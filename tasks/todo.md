@@ -23,9 +23,9 @@
 
 ## Task 4: 配图与交付
 
-- [ ] OpenClaw 生成一张 1080×1440 AI 主图。
-- [ ] Sharp 生成两张 1080×1440 中文信息卡。
-- [ ] 写出 `post.json`、`post.md`、`qc.json` 和 `manifest.json`。
+- [x] OpenClaw 生成一张 1080×1440 AI 主图。
+- [x] Sharp 生成两张 1080×1440 中文信息卡。
+- [x] 写出 `post.json`、`post.md`、`qc.json` 和 `manifest.json`。
 - Verify：读取 PNG metadata 验证尺寸，清单中恰有 3 张图。
 - Dependencies：Task 3。
 

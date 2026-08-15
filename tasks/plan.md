@@ -25,7 +25,7 @@
 ### Phase 2: Core Flow
 
 - [x] Task 3: 实现文案契约、Prompt 和 OpenClaw 文本适配器。
-- [ ] Task 4: 实现 3:4 信息卡、AI 主图适配与交付清单。
+- [x] Task 4: 实现 3:4 信息卡、AI 主图适配与交付清单。
 - [ ] Task 5: 串联 Worker、CLI 和机械质检。
 
 ### Checkpoint: Core Flow

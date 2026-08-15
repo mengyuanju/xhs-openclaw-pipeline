@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const DEFAULT_TEXT_MODEL = 'openai-codex/gpt-5.4-mini';
+const DEFAULT_IMAGE_MODEL = 'openai/gpt-image-2';
 
 function redact(value) {
   return String(value ?? '')
@@ -98,6 +99,56 @@ export function createOpenClawClient({ entryPath, runner = spawnSync } = {}) {
         throw new Error(`OpenClaw text inference failed: ${detail}`);
       }
       return { rawText: extractModelText(result.stdout), model };
+    },
+
+    runImage({
+      prompt,
+      outputPath,
+      model = process.env.XHS_IMAGE_MODEL || DEFAULT_IMAGE_MODEL,
+      timeoutMs = 180_000,
+    }) {
+      if (typeof prompt !== 'string' || prompt.length < 10 || prompt.length > 3_000) {
+        throw new RangeError('image prompt must contain between 10 and 3000 characters');
+      }
+      if (typeof outputPath !== 'string' || outputPath.length === 0 || outputPath.length > 1_000) {
+        throw new TypeError('outputPath must be a non-empty string');
+      }
+      const args = [
+        resolvedEntry,
+        'infer',
+        'image',
+        'generate',
+        '--model',
+        model,
+        '--count',
+        '1',
+        '--size',
+        '1024x1536',
+        '--output-format',
+        'png',
+        '--output',
+        outputPath,
+        '--timeout-ms',
+        String(timeoutMs),
+        '--json',
+        '--prompt',
+        prompt,
+      ];
+      const result = runner(process.execPath, args, {
+        encoding: 'utf8',
+        windowsHide: true,
+        shell: false,
+        timeout: timeoutMs + 10_000,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+      if (result.error || result.status !== 0) {
+        const detail = redact(result.stderr || result.error?.message || `exit status ${result.status}`);
+        throw new Error(`OpenClaw image generation failed: ${detail}`);
+      }
+      if (!existsSync(outputPath)) {
+        throw new Error('OpenClaw reported success but did not create the image file');
+      }
+      return { outputPath, model };
     },
   };
 }
