@@ -1,0 +1,21 @@
+{
+  "name": "xhs-openclaw-pipeline",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Queue-driven Xiaohongshu content production MVP powered by OpenClaw.",
+  "engines": {
+    "node": ">=24.14.0"
+  },
+  "scripts": {
+    "db:init": "node src/cli.mjs init",
+    "enqueue": "node src/cli.mjs enqueue",
+    "status": "node src/cli.mjs status",
+    "worker": "node src/cli.mjs worker",
+    "smoke": "node scripts/smoke.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "sharp": "0.35.3"
+  }
+}

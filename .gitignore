@@ -1,0 +1,9 @@
+node_modules/
+data/
+output/
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+npm-debug.log*
