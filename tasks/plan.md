@@ -26,11 +26,11 @@
 
 - [x] Task 3: 实现文案契约、Prompt 和 OpenClaw 文本适配器。
 - [x] Task 4: 实现 3:4 信息卡、AI 主图适配与交付清单。
-- [ ] Task 5: 串联 Worker、CLI 和机械质检。
+- [x] Task 5: 串联 Worker、CLI 和机械质检。
 
 ### Checkpoint: Core Flow
 
-- [ ] Mock 冒烟能生成完整交付包。
+- [x] Mock 冒烟能生成完整交付包。
 
 ### Phase 3: Live Verification
 

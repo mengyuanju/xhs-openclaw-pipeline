@@ -31,8 +31,8 @@
 
 ## Task 5: Worker 与冒烟
 
-- [ ] CLI 支持 init、enqueue、status、worker once 和 mock。
-- [ ] Mock 冒烟从空库走到 completed。
+- [x] CLI 支持 init、enqueue、status、worker once 和 mock。
+- [x] Mock 冒烟从空库走到 completed。
 - Verify：`npm test` 与 `npm run smoke` 通过。
 - Dependencies：Task 4。
 
