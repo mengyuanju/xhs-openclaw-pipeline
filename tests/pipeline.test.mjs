@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
+import { writeFileSync } from 'node:fs';
 import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import sharp from 'sharp';
 
-import { processNext } from '../src/pipeline.mjs';
+import { createMockPost, processNext } from '../src/pipeline.mjs';
 import { createQueue } from '../src/queue.mjs';
 
 const directories = [];
@@ -101,5 +102,36 @@ describe('content pipeline', () => {
     });
 
     assert.deepEqual(result, { status: 'idle' });
+  });
+
+  it('does not mark a live task completed when the quality gate blocks it', async () => {
+    const { directory, queue } = await setup();
+    const task = queue.enqueue({ query: '需要核验事实的桌面整理任务' });
+    const post = createMockPost();
+    post.unverifiedClaims = ['某个没有来源支持的量化结论'];
+    const rawPng = await sharp({
+      create: { width: 1024, height: 1536, channels: 3, background: '#d7c7b0' },
+    }).png().toBuffer();
+    const openclaw = {
+      runText() {
+        return { rawText: JSON.stringify(post), model: 'openai-codex/gpt-5.4-mini' };
+      },
+      runImage({ outputPath }) {
+        writeFileSync(outputPath, rawPng);
+        return { outputPath, model: 'openai/gpt-image-2' };
+      },
+    };
+
+    const result = await processNext({
+      queue,
+      workerId: 'test-worker',
+      outputRoot: join(directory, 'output'),
+      mock: false,
+      openclaw,
+    });
+
+    assert.equal(result.status, 'failed');
+    assert.equal(queue.get(task.id).status, 'failed');
+    assert.match(queue.get(task.id).error, /quality gate blocked/i);
   });
 });

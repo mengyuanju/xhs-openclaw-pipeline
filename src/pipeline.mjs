@@ -7,7 +7,7 @@ import { createOpenClawClient } from './openclaw.mjs';
 import { buildPostPrompt, parsePostOutput } from './post-contract.mjs';
 import { evaluateDelivery } from './qc.mjs';
 
-function mockPost() {
+export function createMockPost() {
   return parsePostOutput(JSON.stringify({
     taskJudgement: {
       admitted: true,
@@ -106,7 +106,7 @@ export async function processNext({
     let post;
     let textModel = null;
     if (mock) {
-      post = mockPost(task);
+      post = createMockPost();
     } else {
       const generated = client.runText({ prompt: buildPostPrompt(task) });
       post = parsePostOutput(generated.rawText);
@@ -143,6 +143,10 @@ export async function processNext({
       files: await hashFiles(outputDir, deliveryFiles),
     };
     await writeAtomic(join(outputDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+    if (qc.disposition === 'blocked') {
+      throw new Error('quality gate blocked the delivery; inspect qc.json and manifest.json');
+    }
 
     queue.complete(task.id, { workerId, outputDir });
     return { status: 'completed', taskId: task.id, outputDir, qc };

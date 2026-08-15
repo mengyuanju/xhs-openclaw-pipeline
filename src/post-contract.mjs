@@ -3,13 +3,20 @@ import { readFileSync } from 'node:fs';
 const PROMPT_TEMPLATE = readFileSync(new URL('../prompts/post.md', import.meta.url), 'utf8');
 const IMAGE_KINDS = ['hero', 'steps', 'checklist'];
 const FABRICATED_EXPERIENCE = /(我亲测|亲测有效|我用了.{0,8}(个月|年)|本人购买|我家一直|绝对有效)/u;
+const GRAPHEME_SEGMENTER = new Intl.Segmenter('zh-CN', { granularity: 'grapheme' });
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function visibleLength(value) {
-  return [...value].length;
+  return [...GRAPHEME_SEGMENTER.segment(value)].length;
+}
+
+function semanticIconCount(value) {
+  return [...GRAPHEME_SEGMENTER.segment(value)]
+    .filter(({ segment }) => /\p{Extended_Pictographic}|\u20E3/u.test(segment))
+    .length;
 }
 
 function expectRecord(value, field) {
@@ -134,18 +141,22 @@ function validatePost(value) {
   if (FABRICATED_EXPERIENCE.test(body) || root.fabricatedExperience !== false) {
     throw new TypeError('fabricated experience is not allowed');
   }
-  const titleEmojiCount = (title.match(/\p{Extended_Pictographic}/gu) ?? []).length;
-  const bodyEmojiCount = (body.match(/\p{Extended_Pictographic}/gu) ?? []).length;
+  const titleEmojiCount = semanticIconCount(title);
+  const bodyEmojiCount = semanticIconCount(body);
   if (titleEmojiCount > 1) throw new TypeError('title can contain at most one semantic icon');
   if (bodyEmojiCount < 3 || bodyEmojiCount > 6) {
     throw new TypeError('body must contain between 3 and 6 semantic navigation icons');
   }
 
   const iconDictionary = expectRecord(platform.iconDictionary, 'platform.iconDictionary');
-  const safeIcons = {};
+  const safeIcons = Object.create(null);
   for (const [icon, meaning] of Object.entries(iconDictionary)) {
     if (Object.keys(safeIcons).length >= 6) throw new RangeError('platform.iconDictionary cannot exceed 6 entries');
-    safeIcons[expectString(icon, 'platform.iconDictionary key', { max: 4 })] = expectString(
+    const safeIcon = expectString(icon, 'platform.iconDictionary key', { max: 4 });
+    if (semanticIconCount(safeIcon) !== 1 && !/^(0[1-6]|✓|→)$/u.test(safeIcon)) {
+      throw new TypeError('platform.iconDictionary keys must be semantic icons or approved text markers');
+    }
+    safeIcons[safeIcon] = expectString(
       meaning,
       `platform.iconDictionary.${icon}`,
       { max: 12 },

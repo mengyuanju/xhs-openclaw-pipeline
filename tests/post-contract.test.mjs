@@ -93,6 +93,25 @@ describe('post output contract', () => {
 
     assert.throws(() => parsePostOutput(JSON.stringify(input)), /imagePlan.*hero.*steps.*checklist/i);
   });
+
+  it('counts a multi-codepoint emoji as one visible title character', () => {
+    const input = validPost();
+    input.title = `${'桌'.repeat(24)}👨‍👩‍👧‍👦`;
+
+    const post = parsePostOutput(JSON.stringify(input));
+
+    assert.equal(post.title, input.title);
+  });
+
+  it('counts numbered keycap graphemes as semantic navigation icons', () => {
+    const input = validPost();
+    input.body = input.body.replace(/[📌✅⚠]/gu, '') + '\n1️⃣ 清空。\n2️⃣ 分类。\n3️⃣ 复位。';
+    input.platform.iconDictionary = { '1️⃣': '步骤一', '2️⃣': '步骤二', '3️⃣': '步骤三' };
+
+    const post = parsePostOutput(JSON.stringify(input));
+
+    assert.match(post.body, /1️⃣/);
+  });
 });
 
 describe('post prompt', () => {

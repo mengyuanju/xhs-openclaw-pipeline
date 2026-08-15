@@ -65,4 +65,13 @@ describe('CLI', () => {
     assert.equal(result.status, 1);
     assert.match(result.stderr, /--once/);
   });
+
+  it('rejects unknown flags instead of accidentally consuming live quota', async () => {
+    const env = await makeEnvironment();
+
+    const result = runCli(['worker', '--once', '--mokk'], env);
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /unknown option.*--mokk/i);
+  });
 });

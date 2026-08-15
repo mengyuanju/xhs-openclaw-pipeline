@@ -18,6 +18,20 @@ function hasFlag(args, name) {
   return args.includes(name);
 }
 
+function assertAllowedOptions(args, definitions) {
+  for (let index = 0; index < args.length; index += 1) {
+    const option = args[index];
+    if (!option.startsWith('--') || !(option in definitions)) {
+      throw new Error(`unknown option: ${option}`);
+    }
+    if (definitions[option] === 'value') {
+      const value = args[index + 1];
+      if (!value || value.startsWith('--')) throw new Error(`${option} requires a value`);
+      index += 1;
+    }
+  }
+}
+
 function writeJson(stream, value) {
   stream.write(`${JSON.stringify(value, null, 2)}\n`);
 }
@@ -42,11 +56,13 @@ export async function main(
   try {
     queue = createQueue(databasePath);
     if (command === 'init') {
+      assertAllowedOptions(args, {});
       writeJson(stdout, { status: 'initialized', databasePath, outputRoot });
       return 0;
     }
 
     if (command === 'enqueue') {
+      assertAllowedOptions(args, { '--query': 'value', '--input-json': 'value' });
       const query = flagValue(args, '--query');
       if (!query) throw new Error('--query is required');
       const rawInput = flagValue(args, '--input-json');
@@ -63,12 +79,18 @@ export async function main(
     }
 
     if (command === 'status') {
+      assertAllowedOptions(args, { '--limit': 'value' });
       const limit = Number(flagValue(args, '--limit') ?? 20);
       writeJson(stdout, { counts: queue.countByStatus(), recent: queue.list({ limit }) });
       return 0;
     }
 
     if (command === 'worker') {
+      assertAllowedOptions(args, {
+        '--once': 'boolean',
+        '--mock': 'boolean',
+        '--worker-id': 'value',
+      });
       if (!hasFlag(args, '--once')) {
         throw new Error('MVP worker requires the explicit --once safety flag');
       }
