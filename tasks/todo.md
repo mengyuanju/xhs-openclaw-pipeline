@@ -16,8 +16,8 @@
 
 ## Task 3: 文案生成契约
 
-- [ ] Prompt 包含当前作业模式的真实性、结构和平台表达约束。
-- [ ] OpenClaw 输出可提取并校验为受控 JSON。
+- [x] Prompt 包含当前作业模式的真实性、结构和平台表达约束。
+- [x] OpenClaw 输出可提取并校验为受控 JSON。
 - Verify：Fake 输出的合法、缺字段和围栏 JSON 测试通过。
 - Dependencies：Task 2。
 
