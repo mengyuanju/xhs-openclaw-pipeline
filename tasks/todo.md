@@ -2,15 +2,15 @@
 
 ## Task 1: 项目基础
 
-- [ ] 创建 `package.json`、`.gitignore`、`AGENTS.md` 和 README。
-- [ ] 安装 Sharp 并提交锁文件。
+- [x] 创建 `package.json`、`.gitignore`、`AGENTS.md` 和 README。
+- [x] 安装 Sharp 并提交锁文件。
 - Verify：`npm test` 可以启动，即使暂时没有业务测试。
 - Dependencies：None。
 
 ## Task 2: SQLite 队列
 
-- [ ] 支持初始化、入队、原子领取、完成、失败和状态统计。
-- [ ] 任务 Query 为空或超过 500 字时拒绝。
+- [x] 支持初始化、入队、原子领取、完成、失败和状态统计。
+- [x] 任务 Query 为空或超过 500 字时拒绝。
 - Verify：队列测试覆盖状态转换和租约回收。
 - Dependencies：Task 1。
 

@@ -15,12 +15,12 @@
 
 ### Phase 1: Foundation
 
-- [ ] Task 1: 初始化项目、规则、依赖和测试入口。
-- [ ] Task 2: 实现并测试 SQLite 队列状态机。
+- [x] Task 1: 初始化项目、规则、依赖和测试入口。
+- [x] Task 2: 实现并测试 SQLite 队列状态机。
 
 ### Checkpoint: Foundation
 
-- [ ] 队列测试通过，项目无高危依赖漏洞。
+- [x] 队列测试通过，项目无高危依赖漏洞。
 
 ### Phase 2: Core Flow
 
