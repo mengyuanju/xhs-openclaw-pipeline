@@ -48,8 +48,10 @@ export function SideNav() {
         })}
       </nav>
       <div className="sidebar-foot">
-        <span className="status-dot" /> 局域网认证已启用
-        <small>单管理员 · 不包含自动发布</small>
+        <div className="sidebar-auth-summary">
+          <span className="sidebar-auth-label"><span className="status-dot" /> 局域网认证已启用</span>
+          <small>单管理员 · 不包含自动发布</small>
+        </div>
         <button className="sidebar-signout" type="button" onClick={signOut} disabled={isSigningOut}>
           {isSigningOut ? '正在退出…' : '退出后台'}
         </button>

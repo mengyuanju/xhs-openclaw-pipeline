@@ -142,7 +142,12 @@ tbody tr:hover { background: #fffaf8; }
   .nav-list { grid-template-columns: repeat(4, 1fr); }
   .nav-item { justify-content: center; padding: 10px 5px; font-size: 11px; }
   .nav-item span { display: none; }
-  .sidebar-foot { display: none; }
+  .sidebar-foot { display: flex; align-items: center; gap: 10px; margin-top: 14px; padding: 12px 0 0; }
+  .sidebar-auth-summary { min-width: 0; flex: 1; }
+  .sidebar-auth-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+  .sidebar-foot small { display: none; }
+  .sidebar-signout { width: auto; margin-top: 0; white-space: nowrap; }
+  .sidebar-error { margin: 0; }
   .main-shell { padding: 24px 16px 42px; }
   .page-header { align-items: flex-start; flex-direction: column; }
   .form-grid, .stats-grid { grid-template-columns: 1fr; }
