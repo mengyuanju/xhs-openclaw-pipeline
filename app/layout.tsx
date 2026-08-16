@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 
-import { SideNav } from './components/side-nav';
+import { AppFrame } from './components/app-frame';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -12,10 +12,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="zh-CN">
       <body>
-        <div className="app-shell">
-          <SideNav />
-          <main className="main-shell">{children}</main>
-        </div>
+        <AppFrame>{children}</AppFrame>
       </body>
     </html>
   );

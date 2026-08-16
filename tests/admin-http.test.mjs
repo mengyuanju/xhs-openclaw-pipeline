@@ -11,7 +11,7 @@ import {
 import { ADMIN_SESSION_COOKIE, createSessionToken } from '../src/admin/auth.mjs';
 
 const AUTH_ENV = {
-  XHS_ADMIN_PASSWORD_HASH: 'scrypt-v1$MDEyMzQ1Njc4OWFiY2RlZg$MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZg',
+  XHS_ADMIN_PASSWORD_HASH: 'scrypt-v1.MDEyMzQ1Njc4OWFiY2RlZg.MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZg',
   XHS_SESSION_SECRET: 'test-session-secret-with-at-least-32-characters',
 };
 

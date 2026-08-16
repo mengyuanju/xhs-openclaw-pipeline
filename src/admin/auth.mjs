@@ -22,6 +22,22 @@ const SCRYPT_OPTIONS = Object.freeze({
 export const ADMIN_SESSION_COOKIE = 'xhs_admin_session';
 export const ADMIN_SESSION_SECONDS = 8 * 60 * 60;
 
+export function serializeAdminSessionCookie(token, { secure = false, clear = false } = {}) {
+  if (typeof token !== 'string' || (!clear && token.length === 0)) {
+    throw new TypeError('session token is invalid');
+  }
+  const attributes = [
+    `${ADMIN_SESSION_COOKIE}=${clear ? '' : token}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Strict',
+    `Max-Age=${clear ? 0 : ADMIN_SESSION_SECONDS}`,
+    'Priority=High',
+  ];
+  if (secure) attributes.push('Secure');
+  return attributes.join('; ');
+}
+
 function assertStrongPassword(password) {
   if (typeof password !== 'string' || password.length < PASSWORD_MIN_LENGTH) {
     throw new TypeError('admin password must contain at least 12 characters');
@@ -40,7 +56,7 @@ function decodeBase64Url(value, expectedBytes) {
 
 function parsePasswordHash(encoded) {
   if (typeof encoded !== 'string') return null;
-  const parts = encoded.split('$');
+  const parts = encoded.split('.');
   if (parts.length !== 3 || parts[0] !== PASSWORD_HASH_PREFIX) return null;
   const salt = decodeBase64Url(parts[1], PASSWORD_SALT_BYTES);
   const digest = decodeBase64Url(parts[2], PASSWORD_KEY_BYTES);
@@ -51,7 +67,7 @@ export async function hashAdminPassword(password) {
   assertStrongPassword(password);
   const salt = randomBytes(PASSWORD_SALT_BYTES);
   const digest = await scrypt(password, salt, PASSWORD_KEY_BYTES, SCRYPT_OPTIONS);
-  return `${PASSWORD_HASH_PREFIX}$${salt.toString('base64url')}$${Buffer.from(digest).toString('base64url')}`;
+  return `${PASSWORD_HASH_PREFIX}.${salt.toString('base64url')}.${Buffer.from(digest).toString('base64url')}`;
 }
 
 export async function verifyAdminPassword(password, encoded) {
@@ -173,4 +189,34 @@ export class LoginRateLimiter {
   reset() {
     this.#failures = [];
   }
+}
+
+export async function attemptAdminLogin(password, {
+  environment = process.env,
+  limiter,
+  nowMs = Date.now(),
+}) {
+  if (!(limiter instanceof LoginRateLimiter)) {
+    throw new TypeError('login limiter is required');
+  }
+  const rateLimit = limiter.check(nowMs);
+  if (!rateLimit.allowed) {
+    return { status: 'blocked', retryAfterSeconds: rateLimit.retryAfterSeconds };
+  }
+
+  const config = readAuthConfig(environment);
+  const isValid = config
+    ? await verifyAdminPassword(password, config.passwordHash)
+    : false;
+  if (!isValid || !config) {
+    limiter.recordFailure(nowMs);
+    return { status: 'invalid' };
+  }
+
+  limiter.reset();
+  return {
+    status: 'authenticated',
+    token: createSessionToken(config.sessionSecret),
+    expiresInSeconds: ADMIN_SESSION_SECONDS,
+  };
 }

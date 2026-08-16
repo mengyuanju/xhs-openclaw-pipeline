@@ -18,7 +18,7 @@ describe('admin password authentication', () => {
     const first = await hashAdminPassword(password);
     const second = await hashAdminPassword(password);
 
-    assert.match(first, /^scrypt-v1\$/);
+    assert.match(first, /^scrypt-v1\./);
     assert.notEqual(first, second);
     assert.equal(await verifyAdminPassword(password, first), true);
     assert.equal(await verifyAdminPassword('wrong password', first), false);
@@ -56,7 +56,7 @@ describe('admin session authentication', () => {
   it('fails closed when authentication environment variables are missing or weak', () => {
     assert.equal(readAuthConfig({}), null);
     assert.equal(readAuthConfig({
-      XHS_ADMIN_PASSWORD_HASH: 'scrypt-v1$bad',
+      XHS_ADMIN_PASSWORD_HASH: 'scrypt-v1.bad',
       XHS_SESSION_SECRET: 'short',
     }), null);
   });
