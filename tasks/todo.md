@@ -1,51 +1,71 @@
-# MVP Tasks
+# Admin Console v0.2 Tasks
 
-## Task 1: 项目基础
+## Task 1: 管理数据库与提示词版本
 
-- [x] 创建 `package.json`、`.gitignore`、`AGENTS.md` 和 README。
-- [x] 安装 Sharp 并提交锁文件。
-- Verify：`npm test` 可以启动，即使暂时没有业务测试。
+- [ ] 创建管理表与种子提示词，发布版本不可修改。
+- [ ] 校验提示词变量并保存发布内容哈希。
+- Verify：提示词创建、发布、回滚选择和非法变量测试。
 - Dependencies：None。
 
-## Task 2: SQLite 队列
+## Task 2: Excel staging 导入
 
-- [x] 支持初始化、入队、原子领取、完成、失败和状态统计。
-- [x] 任务 Query 为空或超过 500 字时拒绝。
-- Verify：队列测试覆盖状态转换和租约回收。
+- [ ] `.xlsx` 解析首表并返回合法/错误行预览。
+- [ ] 提交批次时批量入队并固定配置，重复提交幂等。
+- Verify：空 Query、重复 externalId、非法 imageCount、1000 行提交测试。
 - Dependencies：Task 1。
 
-## Task 3: 文案生成契约
+## Task 3: 文本修订与审核
 
-- [x] Prompt 包含当前作业模式的真实性、结构和平台表达约束。
-- [x] OpenClaw 输出可提取并校验为受控 JSON。
-- Verify：Fake 输出的合法、缺字段和围栏 JSON 测试通过。
-- Dependencies：Task 2。
+- [ ] 任务保存当前文本修订和完整历史。
+- [ ] 支持 WAITING_REVIEW、APPROVED、REJECTED 状态与审计记录。
+- Verify：非法转换拒绝、修订不覆盖旧版本、操作日志测试。
+- Dependencies：Task 1。
 
-## Task 4: 配图与交付
+## Task 4: 素材与图片修订
 
-- [x] OpenClaw 生成一张 1080×1440 AI 主图。
-- [x] Sharp 生成两张 1080×1440 中文信息卡。
-- [x] 写出 `post.json`、`post.md`、`qc.json` 和 `manifest.json`。
-- Verify：读取 PNG metadata 验证尺寸，清单中恰有 3 张图。
+- [ ] 上传 PNG/JPEG/WebP 参考图，限制大小并用 Sharp 验证真实图片。
+- [ ] 支持旋转/裁剪修订和父子谱系，不覆盖原图。
+- Verify：伪 MIME、路径穿越、尺寸和谱系测试。
 - Dependencies：Task 3。
 
-## Task 5: Worker 与冒烟
+## Task 5: Web 外壳与任务页
 
-- [x] CLI 支持 init、enqueue、status、worker once 和 mock。
-- [x] Mock 冒烟从空库走到 completed。
-- Verify：`npm test` 与 `npm run smoke` 通过。
-- Dependencies：Task 4。
+- [ ] Next.js 页面、导航、仪表盘、分页任务列表和统一错误响应。
+- [ ] 默认开发/生产命令只绑定 `127.0.0.1`。
+- Verify：`npm run build`；任务 API 分页与筛选测试。
+- Dependencies：Tasks 1–3。
 
-## Task 6: 真实 OpenClaw 文案
+## Task 6: Excel 与提示词页面
 
-- [ ] `openai` 插件启用，`openai-codex` OAuth 有效。
-- [ ] 真实文本推理返回合法文案 JSON。
-- Verify：交付清单记录真实 provider/model。
-- Dependencies：用户完成浏览器授权，Task 5。
+- [ ] Excel 上传、预览、提交反馈和错误行展示。
+- [ ] 提示词草稿、版本发布与当前版本展示。
+- Verify：浏览器完成示例 Excel 导入和提示词发布。
+- Dependencies：Tasks 2、5。
 
-## Task 7: 真实 OpenClaw 主图
+## Task 7: 审核工作台
 
-- [ ] OpenClaw 图片推理输出 PNG。
-- [ ] 真实单条完整任务状态为 completed。
-- Verify：人工查看主图和两张卡片，机械质检不低于 2。
-- Dependencies：Task 6。
+- [ ] 修改标题/正文/标签、上传参考图、图片修订、通过/退回。
+- [ ] 展示生成、质检和资产历史。
+- Verify：键盘可达、错误/加载/空状态、浏览器截图和网络检查。
+- Dependencies：Tasks 3–5。
+
+## Task 8: Worker 快照集成
+
+- [ ] Worker 使用任务固定的文本/图片提示词和图片数量。
+- [ ] 生成完成后同步文本、质检和图片资产到管理表。
+- Verify：Fake OpenClaw 断言实际提示词；Mock 批次进入 WAITING_REVIEW。
+- Dependencies：Tasks 1–4。
+
+## Task 9: 图生图与编辑 Worker
+
+- [ ] OpenClaw 适配器支持 `infer image edit --file`。
+- [ ] 审核端 AI 编辑请求创建新运行与图片修订。
+- Verify：Fake CLI 参数测试；无授权时保持明确失败状态。
+- Dependencies：Tasks 4、8。
+
+## Task 10: 最终质量门
+
+- [ ] 全量测试、构建、Mock 冒烟和关键浏览器流程通过。
+- [ ] `npm audit`、秘密扫描、可访问性和五轴代码审查通过。
+- [ ] README 更新为后台使用说明。
+- Dependencies：Tasks 1–9。

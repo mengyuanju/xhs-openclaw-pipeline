@@ -1,56 +1,81 @@
-# Implementation Plan: 小红书图文自动生产 MVP
+# Implementation Plan: 小红书内容生产管理后台 v0.2
 
 ## Overview
 
-先做可重复测试的本地队列和 Mock 端到端，再接入 OpenClaw 文本与图片能力。每一阶段都保持项目可运行，真实 OAuth 是最后一个外部验收点。
+把现有单条 CLI 管线扩展为本机管理后台，按“领域数据 -> Excel 批次 -> 审核修订 -> Web 页面 -> Worker 集成”的依赖顺序纵向交付。每个切片都必须保持旧 CLI 与 Mock 冒烟可用。
 
 ## Architecture Decisions
 
-- 使用 SQLite 任务状态机，避免用文件名推断状态。
-- OpenClaw 调用走 `spawn` 参数数组并关闭 Shell，Query 不进入命令文本。
-- 文案输出采用严格 JSON 契约；模板卡由本地渲染，避免 AI 图片中的中文错字。
-- 真实主图失败时任务失败，不静默替换成“已完成”；Mock 仅用于程序验证。
+- 第一版采用 Next.js BFF + SQLite + 本地文件存储，默认只监听 `127.0.0.1`。
+- Web 请求只创建或修改任务，不同步等待 OpenClaw；Worker 独立领取任务。
+- 提示词发布版本不可变，任务固定版本与哈希；修订内容和图片永不覆盖原件。
+- Excel 先进入 staging 批次，预览后显式提交；提交幂等。
+- 图片能力通过适配器暴露 `generateImage` 与 `editImage`，保留以后切换 API/ComfyUI 的边界。
+
+## Dependency Graph
+
+```text
+管理数据库/契约
+  ├─ 提示词版本
+  ├─ Excel staging/提交
+  ├─ 任务审核与素材谱系
+  │    └─ Worker 提示词/参考图集成
+  └─ REST Route Handlers
+       └─ Next.js 管理页面
+            └─ 浏览器端到端验证
+```
 
 ## Task List
 
 ### Phase 1: Foundation
 
-- [x] Task 1: 初始化项目、规则、依赖和测试入口。
-- [x] Task 2: 实现并测试 SQLite 队列状态机。
+- [ ] Task 1: 管理数据库、提示词版本与统一领域契约。
+- [ ] Task 2: Excel 解析、预览和幂等提交。
 
 ### Checkpoint: Foundation
 
-- [x] 队列测试通过，项目无高危依赖漏洞。
+- [ ] 新领域测试与全部旧测试通过；1000 行导入测试通过。
 
-### Phase 2: Core Flow
+### Phase 2: Review and Assets
 
-- [x] Task 3: 实现文案契约、Prompt 和 OpenClaw 文本适配器。
-- [x] Task 4: 实现 3:4 信息卡、AI 主图适配与交付清单。
-- [x] Task 5: 串联 Worker、CLI 和机械质检。
+- [ ] Task 3: 文本修订、审核状态和审计记录。
+- [ ] Task 4: 参考图上传、图片谱系和确定性图片修订。
 
-### Checkpoint: Core Flow
+### Checkpoint: Review
 
-- [x] Mock 冒烟能生成完整交付包。
+- [ ] 一个任务可经历导入、生成、修改、退回和通过，历史不丢失。
 
-### Phase 3: Live Verification
+### Phase 3: Web Console
 
-- [ ] Task 6: 完成 OpenAI/Codex OAuth 并验证真实文案。
-- [ ] Task 7: 验证真实 AI 主图和完整单条任务。
+- [ ] Task 5: Next.js 外壳、导航、仪表盘和任务分页。
+- [ ] Task 6: Excel 导入页与提示词工作台。
+- [ ] Task 7: 任务审核页、参考图和图片编辑操作。
+
+### Checkpoint: Web
+
+- [ ] 构建通过，后台在 320/768/1440 宽度可用，控制台无错误。
+
+### Phase 4: Worker Integration
+
+- [ ] Task 8: 提示词快照、图片数量和参考图进入生产管线。
+- [ ] Task 9: OpenClaw 图生图/编辑适配与连续消费命令。
 
 ### Checkpoint: Complete
 
-- [ ] 测试、Mock 冒烟和真实单条均通过。
+- [ ] 全量测试、构建、Mock Excel 到审核流程和浏览器验证通过。
+- [ ] 安全扫描、秘密扫描和五轴代码审查无阻断问题。
 
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| OAuth 未完成或订阅无图片能力 | 高 | 保留明确阻塞状态，不伪装为真实成功 |
-| OpenClaw 版本与最新文档不同 | 中 | 以本机 `--help` 和插件清单为执行契约 |
-| 模型返回非 JSON | 中 | 提取 JSON 后严格校验，失败可重试 |
-| Query/模型输出诱导命令执行 | 高 | `spawn` 参数数组、禁用 Shell、文件名只用数据库 ID |
-| 中文卡片字体缺失 | 中 | 使用 Windows 常见中文字体栈并在冒烟后检查成图 |
+| Next.js 与同步 `node:sqlite` 打包边界 | 高 | 数据访问保留在 Node runtime server modules，先做最小构建冒烟 |
+| Excel 恶意或超大压缩包 | 高 | 5 MiB/5000 行/首表限制，超限立即拒绝 |
+| Web 与 Worker 并发写 SQLite | 中 | WAL、短事务、5 秒 busy timeout、幂等状态更新 |
+| 提示词改动污染在途任务 | 高 | 任务固定版本 ID、内容和 SHA-256 快照 |
+| 图片上传伪造 MIME 或路径穿越 | 高 | 随机/数据库 ID 文件名、Sharp 解码、尺寸/大小限制 |
+| OAuth 无法承担目标规模 | 高 | Mock 完成产品验收；真实生产切换 API 凭据并加预算熔断 |
 
 ## Open Questions
 
-- 无阻断问题；正式调度与发布不在当前范围。
+- 无阻断问题；v0.3 再确认多用户认证、远程部署和自动发布。
