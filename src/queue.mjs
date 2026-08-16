@@ -69,7 +69,7 @@ function rowToTask(row) {
   };
 }
 
-function initSchema(db) {
+export function initializeQueueSchema(db) {
   db.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA foreign_keys = ON;
@@ -97,7 +97,7 @@ export function createQueue(databasePath) {
     mkdirSync(dirname(databasePath), { recursive: true });
   }
   const db = new DatabaseSync(databasePath, { timeout: 5_000 });
-  initSchema(db);
+  initializeQueueSchema(db);
 
   const getById = db.prepare('SELECT * FROM tasks WHERE id = ?');
 

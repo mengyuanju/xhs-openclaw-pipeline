@@ -29,12 +29,12 @@
 
 ### Phase 1: Foundation
 
-- [ ] Task 1: 管理数据库、提示词版本与统一领域契约。
-- [ ] Task 2: Excel 解析、预览和幂等提交。
+- [x] Task 1: 管理数据库、提示词版本与统一领域契约。
+- [x] Task 2: Excel 解析、预览和幂等提交。
 
 ### Checkpoint: Foundation
 
-- [ ] 新领域测试与全部旧测试通过；1000 行导入测试通过。
+- [x] 新领域测试与全部旧测试通过；1000 行导入测试通过。
 
 ### Phase 2: Review and Assets
 
