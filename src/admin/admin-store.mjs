@@ -10,6 +10,8 @@ import {
 } from './prompt-service.mjs';
 
 const REVIEW_STATUSES = ['NOT_READY', 'WAITING_REVIEW', 'APPROVED', 'REJECTED'];
+const TASK_STATUSES = ['pending', 'processing', 'completed', 'failed'];
+const IMPORT_STATUSES = ['PREVIEW', 'COMMITTED'];
 
 function nowIso() {
   return new Date().toISOString();
@@ -83,6 +85,46 @@ function rowToAuditLog(row) {
     details: parseJson(row.details_json, {}),
     createdAt: row.created_at,
   };
+}
+
+function rowToImportRow(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    batchId: Number(row.batch_id),
+    rowNumber: Number(row.row_number),
+    externalId: row.external_id,
+    query: row.query,
+    input: parseJson(row.input_json, {}),
+    imageCount: Number(row.image_count),
+    referenceImageFiles: parseJson(row.reference_image_files_json, []),
+    errors: parseJson(row.errors_json, []),
+    isValid: Boolean(row.is_valid),
+    taskId: row.task_id === null ? null : Number(row.task_id),
+  };
+}
+
+function normalizePagination(page, pageSize) {
+  return {
+    page: Math.max(1, Math.floor(Number(page) || 1)),
+    pageSize: Math.max(1, Math.min(100, Math.floor(Number(pageSize) || 20))),
+  };
+}
+
+function paginationResult(data, { page, pageSize }, totalItems) {
+  return {
+    data,
+    pagination: {
+      page,
+      pageSize,
+      totalItems,
+      totalPages: Math.ceil(totalItems / pageSize),
+    },
+  };
+}
+
+function escapeLike(value) {
+  return value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
 }
 
 function visibleLength(value) {
@@ -475,6 +517,45 @@ export function createAdminStore(databasePath) {
       }
     },
 
+    listImportBatches({ page = 1, pageSize = 20, status } = {}) {
+      const pagination = normalizePagination(page, pageSize);
+      const clauses = [];
+      const parameters = [];
+      if (status !== undefined && status !== '') {
+        if (!IMPORT_STATUSES.includes(status)) throw new TypeError('import status is invalid');
+        clauses.push('status = ?');
+        parameters.push(status);
+      }
+      const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+      const totalItems = Number(db.prepare(`
+        SELECT COUNT(*) AS count FROM import_batches ${where}
+      `).get(...parameters).count);
+      const rows = db.prepare(`
+        SELECT id FROM import_batches ${where}
+        ORDER BY id DESC LIMIT ? OFFSET ?
+      `).all(
+        ...parameters,
+        pagination.pageSize,
+        (pagination.page - 1) * pagination.pageSize,
+      );
+      return paginationResult(
+        rows.map((row) => batchSummary(db, row.id)),
+        pagination,
+        totalItems,
+      );
+    },
+
+    getImportBatch(id) {
+      const batch = batchSummary(db, id);
+      if (!batch) return null;
+      return {
+        ...batch,
+        rows: db.prepare(`
+          SELECT * FROM import_rows WHERE batch_id = ? ORDER BY row_number, id
+        `).all(id).map(rowToImportRow),
+      };
+    },
+
     commitImportBatch(batchId) {
       db.exec('BEGIN IMMEDIATE');
       try {
@@ -700,27 +781,81 @@ export function createAdminStore(databasePath) {
       return countTasks();
     },
 
-    listTasks({ page = 1, pageSize = 20 } = {}) {
-      const safePage = Math.max(1, Math.floor(Number(page) || 1));
-      const safePageSize = Math.max(1, Math.min(100, Math.floor(Number(pageSize) || 20)));
-      const totalItems = countTasks();
+    listTasks({ page = 1, pageSize = 20, status, reviewStatus, query } = {}) {
+      const pagination = normalizePagination(page, pageSize);
+      const clauses = [];
+      const parameters = [];
+      if (status !== undefined && status !== '') {
+        if (!TASK_STATUSES.includes(status)) throw new TypeError('task status is invalid');
+        clauses.push('t.status = ?');
+        parameters.push(status);
+      }
+      if (reviewStatus !== undefined && reviewStatus !== '') {
+        if (!REVIEW_STATUSES.includes(reviewStatus)) throw new TypeError('review status is invalid');
+        clauses.push('tc.review_status = ?');
+        parameters.push(reviewStatus);
+      }
+      const normalizedQuery = String(query ?? '').trim();
+      if ([...normalizedQuery].length > 500) throw new RangeError('query filter cannot exceed 500 characters');
+      if (normalizedQuery) {
+        clauses.push("(t.query LIKE ? ESCAPE '\\' OR tc.external_id LIKE ? ESCAPE '\\')");
+        const pattern = `%${escapeLike(normalizedQuery)}%`;
+        parameters.push(pattern, pattern);
+      }
+      const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+      const totalItems = Number(db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM tasks t LEFT JOIN task_configs tc ON tc.task_id = t.id
+        ${where}
+      `).get(...parameters).count);
       const rows = db.prepare(`
         SELECT t.*, tc.*,
                t.id AS task_id, t.status AS task_status, t.created_at AS task_created_at,
                t.updated_at AS task_updated_at
         FROM tasks t
         LEFT JOIN task_configs tc ON tc.task_id = t.id
+        ${where}
         ORDER BY t.id DESC LIMIT ? OFFSET ?
-      `).all(safePageSize, (safePage - 1) * safePageSize);
-      return {
-        data: rows.map(rowToAdminTask),
-        pagination: {
-          page: safePage,
-          pageSize: safePageSize,
-          totalItems,
-          totalPages: Math.ceil(totalItems / safePageSize),
-        },
+      `).all(
+        ...parameters,
+        pagination.pageSize,
+        (pagination.page - 1) * pagination.pageSize,
+      );
+      return paginationResult(rows.map(rowToAdminTask), pagination, totalItems);
+    },
+
+    getDashboardStats() {
+      const taskRows = db.prepare(`
+        SELECT status, COUNT(*) AS count FROM tasks GROUP BY status
+      `).all();
+      const tasks = Object.fromEntries(TASK_STATUSES.map((status) => [status, 0]));
+      for (const row of taskRows) tasks[row.status] = Number(row.count);
+      tasks.total = Object.values(tasks).reduce((sum, count) => sum + count, 0);
+
+      const reviewRows = db.prepare(`
+        SELECT review_status AS status, COUNT(*) AS count
+        FROM task_configs GROUP BY review_status
+      `).all();
+      const reviews = {
+        notReady: 0,
+        waiting: 0,
+        approved: 0,
+        rejected: 0,
       };
+      const reviewKeys = {
+        NOT_READY: 'notReady',
+        WAITING_REVIEW: 'waiting',
+        APPROVED: 'approved',
+        REJECTED: 'rejected',
+      };
+      for (const row of reviewRows) reviews[reviewKeys[row.status]] = Number(row.count);
+
+      const importRows = db.prepare(`
+        SELECT status, COUNT(*) AS count FROM import_batches GROUP BY status
+      `).all();
+      const imports = { preview: 0, committed: 0 };
+      for (const row of importRows) imports[row.status.toLowerCase()] = Number(row.count);
+      return { tasks, reviews, imports };
     },
   };
 }

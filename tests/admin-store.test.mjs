@@ -223,3 +223,42 @@ describe('admin review revisions', () => {
     }
   });
 });
+
+describe('admin console queries', () => {
+  it('lists import batches and task pages with stable filters', () => {
+    const store = createAdminStore(':memory:');
+    try {
+      const firstTask = createReviewTask(store);
+      const secondTask = createReviewTask(store);
+      store.addTextRevision(secondTask.id, {
+        title: '待审核内容',
+        body: '正文',
+        tags: [],
+        source: 'GENERATED',
+      });
+
+      const batches = store.listImportBatches({ page: 1, pageSize: 1 });
+      assert.equal(batches.data.length, 1);
+      assert.equal(batches.pagination.totalItems, 2);
+      assert.equal(store.getImportBatch(batches.data[0].id).rows.length, 1);
+
+      const waiting = store.listTasks({
+        page: 1,
+        pageSize: 20,
+        status: 'pending',
+        reviewStatus: 'WAITING_REVIEW',
+      });
+      assert.equal(waiting.data.length, 1);
+      assert.equal(waiting.data[0].id, secondTask.id);
+      assert.notEqual(waiting.data[0].id, firstTask.id);
+
+      const stats = store.getDashboardStats();
+      assert.equal(stats.tasks.total, 2);
+      assert.equal(stats.tasks.pending, 2);
+      assert.equal(stats.reviews.waiting, 1);
+      assert.equal(stats.imports.committed, 2);
+    } finally {
+      store.close();
+    }
+  });
+});
