@@ -30,42 +30,42 @@
 
 ## Task 5: Web 外壳与任务页
 
-- [ ] Next.js 页面、导航、仪表盘、分页任务列表和统一错误响应。
-- [ ] 默认开发/生产命令只绑定 `127.0.0.1`。
+- [x] Next.js 页面、导航、仪表盘、分页任务列表和统一错误响应。
+- [x] 默认开发/生产命令只绑定 `127.0.0.1`。
 - Verify：`npm run build`；任务 API 分页与筛选测试。
 - Dependencies：Tasks 1–3。
 
 ## Task 6: Excel 与提示词页面
 
-- [ ] Excel 上传、预览、提交反馈和错误行展示。
-- [ ] 提示词草稿、版本发布与当前版本展示。
+- [x] Excel 上传、预览、提交反馈和错误行展示。
+- [x] 提示词草稿、版本发布与当前版本展示。
 - Verify：浏览器完成示例 Excel 导入和提示词发布。
 - Dependencies：Tasks 2、5。
 
 ## Task 7: 审核工作台
 
-- [ ] 修改标题/正文/标签、上传参考图、图片修订、通过/退回。
-- [ ] 展示生成、质检和资产历史。
+- [x] 修改标题/正文/标签、上传参考图、图片修订、通过/退回。
+- [x] 展示生成、质检和资产历史。
 - Verify：键盘可达、错误/加载/空状态、浏览器截图和网络检查。
 - Dependencies：Tasks 3–5。
 
 ## Task 8: Worker 快照集成
 
-- [ ] Worker 使用任务固定的文本/图片提示词和图片数量。
-- [ ] 生成完成后同步文本、质检和图片资产到管理表。
+- [x] Worker 使用任务固定的文本/图片提示词和图片数量。
+- [x] 生成完成后同步文本、质检和图片资产到管理表。
 - Verify：Fake OpenClaw 断言实际提示词；Mock 批次进入 WAITING_REVIEW。
 - Dependencies：Tasks 1–4。
 
 ## Task 9: 图生图与编辑 Worker
 
-- [ ] OpenClaw 适配器支持 `infer image edit --file`。
-- [ ] 审核端 AI 编辑请求创建新运行与图片修订。
+- [x] OpenClaw 适配器支持 `infer image edit --file`。
+- [x] 审核端 AI 编辑请求创建新运行与图片修订。
 - Verify：Fake CLI 参数测试；无授权时保持明确失败状态。
 - Dependencies：Tasks 4、8。
 
 ## Task 10: 最终质量门
 
-- [ ] 全量测试、构建、Mock 冒烟和关键浏览器流程通过。
-- [ ] `npm audit`、秘密扫描、可访问性和五轴代码审查通过。
-- [ ] README 更新为后台使用说明。
+- [x] 全量测试、构建、Mock 冒烟和关键浏览器流程通过。
+- [x] `npm audit`、秘密扫描、可访问性和五轴代码审查无阻断问题。
+- [x] README 更新为后台使用说明。
 - Dependencies：Tasks 1–9。

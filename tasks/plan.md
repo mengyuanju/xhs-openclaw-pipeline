@@ -47,23 +47,23 @@
 
 ### Phase 3: Web Console
 
-- [ ] Task 5: Next.js 外壳、导航、仪表盘和任务分页。
-- [ ] Task 6: Excel 导入页与提示词工作台。
-- [ ] Task 7: 任务审核页、参考图和图片编辑操作。
+- [x] Task 5: Next.js 外壳、导航、仪表盘和任务分页。
+- [x] Task 6: Excel 导入页与提示词工作台。
+- [x] Task 7: 任务审核页、参考图和图片编辑操作。
 
 ### Checkpoint: Web
 
-- [ ] 构建通过，后台在 320/768/1440 宽度可用，控制台无错误。
+- [x] 构建通过，后台在 320/768/1440 宽度可用，控制台无错误。
 
 ### Phase 4: Worker Integration
 
-- [ ] Task 8: 提示词快照、图片数量和参考图进入生产管线。
-- [ ] Task 9: OpenClaw 图生图/编辑适配与连续消费命令。
+- [x] Task 8: 提示词快照、图片数量和参考图进入生产管线。
+- [x] Task 9: OpenClaw 图生图/编辑适配与连续消费命令。
 
 ### Checkpoint: Complete
 
-- [ ] 全量测试、构建、Mock Excel 到审核流程和浏览器验证通过。
-- [ ] 安全扫描、秘密扫描和五轴代码审查无阻断问题。
+- [x] 全量测试、构建、Mock Excel 到审核流程和浏览器验证通过。
+- [x] 安全扫描、秘密扫描和五轴代码审查无阻断问题。
 
 ## Risks and Mitigations
 
