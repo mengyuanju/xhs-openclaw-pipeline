@@ -39,6 +39,8 @@ export function ImportWorkbench() {
     } finally { setBusy(false); }
   }
 
+  const messageIsError = message.includes('失败') || message.includes('无效');
+
   return (
     <div className="stack">
       <form className="panel" onSubmit={upload}>
@@ -46,11 +48,11 @@ export function ImportWorkbench() {
         <div className="form-grid">
           <div className="field"><label htmlFor="batch-name">批次名称（可选）</label><input id="batch-name" className="input" name="name" maxLength={200} placeholder="如：8月收纳选题" /></div>
           <div className="field"><label htmlFor="excel-file">Excel 文件</label><input id="excel-file" className="input" name="file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required /></div>
-          <div className="field full inline"><button className="button primary" disabled={busy}>{busy ? '处理中…' : '上传并预检'}</button><span className="subtle">必需列：query / 查询 / 选题；图片数量支持 3–5。</span></div>
+          <div className="field full inline"><button className="button primary" type="submit" disabled={busy}>{busy ? '处理中…' : '上传并预检'}</button><span className="subtle">必需列：query / 查询 / 选题；图片数量支持 3–5。</span></div>
         </div>
       </form>
 
-      {message && <div className={message.includes('失败') || message.includes('无效') ? 'notice error' : 'notice success'}>{message}</div>}
+      {message && <div className={messageIsError ? 'notice error' : 'notice success'} role={messageIsError ? 'alert' : 'status'} aria-live="polite">{message}</div>}
 
       {batch && (
         <section className="panel">
@@ -61,13 +63,13 @@ export function ImportWorkbench() {
             <div className="stat-card"><span className="label">无效</span><strong>{batch.invalidRows}</strong></div>
             <div className="stat-card"><span className="label">当前状态</span><strong style={{fontSize: 20}}>{batch.status === 'COMMITTED' ? '已入队' : '待确认'}</strong></div>
           </div>
-          <div className="table-wrap">
+          <div className="table-wrap mobile-cards">
             <table><thead><tr><th>行</th><th>外部 ID</th><th>选题</th><th>图片</th><th>校验结果</th></tr></thead>
-              <tbody>{batch.rows.slice(0, 100).map((row: any) => <tr key={row.id}><td>{row.rowNumber}</td><td className="mono">{row.externalId || '—'}</td><td className="query-cell">{row.query || '—'}</td><td>{row.imageCount}</td><td>{row.isValid ? <StatusPill value="APPROVED" /> : <span className="pill pill-failed">{row.errors.join('；')}</span>}</td></tr>)}</tbody>
+              <tbody>{batch.rows.slice(0, 100).map((row: any) => <tr key={row.id}><td data-label="行">{row.rowNumber}</td><td className="mono" data-label="外部 ID">{row.externalId || '—'}</td><td className="query-cell" data-label="选题">{row.query || '—'}</td><td data-label="图片">{row.imageCount}</td><td data-label="校验结果">{row.isValid ? <StatusPill value="APPROVED" /> : <span className="pill pill-failed">{row.errors.join('；')}</span>}</td></tr>)}</tbody>
             </table>
           </div>
           {batch.rows.length > 100 && <p className="subtle">页面仅展示前 100 行，全部 {batch.rows.length} 行已完成校验。</p>}
-          <div className="inline" style={{marginTop: 16}}><button className="button primary" disabled={busy || batch.status === 'COMMITTED' || batch.validRows === 0} onClick={commit}>{batch.status === 'COMMITTED' ? '已写入队列' : `确认入队 ${batch.validRows} 条`}</button><span className="subtle">无效行会保留在预检记录中，但不会进入任务队列。</span></div>
+          <div className="inline" style={{marginTop: 16}}><button className="button primary" type="button" disabled={busy || batch.status === 'COMMITTED' || batch.validRows === 0} onClick={commit}>{batch.status === 'COMMITTED' ? '已写入队列' : `确认入队 ${batch.validRows} 条`}</button><span className="subtle">无效行会保留在预检记录中，但不会进入任务队列。</span></div>
         </section>
       )}
     </div>

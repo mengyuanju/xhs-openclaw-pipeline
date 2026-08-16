@@ -43,13 +43,15 @@ export function PromptEditor({ template }: { template: any }) {
     finally { setBusy(false); }
   }
 
+  const messageIsError = message.includes('失败') || message.includes('无效');
+
   return <article className="panel prompt-card">
     <div className="panel-head"><div><span className="eyebrow">{template.kind}</span><h2 style={{marginTop: 5}}>{template.name}</h2></div><StatusPill value="PUBLISHED" /></div>
     <p className="subtle">{KIND_DESCRIPTIONS[template.kind]}</p>
     <div className="field"><label htmlFor={`prompt-${template.id}`}>系统提示词</label><textarea id={`prompt-${template.id}`} className="textarea mono" value={content} onChange={(event) => setContent(event.target.value)} maxLength={20_000} /></div>
     <div className="code-hint">可用变量由系统白名单校验；未知变量会被拒绝。当前 v{published?.version} · {published?.contentSha256?.slice(0, 10)}…</div>
-    {message && <div className={message.includes('失败') || message.includes('无效') ? 'notice error' : 'notice success'}>{message}</div>}
-    <div className="inline"><button className="button primary" disabled={busy || content.trim() === published?.content} onClick={saveAndPublish}>{busy ? '处理中…' : '创建新版本并发布'}</button></div>
-    <details><summary className="subtle" style={{cursor: 'pointer'}}>查看 {template.versions.length} 个历史版本</summary><div className="history" style={{marginTop: 12}}>{template.versions.map((version: any) => <div className="history-item" key={version.id}><div className="inline"><strong>v{version.version}</strong><StatusPill value={version.status} /><span className="mono">{version.contentSha256.slice(0, 10)}…</span>{version.status !== 'PUBLISHED' && <button className="button small" disabled={busy} onClick={() => rollback(version.id, version.version)}>重新发布</button>}</div></div>)}</div></details>
+    {message && <div className={messageIsError ? 'notice error' : 'notice success'} role={messageIsError ? 'alert' : 'status'} aria-live="polite">{message}</div>}
+    <div className="inline"><button className="button primary" type="button" disabled={busy || content.trim() === published?.content} onClick={saveAndPublish}>{busy ? '处理中…' : '创建新版本并发布'}</button></div>
+    <details><summary className="subtle" style={{cursor: 'pointer'}}>查看 {template.versions.length} 个历史版本</summary><div className="history" style={{marginTop: 12}}>{template.versions.map((version: any) => <div className="history-item" key={version.id}><div className="inline"><strong>v{version.version}</strong><StatusPill value={version.status} /><span className="mono">{version.contentSha256.slice(0, 10)}…</span>{version.status !== 'PUBLISHED' && <button className="button small" type="button" disabled={busy} onClick={() => rollback(version.id, version.version)}>重新发布</button>}</div></div>)}</div></details>
   </article>;
 }

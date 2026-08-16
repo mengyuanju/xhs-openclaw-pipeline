@@ -19,5 +19,5 @@ export function RetryButton({ taskId }: { taskId: number }) {
       setError(caught instanceof Error ? caught.message : '重新入队失败');
     } finally { setBusy(false); }
   }
-  return <><button className="button danger" disabled={busy} onClick={retry}>{busy ? '重新入队中…' : '重新入队'}</button>{error && <span className="pill pill-failed">{error}</span>}</>;
+  return <><button className="button danger" type="button" disabled={busy} onClick={retry}>{busy ? '重新入队中…' : '重新入队'}</button>{error && <span className="pill pill-failed" role="alert">{error}</span>}</>;
 }

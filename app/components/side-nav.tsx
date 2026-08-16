@@ -41,7 +41,12 @@ export function SideNav() {
         {items.map((item) => {
           const active = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
           return (
-            <Link key={item.href} href={item.href} className={active ? 'nav-item active' : 'nav-item'}>
+            <Link
+              key={item.href}
+              href={item.href}
+              className={active ? 'nav-item active' : 'nav-item'}
+              aria-current={active ? 'page' : undefined}
+            >
               <span aria-hidden="true">{item.icon}</span>{item.label}
             </Link>
           );

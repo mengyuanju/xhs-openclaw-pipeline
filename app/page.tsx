@@ -38,15 +38,15 @@ export default function DashboardPage() {
           {recent.length === 0 ? (
             <div className="empty-state">还没有任务，从 Excel 导入第一组选题。</div>
           ) : (
-            <div className="table-wrap">
+            <div className="table-wrap mobile-cards">
               <table>
                 <thead><tr><th>ID</th><th>选题</th><th>生成状态</th><th>审核</th></tr></thead>
                 <tbody>{recent.map((task: any) => (
                   <tr key={task.id}>
-                    <td className="mono">#{task.id}</td>
-                    <td className="query-cell"><Link href={`/tasks/${task.id}`}>{task.query}</Link></td>
-                    <td><StatusPill value={task.status} /></td>
-                    <td><StatusPill value={task.config?.reviewStatus} /></td>
+                    <td className="mono" data-label="ID">#{task.id}</td>
+                    <td className="query-cell" data-label="选题"><Link href={`/tasks/${task.id}`}>{task.query}</Link></td>
+                    <td data-label="生成状态"><StatusPill value={task.status} /></td>
+                    <td data-label="审核"><StatusPill value={task.config?.reviewStatus} /></td>
                   </tr>
                 ))}</tbody>
               </table>
