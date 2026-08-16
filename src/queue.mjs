@@ -200,6 +200,17 @@ export function createQueue(databasePath) {
       return rowToTask(getById.get(id));
     },
 
+    retry(id) {
+      const result = db.prepare(`
+        UPDATE tasks
+        SET status = 'pending', error = NULL, output_dir = NULL,
+            lease_owner = NULL, lease_until = NULL, updated_at = ?
+        WHERE id = ? AND status = 'failed'
+      `).run(new Date().toISOString(), id);
+      if (Number(result.changes) !== 1) throw new Error('only failed tasks can be retried');
+      return rowToTask(getById.get(id));
+    },
+
     countByStatus() {
       const counts = Object.fromEntries(STATUSES.map((status) => [status, 0]));
       for (const row of db.prepare('SELECT status, COUNT(*) AS count FROM tasks GROUP BY status').all()) {

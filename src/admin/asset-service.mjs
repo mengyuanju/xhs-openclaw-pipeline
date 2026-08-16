@@ -30,7 +30,7 @@ async function decodedMetadata(buffer, mimeType) {
   try {
     metadata = await sharp(buffer, { failOn: 'error', limitInputPixels: MAX_IMAGE_PIXELS }).metadata();
   } catch {
-    throw new Error('image upload could not be decoded');
+    throw new TypeError('image upload could not be decoded');
   }
   if (metadata.format !== expectedFormat) throw new TypeError('image content does not match its MIME type');
   if (!metadata.width || !metadata.height || metadata.width * metadata.height > MAX_IMAGE_PIXELS) {
@@ -130,4 +130,3 @@ export async function createImageRevision({ store, taskId, assetId, operation, u
 }
 
 export { MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS };
-

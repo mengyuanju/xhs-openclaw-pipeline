@@ -262,3 +262,49 @@ describe('admin console queries', () => {
     }
   });
 });
+
+describe('admin image edit requests', () => {
+  it('queues, claims and completes an AI image edit without replacing the source asset', () => {
+    const store = createAdminStore(':memory:');
+    try {
+      const task = createReviewTask(store);
+      const source = store.addAsset({
+        taskId: task.id,
+        kind: 'REFERENCE',
+        fileName: 'source.png',
+        relativePath: 'references/1/source.png',
+        mimeType: 'image/png',
+        width: 1080,
+        height: 1440,
+        sha256: 'b'.repeat(64),
+        source: 'upload',
+      });
+      const request = store.createImageEditRequest(task.id, {
+        sourceAssetId: source.id,
+        instruction: '保留桌面主体，去掉背景杂物',
+      });
+      const claimed = store.claimNextImageEdit({ workerId: 'edit-worker' });
+      assert.equal(claimed.id, request.id);
+      assert.equal(claimed.status, 'PROCESSING');
+
+      const result = store.addAsset({
+        taskId: task.id,
+        kind: 'EDITED',
+        parentAssetId: source.id,
+        fileName: 'result.png',
+        relativePath: 'revisions/1/result.png',
+        mimeType: 'image/png',
+        width: 1080,
+        height: 1440,
+        sha256: 'c'.repeat(64),
+        source: 'openclaw:image-edit',
+      });
+      store.completeImageEdit(request.id, { workerId: 'edit-worker', resultAssetId: result.id });
+
+      const detail = store.getTask(task.id);
+      assert.equal(detail.imageEditRequests[0].status, 'COMPLETED');
+      assert.equal(detail.imageEditRequests[0].resultAssetId, result.id);
+      assert.equal(store.getAsset(source.id).kind, 'REFERENCE');
+    } finally { store.close(); }
+  });
+});

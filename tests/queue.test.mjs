@@ -117,4 +117,17 @@ describe('task queue', () => {
       failed: 1,
     });
   });
+
+  it('requeues only failed tasks without erasing the attempt counter', () => {
+    const queue = makeQueue();
+    const task = queue.enqueue({ query: '需要重试的任务' });
+    const claimed = queue.claimNext({ workerId: 'worker-a' });
+    queue.fail(claimed.id, { workerId: 'worker-a', error: 'temporary failure' });
+
+    const retried = queue.retry(task.id);
+    assert.equal(retried.status, 'pending');
+    assert.equal(retried.attempts, 1);
+    assert.equal(retried.error, null);
+    assert.throws(() => queue.retry(task.id), /only failed tasks/i);
+  });
 });

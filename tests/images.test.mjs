@@ -111,4 +111,22 @@ describe('delivery images', () => {
     assert.equal(images[0].provider, 'openclaw');
     assert.equal(images[0].model, 'openai/gpt-image-2');
   });
+
+  it('expands the three-card content plan to the requested five delivery images', async () => {
+    const directory = await makeDirectory();
+    const images = await renderDeliveryImages({
+      post: postFixture(),
+      outputDir: directory,
+      mock: true,
+      imageCount: 5,
+    });
+
+    assert.deepEqual(images.map((image) => image.file), [
+      '01-hero.png',
+      '02-steps.png',
+      '03-checklist.png',
+      '04-detail-1.png',
+      '05-detail-2.png',
+    ]);
+  });
 });

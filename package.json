@@ -8,15 +8,21 @@
     "node": ">=24.14.0"
   },
   "scripts": {
+    "dev": "next dev -H 127.0.0.1",
+    "build": "next build",
+    "start": "next start -H 127.0.0.1",
+    "typecheck": "tsc --noEmit",
     "db:init": "node src/cli.mjs init",
     "enqueue": "node src/cli.mjs enqueue",
     "status": "node src/cli.mjs status",
     "worker": "node src/cli.mjs worker",
+    "worker:drain": "node src/cli.mjs drain",
     "smoke": "node scripts/smoke.mjs",
     "test": "node --test"
   },
   "dependencies": {
     "exceljs": "^4.4.0",
+    "jszip": "3.10.1",
     "next": "^16.3.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

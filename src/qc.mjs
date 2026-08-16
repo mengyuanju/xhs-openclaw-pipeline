@@ -1,13 +1,17 @@
 import { join } from 'node:path';
 import sharp from 'sharp';
 
-export async function evaluateDelivery({ post, images, outputDir, mode }) {
+export async function evaluateDelivery({ post, images, outputDir, mode, expectedImageCount = 3 }) {
   const checks = [];
   const issues = [];
 
   checks.push({ id: 'title_length', passed: [...post.title].length <= 25 });
   checks.push({ id: 'body_length', passed: [...post.body].length >= 200 && [...post.body].length <= 1_200 });
-  checks.push({ id: 'image_count', passed: images.length === 3 });
+  checks.push({
+    id: 'image_count',
+    passed: images.length === expectedImageCount,
+    observed: { actual: images.length, expected: expectedImageCount },
+  });
   checks.push({ id: 'fabricated_experience', passed: post.fabricatedExperience === false });
   checks.push({ id: 'risk_flags', passed: post.riskFlags.length === 0 });
   checks.push({ id: 'unverified_claims', passed: post.unverifiedClaims.length === 0 });

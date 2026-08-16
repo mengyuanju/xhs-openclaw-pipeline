@@ -150,5 +150,65 @@ export function createOpenClawClient({ entryPath, runner = spawnSync } = {}) {
       }
       return { outputPath, model };
     },
+
+    runImageEdit({
+      prompt,
+      inputPaths,
+      outputPath,
+      model = process.env.XHS_IMAGE_MODEL || DEFAULT_IMAGE_MODEL,
+      timeoutMs = 180_000,
+    }) {
+      if (typeof prompt !== 'string' || prompt.length < 10 || prompt.length > 3_000) {
+        throw new RangeError('image edit prompt must contain between 10 and 3000 characters');
+      }
+      if (!Array.isArray(inputPaths) || inputPaths.length < 1 || inputPaths.length > 10) {
+        throw new RangeError('image edit requires between 1 and 10 input files');
+      }
+      for (const inputPath of inputPaths) {
+        if (typeof inputPath !== 'string' || inputPath.length === 0 || inputPath.length > 1_000
+          || !existsSync(inputPath)) {
+          throw new TypeError('image edit input file is invalid');
+        }
+      }
+      if (typeof outputPath !== 'string' || outputPath.length === 0 || outputPath.length > 1_000) {
+        throw new TypeError('outputPath must be a non-empty string');
+      }
+      const fileArgs = inputPaths.flatMap((inputPath) => ['--file', inputPath]);
+      const args = [
+        resolvedEntry,
+        'infer',
+        'image',
+        'edit',
+        '--model',
+        model,
+        ...fileArgs,
+        '--size',
+        '1024x1536',
+        '--output-format',
+        'png',
+        '--output',
+        outputPath,
+        '--timeout-ms',
+        String(timeoutMs),
+        '--json',
+        '--prompt',
+        prompt,
+      ];
+      const result = runner(process.execPath, args, {
+        encoding: 'utf8',
+        windowsHide: true,
+        shell: false,
+        timeout: timeoutMs + 10_000,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+      if (result.error || result.status !== 0) {
+        const detail = redact(result.stderr || result.error?.message || `exit status ${result.status}`);
+        throw new Error(`OpenClaw image edit failed: ${detail}`);
+      }
+      if (!existsSync(outputPath)) {
+        throw new Error('OpenClaw reported success but did not create the edited image file');
+      }
+      return { outputPath, model };
+    },
   };
 }

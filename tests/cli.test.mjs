@@ -6,6 +6,8 @@ import { spawnSync } from 'node:child_process';
 import { afterEach, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { createAdminStore } from '../src/admin/admin-store.mjs';
+
 const directories = [];
 const cliPath = fileURLToPath(new URL('../src/cli.mjs', import.meta.url));
 
@@ -16,6 +18,7 @@ async function makeEnvironment() {
     ...process.env,
     XHS_DATABASE_PATH: join(directory, 'queue.sqlite'),
     XHS_OUTPUT_ROOT: join(directory, 'output'),
+    XHS_ASSET_ROOT: join(directory, 'assets'),
   };
 }
 
@@ -73,5 +76,36 @@ describe('CLI', () => {
 
     assert.equal(result.status, 1);
     assert.match(result.stderr, /unknown option.*--mokk/i);
+  });
+
+  it('drains an explicit bounded mock batch and syncs deliveries for review', async () => {
+    const env = await makeEnvironment();
+    const store = createAdminStore(env.XHS_DATABASE_PATH);
+    const batch = store.createImportBatch({
+      name: 'CLI drain', sourceFileName: 'drain.xlsx',
+      rows: [1, 2].map((number) => ({
+        rowNumber: number + 1,
+        externalId: `drain-${number}`,
+        query: `第 ${number} 条批量任务`,
+        input: {}, imageCount: 3, referenceImageFiles: [], errors: [],
+      })),
+    });
+    store.commitImportBatch(batch.id);
+    store.close();
+
+    const result = runCli(['drain', '--mock', '--max', '10'], env);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).contentCompleted, 2);
+
+    const check = createAdminStore(env.XHS_DATABASE_PATH);
+    try {
+      assert.equal(check.getDashboardStats().reviews.waiting, 2);
+    } finally { check.close(); }
+  });
+
+  it('requires an explicit mode and maximum for batch drain', async () => {
+    const env = await makeEnvironment();
+    assert.match(runCli(['drain', '--max', '10'], env).stderr, /--mock or --live/i);
+    assert.match(runCli(['drain', '--mock'], env).stderr, /--max/i);
   });
 });

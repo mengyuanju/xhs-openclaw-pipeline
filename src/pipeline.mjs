@@ -6,6 +6,7 @@ import { renderDeliveryImages } from './images.mjs';
 import { createOpenClawClient } from './openclaw.mjs';
 import { buildPostPrompt, parsePostOutput } from './post-contract.mjs';
 import { evaluateDelivery } from './qc.mjs';
+import { renderPrompt } from './admin/prompt-service.mjs';
 
 export function createMockPost() {
   return parsePostOutput(JSON.stringify({
@@ -95,6 +96,9 @@ export async function processNext({
   outputRoot,
   mock = false,
   openclaw,
+  configProvider,
+  onCompleted,
+  onFailed,
 }) {
   const task = queue.claimNext({ workerId });
   if (!task) return { status: 'idle' };
@@ -102,26 +106,55 @@ export async function processNext({
 
   try {
     await mkdir(outputDir, { recursive: true });
+    const workerConfig = configProvider ? await configProvider(task) : null;
+    const imageCount = workerConfig?.imageCount ?? 3;
     const client = mock ? null : (openclaw ?? createOpenClawClient());
     let post;
     let textModel = null;
     if (mock) {
       post = createMockPost();
     } else {
-      const generated = client.runText({ prompt: buildPostPrompt(task) });
+      const generated = client.runText({
+        prompt: buildPostPrompt(task, {
+          systemPrompt: workerConfig?.textPromptContent,
+          imageCount,
+        }),
+      });
       post = parsePostOutput(generated.rawText);
       textModel = generated.model;
     }
+
+    const imageVariables = {
+      query: task.query,
+      category: task.input?.category,
+      targetAudience: task.input?.targetAudience,
+      imageIndex: 1,
+      imageCount,
+      reviewInstruction: '',
+    };
+    const pinnedImagePrompt = workerConfig?.imagePromptContent
+      ? renderPrompt(workerConfig.imagePromptContent, imageVariables)
+      : '';
+    const heroPrompt = [pinnedImagePrompt, post.imagePlan[0].prompt].filter(Boolean).join('\n\n');
 
     const images = await renderDeliveryImages({
       post,
       outputDir,
       mock,
       openclaw: client,
+      imageCount,
+      heroPrompt,
+      referenceImagePaths: workerConfig?.referenceImagePaths ?? [],
     });
     await writeAtomic(join(outputDir, 'post.json'), `${JSON.stringify(post, null, 2)}\n`);
     await writeAtomic(join(outputDir, 'post.md'), toMarkdown(task, post));
-    const qc = await evaluateDelivery({ post, images, outputDir, mode: mock ? 'mock' : 'live' });
+    const qc = await evaluateDelivery({
+      post,
+      images,
+      outputDir,
+      mode: mock ? 'mock' : 'live',
+      expectedImageCount: imageCount,
+    });
     await writeAtomic(join(outputDir, 'qc.json'), `${JSON.stringify(qc, null, 2)}\n`);
 
     const deliveryFiles = [
@@ -148,9 +181,23 @@ export async function processNext({
       throw new Error('quality gate blocked the delivery; inspect qc.json and manifest.json');
     }
 
+    await onCompleted?.({
+      task,
+      post,
+      images,
+      outputDir,
+      qc,
+      mode: mock ? 'mock' : 'live',
+    });
     queue.complete(task.id, { workerId, outputDir });
     return { status: 'completed', taskId: task.id, outputDir, qc };
   } catch (error) {
+    await onFailed?.({
+      task,
+      outputDir,
+      mode: mock ? 'mock' : 'live',
+      error,
+    }).catch(() => {});
     const failed = queue.fail(task.id, { workerId, error });
     return { status: 'failed', taskId: task.id, error: failed.error };
   }

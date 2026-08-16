@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs';
+import JSZip from 'jszip';
 
 const MAX_EXCEL_BYTES = 5 * 1024 * 1024;
 const MAX_ROWS = 5_000;
@@ -99,6 +100,51 @@ function valueAt(row, columns, name) {
   return column ? row.getCell(column).value : '';
 }
 
+async function normalizePrefixedWorkbookNamespace(buffer) {
+  const archive = await JSZip.loadAsync(buffer);
+  let changed = false;
+  let inspectedCharacters = 0;
+  for (const [path, entry] of Object.entries(archive.files)) {
+    if (!path.startsWith('xl/') || !path.endsWith('.xml') || entry.dir) continue;
+    const xml = await entry.async('string');
+    inspectedCharacters += xml.length;
+    if (inspectedCharacters > 25_000_000) throw new RangeError('Excel workbook metadata is too large');
+    const match = xml.match(
+      /xmlns:([A-Za-z_][\w.-]*)=["']http:\/\/schemas\.openxmlformats\.org\/spreadsheetml\/2006\/main["']/,
+    );
+    if (!match) continue;
+    const prefix = match[1];
+    const namespacePattern = new RegExp(
+      `xmlns:${prefix}=["']http://schemas\\.openxmlformats\\.org/spreadsheetml/2006/main["']`,
+    );
+    const tagPattern = new RegExp(`<(\\/?)${prefix}:`, 'g');
+    archive.file(path, xml
+      .replace(namespacePattern, 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"')
+      .replace(tagPattern, '<$1'));
+    changed = true;
+  }
+  if (!changed) return null;
+  return archive.generateAsync({ type: 'nodebuffer' });
+}
+
+async function loadWorkbook(buffer) {
+  const workbook = new ExcelJS.Workbook();
+  try {
+    await workbook.xlsx.load(buffer);
+    return workbook;
+  } catch {
+    const normalized = await normalizePrefixedWorkbookNamespace(buffer).catch(() => null);
+    if (!normalized) throw new TypeError('Excel file could not be decoded');
+    try {
+      const fallbackWorkbook = new ExcelJS.Workbook();
+      await fallbackWorkbook.xlsx.load(normalized);
+      return fallbackWorkbook;
+    } catch {
+      throw new TypeError('Excel file could not be decoded');
+    }
+  }
+}
+
 export async function parseExcelImport({ buffer, fileName }) {
   if (typeof fileName !== 'string' || !fileName.toLowerCase().endsWith('.xlsx')) {
     throw new TypeError('only .xlsx files are accepted');
@@ -106,12 +152,7 @@ export async function parseExcelImport({ buffer, fileName }) {
   if (!Buffer.isBuffer(buffer)) throw new TypeError('Excel upload must be a Buffer');
   if (buffer.byteLength > MAX_EXCEL_BYTES) throw new RangeError('Excel upload cannot exceed 5 MiB');
 
-  const workbook = new ExcelJS.Workbook();
-  try {
-    await workbook.xlsx.load(buffer);
-  } catch {
-    throw new Error('Excel file could not be decoded');
-  }
+  const workbook = await loadWorkbook(buffer);
   const worksheet = workbook.worksheets[0];
   if (!worksheet) throw new Error('Excel workbook must contain a worksheet');
   const columns = headerColumns(worksheet);
@@ -174,4 +215,3 @@ export async function parseExcelImport({ buffer, fileName }) {
 }
 
 export { MAX_EXCEL_BYTES, MAX_ROWS };
-

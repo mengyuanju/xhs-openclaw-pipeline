@@ -56,12 +56,12 @@ function mockHeroSvg(plan) {
     </svg>`;
 }
 
-function cardSvg(plan, index) {
+function cardSvg(plan, imageIndex, imageCount) {
   const palettes = [
     { background: '#f2eee7', accent: '#b56f52', soft: '#ead8cb' },
     { background: '#edf1eb', accent: '#57705c', soft: '#d5e0d4' },
   ];
-  const palette = palettes[index] ?? palettes[0];
+  const palette = palettes[(imageIndex - 2) % palettes.length];
   const headlineLines = wrapText(plan.headline, 12);
   const bulletStart = 610;
   const bullets = plan.bullets
@@ -81,7 +81,7 @@ function cardSvg(plan, index) {
       <rect width="1080" height="1440" fill="${palette.background}"/>
       <circle cx="940" cy="120" r="210" fill="${palette.soft}"/>
       <rect x="80" y="80" width="150" height="54" rx="27" fill="${palette.accent}"/>
-      <text x="155" y="117" text-anchor="middle" font-family="${FONT_STACK}" font-size="25" font-weight="700" fill="#ffffff">0${index + 2} / 03</text>
+      <text x="155" y="117" text-anchor="middle" font-family="${FONT_STACK}" font-size="25" font-weight="700" fill="#ffffff">${String(imageIndex).padStart(2, '0')} / ${String(imageCount).padStart(2, '0')}</text>
       ${textLines(headlineLines, { x: 85, y: 280, size: 72, weight: 800 })}
       ${textLines(wrapText(plan.subtitle, 18), { x: 90, y: 485, size: 37, weight: 500, color: '#655e57' })}
       ${bullets}
@@ -102,8 +102,14 @@ export async function renderDeliveryImages({
   outputDir,
   mock,
   openclaw,
+  imageCount = post.imagePlan.length,
+  heroPrompt = post.imagePlan[0].prompt,
+  referenceImagePaths = [],
   rawHeroPath = join(outputDir, '.raw-hero.png'),
 }) {
+  if (!Number.isInteger(imageCount) || imageCount < 3 || imageCount > 5) {
+    throw new RangeError('imageCount must be an integer between 3 and 5');
+  }
   await mkdir(outputDir, { recursive: true });
   const heroPath = join(outputDir, '01-hero.png');
 
@@ -112,11 +118,18 @@ export async function renderDeliveryImages({
     await svgToPng(mockHeroSvg(post.imagePlan[0]), heroPath);
     hero = { file: '01-hero.png', provider: 'mock', model: null };
   } else {
-    if (!openclaw?.runImage) throw new TypeError('openclaw image client is required in live mode');
-    const generated = openclaw.runImage({
-      prompt: post.imagePlan[0].prompt,
-      outputPath: rawHeroPath,
-    });
+    if (!Array.isArray(referenceImagePaths) || referenceImagePaths.length > 10) {
+      throw new TypeError('referenceImagePaths must be an array of at most 10 paths');
+    }
+    if (referenceImagePaths.length > 0 && !openclaw?.runImageEdit) {
+      throw new TypeError('openclaw image edit client is required when reference images are present');
+    }
+    if (referenceImagePaths.length === 0 && !openclaw?.runImage) {
+      throw new TypeError('openclaw image client is required in live mode');
+    }
+    const generated = referenceImagePaths.length > 0
+      ? openclaw.runImageEdit({ prompt: heroPrompt, inputPaths: referenceImagePaths, outputPath: rawHeroPath })
+      : openclaw.runImage({ prompt: heroPrompt, outputPath: rawHeroPath });
     await sharp(generated.outputPath)
       .resize(WIDTH, HEIGHT, { fit: 'cover', position: 'attention' })
       .png({ compressionLevel: 8 })
@@ -124,13 +137,20 @@ export async function renderDeliveryImages({
     if (generated.outputPath !== heroPath) {
       await unlink(generated.outputPath).catch(() => {});
     }
-    hero = { file: '01-hero.png', provider: 'openclaw', model: generated.model };
+    hero = {
+      file: '01-hero.png',
+      provider: referenceImagePaths.length > 0 ? 'openclaw-image-edit' : 'openclaw',
+      model: generated.model,
+    };
   }
 
   const templateImages = [];
-  for (let index = 1; index < post.imagePlan.length; index += 1) {
-    const file = `${String(index + 1).padStart(2, '0')}-${post.imagePlan[index].kind}.png`;
-    await svgToPng(cardSvg(post.imagePlan[index], index - 1), join(outputDir, file));
+  for (let index = 1; index < imageCount; index += 1) {
+    const plan = post.imagePlan[index]
+      ?? post.imagePlan[1 + ((index - 1) % Math.max(1, post.imagePlan.length - 1))];
+    const kind = index < post.imagePlan.length ? plan.kind : `detail-${index - 2}`;
+    const file = `${String(index + 1).padStart(2, '0')}-${kind}.png`;
+    await svgToPng(cardSvg(plan, index + 1, imageCount), join(outputDir, file));
     templateImages.push({ file, provider: 'local-template', model: null });
   }
   return [hero, ...templateImages];

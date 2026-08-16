@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import ExcelJS from 'exceljs';
+import JSZip from 'jszip';
 
 import { parseExcelImport } from '../src/admin/excel-import.mjs';
 
@@ -10,6 +11,23 @@ async function workbookBuffer(rows) {
   sheet.addRow(['外部ID', 'query', '分类', '目标用户', '图片数量', '参考图', '元数据']);
   for (const row of rows) sheet.addRow(row);
   return Buffer.from(await workbook.xlsx.writeBuffer());
+}
+
+async function namespacePrefixedWorkbookBuffer(rows) {
+  const buffer = await workbookBuffer(rows);
+  const archive = await JSZip.loadAsync(buffer);
+  for (const [path, entry] of Object.entries(archive.files)) {
+    if (!path.startsWith('xl/') || !path.endsWith('.xml') || entry.dir) continue;
+    const xml = await entry.async('string');
+    if (!xml.includes('xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"')) continue;
+    archive.file(path, xml
+      .replace(
+        'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"',
+        'xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main"',
+      )
+      .replace(/<(\/?)([A-Za-z][\w-]*)(?=[\s/>])/g, '<$1x:$2'));
+  }
+  return archive.generateAsync({ type: 'nodebuffer' });
 }
 
 describe('parseExcelImport', () => {
@@ -64,5 +82,14 @@ describe('parseExcelImport', () => {
       /query column is required/i,
     );
   });
-});
 
+  it('accepts valid OOXML workbooks that prefix the main spreadsheet namespace', async () => {
+    const buffer = await namespacePrefixedWorkbookBuffer([
+      ['x-1', '带命名空间的工作簿', '测试', '审核员', 3, '', '{}'],
+    ]);
+
+    const preview = await parseExcelImport({ buffer, fileName: 'prefixed.xlsx' });
+    assert.equal(preview.validRows, 1);
+    assert.equal(preview.rows[0].query, '带命名空间的工作簿');
+  });
+});

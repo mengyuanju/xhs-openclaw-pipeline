@@ -3,6 +3,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { processNext } from './pipeline.mjs';
 import { createQueue } from './queue.mjs';
+import { createAdminStore } from './admin/admin-store.mjs';
+import { processNextImageEdit } from './admin/image-edit-worker.mjs';
+import { createAdminWorkerIntegration } from './admin/worker-service.mjs';
 
 const PROJECT_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -50,9 +53,13 @@ export async function main(
     return 1;
   }
 
-  const databasePath = resolve(env.XHS_DATABASE_PATH || resolve(PROJECT_ROOT, 'data', 'queue.sqlite'));
+  const databasePath = resolve(
+    env.XHS_DATABASE_PATH || env.XHS_DB_PATH || resolve(PROJECT_ROOT, 'data', 'queue.db'),
+  );
   const outputRoot = resolve(env.XHS_OUTPUT_ROOT || resolve(PROJECT_ROOT, 'output'));
+  const assetRoot = resolve(env.XHS_ASSET_ROOT || resolve(PROJECT_ROOT, 'data', 'assets'));
   let queue;
+  let adminStore;
   try {
     queue = createQueue(databasePath);
     if (command === 'init') {
@@ -95,14 +102,82 @@ export async function main(
         throw new Error('MVP worker requires the explicit --once safety flag');
       }
       const workerId = flagValue(args, '--worker-id') || `worker-${process.pid}`;
-      const result = await processNext({
+      adminStore = createAdminStore(databasePath);
+      const integration = createAdminWorkerIntegration({ store: adminStore, assetRoot });
+      let result = await processNext({
         queue,
         workerId,
         outputRoot,
         mock: hasFlag(args, '--mock'),
+        configProvider: integration.getTaskConfig,
+        onCompleted: integration.onCompleted,
+        onFailed: integration.onFailed,
       });
+      if (result.status === 'idle') {
+        result = await processNextImageEdit({
+          store: adminStore,
+          assetRoot,
+          workerId,
+          mock: hasFlag(args, '--mock'),
+        });
+      }
       writeJson(stdout, result);
       return result.status === 'failed' ? 1 : 0;
+    }
+
+    if (command === 'drain') {
+      assertAllowedOptions(args, {
+        '--mock': 'boolean',
+        '--live': 'boolean',
+        '--max': 'value',
+        '--worker-id': 'value',
+      });
+      const mock = hasFlag(args, '--mock');
+      const live = hasFlag(args, '--live');
+      if (mock === live) throw new Error('drain requires exactly one of --mock or --live');
+      const rawMax = flagValue(args, '--max');
+      if (!rawMax) throw new Error('drain requires --max');
+      const max = Number(rawMax);
+      if (!Number.isInteger(max) || max < 1 || max > 5_000) {
+        throw new Error('--max must be an integer between 1 and 5000');
+      }
+      const workerId = flagValue(args, '--worker-id') || `drain-${process.pid}`;
+      adminStore = createAdminStore(databasePath);
+      const integration = createAdminWorkerIntegration({ store: adminStore, assetRoot });
+      const summary = {
+        status: 'completed',
+        mode: mock ? 'mock' : 'live',
+        max,
+        processed: 0,
+        contentCompleted: 0,
+        imageEditsCompleted: 0,
+        failed: 0,
+      };
+      while (summary.processed < max) {
+        const content = await processNext({
+          queue,
+          workerId,
+          outputRoot,
+          mock,
+          configProvider: integration.getTaskConfig,
+          onCompleted: integration.onCompleted,
+          onFailed: integration.onFailed,
+        });
+        if (content.status !== 'idle') {
+          summary.processed += 1;
+          if (content.status === 'completed') summary.contentCompleted += 1;
+          else summary.failed += 1;
+          continue;
+        }
+        const edit = await processNextImageEdit({ store: adminStore, assetRoot, workerId, mock });
+        if (edit.status === 'idle') break;
+        summary.processed += 1;
+        if (edit.status === 'completed') summary.imageEditsCompleted += 1;
+        else summary.failed += 1;
+      }
+      if (summary.failed > 0) summary.status = 'completed_with_failures';
+      writeJson(stdout, summary);
+      return summary.failed > 0 ? 1 : 0;
     }
 
     throw new Error(`unknown command: ${command}`);
@@ -110,6 +185,7 @@ export async function main(
     writeJson(stderr, { error: error instanceof Error ? error.message : String(error) });
     return 1;
   } finally {
+    adminStore?.close();
     queue?.close();
   }
 }

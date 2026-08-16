@@ -1,9 +1,12 @@
 node_modules/
 data/
 output/
+outputs/
 .env
 .env.local
 .env.*.local
 *.pem
 *.key
 npm-debug.log*
+.next/
+*.tsbuildinfo

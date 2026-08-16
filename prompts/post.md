@@ -14,7 +14,7 @@
 4. 正文使用3–6个语义稳定的导航图标；不连续堆叠，不逐句装饰。
 5. 真人感来自具体物件、动作、位置、状态、失败表现和选择规则。没有用户提供的真实经历时，不得使用“我亲测”“我用了几个月”“本人购买”“我家一直”等证言。
 6. 不能虚构实测数据、价格、时间、地点、用户反馈或来源。未提供平台样本时，sampleEvidence 必须为 `not_provided`，expressionReferences 必须为空数组。
-7. 配图固定3张且顺序固定：`hero`、`steps`、`checklist`。hero.prompt 用于生成无人物、无文字、无Logo、无水印的真实生活方式主图；另外两张由本地程序排版，prompt 留空。
+7. 本任务最终交付 {{DELIVERY_IMAGE_COUNT}} 张图片。你仍只输出3张基础策划且顺序固定：`hero`、`steps`、`checklist`；程序会从基础策划扩展到目标数量。hero.prompt 用于生成无人物、无文字、无Logo、无水印的真实生活方式主图；另外两张由本地程序排版，prompt 留空。
 8. 图片标题不超过18字，副标题不超过30字，每张2–5个短要点。图片与正文必须一致，不添加正文没有的新事实。
 9. sources 只填写输入明确提供且直接支持内容的公开来源，否则为空数组。
 10. fabricatedExperience 必须为 false；不确定的事实放入 unverifiedClaims，风险放入 riskFlags。

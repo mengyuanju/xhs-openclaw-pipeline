@@ -82,4 +82,38 @@ describe('OpenClaw client', () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it('edits an image with repeated file arguments and no shell', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'xhs-openclaw-edit-'));
+    const firstInput = join(directory, 'first.png');
+    const secondInput = join(directory, 'second.png');
+    const outputPath = join(directory, 'edited.png');
+    writeFileSync(firstInput, 'first');
+    writeFileSync(secondInput, 'second');
+    let invocation;
+    const client = createOpenClawClient({
+      entryPath: 'C:/openclaw/dist/index.js',
+      runner: (command, args, options) => {
+        invocation = { command, args, options };
+        writeFileSync(outputPath, Buffer.from('edited image'));
+        return { status: 0, stdout: '{"ok":true}', stderr: '' };
+      },
+    });
+
+    try {
+      const result = client.runImageEdit({
+        prompt: '保持主体不变，把背景调整得更干净自然',
+        inputPaths: [firstInput, secondInput],
+        outputPath,
+      });
+      assert.equal(invocation.options.shell, false);
+      assert.deepEqual(
+        invocation.args.filter((value, index) => invocation.args[index - 1] === '--file'),
+        [firstInput, secondInput],
+      );
+      assert.equal(result.outputPath, outputPath);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });

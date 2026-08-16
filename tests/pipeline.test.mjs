@@ -40,7 +40,7 @@ describe('content pipeline', () => {
       mock: true,
     });
 
-    assert.equal(result.status, 'completed');
+    assert.equal(result.status, 'completed', result.error);
     assert.equal(queue.get(task.id).status, 'completed');
     for (const file of [
       'post.json',
@@ -133,5 +133,56 @@ describe('content pipeline', () => {
     assert.equal(result.status, 'failed');
     assert.equal(queue.get(task.id).status, 'failed');
     assert.match(queue.get(task.id).error, /quality gate blocked/i);
+  });
+
+  it('passes pinned text, image count and reference files to live OpenClaw calls', async () => {
+    const { directory, queue } = await setup();
+    const task = queue.enqueue({
+      query: '有参考图的玄关整理',
+      input: { category: '收纳', targetAudience: '租房用户' },
+    });
+    const referencePath = join(directory, 'reference.png');
+    await sharp({
+      create: { width: 600, height: 800, channels: 3, background: '#d7c7b0' },
+    }).png().toFile(referencePath);
+    const rawPng = await sharp({
+      create: { width: 1024, height: 1536, channels: 3, background: '#d7c7b0' },
+    }).png().toBuffer();
+    let textPrompt;
+    let imagePrompt;
+    const openclaw = {
+      runText({ prompt }) {
+        textPrompt = prompt;
+        return { rawText: JSON.stringify(createMockPost()), model: 'fake-text' };
+      },
+      runImageEdit({ prompt, inputPaths, outputPath }) {
+        imagePrompt = prompt;
+        assert.deepEqual(inputPaths, [referencePath]);
+        writeFileSync(outputPath, rawPng);
+        return { outputPath, model: 'fake-image-edit' };
+      },
+    };
+
+    const result = await processNext({
+      queue,
+      workerId: 'pinned-worker',
+      outputRoot: join(directory, 'output'),
+      mock: false,
+      openclaw,
+      configProvider: () => ({
+        imageCount: 4,
+        textPromptContent: '围绕 {{query}} 写给 {{targetAudience}}，分类 {{category}}。',
+        imagePromptContent: '生成第 {{imageIndex}} 张，共 {{imageCount}} 张，主题 {{query}}。',
+        referenceImagePaths: [referencePath],
+      }),
+    });
+
+    assert.equal(result.status, 'completed', result.error);
+    assert.match(textPrompt, /有参考图的玄关整理/);
+    assert.match(textPrompt, /本任务最终交付 4 张图片/);
+    assert.match(imagePrompt, /生成第 1 张，共 4 张/);
+    const manifest = JSON.parse(await readFile(join(result.outputDir, 'manifest.json'), 'utf8'));
+    assert.equal(manifest.images.length, 4);
+    assert.equal(manifest.images[0].provider, 'openclaw-image-edit');
   });
 });

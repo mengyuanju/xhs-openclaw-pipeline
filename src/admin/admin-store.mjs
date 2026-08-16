@@ -3,6 +3,8 @@ import { isAbsolute, normalize } from 'node:path';
 
 import { initializeQueueSchema } from '../queue.mjs';
 import { DEFAULT_PROMPTS } from './default-prompts.mjs';
+import { createGenerationStore, initializeGenerationSchema } from './generation-store.mjs';
+import { createImageEditStore, initializeImageEditSchema } from './image-edit-store.mjs';
 import {
   PROMPT_KINDS,
   hashPrompt,
@@ -265,6 +267,8 @@ function initializeAdminSchema(db) {
       created_at TEXT NOT NULL
     ) STRICT;
   `);
+  initializeImageEditSchema(db);
+  initializeGenerationSchema(db);
 }
 
 function seedPrompts(db) {
@@ -353,6 +357,8 @@ export function createAdminStore(databasePath) {
   seedPrompts(db);
 
   const getPromptVersionRow = db.prepare('SELECT * FROM prompt_versions WHERE id = ?');
+  const imageEditStore = createImageEditStore(db);
+  const generationStore = createGenerationStore(db);
   const countTasks = () => Number(db.prepare('SELECT COUNT(*) AS count FROM tasks').get().count);
   const getAssetRow = db.prepare('SELECT * FROM assets WHERE id = ?');
   const getTaskRow = db.prepare(`
@@ -392,11 +398,15 @@ export function createAdminStore(databasePath) {
       ) ?? null,
       assets,
       reviews,
+      imageEditRequests: imageEditStore.listForTask(id),
+      generationRuns: generationStore.listGenerationRuns(id),
       auditLogs,
     };
   };
 
   return {
+    ...imageEditStore,
+    ...generationStore,
     close() {
       db.close();
     },
@@ -630,6 +640,51 @@ export function createAdminStore(databasePath) {
       return getTaskDetail(id);
     },
 
+    retryTask(id) {
+      const updatedAt = nowIso();
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const result = db.prepare(`
+          UPDATE tasks
+          SET status = 'pending', error = NULL, output_dir = NULL,
+              lease_owner = NULL, lease_until = NULL, updated_at = ?
+          WHERE id = ? AND status = 'failed'
+        `).run(updatedAt, id);
+        if (Number(result.changes) !== 1) throw new Error('only failed tasks can be retried');
+        db.prepare(`
+          UPDATE task_configs SET review_status = 'NOT_READY', updated_at = ? WHERE task_id = ?
+        `).run(updatedAt, id);
+        insertAudit.run('task', id, 'TASK_RETRY', '{}', updatedAt);
+        db.exec('COMMIT');
+      } catch (error) {
+        if (db.isTransaction) db.exec('ROLLBACK');
+        throw error;
+      }
+      return getTaskDetail(id);
+    },
+
+    getWorkerConfig(taskId) {
+      const row = db.prepare(`
+        SELECT t.query, t.input_json, tc.*
+        FROM tasks t JOIN task_configs tc ON tc.task_id = t.id
+        WHERE t.id = ?
+      `).get(taskId);
+      if (!row) return null;
+      const referenceAssets = db.prepare(`
+        SELECT * FROM assets WHERE task_id = ? AND kind = 'REFERENCE' ORDER BY id
+      `).all(taskId).map(rowToAsset);
+      return {
+        taskId: Number(taskId),
+        query: row.query,
+        input: parseJson(row.input_json, {}),
+        imageCount: Number(row.image_count),
+        textPromptContent: row.text_prompt_content,
+        imagePromptContent: row.image_prompt_content,
+        imageEditPromptContent: row.image_edit_prompt_content,
+        referenceAssets,
+      };
+    },
+
     addTextRevision(taskId, input) {
       const task = getTaskRow.get(taskId);
       if (!task?.text_prompt_version_id) throw new Error('task configuration not found');
@@ -754,6 +809,10 @@ export function createAdminStore(databasePath) {
         if (!task.currentTextRevision) throw new Error('current text revision is required before approval');
         if (!task.assets.some((asset) => asset.kind === 'GENERATED' || asset.kind === 'EDITED')) {
           throw new Error('delivery image is required before approval');
+        }
+        const latestRun = task.generationRuns.at(-1);
+        if (latestRun && ['mock_only', 'blocked'].includes(latestRun.qcDisposition)) {
+          throw new Error(`${latestRun.qcDisposition} generation cannot be approved`);
         }
       }
       const createdAt = nowIso();
