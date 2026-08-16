@@ -2,6 +2,7 @@ import { z, type ZodType } from 'zod';
 
 import {
   ApiError,
+  assertAuthenticatedRequest,
   assertRequestSize,
   assertLocalRequest,
   errorToApiResponse,
@@ -9,11 +10,12 @@ import {
 
 export async function apiHandler(
   request: Request,
-  options: { mutation?: boolean },
+  options: { mutation?: boolean; auth?: boolean },
   action: () => Promise<Response> | Response,
 ) {
   try {
     assertLocalRequest(request, { mutation: options.mutation });
+    if (options.auth !== false) assertAuthenticatedRequest(request);
     return await action();
   } catch (error) {
     return errorToApiResponse(error);
