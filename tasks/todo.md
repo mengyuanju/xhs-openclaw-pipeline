@@ -69,3 +69,27 @@
 - [x] `npm audit`、秘密扫描、可访问性和五轴代码审查无阻断问题。
 - [x] README 更新为后台使用说明。
 - Dependencies：Tasks 1–9。
+
+## Task 11: 认证内核
+
+- [ ] 使用 scrypt 保存管理员密码哈希，HMAC-SHA256 签发 8 小时会话。
+- [ ] 配置缺失、会话过期/篡改和登录失败使用安全、稳定的错误语义。
+- [ ] 登录失败实行有界内存限流，成功后清除计数。
+- Verify：纯单元测试先失败后通过；不向错误、日志或 Git 输出凭据。
+- Dependencies：Task 10。
+
+## Task 12: HTTP 与 LAN 边界
+
+- [ ] 只接受 loopback、私有 IP、link-local 或显式允许的 Host。
+- [ ] Proxy 保护页面；统一 `apiHandler` 在数据访问前再次验证会话。
+- [ ] 登录/退出和现有写 API 均保持严格同源校验。
+- Verify：Host、401、跨站、篡改 Cookie 和合法私网请求集成测试。
+- Dependencies：Task 11。
+
+## Task 13: 登录体验与运行配置
+
+- [ ] 增加可访问、响应式登录页和退出按钮。
+- [ ] 增加本机 `auth:setup` 配置命令，不在命令行参数或 Git 中保存明文密码。
+- [ ] 默认脚本仍仅本机监听，显式 `dev:lan` / `start:lan` 才开放局域网端口。
+- Verify：全量测试、类型检查、构建、安全扫描和真实浏览器登录/退出流程。
+- Dependencies：Task 12。
