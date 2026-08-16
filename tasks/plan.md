@@ -82,11 +82,11 @@
 
 ## Phase 5: LAN Authentication
 
-- [ ] Task 11: 密码哈希、会话签名、配置校验与登录限流。
-- [ ] Task 12: 私网 Host 策略、Proxy 预检和 API 二次授权。
-- [ ] Task 13: 登录/退出界面、管理员配置命令与 LAN 启动脚本。
+- [x] Task 11: 密码哈希、会话签名、配置校验与登录限流。
+- [x] Task 12: 私网 Host 策略、Proxy 预检和 API 二次授权。
+- [x] Task 13: 登录/退出界面、管理员配置命令与 LAN 启动脚本。
 
 ### Checkpoint: LAN Authentication
 
-- [ ] 未登录页面重定向、API 401、成功登录、退出、会话过期和篡改均通过自动化测试。
-- [ ] `start:lan` 可从本机私网 IP 打开，页面控制台无错误，安全头和 Cookie 属性符合规格。
+- [x] 未登录页面重定向、API 401、成功登录、退出、会话过期和篡改均通过自动化测试。
+- [x] `start:lan` 可从本机私网 IP 打开，页面控制台无错误，安全头和 Cookie 属性符合规格。
