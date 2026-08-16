@@ -129,3 +129,97 @@ describe('admin import batches', () => {
     }
   });
 });
+
+function createReviewTask(store) {
+  const batch = store.createImportBatch({
+    name: '审核测试',
+    sourceFileName: 'review.xlsx',
+    rows: [{
+      rowNumber: 2,
+      externalId: 'review-1',
+      query: '卧室桌面整理',
+      input: {},
+      imageCount: 3,
+      referenceImageFiles: [],
+      errors: [],
+    }],
+  });
+  store.commitImportBatch(batch.id);
+  return store.listTasks({ page: 1, pageSize: 1 }).data[0];
+}
+
+describe('admin review revisions', () => {
+  it('preserves text revisions and invalidates approval after a new edit', () => {
+    const store = createAdminStore(':memory:');
+    try {
+      const task = createReviewTask(store);
+      const generated = store.addTextRevision(task.id, {
+        title: '桌面整理先做减法',
+        body: '这是第一版正文。',
+        tags: ['#桌面整理'],
+        source: 'GENERATED',
+      });
+      const manual = store.addTextRevision(task.id, {
+        title: '租房桌面整理，先做减法',
+        body: '这是审核人员修改后的正文。',
+        tags: ['#桌面整理', '#租房生活'],
+        source: 'MANUAL',
+      });
+
+      assert.equal(manual.parentRevisionId, generated.id);
+      assert.equal(store.getTask(task.id).textRevisions.length, 2);
+      assert.equal(store.getTask(task.id).config.reviewStatus, 'WAITING_REVIEW');
+
+      store.addAsset({
+        taskId: task.id,
+        kind: 'GENERATED',
+        parentAssetId: null,
+        fileName: '01-hero.png',
+        relativePath: '1/attempt-1/01-hero.png',
+        mimeType: 'image/png',
+        width: 1080,
+        height: 1440,
+        sha256: 'a'.repeat(64),
+        source: 'mock',
+      });
+      store.setReviewStatus(task.id, { status: 'APPROVED', note: '可以交付' });
+      assert.equal(store.getTask(task.id).config.reviewStatus, 'APPROVED');
+
+      store.addTextRevision(task.id, {
+        title: '租房桌面整理最终版',
+        body: '通过后再次编辑，应自动回到待审核。',
+        tags: ['#桌面整理'],
+        source: 'MANUAL',
+      });
+      const detail = store.getTask(task.id);
+      assert.equal(detail.config.reviewStatus, 'WAITING_REVIEW');
+      assert.ok(detail.auditLogs.some((log) => log.action === 'REVIEW_APPROVE'));
+      assert.ok(detail.auditLogs.some((log) => log.action === 'TEXT_REVISION_CREATE'));
+    } finally {
+      store.close();
+    }
+  });
+
+  it('refuses approval until text and at least one delivery image exist', () => {
+    const store = createAdminStore(':memory:');
+    try {
+      const task = createReviewTask(store);
+      assert.throws(
+        () => store.setReviewStatus(task.id, { status: 'APPROVED', note: '' }),
+        /current text revision is required/i,
+      );
+      store.addTextRevision(task.id, {
+        title: '桌面整理步骤',
+        body: '正文',
+        tags: [],
+        source: 'GENERATED',
+      });
+      assert.throws(
+        () => store.setReviewStatus(task.id, { status: 'APPROVED', note: '' }),
+        /delivery image is required/i,
+      );
+    } finally {
+      store.close();
+    }
+  });
+});

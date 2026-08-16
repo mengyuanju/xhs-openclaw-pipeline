@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { isAbsolute, normalize } from 'node:path';
 
 import { initializeQueueSchema } from '../queue.mjs';
 import { DEFAULT_PROMPTS } from './default-prompts.mjs';
@@ -38,6 +39,73 @@ function rowToPromptVersion(row) {
     createdAt: row.created_at,
     publishedAt: row.published_at,
   };
+}
+
+function rowToTextRevision(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    taskId: Number(row.task_id),
+    parentRevisionId: row.parent_revision_id === null ? null : Number(row.parent_revision_id),
+    title: row.title,
+    body: row.body,
+    tags: parseJson(row.tags_json, []),
+    source: row.source,
+    createdAt: row.created_at,
+  };
+}
+
+function rowToAsset(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    taskId: Number(row.task_id),
+    kind: row.kind,
+    parentAssetId: row.parent_asset_id === null ? null : Number(row.parent_asset_id),
+    revision: Number(row.revision),
+    fileName: row.file_name,
+    relativePath: row.relative_path,
+    mimeType: row.mime_type,
+    width: Number(row.width),
+    height: Number(row.height),
+    sha256: row.sha256,
+    source: row.source,
+    createdAt: row.created_at,
+  };
+}
+
+function rowToAuditLog(row) {
+  return {
+    id: Number(row.id),
+    entityType: row.entity_type,
+    entityId: Number(row.entity_id),
+    action: row.action,
+    details: parseJson(row.details_json, {}),
+    createdAt: row.created_at,
+  };
+}
+
+function visibleLength(value) {
+  return [...new Intl.Segmenter('zh-CN', { granularity: 'grapheme' }).segment(value)].length;
+}
+
+function normalizeTextRevision({ title: rawTitle, body: rawBody, tags: rawTags, source }) {
+  const title = requiredText(rawTitle, 'title', 100);
+  if (visibleLength(title) > 25) throw new RangeError('title cannot exceed 25 visible characters');
+  const body = requiredText(rawBody, 'body', 20_000);
+  if (!Array.isArray(rawTags) || rawTags.length > 20) throw new TypeError('tags must be an array of at most 20 items');
+  const tags = rawTags.map((tag) => requiredText(tag, 'tag', 30));
+  if (!['GENERATED', 'MANUAL'].includes(source)) throw new TypeError('text revision source is invalid');
+  return { title, body, tags, source };
+}
+
+function assertSafeRelativePath(value) {
+  const path = requiredText(value, 'relative path', 500).replaceAll('\\', '/');
+  const normalized = normalize(path).replaceAll('\\', '/');
+  if (isAbsolute(path) || normalized === '..' || normalized.startsWith('../')) {
+    throw new TypeError('relative path escaped the asset root');
+  }
+  return path;
 }
 
 function initializeAdminSchema(db) {
@@ -89,6 +157,33 @@ function initializeAdminSchema(db) {
       UNIQUE(batch_id, row_number)
     ) STRICT;
     CREATE INDEX IF NOT EXISTS import_rows_batch_valid_idx ON import_rows(batch_id, is_valid);
+    CREATE TABLE IF NOT EXISTS text_revisions (
+      id INTEGER PRIMARY KEY,
+      task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      parent_revision_id INTEGER REFERENCES text_revisions(id) ON DELETE RESTRICT,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      tags_json TEXT NOT NULL,
+      source TEXT NOT NULL CHECK (source IN ('GENERATED', 'MANUAL')),
+      created_at TEXT NOT NULL
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS text_revisions_task_idx ON text_revisions(task_id, id DESC);
+    CREATE TABLE IF NOT EXISTS assets (
+      id INTEGER PRIMARY KEY,
+      task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK (kind IN ('REFERENCE', 'GENERATED', 'EDITED')),
+      parent_asset_id INTEGER REFERENCES assets(id) ON DELETE RESTRICT,
+      revision INTEGER NOT NULL CHECK (revision > 0),
+      file_name TEXT NOT NULL,
+      relative_path TEXT NOT NULL UNIQUE,
+      mime_type TEXT NOT NULL,
+      width INTEGER NOT NULL CHECK (width > 0),
+      height INTEGER NOT NULL CHECK (height > 0),
+      sha256 TEXT NOT NULL,
+      source TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS assets_task_idx ON assets(task_id, id DESC);
     CREATE TABLE IF NOT EXISTS task_configs (
       task_id INTEGER PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
       import_batch_id INTEGER REFERENCES import_batches(id) ON DELETE SET NULL,
@@ -104,12 +199,21 @@ function initializeAdminSchema(db) {
       image_edit_prompt_sha256 TEXT NOT NULL,
       image_count INTEGER NOT NULL CHECK (image_count BETWEEN 3 AND 5),
       reference_asset_ids_json TEXT NOT NULL DEFAULT '[]',
+      current_text_revision_id INTEGER REFERENCES text_revisions(id) ON DELETE SET NULL,
       review_status TEXT NOT NULL DEFAULT 'NOT_READY'
         CHECK (review_status IN ('NOT_READY', 'WAITING_REVIEW', 'APPROVED', 'REJECTED')),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     ) STRICT;
     CREATE INDEX IF NOT EXISTS task_configs_review_idx ON task_configs(review_status, task_id);
+    CREATE TABLE IF NOT EXISTS reviews (
+      id INTEGER PRIMARY KEY,
+      task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK (status IN ('WAITING_REVIEW', 'APPROVED', 'REJECTED')),
+      note TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS reviews_task_idx ON reviews(task_id, id DESC);
     CREATE TABLE IF NOT EXISTS audit_logs (
       id INTEGER PRIMARY KEY,
       entity_type TEXT NOT NULL,
@@ -173,6 +277,34 @@ function batchSummary(db, id) {
   };
 }
 
+function rowToAdminTask(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.task_id),
+    query: row.query,
+    input: parseJson(row.input_json, {}),
+    status: row.task_status,
+    attempts: Number(row.attempts),
+    outputDir: row.output_dir,
+    error: row.error,
+    createdAt: row.task_created_at,
+    updatedAt: row.task_updated_at,
+    config: row.text_prompt_version_id ? {
+      externalId: row.external_id,
+      imageCount: Number(row.image_count),
+      reviewStatus: row.review_status,
+      currentTextRevisionId: row.current_text_revision_id === null
+        ? null
+        : Number(row.current_text_revision_id),
+      textPromptVersionId: Number(row.text_prompt_version_id),
+      textPromptSha256: row.text_prompt_sha256,
+      imagePromptVersionId: Number(row.image_prompt_version_id),
+      imagePromptSha256: row.image_prompt_sha256,
+      imageEditPromptVersionId: Number(row.image_edit_prompt_version_id),
+    } : null,
+  };
+}
+
 export function createAdminStore(databasePath) {
   const db = new DatabaseSync(databasePath, { timeout: 5_000 });
   initializeAdminSchema(db);
@@ -180,6 +312,47 @@ export function createAdminStore(databasePath) {
 
   const getPromptVersionRow = db.prepare('SELECT * FROM prompt_versions WHERE id = ?');
   const countTasks = () => Number(db.prepare('SELECT COUNT(*) AS count FROM tasks').get().count);
+  const getAssetRow = db.prepare('SELECT * FROM assets WHERE id = ?');
+  const getTaskRow = db.prepare(`
+    SELECT t.*, tc.*,
+           t.id AS task_id, t.status AS task_status, t.created_at AS task_created_at,
+           t.updated_at AS task_updated_at
+    FROM tasks t
+    LEFT JOIN task_configs tc ON tc.task_id = t.id
+    WHERE t.id = ?
+  `);
+  const insertAudit = db.prepare(`
+    INSERT INTO audit_logs (entity_type, entity_id, action, details_json, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  const getTaskDetail = (id) => {
+    const task = rowToAdminTask(getTaskRow.get(id));
+    if (!task) return null;
+    const textRevisions = db.prepare(`
+      SELECT * FROM text_revisions WHERE task_id = ? ORDER BY id
+    `).all(id).map(rowToTextRevision);
+    const assets = db.prepare('SELECT * FROM assets WHERE task_id = ? ORDER BY id').all(id).map(rowToAsset);
+    const reviews = db.prepare('SELECT * FROM reviews WHERE task_id = ? ORDER BY id').all(id).map((row) => ({
+      id: Number(row.id),
+      taskId: Number(row.task_id),
+      status: row.status,
+      note: row.note,
+      createdAt: row.created_at,
+    }));
+    const auditLogs = db.prepare(`
+      SELECT * FROM audit_logs WHERE entity_type = 'task' AND entity_id = ? ORDER BY id
+    `).all(id).map(rowToAuditLog);
+    return {
+      ...task,
+      textRevisions,
+      currentTextRevision: textRevisions.find(
+        (revision) => revision.id === task.config?.currentTextRevisionId,
+      ) ?? null,
+      assets,
+      reviews,
+      auditLogs,
+    };
+  };
 
   return {
     close() {
@@ -372,6 +545,157 @@ export function createAdminStore(databasePath) {
       }
     },
 
+    getTask(id) {
+      return getTaskDetail(id);
+    },
+
+    addTextRevision(taskId, input) {
+      const task = getTaskRow.get(taskId);
+      if (!task?.text_prompt_version_id) throw new Error('task configuration not found');
+      const revision = normalizeTextRevision(input);
+      const createdAt = nowIso();
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const result = db.prepare(`
+          INSERT INTO text_revisions
+            (task_id, parent_revision_id, title, body, tags_json, source, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          taskId,
+          task.current_text_revision_id,
+          revision.title,
+          revision.body,
+          JSON.stringify(revision.tags),
+          revision.source,
+          createdAt,
+        );
+        const revisionId = Number(result.lastInsertRowid);
+        db.prepare(`
+          UPDATE task_configs
+          SET current_text_revision_id = ?, review_status = 'WAITING_REVIEW', updated_at = ?
+          WHERE task_id = ?
+        `).run(revisionId, createdAt, taskId);
+        insertAudit.run(
+          'task',
+          taskId,
+          'TEXT_REVISION_CREATE',
+          JSON.stringify({ revisionId, source: revision.source }),
+          createdAt,
+        );
+        db.exec('COMMIT');
+        return rowToTextRevision(db.prepare('SELECT * FROM text_revisions WHERE id = ?').get(revisionId));
+      } catch (error) {
+        if (db.isTransaction) db.exec('ROLLBACK');
+        throw error;
+      }
+    },
+
+    getAsset(id) {
+      return rowToAsset(getAssetRow.get(id));
+    },
+
+    addAsset({
+      taskId,
+      kind,
+      parentAssetId = null,
+      fileName: rawFileName,
+      relativePath: rawRelativePath,
+      mimeType,
+      width,
+      height,
+      sha256,
+      source: rawSource,
+    }) {
+      if (!getTaskRow.get(taskId)) throw new Error('task not found');
+      if (!['REFERENCE', 'GENERATED', 'EDITED'].includes(kind)) throw new TypeError('asset kind is invalid');
+      const fileName = requiredText(rawFileName, 'file name', 255);
+      if (/[\\/]/.test(fileName)) throw new TypeError('file name cannot contain path separators');
+      const relativePath = assertSafeRelativePath(rawRelativePath);
+      if (!['image/png', 'image/jpeg', 'image/webp'].includes(mimeType)) throw new TypeError('asset MIME type is invalid');
+      if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1
+        || width > 10_000 || height > 10_000) {
+        throw new RangeError('asset dimensions are invalid');
+      }
+      if (typeof sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(sha256)) throw new TypeError('asset sha256 is invalid');
+      const source = requiredText(rawSource, 'asset source', 100);
+      if (parentAssetId !== null) {
+        const parent = getAssetRow.get(parentAssetId);
+        if (!parent || Number(parent.task_id) !== Number(taskId)) throw new Error('parent asset not found for task');
+      }
+      const revision = Number(db.prepare(`
+        SELECT COALESCE(MAX(revision), 0) + 1 AS revision FROM assets WHERE task_id = ?
+      `).get(taskId).revision);
+      const createdAt = nowIso();
+      const result = db.prepare(`
+        INSERT INTO assets
+          (task_id, kind, parent_asset_id, revision, file_name, relative_path,
+           mime_type, width, height, sha256, source, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        taskId,
+        kind,
+        parentAssetId,
+        revision,
+        fileName,
+        relativePath,
+        mimeType,
+        width,
+        height,
+        sha256,
+        source,
+        createdAt,
+      );
+      if (kind !== 'REFERENCE') {
+        db.prepare(`
+          UPDATE task_configs SET review_status = 'WAITING_REVIEW', updated_at = ? WHERE task_id = ?
+        `).run(createdAt, taskId);
+      }
+      insertAudit.run(
+        'task',
+        taskId,
+        'ASSET_CREATE',
+        JSON.stringify({ assetId: Number(result.lastInsertRowid), kind, parentAssetId }),
+        createdAt,
+      );
+      return rowToAsset(getAssetRow.get(result.lastInsertRowid));
+    },
+
+    setReviewStatus(taskId, { status, note: rawNote = '' }) {
+      if (!['WAITING_REVIEW', 'APPROVED', 'REJECTED'].includes(status)) {
+        throw new TypeError('review status is invalid');
+      }
+      const task = getTaskDetail(taskId);
+      if (!task?.config) throw new Error('task configuration not found');
+      const note = String(rawNote ?? '').trim();
+      if ([...note].length > 2_000) throw new RangeError('review note cannot exceed 2000 characters');
+      if (status === 'REJECTED' && !note) throw new TypeError('rejection note is required');
+      if (status === 'APPROVED') {
+        if (!task.currentTextRevision) throw new Error('current text revision is required before approval');
+        if (!task.assets.some((asset) => asset.kind === 'GENERATED' || asset.kind === 'EDITED')) {
+          throw new Error('delivery image is required before approval');
+        }
+      }
+      const createdAt = nowIso();
+      const action = status === 'APPROVED'
+        ? 'REVIEW_APPROVE'
+        : status === 'REJECTED' ? 'REVIEW_REJECT' : 'REVIEW_REOPEN';
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        db.prepare(`
+          UPDATE task_configs SET review_status = ?, updated_at = ? WHERE task_id = ?
+        `).run(status, createdAt, taskId);
+        db.prepare(`
+          INSERT INTO reviews (task_id, status, note, created_at) VALUES (?, ?, ?, ?)
+        `).run(taskId, status, note, createdAt);
+        insertAudit.run('task', taskId, action, JSON.stringify({ note }), createdAt);
+        db.exec('COMMIT');
+      } catch (error) {
+        if (db.isTransaction) db.exec('ROLLBACK');
+        throw error;
+      }
+      return getTaskDetail(taskId);
+    },
+
     countTasks() {
       return countTasks();
     },
@@ -389,27 +713,7 @@ export function createAdminStore(databasePath) {
         ORDER BY t.id DESC LIMIT ? OFFSET ?
       `).all(safePageSize, (safePage - 1) * safePageSize);
       return {
-        data: rows.map((row) => ({
-          id: Number(row.task_id),
-          query: row.query,
-          input: parseJson(row.input_json, {}),
-          status: row.task_status,
-          attempts: Number(row.attempts),
-          outputDir: row.output_dir,
-          error: row.error,
-          createdAt: row.task_created_at,
-          updatedAt: row.task_updated_at,
-          config: row.text_prompt_version_id ? {
-            externalId: row.external_id,
-            imageCount: Number(row.image_count),
-            reviewStatus: row.review_status,
-            textPromptVersionId: Number(row.text_prompt_version_id),
-            textPromptSha256: row.text_prompt_sha256,
-            imagePromptVersionId: Number(row.image_prompt_version_id),
-            imagePromptSha256: row.image_prompt_sha256,
-            imageEditPromptVersionId: Number(row.image_edit_prompt_version_id),
-          } : null,
-        })),
+        data: rows.map(rowToAdminTask),
         pagination: {
           page: safePage,
           pageSize: safePageSize,

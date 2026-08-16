@@ -16,15 +16,15 @@
 
 ## Task 3: 文本修订与审核
 
-- [ ] 任务保存当前文本修订和完整历史。
-- [ ] 支持 WAITING_REVIEW、APPROVED、REJECTED 状态与审计记录。
+- [x] 任务保存当前文本修订和完整历史。
+- [x] 支持 WAITING_REVIEW、APPROVED、REJECTED 状态与审计记录。
 - Verify：非法转换拒绝、修订不覆盖旧版本、操作日志测试。
 - Dependencies：Task 1。
 
 ## Task 4: 素材与图片修订
 
-- [ ] 上传 PNG/JPEG/WebP 参考图，限制大小并用 Sharp 验证真实图片。
-- [ ] 支持旋转/裁剪修订和父子谱系，不覆盖原图。
+- [x] 上传 PNG/JPEG/WebP 参考图，限制大小并用 Sharp 验证真实图片。
+- [x] 支持旋转/裁剪修订和父子谱系，不覆盖原图。
 - Verify：伪 MIME、路径穿越、尺寸和谱系测试。
 - Dependencies：Task 3。
 
