@@ -113,6 +113,7 @@ POST       /api/auth/logout
 GET/POST   /api/import-batches
 POST       /api/import-batches/:id/screen
 POST       /api/import-batches/:id/commit
+POST       /api/worker-runs
 GET        /api/tasks?page=&pageSize=&status=&reviewStatus=
 GET/PATCH  /api/tasks/:id
 POST       /api/tasks/:id/retry
@@ -146,6 +147,15 @@ POST       /api/prompt-versions/:id/publish
 - 允许变量：`query`、`category`、`targetAudience`、`imageIndex`、`imageCount`、`reviewInstruction`。
 - 发布前必须校验未知变量；任务入队时固定版本 ID 和内容哈希。
 
+## Web Worker Launch Contract
+
+- 已登录管理员可在导入批次确认入队后，从网页创建一次真实 Worker 运行；网页只负责启动独立后台进程，不同步等待文本和图片生成完成。
+- `POST /api/worker-runs` 只接受严格 JSON：`{ max: 1..20, confirmation: "LIVE_MODEL_COST_ACCEPTED" }`，成功返回 `202` 与 `STARTED`、运行 ID 和实际处理上限。
+- 服务端按启动瞬间的待处理任务数再次收紧 `max`；没有待处理任务、已有网页 Worker 或已有任务正在处理时返回 `409`。
+- 后台进程只能通过固定 Node 入口和参数数组执行 `drain --live`；禁止 Shell、任意命令、任意路径和客户端模型参数。
+- UI 必须在启动前再次说明每条任务约产生 1 次文本模型和 3–5 次图片模型调用；取消确认不得发送请求。
+- 网页 Worker 按全局队列顺序处理，单次最多 20 条；状态和失败原因在内容审核页查看，不自动发布。
+
 ## Testing Strategy
 
 - 单元：Excel 行规范化、提示词变量、状态转换、文件名与图片操作校验。
@@ -158,6 +168,7 @@ POST       /api/prompt-versions/:id/publish
 ## Boundaries
 
 - Always：参数化 SQL；上传大小、MIME 和图片解码校验；发布版本不可变；操作留痕；任务和文件路径使用数据库 ID。
+- Always：真实 Worker 必须显式二次确认、固定命令入口、`shell: false`、最多 20 条，并拒绝并发网页启动。
 - Ask first：开放公网或非私有网段、改为多用户/角色、迁移 PostgreSQL、启用真实批量额度、接入自动发布。
 - Never：公开无认证后台；在源码、Git、日志或响应中保存/展示明文密码、会话密钥、Token/API Key；覆盖原始生成物；执行模型输出；从任意 URL 抓取参考图；把未审核内容标记为已通过。
 

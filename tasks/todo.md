@@ -178,3 +178,24 @@
 - [x] README 记录自动检测、模型配置和失败语义。
 - Verify：`npm test`、`npm run typecheck`、`npm run build`、浏览器导入页检查。
 - Dependencies：Task 24。
+
+## Task 26: 网页 Worker 启动器
+
+- [ ] 使用固定 Node CLI 路径与参数数组启动 `drain --live`，禁止 Shell。
+- [ ] 单次最多 20 条；活动进程未退出时拒绝重复启动，退出后允许下一次运行。
+- Verify：Fake child process 先写失败测试，再验证参数、冲突、错误与退出恢复。
+- Dependencies：Task 25。
+
+## Task 27: Worker Run API
+
+- [ ] 新增认证同源 `POST /api/worker-runs`，严格校验 max 与费用确认字面值。
+- [ ] 无待处理任务、存在 processing 任务或已有网页 Worker 时返回统一 409。
+- Verify：路由契约测试、类型检查与构建通过。
+- Dependencies：Task 26。
+
+## Task 28: 导入页生成入口
+
+- [ ] 已提交且有准入任务的批次显示“启动 OpenClaw 生成”，说明全局队列顺序和调用成本。
+- [ ] 浏览器二次确认后异步启动，展示成功/失败状态和“内容审核”入口。
+- Verify：前端契约测试、键盘操作、浏览器控制台和响应式页面检查。
+- Dependencies：Task 27。
