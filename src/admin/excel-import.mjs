@@ -26,6 +26,14 @@ const HEADER_ALIASES = new Map([
   ['优先级', 'priority'],
   ['metadata', 'metadata'],
   ['元数据', 'metadata'],
+  ['admitted', 'admitted'],
+  ['是否有效', 'admitted'],
+  ['discardreason', 'discardReason'],
+  ['废弃原因', 'discardReason'],
+  ['demandlevel', 'demandLevel'],
+  ['需求强度判定', 'demandLevel'],
+  ['judgementreason', 'judgementReason'],
+  ['判定简要说明', 'judgementReason'],
 ]);
 
 function normalizedHeader(value) {
@@ -83,6 +91,27 @@ function parseImageCount(value, errors) {
     return 3;
   }
   return imageCount;
+}
+
+function parseAdmitted(value, errors) {
+  const text = cleanText(value, 20).toLowerCase();
+  if (!text) return null;
+  if (['是', 'true', 'yes', '1'].includes(text)) return true;
+  if (['否', 'false', 'no', '0'].includes(text)) return false;
+  errors.push('是否有效必须为是或否');
+  return null;
+}
+
+function parseDemandLevel(value, errors, { required = false } = {}) {
+  const text = cleanText(value, 20).toLowerCase();
+  if (!text || text === '-') {
+    if (required) errors.push('有效行的需求强度判定必须为强需或中需');
+    return null;
+  }
+  if (['强需', 'strong'].includes(text)) return 'strong';
+  if (['中需', 'medium'].includes(text)) return 'medium';
+  errors.push('需求强度判定必须为强需或中需');
+  return null;
 }
 
 function headerColumns(worksheet) {
@@ -176,12 +205,31 @@ export async function parseExcelImport({ buffer, fileName }) {
     if (externalId && [...externalId].length > 100) errors.push('externalId不能超过100字');
 
     const metadata = parseMetadata(valueAt(worksheetRow, columns, 'metadata'), errors);
+    const admitted = parseAdmitted(valueAt(worksheetRow, columns, 'admitted'), errors);
+    const discardReason = cleanText(valueAt(worksheetRow, columns, 'discardReason'), 200);
+    const judgementReason = cleanText(valueAt(worksheetRow, columns, 'judgementReason'), 500);
+    const demandLevel = parseDemandLevel(
+      valueAt(worksheetRow, columns, 'demandLevel'),
+      errors,
+      { required: admitted === true },
+    );
+    if (admitted === false) {
+      const reason = discardReason && discardReason !== '-' ? discardReason : '未提供废弃原因';
+      errors.push(`业务判定为无效：${reason}`);
+    }
     const input = {};
     if (category) input.category = category;
     if (targetAudience) input.targetAudience = targetAudience;
     if (promptSet) input.promptSet = promptSet;
     if (priority) input.priority = priority;
     if (metadata) input.metadata = metadata;
+    if (admitted === true && demandLevel) {
+      input.taskJudgement = {
+        admitted: true,
+        demandLevel,
+        reason: judgementReason,
+      };
+    }
 
     rows.push({
       rowNumber,

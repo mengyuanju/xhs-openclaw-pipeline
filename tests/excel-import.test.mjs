@@ -30,6 +30,14 @@ async function namespacePrefixedWorkbookBuffer(rows) {
   return archive.generateAsync({ type: 'nodebuffer' });
 }
 
+async function screenedWorkbookBuffer(rows) {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('已筛选选题');
+  sheet.addRow(['序号', 'query', '分类', '是否有效', '废弃原因', '需求强度判定', '判定简要说明']);
+  for (const row of rows) sheet.addRow(row);
+  return Buffer.from(await workbook.xlsx.writeBuffer());
+}
+
 describe('parseExcelImport', () => {
   it('normalizes Chinese headers and reports invalid and duplicate rows', async () => {
     const buffer = await workbookBuffer([
@@ -91,5 +99,24 @@ describe('parseExcelImport', () => {
     const preview = await parseExcelImport({ buffer, fileName: 'prefixed.xlsx' });
     assert.equal(preview.validRows, 1);
     assert.equal(preview.rows[0].query, '带命名空间的工作簿');
+  });
+
+  it('keeps screened-out rows in preview and passes admitted judgement into valid tasks', async () => {
+    const buffer = await screenedWorkbookBuffer([
+      [15001, '两款投影仪怎么选', '3C', '是', '-', '强需', '存在明确的多对象比较需求。'],
+      [15002, '今天上海天气', '日历', '否', '一句话可回答/固定信息查询', '-', '固定事实即可闭环。'],
+    ]);
+
+    const preview = await parseExcelImport({ buffer, fileName: 'screened.xlsx' });
+
+    assert.equal(preview.validRows, 1);
+    assert.equal(preview.invalidRows, 1);
+    assert.deepEqual(preview.rows[0].input.taskJudgement, {
+      admitted: true,
+      demandLevel: 'strong',
+      reason: '存在明确的多对象比较需求。',
+    });
+    assert.ok(preview.rows[1].errors.some((error) => error.includes('业务判定为无效')));
+    assert.ok(preview.rows[1].errors.some((error) => error.includes('一句话可回答/固定信息查询')));
   });
 });
