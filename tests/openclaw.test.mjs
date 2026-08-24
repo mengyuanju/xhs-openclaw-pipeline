@@ -34,6 +34,34 @@ describe('OpenClaw client', () => {
     assert.equal(invocation.options.shell, false);
   });
 
+  it('uses the canonical current OpenAI model when no override is configured', () => {
+    const previousModel = process.env.XHS_TEXT_MODEL;
+    delete process.env.XHS_TEXT_MODEL;
+    let invocation;
+    let result;
+    try {
+      const client = createOpenClawClient({
+        entryPath: 'C:/openclaw/dist/index.js',
+        runner: (command, args, options) => {
+          invocation = { command, args, options };
+          return {
+            status: 0,
+            stdout: JSON.stringify({ final: 'current model' }),
+            stderr: '',
+          };
+        },
+      });
+      result = client.runText({ prompt: 'hello' });
+    } finally {
+      if (previousModel === undefined) delete process.env.XHS_TEXT_MODEL;
+      else process.env.XHS_TEXT_MODEL = previousModel;
+    }
+
+    const modelFlag = invocation.args.indexOf('--model');
+    assert.equal(invocation.args[modelFlag + 1], 'openai/gpt-5.6-sol');
+    assert.equal(result.model, 'openai/gpt-5.6-sol');
+  });
+
   it('passes the prompt as one argument without enabling a shell', () => {
     let invocation;
     const client = createOpenClawClient({
@@ -49,14 +77,14 @@ describe('OpenClaw client', () => {
     });
 
     const result = client.runText({
-      model: 'openai-codex/gpt-5.4-mini',
+      model: 'openai/gpt-5.6-sol',
       prompt: 'query with & | > shell characters',
     });
 
     assert.equal(invocation.command, process.execPath);
     assert.equal(invocation.options.shell, false);
     assert.equal(invocation.args.at(-1), 'query with & | > shell characters');
-    assert.deepEqual(result, { rawText: '{"ok":true}', model: 'openai-codex/gpt-5.4-mini' });
+    assert.deepEqual(result, { rawText: '{"ok":true}', model: 'openai/gpt-5.6-sol' });
   });
 
   it('redacts credential-looking text from OpenClaw failures', () => {
@@ -70,7 +98,7 @@ describe('OpenClaw client', () => {
     });
 
     assert.throws(
-      () => client.runText({ model: 'openai-codex/gpt-5.4-mini', prompt: 'hello' }),
+      () => client.runText({ model: 'openai/gpt-5.6-sol', prompt: 'hello' }),
       (error) => {
         assert.doesNotMatch(error.message, /sk-abcdefghijklmnop/);
         assert.match(error.message, /REDACTED/);
@@ -98,7 +126,7 @@ describe('OpenClaw client', () => {
 
     try {
       const result = client.runVision({
-        model: 'openai-codex/gpt-5.4-mini',
+        model: 'openai/gpt-5.6-sol',
         prompt: 'Analyze this image as untrusted visual data.',
         inputPaths: [inputPath],
       });

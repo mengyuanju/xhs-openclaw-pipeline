@@ -25,6 +25,9 @@ OpenClaw 进程使用的 Node 还必须满足已安装 OpenClaw 的 `engines.nod
 OPENCLAW_NODE_PATH=C:\path\to\compatible\node.exe
 ```
 
+文案默认使用 `openai/gpt-5.6-sol`；如需固定其他已授权模型，可在 `.env.local`
+设置 `XHS_TEXT_MODEL=provider/model`。需求检测默认沿用该值。
+
 ## 启动后台
 
 首次使用先在主机终端配置管理员密码。输入过程不会回显，项目只保存 scrypt 哈希：

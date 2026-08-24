@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-const DEFAULT_TEXT_MODEL = 'openai-codex/gpt-5.4-mini';
+const DEFAULT_TEXT_MODEL = 'openai/gpt-5.6-sol';
 const DEFAULT_IMAGE_MODEL = 'openai/gpt-image-2';
 
 function redact(value) {

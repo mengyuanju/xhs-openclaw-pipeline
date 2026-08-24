@@ -114,7 +114,7 @@ describe('content pipeline', () => {
     }).png().toBuffer();
     const openclaw = {
       runText() {
-        return { rawText: JSON.stringify(post), model: 'openai-codex/gpt-5.4-mini' };
+        return { rawText: JSON.stringify(post), model: 'openai/gpt-5.6-sol' };
       },
       runImage({ outputPath }) {
         writeFileSync(outputPath, rawPng);
