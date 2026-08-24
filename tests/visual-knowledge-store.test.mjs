@@ -139,4 +139,23 @@ describe('visual knowledge store', () => {
     assert.match(prompt, /不要水印/);
     assert.match(prompt, /木质桌面和暖色自然光/);
   });
+
+  it('treats SQL wildcard characters as literal knowledge search text', () => {
+    const store = createAdminStore(':memory:');
+    try {
+      store.createVisualKnowledge(promptOnlyInput({ name: '100% 可复用主图' }));
+      assert.equal(store.listVisualKnowledge({ query: '%' }).data[0].name, '100% 可复用主图');
+      assert.equal(store.listVisualKnowledge({ query: '_' }).pagination.totalItems, 0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('accepts a long global image rule when the final composed prompt stays within 3000 characters', () => {
+    const prompt = composeVisualImagePrompt({
+      systemPrompt: '全局规则'.repeat(550),
+      taskPrompt: '真实生活场景主图，主体居中。',
+    });
+    assert.ok(prompt.length < 3_000);
+  });
 });

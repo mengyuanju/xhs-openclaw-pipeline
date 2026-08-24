@@ -6,6 +6,7 @@ import sharp from 'sharp';
 
 import { createOpenClawClient } from '../openclaw.mjs';
 import {
+  assertVisualPromptVariables,
   VISUAL_GENERATION_TARGETS,
   VISUAL_KNOWLEDGE_TYPES,
 } from './visual-knowledge-store.mjs';
@@ -84,12 +85,16 @@ export function parseVisualAnalysisOutput(raw, { model = '' } = {}) {
   if (!Number.isFinite(qualityScore) || qualityScore < 1 || qualityScore > 5) {
     throw new RangeError('qualityScore must be between 1 and 5');
   }
+  const promptTemplate = requiredText(value.promptTemplate, 'visual prompt template', 2_000);
+  const negativePrompt = optionalText(value.negativePrompt, 'visual negative prompt', 600);
+  assertVisualPromptVariables(promptTemplate);
+  assertVisualPromptVariables(negativePrompt);
   return {
     name: requiredText(value.name, 'visual knowledge name', 200),
     type,
     generationTarget,
-    promptTemplate: requiredText(value.promptTemplate, 'visual prompt template', 2_000),
-    negativePrompt: optionalText(value.negativePrompt, 'visual negative prompt', 600),
+    promptTemplate,
+    negativePrompt,
     styleTags: stringList(value.styleTags, 'styleTags'),
     categories: stringList(value.categories, 'categories'),
     layoutRules,

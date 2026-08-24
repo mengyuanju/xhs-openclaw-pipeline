@@ -59,7 +59,7 @@ function jsonObject(value, name) {
   return JSON.parse(serialized);
 }
 
-function assertPromptVariables(content) {
+export function assertVisualPromptVariables(content) {
   for (const match of content.matchAll(/\{\{\s*([a-zA-Z][a-zA-Z0-9]*)\s*\}\}/g)) {
     if (!ALLOWED_VARIABLES.has(match[1])) throw new TypeError(`unknown visual prompt variable: ${match[1]}`);
   }
@@ -106,8 +106,8 @@ function normalizeAsset(asset) {
 function normalizeVersionInput(input, fallback = {}) {
   const promptTemplate = requiredText(input.promptTemplate ?? fallback.promptTemplate, 'visual prompt template', 2_000);
   const negativePrompt = optionalText(input.negativePrompt ?? fallback.negativePrompt, 'visual negative prompt', 600);
-  assertPromptVariables(promptTemplate);
-  assertPromptVariables(negativePrompt);
+  assertVisualPromptVariables(promptTemplate);
+  assertVisualPromptVariables(negativePrompt);
   const styleTags = stringList(input.styleTags ?? fallback.styleTags ?? [], 'styleTags');
   const categories = stringList(input.categories ?? fallback.categories ?? [], 'categories');
   const layoutRules = jsonObject(input.layoutRules ?? fallback.layoutRules ?? {}, 'layoutRules');
@@ -172,27 +172,52 @@ function rowToAsset(row) {
   };
 }
 
+function itemDetails(db, ids) {
+  if (ids.length === 0) return [];
+  const placeholders = ids.map(() => '?').join(', ');
+  const itemRows = db.prepare(`
+    SELECT * FROM visual_knowledge_items WHERE id IN (${placeholders})
+  `).all(...ids);
+  const versionRows = db.prepare(`
+    SELECT * FROM visual_knowledge_versions
+    WHERE item_id IN (${placeholders})
+    ORDER BY item_id, version DESC
+  `).all(...ids).map(rowToVersion);
+  const assetRows = db.prepare(`
+    SELECT * FROM visual_knowledge_assets WHERE item_id IN (${placeholders})
+  `).all(...ids).map(rowToAsset);
+  const versionsByItem = new Map();
+  for (const version of versionRows) {
+    const versions = versionsByItem.get(version.itemId) ?? [];
+    versions.push(version);
+    versionsByItem.set(version.itemId, versions);
+  }
+  const assetsByItem = new Map(assetRows.map((asset) => [asset.itemId, asset]));
+  const itemsById = new Map(itemRows.map((item) => [Number(item.id), item]));
+  return ids.flatMap((id) => {
+    const item = itemsById.get(Number(id));
+    if (!item) return [];
+    const versions = versionsByItem.get(Number(id)) ?? [];
+    return [{
+      id: Number(item.id),
+      name: item.name,
+      type: item.type,
+      generationTarget: item.generation_target,
+      retentionMode: item.retention_mode,
+      rightsStatus: item.rights_status,
+      sourceImageSha256: item.source_image_sha256,
+      createdAt: item.created_at,
+      updatedAt: item.updated_at,
+      latestVersion: versions[0] ?? null,
+      publishedVersion: versions.find((version) => version.status === 'PUBLISHED') ?? null,
+      versions,
+      asset: assetsByItem.get(Number(id)) ?? null,
+    }];
+  });
+}
+
 function itemDetail(db, id) {
-  const item = db.prepare('SELECT * FROM visual_knowledge_items WHERE id = ?').get(id);
-  if (!item) return null;
-  const versions = db.prepare(`
-    SELECT * FROM visual_knowledge_versions WHERE item_id = ? ORDER BY version DESC
-  `).all(id).map(rowToVersion);
-  return {
-    id: Number(item.id),
-    name: item.name,
-    type: item.type,
-    generationTarget: item.generation_target,
-    retentionMode: item.retention_mode,
-    rightsStatus: item.rights_status,
-    sourceImageSha256: item.source_image_sha256,
-    createdAt: item.created_at,
-    updatedAt: item.updated_at,
-    latestVersion: versions[0] ?? null,
-    publishedVersion: versions.find((version) => version.status === 'PUBLISHED') ?? null,
-    versions,
-    asset: rowToAsset(db.prepare('SELECT * FROM visual_knowledge_assets WHERE item_id = ?').get(id)),
-  };
+  return itemDetails(db, [Number(id)])[0] ?? null;
 }
 
 function pagination(value, fallback) {
@@ -292,7 +317,7 @@ export function initializeVisualKnowledgeSchema(db) {
 }
 
 export function composeVisualImagePrompt({ systemPrompt, visualReference, variables = {}, taskPrompt }) {
-  const sections = [optionalText(systemPrompt, 'image system prompt', 2_000)];
+  const sections = [optionalText(systemPrompt, 'image system prompt', 3_000)];
   if (visualReference) {
     const recipe = renderPrompt(
       requiredText(visualReference.promptTemplate, 'visual prompt template', 2_000),
@@ -429,8 +454,9 @@ export function createVisualKnowledgeStore(db) {
       const normalizedQuery = String(query ?? '').trim();
       if ([...normalizedQuery].length > 200) throw new RangeError('visual knowledge query is too long');
       if (normalizedQuery) {
-        clauses.push('(i.name LIKE ? OR EXISTS (SELECT 1 FROM visual_knowledge_versions v WHERE v.item_id = i.id AND v.prompt_template LIKE ?))');
-        const pattern = `%${normalizedQuery.replaceAll('%', '\\%').replaceAll('_', '\\_')}%`;
+        clauses.push("(i.name LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM visual_knowledge_versions v WHERE v.item_id = i.id AND v.prompt_template LIKE ? ESCAPE '\\'))");
+        const escaped = normalizedQuery.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
+        const pattern = `%${escaped}%`;
         parameters.push(pattern, pattern);
       }
       const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
@@ -446,7 +472,7 @@ export function createVisualKnowledgeStore(db) {
         (normalizedPage - 1) * normalizedPageSize,
       );
       return {
-        data: rows.map((row) => itemDetail(db, row.id)),
+        data: itemDetails(db, rows.map((row) => Number(row.id))),
         pagination: {
           page: normalizedPage,
           pageSize: normalizedPageSize,
@@ -479,6 +505,8 @@ export function createVisualKnowledgeStore(db) {
         next.contentSha256,
         id,
       );
+      db.prepare('UPDATE visual_knowledge_items SET updated_at = ? WHERE id = ?')
+        .run(nowIso(), current.itemId);
       return rowToVersion(getVersionRow.get(id));
     },
 
