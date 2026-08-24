@@ -93,16 +93,16 @@
 
 ## Phase 6: Visual Knowledge Module
 
-- [ ] Task 14: 定义视觉知识领域契约、SQLite 表、版本和任务锁定。
-- [ ] Task 15: 增加安全图片分析、双保留模式与 OpenClaw 视觉适配。
-- [ ] Task 16: 增加配方 REST API、管理页面和鉴权图片预览。
-- [ ] Task 17: 将已发布配方锁定并接入主图提示词和参考图。
+- [x] Task 14: 定义视觉知识领域契约、SQLite 表、版本和任务锁定。
+- [x] Task 15: 增加安全图片分析、双保留模式与 OpenClaw 视觉适配。
+- [x] Task 16: 增加配方 REST API、管理页面和鉴权图片预览。
+- [x] Task 17: 将已发布配方锁定并接入主图提示词和参考图。
 - [ ] Task 18: 完成全量验证、安全审查和使用文档。
 
 ### Checkpoint: Visual Knowledge
 
-- [ ] `PROMPT_ONLY` 不落盘原图，授权 `IMAGE_AND_PROMPT` 可鉴权预览。
-- [ ] 任务固定视觉配方版本，知识库为空时原生产链路不变。
+- [x] `PROMPT_ONLY` 不落盘原图，授权 `IMAGE_AND_PROMPT` 可鉴权预览。
+- [x] 任务固定视觉配方版本，知识库为空时原生产链路不变。
 - [ ] 全量测试、类型检查、构建、Mock 冒烟和浏览器关键流程通过。
 
 ### Visual Knowledge Risks
