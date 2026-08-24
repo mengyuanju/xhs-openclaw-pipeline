@@ -61,6 +61,20 @@ priority/优先级, metadata/元数据
 
 `imageCount` 只能为 3–5，`metadata` 必须是 JSON 对象。上传后先检查错误行，再点击确认入队。
 
+如工作表已经完成业务筛选，还可提供 `是否有效`、`废弃原因`、`需求强度判定`、`判定简要说明`：明确为“否”的行只保留在预检结果中，不会入队；明确为“是”的行须填写“强需”或“中需”，判定会随任务输入传给 Worker。
+
+## 溯源规则提示词
+
+三类运行提示词分别位于 `prompts/text-system.md`、`prompts/image-system.md` 和 `prompts/image-edit-system.md`，其中的 `[Rxxx]` 对应工作区上级文档 `图文生成统一系统提示词_原始文档溯源版.md` 的来源表。
+
+全新数据库会自动使用这些提示词。已有数据库需要显式发布新版本：
+
+```powershell
+npm run prompts:install-rules
+```
+
+该命令按内容哈希幂等安装并发布版本，不修改已入队任务固定的提示词快照。新版本只影响之后提交的任务。
+
 ## Worker
 
 Mock 单条，不调用模型：
