@@ -67,7 +67,11 @@ function extractModelText(stdout) {
   }
 }
 
-export function createOpenClawClient({ entryPath, runner = spawnSync } = {}) {
+export function createOpenClawClient({
+  entryPath,
+  nodePath = process.env.OPENCLAW_NODE_PATH || process.execPath,
+  runner = spawnSync,
+} = {}) {
   const resolvedEntry = resolveEntryPath(entryPath);
 
   return {
@@ -87,7 +91,7 @@ export function createOpenClawClient({ entryPath, runner = spawnSync } = {}) {
         '--prompt',
         prompt,
       ];
-      const result = runner(process.execPath, args, {
+      const result = runner(nodePath, args, {
         encoding: 'utf8',
         windowsHide: true,
         shell: false,
@@ -133,7 +137,7 @@ export function createOpenClawClient({ entryPath, runner = spawnSync } = {}) {
         '--prompt',
         prompt,
       ];
-      const result = runner(process.execPath, args, {
+      const result = runner(nodePath, args, {
         encoding: 'utf8',
         windowsHide: true,
         shell: false,
@@ -180,7 +184,7 @@ export function createOpenClawClient({ entryPath, runner = spawnSync } = {}) {
         '--prompt',
         prompt,
       ];
-      const result = runner(process.execPath, args, {
+      const result = runner(nodePath, args, {
         encoding: 'utf8',
         windowsHide: true,
         shell: false,
@@ -240,7 +244,7 @@ export function createOpenClawClient({ entryPath, runner = spawnSync } = {}) {
         '--prompt',
         prompt,
       ];
-      const result = runner(process.execPath, args, {
+      const result = runner(nodePath, args, {
         encoding: 'utf8',
         windowsHide: true,
         shell: false,

@@ -14,9 +14,16 @@
 
 ## 环境
 
-- Node.js 24.14+
+- Node.js 24.14+（Web 后台与 Worker）
 - OpenClaw 2026.5.7+
 - 真实模式需要 OpenClaw 中可用的文本与图片模型授权
+
+OpenClaw 进程使用的 Node 还必须满足已安装 OpenClaw 的 `engines.node` 约束；
+如果后台使用的 Node 不兼容，可在 `.env.local` 单独指定兼容运行时，不会替换系统 Node：
+
+```dotenv
+OPENCLAW_NODE_PATH=C:\path\to\compatible\node.exe
+```
 
 ## 启动后台
 

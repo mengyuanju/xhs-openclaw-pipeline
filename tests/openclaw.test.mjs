@@ -8,6 +8,32 @@ import { describe, it } from 'node:test';
 import { createOpenClawClient } from '../src/openclaw.mjs';
 
 describe('OpenClaw client', () => {
+  it('runs OpenClaw through the Node runtime configured in the environment', () => {
+    const previousNodePath = process.env.OPENCLAW_NODE_PATH;
+    process.env.OPENCLAW_NODE_PATH = 'C:/runtime/node.exe';
+    let invocation;
+    try {
+      const client = createOpenClawClient({
+        entryPath: 'C:/openclaw/dist/index.js',
+        runner: (command, args, options) => {
+          invocation = { command, args, options };
+          return {
+            status: 0,
+            stdout: JSON.stringify({ final: 'compatible runtime' }),
+            stderr: '',
+          };
+        },
+      });
+      client.runText({ prompt: 'hello' });
+    } finally {
+      if (previousNodePath === undefined) delete process.env.OPENCLAW_NODE_PATH;
+      else process.env.OPENCLAW_NODE_PATH = previousNodePath;
+    }
+
+    assert.equal(invocation.command, 'C:/runtime/node.exe');
+    assert.equal(invocation.options.shell, false);
+  });
+
   it('passes the prompt as one argument without enabling a shell', () => {
     let invocation;
     const client = createOpenClawClient({
