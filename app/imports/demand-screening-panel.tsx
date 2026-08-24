@@ -23,6 +23,15 @@ function initialDrafts(rows: any[]) {
     }]));
 }
 
+function screeningSourceLabel(row: any) {
+  if (row.screeningSource === 'OPENCLAW') {
+    return row.screeningModel ? `OpenClaw · ${row.screeningModel}` : 'OpenClaw';
+  }
+  if (row.screeningSource === 'EXCEL') return 'Excel';
+  if (row.screeningSource === 'MANUAL') return '人工';
+  return '—';
+}
+
 export function DemandScreeningPanel({
   batch,
   onBatchChange,
@@ -151,7 +160,7 @@ export function DemandScreeningPanel({
 
   return <section className="panel screening-panel" aria-labelledby="demand-screening-title">
     <div className="panel-head">
-      <div><h2 id="demand-screening-title">2. 需求强度筛选</h2><span className="subtle">强需、中需保留；弱需、无需废弃。Excel 已有判定会自动带入。</span></div>
+      <div><h2 id="demand-screening-title">2. 需求强度筛选与复核</h2><span className="subtle">OpenClaw 或 Excel 判定会自动带入；管理员可在入队前修正。</span></div>
       <StatusPill value={pendingScreeningRows === 0 ? 'SCREENED' : 'PENDING_SCREENING'} />
     </div>
 
@@ -172,7 +181,7 @@ export function DemandScreeningPanel({
 
     <div className="table-wrap mobile-cards screening-table-wrap">
       <table>
-        <thead><tr><th><span className="sr-only">选择</span><input type="checkbox" aria-label="选择本页可筛选行" checked={allVisibleSelected} onChange={toggleVisibleRows} disabled={selectableVisibleRows.length === 0} /></th><th>行</th><th>选题</th><th>结构校验</th><th>需求强度</th><th>判定理由</th></tr></thead>
+        <thead><tr><th><span className="sr-only">选择</span><input type="checkbox" aria-label="选择本页可筛选行" checked={allVisibleSelected} onChange={toggleVisibleRows} disabled={selectableVisibleRows.length === 0} /></th><th>行</th><th>选题</th><th>结构校验</th><th>需求强度</th><th>来源</th><th>判定理由</th></tr></thead>
         <tbody>{visibleRows.map((row: any) => {
           const draft = drafts[row.id];
           return <tr key={row.id}>
@@ -181,6 +190,7 @@ export function DemandScreeningPanel({
             <td className="query-cell" data-label="选题">{row.query || '—'}</td>
             <td data-label="结构校验">{row.isValid ? <StatusPill value="APPROVED" /> : <span className="pill pill-failed">{row.errors.join('；')}</span>}</td>
             <td data-label="需求强度">{row.isValid ? batch.status === 'COMMITTED' && !draft ? <span className="pill">历史准入</span> : <select className="select screening-select" aria-label={`第 ${row.rowNumber} 行需求强度`} value={draft?.demandLevel || ''} onChange={(event) => setDecision(row.id, event.target.value as DemandLevel)} disabled={batch.status === 'COMMITTED'}><option value="" disabled>待判定</option>{LEVELS.map((level) => <option value={level} key={level}>{LEVEL_COPY[level].label}</option>)}</select> : '—'}</td>
+            <td data-label="来源"><span className="subtle">{row.isValid ? screeningSourceLabel(row) : '—'}</span></td>
             <td data-label="判定理由">{row.isValid && draft ? <input className="input screening-reason" aria-label={`第 ${row.rowNumber} 行判定理由`} value={draft.reason} maxLength={500} onChange={(event) => setReason(row.id, event.target.value)} disabled={batch.status === 'COMMITTED'} /> : <span className="subtle">{row.isValid ? batch.status === 'COMMITTED' ? '历史批次未记录需求档位' : '选择档位后自动填入，可修改' : '结构错误无需筛选'}</span>}</td>
           </tr>;
         })}</tbody>

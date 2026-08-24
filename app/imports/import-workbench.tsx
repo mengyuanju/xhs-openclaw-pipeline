@@ -27,7 +27,12 @@ export function ImportWorkbench({ initialBatch = null }: { initialBatch?: any })
       const data = new FormData(event.currentTarget);
       const result = await apiRequest<any>('/api/import-batches', { method: 'POST', body: data });
       setBatch(result);
-      setMessage(`已完成 ${result.totalRows} 行结构预检，请继续完成需求强度筛选。`);
+      const modelScreenedRows = result.rows.filter(
+        (row: any) => row.screeningSource === 'OPENCLAW',
+      ).length;
+      setMessage(modelScreenedRows > 0
+        ? `结构预检完成；OpenClaw 已自动判定 ${modelScreenedRows} 行，请复核后再入队。`
+        : `已完成 ${result.totalRows} 行结构预检；现有 Excel 判定可继续人工复核。`);
       router.replace(`/imports?batchId=${result.id}`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '上传失败');
@@ -59,11 +64,11 @@ export function ImportWorkbench({ initialBatch = null }: { initialBatch?: any })
   return (
     <div className="stack">
       <form className="panel" onSubmit={upload}>
-        <div className="panel-head"><h2>1. 上传并预检</h2><span className="subtle">最大 5 MiB · 最多 5,000 行</span></div>
+        <div className="panel-head"><h2>1. 上传、预检与模型检测</h2><span className="subtle">最大 5 MiB · 最多 5,000 行</span></div>
         <div className="form-grid">
           <div className="field"><label htmlFor="batch-name">批次名称（可选）</label><input id="batch-name" className="input" name="name" maxLength={200} placeholder="如：8月收纳选题" /></div>
           <div className="field"><label htmlFor="excel-file">Excel 文件</label><input id="excel-file" className="input file-input" name="file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required /></div>
-          <div className="field full inline"><button className="button primary" type="submit" disabled={busy}>{busy ? '处理中…' : '上传并预检'}</button><span className="subtle">必需列：query / 查询 / 选题；图片数量支持 3–5。</span></div>
+          <div className="field full inline"><button className="button primary" type="submit" disabled={busy}>{busy ? 'OpenClaw 检测中…' : '上传并调用 OpenClaw 检测'}</button><span className="subtle">未预筛选的有效行会调用文本模型，可能产生费用并延长上传时间。</span></div>
         </div>
       </form>
 

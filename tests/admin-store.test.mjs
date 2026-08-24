@@ -175,6 +175,17 @@ describe('admin import batches', () => {
       assert.equal(row.screeningSource, 'OPENCLAW');
       assert.equal(row.screeningModel, 'openai-codex/fake-screening-model');
       assert.equal(row.screeningStatus, 'COMPLETED');
+
+      store.screenImportBatch(batch.id, {
+        decisions: [{
+          rowId: row.id,
+          demandLevel: 'MEDIUM',
+          reason: '管理员复核后调整。',
+        }],
+      });
+      const revised = store.getImportBatch(batch.id).rows[0];
+      assert.equal(revised.screeningSource, 'MANUAL');
+      assert.equal(revised.screeningModel, null);
     } finally {
       store.close();
     }

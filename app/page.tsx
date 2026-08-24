@@ -57,7 +57,7 @@ export default function DashboardPage() {
         <aside className="panel">
           <div className="panel-head"><h2>标准生产流</h2></div>
           <div className="steps">
-            <div className="step"><span className="step-index">01</span><div><strong>Excel 预检</strong><p>识别格式、重复项与无效行，确认后才写入任务队列。</p></div></div>
+            <div className="step"><span className="step-index">01</span><div><strong>Excel 预检与模型检测</strong><p>本地识别格式错误，OpenClaw 自动判定需求强度，人工复核后才入队。</p></div></div>
             <div className="step"><span className="step-index">02</span><div><strong>OpenClaw 生成</strong><p>任务固定使用入队时发布的提示词版本，避免中途漂移。</p></div></div>
             <div className="step"><span className="step-index">03</span><div><strong>人工定稿</strong><p>文案与图片均保留历史版本，通过后才成为可交付内容。</p></div></div>
           </div>

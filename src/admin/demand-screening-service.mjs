@@ -154,7 +154,7 @@ function normalizedModelName(value) {
 
 export async function screenImportRowsWithOpenClaw({
   rows,
-  openclaw,
+  openclaw = undefined,
   model = process.env.XHS_SCREENING_MODEL || process.env.XHS_TEXT_MODEL,
   maxRowsPerBatch = MAX_ROWS_PER_BATCH,
   maxDataCharacters = MAX_DATA_CHARACTERS,
@@ -199,5 +199,3 @@ export async function screenImportRowsWithOpenClaw({
     screening: row.screening ?? screenedByRowNumber.get(row.rowNumber) ?? null,
   }));
 }
-
-export { MAX_DATA_CHARACTERS, MAX_ROWS_PER_BATCH };

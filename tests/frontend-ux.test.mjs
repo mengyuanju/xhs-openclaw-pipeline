@@ -67,6 +67,9 @@ test('Excel import exposes demand screening as a required step before queue comm
   assert.match(importFlow, /pendingScreeningRows/);
   assert.match(importFlow, /保存筛选结果/);
   assert.match(importFlow, /筛选未完成/);
+  assert.match(importWorkbench, /OpenClaw 检测中/);
+  assert.match(demandScreening, /screeningSource/);
+  assert.match(demandScreening, /screeningModel/);
 });
 
 test('file uploads use the branded, keyboard-focusable control', async () => {

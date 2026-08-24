@@ -160,21 +160,21 @@
 
 ## Task 23: OpenClaw 需求检测契约
 
-- [ ] 按行数和字符预算构造有界批次，Query 作为不可信 JSON 数据传入。
-- [ ] 严格拒绝缺行、重复行、额外行、非法档位、空或超长理由。
+- [x] 按行数和字符预算构造有界批次，Query 作为不可信 JSON 数据传入。
+- [x] 严格拒绝缺行、重复行、额外行、非法档位、空或超长理由。
 - Verify：先写失败的服务测试，再用 Fake OpenClaw 通过。
 - Dependencies：Task 22。
 
 ## Task 24: Excel 预检集成
 
-- [ ] 只检测结构合格且未带 Excel 判定的行；全部检测成功后才创建预览批次。
-- [ ] SQLite 记录 `OPENCLAW` 来源与实际模型名，人工修改后来源变为 `MANUAL`。
+- [x] 只检测结构合格且未带 Excel 判定的行；全部检测成功后才创建预览批次。
+- [x] SQLite 记录 `OPENCLAW` 来源与实际模型名，人工修改后来源变为 `MANUAL`。
 - Verify：管理存储测试、路由相关测试和迁移回归通过。
 - Dependencies：Task 23。
 
 ## Task 25: 体验与质量门
 
-- [ ] 上传按钮和成功信息明确显示 OpenClaw 检测状态、成本与人工复核边界。
-- [ ] README 记录自动检测、模型配置和失败语义。
+- [x] 上传按钮和成功信息明确显示 OpenClaw 检测状态、成本与人工复核边界。
+- [x] README 记录自动检测、模型配置和失败语义。
 - Verify：`npm test`、`npm run typecheck`、`npm run build`、浏览器导入页检查。
 - Dependencies：Task 24。
