@@ -1,5 +1,10 @@
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import sharp from 'sharp';
+
+const FORBIDDEN_TITLE_HOOKS = /(不看后悔|错过再等|完爆|吊打|跪着看完|一篇看懂|一文看懂|一次讲清|原因竟是|万万没想到)/u;
+const EMOJI = /\p{Extended_Pictographic}|\u20E3/u;
 
 export async function evaluateDelivery({ post, images, outputDir, mode, expectedImageCount = 3 }) {
   const checks = [];
@@ -7,6 +12,17 @@ export async function evaluateDelivery({ post, images, outputDir, mode, expected
 
   checks.push({ id: 'title_length', passed: [...post.title].length <= 25 });
   checks.push({ id: 'body_length', passed: [...post.body].length >= 200 && [...post.body].length <= 1_200 });
+  checks.push({
+    id: 'body_recommended_length',
+    passed: [...post.body].length >= 400 && [...post.body].length <= 600,
+    blocking: false,
+    observed: { characters: [...post.body].length, recommended: '400-600' },
+  });
+  checks.push({
+    id: 'title_quality',
+    passed: !FORBIDDEN_TITLE_HOOKS.test(post.title) && !/[!！~～]/u.test(post.title) && !EMOJI.test(post.title),
+  });
+  checks.push({ id: 'body_emoji', passed: !EMOJI.test(post.body) });
   checks.push({
     id: 'image_count',
     passed: images.length === expectedImageCount,
@@ -16,15 +32,24 @@ export async function evaluateDelivery({ post, images, outputDir, mode, expected
   checks.push({ id: 'risk_flags', passed: post.riskFlags.length === 0 });
   checks.push({ id: 'unverified_claims', passed: post.unverifiedClaims.length === 0 });
 
+  const imageHashes = [];
   for (const image of images) {
-    const metadata = await sharp(join(outputDir, image.file)).metadata();
+    const imagePath = join(outputDir, image.file);
+    const [metadata, content] = await Promise.all([sharp(imagePath).metadata(), readFile(imagePath)]);
     const passed = metadata.format === 'png' && metadata.width === 1080 && metadata.height === 1440;
+    imageHashes.push(createHash('sha256').update(content).digest('hex'));
     checks.push({
       id: `image_${image.file}`,
       passed,
       observed: { format: metadata.format, width: metadata.width, height: metadata.height },
     });
   }
+  const uniqueImageHashes = new Set(imageHashes);
+  checks.push({
+    id: 'duplicate_images',
+    passed: uniqueImageHashes.size === imageHashes.length,
+    observed: { total: imageHashes.length, unique: uniqueImageHashes.size },
+  });
 
   if (post.expressionReferences.length === 0 || post.platform.sampleEvidence === 'not_provided') {
     issues.push({
@@ -47,8 +72,22 @@ export async function evaluateDelivery({ post, images, outputDir, mode, expected
       evidence: `模型标记 ${post.riskFlags.length} 条风险。`,
     });
   }
+  if (FORBIDDEN_TITLE_HOOKS.test(post.title)) {
+    issues.push({
+      severity: 'blocking',
+      label: '内容-标题问题',
+      evidence: '标题包含原始规则明令禁止的夸张悬念表达。',
+    });
+  }
+  if (uniqueImageHashes.size !== imageHashes.length) {
+    issues.push({
+      severity: 'blocking',
+      label: '配图-重复配图',
+      evidence: `交付图片 ${imageHashes.length} 张，其中仅 ${uniqueImageHashes.size} 个不同文件内容。`,
+    });
+  }
 
-  const mechanicalFailure = checks.some((check) => !check.passed);
+  const mechanicalFailure = checks.some((check) => check.blocking !== false && !check.passed);
   const hasBlockingIssue = issues.some((issue) => issue.severity === 'blocking');
   let overallScore = 2;
   let disposition = 'manual_review_required';
