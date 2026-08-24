@@ -1,10 +1,10 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 
 const MAX_WEB_WORKER_TASKS = 20;
-const DEFAULT_CLI_PATH = fileURLToPath(new URL('../cli.mjs', import.meta.url));
 const DEFAULT_PROJECT_ROOT = process.cwd();
+const DEFAULT_CLI_PATH = join(DEFAULT_PROJECT_ROOT, 'src', 'cli.mjs');
 
 export class WorkerRunConflictError extends Error {
   constructor(message = '已有网页 Worker 正在运行') {
