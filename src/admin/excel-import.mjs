@@ -105,13 +105,43 @@ function parseAdmitted(value, errors) {
 function parseDemandLevel(value, errors, { required = false } = {}) {
   const text = cleanText(value, 20).toLowerCase();
   if (!text || text === '-') {
-    if (required) errors.push('有效行的需求强度判定必须为强需或中需');
+    if (required) errors.push('已填写是否有效时，需求强度判定必须为强需、中需、弱需或无需');
     return null;
   }
-  if (['强需', 'strong'].includes(text)) return 'strong';
-  if (['中需', 'medium'].includes(text)) return 'medium';
-  errors.push('需求强度判定必须为强需或中需');
+  if (['强需', 'strong'].includes(text)) return 'STRONG';
+  if (['中需', 'medium'].includes(text)) return 'MEDIUM';
+  if (['弱需', 'weak'].includes(text)) return 'WEAK';
+  if (['无需', 'none'].includes(text)) return 'NONE';
+  errors.push('需求强度判定必须为强需、中需、弱需或无需');
   return null;
+}
+
+function parseScreening(worksheetRow, columns, errors) {
+  const admitted = parseAdmitted(valueAt(worksheetRow, columns, 'admitted'), errors);
+  const hasAdmittedValue = cleanText(valueAt(worksheetRow, columns, 'admitted'), 20) !== '';
+  const demandLevel = parseDemandLevel(
+    valueAt(worksheetRow, columns, 'demandLevel'),
+    errors,
+    { required: hasAdmittedValue },
+  );
+  if (!demandLevel) return null;
+
+  const shouldAdmit = demandLevel === 'STRONG' || demandLevel === 'MEDIUM';
+  if (admitted !== null && admitted !== shouldAdmit) {
+    errors.push(`${demandLevel === 'STRONG' || demandLevel === 'MEDIUM' ? '强需/中需' : '弱需/无需'}与是否有效判定冲突`);
+    return null;
+  }
+  const discardReason = cleanText(valueAt(worksheetRow, columns, 'discardReason'), 200);
+  const judgementReason = cleanText(valueAt(worksheetRow, columns, 'judgementReason'), 500);
+  const reason = judgementReason
+    || (discardReason && discardReason !== '-' ? discardReason : '')
+    || `${demandLevel === 'STRONG' ? '强需' : demandLevel === 'MEDIUM' ? '中需' : demandLevel === 'WEAK' ? '弱需' : '无需'}判定来自 Excel`;
+  return {
+    admitted: shouldAdmit,
+    demandLevel,
+    reason,
+    source: 'EXCEL',
+  };
 }
 
 function headerColumns(worksheet) {
@@ -205,29 +235,18 @@ export async function parseExcelImport({ buffer, fileName }) {
     if (externalId && [...externalId].length > 100) errors.push('externalId不能超过100字');
 
     const metadata = parseMetadata(valueAt(worksheetRow, columns, 'metadata'), errors);
-    const admitted = parseAdmitted(valueAt(worksheetRow, columns, 'admitted'), errors);
-    const discardReason = cleanText(valueAt(worksheetRow, columns, 'discardReason'), 200);
-    const judgementReason = cleanText(valueAt(worksheetRow, columns, 'judgementReason'), 500);
-    const demandLevel = parseDemandLevel(
-      valueAt(worksheetRow, columns, 'demandLevel'),
-      errors,
-      { required: admitted === true },
-    );
-    if (admitted === false) {
-      const reason = discardReason && discardReason !== '-' ? discardReason : '未提供废弃原因';
-      errors.push(`业务判定为无效：${reason}`);
-    }
+    const screening = parseScreening(worksheetRow, columns, errors);
     const input = {};
     if (category) input.category = category;
     if (targetAudience) input.targetAudience = targetAudience;
     if (promptSet) input.promptSet = promptSet;
     if (priority) input.priority = priority;
     if (metadata) input.metadata = metadata;
-    if (admitted === true && demandLevel) {
+    if (screening) {
       input.taskJudgement = {
-        admitted: true,
-        demandLevel,
-        reason: judgementReason,
+        admitted: screening.admitted,
+        demandLevel: screening.demandLevel.toLowerCase(),
+        reason: screening.reason,
       };
     }
 
@@ -241,6 +260,7 @@ export async function parseExcelImport({ buffer, fileName }) {
         valueAt(worksheetRow, columns, 'referenceImageFiles'),
         errors,
       ),
+      screening,
       errors,
     });
   }

@@ -58,6 +58,7 @@ describe('parseExcelImport', () => {
       input: { category: '收纳', targetAudience: '租房用户', metadata: { city: '上海' } },
       imageCount: 3,
       referenceImageFiles: ['desk.png', 'room.jpg'],
+      screening: null,
       errors: [],
     });
     assert.ok(preview.rows[1].errors.some((error) => error.includes('externalId重复')));
@@ -101,22 +102,61 @@ describe('parseExcelImport', () => {
     assert.equal(preview.rows[0].query, '带命名空间的工作簿');
   });
 
-  it('keeps screened-out rows in preview and passes admitted judgement into valid tasks', async () => {
+  it('imports all four demand levels as screening decisions without treating discards as format errors', async () => {
     const buffer = await screenedWorkbookBuffer([
       [15001, '两款投影仪怎么选', '3C', '是', '-', '强需', '存在明确的多对象比较需求。'],
-      [15002, '今天上海天气', '日历', '否', '一句话可回答/固定信息查询', '-', '固定事实即可闭环。'],
+      [15002, '杭州电子科技大学介绍', '教育', '是', '-', '中需', '专业信息为主，真实经验可作补充。'],
+      [15003, '今天上海天气', '日历', '否', '一句话可回答/固定信息查询', '弱需', '固定事实即可闭环。'],
+      [15004, '聊斋全书 txt 下载', '资源', '否', '资源下载类非笔记需求', '无需', '明确的资源下载需求。'],
     ]);
 
     const preview = await parseExcelImport({ buffer, fileName: 'screened.xlsx' });
 
-    assert.equal(preview.validRows, 1);
-    assert.equal(preview.invalidRows, 1);
+    assert.equal(preview.validRows, 4);
+    assert.equal(preview.invalidRows, 0);
+    assert.deepEqual(preview.rows.map((row) => row.screening), [
+      {
+        admitted: true,
+        demandLevel: 'STRONG',
+        reason: '存在明确的多对象比较需求。',
+        source: 'EXCEL',
+      },
+      {
+        admitted: true,
+        demandLevel: 'MEDIUM',
+        reason: '专业信息为主，真实经验可作补充。',
+        source: 'EXCEL',
+      },
+      {
+        admitted: false,
+        demandLevel: 'WEAK',
+        reason: '固定事实即可闭环。',
+        source: 'EXCEL',
+      },
+      {
+        admitted: false,
+        demandLevel: 'NONE',
+        reason: '明确的资源下载需求。',
+        source: 'EXCEL',
+      },
+    ]);
     assert.deepEqual(preview.rows[0].input.taskJudgement, {
       admitted: true,
       demandLevel: 'strong',
       reason: '存在明确的多对象比较需求。',
     });
-    assert.ok(preview.rows[1].errors.some((error) => error.includes('业务判定为无效')));
-    assert.ok(preview.rows[1].errors.some((error) => error.includes('一句话可回答/固定信息查询')));
+    assert.equal(preview.rows[2].input.taskJudgement.admitted, false);
+    assert.equal(preview.rows[2].input.taskJudgement.demandLevel, 'weak');
+  });
+
+  it('leaves structurally valid rows pending when the workbook has no demand judgement', async () => {
+    const buffer = await workbookBuffer([
+      ['x-1', '租房合同怎么签才不踩坑', '法律', '租房用户', 3, '', '{}'],
+    ]);
+
+    const preview = await parseExcelImport({ buffer, fileName: 'raw.xlsx' });
+
+    assert.equal(preview.validRows, 1);
+    assert.equal(preview.rows[0].screening, null);
   });
 });
