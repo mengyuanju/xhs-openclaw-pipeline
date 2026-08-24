@@ -88,6 +88,7 @@ describe('CLI', () => {
         externalId: `drain-${number}`,
         query: `第 ${number} 条批量任务`,
         input: {}, imageCount: 3, referenceImageFiles: [], errors: [],
+        screening: { admitted: true, demandLevel: 'STRONG', reason: '测试准入行', source: 'EXCEL' },
       })),
     });
     store.commitImportBatch(batch.id);

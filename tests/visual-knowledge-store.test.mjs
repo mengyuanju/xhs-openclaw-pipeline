@@ -15,6 +15,7 @@ function createTask(store, input = { category: '收纳', targetAudience: '租房
       input,
       imageCount: 3,
       referenceImageFiles: [],
+      screening: { admitted: true, demandLevel: 'STRONG', reason: '测试准入行', source: 'EXCEL' },
       errors: [],
     }],
   });

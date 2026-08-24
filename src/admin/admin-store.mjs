@@ -18,6 +18,7 @@ import {
 const REVIEW_STATUSES = ['NOT_READY', 'WAITING_REVIEW', 'APPROVED', 'REJECTED'];
 const TASK_STATUSES = ['pending', 'processing', 'completed', 'failed'];
 const IMPORT_STATUSES = ['PREVIEW', 'COMMITTED'];
+const DEMAND_LEVELS = ['STRONG', 'MEDIUM', 'WEAK', 'NONE'];
 
 function nowIso() {
   return new Date().toISOString();
@@ -106,6 +107,11 @@ function rowToImportRow(row) {
     referenceImageFiles: parseJson(row.reference_image_files_json, []),
     errors: parseJson(row.errors_json, []),
     isValid: Boolean(row.is_valid),
+    screeningStatus: row.screening_status,
+    demandLevel: row.demand_level,
+    screeningReason: row.screening_reason,
+    screeningSource: row.screening_source,
+    isAdmitted: row.is_admitted === null ? null : Boolean(row.is_admitted),
     taskId: row.task_id === null ? null : Number(row.task_id),
   };
 }
@@ -201,6 +207,12 @@ function initializeAdminSchema(db) {
       reference_image_files_json TEXT NOT NULL,
       errors_json TEXT NOT NULL,
       is_valid INTEGER NOT NULL CHECK (is_valid IN (0, 1)),
+      screening_status TEXT NOT NULL DEFAULT 'PENDING'
+        CHECK (screening_status IN ('PENDING', 'COMPLETED', 'NOT_REQUIRED')),
+      demand_level TEXT CHECK (demand_level IN ('STRONG', 'MEDIUM', 'WEAK', 'NONE')),
+      screening_reason TEXT NOT NULL DEFAULT '',
+      screening_source TEXT CHECK (screening_source IN ('EXCEL', 'MANUAL')),
+      is_admitted INTEGER CHECK (is_admitted IN (0, 1)),
       task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
       UNIQUE(batch_id, row_number)
     ) STRICT;
@@ -274,6 +286,23 @@ function initializeAdminSchema(db) {
   initializeImageEditSchema(db);
   initializeGenerationSchema(db);
   initializeVisualKnowledgeSchema(db);
+  const importRowColumns = new Set(
+    db.prepare('PRAGMA table_info(import_rows)').all().map((column) => column.name),
+  );
+  const screeningColumns = [
+    ['screening_status', "TEXT NOT NULL DEFAULT 'PENDING' CHECK (screening_status IN ('PENDING', 'COMPLETED', 'NOT_REQUIRED'))"],
+    ['demand_level', "TEXT CHECK (demand_level IN ('STRONG', 'MEDIUM', 'WEAK', 'NONE'))"],
+    ['screening_reason', "TEXT NOT NULL DEFAULT ''"],
+    ['screening_source', "TEXT CHECK (screening_source IN ('EXCEL', 'MANUAL'))"],
+    ['is_admitted', 'INTEGER CHECK (is_admitted IN (0, 1))'],
+  ];
+  for (const [name, definition] of screeningColumns) {
+    if (!importRowColumns.has(name)) db.exec(`ALTER TABLE import_rows ADD COLUMN ${name} ${definition}`);
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS import_rows_batch_screening_idx
+      ON import_rows(batch_id, is_valid, screening_status, is_admitted);
+  `);
 }
 
 function seedPrompts(db) {
@@ -315,6 +344,19 @@ function publishedPromptMap(db) {
 function batchSummary(db, id) {
   const row = db.prepare('SELECT * FROM import_batches WHERE id = ?').get(id);
   if (!row) return null;
+  const screening = db.prepare(`
+    SELECT
+      SUM(CASE WHEN is_valid = 1 AND screening_status = 'PENDING' THEN 1 ELSE 0 END) AS pending,
+      SUM(CASE WHEN is_valid = 1 AND screening_status = 'COMPLETED' THEN 1 ELSE 0 END) AS screened,
+      SUM(CASE WHEN is_valid = 1 AND is_admitted = 1 THEN 1 ELSE 0 END) AS admitted,
+      SUM(CASE WHEN is_valid = 1 AND is_admitted = 0 THEN 1 ELSE 0 END) AS discarded,
+      SUM(CASE WHEN is_valid = 1 AND demand_level = 'STRONG' THEN 1 ELSE 0 END) AS strong,
+      SUM(CASE WHEN is_valid = 1 AND demand_level = 'MEDIUM' THEN 1 ELSE 0 END) AS medium,
+      SUM(CASE WHEN is_valid = 1 AND demand_level = 'WEAK' THEN 1 ELSE 0 END) AS weak,
+      SUM(CASE WHEN is_valid = 1 AND demand_level = 'NONE' THEN 1 ELSE 0 END) AS none
+    FROM import_rows WHERE batch_id = ?
+  `).get(id);
+  const pendingScreeningRows = Number(screening.pending);
   return {
     id: Number(row.id),
     name: row.name,
@@ -323,9 +365,28 @@ function batchSummary(db, id) {
     totalRows: Number(row.total_rows),
     validRows: Number(row.valid_rows),
     invalidRows: Number(row.invalid_rows),
+    screenedRows: Number(screening.screened),
+    pendingScreeningRows,
+    admittedRows: Number(screening.admitted),
+    discardedRows: Number(screening.discarded),
+    demandCounts: {
+      STRONG: Number(screening.strong),
+      MEDIUM: Number(screening.medium),
+      WEAK: Number(screening.weak),
+      NONE: Number(screening.none),
+    },
+    screeningComplete: pendingScreeningRows === 0,
     createdAt: row.created_at,
     committedAt: row.committed_at,
   };
+}
+
+function normalizeDemandDecision({ demandLevel: rawDemandLevel, reason: rawReason }, source = 'MANUAL') {
+  const demandLevel = String(rawDemandLevel ?? '').trim().toUpperCase();
+  if (!DEMAND_LEVELS.includes(demandLevel)) throw new TypeError('demand level is invalid');
+  const reason = requiredText(rawReason, 'screening reason', 500);
+  const isAdmitted = demandLevel === 'STRONG' || demandLevel === 'MEDIUM';
+  return { demandLevel, reason, source, isAdmitted };
 }
 
 function rowToAdminTask(row) {
@@ -510,21 +571,42 @@ export function createAdminStore(databasePath) {
         const insertRow = db.prepare(`
           INSERT INTO import_rows
             (batch_id, row_number, external_id, query, input_json, image_count,
-             reference_image_files_json, errors_json, is_valid)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             reference_image_files_json, errors_json, is_valid, screening_status,
+             demand_level, screening_reason, screening_source, is_admitted)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         for (const row of rows) {
           const errors = Array.isArray(row.errors) ? row.errors.map(String) : ['row errors are missing'];
+          const structurallyValid = errors.length === 0;
+          const decision = structurallyValid && row.screening
+            ? normalizeDemandDecision(row.screening, 'EXCEL')
+            : null;
+          if (decision && row.screening.admitted !== decision.isAdmitted) {
+            throw new TypeError('screening admitted value conflicts with demand level');
+          }
+          const input = { ...(row.input ?? {}) };
+          if (decision) {
+            input.taskJudgement = {
+              admitted: decision.isAdmitted,
+              demandLevel: decision.demandLevel.toLowerCase(),
+              reason: decision.reason,
+            };
+          }
           insertRow.run(
             batchId,
             Number(row.rowNumber),
             row.externalId || null,
             typeof row.query === 'string' ? row.query : '',
-            JSON.stringify(row.input ?? {}),
+            JSON.stringify(input),
             Number(row.imageCount) || 3,
             JSON.stringify(row.referenceImageFiles ?? []),
             JSON.stringify(errors),
-            errors.length === 0 ? 1 : 0,
+            structurallyValid ? 1 : 0,
+            structurallyValid ? (decision ? 'COMPLETED' : 'PENDING') : 'NOT_REQUIRED',
+            decision?.demandLevel ?? null,
+            decision?.reason ?? '',
+            decision?.source ?? null,
+            decision ? Number(decision.isAdmitted) : null,
           );
         }
         db.exec('COMMIT');
@@ -574,6 +656,69 @@ export function createAdminStore(databasePath) {
       };
     },
 
+    screenImportBatch(batchId, { decisions }) {
+      if (!Array.isArray(decisions) || decisions.length < 1 || decisions.length > 5_000) {
+        throw new RangeError('screening decisions must contain between 1 and 5000 items');
+      }
+      const normalized = decisions.map((decision) => ({
+        rowId: Number(decision.rowId),
+        ...normalizeDemandDecision(decision),
+      }));
+      if (normalized.some((decision) => !Number.isInteger(decision.rowId) || decision.rowId < 1)) {
+        throw new TypeError('screening row id is invalid');
+      }
+      if (new Set(normalized.map((decision) => decision.rowId)).size !== normalized.length) {
+        throw new TypeError('screening row ids must be unique');
+      }
+
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const batch = db.prepare('SELECT status FROM import_batches WHERE id = ?').get(batchId);
+        if (!batch) throw new Error('import batch not found');
+        if (batch.status !== 'PREVIEW') throw new Error('committed import batches cannot be screened');
+        const getRow = db.prepare(`
+          SELECT id, input_json FROM import_rows
+          WHERE id = ? AND batch_id = ? AND is_valid = 1
+        `);
+        const updateRow = db.prepare(`
+          UPDATE import_rows
+          SET input_json = ?, screening_status = 'COMPLETED', demand_level = ?,
+              screening_reason = ?, screening_source = 'MANUAL', is_admitted = ?
+          WHERE id = ? AND batch_id = ? AND is_valid = 1
+        `);
+        for (const decision of normalized) {
+          const row = getRow.get(decision.rowId, batchId);
+          if (!row) throw new Error(`screening row ${decision.rowId} is not a valid row in this batch`);
+          const input = parseJson(row.input_json, {});
+          input.taskJudgement = {
+            admitted: decision.isAdmitted,
+            demandLevel: decision.demandLevel.toLowerCase(),
+            reason: decision.reason,
+          };
+          updateRow.run(
+            JSON.stringify(input),
+            decision.demandLevel,
+            decision.reason,
+            Number(decision.isAdmitted),
+            decision.rowId,
+            batchId,
+          );
+        }
+        insertAudit.run(
+          'import_batch',
+          batchId,
+          'SCREEN_QUERY_DEMAND',
+          JSON.stringify({ updatedRows: normalized.length }),
+          nowIso(),
+        );
+        db.exec('COMMIT');
+      } catch (error) {
+        if (db.isTransaction) db.exec('ROLLBACK');
+        throw error;
+      }
+      return batchSummary(db, batchId);
+    },
+
     commitImportBatch(batchId) {
       db.exec('BEGIN IMMEDIATE');
       try {
@@ -586,9 +731,16 @@ export function createAdminStore(databasePath) {
           db.exec('COMMIT');
           return { batch: batchSummary(db, batchId), createdTasks: count, wasAlreadyCommitted: true };
         }
+        const pendingScreeningRows = Number(db.prepare(`
+          SELECT COUNT(*) AS count FROM import_rows
+          WHERE batch_id = ? AND is_valid = 1 AND screening_status != 'COMPLETED'
+        `).get(batchId).count);
+        if (pendingScreeningRows > 0) throw new Error('demand screening must be complete before commit');
         const prompts = publishedPromptMap(db);
         const rows = db.prepare(`
-          SELECT * FROM import_rows WHERE batch_id = ? AND is_valid = 1 ORDER BY row_number
+          SELECT * FROM import_rows
+          WHERE batch_id = ? AND is_valid = 1 AND is_admitted = 1
+          ORDER BY row_number
         `).all(batchId);
         const insertTask = db.prepare(`
           INSERT INTO tasks (query, input_json, status, created_at, updated_at)

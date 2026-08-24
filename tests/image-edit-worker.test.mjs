@@ -23,7 +23,16 @@ describe('image edit worker', () => {
     try {
       const batch = store.createImportBatch({
         name: '图片编辑', sourceFileName: 'edit.xlsx',
-        rows: [{ rowNumber: 2, externalId: 'edit-1', query: '桌面图片', input: {}, imageCount: 3, referenceImageFiles: [], errors: [] }],
+        rows: [{
+          rowNumber: 2,
+          externalId: 'edit-1',
+          query: '桌面图片',
+          input: {},
+          imageCount: 3,
+          referenceImageFiles: [],
+          screening: { admitted: true, demandLevel: 'STRONG', reason: '测试准入行', source: 'EXCEL' },
+          errors: [],
+        }],
       });
       store.commitImportBatch(batch.id);
       const task = store.listTasks({ pageSize: 1 }).data[0];

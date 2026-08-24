@@ -54,6 +54,91 @@ describe('admin prompt versions', () => {
 });
 
 describe('admin import batches', () => {
+  it('requires demand screening and only admits strong or medium rows', () => {
+    const store = createAdminStore(':memory:');
+    try {
+      const batch = store.createImportBatch({
+        name: '需求筛选批次',
+        sourceFileName: 'screening.xlsx',
+        rows: [
+          {
+            rowNumber: 2,
+            externalId: 'pending',
+            query: '租房合同怎么签才不踩坑',
+            input: {},
+            imageCount: 3,
+            referenceImageFiles: [],
+            errors: [],
+            screening: null,
+          },
+          {
+            rowNumber: 3,
+            externalId: 'strong',
+            query: '两款投影仪怎么选',
+            input: {},
+            imageCount: 3,
+            referenceImageFiles: [],
+            errors: [],
+            screening: {
+              admitted: true,
+              demandLevel: 'STRONG',
+              reason: '真实体验与对比决策需求。',
+              source: 'EXCEL',
+            },
+          },
+          {
+            rowNumber: 4,
+            externalId: 'weak',
+            query: '今天上海天气',
+            input: {},
+            imageCount: 3,
+            referenceImageFiles: [],
+            errors: [],
+            screening: {
+              admitted: false,
+              demandLevel: 'WEAK',
+              reason: '一句话即可闭环。',
+              source: 'EXCEL',
+            },
+          },
+        ],
+      });
+
+      assert.equal(batch.pendingScreeningRows, 1);
+      assert.equal(batch.admittedRows, 1);
+      assert.equal(batch.discardedRows, 1);
+      assert.equal(batch.screeningComplete, false);
+      assert.throws(() => store.commitImportBatch(batch.id), /demand screening.*complete/i);
+
+      const pendingRow = store.getImportBatch(batch.id).rows.find((row) => row.externalId === 'pending');
+      const screened = store.screenImportBatch(batch.id, {
+        decisions: [{
+          rowId: pendingRow.id,
+          demandLevel: 'MEDIUM',
+          reason: '专业答案为主，真实经验可作补充。',
+        }],
+      });
+
+      assert.equal(screened.pendingScreeningRows, 0);
+      assert.equal(screened.admittedRows, 2);
+      assert.equal(screened.discardedRows, 1);
+      assert.equal(screened.demandCounts.STRONG, 1);
+      assert.equal(screened.demandCounts.MEDIUM, 1);
+      assert.equal(screened.demandCounts.WEAK, 1);
+      assert.equal(screened.demandCounts.NONE, 0);
+      assert.equal(screened.screeningComplete, true);
+
+      const commit = store.commitImportBatch(batch.id);
+      assert.equal(commit.createdTasks, 2);
+      assert.deepEqual(
+        store.listTasks({ page: 1, pageSize: 10 }).data.map((task) => task.input.taskJudgement.demandLevel).sort(),
+        ['medium', 'strong'],
+      );
+    } finally {
+      store.close();
+    }
+  });
+
   it('commits valid rows once and pins published prompt versions', () => {
     const store = createAdminStore(':memory:');
     try {
@@ -64,6 +149,7 @@ describe('admin import batches', () => {
         input: { category: '收纳', targetAudience: '租房用户' },
         imageCount: 3,
         referenceImageFiles: [],
+        screening: { admitted: true, demandLevel: 'STRONG', reason: '测试准入行', source: 'EXCEL' },
         errors: [],
       }));
       const batch = store.createImportBatch({
@@ -107,6 +193,7 @@ describe('admin import batches', () => {
             input: {},
             imageCount: 3,
             referenceImageFiles: [],
+            screening: { admitted: true, demandLevel: 'STRONG', reason: '测试准入行', source: 'EXCEL' },
             errors: [],
           },
           {
@@ -141,6 +228,7 @@ function createReviewTask(store) {
       input: {},
       imageCount: 3,
       referenceImageFiles: [],
+      screening: { admitted: true, demandLevel: 'STRONG', reason: '测试准入行', source: 'EXCEL' },
       errors: [],
     }],
   });

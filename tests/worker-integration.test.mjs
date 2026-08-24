@@ -35,6 +35,7 @@ describe('admin worker integration', () => {
           input: { category: '收纳', targetAudience: '租房用户' },
           imageCount: 5,
           referenceImageFiles: [],
+          screening: { admitted: true, demandLevel: 'STRONG', reason: '测试准入行', source: 'EXCEL' },
           errors: [],
         }],
       });
