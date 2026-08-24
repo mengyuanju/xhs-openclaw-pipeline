@@ -70,6 +70,8 @@ test('Excel import exposes demand screening as a required step before queue comm
   assert.match(importWorkbench, /OpenClaw 检测中/);
   assert.match(demandScreening, /screeningSource/);
   assert.match(demandScreening, /screeningModel/);
+  assert.match(importWorkbench, /setMessageIsError\(true\)/);
+  assert.doesNotMatch(importWorkbench, /const messageIsError = message\.includes/);
 });
 
 test('file uploads use the branded, keyboard-focusable control', async () => {

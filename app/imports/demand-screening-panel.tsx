@@ -39,7 +39,7 @@ export function DemandScreeningPanel({
 }: {
   batch: any;
   onBatchChange: (batch: any) => void;
-  onMessage: (message: string) => void;
+  onMessage: (message: string, isError?: boolean) => void;
 }) {
   const router = useRouter();
   const [drafts, setDrafts] = useState<Record<number, { demandLevel: DemandLevel; reason: string }>>(
@@ -125,7 +125,7 @@ export function DemandScreeningPanel({
       .filter((row: any) => row.isValid && dirtyRowIds.has(row.id) && drafts[row.id]?.demandLevel)
       .map((row: any) => ({ rowId: row.id, ...drafts[row.id], reason: drafts[row.id].reason.trim() }));
     if (decisions.some((decision: any) => !decision.reason)) {
-      onMessage('筛选失败：每条判定都需要填写简要理由。');
+      onMessage('筛选失败：每条判定都需要填写简要理由。', true);
       return;
     }
     if (decisions.length === 0) {
@@ -147,7 +147,7 @@ export function DemandScreeningPanel({
         ? `筛选已完成：保留 ${result.admittedRows} 条，废弃 ${result.discardedRows} 条。`
         : `筛选结果已保存，仍有 ${result.pendingScreeningRows} 条待判定。`);
     } catch (error) {
-      onMessage(error instanceof Error ? `筛选失败：${error.message}` : '筛选失败');
+      onMessage(error instanceof Error ? `筛选失败：${error.message}` : '筛选失败', true);
     } finally {
       setSaving(false);
     }

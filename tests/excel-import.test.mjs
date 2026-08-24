@@ -4,6 +4,7 @@ import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
 
 import { parseExcelImport } from '../src/admin/excel-import.mjs';
+import { errorToApiResponse } from '../src/admin/http.mjs';
 
 async function workbookBuffer(rows) {
   const workbook = new ExcelJS.Workbook();
@@ -86,9 +87,26 @@ describe('parseExcelImport', () => {
     sheet.addRow(['x-1', '收纳']);
     const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
 
+    const error = await parseExcelImport({ buffer, fileName: 'queries.xlsx' })
+      .then(() => null, (caught) => caught);
+    assert.ok(error instanceof TypeError);
+    assert.match(error.message, /缺少必需列.*query/i);
+    const response = errorToApiResponse(error);
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), {
+      error: { code: 'INVALID_INPUT', message: error.message },
+    });
+  });
+
+  it('rejects a worksheet that has headers but no data rows', async () => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('空表');
+    sheet.addRow(['query', '分类']);
+    const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+
     await assert.rejects(
-      () => parseExcelImport({ buffer, fileName: 'queries.xlsx' }),
-      /query column is required/i,
+      () => parseExcelImport({ buffer, fileName: 'empty.xlsx' }),
+      (error) => error instanceof TypeError && /没有可导入的数据行/.test(error.message),
     );
   });
 

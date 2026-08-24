@@ -142,7 +142,9 @@ function headerColumns(worksheet) {
     const canonical = HEADER_ALIASES.get(normalizedHeader(cell.value));
     if (canonical && !columns.has(canonical)) columns.set(canonical, columnNumber);
   });
-  if (!columns.has('query')) throw new Error('query column is required');
+  if (!columns.has('query')) {
+    throw new TypeError('Excel 首个工作表缺少必需列：query / 查询 / 选题 / 主题');
+  }
   return columns;
 }
 
@@ -205,7 +207,7 @@ export async function parseExcelImport({ buffer, fileName }) {
 
   const workbook = await loadWorkbook(buffer);
   const worksheet = workbook.worksheets[0];
-  if (!worksheet) throw new Error('Excel workbook must contain a worksheet');
+  if (!worksheet) throw new TypeError('Excel 文件必须至少包含一个工作表');
   const columns = headerColumns(worksheet);
   const rows = [];
 
@@ -262,6 +264,10 @@ export async function parseExcelImport({ buffer, fileName }) {
     if (!row.externalId) continue;
     if (seenExternalIds.has(row.externalId)) row.errors.push(`externalId重复：${row.externalId}`);
     seenExternalIds.add(row.externalId);
+  }
+
+  if (rows.length === 0) {
+    throw new TypeError('Excel 首个工作表没有可导入的数据行');
   }
 
   const validRows = rows.filter((row) => row.errors.length === 0).length;

@@ -19,10 +19,11 @@ export function ImportWorkbench({ initialBatch = null }: { initialBatch?: any })
   const [batch, setBatch] = useState<any>(initialBatch);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [messageIsError, setMessageIsError] = useState(false);
 
   async function upload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setBusy(true); setMessage('');
+    setBusy(true); setMessage(''); setMessageIsError(false);
     try {
       const data = new FormData(event.currentTarget);
       const result = await apiRequest<any>('/api/import-batches', { method: 'POST', body: data });
@@ -33,33 +34,36 @@ export function ImportWorkbench({ initialBatch = null }: { initialBatch?: any })
       setMessage(modelScreenedRows > 0
         ? `结构预检完成；OpenClaw 已自动判定 ${modelScreenedRows} 行，请复核后再入队。`
         : `已完成 ${result.totalRows} 行结构预检；现有 Excel 判定可继续人工复核。`);
+      setMessageIsError(false);
       router.replace(`/imports?batchId=${result.id}`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '上传失败');
+      setMessageIsError(true);
     } finally { setBusy(false); }
   }
 
   async function commit() {
     if (!batch || batch.pendingScreeningRows > 0) {
       setMessage('筛选未完成：请先判定所有结构合格选题的需求强度。');
+      setMessageIsError(true);
       return;
     }
     const commitMessage = batch.admittedRows > 0
       ? `确认将 ${batch.admittedRows} 条强需/中需选题写入生产队列？`
       : '当前没有强需/中需选题，确认完成该批次且不创建任务？';
     if (!window.confirm(commitMessage)) return;
-    setBusy(true); setMessage('');
+    setBusy(true); setMessage(''); setMessageIsError(false);
     try {
       const result = await apiRequest<any>(`/api/import-batches/${batch.id}/commit`, { method: 'POST' });
       setBatch({ ...batch, status: 'COMMITTED', committedAt: result.batch.committedAt });
       setMessage(`已入队 ${result.createdTasks} 条任务。重复点击不会重复创建。`);
+      setMessageIsError(false);
       router.refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '提交失败');
+      setMessageIsError(true);
     } finally { setBusy(false); }
   }
-
-  const messageIsError = message.includes('失败') || message.includes('无效') || message.includes('未完成');
 
   return (
     <div className="stack">
@@ -84,7 +88,10 @@ export function ImportWorkbench({ initialBatch = null }: { initialBatch?: any })
             <div className="stat-card"><span className="label">待筛选</span><strong>{batch.pendingScreeningRows}</strong></div>
           </div>
         </section>
-        <DemandScreeningPanel key={batch.id} batch={batch} onBatchChange={setBatch} onMessage={setMessage} />
+        <DemandScreeningPanel key={batch.id} batch={batch} onBatchChange={setBatch} onMessage={(nextMessage, isError = false) => {
+          setMessage(nextMessage);
+          setMessageIsError(isError);
+        }} />
         <section className="panel commit-panel">
           <div><h2>3. 确认入队</h2><p className="subtle">仅强需和中需进入生产；弱需、无需及结构错误行保留在批次记录中。</p></div>
           <button className="button primary" type="button" disabled={busy || batch.status === 'COMMITTED' || batch.pendingScreeningRows > 0} onClick={commit}>{commitButtonLabel(batch)}</button>
