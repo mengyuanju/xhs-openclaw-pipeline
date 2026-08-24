@@ -407,6 +407,10 @@ export function createVisualKnowledgeStore(db) {
       return itemDetail(db, id);
     },
 
+    getVisualKnowledgeAsset(id) {
+      return rowToAsset(db.prepare('SELECT * FROM visual_knowledge_assets WHERE id = ?').get(id));
+    },
+
     listVisualKnowledge({ page = 1, pageSize = 20, status, type, query } = {}) {
       const normalizedPage = pagination(page, 1);
       const normalizedPageSize = Math.min(100, pagination(pageSize, 20));

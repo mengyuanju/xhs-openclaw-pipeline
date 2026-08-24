@@ -8,6 +8,7 @@ const items = [
   { href: '/', label: '工作台', icon: '◫' },
   { href: '/imports', label: '选题导入', icon: '↥' },
   { href: '/prompts', label: '提示词', icon: '✦' },
+  { href: '/knowledge', label: '视觉知识库', icon: '◇' },
   { href: '/tasks', label: '内容审核', icon: '✓' },
 ];
 

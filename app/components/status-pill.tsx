@@ -11,6 +11,7 @@ const LABELS: Record<string, string> = {
   REJECTED: '已驳回',
   PUBLISHED: '使用中',
   DRAFT: '草稿',
+  TESTING: '测试中',
   RETIRED: '历史',
 };
 

@@ -124,6 +124,7 @@ function safeAbsolute(root, child) {
   return path;
 }
 
+/** @param {{ buffer: Buffer, mimeType: string, fileName: string, vision?: { runVision: Function } }} options */
 export async function analyzeVisualImage({ buffer, mimeType, fileName: _fileName, vision }) {
   await validateImage(buffer, mimeType);
   const directory = await mkdtemp(join(tmpdir(), 'xhs-visual-analysis-'));
@@ -144,6 +145,7 @@ export async function analyzeVisualImage({ buffer, mimeType, fileName: _fileName
   }
 }
 
+/** @param {{ store: any, knowledgeRoot: string, input: any, buffer?: Buffer, mimeType?: string }} options */
 export async function createVisualKnowledgeWithOptionalImage({
   store,
   knowledgeRoot,

@@ -86,3 +86,19 @@ test('primary actions and small login copy meet WCAG AA text contrast', async ()
   assert.ok(contrastRatio(primaryRed, '#ffffff') >= 4.5, 'white primary-button text needs 4.5:1 contrast');
   assert.ok(contrastRatio(footnote, '#20201f') >= 4.5, 'small login footnote text needs 4.5:1 contrast');
 });
+
+test('visual knowledge is a first-class module with accessible analysis and retention controls', async () => {
+  const [navigation, page, workbench] = await Promise.all([
+    readFile(projectFile('app/components/side-nav.tsx'), 'utf8'),
+    readFile(projectFile('app/knowledge/page.tsx'), 'utf8'),
+    readFile(projectFile('app/knowledge/knowledge-workbench.tsx'), 'utf8'),
+  ]);
+
+  assert.match(navigation, /href: '\/knowledge', label: '视觉知识库'/);
+  assert.match(page, /图片只作临时分析/);
+  assert.match(workbench, /htmlFor="knowledge-image"/);
+  assert.match(workbench, /PROMPT_ONLY/);
+  assert.match(workbench, /IMAGE_AND_PROMPT/);
+  assert.match(workbench, /role=\{messageIsError \? 'alert' : 'status'\}/);
+  assert.doesNotMatch(workbench, /<button(?![^>]*type=)[^>]*onClick=/);
+});

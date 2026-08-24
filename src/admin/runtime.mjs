@@ -13,6 +13,10 @@ export function adminAssetRoot() {
   return resolve(/* turbopackIgnore: true */ projectRoot, process.env.XHS_ASSET_ROOT || 'data/assets');
 }
 
+export function adminKnowledgeRoot() {
+  return resolve(/* turbopackIgnore: true */ projectRoot, process.env.XHS_KNOWLEDGE_ROOT || 'data/knowledge');
+}
+
 export function withAdminStore(callback) {
   const databasePath = adminDatabasePath();
   mkdirSync(dirname(databasePath), { recursive: true });
