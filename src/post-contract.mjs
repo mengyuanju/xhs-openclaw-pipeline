@@ -4,6 +4,19 @@ import { renderPrompt } from './admin/prompt-service.mjs';
 
 const PROMPT_TEMPLATE = readFileSync(new URL('../prompts/post.md', import.meta.url), 'utf8');
 const IMAGE_KINDS = ['hero', 'steps', 'checklist'];
+const PRIMARY_TYPES = [
+  '实体科普',
+  '推荐',
+  '盘点',
+  '对比测评',
+  '经验分享',
+  '教程',
+  '评价',
+  '知识科普',
+  '答疑',
+  '穿搭',
+  '攻略',
+];
 const FABRICATED_EXPERIENCE = /(我亲测|亲测有效|我用了.{0,8}(个月|年)|本人购买|我家一直|绝对有效)/u;
 const GRAPHEME_SEGMENTER = new Intl.Segmenter('zh-CN', { granularity: 'grapheme' });
 
@@ -145,24 +158,12 @@ function validatePost(value) {
   }
   const titleEmojiCount = semanticIconCount(title);
   const bodyEmojiCount = semanticIconCount(body);
-  if (titleEmojiCount > 1) throw new TypeError('title can contain at most one semantic icon');
-  if (bodyEmojiCount < 3 || bodyEmojiCount > 6) {
-    throw new TypeError('body must contain between 3 and 6 semantic navigation icons');
-  }
+  if (titleEmojiCount > 0) throw new TypeError('title cannot contain emoji');
+  if (bodyEmojiCount > 0) throw new TypeError('body cannot contain emoji');
 
   const iconDictionary = expectRecord(platform.iconDictionary, 'platform.iconDictionary');
-  const safeIcons = Object.create(null);
-  for (const [icon, meaning] of Object.entries(iconDictionary)) {
-    if (Object.keys(safeIcons).length >= 6) throw new RangeError('platform.iconDictionary cannot exceed 6 entries');
-    const safeIcon = expectString(icon, 'platform.iconDictionary key', { max: 4 });
-    if (semanticIconCount(safeIcon) !== 1 && !/^(0[1-6]|✓|→)$/u.test(safeIcon)) {
-      throw new TypeError('platform.iconDictionary keys must be semantic icons or approved text markers');
-    }
-    safeIcons[safeIcon] = expectString(
-      meaning,
-      `platform.iconDictionary.${icon}`,
-      { max: 12 },
-    );
+  if (Object.keys(iconDictionary).length > 0) {
+    throw new TypeError('platform.iconDictionary must be empty');
   }
 
   const tags = expectStringArray(root.tags, 'tags', { min: 3, max: 8, itemMax: 20 });
@@ -177,7 +178,7 @@ function validatePost(value) {
     taskJudgement: {
       admitted,
       demandLevel: expectEnum(judgement.demandLevel, 'taskJudgement.demandLevel', ['strong', 'medium']),
-      primaryType: expectEnum(judgement.primaryType, 'taskJudgement.primaryType', ['教程']),
+      primaryType: expectEnum(judgement.primaryType, 'taskJudgement.primaryType', PRIMARY_TYPES),
       reason: expectString(judgement.reason, 'taskJudgement.reason', { max: 200 }),
     },
     platform: {
@@ -186,7 +187,7 @@ function validatePost(value) {
       audience: expectString(platform.audience, 'platform.audience', { max: 100 }),
       openingMethod: expectString(platform.openingMethod, 'platform.openingMethod', { max: 150 }),
       bodyStructure: expectString(platform.bodyStructure, 'platform.bodyStructure', { max: 150 }),
-      iconDictionary: safeIcons,
+      iconDictionary: {},
       sampleEvidence: expectEnum(platform.sampleEvidence, 'platform.sampleEvidence', [
         'not_provided',
         'limited',

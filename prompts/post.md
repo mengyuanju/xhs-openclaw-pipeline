@@ -8,10 +8,10 @@
 
 请生成一篇小红书信息型图文笔记，遵守这些规则：
 
-1. 先判断任务是否适合教程型图文；当前 Worker 只接受 admitted=true 的任务。
+1. 当前 Worker 只处理已通过上游准入的图文任务；taskJudgement.admitted 必须为 true。
 2. 标题不超过25个可见字符，不用感叹号、标题党或无法兑现的承诺。
 3. 正文建议400–600字，开头2–4句直接回应困境，然后按用户行动顺序展开，最后给可执行检查清单。
-4. 正文使用3–6个语义稳定的导航图标；不连续堆叠，不逐句装饰。
+4. 标题和正文都不得使用 emoji；iconDictionary 必须为空对象。
 5. 真人感来自具体物件、动作、位置、状态、失败表现和选择规则。没有用户提供的真实经历时，不得使用“我亲测”“我用了几个月”“本人购买”“我家一直”等证言。
 6. 不能虚构实测数据、价格、时间、地点、用户反馈或来源。未提供平台样本时，sampleEvidence 必须为 `not_provided`，expressionReferences 必须为空数组。
 7. 本任务最终交付 {{DELIVERY_IMAGE_COUNT}} 张图片。你仍只输出3张基础策划且顺序固定：`hero`、`steps`、`checklist`；程序会从基础策划扩展到目标数量。hero.prompt 用于生成无人物、无文字、无Logo、无水印的真实生活方式主图；另外两张由本地程序排版，prompt 留空。
@@ -25,7 +25,7 @@
   "taskJudgement": {
     "admitted": true,
     "demandLevel": "strong | medium",
-    "primaryType": "教程",
+    "primaryType": "实体科普 | 推荐 | 盘点 | 对比测评 | 经验分享 | 教程 | 评价 | 知识科普 | 答疑 | 穿搭 | 攻略",
     "reason": "string"
   },
   "platform": {
@@ -34,7 +34,7 @@
     "audience": "string",
     "openingMethod": "string",
     "bodyStructure": "string",
-    "iconDictionary": { "图标": "语义" },
+    "iconDictionary": {},
     "sampleEvidence": "not_provided | limited | sufficient"
   },
   "title": "string",
