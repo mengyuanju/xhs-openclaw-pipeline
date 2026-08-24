@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
 
 import { createAdminStore } from '../src/admin/admin-store.mjs';
@@ -140,6 +144,115 @@ describe('admin import batches', () => {
       );
     } finally {
       store.close();
+    }
+  });
+
+  it('records OpenClaw screening provenance and the actual model name', () => {
+    const store = createAdminStore(':memory:');
+    try {
+      const batch = store.createImportBatch({
+        name: '模型筛选批次',
+        sourceFileName: 'model-screened.xlsx',
+        rows: [{
+          rowNumber: 2,
+          externalId: 'model-screened',
+          query: '两款投影仪怎么选',
+          input: {},
+          imageCount: 3,
+          referenceImageFiles: [],
+          errors: [],
+          screening: {
+            admitted: true,
+            demandLevel: 'STRONG',
+            reason: '存在明确的体验比较和购买决策需求。',
+            source: 'OPENCLAW',
+            model: 'openai-codex/fake-screening-model',
+          },
+        }],
+      });
+
+      const [row] = store.getImportBatch(batch.id).rows;
+      assert.equal(row.screeningSource, 'OPENCLAW');
+      assert.equal(row.screeningModel, 'openai-codex/fake-screening-model');
+      assert.equal(row.screeningStatus, 'COMPLETED');
+    } finally {
+      store.close();
+    }
+  });
+
+  it('migrates legacy screening constraints without losing import rows', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'xhs-screening-migration-'));
+    const databasePath = join(directory, 'queue.db');
+    const legacy = new DatabaseSync(databasePath);
+    try {
+      legacy.exec(`
+        CREATE TABLE tasks (
+          id INTEGER PRIMARY KEY, query TEXT NOT NULL, input_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
+          lease_owner TEXT, lease_until TEXT, output_dir TEXT, error TEXT,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        ) STRICT;
+        CREATE TABLE import_batches (
+          id INTEGER PRIMARY KEY, name TEXT NOT NULL, source_file_name TEXT NOT NULL,
+          status TEXT NOT NULL, total_rows INTEGER NOT NULL, valid_rows INTEGER NOT NULL,
+          invalid_rows INTEGER NOT NULL, created_at TEXT NOT NULL, committed_at TEXT
+        ) STRICT;
+        CREATE TABLE import_rows (
+          id INTEGER PRIMARY KEY,
+          batch_id INTEGER NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
+          row_number INTEGER NOT NULL, external_id TEXT, query TEXT NOT NULL,
+          input_json TEXT NOT NULL, image_count INTEGER NOT NULL,
+          reference_image_files_json TEXT NOT NULL, errors_json TEXT NOT NULL,
+          is_valid INTEGER NOT NULL CHECK (is_valid IN (0, 1)),
+          screening_status TEXT NOT NULL DEFAULT 'PENDING',
+          demand_level TEXT, screening_reason TEXT NOT NULL DEFAULT '',
+          screening_source TEXT CHECK (screening_source IN ('EXCEL', 'MANUAL')),
+          is_admitted INTEGER, task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+          UNIQUE(batch_id, row_number)
+        ) STRICT;
+        INSERT INTO import_batches
+          (id, name, source_file_name, status, total_rows, valid_rows, invalid_rows, created_at)
+        VALUES (1, '旧批次', 'legacy.xlsx', 'PREVIEW', 1, 1, 0, '2026-01-01T00:00:00.000Z');
+        INSERT INTO import_rows
+          (id, batch_id, row_number, query, input_json, image_count,
+           reference_image_files_json, errors_json, is_valid, screening_status,
+           demand_level, screening_reason, screening_source, is_admitted)
+        VALUES (1, 1, 2, '旧选题', '{}', 3, '[]', '[]', 1, 'COMPLETED',
+                'STRONG', '旧 Excel 判定', 'EXCEL', 1);
+      `);
+    } finally {
+      legacy.close();
+    }
+
+    const store = createAdminStore(databasePath);
+    try {
+      const [preserved] = store.getImportBatch(1).rows;
+      assert.equal(preserved.query, '旧选题');
+      assert.equal(preserved.screeningSource, 'EXCEL');
+      assert.equal(preserved.screeningModel, null);
+      const batch = store.createImportBatch({
+        name: '新模型批次',
+        sourceFileName: 'openclaw.xlsx',
+        rows: [{
+          rowNumber: 2,
+          query: '新选题',
+          input: {},
+          imageCount: 3,
+          referenceImageFiles: [],
+          errors: [],
+          screening: {
+            admitted: true,
+            demandLevel: 'MEDIUM',
+            reason: '模型判定。',
+            source: 'OPENCLAW',
+            model: 'fake-model',
+          },
+        }],
+      });
+      assert.equal(store.getImportBatch(batch.id).rows[0].screeningSource, 'OPENCLAW');
+    } finally {
+      store.close();
+      await rm(directory, { recursive: true, force: true });
     }
   });
 

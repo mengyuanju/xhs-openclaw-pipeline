@@ -19,6 +19,7 @@ const REVIEW_STATUSES = ['NOT_READY', 'WAITING_REVIEW', 'APPROVED', 'REJECTED'];
 const TASK_STATUSES = ['pending', 'processing', 'completed', 'failed'];
 const IMPORT_STATUSES = ['PREVIEW', 'COMMITTED'];
 const DEMAND_LEVELS = ['STRONG', 'MEDIUM', 'WEAK', 'NONE'];
+const SCREENING_SOURCES = ['EXCEL', 'MANUAL', 'OPENCLAW'];
 
 function nowIso() {
   return new Date().toISOString();
@@ -111,6 +112,7 @@ function rowToImportRow(row) {
     demandLevel: row.demand_level,
     screeningReason: row.screening_reason,
     screeningSource: row.screening_source,
+    screeningModel: row.screening_model,
     isAdmitted: row.is_admitted === null ? null : Boolean(row.is_admitted),
     taskId: row.task_id === null ? null : Number(row.task_id),
   };
@@ -162,6 +164,57 @@ function assertSafeRelativePath(value) {
   return path;
 }
 
+function migrateOpenClawScreeningSource(db) {
+  const table = db.prepare(`
+    SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'import_rows'
+  `).get();
+  if (!table?.sql || table.sql.includes("'OPENCLAW'")) return;
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.exec(`
+      ALTER TABLE import_rows RENAME TO import_rows_before_openclaw;
+      CREATE TABLE import_rows (
+        id INTEGER PRIMARY KEY,
+        batch_id INTEGER NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
+        row_number INTEGER NOT NULL,
+        external_id TEXT,
+        query TEXT NOT NULL,
+        input_json TEXT NOT NULL,
+        image_count INTEGER NOT NULL,
+        reference_image_files_json TEXT NOT NULL,
+        errors_json TEXT NOT NULL,
+        is_valid INTEGER NOT NULL CHECK (is_valid IN (0, 1)),
+        screening_status TEXT NOT NULL DEFAULT 'PENDING'
+          CHECK (screening_status IN ('PENDING', 'COMPLETED', 'NOT_REQUIRED')),
+        demand_level TEXT CHECK (demand_level IN ('STRONG', 'MEDIUM', 'WEAK', 'NONE')),
+        screening_reason TEXT NOT NULL DEFAULT '',
+        screening_source TEXT CHECK (screening_source IN ('EXCEL', 'MANUAL', 'OPENCLAW')),
+        screening_model TEXT,
+        is_admitted INTEGER CHECK (is_admitted IN (0, 1)),
+        task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+        UNIQUE(batch_id, row_number)
+      ) STRICT;
+      INSERT INTO import_rows
+        (id, batch_id, row_number, external_id, query, input_json, image_count,
+         reference_image_files_json, errors_json, is_valid, screening_status,
+         demand_level, screening_reason, screening_source, screening_model,
+         is_admitted, task_id)
+      SELECT id, batch_id, row_number, external_id, query, input_json, image_count,
+             reference_image_files_json, errors_json, is_valid, screening_status,
+             demand_level, screening_reason, screening_source, screening_model,
+             is_admitted, task_id
+      FROM import_rows_before_openclaw;
+      DROP TABLE import_rows_before_openclaw;
+      CREATE INDEX import_rows_batch_valid_idx ON import_rows(batch_id, is_valid);
+    `);
+    db.exec('COMMIT');
+  } catch (error) {
+    if (db.isTransaction) db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
 function initializeAdminSchema(db) {
   initializeQueueSchema(db);
   db.exec(`
@@ -211,7 +264,8 @@ function initializeAdminSchema(db) {
         CHECK (screening_status IN ('PENDING', 'COMPLETED', 'NOT_REQUIRED')),
       demand_level TEXT CHECK (demand_level IN ('STRONG', 'MEDIUM', 'WEAK', 'NONE')),
       screening_reason TEXT NOT NULL DEFAULT '',
-      screening_source TEXT CHECK (screening_source IN ('EXCEL', 'MANUAL')),
+      screening_source TEXT CHECK (screening_source IN ('EXCEL', 'MANUAL', 'OPENCLAW')),
+      screening_model TEXT,
       is_admitted INTEGER CHECK (is_admitted IN (0, 1)),
       task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
       UNIQUE(batch_id, row_number)
@@ -293,12 +347,14 @@ function initializeAdminSchema(db) {
     ['screening_status', "TEXT NOT NULL DEFAULT 'PENDING' CHECK (screening_status IN ('PENDING', 'COMPLETED', 'NOT_REQUIRED'))"],
     ['demand_level', "TEXT CHECK (demand_level IN ('STRONG', 'MEDIUM', 'WEAK', 'NONE'))"],
     ['screening_reason', "TEXT NOT NULL DEFAULT ''"],
-    ['screening_source', "TEXT CHECK (screening_source IN ('EXCEL', 'MANUAL'))"],
+    ['screening_source', "TEXT CHECK (screening_source IN ('EXCEL', 'MANUAL', 'OPENCLAW'))"],
+    ['screening_model', 'TEXT'],
     ['is_admitted', 'INTEGER CHECK (is_admitted IN (0, 1))'],
   ];
   for (const [name, definition] of screeningColumns) {
     if (!importRowColumns.has(name)) db.exec(`ALTER TABLE import_rows ADD COLUMN ${name} ${definition}`);
   }
+  migrateOpenClawScreeningSource(db);
   db.exec(`
     CREATE INDEX IF NOT EXISTS import_rows_batch_screening_idx
       ON import_rows(batch_id, is_valid, screening_status, is_admitted);
@@ -392,6 +448,7 @@ function batchSummary(db, id) {
 function normalizeDemandDecision({ demandLevel: rawDemandLevel, reason: rawReason }, source = 'MANUAL') {
   const demandLevel = String(rawDemandLevel ?? '').trim().toUpperCase();
   if (!DEMAND_LEVELS.includes(demandLevel)) throw new TypeError('demand level is invalid');
+  if (!SCREENING_SOURCES.includes(source)) throw new TypeError('screening source is invalid');
   const reason = requiredText(rawReason, 'screening reason', 500);
   const isAdmitted = demandLevel === 'STRONG' || demandLevel === 'MEDIUM';
   return { demandLevel, reason, source, isAdmitted };
@@ -580,14 +637,17 @@ export function createAdminStore(databasePath) {
           INSERT INTO import_rows
             (batch_id, row_number, external_id, query, input_json, image_count,
              reference_image_files_json, errors_json, is_valid, screening_status,
-             demand_level, screening_reason, screening_source, is_admitted)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             demand_level, screening_reason, screening_source, screening_model, is_admitted)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         for (const row of rows) {
           const errors = Array.isArray(row.errors) ? row.errors.map(String) : ['row errors are missing'];
           const structurallyValid = errors.length === 0;
           const decision = structurallyValid && row.screening
-            ? normalizeDemandDecision(row.screening, 'EXCEL')
+            ? normalizeDemandDecision(row.screening, row.screening.source ?? 'EXCEL')
+            : null;
+          const screeningModel = decision?.source === 'OPENCLAW'
+            ? requiredText(row.screening.model, 'screening model', 200)
             : null;
           if (decision && row.screening.admitted !== decision.isAdmitted) {
             throw new TypeError('screening admitted value conflicts with demand level');
@@ -614,6 +674,7 @@ export function createAdminStore(databasePath) {
             decision?.demandLevel ?? null,
             decision?.reason ?? '',
             decision?.source ?? null,
+            screeningModel,
             decision ? Number(decision.isAdmitted) : null,
           );
         }
@@ -691,7 +752,8 @@ export function createAdminStore(databasePath) {
         const updateRow = db.prepare(`
           UPDATE import_rows
           SET input_json = ?, screening_status = 'COMPLETED', demand_level = ?,
-              screening_reason = ?, screening_source = 'MANUAL', is_admitted = ?
+              screening_reason = ?, screening_source = 'MANUAL', screening_model = NULL,
+              is_admitted = ?
           WHERE id = ? AND batch_id = ? AND is_valid = 1
         `);
         for (const decision of normalized) {
