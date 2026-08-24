@@ -98,7 +98,7 @@ NOT_READY -> WAITING_REVIEW -> APPROVED
 
 核心实体：
 
-- `import_batches` / `import_rows`：Excel 预览、错误与提交记录。
+- `import_batches` / `import_rows`：Excel 结构预检、强/中/弱/无需筛选、筛选来源与提交记录。
 - `prompt_templates` / `prompt_versions`：提示词种类、草稿与不可变发布版本。
 - `task_configs`：任务固定的提示词版本、图片数量、审核状态与当前文本修订。
 - `assets`：参考图、生成图、修订图和父子谱系。
@@ -111,6 +111,7 @@ NOT_READY -> WAITING_REVIEW -> APPROVED
 POST       /api/auth/login
 POST       /api/auth/logout
 GET/POST   /api/import-batches
+POST       /api/import-batches/:id/screen
 POST       /api/import-batches/:id/commit
 GET        /api/tasks?page=&pageSize=&status=&reviewStatus=
 GET/PATCH  /api/tasks/:id
@@ -127,10 +128,13 @@ POST       /api/prompt-versions/:id/publish
 
 - 只接受 `.xlsx`，最大 5 MiB、5000 个数据行，只读取首个工作表。
 - 必填列：`query`。
-- 可选列：`externalId`、`category`、`targetAudience`、`promptSet`、`imageCount`、`referenceImageFiles`、`priority`、`metadata`。
+- 可选列：`externalId`、`category`、`targetAudience`、`promptSet`、`imageCount`、`referenceImageFiles`、`priority`、`metadata`，以及预筛选列 `是否有效`、`废弃原因`、`需求强度判定`、`判定简要说明`。
 - `externalId` 在同一批次中去重；`imageCount` 只能为 3–5。
 - 参考图使用已上传素材文件名，第一版不从用户提供的远程 URL 抓取，避免 SSRF。
-- 预览批次只有在显式提交后才创建任务，重复提交必须幂等。
+- 结构合格行必须在入队前完成 `STRONG | MEDIUM | WEAK | NONE` 判定；Excel 已有判定自动带入，缺失或需要修正的判定由管理员在页面保存。
+- 强需和中需标记为准入；弱需和无需标记为废弃。筛选理由必填，筛选操作记录审计日志。
+- `POST /api/import-batches/:id/screen` 接受最多 5000 个 `{ rowId, demandLevel, reason }`，请求体最大 10 MiB；行必须属于当前未提交批次且已通过结构校验。
+- 只有全部结构合格行完成需求筛选后才允许提交；提交只创建强需/中需任务，重复提交必须幂等。
 
 ## Prompt Contract
 
@@ -157,7 +161,7 @@ POST       /api/prompt-versions/:id/publish
 
 ## Success Criteria
 
-1. 管理员能上传示例 Excel，预览合法/错误行，并一次性导入至少 1000 条合法任务且重复提交不重复入队。
+1. 管理员能上传示例 Excel，预览结构错误，按强/中/弱/无需完成筛选，并一次性导入至少 1000 条强需/中需任务；筛选未完成不得入队，重复提交不重复建任务。
 2. 管理员能发布三类提示词；任务固定版本快照，后续发布新版本不改变旧任务。
 3. 管理后台能分页查看任务、修改文本、上传参考图、创建图片编辑修订并审核通过/退回。
 4. Mock Worker 能连续消费导入任务并生成现有交付包；真实 OpenClaw 可使用固定提示词与参考图调用文本、生成和编辑命令。

@@ -159,4 +159,16 @@ describe('parseExcelImport', () => {
     assert.equal(preview.validRows, 1);
     assert.equal(preview.rows[0].screening, null);
   });
+
+  it('keeps legacy rejected rows pending when they do not include a four-level judgement', async () => {
+    const buffer = await screenedWorkbookBuffer([
+      [15005, '今天上海天气', '日历', '否', '一句话可回答/固定信息查询', '-', '固定事实即可闭环。'],
+    ]);
+
+    const preview = await parseExcelImport({ buffer, fileName: 'legacy-screened.xlsx' });
+
+    assert.equal(preview.validRows, 1);
+    assert.equal(preview.invalidRows, 0);
+    assert.equal(preview.rows[0].screening, null);
+  });
 });

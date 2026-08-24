@@ -22,16 +22,25 @@ export async function apiHandler(
   }
 }
 
-export async function parseJson<T>(request: Request, schema: ZodType<T>): Promise<T> {
-  assertRequestSize(request, 64 * 1024);
+export async function parseJson<T>(
+  request: Request,
+  schema: ZodType<T>,
+  { maxBytes = 64 * 1024 }: { maxBytes?: number } = {},
+): Promise<T> {
+  assertRequestSize(request, maxBytes);
   const contentType = request.headers.get('content-type') || '';
   if (!contentType.toLowerCase().startsWith('application/json')) {
     throw new ApiError(415, 'UNSUPPORTED_MEDIA_TYPE', '请求必须使用 application/json');
   }
   let body: unknown;
   try {
-    body = await request.json();
-  } catch {
+    const rawBody = await request.text();
+    if (new TextEncoder().encode(rawBody).byteLength > maxBytes) {
+      throw new ApiError(413, 'PAYLOAD_TOO_LARGE', 'request body is too large');
+    }
+    body = JSON.parse(rawBody);
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
     throw new TypeError('请求 JSON 无法解析');
   }
   try {

@@ -302,6 +302,14 @@ function initializeAdminSchema(db) {
   db.exec(`
     CREATE INDEX IF NOT EXISTS import_rows_batch_screening_idx
       ON import_rows(batch_id, is_valid, screening_status, is_admitted);
+    UPDATE import_rows
+    SET screening_status = 'COMPLETED',
+        screening_reason = '历史批次未记录需求档位',
+        screening_source = 'MANUAL',
+        is_admitted = CASE WHEN task_id IS NULL THEN 0 ELSE 1 END
+    WHERE is_valid = 1
+      AND screening_status = 'PENDING'
+      AND batch_id IN (SELECT id FROM import_batches WHERE status = 'COMMITTED');
   `);
 }
 
@@ -675,7 +683,7 @@ export function createAdminStore(databasePath) {
       try {
         const batch = db.prepare('SELECT status FROM import_batches WHERE id = ?').get(batchId);
         if (!batch) throw new Error('import batch not found');
-        if (batch.status !== 'PREVIEW') throw new Error('committed import batches cannot be screened');
+        if (batch.status !== 'PREVIEW') throw new TypeError('committed import batches cannot be screened');
         const getRow = db.prepare(`
           SELECT id, input_json FROM import_rows
           WHERE id = ? AND batch_id = ? AND is_valid = 1
@@ -688,7 +696,7 @@ export function createAdminStore(databasePath) {
         `);
         for (const decision of normalized) {
           const row = getRow.get(decision.rowId, batchId);
-          if (!row) throw new Error(`screening row ${decision.rowId} is not a valid row in this batch`);
+          if (!row) throw new TypeError(`screening row ${decision.rowId} is not a valid row in this batch`);
           const input = parseJson(row.input_json, {});
           input.taskJudgement = {
             admitted: decision.isAdmitted,
@@ -735,7 +743,7 @@ export function createAdminStore(databasePath) {
           SELECT COUNT(*) AS count FROM import_rows
           WHERE batch_id = ? AND is_valid = 1 AND screening_status != 'COMPLETED'
         `).get(batchId).count);
-        if (pendingScreeningRows > 0) throw new Error('demand screening must be complete before commit');
+        if (pendingScreeningRows > 0) throw new TypeError('demand screening must be complete before commit');
         const prompts = publishedPromptMap(db);
         const rows = db.prepare(`
           SELECT * FROM import_rows

@@ -36,18 +36,37 @@ test('task rows provide readable mobile card labels instead of narrow table colu
 });
 
 test('dashboard and import tables use the same readable mobile card treatment', async () => {
-  const [dashboard, importsPage, importWorkbench] = await Promise.all([
+  const [dashboard, importsPage, importWorkbench, demandScreening] = await Promise.all([
     readFile(projectFile('app/page.tsx'), 'utf8'),
     readFile(projectFile('app/imports/page.tsx'), 'utf8'),
     readFile(projectFile('app/imports/import-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/imports/demand-screening-panel.tsx'), 'utf8'),
   ]);
 
   assert.match(dashboard, /className="table-wrap mobile-cards"/);
   assert.match(importsPage, /className="table-wrap mobile-cards"/);
-  assert.match(importWorkbench, /className="table-wrap mobile-cards"/);
+  assert.match(demandScreening, /className="table-wrap mobile-cards screening-table-wrap"/);
   assert.match(dashboard, /data-label="审核"/);
   assert.match(importsPage, /data-label="创建时间"/);
-  assert.match(importWorkbench, /data-label="校验结果"/);
+  assert.match(demandScreening, /data-label="结构校验"/);
+});
+
+test('Excel import exposes demand screening as a required step before queue commit', async () => {
+  const [importWorkbench, demandScreening, demandRules] = await Promise.all([
+    readFile(projectFile('app/imports/import-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/imports/demand-screening-panel.tsx'), 'utf8'),
+    readFile(projectFile('app/imports/demand-screening-rules.tsx'), 'utf8'),
+  ]);
+  const importFlow = `${importWorkbench}\n${demandScreening}\n${demandRules}`;
+
+  assert.match(importFlow, /需求强度筛选/);
+  assert.match(importFlow, /强需/);
+  assert.match(importFlow, /中需/);
+  assert.match(importFlow, /弱需/);
+  assert.match(importFlow, /无需/);
+  assert.match(importFlow, /pendingScreeningRows/);
+  assert.match(importFlow, /保存筛选结果/);
+  assert.match(importFlow, /筛选未完成/);
 });
 
 test('file uploads use the branded, keyboard-focusable control', async () => {
@@ -75,8 +94,9 @@ test('review decision appears before the image-heavy editor on narrow screens', 
 });
 
 test('interactive editors announce operation results and use explicit button behavior', async () => {
-  const [importWorkbench, promptEditor, retryButton] = await Promise.all([
+  const [importWorkbench, demandScreening, promptEditor, retryButton] = await Promise.all([
     readFile(projectFile('app/imports/import-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/imports/demand-screening-panel.tsx'), 'utf8'),
     readFile(projectFile('app/prompts/prompt-editor.tsx'), 'utf8'),
     readFile(projectFile('app/tasks/[id]/retry-button.tsx'), 'utf8'),
   ]);
@@ -84,7 +104,7 @@ test('interactive editors announce operation results and use explicit button beh
   assert.match(importWorkbench, /role=\{messageIsError \? 'alert' : 'status'\}/);
   assert.match(promptEditor, /role=\{messageIsError \? 'alert' : 'status'\}/);
   assert.match(retryButton, /role="alert"/);
-  for (const source of [importWorkbench, promptEditor, retryButton]) {
+  for (const source of [importWorkbench, demandScreening, promptEditor, retryButton]) {
     assert.doesNotMatch(source, /<button(?![^>]*type=)[^>]*onClick=/);
   }
 });

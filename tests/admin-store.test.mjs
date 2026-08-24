@@ -127,6 +127,10 @@ describe('admin import batches', () => {
       assert.equal(screened.demandCounts.WEAK, 1);
       assert.equal(screened.demandCounts.NONE, 0);
       assert.equal(screened.screeningComplete, true);
+      const screenedRows = store.getImportBatch(batch.id).rows;
+      assert.equal(screenedRows.find((row) => row.externalId === 'pending').screeningSource, 'MANUAL');
+      assert.equal(screenedRows.find((row) => row.externalId === 'strong').screeningSource, 'EXCEL');
+      assert.equal(screenedRows.find((row) => row.externalId === 'weak').screeningSource, 'EXCEL');
 
       const commit = store.commitImportBatch(batch.id);
       assert.equal(commit.createdTasks, 2);
@@ -134,6 +138,81 @@ describe('admin import batches', () => {
         store.listTasks({ page: 1, pageSize: 10 }).data.map((task) => task.input.taskJudgement.demandLevel).sort(),
         ['medium', 'strong'],
       );
+    } finally {
+      store.close();
+    }
+  });
+
+  it('can complete a fully screened batch when every query is discarded', () => {
+    const store = createAdminStore(':memory:');
+    try {
+      const batch = store.createImportBatch({
+        name: '全量废弃批次',
+        sourceFileName: 'discarded.xlsx',
+        rows: [{
+          rowNumber: 2,
+          externalId: 'discarded',
+          query: '聊斋全书 txt 下载',
+          input: {},
+          imageCount: 3,
+          referenceImageFiles: [],
+          errors: [],
+          screening: {
+            admitted: false,
+            demandLevel: 'NONE',
+            reason: '资源下载类非笔记需求。',
+            source: 'EXCEL',
+          },
+        }],
+      });
+
+      const result = store.commitImportBatch(batch.id);
+
+      assert.equal(result.createdTasks, 0);
+      assert.equal(result.batch.status, 'COMMITTED');
+      assert.equal(store.countTasks(), 0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('rejects duplicate or foreign screening row ids without partial updates', () => {
+    const store = createAdminStore(':memory:');
+    try {
+      const makeBatch = (name, externalId) => store.createImportBatch({
+        name,
+        sourceFileName: `${externalId}.xlsx`,
+        rows: [{
+          rowNumber: 2,
+          externalId,
+          query: `${name}待筛选选题`,
+          input: {},
+          imageCount: 3,
+          referenceImageFiles: [],
+          errors: [],
+          screening: null,
+        }],
+      });
+      const first = makeBatch('第一批', 'first');
+      const second = makeBatch('第二批', 'second');
+      const firstRow = store.getImportBatch(first.id).rows[0];
+      const secondRow = store.getImportBatch(second.id).rows[0];
+
+      assert.throws(() => store.screenImportBatch(first.id, {
+        decisions: [
+          { rowId: firstRow.id, demandLevel: 'STRONG', reason: '有效判定' },
+          { rowId: firstRow.id, demandLevel: 'WEAK', reason: '重复篡改' },
+        ],
+      }), /row ids must be unique/i);
+      assert.throws(() => store.screenImportBatch(first.id, {
+        decisions: [
+          { rowId: firstRow.id, demandLevel: 'STRONG', reason: '有效判定' },
+          { rowId: secondRow.id, demandLevel: 'MEDIUM', reason: '跨批次篡改' },
+        ],
+      }), /not a valid row in this batch/i);
+
+      assert.equal(store.getImportBatch(first.id).pendingScreeningRows, 1);
+      assert.equal(store.getImportBatch(second.id).pendingScreeningRows, 1);
     } finally {
       store.close();
     }

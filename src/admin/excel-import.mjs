@@ -102,12 +102,9 @@ function parseAdmitted(value, errors) {
   return null;
 }
 
-function parseDemandLevel(value, errors, { required = false } = {}) {
+function parseDemandLevel(value, errors) {
   const text = cleanText(value, 20).toLowerCase();
-  if (!text || text === '-') {
-    if (required) errors.push('已填写是否有效时，需求强度判定必须为强需、中需、弱需或无需');
-    return null;
-  }
+  if (!text || text === '-') return null;
   if (['强需', 'strong'].includes(text)) return 'STRONG';
   if (['中需', 'medium'].includes(text)) return 'MEDIUM';
   if (['弱需', 'weak'].includes(text)) return 'WEAK';
@@ -118,12 +115,7 @@ function parseDemandLevel(value, errors, { required = false } = {}) {
 
 function parseScreening(worksheetRow, columns, errors) {
   const admitted = parseAdmitted(valueAt(worksheetRow, columns, 'admitted'), errors);
-  const hasAdmittedValue = cleanText(valueAt(worksheetRow, columns, 'admitted'), 20) !== '';
-  const demandLevel = parseDemandLevel(
-    valueAt(worksheetRow, columns, 'demandLevel'),
-    errors,
-    { required: hasAdmittedValue },
-  );
+  const demandLevel = parseDemandLevel(valueAt(worksheetRow, columns, 'demandLevel'), errors);
   if (!demandLevel) return null;
 
   const shouldAdmit = demandLevel === 'STRONG' || demandLevel === 'MEDIUM';

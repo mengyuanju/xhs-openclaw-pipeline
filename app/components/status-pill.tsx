@@ -13,6 +13,12 @@ const LABELS: Record<string, string> = {
   DRAFT: '草稿',
   TESTING: '测试中',
   RETIRED: '历史',
+  STRONG: '强需',
+  MEDIUM: '中需',
+  WEAK: '弱需',
+  NONE: '无需',
+  SCREENED: '筛选完成',
+  PENDING_SCREENING: '待筛选',
 };
 
 export function StatusPill({ value }: { value?: string | null }) {
