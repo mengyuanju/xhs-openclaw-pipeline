@@ -6,6 +6,10 @@ import { DEFAULT_PROMPTS } from './default-prompts.mjs';
 import { createGenerationStore, initializeGenerationSchema } from './generation-store.mjs';
 import { createImageEditStore, initializeImageEditSchema } from './image-edit-store.mjs';
 import {
+  createVisualKnowledgeStore,
+  initializeVisualKnowledgeSchema,
+} from './visual-knowledge-store.mjs';
+import {
   PROMPT_KINDS,
   hashPrompt,
   normalizePromptContent,
@@ -269,6 +273,7 @@ function initializeAdminSchema(db) {
   `);
   initializeImageEditSchema(db);
   initializeGenerationSchema(db);
+  initializeVisualKnowledgeSchema(db);
 }
 
 function seedPrompts(db) {
@@ -359,6 +364,7 @@ export function createAdminStore(databasePath) {
   const getPromptVersionRow = db.prepare('SELECT * FROM prompt_versions WHERE id = ?');
   const imageEditStore = createImageEditStore(db);
   const generationStore = createGenerationStore(db);
+  const visualKnowledgeStore = createVisualKnowledgeStore(db);
   const countTasks = () => Number(db.prepare('SELECT COUNT(*) AS count FROM tasks').get().count);
   const getAssetRow = db.prepare('SELECT * FROM assets WHERE id = ?');
   const getTaskRow = db.prepare(`
@@ -407,6 +413,7 @@ export function createAdminStore(databasePath) {
   return {
     ...imageEditStore,
     ...generationStore,
+    ...visualKnowledgeStore,
     close() {
       db.close();
     },
