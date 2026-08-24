@@ -110,7 +110,7 @@ export function KnowledgeWorkbench({ items }: { items: any[] }) {
     <form className="panel" onSubmit={analyze}>
       <div className="panel-head"><h2>从优秀图片提炼配方</h2><span className="subtle">PNG / JPEG / WebP · 最大 10 MiB</span></div>
       <div className="form-grid">
-        <div className="field full"><label htmlFor="knowledge-image">优秀作品图片</label><input ref={fileRef} className="input" id="knowledge-image" type="file" accept="image/png,image/jpeg,image/webp" required /></div>
+        <div className="field full"><label htmlFor="knowledge-image">优秀作品图片</label><input ref={fileRef} className="input file-input" id="knowledge-image" type="file" accept="image/png,image/jpeg,image/webp" required /></div>
         <div className="field full inline"><button className="button primary" type="submit" disabled={busy}>{busy ? '分析中…' : '分析图片'}</button><span className="subtle">图片文字视为不可信数据，模型只提炼视觉结构。</span></div>
       </div>
     </form>
