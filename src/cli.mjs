@@ -58,6 +58,7 @@ export async function main(
   );
   const outputRoot = resolve(env.XHS_OUTPUT_ROOT || resolve(PROJECT_ROOT, 'output'));
   const assetRoot = resolve(env.XHS_ASSET_ROOT || resolve(PROJECT_ROOT, 'data', 'assets'));
+  const knowledgeRoot = resolve(env.XHS_KNOWLEDGE_ROOT || resolve(PROJECT_ROOT, 'data', 'knowledge'));
   let queue;
   let adminStore;
   try {
@@ -103,7 +104,7 @@ export async function main(
       }
       const workerId = flagValue(args, '--worker-id') || `worker-${process.pid}`;
       adminStore = createAdminStore(databasePath);
-      const integration = createAdminWorkerIntegration({ store: adminStore, assetRoot });
+      const integration = createAdminWorkerIntegration({ store: adminStore, assetRoot, knowledgeRoot });
       let result = await processNext({
         queue,
         workerId,
@@ -143,7 +144,7 @@ export async function main(
       }
       const workerId = flagValue(args, '--worker-id') || `drain-${process.pid}`;
       adminStore = createAdminStore(databasePath);
-      const integration = createAdminWorkerIntegration({ store: adminStore, assetRoot });
+      const integration = createAdminWorkerIntegration({ store: adminStore, assetRoot, knowledgeRoot });
       const summary = {
         status: 'completed',
         mode: mock ? 'mock' : 'live',

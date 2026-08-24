@@ -45,18 +45,28 @@ async function copyGeneratedAsset({ store, assetRoot, task, image, outputDir, mo
   }
 }
 
-export function createAdminWorkerIntegration({ store, assetRoot }) {
+export function createAdminWorkerIntegration({ store, assetRoot, knowledgeRoot }) {
   if (!store?.getWorkerConfig) throw new TypeError('admin store with worker config is required');
   const normalizedAssetRoot = resolve(assetRoot);
+  const normalizedKnowledgeRoot = knowledgeRoot ? resolve(knowledgeRoot) : null;
 
   return {
     getTaskConfig(task) {
       const config = store.getWorkerConfig(task.id);
       if (!config) return null;
+      const visualReference = store.resolveVisualReferenceForTask?.(task.id) ?? null;
+      const visualReferenceImagePaths = visualReference?.referenceImageRelativePath
+        ? [safeAbsolute(
+          normalizedKnowledgeRoot ?? normalizedAssetRoot,
+          visualReference.referenceImageRelativePath,
+        )]
+        : [];
       return {
         ...config,
         referenceImagePaths: config.referenceAssets.map((asset) =>
           safeAbsolute(normalizedAssetRoot, asset.relativePath)),
+        visualReference,
+        visualReferenceImagePaths,
       };
     },
 

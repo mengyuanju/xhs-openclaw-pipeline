@@ -7,6 +7,7 @@ import { createOpenClawClient } from './openclaw.mjs';
 import { buildPostPrompt, parsePostOutput } from './post-contract.mjs';
 import { evaluateDelivery } from './qc.mjs';
 import { renderPrompt } from './admin/prompt-service.mjs';
+import { composeVisualImagePrompt } from './admin/visual-knowledge-store.mjs';
 
 export function createMockPost() {
   return parsePostOutput(JSON.stringify({
@@ -135,7 +136,16 @@ export async function processNext({
     const pinnedImagePrompt = workerConfig?.imagePromptContent
       ? renderPrompt(workerConfig.imagePromptContent, imageVariables)
       : '';
-    const heroPrompt = [pinnedImagePrompt, post.imagePlan[0].prompt].filter(Boolean).join('\n\n');
+    const heroPrompt = composeVisualImagePrompt({
+      systemPrompt: pinnedImagePrompt,
+      visualReference: workerConfig?.visualReference,
+      variables: imageVariables,
+      taskPrompt: post.imagePlan[0].prompt,
+    });
+    const referenceImagePaths = [...new Set([
+      ...(workerConfig?.referenceImagePaths ?? []),
+      ...(workerConfig?.visualReferenceImagePaths ?? []),
+    ])].slice(0, 10);
 
     const images = await renderDeliveryImages({
       post,
@@ -144,7 +154,7 @@ export async function processNext({
       openclaw: client,
       imageCount,
       heroPrompt,
-      referenceImagePaths: workerConfig?.referenceImagePaths ?? [],
+      referenceImagePaths,
     });
     await writeAtomic(join(outputDir, 'post.json'), `${JSON.stringify(post, null, 2)}\n`);
     await writeAtomic(join(outputDir, 'post.md'), toMarkdown(task, post));
@@ -171,6 +181,12 @@ export async function processNext({
       mode: mock ? 'mock' : 'live',
       generatedAt: new Date().toISOString(),
       text: { provider: mock ? 'mock' : 'openclaw', model: textModel },
+      visualReference: workerConfig?.visualReference ? {
+        versionId: workerConfig.visualReference.versionId,
+        itemId: workerConfig.visualReference.itemId,
+        type: workerConfig.visualReference.type,
+        contentSha256: workerConfig.visualReference.contentSha256,
+      } : null,
       images,
       qc: { overallScore: qc.overallScore, disposition: qc.disposition },
       files: await hashFiles(outputDir, deliveryFiles),

@@ -406,6 +406,7 @@ export function createAdminStore(databasePath) {
       reviews,
       imageEditRequests: imageEditStore.listForTask(id),
       generationRuns: generationStore.listGenerationRuns(id),
+      visualReference: visualKnowledgeStore.getTaskVisualReference(id),
       auditLogs,
     };
   };
