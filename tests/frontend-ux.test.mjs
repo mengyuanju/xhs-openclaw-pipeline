@@ -89,6 +89,13 @@ test('interactive editors announce operation results and use explicit button beh
   }
 });
 
+test('prompt editors allow publishing an unchanged non-empty version', async () => {
+  const promptEditor = await readFile(projectFile('app/prompts/prompt-editor.tsx'), 'utf8');
+
+  assert.match(promptEditor, /disabled=\{busy \|\| !content\.trim\(\)\}/);
+  assert.doesNotMatch(promptEditor, /content\.trim\(\) === published\?\.content/);
+});
+
 test('primary actions and small login copy meet WCAG AA text contrast', async () => {
   const styles = await readFile(projectFile('app/globals.css'), 'utf8');
   const primaryRed = styles.match(/--red:\s*(#[\da-f]{6})/i)?.[1];
