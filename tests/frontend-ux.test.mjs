@@ -50,6 +50,17 @@ test('dashboard and import tables use the same readable mobile card treatment', 
   assert.match(importWorkbench, /data-label="校验结果"/);
 });
 
+test('Excel upload uses the branded, keyboard-focusable file control', async () => {
+  const [importWorkbench, styles] = await Promise.all([
+    readFile(projectFile('app/imports/import-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+  ]);
+
+  assert.match(importWorkbench, /id="excel-file" className="input file-input"/);
+  assert.match(styles, /\.file-input::file-selector-button\s*\{/);
+  assert.match(styles, /\.file-input:focus-visible\s*\{/);
+});
+
 test('review decision appears before the image-heavy editor on narrow screens', async () => {
   const reviewPanel = await readFile(projectFile('app/tasks/[id]/review-panel.tsx'), 'utf8');
   const decisionIndex = reviewPanel.indexOf('review-decision');

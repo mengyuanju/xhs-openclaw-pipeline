@@ -47,7 +47,7 @@ export function ImportWorkbench() {
         <div className="panel-head"><h2>上传并预检</h2><span className="subtle">最大 5 MiB · 最多 5,000 行</span></div>
         <div className="form-grid">
           <div className="field"><label htmlFor="batch-name">批次名称（可选）</label><input id="batch-name" className="input" name="name" maxLength={200} placeholder="如：8月收纳选题" /></div>
-          <div className="field"><label htmlFor="excel-file">Excel 文件</label><input id="excel-file" className="input" name="file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required /></div>
+          <div className="field"><label htmlFor="excel-file">Excel 文件</label><input id="excel-file" className="input file-input" name="file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required /></div>
           <div className="field full inline"><button className="button primary" type="submit" disabled={busy}>{busy ? '处理中…' : '上传并预检'}</button><span className="subtle">必需列：query / 查询 / 选题；图片数量支持 3–5。</span></div>
         </div>
       </form>

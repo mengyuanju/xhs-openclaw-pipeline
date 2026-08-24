@@ -90,6 +90,11 @@ tbody tr:hover { background: #fffaf8; }
 .field label { color: #625f5a; font-size: 12px; font-weight: 700; }
 .input, .textarea, .select { width: 100%; border: 1px solid #dcd6cf; border-radius: 10px; background: white; color: var(--ink); outline: 0; transition: .14s ease; }
 .input, .select { min-height: 42px; padding: 0 12px; }
+.file-input { padding: 0 12px 0 0; overflow: hidden; color: var(--muted); font-size: 13px; cursor: pointer; }
+.file-input::file-selector-button { min-height: 40px; margin-right: 12px; padding: 0 15px; border: 0; border-right: 1px solid #ead6d8; color: var(--red-dark); background: #fff4f5; cursor: pointer; font-size: 12px; font-weight: 750; transition: background .14s ease, color .14s ease; }
+.file-input:hover { border-color: #cfc7bf; }
+.file-input:hover::file-selector-button { color: #951d2b; background: #ffe8eb; }
+.file-input:focus-visible { border-color: var(--red); box-shadow: 0 0 0 3px rgba(232,61,77,.09); }
 .textarea { min-height: 180px; padding: 12px; line-height: 1.7; resize: vertical; }
 .textarea.compact { min-height: 100px; }
 .input:focus, .textarea:focus, .select:focus { border-color: var(--red); box-shadow: 0 0 0 3px rgba(232,61,77,.09); }
