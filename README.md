@@ -66,7 +66,7 @@ priority/优先级, metadata/元数据
 
 ## 溯源规则提示词
 
-三类运行提示词分别位于 `prompts/text-system.md`、`prompts/image-system.md` 和 `prompts/image-edit-system.md`，其中的 `[Rxxx]` 对应工作区上级文档 `图文生成统一系统提示词_原始文档溯源版.md` 的来源表。
+三类运行提示词分别位于 `prompts/text-system.md`、`prompts/image-system.md` 和 `prompts/image-edit-system.md`。规则编号和原始来源映射保留在工作区上级文档 `图文生成统一系统提示词_原始文档溯源版.md`；运行提示词只包含规则正文，不携带 `[Rxxx]` 标签。
 
 全新数据库会自动使用这些提示词。已有数据库需要显式发布新版本：
 

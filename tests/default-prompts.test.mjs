@@ -5,7 +5,7 @@ import { describe, it } from 'node:test';
 import { DEFAULT_PROMPTS, promptFilePath } from '../src/admin/default-prompts.mjs';
 import { normalizePromptContent } from '../src/admin/prompt-service.mjs';
 
-describe('source-traceable default prompts', () => {
+describe('runtime default prompts', () => {
   it('provides one valid prompt for each runtime prompt kind', () => {
     const textPromptPath = promptFilePath('text-system.md');
     assert.equal(typeof textPromptPath, 'string');
@@ -19,25 +19,27 @@ describe('source-traceable default prompts', () => {
     }
   });
 
-  it('loads text rules with source ids and no legacy icon requirement', () => {
+  it('loads text rules without inline source labels or the legacy icon requirement', () => {
     const prompt = DEFAULT_PROMPTS.find(({ kind }) => kind === 'TEXT_SYSTEM');
 
-    assert.match(prompt.content, /\[R017\]/);
-    assert.match(prompt.content, /\[R049\]/);
-    assert.match(prompt.content, /\[R095\]/);
+    assert.match(prompt.content, /主需关键词/);
+    assert.match(prompt.content, /图片内容.*必须与正文一致/);
+    assert.match(prompt.content, /文案从初稿到终稿/);
+    assert.doesNotMatch(prompt.content, /\[R\d{3}\]/);
     assert.match(prompt.content, /标题和正文.*(?:禁止|不得)使用 emoji/);
     assert.doesNotMatch(prompt.content, /3[–-]6个.*图标/);
   });
 
-  it('loads generation and editing image rules with source ids', () => {
+  it('loads generation and editing image rules without inline source labels', () => {
     const image = DEFAULT_PROMPTS.find(({ kind }) => kind === 'IMAGE_SYSTEM');
     const edit = DEFAULT_PROMPTS.find(({ kind }) => kind === 'IMAGE_EDIT_SYSTEM');
 
     for (const prompt of [image, edit]) {
-      assert.match(prompt.content, /\[R053\]/);
-      assert.match(prompt.content, /\[R080\]/);
-      assert.match(prompt.content, /\[R083\]/);
-      assert.match(prompt.content, /\[R099\]/);
+      assert.match(prompt.content, /3:4/);
+      assert.match(prompt.content, /图片文字、数据/);
+      assert.match(prompt.content, /禁止违法敏感/);
+      assert.match(prompt.content, /物体和文字边缘清晰/);
+      assert.doesNotMatch(prompt.content, /\[R\d{3}\]/);
     }
     assert.match(edit.content, /\{\{reviewInstruction\}\}/);
   });

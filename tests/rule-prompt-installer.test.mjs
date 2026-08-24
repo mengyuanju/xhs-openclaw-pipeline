@@ -7,7 +7,7 @@ import { installRulePrompts } from '../src/admin/rule-prompt-installer.mjs';
 import { hashPrompt } from '../src/admin/prompt-service.mjs';
 
 describe('rule prompt installer', () => {
-  it('republishes the source-traceable versions without changing task snapshots', () => {
+  it('republishes the repository prompt versions without changing task snapshots', () => {
     const store = createAdminStore(':memory:');
     try {
       const textTemplate = store.listPromptTemplates().find(({ kind }) => kind === 'TEXT_SYSTEM');
