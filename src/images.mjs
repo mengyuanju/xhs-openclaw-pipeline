@@ -103,55 +103,73 @@ export async function renderDeliveryImages({
   mock,
   openclaw,
   imageCount = post.imagePlan.length,
-  heroPrompt = post.imagePlan[0].prompt,
+  imagePrompts = post.imagePlan.map((plan) => plan.prompt),
   referenceImagePaths = [],
-  rawHeroPath = join(outputDir, '.raw-hero.png'),
 }) {
   if (!Number.isInteger(imageCount) || imageCount < 3 || imageCount > 5) {
     throw new RangeError('imageCount must be an integer between 3 and 5');
   }
+  if (!Array.isArray(post.imagePlan) || post.imagePlan.length !== imageCount) {
+    throw new RangeError(`imagePlan must contain exactly ${imageCount} items`);
+  }
+  if (!Array.isArray(referenceImagePaths) || referenceImagePaths.length > 10) {
+    throw new TypeError('referenceImagePaths must be an array of at most 10 paths');
+  }
+  if (!mock && (!Array.isArray(imagePrompts) || imagePrompts.length !== imageCount)) {
+    throw new RangeError(`imagePrompts must contain exactly ${imageCount} items`);
+  }
   await mkdir(outputDir, { recursive: true });
-  const heroPath = join(outputDir, '01-hero.png');
+  const baseReferences = [...new Set(referenceImagePaths)];
+  const images = [];
+  let firstImagePath = null;
 
-  let hero;
-  if (mock) {
-    await svgToPng(mockHeroSvg(post.imagePlan[0]), heroPath);
-    hero = { file: '01-hero.png', provider: 'mock', model: null };
-  } else {
-    if (!Array.isArray(referenceImagePaths) || referenceImagePaths.length > 10) {
-      throw new TypeError('referenceImagePaths must be an array of at most 10 paths');
+  for (let index = 0; index < imageCount; index += 1) {
+    const plan = post.imagePlan[index];
+    if (!/^[a-z][a-z0-9-]{0,30}$/u.test(plan.kind)) {
+      throw new TypeError(`imagePlan[${index}].kind is invalid`);
     }
-    if (referenceImagePaths.length > 0 && !openclaw?.runImageEdit) {
-      throw new TypeError('openclaw image edit client is required when reference images are present');
-    }
-    if (referenceImagePaths.length === 0 && !openclaw?.runImage) {
-      throw new TypeError('openclaw image client is required in live mode');
-    }
-    const generated = referenceImagePaths.length > 0
-      ? openclaw.runImageEdit({ prompt: heroPrompt, inputPaths: referenceImagePaths, outputPath: rawHeroPath })
-      : openclaw.runImage({ prompt: heroPrompt, outputPath: rawHeroPath });
-    await sharp(generated.outputPath)
-      .resize(WIDTH, HEIGHT, { fit: 'cover', position: 'attention' })
-      .png({ compressionLevel: 8 })
-      .toFile(heroPath);
-    if (generated.outputPath !== heroPath) {
-      await unlink(generated.outputPath).catch(() => {});
-    }
-    hero = {
-      file: '01-hero.png',
-      provider: referenceImagePaths.length > 0 ? 'openclaw-image-edit' : 'openclaw',
-      model: generated.model,
-    };
-  }
+    const file = `${String(index + 1).padStart(2, '0')}-${plan.kind}.png`;
+    const outputPath = join(outputDir, file);
 
-  const templateImages = [];
-  for (let index = 1; index < imageCount; index += 1) {
-    const plan = post.imagePlan[index]
-      ?? post.imagePlan[1 + ((index - 1) % Math.max(1, post.imagePlan.length - 1))];
-    const kind = index < post.imagePlan.length ? plan.kind : `detail-${index - 2}`;
-    const file = `${String(index + 1).padStart(2, '0')}-${kind}.png`;
-    await svgToPng(cardSvg(plan, index + 1, imageCount), join(outputDir, file));
-    templateImages.push({ file, provider: 'local-template', model: null });
+    if (mock) {
+      const svg = index === 0 ? mockHeroSvg(plan) : cardSvg(plan, index + 1, imageCount);
+      await svgToPng(svg, outputPath);
+      images.push({ file, provider: 'mock', model: null });
+    } else {
+      const prompt = imagePrompts[index];
+      if (typeof prompt !== 'string' || prompt.length < 10 || prompt.length > 8_000) {
+        throw new RangeError(`imagePrompts[${index}] must contain between 10 and 8000 characters`);
+      }
+      const inputPaths = index === 0
+        ? baseReferences
+        : [...new Set([...baseReferences.slice(0, 9), firstImagePath])];
+      const rawOutputPath = join(outputDir, `.raw-${String(index + 1).padStart(2, '0')}.png`);
+      let generated;
+      let provider;
+      if (inputPaths.length > 0) {
+        if (!openclaw?.runImageEdit) {
+          throw new TypeError('openclaw image edit client is required when reference images are present');
+        }
+        generated = openclaw.runImageEdit({ prompt, inputPaths, outputPath: rawOutputPath });
+        provider = 'openclaw-image-edit';
+      } else {
+        if (!openclaw?.runImage) {
+          throw new TypeError('openclaw image client is required in live mode');
+        }
+        generated = openclaw.runImage({ prompt, outputPath: rawOutputPath });
+        provider = 'openclaw';
+      }
+      await sharp(generated.outputPath)
+        .resize(WIDTH, HEIGHT, { fit: 'cover', position: 'attention' })
+        .png({ compressionLevel: 8 })
+        .toFile(outputPath);
+      if (generated.outputPath !== outputPath) {
+        await unlink(generated.outputPath).catch(() => {});
+      }
+      images.push({ file, provider, model: generated.model });
+    }
+
+    if (index === 0) firstImagePath = outputPath;
   }
-  return [hero, ...templateImages];
+  return images;
 }

@@ -1,0 +1,86 @@
+# Spec: 全模型图集生成
+
+## Objective
+
+将交付图集从“首图调用图像模型、其余图片由本地模板排版”改为“全部 3–5 张图片逐张调用图像模型”。每张图片必须以已经生成并通过结构校验的标题、正文和本页图片计划为事实来源，按照正文顺序承载互补信息，同时保持整套图集的视觉一致性。
+
+规则依据为工作区上级文档 `图文生成统一系统提示词_原始文档溯源版.md`：
+
+- R049–R052：图文内容、顺序和数据一致，图片与正文互补。
+- R053–R072：统一 3:4、核心信息自足、画面多样但风格一致、移动端可读。
+- R075–R082：避免 AI 结构和文字错误，仅展示给定内容；工具无风格记忆时使用已生成首图作参考。
+- R096：通读文案、规划每张图片、逐张写提示词并按顺序生成。
+
+## Tech Stack
+
+- Node.js ESM、Next.js 16、SQLite。
+- OpenClaw 图像适配器：`runImage` / `runImageEdit`。
+- Sharp：只负责模型结果的解码、3:4 裁切和 PNG 规范化，不再负责生产信息卡内容。
+
+## Commands
+
+- 定向测试：`node --test tests/post-contract.test.mjs tests/images.test.mjs tests/pipeline.test.mjs tests/visual-pipeline.test.mjs`
+- 全量测试：`npm test`
+- 类型检查：`npm run typecheck`
+- 生产构建：`npm run build`
+- 发布仓库提示词：`npm run prompts:install-rules`
+
+## Project Structure
+
+- `prompts/post.md`：要求文本模型规划全部 3–5 张图片。
+- `prompts/text-system.md`：图文计划的业务规则。
+- `prompts/image-system.md`：所有模型图片共同遵守的视觉规则。
+- `src/post-contract.mjs`：校验图片计划数量、顺序、字段和逐图提示词。
+- `src/pipeline.mjs`：根据生成后的完整文本组合每张图片提示词。
+- `src/images.mjs`：按顺序调用图像模型并规范化输出。
+- `tests/`：契约、图片渲染、管线和视觉配方集成测试。
+
+## Code Style
+
+保持现有 ESM 和小函数风格；对外部模型输入先验证，再调用适配器。例如：
+
+```js
+const imagePrompts = post.imagePlan.map((plan, index) =>
+  composeDeliveryImagePrompt({ post, plan, index, imageCount, workerConfig }));
+```
+
+每个数组位置对应一个最终交付文件，不允许通过循环复用同一个图片计划补足数量。
+
+## Generation Contract
+
+1. `imageCount` 仍为 3–5，默认 3。
+2. 文本模型输出的 `imagePlan` 必须恰好包含 `imageCount` 项。
+3. 第一项必须是 `hero`；后续页面可使用 `steps`、`checklist`、`comparison`、`detail` 或 `summary`。
+4. 每项必须提供非空 `prompt`、标题、副标题和 2–5 个要点，且不得新增正文没有的事实。
+5. 每张最终提示词必须包含：生成后的标题、完整正文、本页序号、本页职责、本页标题/副标题/要点和本页视觉指令。
+6. 每张最终提示词叠加任务固定的图片系统提示词和已锁定的视觉配方；提示词总长度上限为 8,000 字符。
+7. Live 模式下，每张图片必须调用一次 `runImage` 或 `runImageEdit`；不得出现 `local-template` 交付图片。
+8. 第一张有外部参考图时使用图生图，否则使用文生图；第二张起始终把第一张规范化图片作为风格参考，并明确要求生成全新页面、不得复制首图内容和布局。
+9. 所有模型输出统一规范化为 `1080×1440` PNG，文件按图集顺序编号。
+10. Mock 模式可以使用本地占位图，但质检状态继续为 `mock_only`，禁止作为真实交付。
+
+## Testing Strategy
+
+- 契约测试：3 和 5 张计划都能通过；数量不符、首项非 hero、任一空提示词必须失败。
+- 图片测试：Live 模式 3–5 张均产生模型调用；后续调用包含首图参考；所有输出为 1080×1440 PNG。
+- 管线测试：每张模型提示词都包含生成后的正文和对应页面信息，视觉配方应用到每张图。
+- 回归测试：Mock、参考图、视觉知识锁定、QC、资产同步和失败记录仍工作。
+
+## Boundaries
+
+- Always：按顺序逐图生成；限制输入路径和提示词长度；保持任务提示词和视觉配方版本锁定；运行定向测试、全量测试和构建。
+- Ask first：修改图片数量范围、数据库结构、模型供应商或自动发布逻辑。
+- Never：回退到本地模板作为 Live 交付；把 Query 或模型内容拼入 Shell；让后续图片凭空新增正文没有的数据；改写历史任务快照。
+
+## Success Criteria
+
+- Live 模式生成 N 张图片时，模型调用总数等于 N，N ∈ [3, 5]。
+- 每个模型提示词都包含完整生成文本和唯一的本页计划。
+- 后续页面引用首图维持风格，同时提示词明确要求新内容和新构图。
+- 最终图片全部是不同文件、1080×1440 PNG，并通过现有 QC。
+- 当前三个运行提示词发布为新版本；已入队任务继续使用原快照。
+- 定向测试、类型检查和生产构建通过；全量测试不存在本变更新增的失败。
+
+## Open Questions
+
+- 无阻断问题。真实图片生成成本将由每任务 1 次提高到每任务 3–5 次，批量运行仍需显式 Live 模式和数量上限。

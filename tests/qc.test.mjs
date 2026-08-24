@@ -31,9 +31,9 @@ describe('delivery quality checks', () => {
     const outputDir = await mkdtemp(join(tmpdir(), 'xhs-qc-'));
     try {
       const images = [
-        { file: '01.png' },
-        { file: '02.png' },
-        { file: '03.png' },
+        { file: '01.png', provider: 'openclaw' },
+        { file: '02.png', provider: 'openclaw-image-edit' },
+        { file: '03.png', provider: 'openclaw-image-edit' },
       ];
       await Promise.all([
         writePng(join(outputDir, '01.png'), '#ff0000'),
@@ -64,7 +64,11 @@ describe('delivery quality checks', () => {
       await writePng(source, '#ff0000');
       await sharp(source).toFile(join(outputDir, '02.png'));
       await writePng(join(outputDir, '03.png'), '#0000ff');
-      const images = [{ file: '01.png' }, { file: '02.png' }, { file: '03.png' }];
+      const images = [
+        { file: '01.png', provider: 'openclaw' },
+        { file: '02.png', provider: 'openclaw-image-edit' },
+        { file: '03.png', provider: 'openclaw-image-edit' },
+      ];
 
       const qc = await evaluateDelivery({
         post: post({ title: '一篇看懂桌面整理' }),
@@ -78,6 +82,30 @@ describe('delivery quality checks', () => {
       assert.equal(qc.disposition, 'blocked');
       assert.ok(qc.issues.some(({ label }) => label === '内容-标题问题'));
       assert.ok(qc.issues.some(({ label }) => label === '配图-重复配图'));
+    } finally {
+      await rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it('blocks a live delivery when any image did not come from the image model', async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), 'xhs-qc-'));
+    try {
+      const images = [
+        { file: '01.png', provider: 'openclaw' },
+        { file: '02.png', provider: 'local-template' },
+        { file: '03.png', provider: 'openclaw-image-edit' },
+      ];
+      await Promise.all([
+        writePng(join(outputDir, '01.png'), '#ff0000'),
+        writePng(join(outputDir, '02.png'), '#00ff00'),
+        writePng(join(outputDir, '03.png'), '#0000ff'),
+      ]);
+
+      const qc = await evaluateDelivery({ post: post(), images, outputDir, mode: 'live' });
+
+      assert.equal(qc.checks.find(({ id }) => id === 'model_image_sources').passed, false);
+      assert.equal(qc.disposition, 'blocked');
+      assert.ok(qc.issues.some(({ label }) => label === '图片来源-非模型生成'));
     } finally {
       await rm(outputDir, { recursive: true, force: true });
     }

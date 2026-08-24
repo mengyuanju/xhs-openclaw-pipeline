@@ -39,8 +39,8 @@ function validPost() {
     tags: ['#桌面整理', '#租房生活', '#收纳方法'],
     imagePlan: [
       { kind: 'hero', headline: '桌面整理先做减法', subtitle: '低成本保持清爽', bullets: ['先清空', '再分区', '最后复位'], prompt: '真实租房卧室桌面，暖色自然光，木质桌面，主体居中，无文字无水印。' },
-      { kind: 'steps', headline: '四步整理顺序', subtitle: '先别买收纳盒', bullets: ['清空', '分类', '定位置', '复位'], prompt: '' },
-      { kind: 'checklist', headline: '睡前复位清单', subtitle: '只检查三件事', bullets: ['垃圾离桌', '物品归位', '准备明天用品'], prompt: '' },
+      { kind: 'steps', headline: '四步整理顺序', subtitle: '先别买收纳盒', bullets: ['清空', '分类', '定位置', '复位'], prompt: '按正文顺序生成四步整理页面，仅展示给定步骤文字。' },
+      { kind: 'checklist', headline: '睡前复位清单', subtitle: '只检查三件事', bullets: ['垃圾离桌', '物品归位', '准备明天用品'], prompt: '生成睡前复位检查页面，突出三个给定检查项。' },
     ],
     sources: [],
     expressionReferences: [],
@@ -60,17 +60,22 @@ describe('visual knowledge pipeline integration', () => {
       query: '低成本整理卧室桌面',
       input: { category: '收纳', targetAudience: '租房用户' },
     });
-    const rawPng = await sharp({
-      create: { width: 1024, height: 1536, channels: 3, background: '#d8c7b4' },
-    }).png().toBuffer();
-    let imagePrompt = '';
+    const rawImages = await Promise.all(['#d8c7b4', '#c7d8b4', '#b4c7d8'].map((background) => sharp({
+      create: { width: 1024, height: 1536, channels: 3, background },
+    }).png().toBuffer()));
+    const imageCalls = [];
     const openclaw = {
       runText() {
         return { rawText: JSON.stringify(validPost()), model: 'fake-text' };
       },
       runImage({ prompt, outputPath }) {
-        imagePrompt = prompt;
-        writeFileSync(outputPath, rawPng);
+        imageCalls.push({ method: 'generate', prompt, inputPaths: [] });
+        writeFileSync(outputPath, rawImages[imageCalls.length - 1]);
+        return { outputPath, model: 'fake-image' };
+      },
+      runImageEdit({ prompt, inputPaths, outputPath }) {
+        imageCalls.push({ method: 'edit', prompt, inputPaths });
+        writeFileSync(outputPath, rawImages[imageCalls.length - 1]);
         return { outputPath, model: 'fake-image' };
       },
     };
@@ -93,9 +98,17 @@ describe('visual knowledge pipeline integration', () => {
     });
 
     assert.equal(result.status, 'completed', result.error);
-    assert.match(imagePrompt, /保持 3:4 竖版构图/);
-    assert.match(imagePrompt, /使用 收纳 场景的暖色生活感构图/);
-    assert.match(imagePrompt, /不要水印和乱码/);
-    assert.match(imagePrompt, /真实租房卧室桌面/);
+    assert.equal(imageCalls.length, 3);
+    for (const call of imageCalls) {
+      assert.match(call.prompt, /保持 3:4 竖版构图/);
+      assert.match(call.prompt, /使用 收纳 场景的暖色生活感构图/);
+      assert.match(call.prompt, /不要水印和乱码/);
+      assert.match(call.prompt, /先把桌面上的物品全部移开/);
+    }
+    assert.match(imageCalls[0].prompt, /桌面整理先做减法/);
+    assert.match(imageCalls[1].prompt, /四步整理顺序/);
+    assert.match(imageCalls[2].prompt, /睡前复位清单/);
+    assert.ok(imageCalls[1].inputPaths.some((path) => path.endsWith('01-hero.png')));
+    assert.ok(imageCalls[2].inputPaths.some((path) => path.endsWith('01-hero.png')));
   });
 });

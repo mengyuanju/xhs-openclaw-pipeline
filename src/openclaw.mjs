@@ -153,8 +153,8 @@ export function createOpenClawClient({ entryPath, runner = spawnSync } = {}) {
       model = process.env.XHS_IMAGE_MODEL || DEFAULT_IMAGE_MODEL,
       timeoutMs = 180_000,
     }) {
-      if (typeof prompt !== 'string' || prompt.length < 10 || prompt.length > 3_000) {
-        throw new RangeError('image prompt must contain between 10 and 3000 characters');
+      if (typeof prompt !== 'string' || prompt.length < 10 || prompt.length > 8_000) {
+        throw new RangeError('image prompt must contain between 10 and 8000 characters');
       }
       if (typeof outputPath !== 'string' || outputPath.length === 0 || outputPath.length > 1_000) {
         throw new TypeError('outputPath must be a non-empty string');
@@ -204,8 +204,8 @@ export function createOpenClawClient({ entryPath, runner = spawnSync } = {}) {
       model = process.env.XHS_IMAGE_MODEL || DEFAULT_IMAGE_MODEL,
       timeoutMs = 180_000,
     }) {
-      if (typeof prompt !== 'string' || prompt.length < 10 || prompt.length > 3_000) {
-        throw new RangeError('image edit prompt must contain between 10 and 3000 characters');
+      if (typeof prompt !== 'string' || prompt.length < 10 || prompt.length > 8_000) {
+        throw new RangeError('image edit prompt must contain between 10 and 8000 characters');
       }
       if (!Array.isArray(inputPaths) || inputPaths.length < 1 || inputPaths.length > 10) {
         throw new RangeError('image edit requires between 1 and 10 input files');

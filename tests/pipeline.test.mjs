@@ -120,6 +120,10 @@ describe('content pipeline', () => {
         writeFileSync(outputPath, rawPng);
         return { outputPath, model: 'openai/gpt-image-2' };
       },
+      runImageEdit({ outputPath }) {
+        writeFileSync(outputPath, rawPng);
+        return { outputPath, model: 'openai/gpt-image-2' };
+      },
     };
 
     const result = await processNext({
@@ -145,20 +149,21 @@ describe('content pipeline', () => {
     await sharp({
       create: { width: 600, height: 800, channels: 3, background: '#d7c7b0' },
     }).png().toFile(referencePath);
-    const rawPng = await sharp({
-      create: { width: 1024, height: 1536, channels: 3, background: '#d7c7b0' },
-    }).png().toBuffer();
+    const rawImages = await Promise.all(['#d7c7b0', '#c7d7b0', '#b0c7d7', '#d7b0c7'].map((background) => sharp({
+      create: { width: 1024, height: 1536, channels: 3, background },
+    }).png().toBuffer()));
     let textPrompt;
-    let imagePrompt;
+    const imagePrompts = [];
+    const imageInputPaths = [];
     const openclaw = {
       runText({ prompt }) {
         textPrompt = prompt;
-        return { rawText: JSON.stringify(createMockPost()), model: 'fake-text' };
+        return { rawText: JSON.stringify(createMockPost(4)), model: 'fake-text' };
       },
       runImageEdit({ prompt, inputPaths, outputPath }) {
-        imagePrompt = prompt;
-        assert.deepEqual(inputPaths, [referencePath]);
-        writeFileSync(outputPath, rawPng);
+        imagePrompts.push(prompt);
+        imageInputPaths.push(inputPaths);
+        writeFileSync(outputPath, rawImages[imagePrompts.length - 1]);
         return { outputPath, model: 'fake-image-edit' };
       },
     };
@@ -180,9 +185,18 @@ describe('content pipeline', () => {
     assert.equal(result.status, 'completed', result.error);
     assert.match(textPrompt, /有参考图的玄关整理/);
     assert.match(textPrompt, /本任务最终交付 4 张图片/);
-    assert.match(imagePrompt, /生成第 1 张，共 4 张/);
+    assert.equal(imagePrompts.length, 4);
+    imagePrompts.forEach((prompt, index) => {
+      assert.match(prompt, new RegExp(`生成第 ${index + 1} 张，共 4 张`));
+      assert.match(prompt, /桌面总是收完没两天又乱/);
+    });
+    assert.deepEqual(imageInputPaths[0], [referencePath]);
+    for (const paths of imageInputPaths.slice(1)) {
+      assert.ok(paths.includes(referencePath));
+      assert.ok(paths.some((path) => path.endsWith('01-hero.png')));
+    }
     const manifest = JSON.parse(await readFile(join(result.outputDir, 'manifest.json'), 'utf8'));
     assert.equal(manifest.images.length, 4);
-    assert.equal(manifest.images[0].provider, 'openclaw-image-edit');
+    assert.ok(manifest.images.every((image) => image.provider === 'openclaw-image-edit'));
   });
 });

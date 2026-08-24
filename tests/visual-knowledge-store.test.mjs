@@ -152,11 +152,12 @@ describe('visual knowledge store', () => {
     }
   });
 
-  it('accepts a long global image rule when the final composed prompt stays within 3000 characters', () => {
+  it('accepts a full-text image prompt above the legacy 3000-character limit but below 8000', () => {
     const prompt = composeVisualImagePrompt({
-      systemPrompt: '全局规则'.repeat(550),
-      taskPrompt: '真实生活场景主图，主体居中。',
+      systemPrompt: '全局规则'.repeat(100),
+      taskPrompt: '完整正文内容与当前页面计划'.repeat(250),
     });
-    assert.ok(prompt.length < 3_000);
+    assert.ok(prompt.length > 3_000);
+    assert.ok(prompt.length < 8_000);
   });
 });

@@ -327,9 +327,9 @@ export function composeVisualImagePrompt({ systemPrompt, visualReference, variab
     const negative = optionalText(visualReference.negativePrompt, 'visual negative prompt', 600);
     if (negative) sections.push(`负面约束：\n${renderPrompt(negative, variables)}`);
   }
-  sections.push(requiredText(taskPrompt, 'task image prompt', 1_000));
+  sections.push(requiredText(taskPrompt, 'task image prompt', 4_000));
   const prompt = sections.filter(Boolean).join('\n\n');
-  if (prompt.length > 3_000) throw new RangeError('composed image prompt cannot exceed 3000 characters');
+  if (prompt.length > 8_000) throw new RangeError('composed image prompt cannot exceed 8000 characters');
   return prompt;
 }
 

@@ -129,3 +129,31 @@
 - 当前：自动化测试、构建和真实 HTTP 流程通过；本机浏览器控制层拦截 localhost，未取得浏览器截图。
 - Verify：无秘密、无高危依赖、无跳过测试、现有流程无回归。
 - Dependencies：Tasks 14–17。
+
+## Task 19: 全量图片计划契约
+
+- [x] `imagePlan` 数量严格等于任务的 3–5 张配置。
+- [x] 每张包含独立职责、信息要点和非空图像模型提示词。
+- Verify：3/5 张合法，数量不符、首项非 hero、空提示词均被契约测试拒绝。
+- Dependencies：Task 18。
+
+## Task 20: 逐图文本驱动提示词
+
+- [x] 每张最终提示词包含生成后的完整标题/正文和本页计划。
+- [x] 每张叠加任务固定图片规则及锁定视觉配方，限制总长度 8,000 字符。
+- Verify：Fake OpenClaw 捕获的所有提示词包含正文和对应页要点。
+- Dependencies：Task 19。
+
+## Task 21: 全模型图集渲染
+
+- [x] Live 模式每张交付图调用一次文生图或图生图。
+- [x] 第二张起使用首图作风格参考，但生成新页面；Sharp 只做 1080×1440 规范化。
+- Verify：3/5 张调用次数、参考路径、模型来源、尺寸和唯一文件测试。
+- Dependencies：Task 20。
+
+## Task 22: 提示词发布与质量门
+
+- [x] 发布新的文本与图片系统提示词版本，历史任务快照不变。
+- [x] 定向测试、全量测试、类型检查、构建和差异审查完成。
+- Verify：`npm run prompts:install-rules`、`npm test`、`npm run typecheck`、`npm run build`。
+- Dependencies：Tasks 19–21。

@@ -14,8 +14,8 @@
 4. 标题和正文都不得使用 emoji；iconDictionary 必须为空对象。
 5. 真人感来自具体物件、动作、位置、状态、失败表现和选择规则。没有用户提供的真实经历时，不得使用“我亲测”“我用了几个月”“本人购买”“我家一直”等证言。
 6. 不能虚构实测数据、价格、时间、地点、用户反馈或来源。未提供平台样本时，sampleEvidence 必须为 `not_provided`，expressionReferences 必须为空数组。
-7. 本任务最终交付 {{DELIVERY_IMAGE_COUNT}} 张图片。你仍只输出3张基础策划且顺序固定：`hero`、`steps`、`checklist`；程序会从基础策划扩展到目标数量。hero.prompt 用于生成无人物、无文字、无Logo、无水印的真实生活方式主图；另外两张由本地程序排版，prompt 留空。
-8. 图片标题不超过18字，副标题不超过30字，每张2–5个短要点。图片与正文必须一致，不添加正文没有的新事实。
+7. 本任务最终交付 {{DELIVERY_IMAGE_COUNT}} 张图片，imagePlan 必须恰好包含 {{DELIVERY_IMAGE_COUNT}} 项。第一项 kind 必须为 `hero`；其余项从 `steps`、`checklist`、`comparison`、`detail`、`summary` 中按正文内容选择。不得用同一页计划循环补足数量。
+8. 每张图片都由图像模型生成。通读标题和完整正文后，按正文逻辑顺序规划每一页；每项 prompt 都必须非空，明确该页场景、主体、构图、信息层级和给定文字。图片标题不超过18字，副标题不超过30字，每张2–5个短要点。图片与正文必须一致，只能展示给定原文，不添加正文没有的新事实、数据或建议。
 9. sources 只填写输入明确提供且直接支持内容的公开来源，否则为空数组。
 10. fabricatedExperience 必须为 false；不确定的事实放入 unverifiedClaims，风险放入 riskFlags。
 
@@ -41,9 +41,7 @@
   "body": "string",
   "tags": ["#标签"],
   "imagePlan": [
-    { "kind": "hero", "headline": "string", "subtitle": "string", "bullets": ["string"], "prompt": "string" },
-    { "kind": "steps", "headline": "string", "subtitle": "string", "bullets": ["string"], "prompt": "" },
-    { "kind": "checklist", "headline": "string", "subtitle": "string", "bullets": ["string"], "prompt": "" }
+    { "kind": "hero | steps | checklist | comparison | detail | summary", "headline": "string", "subtitle": "string", "bullets": ["string"], "prompt": "string" }
   ],
   "sources": [],
   "expressionReferences": [],

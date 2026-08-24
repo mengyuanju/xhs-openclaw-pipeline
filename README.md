@@ -85,9 +85,9 @@ npm run prompts:install-rules
 - `PROMPT_ONLY`：只保存结构化配方和原图 SHA-256；分析临时目录会被删除。
 - `IMAGE_AND_PROMPT`：保存规范化 PNG 和配方；仅允许 `SELF_OWNED` 或 `LICENSED`。
 
-Worker 首次处理任务时，从已发布的 `MODEL_IMAGE` 配方中按分类、标签和质量分选择一条并锁定版本。最终主图提示词按“全局图片规则 + 视觉配方 + 当前图片内容”组合；授权保留图会进入受控 `referenceImagePaths`。重试继续使用同一版本，知识库为空时保持原生成流程。
+Worker 首次处理任务时，从已发布的 `MODEL_IMAGE` 配方中按分类、标签和质量分选择一条并锁定版本。每张图片的最终提示词按“全局图片规则 + 视觉配方 + 已生成的完整标题/正文 + 当前页计划”组合；授权保留图会进入受控 `referenceImagePaths`。重试继续使用同一版本，知识库为空时只省略配方部分。
 
-视觉图片默认存放在 `data/knowledge/`，可用 `XHS_KNOWLEDGE_ROOT` 覆盖；视觉分析模型可用 `XHS_VISION_MODEL` 覆盖。当前只影响由图片模型生成的第一张主图，本地 Sharp 信息卡布局消费留到后续版本。视觉分析会产生真实模型调用成本，不应在未配置预算和限流时批量执行。
+视觉图片默认存放在 `data/knowledge/`，可用 `XHS_KNOWLEDGE_ROOT` 覆盖；视觉分析模型可用 `XHS_VISION_MODEL` 覆盖。全部 3–5 张交付图都会按顺序调用图片模型；第二张起使用第一张规范化图片作为风格参考，Sharp 只负责统一裁切为 1080×1440 PNG。真实模式每个任务会产生 3–5 次图片模型调用，不应在未配置预算和限流时批量执行。
 
 ## Worker
 

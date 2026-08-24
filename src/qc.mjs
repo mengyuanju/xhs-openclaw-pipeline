@@ -28,6 +28,13 @@ export async function evaluateDelivery({ post, images, outputDir, mode, expected
     passed: images.length === expectedImageCount,
     observed: { actual: images.length, expected: expectedImageCount },
   });
+  const nonModelImages = images.filter((image) =>
+    !['openclaw', 'openclaw-image-edit'].includes(image.provider));
+  checks.push({
+    id: 'model_image_sources',
+    passed: mode !== 'live' || nonModelImages.length === 0,
+    observed: { providers: images.map((image) => image.provider ?? null) },
+  });
   checks.push({ id: 'fabricated_experience', passed: post.fabricatedExperience === false });
   checks.push({ id: 'risk_flags', passed: post.riskFlags.length === 0 });
   checks.push({ id: 'unverified_claims', passed: post.unverifiedClaims.length === 0 });
@@ -84,6 +91,13 @@ export async function evaluateDelivery({ post, images, outputDir, mode, expected
       severity: 'blocking',
       label: '配图-重复配图',
       evidence: `交付图片 ${imageHashes.length} 张，其中仅 ${uniqueImageHashes.size} 个不同文件内容。`,
+    });
+  }
+  if (mode === 'live' && nonModelImages.length > 0) {
+    issues.push({
+      severity: 'blocking',
+      label: '图片来源-非模型生成',
+      evidence: `Live 交付中有 ${nonModelImages.length} 张图片不是由图像模型生成。`,
     });
   }
 

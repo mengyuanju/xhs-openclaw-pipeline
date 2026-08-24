@@ -3,7 +3,44 @@ import { describe, it } from 'node:test';
 
 import { buildPostPrompt, parsePostOutput } from '../src/post-contract.mjs';
 
-function validPost() {
+function validPost(imageCount = 3) {
+  const imagePlan = [
+    {
+      kind: 'hero',
+      headline: '桌面整理先做减法',
+      subtitle: '低成本也能保持清爽',
+      bullets: ['先清空', '再分区', '最后复位'],
+      prompt: '真实租房卧室桌面，整理前后对照感，暖色自然光，展示本页给定标题和要点。',
+    },
+    {
+      kind: 'steps',
+      headline: '四步整理顺序',
+      subtitle: '别从买收纳盒开始',
+      bullets: ['清空桌面', '按频率分类', '给高频物品定位置', '设置复位区'],
+      prompt: '按正文顺序呈现四步桌面整理过程，画面清晰区分每一步，仅展示给定步骤文字。',
+    },
+    {
+      kind: 'checklist',
+      headline: '每天一分钟复位',
+      subtitle: '睡前检查这三件事',
+      bullets: ['垃圾离桌', '物品归位', '明天用品预留'],
+      prompt: '呈现睡前一分钟复位检查场景，突出三个给定检查项，保持与封面一致的暖色生活感。',
+    },
+    {
+      kind: 'comparison',
+      headline: '整理前后差在哪',
+      subtitle: '位置比容器更重要',
+      bullets: ['高频物品伸手可取', '低频物品移入抽屉'],
+      prompt: '生成整理前后对比页，突出高频和低频物品位置差异，只使用正文已有结论和给定文字。',
+    },
+    {
+      kind: 'summary',
+      headline: '一张图记住复位法',
+      subtitle: '每天照着做即可',
+      bullets: ['清垃圾', '放回原位', '预留明日用品'],
+      prompt: '生成整篇方法总结页，用三个给定动作形成清晰信息层级，不新增正文之外的建议或数据。',
+    },
+  ].slice(0, imageCount);
   return {
     taskJudgement: {
       admitted: true,
@@ -23,29 +60,7 @@ function validPost() {
     title: '租房桌面整理，先别急着买收纳盒',
     body: `${'先把桌面上与当天无关的东西全部移开，再按每天使用、每周使用和低频使用分三组。'.repeat(8)}\n\n先清空再分类。\n给高频物品固定位置。\n不要先买盒子再找用途。`,
     tags: ['#桌面整理', '#租房生活', '#收纳思路'],
-    imagePlan: [
-      {
-        kind: 'hero',
-        headline: '桌面整理先做减法',
-        subtitle: '低成本也能保持清爽',
-        bullets: ['先清空', '再分区', '最后复位'],
-        prompt: '真实租房卧室桌面，整理前后对照感，暖色自然光，无人物，无文字，无标识。',
-      },
-      {
-        kind: 'steps',
-        headline: '四步整理顺序',
-        subtitle: '别从买收纳盒开始',
-        bullets: ['清空桌面', '按频率分类', '给高频物品定位置', '设置复位区'],
-        prompt: '',
-      },
-      {
-        kind: 'checklist',
-        headline: '每天一分钟复位',
-        subtitle: '睡前检查这三件事',
-        bullets: ['垃圾离桌', '物品归位', '明天用品预留'],
-        prompt: '',
-      },
-    ],
+    imagePlan,
     sources: [],
     expressionReferences: [],
     riskFlags: [],
@@ -87,11 +102,38 @@ describe('post output contract', () => {
     assert.throws(() => parsePostOutput(JSON.stringify(input)), /fabricated experience/i);
   });
 
-  it('requires exactly one hero, one steps card and one checklist card', () => {
-    const input = validPost();
-    input.imagePlan[2].kind = 'steps';
+  it('accepts one explicit model image plan per requested delivery image', () => {
+    const input = validPost(5);
 
-    assert.throws(() => parsePostOutput(JSON.stringify(input)), /imagePlan.*hero.*steps.*checklist/i);
+    const post = parsePostOutput(JSON.stringify(input), { imageCount: 5 });
+
+    assert.equal(post.imagePlan.length, 5);
+    assert.ok(post.imagePlan.every((image) => image.prompt.length >= 10));
+  });
+
+  it('rejects a plan count that differs from the requested delivery image count', () => {
+    const input = validPost(3);
+
+    assert.throws(
+      () => parsePostOutput(JSON.stringify(input), { imageCount: 5 }),
+      /imagePlan.*5/i,
+    );
+  });
+
+  it('requires the first plan to be the hero and every page prompt to be non-empty', () => {
+    const wrongFirst = validPost();
+    wrongFirst.imagePlan[0].kind = 'steps';
+    assert.throws(
+      () => parsePostOutput(JSON.stringify(wrongFirst), { imageCount: 3 }),
+      /imagePlan.*first.*hero/i,
+    );
+
+    const emptyPrompt = validPost();
+    emptyPrompt.imagePlan[1].prompt = '';
+    assert.throws(
+      () => parsePostOutput(JSON.stringify(emptyPrompt), { imageCount: 3 }),
+      /imagePlan\[1\].*prompt/i,
+    );
   });
 
   it('rejects emoji in the title', () => {
@@ -152,6 +194,8 @@ describe('post prompt', () => {
 
     assert.match(prompt, /围绕 小户型玄关收纳，写给 租房用户，分类是 收纳/);
     assert.match(prompt, /本任务最终交付 5 张图片/);
+    assert.match(prompt, /imagePlan 必须恰好包含 5 项/);
+    assert.match(prompt, /每张图片都由图像模型生成/);
     assert.match(prompt, /只输出一个合法 JSON 对象/);
   });
 });

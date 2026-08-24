@@ -25,6 +25,8 @@ describe('runtime default prompts', () => {
     assert.match(prompt.content, /主需关键词/);
     assert.match(prompt.content, /图片内容.*必须与正文一致/);
     assert.match(prompt.content, /文案从初稿到终稿/);
+    assert.match(prompt.content, /imagePlan 必须按正文逻辑逐张规划全部 \{\{imageCount\}\} 张图片/);
+    assert.match(prompt.content, /每张都提供非空模型提示词/);
     assert.doesNotMatch(prompt.content, /\[R\d{3}\]/);
     assert.match(prompt.content, /标题和正文.*(?:禁止|不得)使用 emoji/);
     assert.doesNotMatch(prompt.content, /3[–-]6个.*图标/);
@@ -41,6 +43,9 @@ describe('runtime default prompts', () => {
       assert.match(prompt.content, /物体和文字边缘清晰/);
       assert.doesNotMatch(prompt.content, /\[R\d{3}\]/);
     }
+    assert.match(image.content, /整套图片均由图像模型逐张生成/);
+    assert.match(image.content, /后续图片引用第一张/);
+    assert.doesNotMatch(image.content, /本地模板/);
     assert.match(edit.content, /\{\{reviewInstruction\}\}/);
   });
 });
