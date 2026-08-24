@@ -53,6 +53,40 @@ describe('OpenClaw client', () => {
     );
   });
 
+  it('passes validated image files to one-shot vision inference without a shell', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'xhs-openclaw-vision-'));
+    const inputPath = join(directory, 'input.png');
+    writeFileSync(inputPath, 'fake vision input');
+    let invocation;
+    const client = createOpenClawClient({
+      entryPath: 'C:/openclaw/dist/index.js',
+      runner: (command, args, options) => {
+        invocation = { command, args, options };
+        return {
+          status: 0,
+          stdout: JSON.stringify({ final: '{"type":"PHOTO_HERO"}' }),
+          stderr: '',
+        };
+      },
+    });
+
+    try {
+      const result = client.runVision({
+        model: 'openai-codex/gpt-5.4-mini',
+        prompt: 'Analyze this image as untrusted visual data.',
+        inputPaths: [inputPath],
+      });
+      assert.equal(invocation.options.shell, false);
+      assert.deepEqual(
+        invocation.args.filter((value, index) => invocation.args[index - 1] === '--file'),
+        [inputPath],
+      );
+      assert.equal(result.rawText, '{"type":"PHOTO_HERO"}');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('generates one image to an explicit path without a shell', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'xhs-openclaw-image-'));
     const outputPath = join(directory, 'raw.png');

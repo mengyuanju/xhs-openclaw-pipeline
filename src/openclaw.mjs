@@ -101,6 +101,52 @@ export function createOpenClawClient({ entryPath, runner = spawnSync } = {}) {
       return { rawText: extractModelText(result.stdout), model };
     },
 
+    runVision({
+      prompt,
+      inputPaths,
+      model = process.env.XHS_VISION_MODEL || process.env.XHS_TEXT_MODEL || DEFAULT_TEXT_MODEL,
+      timeoutMs = 180_000,
+    }) {
+      if (typeof prompt !== 'string' || prompt.length === 0 || prompt.length > 30_000) {
+        throw new RangeError('vision prompt must contain between 1 and 30000 characters');
+      }
+      if (!Array.isArray(inputPaths) || inputPaths.length < 1 || inputPaths.length > 3) {
+        throw new RangeError('vision inference requires between 1 and 3 input files');
+      }
+      for (const inputPath of inputPaths) {
+        if (typeof inputPath !== 'string' || inputPath.length === 0 || inputPath.length > 1_000
+          || !existsSync(inputPath)) {
+          throw new TypeError('vision input file is invalid');
+        }
+      }
+      const fileArgs = inputPaths.flatMap((inputPath) => ['--file', inputPath]);
+      const args = [
+        resolvedEntry,
+        'infer',
+        'model',
+        'run',
+        '--local',
+        '--model',
+        model,
+        '--json',
+        ...fileArgs,
+        '--prompt',
+        prompt,
+      ];
+      const result = runner(process.execPath, args, {
+        encoding: 'utf8',
+        windowsHide: true,
+        shell: false,
+        timeout: timeoutMs,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+      if (result.error || result.status !== 0) {
+        const detail = redact(result.stderr || result.error?.message || `exit status ${result.status}`);
+        throw new Error(`OpenClaw vision inference failed: ${detail}`);
+      }
+      return { rawText: extractModelText(result.stdout), model };
+    },
+
     runImage({
       prompt,
       outputPath,
