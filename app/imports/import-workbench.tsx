@@ -6,6 +6,7 @@ import { useState, type FormEvent } from 'react';
 import { apiRequest } from '../components/api-client';
 import { StatusPill } from '../components/status-pill';
 import { DemandScreeningPanel } from './demand-screening-panel';
+import { QueueGenerationPanel } from './queue-generation-panel';
 
 function commitButtonLabel(batch: any) {
   if (batch.status === 'COMMITTED') return '已写入队列';
@@ -96,6 +97,7 @@ export function ImportWorkbench({ initialBatch = null }: { initialBatch?: any })
           <div><h2>3. 确认入队</h2><p className="subtle">仅强需和中需进入生产；弱需、无需及结构错误行保留在批次记录中。</p></div>
           <button className="button primary" type="button" disabled={busy || batch.status === 'COMMITTED' || batch.pendingScreeningRows > 0} onClick={commit}>{commitButtonLabel(batch)}</button>
         </section>
+        {batch.status === 'COMMITTED' && <QueueGenerationPanel maxTasks={batch.admittedRows} />}
       </>}
     </div>
   );
