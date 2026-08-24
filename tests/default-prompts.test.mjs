@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
+import { isAbsolute } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { DEFAULT_PROMPTS } from '../src/admin/default-prompts.mjs';
+import { DEFAULT_PROMPTS, promptFilePath } from '../src/admin/default-prompts.mjs';
 import { normalizePromptContent } from '../src/admin/prompt-service.mjs';
 
 describe('source-traceable default prompts', () => {
   it('provides one valid prompt for each runtime prompt kind', () => {
+    const textPromptPath = promptFilePath('text-system.md');
+    assert.equal(typeof textPromptPath, 'string');
+    assert.equal(isAbsolute(textPromptPath), true);
     assert.deepEqual(
       DEFAULT_PROMPTS.map(({ kind }) => kind).sort(),
       ['IMAGE_EDIT_SYSTEM', 'IMAGE_SYSTEM', 'TEXT_SYSTEM'],

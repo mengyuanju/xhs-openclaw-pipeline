@@ -1,7 +1,12 @@
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+export function promptFilePath(name) {
+  return resolve(process.cwd(), 'prompts', name);
+}
 
 function promptFile(name) {
-  return readFileSync(new URL(`../../prompts/${name}`, import.meta.url), 'utf8').trim();
+  return readFileSync(promptFilePath(name), 'utf8').trim();
 }
 
 export const DEFAULT_PROMPTS = [
