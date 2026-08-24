@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const MAX_WEB_WORKER_TASKS = 20;
 const DEFAULT_CLI_PATH = fileURLToPath(new URL('../cli.mjs', import.meta.url));
-const DEFAULT_PROJECT_ROOT = fileURLToPath(new URL('../..', import.meta.url));
+const DEFAULT_PROJECT_ROOT = process.cwd();
 
 export class WorkerRunConflictError extends Error {
   constructor(message = '已有网页 Worker 正在运行') {
