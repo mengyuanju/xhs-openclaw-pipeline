@@ -170,6 +170,24 @@ test('dashboard prioritizes actionable production queues over a demo workflow', 
   assert.match(card, /data-slot="card"/);
 });
 
+test('task center separates batch context, filters, and result operations', async () => {
+  const [tasksPage, styles] = await Promise.all([
+    readFile(projectFile('app/tasks/page.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+  ]);
+
+  assert.match(tasksPage, /className="tasks-command-header"/);
+  assert.match(tasksPage, /className="tasks-context-grid"/);
+  assert.match(tasksPage, /className="tasks-filter-panel"/);
+  assert.match(tasksPage, /className="tasks-filter-grid"/);
+  assert.match(tasksPage, /className="tasks-result-header"/);
+  assert.match(tasksPage, /当前筛选/);
+  assert.match(tasksPage, /可批量导出/);
+  assert.match(styles, /\.tasks-context-grid\s*\{/);
+  assert.match(styles, /\.tasks-filter-grid\s*\{/);
+  assert.match(styles, /\.tasks-result-header\s*\{/);
+});
+
 test('Excel import exposes demand screening as a required step before queue commit', async () => {
   const [importWorkbench, demandScreening, demandRules] = await Promise.all([
     readFile(projectFile('app/imports/import-workbench.tsx'), 'utf8'),
@@ -357,6 +375,8 @@ test('task list supports accessible selection and one-file batch export', async 
   assert.match(batchExport, /URL\.createObjectURL/);
   assert.match(batchExport, /aria-live="polite"/);
   assert.match(styles, /\.batch-export-toolbar/);
+  assert.match(styles, /\.batch-export-toolbar\s*\{[^}]*flex-wrap:\s*nowrap/);
+  assert.match(styles, /\.batch-export-guidance[^}]*flex-basis:\s*auto/);
   assert.match(route, /MAX_BATCH_EXPORT_TASKS/);
   assert.match(route, /maxBytes: 4 \* 1024/);
   assert.match(route, /'Cache-Control': 'private, no-store'/);
