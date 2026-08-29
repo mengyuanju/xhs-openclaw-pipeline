@@ -22,15 +22,44 @@ test('mobile navigation stays compact and exposes the active page', async () => 
   ]);
 
   assert.match(navigation, /aria-current=\{active \? 'page' : undefined\}/);
-  assert.match(styles, /@media \(max-width: 760px\)[\s\S]*\.sidebar \{[\s\S]*grid-template-columns: 1fr auto/);
-  assert.match(styles, /@media \(max-width: 760px\)[\s\S]*\.nav-item \{[^}]*white-space: nowrap/);
+  assert.match(navigation, /aria-expanded=\{isMenuOpen\}/);
+  assert.match(navigation, /aria-controls="primary-navigation"/);
+  assert.match(styles, /@media \(max-width: 760px\)[\s\S]*\.nav-list\[data-open="true"\] \{ display: grid/);
+  assert.match(styles, /@media \(max-width: 760px\)[\s\S]*\.nav-group-items \{[^}]*grid-template-columns: repeat\(2/);
 });
 
-test('visual knowledge is the final item in the primary navigation', async () => {
-  const navigation = await readFile(projectFile('app/components/side-nav.tsx'), 'utf8');
-  const itemsSource = navigation.slice(navigation.indexOf('const items = ['), navigation.indexOf('];'));
+test('application shell groups product areas and keeps page context visible', async () => {
+  const [frame, navigation, topbar, styles, packageJson] = await Promise.all([
+    readFile(projectFile('app/components/app-frame.tsx'), 'utf8'),
+    readFile(projectFile('app/components/side-nav.tsx'), 'utf8'),
+    readFile(projectFile('app/components/app-topbar.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+    readFile(projectFile('package.json'), 'utf8'),
+  ]);
 
-  assert.equal(itemsSource.lastIndexOf("href: '/knowledge'"), itemsSource.lastIndexOf('href:'));
+  assert.match(frame, /<AppTopbar\s*\/>/);
+  assert.match(frame, /id="main-content"/);
+  assert.match(navigation, /const navigationGroups[^=]*= \[/);
+  for (const group of ['总览', '内容生产', '内容资产', '运营与系统']) {
+    assert.match(navigation, new RegExp(`label: '${group}'`));
+  }
+  assert.match(navigation, /aria-label="切换主导航"/);
+  assert.match(navigation, /aria-expanded=\{isMenuOpen\}/);
+  assert.match(topbar, /const routeMeta/);
+  assert.match(topbar, /aria-label="当前位置"/);
+  assert.match(topbar, /href="\/imports"/);
+  assert.match(styles, /\.app-workspace\s*\{/);
+  assert.match(styles, /\.app-topbar\s*\{/);
+  assert.match(styles, /\.skip-link\s*\{/);
+  assert.match(packageJson, /"lucide-react"/);
+});
+
+test('visual knowledge remains grouped with reusable content assets', async () => {
+  const navigation = await readFile(projectFile('app/components/side-nav.tsx'), 'utf8');
+
+  assert.match(navigation, /label: '内容资产',[\s\S]*href: '\/prompts'[\s\S]*href: '\/knowledge'/);
+  assert.ok(navigation.indexOf("href: '/prompts'") < navigation.indexOf("href: '/knowledge'"));
+  assert.ok(navigation.indexOf("href: '/knowledge'") < navigation.indexOf("href: '/analytics'"));
 });
 
 test('primary section pages omit visible display headlines while keeping an accessible page name', async () => {
