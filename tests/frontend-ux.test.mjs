@@ -150,6 +150,26 @@ test('dashboard and import tables use the same readable mobile card treatment', 
   assert.match(demandScreening, /data-label="结构校验"/);
 });
 
+test('dashboard prioritizes actionable production queues over a demo workflow', async () => {
+  const [dashboard, styles, card] = await Promise.all([
+    readFile(projectFile('app/page.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+    readFile(projectFile('components/ui/card.tsx'), 'utf8'),
+  ]);
+
+  assert.match(dashboard, /className="dashboard-overview"/);
+  assert.match(dashboard, /className="dashboard-attention-list"/);
+  assert.match(dashboard, /需要处理/);
+  assert.match(dashboard, /href: '\/tasks\?reviewStatus=WAITING_REVIEW'/);
+  assert.match(dashboard, /href="\/imports"/);
+  assert.match(dashboard, /dashboard-metric-card/);
+  assert.match(dashboard, /<Card/);
+  assert.doesNotMatch(dashboard, /标准生产流/);
+  assert.match(styles, /\.dashboard-attention-item\s*\{/);
+  assert.match(styles, /\.dashboard-metric-icon\s*\{/);
+  assert.match(card, /data-slot="card"/);
+});
+
 test('Excel import exposes demand screening as a required step before queue commit', async () => {
   const [importWorkbench, demandScreening, demandRules] = await Promise.all([
     readFile(projectFile('app/imports/import-workbench.tsx'), 'utf8'),

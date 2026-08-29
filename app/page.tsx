@@ -1,4 +1,15 @@
+import {
+  ArrowRight,
+  CheckCircle2,
+  CircleAlert,
+  Clock3,
+  Files,
+  ListChecks,
+  LoaderCircle,
+} from 'lucide-react';
 import Link from 'next/link';
+
+import { Card, CardContent } from '@/components/ui/card';
 
 import { StatusPill } from './components/status-pill';
 import { withAdminStore } from '../src/admin/runtime.mjs';
@@ -11,30 +22,54 @@ export default function DashboardPage() {
     recent: store.listTasks({ page: 1, pageSize: 6 }).data,
   })) as any;
 
+  const metrics = [
+    { label: '全部任务', value: stats.tasks.total, detail: '已进入生产队列', icon: Files, tone: 'neutral' },
+    { label: '生产中', value: stats.tasks.processing, detail: `${stats.tasks.pending} 条等待生成`, icon: LoaderCircle, tone: 'blue' },
+    { label: '待人工审核', value: stats.reviews.waiting, detail: `${stats.reviews.rejected} 条需要返工`, icon: ListChecks, tone: 'amber' },
+    { label: '已通过', value: stats.reviews.approved, detail: '可进入交付导出', icon: CheckCircle2, tone: 'green' },
+  ];
+
+  const attentionItems = [
+    { label: '等待人工审核', count: stats.reviews.waiting, href: '/tasks?reviewStatus=WAITING_REVIEW', icon: ListChecks, tone: 'amber' },
+    { label: '生成失败任务', count: stats.tasks.failed, href: '/tasks?status=failed', icon: CircleAlert, tone: 'red' },
+    { label: '待确认导入批次', count: stats.imports.preview, href: '/imports', icon: Clock3, tone: 'neutral' },
+  ];
+
   return (
     <>
-      <header className="page-header">
+      <section className="dashboard-overview">
         <div>
-          <span className="eyebrow">Production overview</span>
+          <span className="eyebrow">Production command center</span>
           <h1 className="sr-only">工作台</h1>
-          <p className="subtle">选题入队、OpenClaw 生成、人工审核，所有关键状态集中在这里。</p>
+          <h2>内容生产总览</h2>
+          <p className="subtle">先处理阻塞项，再查看最近任务；所有入口都回到同一条生产链路。</p>
         </div>
         <div className="header-actions">
-          <Link className="button" href="/prompts">调整提示词</Link>
+          <Link className="button" href="/tasks">进入任务中心</Link>
           <Link className="button primary" href="/imports">导入新选题</Link>
         </div>
-      </header>
-
-      <section className="stats-grid" aria-label="任务统计">
-        <article className="stat-card accent"><span className="label">全部任务</span><strong>{stats.tasks.total}</strong><small>已进入生产队列</small></article>
-        <article className="stat-card"><span className="label">等待生成</span><strong>{stats.tasks.pending}</strong><small>{stats.tasks.processing} 条正在生成</small></article>
-        <article className="stat-card"><span className="label">待人工审核</span><strong>{stats.reviews.waiting}</strong><small>{stats.reviews.approved} 条已通过</small></article>
-        <article className="stat-card"><span className="label">导入批次</span><strong>{stats.imports.committed}</strong><small>{stats.imports.preview} 个批次待确认</small></article>
       </section>
 
-      <section className="two-column">
-        <article className="panel">
-          <div className="panel-head"><h2>最近任务</h2><Link className="button small" href="/tasks">查看全部</Link></div>
+      <section className="stats-grid dashboard-metrics" aria-label="生产指标">
+        {metrics.map((metric) => {
+          const Icon = metric.icon;
+          return (
+            <Card className="dashboard-metric-card" key={metric.label}>
+              <CardContent className="dashboard-metric-content">
+                <div className={`dashboard-metric-icon tone-${metric.tone}`}><Icon aria-hidden="true" size={17} /></div>
+                <div><span className="label">{metric.label}</span><strong>{metric.value}</strong><small>{metric.detail}</small></div>
+              </CardContent>
+            </Card>
+          );
+        })}
+      </section>
+
+      <section className="dashboard-main-grid">
+        <article className="panel dashboard-recent-panel">
+          <div className="panel-head">
+            <div><span className="section-kicker">Latest production</span><h2>最近任务</h2></div>
+            <Link className="button small" href="/tasks">查看全部</Link>
+          </div>
           {recent.length === 0 ? (
             <div className="empty-state">还没有任务，从 Excel 导入第一组选题。</div>
           ) : (
@@ -54,13 +89,32 @@ export default function DashboardPage() {
           )}
         </article>
 
-        <aside className="panel">
-          <div className="panel-head"><h2>标准生产流</h2></div>
-          <div className="steps">
-            <div className="step"><span className="step-index">01</span><div><strong>Excel 预检与模型检测</strong><p>本地识别格式错误，OpenClaw 自动判定需求强度，人工复核后才入队。</p></div></div>
-            <div className="step"><span className="step-index">02</span><div><strong>OpenClaw 生成</strong><p>任务固定使用入队时发布的提示词版本，避免中途漂移。</p></div></div>
-            <div className="step"><span className="step-index">03</span><div><strong>人工定稿</strong><p>文案与图片均保留历史版本，通过后才成为可交付内容。</p></div></div>
-          </div>
+        <aside className="dashboard-rail">
+          <Card className="dashboard-attention-panel">
+            <div className="dashboard-card-heading"><div><span className="section-kicker">Action queue</span><h2>需要处理</h2></div></div>
+            <CardContent className="dashboard-attention-list">
+              {attentionItems.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <Link className="dashboard-attention-item" href={item.href} key={item.label}>
+                    <span className={`dashboard-attention-icon tone-${item.tone}`}><Icon aria-hidden="true" size={16} /></span>
+                    <span><strong>{item.label}</strong><small>{item.count === 0 ? '当前没有阻塞项' : `${item.count} 项等待处理`}</small></span>
+                    <b>{item.count}</b>
+                    <ArrowRight aria-hidden="true" size={15} />
+                  </Link>
+                );
+              })}
+            </CardContent>
+          </Card>
+
+          <Card className="dashboard-flow-panel">
+            <div className="dashboard-card-heading"><div><span className="section-kicker">Production flow</span><h2>生产链路</h2></div></div>
+            <CardContent className="dashboard-flow-list">
+              <Link href="/imports"><span>01</span><div><strong>选题与需求筛选</strong><small>导入、预检、确认入队</small></div><ArrowRight aria-hidden="true" size={14} /></Link>
+              <Link href="/tasks"><span>02</span><div><strong>生成与人工审核</strong><small>查看进度、修订与返工</small></div><ArrowRight aria-hidden="true" size={14} /></Link>
+              <Link href="/analytics"><span>03</span><div><strong>交付与效果复盘</strong><small>导出内容、观察质量指标</small></div><ArrowRight aria-hidden="true" size={14} /></Link>
+            </CardContent>
+          </Card>
         </aside>
       </section>
     </>
