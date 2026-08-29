@@ -14,12 +14,26 @@ import {
   hashPrompt,
   normalizePromptContent,
 } from './prompt-service.mjs';
+import { readTaskTimingStats } from './task-timing.mjs';
+import {
+  createProductionSettingsStore,
+  initializeProductionSettingsSchema,
+} from './production-settings-store.mjs';
+import { createProductionStatisticsStore } from './production-statistics.mjs';
 
 const REVIEW_STATUSES = ['NOT_READY', 'WAITING_REVIEW', 'APPROVED', 'REJECTED'];
 const TASK_STATUSES = ['pending', 'processing', 'completed', 'failed'];
 const IMPORT_STATUSES = ['PREVIEW', 'COMMITTED'];
 const DEMAND_LEVELS = ['STRONG', 'MEDIUM', 'WEAK', 'NONE'];
 const SCREENING_SOURCES = ['EXCEL', 'MANUAL', 'OPENCLAW'];
+const ASSET_ALIGNMENT_STATUSES = [
+  'NOT_APPLICABLE',
+  'UNVERIFIED',
+  'PASSED',
+  'FAILED',
+  'STALE',
+  'MANUAL_REQUIRED',
+];
 
 function nowIso() {
   return new Date().toISOString();
@@ -80,6 +94,13 @@ function rowToAsset(row) {
     height: Number(row.height),
     sha256: row.sha256,
     source: row.source,
+    sourceTextRevisionId: row.source_text_revision_id === null
+      ? null
+      : Number(row.source_text_revision_id),
+    pageIndex: row.page_index === null ? null : Number(row.page_index),
+    visualPlanSha256: row.visual_plan_sha256,
+    alignmentStatus: row.alignment_status,
+    alignmentResult: parseJson(row.alignment_result_json, {}),
     createdAt: row.created_at,
   };
 }
@@ -295,6 +316,12 @@ function initializeAdminSchema(db) {
       height INTEGER NOT NULL CHECK (height > 0),
       sha256 TEXT NOT NULL,
       source TEXT NOT NULL,
+      source_text_revision_id INTEGER REFERENCES text_revisions(id) ON DELETE SET NULL,
+      page_index INTEGER CHECK (page_index BETWEEN 1 AND 5),
+      visual_plan_sha256 TEXT,
+      alignment_status TEXT NOT NULL DEFAULT 'UNVERIFIED'
+        CHECK (alignment_status IN ('NOT_APPLICABLE', 'UNVERIFIED', 'PASSED', 'FAILED', 'STALE', 'MANUAL_REQUIRED')),
+      alignment_result_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL
     ) STRICT;
     CREATE INDEX IF NOT EXISTS assets_task_idx ON assets(task_id, id DESC);
@@ -340,6 +367,20 @@ function initializeAdminSchema(db) {
   initializeImageEditSchema(db);
   initializeGenerationSchema(db);
   initializeVisualKnowledgeSchema(db);
+  initializeProductionSettingsSchema(db);
+  const assetColumns = new Set(
+    db.prepare('PRAGMA table_info(assets)').all().map((column) => column.name),
+  );
+  const provenanceColumns = [
+    ['source_text_revision_id', 'INTEGER REFERENCES text_revisions(id) ON DELETE SET NULL'],
+    ['page_index', 'INTEGER CHECK (page_index BETWEEN 1 AND 5)'],
+    ['visual_plan_sha256', 'TEXT'],
+    ['alignment_status', "TEXT NOT NULL DEFAULT 'UNVERIFIED' CHECK (alignment_status IN ('NOT_APPLICABLE', 'UNVERIFIED', 'PASSED', 'FAILED', 'STALE', 'MANUAL_REQUIRED'))"],
+    ['alignment_result_json', "TEXT NOT NULL DEFAULT '{}'"],
+  ];
+  for (const [name, definition] of provenanceColumns) {
+    if (!assetColumns.has(name)) db.exec(`ALTER TABLE assets ADD COLUMN ${name} ${definition}`);
+  }
   const importRowColumns = new Set(
     db.prepare('PRAGMA table_info(import_rows)').all().map((column) => column.name),
   );
@@ -405,7 +446,7 @@ function publishedPromptMap(db) {
   return byKind;
 }
 
-function batchSummary(db, id) {
+function batchSummary(db, id, prefetchedStatistics = null) {
   const row = db.prepare('SELECT * FROM import_batches WHERE id = ?').get(id);
   if (!row) return null;
   const screening = db.prepare(`
@@ -442,6 +483,7 @@ function batchSummary(db, id) {
     screeningComplete: pendingScreeningRows === 0,
     createdAt: row.created_at,
     committedAt: row.committed_at,
+    statistics: prefetchedStatistics ?? createProductionStatisticsStore(db).getImportBatchStatistics(id),
   };
 }
 
@@ -464,9 +506,21 @@ function rowToAdminTask(row) {
     attempts: Number(row.attempts),
     outputDir: row.output_dir,
     error: row.error,
+    processingStartedAt: row.processing_started_at,
+    finishedAt: row.finished_at,
+    queuePosition: row.task_status === 'pending' && row.queue_position !== undefined
+      ? Number(row.queue_position)
+      : null,
     createdAt: row.task_created_at,
     updatedAt: row.task_updated_at,
+    ...(row.export_asset_count === undefined ? {} : {
+      exportReadiness: {
+        assetCount: Number(row.export_asset_count),
+        alignedAssetCount: Number(row.export_aligned_asset_count),
+      },
+    }),
     config: row.text_prompt_version_id ? {
+      importBatchId: row.import_batch_id === null ? null : Number(row.import_batch_id),
       externalId: row.external_id,
       imageCount: Number(row.image_count),
       reviewStatus: row.review_status,
@@ -491,12 +545,16 @@ export function createAdminStore(databasePath) {
   const imageEditStore = createImageEditStore(db);
   const generationStore = createGenerationStore(db);
   const visualKnowledgeStore = createVisualKnowledgeStore(db);
+  const productionSettingsStore = createProductionSettingsStore(db);
+  const productionStatisticsStore = createProductionStatisticsStore(db);
   const countTasks = () => Number(db.prepare('SELECT COUNT(*) AS count FROM tasks').get().count);
   const getAssetRow = db.prepare('SELECT * FROM assets WHERE id = ?');
   const getTaskRow = db.prepare(`
     SELECT t.*, tc.*,
            t.id AS task_id, t.status AS task_status, t.created_at AS task_created_at,
-           t.updated_at AS task_updated_at
+           t.updated_at AS task_updated_at,
+           (SELECT COUNT(*) + 1 FROM tasks queued
+            WHERE queued.status = 'pending' AND queued.id < t.id) AS queue_position
     FROM tasks t
     LEFT JOIN task_configs tc ON tc.task_id = t.id
     WHERE t.id = ?
@@ -506,7 +564,8 @@ export function createAdminStore(databasePath) {
     VALUES (?, ?, ?, ?, ?)
   `);
   const getTaskDetail = (id) => {
-    const task = rowToAdminTask(getTaskRow.get(id));
+    const row = getTaskRow.get(id);
+    const task = rowToAdminTask(row);
     if (!task) return null;
     const textRevisions = db.prepare(`
       SELECT * FROM text_revisions WHERE task_id = ? ORDER BY id
@@ -524,6 +583,7 @@ export function createAdminStore(databasePath) {
     `).all(id).map(rowToAuditLog);
     return {
       ...task,
+      config: task.config,
       textRevisions,
       currentTextRevision: textRevisions.find(
         (revision) => revision.id === task.config?.currentTextRevisionId,
@@ -541,6 +601,8 @@ export function createAdminStore(databasePath) {
     ...imageEditStore,
     ...generationStore,
     ...visualKnowledgeStore,
+    ...productionSettingsStore,
+    ...productionStatisticsStore,
     close() {
       db.close();
     },
@@ -707,8 +769,14 @@ export function createAdminStore(databasePath) {
         pagination.pageSize,
         (pagination.page - 1) * pagination.pageSize,
       );
+      const batchIds = rows.map((row) => Number(row.id));
+      const statisticsByBatchId = productionStatisticsStore.getImportBatchStatisticsMap(batchIds);
       return paginationResult(
-        rows.map((row) => batchSummary(db, row.id)),
+        rows.map((row) => batchSummary(
+          db,
+          row.id,
+          statisticsByBatchId.get(Number(row.id)),
+        )),
         pagination,
         totalItems,
       );
@@ -744,9 +812,8 @@ export function createAdminStore(databasePath) {
       try {
         const batch = db.prepare('SELECT status FROM import_batches WHERE id = ?').get(batchId);
         if (!batch) throw new Error('import batch not found');
-        if (batch.status !== 'PREVIEW') throw new TypeError('committed import batches cannot be screened');
         const getRow = db.prepare(`
-          SELECT id, input_json FROM import_rows
+          SELECT id, input_json, task_id FROM import_rows
           WHERE id = ? AND batch_id = ? AND is_valid = 1
         `);
         const updateRow = db.prepare(`
@@ -759,6 +826,9 @@ export function createAdminStore(databasePath) {
         for (const decision of normalized) {
           const row = getRow.get(decision.rowId, batchId);
           if (!row) throw new TypeError(`screening row ${decision.rowId} is not a valid row in this batch`);
+          if (batch.status === 'COMMITTED' && row.task_id !== null) {
+            throw new TypeError('committed import rows with tasks cannot be screened');
+          }
           const input = parseJson(row.input_json, {});
           input.taskJudgement = {
             admitted: decision.isAdmitted,
@@ -794,71 +864,72 @@ export function createAdminStore(databasePath) {
       try {
         const batch = db.prepare('SELECT * FROM import_batches WHERE id = ?').get(batchId);
         if (!batch) throw new Error('import batch not found');
-        if (batch.status === 'COMMITTED') {
-          const count = Number(db.prepare(`
-            SELECT COUNT(*) AS count FROM import_rows WHERE batch_id = ? AND task_id IS NOT NULL
-          `).get(batchId).count);
-          db.exec('COMMIT');
-          return { batch: batchSummary(db, batchId), createdTasks: count, wasAlreadyCommitted: true };
-        }
+        const wasAlreadyCommitted = batch.status === 'COMMITTED';
         const pendingScreeningRows = Number(db.prepare(`
           SELECT COUNT(*) AS count FROM import_rows
           WHERE batch_id = ? AND is_valid = 1 AND screening_status != 'COMPLETED'
         `).get(batchId).count);
         if (pendingScreeningRows > 0) throw new TypeError('demand screening must be complete before commit');
-        const prompts = publishedPromptMap(db);
         const rows = db.prepare(`
           SELECT * FROM import_rows
-          WHERE batch_id = ? AND is_valid = 1 AND is_admitted = 1
+          WHERE batch_id = ? AND is_valid = 1 AND is_admitted = 1 AND task_id IS NULL
           ORDER BY row_number
         `).all(batchId);
-        const insertTask = db.prepare(`
-          INSERT INTO tasks (query, input_json, status, created_at, updated_at)
-          VALUES (?, ?, 'pending', ?, ?)
-        `);
-        const insertConfig = db.prepare(`
-          INSERT INTO task_configs
-            (task_id, import_batch_id, external_id,
-             text_prompt_version_id, text_prompt_content, text_prompt_sha256,
-             image_prompt_version_id, image_prompt_content, image_prompt_sha256,
-             image_edit_prompt_version_id, image_edit_prompt_content, image_edit_prompt_sha256,
-             image_count, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `);
-        const setTaskId = db.prepare('UPDATE import_rows SET task_id = ? WHERE id = ?');
-        const textPrompt = prompts.get('TEXT_SYSTEM');
-        const imagePrompt = prompts.get('IMAGE_SYSTEM');
-        const editPrompt = prompts.get('IMAGE_EDIT_SYSTEM');
         const createdAt = nowIso();
-        for (const row of rows) {
-          const taskId = Number(insertTask.run(row.query, row.input_json, createdAt, createdAt).lastInsertRowid);
-          insertConfig.run(
-            taskId,
-            batchId,
-            row.external_id,
-            textPrompt.id,
-            textPrompt.content,
-            textPrompt.content_sha256,
-            imagePrompt.id,
-            imagePrompt.content,
-            imagePrompt.content_sha256,
-            editPrompt.id,
-            editPrompt.content,
-            editPrompt.content_sha256,
-            row.image_count,
-            createdAt,
-            createdAt,
-          );
-          setTaskId.run(taskId, row.id);
+        if (rows.length > 0) {
+          const prompts = publishedPromptMap(db);
+          const insertTask = db.prepare(`
+            INSERT INTO tasks (query, input_json, status, created_at, updated_at)
+            VALUES (?, ?, 'pending', ?, ?)
+          `);
+          const insertConfig = db.prepare(`
+            INSERT INTO task_configs
+              (task_id, import_batch_id, external_id,
+               text_prompt_version_id, text_prompt_content, text_prompt_sha256,
+               image_prompt_version_id, image_prompt_content, image_prompt_sha256,
+               image_edit_prompt_version_id, image_edit_prompt_content, image_edit_prompt_sha256,
+               image_count, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `);
+          const setTaskId = db.prepare('UPDATE import_rows SET task_id = ? WHERE id = ?');
+          const textPrompt = prompts.get('TEXT_SYSTEM');
+          const imagePrompt = prompts.get('IMAGE_SYSTEM');
+          const editPrompt = prompts.get('IMAGE_EDIT_SYSTEM');
+          for (const row of rows) {
+            const taskId = Number(insertTask.run(row.query, row.input_json, createdAt, createdAt).lastInsertRowid);
+            insertConfig.run(
+              taskId,
+              batchId,
+              row.external_id,
+              textPrompt.id,
+              textPrompt.content,
+              textPrompt.content_sha256,
+              imagePrompt.id,
+              imagePrompt.content,
+              imagePrompt.content_sha256,
+              editPrompt.id,
+              editPrompt.content,
+              editPrompt.content_sha256,
+              row.image_count,
+              createdAt,
+              createdAt,
+            );
+            setTaskId.run(taskId, row.id);
+          }
         }
-        db.prepare(`
-          UPDATE import_batches SET status = 'COMMITTED', committed_at = ? WHERE id = ?
-        `).run(createdAt, batchId);
+        if (!wasAlreadyCommitted) {
+          db.prepare(`
+            UPDATE import_batches SET status = 'COMMITTED', committed_at = ? WHERE id = ?
+          `).run(createdAt, batchId);
+        }
+        const createdTasks = Number(db.prepare(`
+          SELECT COUNT(*) AS count FROM import_rows WHERE batch_id = ? AND task_id IS NOT NULL
+        `).get(batchId).count);
         db.exec('COMMIT');
         return {
           batch: batchSummary(db, batchId),
-          createdTasks: rows.length,
-          wasAlreadyCommitted: false,
+          createdTasks,
+          wasAlreadyCommitted,
         };
       } catch (error) {
         if (db.isTransaction) db.exec('ROLLBACK');
@@ -877,7 +948,8 @@ export function createAdminStore(databasePath) {
         const result = db.prepare(`
           UPDATE tasks
           SET status = 'pending', error = NULL, output_dir = NULL,
-              lease_owner = NULL, lease_until = NULL, updated_at = ?
+              lease_owner = NULL, lease_until = NULL,
+              processing_started_at = NULL, finished_at = NULL, updated_at = ?
           WHERE id = ? AND status = 'failed'
         `).run(updatedAt, id);
         if (Number(result.changes) !== 1) throw new Error('only failed tasks can be retried');
@@ -911,14 +983,45 @@ export function createAdminStore(databasePath) {
         textPromptContent: row.text_prompt_content,
         imagePromptContent: row.image_prompt_content,
         imageEditPromptContent: row.image_edit_prompt_content,
+        productionSettings: productionSettingsStore.getProductionSettings().settings,
         referenceAssets,
       };
+    },
+
+    setTaskImageCount(taskId, imageCount) {
+      if (!Number.isInteger(imageCount) || imageCount < 3 || imageCount > 5) {
+        throw new RangeError('image count must be an integer between 3 and 5');
+      }
+      const previous = db.prepare('SELECT image_count FROM task_configs WHERE task_id = ?').get(taskId);
+      if (!previous) throw new Error('task config not found');
+      const updatedAt = nowIso();
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        db.prepare(`
+          UPDATE task_configs SET image_count = ?, updated_at = ? WHERE task_id = ?
+        `).run(imageCount, updatedAt, taskId);
+        insertAudit.run(
+          'task',
+          taskId,
+          'TASK_IMAGE_COUNT_SELECT',
+          JSON.stringify({ previousImageCount: Number(previous.image_count), imageCount }),
+          updatedAt,
+        );
+        db.exec('COMMIT');
+      } catch (error) {
+        if (db.isTransaction) db.exec('ROLLBACK');
+        throw error;
+      }
+      return imageCount;
     },
 
     addTextRevision(taskId, input) {
       const task = getTaskRow.get(taskId);
       if (!task?.text_prompt_version_id) throw new Error('task configuration not found');
       const revision = normalizeTextRevision(input);
+      if (revision.source === 'MANUAL' && task.task_status === 'processing') {
+        throw new Error('text cannot be edited while generation is processing');
+      }
       const createdAt = nowIso();
       db.exec('BEGIN IMMEDIATE');
       try {
@@ -941,6 +1044,22 @@ export function createAdminStore(databasePath) {
           SET current_text_revision_id = ?, review_status = 'WAITING_REVIEW', updated_at = ?
           WHERE task_id = ?
         `).run(revisionId, createdAt, taskId);
+        db.prepare(`
+          UPDATE assets
+          SET alignment_status = 'STALE'
+          WHERE task_id = ? AND kind != 'REFERENCE'
+            AND source_text_revision_id IS NOT NULL AND source_text_revision_id != ?
+            AND alignment_status != 'STALE'
+        `).run(taskId, revisionId);
+        if (revision.source === 'MANUAL') {
+          db.prepare(`
+            UPDATE tasks
+            SET status = 'pending', error = NULL, output_dir = NULL,
+                lease_owner = NULL, lease_until = NULL,
+                processing_started_at = NULL, finished_at = NULL, updated_at = ?
+            WHERE id = ? AND status IN ('completed', 'failed')
+          `).run(createdAt, taskId);
+        }
         insertAudit.run(
           'task',
           taskId,
@@ -960,6 +1079,54 @@ export function createAdminStore(databasePath) {
       return rowToAsset(getAssetRow.get(id));
     },
 
+    deleteAssetsForRetention(taskId, assetIds) {
+      if (!Number.isInteger(taskId) || taskId < 1) throw new TypeError('task id is invalid');
+      if (!Array.isArray(assetIds) || assetIds.length < 1 || assetIds.length > 1_000) {
+        throw new RangeError('asset ids must contain between 1 and 1000 items');
+      }
+      const ids = [...new Set(assetIds)];
+      if (ids.length !== assetIds.length
+        || ids.some((id) => !Number.isInteger(id) || id < 1)) {
+        throw new TypeError('asset ids must be unique positive integers');
+      }
+      const placeholders = ids.map(() => '?').join(', ');
+      const rows = db.prepare(`
+        SELECT * FROM assets
+        WHERE task_id = ? AND id IN (${placeholders})
+        ORDER BY id DESC
+      `).all(taskId, ...ids);
+      if (rows.length !== ids.length) throw new Error('retention asset was not found for task');
+      if (rows.some((row) => row.kind !== 'GENERATED')) {
+        throw new Error('retention cleanup can delete only generated assets');
+      }
+      const child = db.prepare(`
+        SELECT id FROM assets WHERE parent_asset_id IN (${placeholders}) LIMIT 1
+      `).get(...ids);
+      if (child) throw new Error('retention asset is still referenced by an edited asset');
+      const createdAt = nowIso();
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const deletion = db.prepare(`
+          DELETE FROM assets WHERE task_id = ? AND id IN (${placeholders})
+        `).run(taskId, ...ids);
+        if (Number(deletion.changes) !== ids.length) {
+          throw new Error('retention asset deletion was incomplete');
+        }
+        insertAudit.run(
+          'task',
+          taskId,
+          'STORAGE_RETENTION_CLEANUP',
+          JSON.stringify({ assetIds: ids }),
+          createdAt,
+        );
+        db.exec('COMMIT');
+        return rows.map(rowToAsset);
+      } catch (error) {
+        if (db.isTransaction) db.exec('ROLLBACK');
+        throw error;
+      }
+    },
+
     addAsset({
       taskId,
       kind,
@@ -971,6 +1138,11 @@ export function createAdminStore(databasePath) {
       height,
       sha256,
       source: rawSource,
+      sourceTextRevisionId = null,
+      pageIndex = null,
+      visualPlanSha256 = null,
+      alignmentStatus: rawAlignmentStatus,
+      alignmentResult = {},
     }) {
       if (!getTaskRow.get(taskId)) throw new Error('task not found');
       if (!['REFERENCE', 'GENERATED', 'EDITED'].includes(kind)) throw new TypeError('asset kind is invalid');
@@ -984,6 +1156,38 @@ export function createAdminStore(databasePath) {
       }
       if (typeof sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(sha256)) throw new TypeError('asset sha256 is invalid');
       const source = requiredText(rawSource, 'asset source', 100);
+      const alignmentStatus = rawAlignmentStatus
+        ?? (kind === 'REFERENCE' ? 'NOT_APPLICABLE' : 'UNVERIFIED');
+      if (!ASSET_ALIGNMENT_STATUSES.includes(alignmentStatus)) {
+        throw new TypeError('asset alignment status is invalid');
+      }
+      if (sourceTextRevisionId !== null) {
+        if (!Number.isInteger(sourceTextRevisionId) || sourceTextRevisionId < 1) {
+          throw new TypeError('source text revision id is invalid');
+        }
+        const revisionRow = db.prepare('SELECT task_id FROM text_revisions WHERE id = ?').get(sourceTextRevisionId);
+        if (!revisionRow || Number(revisionRow.task_id) !== Number(taskId)) {
+          throw new Error('source text revision not found for task');
+        }
+      }
+      if (pageIndex !== null && (!Number.isInteger(pageIndex) || pageIndex < 1 || pageIndex > 5)) {
+        throw new RangeError('asset page index must be between 1 and 5');
+      }
+      if (visualPlanSha256 !== null
+        && (typeof visualPlanSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(visualPlanSha256))) {
+        throw new TypeError('visual plan sha256 is invalid');
+      }
+      if (!alignmentResult || typeof alignmentResult !== 'object' || Array.isArray(alignmentResult)) {
+        throw new TypeError('alignment result must be an object');
+      }
+      const alignmentResultJson = JSON.stringify(alignmentResult);
+      if (Buffer.byteLength(alignmentResultJson, 'utf8') > 20_000) {
+        throw new RangeError('alignment result cannot exceed 20000 bytes');
+      }
+      if (alignmentStatus === 'PASSED'
+        && (sourceTextRevisionId === null || pageIndex === null || visualPlanSha256 === null)) {
+        throw new TypeError('passed alignment requires text revision, page index and visual plan hash');
+      }
       if (parentAssetId !== null) {
         const parent = getAssetRow.get(parentAssetId);
         if (!parent || Number(parent.task_id) !== Number(taskId)) throw new Error('parent asset not found for task');
@@ -995,8 +1199,9 @@ export function createAdminStore(databasePath) {
       const result = db.prepare(`
         INSERT INTO assets
           (task_id, kind, parent_asset_id, revision, file_name, relative_path,
-           mime_type, width, height, sha256, source, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           mime_type, width, height, sha256, source, source_text_revision_id,
+           page_index, visual_plan_sha256, alignment_status, alignment_result_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         taskId,
         kind,
@@ -1009,6 +1214,11 @@ export function createAdminStore(databasePath) {
         height,
         sha256,
         source,
+        sourceTextRevisionId,
+        pageIndex,
+        visualPlanSha256,
+        alignmentStatus,
+        alignmentResultJson,
         createdAt,
       );
       if (kind !== 'REFERENCE') {
@@ -1037,12 +1247,22 @@ export function createAdminStore(databasePath) {
       if (status === 'REJECTED' && !note) throw new TypeError('rejection note is required');
       if (status === 'APPROVED') {
         if (!task.currentTextRevision) throw new Error('current text revision is required before approval');
-        if (!task.assets.some((asset) => asset.kind === 'GENERATED' || asset.kind === 'EDITED')) {
-          throw new Error('delivery image is required before approval');
-        }
         const latestRun = task.generationRuns.at(-1);
         if (latestRun && ['mock_only', 'blocked'].includes(latestRun.qcDisposition)) {
           throw new Error(`${latestRun.qcDisposition} generation cannot be approved`);
+        }
+        const latestByPage = new Map();
+        for (const asset of task.assets) {
+          if ((asset.kind === 'GENERATED' || asset.kind === 'EDITED')
+            && asset.sourceTextRevisionId === task.currentTextRevision.id
+            && asset.pageIndex !== null) {
+            latestByPage.set(asset.pageIndex, asset);
+          }
+        }
+        const hasCompleteAlignedSet = latestByPage.size === task.config.imageCount
+          && [...latestByPage.values()].every((asset) => asset.alignmentStatus === 'PASSED');
+        if (!hasCompleteAlignedSet) {
+          throw new Error('current text revision complete aligned image set is required before approval');
         }
       }
       const createdAt = nowIso();
@@ -1070,10 +1290,52 @@ export function createAdminStore(databasePath) {
       return countTasks();
     },
 
-    listTasks({ page = 1, pageSize = 20, status, reviewStatus, query } = {}) {
+    getAdjacentTaskIds(taskId) {
+      if (!Number.isInteger(taskId) || taskId < 1) throw new TypeError('task id is invalid');
+      const taskConfig = db.prepare(`
+        SELECT import_batch_id FROM task_configs WHERE task_id = ?
+      `).get(taskId);
+      const row = taskConfig?.import_batch_id === null || taskConfig?.import_batch_id === undefined
+        ? db.prepare(`
+          SELECT
+            (SELECT id FROM tasks WHERE id > ? ORDER BY id ASC LIMIT 1) AS previous_task_id,
+            (SELECT id FROM tasks WHERE id < ? ORDER BY id DESC LIMIT 1) AS next_task_id
+        `).get(taskId, taskId)
+        : db.prepare(`
+          SELECT
+            (SELECT candidate.id
+             FROM tasks candidate
+             JOIN task_configs candidate_config ON candidate_config.task_id = candidate.id
+             WHERE candidate.id > ? AND candidate_config.import_batch_id = ?
+             ORDER BY candidate.id ASC LIMIT 1) AS previous_task_id,
+            (SELECT candidate.id
+             FROM tasks candidate
+             JOIN task_configs candidate_config ON candidate_config.task_id = candidate.id
+             WHERE candidate.id < ? AND candidate_config.import_batch_id = ?
+             ORDER BY candidate.id DESC LIMIT 1) AS next_task_id
+        `).get(taskId, taskConfig.import_batch_id, taskId, taskConfig.import_batch_id);
+      return {
+        previousTaskId: row.previous_task_id === null ? null : Number(row.previous_task_id),
+        nextTaskId: row.next_task_id === null ? null : Number(row.next_task_id),
+      };
+    },
+
+    getTaskTimingStats() {
+      return readTaskTimingStats(db);
+    },
+
+    listTasks({ page = 1, pageSize = 20, importBatchId, status, reviewStatus, query } = {}) {
       const pagination = normalizePagination(page, pageSize);
       const clauses = [];
       const parameters = [];
+      if (importBatchId !== undefined && importBatchId !== '') {
+        const normalizedImportBatchId = Number(importBatchId);
+        if (!Number.isInteger(normalizedImportBatchId) || normalizedImportBatchId < 1) {
+          throw new TypeError('import batch id is invalid');
+        }
+        clauses.push('tc.import_batch_id = ?');
+        parameters.push(normalizedImportBatchId);
+      }
       if (status !== undefined && status !== '') {
         if (!TASK_STATUSES.includes(status)) throw new TypeError('task status is invalid');
         clauses.push('t.status = ?');
@@ -1098,9 +1360,31 @@ export function createAdminStore(databasePath) {
         ${where}
       `).get(...parameters).count);
       const rows = db.prepare(`
+        WITH latest_delivery_assets AS (
+          SELECT task_id, source_text_revision_id, page_index, alignment_status,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY task_id, source_text_revision_id, page_index
+                   ORDER BY id DESC
+                 ) AS recency
+          FROM assets
+          WHERE kind IN ('GENERATED', 'EDITED') AND page_index IS NOT NULL
+        )
         SELECT t.*, tc.*,
                t.id AS task_id, t.status AS task_status, t.created_at AS task_created_at,
-               t.updated_at AS task_updated_at
+               t.updated_at AS task_updated_at,
+               (SELECT COUNT(*) + 1 FROM tasks queued
+                WHERE queued.status = 'pending' AND queued.id < t.id) AS queue_position,
+               (SELECT COUNT(*) FROM latest_delivery_assets delivery
+                WHERE delivery.task_id = t.id
+                  AND delivery.source_text_revision_id = tc.current_text_revision_id
+                  AND delivery.page_index BETWEEN 1 AND tc.image_count
+                  AND delivery.recency = 1) AS export_asset_count,
+               (SELECT COUNT(*) FROM latest_delivery_assets delivery
+                WHERE delivery.task_id = t.id
+                  AND delivery.source_text_revision_id = tc.current_text_revision_id
+                  AND delivery.page_index BETWEEN 1 AND tc.image_count
+                  AND delivery.recency = 1
+                  AND delivery.alignment_status = 'PASSED') AS export_aligned_asset_count
         FROM tasks t
         LEFT JOIN task_configs tc ON tc.task_id = t.id
         ${where}

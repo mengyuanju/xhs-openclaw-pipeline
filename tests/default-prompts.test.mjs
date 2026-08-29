@@ -32,6 +32,20 @@ describe('runtime default prompts', () => {
     assert.doesNotMatch(prompt.content, /3[–-]6个.*图标/);
   });
 
+  it('requires type-aware natural copy instead of a default numbered-step template', () => {
+    const prompt = DEFAULT_PROMPTS.find(({ kind }) => kind === 'TEXT_SYSTEM');
+
+    assert.match(prompt.content, /按内容类型选择结构/u);
+    assert.match(prompt.content, /教程或操作流程/u);
+    assert.match(prompt.content, /推荐、盘点、对比测评/u);
+    assert.match(prompt.content, /科普、知识、答疑/u);
+    assert.match(prompt.content, /不得默认写成“第一步、第二步、第三步”/u);
+    assert.match(prompt.content, /不得编造第一人称/u);
+    assert.match(prompt.content, /联网研究由 Worker 在文本生成前完成/u);
+    assert.match(prompt.content, /webResearch.*不可信/u);
+    assert.match(prompt.content, /不得声称打开或抓取了快照未包含的网页/u);
+  });
+
   it('loads generation and editing image rules without inline source labels', () => {
     const image = DEFAULT_PROMPTS.find(({ kind }) => kind === 'IMAGE_SYSTEM');
     const edit = DEFAULT_PROMPTS.find(({ kind }) => kind === 'IMAGE_EDIT_SYSTEM');
@@ -43,8 +57,14 @@ describe('runtime default prompts', () => {
       assert.match(prompt.content, /物体和文字边缘清晰/);
       assert.doesNotMatch(prompt.content, /\[R\d{3}\]/);
     }
-    assert.match(image.content, /整套图片均由图像模型逐张生成/);
+    assert.match(image.content, /整套图片由图像模型一次性完成场景与文字排版/u);
+    assert.match(image.content, /图像模型一次性完成场景与文字排版/u);
+    assert.doesNotMatch(image.content, /固定简体中文字体确定性排版/u);
+    assert.doesNotMatch(image.content, /不得生成任何文字、字母、数字、伪文字/);
     assert.match(image.content, /后续图片引用第一张/);
+    assert.match(image.content, /至少 3 种不同的版式骨架/);
+    assert.match(image.content, /封面标题最多 2 行/);
+    assert.match(image.content, /内页禁止海报式满版大字/);
     assert.doesNotMatch(image.content, /本地模板/);
     assert.match(edit.content, /\{\{reviewInstruction\}\}/);
   });

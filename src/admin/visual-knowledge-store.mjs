@@ -226,13 +226,31 @@ function pagination(value, fallback) {
 
 function scoreCandidate(candidate, task) {
   let score = candidate.qualityScore;
-  const category = String(task.input?.category ?? '').trim();
+  const category = String(task.contentProfile?.category ?? task.input?.category ?? '').trim();
   const audience = String(task.input?.targetAudience ?? '').trim();
   if (category && candidate.categories.includes(category)) score += 2;
   if (audience && candidate.promptTemplate.includes(audience)) score += 0.5;
-  const haystack = `${task.query} ${category} ${audience}`;
+  const profileTerms = [
+    ...(task.contentProfile?.tones ?? []),
+    task.contentProfile?.visualMedium,
+    task.contentProfile?.informationDensity,
+  ].filter(Boolean).join(' ');
+  const haystack = `${task.query} ${category} ${audience} ${profileTerms}`;
   score += candidate.styleTags.filter((tag) => haystack.includes(tag)).length * 0.25;
   return score;
+}
+
+function deterministicWeightedPick(ranked, seed) {
+  const minimum = Math.min(...ranked.map(({ score }) => score));
+  const weighted = ranked.map((item) => ({ ...item, weight: item.score - minimum + 1 }));
+  const total = weighted.reduce((sum, item) => sum + item.weight, 0);
+  const digest = createHash('sha256').update(seed).digest();
+  let target = (digest.readUInt32BE(0) / 0x1_0000_0000) * total;
+  for (const item of weighted) {
+    target -= item.weight;
+    if (target < 0) return item;
+  }
+  return weighted.at(-1);
 }
 
 function referenceFromRow(row) {
@@ -316,7 +334,13 @@ export function initializeVisualKnowledgeSchema(db) {
   `);
 }
 
-export function composeVisualImagePrompt({ systemPrompt, visualReference, variables = {}, taskPrompt }) {
+export function composeVisualImagePrompt({
+  systemPrompt,
+  visualReference,
+  variables = {},
+  pageKind,
+  taskPrompt,
+}) {
   const sections = [optionalText(systemPrompt, 'image system prompt', 3_000)];
   if (visualReference) {
     const recipe = renderPrompt(
@@ -326,6 +350,15 @@ export function composeVisualImagePrompt({ systemPrompt, visualReference, variab
     sections.push(`视觉配方：\n${recipe}`);
     const negative = optionalText(visualReference.negativePrompt, 'visual negative prompt', 600);
     if (negative) sections.push(`负面约束：\n${renderPrompt(negative, variables)}`);
+    const layoutRules = visualReference.layoutRules;
+    if (layoutRules && typeof layoutRules === 'object' && !Array.isArray(layoutRules)) {
+      const selected = Object.hasOwn(layoutRules, pageKind) ? layoutRules[pageKind] : layoutRules;
+      if (selected !== undefined && selected !== null
+        && !(typeof selected === 'object' && Object.keys(selected).length === 0)) {
+        const serialized = typeof selected === 'string' ? selected : JSON.stringify(selected);
+        sections.push(`当前页布局规则：\n${requiredText(serialized, 'page layout rules', 1_200)}`);
+      }
+    }
   }
   sections.push(requiredText(taskPrompt, 'task image prompt', 4_000));
   const prompt = sections.filter(Boolean).join('\n\n');
@@ -550,12 +583,20 @@ export function createVisualKnowledgeStore(db) {
       return referenceFromRow(getReferenceRow.get(taskId));
     },
 
-    resolveVisualReferenceForTask(taskId) {
+    resolveVisualReferenceForTask(taskId, { contentProfile = null } = {}) {
       const existing = referenceFromRow(getReferenceRow.get(taskId));
       if (existing) return existing;
-      const taskRow = db.prepare('SELECT query, input_json FROM tasks WHERE id = ?').get(taskId);
+      const taskRow = db.prepare(`
+        SELECT t.query, t.input_json, tc.import_batch_id
+        FROM tasks t LEFT JOIN task_configs tc ON tc.task_id = t.id
+        WHERE t.id = ?
+      `).get(taskId);
       if (!taskRow) throw new Error('task not found');
-      const task = { query: taskRow.query, input: JSON.parse(taskRow.input_json || '{}') };
+      const task = {
+        query: taskRow.query,
+        input: JSON.parse(taskRow.input_json || '{}'),
+        contentProfile,
+      };
       const rows = db.prepare(`
         SELECT v.*, i.name, i.type, i.generation_target, i.retention_mode, i.rights_status,
                a.id AS asset_id, a.relative_path
@@ -579,14 +620,61 @@ export function createVisualKnowledgeStore(db) {
         };
       });
       if (rows.length === 0) return null;
-      const selected = rows
+      const category = String(task.contentProfile?.category ?? task.input?.category ?? '').trim();
+      const categoryMatches = category ? rows.filter((candidate) => candidate.categories.includes(category)) : [];
+      const eligible = categoryMatches.length > 0 ? categoryMatches : rows;
+      let ranked = eligible
         .map((candidate) => ({ candidate, score: scoreCandidate(candidate, task) }))
-        .sort((left, right) => right.score - left.score || left.candidate.id - right.candidate.id)[0];
+        .sort((left, right) => right.score - left.score || left.candidate.id - right.candidate.id);
+      const batchId = taskRow.import_batch_id === null || taskRow.import_batch_id === undefined
+        ? null
+        : Number(taskRow.import_batch_id);
+      let quotaLimit = null;
+      let usageByItem = new Map();
+      let recentItemIds = [];
+      if (batchId !== null) {
+        const batchSize = Number(db.prepare(`
+          SELECT COUNT(*) AS count FROM task_configs WHERE import_batch_id = ?
+        `).get(batchId).count);
+        quotaLimit = Math.max(1, Math.ceil(batchSize * 0.15));
+        usageByItem = new Map(db.prepare(`
+          SELECT v.item_id, COUNT(*) AS count
+          FROM task_visual_references tvr
+          JOIN visual_knowledge_versions v ON v.id = tvr.version_id
+          JOIN task_configs tc ON tc.task_id = tvr.task_id
+          WHERE tc.import_batch_id = ?
+          GROUP BY v.item_id
+        `).all(batchId).map((row) => [Number(row.item_id), Number(row.count)]));
+        recentItemIds = db.prepare(`
+          SELECT v.item_id
+          FROM task_visual_references tvr
+          JOIN visual_knowledge_versions v ON v.id = tvr.version_id
+          JOIN task_configs tc ON tc.task_id = tvr.task_id
+          WHERE tc.import_batch_id = ?
+          ORDER BY tvr.created_at DESC, tvr.task_id DESC
+          LIMIT 3
+        `).all(batchId).map((row) => Number(row.item_id));
+        const underQuota = ranked.filter(({ candidate }) =>
+          (usageByItem.get(candidate.itemId) ?? 0) < quotaLimit);
+        if (underQuota.length > 0) ranked = underQuota;
+        const outsideRecentWindow = ranked.filter(({ candidate }) => !recentItemIds.includes(candidate.itemId));
+        if (outsideRecentWindow.length > 0) {
+          ranked = outsideRecentWindow;
+        } else if (recentItemIds.length > 0) {
+          const notImmediateRepeat = ranked.filter(({ candidate }) => candidate.itemId !== recentItemIds[0]);
+          if (notImmediateRepeat.length > 0) ranked = notImmediateRepeat;
+        }
+      }
+      const topCandidates = ranked.slice(0, 5);
+      const selected = deterministicWeightedPick(
+        topCandidates,
+        `${taskId}|${batchId ?? 'none'}|${topCandidates.map(({ candidate }) => candidate.contentSha256).join('|')}`,
+      );
       const assetId = selected.candidate.retentionMode === 'IMAGE_AND_PROMPT'
         && RETAINABLE_RIGHTS.has(selected.candidate.rightsStatus)
         ? selected.candidate.assetId
         : null;
-      const reason = `type=${selected.candidate.type}; quality=${selected.candidate.qualityScore}`;
+      const reason = `type=${selected.candidate.type}; quality=${selected.candidate.qualityScore}; strategy=stable-top-k; topK=${topCandidates.length}; quota=${quotaLimit ?? 'none'}; priorUsage=${usageByItem.get(selected.candidate.itemId) ?? 0}`;
       db.prepare(`
         INSERT OR IGNORE INTO task_visual_references
           (task_id, version_id, asset_id, retrieval_score, retrieval_reason, created_at)

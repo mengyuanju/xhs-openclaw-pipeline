@@ -9,7 +9,7 @@ export default function KnowledgePage() {
     <header className="page-header">
       <div>
         <span className="eyebrow">Visual knowledge</span>
-        <h1>把优秀作品沉淀为可控的视觉配方</h1>
+        <h1 className="sr-only">视觉知识库</h1>
         <p className="subtle">图片只作临时分析；只有自有或已授权素材才允许长期保留并进入参考图生成。</p>
       </div>
     </header>

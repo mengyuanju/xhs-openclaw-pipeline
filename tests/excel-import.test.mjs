@@ -69,6 +69,45 @@ describe('parseExcelImport', () => {
     assert.ok(preview.rows[2].errors.some((error) => error.includes('metadata必须是JSON对象')));
   });
 
+  it('preserves reference URLs for production tasks', async () => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('选题');
+    sheet.addRow(['query', '图片数量', '参考链接', '参考资料']);
+    sheet.addRow([
+      '自行车铃铛被人弄坏了咋办',
+      3,
+      'https://example.com/guide；https://example.org/rules',
+      '来源摘要：先留证，再核对损坏情况，最后协商处理。',
+    ]);
+    const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+
+    const preview = await parseExcelImport({ buffer, fileName: 'sources.xlsx' });
+
+    assert.equal(preview.validRows, 1);
+    assert.equal(preview.rows[0].imageCount, 3);
+    assert.deepEqual(preview.rows[0].input.referenceUrls, [
+      'https://example.com/guide',
+      'https://example.org/rules',
+    ]);
+    assert.equal(
+      preview.rows[0].input.referenceText,
+      '来源摘要：先留证，再核对损坏情况，最后协商处理。',
+    );
+  });
+
+  it('rejects unsafe or malformed reference URLs', async () => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('选题');
+    sheet.addRow(['query', '参考链接']);
+    sheet.addRow(['测试选题', 'file:///etc/passwd；javascript:alert(1)']);
+    const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+
+    const preview = await parseExcelImport({ buffer, fileName: 'unsafe-sources.xlsx' });
+
+    assert.equal(preview.invalidRows, 1);
+    assert.ok(preview.rows[0].errors.some((error) => error.includes('参考链接必须使用http或https')));
+  });
+
   it('rejects non-xlsx files and files above the upload limit', async () => {
     await assert.rejects(
       () => parseExcelImport({ buffer: Buffer.from('a,b'), fileName: 'queries.csv' }),

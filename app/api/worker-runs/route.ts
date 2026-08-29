@@ -4,6 +4,7 @@ import { apiHandler, ok, parseJson } from '../_lib';
 import { ApiError } from '../../../src/admin/http.mjs';
 import { withAdminStore } from '../../../src/admin/runtime.mjs';
 import {
+  MAX_TASK_CONCURRENCY,
   MAX_WEB_WORKER_TASKS,
   webWorkerLauncher,
   WorkerRunConflictError,
@@ -29,7 +30,7 @@ export function POST(request: Request) {
     }
     const max = Math.min(input.max, stats.tasks.pending, MAX_WEB_WORKER_TASKS);
     try {
-      const run = await webWorkerLauncher.start({ max });
+      const run = await webWorkerLauncher.start({ max, concurrency: MAX_TASK_CONCURRENCY });
       return ok({ ...run, mode: 'LIVE' }, { status: 202 });
     } catch (error) {
       if (error instanceof WorkerRunConflictError) {

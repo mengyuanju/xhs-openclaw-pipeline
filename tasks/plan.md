@@ -176,3 +176,159 @@
 | 重复点击启动并发 Worker | 高 | 进程内活动锁与数据库 processing 状态双重检查 |
 | 长请求阻塞 Next.js 页面 | 高 | 只启动独立 Node 进程并返回 202，不在请求内执行模型 |
 | 命令注入或任意程序执行 | 高 | 固定 CLI 路径、参数数组、`shell: false`、只接收整数 max |
+
+## Phase 10: Text-Grounded, Diverse Image Production
+
+- [x] Task 29: 定义最终正文之后的视觉计划契约，逐页记录来源证据、允许显示的简体中文、内容主体和布局职责。
+- [x] Task 30: 将视觉计划接入 Worker，使图片提示词只使用当前文本版本和逐页白名单，并把视觉知识库 `layoutRules` 真正加入运行提示词。
+- [x] Task 31: 增加逐页视觉验收契约、有限重试和 QC 阻断，验证图文语义、额外事实、简体中文和布局风格。
+- [x] Task 32: 将生成资产绑定文本修订、页码、视觉计划哈希和验收状态；文本修改后旧图片变为 `STALE`。
+- [x] Task 33: 将视觉知识选择从单一最高分改为内容过滤后的稳定 Top-K 调度，并增加近期去重与批次配额。
+- [x] Task 34: 更新费用说明、审核信息和文档，完成定向测试、全量测试、类型检查、构建和 Mock 冒烟。
+- [x] Task 35: 在现有视觉验收调用中增加 GPT OCR 逐字抄录、90% 置信度门槛、繁体与额外文字检测。
+
+### Checkpoint: Text-Grounded Image Production
+
+- [x] 每张图可追溯到当前文本修订和唯一页面计划，关键文字使用明确的简体中文白名单。
+- [x] Live 图片在进入审核前经过视觉模型验收；失败页最多修复两次，仍失败时被 QC 阻断。
+- [x] 同一篇笔记风格统一，不同任务在匹配内容的候选风格间受控轮换。
+- [x] 文本修改后旧图片不能继续作为通过审核的有效图片。
+
+### Text-Grounded Image Risks
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| 二次视觉规划和逐页验收扩大模型成本 | 高 | 网页费用确认显示 2 次文本类调用和 3–5 次视觉验收；每页最多两次修复 |
+| 视觉模型误判导致假通过或假失败 | 高 | 严格 JSON 契约、硬失败字段、保留证据和人工覆盖边界 |
+| 中文图片仍出现伪文字 | 高 | 简体中文白名单、视觉验收；后续可切换模型素材＋程序排版 |
+| 风格多样性损害内容相关性 | 中 | 先过滤内容不匹配候选，再在 Top-K 中稳定抽样；候选不足时相关性优先 |
+| 数据库迁移影响历史资产 | 高 | 只增加可空列和新表；历史资产默认 `UNVERIFIED`，不改写原文件 |
+
+## Phase 11: Rule-Document Quality Scoring V2
+
+- [x] Task 35: 定义并测试 0–3 分维度输入、证据、类型校正和漏斗聚合契约。
+- [x] Task 36: 将现有机械 QC 映射为保守维度证据，在 `qc.json` 中增加 V2 评分详情并保持旧字段兼容。
+- [ ] Task 37: 更新评分文档与审核展示，完成全量测试、类型检查、构建和差异审查。
+
+### Checkpoint: Quality Scoring V2
+
+- [x] 0、1、2、3 与证据不足五种结果互斥、可复核，不使用平均分。
+- [x] 类型校正只影响 2/3 边界；平台样本不足时最终分最高为 2。
+- [x] 旧机械阻断、Mock 门槛、SQLite 生成记录和人工审核边界无回归。
+
+### Quality Scoring V2 Risks
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| 把未检测到问题误判为 3 分 | 高 | 机械证据默认最高 2；3 分要求显式人工/VLM 高质量证据 |
+| 新分数破坏旧审核流程 | 高 | 保留 `overallScore`/`disposition`，新详情使用附加 `rubric` 字段 |
+| 2/3 条件重叠 | 高 | 任一适用维度为 2 或存在轻微标签时固定为 2 |
+| 缺少平台样本仍判 3 | 高 | `platformAdaptation` 自动封顶 2 并记录证据限制 |
+
+## Phase 12: Batch Reliability and Resume Safety
+
+- [x] Task 38: 增加 Live 批次预检，在领取任务前验证 OpenClaw 运行时、模型配置和本地输出边界。
+- [x] Task 39: 增加任务租约续期，并在文本、视觉规划、逐页生成和验收边界刷新租约。
+- [x] Task 40: 将正文与视觉计划在图片生成前原子落盘，并让配置未变化的失败任务复用已通过阶段。
+- [x] Task 41: 保存逐页生成检查点，只复用通过验收且哈希匹配的当前任务图片。
+- [x] Task 42: 完成全量测试、类型检查、构建、Mock 冒烟和差异审查。
+
+### Checkpoint: Batch Reliability
+
+- [x] 全局配置错误在任何任务被领取或增加 attempts 前失败。
+- [x] 超过默认十分钟的任务持续持有合法租约，不会被另一个 Worker 重复领取。
+- [x] 图片阶段失败后，重试不重复调用已经成功且配置未变化的文本与视觉规划。
+- [x] 只复用结构、文件哈希和图文验收全部通过的页面；人工文案变更自动使旧检查点失效。
+
+### Batch Reliability Risks
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| 复用过期文案或图片 | 高 | 检查点绑定 Query、输入、提示词快照、人工文案修订和视觉计划哈希 |
+| 并发 Worker 重复处理同一任务 | 高 | 定期续租且完成/失败继续校验 lease owner |
+| 检查点文件被部分写入 | 高 | 同目录临时文件写入后原子重命名 |
+| 预检误消费模型额度 | 高 | 只执行本地运行时与 OpenClaw 状态命令，不发送推理请求 |
+
+## Phase 13: Content Review Workbench Layout
+
+- [x] Task 43: Persist bounded quality details and expose plain-language score evidence to the review UI.
+- [x] Task 44: Group generated images, run state, prompt versions, text revision, and QC into generation batches.
+- [x] Task 45: Reorder the workbench around full text, the retained review decision, and batch-first image review.
+- [x] Task 46: Move zoom, preview-only rotation, conditional 3:4 crop, and targeted AI edit into the image preview.
+
+### Checkpoint: Review Workbench
+
+- [x] Current title and body render in full while remaining editable.
+- [x] The current score and its evidence are readable text; raw JSON is never shown.
+- [x] Images are organized by generation batch with version and QC context inside each batch.
+- [x] Rotation creates no asset revision, and crop is hidden for images already matching 3:4.
+- [x] Review approval, rejection, reopening, upload, export, and AI edit remain available.
+
+### Review Workbench Risks
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| Historical runs do not contain detailed QC evidence | Medium | Show a clear legacy fallback reason while persisting full detail for every new run |
+| Historical assets do not store a generation-run foreign key | Medium | Associate generated roots by run completion boundaries and keep unmatched assets in a labeled historical batch |
+| Large text and dense image batches make the page unwieldy | Medium | Use a strong top-level hierarchy, compact batch metadata, collapsible trace details, and responsive single-column fallbacks |
+
+## Phase 14: Configurable Quality Repair and Production Analytics
+
+- [x] Task 47: Define and persist the global production settings contract.
+- [x] Task 48: Add the score-1 whole-delivery repair loop and bounded repair evidence.
+- [x] Task 49: Persist generation-run timing and aggregate import-batch statistics.
+- [x] Task 50: Add settings, analytics, batch timing, and repair-history UI surfaces.
+- [x] Task 51: Complete focused/full verification and update operator documentation.
+
+### Checkpoint: Quality Repair and Analytics
+
+- [x] A first Live score of 1 is repaired to at least 2 when possible, with no more than two repair rounds.
+- [x] Repair reasons, methods, before/after scores, and durations are visible in the review workbench.
+- [x] Quality-repair and AI-disclosure behavior can be changed from one validated settings module.
+- [x] Generation batches and import batches expose explicit timing, while analytics summarizes scores and repairs.
+
+### Quality Repair and Analytics Risks
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| Whole-set repair multiplies image and VLM cost | High | Default maximum is two rounds; only an initial score of exactly 1 triggers it |
+| Configuration changes reuse stale checkpoints | High | Include normalized production settings in the checkpoint fingerprint and manifest |
+| Generic repair instructions fail to address the limiting dimension | Medium | Build instructions from stored dimension evidence and a deterministic dimension strategy map |
+| Historical rows lack timing and repair evidence | Low | Add nullable columns and show explicit unavailable states instead of inferred values |
+
+## Phase 15: Natural Copy Structure
+
+- [x] Task 52: Add regression tests for type-aware body structure and the non-default step style.
+- [x] Task 53: Update the base post contract and task-pinned text prompt with natural, type-aware writing rules.
+- [x] Task 54: Run focused and project-wide verification; document prompt publication behavior.
+
+### Checkpoint: Natural Copy Structure
+
+- [x] Only genuinely sequential tutorials default to numbered steps.
+- [x] Other content types use scenes, criteria, differences, causes, boundaries, or tradeoffs.
+- [x] Human tone comes from concrete details and natural transitions, never fabricated experience.
+
+## Phase 16: Web Research Source Provenance
+
+- [x] Task 55: 定义联网研究快照、提供方后备、失败关闭和来源留存契约。
+- [x] Task 56: 增加 OpenClaw web search 适配器与不可信搜索结果归一化。
+- [x] Task 57: 在正文生成前接入研究阶段，绑定来源白名单、提示词、交付文件和检查点。
+- [x] Task 58: 在生成记录中持久化成功或失败的研究快照，并兼容旧数据库。
+- [x] Task 59: 完成定向/全量测试、类型检查、构建、真实提供方探测和操作文档。
+
+### Checkpoint: Web Research Provenance
+
+- [x] Live 新文案在模型推理前获得至少一个公开来源；否则任务明确失败。
+- [x] Codex Hosted Search 失败时可切换到 DuckDuckGo，且提供方尝试链完整留存。
+- [x] 模型只能返回任务输入或研究快照中的 URL，来源快照在重试期间保持稳定。
+- [x] Mock、人工文案图片重生和历史记录不伪造联网行为。
+
+### Web Research Risks
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| 搜索结果含提示注入 | 高 | 将全部搜索文本标记为不可信证据；模型输出仍受严格 JSON 与来源白名单校验 |
+| 搜索服务不可用却继续产文 | 高 | 两个提供方依次尝试；全部失败或零公开 URL 时失败关闭 |
+| 图片失败重试时资料漂移 | 高 | 成功快照写入 checkpoint，同一配置重试直接复用 |
+| 历史任务显示伪造来源 | 高 | 新字段可空，只记录新运行实际发生的检索 |
+| 搜索摘要被误认为网页全文 | 中 | 快照字段明确为 snippet/summary，当前不记录 fetchedContent |

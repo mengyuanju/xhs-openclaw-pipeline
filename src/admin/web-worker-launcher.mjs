@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
 const MAX_WEB_WORKER_TASKS = 20;
+const MAX_TASK_CONCURRENCY = 2;
 const DEFAULT_PROJECT_ROOT = process.cwd();
 const DEFAULT_CLI_PATH = join(DEFAULT_PROJECT_ROOT, 'src', 'cli.mjs');
 
@@ -26,6 +27,13 @@ function validatedRunId(value) {
   return runId;
 }
 
+function validatedConcurrency(value) {
+  if (!Number.isInteger(value) || value < 1 || value > MAX_TASK_CONCURRENCY) {
+    throw new RangeError(`worker concurrency must be between 1 and ${MAX_TASK_CONCURRENCY}`);
+  }
+  return value;
+}
+
 export function createWebWorkerLauncher({
   spawnProcess = spawn,
   nodePath = process.execPath,
@@ -36,8 +44,9 @@ export function createWebWorkerLauncher({
   let activeProcess = null;
 
   return {
-    async start({ max: rawMax }) {
+    async start({ max: rawMax, concurrency: rawConcurrency = MAX_TASK_CONCURRENCY }) {
       const max = validatedMax(rawMax);
+      const concurrency = validatedConcurrency(rawConcurrency);
       if (activeProcess?.exitCode === null) throw new WorkerRunConflictError();
       const runId = validatedRunId(createRunId());
       const child = spawnProcess(
@@ -48,6 +57,8 @@ export function createWebWorkerLauncher({
           '--live',
           '--max',
           String(max),
+          '--concurrency',
+          String(concurrency),
           '--worker-id',
           `web-${runId}`,
         ],
@@ -73,10 +84,10 @@ export function createWebWorkerLauncher({
         throw error;
       }
       child.unref();
-      return { status: 'STARTED', runId, max };
+      return { status: 'STARTED', runId, max, concurrency };
     },
   };
 }
 
 export const webWorkerLauncher = createWebWorkerLauncher();
-export { MAX_WEB_WORKER_TASKS };
+export { MAX_TASK_CONCURRENCY, MAX_WEB_WORKER_TASKS };

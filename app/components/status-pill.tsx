@@ -19,6 +19,12 @@ const LABELS: Record<string, string> = {
   NONE: '无需',
   SCREENED: '筛选完成',
   PENDING_SCREENING: '待筛选',
+  NOT_APPLICABLE: '无需验收',
+  UNVERIFIED: '未验收',
+  PASSED: '图文匹配',
+  FAILED: '验收失败',
+  STALE: '文案已变更',
+  MANUAL_REQUIRED: '需重新验收',
 };
 
 export function StatusPill({ value }: { value?: string | null }) {

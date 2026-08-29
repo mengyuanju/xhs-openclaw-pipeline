@@ -10,6 +10,7 @@ export function GET(request: Request) {
     return ok(withAdminStore((store: any) => store.listTasks({
       page: url.searchParams.get('page'),
       pageSize: url.searchParams.get('pageSize'),
+      importBatchId: url.searchParams.get('batchId') || undefined,
       status: url.searchParams.get('status') || undefined,
       reviewStatus: url.searchParams.get('reviewStatus') || undefined,
       query: url.searchParams.get('query') || undefined,

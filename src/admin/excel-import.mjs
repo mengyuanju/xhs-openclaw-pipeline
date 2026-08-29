@@ -22,6 +22,13 @@ const HEADER_ALIASES = new Map([
   ['图片数量', 'imageCount'],
   ['referenceimagefiles', 'referenceImageFiles'],
   ['参考图', 'referenceImageFiles'],
+  ['referenceurls', 'referenceUrls'],
+  ['referenceurl', 'referenceUrls'],
+  ['参考链接', 'referenceUrls'],
+  ['referencetext', 'referenceText'],
+  ['referencecontext', 'referenceText'],
+  ['参考资料', 'referenceText'],
+  ['参考内容', 'referenceText'],
   ['priority', 'priority'],
   ['优先级', 'priority'],
   ['metadata', 'metadata'],
@@ -80,6 +87,30 @@ function parseReferenceFiles(value, errors) {
     if (!validPattern.test(file)) errors.push(`参考图文件名非法：${file}`);
   }
   return files.filter((file) => validPattern.test(file));
+}
+
+function parseReferenceUrls(value, errors) {
+  const hyperlink = value && typeof value === 'object' && !Array.isArray(value)
+    && typeof value.hyperlink === 'string'
+    ? value.hyperlink.trim()
+    : '';
+  const text = hyperlink || cleanText(value, 8_000);
+  if (!text) return [];
+  const urls = text.split(/[,，;；\n]+/u).map((part) => part.trim()).filter(Boolean);
+  if (urls.length > 8) errors.push('参考链接不能超过8个');
+  const valid = [];
+  for (const candidate of urls.slice(0, 8)) {
+    try {
+      const parsed = new URL(candidate);
+      if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+        throw new Error('unsupported URL');
+      }
+      valid.push(candidate);
+    } catch {
+      errors.push(`参考链接必须使用http或https：${candidate}`);
+    }
+  }
+  return valid;
 }
 
 function parseImageCount(value, errors) {
@@ -230,12 +261,17 @@ export async function parseExcelImport({ buffer, fileName }) {
 
     const metadata = parseMetadata(valueAt(worksheetRow, columns, 'metadata'), errors);
     const screening = parseScreening(worksheetRow, columns, errors);
+    const referenceText = cleanText(valueAt(worksheetRow, columns, 'referenceText'), 12_001);
+    if ([...referenceText].length > 12_000) errors.push('参考资料不能超过12000字');
     const input = {};
     if (category) input.category = category;
     if (targetAudience) input.targetAudience = targetAudience;
     if (promptSet) input.promptSet = promptSet;
     if (priority) input.priority = priority;
     if (metadata) input.metadata = metadata;
+    const referenceUrls = parseReferenceUrls(valueAt(worksheetRow, columns, 'referenceUrls'), errors);
+    if (referenceUrls.length > 0) input.referenceUrls = referenceUrls;
+    if (referenceText && [...referenceText].length <= 12_000) input.referenceText = referenceText;
     if (screening) {
       input.taskJudgement = {
         admitted: screening.admitted,

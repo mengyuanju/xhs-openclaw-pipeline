@@ -69,11 +69,17 @@ describe('visual knowledge worker adapter', () => {
         assetRoot: join(root, 'assets'),
         knowledgeRoot: join(root, 'knowledge'),
       });
-      const config = integration.getTaskConfig(task);
+      const config = await integration.getTaskConfig(task);
+      const resolved = config.resolveVisualReference({
+        category: '收纳',
+        tones: ['暖色'],
+        visualMedium: 'PHOTO',
+        informationDensity: 'LOW',
+      });
 
-      assert.equal(config.visualReference.versionId, item.latestVersion.id);
-      assert.match(config.visualReference.promptTemplate, /\{\{query\}\}/);
-      assert.deepEqual(config.visualReferenceImagePaths, [
+      assert.equal(resolved.visualReference.versionId, item.latestVersion.id);
+      assert.match(resolved.visualReference.promptTemplate, /\{\{query\}\}/);
+      assert.deepEqual(resolved.visualReferenceImagePaths, [
         join(root, 'knowledge', 'references', 'reference.png'),
       ]);
       assert.equal(store.getTaskVisualReference(task.id).versionId, item.latestVersion.id);

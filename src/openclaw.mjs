@@ -1,9 +1,114 @@
-import { existsSync } from 'node:fs';
+import { existsSync, unlinkSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
+import sharp from 'sharp';
 
 const DEFAULT_TEXT_MODEL = 'openai/gpt-5.6-sol';
 const DEFAULT_IMAGE_MODEL = 'openai/gpt-image-2';
+const DEFAULT_PREFLIGHT_TIMEOUT_MS = 120_000;
+const DEFAULT_VISION_TIMEOUT_MS = 300_000;
+const DEFAULT_IMAGE_TIMEOUT_MS = 300_000;
+const IMAGE_GENERATION_SIZE = '1152x1536';
+const TRANSPORT_RETRY_DELAYS_MS = [5_000, 15_000, 30_000];
+const TRANSIENT_TRANSPORT_ERROR = /\b(?:ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET)\b|fetch failed|connection error|other side closed/iu;
+const LEGACY_PROVIDER = /^openai-codex\//iu;
+
+function nonBlockingSleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function runProcessAsync(command, args, options) {
+  return new Promise((resolve) => {
+    execFile(command, args, options, (error, stdout, stderr) => {
+      resolve({
+        status: error ? (Number.isInteger(error.code) ? error.code : null) : 0,
+        stdout,
+        stderr,
+        error: error ?? undefined,
+      });
+    });
+  });
+}
+
+function removePartialOutput(path) {
+  if (!existsSync(path)) return;
+  try {
+    unlinkSync(path);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+}
+
+async function prepareVisionPreviews(inputPaths) {
+  const directory = await mkdtemp(join(tmpdir(), 'xhs-openclaw-vision-'));
+  const previewPaths = inputPaths.map((_inputPath, index) => join(directory, `vision-${index + 1}.jpg`));
+  try {
+    await Promise.all(inputPaths.map((inputPath, index) => sharp(inputPath, {
+      failOn: 'error',
+      limitInputPixels: 40_000_000,
+    })
+      .rotate()
+      .resize({
+        width: 900,
+        height: 1_200,
+        fit: 'inside',
+        withoutEnlargement: true,
+      })
+      .jpeg({
+        quality: 90,
+        chromaSubsampling: '4:4:4',
+        mozjpeg: true,
+      })
+      .toFile(previewPaths[index])));
+    return {
+      inputPaths: previewPaths,
+      cleanup: () => rm(directory, { recursive: true, force: true }),
+    };
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function failureDetail(result) {
+  const details = [];
+  const errorMessage = String(result?.error?.message ?? '').trim();
+  const stderr = String(result?.stderr ?? '').trim();
+  if (stderr) details.push(stderr);
+  if (errorMessage && !details.includes(errorMessage)) details.push(errorMessage);
+  return details.length > 0 ? details.join('\n') : `exit status ${result?.status}`;
+}
+
+async function runWithTransportRetryAsync({
+  runner,
+  nodePath,
+  args,
+  options,
+  optionsForAttempt,
+  sleep,
+  beforeRetry,
+  verifySuccess,
+}) {
+  let result;
+  for (let attempt = 0; attempt <= TRANSPORT_RETRY_DELAYS_MS.length; attempt += 1) {
+    result = await runner(nodePath, args, optionsForAttempt?.(attempt) ?? options);
+    const processSucceeded = !result.error && result.status === 0;
+    const succeeded = processSucceeded && (verifySuccess?.(result) ?? true);
+    if (succeeded) return result;
+    const missingExpectedOutput = processSucceeded && Boolean(verifySuccess);
+    const detail = missingExpectedOutput ? 'expected output file missing' : failureDetail(result);
+    const childProcessTimedOut = result.error?.code === 'ETIMEDOUT';
+    if (childProcessTimedOut || (!missingExpectedOutput && !TRANSIENT_TRANSPORT_ERROR.test(detail))
+      || attempt === TRANSPORT_RETRY_DELAYS_MS.length) {
+      return result;
+    }
+    beforeRetry?.();
+    await sleep(TRANSPORT_RETRY_DELAYS_MS[attempt]);
+  }
+  return result;
+}
 
 function redact(value) {
   return String(value ?? '')
@@ -24,6 +129,53 @@ function resolveEntryPath(explicitPath) {
     if (existsSync(candidate)) return candidate;
   }
   throw new Error('OpenClaw entry not found; set OPENCLAW_ENTRY to its dist/index.js path');
+}
+
+function validatedModelRef(value, fallback, name) {
+  const model = String(value || fallback).trim();
+  if (model.length < 3 || model.length > 200 || !model.includes('/') || /\s/u.test(model)) {
+    throw new TypeError(`${name} must be a provider/model reference`);
+  }
+  if (LEGACY_PROVIDER.test(model)) {
+    throw new TypeError(`${name} uses legacy provider openai-codex; migrate it to openai/<model>`);
+  }
+  return model;
+}
+
+function resolvedImageTimeoutMs(value) {
+  const configured = value ?? process.env.XHS_IMAGE_TIMEOUT_MS;
+  if (configured === undefined || String(configured).trim() === '') return DEFAULT_IMAGE_TIMEOUT_MS;
+  const timeoutMs = Number(configured);
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 30_000 || timeoutMs > 540_000) {
+    throw new RangeError('image timeoutMs must be an integer between 30000 and 540000');
+  }
+  return timeoutMs;
+}
+
+function withImageProxy(options) {
+  const proxyUrl = process.env.XHS_IMAGE_PROXY_URL?.trim();
+  if (!proxyUrl) return options;
+  return {
+    ...options,
+    env: {
+      ...process.env,
+      HTTP_PROXY: proxyUrl,
+      HTTPS_PROXY: proxyUrl,
+    },
+  };
+}
+
+function withModelProxy(options) {
+  const proxyUrl = process.env.XHS_MODEL_PROXY_URL?.trim();
+  if (!proxyUrl) return options;
+  return {
+    ...options,
+    env: {
+      ...process.env,
+      HTTP_PROXY: proxyUrl,
+      HTTPS_PROXY: proxyUrl,
+    },
+  };
 }
 
 function findText(value) {
@@ -67,15 +219,123 @@ function extractModelText(stdout) {
   }
 }
 
+function extractCapabilityResult(stdout, capability) {
+  const text = String(stdout ?? '').trim();
+  let envelope;
+  try {
+    envelope = JSON.parse(text);
+  } catch {
+    throw new Error(`OpenClaw ${capability} returned invalid JSON`);
+  }
+  const result = envelope?.outputs?.[0]?.result;
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    throw new Error(`OpenClaw ${capability} returned an invalid result`);
+  }
+  return { envelope, result };
+}
+
 export function createOpenClawClient({
   entryPath,
   nodePath = process.env.OPENCLAW_NODE_PATH || process.execPath,
   runner = spawnSync,
+  sleep = nonBlockingSleep,
+  asyncRunner,
+  asyncSleep,
 } = {}) {
   const resolvedEntry = resolveEntryPath(entryPath);
+  const resolvedAsyncRunner = asyncRunner
+    ?? (runner === spawnSync ? runProcessAsync : async (...args) => runner(...args));
+  const resolvedAsyncSleep = asyncSleep ?? (async (milliseconds) => sleep(milliseconds));
 
   return {
-    runText({ prompt, model = process.env.XHS_TEXT_MODEL || DEFAULT_TEXT_MODEL, timeoutMs = 180_000 }) {
+    checkReady({
+      textModel = process.env.XHS_TEXT_MODEL || DEFAULT_TEXT_MODEL,
+      imageModel = process.env.XHS_IMAGE_MODEL || DEFAULT_IMAGE_MODEL,
+      timeoutMs = DEFAULT_PREFLIGHT_TIMEOUT_MS,
+    } = {}) {
+      const validatedTextModel = validatedModelRef(textModel, DEFAULT_TEXT_MODEL, 'textModel');
+      const validatedImageModel = validatedModelRef(imageModel, DEFAULT_IMAGE_MODEL, 'imageModel');
+      if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 120_000) {
+        throw new RangeError('preflight timeoutMs must be between 1000 and 120000');
+      }
+      const result = runner(nodePath, [
+        resolvedEntry,
+        'models',
+        'status',
+        '--check',
+        '--json',
+      ], {
+        encoding: 'utf8',
+        windowsHide: true,
+        shell: false,
+        timeout: timeoutMs,
+        maxBuffer: 2 * 1024 * 1024,
+      });
+      if (result.error || result.status !== 0) {
+        const detail = redact(failureDetail(result));
+        throw new Error(`OpenClaw batch preflight failed: ${detail}`);
+      }
+      try {
+        JSON.parse(String(result.stdout || ''));
+      } catch {
+        throw new Error('OpenClaw batch preflight failed: models status returned invalid JSON');
+      }
+      return { textModel: validatedTextModel, imageModel: validatedImageModel };
+    },
+
+    async runWebSearch({
+      query,
+      provider = 'codex',
+      limit = 5,
+      timeoutMs = 90_000,
+    }) {
+      const normalizedQuery = typeof query === 'string' ? query.trim() : '';
+      const normalizedProvider = typeof provider === 'string' ? provider.trim().toLowerCase() : '';
+      if (normalizedQuery.length < 1 || normalizedQuery.length > 500) {
+        throw new RangeError('web search query must contain between 1 and 500 characters');
+      }
+      if (!/^[a-z0-9][a-z0-9-]{0,63}$/u.test(normalizedProvider)) {
+        throw new TypeError('web search provider is invalid');
+      }
+      if (!Number.isInteger(limit) || limit < 1 || limit > 10) {
+        throw new RangeError('web search limit must be an integer between 1 and 10');
+      }
+      if (!Number.isInteger(timeoutMs) || timeoutMs < 5_000 || timeoutMs > 120_000) {
+        throw new RangeError('web search timeoutMs must be between 5000 and 120000');
+      }
+      const args = [
+        resolvedEntry,
+        'infer',
+        'web',
+        'search',
+        '--provider',
+        normalizedProvider,
+        '--query',
+        normalizedQuery,
+        '--limit',
+        String(limit),
+        '--json',
+      ];
+      const processOptions = withModelProxy({
+        encoding: 'utf8',
+        windowsHide: true,
+        shell: false,
+        timeout: timeoutMs,
+        maxBuffer: 5 * 1024 * 1024,
+      });
+      const processResult = await resolvedAsyncRunner(nodePath, args, processOptions);
+      if (processResult.error || processResult.status !== 0) {
+        const detail = redact(failureDetail(processResult));
+        throw new Error(`OpenClaw web search failed (${normalizedProvider}): ${detail}`);
+      }
+      const parsed = extractCapabilityResult(processResult.stdout, 'web search');
+      return {
+        provider: String(parsed.envelope.provider ?? parsed.result.provider ?? normalizedProvider),
+        result: parsed.result,
+      };
+    },
+
+    async runText({ prompt, model = process.env.XHS_TEXT_MODEL || DEFAULT_TEXT_MODEL, timeoutMs = 180_000 }) {
       if (typeof prompt !== 'string' || prompt.length === 0 || prompt.length > 30_000) {
         throw new RangeError('prompt must contain between 1 and 30000 characters');
       }
@@ -91,31 +351,41 @@ export function createOpenClawClient({
         '--prompt',
         prompt,
       ];
-      const result = runner(nodePath, args, {
+      const processOptions = {
         encoding: 'utf8',
         windowsHide: true,
         shell: false,
         timeout: timeoutMs,
         maxBuffer: 10 * 1024 * 1024,
+      };
+      const result = await runWithTransportRetryAsync({
+        runner: resolvedAsyncRunner,
+        nodePath,
+        args,
+        sleep: resolvedAsyncSleep,
+        options: processOptions,
+        optionsForAttempt: (attempt) => (attempt === 0
+          ? withModelProxy(processOptions)
+          : processOptions),
       });
       if (result.error || result.status !== 0) {
-        const detail = redact(result.stderr || result.error?.message || `exit status ${result.status}`);
+        const detail = redact(failureDetail(result));
         throw new Error(`OpenClaw text inference failed: ${detail}`);
       }
       return { rawText: extractModelText(result.stdout), model };
     },
 
-    runVision({
+    async runVision({
       prompt,
       inputPaths,
       model = process.env.XHS_VISION_MODEL || process.env.XHS_TEXT_MODEL || DEFAULT_TEXT_MODEL,
-      timeoutMs = 180_000,
+      timeoutMs = DEFAULT_VISION_TIMEOUT_MS,
     }) {
       if (typeof prompt !== 'string' || prompt.length === 0 || prompt.length > 30_000) {
         throw new RangeError('vision prompt must contain between 1 and 30000 characters');
       }
-      if (!Array.isArray(inputPaths) || inputPaths.length < 1 || inputPaths.length > 3) {
-        throw new RangeError('vision inference requires between 1 and 3 input files');
+      if (!Array.isArray(inputPaths) || inputPaths.length < 1 || inputPaths.length > 5) {
+        throw new RangeError('vision inference requires between 1 and 5 input files');
       }
       for (const inputPath of inputPaths) {
         if (typeof inputPath !== 'string' || inputPath.length === 0 || inputPath.length > 1_000
@@ -123,39 +393,54 @@ export function createOpenClawClient({
           throw new TypeError('vision input file is invalid');
         }
       }
-      const fileArgs = inputPaths.flatMap((inputPath) => ['--file', inputPath]);
-      const args = [
-        resolvedEntry,
-        'infer',
-        'model',
-        'run',
-        '--local',
-        '--model',
-        model,
-        '--json',
-        ...fileArgs,
-        '--prompt',
-        prompt,
-      ];
-      const result = runner(nodePath, args, {
-        encoding: 'utf8',
-        windowsHide: true,
-        shell: false,
-        timeout: timeoutMs,
-        maxBuffer: 10 * 1024 * 1024,
-      });
-      if (result.error || result.status !== 0) {
-        const detail = redact(result.stderr || result.error?.message || `exit status ${result.status}`);
-        throw new Error(`OpenClaw vision inference failed: ${detail}`);
+      const previews = await prepareVisionPreviews(inputPaths);
+      try {
+        const fileArgs = previews.inputPaths.flatMap((inputPath) => ['--file', inputPath]);
+        const args = [
+          resolvedEntry,
+          'infer',
+          'model',
+          'run',
+          '--local',
+          '--model',
+          model,
+          '--json',
+          ...fileArgs,
+          '--prompt',
+          prompt,
+        ];
+        const processOptions = {
+          encoding: 'utf8',
+          windowsHide: true,
+          shell: false,
+          timeout: timeoutMs,
+          maxBuffer: 10 * 1024 * 1024,
+        };
+        const result = await runWithTransportRetryAsync({
+          runner: resolvedAsyncRunner,
+          nodePath,
+          args,
+          sleep: resolvedAsyncSleep,
+          options: processOptions,
+          optionsForAttempt: (attempt) => (attempt === 0
+            ? withModelProxy(processOptions)
+            : processOptions),
+        });
+        if (result.error || result.status !== 0) {
+          const detail = redact(failureDetail(result));
+          throw new Error(`OpenClaw vision inference failed: ${detail}`);
+        }
+        return { rawText: extractModelText(result.stdout), model };
+      } finally {
+        await previews.cleanup();
       }
-      return { rawText: extractModelText(result.stdout), model };
     },
 
-    runImage({
+    async runImage({
       prompt,
       outputPath,
       model = process.env.XHS_IMAGE_MODEL || DEFAULT_IMAGE_MODEL,
-      timeoutMs = 180_000,
+      timeoutMs,
     }) {
       if (typeof prompt !== 'string' || prompt.length < 10 || prompt.length > 8_000) {
         throw new RangeError('image prompt must contain between 10 and 8000 characters');
@@ -163,6 +448,7 @@ export function createOpenClawClient({
       if (typeof outputPath !== 'string' || outputPath.length === 0 || outputPath.length > 1_000) {
         throw new TypeError('outputPath must be a non-empty string');
       }
+      const resolvedTimeoutMs = resolvedImageTimeoutMs(timeoutMs);
       const args = [
         resolvedEntry,
         'infer',
@@ -173,26 +459,38 @@ export function createOpenClawClient({
         '--count',
         '1',
         '--size',
-        '1024x1536',
+        IMAGE_GENERATION_SIZE,
         '--output-format',
         'png',
         '--output',
         outputPath,
         '--timeout-ms',
-        String(timeoutMs),
+        String(resolvedTimeoutMs),
         '--json',
         '--prompt',
         prompt,
       ];
-      const result = runner(nodePath, args, {
+      const processOptions = {
         encoding: 'utf8',
         windowsHide: true,
         shell: false,
-        timeout: timeoutMs + 10_000,
+        timeout: resolvedTimeoutMs + 10_000,
         maxBuffer: 10 * 1024 * 1024,
+      };
+      const result = await runWithTransportRetryAsync({
+        runner: resolvedAsyncRunner,
+        nodePath,
+        args,
+        sleep: resolvedAsyncSleep,
+        beforeRetry: () => removePartialOutput(outputPath),
+        verifySuccess: () => existsSync(outputPath),
+        options: processOptions,
+        optionsForAttempt: (attempt) => (attempt === 0
+          ? withImageProxy(processOptions)
+          : processOptions),
       });
       if (result.error || result.status !== 0) {
-        const detail = redact(result.stderr || result.error?.message || `exit status ${result.status}`);
+        const detail = redact(failureDetail(result));
         throw new Error(`OpenClaw image generation failed: ${detail}`);
       }
       if (!existsSync(outputPath)) {
@@ -201,12 +499,12 @@ export function createOpenClawClient({
       return { outputPath, model };
     },
 
-    runImageEdit({
+    async runImageEdit({
       prompt,
       inputPaths,
       outputPath,
       model = process.env.XHS_IMAGE_MODEL || DEFAULT_IMAGE_MODEL,
-      timeoutMs = 180_000,
+      timeoutMs,
     }) {
       if (typeof prompt !== 'string' || prompt.length < 10 || prompt.length > 8_000) {
         throw new RangeError('image edit prompt must contain between 10 and 8000 characters');
@@ -223,6 +521,7 @@ export function createOpenClawClient({
       if (typeof outputPath !== 'string' || outputPath.length === 0 || outputPath.length > 1_000) {
         throw new TypeError('outputPath must be a non-empty string');
       }
+      const resolvedTimeoutMs = resolvedImageTimeoutMs(timeoutMs);
       const fileArgs = inputPaths.flatMap((inputPath) => ['--file', inputPath]);
       const args = [
         resolvedEntry,
@@ -233,26 +532,38 @@ export function createOpenClawClient({
         model,
         ...fileArgs,
         '--size',
-        '1024x1536',
+        IMAGE_GENERATION_SIZE,
         '--output-format',
         'png',
         '--output',
         outputPath,
         '--timeout-ms',
-        String(timeoutMs),
+        String(resolvedTimeoutMs),
         '--json',
         '--prompt',
         prompt,
       ];
-      const result = runner(nodePath, args, {
+      const processOptions = {
         encoding: 'utf8',
         windowsHide: true,
         shell: false,
-        timeout: timeoutMs + 10_000,
+        timeout: resolvedTimeoutMs + 10_000,
         maxBuffer: 10 * 1024 * 1024,
+      };
+      const result = await runWithTransportRetryAsync({
+        runner: resolvedAsyncRunner,
+        nodePath,
+        args,
+        sleep: resolvedAsyncSleep,
+        beforeRetry: () => removePartialOutput(outputPath),
+        verifySuccess: () => existsSync(outputPath),
+        options: processOptions,
+        optionsForAttempt: (attempt) => (attempt === 0
+          ? withImageProxy(processOptions)
+          : processOptions),
       });
       if (result.error || result.status !== 0) {
-        const detail = redact(result.stderr || result.error?.message || `exit status ${result.status}`);
+        const detail = redact(failureDetail(result));
         throw new Error(`OpenClaw image edit failed: ${detail}`);
       }
       if (!existsSync(outputPath)) {

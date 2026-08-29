@@ -10,6 +10,8 @@ it('worker run API requires explicit live-cost confirmation and bounds work by q
 
   assert.match(route, /LIVE_MODEL_COST_ACCEPTED/);
   assert.match(route, /MAX_WEB_WORKER_TASKS/);
+  assert.match(launcher, /MAX_TASK_CONCURRENCY\s*=\s*2/);
+  assert.match(launcher, /--concurrency/);
   assert.match(route, /mutation:\s*true/);
   assert.match(route, /tasks\.pending/);
   assert.match(route, /tasks\.processing/);

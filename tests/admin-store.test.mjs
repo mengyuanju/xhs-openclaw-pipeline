@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
 
 import { createAdminStore } from '../src/admin/admin-store.mjs';
+import { createQueue } from '../src/queue.mjs';
 
 describe('admin prompt versions', () => {
   it('seeds all prompt kinds and publishes a new immutable version', () => {
@@ -377,6 +378,82 @@ describe('admin import batches', () => {
       assert.equal(task.config.imageCount, 3);
       assert.match(task.config.textPromptSha256, /^[a-f0-9]{64}$/);
       assert.match(task.config.imagePromptSha256, /^[a-f0-9]{64}$/);
+
+      const detail = store.getTask(task.id);
+      assert.equal(detail.config.textPromptContent, undefined,
+        '审核详情不得向浏览器发送文案系统提示词');
+      assert.equal(detail.config.imagePromptContent, undefined,
+        '审核详情不得向浏览器发送图片系统提示词');
+      assert.equal(task.config.textPromptContent, undefined, 'task lists must not include full prompts');
+      assert.equal(task.config.imagePromptContent, undefined, 'task lists must not include full prompts');
+    } finally {
+      store.close();
+    }
+  });
+
+  it('admits previously filtered rows after commit without duplicating existing tasks', () => {
+    const store = createAdminStore(':memory:');
+    try {
+      const batch = store.createImportBatch({
+        name: '已提交批次补充放行',
+        sourceFileName: 'late-admission.xlsx',
+        rows: [
+          {
+            rowNumber: 2,
+            externalId: 'already-admitted',
+            query: '两款投影仪怎么选',
+            input: {},
+            imageCount: 3,
+            referenceImageFiles: [],
+            screening: {
+              admitted: true,
+              demandLevel: 'STRONG',
+              reason: '存在明确的对比决策需求。',
+              source: 'EXCEL',
+            },
+            errors: [],
+          },
+          {
+            rowNumber: 3,
+            externalId: 'late-admitted',
+            query: '今天上海天气',
+            input: {},
+            imageCount: 3,
+            referenceImageFiles: [],
+            screening: {
+              admitted: false,
+              demandLevel: 'WEAK',
+              reason: '一句话即可闭环。',
+              source: 'EXCEL',
+            },
+            errors: [],
+          },
+        ],
+      });
+
+      assert.equal(store.commitImportBatch(batch.id).createdTasks, 1);
+      const filteredRow = store.getImportBatch(batch.id).rows.find(
+        (row) => row.externalId === 'late-admitted',
+      );
+      store.screenImportBatch(batch.id, {
+        decisions: [{
+          rowId: filteredRow.id,
+          demandLevel: 'MEDIUM',
+          reason: '用户明确要求本批次跳过需求过滤。',
+        }],
+      });
+
+      const supplemented = store.commitImportBatch(batch.id);
+      assert.equal(supplemented.createdTasks, 2);
+      assert.equal(supplemented.wasAlreadyCommitted, true);
+      assert.equal(store.commitImportBatch(batch.id).createdTasks, 2);
+      assert.equal(store.countTasks(), 2);
+      assert.deepEqual(
+        store.listTasks({ page: 1, pageSize: 10 }).data
+          .map((task) => task.input.taskJudgement.demandLevel)
+          .sort(),
+        ['medium', 'strong'],
+      );
     } finally {
       store.close();
     }
@@ -439,6 +516,75 @@ function createReviewTask(store) {
   return store.listTasks({ page: 1, pageSize: 1 }).data[0];
 }
 
+function createReviewTaskBatch(store, name, queries) {
+  const batch = store.createImportBatch({
+    name,
+    sourceFileName: `${name}.xlsx`,
+    rows: queries.map((query, index) => ({
+      rowNumber: index + 2,
+      externalId: `${name}-${index + 1}`,
+      query,
+      input: {},
+      imageCount: 3,
+      referenceImageFiles: [],
+      screening: { admitted: true, demandLevel: 'STRONG', reason: '测试准入行', source: 'EXCEL' },
+      errors: [],
+    })),
+  });
+  store.commitImportBatch(batch.id);
+  return store.getImportBatch(batch.id).rows.map((row) => store.getTask(row.taskId));
+}
+
+describe('admin task recovery state', () => {
+  it('exposes recovery state and resets it on an explicit manual retry', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'xhs-admin-recovery-'));
+    const databasePath = join(directory, 'queue.db');
+    let store = createAdminStore(databasePath);
+    let queue;
+    try {
+      const task = createReviewTask(store);
+      store.close();
+      store = null;
+      queue = createQueue(databasePath);
+      let claimed = queue.claimNext({ workerId: 'worker-a' });
+      queue.scheduleRetry(claimed.id, {
+        workerId: 'worker-a',
+        error: 'fetch failed',
+        failureClass: 'TRANSIENT',
+        delayMs: 0,
+      });
+      claimed = queue.claimNext({ workerId: 'worker-a' });
+      queue.fail(claimed.id, {
+        workerId: 'worker-a',
+        error: '401 token_invalidated',
+        failureClass: 'AUTH',
+        manualRequired: true,
+      });
+      queue.close();
+      queue = null;
+
+      store = createAdminStore(databasePath);
+      const failed = store.getTask(task.id);
+      assert.equal(failed.recoveryAttempts, 1);
+      assert.equal(failed.recoveryTotalAttempts, 1);
+      assert.equal(failed.recoveryClass, 'AUTH');
+      assert.equal(failed.manualRequired, true);
+
+      const retried = store.retryTask(task.id);
+      assert.equal(retried.status, 'pending');
+      assert.equal(retried.recoveryAttempts, 0);
+      assert.equal(retried.recoveryTotalAttempts, 0);
+      assert.equal(retried.recoveryClass, null);
+      assert.equal(retried.nextAttemptAt, null);
+      assert.equal(retried.manualRequired, false);
+    } finally {
+      queue?.close();
+      store?.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('admin review revisions', () => {
   it('preserves text revisions and invalidates approval after a new edit', () => {
     const store = createAdminStore(':memory:');
@@ -461,17 +607,28 @@ describe('admin review revisions', () => {
       assert.equal(store.getTask(task.id).textRevisions.length, 2);
       assert.equal(store.getTask(task.id).config.reviewStatus, 'WAITING_REVIEW');
 
-      store.addAsset({
-        taskId: task.id,
-        kind: 'GENERATED',
-        parentAssetId: null,
-        fileName: '01-hero.png',
-        relativePath: '1/attempt-1/01-hero.png',
-        mimeType: 'image/png',
-        width: 1080,
-        height: 1440,
-        sha256: 'a'.repeat(64),
-        source: 'mock',
+      for (let pageIndex = 1; pageIndex <= 3; pageIndex += 1) {
+        store.addAsset({
+          taskId: task.id,
+          kind: 'GENERATED',
+          parentAssetId: null,
+          fileName: `0${pageIndex}-page.png`,
+          relativePath: `1/attempt-1/0${pageIndex}-page.png`,
+          mimeType: 'image/png',
+          width: 1080,
+          height: 1440,
+          sha256: String(pageIndex).repeat(64),
+          source: 'openclaw',
+          sourceTextRevisionId: manual.id,
+          pageIndex,
+          visualPlanSha256: 'd'.repeat(64),
+          alignmentStatus: 'PASSED',
+          alignmentResult: { passed: true },
+        });
+      }
+      assert.deepEqual(store.listTasks({ page: 1, pageSize: 20 }).data[0].exportReadiness, {
+        assetCount: 3,
+        alignedAssetCount: 3,
       });
       store.setReviewStatus(task.id, { status: 'APPROVED', note: '可以交付' });
       assert.equal(store.getTask(task.id).config.reviewStatus, 'APPROVED');
@@ -484,6 +641,12 @@ describe('admin review revisions', () => {
       });
       const detail = store.getTask(task.id);
       assert.equal(detail.config.reviewStatus, 'WAITING_REVIEW');
+      assert.ok(detail.assets.filter((asset) => asset.kind === 'GENERATED')
+        .every((asset) => asset.alignmentStatus === 'STALE'));
+      assert.throws(
+        () => store.setReviewStatus(task.id, { status: 'APPROVED', note: '旧图不应继续通过' }),
+        /current text revision.*aligned image set/i,
+      );
       assert.ok(detail.auditLogs.some((log) => log.action === 'REVIEW_APPROVE'));
       assert.ok(detail.auditLogs.some((log) => log.action === 'TEXT_REVISION_CREATE'));
     } finally {
@@ -491,7 +654,7 @@ describe('admin review revisions', () => {
     }
   });
 
-  it('refuses approval until text and at least one delivery image exist', () => {
+  it('refuses approval until text and a complete aligned delivery image set exist', () => {
     const store = createAdminStore(':memory:');
     try {
       const task = createReviewTask(store);
@@ -507,8 +670,23 @@ describe('admin review revisions', () => {
       });
       assert.throws(
         () => store.setReviewStatus(task.id, { status: 'APPROVED', note: '' }),
-        /delivery image is required/i,
+        /aligned image set is required/i,
       );
+    } finally {
+      store.close();
+    }
+  });
+
+  it('persists the image count selected from finalized content', () => {
+    const store = createAdminStore(':memory:');
+    try {
+      const task = createReviewTask(store);
+
+      store.setTaskImageCount(task.id, 5);
+
+      assert.equal(store.getTask(task.id).config.imageCount, 5);
+      assert.ok(store.getTask(task.id).auditLogs.some((log) => log.action === 'TASK_IMAGE_COUNT_SELECT'));
+      assert.throws(() => store.setTaskImageCount(task.id, 2), /between 3 and 5/i);
     } finally {
       store.close();
     }
@@ -543,11 +721,46 @@ describe('admin console queries', () => {
       assert.equal(waiting.data[0].id, secondTask.id);
       assert.notEqual(waiting.data[0].id, firstTask.id);
 
+      const firstBatchTasks = store.listTasks({
+        page: 1,
+        pageSize: 20,
+        importBatchId: firstTask.config.importBatchId,
+      });
+      assert.deepEqual(firstBatchTasks.data.map((task) => task.id), [firstTask.id]);
+      assert.equal(firstBatchTasks.pagination.totalItems, 1);
+
       const stats = store.getDashboardStats();
       assert.equal(stats.tasks.total, 2);
       assert.equal(stats.tasks.pending, 2);
       assert.equal(stats.reviews.waiting, 1);
       assert.equal(stats.imports.committed, 2);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('finds adjacent review tasks only inside the current import batch', () => {
+    const store = createAdminStore(':memory:');
+    try {
+      const [oldest, middle, newest] = createReviewTaskBatch(
+        store,
+        '同批次审核',
+        ['第一题', '第二题', '第三题'],
+      );
+      createReviewTask(store);
+
+      assert.deepEqual(store.getAdjacentTaskIds(newest.id), {
+        previousTaskId: null,
+        nextTaskId: middle.id,
+      });
+      assert.deepEqual(store.getAdjacentTaskIds(middle.id), {
+        previousTaskId: newest.id,
+        nextTaskId: oldest.id,
+      });
+      assert.deepEqual(store.getAdjacentTaskIds(oldest.id), {
+        previousTaskId: middle.id,
+        nextTaskId: null,
+      });
     } finally {
       store.close();
     }

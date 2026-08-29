@@ -26,13 +26,83 @@ test('mobile navigation stays compact and exposes the active page', async () => 
   assert.match(styles, /@media \(max-width: 760px\)[\s\S]*\.nav-item \{[^}]*white-space: nowrap/);
 });
 
+test('visual knowledge is the final item in the primary navigation', async () => {
+  const navigation = await readFile(projectFile('app/components/side-nav.tsx'), 'utf8');
+  const itemsSource = navigation.slice(navigation.indexOf('const items = ['), navigation.indexOf('];'));
+
+  assert.equal(itemsSource.lastIndexOf("href: '/knowledge'"), itemsSource.lastIndexOf('href:'));
+});
+
+test('primary section pages omit visible display headlines while keeping an accessible page name', async () => {
+  const sectionPages = [
+    ['app/page.tsx', '工作台'],
+    ['app/imports/page.tsx', '选题导入'],
+    ['app/prompts/page.tsx', '提示词'],
+    ['app/tasks/page.tsx', '内容审核'],
+    ['app/analytics/page.tsx', '数据统计'],
+    ['app/settings/page.tsx', '生产配置'],
+    ['app/knowledge/page.tsx', '视觉知识库'],
+  ];
+
+  for (const [path, accessibleName] of sectionPages) {
+    const page = await readFile(projectFile(path), 'utf8');
+    assert.match(page, new RegExp(`<h1 className="sr-only">${accessibleName}<\\/h1>`));
+    assert.doesNotMatch(page, /<h1(?! className="sr-only")/);
+  }
+});
+
 test('task rows provide readable mobile card labels instead of narrow table columns', async () => {
-  const tasksPage = await readFile(projectFile('app/tasks/page.tsx'), 'utf8');
+  const [tasksPage, taskDetail, taskTiming, taskRefresh, styles] = await Promise.all([
+    readFile(projectFile('app/tasks/page.tsx'), 'utf8'),
+    readFile(projectFile('app/tasks/[id]/page.tsx'), 'utf8'),
+    readFile(projectFile('app/components/task-timing.tsx'), 'utf8'),
+    readFile(projectFile('app/components/task-progress-refresh.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+  ]);
 
   assert.match(tasksPage, /className="table-wrap mobile-cards task-table-wrap"/);
-  for (const label of ['ID', '选题', '外部 ID', '图片数', '生成状态', '审核状态']) {
+  for (const label of ['ID', '选题', '外部 ID', '图片数', '生成状态', '审核状态', '耗时']) {
     assert.match(tasksPage, new RegExp(`data-label="${label}"`));
   }
+  assert.match(tasksPage, /TaskTiming/);
+  assert.match(tasksPage, /TaskProgressRefresh/);
+  assert.match(taskDetail, /TaskTiming/);
+  assert.match(taskDetail, /TaskProgressRefresh/);
+  assert.match(taskDetail, /getAdjacentTaskIds/);
+  assert.match(taskDetail, /aria-label="审核题目导航"/);
+  assert.match(taskDetail, />上一题<\/Link>/);
+  assert.match(taskDetail, />下一题<\/Link>/);
+  assert.match(taskDetail, />上一题<\/button>/);
+  assert.match(taskDetail, />下一题<\/button>/);
+  assert.match(taskDetail, /href=\{`\/tasks\/\$\{adjacent\.previousTaskId\}`\}/);
+  assert.match(taskDetail, /href=\{`\/tasks\/\$\{adjacent\.nextTaskId\}`\}/);
+  assert.match(taskTiming, /实际用时/);
+  assert.match(taskTiming, /预计还需/);
+  assert.match(taskTiming, /排队第/);
+  assert.match(taskTiming, /首条完成后自动估算/);
+  assert.match(taskTiming, /aria-live="off"/);
+  assert.match(taskRefresh, /router\.refresh\(\)/);
+  assert.match(taskRefresh, /document\.visibilityState/);
+  assert.match(tasksPage, /自动 3–5/);
+  assert.match(styles, /\.task-review-nav/);
+});
+
+test('task review stays scoped to one import batch across filters and navigation', async () => {
+  const [tasksPage, taskDetail, tasksRoute] = await Promise.all([
+    readFile(projectFile('app/tasks/page.tsx'), 'utf8'),
+    readFile(projectFile('app/tasks/[id]/page.tsx'), 'utf8'),
+    readFile(projectFile('app/api/tasks/route.ts'), 'utf8'),
+  ]);
+
+  assert.match(tasksPage, /listImportBatches/);
+  assert.match(tasksPage, /importBatchId: selectedBatchId/);
+  assert.match(tasksPage, /id="batchId" name="batchId"/);
+  assert.match(tasksPage, /任务批次/);
+  assert.match(tasksPage, /query\.set\('batchId', String\(selectedBatchId\)\)/);
+  assert.match(tasksPage, /href=\{`\/tasks\/\$\{task\.id\}`\}/);
+  assert.doesNotMatch(tasksPage, /<option value="">全部任务<\/option>/);
+  assert.match(taskDetail, /task\.config\.importBatchId/);
+  assert.match(tasksRoute, /importBatchId: url\.searchParams\.get\('batchId'\)/);
 });
 
 test('dashboard and import tables use the same readable mobile card treatment', async () => {
@@ -74,6 +144,42 @@ test('Excel import exposes demand screening as a required step before queue comm
   assert.doesNotMatch(importWorkbench, /const messageIsError = message\.includes/);
 });
 
+test('Excel import focuses one progressive step at a time instead of expanding the full workflow', async () => {
+  const [importsPage, importWorkbench, flowPresentation, demandScreening, styles] = await Promise.all([
+    readFile(projectFile('app/imports/page.tsx'), 'utf8'),
+    readFile(projectFile('app/imports/import-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/imports/import-flow-presentation.tsx'), 'utf8'),
+    readFile(projectFile('app/imports/demand-screening-panel.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+  ]);
+  const importFlow = `${importWorkbench}\n${flowPresentation}`;
+
+  assert.match(importFlow, /type ImportFlowStep = 1 \| 2 \| 3 \| 4/);
+  assert.match(importWorkbench, /aria-label="Excel 导入流程"/);
+  assert.match(flowPresentation, /aria-expanded=\{isActive\}/);
+  assert.match(flowPresentation, /aria-current=\{isActive \? 'step' : undefined\}/);
+  assert.match(flowPresentation, /isActive && <div className="import-flow-step-body">/);
+  assert.match(importWorkbench, /scrollIntoView\(\{ behavior: 'auto', block: 'start' \}\)/);
+  assert.match(importWorkbench, /onComplete=\{\(\) => \{[\s\S]*?setActiveStep\(3\)/);
+  assert.match(importWorkbench, /available=\{Boolean\(committed \|\| \(batch && screeningComplete && activeStep >= 3\)\)\}/);
+  assert.match(importWorkbench, /setActiveStep\(4\)/);
+  assert.match(demandScreening, /dirtyRowIds\.size === 0 && pendingScreeningRows === 0/);
+  assert.match(demandScreening, /确认复核，下一步/);
+  assert.match(importsPage, /<details className="panel recent-imports-disclosure" open=\{!initialBatch\}>/);
+  assert.match(styles, /\.import-flow-step\.is-active/);
+  assert.match(styles, /\.import-flow-step-body \.screening-panel\s*\{[^}]*max-height: calc\(100vh -/);
+  assert.match(styles, /\.import-flow-step-body \.screening-table-wrap\s*\{[^}]*overflow: auto/);
+});
+
+test('Excel step switches settle before paint without a second smooth scroll', async () => {
+  const importWorkbench = await readFile(projectFile('app/imports/import-workbench.tsx'), 'utf8');
+
+  assert.match(importWorkbench, /useLayoutEffect\(\(\) => \{/);
+  assert.match(importWorkbench, /scrollIntoView\(\{ behavior: 'auto', block: 'start' \}\)/);
+  assert.doesNotMatch(importWorkbench, /requestAnimationFrame/);
+  assert.doesNotMatch(importWorkbench, /behavior:\s*'smooth'|\?\s*'auto'\s*:\s*'smooth'/);
+});
+
 test('file uploads use the branded, keyboard-focusable control', async () => {
   const [importWorkbench, knowledgeWorkbench, styles] = await Promise.all([
     readFile(projectFile('app/imports/import-workbench.tsx'), 'utf8'),
@@ -88,7 +194,11 @@ test('file uploads use the branded, keyboard-focusable control', async () => {
 });
 
 test('review decision appears before the image-heavy editor on narrow screens', async () => {
-  const reviewPanel = await readFile(projectFile('app/tasks/[id]/review-panel.tsx'), 'utf8');
+  const [reviewPanel, imageBatch] = await Promise.all([
+    readFile(projectFile('app/tasks/[id]/review-panel.tsx'), 'utf8'),
+    readFile(projectFile('app/tasks/[id]/image-generation-batch.tsx'), 'utf8'),
+  ]);
+  const reviewFlow = `${reviewPanel}\n${imageBatch}`;
   const decisionIndex = reviewPanel.indexOf('review-decision');
   const assetsIndex = reviewPanel.indexOf('review-assets');
 
@@ -96,6 +206,207 @@ test('review decision appears before the image-heavy editor on narrow screens', 
   assert.ok(assetsIndex >= 0, 'image editor needs a stable layout class');
   assert.ok(decisionIndex < assetsIndex, 'review decision must precede the image editor in source order');
   assert.doesNotMatch(reviewPanel, /<button(?![^>]*type=)[^>]*onClick=/);
+  assert.match(reviewPanel, /alignmentStatus/);
+  assert.match(reviewFlow, /ocrConfidence/);
+  assert.match(reviewPanel, /完整图集均通过当前文案版本的图文匹配验收/);
+  assert.match(reviewPanel, /qualityScoreLabel/);
+  assert.match(reviewPanel, /失败预览/);
+  assert.match(reviewPanel, /不可审批.*不可作为正式交付导出/su);
+  assert.match(reviewPanel, /3 分 · 优质/);
+  assert.match(reviewFlow, /自动 3–5 张/);
+});
+
+test('review images version their URLs with the immutable asset content hash', async () => {
+  const imageBatch = await readFile(projectFile('app/tasks/[id]/image-generation-batch.tsx'), 'utf8');
+
+  assert.match(imageBatch, /\/api\/assets\/\$\{asset\.id\}\?v=\$\{asset\.sha256\}/);
+});
+
+test('task details display per-run user prompts and the generated visual plan', async () => {
+  const [taskDetail, imageBatch, promptTrace, visualPlanTrace, styles] = await Promise.all([
+    readFile(projectFile('app/tasks/[id]/page.tsx'), 'utf8'),
+    readFile(projectFile('app/tasks/[id]/image-generation-batch.tsx'), 'utf8'),
+    readFile(projectFile('app/tasks/[id]/generation-prompt-trace.tsx'), 'utf8'),
+    readFile(projectFile('app/tasks/[id]/generation-visual-plan.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+  ]);
+  const promptDisplay = `${imageBatch}\n${promptTrace}\n${visualPlanTrace}`;
+
+  assert.match(promptDisplay, /文案用户提示词/);
+  assert.match(promptDisplay, /第 \$\{prompt\.pageIndex\} 张图片用户提示词/);
+  assert.match(promptDisplay, /run\?\.promptTrace/);
+  assert.match(promptDisplay, /contentKind !== 'USER_PROMPT'/);
+  assert.match(promptDisplay, /imagePrompts\.map/);
+  assert.doesNotMatch(promptDisplay, /content=\{config\?\.textPromptContent\}/);
+  assert.doesNotMatch(promptDisplay, /content=\{config\?\.imagePromptContent\}/);
+  assert.match(promptDisplay, /历史批次未单独保存用户提示词/);
+  assert.doesNotMatch(promptDisplay, /系统模板 v#/);
+  assert.doesNotMatch(imageBatch, /<dt>文本提示词<\/dt>/);
+  assert.doesNotMatch(imageBatch, /<dt>图片提示词<\/dt>/);
+  assert.match(imageBatch, /查看本批次用户提示词/);
+  assert.match(imageBatch, /查看本批次 VisualPlan/);
+  assert.match(imageBatch, /<VisualPlanTrace visualPlan=\{run\?\.visualPlan\}/);
+  assert.match(visualPlanTrace, /JSON\.stringify\(visualPlan, null, 2\)/);
+  assert.match(visualPlanTrace, /历史批次未保存 VisualPlan/);
+  assert.match(visualPlanTrace, /aria-label="本批次 VisualPlan 完整内容"/);
+  assert.match(taskDetail, /attachGenerationVisualPlans/);
+  assert.match(promptDisplay, /className="prompt-content"/);
+  assert.match(promptDisplay, /aria-label=\{`\$\{label\}完整内容`\}/);
+  assert.match(styles, /\.prompt-content\s*\{/);
+  assert.match(styles, /\.prompt-content\s*\{[^}]*overflow: auto/);
+  assert.match(styles, /\.prompt-content\s*\{[^}]*white-space: pre-wrap/);
+});
+
+test('waiting and approved reviews expose ZIP downloads while blocked states explain why', async () => {
+  const [taskDetail, reviewPanel] = await Promise.all([
+    readFile(projectFile('app/tasks/[id]/page.tsx'), 'utf8'),
+    readFile(projectFile('app/tasks/[id]/review-panel.tsx'), 'utf8'),
+  ]);
+
+  assert.match(taskDetail, /getTaskExportAvailability/);
+  assert.match(reviewPanel, /exportAvailability\.canExport/);
+  assert.match(reviewPanel, /href=\{`\/api\/tasks\/\$\{task\.id\}\/export`\}/);
+  assert.match(reviewPanel, /download=\{`xhs-task-\$\{task\.id\}\.zip`\}/);
+  assert.match(reviewPanel, />导出交付包<\/a>/);
+  assert.match(reviewPanel, /aria-describedby="task-export-reason"/);
+  assert.match(reviewPanel, /暂不可导出：\{exportAvailability\.reason\}/);
+  assert.match(reviewPanel, /待审核和已通过任务均可下载/);
+});
+
+test('task rows enable eligible ZIP downloads and show a visible reason when blocked', async () => {
+  const tasksPage = await readFile(projectFile('app/tasks/page.tsx'), 'utf8');
+
+  assert.match(tasksPage, /getTaskExportAvailability/);
+  assert.match(tasksPage, /task\.exportAvailability\.canExport/);
+  assert.match(tasksPage, /href=\{`\/api\/tasks\/\$\{task\.id\}\/export`\}/);
+  assert.match(tasksPage, /download=\{`xhs-task-\$\{task\.id\}\.zip`\}/);
+  assert.match(tasksPage, />导出 ZIP<\/a>/);
+  assert.match(tasksPage, /aria-describedby=\{`task-export-reason-\$\{task\.id\}`\}/);
+  assert.match(tasksPage, /不可导出：\{task\.exportAvailability\.reason\}/);
+});
+
+test('task list supports accessible selection and one-file batch export', async () => {
+  const [tasksPage, batchExport, styles, route] = await Promise.all([
+    readFile(projectFile('app/tasks/page.tsx'), 'utf8'),
+    readFile(projectFile('app/tasks/task-batch-export-form.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+    readFile(projectFile('app/api/task-exports/route.ts'), 'utf8'),
+  ]);
+
+  assert.match(tasksPage, /import \{ TaskBatchExportForm \}/);
+  assert.match(tasksPage, /<TaskBatchExportForm exportableCount=/);
+  assert.match(tasksPage, /name="taskId"/);
+  assert.match(tasksPage, /aria-label=\{`选择任务 #\$\{task\.id\}`\}/);
+  assert.match(tasksPage, /disabled=\{!task\.exportAvailability\.canExport\}/);
+  assert.match(batchExport, /^'use client';/);
+  assert.match(batchExport, /处于待审核或已通过状态、且交付文件完整/);
+  assert.match(batchExport, /全选本页可导出任务/);
+  assert.match(batchExport, /已选 \{selectedTaskIds\.length\} 条/);
+  assert.match(batchExport, /batch-export-guidance/);
+  assert.match(batchExport, /请先勾选至少 1 条可导出任务/);
+  assert.match(batchExport, /fetch\('\/api\/task-exports'/);
+  assert.match(batchExport, /URL\.createObjectURL/);
+  assert.match(batchExport, /aria-live="polite"/);
+  assert.match(styles, /\.batch-export-toolbar/);
+  assert.match(route, /MAX_BATCH_EXPORT_TASKS/);
+  assert.match(route, /maxBytes: 4 \* 1024/);
+  assert.match(route, /'Cache-Control': 'private, no-store'/);
+});
+
+test('generated assets open in an accessible native dialog preview', async () => {
+  const [preview, imageBatch, styles] = await Promise.all([
+    readFile(projectFile('app/components/image-preview.tsx'), 'utf8'),
+    readFile(projectFile('app/tasks/[id]/image-generation-batch.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+  ]);
+
+  assert.match(preview, /export function ImagePreview/);
+  assert.match(preview, /type="button"/);
+  assert.match(preview, /showModal\(\)/);
+  assert.match(preview, /<dialog/);
+  assert.match(preview, /event\.target === event\.currentTarget/);
+  assert.match(preview, /aria-label="关闭图片预览"/);
+  assert.match(preview, /预览与调整/);
+  assert.match(imageBatch, /import \{ ImagePreview \}/);
+  assert.match(imageBatch, /src=\{`\/api\/assets\/\$\{asset\.id\}\?v=\$\{asset\.sha256\}`\}/);
+  assert.match(styles, /\.image-preview-dialog::backdrop/);
+  assert.match(styles, /\.image-preview-full/);
+});
+
+test('reviewers can switch image previews between 100 percent and full-image modes', async () => {
+  const [preview, styles] = await Promise.all([
+    readFile(projectFile('app/components/image-preview.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+  ]);
+
+  assert.match(preview, /type PreviewMode = 'actual' \| 'fit'/);
+  assert.match(preview, /useState<PreviewMode>\('actual'\)/);
+  assert.match(preview, /aria-label="图片显示模式"/);
+  assert.match(preview, />100% 查看</);
+  assert.match(preview, />完整显示</);
+  assert.match(preview, /aria-pressed=\{viewMode === 'fit'\}/);
+  assert.match(preview, /disabled=\{viewMode === 'fit'\}/);
+  assert.match(styles, /\.image-preview-viewport\.is-fit/);
+  assert.match(styles, /\.image-preview-full\.is-fit[^}]*object-fit:\s*contain/s);
+});
+
+test('image previews navigate within a batch and keep fitted landscape images geometrically centered', async () => {
+  const [preview, imageBatch, styles] = await Promise.all([
+    readFile(projectFile('app/components/image-preview.tsx'), 'utf8'),
+    readFile(projectFile('app/tasks/[id]/image-generation-batch.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+  ]);
+
+  assert.match(imageBatch, /useState<number \| null>\(null\)/);
+  assert.match(imageBatch, /isOpen=\{activeAssetIndex === assetIndex\}/);
+  assert.match(imageBatch, /onPrevious=\{assetIndex > 0/);
+  assert.match(imageBatch, /onNext=\{assetIndex < batch\.assets\.length - 1/);
+  assert.match(preview, /aria-label="上一张图片"/);
+  assert.match(preview, /aria-label="下一张图片"/);
+  assert.match(preview, /\{position\} \/ \{total\}/);
+  assert.match(preview, /className=\{`image-preview-stage/);
+  assert.match(styles, /\.image-preview-stage\.is-fit\s*\{[^}]*place-items:\s*unsafe center/s);
+  assert.match(styles, /\.image-preview-stage\.is-fit\s*\{[^}]*grid-template:\s*minmax\(0, 1fr\) \/ minmax\(0, 1fr\)/s);
+  assert.match(styles, /\.image-preview-full\.is-fit\s*\{[^}]*width:\s*auto[^}]*height:\s*auto[^}]*margin:\s*0/s);
+  assert.match(styles, /\.image-preview-full\.is-fit\.is-quarter-turn\s*\{[^}]*max-width:\s*100cqh[^}]*max-height:\s*100cqw/s);
+});
+
+test('review workbench prioritizes full text and generation batches without standalone history panels', async () => {
+  const [reviewPanel, reviewCopy, imageBatch, styles] = await Promise.all([
+    readFile(projectFile('app/tasks/[id]/review-panel.tsx'), 'utf8'),
+    readFile(projectFile('app/tasks/[id]/review-copy-form.tsx'), 'utf8'),
+    readFile(projectFile('app/tasks/[id]/image-generation-batch.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+  ]);
+  const reviewFlow = `${reviewPanel}\n${reviewCopy}\n${imageBatch}`;
+
+  assert.match(reviewCopy, /className="textarea review-copy-textarea"/);
+  assert.match(styles, /\.review-copy-textarea\s*\{[^}]*field-sizing: content/);
+  assert.match(reviewPanel, /buildImageBatches/);
+  assert.match(reviewFlow, /image-generation-batch/);
+  assert.match(reviewPanel, /qualityReasons/);
+  assert.match(reviewPanel, /评分原因/);
+  assert.match(imageBatch, /compact-failed-batch/);
+  assert.doesNotMatch(reviewPanel, /<h3>版本记录<\/h3>/);
+  assert.doesNotMatch(reviewPanel, /<h3>生成与质检<\/h3>/);
+  assert.doesNotMatch(reviewPanel, /<h3>固定生产配置<\/h3>/);
+});
+
+test('image editing controls live in preview with local rotation and conditional crop', async () => {
+  const [preview, reviewPanel, imageBatch] = await Promise.all([
+    readFile(projectFile('app/components/image-preview.tsx'), 'utf8'),
+    readFile(projectFile('app/tasks/[id]/review-panel.tsx'), 'utf8'),
+    readFile(projectFile('app/tasks/[id]/image-generation-batch.tsx'), 'utf8'),
+  ]);
+
+  assert.match(preview, /type="range"/);
+  assert.match(preview, /aria-label="调整预览倍数"/);
+  assert.match(preview, /setRotation/);
+  assert.match(preview, /needsCrop/);
+  assert.match(preview, /裁成 3:4/);
+  assert.match(preview, /AI 图片修改要求/);
+  assert.doesNotMatch(reviewPanel, /editImage\(asset\.id, \{ type: 'rotate'/);
+  assert.match(imageBatch, /imageNeedsCrop\(asset\.width, asset\.height\)/);
 });
 
 test('interactive editors announce operation results and use explicit button behavior', async () => {

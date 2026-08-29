@@ -124,20 +124,103 @@ describe('visual knowledge store', () => {
     }
   });
 
+  it('rotates equally relevant published styles across a batch while keeping every task pinned', () => {
+    const store = createAdminStore(':memory:');
+    try {
+      const batch = store.createImportBatch({
+        name: '批量风格调度',
+        sourceFileName: 'styles.xlsx',
+        rows: Array.from({ length: 6 }, (_, index) => ({
+          rowNumber: index + 2,
+          externalId: `style-${index + 1}`,
+          query: `租房桌面整理方案 ${index + 1}`,
+          input: { category: '收纳', targetAudience: '租房用户' },
+          imageCount: 3,
+          referenceImageFiles: [],
+          screening: { admitted: true, demandLevel: 'STRONG', reason: '测试准入行', source: 'EXCEL' },
+          errors: [],
+        })),
+      });
+      store.commitImportBatch(batch.id);
+      const taskIds = store.getImportBatch(batch.id).rows.map((row) => row.taskId);
+      for (const [index, name] of ['暖色摄影', '清爽信息图', '手账拼贴'].entries()) {
+        const item = store.createVisualKnowledge(promptOnlyInput({
+          name,
+          promptTemplate: `${name}：围绕 {{query}} 生成适合 {{category}} 的视觉页面。`,
+          qualityScore: 4.6,
+          sourceImageSha256: String(index + 1).repeat(64),
+        }));
+        store.publishVisualKnowledgeVersion(item.latestVersion.id);
+      }
+
+      const selected = taskIds.map((taskId) => store.resolveVisualReferenceForTask(taskId));
+
+      assert.equal(new Set(selected.slice(0, 3).map(({ itemId }) => itemId)).size, 3);
+      assert.ok(selected.every((reference, index) =>
+        store.resolveVisualReferenceForTask(taskIds[index]).versionId === reference.versionId));
+      for (let index = 1; index < selected.length; index += 1) {
+        assert.notEqual(selected[index].itemId, selected[index - 1].itemId);
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+  it('uses the finalized content profile to filter the style catalog before stable sampling', () => {
+    const store = createAdminStore(':memory:');
+    try {
+      const task = createTask(store, { targetAudience: '想快速做饭的上班族' });
+      const home = store.createVisualKnowledge(promptOnlyInput({
+        name: '家居收纳风格',
+        categories: ['收纳'],
+        qualityScore: 5,
+      }));
+      store.publishVisualKnowledgeVersion(home.latestVersion.id);
+      const food = store.createVisualKnowledge(promptOnlyInput({
+        name: '真实家常菜风格',
+        categories: ['美食'],
+        styleTags: ['温暖', '真实摄影'],
+        qualityScore: 4,
+        sourceImageSha256: 'f'.repeat(64),
+      }));
+      store.publishVisualKnowledgeVersion(food.latestVersion.id);
+
+      const selected = store.resolveVisualReferenceForTask(task.id, {
+        contentProfile: {
+          category: '美食',
+          tones: ['温暖'],
+          visualMedium: 'PHOTO',
+          informationDensity: 'LOW',
+        },
+      });
+
+      assert.equal(selected.itemId, food.id);
+    } finally {
+      store.close();
+    }
+  });
+
   it('composes global rules, a rendered recipe, negative constraints and task content', () => {
     const prompt = composeVisualImagePrompt({
       systemPrompt: '保持 3:4 竖版构图。',
       visualReference: {
         promptTemplate: '围绕 {{query}} 使用 {{category}} 场景。',
         negativePrompt: '不要水印。',
+        layoutRules: {
+          hero: '主体居中，标题左上。',
+          steps: '使用四步纵向流程，不得使用封面布局。',
+        },
       },
       variables: { query: '桌面整理', category: '收纳' },
+      pageKind: 'steps',
       taskPrompt: '木质桌面和暖色自然光。',
     });
 
     assert.match(prompt, /保持 3:4 竖版构图/);
     assert.match(prompt, /围绕 桌面整理 使用 收纳 场景/);
     assert.match(prompt, /不要水印/);
+    assert.match(prompt, /四步纵向流程/);
+    assert.doesNotMatch(prompt, /主体居中，标题左上/);
     assert.match(prompt, /木质桌面和暖色自然光/);
   });
 

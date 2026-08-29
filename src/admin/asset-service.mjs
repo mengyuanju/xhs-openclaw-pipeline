@@ -125,6 +125,14 @@ export async function createImageRevision({ store, taskId, assetId, operation, u
     height: output.height,
     sha256: output.sha256,
     source: `manual:${operation.type}`,
+    sourceTextRevisionId: parent.sourceTextRevisionId,
+    pageIndex: parent.pageIndex,
+    visualPlanSha256: parent.visualPlanSha256,
+    alignmentStatus: parent.sourceTextRevisionId ? 'MANUAL_REQUIRED' : 'UNVERIFIED',
+    alignmentResult: {
+      parentAlignmentStatus: parent.alignmentStatus,
+      reason: 'manual image revision requires renewed visual review',
+    },
   });
   return { ...asset, absolutePath };
 }

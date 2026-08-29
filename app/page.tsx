@@ -16,7 +16,7 @@ export default function DashboardPage() {
       <header className="page-header">
         <div>
           <span className="eyebrow">Production overview</span>
-          <h1>今天，内容流转到哪里了？</h1>
+          <h1 className="sr-only">工作台</h1>
           <p className="subtle">选题入队、OpenClaw 生成、人工审核，所有关键状态集中在这里。</p>
         </div>
         <div className="header-actions">

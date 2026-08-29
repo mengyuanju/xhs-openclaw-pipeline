@@ -17,6 +17,10 @@ export function adminKnowledgeRoot() {
   return resolve(/* turbopackIgnore: true */ projectRoot, process.env.XHS_KNOWLEDGE_ROOT || 'data/knowledge');
 }
 
+export function adminOutputRoot() {
+  return resolve(/* turbopackIgnore: true */ projectRoot, process.env.XHS_OUTPUT_ROOT || 'output');
+}
+
 export function withAdminStore(callback) {
   const databasePath = adminDatabasePath();
   mkdirSync(dirname(databasePath), { recursive: true });

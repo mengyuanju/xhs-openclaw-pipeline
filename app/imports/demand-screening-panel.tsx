@@ -36,10 +36,12 @@ export function DemandScreeningPanel({
   batch,
   onBatchChange,
   onMessage,
+  onComplete,
 }: {
   batch: any;
   onBatchChange: (batch: any) => void;
   onMessage: (message: string, isError?: boolean) => void;
+  onComplete: () => void;
 }) {
   const router = useRouter();
   const [drafts, setDrafts] = useState<Record<number, { demandLevel: DemandLevel; reason: string }>>(
@@ -66,6 +68,8 @@ export function DemandScreeningPanel({
   const pendingScreeningRows = batch.rows.filter((row: any) => row.isValid && !drafts[row.id]?.demandLevel).length;
   const allVisibleSelected = selectableVisibleRows.length > 0
     && selectableVisibleRows.every((row: any) => selected.has(row.id));
+  const canComplete = batch.status !== 'COMMITTED'
+    && dirtyRowIds.size === 0 && pendingScreeningRows === 0;
 
   function changeFilter(nextFilter: string) {
     setFilter(nextFilter);
@@ -160,7 +164,7 @@ export function DemandScreeningPanel({
 
   return <section className="panel screening-panel" aria-labelledby="demand-screening-title">
     <div className="panel-head">
-      <div><h2 id="demand-screening-title">2. 需求强度筛选与复核</h2><span className="subtle">OpenClaw 或 Excel 判定会自动带入；管理员可在入队前修正。</span></div>
+      <div><h2 id="demand-screening-title">需求强度筛选与复核</h2><span className="subtle">OpenClaw 或 Excel 判定会自动带入；管理员可在入队前修正。</span></div>
       <StatusPill value={pendingScreeningRows === 0 ? 'SCREENED' : 'PENDING_SCREENING'} />
     </div>
 
@@ -201,7 +205,12 @@ export function DemandScreeningPanel({
 
     <div className="screening-savebar">
       <div><strong>{pendingScreeningRows === 0 ? '筛选已完成' : `筛选未完成：${pendingScreeningRows} 条待判定`}</strong><p className="subtle">保存后仍可在入队前修正；每页最多显示 {PAGE_SIZE} 条。</p></div>
-      <button className="button primary" type="button" disabled={saving || batch.status === 'COMMITTED' || dirtyRowIds.size === 0} onClick={saveScreening}>{saving ? '保存中…' : '保存筛选结果'}</button>
+      <button
+        className="button primary"
+        type="button"
+        disabled={saving || batch.status === 'COMMITTED' || (dirtyRowIds.size === 0 && pendingScreeningRows > 0)}
+        onClick={canComplete ? onComplete : saveScreening}
+      >{saving ? '保存中…' : canComplete ? '确认复核，下一步' : batch.status === 'COMMITTED' ? '批次已入队' : '保存筛选结果'}</button>
     </div>
   </section>;
 }

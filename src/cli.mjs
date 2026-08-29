@@ -3,6 +3,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { processNext } from './pipeline.mjs';
 import { createQueue } from './queue.mjs';
+import { createOpenClawClient } from './openclaw.mjs';
 import { createAdminStore } from './admin/admin-store.mjs';
 import { processNextImageEdit } from './admin/image-edit-worker.mjs';
 import { createAdminWorkerIntegration } from './admin/worker-service.mjs';
@@ -45,6 +46,10 @@ export async function main(
     env = process.env,
     stdout = process.stdout,
     stderr = process.stderr,
+    createOpenClaw = createOpenClawClient,
+    processContentTask = processNext,
+    processImageEditTask = processNextImageEdit,
+    sleep = (milliseconds) => new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds)),
   } = {},
 ) {
   const [command, ...args] = argv;
@@ -103,27 +108,36 @@ export async function main(
         throw new Error('MVP worker requires the explicit --once safety flag');
       }
       const workerId = flagValue(args, '--worker-id') || `worker-${process.pid}`;
+      const mock = hasFlag(args, '--mock');
+      const openclaw = mock ? undefined : createOpenClaw();
+      openclaw?.checkReady({
+        textModel: env.XHS_TEXT_MODEL,
+        imageModel: env.XHS_IMAGE_MODEL,
+      });
+      if (!mock) queue.closeCircuit('openclaw-auth');
       adminStore = createAdminStore(databasePath);
       const integration = createAdminWorkerIntegration({ store: adminStore, assetRoot, knowledgeRoot });
-      let result = await processNext({
+      let result = await processContentTask({
         queue,
         workerId,
         outputRoot,
-        mock: hasFlag(args, '--mock'),
+        mock,
+        openclaw,
         configProvider: integration.getTaskConfig,
         onCompleted: integration.onCompleted,
         onFailed: integration.onFailed,
+        recoveryEnabled: !mock,
       });
       if (result.status === 'idle') {
-        result = await processNextImageEdit({
+        result = await processImageEditTask({
           store: adminStore,
           assetRoot,
           workerId,
-          mock: hasFlag(args, '--mock'),
+          mock,
         });
       }
       writeJson(stdout, result);
-      return result.status === 'failed' ? 1 : 0;
+      return ['failed', 'blocked'].includes(result.status) ? 1 : 0;
     }
 
     if (command === 'drain') {
@@ -131,6 +145,7 @@ export async function main(
         '--mock': 'boolean',
         '--live': 'boolean',
         '--max': 'value',
+        '--concurrency': 'value',
         '--worker-id': 'value',
       });
       const mock = hasFlag(args, '--mock');
@@ -142,43 +157,88 @@ export async function main(
       if (!Number.isInteger(max) || max < 1 || max > 5_000) {
         throw new Error('--max must be an integer between 1 and 5000');
       }
+      const concurrency = Number(
+        flagValue(args, '--concurrency') ?? env.XHS_TASK_CONCURRENCY ?? 2,
+      );
+      if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 2) {
+        throw new Error('--concurrency must be an integer between 1 and 2');
+      }
       const workerId = flagValue(args, '--worker-id') || `drain-${process.pid}`;
+      const openclaw = mock ? undefined : createOpenClaw();
+      openclaw?.checkReady({
+        textModel: env.XHS_TEXT_MODEL,
+        imageModel: env.XHS_IMAGE_MODEL,
+      });
+      if (!mock) queue.closeCircuit('openclaw-auth');
       adminStore = createAdminStore(databasePath);
       const integration = createAdminWorkerIntegration({ store: adminStore, assetRoot, knowledgeRoot });
       const summary = {
         status: 'completed',
         mode: mock ? 'mock' : 'live',
         max,
+        concurrency,
         processed: 0,
+        attempted: 0,
         contentCompleted: 0,
         imageEditsCompleted: 0,
+        retriesScheduled: 0,
+        manualRequired: 0,
         failed: 0,
       };
+      let authenticationRequired = false;
       while (summary.processed < max) {
-        const content = await processNext({
-          queue,
-          workerId,
-          outputRoot,
-          mock,
-          configProvider: integration.getTaskConfig,
-          onCompleted: integration.onCompleted,
-          onFailed: integration.onFailed,
-        });
-        if (content.status !== 'idle') {
-          summary.processed += 1;
-          if (content.status === 'completed') summary.contentCompleted += 1;
-          else summary.failed += 1;
+        const slots = Math.min(concurrency, max - summary.processed);
+        const contentResults = await Promise.all(Array.from({ length: slots }, (_value, slot) =>
+          processContentTask({
+            queue,
+            workerId: `${workerId}-${slot + 1}`,
+            outputRoot,
+            mock,
+            openclaw,
+            imageConcurrency: concurrency > 1 ? 1 : undefined,
+            configProvider: integration.getTaskConfig,
+            onCompleted: integration.onCompleted,
+            onFailed: integration.onFailed,
+            recoveryEnabled: !mock,
+          })));
+        const blockedContent = contentResults.filter(({ status }) => status === 'blocked');
+        const claimedContent = contentResults.filter(({ status }) => !['idle', 'blocked'].includes(status));
+        if (claimedContent.length > 0) {
+          summary.attempted += claimedContent.length;
+          summary.contentCompleted += claimedContent.filter(({ status }) => status === 'completed').length;
+          const failedContent = claimedContent.filter(({ status }) => status === 'failed');
+          const scheduledContent = claimedContent.filter(({ status }) => status === 'retry_scheduled');
+          summary.failed += failedContent.length;
+          summary.retriesScheduled += scheduledContent.length;
+          summary.manualRequired += failedContent.filter(({ recovery }) =>
+            recovery?.manualRequired === true).length;
+          summary.processed += claimedContent.filter(({ status }) =>
+            status === 'completed' || status === 'failed').length;
+          authenticationRequired = claimedContent.some(({ recovery }) =>
+            recovery?.failureClass === 'AUTH' && recovery?.haltWorker === true);
+          if (authenticationRequired) break;
           continue;
         }
-        const edit = await processNextImageEdit({ store: adminStore, assetRoot, workerId, mock });
-        if (edit.status === 'idle') break;
+        if (blockedContent.some(({ haltWorker }) => haltWorker === true)) {
+          authenticationRequired = true;
+          break;
+        }
+        const edit = await processImageEditTask({ store: adminStore, assetRoot, workerId, mock });
+        if (edit.status === 'idle') {
+          const delayMs = queue.nextClaimDelayMs();
+          if (delayMs === null) break;
+          await sleep(Math.max(1, Math.min(delayMs, 60_000)));
+          continue;
+        }
+        summary.attempted += 1;
         summary.processed += 1;
         if (edit.status === 'completed') summary.imageEditsCompleted += 1;
         else summary.failed += 1;
       }
-      if (summary.failed > 0) summary.status = 'completed_with_failures';
+      if (authenticationRequired) summary.status = 'authentication_required';
+      else if (summary.failed > 0) summary.status = 'completed_with_failures';
       writeJson(stdout, summary);
-      return summary.failed > 0 ? 1 : 0;
+      return authenticationRequired || summary.failed > 0 ? 1 : 0;
     }
 
     throw new Error(`unknown command: ${command}`);

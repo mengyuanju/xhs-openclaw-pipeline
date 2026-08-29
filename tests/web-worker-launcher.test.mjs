@@ -50,7 +50,7 @@ describe('web worker launcher', () => {
 
     const result = await launcher.start({ max: 3 });
 
-    assert.deepEqual(result, { status: 'STARTED', runId: 'run-1', max: 3 });
+    assert.deepEqual(result, { status: 'STARTED', runId: 'run-1', max: 3, concurrency: 2 });
     assert.deepEqual(calls, [{
       command: 'C:/runtime/node.exe',
       args: [
@@ -59,6 +59,8 @@ describe('web worker launcher', () => {
         '--live',
         '--max',
         '3',
+        '--concurrency',
+        '2',
         '--worker-id',
         'web-run-1',
       ],
@@ -79,6 +81,14 @@ describe('web worker launcher', () => {
     await assert.rejects(() => launcher.start({ max: 0 }), /between 1 and 20/i);
     await assert.rejects(() => launcher.start({ max: 21 }), /between 1 and 20/i);
     await assert.rejects(() => launcher.start({ max: 1.5 }), /between 1 and 20/i);
+    assert.equal(calls.length, 0);
+  });
+
+  it('rejects task concurrency above two before spawning', async () => {
+    const { calls, launcher } = launcherHarness();
+
+    await assert.rejects(() => launcher.start({ max: 2, concurrency: 0 }), /concurrency.*between 1 and 2/i);
+    await assert.rejects(() => launcher.start({ max: 2, concurrency: 3 }), /concurrency.*between 1 and 2/i);
     assert.equal(calls.length, 0);
   });
 

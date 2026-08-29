@@ -199,3 +199,227 @@
 - [x] 浏览器二次确认后异步启动，展示成功/失败状态和“内容审核”入口。
 - Verify：前端契约测试、键盘操作、浏览器控制台和响应式页面检查。
 - Dependencies：Task 27。
+
+## Task 29: 最终正文视觉计划契约
+
+- [x] 在正文生成后执行独立视觉规划，输出与图片数量严格一致的逐页计划。
+- [x] 每页包含来源证据、允许显示文字、视觉主体、必须展示和禁止内容，并严格校验不可信模型 JSON。
+- Verify：先写失败的纯契约测试；合法 3/5 页通过，缺页、额外页、正文外证据和非法简体中文字段失败。
+- Dependencies：Task 28。
+
+## Task 30: 视觉计划与布局提示词集成
+
+- [x] 每张图片提示词使用最终正文、当前页视觉计划和简体中文白名单。
+- [x] 将锁定视觉配方的 `layoutRules` 按页面类型加入提示词，继续保持 8,000 字符上限。
+- Verify：Fake OpenClaw 捕获的逐页提示词包含唯一来源证据、白名单和对应布局规则。
+- Dependencies：Task 29。
+
+## Task 31: 逐页视觉验收与有限重试
+
+- [x] 使用 `runVision` 对规范化 PNG 做严格结构化验收，检查主体、场景、文字、额外事实、风格和布局。
+- [x] 失败页携带修复指令重新生成，首次生成后最多修复两次；最终失败进入 QC 阻断。
+- Verify：Fake 视觉模型覆盖首次通过、修复后通过、非法 JSON 和达到上限仍失败。
+- Dependencies：Task 30。
+
+## Task 32: 文本版本与图片验收状态
+
+- [x] 生成资产记录文本修订、页码、视觉计划哈希和验收状态，迁移保持历史数据库可打开。
+- [x] 新文本修订创建后将旧生成/编辑图片标记为 `STALE`，审核批准拒绝过期或未通过的图片。
+- Verify：SQLite 集成测试覆盖新库、旧库迁移、生成同步、文本修改失效和批准门槛。
+- Dependencies：Task 31。
+
+## Task 33: 批量风格调度
+
+- [x] 已发布且内容匹配的视觉配方进入 Top-K 稳定带权选择。
+- [x] 同批次近期任务避免重复，单配方达到默认 15% 配额时优先选择其他合格候选；候选不足时安全回退。
+- Verify：SQLite 测试覆盖稳定复现、近期去重、配额和单候选回退。
+- Dependencies：Task 32。
+
+## Task 34: 体验、文档与最终质量门
+
+- [x] 更新真实调用成本说明和审核页图文匹配状态，不触发自动发布。
+- [x] 更新优化文档的实施状态和剩余混合排版边界。
+- Verify：`npm test`、`npm run typecheck`、`npm run build`、`npm run smoke`、差异和秘密检查。
+- Dependencies：Tasks 29–33。
+
+## Task 35: GPT OCR 逐字验收
+
+- [x] 同一次 `runVision` 返回标题、副标题、要点、额外文字、不可辨认区域、繁体标记和 OCR 置信度。
+- [x] 程序将识别文字与 `allowedVisibleText` 逐字段比较，低于 90% 或任何关键字段不一致时改判失败并触发修复。
+- Verify：契约测试覆盖完全一致、名义 PASS 但错字、额外文字、繁体、不可辨认区域和低置信度。
+- Dependencies：Task 31。
+
+## Task 35: 0–3 分评分聚合契约
+
+- [x] 定义固定维度、证据来源、问题标签、类型校正和互斥最终结果。
+- [x] 覆盖 0/1 前置终止、2/3 边界、平台样本封顶和证据不足。
+- Verify：先运行失败的 `tests/quality-scoring.test.mjs`，再实现到全部通过。
+- Dependencies：Task 34。
+
+## Task 36: 机械 QC 集成
+
+- [x] 把现有检查映射为保守维度分，机械证据不足时不得给 3。
+- [x] `qc.json` 增加 `rubric`，顶层旧字段、manifest、SQLite 和审核门槛保持兼容。
+- Verify：`tests/qc.test.mjs` 与 pipeline/worker 集成测试通过。
+- Dependencies：Task 35。
+
+## Task 37: 评分展示与最终质量门
+
+- [x] 审核页展示 0–3 分语义，manifest 记录规则版本和处置动作，不增加自动发布。
+- [x] 更新 README/规格实施状态并完成差异、秘密和兼容性检查。
+- [ ] 全量测试清零；当前受 Phase 10 `image-alignment` OCR 契约的 5 个既有失败阻塞。
+- Verify：`npm test`、`npm run typecheck`、`npm run build`。
+- Dependencies：Task 36。
+
+## Task 38: Live 批次预检
+
+- [x] 在 `drain --live` 领取任务前执行一次无推理、无图片调用的本地预检。
+- [x] 运行时不兼容、OpenClaw 不可启动或模型配置仍使用旧 provider 时立即失败。
+- Verify：Fake runner 覆盖成功、Node 不兼容、旧模型配置和命令失败；CLI 测试确认 attempts 保持不变。
+- Dependencies：Task 37。
+
+## Task 39: 任务租约续期
+
+- [x] Queue 支持同一 owner 有界续租，其他 owner 和非 processing 状态不能续租。
+- [x] Worker 在各模型阶段和逐页生成/验收边界刷新租约。
+- Verify：SQLite 时间测试与管线 Fake 覆盖长任务、错误 owner 和租约丢失。
+- Dependencies：Task 38。
+
+## Task 40: 文本与视觉计划检查点
+
+- [x] 正文和视觉计划通过契约后立即原子保存，而不是等全部图片完成。
+- [x] 失败任务重试时，配置指纹一致才复用；人工文案或提示词变化必须重新生成。
+- Verify：管线测试证明图片失败后重试不再调用文本/视觉规划，指纹变化后会重新调用。
+- Dependencies：Task 39。
+
+## Task 41: 逐页图片检查点
+
+- [x] 每张通过图文验收的图片记录文件哈希、页码、视觉计划哈希和最终证据。
+- [x] 重试只复用文件存在、哈希一致且 alignment PASS 的页面，其余页面重新生成。
+- Verify：测试覆盖部分成功、文件篡改、验收失败和人工文案变更。
+- Dependencies：Task 40。
+
+## Task 42: 批量可靠性质量门
+
+- [x] 全量测试、类型检查、生产构建和 Mock 冒烟通过。
+- [x] 审查性能、安全、秘密、旧数据库迁移和未提交差异，不增加自动发布。
+- Verify：`npm test`、`npm run typecheck`、`npm run build`、`npm run smoke`。
+- Dependencies：Tasks 38–41。
+
+## Task 43: 审核评分详情
+
+- [x] SQLite 生成记录保存有界的完整质检详情，并兼容旧数据库。
+- [x] 当前评分、限制分数的维度和证据以中文文本显示，不渲染 JSON。
+- Verify：生成记录迁移/往返测试；评分原因展示模型测试。
+- Dependencies：Task 42。
+
+## Task 44: 图片生成批次
+
+- [x] 图片按生成运行归组，编辑后版本跟随其生成根图所在批次。
+- [x] 每个批次内统一显示运行状态、文案/提示词版本、视觉配方和质检摘要。
+- Verify：批次归组测试覆盖完成、失败、编辑后版本和历史未匹配图片。
+- Dependencies：Task 43。
+
+## Task 45: 审核工作台排版
+
+- [x] 完整文案与审核结论优先展示，保留通过、驳回、重开、导出和上传。
+- [x] 删除独立版本记录、生成质检和固定生产配置板块，将信息移入图片批次。
+- Verify：前端契约测试、320/768/1024/1440 响应式检查。
+- Dependencies：Task 44。
+
+## Task 46: 预览内图片操作
+
+- [x] 预览支持倍率缩放和不落盘旋转，不再生成旋转副本。
+- [x] 只有非 3:4 图片显示裁剪按钮；裁剪与当前图片 AI 编辑均在预览中执行。
+- Verify：组件行为测试、键盘操作、真实浏览器截图与控制台检查。
+- Dependencies：Task 45。
+
+## Task 47: 全局生产配置
+
+- [x] 持久化质量修复开关、触发分、目标分、最多修复次数和 AI 标识配置，兼容旧数据库。
+- [x] 配置进入 Worker、检查点指纹和交付清单，提供严格 GET/PATCH API。
+- Verify：配置纯函数、SQLite 迁移/往返和 API 契约测试。
+- Dependencies：Task 42。
+
+## Task 48: 1 分整套质量修复
+
+- [x] 首次 Live 终审恰好 1 分时，以当前图片为输入重新生成整套页面，至少 2 分即停止，最多修复两次。
+- [x] 每轮记录原因、方法、修复前后分数和耗时，最终 QC 保留完整历史。
+- Verify：Fake OpenClaw 覆盖 1→2、1→1→2、两次仍失败，以及首次 0/2 不触发。
+- Dependencies：Task 47。
+
+## Task 49: 批次耗时与统计聚合
+
+- [x] 生成运行保存开始、完成和实际耗时；旧记录保持可读。
+- [x] 聚合导入批次进度、墙钟耗时、平均任务耗时、评分分布和质量修复次数。
+- Verify：生成存储迁移测试和统计纯函数/SQLite 集成测试。
+- Dependencies：Task 48。
+
+## Task 50: 配置、统计和证据展示
+
+- [x] 增加生产配置页和数据统计页，并加入主导航。
+- [x] 审核页展示质量修复历史和生成批次耗时；导入页展示批次时间与进度。
+- Verify：前端契约、键盘可用性、响应式构建和浏览器检查。
+- Dependencies：Task 49。
+
+## Task 51: 最终质量门
+
+- [x] 更新 README，完成定向测试、全量测试、类型检查、生产构建和 Mock 冒烟。
+- [x] 审查未提交差异、秘密、迁移兼容性和模型调用上限。
+- Verify：`npm test`、`npm run typecheck`、`npm run build`、`npm run smoke`。
+- Dependencies：Tasks 47–50。
+
+## Task 52: 自然文案结构回归测试
+
+- [x] 固化按内容类型选结构、默认不写步骤体的提示词要求。
+- Verify：`node --test tests/default-prompts.test.mjs tests/post-contract.test.mjs` 先失败。
+- Dependencies：Task 51。
+
+## Task 53: 文案提示词调整
+
+- [x] 修改基础正文契约和任务固定文本提示词，加入自然表达与分类结构规则。
+- [x] 保留事实、来源、安全、长度和 JSON 契约。
+- Verify：Task 52 的定向测试转为通过。
+- Dependencies：Task 52。
+
+## Task 54: 自然文案质量门
+
+- [x] 完成全量测试、类型检查、构建和差异审查。
+- [x] 说明新提示词只影响重新发布后创建的新任务。
+- Verify：`npm test`、`npm run typecheck`、`npm run build`。
+- Dependencies：Task 53。
+
+## Task 55: 联网研究契约
+
+- [x] 定义 Live/Mock/人工文案边界、来源快照字段、失败关闭和双重持久化。
+- [x] 明确 Codex 优先、DuckDuckGo 后备，以及当前不声称抓取网页全文。
+- Verify：`docs/web-research-source-spec.md` 覆盖成功、失败、安全和历史兼容。
+- Dependencies：Task 54。
+
+## Task 56: OpenClaw 检索适配器
+
+- [x] 以无 shell 参数调用 `infer web search --json`，校验输入、解析输出并脱敏错误。
+- [x] 归一化结构化结果和 Codex 归纳结果，过滤非公开 HTTP(S) URL。
+- Verify：`node --test tests/openclaw.test.mjs tests/research.test.mjs`。
+- Dependencies：Task 55。
+
+## Task 57: Worker 研究阶段
+
+- [x] Live 正文生成前检索，来源进入提示词和允许 URL 白名单。
+- [x] 保存 `research.json`，写入 manifest 与 checkpoint；图片失败重试不重复检索。
+- Verify：`node --test tests/pipeline.test.mjs tests/post-contract.test.mjs tests/checkpoint.test.mjs`。
+- Dependencies：Task 56。
+
+## Task 58: 生成记录来源快照
+
+- [x] 为新旧 SQLite 增加可空、有界的 `research_snapshot_json`。
+- [x] 成功和失败回调都保存实际快照，旧记录返回 `null`。
+- Verify：`node --test tests/generation-store.test.mjs tests/worker-integration.test.mjs`。
+- Dependencies：Task 57。
+
+## Task 59: 联网研究质量门
+
+- [x] 更新提示词、环境说明和 README，说明资料边界、提供方与失败行为。
+- [x] 完成定向测试、全量测试、类型检查、生产构建和差异审查。
+- Verify：`npm test`、`npm run typecheck`、`npm run build`。
+- Dependencies：Tasks 55–58。
