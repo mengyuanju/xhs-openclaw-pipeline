@@ -504,6 +504,11 @@ function rowToAdminTask(row) {
     input: parseJson(row.input_json, {}),
     status: row.task_status,
     attempts: Number(row.attempts),
+    recoveryAttempts: Number(row.recovery_attempts),
+    recoveryTotalAttempts: Number(row.recovery_total_attempts),
+    recoveryClass: row.recovery_class,
+    nextAttemptAt: row.next_attempt_at,
+    manualRequired: row.manual_required === 1,
     outputDir: row.output_dir,
     error: row.error,
     processingStartedAt: row.processing_started_at,
@@ -949,6 +954,8 @@ export function createAdminStore(databasePath) {
           UPDATE tasks
           SET status = 'pending', error = NULL, output_dir = NULL,
               lease_owner = NULL, lease_until = NULL,
+              recovery_attempts = 0, recovery_total_attempts = 0,
+              recovery_class = NULL, next_attempt_at = NULL, manual_required = 0,
               processing_started_at = NULL, finished_at = NULL, updated_at = ?
           WHERE id = ? AND status = 'failed'
         `).run(updatedAt, id);
