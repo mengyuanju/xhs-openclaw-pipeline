@@ -8,6 +8,8 @@ import {
   type FormEvent,
 } from 'react';
 
+import { useConfirmDialog } from '@/components/ui/confirm-dialog';
+
 import { apiRequest } from '../components/api-client';
 import { DemandScreeningPanel } from './demand-screening-panel';
 import {
@@ -31,6 +33,7 @@ function commitButtonLabel(batch: any) {
 
 export function ImportWorkbench({ initialBatch = null, timingStats }: { initialBatch?: any; timingStats: any }) {
   const router = useRouter();
+  const confirm = useConfirmDialog();
   const flowRef = useRef<HTMLDivElement>(null);
   const [batch, setBatch] = useState<any>(initialBatch);
   const [activeStep, setActiveStep] = useState<ImportFlowStep>(() => initialFlowStep(initialBatch));
@@ -74,7 +77,11 @@ export function ImportWorkbench({ initialBatch = null, timingStats }: { initialB
     const commitMessage = batch.admittedRows > 0
       ? `确认将 ${batch.admittedRows} 条强需/中需选题写入生产队列？`
       : '当前没有强需/中需选题，确认完成该批次且不创建任务？';
-    if (!window.confirm(commitMessage)) return;
+    if (!await confirm({
+      title: batch.admittedRows > 0 ? '写入生产队列？' : '完成空批次？',
+      description: commitMessage,
+      confirmLabel: batch.admittedRows > 0 ? `确认入队 ${batch.admittedRows} 条` : '确认完成批次',
+    })) return;
     setBusy(true); setMessage(''); setMessageIsError(false);
     try {
       const result = await apiRequest<any>(`/api/import-batches/${batch.id}/commit`, { method: 'POST' });

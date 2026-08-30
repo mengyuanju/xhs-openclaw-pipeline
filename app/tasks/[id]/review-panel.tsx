@@ -3,6 +3,8 @@
 import { useRouter } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
 
+import { useConfirmDialog } from '@/components/ui/confirm-dialog';
+
 import { apiRequest } from '../../components/api-client';
 import { StatusPill } from '../../components/status-pill';
 import { ImageGenerationBatch } from './image-generation-batch';
@@ -26,6 +28,7 @@ type ExportAvailability = {
 
 export function ReviewPanel({ task, exportAvailability }: { task: any; exportAvailability: ExportAvailability }) {
   const router = useRouter();
+  const confirm = useConfirmDialog();
   const current = task.currentTextRevision;
   const latestRun = task.generationRuns.at(-1);
   const batches = buildImageBatches({
@@ -106,8 +109,12 @@ export function ReviewPanel({ task, exportAvailability }: { task: any; exportAva
       : `${label}完成，已生成新的图片版本。`);
   }
 
-  function review(status: 'APPROVED' | 'REJECTED' | 'WAITING_REVIEW') {
-    if (status === 'APPROVED' && !window.confirm('确认文案和图片均可交付？')) return;
+  async function review(status: 'APPROVED' | 'REJECTED' | 'WAITING_REVIEW') {
+    if (status === 'APPROVED' && !await confirm({
+      title: '通过人工审核？',
+      description: '请确认文案、标签和整套图片均已检查，可以作为正式交付导出。',
+      confirmLabel: '确认通过',
+    })) return;
     if (status === 'REJECTED' && !note.trim()) {
       setMessage('驳回时必须填写原因。');
       setMessageIsError(true);

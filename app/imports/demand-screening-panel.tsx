@@ -3,6 +3,14 @@
 import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+
 import { apiRequest } from '../components/api-client';
 import { StatusPill } from '../components/status-pill';
 import {
@@ -176,9 +184,10 @@ export function DemandScreeningPanel({
       </div>
       <div className="inline">
         <label className="subtle" htmlFor="bulk-demand-level">批量判定</label>
-        <select className="select compact-control" id="bulk-demand-level" value={bulkLevel} onChange={(event) => setBulkLevel(event.target.value as DemandLevel)} disabled={batch.status === 'COMMITTED'}>
-          {LEVELS.map((level) => <option value={level} key={level}>{LEVEL_COPY[level].label}</option>)}
-        </select>
+        <Select value={bulkLevel} onValueChange={(value) => setBulkLevel(value as DemandLevel)} disabled={batch.status === 'COMMITTED'}>
+          <SelectTrigger className="compact-control select-compact" id="bulk-demand-level"><SelectValue /></SelectTrigger>
+          <SelectContent>{LEVELS.map((level) => <SelectItem value={level} key={level}>{LEVEL_COPY[level].label}</SelectItem>)}</SelectContent>
+        </Select>
         <button className="button small" type="button" disabled={selected.size === 0 || batch.status === 'COMMITTED'} onClick={applyBulkLevel}>应用到已选 {selected.size || ''}</button>
       </div>
     </div>
@@ -193,7 +202,10 @@ export function DemandScreeningPanel({
             <td data-label="行">{row.rowNumber}</td>
             <td className="query-cell" data-label="选题">{row.query || '—'}</td>
             <td data-label="结构校验">{row.isValid ? <StatusPill value="APPROVED" /> : <span className="pill pill-failed">{row.errors.join('；')}</span>}</td>
-            <td data-label="需求强度">{row.isValid ? batch.status === 'COMMITTED' && !draft ? <span className="pill">历史准入</span> : <select className="select screening-select" aria-label={`第 ${row.rowNumber} 行需求强度`} value={draft?.demandLevel || ''} onChange={(event) => setDecision(row.id, event.target.value as DemandLevel)} disabled={batch.status === 'COMMITTED'}><option value="" disabled>待判定</option>{LEVELS.map((level) => <option value={level} key={level}>{LEVEL_COPY[level].label}</option>)}</select> : '—'}</td>
+            <td data-label="需求强度">{row.isValid ? batch.status === 'COMMITTED' && !draft ? <span className="pill">历史准入</span> : <Select value={draft?.demandLevel} onValueChange={(value) => setDecision(row.id, value as DemandLevel)} disabled={batch.status === 'COMMITTED'}>
+              <SelectTrigger className="screening-select select-compact" aria-label={`第 ${row.rowNumber} 行需求强度`}><SelectValue placeholder="待判定" /></SelectTrigger>
+              <SelectContent>{LEVELS.map((level) => <SelectItem value={level} key={level}>{LEVEL_COPY[level].label}</SelectItem>)}</SelectContent>
+            </Select> : '—'}</td>
             <td data-label="来源"><span className="subtle">{row.isValid ? screeningSourceLabel(row) : '—'}</span></td>
             <td data-label="判定理由">{row.isValid && draft ? <input className="input screening-reason" aria-label={`第 ${row.rowNumber} 行判定理由`} value={draft.reason} maxLength={500} onChange={(event) => setReason(row.id, event.target.value)} disabled={batch.status === 'COMMITTED'} /> : <span className="subtle">{row.isValid ? batch.status === 'COMMITTED' ? '历史批次未记录需求档位' : '选择档位后自动填入，可修改' : '结构错误无需筛选'}</span>}</td>
           </tr>;

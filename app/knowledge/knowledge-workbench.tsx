@@ -3,6 +3,15 @@
 import { useRouter } from 'next/navigation';
 import { useRef, useState, type FormEvent } from 'react';
 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { useConfirmDialog } from '@/components/ui/confirm-dialog';
+
 import { apiRequest } from '../components/api-client';
 import { StatusPill } from '../components/status-pill';
 
@@ -20,6 +29,7 @@ const emptyDraft = {
 
 export function KnowledgeWorkbench({ items }: { items: any[] }) {
   const router = useRouter();
+  const confirm = useConfirmDialog();
   const fileRef = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState<any>(emptyDraft);
   const [busy, setBusy] = useState(false);
@@ -33,7 +43,11 @@ export function KnowledgeWorkbench({ items }: { items: any[] }) {
     event.preventDefault();
     const file = fileRef.current?.files?.[0];
     if (!file) return;
-    if (!window.confirm('视觉分析将调用真实模型并可能产生费用，确认继续？')) return;
+    if (!await confirm({
+      title: '开始视觉分析？',
+      description: '这会调用真实模型并可能产生费用。分析完成后，你仍可检查和修改配方再保存。',
+      confirmLabel: '确认分析',
+    })) return;
     setBusy(true); setMessage('');
     try {
       const data = new FormData();
@@ -89,7 +103,12 @@ export function KnowledgeWorkbench({ items }: { items: any[] }) {
 
   async function setStatus(item: any, status: 'PUBLISHED' | 'RETIRED') {
     const label = status === 'PUBLISHED' ? '发布并用于后续任务' : '归档并停止匹配';
-    if (!window.confirm(`确认${label}“${item.name}”？`)) return;
+    if (!await confirm({
+      title: status === 'PUBLISHED' ? '发布视觉配方？' : '归档视觉配方？',
+      description: `确认${label}“${item.name}”？`,
+      confirmLabel: status === 'PUBLISHED' ? '确认发布' : '确认归档',
+      tone: status === 'RETIRED' ? 'danger' : 'default',
+    })) return;
     setBusy(true); setMessage('');
     try {
       await apiRequest(`/api/knowledge-items/${item.id}`, {
@@ -119,16 +138,45 @@ export function KnowledgeWorkbench({ items }: { items: any[] }) {
       <div className="panel-head"><h2>检查并保存配方</h2><StatusPill value="DRAFT" /></div>
       <div className="form-grid">
         <div className="field"><label htmlFor="knowledge-name">配方名称</label><input className="input" id="knowledge-name" value={draft.name} maxLength={200} onChange={(event) => setField('name', event.target.value)} /></div>
-        <div className="field"><label htmlFor="knowledge-type">图片类型</label><select className="select" id="knowledge-type" value={draft.type} onChange={(event) => setField('type', event.target.value)}>{TYPES.map((type) => <option key={type}>{type}</option>)}</select></div>
-        <div className="field"><label htmlFor="knowledge-target">生成目标</label><select className="select" id="knowledge-target" value={draft.generationTarget} onChange={(event) => setField('generationTarget', event.target.value)}><option value="MODEL_IMAGE">模型生成图片</option><option value="LOCAL_CARD">本地信息卡</option></select></div>
+        <div className="field">
+          <label htmlFor="knowledge-type">图片类型</label>
+          <Select value={draft.type} onValueChange={(value) => setField('type', value)}>
+            <SelectTrigger id="knowledge-type"><SelectValue /></SelectTrigger>
+            <SelectContent>{TYPES.map((type) => <SelectItem key={type} value={type}>{type}</SelectItem>)}</SelectContent>
+          </Select>
+        </div>
+        <div className="field">
+          <label htmlFor="knowledge-target">生成目标</label>
+          <Select value={draft.generationTarget} onValueChange={(value) => setField('generationTarget', value)}>
+            <SelectTrigger id="knowledge-target"><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value="MODEL_IMAGE">模型生成图片</SelectItem><SelectItem value="LOCAL_CARD">本地信息卡</SelectItem></SelectContent>
+          </Select>
+        </div>
         <div className="field"><label htmlFor="knowledge-score">人工质量分</label><input className="input" id="knowledge-score" type="number" min="1" max="5" step="0.1" value={draft.qualityScore} onChange={(event) => setField('qualityScore', event.target.value)} /></div>
         <div className="field full"><label htmlFor="knowledge-prompt">提示词模板</label><textarea className="textarea" id="knowledge-prompt" maxLength={2_000} value={draft.promptTemplate} onChange={(event) => setField('promptTemplate', event.target.value)} /></div>
         <div className="field full"><label htmlFor="knowledge-negative">负面约束</label><textarea className="textarea compact" id="knowledge-negative" maxLength={600} value={draft.negativePrompt} onChange={(event) => setField('negativePrompt', event.target.value)} /></div>
         <div className="field"><label htmlFor="knowledge-tags">风格标签（逗号分隔）</label><input className="input" id="knowledge-tags" value={draft.styleTags} onChange={(event) => setField('styleTags', event.target.value)} /></div>
         <div className="field"><label htmlFor="knowledge-categories">适用分类（逗号分隔）</label><input className="input" id="knowledge-categories" value={draft.categories} onChange={(event) => setField('categories', event.target.value)} /></div>
         <div className="field full"><label htmlFor="knowledge-layout">布局规则 JSON</label><textarea className="textarea compact mono" id="knowledge-layout" value={draft.layoutRules} onChange={(event) => setField('layoutRules', event.target.value)} /></div>
-        <div className="field"><label htmlFor="knowledge-retention">保存方式</label><select className="select" id="knowledge-retention" value={draft.retentionMode} onChange={(event) => setField('retentionMode', event.target.value)}><option value="PROMPT_ONLY">只保存提示词</option><option value="IMAGE_AND_PROMPT">保存图片和提示词</option></select></div>
-        <div className="field"><label htmlFor="knowledge-rights">图片授权</label><select className="select" id="knowledge-rights" value={draft.rightsStatus} onChange={(event) => setField('rightsStatus', event.target.value)}><option value="INTERNAL_ANALYSIS_ONLY">仅内部分析</option><option value="UNKNOWN">未知</option><option value="SELF_OWNED">自有图片</option><option value="LICENSED">已授权</option></select></div>
+        <div className="field">
+          <label htmlFor="knowledge-retention">保存方式</label>
+          <Select value={draft.retentionMode} onValueChange={(value) => setField('retentionMode', value)}>
+            <SelectTrigger id="knowledge-retention"><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value="PROMPT_ONLY">只保存提示词</SelectItem><SelectItem value="IMAGE_AND_PROMPT">保存图片和提示词</SelectItem></SelectContent>
+          </Select>
+        </div>
+        <div className="field">
+          <label htmlFor="knowledge-rights">图片授权</label>
+          <Select value={draft.rightsStatus} onValueChange={(value) => setField('rightsStatus', value)}>
+            <SelectTrigger id="knowledge-rights"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="INTERNAL_ANALYSIS_ONLY">仅内部分析</SelectItem>
+              <SelectItem value="UNKNOWN">未知</SelectItem>
+              <SelectItem value="SELF_OWNED">自有图片</SelectItem>
+              <SelectItem value="LICENSED">已授权</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
         <div className="field full inline"><button className="button primary" type="button" disabled={busy} onClick={saveDraft}>保存草稿</button><span className="subtle">保留图片仅允许“自有图片”或“已授权”。</span></div>
       </div>
     </section>}

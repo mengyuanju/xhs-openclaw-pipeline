@@ -12,7 +12,9 @@ it('committed import batches expose a confirmed asynchronous generation action',
   assert.match(workbench, /QueueGenerationPanel/);
   assert.match(workbench, /batch\.status === 'COMMITTED'/);
   assert.match(launchPanel, /\/api\/worker-runs/);
-  assert.match(launchPanel, /window\.confirm/);
+  assert.match(launchPanel, /useConfirmDialog/);
+  assert.match(launchPanel, /await confirm\(\{/);
+  assert.doesNotMatch(launchPanel, /window\.confirm/);
   assert.match(launchPanel, /2 次文本模型/);
   assert.match(launchPanel, /3–5 次图片模型/);
   assert.match(launchPanel, /3–5 次视觉验收/);

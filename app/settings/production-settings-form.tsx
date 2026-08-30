@@ -2,6 +2,14 @@
 
 import { useState } from 'react';
 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+
 import { apiRequest } from '../components/api-client';
 
 type Settings = {
@@ -53,13 +61,34 @@ export function ProductionSettingsForm({ initialRecord }: { initialRecord: { set
         <label className="switch-field"><input type="checkbox" checked={settings.qualityRepairEnabled} onChange={(event) => update('qualityRepairEnabled', event.target.checked)} /><span>启用自动修复</span></label>
       </div>
       <div className="form-grid compact-settings-grid">
-        <div className="field"><label htmlFor="repair-trigger-score">触发分数</label><select id="repair-trigger-score" className="select" value={settings.qualityRepairTriggerScore} disabled={!settings.qualityRepairEnabled} onChange={(event) => {
-          const trigger = Number(event.target.value);
-          update('qualityRepairTriggerScore', trigger);
-          if (settings.qualityRepairTargetScore <= trigger) update('qualityRepairTargetScore', Math.min(3, trigger + 1));
-        }}>{[0, 1, 2].map((score) => <option key={score} value={score}>{score} 分</option>)}</select><small>默认仅首次 1 分触发。</small></div>
-        <div className="field"><label htmlFor="repair-target-score">目标分数</label><select id="repair-target-score" className="select" value={settings.qualityRepairTargetScore} disabled={!settings.qualityRepairEnabled} onChange={(event) => update('qualityRepairTargetScore', Number(event.target.value))}>{targetOptions.map((score) => <option key={score} value={score}>{score} 分</option>)}</select><small>达到目标后回到现有质量门禁。</small></div>
-        <div className="field"><label htmlFor="repair-max-attempts">最多修复次数</label><select id="repair-max-attempts" className="select" value={settings.qualityRepairMaxAttempts} disabled={!settings.qualityRepairEnabled} onChange={(event) => update('qualityRepairMaxAttempts', Number(event.target.value))}>{[0, 1, 2].map((count) => <option key={count} value={count}>{count} 次</option>)}</select><small>安全上限固定为 2 次。</small></div>
+        <div className="field">
+          <label htmlFor="repair-trigger-score">触发分数</label>
+          <Select value={String(settings.qualityRepairTriggerScore)} disabled={!settings.qualityRepairEnabled} onValueChange={(value) => {
+            const trigger = Number(value);
+            update('qualityRepairTriggerScore', trigger);
+            if (settings.qualityRepairTargetScore <= trigger) update('qualityRepairTargetScore', Math.min(3, trigger + 1));
+          }}>
+            <SelectTrigger id="repair-trigger-score"><SelectValue /></SelectTrigger>
+            <SelectContent>{[0, 1, 2].map((score) => <SelectItem key={score} value={String(score)}>{score} 分</SelectItem>)}</SelectContent>
+          </Select>
+          <small>默认仅首次 1 分触发。</small>
+        </div>
+        <div className="field">
+          <label htmlFor="repair-target-score">目标分数</label>
+          <Select value={String(settings.qualityRepairTargetScore)} disabled={!settings.qualityRepairEnabled} onValueChange={(value) => update('qualityRepairTargetScore', Number(value))}>
+            <SelectTrigger id="repair-target-score"><SelectValue /></SelectTrigger>
+            <SelectContent>{targetOptions.map((score) => <SelectItem key={score} value={String(score)}>{score} 分</SelectItem>)}</SelectContent>
+          </Select>
+          <small>达到目标后回到现有质量门禁。</small>
+        </div>
+        <div className="field">
+          <label htmlFor="repair-max-attempts">最多修复次数</label>
+          <Select value={String(settings.qualityRepairMaxAttempts)} disabled={!settings.qualityRepairEnabled} onValueChange={(value) => update('qualityRepairMaxAttempts', Number(value))}>
+            <SelectTrigger id="repair-max-attempts"><SelectValue /></SelectTrigger>
+            <SelectContent>{[0, 1, 2].map((count) => <SelectItem key={count} value={String(count)}>{count} 次</SelectItem>)}</SelectContent>
+          </Select>
+          <small>安全上限固定为 2 次。</small>
+        </div>
       </div>
     </section>
 

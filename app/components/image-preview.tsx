@@ -1,6 +1,14 @@
 'use client';
 
-import { useEffect, useRef, useState, type FormEvent, type MouseEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
+
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog';
 
 type PreviewMode = 'actual' | 'fit';
 
@@ -39,8 +47,7 @@ export function ImagePreview({
   onCrop,
   onAiEdit,
 }: ImagePreviewProps) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
-  const closeRef = useRef<HTMLButtonElement>(null);
+  const [internalOpen, setInternalOpen] = useState(false);
   const [viewMode, setViewMode] = useState<PreviewMode>('actual');
   const [zoom, setZoom] = useState(100);
   const [rotation, setRotation] = useState(0);
@@ -48,30 +55,13 @@ export function ImagePreview({
   const [actionBusy, setActionBusy] = useState(false);
 
   useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog || isOpen === undefined) return;
-    if (isOpen && !dialog.open) {
-      dialog.showModal();
-      closeRef.current?.focus();
-    } else if (!isOpen && dialog.open) {
-      dialog.close();
+    if (isOpen === false) {
+      setViewMode('actual');
+      setZoom(100);
+      setRotation(0);
+      setActionBusy(false);
     }
   }, [isOpen]);
-
-  function openPreview() {
-    if (onOpen) {
-      onOpen();
-      return;
-    }
-    if (!dialogRef.current?.open) {
-      dialogRef.current?.showModal();
-      closeRef.current?.focus();
-    }
-  }
-
-  function closePreview() {
-    dialogRef.current?.close();
-  }
 
   function resetPreview() {
     setViewMode('actual');
@@ -80,13 +70,18 @@ export function ImagePreview({
     setActionBusy(false);
   }
 
-  function handleDialogClose() {
+  function setPreviewOpen(nextOpen: boolean) {
+    if (isOpen === undefined) setInternalOpen(nextOpen);
+    if (nextOpen) {
+      onOpen?.();
+      return;
+    }
     resetPreview();
     onClose?.();
   }
 
-  function closeOnBackdrop(event: MouseEvent<HTMLDialogElement>) {
-    if (event.target === event.currentTarget) event.currentTarget.close();
+  function closePreview() {
+    setPreviewOpen(false);
   }
 
   async function cropImage() {
@@ -117,28 +112,29 @@ export function ImagePreview({
   const controlsDisabled = busy || actionBusy;
   const isQuarterTurn = Math.abs(rotation % 180) === 90;
   const hasNavigation = typeof position === 'number' && typeof total === 'number' && total > 1;
+  const open = isOpen ?? internalOpen;
 
-  return <>
-    <button
-      className="image-preview-trigger"
-      type="button"
-      aria-label={`预览图片：${alt}`}
-      onClick={openPreview}
-    >
-      <img className="image-preview-thumbnail" src={src} alt="" />
-      <span className="image-preview-hint" aria-hidden="true">预览与调整</span>
-    </button>
-    <dialog
-      ref={dialogRef}
+  return <Dialog open={open} onOpenChange={setPreviewOpen}>
+    <DialogTrigger asChild>
+      <button
+        className="image-preview-trigger"
+        type="button"
+        aria-label={`预览图片：${alt}`}
+      >
+        <img className="image-preview-thumbnail" src={src} alt="" />
+        <span className="image-preview-hint" aria-hidden="true">预览与调整</span>
+      </button>
+    </DialogTrigger>
+    <DialogContent
       className="image-preview-dialog"
       aria-label={`图片预览：${alt}`}
-      onClick={closeOnBackdrop}
-      onClose={handleDialogClose}
+      aria-describedby={undefined}
+      showCloseButton={false}
     >
       <div className="image-preview-surface">
         <header className="image-preview-head">
           <div className="image-preview-title">
-            <strong>{alt}</strong>
+            <DialogTitle asChild><strong>{alt}</strong></DialogTitle>
             {width && height ? <span>{width} × {height}px</span> : null}
           </div>
           {hasNavigation && <nav className="image-preview-navigation" aria-label="图片切换">
@@ -158,13 +154,13 @@ export function ImagePreview({
               onClick={onNext}
             >下一张 <span aria-hidden="true">→</span></button>
           </nav>}
-          <button
-            ref={closeRef}
-            className="image-preview-close"
-            type="button"
-            aria-label="关闭图片预览"
-            onClick={closePreview}
-          ><span aria-hidden="true">×</span></button>
+          <DialogClose asChild>
+            <button
+              className="image-preview-close"
+              type="button"
+              aria-label="关闭图片预览"
+            ><span aria-hidden="true">×</span></button>
+          </DialogClose>
         </header>
 
         <div className="image-preview-toolbar" aria-label="图片预览工具">
@@ -239,6 +235,6 @@ export function ImagePreview({
           <p>AI 编辑会生成一个可追溯的新版本；预览旋转不会修改文件。</p>
         </form>}
       </div>
-    </dialog>
-  </>;
+    </DialogContent>
+  </Dialog>;
 }

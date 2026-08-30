@@ -3,6 +3,8 @@
 import Link from 'next/link';
 import { useState } from 'react';
 
+import { useConfirmDialog } from '@/components/ui/confirm-dialog';
+
 import { apiRequest } from '../components/api-client';
 import { formatDuration } from '../components/time-format';
 
@@ -10,6 +12,7 @@ type LaunchState = 'IDLE' | 'STARTING' | 'STARTED' | 'ERROR';
 const TASK_CONCURRENCY = 2;
 
 export function QueueGenerationPanel({ maxTasks, timingStats }: { maxTasks: number; timingStats: any }) {
+  const confirm = useConfirmDialog();
   const boundedMax = Math.max(0, Math.min(20, Math.floor(maxTasks || 0)));
   const typicalDurationMs = Number(timingStats?.typicalDurationMs) || null;
   const estimatedBatchDurationMs = typicalDurationMs === null
@@ -20,9 +23,11 @@ export function QueueGenerationPanel({ maxTasks, timingStats }: { maxTasks: numb
 
   async function startGeneration() {
     if (boundedMax < 1 || launchState === 'STARTING' || launchState === 'STARTED') return;
-    const confirmed = window.confirm(
-      `即将按全局队列顺序启动最多 ${boundedMax} 条真实生成，最多 2 条任务同时生产。每条基础流程会调用 2 次文本模型、3–5 次图片模型和 3–5 次视觉验收；验收失败的页面最多再生成 2 次，可能产生额外费用。确认启动？`,
-    );
+    const confirmed = await confirm({
+      title: `启动最多 ${boundedMax} 条真实生成？`,
+      description: '系统将按全局队列顺序运行，最多同时生产 2 条。每条基础流程会调用 2 次文本模型、3–5 次图片模型和 3–5 次视觉验收；验收失败的页面最多再生成 2 次，可能产生额外费用。',
+      confirmLabel: '接受费用并启动',
+    });
     if (!confirmed) return;
 
     setLaunchState('STARTING');

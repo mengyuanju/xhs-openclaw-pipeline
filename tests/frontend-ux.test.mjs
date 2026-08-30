@@ -125,7 +125,8 @@ test('task review stays scoped to one import batch across filters and navigation
 
   assert.match(tasksPage, /listImportBatches/);
   assert.match(tasksPage, /importBatchId: selectedBatchId/);
-  assert.match(tasksPage, /id="batchId" name="batchId"/);
+  assert.match(tasksPage, /<Select name="batchId"/);
+  assert.match(tasksPage, /<SelectTrigger id="batchId"/);
   assert.match(tasksPage, /任务批次/);
   assert.match(tasksPage, /query\.set\('batchId', String\(selectedBatchId\)\)/);
   assert.match(tasksPage, /href=\{`\/tasks\/\$\{task\.id\}`\}/);
@@ -382,24 +383,91 @@ test('task list supports accessible selection and one-file batch export', async 
   assert.match(route, /'Cache-Control': 'private, no-store'/);
 });
 
-test('generated assets open in an accessible native dialog preview', async () => {
-  const [preview, imageBatch, styles] = await Promise.all([
+test('generated assets open in an accessible centered Radix dialog preview', async () => {
+  const [preview, imageBatch, dialog, styles] = await Promise.all([
     readFile(projectFile('app/components/image-preview.tsx'), 'utf8'),
     readFile(projectFile('app/tasks/[id]/image-generation-batch.tsx'), 'utf8'),
+    readFile(projectFile('components/ui/dialog.tsx'), 'utf8'),
     readFile(projectFile('app/globals.css'), 'utf8'),
   ]);
 
   assert.match(preview, /export function ImagePreview/);
   assert.match(preview, /type="button"/);
-  assert.match(preview, /showModal\(\)/);
-  assert.match(preview, /<dialog/);
-  assert.match(preview, /event\.target === event\.currentTarget/);
+  assert.match(preview, /<Dialog open=/);
+  assert.match(preview, /<DialogContent/);
+  assert.match(preview, /<DialogTitle/);
+  assert.doesNotMatch(preview, /<dialog|showModal\(\)/);
   assert.match(preview, /aria-label="关闭图片预览"/);
   assert.match(preview, /预览与调整/);
   assert.match(imageBatch, /import \{ ImagePreview \}/);
   assert.match(imageBatch, /src=\{`\/api\/assets\/\$\{asset\.id\}\?v=\$\{asset\.sha256\}`\}/);
-  assert.match(styles, /\.image-preview-dialog::backdrop/);
+  assert.match(dialog, /@radix-ui\/react-dialog/);
+  assert.match(dialog, /fixed inset-0/);
+  assert.match(dialog, /left-1\/2 top-1\/2/);
+  assert.match(dialog, /-translate-x-1\/2 -translate-y-1\/2/);
+  assert.match(styles, /\.image-preview-dialog/);
+  assert.doesNotMatch(styles, /\.dialog-content\s*\{[^}]*transform:\s*translate\(-50%,\s*-50%\)/s);
+  assert.doesNotMatch(styles, /\.confirm-dialog-content\s*\{[^}]*transform:\s*translate\(-50%,\s*-50%\)/s);
   assert.match(styles, /\.image-preview-full/);
+});
+
+test('application dropdowns use the shared Radix select instead of native selects', async () => {
+  const paths = [
+    'app/tasks/page.tsx',
+    'app/imports/demand-screening-panel.tsx',
+    'app/knowledge/knowledge-workbench.tsx',
+    'app/settings/production-settings-form.tsx',
+  ];
+  const [select, styles, ...screens] = await Promise.all([
+    readFile(projectFile('components/ui/select.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+    ...paths.map((path) => readFile(projectFile(path), 'utf8')),
+  ]);
+
+  assert.match(select, /@radix-ui\/react-select/);
+  assert.match(select, /SelectPrimitive\.Portal/);
+  assert.match(select, /SelectPrimitive\.Viewport/);
+  assert.match(select, /SelectPrimitive\.ItemIndicator/);
+  assert.match(styles, /\.select-trigger\s*\{[^}]*min-width:\s*0/s);
+  assert.match(
+    styles,
+    /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.select-trigger[^{}]*\.select-content[^{}]*\.dialog-overlay[^{}]*\.dialog-content[^{}]*\.confirm-dialog-content\s*\{[^}]*animation:\s*none/s,
+  );
+  for (const screen of screens) {
+    assert.doesNotMatch(screen, /<select/);
+    assert.match(screen, /<Select/);
+    assert.match(screen, /<SelectTrigger/);
+    assert.match(screen, /<SelectContent/);
+  }
+});
+
+test('confirmation prompts use one accessible Radix alert dialog provider', async () => {
+  const paths = [
+    'app/knowledge/knowledge-workbench.tsx',
+    'app/tasks/[id]/review-panel.tsx',
+    'app/tasks/[id]/retry-button.tsx',
+    'app/imports/import-workbench.tsx',
+    'app/imports/queue-generation-panel.tsx',
+    'app/prompts/prompt-editor.tsx',
+  ];
+  const [confirmation, frame, ...screens] = await Promise.all([
+    readFile(projectFile('components/ui/confirm-dialog.tsx'), 'utf8'),
+    readFile(projectFile('app/components/app-frame.tsx'), 'utf8'),
+    ...paths.map((path) => readFile(projectFile(path), 'utf8')),
+  ]);
+
+  assert.match(confirmation, /@radix-ui\/react-alert-dialog/);
+  assert.match(confirmation, /export function ConfirmDialogProvider/);
+  assert.match(confirmation, /export function useConfirmDialog/);
+  assert.match(confirmation, /<AlertDialogPrimitive\.Title/);
+  assert.match(confirmation, /<AlertDialogPrimitive\.Description/);
+  assert.match(confirmation, /returnFocusRef/);
+  assert.match(confirmation, /requestAnimationFrame/);
+  assert.match(frame, /<ConfirmDialogProvider>/);
+  for (const screen of screens) {
+    assert.doesNotMatch(screen, /window\.confirm/);
+    assert.match(screen, /useConfirmDialog/);
+  }
 });
 
 test('reviewers can switch image previews between 100 percent and full-image modes', async () => {

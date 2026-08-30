@@ -3,6 +3,8 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
+import { useConfirmDialog } from '@/components/ui/confirm-dialog';
+
 import { apiRequest } from '../components/api-client';
 import { StatusPill } from '../components/status-pill';
 
@@ -14,13 +16,18 @@ const KIND_DESCRIPTIONS: Record<string, string> = {
 
 export function PromptEditor({ template }: { template: any }) {
   const router = useRouter();
+  const confirm = useConfirmDialog();
   const published = template.versions.find((item: any) => item.status === 'PUBLISHED');
   const [content, setContent] = useState(published?.content || '');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
 
   async function saveAndPublish() {
-    if (!window.confirm('将创建一个不可覆盖的新版本，并用于之后入队的任务。确认发布？')) return;
+    if (!await confirm({
+      title: '发布新的提示词版本？',
+      description: '系统会创建一个不可覆盖的新版本，并用于之后入队的任务；既有任务继续使用原固定版本。',
+      confirmLabel: '创建并发布',
+    })) return;
     setBusy(true); setMessage('');
     try {
       const draft = await apiRequest<any>(`/api/prompts/${template.id}/versions`, {
@@ -34,7 +41,11 @@ export function PromptEditor({ template }: { template: any }) {
   }
 
   async function rollback(versionId: number, version: number) {
-    if (!window.confirm(`确认重新发布历史版本 v${version}？`)) return;
+    if (!await confirm({
+      title: `重新发布 v${version}？`,
+      description: `历史版本 v${version} 将成为之后入队任务使用的提示词版本。`,
+      confirmLabel: `发布 v${version}`,
+    })) return;
     setBusy(true); setMessage('');
     try {
       await apiRequest(`/api/prompt-versions/${versionId}/publish`, { method: 'POST' });

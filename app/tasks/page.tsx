@@ -8,6 +8,13 @@ import {
 import Link from 'next/link';
 
 import { Card, CardContent } from '@/components/ui/card';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 import { StatusPill } from '../components/status-pill';
 import { TaskProgressRefresh } from '../components/task-progress-refresh';
@@ -18,9 +25,14 @@ import { getTaskExportAvailability } from '../../src/admin/task-export.mjs';
 
 export const dynamic = 'force-dynamic';
 
+const ALL_FILTERS = '__all__';
+
 export default async function TasksPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const params = await searchParams;
-  const value = (key: string) => typeof params[key] === 'string' ? params[key] as string : '';
+  const value = (key: string) => {
+    const current = typeof params[key] === 'string' ? params[key] as string : '';
+    return current === ALL_FILTERS ? '' : current;
+  };
   const requestedBatchId = Number(value('batchId'));
   const { result, timingStats, batches, selectedBatchId } = withAdminStore((store: any) => {
     const batches = store.listImportBatches({
@@ -111,11 +123,14 @@ export default async function TasksPage({ searchParams }: { searchParams: Promis
       <form className="tasks-filter-grid" method="get">
         <div className="field tasks-filter-batch">
           <label htmlFor="batchId">任务批次</label>
-          <select className="select" id="batchId" name="batchId" defaultValue={selectedBatchId ? String(selectedBatchId) : ''} disabled={batches.length === 0}>
-            {batches.length === 0
-              ? <option value="">暂无已入队任务</option>
-              : batches.map((batch: any) => <option key={batch.id} value={batch.id}>{batch.name}（{batch.statistics.taskCount} 条）</option>)}
-          </select>
+          <Select name="batchId" defaultValue={selectedBatchId ? String(selectedBatchId) : undefined} disabled={batches.length === 0}>
+            <SelectTrigger id="batchId"><SelectValue placeholder="暂无已入队任务" /></SelectTrigger>
+            <SelectContent>
+              {batches.map((batch: any) => (
+                <SelectItem key={batch.id} value={String(batch.id)}>{batch.name}（{batch.statistics.taskCount} 条）</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <div className="field tasks-filter-query">
           <label htmlFor="query">搜索选题或外部 ID</label>
@@ -123,15 +138,29 @@ export default async function TasksPage({ searchParams }: { searchParams: Promis
         </div>
         <div className="field">
           <label htmlFor="status">生成状态</label>
-          <select className="select" id="status" name="status" defaultValue={value('status')}>
-            <option value="">全部</option><option value="pending">待处理</option><option value="processing">生成中</option><option value="completed">已生成</option><option value="failed">失败</option>
-          </select>
+          <Select name="status" defaultValue={value('status') || ALL_FILTERS}>
+            <SelectTrigger id="status"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_FILTERS}>全部</SelectItem>
+              <SelectItem value="pending">待处理</SelectItem>
+              <SelectItem value="processing">生成中</SelectItem>
+              <SelectItem value="completed">已生成</SelectItem>
+              <SelectItem value="failed">失败</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
         <div className="field">
           <label htmlFor="reviewStatus">审核状态</label>
-          <select className="select" id="reviewStatus" name="reviewStatus" defaultValue={value('reviewStatus')}>
-            <option value="">全部</option><option value="NOT_READY">未就绪</option><option value="WAITING_REVIEW">待审核</option><option value="APPROVED">已通过</option><option value="REJECTED">已驳回</option>
-          </select>
+          <Select name="reviewStatus" defaultValue={value('reviewStatus') || ALL_FILTERS}>
+            <SelectTrigger id="reviewStatus"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_FILTERS}>全部</SelectItem>
+              <SelectItem value="NOT_READY">未就绪</SelectItem>
+              <SelectItem value="WAITING_REVIEW">待审核</SelectItem>
+              <SelectItem value="APPROVED">已通过</SelectItem>
+              <SelectItem value="REJECTED">已驳回</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
         <div className="tasks-filter-actions">
           <button className="button primary" type="submit" disabled={batches.length === 0}>应用筛选</button>
