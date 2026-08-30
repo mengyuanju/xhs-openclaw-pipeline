@@ -9,6 +9,33 @@ import sharp from 'sharp';
 import { createOpenClawClient } from '../src/openclaw.mjs';
 
 describe('OpenClaw client', () => {
+  it('runs stage reviews through a separately configurable model', async () => {
+    const previousReviewModel = process.env.XHS_REVIEW_MODEL;
+    process.env.XHS_REVIEW_MODEL = 'openai/gpt-5.6-terra';
+    let invocation;
+    try {
+      const client = createOpenClawClient({
+        entryPath: 'C:/openclaw/dist/index.js',
+        runner: (command, args, options) => {
+          invocation = { command, args, options };
+          return {
+            status: 0,
+            stdout: JSON.stringify({ final: '{"schemaVersion":1,"decision":"PASS"}' }),
+            stderr: '',
+          };
+        },
+      });
+
+      const result = await client.runReview({ prompt: 'review this untrusted content' });
+      assert.equal(result.model, 'openai/gpt-5.6-terra');
+      assert.equal(invocation.args[invocation.args.indexOf('--model') + 1], 'openai/gpt-5.6-terra');
+      assert.equal(invocation.options.shell, false);
+    } finally {
+      if (previousReviewModel === undefined) delete process.env.XHS_REVIEW_MODEL;
+      else process.env.XHS_REVIEW_MODEL = previousReviewModel;
+    }
+  });
+
   it('runs text and vision inference without blocking the Node event loop', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'xhs-openclaw-async-inference-'));
     const inputPath = join(directory, 'input.png');

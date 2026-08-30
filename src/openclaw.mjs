@@ -375,6 +375,15 @@ export function createOpenClawClient({
       return { rawText: extractModelText(result.stdout), model };
     },
 
+    async runReview({
+      prompt,
+      model = process.env.XHS_REVIEW_MODEL || process.env.XHS_TEXT_MODEL || DEFAULT_TEXT_MODEL,
+      timeoutMs = 180_000,
+    }) {
+      const reviewModel = validatedModelRef(model, DEFAULT_TEXT_MODEL, 'reviewModel');
+      return this.runText({ prompt, model: reviewModel, timeoutMs });
+    },
+
     async runVision({
       prompt,
       inputPaths,

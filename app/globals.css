@@ -430,6 +430,19 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .batch-trace { margin: 0 18px 16px; border-top: 1px solid #dfd8d1; }
 .batch-trace > summary { padding: 12px 0 0; cursor: pointer; color: #57524d; font-size: 11px; font-weight: 750; }
 .batch-trace .prompt-content-list { padding-top: 12px; }
+.stage-review-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding-top: 12px; }
+.stage-review-card { min-width: 0; padding: 12px; border: 1px solid #e6e0d9; border-radius: 9px; background: #fff; }
+.stage-review-card.empty, .stage-review-empty { color: var(--muted); }
+.stage-review-empty { padding: 12px 0 2px; font-size: 12px; }
+.stage-review-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.stage-review-head span { font-size: 11px; font-weight: 800; }
+.stage-review-pass { color: #22724a; }
+.stage-review-reject { color: #a73c32; }
+.stage-review-card p { margin: 8px 0; color: #57524d; font-size: 12px; line-height: 1.6; }
+.stage-review-meta { display: flex; flex-wrap: wrap; gap: 5px 10px; color: var(--muted); font-size: 10px; }
+.stage-review-issues { display: grid; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; }
+.stage-review-issues li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; color: #57524d; font-size: 11px; line-height: 1.5; }
+.stage-review-issues strong { color: #a73c32; font-size: 9px; letter-spacing: .04em; }
 .visual-plan-trace .prompt-content { max-height: 420px; }
 .history { display: grid; gap: 10px; }
 .history-item { padding: 12px; border-left: 2px solid #ddd4cc; background: #faf8f5; font-size: 12px; }
@@ -567,6 +580,7 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
   .tasks-filter-actions { grid-column: 1 / -1; }
   .review-decision-panel { position: static; }
   .batch-context-grid { grid-template-columns: 1fr; }
+  .stage-review-grid { grid-template-columns: 1fr; }
   .screening-rules { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .compact-settings-grid { grid-template-columns: 1fr; }
 }

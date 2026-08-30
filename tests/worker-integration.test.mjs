@@ -74,6 +74,20 @@ describe('admin worker integration', () => {
           retrievedAt: '2026-08-29T08:00:00.000Z',
         }],
       };
+      const stageReviews = {
+        query: {
+          schemaVersion: 1,
+          stage: 'QUERY',
+          decision: 'PASS',
+          summary: 'Query 可以继续。',
+          issues: [],
+          source: 'OPENCLAW',
+          model: 'fake-review',
+          reviewedAt: '2026-08-31T08:00:00.000Z',
+          subjectSha256: 'a'.repeat(64),
+        },
+        text: null,
+      };
       await mkdir(outputDir, { recursive: true });
       await Promise.all([
         writeFile(join(outputDir, 'post.json'), JSON.stringify(post)),
@@ -89,6 +103,7 @@ describe('admin worker integration', () => {
         mode: 'live',
         error: new Error('质量门禁未通过'),
         researchSnapshot,
+        stageReviews,
       });
 
       const detail = store.getTask(task.id);
@@ -100,6 +115,7 @@ describe('admin worker integration', () => {
       assert.equal(detail.generationRuns.at(-1).status, 'FAILED');
       assert.equal(detail.generationRuns.at(-1).qcDisposition, 'blocked');
       assert.deepEqual(detail.generationRuns.at(-1).researchSnapshot, researchSnapshot);
+      assert.deepEqual(detail.generationRuns.at(-1).stageReviews, stageReviews);
       const retryConfig = await integration.getTaskConfig({ id: task.id });
       assert.equal(retryConfig.currentTextRevisionId, null);
       assert.equal(retryConfig.postOverride, null);
@@ -189,6 +205,8 @@ describe('admin worker integration', () => {
       assert.ok(generatedAssets.every((asset) => /^[a-f0-9]{64}$/.test(asset.visualPlanSha256)));
       assert.equal(detail.generationRuns[0].qcDisposition, 'mock_only');
       assert.equal(detail.generationRuns[0].visualPlan.pages.length, 5);
+      assert.equal(detail.generationRuns[0].stageReviews.query.source, 'MOCK');
+      assert.equal(detail.generationRuns[0].stageReviews.text.source, 'MOCK');
       assert.throws(
         () => store.setReviewStatus(task.id, { status: 'APPROVED', note: '不应通过 Mock' }),
         /mock_only/i,

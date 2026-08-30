@@ -189,6 +189,7 @@ export function createAdminWorkerIntegration({
       sourceTextRevisionId,
       promptTrace,
       researchSnapshot,
+      stageReviews,
       startedAt,
       finishedAt,
     }) {
@@ -232,6 +233,7 @@ export function createAdminWorkerIntegration({
         promptTrace,
         visualPlan,
         researchSnapshot,
+        stageReviews,
         startedAt,
         finishedAt,
       });
@@ -246,6 +248,7 @@ export function createAdminWorkerIntegration({
       qc: pipelineQc,
       promptTrace,
       researchSnapshot,
+      stageReviews,
       visualPlan,
       startedAt,
       finishedAt,
@@ -278,6 +281,7 @@ export function createAdminWorkerIntegration({
         promptTrace,
         visualPlan: runVisualPlan,
         researchSnapshot,
+        stageReviews,
         error: previewError
           ? `${originalError}；失败预览同步异常：${previewError.message ?? String(previewError)}`
           : originalError,

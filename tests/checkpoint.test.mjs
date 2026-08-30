@@ -42,17 +42,33 @@ describe('pipeline checkpoints', () => {
         retrievedAt: '2026-08-29T08:00:00.000Z',
       }],
     };
+    const stageReviews = {
+      query: {
+        schemaVersion: 1,
+        stage: 'QUERY',
+        decision: 'PASS',
+        summary: 'Query 可以继续。',
+        issues: [],
+        source: 'OPENCLAW',
+        model: 'fake-review',
+        reviewedAt: '2026-08-31T08:00:00.000Z',
+        subjectSha256: 'a'.repeat(64),
+      },
+      text: null,
+    };
     await savePipelineCheckpoint({
       outputRoot,
       taskId: task.id,
       fingerprint,
       research,
+      stageReviews,
       post: { value: { title: '已生成正文' }, model: 'fake-text' },
       visualPlan: null,
     });
 
     const loaded = await loadPipelineCheckpoint({ outputRoot, taskId: task.id, fingerprint });
     assert.deepEqual(loaded.research, research);
+    assert.deepEqual(loaded.stageReviews, stageReviews);
     const checkpointPath = join(outputRoot, String(task.id), 'checkpoint.json');
     const previousSchema = JSON.parse(await readFile(checkpointPath, 'utf8'));
     previousSchema.schemaVersion = 4;

@@ -4,7 +4,7 @@ import { basename, dirname, relative, resolve } from 'node:path';
 
 import { normalizeProductionSettings } from './production-settings.mjs';
 
-const CHECKPOINT_SCHEMA_VERSION = 7;
+const CHECKPOINT_SCHEMA_VERSION = 8;
 const MAX_CHECKPOINT_BYTES = 500_000;
 const MAX_CHECKPOINT_IMAGE_BYTES = 25 * 1024 * 1024;
 
@@ -81,6 +81,7 @@ export async function savePipelineCheckpoint({
   taskId,
   fingerprint,
   research,
+  stageReviews,
   post,
   visualPlan,
   images = [],
@@ -90,6 +91,7 @@ export async function savePipelineCheckpoint({
     schemaVersion: CHECKPOINT_SCHEMA_VERSION,
     fingerprint,
     research: research ?? null,
+    stageReviews: stageReviews ?? null,
     post: post ?? null,
     visualPlan: visualPlan ?? null,
     images: Array.isArray(images) ? images : [],

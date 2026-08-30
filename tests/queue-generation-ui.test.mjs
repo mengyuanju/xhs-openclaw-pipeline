@@ -15,7 +15,9 @@ it('committed import batches expose a confirmed asynchronous generation action',
   assert.match(launchPanel, /useConfirmDialog/);
   assert.match(launchPanel, /await confirm\(\{/);
   assert.doesNotMatch(launchPanel, /window\.confirm/);
-  assert.match(launchPanel, /2 次文本模型/);
+  assert.match(launchPanel, /4 次文本模型/);
+  assert.match(launchPanel, /Query 审核/u);
+  assert.match(launchPanel, /文本生成后审核/u);
   assert.match(launchPanel, /3–5 次图片模型/);
   assert.match(launchPanel, /3–5 次视觉验收/);
   assert.match(launchPanel, /最多 2 条任务同时生产/);

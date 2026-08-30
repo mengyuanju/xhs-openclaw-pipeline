@@ -33,6 +33,33 @@ function researchSnapshot() {
   };
 }
 
+function stageReviews() {
+  return {
+    query: {
+      schemaVersion: 1,
+      stage: 'QUERY',
+      decision: 'PASS',
+      summary: 'Query 目标清晰。',
+      issues: [],
+      source: 'OPENCLAW',
+      model: 'fake-review',
+      reviewedAt: '2026-08-31T08:00:00.000Z',
+      subjectSha256: 'a'.repeat(64),
+    },
+    text: {
+      schemaVersion: 1,
+      stage: 'TEXT',
+      decision: 'PASS',
+      summary: '文本可以进入视觉规划。',
+      issues: [],
+      source: 'OPENCLAW',
+      model: 'fake-review',
+      reviewedAt: '2026-08-31T08:01:00.000Z',
+      subjectSha256: 'b'.repeat(64),
+    },
+  };
+}
+
 test('generation runs persist bounded QC detail for human-readable review reasons', () => {
   const db = databaseWithTasks();
   try {
@@ -79,6 +106,7 @@ test('generation runs persist bounded QC detail for human-readable review reason
         pages: [{ pageIndex: 1, layoutDirection: '主体居中，标题置顶。' }],
       },
       researchSnapshot: researchSnapshot(),
+      stageReviews: stageReviews(),
     });
 
     assert.deepEqual(saved.qcDetail, qc);
@@ -98,10 +126,12 @@ test('generation runs persist bounded QC detail for human-readable review reason
       pages: [{ pageIndex: 1, layoutDirection: '主体居中，标题置顶。' }],
     });
     assert.deepEqual(saved.researchSnapshot, researchSnapshot());
+    assert.deepEqual(saved.stageReviews, stageReviews());
     assert.deepEqual(store.listGenerationRuns(1)[0].qcDetail, qc);
     assert.deepEqual(store.listGenerationRuns(1)[0].promptTrace, saved.promptTrace);
     assert.deepEqual(store.listGenerationRuns(1)[0].visualPlan, saved.visualPlan);
     assert.deepEqual(store.listGenerationRuns(1)[0].researchSnapshot, researchSnapshot());
+    assert.deepEqual(store.listGenerationRuns(1)[0].stageReviews, stageReviews());
   } finally {
     db.close();
   }
@@ -136,6 +166,7 @@ test('generation schema adds the QC detail column to historical databases', () =
     assert.ok(columns.includes('prompt_trace_json'));
     assert.ok(columns.includes('visual_plan_json'));
     assert.ok(columns.includes('research_snapshot_json'));
+    assert.ok(columns.includes('stage_reviews_json'));
   } finally {
     db.close();
   }

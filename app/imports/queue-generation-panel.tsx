@@ -25,7 +25,7 @@ export function QueueGenerationPanel({ maxTasks, timingStats }: { maxTasks: numb
     if (boundedMax < 1 || launchState === 'STARTING' || launchState === 'STARTED') return;
     const confirmed = await confirm({
       title: `启动最多 ${boundedMax} 条真实生成？`,
-      description: '系统将按全局队列顺序运行，最多同时生产 2 条。每条基础流程会调用 2 次文本模型、3–5 次图片模型和 3–5 次视觉验收；验收失败的页面最多再生成 2 次，可能产生额外费用。',
+      description: '系统将按全局队列顺序运行，最多同时生产 2 条。每条基础流程会调用 4 次文本模型（Query 审核、正文生成、文本生成后审核、视觉规划）、3–5 次图片模型和 3–5 次视觉验收；验收失败的页面最多再生成 2 次，可能产生额外费用。',
       confirmLabel: '接受费用并启动',
     });
     if (!confirmed) return;

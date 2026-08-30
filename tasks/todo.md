@@ -1,5 +1,27 @@
 # Admin Console v0.2 Tasks
 
+## Phase 17: Query and Text Stage Reviews
+
+- [x] Task 60: 审核契约与独立模型调用。
+  - Acceptance: PASS/REJECT 语义、问题证据、字段长度和重试次数均严格校验。
+  - Verify: `node --test tests/content-stage-review.test.mjs tests/openclaw.test.mjs`
+  - Files: `src/content-stage-review.mjs`, `src/openclaw.mjs`, `tests/content-stage-review.test.mjs`, `tests/openclaw.test.mjs`
+
+- [x] Task 61: 管线门禁与可恢复落盘。
+  - Acceptance: Query 审核先于检索；文本审核先于视觉规划；拒绝时无后续付费调用。
+  - Verify: `node --test tests/pipeline.test.mjs tests/checkpoint.test.mjs`
+  - Files: `src/pipeline.mjs`, `src/checkpoint.mjs`, `tests/pipeline.test.mjs`, `tests/checkpoint.test.mjs`
+
+- [x] Task 62: 存储与审核页展示。
+  - Acceptance: 完成/失败运行都保存两阶段证据；批次可读显示决策、来源、原因与历史空状态。
+  - Verify: `node --test tests/generation-store.test.mjs tests/worker-integration.test.mjs tests/frontend-ux.test.mjs && npm run typecheck`
+  - Files: `src/admin/generation-store.mjs`, `src/admin/worker-service.mjs`, `app/tasks/[id]/generation-stage-reviews.tsx`, `app/tasks/[id]/image-generation-batch.tsx`, `tests/`
+
+- [x] Task 63: 全量验证与操作文档。
+  - Acceptance: README 说明新顺序、模型配置和图片提示词的实际组合时机。
+  - Verify: `npm test && npm run typecheck && npm run build && npm run smoke`
+  - Files: `README.md`, `docs/content-stage-review-spec.md`, `tasks/plan.md`, `tasks/todo.md`
+
 ## Task 1: 管理数据库与提示词版本
 
 - [x] 创建管理表与种子提示词，发布版本不可修改。

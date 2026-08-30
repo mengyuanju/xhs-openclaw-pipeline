@@ -6,6 +6,7 @@ import { ImagePreview } from '../../components/image-preview';
 import { StatusPill } from '../../components/status-pill';
 import { formatDuration } from '../../components/time-format';
 import { PromptTrace } from './generation-prompt-trace';
+import { StageReviewTrace } from './generation-stage-reviews';
 import { VisualPlanTrace } from './generation-visual-plan';
 import {
   imageNeedsCrop,
@@ -116,6 +117,10 @@ export function ImageGenerationBatch({
         </div>
         {runTiming && <p className="batch-timing-line">批次时间：{runTiming}</p>}
         <details className="batch-trace">
+          <summary>查看 Query 与文本审核</summary>
+          <StageReviewTrace stageReviews={run?.stageReviews} />
+        </details>
+        <details className="batch-trace">
           <summary>查看本批次用户提示词</summary>
           <PromptTrace run={run} />
         </details>
@@ -190,6 +195,10 @@ export function ImageGenerationBatch({
           </article>;
         })}</div>}
 
+    {!isReference && <details className="batch-trace">
+      <summary>查看 Query 与文本审核</summary>
+      <StageReviewTrace stageReviews={run?.stageReviews} />
+    </details>}
     {!isReference && <details className="batch-trace">
       <summary>查看本批次用户提示词</summary>
       <PromptTrace run={run} />

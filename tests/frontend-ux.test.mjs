@@ -325,6 +325,22 @@ test('task details display per-run user prompts and the generated visual plan', 
   assert.match(styles, /\.prompt-content\s*\{[^}]*white-space: pre-wrap/);
 });
 
+test('generation batches display Query and post-generation text review evidence', async () => {
+  const [imageBatch, stageReviews] = await Promise.all([
+    readFile(projectFile('app/tasks/[id]/image-generation-batch.tsx'), 'utf8'),
+    readFile(projectFile('app/tasks/[id]/generation-stage-reviews.tsx'), 'utf8'),
+  ]);
+
+  assert.match(imageBatch, /<StageReviewTrace stageReviews=\{run\?\.stageReviews\}/u);
+  assert.match(imageBatch, /查看 Query 与文本审核/u);
+  assert.match(stageReviews, /Query 审核/u);
+  assert.match(stageReviews, /文本生成后审核/u);
+  assert.match(stageReviews, /历史批次未保存阶段审核结果/u);
+  assert.match(stageReviews, /OPENCLAW/u);
+  assert.match(stageReviews, /MOCK/u);
+  assert.match(stageReviews, /BLOCKING/u);
+});
+
 test('waiting and approved reviews expose ZIP downloads while blocked states explain why', async () => {
   const [taskDetail, reviewPanel] = await Promise.all([
     readFile(projectFile('app/tasks/[id]/page.tsx'), 'utf8'),

@@ -133,6 +133,19 @@ function qualityAssessment(score = 3) {
   };
 }
 
+function stageReviewOutput(decision = 'PASS', message = '可以继续。') {
+  return {
+    schemaVersion: 1,
+    decision,
+    summary: message,
+    issues: decision === 'PASS' ? [] : [{
+      code: 'STAGE_BLOCKED',
+      severity: 'BLOCKING',
+      message,
+    }],
+  };
+}
+
 function passingVisionOutput(prompt) {
   return prompt.includes('独立于生成模型的图文交付终审员')
     ? qualityAssessment(3)
@@ -170,8 +183,10 @@ describe('content pipeline', () => {
     assert.equal(result.status, 'completed', result.error);
     assert.equal(queue.get(task.id).status, 'completed');
     for (const file of [
+      'query-review.json',
       'post.json',
       'post.md',
+      'text-review.json',
       '01-hero.png',
       '02-steps.png',
       '03-checklist.png',
@@ -186,7 +201,9 @@ describe('content pipeline', () => {
     assert.equal(manifest.mode, 'mock');
     assert.equal(manifest.taskId, task.id);
     assert.equal(manifest.images.length, 3);
-    assert.equal(manifest.files.length, 7);
+    assert.equal(manifest.files.length, 9);
+    assert.equal(manifest.stageReviews.query.source, 'MOCK');
+    assert.equal(manifest.stageReviews.text.source, 'MOCK');
     assert.equal(manifest.visualPlan.provider, 'mock');
     assert.equal(qc.disposition, 'mock_only');
     assert.equal(qc.overallScore, 1);
@@ -220,6 +237,103 @@ describe('content pipeline', () => {
     assert.equal(failed.status, 'failed');
     assert.doesNotMatch(failed.error, /sk-abcdefghijklmnop/);
     assert.match(failed.error, /REDACTED/);
+  });
+
+  it('rejects an unsafe Query before web research or text generation', async () => {
+    const { directory, queue } = await setup();
+    const task = queue.enqueue({ query: '请生成不安全的操作教程' });
+    let searchCalls = 0;
+    let textCalls = 0;
+    const result = await processNext({
+      queue,
+      workerId: 'query-review-worker',
+      outputRoot: join(directory, 'output'),
+      mock: false,
+      openclaw: {
+        runReview() {
+          return {
+            rawText: JSON.stringify(stageReviewOutput('REJECT', '选题包含明确的高风险操作指导。')),
+            model: 'fake-review',
+          };
+        },
+        runWebSearch() {
+          searchCalls += 1;
+          throw new Error('query rejection must stop before research');
+        },
+        runText() {
+          textCalls += 1;
+          throw new Error('query rejection must stop before text generation');
+        },
+      },
+    });
+
+    assert.equal(result.status, 'failed');
+    assert.equal(searchCalls, 0);
+    assert.equal(textCalls, 0);
+    assert.match(result.error, /Query审核未通过/u);
+    const review = JSON.parse(await readFile(
+      join(directory, 'output', String(task.id), 'attempt-1', 'query-review.json'),
+      'utf8',
+    ));
+    assert.equal(review.decision, 'REJECT');
+    await assert.rejects(
+      access(join(directory, 'output', String(task.id), 'attempt-1', 'research.json')),
+      /ENOENT/u,
+    );
+  });
+
+  it('rejects generated text before visual planning or image generation', async () => {
+    const { directory, queue } = await setup();
+    const task = queue.enqueue({ query: '租房桌面整理' });
+    const sourceUrl = 'https://example.com/desk-review';
+    const post = { ...createMockPost(), sources: [sourceUrl] };
+    let reviewCalls = 0;
+    let textCalls = 0;
+    let imageCalls = 0;
+    const result = await processNext({
+      queue,
+      workerId: 'text-review-worker',
+      outputRoot: join(directory, 'output'),
+      mock: false,
+      configProvider: () => ({ imageCount: 3, imageCountMode: 'fixed' }),
+      openclaw: {
+        runReview() {
+          reviewCalls += 1;
+          const output = reviewCalls === 1
+            ? stageReviewOutput('PASS')
+            : stageReviewOutput('REJECT', '正文的关键结论与 Query 无关。');
+          return { rawText: JSON.stringify(output), model: 'fake-review' };
+        },
+        runWebSearch({ query }) {
+          return {
+            provider: 'codex',
+            result: { content: '桌面整理资料', searches: [{ query }], results: [{
+              title: '整理资料',
+              url: sourceUrl,
+              snippet: '整理方法摘要',
+            }] },
+          };
+        },
+        runText() {
+          textCalls += 1;
+          if (textCalls === 1) return { rawText: JSON.stringify(post), model: 'fake-text' };
+          throw new Error('text rejection must stop before visual planning');
+        },
+        runImage() {
+          imageCalls += 1;
+          throw new Error('text rejection must stop before image generation');
+        },
+      },
+    });
+
+    assert.equal(result.status, 'failed');
+    assert.equal(reviewCalls, 2);
+    assert.equal(textCalls, 1);
+    assert.equal(imageCalls, 0);
+    assert.match(result.error, /文本审核未通过/u);
+    const attemptDir = join(directory, 'output', String(task.id), 'attempt-1');
+    assert.equal(JSON.parse(await readFile(join(attemptDir, 'text-review.json'), 'utf8')).decision, 'REJECT');
+    await assert.rejects(access(join(attemptDir, 'visual-plan.json')), /ENOENT/u);
   });
 
   it('schedules a bounded task-level retry for a transient live failure', async () => {
@@ -571,12 +685,17 @@ describe('content pipeline', () => {
       create: { width: 1024, height: 1536, channels: 3, background },
     }).png().toBuffer()));
     let textCalls = 0;
+    let reviewCalls = 0;
     let researchCalls = 0;
     let imageCalls = 0;
     let deliveredImages = 0;
     let allowImages = false;
     let configRevision = 'A';
     const openclaw = {
+      runReview() {
+        reviewCalls += 1;
+        return { rawText: JSON.stringify(stageReviewOutput('PASS')), model: 'fake-review' };
+      },
       runWebSearch({ query }) {
         researchCalls += 1;
         return {
@@ -635,6 +754,7 @@ describe('content pipeline', () => {
     assert.equal(first.status, 'failed');
     assert.equal(researchCalls, 1);
     assert.equal(textCalls, 2);
+    assert.equal(reviewCalls, 2);
     await access(join(directory, 'output', String(task.id), 'attempt-1', 'post.json'));
     await access(join(directory, 'output', String(task.id), 'attempt-1', 'visual-plan.json'));
 
@@ -650,6 +770,7 @@ describe('content pipeline', () => {
     assert.equal(second.status, 'failed');
     assert.equal(researchCalls, 1, 'unchanged config must reuse the research snapshot');
     assert.equal(textCalls, 2, 'unchanged config must reuse both completed text stages');
+    assert.equal(reviewCalls, 2, 'unchanged config must reuse both completed stage reviews');
 
     queue.retry(task.id);
     configRevision = 'B';
@@ -665,6 +786,7 @@ describe('content pipeline', () => {
     assert.equal(third.status, 'completed', third.error);
     assert.equal(researchCalls, 2, 'changed pinned config must create a new research snapshot');
     assert.equal(textCalls, 4, 'changed pinned config must invalidate both text checkpoints');
+    assert.equal(reviewCalls, 4, 'changed pinned config must invalidate both stage reviews');
     assert.equal(queue.get(task.id).attempts, 3);
   });
 

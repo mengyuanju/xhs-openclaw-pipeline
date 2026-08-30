@@ -8,6 +8,14 @@ import { createOpenClawClient } from './openclaw.mjs';
 import { createDeliveryQualityAssessor } from './quality-assessment.mjs';
 import { fullPageInstructionForLayout } from './layout-contract.mjs';
 import {
+  describeStageReviewFailure,
+  isReusableStageReview,
+  queryReviewSubject,
+  runQueryReview,
+  runTextReview,
+  textReviewSubject,
+} from './content-stage-review.mjs';
+import {
   attachResearchToTask,
   createResearchSnapshot,
   normalizeResearchSnapshot,
@@ -388,6 +396,7 @@ export async function processNext({
   let failureQc = null;
   let visualPlan = null;
   let researchSnapshot = null;
+  const stageReviews = { query: null, text: null };
   let promptTrace = {
     contentKind: 'USER_PROMPT',
     text: {
@@ -427,6 +436,35 @@ export async function processNext({
       fingerprint: checkpointFingerprint,
     });
     let generationTask = task;
+    const reusableQueryReview = checkpoint?.stageReviews?.query;
+    if (isReusableStageReview(reusableQueryReview, {
+      stage: 'QUERY',
+      subject: queryReviewSubject(task),
+    })) {
+      stageReviews.query = reusableQueryReview;
+    } else {
+      await heartbeat();
+      stageReviews.query = await runQueryReview({ client, task, mock });
+    }
+    await writeAtomic(
+      join(outputDir, 'query-review.json'),
+      `${JSON.stringify(stageReviews.query, null, 2)}\n`,
+    );
+    if (!mock && stageReviews.query !== reusableQueryReview) {
+      checkpoint = await savePipelineCheckpoint({
+        outputRoot,
+        taskId: task.id,
+        fingerprint: checkpointFingerprint,
+        research: checkpoint?.research ?? null,
+        stageReviews,
+        post: checkpoint?.post ?? null,
+        visualPlan: checkpoint?.visualPlan ?? null,
+        images: checkpoint?.images ?? [],
+      });
+    }
+    if (stageReviews.query.decision !== 'PASS') {
+      throw new Error(describeStageReviewFailure(stageReviews.query));
+    }
     const shouldResearch = !mock && !workerConfig?.postOverride
       && typeof client?.runWebSearch === 'function';
     if (shouldResearch) {
@@ -457,6 +495,7 @@ export async function processNext({
           taskId: task.id,
           fingerprint: checkpointFingerprint,
           research: researchSnapshot,
+          stageReviews,
           post: checkpoint?.post ?? null,
           visualPlan: checkpoint?.visualPlan ?? null,
           images: checkpoint?.images ?? [],
@@ -523,12 +562,43 @@ export async function processNext({
     const imageCount = post.imagePlan.length;
     await writeAtomic(join(outputDir, 'post.json'), `${JSON.stringify(post, null, 2)}\n`);
     await writeAtomic(join(outputDir, 'post.md'), toMarkdown(task, post));
+    const reusableTextReview = checkpoint?.stageReviews?.text;
+    const currentTextReviewSubject = textReviewSubject({ task, post, allowedSources });
+    if (isReusableStageReview(reusableTextReview, {
+      stage: 'TEXT',
+      subject: currentTextReviewSubject,
+    })) {
+      stageReviews.text = reusableTextReview;
+    } else {
+      await heartbeat();
+      stageReviews.text = await runTextReview({ client, task, post, allowedSources, mock });
+    }
+    await writeAtomic(
+      join(outputDir, 'text-review.json'),
+      `${JSON.stringify(stageReviews.text, null, 2)}\n`,
+    );
+    if (stageReviews.text.decision !== 'PASS') {
+      if (!mock) {
+        checkpoint = await savePipelineCheckpoint({
+          outputRoot,
+          taskId: task.id,
+          fingerprint: checkpointFingerprint,
+          research: researchSnapshot,
+          stageReviews,
+          post: null,
+          visualPlan: null,
+          images: [],
+        });
+      }
+      throw new Error(describeStageReviewFailure(stageReviews.text));
+    }
     if (!mock) {
       checkpoint = await savePipelineCheckpoint({
         outputRoot,
         taskId: task.id,
         fingerprint: checkpointFingerprint,
         research: researchSnapshot,
+        stageReviews,
         post: { value: post, model: textModel },
         visualPlan: checkpoint?.visualPlan ?? null,
         images: checkpoint?.images ?? [],
@@ -560,6 +630,7 @@ export async function processNext({
         taskId: task.id,
         fingerprint: checkpointFingerprint,
         research: researchSnapshot,
+        stageReviews,
         post: { value: post, model: textModel },
         visualPlan: { value: visualPlan, model: visualPlanModel },
         images: checkpoint?.images ?? [],
@@ -675,6 +746,7 @@ export async function processNext({
             taskId: task.id,
             fingerprint: checkpointFingerprint,
             research: researchSnapshot,
+            stageReviews,
             post: { value: post, model: textModel },
             visualPlan: { value: visualPlan, model: visualPlanModel },
             images: imageRecords,
@@ -794,9 +866,11 @@ export async function processNext({
     await writeAtomic(join(outputDir, 'qc.json'), `${JSON.stringify(qc, null, 2)}\n`);
 
     const deliveryFiles = [
+      'query-review.json',
       ...(researchSnapshot ? ['research.json'] : []),
       'post.json',
       'post.md',
+      'text-review.json',
       'visual-plan.json',
       ...images.map((image) => image.file),
       'qc.json',
@@ -818,6 +892,7 @@ export async function processNext({
         sourceCount: researchSnapshot.sources.length,
         searchedAt: researchSnapshot.searchedAt,
       } : null,
+      stageReviews,
       visualPlan: {
         provider: mock ? 'mock' : 'openclaw',
         model: visualPlanModel,
@@ -851,6 +926,7 @@ export async function processNext({
           research: regenerateContent && shouldRefreshResearchAfterQualityFailure(qc, researchSnapshot)
             ? null
             : researchSnapshot,
+          stageReviews: regenerateContent ? { query: stageReviews.query, text: null } : stageReviews,
           post: regenerateContent ? null : { value: post, model: textModel },
           visualPlan: regenerateContent ? null : { value: visualPlan, model: visualPlanModel },
           images: regenerateContent || shouldRegenerateWholeImageSetAfterQualityFailure(qc)
@@ -866,6 +942,7 @@ export async function processNext({
         taskId: task.id,
         fingerprint: checkpointFingerprint,
         research: researchSnapshot,
+        stageReviews: { query: stageReviews.query, text: null },
         post: null,
         visualPlan: null,
         images: [],
@@ -888,6 +965,7 @@ export async function processNext({
         : null,
       promptTrace,
       researchSnapshot,
+      stageReviews,
       startedAt: runStartedAt,
       finishedAt: new Date().toISOString(),
     });
@@ -902,6 +980,7 @@ export async function processNext({
       qc: failureQc,
       promptTrace,
       researchSnapshot,
+      stageReviews,
       visualPlan,
       startedAt: runStartedAt,
       finishedAt: new Date().toISOString(),

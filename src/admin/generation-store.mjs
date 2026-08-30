@@ -15,6 +15,7 @@ function rowToGenerationRun(row) {
     promptTrace: parseUserPromptTrace(row.prompt_trace_json),
     visualPlan: parseStoredObject(row.visual_plan_json),
     researchSnapshot: parseStoredResearchSnapshot(row.research_snapshot_json),
+    stageReviews: parseStoredObject(row.stage_reviews_json),
     error: row.error,
     startedAt: row.started_at ?? null,
     finishedAt: row.finished_at ?? null,
@@ -89,6 +90,10 @@ function boundedResearchSnapshot(value) {
   return boundedStoredObject(normalizeResearchSnapshot(value), 'research snapshot', 100_000);
 }
 
+function boundedStageReviews(value) {
+  return boundedStoredObject(value, 'stage reviews', 100_000);
+}
+
 function runTiming(startedAt, finishedAt) {
   if (startedAt === null || startedAt === undefined || finishedAt === null || finishedAt === undefined) {
     return { startedAt: null, finishedAt: null, durationMs: null };
@@ -120,6 +125,7 @@ export function initializeGenerationSchema(db) {
       prompt_trace_json TEXT,
       visual_plan_json TEXT,
       research_snapshot_json TEXT,
+      stage_reviews_json TEXT,
       error TEXT,
       started_at TEXT,
       finished_at TEXT,
@@ -144,6 +150,9 @@ export function initializeGenerationSchema(db) {
   }
   if (!columns.has('research_snapshot_json')) {
     db.exec('ALTER TABLE generation_runs ADD COLUMN research_snapshot_json TEXT');
+  }
+  if (!columns.has('stage_reviews_json')) {
+    db.exec('ALTER TABLE generation_runs ADD COLUMN stage_reviews_json TEXT');
   }
   if (!columns.has('started_at')) db.exec('ALTER TABLE generation_runs ADD COLUMN started_at TEXT');
   if (!columns.has('finished_at')) db.exec('ALTER TABLE generation_runs ADD COLUMN finished_at TEXT');
@@ -170,6 +179,7 @@ export function createGenerationStore(db) {
       promptTrace = null,
       visualPlan = null,
       researchSnapshot = null,
+      stageReviews = null,
       error = null,
       startedAt = null,
       finishedAt = null,
@@ -182,13 +192,14 @@ export function createGenerationStore(db) {
       const promptTraceJson = boundedPromptTrace(promptTrace);
       const visualPlanJson = boundedVisualPlan(visualPlan);
       const researchSnapshotJson = boundedResearchSnapshot(researchSnapshot);
+      const stageReviewsJson = boundedStageReviews(stageReviews);
       const timing = runTiming(startedAt, finishedAt);
       const result = db.prepare(`
         INSERT INTO generation_runs
           (task_id, attempt, mode, status, output_dir, qc_score, qc_disposition,
            qc_detail_json, prompt_trace_json, visual_plan_json, research_snapshot_json,
-           error, started_at, finished_at, duration_ms, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           stage_reviews_json, error, started_at, finished_at, duration_ms, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(task_id, attempt, status) DO UPDATE SET
           output_dir = excluded.output_dir,
           qc_score = excluded.qc_score,
@@ -197,6 +208,7 @@ export function createGenerationStore(db) {
           prompt_trace_json = excluded.prompt_trace_json,
           visual_plan_json = excluded.visual_plan_json,
           research_snapshot_json = excluded.research_snapshot_json,
+          stage_reviews_json = excluded.stage_reviews_json,
           error = excluded.error,
           started_at = excluded.started_at,
           finished_at = excluded.finished_at,
@@ -215,6 +227,7 @@ export function createGenerationStore(db) {
         promptTraceJson,
         visualPlanJson,
         researchSnapshotJson,
+        stageReviewsJson,
         boundedError(error),
         timing.startedAt,
         timing.finishedAt,
