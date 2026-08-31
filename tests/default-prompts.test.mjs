@@ -24,7 +24,7 @@ describe('runtime default prompts', () => {
 
     assert.match(prompt.content, /主需关键词/);
     assert.match(prompt.content, /图片内容.*必须与正文一致/);
-    assert.match(prompt.content, /文案从初稿到终稿/);
+    assert.doesNotMatch(prompt.content, /人工语言排版微调/);
     assert.match(prompt.content, /imagePlan 必须按正文逻辑逐张规划全部 \{\{imageCount\}\} 张图片/);
     assert.match(prompt.content, /每张都提供非空模型提示词/);
     assert.doesNotMatch(prompt.content, /\[R\d{3}\]/);
@@ -44,6 +44,19 @@ describe('runtime default prompts', () => {
     assert.match(prompt.content, /联网研究由 Worker 在文本生成前完成/u);
     assert.match(prompt.content, /webResearch.*不可信/u);
     assert.match(prompt.content, /不得声称打开或抓取了快照未包含的网页/u);
+  });
+
+  it('defines the copy-only three-point acceptance gate measured by the latest trial', () => {
+    const prompt = DEFAULT_PROMPTS.find(({ kind }) => kind === 'TEXT_SYSTEM');
+
+    assert.match(prompt.content, /文案 3 分门禁/u);
+    assert.match(prompt.content, /标题前半段.*完整主需.*后半段.*交付内容/u);
+    assert.match(prompt.content, /数字承诺.*正文.*实际条数/u);
+    assert.match(prompt.content, /正文前两句.*直接回答 Query/u);
+    assert.match(prompt.content, /没有输入支持.*朋友问我.*上一份工作.*打电话问家人/u);
+    assert.match(prompt.content, /标题、正文和 imagePlan.*数字、顺序和结论一致/u);
+    assert.match(prompt.content, /错别字、重复段落和多余空行/u);
+    assert.doesNotMatch(prompt.content, /使用 2[—-]3 个 AI 工具交叉验证/u);
   });
 
   it('loads generation and editing image rules without inline source labels', () => {
