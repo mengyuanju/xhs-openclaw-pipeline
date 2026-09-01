@@ -3,6 +3,7 @@ import { mkdir, readFile, unlink } from 'node:fs/promises';
 import { dirname, relative, resolve } from 'node:path';
 import sharp from 'sharp';
 
+import { DELIVERY_IMAGE_HEIGHT, DELIVERY_IMAGE_WIDTH } from '../image-output-contract.mjs';
 import { applyDeterministicTextOverlay } from '../images.mjs';
 import { createImageAlignmentValidator } from '../image-alignment.mjs';
 import { createOpenClawClient } from '../openclaw.mjs';
@@ -49,7 +50,7 @@ export async function processNextImageEdit({
     let alignment = null;
     if (mock) {
       await sharp(sourcePath, { failOn: 'error', limitInputPixels: 40_000_000 })
-        .resize(1080, 1440, { fit: 'cover', position: 'attention' })
+        .resize(DELIVERY_IMAGE_WIDTH, DELIVERY_IMAGE_HEIGHT, { fit: 'cover', position: 'attention' })
         .png({ compressionLevel: 8 })
         .toFile(outputPath);
     } else {
@@ -71,7 +72,7 @@ export async function processNextImageEdit({
       });
       model = generated.model;
       await sharp(generated.outputPath, { failOn: 'error', limitInputPixels: 40_000_000 })
-        .resize(1080, 1440, { fit: 'cover', position: 'attention' })
+        .resize(DELIVERY_IMAGE_WIDTH, DELIVERY_IMAGE_HEIGHT, { fit: 'cover', position: 'attention' })
         .png({ compressionLevel: 8 })
         .toFile(outputPath);
       if (source.sourceTextRevisionId && source.pageIndex) {

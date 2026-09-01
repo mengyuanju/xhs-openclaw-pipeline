@@ -117,4 +117,36 @@ describe('admin asset service', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('normalizes a 3:4 crop revision to the delivery resolution', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'xhs-assets-'));
+    const store = createAdminStore(':memory:');
+    try {
+      const task = createTask(store);
+      const buffer = await sharp({
+        create: { width: 800, height: 800, channels: 3, background: '#6f8f72' },
+      }).png().toBuffer();
+      const parent = await saveUploadedImage({
+        store,
+        taskId: task.id,
+        buffer,
+        fileName: 'square.png',
+        mimeType: 'image/png',
+        uploadRoot: root,
+      });
+
+      const child = await createImageRevision({
+        store,
+        taskId: task.id,
+        assetId: parent.id,
+        operation: { type: 'crop-3x4' },
+        uploadRoot: root,
+      });
+
+      assert.deepEqual([child.width, child.height], [1086, 1448]);
+    } finally {
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

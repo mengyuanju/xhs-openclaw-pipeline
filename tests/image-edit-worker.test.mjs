@@ -58,7 +58,9 @@ describe('image edit worker', () => {
       const detail = store.getTask(task.id);
       const request = detail.imageEditRequests[0];
       assert.equal(request.status, 'COMPLETED');
-      assert.equal(detail.assets.find((asset) => asset.id === request.resultAssetId).parentAssetId, source.id);
+      const edited = detail.assets.find((asset) => asset.id === request.resultAssetId);
+      assert.equal(edited.parentAssetId, source.id);
+      assert.deepEqual([edited.width, edited.height], [1086, 1448]);
       assert.equal(store.getAsset(source.id).kind, 'REFERENCE');
     } finally { store.close(); }
   });
@@ -177,6 +179,7 @@ describe('image edit worker', () => {
       const edited = store.getAsset(result.assetId);
       assert.equal(edited.sourceTextRevisionId, revision.id);
       assert.equal(edited.pageIndex, 1);
+      assert.deepEqual([edited.width, edited.height], [1086, 1448]);
       assert.equal(edited.alignmentStatus, 'PASSED');
       assert.equal(edited.alignmentResult.model, 'fake-vision');
     } finally {

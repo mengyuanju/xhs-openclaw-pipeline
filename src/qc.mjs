@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import sharp from 'sharp';
 
+import { DELIVERY_IMAGE_HEIGHT, DELIVERY_IMAGE_WIDTH } from './image-output-contract.mjs';
 import {
   normalizeQualityDimensionAssessment,
   scoreQualityAssessment,
@@ -214,7 +215,9 @@ export async function evaluateDelivery({
   for (const image of images) {
     const imagePath = join(outputDir, image.file);
     const [metadata, content] = await Promise.all([sharp(imagePath).metadata(), readFile(imagePath)]);
-    const passed = metadata.format === 'png' && metadata.width === 1080 && metadata.height === 1440;
+    const passed = metadata.format === 'png'
+      && metadata.width === DELIVERY_IMAGE_WIDTH
+      && metadata.height === DELIVERY_IMAGE_HEIGHT;
     imageHashes.push(createHash('sha256').update(content).digest('hex'));
     checks.push({
       id: `image_${image.file}`,

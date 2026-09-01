@@ -3,6 +3,8 @@ import { mkdir, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import sharp from 'sharp';
 
+import { DELIVERY_IMAGE_HEIGHT, DELIVERY_IMAGE_WIDTH } from '../image-output-contract.mjs';
+
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 40_000_000;
 const MIME_TO_FORMAT = new Map([
@@ -98,7 +100,10 @@ function revisionPipeline(inputPath, operation) {
     return pipeline.rotate(operation.degrees);
   }
   if (operation?.type === 'crop-3x4') {
-    return pipeline.resize(1080, 1440, { fit: 'cover', position: 'attention' });
+    return pipeline.resize(DELIVERY_IMAGE_WIDTH, DELIVERY_IMAGE_HEIGHT, {
+      fit: 'cover',
+      position: 'attention',
+    });
   }
   throw new TypeError('image revision operation is invalid');
 }

@@ -34,7 +34,7 @@ function post(overrides = {}) {
 }
 
 async function writePng(path, color) {
-  await sharp({ create: { width: 1080, height: 1440, channels: 3, background: color } })
+  await sharp({ create: { width: 1086, height: 1448, channels: 3, background: color } })
     .png()
     .toFile(path);
 }

@@ -413,7 +413,7 @@ describe('delivery images', () => {
     assert.ok(Number(firstCard?.[1]) >= 700);
   });
 
-  it('renders three 1080x1440 PNG files in mock mode', async () => {
+  it('renders three 1086x1448 PNG files in mock mode', async () => {
     const directory = await makeDirectory();
 
     const images = await renderDeliveryImages({
@@ -430,8 +430,8 @@ describe('delivery images', () => {
     for (const image of images) {
       const metadata = await sharp(join(directory, image.file)).metadata();
       assert.equal(metadata.format, 'png');
-      assert.equal(metadata.width, 1080);
-      assert.equal(metadata.height, 1440);
+      assert.equal(metadata.width, 1086);
+      assert.equal(metadata.height, 1448);
     }
     assert.ok(images.every((image) => image.provider === 'mock'));
   });
@@ -504,7 +504,7 @@ describe('delivery images', () => {
     assert.ok(images.every((image) => image.textRenderer === 'gpt-image-native'));
     for (const image of images) {
       const metadata = await sharp(join(directory, image.file)).metadata();
-      assert.deepEqual([metadata.width, metadata.height], [1080, 1440]);
+      assert.deepEqual([metadata.width, metadata.height], [1086, 1448]);
     }
     const { data: firstPixels, info } = await sharp(join(directory, images[0].file))
       .raw()

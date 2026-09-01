@@ -212,7 +212,7 @@ describe('content pipeline', () => {
     assert.equal(manifest.qc.action, 'return_for_revision');
 
     const metadata = await sharp(join(result.outputDir, '01-hero.png')).metadata();
-    assert.deepEqual([metadata.width, metadata.height], [1080, 1440]);
+    assert.deepEqual([metadata.width, metadata.height], [1086, 1448]);
   });
 
   it('marks a task failed when live text inference fails', async () => {

@@ -2,10 +2,12 @@ import { copyFile, mkdir, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import sharp from 'sharp';
 
+import {
+  DELIVERY_IMAGE_HEIGHT as HEIGHT,
+  DELIVERY_IMAGE_WIDTH as WIDTH,
+} from './image-output-contract.mjs';
 import { layoutGeometry } from './layout-contract.mjs';
 
-const WIDTH = 1080;
-const HEIGHT = 1440;
 const FONT_STACK = "'Microsoft YaHei','Noto Sans CJK SC','PingFang SC',sans-serif";
 const TRANSIENT_IMAGE_EDIT_ERROR = /\b(?:ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET)\b|fetch failed|connection error|other side closed/iu;
 
@@ -49,7 +51,7 @@ function mockHeroSvg(plan) {
           <stop offset="1" stop-color="#d7bfa3"/>
         </linearGradient>
       </defs>
-      <rect width="1080" height="1440" fill="url(#bg)"/>
+      <rect width="${WIDTH}" height="${HEIGHT}" fill="url(#bg)"/>
       <circle cx="900" cy="210" r="230" fill="#fff4dc" opacity="0.7"/>
       <rect x="90" y="700" width="900" height="420" rx="32" fill="#9f7f5f"/>
       <rect x="140" y="630" width="800" height="120" rx="28" fill="#f8f4ed"/>
@@ -85,7 +87,7 @@ function cardSvg(plan, imageIndex, imageCount) {
 
   return `
     <svg width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${HEIGHT}" xmlns="http://www.w3.org/2000/svg">
-      <rect width="1080" height="1440" fill="${palette.background}"/>
+      <rect width="${WIDTH}" height="${HEIGHT}" fill="${palette.background}"/>
       <circle cx="940" cy="120" r="210" fill="${palette.soft}"/>
       <rect x="80" y="80" width="150" height="54" rx="27" fill="${palette.accent}"/>
       <text x="155" y="117" text-anchor="middle" font-family="${FONT_STACK}" font-size="25" font-weight="700" fill="#ffffff">${String(imageIndex).padStart(2, '0')} / ${String(imageCount).padStart(2, '0')}</text>

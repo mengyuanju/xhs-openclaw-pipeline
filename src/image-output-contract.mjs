@@ -1,0 +1,2 @@
+export const DELIVERY_IMAGE_WIDTH = 1086;
+export const DELIVERY_IMAGE_HEIGHT = 1448;
