@@ -197,6 +197,7 @@ describe('standalone copy generation', () => {
       task: { query: '租房桌面怎么低成本整理？', input: {} },
       imageCount: 3,
       systemPrompt: '围绕 {{query}} 生成文案。',
+      autoReviseOnReject: true,
     });
 
     assert.equal(textGenerationCount, 2);
@@ -204,6 +205,55 @@ describe('standalone copy generation', () => {
     assert.match(generationPrompts[1], /<untrusted_quality_revision>/u);
     assert.equal(generated.originalPost.body, originalPost.body);
     assert.equal(generated.reviewedPost.body, revisedPost.body);
+    assert.equal(toCopyGenerationResponse(generated).generation.revisionAttempted, true);
+  });
+
+  it('keeps a rejected first draft for manual review when automatic revision is not selected', async () => {
+    const originalPost = createMockPost(3);
+    let textGenerationCount = 0;
+    let textReviewCount = 0;
+    const client = {
+      async runReview({ prompt }) {
+        if (prompt.includes('Query 审核员')) {
+          return { rawText: passingReview(), model: 'review-model' };
+        }
+        textReviewCount += 1;
+        return { rawText: rejectingReview(), model: 'review-model' };
+      },
+      async runWebSearch({ query, provider }) {
+        return {
+          provider,
+          result: {
+            content: `${query} 的公开资料`,
+            results: [{
+              title: '公开资料',
+              url: 'https://example.com/reference',
+              snippet: '可核验摘要',
+            }],
+          },
+        };
+      },
+      async runText() {
+        textGenerationCount += 1;
+        return { rawText: JSON.stringify(originalPost), model: 'text-model' };
+      },
+    };
+
+    const generated = await generateCopy({
+      client,
+      task: { query: '租房桌面怎么低成本整理？', input: {} },
+      imageCount: 3,
+    });
+    const response = toCopyGenerationResponse(generated);
+
+    assert.equal(textGenerationCount, 1);
+    assert.equal(textReviewCount, 1);
+    assert.equal(response.original.copy.body, originalPost.body);
+    assert.equal(response.reviewed.copy.body, originalPost.body);
+    assert.equal(response.reviewed.review.decision, 'REJECT');
+    assert.equal(response.generation.revisionAttempted, false);
+    assert.equal(response.generation.timing.reviewedGenerationMs, 0);
+    assert.equal(response.generation.timing.reviewedReviewMs, 0);
   });
 
   it('returns the reviewed text and detailed issues when the final text review still rejects it', async () => {
@@ -248,6 +298,7 @@ describe('standalone copy generation', () => {
       client,
       task: { query: '自行车活鱼桶装水防晃技巧', input: {} },
       imageCount: 3,
+      autoReviseOnReject: true,
     });
     const response = toCopyGenerationResponse(generated);
 
@@ -296,6 +347,7 @@ describe('standalone copy generation', () => {
         task: { query: '租房桌面怎么低成本整理？', input: {} },
         imageCount: 3,
         systemPrompt: '围绕 {{query}} 生成文案。',
+        autoReviseOnReject: true,
       }),
       (error) => error instanceof CopyGenerationUnchangedError
         && error.message.includes('没有产生实际修改'),
@@ -460,6 +512,8 @@ describe('standalone copy generation', () => {
     );
 
     assert.match(route, /LIVE_MODEL_COST_ACCEPTED/u);
+    assert.match(route, /autoReviseOnReject:\s*z\.boolean\(\)\.default\(false\)/u);
+    assert.match(route, /autoReviseOnReject:\s*input\.autoReviseOnReject/u);
     assert.match(route, /\.strict\(\)/u);
     assert.match(route, /mutation:\s*true/u);
     assert.match(route, /COPY_GENERATION_IN_PROGRESS/u);

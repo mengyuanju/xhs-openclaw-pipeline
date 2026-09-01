@@ -148,6 +148,7 @@
 .copy-timing-stage-grid dt { color: var(--muted); font-size: 10px; }
 .copy-timing-stage-grid dd { margin: 3px 0 0; font-size: 12px; font-weight: 700; }
 .copy-comparison-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.copy-comparison-grid.single { grid-template-columns: minmax(0, 1fr); }
 .copy-version-card { min-width: 0; padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-soft); }
 .copy-version-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .copy-version-head > div { min-width: 0; }

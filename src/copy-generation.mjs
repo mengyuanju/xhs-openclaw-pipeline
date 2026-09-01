@@ -259,6 +259,7 @@ async function createReviewedPost(client, task, originalPost, originalReview, op
  *   client?: ReturnType<typeof createOpenClawClient>,
  *   systemPrompt?: string,
  *   imageCount?: number | 'auto',
+ *   autoReviseOnReject?: boolean,
  *   now?: () => number,
  * }} options
  */
@@ -267,9 +268,13 @@ export async function generateCopy({
   client = createOpenClawClient(),
   systemPrompt,
   imageCount = 'auto',
+  autoReviseOnReject = false,
   now = () => performance.now(),
 }) {
   if (typeof now !== 'function') throw new TypeError('copy generation clock must be a function');
+  if (typeof autoReviseOnReject !== 'boolean') {
+    throw new TypeError('autoReviseOnReject must be a boolean');
+  }
   const startedAt = now();
   const timing = {
     queryReviewMs: 0,
@@ -337,7 +342,9 @@ export async function generateCopy({
   );
   let reviewed = original;
   let reviewedTextReview = originalTextReview;
-  if (originalTextReview.decision !== 'PASS') {
+  let revisionAttempted = false;
+  if (originalTextReview.decision !== 'PASS' && autoReviseOnReject) {
+    revisionAttempted = true;
     reviewed = await measureModelStage(
       timing,
       'reviewedGenerationMs',
@@ -376,6 +383,7 @@ export async function generateCopy({
     reviewedModel: reviewed.model,
     originalThinking: original.thinking,
     reviewedThinking: reviewed.thinking,
+    revisionAttempted,
     researchSnapshot,
     timing,
     stageReviews: {
@@ -425,6 +433,7 @@ export function toCopyGenerationResponse({
   reviewedModel = model,
   originalThinking = null,
   reviewedThinking = originalThinking,
+  revisionAttempted: rawRevisionAttempted,
   researchSnapshot,
   stageReviews,
   timing = null,
@@ -440,6 +449,10 @@ export function toCopyGenerationResponse({
     ...stageReviews,
     text: stageReviews?.reviewedText ?? stageReviews?.text,
   };
+  const revisionAttempted = typeof rawRevisionAttempted === 'boolean'
+    ? rawRevisionAttempted
+    : Boolean(timing?.reviewedGenerationMs)
+      || JSON.stringify(originalPost) !== JSON.stringify(reviewedPost);
   return {
     ...(id === undefined ? {} : { id }),
     ...(query === undefined ? {} : { query }),
@@ -468,6 +481,7 @@ export function toCopyGenerationResponse({
       thinking: reviewedThinking,
       originalThinking,
       reviewedThinking,
+      revisionAttempted,
       imageCount: reviewedPost.imagePlan.length,
       research: researchSnapshot,
       reviews,

@@ -70,6 +70,7 @@ export type CopyGenerationResult = {
     thinking: string | null;
     originalThinking: string | null;
     reviewedThinking: string | null;
+    revisionAttempted: boolean;
     imageCount: number;
     timing: CopyGenerationTiming | null;
   };
@@ -175,7 +176,13 @@ function CopyVersion({
   </article>;
 }
 
-function CopyGenerationTimingBreakdown({ timing }: { timing: CopyGenerationTiming | null }) {
+function CopyGenerationTimingBreakdown({
+  timing,
+  revisionAttempted,
+}: {
+  timing: CopyGenerationTiming | null;
+  revisionAttempted: boolean;
+}) {
   return <section className="copy-timing-breakdown" aria-labelledby="copy-timing-heading">
     <div className="copy-timing-head">
       <div><Clock3 aria-hidden="true" size={17} /><h3 id="copy-timing-heading">生成耗时</h3></div>
@@ -184,7 +191,9 @@ function CopyGenerationTimingBreakdown({ timing }: { timing: CopyGenerationTimin
     {timing ? <dl className="copy-timing-stage-grid">
       {TIMING_STAGES.map(({ field, label }) => <div key={field}>
         <dt>{label}</dt>
-        <dd>{formatDuration(timing[field])}</dd>
+        <dd>{!revisionAttempted && ['reviewedGenerationMs', 'reviewedReviewMs'].includes(field)
+          ? '未执行'
+          : formatDuration(timing[field])}</dd>
       </div>)}
     </dl> : <p>这条历史记录生成于耗时统计上线前，仍可正常查看和对比文案。</p>}
   </section>;
@@ -200,6 +209,8 @@ export function CopyGenerationComparison({
   onMessage: (message: string, isError: boolean) => void;
 }) {
   const router = useRouter();
+  const revisionAttempted = result.generation.revisionAttempted;
+  const activeVersionLabel = revisionAttempted ? '质检版' : '当前版';
   const reviewedCopyPassed = result.reviewed.review.decision === 'PASS';
   const blockingIssues = result.reviewed.review.issues
     .filter((issue) => issue.severity === 'BLOCKING');
@@ -215,7 +226,7 @@ export function CopyGenerationComparison({
 
   function importReviewedCopy() {
     if (!reviewedCopyPassed) {
-      onMessage('质检版尚未通过，不能导入图片生成。', true);
+      onMessage(`${activeVersionLabel}尚未通过，不能导入图片生成。`, true);
       return;
     }
     try {
@@ -238,12 +249,12 @@ export function CopyGenerationComparison({
         <small>{new Date(result.createdAt).toLocaleString('zh-CN')} · {result.generation.imageCount} 页配图策划</small>
       </div>
       <div className="inline">
-        <button className="button small" type="button" onClick={() => copyVersion('原始版', result.original.copy)}>
-          <Copy aria-hidden="true" size={14} />复制原始版
+        <button className="button small" type="button" onClick={() => copyVersion(revisionAttempted ? '原始版' : '当前版', result.original.copy)}>
+          <Copy aria-hidden="true" size={14} />{revisionAttempted ? '复制原始版' : '复制当前版'}
         </button>
-        <button className="button small" type="button" onClick={() => copyVersion('质检版', result.reviewed.copy)}>
+        {revisionAttempted && <button className="button small" type="button" onClick={() => copyVersion('质检版', result.reviewed.copy)}>
           <Copy aria-hidden="true" size={14} />复制质检版
-        </button>
+        </button>}
         <button
           className="button small primary"
           type="button"
@@ -251,7 +262,7 @@ export function CopyGenerationComparison({
           aria-describedby={!reviewedCopyPassed ? 'copy-validation-note' : undefined}
           onClick={importReviewedCopy}
         >
-          导入质检版到图片生成<ArrowRight aria-hidden="true" size={14} />
+          导入{activeVersionLabel}到图片生成<ArrowRight aria-hidden="true" size={14} />
         </button>
         <button className="button small" type="button" onClick={onClose}>
           <RotateCcw aria-hidden="true" size={14} />关闭对比
@@ -268,10 +279,13 @@ export function CopyGenerationComparison({
       </ul>}
       <p>文案仍可查看、复制并进行人工二次质检；人工确认前不能导入图片生成。</p>
     </div>}
-    <CopyGenerationTimingBreakdown timing={result.generation.timing} />
-    <div className="copy-comparison-grid">
-      <CopyVersion label="原始版" version={result.original} />
-      <CopyVersion label="质检版" version={result.reviewed} />
+    <CopyGenerationTimingBreakdown
+      timing={result.generation.timing}
+      revisionAttempted={revisionAttempted}
+    />
+    <div className={`copy-comparison-grid${revisionAttempted ? '' : ' single'}`}>
+      <CopyVersion label={revisionAttempted ? '原始版' : '当前版'} version={result.original} />
+      {revisionAttempted && <CopyVersion label="质检版" version={result.reviewed} />}
     </div>
   </section>;
 }

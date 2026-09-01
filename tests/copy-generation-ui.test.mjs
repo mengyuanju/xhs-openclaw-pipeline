@@ -32,6 +32,10 @@ describe('standalone copy generation workspace', () => {
     assert.match(historyState, /\/api\/copy-generations\?page=1&pageSize=20/u);
     assert.match(workbench, /apiRequest<CopyGenerationResult>\('\/api\/copy-generations'/u);
     assert.match(workbench, /confirmation: 'LIVE_MODEL_COST_ACCEPTED'/u);
+    assert.match(workbench, /autoReviseOnReject/u);
+    assert.match(workbench, /id="copy-auto-revise"/u);
+    assert.match(workbench, /首次质检不通过时自动重写/u);
+    assert.match(workbench, /默认关闭.*保留首稿.*人工复核/u);
     assert.match(workbench, /htmlFor="copy-query"/u);
     assert.match(workbench, /htmlFor="copy-category"/u);
     assert.match(workbench, /htmlFor="copy-audience"/u);
@@ -45,8 +49,8 @@ describe('standalone copy generation workspace', () => {
     assert.match(workbench, /CopyGenerationComparison/u);
     assert.match(workbench, /useCopyGenerationHistory/u);
     assert.match(workbench, /jobs=\{jobs\}/u);
-    assert.match(workbench, /首稿审核通过后直接保存/u);
-    assert.match(workbench, /只有存在阻断问题才调用第二次文案生成/u);
+    assert.match(workbench, /首稿未通过时直接保留并进入人工复核/u);
+    assert.match(workbench, /存在阻断问题时还会自动重写并复检/u);
     assert.match(historyState, /hasRunningJobs/u);
     assert.match(historyState, /setInterval/u);
     assert.match(historyState, /response\.jobs/u);
@@ -76,6 +80,8 @@ describe('standalone copy generation workspace', () => {
     assert.match(comparison, /人工二次质检/u);
     assert.match(comparison, /不能导入图片生成/u);
     assert.match(comparison, /disabled=\{!reviewedCopyPassed\}/u);
+    assert.match(comparison, /result\.generation\.revisionAttempted/u);
+    assert.match(comparison, /当前版/u);
     assert.match(comparison, /version\.thinking/u);
     assert.match(comparison, /thinking：/u);
     assert.match(comparison, /总耗时/u);

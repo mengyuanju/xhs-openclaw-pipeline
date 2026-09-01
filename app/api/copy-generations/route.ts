@@ -41,6 +41,7 @@ const copyGenerationSchema = z.object({
     z.literal('auto'),
     z.number().int().min(3).max(5),
   ]).default('auto'),
+  autoReviseOnReject: z.boolean().default(false),
   confirmation: z.literal('LIVE_MODEL_COST_ACCEPTED'),
 }).strict();
 
@@ -110,6 +111,7 @@ export function POST(request: Request) {
         task: { query: input.query, input: input.input },
         systemPrompt: runtime.systemPrompt,
         imageCount: input.imageCount,
+        autoReviseOnReject: input.autoReviseOnReject,
       });
       const saved = withAdminStore((store: any) => store.saveStandaloneCopyGeneration({
         jobId,

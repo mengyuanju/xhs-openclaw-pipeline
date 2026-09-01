@@ -103,13 +103,13 @@ describe('copy-to-image draft transfer', () => {
     }), /不能导入图片生成/u);
   });
 
-  it('adds an explicit reviewed-copy import action and auto-fills controlled image inputs', async () => {
+  it('adds a reviewed copy import action and auto-fills controlled image inputs', async () => {
     const [comparison, workbench] = await Promise.all([
       source('app/copy-generation/copy-generation-comparison.tsx'),
       source('app/image-generation/image-generation-workbench.tsx'),
     ]);
 
-    assert.match(comparison, /导入质检版到图片生成/u);
+    assert.match(comparison, /导入\{activeVersionLabel\}到图片生成/u);
     assert.match(comparison, /result\.reviewed\.copy/u);
     assert.match(comparison, /result\.reviewed\.imagePlan/u);
     assert.match(comparison, /writeImageGenerationDraft\(window\.sessionStorage/u);
