@@ -1,6 +1,11 @@
 export const DEFAULT_TEXT_MODEL = 'openai/gpt-5.6-sol';
 export const DEFAULT_IMAGE_MODEL = 'openai/gpt-image-2';
 export const DEFAULT_IMAGE_TIMEOUT_MS = 300_000;
+export const DEFAULT_COPY_GENERATION_PROVIDER = 'OPENCLAW';
+export const DEFAULT_DOTS_BASE_URL = 'https://note3-prev-api.askdiandian.com';
+export const DEFAULT_DOTS_MODEL = 'dots3-note-prev';
+
+const COPY_GENERATION_PROVIDERS = new Set(['OPENCLAW', 'DOTS']);
 
 const MODEL_API_FIELDS = new Set([
   'textModel',
@@ -12,6 +17,9 @@ const MODEL_API_FIELDS = new Set([
   'modelProxyUrl',
   'imageProxyUrl',
   'imageTimeoutMs',
+  'copyGenerationProvider',
+  'dotsBaseUrl',
+  'dotsModel',
 ]);
 const LEGACY_PROVIDER = /^openai-codex\//iu;
 
@@ -25,6 +33,9 @@ export const DEFAULT_MODEL_API_SETTINGS = Object.freeze({
   modelProxyUrl: null,
   imageProxyUrl: null,
   imageTimeoutMs: null,
+  copyGenerationProvider: null,
+  dotsBaseUrl: null,
+  dotsModel: null,
 });
 
 export function validatedModelRef(value, fallback, name) {
@@ -68,6 +79,48 @@ function optionalImageTimeout(value) {
   return value;
 }
 
+function optionalCopyGenerationProvider(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  const provider = String(value).trim().toUpperCase();
+  if (!COPY_GENERATION_PROVIDERS.has(provider)) {
+    throw new TypeError('copyGenerationProvider must be OPENCLAW or DOTS');
+  }
+  return provider;
+}
+
+export function validatedDotsBaseUrl(value, fallback = DEFAULT_DOTS_BASE_URL) {
+  const text = String(value || fallback || '').trim();
+  let url;
+  try {
+    url = new URL(text);
+  } catch {
+    throw new TypeError('dotsBaseUrl must use the documented Dots API origin');
+  }
+  if (url.origin !== DEFAULT_DOTS_BASE_URL || url.pathname !== '/'
+    || url.username || url.password || url.search || url.hash) {
+    throw new TypeError('dotsBaseUrl must use the documented Dots API origin');
+  }
+  return url.origin;
+}
+
+export function validatedDotsModel(value, fallback = DEFAULT_DOTS_MODEL) {
+  const model = String(value || fallback || '').trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/u.test(model)) {
+    throw new TypeError('dotsModel must be a model name without whitespace');
+  }
+  return model;
+}
+
+function optionalDotsBaseUrl(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  return validatedDotsBaseUrl(value);
+}
+
+function optionalDotsModel(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  return validatedDotsModel(value);
+}
+
 export function normalizeModelApiSettings(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new TypeError('model API settings must be an object');
@@ -85,6 +138,9 @@ export function normalizeModelApiSettings(input = {}) {
     modelProxyUrl: optionalProxyUrl(input.modelProxyUrl, 'modelProxyUrl'),
     imageProxyUrl: optionalProxyUrl(input.imageProxyUrl, 'imageProxyUrl'),
     imageTimeoutMs: optionalImageTimeout(input.imageTimeoutMs),
+    copyGenerationProvider: optionalCopyGenerationProvider(input.copyGenerationProvider),
+    dotsBaseUrl: optionalDotsBaseUrl(input.dotsBaseUrl),
+    dotsModel: optionalDotsModel(input.dotsModel),
   };
 }
 
@@ -102,6 +158,9 @@ function effectiveTimeout(override, environmentValue) {
 
 export function effectiveModelApiConfig(input = {}, environment = process.env) {
   const settings = normalizeModelApiSettings(input);
+  const copyGenerationProvider = optionalCopyGenerationProvider(
+    settings.copyGenerationProvider ?? environment.XHS_COPY_GENERATION_PROVIDER,
+  ) ?? DEFAULT_COPY_GENERATION_PROVIDER;
   const textModel = validatedModelRef(
     settings.textModel ?? environment.XHS_TEXT_MODEL,
     DEFAULT_TEXT_MODEL,
@@ -113,6 +172,11 @@ export function effectiveModelApiConfig(input = {}, environment = process.env) {
     'visionModel',
   );
   return {
+    copyGenerationProvider,
+    dotsBaseUrl: validatedDotsBaseUrl(
+      settings.dotsBaseUrl ?? environment.XHS_DOTS_BASE_URL,
+    ),
+    dotsModel: validatedDotsModel(settings.dotsModel ?? environment.XHS_DOTS_MODEL),
     textModel,
     screeningModel: validatedModelRef(
       settings.screeningModel ?? environment.XHS_SCREENING_MODEL,
@@ -150,6 +214,10 @@ export function effectiveModelApiConfig(input = {}, environment = process.env) {
 export function publicModelApiStatus(input = {}, environment = process.env) {
   const effective = effectiveModelApiConfig(input, environment);
   return {
+    copyGenerationProvider: effective.copyGenerationProvider,
+    dotsBaseUrl: effective.dotsBaseUrl,
+    dotsModel: effective.dotsModel,
+    dotsApiKeyConfigured: Boolean(String(environment.XHS_DOTS_API_KEY ?? '').trim()),
     textModel: effective.textModel,
     screeningModel: effective.screeningModel,
     reviewModel: effective.reviewModel,

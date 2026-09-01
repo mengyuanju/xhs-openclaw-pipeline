@@ -46,6 +46,9 @@ describe('production settings contract', () => {
   it('keeps model API overrides in production settings and falls back predictably', () => {
     const settings = normalizeProductionSettings({
       modelApi: {
+        copyGenerationProvider: 'DOTS',
+        dotsBaseUrl: 'https://note3-prev-api.askdiandian.com',
+        dotsModel: 'dots3-note-prev',
         textModel: 'openai/gpt-5.6-terra',
         qualityModel: 'openai/gpt-5.6-sol',
         modelProxyUrl: 'http://127.0.0.1:7897',
@@ -59,6 +62,9 @@ describe('production settings contract', () => {
     });
 
     assert.equal(settings.modelApi.textModel, 'openai/gpt-5.6-terra');
+    assert.equal(effective.copyGenerationProvider, 'DOTS');
+    assert.equal(effective.dotsBaseUrl, 'https://note3-prev-api.askdiandian.com');
+    assert.equal(effective.dotsModel, 'dots3-note-prev');
     assert.equal(settings.modelApi.reviewModel, null);
     assert.equal(effective.textModel, 'openai/gpt-5.6-terra');
     assert.equal(effective.reviewModel, 'openai/gpt-5.4');
@@ -81,6 +87,12 @@ describe('production settings contract', () => {
     assert.throws(() => normalizeProductionSettings({
       modelApi: { imageTimeoutMs: 10_000 },
     }), /between 30000 and 540000/iu);
+    assert.throws(() => normalizeProductionSettings({
+      modelApi: { copyGenerationProvider: 'UNTRUSTED' },
+    }), /OPENCLAW or DOTS/iu);
+    assert.throws(() => normalizeProductionSettings({
+      modelApi: { dotsBaseUrl: 'http://127.0.0.1:3000' },
+    }), /documented Dots API origin/iu);
   });
 });
 
