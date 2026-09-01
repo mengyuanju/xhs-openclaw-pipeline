@@ -117,14 +117,36 @@ describe('copy generation provider selection', () => {
     assert.equal((await client.runWebSearch({ query: '检索。' })).result, 'openclaw-search');
   });
 
-  it('keeps the existing OpenClaw client when Dots is not selected', () => {
-    const openclaw = { runText() {} };
+  it('pins OpenClaw copy generation and review calls to low thinking effort', async () => {
+    const invocations = [];
+    const openclaw = {
+      async runText(input) {
+        invocations.push(['text', input]);
+        return { rawText: 'copy', model: 'openai/copy', thinking: input.thinking };
+      },
+      async runReview(input) {
+        invocations.push(['review', input]);
+        return { rawText: 'review', model: 'openai/review', thinking: input.thinking };
+      },
+      async runWebSearch(input) {
+        invocations.push(['search', input]);
+        return { result: 'search' };
+      },
+    };
     const client = createCopyGenerationClient({
       modelApi: { copyGenerationProvider: 'OPENCLAW' },
       environment: {},
       openclaw,
     });
 
-    assert.equal(client, openclaw);
+    await client.runText({ prompt: '生成。', thinking: 'high' });
+    await client.runReview({ prompt: '审核。', thinking: 'high' });
+    await client.runWebSearch({ query: '检索。' });
+
+    assert.deepEqual(invocations, [
+      ['text', { prompt: '生成。', thinking: 'low' }],
+      ['review', { prompt: '审核。', thinking: 'low' }],
+      ['search', { query: '检索。' }],
+    ]);
   });
 });

@@ -2,6 +2,8 @@ import { createDotsChatClient } from './dots-chat-client.mjs';
 import { effectiveModelApiConfig } from './model-api-config.mjs';
 import { createOpenClawClient } from './openclaw.mjs';
 
+const COPY_GENERATION_THINKING = 'low';
+
 export function createCopyGenerationClient({
   modelApi = {},
   environment = process.env,
@@ -10,20 +12,21 @@ export function createCopyGenerationClient({
 } = {}) {
   const configuration = effectiveModelApiConfig(modelApi, environment);
   const resolvedOpenClaw = openclaw ?? createOpenClawClient({ modelApi });
-  if (configuration.copyGenerationProvider !== 'DOTS') return resolvedOpenClaw;
-
-  const dots = createDotsChatClient({
-    apiKey: environment.XHS_DOTS_API_KEY,
-    baseUrl: configuration.dotsBaseUrl,
-    model: configuration.dotsModel,
-    fetchImpl,
-  });
+  const textClient = configuration.copyGenerationProvider === 'DOTS'
+    ? createDotsChatClient({
+      apiKey: environment.XHS_DOTS_API_KEY,
+      baseUrl: configuration.dotsBaseUrl,
+      model: configuration.dotsModel,
+      fetchImpl,
+    })
+    : resolvedOpenClaw;
   return {
+    ...resolvedOpenClaw,
     runText(input) {
-      return dots.runText(input);
+      return textClient.runText({ ...input, thinking: COPY_GENERATION_THINKING });
     },
     runReview(input) {
-      return resolvedOpenClaw.runReview(input);
+      return resolvedOpenClaw.runReview({ ...input, thinking: COPY_GENERATION_THINKING });
     },
     runWebSearch(input) {
       return resolvedOpenClaw.runWebSearch(input);

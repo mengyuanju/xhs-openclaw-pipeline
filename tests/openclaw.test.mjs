@@ -379,6 +379,34 @@ describe('OpenClaw client', () => {
     assert.equal(result.thinking, 'low');
   });
 
+  it('keeps an explicit low thinking effort stable across transport retries', async () => {
+    const thinkingAttempts = [];
+    const client = createOpenClawClient({
+      entryPath: 'C:/openclaw/dist/index.js',
+      sleep: () => {},
+      runner: (_command, args) => {
+        const thinking = args[args.indexOf('--thinking') + 1];
+        thinkingAttempts.push(thinking);
+        if (thinkingAttempts.length < 3) {
+          return {
+            status: 1,
+            stdout: '',
+            stderr: 'UND_ERR_SOCKET terminated',
+          };
+        }
+        return { status: 0, stdout: JSON.stringify({ final: 'stable at low effort' }), stderr: '' };
+      },
+    });
+
+    const result = await client.runText({
+      prompt: 'keep a stable thinking effort',
+      thinking: 'low',
+    });
+
+    assert.deepEqual(thinkingAttempts, ['low', 'low', 'low']);
+    assert.equal(result.thinking, 'low');
+  });
+
   it('does not retry deterministic model errors', async () => {
     let calls = 0;
     const client = createOpenClawClient({

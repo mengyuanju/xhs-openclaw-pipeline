@@ -19,7 +19,7 @@ const TRANSIENT_TRANSPORT_ERROR = /\b(?:ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AG
 const TEXT_THINKING_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 const TEXT_RETRY_THINKING = Object.freeze({
   minimal: ['minimal', 'minimal', 'minimal', 'minimal'],
-  low: ['low', 'minimal', 'minimal', 'minimal'],
+  low: ['low', 'low', 'low', 'low'],
   medium: ['medium', 'low', 'minimal', 'minimal'],
   high: ['high', 'medium', 'low', 'minimal'],
   xhigh: ['xhigh', 'high', 'medium', 'low'],
@@ -420,9 +420,9 @@ export function createOpenClawClient({
       };
     },
 
-    async runReview({ prompt, model, timeoutMs = 180_000 }) {
+    async runReview({ prompt, model, thinking, timeoutMs = 180_000 }) {
       const reviewModel = validatedModelRef(model, currentModelApi().reviewModel, 'reviewModel');
-      return this.runText({ prompt, model: reviewModel, timeoutMs });
+      return this.runText({ prompt, model: reviewModel, thinking, timeoutMs });
     },
 
     async runVision({
