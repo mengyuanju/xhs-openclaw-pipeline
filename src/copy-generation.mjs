@@ -15,6 +15,14 @@ import {
 
 const POST_MAX_ATTEMPTS = 3;
 const QUALITY_REVISION_MAX_ATTEMPTS = 2;
+const TRANSIENT_MODEL_FAILURE = /\b(?:ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET|429)\b|fetch failed|connection error|other side closed|socket hang up|timed? out|terminated|no text output returned|temporar(?:y|ily) unavailable|rate limit/iu;
+const COPY_GENERATION_STAGE_LABELS = Object.freeze({
+  QUERY_REVIEW: '选题审核',
+  ORIGINAL_GENERATION: '首稿生成',
+  ORIGINAL_REVIEW: '首稿审核',
+  REVIEWED_GENERATION: '质检修订',
+  REVIEWED_REVIEW: '修订复检',
+});
 
 function elapsedMilliseconds(now, startedAt) {
   const finishedAt = Number(now());
@@ -29,6 +37,28 @@ async function measureStage(timing, field, now, operation) {
     return await operation();
   } finally {
     timing[field] = elapsedMilliseconds(now, startedAt);
+  }
+}
+
+function failureChainText(error) {
+  const messages = [];
+  let current = error;
+  for (let depth = 0; current && depth < 4; depth += 1) {
+    messages.push(String(current instanceof Error ? current.message : current));
+    current = current instanceof Error ? current.cause : null;
+  }
+  return messages.join(' ');
+}
+
+async function measureModelStage(timing, field, stage, now, operation) {
+  try {
+    return await measureStage(timing, field, now, operation);
+  } catch (error) {
+    if (error instanceof CopyGenerationTransportError) throw error;
+    if (TRANSIENT_MODEL_FAILURE.test(failureChainText(error))) {
+      throw new CopyGenerationTransportError(stage, error);
+    }
+    throw error;
   }
 }
 
@@ -140,6 +170,16 @@ export class CopyGenerationUnchangedError extends Error {
   }
 }
 
+export class CopyGenerationTransportError extends Error {
+  constructor(stage, cause) {
+    const label = COPY_GENERATION_STAGE_LABELS[stage];
+    if (!label) throw new TypeError('copy generation transport stage is invalid');
+    super(`模型连接中断，已自动重试仍失败（阶段：${label}），请稍后重试`, { cause });
+    this.name = 'CopyGenerationTransportError';
+    this.stage = stage;
+  }
+}
+
 function contractFailureReason(error) {
   const message = String(error?.message ?? error);
   if (/title cannot merely repeat the Query/iu.test(message)) return '标题不能照抄 Query';
@@ -238,9 +278,10 @@ export async function generateCopy({
     totalMs: 0,
   };
   const sourceTask = normalizedTask(task);
-  const queryReview = await measureStage(
+  const queryReview = await measureModelStage(
     timing,
     'queryReviewMs',
+    'QUERY_REVIEW',
     now,
     () => runQueryReview({ client, task: sourceTask }),
   );
@@ -267,9 +308,10 @@ export async function generateCopy({
     ...(sourceTask.input.referenceUrls ?? []),
     ...(researchSnapshot ? researchSourceUrls(researchSnapshot) : []),
   ])];
-  const original = await measureStage(
+  const original = await measureModelStage(
     timing,
     'originalGenerationMs',
+    'ORIGINAL_GENERATION',
     now,
     () => createLivePost(client, generationTask, {
       systemPrompt,
@@ -277,9 +319,10 @@ export async function generateCopy({
       allowedSources,
     }),
   );
-  const originalTextReview = await measureStage(
+  const originalTextReview = await measureModelStage(
     timing,
     'originalReviewMs',
+    'ORIGINAL_REVIEW',
     now,
     () => runTextReview({
       client,
@@ -292,9 +335,10 @@ export async function generateCopy({
   let reviewed = original;
   let reviewedTextReview = originalTextReview;
   if (originalTextReview.decision !== 'PASS') {
-    reviewed = await measureStage(
+    reviewed = await measureModelStage(
       timing,
       'reviewedGenerationMs',
+      'REVIEWED_GENERATION',
       now,
       () => createReviewedPost(
         client,
@@ -304,9 +348,10 @@ export async function generateCopy({
         { systemPrompt, imageCount, allowedSources },
       ),
     );
-    reviewedTextReview = await measureStage(
+    reviewedTextReview = await measureModelStage(
       timing,
       'reviewedReviewMs',
+      'REVIEWED_REVIEW',
       now,
       () => runTextReview({
         client,

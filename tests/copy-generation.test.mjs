@@ -5,6 +5,7 @@ import { describe, it } from 'node:test';
 import {
   CopyGenerationContractError,
   CopyGenerationRejectedError,
+  CopyGenerationTransportError,
   CopyGenerationUnchangedError,
   generateCopy,
   toCopyGenerationResponse,
@@ -298,6 +299,45 @@ describe('standalone copy generation', () => {
     assert.doesNotMatch(textPrompts[1], /结构化写作步骤/u);
   });
 
+  it('reports an exhausted model transport failure with its generation stage', async () => {
+    const client = {
+      async runReview() {
+        return { rawText: passingReview(), model: 'review-model' };
+      },
+      async runWebSearch({ query, provider }) {
+        return {
+          provider,
+          result: {
+            content: `${query} 的公开资料`,
+            results: [{
+              title: '公开资料',
+              url: 'https://example.com/reference',
+              snippet: '可核验摘要',
+            }],
+          },
+        };
+      },
+      async runText() {
+        throw new Error('OpenClaw text inference failed: UND_ERR_SOCKET terminated');
+      },
+    };
+
+    await assert.rejects(
+      generateCopy({
+        client,
+        task: { query: '自行车活鱼桶装水防晃技巧', input: {} },
+        imageCount: 3,
+      }),
+      (error) => {
+        assert.ok(error instanceof CopyGenerationTransportError);
+        assert.equal(error.stage, 'ORIGINAL_GENERATION');
+        assert.equal(error.message, '模型连接中断，已自动重试仍失败（阶段：首稿生成），请稍后重试');
+        assert.doesNotMatch(error.message, /UND_ERR_SOCKET|OpenClaw/u);
+        return true;
+      },
+    );
+  });
+
   it('stops before research and text generation when the query review rejects', async () => {
     let downstreamCalls = 0;
     const client = {
@@ -343,6 +383,8 @@ describe('standalone copy generation', () => {
     assert.match(route, /COPY_GENERATION_IN_PROGRESS/u);
     assert.match(route, /COPY_REVISION_UNCHANGED/u);
     assert.match(route, /COPY_CONTRACT_FAILED/u);
+    assert.match(route, /MODEL_TRANSPORT_FAILED/u);
+    assert.match(route, /CopyGenerationTransportError/u);
     assert.match(route, /createStandaloneCopyGenerationJob/u);
     assert.match(route, /failStandaloneCopyGenerationJob/u);
     assert.match(route, /listStandaloneCopyGenerationJobs/u);

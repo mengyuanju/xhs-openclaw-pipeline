@@ -17,6 +17,14 @@ const IMAGE_GENERATION_SIZE = '1152x1536';
 const TRANSPORT_RETRY_DELAYS_MS = [5_000, 15_000, 30_000];
 const TRANSIENT_TRANSPORT_ERROR = /\b(?:ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET)\b|fetch failed|connection error|other side closed|reconnecting|model\/list timed out/iu;
 const TEXT_THINKING_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+const TEXT_RETRY_THINKING = Object.freeze({
+  minimal: ['minimal', 'minimal', 'minimal', 'minimal'],
+  low: ['low', 'minimal', 'minimal', 'minimal'],
+  medium: ['medium', 'low', 'minimal', 'minimal'],
+  high: ['high', 'medium', 'low', 'minimal'],
+  xhigh: ['xhigh', 'high', 'medium', 'low'],
+  max: ['max', 'high', 'medium', 'low'],
+});
 
 function nonBlockingSleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -89,6 +97,7 @@ async function runWithTransportRetryAsync({
   nodePath,
   args,
   options,
+  argsForAttempt,
   optionsForAttempt,
   sleep,
   beforeRetry,
@@ -96,7 +105,11 @@ async function runWithTransportRetryAsync({
 }) {
   let result;
   for (let attempt = 0; attempt <= TRANSPORT_RETRY_DELAYS_MS.length; attempt += 1) {
-    result = await runner(nodePath, args, optionsForAttempt?.(attempt) ?? options);
+    result = await runner(
+      nodePath,
+      argsForAttempt?.(attempt) ?? args,
+      optionsForAttempt?.(attempt) ?? options,
+    );
     const processSucceeded = !result.error && result.status === 0;
     const succeeded = processSucceeded && (verifySuccess?.(result) ?? true);
     if (succeeded) return result;
@@ -149,6 +162,18 @@ function validatedTextThinking(value = DEFAULT_TEXT_THINKING) {
     throw new TypeError(`thinking must be one of: ${[...TEXT_THINKING_LEVELS].join(', ')}`);
   }
   return thinking;
+}
+
+function textThinkingForAttempt(initialThinking, attempt) {
+  const schedule = TEXT_RETRY_THINKING[initialThinking];
+  return schedule[Math.min(attempt, schedule.length - 1)];
+}
+
+function withTextThinking(args, thinking) {
+  const thinkingIndex = args.indexOf('--thinking');
+  const nextArgs = [...args];
+  nextArgs[thinkingIndex + 1] = thinking;
+  return nextArgs;
 }
 
 function withImageProxy(options, proxyUrl) {
@@ -369,12 +394,17 @@ export function createOpenClawClient({
         timeout: timeoutMs,
         maxBuffer: 10 * 1024 * 1024,
       };
+      let completedThinking = resolvedThinking;
       const result = await runWithTransportRetryAsync({
         runner: resolvedAsyncRunner,
         nodePath,
         args,
         sleep: resolvedAsyncSleep,
         options: processOptions,
+        argsForAttempt: (attempt) => {
+          completedThinking = textThinkingForAttempt(resolvedThinking, attempt);
+          return withTextThinking(args, completedThinking);
+        },
         optionsForAttempt: (attempt) => (attempt === 0
           ? withModelProxy(processOptions, configuration.modelProxyUrl)
           : processOptions),
@@ -386,7 +416,7 @@ export function createOpenClawClient({
       return {
         rawText: extractModelText(result.stdout),
         model: resolvedModel,
-        thinking: resolvedThinking,
+        thinking: completedThinking,
       };
     },
 

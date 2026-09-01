@@ -5,6 +5,7 @@ import {
   CopyGenerationContractError,
   CopyGenerationRejectedError,
   CopyGenerationResearchError,
+  CopyGenerationTransportError,
   CopyGenerationUnchangedError,
   generateCopy,
   toCopyGenerationResponse,
@@ -60,6 +61,7 @@ function copyGenerationRuntime() {
 function copyGenerationJobFailureMessage(error: unknown) {
   if (error instanceof CopyGenerationRejectedError
     || error instanceof CopyGenerationResearchError
+    || error instanceof CopyGenerationTransportError
     || error instanceof CopyGenerationUnchangedError
     || error instanceof CopyGenerationContractError) {
     return error.message;
@@ -140,6 +142,11 @@ export function POST(request: Request) {
       }
       if (error instanceof CopyGenerationUnchangedError) {
         throw new ApiError(502, 'COPY_REVISION_UNCHANGED', error.message);
+      }
+      if (error instanceof CopyGenerationTransportError) {
+        throw new ApiError(503, 'MODEL_TRANSPORT_FAILED', error.message, {
+          stage: error.stage,
+        });
       }
       if (error instanceof CopyGenerationContractError) {
         throw new ApiError(502, 'COPY_CONTRACT_FAILED', error.message);

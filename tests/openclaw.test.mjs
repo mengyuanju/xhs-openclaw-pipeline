@@ -351,6 +351,34 @@ describe('OpenClaw client', () => {
     assert.deepEqual(delays, [5_000, 15_000, 30_000]);
   });
 
+  it('reduces thinking effort when retrying a terminated text stream', async () => {
+    const delays = [];
+    const thinkingAttempts = [];
+    const client = createOpenClawClient({
+      entryPath: 'C:/openclaw/dist/index.js',
+      sleep: (milliseconds) => delays.push(milliseconds),
+      runner: (_command, args) => {
+        const thinking = args[args.indexOf('--thinking') + 1];
+        thinkingAttempts.push(thinking);
+        if (thinking !== 'low') {
+          return {
+            status: 1,
+            stdout: '',
+            stderr: 'No text output returned: UND_ERR_SOCKET terminated',
+          };
+        }
+        return { status: 0, stdout: JSON.stringify({ final: 'recovered at low effort' }), stderr: '' };
+      },
+    });
+
+    const result = await client.runText({ prompt: 'recover a terminated response stream' });
+
+    assert.deepEqual(thinkingAttempts, ['high', 'medium', 'low']);
+    assert.deepEqual(delays, [5_000, 15_000]);
+    assert.equal(result.rawText, 'recovered at low effort');
+    assert.equal(result.thinking, 'low');
+  });
+
   it('does not retry deterministic model errors', async () => {
     let calls = 0;
     const client = createOpenClawClient({
