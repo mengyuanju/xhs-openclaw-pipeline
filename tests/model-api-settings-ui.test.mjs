@@ -29,10 +29,11 @@ describe('model API production settings UI', () => {
   });
 
   it('renders model, proxy and timeout controls inside production settings', async () => {
-    const [page, form, section] = await Promise.all([
+    const [page, form, section, dotsFields] = await Promise.all([
       source('app/settings/page.tsx'),
       source('app/settings/production-settings-form.tsx'),
       source('app/settings/model-api-settings-section.tsx'),
+      source('app/settings/dots-copy-provider-fields.tsx'),
     ]);
 
     assert.match(page, /publicModelApiStatus/u);
@@ -49,10 +50,15 @@ describe('model API production settings UI', () => {
     assert.match(section, /文本与视觉代理/u);
     assert.match(section, /图片生成代理/u);
     assert.match(section, /图片调用超时/u);
-    assert.match(section, /独立文案提供方/u);
-    assert.match(section, /Dots API 基础地址/u);
-    assert.match(section, /Dots 模型/u);
-    assert.match(section, /XHS_DOTS_API_KEY/u);
+    assert.match(section, /<DotsCopyProviderFields/u);
+    assert.match(dotsFields, /独立文案提供方/u);
+    assert.match(dotsFields, /Dots API 基础地址/u);
+    assert.match(dotsFields, /Dots 模型/u);
+    assert.match(dotsFields, /XHS_DOTS_API_KEY/u);
+    assert.match(dotsFields, /@\/components\/ui\/select/u);
+    assert.match(dotsFields, /<SelectTrigger/u);
+    assert.match(dotsFields, /<SelectContent/u);
+    assert.doesNotMatch(dotsFields, /<select/u);
     assert.match(section, /不保存 API Key、Token 或 OAuth 授权码/u);
     assert.match(section, /恢复环境配置/u);
     assert.doesNotMatch(section, /name="(?:apiKey|accessToken|clientSecret)"/u);
