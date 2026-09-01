@@ -123,6 +123,7 @@
 .copy-history-list button:focus-visible { outline: 3px solid var(--control-ring); outline-offset: 2px; }
 .copy-history-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .copy-history-list span { color: var(--muted); font-size: 10px; }
+.copy-history-list .pill-rejected { width: fit-content; color: #a52232; background: #ffe8eb; font-size: 10px; }
 .copy-timing-empty { margin: 0 0 14px; color: var(--muted); font-size: 11px; line-height: 1.55; }
 .copy-timing-statistics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0 0 14px; }
 .copy-timing-statistics > div { min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); }
@@ -131,6 +132,10 @@
 .copy-comparison-head { align-items: flex-start; }
 .copy-comparison-head h2 { margin-bottom: 5px; }
 .copy-comparison-head small { color: var(--muted); }
+.copy-validation-notice { display: grid; gap: 8px; margin-bottom: 16px; }
+.copy-validation-notice > div { display: flex; align-items: center; gap: 7px; }
+.copy-validation-notice p { margin: 0; line-height: 1.6; }
+.copy-validation-notice ul { display: grid; gap: 5px; margin: 0; padding-left: 18px; line-height: 1.55; }
 .copy-timing-breakdown { display: grid; gap: 12px; margin-bottom: 16px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
 .copy-timing-breakdown > p { margin: 0; color: var(--muted); font-size: 12px; }
 .copy-timing-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

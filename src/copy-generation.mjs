@@ -365,9 +365,6 @@ export async function generateCopy({
       }),
     );
   }
-  if (reviewedTextReview.decision !== 'PASS') {
-    throw new CopyGenerationRejectedError('TEXT', reviewedTextReview);
-  }
   timing.totalMs = elapsedMilliseconds(now, startedAt);
 
   return {

@@ -40,6 +40,8 @@ describe('standalone copy generation workspace', () => {
     assert.match(workbench, /htmlFor="copy-image-count"/u);
     assert.match(workbench, /role=\{messageIsError \? 'alert' : 'status'\}/u);
     assert.match(workbench, /aria-live="polite"/u);
+    assert.match(workbench, /generated\.reviewed\.review\.decision/u);
+    assert.match(workbench, /质检仍未通过.*具体错误.*人工二次质检/u);
     assert.match(workbench, /CopyGenerationComparison/u);
     assert.match(workbench, /useCopyGenerationHistory/u);
     assert.match(workbench, /jobs=\{jobs\}/u);
@@ -69,6 +71,11 @@ describe('standalone copy generation workspace', () => {
     assert.match(comparison, /result\.reviewed\.copy/u);
     assert.match(comparison, /version\.review\.summary/u);
     assert.match(comparison, /version\.review\.issues/u);
+    assert.match(comparison, /质检未通过，结果已保留/u);
+    assert.match(comparison, /blockingIssues/u);
+    assert.match(comparison, /人工二次质检/u);
+    assert.match(comparison, /不能导入图片生成/u);
+    assert.match(comparison, /disabled=\{!reviewedCopyPassed\}/u);
     assert.match(comparison, /version\.thinking/u);
     assert.match(comparison, /thinking：/u);
     assert.match(comparison, /总耗时/u);
@@ -82,6 +89,7 @@ describe('standalone copy generation workspace', () => {
     assert.match(history, /生成任务/u);
     assert.match(history, /生成中/u);
     assert.match(history, /生成失败/u);
+    assert.match(history, /待人工复核/u);
     assert.match(history, /aria-live="polite"/u);
     assert.match(historyState, /setTimingStatistics/u);
     assert.match(styles, /\.copy-generation-history/u);
@@ -89,5 +97,7 @@ describe('standalone copy generation workspace', () => {
     assert.match(styles, /\.copy-timing-statistics/u);
     assert.match(styles, /\.copy-timing-breakdown/u);
     assert.match(styles, /\.copy-job-list/u);
+    assert.match(styles, /\.copy-validation-notice/u);
+    assert.match(styles, /\.copy-history-list \.pill-rejected/u);
   });
 });

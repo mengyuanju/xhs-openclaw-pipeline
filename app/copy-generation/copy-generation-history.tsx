@@ -79,6 +79,8 @@ export function CopyGenerationHistory({
           {records.map((record) => <li key={record.id}>
             <button type="button" aria-pressed={selectedId === record.id} onClick={() => onSelect(record)}>
               <strong>{record.query}</strong>
+              {record.reviewed.review.decision === 'REJECT'
+                && <span className="pill pill-rejected">待人工复核</span>}
               <span>#{record.id} · {new Date(record.createdAt).toLocaleString('zh-CN')} · {record.generation.timing
                 ? formatDuration(record.generation.timing.totalMs)
                 : '耗时未记录'}</span>

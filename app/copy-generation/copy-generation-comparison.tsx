@@ -1,6 +1,6 @@
 'use client';
 
-import { ArrowRight, CheckCircle2, Clock3, Copy, RotateCcw } from 'lucide-react';
+import { ArrowRight, CheckCircle2, CircleAlert, Clock3, Copy, RotateCcw } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
 import { formatDuration } from '../components/time-format';
@@ -200,6 +200,9 @@ export function CopyGenerationComparison({
   onMessage: (message: string, isError: boolean) => void;
 }) {
   const router = useRouter();
+  const reviewedCopyPassed = result.reviewed.review.decision === 'PASS';
+  const blockingIssues = result.reviewed.review.issues
+    .filter((issue) => issue.severity === 'BLOCKING');
 
   async function copyVersion(label: string, copy: CopyText) {
     try {
@@ -211,6 +214,10 @@ export function CopyGenerationComparison({
   }
 
   function importReviewedCopy() {
+    if (!reviewedCopyPassed) {
+      onMessage('质检版尚未通过，不能导入图片生成。', true);
+      return;
+    }
     try {
       writeImageGenerationDraft(window.sessionStorage, createImageGenerationDraft({
         query: result.query,
@@ -237,7 +244,13 @@ export function CopyGenerationComparison({
         <button className="button small" type="button" onClick={() => copyVersion('质检版', result.reviewed.copy)}>
           <Copy aria-hidden="true" size={14} />复制质检版
         </button>
-        <button className="button small primary" type="button" onClick={importReviewedCopy}>
+        <button
+          className="button small primary"
+          type="button"
+          disabled={!reviewedCopyPassed}
+          aria-describedby={!reviewedCopyPassed ? 'copy-validation-note' : undefined}
+          onClick={importReviewedCopy}
+        >
           导入质检版到图片生成<ArrowRight aria-hidden="true" size={14} />
         </button>
         <button className="button small" type="button" onClick={onClose}>
@@ -245,6 +258,16 @@ export function CopyGenerationComparison({
         </button>
       </div>
     </div>
+    {!reviewedCopyPassed && <div className="notice error copy-validation-notice" id="copy-validation-note" role="alert">
+      <div><CircleAlert aria-hidden="true" size={17} /><strong>质检未通过，结果已保留</strong></div>
+      <p>{result.reviewed.review.summary}</p>
+      {blockingIssues.length > 0 && <ul>
+        {blockingIssues.map((issue) => <li key={`${issue.code}-${issue.message}`}>
+          <strong>{issue.code}</strong>：{issue.message}
+        </li>)}
+      </ul>}
+      <p>文案仍可查看、复制并进行人工二次质检；人工确认前不能导入图片生成。</p>
+    </div>}
     <CopyGenerationTimingBreakdown timing={result.generation.timing} />
     <div className="copy-comparison-grid">
       <CopyVersion label="原始版" version={result.original} />

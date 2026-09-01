@@ -206,6 +206,59 @@ describe('standalone copy generation', () => {
     assert.equal(generated.reviewedPost.body, revisedPost.body);
   });
 
+  it('returns the reviewed text and detailed issues when the final text review still rejects it', async () => {
+    const originalPost = createMockPost(3);
+    const revisedPost = {
+      ...originalPost,
+      body: `${originalPost.body}\n补充：先确认固定位置，再根据路况调整骑行速度。`,
+    };
+    let generationCount = 0;
+    let textReviewCount = 0;
+    const client = {
+      async runReview({ prompt }) {
+        if (prompt.includes('Query 审核员')) {
+          return { rawText: passingReview(), model: 'review-model' };
+        }
+        textReviewCount += 1;
+        return { rawText: rejectingReview(), model: 'review-model' };
+      },
+      async runWebSearch({ query, provider }) {
+        return {
+          provider,
+          result: {
+            content: `${query} 的公开资料`,
+            results: [{
+              title: '公开资料',
+              url: 'https://example.com/reference',
+              snippet: '可核验摘要',
+            }],
+          },
+        };
+      },
+      async runText() {
+        generationCount += 1;
+        return {
+          rawText: JSON.stringify(generationCount === 1 ? originalPost : revisedPost),
+          model: 'text-model',
+        };
+      },
+    };
+
+    const generated = await generateCopy({
+      client,
+      task: { query: '自行车活鱼桶装水防晃技巧', input: {} },
+      imageCount: 3,
+    });
+    const response = toCopyGenerationResponse(generated);
+
+    assert.equal(generationCount, 2);
+    assert.equal(textReviewCount, 2);
+    assert.equal(response.reviewed.copy.body, revisedPost.body);
+    assert.equal(response.reviewed.review.decision, 'REJECT');
+    assert.equal(response.reviewed.review.issues[0].severity, 'BLOCKING');
+    assert.equal(response.reviewed.review.issues[0].message, '正文没有完整回答 Query。');
+  });
+
   it('rejects the result when both quality revision attempts remain unchanged', async () => {
     const originalPost = createMockPost(3);
     let textGenerationCount = 0;

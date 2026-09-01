@@ -102,9 +102,13 @@ export function CopyGenerationWorkbench() {
         }),
       });
       setResult(generated);
-      setMessage(generated.original.review.decision === 'PASS'
-        ? '首稿已通过质检并直接保存，无需二次改写。'
-        : '首稿及针对阻断问题修订后的版本已分别保存，可在历史记录中对比。');
+      if (generated.reviewed.review.decision !== 'PASS') {
+        showMessage('文案已生成并保留，但质检仍未通过；请查看结果中的具体错误，并进行人工二次质检。', true);
+      } else {
+        showMessage(generated.original.review.decision === 'PASS'
+          ? '首稿已通过质检并直接保存，无需二次改写。'
+          : '首稿及针对阻断问题修订后的版本已分别保存，可在历史记录中对比。', false);
+      }
       void refreshHistory({ silent: true })
         .catch(() => {
           showMessage('文案已保存，但耗时统计刷新失败；刷新页面可重试。', true);
