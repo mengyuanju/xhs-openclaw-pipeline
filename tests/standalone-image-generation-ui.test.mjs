@@ -36,8 +36,10 @@ describe('standalone image generation workspace', () => {
   });
 
   it('renders labeled inputs, cost confirmation, loading, errors and image previews', async () => {
-    const [workbench, styles] = await Promise.all([
+    const [workbench, resultView, runState, styles] = await Promise.all([
       source('app/image-generation/image-generation-workbench.tsx'),
+      source('app/image-generation/image-generation-result.tsx'),
+      source('app/image-generation/use-image-generation-run.ts'),
       source('app/globals.css'),
     ]);
 
@@ -52,10 +54,22 @@ describe('standalone image generation workspace', () => {
     assert.match(workbench, /确认调用真实图片模型/u);
     assert.match(workbench, /正在生成图片/u);
     assert.match(workbench, /role=\{messageIsError \? 'alert' : 'status'\}/u);
-    assert.match(workbench, /result\.images\.map/u);
-    assert.match(workbench, /<img/u);
+    assert.match(workbench, /<ImageGenerationResultView result=\{result\}/u);
+    assert.match(runState, /visualPlan/u);
+    assert.match(runState, /layout/u);
+    assert.match(runState, /dimensions/u);
+    assert.match(resultView, /成品预览/u);
+    assert.match(resultView, /视觉布局/u);
+    assert.match(resultView, /图片质检意见/u);
+    assert.match(resultView, /result\.images\.map/u);
+    assert.match(resultView, /image\.layout/u);
+    assert.match(resultView, /result\.qc\.dimensions\.map/u);
+    assert.match(resultView, /result\.qc\.issues/u);
+    assert.match(resultView, /<img/u);
     assert.match(styles, /\.standalone-image-workspace/u);
-    assert.match(styles, /\.standalone-image-gallery/u);
+    assert.match(styles, /\.standalone-image-page-list/u);
+    assert.match(styles, /\.standalone-image-layout/u);
+    assert.match(styles, /\.standalone-image-quality/u);
   });
 
   it('polls a recoverable run and shows real stages, percentage and estimated time', async () => {

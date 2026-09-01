@@ -1,6 +1,6 @@
 'use client';
 
-import { ExternalLink, ImagePlus, LoaderCircle, WandSparkles } from 'lucide-react';
+import { ImagePlus, LoaderCircle, WandSparkles } from 'lucide-react';
 import { useEffect, useState, type FormEvent } from 'react';
 
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
@@ -14,6 +14,7 @@ import {
 
 import { readImageGenerationDraft } from './image-generation-draft';
 import { ImageGenerationProgress } from './image-generation-progress';
+import { ImageGenerationResultView } from './image-generation-result';
 import { useImageGenerationRun } from './use-image-generation-run';
 
 type ImageGenerationForm = {
@@ -176,29 +177,7 @@ export function ImageGenerationWorkbench() {
 
     {progress && <ImageGenerationProgress progress={progress} />}
 
-    {result && <section className="panel standalone-image-result" aria-labelledby="image-result-heading">
-      <div className="panel-head">
-        <div><span className="section-kicker">Run result</span><h2 id="image-result-heading">图片试验结果</h2></div>
-        <span className={result.status === 'COMPLETED' ? 'pill pill-approved' : 'pill pill-warning'}>{result.status === 'COMPLETED' ? '已完成' : '仅供验证'}</span>
-      </div>
-      <dl className="standalone-image-summary">
-        <div><dt>运行 ID</dt><dd className="mono">{result.runId}</dd></div>
-        <div><dt>模式</dt><dd>{result.mode}</dd></div>
-        <div><dt>图片</dt><dd>{result.imageCount} 张</dd></div>
-        <div><dt>QC</dt><dd>{result.qc.overallScore ?? '未评分'}</dd></div>
-      </dl>
-      <p className="notice">{result.qc.summary}</p>
-      <div className="standalone-image-gallery">
-        {result.images.map((image) => <article className="standalone-image-card" key={image.pageIndex}>
-          <img src={image.url} alt={`第 ${image.pageIndex} 页：${image.kind}`} />
-          <div>
-            <strong>{String(image.pageIndex).padStart(2, '0')} · {image.kind}</strong>
-            <span>{image.provider}{image.model ? ` · ${image.model}` : ''}</span>
-            <a href={image.url} target="_blank" rel="noreferrer">查看原图 <ExternalLink aria-hidden="true" size={13} /></a>
-          </div>
-        </article>)}
-      </div>
-    </section>}
+    {result && <ImageGenerationResultView result={result} />}
 
     {message && <div className={messageIsError ? 'notice error' : 'notice success'} role={messageIsError ? 'alert' : 'status'} aria-live="polite">{message}</div>}
   </div>;

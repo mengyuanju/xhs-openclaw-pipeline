@@ -22,8 +22,48 @@ export type ImageGenerationResult = {
     model: string | null;
     generationAttempts: number | null;
     alignmentPassed: boolean | null;
+    layout: {
+      layoutTemplate: string;
+      layoutDirection: string;
+      visualSubject: string;
+      allowedVisibleText: {
+        headline: string;
+        subtitle: string;
+        bullets: string[];
+        labels: string[];
+      };
+      mustShow: string[];
+      mustAvoid: string[];
+    } | null;
   }>;
-  qc: { passed: boolean; overallScore: number | null; summary: string };
+  visualPlan: {
+    model: string | null;
+    degraded: boolean;
+    warning: {
+      stage: string;
+      code: string;
+      message: string;
+    } | null;
+  } | null;
+  qc: {
+    passed: boolean;
+    overallScore: number | null;
+    summary: string;
+    disposition: string;
+    action: string | null;
+    issues: Array<{
+      severity: string;
+      label: string;
+      evidence: string;
+    }>;
+    dimensions: Array<{
+      key: string;
+      score: number | null;
+      applicable: boolean;
+      evidence: string[];
+    }>;
+    limitations: string[];
+  };
 };
 
 export type ImageGenerationProgressValue = {

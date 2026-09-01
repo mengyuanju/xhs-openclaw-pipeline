@@ -328,6 +328,67 @@ function normalizedStoredResult(value, runId) {
   };
 }
 
+async function readOptionalRunArtifact(outputDir, file) {
+  try {
+    const content = await readFile(join(outputDir, file));
+    if (content.byteLength > MANIFEST_MAX_BYTES) return null;
+    const value = JSON.parse(content.toString('utf8'));
+    return isRecord(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+async function enrichStoredResult(outputDir, result) {
+  const needsVisualPlan = result.visualPlan === null
+    || result.images.some((image) => image.layout === null);
+  const needsQualityDetails = result.qc.dimensions.length === 0
+    || result.qc.limitations.length === 0;
+  if (!needsVisualPlan && !needsQualityDetails) return result;
+
+  const [visualPlanArtifact, qcArtifact] = await Promise.all([
+    needsVisualPlan ? readOptionalRunArtifact(outputDir, 'visual-plan.json') : null,
+    needsQualityDetails ? readOptionalRunArtifact(outputDir, 'qc.json') : null,
+  ]);
+  let visualPlan = result.visualPlan;
+  let images = result.images;
+  if (visualPlanArtifact) {
+    try {
+      if (visualPlan === null) {
+        visualPlan = {
+          model: visualPlanArtifact.model === null
+            ? null
+            : boundedText(visualPlanArtifact.model, 'visualPlan.model', 1, 200),
+          degraded: visualPlanArtifact.degraded === true,
+          warning: normalizedOperationalNotice(visualPlanArtifact.warning, 'visualPlan.warning'),
+        };
+      }
+      const pages = isRecord(visualPlanArtifact.value) && Array.isArray(visualPlanArtifact.value.pages)
+        ? visualPlanArtifact.value.pages
+        : [];
+      images = images.map((image, index) => ({
+        ...image,
+        layout: image.layout ?? (pages[index]
+          ? publicLayout(pages[index], `visualPlan.pages[${index}]`)
+          : null),
+      }));
+    } catch {
+      visualPlan = result.visualPlan;
+      images = result.images;
+    }
+  }
+
+  let qc = result.qc;
+  if (qcArtifact) {
+    try {
+      qc = { ...qc, ...publicQualityDetails(qcArtifact) };
+    } catch {
+      qc = result.qc;
+    }
+  }
+  return { ...result, images, visualPlan, qc };
+}
+
 function normalizedTags(value) {
   if (!Array.isArray(value)) throw new TypeError('copy.tags must be an array');
   return value.map((tag, index) => boundedText(tag, `copy.tags[${index}]`, 2, 20));
@@ -944,6 +1005,9 @@ export async function readStandaloneImageProgress({ outputRoot, runId: rawRunId 
   const warnings = (value.warnings ?? []).map((warning, index) =>
     normalizedOperationalNotice(warning, `progress.warnings[${index}]`));
   const diagnostic = normalizedOperationalNotice(value.diagnostic, 'progress.diagnostic');
+  const result = value.status === 'COMPLETED'
+    ? await enrichStoredResult(outputDir, normalizedStoredResult(value.result, runId))
+    : null;
   return {
     runId,
     mode: value.mode,
@@ -969,7 +1033,7 @@ export async function readStandaloneImageProgress({ outputRoot, runId: rawRunId 
     warnings,
     diagnostic,
     error: typeof value.error === 'string' ? value.error.slice(0, 500) : null,
-    result: value.status === 'COMPLETED' ? normalizedStoredResult(value.result, runId) : null,
+    result,
   };
 }
 

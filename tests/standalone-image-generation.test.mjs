@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -224,12 +224,28 @@ describe('standalone image generation service', () => {
         [...progressEvents.map((progress) => progress.progressPercent)].sort((left, right) => left - right),
       );
 
+      const runDirectory = join(outputRoot, 'standalone-image-generations', RUN_ID);
+      const progressPath = join(runDirectory, 'progress.json');
+      const legacyProgress = JSON.parse(await readFile(progressPath, 'utf8'));
+      delete legacyProgress.result.visualPlan;
+      delete legacyProgress.result.qc.disposition;
+      delete legacyProgress.result.qc.action;
+      delete legacyProgress.result.qc.issues;
+      delete legacyProgress.result.qc.dimensions;
+      delete legacyProgress.result.qc.limitations;
+      for (const image of legacyProgress.result.images) delete image.layout;
+      await writeFile(progressPath, `${JSON.stringify(legacyProgress, null, 2)}\n`, 'utf8');
+
       const progress = await readStandaloneImageProgress({ outputRoot, runId: RUN_ID });
       assert.equal(progress.status, 'COMPLETED');
       assert.equal(progress.completedImages, 3);
       assert.equal(progress.totalImages, 3);
       assert.equal(progress.estimatedRemainingMs, 0);
       assert.equal(progress.result.runId, RUN_ID);
+      assert.equal(progress.result.images[0].layout.layoutTemplate, 'HERO_LEFT');
+      assert.equal(progress.result.visualPlan.degraded, false);
+      assert.equal(progress.result.qc.disposition, 'mock_only');
+      assert.ok(progress.result.qc.dimensions.length > 0);
 
       const hashes = new Set();
       for (const image of result.images) {
@@ -248,7 +264,7 @@ describe('standalone image generation service', () => {
       assert.equal(hashes.size, 3);
 
       const manifest = JSON.parse(await readFile(
-        join(outputRoot, 'standalone-image-generations', RUN_ID, 'result.json'),
+        join(runDirectory, 'result.json'),
         'utf8',
       ));
       assert.equal(manifest.runId, RUN_ID);
