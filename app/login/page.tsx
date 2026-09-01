@@ -27,9 +27,9 @@ export default async function LoginPage({
       </section>
       <section className="login-panel" aria-labelledby="login-title">
         <div className="login-card">
-          <span className="login-kicker">ADMIN ACCESS</span>
+          <span className="login-kicker">TEAM ACCESS</span>
           <h2 id="login-title">登录内容工场</h2>
-          <p className="subtle">使用这台主机上配置的管理员密码。</p>
+          <p className="subtle">管理员和质检人员使用各自账号进入对应工作区。</p>
           <LoginForm nextPath={safeReturnPath(params.next)} />
         </div>
       </section>

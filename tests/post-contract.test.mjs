@@ -74,6 +74,21 @@ function validPost(imageCount = 3) {
   };
 }
 
+function editorialPost() {
+  const input = validPost();
+  input.title = '自行车活鱼桶装水防晃，关键看3点';
+  input.body = `我先说结论：自行车带活鱼桶时，防晃的关键不是把水装满，而是控制水量、限制水体移动，并把桶固定在车架中心附近。这样能同时减少水的惯性冲击和桶身摆动，骑行时也更容易保持方向稳定。
+
+先看装水量。桶里要给水面留出缓冲空间，避免加速、刹车或转弯时水直接拍击桶盖。水量还要结合鱼的数量、运输时间和增氧条件判断，不能只为了防晃而过度减水。出发前可先短距离推行，观察水面和桶盖状态。
+
+再处理桶内晃动。可使用干净、适合接触养殖用水的带孔隔板或食品级浮板，把大面积自由水面分隔开；材料边缘要圆滑，不能挤压鱼体或堵住增氧。桶盖应可靠闭合，同时保留所需的供氧条件。
+
+最后固定桶身。优先把桶放在低位、靠近自行车纵向中心的位置，用两条独立绑带交叉固定，并设置防滑垫。出发前分别做前后、左右推拉检查；骑行时降低速度，提前减速，避开急转和坑洼路段。
+
+归纳起来，自行车活鱼桶装水防晃要同时处理水、桶和骑行三层问题：水量留缓冲、桶内做分隔、桶身低位双重固定。若桶体明显偏移或影响转向，应停止骑行并重新调整。`;
+  return input;
+}
+
 describe('post output contract', () => {
   it('accepts a valid JSON object and returns only allowlisted fields', () => {
     const input = { ...validPost(), ignored: 'do not keep me' };
@@ -198,10 +213,60 @@ describe('post output contract', () => {
     assert.throws(() => parsePostOutput(JSON.stringify(input)), /body.*700/i);
   });
 
+  it('enforces the published 400 to 600 character body range for a real Query', () => {
+    const input = editorialPost();
+    const options = { query: '自行车活鱼桶 装水防晃 技巧' };
+
+    assert.doesNotThrow(() => parsePostOutput(JSON.stringify(input), options));
+
+    input.body = `我先说结论：${'字'.repeat(380)}`;
+    assert.throws(
+      () => parsePostOutput(JSON.stringify(input), options),
+      /body.*400.*600.*received \d+/iu,
+    );
+
+    input.body = `我先说结论：${'字'.repeat(610)}`;
+    assert.throws(() => parsePostOutput(JSON.stringify(input), options), /body.*400.*600/iu);
+  });
+
+  it('rejects a title that copies the Query or uses a question form', () => {
+    const input = editorialPost();
+    const query = '自行车活鱼桶 装水防晃 技巧';
+
+    input.title = '自行车活鱼桶装水防晃技巧';
+    assert.throws(
+      () => parsePostOutput(JSON.stringify(input), { query }),
+      /title.*query/iu,
+    );
+
+    input.title = '自行车活鱼桶装水防晃技巧？';
+    assert.throws(
+      () => parsePostOutput(JSON.stringify(input), { query }),
+      /title.*question/iu,
+    );
+  });
+
+  it('requires a safe first-person opening without permitting invented experience', () => {
+    const input = editorialPost();
+    const query = '自行车活鱼桶 装水防晃 技巧';
+
+    input.body = input.body.replace('我先说结论', '先说结论');
+    assert.throws(
+      () => parsePostOutput(JSON.stringify(input), { query }),
+      /first paragraph.*first-person/iu,
+    );
+
+    input.body = editorialPost().body.replace('我先说结论', '我亲测三个月后总结');
+    assert.throws(
+      () => parsePostOutput(JSON.stringify(input), { query }),
+      /fabricated experience/iu,
+    );
+  });
+
   it('rejects a counted multi-day itinerary that does not cover every promised day', () => {
     const input = validPost(4);
-    input.title = '绵阳到北京自驾8天行程';
-    input.body = `${'先确认路线、天气、车辆状态和进京要求，再决定每天的驾驶节奏。'.repeat(8)}\n\n去程、北京停留和返程都要留出休息时间。`;
+    input.title = '绵阳到北京自驾8天行程，逐日安排';
+    input.body = `我先说结论：${'先确认路线、天气、车辆状态和进京要求，再决定每天的驾驶节奏。'.repeat(14)}\n\n去程、北京停留和返程都要留出休息时间。`;
 
     assert.throws(
       () => parsePostOutput(JSON.stringify(input), {
@@ -211,7 +276,7 @@ describe('post output contract', () => {
       /itinerary.*days 1-8/iu,
     );
 
-    input.body = `${'先确认路线、天气和车辆状态。'.repeat(10)}\n\n第1天绵阳到西安；第2天西安到北京；第3天北京城区；第4天北京城区；第5天北京城区；第6天北京周边；第7天北京到西安；第8天西安到绵阳。`;
+    input.body = `我先说结论：${'先确认路线、天气和车辆状态，并给每天留出休息和调整空间。'.repeat(14)}\n\n第1天绵阳到西安；第2天西安到北京；第3天北京城区；第4天北京城区；第5天北京城区；第6天北京周边；第7天北京到西安；第8天西安到绵阳。`;
     const post = parsePostOutput(JSON.stringify(input), {
       imageCount: 4,
       query: '绵阳到北京自驾8天行程',
@@ -326,6 +391,19 @@ describe('post prompt', () => {
     assert.match(prompt, /imagePlan 必须恰好包含 5 项/);
     assert.match(prompt, /每张图片都由图像模型生成/);
     assert.match(prompt, /只输出一个合法 JSON 对象/);
+  });
+
+  it('fills missing editorial audience and category variables with explicit defaults', () => {
+    const prompt = buildPostPrompt({
+      query: '自行车活鱼桶 装水防晃 技巧',
+      input: {},
+    }, {
+      systemPrompt: '分类：{{category}}；受众：{{targetAudience}}；主题：{{query}}。',
+    });
+
+    assert.match(prompt, /分类：根据 Query 判断/u);
+    assert.match(prompt, /受众：搜索该 Query、希望获得直接答案的小红书用户/u);
+    assert.doesNotMatch(prompt, /\{\{(?:category|targetAudience)\}\}/u);
   });
 
   it('asks the model to choose the smallest sufficient image count from content', () => {

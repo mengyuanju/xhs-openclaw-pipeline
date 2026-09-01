@@ -14,12 +14,15 @@ export function LoginForm({ nextPath }: { nextPath: string }) {
     setError('');
     const form = new FormData(event.currentTarget);
     try {
-      await apiRequest('/api/auth/login', {
+      const result = await apiRequest<{ homePath: string }>('/api/auth/login', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ password: form.get('password') }),
+        body: JSON.stringify({ username: form.get('username'), password: form.get('password') }),
       });
-      const target = nextPath.startsWith('/') && !nextPath.startsWith('//') ? nextPath : '/';
+      const safeNext = nextPath.startsWith('/') && !nextPath.startsWith('//') ? nextPath : result.homePath;
+      const target = result.homePath === '/reviews' && !safeNext.startsWith('/reviews')
+        ? '/reviews'
+        : safeNext;
       window.location.assign(target);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '登录失败');
@@ -31,24 +34,38 @@ export function LoginForm({ nextPath }: { nextPath: string }) {
   return (
     <form className="login-form" onSubmit={submit}>
       <div className="field">
-        <label htmlFor="admin-password">管理员密码</label>
+        <label htmlFor="account-username">账号</label>
         <input
           className="input login-input"
-          id="admin-password"
+          id="account-username"
+          name="username"
+          type="text"
+          autoComplete="username"
+          minLength={3}
+          maxLength={50}
+          defaultValue="admin"
+          required
+          autoFocus
+        />
+      </div>
+      <div className="field">
+        <label htmlFor="account-password">密码</label>
+        <input
+          className="input login-input"
+          id="account-password"
           name="password"
           type="password"
           autoComplete="current-password"
           minLength={12}
           maxLength={1_024}
           required
-          autoFocus
         />
       </div>
       {error && <div className="notice error" role="alert">{error}</div>}
       <button className="button primary login-submit" type="submit" disabled={isBusy}>
         {isBusy ? '正在验证…' : '进入后台'}
       </button>
-      <p className="login-help">密码未配置时，请先在主机终端运行 <code>npm run auth:setup</code>。</p>
+      <p className="login-help">系统管理员账号为 <code>admin</code>；首次使用请在主机终端运行 <code>npm run auth:setup</code>。</p>
     </form>
   );
 }

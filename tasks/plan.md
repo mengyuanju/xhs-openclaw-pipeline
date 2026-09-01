@@ -80,6 +80,110 @@
 
 - 无阻断问题；跨公网 HTTPS、多用户认证和自动发布留到后续版本。
 
+## Phase 20: 单条文案双版本保存与对比
+
+### Overview
+
+为“单独生成文案”增加原始版、质检修订版、两次审核证据的原子持久化，并提供历史恢复与双栏对比。详细契约见 `docs/standalone-copy-comparison-spec.md`。
+
+### Architecture Decisions
+
+- 首次结构合法的模型输出是原始版；以原始版和首次质检证据为输入进行第二次完整生成，得到质检版。
+- 质检版再进行一次独立文本复检；两次证据都保存。
+- 新增独立 SQLite 表，不创建生产任务；POST 成功后一次事务写入整对版本。
+- API 叠加 `original` 和 `reviewed`，旧 `copy` 字段继续指向质检版。
+
+### Checkpoints
+
+- Contract/Store：生成顺序、双版返回、SQLite 读写和分页测试通过。
+- Interface：POST 保存、GET 历史、分别复制和响应式对比通过。
+- Complete：全量测试、类型检查、构建和浏览器验证通过。
+
+### Timing Observability
+
+- 使用单调时钟记录成功生成的总耗时和六阶段耗时，不记录请求正文、令牌等敏感信息。
+- SQLite 对旧表增量增加可空耗时列；旧记录继续可读并排除在统计样本之外。
+- 历史汇总使用最近最多 1000 条有效样本的平均值与 nearest-rank P50/P95；单条记录展示阶段明细，便于定位模型或研究瓶颈。
+
+### Risks and Mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| 第二遍增加模型费用 | 中 | 确认框明示两次文案调用与两次审核 |
+| 质检修订引入新事实 | 高 | 复用相同允许来源与严格 Post 契约，再独立复检 |
+| 历史 JSON 过大 | 中 | 字段字节上限与有界分页 |
+| 旧调用方契约中断 | 高 | 只添加字段，保留 `copy`/`imagePlan` 别名 |
+
+## Phase 19: 任务级内容质检负责人
+
+### Overview
+
+把生产质检从“每个文案版本一张工单”迁移为“每个内容任务一个负责人”。管理员按批次、质检员和条数分配；同一负责人在统一详情页完成文案与图片阶段审核。详细契约见 `docs/review-work-management-spec.md`，设计理由见 `docs/decisions/001-task-level-review-ownership.md`。
+
+### Architecture Decisions
+
+- Query 预审继续使用独立工单；生产质检使用 `task_id` 唯一的分配记录。
+- `COPY_REVIEWER` 作为兼容内部角色保留，产品名称改为内容质检员。
+- 文案/图片结论追加保存并绑定阶段快照；图片指纹包含当前文案指纹。
+- 按条数分配使用短写事务，库存不足整次回滚；转派与提交使用乐观版本。
+- 旧 COPY 工单迁入任务负责人/文案阶段历史，新 UI 不再生成。
+
+### Checkpoints
+
+- Domain：精确分配、唯一负责人、阶段新鲜度、迁移和越权测试通过。
+- Interface：严格 API、统一详情和受控图片读取通过。
+- Complete：全量测试、类型检查、构建、浏览器与安全验证通过。
+
+### Risks and Mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| 多个组长同时分配造成超发 | 高 | `BEGIN IMMEDIATE` 内重新选择未分配任务，数量不足回滚 |
+| 文案变化后旧图片结论误生效 | 高 | 图片快照包含文案指纹，加载时实时判断新鲜度 |
+| 质检员枚举图片 ID 读取他人素材 | 高 | assignment、task、asset 三重归属校验 |
+| 旧文案工单历史丢失 | 中 | 只增表迁移，保留旧表并迁移负责人和 COPY 结论 |
+| 人工流程阻塞现有生产 | 中 | 本阶段不改 Worker 门禁，后续单独设计暂停/恢复 |
+
+## Phase 18: Query 与文案质检作业中心
+
+### Overview
+
+在不打断现有 Worker 连续生产流程的前提下，新增独立质检人员、角色、作业单、派单/领取、版本化结论和质检工作台。详细契约见 `docs/review-work-management-spec.md`。
+
+### Dependency Graph
+
+```text
+人员与会话兼容层
+  └─ 质检领域存储与授权
+       ├─ 人员管理 API/UI
+       └─ 作业生成/派单/领取/结论 API
+            └─ 质检工作台与单条审核页
+```
+
+### Architecture Decisions
+
+- 保留环境变量管理员为超级管理员；质检人员存 SQLite，禁止公共注册。
+- 自动审核证据与人工质检结论分表保存，不改变 `generation_runs.stage_reviews_json`。
+- 作业单绑定不可变主体快照和 SHA-256；内容新版本产生新作业单。
+- 现有 API 默认仅 `ADMIN` 可访问；质检 API 显式开放角色并在领域层二次校验活动用户。
+- 第一阶段不让 Worker 等待人工，后续另行拆分文本/视觉作业。
+
+### Checkpoints
+
+- Foundation：人员会话兼容、领域测试和现有认证测试通过。
+- Operations：生成、派单、领取、提交的 SQLite/API 测试通过。
+- Complete：页面运行时、全量测试、类型检查、构建和安全扫描通过。
+
+### Risks and Mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| 质检 Token 角色过期 | 高 | 新端点从数据库重读启用状态和角色 |
+| 同一作业并发领取/提交 | 高 | 短事务、条件更新、版本号与 409 |
+| 历史内容变化后误审 | 高 | 主体快照、SHA-256 和幂等键 |
+| 旧管理员/接口回归 | 高 | Token v1 兼容，现有 API 默认 ADMIN |
+| 跨设备明文局域网登录 | 中 | 文档继续限定可信私网，实际多人部署建议 HTTPS 反代 |
+
 ## Phase 5: LAN Authentication
 
 - [x] Task 11: 密码哈希、会话签名、配置校验与登录限流。

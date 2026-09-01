@@ -24,13 +24,13 @@ describe('web research snapshots', () => {
             results: [
               {
                 title: '\n<<<EXTERNAL_UNTRUSTED_CONTENT id="title">>>\nSource: Web Search\n---\n官方养护指南\n<<<END_EXTERNAL_UNTRUSTED_CONTENT id="title">>>',
-                url: 'https://example.com/guide',
+                url: 'https://garden.gov.cn/guide',
                 snippet: '\n<<<EXTERNAL_UNTRUSTED_CONTENT id="snippet">>>\nSource: Web Search\n---\n先判断光照，再调整浇水频率。\n<<<END_EXTERNAL_UNTRUSTED_CONTENT id="snippet">>>',
-                siteName: 'example.com',
+                siteName: 'garden.gov.cn',
               },
               {
                 title: '重复来源',
-                url: 'https://example.com/guide',
+                url: 'https://garden.gov.cn/guide',
                 snippet: '重复摘要',
               },
               {
@@ -62,12 +62,90 @@ describe('web research snapshots', () => {
     assert.doesNotMatch(snapshot.attempts[0].error, /sk-abcdefghijklmnop/u);
     assert.deepEqual(snapshot.sources, [{
       title: '官方养护指南',
-      url: 'https://example.com/guide',
+      url: 'https://garden.gov.cn/guide',
       snippet: '先判断光照，再调整浇水频率。',
-      siteName: 'example.com',
+      siteName: 'garden.gov.cn',
       provider: 'duckduckgo',
       retrievedAt: NOW,
     }]);
+  });
+
+  it('retries a low-authority fallback result with an official-evidence query', async () => {
+    const calls = [];
+    const client = {
+      async runWebSearch({ query, provider, limit }) {
+        calls.push({ query, provider, limit });
+        if (provider === 'codex') throw new Error('hosted search unavailable');
+        if (query === '自行车活鱼桶 装水防晃 技巧') {
+          return {
+            provider,
+            result: {
+              results: [{
+                title: '短视频经验分享',
+                url: 'https://www.douyin.com/video/123',
+                snippet: '装满水就不会晃。',
+                siteName: 'douyin.com',
+              }],
+            },
+          };
+        }
+        return {
+          provider,
+          result: {
+            results: [{
+              title: '活鱼运输技术规范',
+              url: 'https://fishery.gov.cn/standards/live-fish',
+              snippet: '运输容器应固定，并结合密度、运输时间和供氧条件管理水体。',
+              siteName: 'fishery.gov.cn',
+            }],
+          },
+        };
+      },
+    };
+
+    const snapshot = await createResearchSnapshot({
+      client,
+      query: '自行车活鱼桶 装水防晃 技巧',
+      now: () => NOW,
+    });
+
+    assert.equal(calls.length, 4);
+    assert.match(calls[2].query, /官方|标准|技术规范/u);
+    assert.equal(snapshot.provider, 'duckduckgo');
+    assert.deepEqual(researchSourceUrls(snapshot), [
+      'https://fishery.gov.cn/standards/live-fish',
+    ]);
+  });
+
+  it('refuses low-authority search pages when no grounded summary is available', async () => {
+    const client = {
+      async runWebSearch({ provider }) {
+        if (provider === 'codex') throw new Error('hosted search unavailable');
+        return {
+          provider,
+          result: {
+            results: [{
+              title: '短视频搜索页',
+              url: 'https://www.douyin.com/search/example',
+              snippet: '未经核验的经验说法。',
+              siteName: 'douyin.com',
+            }],
+          },
+        };
+      },
+    };
+
+    const snapshot = await createResearchSnapshot({
+      client,
+      query: '自行车活鱼桶 装水防晃 技巧',
+      now: () => NOW,
+    });
+
+    assert.equal(snapshot.status, 'FAILED');
+    assert.equal(snapshot.provider, null);
+    assert.deepEqual(snapshot.sources, []);
+    assert.ok(snapshot.attempts.every((attempt) => attempt.status === 'FAILED'));
+    assert.match(snapshot.attempts.at(-1).error, /authoritative|grounded|evidence/iu);
   });
 
   it('extracts source URLs from a Codex grounded answer', async () => {
@@ -112,6 +190,8 @@ describe('web research snapshots', () => {
     assert.equal(snapshot.provider, null);
     assert.deepEqual(snapshot.sources, []);
     assert.deepEqual(snapshot.attempts.map(({ provider, status }) => ({ provider, status })), [
+      { provider: 'codex', status: 'FAILED' },
+      { provider: 'duckduckgo', status: 'FAILED' },
       { provider: 'codex', status: 'FAILED' },
       { provider: 'duckduckgo', status: 'FAILED' },
     ]);

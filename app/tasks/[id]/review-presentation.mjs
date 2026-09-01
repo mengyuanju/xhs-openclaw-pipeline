@@ -11,6 +11,24 @@ const DIMENSION_LABELS = Object.freeze({
   imageDiversity: '图集多样性',
 });
 
+const ISSUE_SEVERITY_PRESENTATION = Object.freeze({
+  minor: Object.freeze({
+    severityLabel: '轻微问题',
+    scoreCap: 2,
+    capReason: '仍有轻微缺陷，不属于无明显问题的优质候选。',
+  }),
+  major: Object.freeze({
+    severityLabel: '主要问题',
+    scoreCap: 1,
+    capReason: '存在影响可用性的主要问题，需要返修。',
+  }),
+  redline: Object.freeze({
+    severityLabel: '红线问题',
+    scoreCap: 0,
+    capReason: '涉及安全、隐私、严重误导等禁止交付问题。',
+  }),
+});
+
 function timestamp(value) {
   const parsed = Date.parse(value ?? '');
   return Number.isFinite(parsed) ? parsed : 0;
@@ -127,6 +145,25 @@ export function qualityDimensionRows(run) {
   });
 }
 
+export function qualityIssueRows(run) {
+  const issueLabels = run?.qcDetail?.rubric?.issueLabels;
+  if (!Array.isArray(issueLabels)) return [];
+  return issueLabels.flatMap((issue) => {
+    const severity = issue?.severity;
+    if (!Object.hasOwn(ISSUE_SEVERITY_PRESENTATION, severity)) return [];
+    const presentation = ISSUE_SEVERITY_PRESENTATION[severity];
+    const label = String(issue?.label ?? '').trim() || presentation.severityLabel;
+    const evidence = String(issue?.evidence ?? '').trim()
+      || '未保存详细原因，请结合图片和逐项评分人工复核。';
+    return [{
+      severity,
+      ...presentation,
+      label,
+      evidence,
+    }];
+  });
+}
+
 function summarizeRunFailure(error) {
   const value = String(error ?? '').replace(/\s+/g, ' ').trim();
   if (/requires Node|PATH searched|Detected: node/i.test(value)) {
@@ -191,4 +228,4 @@ export function qualityReasons(run) {
   return ['本批次尚未产生可用评分。'];
 }
 
-export { DIMENSION_LABELS };
+export { DIMENSION_LABELS, ISSUE_SEVERITY_PRESENTATION };

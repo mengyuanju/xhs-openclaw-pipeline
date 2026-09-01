@@ -10,6 +10,7 @@
 - 1 分用于需求满足度低于 2、严重重复，或任一适用基础可用维度低于 2。
 - 2 分用于所有基础维度合格，但任一适用维度仍为 2 或存在轻微问题标签。
 - 3 分只在所有适用维度经类型校正后均为 3、没有问题标签，并具有独立人工或 VLM 终审证据时产生。
+- 未提供站内正文和图集候选时，`contentOriginality` 保留为 `applicable: false` 的未核验标识，不参与 3 分门禁；字节级重复图片仍按严重重复阻断。
 - 只有机械证据且平台样本缺失或未核验时，平台表达适配最高为 2；独立人工/VLM 对最终交付完成直接平台评审时记录为 `direct_review`。
 - 缺少必需维度证据时返回“证据不足”，不得猜测分数。
 
@@ -50,6 +51,12 @@
 - 是否满足：`queryRelevance`、`contentOriginality`。
 - 是否可用：`imageBaseQuality`、`imageTextQuality`、`imageConsistency`、`noteTone`、`platformAdaptation`。
 - 是否优质：`informationValue`、`imageAesthetics`、`imageDiversity`。
+
+原创度和多样性的边界：
+
+- `contentOriginality` 只判断与站内已有正文、图集的重复性；没有站内候选时不猜测分数。
+- `imageDiversity` 判断跨页主体、背景、构图、信息载体和阅读动线是否实质重复。
+- 统一色调、字体、卡片装饰和视觉符号是整套图片风格一致性的要求，不得单独作为 `imageDiversity` 扣分理由。
 
 评分输出包含：
 

@@ -65,6 +65,8 @@ describe('independent delivery quality assessment', () => {
     assert.match(prompt, /inputReferenceText.*可用来源证据/u);
     assert.match(prompt, /不得额外要求图片展示网页截图/u);
     assert.match(prompt, /现名与原名/u);
+    assert.match(prompt, /未提供站内正文和图集候选.*不参与最终评分/u);
+    assert.match(prompt, /统一的色调、字体和装饰语言.*不得仅据此降低 imageDiversity/u);
     assert.match(prompt, /恰好 4 张图片/);
     assert.ok(prompt.length < 30_000);
   });

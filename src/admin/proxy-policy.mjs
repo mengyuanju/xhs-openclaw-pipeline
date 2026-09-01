@@ -11,19 +11,27 @@ export function evaluateAdminProxyRequest(request, environment = process.env) {
     throw error;
   }
 
-  let isAuthenticated = false;
+  let session = null;
   try {
-    assertAuthenticatedRequest(request, environment);
-    isAuthenticated = true;
+    session = assertAuthenticatedRequest(request, environment);
   } catch (error) {
     if (!(error instanceof ApiError) || error.code !== 'AUTH_REQUIRED') throw error;
   }
 
-  if (url.pathname === '/login' && isAuthenticated) {
-    return { type: 'redirect', location: '/' };
+  if (url.pathname === '/login' && session && url.searchParams.get('reauth') !== '1') {
+    return { type: 'redirect', location: session.subject === 'admin' ? '/' : '/reviews' };
   }
   if (PUBLIC_PATHS.has(url.pathname)) return { type: 'next' };
-  if (isAuthenticated) return { type: 'next' };
+  if (session?.subject === 'admin') return { type: 'next' };
+  if (session?.subject === 'user') {
+    const isReviewPath = url.pathname === '/reviews'
+      || url.pathname.startsWith('/reviews/')
+      || url.pathname.startsWith('/api/review-work-items')
+      || url.pathname.startsWith('/api/review-task-assignments')
+      || url.pathname.startsWith('/api/review-users')
+      || url.pathname === '/api/auth/logout';
+    return isReviewPath ? { type: 'next' } : { type: 'forbidden' };
+  }
   if (url.pathname.startsWith('/api/')) return { type: 'unauthorized' };
 
   const returnPath = `${url.pathname}${url.search}`;

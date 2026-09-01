@@ -1,6 +1,6 @@
 'use client';
 
-import { Copy, FileText, LoaderCircle, RotateCcw, Sparkles } from 'lucide-react';
+import { LoaderCircle, Sparkles } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
@@ -13,12 +13,12 @@ import {
 } from '@/components/ui/select';
 
 import { apiRequest } from '../components/api-client';
-
-type CopyGenerationResult = {
-  copy: { title: string; body: string; tags: string[] };
-  imagePlan: unknown[];
-  generation: { model: string; imageCount: number };
-};
+import {
+  CopyGenerationComparison,
+  type CopyGenerationResult,
+} from './copy-generation-comparison';
+import { CopyGenerationHistory } from './copy-generation-history';
+import { useCopyGenerationHistory } from './use-copy-generation-history';
 
 function referenceUrlsFrom(value: string) {
   const urls = [...new Set(value.split(/\r?\n/u).map((item) => item.trim()).filter(Boolean))];
@@ -38,20 +38,28 @@ function referenceUrlsFrom(value: string) {
   return urls;
 }
 
-function copyText(result: CopyGenerationResult) {
-  const tags = result.copy.tags
-    .map((tag) => tag.startsWith('#') ? tag : `#${tag}`)
-    .join(' ');
-  return [result.copy.title, result.copy.body, tags].filter(Boolean).join('\n\n');
-}
-
 export function CopyGenerationWorkbench() {
   const confirm = useConfirmDialog();
   const [imageCount, setImageCount] = useState('auto');
-  const [result, setResult] = useState<CopyGenerationResult | null>(null);
-  const [busy, setBusy] = useState(false);
+  const {
+    result,
+    setResult,
+    history,
+    jobs,
+    timingStatistics,
+    historyLoading,
+    historyError,
+    hasRunningJobs,
+    refreshHistory,
+  } = useCopyGenerationHistory();
+  const [requestBusy, setRequestBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [messageIsError, setMessageIsError] = useState(false);
+
+  function showMessage(nextMessage: string, isError: boolean) {
+    setMessage(nextMessage);
+    setMessageIsError(isError);
+  }
 
   async function generate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -66,15 +74,15 @@ export function CopyGenerationWorkbench() {
     }
 
     if (!await confirm({
-      title: '确认调用真实模型生成文案？',
-      description: '会执行选题审核、联网研究、文案生成和文本审核，可能产生模型费用；不会生成图片或写入任务队列。',
+      title: '确认调用真实模型生成并审核文案？',
+      description: '会执行选题审核、联网研究、首稿生成与质检。首稿审核通过后直接保存；只有存在阻断问题才调用第二次文案生成进行修订和复检，因此模型费用会随质检结果变化。',
       confirmLabel: '确认并生成',
     })) return;
 
     const category = String(data.get('category') ?? '').trim();
     const targetAudience = String(data.get('targetAudience') ?? '').trim();
     const referenceText = String(data.get('referenceText') ?? '').trim();
-    setBusy(true);
+    setRequestBusy(true);
     setMessage('');
     setMessageIsError(false);
     try {
@@ -94,35 +102,24 @@ export function CopyGenerationWorkbench() {
         }),
       });
       setResult(generated);
-      setMessage('文案生成并审核完成。结果仅保留在当前页面，请及时复制。');
+      setMessage(generated.original.review.decision === 'PASS'
+        ? '首稿已通过质检并直接保存，无需二次改写。'
+        : '首稿及针对阻断问题修订后的版本已分别保存，可在历史记录中对比。');
+      void refreshHistory({ silent: true })
+        .catch(() => {
+          showMessage('文案已保存，但耗时统计刷新失败；刷新页面可重试。', true);
+        });
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '文案生成失败');
       setMessageIsError(true);
+      void refreshHistory({ silent: true }).catch(() => {});
     } finally {
-      setBusy(false);
+      setRequestBusy(false);
     }
-  }
-
-  async function copyResult() {
-    if (!result) return;
-    try {
-      await navigator.clipboard.writeText(copyText(result));
-      setMessage('标题、正文和标签已复制到剪贴板。');
-      setMessageIsError(false);
-    } catch {
-      setMessage('复制失败，请手动选择结果内容。');
-      setMessageIsError(true);
-    }
-  }
-
-  function clearResult() {
-    setResult(null);
-    setMessage('结果已从当前页面清除。');
-    setMessageIsError(false);
   }
 
   return <div className="stack">
-    <div className="grid gap-4 xl:grid-cols-[minmax(360px,0.82fr)_minmax(0,1.18fr)] xl:items-start">
+    <div className="copy-generation-workspace">
       <form className="panel" onSubmit={generate}>
         <div className="panel-head">
           <div><span className="section-kicker">Generation input</span><h2>输入生成要求</h2></div>
@@ -165,41 +162,37 @@ export function CopyGenerationWorkbench() {
             <small>只影响返回的图片策划建议，本次不会调用图片模型。</small>
           </div>
           <div className="field full">
-            <div className="notice">提交会调用真实模型并产生费用。单次只允许一个生成请求，结果不会自动保存。</div>
+            <div className="notice">提交后会先保存生成任务，刷新或切换页面后仍可查看状态。通常调用一次文案生成和一次文本审核；只有存在阻断问题才调用第二次文案生成，并对修订结果复检。</div>
           </div>
           <div className="field full inline">
-            <button className="button primary" type="submit" disabled={busy}>
-              {busy ? <><LoaderCircle aria-hidden="true" className="animate-spin" size={16} />正在生成与审核…</> : <><Sparkles aria-hidden="true" size={16} />生成文案</>}
+            <button className="button primary" type="submit" disabled={historyLoading || requestBusy || hasRunningJobs}>
+              {requestBusy
+                ? <><LoaderCircle aria-hidden="true" className="animate-spin" size={16} />正在生成与审核…</>
+                : hasRunningJobs
+                  ? <><LoaderCircle aria-hidden="true" className="animate-spin" size={16} />已有任务生成中…</>
+                  : historyLoading
+                    ? <><LoaderCircle aria-hidden="true" className="animate-spin" size={16} />正在读取任务…</>
+                    : <><Sparkles aria-hidden="true" size={16} />生成文案</>}
             </button>
             <span className="subtle">不会入队、发布或生成图片。</span>
           </div>
         </div>
       </form>
-
-      <section className="panel xl:sticky xl:top-24" aria-labelledby="copy-result-heading" aria-live="polite">
-        <div className="panel-head">
-          <div><span className="section-kicker">Generated copy</span><h2 id="copy-result-heading">生成结果</h2></div>
-          {result && <div className="inline">
-            <button className="button small" type="button" onClick={copyResult}><Copy aria-hidden="true" size={14} />复制全文</button>
-            <button className="button small" type="button" onClick={clearResult}><RotateCcw aria-hidden="true" size={14} />清除</button>
-          </div>}
-        </div>
-        {!result ? <div className="empty-state">
-          <FileText aria-hidden="true" size={32} />
-          <h3>等待生成文案</h3>
-          <p>提交左侧要求后，标题、正文和标签会显示在这里。</p>
-        </div> : <div>
-          <h3 className="review-task-copy-title">{result.copy.title}</h3>
-          <div className="review-copy-body">{result.copy.body}</div>
-          <div className="review-copy-tags" aria-label="文案标签">
-            {result.copy.tags.map((tag) => <span className="pill" key={tag}>{tag.startsWith('#') ? tag : `#${tag}`}</span>)}
-          </div>
-          <div className="notice">
-            已返回 {result.imagePlan.length} 页配图策划建议，但未调用图片模型。文案模型：<span className="mono">{result.generation.model}</span>
-          </div>
-        </div>}
-      </section>
+      <CopyGenerationHistory
+        records={history}
+        jobs={jobs}
+        statistics={timingStatistics}
+        selectedId={result?.id ?? null}
+        loading={historyLoading}
+        error={historyError}
+        onSelect={setResult}
+      />
     </div>
+    {result && <CopyGenerationComparison
+      result={result}
+      onClose={() => setResult(null)}
+      onMessage={showMessage}
+    />}
     {message && <div className={messageIsError ? 'notice error' : 'notice success'} role={messageIsError ? 'alert' : 'status'} aria-live="polite">{message}</div>}
   </div>;
 }

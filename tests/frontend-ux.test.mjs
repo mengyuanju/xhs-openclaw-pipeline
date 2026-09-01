@@ -37,7 +37,7 @@ test('application shell groups product areas and keeps page context visible', as
     readFile(projectFile('package.json'), 'utf8'),
   ]);
 
-  assert.match(frame, /<AppTopbar\s*\/>/);
+  assert.match(frame, /<AppTopbar\s+session=\{session\}\s*\/>/);
   assert.match(frame, /id="main-content"/);
   assert.match(navigation, /const navigationGroups[^=]*= \[/);
   for (const group of ['总览', '内容生产', '内容资产', '运营与系统']) {
@@ -291,10 +291,11 @@ test('review images version their URLs with the immutable asset content hash', a
 });
 
 test('task details display per-run user prompts and the generated visual plan', async () => {
-  const [taskDetail, imageBatch, promptTrace, visualPlanTrace, styles] = await Promise.all([
+  const [taskDetail, imageBatch, promptTrace, imagePromptPresentation, visualPlanTrace, styles] = await Promise.all([
     readFile(projectFile('app/tasks/[id]/page.tsx'), 'utf8'),
     readFile(projectFile('app/tasks/[id]/image-generation-batch.tsx'), 'utf8'),
     readFile(projectFile('app/tasks/[id]/generation-prompt-trace.tsx'), 'utf8'),
+    readFile(projectFile('app/tasks/[id]/image-prompt-presentation.mjs'), 'utf8'),
     readFile(projectFile('app/tasks/[id]/generation-visual-plan.tsx'), 'utf8'),
     readFile(projectFile('app/globals.css'), 'utf8'),
   ]);
@@ -302,6 +303,15 @@ test('task details display per-run user prompts and the generated visual plan', 
 
   assert.match(promptDisplay, /文案用户提示词/);
   assert.match(promptDisplay, /第 \$\{prompt\.pageIndex\} 张图片用户提示词/);
+  assert.match(promptTrace, /summarizeImagePrompt/);
+  assert.match(promptTrace, /className="image-prompt-summary"/);
+  assert.match(promptTrace, /视觉主体/);
+  assert.match(promptTrace, /构图与阅读顺序/);
+  assert.match(promptTrace, /页面可见文字/);
+  assert.match(promptTrace, /必须呈现/);
+  assert.match(promptTrace, /避免出现/);
+  assert.doesNotMatch(promptTrace, /content=\{prompt\.content\}/);
+  assert.match(imagePromptPresentation, /current_image_plan/);
   assert.match(promptDisplay, /run\?\.promptTrace/);
   assert.match(promptDisplay, /contentKind !== 'USER_PROMPT'/);
   assert.match(promptDisplay, /imagePrompts\.map/);
@@ -323,6 +333,7 @@ test('task details display per-run user prompts and the generated visual plan', 
   assert.match(styles, /\.prompt-content\s*\{/);
   assert.match(styles, /\.prompt-content\s*\{[^}]*overflow: auto/);
   assert.match(styles, /\.prompt-content\s*\{[^}]*white-space: pre-wrap/);
+  assert.match(styles, /\.image-prompt-summary\s*\{/);
 });
 
 test('generation batches display Query and post-generation text review evidence', async () => {
@@ -339,6 +350,31 @@ test('generation batches display Query and post-generation text review evidence'
   assert.match(stageReviews, /OPENCLAW/u);
   assert.match(stageReviews, /MOCK/u);
   assert.match(stageReviews, /BLOCKING/u);
+});
+
+test('review workbench exposes latest research links, readable prompts and stage reviews together', async () => {
+  const [reviewPanel, evidencePanel, promptTrace, styles] = await Promise.all([
+    readFile(projectFile('app/tasks/[id]/review-panel.tsx'), 'utf8'),
+    readFile(projectFile('app/tasks/[id]/generation-evidence-panel.tsx'), 'utf8'),
+    readFile(projectFile('app/tasks/[id]/generation-prompt-trace.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+  ]);
+
+  assert.match(reviewPanel, /<GenerationEvidencePanel run=\{latestRun\}/u);
+  assert.match(evidencePanel, /生成依据与自动审核/u);
+  assert.match(evidencePanel, /文案资料来源/u);
+  assert.match(evidencePanel, /不代表每条都被最终文案引用/u);
+  assert.match(evidencePanel, /target="_blank"/u);
+  assert.match(evidencePanel, /rel="noopener noreferrer"/u);
+  assert.match(evidencePanel, /<StageReviewTrace stageReviews=\{run\?\.stageReviews\}/u);
+  assert.match(evidencePanel, /<PromptTrace run=\{run\}/u);
+  assert.match(promptTrace, /summarizeTextPrompt/u);
+  assert.match(promptTrace, /className="text-prompt-summary"/u);
+  assert.match(promptTrace, /查看原始提示词/u);
+  assert.doesNotMatch(promptTrace, /content=\{promptTrace\.text\?\.content\}/u);
+  assert.match(styles, /\.generation-evidence-panel\s*\{/u);
+  assert.match(styles, /\.research-source-link\s*\{/u);
+  assert.match(styles, /\.text-prompt-summary\s*\{/u);
 });
 
 test('waiting and approved reviews expose ZIP downloads while blocked states explain why', async () => {
@@ -525,10 +561,11 @@ test('image previews navigate within a batch and keep fitted landscape images ge
 });
 
 test('review workbench prioritizes full text and generation batches without standalone history panels', async () => {
-  const [reviewPanel, reviewCopy, imageBatch, styles] = await Promise.all([
+  const [reviewPanel, reviewCopy, imageBatch, qualityIssues, styles] = await Promise.all([
     readFile(projectFile('app/tasks/[id]/review-panel.tsx'), 'utf8'),
     readFile(projectFile('app/tasks/[id]/review-copy-form.tsx'), 'utf8'),
     readFile(projectFile('app/tasks/[id]/image-generation-batch.tsx'), 'utf8'),
+    readFile(projectFile('app/tasks/[id]/quality-issue-list.tsx'), 'utf8'),
     readFile(projectFile('app/globals.css'), 'utf8'),
   ]);
   const reviewFlow = `${reviewPanel}\n${reviewCopy}\n${imageBatch}`;
@@ -539,10 +576,41 @@ test('review workbench prioritizes full text and generation batches without stan
   assert.match(reviewFlow, /image-generation-batch/);
   assert.match(reviewPanel, /qualityReasons/);
   assert.match(reviewPanel, /评分原因/);
+  assert.match(reviewPanel, /<QualityIssueList issues=\{currentIssues\}/);
+  assert.match(imageBatch, /<QualityIssueList issues=\{issues\}/);
+  assert.match(qualityIssues, /问题标签会按严重度限制最终分/);
+  assert.match(qualityIssues, /详细原因/);
+  assert.match(qualityIssues, /最终分最高 \{issue\.scoreCap\} 分/);
+  assert.match(styles, /\.quality-issue-severity/);
+  assert.match(styles, /\.quality-issue-reason/);
   assert.match(imageBatch, /compact-failed-batch/);
   assert.doesNotMatch(reviewPanel, /<h3>版本记录<\/h3>/);
   assert.doesNotMatch(reviewPanel, /<h3>生成与质检<\/h3>/);
   assert.doesNotMatch(reviewPanel, /<h3>固定生产配置<\/h3>/);
+});
+
+test('review workbench separates copy, evidence and images into focused review stages', async () => {
+  const [reviewPanel, styles] = await Promise.all([
+    readFile(projectFile('app/tasks/[id]/review-panel.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+  ]);
+
+  assert.match(reviewPanel, /type ReviewStage = 'copy' \| 'evidence' \| 'images'/u);
+  assert.match(reviewPanel, /useState<ReviewStage>\('copy'\)/u);
+  assert.match(reviewPanel, /role="tablist"/u);
+  assert.match(reviewPanel, /aria-label="审核内容分区"/u);
+  assert.match(reviewPanel, /文案定稿/u);
+  assert.match(reviewPanel, /生成依据/u);
+  assert.match(reviewPanel, /图片审核/u);
+  assert.match(reviewPanel, /role="tabpanel"/u);
+  assert.match(reviewPanel, /hidden=\{activeStage !== 'copy'\}/u);
+  assert.match(reviewPanel, /hidden=\{activeStage !== 'evidence'\}/u);
+  assert.match(reviewPanel, /hidden=\{activeStage !== 'images'\}/u);
+  assert.match(styles, /\.review-stage-nav\s*\{/u);
+  assert.match(styles, /\.review-stage-tab\[aria-selected="true"\]/u);
+  assert.match(styles, /\.review-stage-panel\[hidden\]/u);
+  assert.match(styles, /@media \(max-width: 760px\)[\s\S]*\.review-stage-nav\s*\{[^}]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/u);
+  assert.match(styles, /\.review-stage-status, \.review-stage-copy small\s*\{\s*display: none;/u);
 });
 
 test('image editing controls live in preview with local rotation and conditional crop', async () => {

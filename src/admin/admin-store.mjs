@@ -4,6 +4,10 @@ import { isAbsolute, normalize } from 'node:path';
 import { initializeQueueSchema } from '../queue.mjs';
 import { DEFAULT_PROMPTS } from './default-prompts.mjs';
 import { createGenerationStore, initializeGenerationSchema } from './generation-store.mjs';
+import {
+  createStandaloneCopyGenerationStore,
+  initializeStandaloneCopyGenerationSchema,
+} from './standalone-copy-generation-store.mjs';
 import { createImageEditStore, initializeImageEditSchema } from './image-edit-store.mjs';
 import {
   createVisualKnowledgeStore,
@@ -15,6 +19,7 @@ import {
   normalizePromptContent,
 } from './prompt-service.mjs';
 import { readTaskTimingStats } from './task-timing.mjs';
+import { createReviewWorkStore, initializeReviewWorkSchema } from './review-work-store.mjs';
 import {
   createProductionSettingsStore,
   initializeProductionSettingsSchema,
@@ -366,8 +371,10 @@ function initializeAdminSchema(db) {
   `);
   initializeImageEditSchema(db);
   initializeGenerationSchema(db);
+  initializeStandaloneCopyGenerationSchema(db);
   initializeVisualKnowledgeSchema(db);
   initializeProductionSettingsSchema(db);
+  initializeReviewWorkSchema(db);
   const assetColumns = new Set(
     db.prepare('PRAGMA table_info(assets)').all().map((column) => column.name),
   );
@@ -549,9 +556,11 @@ export function createAdminStore(databasePath) {
   const getPromptVersionRow = db.prepare('SELECT * FROM prompt_versions WHERE id = ?');
   const imageEditStore = createImageEditStore(db);
   const generationStore = createGenerationStore(db);
+  const standaloneCopyGenerationStore = createStandaloneCopyGenerationStore(db);
   const visualKnowledgeStore = createVisualKnowledgeStore(db);
   const productionSettingsStore = createProductionSettingsStore(db);
   const productionStatisticsStore = createProductionStatisticsStore(db);
+  const reviewWorkStore = createReviewWorkStore(db);
   const countTasks = () => Number(db.prepare('SELECT COUNT(*) AS count FROM tasks').get().count);
   const getAssetRow = db.prepare('SELECT * FROM assets WHERE id = ?');
   const getTaskRow = db.prepare(`
@@ -605,9 +614,11 @@ export function createAdminStore(databasePath) {
   return {
     ...imageEditStore,
     ...generationStore,
+    ...standaloneCopyGenerationStore,
     ...visualKnowledgeStore,
     ...productionSettingsStore,
     ...productionStatisticsStore,
+    ...reviewWorkStore,
     close() {
       db.close();
     },

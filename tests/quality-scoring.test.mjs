@@ -193,6 +193,23 @@ describe('rule-document quality scoring', () => {
     assert.equal(result.dimensions.platformAdaptation.applicable, false);
   });
 
+  it('allows unverified station originality to remain visible without blocking score 3', () => {
+    const result = scoreQualityAssessment(assessment({
+      dimensions: {
+        contentOriginality: dimension(null, {
+          evidence: ['未提供站内正文和图集候选；保留未核验标识，但不参与最终评分。'],
+          source: 'mechanical',
+          applicable: false,
+        }),
+      },
+    }));
+
+    assert.equal(result.finalScore, 3);
+    assert.equal(result.dimensions.contentOriginality.score, null);
+    assert.equal(result.dimensions.contentOriginality.applicable, false);
+    assert.deepEqual(result.lowestObstacleDimensions, []);
+  });
+
   it('does not allow required non-platform dimensions to be marked not applicable', () => {
     assert.throws(
       () => scoreQualityAssessment(assessment({

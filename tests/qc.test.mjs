@@ -183,6 +183,45 @@ describe('delivery quality checks', () => {
     }
   });
 
+  it('keeps missing station-duplicate evidence as a non-blocking originality marker', async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), 'xhs-qc-'));
+    try {
+      const images = [
+        { file: '01.png', provider: 'openclaw', alignment: { passed: true, failureClass: 'PASS' } },
+        { file: '02.png', provider: 'openclaw-image-edit', alignment: { passed: true, failureClass: 'PASS' } },
+        { file: '03.png', provider: 'openclaw-image-edit', alignment: { passed: true, failureClass: 'PASS' } },
+      ];
+      await Promise.all([
+        writePng(join(outputDir, '01.png'), '#ff0000'),
+        writePng(join(outputDir, '02.png'), '#00ff00'),
+        writePng(join(outputDir, '03.png'), '#0000ff'),
+      ]);
+      const rubricAssessment = completeRubricAssessment(3);
+      rubricAssessment.dimensions.contentOriginality = {
+        score: 2,
+        evidence: ['没有站内候选，无法执行站内重复比对。'],
+        source: 'vlm',
+        applicable: true,
+      };
+
+      const qc = await evaluateDelivery({
+        post: post({ platform: { sampleEvidence: 'sufficient', iconDictionary: {} } }),
+        images,
+        outputDir,
+        mode: 'live',
+        rubricAssessment,
+      });
+
+      assert.equal(qc.overallScore, 3);
+      assert.equal(qc.rubric.dimensions.contentOriginality.score, null);
+      assert.equal(qc.rubric.dimensions.contentOriginality.applicable, false);
+      assert.match(qc.rubric.dimensions.contentOriginality.evidence.join('\n'), /不参与最终评分/u);
+      assert.deepEqual(qc.rubric.lowestObstacleDimensions, []);
+    } finally {
+      await rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
   it('maps an explicit redline assessment to score 0 and a blocked disposition', async () => {
     const outputDir = await mkdtemp(join(tmpdir(), 'xhs-qc-'));
     try {

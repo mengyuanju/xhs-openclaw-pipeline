@@ -2,7 +2,7 @@
 
 ## Assumptions
 
-1. 后台支持本机和可信私有局域网访问，仍为单管理员；任何页面、API 和素材都不得匿名访问。
+1. 后台支持本机和可信私有局域网访问；系统管理仍为单管理员，质检人员仅可进入按角色授权的质检中心；任何页面、API 和素材都不得匿名访问。
 2. 保留现有 Node.js/OpenClaw/Sharp 生产核心；Web 端负责配置、入队、审核和修订，不在 HTTP 请求中同步等待模型生成。
 3. 单机每日目标为 1000 条 Query；任务与元数据继续使用 SQLite，图片和 Excel 文件存放本地受控目录。多机部署前迁移 PostgreSQL 与对象存储。
 4. 第一版不自动发布小红书。只有人工确认后的内容可以标记为 `approved`；处于待审核或已经通过状态、且当前交付文件完整的内容均可导出，导出包必须保留真实审核状态。
@@ -24,7 +24,7 @@
 
 - 默认 `npm run dev` / `npm run start` 仍只监听 `127.0.0.1`；显式使用 `dev:lan` / `start:lan` 才监听 `0.0.0.0`。
 - 允许访问的 Host 为 loopback、RFC1918 IPv4、IPv4 link-local、IPv6 loopback/ULA/link-local，以及管理员通过 `XHS_ALLOWED_HOSTS` 显式添加的主机名；公网 IP 默认拒绝。
-- 单管理员密码只以 scrypt 哈希保存在被 Git 忽略的 `.env.local`；会话密钥至少 32 字节随机值，也只保存在环境变量。
+- 系统管理员密码只以 scrypt 哈希保存在被 Git 忽略的 `.env.local`；质检人员密码以 scrypt 哈希存入 SQLite；会话密钥至少 32 字节随机值，也只保存在环境变量。
 - 登录成功后签发 8 小时 HMAC-SHA256 会话，Cookie 使用 `HttpOnly`、`SameSite=Strict`、`Path=/`；HTTPS 时额外使用 `Secure`。
 - 登录接口统一返回通用失败消息，不区分“未配置”和“密码错误”；15 分钟内最多 5 次失败，成功登录后清除失败计数。
 - Next.js Proxy 只负责页面和 API 的快速预检；所有既有 `/api/*` Route Handler 仍在统一 `apiHandler` 边界再次验证会话。
@@ -176,7 +176,7 @@ POST       /api/prompt-versions/:id/publish
 
 - Always：参数化 SQL；上传大小、MIME 和图片解码校验；发布版本不可变；操作留痕；任务和文件路径使用数据库 ID。
 - Always：真实 Worker 必须显式二次确认、固定命令入口、`shell: false`、最多 20 条，并拒绝并发网页启动。
-- Ask first：开放公网或非私有网段、改为多用户/角色、迁移 PostgreSQL、启用真实批量额度、接入自动发布。
+- Ask first：开放公网或非私有网段、开放公共注册或扩大质检角色权限、迁移 PostgreSQL、启用真实批量额度、接入自动发布。
 - Never：公开无认证后台；在源码、Git、日志或响应中保存/展示明文密码、会话密钥、Token/API Key；覆盖原始生成物；执行模型输出；从任意 URL 抓取参考图；把未审核内容标记为已通过。
 
 ## Success Criteria
@@ -190,7 +190,7 @@ POST       /api/prompt-versions/:id/publish
 
 ## Open Questions
 
-- 多用户角色、跨公网部署、PostgreSQL、对象存储、自动发布和审核抽样策略留到后续版本。
+- 内容生产岗位多用户化、跨公网部署、PostgreSQL、对象存储、自动发布和审核抽样策略留到后续版本；当前仅新增受限的质检人员角色，详见 `docs/review-work-management-spec.md`。
 
 ## Official Sources
 

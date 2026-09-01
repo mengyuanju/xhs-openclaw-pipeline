@@ -76,8 +76,19 @@ describe('content stage review contract', () => {
       query: '租房桌面整理',
       post: { title: '桌面整理', body: '正文', tags: ['#整理'], imagePlan: [] },
       allowedSources: ['https://example.com/source'],
+      editorialInstruction: '标题不得照抄 Query，正文必须为400～600字。',
+      evidence: {
+        referenceText: '法规原文明确要求转弯前减速慢行。',
+        referenceUrls: ['https://example.com/source'],
+      },
     });
     assert.match(textPrompt, /<untrusted_text_review_input>/u);
+    assert.match(textPrompt, /<trusted_editorial_requirements>/u);
+    assert.match(textPrompt, /标题不得照抄 Query/u);
+    assert.match(textPrompt, /"bodyCharacterCount": 2/u);
+    assert.match(textPrompt, /不得目测估算/u);
+    assert.match(textPrompt, /法规原文明确要求转弯前减速慢行/u);
+    assert.match(textPrompt, /违反.*必须.*BLOCKING/iu);
     assert.match(textPrompt, /https:\/\/example\.com\/source/u);
     assert.match(textPrompt, /图片规划/u);
   });
@@ -130,6 +141,41 @@ describe('content stage review contract', () => {
     assert.equal(review.decision, 'REJECT');
     assert.match(describeStageReviewFailure(review), /文本审核未通过/u);
     assert.match(describeStageReviewFailure(review), /高风险操作/u);
+  });
+
+  it('passes task reference text and research snippets to the independent reviewer', async () => {
+    let submittedPrompt = '';
+    await runTextReview({
+      client: {
+        async runReview({ prompt }) {
+          submittedPrompt = prompt;
+          return { rawText: passOutput(), model: 'fake-reviewer' };
+        },
+      },
+      task: {
+        query: '活鱼运输',
+        input: {
+          referenceText: '农业部门资料要求关注水质和充足溶氧。',
+          referenceUrls: ['https://example.gov.cn/guide'],
+          webResearch: {
+            provider: 'duckduckgo',
+            summary: '标准平台显示该国家标准现行。',
+            sources: [{
+              title: '国家标准',
+              url: 'https://std.example.gov.cn/rule',
+              snippet: '规定活鱼运输基本要求。',
+            }],
+          },
+        },
+      },
+      post: { title: '活鱼运输要点', body: '正文', tags: [], imagePlan: [] },
+      allowedSources: ['https://example.gov.cn/guide'],
+      now: () => FIXED_NOW,
+    });
+
+    assert.match(submittedPrompt, /农业部门资料要求关注水质和充足溶氧/u);
+    assert.match(submittedPrompt, /标准平台显示该国家标准现行/u);
+    assert.match(submittedPrompt, /规定活鱼运输基本要求/u);
   });
 
   it('labels mock and legacy-client compatibility reviews without claiming OpenClaw evidence', async () => {

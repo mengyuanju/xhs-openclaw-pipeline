@@ -5,7 +5,10 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export function POST(request: Request) {
-  return apiHandler(request, { mutation: true }, () => {
+  return apiHandler(request, {
+    mutation: true,
+    roles: ['ADMIN', 'QC_LEAD', 'QUERY_REVIEWER', 'COPY_REVIEWER'],
+  }, () => {
     const response = Response.json({ data: { authenticated: false } });
     response.headers.set('cache-control', 'no-store');
     response.headers.set('set-cookie', serializeAdminSessionCookie('', {

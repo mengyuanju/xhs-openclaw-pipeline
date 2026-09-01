@@ -18,6 +18,12 @@ const SCRYPT_OPTIONS = Object.freeze({
   p: 1,
   maxmem: 64 * 1024 * 1024,
 });
+const REVIEW_ACCOUNT_ROLES = Object.freeze([
+  'QC_LEAD',
+  'QUERY_REVIEWER',
+  'COPY_REVIEWER',
+]);
+const DUMMY_PASSWORD_HASH = 'scrypt-v1.MDEyMzQ1Njc4OWFiY2RlZg.MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZg';
 
 export const ADMIN_SESSION_COOKIE = 'xhs_admin_session';
 export const ADMIN_SESSION_SECONDS = 8 * 60 * 60;
@@ -91,14 +97,42 @@ function signSessionPayload(payload, secret) {
 
 export function createSessionToken(secret, {
   nowSeconds = Math.floor(Date.now() / 1_000),
+  actor = null,
 } = {}) {
   assertSessionSecret(secret);
   if (!Number.isSafeInteger(nowSeconds)) {
     throw new TypeError('session timing is invalid');
   }
+  let identity = { v: 1, sub: 'admin' };
+  if (actor !== null) {
+    if (!actor || !Number.isSafeInteger(actor.userId) || actor.userId < 1) {
+      throw new TypeError('session user id is invalid');
+    }
+    if (typeof actor.username !== 'string'
+      || !/^[a-z0-9][a-z0-9._-]{2,49}$/u.test(actor.username)) {
+      throw new TypeError('session username is invalid');
+    }
+    if (!Array.isArray(actor.roles) || actor.roles.length < 1) {
+      throw new TypeError('session roles are invalid');
+    }
+    const roles = [...new Set(actor.roles)];
+    if (roles.some((role) => !REVIEW_ACCOUNT_ROLES.includes(role))) {
+      throw new TypeError('session role is invalid');
+    }
+    if (!Number.isSafeInteger(actor.credentialVersion) || actor.credentialVersion < 1) {
+      throw new TypeError('session credential version is invalid');
+    }
+    identity = {
+      v: 2,
+      sub: 'user',
+      uid: actor.userId,
+      usr: actor.username,
+      roles,
+      cv: actor.credentialVersion,
+    };
+  }
   const payload = Buffer.from(JSON.stringify({
-    v: 1,
-    sub: 'admin',
+    ...identity,
     iat: nowSeconds,
     exp: nowSeconds + ADMIN_SESSION_SECONDS,
     jti: randomBytes(16).toString('base64url'),
@@ -126,9 +160,21 @@ export function verifySessionToken(token, secret, {
   } catch {
     return null;
   }
+  const isAdmin = payload?.v === 1 && payload?.sub === 'admin';
+  const isReviewer = payload?.v === 2
+    && payload?.sub === 'user'
+    && Number.isSafeInteger(payload.uid)
+    && payload.uid > 0
+    && typeof payload.usr === 'string'
+    && /^[a-z0-9][a-z0-9._-]{2,49}$/u.test(payload.usr)
+    && Array.isArray(payload.roles)
+    && payload.roles.length > 0
+    && new Set(payload.roles).size === payload.roles.length
+    && payload.roles.every((role) => REVIEW_ACCOUNT_ROLES.includes(role))
+    && Number.isSafeInteger(payload.cv)
+    && payload.cv > 0;
   if (
-    payload?.v !== 1
-    || payload?.sub !== 'admin'
+    (!isAdmin && !isReviewer)
     || !Number.isSafeInteger(payload.iat)
     || !Number.isSafeInteger(payload.exp)
     || !decodeBase64Url(payload.jti, 16)
@@ -138,12 +184,25 @@ export function verifySessionToken(token, secret, {
   ) {
     return null;
   }
+  if (isReviewer) {
+    return {
+      subject: 'user',
+      userId: payload.uid,
+      username: payload.usr,
+      roles: payload.roles,
+      credentialVersion: payload.cv,
+      issuedAt: payload.iat,
+      expiresAt: payload.exp,
+    };
+  }
   return {
     subject: 'admin',
     issuedAt: payload.iat,
     expiresAt: payload.exp,
   };
 }
+
+export { REVIEW_ACCOUNT_ROLES };
 
 export function readAuthConfig(environment = process.env) {
   const passwordHash = environment.XHS_ADMIN_PASSWORD_HASH;
@@ -217,6 +276,42 @@ export async function attemptAdminLogin(password, {
   return {
     status: 'authenticated',
     token: createSessionToken(config.sessionSecret),
+    expiresInSeconds: ADMIN_SESSION_SECONDS,
+  };
+}
+
+export async function attemptReviewUserLogin({
+  username,
+  password,
+  lookupUser,
+  sessionSecret,
+  limiter,
+  nowMs = Date.now(),
+}) {
+  if (!(limiter instanceof LoginRateLimiter)) throw new TypeError('login limiter is required');
+  if (typeof lookupUser !== 'function') throw new TypeError('review user lookup is required');
+  const rateLimit = limiter.check(nowMs);
+  if (!rateLimit.allowed) {
+    return { status: 'blocked', retryAfterSeconds: rateLimit.retryAfterSeconds };
+  }
+  const normalizedUsername = typeof username === 'string' ? username.trim().toLowerCase() : '';
+  const user = await lookupUser(normalizedUsername);
+  const isValid = await verifyAdminPassword(password, user?.passwordHash || DUMMY_PASSWORD_HASH);
+  if (!user || !isValid) {
+    limiter.recordFailure(nowMs);
+    return { status: 'invalid' };
+  }
+  limiter.reset();
+  return {
+    status: 'authenticated',
+    token: createSessionToken(sessionSecret, {
+      actor: {
+        userId: user.id,
+        username: user.username,
+        roles: user.roles,
+        credentialVersion: user.credentialVersion,
+      },
+    }),
     expiresInSeconds: ADMIN_SESSION_SECONDS,
   };
 }

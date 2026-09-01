@@ -12,9 +12,11 @@ import {
 
 const DEFAULT_PREFLIGHT_TIMEOUT_MS = 120_000;
 const DEFAULT_VISION_TIMEOUT_MS = 300_000;
+const DEFAULT_TEXT_THINKING = 'high';
 const IMAGE_GENERATION_SIZE = '1152x1536';
 const TRANSPORT_RETRY_DELAYS_MS = [5_000, 15_000, 30_000];
-const TRANSIENT_TRANSPORT_ERROR = /\b(?:ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET)\b|fetch failed|connection error|other side closed/iu;
+const TRANSIENT_TRANSPORT_ERROR = /\b(?:ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET)\b|fetch failed|connection error|other side closed|reconnecting|model\/list timed out/iu;
+const TEXT_THINKING_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 
 function nonBlockingSleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -139,6 +141,14 @@ function resolvedImageTimeoutMs(value, configuredDefault) {
     throw new RangeError('image timeoutMs must be an integer between 30000 and 540000');
   }
   return timeoutMs;
+}
+
+function validatedTextThinking(value = DEFAULT_TEXT_THINKING) {
+  const thinking = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (!TEXT_THINKING_LEVELS.has(thinking)) {
+    throw new TypeError(`thinking must be one of: ${[...TEXT_THINKING_LEVELS].join(', ')}`);
+  }
+  return thinking;
 }
 
 function withImageProxy(options, proxyUrl) {
@@ -302,14 +312,24 @@ export function createOpenClawClient({
         String(limit),
         '--json',
       ];
-      const processOptions = withModelProxy({
+      const processOptions = {
         encoding: 'utf8',
         windowsHide: true,
         shell: false,
         timeout: timeoutMs,
         maxBuffer: 5 * 1024 * 1024,
-      }, currentModelApi().modelProxyUrl);
-      const processResult = await resolvedAsyncRunner(nodePath, args, processOptions);
+      };
+      const configuration = currentModelApi();
+      const processResult = await runWithTransportRetryAsync({
+        runner: resolvedAsyncRunner,
+        nodePath,
+        args,
+        sleep: resolvedAsyncSleep,
+        options: processOptions,
+        optionsForAttempt: (attempt) => (attempt === 0
+          ? withModelProxy(processOptions, configuration.modelProxyUrl)
+          : processOptions),
+      });
       if (processResult.error || processResult.status !== 0) {
         const detail = redact(failureDetail(processResult));
         throw new Error(`OpenClaw web search failed (${normalizedProvider}): ${detail}`);
@@ -321,12 +341,13 @@ export function createOpenClawClient({
       };
     },
 
-    async runText({ prompt, model, timeoutMs = 180_000 }) {
+    async runText({ prompt, model, thinking, timeoutMs = 180_000 }) {
       if (typeof prompt !== 'string' || prompt.length === 0 || prompt.length > 30_000) {
         throw new RangeError('prompt must contain between 1 and 30000 characters');
       }
       const configuration = currentModelApi();
       const resolvedModel = validatedModelRef(model, configuration.textModel, 'textModel');
+      const resolvedThinking = validatedTextThinking(thinking);
       const args = [
         resolvedEntry,
         'infer',
@@ -335,6 +356,8 @@ export function createOpenClawClient({
         '--local',
         '--model',
         resolvedModel,
+        '--thinking',
+        resolvedThinking,
         '--json',
         '--prompt',
         prompt,
@@ -360,7 +383,11 @@ export function createOpenClawClient({
         const detail = redact(failureDetail(result));
         throw new Error(`OpenClaw text inference failed: ${detail}`);
       }
-      return { rawText: extractModelText(result.stdout), model: resolvedModel };
+      return {
+        rawText: extractModelText(result.stdout),
+        model: resolvedModel,
+        thinking: resolvedThinking,
+      };
     },
 
     async runReview({ prompt, model, timeoutMs = 180_000 }) {

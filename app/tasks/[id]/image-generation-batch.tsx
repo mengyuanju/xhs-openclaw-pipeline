@@ -8,9 +8,11 @@ import { formatDuration } from '../../components/time-format';
 import { PromptTrace } from './generation-prompt-trace';
 import { StageReviewTrace } from './generation-stage-reviews';
 import { VisualPlanTrace } from './generation-visual-plan';
+import { QualityIssueList } from './quality-issue-list';
 import {
   imageNeedsCrop,
   qualityDimensionRows,
+  qualityIssueRows,
   qualityReasons,
 } from './review-presentation.mjs';
 
@@ -43,6 +45,7 @@ function assetKindLabel(kind: string) {
 function BatchQuality({ run, qualityScoreLabel }: { run: any; qualityScoreLabel: (score: unknown) => string }) {
   const reasons = qualityReasons(run);
   const dimensions = qualityDimensionRows(run);
+  const issues = qualityIssueRows(run);
   const qualityRepair = run?.qcDetail?.qualityRepair;
   const repairAttempts = Array.isArray(qualityRepair?.attempts) ? qualityRepair.attempts : [];
   const settings = run?.qcDetail?.productionSettings;
@@ -55,6 +58,7 @@ function BatchQuality({ run, qualityScoreLabel }: { run: any; qualityScoreLabel:
       <strong className="batch-label">评分原因</strong>
       <ul className="quality-reason-list">{reasons.map((reason: string) => <li key={reason}>{reason}</li>)}</ul>
     </div>
+    <QualityIssueList issues={issues} />
     {settings && <div className="batch-policy-summary"><span>整套修复：{settings.qualityRepairEnabled ? `${settings.qualityRepairTriggerScore} 分触发，目标 ${settings.qualityRepairTargetScore} 分，最多 ${settings.qualityRepairMaxAttempts} 次` : '关闭'}</span><span>合规标识：{settings.aiDisclosureEnabled ? settings.aiDisclosureText : '关闭'}</span></div>}
     {repairAttempts.length > 0 && <section className="quality-repair-history" aria-label="质量修复历史">
       <div className="quality-repair-summary"><strong>质量修复</strong><span>{qualityRepair.initialScore} 分 → {qualityRepair.finalScore} 分 · 共 {repairAttempts.length} 次</span></div>

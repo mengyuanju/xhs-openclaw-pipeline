@@ -55,11 +55,11 @@ function StageReviewCard({ label, review }: { label: string; review?: StageRevie
 }
 
 export function StageReviewTrace({ stageReviews }: { stageReviews?: StageReviews | null }) {
-  if (!stageReviews) {
-    return <div className="stage-review-empty">历史批次未保存阶段审核结果。</div>;
-  }
-  return <div className="stage-review-grid" aria-label="本批次阶段审核">
-    <StageReviewCard label="Query 审核" review={stageReviews.query} />
-    <StageReviewCard label="文本生成后审核" review={stageReviews.text} />
-  </div>;
+  return <>
+    {!stageReviews && <div className="stage-review-empty">历史批次未保存阶段审核结果；新的生成批次会分别记录以下两道审核。</div>}
+    <div className="stage-review-grid" aria-label="本批次阶段审核">
+      <StageReviewCard label="Query 审核" review={stageReviews?.query} />
+      <StageReviewCard label="文本生成后审核" review={stageReviews?.text} />
+    </div>
+  </>;
 }

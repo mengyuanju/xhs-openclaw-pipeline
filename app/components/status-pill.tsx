@@ -2,6 +2,7 @@ const LABELS: Record<string, string> = {
   pending: '待处理',
   processing: '生成中',
   completed: '已生成',
+  COMPLETED: '质检完成',
   failed: '失败',
   PREVIEW: '待确认',
   COMMITTED: '已入队',
@@ -23,8 +24,14 @@ const LABELS: Record<string, string> = {
   UNVERIFIED: '未验收',
   PASSED: '图文匹配',
   FAILED: '验收失败',
-  STALE: '文案已变更',
+  STALE: '需重新审核',
   MANUAL_REQUIRED: '需重新验收',
+  OPEN: '待领取',
+  PENDING: '待审核',
+  IN_REVIEW: '审核中',
+  CANCELLED: '已取消',
+  ACTIVE: '启用',
+  DISABLED: '停用',
 };
 
 export function StatusPill({ value }: { value?: string | null }) {

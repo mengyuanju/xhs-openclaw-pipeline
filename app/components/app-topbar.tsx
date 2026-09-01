@@ -6,9 +6,11 @@ import {
   FilePenLine,
   FileUp,
   LayoutDashboard,
+  ImagePlus,
   LibraryBig,
   ListChecks,
   MessageSquareText,
+  ClipboardCheck,
   Plus,
   Settings2,
   ShieldCheck,
@@ -29,18 +31,21 @@ const routeMeta: Array<{ match: (pathname: string) => boolean; meta: RouteMeta }
   { match: (pathname) => pathname === '/', meta: { section: '总览', title: '工作台', icon: LayoutDashboard } },
   { match: (pathname) => pathname.startsWith('/imports'), meta: { section: '内容生产', title: '选题导入', icon: FileUp } },
   { match: (pathname) => pathname.startsWith('/copy-generation'), meta: { section: '内容生产', title: '单独生成文案', icon: FilePenLine } },
+  { match: (pathname) => pathname.startsWith('/image-generation'), meta: { section: '内容生产', title: '单独生成图片', icon: ImagePlus } },
   { match: (pathname) => /^\/tasks\/\d+/.test(pathname), meta: { section: '内容生产', title: '任务详情', icon: ListChecks } },
   { match: (pathname) => pathname.startsWith('/tasks'), meta: { section: '内容生产', title: '任务中心', icon: ListChecks } },
   { match: (pathname) => pathname.startsWith('/prompts'), meta: { section: '内容资产', title: '提示词版本', icon: MessageSquareText } },
   { match: (pathname) => pathname.startsWith('/knowledge'), meta: { section: '内容资产', title: '视觉知识库', icon: LibraryBig } },
   { match: (pathname) => pathname.startsWith('/analytics'), meta: { section: '运营与系统', title: '数据统计', icon: BarChart3 } },
   { match: (pathname) => pathname.startsWith('/settings'), meta: { section: '运营与系统', title: '生产配置', icon: Settings2 } },
+  { match: (pathname) => pathname.startsWith('/reviews'), meta: { section: '质检作业', title: '质检中心', icon: ClipboardCheck } },
 ];
 
-export function AppTopbar() {
+export function AppTopbar({ session }: { session: { roles?: string[] } | null }) {
   const pathname = usePathname();
   const current = routeMeta.find((route) => route.match(pathname))?.meta ?? routeMeta[0].meta;
   const Icon = current.icon;
+  const isAdmin = session?.roles?.includes('ADMIN') === true;
 
   return (
     <header className="app-topbar">
@@ -57,12 +62,9 @@ export function AppTopbar() {
       </div>
       <div className="topbar-actions">
         <span className="workspace-mode"><ShieldCheck aria-hidden="true" size={14} /> 本地工作区</span>
-        <Button asChild size="sm" className="topbar-primary-action">
-          <Link href="/imports">
-            <Plus aria-hidden="true" size={15} />
-            导入选题
-          </Link>
-        </Button>
+        {isAdmin && <Button asChild size="sm" className="topbar-primary-action">
+          <Link href="/imports"><Plus aria-hidden="true" size={15} />导入选题</Link>
+        </Button>}
       </div>
     </header>
   );

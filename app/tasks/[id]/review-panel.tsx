@@ -1,15 +1,17 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useState, type FormEvent } from 'react';
+import { useState, type FormEvent, type KeyboardEvent } from 'react';
 
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 
 import { apiRequest } from '../../components/api-client';
 import { StatusPill } from '../../components/status-pill';
+import { GenerationEvidencePanel } from './generation-evidence-panel';
 import { ImageGenerationBatch } from './image-generation-batch';
+import { QualityIssueList } from './quality-issue-list';
 import { ReviewCopyForm } from './review-copy-form';
-import { buildImageBatches, qualityReasons } from './review-presentation.mjs';
+import { buildImageBatches, qualityIssueRows, qualityReasons } from './review-presentation.mjs';
 
 function qualityScoreLabel(score: unknown) {
   switch (score) {
@@ -25,6 +27,8 @@ type ExportAvailability = {
   canExport: boolean;
   reason: string | null;
 };
+
+type ReviewStage = 'copy' | 'evidence' | 'images';
 
 export function ReviewPanel({ task, exportAvailability }: { task: any; exportAvailability: ExportAvailability }) {
   const router = useRouter();
@@ -53,6 +57,7 @@ export function ReviewPanel({ task, exportAvailability }: { task: any; exportAva
       ? '当前文案版本还没有一套完整且通过图文匹配验收的图片。'
       : '通过条件：完整图集均通过当前文案版本的图文匹配验收。';
   const currentScoreReasons = qualityReasons(latestRun);
+  const currentIssues = qualityIssueRows(latestRun);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [messageIsError, setMessageIsError] = useState(false);
@@ -60,6 +65,30 @@ export function ReviewPanel({ task, exportAvailability }: { task: any; exportAva
   const [body, setBody] = useState<string>(current?.body || '');
   const [tags, setTags] = useState<string>((current?.tags || []).join(' '));
   const [note, setNote] = useState('');
+  const [activeStage, setActiveStage] = useState<ReviewStage>('copy');
+  const reviewStages = [
+    {
+      id: 'copy' as const,
+      index: '01',
+      label: '文案定稿',
+      description: '检查标题、正文与标签',
+      status: `修订 #${current?.id || '—'}`,
+    },
+    {
+      id: 'evidence' as const,
+      index: '02',
+      label: '生成依据',
+      description: '核对来源与自动审核',
+      status: latestRun ? `批次 #${latestRun.attempt || '—'}` : '暂无记录',
+    },
+    {
+      id: 'images' as const,
+      index: '03',
+      label: '图片审核',
+      description: '预览、质检与调整图集',
+      status: `${task.assets.length} 个版本`,
+    },
+  ];
 
   async function run(action: () => Promise<unknown>, success: string) {
     setBusy(true);
@@ -127,24 +156,45 @@ export function ReviewPanel({ task, exportAvailability }: { task: any; exportAva
     }), status === 'APPROVED' ? '审核已通过。' : status === 'REJECTED' ? '已驳回并记录原因。' : '已重新打开审核。');
   }
 
-  return <div className="review-grid">
-    <div className="review-primary-grid">
-      <ReviewCopyForm
-        currentRevisionId={current?.id}
-        title={title}
-        body={body}
-        tags={tags}
-        busy={busy}
-        onTitleChange={setTitle}
-        onBodyChange={setBody}
-        onTagsChange={setTags}
-        onSubmit={saveText}
-      />
+  function moveStageFocus(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    let nextIndex = index;
+    if (event.key === 'ArrowRight') nextIndex = (index + 1) % reviewStages.length;
+    else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + reviewStages.length) % reviewStages.length;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = reviewStages.length - 1;
+    else return;
 
+    event.preventDefault();
+    const nextStage = reviewStages[nextIndex];
+    setActiveStage(nextStage.id);
+    document.getElementById(`review-stage-tab-${nextStage.id}`)?.focus();
+  }
+
+  return <div className="review-grid">
+    <nav className="review-stage-nav" role="tablist" aria-label="审核内容分区">
+      {reviewStages.map((stage, index) => <button
+        className="review-stage-tab"
+        id={`review-stage-tab-${stage.id}`}
+        key={stage.id}
+        type="button"
+        role="tab"
+        aria-controls={`review-stage-panel-${stage.id}`}
+        aria-selected={activeStage === stage.id}
+        tabIndex={activeStage === stage.id ? 0 : -1}
+        onClick={() => setActiveStage(stage.id)}
+        onKeyDown={(event) => moveStageFocus(event, index)}
+      >
+        <span className="review-stage-index" aria-hidden="true">{stage.index}</span>
+        <span className="review-stage-copy"><strong>{stage.label}</strong><small>{stage.description}</small></span>
+        <span className="review-stage-status">{stage.status}</span>
+      </button>)}
+    </nav>
+
+    <div className="review-primary-grid">
       <aside className="stack review-decision">
         <section className="panel review-decision-panel">
           <div className="panel-head">
-            <div><span className="section-kicker">02 · 人工审核</span><h2>审核结论</h2></div>
+            <div><span className="section-kicker">人工审核</span><h2>审核结论</h2></div>
             <StatusPill value={task.config?.reviewStatus} />
           </div>
 
@@ -155,6 +205,7 @@ export function ReviewPanel({ task, exportAvailability }: { task: any; exportAva
             </div>
             <strong className="batch-label">评分原因</strong>
             <ul className="quality-reason-list">{currentScoreReasons.map((reason: string) => <li key={reason}>{reason}</li>)}</ul>
+            <QualityIssueList issues={currentIssues} />
           </section>
 
           <div className="field">
@@ -189,30 +240,70 @@ export function ReviewPanel({ task, exportAvailability }: { task: any; exportAva
         </section>
         {message && <div className={messageIsError ? 'notice error' : 'notice success'} role={messageIsError ? 'alert' : 'status'} aria-live="polite">{message}</div>}
       </aside>
-    </div>
 
-    <section className="panel review-assets">
-      <div className="panel-head review-assets-head">
-        <div><span className="section-kicker">03 · 图片</span><h2>图片生成批次</h2><p className="subtle">版本、生成状态和质检结果统一收在对应批次中；点击图片进入预览、缩放和调整。</p></div>
-        <span className="asset-total">{task.assets.length} 个图片版本</span>
-      </div>
-      {failedPreview && <div className="notice failed-preview" role="note"><strong>失败预览</strong>：质量门禁失败时保留的当次文案和图片仅供查看与修改，不可审批，也不可作为正式交付导出。</div>}
-      <form className="inline upload-row" onSubmit={uploadImage}>
-        <input className="input file-input upload-input" name="file" type="file" accept="image/png,image/jpeg,image/webp" aria-label="上传参考图片" required />
-        <button className="button" type="submit" disabled={busy}>上传参考图</button>
-      </form>
-      {batches.length === 0
-        ? <div className="empty-state">还没有图片或生成运行。完成生成后会按批次显示，也可以先上传参考图。</div>
-        : <div className="image-batch-list">{batches.map((batch: any) => <ImageGenerationBatch
-            key={batch.id}
-            batch={batch}
-            config={task.config}
-            visualReference={task.visualReference}
-            imageEditRequests={task.imageEditRequests}
+      <div className="review-content-column">
+        <section
+          className="review-stage-panel"
+          id="review-stage-panel-copy"
+          role="tabpanel"
+          aria-labelledby="review-stage-tab-copy"
+          hidden={activeStage !== 'copy'}
+        >
+          <ReviewCopyForm
+            currentRevisionId={current?.id}
+            title={title}
+            body={body}
+            tags={tags}
             busy={busy}
-            qualityScoreLabel={qualityScoreLabel}
-            onEdit={editImage}
-          />)}</div>}
-    </section>
+            onTitleChange={setTitle}
+            onBodyChange={setBody}
+            onTagsChange={setTags}
+            onSubmit={saveText}
+          />
+        </section>
+
+        <section
+          className="review-stage-panel"
+          id="review-stage-panel-evidence"
+          role="tabpanel"
+          aria-labelledby="review-stage-tab-evidence"
+          hidden={activeStage !== 'evidence'}
+        >
+          <GenerationEvidencePanel run={latestRun} />
+        </section>
+
+        <section
+          className="review-stage-panel"
+          id="review-stage-panel-images"
+          role="tabpanel"
+          aria-labelledby="review-stage-tab-images"
+          hidden={activeStage !== 'images'}
+        >
+          <section className="panel review-assets">
+            <div className="panel-head review-assets-head">
+              <div><span className="section-kicker">03 · 图片审核</span><h2>图片生成批次</h2><p className="subtle">版本、生成状态和质检结果统一收在对应批次中；点击图片进入预览、缩放和调整。</p></div>
+              <span className="asset-total">{task.assets.length} 个图片版本</span>
+            </div>
+            {failedPreview && <div className="notice failed-preview" role="note"><strong>失败预览</strong>：质量门禁失败时保留的当次文案和图片仅供查看与修改，不可审批，也不可作为正式交付导出。</div>}
+            <form className="inline upload-row" onSubmit={uploadImage}>
+              <input className="input file-input upload-input" name="file" type="file" accept="image/png,image/jpeg,image/webp" aria-label="上传参考图片" required />
+              <button className="button" type="submit" disabled={busy}>上传参考图</button>
+            </form>
+            {batches.length === 0
+              ? <div className="empty-state">还没有图片或生成运行。完成生成后会按批次显示，也可以先上传参考图。</div>
+              : <div className="image-batch-list">{batches.map((batch: any) => <ImageGenerationBatch
+                  key={batch.id}
+                  batch={batch}
+                  config={task.config}
+                  visualReference={task.visualReference}
+                  imageEditRequests={task.imageEditRequests}
+                  busy={busy}
+                  qualityScoreLabel={qualityScoreLabel}
+                  onEdit={editImage}
+                />)}</div>}
+          </section>
+        </section>
+      </div>
+    </div>
   </div>;
 }

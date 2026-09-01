@@ -2,8 +2,10 @@ import { z } from 'zod';
 
 import { apiHandler, ok, parseJson } from '../_lib';
 import {
+  CopyGenerationContractError,
   CopyGenerationRejectedError,
   CopyGenerationResearchError,
+  CopyGenerationUnchangedError,
   generateCopy,
   toCopyGenerationResponse,
 } from '../../../src/copy-generation.mjs';
@@ -55,6 +57,33 @@ function copyGenerationRuntime() {
   });
 }
 
+function copyGenerationJobFailureMessage(error: unknown) {
+  if (error instanceof CopyGenerationRejectedError
+    || error instanceof CopyGenerationResearchError
+    || error instanceof CopyGenerationUnchangedError
+    || error instanceof CopyGenerationContractError) {
+    return error.message;
+  }
+  return '文案生成失败，请稍后重试';
+}
+
+export function GET(request: Request) {
+  return apiHandler(request, {}, () => {
+    const url = new URL(request.url);
+    const result = withAdminStore((store: any) => ({
+      ...store.listStandaloneCopyGenerations({
+        page: url.searchParams.get('page'),
+        pageSize: url.searchParams.get('pageSize'),
+      }),
+      jobs: store.listStandaloneCopyGenerationJobs({ limit: 20 }),
+    }));
+    return ok({
+      ...result,
+      data: result.data.map(toCopyGenerationResponse),
+    });
+  });
+}
+
 export function POST(request: Request) {
   return apiHandler(request, { mutation: true }, async () => {
     const input = await parseJson(request, copyGenerationSchema, { maxBytes: 32 * 1024 });
@@ -66,7 +95,12 @@ export function POST(request: Request) {
       );
     }
     copyGenerationInProgress = true;
+    let jobId: number | null = null;
     try {
+      const job = withAdminStore((store: any) => store.createStandaloneCopyGenerationJob({
+        query: input.query,
+      }));
+      jobId = job.id;
       const runtime = copyGenerationRuntime();
       const client = createCopyGenerationClient({ modelApi: runtime.modelApi });
       const generated = await generateCopy({
@@ -75,8 +109,22 @@ export function POST(request: Request) {
         systemPrompt: runtime.systemPrompt,
         imageCount: input.imageCount,
       });
-      return ok(toCopyGenerationResponse(generated), { status: 201 });
+      const saved = withAdminStore((store: any) => store.saveStandaloneCopyGeneration({
+        jobId,
+        query: input.query,
+        input: input.input,
+        requestedImageCount: input.imageCount,
+        ...generated,
+      }));
+      jobId = null;
+      return ok(toCopyGenerationResponse(saved), { status: 201 });
     } catch (error) {
+      if (jobId !== null) {
+        withAdminStore((store: any) => store.failStandaloneCopyGenerationJob(
+          jobId,
+          copyGenerationJobFailureMessage(error),
+        ));
+      }
       if (error instanceof CopyGenerationRejectedError) {
         throw new ApiError(
           422,
@@ -89,6 +137,12 @@ export function POST(request: Request) {
         throw new ApiError(502, 'RESEARCH_FAILED', error.message, {
           research: error.snapshot,
         });
+      }
+      if (error instanceof CopyGenerationUnchangedError) {
+        throw new ApiError(502, 'COPY_REVISION_UNCHANGED', error.message);
+      }
+      if (error instanceof CopyGenerationContractError) {
+        throw new ApiError(502, 'COPY_CONTRACT_FAILED', error.message);
       }
       throw error;
     } finally {

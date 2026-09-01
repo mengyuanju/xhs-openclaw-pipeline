@@ -22,9 +22,14 @@ describe('standalone copy generation workspace', () => {
   });
 
   it('submits the confirmed API contract and renders accessible operation states', async () => {
-    const workbench = await source('app/copy-generation/copy-generation-workbench.tsx');
+    const [workbench, historyState] = await Promise.all([
+      source('app/copy-generation/copy-generation-workbench.tsx'),
+      source('app/copy-generation/use-copy-generation-history.ts'),
+    ]);
 
     assert.match(workbench, /^'use client';/u);
+    assert.match(historyState, /useEffect/u);
+    assert.match(historyState, /\/api\/copy-generations\?page=1&pageSize=20/u);
     assert.match(workbench, /apiRequest<CopyGenerationResult>\('\/api\/copy-generations'/u);
     assert.match(workbench, /confirmation: 'LIVE_MODEL_COST_ACCEPTED'/u);
     assert.match(workbench, /htmlFor="copy-query"/u);
@@ -35,11 +40,54 @@ describe('standalone copy generation workspace', () => {
     assert.match(workbench, /htmlFor="copy-image-count"/u);
     assert.match(workbench, /role=\{messageIsError \? 'alert' : 'status'\}/u);
     assert.match(workbench, /aria-live="polite"/u);
-    assert.match(workbench, /navigator\.clipboard\.writeText/u);
-    assert.match(workbench, /result\.copy\.title/u);
-    assert.match(workbench, /result\.copy\.body/u);
-    assert.match(workbench, /result\.copy\.tags/u);
+    assert.match(workbench, /CopyGenerationComparison/u);
+    assert.match(workbench, /useCopyGenerationHistory/u);
+    assert.match(workbench, /jobs=\{jobs\}/u);
+    assert.match(workbench, /首稿审核通过后直接保存/u);
+    assert.match(workbench, /只有存在阻断问题才调用第二次文案生成/u);
+    assert.match(historyState, /hasRunningJobs/u);
+    assert.match(historyState, /setInterval/u);
+    assert.match(historyState, /response\.jobs/u);
     assert.doesNotMatch(workbench, /<select\b/u);
     assert.doesNotMatch(workbench, /runImage|image-generations/u);
+  });
+
+  it('renders persistent history and separate original/reviewed comparison controls', async () => {
+    const [comparison, history, historyState, styles] = await Promise.all([
+      source('app/copy-generation/copy-generation-comparison.tsx'),
+      source('app/copy-generation/copy-generation-history.tsx'),
+      source('app/copy-generation/use-copy-generation-history.ts'),
+      source('app/globals.css'),
+    ]);
+
+    assert.match(comparison, /原始版/u);
+    assert.match(comparison, /质检版/u);
+    assert.match(comparison, /复制原始版/u);
+    assert.match(comparison, /复制质检版/u);
+    assert.match(comparison, /navigator\.clipboard\.writeText/u);
+    assert.match(comparison, /result\.original\.copy/u);
+    assert.match(comparison, /result\.reviewed\.copy/u);
+    assert.match(comparison, /version\.review\.summary/u);
+    assert.match(comparison, /version\.review\.issues/u);
+    assert.match(comparison, /version\.thinking/u);
+    assert.match(comparison, /thinking：/u);
+    assert.match(comparison, /总耗时/u);
+    assert.match(comparison, /原始版生成/u);
+    assert.match(comparison, /质检版复检/u);
+    assert.match(comparison, /formatDuration/u);
+    assert.match(history, /平均耗时/u);
+    assert.match(history, /P50/u);
+    assert.match(history, /P95/u);
+    assert.match(history, /statistics\.sampleSize/u);
+    assert.match(history, /生成任务/u);
+    assert.match(history, /生成中/u);
+    assert.match(history, /生成失败/u);
+    assert.match(history, /aria-live="polite"/u);
+    assert.match(historyState, /setTimingStatistics/u);
+    assert.match(styles, /\.copy-generation-history/u);
+    assert.match(styles, /\.copy-comparison-grid/u);
+    assert.match(styles, /\.copy-timing-statistics/u);
+    assert.match(styles, /\.copy-timing-breakdown/u);
+    assert.match(styles, /\.copy-job-list/u);
   });
 });

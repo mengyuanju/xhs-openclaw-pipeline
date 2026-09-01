@@ -98,6 +98,19 @@ export function assertAuthenticatedRequest(request, environment = process.env) {
   if (!session) {
     throw new ApiError(401, 'AUTH_REQUIRED', 'Please sign in to continue');
   }
+  return session.subject === 'admin'
+    ? { ...session, roles: ['ADMIN'] }
+    : session;
+}
+
+export function assertAuthorizedSession(session, allowedRoles = ['ADMIN']) {
+  if (!session || !Array.isArray(session.roles)) {
+    throw new ApiError(401, 'AUTH_REQUIRED', 'Please sign in to continue');
+  }
+  if (!Array.isArray(allowedRoles) || allowedRoles.length < 1
+    || !session.roles.some((role) => allowedRoles.includes(role))) {
+    throw new ApiError(403, 'FORBIDDEN', '当前账号没有执行此操作的权限');
+  }
   return session;
 }
 

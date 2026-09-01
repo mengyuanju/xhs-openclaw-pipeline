@@ -239,8 +239,11 @@ describe('OpenClaw client', () => {
     }
 
     const modelFlag = invocation.args.indexOf('--model');
+    const thinkingFlag = invocation.args.indexOf('--thinking');
     assert.equal(invocation.args[modelFlag + 1], 'openai/gpt-5.6-sol');
+    assert.equal(invocation.args[thinkingFlag + 1], 'high');
     assert.equal(result.model, 'openai/gpt-5.6-sol');
+    assert.equal(result.thinking, 'high');
   });
 
   it('passes the prompt as one argument without enabling a shell', async () => {
@@ -265,7 +268,11 @@ describe('OpenClaw client', () => {
     assert.equal(invocation.command, process.execPath);
     assert.equal(invocation.options.shell, false);
     assert.equal(invocation.args.at(-1), 'query with & | > shell characters');
-    assert.deepEqual(result, { rawText: '{"ok":true}', model: 'openai/gpt-5.6-sol' });
+    assert.deepEqual(result, {
+      rawText: '{"ok":true}',
+      model: 'openai/gpt-5.6-sol',
+      thinking: 'high',
+    });
   });
 
   it('redacts credential-looking text from OpenClaw failures', async () => {
@@ -783,6 +790,35 @@ describe('OpenClaw client', () => {
       if (previousProxyUrl === undefined) delete process.env.XHS_MODEL_PROXY_URL;
       else process.env.XHS_MODEL_PROXY_URL = previousProxyUrl;
     }
+  });
+
+  it('retries transient Codex web-search transport failures before falling back', async () => {
+    let calls = 0;
+    const delays = [];
+    const client = createOpenClawClient({
+      entryPath: 'C:/openclaw/dist/index.js',
+      runner: () => {
+        calls += 1;
+        if (calls === 1) {
+          return { status: 1, stdout: '', stderr: 'Error: Reconnecting... 2/5' };
+        }
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            provider: 'codex',
+            outputs: [{ result: { results: [{ url: 'https://example.com/source' }] } }],
+          }),
+          stderr: '',
+        };
+      },
+      asyncSleep: async (milliseconds) => { delays.push(milliseconds); },
+    });
+
+    const result = await client.runWebSearch({ query: '需要核验的主题', provider: 'codex' });
+
+    assert.equal(calls, 2);
+    assert.deepEqual(delays, [5_000]);
+    assert.equal(result.provider, 'codex');
   });
 
   it('validates web search input before starting OpenClaw', async () => {

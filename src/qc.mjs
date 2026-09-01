@@ -12,8 +12,8 @@ import {
 const FORBIDDEN_TITLE_HOOKS = /(不看后悔|错过再等|完爆|吊打|跪着看完|一篇看懂|一文看懂|一次讲清|原因竟是|万万没想到)/u;
 const EMOJI = /\p{Extended_Pictographic}|\u20E3/u;
 
-function dimension(score, evidence, source = 'mechanical') {
-  return { score, evidence: [evidence], source, applicable: true };
+function dimension(score, evidence, source = 'mechanical', applicable = true) {
+  return { score, evidence: [evidence], source, applicable };
 }
 
 function checkPassed(checks, id) {
@@ -28,6 +28,23 @@ function mergeRubricAssessment(mechanical, external) {
     const baseline = dimensions[name];
     if (!baseline) {
       dimensions[name] = normalizedExternal;
+      continue;
+    }
+    if (!baseline.applicable) {
+      dimensions[name] = {
+        score: null,
+        evidence: [...baseline.evidence, ...normalizedExternal.evidence],
+        source: 'hybrid',
+        applicable: false,
+      };
+      continue;
+    }
+    if (!normalizedExternal.applicable) {
+      dimensions[name] = {
+        ...baseline,
+        evidence: [...baseline.evidence, ...normalizedExternal.evidence],
+        source: 'hybrid',
+      };
       continue;
     }
     if (baseline.score <= 1) {
@@ -94,10 +111,12 @@ function buildMechanicalRubricAssessment({ post, images, checks, issues, mode })
         '机械检查只能确认结构和主题字段存在，不能完成 Query 语义终审，保守记 2。',
       ),
       contentOriginality: dimension(
-        duplicateImagesPassed ? 2 : 1,
+        duplicateImagesPassed ? null : 1,
         duplicateImagesPassed
-          ? '交付图片文件哈希均不同；未提供站内正文和图集候选，最高记 2。'
+          ? '交付图片文件哈希均不同；未提供站内正文和图集候选，保留未核验标识，但不参与最终评分。'
           : '交付图片存在字节级重复，内容重复性记 1。',
+        'mechanical',
+        !duplicateImagesPassed,
       ),
       imageBaseQuality: dimension(
         imageBasePassed ? 2 : 1,
@@ -311,7 +330,7 @@ export async function evaluateDelivery({
     issues,
     rubric,
     limitations: [
-      '机械质检不能判断 AI 结构异常、构图美观、版权来源或站内重复，发布前仍需人工看图。',
+      '机械质检不能判断 AI 结构异常、构图美观、版权来源或站内重复；未提供站内候选时保留原创度未核验标识，但不参与最终评分。',
       '没有平台样本证据时，平台表达适配最高只能按 2 分处理。',
     ],
   };

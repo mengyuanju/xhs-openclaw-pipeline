@@ -1,5 +1,91 @@
 # Admin Console v0.2 Tasks
 
+## Phase 20: 单条文案双版本保存与对比
+
+- [x] Task 73: 双版本生成契约与质检修订。
+  - Acceptance: 原始版、首次质检、质检修订版和最终复检顺序可验证；返回双版且旧字段仍可用。
+  - Verify: `node --test tests/copy-generation.test.mjs`
+  - Files: `src/copy-generation.mjs`, `tests/copy-generation.test.mjs`
+
+- [x] Task 74: 双版本 SQLite 持久化与 API 历史。
+  - Acceptance: POST 原子保存两版、模型、审核和研究证据；GET 按新到旧有界分页。
+  - Verify: `node --test tests/standalone-copy-generation-store.test.mjs tests/copy-generation.test.mjs`
+  - Files: `src/admin/standalone-copy-generation-store.mjs`, `src/admin/admin-store.mjs`, `app/api/copy-generations/route.ts`, `tests/`
+
+- [x] Task 75: 历史选择与双栏对比界面。
+  - Acceptance: 刷新后可选择历史；原始版/质检版并排展示并可分别复制；窄屏单列且空/错/忙状态可读。
+  - Verify: `node --test tests/copy-generation-ui.test.mjs && npm run typecheck && npm run build`，浏览器检查桌面和 390px。
+  - Files: `app/copy-generation/**`, `app/globals.css`, `tests/copy-generation-ui.test.mjs`
+
+- [x] Task 76: 文档、全量验证与代码审查。
+  - Acceptance: README/API 说明两次调用与持久化；无真实模型调用、无其他工作区改动被覆盖。
+  - Verify: `npm test && npm run typecheck && npm run build`
+  - Files: `README.md`, `docs/standalone-copy-comparison-spec.md`, `tasks/`
+
+- [x] Task 77: 生成链路阶段计时与持久化迁移。
+  - Acceptance: 成功记录包含总耗时和六阶段耗时；升级前记录保持可读且不伪造数据。
+  - Verify: `node --test tests/copy-generation.test.mjs tests/standalone-copy-generation-store.test.mjs`
+  - Files: `src/copy-generation.mjs`, `src/admin/standalone-copy-generation-store.mjs`, `tests/`
+
+- [x] Task 78: 历史耗时聚合与界面展示。
+  - Acceptance: API 返回样本数、平均、P50、P95；历史区和单条对比页分别展示汇总与阶段明细。
+  - Verify: `node --test tests/copy-generation-ui.test.mjs && npm run typecheck`
+  - Files: `app/copy-generation/**`, `app/globals.css`, `tests/copy-generation-ui.test.mjs`
+
+- [x] Task 79: 耗时统计完整验证。
+  - Acceptance: 全量测试、构建和桌面/窄屏浏览器验证通过，无真实模型调用。
+  - Verify: `npm test && npm run typecheck && npm run build`
+  - Files: `README.md`, `docs/standalone-copy-comparison-spec.md`, `tasks/`
+
+## Phase 19: 任务级内容质检负责人
+
+- [x] Task 69: 任务级分配、阶段结论与兼容迁移。
+  - Acceptance: 每个任务唯一负责人；按条数精确分配；文案/图片结论绑定快照；旧 COPY 负责人和结论可迁移。
+  - Verify: `node --test tests/review-work-store.test.mjs`
+  - Files: `src/admin/review-task-store.mjs`, `src/admin/review-work-store.mjs`, `src/admin/admin-store.mjs`, `tests/review-work-store.test.mjs`
+
+- [x] Task 70: 任务分配与阶段审核 API。
+  - Acceptance: 严格输入、角色授权、版本冲突、跨任务图片读取禁止。
+  - Verify: `node --test tests/review-center-ui.test.mjs tests/reviewer-auth.test.mjs && npm run typecheck`
+  - Files: `app/api/review-task-assignments/**`, `app/api/_lib.ts`, `src/admin/proxy-policy.mjs`, `tests/`
+
+- [x] Task 71: 按条数派单与统一审核详情。
+  - Acceptance: 管理员按批次/人员/条数分配；内容质检员在同一任务页查看文案和图片并提交两个阶段结论。
+  - Verify: `node --test tests/review-center-ui.test.mjs && npm run build`，浏览器检查桌面和 390px。
+  - Files: `app/reviews/**`, `app/globals.css`, `tests/review-center-ui.test.mjs`
+
+- [x] Task 72: 完整验证与迁移说明。
+  - Acceptance: Query 工单、旧管理员、Worker、任务审核与导出无回归；无高危依赖或秘密。
+  - Verify: `npm test && npm run typecheck && npm run build && npm run smoke && npm audit --audit-level=high`
+  - Files: `README.md`, `docs/review-work-management-spec.md`, `docs/decisions/001-task-level-review-ownership.md`, `tasks/`
+
+## Phase 18: Query 与文案质检作业中心
+
+- [x] Task 64: 质检人员与兼容会话。
+  - Acceptance: 管理员 Token 保持兼容；质检人员密码使用 scrypt；Token 只保存最小身份与角色；停用人员无法调用质检领域接口。
+  - Verify: `node --test tests/auth.test.mjs tests/auth-routes.test.mjs tests/reviewer-auth.test.mjs`
+  - Files: `src/admin/auth.mjs`, `src/admin/http.mjs`, `src/admin/review-work-store.mjs`, `tests/reviewer-auth.test.mjs`
+
+- [x] Task 65: 作业单领域与事务。
+  - Acceptance: Query/文案作业幂等生成；分配、领取、提交结论均授权且防并发覆盖；事件完整。
+  - Verify: `node --test tests/review-work-store.test.mjs`
+  - Files: `src/admin/review-work-store.mjs`, `src/admin/admin-store.mjs`, `tests/review-work-store.test.mjs`
+
+- [x] Task 66: 人员与作业 REST 接口。
+  - Acceptance: 严格输入、统一错误、分页和角色授权；响应不含密码哈希。
+  - Verify: `node --test tests/reviewer-auth.test.mjs tests/review-center-ui.test.mjs && npm run typecheck`
+  - Files: `app/api/review-users/**`, `app/api/review-work-items/**`, `app/api/_lib.ts`, `tests/`
+
+- [x] Task 67: 质检中心页面。
+  - Acceptance: 管理员可创建人员、生成/派单；质检员可查看、领取、审核并自动回到待办；有空/错/忙状态且键盘可达。
+  - Verify: `node --test tests/review-center-ui.test.mjs && npm run build`，浏览器检查 `/reviews` 与 `/reviews/:id`。
+  - Files: `app/reviews/**`, `app/components/**`, `app/login/**`, `app/globals.css`, `tests/review-center-ui.test.mjs`
+
+- [x] Task 68: 兼容、文档与完整验证。
+  - Acceptance: 旧管理员/任务审核/Worker 保持工作；README 说明账号和派单；无高危依赖或秘密泄漏。
+  - Verify: `npm test && npm run typecheck && npm run build && npm run smoke && npm audit --audit-level=high`
+  - Files: `README.md`, `docs/review-work-management-spec.md`, `tasks/plan.md`, `tasks/todo.md`
+
 ## Phase 17: Query and Text Stage Reviews
 
 - [x] Task 60: 审核契约与独立模型调用。

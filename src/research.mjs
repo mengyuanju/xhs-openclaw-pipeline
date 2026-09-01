@@ -3,6 +3,7 @@ import { isIP } from 'node:net';
 const RESEARCH_SCHEMA_VERSION = 1;
 const DEFAULT_PROVIDERS = ['codex', 'duckduckgo'];
 const MAX_SOURCES = 5;
+const MAX_ATTEMPTS = 5;
 
 function cleanExternalText(value, maxLength) {
   if (typeof value !== 'string') return '';
@@ -43,6 +44,19 @@ function normalizedPublicUrl(value) {
     || hostname.endsWith('.internal') || hostname.endsWith('.home.arpa')) return null;
   parsed.hash = '';
   return parsed.href;
+}
+
+function sourceAuthorityScore(source) {
+  let hostname = '';
+  try {
+    hostname = new URL(source?.url).hostname.toLowerCase();
+  } catch {
+    return 0;
+  }
+  if (/(?:^|\.)gov(?:\.|$)/u.test(hostname)) return 3;
+  if (/(?:^|\.)edu(?:\.|$)/u.test(hostname)) return 2;
+  if (/^(?:www\.)?(?:who\.int|fao\.org|iso\.org)$/u.test(hostname)) return 2;
+  return 0;
 }
 
 function urlsFromText(value) {
@@ -97,7 +111,13 @@ function normalizeSources(result, provider, retrievedAt) {
     });
     if (sources.length === MAX_SOURCES) break;
   }
+  sources.sort((left, right) => sourceAuthorityScore(right) - sourceAuthorityScore(left));
   return { summary: summary || null, sources };
+}
+
+function hasGroundedSummary(evidence) {
+  return Boolean(evidence?.summary
+    && evidence.sources.some((source) => typeof source.snippet === 'string' && source.snippet));
 }
 
 function normalizedTimestamp(value, field) {
@@ -200,34 +220,70 @@ export async function createResearchSnapshot({
   }
   const searchedAt = normalizedTimestamp(now(), 'research searchedAt');
   const attempts = [];
-  for (const rawProvider of providers) {
-    const provider = normalizedProvider(rawProvider);
-    try {
-      const response = await client.runWebSearch({ query: normalizedQuery, provider, limit });
-      const actualProvider = normalizedProvider(response?.provider ?? provider);
-      const evidence = normalizeSources(response?.result, actualProvider, searchedAt);
-      if (evidence.sources.length === 0) {
-        attempts.push({
-          provider,
-          status: 'FAILED',
-          error: 'web search returned no public sources',
-        });
-        continue;
+  const authorityQuery = `${normalizedQuery} 官方 标准 技术规范`.slice(0, 500);
+  const queryVariants = [...new Set([normalizedQuery, authorityQuery])];
+  let bestFallback = null;
+  searchLoop:
+  for (const searchQuery of queryVariants) {
+    for (const rawProvider of providers) {
+      if (attempts.length >= MAX_ATTEMPTS) break searchLoop;
+      const provider = normalizedProvider(rawProvider);
+      try {
+        const response = await client.runWebSearch({ query: searchQuery, provider, limit });
+        const actualProvider = normalizedProvider(response?.provider ?? provider);
+        const evidence = normalizeSources(response?.result, actualProvider, searchedAt);
+        if (evidence.sources.length === 0) {
+          attempts.push({
+            provider,
+            status: 'FAILED',
+            error: 'web search returned no public sources',
+          });
+          continue;
+        }
+        const authorityScore = Math.max(...evidence.sources.map(sourceAuthorityScore));
+        const groundedSummary = hasGroundedSummary(evidence);
+        if (authorityScore === 0 && !groundedSummary) {
+          attempts.push({
+            provider,
+            status: 'FAILED',
+            error: 'web search returned no authoritative or grounded evidence',
+          });
+          continue;
+        }
+        attempts.push({ provider, status: 'COMPLETED', error: null });
+        if (authorityScore > 0 || (actualProvider === 'codex' && groundedSummary)) {
+          return normalizeResearchSnapshot({
+            schemaVersion: RESEARCH_SCHEMA_VERSION,
+            status: 'COMPLETED',
+            query: normalizedQuery,
+            searchedAt,
+            provider: actualProvider,
+            summary: evidence.summary,
+            attempts,
+            sources: evidence.sources,
+          });
+        }
+        const candidate = { actualProvider, evidence, authorityScore };
+        if (!bestFallback
+          || evidence.sources.length > bestFallback.evidence.sources.length) {
+          bestFallback = candidate;
+        }
+      } catch (error) {
+        attempts.push({ provider, status: 'FAILED', error: redactedError(error) });
       }
-      attempts.push({ provider, status: 'COMPLETED', error: null });
-      return normalizeResearchSnapshot({
-        schemaVersion: RESEARCH_SCHEMA_VERSION,
-        status: 'COMPLETED',
-        query: normalizedQuery,
-        searchedAt,
-        provider: actualProvider,
-        summary: evidence.summary,
-        attempts,
-        sources: evidence.sources,
-      });
-    } catch (error) {
-      attempts.push({ provider, status: 'FAILED', error: redactedError(error) });
     }
+  }
+  if (bestFallback) {
+    return normalizeResearchSnapshot({
+      schemaVersion: RESEARCH_SCHEMA_VERSION,
+      status: 'COMPLETED',
+      query: normalizedQuery,
+      searchedAt,
+      provider: bestFallback.actualProvider,
+      summary: bestFallback.evidence.summary,
+      attempts,
+      sources: bestFallback.evidence.sources,
+    });
   }
   return normalizeResearchSnapshot({
     schemaVersion: RESEARCH_SCHEMA_VERSION,

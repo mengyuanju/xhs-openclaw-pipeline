@@ -31,6 +31,13 @@ function visibleLength(value) {
   return [...GRAPHEME_SEGMENTER.segment(value)].length;
 }
 
+function normalizedTopicKey(value) {
+  return String(value ?? '')
+    .normalize('NFKC')
+    .toLocaleLowerCase('zh-CN')
+    .replace(/[\p{P}\p{S}\s]/gu, '');
+}
+
 function semanticIconCount(value) {
   return [...GRAPHEME_SEGMENTER.segment(value)]
     .filter(({ segment }) => /\p{Extended_Pictographic}|\u20E3/u.test(segment))
@@ -218,11 +225,24 @@ function validatePost(value, { imageCount = 3, allowedSources = [], query = '' }
   const platform = expectRecord(root.platform, 'platform');
   const title = expectString(root.title, 'title', { max: 25 });
   const body = expectString(root.body, 'body', { min: 200, max: 700 });
+  const hasQuery = typeof query === 'string' && query.trim() !== '';
+  const bodyLength = visibleLength(body);
+  if (hasQuery && (bodyLength < 400 || bodyLength > 600)) {
+    throw new RangeError(`body must contain between 400 and 600 characters; received ${bodyLength}`);
+  }
   validateExplicitItineraryCoverage(body, query);
 
   if (/[!！~～]/u.test(title)) throw new TypeError('title cannot contain exclamation marks or decorative tildes');
+  if (/[?？]/u.test(title)) throw new TypeError('title cannot use a question form');
+  if (hasQuery && normalizedTopicKey(title) === normalizedTopicKey(query)) {
+    throw new TypeError('title cannot merely repeat the Query');
+  }
   if (FABRICATED_EXPERIENCE.test(body) || root.fabricatedExperience !== false) {
     throw new TypeError('fabricated experience is not allowed');
+  }
+  const firstParagraph = body.split(/\n\s*\n/u, 1)[0];
+  if (hasQuery && !/我/u.test(firstParagraph)) {
+    throw new TypeError('body first paragraph must use a safe first-person perspective');
   }
   const titleEmojiCount = semanticIconCount(title);
   const bodyEmojiCount = semanticIconCount(body);
@@ -302,8 +322,10 @@ export function buildPostPrompt({ query, input = {} }, { systemPrompt, imageCoun
   if (!systemPrompt) return renderedBasePrompt;
   const editorialInstruction = renderPrompt(systemPrompt, {
     query: escapedPromptVariable(query),
-    category: escapedPromptVariable(input.category),
-    targetAudience: escapedPromptVariable(input.targetAudience),
+    category: escapedPromptVariable(input.category || '根据 Query 判断'),
+    targetAudience: escapedPromptVariable(
+      input.targetAudience || '搜索该 Query、希望获得直接答案的小红书用户',
+    ),
     imageCount: automatic ? '3–5（根据内容自动选择）' : imageCount,
     imageIndex: 1,
     reviewInstruction: '',

@@ -3,6 +3,7 @@ import { z, type ZodType } from 'zod';
 import {
   ApiError,
   assertAuthenticatedRequest,
+  assertAuthorizedSession,
   assertRequestSize,
   assertLocalRequest,
   errorToApiResponse,
@@ -10,13 +11,14 @@ import {
 
 export async function apiHandler(
   request: Request,
-  options: { mutation?: boolean; auth?: boolean },
-  action: () => Promise<Response> | Response,
+  options: { mutation?: boolean; auth?: boolean; roles?: string[] },
+  action: (session: any) => Promise<Response> | Response,
 ) {
   try {
     assertLocalRequest(request, { mutation: options.mutation });
-    if (options.auth !== false) assertAuthenticatedRequest(request);
-    return await action();
+    const session = options.auth === false ? null : assertAuthenticatedRequest(request);
+    if (session) assertAuthorizedSession(session, options.roles || ['ADMIN']);
+    return await action(session);
   } catch (error) {
     return errorToApiResponse(error);
   }
@@ -25,7 +27,10 @@ export async function apiHandler(
 export async function parseJson<T>(
   request: Request,
   schema: ZodType<T>,
-  { maxBytes = 64 * 1024 }: { maxBytes?: number } = {},
+  {
+    maxBytes = 64 * 1024,
+    validationCode = 'INVALID_INPUT',
+  }: { maxBytes?: number; validationCode?: string } = {},
 ): Promise<T> {
   assertRequestSize(request, maxBytes);
   const contentType = request.headers.get('content-type') || '';
@@ -47,7 +52,7 @@ export async function parseJson<T>(
     return schema.parse(body);
   } catch (error) {
     if (error instanceof z.ZodError) {
-      throw new ApiError(400, 'INVALID_INPUT', '请求参数无效', error.issues.map((issue) => ({
+      throw new ApiError(400, validationCode, '请求参数无效', error.issues.map((issue) => ({
         path: issue.path.join('.'),
         message: issue.message,
       })));

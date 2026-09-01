@@ -5,12 +5,15 @@ import {
   FilePenLine,
   FileUp,
   LayoutDashboard,
+  ImagePlus,
   LibraryBig,
   ListChecks,
+  ClipboardCheck,
   LogOut,
   Menu,
   MessageSquareText,
   Settings2,
+  Users,
   X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -27,6 +30,7 @@ const navigationGroups: Array<{ label: string; items: NavigationItem[] }> = [
     items: [
       { href: '/imports', label: '选题导入', icon: FileUp },
       { href: '/copy-generation', label: '单独生成文案', icon: FilePenLine },
+      { href: '/image-generation', label: '单独生成图片', icon: ImagePlus },
       { href: '/tasks', label: '任务中心', icon: ListChecks },
     ],
   },
@@ -46,12 +50,24 @@ const navigationGroups: Array<{ label: string; items: NavigationItem[] }> = [
   },
 ];
 
-export function SideNav() {
+const reviewNavigation: Array<{ label: string; items: NavigationItem[] }> = [{
+  label: '质检作业',
+  items: [
+    { href: '/reviews', label: '质检中心', icon: ClipboardCheck },
+    { href: '/reviews/people', label: '质检人员', icon: Users },
+  ],
+}];
+
+export function SideNav({ session }: { session: { subject: string; username?: string; roles?: string[] } | null }) {
   const pathname = usePathname();
   const router = useRouter();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState('');
+  const isAdmin = session?.roles?.includes('ADMIN') === true;
+  const visibleGroups = isAdmin
+    ? [...navigationGroups.slice(0, 2), ...reviewNavigation, ...navigationGroups.slice(2)]
+    : reviewNavigation.map((group) => ({ ...group, items: group.items.filter((item) => item.href === '/reviews') }));
 
   useEffect(() => setIsMenuOpen(false), [pathname]);
 
@@ -88,7 +104,7 @@ export function SideNav() {
         </button>
       </div>
       <nav className="nav-list" id="primary-navigation" data-open={isMenuOpen} aria-label="主导航">
-        {navigationGroups.map((group) => (
+        {visibleGroups.map((group) => (
           <div className="nav-group" key={group.label}>
             <span className="nav-group-label">{group.label}</span>
             <div className="nav-group-items">
@@ -114,7 +130,7 @@ export function SideNav() {
       <div className="sidebar-foot">
         <div className="sidebar-auth-summary">
           <span className="sidebar-auth-label"><span className="status-dot" /> 局域网认证已启用</span>
-          <small>单管理员 · 不包含自动发布</small>
+          <small>{isAdmin ? '系统管理员' : `质检账号 · ${session?.username || '未识别'}`}</small>
         </div>
         <button className="sidebar-signout" type="button" onClick={signOut} disabled={isSigningOut}>
           <LogOut aria-hidden="true" size={14} />

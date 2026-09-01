@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 
 import { AppFrame } from './components/app-frame';
+import { readServerSession } from './server-session';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -8,11 +9,12 @@ export const metadata: Metadata = {
   description: '小红书内容批量生成与审核后台',
 };
 
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  const session = await readServerSession();
   return (
     <html lang="zh-CN">
       <body>
-        <AppFrame>{children}</AppFrame>
+        <AppFrame session={session}>{children}</AppFrame>
       </body>
     </html>
   );

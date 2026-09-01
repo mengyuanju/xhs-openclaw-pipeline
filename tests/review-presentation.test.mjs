@@ -5,6 +5,7 @@ import {
   buildImageBatches,
   imageNeedsCrop,
   qualityDimensionRows,
+  qualityIssueRows,
   qualityReasons,
 } from '../app/tasks/[id]/review-presentation.mjs';
 
@@ -78,6 +79,48 @@ test('score evidence is translated into plain-language reasons and dimension row
       label: '图片文字质量',
       score: 2,
       evidence: ['图中文字逐字一致，但完整语义质量仍需人工终审。'],
+    },
+  ]);
+});
+
+test('issue labels retain their severity category and expose detailed blocking reasons', () => {
+  const rows = qualityIssueRows({
+    qcDetail: {
+      rubric: {
+        issueLabels: [
+          { severity: 'minor', label: '文字裁切', evidence: '第 3 页主标题最后两个字被裁掉。' },
+          { severity: 'major', label: 'major', evidence: '第 2 页参数表没有显示核心价格数据。' },
+          { severity: 'redline', label: '隐私泄露', evidence: '第 1 页露出了未打码的身份证号码。' },
+          { severity: 'toString', label: '非法分类', evidence: '这条历史脏数据不应进入前端。' },
+        ],
+      },
+    },
+  });
+
+  assert.deepEqual(rows, [
+    {
+      severity: 'minor',
+      severityLabel: '轻微问题',
+      scoreCap: 2,
+      capReason: '仍有轻微缺陷，不属于无明显问题的优质候选。',
+      label: '文字裁切',
+      evidence: '第 3 页主标题最后两个字被裁掉。',
+    },
+    {
+      severity: 'major',
+      severityLabel: '主要问题',
+      scoreCap: 1,
+      capReason: '存在影响可用性的主要问题，需要返修。',
+      label: 'major',
+      evidence: '第 2 页参数表没有显示核心价格数据。',
+    },
+    {
+      severity: 'redline',
+      severityLabel: '红线问题',
+      scoreCap: 0,
+      capReason: '涉及安全、隐私、严重误导等禁止交付问题。',
+      label: '隐私泄露',
+      evidence: '第 1 页露出了未打码的身份证号码。',
     },
   ]);
 });

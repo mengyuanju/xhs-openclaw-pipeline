@@ -14,6 +14,7 @@ const LAYERS = {
 
 const DIMENSION_NAMES = Object.values(LAYERS).flat();
 const DIMENSION_NAME_SET = new Set(DIMENSION_NAMES);
+const OPTIONAL_DIMENSION_NAMES = new Set(['contentOriginality', 'platformAdaptation']);
 const EVIDENCE_SOURCES = new Set(['mechanical', 'vlm', 'human', 'hybrid']);
 const ISSUE_SEVERITIES = new Set(['minor', 'major', 'redline']);
 const PLATFORM_EVIDENCE_LEVELS = new Set([
@@ -50,7 +51,7 @@ function normalizeDimension(name, value) {
   if (!EVIDENCE_SOURCES.has(source)) throw new TypeError(`${name}.source is invalid`);
   const evidence = normalizeEvidence(value.evidence, `${name}.evidence`);
   if (!applicable) {
-    if (name !== 'platformAdaptation') {
+    if (!OPTIONAL_DIMENSION_NAMES.has(name)) {
       throw new TypeError(`${name} cannot be not applicable`);
     }
     if (value.score !== null && value.score !== undefined) {

@@ -418,7 +418,7 @@ describe('content pipeline', () => {
   it('retries malformed live post output before starting visual planning', async () => {
     const { directory, queue } = await setup();
     const task = queue.enqueue({ query: '正文第一次格式错误的任务' });
-    const sourceUrl = 'https://example.com/research-source';
+    const sourceUrl = 'https://www.gov.cn/zhengce/research-source';
     const post = { ...createMockPost(), sources: [sourceUrl] };
     const rawImages = await Promise.all(['#d7c7b0', '#c7d7b0', '#b0c7d7'].map((background) => sharp({
       create: { width: 1024, height: 1536, channels: 3, background },
@@ -478,9 +478,10 @@ describe('content pipeline', () => {
     assert.equal(result.status, 'completed', result.error);
     assert.equal(researchCalls, 1);
     assert.equal(textPrompts.length, 3);
-    assert.match(textPrompts[1], /上一次正文输出未通过结构校验/u);
+    assert.match(textPrompts[1], /结构化文案定点修复器/u);
+    assert.match(textPrompts[1], /模型输出不是合法 JSON/u);
     assert.match(textPrompts[0], /webResearch/u);
-    assert.match(textPrompts[0], /https:\/\/example\.com\/research-source/u);
+    assert.match(textPrompts[0], /https:\/\/www\.gov\.cn\/zhengce\/research-source/u);
     const research = JSON.parse(await readFile(join(result.outputDir, 'research.json'), 'utf8'));
     assert.equal(research.status, 'COMPLETED');
     assert.equal(research.sources[0].url, sourceUrl);
@@ -521,7 +522,7 @@ describe('content pipeline', () => {
     });
 
     assert.equal(result.status, 'failed');
-    assert.equal(searchCalls, 2);
+    assert.equal(searchCalls, 4);
     assert.equal(textCalls, 0);
     assert.match(result.error, /联网研究失败/u);
     const research = JSON.parse(await readFile(
@@ -721,7 +722,7 @@ describe('content pipeline', () => {
           result: {
             results: [{
               title: '恢复测试来源',
-              url: 'https://example.com/resume-source',
+              url: 'https://example.gov.cn/resume-source',
               snippet: query,
             }],
           },
