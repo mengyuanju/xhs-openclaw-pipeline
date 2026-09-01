@@ -195,6 +195,28 @@ Live `worker` / `drain` 会在领取任何任务前执行一次 OpenClaw 无推�
 
 每个任务在 `output/<task-id>/checkpoint.json` 保存配置指纹、已通过契约的正文、视觉计划和逐页图片检查点。失败重试仅在 Query、输入、固定提示词、生产配置、人工文案修订和参考图配置均未变化时复用；图片还必须同时满足当前视觉计划哈希、`alignment=PASS` 和文件 SHA-256 一致。检查点损坏、文件被修改、生产配置变化或人工文案变化时会安全失效并重新生成，不会把旧图片混入当前交付。
 
+### 单独生成文案 API
+
+`POST /api/copy-generations` 可脱离完整 Worker 单独生成文案。它复用正式生产的 Query 审核、联网研究、正文结构校验与修复重试、文本审核，并使用后台当前已发布的 `TEXT_SYSTEM` 提示词；不会启动视觉规划、图片生成或图片验收，也不会自动写入任务和文案修订表。
+
+请求必须来自已登录管理员的同源会话，并显式确认真实模型费用：
+
+```json
+{
+  "query": "租房桌面怎么低成本整理？",
+  "input": {
+    "category": "收纳",
+    "targetAudience": "小户型租房人群",
+    "referenceText": "可选的参考资料，最多 12000 字",
+    "referenceUrls": ["https://example.com/reference"]
+  },
+  "imageCount": "auto",
+  "confirmation": "LIVE_MODEL_COST_ACCEPTED"
+}
+```
+
+`imageCount` 可传 `3`、`4`、`5` 或 `"auto"`，只控制随文案返回的 `imagePlan` 项数，不会调用图片模型。成功返回 HTTP `201`，`data.copy` 包含 `title`、`body`、`tags`，`data.generation` 包含模型、研究快照和两阶段审核结果。Query 或文本审核拒绝时返回 HTTP `422`；联网研究失败时返回 HTTP `502`；同一服务进程已有文案请求执行时返回 HTTP `409`。调用方如需进入后续生图，应先通过任务文案修订接口显式保存确认后的文案。
+
 ## 存储优化与保留策略
 
 同一磁盘上的新生成图片会在 `output/` 与 `data/assets/` 之间使用硬链接，共享一份物理数据；文件系统不支持硬链接时自动回退为独占复制。每次内容生成结束后，Worker 会自动保留当前交付图片、全部人工编辑图片及其父素材、最新尝试的完整文件，以及所有历史尝试的 JSON/Markdown 记录；其他历史尝试图片和未被当前交付或编辑链引用的生成素材会被清理。素材数据库删除会写入 `STORAGE_RETENTION_CLEANUP` 审计记录，清理失败不会把已生成任务改判为失败。
