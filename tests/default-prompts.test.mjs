@@ -32,15 +32,21 @@ describe('runtime default prompts', () => {
     assert.doesNotMatch(prompt.content, /3[–-]6个.*图标/);
   });
 
-  it('requires type-aware natural copy instead of a default numbered-step template', () => {
+  it('requires query-first titles and a strict beginning-middle-end body structure', () => {
     const prompt = DEFAULT_PROMPTS.find(({ kind }) => kind === 'TEXT_SYSTEM');
 
-    assert.match(prompt.content, /按内容类型选择结构/u);
-    assert.match(prompt.content, /教程或操作流程/u);
-    assert.match(prompt.content, /推荐、盘点、对比测评/u);
-    assert.match(prompt.content, /科普、知识、答疑/u);
-    assert.match(prompt.content, /不得默认写成“第一步、第二步、第三步”/u);
-    assert.match(prompt.content, /不得编造第一人称/u);
+    assert.match(prompt.content, /生成前.*判断 Query.*关键词.*核心需求/u);
+    assert.match(prompt.content, /“主需关键词 \+ 回答核心信息 \+ 看点”/u);
+    assert.match(prompt.content, /标题不得使用疑问句/u);
+    assert.match(prompt.content, /标题总长不超过 25 个可见字符/u);
+    assert.match(prompt.content, /正文严格控制在 400～600 字/u);
+    assert.match(prompt.content, /严格使用“总—分—总”结构/u);
+    assert.match(prompt.content, /第一段必须采用第一人称视角/u);
+    assert.match(prompt.content, /第一人称场景不得虚构/u);
+    assert.match(prompt.content, /最后一段必须再次明确核心结论/u);
+    assert.match(prompt.content, /后期配图/u);
+    assert.match(prompt.content, /涉及时效性信息.*时效说明/u);
+    assert.match(prompt.content, /全文使用中文全角标点/u);
     assert.match(prompt.content, /联网研究由 Worker 在文本生成前完成/u);
     assert.match(prompt.content, /webResearch.*不可信/u);
     assert.match(prompt.content, /不得声称打开或抓取了快照未包含的网页/u);
