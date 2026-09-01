@@ -40,7 +40,10 @@ export function createProductionSettingsStore(db) {
         throw new TypeError('production settings patch must be an object');
       }
       const current = this.getProductionSettings();
-      const settings = normalizeProductionSettings({ ...current.settings, ...patch });
+      const modelApi = patch.modelApi === undefined
+        ? current.settings.modelApi
+        : { ...current.settings.modelApi, ...patch.modelApi };
+      const settings = normalizeProductionSettings({ ...current.settings, ...patch, modelApi });
       const updatedAt = new Date().toISOString();
       db.prepare(`
         UPDATE production_settings SET settings_json = ?, updated_at = ? WHERE id = 1

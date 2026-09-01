@@ -1,3 +1,8 @@
+import {
+  DEFAULT_MODEL_API_SETTINGS,
+  normalizeModelApiSettings,
+} from './model-api-config.mjs';
+
 export const DEFAULT_PRODUCTION_SETTINGS = Object.freeze({
   qualityRepairEnabled: true,
   qualityRepairTriggerScore: 1,
@@ -5,6 +10,7 @@ export const DEFAULT_PRODUCTION_SETTINGS = Object.freeze({
   qualityRepairMaxAttempts: 2,
   aiDisclosureEnabled: true,
   aiDisclosureText: 'AI生成',
+  modelApi: DEFAULT_MODEL_API_SETTINGS,
 });
 
 function booleanSetting(value, fallback, name) {
@@ -76,6 +82,7 @@ export function normalizeProductionSettings(input = {}) {
       'aiDisclosureText',
       12,
     ),
+    modelApi: normalizeModelApiSettings(input.modelApi ?? DEFAULT_MODEL_API_SETTINGS),
   };
   if (settings.qualityRepairTargetScore <= settings.qualityRepairTriggerScore) {
     throw new RangeError('quality repair target score must be greater than trigger score');
