@@ -246,15 +246,12 @@ describe('post output contract', () => {
     );
   });
 
-  it('requires a safe first-person opening without permitting invented experience', () => {
+  it('accepts an objective opening while still rejecting invented first-person experience', () => {
     const input = editorialPost();
     const query = '自行车活鱼桶 装水防晃 技巧';
 
     input.body = input.body.replace('我先说结论', '先说结论');
-    assert.throws(
-      () => parsePostOutput(JSON.stringify(input), { query }),
-      /first paragraph.*first-person/iu,
-    );
+    assert.doesNotThrow(() => parsePostOutput(JSON.stringify(input), { query }));
 
     input.body = editorialPost().body.replace('我先说结论', '我亲测三个月后总结');
     assert.throws(

@@ -41,8 +41,10 @@ describe('runtime default prompts', () => {
     assert.match(prompt.content, /标题总长不超过 25 个可见字符/u);
     assert.match(prompt.content, /正文严格控制在 400～600 字/u);
     assert.match(prompt.content, /严格使用“总—分—总”结构/u);
-    assert.match(prompt.content, /第一段必须采用第一人称视角/u);
-    assert.match(prompt.content, /第一人称场景不得虚构/u);
+    assert.doesNotMatch(prompt.content, /正文以第一人称为主/u);
+    assert.doesNotMatch(prompt.content, /第一段必须采用第一人称视角/u);
+    assert.match(prompt.content, /第一人称不是正文必须采用的主要叙述视角/u);
+    assert.match(prompt.content, /第一人称.*不得虚构/u);
     assert.match(prompt.content, /最后一段必须再次明确核心结论/u);
     assert.match(prompt.content, /后期配图/u);
     assert.match(prompt.content, /涉及时效性信息.*时效说明/u);

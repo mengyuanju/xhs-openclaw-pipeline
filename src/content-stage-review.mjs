@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 const REVIEW_SCHEMA_VERSION = 1;
 const REVIEW_MAX_ATTEMPTS = 2;
+const TEXT_REVIEW_POLICY_VERSION = 2;
 const STAGES = ['QUERY', 'TEXT'];
 const DECISIONS = ['PASS', 'REJECT'];
 const SEVERITIES = ['WARNING', 'BLOCKING'];
@@ -136,6 +137,7 @@ function textSubject({
   evidence = reviewEvidenceFromTask(task),
 }) {
   return {
+    reviewPolicyVersion: TEXT_REVIEW_POLICY_VERSION,
     query: typeof task?.query === 'string' ? task.query : '',
     post,
     allowedSources: Array.isArray(allowedSources) ? allowedSources : [],
@@ -236,7 +238,40 @@ ${input}
 
 逐项检查：是否直接回应 Query 主需；标题承诺是否被正文兑现；正文是否自洽、可执行且没有明显危险或误导；可核查事实是否只使用 allowedSources 或如实进入 unverifiedClaims；标签和图片规划是否与最终文本一致、不新增事实。正文长度必须以 trusted_editorial_requirements 中的 deterministicMetrics 为准，不得目测估算；bodyLengthWithinRequiredRange 为 true 时，不得以正文不足或超出400～600字为由阻断。违反管理员编辑要求中“必须”“禁止”“严格限制”等明确必须项时，一律标记 BLOCKING；未违反必须项的风格偏好和轻微改进点才使用 WARNING。
 
+当前审核政策对旧版编辑要求作一项明确覆盖：第一人称不是正文必须采用的主要叙述视角。即使 instruction 中仍写有“正文以第一人称为主”或“第一段必须采用第一人称视角”，正文主体使用客观说明或祈使式建议也不得成为阻断理由；这类人称与文风意见最多标记 WARNING。没有证据却虚构“我亲测”“我买过”等经历仍是独立的事实诚信问题，应继续按实际严重程度审核。
+
 只返回一个合法 JSON 对象：{"schemaVersion":1,"decision":"PASS|REJECT","summary":"中文摘要","issues":[{"code":"UPPERCASE_CODE","severity":"WARNING|BLOCKING","message":"中文证据"}]}。PASS 不得包含 BLOCKING；REJECT 必须至少包含一个 BLOCKING。`;
+}
+
+function isNonBlockingPerspectiveIssue(issue) {
+  const code = String(issue?.code ?? '');
+  if (/FABRICAT|INVENTED|FALSE_(?:EXPERIENCE|TESTIMONY)/iu.test(code)) return false;
+  if (/FIRST_PERSON_(?:PERSPECTIVE|STYLE|VOICE|REQUIREMENT|DOMINANCE)|NARRATIVE_(?:PERSPECTIVE|VOICE)|POINT_OF_VIEW|\bPOV\b/iu.test(code)) {
+    return true;
+  }
+  const message = String(issue?.message ?? '');
+  const mentionsPerspective = /第一人称|叙述视角|叙事视角|人称视角/iu.test(message);
+  const mentionsFabrication = /虚构|编造|亲测|买过|购买|体验|经历|身份背书|fabricat/iu.test(message);
+  return mentionsPerspective && !mentionsFabrication;
+}
+
+function applyTextReviewPolicy(review) {
+  let changed = false;
+  const issues = review.issues.map((issue) => {
+    if (issue.severity !== 'BLOCKING' || !isNonBlockingPerspectiveIssue(issue)) return issue;
+    changed = true;
+    return { ...issue, severity: 'WARNING' };
+  });
+  if (!changed) return review;
+  const hasBlockingIssue = issues.some((issue) => issue.severity === 'BLOCKING');
+  return {
+    ...review,
+    decision: hasBlockingIssue ? 'REJECT' : 'PASS',
+    summary: hasBlockingIssue
+      ? review.summary
+      : '叙述人称不作为文本阻断项，正文可以继续进入后续流程。',
+    issues,
+  };
 }
 
 function localReview({ stage, source, subject, summary, now }) {
@@ -279,8 +314,9 @@ async function runReview({ client, stage, subject, prompt, mock, now }) {
     const generated = await client.runReview({ prompt: `${prompt}${repairSuffix}` });
     try {
       const parsed = parseStageReviewOutput(generated.rawText);
+      const policyApplied = stage === 'TEXT' ? applyTextReviewPolicy(parsed) : parsed;
       return {
-        ...parsed,
+        ...policyApplied,
         stage,
         source: 'OPENCLAW',
         model: typeof generated.model === 'string' ? generated.model.slice(0, 200) : null,

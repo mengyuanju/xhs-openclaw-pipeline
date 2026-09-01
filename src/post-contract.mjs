@@ -240,10 +240,6 @@ function validatePost(value, { imageCount = 3, allowedSources = [], query = '' }
   if (FABRICATED_EXPERIENCE.test(body) || root.fabricatedExperience !== false) {
     throw new TypeError('fabricated experience is not allowed');
   }
-  const firstParagraph = body.split(/\n\s*\n/u, 1)[0];
-  if (hasQuery && !/我/u.test(firstParagraph)) {
-    throw new TypeError('body first paragraph must use a safe first-person perspective');
-  }
   const titleEmojiCount = semanticIconCount(title);
   const bodyEmojiCount = semanticIconCount(body);
   if (titleEmojiCount > 0) throw new TypeError('title cannot contain emoji');

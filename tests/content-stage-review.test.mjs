@@ -35,6 +35,19 @@ function rejectOutput() {
   });
 }
 
+function perspectiveRejectOutput() {
+  return JSON.stringify({
+    schemaVersion: 1,
+    decision: 'REJECT',
+    summary: '正文没有以第一人称为主要叙述视角。',
+    issues: [{
+      code: 'FIRST_PERSON_PERSPECTIVE',
+      severity: 'BLOCKING',
+      message: '正文仅在开头使用“我先说结论”，其余主体为客观说明和祈使式建议，第一人称并非正文主要叙述视角。',
+    }],
+  });
+}
+
 describe('content stage review contract', () => {
   it('parses a strict pass result and rejects contradictory decisions', () => {
     assert.deepEqual(parseStageReviewOutput(passOutput()), {
@@ -89,8 +102,66 @@ describe('content stage review contract', () => {
     assert.match(textPrompt, /不得目测估算/u);
     assert.match(textPrompt, /法规原文明确要求转弯前减速慢行/u);
     assert.match(textPrompt, /违反.*必须.*BLOCKING/iu);
+    assert.match(textPrompt, /第一人称不是正文必须采用的主要叙述视角/u);
+    assert.match(textPrompt, /客观说明或祈使式建议.*不得.*阻断/u);
     assert.match(textPrompt, /https:\/\/example\.com\/source/u);
     assert.match(textPrompt, /图片规划/u);
+  });
+
+  it('downgrades a first-person perspective rejection without weakening fabricated-experience checks', async () => {
+    const review = await runTextReview({
+      client: {
+        async runReview() {
+          return { rawText: perspectiveRejectOutput(), model: 'fake-reviewer' };
+        },
+      },
+      task: { query: '自行车活鱼桶 装水防晃 技巧', input: {} },
+      post: {
+        title: '自行车活鱼桶防晃，关键看3点',
+        body: '先说结论：控制水量，限制水体移动，并固定桶身。其余正文使用客观说明和操作建议。',
+        tags: [],
+        imagePlan: [],
+      },
+      allowedSources: [],
+      editorialInstruction: '正文以第一人称为主。',
+      now: () => FIXED_NOW,
+    });
+
+    assert.equal(review.decision, 'PASS');
+    assert.equal(review.issues[0].severity, 'WARNING');
+    assert.equal(review.issues[0].code, 'FIRST_PERSON_PERSPECTIVE');
+
+    const fabricatedReview = await runTextReview({
+      client: {
+        async runReview() {
+          return {
+            rawText: JSON.stringify({
+              schemaVersion: 1,
+              decision: 'REJECT',
+              summary: '正文虚构了第一人称经历。',
+              issues: [{
+                code: 'FIRST_PERSON_FABRICATED_EXPERIENCE',
+                severity: 'BLOCKING',
+                message: '正文声称“我亲测三个月”，但输入没有提供这段经历。',
+              }],
+            }),
+            model: 'fake-reviewer',
+          };
+        },
+      },
+      task: { query: '自行车活鱼桶 装水防晃 技巧', input: {} },
+      post: {
+        title: '自行车活鱼桶防晃，关键看3点',
+        body: '我亲测三个月后总结：控制水量，限制水体移动，并固定桶身。',
+        tags: [],
+        imagePlan: [],
+      },
+      allowedSources: [],
+      now: () => FIXED_NOW,
+    });
+
+    assert.equal(fabricatedReview.decision, 'REJECT');
+    assert.equal(fabricatedReview.issues[0].severity, 'BLOCKING');
   });
 
   it('retries malformed reviewer output once and binds evidence to the Query hash', async () => {
