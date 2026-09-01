@@ -38,7 +38,7 @@ const navigationGroups: Array<{ label: string; items: NavigationItem[] }> = [
     label: '内容资产',
     items: [
       { href: '/prompts', label: '提示词版本', icon: MessageSquareText },
-      { href: '/knowledge', label: '视觉知识库', icon: LibraryBig },
+      { href: '/knowledge', label: '知识库', icon: LibraryBig },
     ],
   },
   {

@@ -7,16 +7,24 @@ async function source(path) {
 }
 
 describe('excellent copy analysis and classification UI', () => {
-  it('adds the module to the prompt page with empty authoring fields and label filtering', async () => {
-    const [page, workbench, library] = await Promise.all([
+  it('places the module in the unified knowledge page with accessible visual and copy tabs', async () => {
+    const [page, promptsPage, tabs, workbench, library] = await Promise.all([
+      source('app/knowledge/page.tsx'),
       source('app/prompts/page.tsx'),
-      source('app/prompts/copy-knowledge-workbench.tsx'),
-      source('app/prompts/copy-knowledge-library.tsx'),
+      source('app/knowledge/knowledge-tabs.tsx'),
+      source('app/knowledge/copy-knowledge-workbench.tsx'),
+      source('app/knowledge/copy-knowledge-library.tsx'),
     ]);
 
-    assert.match(page, /<CopyKnowledgeWorkbench/u);
+    assert.match(page, /<KnowledgeTabs/u);
     assert.match(page, /listCopyKnowledge/u);
     assert.match(page, /listCopyKnowledgeLabels/u);
+    assert.doesNotMatch(promptsPage, /CopyKnowledgeWorkbench|listCopyKnowledge/u);
+    assert.match(tabs, /role="tablist"/u);
+    assert.match(tabs, /aria-label="知识库类型"/u);
+    assert.match(tabs, />视觉</u);
+    assert.match(tabs, />文案</u);
+    assert.match(tabs, /role="tabpanel"/u);
     assert.match(workbench, /优秀文案分析与分类/u);
     assert.match(workbench, /优秀文案/u);
     assert.match(workbench, /分析 Prompt/u);

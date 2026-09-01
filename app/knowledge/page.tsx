@@ -1,19 +1,26 @@
 import { withAdminStore } from '../../src/admin/runtime.mjs';
-import { KnowledgeWorkbench } from './knowledge-workbench';
+import { KnowledgeTabs } from './knowledge-tabs';
 
 export const dynamic = 'force-dynamic';
 
 export default function KnowledgePage() {
-  const result = withAdminStore((store: any) => store.listVisualKnowledge({ page: 1, pageSize: 100 })) as any;
+  const result = withAdminStore((store: any) => ({
+    visualKnowledge: store.listVisualKnowledge({ page: 1, pageSize: 100 }),
+    copyKnowledge: store.listCopyKnowledge({ page: 1, pageSize: 100 }),
+    copyLabels: store.listCopyKnowledgeLabels(),
+  })) as any;
   return <>
     <header className="page-header">
       <div>
-        <span className="eyebrow">Visual knowledge</span>
-        <h1 className="sr-only">视觉知识库</h1>
-        <p className="subtle">图片只作临时分析；只有自有或已授权素材才允许长期保留并进入参考图生成。</p>
+        <span className="eyebrow">Content knowledge</span>
+        <h1 className="sr-only">知识库</h1>
+        <p className="subtle">在同一入口沉淀视觉经验与文案经验，并按内容类型切换管理。</p>
       </div>
     </header>
-    <div className="notice">视觉分析会调用真实模型并可能产生费用。配方必须由管理员确认发布，草稿不会进入生产任务。</div>
-    <KnowledgeWorkbench items={result.data} />
+    <KnowledgeTabs
+      visualItems={result.visualKnowledge.data}
+      copyItems={result.copyKnowledge.data}
+      copyLabels={result.copyLabels}
+    />
   </>;
 }

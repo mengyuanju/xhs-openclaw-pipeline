@@ -54,7 +54,7 @@ test('application shell groups product areas and keeps page context visible', as
   assert.match(packageJson, /"lucide-react"/);
 });
 
-test('visual knowledge remains grouped with reusable content assets', async () => {
+test('the unified knowledge base remains grouped with reusable content assets', async () => {
   const navigation = await readFile(projectFile('app/components/side-nav.tsx'), 'utf8');
 
   assert.match(navigation, /label: '内容资产',[\s\S]*href: '\/prompts'[\s\S]*href: '\/knowledge'/);
@@ -70,7 +70,7 @@ test('primary section pages omit visible display headlines while keeping an acce
     ['app/tasks/page.tsx', '内容审核'],
     ['app/analytics/page.tsx', '数据统计'],
     ['app/settings/page.tsx', '生产配置'],
-    ['app/knowledge/page.tsx', '视觉知识库'],
+    ['app/knowledge/page.tsx', '知识库'],
   ];
 
   for (const [path, accessibleName] of sectionPages) {
@@ -664,15 +664,21 @@ test('primary actions and small login copy meet WCAG AA text contrast', async ()
   assert.ok(contrastRatio(footnote, '#20201f') >= 4.5, 'small login footnote text needs 4.5:1 contrast');
 });
 
-test('visual knowledge is a first-class module with accessible analysis and retention controls', async () => {
-  const [navigation, page, workbench] = await Promise.all([
+test('the unified knowledge base exposes visual and copy modules with accessible controls', async () => {
+  const [navigation, topbar, page, tabs, workbench] = await Promise.all([
     readFile(projectFile('app/components/side-nav.tsx'), 'utf8'),
+    readFile(projectFile('app/components/app-topbar.tsx'), 'utf8'),
     readFile(projectFile('app/knowledge/page.tsx'), 'utf8'),
+    readFile(projectFile('app/knowledge/knowledge-tabs.tsx'), 'utf8'),
     readFile(projectFile('app/knowledge/knowledge-workbench.tsx'), 'utf8'),
   ]);
 
-  assert.match(navigation, /href: '\/knowledge', label: '视觉知识库'/);
-  assert.match(page, /图片只作临时分析/);
+  assert.match(navigation, /href: '\/knowledge', label: '知识库'/);
+  assert.match(topbar, /pathname\.startsWith\('\/knowledge'\)[\s\S]*title: '知识库'/u);
+  assert.match(page, /视觉经验与文案经验/u);
+  assert.match(tabs, /role="tablist"/u);
+  assert.match(tabs, /aria-selected/u);
+  assert.match(tabs, /aria-controls/u);
   assert.match(workbench, /htmlFor="knowledge-image"/);
   assert.match(workbench, /PROMPT_ONLY/);
   assert.match(workbench, /IMAGE_AND_PROMPT/);

@@ -8,6 +8,8 @@ import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { apiRequest } from '../components/api-client';
 import { CopyKnowledgeLibrary, type CopyKnowledgeItem } from './copy-knowledge-library';
 
+export type { CopyKnowledgeItem } from './copy-knowledge-library';
+
 type AnalysisDraft = {
   title: string;
   summary: string;
