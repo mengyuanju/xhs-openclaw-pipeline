@@ -59,8 +59,9 @@ describe('standalone copy generation workspace', () => {
   });
 
   it('renders persistent history and separate original/reviewed comparison controls', async () => {
-    const [comparison, history, historyState, styles] = await Promise.all([
+    const [comparison, researchPanel, history, historyState, styles] = await Promise.all([
       source('app/copy-generation/copy-generation-comparison.tsx'),
+      source('app/copy-generation/copy-generation-research.tsx'),
       source('app/copy-generation/copy-generation-history.tsx'),
       source('app/copy-generation/use-copy-generation-history.ts'),
       source('app/globals.css'),
@@ -88,6 +89,16 @@ describe('standalone copy generation workspace', () => {
     assert.match(comparison, /原始版生成/u);
     assert.match(comparison, /质检版复检/u);
     assert.match(comparison, /formatDuration/u);
+    assert.match(comparison, /CopyGenerationResearchPanel/u);
+    assert.match(comparison, /research=\{result\.generation\.research\}/u);
+    assert.match(researchPanel, /联网研究资料/u);
+    assert.match(researchPanel, /research\.summary/u);
+    assert.match(researchPanel, /research\.sources/u);
+    assert.match(researchPanel, /source\.snippet/u);
+    assert.match(researchPanel, /href=\{source\.url\}/u);
+    assert.match(researchPanel, /target="_blank"/u);
+    assert.match(researchPanel, /rel="noopener noreferrer"/u);
+    assert.match(researchPanel, /这条历史记录没有保存联网研究资料/u);
     assert.match(history, /平均耗时/u);
     assert.match(history, /P50/u);
     assert.match(history, /P95/u);
@@ -102,6 +113,8 @@ describe('standalone copy generation workspace', () => {
     assert.match(styles, /\.copy-comparison-grid/u);
     assert.match(styles, /\.copy-timing-statistics/u);
     assert.match(styles, /\.copy-timing-breakdown/u);
+    assert.match(styles, /\.copy-research/u);
+    assert.match(styles, /\.copy-research-source-list/u);
     assert.match(styles, /\.copy-job-list/u);
     assert.match(styles, /\.copy-validation-notice/u);
     assert.match(styles, /\.copy-history-list \.pill-rejected/u);

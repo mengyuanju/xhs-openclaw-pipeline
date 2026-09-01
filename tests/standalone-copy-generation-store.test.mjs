@@ -22,6 +22,26 @@ function review(stage, summary) {
   };
 }
 
+function researchSnapshot() {
+  return {
+    schemaVersion: 1,
+    status: 'COMPLETED',
+    query: '租房桌面整理',
+    searchedAt: '2026-09-01T07:55:00.000Z',
+    provider: 'codex',
+    summary: '公开资料显示，桌面整理应优先保留高频使用区域。',
+    attempts: [{ provider: 'codex', status: 'COMPLETED', error: null }],
+    sources: [{
+      title: '桌面整理公开资料',
+      url: 'https://example.com/desk-guide',
+      snippet: '优先保留高频使用区域，并减少桌面上的长期闲置物品。',
+      siteName: 'example.com',
+      provider: 'codex',
+      retrievedAt: '2026-09-01T07:55:00.000Z',
+    }],
+  };
+}
+
 function generationRecord(query, suffix, totalMs = 1_090) {
   const originalPost = { ...createMockPost(3), title: `原始版${suffix}` };
   const reviewedPost = { ...createMockPost(3), title: `质检版${suffix}` };
@@ -140,6 +160,30 @@ describe('standalone copy generation persistence', () => {
       assert.equal(saved.stageReviews.reviewedText.summary, '质检版复检');
       assert.deepEqual(saved.timing, generationRecord('租房桌面整理', 'A').timing);
       assert.match(saved.createdAt, /^\d{4}-\d{2}-\d{2}T/u);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('persists the complete research snapshot for historical display', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      initializeStandaloneCopyGenerationSchema(db);
+      const store = createStandaloneCopyGenerationStore(db);
+      const record = {
+        ...generationRecord('租房桌面整理', 'R'),
+        researchSnapshot: researchSnapshot(),
+      };
+
+      const saved = store.saveStandaloneCopyGeneration(record);
+      const listed = store.listStandaloneCopyGenerations({ page: 1, pageSize: 20 });
+      const persistedJson = db.prepare(`
+        SELECT research_snapshot_json FROM standalone_copy_generations WHERE id = ?
+      `).get(saved.id).research_snapshot_json;
+
+      assert.deepEqual(saved.researchSnapshot, researchSnapshot());
+      assert.deepEqual(listed.data[0].researchSnapshot, researchSnapshot());
+      assert.deepEqual(JSON.parse(persistedJson), researchSnapshot());
     } finally {
       db.close();
     }

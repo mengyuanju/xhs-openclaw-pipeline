@@ -8,6 +8,10 @@ import {
   createImageGenerationDraft,
   writeImageGenerationDraft,
 } from '../image-generation/image-generation-draft';
+import {
+  CopyGenerationResearchPanel,
+  type CopyGenerationResearch,
+} from './copy-generation-research';
 
 export type CopyText = { title: string; body: string; tags: string[] };
 
@@ -72,6 +76,7 @@ export type CopyGenerationResult = {
     reviewedThinking: string | null;
     revisionAttempted: boolean;
     imageCount: number;
+    research: CopyGenerationResearch | null;
     timing: CopyGenerationTiming | null;
   };
 };
@@ -283,6 +288,7 @@ export function CopyGenerationComparison({
       timing={result.generation.timing}
       revisionAttempted={revisionAttempted}
     />
+    <CopyGenerationResearchPanel research={result.generation.research} />
     <div className={`copy-comparison-grid${revisionAttempted ? '' : ' single'}`}>
       <CopyVersion label={revisionAttempted ? '原始版' : '当前版'} version={result.original} />
       {revisionAttempted && <CopyVersion label="质检版" version={result.reviewed} />}
