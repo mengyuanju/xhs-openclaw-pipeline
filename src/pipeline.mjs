@@ -4,6 +4,7 @@ import { join, relative, resolve } from 'node:path';
 
 import { renderDeliveryImages } from './images.mjs';
 import { createImageAlignmentValidator } from './image-alignment.mjs';
+import { effectiveModelApiConfig } from './model-api-config.mjs';
 import { createOpenClawClient } from './openclaw.mjs';
 import { createDeliveryQualityAssessor } from './quality-assessment.mjs';
 import { fullPageInstructionForLayout } from './layout-contract.mjs';
@@ -387,11 +388,12 @@ export async function processNext({
     await mkdir(outputDir, { recursive: true });
     const workerConfig = configProvider ? await configProvider(task) : null;
     const productionSettings = normalizeProductionSettings(workerConfig?.productionSettings ?? {});
+    const effectiveModelApi = effectiveModelApiConfig(productionSettings.modelApi);
     const complianceDisclosure = productionDisclosure(productionSettings);
     const configuredImageCount = workerConfig?.imageCount ?? 3;
     const automaticImageCount = !mock && workerConfig?.imageCountMode !== 'fixed';
     const requestedImageCount = automaticImageCount ? 'auto' : configuredImageCount;
-    const client = mock ? null : (openclaw ?? createOpenClawClient());
+    const client = mock ? null : (openclaw ?? createOpenClawClient({ modelApi: productionSettings.modelApi }));
     const checkpointFingerprint = createCheckpointFingerprint({ task, workerConfig, mock });
     let checkpoint = mock ? null : await loadPipelineCheckpoint({
       outputRoot,
@@ -727,6 +729,7 @@ export async function processNext({
           openclaw: client,
           task,
           post,
+          model: effectiveModelApi.qualityModel,
         })({
           imagePaths: currentImages.map((image) => join(outputDir, image.file)),
         });

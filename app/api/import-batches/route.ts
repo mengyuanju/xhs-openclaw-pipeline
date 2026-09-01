@@ -31,9 +31,11 @@ export function POST(request: Request) {
       buffer: Buffer.from(await file.arrayBuffer()),
       fileName: file.name,
     });
+    const modelApi = withAdminStore((store: any) =>
+      store.getProductionSettings().settings.modelApi);
     let screenedRows;
     try {
-      screenedRows = await screenImportRowsWithOpenClaw({ rows: parsed.rows });
+      screenedRows = await screenImportRowsWithOpenClaw({ rows: parsed.rows, modelApi });
     } catch {
       throw new ApiError(
         502,

@@ -9,6 +9,7 @@ import {
 } from '../../../src/copy-generation.mjs';
 import { ApiError } from '../../../src/admin/http.mjs';
 import { withAdminStore } from '../../../src/admin/runtime.mjs';
+import { createOpenClawClient } from '../../../src/openclaw.mjs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -40,14 +41,17 @@ const copyGenerationSchema = z.object({
   confirmation: z.literal('LIVE_MODEL_COST_ACCEPTED'),
 }).strict();
 
-function publishedTextSystemPrompt() {
+function copyGenerationRuntime() {
   return withAdminStore((store: any) => {
     const template = store.listPromptTemplates()
       .find((candidate: any) => candidate.kind === 'TEXT_SYSTEM');
     const published = template?.versions
       .find((version: any) => version.status === 'PUBLISHED');
     if (!published?.content) throw new Error('published text system prompt is unavailable');
-    return published.content;
+    return {
+      systemPrompt: published.content,
+      modelApi: store.getProductionSettings().settings.modelApi,
+    };
   });
 }
 
@@ -63,9 +67,12 @@ export function POST(request: Request) {
     }
     copyGenerationInProgress = true;
     try {
+      const runtime = copyGenerationRuntime();
+      const client = createOpenClawClient({ modelApi: runtime.modelApi });
       const generated = await generateCopy({
+        client,
         task: { query: input.query, input: input.input },
-        systemPrompt: publishedTextSystemPrompt(),
+        systemPrompt: runtime.systemPrompt,
         imageCount: input.imageCount,
       });
       return ok(toCopyGenerationResponse(generated), { status: 201 });

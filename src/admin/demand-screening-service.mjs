@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { effectiveModelApiConfig } from '../model-api-config.mjs';
 import { createOpenClawClient } from '../openclaw.mjs';
 
 const MAX_ROWS_PER_BATCH = 50;
@@ -155,7 +156,8 @@ function normalizedModelName(value) {
 export async function screenImportRowsWithOpenClaw({
   rows,
   openclaw = undefined,
-  model = process.env.XHS_SCREENING_MODEL || process.env.XHS_TEXT_MODEL,
+  model = undefined,
+  modelApi = undefined,
   maxRowsPerBatch = MAX_ROWS_PER_BATCH,
   maxDataCharacters = MAX_DATA_CHARACTERS,
 }) {
@@ -172,14 +174,16 @@ export async function screenImportRowsWithOpenClaw({
     throw new TypeError('pending import row numbers are invalid');
   }
 
-  const client = openclaw ?? createOpenClawClient();
+  const effectiveModelApi = effectiveModelApiConfig(modelApi ?? {});
+  const screeningModel = model ?? effectiveModelApi.screeningModel;
+  const client = openclaw ?? createOpenClawClient({ modelApi });
   if (!client?.runText) throw new TypeError('OpenClaw text client is required');
   const screenedByRowNumber = new Map();
   const batches = splitRows(pendingRows, { maxRowsPerBatch, maxDataCharacters });
   for (const batch of batches) {
     const prompt = buildScreeningPrompt(batch);
-    const generated = await client.runText({ prompt, model });
-    const screeningModel = normalizedModelName(generated?.model);
+    const generated = await client.runText({ prompt, model: screeningModel });
+    const generatedModel = normalizedModelName(generated?.model);
     const decisions = parseDemandScreeningOutput(generated?.rawText, {
       expectedRowNumbers: batch.map(({ rowNumber }) => rowNumber),
     });
@@ -189,7 +193,7 @@ export async function screenImportRowsWithOpenClaw({
         demandLevel: decision.demandLevel,
         reason: decision.reason,
         source: 'OPENCLAW',
-        model: screeningModel,
+        model: generatedModel,
       });
     }
   }

@@ -53,8 +53,8 @@ export async function processNextImageEdit({
         .png({ compressionLevel: 8 })
         .toFile(outputPath);
     } else {
-      const client = openclaw ?? createOpenClawClient();
       const productionSettings = normalizeProductionSettings(config.productionSettings ?? {});
+      const client = openclaw ?? createOpenClawClient({ modelApi: productionSettings.modelApi });
       const complianceDisclosure = productionDisclosure(productionSettings);
       const prompt = renderPrompt(config.imageEditPromptContent, {
         query: config.query,

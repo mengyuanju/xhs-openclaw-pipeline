@@ -3,6 +3,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { processNext } from './pipeline.mjs';
 import { createQueue } from './queue.mjs';
+import { effectiveModelApiConfig } from './model-api-config.mjs';
 import { createOpenClawClient } from './openclaw.mjs';
 import { createAdminStore } from './admin/admin-store.mjs';
 import { processNextImageEdit } from './admin/image-edit-worker.mjs';
@@ -109,13 +110,15 @@ export async function main(
       }
       const workerId = flagValue(args, '--worker-id') || `worker-${process.pid}`;
       const mock = hasFlag(args, '--mock');
-      const openclaw = mock ? undefined : createOpenClaw();
+      adminStore = createAdminStore(databasePath);
+      const productionSettings = adminStore.getProductionSettings().settings;
+      const modelApi = effectiveModelApiConfig(productionSettings.modelApi, env);
+      const openclaw = mock ? undefined : createOpenClaw({ modelApi });
       openclaw?.checkReady({
-        textModel: env.XHS_TEXT_MODEL,
-        imageModel: env.XHS_IMAGE_MODEL,
+        textModel: modelApi.textModel,
+        imageModel: modelApi.imageModel,
       });
       if (!mock) queue.closeCircuit('openclaw-auth');
-      adminStore = createAdminStore(databasePath);
       const integration = createAdminWorkerIntegration({ store: adminStore, assetRoot, knowledgeRoot });
       let result = await processContentTask({
         queue,
@@ -164,13 +167,15 @@ export async function main(
         throw new Error('--concurrency must be an integer between 1 and 2');
       }
       const workerId = flagValue(args, '--worker-id') || `drain-${process.pid}`;
-      const openclaw = mock ? undefined : createOpenClaw();
+      adminStore = createAdminStore(databasePath);
+      const productionSettings = adminStore.getProductionSettings().settings;
+      const modelApi = effectiveModelApiConfig(productionSettings.modelApi, env);
+      const openclaw = mock ? undefined : createOpenClaw({ modelApi });
       openclaw?.checkReady({
-        textModel: env.XHS_TEXT_MODEL,
-        imageModel: env.XHS_IMAGE_MODEL,
+        textModel: modelApi.textModel,
+        imageModel: modelApi.imageModel,
       });
       if (!mock) queue.closeCircuit('openclaw-auth');
-      adminStore = createAdminStore(databasePath);
       const integration = createAdminWorkerIntegration({ store: adminStore, assetRoot, knowledgeRoot });
       const summary = {
         status: 'completed',

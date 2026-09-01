@@ -129,8 +129,8 @@ function safeAbsolute(root, child) {
   return path;
 }
 
-/** @param {{ buffer: Buffer, mimeType: string, fileName: string, vision?: { runVision: Function } }} options */
-export async function analyzeVisualImage({ buffer, mimeType, fileName: _fileName, vision }) {
+/** @param {{ buffer: Buffer, mimeType: string, fileName: string, vision?: { runVision: Function }, modelApi?: object }} options */
+export async function analyzeVisualImage({ buffer, mimeType, fileName: _fileName, vision, modelApi }) {
   await validateImage(buffer, mimeType);
   const directory = await mkdtemp(join(tmpdir(), 'xhs-visual-analysis-'));
   const normalizedPath = join(directory, 'input.png');
@@ -139,7 +139,7 @@ export async function analyzeVisualImage({ buffer, mimeType, fileName: _fileName
       .rotate()
       .png({ compressionLevel: 8 })
       .toFile(normalizedPath);
-    const client = vision ?? createOpenClawClient();
+    const client = vision ?? createOpenClawClient({ modelApi });
     const result = await client.runVision({ prompt: ANALYSIS_PROMPT, inputPaths: [normalizedPath] });
     return {
       analysis: parseVisualAnalysisOutput(result.rawText, { model: result.model }),
