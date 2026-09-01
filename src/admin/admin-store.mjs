@@ -8,6 +8,10 @@ import {
   createStandaloneCopyGenerationStore,
   initializeStandaloneCopyGenerationSchema,
 } from './standalone-copy-generation-store.mjs';
+import {
+  createCopyKnowledgeStore,
+  initializeCopyKnowledgeSchema,
+} from './copy-knowledge-store.mjs';
 import { createImageEditStore, initializeImageEditSchema } from './image-edit-store.mjs';
 import {
   createVisualKnowledgeStore,
@@ -372,6 +376,7 @@ function initializeAdminSchema(db) {
   initializeImageEditSchema(db);
   initializeGenerationSchema(db);
   initializeStandaloneCopyGenerationSchema(db);
+  initializeCopyKnowledgeSchema(db);
   initializeVisualKnowledgeSchema(db);
   initializeProductionSettingsSchema(db);
   initializeReviewWorkSchema(db);
@@ -557,6 +562,7 @@ export function createAdminStore(databasePath) {
   const imageEditStore = createImageEditStore(db);
   const generationStore = createGenerationStore(db);
   const standaloneCopyGenerationStore = createStandaloneCopyGenerationStore(db);
+  const copyKnowledgeStore = createCopyKnowledgeStore(db);
   const visualKnowledgeStore = createVisualKnowledgeStore(db);
   const productionSettingsStore = createProductionSettingsStore(db);
   const productionStatisticsStore = createProductionStatisticsStore(db);
@@ -615,6 +621,7 @@ export function createAdminStore(databasePath) {
     ...imageEditStore,
     ...generationStore,
     ...standaloneCopyGenerationStore,
+    ...copyKnowledgeStore,
     ...visualKnowledgeStore,
     ...productionSettingsStore,
     ...productionStatisticsStore,

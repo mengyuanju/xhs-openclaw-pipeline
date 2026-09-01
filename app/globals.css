@@ -457,6 +457,24 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .dropzone { display: grid; place-items: center; min-height: 190px; padding: 24px; border: 1.5px dashed #ccc5bd; border-radius: 14px; background: #faf8f5; text-align: center; }
 .dropzone input { max-width: 280px; }
 .prompt-card { display: grid; gap: 15px; }
+.copy-knowledge-workbench { margin-top: 18px; }
+.prompt-template-list { margin-top: 18px; }
+.copy-label-filter-block { display: grid; gap: 8px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.copy-label-filters, .copy-knowledge-labels { display: flex; gap: 7px; flex-wrap: wrap; }
+.copy-label-filters .button[aria-pressed="true"] { color: white; border-color: var(--red); background: var(--red); }
+.copy-knowledge-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.copy-knowledge-list > li { display: grid; gap: 12px; padding: 18px 0; border-top: 1px solid var(--line); }
+.copy-knowledge-list > li:first-child { border-top: 0; }
+.copy-knowledge-item-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.copy-knowledge-item-head h3 { margin: 0; font-size: 16px; }
+.copy-knowledge-item-head p { margin: 6px 0 0; color: #5f5a55; font-size: 12px; line-height: 1.65; }
+.copy-knowledge-item-head time { flex: 0 0 auto; color: var(--muted); font-size: 10px; }
+.copy-knowledge-details { border-top: 1px solid #eee9e3; }
+.copy-knowledge-details > summary { padding-top: 11px; color: var(--muted); cursor: pointer; font-size: 11px; font-weight: 750; }
+.copy-knowledge-details > div { display: grid; gap: 6px; margin-top: 12px; padding: 14px; border-radius: 10px; background: var(--surface-soft); }
+.copy-knowledge-details h4 { margin: 8px 0 0; font-size: 11px; }
+.copy-knowledge-details h4:first-child { margin-top: 0; }
+.copy-knowledge-details p { margin: 0; overflow-wrap: anywhere; color: #514c47; font-size: 12px; line-height: 1.75; white-space: pre-wrap; }
 .prompt-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .code-hint { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; color: #766f68; font-size: 11px; }
 .task-title { width: 100%; max-width: 780px; }
@@ -891,6 +909,7 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
   .import-flow-step-body .screening-table-wrap { overflow: visible; }
   .recent-imports-disclosure { padding: 16px; }
   .form-grid { grid-template-columns: 1fr; }
+  .copy-knowledge-item-head { flex-direction: column; }
   .import-steps { grid-template-columns: 1fr; }
   .import-step .button { width: 100%; }
   .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
