@@ -174,11 +174,12 @@ describe('standalone image generation service', () => {
 
   it('renders an isolated Mock run with distinct delivery-sized PNG files and a manifest', async () => {
     const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-image-generation-'));
+    const source = validSource();
     let liveCalls = 0;
     const progressEvents = [];
     try {
       const result = await generateStandaloneImages({
-        source: validSource(),
+        source,
         mode: 'MOCK',
         outputRoot,
         runId: RUN_ID,
@@ -202,6 +203,17 @@ describe('standalone image generation service', () => {
       assert.equal(result.imageCount, 3);
       assert.equal(result.images.length, 3);
       assert.equal(result.qc.passed, false);
+      assert.equal(result.visualPlan.model, null);
+      assert.equal(result.visualPlan.degraded, false);
+      assert.equal(result.visualPlan.warning, null);
+      assert.equal(result.images[0].layout.layoutTemplate, 'HERO_LEFT');
+      assert.equal(result.images[0].layout.allowedVisibleText.headline, source.imagePlan[0].headline);
+      assert.deepEqual(result.images[0].layout.allowedVisibleText.bullets, source.imagePlan[0].bullets);
+      assert.equal(result.qc.disposition, 'mock_only');
+      assert.equal(result.qc.action, 'return_for_revision');
+      assert.ok(result.qc.issues.some((issue) => issue.label === '图片来源-Mock'));
+      assert.ok(result.qc.dimensions.some((dimension) => dimension.key === 'imageBaseQuality'));
+      assert.ok(result.qc.limitations.length > 0);
       assert.equal(progressEvents[0].stage, 'PREPARING');
       assert.equal(progressEvents.at(-1).stage, 'COMPLETED');
       assert.equal(progressEvents.at(-1).progressPercent, 100);
@@ -266,6 +278,20 @@ describe('standalone image generation service', () => {
 
       assert.equal(result.runId, FALLBACK_RUN_ID);
       assert.equal(result.images.length, 3);
+      assert.equal(result.visualPlan.model, 'deterministic-transport-fallback');
+      assert.equal(result.visualPlan.degraded, true);
+      assert.equal(result.visualPlan.warning.code, 'VISUAL_PLAN_TRANSPORT_FALLBACK');
+      assert.equal(result.images[1].layout.layoutTemplate, 'STEPS_LEFT');
+      assert.equal(result.qc.disposition, 'manual_review_required');
+      assert.equal(result.qc.action, 'priority_review');
+      assert.equal(
+        result.qc.dimensions.find((dimension) => dimension.key === 'imageTextQuality').score,
+        3,
+      );
+      assert.match(
+        result.qc.dimensions.find((dimension) => dimension.key === 'imageTextQuality').evidence.join('\n'),
+        /终审证据/u,
+      );
       const runDirectory = join(
         outputRoot,
         'standalone-image-generations',

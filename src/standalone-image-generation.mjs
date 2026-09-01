@@ -287,18 +287,43 @@ function normalizedStoredResult(value, runId) {
       model: image.model === null ? null : boundedText(image.model, `images[${index}].model`, 1, 200),
       generationAttempts: Number.isInteger(image.generationAttempts) ? image.generationAttempts : null,
       alignmentPassed: typeof image.alignmentPassed === 'boolean' ? image.alignmentPassed : null,
+      layout: image.layout === null || image.layout === undefined
+        ? null
+        : publicLayout(image.layout, `images[${index}].layout`),
     };
   });
+  const storedVisualPlan = isRecord(value.visualPlan) ? value.visualPlan : null;
+  const storedQc = value.qc;
   return {
     runId,
     mode: value.mode,
     status: value.status,
     imageCount: images.length,
     images,
+    visualPlan: storedVisualPlan === null ? null : {
+      model: storedVisualPlan.model === null
+        ? null
+        : boundedText(storedVisualPlan.model, 'visualPlan.model', 1, 200),
+      degraded: storedVisualPlan.degraded === true,
+      warning: normalizedOperationalNotice(storedVisualPlan.warning, 'visualPlan.warning'),
+    },
     qc: {
-      passed: value.qc.passed === true,
-      overallScore: Number.isFinite(value.qc.overallScore) ? Number(value.qc.overallScore) : null,
-      summary: boundedText(value.qc.summary, 'qc.summary', 1, 500),
+      passed: storedQc.passed === true,
+      overallScore: Number.isFinite(storedQc.overallScore) ? Number(storedQc.overallScore) : null,
+      summary: boundedText(storedQc.summary, 'qc.summary', 1, 500),
+      disposition: typeof storedQc.disposition === 'string'
+        ? boundedText(storedQc.disposition, 'qc.disposition', 1, 100)
+        : value.mode === 'MOCK' ? 'mock_only' : value.status === 'BLOCKED' ? 'blocked' : 'manual_review_required',
+      action: storedQc.action === null || storedQc.action === undefined
+        ? null
+        : boundedText(storedQc.action, 'qc.action', 1, 100),
+      issues: publicQualityIssues(storedQc.issues),
+      dimensions: publicStoredQualityDimensions(storedQc.dimensions),
+      limitations: publicTextList(storedQc.limitations, 'qc.limitations', {
+        minimum: 0,
+        maximum: 10,
+        itemMaximum: 500,
+      }),
     },
   };
 }
@@ -362,10 +387,129 @@ function qualitySummary(qc, mode) {
   return issues.map((issue) => String(issue.label ?? '未命名问题')).join('；').slice(0, 500);
 }
 
-function publicResult({ runId, mode, images, qc }) {
+function publicTextList(value, field, {
+  minimum = 0,
+  maximum = 10,
+  itemMaximum = 500,
+} = {}) {
+  if (!Array.isArray(value) || value.length < minimum || value.length > maximum) {
+    if (minimum === 0 && value === undefined) return [];
+    throw new TypeError(`${field} is invalid`);
+  }
+  return value.map((item, index) => boundedText(item, `${field}[${index}]`, 1, itemMaximum));
+}
+
+function publicLayout(page, field = 'layout') {
+  if (!isRecord(page) || !isRecord(page.allowedVisibleText)) {
+    throw new TypeError(`${field} is invalid`);
+  }
+  return {
+    layoutTemplate: boundedText(page.layoutTemplate, `${field}.layoutTemplate`, 1, 64),
+    layoutDirection: boundedText(page.layoutDirection, `${field}.layoutDirection`, 1, 300),
+    visualSubject: boundedText(page.visualSubject, `${field}.visualSubject`, 1, 300),
+    allowedVisibleText: {
+      headline: boundedText(page.allowedVisibleText.headline, `${field}.allowedVisibleText.headline`, 1, 18),
+      subtitle: boundedText(page.allowedVisibleText.subtitle, `${field}.allowedVisibleText.subtitle`, 1, 30),
+      bullets: publicTextList(page.allowedVisibleText.bullets, `${field}.allowedVisibleText.bullets`, {
+        minimum: 2,
+        maximum: 5,
+        itemMaximum: 40,
+      }),
+      labels: publicTextList(page.allowedVisibleText.labels ?? [], `${field}.allowedVisibleText.labels`, {
+        minimum: 0,
+        maximum: 3,
+        itemMaximum: 20,
+      }),
+    },
+    mustShow: publicTextList(page.mustShow, `${field}.mustShow`, {
+      minimum: 1,
+      maximum: 10,
+      itemMaximum: 100,
+    }),
+    mustAvoid: publicTextList(page.mustAvoid, `${field}.mustAvoid`, {
+      minimum: 1,
+      maximum: 10,
+      itemMaximum: 100,
+    }),
+  };
+}
+
+function publicQualityIssues(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 30).flatMap((issue, index) => {
+    if (!isRecord(issue)) return [];
+    const label = String(issue.label ?? '').trim();
+    const evidence = String(issue.evidence ?? '').trim();
+    if (!label || !evidence) return [];
+    return [{
+      severity: typeof issue.severity === 'string'
+        ? issue.severity.slice(0, 30)
+        : 'warning',
+      label: boundedText(label, `qc.issues[${index}].label`, 1, 100),
+      evidence: boundedText(evidence, `qc.issues[${index}].evidence`, 1, 500),
+    }];
+  });
+}
+
+function publicStoredQualityDimensions(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 30).flatMap((dimension, index) => {
+    if (!isRecord(dimension) || typeof dimension.key !== 'string') return [];
+    return [{
+      key: boundedText(dimension.key, `qc.dimensions[${index}].key`, 1, 100),
+      score: Number.isInteger(dimension.score) ? dimension.score : null,
+      applicable: dimension.applicable !== false,
+      evidence: publicTextList(dimension.evidence ?? [], `qc.dimensions[${index}].evidence`, {
+        minimum: 0,
+        maximum: 20,
+        itemMaximum: 500,
+      }),
+    }];
+  });
+}
+
+function publicQualityDetails(qc) {
+  const rubric = isRecord(qc?.rubric) ? qc.rubric : {};
+  const dimensions = isRecord(rubric.dimensions)
+    ? Object.entries(rubric.dimensions).flatMap(([key, dimension]) => {
+      if (!isRecord(dimension)) return [];
+      return [{
+        key,
+        score: Number.isInteger(dimension.score) ? dimension.score : null,
+        applicable: dimension.applicable !== false,
+        evidence: publicTextList(dimension.evidence ?? [], `qc.rubric.dimensions.${key}.evidence`, {
+          minimum: 0,
+          maximum: 20,
+          itemMaximum: 500,
+        }),
+      }];
+    })
+    : [];
+  const issueCandidates = [
+    ...(Array.isArray(qc?.issues) ? qc.issues : []),
+    ...(Array.isArray(rubric.issueLabels) ? rubric.issueLabels : []),
+  ];
+  const issues = publicQualityIssues(issueCandidates).filter((issue, index, collection) =>
+    collection.findIndex((candidate) => candidate.label === issue.label
+      && candidate.evidence === issue.evidence) === index);
+  return {
+    disposition: typeof qc?.disposition === 'string' ? qc.disposition.slice(0, 100) : 'not_available',
+    action: typeof rubric.action === 'string' ? rubric.action.slice(0, 100) : null,
+    issues,
+    dimensions,
+    limitations: publicTextList(qc?.limitations ?? [], 'qc.limitations', {
+      minimum: 0,
+      maximum: 10,
+      itemMaximum: 500,
+    }),
+  };
+}
+
+function publicResult({ runId, mode, images, qc, visualPlan, planning }) {
   const blocked = mode === 'MOCK'
     || qc?.disposition === 'blocked'
     || qc?.issues?.some((issue) => issue?.severity === 'blocking');
+  const qualityDetails = publicQualityDetails(qc);
   return {
     runId,
     mode,
@@ -380,11 +524,18 @@ function publicResult({ runId, mode, images, qc }) {
       model: image.model ?? null,
       generationAttempts: image.generationAttempts ?? null,
       alignmentPassed: image.alignment?.passed ?? null,
+      layout: publicLayout(visualPlan.pages[index], `visualPlan.pages[${index}]`),
     })),
+    visualPlan: {
+      model: typeof planning?.model === 'string' ? planning.model.slice(0, 200) : null,
+      degraded: planning?.degraded === true,
+      warning: normalizedOperationalNotice(planning?.warning, 'visualPlan.warning'),
+    },
     qc: {
       passed: !blocked,
       overallScore: Number.isFinite(qc?.overallScore) ? Number(qc.overallScore) : null,
       summary: qualitySummary(qc, mode),
+      ...qualityDetails,
     },
   };
 }
@@ -709,7 +860,14 @@ export async function generateStandaloneImages({
       expectedImageCount: imageCount,
       rubricAssessment,
     });
-    const result = publicResult({ runId, mode, images, qc });
+    const result = publicResult({
+      runId,
+      mode,
+      images,
+      qc,
+      visualPlan,
+      planning: planned,
+    });
     activeStage = 'FINALIZING';
     await reportProgress({
       stage: 'FINALIZING',
