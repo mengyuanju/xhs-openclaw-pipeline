@@ -338,6 +338,35 @@ describe('standalone copy generation', () => {
     );
   });
 
+  it('reports a gateway model allowlist rejection with its review stage', async () => {
+    const client = {
+      async runReview() {
+        throw new Error(
+          'GatewayClientRequestError: Error: Model override "openai/gpt-5.6-terra" '
+          + 'is not allowed for agent "main".',
+        );
+      },
+    };
+
+    await assert.rejects(
+      generateCopy({
+        client,
+        task: { query: '自行车活鱼桶装水防晃技巧', input: {} },
+        imageCount: 3,
+      }),
+      (error) => {
+        assert.ok(error instanceof CopyGenerationTransportError);
+        assert.equal(error.stage, 'QUERY_REVIEW');
+        assert.equal(
+          error.message,
+          '当前模型未被代理允许（阶段：选题审核），请检查模型配置后重试',
+        );
+        assert.doesNotMatch(error.message, /gpt-5\.6-terra|GatewayClientRequestError/u);
+        return true;
+      },
+    );
+  });
+
   it('stops before research and text generation when the query review rejects', async () => {
     let downstreamCalls = 0;
     const client = {

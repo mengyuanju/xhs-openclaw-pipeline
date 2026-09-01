@@ -16,6 +16,7 @@ import {
 const POST_MAX_ATTEMPTS = 3;
 const QUALITY_REVISION_MAX_ATTEMPTS = 2;
 const TRANSIENT_MODEL_FAILURE = /\b(?:ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET|429)\b|fetch failed|connection error|other side closed|socket hang up|timed? out|terminated|no text output returned|temporar(?:y|ily) unavailable|rate limit/iu;
+const MODEL_NOT_ALLOWED_FAILURE = /model override\b.{0,300}\bis not allowed for agent\b/iu;
 const COPY_GENERATION_STAGE_LABELS = Object.freeze({
   QUERY_REVIEW: '选题审核',
   ORIGINAL_GENERATION: '首稿生成',
@@ -55,7 +56,9 @@ async function measureModelStage(timing, field, stage, now, operation) {
     return await measureStage(timing, field, now, operation);
   } catch (error) {
     if (error instanceof CopyGenerationTransportError) throw error;
-    if (TRANSIENT_MODEL_FAILURE.test(failureChainText(error))) {
+    const failureText = failureChainText(error);
+    if (TRANSIENT_MODEL_FAILURE.test(failureText)
+      || MODEL_NOT_ALLOWED_FAILURE.test(failureText)) {
       throw new CopyGenerationTransportError(stage, error);
     }
     throw error;
@@ -174,7 +177,10 @@ export class CopyGenerationTransportError extends Error {
   constructor(stage, cause) {
     const label = COPY_GENERATION_STAGE_LABELS[stage];
     if (!label) throw new TypeError('copy generation transport stage is invalid');
-    super(`模型连接中断，已自动重试仍失败（阶段：${label}），请稍后重试`, { cause });
+    const message = MODEL_NOT_ALLOWED_FAILURE.test(failureChainText(cause))
+      ? `当前模型未被代理允许（阶段：${label}），请检查模型配置后重试`
+      : `模型连接中断，已自动重试仍失败（阶段：${label}），请稍后重试`;
+    super(message, { cause });
     this.name = 'CopyGenerationTransportError';
     this.stage = stage;
   }
