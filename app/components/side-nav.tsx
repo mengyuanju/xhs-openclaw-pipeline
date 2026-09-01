@@ -2,6 +2,7 @@
 
 import {
   BarChart3,
+  FilePenLine,
   FileUp,
   LayoutDashboard,
   LibraryBig,
@@ -25,6 +26,7 @@ const navigationGroups: Array<{ label: string; items: NavigationItem[] }> = [
     label: '内容生产',
     items: [
       { href: '/imports', label: '选题导入', icon: FileUp },
+      { href: '/copy-generation', label: '单独生成文案', icon: FilePenLine },
       { href: '/tasks', label: '任务中心', icon: ListChecks },
     ],
   },

@@ -3,6 +3,7 @@
 import {
   BarChart3,
   ChevronRight,
+  FilePenLine,
   FileUp,
   LayoutDashboard,
   LibraryBig,
@@ -27,6 +28,7 @@ type RouteMeta = {
 const routeMeta: Array<{ match: (pathname: string) => boolean; meta: RouteMeta }> = [
   { match: (pathname) => pathname === '/', meta: { section: '总览', title: '工作台', icon: LayoutDashboard } },
   { match: (pathname) => pathname.startsWith('/imports'), meta: { section: '内容生产', title: '选题导入', icon: FileUp } },
+  { match: (pathname) => pathname.startsWith('/copy-generation'), meta: { section: '内容生产', title: '单独生成文案', icon: FilePenLine } },
   { match: (pathname) => /^\/tasks\/\d+/.test(pathname), meta: { section: '内容生产', title: '任务详情', icon: ListChecks } },
   { match: (pathname) => pathname.startsWith('/tasks'), meta: { section: '内容生产', title: '任务中心', icon: ListChecks } },
   { match: (pathname) => pathname.startsWith('/prompts'), meta: { section: '内容资产', title: '提示词版本', icon: MessageSquareText } },
