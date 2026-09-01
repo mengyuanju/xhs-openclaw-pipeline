@@ -1,5 +1,6 @@
 import { existsSync, unlinkSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile, spawnSync } from 'node:child_process';
@@ -17,14 +18,22 @@ const IMAGE_GENERATION_SIZE = '1152x1536';
 const TRANSPORT_RETRY_DELAYS_MS = [5_000, 15_000, 30_000];
 const TRANSIENT_TRANSPORT_ERROR = /\b(?:ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET)\b|fetch failed|connection error|other side closed|reconnecting|model\/list timed out/iu;
 const TEXT_THINKING_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
-const TEXT_RETRY_THINKING = Object.freeze({
-  minimal: ['minimal', 'minimal', 'minimal', 'minimal'],
-  low: ['low', 'low', 'low', 'low'],
-  medium: ['medium', 'low', 'minimal', 'minimal'],
-  high: ['high', 'medium', 'low', 'minimal'],
-  xhigh: ['xhigh', 'high', 'medium', 'low'],
-  max: ['max', 'high', 'medium', 'low'],
-});
+
+let textInferenceTail = Promise.resolve();
+
+async function runTextExclusively(operation) {
+  const previous = textInferenceTail.catch(() => undefined);
+  let release;
+  textInferenceTail = new Promise((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
+}
 
 function nonBlockingSleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -164,18 +173,6 @@ function validatedTextThinking(value = DEFAULT_TEXT_THINKING) {
   return thinking;
 }
 
-function textThinkingForAttempt(initialThinking, attempt) {
-  const schedule = TEXT_RETRY_THINKING[initialThinking];
-  return schedule[Math.min(attempt, schedule.length - 1)];
-}
-
-function withTextThinking(args, thinking) {
-  const thinkingIndex = args.indexOf('--thinking');
-  const nextArgs = [...args];
-  nextArgs[thinkingIndex + 1] = thinking;
-  return nextArgs;
-}
-
 function withImageProxy(options, proxyUrl) {
   if (!proxyUrl) return options;
   return {
@@ -241,6 +238,31 @@ function extractModelText(stdout) {
   }
 }
 
+function extractGatewayText(stdout) {
+  const text = String(stdout ?? '').trim();
+  let envelope;
+  try {
+    envelope = JSON.parse(text);
+  } catch {
+    throw new Error('OpenClaw Gateway returned invalid JSON');
+  }
+  if (typeof envelope?.status === 'string' && envelope.status !== 'ok') {
+    const detail = findText(envelope.error ?? envelope.message ?? envelope.result) ?? envelope.status;
+    throw new Error(`OpenClaw Gateway agent run ${envelope.status}: ${redact(detail)}`);
+  }
+  const rawText = findText(envelope?.result?.payloads ?? envelope);
+  if (!rawText) throw new Error('OpenClaw Gateway agent run returned no text payload');
+  return { envelope, rawText };
+}
+
+function validatedAgentId(value) {
+  const agentId = typeof value === 'string' ? value.trim() : '';
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/u.test(agentId)) {
+    throw new TypeError('OpenClaw agent id is invalid');
+  }
+  return agentId;
+}
+
 function extractCapabilityResult(stdout, capability) {
   const text = String(stdout ?? '').trim();
   let envelope;
@@ -264,6 +286,8 @@ export function createOpenClawClient({
   sleep = nonBlockingSleep,
   asyncRunner,
   asyncSleep,
+  agentId = process.env.XHS_OPENCLAW_AGENT_ID || 'main',
+  sessionPrefix = 'xhs',
 } = {}) {
   const resolvedEntry = resolveEntryPath(entryPath);
   const resolvedAsyncRunner = asyncRunner
@@ -373,51 +397,66 @@ export function createOpenClawClient({
       const configuration = currentModelApi();
       const resolvedModel = validatedModelRef(model, configuration.textModel, 'textModel');
       const resolvedThinking = validatedTextThinking(thinking);
-      const args = [
-        resolvedEntry,
-        'infer',
-        'model',
-        'run',
-        '--local',
-        '--model',
-        resolvedModel,
-        '--thinking',
-        resolvedThinking,
-        '--json',
-        '--prompt',
-        prompt,
-      ];
-      const processOptions = {
-        encoding: 'utf8',
-        windowsHide: true,
-        shell: false,
-        timeout: timeoutMs,
-        maxBuffer: 10 * 1024 * 1024,
-      };
-      let completedThinking = resolvedThinking;
-      const result = await runWithTransportRetryAsync({
-        runner: resolvedAsyncRunner,
-        nodePath,
-        args,
-        sleep: resolvedAsyncSleep,
-        options: processOptions,
-        argsForAttempt: (attempt) => {
-          completedThinking = textThinkingForAttempt(resolvedThinking, attempt);
-          return withTextThinking(args, completedThinking);
-        },
-        optionsForAttempt: (attempt) => (attempt === 0
-          ? withModelProxy(processOptions, configuration.modelProxyUrl)
-          : processOptions),
-      });
-      if (result.error || result.status !== 0) {
-        const detail = redact(failureDetail(result));
-        throw new Error(`OpenClaw text inference failed: ${detail}`);
+      if (!Number.isInteger(timeoutMs) || timeoutMs < 30_000 || timeoutMs > 540_000) {
+        throw new RangeError('text timeoutMs must be an integer between 30000 and 540000');
       }
-      return {
-        rawText: extractModelText(result.stdout),
-        model: resolvedModel,
-        thinking: completedThinking,
-      };
+      const resolvedAgentId = validatedAgentId(agentId);
+      const normalizedSessionPrefix = typeof sessionPrefix === 'string' ? sessionPrefix.trim() : '';
+      if (!/^[a-z0-9][a-z0-9_-]{0,31}$/u.test(normalizedSessionPrefix)) {
+        throw new TypeError('OpenClaw session prefix is invalid');
+      }
+
+      return runTextExclusively(async () => {
+        const sessionId = `${normalizedSessionPrefix}-${randomUUID()}`;
+        const directory = await mkdtemp(join(tmpdir(), 'xhs-openclaw-text-'));
+        const messagePath = join(directory, 'message.txt');
+        try {
+          await writeFile(messagePath, prompt, 'utf8');
+          const args = [
+            resolvedEntry,
+            'agent',
+            '--agent',
+            resolvedAgentId,
+            '--session-id',
+            sessionId,
+            '--model',
+            resolvedModel,
+            '--thinking',
+            resolvedThinking,
+            '--timeout',
+            String(Math.ceil(timeoutMs / 1_000)),
+            '--json',
+            '--message-file',
+            messagePath,
+          ];
+          const processOptions = {
+            encoding: 'utf8',
+            windowsHide: true,
+            shell: false,
+            timeout: timeoutMs + 45_000,
+            maxBuffer: 10 * 1024 * 1024,
+          };
+          const result = await resolvedAsyncRunner(nodePath, args, processOptions);
+          if (result.error || result.status !== 0) {
+            const detail = redact(failureDetail(result));
+            throw new Error(`OpenClaw Gateway text inference failed: ${detail}`);
+          }
+          const parsed = extractGatewayText(result.stdout);
+          const harnessRuntime = parsed.envelope?.result?.meta?.agentMeta?.agentHarnessId ?? 'codex';
+          return {
+            rawText: parsed.rawText,
+            model: resolvedModel,
+            thinking: resolvedThinking,
+            execution: {
+              runtime: String(harnessRuntime),
+              sessionId,
+              runId: typeof parsed.envelope?.runId === 'string' ? parsed.envelope.runId : null,
+            },
+          };
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+      });
     },
 
     async runReview({ prompt, model, thinking, timeoutMs = 180_000 }) {

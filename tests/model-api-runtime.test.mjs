@@ -10,7 +10,7 @@ async function source(path) {
 }
 
 describe('model API runtime configuration', () => {
-  it('uses production model and proxy overrides for OpenClaw text calls', async () => {
+  it('uses the production model override while the Gateway owns provider transport', async () => {
     let invocation;
     const client = createOpenClawClient({
       entryPath: 'C:/openclaw/dist/index.js',
@@ -29,8 +29,7 @@ describe('model API runtime configuration', () => {
 
     assert.equal(invocation.args[invocation.args.indexOf('--model') + 1], 'openai/gpt-5.4');
     assert.equal(invocation.options.shell, false);
-    assert.equal(invocation.options.HTTPS_PROXY, undefined);
-    assert.equal(invocation.options.env.HTTPS_PROXY, 'http://127.0.0.1:7897');
+    assert.equal(invocation.options.env, undefined);
     assert.equal(result.model, 'openai/gpt-5.4');
   });
 

@@ -53,7 +53,9 @@ describe('OpenClaw client', () => {
 
     try {
       const textPromise = client.runText({ prompt: 'non-blocking text inference' });
-      await new Promise((resolve) => setImmediate(resolve));
+      for (let attempt = 0; attempt < 50 && pendingRuns.length === 0; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
       assert.equal(pendingRuns.length, 1);
       pendingRuns.shift().resolve({
         status: 0,
@@ -163,6 +165,97 @@ describe('OpenClaw client', () => {
     assert.equal(invocation.options.shell, false);
   });
 
+  it('routes text generation through the Gateway Codex harness with a durable session', async () => {
+    const prompt = 'query with & | > shell characters';
+    let invocation;
+    let submittedPrompt;
+    const client = createOpenClawClient({
+      entryPath: 'C:/openclaw/dist/index.js',
+      runner: (command, args, options) => {
+        invocation = { command, args, options };
+        const messageFileFlag = args.indexOf('--message-file');
+        if (messageFileFlag >= 0) {
+          submittedPrompt = readFileSync(args[messageFileFlag + 1], 'utf8');
+        }
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            status: 'ok',
+            runId: 'gateway-run-1',
+            result: {
+              payloads: [{ text: '{"ok":true}' }],
+              meta: { agentMeta: { agentHarnessId: 'codex' } },
+            },
+          }),
+          stderr: '',
+        };
+      },
+    });
+
+    const result = await client.runText({
+      model: 'openai/gpt-5.6-sol',
+      prompt,
+    });
+
+    assert.equal(invocation.command, process.execPath);
+    assert.equal(invocation.args[1], 'agent');
+    assert.equal(invocation.args.includes('infer'), false);
+    assert.equal(invocation.args[invocation.args.indexOf('--agent') + 1], 'main');
+    assert.match(invocation.args[invocation.args.indexOf('--session-id') + 1], /^xhs-[a-f0-9-]+$/u);
+    assert.equal(invocation.options.shell, false);
+    assert.equal(submittedPrompt, prompt);
+    assert.equal(result.rawText, '{"ok":true}');
+    assert.equal(result.execution.runtime, 'codex');
+    assert.equal(result.execution.runId, 'gateway-run-1');
+    assert.match(result.execution.sessionId, /^xhs-[a-f0-9-]+$/u);
+  });
+
+  it('serializes text generation across independent client instances', async () => {
+    const pendingRuns = [];
+    let startedRuns = 0;
+    const asyncRunner = () => new Promise((resolve) => {
+      startedRuns += 1;
+      pendingRuns.push(resolve);
+    });
+    const firstClient = createOpenClawClient({
+      entryPath: 'C:/openclaw/dist/index.js',
+      runner: () => assert.fail('text generation must use the async runner'),
+      asyncRunner,
+    });
+    const secondClient = createOpenClawClient({
+      entryPath: 'C:/openclaw/dist/index.js',
+      runner: () => assert.fail('text generation must use the async runner'),
+      asyncRunner,
+    });
+    const output = (text) => ({
+      status: 0,
+      stdout: JSON.stringify({ status: 'ok', result: { payloads: [{ text }] } }),
+      stderr: '',
+    });
+
+    const first = firstClient.runText({ prompt: 'first job' });
+    for (let attempt = 0; attempt < 50 && startedRuns < 1; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const second = secondClient.runText({ prompt: 'second job' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    try {
+      assert.equal(startedRuns, 1);
+      pendingRuns.shift()(output('first result'));
+      assert.equal((await first).rawText, 'first result');
+      for (let attempt = 0; attempt < 50 && startedRuns < 2; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      assert.equal(startedRuns, 2);
+      pendingRuns.shift()(output('second result'));
+      assert.equal((await second).rawText, 'second result');
+    } finally {
+      while (pendingRuns.length > 0) pendingRuns.shift()(output('cleanup'));
+      await Promise.allSettled([first, second]);
+    }
+  });
+
   it('does not inject the image-only proxy into text inference', async () => {
     const previousProxyUrl = process.env.XHS_IMAGE_PROXY_URL;
     process.env.XHS_IMAGE_PROXY_URL = 'http://127.0.0.1:7897';
@@ -188,27 +281,23 @@ describe('OpenClaw client', () => {
     assert.equal(invocation.options.env, undefined);
   });
 
-  it('uses the model proxy first and falls back to direct text transport', async () => {
+  it('does not proxy the localhost Gateway connection through the model proxy', async () => {
     const previousProxyUrl = process.env.XHS_MODEL_PROXY_URL;
     process.env.XHS_MODEL_PROXY_URL = 'http://127.0.0.1:7897';
     const invocations = [];
     const client = createOpenClawClient({
       entryPath: 'C:/openclaw/dist/index.js',
-      sleep: () => {},
       runner: (_command, _args, options) => {
         invocations.push(options);
-        if (invocations.length === 1) {
-          return { status: 1, stdout: '', stderr: 'fetch failed: ECONNRESET' };
-        }
-        return { status: 0, stdout: JSON.stringify({ final: 'direct fallback' }), stderr: '' };
+        return { status: 0, stdout: JSON.stringify({ final: 'gateway result' }), stderr: '' };
       },
     });
 
     try {
-      const result = await client.runText({ prompt: 'try the configured model proxy first' });
-      assert.equal(result.rawText, 'direct fallback');
-      assert.equal(invocations[0].env.HTTPS_PROXY, 'http://127.0.0.1:7897');
-      assert.equal(invocations[1].env, undefined);
+      const result = await client.runText({ prompt: 'use the local Gateway connection' });
+      assert.equal(result.rawText, 'gateway result');
+      assert.equal(invocations.length, 1);
+      assert.equal(invocations[0].env, undefined);
     } finally {
       if (previousProxyUrl === undefined) delete process.env.XHS_MODEL_PROXY_URL;
       else process.env.XHS_MODEL_PROXY_URL = previousProxyUrl;
@@ -246,12 +335,14 @@ describe('OpenClaw client', () => {
     assert.equal(result.thinking, 'high');
   });
 
-  it('passes the prompt as one argument without enabling a shell', async () => {
+  it('passes the prompt through a temporary file without enabling a shell', async () => {
     let invocation;
+    let submittedPrompt;
     const client = createOpenClawClient({
       entryPath: 'C:/openclaw/dist/index.js',
       runner: (command, args, options) => {
         invocation = { command, args, options };
+        submittedPrompt = readFileSync(args[args.indexOf('--message-file') + 1], 'utf8');
         return {
           status: 0,
           stdout: JSON.stringify({ final: '{"ok":true}' }),
@@ -267,12 +358,12 @@ describe('OpenClaw client', () => {
 
     assert.equal(invocation.command, process.execPath);
     assert.equal(invocation.options.shell, false);
-    assert.equal(invocation.args.at(-1), 'query with & | > shell characters');
-    assert.deepEqual(result, {
-      rawText: '{"ok":true}',
-      model: 'openai/gpt-5.6-sol',
-      thinking: 'high',
-    });
+    assert.equal(invocation.args.includes('query with & | > shell characters'), false);
+    assert.equal(submittedPrompt, 'query with & | > shell characters');
+    assert.equal(result.rawText, '{"ok":true}');
+    assert.equal(result.model, 'openai/gpt-5.6-sol');
+    assert.equal(result.thinking, 'high');
+    assert.equal(result.execution.runtime, 'codex');
   });
 
   it('redacts credential-looking text from OpenClaw failures', async () => {
@@ -325,61 +416,46 @@ describe('OpenClaw client', () => {
     }
   });
 
-  it('retries bounded transient text transport failures with backoff', async () => {
-    const delays = [];
+  it('delegates text transport retry and idempotency to the Gateway', async () => {
     let calls = 0;
     const client = createOpenClawClient({
       entryPath: 'C:/openclaw/dist/index.js',
-      sleep: (milliseconds) => delays.push(milliseconds),
       runner: () => {
         calls += 1;
-        if (calls < 4) {
-          return {
-            status: 1,
-            stdout: '',
-            stderr: 'TypeError: fetch failed causeCode=ECONNRESET message=Connection error.',
-          };
-        }
-        return { status: 0, stdout: JSON.stringify({ final: 'recovered' }), stderr: '' };
+        return {
+          status: 1,
+          stdout: '',
+          stderr: 'TypeError: fetch failed causeCode=ECONNRESET message=Connection error.',
+        };
       },
     });
 
-    const result = await client.runText({ prompt: 'retry a transient connection failure' });
-
-    assert.equal(result.rawText, 'recovered');
-    assert.equal(calls, 4);
-    assert.deepEqual(delays, [5_000, 15_000, 30_000]);
+    await assert.rejects(
+      client.runText({ prompt: 'let the Gateway own transient recovery' }),
+      /ECONNRESET/u,
+    );
+    assert.equal(calls, 1);
   });
 
-  it('reduces thinking effort when retrying a terminated text stream', async () => {
-    const delays = [];
+  it('keeps thinking effort stable for one Gateway-managed run', async () => {
     const thinkingAttempts = [];
     const client = createOpenClawClient({
       entryPath: 'C:/openclaw/dist/index.js',
-      sleep: (milliseconds) => delays.push(milliseconds),
       runner: (_command, args) => {
         const thinking = args[args.indexOf('--thinking') + 1];
         thinkingAttempts.push(thinking);
-        if (thinking !== 'low') {
-          return {
-            status: 1,
-            stdout: '',
-            stderr: 'No text output returned: UND_ERR_SOCKET terminated',
-          };
-        }
-        return { status: 0, stdout: JSON.stringify({ final: 'recovered at low effort' }), stderr: '' };
+        return { status: 0, stdout: JSON.stringify({ final: 'one managed run' }), stderr: '' };
       },
     });
 
-    const result = await client.runText({ prompt: 'recover a terminated response stream' });
+    const result = await client.runText({ prompt: 'run with stable thinking effort' });
 
-    assert.deepEqual(thinkingAttempts, ['high', 'medium', 'low']);
-    assert.deepEqual(delays, [5_000, 15_000]);
-    assert.equal(result.rawText, 'recovered at low effort');
-    assert.equal(result.thinking, 'low');
+    assert.deepEqual(thinkingAttempts, ['high']);
+    assert.equal(result.rawText, 'one managed run');
+    assert.equal(result.thinking, 'high');
   });
 
-  it('keeps an explicit low thinking effort stable across transport retries', async () => {
+  it('passes an explicit low thinking effort to the Gateway', async () => {
     const thinkingAttempts = [];
     const client = createOpenClawClient({
       entryPath: 'C:/openclaw/dist/index.js',
@@ -387,13 +463,6 @@ describe('OpenClaw client', () => {
       runner: (_command, args) => {
         const thinking = args[args.indexOf('--thinking') + 1];
         thinkingAttempts.push(thinking);
-        if (thinkingAttempts.length < 3) {
-          return {
-            status: 1,
-            stdout: '',
-            stderr: 'UND_ERR_SOCKET terminated',
-          };
-        }
         return { status: 0, stdout: JSON.stringify({ final: 'stable at low effort' }), stderr: '' };
       },
     });
@@ -403,7 +472,7 @@ describe('OpenClaw client', () => {
       thinking: 'low',
     });
 
-    assert.deepEqual(thinkingAttempts, ['low', 'low', 'low']);
+    assert.deepEqual(thinkingAttempts, ['low']);
     assert.equal(result.thinking, 'low');
   });
 
