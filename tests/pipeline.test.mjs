@@ -46,6 +46,14 @@ it('asks the image model to render the full page from the structured layout cont
   assert.match(prompt, /"layoutTemplate": "CHECKLIST_RIGHT"/u);
   assert.match(prompt, /主体区域：左侧/u);
   assert.match(prompt, /文字排版区域：右侧/u);
+  assert.match(prompt, /3:4.*1086×1448/u);
+  assert.match(prompt, /禁止白色、深色和暗色背景/u);
+  assert.match(prompt, /字体不超过 3 种/u);
+  assert.match(prompt, /所有汉字和字母.*水平排列/u);
+  assert.match(prompt, /画面主体.*中心/u);
+  assert.match(prompt, /优先采用真实风格/u);
+  assert.match(prompt, /allowedVisibleText.*精简文字/u);
+  assert.match(prompt, /不得照搬正文中的其他长段落/u);
 
   const promptWithoutDisclosure = buildDeliveryImageTaskPrompt({
     post,
@@ -56,6 +64,16 @@ it('asks the image model to render the full page from the structured layout cont
     complianceDisclosure: '',
   });
   assert.doesNotMatch(promptWithoutDisclosure, /AI生成/u);
+
+  const portraitPrompt = buildDeliveryImageTaskPrompt({
+    post,
+    plan: { kind: 'detail', prompt: '人物操作示范页' },
+    visualPage: { ...visualPage, visualSubject: '居中的人物操作示范' },
+    imageIndex: 2,
+    imageCount: 3,
+    complianceDisclosure: '',
+  });
+  assert.match(portraitPrompt, /右下角.*“AI生成”/u);
 
   const detailPrompt = buildDeliveryImageTaskPrompt({
     post,

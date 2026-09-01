@@ -84,6 +84,16 @@ describe('runtime default prompts', () => {
     assert.match(image.content, /至少 3 种不同的版式骨架/);
     assert.match(image.content, /封面标题最多 2 行/);
     assert.match(image.content, /内页禁止海报式满版大字/);
+    assert.match(image.content, /1086×1448/u);
+    assert.match(image.content, /文字.*不得完全照搬正文/u);
+    assert.match(image.content, /第一张.*标题.*核心结论/u);
+    assert.match(image.content, /每套.*不得少于 2 张.*3～5 张/u);
+    assert.match(image.content, /禁止白色背景.*深色.*暗色背景/u);
+    assert.match(image.content, /字体不超过 3 种/u);
+    assert.match(image.content, /所有汉字和字母.*水平排列/u);
+    assert.match(image.content, /真实风格/u);
+    assert.match(image.content, /涉及人像.*右下角.*AI生成/u);
+    assert.match(image.content, /一次处理多组图片.*不同模板和风格/u);
     assert.doesNotMatch(image.content, /本地模板/);
     assert.match(edit.content, /\{\{reviewInstruction\}\}/);
   });

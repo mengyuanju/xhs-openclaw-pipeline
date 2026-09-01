@@ -86,6 +86,13 @@ describe('visual plan contract', () => {
     assert.match(prompt, /mustShow.*具体可见文字.*allowedVisibleText/u);
     assert.match(prompt, /不得要求或暗示 AI 生成的具体校貌、门店、人物或产品是可核验实景/u);
     assert.match(prompt, /中性信息图或明确的示意场景/u);
+    assert.match(prompt, /严格按照正文行文顺序/u);
+    assert.match(prompt, /同一信息焦点.*同一页/u);
+    assert.match(prompt, /第一页.*标题.*核心结论/u);
+    assert.match(prompt, /不得完全照搬正文长句/u);
+    assert.match(prompt, /关键核心信息.*完整覆盖/u);
+    assert.match(prompt, /3:4.*1086×1448/u);
+    assert.match(prompt, /涉及人像.*右下角.*AI生成/u);
     assert.match(prompt, /layoutSchemaVersion.*1/u);
     assert.match(prompt, /layoutTemplate/u);
     assert.match(prompt, /恰好包含 3 项/);

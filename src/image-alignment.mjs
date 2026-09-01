@@ -9,6 +9,18 @@ const FAILURE_CLASSES = new Set([
 ]);
 const MIN_OCR_CONFIDENCE = 0.9;
 const MAX_ALIGNMENT_RESPONSE_ATTEMPTS = 3;
+const PORTRAIT_PATTERN = /(?:人像|人物|真人|模特|肖像|半身|全身|面部|人物操作|人物示范)/u;
+const PORTRAIT_EXCLUSION_PATTERN = /(?:无人物|无人像|不含人物|不出现人物|禁止人物|不要人物|没有人物)/u;
+
+export function imagePageUsesPortrait(page, extraDirection = '') {
+  const description = [
+    page?.visualSubject,
+    page?.layoutDirection,
+    ...(Array.isArray(page?.mustShow) ? page.mustShow : []),
+    extraDirection,
+  ].filter((value) => typeof value === 'string' && value.trim()).join('\n');
+  return !PORTRAIT_EXCLUSION_PATTERN.test(description) && PORTRAIT_PATTERN.test(description);
+}
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -334,13 +346,24 @@ export function createImageAlignmentValidator({
   return async function validateImage({ imagePath, pageIndex, attempt }) {
     const page = visualPage ?? visualPlan?.pages?.[pageIndex - 1];
     if (!page) throw new TypeError(`visual plan page ${pageIndex} is missing`);
-    const allowedVisibleText = complianceDisclosure
+    const requiredDisclosures = [
+      complianceDisclosure,
+      imagePageUsesPortrait(page) ? 'AI生成' : '',
+    ].filter(Boolean);
+    const allowedVisibleText = requiredDisclosures.length > 0
       ? {
         ...page.allowedVisibleText,
-        labels: [...new Set([...(page.allowedVisibleText.labels ?? []), complianceDisclosure])],
+        labels: [...new Set([...(page.allowedVisibleText.labels ?? []), ...requiredDisclosures])],
       }
       : page.allowedVisibleText;
-    const validationPage = { ...page, allowedVisibleText };
+    const validationPage = {
+      ...page,
+      allowedVisibleText,
+      mustShow: [
+        ...(page.mustShow ?? []),
+        ...requiredDisclosures.map((value) => `图片右下角合规标识“${value}”`),
+      ],
+    };
     const prompt = buildImageAlignmentPrompt({
       post,
       visualPage: validationPage,

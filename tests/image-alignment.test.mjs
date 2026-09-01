@@ -7,6 +7,7 @@ import { afterEach, describe, it } from 'node:test';
 import {
   buildImageAlignmentPrompt,
   createImageAlignmentValidator,
+  imagePageUsesPortrait,
   parseImageAlignmentOutput,
 } from '../src/image-alignment.mjs';
 
@@ -348,6 +349,47 @@ describe('image alignment contract', () => {
     assert.equal(result.model, 'fake-vision');
     assert.deepEqual(calls[0].inputPaths, [imagePath]);
     assert.match(calls[0].prompt, /AI生成/);
+  });
+
+  it('requires and accepts a bottom-right AI disclosure for portrait pages', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'xhs-alignment-portrait-'));
+    directories.push(directory);
+    const imagePath = join(directory, '02-steps.png');
+    await writeFile(imagePath, 'fake-image');
+    const portraitPage = {
+      ...fixture().visualPage,
+      visualSubject: '居中的人物操作示范',
+    };
+    let validationPrompt = '';
+
+    assert.equal(imagePageUsesPortrait(fixture().visualPage), false);
+    assert.equal(imagePageUsesPortrait(portraitPage), true);
+
+    const validator = createImageAlignmentValidator({
+      openclaw: {
+        runVision(input) {
+          validationPrompt = input.prompt;
+          return {
+            rawText: JSON.stringify(passingOutput({
+              recognizedText: {
+                ...passingOutput().recognizedText,
+                otherText: ['AI生成'],
+              },
+            })),
+            model: 'fake-vision',
+          };
+        },
+      },
+      post: fixture().post,
+      visualPage: portraitPage,
+      imageCount: 3,
+      complianceDisclosure: '',
+    });
+
+    const result = await validator({ imagePath, pageIndex: 2, attempt: 1 });
+
+    assert.equal(result.passed, true);
+    assert.match(validationPrompt, /右下角.*AI生成/u);
   });
 
   it('retries a bounded malformed vision response before failing image alignment', async () => {
