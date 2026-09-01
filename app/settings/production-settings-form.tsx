@@ -11,6 +11,11 @@ import {
 } from '@/components/ui/select';
 
 import { apiRequest } from '../components/api-client';
+import {
+  ModelApiSettingsSection,
+  type EffectiveModelApi,
+  type ModelApiSettings,
+} from './model-api-settings-section';
 
 type Settings = {
   qualityRepairEnabled: boolean;
@@ -19,9 +24,28 @@ type Settings = {
   qualityRepairMaxAttempts: number;
   aiDisclosureEnabled: boolean;
   aiDisclosureText: string;
+  modelApi: ModelApiSettings;
 };
 
-export function ProductionSettingsForm({ initialRecord }: { initialRecord: { settings: Settings; updatedAt: string } }) {
+const EMPTY_MODEL_API: ModelApiSettings = {
+  textModel: null,
+  screeningModel: null,
+  reviewModel: null,
+  visionModel: null,
+  qualityModel: null,
+  imageModel: null,
+  modelProxyUrl: null,
+  imageProxyUrl: null,
+  imageTimeoutMs: null,
+};
+
+export function ProductionSettingsForm({
+  initialRecord,
+  effectiveModelApi,
+}: {
+  initialRecord: { settings: Settings; updatedAt: string };
+  effectiveModelApi: EffectiveModelApi;
+}) {
   const [settings, setSettings] = useState<Settings>(initialRecord.settings);
   const [updatedAt, setUpdatedAt] = useState(initialRecord.updatedAt);
   const [busy, setBusy] = useState(false);
@@ -30,6 +54,13 @@ export function ProductionSettingsForm({ initialRecord }: { initialRecord: { set
 
   function update<K extends keyof Settings>(key: K, value: Settings[K]) {
     setSettings((current) => ({ ...current, [key]: value }));
+  }
+
+  function updateModelApi<K extends keyof ModelApiSettings>(key: K, value: ModelApiSettings[K]) {
+    setSettings((current) => ({
+      ...current,
+      modelApi: { ...current.modelApi, [key]: value },
+    }));
   }
 
   async function save() {
@@ -55,6 +86,13 @@ export function ProductionSettingsForm({ initialRecord }: { initialRecord: { set
 
   const targetOptions = [1, 2, 3].filter((score) => score > settings.qualityRepairTriggerScore);
   return <div className="settings-stack">
+    <ModelApiSettingsSection
+      value={settings.modelApi}
+      effective={effectiveModelApi}
+      busy={busy}
+      onChange={updateModelApi}
+      onReset={() => update('modelApi', { ...EMPTY_MODEL_API })}
+    />
     <section className="panel settings-section" aria-labelledby="quality-repair-heading">
       <div className="panel-head">
         <div><h2 id="quality-repair-heading">整套图片质量修复</h2><p className="subtle">只有首次终审命中触发分数时才开始；达到目标分数立即停止。</p></div>
