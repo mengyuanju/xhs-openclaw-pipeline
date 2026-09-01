@@ -20,6 +20,9 @@ describe('model API production settings UI', () => {
     assert.match(route, /modelProxyUrl/u);
     assert.match(route, /imageProxyUrl/u);
     assert.match(route, /imageTimeoutMs/u);
+    assert.match(route, /copyGenerationProvider/u);
+    assert.match(route, /dotsBaseUrl/u);
+    assert.match(route, /dotsModel/u);
     assert.match(route, /\.nullable\(\)/u);
     assert.match(route, /\.strict\(\)/u);
     assert.doesNotMatch(route, /apiKey|accessToken|clientSecret/u);
@@ -46,6 +49,10 @@ describe('model API production settings UI', () => {
     assert.match(section, /文本与视觉代理/u);
     assert.match(section, /图片生成代理/u);
     assert.match(section, /图片调用超时/u);
+    assert.match(section, /独立文案提供方/u);
+    assert.match(section, /Dots API 基础地址/u);
+    assert.match(section, /Dots 模型/u);
+    assert.match(section, /XHS_DOTS_API_KEY/u);
     assert.match(section, /不保存 API Key、Token 或 OAuth 授权码/u);
     assert.match(section, /恢复环境配置/u);
     assert.doesNotMatch(section, /name="(?:apiKey|accessToken|clientSecret)"/u);

@@ -20,6 +20,10 @@ const proxyUrlSchema = z.string().trim().min(1).max(500).refine((value) => {
   }
 }, '代理必须是无账号密码的 HTTP(S) URL');
 
+const dotsBaseUrlSchema = z.literal('https://note3-prev-api.askdiandian.com');
+const dotsModelSchema = z.string().trim().min(1).max(200)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u, 'Dots 模型名称格式无效');
+
 const modelApiPatchSchema = z.object({
   textModel: modelRefSchema.nullable().optional(),
   screeningModel: modelRefSchema.nullable().optional(),
@@ -30,6 +34,9 @@ const modelApiPatchSchema = z.object({
   modelProxyUrl: proxyUrlSchema.nullable().optional(),
   imageProxyUrl: proxyUrlSchema.nullable().optional(),
   imageTimeoutMs: z.number().int().min(30_000).max(540_000).nullable().optional(),
+  copyGenerationProvider: z.enum(['OPENCLAW', 'DOTS']).nullable().optional(),
+  dotsBaseUrl: dotsBaseUrlSchema.nullable().optional(),
+  dotsModel: dotsModelSchema.nullable().optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, '至少修改一项模型 API 配置');
 
 const settingsPatchSchema = z.object({

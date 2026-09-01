@@ -3,6 +3,9 @@
 import { Cable, RotateCcw } from 'lucide-react';
 
 export type ModelApiSettings = {
+  copyGenerationProvider: 'OPENCLAW' | 'DOTS' | null;
+  dotsBaseUrl: string | null;
+  dotsModel: string | null;
   textModel: string | null;
   screeningModel: string | null;
   reviewModel: string | null;
@@ -15,6 +18,10 @@ export type ModelApiSettings = {
 };
 
 export type EffectiveModelApi = {
+  copyGenerationProvider: 'OPENCLAW' | 'DOTS';
+  dotsBaseUrl: string;
+  dotsModel: string;
+  dotsApiKeyConfigured: boolean;
   textModel: string;
   screeningModel: string;
   reviewModel: string;
@@ -62,7 +69,7 @@ export function ModelApiSettingsSection({
   return <section className="panel settings-section" aria-labelledby="model-api-heading">
     <div className="panel-head">
       <div>
-        <span className="section-kicker">OpenClaw runtime</span>
+        <span className="section-kicker">Model runtime</span>
         <h2 id="model-api-heading">模型 API 与网络</h2>
         <p className="subtle">数据库配置优先；留空时沿用主机环境变量或项目默认值。</p>
       </div>
@@ -70,10 +77,61 @@ export function ModelApiSettingsSection({
     </div>
 
     <div className="notice">
-      后台不保存 API Key、Token 或 OAuth 授权码。模型认证仍通过主机上的 <span className="mono">openclaw models auth login</span> 管理。
+      后台不保存 API Key、Token 或 OAuth 授权码。OpenClaw 认证由主机管理；Dots Key 仅从 <span className="mono">XHS_DOTS_API_KEY</span> 读取。
     </div>
 
     <div className="form-grid compact-settings-grid">
+      <div className="field">
+        <label htmlFor="model-api-copy-provider">独立文案提供方</label>
+        <select
+          className="input"
+          id="model-api-copy-provider"
+          value={value.copyGenerationProvider ?? ''}
+          onChange={(event) => onChange(
+            'copyGenerationProvider',
+            event.target.value === ''
+              ? null
+              : event.target.value as 'OPENCLAW' | 'DOTS',
+          )}
+        >
+          <option value="">环境或默认值（{effective.copyGenerationProvider}）</option>
+          <option value="OPENCLAW">OpenClaw</option>
+          <option value="DOTS">Dots Chat Completions</option>
+        </select>
+        <small>只切换独立文案的正文生成；检索和独立审核仍由 OpenClaw 执行。</small>
+      </div>
+
+      <div className="field">
+        <label htmlFor="model-api-dots-base-url">Dots API 基础地址</label>
+        <input
+          className="input mono"
+          id="model-api-dots-base-url"
+          type="url"
+          value={value.dotsBaseUrl ?? ''}
+          placeholder={effective.dotsBaseUrl}
+          maxLength={500}
+          autoComplete="off"
+          onChange={(event) => onChange('dotsBaseUrl', optionalText(event.target.value))}
+        />
+        <small>固定为官方文档地址；请求端点自动追加 <span className="mono">/v1/chat/completions</span>。</small>
+      </div>
+
+      <div className="field">
+        <label htmlFor="model-api-dots-model">Dots 模型</label>
+        <input
+          className="input mono"
+          id="model-api-dots-model"
+          value={value.dotsModel ?? ''}
+          placeholder={effective.dotsModel}
+          maxLength={200}
+          pattern="[A-Za-z0-9][A-Za-z0-9._:-]*"
+          spellCheck={false}
+          autoComplete="off"
+          onChange={(event) => onChange('dotsModel', optionalText(event.target.value))}
+        />
+        <small>当前 Key 状态：{effective.dotsApiKeyConfigured ? '服务器已配置' : '尚未配置，请补充 XHS_DOTS_API_KEY'}。</small>
+      </div>
+
       {MODEL_FIELDS.map((field) => <div className="field" key={field.key}>
         <label htmlFor={`model-api-${field.key}`}>{field.label}</label>
         <input

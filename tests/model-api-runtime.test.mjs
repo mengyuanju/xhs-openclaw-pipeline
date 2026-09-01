@@ -73,7 +73,7 @@ describe('model API runtime configuration', () => {
       source('src/admin/image-edit-worker.mjs'),
     ]);
 
-    assert.match(copyRoute, /createOpenClawClient\(\{ modelApi/u);
+    assert.match(copyRoute, /createCopyGenerationClient\(\{ modelApi/u);
     assert.match(pipeline, /createOpenClawClient\(\{ modelApi: productionSettings\.modelApi \}\)/u);
     assert.match(pipeline, /model: effectiveModelApi\.qualityModel/u);
     assert.match(cli, /effectiveModelApiConfig\(productionSettings\.modelApi, env\)/u);

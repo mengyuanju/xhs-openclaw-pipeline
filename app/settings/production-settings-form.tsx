@@ -28,6 +28,9 @@ type Settings = {
 };
 
 const EMPTY_MODEL_API: ModelApiSettings = {
+  copyGenerationProvider: null,
+  dotsBaseUrl: null,
+  dotsModel: null,
   textModel: null,
   screeningModel: null,
   reviewModel: null,

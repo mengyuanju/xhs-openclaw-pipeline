@@ -9,7 +9,7 @@ import {
 } from '../../../src/copy-generation.mjs';
 import { ApiError } from '../../../src/admin/http.mjs';
 import { withAdminStore } from '../../../src/admin/runtime.mjs';
-import { createOpenClawClient } from '../../../src/openclaw.mjs';
+import { createCopyGenerationClient } from '../../../src/copy-generation-client.mjs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -68,7 +68,7 @@ export function POST(request: Request) {
     copyGenerationInProgress = true;
     try {
       const runtime = copyGenerationRuntime();
-      const client = createOpenClawClient({ modelApi: runtime.modelApi });
+      const client = createCopyGenerationClient({ modelApi: runtime.modelApi });
       const generated = await generateCopy({
         client,
         task: { query: input.query, input: input.input },

@@ -1,12 +1,13 @@
 import { withAdminStore } from '../../src/admin/runtime.mjs';
 import { publicModelApiStatus } from '../../src/model-api-config.mjs';
+import type { EffectiveModelApi } from './model-api-settings-section';
 import { ProductionSettingsForm } from './production-settings-form';
 
 export const dynamic = 'force-dynamic';
 
 export default function ProductionSettingsPage() {
   const record = withAdminStore((store: any) => store.getProductionSettings()) as any;
-  const effectiveModelApi = publicModelApiStatus(record.settings.modelApi);
+  const effectiveModelApi = publicModelApiStatus(record.settings.modelApi) as EffectiveModelApi;
   return <>
     <header className="page-header">
       <div>
