@@ -18,6 +18,21 @@ import {
 } from '../src/standalone-image-generation.mjs';
 
 const RUN_ID = '11111111-1111-4111-8111-111111111111';
+const FALLBACK_RUN_ID = '22222222-2222-4222-8222-222222222222';
+const FAILURE_RUN_ID = '33333333-3333-4333-8333-333333333333';
+
+const QUALITY_DIMENSIONS = [
+  'queryRelevance',
+  'contentOriginality',
+  'imageBaseQuality',
+  'imageTextQuality',
+  'imageConsistency',
+  'noteTone',
+  'platformAdaptation',
+  'informationValue',
+  'imageAesthetics',
+  'imageDiversity',
+];
 
 function validSource(imageCount = 3) {
   const post = createMockPost(imageCount);
@@ -29,6 +44,84 @@ function validSource(imageCount = 3) {
       tags: post.tags,
     },
     imagePlan: post.imagePlan,
+  };
+}
+
+function passingAlignment(prompt) {
+  const contract = JSON.parse(prompt.match(
+    /<untrusted_alignment_contract>\n([\s\S]+?)\n<\/untrusted_alignment_contract>/u,
+  )[1]);
+  const allowed = contract.page.allowedVisibleText;
+  return {
+    schemaVersion: 1,
+    subjectMatched: true,
+    sceneMatched: true,
+    headlineMatched: true,
+    bulletCoverage: 1,
+    styleMatched: true,
+    layoutMatched: true,
+    contradictions: [],
+    extraClaims: [],
+    textErrors: [],
+    recognizedText: {
+      headline: allowed.headline,
+      subtitle: allowed.subtitle,
+      bullets: allowed.bullets,
+      otherText: allowed.labels ?? [],
+    },
+    unreadableText: [],
+    hasTraditionalChinese: false,
+    ocrConfidence: 0.98,
+    failureClass: 'PASS',
+    repairInstruction: '',
+  };
+}
+
+function qualityAssessment() {
+  return {
+    schemaVersion: 1,
+    dimensions: Object.fromEntries(QUALITY_DIMENSIONS.map((name) => [name, {
+      score: 3,
+      evidence: [`终审证据 ${name}=3`],
+      applicable: true,
+    }])),
+    issueLabels: [],
+    typeAdjustments: [],
+  };
+}
+
+function liveClient({ runText }) {
+  let imageIndex = 0;
+  const writeGeneratedImage = async (outputPath) => {
+    imageIndex += 1;
+    await sharp({
+      create: {
+        width: 1086,
+        height: 1448,
+        channels: 3,
+        background: {
+          r: 80 + imageIndex * 20,
+          g: 130 + imageIndex * 10,
+          b: 170 - imageIndex * 10,
+        },
+      },
+    }).png().toFile(outputPath);
+    return { outputPath, model: 'fake-image' };
+  };
+  return {
+    runText,
+    runImage({ outputPath }) {
+      return writeGeneratedImage(outputPath);
+    },
+    runImageEdit({ outputPath }) {
+      return writeGeneratedImage(outputPath);
+    },
+    runVision({ prompt }) {
+      const output = prompt.includes('独立于生成模型的图文交付终审员')
+        ? qualityAssessment()
+        : passingAlignment(prompt);
+      return { rawText: JSON.stringify(output), model: 'fake-vision' };
+    },
   };
 }
 
@@ -148,6 +241,96 @@ describe('standalone image generation service', () => {
       ));
       assert.equal(manifest.runId, RUN_ID);
       assert.equal(manifest.images.length, 3);
+    } finally {
+      await rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to a deterministic visual plan when Live text planning loses its socket', async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-image-fallback-'));
+    try {
+      const result = await generateStandaloneImages({
+        source: validSource(),
+        mode: 'LIVE',
+        outputRoot,
+        runId: FALLBACK_RUN_ID,
+        runtime: {
+          client: liveClient({
+            async runText() {
+              throw new Error('OpenClaw text inference failed: UND_ERR_SOCKET terminated');
+            },
+          }),
+          imageConcurrency: 1,
+        },
+      });
+
+      assert.equal(result.runId, FALLBACK_RUN_ID);
+      assert.equal(result.images.length, 3);
+      const runDirectory = join(
+        outputRoot,
+        'standalone-image-generations',
+        FALLBACK_RUN_ID,
+      );
+      const storedPlan = JSON.parse(await readFile(join(runDirectory, 'visual-plan.json'), 'utf8'));
+      assert.equal(storedPlan.model, 'deterministic-transport-fallback');
+      assert.equal(storedPlan.degraded, true);
+      assert.equal(storedPlan.warning.code, 'VISUAL_PLAN_TRANSPORT_FALLBACK');
+
+      const progress = await readStandaloneImageProgress({
+        outputRoot,
+        runId: FALLBACK_RUN_ID,
+      });
+      assert.equal(progress.status, 'COMPLETED');
+      assert.ok(progress.warnings.some(
+        (warning) => warning.code === 'VISUAL_PLAN_TRANSPORT_FALLBACK',
+      ));
+    } finally {
+      await rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('persists the failed stage and a redacted root cause for unrecoverable Live failures', async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-image-diagnostic-'));
+    const fakeSecret = 'sk-test-secret-value-123456789';
+    try {
+      await assert.rejects(
+        generateStandaloneImages({
+          source: validSource(),
+          mode: 'LIVE',
+          outputRoot,
+          runId: FAILURE_RUN_ID,
+          runtime: {
+            client: liveClient({
+              async runText() {
+                throw new Error(`401 unauthorized api_key=${fakeSecret}`);
+              },
+            }),
+          },
+        }),
+        (error) => {
+          assert.match(error.message, /视觉规划失败/u);
+          assert.doesNotMatch(error.message, new RegExp(fakeSecret, 'u'));
+          return true;
+        },
+      );
+
+      const runDirectory = join(
+        outputRoot,
+        'standalone-image-generations',
+        FAILURE_RUN_ID,
+      );
+      const source = JSON.parse(await readFile(join(runDirectory, 'source.json'), 'utf8'));
+      assert.equal(source.query, validSource().query);
+
+      const progress = await readStandaloneImageProgress({
+        outputRoot,
+        runId: FAILURE_RUN_ID,
+      });
+      assert.equal(progress.status, 'FAILED');
+      assert.equal(progress.diagnostic.stage, 'PLANNING');
+      assert.equal(progress.diagnostic.code, 'PLANNING_FAILED');
+      assert.match(progress.diagnostic.message, /401 unauthorized/u);
+      assert.doesNotMatch(progress.diagnostic.message, new RegExp(fakeSecret, 'u'));
     } finally {
       await rm(outputRoot, { recursive: true, force: true });
     }

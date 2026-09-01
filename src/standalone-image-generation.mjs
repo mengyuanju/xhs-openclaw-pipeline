@@ -26,6 +26,7 @@ const IMAGE_FILE = /^\d{2}-[a-z][a-z0-9-]{0,30}\.png$/u;
 const MANIFEST_MAX_BYTES = 200_000;
 const IMAGE_MAX_BYTES = 30 * 1024 * 1024;
 const VISUAL_PLAN_MAX_ATTEMPTS = 3;
+const FAILURE_DETAIL_MAX_LENGTH = 400;
 const PROGRESS_FILE = 'progress.json';
 const PROGRESS_STAGES = new Set([
   'PREPARING',
@@ -39,6 +40,16 @@ const PROGRESS_STAGES = new Set([
 ]);
 const LEGACY_BACKGROUND_ONLY_MARKER = '整套图片均由图像模型逐张生成视觉底图';
 const ONE_PASS_IMAGE_MARKER = '整套图片由图像模型一次性完成场景与文字排版';
+const FAILURE_STAGE_LABELS = {
+  PREPARING: '准备阶段',
+  PLANNING: '视觉规划',
+  GENERATING: '图片生成',
+  ALIGNING: '图文对齐',
+  QUALITY_CHECK: '质量检查',
+  FINALIZING: '结果保存',
+};
+const TRANSIENT_MODEL_FAILURE = /(?:UND_ERR_SOCKET|terminated|socket hang up|fetch failed|network|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|timeout|timed out|no text output returned)/iu;
+const AUTHORIZATION_FAILURE = /(?:\b401\b|\b403\b|unauthori[sz]ed|forbidden|invalid api[_ -]?key|authentication failed|permission denied)/iu;
 
 export class StandaloneImageConfirmationError extends Error {
   constructor(message = 'Live image generation requires explicit cost confirmation') {
@@ -48,17 +59,58 @@ export class StandaloneImageConfirmationError extends Error {
 }
 
 export class StandaloneImageAlignmentError extends Error {
-  constructor(message = '图片 OCR 与图文对齐验收失败') {
-    super(message);
+  constructor(message = '图片 OCR 与图文对齐验收失败', options = {}) {
+    super(message, { cause: options.cause });
     this.name = 'StandaloneImageAlignmentError';
+    this.stage = 'ALIGNING';
+    this.code = 'ALIGNMENT_FAILED';
+    this.detail = sanitizedFailureDetail(options.cause ?? message);
   }
 }
 
 export class StandaloneImageGenerationError extends Error {
-  constructor(message = '图片生成失败，请稍后重试', options) {
-    super(message, options);
+  constructor(message, options = {}) {
+    const stage = PROGRESS_STAGES.has(options.stage) && options.stage !== 'FAILED'
+      ? options.stage
+      : 'GENERATING';
+    const detail = sanitizedFailureDetail(options.cause ?? message);
+    const safeMessage = message === undefined
+      ? `${FAILURE_STAGE_LABELS[stage] ?? '图片生成'}失败：${detail || '未知错误，请稍后重试'}`
+      : sanitizedFailureDetail(message);
+    super(safeMessage, { cause: options.cause });
     this.name = 'StandaloneImageGenerationError';
+    this.stage = stage;
+    this.code = typeof options.code === 'string' ? options.code : `${stage}_FAILED`;
+    this.detail = detail;
   }
+}
+
+function errorChainText(error) {
+  const messages = [];
+  const visited = new Set();
+  let current = error;
+  while (current !== undefined && current !== null && messages.length < 4 && !visited.has(current)) {
+    if (typeof current === 'object') visited.add(current);
+    const message = current instanceof Error ? current.message : String(current);
+    if (message.trim() && !messages.includes(message.trim())) messages.push(message.trim());
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return messages.join('：');
+}
+
+function sanitizedFailureDetail(error) {
+  return errorChainText(error)
+    .replace(/\bBearer\s+[^\s,;]+/giu, 'Bearer [REDACTED]')
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/giu, '[REDACTED]')
+    .replace(/\b(api[_-]?key|token|authorization)\b\s*[:=]\s*[^\s,;]+/giu, '$1=[REDACTED]')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .slice(0, FAILURE_DETAIL_MAX_LENGTH);
+}
+
+function isTransientModelFailure(error) {
+  const detail = errorChainText(error);
+  return !AUTHORIZATION_FAILURE.test(detail) && TRANSIENT_MODEL_FAILURE.test(detail);
 }
 
 function boundedText(value, field, minimum, maximum) {
@@ -73,6 +125,30 @@ function boundedText(value, field, minimum, maximum) {
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizedOperationalNotice(value, field) {
+  if (value === null || value === undefined) return null;
+  if (!isRecord(value) || !PROGRESS_STAGES.has(value.stage)
+    || typeof value.code !== 'string' || !/^[A-Z][A-Z0-9_]{1,63}$/u.test(value.code)) {
+    throw new TypeError(`${field} is invalid`);
+  }
+  return {
+    stage: value.stage,
+    code: value.code,
+    message: boundedText(value.message, `${field}.message`, 1, 500),
+  };
+}
+
+function failureDiagnostic(error, fallbackStage) {
+  const stage = PROGRESS_STAGES.has(error?.stage) && error.stage !== 'FAILED'
+    ? error.stage
+    : fallbackStage;
+  return {
+    stage,
+    code: typeof error?.code === 'string' ? error.code : `${stage}_FAILED`,
+    message: sanitizedFailureDetail(error?.detail || error?.cause || error) || '未知错误',
+  };
 }
 
 function validatedRunId(value) {
@@ -122,6 +198,8 @@ function createProgressReporter({ outputDir, runId, mode, imageCount, onProgress
   let lastPercent = 0;
   let completedImages = 0;
   let estimatedTotalMs = estimateStandaloneImageDuration({ mode, imageCount });
+  const warnings = [];
+  let diagnostic = null;
   let writeQueue = Promise.resolve();
 
   return function reportProgress(update) {
@@ -143,6 +221,16 @@ function createProgressReporter({ outputDir, runId, mode, imageCount, onProgress
           Math.ceil(elapsedMs * 100 / progressPercent),
         );
       }
+      const warning = normalizedOperationalNotice(update.warning, 'progress.warning');
+      if (warning && !warnings.some((item) => item.code === warning.code
+        && item.message === warning.message)) {
+        warnings.push(warning);
+      }
+      const nextDiagnostic = normalizedOperationalNotice(
+        update.diagnostic,
+        'progress.diagnostic',
+      );
+      if (nextDiagnostic) diagnostic = nextDiagnostic;
       const terminal = ['COMPLETED', 'FAILED'].includes(update.stage);
       const snapshot = {
         runId,
@@ -164,6 +252,8 @@ function createProgressReporter({ outputDir, runId, mode, imageCount, onProgress
         elapsedMs,
         estimatedRemainingMs: terminal ? 0 : Math.max(0, estimatedTotalMs - elapsedMs),
         estimateBasis: 'mode-and-page-count',
+        warnings: [...warnings],
+        diagnostic,
         error: typeof update.error === 'string' ? update.error.slice(0, 500) : null,
         result: update.result ?? null,
       };
@@ -375,11 +465,29 @@ async function liveVisualPlan(client, post, imageCount) {
     const prompt = attempt === 0
       ? buildVisualPlanPrompt(post, { imageCount })
       : visualPlanRepairPrompt(post, imageCount, lastError);
-    const planned = await client.runText({ prompt });
+    let planned;
+    try {
+      planned = await client.runText({ prompt });
+    } catch (error) {
+      if (!isTransientModelFailure(error)) throw error;
+      const detail = sanitizedFailureDetail(error);
+      return {
+        visualPlan: createMockVisualPlan(post, { imageCount }),
+        model: 'deterministic-transport-fallback',
+        degraded: true,
+        warning: {
+          stage: 'PLANNING',
+          code: 'VISUAL_PLAN_TRANSPORT_FALLBACK',
+          message: `视觉规划模型连接中断，已使用确定性规划继续生成：${detail}`.slice(0, 500),
+        },
+      };
+    }
     try {
       return {
         visualPlan: parseVisualPlanOutput(planned.rawText, { post, imageCount }),
         model: planned.model,
+        degraded: false,
+        warning: null,
       };
     } catch (error) {
       lastError = error;
@@ -388,6 +496,13 @@ async function liveVisualPlan(client, post, imageCount) {
   return {
     visualPlan: createMockVisualPlan(post, { imageCount }),
     model: 'deterministic-fallback',
+    degraded: true,
+    warning: {
+      stage: 'PLANNING',
+      code: 'VISUAL_PLAN_SCHEMA_FALLBACK',
+      message: `视觉规划模型连续返回无效结构，已使用确定性规划继续生成：${sanitizedFailureDetail(lastError)}`
+        .slice(0, 500),
+    },
   };
 }
 
@@ -431,6 +546,7 @@ export async function generateStandaloneImages({
     onProgress,
   });
   const completedPages = new Set();
+  let activeStage = 'PREPARING';
 
   try {
     await reportProgress({
@@ -438,21 +554,37 @@ export async function generateStandaloneImages({
       progressPercent: 3,
       message: '正在准备图片生成环境',
     });
+    await writeJsonAtomic(join(outputDir, 'source.json'), { query, post });
     const productionSettings = normalizeProductionSettings(runtime.productionSettings ?? {});
     const complianceDisclosure = productionDisclosure(productionSettings);
+    activeStage = 'PLANNING';
     await reportProgress({
       stage: 'PLANNING',
       progressPercent: 8,
       message: mock ? '正在创建 Mock 视觉规划' : '正在调用模型创建视觉规划',
     });
     const planned = mock
-      ? { visualPlan: createMockVisualPlan(post, { imageCount }), model: null }
+      ? {
+        visualPlan: createMockVisualPlan(post, { imageCount }),
+        model: null,
+        degraded: false,
+        warning: null,
+      }
       : await liveVisualPlan(runtime.client, post, imageCount);
     const visualPlan = planned.visualPlan;
+    await writeJsonAtomic(join(outputDir, 'visual-plan.json'), {
+      model: planned.model,
+      degraded: planned.degraded === true,
+      warning: planned.warning ?? null,
+      value: visualPlan,
+    });
     await reportProgress({
       stage: 'PLANNING',
       progressPercent: 18,
-      message: `视觉规划已完成，共 ${imageCount} 页`,
+      message: planned.degraded
+        ? `视觉规划模型不可用，已切换确定性规划并继续生成，共 ${imageCount} 页`
+        : `视觉规划已完成，共 ${imageCount} 页`,
+      warning: planned.warning,
     });
     const visualReference = visualReferenceForRuntime(runtime.visualReference);
     const imagePrompts = post.imagePlan.map((plan, index) => {
@@ -490,6 +622,7 @@ export async function generateStandaloneImages({
       complianceDisclosure,
     }));
     let images;
+    activeStage = 'GENERATING';
     try {
       await reportProgress({
         stage: 'GENERATING',
@@ -545,6 +678,7 @@ export async function generateStandaloneImages({
       completedImages: imageCount,
       message: `${imageCount} 页图片已全部生成`,
     });
+    activeStage = 'QUALITY_CHECK';
     let rubricAssessment = null;
     if (!mock) {
       await reportProgress({
@@ -576,16 +710,12 @@ export async function generateStandaloneImages({
       rubricAssessment,
     });
     const result = publicResult({ runId, mode, images, qc });
+    activeStage = 'FINALIZING';
     await reportProgress({
       stage: 'FINALIZING',
       progressPercent: 96,
       completedImages: imageCount,
       message: '正在保存运行结果和图片清单',
-    });
-    await writeJsonAtomic(join(outputDir, 'source.json'), { query, post });
-    await writeJsonAtomic(join(outputDir, 'visual-plan.json'), {
-      model: planned.model,
-      value: visualPlan,
     });
     await writeJsonAtomic(join(outputDir, 'qc.json'), qc);
     await writeJsonAtomic(join(outputDir, 'result.json'), result);
@@ -601,13 +731,19 @@ export async function generateStandaloneImages({
     const failure = error instanceof StandaloneImageAlignmentError
       || error instanceof StandaloneImageGenerationError
       ? error
-      : new StandaloneImageGenerationError(undefined, { cause: error });
+      : new StandaloneImageGenerationError(undefined, {
+        cause: error,
+        stage: activeStage,
+        code: `${activeStage}_FAILED`,
+      });
+    const diagnostic = failureDiagnostic(failure, activeStage);
     await reportProgress({
       stage: 'FAILED',
       progressPercent: 99,
       completedImages: completedPages.size,
       message: failure.message,
       error: failure.message,
+      diagnostic,
     }).catch(() => {});
     throw failure;
   }
@@ -643,6 +779,13 @@ export async function readStandaloneImageProgress({ outputRoot, runId: rawRunId 
   }
   const elapsedMs = Math.max(0, (finishedAtMs ?? Date.now()) - startedAtMs);
   const estimateOverdue = value.status === 'RUNNING' && elapsedMs >= value.estimatedTotalMs;
+  if (value.warnings !== undefined
+    && (!Array.isArray(value.warnings) || value.warnings.length > 10)) {
+    throw new TypeError('standalone image progress warnings are invalid');
+  }
+  const warnings = (value.warnings ?? []).map((warning, index) =>
+    normalizedOperationalNotice(warning, `progress.warnings[${index}]`));
+  const diagnostic = normalizedOperationalNotice(value.diagnostic, 'progress.diagnostic');
   return {
     runId,
     mode: value.mode,
@@ -665,6 +808,8 @@ export async function readStandaloneImageProgress({ outputRoot, runId: rawRunId 
       : 0,
     estimateBasis: 'mode-and-page-count',
     estimateOverdue,
+    warnings,
+    diagnostic,
     error: typeof value.error === 'string' ? value.error.slice(0, 500) : null,
     result: value.status === 'COMPLETED' ? normalizedStoredResult(value.result, runId) : null,
   };
