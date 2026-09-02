@@ -35,6 +35,23 @@ function rejectingReview() {
 }
 
 describe('standalone copy generation', () => {
+  it('normalizes historical literal newline escapes in the API response', () => {
+    const historicalPost = createMockPost(3);
+    const expectedBody = historicalPost.body;
+    historicalPost.body = expectedBody.replaceAll('\n', '\\n');
+    const review = JSON.parse(passingReview());
+
+    const response = toCopyGenerationResponse({
+      post: historicalPost,
+      model: 'openai/gpt-5.6-luna',
+      stageReviews: { originalText: review, reviewedText: review },
+    });
+
+    assert.equal(response.original.copy.body, expectedBody);
+    assert.equal(response.reviewed.copy.body, expectedBody);
+    assert.equal(response.copy.body, expectedBody);
+  });
+
   it('returns the first draft unchanged when its review passes', async () => {
     const calls = [];
     const stages = [];

@@ -108,6 +108,17 @@ describe('post output contract', () => {
     assert.equal(post.platform.target, '小红书');
   });
 
+  it('normalizes double-escaped model line breaks before validating the body', () => {
+    const input = validPost();
+    const expectedBody = input.body;
+    input.body = expectedBody.replaceAll('\n', '\\n');
+
+    const post = parsePostOutput(JSON.stringify(input));
+
+    assert.equal(post.body, expectedBody);
+    assert.doesNotMatch(post.body, /\\n/u);
+  });
+
   it('rejects an overlong title', () => {
     const input = validPost();
     input.title = '桌'.repeat(26);

@@ -31,6 +31,11 @@ function visibleLength(value) {
   return [...GRAPHEME_SEGMENTER.segment(value)].length;
 }
 
+export function normalizeProseLineBreaks(value) {
+  if (typeof value !== 'string') return value;
+  return value.replace(/\\r\\n|\\n|\\r/gu, '\n');
+}
+
 function normalizedTopicKey(value) {
   return String(value ?? '')
     .normalize('NFKC')
@@ -247,7 +252,7 @@ function validatePost(value, { imageCount = 3, allowedSources = [], query = '' }
   const judgement = expectRecord(root.taskJudgement, 'taskJudgement');
   const platform = expectRecord(root.platform, 'platform');
   const title = expectString(root.title, 'title', { max: 25 });
-  const body = expectString(root.body, 'body', { min: 200, max: 700 });
+  const body = expectString(normalizeProseLineBreaks(root.body), 'body', { min: 200, max: 700 });
   const hasQuery = typeof query === 'string' && query.trim() !== '';
   const bodyLength = visibleLength(body);
   if (hasQuery && (bodyLength < 400 || bodyLength > 600)) {

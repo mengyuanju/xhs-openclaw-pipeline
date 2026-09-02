@@ -9,6 +9,7 @@ import { createOpenClawClient } from './openclaw.mjs';
 import {
   buildPostPrompt,
   filterAllowedSourceReferences,
+  normalizeProseLineBreaks,
   parsePostCandidate,
   parsePostOutput,
 } from './post-contract.mjs';
@@ -463,7 +464,11 @@ export async function generateCopy({
 }
 
 function copyFrom(post) {
-  return { title: post.title, body: post.body, tags: post.tags };
+  return {
+    title: post.title,
+    body: normalizeProseLineBreaks(post.body),
+    tags: post.tags,
+  };
 }
 
 function metadataFrom(post) {
