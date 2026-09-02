@@ -108,6 +108,15 @@ describe('standalone copy generation persistence', () => {
       assert.equal(failed.error, '联网研究失败 Bearer [REDACTED_TOKEN]，请重试');
       assert.match(failed.finishedAt, /^\d{4}-\d{2}-\d{2}T/u);
       assert.deepEqual(store.listStandaloneCopyGenerationJobs(), [failed]);
+
+      const overlong = store.createStandaloneCopyGenerationJob({ query: '错误信息过长' });
+      const boundedFailure = store.failStandaloneCopyGenerationJob(
+        overlong.id,
+        `联网失败 Bearer abcdefghijklmnop ${'详细原因'.repeat(400)}`,
+      );
+      assert.equal([...boundedFailure.error].length, 1_000);
+      assert.match(boundedFailure.error, /Bearer \[REDACTED_TOKEN\]/u);
+      assert.ok(boundedFailure.error.endsWith('…'));
     } finally {
       db.close();
     }

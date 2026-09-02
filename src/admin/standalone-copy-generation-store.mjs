@@ -46,7 +46,12 @@ function redactedSecrets(value) {
 }
 
 function redactedText(value, field, maxLength) {
-  return redactedSecrets(boundedText(value, field, maxLength));
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new TypeError(`${field} must be a non-empty string`);
+  }
+  const redacted = [...redactedSecrets(value.trim())];
+  if (redacted.length <= maxLength) return redacted.join('');
+  return `${redacted.slice(0, maxLength - 1).join('')}…`;
 }
 
 function redactedJson(value, field, maxBytes) {

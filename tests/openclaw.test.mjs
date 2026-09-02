@@ -1009,6 +1009,42 @@ describe('OpenClaw client', () => {
     assert.equal(result.provider, 'codex');
   });
 
+  it('retries once when the web-search child process itself reaches its timeout', async () => {
+    let calls = 0;
+    const delays = [];
+    const client = createOpenClawClient({
+      entryPath: 'C:/openclaw/dist/index.js',
+      runner: () => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            status: null,
+            stdout: '',
+            stderr: '',
+            error: Object.assign(new Error('web search process exceeded its budget'), {
+              code: 'ETIMEDOUT',
+            }),
+          };
+        }
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            provider: 'codex',
+            outputs: [{ result: { results: [{ url: 'https://example.com/source' }] } }],
+          }),
+          stderr: '',
+        };
+      },
+      asyncSleep: async (milliseconds) => { delays.push(milliseconds); },
+    });
+
+    const result = await client.runWebSearch({ query: '需要核验的主题', provider: 'codex' });
+
+    assert.equal(calls, 2);
+    assert.deepEqual(delays, [2_000]);
+    assert.equal(result.provider, 'codex');
+  });
+
   it('caps transient web-search recovery at one direct retry', async () => {
     let calls = 0;
     const delays = [];

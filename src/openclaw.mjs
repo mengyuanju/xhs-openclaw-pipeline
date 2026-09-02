@@ -112,6 +112,7 @@ async function runWithTransportRetryAsync({
   sleep,
   beforeRetry,
   verifySuccess,
+  retryProcessTimeouts = false,
   retryDelaysMs = TRANSPORT_RETRY_DELAYS_MS,
 }) {
   let result;
@@ -127,8 +128,10 @@ async function runWithTransportRetryAsync({
     const missingExpectedOutput = processSucceeded && Boolean(verifySuccess);
     const detail = missingExpectedOutput ? 'expected output file missing' : failureDetail(result);
     const childProcessTimedOut = result.error?.code === 'ETIMEDOUT';
-    if (childProcessTimedOut || (!missingExpectedOutput && !TRANSIENT_TRANSPORT_ERROR.test(detail))
-      || attempt === retryDelaysMs.length) {
+    const retryable = childProcessTimedOut
+      ? retryProcessTimeouts
+      : missingExpectedOutput || TRANSIENT_TRANSPORT_ERROR.test(detail);
+    if (!retryable || attempt === retryDelaysMs.length) {
       return result;
     }
     beforeRetry?.();
@@ -388,6 +391,7 @@ export function createOpenClawClient({
         optionsForAttempt: (attempt) => (attempt === 0
           ? withModelProxy(processOptions, configuration.modelProxyUrl)
           : processOptions),
+        retryProcessTimeouts: true,
         retryDelaysMs: WEB_SEARCH_RETRY_DELAYS_MS,
       });
       if (processResult.error || processResult.status !== 0) {
