@@ -16,6 +16,7 @@ const DEFAULT_VISION_TIMEOUT_MS = 300_000;
 const DEFAULT_TEXT_THINKING = 'high';
 const IMAGE_GENERATION_SIZE = '1152x1536';
 const TRANSPORT_RETRY_DELAYS_MS = [5_000, 15_000, 30_000];
+const WEB_SEARCH_RETRY_DELAYS_MS = [2_000];
 const TRANSIENT_TRANSPORT_ERROR = /\b(?:ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET)\b|fetch failed|connection error|other side closed|reconnecting|model\/list timed out/iu;
 const TEXT_THINKING_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 
@@ -111,9 +112,10 @@ async function runWithTransportRetryAsync({
   sleep,
   beforeRetry,
   verifySuccess,
+  retryDelaysMs = TRANSPORT_RETRY_DELAYS_MS,
 }) {
   let result;
-  for (let attempt = 0; attempt <= TRANSPORT_RETRY_DELAYS_MS.length; attempt += 1) {
+  for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
     result = await runner(
       nodePath,
       argsForAttempt?.(attempt) ?? args,
@@ -126,11 +128,11 @@ async function runWithTransportRetryAsync({
     const detail = missingExpectedOutput ? 'expected output file missing' : failureDetail(result);
     const childProcessTimedOut = result.error?.code === 'ETIMEDOUT';
     if (childProcessTimedOut || (!missingExpectedOutput && !TRANSIENT_TRANSPORT_ERROR.test(detail))
-      || attempt === TRANSPORT_RETRY_DELAYS_MS.length) {
+      || attempt === retryDelaysMs.length) {
       return result;
     }
     beforeRetry?.();
-    await sleep(TRANSPORT_RETRY_DELAYS_MS[attempt]);
+    await sleep(retryDelaysMs[attempt]);
   }
   return result;
 }
@@ -378,6 +380,7 @@ export function createOpenClawClient({
         optionsForAttempt: (attempt) => (attempt === 0
           ? withModelProxy(processOptions, configuration.modelProxyUrl)
           : processOptions),
+        retryDelaysMs: WEB_SEARCH_RETRY_DELAYS_MS,
       });
       if (processResult.error || processResult.status !== 0) {
         const detail = redact(failureDetail(processResult));

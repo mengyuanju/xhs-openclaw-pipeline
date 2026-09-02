@@ -942,8 +942,29 @@ describe('OpenClaw client', () => {
     const result = await client.runWebSearch({ query: '需要核验的主题', provider: 'codex' });
 
     assert.equal(calls, 2);
-    assert.deepEqual(delays, [5_000]);
+    assert.deepEqual(delays, [2_000]);
     assert.equal(result.provider, 'codex');
+  });
+
+  it('caps transient web-search recovery at one direct retry', async () => {
+    let calls = 0;
+    const delays = [];
+    const client = createOpenClawClient({
+      entryPath: 'C:/openclaw/dist/index.js',
+      runner: () => {
+        calls += 1;
+        return { status: 1, stdout: '', stderr: 'Error: Reconnecting... 2/5' };
+      },
+      asyncSleep: async (milliseconds) => { delays.push(milliseconds); },
+    });
+
+    await assert.rejects(
+      client.runWebSearch({ query: '需要核验的主题', provider: 'codex' }),
+      /Reconnecting/iu,
+    );
+
+    assert.equal(calls, 2);
+    assert.deepEqual(delays, [2_000]);
   });
 
   it('validates web search input before starting OpenClaw', async () => {

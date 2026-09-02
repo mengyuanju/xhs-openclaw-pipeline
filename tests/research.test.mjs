@@ -109,7 +109,12 @@ describe('web research snapshots', () => {
       now: () => NOW,
     });
 
-    assert.equal(calls.length, 4);
+    assert.equal(calls.length, 3);
+    assert.deepEqual(calls.map(({ provider }) => provider), [
+      'codex',
+      'duckduckgo',
+      'duckduckgo',
+    ]);
     assert.match(calls[2].query, /官方|标准|技术规范/u);
     assert.equal(snapshot.provider, 'duckduckgo');
     assert.deepEqual(researchSourceUrls(snapshot), [
@@ -192,7 +197,6 @@ describe('web research snapshots', () => {
     assert.deepEqual(snapshot.attempts.map(({ provider, status }) => ({ provider, status })), [
       { provider: 'codex', status: 'FAILED' },
       { provider: 'duckduckgo', status: 'FAILED' },
-      { provider: 'codex', status: 'FAILED' },
       { provider: 'duckduckgo', status: 'FAILED' },
     ]);
   });

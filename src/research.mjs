@@ -220,6 +220,7 @@ export async function createResearchSnapshot({
   }
   const searchedAt = normalizedTimestamp(now(), 'research searchedAt');
   const attempts = [];
+  const unavailableProviders = new Set();
   const authorityQuery = `${normalizedQuery} 官方 标准 技术规范`.slice(0, 500);
   const queryVariants = [...new Set([normalizedQuery, authorityQuery])];
   let bestFallback = null;
@@ -228,6 +229,7 @@ export async function createResearchSnapshot({
     for (const rawProvider of providers) {
       if (attempts.length >= MAX_ATTEMPTS) break searchLoop;
       const provider = normalizedProvider(rawProvider);
+      if (unavailableProviders.has(provider)) continue;
       try {
         const response = await client.runWebSearch({ query: searchQuery, provider, limit });
         const actualProvider = normalizedProvider(response?.provider ?? provider);
@@ -269,6 +271,7 @@ export async function createResearchSnapshot({
           bestFallback = candidate;
         }
       } catch (error) {
+        unavailableProviders.add(provider);
         attempts.push({ provider, status: 'FAILED', error: redactedError(error) });
       }
     }
