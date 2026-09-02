@@ -8,6 +8,14 @@ const MAX_JOB_LIST_SIZE = 50;
 const MAX_TIMING_DURATION_MS = 24 * 60 * 60_000;
 const MAX_TIMING_SAMPLES = 1_000;
 const THINKING_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+const COPY_GENERATION_JOB_STAGES = new Set([
+  'QUERY_REVIEW',
+  'RESEARCH',
+  'ORIGINAL_GENERATION',
+  'ORIGINAL_REVIEW',
+  'REVIEWED_GENERATION',
+  'REVIEWED_REVIEW',
+]);
 const TIMING_COLUMNS = [
   ['queryReviewMs', 'query_review_ms'],
   ['researchMs', 'research_ms'],
@@ -181,6 +189,8 @@ function rowToStandaloneCopyGenerationJob(row) {
     query: row.query,
     status: row.status,
     generationId: row.generation_id === null ? null : Number(row.generation_id),
+    currentStage: normalizedJobStage(row.current_stage ?? 'QUERY_REVIEW'),
+    stageUpdatedAt: row.stage_updated_at ?? row.created_at,
     error: row.error,
     createdAt: row.created_at,
     finishedAt: row.finished_at,
@@ -193,6 +203,14 @@ function normalizedJobId(value) {
     throw new RangeError('copy generation job id must be a positive integer');
   }
   return id;
+}
+
+function normalizedJobStage(value) {
+  const stage = typeof value === 'string' ? value.trim().toUpperCase() : '';
+  if (!COPY_GENERATION_JOB_STAGES.has(stage)) {
+    throw new TypeError('copy generation job stage is invalid');
+  }
+  return stage;
 }
 
 export function initializeStandaloneCopyGenerationSchema(db) {
@@ -229,6 +247,9 @@ export function initializeStandaloneCopyGenerationSchema(db) {
       query TEXT NOT NULL,
       status TEXT NOT NULL CHECK (status IN ('RUNNING', 'COMPLETED', 'FAILED')),
       generation_id INTEGER REFERENCES standalone_copy_generations(id) ON DELETE RESTRICT,
+      current_stage TEXT NOT NULL DEFAULT 'QUERY_REVIEW'
+        CHECK (current_stage IN ('QUERY_REVIEW', 'RESEARCH', 'ORIGINAL_GENERATION', 'ORIGINAL_REVIEW', 'REVIEWED_GENERATION', 'REVIEWED_REVIEW')),
+      stage_updated_at TEXT,
       error TEXT,
       created_at TEXT NOT NULL,
       finished_at TEXT,
@@ -257,6 +278,20 @@ export function initializeStandaloneCopyGenerationSchema(db) {
         CHECK (${column} IS NULL OR ${column} IN ('minimal', 'low', 'medium', 'high', 'xhigh', 'max'))`);
     }
   }
+  const jobColumns = new Set(
+    db.prepare('PRAGMA table_info(standalone_copy_generation_jobs)').all()
+      .map((column) => column.name),
+  );
+  if (!jobColumns.has('current_stage')) {
+    db.exec(`ALTER TABLE standalone_copy_generation_jobs
+      ADD COLUMN current_stage TEXT NOT NULL DEFAULT 'QUERY_REVIEW'
+      CHECK (current_stage IN ('QUERY_REVIEW', 'RESEARCH', 'ORIGINAL_GENERATION', 'ORIGINAL_REVIEW', 'REVIEWED_GENERATION', 'REVIEWED_REVIEW'))`);
+  }
+  if (!jobColumns.has('stage_updated_at')) {
+    db.exec('ALTER TABLE standalone_copy_generation_jobs ADD COLUMN stage_updated_at TEXT');
+  }
+  db.exec(`UPDATE standalone_copy_generation_jobs
+    SET stage_updated_at = COALESCE(stage_updated_at, created_at)`);
 }
 
 export function createStandaloneCopyGenerationStore(db) {
@@ -265,12 +300,30 @@ export function createStandaloneCopyGenerationStore(db) {
       const query = boundedText(rawQuery, 'copy generation job query', 500);
       const createdAt = new Date().toISOString();
       const result = db.prepare(`
-        INSERT INTO standalone_copy_generation_jobs (query, status, created_at)
-        VALUES (?, 'RUNNING', ?)
-      `).run(query, createdAt);
+        INSERT INTO standalone_copy_generation_jobs
+          (query, status, current_stage, stage_updated_at, created_at)
+        VALUES (?, 'RUNNING', 'QUERY_REVIEW', ?, ?)
+      `).run(query, createdAt, createdAt);
       return rowToStandaloneCopyGenerationJob(
         db.prepare('SELECT * FROM standalone_copy_generation_jobs WHERE id = ?')
           .get(Number(result.lastInsertRowid)),
+      );
+    },
+
+    updateStandaloneCopyGenerationJobStage(rawJobId, rawStage) {
+      const jobId = normalizedJobId(rawJobId);
+      const stage = normalizedJobStage(rawStage);
+      const stageUpdatedAt = new Date().toISOString();
+      const result = db.prepare(`
+        UPDATE standalone_copy_generation_jobs
+        SET current_stage = ?, stage_updated_at = ?
+        WHERE id = ? AND status = 'RUNNING'
+      `).run(stage, stageUpdatedAt, jobId);
+      if (Number(result.changes) !== 1) {
+        throw new Error('running copy generation job not found');
+      }
+      return rowToStandaloneCopyGenerationJob(
+        db.prepare('SELECT * FROM standalone_copy_generation_jobs WHERE id = ?').get(jobId),
       );
     },
 

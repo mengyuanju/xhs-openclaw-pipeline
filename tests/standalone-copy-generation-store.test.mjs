@@ -84,9 +84,21 @@ describe('standalone copy generation persistence', () => {
       assert.equal(running.id, 1);
       assert.equal(running.status, 'RUNNING');
       assert.equal(running.query, '刷新后仍能看到我');
+      assert.equal(running.currentStage, 'QUERY_REVIEW');
+      assert.match(running.stageUpdatedAt, /^\d{4}-\d{2}-\d{2}T/u);
       assert.equal(running.error, null);
       assert.equal(running.finishedAt, null);
       assert.deepEqual(store.listStandaloneCopyGenerationJobs(), [running]);
+
+      const researching = store.updateStandaloneCopyGenerationJobStage(running.id, 'RESEARCH');
+      assert.equal(researching.currentStage, 'RESEARCH');
+      assert.match(researching.stageUpdatedAt, /^\d{4}-\d{2}-\d{2}T/u);
+      assert.deepEqual(store.listStandaloneCopyGenerationJobs(), [researching]);
+
+      assert.throws(
+        () => store.updateStandaloneCopyGenerationJobStage(running.id, 'UNKNOWN_STAGE'),
+        /stage/iu,
+      );
 
       const failed = store.failStandaloneCopyGenerationJob(
         running.id,
@@ -134,6 +146,12 @@ describe('standalone copy generation persistence', () => {
         db.prepare('SELECT COUNT(*) AS count FROM standalone_copy_generations').get().count,
         1,
       );
+      const jobColumns = new Set(
+        db.prepare('PRAGMA table_info(standalone_copy_generation_jobs)').all()
+          .map((column) => column.name),
+      );
+      assert.equal(jobColumns.has('current_stage'), true);
+      assert.equal(jobColumns.has('stage_updated_at'), true);
     } finally {
       db.close();
     }

@@ -11,11 +11,21 @@ import type {
 const HISTORY_URL = '/api/copy-generations?page=1&pageSize=20';
 const RUNNING_JOB_POLL_MS = 2_500;
 
+export type CopyGenerationStage =
+  | 'QUERY_REVIEW'
+  | 'RESEARCH'
+  | 'ORIGINAL_GENERATION'
+  | 'ORIGINAL_REVIEW'
+  | 'REVIEWED_GENERATION'
+  | 'REVIEWED_REVIEW';
+
 export type CopyGenerationJob = {
   id: number;
   query: string;
   status: 'RUNNING' | 'FAILED';
   generationId: null;
+  currentStage: CopyGenerationStage;
+  stageUpdatedAt: string;
   error: string | null;
   createdAt: string;
   finishedAt: string | null;
@@ -28,7 +38,7 @@ type CopyGenerationHistoryResponse = {
   pagination: { page: number; pageSize: number; totalItems: number; totalPages: number };
 };
 
-export function useCopyGenerationHistory() {
+export function useCopyGenerationHistory({ pollWhileRequestBusy = false } = {}) {
   const [result, setResult] = useState<CopyGenerationResult | null>(null);
   const [history, setHistory] = useState<CopyGenerationResult[]>([]);
   const [jobs, setJobs] = useState<CopyGenerationJob[]>([]);
@@ -62,12 +72,13 @@ export function useCopyGenerationHistory() {
   const hasRunningJobs = jobs.some((job) => job.status === 'RUNNING');
 
   useEffect(() => {
-    if (!hasRunningJobs) return undefined;
+    if (!hasRunningJobs && !pollWhileRequestBusy) return undefined;
+    void refreshHistory({ silent: true }).catch(() => {});
     const intervalId = window.setInterval(() => {
       void refreshHistory({ silent: true }).catch(() => {});
     }, RUNNING_JOB_POLL_MS);
     return () => window.clearInterval(intervalId);
-  }, [hasRunningJobs, refreshHistory]);
+  }, [hasRunningJobs, pollWhileRequestBusy, refreshHistory]);
 
   return {
     result,

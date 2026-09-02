@@ -9,6 +9,15 @@ import type {
 } from './copy-generation-comparison';
 import type { CopyGenerationJob } from './use-copy-generation-history';
 
+const STAGE_LABELS = {
+  QUERY_REVIEW: '选题审核',
+  RESEARCH: '联网研究',
+  ORIGINAL_GENERATION: '首稿生成',
+  ORIGINAL_REVIEW: '首稿质检',
+  REVIEWED_GENERATION: '质检修订',
+  REVIEWED_REVIEW: '修订复检',
+} as const;
+
 function CopyGenerationJobs({ jobs }: { jobs: CopyGenerationJob[] }) {
   if (jobs.length === 0) return null;
   const hasRunningJobs = jobs.some((job) => job.status === 'RUNNING');
@@ -27,6 +36,9 @@ function CopyGenerationJobs({ jobs }: { jobs: CopyGenerationJob[] }) {
               : <><CircleAlert aria-hidden="true" size={12} />生成失败</>}
           </span>
         </div>
+        <span className="copy-job-meta">{job.status === 'RUNNING'
+          ? `正在：${STAGE_LABELS[job.currentStage]}`
+          : `停止于：${STAGE_LABELS[job.currentStage]}`}</span>
         <span className="copy-job-meta">任务 #{job.id} · {new Date(job.createdAt).toLocaleString('zh-CN')}</span>
         {job.error && <p className="copy-job-error" role="alert">{job.error}</p>}
       </li>)}

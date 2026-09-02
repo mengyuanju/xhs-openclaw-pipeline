@@ -112,6 +112,8 @@ export function POST(request: Request) {
         systemPrompt: runtime.systemPrompt,
         imageCount: input.imageCount,
         autoReviseOnReject: input.autoReviseOnReject,
+        onStageChange: (stage) => withAdminStore((store: any) =>
+          store.updateStandaloneCopyGenerationJobStage(jobId, stage)),
       });
       const saved = withAdminStore((store: any) => store.saveStandaloneCopyGeneration({
         jobId,

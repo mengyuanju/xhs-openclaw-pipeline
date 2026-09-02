@@ -262,6 +262,7 @@ async function createReviewedPost(client, task, originalPost, originalReview, op
  *   imageCount?: number | 'auto',
  *   autoReviseOnReject?: boolean,
  *   now?: () => number,
+ *   onStageChange?: (stage: string) => void | Promise<void>,
  * }} options
  */
 export async function generateCopy({
@@ -271,8 +272,12 @@ export async function generateCopy({
   imageCount = 'auto',
   autoReviseOnReject = false,
   now = () => performance.now(),
+  onStageChange = async () => {},
 }) {
   if (typeof now !== 'function') throw new TypeError('copy generation clock must be a function');
+  if (typeof onStageChange !== 'function') {
+    throw new TypeError('copy generation stage callback must be a function');
+  }
   if (typeof autoReviseOnReject !== 'boolean') {
     throw new TypeError('autoReviseOnReject must be a boolean');
   }
@@ -287,6 +292,7 @@ export async function generateCopy({
     totalMs: 0,
   };
   const sourceTask = normalizedTask(task);
+  await onStageChange('QUERY_REVIEW');
   const queryReview = await measureModelStage(
     timing,
     'queryReviewMs',
@@ -301,6 +307,7 @@ export async function generateCopy({
   let generationTask = sourceTask;
   let researchSnapshot = null;
   if (typeof client.runWebSearch === 'function') {
+    await onStageChange('RESEARCH');
     researchSnapshot = await measureStage(
       timing,
       'researchMs',
@@ -317,6 +324,7 @@ export async function generateCopy({
     ...(sourceTask.input.referenceUrls ?? []),
     ...(researchSnapshot ? researchSourceUrls(researchSnapshot) : []),
   ])];
+  await onStageChange('ORIGINAL_GENERATION');
   const original = await measureModelStage(
     timing,
     'originalGenerationMs',
@@ -328,6 +336,7 @@ export async function generateCopy({
       allowedSources,
     }),
   );
+  await onStageChange('ORIGINAL_REVIEW');
   const originalTextReview = await measureModelStage(
     timing,
     'originalReviewMs',
@@ -346,6 +355,7 @@ export async function generateCopy({
   let revisionAttempted = false;
   if (originalTextReview.decision !== 'PASS' && autoReviseOnReject) {
     revisionAttempted = true;
+    await onStageChange('REVIEWED_GENERATION');
     reviewed = await measureModelStage(
       timing,
       'reviewedGenerationMs',
@@ -359,6 +369,7 @@ export async function generateCopy({
         { systemPrompt, imageCount, allowedSources },
       ),
     );
+    await onStageChange('REVIEWED_REVIEW');
     reviewedTextReview = await measureModelStage(
       timing,
       'reviewedReviewMs',

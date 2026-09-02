@@ -42,6 +42,7 @@ export function CopyGenerationWorkbench() {
   const confirm = useConfirmDialog();
   const [imageCount, setImageCount] = useState('auto');
   const [autoReviseOnReject, setAutoReviseOnReject] = useState(false);
+  const [requestBusy, setRequestBusy] = useState(false);
   const {
     result,
     setResult,
@@ -52,8 +53,7 @@ export function CopyGenerationWorkbench() {
     historyError,
     hasRunningJobs,
     refreshHistory,
-  } = useCopyGenerationHistory();
-  const [requestBusy, setRequestBusy] = useState(false);
+  } = useCopyGenerationHistory({ pollWhileRequestBusy: requestBusy });
   const [message, setMessage] = useState('');
   const [messageIsError, setMessageIsError] = useState(false);
 

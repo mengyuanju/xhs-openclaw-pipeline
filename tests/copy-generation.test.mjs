@@ -37,6 +37,7 @@ function rejectingReview() {
 describe('standalone copy generation', () => {
   it('returns the first draft unchanged when its review passes', async () => {
     const calls = [];
+    const stages = [];
     let elapsedMs = 0;
     const originalPost = {
       ...createMockPost(3),
@@ -97,6 +98,7 @@ describe('standalone copy generation', () => {
       imageCount: 'auto',
       systemPrompt: '围绕 {{query}} 生成文案。',
       now: () => elapsedMs,
+      onStageChange: async (stage) => { stages.push(stage); },
     });
     const response = toCopyGenerationResponse(generated);
 
@@ -105,6 +107,12 @@ describe('standalone copy generation', () => {
       'research:codex',
       'original-generation',
       'original-review',
+    ]);
+    assert.deepEqual(stages, [
+      'QUERY_REVIEW',
+      'RESEARCH',
+      'ORIGINAL_GENERATION',
+      'ORIGINAL_REVIEW',
     ]);
     assert.equal(textReviewPrompts.length, 1);
     assert.ok(textReviewPrompts.every((prompt) =>
@@ -524,6 +532,8 @@ describe('standalone copy generation', () => {
     assert.match(route, /createStandaloneCopyGenerationJob/u);
     assert.match(route, /failStandaloneCopyGenerationJob/u);
     assert.match(route, /listStandaloneCopyGenerationJobs/u);
+    assert.match(route, /updateStandaloneCopyGenerationJobStage/u);
+    assert.match(route, /onStageChange/u);
     assert.match(route, /jobId/u);
     assert.match(route, /await generateCopy/u);
     assert.match(route, /saveStandaloneCopyGeneration/u);

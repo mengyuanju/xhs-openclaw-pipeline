@@ -52,6 +52,7 @@ describe('standalone copy generation workspace', () => {
     assert.match(workbench, /首稿未通过时直接保留并进入人工复核/u);
     assert.match(workbench, /存在阻断问题时还会自动重写并复检/u);
     assert.match(historyState, /hasRunningJobs/u);
+    assert.match(historyState, /pollWhileRequestBusy/u);
     assert.match(historyState, /setInterval/u);
     assert.match(historyState, /response\.jobs/u);
     assert.doesNotMatch(workbench, /<select\b/u);
@@ -80,7 +81,13 @@ describe('standalone copy generation workspace', () => {
     assert.match(comparison, /blockingIssues/u);
     assert.match(comparison, /人工二次质检/u);
     assert.match(comparison, /不能导入图片生成/u);
-    assert.match(comparison, /disabled=\{!reviewedCopyPassed\}/u);
+    assert.match(comparison, /useConfirmDialog/u);
+    assert.match(comparison, /人工审核通过/u);
+    assert.match(comparison, /确认人工审核通过？/u);
+    assert.match(comparison, /manualReviewedResultId === result\.id/u);
+    assert.match(comparison, /reviewedCopyPassed \|\| manuallyApproved/u);
+    assert.match(comparison, /disabled=\{!canImportReviewedCopy\}/u);
+    assert.match(comparison, /已完成本次人工确认/u);
     assert.match(comparison, /result\.generation\.revisionAttempted/u);
     assert.match(comparison, /当前版/u);
     assert.match(comparison, /version\.thinking/u);
@@ -106,6 +113,9 @@ describe('standalone copy generation workspace', () => {
     assert.match(history, /生成任务/u);
     assert.match(history, /生成中/u);
     assert.match(history, /生成失败/u);
+    assert.match(history, /job\.currentStage/u);
+    assert.match(history, /正在：/u);
+    assert.match(history, /联网研究/u);
     assert.match(history, /待人工复核/u);
     assert.match(history, /aria-live="polite"/u);
     assert.match(historyState, /setTimingStatistics/u);
