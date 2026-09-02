@@ -2,6 +2,7 @@ node_modules/
 data/
 output/
 outputs/
+.codex_artifacts/
 .env
 .env.local
 .env.*.local
