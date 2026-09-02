@@ -6,6 +6,7 @@ import {
   CircleAlert,
   Clock3,
   Copy,
+  LoaderCircle,
   RotateCcw,
   UserCheck,
 } from 'lucide-react';
@@ -14,6 +15,7 @@ import { useState } from 'react';
 
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 
+import { apiRequest } from '../components/api-client';
 import { formatDuration } from '../components/time-format';
 import {
   createImageGenerationDraft,
@@ -74,6 +76,11 @@ export type CopyGenerationResult = {
   input: Record<string, unknown>;
   requestedImageCount: 'auto' | number;
   createdAt: string;
+  manualReview: {
+    decision: 'APPROVED';
+    reviewedAt: string;
+    reviewedBy: string;
+  } | null;
   original: CopyGenerationVersion;
   reviewed: CopyGenerationVersion;
   copy: CopyText;
@@ -219,18 +226,20 @@ export function CopyGenerationComparison({
   result,
   onClose,
   onMessage,
+  onResultChange,
 }: {
   result: CopyGenerationResult;
   onClose: () => void;
   onMessage: (message: string, isError: boolean) => void;
+  onResultChange: (result: CopyGenerationResult) => void;
 }) {
   const confirm = useConfirmDialog();
   const router = useRouter();
-  const [manualReviewedResultId, setManualReviewedResultId] = useState<number | null>(null);
+  const [manualReviewBusy, setManualReviewBusy] = useState(false);
   const revisionAttempted = result.generation.revisionAttempted;
   const activeVersionLabel = revisionAttempted ? '质检版' : '当前版';
   const reviewedCopyPassed = result.reviewed.review.decision === 'PASS';
-  const manuallyApproved = manualReviewedResultId === result.id;
+  const manuallyApproved = result.manualReview?.decision === 'APPROVED';
   const canImportReviewedCopy = reviewedCopyPassed || manuallyApproved;
   const blockingIssues = result.reviewed.review.issues
     .filter((issue) => issue.severity === 'BLOCKING');
@@ -245,19 +254,35 @@ export function CopyGenerationComparison({
   }
 
   async function approveReviewedCopyManually() {
-    if (reviewedCopyPassed || manuallyApproved) return;
+    if (reviewedCopyPassed || manuallyApproved || manualReviewBusy) return;
     if (!await confirm({
       title: '确认人工审核通过？',
       description: `请确认你已完整检查${activeVersionLabel}的正文、事实依据、风险边界和配图策划。确认后会保留自动质检问题，但允许将当前文案导入图片生成。`,
       confirmLabel: '确认人工审核通过',
     })) return;
-    setManualReviewedResultId(result.id);
-    onMessage('已完成本次人工确认，现在可以导入图片生成。', false);
+    setManualReviewBusy(true);
+    try {
+      const approved = await apiRequest<CopyGenerationResult>(
+        `/api/copy-generations/${result.id}/manual-review`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ decision: 'APPROVED' }),
+        },
+      );
+      onResultChange(approved);
+      onMessage('已保存本次人工确认，现在可以导入图片生成；刷新页面后状态仍会保留。', false);
+    } catch (error) {
+      onMessage(error instanceof Error ? error.message : '人工审核结果保存失败，请重试。', true);
+    } finally {
+      setManualReviewBusy(false);
+    }
   }
 
   function importReviewedCopy() {
     if (!canImportReviewedCopy) {
       onMessage(`${activeVersionLabel}尚未通过自动质检或人工确认，不能导入图片生成。`, true);
+      document.getElementById('copy-manual-review-button')?.focus();
       return;
     }
     try {
@@ -289,7 +314,7 @@ export function CopyGenerationComparison({
         <button
           className="button small primary"
           type="button"
-          disabled={!canImportReviewedCopy}
+          aria-disabled={!canImportReviewedCopy}
           aria-describedby={!canImportReviewedCopy ? 'copy-validation-note' : undefined}
           onClick={importReviewedCopy}
         >
@@ -320,11 +345,16 @@ export function CopyGenerationComparison({
       <div className="copy-manual-review-action">
         <button
           className="button small"
+          id="copy-manual-review-button"
           type="button"
           aria-pressed={manuallyApproved}
+          aria-busy={manualReviewBusy}
+          disabled={manualReviewBusy || manuallyApproved}
           onClick={approveReviewedCopyManually}
         >
-          {manuallyApproved
+          {manualReviewBusy
+            ? <><LoaderCircle aria-hidden="true" className="animate-spin" size={14} />正在保存审核结果…</>
+            : manuallyApproved
             ? <><CheckCircle2 aria-hidden="true" size={14} />已人工审核通过</>
             : <><UserCheck aria-hidden="true" size={14} />人工审核通过</>}
         </button>

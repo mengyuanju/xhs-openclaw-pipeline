@@ -217,6 +217,10 @@ export function CopyGenerationWorkbench() {
       result={result}
       onClose={() => setResult(null)}
       onMessage={showMessage}
+      onResultChange={(nextResult) => {
+        setResult(nextResult);
+        void refreshHistory({ silent: true }).catch(() => {});
+      }}
     />}
     {message && <div className={messageIsError ? 'notice error' : 'notice success'} role={messageIsError ? 'alert' : 'status'} aria-live="polite">{message}</div>}
   </div>;

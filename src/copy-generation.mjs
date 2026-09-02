@@ -508,6 +508,7 @@ export function toCopyGenerationResponse({
   revisionAttempted: rawRevisionAttempted,
   researchSnapshot,
   stageReviews,
+  manualReview = null,
   timing = null,
   createdAt,
 }) {
@@ -531,6 +532,7 @@ export function toCopyGenerationResponse({
     ...(input === undefined ? {} : { input }),
     ...(requestedImageCount === undefined ? {} : { requestedImageCount }),
     ...(createdAt === undefined ? {} : { createdAt }),
+    manualReview,
     original: versionFrom(
       originalPost,
       originalModel,

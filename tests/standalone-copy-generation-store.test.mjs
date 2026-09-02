@@ -186,7 +186,44 @@ describe('standalone copy generation persistence', () => {
       assert.equal(saved.stageReviews.originalText.summary, '原始版质检');
       assert.equal(saved.stageReviews.reviewedText.summary, '质检版复检');
       assert.deepEqual(saved.timing, generationRecord('租房桌面整理', 'A').timing);
+      assert.equal(saved.manualReview, null);
       assert.match(saved.createdAt, /^\d{4}-\d{2}-\d{2}T/u);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('persists an idempotent manual approval across history reloads', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      initializeStandaloneCopyGenerationSchema(db);
+      const store = createStandaloneCopyGenerationStore(db);
+      const saved = store.saveStandaloneCopyGeneration(
+        generationRecord('人工确认后允许生图', 'M'),
+      );
+
+      const approved = store.approveStandaloneCopyGeneration(saved.id, {
+        reviewedBy: 'admin',
+      });
+      assert.deepEqual(approved.manualReview, {
+        decision: 'APPROVED',
+        reviewedAt: approved.manualReview.reviewedAt,
+        reviewedBy: 'admin',
+      });
+      assert.match(approved.manualReview.reviewedAt, /^\d{4}-\d{2}-\d{2}T/u);
+
+      const repeated = store.approveStandaloneCopyGeneration(saved.id, {
+        reviewedBy: 'another-admin',
+      });
+      assert.deepEqual(repeated.manualReview, approved.manualReview);
+      assert.deepEqual(
+        store.listStandaloneCopyGenerations().data[0].manualReview,
+        approved.manualReview,
+      );
+      assert.equal(
+        store.approveStandaloneCopyGeneration(999, { reviewedBy: 'admin' }),
+        null,
+      );
     } finally {
       db.close();
     }
@@ -302,6 +339,8 @@ describe('standalone copy generation persistence', () => {
         'total_ms',
         'original_thinking',
         'reviewed_thinking',
+        'manual_reviewed_at',
+        'manual_reviewed_by',
       ]) assert.equal(columns.has(column), true);
       assert.equal(
         db.prepare(`

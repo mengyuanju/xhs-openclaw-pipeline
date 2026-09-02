@@ -182,6 +182,13 @@ function rowToStandaloneCopyGeneration(row) {
       originalText: parsedObject(row.original_text_review_json, 'stored original text review'),
       reviewedText: parsedObject(row.reviewed_text_review_json, 'stored reviewed text review'),
     },
+    manualReview: row.manual_reviewed_at === null || row.manual_reviewed_at === undefined
+      ? null
+      : {
+          decision: 'APPROVED',
+          reviewedAt: row.manual_reviewed_at,
+          reviewedBy: row.manual_reviewed_by,
+        },
     timing: timingFromRow(row),
     createdAt: row.created_at,
   };
@@ -206,6 +213,14 @@ function normalizedJobId(value) {
   const id = Number(value);
   if (!Number.isSafeInteger(id) || id < 1) {
     throw new RangeError('copy generation job id must be a positive integer');
+  }
+  return id;
+}
+
+function normalizedGenerationId(value) {
+  const id = Number(value);
+  if (!Number.isSafeInteger(id) || id < 1) {
+    throw new RangeError('copy generation id must be a positive integer');
   }
   return id;
 }
@@ -243,7 +258,13 @@ export function initializeStandaloneCopyGenerationSchema(db) {
       reviewed_generation_ms INTEGER CHECK (reviewed_generation_ms IS NULL OR reviewed_generation_ms BETWEEN 0 AND 86400000),
       reviewed_review_ms INTEGER CHECK (reviewed_review_ms IS NULL OR reviewed_review_ms BETWEEN 0 AND 86400000),
       total_ms INTEGER CHECK (total_ms IS NULL OR total_ms BETWEEN 0 AND 86400000),
-      created_at TEXT NOT NULL
+      manual_reviewed_at TEXT,
+      manual_reviewed_by TEXT,
+      created_at TEXT NOT NULL,
+      CHECK (
+        (manual_reviewed_at IS NULL AND manual_reviewed_by IS NULL)
+        OR (manual_reviewed_at IS NOT NULL AND manual_reviewed_by IS NOT NULL)
+      )
     ) STRICT;
     CREATE INDEX IF NOT EXISTS standalone_copy_generations_created_idx
       ON standalone_copy_generations(id DESC);
@@ -281,6 +302,11 @@ export function initializeStandaloneCopyGenerationSchema(db) {
     if (!columns.has(column)) {
       db.exec(`ALTER TABLE standalone_copy_generations ADD COLUMN ${column} TEXT
         CHECK (${column} IS NULL OR ${column} IN ('minimal', 'low', 'medium', 'high', 'xhigh', 'max'))`);
+    }
+  }
+  for (const column of ['manual_reviewed_at', 'manual_reviewed_by']) {
+    if (!columns.has(column)) {
+      db.exec(`ALTER TABLE standalone_copy_generations ADD COLUMN ${column} TEXT`);
     }
   }
   const jobColumns = new Set(
@@ -443,6 +469,26 @@ export function createStandaloneCopyGenerationStore(db) {
         if (db.isTransaction) db.exec('ROLLBACK');
         throw error;
       }
+    },
+
+    approveStandaloneCopyGeneration(rawGenerationId, { reviewedBy: rawReviewedBy }) {
+      const generationId = normalizedGenerationId(rawGenerationId);
+      const reviewedBy = boundedText(rawReviewedBy, 'manual reviewer', 80);
+      const existing = db.prepare(`
+        SELECT * FROM standalone_copy_generations WHERE id = ?
+      `).get(generationId);
+      if (!existing) return null;
+      if (existing.manual_reviewed_at === null) {
+        const reviewedAt = new Date().toISOString();
+        db.prepare(`
+          UPDATE standalone_copy_generations
+          SET manual_reviewed_at = ?, manual_reviewed_by = ?
+          WHERE id = ? AND manual_reviewed_at IS NULL
+        `).run(reviewedAt, reviewedBy, generationId);
+      }
+      return rowToStandaloneCopyGeneration(
+        db.prepare('SELECT * FROM standalone_copy_generations WHERE id = ?').get(generationId),
+      );
     },
 
     listStandaloneCopyGenerations({ page: rawPage = 1, pageSize: rawPageSize = 20 } = {}) {

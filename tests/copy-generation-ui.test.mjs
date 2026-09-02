@@ -60,11 +60,12 @@ describe('standalone copy generation workspace', () => {
   });
 
   it('renders persistent history and separate original/reviewed comparison controls', async () => {
-    const [comparison, researchPanel, history, historyState, styles] = await Promise.all([
+    const [comparison, researchPanel, history, historyState, workbench, styles] = await Promise.all([
       source('app/copy-generation/copy-generation-comparison.tsx'),
       source('app/copy-generation/copy-generation-research.tsx'),
       source('app/copy-generation/copy-generation-history.tsx'),
       source('app/copy-generation/use-copy-generation-history.ts'),
+      source('app/copy-generation/copy-generation-workbench.tsx'),
       source('app/globals.css'),
     ]);
 
@@ -84,12 +85,19 @@ describe('standalone copy generation workspace', () => {
     assert.match(comparison, /useConfirmDialog/u);
     assert.match(comparison, /人工审核通过/u);
     assert.match(comparison, /确认人工审核通过？/u);
-    assert.match(comparison, /manualReviewedResultId === result\.id/u);
+    assert.match(comparison, /result\.manualReview\?\.decision === 'APPROVED'/u);
     assert.match(comparison, /reviewedCopyPassed \|\| manuallyApproved/u);
-    assert.match(comparison, /disabled=\{!canImportReviewedCopy\}/u);
+    assert.match(comparison, /aria-disabled=\{!canImportReviewedCopy\}/u);
+    assert.doesNotMatch(comparison, /^\s*disabled=\{!canImportReviewedCopy\}/mu);
+    assert.match(comparison, /尚未通过自动质检或人工确认，不能导入图片生成/u);
+    assert.match(comparison, /apiRequest<CopyGenerationResult>/u);
+    assert.match(comparison, /\/api\/copy-generations\/\$\{result\.id\}\/manual-review/u);
+    assert.match(comparison, /decision: 'APPROVED'/u);
     assert.match(comparison, /已完成本次人工确认/u);
     assert.match(comparison, /aria-pressed=\{manuallyApproved\}/u);
     assert.match(comparison, /已人工审核通过/u);
+    assert.match(workbench, /onResultChange/u);
+    assert.match(history, /record\.manualReview/u);
     assert.match(comparison, /result\.generation\.revisionAttempted/u);
     assert.match(comparison, /当前版/u);
     assert.match(comparison, /version\.thinking/u);
@@ -130,5 +138,17 @@ describe('standalone copy generation workspace', () => {
     assert.match(styles, /\.copy-job-list/u);
     assert.match(styles, /\.copy-validation-notice/u);
     assert.match(styles, /\.copy-history-list \.pill-rejected/u);
+  });
+
+  it('persists manual copy approval through a protected idempotent endpoint', async () => {
+    const route = await source('app/api/copy-generations/[id]/manual-review/route.ts');
+
+    assert.match(route, /export function PUT/u);
+    assert.match(route, /mutation:\s*true/u);
+    assert.match(route, /parsePositiveId/u);
+    assert.match(route, /decision:\s*z\.literal\('APPROVED'\)/u);
+    assert.match(route, /approveStandaloneCopyGeneration/u);
+    assert.match(route, /if \(!saved\) notFound/u);
+    assert.match(route, /toCopyGenerationResponse/u);
   });
 });
