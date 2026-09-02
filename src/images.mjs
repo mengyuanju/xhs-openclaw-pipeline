@@ -1,4 +1,5 @@
-import { copyFile, mkdir, unlink, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { copyFile, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import sharp from 'sharp';
 
@@ -538,6 +539,7 @@ export async function renderDeliveryImages({
   maxGenerationAttempts = validateImage ? 3 : 1,
   heartbeat,
   resumeImages = [],
+  recoveryImages = [],
   repairSourceImagePaths = [],
   onImageCompleted,
   imageConcurrency,
@@ -590,6 +592,9 @@ export async function renderDeliveryImages({
   if (!Array.isArray(resumeImages) || resumeImages.length > imageCount) {
     throw new TypeError('resumeImages must be an array within the delivery image count');
   }
+  if (!Array.isArray(recoveryImages) || recoveryImages.length > imageCount) {
+    throw new TypeError('recoveryImages must be an array within the delivery image count');
+  }
   if (!Array.isArray(repairSourceImagePaths)
     || ![0, imageCount].includes(repairSourceImagePaths.length)
     || repairSourceImagePaths.some((path) => typeof path !== 'string' || path.trim() === '')) {
@@ -614,6 +619,7 @@ export async function renderDeliveryImages({
     const file = `${String(index + 1).padStart(2, '0')}-${plan.kind}.png`;
     const outputPath = join(outputDir, file);
     const reusable = resumeImages[index];
+    const recovery = recoveryImages[index];
 
     if (!mock && reusable) {
       if (reusable.file !== file || typeof reusable.sourcePath !== 'string') {
@@ -650,7 +656,46 @@ export async function renderDeliveryImages({
       if (typeof basePrompt !== 'string' || basePrompt.length < 10 || basePrompt.length > 8_000) {
         throw new RangeError(`imagePrompts[${index}] must contain between 10 and 8000 characters`);
       }
-      const repairSourcePath = repairSourceImagePaths[index] ?? null;
+      let recoveredAlignment = null;
+      let recoveredSourcePath = null;
+      if (recovery) {
+        if (recovery.file !== file || typeof recovery.sourcePath !== 'string'
+          || !/^[a-f0-9]{64}$/u.test(recovery.sha256 ?? '')) {
+          throw new TypeError(`recoveryImages[${index}] is invalid`);
+        }
+        await copyFile(recovery.sourcePath, outputPath);
+        const recoveredContent = await readFile(outputPath);
+        const recoveredSha256 = createHash('sha256').update(recoveredContent).digest('hex');
+        if (recoveredSha256 !== recovery.sha256) {
+          throw new Error(`recovery image ${index + 1} changed before validation`);
+        }
+        await heartbeat?.({ stage: 'image_alignment', pageIndex: index + 1, attempt: 1 });
+        recoveredAlignment = await validateImage({
+          imagePath: outputPath,
+          pageIndex: index + 1,
+          attempt: 1,
+        });
+        if (recoveredAlignment?.passed === true) {
+          const image = {
+            file,
+            provider: recovery.provider,
+            model: recovery.model ?? null,
+            generationAttempts: 0,
+            alignment: recoveredAlignment,
+            prompt: basePrompt,
+            reusedFromCheckpoint: true,
+          };
+          images[index] = image;
+          if (index === 0) {
+            await copyFile(outputPath, styleReferencePath);
+            firstStyleReferencePath = styleReferencePath;
+          }
+          await onImageCompleted?.({ image, outputPath, pageIndex: index + 1 });
+          return;
+        }
+        recoveredSourcePath = outputPath;
+      }
+      const repairSourcePath = recoveredSourcePath ?? repairSourceImagePaths[index] ?? null;
       const inputPaths = index === 0
         ? [...new Set([repairSourcePath, ...baseReferences].filter(Boolean))].slice(0, 10)
         : [...new Set([
@@ -660,9 +705,11 @@ export async function renderDeliveryImages({
         ].filter(Boolean))].slice(0, 10);
       let provider;
       let model = null;
-      let alignment = null;
+      let alignment = recoveredAlignment;
       let generationAttempts = 0;
-      let prompt = basePrompt;
+      let prompt = recoveredAlignment?.passed === false
+        ? promptWithRepair(basePrompt, recoveredAlignment, 1)
+        : basePrompt;
       for (let attempt = 1; attempt <= maxGenerationAttempts; attempt += 1) {
         generationAttempts = attempt;
         await heartbeat?.({ stage: 'image_generation', pageIndex: index + 1, attempt });

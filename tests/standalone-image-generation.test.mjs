@@ -16,11 +16,14 @@ import {
   normalizeStandaloneImageSource,
   readStandaloneImageFile,
   readStandaloneImageProgress,
+  retryStandaloneImageRun,
 } from '../src/standalone-image-generation.mjs';
 
 const RUN_ID = '11111111-1111-4111-8111-111111111111';
 const FALLBACK_RUN_ID = '22222222-2222-4222-8222-222222222222';
 const FAILURE_RUN_ID = '33333333-3333-4333-8333-333333333333';
+const RECOVERY_SOURCE_RUN_ID = '44444444-4444-4444-8444-444444444444';
+const RECOVERY_RUN_ID = '55555555-5555-4555-8555-555555555555';
 
 const QUALITY_DIMENSIONS = [
   'queryRelevance',
@@ -91,10 +94,11 @@ function qualityAssessment() {
   };
 }
 
-function liveClient({ runText }) {
+function liveClient({ runText, runVision, onImage }) {
   let imageIndex = 0;
   const writeGeneratedImage = async (outputPath) => {
     imageIndex += 1;
+    onImage?.(imageIndex);
     await sharp({
       create: {
         width: 1086,
@@ -117,7 +121,9 @@ function liveClient({ runText }) {
     runImageEdit({ outputPath }) {
       return writeGeneratedImage(outputPath);
     },
-    runVision({ prompt }) {
+    runVision(input) {
+      if (runVision) return runVision(input);
+      const { prompt } = input;
       const output = prompt.includes('独立于生成模型的图文交付终审员')
         ? qualityAssessment()
         : passingAlignment(prompt);
@@ -374,6 +380,94 @@ describe('standalone image generation service', () => {
       assert.equal(progress.diagnostic.code, 'PLANNING_FAILED');
       assert.match(progress.diagnostic.message, /401 unauthorized/u);
       assert.doesNotMatch(progress.diagnostic.message, new RegExp(fakeSecret, 'u'));
+    } finally {
+      await rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a generated page after an invalid alignment response and resumes without regenerating it', async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-image-recovery-'));
+    let initialImageCalls = 0;
+    try {
+      await assert.rejects(
+        generateStandaloneImages({
+          source: validSource(),
+          mode: 'LIVE',
+          outputRoot,
+          runId: RECOVERY_SOURCE_RUN_ID,
+          runtime: {
+            client: liveClient({
+              async runText() {
+                throw new Error('UND_ERR_SOCKET terminated');
+              },
+              onImage() {
+                initialImageCalls += 1;
+              },
+              async runVision() {
+                return { rawText: 'not-json', model: 'fake-vision' };
+              },
+            }),
+            imageConcurrency: 1,
+          },
+        }),
+        (error) => {
+          assert.equal(error.code, 'ALIGNMENT_RESPONSE_INVALID');
+          assert.equal(error.retryable, true);
+          return true;
+        },
+      );
+      assert.equal(initialImageCalls, 1);
+
+      const failedProgress = await readStandaloneImageProgress({
+        outputRoot,
+        runId: RECOVERY_SOURCE_RUN_ID,
+      });
+      assert.equal(failedProgress.generatedImages, 1);
+      assert.equal(failedProgress.validatedImages, 0);
+      assert.equal(failedProgress.canResume, true);
+      assert.equal(failedProgress.retryReason, 'ALIGNMENT_RESPONSE_INVALID');
+
+      const evidence = (await readFile(join(
+        outputRoot,
+        'standalone-image-generations',
+        RECOVERY_SOURCE_RUN_ID,
+        'alignment-attempts.jsonl',
+      ), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+      assert.equal(evidence.length, 3);
+      assert.ok(evidence.every((item) => item.rawTextSha256.length === 64));
+      assert.ok(evidence.every((item) => item.responseExcerpt === 'not-json'));
+
+      let resumedImageCalls = 0;
+      const result = await retryStandaloneImageRun({
+        sourceRunId: RECOVERY_SOURCE_RUN_ID,
+        runId: RECOVERY_RUN_ID,
+        outputRoot,
+        runtime: {
+          client: liveClient({
+            async runText() {
+              assert.fail('a resumed run must reuse the stored visual plan');
+            },
+            onImage() {
+              resumedImageCalls += 1;
+            },
+          }),
+          imageConcurrency: 1,
+        },
+      });
+
+      assert.equal(resumedImageCalls, 2);
+      assert.equal(result.images.length, 3);
+      assert.equal(result.images[0].provider, 'recovered-existing-image');
+      assert.equal(result.images[0].alignmentPassed, true);
+      assert.equal(result.images[0].generationAttempts, 0);
+      const resumedProgress = await readStandaloneImageProgress({
+        outputRoot,
+        runId: RECOVERY_RUN_ID,
+      });
+      assert.equal(resumedProgress.status, 'COMPLETED');
+      assert.equal(resumedProgress.generatedImages, 3);
+      assert.equal(resumedProgress.validatedImages, 3);
+      assert.equal(resumedProgress.canResume, false);
     } finally {
       await rm(outputRoot, { recursive: true, force: true });
     }

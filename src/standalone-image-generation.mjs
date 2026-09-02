@@ -4,7 +4,12 @@ import { join, relative, resolve } from 'node:path';
 
 import { composeVisualImagePrompt } from './admin/visual-knowledge-store.mjs';
 import { renderPrompt } from './admin/prompt-service.mjs';
-import { createImageAlignmentValidator, imagePageUsesPortrait } from './image-alignment.mjs';
+import {
+  ImageAlignmentResponseError,
+  ImageAlignmentServiceError,
+  createImageAlignmentValidator,
+  imagePageUsesPortrait,
+} from './image-alignment.mjs';
 import { renderDeliveryImages } from './images.mjs';
 import { fullPageInstructionForLayout } from './layout-contract.mjs';
 import { parsePostOutput } from './post-contract.mjs';
@@ -19,6 +24,17 @@ import {
   createMockVisualPlan,
   parseVisualPlanOutput,
 } from './visual-plan.mjs';
+import {
+  StandaloneImageRecoveryError,
+  countStandaloneGeneratedImages,
+  createAlignmentAttemptRecorder,
+  discoverStandaloneRecoveryImages,
+  plannedForStandaloneRecovery,
+  recoverableAlignmentReason,
+  sourceForStandaloneRecovery,
+} from './standalone-image-recovery.mjs';
+
+export { StandaloneImageRecoveryError } from './standalone-image-recovery.mjs';
 
 const RUN_DIRECTORY = 'standalone-image-generations';
 const RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -63,7 +79,8 @@ export class StandaloneImageAlignmentError extends Error {
     super(message, { cause: options.cause });
     this.name = 'StandaloneImageAlignmentError';
     this.stage = 'ALIGNING';
-    this.code = 'ALIGNMENT_FAILED';
+    this.code = typeof options.code === 'string' ? options.code : 'ALIGNMENT_FAILED';
+    this.retryable = options.retryable === true;
     this.detail = sanitizedFailureDetail(options.cause ?? message);
   }
 }
@@ -197,6 +214,8 @@ function createProgressReporter({ outputDir, runId, mode, imageCount, onProgress
   const startedAt = new Date(startedAtMs).toISOString();
   let lastPercent = 0;
   let completedImages = 0;
+  let generatedImages = 0;
+  let validatedImages = 0;
   let estimatedTotalMs = estimateStandaloneImageDuration({ mode, imageCount });
   const warnings = [];
   let diagnostic = null;
@@ -215,6 +234,16 @@ function createProgressReporter({ outputDir, runId, mode, imageCount, onProgress
         completedImages,
         Math.min(imageCount, Math.round(Number(update.completedImages) || 0)),
       );
+      generatedImages = Math.max(
+        generatedImages,
+        Math.min(imageCount, Math.round(Number(update.generatedImages) || 0)),
+      );
+      validatedImages = Math.max(
+        validatedImages,
+        completedImages,
+        Math.min(imageCount, Math.round(Number(update.validatedImages) || 0)),
+      );
+      generatedImages = Math.max(generatedImages, validatedImages);
       if (progressPercent > 0 && progressPercent < 100) {
         estimatedTotalMs = Math.max(
           estimatedTotalMs,
@@ -242,6 +271,8 @@ function createProgressReporter({ outputDir, runId, mode, imageCount, onProgress
         progressPercent,
         message: String(update.message ?? '').slice(0, 500),
         completedImages,
+        generatedImages,
+        validatedImages,
         totalImages: imageCount,
         currentPage: Number.isInteger(update.currentPage) ? update.currentPage : null,
         attempt: Number.isInteger(update.attempt) ? update.attempt : null,
@@ -254,6 +285,8 @@ function createProgressReporter({ outputDir, runId, mode, imageCount, onProgress
         estimateBasis: 'mode-and-page-count',
         warnings: [...warnings],
         diagnostic,
+        canResume: update.canResume === true,
+        retryReason: typeof update.retryReason === 'string' ? update.retryReason : null,
         error: typeof update.error === 'string' ? update.error.slice(0, 500) : null,
         result: update.result ?? null,
       };
@@ -724,6 +757,18 @@ function wrapAlignmentValidator(validator) {
     try {
       return await validator(input);
     } catch (error) {
+      if (error instanceof ImageAlignmentResponseError) {
+        throw new StandaloneImageAlignmentError(
+          '图片已生成，但验收模型返回格式异常，可重新验收并继续',
+          { cause: error, code: error.code, retryable: true },
+        );
+      }
+      if (error instanceof ImageAlignmentServiceError) {
+        throw new StandaloneImageAlignmentError(
+          '图片已生成，但验收服务暂时不可用，可重新验收并继续',
+          { cause: error, code: error.code, retryable: true },
+        );
+      }
       throw new StandaloneImageAlignmentError(undefined, { cause: error });
     }
   };
@@ -736,6 +781,7 @@ export async function generateStandaloneImages({
   outputRoot,
   runId: requestedRunId = String(randomUUID()),
   onProgress = undefined,
+  recovery = null,
 }) {
   const runId = validatedRunId(requestedRunId);
   const post = normalizeStandaloneImageSource(source);
@@ -758,6 +804,7 @@ export async function generateStandaloneImages({
     onProgress,
   });
   const completedPages = new Set();
+  const generatedPages = new Set();
   let activeStage = 'PREPARING';
 
   try {
@@ -775,14 +822,14 @@ export async function generateStandaloneImages({
       progressPercent: 8,
       message: mock ? '正在创建 Mock 视觉规划' : '正在调用模型创建视觉规划',
     });
-    const planned = mock
+    const planned = recovery?.planned ?? (mock
       ? {
         visualPlan: createMockVisualPlan(post, { imageCount }),
         model: null,
         degraded: false,
         warning: null,
       }
-      : await liveVisualPlan(runtime.client, post, imageCount);
+      : await liveVisualPlan(runtime.client, post, imageCount));
     const visualPlan = planned.visualPlan;
     await writeJsonAtomic(join(outputDir, 'visual-plan.json'), {
       model: planned.model,
@@ -832,6 +879,10 @@ export async function generateStandaloneImages({
       visualPlan,
       imageCount,
       complianceDisclosure,
+      onInvalidResponse: createAlignmentAttemptRecorder({
+        outputDir,
+        redact: sanitizedFailureDetail,
+      }),
     }));
     let images;
     activeStage = 'GENERATING';
@@ -854,14 +905,18 @@ export async function generateStandaloneImages({
         complianceDisclosure,
         textRenderingMode: mock ? 'deterministic-overlay' : 'model-native',
         validateImage: validator,
+        recoveryImages: recovery?.images ?? [],
         maxGenerationAttempts: mock ? 1 : 3,
         imageConcurrency: runtime.imageConcurrency,
         heartbeat: async ({ stage, pageIndex, attempt }) => {
           const aligning = stage === 'image_alignment';
+          if (aligning) generatedPages.add(pageIndex);
           await reportProgress({
             stage: aligning ? 'ALIGNING' : 'GENERATING',
             progressPercent: 24 + Math.round(completedPages.size / imageCount * 54),
             completedImages: completedPages.size,
+            generatedImages: generatedPages.size,
+            validatedImages: completedPages.size,
             currentPage: pageIndex,
             attempt,
             message: aligning
@@ -871,10 +926,13 @@ export async function generateStandaloneImages({
         },
         onImageCompleted: async ({ pageIndex }) => {
           completedPages.add(pageIndex);
+          generatedPages.add(pageIndex);
           await reportProgress({
             stage: 'GENERATING',
             progressPercent: 24 + Math.round(completedPages.size / imageCount * 56),
             completedImages: completedPages.size,
+            generatedImages: generatedPages.size,
+            validatedImages: completedPages.size,
             currentPage: pageIndex,
             message: `已完成 ${completedPages.size}/${imageCount} 页图片`,
           });
@@ -956,16 +1014,69 @@ export async function generateStandaloneImages({
         code: `${activeStage}_FAILED`,
       });
     const diagnostic = failureDiagnostic(failure, activeStage);
+    const retryReason = failure.retryable === true
+      ? recoverableAlignmentReason(diagnostic)
+      : null;
     await reportProgress({
       stage: 'FAILED',
       progressPercent: 99,
       completedImages: completedPages.size,
+      generatedImages: generatedPages.size,
+      validatedImages: completedPages.size,
       message: failure.message,
       error: failure.message,
       diagnostic,
+      canResume: retryReason !== null,
+      retryReason,
     }).catch(() => {});
     throw failure;
   }
+}
+
+export async function retryStandaloneImageRun({
+  sourceRunId: rawSourceRunId,
+  runId: rawRunId = String(randomUUID()),
+  runtime = {},
+  outputRoot,
+  onProgress = undefined,
+}) {
+  const sourceRunId = validatedRunId(rawSourceRunId);
+  const runId = validatedRunId(rawRunId);
+  if (sourceRunId === runId) {
+    throw new StandaloneImageRecoveryError('恢复运行必须使用新的运行 ID');
+  }
+  const sourceProgress = await readStandaloneImageProgress({ outputRoot, runId: sourceRunId });
+  if (sourceProgress.mode !== 'LIVE' || sourceProgress.canResume !== true) {
+    throw new StandaloneImageRecoveryError('当前图片运行不支持恢复');
+  }
+  const sourceOutputDir = runDirectory(outputRoot, sourceRunId);
+  const [storedSource, storedPlan] = await Promise.all([
+    readOptionalRunArtifact(sourceOutputDir, 'source.json'),
+    readOptionalRunArtifact(sourceOutputDir, 'visual-plan.json'),
+  ]);
+  const source = sourceForStandaloneRecovery(storedSource);
+  const post = normalizeStandaloneImageSource(source);
+  const planned = plannedForStandaloneRecovery({
+    storedPlan,
+    post,
+    normalizeNotice: normalizedOperationalNotice,
+  });
+  const images = await discoverStandaloneRecoveryImages({ outputDir: sourceOutputDir, post });
+  if (!images.some(Boolean)) {
+    throw new StandaloneImageRecoveryError('原运行没有可复用的合格尺寸 PNG 图片');
+  }
+  return generateStandaloneImages({
+    source,
+    mode: 'LIVE',
+    runtime,
+    outputRoot,
+    runId,
+    onProgress,
+    recovery: {
+      planned,
+      images,
+    },
+  });
 }
 
 export async function readStandaloneImageProgress({ outputRoot, runId: rawRunId }) {
@@ -1005,6 +1116,29 @@ export async function readStandaloneImageProgress({ outputRoot, runId: rawRunId 
   const warnings = (value.warnings ?? []).map((warning, index) =>
     normalizedOperationalNotice(warning, `progress.warnings[${index}]`));
   const diagnostic = normalizedOperationalNotice(value.diagnostic, 'progress.diagnostic');
+  const storedGeneratedImages = Number.isInteger(value.generatedImages)
+    ? Math.min(value.totalImages, Math.max(value.completedImages, value.generatedImages))
+    : value.completedImages;
+  const discoveredGeneratedImages = await countStandaloneGeneratedImages(
+    outputDir,
+    value.totalImages,
+  );
+  const generatedImages = Math.min(
+    value.totalImages,
+    Math.max(storedGeneratedImages, discoveredGeneratedImages),
+  );
+  const validatedImages = Number.isInteger(value.validatedImages)
+    ? Math.min(value.totalImages, Math.max(value.completedImages, value.validatedImages))
+    : value.completedImages;
+  const inferredRetryReason = value.status === 'FAILED'
+    ? recoverableAlignmentReason(diagnostic)
+    : null;
+  const retryReason = typeof value.retryReason === 'string'
+    ? value.retryReason
+    : inferredRetryReason;
+  const canResume = value.status === 'FAILED'
+    && generatedImages > 0
+    && (value.canResume === true || inferredRetryReason !== null);
   const result = value.status === 'COMPLETED'
     ? await enrichStoredResult(outputDir, normalizedStoredResult(value.result, runId))
     : null;
@@ -1016,6 +1150,8 @@ export async function readStandaloneImageProgress({ outputRoot, runId: rawRunId 
     progressPercent: value.progressPercent,
     message: boundedText(value.message, 'progress.message', 1, 500),
     completedImages: value.completedImages,
+    generatedImages,
+    validatedImages,
     totalImages: value.totalImages,
     currentPage: Number.isInteger(value.currentPage) && value.currentPage >= 1
       && value.currentPage <= value.totalImages ? value.currentPage : null,
@@ -1032,6 +1168,8 @@ export async function readStandaloneImageProgress({ outputRoot, runId: rawRunId 
     estimateOverdue,
     warnings,
     diagnostic,
+    canResume,
+    retryReason: canResume ? retryReason : null,
     error: typeof value.error === 'string' ? value.error.slice(0, 500) : null,
     result,
   };
@@ -1075,6 +1213,10 @@ export async function listStandaloneImageRuns({ outputRoot, limit: rawLimit = 50
           status: progress.status,
           stage: progress.stage,
           completedImages: progress.completedImages,
+          generatedImages: progress.generatedImages,
+          validatedImages: progress.validatedImages,
+          canResume: progress.canResume,
+          retryReason: progress.retryReason,
           imageCount: progress.totalImages,
           qcScore: progress.result?.qc?.overallScore ?? null,
           startedAt: progress.startedAt,
