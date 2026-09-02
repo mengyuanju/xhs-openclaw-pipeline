@@ -412,6 +412,59 @@ describe('standalone copy generation', () => {
     assert.doesNotMatch(textPrompts[1], /结构化写作步骤/u);
   });
 
+  it('repairs only the rejected field and drops model-mutated source URLs', async () => {
+    const validSource = 'https://example.com/reference';
+    const invalidSource = 'https://example.com/model-invented-reference';
+    const initialDraft = {
+      ...createMockPost(3),
+      title: '活鱼桶稳载四步法',
+      body: '甲'.repeat(601),
+      sources: [validSource, invalidSource],
+    };
+    const repairedDraft = {
+      ...initialDraft,
+      title: '修正文时被意外改写的标题',
+      body: '乙'.repeat(500),
+      sources: [`${validSource}D`],
+    };
+    let textGenerationCount = 0;
+    const generationPrompts = [];
+    const client = {
+      async runReview() {
+        return { rawText: passingReview(), model: 'review-model' };
+      },
+      async runWebSearch({ query, provider }) {
+        return {
+          provider,
+          result: {
+            content: `${query} 的公开资料`,
+            results: [{ title: '公开资料', url: validSource, snippet: '可核验摘要' }],
+          },
+        };
+      },
+      async runText({ prompt }) {
+        generationPrompts.push(prompt);
+        textGenerationCount += 1;
+        return {
+          rawText: JSON.stringify(textGenerationCount === 1 ? initialDraft : repairedDraft),
+          model: 'text-model',
+        };
+      },
+    };
+
+    const generated = await generateCopy({
+      client,
+      task: { query: '自行车活鱼桶装水防晃技巧', input: {} },
+      imageCount: 3,
+    });
+
+    assert.equal(textGenerationCount, 2);
+    assert.match(generationPrompts[1], /body must contain between 400 and 600 characters/u);
+    assert.equal(generated.originalPost.title, initialDraft.title);
+    assert.equal(generated.originalPost.body, repairedDraft.body);
+    assert.deepEqual(generated.originalPost.sources, [validSource]);
+  });
+
   it('reports an exhausted model transport failure with its generation stage', async () => {
     const client = {
       async runReview() {

@@ -177,6 +177,29 @@ function normalizedSourceUrl(value, name) {
   return { source, normalized: parsed.href };
 }
 
+export function filterAllowedSourceReferences(value, allowedSources = []) {
+  if (!Array.isArray(value)) return value;
+  const allowed = new Map(allowedSources.map((source, index) => {
+    const parsed = normalizedSourceUrl(source, `allowedSources[${index}]`);
+    return [parsed.normalized, parsed.source];
+  }));
+  const filtered = [];
+  const seen = new Set();
+  for (const candidate of value) {
+    const source = isRecord(candidate) ? candidate.url : candidate;
+    try {
+      const parsed = normalizedSourceUrl(source, 'source');
+      const canonical = allowed.get(parsed.normalized);
+      if (!canonical || seen.has(canonical)) continue;
+      seen.add(canonical);
+      filtered.push(canonical);
+    } catch {
+      // Generated source metadata is optional; discard malformed or untrusted references.
+    }
+  }
+  return filtered;
+}
+
 function validateSources(value, allowedSources = []) {
   if (!Array.isArray(value) || value.length > 8) {
     throw new RangeError('sources must contain between 0 and 8 items');
@@ -341,6 +364,10 @@ export function buildDynamicImagePlanPrompt(post) {
 export function parseDynamicImagePlanOutput(raw) {
   const root = parseFirstObject(raw);
   return validateImagePlan(root.imagePlan, AUTO_IMAGE_COUNT);
+}
+
+export function parsePostCandidate(raw) {
+  return parseFirstObject(raw);
 }
 
 export function parsePostOutput(raw, options) {

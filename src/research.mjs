@@ -60,8 +60,13 @@ function sourceAuthorityScore(source) {
 }
 
 function urlsFromText(value) {
-  const matches = cleanExternalText(value, 6_000).match(/https?:\/\/[^\s<>"'`]+/giu) ?? [];
-  return matches.map((match) => match.replace(/[\])}>.,，。；;!?！]+$/gu, ''));
+  const text = cleanExternalText(value, 6_000);
+  const markdownLink = /\[[^\]\r\n]*\]\((https?:\/\/[^\s)]+)\)/giu;
+  const urls = [...text.matchAll(markdownLink)].map((match) => match[1]);
+  const withoutMarkdownLinks = text.replace(markdownLink, '');
+  const bare = withoutMarkdownLinks.match(/https?:\/\/[^\s<>"'`()\]}>，。；;!?！]+/giu) ?? [];
+  urls.push(...bare.map((match) => match.replace(/[.,]+$/gu, '')));
+  return [...new Set(urls)];
 }
 
 function sourceItems(result) {

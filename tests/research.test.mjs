@@ -199,6 +199,29 @@ describe('web research snapshots', () => {
     ]);
   });
 
+  it('keeps Markdown source URLs clean when Chinese prose immediately follows the link', async () => {
+    const currentStandard = 'https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=CURRENT';
+    const previousStandard = 'https://std.samr.gov.cn/gb/search/gbDetailed?id=PREVIOUS';
+    const snapshot = await createResearchSnapshot({
+      client: {
+        async runWebSearch() {
+          return {
+            provider: 'codex',
+            result: {
+              content: `现行标准为 [新版](${currentStandard})，2025年实施；旧版 [旧版](${previousStandard})仍标注现行。`,
+            },
+          };
+        },
+      },
+      query: '活鱼运输标准',
+      providers: ['codex'],
+      now: () => NOW,
+    });
+
+    assert.equal(snapshot.status, 'COMPLETED');
+    assert.deepEqual(researchSourceUrls(snapshot), [currentStandard, previousStandard]);
+  });
+
   it('returns a saved failed snapshot when no provider yields a public source', async () => {
     const snapshot = await createResearchSnapshot({
       client: {
