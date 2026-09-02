@@ -6,7 +6,7 @@ export default function CopyGenerationPage() {
       <div>
         <span className="eyebrow">Standalone copy</span>
         <h1>单独生成文案</h1>
-        <p className="subtle">分别生成并保存原始版与质检修订版，支持历史恢复和并排对比；不创建生产任务，也不生成图片。</p>
+        <p className="subtle">生成并保存当前文案，支持历史恢复；自动文案质检当前已关闭，不创建生产任务，也不生成图片。</p>
       </div>
     </header>
     <CopyGenerationWorkbench />

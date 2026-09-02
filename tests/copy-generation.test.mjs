@@ -174,6 +174,57 @@ describe('standalone copy generation', () => {
     assert.equal(response.imagePlan.length, 3);
   });
 
+  it('saves the first draft without running text quality review when review is disabled', async () => {
+    const originalPost = createMockPost(3);
+    const reviewPrompts = [];
+    const stages = [];
+    const client = {
+      async runReview({ prompt }) {
+        reviewPrompts.push(prompt);
+        if (!prompt.includes('Query 审核员')) {
+          assert.fail('disabled text quality review must not call the text reviewer');
+        }
+        return { rawText: passingReview(), model: 'review-model' };
+      },
+      async runWebSearch({ query, provider }) {
+        return {
+          provider,
+          result: {
+            content: `${query} 的公开资料`,
+            results: [{
+              title: '公开资料',
+              url: 'https://example.com/reference',
+              snippet: '可核验摘要',
+            }],
+          },
+        };
+      },
+      async runText() {
+        return { rawText: JSON.stringify(originalPost), model: 'text-model' };
+      },
+    };
+
+    const generated = await generateCopy({
+      client,
+      task: { query: '租房桌面怎么低成本整理？', input: {} },
+      imageCount: 3,
+      textReviewEnabled: false,
+      onStageChange: async (stage) => { stages.push(stage); },
+    });
+    const response = toCopyGenerationResponse(generated);
+
+    assert.equal(reviewPrompts.length, 1);
+    assert.deepEqual(stages, ['QUERY_REVIEW', 'RESEARCH', 'ORIGINAL_GENERATION']);
+    assert.equal(response.reviewed.copy.body, originalPost.body);
+    assert.equal(response.reviewed.review.decision, 'PASS');
+    assert.equal(response.reviewed.review.skipped, true);
+    assert.match(response.reviewed.review.summary, /质检已关闭/u);
+    assert.equal(response.generation.revisionAttempted, false);
+    assert.equal(response.generation.timing.originalReviewMs, 0);
+    assert.equal(response.generation.timing.reviewedGenerationMs, 0);
+    assert.equal(response.generation.timing.reviewedReviewMs, 0);
+  });
+
   it('repairs a rejected first draft and reviews only the repaired version', async () => {
     const originalPost = createMockPost(3);
     const revisedPost = {
@@ -592,6 +643,7 @@ describe('standalone copy generation', () => {
     assert.match(route, /LIVE_MODEL_COST_ACCEPTED/u);
     assert.match(route, /autoReviseOnReject:\s*z\.boolean\(\)\.default\(false\)/u);
     assert.match(route, /autoReviseOnReject:\s*input\.autoReviseOnReject/u);
+    assert.match(route, /textReviewEnabled:\s*false/u);
     assert.match(route, /\.strict\(\)/u);
     assert.match(route, /mutation:\s*true/u);
     assert.match(route, /COPY_GENERATION_IN_PROGRESS/u);

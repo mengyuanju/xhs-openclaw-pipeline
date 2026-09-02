@@ -31,6 +31,16 @@ const COPY_GENERATION_STAGE_LABELS = Object.freeze({
   REVIEWED_REVIEW: '修订复检',
 });
 
+function disabledTextReviewResult() {
+  return {
+    schemaVersion: 1,
+    decision: 'PASS',
+    summary: '自动文案质检已关闭，当前结果未经自动质检。',
+    issues: [],
+    skipped: true,
+  };
+}
+
 function elapsedMilliseconds(now, startedAt) {
   const finishedAt = Number(now());
   const normalizedStart = Number(startedAt);
@@ -317,6 +327,7 @@ async function createReviewedPost(client, task, originalPost, originalReview, op
  *   systemPrompt?: string,
  *   imageCount?: number | 'auto',
  *   autoReviseOnReject?: boolean,
+ *   textReviewEnabled?: boolean,
  *   now?: () => number,
  *   onStageChange?: (stage: string) => void | Promise<void>,
  * }} options
@@ -327,6 +338,7 @@ export async function generateCopy({
   systemPrompt,
   imageCount = 'auto',
   autoReviseOnReject = false,
+  textReviewEnabled = true,
   now = () => performance.now(),
   onStageChange = async () => {},
 }) {
@@ -336,6 +348,9 @@ export async function generateCopy({
   }
   if (typeof autoReviseOnReject !== 'boolean') {
     throw new TypeError('autoReviseOnReject must be a boolean');
+  }
+  if (typeof textReviewEnabled !== 'boolean') {
+    throw new TypeError('textReviewEnabled must be a boolean');
   }
   const startedAt = now();
   const timing = {
@@ -392,53 +407,57 @@ export async function generateCopy({
       allowedSources,
     }),
   );
-  await onStageChange('ORIGINAL_REVIEW');
-  const originalTextReview = await measureModelStage(
-    timing,
-    'originalReviewMs',
-    'ORIGINAL_REVIEW',
-    now,
-    () => runTextReview({
-      client,
-      task: generationTask,
-      post: original.post,
-      allowedSources,
-      editorialInstruction: systemPrompt,
-    }),
-  );
   let reviewed = original;
+  let originalTextReview = disabledTextReviewResult();
   let reviewedTextReview = originalTextReview;
   let revisionAttempted = false;
-  if (originalTextReview.decision !== 'PASS' && autoReviseOnReject) {
-    revisionAttempted = true;
-    await onStageChange('REVIEWED_GENERATION');
-    reviewed = await measureModelStage(
+  if (textReviewEnabled) {
+    await onStageChange('ORIGINAL_REVIEW');
+    originalTextReview = await measureModelStage(
       timing,
-      'reviewedGenerationMs',
-      'REVIEWED_GENERATION',
-      now,
-      () => createReviewedPost(
-        client,
-        generationTask,
-        original.post,
-        originalTextReview,
-        { systemPrompt, imageCount, allowedSources },
-      ),
-    );
-    await onStageChange('REVIEWED_REVIEW');
-    reviewedTextReview = await measureModelStage(
-      timing,
-      'reviewedReviewMs',
-      'REVIEWED_REVIEW',
+      'originalReviewMs',
+      'ORIGINAL_REVIEW',
       now,
       () => runTextReview({
         client,
         task: generationTask,
-        post: reviewed.post,
+        post: original.post,
         allowedSources,
         editorialInstruction: systemPrompt,
       }),
     );
+    reviewedTextReview = originalTextReview;
+    if (originalTextReview.decision !== 'PASS' && autoReviseOnReject) {
+      revisionAttempted = true;
+      await onStageChange('REVIEWED_GENERATION');
+      reviewed = await measureModelStage(
+        timing,
+        'reviewedGenerationMs',
+        'REVIEWED_GENERATION',
+        now,
+        () => createReviewedPost(
+          client,
+          generationTask,
+          original.post,
+          originalTextReview,
+          { systemPrompt, imageCount, allowedSources },
+        ),
+      );
+      await onStageChange('REVIEWED_REVIEW');
+      reviewedTextReview = await measureModelStage(
+        timing,
+        'reviewedReviewMs',
+        'REVIEWED_REVIEW',
+        now,
+        () => runTextReview({
+          client,
+          task: generationTask,
+          post: reviewed.post,
+          allowedSources,
+          editorialInstruction: systemPrompt,
+        }),
+      );
+    }
   }
   timing.totalMs = elapsedMilliseconds(now, startedAt);
 

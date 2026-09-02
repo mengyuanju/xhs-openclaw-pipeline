@@ -112,6 +112,7 @@ export function POST(request: Request) {
         systemPrompt: runtime.systemPrompt,
         imageCount: input.imageCount,
         autoReviseOnReject: input.autoReviseOnReject,
+        textReviewEnabled: false,
         onStageChange: (stage) => withAdminStore((store: any) =>
           store.updateStandaloneCopyGenerationJobStage(jobId, stage)),
       });

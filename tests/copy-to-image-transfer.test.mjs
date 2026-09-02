@@ -116,7 +116,7 @@ describe('copy-to-image draft transfer', () => {
     assert.match(comparison, /router\.push\('\/image-generation'\)/u);
 
     assert.match(workbench, /readImageGenerationDraft\(window\.sessionStorage\)/u);
-    assert.match(workbench, /已从“单独生成文案”导入质检版/u);
+    assert.match(workbench, /已从“单独生成文案”导入当前版本/u);
     assert.match(workbench, /value=\{form\.query\}/u);
     assert.match(workbench, /value=\{form\.title\}/u);
     assert.match(workbench, /value=\{form\.body\}/u);

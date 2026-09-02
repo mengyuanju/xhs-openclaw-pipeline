@@ -91,7 +91,9 @@ export function CopyGenerationHistory({
           {records.map((record) => <li key={record.id}>
             <button type="button" aria-pressed={selectedId === record.id} onClick={() => onSelect(record)}>
               <strong>{record.query}</strong>
-              {record.reviewed.review.decision === 'REJECT' && (record.manualReview
+              {record.reviewed.review.skipped
+                ? <span className="pill">质检已关闭</span>
+                : record.reviewed.review.decision === 'REJECT' && (record.manualReview
                 ? <span className="pill pill-approved">已人工审核</span>
                 : <span className="pill pill-rejected">待人工复核</span>)}
               <span>#{record.id} · {new Date(record.createdAt).toLocaleString('zh-CN')} · {record.generation.timing

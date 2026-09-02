@@ -32,10 +32,10 @@ describe('standalone copy generation workspace', () => {
     assert.match(historyState, /\/api\/copy-generations\?page=1&pageSize=20/u);
     assert.match(workbench, /apiRequest<CopyGenerationResult>\('\/api\/copy-generations'/u);
     assert.match(workbench, /confirmation: 'LIVE_MODEL_COST_ACCEPTED'/u);
-    assert.match(workbench, /autoReviseOnReject/u);
-    assert.match(workbench, /id="copy-auto-revise"/u);
-    assert.match(workbench, /首次质检不通过时自动重写/u);
-    assert.match(workbench, /默认关闭.*保留首稿.*人工复核/u);
+    assert.doesNotMatch(workbench, /id="copy-auto-revise"/u);
+    assert.doesNotMatch(workbench, /首次质检不通过时自动重写/u);
+    assert.match(workbench, /不执行自动文案质检或质检修订/u);
+    assert.match(workbench, /自动文案质检当前已关闭/u);
     assert.match(workbench, /htmlFor="copy-query"/u);
     assert.match(workbench, /htmlFor="copy-category"/u);
     assert.match(workbench, /htmlFor="copy-audience"/u);
@@ -45,12 +45,10 @@ describe('standalone copy generation workspace', () => {
     assert.match(workbench, /role=\{messageIsError \? 'alert' : 'status'\}/u);
     assert.match(workbench, /aria-live="polite"/u);
     assert.match(workbench, /generated\.reviewed\.review\.decision/u);
-    assert.match(workbench, /质检仍未通过.*具体错误.*人工二次质检/u);
     assert.match(workbench, /CopyGenerationComparison/u);
     assert.match(workbench, /useCopyGenerationHistory/u);
     assert.match(workbench, /jobs=\{jobs\}/u);
-    assert.match(workbench, /首稿未通过时直接保留并进入人工复核/u);
-    assert.match(workbench, /存在阻断问题时还会自动重写并复检/u);
+    assert.match(workbench, /首稿生成后直接保存/u);
     assert.match(historyState, /hasRunningJobs/u);
     assert.match(historyState, /pollWhileRequestBusy/u);
     assert.match(historyState, /setInterval/u);
@@ -86,7 +84,7 @@ describe('standalone copy generation workspace', () => {
     assert.match(comparison, /人工审核通过/u);
     assert.match(comparison, /确认人工审核通过？/u);
     assert.match(comparison, /result\.manualReview\?\.decision === 'APPROVED'/u);
-    assert.match(comparison, /reviewedCopyPassed \|\| manuallyApproved/u);
+    assert.match(comparison, /reviewedCopyPassed \|\| reviewedCopySkipped \|\| manuallyApproved/u);
     assert.match(comparison, /aria-disabled=\{!canImportReviewedCopy\}/u);
     assert.doesNotMatch(comparison, /^\s*disabled=\{!canImportReviewedCopy\}/mu);
     assert.match(comparison, /尚未通过自动质检或人工确认，不能导入图片生成/u);
@@ -99,6 +97,8 @@ describe('standalone copy generation workspace', () => {
     assert.match(workbench, /onResultChange/u);
     assert.match(history, /record\.manualReview/u);
     assert.match(comparison, /result\.generation\.revisionAttempted/u);
+    assert.match(comparison, /reviewedCopySkipped/u);
+    assert.match(comparison, /质检已关闭/u);
     assert.match(comparison, /当前版/u);
     assert.match(comparison, /version\.thinking/u);
     assert.match(comparison, /thinking：/u);

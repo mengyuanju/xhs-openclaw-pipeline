@@ -40,6 +40,7 @@ type StageReview = {
   decision: 'PASS' | 'REJECT';
   summary: string;
   issues: Array<{ code: string; severity: 'WARNING' | 'BLOCKING'; message: string }>;
+  skipped?: boolean;
 };
 
 type CopyGenerationVersion = {
@@ -168,6 +169,7 @@ function CopyVersion({
   label: string;
   version: CopyGenerationVersion;
 }) {
+  const reviewSkipped = version.review.skipped === true;
   return <article className="copy-version-card">
     <div className="copy-version-head">
       <div>
@@ -175,8 +177,10 @@ function CopyVersion({
         <strong>{version.model}</strong>
         <small>thinking：{version.thinking ?? '历史记录未记录'}</small>
       </div>
-      <span className={version.review.decision === 'PASS' ? 'pill pill-approved' : 'pill pill-rejected'}>
-        {version.review.decision === 'PASS' ? '审核通过' : '审核未通过'}
+      <span className={reviewSkipped
+        ? 'pill'
+        : version.review.decision === 'PASS' ? 'pill pill-approved' : 'pill pill-rejected'}>
+        {reviewSkipped ? '质检已关闭' : version.review.decision === 'PASS' ? '审核通过' : '审核未通过'}
       </span>
     </div>
     <h3 className="review-task-copy-title">{version.copy.title}</h3>
@@ -188,7 +192,7 @@ function CopyVersion({
     </div>
     <CopyImagePlan label={label} imagePlan={version.imagePlan} />
     <div className="copy-review-summary">
-      <div><CheckCircle2 aria-hidden="true" size={15} /><strong>质检摘要</strong></div>
+      <div><CheckCircle2 aria-hidden="true" size={15} /><strong>{reviewSkipped ? '质检状态' : '质检摘要'}</strong></div>
       <p>{version.review.summary}</p>
       {version.review.issues.length > 0 && <ul>
         {version.review.issues.map((issue) => <li key={`${issue.code}-${issue.message}`}>
@@ -202,9 +206,11 @@ function CopyVersion({
 function CopyGenerationTimingBreakdown({
   timing,
   revisionAttempted,
+  reviewSkipped,
 }: {
   timing: CopyGenerationTiming | null;
   revisionAttempted: boolean;
+  reviewSkipped: boolean;
 }) {
   return <section className="copy-timing-breakdown" aria-labelledby="copy-timing-heading">
     <div className="copy-timing-head">
@@ -214,7 +220,8 @@ function CopyGenerationTimingBreakdown({
     {timing ? <dl className="copy-timing-stage-grid">
       {TIMING_STAGES.map(({ field, label }) => <div key={field}>
         <dt>{label}</dt>
-        <dd>{!revisionAttempted && ['reviewedGenerationMs', 'reviewedReviewMs'].includes(field)
+        <dd>{(reviewSkipped && ['originalReviewMs', 'reviewedGenerationMs', 'reviewedReviewMs'].includes(field))
+          || (!revisionAttempted && ['reviewedGenerationMs', 'reviewedReviewMs'].includes(field))
           ? '未执行'
           : formatDuration(timing[field])}</dd>
       </div>)}
@@ -238,9 +245,10 @@ export function CopyGenerationComparison({
   const [manualReviewBusy, setManualReviewBusy] = useState(false);
   const revisionAttempted = result.generation.revisionAttempted;
   const activeVersionLabel = revisionAttempted ? '质检版' : '当前版';
-  const reviewedCopyPassed = result.reviewed.review.decision === 'PASS';
+  const reviewedCopySkipped = result.reviewed.review.skipped === true;
+  const reviewedCopyPassed = result.reviewed.review.decision === 'PASS' && !reviewedCopySkipped;
   const manuallyApproved = result.manualReview?.decision === 'APPROVED';
-  const canImportReviewedCopy = reviewedCopyPassed || manuallyApproved;
+  const canImportReviewedCopy = reviewedCopyPassed || reviewedCopySkipped || manuallyApproved;
   const blockingIssues = result.reviewed.review.issues
     .filter((issue) => issue.severity === 'BLOCKING');
 
@@ -254,7 +262,7 @@ export function CopyGenerationComparison({
   }
 
   async function approveReviewedCopyManually() {
-    if (reviewedCopyPassed || manuallyApproved || manualReviewBusy) return;
+    if (reviewedCopyPassed || reviewedCopySkipped || manuallyApproved || manualReviewBusy) return;
     if (!await confirm({
       title: '确认人工审核通过？',
       description: `请确认你已完整检查${activeVersionLabel}的正文、事实依据、风险边界和配图策划。确认后会保留自动质检问题，但允许将当前文案导入图片生成。`,
@@ -325,7 +333,7 @@ export function CopyGenerationComparison({
         </button>
       </div>
     </div>
-    {!reviewedCopyPassed && <div
+    {!reviewedCopyPassed && !reviewedCopySkipped && <div
       className={`notice copy-validation-notice${manuallyApproved ? '' : ' error'}`}
       id="copy-validation-note"
       role={manuallyApproved ? 'status' : 'alert'}
@@ -366,6 +374,7 @@ export function CopyGenerationComparison({
     <CopyGenerationTimingBreakdown
       timing={result.generation.timing}
       revisionAttempted={revisionAttempted}
+      reviewSkipped={reviewedCopySkipped}
     />
     <CopyGenerationResearchPanel research={result.generation.research} />
     <div className={`copy-comparison-grid${revisionAttempted ? '' : ' single'}`}>

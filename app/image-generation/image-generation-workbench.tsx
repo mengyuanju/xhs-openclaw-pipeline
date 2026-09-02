@@ -142,7 +142,7 @@ export function ImageGenerationWorkbench() {
 
   return <div className="standalone-image-workspace">
     {importedDraft && <div className="notice success" role="status" aria-live="polite">
-      已从“单独生成文案”导入质检版，标题、正文、标签和图片策划均已回填，可继续修改后生成。
+      已从“单独生成文案”导入当前版本，标题、正文、标签和图片策划均已回填，可继续修改后生成。
     </div>}
     <div className="standalone-image-workspace-grid">
       <div className="standalone-image-main">

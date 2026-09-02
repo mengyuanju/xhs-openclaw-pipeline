@@ -41,7 +41,6 @@ function referenceUrlsFrom(value: string) {
 export function CopyGenerationWorkbench() {
   const confirm = useConfirmDialog();
   const [imageCount, setImageCount] = useState('auto');
-  const [autoReviseOnReject, setAutoReviseOnReject] = useState(false);
   const [requestBusy, setRequestBusy] = useState(false);
   const {
     result,
@@ -75,10 +74,8 @@ export function CopyGenerationWorkbench() {
     }
 
     if (!await confirm({
-      title: '确认调用真实模型生成并审核文案？',
-      description: autoReviseOnReject
-        ? '会执行选题审核、联网研究、首稿生成与质检；存在阻断问题时还会自动重写并复检，因此耗时和模型费用会增加。'
-        : '会执行选题审核、联网研究、首稿生成与质检；首稿未通过时直接保留并进入人工复核，不调用自动重写与复检。',
+      title: '确认调用真实模型生成文案？',
+      description: '会执行选题审核、联网研究和首稿生成；当前不执行自动文案质检或质检修订。',
       confirmLabel: '确认并生成',
     })) return;
 
@@ -101,12 +98,13 @@ export function CopyGenerationWorkbench() {
             ...(referenceUrls.length > 0 ? { referenceUrls } : {}),
           },
           imageCount: imageCount === 'auto' ? 'auto' : Number(imageCount),
-          autoReviseOnReject,
           confirmation: 'LIVE_MODEL_COST_ACCEPTED',
         }),
       });
       setResult(generated);
-      if (generated.reviewed.review.decision !== 'PASS') {
+      if (generated.reviewed.review.skipped) {
+        showMessage('文案已生成并保存；自动文案质检当前已关闭。', false);
+      } else if (generated.reviewed.review.decision !== 'PASS') {
         showMessage(generated.generation.revisionAttempted
           ? '自动重写后的文案质检仍未通过；请查看具体错误，并进行人工二次质检。'
           : '首稿质检仍未通过，已跳过自动重写并保留；请查看具体错误，并进行人工二次质检。', true);
@@ -172,27 +170,12 @@ export function CopyGenerationWorkbench() {
             <small>只影响返回的图片策划建议，本次不会调用图片模型。</small>
           </div>
           <div className="field full">
-            <label className="switch-field" htmlFor="copy-auto-revise">
-              <input
-                id="copy-auto-revise"
-                type="checkbox"
-                checked={autoReviseOnReject}
-                aria-describedby="copy-auto-revise-help"
-                onChange={(event) => setAutoReviseOnReject(event.target.checked)}
-              />
-              <span>首次质检不通过时自动重写</span>
-            </label>
-            <small id="copy-auto-revise-help">默认关闭；关闭时保留首稿和具体错误，交由人工复核，可省去一次重写与复检。</small>
-          </div>
-          <div className="field full">
-            <div className="notice">提交后会先保存生成任务，刷新或切换页面后仍可查看状态。{autoReviseOnReject
-              ? '若首稿存在阻断问题，系统会额外执行一次自动重写和复检。'
-              : '若首稿存在阻断问题，系统会保留正文和错误，等待人工二次质检。'}</div>
+            <div className="notice">提交后会先保存生成任务，刷新或切换页面后仍可查看状态。自动文案质检当前已关闭，首稿生成后直接保存。</div>
           </div>
           <div className="field full inline">
             <button className="button primary" type="submit" disabled={historyLoading || requestBusy || hasRunningJobs}>
               {requestBusy
-                ? <><LoaderCircle aria-hidden="true" className="animate-spin" size={16} />正在生成与审核…</>
+                ? <><LoaderCircle aria-hidden="true" className="animate-spin" size={16} />正在生成文案…</>
                 : hasRunningJobs
                   ? <><LoaderCircle aria-hidden="true" className="animate-spin" size={16} />已有任务生成中…</>
                   : historyLoading

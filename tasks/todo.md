@@ -531,3 +531,25 @@
 - [x] 完成定向测试、全量测试、类型检查、生产构建和差异审查。
 - Verify：`npm test`、`npm run typecheck`、`npm run build`。
 - Dependencies：Tasks 55–58。
+
+## Task 64: 批量输入与执行契约
+
+- [x] 每行一个选题，清理空行并拒绝少于 2 条、多于 20 条、重复项或超过 500 字的项。
+- [x] 共享参考链接沿用单次模式的协议、凭据、数量和长度边界。
+- Verify：`node --test tests/batch-generation.test.mjs` 先失败再通过。
+- Dependencies：Task 63。
+
+## Task 65: 独立批量图文模式
+
+- [x] 新增导航和 `/batch-generation` 页面，不改写两个单次工作台。
+- [x] 每条依次调用单次文案 API 和单次图片 API，图片使用文案返回的当前版本与图片策划。
+- Verify：源码契约测试、`npm run typecheck`、`npm run build`。
+- Dependencies：Task 64。
+
+## Task 66: 批次交互与质量门
+
+- [x] 显示整批进度和逐条状态，支持当前条结束后停止；失败条记录阶段和原因并继续。
+- [x] Live 图片整批费用确认、Mock 说明、键盘语义和窄屏布局完整。
+- Verify：`npm test`、`npm run typecheck`、`npm run build`、真实浏览器检查。
+- 当前：自动化测试、类型检查和生产构建通过；可用浏览器没有已登录后台会话，只验证到受保护路由正确跳转登录页。
+- Dependencies：Task 65。
