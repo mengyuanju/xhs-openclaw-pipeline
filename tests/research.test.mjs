@@ -11,6 +11,23 @@ import {
 const NOW = '2026-08-29T08:00:00.000Z';
 
 describe('web research snapshots', () => {
+  it('uses only search providers supported by the current OpenClaw release by default', async () => {
+    const calls = [];
+    const snapshot = await createResearchSnapshot({
+      client: {
+        async runWebSearch({ query, provider }) {
+          calls.push({ query, provider });
+          return { provider, result: { results: [] } };
+        },
+      },
+      query: '需要核验的主题',
+      now: () => NOW,
+    });
+
+    assert.equal(snapshot.status, 'FAILED');
+    assert.deepEqual(calls.map(({ provider }) => provider), ['codex', 'codex']);
+  });
+
   it('falls back between providers and keeps only bounded public source evidence', async () => {
     const calls = [];
     const client = {
@@ -47,6 +64,7 @@ describe('web research snapshots', () => {
     const snapshot = await createResearchSnapshot({
       client,
       query: '绿萝叶子发黄怎么办',
+      providers: ['codex', 'duckduckgo'],
       now: () => NOW,
     });
 
@@ -106,6 +124,7 @@ describe('web research snapshots', () => {
     const snapshot = await createResearchSnapshot({
       client,
       query: '自行车活鱼桶 装水防晃 技巧',
+      providers: ['codex', 'duckduckgo'],
       now: () => NOW,
     });
 
@@ -143,6 +162,7 @@ describe('web research snapshots', () => {
     const snapshot = await createResearchSnapshot({
       client,
       query: '自行车活鱼桶 装水防晃 技巧',
+      providers: ['codex', 'duckduckgo'],
       now: () => NOW,
     });
 
@@ -188,6 +208,7 @@ describe('web research snapshots', () => {
         },
       },
       query: '需要核验的主题',
+      providers: ['codex', 'duckduckgo'],
       now: () => NOW,
     });
 

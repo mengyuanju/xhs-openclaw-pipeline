@@ -1,7 +1,7 @@
 import { isIP } from 'node:net';
 
 const RESEARCH_SCHEMA_VERSION = 1;
-const DEFAULT_PROVIDERS = ['codex', 'duckduckgo'];
+const DEFAULT_PROVIDERS = ['codex'];
 const MAX_SOURCES = 5;
 const MAX_ATTEMPTS = 5;
 

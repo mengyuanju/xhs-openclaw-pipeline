@@ -744,6 +744,33 @@ describe('OpenClaw client', () => {
     assert.equal(invocation.options.timeout, 310000);
   });
 
+  it('explains that ChatGPT OAuth cannot authorize the OpenAI image route', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'xhs-openclaw-image-oauth-'));
+    const outputPath = join(directory, 'raw.png');
+    const client = createOpenClawClient({
+      entryPath: 'C:/openclaw/dist/index.js',
+      runner: () => ({
+        status: 1,
+        stdout: '',
+        stderr: "OpenAI Codex image generation failed (HTTP 400): The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account.",
+      }),
+    });
+
+    try {
+      await assert.rejects(
+        client.runImage({ prompt: 'generate a production image', outputPath }),
+        (error) => {
+          assert.match(error.message, /ChatGPT\/Codex OAuth/u);
+          assert.match(error.message, /OPENAI_API_KEY/u);
+          assert.doesNotMatch(error.message, /gpt-5\.6-sol/u);
+          return true;
+        },
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('starts independent image CLI processes concurrently through the async runner', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'xhs-openclaw-image-concurrency-'));
     const outputPaths = [join(directory, 'first.png'), join(directory, 'second.png')];
@@ -943,6 +970,42 @@ describe('OpenClaw client', () => {
 
     assert.equal(calls, 2);
     assert.deepEqual(delays, [2_000]);
+    assert.equal(result.provider, 'codex');
+  });
+
+  it('retries a bounded Codex hosted-search timeout and leaves room for its configured budget', async () => {
+    let calls = 0;
+    const delays = [];
+    const observedTimeouts = [];
+    const client = createOpenClawClient({
+      entryPath: 'C:/openclaw/dist/index.js',
+      runner: (_command, _args, options) => {
+        calls += 1;
+        observedTimeouts.push(options.timeout);
+        if (calls === 1) {
+          return {
+            status: 1,
+            stdout: '',
+            stderr: 'codex app-server hosted search turn timed out after 90s',
+          };
+        }
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            provider: 'codex',
+            outputs: [{ result: { results: [{ url: 'https://example.com/source' }] } }],
+          }),
+          stderr: '',
+        };
+      },
+      asyncSleep: async (milliseconds) => { delays.push(milliseconds); },
+    });
+
+    const result = await client.runWebSearch({ query: '需要核验的主题', provider: 'codex' });
+
+    assert.equal(calls, 2);
+    assert.deepEqual(delays, [2_000]);
+    assert.deepEqual(observedTimeouts, [120_000, 120_000]);
     assert.equal(result.provider, 'codex');
   });
 

@@ -17,7 +17,7 @@ const DEFAULT_TEXT_THINKING = 'high';
 const IMAGE_GENERATION_SIZE = '1152x1536';
 const TRANSPORT_RETRY_DELAYS_MS = [5_000, 15_000, 30_000];
 const WEB_SEARCH_RETRY_DELAYS_MS = [2_000];
-const TRANSIENT_TRANSPORT_ERROR = /\b(?:ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET)\b|fetch failed|connection error|other side closed|reconnecting|model\/list timed out/iu;
+const TRANSIENT_TRANSPORT_ERROR = /\b(?:ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET)\b|fetch failed|connection error|other side closed|reconnecting|timed?\s*out/iu;
 const TEXT_THINKING_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 
 let textInferenceTail = Promise.resolve();
@@ -142,6 +142,14 @@ function redact(value) {
     .replace(/\bsk-[a-zA-Z0-9_-]{12,}\b/g, '[REDACTED_API_KEY]')
     .replace(/\bBearer\s+[a-zA-Z0-9._~+/=-]{12,}\b/gi, 'Bearer [REDACTED_TOKEN]')
     .slice(0, 4_000);
+}
+
+function actionableImageFailureDetail(result) {
+  const detail = redact(failureDetail(result));
+  if (/not supported when using Codex with a ChatGPT account/iu.test(detail)) {
+    return 'ChatGPT/Codex OAuth 不能用于此图片生成接口。请在 .env.local 配置 OPENAI_API_KEY，或配置其他 OpenClaw 图片提供方凭据。';
+  }
+  return detail;
 }
 
 function resolveEntryPath(explicitPath) {
@@ -334,7 +342,7 @@ export function createOpenClawClient({
       query,
       provider = 'codex',
       limit = 5,
-      timeoutMs = 90_000,
+      timeoutMs = 120_000,
     }) {
       const normalizedQuery = typeof query === 'string' ? query.trim() : '';
       const normalizedProvider = typeof provider === 'string' ? provider.trim().toLowerCase() : '';
@@ -586,7 +594,7 @@ export function createOpenClawClient({
           : processOptions),
       });
       if (result.error || result.status !== 0) {
-        const detail = redact(failureDetail(result));
+        const detail = actionableImageFailureDetail(result);
         throw new Error(`OpenClaw image generation failed: ${detail}`);
       }
       if (!existsSync(outputPath)) {
@@ -661,7 +669,7 @@ export function createOpenClawClient({
           : processOptions),
       });
       if (result.error || result.status !== 0) {
-        const detail = redact(failureDetail(result));
+        const detail = actionableImageFailureDetail(result);
         throw new Error(`OpenClaw image edit failed: ${detail}`);
       }
       if (!existsSync(outputPath)) {

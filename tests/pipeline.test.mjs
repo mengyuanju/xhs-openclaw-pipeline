@@ -532,7 +532,7 @@ describe('content pipeline', () => {
     });
 
     assert.equal(result.status, 'failed');
-    assert.equal(searchCalls, 2);
+    assert.equal(searchCalls, 1);
     assert.equal(textCalls, 0);
     assert.match(result.error, /联网研究失败/u);
     const research = JSON.parse(await readFile(
