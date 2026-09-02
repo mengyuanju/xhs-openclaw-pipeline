@@ -44,3 +44,22 @@ export function parseBatchReferenceUrls(value) {
   }
   return urls;
 }
+
+export function parseBatchCopyGenerationIds(value) {
+  if (!Array.isArray(value)) throw new TypeError('批量生图文案记录必须是数组');
+  const ids = [...new Set(value)];
+  if (ids.length < 1 || ids.length > MAX_BATCH_QUERIES) {
+    throw new Error(`每批请选择 1–${MAX_BATCH_QUERIES} 条已质检文案`);
+  }
+  if (!ids.every((id) => Number.isSafeInteger(id) && id > 0)) {
+    throw new Error('文案记录 ID 必须是正整数');
+  }
+  return ids;
+}
+
+export function selectApprovedCopyGenerations(value) {
+  if (!Array.isArray(value)) throw new TypeError('文案历史记录必须是数组');
+  return value.filter((record) => record
+    && typeof record === 'object'
+    && record.manualReview?.decision === 'APPROVED');
+}

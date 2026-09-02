@@ -553,3 +553,32 @@
 - Verify：`npm test`、`npm run typecheck`、`npm run build`、真实浏览器检查。
 - 当前：自动化测试、类型检查和生产构建通过；可用浏览器没有已登录后台会话，只验证到受保护路由正确跳转登录页。
 - Dependencies：Task 65。
+
+## Phase 21: 批量文案与图片分离
+
+## Task 80: 拆分批量入口
+
+- [x] 新增 `/batch-copy-generation` 与 `/batch-image-generation`，更新导航和顶部上下文。
+- [x] `/batch-generation` 兼容跳转到批量生文。
+- Verify：`node --test tests/batch-generation.test.mjs`。
+- Dependencies：Task 79。
+
+## Task 81: 批量文案质检门禁
+
+- [x] 文案生成成功后停在待人工质检，不调用图片 API。
+- [x] 展示完整文案并通过现有接口持久化人工确认；恢复最近未确认记录。
+- Verify：定向测试与 `npm run typecheck`。
+- Dependencies：Task 80。
+
+## Task 82: 已质检文案批量生图
+
+- [x] 只展示 `manualReview=APPROVED` 的文案，每批选择 1–20 条。
+- [x] 保留 Mock/Live、整批费用确认、顺序执行、失败隔离和停止控制。
+- Verify：定向测试与 `npm run typecheck`。
+- Dependencies：Task 81。
+
+## Task 83: 分离模式质量门
+
+- [x] 完成 502 项全量测试、类型检查、生产构建和五轴差异审查。
+- [x] Chrome 管理员会话验证两个页面、旧地址跳转、完整质检内容、桌面与 375px 布局，控制台无错误。
+- Dependencies：Tasks 80–82。

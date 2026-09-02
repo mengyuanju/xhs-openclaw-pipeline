@@ -112,6 +112,32 @@
 .batch-generation-error { margin: 0 0 0 35px; color: var(--red-dark); font-size: 10px; line-height: 1.55; }
 .batch-generation-item-meta { display: flex; align-items: center; gap: 6px 12px; flex-wrap: wrap; margin-left: 35px; color: var(--muted); font-size: 10px; }
 .batch-generation-item-meta a { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-weight: 750; }
+.batch-copy-review { display: grid; gap: 10px; margin-left: 35px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); }
+.batch-copy-review summary { color: var(--accent); cursor: pointer; font-size: 11px; font-weight: 800; }
+.batch-copy-review summary:focus-visible { outline: 3px solid var(--control-ring); outline-offset: 3px; border-radius: 3px; }
+.batch-copy-review h3, .batch-copy-review p { margin: 0; }
+.batch-copy-review h3 { font-family: Georgia, "Songti SC", serif; font-size: 16px; line-height: 1.45; }
+.batch-copy-review p { color: var(--ink-soft); font-size: 11px; line-height: 1.75; white-space: pre-wrap; }
+.batch-copy-review small { color: var(--muted); }
+.batch-copy-plan { display: grid; gap: 7px; padding-top: 9px; border-top: 1px solid var(--line); }
+.batch-copy-plan > strong { font-size: 11px; }
+.batch-copy-plan ol { display: grid; gap: 7px; margin: 0; padding-left: 18px; }
+.batch-copy-plan ol > li { color: var(--ink-soft); font-size: 10px; line-height: 1.55; }
+.batch-copy-plan ol > li > span, .batch-copy-plan ol > li > small { display: block; }
+.batch-copy-plan ul { margin: 4px 0 0; padding-left: 16px; }
+.batch-generation-next-step { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.batch-generation-next-step span { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.batch-approved-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 14px 0 10px; }
+.batch-select-all, .batch-approved-list label { display: flex; align-items: flex-start; gap: 9px; cursor: pointer; }
+.batch-select-all { color: var(--ink-soft); font-size: 11px; font-weight: 750; }
+.batch-select-all input, .batch-approved-list input { width: 16px; height: 16px; flex: 0 0 auto; margin: 1px 0 0; accent-color: var(--red); }
+.batch-approved-list { max-height: 420px; display: grid; gap: 7px; margin: 0; padding: 0 3px 0 0; overflow-y: auto; list-style: none; }
+.batch-approved-list li { padding: 10px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); }
+.batch-approved-list label > span { min-width: 0; display: grid; gap: 3px; }
+.batch-approved-list strong, .batch-approved-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batch-approved-list strong { color: var(--ink); font-size: 12px; }
+.batch-approved-list small { color: var(--muted); font-size: 10px; line-height: 1.5; }
+.batch-image-options { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
 .standalone-image-workspace { display: grid; gap: 16px; }
 .standalone-image-workspace-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(290px, 340px); gap: 16px; align-items: start; }
 .standalone-image-main { min-width: 0; display: grid; gap: 16px; }
@@ -1024,7 +1050,9 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
   .batch-generation-actions .button, .batch-generation-progress .button { width: 100%; }
   .batch-generation-item-head { grid-template-columns: 26px minmax(0, 1fr); }
   .batch-generation-item-head .pill { grid-column: 2; width: fit-content; }
-  .batch-generation-error, .batch-generation-item-meta { margin-left: 35px; }
+  .batch-generation-error, .batch-generation-item-meta, .batch-copy-review { margin-left: 35px; }
+  .batch-generation-next-step, .batch-approved-toolbar { align-items: stretch; flex-direction: column; }
+  .batch-generation-next-step .button, .batch-approved-toolbar .button { width: 100%; }
   .standalone-image-summary, .standalone-image-progress-facts, .standalone-image-page-card, .standalone-image-layout-facts, .standalone-image-layout-constraints, .standalone-image-quality-dimensions { grid-template-columns: 1fr; }
   .standalone-image-resume { align-items: flex-start; flex-direction: column; }
   .standalone-image-page-card { padding: 12px; }

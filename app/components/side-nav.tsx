@@ -6,6 +6,7 @@ import {
   FileUp,
   LayoutDashboard,
   ImagePlus,
+  Images,
   Layers3,
   LibraryBig,
   ListChecks,
@@ -32,8 +33,9 @@ const navigationGroups: Array<{ label: string; items: NavigationItem[] }> = [
     items: [
       { href: '/imports', label: '选题导入', icon: FileUp },
       { href: '/copy-generation', label: '单独生成文案', icon: FilePenLine },
+      { href: '/batch-copy-generation', label: '批量生成文案', icon: Layers3 },
       { href: '/image-generation', label: '单独生成图片', icon: ImagePlus },
-      { href: '/batch-generation', label: '批量生成图文', icon: Layers3 },
+      { href: '/batch-image-generation', label: '批量生成图片', icon: Images },
       { href: '/tasks', label: '任务中心', icon: ListChecks },
     ],
   },
