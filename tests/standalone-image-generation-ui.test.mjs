@@ -88,7 +88,7 @@ describe('standalone image generation workspace', () => {
     assert.match(statusRoute, /readStandaloneImageProgress/u);
     assert.match(statusRoute, /adminOutputRoot/u);
     assert.match(statusRoute, /'Cache-Control': 'no-store'/u);
-    assert.match(runState, /crypto\.randomUUID\(\)/u);
+    assert.match(runState, /createRunId\(\)/u);
     assert.match(runState, /xhs:image-generation-active-run:v1/u);
     assert.match(runState, /PROGRESS_MISS_LIMIT = 10/u);
     assert.match(runState, /useRef\(0\)/u);

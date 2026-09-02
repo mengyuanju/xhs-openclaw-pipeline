@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { apiRequest } from '../components/api-client';
+import { createRunId } from './run-id';
 
 const ACTIVE_RUN_STORAGE_KEY = 'xhs:image-generation-active-run:v1';
 const PROGRESS_POLL_MS = 1_000;
@@ -203,7 +204,7 @@ export function useImageGenerationRun() {
   }, [forgetRun, refreshProgress]);
 
   async function startRun(request: ImageGenerationRequest) {
-    const nextRunId = crypto.randomUUID();
+    const nextRunId = createRunId();
     activeRunId.current = nextRunId;
     progressMisses.current = 0;
     window.sessionStorage.setItem(ACTIVE_RUN_STORAGE_KEY, nextRunId);
