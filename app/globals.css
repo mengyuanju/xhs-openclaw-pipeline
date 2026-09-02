@@ -208,6 +208,8 @@
 .copy-validation-notice > div { display: flex; align-items: center; gap: 7px; }
 .copy-validation-notice p { margin: 0; line-height: 1.6; }
 .copy-validation-notice ul { display: grid; gap: 5px; margin: 0; padding-left: 18px; line-height: 1.55; }
+.copy-validation-notice .copy-manual-review-action { flex-wrap: wrap; padding-top: 4px; }
+.copy-manual-review-action span { color: var(--muted); font-size: 11px; }
 .copy-timing-breakdown { display: grid; gap: 12px; margin-bottom: 16px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
 .copy-timing-breakdown > p { margin: 0; color: var(--muted); font-size: 12px; }
 .copy-timing-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

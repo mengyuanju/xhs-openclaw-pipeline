@@ -88,6 +88,8 @@ describe('standalone copy generation workspace', () => {
     assert.match(comparison, /reviewedCopyPassed \|\| manuallyApproved/u);
     assert.match(comparison, /disabled=\{!canImportReviewedCopy\}/u);
     assert.match(comparison, /已完成本次人工确认/u);
+    assert.match(comparison, /aria-pressed=\{manuallyApproved\}/u);
+    assert.match(comparison, /已人工审核通过/u);
     assert.match(comparison, /result\.generation\.revisionAttempted/u);
     assert.match(comparison, /当前版/u);
     assert.match(comparison, /version\.thinking/u);

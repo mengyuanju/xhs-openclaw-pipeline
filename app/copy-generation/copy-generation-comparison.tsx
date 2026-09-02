@@ -1,7 +1,18 @@
 'use client';
 
-import { ArrowRight, CheckCircle2, CircleAlert, Clock3, Copy, RotateCcw } from 'lucide-react';
+import {
+  ArrowRight,
+  CheckCircle2,
+  CircleAlert,
+  Clock3,
+  Copy,
+  RotateCcw,
+  UserCheck,
+} from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import { useState } from 'react';
+
+import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 
 import { formatDuration } from '../components/time-format';
 import {
@@ -213,10 +224,14 @@ export function CopyGenerationComparison({
   onClose: () => void;
   onMessage: (message: string, isError: boolean) => void;
 }) {
+  const confirm = useConfirmDialog();
   const router = useRouter();
+  const [manualReviewedResultId, setManualReviewedResultId] = useState<number | null>(null);
   const revisionAttempted = result.generation.revisionAttempted;
   const activeVersionLabel = revisionAttempted ? '质检版' : '当前版';
   const reviewedCopyPassed = result.reviewed.review.decision === 'PASS';
+  const manuallyApproved = manualReviewedResultId === result.id;
+  const canImportReviewedCopy = reviewedCopyPassed || manuallyApproved;
   const blockingIssues = result.reviewed.review.issues
     .filter((issue) => issue.severity === 'BLOCKING');
 
@@ -229,9 +244,20 @@ export function CopyGenerationComparison({
     }
   }
 
+  async function approveReviewedCopyManually() {
+    if (reviewedCopyPassed || manuallyApproved) return;
+    if (!await confirm({
+      title: '确认人工审核通过？',
+      description: `请确认你已完整检查${activeVersionLabel}的正文、事实依据、风险边界和配图策划。确认后会保留自动质检问题，但允许将当前文案导入图片生成。`,
+      confirmLabel: '确认人工审核通过',
+    })) return;
+    setManualReviewedResultId(result.id);
+    onMessage('已完成本次人工确认，现在可以导入图片生成。', false);
+  }
+
   function importReviewedCopy() {
-    if (!reviewedCopyPassed) {
-      onMessage(`${activeVersionLabel}尚未通过，不能导入图片生成。`, true);
+    if (!canImportReviewedCopy) {
+      onMessage(`${activeVersionLabel}尚未通过自动质检或人工确认，不能导入图片生成。`, true);
       return;
     }
     try {
@@ -263,8 +289,8 @@ export function CopyGenerationComparison({
         <button
           className="button small primary"
           type="button"
-          disabled={!reviewedCopyPassed}
-          aria-describedby={!reviewedCopyPassed ? 'copy-validation-note' : undefined}
+          disabled={!canImportReviewedCopy}
+          aria-describedby={!canImportReviewedCopy ? 'copy-validation-note' : undefined}
           onClick={importReviewedCopy}
         >
           导入{activeVersionLabel}到图片生成<ArrowRight aria-hidden="true" size={14} />
@@ -274,15 +300,38 @@ export function CopyGenerationComparison({
         </button>
       </div>
     </div>
-    {!reviewedCopyPassed && <div className="notice error copy-validation-notice" id="copy-validation-note" role="alert">
-      <div><CircleAlert aria-hidden="true" size={17} /><strong>质检未通过，结果已保留</strong></div>
+    {!reviewedCopyPassed && <div
+      className={`notice copy-validation-notice${manuallyApproved ? '' : ' error'}`}
+      id="copy-validation-note"
+      role={manuallyApproved ? 'status' : 'alert'}
+    >
+      <div><CircleAlert aria-hidden="true" size={17} /><strong>{manuallyApproved
+        ? '自动质检未通过，已人工确认'
+        : '质检未通过，结果已保留'}</strong></div>
       <p>{result.reviewed.review.summary}</p>
       {blockingIssues.length > 0 && <ul>
         {blockingIssues.map((issue) => <li key={`${issue.code}-${issue.message}`}>
           <strong>{issue.code}</strong>：{issue.message}
         </li>)}
       </ul>}
-      <p>文案仍可查看、复制并进行人工二次质检；人工确认前不能导入图片生成。</p>
+      <p>{manuallyApproved
+        ? '已完成本次人工确认；自动质检证据仍保留，现在可导入图片生成。'
+        : '文案仍可查看、复制并进行人工二次质检；人工确认前不能导入图片生成。'}</p>
+      <div className="copy-manual-review-action">
+        <button
+          className="button small"
+          type="button"
+          aria-pressed={manuallyApproved}
+          onClick={approveReviewedCopyManually}
+        >
+          {manuallyApproved
+            ? <><CheckCircle2 aria-hidden="true" size={14} />已人工审核通过</>
+            : <><UserCheck aria-hidden="true" size={14} />人工审核通过</>}
+        </button>
+        <span>{manuallyApproved
+          ? '已保留自动质检问题，可继续生成图片。'
+          : '仅在你已逐项复核当前文案后确认。'}</span>
+      </div>
     </div>}
     <CopyGenerationTimingBreakdown
       timing={result.generation.timing}
