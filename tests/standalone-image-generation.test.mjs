@@ -12,6 +12,7 @@ import {
   assertStandaloneImageConfirmation,
   estimateStandaloneImageDuration,
   generateStandaloneImages,
+  listStandaloneImageRuns,
   normalizeStandaloneImageSource,
   readStandaloneImageFile,
   readStandaloneImageProgress,
@@ -373,6 +374,53 @@ describe('standalone image generation service', () => {
       assert.equal(progress.diagnostic.code, 'PLANNING_FAILED');
       assert.match(progress.diagnostic.message, /401 unauthorized/u);
       assert.doesNotMatch(progress.diagnostic.message, new RegExp(fakeSecret, 'u'));
+    } finally {
+      await rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('lists isolated image runs newest first with safe source and progress summaries', async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-image-history-'));
+    try {
+      await generateStandaloneImages({
+        source: validSource(4),
+        mode: 'MOCK',
+        outputRoot,
+        runId: RUN_ID,
+      });
+      await assert.rejects(generateStandaloneImages({
+        source: validSource(),
+        mode: 'LIVE',
+        outputRoot,
+        runId: FAILURE_RUN_ID,
+        runtime: {
+          client: liveClient({
+            async runText() {
+              throw new Error('401 unauthorized');
+            },
+          }),
+        },
+      }));
+
+      const history = await listStandaloneImageRuns({ outputRoot, limit: 10 });
+
+      assert.equal(history.total, 2);
+      assert.equal(history.data.length, 2);
+      assert.equal(history.data[0].runId, FAILURE_RUN_ID);
+      assert.equal(history.data[0].status, 'FAILED');
+      assert.equal(history.data[0].mode, 'LIVE');
+      assert.equal(history.data[0].title, validSource().copy.title);
+      assert.equal(history.data[0].query, validSource().query);
+      assert.match(history.data[0].error, /视觉规划失败/u);
+      assert.equal(history.data[1].runId, RUN_ID);
+      assert.equal(history.data[1].status, 'COMPLETED');
+      assert.equal(history.data[1].completedImages, 4);
+      assert.equal(history.data[1].imageCount, 4);
+      assert.equal(history.data[1].qcScore, 1);
+
+      const limited = await listStandaloneImageRuns({ outputRoot, limit: 1 });
+      assert.equal(limited.total, 2);
+      assert.equal(limited.data.length, 1);
     } finally {
       await rm(outputRoot, { recursive: true, force: true });
     }

@@ -10,6 +10,7 @@ import {
   StandaloneImageGenerationError,
   assertStandaloneImageConfirmation,
   generateStandaloneImages,
+  listStandaloneImageRuns,
 } from '../../../src/standalone-image-generation.mjs';
 
 export const runtime = 'nodejs';
@@ -89,6 +90,23 @@ function imageGenerationRuntime({ live }: { live: boolean }) {
       visualReference,
       client: createOpenClawClient({ modelApi: productionSettings.modelApi }),
     };
+  });
+}
+
+export async function GET(request: Request) {
+  return apiHandler(request, {}, async () => {
+    const rawLimit = new URL(request.url).searchParams.get('limit');
+    const limit = rawLimit === null ? 50 : Number(rawLimit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new ApiError(400, 'VALIDATION_ERROR', '历史记录数量必须是 1–100 的整数');
+    }
+    const history = await listStandaloneImageRuns({
+      outputRoot: adminOutputRoot(),
+      limit,
+    });
+    return ok(history, {
+      headers: { 'Cache-Control': 'no-store' },
+    });
   });
 }
 

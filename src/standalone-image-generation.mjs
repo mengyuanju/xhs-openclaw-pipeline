@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 
 import { composeVisualImagePrompt } from './admin/visual-knowledge-store.mjs';
@@ -1034,6 +1034,64 @@ export async function readStandaloneImageProgress({ outputRoot, runId: rawRunId 
     diagnostic,
     error: typeof value.error === 'string' ? value.error.slice(0, 500) : null,
     result,
+  };
+}
+
+function historySourceSummary(value, runId) {
+  const query = typeof value?.query === 'string' ? value.query.trim() : '';
+  const title = typeof value?.post?.title === 'string' ? value.post.title.trim() : '';
+  return {
+    query: query ? [...query].slice(0, 500).join('') : runId,
+    title: title ? [...title].slice(0, 25).join('') : '未命名图片试验',
+  };
+}
+
+export async function listStandaloneImageRuns({ outputRoot, limit: rawLimit = 50 }) {
+  const limit = Number(rawLimit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new RangeError('standalone image history limit must be an integer between 1 and 100');
+  }
+  const root = resolve(outputRoot, RUN_DIRECTORY);
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { data: [], total: 0 };
+    throw error;
+  }
+  const records = (await Promise.all(entries
+    .filter((entry) => entry.isDirectory() && RUN_ID.test(entry.name))
+    .map(async (entry) => {
+      try {
+        const progress = await readStandaloneImageProgress({ outputRoot, runId: entry.name });
+        const source = await readOptionalRunArtifact(
+          runDirectory(outputRoot, entry.name),
+          'source.json',
+        );
+        return {
+          runId: entry.name,
+          ...historySourceSummary(source, entry.name),
+          mode: progress.mode,
+          status: progress.status,
+          stage: progress.stage,
+          completedImages: progress.completedImages,
+          imageCount: progress.totalImages,
+          qcScore: progress.result?.qc?.overallScore ?? null,
+          startedAt: progress.startedAt,
+          updatedAt: progress.updatedAt,
+          finishedAt: progress.finishedAt,
+          error: progress.error,
+        };
+      } catch {
+        return null;
+      }
+    })))
+    .filter(Boolean)
+    .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt)
+      || right.runId.localeCompare(left.runId));
+  return {
+    data: records.slice(0, limit),
+    total: records.length,
   };
 }
 
