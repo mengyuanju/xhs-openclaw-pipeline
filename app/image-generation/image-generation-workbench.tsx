@@ -13,8 +13,10 @@ import {
 } from '@/components/ui/select';
 
 import { readImageGenerationDraft } from './image-generation-draft';
+import { ImageGenerationHistory } from './image-generation-history';
 import { ImageGenerationProgress } from './image-generation-progress';
 import { ImageGenerationResultView } from './image-generation-result';
+import { useImageGenerationHistory } from './use-image-generation-history';
 import { useImageGenerationRun } from './use-image-generation-run';
 
 type ImageGenerationForm = {
@@ -60,12 +62,22 @@ export function ImageGenerationWorkbench() {
   const [importedDraft, setImportedDraft] = useState(false);
   const [mode, setMode] = useState<'MOCK' | 'LIVE'>('MOCK');
   const {
+    records,
+    total,
+    loading: historyLoading,
+    error: historyError,
+    refreshHistory,
+  } = useImageGenerationHistory();
+  const {
+    runId,
     busy,
+    openingRunId,
     progress,
     result,
     message,
     messageIsError,
     showMessage,
+    openRun,
     startRun,
   } = useImageGenerationRun();
 
@@ -113,72 +125,88 @@ export function ImageGenerationWorkbench() {
       mode,
       ...(mode === 'LIVE' ? { confirmation: 'LIVE_IMAGE_COST_ACCEPTED' as const } : {}),
     });
+    await refreshHistory({ silent: true }).catch(() => {});
   }
 
   return <div className="standalone-image-workspace">
     {importedDraft && <div className="notice success" role="status" aria-live="polite">
       已从“单独生成文案”导入质检版，标题、正文、标签和图片策划均已回填，可继续修改后生成。
     </div>}
-    <form className="panel" onSubmit={generate}>
-      <div className="panel-head">
-        <div><span className="section-kicker">Image input</span><h2>输入已完成文案</h2></div>
-        <WandSparkles aria-hidden="true" size={20} />
-      </div>
-      <div className="form-grid">
-        <div className="field full">
-          <label htmlFor="image-query">Query</label>
-          <textarea className="textarea compact" id="image-query" name="query" value={form.query} onChange={(event) => updateForm('query', event.target.value)} maxLength={500} required placeholder="例如：租房桌面怎么低成本整理？" />
-        </div>
-        <div className="field full">
-          <label htmlFor="image-title">标题</label>
-          <input className="input" id="image-title" name="title" value={form.title} onChange={(event) => updateForm('title', event.target.value)} maxLength={25} required placeholder="最多 25 字，不含感叹号或 Emoji" />
-        </div>
-        <div className="field full">
-          <label htmlFor="image-body">正文</label>
-          <textarea className="textarea standalone-image-body" id="image-body" name="body" value={form.body} onChange={(event) => updateForm('body', event.target.value)} minLength={200} maxLength={700} required placeholder="粘贴 200–700 字已审核正文" />
-        </div>
-        <div className="field full">
-          <label htmlFor="image-tags">标签</label>
-          <input className="input" id="image-tags" name="tags" value={form.tags} onChange={(event) => updateForm('tags', event.target.value)} required placeholder="#桌面整理 #租房生活 #低成本收纳" />
-          <small>填写 3–8 个标签，用空格或逗号分隔；未写 # 时会自动补齐。</small>
-        </div>
-        <div className="field full">
-          <label htmlFor="image-plan">图片策划 JSON</label>
-          <textarea className="textarea standalone-image-plan" id="image-plan" name="imagePlan" value={form.imagePlan} onChange={(event) => updateForm('imagePlan', event.target.value)} required placeholder={'粘贴 3–5 项 imagePlan 数组\n第一项 kind 必须为 hero'} />
-          <small>每项包含 kind、headline、subtitle、bullets 和 prompt；也可粘贴包含 imagePlan 字段的对象。</small>
-        </div>
-        <div className="field full">
-          <label htmlFor="image-mode">运行模式</label>
-          <Select value={mode} onValueChange={(value) => setMode(value as 'MOCK' | 'LIVE')}>
-            <SelectTrigger id="image-mode"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="MOCK">Mock 验证（不调用模型）</SelectItem>
-              <SelectItem value="LIVE">Live 生成（产生模型费用）</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="field full">
-          <div className={mode === 'LIVE' ? 'notice warning' : 'notice'}>
-            {mode === 'LIVE'
-              ? 'Live 会按当前生产配置生成 3–5 张图片，并执行视觉规划、OCR 对齐和质量检查；提交前会再次确认费用。'
-              : 'Mock 使用确定性占位图验证分页、尺寸、文件和预览，不会调用任何外部模型。'}
+    <div className="standalone-image-workspace-grid">
+      <div className="standalone-image-main">
+        <form className="panel" onSubmit={generate}>
+          <div className="panel-head">
+            <div><span className="section-kicker">Image input</span><h2>输入已完成文案</h2></div>
+            <WandSparkles aria-hidden="true" size={20} />
           </div>
-        </div>
-        <div className="field full inline">
-          <button className="button primary" type="submit" disabled={busy}>
-            {busy
-              ? <><LoaderCircle aria-hidden="true" className="animate-spin" size={16} />正在生成图片…</>
-              : <><ImagePlus aria-hidden="true" size={16} />开始图片试验</>}
-          </button>
-          <span className="subtle">不创建生产任务、不修改文案、不进入正式审核。</span>
-        </div>
+          <div className="form-grid">
+            <div className="field full">
+              <label htmlFor="image-query">Query</label>
+              <textarea className="textarea compact" id="image-query" name="query" value={form.query} onChange={(event) => updateForm('query', event.target.value)} maxLength={500} required placeholder="例如：租房桌面怎么低成本整理？" />
+            </div>
+            <div className="field full">
+              <label htmlFor="image-title">标题</label>
+              <input className="input" id="image-title" name="title" value={form.title} onChange={(event) => updateForm('title', event.target.value)} maxLength={25} required placeholder="最多 25 字，不含感叹号或 Emoji" />
+            </div>
+            <div className="field full">
+              <label htmlFor="image-body">正文</label>
+              <textarea className="textarea standalone-image-body" id="image-body" name="body" value={form.body} onChange={(event) => updateForm('body', event.target.value)} minLength={200} maxLength={700} required placeholder="粘贴 200–700 字已审核正文" />
+            </div>
+            <div className="field full">
+              <label htmlFor="image-tags">标签</label>
+              <input className="input" id="image-tags" name="tags" value={form.tags} onChange={(event) => updateForm('tags', event.target.value)} required placeholder="#桌面整理 #租房生活 #低成本收纳" />
+              <small>填写 3–8 个标签，用空格或逗号分隔；未写 # 时会自动补齐。</small>
+            </div>
+            <div className="field full">
+              <label htmlFor="image-plan">图片策划 JSON</label>
+              <textarea className="textarea standalone-image-plan" id="image-plan" name="imagePlan" value={form.imagePlan} onChange={(event) => updateForm('imagePlan', event.target.value)} required placeholder={'粘贴 3–5 项 imagePlan 数组\n第一项 kind 必须为 hero'} />
+              <small>每项包含 kind、headline、subtitle、bullets 和 prompt；也可粘贴包含 imagePlan 字段的对象。</small>
+            </div>
+            <div className="field full">
+              <label htmlFor="image-mode">运行模式</label>
+              <Select value={mode} onValueChange={(value) => setMode(value as 'MOCK' | 'LIVE')}>
+                <SelectTrigger id="image-mode"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="MOCK">Mock 验证（不调用模型）</SelectItem>
+                  <SelectItem value="LIVE">Live 生成（产生模型费用）</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="field full">
+              <div className={mode === 'LIVE' ? 'notice warning' : 'notice'}>
+                {mode === 'LIVE'
+                  ? 'Live 会按当前生产配置生成 3–5 张图片，并执行视觉规划、OCR 对齐和质量检查；提交前会再次确认费用。'
+                  : 'Mock 使用确定性占位图验证分页、尺寸、文件和预览，不会调用任何外部模型。'}
+              </div>
+            </div>
+            <div className="field full inline">
+              <button className="button primary" type="submit" disabled={busy}>
+                {busy
+                  ? <><LoaderCircle aria-hidden="true" className="animate-spin" size={16} />正在生成图片…</>
+                  : <><ImagePlus aria-hidden="true" size={16} />开始图片试验</>}
+              </button>
+              <span className="subtle">不创建生产任务、不修改文案、不进入正式审核。</span>
+            </div>
+          </div>
+        </form>
+
+        {progress && <ImageGenerationProgress progress={progress} />}
+
+        {result && <ImageGenerationResultView result={result} />}
+
+        {message && <div className={messageIsError ? 'notice error' : 'notice success'} role={messageIsError ? 'alert' : 'status'} aria-live="polite">{message}</div>}
       </div>
-    </form>
-
-    {progress && <ImageGenerationProgress progress={progress} />}
-
-    {result && <ImageGenerationResultView result={result} />}
-
-    {message && <div className={messageIsError ? 'notice error' : 'notice success'} role={messageIsError ? 'alert' : 'status'} aria-live="polite">{message}</div>}
+      <ImageGenerationHistory
+        records={records}
+        total={total}
+        selectedRunId={runId}
+        openingRunId={openingRunId}
+        loading={historyLoading}
+        error={historyError}
+        disabled={busy || openingRunId !== null}
+        onSelect={(record) => { void openRun(record.runId); }}
+        onRefresh={() => { void refreshHistory().catch(() => {}); }}
+      />
+    </div>
   </div>;
 }

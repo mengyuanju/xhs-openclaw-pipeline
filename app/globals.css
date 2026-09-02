@@ -79,6 +79,28 @@
 .copy-generation-workspace { display: grid; grid-template-columns: minmax(420px, 1.25fr) minmax(300px, .75fr); gap: 16px; align-items: start; }
 .copy-generation-history { position: sticky; top: 82px; min-width: 0; }
 .standalone-image-workspace { display: grid; gap: 16px; }
+.standalone-image-workspace-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(290px, 340px); gap: 16px; align-items: start; }
+.standalone-image-main { min-width: 0; display: grid; gap: 16px; }
+.standalone-image-history { position: sticky; top: 82px; min-width: 0; max-height: calc(100vh - 100px); display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; overflow: hidden; }
+.standalone-image-history-head { margin-bottom: 10px; }
+.standalone-image-history-refresh { width: 34px; padding: 0; }
+.standalone-image-history-count { margin: 0 0 12px; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.standalone-image-history-list { min-height: 0; display: grid; align-content: start; gap: 8px; margin: 0; padding: 0 3px 2px 0; overflow-y: auto; list-style: none; }
+.standalone-image-history-list button { width: 100%; display: grid; gap: 7px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; color: var(--ink); background: var(--surface-soft); cursor: pointer; text-align: left; transition: border-color .14s ease, background .14s ease, box-shadow .14s ease; }
+.standalone-image-history-list button:hover { border-color: #d9c1bd; background: #fff8f7; }
+.standalone-image-history-list button:focus-visible { outline: 3px solid var(--control-ring); outline-offset: 2px; }
+.standalone-image-history-list button:disabled { cursor: not-allowed; opacity: .64; }
+.standalone-image-history-list button[aria-pressed="true"] { border-color: #d9a4aa; background: #fff1f2; box-shadow: 0 0 0 3px rgba(217,52,70,.08); }
+.standalone-image-history-row { min-width: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.standalone-image-history-row strong { min-width: 0; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.standalone-image-history-row .pill { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; }
+.standalone-image-history-query { overflow: hidden; color: #5e5954; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.standalone-image-history-meta { display: flex; flex-wrap: wrap; gap: 4px 9px; color: var(--muted); font-size: 10px; }
+.standalone-image-history-failure { display: -webkit-box; overflow: hidden; color: #a52232; font-size: 10px; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.standalone-image-history-error { display: grid; align-content: start; gap: 10px; }
+.standalone-image-history-error .button { width: fit-content; }
+.standalone-image-history-footnote { display: flex; align-items: flex-start; gap: 6px; margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; line-height: 1.5; }
+.standalone-image-history-footnote svg { flex: 0 0 auto; margin-top: 1px; }
 .standalone-image-body { min-height: 220px; }
 .standalone-image-plan { min-height: 260px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
 .standalone-image-progress { display: grid; gap: 14px; }
@@ -951,6 +973,10 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
   .screening-rules { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .compact-settings-grid { grid-template-columns: 1fr; }
   .standalone-image-page-card { grid-template-columns: minmax(220px, 280px) minmax(0, 1fr); }
+  .standalone-image-workspace-grid { grid-template-columns: 1fr; }
+  .standalone-image-history { position: static; max-height: none; grid-row: 1; }
+  .standalone-image-history-list { max-height: 360px; }
+  .standalone-image-main { grid-row: 2; }
 }
 @media (max-width: 760px) {
   .standalone-image-summary, .standalone-image-progress-facts, .standalone-image-page-card, .standalone-image-layout-facts, .standalone-image-layout-constraints, .standalone-image-quality-dimensions { grid-template-columns: 1fr; }

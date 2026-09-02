@@ -105,11 +105,13 @@ function completionMessage(mode: 'MOCK' | 'LIVE') {
 
 export function useImageGenerationRun() {
   const [runId, setRunId] = useState<string | null>(null);
+  const [openingRunId, setOpeningRunId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<ImageGenerationProgressValue | null>(null);
   const [result, setResult] = useState<ImageGenerationResult | null>(null);
   const [message, setMessage] = useState('');
   const [messageIsError, setMessageIsError] = useState(false);
+  const activeRunId = useRef<string | null>(null);
   const progressMisses = useRef(0);
 
   function showMessage(nextMessage: string, isError: boolean) {
@@ -122,6 +124,7 @@ export function useImageGenerationRun() {
       `/api/image-generations/${targetRunId}`,
       { cache: 'no-store' },
     );
+    if (activeRunId.current !== targetRunId) return next;
     progressMisses.current = 0;
     setProgress(next);
     if (next.result) setResult(next.result);
@@ -139,6 +142,7 @@ export function useImageGenerationRun() {
 
   const forgetRun = useCallback(() => {
     window.sessionStorage.removeItem(ACTIVE_RUN_STORAGE_KEY);
+    activeRunId.current = null;
     progressMisses.current = 0;
     setRunId(null);
     setBusy(false);
@@ -151,6 +155,7 @@ export function useImageGenerationRun() {
       window.sessionStorage.removeItem(ACTIVE_RUN_STORAGE_KEY);
       return;
     }
+    activeRunId.current = storedRunId;
     setRunId(storedRunId);
     setBusy(true);
     void refreshProgress(storedRunId).catch(() => {
@@ -169,8 +174,37 @@ export function useImageGenerationRun() {
     return () => window.clearInterval(intervalId);
   }, [busy, forgetRun, refreshProgress, runId]);
 
+  const openRun = useCallback(async (targetRunId: string) => {
+    if (!RUN_ID.test(targetRunId)) {
+      setMessage('图片历史记录 ID 无效');
+      setMessageIsError(true);
+      return null;
+    }
+    setOpeningRunId(targetRunId);
+    setProgress(null);
+    setResult(null);
+    setMessage('');
+    setMessageIsError(false);
+    activeRunId.current = targetRunId;
+    setRunId(targetRunId);
+    window.sessionStorage.setItem(ACTIVE_RUN_STORAGE_KEY, targetRunId);
+    try {
+      const next = await refreshProgress(targetRunId);
+      if (activeRunId.current === targetRunId) setBusy(next.status === 'RUNNING');
+      return next;
+    } catch (error) {
+      forgetRun();
+      setMessage(error instanceof Error ? error.message : '图片历史记录读取失败');
+      setMessageIsError(true);
+      return null;
+    } finally {
+      setOpeningRunId(null);
+    }
+  }, [forgetRun, refreshProgress]);
+
   async function startRun(request: ImageGenerationRequest) {
     const nextRunId = crypto.randomUUID();
+    activeRunId.current = nextRunId;
     progressMisses.current = 0;
     window.sessionStorage.setItem(ACTIVE_RUN_STORAGE_KEY, nextRunId);
     setRunId(nextRunId);
@@ -188,6 +222,7 @@ export function useImageGenerationRun() {
       setResult(generated);
       setMessage(completionMessage(request.mode));
       await refreshProgress(nextRunId).catch(() => {});
+      return generated;
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '图片生成失败');
       setMessageIsError(true);
@@ -195,18 +230,22 @@ export function useImageGenerationRun() {
         forgetRun();
         setProgress(null);
       });
+      return null;
     } finally {
-      setBusy(false);
+      if (activeRunId.current === nextRunId) setBusy(false);
     }
   }
 
   return {
+    runId,
     busy,
+    openingRunId,
     progress,
     result,
     message,
     messageIsError,
     showMessage,
+    openRun,
     startRun,
   };
 }

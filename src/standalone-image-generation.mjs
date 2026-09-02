@@ -1037,11 +1037,11 @@ export async function readStandaloneImageProgress({ outputRoot, runId: rawRunId 
   };
 }
 
-function historySourceSummary(value, runId) {
+function historySourceSummary(value) {
   const query = typeof value?.query === 'string' ? value.query.trim() : '';
   const title = typeof value?.post?.title === 'string' ? value.post.title.trim() : '';
   return {
-    query: query ? [...query].slice(0, 500).join('') : runId,
+    query: query ? [...query].slice(0, 500).join('') : '旧记录未保存输入内容',
     title: title ? [...title].slice(0, 25).join('') : '未命名图片试验',
   };
 }
@@ -1070,7 +1070,7 @@ export async function listStandaloneImageRuns({ outputRoot, limit: rawLimit = 50
         );
         return {
           runId: entry.name,
-          ...historySourceSummary(source, entry.name),
+          ...historySourceSummary(source),
           mode: progress.mode,
           status: progress.status,
           stage: progress.stage,

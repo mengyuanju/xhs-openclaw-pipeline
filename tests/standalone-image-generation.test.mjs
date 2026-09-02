@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -401,6 +401,12 @@ describe('standalone image generation service', () => {
           }),
         },
       }));
+      await unlink(join(
+        outputRoot,
+        'standalone-image-generations',
+        FAILURE_RUN_ID,
+        'source.json',
+      ));
 
       const history = await listStandaloneImageRuns({ outputRoot, limit: 10 });
 
@@ -409,11 +415,13 @@ describe('standalone image generation service', () => {
       assert.equal(history.data[0].runId, FAILURE_RUN_ID);
       assert.equal(history.data[0].status, 'FAILED');
       assert.equal(history.data[0].mode, 'LIVE');
-      assert.equal(history.data[0].title, validSource().copy.title);
-      assert.equal(history.data[0].query, validSource().query);
+      assert.equal(history.data[0].title, '未命名图片试验');
+      assert.equal(history.data[0].query, '旧记录未保存输入内容');
       assert.match(history.data[0].error, /视觉规划失败/u);
       assert.equal(history.data[1].runId, RUN_ID);
       assert.equal(history.data[1].status, 'COMPLETED');
+      assert.equal(history.data[1].title, validSource().copy.title);
+      assert.equal(history.data[1].query, validSource().query);
       assert.equal(history.data[1].completedImages, 4);
       assert.equal(history.data[1].imageCount, 4);
       assert.equal(history.data[1].qcScore, 1);

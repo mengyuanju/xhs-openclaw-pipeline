@@ -114,4 +114,30 @@ describe('standalone image generation workspace', () => {
     assert.match(imageRoute, /Content-Type': 'image\/png'/u);
     assert.match(imageRoute, /X-Content-Type-Options': 'nosniff'/u);
   });
+
+  it('lists saved runs and lets the operator reopen a historical result', async () => {
+    const [route, workbench, history, historyState, runState, styles] = await Promise.all([
+      source('app/api/image-generations/route.ts'),
+      source('app/image-generation/image-generation-workbench.tsx'),
+      source('app/image-generation/image-generation-history.tsx'),
+      source('app/image-generation/use-image-generation-history.ts'),
+      source('app/image-generation/use-image-generation-run.ts'),
+      source('app/globals.css'),
+    ]);
+
+    assert.match(route, /export async function GET/u);
+    assert.match(route, /listStandaloneImageRuns/u);
+    assert.match(historyState, /\/api\/image-generations\?limit=50/u);
+    assert.match(historyState, /hasRunningRuns/u);
+    assert.match(history, /图片生成历史/u);
+    assert.match(history, /已完成/u);
+    assert.match(history, /生成失败/u);
+    assert.match(history, /生成中/u);
+    assert.match(history, /aria-pressed/u);
+    assert.match(runState, /openRun/u);
+    assert.match(workbench, /<ImageGenerationHistory/u);
+    assert.match(workbench, /openRun/u);
+    assert.match(styles, /\.standalone-image-workspace-grid/u);
+    assert.match(styles, /\.standalone-image-history/u);
+  });
 });
