@@ -9,6 +9,14 @@ export function adminDatabasePath() {
   return resolve(/* turbopackIgnore: true */ projectRoot, process.env.XHS_DB_PATH || 'data/queue.db');
 }
 
+export function adminOpenClawRoot() {
+  const configuredRoot = process.env.XHS_OPENCLAW_ROOT?.trim();
+  if (configuredRoot) return resolve(/* turbopackIgnore: true */ projectRoot, configuredRoot);
+  const userProfile = process.env.USERPROFILE?.trim();
+  if (!userProfile) throw new Error('OpenClaw home is unavailable');
+  return resolve(/* turbopackIgnore: true */ userProfile, '.openclaw');
+}
+
 export function adminAssetRoot() {
   return resolve(/* turbopackIgnore: true */ projectRoot, process.env.XHS_ASSET_ROOT || 'data/assets');
 }

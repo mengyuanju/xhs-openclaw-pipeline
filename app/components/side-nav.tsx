@@ -14,6 +14,7 @@ import {
   MessageSquareText,
   Settings2,
   Users,
+  Waypoints,
   X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -45,6 +46,7 @@ const navigationGroups: Array<{ label: string; items: NavigationItem[] }> = [
     label: '运营与系统',
     items: [
       { href: '/analytics', label: '数据统计', icon: BarChart3 },
+      { href: '/openclaw-traces', label: '模型链路', icon: Waypoints },
       { href: '/settings', label: '生产配置', icon: Settings2 },
     ],
   },

@@ -7,7 +7,9 @@ import { describe, it } from 'node:test';
 
 import {
   collectOpenClawCodexTrace,
+  listOpenClawCodexTraceJobs,
   matchSessionsToPhases,
+  OpenClawTraceNotFoundError,
   redactSensitive,
   summarizeUsage,
   writeOpenClawCodexTrace,
@@ -142,6 +144,20 @@ describe('OpenClaw to Codex trace export', () => {
         10, 20, 30, 0, 0, 0, 60, 'low', 'low',
       );
       business.close();
+
+      assert.deepEqual(listOpenClawCodexTraceJobs({ databasePath }), [{
+        id: 7,
+        query: '测试 Query',
+        status: 'COMPLETED',
+        generationId: 9,
+        createdAt: '2026-09-02T02:00:00.000Z',
+        finishedAt: '2026-09-02T02:01:00.000Z',
+      }]);
+      assert.throws(() => collectOpenClawCodexTrace({
+        databasePath,
+        openClawRoot,
+        jobId: 99,
+      }), OpenClawTraceNotFoundError);
 
       const sessionId = 'xhs-11111111-1111-4111-8111-111111111111';
       writeFileSync(join(sessionRoot, `${sessionId}.jsonl`), [

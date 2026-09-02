@@ -17,6 +17,13 @@ const JWT = /\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b/g
 const CHINA_PHONE = /(?<!\d)1[3-9]\d{9}(?!\d)/gu;
 const CHINA_ID = /(?<!\d)\d{17}[0-9X](?!\d)/giu;
 
+export class OpenClawTraceNotFoundError extends Error {
+  constructor() {
+    super('standalone copy generation job was not found');
+    this.name = 'OpenClawTraceNotFoundError';
+  }
+}
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
@@ -153,7 +160,7 @@ function sourceDescriptor(path) {
 
 function databaseSources(path) {
   return [path, `${path}-wal`, `${path}-shm`]
-    .filter((candidate) => existsSync(candidate))
+    .filter((candidate) => existsSync(/* turbopackIgnore: true */ candidate))
     .map(sourceDescriptor);
 }
 
@@ -276,6 +283,37 @@ function parseJsonColumns(row) {
   }));
 }
 
+/**
+ * @param {{ databasePath: string; limit?: number }} options
+ */
+export function listOpenClawCodexTraceJobs({ databasePath, limit = 20 }) {
+  if (typeof databasePath !== 'string' || !existsSync(databasePath)) {
+    throw new TypeError('databasePath must point to an existing SQLite database');
+  }
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+    throw new TypeError('limit must be an integer between 1 and 50');
+  }
+  const db = new DatabaseSync(databasePath, { readOnly: true });
+  try {
+    if (!tableExists(db, 'standalone_copy_generation_jobs')) return [];
+    return db.prepare(`
+      SELECT id, query, status, generation_id, created_at, finished_at
+      FROM standalone_copy_generation_jobs
+      WHERE status = 'COMPLETED' AND generation_id IS NOT NULL
+      ORDER BY id DESC LIMIT ?
+    `).all(limit).map((row) => ({
+      id: Number(row.id),
+      query: row.query,
+      status: row.status,
+      generationId: Number(row.generation_id),
+      createdAt: row.created_at,
+      finishedAt: row.finished_at,
+    }));
+  } finally {
+    db.close();
+  }
+}
+
 function readBusinessRecords(databasePath, jobId) {
   const db = new DatabaseSync(databasePath, { readOnly: true });
   try {
@@ -285,7 +323,7 @@ function readBusinessRecords(databasePath, jobId) {
     const rawJob = jobId === null || jobId === undefined
       ? db.prepare('SELECT * FROM standalone_copy_generation_jobs ORDER BY id DESC LIMIT 1').get()
       : db.prepare('SELECT * FROM standalone_copy_generation_jobs WHERE id = ?').get(jobId);
-    if (!rawJob) throw new Error('standalone copy generation job was not found');
+    if (!rawJob) throw new OpenClawTraceNotFoundError();
     const rawGeneration = rawJob.generation_id === null || rawJob.generation_id === undefined
       ? null
       : db.prepare('SELECT * FROM standalone_copy_generations WHERE id = ?').get(rawJob.generation_id);
@@ -415,6 +453,15 @@ function enrichPhases(phases, sessions, generation) {
   });
 }
 
+/**
+ * @param {{
+ *   databasePath: string;
+ *   openClawRoot: string;
+ *   jobId?: number | null;
+ *   capturedAt?: string;
+ *   userProfile?: string;
+ * }} options
+ */
 export function collectOpenClawCodexTrace({
   databasePath,
   openClawRoot,
