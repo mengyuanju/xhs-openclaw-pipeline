@@ -2,10 +2,20 @@ export const DEFAULT_TEXT_MODEL = 'openai/gpt-5.6-sol';
 export const DEFAULT_IMAGE_MODEL = 'openai/gpt-image-2';
 export const DEFAULT_IMAGE_TIMEOUT_MS = 300_000;
 export const DEFAULT_COPY_GENERATION_PROVIDER = 'OPENCLAW';
+export const DEFAULT_COPY_GENERATION_THINKING = 'low';
 export const DEFAULT_DOTS_BASE_URL = 'https://note3-prev-api.askdiandian.com';
 export const DEFAULT_DOTS_MODEL = 'dots3-note-prev';
+export const COPY_GENERATION_THINKING_LEVELS = Object.freeze([
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+]);
 
 const COPY_GENERATION_PROVIDERS = new Set(['OPENCLAW', 'DOTS']);
+const COPY_GENERATION_THINKING_LEVEL_SET = new Set(COPY_GENERATION_THINKING_LEVELS);
 
 const MODEL_API_FIELDS = new Set([
   'textModel',
@@ -18,6 +28,7 @@ const MODEL_API_FIELDS = new Set([
   'imageProxyUrl',
   'imageTimeoutMs',
   'copyGenerationProvider',
+  'copyGenerationThinking',
   'dotsBaseUrl',
   'dotsModel',
 ]);
@@ -34,6 +45,7 @@ export const DEFAULT_MODEL_API_SETTINGS = Object.freeze({
   imageProxyUrl: null,
   imageTimeoutMs: null,
   copyGenerationProvider: null,
+  copyGenerationThinking: null,
   dotsBaseUrl: null,
   dotsModel: null,
 });
@@ -88,6 +100,24 @@ function optionalCopyGenerationProvider(value) {
   return provider;
 }
 
+export function validatedCopyGenerationThinking(
+  value,
+  fallback = DEFAULT_COPY_GENERATION_THINKING,
+) {
+  const thinking = String(value ?? fallback ?? '').trim().toLowerCase();
+  if (!COPY_GENERATION_THINKING_LEVEL_SET.has(thinking)) {
+    throw new TypeError(
+      `copyGenerationThinking must be one of: ${COPY_GENERATION_THINKING_LEVELS.join(', ')}`,
+    );
+  }
+  return thinking;
+}
+
+function optionalCopyGenerationThinking(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  return validatedCopyGenerationThinking(value);
+}
+
 export function validatedDotsBaseUrl(value, fallback = DEFAULT_DOTS_BASE_URL) {
   const text = String(value || fallback || '').trim();
   let url;
@@ -139,6 +169,7 @@ export function normalizeModelApiSettings(input = {}) {
     imageProxyUrl: optionalProxyUrl(input.imageProxyUrl, 'imageProxyUrl'),
     imageTimeoutMs: optionalImageTimeout(input.imageTimeoutMs),
     copyGenerationProvider: optionalCopyGenerationProvider(input.copyGenerationProvider),
+    copyGenerationThinking: optionalCopyGenerationThinking(input.copyGenerationThinking),
     dotsBaseUrl: optionalDotsBaseUrl(input.dotsBaseUrl),
     dotsModel: optionalDotsModel(input.dotsModel),
   };
@@ -173,6 +204,9 @@ export function effectiveModelApiConfig(input = {}, environment = process.env) {
   );
   return {
     copyGenerationProvider,
+    copyGenerationThinking: validatedCopyGenerationThinking(
+      settings.copyGenerationThinking ?? environment.XHS_COPY_GENERATION_THINKING,
+    ),
     dotsBaseUrl: validatedDotsBaseUrl(
       settings.dotsBaseUrl ?? environment.XHS_DOTS_BASE_URL,
     ),
@@ -215,6 +249,7 @@ export function publicModelApiStatus(input = {}, environment = process.env) {
   const effective = effectiveModelApiConfig(input, environment);
   return {
     copyGenerationProvider: effective.copyGenerationProvider,
+    copyGenerationThinking: effective.copyGenerationThinking,
     dotsBaseUrl: effective.dotsBaseUrl,
     dotsModel: effective.dotsModel,
     dotsApiKeyConfigured: Boolean(String(environment.XHS_DOTS_API_KEY ?? '').trim()),

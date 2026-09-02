@@ -63,6 +63,7 @@ describe('production settings contract', () => {
 
     assert.equal(settings.modelApi.textModel, 'openai/gpt-5.6-terra');
     assert.equal(effective.copyGenerationProvider, 'DOTS');
+    assert.equal(effective.copyGenerationThinking, 'low');
     assert.equal(effective.dotsBaseUrl, 'https://note3-prev-api.askdiandian.com');
     assert.equal(effective.dotsModel, 'dots3-note-prev');
     assert.equal(settings.modelApi.reviewModel, null);
@@ -75,6 +76,21 @@ describe('production settings contract', () => {
     assert.equal(effective.modelProxyUrl, 'http://127.0.0.1:7897');
     assert.equal(effective.imageProxyUrl, 'http://127.0.0.1:7898');
     assert.equal(effective.imageTimeoutMs, 420_000);
+  });
+
+  it('stores copy generation thinking and resolves setting, environment and default precedence', () => {
+    const configured = normalizeProductionSettings({
+      modelApi: { copyGenerationThinking: 'max' },
+    });
+
+    assert.equal(configured.modelApi.copyGenerationThinking, 'max');
+    assert.equal(effectiveModelApiConfig(configured.modelApi, {
+      XHS_COPY_GENERATION_THINKING: 'medium',
+    }).copyGenerationThinking, 'max');
+    assert.equal(effectiveModelApiConfig({}, {
+      XHS_COPY_GENERATION_THINKING: 'xhigh',
+    }).copyGenerationThinking, 'xhigh');
+    assert.equal(effectiveModelApiConfig({}, {}).copyGenerationThinking, 'low');
   });
 
   it('rejects unsafe model references, credential-bearing proxies and timeouts', () => {
@@ -93,6 +109,9 @@ describe('production settings contract', () => {
     assert.throws(() => normalizeProductionSettings({
       modelApi: { dotsBaseUrl: 'http://127.0.0.1:3000' },
     }), /documented Dots API origin/iu);
+    assert.throws(() => normalizeProductionSettings({
+      modelApi: { copyGenerationThinking: 'unlimited' },
+    }), /thinking/iu);
   });
 });
 
@@ -127,6 +146,7 @@ describe('production settings store', () => {
         modelApi: {
           textModel: 'openai/gpt-5.6-terra',
           imageModel: 'openai/gpt-image-2',
+          copyGenerationThinking: 'high',
         },
       });
       const updated = store.updateProductionSettings({
@@ -136,6 +156,7 @@ describe('production settings store', () => {
       assert.equal(updated.settings.modelApi.textModel, 'openai/gpt-5.6-terra');
       assert.equal(updated.settings.modelApi.reviewModel, 'openai/gpt-5.4');
       assert.equal(updated.settings.modelApi.imageModel, 'openai/gpt-image-2');
+      assert.equal(updated.settings.modelApi.copyGenerationThinking, 'high');
       assert.equal(updated.settings.modelApi.imageProxyUrl, null);
     } finally {
       db.close();

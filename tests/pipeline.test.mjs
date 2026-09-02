@@ -308,15 +308,22 @@ describe('content pipeline', () => {
     let reviewCalls = 0;
     let textCalls = 0;
     let imageCalls = 0;
+    const reviewThinking = [];
+    const textThinking = [];
     const result = await processNext({
       queue,
       workerId: 'text-review-worker',
       outputRoot: join(directory, 'output'),
       mock: false,
-      configProvider: () => ({ imageCount: 3, imageCountMode: 'fixed' }),
+      configProvider: () => ({
+        imageCount: 3,
+        imageCountMode: 'fixed',
+        productionSettings: { modelApi: { copyGenerationThinking: 'xhigh' } },
+      }),
       openclaw: {
-        runReview() {
+        runReview({ thinking }) {
           reviewCalls += 1;
+          reviewThinking.push(thinking);
           const output = reviewCalls === 1
             ? stageReviewOutput('PASS')
             : stageReviewOutput('REJECT', '正文的关键结论与 Query 无关。');
@@ -332,8 +339,9 @@ describe('content pipeline', () => {
             }] },
           };
         },
-        runText() {
+        runText({ thinking }) {
           textCalls += 1;
+          textThinking.push(thinking);
           if (textCalls === 1) return { rawText: JSON.stringify(post), model: 'fake-text' };
           throw new Error('text rejection must stop before visual planning');
         },
@@ -347,6 +355,8 @@ describe('content pipeline', () => {
     assert.equal(result.status, 'failed');
     assert.equal(reviewCalls, 2);
     assert.equal(textCalls, 1);
+    assert.deepEqual(reviewThinking, [undefined, 'xhigh']);
+    assert.deepEqual(textThinking, ['xhigh']);
     assert.equal(imageCalls, 0);
     assert.match(result.error, /文本审核未通过/u);
     const attemptDir = join(directory, 'output', String(task.id), 'attempt-1');

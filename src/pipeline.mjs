@@ -523,6 +523,7 @@ export async function processNext({
         imageCount: requestedImageCount,
         allowedSources,
         query: task.query,
+        thinking: effectiveModelApi.copyGenerationThinking,
       };
       promptTrace.text = { status: 'SUBMITTED', content: textUserPrompt };
       const generated = await createLivePost(client, generationTask, postOptions);
@@ -552,6 +553,7 @@ export async function processNext({
         post,
         allowedSources,
         editorialInstruction: workerConfig?.textPromptContent ?? '',
+        thinking: effectiveModelApi.copyGenerationThinking,
         mock,
       });
     }

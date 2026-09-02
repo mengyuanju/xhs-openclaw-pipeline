@@ -214,6 +214,7 @@ async function createPostFromPrompt(client, task, basePrompt, options) {
       prompt: attempt === 0
         ? basePrompt
         : buildPostRepairPrompt(task, lastError, previousOutput),
+      thinking: options.thinking,
     });
     previousOutput = generated.rawText;
     try {

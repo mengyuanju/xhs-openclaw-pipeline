@@ -288,7 +288,7 @@ function localReview({ stage, source, subject, summary, now }) {
   };
 }
 
-async function runReview({ client, stage, subject, prompt, mock, now }) {
+async function runReview({ client, stage, subject, prompt, thinking, mock, now }) {
   if (mock) {
     return localReview({
       stage,
@@ -311,7 +311,7 @@ async function runReview({ client, stage, subject, prompt, mock, now }) {
   let lastError;
   for (let attempt = 0; attempt < REVIEW_MAX_ATTEMPTS; attempt += 1) {
     const repairSuffix = attempt === 0 ? '' : `\n\n上一次审核输出不符合 JSON 契约：${JSON.stringify({ validationError: String(lastError?.message ?? lastError).slice(0, 300) })}。请重新返回完整合法 JSON，不要加 Markdown。`;
-    const generated = await client.runReview({ prompt: `${prompt}${repairSuffix}` });
+    const generated = await client.runReview({ prompt: `${prompt}${repairSuffix}`, thinking });
     try {
       const parsed = parseStageReviewOutput(generated.rawText);
       const policyApplied = stage === 'TEXT' ? applyTextReviewPolicy(parsed) : parsed;
@@ -348,6 +348,7 @@ export function runTextReview({
   post,
   allowedSources = [],
   editorialInstruction = '',
+  thinking,
   mock = false,
   now = () => new Date(),
 }) {
@@ -370,6 +371,7 @@ export function runTextReview({
       editorialInstruction,
       evidence,
     }),
+    thinking,
     mock,
     now,
   });

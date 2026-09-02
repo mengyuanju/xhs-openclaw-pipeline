@@ -29,6 +29,7 @@ type Settings = {
 
 const EMPTY_MODEL_API: ModelApiSettings = {
   copyGenerationProvider: null,
+  copyGenerationThinking: null,
   dotsBaseUrl: null,
   dotsModel: null,
   textModel: null,

@@ -2,10 +2,21 @@
 
 import { Cable, RotateCcw } from 'lucide-react';
 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+
 import { DotsCopyProviderFields } from './dots-copy-provider-fields';
+
+type CopyGenerationThinking = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export type ModelApiSettings = {
   copyGenerationProvider: 'OPENCLAW' | 'DOTS' | null;
+  copyGenerationThinking: CopyGenerationThinking | null;
   dotsBaseUrl: string | null;
   dotsModel: string | null;
   textModel: string | null;
@@ -21,6 +32,7 @@ export type ModelApiSettings = {
 
 export type EffectiveModelApi = {
   copyGenerationProvider: 'OPENCLAW' | 'DOTS';
+  copyGenerationThinking: CopyGenerationThinking;
   dotsBaseUrl: string;
   dotsModel: string;
   dotsApiKeyConfigured: boolean;
@@ -50,6 +62,38 @@ const MODEL_FIELDS: Array<{
   { key: 'qualityModel', label: '独立终审模型', description: '整套交付的最终质量评分。' },
   { key: 'imageModel', label: '图片生成模型', description: '生成和编辑交付图片。' },
 ];
+
+const INHERIT_VALUE = 'INHERIT';
+const TEXT_MODEL_OPTIONS = [
+  'openai/gpt-5.6-sol',
+  'openai/gpt-5.6-terra',
+  'openai/gpt-5.6-luna',
+  'openai/gpt-5.5',
+  'openai/gpt-5.4',
+  'openai/gpt-5.4-mini',
+  'openai/gpt-5.3-codex-spark',
+] as const;
+const IMAGE_MODEL_OPTIONS = ['openai/gpt-image-2'] as const;
+const MODEL_OPTIONS: Record<ModelKey, readonly string[]> = {
+  textModel: TEXT_MODEL_OPTIONS,
+  screeningModel: TEXT_MODEL_OPTIONS,
+  reviewModel: TEXT_MODEL_OPTIONS,
+  visionModel: TEXT_MODEL_OPTIONS,
+  qualityModel: TEXT_MODEL_OPTIONS,
+  imageModel: IMAGE_MODEL_OPTIONS,
+};
+const THINKING_OPTIONS: Array<{ value: CopyGenerationThinking; label: string }> = [
+  { value: 'minimal', label: '极简（minimal）' },
+  { value: 'low', label: '低（low）' },
+  { value: 'medium', label: '中（medium）' },
+  { value: 'high', label: '高（high）' },
+  { value: 'xhigh', label: '超高（xhigh）' },
+  { value: 'max', label: '最高（max）' },
+];
+
+function availableModels(field: ModelKey, saved: string | null, effective: string) {
+  return [...new Set([saved, effective, ...MODEL_OPTIONS[field]].filter((model): model is string => Boolean(model)))];
+}
 
 function optionalText(value: string) {
   return value === '' ? null : value;
@@ -91,19 +135,43 @@ export function ModelApiSettingsSection({
         onModelChange={(nextValue) => onChange('dotsModel', nextValue)}
       />
 
+      <div className="field">
+        <label htmlFor="model-api-copy-thinking">文案思考强度</label>
+        <Select
+          value={value.copyGenerationThinking ?? INHERIT_VALUE}
+          onValueChange={(selected) => onChange(
+            'copyGenerationThinking',
+            selected === INHERIT_VALUE ? null : selected as CopyGenerationThinking,
+          )}
+        >
+          <SelectTrigger id="model-api-copy-thinking"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value={INHERIT_VALUE}>环境或默认值（{effective.copyGenerationThinking}）</SelectItem>
+            {THINKING_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <small>用于 OpenClaw 文案生成与独立审核；Dots 正文关闭思考时，审核仍使用此值。</small>
+      </div>
+
       {MODEL_FIELDS.map((field) => <div className="field" key={field.key}>
         <label htmlFor={`model-api-${field.key}`}>{field.label}</label>
-        <input
-          className="input mono"
-          id={`model-api-${field.key}`}
-          value={value[field.key] ?? ''}
-          maxLength={200}
-          pattern="[^\s]+\/[^\s]+"
-          placeholder={effective[field.key]}
-          spellCheck={false}
-          autoComplete="off"
-          onChange={(event) => onChange(field.key, optionalText(event.target.value))}
-        />
+        <Select
+          value={value[field.key] ?? INHERIT_VALUE}
+          onValueChange={(selected) => onChange(
+            field.key,
+            selected === INHERIT_VALUE ? null : selected,
+          )}
+        >
+          <SelectTrigger className="mono" id={`model-api-${field.key}`}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value={INHERIT_VALUE}>环境或默认值（{effective[field.key]}）</SelectItem>
+            {availableModels(field.key, value[field.key], effective[field.key]).map((model) => (
+              <SelectItem key={model} value={model}>{model}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <small>{field.description} 当前生效：<span className="mono">{effective[field.key]}</span></small>
       </div>)}
 

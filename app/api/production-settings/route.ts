@@ -35,6 +35,7 @@ const modelApiPatchSchema = z.object({
   imageProxyUrl: proxyUrlSchema.nullable().optional(),
   imageTimeoutMs: z.number().int().min(30_000).max(540_000).nullable().optional(),
   copyGenerationProvider: z.enum(['OPENCLAW', 'DOTS']).nullable().optional(),
+  copyGenerationThinking: z.enum(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']).nullable().optional(),
   dotsBaseUrl: dotsBaseUrlSchema.nullable().optional(),
   dotsModel: dotsModelSchema.nullable().optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, '至少修改一项模型 API 配置');

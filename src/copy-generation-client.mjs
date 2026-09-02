@@ -2,8 +2,6 @@ import { createDotsChatClient } from './dots-chat-client.mjs';
 import { effectiveModelApiConfig } from './model-api-config.mjs';
 import { createOpenClawClient } from './openclaw.mjs';
 
-const COPY_GENERATION_THINKING = 'low';
-
 export function createCopyGenerationClient({
   modelApi = {},
   environment = process.env,
@@ -23,10 +21,10 @@ export function createCopyGenerationClient({
   return {
     ...resolvedOpenClaw,
     runText(input) {
-      return textClient.runText({ ...input, thinking: COPY_GENERATION_THINKING });
+      return textClient.runText({ ...input, thinking: configuration.copyGenerationThinking });
     },
     runReview(input) {
-      return resolvedOpenClaw.runReview({ ...input, thinking: COPY_GENERATION_THINKING });
+      return resolvedOpenClaw.runReview({ ...input, thinking: configuration.copyGenerationThinking });
     },
     runWebSearch(input) {
       return resolvedOpenClaw.runWebSearch(input);

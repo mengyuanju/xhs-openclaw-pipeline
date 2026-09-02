@@ -21,6 +21,7 @@ describe('model API production settings UI', () => {
     assert.match(route, /imageProxyUrl/u);
     assert.match(route, /imageTimeoutMs/u);
     assert.match(route, /copyGenerationProvider/u);
+    assert.match(route, /copyGenerationThinking:\s*z\.enum\(\['minimal', 'low', 'medium', 'high', 'xhigh', 'max'\]\)/u);
     assert.match(route, /dotsBaseUrl/u);
     assert.match(route, /dotsModel/u);
     assert.match(route, /\.nullable\(\)/u);
@@ -47,6 +48,11 @@ describe('model API production settings UI', () => {
     assert.match(section, /视觉验收模型/u);
     assert.match(section, /独立终审模型/u);
     assert.match(section, /图片生成模型/u);
+    assert.match(section, /文案思考强度/u);
+    assert.match(section, /MODEL_OPTIONS/u);
+    assert.match(section, /<SelectTrigger/u);
+    assert.match(section, /<SelectContent/u);
+    assert.doesNotMatch(section, /id=\{`model-api-\$\{field\.key\}`\}[\s\S]{0,200}onChange=/u);
     assert.match(section, /文本与视觉代理/u);
     assert.match(section, /图片生成代理/u);
     assert.match(section, /图片调用超时/u);
@@ -58,6 +64,7 @@ describe('model API production settings UI', () => {
     assert.match(dotsFields, /@\/components\/ui\/select/u);
     assert.match(dotsFields, /<SelectTrigger/u);
     assert.match(dotsFields, /<SelectContent/u);
+    assert.match(dotsFields, /DOTS_MODEL_OPTIONS/u);
     assert.doesNotMatch(dotsFields, /<select/u);
     assert.match(section, /不保存 API Key、Token 或 OAuth 授权码/u);
     assert.match(section, /恢复环境配置/u);

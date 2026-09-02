@@ -21,6 +21,9 @@ type EffectiveDotsSettings = {
   dotsApiKeyConfigured: boolean;
 };
 
+const INHERIT_VALUE = 'INHERIT';
+const DOTS_MODEL_OPTIONS = ['dots3-note-prev'] as const;
+
 function optionalText(value: string) {
   return value === '' ? null : value;
 }
@@ -42,14 +45,14 @@ export function DotsCopyProviderFields({
     <div className="field">
       <label htmlFor="model-api-copy-provider">独立文案提供方</label>
       <Select
-        value={value.copyGenerationProvider ?? 'INHERIT'}
+        value={value.copyGenerationProvider ?? INHERIT_VALUE}
         onValueChange={(selected) => onProviderChange(
-          selected === 'INHERIT' ? null : selected as 'OPENCLAW' | 'DOTS',
+          selected === INHERIT_VALUE ? null : selected as 'OPENCLAW' | 'DOTS',
         )}
       >
         <SelectTrigger id="model-api-copy-provider"><SelectValue /></SelectTrigger>
         <SelectContent>
-          <SelectItem value="INHERIT">环境或默认值（{effective.copyGenerationProvider}）</SelectItem>
+          <SelectItem value={INHERIT_VALUE}>环境或默认值（{effective.copyGenerationProvider}）</SelectItem>
           <SelectItem value="OPENCLAW">OpenClaw</SelectItem>
           <SelectItem value="DOTS">Dots Chat Completions</SelectItem>
         </SelectContent>
@@ -74,17 +77,18 @@ export function DotsCopyProviderFields({
 
     <div className="field">
       <label htmlFor="model-api-dots-model">Dots 模型</label>
-      <input
-        className="input mono"
-        id="model-api-dots-model"
-        value={value.dotsModel ?? ''}
-        placeholder={effective.dotsModel}
-        maxLength={200}
-        pattern="[A-Za-z0-9][A-Za-z0-9._:-]*"
-        spellCheck={false}
-        autoComplete="off"
-        onChange={(event) => onModelChange(optionalText(event.target.value))}
-      />
+      <Select
+        value={value.dotsModel ?? INHERIT_VALUE}
+        onValueChange={(selected) => onModelChange(selected === INHERIT_VALUE ? null : selected)}
+      >
+        <SelectTrigger className="mono" id="model-api-dots-model"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value={INHERIT_VALUE}>环境或默认值（{effective.dotsModel}）</SelectItem>
+          {[...new Set([value.dotsModel, effective.dotsModel, ...DOTS_MODEL_OPTIONS]
+            .filter((model): model is string => Boolean(model)))]
+            .map((model) => <SelectItem key={model} value={model}>{model}</SelectItem>)}
+        </SelectContent>
+      </Select>
       <small>当前 Key 状态：{effective.dotsApiKeyConfigured ? '服务器已配置' : '尚未配置，请补充 XHS_DOTS_API_KEY'}。</small>
     </div>
   </>;
