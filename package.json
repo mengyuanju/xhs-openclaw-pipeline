@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Queue-driven Xiaohongshu content production MVP powered by OpenClaw.",
   "engines": {
-    "node": ">=24.14.0"
+    "node": ">=24.19.0 <25"
   },
   "scripts": {
     "dev": "next dev -H 127.0.0.1",

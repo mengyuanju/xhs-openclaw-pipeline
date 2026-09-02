@@ -18,7 +18,7 @@
 
 - Node.js 24 ESM、`node:sqlite`、Sharp、Zod。
 - Next.js 16 App Router + React 19。
-- OpenClaw 2026.5.7 `infer model run --file` 进行视觉分析。
+- OpenClaw 2026.8.2 `infer model run --file` 进行视觉分析。
 
 ## Commands
 

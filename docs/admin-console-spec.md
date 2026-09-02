@@ -33,13 +33,13 @@
 
 ## Tech Stack
 
-- Node.js 24.14+，ECMAScript modules。
+- Node.js 24.19.x，ECMAScript modules。
 - Next.js App Router + React + TypeScript，作为本地管理界面和 REST/BFF 路由。
 - `node:sqlite` 保存队列、批次、提示词版本、素材与审核记录。
 - ExcelJS 在服务器端解析 `.xlsx`。
 - Zod 校验 HTTP、Excel 与配置输入。
 - Sharp 校验、规范化和修订图片。
-- OpenClaw 2026.5.7+ 执行文本、文生图与 `infer image edit`。
+- OpenClaw 2026.8.2 执行文本、文生图与 `infer image edit`。
 
 ## Commands
 
@@ -198,9 +198,9 @@ POST       /api/prompt-versions/:id/publish
 - Next.js authentication and session management: https://nextjs.org/docs/app/guides/authentication
 - Next.js Proxy: https://nextjs.org/docs/app/api-reference/file-conventions/proxy
 - Next.js cookies: https://nextjs.org/docs/app/api-reference/functions/cookies
-- Node.js 24 crypto: https://nodejs.org/download/release/v24.14.0/docs/api/crypto.html
+- Node.js 24 crypto: https://nodejs.org/download/release/v24.19.0/docs/api/crypto.html
 - Next.js forms: https://nextjs.org/docs/app/guides/forms
 - ExcelJS workbook reader: https://github.com/exceljs/exceljs
 - OpenClaw inference: https://docs.openclaw.ai/cli/infer
 - OpenClaw image editing: https://docs.openclaw.ai/tools/image-generation
-- Node SQLite: https://nodejs.org/download/release/v24.14.0/docs/api/sqlite.html
+- Node SQLite: https://nodejs.org/download/release/v24.19.0/docs/api/sqlite.html

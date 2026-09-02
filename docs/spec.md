@@ -14,10 +14,10 @@
 
 ## Tech Stack
 
-- Node.js 24.14，ECMAScript modules。
+- Node.js 24.19，ECMAScript modules。
 - Node 内置 `node:sqlite` 保存任务队列。
 - Node 内置 `node:test` 执行测试。
-- OpenClaw 2026.5.7 CLI 执行文本与图片推理。
+- OpenClaw 2026.8.2 CLI 执行文本与图片推理。
 - Sharp 将受控 SVG 模板渲染为 PNG。
 
 ## Commands
@@ -83,7 +83,7 @@ OpenClaw 通过参数数组启动，不启用 Shell，也不把 Query 或模型�
 
 - OpenClaw inference: https://docs.openclaw.ai/cli/infer
 - OpenClaw image generation: https://docs.openclaw.ai/tools/image-generation
-- Node SQLite: https://nodejs.org/download/release/v24.14.0/docs/api/sqlite.html
-- Node test runner: https://nodejs.org/download/release/v24.14.0/docs/api/test.html
-- Node child processes: https://nodejs.org/download/release/v24.14.0/docs/api/child_process.html
+- Node SQLite: https://nodejs.org/download/release/v24.19.0/docs/api/sqlite.html
+- Node test runner: https://nodejs.org/download/release/v24.19.0/docs/api/test.html
+- Node child processes: https://nodejs.org/download/release/v24.19.0/docs/api/child_process.html
 - Sharp installation/output: https://sharp.pixelplumbing.com/install/ and https://sharp.pixelplumbing.com/api-output/

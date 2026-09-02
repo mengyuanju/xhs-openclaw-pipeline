@@ -18,15 +18,15 @@
 
 ## 环境
 
-- Node.js 24.14+（Web 后台与 Worker）
-- OpenClaw 2026.5.7+
+- Node.js 24.19.x（Web 后台、Worker 与 OpenClaw 统一运行时）
+- OpenClaw 2026.8.2
 - 真实模式需要 OpenClaw 中可用的文本与图片模型授权
 
 OpenClaw 进程使用的 Node 还必须满足已安装 OpenClaw 的 `engines.node` 约束；
 如果后台使用的 Node 不兼容，可在 `.env.local` 单独指定兼容运行时，不会替换系统 Node：
 
 ```dotenv
-OPENCLAW_NODE_PATH=C:\path\to\compatible\node.exe
+OPENCLAW_NODE_PATH=C:\Program Files\nodejs\node.exe
 ```
 
 文案默认使用 `openai/gpt-5.6-sol`，文本请求固定使用 `thinking=high`；如需固定其他已授权模型，可在 `.env.local`
