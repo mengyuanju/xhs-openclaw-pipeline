@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 
 import {
+  ImageAlignmentResponseError,
+  ImageAlignmentServiceError,
   buildImageAlignmentPrompt,
   createImageAlignmentValidator,
   imagePageUsesPortrait,
@@ -416,5 +418,67 @@ describe('image alignment contract', () => {
 
     assert.equal(result.passed, true);
     assert.equal(calls, 2);
+  });
+
+  it('reports an exhausted malformed response as a retryable protocol error', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'xhs-alignment-invalid-response-'));
+    directories.push(directory);
+    const imagePath = join(directory, '02-steps.png');
+    await writeFile(imagePath, 'fake-image');
+    const prompts = [];
+    const invalidResponses = [];
+    const validator = createImageAlignmentValidator({
+      openclaw: {
+        async runVision(input) {
+          prompts.push(input.prompt);
+          return { rawText: 'not-json', model: 'fake-vision' };
+        },
+      },
+      ...fixture(),
+      imageCount: 3,
+      onInvalidResponse(response) {
+        invalidResponses.push(response);
+      },
+    });
+
+    await assert.rejects(
+      validator({ imagePath, pageIndex: 2, attempt: 1 }),
+      (error) => {
+        assert.ok(error instanceof ImageAlignmentResponseError);
+        assert.equal(error.code, 'ALIGNMENT_RESPONSE_INVALID');
+        assert.equal(error.retryable, true);
+        assert.equal(error.responseAttempts, 3);
+        return true;
+      },
+    );
+    assert.equal(prompts.length, 3);
+    assert.match(prompts[1], /上一次响应未通过 JSON 契约/u);
+    assert.equal(invalidResponses.length, 3);
+  });
+
+  it('reports a vision transport failure separately from image mismatch', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'xhs-alignment-service-failure-'));
+    directories.push(directory);
+    const imagePath = join(directory, '02-steps.png');
+    await writeFile(imagePath, 'fake-image');
+    const validator = createImageAlignmentValidator({
+      openclaw: {
+        async runVision() {
+          throw new Error('vision service timeout');
+        },
+      },
+      ...fixture(),
+      imageCount: 3,
+    });
+
+    await assert.rejects(
+      validator({ imagePath, pageIndex: 2, attempt: 1 }),
+      (error) => {
+        assert.ok(error instanceof ImageAlignmentServiceError);
+        assert.equal(error.code, 'ALIGNMENT_SERVICE_FAILED');
+        assert.equal(error.retryable, true);
+        return true;
+      },
+    );
   });
 });

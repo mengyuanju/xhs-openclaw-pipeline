@@ -12,6 +12,25 @@ const MAX_ALIGNMENT_RESPONSE_ATTEMPTS = 3;
 const PORTRAIT_PATTERN = /(?:人像|人物|真人|模特|肖像|半身|全身|面部|人物操作|人物示范)/u;
 const PORTRAIT_EXCLUSION_PATTERN = /(?:无人物|无人像|不含人物|不出现人物|禁止人物|不要人物|没有人物)/u;
 
+export class ImageAlignmentResponseError extends SyntaxError {
+  constructor(cause, responseAttempts = MAX_ALIGNMENT_RESPONSE_ATTEMPTS) {
+    super('image alignment model repeatedly returned an invalid response', { cause });
+    this.name = 'ImageAlignmentResponseError';
+    this.code = 'ALIGNMENT_RESPONSE_INVALID';
+    this.retryable = true;
+    this.responseAttempts = responseAttempts;
+  }
+}
+
+export class ImageAlignmentServiceError extends Error {
+  constructor(cause) {
+    super('image alignment service failed before returning a response', { cause });
+    this.name = 'ImageAlignmentServiceError';
+    this.code = 'ALIGNMENT_SERVICE_FAILED';
+    this.retryable = true;
+  }
+}
+
 export function imagePageUsesPortrait(page, extraDirection = '') {
   const description = [
     page?.visualSubject,
@@ -341,8 +360,12 @@ export function createImageAlignmentValidator({
   visualPage,
   imageCount,
   complianceDisclosure = '',
+  onInvalidResponse,
 }) {
   if (!openclaw?.runVision) throw new TypeError('OpenClaw vision client is required for image alignment');
+  if (onInvalidResponse !== undefined && typeof onInvalidResponse !== 'function') {
+    throw new TypeError('onInvalidResponse must be a function');
+  }
   return async function validateImage({ imagePath, pageIndex, attempt }) {
     const page = visualPage ?? visualPlan?.pages?.[pageIndex - 1];
     if (!page) throw new TypeError(`visual plan page ${pageIndex} is missing`);
@@ -372,10 +395,18 @@ export function createImageAlignmentValidator({
     });
     let lastContractError;
     for (let responseAttempt = 1; responseAttempt <= MAX_ALIGNMENT_RESPONSE_ATTEMPTS; responseAttempt += 1) {
-      const generated = await openclaw.runVision({
-        prompt,
-        inputPaths: [imagePath],
-      });
+      const correction = responseAttempt === 1
+        ? ''
+        : `\n\n上一次响应未通过 JSON 契约（${lastContractError?.message ?? '结构无效'}）。这是格式纠正重试：只输出一个完整 JSON 对象，不要 Markdown、解释、前后缀或代码块。`;
+      let generated;
+      try {
+        generated = await openclaw.runVision({
+          prompt: `${prompt}${correction}`,
+          inputPaths: [imagePath],
+        });
+      } catch (error) {
+        throw new ImageAlignmentServiceError(error);
+      }
       try {
         return {
           ...parseImageAlignmentOutput(generated.rawText, { allowedVisibleText }),
@@ -386,8 +417,16 @@ export function createImageAlignmentValidator({
       } catch (error) {
         if (!(error instanceof SyntaxError || error instanceof TypeError || error instanceof RangeError)) throw error;
         lastContractError = error;
+        await Promise.resolve(onInvalidResponse?.({
+          pageIndex,
+          generationAttempt: attempt,
+          responseAttempt,
+          model: generated.model,
+          rawText: generated.rawText,
+          error,
+        })).catch(() => {});
       }
     }
-    throw lastContractError;
+    throw new ImageAlignmentResponseError(lastContractError);
   };
 }
