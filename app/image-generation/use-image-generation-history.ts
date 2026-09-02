@@ -15,6 +15,10 @@ export type ImageGenerationHistoryRecord = {
   status: 'RUNNING' | 'COMPLETED' | 'FAILED';
   stage: string;
   completedImages: number;
+  generatedImages: number;
+  validatedImages: number;
+  canResume: boolean;
+  retryReason: string | null;
   imageCount: number;
   qcScore: number | null;
   startedAt: string;

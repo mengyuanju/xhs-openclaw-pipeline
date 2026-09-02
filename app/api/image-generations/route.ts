@@ -2,21 +2,21 @@ import { z } from 'zod';
 
 import { apiHandler, ok, parseJson } from '../_lib';
 import { ApiError } from '../../../src/admin/http.mjs';
-import { adminOutputRoot, withAdminStore } from '../../../src/admin/runtime.mjs';
-import { createOpenClawClient } from '../../../src/openclaw.mjs';
+import { adminOutputRoot } from '../../../src/admin/runtime.mjs';
 import {
-  StandaloneImageAlignmentError,
   StandaloneImageConfirmationError,
-  StandaloneImageGenerationError,
   assertStandaloneImageConfirmation,
   generateStandaloneImages,
   listStandaloneImageRuns,
 } from '../../../src/standalone-image-generation.mjs';
+import {
+  imageGenerationApiError,
+  imageGenerationRuntime,
+  withImageGenerationLock,
+} from './_runtime';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-let imageGenerationInProgress = false;
 
 const imageKindSchema = z.enum([
   'hero',
@@ -68,31 +68,6 @@ const imageGenerationSchema = z.object({
   });
 });
 
-function imageGenerationRuntime({ live }: { live: boolean }) {
-  return withAdminStore((store: any) => {
-    const productionSettings = store.getProductionSettings().settings;
-    if (!live) return { productionSettings };
-    const template = store.listPromptTemplates()
-      .find((candidate: any) => candidate.kind === 'IMAGE_SYSTEM');
-    const published = template?.versions
-      .find((version: any) => version.status === 'PUBLISHED');
-    if (!published?.content) {
-      throw new StandaloneImageGenerationError('已发布的图片系统提示词不可用');
-    }
-    const visualReference = store.listVisualKnowledge({ status: 'PUBLISHED', pageSize: 100 }).data
-      .filter((item: any) => item.generationTarget === 'MODEL_IMAGE' && item.publishedVersion)
-      .sort((left: any, right: any) => (
-        right.publishedVersion.qualityScore - left.publishedVersion.qualityScore
-      ))[0]?.publishedVersion ?? null;
-    return {
-      productionSettings,
-      imageSystemPrompt: published.content,
-      visualReference,
-      client: createOpenClawClient({ modelApi: productionSettings.modelApi }),
-    };
-  });
-}
-
 export async function GET(request: Request) {
   return apiHandler(request, {}, async () => {
     const rawLimit = new URL(request.url).searchParams.get('limit');
@@ -124,16 +99,8 @@ export function POST(request: Request) {
       }
       throw new ApiError(400, 'VALIDATION_ERROR', 'Mock 模式不接受 Live 费用确认');
     }
-    if (imageGenerationInProgress) {
-      throw new ApiError(
-        409,
-        'IMAGE_GENERATION_IN_PROGRESS',
-        '已有独立图片试验正在运行，请等待当前请求完成',
-      );
-    }
-    imageGenerationInProgress = true;
     try {
-      const result = await generateStandaloneImages({
+      const result = await withImageGenerationLock(() => generateStandaloneImages({
         source: {
           query: input.query,
           copy: input.copy,
@@ -143,21 +110,10 @@ export function POST(request: Request) {
         runtime: imageGenerationRuntime({ live: input.mode === 'LIVE' }),
         outputRoot: adminOutputRoot(),
         runId: input.runId,
-      });
+      }));
       return ok(result, { status: 201 });
     } catch (error) {
-      if (error instanceof StandaloneImageAlignmentError) {
-        throw new ApiError(422, 'IMAGE_ALIGNMENT_FAILED', error.message);
-      }
-      if (error instanceof StandaloneImageGenerationError) {
-        throw new ApiError(502, 'IMAGE_GENERATION_FAILED', error.message);
-      }
-      if (error instanceof TypeError || error instanceof RangeError) {
-        throw new ApiError(400, 'VALIDATION_ERROR', '图片试验输入不符合生产契约');
-      }
-      throw error;
-    } finally {
-      imageGenerationInProgress = false;
+      throw imageGenerationApiError(error);
     }
   });
 }

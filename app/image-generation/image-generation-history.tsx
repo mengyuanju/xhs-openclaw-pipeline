@@ -18,6 +18,11 @@ function statusPill(record: ImageGenerationHistoryRecord) {
     </span>;
   }
   if (record.status === 'FAILED') {
+    if (record.canResume) {
+      return <span className="pill pill-processing">
+        <RefreshCw aria-hidden="true" size={12} />待重新验收
+      </span>;
+    }
     return <span className="pill pill-failed">
       <CircleAlert aria-hidden="true" size={12} />生成失败
     </span>;
@@ -99,7 +104,8 @@ export function ImageGenerationHistory({
                   <span className="standalone-image-history-meta">
                     <time dateTime={record.startedAt}>{runTime(record.startedAt)}</time>
                     <span>{record.mode === 'LIVE' ? 'Live' : 'Mock'}</span>
-                    <span>{record.completedImages}/{record.imageCount} 张</span>
+                    <span>已生成 {record.generatedImages}/{record.imageCount}</span>
+                    <span>已验收 {record.validatedImages}/{record.imageCount}</span>
                     {record.qcScore !== null && <span>QC {record.qcScore}/3</span>}
                   </span>
                   {record.error && <span className="standalone-image-history-failure">{record.error}</span>}

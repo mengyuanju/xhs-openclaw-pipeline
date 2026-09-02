@@ -78,6 +78,7 @@ export function ImageGenerationWorkbench() {
     messageIsError,
     showMessage,
     openRun,
+    retryRun,
     startRun,
   } = useImageGenerationRun();
 
@@ -125,6 +126,17 @@ export function ImageGenerationWorkbench() {
       mode,
       ...(mode === 'LIVE' ? { confirmation: 'LIVE_IMAGE_COST_ACCEPTED' as const } : {}),
     });
+    await refreshHistory({ silent: true }).catch(() => {});
+  }
+
+  async function resumeRun() {
+    if (!progress?.canResume || busy) return;
+    if (!await confirm({
+      title: '确认重新验收并继续？',
+      description: `将复用已生成图片，重新执行 OCR 与图文对齐；未生成或验收不通过的页面会继续调用图片模型，仍会产生真实模型费用。当前已生成 ${progress.generatedImages}/${progress.totalImages} 张。`,
+      confirmLabel: '确认费用并继续',
+    })) return;
+    await retryRun(progress.runId);
     await refreshHistory({ silent: true }).catch(() => {});
   }
 
@@ -190,7 +202,11 @@ export function ImageGenerationWorkbench() {
           </div>
         </form>
 
-        {progress && <ImageGenerationProgress progress={progress} />}
+        {progress && <ImageGenerationProgress
+          progress={progress}
+          disabled={busy}
+          onResume={() => { void resumeRun(); }}
+        />}
 
         {result && <ImageGenerationResultView result={result} />}
 

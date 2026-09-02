@@ -75,6 +75,8 @@ export type ImageGenerationProgressValue = {
   progressPercent: number;
   message: string;
   completedImages: number;
+  generatedImages: number;
+  validatedImages: number;
   totalImages: number;
   currentPage: number | null;
   attempt: number | null;
@@ -86,6 +88,8 @@ export type ImageGenerationProgressValue = {
   estimatedRemainingMs: number | null;
   estimateBasis: 'mode-and-page-count';
   estimateOverdue: boolean;
+  canResume: boolean;
+  retryReason: string | null;
   error: string | null;
   result: ImageGenerationResult | null;
 };
@@ -237,6 +241,51 @@ export function useImageGenerationRun() {
     }
   }
 
+  async function retryRun(sourceRunId: string) {
+    if (!RUN_ID.test(sourceRunId)) {
+      showMessage('待恢复的图片运行 ID 无效', true);
+      return null;
+    }
+    let nextRunId = createRunId();
+    while (nextRunId === sourceRunId) nextRunId = createRunId();
+    activeRunId.current = nextRunId;
+    progressMisses.current = 0;
+    window.sessionStorage.setItem(ACTIVE_RUN_STORAGE_KEY, nextRunId);
+    setRunId(nextRunId);
+    setBusy(true);
+    setProgress(null);
+    setResult(null);
+    setMessage('');
+    setMessageIsError(false);
+    try {
+      const generated = await apiRequest<ImageGenerationResult>(
+        `/api/image-generations/${sourceRunId}/attempts`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            runId: nextRunId,
+            confirmation: 'LIVE_IMAGE_COST_ACCEPTED',
+          }),
+        },
+      );
+      setResult(generated);
+      setMessage(completionMessage('LIVE'));
+      await refreshProgress(nextRunId).catch(() => {});
+      return generated;
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '图片恢复失败');
+      setMessageIsError(true);
+      await refreshProgress(nextRunId).catch(() => {
+        forgetRun();
+        setProgress(null);
+      });
+      return null;
+    } finally {
+      if (activeRunId.current === nextRunId) setBusy(false);
+    }
+  }
+
   return {
     runId,
     busy,
@@ -247,6 +296,7 @@ export function useImageGenerationRun() {
     messageIsError,
     showMessage,
     openRun,
+    retryRun,
     startRun,
   };
 }

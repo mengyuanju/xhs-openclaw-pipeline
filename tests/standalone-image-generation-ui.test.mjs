@@ -22,17 +22,48 @@ describe('standalone image generation workspace', () => {
   });
 
   it('exposes the strict Mock/Live API contract and safe error codes', async () => {
-    const route = await source('app/api/image-generations/route.ts');
+    const [route, runtime] = await Promise.all([
+      source('app/api/image-generations/route.ts'),
+      source('app/api/image-generations/_runtime.ts'),
+    ]);
+    const contract = `${route}\n${runtime}`;
 
     assert.match(route, /mode: z\.enum\(\['MOCK', 'LIVE'\]\)/u);
     assert.match(route, /validationCode: 'VALIDATION_ERROR'/u);
     assert.match(route, /LIVE_IMAGE_COST_ACCEPTED/u);
-    assert.match(route, /IMAGE_GENERATION_IN_PROGRESS/u);
+    assert.match(contract, /IMAGE_GENERATION_IN_PROGRESS/u);
     assert.match(route, /LIVE_CONFIRMATION_REQUIRED/u);
-    assert.match(route, /IMAGE_ALIGNMENT_FAILED/u);
-    assert.match(route, /IMAGE_GENERATION_FAILED/u);
+    assert.match(contract, /IMAGE_ALIGNMENT_FAILED/u);
+    assert.match(contract, /ALIGNMENT_RESPONSE_INVALID/u);
+    assert.match(contract, /ALIGNMENT_SERVICE_FAILED/u);
+    assert.match(contract, /IMAGE_GENERATION_FAILED/u);
     assert.match(route, /generateStandaloneImages/u);
-    assert.match(route, /createOpenClawClient/u);
+    assert.match(runtime, /createOpenClawClient/u);
+    assert.match(runtime, /withImageGenerationLock/u);
+  });
+
+  it('requires explicit cost confirmation and a fresh run ID before resuming', async () => {
+    const [attemptRoute, workbench, progressView, runState] = await Promise.all([
+      source('app/api/image-generations/[runId]/attempts/route.ts'),
+      source('app/image-generation/image-generation-workbench.tsx'),
+      source('app/image-generation/image-generation-progress.tsx'),
+      source('app/image-generation/use-image-generation-run.ts'),
+    ]);
+
+    assert.match(attemptRoute, /export async function POST/u);
+    assert.match(attemptRoute, /z\.literal\('LIVE_IMAGE_COST_ACCEPTED'\)/u);
+    assert.match(attemptRoute, /retryStandaloneImageRun/u);
+    assert.match(attemptRoute, /sourceRunId: runId/u);
+    assert.match(attemptRoute, /runId: input\.runId/u);
+    assert.match(attemptRoute, /withImageGenerationLock/u);
+    assert.match(runState, /retryRun/u);
+    assert.match(runState, /\/attempts/u);
+    assert.match(runState, /confirmation: 'LIVE_IMAGE_COST_ACCEPTED'/u);
+    assert.match(progressView, /已生成/u);
+    assert.match(progressView, /已验收/u);
+    assert.match(progressView, /重新验收并继续/u);
+    assert.match(workbench, /复用已生成图片/u);
+    assert.match(workbench, /retryRun/u);
   });
 
   it('renders labeled inputs, cost confirmation, loading, errors and image previews', async () => {
@@ -95,12 +126,13 @@ describe('standalone image generation workspace', () => {
     assert.match(runState, /setInterval/u);
     assert.match(runState, /`\/api\/image-generations\/\$\{[^}]+\}`/u);
     assert.match(runState, /cache: 'no-store'/u);
-    assert.match(workbench, /<ImageGenerationProgress progress=\{progress\}/u);
+    assert.match(workbench, /<ImageGenerationProgress\s+progress=\{progress\}/u);
     assert.match(progressView, /<progress/u);
     assert.match(progressView, /当前阶段/u);
     assert.match(progressView, /已用时间/u);
     assert.match(progressView, /预计剩余/u);
-    assert.match(progressView, /完成图片/u);
+    assert.match(progressView, /已生成/u);
+    assert.match(progressView, /已验收/u);
     assert.match(progressView, /aria-live="polite"/u);
     assert.match(styles, /\.standalone-image-progress/u);
     assert.match(styles, /\.standalone-image-progress-bar/u);

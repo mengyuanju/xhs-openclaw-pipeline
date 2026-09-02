@@ -22,8 +22,12 @@ function remainingLabel(progress: ImageGenerationProgressValue) {
 
 export function ImageGenerationProgress({
   progress,
+  disabled = false,
+  onResume,
 }: {
   progress: ImageGenerationProgressValue;
+  disabled?: boolean;
+  onResume?: () => void;
 }) {
   return <section className="panel standalone-image-progress" aria-labelledby="image-progress-heading" aria-live="polite">
     <div className="panel-head">
@@ -52,8 +56,16 @@ export function ImageGenerationProgress({
       <div><dt>当前阶段</dt><dd>{STAGE_LABELS[progress.stage]}</dd></div>
       <div><dt><Clock3 aria-hidden="true" size={13} />已用时间</dt><dd>{formatDuration(progress.elapsedMs)}</dd></div>
       <div><dt>预计剩余</dt><dd>{remainingLabel(progress)}</dd></div>
-      <div><dt><Images aria-hidden="true" size={13} />完成图片</dt><dd>{progress.completedImages}/{progress.totalImages} 页</dd></div>
+      <div><dt><Images aria-hidden="true" size={13} />已生成</dt><dd>{progress.generatedImages}/{progress.totalImages} 页</dd></div>
+      <div><dt><CircleCheck aria-hidden="true" size={13} />已验收</dt><dd>{progress.validatedImages}/{progress.totalImages} 页</dd></div>
     </dl>
+    {progress.canResume && onResume && <div className="notice warning standalone-image-resume">
+      <span>已生成图片会先重新验收；通过的图片直接复用，只为剩余或不合格页面重新生成。</span>
+      <button className="button small" type="button" onClick={onResume} disabled={disabled}>
+        {disabled && <LoaderCircle aria-hidden="true" className="animate-spin" size={14} />}
+        重新验收并继续
+      </button>
+    </div>}
     <small>预计时间根据运行模式、图片页数和当前阶段计算，会随实际耗时向上修正，仅供参考。</small>
   </section>;
 }

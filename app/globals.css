@@ -111,11 +111,13 @@
 .standalone-image-progress-bar::-webkit-progress-value { border-radius: 999px; background: var(--red); transition: width .25s ease; }
 .standalone-image-progress-bar::-moz-progress-bar { border-radius: 999px; background: var(--red); }
 .standalone-image-progress-message { margin: 0; font-size: 13px; font-weight: 700; line-height: 1.55; }
-.standalone-image-progress-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 0; }
+.standalone-image-progress-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 0; }
 .standalone-image-progress-facts > div { min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--control-bg-muted); }
 .standalone-image-progress-facts dt { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; }
 .standalone-image-progress-facts dd { margin: 4px 0 0; font-size: 13px; font-weight: 750; }
 .standalone-image-progress > small { color: var(--muted); line-height: 1.55; }
+.standalone-image-resume { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.standalone-image-resume .button { flex: 0 0 auto; }
 .standalone-image-result { overflow: hidden; }
 .standalone-image-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 0 0 14px; }
 .standalone-image-summary div { min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--control-bg-muted); }
@@ -982,6 +984,7 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 }
 @media (max-width: 760px) {
   .standalone-image-summary, .standalone-image-progress-facts, .standalone-image-page-card, .standalone-image-layout-facts, .standalone-image-layout-constraints, .standalone-image-quality-dimensions { grid-template-columns: 1fr; }
+  .standalone-image-resume { align-items: flex-start; flex-direction: column; }
   .standalone-image-page-card { padding: 12px; }
   .standalone-image-section-heading { align-items: flex-start; flex-direction: column; gap: 5px; }
   .standalone-image-layout-block ul { grid-template-columns: 1fr; }
