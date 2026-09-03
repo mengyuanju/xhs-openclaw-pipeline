@@ -201,21 +201,19 @@ function elapsedMs(startedAt, finishedAt) {
   return finishMs - startMs;
 }
 
-function readSession(path) {
-  const records = parseJsonLines(path);
+function sessionFromRecords({ records, trajectory, sessionId, sources, metadata = {} }) {
   const sessionRecord = records.find((row) => row?.type === 'session') ?? null;
   const messages = records.filter((row) => row?.type === 'message');
   const userMessage = messages.find((row) => row?.message?.role === 'user')?.message ?? null;
   const assistantMessage = [...messages].reverse()
     .find((row) => row?.message?.role === 'assistant')?.message ?? null;
-  const sessionId = String(sessionRecord?.id ?? basename(path, '.jsonl'));
-  const trajectoryPath = path.replace(/\.jsonl$/u, '.trajectory.jsonl');
-  const trajectory = existsSync(trajectoryPath) ? parseJsonLines(trajectoryPath) : [];
   const started = trajectory.find((row) => row?.type === 'session.started') ?? null;
   const completed = [...trajectory].reverse().find((row) => row?.type === 'model.completed') ?? null;
   const ended = [...trajectory].reverse().find((row) => row?.type === 'session.ended') ?? null;
-  const startedAt = started?.ts ?? sessionRecord?.timestamp ?? messages[0]?.timestamp ?? null;
-  const endedAt = ended?.ts ?? completed?.ts ?? messages.at(-1)?.timestamp ?? null;
+  const startedAt = started?.ts ?? metadata.startedAt
+    ?? sessionRecord?.timestamp ?? messages[0]?.timestamp ?? null;
+  const endedAt = ended?.ts ?? completed?.ts ?? metadata.endedAt
+    ?? messages.at(-1)?.timestamp ?? null;
 
   return {
     sessionId,
@@ -225,8 +223,8 @@ function readSession(path) {
     runId: started?.runId ?? completed?.runId ?? null,
     threadId: started?.data?.threadId ?? completed?.data?.threadId ?? null,
     turnId: completed?.data?.turnId ?? ended?.data?.turnId ?? null,
-    provider: assistantMessage?.provider ?? started?.provider ?? null,
-    model: assistantMessage?.model ?? started?.modelId ?? null,
+    provider: assistantMessage?.provider ?? started?.provider ?? metadata.provider ?? null,
+    model: assistantMessage?.model ?? started?.modelId ?? metadata.model ?? null,
     modelApi: assistantMessage?.api ?? started?.modelApi ?? null,
     usage: assistantMessage?.usage ?? completed?.data?.usage ?? null,
     stopReason: assistantMessage?.stopReason ?? null,
@@ -234,23 +232,113 @@ function readSession(path) {
     assistantText: messageText(assistantMessage),
     records,
     trajectory,
+    sources,
+  };
+}
+
+function readSession(path) {
+  const records = parseJsonLines(path);
+  const sessionRecord = records.find((row) => row?.type === 'session') ?? null;
+  const trajectoryPath = path.replace(/\.jsonl$/u, '.trajectory.jsonl');
+  const trajectory = existsSync(trajectoryPath) ? parseJsonLines(trajectoryPath) : [];
+  return sessionFromRecords({
+    records,
+    trajectory,
+    sessionId: String(sessionRecord?.id ?? basename(path, '.jsonl')),
     sources: [
       sourceDescriptor(path),
       ...(existsSync(trajectoryPath) ? [sourceDescriptor(trajectoryPath)] : []),
     ],
-  };
+  });
 }
 
-function sessionsForWindow({ sessionRoot, startedAt, finishedAt, query }) {
-  if (!existsSync(sessionRoot)) return [];
+function parseStoredJsonRows(rows) {
+  return rows.map((row) => {
+    try {
+      return JSON.parse(row.event_json);
+    } catch {
+      return {
+        type: 'parse_error',
+        sequence: row.seq,
+        bytes: Buffer.byteLength(String(row.event_json ?? ''), 'utf8'),
+        sha256: createHash('sha256').update(String(row.event_json ?? '')).digest('hex'),
+      };
+    }
+  });
+}
+
+function isoTimestamp(value) {
+  const milliseconds = Number(value);
+  if (!Number.isFinite(milliseconds)) return null;
+  const date = new Date(milliseconds);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function readSqliteSessions(path, { startMs, finishMs }) {
+  if (!existsSync(path)) return [];
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    if (!tableExists(db, 'session_windows')
+      || !tableExists(db, 'transcript_events')) return [];
+    const transcript = db.prepare(`
+      SELECT seq, event_json FROM transcript_events WHERE session_id = ? ORDER BY seq
+    `);
+    const trajectory = tableExists(db, 'trajectory_runtime_events')
+      ? db.prepare(`
+        SELECT seq, event_json FROM trajectory_runtime_events WHERE session_id = ? ORDER BY seq
+      `)
+      : null;
+    const sources = databaseSources(path);
+    return db.prepare(`
+      SELECT session_id, started_at, ended_at, created_at, updated_at, model_provider, model
+      FROM session_windows
+      WHERE session_id LIKE 'xhs-%'
+        AND COALESCE(started_at, created_at) >= ?
+        AND COALESCE(started_at, created_at) <= ?
+      ORDER BY COALESCE(started_at, created_at)
+    `).all(
+      Number.isFinite(startMs) ? startMs - 2_000 : Number.MIN_SAFE_INTEGER,
+      Number.isFinite(finishMs) ? finishMs + 2_000 : Number.MAX_SAFE_INTEGER,
+    ).map((row) => sessionFromRecords({
+      records: parseStoredJsonRows(transcript.all(row.session_id)),
+      trajectory: trajectory ? parseStoredJsonRows(trajectory.all(row.session_id)) : [],
+      sessionId: String(row.session_id),
+      sources,
+      metadata: {
+        startedAt: isoTimestamp(row.started_at ?? row.created_at),
+        endedAt: isoTimestamp(row.ended_at ?? row.updated_at),
+        provider: row.model_provider,
+        model: row.model,
+      },
+    }));
+  } finally {
+    db.close();
+  }
+}
+
+function sessionsForWindow({ openClawRoot, startedAt, finishedAt, query }) {
   const startMs = Date.parse(startedAt ?? '');
   const finishMs = Date.parse(finishedAt ?? '');
-  const candidates = readdirSync(sessionRoot, { withFileTypes: true })
-    .filter((entry) => entry.isFile()
-      && /^xhs-[a-z0-9-]+\.jsonl$/u.test(entry.name)
-      && !entry.name.endsWith('.trajectory.jsonl'))
-    .map((entry) => readSession(join(sessionRoot, entry.name)))
-    .filter((session) => {
+  const sessionRoot = join(openClawRoot, 'agents', 'main', 'sessions');
+  const legacySessions = existsSync(sessionRoot)
+    ? readdirSync(sessionRoot, { withFileTypes: true })
+      .filter((entry) => entry.isFile()
+        && /^xhs-[a-z0-9-]+\.jsonl$/u.test(entry.name)
+        && !entry.name.endsWith('.trajectory.jsonl'))
+      .map((entry) => readSession(join(sessionRoot, entry.name)))
+    : [];
+  const agentDatabasePath = join(
+    openClawRoot,
+    'agents',
+    'main',
+    'agent',
+    'openclaw-agent.sqlite',
+  );
+  const sessions = [...new Map([
+    ...legacySessions,
+    ...readSqliteSessions(agentDatabasePath, { startMs, finishMs }),
+  ].map((session) => [session.sessionId, session])).values()];
+  const candidates = sessions.filter((session) => {
       const sessionMs = Date.parse(session.startedAt ?? '');
       return Number.isFinite(sessionMs)
         && (!Number.isFinite(startMs) || sessionMs >= startMs - 2_000)
@@ -481,9 +569,8 @@ export function collectOpenClawCodexTrace({
 
   const business = readBusinessRecords(databasePath, jobId);
   const finishedAt = business.rawJob.finished_at ?? capturedAt;
-  const sessionRoot = join(openClawRoot, 'agents', 'main', 'sessions');
   const sessions = sessionsForWindow({
-    sessionRoot,
+    openClawRoot,
     startedAt: business.rawJob.created_at,
     finishedAt,
     query: business.rawJob.query,

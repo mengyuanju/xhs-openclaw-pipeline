@@ -90,6 +90,114 @@ describe('OpenClaw to Codex trace export', () => {
     });
   });
 
+  it('reads the user prompt from migrated OpenClaw SQLite session storage', () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'xhs-trace-sqlite-'));
+    try {
+      const databasePath = join(fixtureRoot, 'queue.db');
+      const openClawRoot = join(fixtureRoot, '.openclaw');
+      const agentRoot = join(openClawRoot, 'agents', 'main', 'agent');
+      mkdirSync(agentRoot, { recursive: true });
+
+      const business = new DatabaseSync(databasePath);
+      business.exec(`
+        CREATE TABLE standalone_copy_generation_jobs (
+          id INTEGER PRIMARY KEY, query TEXT NOT NULL, status TEXT NOT NULL,
+          generation_id INTEGER, created_at TEXT NOT NULL, finished_at TEXT
+        ) STRICT;
+        CREATE TABLE standalone_copy_generations (
+          id INTEGER PRIMARY KEY, query_review_json TEXT,
+          query_review_ms INTEGER, research_ms INTEGER,
+          original_generation_ms INTEGER, original_review_ms INTEGER,
+          reviewed_generation_ms INTEGER, reviewed_review_ms INTEGER,
+          total_ms INTEGER
+        ) STRICT;
+      `);
+      business.prepare(`
+        INSERT INTO standalone_copy_generation_jobs
+          (id, query, status, generation_id, created_at, finished_at)
+        VALUES (?, ?, 'COMPLETED', ?, ?, ?)
+      `).run(8, '测试 Query', 10, '2026-09-03T02:00:00.000Z', '2026-09-03T02:01:00.000Z');
+      business.prepare(`
+        INSERT INTO standalone_copy_generations
+          (id, query_review_json, query_review_ms, total_ms)
+        VALUES (?, ?, ?, ?)
+      `).run(10, '{"decision":"PASS"}', 1_000, 1_000);
+      business.close();
+
+      const sessionId = 'xhs-22222222-2222-4222-8222-222222222222';
+      const sessionKey = `agent:main:explicit:${sessionId}`;
+      const agent = new DatabaseSync(join(agentRoot, 'openclaw-agent.sqlite'));
+      agent.exec(`
+        CREATE TABLE session_nodes (
+          session_key TEXT PRIMARY KEY, current_session_id TEXT NOT NULL,
+          created_at INTEGER, updated_at INTEGER, status TEXT
+        ) STRICT;
+        CREATE TABLE session_windows (
+          session_id TEXT PRIMARY KEY, session_key TEXT NOT NULL,
+          created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+          started_at INTEGER, ended_at INTEGER, model_provider TEXT, model TEXT
+        ) STRICT;
+        CREATE TABLE transcript_events (
+          session_id TEXT NOT NULL, seq INTEGER NOT NULL,
+          event_json TEXT NOT NULL, created_at INTEGER NOT NULL,
+          PRIMARY KEY (session_id, seq)
+        ) STRICT;
+        CREATE TABLE trajectory_runtime_events (
+          session_id TEXT NOT NULL, seq INTEGER NOT NULL, run_id TEXT,
+          event_json TEXT NOT NULL, created_at INTEGER NOT NULL,
+          PRIMARY KEY (session_id, seq)
+        ) STRICT;
+      `);
+      const startedAt = Date.parse('2026-09-03T02:00:01.000Z');
+      const endedAt = Date.parse('2026-09-03T02:00:02.000Z');
+      agent.prepare('INSERT INTO session_nodes VALUES (?, ?, ?, ?, ?)')
+        .run(sessionKey, sessionId, startedAt, endedAt, 'done');
+      agent.prepare('INSERT INTO session_windows VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(sessionId, sessionKey, startedAt, endedAt, startedAt, endedAt, 'openai', 'gpt-test');
+      const insertTranscript = agent.prepare('INSERT INTO transcript_events VALUES (?, ?, ?, ?)');
+      insertTranscript.run(sessionId, 0, JSON.stringify({
+        type: 'session', id: sessionId, timestamp: '2026-09-03T02:00:01.000Z',
+      }), startedAt);
+      insertTranscript.run(sessionId, 1, JSON.stringify({
+        type: 'message', timestamp: '2026-09-03T02:00:01.000Z',
+        message: { role: 'user', content: '需求 Prompt：测试 Query' },
+      }), startedAt);
+      insertTranscript.run(sessionId, 2, JSON.stringify({
+        type: 'message', timestamp: '2026-09-03T02:00:02.000Z',
+        message: {
+          role: 'assistant', content: '{"decision":"PASS"}',
+          provider: 'openai', model: 'gpt-test',
+          usage: { input: 4, output: 2, totalTokens: 6 },
+        },
+      }), endedAt);
+      const insertTrajectory = agent.prepare('INSERT INTO trajectory_runtime_events VALUES (?, ?, ?, ?, ?)');
+      insertTrajectory.run(sessionId, 0, 'run-sqlite', JSON.stringify({
+        type: 'session.started', ts: '2026-09-03T02:00:01.000Z', runId: 'run-sqlite',
+        provider: 'openai', modelId: 'gpt-test', data: { threadId: 'thread-sqlite' },
+      }), startedAt);
+      insertTrajectory.run(sessionId, 1, 'run-sqlite', JSON.stringify({
+        type: 'model.completed', ts: '2026-09-03T02:00:02.000Z', runId: 'run-sqlite',
+        data: { threadId: 'thread-sqlite', turnId: 'turn-sqlite', usage: { totalTokens: 6 } },
+      }), endedAt);
+      agent.close();
+
+      const report = collectOpenClawCodexTrace({
+        databasePath,
+        openClawRoot,
+        jobId: 8,
+        capturedAt: '2026-09-03T03:00:00.000Z',
+      });
+
+      assert.equal(report.chain.phases[0].sessionId, sessionId);
+      assert.equal(report.openclaw.sessions[0].userText, '需求 Prompt：测试 Query');
+      assert.equal(report.openclaw.sessions[0].threadId, 'thread-sqlite');
+      assert.equal(report.chain.usage.totalTokens, 6);
+      assert.ok(report.sources.some((source) => source.path.endsWith('openclaw-agent.sqlite')));
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   it('collects a redacted business to OpenClaw to Codex trace bundle', () => {
     const fixtureRoot = mkdtempSync(join(tmpdir(), 'xhs-trace-export-'));
     try {
