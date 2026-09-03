@@ -67,7 +67,7 @@ async function main() {
   const passwordHash = await hashAdminPassword(password);
   const sessionSecret = randomBytes(48).toString('base64url');
   const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  const environmentPath = resolve(projectRoot, '.env.local');
+  const environmentPath = resolve(projectRoot, '.env');
   let existing = '';
   try {
     existing = await readFile(environmentPath, 'utf8');

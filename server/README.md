@@ -9,13 +9,20 @@
 ```powershell
 cd server
 npm install
-Copy-Item .env.example .env
-# 编辑 .env 中的 DATABASE_URL
 npm run init
 npm start
 ```
 
-Linux/macOS 将 `Copy-Item` 换成 `cp .env.example .env`。`npm run init` 可重复执行，首次运行会建表并安装默认生产配置和提示词。
+启动前在当前目录创建 `.env`：
+
+```dotenv
+DATABASE_URL=postgresql://xhs_control:替换为数据库密码@127.0.0.1:5432/xhs_control
+CONTROL_PLANE_HOST=0.0.0.0
+CONTROL_PLANE_PORT=4310
+CONTROL_PLANE_STORAGE_ROOT=server-storage
+```
+
+`npm run init` 可重复执行，首次运行会建表并安装默认生产配置和提示词。
 
 默认监听 `127.0.0.1:4310`。需要局域网执行机访问时，把 `CONTROL_PLANE_HOST` 改为 `0.0.0.0`，并用防火墙仅允许可信内网网段。当前版本没有 TLS 和节点身份认证，不能直接暴露到公网。
 

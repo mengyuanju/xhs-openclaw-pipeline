@@ -46,11 +46,20 @@ psql -U postgres -c "CREATE DATABASE xhs_control OWNER xhs_control;"
 ```powershell
 cd server
 npm install
-Copy-Item .env.example .env
-# 编辑 .env 中的 DATABASE_URL、监听地址和存储目录
 npm run init
 npm start
 ```
+
+中心服务只使用 `server/.env`：
+
+```dotenv
+DATABASE_URL=postgresql://xhs_control:替换为数据库密码@127.0.0.1:5432/xhs_control
+CONTROL_PLANE_HOST=0.0.0.0
+CONTROL_PLANE_PORT=4310
+CONTROL_PLANE_STORAGE_ROOT=server-storage
+```
+
+`CONTROL_PLANE_STORAGE_ROOT` 是中心服务保存任务图片等文件的目录；相对路径从 `server/` 目录计算。
 
 默认端口是 `4310`。需要供局域网执行机访问时，将 `CONTROL_PLANE_HOST` 设为 `0.0.0.0`，并仅在专用/可信内网的防火墙中允许执行机网段访问该端口。当前第一版是内网 HTTP 且没有 Worker 身份认证，不得做公网端口映射。
 
@@ -73,12 +82,22 @@ openclaw onboard --install-daemon
 
 ```powershell
 npm install
-Copy-Item .env.executor.example .env.executor
-# 编辑 .env.executor；再向已有 .env.local 追加 CONTROL_PLANE_URL 和同一个 EXECUTOR_NODE_ID
-# 不要覆盖 .env.local 中现有的管理员认证和本机模型环境变量
 npm run auth:setup
 npm run dev:lan
 ```
+
+执行机只使用项目根目录 `.env`。`npm run auth:setup` 会在其中新增或更新管理员密码哈希和会话密钥，不会覆盖下面的其他配置：
+
+```dotenv
+CONTROL_PLANE_URL=http://中心服务器内网IP:4310
+EXECUTOR_NODE_ID=每台机器唯一且长期不变的ID
+EXECUTOR_NODE_NAME=便于识别的机器名称
+IMAGE_WORKER_ENABLED=true
+EXECUTOR_POLL_MS=5000
+EXECUTOR_WORK_ROOT=data/executor-work
+```
+
+不承担生图任务的机器将 `IMAGE_WORKER_ENABLED` 设为 `false`。OpenClaw 模型、代理或 API Key 等本机配置也统一写在这份文件中。
 
 另开一个终端启动执行代理。纯文案机器不会启动图片轮询：
 
@@ -92,7 +111,7 @@ npm run executor -- --disable-image-worker
 npm run executor -- --enable-image-worker
 ```
 
-也可在 `.env.executor` 固定 `IMAGE_WORKER_ENABLED=true|false`。命令行开关优先级更高。执行代理默认共用一个执行槽：先处理本机文案队列，本机文案为空时才领取全局图片任务。停止执行代理不会影响远端已保存数据；若某次执行长时间没有更新，在“远端作业中心”中人工选择复用原快照或使用最新配置重新执行。
+也可在根目录 `.env` 固定 `IMAGE_WORKER_ENABLED=true|false`。命令行开关优先级更高。执行代理默认共用一个执行槽：先处理本机文案队列，本机文案为空时才领取全局图片任务。停止执行代理不会影响远端已保存数据；若某次执行长时间没有更新，在“远端作业中心”中人工选择复用原快照或使用最新配置重新执行。
 
 分布式模式下：
 
@@ -113,13 +132,13 @@ npm run control-plane:migrate-local -- --apply
 `--apply` 不是幂等导入，重复执行会追加重复版本。迁移验收完成后再启用分布式模式，避免新旧数据双写。
 
 OpenClaw 进程使用的 Node 还必须满足已安装 OpenClaw 的 `engines.node` 约束；
-如果后台使用的 Node 不兼容，可在 `.env.local` 单独指定兼容运行时，不会替换系统 Node：
+如果后台使用的 Node 不兼容，可在根目录 `.env` 单独指定兼容运行时，不会替换系统 Node：
 
 ```dotenv
 OPENCLAW_NODE_PATH=C:\Program Files\nodejs\node.exe
 ```
 
-文案默认使用 `openai/gpt-5.6-sol`，文本请求固定使用 `thinking=high`；如需固定其他已授权模型，可在 `.env.local`
+文案默认使用 `openai/gpt-5.6-sol`，文本请求固定使用 `thinking=high`；如需固定其他已授权模型，可在根目录 `.env`
 设置 `XHS_TEXT_MODEL=provider/model`。需求检测默认沿用该值，也可用 `XHS_SCREENING_MODEL` 单独指定成本更低的模型。
 两道阶段审核可用 `XHS_REVIEW_MODEL=provider/model` 单独指定；未设置时沿用 `XHS_TEXT_MODEL`。
 逐页 OCR/图文验收可用 `XHS_VISION_MODEL=provider/model` 单独指定；最终 0–3 分终审可用
@@ -163,7 +182,7 @@ npm run build
 npm run start:lan
 ```
 
-同一私有局域网的设备打开 `http://<这台电脑的局域网IP>:3000`，使用刚设置的管理员密码登录。默认允许 loopback、`10/8`、`172.16/12`、`192.168/16`、IPv4 link-local 和 IPv6 ULA/link-local；如需使用电脑主机名，在 `.env.local` 添加 `XHS_ALLOWED_HOSTS=主机名` 后重启。
+同一私有局域网的设备打开 `http://<这台电脑的局域网IP>:3000`，使用刚设置的管理员密码登录。默认允许 loopback、`10/8`、`172.16/12`、`192.168/16`、IPv4 link-local 和 IPv6 ULA/link-local；如需使用电脑主机名，在根目录 `.env` 添加 `XHS_ALLOWED_HOSTS=主机名` 后重启。
 
 `start:lan` 不等于公网部署。它只适用于可信家庭/办公局域网；不要在来宾 Wi-Fi、端口映射或公网服务器上直接使用 HTTP。跨网段或公网部署必须增加 HTTPS 反向代理、防火墙白名单和更完整的身份系统。
 

@@ -150,7 +150,7 @@ function redact(value) {
 function actionableImageFailureDetail(result) {
   const detail = redact(failureDetail(result));
   if (/not supported when using Codex with a ChatGPT account/iu.test(detail)) {
-    return 'ChatGPT/Codex OAuth 不能用于此图片生成接口。请在 .env.local 配置 OPENAI_API_KEY，或配置其他 OpenClaw 图片提供方凭据。';
+    return 'ChatGPT/Codex OAuth 不能用于此图片生成接口。请在 .env 配置 OPENAI_API_KEY，或配置其他 OpenClaw 图片提供方凭据。';
   }
   return detail;
 }

@@ -5,10 +5,7 @@ outputs/
 server/server-storage/
 .codex_artifacts/
 .env
-.env.local
 .env.*.local
-server/.env
-.env.executor
 *.pem
 *.key
 npm-debug.log*

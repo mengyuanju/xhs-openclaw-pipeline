@@ -24,7 +24,7 @@
 
 - 默认 `npm run dev` / `npm run start` 仍只监听 `127.0.0.1`；显式使用 `dev:lan` / `start:lan` 才监听 `0.0.0.0`。
 - 允许访问的 Host 为 loopback、RFC1918 IPv4、IPv4 link-local、IPv6 loopback/ULA/link-local，以及管理员通过 `XHS_ALLOWED_HOSTS` 显式添加的主机名；公网 IP 默认拒绝。
-- 系统管理员密码只以 scrypt 哈希保存在被 Git 忽略的 `.env.local`；质检人员密码以 scrypt 哈希存入 SQLite；会话密钥至少 32 字节随机值，也只保存在环境变量。
+- 系统管理员密码只以 scrypt 哈希保存在被 Git 忽略的根目录 `.env`；质检人员密码以 scrypt 哈希存入 SQLite；会话密钥至少 32 字节随机值，也只保存在环境变量。
 - 登录成功后签发 8 小时 HMAC-SHA256 会话，Cookie 使用 `HttpOnly`、`SameSite=Strict`、`Path=/`；HTTPS 时额外使用 `Secure`。
 - 登录接口统一返回通用失败消息，不区分“未配置”和“密码错误”；15 分钟内最多 5 次失败，成功登录后清除失败计数。
 - Next.js Proxy 只负责页面和 API 的快速预检；所有既有 `/api/*` Route Handler 仍在统一 `apiHandler` 边界再次验证会话。
