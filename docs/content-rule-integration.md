@@ -7,9 +7,9 @@
 ## 运行分层
 
 - `prompts/post.md`：不可信 Query 包装和 JSON 输出契约。
-- `prompts/text-system.md`：准入后的文本、来源、图文规划和安全规则。
-- `prompts/image-system.md`：图片生成规则。
-- `prompts/image-edit-system.md`：图片编辑规则。
+- `server/prompts/text-system.md`：准入后的文本、来源、图文规划和安全规则。
+- `server/prompts/image-system.md`：图片生成规则。
+- `server/prompts/image-edit-system.md`：图片编辑规则。
 - `src/post-contract.mjs`：零 emoji、标题长度、类型和字段契约。
 - `src/qc.mjs`：可机械验证的质量门；语义、构图、版权和站内重复仍需人工终审。
 

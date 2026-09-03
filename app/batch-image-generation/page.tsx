@@ -1,6 +1,9 @@
 import { BatchImageGenerationWorkbench } from './batch-image-generation-workbench';
+import { redirect } from 'next/navigation';
+import { controlPlaneUrl } from '../../src/control-plane/next-runtime.mjs';
 
 export default function BatchImageGenerationPage() {
+  if (controlPlaneUrl()) redirect('/jobs');
   return <div className="stack">
     <header className="page-header">
       <div>

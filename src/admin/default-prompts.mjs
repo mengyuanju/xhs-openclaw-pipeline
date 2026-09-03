@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 export function promptFilePath(name) {
-  return resolve(process.cwd(), 'prompts', name);
+  return resolve(process.cwd(), 'server', 'prompts', name);
 }
 
 function promptFile(name) {

@@ -1,6 +1,9 @@
 import { BatchCopyGenerationWorkbench } from './batch-copy-generation-workbench';
+import { redirect } from 'next/navigation';
+import { controlPlaneUrl } from '../../src/control-plane/next-runtime.mjs';
 
 export default function BatchCopyGenerationPage() {
+  if (controlPlaneUrl()) redirect('/copy-generation');
   return <div className="stack">
     <header className="page-header">
       <div>

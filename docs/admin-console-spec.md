@@ -63,7 +63,7 @@ app/                  Next.js 页面、组件与 API Route Handlers
 src/admin/            管理后台领域逻辑、数据库、Excel 与素材服务
 src/                  既有生产管线、OpenClaw 和质检逻辑
 tests/                Node 单元与集成测试
-prompts/              版本库中的默认提示词种子
+server/prompts/       版本库中的默认提示词种子
 data/queue.sqlite     本地数据库（忽略提交）
 data/uploads/         原始 Excel 和参考图（忽略提交）
 output/<task-id>/     生成结果与修订图片（忽略提交）

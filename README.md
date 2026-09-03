@@ -22,6 +22,96 @@
 - OpenClaw 2026.8.2
 - 真实模式需要 OpenClaw 中可用的文本与图片模型授权
 
+## 分布式中心服务（新架构）
+
+配置 `CONTROL_PLANE_URL` 后，系统进入分布式模式：远端 PostgreSQL 和远端文件目录是任务、执行记录、文案版本、图片结果、审核、提示词、知识库和生产配置的唯一真源。本机 Web 只作为操作界面，本机执行代理负责 OpenClaw 模型调用和短期临时文件。
+
+文案任务固定由创建它的执行机串行处理；人工审核指定文案版本后，任务直接进入全局生图队列。只有显式启用图片能力且当前空闲的执行机才能原子领取一条生图任务。每次执行都有独立 `executionId`；人工重试会作废旧代次，旧进程之后提交的结果会被中心服务拒绝，不能覆盖新结果。
+
+完整状态与存储设计见 `docs/distributed-control-plane.md`。
+
+### 远端中心机器安装
+
+中心机器不安装 OpenClaw，也不保存模型密钥。它只需要项目要求的 Node.js 24.19.x、PostgreSQL、当前项目代码和一个服务端图片目录。PostgreSQL 只允许中心服务本机访问，执行机不得直连数据库。
+
+从 [PostgreSQL 官方下载页](https://www.postgresql.org/download/) 安装后，创建独立数据库和账号（密码请自行替换；如含特殊字符，写入连接 URL 时需要 URL 编码）：
+
+```powershell
+psql -U postgres -c "CREATE USER xhs_control WITH PASSWORD 'replace-this-password';"
+psql -U postgres -c "CREATE DATABASE xhs_control OWNER xhs_control;"
+```
+
+远端服务已经从执行机项目中拆到独立的 `server/` 包，接口使用 Koa。中心机器只安装该目录的依赖；`npm run init` 可重复执行，首次会安装默认生产配置和三类默认提示词：
+
+```powershell
+cd server
+npm install
+Copy-Item .env.example .env
+# 编辑 .env 中的 DATABASE_URL、监听地址和存储目录
+npm run init
+npm start
+```
+
+默认端口是 `4310`。需要供局域网执行机访问时，将 `CONTROL_PLANE_HOST` 设为 `0.0.0.0`，并仅在专用/可信内网的防火墙中允许执行机网段访问该端口。当前第一版是内网 HTTP 且没有 Worker 身份认证，不得做公网端口映射。
+
+### 每台执行机安装
+
+执行机需要 Node.js、项目依赖、OpenClaw 及本机模型授权。Windows 可使用 [OpenClaw 官方安装器](https://docs.openclaw.ai/install)：
+
+```powershell
+iwr -useb https://openclaw.ai/install.ps1 | iex
+```
+
+已经自行管理 Node.js 时也可以使用 npm，并完成本机授权：
+
+```powershell
+npm install -g openclaw@latest --allow-scripts=openclaw
+openclaw onboard --install-daemon
+```
+
+拉取项目后配置执行代理和本机 Web。`EXECUTOR_NODE_ID` 必须每台机器唯一且重启后保持不变：
+
+```powershell
+npm install
+Copy-Item .env.executor.example .env.executor
+# 编辑 .env.executor；再向已有 .env.local 追加 CONTROL_PLANE_URL 和同一个 EXECUTOR_NODE_ID
+# 不要覆盖 .env.local 中现有的管理员认证和本机模型环境变量
+npm run auth:setup
+npm run dev:lan
+```
+
+另开一个终端启动执行代理。纯文案机器不会启动图片轮询：
+
+```powershell
+npm run executor -- --disable-image-worker
+```
+
+允许领取全局生图任务的机器必须显式开启：
+
+```powershell
+npm run executor -- --enable-image-worker
+```
+
+也可在 `.env.executor` 固定 `IMAGE_WORKER_ENABLED=true|false`。命令行开关优先级更高。执行代理默认共用一个执行槽：先处理本机文案队列，本机文案为空时才领取全局图片任务。停止执行代理不会影响远端已保存数据；若某次执行长时间没有更新，在“远端作业中心”中人工选择复用原快照或使用最新配置重新执行。
+
+分布式模式下：
+
+- `/copy-generation` 创建单条或批量 Query，不在页面请求中同步跑模型。
+- `/jobs` 展示所有节点的任务、阶段、开始时间、最后进度、人工文案审核、图文审核和重试。
+- `/prompts`、`/knowledge`、`/settings` 读写远端中心数据。
+- `/image-generation` 和 `/batch-image-generation` 不再直接生图，生图统一由启用图片能力的执行代理领取。
+
+如果没有配置 `CONTROL_PLANE_URL`，旧的 SQLite 本地模式仍暂时保留，便于迁移和紧急回退；不要同时把两套模式当作业务真源写入。
+
+已有本地 SQLite 中的提示词、文案知识、视觉知识和生产配置可做一次性追加迁移。先运行只读预览，再明确执行；旧任务与历史图片不会由第一版脚本迁移：
+
+```powershell
+npm run control-plane:migrate-local
+npm run control-plane:migrate-local -- --apply
+```
+
+`--apply` 不是幂等导入，重复执行会追加重复版本。迁移验收完成后再启用分布式模式，避免新旧数据双写。
+
 OpenClaw 进程使用的 Node 还必须满足已安装 OpenClaw 的 `engines.node` 约束；
 如果后台使用的 Node 不兼容，可在 `.env.local` 单独指定兼容运行时，不会替换系统 Node：
 
@@ -137,7 +227,7 @@ Live 且需要生成新文案的任务会在文本模型之前执行 OpenClaw `i
 
 ## 溯源规则提示词
 
-三类运行提示词分别位于 `prompts/text-system.md`、`prompts/image-system.md` 和 `prompts/image-edit-system.md`。规则编号和原始来源映射保留在工作区上级文档 `图文生成统一系统提示词_原始文档溯源版.md`；运行提示词只包含规则正文，不携带 `[Rxxx]` 标签。
+三类运行提示词分别位于 `server/prompts/text-system.md`、`server/prompts/image-system.md` 和 `server/prompts/image-edit-system.md`。它们随中心服务独立部署，同时仍作为旧本地模式的初始种子。规则编号和原始来源映射保留在工作区上级文档 `图文生成统一系统提示词_原始文档溯源版.md`；运行提示词只包含规则正文，不携带 `[Rxxx]` 标签。
 
 全新数据库会自动使用这些提示词。已有数据库需要显式发布新版本：
 

@@ -1,6 +1,9 @@
 import { ImageGenerationWorkbench } from './image-generation-workbench';
+import { redirect } from 'next/navigation';
+import { controlPlaneUrl } from '../../src/control-plane/next-runtime.mjs';
 
 export default function ImageGenerationPage() {
+  if (controlPlaneUrl()) redirect('/jobs');
   return <div className="stack">
     <div className="page-heading">
       <div>

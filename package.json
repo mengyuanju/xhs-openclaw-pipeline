@@ -20,10 +20,12 @@
     "auth:setup": "node scripts/setup-admin.mjs",
     "prompts:install-rules": "node scripts/install-rule-prompts.mjs",
     "storage:optimize": "node scripts/optimize-storage.mjs",
+    "control-plane:migrate-local": "node --env-file-if-exists=.env.executor scripts/migrate-local-global-data.mjs",
+    "executor": "node --env-file-if-exists=.env.executor src/executor/cli.mjs",
     "worker": "node src/cli.mjs worker",
     "worker:drain": "node src/cli.mjs drain",
     "smoke": "node scripts/smoke.mjs",
-    "test": "node --test"
+    "test": "node --test \"tests/*.test.mjs\""
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.23",

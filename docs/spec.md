@@ -36,7 +36,7 @@
 ```text
 src/                 应用源码
 tests/               单元与集成测试
-prompts/             版本化提示词
+server/prompts/      版本化提示词
 tasks/               实施计划和任务清单
 data/queue.sqlite    本地队列（忽略提交）
 output/<task-id>/    文案、图片、质检与执行清单（忽略提交）

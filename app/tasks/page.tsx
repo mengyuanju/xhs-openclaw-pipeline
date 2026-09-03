@@ -6,6 +6,7 @@ import {
   Search,
 } from 'lucide-react';
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
 
 import { Card, CardContent } from '@/components/ui/card';
 import {
@@ -22,12 +23,14 @@ import { TaskTiming } from '../components/task-timing';
 import { TaskBatchExportForm } from './task-batch-export-form';
 import { withAdminStore } from '../../src/admin/runtime.mjs';
 import { getTaskExportAvailability } from '../../src/admin/task-export.mjs';
+import { controlPlaneUrl } from '../../src/control-plane/next-runtime.mjs';
 
 export const dynamic = 'force-dynamic';
 
 const ALL_FILTERS = '__all__';
 
 export default async function TasksPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  if (controlPlaneUrl()) redirect('/jobs');
   const params = await searchParams;
   const value = (key: string) => {
     const current = typeof params[key] === 'string' ? params[key] as string : '';

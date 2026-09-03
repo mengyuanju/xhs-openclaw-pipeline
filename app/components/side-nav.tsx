@@ -17,6 +17,7 @@ import {
   Settings2,
   Users,
   Waypoints,
+  Workflow,
   X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -31,6 +32,7 @@ const navigationGroups: Array<{ label: string; items: NavigationItem[] }> = [
   {
     label: '内容生产',
     items: [
+      { href: '/jobs', label: '远端作业中心', icon: Workflow },
       { href: '/imports', label: '选题导入', icon: FileUp },
       { href: '/copy-generation', label: '单独生成文案', icon: FilePenLine },
       { href: '/batch-copy-generation', label: '批量生成文案', icon: Layers3 },

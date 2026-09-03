@@ -1,0 +1,21 @@
+{
+  "name": "xhs-openclaw-control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Remote task and global-data control plane for xhs-openclaw-pipeline.",
+  "engines": {
+    "node": ">=24.19.0 <25"
+  },
+  "scripts": {
+    "init": "node --env-file-if-exists=.env src/cli.mjs init",
+    "start": "node --env-file-if-exists=.env src/cli.mjs serve",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@koa/bodyparser": "^6.1.0",
+    "@koa/router": "^15.7.0",
+    "koa": "^3.2.1",
+    "pg": "^8.23.0"
+  }
+}

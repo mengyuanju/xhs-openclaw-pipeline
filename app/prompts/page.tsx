@@ -1,9 +1,15 @@
 import { withAdminStore } from '../../src/admin/runtime.mjs';
 import { PromptEditor } from './prompt-editor';
+import { CentralDataWorkbench } from '../components/central-data-workbench';
+import { controlPlaneUrl } from '../../src/control-plane/next-runtime.mjs';
 
 export const dynamic = 'force-dynamic';
 
 export default function PromptsPage() {
+  if (controlPlaneUrl()) return <>
+    <header className="page-header"><div><span className="eyebrow">Central prompt versions</span><h1 className="sr-only">提示词</h1><p className="subtle">提示词由远端中心统一保存和发布；运行中的任务使用已冻结版本。</p></div></header>
+    <CentralDataWorkbench resource="prompts" />
+  </>;
   const templates = withAdminStore((store: any) => store.listPromptTemplates()) as any[];
   return <>
     <header className="page-header"><div><span className="eyebrow">Versioned instructions</span><h1 className="sr-only">提示词</h1><p className="subtle">新任务在入队时固定提示词内容和哈希；发布新版本不会改变已经排队的任务。</p></div></header>

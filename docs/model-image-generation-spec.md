@@ -28,8 +28,8 @@
 ## Project Structure
 
 - `prompts/post.md`：要求文本模型规划全部 3–5 张图片。
-- `prompts/text-system.md`：图文计划的业务规则。
-- `prompts/image-system.md`：所有模型图片共同遵守的视觉规则。
+- `server/prompts/text-system.md`：图文计划的业务规则。
+- `server/prompts/image-system.md`：所有模型图片共同遵守的视觉规则。
 - `src/post-contract.mjs`：校验图片计划数量、顺序、字段和逐图提示词。
 - `src/pipeline.mjs`：根据生成后的完整文本组合每张图片提示词。
 - `src/images.mjs`：按顺序调用图像模型并规范化输出。
