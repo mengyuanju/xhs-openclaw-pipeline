@@ -2,14 +2,14 @@
 
 ## Objective
 
-新增一个与生产任务隔离的“单独生成图片”试验模块，用来验证现有主流程中从已完成文案到图片交付的中间链路。操作者输入上一步已经产出的 Query、标题、正文、标签和图片策划，选择 Mock 或 Live 模式后，模块独立执行视觉规划、逐页提示词组装、图片生成、OCR 对齐和质量检查，并在页面中预览结果。
+新增一个与生产任务隔离的“单独生成图片”试验模块，用来验证现有主流程中从已完成文案到图片交付的中间链路。操作者输入上一步已经产出的 Query、标题、正文、标签和图片策划，确认真实模型费用后，模块独立执行视觉规划、逐页提示词组装、图片生成、OCR 对齐和质量检查，并在页面中预览结果。
 
 第一阶段只验证图片链路，不创建生产任务、不修改原文案、不进入正式审核和导出流程，也不改变 `processNext` 的现有行为。试验稳定后，再把已经验证的编排服务抽成主流程与试验模块共同调用的共享模块。
 
 ## Current production flow
 
 1. 导入 Query，完成需求筛选并创建队列任务，同时锁定提示词和生产配置。
-2. 执行 Query 审核；Live 模式按需要进行联网研究。
+2. 执行 Query 审核；按需要进行联网研究。
 3. 生成或读取人工修订后的标题、正文、标签和 3～5 页 `imagePlan`。
 4. 执行正文审核；不通过时停止，不进入图片阶段。
 5. 根据最终文案生成逐页 `visualPlan`，确定每页证据、主体、版式和精简可见文字。
@@ -25,8 +25,7 @@
 
 - 新页面 `/image-generation`，名称为“单独生成图片”。
 - 输入字段：Query、标题、正文、标签和 3～5 页图片策划 JSON。
-- Mock 模式：不调用外部模型，用确定性图片验证输入、分页、文件、尺寸和预览链路。
-- Live 模式：必须二次确认费用，使用当前已发布的图片系统提示词和当前生产模型配置。
+- 只允许真实图片生成：必须二次确认费用，使用当前已发布的图片系统提示词和当前生产模型配置。
 - 复用现有 `visual-plan`、逐页提示词、视觉知识、`renderDeliveryImages`、图片对齐和 QC 规则。
 - 每次运行写入独立试验目录和有界结果清单，返回图片预览地址、逐页状态和 QC 摘要。
 - 同一进程只允许一个试验运行，避免重复费用和本机资源争用。
@@ -59,15 +58,15 @@ type StandaloneImageGenerationInput = {
     bullets: string[];
     prompt: string;
   }>;
-  mode: 'MOCK' | 'LIVE';
-  confirmation?: 'LIVE_IMAGE_COST_ACCEPTED';
+  mode: 'LIVE';
+  confirmation: 'LIVE_IMAGE_COST_ACCEPTED';
 };
 ```
 
 约束：
 
 - 请求对象严格校验，拒绝未知字段；Query、文案和图片策划沿用当前生产契约的长度与数量限制。
-- `LIVE` 必须携带费用确认；`MOCK` 不接受也不需要确认。
+- 请求只接受 `mode: 'LIVE'`，并且必须携带费用确认。
 - 只接受 3～5 页，首项必须为 `hero`。
 - 输入内容始终作为不可信数据处理，不可覆盖系统提示词。
 
@@ -76,7 +75,7 @@ type StandaloneImageGenerationInput = {
 ```ts
 type StandaloneImageGenerationResult = {
   runId: string;
-  mode: 'MOCK' | 'LIVE';
+  mode: 'LIVE';
   status: 'COMPLETED' | 'BLOCKED';
   imageCount: number;
   images: Array<{
@@ -96,7 +95,13 @@ type StandaloneImageGenerationResult = {
 };
 ```
 
-错误统一沿用现有 API 格式，至少区分 `VALIDATION_ERROR`、`IMAGE_GENERATION_IN_PROGRESS`、`LIVE_CONFIRMATION_REQUIRED`、`IMAGE_ALIGNMENT_FAILED` 和 `IMAGE_GENERATION_FAILED`。
+错误统一沿用现有 API 格式，至少区分 `VALIDATION_ERROR`、`IMAGE_GENERATION_IN_PROGRESS`、`LIVE_CONFIRMATION_REQUIRED`、`IMAGE_GENERATION_CANCELLED`、`IMAGE_ALIGNMENT_FAILED` 和 `IMAGE_GENERATION_FAILED`。
+
+### `GET | DELETE /api/image-generations/{runId}`
+
+- `GET` 返回持久化进度，状态包含 `RUNNING`、`COMPLETED`、`CANCELLED` 和 `FAILED`。
+- `DELETE` 幂等取消仍在运行的记录。活动请求会向 OpenClaw 子进程传递中止信号；服务重启后遗留的 `RUNNING` 记录也会直接转为 `CANCELLED`。
+- 已有可恢复图片时，取消记录仍可走“重新验收并继续”；没有图片的取消记录不会伪装为可恢复任务。
 
 ### `GET /api/image-generations/{runId}/images/{file}`
 
@@ -135,7 +140,7 @@ standalone image service
 - Node.js 24、Next.js 16、React 19、TypeScript 7。
 - Zod 负责 API 边界校验。
 - 现有 OpenClaw 客户端负责文本视觉规划、图片生成和视觉验收。
-- Sharp 负责 PNG 解码、尺寸规范化和 Mock 输出。
+- Sharp 负责 PNG 解码和尺寸规范化。
 - Node test runner 负责单元与集成测试。
 
 ## Commands
@@ -176,9 +181,9 @@ export async function generateStandaloneImages({
 
 - 先写失败测试，再实现每个行为。
 - 小型单元测试覆盖输入规范化、Live 确认、路径逃逸和响应映射。
-- 中型集成测试使用 Mock 模式真实生成 3 张 PNG，验证尺寸为 `1086×1448`、文件互不重复且不写入生产任务表。
+- 中型集成测试使用 Fake 模型客户端生成 3 张 PNG，不消耗模型额度，并验证尺寸为 `1086×1448`、文件互不重复且不写入生产任务表。
 - API 契约测试验证严格请求体、409 并发保护和有界错误响应。
-- UI 契约测试验证表单标签、Mock/Live 状态、费用确认、加载、错误和结果预览。
+- UI 契约测试验证表单标签、仅真实生成、费用确认、加载、错误和结果预览。
 - 页面完成后在隔离浏览器中验证桌面与移动布局、控制台、网络请求、键盘操作和可访问名称。
 
 ## Boundaries
@@ -186,7 +191,7 @@ export async function generateStandaloneImages({
 ### Always
 
 - 使用当前发布的 `IMAGE_SYSTEM` 和当前生产设置，不硬编码另一套提示词。
-- Mock 先通过后才运行 Live；Live 必须显式确认费用。
+- 真实图片生成必须显式确认费用；测试只使用 Fake 客户端，不消耗模型额度。
 - 所有输入、模型输出、文件名和路径都在边界校验。
 - 每个增量通过定向测试后再提交；最终运行全量测试、类型检查和构建。
 
@@ -206,8 +211,7 @@ export async function generateStandaloneImages({
 
 ## Success criteria
 
-- 操作者能在独立页面提交一份合法的上一步文案输出并选择 Mock 或 Live。
-- Mock 运行生成 3～5 张不同的 `1086×1448` PNG，页面可预览且主任务数量、状态和审核记录保持不变。
+- 操作者能在独立页面提交一份合法的上一步文案输出并确认真实模型费用。
 - Live 未确认时零模型调用；确认后按当前图片提示词执行视觉规划、逐页生成和 OCR 对齐。
 - 第一张先完成，后续页面继承风格参考且最多并发 2 张。
 - 人像页右下角“AI生成”进入生成提示和 OCR 白名单。
@@ -218,7 +222,7 @@ export async function generateStandaloneImages({
 
 只有以下条件全部满足后，才进入“并入主系统”阶段：
 
-1. 至少完成 1 次 Mock 全链路和 1 次人工确认的 Live 全链路。
+1. 至少完成 1 次人工确认的真实图片生成全链路。
 2. Live 每页 OCR 对齐通过，整套 QC 没有阻断项。
 3. 输出尺寸、页序、数据和文案对应关系人工抽查通过。
 4. 试验模块没有修改主任务、审核、导出或历史快照。
@@ -227,4 +231,4 @@ export async function generateStandaloneImages({
 ## Open questions
 
 - 第一版输入采用“手动粘贴上一步的 Query、文案和图片策划”，还是直接读取“单独生成文案”的历史记录？推荐先手动粘贴，避免试验模块依赖仍在开发中的文案历史功能。
-- 试验结果是否需要跨服务重启保留历史？推荐第一版只保留隔离文件和当前响应，不新增数据库。
+- 运行历史采用隔离文件持久化，并可在单条和批量图片页面读取；无需新增数据库表。

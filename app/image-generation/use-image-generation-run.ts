@@ -12,7 +12,7 @@ const RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]
 
 export type ImageGenerationResult = {
   runId: string;
-  mode: 'MOCK' | 'LIVE';
+  mode: 'LIVE';
   status: 'COMPLETED' | 'BLOCKED';
   imageCount: number;
   images: Array<{
@@ -69,9 +69,9 @@ export type ImageGenerationResult = {
 
 export type ImageGenerationProgressValue = {
   runId: string;
-  mode: 'MOCK' | 'LIVE';
-  status: 'RUNNING' | 'COMPLETED' | 'FAILED';
-  stage: 'PREPARING' | 'PLANNING' | 'GENERATING' | 'ALIGNING' | 'QUALITY_CHECK' | 'FINALIZING' | 'COMPLETED' | 'FAILED';
+  mode: 'LIVE';
+  status: 'RUNNING' | 'COMPLETED' | 'CANCELLED' | 'FAILED';
+  stage: 'PREPARING' | 'PLANNING' | 'GENERATING' | 'ALIGNING' | 'QUALITY_CHECK' | 'FINALIZING' | 'COMPLETED' | 'CANCELLED' | 'FAILED';
   progressPercent: number;
   message: string;
   completedImages: number;
@@ -98,19 +98,18 @@ export type ImageGenerationRequest = {
   query: string;
   copy: { title: string; body: string; tags: string[] };
   imagePlan: unknown[];
-  mode: 'MOCK' | 'LIVE';
-  confirmation?: 'LIVE_IMAGE_COST_ACCEPTED';
+  mode: 'LIVE';
+  confirmation: 'LIVE_IMAGE_COST_ACCEPTED';
 };
 
-function completionMessage(mode: 'MOCK' | 'LIVE') {
-  return mode === 'MOCK'
-    ? 'Mock 图片链路验证完成；占位图不能用于发布。'
-    : '真实图片生成与质量检查完成，请继续人工抽查。';
+function completionMessage() {
+  return '真实图片生成与质量检查完成，请继续人工抽查。';
 }
 
 export function useImageGenerationRun() {
   const [runId, setRunId] = useState<string | null>(null);
   const [openingRunId, setOpeningRunId] = useState<string | null>(null);
+  const [cancellingRunId, setCancellingRunId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<ImageGenerationProgressValue | null>(null);
   const [result, setResult] = useState<ImageGenerationResult | null>(null);
@@ -135,7 +134,11 @@ export function useImageGenerationRun() {
     if (next.result) setResult(next.result);
     if (next.status === 'COMPLETED') {
       setBusy(false);
-      setMessage(completionMessage(next.mode));
+      setMessage(completionMessage());
+      setMessageIsError(false);
+    } else if (next.status === 'CANCELLED') {
+      setBusy(false);
+      setMessage('图片生成已取消。');
       setMessageIsError(false);
     } else if (next.status === 'FAILED') {
       setBusy(false);
@@ -225,7 +228,7 @@ export function useImageGenerationRun() {
         body: JSON.stringify({ ...request, runId: nextRunId }),
       });
       setResult(generated);
-      setMessage(completionMessage(request.mode));
+      setMessage(completionMessage());
       await refreshProgress(nextRunId).catch(() => {});
       return generated;
     } catch (error) {
@@ -270,7 +273,7 @@ export function useImageGenerationRun() {
         },
       );
       setResult(generated);
-      setMessage(completionMessage('LIVE'));
+      setMessage(completionMessage());
       await refreshProgress(nextRunId).catch(() => {});
       return generated;
     } catch (error) {
@@ -286,16 +289,46 @@ export function useImageGenerationRun() {
     }
   }
 
+  async function cancelRun(targetRunId: string) {
+    if (!RUN_ID.test(targetRunId)) {
+      showMessage('待取消的图片运行 ID 无效', true);
+      return null;
+    }
+    setCancellingRunId(targetRunId);
+    try {
+      const cancelled = await apiRequest<ImageGenerationProgressValue>(
+        `/api/image-generations/${targetRunId}`,
+        { method: 'DELETE' },
+      );
+      if (activeRunId.current === targetRunId) {
+        setProgress(cancelled);
+        setBusy(false);
+        setResult(null);
+      }
+      setMessage(cancelled.status === 'CANCELLED' ? '图片生成已取消。' : cancelled.message);
+      setMessageIsError(false);
+      return cancelled;
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '取消图片生成失败');
+      setMessageIsError(true);
+      return null;
+    } finally {
+      setCancellingRunId(null);
+    }
+  }
+
   return {
     runId,
     busy,
     openingRunId,
+    cancellingRunId,
     progress,
     result,
     message,
     messageIsError,
     showMessage,
     openRun,
+    cancelRun,
     retryRun,
     startRun,
   };

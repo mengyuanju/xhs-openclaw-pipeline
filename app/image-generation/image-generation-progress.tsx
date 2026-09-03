@@ -1,4 +1,4 @@
-import { CircleCheck, Clock3, Images, LoaderCircle } from 'lucide-react';
+import { Ban, CircleCheck, Clock3, Images, LoaderCircle } from 'lucide-react';
 
 import { formatDuration } from '../components/time-format';
 import type { ImageGenerationProgressValue } from './use-image-generation-run';
@@ -11,6 +11,7 @@ const STAGE_LABELS: Record<ImageGenerationProgressValue['stage'], string> = {
   QUALITY_CHECK: '整套质量检查',
   FINALIZING: '保存结果',
   COMPLETED: '已完成',
+  CANCELLED: '已取消',
   FAILED: '运行失败',
 };
 
@@ -23,10 +24,14 @@ function remainingLabel(progress: ImageGenerationProgressValue) {
 export function ImageGenerationProgress({
   progress,
   disabled = false,
+  cancelling = false,
+  onCancel,
   onResume,
 }: {
   progress: ImageGenerationProgressValue;
   disabled?: boolean;
+  cancelling?: boolean;
+  onCancel?: () => void;
   onResume?: () => void;
 }) {
   return <section className="panel standalone-image-progress" aria-labelledby="image-progress-heading" aria-live="polite">
@@ -35,9 +40,11 @@ export function ImageGenerationProgress({
         <span className="section-kicker">Live progress</span>
         <h2 id="image-progress-heading">图片生成进度</h2>
       </div>
-      <span className={progress.status === 'FAILED' ? 'pill pill-rejected' : 'pill'}>
+      <span className={['FAILED', 'CANCELLED'].includes(progress.status) ? 'pill pill-rejected' : 'pill'}>
         {progress.status === 'COMPLETED'
           ? <><CircleCheck aria-hidden="true" size={14} />已完成</>
+          : progress.status === 'CANCELLED'
+            ? <><Ban aria-hidden="true" size={14} />已取消</>
           : progress.status === 'FAILED'
             ? '运行失败'
             : <><LoaderCircle aria-hidden="true" className="animate-spin" size={14} />{progress.progressPercent}%</>}
@@ -59,6 +66,14 @@ export function ImageGenerationProgress({
       <div><dt><Images aria-hidden="true" size={13} />已生成</dt><dd>{progress.generatedImages}/{progress.totalImages} 页</dd></div>
       <div><dt><CircleCheck aria-hidden="true" size={13} />已验收</dt><dd>{progress.validatedImages}/{progress.totalImages} 页</dd></div>
     </dl>
+    {progress.status === 'RUNNING' && onCancel && <div className="standalone-image-progress-actions">
+      <button className="button small danger" type="button" onClick={onCancel} disabled={cancelling}>
+        {cancelling
+          ? <><LoaderCircle aria-hidden="true" className="animate-spin" size={14} />正在取消…</>
+          : <><Ban aria-hidden="true" size={14} />取消生成</>}
+      </button>
+      <span>已产生的模型费用无法撤回；取消后不会继续发起后续页面生成。</span>
+    </div>}
     {progress.canResume && onResume && <div className="notice warning standalone-image-resume">
       <span>已生成图片会先重新验收；通过的图片直接复用，只为剩余或不合格页面重新生成。</span>
       <button className="button small" type="button" onClick={onResume} disabled={disabled}>
@@ -66,6 +81,6 @@ export function ImageGenerationProgress({
         重新验收并继续
       </button>
     </div>}
-    <small>预计时间根据运行模式、图片页数和当前阶段计算，会随实际耗时向上修正，仅供参考。</small>
+    <small>预计时间根据图片页数和当前阶段计算，会随实际耗时向上修正，仅供参考。</small>
   </section>;
 }

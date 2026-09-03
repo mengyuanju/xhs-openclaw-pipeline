@@ -100,6 +100,14 @@ describe('separate batch generation workspaces', () => {
     assert.match(workbench, /catch \(error\)[\s\S]*continue;/u);
     assert.match(workbench, /\/api\/copy-generations\?page=1&pageSize=50/u);
     assert.match(workbench, /record\.manualReview === null/u);
+    assert.match(workbench, /htmlFor="batch-copy-name"/u);
+    assert.match(workbench, /createRunId\(\)/u);
+    assert.match(workbench, /batch:\s*\{\s*id:\s*batchId,\s*name:\s*resolvedBatchName\s*\}/u);
+    assert.match(workbench, /batchId=/u);
+    assert.match(workbench, /response\.batches/u);
+    assert.match(workbench, /response\.jobs/u);
+    assert.match(workbench, /查看历史批次/u);
+    assert.match(results, /batchName/u);
     assert.match(workbench, /\/manual-review/u);
     assert.match(results, /待人工质检/u);
     assert.match(results, /人工质检通过/u);
@@ -121,8 +129,17 @@ describe('separate batch generation workspaces', () => {
     assert.match(workbench, /apiRequest<ImageGenerationResult>\('\/api\/image-generations'/u);
     assert.doesNotMatch(workbench, /method: 'POST'[\s\S]{0,160}\/api\/copy-generations/u);
     assert.match(workbench, /confirmation: 'LIVE_IMAGE_COST_ACCEPTED'/u);
+    assert.match(workbench, /mode: 'LIVE'/u);
+    assert.doesNotMatch(workbench, /Mock|MOCK/u);
+    assert.match(workbench, /useImageGenerationHistory/u);
+    assert.match(workbench, /useImageGenerationHistory\(\{ pollWhile: busy \}\)/u);
+    assert.match(workbench, /<ImageGenerationHistory/u);
+    assert.match(workbench, /<ImageGenerationHistory[\s\S]{0,320}disabled=\{busy\}/u);
+    assert.match(workbench, /runId: nextRunId/u);
     assert.match(results, /图片已完成/u);
     assert.match(results, /打开首图/u);
+    assert.match(results, /查看运行记录/u);
+    assert.match(results, /runId[\s\S]{0,180}target="_blank"/u);
   });
 
   it('renders accessible inputs, quality gates, progress, stop and result states', async () => {
@@ -139,7 +156,8 @@ describe('separate batch generation workspaces', () => {
     assert.match(copyWorkbench, /htmlFor="batch-copy-image-count"/u);
     assert.match(copyWorkbench, /确认批量生成文案/u);
     assert.match(imageWorkbench, /aria-label="选择全部已质检文案"/u);
-    assert.match(imageWorkbench, /htmlFor="batch-image-mode"/u);
+    assert.doesNotMatch(imageWorkbench, /Mock|MOCK|batch-image-mode/u);
+    assert.match(imageWorkbench, /真实图片并执行 OCR 与质量检查/u);
     assert.match(imageWorkbench, /仅显示人工质检通过的文案/u);
     assert.match(interfaceSource, /完成当前条后停止/u);
     assert.match(interfaceSource, /<progress/u);

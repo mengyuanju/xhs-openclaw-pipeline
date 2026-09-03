@@ -14,6 +14,7 @@ export type BatchImageItemStatus = 'PENDING' | 'IMAGING' | 'COMPLETED' | 'FAILED
 export type BatchImageItem = {
   copyResult: CopyGenerationResult;
   status: BatchImageItemStatus;
+  runId: string | null;
   imageResult: ImageGenerationResult | null;
   error: string;
 };
@@ -76,7 +77,8 @@ export function BatchImageGenerationResults({ items, busy, stopRequested, summar
               {item.error && <p className="batch-generation-error" role="alert">图片阶段：{item.error}</p>}
               <div className="batch-generation-item-meta">
                 <span>文案记录 #{item.copyResult.id}</span>
-                {item.imageResult && <span>{item.imageResult.imageCount} 张 · {item.imageResult.mode === 'MOCK' ? 'Mock' : 'Live'}</span>}
+                {item.imageResult && <span>{item.imageResult.imageCount} 张</span>}
+                {item.runId && <a href={`/image-generation?runId=${encodeURIComponent(item.runId)}`} target="_blank" rel="noopener noreferrer">查看运行记录<ExternalLink aria-hidden="true" size={12} /></a>}
                 {item.imageResult?.images[0]?.url && <a href={item.imageResult.images[0].url} target="_blank" rel="noopener noreferrer">打开首图<ExternalLink aria-hidden="true" size={12} /></a>}
               </div>
             </li>)}

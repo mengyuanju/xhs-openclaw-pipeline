@@ -199,6 +199,33 @@ describe('web research snapshots', () => {
     ]);
   });
 
+  it('accepts a Codex grounded answer whose source URLs have no separate snippets', async () => {
+    const snapshot = await createResearchSnapshot({
+      client: {
+        async runWebSearch() {
+          return {
+            provider: 'codex',
+            result: {
+              content: '华为与小米手表都可通过蓝牙连接安卓手机，具体功能以'
+                + '[华为兼容说明](https://consumer.huawei.com/cn/support/content/zh-cn15893330/)'
+                + '和[小米帮助](https://www.mi.com/service/support/)为准。',
+              searches: [{ query: '华为手表 小米手表 安卓兼容说明' }],
+            },
+          };
+        },
+      },
+      query: 'OPPO手机适合华为fit4还是红米watch6',
+      providers: ['codex'],
+      now: () => NOW,
+    });
+
+    assert.equal(snapshot.status, 'COMPLETED');
+    assert.equal(snapshot.provider, 'codex');
+    assert.equal(snapshot.attempts.length, 1);
+    assert.equal(snapshot.sources.length, 2);
+    assert.ok(snapshot.sources.every((source) => source.snippet === ''));
+  });
+
   it('keeps Markdown source URLs clean when Chinese prose immediately follows the link', async () => {
     const currentStandard = 'https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=CURRENT';
     const previousStandard = 'https://std.samr.gov.cn/gb/search/gbDetailed?id=PREVIOUS';

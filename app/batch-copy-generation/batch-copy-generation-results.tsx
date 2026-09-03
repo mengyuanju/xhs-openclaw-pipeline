@@ -52,6 +52,7 @@ function statusClass(status: BatchCopyItemStatus) {
 }
 
 export function BatchCopyGenerationResults({
+  batchName,
   items,
   busy,
   stopRequested,
@@ -59,6 +60,7 @@ export function BatchCopyGenerationResults({
   onStop,
   onApprove,
 }: {
+  batchName: string;
   items: BatchCopyItem[];
   busy: boolean;
   stopRequested: boolean;
@@ -70,7 +72,7 @@ export function BatchCopyGenerationResults({
 
   return <section className="panel batch-generation-results" aria-labelledby="batch-copy-results-heading">
     <div className="panel-head batch-generation-results-head">
-      <div><span className="section-kicker">Copy progress</span><h2 id="batch-copy-results-heading">文案与质检</h2></div>
+      <div><span className="section-kicker">Copy progress</span><h2 id="batch-copy-results-heading">文案与质检</h2>{batchName && <span className="pill">批次：{batchName}</span>}</div>
       {busy && <LoaderCircle aria-hidden="true" className="animate-spin" size={20} />}
     </div>
 
@@ -84,7 +86,7 @@ export function BatchCopyGenerationResults({
           <div className="batch-generation-progress" aria-live="polite">
             <div>
               <strong>{settledCount}/{items.length} 条已生成或结束</strong>
-              <span>{busy ? stopRequested ? '等待当前条结束后停止' : '正在顺序生成文案' : summary ? batchCopyResultMessage(summary) : '已恢复待人工质检记录'}</span>
+              <span>{busy ? stopRequested ? '等待当前条结束后停止' : '正在顺序生成文案' : summary ? batchCopyResultMessage(summary) : batchName ? '已恢复该批次记录' : '已恢复待人工质检记录'}</span>
             </div>
             <progress value={settledCount} max={items.length} aria-label={`批量文案进度：${settledCount}/${items.length}`} />
             {busy && <button className="button small" type="button" disabled={stopRequested} onClick={onStop}>

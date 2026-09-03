@@ -32,11 +32,12 @@ export async function POST(
     });
     const { runId } = await context.params;
     try {
-      const result = await withImageGenerationLock(() => retryStandaloneImageRun({
+      const result = await withImageGenerationLock(input.runId, (signal) => retryStandaloneImageRun({
         sourceRunId: runId,
         runId: input.runId,
-        runtime: imageGenerationRuntime({ live: true }),
+        runtime: imageGenerationRuntime(),
         outputRoot: adminOutputRoot(),
+        signal,
       }));
       return ok(result, { status: 201 });
     } catch (error) {

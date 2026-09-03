@@ -21,14 +21,15 @@ describe('standalone image generation workspace', () => {
     assert.match(page, /<ImageGenerationWorkbench/u);
   });
 
-  it('exposes the strict Mock/Live API contract and safe error codes', async () => {
+  it('exposes a Live-only API contract and safe error codes', async () => {
     const [route, runtime] = await Promise.all([
       source('app/api/image-generations/route.ts'),
       source('app/api/image-generations/_runtime.ts'),
     ]);
     const contract = `${route}\n${runtime}`;
 
-    assert.match(route, /mode: z\.enum\(\['MOCK', 'LIVE'\]\)/u);
+    assert.doesNotMatch(route, /MOCK/u);
+    assert.match(route, /mode: z\.literal\('LIVE'\)/u);
     assert.match(route, /validationCode: 'VALIDATION_ERROR'/u);
     assert.match(route, /LIVE_IMAGE_COST_ACCEPTED/u);
     assert.match(contract, /IMAGE_GENERATION_IN_PROGRESS/u);
@@ -40,6 +41,9 @@ describe('standalone image generation workspace', () => {
     assert.match(route, /generateStandaloneImages/u);
     assert.match(runtime, /createOpenClawClient/u);
     assert.match(runtime, /withImageGenerationLock/u);
+    assert.match(runtime, /imageGenerationRuntime\(\)/u);
+    assert.doesNotMatch(runtime, /if \(!live\)/u);
+    assert.match(route, /imageGenerationRuntime\(\)/u);
   });
 
   it('requires explicit cost confirmation and a fresh run ID before resuming', async () => {
@@ -66,7 +70,7 @@ describe('standalone image generation workspace', () => {
     assert.match(workbench, /retryRun/u);
   });
 
-  it('renders labeled inputs, cost confirmation, loading, errors and image previews', async () => {
+  it('renders labeled inputs, mandatory cost confirmation, loading, errors and image previews', async () => {
     const [workbench, resultView, runState, styles] = await Promise.all([
       source('app/image-generation/image-generation-workbench.tsx'),
       source('app/image-generation/image-generation-result.tsx'),
@@ -80,7 +84,8 @@ describe('standalone image generation workspace', () => {
     assert.match(workbench, /htmlFor="image-body"/u);
     assert.match(workbench, /htmlFor="image-tags"/u);
     assert.match(workbench, /htmlFor="image-plan"/u);
-    assert.match(workbench, /htmlFor="image-mode"/u);
+    assert.doesNotMatch(workbench, /Mock|MOCK|image-mode/u);
+    assert.match(workbench, /mode: 'LIVE'/u);
     assert.match(workbench, /LIVE_IMAGE_COST_ACCEPTED/u);
     assert.match(workbench, /确认调用真实图片模型/u);
     assert.match(workbench, /正在生成图片/u);
@@ -114,9 +119,11 @@ describe('standalone image generation workspace', () => {
     ]);
 
     assert.match(route, /runId: z\.string\(\)\.uuid\(\)\.optional\(\)/u);
-    assert.match(route, /runId: input\.runId/u);
+    assert.match(route, /const runId = input\.runId \?\? randomUUID\(\)/u);
+    assert.match(route, /runId,\s+signal,/u);
     assert.match(statusRoute, /export async function GET/u);
     assert.match(statusRoute, /readStandaloneImageProgress/u);
+    assert.match(statusRoute, /progress\.mode !== 'LIVE'/u);
     assert.match(statusRoute, /adminOutputRoot/u);
     assert.match(statusRoute, /'Cache-Control': 'no-store'/u);
     assert.match(runState, /createRunId\(\)/u);
@@ -136,6 +143,30 @@ describe('standalone image generation workspace', () => {
     assert.match(progressView, /aria-live="polite"/u);
     assert.match(styles, /\.standalone-image-progress/u);
     assert.match(styles, /\.standalone-image-progress-bar/u);
+  });
+
+  it('lets the operator cancel active and restart-stale image runs', async () => {
+    const [statusRoute, runtime, workbench, progressView, history, runState] = await Promise.all([
+      source('app/api/image-generations/[runId]/route.ts'),
+      source('app/api/image-generations/_runtime.ts'),
+      source('app/image-generation/image-generation-workbench.tsx'),
+      source('app/image-generation/image-generation-progress.tsx'),
+      source('app/image-generation/image-generation-history.tsx'),
+      source('app/image-generation/use-image-generation-run.ts'),
+    ]);
+
+    assert.match(statusRoute, /export async function DELETE/u);
+    assert.match(statusRoute, /cancelStandaloneImageRun/u);
+    assert.match(statusRoute, /cancelActiveImageGeneration/u);
+    assert.match(runtime, /new AbortController\(\)/u);
+    assert.match(runtime, /globalThis/u);
+    assert.match(runtime, /controller\.abort/u);
+    assert.match(runState, /cancelRun/u);
+    assert.match(runState, /method: 'DELETE'/u);
+    assert.match(workbench, /取消图片生成/u);
+    assert.match(progressView, /取消生成/u);
+    assert.match(progressView, /progress\.status === 'RUNNING'/u);
+    assert.match(history, /已取消/u);
   });
 
   it('serves only manifest-owned PNG files from the isolated run directory', async () => {
@@ -169,6 +200,7 @@ describe('standalone image generation workspace', () => {
     assert.match(runState, /openRun/u);
     assert.match(workbench, /<ImageGenerationHistory/u);
     assert.match(workbench, /openRun/u);
+    assert.match(workbench, /URLSearchParams\(window\.location\.search\)/u);
     assert.match(styles, /\.standalone-image-workspace-grid/u);
     assert.match(styles, /\.standalone-image-history/u);
   });

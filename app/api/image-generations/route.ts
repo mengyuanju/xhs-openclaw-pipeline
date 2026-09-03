@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { z } from 'zod';
 
 import { apiHandler, ok, parseJson } from '../_lib';
@@ -44,7 +46,7 @@ const imageGenerationSchema = z.object({
     tags: z.array(z.string().trim().min(2).max(20).regex(/^#[^#\s]+$/u)).min(3).max(8),
   }).strict(),
   imagePlan: z.array(imagePlanSchema).min(3).max(5),
-  mode: z.enum(['MOCK', 'LIVE']),
+  mode: z.literal('LIVE'),
   confirmation: z.literal('LIVE_IMAGE_COST_ACCEPTED').optional(),
 }).strict().superRefine((value, context) => {
   if (value.imagePlan[0]?.kind !== 'hero') {
@@ -97,19 +99,21 @@ export function POST(request: Request) {
       if (error instanceof StandaloneImageConfirmationError) {
         throw new ApiError(400, 'LIVE_CONFIRMATION_REQUIRED', 'Live 图片生成必须先确认模型费用');
       }
-      throw new ApiError(400, 'VALIDATION_ERROR', 'Mock 模式不接受 Live 费用确认');
+      throw new ApiError(400, 'VALIDATION_ERROR', '图片生成请求无效');
     }
     try {
-      const result = await withImageGenerationLock(() => generateStandaloneImages({
+      const runId = input.runId ?? randomUUID();
+      const result = await withImageGenerationLock(runId, (signal) => generateStandaloneImages({
         source: {
           query: input.query,
           copy: input.copy,
           imagePlan: input.imagePlan,
         },
         mode: input.mode,
-        runtime: imageGenerationRuntime({ live: input.mode === 'LIVE' }),
+        runtime: imageGenerationRuntime(),
         outputRoot: adminOutputRoot(),
-        runId: input.runId,
+        runId,
+        signal,
       }));
       return ok(result, { status: 201 });
     } catch (error) {

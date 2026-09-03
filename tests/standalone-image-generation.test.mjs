@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -9,7 +9,9 @@ import sharp from 'sharp';
 import { createMockPost } from '../src/pipeline.mjs';
 import {
   StandaloneImageConfirmationError,
+  StandaloneImageCancellationError,
   assertStandaloneImageConfirmation,
+  cancelStandaloneImageRun,
   estimateStandaloneImageDuration,
   generateStandaloneImages,
   listStandaloneImageRuns,
@@ -24,6 +26,7 @@ const FALLBACK_RUN_ID = '22222222-2222-4222-8222-222222222222';
 const FAILURE_RUN_ID = '33333333-3333-4333-8333-333333333333';
 const RECOVERY_SOURCE_RUN_ID = '44444444-4444-4444-8444-444444444444';
 const RECOVERY_RUN_ID = '55555555-5555-4555-8555-555555555555';
+const CANCELLED_RUN_ID = '66666666-6666-4666-8666-666666666666';
 
 const QUALITY_DIMENSIONS = [
   'queryRelevance',
@@ -156,30 +159,45 @@ describe('standalone image generation service', () => {
     assert.equal(post.imagePlan.length, source.imagePlan.length);
   });
 
-  it('requires explicit cost confirmation only for Live mode', () => {
-    assert.doesNotThrow(() => assertStandaloneImageConfirmation('MOCK'));
+  it('allows only Live mode and requires explicit cost confirmation', () => {
     assert.doesNotThrow(() => assertStandaloneImageConfirmation('LIVE', 'LIVE_IMAGE_COST_ACCEPTED'));
     assert.throws(
       () => assertStandaloneImageConfirmation('LIVE'),
       StandaloneImageConfirmationError,
     );
     assert.throws(
-      () => assertStandaloneImageConfirmation('MOCK', 'LIVE_IMAGE_COST_ACCEPTED'),
-      /Mock mode does not accept Live confirmation/u,
+      () => assertStandaloneImageConfirmation('MOCK'),
+      /mode must be LIVE/u,
     );
   });
 
-  it('estimates Live runs by page count and keeps Mock estimates short', () => {
-    const mockEstimate = estimateStandaloneImageDuration({ mode: 'MOCK', imageCount: 3 });
+  it('estimates Live runs by page count and rejects Mock mode', () => {
     const liveThreePageEstimate = estimateStandaloneImageDuration({ mode: 'LIVE', imageCount: 3 });
     const liveFivePageEstimate = estimateStandaloneImageDuration({ mode: 'LIVE', imageCount: 5 });
 
-    assert.ok(mockEstimate >= 1_000);
-    assert.ok(liveThreePageEstimate > mockEstimate);
+    assert.throws(
+      () => estimateStandaloneImageDuration({ mode: 'MOCK', imageCount: 3 }),
+      /mode must be LIVE/u,
+    );
+    assert.ok(liveThreePageEstimate >= 1_000);
     assert.ok(liveFivePageEstimate > liveThreePageEstimate);
   });
 
-  it('renders an isolated Mock run with distinct delivery-sized PNG files and a manifest', async () => {
+  it('rejects standalone Mock generation before creating a run', async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-image-no-mock-'));
+    try {
+      await assert.rejects(generateStandaloneImages({
+        source: validSource(),
+        mode: 'MOCK',
+        outputRoot,
+        runId: RUN_ID,
+      }), /mode must be LIVE/u);
+    } finally {
+      await rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('renders an isolated Live run with fake model clients and persists its manifest', async () => {
     const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-image-generation-'));
     const source = validSource();
     let liveCalls = 0;
@@ -187,38 +205,38 @@ describe('standalone image generation service', () => {
     try {
       const result = await generateStandaloneImages({
         source,
-        mode: 'MOCK',
+        mode: 'LIVE',
         outputRoot,
         runId: RUN_ID,
         onProgress(progress) {
           progressEvents.push(progress);
         },
         runtime: {
-          client: {
-            async runImage() {
-              liveCalls += 1;
-              throw new Error('Mock mode must not call the image model');
+          client: liveClient({
+            async runText() {
+              throw new Error('OpenClaw text inference failed: UND_ERR_SOCKET terminated');
             },
-          },
+            onImage() { liveCalls += 1; },
+          }),
+          imageConcurrency: 1,
         },
       });
 
-      assert.equal(liveCalls, 0);
+      assert.equal(liveCalls, 3);
       assert.equal(result.runId, RUN_ID);
-      assert.equal(result.mode, 'MOCK');
-      assert.equal(result.status, 'BLOCKED');
+      assert.equal(result.mode, 'LIVE');
+      assert.equal(result.status, 'COMPLETED');
       assert.equal(result.imageCount, 3);
       assert.equal(result.images.length, 3);
-      assert.equal(result.qc.passed, false);
-      assert.equal(result.visualPlan.model, null);
-      assert.equal(result.visualPlan.degraded, false);
-      assert.equal(result.visualPlan.warning, null);
+      assert.equal(result.qc.passed, true);
+      assert.equal(result.visualPlan.model, 'deterministic-transport-fallback');
+      assert.equal(result.visualPlan.degraded, true);
+      assert.equal(result.visualPlan.warning.code, 'VISUAL_PLAN_TRANSPORT_FALLBACK');
       assert.equal(result.images[0].layout.layoutTemplate, 'HERO_LEFT');
       assert.equal(result.images[0].layout.allowedVisibleText.headline, source.imagePlan[0].headline);
       assert.deepEqual(result.images[0].layout.allowedVisibleText.bullets, source.imagePlan[0].bullets);
-      assert.equal(result.qc.disposition, 'mock_only');
-      assert.equal(result.qc.action, 'return_for_revision');
-      assert.ok(result.qc.issues.some((issue) => issue.label === '图片来源-Mock'));
+      assert.equal(result.qc.disposition, 'manual_review_required');
+      assert.equal(result.qc.action, 'priority_review');
       assert.ok(result.qc.dimensions.some((dimension) => dimension.key === 'imageBaseQuality'));
       assert.ok(result.qc.limitations.length > 0);
       assert.equal(progressEvents[0].stage, 'PREPARING');
@@ -250,8 +268,8 @@ describe('standalone image generation service', () => {
       assert.equal(progress.estimatedRemainingMs, 0);
       assert.equal(progress.result.runId, RUN_ID);
       assert.equal(progress.result.images[0].layout.layoutTemplate, 'HERO_LEFT');
-      assert.equal(progress.result.visualPlan.degraded, false);
-      assert.equal(progress.result.qc.disposition, 'mock_only');
+      assert.equal(progress.result.visualPlan.degraded, true);
+      assert.equal(progress.result.qc.disposition, 'manual_review_required');
       assert.ok(progress.result.qc.dimensions.length > 0);
 
       const hashes = new Set();
@@ -473,14 +491,119 @@ describe('standalone image generation service', () => {
     }
   });
 
+  it('marks an active run as cancelled without reporting a generation failure', async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-image-active-cancel-'));
+    const controller = new AbortController();
+    let modelCalls = 0;
+    try {
+      await assert.rejects(
+        generateStandaloneImages({
+          source: validSource(),
+          mode: 'LIVE',
+          outputRoot,
+          runId: CANCELLED_RUN_ID,
+          signal: controller.signal,
+          onProgress(progress) {
+            if (progress.stage === 'PLANNING' && progress.progressPercent === 8) {
+              controller.abort();
+            }
+          },
+          runtime: {
+            client: liveClient({
+              async runText() {
+                modelCalls += 1;
+                return { rawText: '{}', model: 'should-not-run' };
+              },
+            }),
+          },
+        }),
+        StandaloneImageCancellationError,
+      );
+
+      assert.equal(modelCalls, 0);
+      const progress = await readStandaloneImageProgress({
+        outputRoot,
+        runId: CANCELLED_RUN_ID,
+      });
+      assert.equal(progress.status, 'CANCELLED');
+      assert.equal(progress.stage, 'CANCELLED');
+      assert.equal(progress.error, null);
+      assert.equal(progress.estimatedRemainingMs, 0);
+      assert.ok(progress.finishedAt);
+    } finally {
+      await rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('cancels a persisted running record left behind by a server restart', async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-image-stale-cancel-'));
+    const outputDir = join(outputRoot, 'standalone-image-generations', CANCELLED_RUN_ID);
+    const startedAt = '2026-09-03T05:51:52.978Z';
+    try {
+      await mkdir(outputDir, { recursive: true });
+      await writeFile(join(outputDir, 'source.json'), `${JSON.stringify({
+        query: validSource().query,
+        post: normalizeStandaloneImageSource(validSource()),
+      })}\n`, 'utf8');
+      await writeFile(join(outputDir, 'progress.json'), `${JSON.stringify({
+        runId: CANCELLED_RUN_ID,
+        mode: 'LIVE',
+        status: 'RUNNING',
+        stage: 'PLANNING',
+        progressPercent: 8,
+        message: '正在调用模型创建视觉规划',
+        completedImages: 0,
+        generatedImages: 0,
+        validatedImages: 0,
+        totalImages: 3,
+        currentPage: null,
+        attempt: null,
+        startedAt,
+        updatedAt: startedAt,
+        finishedAt: null,
+        estimatedTotalMs: 420_000,
+        elapsedMs: 0,
+        estimatedRemainingMs: 420_000,
+        estimateBasis: 'mode-and-page-count',
+        warnings: [],
+        diagnostic: null,
+        canResume: false,
+        retryReason: null,
+        error: null,
+        result: null,
+      })}\n`, 'utf8');
+
+      const cancelled = await cancelStandaloneImageRun({ outputRoot, runId: CANCELLED_RUN_ID });
+      const cancelledAgain = await cancelStandaloneImageRun({ outputRoot, runId: CANCELLED_RUN_ID });
+      const history = await listStandaloneImageRuns({ outputRoot });
+
+      assert.equal(cancelled.status, 'CANCELLED');
+      assert.equal(cancelled.stage, 'CANCELLED');
+      assert.equal(cancelled.message, '图片生成已取消');
+      assert.equal(cancelledAgain.status, 'CANCELLED');
+      assert.equal(history.data[0].status, 'CANCELLED');
+      assert.equal(history.data[0].finishedAt, cancelled.finishedAt);
+    } finally {
+      await rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
   it('lists isolated image runs newest first with safe source and progress summaries', async () => {
     const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-image-history-'));
     try {
       await generateStandaloneImages({
         source: validSource(4),
-        mode: 'MOCK',
+        mode: 'LIVE',
         outputRoot,
         runId: RUN_ID,
+        runtime: {
+          client: liveClient({
+            async runText() {
+              throw new Error('OpenClaw text inference failed: UND_ERR_SOCKET terminated');
+            },
+          }),
+          imageConcurrency: 1,
+        },
       });
       await assert.rejects(generateStandaloneImages({
         source: validSource(),
@@ -518,7 +641,7 @@ describe('standalone image generation service', () => {
       assert.equal(history.data[1].query, validSource().query);
       assert.equal(history.data[1].completedImages, 4);
       assert.equal(history.data[1].imageCount, 4);
-      assert.equal(history.data[1].qcScore, 1);
+      assert.equal(history.data[1].qcScore, 3);
 
       const limited = await listStandaloneImageRuns({ outputRoot, limit: 1 });
       assert.equal(limited.total, 2);
@@ -533,9 +656,17 @@ describe('standalone image generation service', () => {
     try {
       await generateStandaloneImages({
         source: validSource(),
-        mode: 'MOCK',
+        mode: 'LIVE',
         outputRoot,
         runId: RUN_ID,
+        runtime: {
+          client: liveClient({
+            async runText() {
+              throw new Error('OpenClaw text inference failed: UND_ERR_SOCKET terminated');
+            },
+          }),
+          imageConcurrency: 1,
+        },
       });
 
       await assert.rejects(

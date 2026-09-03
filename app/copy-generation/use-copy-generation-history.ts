@@ -21,6 +21,8 @@ export type CopyGenerationStage =
 
 export type CopyGenerationJob = {
   id: number;
+  batchId: string | null;
+  batchName: string | null;
   query: string;
   status: 'RUNNING' | 'FAILED';
   generationId: null;

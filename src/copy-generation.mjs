@@ -513,6 +513,8 @@ function versionFrom(post, model, thinking, review) {
 
 export function toCopyGenerationResponse({
   id,
+  batchId = null,
+  batchName = null,
   query,
   input,
   requestedImageCount,
@@ -547,6 +549,8 @@ export function toCopyGenerationResponse({
       || JSON.stringify(originalPost) !== JSON.stringify(reviewedPost);
   return {
     ...(id === undefined ? {} : { id }),
+    batchId,
+    batchName,
     ...(query === undefined ? {} : { query }),
     ...(input === undefined ? {} : { input }),
     ...(requestedImageCount === undefined ? {} : { requestedImageCount }),

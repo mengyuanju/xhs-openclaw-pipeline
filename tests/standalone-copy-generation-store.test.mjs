@@ -8,6 +8,15 @@ import {
 } from '../src/admin/standalone-copy-generation-store.mjs';
 import { createMockPost } from '../src/pipeline.mjs';
 
+const BATCH_A = {
+  id: '11111111-1111-4111-8111-111111111111',
+  name: '9月3日混合选题',
+};
+const BATCH_B = {
+  id: '22222222-2222-4222-8222-222222222222',
+  name: '补充选题',
+};
+
 function review(stage, summary) {
   return {
     schemaVersion: 1,
@@ -122,6 +131,31 @@ describe('standalone copy generation persistence', () => {
     }
   });
 
+  it('persists batch grouping on running and failed jobs and filters by batch', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      initializeStandaloneCopyGenerationSchema(db);
+      const store = createStandaloneCopyGenerationStore(db);
+      const grouped = store.createStandaloneCopyGenerationJob({
+        query: '同一批次中的失败选题',
+        batch: BATCH_A,
+      });
+      store.createStandaloneCopyGenerationJob({ query: '未分组选题' });
+
+      assert.equal(grouped.batchId, BATCH_A.id);
+      assert.equal(grouped.batchName, BATCH_A.name);
+      const failed = store.failStandaloneCopyGenerationJob(grouped.id, '联网研究失败');
+      assert.equal(failed.batchId, BATCH_A.id);
+      assert.equal(failed.batchName, BATCH_A.name);
+      assert.deepEqual(
+        store.listStandaloneCopyGenerationJobs({ batchId: BATCH_A.id }),
+        [failed],
+      );
+    } finally {
+      db.close();
+    }
+  });
+
   it('atomically completes a running job with its saved comparison', () => {
     const db = new DatabaseSync(':memory:');
     try {
@@ -161,6 +195,36 @@ describe('standalone copy generation persistence', () => {
       );
       assert.equal(jobColumns.has('current_stage'), true);
       assert.equal(jobColumns.has('stage_updated_at'), true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('inherits the running job batch when saving a completed comparison', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      initializeStandaloneCopyGenerationSchema(db);
+      const store = createStandaloneCopyGenerationStore(db);
+      const job = store.createStandaloneCopyGenerationJob({
+        query: '生成成功也留在原批次',
+        batch: BATCH_A,
+      });
+      const saved = store.saveStandaloneCopyGeneration({
+        ...generationRecord('生成成功也留在原批次', 'B'),
+        jobId: job.id,
+        batch: BATCH_B,
+      });
+
+      assert.equal(saved.batchId, BATCH_A.id);
+      assert.equal(saved.batchName, BATCH_A.name);
+      assert.deepEqual(
+        store.listStandaloneCopyGenerations({ batchId: BATCH_A.id }).data,
+        [saved],
+      );
+      assert.equal(
+        store.listStandaloneCopyGenerations({ batchId: BATCH_B.id }).data.length,
+        0,
+      );
     } finally {
       db.close();
     }
@@ -302,6 +366,94 @@ describe('standalone copy generation persistence', () => {
     }
   });
 
+  it('aggregates recent batches without double-counting completed jobs', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      initializeStandaloneCopyGenerationSchema(db);
+      const store = createStandaloneCopyGenerationStore(db);
+      const completedJob = store.createStandaloneCopyGenerationJob({
+        query: '批次 A 成功',
+        batch: BATCH_A,
+      });
+      store.saveStandaloneCopyGeneration({
+        ...generationRecord('批次 A 成功', 'A'),
+        jobId: completedJob.id,
+      });
+      const failedJob = store.createStandaloneCopyGenerationJob({
+        query: '批次 A 失败',
+        batch: BATCH_A,
+      });
+      store.failStandaloneCopyGenerationJob(failedJob.id, '生成失败');
+      store.createStandaloneCopyGenerationJob({ query: '批次 B 运行中', batch: BATCH_B });
+      store.saveStandaloneCopyGeneration(generationRecord('历史未分组', 'L'));
+
+      const batches = store.listStandaloneCopyGenerationBatches();
+      const batchA = batches.find((batch) => batch.id === BATCH_A.id);
+      const batchB = batches.find((batch) => batch.id === BATCH_B.id);
+      assert.deepEqual(batchA, {
+        id: BATCH_A.id,
+        name: BATCH_A.name,
+        totalCount: 2,
+        completedCount: 1,
+        failedCount: 1,
+        runningCount: 0,
+        lastActivityAt: batchA.lastActivityAt,
+      });
+      assert.match(batchA.lastActivityAt, /^\d{4}-\d{2}-\d{2}T/u);
+      assert.deepEqual(batchB, {
+        id: BATCH_B.id,
+        name: BATCH_B.name,
+        totalCount: 1,
+        completedCount: 0,
+        failedCount: 0,
+        runningCount: 1,
+        lastActivityAt: batchB.lastActivityAt,
+      });
+      assert.equal(batches.some((batch) => batch.name === '未分组'), false);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects malformed or incomplete batch metadata at the storage boundary', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      initializeStandaloneCopyGenerationSchema(db);
+      const store = createStandaloneCopyGenerationStore(db);
+      assert.throws(
+        () => store.createStandaloneCopyGenerationJob({
+          query: '非法 ID',
+          batch: { id: 'not-a-uuid', name: '非法批次' },
+        }),
+        /batch id/iu,
+      );
+      assert.throws(
+        () => store.createStandaloneCopyGenerationJob({
+          query: '名称缺失',
+          batch: { id: BATCH_A.id },
+        }),
+        /batch name/iu,
+      );
+      assert.throws(
+        () => store.createStandaloneCopyGenerationJob({
+          query: '名称过长',
+          batch: { id: BATCH_A.id, name: '批'.repeat(101) },
+        }),
+        /100 characters/iu,
+      );
+      store.createStandaloneCopyGenerationJob({ query: '合法批次', batch: BATCH_A });
+      assert.throws(
+        () => store.createStandaloneCopyGenerationJob({
+          query: '同一 ID 不得改名',
+          batch: { id: BATCH_A.id, name: '另一个名字' },
+        }),
+        /batch name does not match/iu,
+      );
+    } finally {
+      db.close();
+    }
+  });
+
   it('adds nullable timing columns to legacy comparison tables', () => {
     const db = new DatabaseSync(':memory:');
     try {
@@ -320,6 +472,17 @@ describe('standalone copy generation persistence', () => {
           reviewed_text_review_json TEXT NOT NULL,
           research_snapshot_json TEXT,
           created_at TEXT NOT NULL
+        ) STRICT;
+        CREATE TABLE standalone_copy_generation_jobs (
+          id INTEGER PRIMARY KEY,
+          query TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('RUNNING', 'COMPLETED', 'FAILED')),
+          generation_id INTEGER REFERENCES standalone_copy_generations(id) ON DELETE RESTRICT,
+          current_stage TEXT NOT NULL DEFAULT 'QUERY_REVIEW',
+          stage_updated_at TEXT,
+          error TEXT,
+          created_at TEXT NOT NULL,
+          finished_at TEXT
         ) STRICT;
       `);
 
@@ -341,6 +504,8 @@ describe('standalone copy generation persistence', () => {
         'reviewed_thinking',
         'manual_reviewed_at',
         'manual_reviewed_by',
+        'batch_id',
+        'batch_name',
       ]) assert.equal(columns.has(column), true);
       assert.equal(
         db.prepare(`
@@ -349,6 +514,12 @@ describe('standalone copy generation persistence', () => {
         `).get().count,
         1,
       );
+      const jobColumns = new Set(
+        db.prepare('PRAGMA table_info(standalone_copy_generation_jobs)').all()
+          .map((column) => column.name),
+      );
+      assert.equal(jobColumns.has('batch_id'), true);
+      assert.equal(jobColumns.has('batch_name'), true);
     } finally {
       db.close();
     }

@@ -17,7 +17,7 @@ const DEFAULT_TEXT_THINKING = 'high';
 const IMAGE_GENERATION_SIZE = '1152x1536';
 const TRANSPORT_RETRY_DELAYS_MS = [5_000, 15_000, 30_000];
 const WEB_SEARCH_RETRY_DELAYS_MS = [2_000];
-const TRANSIENT_TRANSPORT_ERROR = /\b(?:ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET)\b|fetch failed|connection error|other side closed|reconnecting|timed?\s*out/iu;
+const TRANSIENT_TRANSPORT_ERROR = /\b(?:EBUSY|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET)\b|fetch failed|connection error|other side closed|reconnecting|timed?\s*out/iu;
 const TEXT_THINKING_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 
 let textInferenceTail = Promise.resolve();
@@ -176,6 +176,15 @@ function resolvedImageTimeoutMs(value, configuredDefault) {
     throw new RangeError('image timeoutMs must be an integer between 30000 and 540000');
   }
   return timeoutMs;
+}
+
+function withAbortSignal(options, signal) {
+  if (signal === undefined) return options;
+  if (typeof signal !== 'object' || typeof signal.aborted !== 'boolean') {
+    throw new TypeError('signal must be an AbortSignal');
+  }
+  signal.throwIfAborted?.();
+  return { ...options, signal };
 }
 
 function validatedTextThinking(value = DEFAULT_TEXT_THINKING) {
@@ -405,7 +414,7 @@ export function createOpenClawClient({
       };
     },
 
-    async runText({ prompt, model, thinking, timeoutMs = 180_000 }) {
+    async runText({ prompt, model, thinking, timeoutMs = 180_000, signal }) {
       if (typeof prompt !== 'string' || prompt.length === 0 || prompt.length > 30_000) {
         throw new RangeError('prompt must contain between 1 and 30000 characters');
       }
@@ -444,13 +453,13 @@ export function createOpenClawClient({
             '--message-file',
             messagePath,
           ];
-          const processOptions = {
+          const processOptions = withAbortSignal({
             encoding: 'utf8',
             windowsHide: true,
             shell: false,
             timeout: timeoutMs + 45_000,
             maxBuffer: 10 * 1024 * 1024,
-          };
+          }, signal);
           const result = await resolvedAsyncRunner(nodePath, args, processOptions);
           if (result.error || result.status !== 0) {
             const detail = redact(failureDetail(result));
@@ -474,9 +483,9 @@ export function createOpenClawClient({
       });
     },
 
-    async runReview({ prompt, model, thinking, timeoutMs = 180_000 }) {
+    async runReview({ prompt, model, thinking, timeoutMs = 180_000, signal }) {
       const reviewModel = validatedModelRef(model, currentModelApi().reviewModel, 'reviewModel');
-      return this.runText({ prompt, model: reviewModel, thinking, timeoutMs });
+      return this.runText({ prompt, model: reviewModel, thinking, timeoutMs, signal });
     },
 
     async runVision({
@@ -484,6 +493,7 @@ export function createOpenClawClient({
       inputPaths,
       model,
       timeoutMs = DEFAULT_VISION_TIMEOUT_MS,
+      signal,
     }) {
       if (typeof prompt !== 'string' || prompt.length === 0 || prompt.length > 30_000) {
         throw new RangeError('vision prompt must contain between 1 and 30000 characters');
@@ -515,13 +525,13 @@ export function createOpenClawClient({
           '--prompt',
           prompt,
         ];
-        const processOptions = {
+        const processOptions = withAbortSignal({
           encoding: 'utf8',
           windowsHide: true,
           shell: false,
           timeout: timeoutMs,
           maxBuffer: 10 * 1024 * 1024,
-        };
+        }, signal);
         const result = await runWithTransportRetryAsync({
           runner: resolvedAsyncRunner,
           nodePath,
@@ -547,6 +557,7 @@ export function createOpenClawClient({
       outputPath,
       model,
       timeoutMs,
+      signal,
     }) {
       if (typeof prompt !== 'string' || prompt.length < 10 || prompt.length > 8_000) {
         throw new RangeError('image prompt must contain between 10 and 8000 characters');
@@ -578,13 +589,13 @@ export function createOpenClawClient({
         '--prompt',
         prompt,
       ];
-      const processOptions = {
+      const processOptions = withAbortSignal({
         encoding: 'utf8',
         windowsHide: true,
         shell: false,
         timeout: resolvedTimeoutMs + 10_000,
         maxBuffer: 10 * 1024 * 1024,
-      };
+      }, signal);
       const result = await runWithTransportRetryAsync({
         runner: resolvedAsyncRunner,
         nodePath,
@@ -613,6 +624,7 @@ export function createOpenClawClient({
       outputPath,
       model,
       timeoutMs,
+      signal,
     }) {
       if (typeof prompt !== 'string' || prompt.length < 10 || prompt.length > 8_000) {
         throw new RangeError('image edit prompt must contain between 10 and 8000 characters');
@@ -653,13 +665,13 @@ export function createOpenClawClient({
         '--prompt',
         prompt,
       ];
-      const processOptions = {
+      const processOptions = withAbortSignal({
         encoding: 'utf8',
         windowsHide: true,
         shell: false,
         timeout: resolvedTimeoutMs + 10_000,
         maxBuffer: 10 * 1024 * 1024,
-      };
+      }, signal);
       const result = await runWithTransportRetryAsync({
         runner: resolvedAsyncRunner,
         nodePath,

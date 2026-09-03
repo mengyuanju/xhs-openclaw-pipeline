@@ -40,6 +40,7 @@ function CopyGenerationJobs({ jobs }: { jobs: CopyGenerationJob[] }) {
           ? `正在：${STAGE_LABELS[job.currentStage]}`
           : `停止于：${STAGE_LABELS[job.currentStage]}`}</span>
         <span className="copy-job-meta">任务 #{job.id} · {new Date(job.createdAt).toLocaleString('zh-CN')}</span>
+        {job.batchName && <span className="copy-job-meta">批次：{job.batchName}</span>}
         {job.error && <p className="copy-job-error" role="alert">{job.error}</p>}
       </li>)}
     </ol>
@@ -91,6 +92,7 @@ export function CopyGenerationHistory({
           {records.map((record) => <li key={record.id}>
             <button type="button" aria-pressed={selectedId === record.id} onClick={() => onSelect(record)}>
               <strong>{record.query}</strong>
+              {record.batchName && <span className="pill">批次：{record.batchName}</span>}
               {record.reviewed.review.skipped
                 ? <span className="pill">质检已关闭</span>
                 : record.reviewed.review.decision === 'REJECT' && (record.manualReview

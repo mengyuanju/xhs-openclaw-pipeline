@@ -24,7 +24,6 @@ const DIMENSION_LABELS: Record<string, string> = {
 
 const DISPOSITION_LABELS: Record<string, string> = {
   manual_review_required: '待人工复核',
-  mock_only: '仅 Mock 验证',
   blocked: '质检阻断',
   not_available: '暂无结论',
 };
@@ -65,7 +64,6 @@ export function ImageGenerationResultView({ result }: { result: ImageGenerationR
 
     <dl className="standalone-image-summary">
       <div><dt>运行 ID</dt><dd className="mono">{result.runId}</dd></div>
-      <div><dt>模式</dt><dd>{result.mode}</dd></div>
       <div><dt>图片</dt><dd>{result.imageCount} 张</dd></div>
       <div><dt>QC</dt><dd>{qualityScore(result.qc.overallScore)}</dd></div>
     </dl>

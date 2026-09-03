@@ -83,6 +83,59 @@ describe('OpenClaw client', () => {
     }
   });
 
+  it('forwards an abort signal to every inference child process', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'xhs-openclaw-abort-signal-'));
+    const inputPath = join(directory, 'input.png');
+    const generatedPath = join(directory, 'generated.png');
+    const editedPath = join(directory, 'edited.png');
+    await sharp({
+      create: { width: 32, height: 32, channels: 3, background: '#d7c7b0' },
+    }).png().toFile(inputPath);
+    const controller = new AbortController();
+    const invocations = [];
+    const client = createOpenClawClient({
+      entryPath: 'C:/openclaw/dist/index.js',
+      runner: () => assert.fail('inference must use the async runner'),
+      asyncRunner: async (_command, args, options) => {
+        invocations.push({ args, options });
+        const outputFlag = args.indexOf('--output');
+        if (outputFlag >= 0) writeFileSync(args[outputFlag + 1], 'generated image');
+        return {
+          status: 0,
+          stdout: args.includes('agent')
+            ? JSON.stringify({ status: 'ok', result: { payloads: [{ text: 'text result' }] } })
+            : JSON.stringify({ final: 'vision result' }),
+          stderr: '',
+        };
+      },
+    });
+
+    try {
+      await client.runText({ prompt: 'abortable text inference', signal: controller.signal });
+      await client.runVision({
+        prompt: 'abortable vision inference',
+        inputPaths: [inputPath],
+        signal: controller.signal,
+      });
+      await client.runImage({
+        prompt: 'generate an abortable image',
+        outputPath: generatedPath,
+        signal: controller.signal,
+      });
+      await client.runImageEdit({
+        prompt: 'edit an abortable image',
+        inputPaths: [inputPath],
+        outputPath: editedPath,
+        signal: controller.signal,
+      });
+
+      assert.equal(invocations.length, 4);
+      assert.ok(invocations.every(({ options }) => options.signal === controller.signal));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('preflights the configured runtime and auth without sending an inference prompt', () => {
     let invocation;
     const client = createOpenClawClient({
@@ -953,6 +1006,39 @@ describe('OpenClaw client', () => {
         calls += 1;
         if (calls === 1) {
           return { status: 1, stdout: '', stderr: 'Error: Reconnecting... 2/5' };
+        }
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            provider: 'codex',
+            outputs: [{ result: { results: [{ url: 'https://example.com/source' }] } }],
+          }),
+          stderr: '',
+        };
+      },
+      asyncSleep: async (milliseconds) => { delays.push(milliseconds); },
+    });
+
+    const result = await client.runWebSearch({ query: '需要核验的主题', provider: 'codex' });
+
+    assert.equal(calls, 2);
+    assert.deepEqual(delays, [2_000]);
+    assert.equal(result.provider, 'codex');
+  });
+
+  it('retries a transient Windows EBUSY cleanup failure from bounded Codex search', async () => {
+    let calls = 0;
+    const delays = [];
+    const client = createOpenClawClient({
+      entryPath: 'C:/openclaw/dist/index.js',
+      runner: () => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            status: 1,
+            stdout: '',
+            stderr: "EBUSY: resource busy or locked, rmdir 'C:\\Temp\\codex-home\\.tmp\\plugins-clone-test'",
+          };
         }
         return {
           status: 0,

@@ -120,9 +120,13 @@ function normalizeSources(result, provider, retrievedAt) {
   return { summary: summary || null, sources };
 }
 
-function hasGroundedSummary(evidence) {
+function hasGroundedSummary(evidence, provider) {
+  // Codex Hosted Search returns a synthesized answer with citation URLs, but its
+  // citation records do not include per-source snippets.
   return Boolean(evidence?.summary
-    && evidence.sources.some((source) => typeof source.snippet === 'string' && source.snippet));
+    && evidence.sources.length > 0
+    && (provider === 'codex'
+      || evidence.sources.some((source) => typeof source.snippet === 'string' && source.snippet)));
 }
 
 function normalizedTimestamp(value, field) {
@@ -248,7 +252,7 @@ export async function createResearchSnapshot({
           continue;
         }
         const authorityScore = Math.max(...evidence.sources.map(sourceAuthorityScore));
-        const groundedSummary = hasGroundedSummary(evidence);
+        const groundedSummary = hasGroundedSummary(evidence, actualProvider);
         if (authorityScore === 0 && !groundedSummary) {
           attempts.push({
             provider,

@@ -27,6 +27,11 @@ function statusPill(record: ImageGenerationHistoryRecord) {
       <CircleAlert aria-hidden="true" size={12} />生成失败
     </span>;
   }
+  if (record.status === 'CANCELLED') {
+    return <span className="pill pill-cancelled">
+      <CircleAlert aria-hidden="true" size={12} />已取消
+    </span>;
+  }
   return <span className="pill pill-approved">
     <CircleCheck aria-hidden="true" size={12} />已完成
   </span>;
@@ -103,7 +108,6 @@ export function ImageGenerationHistory({
                   <span className="standalone-image-history-query">{record.query}</span>
                   <span className="standalone-image-history-meta">
                     <time dateTime={record.startedAt}>{runTime(record.startedAt)}</time>
-                    <span>{record.mode === 'LIVE' ? 'Live' : 'Mock'}</span>
                     <span>已生成 {record.generatedImages}/{record.imageCount}</span>
                     <span>已验收 {record.validatedImages}/{record.imageCount}</span>
                     {record.qcScore !== null && <span>QC {record.qcScore}/3</span>}

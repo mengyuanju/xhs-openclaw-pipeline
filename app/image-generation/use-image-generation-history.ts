@@ -11,8 +11,8 @@ export type ImageGenerationHistoryRecord = {
   runId: string;
   query: string;
   title: string;
-  mode: 'MOCK' | 'LIVE';
-  status: 'RUNNING' | 'COMPLETED' | 'FAILED';
+  mode: 'LIVE';
+  status: 'RUNNING' | 'COMPLETED' | 'CANCELLED' | 'FAILED';
   stage: string;
   completedImages: number;
   generatedImages: number;
@@ -32,7 +32,7 @@ type ImageGenerationHistoryResponse = {
   total: number;
 };
 
-export function useImageGenerationHistory() {
+export function useImageGenerationHistory({ pollWhile = false }: { pollWhile?: boolean } = {}) {
   const [records, setRecords] = useState<ImageGenerationHistoryRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -65,12 +65,13 @@ export function useImageGenerationHistory() {
   const hasRunningRuns = records.some((record) => record.status === 'RUNNING');
 
   useEffect(() => {
-    if (!hasRunningRuns) return undefined;
+    if (!hasRunningRuns && !pollWhile) return undefined;
+    void refreshHistory({ silent: true }).catch(() => {});
     const intervalId = window.setInterval(() => {
       void refreshHistory({ silent: true }).catch(() => {});
     }, RUNNING_HISTORY_POLL_MS);
     return () => window.clearInterval(intervalId);
-  }, [hasRunningRuns, refreshHistory]);
+  }, [hasRunningRuns, pollWhile, refreshHistory]);
 
   return {
     records,

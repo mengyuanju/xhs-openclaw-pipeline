@@ -4,13 +4,6 @@ import { ImagePlus, LoaderCircle, WandSparkles } from 'lucide-react';
 import { useEffect, useState, type FormEvent } from 'react';
 
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 
 import { readImageGenerationDraft } from './image-generation-draft';
 import { ImageGenerationHistory } from './image-generation-history';
@@ -60,7 +53,6 @@ export function ImageGenerationWorkbench() {
   const confirm = useConfirmDialog();
   const [form, setForm] = useState(EMPTY_FORM);
   const [importedDraft, setImportedDraft] = useState(false);
-  const [mode, setMode] = useState<'MOCK' | 'LIVE'>('MOCK');
   const {
     records,
     total,
@@ -72,11 +64,13 @@ export function ImageGenerationWorkbench() {
     runId,
     busy,
     openingRunId,
+    cancellingRunId,
     progress,
     result,
     message,
     messageIsError,
     showMessage,
+    cancelRun,
     openRun,
     retryRun,
     startRun,
@@ -95,6 +89,11 @@ export function ImageGenerationWorkbench() {
     setImportedDraft(true);
   }, []);
 
+  useEffect(() => {
+    const requestedRunId = new URLSearchParams(window.location.search).get('runId');
+    if (requestedRunId) void openRun(requestedRunId);
+  }, [openRun]);
+
   function updateForm(field: keyof ImageGenerationForm, value: string) {
     setForm((current) => ({ ...current, [field]: value }));
   }
@@ -109,7 +108,7 @@ export function ImageGenerationWorkbench() {
       showMessage(error instanceof Error ? error.message : '图片策划格式不正确', true);
       return;
     }
-    if (mode === 'LIVE' && !await confirm({
+    if (!await confirm({
       title: '确认调用真实图片模型？',
       description: `本次会执行视觉规划、生成 ${imagePlan.length} 张图片、逐页 OCR 对齐和整套质量检查，会产生真实模型费用。`,
       confirmLabel: '确认费用并生成',
@@ -123,8 +122,8 @@ export function ImageGenerationWorkbench() {
         tags: tagsFrom(String(data.get('tags') ?? '')),
       },
       imagePlan,
-      mode,
-      ...(mode === 'LIVE' ? { confirmation: 'LIVE_IMAGE_COST_ACCEPTED' as const } : {}),
+      mode: 'LIVE',
+      confirmation: 'LIVE_IMAGE_COST_ACCEPTED',
     });
     await refreshHistory({ silent: true }).catch(() => {});
   }
@@ -137,6 +136,18 @@ export function ImageGenerationWorkbench() {
       confirmLabel: '确认费用并继续',
     })) return;
     await retryRun(progress.runId);
+    await refreshHistory({ silent: true }).catch(() => {});
+  }
+
+  async function cancelCurrentRun() {
+    if (progress?.status !== 'RUNNING' || cancellingRunId) return;
+    if (!await confirm({
+      title: '取消图片生成？',
+      description: '系统会停止当前生成和后续页面。已经完成的模型调用可能已经产生费用，取消后无法撤回。',
+      confirmLabel: '确认取消生成',
+      tone: 'danger',
+    })) return;
+    await cancelRun(progress.runId);
     await refreshHistory({ silent: true }).catch(() => {});
   }
 
@@ -175,20 +186,8 @@ export function ImageGenerationWorkbench() {
               <small>每项包含 kind、headline、subtitle、bullets 和 prompt；也可粘贴包含 imagePlan 字段的对象。</small>
             </div>
             <div className="field full">
-              <label htmlFor="image-mode">运行模式</label>
-              <Select value={mode} onValueChange={(value) => setMode(value as 'MOCK' | 'LIVE')}>
-                <SelectTrigger id="image-mode"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="MOCK">Mock 验证（不调用模型）</SelectItem>
-                  <SelectItem value="LIVE">Live 生成（产生模型费用）</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="field full">
-              <div className={mode === 'LIVE' ? 'notice warning' : 'notice'}>
-                {mode === 'LIVE'
-                  ? 'Live 会按当前生产配置生成 3–5 张图片，并执行视觉规划、OCR 对齐和质量检查；提交前会再次确认费用。'
-                  : 'Mock 使用确定性占位图验证分页、尺寸、文件和预览，不会调用任何外部模型。'}
+              <div className="notice warning">
+                系统会按当前生产配置调用真实模型生成 3–5 张图片，并执行视觉规划、OCR 对齐和质量检查；提交前会再次确认费用。
               </div>
             </div>
             <div className="field full inline">
@@ -205,6 +204,8 @@ export function ImageGenerationWorkbench() {
         {progress && <ImageGenerationProgress
           progress={progress}
           disabled={busy}
+          cancelling={cancellingRunId === progress.runId}
+          onCancel={() => { void cancelCurrentRun(); }}
           onResume={() => { void resumeRun(); }}
         />}
 

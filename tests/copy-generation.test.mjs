@@ -654,6 +654,13 @@ describe('standalone copy generation', () => {
     assert.match(route, /createStandaloneCopyGenerationJob/u);
     assert.match(route, /failStandaloneCopyGenerationJob/u);
     assert.match(route, /listStandaloneCopyGenerationJobs/u);
+    assert.match(route, /listStandaloneCopyGenerationBatches/u);
+    assert.match(route, /const copyBatchSchema = z\.object\(\{/u);
+    assert.match(route, /batch:\s*copyBatchSchema\.optional\(\)/u);
+    assert.match(route, /id:\s*z\.string\(\)\.uuid\(\)/u);
+    assert.match(route, /batch:\s*input\.batch/u);
+    assert.match(route, /listStandaloneCopyGenerations\(\{[\s\S]*batchId,/u);
+    assert.match(route, /listStandaloneCopyGenerationJobs\(\{ limit: 20, batchId \}\)/u);
     assert.match(route, /updateStandaloneCopyGenerationJobStage/u);
     assert.match(route, /onStageChange/u);
     assert.match(route, /jobId/u);

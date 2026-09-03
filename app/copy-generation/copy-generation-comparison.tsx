@@ -73,6 +73,8 @@ export type CopyGenerationTimingStatistics = {
 
 export type CopyGenerationResult = {
   id: number;
+  batchId: string | null;
+  batchName: string | null;
   query: string;
   input: Record<string, unknown>;
   requestedImageCount: 'auto' | number;

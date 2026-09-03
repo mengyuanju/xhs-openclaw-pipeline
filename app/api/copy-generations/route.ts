@@ -28,6 +28,11 @@ const referenceUrlSchema = z.string().trim().min(1).max(500).refine((value) => {
   }
 }, '参考链接必须是无账号密码的 HTTP(S) URL');
 
+const copyBatchSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().trim().min(1).max(100),
+}).strict();
+
 const copyGenerationSchema = z.object({
   query: z.string().trim().min(1).max(500),
   input: z.object({
@@ -42,6 +47,7 @@ const copyGenerationSchema = z.object({
     z.number().int().min(3).max(5),
   ]).default('auto'),
   autoReviseOnReject: z.boolean().default(false),
+  batch: copyBatchSchema.optional(),
   confirmation: z.literal('LIVE_MODEL_COST_ACCEPTED'),
 }).strict();
 
@@ -73,12 +79,18 @@ function copyGenerationJobFailureMessage(error: unknown) {
 export function GET(request: Request) {
   return apiHandler(request, {}, () => {
     const url = new URL(request.url);
+    const batchId = url.searchParams.get('batchId');
+    if (batchId !== null && !z.string().uuid().safeParse(batchId).success) {
+      throw new ApiError(400, 'INVALID_BATCH_ID', '批次 ID 无效');
+    }
     const result = withAdminStore((store: any) => ({
       ...store.listStandaloneCopyGenerations({
         page: url.searchParams.get('page'),
         pageSize: url.searchParams.get('pageSize'),
+        batchId,
       }),
-      jobs: store.listStandaloneCopyGenerationJobs({ limit: 20 }),
+      jobs: store.listStandaloneCopyGenerationJobs({ limit: 20, batchId }),
+      batches: store.listStandaloneCopyGenerationBatches({ limit: 20 }),
     }));
     return ok({
       ...result,
@@ -102,6 +114,7 @@ export function POST(request: Request) {
     try {
       const job = withAdminStore((store: any) => store.createStandaloneCopyGenerationJob({
         query: input.query,
+        batch: input.batch,
       }));
       jobId = job.id;
       const runtime = copyGenerationRuntime();

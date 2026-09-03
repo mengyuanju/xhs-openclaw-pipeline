@@ -52,6 +52,7 @@ const PROGRESS_STAGES = new Set([
   'QUALITY_CHECK',
   'FINALIZING',
   'COMPLETED',
+  'CANCELLED',
   'FAILED',
 ]);
 const LEGACY_BACKGROUND_ONLY_MARKER = '整套图片均由图像模型逐张生成视觉底图';
@@ -71,6 +72,15 @@ export class StandaloneImageConfirmationError extends Error {
   constructor(message = 'Live image generation requires explicit cost confirmation') {
     super(message);
     this.name = 'StandaloneImageConfirmationError';
+  }
+}
+
+export class StandaloneImageCancellationError extends Error {
+  constructor(message = '图片生成已取消', options = {}) {
+    super(message, { cause: options.cause });
+    this.name = 'StandaloneImageCancellationError';
+    this.stage = 'CANCELLED';
+    this.code = 'IMAGE_GENERATION_CANCELLED';
   }
 }
 
@@ -180,6 +190,31 @@ function validatedImageFile(value) {
   return file;
 }
 
+function cancellationError(signal) {
+  return signal?.reason instanceof StandaloneImageCancellationError
+    ? signal.reason
+    : new StandaloneImageCancellationError(undefined, { cause: signal?.reason });
+}
+
+function throwIfCancelled(signal) {
+  if (signal?.aborted) throw cancellationError(signal);
+}
+
+function clientWithCancellation(client, signal) {
+  if (!signal) return client;
+  const withSignal = (method) => (input) => {
+    throwIfCancelled(signal);
+    return method.call(client, { ...input, signal });
+  };
+  return {
+    ...client,
+    runText: withSignal(client.runText),
+    runVision: withSignal(client.runVision),
+    runImage: withSignal(client.runImage),
+    runImageEdit: withSignal(client.runImageEdit),
+  };
+}
+
 function runDirectory(outputRoot, runId) {
   const root = resolve(outputRoot, RUN_DIRECTORY);
   const path = resolve(root, validatedRunId(runId));
@@ -200,16 +235,14 @@ async function writeJsonAtomic(path, value) {
 }
 
 export function estimateStandaloneImageDuration({ mode, imageCount }) {
-  if (!['MOCK', 'LIVE'].includes(mode)) throw new TypeError('mode must be MOCK or LIVE');
+  if (mode !== 'LIVE') throw new TypeError('mode must be LIVE');
   if (!Number.isInteger(imageCount) || imageCount < 3 || imageCount > 5) {
     throw new RangeError('imageCount must be an integer between 3 and 5');
   }
-  return mode === 'MOCK'
-    ? 5_000 + imageCount * 1_000
-    : 150_000 + imageCount * 90_000;
+  return 150_000 + imageCount * 90_000;
 }
 
-function createProgressReporter({ outputDir, runId, mode, imageCount, onProgress }) {
+function createProgressReporter({ outputDir, runId, mode, imageCount, onProgress, signal }) {
   const startedAtMs = Date.now();
   const startedAt = new Date(startedAtMs).toISOString();
   let lastPercent = 0;
@@ -223,6 +256,7 @@ function createProgressReporter({ outputDir, runId, mode, imageCount, onProgress
 
   return function reportProgress(update) {
     writeQueue = writeQueue.catch(() => {}).then(async () => {
+      if (signal?.aborted && update.stage !== 'CANCELLED') throw cancellationError(signal);
       const now = Date.now();
       const elapsedMs = Math.max(0, now - startedAtMs);
       const progressPercent = Math.max(
@@ -260,13 +294,15 @@ function createProgressReporter({ outputDir, runId, mode, imageCount, onProgress
         'progress.diagnostic',
       );
       if (nextDiagnostic) diagnostic = nextDiagnostic;
-      const terminal = ['COMPLETED', 'FAILED'].includes(update.stage);
+      const terminal = ['COMPLETED', 'CANCELLED', 'FAILED'].includes(update.stage);
       const snapshot = {
         runId,
         mode,
         status: update.stage === 'COMPLETED'
           ? 'COMPLETED'
-          : update.stage === 'FAILED' ? 'FAILED' : 'RUNNING',
+          : update.stage === 'CANCELLED'
+            ? 'CANCELLED'
+            : update.stage === 'FAILED' ? 'FAILED' : 'RUNNING',
         stage: update.stage,
         progressPercent,
         message: String(update.message ?? '').slice(0, 500),
@@ -290,7 +326,7 @@ function createProgressReporter({ outputDir, runId, mode, imageCount, onProgress
         error: typeof update.error === 'string' ? update.error.slice(0, 500) : null,
         result: update.result ?? null,
       };
-      await writeFile(join(outputDir, PROGRESS_FILE), `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');
+      await writeJsonAtomic(join(outputDir, PROGRESS_FILE), snapshot);
       if (typeof onProgress === 'function') {
         await Promise.resolve(onProgress(snapshot)).catch(() => {});
       }
@@ -465,17 +501,13 @@ export function normalizeStandaloneImageSource(source) {
 }
 
 export function assertStandaloneImageConfirmation(mode, confirmation) {
-  if (!['MOCK', 'LIVE'].includes(mode)) throw new TypeError('mode must be MOCK or LIVE');
-  if (mode === 'LIVE' && confirmation !== 'LIVE_IMAGE_COST_ACCEPTED') {
+  if (mode !== 'LIVE') throw new TypeError('mode must be LIVE');
+  if (confirmation !== 'LIVE_IMAGE_COST_ACCEPTED') {
     throw new StandaloneImageConfirmationError();
-  }
-  if (mode === 'MOCK' && confirmation !== undefined) {
-    throw new TypeError('Mock mode does not accept Live confirmation');
   }
 }
 
-function qualitySummary(qc, mode) {
-  if (mode === 'MOCK') return 'Mock 链路已完成；占位图仅用于验证分页、尺寸、文件和预览，不可发布。';
+function qualitySummary(qc) {
   const issues = Array.isArray(qc?.issues) ? qc.issues.slice(0, 3) : [];
   if (issues.length === 0) return '图片生成与质量检查完成，等待人工抽查。';
   return issues.map((issue) => String(issue.label ?? '未命名问题')).join('；').slice(0, 500);
@@ -600,8 +632,7 @@ function publicQualityDetails(qc) {
 }
 
 function publicResult({ runId, mode, images, qc, visualPlan, planning }) {
-  const blocked = mode === 'MOCK'
-    || qc?.disposition === 'blocked'
+  const blocked = qc?.disposition === 'blocked'
     || qc?.issues?.some((issue) => issue?.severity === 'blocking');
   const qualityDetails = publicQualityDetails(qc);
   return {
@@ -628,7 +659,7 @@ function publicResult({ runId, mode, images, qc, visualPlan, planning }) {
     qc: {
       passed: !blocked,
       overallScore: Number.isFinite(qc?.overallScore) ? Number(qc.overallScore) : null,
-      summary: qualitySummary(qc, mode),
+      summary: qualitySummary(qc),
       ...qualityDetails,
     },
   };
@@ -782,17 +813,22 @@ export async function generateStandaloneImages({
   runId: requestedRunId = String(randomUUID()),
   onProgress = undefined,
   recovery = null,
+  signal = /** @type {AbortSignal | undefined} */ (undefined),
 }) {
   const runId = validatedRunId(requestedRunId);
   const post = normalizeStandaloneImageSource(source);
   const query = boundedText(source.query, 'query', 1, 500);
   const imageCount = post.imagePlan.length;
-  const mock = mode === 'MOCK';
-  if (!mock && mode !== 'LIVE') throw new TypeError('mode must be MOCK or LIVE');
-  if (!mock && !runtime.client) throw new TypeError('Live mode requires an OpenClaw client');
+  if (mode !== 'LIVE') throw new TypeError('mode must be LIVE');
+  if (!runtime.client) throw new TypeError('Live mode requires an OpenClaw client');
   if (onProgress !== undefined && typeof onProgress !== 'function') {
     throw new TypeError('onProgress must be a function');
   }
+  if (signal !== undefined && (typeof signal !== 'object' || typeof signal.aborted !== 'boolean')) {
+    throw new TypeError('signal must be an AbortSignal');
+  }
+  throwIfCancelled(signal);
+  const client = clientWithCancellation(runtime.client, signal);
   const outputDir = runDirectory(outputRoot, runId);
   await mkdir(resolve(outputRoot, RUN_DIRECTORY), { recursive: true });
   await mkdir(outputDir, { recursive: false });
@@ -802,6 +838,7 @@ export async function generateStandaloneImages({
     mode,
     imageCount,
     onProgress,
+    signal,
   });
   const completedPages = new Set();
   const generatedPages = new Set();
@@ -813,6 +850,7 @@ export async function generateStandaloneImages({
       progressPercent: 3,
       message: '正在准备图片生成环境',
     });
+    throwIfCancelled(signal);
     await writeJsonAtomic(join(outputDir, 'source.json'), { query, post });
     const productionSettings = normalizeProductionSettings(runtime.productionSettings ?? {});
     const complianceDisclosure = productionDisclosure(productionSettings);
@@ -820,16 +858,11 @@ export async function generateStandaloneImages({
     await reportProgress({
       stage: 'PLANNING',
       progressPercent: 8,
-      message: mock ? '正在创建 Mock 视觉规划' : '正在调用模型创建视觉规划',
+      message: '正在调用模型创建视觉规划',
     });
-    const planned = recovery?.planned ?? (mock
-      ? {
-        visualPlan: createMockVisualPlan(post, { imageCount }),
-        model: null,
-        degraded: false,
-        warning: null,
-      }
-      : await liveVisualPlan(runtime.client, post, imageCount));
+    throwIfCancelled(signal);
+    const planned = recovery?.planned ?? await liveVisualPlan(client, post, imageCount);
+    throwIfCancelled(signal);
     const visualPlan = planned.visualPlan;
     await writeJsonAtomic(join(outputDir, 'visual-plan.json'), {
       model: planned.model,
@@ -873,8 +906,8 @@ export async function generateStandaloneImages({
         }),
       });
     });
-    const validator = mock ? undefined : wrapAlignmentValidator(createImageAlignmentValidator({
-      openclaw: runtime.client,
+    const validator = wrapAlignmentValidator(createImageAlignmentValidator({
+      openclaw: client,
       post,
       visualPlan,
       imageCount,
@@ -890,23 +923,23 @@ export async function generateStandaloneImages({
       await reportProgress({
         stage: 'GENERATING',
         progressPercent: 24,
-        message: mock ? '正在渲染 Mock 图片' : `正在生成第 1/${imageCount} 页图片`,
+        message: `正在生成第 1/${imageCount} 页图片`,
       });
       images = await renderDeliveryImages({
         post,
         outputDir,
-        mock,
-        openclaw: runtime.client,
+        mock: false,
+        openclaw: client,
         imageCount,
         imagePrompts,
         visibleTextPlans: visualPlan.pages.map((page) => page.allowedVisibleText),
         layoutDirections: visualPlan.pages.map((page) => page.layoutDirection),
         layoutTemplates: visualPlan.pages.map((page) => page.layoutTemplate),
         complianceDisclosure,
-        textRenderingMode: mock ? 'deterministic-overlay' : 'model-native',
+        textRenderingMode: 'model-native',
         validateImage: validator,
         recoveryImages: recovery?.images ?? [],
-        maxGenerationAttempts: mock ? 1 : 3,
+        maxGenerationAttempts: 3,
         imageConcurrency: runtime.imageConcurrency,
         heartbeat: async ({ stage, pageIndex, attempt }) => {
           const aligning = stage === 'image_alignment';
@@ -949,22 +982,18 @@ export async function generateStandaloneImages({
       message: `${imageCount} 页图片已全部生成`,
     });
     activeStage = 'QUALITY_CHECK';
-    let rubricAssessment = null;
-    if (!mock) {
-      await reportProgress({
-        stage: 'QUALITY_CHECK',
-        progressPercent: 85,
-        completedImages: imageCount,
-        message: '正在进行整套图片质量检查',
-      });
-      const assessed = await createDeliveryQualityAssessor({
-        openclaw: runtime.client,
-        task: { query, input: {} },
-        post,
-        model: productionSettings.modelApi.qualityModel,
-      })({ imagePaths: images.map((image) => join(outputDir, image.file)) });
-      rubricAssessment = assessed.assessment;
-    }
+    await reportProgress({
+      stage: 'QUALITY_CHECK',
+      progressPercent: 85,
+      completedImages: imageCount,
+      message: '正在进行整套图片质量检查',
+    });
+    const assessed = await createDeliveryQualityAssessor({
+      openclaw: client,
+      task: { query, input: {} },
+      post,
+      model: productionSettings.modelApi.qualityModel,
+    })({ imagePaths: images.map((image) => join(outputDir, image.file)) });
     await reportProgress({
       stage: 'QUALITY_CHECK',
       progressPercent: 92,
@@ -975,9 +1004,9 @@ export async function generateStandaloneImages({
       post,
       images,
       outputDir,
-      mode: mock ? 'mock' : 'live',
+      mode: 'live',
       expectedImageCount: imageCount,
-      rubricAssessment,
+      rubricAssessment: assessed.assessment,
     });
     const result = publicResult({
       runId,
@@ -1000,11 +1029,31 @@ export async function generateStandaloneImages({
       stage: 'COMPLETED',
       progressPercent: 100,
       completedImages: imageCount,
-      message: mock ? 'Mock 图片链路验证完成' : '图片生成和质量检查完成',
+      message: '图片生成和质量检查完成',
       result,
     });
     return result;
   } catch (error) {
+    if (error instanceof StandaloneImageCancellationError || signal?.aborted) {
+      const cancelled = error instanceof StandaloneImageCancellationError
+        ? error
+        : cancellationError(signal);
+      const discoveredImages = await countStandaloneGeneratedImages(outputDir, imageCount)
+        .catch(() => generatedPages.size);
+      const generatedImages = Math.max(generatedPages.size, discoveredImages);
+      const canResume = generatedImages > 0;
+      await reportProgress({
+        stage: 'CANCELLED',
+        progressPercent: 0,
+        completedImages: completedPages.size,
+        generatedImages,
+        validatedImages: completedPages.size,
+        message: cancelled.message,
+        canResume,
+        retryReason: canResume ? 'CANCELLED' : null,
+      }).catch(() => {});
+      throw cancelled;
+    }
     const failure = error instanceof StandaloneImageAlignmentError
       || error instanceof StandaloneImageGenerationError
       ? error
@@ -1039,6 +1088,7 @@ export async function retryStandaloneImageRun({
   runtime = {},
   outputRoot,
   onProgress = undefined,
+  signal = /** @type {AbortSignal | undefined} */ (undefined),
 }) {
   const sourceRunId = validatedRunId(rawSourceRunId);
   const runId = validatedRunId(rawRunId);
@@ -1072,11 +1122,36 @@ export async function retryStandaloneImageRun({
     outputRoot,
     runId,
     onProgress,
+    signal,
     recovery: {
       planned,
       images,
     },
   });
+}
+
+export async function cancelStandaloneImageRun({ outputRoot, runId: rawRunId }) {
+  const runId = validatedRunId(rawRunId);
+  const progress = await readStandaloneImageProgress({ outputRoot, runId });
+  if (progress.status !== 'RUNNING') return progress;
+  const now = new Date();
+  const canResume = progress.generatedImages > 0;
+  await writeJsonAtomic(join(runDirectory(outputRoot, runId), PROGRESS_FILE), {
+    ...progress,
+    status: 'CANCELLED',
+    stage: 'CANCELLED',
+    message: '图片生成已取消',
+    updatedAt: now.toISOString(),
+    finishedAt: now.toISOString(),
+    elapsedMs: Math.max(0, now.getTime() - Date.parse(progress.startedAt)),
+    estimatedRemainingMs: 0,
+    estimateOverdue: false,
+    canResume,
+    retryReason: canResume ? 'CANCELLED' : null,
+    error: null,
+    result: null,
+  });
+  return readStandaloneImageProgress({ outputRoot, runId });
 }
 
 export async function readStandaloneImageProgress({ outputRoot, runId: rawRunId }) {
@@ -1091,7 +1166,7 @@ export async function readStandaloneImageProgress({ outputRoot, runId: rawRunId 
     throw new TypeError('standalone image progress is invalid');
   }
   if (!isRecord(value) || value.runId !== runId || !['MOCK', 'LIVE'].includes(value.mode)
-    || !['RUNNING', 'COMPLETED', 'FAILED'].includes(value.status)
+    || !['RUNNING', 'COMPLETED', 'CANCELLED', 'FAILED'].includes(value.status)
     || !PROGRESS_STAGES.has(value.stage)
     || !Number.isInteger(value.progressPercent) || value.progressPercent < 0 || value.progressPercent > 100
     || !Number.isInteger(value.completedImages) || value.completedImages < 0
@@ -1136,7 +1211,7 @@ export async function readStandaloneImageProgress({ outputRoot, runId: rawRunId 
   const retryReason = typeof value.retryReason === 'string'
     ? value.retryReason
     : inferredRetryReason;
-  const canResume = value.status === 'FAILED'
+  const canResume = ['FAILED', 'CANCELLED'].includes(value.status)
     && generatedImages > 0
     && (value.canResume === true || inferredRetryReason !== null);
   const result = value.status === 'COMPLETED'
@@ -1202,6 +1277,7 @@ export async function listStandaloneImageRuns({ outputRoot, limit: rawLimit = 50
     .map(async (entry) => {
       try {
         const progress = await readStandaloneImageProgress({ outputRoot, runId: entry.name });
+        if (progress.mode !== 'LIVE') return null;
         const source = await readOptionalRunArtifact(
           runDirectory(outputRoot, entry.name),
           'source.json',

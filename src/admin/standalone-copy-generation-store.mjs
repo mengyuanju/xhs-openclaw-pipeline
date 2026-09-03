@@ -5,6 +5,8 @@ const MAX_RESEARCH_BYTES = 100_000;
 const MAX_HISTORY_PAGE = 1_000_000;
 const MAX_JOB_ERROR_LENGTH = 1_000;
 const MAX_JOB_LIST_SIZE = 50;
+const MAX_BATCH_LIST_SIZE = 50;
+const MAX_BATCH_NAME_LENGTH = 100;
 const MAX_TIMING_DURATION_MS = 24 * 60 * 60_000;
 const MAX_TIMING_SAMPLES = 1_000;
 const THINKING_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
@@ -25,6 +27,7 @@ const TIMING_COLUMNS = [
   ['reviewedReviewMs', 'reviewed_review_ms'],
   ['totalMs', 'total_ms'],
 ];
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -97,6 +100,35 @@ function normalizedPaginationInteger(value, fallback, maximum) {
   return Math.max(1, Math.min(maximum, parsed));
 }
 
+function normalizedBatchId(value, { optional = false } = {}) {
+  if (optional && (value === null || value === undefined || value === '')) return null;
+  const id = boundedText(value, 'batch id', 36).toLowerCase();
+  if (!UUID_PATTERN.test(id)) throw new TypeError('batch id must be a UUID');
+  return id;
+}
+
+function normalizedBatch(value) {
+  if (value === null || value === undefined) return null;
+  if (!isRecord(value)) throw new TypeError('batch must be an object');
+  return {
+    id: normalizedBatchId(value.id),
+    name: boundedText(value.name, 'batch name', MAX_BATCH_NAME_LENGTH),
+  };
+}
+
+function assertCompatibleBatchName(db, batch) {
+  if (batch === null) return;
+  const existing = db.prepare(`
+    SELECT batch_name FROM standalone_copy_generation_jobs WHERE batch_id = ?
+    UNION ALL
+    SELECT batch_name FROM standalone_copy_generations WHERE batch_id = ?
+    LIMIT 1
+  `).get(batch.id, batch.id);
+  if (existing && existing.batch_name !== batch.name) {
+    throw new TypeError('batch name does not match the existing batch id');
+  }
+}
+
 function normalizedTiming(value) {
   if (!isRecord(value)) throw new TypeError('copy generation timing must be an object');
   return Object.fromEntries(TIMING_COLUMNS.map(([field]) => {
@@ -163,6 +195,8 @@ function rowToStandaloneCopyGeneration(row) {
   if (!row) return null;
   return {
     id: Number(row.id),
+    batchId: row.batch_id ?? null,
+    batchName: row.batch_name ?? null,
     query: row.query,
     input: parsedObject(row.input_json, 'stored copy generation input'),
     requestedImageCount: row.requested_image_count === 'auto'
@@ -198,6 +232,8 @@ function rowToStandaloneCopyGenerationJob(row) {
   if (!row) return null;
   return {
     id: Number(row.id),
+    batchId: row.batch_id ?? null,
+    batchName: row.batch_name ?? null,
     query: row.query,
     status: row.status,
     generationId: row.generation_id === null ? null : Number(row.generation_id),
@@ -237,6 +273,8 @@ export function initializeStandaloneCopyGenerationSchema(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS standalone_copy_generations (
       id INTEGER PRIMARY KEY,
+      batch_id TEXT,
+      batch_name TEXT,
       query TEXT NOT NULL,
       input_json TEXT NOT NULL,
       requested_image_count TEXT NOT NULL
@@ -264,12 +302,18 @@ export function initializeStandaloneCopyGenerationSchema(db) {
       CHECK (
         (manual_reviewed_at IS NULL AND manual_reviewed_by IS NULL)
         OR (manual_reviewed_at IS NOT NULL AND manual_reviewed_by IS NOT NULL)
+      ),
+      CHECK (
+        (batch_id IS NULL AND batch_name IS NULL)
+        OR (batch_id IS NOT NULL AND batch_name IS NOT NULL)
       )
     ) STRICT;
     CREATE INDEX IF NOT EXISTS standalone_copy_generations_created_idx
       ON standalone_copy_generations(id DESC);
     CREATE TABLE IF NOT EXISTS standalone_copy_generation_jobs (
       id INTEGER PRIMARY KEY,
+      batch_id TEXT,
+      batch_name TEXT,
       query TEXT NOT NULL,
       status TEXT NOT NULL CHECK (status IN ('RUNNING', 'COMPLETED', 'FAILED')),
       generation_id INTEGER REFERENCES standalone_copy_generations(id) ON DELETE RESTRICT,
@@ -283,6 +327,10 @@ export function initializeStandaloneCopyGenerationSchema(db) {
         (status = 'RUNNING' AND generation_id IS NULL AND error IS NULL AND finished_at IS NULL)
         OR (status = 'COMPLETED' AND generation_id IS NOT NULL AND error IS NULL AND finished_at IS NOT NULL)
         OR (status = 'FAILED' AND generation_id IS NULL AND error IS NOT NULL AND finished_at IS NOT NULL)
+      ),
+      CHECK (
+        (batch_id IS NULL AND batch_name IS NULL)
+        OR (batch_id IS NOT NULL AND batch_name IS NOT NULL)
       )
     ) STRICT;
     CREATE INDEX IF NOT EXISTS standalone_copy_generation_jobs_status_idx
@@ -309,6 +357,11 @@ export function initializeStandaloneCopyGenerationSchema(db) {
       db.exec(`ALTER TABLE standalone_copy_generations ADD COLUMN ${column} TEXT`);
     }
   }
+  for (const column of ['batch_id', 'batch_name']) {
+    if (!columns.has(column)) {
+      db.exec(`ALTER TABLE standalone_copy_generations ADD COLUMN ${column} TEXT`);
+    }
+  }
   const jobColumns = new Set(
     db.prepare('PRAGMA table_info(standalone_copy_generation_jobs)').all()
       .map((column) => column.name),
@@ -321,20 +374,33 @@ export function initializeStandaloneCopyGenerationSchema(db) {
   if (!jobColumns.has('stage_updated_at')) {
     db.exec('ALTER TABLE standalone_copy_generation_jobs ADD COLUMN stage_updated_at TEXT');
   }
+  for (const column of ['batch_id', 'batch_name']) {
+    if (!jobColumns.has(column)) {
+      db.exec(`ALTER TABLE standalone_copy_generation_jobs ADD COLUMN ${column} TEXT`);
+    }
+  }
   db.exec(`UPDATE standalone_copy_generation_jobs
     SET stage_updated_at = COALESCE(stage_updated_at, created_at)`);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS standalone_copy_generations_batch_idx
+      ON standalone_copy_generations(batch_id, id DESC);
+    CREATE INDEX IF NOT EXISTS standalone_copy_generation_jobs_batch_idx
+      ON standalone_copy_generation_jobs(batch_id, id DESC);
+  `);
 }
 
 export function createStandaloneCopyGenerationStore(db) {
   return {
-    createStandaloneCopyGenerationJob({ query: rawQuery }) {
+    createStandaloneCopyGenerationJob({ query: rawQuery, batch: rawBatch = null }) {
       const query = boundedText(rawQuery, 'copy generation job query', 500);
+      const batch = normalizedBatch(rawBatch);
+      assertCompatibleBatchName(db, batch);
       const createdAt = new Date().toISOString();
       const result = db.prepare(`
         INSERT INTO standalone_copy_generation_jobs
-          (query, status, current_stage, stage_updated_at, created_at)
-        VALUES (?, 'RUNNING', 'QUERY_REVIEW', ?, ?)
-      `).run(query, createdAt, createdAt);
+          (batch_id, batch_name, query, status, current_stage, stage_updated_at, created_at)
+        VALUES (?, ?, ?, 'RUNNING', 'QUERY_REVIEW', ?, ?)
+      `).run(batch?.id ?? null, batch?.name ?? null, query, createdAt, createdAt);
       return rowToStandaloneCopyGenerationJob(
         db.prepare('SELECT * FROM standalone_copy_generation_jobs WHERE id = ?')
           .get(Number(result.lastInsertRowid)),
@@ -375,13 +441,14 @@ export function createStandaloneCopyGenerationStore(db) {
       );
     },
 
-    listStandaloneCopyGenerationJobs({ limit: rawLimit = 20 } = {}) {
+    listStandaloneCopyGenerationJobs({ limit: rawLimit = 20, batchId: rawBatchId = null } = {}) {
       const limit = normalizedPaginationInteger(rawLimit, 20, MAX_JOB_LIST_SIZE);
+      const batchId = normalizedBatchId(rawBatchId, { optional: true });
       return db.prepare(`
         SELECT * FROM standalone_copy_generation_jobs
-        WHERE status != 'COMPLETED'
+        WHERE status != 'COMPLETED' AND (? IS NULL OR batch_id = ?)
         ORDER BY id DESC LIMIT ?
-      `).all(limit).map(rowToStandaloneCopyGenerationJob);
+      `).all(batchId, batchId, limit).map(rowToStandaloneCopyGenerationJob);
     },
 
     saveStandaloneCopyGeneration({
@@ -398,6 +465,7 @@ export function createStandaloneCopyGenerationStore(db) {
       researchSnapshot = null,
       stageReviews,
       timing: rawTiming,
+      batch: rawBatch = null,
     }) {
       const query = boundedText(rawQuery, 'copy generation query', 500);
       const originalModel = boundedText(rawOriginalModel, 'original model', 200);
@@ -411,20 +479,35 @@ export function createStandaloneCopyGenerationStore(db) {
       const timing = normalizedTiming(rawTiming);
       const requested = normalizedRequestedImageCount(requestedImageCount);
       const jobId = rawJobId === null ? null : normalizedJobId(rawJobId);
+      const requestedBatch = normalizedBatch(rawBatch);
       const createdAt = new Date().toISOString();
       db.exec('BEGIN IMMEDIATE');
       try {
+        let batch = requestedBatch;
+        if (jobId !== null) {
+          const job = db.prepare(`
+            SELECT batch_id, batch_name FROM standalone_copy_generation_jobs
+            WHERE id = ? AND status = 'RUNNING'
+          `).get(jobId);
+          if (!job) throw new Error('running copy generation job not found');
+          batch = job.batch_id === null
+            ? null
+            : normalizedBatch({ id: job.batch_id, name: job.batch_name });
+        }
+        assertCompatibleBatchName(db, batch);
         const result = db.prepare(`
           INSERT INTO standalone_copy_generations
-            (query, input_json, requested_image_count, original_post_json,
+            (batch_id, batch_name, query, input_json, requested_image_count, original_post_json,
              reviewed_post_json, original_model, reviewed_model,
              original_thinking, reviewed_thinking, query_review_json,
              original_text_review_json, reviewed_text_review_json,
              research_snapshot_json, query_review_ms, research_ms,
              original_generation_ms, original_review_ms, reviewed_generation_ms,
              reviewed_review_ms, total_ms, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
+          batch?.id ?? null,
+          batch?.name ?? null,
           query,
           redactedJson(input, 'copy generation input', MAX_INPUT_BYTES),
           requested,
@@ -491,16 +574,26 @@ export function createStandaloneCopyGenerationStore(db) {
       );
     },
 
-    listStandaloneCopyGenerations({ page: rawPage = 1, pageSize: rawPageSize = 20 } = {}) {
+    listStandaloneCopyGenerations({
+      page: rawPage = 1,
+      pageSize: rawPageSize = 20,
+      batchId: rawBatchId = null,
+    } = {}) {
       const page = normalizedPaginationInteger(rawPage, 1, MAX_HISTORY_PAGE);
       const pageSize = normalizedPaginationInteger(rawPageSize, 20, 50);
+      const batchId = normalizedBatchId(rawBatchId, { optional: true });
       const totalItems = Number(
-        db.prepare('SELECT COUNT(*) AS count FROM standalone_copy_generations').get().count,
+        db.prepare(`
+          SELECT COUNT(*) AS count FROM standalone_copy_generations
+          WHERE (? IS NULL OR batch_id = ?)
+        `).get(batchId, batchId).count,
       );
       const data = db.prepare(`
         SELECT * FROM standalone_copy_generations
+        WHERE (? IS NULL OR batch_id = ?)
         ORDER BY id DESC LIMIT ? OFFSET ?
-      `).all(pageSize, (page - 1) * pageSize).map(rowToStandaloneCopyGeneration);
+      `).all(batchId, batchId, pageSize, (page - 1) * pageSize)
+        .map(rowToStandaloneCopyGeneration);
       return {
         data,
         statistics: timingStatistics(db),
@@ -511,6 +604,40 @@ export function createStandaloneCopyGenerationStore(db) {
           totalPages: Math.ceil(totalItems / pageSize),
         },
       };
+    },
+
+    listStandaloneCopyGenerationBatches({ limit: rawLimit = 20 } = {}) {
+      const limit = normalizedPaginationInteger(rawLimit, 20, MAX_BATCH_LIST_SIZE);
+      return db.prepare(`
+        WITH batch_entries AS (
+          SELECT batch_id, batch_name, 'COMPLETED' AS status, created_at AS activity_at
+          FROM standalone_copy_generations
+          WHERE batch_id IS NOT NULL
+          UNION ALL
+          SELECT batch_id, batch_name, status,
+                 COALESCE(finished_at, stage_updated_at, created_at) AS activity_at
+          FROM standalone_copy_generation_jobs
+          WHERE batch_id IS NOT NULL AND status != 'COMPLETED'
+        )
+        SELECT batch_id, MAX(batch_name) AS batch_name,
+               COUNT(*) AS total_count,
+               SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) AS completed_count,
+               SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) AS failed_count,
+               SUM(CASE WHEN status = 'RUNNING' THEN 1 ELSE 0 END) AS running_count,
+               MAX(activity_at) AS last_activity_at
+        FROM batch_entries
+        GROUP BY batch_id
+        ORDER BY last_activity_at DESC, batch_id DESC
+        LIMIT ?
+      `).all(limit).map((row) => ({
+        id: row.batch_id,
+        name: row.batch_name,
+        totalCount: Number(row.total_count),
+        completedCount: Number(row.completed_count),
+        failedCount: Number(row.failed_count),
+        runningCount: Number(row.running_count),
+        lastActivityAt: row.last_activity_at,
+      }));
     },
   };
 }

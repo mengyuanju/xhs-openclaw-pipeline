@@ -161,6 +161,8 @@
 .standalone-image-history-error .button { width: fit-content; }
 .standalone-image-history-footnote { display: flex; align-items: flex-start; gap: 6px; margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; line-height: 1.5; }
 .standalone-image-history-footnote svg { flex: 0 0 auto; margin-top: 1px; }
+.batch-image-history { margin-top: 16px; }
+.batch-image-history .standalone-image-history { position: static; max-height: 520px; }
 .standalone-image-body { min-height: 220px; }
 .standalone-image-plan { min-height: 260px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
 .standalone-image-progress { display: grid; gap: 14px; }
@@ -178,6 +180,8 @@
 .standalone-image-progress > small { color: var(--muted); line-height: 1.55; }
 .standalone-image-resume { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .standalone-image-resume .button { flex: 0 0 auto; }
+.standalone-image-progress-actions { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.standalone-image-progress-actions .button { flex: 0 0 auto; }
 .standalone-image-result { overflow: hidden; }
 .standalone-image-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 0 0 14px; }
 .standalone-image-summary div { min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--control-bg-muted); }
@@ -1063,7 +1067,7 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
   .batch-generation-next-step, .batch-approved-toolbar { align-items: stretch; flex-direction: column; }
   .batch-generation-next-step .button, .batch-approved-toolbar .button { width: 100%; }
   .standalone-image-summary, .standalone-image-progress-facts, .standalone-image-page-card, .standalone-image-layout-facts, .standalone-image-layout-constraints, .standalone-image-quality-dimensions { grid-template-columns: 1fr; }
-  .standalone-image-resume { align-items: flex-start; flex-direction: column; }
+  .standalone-image-resume, .standalone-image-progress-actions { align-items: flex-start; flex-direction: column; }
   .standalone-image-page-card { padding: 12px; }
   .standalone-image-section-heading { align-items: flex-start; flex-direction: column; gap: 5px; }
   .standalone-image-layout-block ul { grid-template-columns: 1fr; }
