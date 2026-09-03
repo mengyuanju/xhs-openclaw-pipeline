@@ -648,6 +648,15 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .copy-knowledge-details h4 { margin: 8px 0 0; font-size: 11px; }
 .copy-knowledge-details h4:first-child { margin-top: 0; }
 .copy-knowledge-details p { margin: 0; overflow-wrap: anywhere; color: #514c47; font-size: 12px; line-height: 1.75; white-space: pre-wrap; }
+.copy-knowledge-edit-block { display: grid; gap: 10px; }
+.copy-knowledge-editor { overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: #faf8f5; }
+.copy-knowledge-editor > summary { padding: 11px 13px; color: #5f5a55; cursor: pointer; font-size: 12px; font-weight: 750; }
+.copy-knowledge-editor > summary:hover { color: var(--ink); background: #f5f1ec; }
+.copy-knowledge-editor > summary:focus-visible { outline: 3px solid var(--control-ring); outline-offset: -3px; }
+.copy-knowledge-editor[open] > summary { border-bottom: 1px solid var(--line); background: #f5f1ec; }
+.copy-knowledge-edit-form { padding: 16px; background: var(--surface); }
+.copy-knowledge-edit-actions { justify-content: flex-start; }
+.copy-knowledge-edit-message { margin: 0; }
 .prompt-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .code-hint { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; color: #766f68; font-size: 11px; }
 .task-title { width: 100%; max-width: 780px; }

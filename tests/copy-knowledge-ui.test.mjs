@@ -33,6 +33,11 @@ describe('excellent copy analysis and classification UI', () => {
     assert.match(library, /按标签查看/u);
     assert.match(workbench, /\/api\/copy-analyses/u);
     assert.match(workbench, /\/api\/copy-knowledge-items/u);
+    assert.match(library, /编辑已保存内容/u);
+    assert.match(library, /保存修改/u);
+    assert.match(library, /取消/u);
+    assert.match(library, /method:\s*'PATCH'/u);
+    assert.match(library, /\/api\/copy-knowledge-items\/\$\{item\.id\}/u);
   });
 
   it('validates both mutation endpoints with strict bounded schemas', async () => {
@@ -52,5 +57,20 @@ describe('excellent copy analysis and classification UI', () => {
     assert.match(storageRoute, /labels:\s*z\.array/u);
     assert.match(storageRoute, /\.min\(1\)\.max\(12\)/u);
     assert.match(storageRoute, /maxBytes:\s*192 \* 1024/u);
+  });
+
+  it('validates saved-copy edits through a strict bounded PATCH endpoint', async () => {
+    const updateRoute = await source('app/api/copy-knowledge-items/[id]/route.ts');
+
+    assert.match(updateRoute, /export async function PATCH/u);
+    assert.match(updateRoute, /apiHandler\(request, \{ mutation: true \}/u);
+    assert.match(updateRoute, /parsePositiveId/u);
+    assert.match(updateRoute, /\.strict\(\)/u);
+    assert.match(updateRoute, /sourceCopy/u);
+    assert.match(updateRoute, /analysisPrompt/u);
+    assert.match(updateRoute, /labels:\s*z\.array/u);
+    assert.match(updateRoute, /\.min\(1\)\.max\(12\)/u);
+    assert.match(updateRoute, /maxBytes:\s*192 \* 1024/u);
+    assert.match(updateRoute, /notFound\('文案知识不存在'\)/u);
   });
 });

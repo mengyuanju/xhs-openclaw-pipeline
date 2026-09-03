@@ -54,6 +54,48 @@ describe('copy knowledge store', () => {
     }
   });
 
+  it('updates saved analysis content and label links without replacing its metadata', () => {
+    const store = createAdminStore(':memory:');
+    try {
+      const created = store.createCopyKnowledge(knowledgeInput({
+        labels: ['方法型', '强开头'],
+      }));
+
+      const updated = store.updateCopyKnowledge(created.id, {
+        title: '修改后的分析标题',
+        sourceCopy: '这是修改后的优秀文案。',
+        analysisPrompt: '改为分析叙事节奏与转化路径。',
+        summary: '修改后的摘要。',
+        analysis: '修改后的完整分析。',
+        labels: ['故事型', '#强结尾', '故事型'],
+      });
+
+      assert.equal(updated.id, created.id);
+      assert.equal(updated.title, '修改后的分析标题');
+      assert.equal(updated.sourceCopy, '这是修改后的优秀文案。');
+      assert.equal(updated.analysisModel, 'fake-text-model');
+      assert.equal(updated.createdAt, created.createdAt);
+      assert.deepEqual(updated.labels, ['故事型', '强结尾']);
+      assert.equal(store.listCopyKnowledge({ label: '方法型' }).pagination.totalItems, 0);
+      assert.equal(store.listCopyKnowledge({ label: '故事型' }).data[0].id, created.id);
+      assert.deepEqual(store.listCopyKnowledgeLabels(), [
+        { name: '强结尾', itemCount: 1 },
+        { name: '故事型', itemCount: 1 },
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('returns null when updating a copy knowledge item that does not exist', () => {
+    const store = createAdminStore(':memory:');
+    try {
+      assert.equal(store.updateCopyKnowledge(999, knowledgeInput()), null);
+    } finally {
+      store.close();
+    }
+  });
+
   it('rejects entries without a usable classification label', () => {
     const store = createAdminStore(':memory:');
     try {

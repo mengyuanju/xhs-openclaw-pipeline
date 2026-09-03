@@ -40,7 +40,7 @@ export function normalizeCopyKnowledgeLabels(value) {
   return labels;
 }
 
-function normalizeInput(input) {
+function normalizeEditableInput(input) {
   const labels = normalizeCopyKnowledgeLabels(input.labels);
   return {
     title: requiredText(input.title, 'copy knowledge title', 200),
@@ -48,8 +48,14 @@ function normalizeInput(input) {
     analysisPrompt: requiredText(input.analysisPrompt, 'analysis prompt', 8_000),
     summary: requiredText(input.summary, 'analysis summary', 2_000),
     analysis: requiredText(input.analysis, 'analysis result', 15_000),
-    analysisModel: optionalText(input.analysisModel, 'analysis model', 200),
     labels,
+  };
+}
+
+function normalizeInput(input) {
+  return {
+    ...normalizeEditableInput(input),
+    analysisModel: optionalText(input.analysisModel, 'analysis model', 200),
   };
 }
 
@@ -145,6 +151,21 @@ export function createCopyKnowledgeStore(db) {
   const linkLabel = db.prepare(`
     INSERT INTO copy_knowledge_item_labels (item_id, label_id, position) VALUES (?, ?, ?)
   `);
+  const findItem = db.prepare('SELECT id FROM copy_knowledge_items WHERE id = ?');
+  const updateItem = db.prepare(`
+    UPDATE copy_knowledge_items
+    SET title = ?, source_copy = ?, source_copy_sha256 = ?, analysis_prompt = ?, summary = ?, analysis = ?
+    WHERE id = ?
+  `);
+  const unlinkLabels = db.prepare('DELETE FROM copy_knowledge_item_labels WHERE item_id = ?');
+
+  function attachLabels(itemId, labels, createdAt) {
+    labels.forEach((label, position) => {
+      insertLabel.run(label.name, label.key, createdAt);
+      const labelId = Number(findLabel.get(label.key).id);
+      linkLabel.run(itemId, labelId, position);
+    });
+  }
 
   return {
     createCopyKnowledge(input) {
@@ -163,13 +184,34 @@ export function createCopyKnowledgeStore(db) {
           createdAt,
         );
         const itemId = Number(result.lastInsertRowid);
-        normalized.labels.forEach((label, position) => {
-          insertLabel.run(label.name, label.key, createdAt);
-          const labelId = Number(findLabel.get(label.key).id);
-          linkLabel.run(itemId, labelId, position);
-        });
+        attachLabels(itemId, normalized.labels, createdAt);
         db.exec('COMMIT');
         return itemDetails(db, [itemId])[0];
+      } catch (error) {
+        if (db.isTransaction) db.exec('ROLLBACK');
+        throw error;
+      }
+    },
+
+    updateCopyKnowledge(id, input) {
+      if (!Number.isSafeInteger(id) || id < 1) throw new TypeError('copy knowledge id is invalid');
+      if (!findItem.get(id)) return null;
+      const normalized = normalizeEditableInput(input);
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        updateItem.run(
+          normalized.title,
+          normalized.sourceCopy,
+          sha256(normalized.sourceCopy),
+          normalized.analysisPrompt,
+          normalized.summary,
+          normalized.analysis,
+          id,
+        );
+        unlinkLabels.run(id);
+        attachLabels(id, normalized.labels, nowIso());
+        db.exec('COMMIT');
+        return itemDetails(db, [id])[0];
       } catch (error) {
         if (db.isTransaction) db.exec('ROLLBACK');
         throw error;
