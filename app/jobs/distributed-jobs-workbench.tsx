@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 
 import { apiRequest } from '../components/api-client';
+import { resumeImageTask } from '../components/resume-image-task';
 
 type TaskState =
   | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_FAILED'
@@ -227,22 +228,25 @@ export function DistributedJobsWorkbench({
 
   async function retryTask(useLatestConfig: boolean) {
     if (!selected || !RETRY_STATES.has(selected.state)) return;
+    const resumeImages = !useLatestConfig && selected.state.startsWith('IMAGE_');
     if (!await confirm({
-      title: selected.currentExecutionId ? '作废当前执行并重新开始？' : '重新执行失败任务？',
+      title: resumeImages ? '从失败步骤继续生图？' : '重新执行任务？',
       description: useLatestConfig
         ? '会作废旧执行并使用当前最新提示词、知识库和生产配置。旧执行的迟到结果将被拒绝。'
-        : '会作废旧执行并复用上次配置快照。旧执行的迟到结果将被拒绝。',
-      confirmLabel: '确认重新执行',
+        : resumeImages ? '保留已完成的规划、图片、验收和上传结果，由原执行机继续未完成步骤。剩余模型调用会产生费用。'
+          : '会作废旧执行并复用上次配置快照。旧执行的迟到结果将被拒绝。',
+      confirmLabel: resumeImages ? '继续生图' : '确认重新执行',
       tone: selected.currentExecutionId ? 'danger' : 'default',
     })) return;
     setBusy(true);
     try {
-      await apiRequest(apiPath(`/v1/tasks/${selected.id}/retry`), {
+      if (resumeImages) await resumeImageTask(selected.id);
+      else await apiRequest(apiPath(`/v1/tasks/${selected.id}/retry`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ useLatestConfig }),
       });
-      setMessage('已创建新的待执行代次。');
+      setMessage(resumeImages ? '任务已等待原执行机从失败步骤继续。' : '任务已重新加入队列。');
       await refresh({ silent: true });
     } catch (retryError) {
       setError(retryError instanceof Error ? retryError.message : '重新执行失败');
@@ -275,7 +279,9 @@ export function DistributedJobsWorkbench({
   const revision = selected?.copyRevisions.find((item) => item.id === selected.currentCopyRevisionId)
     ?? selected?.copyRevisions[0];
   const reviewed = copyFromRevision(revision);
-  const selectedAssets = selected?.assets.filter((asset) => asset.imageRunId === selected.currentImageRunId) ?? [];
+  const resultImages = selected?.imageRuns.find((run) => run.id === selected.currentImageRunId)?.result?.images ?? [];
+  const selectedAssets = selected?.assets.filter((asset) => asset.imageRunId === selected.currentImageRunId
+    || resultImages.some((image: { assetId?: number }) => image.assetId === asset.id)) ?? [];
 
   return <div className="distributed-jobs-stack">
     <form className="panel" onSubmit={createTasks}>
@@ -367,8 +373,8 @@ export function DistributedJobsWorkbench({
         {selected.state === 'COPY_REVIEW_PENDING' && <button className="button primary" type="button" disabled={busy} onClick={() => { void approveCopy(); }}><CheckCircle2 size={15} />审核通过，进入生图队列</button>}
         {selected.state === 'DELIVERY_REVIEW_PENDING' && <button className="button primary" type="button" disabled={busy} onClick={() => { void approveDelivery(); }}><CheckCircle2 size={15} />图文审核通过</button>}
         {RETRY_STATES.has(selected.state) && <>
-          <button className="button" type="button" disabled={busy} onClick={() => { void retryTask(false); }}><RotateCcw size={15} />复用原配置重试</button>
-          <button className="button" type="button" disabled={busy} onClick={() => { void retryTask(true); }}>使用最新配置重试</button>
+          <button className="button" type="button" disabled={busy} onClick={() => { void retryTask(false); }}><RotateCcw size={15} />{selected.state.startsWith('IMAGE_') ? '从失败步骤继续' : '复用原配置重试'}</button>
+          <button className="button" type="button" disabled={busy} onClick={() => { void retryTask(true); }}>使用最新配置重新生成</button>
         </>}
       </div>
     </section>}

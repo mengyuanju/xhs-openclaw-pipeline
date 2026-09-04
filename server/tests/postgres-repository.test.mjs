@@ -108,6 +108,126 @@ test('execution failure uses separate PostgreSQL parameters for varchar and text
   assert.match(taskUpdate.sql, /progress_message = \$3, error = \$4/u);
 });
 
+function executionFailureDatabase(kind) {
+  const executionId = '47d841f5-3808-46f0-9f2a-fa9781379b38';
+  let stored = {
+    task: taskRow({ state: `${kind}_RUNNING`, current_execution_id: executionId }),
+    execution: {
+      id: executionId, task_id: 41, kind, status: 'RUNNING', stage: 'RESEARCH',
+      progress_message: '', error: null, finished_at: null,
+    },
+    imageRun: kind === 'IMAGE' ? { status: 'RUNNING' } : null,
+  };
+  let pending;
+  const transactions = [];
+
+  // PostgreSQL varchar(n) counts characters, not UTF-16 code units or bytes.
+  function varchar500(value) {
+    const characters = [...value];
+    if (characters.slice(500).some((character) => character !== ' ')) {
+      throw Object.assign(new Error('value too long for type character varying(500)'), { code: '22001' });
+    }
+    return characters.slice(0, 500).join('');
+  }
+
+  const client = {
+    async query(sql, values) {
+      const source = String(sql).trim();
+      if (source === 'BEGIN') {
+        pending = structuredClone(stored);
+      } else if (source === 'COMMIT') {
+        stored = pending;
+        pending = undefined;
+      } else if (source === 'ROLLBACK') {
+        pending = undefined;
+      } else if (source.includes('FROM task_executions e')) {
+        assert.equal(values[0], executionId);
+        return { rows: [{
+          ...pending.execution,
+          current_execution_id: pending.task.current_execution_id,
+          task_state: pending.task.state,
+        }] };
+      } else if (source.startsWith('UPDATE task_executions SET')) {
+        const [id, progressMessage, error] = values;
+        assert.equal(id, executionId);
+        const message = varchar500(progressMessage);
+        Object.assign(pending.execution, {
+          status: 'FAILED', stage: 'FAILED', progress_message: message, error, finished_at: new Date(),
+        });
+        return { rows: [] };
+      } else if (source.startsWith('UPDATE image_runs SET')) {
+        assert.equal(values[0], executionId);
+        pending.imageRun.status = 'FAILED';
+        return { rows: [] };
+      } else if (source.startsWith('UPDATE tasks SET')) {
+        const [taskId, state, progressMessage, error, currentExecutionId] = values;
+        assert.equal(taskId, pending.task.id);
+        assert.equal(currentExecutionId, pending.task.current_execution_id);
+        const message = varchar500(progressMessage);
+        Object.assign(pending.task, {
+          state, current_execution_id: null, current_stage: 'FAILED',
+          progress_message: message, error, finished_at: new Date(),
+        });
+        return { rows: [structuredClone(pending.task)] };
+      } else {
+        throw new Error(`unexpected failure-write query: ${source}`);
+      }
+      transactions.push(source);
+      return { rows: [] };
+    },
+    release() {},
+  };
+  return { executionId, pool: { connect: async () => client }, transactions, stored: () => stored };
+}
+
+test('execution failure commits bounded Unicode progress and full redacted errors to both tables', async (t) => {
+  const fakeApiKey = `sk-${'a'.repeat(16)}`;
+  const fakeBearerToken = 'b'.repeat(16);
+  const rawSecretError = `${'x'.repeat(490)} ${fakeApiKey} Bearer ${fakeBearerToken} ${'尾'.repeat(2_000)}`;
+  const redactedError = `${'x'.repeat(490)} [REDACTED_API_KEY] Bearer [REDACTED_TOKEN] ${'尾'.repeat(2_000)}`;
+  const cases = [
+    { name: 'short error', error: 'simulated failure', expectedError: 'simulated failure' },
+    ...[499, 500, 501, 2_000, 2_001].map((length) => ({
+      name: `${length} ASCII characters`, error: 'x'.repeat(length), expectedError: 'x'.repeat(Math.min(length, 2_000)),
+    })),
+    ...[500, 501].map((length) => ({
+      name: `${length} emoji code points`, error: '😀'.repeat(length), expectedError: '😀'.repeat(length),
+    })),
+    { name: 'emoji at the truncation boundary', error: `${'x'.repeat(499)}😀尾`, expectedError: `${'x'.repeat(499)}😀尾` },
+    { name: 'redaction before both length limits', error: new Error(rawSecretError), expectedError: redactedError.slice(0, 2_000) },
+  ];
+
+  for (const kind of ['COPY', 'IMAGE']) {
+    for (const { name, error, expectedError } of cases) {
+      await t.test(`${kind}: ${name}`, async () => {
+        const database = executionFailureDatabase(kind);
+        const repository = new PostgresControlPlaneRepository({ pool: database.pool });
+
+        const failed = await repository.failExecution(database.executionId, error);
+
+        const { task, execution, imageRun } = database.stored();
+        const expectedProgress = [...expectedError].slice(0, 500).join('');
+        assert.equal(failed.state, `${kind}_FAILED`);
+        assert.equal(failed.currentExecutionId, null);
+        assert.equal(failed.progressMessage, expectedProgress);
+        assert.equal(failed.error, expectedError);
+        for (const row of [task, execution]) {
+          assert.equal(row.progress_message, expectedProgress);
+          assert.equal(row.progress_message.isWellFormed(), true);
+          assert.equal(row.error, expectedError);
+          assert.ok(row.finished_at instanceof Date);
+        }
+        assert.equal(task.state, `${kind}_FAILED`);
+        assert.equal(task.current_execution_id, null);
+        assert.equal(execution.status, 'FAILED');
+        assert.equal(execution.stage, 'FAILED');
+        if (kind === 'IMAGE') assert.equal(imageRun.status, 'FAILED');
+        assert.deepEqual(database.transactions, ['BEGIN', 'COMMIT']);
+      });
+    }
+  }
+});
+
 test('task pages filter multiple states and Query text while returning a total', async () => {
   const queries = [];
   const repository = new PostgresControlPlaneRepository({

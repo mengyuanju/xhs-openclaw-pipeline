@@ -1,11 +1,13 @@
 import { constants } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { access, mkdir, readFile, rm } from 'node:fs/promises';
 import { basename, join, relative, resolve } from 'node:path';
 
 import { createCopyGenerationClient } from '../copy-generation-client.mjs';
 import { generateCopy, toCopyGenerationResponse } from '../copy-generation.mjs';
 import { createOpenClawClient } from '../openclaw.mjs';
-import { generateStandaloneImages } from '../standalone-image-generation.mjs';
+import { generateStandaloneImages, retryStandaloneImageRun, standaloneImageRunDirectory } from '../standalone-image-generation.mjs';
+import { findImageRecoveryRun, imageRecoveryRunIds, loadUploadedImages, saveCheckpoint } from './image-checkpoints.mjs';
 
 const COPY_PROGRESS = Object.freeze({
   QUERY_REVIEW: 5,
@@ -81,10 +83,6 @@ function copySource(revision) {
   return { query: content.query ?? revision.query, copy, imagePlan };
 }
 
-function imageOutputDirectory(taskWorkRoot, runId) {
-  return join(taskWorkRoot, 'standalone-image-runs', runId);
-}
-
 export async function checkExecutorReady({
   controlPlane,
   workRoot,
@@ -129,6 +127,7 @@ export async function executeImageClaim({
   claim,
   controlPlane,
   workRoot,
+  imageClient,
 }) {
   const { execution, task } = claim;
   const snapshot = execution.snapshot;
@@ -136,16 +135,22 @@ export async function executeImageClaim({
   const taskRoot = safeTaskWorkRoot(workRoot, task.id);
   const source = copySource(snapshot.copyRevision);
   if (!source.query) source.query = snapshot.task.query;
-  const result = await generateStandaloneImages({
+  const recoveryRunIds = imageRecoveryRunIds(execution, taskRoot);
+  const sourceRunId = recoveryRunIds.length > 0
+    ? await findImageRecoveryRun(taskRoot, recoveryRunIds)
+    : null;
+  const generate = sourceRunId ? retryStandaloneImageRun : generateStandaloneImages;
+  const result = await generate({
     source,
     mode: 'LIVE',
     outputRoot: taskRoot,
     runId: execution.id,
+    ...(sourceRunId ? { sourceRunId, expectedSource: source, allowInterrupted: true } : {}),
     runtime: {
       productionSettings: settings,
       imageSystemPrompt: publishedPrompt(snapshot, 'IMAGE_SYSTEM'),
       visualReference: visualReference(snapshot),
-      client: createOpenClawClient({ modelApi: settings.modelApi ?? {} }),
+      client: imageClient ?? createOpenClawClient({ modelApi: settings.modelApi ?? {} }),
     },
     onProgress: async (progress) => controlPlane.updateProgress(execution.id, {
       stage: progress.stage,
@@ -160,25 +165,35 @@ export async function executeImageClaim({
       },
     }),
   });
-  const outputDirectory = imageOutputDirectory(taskRoot, execution.id);
+  const outputDirectory = standaloneImageRunDirectory(taskRoot, execution.id);
+  const uploads = await loadUploadedImages(taskRoot, recoveryRunIds);
+  await controlPlane.updateProgress(execution.id, {
+    stage: 'UPLOADING', progressPercent: 97, message: '正在上传已生成的图片', details: {},
+  });
   const uploadedImages = [];
   for (const image of result.images) {
     const fileName = basename(image.file);
     if (fileName !== image.file || !/^\d{2}-[a-z0-9-]+\.png$/u.test(fileName)) {
       throw new Error('generated image file name is invalid');
     }
-    const asset = await controlPlane.uploadAsset(execution.id, {
-      content: await readFile(join(outputDirectory, fileName)),
-      mediaType: 'image/png',
-      fileName,
-    });
+    const content = await readFile(join(outputDirectory, fileName));
+    const sha256 = createHash('sha256').update(content).digest('hex');
+    const asset = uploads[fileName]?.sha256 === sha256
+      ? uploads[fileName].asset
+      : await controlPlane.uploadAsset(execution.id, { content, mediaType: 'image/png', fileName });
+    uploads[fileName] = { sha256, asset };
+    await saveCheckpoint(join(outputDirectory, 'uploads.json'), uploads);
     uploadedImages.push({ ...image, assetId: asset.id, url: asset.url });
   }
+  await controlPlane.updateProgress(execution.id, {
+    stage: 'FINALIZING', progressPercent: 99, message: '图片已上传，正在保存交付结果', details: {},
+  });
   const completed = await controlPlane.completeImage(execution.id, {
     ...result,
     images: uploadedImages,
   });
-  await rm(taskRoot, { recursive: true, force: true });
+  // Cleanup failure must not turn an accepted delivery into a failed task.
+  await rm(taskRoot, { recursive: true, force: true }).catch(() => {});
   return completed;
 }
 
@@ -196,6 +211,7 @@ export function createExecutorAgent({
   if (!controlPlane) throw new TypeError('controlPlane client is required');
   if (typeof imageWorkerEnabled !== 'boolean') throw new TypeError('imageWorkerEnabled must be a boolean');
   let ready = false;
+  const pendingFailures = new Map();
 
   async function reportFailure(claim, error) {
     try {
@@ -205,9 +221,24 @@ export function createExecutorAgent({
     }
   }
 
+  async function finishFailure(kind, { claim, error }) {
+    await reportFailure(claim, error);
+    pendingFailures.delete(kind);
+    return {
+      kind,
+      taskId: claim.task.id,
+      executionId: claim.execution.id,
+      status: error?.code === 'STALE_EXECUTION' ? 'ABANDONED' : 'FAILED',
+      error,
+    };
+  }
+
   async function claimAndExecute(kind) {
     if (!ready) throw new Error('executor is not ready; call prepare before claiming work');
     if (kind === 'IMAGE' && !imageWorkerEnabled) return null;
+    // A failed report must be retried before claiming; the server still owns the
+    // RUNNING lease. Never regenerate content just to retry a status update.
+    if (pendingFailures.has(kind)) return finishFailure(kind, pendingFailures.get(kind));
     const claim = kind === 'COPY'
       ? await controlPlane.claimCopy(nodeId)
       : await controlPlane.claimImage(nodeId);
@@ -220,14 +251,9 @@ export function createExecutorAgent({
       }
       return { kind, taskId: claim.task.id, executionId: claim.execution.id, status: 'SUCCEEDED' };
     } catch (error) {
-      await reportFailure(claim, error);
-      return {
-        kind,
-        taskId: claim.task.id,
-        executionId: claim.execution.id,
-        status: error?.code === 'STALE_EXECUTION' ? 'ABANDONED' : 'FAILED',
-        error,
-      };
+      const failure = { claim, error };
+      pendingFailures.set(kind, failure);
+      return finishFailure(kind, failure);
     }
   }
 

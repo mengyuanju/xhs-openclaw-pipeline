@@ -93,10 +93,22 @@ export function createControlPlaneClient({
       `/v1/executions/${executionId}/complete-image`,
       { method: 'POST', body: { result }, timeoutMs: 60_000 },
     ),
-    failExecution: (executionId, error) => request(
-      `/v1/executions/${executionId}/fail`,
-      { method: 'POST', body: { error: error instanceof Error ? error.message : String(error) } },
-    ),
+    async failExecution(executionId, error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const path = `/v1/executions/${executionId}/fail`;
+      try {
+        return await request(path, { method: 'POST', body: { error: message } });
+      } catch (reportError) {
+        // Older servers copied the full error into progress_message varchar(500).
+        // Keep full diagnostics on upgraded servers; retry only that legacy shape.
+        if (reportError.status !== 500 || reportError.code !== 'INTERNAL_ERROR'
+          || [...message].length <= 500) throw reportError;
+        return request(path, {
+          method: 'POST',
+          body: { error: [...message].slice(0, 499).join('') + '…' },
+        });
+      }
+    },
     approveCopy: (taskId, input) => request(`/v1/tasks/${taskId}/approve-copy`, {
       method: 'POST', body: input,
     }),

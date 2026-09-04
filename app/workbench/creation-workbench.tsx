@@ -85,6 +85,7 @@ const STAGE_LABELS: Record<string, string> = {
   SEARCHING_IMAGES: '联网搜索图片',
   SELECTING_IMAGES: '筛选并校验图片',
   UPLOADING_IMAGES: '上传图片到中心服务',
+  UPLOADING: '上传图片到中心服务',
   QUERY_REVIEW: '选题审核',
   RESEARCH: '全网搜索与资料整理',
   ORIGINAL_GENERATION: '标题、正文与配图策划生成',

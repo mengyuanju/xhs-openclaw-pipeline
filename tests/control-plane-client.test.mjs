@@ -78,3 +78,46 @@ test('control plane client supports paged task search, counts and logical cancel
   assert.equal(calls[2].url, 'http://127.0.0.1:4310/v1/tasks/7/cancel');
   assert.equal(calls[2].init.method, 'POST');
 });
+
+test('failure reporting falls back to a bounded message for an older control plane varchar limit', async () => {
+  const errors = [];
+  const client = createControlPlaneClient({
+    baseUrl: 'http://127.0.0.1:4310',
+    fetchImpl: async (_url, init) => {
+      const { error } = JSON.parse(init.body);
+      errors.push(error);
+      const tooLong = [...error].length > 500;
+      return new Response(JSON.stringify(tooLong
+        ? { error: { code: 'INTERNAL_ERROR', message: 'control plane request failed' } }
+        : { data: { state: 'COPY_FAILED' } }), {
+        status: tooLong ? 500 : 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+  });
+  const message = '联网搜索失败：' + '错误🔍'.repeat(350);
+  const result = await client.failExecution('4c8649a9-8c8f-4708-aeb7-2df0a3171a5a', new Error(message));
+  assert.equal(result.state, 'COPY_FAILED');
+  assert.equal(errors.length, 2);
+  assert.equal(errors[0], message);
+  assert.ok([...errors[1]].length <= 500);
+  assert.ok(errors[1].isWellFormed());
+  assert.match(errors[1], /^联网搜索失败/u);
+});
+
+test('failure reporting does not retry stale executions or hide other errors', async () => {
+  for (const status of [400, 409, 503]) {
+    let calls = 0;
+    const client = createControlPlaneClient({
+      baseUrl: 'http://127.0.0.1:4310',
+      fetchImpl: async () => {
+        calls += 1;
+        return new Response(JSON.stringify({ error: { code: 'TEST_ERROR', message: 'failed' } }), {
+          status, headers: { 'Content-Type': 'application/json' },
+        });
+      },
+    });
+    await assert.rejects(client.failExecution('execution', new Error('x'.repeat(900))), { status });
+    assert.equal(calls, 1);
+  }
+});

@@ -245,7 +245,7 @@ export class PostgresControlPlaneRepository {
 
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
-    return { ok: true, databaseTime: result.rows[0].now };
+    return { ok: true, databaseTime: result.rows[0].now, capabilities: { imageResume: true } };
   }
 
   async registerNode({ nodeId: rawNodeId, name: rawName, imageWorkerEnabled = false }) {
@@ -481,8 +481,10 @@ export class PostgresControlPlaneRepository {
       if (active.rows[0]) return null;
       const queuedState = kind === 'COPY' ? 'COPY_QUEUED' : 'IMAGE_QUEUED';
       const runningState = kind === 'COPY' ? 'COPY_RUNNING' : 'IMAGE_RUNNING';
-      const ownership = kind === 'COPY' ? 'AND copy_executor_node_id = $2' : '';
-      const parameters = kind === 'COPY' ? [queuedState, nodeId] : [queuedState];
+      const ownership = kind === 'COPY'
+        ? 'AND copy_executor_node_id = $2'
+        : "AND COALESCE(pending_snapshot->'imageRecovery'->>'nodeId', $2) = $2";
+      const parameters = [queuedState, nodeId];
       const candidate = await client.query(`
         SELECT * FROM tasks
         WHERE state = $1 ${ownership}
@@ -693,6 +695,7 @@ export class PostgresControlPlaneRepository {
   async failExecution(rawExecutionId, rawError) {
     const executionId = normalizeUuid(rawExecutionId, 'executionId');
     const message = redactExecutionError(rawError);
+    const progressMessage = [...message].slice(0, 500).join('');
     return transaction(this.pool, async (client) => {
       const execution = await lockedExecution(client, executionId);
       const failedState = execution.kind === 'COPY' ? 'COPY_FAILED' : 'IMAGE_FAILED';
@@ -701,7 +704,7 @@ export class PostgresControlPlaneRepository {
           status = 'FAILED', stage = 'FAILED', progress_message = $2,
           error = $3, last_activity_at = now(), finished_at = now()
         WHERE id = $1
-      `, [executionId, message, message]);
+      `, [executionId, progressMessage, message]);
       if (execution.kind === 'IMAGE') {
         await client.query(`
           UPDATE image_runs SET status = 'FAILED', finished_at = now() WHERE id = $1
@@ -714,7 +717,7 @@ export class PostgresControlPlaneRepository {
           finished_at = now(), updated_at = now()
         WHERE id = $1 AND current_execution_id = $5
         RETURNING *
-      `, [execution.task_id, failedState, message, message, executionId]);
+      `, [execution.task_id, failedState, progressMessage, message, executionId]);
       return taskFrom(task.rows[0]);
     });
   }
@@ -732,11 +735,13 @@ export class PostgresControlPlaneRepository {
         throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'only running or failed work can be retried');
       }
       let snapshot = null;
+      let previousExecution = null;
       if (task.current_execution_id) {
         const execution = await client.query(`
           SELECT * FROM task_executions WHERE id = $1 FOR UPDATE
         `, [task.current_execution_id]);
         if (execution.rows[0]?.status === 'RUNNING') {
+          previousExecution = execution.rows[0];
           snapshot = execution.rows[0].snapshot;
           await client.query(`
             UPDATE task_executions SET
@@ -754,11 +759,27 @@ export class PostgresControlPlaneRepository {
         }
       } else if (!useLatestConfig) {
         const previous = await client.query(`
-          SELECT snapshot FROM task_executions
+          SELECT id, node_id, snapshot FROM task_executions
           WHERE task_id = $1 AND kind = $2
           ORDER BY started_at DESC LIMIT 1
         `, [taskId, isCopy ? 'COPY' : 'IMAGE']);
         snapshot = previous.rows[0]?.snapshot ?? null;
+        previousExecution = previous.rows[0] ?? null;
+      }
+      if (isImage && !useLatestConfig) {
+        if (!snapshot || !previousExecution) {
+          throw new ControlPlaneConflictError('IMAGE_RECOVERY_UNAVAILABLE', '原生图执行快照缺失，无法从失败步骤继续');
+        }
+        snapshot = {
+          ...snapshot,
+          imageRecovery: {
+            nodeId: previousExecution.node_id,
+            runIds: [...new Set([
+              previousExecution.id,
+              ...(snapshot.imageRecovery?.runIds ?? []),
+            ])],
+          },
+        };
       }
       const nextState = isCopy ? 'COPY_QUEUED' : 'IMAGE_QUEUED';
       const updated = await client.query(`

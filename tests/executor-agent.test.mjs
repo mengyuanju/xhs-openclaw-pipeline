@@ -89,3 +89,35 @@ test('executor readiness completes control-plane and work-directory checks befor
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('executor retries an unreported failure before claiming more work, without rerunning the model', async () => {
+  const claim = { task: { id: 11 }, execution: { id: '4c8649a9-8c8f-4708-aeb7-2df0a3171a5a' } };
+  const modelError = new Error('OpenClaw web search failed: EBUSY');
+  let claims = 0;
+  let modelCalls = 0;
+  let reports = 0;
+  const agent = createExecutorAgent({
+    nodeId: 'test',
+    readinessCheck: async () => {},
+    controlPlane: {
+      claimCopy: async () => { claims += 1; return claims === 1 ? claim : null; },
+      failExecution: async (id, error) => {
+        assert.equal(id, claim.execution.id);
+        assert.equal(error, modelError);
+        reports += 1;
+        if (reports === 1) throw new Error('control plane temporarily unavailable');
+      },
+    },
+    executeCopy: async () => { modelCalls += 1; throw modelError; },
+  });
+  await agent.prepare();
+  await assert.rejects(agent.runCopyOnce(), /temporarily unavailable/u);
+  const result = await agent.runCopyOnce();
+  assert.equal(result?.status, 'FAILED');
+  assert.equal(result?.error, modelError);
+  assert.equal(claims, 1);
+  assert.equal(modelCalls, 1);
+  assert.equal(reports, 2);
+  assert.equal(await agent.runCopyOnce(), null);
+  assert.equal(claims, 2);
+});
