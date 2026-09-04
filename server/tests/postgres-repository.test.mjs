@@ -232,6 +232,31 @@ test('personal task pagination and totals filter the creator independently of ex
   await assert.rejects(repository.listTasks({ createdByUserId: '' }), /createdByUserId/u);
 });
 
+test('task pages expose the current running image executor independently of copy ownership', async () => {
+  let selection;
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql) {
+      selection = sql;
+      return { rows: [
+        taskRow({ state: 'IMAGE_RUNNING', copy_executor_node_id: 'copy-a',
+          image_executor_node_id: 'image-b', image_executor_node_name: '生图工作站 B' }),
+        taskRow({ id: 42, state: 'IMAGE_QUEUED', image_executor_node_id: null,
+          image_executor_node_name: null }),
+      ] };
+    },
+  } });
+  const tasks = await repository.listTasks({ states: ['IMAGE_RUNNING', 'IMAGE_QUEUED'] });
+  assert.equal(tasks[0].copyExecutorNodeId, 'copy-a');
+  assert.equal(tasks[0].imageExecutorNodeId, 'image-b');
+  assert.equal(tasks[0].imageExecutorNodeName, '生图工作站 B');
+  assert.equal(tasks[1].imageExecutorNodeId, null);
+  assert.equal(tasks[1].imageExecutorNodeName, null);
+  assert.match(selection, /e.id = page.current_execution_id/u);
+  assert.match(selection, /e.kind = 'IMAGE' AND e.status = 'RUNNING' AND page.state = 'IMAGE_RUNNING'/u);
+  assert.match(selection, /n.id = e.node_id/u);
+  assert.doesNotMatch(selection, /n.id = .*copy_executor_node_id/u);
+});
+
 test('copy approval submits reviewed copy to the image queue', async () => {
   const queries = [];
   const client = {

@@ -37,6 +37,8 @@ function taskFrom(row) {
     createdByNodeId: row.created_by_node_id,
     createdByUserId: row.created_by_user_id ?? null,
     copyExecutorNodeId: row.copy_executor_node_id,
+    imageExecutorNodeId: row.image_executor_node_id ?? null,
+    imageExecutorNodeName: row.image_executor_node_name ?? null,
     currentCopyRevisionId: row.current_copy_revision_id === null
       ? null
       : Number(row.current_copy_revision_id),
@@ -373,10 +375,17 @@ export class PostgresControlPlaneRepository {
     const pageValues = [...values, safeLimit, safeOffset];
     const [result, countResult] = await Promise.all([
       this.pool.query(`
-      SELECT * FROM tasks
-      ${where}
-      ORDER BY id DESC
-      LIMIT $${pageValues.length - 1} OFFSET $${pageValues.length}
+      SELECT page.*, e.node_id AS image_executor_node_id, n.name AS image_executor_node_name
+      FROM (
+        SELECT * FROM tasks
+        ${where}
+        ORDER BY id DESC
+        LIMIT $${pageValues.length - 1} OFFSET $${pageValues.length}
+      ) page
+      LEFT JOIN task_executions e ON e.id = page.current_execution_id
+        AND e.kind = 'IMAGE' AND e.status = 'RUNNING' AND page.state = 'IMAGE_RUNNING'
+      LEFT JOIN executor_nodes n ON n.id = e.node_id
+      ORDER BY page.id DESC
     `, pageValues),
       includeTotal
         ? this.pool.query(`SELECT COUNT(*) AS total FROM tasks ${where}`, values)

@@ -31,6 +31,7 @@ import { apiRequest } from '../components/api-client';
 import { IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
 import { parseQueryBatch } from '../../src/control-plane/query-batch.mjs';
 import { selectCopyExecutor } from '../../src/control-plane/copy-executor-selection.mjs';
+import { imageExecutorLabel } from '../../src/control-plane/image-executor-label.mjs';
 import { TaskReviewDialog } from './task-review-dialog';
 
 import { WORKBENCH_VIEWS, matchesWorkbenchView, type TaskState, type ViewKey } from './views';
@@ -40,6 +41,8 @@ type DistributedTask = {
   query: string;
   state: TaskState;
   copyExecutorNodeId: string;
+  imageExecutorNodeId?: string | null;
+  imageExecutorNodeName?: string | null;
   createdByUserId: string | null;
   currentStage: string | null;
   progressPercent: number;
@@ -142,6 +145,7 @@ function timeLabel(value: string | null) {
 export function CreationWorkbench({ nodeId, creatorUserId, viewKey: activeView }: { nodeId: string; creatorUserId: string; viewKey: ViewKey }) {
   const router = useRouter();
   const activeDefinition = WORKBENCH_VIEWS.find((view) => view.key === activeView)!;
+  const executorColumnLabel = activeView === 'IMAGE_WORK' ? '生图执行机' : '文案执行机';
   const confirm = useConfirmDialog();
   const [tasks, setTasks] = useState<DistributedTask[]>([]);
   const [total, setTotal] = useState(0);
@@ -489,14 +493,16 @@ export function CreationWorkbench({ nodeId, creatorUserId, viewKey: activeView }
           </div>
           : <div className="table-wrap mobile-cards workbench-table-wrap">
             <table>
-              <thead><tr><th>ID</th><th>Query</th><th>状态</th><th>文案执行机</th><th>开始时间</th><th>阶段 / 进度</th><th>耗时</th><th>操作</th></tr></thead>
+              <thead><tr><th>ID</th><th>Query</th><th>状态</th><th>{executorColumnLabel}</th><th>开始时间</th><th>阶段 / 进度</th><th>耗时</th><th>操作</th></tr></thead>
               <tbody>{visibleTasks.map((task) => <tr key={task.id}>
                 <td className="mono" data-label="ID">#{task.id}</td>
                 <td className="query-cell" data-label="Query">{task.query}</td>
                 <td data-label="状态">
                   <span className={`pill ${isImageRetryExhausted(task) ? 'pill-rejected' : `workbench-state-${task.state.toLowerCase()}`}${isStale(task) ? ' pill-rejected' : ''}`}>{isImageRetryExhausted(task) ? IMAGE_RETRY_EXHAUSTED_LABEL : STATE_LABELS[task.state]}</span>
                 </td>
-                <td className="mono" data-label="文案执行机">{nodes.find((node) => node.id === task.copyExecutorNodeId)?.name ?? task.copyExecutorNodeId}</td>
+                <td className="mono" data-label={executorColumnLabel}>{activeView === 'IMAGE_WORK'
+                  ? imageExecutorLabel(task)
+                  : nodes.find((node) => node.id === task.copyExecutorNodeId)?.name ?? task.copyExecutorNodeId}</td>
                 <td data-label="开始时间">{timeLabel(task.executionStartedAt)}</td>
                 <td data-label="阶段 / 进度">
                   <div className="distributed-progress">
