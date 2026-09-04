@@ -22,7 +22,13 @@ async function responseData(response) {
   const contentType = response.headers.get('content-type') ?? '';
   let payload = null;
   if (contentType.includes('application/json')) {
-    payload = await response.json().catch(() => null);
+    try {
+      payload = await response.json();
+    } catch (error) {
+      if (error?.name === 'TimeoutError' || error?.name === 'AbortError') throw error;
+      // A successful HTTP status with a broken body is not an empty queue.
+      // Leave payload null so malformed upstream bodies never enter error messages.
+    }
   }
   if (!response.ok) {
     throw new ControlPlaneApiError(
@@ -31,7 +37,12 @@ async function responseData(response) {
       payload?.error?.message ?? `control plane returned HTTP ${response.status}`,
     );
   }
-  return payload?.data;
+  if (!payload || typeof payload !== 'object' || !Object.hasOwn(payload, 'data')) {
+    throw new ControlPlaneApiError(
+      502, 'INVALID_CONTROL_PLANE_RESPONSE', '中心服务响应不完整或格式错误，请检查连接后重试',
+    );
+  }
+  return payload.data;
 }
 
 /** @param {{ baseUrl: string, fetchImpl?: typeof fetch, requestTimeoutMs?: number }} options */
