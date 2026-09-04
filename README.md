@@ -26,7 +26,7 @@
 
 配置 `CONTROL_PLANE_URL` 后，系统进入分布式模式：远端 PostgreSQL 和远端文件目录是任务、执行记录、文案版本、图片结果、审核、提示词、知识库和生产配置的唯一真源。本机 Web 只作为操作界面，本机执行代理负责 OpenClaw 模型调用和短期临时文件。
 
-文案任务固定由创建它的执行机串行处理；人工审核指定文案版本后，任务直接进入全局生图队列。只有显式启用图片能力且当前空闲的执行机才能原子领取一条生图任务。每次执行都有独立 `executionId`；人工重试会作废旧代次，旧进程之后提交的结果会被中心服务拒绝，不能覆盖新结果。
+创建笔记时可以从当前在线节点中指定文案执行机，文案任务只会由被指定的执行机串行处理；人工审核指定文案版本后，任务直接进入全局生图队列。只有显式启用图片能力且当前空闲的执行机才能原子领取一条生图任务。每次执行都有独立 `executionId`；人工重试会作废旧代次，旧进程之后提交的结果会被中心服务拒绝，不能覆盖新结果。
 
 完整状态与存储设计见 `docs/distributed-control-plane.md`。
 
@@ -62,6 +62,93 @@ CONTROL_PLANE_STORAGE_ROOT=server-storage
 `CONTROL_PLANE_STORAGE_ROOT` 是中心服务保存任务图片等文件的目录；相对路径从 `server/` 目录计算。
 
 默认端口是 `4310`。需要供局域网执行机访问时，将 `CONTROL_PLANE_HOST` 设为 `0.0.0.0`，并仅在专用/可信内网的防火墙中允许执行机网段访问该端口。当前第一版是内网 HTTP 且没有 Worker 身份认证，不得做公网端口映射。
+
+### 中心数据库导出、首次导入与增量升级
+
+这组命令只操作 `server/.env` 中 `DATABASE_URL` 指向的 **PostgreSQL 中心库**，不操作旧的本地 SQLite。
+需要安装 PostgreSQL 客户端 `pg_dump` / `pg_restore`；Windows 自动查找 `C:\Program Files\PostgreSQL\<版本>\bin`。
+不在默认位置时，在 `server/.env` 添加 `PG_BIN=C:\你的路径\PostgreSQL\18\bin`。客户端主版本不能低于源数据库，恢复目标建议使用相同或更新的 PostgreSQL 主版本。
+不打印数据库密码，也不把密码放进子进程命令行；脚本从配置自动读取。
+
+以下命令均在 `server/` 目录执行。也可以在项目根目录分别使用 `npm run server:db:export`、`npm run server:db:init -- ...`、`npm run server:db:upgrade -- ...`。
+注意根目录旧的 `npm run db:init` 仍是 SQLite 初始化，不要混淆。
+
+#### 1. 导出所有表结构和数据
+
+```powershell
+cd server
+npm run db:export
+# 可选：指定导出文件夹的父目录（每次自动新建唯一备份子目录，不覆盖已有备份）
+npm run db:export -- --out=D:/backups/xhs
+```
+
+默认生成 `server/backups/backup-时间-随机后缀/`，包含：
+
+- `database.dump`：完整结构和数据的 PostgreSQL 备份，包含索引、约束和序列。
+- `database.sql`：同一份备份的可读 SQL，便于检查。
+- `tables/*.jsonl`：增量合并使用的全表数据，支持流式读取和大整数 ID。
+- `migrations/*.sql`：版本化表结构升级文件。
+- `manifest.json`：表清单、行数、序列状态和各文件校验和；最后写入，缺少清单即为未完成备份。
+
+全量备份与 JSONL 使用同一个数据库快照，保证表间一致。所有非系统表均导出；不导出 PostgreSQL 集群级账号、密码和授权配置。
+备份包含内部业务数据，默认目录已被 Git 忽略。完整保留整个备份目录，不要只复制一个 SQL 文件。
+
+#### 2. 在新机器首次导入
+
+先安装 PostgreSQL、创建账号和**空数据库**，并将目标连接写入目标机器的 `server/.env`。
+这里不要先运行旧的 `npm run init`，否则它会建表，数据库不再为空。
+
+```powershell
+cd server
+npm install
+# 只预览、检查文件完整性和目标库是否为空，不写入
+npm run db:init -- --from=D:/backups/xhs/backup-实际目录
+# 确认目标连接正确后执行
+npm run db:init -- --from=D:/backups/xhs/backup-实际目录 --apply
+```
+
+只允许导入空库，不会 DROP / 清空现有数据。恢复使用单事务，SQL 执行失败会回滚。目标数据库和角色需要提前创建，脚本不要求超级用户或 CREATEDB 权限。
+导入使用目标账号拥有对象，不复用源端 owner/ACL；新账号需要有目标 schema 的创建权限。
+
+#### 3. 已有数据库增量升级（结构 + 新增/修改数据）
+
+先停止目标中心服务及执行机，备份目标库，再导入来自同一数据源的新导出包：
+
+```powershell
+cd server
+npm run db:export
+npm run db:upgrade -- --from=D:/backups/xhs/backup-新版目录
+npm run db:upgrade -- --from=D:/backups/xhs/backup-新版目录 --apply
+```
+
+合并规则：新增主键插入；相同主键以导出包为准更新；相同内容不重复更新；不删除目标库独有的行。
+“增量”指目标端执行增量合并，导出包本身仍是完整快照，不是时间差分包。
+不是按修改时间自动取较新值：较旧备份也可能覆盖目标修改，因此务必预览目标连接、先备份并确认数据方向。
+发布版本跟随源库：同一提示词/知识条目已有的其他发布版本会归档，以保证只有一个当前发布版本；条目和历史内容不会删除。
+表结构迁移记录、checksum 校验、循环外键检查与数据合并一起管理。中途遇到冲突会回滚表结构和数据；序列只前进不倒退，极端提交失败可能留下无害的 ID 间隔。
+
+只支持**从同一源库衍生的数据**：独立两套系统可能用了相同数字 ID，不能当作同一条业务记录自动合并。
+脚本会检查创建时间、版本归属等身份字段及唯一键，发现明显冲突就停止回滚，不会猜测并改写关联 ID。
+没有主键的表不能安全增量合并；未记录为迁移 SQL 的手工结构差异也会被拒绝。全量初始化不受这两项增量限制。
+预览只列出源表行数和待迁移版本；完整逐行冲突检查在执行事务中完成，不保证预览通过就一定无冲突。
+
+只升级当前代码的表结构、不合并业务数据：
+
+```powershell
+npm run db:upgrade
+npm run db:upgrade -- --apply
+```
+
+后续新增字段/索引时，在 `server/migrations/` 新增编号 SQL，见该目录 README；不要修改已执行迁移或基线 `server/src/schema.sql`。
+中心服务启动也会执行尚未应用的代码迁移，不会反复覆盖默认配置或用户数据。
+
+**图片与安全注意事项：**
+
+- 数据库不含 PNG/JPEG 文件。完整迁移还要单独复制 `CONTROL_PLANE_STORAGE_ROOT`（默认 `server/server-storage/`）。
+- 当前资产表和部分历史快照保存绝对文件路径。搬机后需保持相同绝对路径；路径不同需另做路径迁移，脚本不会盲目替换 JSON 中的路径。
+- 为了让文件目录与数据库对应，并避免复制正在执行的任务状态，整机迁移前先暂停执行机和中心服务，再备份数据库和文件目录；迁移完成后只启动预期的一套执行机。
+- 只导入自己生成或已审查的可信备份：SQL/迁移文件会作为数据库代码执行，校验和只能校验完整性，不代表可信授权。
+- 官方说明：[pg_dump](https://www.postgresql.org/docs/current/app-pgdump.html)、[pg_restore](https://www.postgresql.org/docs/current/app-pgrestore.html)。
 
 ### 每台执行机安装
 
@@ -111,14 +198,55 @@ npm run executor -- --disable-image-worker
 npm run executor -- --enable-image-worker
 ```
 
-也可在根目录 `.env` 固定 `IMAGE_WORKER_ENABLED=true|false`。命令行开关优先级更高。执行代理默认共用一个执行槽：先处理本机文案队列，本机文案为空时才领取全局图片任务。停止执行代理不会影响远端已保存数据；若某次执行长时间没有更新，在“远端作业中心”中人工选择复用原快照或使用最新配置重新执行。
+也可在根目录 `.env` 固定 `IMAGE_WORKER_ENABLED=true|false`。命令行开关优先级更高。文案和图片使用两个互不阻塞的执行通道：文案通道串行处理分配给本机的任务；图片通道开启后，只要本机当前没有正在执行的图片任务，就会独立领取一条全局图片任务，不需要等待文案队列清空。停止执行代理不会影响远端已保存数据；若某次执行长时间没有更新，在“远端作业中心”中人工选择复用原快照或使用最新配置重新执行。
+
+执行代理启动时会先检查中心服务连接和本机工作目录；全部通过后才向中心注册上线并开始轮询。运行期间每 15 秒刷新在线状态，中心将 90 秒内有活动的节点视为在线。节点中途关闭时，已分配的待执行文案保留在原队列；该节点重启并重新通过就绪检查后才会继续领取。OpenClaw 和模型连接在实际执行任务时检查，当前不作为节点上线门禁。
 
 分布式模式下：
 
 - `/copy-generation` 创建单条或批量 Query，不在页面请求中同步跑模型。
 - `/jobs` 展示所有节点的任务、阶段、开始时间、最后进度、人工文案审核、图文审核和重试。
+- `/workbench` 默认展示本机文案队列，并可切换全部节点的待执行、执行中、失败、待审核、生图和已完成任务；创建笔记时可选择在线文案执行机。
 - `/prompts`、`/knowledge`、`/settings` 读写远端中心数据。
 - `/image-generation` 和 `/batch-image-generation` 不再直接生图，生图统一由启用图片能力的执行代理领取。
+
+### DeepSeek 文案模拟执行（临时测试入口）
+
+本机暂时无法调用 OpenClaw 时，可启动隔离的 DeepSeek 模拟执行机。它使用固定模型 `deepseek-v4-pro` 和 Responses API 的服务端 `web_search`，仍按 Query 审核、联网研究、首稿及图片策划的现有契约执行，并把结果写回中心进入人工文案审核；不会执行自动文案质检或自动改写。正常 `npm run executor`、`executeCopyClaim` 和 OpenClaw 调用链不受影响。
+
+只在本机根目录 `.env` 配置密钥和独立节点 ID，禁止把真实密钥提交到 Git：
+
+```dotenv
+DEEPSEEK_API_KEY=在本机填写
+DEEPSEEK_SIM_NODE_ID=poker-deepseek-sim
+```
+
+启动后，该节点会出现在创建笔记的在线执行机列表中。选择它创建任务；进程会常驻并持续轮询分配给本机的文案任务，队列为空时等待：
+
+```powershell
+npm run executor:deepseek-sim
+```
+
+进度和结果会明确标记为 `DEEPSEEK_SIMULATION`。只有显式传入 `--once` 才会在每个已启用通道轮询一次后退出，供自动化测试使用。测试结束后，删除 `src/deepseek-responses-client.mjs`、`src/executor/deepseek-copy-simulator.mjs`、`src/executor/deepseek-image-simulator.mjs`、`src/executor/deepseek-simulator-cli.mjs` 以及本脚本配置即可，生产执行链不需要回改。
+
+### DeepSeek 搜图模拟执行（临时测试入口）
+
+文案人工审核通过后会进入全局生图队列。本机无法调用 OpenClaw 生图时，可另外启动完全隔离的搜图模拟执行机。它使用 `deepseek-v4-pro` 的服务端联网搜索，为每页配图策划返回带来源和使用说明的候选图片；执行机逐个校验公网 URL、响应类型、大小和像素尺寸，统一裁切为 `900 × 1200` PNG 后上传中心文件服务。任务随后照常进入图文审核，弹窗会明确标记“联网搜索模拟图”并展示来源。它不会调用或修改正常的 `executeImageClaim`、`generateStandaloneImages` 与 OpenClaw 生图链路。
+
+搜图模拟与文案模拟共用同一个常驻执行机进程和节点标识。沿用本机 `DEEPSEEK_API_KEY`，并通过已有开关决定是否启动图片轮询通道：
+
+```dotenv
+DEEPSEEK_SIM_NODE_ID=poker-deepseek-sim
+IMAGE_WORKER_ENABLED=true
+```
+
+只需启动一个模拟执行机。文案通道始终持续轮询；当 `IMAGE_WORKER_ENABLED=true` 时，图片通道同时持续轮询全局 `IMAGE_QUEUED`，两个通道互不等待，进程不会因为暂时没有任务而退出：
+
+```powershell
+npm run executor:deepseek-sim
+```
+
+所有图片二进制都会通过中心服务上传接口保存到 `server/server-storage/tasks/<taskId>/image-runs/<runId>/`，本地执行机不作为图片真源。搜索图片仅用于内部流程联调，不等同于 OpenClaw 生成结果，也不代表已经完成版权、图文匹配或质量审核。
 
 如果没有配置 `CONTROL_PLANE_URL`，旧的 SQLite 本地模式仍暂时保留，便于迁移和紧急回退；不要同时把两套模式当作业务真源写入。
 

@@ -9,6 +9,9 @@
   },
   "scripts": {
     "init": "node --env-file-if-exists=.env src/cli.mjs init",
+    "db:export": "node scripts/export-database.mjs",
+    "db:init": "node scripts/manage-database.mjs init",
+    "db:upgrade": "node scripts/manage-database.mjs upgrade",
     "start": "node --env-file-if-exists=.env src/cli.mjs serve",
     "test": "node --test"
   },

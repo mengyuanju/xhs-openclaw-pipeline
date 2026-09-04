@@ -111,9 +111,11 @@ function elapsed(task: DistributedTask) {
 export function DistributedJobsWorkbench({
   nodeId,
   creationOnly = false,
+  initialTaskId = null,
 }: {
   nodeId: string;
   creationOnly?: boolean;
+  initialTaskId?: number | null;
 }) {
   const confirm = useConfirmDialog();
   const [tasks, setTasks] = useState<DistributedTask[]>([]);
@@ -166,6 +168,7 @@ export function DistributedJobsWorkbench({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           nodeId,
+          copyExecutorNodeId: nodeId,
           tasks: queries.map((query) => ({
             query,
             input: {},
@@ -194,6 +197,10 @@ export function DistributedJobsWorkbench({
       setBusy(false);
     }
   }
+
+  useEffect(() => {
+    if (initialTaskId) void openTask(initialTaskId);
+  }, [initialTaskId]);
 
   async function approveCopy() {
     if (!selected?.currentCopyRevisionId) return;

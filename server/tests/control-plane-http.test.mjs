@@ -26,6 +26,7 @@ test('control plane HTTP exposes node registration and batched task creation', a
   const calls = [];
   const repository = {
     registerNode: async (input) => { calls.push(['node', input]); return { id: input.nodeId }; },
+    listNodes: async () => [{ id: 'node-b', name: 'Node B', online: true }],
     createTasks: async (input) => { calls.push(['tasks', input]); return [{ id: 1, state: 'COPY_QUEUED' }]; },
   };
   await withServer(repository, async (root) => {
@@ -35,15 +36,22 @@ test('control plane HTTP exposes node registration and batched task creation', a
       body: JSON.stringify({ nodeId: 'node-a', imageWorkerEnabled: false }),
     });
     assert.equal(registered.status, 200);
+    const nodes = await fetch(`${root}/v1/nodes`);
+    assert.deepEqual((await nodes.json()).data, [{ id: 'node-b', name: 'Node B', online: true }]);
     const created = await fetch(`${root}/v1/tasks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ nodeId: 'node-a', tasks: [{ query: '选题' }] }),
+      body: JSON.stringify({
+        nodeId: 'node-a',
+        copyExecutorNodeId: 'node-b',
+        tasks: [{ query: '选题' }],
+      }),
     });
     assert.equal(created.status, 201);
     assert.deepEqual((await created.json()).data, [{ id: 1, state: 'COPY_QUEUED' }]);
   });
   assert.deepEqual(calls.map(([name]) => name), ['node', 'tasks']);
+  assert.equal(calls[1][1].copyExecutorNodeId, 'node-b');
 });
 
 test('control plane HTTP returns a structured stale execution conflict', async () => {
@@ -66,6 +74,86 @@ test('control plane HTTP returns a structured stale execution conflict', async (
       error: { code: 'STALE_EXECUTION', message: 'execution was replaced' },
     });
   });
+});
+
+test('copy approval forwards the editable review payload as one operation', async () => {
+  let received;
+  const repository = {
+    approveCopy: async (taskId, input) => {
+      received = { taskId, input };
+      return { id: Number(taskId), state: 'IMAGE_QUEUED' };
+    },
+  };
+  const edits = {
+    copy: { title: '标题', body: '正文', tags: ['#标签'] },
+    imagePlan: [{ kind: 'hero' }],
+  };
+  await withServer(repository, async (root) => {
+    const response = await fetch(`${root}/v1/tasks/7/approve-copy`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ revisionId: 12, nodeId: 'node-a', edits }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).data.state, 'IMAGE_QUEUED');
+  });
+  assert.deepEqual(received, {
+    taskId: '7',
+    input: { revisionId: 12, nodeId: 'node-a', edits },
+  });
+});
+
+test('task listing forwards server-side pagination, states and Query search', async () => {
+  const calls = [];
+  const repository = {
+    listTasks: async (input) => {
+      calls.push(['list', input]);
+      return { items: [], total: 0, limit: 20, offset: 20 };
+    },
+    taskCounts: async (input) => {
+      calls.push(['counts', input]);
+      return { allCopy: 3 };
+    },
+  };
+  await withServer(repository, async (root) => {
+    const listed = await fetch(`${root}/v1/tasks?states=COPY_QUEUED,COPY_FAILED&nodeId=node-a&query=%E9%BB%84%E5%B1%B1&limit=20&offset=20&includeTotal=true`);
+    assert.equal(listed.status, 200);
+    assert.equal((await listed.json()).data.total, 0);
+    const counts = await fetch(`${root}/v1/task-counts?nodeId=node-a`);
+    assert.equal((await counts.json()).data.allCopy, 3);
+  });
+  assert.deepEqual(calls, [
+    ['list', {
+      state: undefined,
+      states: 'COPY_QUEUED,COPY_FAILED',
+      nodeId: 'node-a',
+      query: '黄山',
+      limit: '20',
+      offset: '20',
+      includeTotal: true,
+    }],
+    ['counts', { nodeId: 'node-a' }],
+  ]);
+});
+
+test('task cancellation is exposed as a logical-delete operation', async () => {
+  let cancelledTaskId;
+  const repository = {
+    cancelTask: async (taskId) => {
+      cancelledTaskId = taskId;
+      return { id: Number(taskId), state: 'CANCELLED' };
+    },
+  };
+  await withServer(repository, async (root) => {
+    const response = await fetch(`${root}/v1/tasks/7/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).data.state, 'CANCELLED');
+  });
+  assert.equal(cancelledTaskId, '7');
 });
 
 test('unknown control plane routes do not leak implementation details', async () => {

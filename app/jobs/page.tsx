@@ -3,9 +3,17 @@ import { controlPlaneUrl, executorNodeId } from '../../src/control-plane/next-ru
 
 export const dynamic = 'force-dynamic';
 
-export default function JobsPage() {
+export default async function JobsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ taskId?: string | string[] }>;
+}) {
   const configured = Boolean(controlPlaneUrl());
   const nodeId = configured ? executorNodeId() : '';
+  const rawTaskId = (await searchParams).taskId;
+  const taskId = typeof rawTaskId === 'string' && /^\d+$/u.test(rawTaskId)
+    ? Number(rawTaskId)
+    : null;
   return <>
     <header className="page-header">
       <div>
@@ -15,7 +23,7 @@ export default function JobsPage() {
       </div>
     </header>
     {configured
-      ? <DistributedJobsWorkbench nodeId={nodeId} />
+      ? <DistributedJobsWorkbench nodeId={nodeId} initialTaskId={taskId} />
       : <div className="panel empty-state">
         请先配置 <code>CONTROL_PLANE_URL</code> 和 <code>EXECUTOR_NODE_ID</code>，然后重启本机界面服务。
       </div>}

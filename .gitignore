@@ -3,7 +3,10 @@ data/
 output/
 outputs/
 server/server-storage/
+server/backups/
 .codex_artifacts/
+.tmp-control-plane/
+.tmp-deepseek-executor/
 .env
 .env.*.local
 *.pem

@@ -21,6 +21,7 @@ export const EXECUTION_STATUSES = Object.freeze([
 
 const NODE_ID_PATTERN = /^[a-zA-Z0-9._:-]{1,100}$/u;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const IMAGE_PLAN_KINDS = Object.freeze(['hero', 'steps', 'checklist', 'comparison', 'detail', 'summary']);
 
 export class ControlPlaneConflictError extends Error {
   constructor(code, message) {
@@ -100,6 +101,77 @@ export function normalizeTaskBatch(value) {
     throw new TypeError('tasks must contain between 1 and 100 items');
   }
   return value.map(normalizeCreateTask);
+}
+
+function normalizedReviewText(value, field, { min = 1, max }) {
+  if (typeof value !== 'string') throw new TypeError(`${field} must be a string`);
+  const text = value.replace(/\r\n?/gu, '\n').trim();
+  if ([...text].length < min || [...text].length > max) {
+    throw new RangeError(`${field} must contain between ${min} and ${max} characters`);
+  }
+  return text;
+}
+
+function normalizedReviewTextList(value, field, { min, max, itemMax }) {
+  if (!Array.isArray(value) || value.length < min || value.length > max) {
+    throw new RangeError(`${field} must contain between ${min} and ${max} items`);
+  }
+  return value.map((item, index) => normalizedReviewText(item, `${field}[${index}]`, { max: itemMax }));
+}
+
+export function normalizeCopyReviewEdits(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('copy review edits must be an object');
+  }
+  const copy = value.copy;
+  if (!copy || typeof copy !== 'object' || Array.isArray(copy)) {
+    throw new TypeError('copy review edits.copy must be an object');
+  }
+  const tags = normalizedReviewTextList(copy.tags, 'copy review tags', {
+    min: 3,
+    max: 8,
+    itemMax: 20,
+  });
+  if (tags.some((tag) => !/^#[^#\s]+$/u.test(tag)) || new Set(tags).size !== tags.length) {
+    throw new TypeError('copy review tags must be unique hashtags without whitespace');
+  }
+  if (!Array.isArray(value.imagePlan) || value.imagePlan.length < 3 || value.imagePlan.length > 5) {
+    throw new RangeError('copy review imagePlan must contain between 3 and 5 items');
+  }
+  const imagePlan = value.imagePlan.map((rawItem, index) => {
+    if (!rawItem || typeof rawItem !== 'object' || Array.isArray(rawItem)) {
+      throw new TypeError(`copy review imagePlan[${index}] must be an object`);
+    }
+    const kind = String(rawItem.kind ?? '').trim();
+    if (!IMAGE_PLAN_KINDS.includes(kind)) {
+      throw new TypeError(`copy review imagePlan[${index}].kind is invalid`);
+    }
+    return {
+      kind,
+      headline: normalizedReviewText(rawItem.headline, `copy review imagePlan[${index}].headline`, { max: 18 }),
+      subtitle: normalizedReviewText(rawItem.subtitle, `copy review imagePlan[${index}].subtitle`, { max: 30 }),
+      bullets: normalizedReviewTextList(rawItem.bullets, `copy review imagePlan[${index}].bullets`, {
+        min: 2,
+        max: 5,
+        itemMax: kind === 'checklist' ? 40 : 30,
+      }),
+      prompt: normalizedReviewText(rawItem.prompt, `copy review imagePlan[${index}].prompt`, {
+        min: 10,
+        max: 1_000,
+      }),
+    };
+  });
+  if (imagePlan[0].kind !== 'hero' || imagePlan.slice(1).some((item) => item.kind === 'hero')) {
+    throw new TypeError('copy review imagePlan must contain hero only as its first item');
+  }
+  return {
+    copy: {
+      title: normalizedReviewText(copy.title, 'copy review title', { max: 25 }),
+      body: normalizedReviewText(copy.body, 'copy review body', { min: 400, max: 600 }),
+      tags,
+    },
+    imagePlan,
+  };
 }
 
 export function normalizeStage(value) {

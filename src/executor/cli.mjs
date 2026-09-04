@@ -54,22 +54,50 @@ async function main() {
   const configuration = config();
   const controlPlane = createControlPlaneClient({ baseUrl: configuration.serverUrl });
   const agent = createExecutorAgent({ controlPlane, ...configuration });
+  console.log(`Executor ${configuration.nodeId} is checking work directory and control plane readiness...`);
+  await agent.prepare();
   await agent.register();
   console.log(
-    `Executor ${configuration.nodeId} connected; image worker: ${configuration.imageWorkerEnabled ? 'enabled' : 'disabled'}.`,
+    `Executor ${configuration.nodeId} is ready and connected; image worker: ${configuration.imageWorkerEnabled ? 'enabled' : 'disabled'}.`,
   );
 
   let stopping = false;
   process.once('SIGINT', () => { stopping = true; });
   process.once('SIGTERM', () => { stopping = true; });
-  do {
-    const outcome = await agent.runOnce();
-    if (outcome) {
-      console.log(`${outcome.kind} task ${outcome.taskId}: ${outcome.status}`);
+  const heartbeatTimer = setInterval(() => {
+    void agent.heartbeat().catch((error) => {
+      console.error(`Executor heartbeat failed: ${error instanceof Error ? error.message : error}`);
+    });
+  }, 15_000);
+  heartbeatTimer.unref();
+
+  async function runLane(kind, runOnce) {
+    while (!stopping) {
+      let outcome;
+      try {
+        outcome = await runOnce();
+      } catch (error) {
+        console.error(`${kind} polling failed; retrying: ${error instanceof Error ? error.message : error}`);
+        if (!stopping) await new Promise((resolvePromise) => setTimeout(resolvePromise, configuration.pollMs));
+        continue;
+      }
+      if (outcome) {
+        console.log(`${kind} task ${outcome.taskId}: ${outcome.status}`);
+      }
+      if (configuration.once || stopping) break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, outcome ? 0 : configuration.pollMs));
     }
-    if (configuration.once || stopping) break;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, outcome ? 0 : configuration.pollMs));
-  } while (!stopping);
+  }
+
+  try {
+    const lanes = [runLane('COPY', () => agent.runCopyOnce())];
+    if (configuration.imageWorkerEnabled) {
+      lanes.push(runLane('IMAGE', () => agent.runImageOnce()));
+    }
+    await Promise.all(lanes);
+  } finally {
+    clearInterval(heartbeatTimer);
+  }
 }
 
 main().catch((error) => {

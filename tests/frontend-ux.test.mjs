@@ -37,17 +37,22 @@ test('application shell groups product areas and keeps page context visible', as
     readFile(projectFile('package.json'), 'utf8'),
   ]);
 
-  assert.match(frame, /<AppTopbar\s+session=\{session\}\s*\/>/);
+  assert.match(frame, /<AppTopbar\s*\/>/);
   assert.match(frame, /id="main-content"/);
   assert.match(navigation, /const navigationGroups[^=]*= \[/);
-  for (const group of ['总览', '内容生产', '内容资产', '运营与系统']) {
+  for (const group of ['创作工作台', '内容生产', '内容资产', '运营与系统']) {
     assert.match(navigation, new RegExp(`label: '${group}'`));
   }
   assert.match(navigation, /aria-label="切换主导航"/);
   assert.match(navigation, /aria-expanded=\{isMenuOpen\}/);
   assert.match(topbar, /const routeMeta/);
   assert.match(topbar, /aria-label="当前位置"/);
-  assert.match(topbar, /href="\/imports"/);
+  assert.match(topbar, /aria-current="page"/);
+  assert.doesNotMatch(topbar, /本地工作区|导入选题|topbar-actions/);
+  assert.match(navigation, /roleGroups\.filter\(\(group\) => !group.hidden/u);
+  for (const group of ['内容生产', '质检作业', '运营与系统']) {
+    assert.match(navigation, new RegExp(`label: '${group}',\\s+hidden: true`));
+  }
   assert.match(styles, /\.app-workspace\s*\{/);
   assert.match(styles, /\.app-topbar\s*\{/);
   assert.match(styles, /\.skip-link\s*\{/);
@@ -64,6 +69,7 @@ test('the unified knowledge base remains grouped with reusable content assets', 
 
 test('primary section pages omit visible display headlines while keeping an accessible page name', async () => {
   const sectionPages = [
+    ['app/workbench/page.tsx', '作业中心'],
     ['app/page.tsx', '工作台'],
     ['app/imports/page.tsx', '选题导入'],
     ['app/prompts/page.tsx', '提示词'],

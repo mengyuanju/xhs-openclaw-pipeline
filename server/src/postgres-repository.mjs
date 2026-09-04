@@ -1,11 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { migrateDatabase } from './database-migrations.mjs';
 
 import pg from 'pg';
 
 import {
   ControlPlaneConflictError,
   ControlPlaneNotFoundError,
+  TASK_STATES,
+  normalizeCopyReviewEdits,
   normalizeCreateTask,
   normalizeJson,
   normalizeNodeId,
@@ -18,7 +20,6 @@ import {
 } from './domain.mjs';
 
 const { Pool } = pg;
-const SCHEMA_URL = new URL('./schema.sql', import.meta.url);
 
 function taskFrom(row) {
   if (!row) return null;
@@ -69,6 +70,40 @@ function executionFrom(row) {
   };
 }
 
+function nodeFrom(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    imageWorkerEnabled: row.image_worker_enabled,
+    online: Boolean(row.online),
+    copyQueuedCount: Number(row.copy_queued_count ?? 0),
+    copyRunningCount: Number(row.copy_running_count ?? 0),
+    lastSeenAt: row.last_seen_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function contentWithReviewEdits(content, edits, { baseRevisionId, nodeId }) {
+  const original = normalizeJson(content, 'copy revision content', 5_000_000);
+  const reviewed = original.reviewed && typeof original.reviewed === 'object' && !Array.isArray(original.reviewed)
+    ? { ...original.reviewed, copy: edits.copy, imagePlan: edits.imagePlan }
+    : original.reviewed;
+  return {
+    ...original,
+    copy: edits.copy,
+    imagePlan: edits.imagePlan,
+    ...(reviewed ? { reviewed } : {}),
+    manualReview: {
+      edited: true,
+      baseRevisionId,
+      reviewedByNodeId: nodeId,
+      submittedAt: new Date().toISOString(),
+    },
+  };
+}
+
 function revisionFrom(row) {
   if (!row) return null;
   return {
@@ -81,6 +116,24 @@ function revisionFrom(row) {
     approvedByNodeId: row.approved_by_node_id,
     createdAt: row.created_at,
   };
+}
+
+function normalizedTaskStates(state, states) {
+  const values = states === null || states === undefined
+    ? (state === null || state === undefined ? [] : [state])
+    : Array.isArray(states) ? states : String(states).split(',');
+  const normalized = [...new Set(values.map((value) => String(value).trim()).filter(Boolean))];
+  if (normalized.some((value) => !TASK_STATES.includes(value))) {
+    throw new TypeError('task state filter is invalid');
+  }
+  return normalized;
+}
+
+function normalizedTaskQuery(value) {
+  if (value === null || value === undefined) return null;
+  const query = String(value).trim();
+  if ([...query].length > 500) throw new RangeError('task query filter cannot exceed 500 characters');
+  return query || null;
 }
 
 async function transaction(pool, action) {
@@ -187,8 +240,7 @@ export class PostgresControlPlaneRepository {
   }
 
   async initialize() {
-    const sql = await readFile(SCHEMA_URL, 'utf8');
-    await this.pool.query(sql);
+    await migrateDatabase(this.pool);
   }
 
   async health() {
@@ -221,50 +273,135 @@ export class PostgresControlPlaneRepository {
     };
   }
 
-  async createTasks({ nodeId: rawNodeId, tasks: rawTasks }) {
+  async listNodes() {
+    const result = await this.pool.query(`
+      SELECT
+        n.*,
+        n.last_seen_at >= now() - interval '90 seconds' AS online,
+        COUNT(t.id) FILTER (WHERE t.state = 'COPY_QUEUED') AS copy_queued_count,
+        COUNT(t.id) FILTER (WHERE t.state = 'COPY_RUNNING') AS copy_running_count
+      FROM executor_nodes n
+      LEFT JOIN tasks t ON t.copy_executor_node_id = n.id
+      GROUP BY n.id
+      ORDER BY online DESC, n.name, n.id
+    `);
+    return result.rows.map(nodeFrom);
+  }
+
+  async createTasks({ nodeId: rawNodeId, copyExecutorNodeId: rawCopyExecutorNodeId, tasks: rawTasks }) {
     const nodeId = normalizeNodeId(rawNodeId);
+    const copyExecutorNodeId = normalizeNodeId(rawCopyExecutorNodeId ?? rawNodeId);
     const tasks = normalizeTaskBatch(rawTasks);
     return transaction(this.pool, async (client) => {
       await client.query(`
-        INSERT INTO executor_nodes(id, name, image_worker_enabled)
-        VALUES ($1, $1, false)
+        INSERT INTO executor_nodes(id, name, image_worker_enabled, last_seen_at)
+        VALUES ($1, $1, false, 'epoch'::timestamptz)
         ON CONFLICT(id) DO NOTHING
       `, [nodeId]);
+      const executor = await client.query(`
+        SELECT id, last_seen_at >= now() - interval '90 seconds' AS online
+        FROM executor_nodes
+        WHERE id = $1
+        FOR UPDATE
+      `, [copyExecutorNodeId]);
+      if (!executor.rows[0]) {
+        throw new ControlPlaneNotFoundError('copy executor node is not registered');
+      }
+      if (!executor.rows[0].online) {
+        throw new ControlPlaneConflictError(
+          'EXECUTOR_OFFLINE',
+          'copy executor node is offline; choose an online executor',
+        );
+      }
       const created = [];
       for (const task of tasks) {
         const result = await client.query(`
           INSERT INTO tasks(
             query, input, requested_image_count, created_by_node_id, copy_executor_node_id
-          ) VALUES ($1, $2, $3, $4, $4)
+          ) VALUES ($1, $2, $3, $4, $5)
           RETURNING *
-        `, [task.query, task.input, String(task.imageCount), nodeId]);
+        `, [task.query, task.input, String(task.imageCount), nodeId, copyExecutorNodeId]);
         created.push(taskFrom(result.rows[0]));
       }
       return created;
     });
   }
 
-  async listTasks({ state = null, nodeId = null, limit = 50, offset = 0 } = {}) {
+  async listTasks({
+    state = null,
+    states = null,
+    nodeId = null,
+    query = null,
+    limit = 50,
+    offset = 0,
+    includeTotal = false,
+  } = {}) {
     const safeLimit = Math.max(1, Math.min(200, Number(limit) || 50));
     const safeOffset = Math.max(0, Number(offset) || 0);
+    if (typeof includeTotal !== 'boolean') throw new TypeError('includeTotal must be a boolean');
     const values = [];
     const filters = [];
-    if (state !== null) {
-      values.push(String(state));
-      filters.push(`state = $${values.length}`);
+    const stateFilters = normalizedTaskStates(state, states);
+    if (stateFilters.length > 0) {
+      values.push(stateFilters);
+      filters.push(`state = ANY($${values.length}::varchar[])`);
     }
     if (nodeId !== null) {
       values.push(normalizeNodeId(nodeId));
       filters.push(`copy_executor_node_id = $${values.length}`);
     }
-    values.push(safeLimit, safeOffset);
-    const result = await this.pool.query(`
+    const searchQuery = normalizedTaskQuery(query);
+    if (searchQuery !== null) {
+      values.push(searchQuery);
+      filters.push(`strpos(lower(query), lower($${values.length})) > 0`);
+    }
+    const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+    const pageValues = [...values, safeLimit, safeOffset];
+    const [result, countResult] = await Promise.all([
+      this.pool.query(`
       SELECT * FROM tasks
-      ${filters.length ? `WHERE ${filters.join(' AND ')}` : ''}
+      ${where}
       ORDER BY id DESC
-      LIMIT $${values.length - 1} OFFSET $${values.length}
-    `, values);
-    return result.rows.map(taskFrom);
+      LIMIT $${pageValues.length - 1} OFFSET $${pageValues.length}
+    `, pageValues),
+      includeTotal
+        ? this.pool.query(`SELECT COUNT(*) AS total FROM tasks ${where}`, values)
+        : Promise.resolve(null),
+    ]);
+    const items = result.rows.map(taskFrom);
+    if (!includeTotal) return items;
+    return {
+      items,
+      total: Number(countResult.rows[0].total),
+      limit: safeLimit,
+      offset: safeOffset,
+    };
+  }
+
+  async taskCounts({ nodeId: rawNodeId }) {
+    const nodeId = normalizeNodeId(rawNodeId);
+    const result = await this.pool.query(`
+      SELECT
+        COUNT(*) FILTER (
+          WHERE copy_executor_node_id = $1 AND state IN ('COPY_QUEUED', 'COPY_RUNNING')
+        ) AS local_copy,
+        COUNT(*) FILTER (WHERE state IN ('COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED')) AS all_copy,
+        COUNT(*) FILTER (WHERE state IN ('COPY_REVIEW_PENDING', 'IMAGE_FAILED')) AS copy_review,
+        COUNT(*) FILTER (WHERE state IN ('IMAGE_QUEUED', 'IMAGE_RUNNING')) AS image_work,
+        COUNT(*) FILTER (WHERE state = 'DELIVERY_REVIEW_PENDING') AS delivery_review,
+        COUNT(*) FILTER (WHERE state = 'COMPLETED') AS completed
+      FROM tasks
+      WHERE state <> 'CANCELLED'
+    `, [nodeId]);
+    const row = result.rows[0];
+    return {
+      localCopy: Number(row.local_copy),
+      allCopy: Number(row.all_copy),
+      copyReview: Number(row.copy_review),
+      imageWork: Number(row.image_work),
+      deliveryReview: Number(row.delivery_review),
+      completed: Number(row.completed),
+    };
   }
 
   async getTask(rawTaskId) {
@@ -329,6 +466,7 @@ export class PostgresControlPlaneRepository {
         SELECT * FROM executor_nodes WHERE id = $1 FOR UPDATE
       `, [nodeId]);
       if (!node.rows[0]) throw new ControlPlaneNotFoundError('executor node is not registered');
+      await client.query(`UPDATE executor_nodes SET last_seen_at = now() WHERE id = $1`, [nodeId]);
       if (kind === 'IMAGE' && !node.rows[0].image_worker_enabled) {
         throw new ControlPlaneConflictError(
           'IMAGE_WORKER_DISABLED',
@@ -336,8 +474,10 @@ export class PostgresControlPlaneRepository {
         );
       }
       const active = await client.query(`
-        SELECT 1 FROM task_executions WHERE node_id = $1 AND status = 'RUNNING' LIMIT 1
-      `, [nodeId]);
+        SELECT 1 FROM task_executions
+        WHERE node_id = $1 AND kind = $2 AND status = 'RUNNING'
+        LIMIT 1
+      `, [nodeId, kind]);
       if (active.rows[0]) return null;
       const queuedState = kind === 'COPY' ? 'COPY_QUEUED' : 'IMAGE_QUEUED';
       const runningState = kind === 'COPY' ? 'COPY_RUNNING' : 'IMAGE_RUNNING';
@@ -351,10 +491,7 @@ export class PostgresControlPlaneRepository {
         LIMIT 1
       `, parameters);
       const task = candidate.rows[0];
-      if (!task) {
-        await client.query(`UPDATE executor_nodes SET last_seen_at = now() WHERE id = $1`, [nodeId]);
-        return null;
-      }
+      if (!task) return null;
       const executionId = randomUUID();
       const snapshot = task.pending_snapshot
         ?? await configurationSnapshot(client, task, kind);
@@ -401,7 +538,7 @@ export class PostgresControlPlaneRepository {
     const executionId = normalizeUuid(rawExecutionId, 'executionId');
     const progress = normalizeProgress(rawProgress);
     return transaction(this.pool, async (client) => {
-      await lockedExecution(client, executionId);
+      const activeExecution = await lockedExecution(client, executionId);
       const updated = await client.query(`
         UPDATE task_executions SET
           stage = $2,
@@ -427,6 +564,7 @@ export class PostgresControlPlaneRepository {
           updated_at = now()
         WHERE current_execution_id = $1
       `, [executionId, progress.stage, progress.progressPercent, progress.message]);
+      await client.query(`UPDATE executor_nodes SET last_seen_at = now() WHERE id = $1`, [activeExecution.node_id]);
       return executionFrom(updated.rows[0]);
     });
   }
@@ -465,36 +603,60 @@ export class PostgresControlPlaneRepository {
     });
   }
 
-  async approveCopy(rawTaskId, { revisionId: rawRevisionId, nodeId: rawNodeId }) {
+  async approveCopy(rawTaskId, { revisionId: rawRevisionId, nodeId: rawNodeId, edits: rawEdits }) {
     const taskId = normalizeTaskId(rawTaskId);
     const revisionId = normalizeTaskId(rawRevisionId);
     const nodeId = normalizeNodeId(rawNodeId);
+    const edits = rawEdits === undefined ? null : normalizeCopyReviewEdits(rawEdits);
     return transaction(this.pool, async (client) => {
       const taskResult = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
       const task = taskResult.rows[0];
       if (!task) throw new ControlPlaneNotFoundError('task not found');
-      if (task.state !== 'COPY_REVIEW_PENDING') {
+      if (!['COPY_REVIEW_PENDING', 'IMAGE_FAILED'].includes(task.state)) {
         throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'task is not waiting for copy review');
       }
+      if (Number(task.current_copy_revision_id) !== revisionId) {
+        throw new ControlPlaneConflictError('STALE_COPY_REVISION', 'copy revision is no longer current');
+      }
       const revision = await client.query(`
-        SELECT * FROM copy_revisions WHERE id = $1 AND task_id = $2
+        SELECT * FROM copy_revisions WHERE id = $1 AND task_id = $2 FOR UPDATE
       `, [revisionId, taskId]);
       if (!revision.rows[0]) throw new ControlPlaneNotFoundError('copy revision not found');
       const node = await client.query('SELECT id FROM executor_nodes WHERE id = $1', [nodeId]);
       if (!node.rows[0]) throw new ControlPlaneNotFoundError('executor node is not registered');
-      await client.query(`
-        UPDATE copy_revisions SET approved_at = now(), approved_by_node_id = $2 WHERE id = $1
-      `, [revisionId, nodeId]);
+      let approvedRevisionId = revisionId;
+      if (edits) {
+        const revisionNumber = Number((await client.query(`
+          SELECT COALESCE(MAX(revision), 0) + 1 AS revision
+          FROM copy_revisions WHERE task_id = $1
+        `, [taskId])).rows[0].revision);
+        const reviewedContent = contentWithReviewEdits(revision.rows[0].content, edits, {
+          baseRevisionId: revisionId,
+          nodeId,
+        });
+        const reviewedRevision = await client.query(`
+          INSERT INTO copy_revisions(
+            task_id, execution_id, revision, content, approved_at, approved_by_node_id
+          ) VALUES ($1, NULL, $2, $3, now(), $4)
+          RETURNING *
+        `, [taskId, revisionNumber, reviewedContent, nodeId]);
+        approvedRevisionId = Number(reviewedRevision.rows[0].id);
+      } else {
+        await client.query(`
+          UPDATE copy_revisions SET approved_at = now(), approved_by_node_id = $2 WHERE id = $1
+        `, [revisionId, nodeId]);
+      }
       const updated = await client.query(`
         UPDATE tasks SET
           state = 'IMAGE_QUEUED', current_copy_revision_id = $2,
+          current_image_run_id = NULL,
           current_stage = 'IMAGE_QUEUED', progress_percent = 0,
           progress_message = '文案审核通过，等待图片执行机领取',
           execution_started_at = NULL, last_activity_at = now(), finished_at = NULL,
-          error = NULL, updated_at = now()
+          error = NULL, pending_snapshot = NULL, updated_at = now()
         WHERE id = $1
         RETURNING *
-      `, [taskId, revisionId]);
+      `, [taskId, approvedRevisionId]);
       return taskFrom(updated.rows[0]);
     });
   }
@@ -537,9 +699,9 @@ export class PostgresControlPlaneRepository {
       await client.query(`
         UPDATE task_executions SET
           status = 'FAILED', stage = 'FAILED', progress_message = $2,
-          error = $2, last_activity_at = now(), finished_at = now()
+          error = $3, last_activity_at = now(), finished_at = now()
         WHERE id = $1
-      `, [executionId, message]);
+      `, [executionId, message, message]);
       if (execution.kind === 'IMAGE') {
         await client.query(`
           UPDATE image_runs SET status = 'FAILED', finished_at = now() WHERE id = $1
@@ -548,11 +710,11 @@ export class PostgresControlPlaneRepository {
       const task = await client.query(`
         UPDATE tasks SET
           state = $2, current_execution_id = NULL, current_stage = 'FAILED',
-          progress_message = $3, error = $3, last_activity_at = now(),
+          progress_message = $3, error = $4, last_activity_at = now(),
           finished_at = now(), updated_at = now()
-        WHERE id = $1 AND current_execution_id = $4
+        WHERE id = $1 AND current_execution_id = $5
         RETURNING *
-      `, [execution.task_id, failedState, message, executionId]);
+      `, [execution.task_id, failedState, message, message, executionId]);
       return taskFrom(task.rows[0]);
     });
   }
@@ -628,6 +790,45 @@ export class PostgresControlPlaneRepository {
       );
     }
     return taskFrom(result.rows[0]);
+  }
+
+  async cancelTask(rawTaskId) {
+    const taskId = normalizeTaskId(rawTaskId);
+    return transaction(this.pool, async (client) => {
+      const result = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
+      const task = result.rows[0];
+      if (!task) throw new ControlPlaneNotFoundError('task not found');
+      if (task.state === 'CANCELLED') return taskFrom(task);
+      if (task.current_execution_id) {
+        const execution = await client.query(`
+          SELECT * FROM task_executions WHERE id = $1 FOR UPDATE
+        `, [task.current_execution_id]);
+        if (execution.rows[0]?.status === 'RUNNING') {
+          await client.query(`
+            UPDATE task_executions SET
+              status = 'ABANDONED', stage = 'ABANDONED',
+              progress_message = '任务已被人工废弃',
+              last_activity_at = now(), finished_at = now()
+            WHERE id = $1
+          `, [task.current_execution_id]);
+          if (execution.rows[0].kind === 'IMAGE') {
+            await client.query(`
+              UPDATE image_runs SET status = 'ABANDONED', finished_at = now()
+              WHERE id = $1 AND status = 'RUNNING'
+            `, [task.current_execution_id]);
+          }
+        }
+      }
+      const updated = await client.query(`
+        UPDATE tasks SET
+          state = 'CANCELLED', current_execution_id = NULL, current_stage = 'CANCELLED',
+          progress_message = '任务已被人工废弃', last_activity_at = now(),
+          finished_at = now(), updated_at = now()
+        WHERE id = $1
+        RETURNING *
+      `, [taskId]);
+      return taskFrom(updated.rows[0]);
+    });
   }
 
   async upsertSetting(rawKey, rawValue) {

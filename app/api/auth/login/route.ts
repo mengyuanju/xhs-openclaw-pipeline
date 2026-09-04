@@ -74,7 +74,7 @@ export async function POST(request: Request) {
     const response = Response.json({
       data: {
         authenticated: true,
-        homePath: username === 'admin' ? '/' : '/reviews',
+        homePath: username === 'admin' ? '/workbench' : '/reviews',
       },
     });
     response.headers.set('cache-control', 'no-store');

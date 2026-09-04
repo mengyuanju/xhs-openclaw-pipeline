@@ -147,17 +147,30 @@ function installRoutes(router, repository, storageRoot) {
   router.post('/v1/nodes', async (ctx) => {
     json(ctx, 200, await repository.registerNode(requireJson(ctx)));
   });
+  router.get('/v1/nodes', async (ctx) => {
+    json(ctx, 200, await repository.listNodes());
+  });
   router.post('/v1/tasks', async (ctx) => {
     const body = requireJson(ctx);
-    json(ctx, 201, await repository.createTasks({ nodeId: body.nodeId, tasks: body.tasks }));
+    json(ctx, 201, await repository.createTasks({
+      nodeId: body.nodeId,
+      copyExecutorNodeId: body.copyExecutorNodeId,
+      tasks: body.tasks,
+    }));
   });
   router.get('/v1/tasks', async (ctx) => {
     json(ctx, 200, await repository.listTasks({
       state: ctx.query.state,
+      states: ctx.query.states,
       nodeId: ctx.query.nodeId,
+      query: ctx.query.query,
       limit: ctx.query.limit,
       offset: ctx.query.offset,
+      includeTotal: ctx.query.includeTotal === 'true',
     }));
+  });
+  router.get('/v1/task-counts', async (ctx) => {
+    json(ctx, 200, await repository.taskCounts({ nodeId: ctx.query.nodeId }));
   });
   router.get('/v1/tasks/:taskId', async (ctx) => {
     const result = await repository.getTask(ctx.params.taskId);
@@ -209,6 +222,9 @@ function installRoutes(router, repository, storageRoot) {
   });
   router.post('/v1/tasks/:taskId/approve-delivery', async (ctx) => {
     json(ctx, 200, await repository.completeDeliveryReview(ctx.params.taskId));
+  });
+  router.post('/v1/tasks/:taskId/cancel', async (ctx) => {
+    json(ctx, 200, await repository.cancelTask(ctx.params.taskId));
   });
 
   router.get('/v1/settings', async (ctx) => json(ctx, 200, await repository.listSettings()));

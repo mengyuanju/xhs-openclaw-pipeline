@@ -62,13 +62,18 @@ export function createControlPlaneClient({
   return {
     health: () => request('/health'),
     registerNode: (input) => request('/v1/nodes', { method: 'POST', body: input }),
+    listNodes: () => request('/v1/nodes'),
     createTasks: (input) => request('/v1/tasks', { method: 'POST', body: input }),
-    listTasks: ({ state, nodeId, limit = 50, offset = 0 } = {}) => {
+    listTasks: ({ state, states, nodeId, query, limit = 50, offset = 0, includeTotal = false } = {}) => {
       const search = new URLSearchParams({ limit: String(limit), offset: String(offset) });
       if (state) search.set('state', state);
+      if (states) search.set('states', Array.isArray(states) ? states.join(',') : states);
       if (nodeId) search.set('nodeId', nodeId);
+      if (query) search.set('query', query);
+      if (includeTotal) search.set('includeTotal', 'true');
       return request(`/v1/tasks?${search}`);
     },
+    taskCounts: (nodeId) => request(`/v1/task-counts?${new URLSearchParams({ nodeId: String(nodeId) })}`),
     getTask: (taskId) => request(`/v1/tasks/${taskId}`),
     claimCopy: (nodeId) => request('/v1/executions/claim-copy', {
       method: 'POST', body: { nodeId },
@@ -99,6 +104,9 @@ export function createControlPlaneClient({
       method: 'POST', body: input,
     }),
     approveDelivery: (taskId) => request(`/v1/tasks/${taskId}/approve-delivery`, {
+      method: 'POST', body: {},
+    }),
+    cancelTask: (taskId) => request(`/v1/tasks/${taskId}/cancel`, {
       method: 'POST', body: {},
     }),
     uploadAsset: (executionId, { content, mediaType, fileName }) => request(

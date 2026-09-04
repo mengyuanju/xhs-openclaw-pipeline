@@ -608,6 +608,34 @@ describe('OpenClaw client', () => {
     }
   });
 
+  it('retries image generation when OpenClaw returns success without an output file', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'xhs-openclaw-missing-generated-image-retry-'));
+    const outputPath = join(directory, 'raw.png');
+    const delays = [];
+    let calls = 0;
+    const client = createOpenClawClient({
+      entryPath: 'C:/openclaw/dist/index.js',
+      sleep: (milliseconds) => delays.push(milliseconds),
+      runner: () => {
+        calls += 1;
+        if (calls === 2) writeFileSync(outputPath, 'complete');
+        return { status: 0, stdout: calls === 1 ? '' : '{"ok":true}', stderr: '' };
+      },
+    });
+
+    try {
+      const result = await client.runImage({
+        prompt: 'generate an image and require a real output file',
+        outputPath,
+      });
+      assert.equal(result.outputPath, outputPath);
+      assert.equal(calls, 2);
+      assert.deepEqual(delays, [5_000]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('retries when image editing exits successfully without creating its output file', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'xhs-openclaw-missing-image-retry-'));
     const inputPath = join(directory, 'input.png');

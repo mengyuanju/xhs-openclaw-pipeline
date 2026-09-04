@@ -1,6 +1,6 @@
 import { withAdminStore } from '../../src/admin/runtime.mjs';
 import { PromptEditor } from './prompt-editor';
-import { CentralDataWorkbench } from '../components/central-data-workbench';
+import { CentralPromptWorkbench } from './central-prompt-workbench';
 import { controlPlaneUrl } from '../../src/control-plane/next-runtime.mjs';
 
 export const dynamic = 'force-dynamic';
@@ -8,7 +8,7 @@ export const dynamic = 'force-dynamic';
 export default function PromptsPage() {
   if (controlPlaneUrl()) return <>
     <header className="page-header"><div><span className="eyebrow">Central prompt versions</span><h1 className="sr-only">提示词</h1><p className="subtle">提示词由远端中心统一保存和发布；运行中的任务使用已冻结版本。</p></div></header>
-    <CentralDataWorkbench resource="prompts" />
+    <CentralPromptWorkbench />
   </>;
   const templates = withAdminStore((store: any) => store.listPromptTemplates()) as any[];
   return <>

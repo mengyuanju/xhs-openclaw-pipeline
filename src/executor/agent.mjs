@@ -1,4 +1,5 @@
-import { readFile, rm } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { access, mkdir, readFile, rm } from 'node:fs/promises';
 import { basename, join, relative, resolve } from 'node:path';
 
 import { createCopyGenerationClient } from '../copy-generation-client.mjs';
@@ -82,6 +83,17 @@ function copySource(revision) {
 
 function imageOutputDirectory(taskWorkRoot, runId) {
   return join(taskWorkRoot, 'standalone-image-runs', runId);
+}
+
+export async function checkExecutorReady({
+  controlPlane,
+  workRoot,
+}) {
+  const health = await controlPlane.health();
+  if (!health?.ok) throw new Error('中心服务尚未准备完成');
+  await mkdir(workRoot, { recursive: true });
+  await access(workRoot, constants.R_OK | constants.W_OK);
+  return { health, workRoot };
 }
 
 export async function executeCopyClaim({ claim, controlPlane, environment = process.env }) {
@@ -178,10 +190,12 @@ export function createExecutorAgent({
   workRoot = resolve('data/executor-work'),
   executeCopy = executeCopyClaim,
   executeImage = executeImageClaim,
+  readinessCheck = checkExecutorReady,
   environment = process.env,
 }) {
   if (!controlPlane) throw new TypeError('controlPlane client is required');
   if (typeof imageWorkerEnabled !== 'boolean') throw new TypeError('imageWorkerEnabled must be a boolean');
+  let ready = false;
 
   async function reportFailure(claim, error) {
     try {
@@ -191,36 +205,57 @@ export function createExecutorAgent({
     }
   }
 
+  async function claimAndExecute(kind) {
+    if (!ready) throw new Error('executor is not ready; call prepare before claiming work');
+    if (kind === 'IMAGE' && !imageWorkerEnabled) return null;
+    const claim = kind === 'COPY'
+      ? await controlPlane.claimCopy(nodeId)
+      : await controlPlane.claimImage(nodeId);
+    if (!claim) return null;
+    try {
+      if (kind === 'COPY') {
+        await executeCopy({ claim, controlPlane, environment });
+      } else {
+        await executeImage({ claim, controlPlane, workRoot, environment });
+      }
+      return { kind, taskId: claim.task.id, executionId: claim.execution.id, status: 'SUCCEEDED' };
+    } catch (error) {
+      await reportFailure(claim, error);
+      return {
+        kind,
+        taskId: claim.task.id,
+        executionId: claim.execution.id,
+        status: error?.code === 'STALE_EXECUTION' ? 'ABANDONED' : 'FAILED',
+        error,
+      };
+    }
+  }
+
   return {
+    async prepare() {
+      const result = await readinessCheck({
+        controlPlane,
+        nodeId,
+        nodeName,
+        imageWorkerEnabled,
+        workRoot,
+        environment,
+      });
+      ready = true;
+      return result;
+    },
+
     async register() {
+      if (!ready) throw new Error('executor is not ready; call prepare before register');
       return controlPlane.registerNode({ nodeId, name: nodeName, imageWorkerEnabled });
     },
 
-    async runOnce() {
-      let claim = await controlPlane.claimCopy(nodeId);
-      let kind = 'COPY';
-      if (!claim && imageWorkerEnabled) {
-        claim = await controlPlane.claimImage(nodeId);
-        kind = 'IMAGE';
-      }
-      if (!claim) return null;
-      try {
-        if (kind === 'COPY') {
-          await executeCopy({ claim, controlPlane, environment });
-        } else {
-          await executeImage({ claim, controlPlane, workRoot, environment });
-        }
-        return { kind, taskId: claim.task.id, executionId: claim.execution.id, status: 'SUCCEEDED' };
-      } catch (error) {
-        await reportFailure(claim, error);
-        return {
-          kind,
-          taskId: claim.task.id,
-          executionId: claim.execution.id,
-          status: error?.code === 'STALE_EXECUTION' ? 'ABANDONED' : 'FAILED',
-          error,
-        };
-      }
+    async heartbeat() {
+      if (!ready) throw new Error('executor is not ready; call prepare before heartbeat');
+      return controlPlane.registerNode({ nodeId, name: nodeName, imageWorkerEnabled });
     },
+
+    runCopyOnce: () => claimAndExecute('COPY'),
+    runImageOnce: () => claimAndExecute('IMAGE'),
   };
 }

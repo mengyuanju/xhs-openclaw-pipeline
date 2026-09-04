@@ -19,7 +19,7 @@ export function evaluateAdminProxyRequest(request, environment = process.env) {
   }
 
   if (url.pathname === '/login' && session && url.searchParams.get('reauth') !== '1') {
-    return { type: 'redirect', location: session.subject === 'admin' ? '/' : '/reviews' };
+    return { type: 'redirect', location: session.subject === 'admin' ? '/workbench' : '/reviews' };
   }
   if (PUBLIC_PATHS.has(url.pathname)) return { type: 'next' };
   if (session?.subject === 'admin') return { type: 'next' };

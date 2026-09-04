@@ -20,7 +20,7 @@ export function AppFrame({ children, session }: { children: React.ReactNode; ses
         <a className="skip-link" href="#main-content">跳到主要内容</a>
         <SideNav session={session} />
         <div className="app-workspace">
-          <AppTopbar session={session} />
+          <AppTopbar />
           <main className="main-shell" id="main-content">{children}</main>
         </div>
       </div>

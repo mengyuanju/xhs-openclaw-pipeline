@@ -122,7 +122,7 @@ CREATE INDEX IF NOT EXISTS task_executions_task_idx ON task_executions(task_id, 
 CREATE TABLE IF NOT EXISTS copy_revisions (
   id bigserial PRIMARY KEY,
   task_id bigint NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-  execution_id uuid NOT NULL UNIQUE REFERENCES task_executions(id),
+  execution_id uuid UNIQUE REFERENCES task_executions(id),
   revision integer NOT NULL,
   content jsonb NOT NULL,
   approved_at timestamptz,
@@ -130,6 +130,10 @@ CREATE TABLE IF NOT EXISTS copy_revisions (
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE(task_id, revision)
 );
+
+-- Human copy review creates a new immutable revision without pretending that a
+-- model execution produced it. Existing databases originally required this ID.
+ALTER TABLE copy_revisions ALTER COLUMN execution_id DROP NOT NULL;
 
 CREATE TABLE IF NOT EXISTS image_runs (
   id uuid PRIMARY KEY,
