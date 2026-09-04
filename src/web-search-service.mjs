@@ -1,8 +1,8 @@
 import { runDeepSeekWebSearch } from './deepseek-web-search.mjs';
 import { resolveWebSearchConfig } from './web-search-config.mjs';
 
-export function withWebSearchProvider(client, { environment = process.env, fetchImpl = fetch } = {}) {
-  const configuration = resolveWebSearchConfig(environment);
+export function withWebSearchProvider(client, { environment = process.env, fetchImpl = fetch, settings = {} } = {}) {
+  const configuration = resolveWebSearchConfig(environment, settings);
   if (configuration.provider === 'OPENCLAW') return client;
   return {
     ...client,

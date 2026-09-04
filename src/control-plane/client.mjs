@@ -34,6 +34,7 @@ async function responseData(response) {
   return payload?.data;
 }
 
+/** @param {{ baseUrl: string, fetchImpl?: typeof fetch, requestTimeoutMs?: number }} options */
 export function createControlPlaneClient({
   baseUrl,
   fetchImpl = fetch,

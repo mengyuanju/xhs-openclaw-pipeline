@@ -703,5 +703,5 @@ export function createOpenClawClient({
       }
       return { outputPath, model: resolvedModel };
     },
-  }, { environment, fetchImpl });
+  }, { environment, fetchImpl, settings: modelApi ?? {} });
 }

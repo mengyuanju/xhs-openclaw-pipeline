@@ -224,6 +224,10 @@ npm run executor -- --enable-image-worker
 
 正式文案流程可独立切换联网搜索提供方。默认或配置 `XHS_WEB_SEARCH_PROVIDER=OPENCLAW` 时，保留原有 OpenClaw/Codex 搜索及重试逻辑。切换为 DeepSeek 只替换研究阶段，文案生成（OpenClaw 或 Dots）、审核、生图及人工审核流程仍沿用原配置。
 
+在“生产配置”页面上方的“联网搜索”面板，可直接选择 OpenClaw / DeepSeek、DeepSeek 搜索模型和超时，并点击“保存搜索配置”。本地和远端中心模式都支持；保存值优先于执行机环境变量。选择“继承执行机环境”或点击“恢复环境配置”后保存，即可恢复环境变量控制。此面板只修改搜索字段，不覆盖文案模型或其他生产配置。
+
+中心模式将配置保存在生产设置的 `modelApi.webSearchProvider`、`modelApi.deepseekSearchModel`、`modelApi.webSearchTimeoutMs` 中，后续创建的执行快照会携带这些值。各执行机须更新至支持这些字段的项目版本并重启一次；之后通过页面修改提供方或模型无需再次重启，已经领取的任务继续使用原快照。Key 始终由使用者在执行机提供，页面不接收、保存或下发密钥，也不把前端主机的 Key 状态当作远端执行机状态。
+
 在**实际执行文案任务的机器**上，向项目根目录的本机 `.env` 或进程环境中添加以下配置，并自行填写 Key（禁止提交真实密钥）：
 
 ```dotenv
@@ -235,7 +239,7 @@ XHS_DEEPSEEK_SEARCH_TIMEOUT_MS=120000
 
 `DEEPSEEK_API_KEY` 必填；后两项可以省略。搜索模型支持 `deepseek-v4-pro` 和 `deepseek-v4-flash`，超时允许 5000–120000 毫秒。修改后重启相应服务：网页本地执行重启 Next.js，分布式执行重启 `npm run executor`。仅在中心服务器设置不会传递给远端执行机。旧 CLI worker 不自动加载 `.env`，可使用 `node --env-file-if-exists=.env src/cli.mjs worker --once`，或通过启动进程的环境提供配置。
 
-改回 `XHS_WEB_SEARCH_PROVIDER=OPENCLAW` 并重启即可恢复原搜索方式，不需要删除 Key。配置模块为 `src/web-search-config.mjs`，此开关与 `XHS_COPY_GENERATION_PROVIDER` 相互独立，也不改变临时 DeepSeek 模拟执行机的逻辑。
+没有页面覆盖值时，改回 `XHS_WEB_SEARCH_PROVIDER=OPENCLAW` 并重启即可恢复原搜索方式，不需要删除 Key；已有页面覆盖值时，直接在面板选择 OpenClaw 并保存。配置模块为 `src/web-search-config.mjs`，此开关与 `XHS_COPY_GENERATION_PROVIDER` 相互独立，也不改变临时 DeepSeek 模拟执行机的逻辑。
 
 DeepSeek 通过官方 Responses API 执行服务端 `web_search`，使用 Node HTTPS 请求，不使用 OpenClaw 的 `XHS_MODEL_PROXY_URL` 子进程代理配置。缺少 Key、接口错误、没有完成搜索或缺少有效公开来源时，沿用现有研究失败流程并停止该次文案生成，不自动切回其他提供方。研究快照保留 `deepseek` 提供方及来源信息，不保存 Key、原始接口响应或模型推理内容。
 

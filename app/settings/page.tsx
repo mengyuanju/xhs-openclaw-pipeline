@@ -4,6 +4,7 @@ import type { EffectiveModelApi } from './model-api-settings-section';
 import { ProductionSettingsForm } from './production-settings-form';
 import { CentralDataWorkbench } from '../components/central-data-workbench';
 import { controlPlaneUrl } from '../../src/control-plane/next-runtime.mjs';
+import { WebSearchSettingsPanel } from './web-search-settings-panel';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,6 +23,7 @@ export default function ProductionSettingsPage() {
         <p className="subtle">统一控制模型 API、质量修复和图片合规标识。修改会用于后续模型请求，并使不匹配的旧检查点失效。</p>
       </div>
     </header>
+    <WebSearchSettingsPanel />
     <ProductionSettingsForm initialRecord={record} effectiveModelApi={effectiveModelApi} />
   </>;
 }

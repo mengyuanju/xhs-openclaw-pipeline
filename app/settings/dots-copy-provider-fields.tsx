@@ -57,7 +57,7 @@ export function DotsCopyProviderFields({
           <SelectItem value="DOTS">Dots Chat Completions</SelectItem>
         </SelectContent>
       </Select>
-      <small>只切换独立文案的正文生成；检索和独立审核仍由 OpenClaw 执行。</small>
+      <small>只切换独立文案的正文生成；检索使用联网搜索配置，独立审核仍由 OpenClaw 执行。</small>
     </div>
 
     <div className="field">

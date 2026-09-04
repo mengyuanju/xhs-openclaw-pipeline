@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 
 import { apiRequest } from './api-client';
+import { WebSearchSettingsPanel } from '../settings/web-search-settings-panel';
 
 type Resource = 'prompts' | 'knowledge' | 'settings';
 
@@ -145,6 +146,7 @@ export function CentralDataWorkbench({ resource }: { resource: Resource }) {
   const production = data.find((item) => item.key === 'production');
 
   return <div className="central-data-stack">
+    {resource === 'settings' && <WebSearchSettingsPanel onSaved={refresh} />}
     {resource === 'prompts' && <form className="panel" onSubmit={createPrompt}>
       <div className="panel-head"><div><span className="section-kicker">Remote prompt</span><h2>新建提示词草稿</h2></div><Save size={18} /></div>
       <div className="form-grid">

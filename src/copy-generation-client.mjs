@@ -11,7 +11,7 @@ export function createCopyGenerationClient({
 } = {}) {
   const configuration = effectiveModelApiConfig(modelApi, environment);
   const resolvedOpenClaw = openclaw
-    ? withWebSearchProvider(openclaw, { environment, fetchImpl })
+    ? withWebSearchProvider(openclaw, { environment, fetchImpl, settings: modelApi })
     : createOpenClawClient({ modelApi, environment, fetchImpl });
   const textClient = configuration.copyGenerationProvider === 'DOTS'
     ? createDotsChatClient({

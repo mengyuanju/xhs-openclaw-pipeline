@@ -1,3 +1,5 @@
+import { DEFAULT_WEB_SEARCH_SETTINGS, normalizeWebSearchSettings, resolveWebSearchConfig } from './web-search-config.mjs';
+
 export const DEFAULT_TEXT_MODEL = 'openai/gpt-5.6-sol';
 export const DEFAULT_IMAGE_MODEL = 'openai/gpt-image-2';
 export const DEFAULT_IMAGE_TIMEOUT_MS = 300_000;
@@ -18,6 +20,7 @@ const COPY_GENERATION_PROVIDERS = new Set(['OPENCLAW', 'DOTS']);
 const COPY_GENERATION_THINKING_LEVEL_SET = new Set(COPY_GENERATION_THINKING_LEVELS);
 
 const MODEL_API_FIELDS = new Set([
+  ...Object.keys(DEFAULT_WEB_SEARCH_SETTINGS),
   'textModel',
   'screeningModel',
   'reviewModel',
@@ -35,6 +38,7 @@ const MODEL_API_FIELDS = new Set([
 const LEGACY_PROVIDER = /^openai-codex\//iu;
 
 export const DEFAULT_MODEL_API_SETTINGS = Object.freeze({
+  ...DEFAULT_WEB_SEARCH_SETTINGS,
   textModel: null,
   screeningModel: null,
   reviewModel: null,
@@ -160,6 +164,7 @@ export function normalizeModelApiSettings(input = {}) {
   }
   return {
     textModel: optionalModelRef(input.textModel, 'textModel'),
+    ...normalizeWebSearchSettings(input),
     screeningModel: optionalModelRef(input.screeningModel, 'screeningModel'),
     reviewModel: optionalModelRef(input.reviewModel, 'reviewModel'),
     visionModel: optionalModelRef(input.visionModel, 'visionModel'),
@@ -189,6 +194,7 @@ function effectiveTimeout(override, environmentValue) {
 
 export function effectiveModelApiConfig(input = {}, environment = process.env) {
   const settings = normalizeModelApiSettings(input);
+  const search = resolveWebSearchConfig(environment, settings);
   const copyGenerationProvider = optionalCopyGenerationProvider(
     settings.copyGenerationProvider ?? environment.XHS_COPY_GENERATION_PROVIDER,
   ) ?? DEFAULT_COPY_GENERATION_PROVIDER;
@@ -204,6 +210,9 @@ export function effectiveModelApiConfig(input = {}, environment = process.env) {
   );
   return {
     copyGenerationProvider,
+    webSearchProvider: search.provider,
+    deepseekSearchModel: search.model ?? settings.deepseekSearchModel,
+    webSearchTimeoutMs: search.timeoutMs ?? settings.webSearchTimeoutMs,
     copyGenerationThinking: validatedCopyGenerationThinking(
       settings.copyGenerationThinking ?? environment.XHS_COPY_GENERATION_THINKING,
     ),

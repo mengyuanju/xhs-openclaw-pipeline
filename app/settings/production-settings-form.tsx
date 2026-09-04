@@ -72,10 +72,14 @@ export function ProductionSettingsForm({
     setMessage('');
     setMessageIsError(false);
     try {
+      // Search settings have their own save action; do not overwrite them with this form's older snapshot.
+      const modelApi = Object.fromEntries(Object.keys(EMPTY_MODEL_API).map((key) => [
+        key, settings.modelApi[key as keyof ModelApiSettings],
+      ]));
       const record = await apiRequest<{ settings: Settings; updatedAt: string }>('/api/production-settings', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings),
+        body: JSON.stringify({ ...settings, modelApi }),
       });
       setSettings(record.settings);
       setUpdatedAt(record.updatedAt);
