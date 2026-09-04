@@ -18,6 +18,7 @@ const IMAGE_GENERATION_SIZE = '1152x1536';
 const TRANSPORT_RETRY_DELAYS_MS = [5_000, 15_000, 30_000];
 const WEB_SEARCH_RETRY_DELAYS_MS = [2_000];
 const TRANSIENT_TRANSPORT_ERROR = /\b(?:EBUSY|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET)\b|fetch failed|connection error|other side closed|reconnecting|timed?\s*out/iu;
+const BLOCKED_NETWORK_TARGET_ERROR = /blocked URL fetch|Blocked hostname|Blocked: resolves to private\/internal\/special-use IP address/iu;
 const TEXT_THINKING_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 
 let textInferenceTail = Promise.resolve();
@@ -127,6 +128,7 @@ async function runWithTransportRetryAsync({
     if (succeeded) return result;
     const missingExpectedOutput = processSucceeded && Boolean(verifySuccess);
     const detail = missingExpectedOutput ? 'expected output file missing' : failureDetail(result);
+    if (BLOCKED_NETWORK_TARGET_ERROR.test(detail)) return result;
     const childProcessTimedOut = result.error?.code === 'ETIMEDOUT';
     const retryable = childProcessTimedOut
       ? retryProcessTimeouts
@@ -148,7 +150,18 @@ function redact(value) {
 }
 
 function actionableImageFailureDetail(result) {
-  const detail = redact(failureDetail(result));
+  const rawDetail = failureDetail(result);
+  if (/Blocked: resolves to private\/internal\/special-use IP address/iu.test(rawDetail)) {
+    const target = rawDetail.match(/targetOrigin=(https?:\/\/\S+)/u)?.[1];
+    let origin = '';
+    try {
+      origin = target ? new URL(target).origin : '';
+    } catch {
+      // Diagnostics can contain malformed URLs; never obscure the network error.
+    }
+    return `OpenClaw 安全校验拦截了图片请求${origin ? `（${redact(origin).slice(0, 200)}）` : ''}：域名解析到私有、内部或保留 IP，可能由 TUN/Fake-IP 引起。请检查图片代理 XHS_IMAGE_PROXY_URL 或代理 DNS 配置。`;
+  }
+  const detail = redact(rawDetail);
   if (/not supported when using Codex with a ChatGPT account/iu.test(detail)) {
     return 'ChatGPT/Codex OAuth 不能用于此图片生成接口。请在 .env 配置 OPENAI_API_KEY，或配置其他 OpenClaw 图片提供方凭据。';
   }
@@ -603,10 +616,7 @@ export function createOpenClawClient({
         sleep: resolvedAsyncSleep,
         beforeRetry: () => removePartialOutput(outputPath),
         verifySuccess: () => existsSync(outputPath),
-        options: processOptions,
-        optionsForAttempt: (attempt) => (attempt === 0
-          ? withImageProxy(processOptions, configuration.imageProxyUrl)
-          : processOptions),
+        options: withImageProxy(processOptions, configuration.imageProxyUrl),
       });
       if (result.error || result.status !== 0) {
         const detail = actionableImageFailureDetail(result);
@@ -679,10 +689,7 @@ export function createOpenClawClient({
         sleep: resolvedAsyncSleep,
         beforeRetry: () => removePartialOutput(outputPath),
         verifySuccess: () => existsSync(outputPath),
-        options: processOptions,
-        optionsForAttempt: (attempt) => (attempt === 0
-          ? withImageProxy(processOptions, configuration.imageProxyUrl)
-          : processOptions),
+        options: withImageProxy(processOptions, configuration.imageProxyUrl),
       });
       if (result.error || result.status !== 0) {
         const detail = actionableImageFailureDetail(result);

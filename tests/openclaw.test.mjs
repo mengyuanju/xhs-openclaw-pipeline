@@ -544,6 +544,42 @@ describe('OpenClaw client', () => {
     assert.equal(calls, 1);
   });
 
+  it('keeps the blocked image destination visible before noisy plugin warnings and command output', async () => {
+    let calls = 0;
+    const client = createOpenClawClient({
+      entryPath: 'C:/openclaw/dist/index.js',
+      sleep: () => assert.fail('security blocks must not retry'),
+      runner: () => {
+        calls += 1;
+        return {
+          status: 1,
+          stdout: '',
+          stderr: [
+            '[config] warnings: plugins.entries.deepseek: plugin not installed: deepseek'.repeat(70),
+            '[image-generation/openai] image auth selected: provider=openai mode=oauth',
+            '[security] blocked URL fetch targetOrigin=https://chatgpt.com reason=Blocked: resolves to private/internal/special-use IP address',
+            'fetch failed',
+          ].join('\n'),
+          error: new Error('Command failed: node infer --prompt sk-abcdefghijklmnop'),
+        };
+      },
+    });
+
+    await assert.rejects(
+      client.runImage({ prompt: 'generate an image blocked by fake IP DNS', outputPath: 'C:/tmp/blocked.png' }),
+      (error) => {
+        const visible = error.message.slice(0, 500);
+        assert.match(visible, /安全.*拦截/u);
+        assert.match(visible, /Fake-IP/u);
+        assert.match(visible, /XHS_IMAGE_PROXY_URL/u);
+        assert.match(visible, /https:\/\/chatgpt\.com/u);
+        assert.doesNotMatch(error.message, /sk-abcdefghijklmnop/u);
+        return true;
+      },
+    );
+    assert.equal(calls, 1);
+  });
+
   it('preserves the spawn timeout when OpenClaw also writes informational stderr', async () => {
     let calls = 0;
     const client = createOpenClawClient({
@@ -668,7 +704,7 @@ describe('OpenClaw client', () => {
     }
   });
 
-  it('falls back to direct image transport after the configured proxy resets the connection', async () => {
+  it('keeps the configured image proxy on retries after a transient connection reset', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'xhs-openclaw-proxy-fallback-'));
     const outputPath = join(directory, 'raw.png');
     const previousProxyUrl = process.env.XHS_IMAGE_PROXY_URL;
@@ -679,23 +715,24 @@ describe('OpenClaw client', () => {
       sleep: () => {},
       runner: (command, args, options) => {
         invocations.push({ command, args, options });
-        if (options.env?.HTTPS_PROXY) {
+        if (invocations.length === 1) {
           return { status: 1, stdout: '', stderr: 'fetch failed: ECONNRESET before TLS' };
         }
-        writeFileSync(outputPath, 'direct connection image');
+        assert.equal(options.env?.HTTPS_PROXY, 'http://127.0.0.1:7897');
+        writeFileSync(outputPath, 'proxy connection image');
         return { status: 0, stdout: '{"ok":true}', stderr: '' };
       },
     });
 
     try {
       const result = await client.runImage({
-        prompt: 'generate through a direct fallback after proxy reset',
+        prompt: 'generate through the configured proxy after a transient reset',
         outputPath,
       });
       assert.equal(result.outputPath, outputPath);
       assert.equal(invocations.length, 2);
       assert.equal(invocations[0].options.env.HTTPS_PROXY, 'http://127.0.0.1:7897');
-      assert.equal(invocations[1].options.env, undefined);
+      assert.equal(invocations[1].options.env.HTTPS_PROXY, 'http://127.0.0.1:7897');
     } finally {
       if (previousProxyUrl === undefined) delete process.env.XHS_IMAGE_PROXY_URL;
       else process.env.XHS_IMAGE_PROXY_URL = previousProxyUrl;
