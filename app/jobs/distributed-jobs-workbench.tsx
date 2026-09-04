@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 
 import { apiRequest } from '../components/api-client';
+import { IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
 import { resumeImageTask } from '../components/resume-image-task';
 
 type TaskState =
@@ -334,7 +335,7 @@ export function DistributedJobsWorkbench({
               <tbody>{tasks.map((task) => <tr key={task.id}>
                 <td className="mono" data-label="ID">#{task.id}</td>
                 <td className="query-cell" data-label="Query">{task.query}</td>
-                <td data-label="状态"><span className={`pill${isStale(task) ? ' pill-rejected' : ''}`}>{STATE_LABELS[task.state]}</span></td>
+                <td data-label="状态"><span className={`pill${isStale(task) || isImageRetryExhausted(task) ? ' pill-rejected' : ''}`}>{isImageRetryExhausted(task) ? IMAGE_RETRY_EXHAUSTED_LABEL : STATE_LABELS[task.state]}</span></td>
                 <td className="mono" data-label="节点">{task.copyExecutorNodeId}</td>
                 <td data-label="阶段 / 进度"><div className="distributed-progress"><span>{task.currentStage || '—'} · {task.progressPercent}%</span><small>{isStale(task) ? '长时间无进度，可人工重新执行' : task.progressMessage}</small></div></td>
                 <td data-label="耗时"><Clock3 aria-hidden="true" size={13} /> {elapsed(task)}</td>
@@ -350,7 +351,7 @@ export function DistributedJobsWorkbench({
         <button className="button small" type="button" onClick={() => setSelected(null)}>关闭</button>
       </div>
       <dl className="distributed-task-facts">
-        <div><dt>状态</dt><dd>{STATE_LABELS[selected.state]}</dd></div>
+        <div><dt>状态</dt><dd>{isImageRetryExhausted(selected) ? IMAGE_RETRY_EXHAUSTED_LABEL : STATE_LABELS[selected.state]}</dd></div>
         <div><dt>开始时间</dt><dd>{selected.executionStartedAt ? new Date(selected.executionStartedAt).toLocaleString('zh-CN') : '—'}</dd></div>
         <div><dt>最后进度</dt><dd>{selected.lastActivityAt ? new Date(selected.lastActivityAt).toLocaleString('zh-CN') : '—'}</dd></div>
         <div><dt>执行代次</dt><dd className="mono">{selected.currentExecutionId ?? '—'}</dd></div>

@@ -1,20 +1,22 @@
-import { withAdminStore } from '../../src/admin/runtime.mjs';
+import { withKnowledgeStore, listAllKnowledge } from '../../src/admin/knowledge-runtime.mjs';
 import { KnowledgeTabs } from './knowledge-tabs';
-import { CentralDataWorkbench } from '../components/central-data-workbench';
-import { controlPlaneUrl } from '../../src/control-plane/next-runtime.mjs';
+import './knowledge.css';
 
 export const dynamic = 'force-dynamic';
 
-export default function KnowledgePage() {
-  if (controlPlaneUrl()) return <>
-    <header className="page-header"><div><span className="eyebrow">Central knowledge</span><h1 className="sr-only">知识库</h1><p className="subtle">文案与视觉知识由远端中心统一管理，执行机只读取领取任务时冻结的版本。</p></div></header>
-    <CentralDataWorkbench resource="knowledge" />
-  </>;
-  const result = withAdminStore((store: any) => ({
-    visualKnowledge: store.listVisualKnowledge({ page: 1, pageSize: 100 }),
-    copyKnowledge: store.listCopyKnowledge({ page: 1, pageSize: 100 }),
-    copyLabels: store.listCopyKnowledgeLabels(),
-  })) as any;
+export default async function KnowledgePage() {
+  let result: any;
+  try {
+    result = await withKnowledgeStore(async (store: any) => {
+      const [visualItems, copyItems, copyLabels, copyAnalysisPrompts] = await Promise.all([
+        listAllKnowledge(store, 'listVisualKnowledge'), listAllKnowledge(store, 'listCopyKnowledge'),
+        store.listCopyKnowledgeLabels(), store.listCopyAnalysisPrompts(),
+      ]);
+      return { visualItems, copyItems, copyLabels, copyAnalysisPrompts };
+    });
+  } catch (error) {
+    return <section className="panel"><h1 className="sr-only">知识库</h1><h2>知识库暂时无法读取</h2><p role="alert">{error instanceof Error ? error.message : '读取失败，请稍后重试'}</p><a className="button" href="/knowledge">重新加载</a></section>;
+  }
   return <>
     <header className="page-header">
       <div>
@@ -24,9 +26,10 @@ export default function KnowledgePage() {
       </div>
     </header>
     <KnowledgeTabs
-      visualItems={result.visualKnowledge.data}
-      copyItems={result.copyKnowledge.data}
+      visualItems={result.visualItems}
+      copyItems={result.copyItems}
       copyLabels={result.copyLabels}
+      copyAnalysisPrompts={result.copyAnalysisPrompts}
     />
   </>;
 }

@@ -2,7 +2,8 @@ import { z } from 'zod';
 
 import { apiHandler, ok, parseJson } from '../_lib';
 import { ApiError, assertRequestSize } from '../../../src/admin/http.mjs';
-import { adminKnowledgeRoot, withAdminStore } from '../../../src/admin/runtime.mjs';
+import { adminKnowledgeRoot } from '../../../src/admin/runtime.mjs';
+import { withKnowledgeStore } from '../../../src/admin/knowledge-runtime.mjs';
 import { createVisualKnowledgeWithOptionalImage } from '../../../src/admin/visual-knowledge-service.mjs';
 
 export const runtime = 'nodejs';
@@ -14,7 +15,7 @@ const itemSchema = z.object({
   generationTarget: z.enum(['MODEL_IMAGE', 'LOCAL_CARD']),
   retentionMode: z.enum(['PROMPT_ONLY', 'IMAGE_AND_PROMPT']),
   rightsStatus: z.enum(['SELF_OWNED', 'LICENSED', 'INTERNAL_ANALYSIS_ONLY', 'UNKNOWN']),
-  sourceImageSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  sourceImageSha256: z.string().regex(/^[a-f0-9]{64}$/).or(z.literal('')).optional(),
   promptTemplate: z.string().trim().min(1).max(2_000),
   negativePrompt: z.string().trim().max(600).default(''),
   styleTags: z.array(z.string().trim().min(1).max(50)).max(20),
@@ -40,9 +41,9 @@ function validateFormJson(value: FormDataEntryValue | null) {
 }
 
 export function GET(request: Request) {
-  return apiHandler(request, {}, () => {
+  return apiHandler(request, {}, async () => {
     const url = new URL(request.url);
-    return ok(withAdminStore((store: any) => store.listVisualKnowledge({
+    return ok(await withKnowledgeStore((store: any) => store.listVisualKnowledge({
       page: url.searchParams.get('page'),
       pageSize: url.searchParams.get('pageSize'),
       status: url.searchParams.get('status') || undefined,
@@ -57,7 +58,7 @@ export function POST(request: Request) {
     const contentType = request.headers.get('content-type')?.toLowerCase() || '';
     if (contentType.startsWith('application/json')) {
       const input = await parseJson(request, itemSchema);
-      const created = await withAdminStore((store: any) => createVisualKnowledgeWithOptionalImage({
+      const created = await withKnowledgeStore((store: any) => createVisualKnowledgeWithOptionalImage({
         store,
         knowledgeRoot: adminKnowledgeRoot(),
         input,
@@ -74,7 +75,7 @@ export function POST(request: Request) {
     if (!(file instanceof File)) throw new TypeError('保留图片模式必须选择图片');
     if (file.size > 10 * 1024 * 1024) throw new RangeError('图片不能超过 10 MiB');
     const buffer = Buffer.from(await file.arrayBuffer());
-    const created = await withAdminStore((store: any) => createVisualKnowledgeWithOptionalImage({
+    const created = await withKnowledgeStore((store: any) => createVisualKnowledgeWithOptionalImage({
       store,
       knowledgeRoot: adminKnowledgeRoot(),
       input,

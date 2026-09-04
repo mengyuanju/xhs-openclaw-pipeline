@@ -19,12 +19,19 @@ COPY_REVIEW_PENDING --审核指定 copyRevisionId--> IMAGE_QUEUED
 IMAGE_QUEUED --任意已启用图片能力的空闲节点原子领取--> IMAGE_RUNNING
 IMAGE_RUNNING -> DELIVERY_REVIEW_PENDING -> COMPLETED
       |
-      +-> IMAGE_QUEUED（生图失败自动重新排队，无需重新审核文案）
+      +-> IMAGE_QUEUED（第 1、2 次失败，由原生图执行机重试）
+      +-> COPY_REVIEW_PENDING（第 3 次失败：生图3次失败，等待人工审核）
 ```
 
 文案任务不会被非指定机器领取。创建任务时，中心服务分别记录 `createdByNodeId` 和用户选择的 `copyExecutorNodeId`；执行代理只领取分配给自己的 `COPY_QUEUED`。图片任务无创建机优先级。
 
-生图失败时，本次 `task_executions` 和 `image_runs` 保留 `FAILED` 历史，任务本身回到 `IMAGE_QUEUED`（待生图），保留脱敏错误和原执行快照，清空当前执行/图片运行指针。中心领取接口限制失败任务至少等待 5 秒，并优先领取等待更久的图片任务，避免单个失败任务持续占用队列头部；空闲且已开启生图的任意节点均可再次领取，创建全新的执行记录。连续失败仍会持续重试，可能继续消耗模型额度，需要排查执行机错误。
+每轮人工审核通过后，生图最多执行 3 次（首次 + 最多 2 次自动重试）。只有整次执行在 OpenClaw 内部重试结束后仍失败，才记 1 次；内部模型重试和失败回报的网络重发不额外计数。每次失败仍保留 `task_executions` 和 `image_runs` 的 `FAILED` 历史及脱敏错误。
+
+第 1、2 次失败回到 `IMAGE_QUEUED`，至少等待 5 秒后由原生图执行机再次领取，保留原配置快照，创建新执行 ID；原节点离线时等待，不转交其他节点。中心在已有 JSON 快照中写入 `imageRetry: { failedAttempts, nodeId }`，经 `pending_snapshot` 传递到下一次执行，进程重启不清零，无需改表。此预算按整次任务执行计数，不改变 OpenClaw 内部重试策略。
+
+第 3 次失败进入 `COPY_REVIEW_PENDING`，`currentStage` 为 `IMAGE_RETRY_EXHAUSTED`，界面状态显示“生图3次失败”。任务计入待文案审核列表与角标，保留原文案供人工修改或废弃；不再自动领取。重新提交文案审核后，清除旧重试快照，开始新的最多 3 次生图周期。旧快照没有 `imageRetry` 时从本次失败开始计数，不根据历史总次数追溯判定。
+
+部署时必须更新并重启远端中心服务及界面；仅更新执行机或刷新页面不能启用次数限制。此实现不自动部署、不批量修改现有远端任务。
 
 新版本中心启动时自动应用 `0002_requeue_failed_images`，将旧 `IMAGE_FAILED` 任务转回待生图；文案审核记录和失败历史不删除。这些任务归入工作台的“生图中”页签，状态为“待生图”，不再进入“待文案审核”。
 

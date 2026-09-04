@@ -55,6 +55,13 @@ export function normalizeNodeName(value, fallback) {
   return name;
 }
 
+export function normalizeCreatorUserId(value) {
+  if (typeof value !== 'string' || !/^[a-zA-Z0-9._:-]{1,100}$/u.test(value)) {
+    throw new TypeError('createdByUserId must be a valid account identifier');
+  }
+  return value;
+}
+
 export function normalizeUuid(value, name = 'id') {
   const id = String(value ?? '').trim();
   if (!UUID_PATTERN.test(id)) throw new TypeError(`${name} must be a UUID`);

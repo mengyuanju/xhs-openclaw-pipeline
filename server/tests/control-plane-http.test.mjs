@@ -128,12 +128,33 @@ test('task listing forwards server-side pagination, states and Query search', as
       states: 'COPY_QUEUED,COPY_FAILED',
       nodeId: 'node-a',
       query: '黄山',
+      createdByUserId: undefined,
       limit: '20',
       offset: '20',
       includeTotal: true,
     }],
     ['counts', { nodeId: 'node-a' }],
   ]);
+});
+
+test('task ownership comes from the UI server identity and is forwarded to task filtering', async () => {
+  const calls = [];
+  await withServer({
+    createTasks: async (input) => { calls.push(input); return []; },
+    listTasks: async (input) => { calls.push(input); return []; },
+  }, async (root) => {
+    const created = await fetch(`${root}/v1/tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Task-Creator-Id': 'admin' },
+      body: JSON.stringify({ nodeId: 'node-a', createdByUserId: 'forged', tasks: [{ query: '我的任务' }] }),
+    });
+    assert.equal(created.status, 201);
+    const listed = await fetch(`${root}/v1/tasks?createdByUserId=admin&includeTotal=true`);
+    assert.equal(listed.status, 200);
+  });
+  assert.equal(calls[0].createdByUserId, 'admin');
+  assert.equal(calls[1].createdByUserId, 'admin');
+  assert.equal(calls[1].nodeId, undefined);
 });
 
 test('task cancellation is exposed as a logical-delete operation', async () => {

@@ -121,3 +121,35 @@ test('executor retries an unreported failure before claiming more work, without 
   assert.equal(await agent.runCopyOnce(), null);
   assert.equal(claims, 2);
 });
+
+test('image internal retries and failure-report retries count as one outer execution', async () => {
+  const claim = { task: { id: 41 }, execution: { id: '4c8649a9-8c8f-4708-aeb7-2df0a3171a5a' } };
+  let internalAttempts = 0;
+  let claims = 0;
+  let reports = 0;
+  const agent = createExecutorAgent({
+    nodeId: 'image-node', imageWorkerEnabled: true, readinessCheck: async () => {},
+    controlPlane: {
+      claimImage: async () => { claims += 1; return claim; },
+      failExecution: async (id) => {
+        assert.equal(id, claim.execution.id);
+        assert.equal(internalAttempts, 4, 'report only after all internal attempts finish');
+        reports += 1;
+        if (reports === 1) throw new Error('report temporarily unavailable');
+      },
+    },
+    executeImage: async () => {
+      for (let internal = 0; internal < 4; internal += 1) {
+        assert.equal(reports, 0);
+        internalAttempts += 1;
+      }
+      throw new Error('internal image retries exhausted');
+    },
+  });
+  await agent.prepare();
+  await assert.rejects(agent.runImageOnce(), /report temporarily unavailable/u);
+  assert.equal((await agent.runImageOnce()).status, 'FAILED');
+  assert.equal(claims, 1);
+  assert.equal(internalAttempts, 4);
+  assert.equal(reports, 2);
+});

@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { apiHandler, ok, parseJson } from '../../_lib';
 import { notFound, parsePositiveId } from '../../../../src/admin/http.mjs';
-import { withAdminStore } from '../../../../src/admin/runtime.mjs';
+import { withKnowledgeStore } from '../../../../src/admin/knowledge-runtime.mjs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -20,7 +20,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   return apiHandler(request, { mutation: true }, async () => {
     const id = parsePositiveId((await context.params).id);
     const input = await parseJson(request, updateSchema, { maxBytes: 192 * 1024 });
-    const updated = withAdminStore((store: any) => store.updateCopyKnowledge(id, input));
+    const updated = await withKnowledgeStore((store: any) => store.updateCopyKnowledge(id, input));
     if (!updated) notFound('文案知识不存在');
     return ok(updated);
   });

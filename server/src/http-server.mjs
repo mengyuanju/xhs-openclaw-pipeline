@@ -5,6 +5,7 @@ import { relative, resolve } from 'node:path';
 import { bodyParser } from '@koa/bodyparser';
 import Router from '@koa/router';
 import Koa from 'koa';
+import { importCopyKnowledgeLabels, listCopyAnalysisPrompts, retireKnowledge, saveCopyAnalysisPrompt } from './knowledge-admin.mjs';
 
 import {
   ControlPlaneConflictError,
@@ -155,6 +156,7 @@ function installRoutes(router, repository, storageRoot) {
     json(ctx, 201, await repository.createTasks({
       nodeId: body.nodeId,
       copyExecutorNodeId: body.copyExecutorNodeId,
+      createdByUserId: ctx.get('X-Task-Creator-Id') || null,
       tasks: body.tasks,
     }));
   });
@@ -163,6 +165,7 @@ function installRoutes(router, repository, storageRoot) {
       state: ctx.query.state,
       states: ctx.query.states,
       nodeId: ctx.query.nodeId,
+      createdByUserId: ctx.query.createdByUserId,
       query: ctx.query.query,
       limit: ctx.query.limit,
       offset: ctx.query.offset,
@@ -240,6 +243,12 @@ function installRoutes(router, repository, storageRoot) {
   });
 
   router.get('/v1/knowledge', async (ctx) => json(ctx, 200, await repository.listKnowledge()));
+  router.get('/v1/knowledge/capabilities', (ctx) => json(ctx, 200, { workbenchVersion: 1 }));
+  router.get('/v1/copy-analysis-prompts', async (ctx) => json(ctx, 200, await listCopyAnalysisPrompts(repository.pool)));
+  router.post('/v1/copy-analysis-prompts', async (ctx) => json(ctx, 201, await saveCopyAnalysisPrompt(repository.pool, requireJson(ctx))));
+  router.patch('/v1/copy-analysis-prompts/:id', async (ctx) => json(ctx, 200, await saveCopyAnalysisPrompt(repository.pool, requireJson(ctx), ctx.params.id)));
+  router.post('/v1/knowledge/labels/import', async (ctx) => json(ctx, 200, await importCopyKnowledgeLabels(repository.pool, requireJson(ctx).labels)));
+  router.post('/v1/knowledge/:id/retire', async (ctx) => json(ctx, 200, await retireKnowledge(repository.pool, ctx.params.id)));
   router.post('/v1/knowledge/versions', async (ctx) => {
     const body = requireJson(ctx);
     json(ctx, 201, await repository.createKnowledgeVersion({
@@ -247,6 +256,8 @@ function installRoutes(router, repository, storageRoot) {
       kind: body.kind,
       name: body.name,
       content: body.content ?? {},
+      publish: body.publish ?? false,
+      expectedVersionId: body.expectedVersionId ?? null,
     }));
   });
   router.put('/v1/knowledge-versions/:versionId/asset', async (ctx) => {

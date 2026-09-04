@@ -11,6 +11,7 @@ function taskRow(overrides = {}) {
     requested_image_count: 'auto',
     state: 'COPY_QUEUED',
     created_by_node_id: 'node-a',
+    created_by_user_id: 'admin',
     copy_executor_node_id: 'node-b',
     current_copy_revision_id: null,
     current_image_run_id: null,
@@ -48,14 +49,16 @@ test('task creation keeps creator and selected copy executor separate', async ()
   const created = await repository.createTasks({
     nodeId: 'node-a',
     copyExecutorNodeId: 'node-b',
+    createdByUserId: 'admin',
     tasks: [{ query: '指定远端执行机' }],
   });
   const insert = queries.find((query) => query.sql.includes('INSERT INTO tasks'));
 
   assert.equal(created[0].createdByNodeId, 'node-a');
   assert.equal(created[0].copyExecutorNodeId, 'node-b');
-  assert.deepEqual(insert.values.slice(3), ['node-a', 'node-b']);
-  assert.match(insert.sql, /VALUES \(\$1, \$2, \$3, \$4, \$5\)/u);
+  assert.equal(created[0].createdByUserId, 'admin');
+  assert.deepEqual(insert.values.slice(3), ['node-a', 'node-b', 'admin']);
+  assert.match(insert.sql, /VALUES \(\$1, \$2, \$3, \$4, \$5, \$6\)/u);
   assert.equal(queries.at(-1).sql, 'COMMIT');
 });
 
@@ -128,7 +131,7 @@ for (const kind of ['COPY', 'IMAGE']) {
           const source = String(sql);
           queries.push({ sql: source, values });
           if (source.includes('FROM task_executions e')) return { rows: [{
-            id: executionId, task_id: 41, kind, status: 'RUNNING',
+            id: executionId, task_id: 41, kind, status: 'RUNNING', node_id: 'node-b',
             current_execution_id: executionId, task_state: `${kind}_RUNNING`, snapshot,
           }] };
           // Model PostgreSQL's varchar(500) constraint for both writes.
@@ -149,10 +152,10 @@ for (const kind of ['COPY', 'IMAGE']) {
       const executionUpdate = queries.find((query) => query.sql.includes('UPDATE task_executions SET'));
       const taskUpdate = queries.find((query) => query.sql.includes('UPDATE tasks SET'));
       const nextState = kind === 'IMAGE' ? 'IMAGE_QUEUED' : 'COPY_FAILED';
-      const taskMessage = kind === 'IMAGE' ? '生图失败，已重新排队，等待执行机领取' : summary;
+      const taskMessage = kind === 'IMAGE' ? '生图第1次失败，等待原执行机重试（最多3次）' : summary;
       assert.deepEqual(executionUpdate.values, [executionId, summary, detail]);
       assert.deepEqual(taskUpdate.values, [41, nextState, taskMessage, detail, executionId,
-        ...(kind === 'IMAGE' ? [snapshot] : [])]);
+        ...(kind === 'IMAGE' ? [{ ...snapshot, imageRetry: { failedAttempts: 1, nodeId: 'node-b' } }] : [])]);
       assert.equal(failed.state, nextState);
       assert.equal(failed.progressMessage, taskMessage);
       if (kind === 'IMAGE') {
@@ -205,6 +208,28 @@ test('task pages filter multiple states and Query text while returning a total',
   ]);
   assert.match(pageQuery.sql, /state = ANY\(\$1::varchar\[\]\)/u);
   assert.match(pageQuery.sql, /strpos\(lower\(query\), lower\(\$3\)\) > 0/u);
+});
+
+test('personal task pagination and totals filter the creator independently of execution nodes', async () => {
+  const queries = [];
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql, values) {
+      queries.push({ sql, values });
+      return { rows: sql.includes('COUNT(*) AS total')
+        ? [{ total: '2' }]
+        : [taskRow(), taskRow({ id: 42, state: 'COMPLETED', copy_executor_node_id: 'node-c' })] };
+    },
+  } });
+  const page = await repository.listTasks({ createdByUserId: 'admin', query: '远端', includeTotal: true });
+  assert.equal(page.total, 2);
+  assert.deepEqual(page.items.map((task) => task.createdByUserId), ['admin', 'admin']);
+  assert.deepEqual(page.items.map((task) => task.copyExecutorNodeId), ['node-b', 'node-c']);
+  for (const { sql, values } of queries) {
+    assert.match(sql, /created_by_user_id = \$1/u);
+    assert.doesNotMatch(sql, /copy_executor_node_id =/u);
+    assert.deepEqual(values.slice(0, 2), ['admin', '远端']);
+  }
+  await assert.rejects(repository.listTasks({ createdByUserId: '' }), /createdByUserId/u);
 });
 
 test('copy approval submits reviewed copy to the image queue', async () => {
@@ -272,7 +297,8 @@ test('requeued images cannot be edited through copy approval', async () => {
 test('image claims apply a shared retry cooldown and reuse the approved snapshot in a new execution', async () => {
   const queries = [];
   const previousId = '47d841f5-3808-46f0-9f2a-fa9781379b38';
-  const snapshot = { copyRevision: { id: 12, content: { reviewed: true } } };
+  const snapshot = { copyRevision: { id: 12, content: { reviewed: true } },
+    imageRetry: { failedAttempts: 2, nodeId: 'node-b' } };
   let execution;
   const client = {
     async query(sql, values) {
@@ -295,7 +321,7 @@ test('image claims apply a shared retry cooldown and reuse the approved snapshot
   const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
   const claim = await repository.claimImage('node-b');
   const candidate = queries.find((query) => query.sql.includes('SELECT * FROM tasks'));
-  assert.deepEqual(candidate.values, ['IMAGE_QUEUED']);
+  assert.deepEqual(candidate.values, ['IMAGE_QUEUED', 'node-b']);
   assert.match(candidate.sql, /error IS NULL OR last_activity_at <= now\(\) - interval '5 seconds'/u);
   assert.match(candidate.sql, /ORDER BY last_activity_at NULLS FIRST, id/u);
   assert.match(candidate.sql, /FOR UPDATE SKIP LOCKED/u);

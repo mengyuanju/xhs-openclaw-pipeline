@@ -14,6 +14,7 @@ import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 import { apiRequest } from '../components/api-client';
+import { IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
 import { ImagePreview } from '../components/image-preview';
 
 type TaskState =
@@ -97,6 +98,7 @@ const STATE_LABELS: Record<TaskState, string> = {
   CANCELLED: '已取消',
 };
 const STAGE_LABELS: Record<string, string> = {
+  IMAGE_RETRY_EXHAUSTED: IMAGE_RETRY_EXHAUSTED_LABEL,
   STARTING_COPY: '准备生成文案',
   STARTING_IMAGE: '准备生成图片',
   SEARCHING_IMAGES: '联网搜索图片',
@@ -315,7 +317,7 @@ export function TaskReviewDialog({
               <div className="workbench-review-section-title"><span>01</span><div><h3>当前任务概览</h3><p>确认 Query、状态和执行进度。</p></div></div>
               <dl className="workbench-review-facts">
                 <div className="wide"><dt>Query 原文</dt><dd>{detail.query}</dd></div>
-                <div><dt>当前状态</dt><dd><span className={`pill workbench-state-${detail.state.toLowerCase()}`}>{STATE_LABELS[detail.state]}</span></dd></div>
+                <div><dt>当前状态</dt><dd><span className={`pill ${isImageRetryExhausted(detail) ? 'pill-rejected' : `workbench-state-${detail.state.toLowerCase()}`}`}>{isImageRetryExhausted(detail) ? IMAGE_RETRY_EXHAUSTED_LABEL : STATE_LABELS[detail.state]}</span></dd></div>
                 <div><dt>文案执行机</dt><dd className="mono">{detail.copyExecutorNodeId}</dd></div>
                 <div><dt>创建时间</dt><dd>{dateTime(detail.createdAt)}</dd></div>
                 <div><dt>开始时间</dt><dd>{dateTime(detail.executionStartedAt)}</dd></div>

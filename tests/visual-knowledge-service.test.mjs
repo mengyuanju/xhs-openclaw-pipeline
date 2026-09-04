@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { access, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -119,15 +120,17 @@ describe('visual knowledge image retention', () => {
     const root = await mkdtemp(join(tmpdir(), 'xhs-knowledge-'));
     directories.push(root);
     const store = createAdminStore(':memory:');
+    const buffer = await imageBuffer();
     try {
       const created = await createVisualKnowledgeWithOptionalImage({
         store,
         knowledgeRoot: root,
-        buffer: await imageBuffer(),
+        buffer,
         mimeType: 'image/png',
         input: knowledgeInput({
           retentionMode: 'IMAGE_AND_PROMPT',
           rightsStatus: 'SELF_OWNED',
+          sourceImageSha256: createHash('sha256').update(buffer).digest('hex'),
         }),
       });
       assert.equal(created.asset.mimeType, 'image/png');
@@ -135,5 +138,37 @@ describe('visual knowledge image retention', () => {
     } finally {
       store.close();
     }
+  });
+
+  it('rejects unlicensed retained images before creating a file or remote draft', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'xhs-knowledge-rights-'));
+    directories.push(root);
+    let writes = 0;
+    await assert.rejects(() => createVisualKnowledgeWithOptionalImage({
+      store: { remote: true, createVisualKnowledge() { writes++; } }, knowledgeRoot: root,
+      input: knowledgeInput({ retentionMode: 'IMAGE_AND_PROMPT', rightsStatus: 'UNKNOWN' }),
+      buffer: Buffer.from('not used'), mimeType: 'image/png',
+    }), /self-owned or licensed/);
+    assert.equal(writes, 0);
+    assert.deepEqual(await readdir(root), []);
+  });
+
+  it('uploads a normalized PNG and metadata to the central service without a local reference file', async () => {
+    const buffer = await imageBuffer();
+    let saved;
+    let uploaded;
+    const root = await mkdtemp(join(tmpdir(), 'xhs-central-knowledge-'));
+    directories.push(root);
+    await createVisualKnowledgeWithOptionalImage({
+      store: { remote: true, async createVisualKnowledge(input) { saved = input; return { latestVersion: { id: 7 } }; },
+        client: { async uploadKnowledgeAsset(id, data) { uploaded = { id, data }; } } },
+      knowledgeRoot: root, buffer, mimeType: 'image/png',
+      input: knowledgeInput({ retentionMode: 'IMAGE_AND_PROMPT', rightsStatus: 'LICENSED', sourceImageSha256: createHash('sha256').update(buffer).digest('hex') }),
+    });
+    assert.equal(uploaded.id, 7);
+    assert.equal((await sharp(uploaded.data).metadata()).format, 'png');
+    assert.equal(saved.asset.width, 120);
+    assert.equal(saved.asset.sha256, createHash('sha256').update(uploaded.data).digest('hex'));
+    assert.deepEqual(await readdir(root), []);
   });
 });

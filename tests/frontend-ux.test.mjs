@@ -69,7 +69,6 @@ test('the unified knowledge base remains grouped with reusable content assets', 
 
 test('primary section pages omit visible display headlines while keeping an accessible page name', async () => {
   const sectionPages = [
-    ['app/workbench/page.tsx', '作业中心'],
     ['app/page.tsx', '工作台'],
     ['app/imports/page.tsx', '选题导入'],
     ['app/prompts/page.tsx', '提示词'],

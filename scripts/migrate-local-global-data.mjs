@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { relative, resolve } from 'node:path';
 
 import { createControlPlaneClient } from '../src/control-plane/client.mjs';
-import { adminKnowledgeRoot, withAdminStore } from '../src/admin/runtime.mjs';
+import { adminDatabasePath, adminKnowledgeRoot, withAdminStore } from '../src/admin/runtime.mjs';
+import { readLegacyKnowledge, migrateLegacyKnowledge } from '../src/admin/knowledge-migration.mjs';
+import { createRemoteKnowledgeStore } from '../src/admin/remote-knowledge-store.mjs';
+import { listAllKnowledge } from '../src/admin/knowledge-runtime.mjs';
 
 function published(version) {
   return version?.status === 'PUBLISHED';
@@ -69,15 +73,17 @@ async function main() {
   const apply = process.argv.includes('--apply');
   const baseUrl = process.env.CONTROL_PLANE_URL?.trim();
   if (!baseUrl) throw new Error('CONTROL_PLANE_URL is required');
-  const local = withAdminStore((store) => ({
+  const local = await withAdminStore(async (store) => ({
     prompts: store.listPromptTemplates(),
     settings: store.getProductionSettings().settings,
-    copyKnowledge: store.listCopyKnowledge({ page: 1, pageSize: 100 }).data,
-    visualKnowledge: store.listVisualKnowledge({ page: 1, pageSize: 100 }).data,
+    visualKnowledge: await listAllKnowledge(store, 'listVisualKnowledge'),
   }));
+  const legacy = readLegacyKnowledge(adminDatabasePath());
   const summary = {
     prompts: local.prompts.length,
-    copyKnowledge: local.copyKnowledge.length,
+    copyKnowledge: legacy.copyItems.length,
+    copyAnalysisPrompts: legacy.analysisPrompts.length,
+    copyLabels: legacy.labels.length,
     visualKnowledge: local.visualKnowledge.length,
     productionSettings: 1,
   };
@@ -88,9 +94,13 @@ async function main() {
   }
   const client = createControlPlaneClient({ baseUrl });
   await client.health();
+  await client.knowledgeCapabilities();
   await client.updateSetting('production', local.settings);
   for (const prompt of local.prompts) await migratePrompt(client, prompt);
-  await migrateKnowledgeItems(client, 'COPY', local.copyKnowledge, adminKnowledgeRoot());
+  const sourcePath = adminDatabasePath();
+  const sourceKey = `sqlite:${createHash('sha256').update(process.platform === 'win32' ? sourcePath.toLowerCase() : sourcePath).digest('hex')}`;
+  // Visual versions and their files are migrated separately immediately below.
+  await migrateLegacyKnowledge({ source: { ...legacy, visualItems: [], assets: [] }, sourceKey, store: createRemoteKnowledgeStore(client) });
   await migrateKnowledgeItems(client, 'VISUAL', local.visualKnowledge, adminKnowledgeRoot());
   console.log(JSON.stringify({ mode: 'APPLIED', ...summary }, null, 2));
   console.log('Migration appends versions. Do not run --apply again unless duplicates are intended.');

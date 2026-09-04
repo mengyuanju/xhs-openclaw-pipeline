@@ -145,6 +145,12 @@ export function createControlPlaneClient({
       method: 'POST', body: {},
     }),
     listKnowledge: () => request('/v1/knowledge'),
+    knowledgeCapabilities: () => request('/v1/knowledge/capabilities'),
+    listCopyAnalysisPrompts: () => request('/v1/copy-analysis-prompts'),
+    createCopyAnalysisPrompt: (input) => request('/v1/copy-analysis-prompts', { method: 'POST', body: input }),
+    replaceCopyAnalysisPrompt: (id, input) => request(`/v1/copy-analysis-prompts/${id}`, { method: 'PATCH', body: input }),
+    importCopyKnowledgeLabels: (labels) => request('/v1/knowledge/labels/import', { method: 'POST', body: { labels } }),
+    retireKnowledge: (id) => request(`/v1/knowledge/${id}/retire`, { method: 'POST', body: {} }),
     createKnowledgeVersion: (input) => request('/v1/knowledge/versions', {
       method: 'POST', body: input,
     }),

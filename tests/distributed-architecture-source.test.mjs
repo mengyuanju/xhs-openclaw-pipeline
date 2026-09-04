@@ -17,7 +17,11 @@ test('distributed mode routes copy creation and global data through the control 
   assert.match(copyPage, /controlPlaneUrl\(\)/u);
   assert.match(copyPage, /DistributedJobsWorkbench/u);
   assert.match(promptsPage, /CentralPromptWorkbench/u);
-  assert.match(knowledgePage, /CentralDataWorkbench resource="knowledge"/u);
+  assert.match(knowledgePage, /withKnowledgeStore/u);
+  assert.match(knowledgePage, /<KnowledgeTabs/u);
+  const knowledgeRuntime = await source('src/admin/knowledge-runtime.mjs');
+  assert.match(knowledgeRuntime, /CONTROL_PLANE_URL/u);
+  assert.match(knowledgeRuntime, /createRemoteKnowledgeStore/u);
   assert.match(settingsPage, /CentralDataWorkbench resource="settings"/u);
   assert.match(navigation, /href: '\/jobs', label: '远端作业中心'/u);
 });

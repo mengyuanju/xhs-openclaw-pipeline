@@ -71,6 +71,14 @@ test('failed-image migration only requeues tasks and preserves approved copy and
   assert.doesNotMatch(migration.sql, /DELETE|TRUNCATE|DROP|UPDATE public.copy_revisions|current_copy_revision_id\s*=|error\s*=/u);
 });
 
+test('task creator migration preserves unattributed history and adds an ownership index', async () => {
+  const migration = (await loadMigrations()).find((item) => item.id === '0003_task_creator');
+  assert.ok(migration);
+  assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS created_by_user_id varchar\(100\)/u);
+  assert.match(migration.sql, /ON tasks\(created_by_user_id, id DESC\)/u);
+  assert.doesNotMatch(migration.sql, /DEFAULT|NOT NULL|UPDATE tasks|DELETE|DROP/u);
+});
+
 test('failed upgrades roll back the enclosing schema-and-data transaction', async () => {
   const queries = [];
   const client = { query: async (sql) => {

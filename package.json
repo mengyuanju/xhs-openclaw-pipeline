@@ -21,6 +21,7 @@
     "prompts:install-rules": "node scripts/install-rule-prompts.mjs",
     "storage:optimize": "node scripts/optimize-storage.mjs",
     "control-plane:migrate-local": "node --env-file-if-exists=.env scripts/migrate-local-global-data.mjs",
+    "knowledge:migrate": "node --env-file-if-exists=.env scripts/migrate-knowledge.mjs",
     "server:db:export": "npm --prefix server run db:export --",
     "server:db:init": "npm --prefix server run db:init --",
     "server:db:upgrade": "npm --prefix server run db:upgrade --",

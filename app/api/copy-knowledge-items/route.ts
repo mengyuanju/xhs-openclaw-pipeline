@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { apiHandler, ok, parseJson } from '../_lib';
-import { withAdminStore } from '../../../src/admin/runtime.mjs';
+import { withKnowledgeStore } from '../../../src/admin/knowledge-runtime.mjs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -16,10 +16,20 @@ const bodySchema = z.object({
   analysisModel: z.string().trim().max(200).optional().default(''),
 }).strict();
 
+export function GET(request: Request) {
+  return apiHandler(request, {}, async () => {
+    const url = new URL(request.url);
+    return ok(await withKnowledgeStore((store: any) => store.listCopyKnowledge({
+      page: url.searchParams.get('page'), pageSize: url.searchParams.get('pageSize'),
+      label: url.searchParams.get('label') || undefined,
+    })));
+  });
+}
+
 export async function POST(request: Request) {
   return apiHandler(request, { mutation: true }, async () => {
     const input = await parseJson(request, bodySchema, { maxBytes: 192 * 1024 });
-    const created = withAdminStore((store: any) => store.createCopyKnowledge(input));
+    const created = await withKnowledgeStore((store: any) => store.createCopyKnowledge(input));
     return ok(created, { status: 201 });
   });
 }

@@ -159,12 +159,39 @@ export async function createVisualKnowledgeWithOptionalImage({
   mimeType,
 }) {
   if (!store?.createVisualKnowledge) throw new TypeError('visual knowledge store is required');
+  if (!['PROMPT_ONLY', 'IMAGE_AND_PROMPT'].includes(input.retentionMode)) throw new TypeError('visual retention mode is invalid');
+  if (!['SELF_OWNED', 'LICENSED', 'INTERNAL_ANALYSIS_ONLY', 'UNKNOWN'].includes(input.rightsStatus)) throw new TypeError('visual rights status is invalid');
+  if (input.retentionMode === 'IMAGE_AND_PROMPT' && !['SELF_OWNED', 'LICENSED'].includes(input.rightsStatus)) {
+    throw new TypeError('retained images require self-owned or licensed rights');
+  }
+  // Validate all model-controlled fields before either storage backend receives data.
+  const analysis = parseVisualAnalysisOutput(JSON.stringify(input), { model: input.analysisModel });
+  input = { ...input, ...analysis };
   if (input.retentionMode === 'PROMPT_ONLY') {
     if (buffer !== undefined) throw new TypeError('prompt-only visual knowledge cannot retain an uploaded image');
     return store.createVisualKnowledge(input);
   }
   if (!Buffer.isBuffer(buffer)) throw new TypeError('retained image asset is required');
   await validateImage(buffer, mimeType);
+  if (input.sourceImageSha256 && input.sourceImageSha256 !== createHash('sha256').update(buffer).digest('hex')) {
+    throw new TypeError('图片已更换，请重新分析后保存');
+  }
+  if (store.remote) {
+    const { data, info } = await sharp(buffer, { failOn: 'error', limitInputPixels: MAX_VISUAL_IMAGE_PIXELS })
+      .rotate().png({ compressionLevel: 8 }).toBuffer({ resolveWithObject: true });
+    const created = await store.createVisualKnowledge({ ...input, asset: {
+      mimeType: 'image/png', width: info.width, height: info.height,
+      sha256: createHash('sha256').update(data).digest('hex'),
+    } });
+    try {
+      await store.client.uploadKnowledgeAsset(created.latestVersion.id, data);
+    } catch (error) {
+      // Keep failed uploads out of the publishable library; a retry can start cleanly.
+      await store.retireVisualKnowledge(created.id).catch(() => {});
+      throw error;
+    }
+    return created;
+  }
   const fileName = `reference-${randomUUID()}.png`;
   const relativePath = `references/${fileName}`;
   const outputPath = safeAbsolute(knowledgeRoot, relativePath);

@@ -8,6 +8,7 @@ import {
   ControlPlaneNotFoundError,
   TASK_STATES,
   normalizeCopyReviewEdits,
+  normalizeCreatorUserId,
   normalizeCreateTask,
   normalizeJson,
   normalizeNodeId,
@@ -20,6 +21,7 @@ import {
 } from './domain.mjs';
 
 const { Pool } = pg;
+const MAX_IMAGE_ATTEMPTS = 3;
 
 function taskFrom(row) {
   if (!row) return null;
@@ -32,6 +34,7 @@ function taskFrom(row) {
       : Number(row.requested_image_count),
     state: row.state,
     createdByNodeId: row.created_by_node_id,
+    createdByUserId: row.created_by_user_id ?? null,
     copyExecutorNodeId: row.copy_executor_node_id,
     currentCopyRevisionId: row.current_copy_revision_id === null
       ? null
@@ -288,8 +291,9 @@ export class PostgresControlPlaneRepository {
     return result.rows.map(nodeFrom);
   }
 
-  async createTasks({ nodeId: rawNodeId, copyExecutorNodeId: rawCopyExecutorNodeId, tasks: rawTasks }) {
+  async createTasks({ nodeId: rawNodeId, copyExecutorNodeId: rawCopyExecutorNodeId, createdByUserId: rawCreator = null, tasks: rawTasks }) {
     const nodeId = normalizeNodeId(rawNodeId);
+    const createdByUserId = rawCreator === null ? null : normalizeCreatorUserId(rawCreator);
     const copyExecutorNodeId = normalizeNodeId(rawCopyExecutorNodeId ?? rawNodeId);
     const tasks = normalizeTaskBatch(rawTasks);
     return transaction(this.pool, async (client) => {
@@ -317,10 +321,10 @@ export class PostgresControlPlaneRepository {
       for (const task of tasks) {
         const result = await client.query(`
           INSERT INTO tasks(
-            query, input, requested_image_count, created_by_node_id, copy_executor_node_id
-          ) VALUES ($1, $2, $3, $4, $5)
+            query, input, requested_image_count, created_by_node_id, copy_executor_node_id, created_by_user_id
+          ) VALUES ($1, $2, $3, $4, $5, $6)
           RETURNING *
-        `, [task.query, task.input, String(task.imageCount), nodeId, copyExecutorNodeId]);
+        `, [task.query, task.input, String(task.imageCount), nodeId, copyExecutorNodeId, createdByUserId]);
         created.push(taskFrom(result.rows[0]));
       }
       return created;
@@ -331,6 +335,7 @@ export class PostgresControlPlaneRepository {
     state = null,
     states = null,
     nodeId = null,
+    createdByUserId = null,
     query = null,
     limit = 50,
     offset = 0,
@@ -349,6 +354,10 @@ export class PostgresControlPlaneRepository {
     if (nodeId !== null) {
       values.push(normalizeNodeId(nodeId));
       filters.push(`copy_executor_node_id = $${values.length}`);
+    }
+    if (createdByUserId !== null) {
+      values.push(normalizeCreatorUserId(createdByUserId));
+      filters.push(`created_by_user_id = $${values.length}`);
     }
     const searchQuery = normalizedTaskQuery(query);
     if (searchQuery !== null) {
@@ -481,12 +490,13 @@ export class PostgresControlPlaneRepository {
       if (active.rows[0]) return null;
       const queuedState = kind === 'COPY' ? 'COPY_QUEUED' : 'IMAGE_QUEUED';
       const runningState = kind === 'COPY' ? 'COPY_RUNNING' : 'IMAGE_RUNNING';
-      const ownership = kind === 'COPY' ? 'AND copy_executor_node_id = $2' : '';
-      // Cool down failed image tasks centrally, including claims from other nodes.
+      const ownership = kind === 'COPY' ? 'AND copy_executor_node_id = $2'
+        : "AND (pending_snapshot->'imageRetry'->>'nodeId' IS NULL OR pending_snapshot->'imageRetry'->>'nodeId' = $2)";
+      // Retry on the original image node, with a cooldown between complete executions.
       const retryDelay = kind === 'IMAGE'
         ? "AND (error IS NULL OR last_activity_at <= now() - interval '5 seconds')" : '';
       const order = kind === 'IMAGE' ? 'last_activity_at NULLS FIRST, id' : 'id';
-      const parameters = kind === 'COPY' ? [queuedState, nodeId] : [queuedState];
+      const parameters = [queuedState, nodeId];
       const candidate = await client.query(`
         SELECT * FROM tasks
         WHERE state = $1 ${ownership} ${retryDelay}
@@ -702,7 +712,19 @@ export class PostgresControlPlaneRepository {
     return transaction(this.pool, async (client) => {
       const execution = await lockedExecution(client, executionId);
       const isImage = execution.kind === 'IMAGE';
-      const nextState = isImage ? 'IMAGE_QUEUED' : 'COPY_FAILED';
+      // The executor reports only after its entire run (including internal retries) fails.
+      // Persist the budget in the next execution's snapshot, not in process-local memory.
+      const failedAttempts = isImage ? (execution.snapshot?.imageRetry?.failedAttempts ?? 0) + 1 : 0;
+      const exhausted = isImage && failedAttempts >= MAX_IMAGE_ATTEMPTS;
+      const nextState = isImage ? (exhausted ? 'COPY_REVIEW_PENDING' : 'IMAGE_QUEUED') : 'COPY_FAILED';
+      const retrySnapshot = isImage && !exhausted ? {
+        ...execution.snapshot,
+        imageRetry: { failedAttempts, nodeId: execution.node_id },
+      } : null;
+      const taskMessage = isImage
+        ? exhausted ? '生图3次失败，已停止自动重试，等待人工文案审核'
+          : `生图第${failedAttempts}次失败，等待原执行机重试（最多${MAX_IMAGE_ATTEMPTS}次）`
+        : progressMessage;
       await client.query(`
         UPDATE task_executions SET
           status = 'FAILED', stage = 'FAILED', progress_message = $2,
@@ -715,14 +737,12 @@ export class PostgresControlPlaneRepository {
         `, [executionId]);
       }
       const lifecycle = isImage
-        ? `current_stage = 'IMAGE_QUEUED', progress_percent = 0,
-           current_image_run_id = NULL, pending_snapshot = $6,
-           execution_started_at = NULL, finished_at = NULL,`
+        ? `current_stage = '${exhausted ? 'IMAGE_RETRY_EXHAUSTED' : 'IMAGE_QUEUED'}', progress_percent = 0,
+           current_image_run_id = ${exhausted ? 'current_image_run_id' : 'NULL'}, pending_snapshot = $6,
+           execution_started_at = NULL, finished_at = ${exhausted ? 'now()' : 'NULL'},`
         : "current_stage = 'FAILED', finished_at = now(),";
-      const values = [execution.task_id, nextState,
-        isImage ? '生图失败，已重新排队，等待执行机领取' : progressMessage,
-        message, executionId];
-      if (isImage) values.push(execution.snapshot);
+      const values = [execution.task_id, nextState, taskMessage, message, executionId];
+      if (isImage) values.push(retrySnapshot);
       const task = await client.query(`
         UPDATE tasks SET
           state = $2, current_execution_id = NULL, ${lifecycle}
@@ -986,7 +1006,10 @@ export class PostgresControlPlaneRepository {
     content: rawContent = {},
     storagePath = null,
     sha256 = null,
+    publish = false,
+    expectedVersionId = null,
   }) {
+    if (typeof publish !== 'boolean') throw new TypeError('publish must be boolean');
     const itemId = rawItemId === null ? null : normalizeTaskId(rawItemId);
     const kind = String(rawKind ?? '').trim().toUpperCase();
     if (!['COPY', 'VISUAL'].includes(kind)) throw new TypeError('knowledge kind is invalid');
@@ -1001,6 +1024,21 @@ export class PostgresControlPlaneRepository {
     }
     return transaction(this.pool, async (client) => {
       let item;
+      if (itemId === null && content.legacySource) {
+        const { sourceKey, sourceId } = content.legacySource;
+        if (typeof sourceKey !== 'string' || !sourceKey || sourceKey.length > 500) throw new TypeError('legacy source key is invalid');
+        normalizeTaskId(sourceId);
+        await client.query('SELECT pg_advisory_xact_lock(4310, hashtext($1))', [`${kind}:${sourceKey}:${sourceId}`]);
+        const existing = await client.query(`
+          SELECT v.*, i.name FROM knowledge_versions v JOIN knowledge_items i ON i.id = v.item_id
+          WHERE i.kind = $1 AND v.content @> $2::jsonb ORDER BY v.version DESC LIMIT 1
+        `, [kind, JSON.stringify({ legacySource: content.legacySource })]);
+        if (existing.rows[0]) {
+          const row = existing.rows[0];
+          return { itemId: Number(row.item_id), versionId: Number(row.id), kind, name: row.name,
+            content: row.content, status: row.status, skipped: true };
+        }
+      }
       if (itemId === null) {
         item = (await client.query(`
           INSERT INTO knowledge_items(kind, name) VALUES ($1, $2) RETURNING *
@@ -1019,12 +1057,23 @@ export class PostgresControlPlaneRepository {
         SELECT COALESCE(MAX(version), 0) + 1 AS version
         FROM knowledge_versions WHERE item_id = $1
       `, [item.id])).rows[0].version);
+      if (expectedVersionId !== null) {
+        const latest = await client.query('SELECT id FROM knowledge_versions WHERE item_id = $1 ORDER BY version DESC LIMIT 1', [item.id]);
+        if (Number(latest.rows[0]?.id) !== normalizeTaskId(expectedVersionId)) {
+          throw new ControlPlaneConflictError('KNOWLEDGE_CHANGED', '知识已被其他页面修改，请刷新后重试');
+        }
+      }
+      if (publish) {
+        if (kind !== 'COPY') throw new TypeError('visual knowledge requires a separate publication review');
+        await client.query("UPDATE knowledge_versions SET status = 'ARCHIVED' WHERE item_id = $1 AND status = 'PUBLISHED'", [item.id]);
+      }
       const created = await client.query(`
         INSERT INTO knowledge_versions(
           item_id, version, content, storage_path, content_sha256
         ) VALUES ($1, $2, $3, $4, $5)
         RETURNING *
       `, [item.id, version, content, storagePath, sha256]);
+      if (publish) await client.query("UPDATE knowledge_versions SET status = 'PUBLISHED', published_at = now() WHERE id = $1", [created.rows[0].id]);
       return {
         itemId: Number(item.id),
         kind,
@@ -1034,7 +1083,7 @@ export class PostgresControlPlaneRepository {
         content,
         storagePath,
         sha256,
-        status: 'DRAFT',
+        status: publish ? 'PUBLISHED' : 'DRAFT',
       };
     });
   }
@@ -1046,6 +1095,11 @@ export class PostgresControlPlaneRepository {
         SELECT * FROM knowledge_versions WHERE id = $1 FOR UPDATE
       `, [versionId]);
       if (!version.rows[0]) throw new ControlPlaneNotFoundError('knowledge version not found');
+      const content = version.rows[0].content;
+      if (content?.retentionMode === 'IMAGE_AND_PROMPT'
+        && (!['SELF_OWNED', 'LICENSED'].includes(content.rightsStatus) || !version.rows[0].storage_path)) {
+        throw new TypeError('retained visual knowledge requires an authorized uploaded image before publication');
+      }
       await client.query(`
         UPDATE knowledge_versions SET status = 'ARCHIVED'
         WHERE item_id = $1 AND status = 'PUBLISHED'
@@ -1101,7 +1155,7 @@ export class PostgresControlPlaneRepository {
   async knowledgeUploadContext(rawVersionId) {
     const versionId = normalizeTaskId(rawVersionId);
     const result = await this.pool.query(`
-      SELECT v.id AS version_id, v.status, i.id AS item_id, i.kind
+      SELECT v.id AS version_id, v.status, v.content, i.id AS item_id, i.kind
       FROM knowledge_versions v
       JOIN knowledge_items i ON i.id = v.item_id
       WHERE v.id = $1
@@ -1112,6 +1166,11 @@ export class PostgresControlPlaneRepository {
         'KNOWLEDGE_VERSION_IMMUTABLE',
         'only a draft knowledge version can receive an asset',
       );
+    }
+    const content = result.rows[0].content;
+    if (result.rows[0].kind !== 'VISUAL' || content?.retentionMode !== 'IMAGE_AND_PROMPT'
+      || !['SELF_OWNED', 'LICENSED'].includes(content.rightsStatus)) {
+      throw new TypeError('only self-owned or licensed retained visual images may be uploaded');
     }
     return {
       versionId,

@@ -2,7 +2,11 @@
 
 import { useRef, useState, type KeyboardEvent } from 'react';
 
-import { CopyKnowledgeWorkbench, type CopyKnowledgeItem } from './copy-knowledge-workbench';
+import {
+  CopyKnowledgeWorkbench,
+  type CopyAnalysisPrompt,
+  type CopyKnowledgeItem,
+} from './copy-knowledge-workbench';
 import { KnowledgeWorkbench } from './knowledge-workbench';
 
 type KnowledgeView = 'VISUAL' | 'COPY';
@@ -12,10 +16,12 @@ export function KnowledgeTabs({
   visualItems,
   copyItems,
   copyLabels,
+  copyAnalysisPrompts,
 }: {
   visualItems: any[];
   copyItems: CopyKnowledgeItem[];
   copyLabels: LabelSummary[];
+  copyAnalysisPrompts: CopyAnalysisPrompt[];
 }) {
   const [activeView, setActiveView] = useState<KnowledgeView>('VISUAL');
   const visualTabRef = useRef<HTMLButtonElement>(null);
@@ -76,7 +82,7 @@ export function KnowledgeTabs({
       hidden={activeView !== 'COPY'}
     >
       <div className="notice">文案分析会调用真实文本模型并可能产生费用。分析结果只有在人工检查并保存后才会进入知识库。</div>
-      <CopyKnowledgeWorkbench items={copyItems} labels={copyLabels} />
+      <CopyKnowledgeWorkbench items={copyItems} labels={copyLabels} prompts={copyAnalysisPrompts} />
     </section>
   </div>;
 }

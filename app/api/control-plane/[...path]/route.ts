@@ -10,6 +10,7 @@ const MAX_PROXY_BODY_BYTES = 20 * 1024 * 1024;
 async function proxyRequest(
   request: Request,
   context: { params: Promise<{ path: string[] }> },
+  session: { subject: string },
 ) {
   const root = controlPlaneUrl();
   if (!root) throw new ApiError(503, 'CONTROL_PLANE_NOT_CONFIGURED', '远端中心服务尚未配置');
@@ -20,6 +21,11 @@ async function proxyRequest(
   const incomingUrl = new URL(request.url);
   const upstreamUrl = new URL(`${root}/${path.map(encodeURIComponent).join('/')}`);
   upstreamUrl.search = incomingUrl.search;
+  if (path.join('/') === 'v1/tasks' && upstreamUrl.searchParams.get('mine') === 'true') {
+    upstreamUrl.searchParams.set('createdByUserId', session.subject);
+    upstreamUrl.searchParams.delete('nodeId');
+    upstreamUrl.searchParams.delete('mine');
+  }
   const declaredLength = Number(request.headers.get('content-length') ?? 0);
   if (Number.isFinite(declaredLength) && declaredLength > MAX_PROXY_BODY_BYTES) {
     throw new ApiError(413, 'PAYLOAD_TOO_LARGE', '请求内容过大');
@@ -35,6 +41,7 @@ async function proxyRequest(
     upstream = await fetch(upstreamUrl, {
       method: request.method,
       headers: {
+        'X-Task-Creator-Id': session.subject,
         ...(request.headers.get('content-type')
           ? { 'Content-Type': request.headers.get('content-type') as string }
           : {}),
@@ -65,7 +72,7 @@ function handler(
   return apiHandler(
     request,
     { mutation: !['GET', 'HEAD'].includes(request.method) },
-    () => proxyRequest(request, context),
+    (session) => proxyRequest(request, context, session),
   );
 }
 

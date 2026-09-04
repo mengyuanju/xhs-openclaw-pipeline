@@ -1,5 +1,14 @@
 import { createHash } from 'node:crypto';
 
+export const COPY_ANALYSIS_PROMPT_LIMIT = 10;
+
+export class CopyAnalysisPromptLimitError extends RangeError {
+  constructor() {
+    super(`at most ${COPY_ANALYSIS_PROMPT_LIMIT} saved copy analysis prompts are allowed`);
+    this.name = 'CopyAnalysisPromptLimitError';
+  }
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -52,7 +61,7 @@ function normalizeEditableInput(input) {
   };
 }
 
-function normalizeInput(input) {
+export function normalizeCopyKnowledgeInput(input) {
   return {
     ...normalizeEditableInput(input),
     analysisModel: optionalText(input.analysisModel, 'analysis model', 200),
@@ -65,6 +74,16 @@ function sha256(value) {
 
 function pagination(value, fallback) {
   return Math.max(1, Math.floor(Number(value) || fallback));
+}
+
+function analysisPromptDetails(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    content: row.content,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
 function itemDetails(db, ids) {
@@ -108,6 +127,18 @@ function itemDetails(db, ids) {
 
 export function initializeCopyKnowledgeSchema(db) {
   db.exec(`
+    CREATE TABLE IF NOT EXISTS knowledge_imports (
+      source_key TEXT NOT NULL, source_id INTEGER NOT NULL, kind TEXT NOT NULL,
+      target_id INTEGER NOT NULL, PRIMARY KEY (source_key, source_id, kind)
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS copy_analysis_prompts (
+      id INTEGER PRIMARY KEY,
+      content TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS copy_analysis_prompts_updated_idx
+      ON copy_analysis_prompts(updated_at DESC, id DESC);
     CREATE TABLE IF NOT EXISTS copy_knowledge_items (
       id INTEGER PRIMARY KEY,
       title TEXT NOT NULL,
@@ -137,6 +168,22 @@ export function initializeCopyKnowledgeSchema(db) {
 }
 
 export function createCopyKnowledgeStore(db) {
+  const listAnalysisPrompts = db.prepare(`
+    SELECT * FROM copy_analysis_prompts
+    ORDER BY updated_at DESC, id DESC
+    LIMIT ${COPY_ANALYSIS_PROMPT_LIMIT}
+  `);
+  const findAnalysisPrompt = db.prepare('SELECT * FROM copy_analysis_prompts WHERE id = ?');
+  const findAnalysisPromptByContent = db.prepare(
+    'SELECT * FROM copy_analysis_prompts WHERE content = ?',
+  );
+  const countAnalysisPrompts = db.prepare('SELECT COUNT(*) AS count FROM copy_analysis_prompts');
+  const insertAnalysisPrompt = db.prepare(`
+    INSERT INTO copy_analysis_prompts (content, created_at, updated_at) VALUES (?, ?, ?)
+  `);
+  const updateAnalysisPrompt = db.prepare(`
+    UPDATE copy_analysis_prompts SET content = ?, updated_at = ? WHERE id = ?
+  `);
   const insertItem = db.prepare(`
     INSERT INTO copy_knowledge_items
       (title, source_copy, source_copy_sha256, analysis_prompt, summary, analysis, analysis_model, created_at)
@@ -158,6 +205,15 @@ export function createCopyKnowledgeStore(db) {
     WHERE id = ?
   `);
   const unlinkLabels = db.prepare('DELETE FROM copy_knowledge_item_labels WHERE item_id = ?');
+  const randomItemByLabel = db.prepare(`
+    SELECT i.id
+    FROM copy_knowledge_items i
+    JOIN copy_knowledge_item_labels cil ON cil.item_id = i.id
+    JOIN copy_knowledge_labels l ON l.id = cil.label_id
+    WHERE l.normalized_name = ?
+    ORDER BY RANDOM()
+    LIMIT 1
+  `);
 
   function attachLabels(itemId, labels, createdAt) {
     labels.forEach((label, position) => {
@@ -168,8 +224,105 @@ export function createCopyKnowledgeStore(db) {
   }
 
   return {
+    importCopyKnowledgeLabels(labels) {
+      for (const value of labels) {
+        const label = normalizeLabel(value.name);
+        insertLabel.run(label.name, label.key, value.createdAt ?? nowIso());
+      }
+    },
+
+    importCopyKnowledge(input, { sourceKey, sourceId }) {
+      const normalized = normalizeCopyKnowledgeInput(input);
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const existing = db.prepare("SELECT target_id FROM knowledge_imports WHERE source_key = ? AND source_id = ? AND kind = 'COPY'").get(sourceKey, sourceId);
+        if (existing) { db.exec('COMMIT'); return { item: itemDetails(db, [existing.target_id])[0], skipped: true }; }
+        const createdAt = input.createdAt ?? nowIso();
+        const id = Number(insertItem.run(normalized.title, normalized.sourceCopy, sha256(normalized.sourceCopy), normalized.analysisPrompt,
+          normalized.summary, normalized.analysis, normalized.analysisModel, createdAt).lastInsertRowid);
+        attachLabels(id, normalized.labels, createdAt);
+        db.prepare("INSERT INTO knowledge_imports VALUES (?, ?, 'COPY', ?)").run(sourceKey, sourceId, id);
+        db.exec('COMMIT');
+        return { item: itemDetails(db, [id])[0], skipped: false };
+      } catch (error) { if (db.isTransaction) db.exec('ROLLBACK'); throw error; }
+    },
+
+    importCopyAnalysisPrompt(input, { sourceKey, sourceId }) {
+      const content = requiredText(input.content, 'copy analysis prompt', 8_000);
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const imported = db.prepare("SELECT target_id FROM knowledge_imports WHERE source_key = ? AND source_id = ? AND kind = 'PROMPT'").get(sourceKey, sourceId);
+        if (imported) { db.exec('COMMIT'); return { item: analysisPromptDetails(findAnalysisPrompt.get(imported.target_id)), skipped: true }; }
+        let row = findAnalysisPromptByContent.get(content);
+        const skipped = Boolean(row);
+        if (!row) {
+          if (Number(countAnalysisPrompts.get().count) >= COPY_ANALYSIS_PROMPT_LIMIT) throw new CopyAnalysisPromptLimitError();
+          const createdAt = input.createdAt ?? nowIso();
+          const id = Number(insertAnalysisPrompt.run(content, createdAt, input.updatedAt ?? createdAt).lastInsertRowid);
+          row = findAnalysisPrompt.get(id);
+        }
+        db.prepare("INSERT INTO knowledge_imports VALUES (?, ?, 'PROMPT', ?)").run(sourceKey, sourceId, row.id);
+        db.exec('COMMIT');
+        return { item: analysisPromptDetails(row), skipped };
+      } catch (error) { if (db.isTransaction) db.exec('ROLLBACK'); throw error; }
+    },
+
+    hasKnowledgeImport({ sourceKey, sourceId, kind }) {
+      return Boolean(db.prepare('SELECT 1 FROM knowledge_imports WHERE source_key = ? AND source_id = ? AND kind = ?').get(sourceKey, sourceId, kind));
+    },
+
+    listCopyAnalysisPrompts() {
+      return listAnalysisPrompts.all().map(analysisPromptDetails);
+    },
+
+    createCopyAnalysisPrompt(input) {
+      const content = requiredText(input?.content, 'copy analysis prompt', 8_000);
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const existing = findAnalysisPromptByContent.get(content);
+        if (existing) {
+          db.exec('COMMIT');
+          return analysisPromptDetails(existing);
+        }
+        if (Number(countAnalysisPrompts.get().count) >= COPY_ANALYSIS_PROMPT_LIMIT) {
+          throw new CopyAnalysisPromptLimitError();
+        }
+        const createdAt = nowIso();
+        const result = insertAnalysisPrompt.run(content, createdAt, createdAt);
+        const created = findAnalysisPrompt.get(Number(result.lastInsertRowid));
+        db.exec('COMMIT');
+        return analysisPromptDetails(created);
+      } catch (error) {
+        if (db.isTransaction) db.exec('ROLLBACK');
+        throw error;
+      }
+    },
+
+    replaceCopyAnalysisPrompt(id, input) {
+      if (!Number.isSafeInteger(id) || id < 1) throw new TypeError('copy analysis prompt id is invalid');
+      const content = requiredText(input?.content, 'copy analysis prompt', 8_000);
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        if (!findAnalysisPrompt.get(id)) {
+          db.exec('COMMIT');
+          return null;
+        }
+        const duplicate = findAnalysisPromptByContent.get(content);
+        if (duplicate && Number(duplicate.id) !== id) {
+          throw new TypeError('copy analysis prompt already exists');
+        }
+        updateAnalysisPrompt.run(content, nowIso(), id);
+        const updated = findAnalysisPrompt.get(id);
+        db.exec('COMMIT');
+        return analysisPromptDetails(updated);
+      } catch (error) {
+        if (db.isTransaction) db.exec('ROLLBACK');
+        throw error;
+      }
+    },
+
     createCopyKnowledge(input) {
-      const normalized = normalizeInput(input);
+      const normalized = normalizeCopyKnowledgeInput(input);
       db.exec('BEGIN IMMEDIATE');
       try {
         const createdAt = nowIso();
@@ -216,6 +369,11 @@ export function createCopyKnowledgeStore(db) {
         if (db.isTransaction) db.exec('ROLLBACK');
         throw error;
       }
+    },
+
+    pickRandomCopyKnowledgeByLabel(label) {
+      const row = randomItemByLabel.get(normalizeLabel(label).key);
+      return row ? itemDetails(db, [Number(row.id)])[0] ?? null : null;
     },
 
     listCopyKnowledge({ page = 1, pageSize = 20, label } = {}) {

@@ -6,8 +6,6 @@ import {
   Clock3,
   Eye,
   FileCheck2,
-  FileText,
-  Image as ImageIcon,
   LoaderCircle,
   Plus,
   RefreshCw,
@@ -15,6 +13,7 @@ import {
   Search,
   Trash2,
 } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 
 import {
@@ -29,18 +28,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 
 import { apiRequest } from '../components/api-client';
+import { IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
 import { TaskReviewDialog } from './task-review-dialog';
 
-type TaskState =
-  | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_FAILED'
-  | 'IMAGE_QUEUED' | 'IMAGE_RUNNING' | 'IMAGE_FAILED'
-  | 'DELIVERY_REVIEW_PENDING' | 'COMPLETED' | 'CANCELLED';
+import { WORKBENCH_VIEWS, matchesWorkbenchView, type TaskState, type ViewKey } from './views';
 
 type DistributedTask = {
   id: number;
   query: string;
   state: TaskState;
   copyExecutorNodeId: string;
+  createdByUserId: string | null;
   currentStage: string | null;
   progressPercent: number;
   progressMessage: string;
@@ -61,10 +59,8 @@ type ExecutorNode = {
   lastSeenAt: string;
 };
 
-type ViewKey = 'LOCAL_COPY' | 'ALL_COPY' | 'COPY_REVIEW' | 'IMAGE_WORK' | 'DELIVERY_REVIEW' | 'COMPLETED';
 type QueryRow = { key: number; value: string };
 type TaskPage = { items: DistributedTask[]; total: number; limit: number; offset: number };
-type TaskCounts = Record<ViewKey, number>;
 
 const STATE_LABELS: Record<TaskState, string> = {
   COPY_QUEUED: '待执行',
@@ -80,6 +76,7 @@ const STATE_LABELS: Record<TaskState, string> = {
 };
 
 const STAGE_LABELS: Record<string, string> = {
+  IMAGE_RETRY_EXHAUSTED: IMAGE_RETRY_EXHAUSTED_LABEL,
   STARTING_COPY: '准备生成文案',
   STARTING_IMAGE: '准备生成图片',
   SEARCHING_IMAGES: '联网搜索图片',
@@ -114,74 +111,8 @@ function stageLabel(task: DistributedTask) {
   return task.currentStage ? STAGE_LABELS[task.currentStage] ?? STATE_LABELS[task.state] : STATE_LABELS[task.state];
 }
 
-const VIEWS: Array<{
-  key: ViewKey;
-  label: string;
-  icon: typeof FileText;
-  states: TaskState[];
-  localOnly?: boolean;
-}> = [
-  {
-    key: 'LOCAL_COPY',
-    label: '本机作业',
-    icon: FileText,
-    states: ['COPY_QUEUED', 'COPY_RUNNING'],
-    localOnly: true,
-  },
-  {
-    key: 'ALL_COPY',
-    label: '全部文案任务',
-    icon: FileText,
-    states: ['COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED'],
-  },
-  {
-    key: 'COPY_REVIEW',
-    label: '待文案审核',
-    icon: FileCheck2,
-    states: ['COPY_REVIEW_PENDING'],
-  },
-  {
-    key: 'IMAGE_WORK',
-    label: '生图中',
-    icon: ImageIcon,
-    states: ['IMAGE_QUEUED', 'IMAGE_RUNNING'],
-  },
-  {
-    key: 'DELIVERY_REVIEW',
-    label: '图文待审核',
-    icon: FileCheck2,
-    states: ['DELIVERY_REVIEW_PENDING'],
-  },
-  {
-    key: 'COMPLETED',
-    label: '已完成',
-    icon: FileCheck2,
-    states: ['COMPLETED'],
-  },
-];
-
 const STALE_AFTER_MS = 30 * 60_000;
 const PAGE_SIZE = 20;
-const EMPTY_COUNTS: TaskCounts = {
-  LOCAL_COPY: 0,
-  ALL_COPY: 0,
-  COPY_REVIEW: 0,
-  IMAGE_WORK: 0,
-  DELIVERY_REVIEW: 0,
-  COMPLETED: 0,
-};
-
-function matchesView(task: DistributedTask, view: (typeof VIEWS)[number], nodeId: string) {
-  return view.states.includes(task.state)
-    && (!view.localOnly || task.copyExecutorNodeId === nodeId);
-}
-
-function countsFromTasks(tasks: DistributedTask[], nodeId: string): TaskCounts {
-  return Object.fromEntries(VIEWS.map((view) => [
-    view.key,
-    tasks.filter((task) => matchesView(task, view, nodeId)).length,
-  ])) as TaskCounts;
-}
 
 function apiPath(path: string) {
   return `/api/control-plane${path}`;
@@ -207,14 +138,14 @@ function timeLabel(value: string | null) {
   return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '尚未开始';
 }
 
-export function CreationWorkbench({ nodeId }: { nodeId: string }) {
+export function CreationWorkbench({ nodeId, creatorUserId, viewKey: activeView }: { nodeId: string; creatorUserId: string; viewKey: ViewKey }) {
+  const router = useRouter();
+  const activeDefinition = WORKBENCH_VIEWS.find((view) => view.key === activeView)!;
   const confirm = useConfirmDialog();
   const nextQueryKey = useRef(1);
   const [tasks, setTasks] = useState<DistributedTask[]>([]);
-  const [counts, setCounts] = useState<TaskCounts>(EMPTY_COUNTS);
   const [total, setTotal] = useState(0);
   const [nodes, setNodes] = useState<ExecutorNode[]>([]);
-  const [activeView, setActiveView] = useState<ViewKey>('LOCAL_COPY');
   const [page, setPage] = useState(1);
   const [searchInput, setSearchInput] = useState('');
   const [searchKeyword, setSearchKeyword] = useState('');
@@ -236,27 +167,26 @@ export function CreationWorkbench({ nodeId }: { nodeId: string }) {
       setLoading(true);
     }
     try {
-      const view = VIEWS.find((item) => item.key === activeView) as (typeof VIEWS)[number];
+      const view = activeDefinition;
       const search = new URLSearchParams({
         states: view.states.join(','),
         limit: String(PAGE_SIZE),
         offset: String((page - 1) * PAGE_SIZE),
         includeTotal: 'true',
       });
-      if (view.localOnly) search.set('nodeId', nodeId);
+      if (view.personalOnly) search.set('mine', 'true');
       if (searchKeyword) search.set('query', searchKeyword);
       const [rawTaskPage, nextNodes] = await Promise.all([
         apiRequest<TaskPage | DistributedTask[]>(apiPath(`/v1/tasks?${search}`)),
         apiRequest<ExecutorNode[]>(apiPath('/v1/nodes')),
       ]);
       let taskPage: TaskPage;
-      let legacyTasks: DistributedTask[] | null = null;
       if (Array.isArray(rawTaskPage)) {
-        // Older control-plane processes apply nodeId before returning their legacy array.
-        // Always load one unfiltered snapshot so every tab count stays global and stable.
-        legacyTasks = await apiRequest<DistributedTask[]>(apiPath('/v1/tasks?limit=200&offset=0'));
+        // Older services return arrays. Filter by account explicitly; missing ownership
+        // must never fall back to the creating or executing node.
+        const legacyTasks = await apiRequest<DistributedTask[]>(apiPath('/v1/tasks?limit=200&offset=0'));
         const keyword = searchKeyword.toLocaleLowerCase('zh-CN');
-        const filtered = legacyTasks.filter((task) => matchesView(task, view, nodeId)
+        const filtered = legacyTasks.filter((task) => matchesWorkbenchView(task, view, creatorUserId)
           && (!keyword || task.query.toLocaleLowerCase('zh-CN').includes(keyword)));
         taskPage = {
           items: filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
@@ -267,24 +197,11 @@ export function CreationWorkbench({ nodeId }: { nodeId: string }) {
       } else {
         taskPage = rawTaskPage;
       }
-      const nextCounts = await apiRequest<{
-          localCopy: number;
-          allCopy: number;
-          copyReview: number;
-          imageWork: number;
-          deliveryReview: number;
-          completed: number;
-        }>(apiPath(`/v1/task-counts?${new URLSearchParams({ nodeId })}`)).catch(() => null);
+      if (view.personalOnly && taskPage.items.some((task) => task.createdByUserId !== creatorUserId)) {
+        throw new Error('中心服务尚未支持个人任务筛选，请更新并重启中心服务。');
+      }
       setTasks(taskPage.items);
       setTotal(taskPage.total);
-      setCounts(nextCounts ? {
-          LOCAL_COPY: nextCounts.localCopy,
-          ALL_COPY: nextCounts.allCopy,
-          COPY_REVIEW: nextCounts.copyReview,
-          IMAGE_WORK: nextCounts.imageWork,
-          DELIVERY_REVIEW: nextCounts.deliveryReview,
-          COMPLETED: nextCounts.completed,
-        } : countsFromTasks(legacyTasks ?? taskPage.items, nodeId));
       const lastPage = Math.max(1, Math.ceil(taskPage.total / PAGE_SIZE));
       if (page > lastPage) setPage(lastPage);
       setNodes(nextNodes);
@@ -300,7 +217,7 @@ export function CreationWorkbench({ nodeId }: { nodeId: string }) {
       setLoading(false);
       if (!silent) setRefreshing(false);
     }
-  }, [activeView, nodeId, page, searchKeyword]);
+  }, [activeDefinition, creatorUserId, nodeId, page, searchKeyword]);
 
   useEffect(() => {
     void refresh();
@@ -393,6 +310,7 @@ export function CreationWorkbench({ nodeId }: { nodeId: string }) {
     </div>;
     return <div className="workbench-row-actions">
       <button className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>
+      {activeView === 'PERSONAL' && task.state === 'COPY_FAILED' && <button className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</button>}
       <button className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</button>
     </div>;
   }
@@ -452,10 +370,10 @@ export function CreationWorkbench({ nodeId }: { nodeId: string }) {
       });
       resetCreateForm();
       setCreateOpen(false);
-      setActiveView('LOCAL_COPY');
       setPage(1);
       setSearchInput('');
       setSearchKeyword('');
+      if (activeView !== 'PERSONAL') router.push('/workbench/personal');
       setMessage(`已创建 ${queries.length} 条笔记并分配给 ${selectedExecutor.name}；该执行机空闲后会从第一条开始依次生成文案。`);
       await refresh({ silent: true });
     } catch (caught) {
@@ -465,7 +383,6 @@ export function CreationWorkbench({ nodeId }: { nodeId: string }) {
     }
   }
 
-  const activeDefinition = VIEWS.find((view) => view.key === activeView) as (typeof VIEWS)[number];
 
   return <div className="creation-workbench">
     <section className="panel workbench-task-panel">
@@ -473,13 +390,7 @@ export function CreationWorkbench({ nodeId }: { nodeId: string }) {
         <div>
           <span className="section-kicker">Task lifecycle</span>
           <h2>{activeDefinition.label}</h2>
-          <p>{activeView === 'LOCAL_COPY'
-            ? `只显示由本机节点 ${nodeId} 执行的待生成和生成中文案。`
-            : activeView === 'ALL_COPY'
-              ? '显示所有节点待执行、执行中和执行失败的文案任务，可进入详情重试。'
-              : activeView === 'COPY_REVIEW'
-                ? '显示待人工审核的文案；生图失败的任务自动回到待生图队列，无需重新审核。'
-                : '显示所有执行节点共享的远端任务。'}</p>
+          <p>{activeDefinition.description}</p>
         </div>
         <div className="workbench-toolbar-actions">
           <button className="button small" type="button" disabled={refreshing} onClick={() => { void refresh(); }}>
@@ -492,9 +403,9 @@ export function CreationWorkbench({ nodeId }: { nodeId: string }) {
             <DialogContent className="workbench-create-dialog">
               <div className="workbench-create-heading">
                 <span className="section-kicker">Create notes</span>
-                <DialogTitle>创建本机文案作业</DialogTitle>
+                <DialogTitle>创建 Query 作业</DialogTitle>
                 <DialogDescription>
-                  可同时录入多条 Query。任务创建后写入远端，本机执行机按创建顺序逐条生成文案。
+                  可同时录入多条 Query。任务归属当前账号，由所选执行机按创建顺序逐条生成文案。
                 </DialogDescription>
               </div>
               <form className="workbench-create-form" onSubmit={createTasks}>
@@ -555,8 +466,8 @@ export function CreationWorkbench({ nodeId }: { nodeId: string }) {
                     </Select>
                   </div>
                   <div className="field workbench-node-summary">
-                    <label>创建节点</label>
-                    <code>{nodeId}</code>
+                    <label>创建账号</label>
+                    <span>{creatorUserId}</span>
                   </div>
                 </div>
                 <div className="workbench-create-footer">
@@ -572,25 +483,6 @@ export function CreationWorkbench({ nodeId }: { nodeId: string }) {
             </DialogContent>
           </Dialog>
         </div>
-      </div>
-
-      <div className="workbench-view-tabs" role="tablist" aria-label="按任务状态筛选">
-        {VIEWS.map((view) => {
-          const Icon = view.icon;
-          const selected = view.key === activeView;
-          return <button
-            key={view.key}
-            type="button"
-            role="tab"
-            aria-selected={selected}
-            className="workbench-view-tab"
-            onClick={() => { setActiveView(view.key); setPage(1); }}
-          >
-            <Icon aria-hidden="true" size={15} />
-            <span>{view.label}</span>
-            <b>{counts[view.key]}</b>
-          </button>;
-        })}
       </div>
 
       <div className="workbench-list-tools">
@@ -614,8 +506,8 @@ export function CreationWorkbench({ nodeId }: { nodeId: string }) {
         ? <div className="empty-state"><LoaderCircle className="animate-spin" size={20} />正在读取远端任务…</div>
         : visibleTasks.length === 0
           ? <div className="workbench-empty">
-            <span>{activeView === 'LOCAL_COPY' ? '本机当前没有待执行或正在执行的文案任务。' : `当前没有${activeDefinition.label}任务。`}</span>
-            {activeView === 'LOCAL_COPY' && <button className="button small" type="button" onClick={() => setCreateOpen(true)}><Plus size={14} />创建第一条笔记</button>}
+            <span>{activeView === 'PERSONAL' ? '当前没有你创建的 Query 任务。' : `当前没有${activeDefinition.label}任务。`}</span>
+            {activeView === 'PERSONAL' && <button className="button small" type="button" onClick={() => setCreateOpen(true)}><Plus size={14} />创建第一条笔记</button>}
           </div>
           : <div className="table-wrap mobile-cards workbench-table-wrap">
             <table>
@@ -624,7 +516,7 @@ export function CreationWorkbench({ nodeId }: { nodeId: string }) {
                 <td className="mono" data-label="ID">#{task.id}</td>
                 <td className="query-cell" data-label="Query">{task.query}</td>
                 <td data-label="状态">
-                  <span className={`pill workbench-state-${task.state.toLowerCase()}${isStale(task) ? ' pill-rejected' : ''}`}>{STATE_LABELS[task.state]}</span>
+                  <span className={`pill ${isImageRetryExhausted(task) ? 'pill-rejected' : `workbench-state-${task.state.toLowerCase()}`}${isStale(task) ? ' pill-rejected' : ''}`}>{isImageRetryExhausted(task) ? IMAGE_RETRY_EXHAUSTED_LABEL : STATE_LABELS[task.state]}</span>
                 </td>
                 <td className="mono" data-label="文案执行机">{nodes.find((node) => node.id === task.copyExecutorNodeId)?.name ?? task.copyExecutorNodeId}</td>
                 <td data-label="开始时间">{timeLabel(task.executionStartedAt)}</td>

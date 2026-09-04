@@ -6,9 +6,14 @@ import { useState, type FormEvent } from 'react';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 
 import { apiRequest } from '../components/api-client';
+import {
+  CopyAnalysisPromptManager,
+  type CopyAnalysisPrompt,
+} from './copy-analysis-prompt-manager';
 import { CopyKnowledgeLibrary, type CopyKnowledgeItem } from './copy-knowledge-library';
 
 export type { CopyKnowledgeItem } from './copy-knowledge-library';
+export type { CopyAnalysisPrompt } from './copy-analysis-prompt-manager';
 
 type AnalysisDraft = {
   title: string;
@@ -27,9 +32,11 @@ function labelsFromText(value: string) {
 export function CopyKnowledgeWorkbench({
   items,
   labels,
+  prompts,
 }: {
   items: CopyKnowledgeItem[];
   labels: LabelSummary[];
+  prompts: CopyAnalysisPrompt[];
 }) {
   const router = useRouter();
   const confirm = useConfirmDialog();
@@ -130,6 +137,7 @@ export function CopyKnowledgeWorkbench({
           <textarea
             className="textarea"
             id="excellent-copy-source"
+            disabled={busy !== null}
             value={sourceCopy}
             maxLength={20_000}
             placeholder="粘贴待分析的优秀文案"
@@ -143,11 +151,19 @@ export function CopyKnowledgeWorkbench({
           <textarea
             className="textarea compact"
             id="excellent-copy-prompt"
+            disabled={busy !== null}
+            aria-describedby="copy-analysis-prompt-help"
             value={analysisPrompt}
             maxLength={8_000}
             placeholder="填写希望模型采用的分析维度和输出要求"
             onChange={(event) => updateInput(setAnalysisPrompt, event.target.value)}
             required
+          />
+          <CopyAnalysisPromptManager
+            initialPrompts={prompts}
+            disabled={busy !== null}
+            currentPrompt={analysisPrompt}
+            onSelectPrompt={(content) => updateInput(setAnalysisPrompt, content)}
           />
         </div>
         <div className="field full inline">

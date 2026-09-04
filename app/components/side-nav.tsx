@@ -2,6 +2,7 @@
 
 import {
   BarChart3,
+  ChevronDown,
   FilePenLine,
   FileUp,
   LayoutDashboard,
@@ -24,13 +25,14 @@ import type { LucideIcon } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { WORKBENCH_VIEWS } from '../workbench/views';
 
-type NavigationItem = { href: string; label: string; icon: LucideIcon };
+type NavigationItem = { href: string; label: string; icon: LucideIcon; children?: NavigationItem[] };
 type NavigationGroup = { label: string; items: NavigationItem[]; hidden?: boolean };
 
 // Temporary presentation flags only: keep routes and their access rules unchanged.
 const navigationGroups: NavigationGroup[] = [
-  { label: '创作工作台', items: [{ href: '/workbench', label: '作业中心', icon: LayoutDashboard }] },
+  { label: '创作工作台', items: [{ href: '/workbench', label: '作业中心', icon: LayoutDashboard, children: WORKBENCH_VIEWS }] },
   {
     label: '内容生产',
     hidden: true,
@@ -75,6 +77,7 @@ export function SideNav({ session }: { session: { subject: string; username?: st
   const pathname = usePathname();
   const router = useRouter();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isWorkbenchOpen, setIsWorkbenchOpen] = useState(pathname.startsWith('/workbench'));
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState('');
   const isAdmin = session?.roles?.includes('ADMIN') === true;
@@ -84,6 +87,9 @@ export function SideNav({ session }: { session: { subject: string; username?: st
   const visibleGroups = roleGroups.filter((group) => !group.hidden && group.items.length > 0);
 
   useEffect(() => setIsMenuOpen(false), [pathname]);
+  useEffect(() => {
+    if (pathname.startsWith('/workbench')) setIsWorkbenchOpen(true);
+  }, [pathname]);
 
   async function signOut() {
     setIsSigningOut(true);
@@ -125,6 +131,31 @@ export function SideNav({ session }: { session: { subject: string; username?: st
               {group.items.map((item) => {
                 const active = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
                 const Icon = item.icon;
+                if (item.children) return <div className="nav-item-group" key={item.href}>
+                  <button
+                    className="nav-item nav-parent"
+                    type="button"
+                    aria-expanded={isWorkbenchOpen}
+                    aria-controls="workbench-submenu"
+                    onClick={() => setIsWorkbenchOpen((open) => !open)}
+                  >
+                    <Icon aria-hidden="true" size={17} strokeWidth={1.8} />
+                    <span>{item.label}</span>
+                    <ChevronDown aria-hidden="true" size={14} className="nav-parent-chevron" />
+                  </button>
+                  <div className="nav-submenu" id="workbench-submenu" hidden={!isWorkbenchOpen}>
+                    {item.children.map((child) => {
+                      const ChildIcon = child.icon;
+                      const selected = pathname === child.href;
+                      return <Link key={child.href} href={child.href}
+                        className={selected ? 'nav-item active' : 'nav-item'}
+                        aria-current={selected ? 'page' : undefined}>
+                        <ChildIcon aria-hidden="true" size={15} strokeWidth={1.8} />
+                        <span>{child.label}</span>
+                      </Link>;
+                    })}
+                  </div>
+                </div>;
                 return (
                   <Link
                     key={item.href}

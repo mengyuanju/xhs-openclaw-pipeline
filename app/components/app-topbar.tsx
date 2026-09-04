@@ -20,6 +20,7 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { WORKBENCH_VIEWS } from '../workbench/views';
 
 type RouteMeta = {
   section: string;
@@ -28,6 +29,10 @@ type RouteMeta = {
 };
 
 const routeMeta: Array<{ match: (pathname: string) => boolean; meta: RouteMeta }> = [
+  ...WORKBENCH_VIEWS.map((view) => ({
+    match: (pathname: string) => pathname === view.href,
+    meta: { section: '作业中心', title: view.label, icon: view.icon },
+  })),
   { match: (pathname) => pathname.startsWith('/workbench'), meta: { section: '创作工作台', title: '作业中心', icon: LayoutDashboard } },
   { match: (pathname) => pathname === '/', meta: { section: '创作工作台', title: '历史工作台', icon: LayoutDashboard } },
   { match: (pathname) => pathname.startsWith('/jobs'), meta: { section: '内容生产', title: '远端作业中心', icon: Workflow } },
