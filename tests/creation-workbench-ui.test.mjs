@@ -58,7 +58,7 @@ test('personal copy failures expose retry using the existing guarded copy retry 
   assert.match(source, /useLatestConfig: true/u);
 });
 
-test('creation dialog accepts ordered Query rows and creates one remote batch', async () => {
+test('creation dialog accepts a single batch textarea and creates one remote batch', async () => {
   const [workbench, reviewDialog, styles, jobsPage, jobsWorkbench] = await Promise.all([
     readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
     readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
@@ -68,8 +68,14 @@ test('creation dialog accepts ordered Query rows and creates one remote batch', 
   ]);
 
   assert.match(workbench, /<Dialog open=\{createOpen\}/u);
-  assert.match(workbench, /queryRows\.map\(\(row, index\)/u);
-  assert.match(workbench, /添加一条 Query/u);
+  assert.match(workbench, /<textarea[\s\S]*?id="workbench-query-text"/u);
+  assert.match(workbench, /parseQueryBatch\(queryText\)/u);
+  assert.match(workbench, /const \{ queries, error: validationError \} = queryBatch/u);
+  assert.match(workbench, /已识别 \{queryBatch.queries.length\} 条 Query/u);
+  assert.match(workbench, /中文逗号（，）、英文逗号（,）/u);
+  assert.match(workbench, /disabled=\{creating \|\| !selectedExecutor \|\| Boolean\(queryBatch.error\)\}/u);
+  assert.match(workbench, /createError && <div className="notice error" role="alert"/u);
+  assert.doesNotMatch(workbench, /queryRows|nextQueryKey|添加一条 Query|workbench-remove-query/u);
   assert.match(workbench, /tasks: queries\.map\(\(query\)/u);
   assert.match(workbench, /copyExecutorNodeId: selectedExecutor\.id/u);
   assert.match(workbench, /apiPath\('\/v1\/nodes'\)/u);

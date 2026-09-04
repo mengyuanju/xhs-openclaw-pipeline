@@ -22,6 +22,26 @@ async function withServer(repository, action, { storageRoot = 'test-storage' } =
   }
 }
 
+test('model trace HTTP routes forward execution uploads and task-scoped lazy reads', async () => {
+  const calls = [];
+  const repository = {
+    recordModelCall: async (...args) => { calls.push(args); return { id: args[1] }; },
+    listModelCalls: async (...args) => { calls.push(args); return { items: [], total: 0 }; },
+    getModelCall: async (...args) => { calls.push(args); return { prompt: 'actual prompt', response: 'raw result' }; },
+  };
+  await withServer(repository, async (root) => {
+    const upload = await fetch(`${root}/v1/executions/exec/model-calls/call`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sequence: 1 }),
+    });
+    assert.equal(upload.status, 200);
+    const page = await fetch(`${root}/v1/tasks/1/model-calls?limit=20&offset=40`);
+    assert.deepEqual((await page.json()).data, { items: [], total: 0 });
+    const detail = await fetch(`${root}/v1/tasks/1/model-calls/call`);
+    assert.equal((await detail.json()).data.response, 'raw result');
+  });
+  assert.deepEqual(calls, [['exec', 'call', { sequence: 1 }], ['1', { limit: '20', offset: '40' }], ['1', 'call']]);
+});
+
 test('control plane HTTP exposes node registration and batched task creation', async () => {
   const calls = [];
   const repository = {

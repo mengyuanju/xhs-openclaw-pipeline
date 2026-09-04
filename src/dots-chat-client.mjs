@@ -1,3 +1,4 @@
+import { tracedModelFetch } from './model-call-trace.mjs';
 import {
   DEFAULT_DOTS_BASE_URL,
   DEFAULT_DOTS_MODEL,
@@ -41,6 +42,7 @@ export function createDotsChatClient({
 } = {}) {
   const endpoint = new URL('/v1/chat/completions', validatedDotsBaseUrl(baseUrl)).toString();
   const configuredModel = validatedDotsModel(model);
+  fetchImpl = tracedModelFetch(fetchImpl, 'Dots');
   if (!Number.isInteger(maxTokens) || maxTokens < 256 || maxTokens > 32_768) {
     throw new RangeError('Dots maxTokens must be between 256 and 32768');
   }

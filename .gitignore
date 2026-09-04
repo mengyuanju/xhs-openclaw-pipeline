@@ -1,5 +1,7 @@
 node_modules/
 data/
+data-bak/
+debug.log
 output/
 outputs/
 server/server-storage/

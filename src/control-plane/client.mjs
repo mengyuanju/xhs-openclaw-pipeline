@@ -76,6 +76,10 @@ export function createControlPlaneClient({
     },
     taskCounts: (nodeId) => request(`/v1/task-counts?${new URLSearchParams({ nodeId: String(nodeId) })}`),
     getTask: (taskId) => request(`/v1/tasks/${taskId}`),
+    recordModelCall: (executionId, callId, record) => request(
+      `/v1/executions/${executionId}/model-calls/${callId}`,
+      { method: 'PUT', body: record, timeoutMs: 5_000 },
+    ),
     claimCopy: (nodeId) => request('/v1/executions/claim-copy', {
       method: 'POST', body: { nodeId },
     }),

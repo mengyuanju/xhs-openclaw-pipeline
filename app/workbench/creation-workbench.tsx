@@ -14,7 +14,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 
 import {
   Dialog,
@@ -29,6 +29,8 @@ import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 
 import { apiRequest } from '../components/api-client';
 import { IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
+import { parseQueryBatch } from '../../src/control-plane/query-batch.mjs';
+import { selectCopyExecutor } from '../../src/control-plane/copy-executor-selection.mjs';
 import { TaskReviewDialog } from './task-review-dialog';
 
 import { WORKBENCH_VIEWS, matchesWorkbenchView, type TaskState, type ViewKey } from './views';
@@ -59,7 +61,6 @@ type ExecutorNode = {
   lastSeenAt: string;
 };
 
-type QueryRow = { key: number; value: string };
 type TaskPage = { items: DistributedTask[]; total: number; limit: number; offset: number };
 
 const STATE_LABELS: Record<TaskState, string> = {
@@ -142,14 +143,15 @@ export function CreationWorkbench({ nodeId, creatorUserId, viewKey: activeView }
   const router = useRouter();
   const activeDefinition = WORKBENCH_VIEWS.find((view) => view.key === activeView)!;
   const confirm = useConfirmDialog();
-  const nextQueryKey = useRef(1);
   const [tasks, setTasks] = useState<DistributedTask[]>([]);
   const [total, setTotal] = useState(0);
   const [nodes, setNodes] = useState<ExecutorNode[]>([]);
   const [page, setPage] = useState(1);
   const [searchInput, setSearchInput] = useState('');
   const [searchKeyword, setSearchKeyword] = useState('');
-  const [queryRows, setQueryRows] = useState<QueryRow[]>([{ key: 0, value: '' }]);
+  const [queryText, setQueryText] = useState('');
+  const [createError, setCreateError] = useState('');
+  const queryBatch = useMemo(() => parseQueryBatch(queryText), [queryText]);
   const [imageCount, setImageCount] = useState('auto');
   const [targetNodeId, setTargetNodeId] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
@@ -205,11 +207,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, viewKey: activeView }
       const lastPage = Math.max(1, Math.ceil(taskPage.total / PAGE_SIZE));
       if (page > lastPage) setPage(lastPage);
       setNodes(nextNodes);
-      setTargetNodeId((current) => {
-        const onlineNodes = nextNodes.filter((node) => node.online);
-        if (onlineNodes.some((node) => node.id === current)) return current;
-        return onlineNodes.find((node) => node.id === nodeId)?.id ?? onlineNodes[0]?.id ?? '';
-      });
+      setTargetNodeId((current) => nextNodes.some((node) => node.online && node.id === current) ? current : '');
       setError('');
     } catch (caught) {
       if (!silent) setError(caught instanceof Error ? caught.message : '任务读取失败');
@@ -217,7 +215,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, viewKey: activeView }
       setLoading(false);
       if (!silent) setRefreshing(false);
     }
-  }, [activeDefinition, creatorUserId, nodeId, page, searchKeyword]);
+  }, [activeDefinition, creatorUserId, page, searchKeyword]);
 
   useEffect(() => {
     void refresh();
@@ -228,7 +226,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, viewKey: activeView }
   const visibleTasks = tasks;
 
   const onlineNodes = useMemo(() => nodes.filter((node) => node.online), [nodes]);
-  const selectedExecutor = onlineNodes.find((node) => node.id === targetNodeId) ?? null;
+  const selectedExecutor = selectCopyExecutor(nodes, targetNodeId);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
@@ -294,6 +292,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, viewKey: activeView }
   function taskActions(task: DistributedTask) {
     const busy = actingTaskId === task.id;
     if (activeView === 'ALL_COPY') return <div className="workbench-row-actions">
+      <button className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>
       {task.state === 'COPY_FAILED' && <button className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重新生文</button>}
       <button className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</button>
     </div>;
@@ -315,43 +314,26 @@ export function CreationWorkbench({ nodeId, creatorUserId, viewKey: activeView }
     </div>;
   }
 
-  function updateQuery(key: number, value: string) {
-    setQueryRows((current) => current.map((row) => row.key === key ? { ...row, value } : row));
-  }
-
-  function addQuery() {
-    if (queryRows.length >= 100) {
-      setError('一次最多创建 100 条笔记。');
-      return;
-    }
-    setQueryRows((current) => [...current, { key: nextQueryKey.current++, value: '' }]);
-  }
-
-  function removeQuery(key: number) {
-    setQueryRows((current) => current.length === 1 ? current : current.filter((row) => row.key !== key));
-  }
-
   function resetCreateForm() {
-    setQueryRows([{ key: nextQueryKey.current++, value: '' }]);
+    setQueryText('');
+    setCreateError('');
     setImageCount('auto');
   }
 
   async function createTasks(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const queries = queryRows.map((row) => row.value.trim());
+    if (creating) return;
+    const { queries, error: validationError } = queryBatch;
     if (!selectedExecutor) {
-      setError('当前没有可分配的在线执行机，请先完整启动至少一台执行机。');
+      setCreateError('当前没有可分配的在线执行机，请先完整启动至少一台执行机。');
       return;
     }
-    if (queries.some((query) => !query)) {
-      setError('请填写所有 Query，或删除空白输入框。');
-      return;
-    }
-    if (new Set(queries).size !== queries.length) {
-      setError('Query 不能重复，请修改后再创建。');
+    if (validationError) {
+      setCreateError(validationError);
       return;
     }
     setCreating(true);
+    setCreateError('');
     setError('');
     setMessage('');
     try {
@@ -377,7 +359,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, viewKey: activeView }
       setMessage(`已创建 ${queries.length} 条笔记并分配给 ${selectedExecutor.name}；该执行机空闲后会从第一条开始依次生成文案。`);
       await refresh({ silent: true });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '笔记创建失败');
+      setCreateError(caught instanceof Error ? caught.message : '笔记创建失败');
     } finally {
       setCreating(false);
     }
@@ -396,7 +378,14 @@ export function CreationWorkbench({ nodeId, creatorUserId, viewKey: activeView }
           <button className="button small" type="button" disabled={refreshing} onClick={() => { void refresh(); }}>
             <RefreshCw className={refreshing ? 'animate-spin' : ''} aria-hidden="true" size={14} />刷新
           </button>
-          <Dialog open={createOpen} onOpenChange={(open) => { if (!creating) setCreateOpen(open); }}>
+          <Dialog open={createOpen} onOpenChange={(open) => {
+            if (creating) return;
+            if (open) {
+              setTargetNodeId('');
+              void refresh({ silent: true });
+            }
+            setCreateOpen(open);
+          }}>
             <DialogTrigger asChild>
               <button className="button primary" type="button"><Plus aria-hidden="true" size={16} />创建笔记</button>
             </DialogTrigger>
@@ -412,46 +401,39 @@ export function CreationWorkbench({ nodeId, creatorUserId, viewKey: activeView }
                 {onlineNodes.length === 0 && <div className="notice error" role="alert">
                   当前没有在线执行机。执行机只有完成中心服务、工作目录和 OpenClaw 就绪检查后才会上线。
                 </div>}
-                <div className="workbench-query-list">
-                  {queryRows.map((row, index) => <div className="workbench-query-row" key={row.key}>
-                    <div className="field">
-                      <label htmlFor={`workbench-query-${row.key}`}>Query {index + 1}</label>
-                      <input
-                        className="input"
-                        id={`workbench-query-${row.key}`}
-                        value={row.value}
-                        onChange={(event) => updateQuery(row.key, event.target.value)}
-                        placeholder="输入一个笔记选题"
-                        maxLength={500}
-                        required
-                        autoFocus={index === 0}
-                      />
-                    </div>
-                    <button
-                      className="workbench-remove-query"
-                      type="button"
-                      aria-label={`删除 Query ${index + 1}`}
-                      disabled={queryRows.length === 1 || creating}
-                      onClick={() => removeQuery(row.key)}
-                    >
-                      <Trash2 aria-hidden="true" size={16} />
-                    </button>
-                  </div>)}
+                <div className="field">
+                  <label htmlFor="workbench-query-text">笔记选题（Query）</label>
+                  <textarea
+                    className="textarea workbench-query-textarea"
+                    id="workbench-query-text"
+                    value={queryText}
+                    onChange={(event) => { setQueryText(event.target.value); setCreateError(''); }}
+                    placeholder={'例如：\n租房桌面收纳\n通勤穿搭，周末露营装备'}
+                    rows={7}
+                    disabled={creating}
+                    required
+                    autoFocus
+                    aria-describedby="workbench-query-help workbench-query-validation"
+                    aria-invalid={Boolean(queryText && queryBatch.error)}
+                  />
+                  <p className="workbench-query-help" id="workbench-query-help">每行一条，或用中文逗号（，）、英文逗号（,）分隔。空白项自动忽略；最多 100 条，每条不超过 500 个字符。</p>
+                  <div id="workbench-query-validation" aria-live="polite">
+                    {queryText && queryBatch.error && <p className="workbench-query-validation">{queryBatch.error}</p>}
+                  </div>
                 </div>
-                <button className="workbench-add-query" type="button" disabled={creating || queryRows.length >= 100} onClick={addQuery}>
-                  <Plus aria-hidden="true" size={15} />添加一条 Query
-                </button>
+                {createError && <div className="notice error" role="alert">{createError}</div>}
                 <div className="workbench-create-options">
                   <div className="field">
                     <label htmlFor="workbench-copy-executor">文案执行机</label>
-                    <Select value={targetNodeId} onValueChange={setTargetNodeId} disabled={creating || onlineNodes.length === 0}>
-                      <SelectTrigger id="workbench-copy-executor"><SelectValue placeholder="暂无在线执行机" /></SelectTrigger>
+                    <Select value={selectedExecutor?.id ?? ''} onValueChange={setTargetNodeId} disabled={creating || onlineNodes.length === 0}>
+                      <SelectTrigger id="workbench-copy-executor" aria-describedby="workbench-executor-help"><SelectValue placeholder="暂无在线执行机" /></SelectTrigger>
                       <SelectContent>
                         {onlineNodes.map((node) => <SelectItem key={node.id} value={node.id}>
                           {node.name}（待执行 {node.copyQueuedCount} / 执行中 {node.copyRunningCount}）
                         </SelectItem>)}
                       </SelectContent>
                     </Select>
+                    <p className="workbench-query-help" id="workbench-executor-help">默认选择文案任务最少的在线执行机，可手动调整。</p>
                   </div>
                   <div className="field">
                     <label htmlFor="workbench-image-count">配图页数</label>
@@ -465,16 +447,12 @@ export function CreationWorkbench({ nodeId, creatorUserId, viewKey: activeView }
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="field workbench-node-summary">
-                    <label>创建账号</label>
-                    <span>{creatorUserId}</span>
-                  </div>
                 </div>
                 <div className="workbench-create-footer">
-                  <span>共 {queryRows.length} 条，创建后不能在本弹窗内撤销。</span>
+                  <span aria-live="polite">已识别 {queryBatch.queries.length} 条 Query，按输入顺序加入队列。</span>
                   <div>
                     <DialogClose asChild><button className="button" type="button" disabled={creating}>取消</button></DialogClose>
-                    <button className="button primary" type="submit" disabled={creating || !selectedExecutor}>
+                    <button className="button primary" type="submit" disabled={creating || !selectedExecutor || Boolean(queryBatch.error)}>
                       {creating ? <><LoaderCircle className="animate-spin" size={16} />正在创建…</> : <>创建并加入队列</>}
                     </button>
                   </div>

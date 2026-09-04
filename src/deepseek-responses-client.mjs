@@ -1,3 +1,5 @@
+import { tracedModelFetch } from './model-call-trace.mjs';
+
 const DEEPSEEK_RESPONSES_ENDPOINT = 'https://api.deepseek.com/responses';
 export const DEEPSEEK_SIMULATION_MODEL = 'deepseek-v4-pro';
 
@@ -230,6 +232,7 @@ export function createDeepSeekResponsesClient({
     throw new TypeError(`DeepSeek simulation model must be ${DEEPSEEK_SIMULATION_MODEL}`);
   }
   if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl must be a function');
+  fetchImpl = tracedModelFetch(fetchImpl, 'DeepSeek 模拟');
   if (!Number.isInteger(maxOutputTokens) || maxOutputTokens < 1_024 || maxOutputTokens > 32_768) {
     throw new RangeError('DeepSeek maxOutputTokens must be between 1024 and 32768');
   }

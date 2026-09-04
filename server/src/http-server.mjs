@@ -143,6 +143,15 @@ function json(ctx, status, data) {
 }
 
 function installRoutes(router, repository, storageRoot) {
+  router.put('/v1/executions/:executionId/model-calls/:callId', async (ctx) => {
+    json(ctx, 200, await repository.recordModelCall(ctx.params.executionId, ctx.params.callId, requireJson(ctx)));
+  });
+  router.get('/v1/tasks/:taskId/model-calls', async (ctx) => {
+    json(ctx, 200, await repository.listModelCalls(ctx.params.taskId, { limit: ctx.query.limit, offset: ctx.query.offset }));
+  });
+  router.get('/v1/tasks/:taskId/model-calls/:callId', async (ctx) => {
+    json(ctx, 200, await repository.getModelCall(ctx.params.taskId, ctx.params.callId));
+  });
   router.get('/health', async (ctx) => json(ctx, 200, await repository.health()));
 
   router.post('/v1/nodes', async (ctx) => {

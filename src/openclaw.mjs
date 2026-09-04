@@ -1,4 +1,5 @@
 import { existsSync, unlinkSync } from 'node:fs';
+import { tracedOpenClawRunner } from './model-call-trace.mjs';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -328,8 +329,8 @@ export function createOpenClawClient({
   fetchImpl = fetch,
 } = {}) {
   const resolvedEntry = resolveEntryPath(entryPath);
-  const resolvedAsyncRunner = asyncRunner
-    ?? (runner === spawnSync ? runProcessAsync : async (...args) => runner(...args));
+  const resolvedAsyncRunner = tracedOpenClawRunner(asyncRunner
+    ?? (runner === spawnSync ? runProcessAsync : async (...args) => runner(...args)));
   const resolvedAsyncSleep = asyncSleep ?? (async (milliseconds) => sleep(milliseconds));
   const currentModelApi = () => effectiveModelApiConfig(modelApi ?? {}, process.env);
 

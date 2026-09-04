@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { migrateDatabase } from './database-migrations.mjs';
+import { saveModelCall, listModelCalls, getModelCall } from './model-call-traces.mjs';
 
 import pg from 'pg';
 
@@ -232,6 +233,10 @@ async function lockedExecution(client, executionId) {
 }
 
 export class PostgresControlPlaneRepository {
+  recordModelCall(executionId, callId, input) { return saveModelCall(this.pool, executionId, callId, input); }
+  listModelCalls(taskId, options) { return listModelCalls(this.pool, taskId, options); }
+  getModelCall(taskId, callId) { return getModelCall(this.pool, taskId, callId); }
+
   constructor({ connectionString, pool } = {}) {
     if (!pool && !connectionString) throw new TypeError('PostgreSQL connection string is required');
     this.pool = pool ?? new Pool({ connectionString, max: 10 });

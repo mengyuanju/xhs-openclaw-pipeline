@@ -14,6 +14,7 @@ import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 import { apiRequest } from '../components/api-client';
+import { ModelCallTrace } from './model-call-trace';
 import { IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
 import { ImagePreview } from '../components/image-preview';
 
@@ -421,6 +422,7 @@ export function TaskReviewDialog({
               </section>}
             </>}
 
+            <ModelCallTrace key={detail.id} taskId={detail.id} />
           </div>
 
           <footer className="workbench-review-footer">

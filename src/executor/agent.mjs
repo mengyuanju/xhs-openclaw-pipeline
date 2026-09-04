@@ -1,4 +1,5 @@
 import { constants } from 'node:fs';
+import { withModelCallTracing } from '../model-call-trace.mjs';
 import { createHash } from 'node:crypto';
 import { access, mkdir, readFile, rm } from 'node:fs/promises';
 import { basename, join, relative, resolve } from 'node:path';
@@ -244,11 +245,13 @@ export function createExecutorAgent({
       : await controlPlane.claimImage(nodeId);
     if (!claim) return null;
     try {
-      if (kind === 'COPY') {
-        await executeCopy({ claim, controlPlane, environment });
-      } else {
-        await executeImage({ claim, controlPlane, workRoot, environment });
-      }
+      await withModelCallTracing({ executionId: claim.execution.id, controlPlane }, async (tracedPlane) => {
+        if (kind === 'COPY') {
+          await executeCopy({ claim, controlPlane: tracedPlane, environment });
+        } else {
+          await executeImage({ claim, controlPlane: tracedPlane, workRoot, environment });
+        }
+      });
       return { kind, taskId: claim.task.id, executionId: claim.execution.id, status: 'SUCCEEDED' };
     } catch (error) {
       const failure = { claim, error };
