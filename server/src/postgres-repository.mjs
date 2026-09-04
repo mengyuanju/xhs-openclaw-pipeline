@@ -375,7 +375,8 @@ export class PostgresControlPlaneRepository {
     const pageValues = [...values, safeLimit, safeOffset];
     const [result, countResult] = await Promise.all([
       this.pool.query(`
-      SELECT page.*, e.node_id AS image_executor_node_id, n.name AS image_executor_node_name
+      SELECT page.*, COALESCE(e.node_id, successful_image.node_id) AS image_executor_node_id,
+        n.name AS image_executor_node_name
       FROM (
         SELECT * FROM tasks
         ${where}
@@ -384,7 +385,13 @@ export class PostgresControlPlaneRepository {
       ) page
       LEFT JOIN task_executions e ON e.id = page.current_execution_id
         AND e.kind = 'IMAGE' AND e.status = 'RUNNING' AND page.state = 'IMAGE_RUNNING'
-      LEFT JOIN executor_nodes n ON n.id = e.node_id
+      LEFT JOIN image_runs delivered_run ON delivered_run.id = page.current_image_run_id
+        AND delivered_run.task_id = page.id AND delivered_run.status = 'COMPLETED'
+        AND page.state = 'DELIVERY_REVIEW_PENDING'
+      LEFT JOIN task_executions successful_image ON successful_image.id = delivered_run.execution_id
+        AND successful_image.task_id = page.id
+        AND successful_image.kind = 'IMAGE' AND successful_image.status = 'SUCCEEDED'
+      LEFT JOIN executor_nodes n ON n.id = COALESCE(e.node_id, successful_image.node_id)
       ORDER BY page.id DESC
     `, pageValues),
       includeTotal

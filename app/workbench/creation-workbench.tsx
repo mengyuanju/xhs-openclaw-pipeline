@@ -493,7 +493,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, viewKey: activeView }
           </div>
           : <div className="table-wrap mobile-cards workbench-table-wrap">
             <table>
-              <thead><tr><th>ID</th><th>Query</th><th>状态</th><th>{executorColumnLabel}</th><th>开始时间</th><th>阶段 / 进度</th><th>耗时</th><th>操作</th></tr></thead>
+              <thead><tr><th>ID</th><th>Query</th><th>状态</th><th>{executorColumnLabel}</th>{activeView === 'DELIVERY_REVIEW' && <th>生图执行机</th>}<th>开始时间</th><th>阶段 / 进度</th><th>耗时</th><th>操作</th></tr></thead>
               <tbody>{visibleTasks.map((task) => <tr key={task.id}>
                 <td className="mono" data-label="ID">#{task.id}</td>
                 <td className="query-cell" data-label="Query">{task.query}</td>
@@ -503,6 +503,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, viewKey: activeView }
                 <td className="mono" data-label={executorColumnLabel}>{activeView === 'IMAGE_WORK'
                   ? imageExecutorLabel(task)
                   : nodes.find((node) => node.id === task.copyExecutorNodeId)?.name ?? task.copyExecutorNodeId}</td>
+                {activeView === 'DELIVERY_REVIEW' && <td className="mono" data-label="生图执行机">{imageExecutorLabel(task)}</td>}
                 <td data-label="开始时间">{timeLabel(task.executionStartedAt)}</td>
                 <td data-label="阶段 / 进度">
                   <div className="distributed-progress">
