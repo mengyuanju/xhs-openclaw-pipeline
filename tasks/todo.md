@@ -605,3 +605,47 @@
 - [x] 复核兼容性、安全边界、提示词隔离和未提交差异。
 - Verify：513 项测试、类型检查、生产构建、Mock smoke 通过；Chrome 管理员会话以隔离测试库验证两个批次切换、成功/失败/进行中恢复和 375px 无横向溢出，控制台无错误。
 - Dependencies：Tasks 84–85。
+
+## 2026-09-04: 执行机文案案例匹配（已完成）
+
+- [x] K0a：取消 OpenClaw 文本 prompt 的固定字符上限。
+  - Acceptance：超过 30,000 字符的合法 prompt 全文传入调用；保留类型和非空校验；实际上下文错误可识别。
+  - Verify：tests/text-client-capacity.test.mjs 与 tests/openclaw.test.mjs，使用 fake runner 验证完整消息内容及错误传播。
+  - Files：src/openclaw.mjs、tests/text-client-capacity.test.mjs。
+  - Dependencies：无。
+
+- [x] K0b：同步 Dots 与 DeepSeek 模拟文本客户端。
+  - Acceptance：两个客户端取消 30,000 字符限制且不裁剪请求；保留输出容量控制并识别不完整响应。
+  - Verify：tests/text-client-capacity.test.mjs 与现有客户端测试，使用 fake fetch 验证大输入全文与容量错误。
+  - Files：src/dots-chat-client.mjs、src/deepseek-responses-client.mjs、tests/text-client-capacity.test.mjs。
+  - Dependencies：无。
+
+- [x] K1：实现摘要评分与选优模块。
+  - Acceptance：全部摘要不截断，以实际模型容量决定是否分批；每条候选都评分；score >= 70 才合格；最高分胜出，同分稳定；错误输出不能进入选优。
+  - Verify：新增 tests/copy-knowledge-match.test.mjs，用 fakes 覆盖 69.99/70 边界、同分、分批、缺项、重复 ID、未知 ID 和非法分数。
+  - Files：src/copy-knowledge-match.mjs、tests/copy-knowledge-match.test.mjs。
+  - Dependencies：K0a、K0b。
+
+- [x] K2：把胜出案例完整分析接入生成提示词。
+  - Acceptance：基础提示词加单个完整分析；先渲染管理员模板再加入数据；不按固定字符数截断或拒绝，实际模型上下文不足时明确失败。
+  - Verify：tests/copy-knowledge-generation.test.mjs 与现有提示词测试，检查完整内容、未选案例隔离、数据转义和长度边界。
+  - Files：src/post-contract.mjs、src/copy-knowledge-match.mjs、tests/copy-knowledge-generation.test.mjs。
+  - Dependencies：K1。
+
+- [x] K3：接入执行机正式文案链路。
+  - Acceptance：Query 审核后、首稿前执行匹配；使用领取快照；NO_MATCH/EMPTY 按建议继续基础生成，调用失败单独报错。
+  - Verify：tests/copy-knowledge-generation.test.mjs 与现有生成/执行机测试，fake 调用验证顺序、阶段进度和失败路径。
+  - Files：src/copy-generation.mjs、src/executor/agent.mjs、tests/copy-knowledge-generation.test.mjs。
+  - Dependencies：K1、K2。
+
+- [x] K4：保存可追溯结果。
+  - Acceptance：generation.knowledgeMatch 保存覆盖数量、分数理由、门槛、选中版本、模型及分析哈希；匹配耗时随结果上传中心。
+  - Verify：tests/copy-knowledge-generation.test.mjs，验证 completeCopy 收到完整元数据及原有结果字段。
+  - Files：src/copy-generation.mjs、src/executor/agent.mjs、tests/copy-knowledge-generation.test.mjs。
+  - Dependencies：K3。
+
+- [x] K5：同步模拟执行入口并完成回归文档。
+  - Acceptance：模拟入口复用评分规则、版本固定与门槛，保留模拟标记；更新执行流程说明。
+  - Verify：tests/copy-knowledge-generation.test.mjs、tests/deepseek-copy-simulator.test.mjs；npm test 全量653项、类型检查、生产构建通过。
+  - Files：src/executor/deepseek-copy-simulator.mjs、tests/copy-knowledge-generation.test.mjs、docs/distributed-control-plane.md。
+  - Dependencies：K3、K4。
