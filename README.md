@@ -30,6 +30,14 @@
 
 完整状态与存储设计见 `docs/distributed-control-plane.md`。
 
+### 生图失败后继续
+
+图片任务失败后，在任务详情点击“从失败步骤继续”，系统沿用已审核文案与原配置，由原执行机读取检查点继续：已完成的视觉规划不重做，已验收图片不重画，图片已生成但验收失败时只继续验收，整套质检失败时只重试质检，上传失败时只补传未完成图片。模型返回后保留下来的原始图也可用于重试本地图片处理。
+
+失败期间请保留执行机的 `data/executor-work/<task-id>/`；原执行机离线时，任务等待该节点恢复。检查点缺失时明确报错，不会自动退回整套重画。需要修改文案、提示词或模型配置时，选择“使用最新配置重新生成”或重新提交文案审核。
+
+启用此功能需要同步更新并重启中心服务、本机执行器和 Web 服务；不需要数据库迁移。Web 会检查中心 `/health` 的 `capabilities.imageResume`，旧中心服务不接受界面的断点续跑请求。升级时先停止旧执行器，再更新中心服务，最后启动新版执行器和 Web。详细契约和验证见 [生图断点恢复说明](docs/image-resume-spec.md)。
+
 ### 远端中心机器安装
 
 中心机器不安装 OpenClaw，也不保存模型密钥。它只需要项目要求的 Node.js 24.19.x、PostgreSQL、当前项目代码和一个服务端图片目录。PostgreSQL 只允许中心服务本机访问，执行机不得直连数据库。
@@ -279,6 +287,12 @@ OPENCLAW_NODE_PATH=C:\Program Files\nodejs\node.exe
 XHS_IMAGE_PROXY_URL=http://127.0.0.1:7897
 ```
 
+若日志出现 `Blocked: resolves to private/internal/special-use IP address`，且 `chatgpt.com`
+被解析为 `198.18.x.x`，说明 TUN/Fake-IP 解析触发了 OpenClaw 的网络安全校验。
+将上面的地址设为本机实际运行的 HTTP 代理，保存后重启使用 `.env` 的执行器。
+图片生成与编辑重试会继续使用配置的代理；安全拦截不会作为瞬时网络故障重试。
+页面会优先显示拦截原因，避免被前面的插件配置警告截断。
+
 单次图片生成/编辑默认等待 5 分钟；如需调整，可设置
 `XHS_IMAGE_TIMEOUT_MS=300000`（允许 30000–540000 毫秒）。整段进程超时不会在同一任务租约内自动重跑；错误会同时保留进程异常和 OpenClaw 日志，避免把认证路由提示误报为根因。`drain` 任务并发可用 `--concurrency 1|2` 或 `XHS_TASK_CONCURRENCY=1|2` 控制，默认为 2。单任务图片并发可用 `XHS_IMAGE_CONCURRENCY=1|2` 控制；当任务并发为 2 时，每个任务的图片并发会强制为 1，使同一 drain 内的总模型调用并发不超过 2。
 
@@ -299,7 +313,7 @@ npm run build
 npm start
 ```
 
-打开 `http://127.0.0.1:3000`。数据库默认为 `data/queue.db`，生成交付在 `output/`，审核素材在 `data/assets/`；这些目录不会进入 Git。
+打开 `http://127.0.0.1:3001`。数据库默认为 `data/queue.db`，生成交付在 `output/`，审核素材在 `data/assets/`；这些目录不会进入 Git。
 
 ### 局域网登录
 
@@ -310,7 +324,7 @@ npm run build
 npm run start:lan
 ```
 
-同一私有局域网的设备打开 `http://<这台电脑的局域网IP>:3000`，使用刚设置的管理员密码登录。默认允许 loopback、`10/8`、`172.16/12`、`192.168/16`、IPv4 link-local 和 IPv6 ULA/link-local；如需使用电脑主机名，在根目录 `.env` 添加 `XHS_ALLOWED_HOSTS=主机名` 后重启。
+同一私有局域网的设备打开 `http://<这台电脑的局域网IP>:3001`，使用刚设置的管理员密码登录。默认允许 loopback、`10/8`、`172.16/12`、`192.168/16`、IPv4 link-local 和 IPv6 ULA/link-local；如需使用电脑主机名，在根目录 `.env` 添加 `XHS_ALLOWED_HOSTS=主机名` 后重启。
 
 `start:lan` 不等于公网部署。它只适用于可信家庭/办公局域网；不要在来宾 Wi-Fi、端口映射或公网服务器上直接使用 HTTP。跨网段或公网部署必须增加 HTTPS 反向代理、防火墙白名单和更完整的身份系统。
 
@@ -371,6 +385,21 @@ Live 且需要生成新文案的任务会在文本模型之前执行 OpenClaw `i
 若 Codex 和 DuckDuckGo 都失败，或没有返回可用的公开 HTTP(S) URL，任务会在文本生成前失败，同时保留失败快照；不会在无资料时继续生成并声称已经核验。Mock 和人工文案仅重生图片不会联网。
 
 当前接入保存搜索结果的摘要或 Codex 归纳文本，不等于读取网页全文。OpenClaw 的 `web_fetch` 需要当前安装中存在可用 fetch provider；未配置时本项目不会伪造正文抓取记录。官方能力边界见 [OpenClaw Web Search](https://docs.openclaw.ai/tools/web) 和 [OpenClaw Web Fetch](https://docs.openclaw.ai/tools/web-fetch)。
+
+### Windows 搜索卡在 RESEARCH / EBUSY
+
+OpenClaw 2026.8.2 的隔离搜索进程可能在启动时下载 Codex 插件目录，清理临时 `codex-home/.tmp/plugins-clone-*` 时发生 EBUSY。`scripts/patch-openclaw-bounded-search.mjs` 将搜索原有的 `features.plugins=false` 限制提前到子进程启动，不修改登录、普通文案/生图会话或 Hosted Search。
+
+先用 `openclaw plugins inspect codex --json` 确认实际启用插件的 `plugin.rootDir`。独立安装的 `@openclaw/codex` 自带搜索模块，**只修补全局 `openclaw/dist` 不会修复它**。对查到的准确包目录执行：
+
+```powershell
+node scripts/patch-openclaw-bounded-search.mjs --openclaw-root="<plugin.rootDir>"
+node scripts/patch-openclaw-bounded-search.mjs --openclaw-root="<plugin.rootDir>" --apply
+```
+
+第一条仅检查，第二条先保存 `.xhs-startup-plugins.bak` 再修补；输出包含包名和准确文件路径，已修补时不会重复修改。脚本只接受 `openclaw` 或 `@openclaw/codex`，拒绝未知代码结构和覆盖已有备份。上游包升级后需要重新检查。
+
+先确认中心服务 `/health` 可用，再停止旧执行机并重新运行 `npm run executor`，使失败回报重试及长错误兼容逻辑生效；仅刷新网页或重启 Gateway 不会更新执行机进程。确认旧执行机已停止后，对仍卡住的任务执行“重试”，不需要废弃任务或重新录入。若搜索通过常驻 Gateway 调用，需在没有运行中任务时另行重启 Gateway；本项目 `infer web search` 的新 CLI 子进程会读取更新后的文件。
 
 ## 溯源规则提示词
 

@@ -8,11 +8,11 @@
     "node": ">=24.19.0 <25"
   },
   "scripts": {
-    "dev": "next dev -H 127.0.0.1",
-    "dev:lan": "next dev -H 0.0.0.0",
+    "dev": "next dev -H 127.0.0.1 -p 3001",
+    "dev:lan": "next dev -H 0.0.0.0 -p 3001",
     "build": "next build",
-    "start": "next start -H 127.0.0.1",
-    "start:lan": "next start -H 0.0.0.0",
+    "start": "next start -H 127.0.0.1 -p 3001",
+    "start:lan": "next start -H 0.0.0.0 -p 3001",
     "typecheck": "tsc --noEmit",
     "db:init": "node src/cli.mjs init",
     "enqueue": "node src/cli.mjs enqueue",
