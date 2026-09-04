@@ -1,0 +1,850 @@
+{
+  "format": "xhs-control-plane-backup",
+  "version": 1,
+  "createdAt": "2026-09-04T07:44:11.465Z",
+  "databaseName": "xhs_control",
+  "pgVersion": "18.6",
+  "tables": [
+    {
+      "schema": "public",
+      "name": "assets",
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "task_id",
+          "type": "bigint",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "image_run_id",
+          "type": "uuid",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "media_type",
+          "type": "character varying(100)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "byte_size",
+          "type": "bigint",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "sha256",
+          "type": "character(64)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "storage_path",
+          "type": "text",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "original_name",
+          "type": "character varying(255)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        }
+      ],
+      "primaryKey": [
+        "id"
+      ],
+      "file": "tables/0001.jsonl",
+      "rows": 27,
+      "sha256": "9b2d4ad48a18d405df9321c850d02d4dc01dc58cfd4dd9e4573e6cb24c668728"
+    },
+    {
+      "schema": "public",
+      "name": "control_plane_migrations",
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "sha256",
+          "type": "character(64)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "applied_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        }
+      ],
+      "primaryKey": [
+        "id"
+      ],
+      "file": "tables/0002.jsonl",
+      "rows": 3,
+      "sha256": "a8e2b78d61ecfc8eaca8dffb558f07c8e19f2ef3d69cf75516d08d7e02f48c21"
+    },
+    {
+      "schema": "public",
+      "name": "copy_revisions",
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "task_id",
+          "type": "bigint",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "execution_id",
+          "type": "uuid",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "revision",
+          "type": "integer",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "content",
+          "type": "jsonb",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "approved_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "approved_by_node_id",
+          "type": "character varying(100)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        }
+      ],
+      "primaryKey": [
+        "id"
+      ],
+      "file": "tables/0003.jsonl",
+      "rows": 20,
+      "sha256": "e9f829eafd1c2f3944285b7d50b3bc84a5af482889a81f0ad2718885bf3a63de"
+    },
+    {
+      "schema": "public",
+      "name": "executor_nodes",
+      "columns": [
+        {
+          "name": "id",
+          "type": "character varying(100)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "name",
+          "type": "character varying(100)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "image_worker_enabled",
+          "type": "boolean",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "last_seen_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        }
+      ],
+      "primaryKey": [
+        "id"
+      ],
+      "file": "tables/0004.jsonl",
+      "rows": 3,
+      "sha256": "3de0bae4583d1f6ca4a3281f8fd2f2d24a363461dbcc7707b91c7c24a25d31ca"
+    },
+    {
+      "schema": "public",
+      "name": "global_settings",
+      "columns": [
+        {
+          "name": "key",
+          "type": "character varying(100)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "value",
+          "type": "jsonb",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "version",
+          "type": "bigint",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        }
+      ],
+      "primaryKey": [
+        "key"
+      ],
+      "file": "tables/0005.jsonl",
+      "rows": 1,
+      "sha256": "29a15e10d9c7b9a644ff3dddb33240657cde7c59c4d033518bd9ff00dfe74a21"
+    },
+    {
+      "schema": "public",
+      "name": "image_runs",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "task_id",
+          "type": "bigint",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "execution_id",
+          "type": "uuid",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "copy_revision_id",
+          "type": "bigint",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "status",
+          "type": "character varying(20)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "result",
+          "type": "jsonb",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "finished_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        }
+      ],
+      "primaryKey": [
+        "id"
+      ],
+      "file": "tables/0006.jsonl",
+      "rows": 12,
+      "sha256": "431fa68c9681e58aaf4c877a54a2f8a2716d2d2845ade8166d9c0ff36a4f8252"
+    },
+    {
+      "schema": "public",
+      "name": "knowledge_items",
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "kind",
+          "type": "character varying(20)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "name",
+          "type": "character varying(200)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "status",
+          "type": "character varying(20)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        }
+      ],
+      "primaryKey": [
+        "id"
+      ],
+      "file": "tables/0007.jsonl",
+      "rows": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "schema": "public",
+      "name": "knowledge_versions",
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "item_id",
+          "type": "bigint",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "version",
+          "type": "integer",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "content",
+          "type": "jsonb",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "storage_path",
+          "type": "text",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "content_sha256",
+          "type": "character(64)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "status",
+          "type": "character varying(20)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "published_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        }
+      ],
+      "primaryKey": [
+        "id"
+      ],
+      "file": "tables/0008.jsonl",
+      "rows": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "schema": "public",
+      "name": "prompt_templates",
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "kind",
+          "type": "character varying(80)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "name",
+          "type": "character varying(160)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        }
+      ],
+      "primaryKey": [
+        "id"
+      ],
+      "file": "tables/0009.jsonl",
+      "rows": 3,
+      "sha256": "ff926b7cec9d414943a26626184bfdd6e3019bc023c4b0f84cd8c46122a66603"
+    },
+    {
+      "schema": "public",
+      "name": "prompt_versions",
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "template_id",
+          "type": "bigint",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "version",
+          "type": "integer",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "content",
+          "type": "text",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "content_sha256",
+          "type": "character(64)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "status",
+          "type": "character varying(20)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "published_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        }
+      ],
+      "primaryKey": [
+        "id"
+      ],
+      "file": "tables/0010.jsonl",
+      "rows": 5,
+      "sha256": "6682cf7ede718b16fe40fc00f56816a75e4f3853d5354bca43643cab73983cf7"
+    },
+    {
+      "schema": "public",
+      "name": "task_executions",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "task_id",
+          "type": "bigint",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "kind",
+          "type": "character varying(10)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "node_id",
+          "type": "character varying(100)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "status",
+          "type": "character varying(20)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "stage",
+          "type": "character varying(64)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "progress_percent",
+          "type": "smallint",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "progress_message",
+          "type": "character varying(500)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "progress_details",
+          "type": "jsonb",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "snapshot",
+          "type": "jsonb",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "error",
+          "type": "text",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "last_activity_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "finished_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        }
+      ],
+      "primaryKey": [
+        "id"
+      ],
+      "file": "tables/0011.jsonl",
+      "rows": 43,
+      "sha256": "dc50bd27c902fc12611d69d688291e7912535c71a188cc48d57afbfa917c1a1d"
+    },
+    {
+      "schema": "public",
+      "name": "tasks",
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "query",
+          "type": "character varying(500)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "input",
+          "type": "jsonb",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "requested_image_count",
+          "type": "character varying(8)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "state",
+          "type": "character varying(40)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "created_by_node_id",
+          "type": "character varying(100)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "copy_executor_node_id",
+          "type": "character varying(100)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "current_copy_revision_id",
+          "type": "bigint",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "current_image_run_id",
+          "type": "uuid",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "current_execution_id",
+          "type": "uuid",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "current_stage",
+          "type": "character varying(64)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "progress_percent",
+          "type": "smallint",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "progress_message",
+          "type": "character varying(500)",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "pending_snapshot",
+          "type": "jsonb",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "execution_started_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "last_activity_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "finished_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "error",
+          "type": "text",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "generated": "",
+          "identity": ""
+        },
+        {
+          "name": "created_by_user_id",
+          "type": "character varying(100)",
+          "generated": "",
+          "identity": ""
+        }
+      ],
+      "primaryKey": [
+        "id"
+      ],
+      "file": "tables/0012.jsonl",
+      "rows": 18,
+      "sha256": "46be85f6ab5991e7bb6cbdd5fbebb42ea6190aed0f3c2a18631d89a4da4d5c90"
+    }
+  ],
+  "sequences": [
+    {
+      "schema": "public",
+      "name": "assets_id_seq",
+      "tableSchema": "public",
+      "tableName": "assets",
+      "columnName": "id",
+      "lastValue": "27",
+      "isCalled": true
+    },
+    {
+      "schema": "public",
+      "name": "copy_revisions_id_seq",
+      "tableSchema": "public",
+      "tableName": "copy_revisions",
+      "columnName": "id",
+      "lastValue": "20",
+      "isCalled": true
+    },
+    {
+      "schema": "public",
+      "name": "knowledge_items_id_seq",
+      "tableSchema": "public",
+      "tableName": "knowledge_items",
+      "columnName": "id",
+      "lastValue": "1",
+      "isCalled": false
+    },
+    {
+      "schema": "public",
+      "name": "knowledge_versions_id_seq",
+      "tableSchema": "public",
+      "tableName": "knowledge_versions",
+      "columnName": "id",
+      "lastValue": "1",
+      "isCalled": false
+    },
+    {
+      "schema": "public",
+      "name": "prompt_templates_id_seq",
+      "tableSchema": "public",
+      "tableName": "prompt_templates",
+      "columnName": "id",
+      "lastValue": "5",
+      "isCalled": true
+    },
+    {
+      "schema": "public",
+      "name": "prompt_versions_id_seq",
+      "tableSchema": "public",
+      "tableName": "prompt_versions",
+      "columnName": "id",
+      "lastValue": "5",
+      "isCalled": true
+    },
+    {
+      "schema": "public",
+      "name": "tasks_id_seq",
+      "tableSchema": "public",
+      "tableName": "tasks",
+      "columnName": "id",
+      "lastValue": "18",
+      "isCalled": true
+    }
+  ],
+  "migrations": [
+    {
+      "id": "0001_baseline",
+      "sha256": "4f307fca92204cd127a35310ed7f838b8108a71e8b38826aa66d90ba5d52c4e2",
+      "file": "migrations/0001_baseline.sql"
+    },
+    {
+      "id": "0002_requeue_failed_images",
+      "sha256": "8789e32825fbfbcde25de26653b0195307e93408fc7947e7a80ae2941cd5f9f1",
+      "file": "migrations/0002_requeue_failed_images.sql"
+    },
+    {
+      "id": "0003_task_creator",
+      "sha256": "feada883d5b0e70828faf60762c9a635b2eeca40168e210d1473426289c1fa01",
+      "file": "migrations/0003_task_creator.sql"
+    }
+  ],
+  "archive": {
+    "file": "database.dump",
+    "sha256": "fe76b1a6bcfdc506c5757f33341db6b0044d926a02c4b51fbc8fecdd92ae440a"
+  },
+  "sql": {
+    "file": "database.sql",
+    "sha256": "4a6b3c92202d4240d58ece017502eae9ba58c3870fee680abb829b0dee47f2f4"
+  },
+  "warning": "Database only. Copy server-storage separately; stored absolute file paths must match the destination."
+}
