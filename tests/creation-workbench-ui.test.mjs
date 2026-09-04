@@ -22,8 +22,9 @@ test('new creation workbench keeps the old dashboard and exposes lifecycle views
   assert.match(workbench, /label: '全部文案任务'/u);
   assert.match(workbench, /states: \['COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED'\]/u);
   assert.match(workbench, /待文案审核/u);
-  assert.match(workbench, /states: \['COPY_REVIEW_PENDING', 'IMAGE_FAILED'\]/u);
-  assert.match(workbench, /生图失败后退回的任务/u);
+  assert.match(workbench, /states: \['COPY_REVIEW_PENDING'\]/u);
+  assert.match(workbench, /生图失败的任务自动回到待生图队列，无需重新审核/u);
+  assert.doesNotMatch(workbench, /states: \['COPY_REVIEW_PENDING', 'IMAGE_FAILED'\]/u);
   assert.match(workbench, /states: \['IMAGE_QUEUED', 'IMAGE_RUNNING'\]/u);
   assert.match(workbench, /图文待审核/u);
   assert.match(workbench, /已完成/u);
@@ -69,7 +70,7 @@ test('creation dialog accepts ordered Query rows and creates one remote batch', 
   assert.match(reviewDialog, /本地流程联调兜底图/u);
   assert.match(reviewDialog, /resultImage\.source\.pageUrl/u);
   assert.match(reviewDialog, /edits: draft/u);
-  assert.match(reviewDialog, /\['COPY_REVIEW_PENDING', 'IMAGE_FAILED'\]\.includes\(detail\?\.state \?\? ''\)/u);
+  assert.match(reviewDialog, /const editable = detail\?\.state === 'COPY_REVIEW_PENDING'/u);
   assert.match(reviewDialog, /<ImagePreview src=\{apiPath\(asset\.url\)\}/u);
   assert.match(reviewDialog, />提交审核</u);
   assert.match(workbench, /按 Query 关键字搜索/u);

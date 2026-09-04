@@ -108,125 +108,68 @@ test('execution failure uses separate PostgreSQL parameters for varchar and text
   assert.match(taskUpdate.sql, /progress_message = \$3, error = \$4/u);
 });
 
-function executionFailureDatabase(kind) {
-  const executionId = '47d841f5-3808-46f0-9f2a-fa9781379b38';
-  let stored = {
-    task: taskRow({ state: `${kind}_RUNNING`, current_execution_id: executionId }),
-    execution: {
-      id: executionId, task_id: 41, kind, status: 'RUNNING', stage: 'RESEARCH',
-      progress_message: '', error: null, finished_at: null,
-    },
-    imageRun: kind === 'IMAGE' ? { status: 'RUNNING' } : null,
-  };
-  let pending;
-  const transactions = [];
-
-  // PostgreSQL varchar(n) counts characters, not UTF-16 code units or bytes.
-  function varchar500(value) {
-    const characters = [...value];
-    if (characters.slice(500).some((character) => character !== ' ')) {
-      throw Object.assign(new Error('value too long for type character varying(500)'), { code: '22001' });
-    }
-    return characters.slice(0, 500).join('');
-  }
-
-  const client = {
-    async query(sql, values) {
-      const source = String(sql).trim();
-      if (source === 'BEGIN') {
-        pending = structuredClone(stored);
-      } else if (source === 'COMMIT') {
-        stored = pending;
-        pending = undefined;
-      } else if (source === 'ROLLBACK') {
-        pending = undefined;
-      } else if (source.includes('FROM task_executions e')) {
-        assert.equal(values[0], executionId);
-        return { rows: [{
-          ...pending.execution,
-          current_execution_id: pending.task.current_execution_id,
-          task_state: pending.task.state,
-        }] };
-      } else if (source.startsWith('UPDATE task_executions SET')) {
-        const [id, progressMessage, error] = values;
-        assert.equal(id, executionId);
-        const message = varchar500(progressMessage);
-        Object.assign(pending.execution, {
-          status: 'FAILED', stage: 'FAILED', progress_message: message, error, finished_at: new Date(),
-        });
-        return { rows: [] };
-      } else if (source.startsWith('UPDATE image_runs SET')) {
-        assert.equal(values[0], executionId);
-        pending.imageRun.status = 'FAILED';
-        return { rows: [] };
-      } else if (source.startsWith('UPDATE tasks SET')) {
-        const [taskId, state, progressMessage, error, currentExecutionId] = values;
-        assert.equal(taskId, pending.task.id);
-        assert.equal(currentExecutionId, pending.task.current_execution_id);
-        const message = varchar500(progressMessage);
-        Object.assign(pending.task, {
-          state, current_execution_id: null, current_stage: 'FAILED',
-          progress_message: message, error, finished_at: new Date(),
-        });
-        return { rows: [structuredClone(pending.task)] };
-      } else {
-        throw new Error(`unexpected failure-write query: ${source}`);
+for (const kind of ['COPY', 'IMAGE']) {
+  test(`${kind} failure bounds both progress columns while retaining redacted error details`, async () => {
+    const executionId = '47d841f5-3808-46f0-9f2a-fa9781379b38';
+    const snapshot = { copyRevision: { id: 12, content: { reviewed: true } } };
+    const cases = [
+      { raw: '错'.repeat(500), detail: '错'.repeat(500) },
+      { raw: '错'.repeat(501), detail: '错'.repeat(501) },
+      { raw: '错'.repeat(2500), detail: '错'.repeat(2000) },
+      { raw: '错'.repeat(499) + '🖼️'.repeat(800), detail: [...('错'.repeat(499) + '🖼️'.repeat(800))].slice(0, 2000).join('') },
+      { raw: 'Bearer abcdefghijklmnop sk-abcdefghijklmnop ' + '错'.repeat(800),
+        detail: 'Bearer [REDACTED_TOKEN] [REDACTED_API_KEY] ' + '错'.repeat(800) },
+    ];
+    for (const { raw, detail } of cases) {
+      const queries = [];
+      let released = false;
+      const client = {
+        async query(sql, values) {
+          const source = String(sql);
+          queries.push({ sql: source, values });
+          if (source.includes('FROM task_executions e')) return { rows: [{
+            id: executionId, task_id: 41, kind, status: 'RUNNING',
+            current_execution_id: executionId, task_state: `${kind}_RUNNING`, snapshot,
+          }] };
+          // Model PostgreSQL's varchar(500) constraint for both writes.
+          if (source.includes('UPDATE task_executions SET')) {
+            assert.ok([...values[1]].length <= 500, 'execution progress exceeds varchar(500)');
+          }
+          if (source.includes('UPDATE tasks SET')) {
+            assert.ok([...values[2]].length <= 500, 'task progress exceeds varchar(500)');
+            return { rows: [taskRow({ state: values[1], progress_message: values[2], error: values[3] })] };
+          }
+          return { rows: [] };
+        },
+        release() { released = true; },
+      };
+      const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
+      const failed = await repository.failExecution(executionId, new Error(raw));
+      const summary = [...detail].slice(0, 500).join('');
+      const executionUpdate = queries.find((query) => query.sql.includes('UPDATE task_executions SET'));
+      const taskUpdate = queries.find((query) => query.sql.includes('UPDATE tasks SET'));
+      const nextState = kind === 'IMAGE' ? 'IMAGE_QUEUED' : 'COPY_FAILED';
+      const taskMessage = kind === 'IMAGE' ? '生图失败，已重新排队，等待执行机领取' : summary;
+      assert.deepEqual(executionUpdate.values, [executionId, summary, detail]);
+      assert.deepEqual(taskUpdate.values, [41, nextState, taskMessage, detail, executionId,
+        ...(kind === 'IMAGE' ? [snapshot] : [])]);
+      assert.equal(failed.state, nextState);
+      assert.equal(failed.progressMessage, taskMessage);
+      if (kind === 'IMAGE') {
+        assert.match(taskUpdate.sql, /current_stage = 'IMAGE_QUEUED', progress_percent = 0/u);
+        assert.match(taskUpdate.sql, /current_image_run_id = NULL, pending_snapshot = \$6/u);
+        assert.match(taskUpdate.sql, /execution_started_at = NULL, finished_at = NULL/u);
       }
-      transactions.push(source);
-      return { rows: [] };
-    },
-    release() {},
-  };
-  return { executionId, pool: { connect: async () => client }, transactions, stored: () => stored };
-}
-
-test('execution failure commits bounded Unicode progress and full redacted errors to both tables', async (t) => {
-  const fakeApiKey = `sk-${'a'.repeat(16)}`;
-  const fakeBearerToken = 'b'.repeat(16);
-  const rawSecretError = `${'x'.repeat(490)} ${fakeApiKey} Bearer ${fakeBearerToken} ${'尾'.repeat(2_000)}`;
-  const redactedError = `${'x'.repeat(490)} [REDACTED_API_KEY] Bearer [REDACTED_TOKEN] ${'尾'.repeat(2_000)}`;
-  const cases = [
-    { name: 'short error', error: 'simulated failure', expectedError: 'simulated failure' },
-    ...[499, 500, 501, 2_000, 2_001].map((length) => ({
-      name: `${length} ASCII characters`, error: 'x'.repeat(length), expectedError: 'x'.repeat(Math.min(length, 2_000)),
-    })),
-    ...[500, 501].map((length) => ({
-      name: `${length} emoji code points`, error: '😀'.repeat(length), expectedError: '😀'.repeat(length),
-    })),
-    { name: 'emoji at the truncation boundary', error: `${'x'.repeat(499)}😀尾`, expectedError: `${'x'.repeat(499)}😀尾` },
-    { name: 'redaction before both length limits', error: new Error(rawSecretError), expectedError: redactedError.slice(0, 2_000) },
-  ];
-
-  for (const kind of ['COPY', 'IMAGE']) {
-    for (const { name, error, expectedError } of cases) {
-      await t.test(`${kind}: ${name}`, async () => {
-        const database = executionFailureDatabase(kind);
-        const repository = new PostgresControlPlaneRepository({ pool: database.pool });
-
-        const failed = await repository.failExecution(database.executionId, error);
-
-        const { task, execution, imageRun } = database.stored();
-        const expectedProgress = [...expectedError].slice(0, 500).join('');
-        assert.equal(failed.state, `${kind}_FAILED`);
-        assert.equal(failed.currentExecutionId, null);
-        assert.equal(failed.progressMessage, expectedProgress);
-        assert.equal(failed.error, expectedError);
-        for (const row of [task, execution]) {
-          assert.equal(row.progress_message, expectedProgress);
-          assert.equal(row.progress_message.isWellFormed(), true);
-          assert.equal(row.error, expectedError);
-          assert.ok(row.finished_at instanceof Date);
-        }
-        assert.equal(task.state, `${kind}_FAILED`);
-        assert.equal(task.current_execution_id, null);
-        assert.equal(execution.status, 'FAILED');
-        assert.equal(execution.stage, 'FAILED');
-        if (kind === 'IMAGE') assert.equal(imageRun.status, 'FAILED');
-        assert.deepEqual(database.transactions, ['BEGIN', 'COMMIT']);
-      });
+      assert.equal(failed.error, detail);
+      assert.ok(summary.isWellFormed());
+      assert.ok(detail.isWellFormed());
+      assert.equal(queries.some((query) => query.sql.includes('UPDATE image_runs SET')), kind === 'IMAGE');
+      assert.match(taskUpdate.sql, /current_execution_id = NULL/u);
+      assert.equal(queries.at(-1).sql, 'COMMIT');
+      assert.equal(released, true);
     }
-  }
-});
+  });
+}
 
 test('task pages filter multiple states and Query text while returning a total', async () => {
   const queries = [];
@@ -264,7 +207,7 @@ test('task pages filter multiple states and Query text while returning a total',
   assert.match(pageQuery.sql, /strpos\(lower\(query\), lower\(\$3\)\) > 0/u);
 });
 
-test('image failure can be edited and submitted back to the image queue', async () => {
+test('copy approval submits reviewed copy to the image queue', async () => {
   const queries = [];
   const client = {
     async query(sql, values) {
@@ -273,7 +216,7 @@ test('image failure can be edited and submitted back to the image queue', async 
       if (source === 'BEGIN' || source === 'COMMIT') return { rows: [] };
       if (source.includes('SELECT * FROM tasks WHERE id')) {
         return { rows: [taskRow({
-          state: 'IMAGE_FAILED',
+          state: 'COPY_REVIEW_PENDING',
           current_copy_revision_id: 12,
           current_image_run_id: '47d841f5-3808-46f0-9f2a-fa9781379b38',
         })] };
@@ -308,6 +251,74 @@ test('image failure can be edited and submitted back to the image queue', async 
 
   assert.equal(approved.state, 'IMAGE_QUEUED');
   assert.ok(queries.some((item) => item.sql.includes("state = 'IMAGE_QUEUED'")));
+});
+
+test('requeued images cannot be edited through copy approval', async () => {
+  const queries = [];
+  const client = {
+    async query(sql) {
+      queries.push(sql);
+      return { rows: sql.includes('SELECT * FROM tasks') ? [taskRow({ state: 'IMAGE_QUEUED' })] : [] };
+    },
+    release() {},
+  };
+  const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
+  await assert.rejects(repository.approveCopy(41, { revisionId: 12, nodeId: 'node-b' }),
+    (error) => error.code === 'INVALID_TASK_STATE');
+  assert.equal(queries.at(-1), 'ROLLBACK');
+  assert.equal(queries.some((sql) => /^\s*UPDATE\b/u.test(sql)), false);
+});
+
+test('image claims apply a shared retry cooldown and reuse the approved snapshot in a new execution', async () => {
+  const queries = [];
+  const previousId = '47d841f5-3808-46f0-9f2a-fa9781379b38';
+  const snapshot = { copyRevision: { id: 12, content: { reviewed: true } } };
+  let execution;
+  const client = {
+    async query(sql, values) {
+      queries.push({ sql, values });
+      if (sql.includes('SELECT * FROM executor_nodes')) return { rows: [{ id: 'node-b', image_worker_enabled: true }] };
+      if (sql.includes('SELECT * FROM tasks')) return { rows: [taskRow({
+        state: 'IMAGE_QUEUED', current_copy_revision_id: 12, pending_snapshot: snapshot,
+      })] };
+      if (sql.includes('INSERT INTO task_executions')) {
+        execution = { id: values[0], task_id: values[1], kind: values[2], snapshot: values[6], status: 'RUNNING' };
+      }
+      if (sql.includes('UPDATE tasks SET')) return { rows: [taskRow({
+        state: values[0], current_execution_id: values[1], current_copy_revision_id: 12,
+      })] };
+      if (sql.includes('SELECT * FROM task_executions')) return { rows: [execution] };
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
+  const claim = await repository.claimImage('node-b');
+  const candidate = queries.find((query) => query.sql.includes('SELECT * FROM tasks'));
+  assert.deepEqual(candidate.values, ['IMAGE_QUEUED']);
+  assert.match(candidate.sql, /error IS NULL OR last_activity_at <= now\(\) - interval '5 seconds'/u);
+  assert.match(candidate.sql, /ORDER BY last_activity_at NULLS FIRST, id/u);
+  assert.match(candidate.sql, /FOR UPDATE SKIP LOCKED/u);
+  assert.doesNotMatch(candidate.sql, /copy_executor_node_id/u);
+  assert.notEqual(claim.execution.id, previousId);
+  assert.deepEqual(claim.execution.snapshot, snapshot);
+  assert.equal(claim.task.state, 'IMAGE_RUNNING');
+  assert.equal(queries.find((query) => query.sql.includes('INSERT INTO image_runs')).values[2], 12);
+  assert.equal(queries.at(-1).sql, 'COMMIT');
+});
+
+test('task counts no longer classify failed images as pending copy review', async () => {
+  let source;
+  const repository = new PostgresControlPlaneRepository({ pool: { async query(sql) {
+    source = sql;
+    return { rows: [{ local_copy: '0', all_copy: '0', copy_review: '2', image_work: '3', delivery_review: '0', completed: '1' }] };
+  } } });
+  const counts = await repository.taskCounts({ nodeId: 'node-b' });
+  assert.equal(counts.copyReview, 2);
+  assert.equal(counts.imageWork, 3);
+  assert.match(source, /WHERE state = 'COPY_REVIEW_PENDING'/u);
+  assert.match(source, /WHERE state IN \('IMAGE_QUEUED', 'IMAGE_RUNNING'\)/u);
+  assert.doesNotMatch(source, /IMAGE_FAILED/u);
 });
 
 test('logical task cancellation abandons an active image execution and keeps task history', async () => {

@@ -19,10 +19,14 @@ COPY_REVIEW_PENDING --审核指定 copyRevisionId--> IMAGE_QUEUED
 IMAGE_QUEUED --任意已启用图片能力的空闲节点原子领取--> IMAGE_RUNNING
 IMAGE_RUNNING -> DELIVERY_REVIEW_PENDING -> COMPLETED
       |
-      +-> IMAGE_FAILED -> IMAGE_QUEUED（人工重试，回到全局池）
+      +-> IMAGE_QUEUED（生图失败自动重新排队，无需重新审核文案）
 ```
 
 文案任务不会被非指定机器领取。创建任务时，中心服务分别记录 `createdByNodeId` 和用户选择的 `copyExecutorNodeId`；执行代理只领取分配给自己的 `COPY_QUEUED`。图片任务无创建机优先级。
+
+生图失败时，本次 `task_executions` 和 `image_runs` 保留 `FAILED` 历史，任务本身回到 `IMAGE_QUEUED`（待生图），保留脱敏错误和原执行快照，清空当前执行/图片运行指针。中心领取接口限制失败任务至少等待 5 秒，并优先领取等待更久的图片任务，避免单个失败任务持续占用队列头部；空闲且已开启生图的任意节点均可再次领取，创建全新的执行记录。连续失败仍会持续重试，可能继续消耗模型额度，需要排查执行机错误。
+
+新版本中心启动时自动应用 `0002_requeue_failed_images`，将旧 `IMAGE_FAILED` 任务转回待生图；文案审核记录和失败历史不删除。这些任务归入工作台的“生图中”页签，状态为“待生图”，不再进入“待文案审核”。
 
 ## 执行隔离
 

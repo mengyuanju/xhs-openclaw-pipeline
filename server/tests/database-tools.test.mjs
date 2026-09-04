@@ -59,6 +59,18 @@ test('migration baseline has no nested transactions and detects checksum drift',
   await assert.rejects(pendingMigrations(fake, migrations), /missing or changed/u);
 });
 
+test('failed-image migration only requeues tasks and preserves approved copy and failure history', async () => {
+  const migrations = await loadMigrations();
+  const migration = migrations.find((item) => item.id === '0002_requeue_failed_images');
+  assert.ok(migration);
+  assert.match(migration.sql, /state = 'IMAGE_QUEUED'/u);
+  assert.match(migration.sql, /WHERE t.state = 'IMAGE_FAILED'/u);
+  assert.match(migration.sql, /SELECT e.snapshot FROM public.task_executions/u);
+  assert.match(migration.sql, /current_execution_id = NULL/u);
+  assert.match(migration.sql, /finished_at = NULL/u);
+  assert.doesNotMatch(migration.sql, /DELETE|TRUNCATE|DROP|UPDATE public.copy_revisions|current_copy_revision_id\s*=|error\s*=/u);
+});
+
 test('failed upgrades roll back the enclosing schema-and-data transaction', async () => {
   const queries = [];
   const client = { query: async (sql) => {

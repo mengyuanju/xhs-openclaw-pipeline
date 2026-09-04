@@ -71,7 +71,7 @@ const STATE_LABELS: Record<TaskState, string> = {
   COPY_RUNNING: '文案生成中',
   COPY_REVIEW_PENDING: '待文案审核',
   COPY_FAILED: '文案生成失败',
-  IMAGE_QUEUED: '等待生图',
+  IMAGE_QUEUED: '待生图',
   IMAGE_RUNNING: '生图中',
   IMAGE_FAILED: '生图失败',
   DELIVERY_REVIEW_PENDING: '图文待审核',
@@ -85,7 +85,6 @@ const STAGE_LABELS: Record<string, string> = {
   SEARCHING_IMAGES: '联网搜索图片',
   SELECTING_IMAGES: '筛选并校验图片',
   UPLOADING_IMAGES: '上传图片到中心服务',
-  UPLOADING: '上传图片到中心服务',
   QUERY_REVIEW: '选题审核',
   RESEARCH: '全网搜索与资料整理',
   ORIGINAL_GENERATION: '标题、正文与配图策划生成',
@@ -102,7 +101,7 @@ const STAGE_LABELS: Record<string, string> = {
   COPY_RUNNING: '文案生成中',
   COPY_REVIEW_PENDING: '待文案审核',
   COPY_FAILED: '文案生成失败',
-  IMAGE_QUEUED: '等待生图',
+  IMAGE_QUEUED: '待生图',
   IMAGE_RUNNING: '生图中',
   IMAGE_FAILED: '生图失败',
   DELIVERY_REVIEW_PENDING: '图文待审核',
@@ -139,7 +138,7 @@ const VIEWS: Array<{
     key: 'COPY_REVIEW',
     label: '待文案审核',
     icon: FileCheck2,
-    states: ['COPY_REVIEW_PENDING', 'IMAGE_FAILED'],
+    states: ['COPY_REVIEW_PENDING'],
   },
   {
     key: 'IMAGE_WORK',
@@ -479,7 +478,7 @@ export function CreationWorkbench({ nodeId }: { nodeId: string }) {
             : activeView === 'ALL_COPY'
               ? '显示所有节点待执行、执行中和执行失败的文案任务，可进入详情重试。'
               : activeView === 'COPY_REVIEW'
-                ? '显示待人工审核的文案，以及生图失败后退回的任务。'
+                ? '显示待人工审核的文案；生图失败的任务自动回到待生图队列，无需重新审核。'
                 : '显示所有执行节点共享的远端任务。'}</p>
         </div>
         <div className="workbench-toolbar-actions">

@@ -14,7 +14,6 @@ import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 import { apiRequest } from '../components/api-client';
-import { resumeImageTask } from '../components/resume-image-task';
 import { ImagePreview } from '../components/image-preview';
 
 type TaskState =
@@ -90,7 +89,7 @@ const STATE_LABELS: Record<TaskState, string> = {
   COPY_RUNNING: '文案生成中',
   COPY_REVIEW_PENDING: '待文案审核',
   COPY_FAILED: '文案生成失败',
-  IMAGE_QUEUED: '等待生图',
+  IMAGE_QUEUED: '待生图',
   IMAGE_RUNNING: '生图中',
   IMAGE_FAILED: '生图失败',
   DELIVERY_REVIEW_PENDING: '图文待审核',
@@ -103,7 +102,6 @@ const STAGE_LABELS: Record<string, string> = {
   SEARCHING_IMAGES: '联网搜索图片',
   SELECTING_IMAGES: '筛选并校验图片',
   UPLOADING_IMAGES: '上传图片到中心服务',
-  UPLOADING: '上传图片到中心服务',
   QUERY_REVIEW: '选题审核',
   RESEARCH: '全网搜索与资料整理',
   ORIGINAL_GENERATION: '标题、正文与配图策划生成',
@@ -120,7 +118,7 @@ const STAGE_LABELS: Record<string, string> = {
   COPY_RUNNING: '文案生成中',
   COPY_REVIEW_PENDING: '待文案审核',
   COPY_FAILED: '文案生成失败',
-  IMAGE_QUEUED: '等待生图',
+  IMAGE_QUEUED: '待生图',
   IMAGE_RUNNING: '生图中',
   IMAGE_FAILED: '生图失败',
   DELIVERY_REVIEW_PENDING: '图文待审核',
@@ -212,9 +210,12 @@ export function TaskReviewDialog({
   }, [load, taskId]);
 
   const revision = currentRevision(detail);
-  const editable = ['COPY_REVIEW_PENDING', 'IMAGE_FAILED'].includes(detail?.state ?? '')
+  const editable = detail?.state === 'COPY_REVIEW_PENDING'
     && Boolean(revision && draft);
   const sources = revision?.content.generation?.research?.sources ?? [];
+  const assets = useMemo(() => detail?.assets.filter(
+    (asset) => asset.imageRunId === detail.currentImageRunId,
+  ) ?? [], [detail]);
   const currentImageRun = useMemo(() => detail?.imageRuns.find(
     (run) => run.id === detail.currentImageRunId,
   ) ?? null, [detail]);
@@ -223,30 +224,6 @@ export function TaskReviewDialog({
       .filter((image) => Number.isSafeInteger(image.assetId))
       .map((image) => [image.assetId as number, image]),
   ), [currentImageRun]);
-  const assets = useMemo(() => detail?.assets.filter(
-    (asset) => asset.imageRunId === detail.currentImageRunId || resultImageByAssetId.has(asset.id),
-  ).sort((left, right) => (resultImageByAssetId.get(left.id)?.pageIndex ?? left.id)
-    - (resultImageByAssetId.get(right.id)?.pageIndex ?? right.id)) ?? [], [detail, resultImageByAssetId]);
-
-  async function continueImages() {
-    if (!detail || detail.state !== 'IMAGE_FAILED') return;
-    if (!await confirm({
-      title: '从失败步骤继续生图？',
-      description: '沿用已审核文案和原配置，保留已完成的规划、图片及检查结果，由原执行机继续未完成步骤。本页未提交的修改不会用于此次续跑；剩余模型调用会产生费用。',
-      confirmLabel: '继续生图',
-    })) return;
-    setSubmitting(true);
-    setError('');
-    try {
-      await resumeImageTask(detail.id);
-      await onUpdated('任务已等待原执行机从失败步骤继续。');
-      onOpenChange(false);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '继续生图失败');
-    } finally {
-      setSubmitting(false);
-    }
-  }
 
   function updateCopy(field: 'title' | 'body' | 'tags', value: string) {
     setDraft((current) => current ? {
@@ -274,9 +251,7 @@ export function TaskReviewDialog({
     if (!detail || !revision || !draft || !editable) return;
     if (!await confirm({
       title: '提交当前修改并通过文案审核？',
-      description: detail.state === 'IMAGE_FAILED'
-        ? '系统会保存新的人工修订版本，并将生图失败的任务重新送入全局生图队列。'
-        : '系统会保存一个新的人工修订版本，并立即将任务送入全局生图队列。',
+      description: '系统会保存一个新的人工修订版本，并立即将任务送入全局生图队列。',
       confirmLabel: '提交审核',
     })) return;
     setSubmitting(true);
@@ -450,9 +425,6 @@ export function TaskReviewDialog({
             <span>{editable ? `提交后将创建人工修订版 v${(revision?.revision ?? 0) + 1}` : `当前文案版本 v${revision?.revision ?? '—'}`}</span>
             <div>
               <DialogClose asChild><button className="button" type="button" disabled={submitting}>关闭</button></DialogClose>
-              {detail.state === 'IMAGE_FAILED' && <button className="button primary" type="button" disabled={submitting} onClick={() => { void continueImages(); }}>
-                <RefreshCw size={15} />从失败步骤继续
-              </button>}
               {editable && <button className="button primary" type="submit" disabled={submitting}>
                 {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : <><CheckCircle2 size={15} />提交审核</>}
               </button>}
