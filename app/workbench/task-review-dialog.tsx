@@ -89,7 +89,7 @@ const STATE_LABELS: Record<TaskState, string> = {
   COPY_RUNNING: '文案生成中',
   COPY_REVIEW_PENDING: '待文案审核',
   COPY_FAILED: '文案生成失败',
-  IMAGE_QUEUED: '等待生图',
+  IMAGE_QUEUED: '待生图',
   IMAGE_RUNNING: '生图中',
   IMAGE_FAILED: '生图失败',
   DELIVERY_REVIEW_PENDING: '图文待审核',
@@ -118,7 +118,7 @@ const STAGE_LABELS: Record<string, string> = {
   COPY_RUNNING: '文案生成中',
   COPY_REVIEW_PENDING: '待文案审核',
   COPY_FAILED: '文案生成失败',
-  IMAGE_QUEUED: '等待生图',
+  IMAGE_QUEUED: '待生图',
   IMAGE_RUNNING: '生图中',
   IMAGE_FAILED: '生图失败',
   DELIVERY_REVIEW_PENDING: '图文待审核',
@@ -210,7 +210,7 @@ export function TaskReviewDialog({
   }, [load, taskId]);
 
   const revision = currentRevision(detail);
-  const editable = ['COPY_REVIEW_PENDING', 'IMAGE_FAILED'].includes(detail?.state ?? '')
+  const editable = detail?.state === 'COPY_REVIEW_PENDING'
     && Boolean(revision && draft);
   const sources = revision?.content.generation?.research?.sources ?? [];
   const assets = useMemo(() => detail?.assets.filter(
@@ -251,9 +251,7 @@ export function TaskReviewDialog({
     if (!detail || !revision || !draft || !editable) return;
     if (!await confirm({
       title: '提交当前修改并通过文案审核？',
-      description: detail.state === 'IMAGE_FAILED'
-        ? '系统会保存新的人工修订版本，并将生图失败的任务重新送入全局生图队列。'
-        : '系统会保存一个新的人工修订版本，并立即将任务送入全局生图队列。',
+      description: '系统会保存一个新的人工修订版本，并立即将任务送入全局生图队列。',
       confirmLabel: '提交审核',
     })) return;
     setSubmitting(true);

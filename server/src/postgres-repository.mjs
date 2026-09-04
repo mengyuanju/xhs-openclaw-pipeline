@@ -386,7 +386,7 @@ export class PostgresControlPlaneRepository {
           WHERE copy_executor_node_id = $1 AND state IN ('COPY_QUEUED', 'COPY_RUNNING')
         ) AS local_copy,
         COUNT(*) FILTER (WHERE state IN ('COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED')) AS all_copy,
-        COUNT(*) FILTER (WHERE state IN ('COPY_REVIEW_PENDING', 'IMAGE_FAILED')) AS copy_review,
+        COUNT(*) FILTER (WHERE state = 'COPY_REVIEW_PENDING') AS copy_review,
         COUNT(*) FILTER (WHERE state IN ('IMAGE_QUEUED', 'IMAGE_RUNNING')) AS image_work,
         COUNT(*) FILTER (WHERE state = 'DELIVERY_REVIEW_PENDING') AS delivery_review,
         COUNT(*) FILTER (WHERE state = 'COMPLETED') AS completed
@@ -482,11 +482,15 @@ export class PostgresControlPlaneRepository {
       const queuedState = kind === 'COPY' ? 'COPY_QUEUED' : 'IMAGE_QUEUED';
       const runningState = kind === 'COPY' ? 'COPY_RUNNING' : 'IMAGE_RUNNING';
       const ownership = kind === 'COPY' ? 'AND copy_executor_node_id = $2' : '';
+      // Cool down failed image tasks centrally, including claims from other nodes.
+      const retryDelay = kind === 'IMAGE'
+        ? "AND (error IS NULL OR last_activity_at <= now() - interval '5 seconds')" : '';
+      const order = kind === 'IMAGE' ? 'last_activity_at NULLS FIRST, id' : 'id';
       const parameters = kind === 'COPY' ? [queuedState, nodeId] : [queuedState];
       const candidate = await client.query(`
         SELECT * FROM tasks
-        WHERE state = $1 ${ownership}
-        ORDER BY id
+        WHERE state = $1 ${ownership} ${retryDelay}
+        ORDER BY ${order}
         FOR UPDATE SKIP LOCKED
         LIMIT 1
       `, parameters);
@@ -612,7 +616,7 @@ export class PostgresControlPlaneRepository {
       const taskResult = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
       const task = taskResult.rows[0];
       if (!task) throw new ControlPlaneNotFoundError('task not found');
-      if (!['COPY_REVIEW_PENDING', 'IMAGE_FAILED'].includes(task.state)) {
+      if (task.state !== 'COPY_REVIEW_PENDING') {
         throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'task is not waiting for copy review');
       }
       if (Number(task.current_copy_revision_id) !== revisionId) {
@@ -693,28 +697,40 @@ export class PostgresControlPlaneRepository {
   async failExecution(rawExecutionId, rawError) {
     const executionId = normalizeUuid(rawExecutionId, 'executionId');
     const message = redactExecutionError(rawError);
+    // Both progress columns are varchar(500); keep longer diagnostics in error (text).
+    const progressMessage = [...message].slice(0, 500).join('');
     return transaction(this.pool, async (client) => {
       const execution = await lockedExecution(client, executionId);
-      const failedState = execution.kind === 'COPY' ? 'COPY_FAILED' : 'IMAGE_FAILED';
+      const isImage = execution.kind === 'IMAGE';
+      const nextState = isImage ? 'IMAGE_QUEUED' : 'COPY_FAILED';
       await client.query(`
         UPDATE task_executions SET
           status = 'FAILED', stage = 'FAILED', progress_message = $2,
           error = $3, last_activity_at = now(), finished_at = now()
         WHERE id = $1
-      `, [executionId, message, message]);
-      if (execution.kind === 'IMAGE') {
+      `, [executionId, progressMessage, message]);
+      if (isImage) {
         await client.query(`
           UPDATE image_runs SET status = 'FAILED', finished_at = now() WHERE id = $1
         `, [executionId]);
       }
+      const lifecycle = isImage
+        ? `current_stage = 'IMAGE_QUEUED', progress_percent = 0,
+           current_image_run_id = NULL, pending_snapshot = $6,
+           execution_started_at = NULL, finished_at = NULL,`
+        : "current_stage = 'FAILED', finished_at = now(),";
+      const values = [execution.task_id, nextState,
+        isImage ? '生图失败，已重新排队，等待执行机领取' : progressMessage,
+        message, executionId];
+      if (isImage) values.push(execution.snapshot);
       const task = await client.query(`
         UPDATE tasks SET
-          state = $2, current_execution_id = NULL, current_stage = 'FAILED',
+          state = $2, current_execution_id = NULL, ${lifecycle}
           progress_message = $3, error = $4, last_activity_at = now(),
-          finished_at = now(), updated_at = now()
+          updated_at = now()
         WHERE id = $1 AND current_execution_id = $5
         RETURNING *
-      `, [execution.task_id, failedState, message, message, executionId]);
+      `, values);
       return taskFrom(task.rows[0]);
     });
   }

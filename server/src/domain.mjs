@@ -214,8 +214,8 @@ export function normalizeJson(value, name, maxBytes = 2_000_000) {
 }
 
 export function redactExecutionError(value) {
-  return String(value instanceof Error ? value.message : value ?? 'Unknown execution failure')
+  const redacted = String(value instanceof Error ? value.message : value ?? 'Unknown execution failure')
     .replace(/\bsk-[a-zA-Z0-9_-]{12,}\b/gu, '[REDACTED_API_KEY]')
-    .replace(/\bBearer\s+[a-zA-Z0-9._~+/=-]{12,}\b/giu, 'Bearer [REDACTED_TOKEN]')
-    .slice(0, 2_000);
+    .replace(/\bBearer\s+[a-zA-Z0-9._~+/=-]{12,}\b/giu, 'Bearer [REDACTED_TOKEN]');
+  return [...redacted].slice(0, 2_000).join('');
 }
