@@ -542,6 +542,7 @@ export async function renderDeliveryImages({
   recoveryImages = [],
   repairSourceImagePaths = [],
   onImageCompleted,
+  onImageCheckpoint,
   imageConcurrency,
 }) {
   if (!Number.isInteger(imageCount) || imageCount < 3 || imageCount > 5) {
@@ -621,6 +622,30 @@ export async function renderDeliveryImages({
     const reusable = resumeImages[index];
     const recovery = recoveryImages[index];
 
+    async function normalizeGeneratedImage(sourcePath, alignment) {
+      // Keep the raw response until resizing, overlaying, and checkpointing all
+      // succeed. A local filesystem error must not spend another image call.
+      await sharp(sourcePath)
+        .resize(WIDTH, HEIGHT, { fit: 'cover', position: 'attention' })
+        .png({ compressionLevel: 8 })
+        .toFile(outputPath);
+      if (index === 0) {
+        await copyFile(outputPath, styleReferencePath);
+        firstStyleReferencePath = styleReferencePath;
+      }
+      if (visibleTextPlans && textRenderingMode === 'deterministic-overlay') {
+        await applyDeterministicTextOverlay({
+          imagePath: outputPath,
+          visibleText: visibleTextPlans[index],
+          disclosure: complianceDisclosure,
+          pageKind: plan.kind,
+          layoutDirection: layoutDirections?.[index] ?? '',
+          repairInstruction: alignment?.passed === false ? alignment.repairInstruction : '',
+          layoutTemplate: layoutTemplates?.[index] ?? null,
+        });
+      }
+    }
+
     if (!mock && reusable) {
       if (reusable.file !== file || typeof reusable.sourcePath !== 'string') {
         throw new TypeError(`resumeImages[${index}] is invalid`);
@@ -663,26 +688,39 @@ export async function renderDeliveryImages({
           || !/^[a-f0-9]{64}$/u.test(recovery.sha256 ?? '')) {
           throw new TypeError(`recoveryImages[${index}] is invalid`);
         }
-        await copyFile(recovery.sourcePath, outputPath);
-        const recoveredContent = await readFile(outputPath);
+        const recoveredContent = await readFile(recovery.sourcePath);
         const recoveredSha256 = createHash('sha256').update(recoveredContent).digest('hex');
         if (recoveredSha256 !== recovery.sha256) {
           throw new Error(`recovery image ${index + 1} changed before validation`);
         }
-        await heartbeat?.({ stage: 'image_alignment', pageIndex: index + 1, attempt: 1 });
-        recoveredAlignment = await validateImage({
-          imagePath: outputPath,
-          pageIndex: index + 1,
-          attempt: 1,
-        });
-        if (recoveredAlignment?.passed === true) {
+        if (recovery.needsNormalization) {
+          await normalizeGeneratedImage(recovery.sourcePath, null);
+          await onImageCheckpoint?.({ image: recovery, outputPath });
+          const stagedRaw = join(outputDir, `.raw-${file.slice(0, 2)}-attempt-${recovery.generationAttempts}.png`);
+          await unlink(stagedRaw).catch(() => {});
+        } else {
+          await writeFile(outputPath, recoveredContent);
+        }
+        recoveredAlignment = recovery.alignment ?? null;
+        if (!recovery.completed && !recoveredAlignment) {
+          const attempt = recovery.generationAttempts || 1;
+          await heartbeat?.({ stage: 'image_alignment', pageIndex: index + 1, attempt });
+          recoveredAlignment = await validateImage?.({
+            imagePath: outputPath,
+            pageIndex: index + 1,
+            attempt,
+          });
+          await onImageCheckpoint?.({ image: { ...recovery, alignment: recoveredAlignment }, outputPath });
+        }
+        if (recovery.completed || !validateImage || recoveredAlignment?.passed === true
+          || recovery.generationAttempts >= maxGenerationAttempts) {
           const image = {
             file,
             provider: recovery.provider,
             model: recovery.model ?? null,
-            generationAttempts: 0,
+            generationAttempts: recovery.generationAttempts ?? 0,
             alignment: recoveredAlignment,
-            prompt: basePrompt,
+            prompt: recovery.prompt ?? basePrompt,
             reusedFromCheckpoint: true,
           };
           images[index] = image;
@@ -707,10 +745,11 @@ export async function renderDeliveryImages({
       let model = null;
       let alignment = recoveredAlignment;
       let generationAttempts = 0;
+      const firstAttempt = recoveredAlignment?.passed === false ? (recovery.generationAttempts ?? 0) + 1 : 1;
       let prompt = recoveredAlignment?.passed === false
-        ? promptWithRepair(basePrompt, recoveredAlignment, 1)
+        ? promptWithRepair(basePrompt, recoveredAlignment, firstAttempt)
         : basePrompt;
-      for (let attempt = 1; attempt <= maxGenerationAttempts; attempt += 1) {
+      for (let attempt = firstAttempt; attempt <= maxGenerationAttempts; attempt += 1) {
         generationAttempts = attempt;
         await heartbeat?.({ stage: 'image_generation', pageIndex: index + 1, attempt });
         const rawOutputPath = join(
@@ -744,31 +783,11 @@ export async function renderDeliveryImages({
           provider = 'openclaw';
         }
         model = generated.model;
-        try {
-          await sharp(generated.outputPath)
-            .resize(WIDTH, HEIGHT, { fit: 'cover', position: 'attention' })
-            .png({ compressionLevel: 8 })
-            .toFile(outputPath);
-        } finally {
-          if (generated.outputPath !== outputPath) {
-            await unlink(generated.outputPath).catch(() => {});
-          }
-        }
-        if (index === 0) {
-          await copyFile(outputPath, styleReferencePath);
-          firstStyleReferencePath = styleReferencePath;
-        }
-        if (visibleTextPlans && textRenderingMode === 'deterministic-overlay') {
-          await applyDeterministicTextOverlay({
-            imagePath: outputPath,
-            visibleText: visibleTextPlans[index],
-            disclosure: complianceDisclosure,
-            pageKind: plan.kind,
-            layoutDirection: layoutDirections?.[index] ?? '',
-            repairInstruction: alignment?.passed === false ? alignment.repairInstruction : '',
-            layoutTemplate: layoutTemplates?.[index] ?? null,
-          });
-        }
+        const checkpointImage = { file, provider, model, generationAttempts, prompt, alignment: null };
+        await onImageCheckpoint?.({ image: checkpointImage, outputPath: generated.outputPath, stage: 'raw' });
+        await normalizeGeneratedImage(generated.outputPath, alignment);
+        await onImageCheckpoint?.({ image: checkpointImage, outputPath });
+        if (generated.outputPath !== outputPath) await unlink(generated.outputPath).catch(() => {});
         if (!validateImage) break;
         await heartbeat?.({ stage: 'image_alignment', pageIndex: index + 1, attempt });
         alignment = await validateImage({
@@ -776,6 +795,7 @@ export async function renderDeliveryImages({
           pageIndex: index + 1,
           attempt,
         });
+        await onImageCheckpoint?.({ image: { ...checkpointImage, alignment }, outputPath });
         if (alignment?.passed === true || attempt === maxGenerationAttempts) break;
         prompt = promptWithRepair(basePrompt, alignment, attempt + 1);
       }

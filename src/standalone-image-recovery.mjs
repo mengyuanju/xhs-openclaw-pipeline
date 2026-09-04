@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { appendFile, readFile, readdir } from 'node:fs/promises';
+import { appendFile, copyFile, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import sharp from 'sharp';
 
@@ -12,6 +12,41 @@ import { parseVisualPlanOutput } from './visual-plan.mjs';
 const ALIGNMENT_ATTEMPTS_FILE = 'alignment-attempts.jsonl';
 const IMAGE_FILE = /^\d{2}-[a-z][a-z0-9-]{0,30}\.png$/u;
 const IMAGE_MAX_BYTES = 30 * 1024 * 1024;
+
+export async function writeImageCheckpoint({ image, outputPath, completed = false, stage = 'normalized' }) {
+  if (!IMAGE_FILE.test(image.file)) throw new TypeError('invalid checkpoint image file');
+  const sha256 = createHash('sha256').update(await readFile(outputPath)).digest('hex');
+  const path = `${outputPath}.checkpoint.json`;
+  await writeFile(`${path}.tmp`, JSON.stringify({ schemaVersion: 1, sha256, image, completed, stage }), 'utf8');
+  await rename(`${path}.tmp`, path);
+}
+
+async function readImageCheckpoint(path) {
+  try {
+    const content = await readFile(`${path}.checkpoint.json`);
+    if (content.byteLength > 200_000) return null;
+    const value = JSON.parse(content.toString('utf8'));
+    return value.schemaVersion === 1 && isRecord(value.image) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function stageRecoveryImages({ images, outputDir }) {
+  // Copy every available page before resuming work, including later parallel
+  // successes, so a second failure cannot lose the previous run's checkpoints.
+  for (const image of images.filter(Boolean)) {
+    const rawFile = `.raw-${image.file.slice(0, 2)}-attempt-${image.generationAttempts}.png`;
+    const outputPath = join(outputDir, image.needsNormalization ? rawFile : image.file);
+    await copyFile(image.sourcePath, outputPath);
+    const hash = createHash('sha256').update(await readFile(outputPath)).digest('hex');
+    if (hash !== image.sha256) throw new StandaloneImageRecoveryError('恢复图片在复制时发生变化');
+    await writeImageCheckpoint({
+      image, outputPath, completed: image.completed === true,
+      stage: image.needsNormalization ? 'raw' : 'normalized',
+    });
+  }
+}
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -108,25 +143,43 @@ export async function discoverStandaloneRecoveryImages({ outputDir, post }) {
   const images = Array.from({ length: post.imagePlan.length });
   for (const [index, plan] of post.imagePlan.entries()) {
     const file = `${String(index + 1).padStart(2, '0')}-${plan.kind}.png`;
-    const sourcePath = join(outputDir, file);
-    try {
-      const content = await readFile(sourcePath);
-      if (content.byteLength < 1 || content.byteLength > IMAGE_MAX_BYTES) continue;
-      const metadata = await sharp(content, {
-        failOn: 'error',
-        limitInputPixels: 40_000_000,
-      }).metadata();
-      if (metadata.format !== 'png' || metadata.width !== DELIVERY_IMAGE_WIDTH
-        || metadata.height !== DELIVERY_IMAGE_HEIGHT) continue;
-      images[index] = {
-        file,
-        sourcePath,
-        sha256: createHash('sha256').update(content).digest('hex'),
-        provider: 'recovered-existing-image',
-        model: null,
-      };
-    } catch {
-      // Missing or malformed images are regenerated in the recovery run.
+    // A pending raw image takes precedence over an older normalized repair
+    // attempt. It is retained until its normalized checkpoint is durable.
+    const candidates = [3, 2, 1].map((attempt) => ({
+      name: `.raw-${String(index + 1).padStart(2, '0')}-attempt-${attempt}.png`, attempt,
+    }));
+    candidates.push({ name: file, attempt: 0 });
+    for (const { name, attempt } of candidates) {
+      if (images[index] && attempt) continue;
+      const sourcePath = join(outputDir, name);
+      try {
+        const content = await readFile(sourcePath);
+        if (content.byteLength < 1 || content.byteLength > IMAGE_MAX_BYTES) continue;
+        const metadata = await sharp(content, {
+          failOn: 'error',
+          limitInputPixels: 40_000_000,
+        }).metadata();
+        if (metadata.format !== 'png' || (!attempt && (metadata.width !== DELIVERY_IMAGE_WIDTH
+          || metadata.height !== DELIVERY_IMAGE_HEIGHT))) continue;
+        const sha256 = createHash('sha256').update(content).digest('hex');
+        const checkpoint = await readImageCheckpoint(sourcePath);
+        if (attempt && (checkpoint?.stage !== 'raw' || checkpoint.image.generationAttempts !== attempt)) continue;
+        if (checkpoint && (checkpoint.sha256 !== sha256 || checkpoint.image.file !== file)) continue;
+        // A completed normalization can outlive a failed raw-file cleanup.
+        if (images[index] && !(checkpoint?.image.generationAttempts >= images[index].generationAttempts)) continue;
+        images[index] = {
+          ...checkpoint?.image,
+          file,
+          sourcePath,
+          sha256,
+          needsNormalization: attempt > 0,
+          completed: checkpoint?.completed === true,
+          provider: checkpoint?.image.provider ?? 'recovered-existing-image',
+          model: checkpoint?.image.model ?? null,
+        };
+      } catch {
+        // Missing or malformed images are regenerated in the recovery run.
+      }
     }
   }
   return images;

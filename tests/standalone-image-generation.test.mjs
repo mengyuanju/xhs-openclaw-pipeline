@@ -7,6 +7,7 @@ import { describe, it } from 'node:test';
 import sharp from 'sharp';
 
 import { createMockPost } from '../src/pipeline.mjs';
+import { createMockVisualPlan } from '../src/visual-plan.mjs';
 import {
   StandaloneImageConfirmationError,
   StandaloneImageCancellationError,
@@ -97,7 +98,7 @@ function qualityAssessment() {
   };
 }
 
-function liveClient({ runText, runVision, onImage }) {
+function liveClient({ runText, runVision, onImage, imageOffset = 0 }) {
   let imageIndex = 0;
   const writeGeneratedImage = async (outputPath) => {
     imageIndex += 1;
@@ -108,9 +109,9 @@ function liveClient({ runText, runVision, onImage }) {
         height: 1448,
         channels: 3,
         background: {
-          r: 80 + imageIndex * 20,
-          g: 130 + imageIndex * 10,
-          b: 170 - imageIndex * 10,
+          r: 80 + (imageOffset + imageIndex) * 20,
+          g: 130 + (imageOffset + imageIndex) * 10,
+          b: 170 - (imageOffset + imageIndex) * 10,
         },
       },
     }).png().toFile(outputPath);
@@ -133,6 +134,40 @@ function liveClient({ runText, runVision, onImage }) {
       return { rawText: JSON.stringify(output), model: 'fake-vision' };
     },
   };
+}
+
+function resumableLiveClient({
+  source = validSource(), failImageCall, failQuality = false, imageOffset = 0,
+} = {}) {
+  const calls = { planning: 0, images: 0, alignmentPages: [], quality: 0 };
+  const client = liveClient({
+    imageOffset,
+    async runText() {
+      calls.planning += 1;
+      const post = normalizeStandaloneImageSource(source);
+      return {
+        rawText: JSON.stringify(createMockVisualPlan(post, { imageCount: post.imagePlan.length })),
+        model: 'fake-planner',
+      };
+    },
+    onImage(imageIndex) {
+      calls.images += 1;
+      if (imageIndex === failImageCall) throw new Error('simulated image service unavailable');
+    },
+    async runVision({ prompt }) {
+      if (prompt.includes('独立于生成模型的图文交付终审员')) {
+        calls.quality += 1;
+        if (failQuality) throw new Error('simulated quality service unavailable');
+        return { rawText: JSON.stringify(qualityAssessment()), model: 'fake-quality' };
+      }
+      const contract = JSON.parse(prompt.match(
+        /<untrusted_alignment_contract>\n([\s\S]+?)\n<\/untrusted_alignment_contract>/u,
+      )[1]);
+      calls.alignmentPages.push(contract.pageIndex);
+      return { rawText: JSON.stringify(passingAlignment(prompt)), model: 'fake-alignment' };
+    },
+  });
+  return { client, calls, imageConcurrency: 1 };
 }
 
 describe('standalone image generation service', () => {
@@ -475,9 +510,9 @@ describe('standalone image generation service', () => {
 
       assert.equal(resumedImageCalls, 2);
       assert.equal(result.images.length, 3);
-      assert.equal(result.images[0].provider, 'recovered-existing-image');
+      assert.equal(result.images[0].provider, 'openclaw');
       assert.equal(result.images[0].alignmentPassed, true);
-      assert.equal(result.images[0].generationAttempts, 0);
+      assert.equal(result.images[0].generationAttempts, 1);
       const resumedProgress = await readStandaloneImageProgress({
         outputRoot,
         runId: RECOVERY_RUN_ID,
@@ -486,6 +521,325 @@ describe('standalone image generation service', () => {
       assert.equal(resumedProgress.generatedImages, 3);
       assert.equal(resumedProgress.validatedImages, 3);
       assert.equal(resumedProgress.canResume, false);
+    } finally {
+      await rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('resumes after first-page generation fails and reuses the completed visual plan', async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-resume-first-page-'));
+    const initialRuntime = resumableLiveClient({ failImageCall: 1 });
+    const resumedRuntime = resumableLiveClient();
+    try {
+      await assert.rejects(generateStandaloneImages({
+        source: validSource(),
+        mode: 'LIVE',
+        outputRoot,
+        runId: RECOVERY_SOURCE_RUN_ID,
+        runtime: initialRuntime,
+      }), /simulated image service unavailable/u);
+      assert.equal(initialRuntime.calls.planning, 1);
+
+      const result = await retryStandaloneImageRun({
+        sourceRunId: RECOVERY_SOURCE_RUN_ID,
+        runId: RECOVERY_RUN_ID,
+        outputRoot,
+        runtime: resumedRuntime,
+      });
+
+      assert.equal(result.status, 'COMPLETED');
+      assert.equal(result.visualPlan.model, 'fake-planner');
+      assert.deepEqual(resumedRuntime.calls, {
+        planning: 0, images: 3, alignmentPages: [1, 2, 3], quality: 1,
+      });
+    } finally {
+      await rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('resumes at a failed second page without generating or validating the accepted first page', async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-resume-second-page-'));
+    const initialRuntime = resumableLiveClient({ failImageCall: 2 });
+    const resumedRuntime = resumableLiveClient({ imageOffset: 1 });
+    try {
+      await assert.rejects(generateStandaloneImages({
+        source: validSource(),
+        mode: 'LIVE',
+        outputRoot,
+        runId: RECOVERY_SOURCE_RUN_ID,
+        runtime: initialRuntime,
+      }), /simulated image service unavailable/u);
+      assert.deepEqual(initialRuntime.calls.alignmentPages, [1]);
+      const originalHero = await readFile(join(
+        outputRoot, 'standalone-image-generations', RECOVERY_SOURCE_RUN_ID, '01-hero.png',
+      ));
+
+      const result = await retryStandaloneImageRun({
+        sourceRunId: RECOVERY_SOURCE_RUN_ID,
+        runId: RECOVERY_RUN_ID,
+        outputRoot,
+        runtime: resumedRuntime,
+      });
+
+      assert.equal(result.status, 'COMPLETED');
+      assert.deepEqual(resumedRuntime.calls, {
+        planning: 0, images: 2, alignmentPages: [2, 3], quality: 1,
+      });
+      const recoveredHero = await readStandaloneImageFile({
+        outputRoot, runId: RECOVERY_RUN_ID, file: result.images[0].file,
+      });
+      assert.deepEqual(recoveredHero.content, originalHero);
+      assert.equal(result.images[0].alignmentPassed, true);
+      assert.equal(result.images[0].provider, 'openclaw');
+      assert.equal(result.images[0].generationAttempts, 1);
+    } finally {
+      await rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('resumes a failed whole-set quality request without repeating completed page work', async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-resume-quality-'));
+    const initialRuntime = resumableLiveClient({ failQuality: true });
+    const resumedRuntime = resumableLiveClient();
+    try {
+      await assert.rejects(generateStandaloneImages({
+        source: validSource(),
+        mode: 'LIVE',
+        outputRoot,
+        runId: RECOVERY_SOURCE_RUN_ID,
+        runtime: initialRuntime,
+      }), /simulated quality service unavailable/u);
+      assert.deepEqual(initialRuntime.calls.alignmentPages, [1, 2, 3]);
+      const originals = await Promise.all(validSource().imagePlan.map((page, index) => readFile(join(
+        outputRoot, 'standalone-image-generations', RECOVERY_SOURCE_RUN_ID,
+        `${String(index + 1).padStart(2, '0')}-${page.kind}.png`,
+      ))));
+
+      const result = await retryStandaloneImageRun({
+        sourceRunId: RECOVERY_SOURCE_RUN_ID,
+        runId: RECOVERY_RUN_ID,
+        outputRoot,
+        runtime: resumedRuntime,
+      });
+
+      assert.equal(result.status, 'COMPLETED');
+      assert.deepEqual(resumedRuntime.calls, {
+        planning: 0, images: 0, alignmentPages: [], quality: 1,
+      });
+      for (const [index, image] of result.images.entries()) {
+        const recovered = await readStandaloneImageFile({
+          outputRoot, runId: RECOVERY_RUN_ID, file: image.file,
+        });
+        assert.deepEqual(recovered.content, originals[index]);
+      }
+    } finally {
+      await rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('resumes across consecutive failures while preserving pages accepted in earlier runs', async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-resume-consecutive-'));
+    const firstRuntime = resumableLiveClient({ failImageCall: 2 });
+    const secondRuntime = resumableLiveClient({ failImageCall: 2, imageOffset: 1 });
+    const finalRuntime = resumableLiveClient({ imageOffset: 2 });
+    try {
+      await assert.rejects(generateStandaloneImages({
+        source: validSource(),
+        mode: 'LIVE',
+        outputRoot,
+        runId: RECOVERY_SOURCE_RUN_ID,
+        runtime: firstRuntime,
+      }), /simulated image service unavailable/u);
+      const originalHero = await readFile(join(
+        outputRoot, 'standalone-image-generations', RECOVERY_SOURCE_RUN_ID, '01-hero.png',
+      ));
+
+      await assert.rejects(retryStandaloneImageRun({
+        sourceRunId: RECOVERY_SOURCE_RUN_ID,
+        runId: RECOVERY_RUN_ID,
+        outputRoot,
+        runtime: secondRuntime,
+      }), /simulated image service unavailable/u);
+      assert.deepEqual(secondRuntime.calls, {
+        planning: 0, images: 2, alignmentPages: [2], quality: 0,
+      });
+
+      const result = await retryStandaloneImageRun({
+        sourceRunId: RECOVERY_RUN_ID,
+        runId: RUN_ID,
+        outputRoot,
+        runtime: finalRuntime,
+      });
+
+      assert.equal(result.status, 'COMPLETED');
+      assert.deepEqual(finalRuntime.calls, {
+        planning: 0, images: 1, alignmentPages: [3], quality: 1,
+      });
+      const recoveredHero = await readStandaloneImageFile({
+        outputRoot, runId: RUN_ID, file: result.images[0].file,
+      });
+      assert.deepEqual(recoveredHero.content, originalHero);
+      assert.equal(result.images[0].alignmentPassed, true);
+    } finally {
+      await rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('regenerates only the page whose PNG changed after its acceptance checkpoint', async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-resume-changed-png-'));
+    const resumedRuntime = resumableLiveClient({ imageOffset: 3 });
+    try {
+      await assert.rejects(generateStandaloneImages({
+        source: validSource(),
+        mode: 'LIVE',
+        outputRoot,
+        runId: RECOVERY_SOURCE_RUN_ID,
+        runtime: resumableLiveClient({ failQuality: true }),
+      }), /simulated quality service unavailable/u);
+      const sourceDirectory = join(outputRoot, 'standalone-image-generations', RECOVERY_SOURCE_RUN_ID);
+      const changedFile = `02-${validSource().imagePlan[1].kind}.png`;
+      const originalHero = await readFile(join(sourceDirectory, '01-hero.png'));
+      const changedImage = await sharp({
+        create: { width: 1086, height: 1448, channels: 3, background: '#102030' },
+      }).png().toBuffer();
+      await writeFile(join(sourceDirectory, changedFile), changedImage);
+
+      const result = await retryStandaloneImageRun({
+        sourceRunId: RECOVERY_SOURCE_RUN_ID,
+        runId: RECOVERY_RUN_ID,
+        outputRoot,
+        runtime: resumedRuntime,
+      });
+
+      assert.equal(result.status, 'COMPLETED');
+      assert.deepEqual(resumedRuntime.calls, {
+        planning: 0, images: 1, alignmentPages: [2], quality: 1,
+      });
+      const recoveredHero = await readStandaloneImageFile({
+        outputRoot, runId: RECOVERY_RUN_ID, file: '01-hero.png',
+      });
+      const recoveredSecond = await readStandaloneImageFile({
+        outputRoot, runId: RECOVERY_RUN_ID, file: changedFile,
+      });
+      assert.deepEqual(recoveredHero.content, originalHero);
+      assert.notDeepEqual(recoveredSecond.content, changedImage);
+    } finally {
+      await rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('resumes local image normalization after saving fails without generating the same page again', async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-resume-raw-image-'));
+    const initialRuntime = resumableLiveClient();
+    const resumedRuntime = resumableLiveClient({ imageOffset: 1 });
+    const finalHeroPath = join(
+      outputRoot, 'standalone-image-generations', RECOVERY_SOURCE_RUN_ID, '01-hero.png',
+    );
+    const rawImage = await sharp({
+      create: { width: 512, height: 512, channels: 3, background: '#641e1e' },
+    }).png().toBuffer();
+    let originalImageCalls = 0;
+    initialRuntime.client.runImage = async ({ outputPath }) => {
+      originalImageCalls += 1;
+      await writeFile(outputPath, rawImage);
+      // The provider has succeeded; only the local final-image write will fail.
+      await mkdir(finalHeroPath);
+      return { outputPath, model: 'fake-small-image' };
+    };
+    try {
+      await assert.rejects(generateStandaloneImages({
+        source: validSource(),
+        mode: 'LIVE',
+        outputRoot,
+        runId: RECOVERY_SOURCE_RUN_ID,
+        runtime: initialRuntime,
+      }), (error) => {
+        assert.equal(error.stage, 'GENERATING');
+        return true;
+      });
+      assert.equal(originalImageCalls, 1);
+      assert.deepEqual(initialRuntime.calls.alignmentPages, []);
+      await rm(finalHeroPath, { recursive: true });
+
+      const result = await retryStandaloneImageRun({
+        sourceRunId: RECOVERY_SOURCE_RUN_ID,
+        runId: RECOVERY_RUN_ID,
+        outputRoot,
+        runtime: resumedRuntime,
+      });
+
+      assert.equal(result.status, 'COMPLETED');
+      assert.deepEqual(resumedRuntime.calls, {
+        planning: 0, images: 2, alignmentPages: [1, 2, 3], quality: 1,
+      });
+      const hero = await readStandaloneImageFile({
+        outputRoot, runId: RECOVERY_RUN_ID, file: '01-hero.png',
+      });
+      const { data, info } = await sharp(hero.content).raw().toBuffer({ resolveWithObject: true });
+      assert.equal(info.width, 1086);
+      assert.equal(info.height, 1448);
+      assert.deepEqual([...data.subarray(0, 3)], [100, 30, 30]);
+    } finally {
+      await rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('stops at a stale alignment progress report and preserves the stale-execution error', async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-stale-execution-'));
+    const runtime = resumableLiveClient();
+    const stale = Object.assign(new Error('execution lease was replaced'), { code: 'STALE_EXECUTION' });
+    try {
+      await assert.rejects(generateStandaloneImages({
+        source: validSource(),
+        mode: 'LIVE',
+        outputRoot,
+        runId: RUN_ID,
+        runtime,
+        onProgress(progress) {
+          if (progress.stage === 'ALIGNING') throw stale;
+        },
+      }), { code: 'STALE_EXECUTION' });
+
+      assert.deepEqual(runtime.calls, {
+        planning: 1, images: 1, alignmentPages: [], quality: 0,
+      });
+    } finally {
+      await rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('stops queued sibling pages after the first stale-execution report', async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-stale-parallel-'));
+    const runtime = resumableLiveClient();
+    runtime.imageConcurrency = 2;
+    let leaseReplaced = false;
+    const callsAfterStale = [];
+    for (const method of ['runText', 'runImage', 'runImageEdit', 'runVision']) {
+      const original = runtime.client[method];
+      runtime.client[method] = (input) => {
+        if (leaseReplaced) callsAfterStale.push(method);
+        return original(input);
+      };
+    }
+    try {
+      await assert.rejects(generateStandaloneImages({
+        source: validSource(),
+        mode: 'LIVE',
+        outputRoot,
+        runId: RUN_ID,
+        runtime,
+        onProgress(progress) {
+          if (!leaseReplaced && progress.stage === 'GENERATING' && progress.currentPage === 2) {
+            leaseReplaced = true;
+            throw Object.assign(new Error('execution lease was replaced'), { code: 'STALE_EXECUTION' });
+          }
+        },
+      }), { code: 'STALE_EXECUTION' });
+
+      assert.deepEqual(callsAfterStale, []);
+      assert.deepEqual(runtime.calls, {
+        planning: 1, images: 1, alignmentPages: [1], quality: 0,
+      });
     } finally {
       await rm(outputRoot, { recursive: true, force: true });
     }

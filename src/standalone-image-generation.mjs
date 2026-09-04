@@ -18,7 +18,7 @@ import {
   productionDisclosure,
 } from './production-settings.mjs';
 import { evaluateDelivery } from './qc.mjs';
-import { createDeliveryQualityAssessor } from './quality-assessment.mjs';
+import { createDeliveryQualityAssessor, parseDeliveryQualityAssessmentOutput } from './quality-assessment.mjs';
 import {
   buildVisualPlanPrompt,
   createMockVisualPlan,
@@ -32,9 +32,12 @@ import {
   plannedForStandaloneRecovery,
   recoverableAlignmentReason,
   sourceForStandaloneRecovery,
+  stageRecoveryImages,
+  writeImageCheckpoint,
 } from './standalone-image-recovery.mjs';
 
 export { StandaloneImageRecoveryError } from './standalone-image-recovery.mjs';
+export { runDirectory as standaloneImageRunDirectory };
 
 const RUN_DIRECTORY = 'standalone-image-generations';
 const RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -255,7 +258,11 @@ function createProgressReporter({ outputDir, runId, mode, imageCount, onProgress
   let writeQueue = Promise.resolve();
 
   return function reportProgress(update) {
-    writeQueue = writeQueue.catch(() => {}).then(async () => {
+    writeQueue = writeQueue.catch((error) => {
+      // A replaced execution cannot regain its lease on a later progress
+      // update, including updates already queued by another parallel page.
+      if (error?.code === 'STALE_EXECUTION') throw error;
+    }).then(async () => {
       if (signal?.aborted && update.stage !== 'CANCELLED') throw cancellationError(signal);
       const now = Date.now();
       const elapsedMs = Math.max(0, now - startedAtMs);
@@ -328,7 +335,9 @@ function createProgressReporter({ outputDir, runId, mode, imageCount, onProgress
       };
       await writeJsonAtomic(join(outputDir, PROGRESS_FILE), snapshot);
       if (typeof onProgress === 'function') {
-        await Promise.resolve(onProgress(snapshot)).catch(() => {});
+        await Promise.resolve(onProgress(snapshot)).catch((error) => {
+          if (error?.code === 'STALE_EXECUTION') throw error;
+        });
       }
       return snapshot;
     });
@@ -852,13 +861,30 @@ export async function generateStandaloneImages({
     });
     throwIfCancelled(signal);
     await writeJsonAtomic(join(outputDir, 'source.json'), { query, post });
+    if (recovery?.images) await stageRecoveryImages({ images: recovery.images, outputDir });
+    // Persist all inherited checkpoints before leaving PREPARING. If copying
+    // fails, the executor can select the intact parent without losing work.
+    if (recovery?.planned) await writeJsonAtomic(join(outputDir, 'visual-plan.json'), {
+      model: recovery.planned.model,
+      degraded: recovery.planned.degraded,
+      warning: recovery.planned.warning,
+      value: recovery.planned.visualPlan,
+    });
+    if (recovery?.imagePrompts) await writeJsonAtomic(join(outputDir, 'image-prompts.json'), {
+      prompts: recovery.imagePrompts,
+    });
+    if (recovery?.assessed) await writeJsonAtomic(join(outputDir, 'quality-assessment.json'), {
+      imageHashes: recovery.images.map((image) => image?.sha256 ?? null),
+      assessment: { schemaVersion: 1, ...recovery.assessed.assessment },
+      model: recovery.assessed.model,
+    });
     const productionSettings = normalizeProductionSettings(runtime.productionSettings ?? {});
     const complianceDisclosure = productionDisclosure(productionSettings);
     activeStage = 'PLANNING';
     await reportProgress({
       stage: 'PLANNING',
       progressPercent: 8,
-      message: '正在调用模型创建视觉规划',
+      message: recovery?.planned ? '正在复用已完成的视觉规划' : '正在调用模型创建视觉规划',
     });
     throwIfCancelled(signal);
     const planned = recovery?.planned ?? await liveVisualPlan(client, post, imageCount);
@@ -879,7 +905,7 @@ export async function generateStandaloneImages({
       warning: planned.warning,
     });
     const visualReference = visualReferenceForRuntime(runtime.visualReference);
-    const imagePrompts = post.imagePlan.map((plan, index) => {
+    const imagePrompts = recovery?.imagePrompts ?? post.imagePlan.map((plan, index) => {
       const variables = {
         query: escapedPromptVariable(query),
         category: '',
@@ -906,6 +932,7 @@ export async function generateStandaloneImages({
         }),
       });
     });
+    await writeJsonAtomic(join(outputDir, 'image-prompts.json'), { prompts: imagePrompts });
     const validator = wrapAlignmentValidator(createImageAlignmentValidator({
       openclaw: client,
       post,
@@ -923,7 +950,7 @@ export async function generateStandaloneImages({
       await reportProgress({
         stage: 'GENERATING',
         progressPercent: 24,
-        message: `正在生成第 1/${imageCount} 页图片`,
+        message: recovery ? '正在读取图片检查点并继续未完成的步骤' : `正在生成第 1/${imageCount} 页图片`,
       });
       images = await renderDeliveryImages({
         post,
@@ -939,6 +966,7 @@ export async function generateStandaloneImages({
         textRenderingMode: 'model-native',
         validateImage: validator,
         recoveryImages: recovery?.images ?? [],
+        onImageCheckpoint: writeImageCheckpoint,
         maxGenerationAttempts: 3,
         imageConcurrency: runtime.imageConcurrency,
         heartbeat: async ({ stage, pageIndex, attempt }) => {
@@ -957,7 +985,8 @@ export async function generateStandaloneImages({
               : `正在生成第 ${pageIndex}/${imageCount} 页图片（第 ${attempt} 次）`,
           });
         },
-        onImageCompleted: async ({ pageIndex }) => {
+        onImageCompleted: async ({ pageIndex, image, outputPath }) => {
+          await writeImageCheckpoint({ image, outputPath, completed: true });
           completedPages.add(pageIndex);
           generatedPages.add(pageIndex);
           await reportProgress({
@@ -972,7 +1001,7 @@ export async function generateStandaloneImages({
         },
       });
     } catch (error) {
-      if (error instanceof StandaloneImageAlignmentError) throw error;
+      if (error?.code === 'STALE_EXECUTION' || error instanceof StandaloneImageAlignmentError) throw error;
       throw new StandaloneImageGenerationError(undefined, { cause: error });
     }
     await reportProgress({
@@ -986,14 +1015,20 @@ export async function generateStandaloneImages({
       stage: 'QUALITY_CHECK',
       progressPercent: 85,
       completedImages: imageCount,
-      message: '正在进行整套图片质量检查',
+      message: recovery?.assessed ? '正在复用整套图片质量检查结果' : '正在进行整套图片质量检查',
     });
-    const assessed = await createDeliveryQualityAssessor({
+    const assessed = recovery?.assessed ?? await createDeliveryQualityAssessor({
       openclaw: client,
       task: { query, input: {} },
       post,
       model: productionSettings.modelApi.qualityModel,
     })({ imagePaths: images.map((image) => join(outputDir, image.file)) });
+    const savedImages = await discoverStandaloneRecoveryImages({ outputDir, post });
+    await writeJsonAtomic(join(outputDir, 'quality-assessment.json'), {
+      imageHashes: savedImages.map((image) => image?.sha256 ?? null),
+      assessment: { schemaVersion: 1, ...assessed.assessment },
+      model: assessed.model,
+    });
     await reportProgress({
       stage: 'QUALITY_CHECK',
       progressPercent: 92,
@@ -1034,6 +1069,7 @@ export async function generateStandaloneImages({
     });
     return result;
   } catch (error) {
+    if (error?.code === 'STALE_EXECUTION') throw error;
     if (error instanceof StandaloneImageCancellationError || signal?.aborted) {
       const cancelled = error instanceof StandaloneImageCancellationError
         ? error
@@ -1063,9 +1099,7 @@ export async function generateStandaloneImages({
         code: `${activeStage}_FAILED`,
       });
     const diagnostic = failureDiagnostic(failure, activeStage);
-    const retryReason = failure.retryable === true
-      ? recoverableAlignmentReason(diagnostic)
-      : null;
+    const retryReason = recoverableAlignmentReason(diagnostic) ?? diagnostic.code;
     await reportProgress({
       stage: 'FAILED',
       progressPercent: 99,
@@ -1089,6 +1123,8 @@ export async function retryStandaloneImageRun({
   outputRoot,
   onProgress = undefined,
   signal = /** @type {AbortSignal | undefined} */ (undefined),
+  allowInterrupted = false,
+  expectedSource = undefined,
 }) {
   const sourceRunId = validatedRunId(rawSourceRunId);
   const runId = validatedRunId(rawRunId);
@@ -1096,24 +1132,42 @@ export async function retryStandaloneImageRun({
     throw new StandaloneImageRecoveryError('恢复运行必须使用新的运行 ID');
   }
   const sourceProgress = await readStandaloneImageProgress({ outputRoot, runId: sourceRunId });
-  if (sourceProgress.mode !== 'LIVE' || sourceProgress.canResume !== true) {
+  if (sourceProgress.mode !== 'LIVE'
+    || (!['FAILED', 'CANCELLED'].includes(sourceProgress.status)
+      && !(allowInterrupted && ['RUNNING', 'COMPLETED'].includes(sourceProgress.status)))) {
     throw new StandaloneImageRecoveryError('当前图片运行不支持恢复');
   }
   const sourceOutputDir = runDirectory(outputRoot, sourceRunId);
-  const [storedSource, storedPlan] = await Promise.all([
+  const [storedSource, storedPlan, storedPrompts, storedAssessment] = await Promise.all([
     readOptionalRunArtifact(sourceOutputDir, 'source.json'),
     readOptionalRunArtifact(sourceOutputDir, 'visual-plan.json'),
+    readOptionalRunArtifact(sourceOutputDir, 'image-prompts.json'),
+    readOptionalRunArtifact(sourceOutputDir, 'quality-assessment.json'),
   ]);
   const source = sourceForStandaloneRecovery(storedSource);
   const post = normalizeStandaloneImageSource(source);
-  const planned = plannedForStandaloneRecovery({
+  if (expectedSource && (JSON.stringify(normalizeStandaloneImageSource(expectedSource)) !== JSON.stringify(post)
+    || expectedSource.query !== source.query)) {
+    throw new StandaloneImageRecoveryError('原运行文案与当前任务不一致，不能复用旧图片');
+  }
+  const planned = storedPlan ? plannedForStandaloneRecovery({
     storedPlan,
     post,
     normalizeNotice: normalizedOperationalNotice,
-  });
+  }) : null;
   const images = await discoverStandaloneRecoveryImages({ outputDir: sourceOutputDir, post });
-  if (!images.some(Boolean)) {
-    throw new StandaloneImageRecoveryError('原运行没有可复用的合格尺寸 PNG 图片');
+  const imagePrompts = storedPrompts?.prompts;
+  if (imagePrompts && (!Array.isArray(imagePrompts) || imagePrompts.length !== post.imagePlan.length
+    || imagePrompts.some((prompt) => typeof prompt !== 'string' || prompt.length < 10 || prompt.length > 8_000))) {
+    throw new StandaloneImageRecoveryError('原运行图片提示词检查点无效');
+  }
+  let assessed;
+  if (storedAssessment && planned && images.every((image) => image?.completed)
+    && JSON.stringify(storedAssessment.imageHashes) === JSON.stringify(images.map((image) => image.sha256))) {
+    assessed = {
+      assessment: parseDeliveryQualityAssessmentOutput(JSON.stringify(storedAssessment.assessment)),
+      model: storedAssessment.model,
+    };
   }
   return generateStandaloneImages({
     source,
@@ -1126,6 +1180,8 @@ export async function retryStandaloneImageRun({
     recovery: {
       planned,
       images,
+      imagePrompts,
+      assessed,
     },
   });
 }
@@ -1211,9 +1267,8 @@ export async function readStandaloneImageProgress({ outputRoot, runId: rawRunId 
   const retryReason = typeof value.retryReason === 'string'
     ? value.retryReason
     : inferredRetryReason;
-  const canResume = ['FAILED', 'CANCELLED'].includes(value.status)
-    && generatedImages > 0
-    && (value.canResume === true || inferredRetryReason !== null);
+  const canResume = value.status === 'FAILED'
+    || (value.status === 'CANCELLED' && generatedImages > 0);
   const result = value.status === 'COMPLETED'
     ? await enrichStoredResult(outputDir, normalizedStoredResult(value.result, runId))
     : null;
@@ -1244,7 +1299,7 @@ export async function readStandaloneImageProgress({ outputRoot, runId: rawRunId 
     warnings,
     diagnostic,
     canResume,
-    retryReason: canResume ? retryReason : null,
+    retryReason: canResume ? retryReason ?? diagnostic?.code ?? value.stage : null,
     error: typeof value.error === 'string' ? value.error.slice(0, 500) : null,
     result,
   };
