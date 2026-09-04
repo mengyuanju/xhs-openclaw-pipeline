@@ -113,7 +113,7 @@ export async function main(
       adminStore = createAdminStore(databasePath);
       const productionSettings = adminStore.getProductionSettings().settings;
       const modelApi = effectiveModelApiConfig(productionSettings.modelApi, env);
-      const openclaw = mock ? undefined : createOpenClaw({ modelApi });
+      const openclaw = mock ? undefined : createOpenClaw({ modelApi, environment: env });
       openclaw?.checkReady({
         textModel: modelApi.textModel,
         imageModel: modelApi.imageModel,
@@ -170,7 +170,7 @@ export async function main(
       adminStore = createAdminStore(databasePath);
       const productionSettings = adminStore.getProductionSettings().settings;
       const modelApi = effectiveModelApiConfig(productionSettings.modelApi, env);
-      const openclaw = mock ? undefined : createOpenClaw({ modelApi });
+      const openclaw = mock ? undefined : createOpenClaw({ modelApi, environment: env });
       openclaw?.checkReady({
         textModel: modelApi.textModel,
         imageModel: modelApi.imageModel,

@@ -10,6 +10,7 @@ import {
   effectiveModelApiConfig,
   validatedModelRef,
 } from './model-api-config.mjs';
+import { withWebSearchProvider } from './web-search-service.mjs';
 
 const DEFAULT_PREFLIGHT_TIMEOUT_MS = 120_000;
 const DEFAULT_VISION_TIMEOUT_MS = 300_000;
@@ -323,6 +324,8 @@ export function createOpenClawClient({
   asyncSleep,
   agentId = process.env.XHS_OPENCLAW_AGENT_ID || 'main',
   sessionPrefix = 'xhs',
+  environment = process.env,
+  fetchImpl = fetch,
 } = {}) {
   const resolvedEntry = resolveEntryPath(entryPath);
   const resolvedAsyncRunner = asyncRunner
@@ -330,7 +333,7 @@ export function createOpenClawClient({
   const resolvedAsyncSleep = asyncSleep ?? (async (milliseconds) => sleep(milliseconds));
   const currentModelApi = () => effectiveModelApiConfig(modelApi ?? {}, process.env);
 
-  return {
+  return withWebSearchProvider({
     checkReady({ textModel, imageModel, timeoutMs = DEFAULT_PREFLIGHT_TIMEOUT_MS } = {}) {
       const configuration = currentModelApi();
       const validatedTextModel = validatedModelRef(textModel, configuration.textModel, 'textModel');
@@ -700,5 +703,5 @@ export function createOpenClawClient({
       }
       return { outputPath, model: resolvedModel };
     },
-  };
+  }, { environment, fetchImpl });
 }

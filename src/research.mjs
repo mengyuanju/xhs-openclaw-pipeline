@@ -217,7 +217,7 @@ export function normalizeResearchSnapshot(value) {
 export async function createResearchSnapshot({
   client,
   query,
-  providers = DEFAULT_PROVIDERS,
+  providers = client?.webSearchProviders ?? DEFAULT_PROVIDERS,
   limit = MAX_SOURCES,
   now = () => new Date().toISOString(),
 }) {

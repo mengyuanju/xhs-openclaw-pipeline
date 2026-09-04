@@ -1,6 +1,7 @@
 import { createDotsChatClient } from './dots-chat-client.mjs';
 import { effectiveModelApiConfig } from './model-api-config.mjs';
 import { createOpenClawClient } from './openclaw.mjs';
+import { withWebSearchProvider } from './web-search-service.mjs';
 
 export function createCopyGenerationClient({
   modelApi = {},
@@ -9,7 +10,9 @@ export function createCopyGenerationClient({
   fetchImpl = fetch,
 } = {}) {
   const configuration = effectiveModelApiConfig(modelApi, environment);
-  const resolvedOpenClaw = openclaw ?? createOpenClawClient({ modelApi });
+  const resolvedOpenClaw = openclaw
+    ? withWebSearchProvider(openclaw, { environment, fetchImpl })
+    : createOpenClawClient({ modelApi, environment, fetchImpl });
   const textClient = configuration.copyGenerationProvider === 'DOTS'
     ? createDotsChatClient({
       apiKey: environment.XHS_DOTS_API_KEY,
