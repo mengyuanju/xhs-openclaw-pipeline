@@ -130,10 +130,14 @@ describe('reviewer session authentication', () => {
       new Request('http://192.168.1.8:3000/login?reauth=1', { headers }),
       environment,
     ), { type: 'next' });
-    assert.deepEqual(evaluateAdminProxyRequest(
-      new Request('http://192.168.1.8:3000/tasks', { headers }),
-      environment,
-    ), { type: 'forbidden' });
+    for (const path of ['/tasks', '/settings', '/api/web-search-settings', '/api/production-settings']) {
+      for (const method of ['GET', 'PATCH']) {
+        assert.deepEqual(evaluateAdminProxyRequest(
+          new Request(`http://192.168.1.8:3000${path}`, { headers, method }),
+          environment,
+        ), { type: 'forbidden' }, `${method} ${path} must remain admin-only`);
+      }
+    }
     assert.deepEqual(evaluateAdminProxyRequest(
       new Request('http://192.168.1.8:3000/login', { headers }),
       environment,

@@ -50,7 +50,7 @@ test('application shell groups product areas and keeps page context visible', as
   assert.match(topbar, /aria-current="page"/);
   assert.doesNotMatch(topbar, /本地工作区|导入选题|topbar-actions/);
   assert.match(navigation, /roleGroups\.filter\(\(group\) => !group.hidden/u);
-  for (const group of ['内容生产', '质检作业', '运营与系统']) {
+  for (const group of ['内容生产', '质检作业']) {
     assert.match(navigation, new RegExp(`label: '${group}',\\s+hidden: true`));
   }
   assert.match(styles, /\.app-workspace\s*\{/);

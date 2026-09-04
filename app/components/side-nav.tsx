@@ -27,7 +27,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { WORKBENCH_VIEWS } from '../workbench/views';
 
-type NavigationItem = { href: string; label: string; icon: LucideIcon; children?: NavigationItem[] };
+type NavigationItem = { href: string; label: string; icon: LucideIcon; children?: NavigationItem[]; hidden?: boolean };
 type NavigationGroup = { label: string; items: NavigationItem[]; hidden?: boolean };
 
 // Temporary presentation flags only: keep routes and their access rules unchanged.
@@ -55,10 +55,9 @@ const navigationGroups: NavigationGroup[] = [
   },
   {
     label: '运营与系统',
-    hidden: true,
     items: [
-      { href: '/analytics', label: '数据统计', icon: BarChart3 },
-      { href: '/openclaw-traces', label: '模型链路', icon: Waypoints },
+      { href: '/analytics', label: '数据统计', icon: BarChart3, hidden: true },
+      { href: '/openclaw-traces', label: '模型链路', icon: Waypoints, hidden: true },
       { href: '/settings', label: '生产配置', icon: Settings2 },
     ],
   },
@@ -84,7 +83,9 @@ export function SideNav({ session }: { session: { subject: string; username?: st
   const roleGroups = isAdmin
     ? [...navigationGroups.slice(0, 2), ...reviewNavigation, ...navigationGroups.slice(2)]
     : reviewNavigation.map((group) => ({ ...group, items: group.items.filter((item) => item.href === '/reviews') }));
-  const visibleGroups = roleGroups.filter((group) => !group.hidden && group.items.length > 0);
+  const visibleGroups = roleGroups.filter((group) => !group.hidden)
+    .map((group) => ({ ...group, items: group.items.filter((item) => !item.hidden) }))
+    .filter((group) => group.items.length > 0);
 
   useEffect(() => setIsMenuOpen(false), [pathname]);
   useEffect(() => {
