@@ -23,6 +23,23 @@ async function withServer(repository, action, { storageRoot = 'test-storage' } =
   }
 }
 
+test('batch claim routes forward request identity and return independent claims', async () => {
+  for (const kind of ['copy', 'image']) {
+    const input = { nodeId: 'node-a', limit: 3, requestId: 'request' };
+    const method = kind === 'copy' ? 'claimCopyBatch' : 'claimImageBatch';
+    await withServer({ [method]: async (body) => {
+      assert.deepEqual(body, input);
+      return { requestId: body.requestId, claims: [] };
+    } }, async (root) => {
+      const response = await fetch(`${root}/v1/executions/claim-${kind}-batch`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual((await response.json()).data, { requestId: 'request', claims: [] });
+    });
+  }
+});
+
 test('failure HTTP route forwards optional retry control without changing legacy calls', async () => {
   const calls = [];
   await withServer({ failExecution: async (...args) => { calls.push(args); return { state: 'IMAGE_FAILED' }; } }, async (root) => {

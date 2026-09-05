@@ -365,7 +365,7 @@ describe('knowledge retirement', () => {
         if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
         if (sql.startsWith('SELECT * FROM executor_nodes')) return { rows: [{ id: 'node-a' }] };
         if (sql.startsWith('UPDATE executor_nodes')) return { rows: [] };
-        if (sql.startsWith('SELECT 1 FROM task_executions')) return { rows: [] };
+        if (sql.startsWith('SELECT COUNT(*) AS count FROM task_executions')) return { rows: [{ count: 0 }] };
         if (sql.startsWith('SELECT * FROM tasks')) return { rows: [task] };
         if (sql.includes('FROM global_settings') || sql.includes('FROM prompt_templates')) return { rows: [] };
         if (sql.includes('FROM knowledge_items i')) {

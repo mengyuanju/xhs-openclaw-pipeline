@@ -148,27 +148,22 @@ test('task detail shows the image collection directly after copy and before plan
 });
 
 test('executor CLI gates registration and polling behind readiness', async () => {
-  const [cli, simulationCli] = await Promise.all([
+  const [cli, simulationCli, runtime] = await Promise.all([
     readFile(projectFile('src/executor/cli.mjs'), 'utf8'),
     readFile(projectFile('src/executor/deepseek-simulator-cli.mjs'), 'utf8'),
+    readFile(projectFile('src/executor/runtime.mjs'), 'utf8'),
   ]);
-  const prepareAt = cli.indexOf('await agent.prepare()');
-  const registerAt = cli.indexOf('await agent.register()');
-  const copyClaimAt = cli.indexOf('agent.runCopyOnce()');
-  const imageClaimAt = cli.indexOf('agent.runImageOnce()');
-
+  const prepareAt = runtime.indexOf('await agent.prepare()');
+  const registerAt = runtime.indexOf('await agent.register()');
   assert.ok(prepareAt >= 0 && prepareAt < registerAt);
-  assert.ok(registerAt < copyClaimAt);
-  assert.ok(registerAt < imageClaimAt);
-  assert.match(cli, /agent\.heartbeat\(\)/u);
-  assert.match(cli, /await Promise\.all\(lanes\)/u);
-  assert.match(cli, /polling failed; retrying/u);
+  assert.ok(registerAt < runtime.indexOf('await scheduler.start()'));
+  assert.match(runtime, /agent\.heartbeat\(\)/u);
+  assert.match(cli, /await runExecutor\(/u);
+  assert.match(cli, /concurrencyEnabled: true/u);
   assert.match(simulationCli, /executeCopy: executeDeepSeekCopySimulation/u);
   assert.match(simulationCli, /executeImage: executeDeepSeekImageSimulation/u);
-  assert.match(simulationCli, /environment\.IMAGE_WORKER_ENABLED/u);
-  assert.match(simulationCli, /runLane\('COPY', \(\) => agent\.runCopyOnce\(\)\)/u);
-  assert.match(simulationCli, /runLane\('IMAGE', \(\) => agent\.runImageOnce\(\)\)/u);
-  assert.match(simulationCli, /await Promise\.all\(lanes\)/u);
-  assert.match(simulationCli, /polling failed; retrying/u);
+  assert.match(simulationCli, /executorConfig\(.*simulation: true/u);
+  assert.match(simulationCli, /await runExecutor\(/u);
+  assert.match(simulationCli, /concurrencyEnabled: true/u);
   assert.doesNotMatch(simulationCli, /option\('max'\)|processed <|config\.max/u);
 });

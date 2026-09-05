@@ -1,10 +1,33 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { randomUUID } from 'node:crypto';
 
 import {
   ControlPlaneApiError,
   createControlPlaneClient,
 } from '../src/control-plane/client.mjs';
+
+test('batch claims preserve request identity and reject malformed or duplicate executions', async () => {
+  const requestId = randomUUID();
+  const executionId = randomUUID();
+  const claim = { task: { id: 1, currentExecutionId: executionId, state: 'COPY_RUNNING' },
+    execution: { id: executionId, taskId: 1, nodeId: 'a', kind: 'COPY', status: 'RUNNING', snapshot: {} } };
+  let payload = { requestId, claims: [claim] };
+  const client = createControlPlaneClient({ baseUrl: 'http://localhost', fetchImpl: async (url, options) => {
+    assert.ok(url.endsWith('/claim-copy-batch'));
+    assert.deepEqual(JSON.parse(options.body), { nodeId: 'a', requestId, limit: 2 });
+    return Response.json({ data: payload });
+  } });
+  assert.deepEqual(await client.claimCopyBatch({ nodeId: 'a', requestId, limit: 2 }), payload);
+  for (const invalid of [null, { requestId, claims: null }, { requestId: randomUUID(), claims: [] },
+    { requestId, claims: [null] }, { requestId, claims: [claim, claim] },
+    { requestId, claims: [{ ...claim, execution: { ...claim.execution, snapshot: null } }] },
+    { requestId, claims: [{ ...claim, task: { ...claim.task, currentExecutionId: randomUUID() } }] },
+    { requestId, claims: [{ ...claim, execution: { ...claim.execution, nodeId: 'b' } }] }]) {
+    payload = invalid;
+    await assert.rejects(client.claimCopyBatch({ nodeId: 'a', requestId, limit: 2 }), { code: 'INVALID_CONTROL_PLANE_RESPONSE' });
+  }
+});
 
 test('failure reporting preserves explicit no-auto-retry policy on the wire', async () => {
   let body;

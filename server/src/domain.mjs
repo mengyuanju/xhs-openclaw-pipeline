@@ -54,6 +54,13 @@ export function normalizeNodeName(value, fallback) {
   return name;
 }
 
+export function normalizeConcurrency(value, name = 'concurrency') {
+  if (!Number.isInteger(value) || value < 1 || value > 32) {
+    throw new RangeError(`${name} must be an integer from 1 to 32`);
+  }
+  return value;
+}
+
 export function normalizeCreatorUserId(value) {
   if (typeof value !== 'string' || !/^[a-zA-Z0-9._:-]{1,100}$/u.test(value)) {
     throw new TypeError('createdByUserId must be a valid account identifier');

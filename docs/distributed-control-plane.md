@@ -13,7 +13,7 @@ COPY_QUEUED -> COPY_RUNNING -> COPY_REVIEW_PENDING
       |              |
       |              +-> COPY_FAILED -> COPY_QUEUED（人工重试）
       |
-      + 本机创建、本机串行执行
+      + 指定文案执行机按自身容量并发执行
 
 COPY_REVIEW_PENDING --审核指定 copyRevisionId--> IMAGE_QUEUED
 IMAGE_QUEUED --任意已启用图片能力的空闲节点原子领取--> IMAGE_RUNNING
@@ -80,7 +80,15 @@ Query 仅保存在 PostgreSQL 和可选的元数据文件中。重试产生新�
 
 执行代理默认不领取图片任务。只有显式配置 `IMAGE_WORKER_ENABLED=true` 或传入 `--enable-image-worker` 时才启动图片轮询，并在节点注册信息中声明能力。关闭时不创建图片轮询定时器，也不会调用图片领取 API。
 
-每台机器有两个互不阻塞的执行通道。文案通道串行处理分配给本机的文案队列；图片通道在启用图片能力后独立轮询，只要该节点当前没有 `IMAGE_RUNNING`，就可以领取一条全局图片任务，不需要等待文案队列清空。同一节点最多同时执行一条文案任务和一条图片任务。
+每台机器有两个独立的有界任务池。`EXECUTOR_COPY_CONCURRENCY` 和 `EXECUTOR_IMAGE_CONCURRENCY` 分别控制文案、图片任务并发，均默认 1、允许 1–32。每次按空闲槽位批量领取，任务结束即补位；只返回部分任务时，剩余槽位按 `EXECUTOR_POLL_MS` 继续轮询。图片池仍只在显式启用图片能力时运行。
+
+节点注册与心跳上报两类容量；中心在短事务内锁定节点行，按容量减去该节点同类 `RUNNING` 执行数，再用 `FOR UPDATE SKIP LOCKED` 领取任务。原单条接口保留返回结构并复用同一容量检查。新接口为 `POST /v1/executions/claim-copy-batch` 和 `claim-image-batch`，请求 `{ nodeId, limit, requestId }`、响应 `{ requestId, claims }`；`requestId` 是 UUIDv7。
+
+领取响应丢失时，执行机保留槽位并以原请求 ID 重试。回执与任务在同一事务提交，重试只返回原执行及其最新状态，终态执行不再调用模型。回执有效期为请求时间起 24 小时；每次新领取最多清理 100 条已过期且没有 `RUNNING` 执行的回执。尚有任务运行的回执持续保留，即使过期也能对账；已清理的过期 ID 返回 `CLAIM_REQUEST_EXPIRED`，不会成为一次新领取。执行机与中心需同步系统时间。
+
+失败回报按执行 ID 单独重试，未确认前继续占槽，其余任务可继续执行。SIGINT/SIGTERM 停止新领取、等待已发出的领取请求及全部在途任务/回报收尾，期间继续心跳；`--once` 每种启用类型最多尝试一条，不受并发配置放大。图片完成只清理当前执行目录，其他执行和历史恢复检查点保留。遗留检查点在确认无需恢复后由管理员清理。
+
+中心须先应用 `0007_executor_concurrency`、`0008_claim_receipt_retention` 并更新 API，再更新执行机；新 CLI 检查 `/health` 的 `capabilities.executorConcurrency`，不支持时明确拒绝启动。详细配置及本机测试见 [执行机并发配置](executor-concurrency.md)。
 
 执行代理必须先完成中心服务健康检查和工作目录读写检查，之后才能注册节点并开始领取。运行期间每 15 秒刷新节点活动时间；中心将 90 秒内有活动的节点提供给创建界面选择。节点掉线不会迁移已分配任务，重启后也必须重新通过完整就绪检查，才会继续领取原队列。OpenClaw 和模型连接当前不作为节点上线门禁，在实际执行任务时检查。
 

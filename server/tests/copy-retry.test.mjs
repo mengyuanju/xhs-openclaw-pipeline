@@ -128,7 +128,7 @@ test('copy claims only select the queue bound to the requesting node', async () 
   await repository.claimCopy('copy-old');
   await repository.claimCopy('copy-new');
   assert.deepEqual(selections.map(({ values }) => values), [
-    ['COPY_QUEUED', 'copy-old'], ['COPY_QUEUED', 'copy-new'],
+    ['COPY_QUEUED', 'copy-old', 1], ['COPY_QUEUED', 'copy-new', 1],
   ]);
   for (const { sql } of selections) assert.match(sql, /copy_executor_node_id = \$2/u);
 });

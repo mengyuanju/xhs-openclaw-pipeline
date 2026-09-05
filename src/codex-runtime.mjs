@@ -16,15 +16,37 @@ function alive(pid) {
   catch (error) { return error.code !== 'ESRCH'; }
 }
 
-export function createCodexRuntime({ databasePath = codexRuntimePath(), pollMs = 100, maxConcurrent = 2 } = {}) {
-  if (![1, 2].includes(maxConcurrent)) throw new RangeError('Codex concurrency must be 1 or 2');
+function validateCapacity(value, name) {
+  if (!Number.isInteger(value) || value < 1 || value > 32) throw new RangeError(`${name} must be an integer from 1 to 32`);
+  return value;
+}
+
+export function codexConcurrencyConfig(environment = process.env) {
+  const read = (name, fallback) => {
+    const value = environment[name];
+    if (value === undefined) return fallback;
+    if (!/^[0-9]+$/u.test(String(value))) throw new RangeError(`${name} must be an integer from 1 to 32`);
+    return validateCapacity(Number(value), name);
+  };
+  const maxConcurrent = read('XHS_CODEX_CONCURRENCY', 2);
+  const maxConcurrentImages = read('XHS_CODEX_IMAGE_CONCURRENCY', 1);
+  if (maxConcurrentImages > maxConcurrent) throw new RangeError('Codex image concurrency cannot exceed total concurrency');
+  return { maxConcurrent, maxConcurrentImages };
+}
+
+export function createCodexRuntime({ databasePath = codexRuntimePath(), pollMs = 100,
+  maxConcurrent = 2, maxConcurrentImages = 1 } = {}) {
+  validateCapacity(maxConcurrent, 'Codex total concurrency');
+  validateCapacity(maxConcurrentImages, 'Codex image concurrency');
+  if (maxConcurrentImages > maxConcurrent) throw new RangeError('Codex image concurrency cannot exceed total concurrency');
   function transaction(action) {
     mkdirSync(dirname(databasePath), { recursive: true });
     const db = new DatabaseSync(databasePath);
     try {
       db.exec(`PRAGMA busy_timeout = 1000;
         CREATE TABLE IF NOT EXISTS permits (id TEXT PRIMARY KEY, owner_pid INTEGER NOT NULL, child_pid INTEGER, image INTEGER NOT NULL);
-        CREATE TABLE IF NOT EXISTS pause (id INTEGER PRIMARY KEY CHECK (id = 1), code TEXT NOT NULL, retry_at INTEGER NOT NULL);`);
+        CREATE TABLE IF NOT EXISTS pause (id INTEGER PRIMARY KEY CHECK (id = 1), code TEXT NOT NULL, retry_at INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS concurrency_config (id INTEGER PRIMARY KEY CHECK (id = 1), total INTEGER NOT NULL, images INTEGER NOT NULL);`);
       db.exec('BEGIN IMMEDIATE');
       const result = action(db);
       db.exec('COMMIT');
@@ -62,7 +84,17 @@ export function createCodexRuntime({ databasePath = codexRuntimePath(), pollMs =
         const acquired = transaction((db) => {
           const state = snapshot(db);
           assertStatus(state);
-          if (state.active >= maxConcurrent || (image && state.images >= 1)) return false;
+          const policy = db.prepare('SELECT total, images FROM concurrency_config WHERE id = 1').get();
+          // Existing permits without a policy were issued by the legacy 2/1 runtime.
+          const current = policy ?? { total: 2, images: 1 };
+          if (state.active > 0 && (current.total !== maxConcurrent || current.images !== maxConcurrentImages)) {
+            throw codexFailure({ message: 'Shared runtime concurrency differs; stop active callers and restart them with consistent environment settings.' }, 'CODEX_CONCURRENCY_MISMATCH');
+          }
+          if (!policy || current.total !== maxConcurrent || current.images !== maxConcurrentImages) {
+            db.prepare('INSERT INTO concurrency_config(id, total, images) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET total = excluded.total, images = excluded.images')
+              .run(maxConcurrent, maxConcurrentImages);
+          }
+          if (state.active >= maxConcurrent || (image && state.images >= maxConcurrentImages)) return false;
           db.prepare('INSERT INTO permits (id, owner_pid, image) VALUES (?, ?, ?)').run(id, process.pid, Number(image));
           return true;
         });

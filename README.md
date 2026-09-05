@@ -168,7 +168,9 @@ npm run db:upgrade -- --apply
 
 ### 每台执行机安装
 
-执行机需要 Node.js、项目依赖、OpenClaw 及本机模型授权。Windows 可使用 [OpenClaw 官方安装器](https://docs.openclaw.ai/install)：
+完整的新电脑安装、配置、验收和故障处理步骤见 [Windows 执行机部署指南](docs/windows-executor-deployment.md)。当前版本默认使用 Codex CLI 的 ChatGPT 登录，支持显式回切 OpenClaw；任务池和模型调用许可见 [执行机并发配置](docs/executor-concurrency.md)。
+
+执行机需要 Node.js、项目依赖，以及当前生成引擎的本机授权；默认 Codex 的安装与 ChatGPT 登录见上方部署指南。以下是选择 OpenClaw 回退时的安装方式，Windows 可使用 [OpenClaw 官方安装器](https://docs.openclaw.ai/install)：
 
 ```powershell
 iwr -useb https://openclaw.ai/install.ps1 | iex
@@ -196,6 +198,8 @@ CONTROL_PLANE_URL=http://中心服务器内网IP:4310
 EXECUTOR_NODE_ID=每台机器唯一且长期不变的ID
 EXECUTOR_NODE_NAME=便于识别的机器名称
 IMAGE_WORKER_ENABLED=true
+EXECUTOR_COPY_CONCURRENCY=1
+EXECUTOR_IMAGE_CONCURRENCY=1
 EXECUTOR_POLL_MS=5000
 EXECUTOR_WORK_ROOT=data/executor-work
 ```
@@ -214,9 +218,9 @@ npm run executor -- --disable-image-worker
 npm run executor -- --enable-image-worker
 ```
 
-也可在根目录 `.env` 固定 `IMAGE_WORKER_ENABLED=true|false`。命令行开关优先级更高。文案和图片使用两个互不阻塞的执行通道：文案通道串行处理分配给本机的任务；图片通道开启后，只要本机当前没有正在执行的图片任务，就会独立领取一条全局图片任务，不需要等待文案队列清空。停止执行代理不会影响远端已保存数据；若某次执行长时间没有更新，在“远端作业中心”中人工选择复用原快照或使用最新配置重新执行。
+也可在根目录 `.env` 固定 `IMAGE_WORKER_ENABLED=true|false`。命令行开关优先级更高。文案和图片使用两个独立的有界任务池，两类 `EXECUTOR_*_CONCURRENCY` 默认均为 1、允许 1–32；有空闲容量就按缺口批量领取，完成一条即补位。中心保存节点容量，并在事务内防止重复领取和超领。新执行机要求中心先升级 `0007`、`0008` 迁移及批量领取 API；旧中心会被启动检查明确拦截。停止执行代理会等待在途任务及回报收尾；进程崩溃遗留的执行仍在“远端作业中心”中人工处理。
 
-执行代理启动时会先检查中心服务连接和本机工作目录；全部通过后才向中心注册上线并开始轮询。运行期间每 15 秒刷新在线状态，中心将 90 秒内有活动的节点视为在线。节点中途关闭时，已分配的待执行文案保留在原队列；该节点重启并重新通过就绪检查后才会继续领取。OpenClaw 和模型连接在实际执行任务时检查，当前不作为节点上线门禁。
+执行代理启动时会先检查中心能力和本机工作目录，Codex 还检查当前 ChatGPT 登录与共享暂停状态；通过后才注册上线并开始轮询。运行期间每 15 秒刷新在线状态，中心将 90 秒内有活动的节点视为在线。节点中途关闭时，已分配的待执行文案保留在原队列；该节点重启并重新通过就绪检查后才会继续领取。
 
 分布式模式下：
 

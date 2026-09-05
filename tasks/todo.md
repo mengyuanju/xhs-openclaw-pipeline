@@ -683,3 +683,93 @@
 - [x] P4：记录模型排队时间，不在无证据时提高限流上限。
 - [x] P5：本地分阶段历史预估、冷启动与旧进度兼容；真实无心跳超时轮询、历史存取和恢复样本隔离均有 fake 回归。
 - [x] 最终：全量 758/758、类型检查、生产构建、隔离网页历史/冷启动/超时显示及独立差异审查通过；浏览器无错误或警告，不执行真实模型成本测试。
+
+## 2026-09-05: 执行机文案与生图并发队列（已实现并完成真实模型复测）
+
+已完成 C1–C7、C9 及本机 PostgreSQL 并发验收。当前使用 Codex，C8 不适用，OpenClaw 原逻辑保留。用户随后明确要求真实模型效率测试；本机复制中心已发布配置并使用真实模型，中心服务未部署。
+
+- [x] C1：统一执行机并发配置。
+  - Acceptance：文案/图片上限独立，缺省 1；建议 1–32 严格整数校验；图片开关关闭后有效容量为 0。
+  - Files：新增 src/executor/config.mjs、tests/executor-config.test.mjs。
+  - Verify：fake env 覆盖缺省、有效值、空值、越界、小数及图片开关。
+  - Dependencies：无。Scope：S。
+
+- [x] C2：中心保存容量及幂等领取回执。
+  - Acceptance：增量迁移添加容量、RUNNING 条件索引及回执；旧节点为 1；省略字段不覆盖已配置容量。
+  - Files：新增 server/migrations/<下一编号>_executor_concurrency.sql；server/src/domain.mjs、server/src/postgres-repository.mjs、server/tests/database-tools.test.mjs、server/tests/control-plane-domain.test.mjs。
+  - Verify：配置校验、隔离数据库新建/升级/重复执行迁移；既有任务和基线校验和保持正确。
+  - Dependencies：C1 的字段契约。Scope：M。
+
+- [x] C3：中心有界批量原子领取。
+  - Acceptance：按节点容量减 RUNNING 数截断；节点锁加 SKIP LOCKED 防重领/超领；同 requestId 重试复用回执且单条接口兼容。
+  - Files：server/src/postgres-repository.mjs、server/src/http-server.mjs、server/tests/postgres-repository.test.mjs、server/tests/control-plane-http.test.mjs、新增 server/tests/executor-concurrency.test.mjs。
+  - Verify：空队列/部分返回/满载/同节点同时请求/多节点争抢/回滚/重复请求；隔离 PostgreSQL 验证真实事务竞争。
+  - Dependencies：C2。Scope：M。
+
+### 检查点：中心契约
+
+- [x] 中心测试通过，默认 1 与旧接口兼容；迁移及事务竞争验证有实际证据。
+
+- [x] C4：客户端批量领取与能力检查。
+  - Acceptance：新接口保留 requestId 和列表；旧调用可用；新调度器连接不支持的中心时明确停止，不静默退化。
+  - Files：src/control-plane/client.mjs、src/executor/agent.mjs、tests/control-plane-client.test.mjs、tests/executor-agent.test.mjs。
+  - Verify：fake fetch 覆盖完整响应、畸形响应、超时、容量字段、能力缺失及旧接口。
+  - Dependencies：C3。Scope：M。
+
+- [x] C5：按 executionId 隔离执行和失败回报。
+  - Acceptance：领取与执行可分开调用；并发失败不覆盖；回报失败只重发回报且继续占槽，不重跑模型或重复计失败次数。
+  - Files：src/executor/agent.mjs、tests/executor-agent.test.mjs、tests/executor-image-resume.test.mjs、tests/model-call-trace.test.mjs。
+  - Verify：两个同类任务交错失败、回报断网/恢复、STALE_EXECUTION、图片检查点与日志串任务检查。
+  - Dependencies：C4。Scope：M。
+
+- [x] C6：实现两个独立的有界执行池。
+  - Acceptance：槽位先预留，始终不超限；完成即补位且空闲持续轮询；一条失败不终止其他任务，领取不确定时同 ID 重试并去重。
+  - Files：新增 src/executor/scheduler.mjs、tests/executor-scheduler.test.mjs。
+  - Verify：deferred promise 与可控时钟证明 3/2 峰值、部分队列、慢任务不阻塞补位、触发重入、失败回报占槽、响应丢失及暂停恢复。
+  - Dependencies：C5。Scope：S。
+
+### 检查点：执行池
+
+- [x] fake 端到端证明每类任务达到配置并发且峰值不超限；与中心容量和幂等语义一致。
+
+- [x] C7：正式/模拟 CLI 复用配置与调度器。
+  - Acceptance：两个入口行为一致且保留模拟标记；启动日志显示两类容量；停机停止补领并收尾，--once 各类型最多一条。
+  - Files：src/executor/cli.mjs、src/executor/deepseek-simulator-cli.mjs、新增 tests/executor-cli.test.mjs、tests/distributed-architecture-source.test.mjs、tests/creation-workbench-ui.test.mjs。
+  - Verify：fake 启动/心跳/停机/--once/图片禁用；更新现有依赖源码形态的断言，行为测试证明运行正确。
+  - Dependencies：C1、C6。Scope：M。
+
+- [ ] C8（不适用，未实施）：OpenClaw 文本许可配套（使用 OpenClaw 且要求模型调用并发时）。
+  - Acceptance：共享文本信号量可配置，默认 1；不同任务/客户端合计不超限；独立 session 和异常释放正确。
+  - Files：src/openclaw.mjs、新增 src/model-call-semaphore.mjs、tests/openclaw.test.mjs、新增 tests/model-call-semaphore.test.mjs。
+  - Verify：fake runner 测量串行默认和配置 N 的实际调用峰值、失败释放、交错会话及队列耗时。
+  - Dependencies：C7。Scope：M。
+
+- [x] C9：Codex 模型许可配套（使用 Codex 且要求模型调用并发时）。
+  - Acceptance：总许可和图片许可分别可配置且跨进程共享；默认 2/1；保留额度暂停、等待超时、进程存活保护，配置关系有效。
+  - Files：src/codex-runtime.mjs、src/codex.mjs、tests/codex-runtime.test.mjs、tests/codex-client.test.mjs、tests/fixtures/codex-limit-child.mjs。
+  - Verify：fake 多进程证明总/图片峰值、默认值、非法关系、暂停传播、排队取消和子进程尚未退出不释放。
+  - Dependencies：C7。Scope：M。
+
+- [x] C10：环境示例、说明与回归。
+  - Acceptance：解释任务并发/单任务图片并发/模型许可三者；记录升级顺序、重启生效、崩溃遗留任务处理及部署前检查。
+  - Files：.env.example、README.md、docs/distributed-control-plane.md、docs/codex-exec-migration.md、docs/windows-executor-deployment.md（与现有未提交内容协调）。
+  - Verify：npm test、npm --prefix server test、npm run typecheck；需要 C8/C9 时包含对应 fake 实际调用峰值验收。
+  - Dependencies：C7，以及所用提供方需要的 C8/C9。Scope：M。
+
+### 检查点：最终验收
+
+- [x] 本地与中心定向/全量检查通过，fake 模型无真实额度消耗。
+- [x] 真实事务竞争测试、响应丢失和并发失败测试有证据；无法执行的检查明确标记未验证。
+- [x] 配置目标容量时能区分任务池活跃数与实际模型调用数；未自动部署或启动生产执行。
+
+- [x] C11：按用户追加要求进行真实模型计时与故障修复。
+  - 已完成首轮真实 3 条文案、2 条图片任务，发现新建图误用改图指令及 exec 缺失原生图片事件；app-server 单图复测成功（约 76 秒）。
+  - 保留失败原始输出，修正已恢复重连被误判失败的解析，补齐 DeepSeek 搜索追踪。真实图片复测 2/2 任务、6/6 图片通过，分别 571/663 秒；原失败文案最终 178 秒成功。DeepSeek 搜索 Schema 与完整代码块接收均有真实证据，数据保存在 .codex_artifacts/executor-benchmark。
+
+### 最终交付记录
+
+- 自动化：根目录 794/794、中心 99/99，本机独立 PostgreSQL 事务竞争和 HTTP 执行池验证通过；类型检查、生产构建通过。
+- 真实模型：任务峰值 COPY=3、IMAGE=2，原生图片调用峰值 2；6 张 1086×1448 PNG 全部通过原有校验并回传，包含 3 次局部改图。知识匹配 69–131 秒，模型生成和图片修复为主要耗时。
+- 修复：新图/编辑指令分离，原生 app-server 图片事件，已恢复重连的解析，失败脱敏证据，DeepSeek 搜索结构化约束与完整代码块兼容，图片风格及合规标识优先级。
+- 边界：中心未部署，本机 .env 未修改；任务默认 1/1、模型默认 2/1。提示词澄清尚无修复率下降的整套图片对照；未声称长期吞吐保证或精确加速倍数。
+- 本轮所有临时 PostgreSQL 已关闭并删除，模型活跃许可为 0。详细证据和复现命令见 docs/executor-concurrency-live-results.md。

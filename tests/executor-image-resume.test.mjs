@@ -174,7 +174,8 @@ test('executor resumes a failed second upload without repeating model work or th
     assert.equal(completions[0].result.runId, SECOND_RUN_ID);
     assert.equal(completions[0].result.images[0].assetId, 101);
     assert.equal(completions[0].result.images[0].url, '/v1/assets/101');
-    await assert.rejects(access(join(workRoot, String(TASK_ID))), { code: 'ENOENT' });
+    await assert.rejects(access(join(workRoot, String(TASK_ID), 'standalone-image-generations', SECOND_RUN_ID)), { code: 'ENOENT' });
+    await access(join(workRoot, String(TASK_ID), 'standalone-image-generations', FIRST_RUN_ID));
   } finally {
     await rm(workRoot, { recursive: true, force: true });
   }
@@ -226,7 +227,7 @@ test('executor retries completion reports across three runs without regenerating
       assert.equal(result.runId, executionId);
       assert.deepEqual(result.images.map((image) => image.assetId), [201, 202, 203]);
     }
-    await assert.rejects(access(join(workRoot, String(TASK_ID))), { code: 'ENOENT' });
+    await assert.rejects(access(join(workRoot, String(TASK_ID), 'standalone-image-generations', THIRD_RUN_ID)), { code: 'ENOENT' });
   } finally {
     await rm(workRoot, { recursive: true, force: true });
   }
@@ -248,6 +249,28 @@ test('executor reports a missing recovery checkpoint without starting a new gene
   } finally {
     await rm(workRoot, { recursive: true, force: true });
   }
+});
+
+test('a delayed completion only cleans its own directory and preserves the next execution', async t => {
+  const workRoot = await mkdtemp(join(tmpdir(), 'executor-concurrent-cleanup-'));
+  t.after(() => rm(workRoot, { recursive: true, force: true }));
+  const taskRoot = join(workRoot, String(TASK_ID), 'standalone-image-generations');
+  const nextDirectory = join(taskRoot, SECOND_RUN_ID);
+  await executeImageClaim({
+    claim: imageClaim(FIRST_RUN_ID), workRoot, imageClient: generatingImageClient(),
+    controlPlane: {
+      async updateProgress() {},
+      async uploadAsset() { return { id: 1, url: '/v1/assets/1' }; },
+      async completeImage() {
+        // The center has accepted this completion and another run starts before its response arrives.
+        await mkdir(nextDirectory, { recursive: true });
+        await writeFile(join(nextDirectory, 'progress.json'), '{"status":"RUNNING"}');
+        return { accepted: true };
+      },
+    },
+  });
+  assert.equal(await readFile(join(nextDirectory, 'progress.json'), 'utf8'), '{"status":"RUNNING"}');
+  await assert.rejects(access(join(taskRoot, FIRST_RUN_ID)), { code: 'ENOENT' });
 });
 
 test('executor abandons a stale lease during alignment without further model calls', async () => {
@@ -353,7 +376,8 @@ test('executor uses the ancestor checkpoint when a newer run stopped during prep
     assert.equal(completions.length, 2);
     assert.equal(completions[1].result.runId, THIRD_RUN_ID);
     assert.deepEqual(completions[1].result.images.map((image) => image.assetId), [301, 302, 303]);
-    await assert.rejects(access(taskRoot), { code: 'ENOENT' });
+    await assert.rejects(access(join(taskRoot, 'standalone-image-generations', THIRD_RUN_ID)), { code: 'ENOENT' });
+    await access(interruptedDirectory);
   } finally {
     await rm(workRoot, { recursive: true, force: true });
   }

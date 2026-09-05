@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { migrateDatabase } from './database-migrations.mjs';
+import { claimRequestExpiry } from './claim-request.mjs';
 import { saveModelCall, listModelCalls, getModelCall } from './model-call-traces.mjs';
 import { hashUserPassword, verifyUserPassword } from './user-auth.mjs';
 
@@ -9,6 +10,7 @@ import {
   ControlPlaneConflictError,
   ControlPlaneNotFoundError,
   TASK_STATES,
+  normalizeConcurrency,
   normalizeCopyReviewEdits,
   normalizeCreatorUserId,
   normalizeCreateTask,
@@ -136,6 +138,8 @@ function nodeFrom(row) {
     id: row.id,
     name: row.name,
     imageWorkerEnabled: row.image_worker_enabled,
+    copyConcurrency: row.copy_concurrency ?? 1,
+    imageConcurrency: row.image_concurrency ?? 1,
     online: Boolean(row.online),
     copyQueuedCount: Number(row.copy_queued_count ?? 0),
     copyRunningCount: Number(row.copy_running_count ?? 0),
@@ -211,38 +215,30 @@ async function transaction(pool, action) {
   }
 }
 
-async function configurationSnapshot(client, task, kind) {
-  const [settings, prompts, knowledge, revision] = await Promise.all([
-    client.query(`SELECT key, value, version FROM global_settings ORDER BY key`),
-    client.query(`
+async function configurationSnapshots(client, tasks, kind) {
+  if (!tasks.length) return new Map();
+  // pg serializes one connection; overlapping query() calls are deprecated.
+  const settings = await client.query(`SELECT key, value, version FROM global_settings ORDER BY key`);
+  const prompts = await client.query(`
       SELECT t.kind, t.name, v.id AS version_id, v.version, v.content, v.content_sha256
       FROM prompt_templates t
       LEFT JOIN prompt_versions v ON v.template_id = t.id AND v.status = 'PUBLISHED'
       ORDER BY t.kind
-    `),
-    client.query(`
+    `);
+  const knowledge = await client.query(`
       SELECT i.id, i.kind, i.name, v.id AS version_id, v.version, v.content,
              v.storage_path, v.content_sha256
       FROM knowledge_items i
       JOIN knowledge_versions v ON v.item_id = i.id AND v.status = 'PUBLISHED'
       WHERE i.status = 'ACTIVE'
       ORDER BY i.kind, i.id
-    `),
-    kind === 'IMAGE'
-      ? client.query('SELECT * FROM copy_revisions WHERE id = $1', [task.current_copy_revision_id])
-      : Promise.resolve({ rows: [] }),
-  ]);
-  return {
+    `);
+  const revision = kind === 'IMAGE'
+    ? await client.query('SELECT * FROM copy_revisions WHERE id = ANY($1::bigint[])', [tasks.map(task => task.current_copy_revision_id)])
+    : { rows: [] };
+  const shared = {
     schemaVersion: 1,
     capturedAt: new Date().toISOString(),
-    task: {
-      id: Number(task.id),
-      query: task.query,
-      input: task.input,
-      requestedImageCount: task.requested_image_count === 'auto'
-        ? 'auto'
-        : Number(task.requested_image_count),
-    },
     productionSettings: Object.fromEntries(
       settings.rows.map((row) => [row.key, { version: Number(row.version), value: row.value }]),
     ),
@@ -265,8 +261,16 @@ async function configurationSnapshot(client, task, kind) {
       storagePath: row.storage_path,
       sha256: row.content_sha256,
     })),
-    copyRevision: revisionFrom(revision.rows[0]),
   };
+  const revisions = new Map(revision.rows.map(row => [String(row.id), revisionFrom(row)]));
+  return new Map(tasks.map(task => [task.id, {
+    ...shared,
+    task: {
+      id: Number(task.id), query: task.query, input: task.input,
+      requestedImageCount: task.requested_image_count === 'auto' ? 'auto' : Number(task.requested_image_count),
+    },
+    copyRevision: revisions.get(String(task.current_copy_revision_id)) ?? null,
+  }]));
 }
 
 async function lockedExecution(client, executionId) {
@@ -309,7 +313,8 @@ export class PostgresControlPlaneRepository {
 
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
-    return { ok: true, databaseTime: result.rows[0].now, capabilities: { executionRetryControl: true, imageResume: true } };
+    return { ok: true, databaseTime: result.rows[0].now,
+      capabilities: { executionRetryControl: true, imageResume: true, executorConcurrency: true } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -458,27 +463,33 @@ export class PostgresControlPlaneRepository {
     return publicUserFrom(result.rows[0]);
   }
 
-  async registerNode({ nodeId: rawNodeId, name: rawName, imageWorkerEnabled = false }) {
+  async registerNode({ nodeId: rawNodeId, name: rawName, imageWorkerEnabled = false, copyConcurrency, imageConcurrency }) {
     const nodeId = normalizeNodeId(rawNodeId);
     const name = normalizeNodeName(rawName, nodeId);
+    if (copyConcurrency !== undefined) normalizeConcurrency(copyConcurrency, 'copyConcurrency');
+    if (imageConcurrency !== undefined) normalizeConcurrency(imageConcurrency, 'imageConcurrency');
     if (typeof imageWorkerEnabled !== 'boolean') {
       throw new TypeError('imageWorkerEnabled must be a boolean');
     }
     const result = await this.pool.query(`
-      INSERT INTO executor_nodes(id, name, image_worker_enabled)
-      VALUES ($1, $2, $3)
+      INSERT INTO executor_nodes(id, name, image_worker_enabled, copy_concurrency, image_concurrency)
+      VALUES ($1, $2, $3, COALESCE($4, 1), COALESCE($5, 1))
       ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         image_worker_enabled = excluded.image_worker_enabled,
+        copy_concurrency = COALESCE($4, executor_nodes.copy_concurrency),
+        image_concurrency = COALESCE($5, executor_nodes.image_concurrency),
         last_seen_at = now(),
         updated_at = now()
       RETURNING *
-    `, [nodeId, name, imageWorkerEnabled]);
+    `, [nodeId, name, imageWorkerEnabled, copyConcurrency ?? null, imageConcurrency ?? null]);
     const row = result.rows[0];
     return {
       id: row.id,
       name: row.name,
       imageWorkerEnabled: row.image_worker_enabled,
+      copyConcurrency: row.copy_concurrency ?? 1,
+      imageConcurrency: row.image_concurrency ?? 1,
       lastSeenAt: row.last_seen_at,
     };
   }
@@ -681,21 +692,58 @@ export class PostgresControlPlaneRepository {
   }
 
   async claimCopy(rawNodeId) {
-    return this.#claim({ kind: 'COPY', nodeId: rawNodeId });
+    return (await this.#claim({ kind: 'COPY', nodeId: rawNodeId, limit: 1 })).claims[0] ?? null;
   }
 
   async claimImage(rawNodeId) {
-    return this.#claim({ kind: 'IMAGE', nodeId: rawNodeId });
+    return (await this.#claim({ kind: 'IMAGE', nodeId: rawNodeId, limit: 1 })).claims[0] ?? null;
   }
 
-  async #claim({ kind, nodeId: rawNodeId }) {
+  async claimCopyBatch({ nodeId, limit, requestId }) {
+    return this.#claim({ kind: 'COPY', nodeId, limit, requestId: normalizeUuid(requestId, 'requestId') });
+  }
+
+  async claimImageBatch({ nodeId, limit, requestId }) {
+    return this.#claim({ kind: 'IMAGE', nodeId, limit, requestId: normalizeUuid(requestId, 'requestId') });
+  }
+
+  async #claim({ kind, nodeId: rawNodeId, limit, requestId }) {
     const nodeId = normalizeNodeId(rawNodeId);
+    normalizeConcurrency(limit, 'limit');
     return transaction(this.pool, async (client) => {
       const node = await client.query(`
         SELECT * FROM executor_nodes WHERE id = $1 FOR UPDATE
       `, [nodeId]);
       if (!node.rows[0]) throw new ControlPlaneNotFoundError('executor node is not registered');
       await client.query(`UPDATE executor_nodes SET last_seen_at = now() WHERE id = $1`, [nodeId]);
+      // Reconcile an uncertain request even after image work has been disabled.
+      if (requestId) {
+        const receipt = (await client.query(`SELECT * FROM execution_claim_requests
+          WHERE node_id = $1 AND kind = $2 AND request_id = $3`, [nodeId, kind, requestId])).rows[0];
+        if (receipt) {
+          if (receipt.requested_limit !== limit) {
+            throw new ControlPlaneConflictError('CLAIM_REQUEST_MISMATCH', 'requestId was already used with another limit');
+          }
+          const records = receipt.execution_ids.length ? (await client.query(`
+            SELECT e.*, row_to_json(t) AS task FROM task_executions e
+            JOIN tasks t ON t.id = e.task_id WHERE e.id = ANY($1::uuid[])
+            ORDER BY array_position($1::uuid[], e.id)
+          `, [receipt.execution_ids])).rows : [];
+          return { requestId, claims: records.map(row => ({ task: taskFrom(row.task), execution: executionFrom(row) })) };
+        }
+      }
+      const expiresAt = requestId ? claimRequestExpiry(requestId) : null;
+      if (requestId) {
+        // The node lock serializes claims/GC. Terminal executions never return to RUNNING.
+        // A bounded batch avoids extending the claim transaction after long downtime.
+        await client.query(`DELETE FROM execution_claim_requests r USING (
+          SELECT request_id FROM execution_claim_requests old
+          WHERE node_id = $1 AND kind = $2 AND expires_at <= $3
+            AND NOT EXISTS (SELECT 1 FROM task_executions e
+              WHERE e.id = ANY(old.execution_ids) AND e.status = 'RUNNING')
+          ORDER BY expires_at LIMIT 100
+        ) expired WHERE r.node_id = $1 AND r.kind = $2 AND r.request_id = expired.request_id`, [nodeId, kind, new Date()]);
+      }
       if (kind === 'IMAGE' && !node.rows[0].image_worker_enabled) {
         throw new ControlPlaneConflictError(
           'IMAGE_WORKER_DISABLED',
@@ -703,11 +751,11 @@ export class PostgresControlPlaneRepository {
         );
       }
       const active = await client.query(`
-        SELECT 1 FROM task_executions
+        SELECT COUNT(*) AS count FROM task_executions
         WHERE node_id = $1 AND kind = $2 AND status = 'RUNNING'
-        LIMIT 1
       `, [nodeId, kind]);
-      if (active.rows[0]) return null;
+      const capacity = (kind === 'COPY' ? node.rows[0].copy_concurrency : node.rows[0].image_concurrency) ?? 1;
+      const available = Math.min(limit, Math.max(0, capacity - Number(active.rows[0]?.count ?? 0)));
       const queuedState = kind === 'COPY' ? 'COPY_QUEUED' : 'IMAGE_QUEUED';
       const runningState = kind === 'COPY' ? 'COPY_RUNNING' : 'IMAGE_RUNNING';
       const ownership = kind === 'COPY' ? 'AND copy_executor_node_id = $2'
@@ -716,55 +764,62 @@ export class PostgresControlPlaneRepository {
       const retryDelay = kind === 'IMAGE'
         ? "AND (error IS NULL OR last_activity_at <= now() - interval '5 seconds')" : '';
       const order = kind === 'IMAGE' ? 'last_activity_at NULLS FIRST, id' : 'id';
-      const parameters = [queuedState, nodeId];
-      const candidate = await client.query(`
+      const parameters = [queuedState, nodeId, available];
+      const candidate = available ? await client.query(`
         SELECT * FROM tasks
         WHERE state = $1 ${ownership} ${retryDelay}
         ORDER BY ${order}
         FOR UPDATE SKIP LOCKED
-        LIMIT 1
-      `, parameters);
-      const task = candidate.rows[0];
-      if (!task) return null;
-      const executionId = randomUUID();
-      const snapshot = task.pending_snapshot
-        ?? await configurationSnapshot(client, task, kind);
-      const stage = kind === 'COPY' ? 'STARTING_COPY' : 'STARTING_IMAGE';
-      await client.query(`
-        INSERT INTO task_executions(
-          id, task_id, kind, node_id, stage, progress_message, snapshot
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-      `, [executionId, task.id, kind, nodeId, stage, '执行机已领取任务', snapshot]);
-      if (kind === 'IMAGE') {
+        LIMIT $3
+      `, parameters) : { rows: [] };
+      const snapshots = await configurationSnapshots(client, candidate.rows.filter(task => task.pending_snapshot == null), kind);
+      const claims = [];
+      for (const task of candidate.rows) {
+        const executionId = randomUUID();
+        const snapshot = task.pending_snapshot
+          ?? snapshots.get(task.id);
+        const stage = kind === 'COPY' ? 'STARTING_COPY' : 'STARTING_IMAGE';
         await client.query(`
-          INSERT INTO image_runs(id, task_id, execution_id, copy_revision_id)
-          VALUES ($1, $2, $1, $3)
-        `, [executionId, task.id, task.current_copy_revision_id]);
+          INSERT INTO task_executions(
+            id, task_id, kind, node_id, stage, progress_message, snapshot
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `, [executionId, task.id, kind, nodeId, stage, '执行机已领取任务', snapshot]);
+        if (kind === 'IMAGE') {
+          await client.query(`
+            INSERT INTO image_runs(id, task_id, execution_id, copy_revision_id)
+            VALUES ($1, $2, $1, $3)
+          `, [executionId, task.id, task.current_copy_revision_id]);
+        }
+        const updated = await client.query(`
+          UPDATE tasks SET
+            state = $1,
+            current_execution_id = $2,
+            current_image_run_id = CASE WHEN $3 = 'IMAGE' THEN $2 ELSE current_image_run_id END,
+            current_stage = $4,
+            progress_percent = 0,
+            progress_message = '执行机已领取任务',
+            execution_started_at = now(),
+            last_activity_at = now(),
+            finished_at = NULL,
+            error = NULL,
+            pending_snapshot = NULL,
+            updated_at = now()
+          WHERE id = $5 AND state = $6
+          RETURNING *
+        `, [runningState, executionId, kind, stage, task.id, queuedState]);
+        claims.push({
+          task: taskFrom(updated.rows[0]),
+          execution: executionFrom((await client.query(
+            'SELECT * FROM task_executions WHERE id = $1',
+            [executionId],
+          )).rows[0]),
+        });
       }
-      const updated = await client.query(`
-        UPDATE tasks SET
-          state = $1,
-          current_execution_id = $2,
-          current_image_run_id = CASE WHEN $3 = 'IMAGE' THEN $2 ELSE current_image_run_id END,
-          current_stage = $4,
-          progress_percent = 0,
-          progress_message = '执行机已领取任务',
-          execution_started_at = now(),
-          last_activity_at = now(),
-          finished_at = NULL,
-          error = NULL,
-          pending_snapshot = NULL,
-          updated_at = now()
-        WHERE id = $5 AND state = $6
-        RETURNING *
-      `, [runningState, executionId, kind, stage, task.id, queuedState]);
-      return {
-        task: taskFrom(updated.rows[0]),
-        execution: executionFrom((await client.query(
-          'SELECT * FROM task_executions WHERE id = $1',
-          [executionId],
-        )).rows[0]),
-      };
+      if (requestId) {
+        await client.query(`INSERT INTO execution_claim_requests(node_id, kind, request_id, requested_limit, execution_ids, expires_at)
+          VALUES ($1, $2, $3, $4, $5, $6)`, [nodeId, kind, requestId, limit, claims.map(claim => claim.execution.id), expiresAt]);
+      }
+      return { requestId, claims };
     });
   }
 

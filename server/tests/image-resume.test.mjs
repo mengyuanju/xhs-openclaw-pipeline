@@ -47,7 +47,7 @@ test('image claim restricts checkpoint recovery to the node holding the files', 
   };
   const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
   assert.equal(await repository.claimImage('other-node'), null);
-  assert.deepEqual(selection.values, ['IMAGE_QUEUED', 'other-node']);
+  assert.deepEqual(selection.values, ['IMAGE_QUEUED', 'other-node', 1]);
   assert.match(selection.sql, /imageRecovery[\s\S]*nodeId[\s\S]*\$2/u);
 });
 

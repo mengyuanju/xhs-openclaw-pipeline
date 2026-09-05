@@ -5,7 +5,40 @@ import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createCodexRuntime } from '../src/codex-runtime.mjs';
+import { codexConcurrencyConfig, createCodexRuntime } from '../src/codex-runtime.mjs';
+
+test('Codex total and image capacity configuration is independent and strictly bounded', () => {
+  assert.deepEqual(codexConcurrencyConfig({}), { maxConcurrent: 2, maxConcurrentImages: 1 });
+  assert.deepEqual(codexConcurrencyConfig({ XHS_CODEX_CONCURRENCY: '5', XHS_CODEX_IMAGE_CONCURRENCY: '2' }),
+    { maxConcurrent: 5, maxConcurrentImages: 2 });
+  for (const name of ['XHS_CODEX_CONCURRENCY', 'XHS_CODEX_IMAGE_CONCURRENCY']) {
+    for (const value of ['', ' ', '0', '-1', '1.5', '33', '0x2']) {
+      assert.throws(() => codexConcurrencyConfig({ [name]: value }), /integer/);
+    }
+  }
+  assert.throws(() => codexConcurrencyConfig({ XHS_CODEX_CONCURRENCY: '1', XHS_CODEX_IMAGE_CONCURRENCY: '2' }), /total/);
+});
+
+test('configured runtime admits two images and three text calls without crossing either ceiling', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'xhs-configured-codex-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const options = { databasePath: join(root, 'limits.sqlite'), maxConcurrent: 5, maxConcurrentImages: 2, pollMs: 5 };
+  const a = createCodexRuntime(options), b = createCodexRuntime(options);
+  const gate = Promise.withResolvers();
+  let entered = 0, imageCount = 0;
+  const work = image => async () => { entered++; if (image) imageCount++; await gate.promise; };
+  const jobs = [a.run(work(true), { image: true }), b.run(work(true), { image: true }),
+    a.run(work(false)), b.run(work(false)), a.run(work(false))];
+  try {
+    for (let i = 0; i < 50 && entered < 5; i++) await new Promise(resolve => setTimeout(resolve, 2));
+    assert.equal(entered, 5);
+    assert.equal(imageCount, 2);
+    await assert.rejects(b.run(() => assert.fail('full runtime admitted work'), { waitMs: 0 }), { code: 'CODEX_QUEUE_TIMEOUT' });
+    const conflict = createCodexRuntime({ databasePath: options.databasePath, maxConcurrent: 6, maxConcurrentImages: 3 });
+    await assert.rejects(conflict.run(() => assert.fail('conflicting configuration admitted work')), { code: 'CODEX_CONCURRENCY_MISMATCH' });
+  } finally { gate.resolve(); await Promise.all(jobs); }
+  assert.equal(a.status().active, 0);
+});
 
 async function runtimeFixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'xhs-codex-limit-test-'));
@@ -62,7 +95,8 @@ test('rate limiting shares a timed cooldown without unlimited automatic retries'
   assert.ok(b.status().retryAt > Date.now());
 });
 
-test('separate Node processes obey the same concurrency limits', { timeout: 15_000 }, async (t) => {
+for (const [total, images] of [[2, 1], [5, 2]]) {
+test(`separate Node processes obey shared ${total}/${images} concurrency limits`, { timeout: 15_000 }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'xhs-codex-process-limits-'));
   const databasePath = join(root, 'limits.sqlite');
   const children = [];
@@ -70,29 +104,32 @@ test('separate Node processes obey the same concurrency limits', { timeout: 15_0
     for (const child of children) if (child.exitCode === null && child.signalCode === null) { const closed = once(child, 'close'); child.kill(); await closed; }
     await rm(root, { recursive: true, force: true });
   });
-  for (const image of ['image', 'text', 'image', 'text']) {
-    const child = fork(new URL('./fixtures/codex-limit-child.mjs', import.meta.url), [databasePath, image],
+  const flags = [...Array(images).fill('image'), ...Array(total - images).fill('text'), 'image', 'text'];
+  for (const image of flags) {
+    const child = fork(new URL('./fixtures/codex-limit-child.mjs', import.meta.url), [databasePath, image, String(total), String(images)],
       { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true });
     children.push(child);
     assert.equal((await once(child, 'message'))[0].type, 'ready');
   }
   const entered = children.map((child) => once(child, 'message'));
-  children[0].send('go'); children[1].send('go');
-  await Promise.all(entered.slice(0, 2));
-  children[2].send('go'); children[3].send('go');
+  children.slice(0, total).forEach(child => child.send('go'));
+  await Promise.all(entered.slice(0, total));
+  children.slice(total).forEach(child => child.send('go'));
   let queuedEntered = false;
-  void Promise.race(entered.slice(2)).then(() => { queuedEntered = true; });
+  void Promise.race(entered.slice(total)).then(() => { queuedEntered = true; });
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(queuedEntered, false);
   const limits = createCodexRuntime({ databasePath });
+  assert.equal(limits.status().active, total);
+  assert.equal(limits.status().images, images);
+  const firstClosed = children.slice(0, total).map(child => once(child, 'close'));
+  children.slice(0, total).forEach(child => child.send('release'));
+  await Promise.all([...firstClosed, ...entered.slice(total)]);
   assert.equal(limits.status().active, 2);
   assert.equal(limits.status().images, 1);
-  children[0].send('release'); children[1].send('release');
-  await Promise.all(entered.slice(2));
-  assert.equal(limits.status().active, 2);
-  assert.equal(limits.status().images, 1);
-  const closed = children.slice(2).map((child) => once(child, 'close'));
-  children[2].send('release'); children[3].send('release');
+  const closed = children.slice(total).map((child) => once(child, 'close'));
+  children.slice(total).forEach(child => child.send('release'));
   await Promise.all(closed);
   assert.equal(limits.status().active, 0);
 });
+}

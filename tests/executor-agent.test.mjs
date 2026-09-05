@@ -3,8 +3,34 @@ import { access, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { randomUUID } from 'node:crypto';
 
 import { checkExecutorReady, createExecutorAgent } from '../src/executor/agent.mjs';
+
+test('concurrent same-kind failures retain independent reports without rerunning either model', async () => {
+  const claims = [1, 2].map(id => ({ task: { id }, execution: { id: randomUUID(), status: 'RUNNING' } }));
+  const reports = new Map();
+  const models = [];
+  const agent = createExecutorAgent({ nodeId: 'a', readinessCheck: async () => {}, availabilityCheck: async () => {},
+    executeCopy: async ({ claim }) => { models.push(claim.task.id); throw new Error(`failed ${claim.task.id}`); },
+    controlPlane: { failExecution: async id => {
+      reports.set(id, (reports.get(id) ?? 0) + 1);
+      if (reports.get(id) === 1) throw new Error('offline');
+    } } });
+  await agent.prepare();
+  const failures = await Promise.allSettled(claims.map(claim => agent.executeClaim('COPY', claim)));
+  assert.ok(failures.every(r => r.status === 'rejected'));
+  const finished = await Promise.all(claims.flatMap(claim => [agent.executeClaim('COPY', claim), agent.executeClaim('COPY', claim)]));
+  assert.ok(finished.every(r => r.status === 'FAILED'));
+  assert.deepEqual(models.sort(), [1, 2]);
+  assert.deepEqual([...reports.values()], [2, 2]);
+});
+
+test('concurrent executor refuses an old center before registration', async () => {
+  const agent = createExecutorAgent({ nodeId: 'a', concurrencyEnabled: true, controlPlane: {},
+    readinessCheck: async () => ({ health: { ok: true } }) });
+  await assert.rejects(agent.prepare(), /executorConcurrency/);
+});
 
 test('executor never claims images when image capability is disabled', async () => {
   const calls = [];

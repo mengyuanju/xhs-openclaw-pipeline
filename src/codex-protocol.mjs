@@ -41,13 +41,28 @@ export function parseCodexOutput(stdout, { requireText = true } = {}) {
   let completed = false;
   let usage = null;
   let searched = false;
+  let reconnectError = null;
+  let reconnectCount = 0;
+  let answerAfterReconnect = false;
   const images = [];
   for (const event of events) {
     if (!event || typeof event !== 'object') throw codexFailure({}, 'MODEL_OUTPUT_INCOMPLETE');
+    if (event.type === 'warning' && event.will_retry === true) reconnectCount++;
     if (event.type === 'thread.started') threadId = event.thread_id ?? null;
     if (event.type === 'turn.started') completed = false;
     if (event.type === 'turn.failed' || event.type === 'error') {
-      throw codexFailure(event.error ?? event);
+      const failure = codexFailure(event.error ?? event);
+      // exec JSONL drops app-server's willRetry flag. Its explicit reconnect notice
+      // is recoverable only if a fresh answer and completed turn follow it.
+      if (event.type === 'error' && failure.code === 'CODEX_EXEC_FAILED'
+        && /^Reconnecting\.\.\. \d+\/\d+ \(/u.test(event.message ?? '')) {
+        reconnectError = failure;
+        reconnectCount++;
+        answerAfterReconnect = false;
+        completed = false;
+        continue;
+      }
+      throw failure;
     }
     if (event.type === 'turn.completed') {
       if (event.status === 'incomplete' || ['length', 'max_output_tokens'].includes(event.finish_reason)) {
@@ -58,7 +73,10 @@ export function parseCodexOutput(stdout, { requireText = true } = {}) {
     }
     if (event.type !== 'item.completed') continue;
     const item = event.item;
-    if (item?.type === 'agent_message') rawText = typeof item.text === 'string' ? item.text : '';
+    if (item?.type === 'agent_message') {
+      rawText = typeof item.text === 'string' ? item.text : '';
+      if (reconnectError && rawText.trim()) answerAfterReconnect = true;
+    }
     if (item?.type === 'web_search' && !['failed', 'in_progress'].includes(item.status)) searched = true;
     if (['image_generation', 'imageGeneration'].includes(item?.type)) {
       if (item.failure) throw codexFailure(item.failure);
@@ -69,6 +87,7 @@ export function parseCodexOutput(stdout, { requireText = true } = {}) {
       }
     }
   }
+  if (reconnectError && (!completed || !answerAfterReconnect)) throw reconnectError;
   if (!completed || (requireText && !rawText.trim())) throw codexFailure({ message: 'missing completed turn or final message' }, 'MODEL_OUTPUT_INCOMPLETE');
-  return { rawText, threadId, usage, searched, images };
+  return { rawText, threadId, usage, searched, images, reconnectCount };
 }
