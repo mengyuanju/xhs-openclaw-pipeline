@@ -50,6 +50,7 @@ function taskFrom(row) {
     requestedImageCount: row.requested_image_count === 'auto'
       ? 'auto'
       : Number(row.requested_image_count),
+    aiDisclosureEnabled: row.ai_disclosure_enabled ?? true,
     state: row.state,
     createdByNodeId: row.created_by_node_id,
     createdByUserId: row.created_by_user_id ?? null,
@@ -268,6 +269,7 @@ async function configurationSnapshots(client, tasks, kind) {
     task: {
       id: Number(task.id), query: task.query, input: task.input,
       requestedImageCount: task.requested_image_count === 'auto' ? 'auto' : Number(task.requested_image_count),
+      aiDisclosureEnabled: task.ai_disclosure_enabled ?? true,
     },
     copyRevision: revisions.get(String(task.current_copy_revision_id)) ?? null,
   }]));
@@ -892,11 +894,19 @@ export class PostgresControlPlaneRepository {
     });
   }
 
-  async approveCopy(rawTaskId, { revisionId: rawRevisionId, nodeId: rawNodeId, edits: rawEdits }) {
+  async approveCopy(rawTaskId, {
+    revisionId: rawRevisionId,
+    nodeId: rawNodeId,
+    edits: rawEdits,
+    aiDisclosureEnabled: rawAiDisclosureEnabled,
+  }) {
     const taskId = normalizeTaskId(rawTaskId);
     const revisionId = normalizeTaskId(rawRevisionId);
     const nodeId = normalizeNodeId(rawNodeId);
     const edits = rawEdits === undefined ? null : normalizeCopyReviewEdits(rawEdits);
+    if (rawAiDisclosureEnabled !== undefined && typeof rawAiDisclosureEnabled !== 'boolean') {
+      throw new TypeError('aiDisclosureEnabled must be a boolean');
+    }
     return transaction(this.pool, async (client) => {
       const taskResult = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
       const task = taskResult.rows[0];
@@ -904,6 +914,7 @@ export class PostgresControlPlaneRepository {
       if (task.state !== 'COPY_REVIEW_PENDING') {
         throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'task is not waiting for copy review');
       }
+      const aiDisclosureEnabled = rawAiDisclosureEnabled ?? task.ai_disclosure_enabled ?? true;
       if (Number(task.current_copy_revision_id) !== revisionId) {
         throw new ControlPlaneConflictError('STALE_COPY_REVISION', 'copy revision is no longer current');
       }
@@ -938,6 +949,7 @@ export class PostgresControlPlaneRepository {
       const updated = await client.query(`
         UPDATE tasks SET
           state = 'IMAGE_QUEUED', current_copy_revision_id = $2,
+          ai_disclosure_enabled = $3,
           current_image_run_id = NULL,
           current_stage = 'IMAGE_QUEUED', progress_percent = 0,
           progress_message = '文案审核通过，等待图片执行机领取',
@@ -945,7 +957,7 @@ export class PostgresControlPlaneRepository {
           error = NULL, pending_snapshot = NULL, updated_at = now()
         WHERE id = $1
         RETURNING *
-      `, [taskId, approvedRevisionId]);
+      `, [taskId, approvedRevisionId, aiDisclosureEnabled]);
       return taskFrom(updated.rows[0]);
     });
   }

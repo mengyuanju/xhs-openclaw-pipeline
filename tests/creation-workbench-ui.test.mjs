@@ -105,6 +105,9 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(reviewDialog, /本地流程联调兜底图/u);
   assert.match(reviewDialog, /resultImage\.source\.pageUrl/u);
   assert.match(reviewDialog, /edits: draft/u);
+  assert.match(reviewDialog, /aiDisclosureEnabled/u);
+  assert.match(reviewDialog, /workbench-ai-disclosure-toggle/u);
+  assert.match(reviewDialog, /<span>AI生成<\/span>/u);
   assert.match(reviewDialog, /const editable = detail\?\.state === 'COPY_REVIEW_PENDING'/u);
   assert.match(reviewDialog, /<ImagePreview src=\{apiPath\(asset\.url\)\}/u);
   assert.match(reviewDialog, />提交审核</u);

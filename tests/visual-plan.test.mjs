@@ -97,6 +97,13 @@ describe('visual plan contract', () => {
     assert.match(prompt, /layoutTemplate/u);
     assert.match(prompt, /恰好包含 3 项/);
     assert.ok(prompt.length < 30_000);
+
+    const promptWithoutDisclosure = buildVisualPlanPrompt(postFixture(), {
+      imageCount: 3,
+      complianceDisclosure: '',
+    });
+    assert.doesNotMatch(promptWithoutDisclosure, /右下角.*AI生成/u);
+    assert.match(promptWithoutDisclosure, /不得添加任何额外合规标识/u);
   });
 
   it('accepts a traceable visual plan with one page for every delivery image', () => {

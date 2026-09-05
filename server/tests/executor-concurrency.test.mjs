@@ -23,7 +23,8 @@ function fixture({ capacity = 3, running = 1, receipt, enabled = true, fresh = f
       if (sql.includes('SELECT * FROM execution_claim_requests')) return { rows: receipt ? [receipt] : [] };
       if (sql.includes('COUNT(*)') && sql.includes('task_executions')) return { rows: [{ count: running }] };
       if (sql.includes('FOR UPDATE SKIP LOCKED')) return { rows: [1, 2, 3].slice(0, args[2]).map(id => ({ id,
-        current_copy_revision_id: id, pending_snapshot: fresh ? null : { task: { id } } })) };
+        current_copy_revision_id: id, ai_disclosure_enabled: id % 2 === 1,
+        pending_snapshot: fresh ? null : { task: { id } } })) };
       if (sql.includes('INSERT INTO task_executions')) executions.set(args[0], { id: args[0], task_id: args[1], kind: args[2], status: 'RUNNING', snapshot: args[6] });
       if (sql.includes('UPDATE tasks SET')) return { rows: [{ id: args[4], state: args[0] }] };
       if (sql.includes('SELECT * FROM task_executions WHERE id =')) return { rows: [executions.get(args[0])] };
@@ -51,6 +52,7 @@ test('each batch reads shared configuration once and preserves individual task s
     const result = await (kind === 'COPY' ? repo.claimCopyBatch({ nodeId: 'node-a', limit: 3, requestId: randomUUID() })
       : repo.claimImageBatch({ nodeId: 'node-a', limit: 3, requestId: randomUUID() }));
     assert.deepEqual(result.claims.map(claim => claim.execution.snapshot.task.id), [1, 2, 3]);
+    assert.deepEqual(result.claims.map(claim => claim.execution.snapshot.task.aiDisclosureEnabled), [true, false, true]);
     for (const source of ['FROM global_settings', 'FROM prompt_templates', 'FROM knowledge_items']) {
       assert.equal(calls.filter(c => c.sql.includes(source)).length, 1);
     }

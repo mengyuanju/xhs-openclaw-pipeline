@@ -9,6 +9,7 @@ function taskRow(overrides = {}) {
     query: '指定远端执行机',
     input: {},
     requested_image_count: 'auto',
+    ai_disclosure_enabled: true,
     state: 'COPY_QUEUED',
     created_by_node_id: 'node-a',
     created_by_user_id: 'admin',
@@ -358,10 +359,25 @@ test('copy approval submits reviewed copy to the image queue', async () => {
   const approved = await repository.approveCopy(41, {
     revisionId: 12,
     nodeId: 'node-b',
+    aiDisclosureEnabled: false,
   });
 
   assert.equal(approved.state, 'IMAGE_QUEUED');
-  assert.ok(queries.some((item) => item.sql.includes("state = 'IMAGE_QUEUED'")));
+  const taskUpdate = queries.find((item) => item.sql.includes("state = 'IMAGE_QUEUED'"));
+  assert.ok(taskUpdate);
+  assert.match(taskUpdate.sql, /ai_disclosure_enabled = \$3/u);
+  assert.equal(taskUpdate.values[2], false);
+});
+
+test('copy approval rejects a non-boolean AI disclosure setting before opening a transaction', async () => {
+  const repository = new PostgresControlPlaneRepository({
+    pool: { connect: async () => { throw new Error('must not connect'); } },
+  });
+  await assert.rejects(repository.approveCopy(41, {
+    revisionId: 12,
+    nodeId: 'node-b',
+    aiDisclosureEnabled: 'false',
+  }), /aiDisclosureEnabled must be a boolean/u);
 });
 
 test('requeued images cannot be edited through copy approval', async () => {

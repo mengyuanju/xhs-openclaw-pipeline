@@ -88,6 +88,13 @@ test('manual archive migration merges both former delivery states without deleti
   assert.doesNotMatch(migration.sql, /DELETE|TRUNCATE|DROP TABLE/u);
 });
 
+test('task AI disclosure migration adds a default-on boolean without rewriting task history', async () => {
+  const migration = (await loadMigrations()).find((item) => item.id === '0009_task_ai_disclosure');
+  assert.ok(migration);
+  assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS ai_disclosure_enabled boolean NOT NULL DEFAULT true/u);
+  assert.doesNotMatch(migration.sql, /UPDATE|DELETE|TRUNCATE|DROP/u);
+});
+
 test('failed upgrades roll back the enclosing schema-and-data transaction', async () => {
   const queries = [];
   const client = { query: async (sql) => {

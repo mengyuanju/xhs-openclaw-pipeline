@@ -142,14 +142,14 @@ test('copy approval forwards the editable review payload as one operation', asyn
     const response = await fetch(`${root}/v1/tasks/7/approve-copy`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ revisionId: 12, nodeId: 'node-a', edits }),
+      body: JSON.stringify({ revisionId: 12, nodeId: 'node-a', edits, aiDisclosureEnabled: false }),
     });
     assert.equal(response.status, 200);
     assert.equal((await response.json()).data.state, 'IMAGE_QUEUED');
   });
   assert.deepEqual(received, {
     taskId: '7',
-    input: { revisionId: 12, nodeId: 'node-a', edits },
+    input: { revisionId: 12, nodeId: 'node-a', edits, aiDisclosureEnabled: false },
   });
 });
 

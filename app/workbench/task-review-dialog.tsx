@@ -46,6 +46,7 @@ type CopyRevision = {
 type TaskDetail = {
   id: number;
   query: string;
+  aiDisclosureEnabled: boolean;
   state: TaskState;
   copyExecutorNodeId: string;
   currentCopyRevisionId: number | null;
@@ -183,6 +184,7 @@ export function TaskReviewDialog({
   const [draft, setDraft] = useState<ReviewDraft | null>(null);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [aiDisclosureEnabled, setAiDisclosureEnabled] = useState(true);
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
@@ -192,6 +194,7 @@ export function TaskReviewDialog({
       const next = await apiRequest<TaskDetail>(apiPath(`/v1/tasks/${taskId}`));
       setDetail(next);
       setDraft(draftFromRevision(currentRevision(next)));
+      setAiDisclosureEnabled(next.aiDisclosureEnabled !== false);
       setError('');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '任务详情读取失败');
@@ -204,6 +207,7 @@ export function TaskReviewDialog({
     if (!taskId) {
       setDetail(null);
       setDraft(null);
+      setAiDisclosureEnabled(true);
       setError('');
       return;
     }
@@ -261,7 +265,12 @@ export function TaskReviewDialog({
       await apiRequest(apiPath(`/v1/tasks/${detail.id}/approve-copy`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ revisionId: revision.id, nodeId, edits: draft }),
+        body: JSON.stringify({
+          revisionId: revision.id,
+          nodeId,
+          edits: draft,
+          aiDisclosureEnabled,
+        }),
       });
       await onUpdated('文案修改已保存并审核通过，任务已进入全局生图队列。');
       onOpenChange(false);
@@ -286,6 +295,15 @@ export function TaskReviewDialog({
           {detail?.state === 'MANUAL_ARCHIVE' && <a className="button small primary" href={apiPath(`/v1/tasks/${detail.id}/archive`)} download>
             <Download size={14} />下载资源
           </a>}
+          {detail && <label className="switch-field workbench-ai-disclosure-toggle" title="开启后，生成图片会显示“AI生成”水印">
+            <input
+              type="checkbox"
+              checked={aiDisclosureEnabled}
+              disabled={!editable || loading || submitting}
+              onChange={(event) => setAiDisclosureEnabled(event.target.checked)}
+            />
+            <span>AI生成</span>
+          </label>}
           <button className="button small" type="button" disabled={loading || submitting} onClick={() => { void load(); }}>
             <RefreshCw className={loading ? 'animate-spin' : ''} size={14} />刷新
           </button>
