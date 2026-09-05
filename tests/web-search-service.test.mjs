@@ -32,6 +32,26 @@ function jsonResponse(payload) {
   return new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } });
 }
 
+test('a single intact terminal JSON fence after an introduction is accepted without another search', async () => {
+  let calls = 0;
+  const payload = responsePayload();
+  payload.output[1].content[0].text = `基于实际搜索，以下为结果：\n\n\`\`\`json\n${JSON.stringify(evidence)}\n\`\`\``;
+  const client = withWebSearchProvider({}, { environment, fetchImpl: async () => { calls++; return jsonResponse(payload); } });
+  const result = await client.runWebSearch({ query: 'fixture' });
+  assert.equal(result.result.content, evidence.summary);
+  assert.equal(calls, 1);
+});
+
+test('search fence extraction rejects competing objects, extra fences and invalid inner JSON', async () => {
+  for (const text of [`{}\n\`\`\`json\n${JSON.stringify(evidence)}\n\`\`\``,
+    `\`\`\`json\n${JSON.stringify(evidence)}\n\`\`\`\n\`\`\`json\n{}\n\`\`\``,
+    '说明\n```json\n{"summary":"未转义"引号", "sources":[]}\n```']) {
+    const payload = responsePayload(); payload.output[1].content[0].text = text;
+    const client = withWebSearchProvider({}, { environment, fetchImpl: async () => jsonResponse(payload) });
+    await assert.rejects(client.runWebSearch({ query: 'fixture' }), /not valid JSON/);
+  }
+});
+
 test('explicit OpenClaw search preserves the original client without requiring a DeepSeek key', async () => {
   const original = { async runWebSearch(input) { return { provider: input.provider, result: evidence }; } };
   const client = withWebSearchProvider(original, { environment: { XHS_WEB_SEARCH_PROVIDER: 'OPENCLAW' }, fetchImpl: () => assert.fail('no network') });

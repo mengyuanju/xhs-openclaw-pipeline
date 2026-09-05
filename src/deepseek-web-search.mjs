@@ -36,9 +36,13 @@ function searchEvidence(payload, limit) {
     // Remove only this known suffix; never rewrite evidence strings or fill missing JSON.
     const normalized = text
       .replace(/(?:<\/｜｜DSML｜｜(?:parameter|invoke|tool_calls)>\s*)+$/u, '')
-      .trim()
-      .replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '');
-    result = JSON.parse(normalized);
+      .trim();
+    // A completed response can wrap one intact JSON block in an introduction.
+    // Accept only a single terminal fence; never repair strings or choose between objects.
+    const fenced = normalized.match(/^([^`]*?)```json\s*\n([\s\S]*?)\n```\s*$/iu);
+    const candidate = fenced && !/[{\[]/u.test(fenced[1]) && !fenced[2].includes('```')
+      ? fenced[2] : normalized.replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '');
+    result = JSON.parse(candidate);
   } catch {
     throw new TypeError('DeepSeek search output is not valid JSON');
   }
