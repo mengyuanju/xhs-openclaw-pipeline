@@ -186,6 +186,13 @@ function installRoutes(router, repository, storageRoot, analyzeCopy) {
     requestActor(ctx, ['ADMIN']);
     json(ctx, 200, await repository.updateUser(ctx.params.userId, requireJson(ctx)));
   });
+  router.delete('/v1/users/:userId', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.deleteUser(ctx.params.userId, {
+      ...requireJson(ctx),
+      actorUsername: actor.username,
+    }));
+  });
   router.post('/v1/users/:userId/reset-password', async (ctx) => {
     requestActor(ctx, ['ADMIN']);
     json(ctx, 200, await repository.resetUserPassword(ctx.params.userId));
@@ -409,7 +416,11 @@ export function createControlPlaneApp({ repository, storageRoot, enforceUserAuth
     }
   });
 
-  const parseJsonBody = bodyParser({ enableTypes: ['json'], jsonLimit: JSON_BODY_LIMIT });
+  const parseJsonBody = bodyParser({
+    enableTypes: ['json'],
+    jsonLimit: JSON_BODY_LIMIT,
+    parsedMethods: ['POST', 'PUT', 'PATCH', 'DELETE'],
+  });
   app.use(async (ctx, next) => {
     const rawUpload = ctx.method === 'PUT'
       && (/^\/v1\/executions\/[^/]+\/assets$/u.test(ctx.path)

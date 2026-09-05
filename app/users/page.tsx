@@ -15,6 +15,6 @@ export default async function UsersPage() {
     <header className="page-header">
       <div><span className="eyebrow">Access management</span><h1>用户管理</h1><p className="subtle">创建账号、设置姓名和固定角色。新账号的默认密码均为 123456。</p></div>
     </header>
-    <UserManager initialUsers={users} />
+    <UserManager initialUsers={users} currentUsername={session.username || session.subject} />
   </>;
 }

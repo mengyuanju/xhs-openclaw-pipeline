@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { createControlPlaneApp } from '../src/http-server.mjs';
+import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import { hashUserPassword, verifyUserPassword } from '../src/user-auth.mjs';
 
 const DEFAULT_ADMIN_HASH = 'scrypt-v1.YXV0by1jbG93LWFkbWluIQ.H0k0pdnIz73LcskpQsVwP7TDdqbNQUQTO6xAVIx8EzwuLhs1yIMG9HVTWHIsta0DlgkzyJle37uMZx1YRci6Tg';
@@ -94,6 +95,54 @@ test('reviewers cannot mutate prompts or production settings and cannot manage u
     assert.equal((await fetch(`${root}/v1/settings/production`, { method: 'PUT', headers, body: JSON.stringify({ value: {} }) })).status, 403);
     assert.equal((await fetch(`${root}/v1/prompts/versions`, { method: 'POST', headers, body: '{}' })).status, 403);
     assert.equal((await fetch(`${root}/v1/users`, { headers })).status, 403);
+    assert.equal((await fetch(`${root}/v1/users/1`, { method: 'DELETE', headers, body: JSON.stringify({ expectedVersion: 1 }) })).status, 403);
     assert.equal((await fetch(`${root}/v1/knowledge`, { headers })).status, 200);
   });
+});
+
+test('administrators can delete another user and the actor identity is enforced by the route', async () => {
+  const admin = { id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credentialVersion: 1 };
+  const calls = [];
+  const repository = {
+    ownsPool: true,
+    getUserByUsername: async () => admin,
+    deleteUser: async (userId, input) => {
+      calls.push({ userId, input });
+      return { id: Number(userId), username: 'alice' };
+    },
+  };
+  await withServer(repository, async (root) => {
+    const response = await fetch(`${root}/v1/users/2`, {
+      method: 'DELETE',
+      headers: { ...actorHeaders('admin', 'ADMIN'), 'content-type': 'application/json' },
+      body: JSON.stringify({ expectedVersion: 4, actorUsername: 'spoofed' }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(calls, [{ userId: '2', input: { expectedVersion: 4, actorUsername: 'admin' } }]);
+  });
+});
+
+test('user deletion rejects the current account and the last active administrator', async () => {
+  function repositoryFor(current, adminCount = 2) {
+    const client = {
+      async query(sql) {
+        if (sql.includes('SELECT * FROM app_users')) return { rows: [current] };
+        if (sql.includes('SELECT COUNT(*)')) return { rows: [{ count: String(adminCount) }] };
+        return { rows: [] };
+      },
+      release() {},
+    };
+    return new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
+  }
+
+  await assert.rejects(
+    repositoryFor({ id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE' })
+      .deleteUser(1, { actorUsername: 'admin', expectedVersion: 1 }),
+    { code: 'SELF_DELETE' },
+  );
+  await assert.rejects(
+    repositoryFor({ id: 2, username: 'backup-admin', role: 'ADMIN', status: 'ACTIVE' }, 1)
+      .deleteUser(2, { actorUsername: 'admin', expectedVersion: 1 }),
+    { code: 'LAST_ADMIN' },
+  );
 });

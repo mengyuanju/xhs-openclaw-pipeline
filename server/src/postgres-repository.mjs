@@ -388,6 +388,32 @@ export class PostgresControlPlaneRepository {
     return publicUserFrom(result.rows[0]);
   }
 
+  async deleteUser(rawUserId, { actorUsername: rawActorUsername, expectedVersion }) {
+    const userId = normalizeTaskId(rawUserId);
+    const actorUsername = normalizedUsername(rawActorUsername);
+    if (!Number.isInteger(expectedVersion) || expectedVersion < 1) throw new TypeError('expectedVersion is invalid');
+    return transaction(this.pool, async (client) => {
+      const currentResult = await client.query('SELECT * FROM app_users WHERE id = $1 FOR UPDATE', [userId]);
+      const current = currentResult.rows[0];
+      if (!current) throw new ControlPlaneNotFoundError('user not found');
+      if (current.username === actorUsername) {
+        throw new ControlPlaneConflictError('SELF_DELETE', 'current administrator cannot delete their own account');
+      }
+      if (current.role === 'ADMIN' && current.status === 'ACTIVE') {
+        const count = await client.query("SELECT COUNT(*) AS count FROM app_users WHERE role = 'ADMIN' AND status = 'ACTIVE'");
+        if (Number(count.rows[0].count) <= 1) {
+          throw new ControlPlaneConflictError('LAST_ADMIN', 'the last active administrator cannot be deleted');
+        }
+      }
+      const result = await client.query(
+        'DELETE FROM app_users WHERE id = $1 AND version = $2 RETURNING *',
+        [userId, expectedVersion],
+      );
+      if (!result.rows[0]) throw new ControlPlaneConflictError('VERSION_CONFLICT', 'user was updated by another request');
+      return publicUserFrom(result.rows[0]);
+    });
+  }
+
   async changeOwnPassword(rawUsername, { currentPassword, newPassword }) {
     const username = normalizedUsername(rawUsername);
     const current = await this.pool.query(
