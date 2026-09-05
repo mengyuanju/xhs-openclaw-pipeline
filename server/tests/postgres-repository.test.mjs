@@ -405,7 +405,7 @@ test('image claims apply a shared retry cooldown and reuse the approved snapshot
   const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
   const claim = await repository.claimImage('node-b');
   const candidate = queries.find((query) => query.sql.includes('SELECT * FROM tasks'));
-  assert.deepEqual(candidate.values, ['IMAGE_QUEUED', 'node-b']);
+  assert.deepEqual(candidate.values, ['IMAGE_QUEUED', 'node-b', 1]);
   assert.match(candidate.sql, /error IS NULL OR last_activity_at <= now\(\) - interval '5 seconds'/u);
   assert.match(candidate.sql, /ORDER BY last_activity_at NULLS FIRST, id/u);
   assert.match(candidate.sql, /FOR UPDATE SKIP LOCKED/u);

@@ -284,6 +284,12 @@ function installRoutes(router, repository, storageRoot, analyzeCopy) {
   router.post('/v1/executions/claim-image', async (ctx) => {
     json(ctx, 200, await repository.claimImage(requireJson(ctx).nodeId));
   });
+  router.post('/v1/executions/claim-copy-batch', async (ctx) => {
+    json(ctx, 200, await repository.claimCopyBatch(requireJson(ctx)));
+  });
+  router.post('/v1/executions/claim-image-batch', async (ctx) => {
+    json(ctx, 200, await repository.claimImageBatch(requireJson(ctx)));
+  });
   router.patch('/v1/executions/:executionId/progress', async (ctx) => {
     json(ctx, 200, await repository.updateProgress(ctx.params.executionId, requireJson(ctx)));
   });

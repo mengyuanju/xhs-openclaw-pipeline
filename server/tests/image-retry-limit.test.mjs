@@ -88,7 +88,7 @@ test('image retry claim is pinned to its previous executor while fresh work rema
   };
   const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
   assert.equal(await repository.claimImage('other-node'), null);
-  assert.deepEqual(selection.values, ['IMAGE_QUEUED', 'other-node']);
+  assert.deepEqual(selection.values, ['IMAGE_QUEUED', 'other-node', 1]);
   assert.match(selection.sql, /pending_snapshot->'imageRetry'->>'nodeId' IS NULL/u);
   assert.match(selection.sql, /pending_snapshot->'imageRetry'->>'nodeId' = \$2/u);
   assert.match(selection.sql, /interval '5 seconds'/u);
