@@ -4,6 +4,13 @@ import { useRouter } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
 
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from '@/components/ui/dialog';
 
 import { apiRequest } from '../components/api-client';
 import {
@@ -31,6 +38,7 @@ export function CopyKnowledgeWorkbench({
   const [sourceCopy, setSourceCopy] = useState('');
   const [analysisPrompt, setAnalysisPrompt] = useState('');
   const [selectedLabel, setSelectedLabel] = useState('ALL');
+  const [analysisOpen, setAnalysisOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
 
@@ -58,6 +66,7 @@ export function CopyKnowledgeWorkbench({
       setAnalysisPrompt('');
       setSelectedLabel('ALL');
       setMessage(`“${result.title}”已由 DeepSeek 分析并按 ${result.labels.length} 个标签保存到中心知识库。`);
+      setAnalysisOpen(false);
       router.refresh();
     } catch (error) {
       setMessage(error instanceof Error ? `分析失败：${error.message}` : '分析失败');
@@ -67,18 +76,20 @@ export function CopyKnowledgeWorkbench({
   }
 
   const messageIsError = message.includes('失败') || message.includes('无效');
+  function changeAnalysisOpen(open: boolean) {
+    if (busy) return;
+    setAnalysisOpen(open);
+    if (open) setMessage('');
+  }
 
   return <div className="stack copy-knowledge-workbench">
-    <section className="panel prompt-card" aria-labelledby="copy-knowledge-heading">
-      <div className="panel-head">
-        <div>
-          <span className="eyebrow">Copy knowledge</span>
-          <h2 id="copy-knowledge-heading">优秀文案分析与分类</h2>
+    <Dialog open={analysisOpen} onOpenChange={changeAnalysisOpen}>
+      <DialogContent className="copy-analysis-create-dialog">
+        <div className="copy-analysis-create-dialog-head">
+          <DialogTitle>新增文案分析</DialogTitle>
+          <DialogDescription>输入一条优秀文案和分析 Prompt，中心服务会调用 DeepSeek 生成分析与分类标签，并直接保存到中心知识库。</DialogDescription>
         </div>
-        <span className="pill">新增模块</span>
-      </div>
-      <p className="subtle">输入一条优秀文案和分析 Prompt，中心服务会调用 DeepSeek 生成分析与分类标签，并直接保存到中心知识库。</p>
-      <form className="form-grid" onSubmit={analyze}>
+        <form className="form-grid copy-analysis-create-form" onSubmit={analyze}>
         <div className="field full">
           <label htmlFor="excellent-copy-source">优秀文案</label>
           <textarea
@@ -113,17 +124,20 @@ export function CopyKnowledgeWorkbench({
             onSelectPrompt={(content) => updateInput(setAnalysisPrompt, content)}
           />
         </div>
-        <div className="field full inline">
+        <div className="field full copy-analysis-create-actions">
+          <DialogClose asChild>
+            <button className="button" type="button" disabled={busy}>取消</button>
+          </DialogClose>
           <button className="button primary" type="submit" disabled={busy || !sourceCopy.trim() || !analysisPrompt.trim()}>
             {busy ? '分析并入库中…' : 'AI 分析并直接入库'}
           </button>
-          <span className="subtle">分析前会确认模型费用；模型结果校验失败时不会写入知识库。</span>
         </div>
-      </form>
-    </section>
+        </form>
+      </DialogContent>
+    </Dialog>
 
     {message && <div className={messageIsError ? 'notice error' : 'notice success'} role={messageIsError ? 'alert' : 'status'} aria-live="polite">{message}</div>}
 
-    <CopyKnowledgeLibrary items={items} labels={labels} selectedLabel={selectedLabel} onSelectLabel={setSelectedLabel} />
+    <CopyKnowledgeLibrary items={items} labels={labels} selectedLabel={selectedLabel} onSelectLabel={setSelectedLabel} onAddAnalysis={() => changeAnalysisOpen(true)} />
   </div>;
 }

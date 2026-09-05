@@ -7,7 +7,7 @@ async function source(path) {
 }
 
 describe('excellent copy analysis and classification UI', () => {
-  it('places the module in the unified knowledge page with accessible visual and copy tabs', async () => {
+  it('opens on the copy library while retaining the temporarily hidden knowledge switcher', async () => {
     const [page, promptsPage, tabs, workbench, library] = await Promise.all([
       source('app/knowledge/page.tsx'),
       source('app/prompts/page.tsx'),
@@ -20,22 +20,32 @@ describe('excellent copy analysis and classification UI', () => {
     assert.match(page, /listCopyKnowledge/u);
     assert.match(page, /listCopyKnowledgeLabels/u);
     assert.doesNotMatch(promptsPage, /CopyKnowledgeWorkbench|listCopyKnowledge/u);
+    assert.match(tabs, /SHOW_KNOWLEDGE_TYPE_SWITCHER = false/u);
+    assert.match(tabs, /useState<KnowledgeView>\('COPY'\)/u);
     assert.match(tabs, /role="tablist"/u);
     assert.match(tabs, /aria-label="知识库类型"/u);
     assert.match(tabs, />视觉</u);
     assert.match(tabs, />文案</u);
     assert.match(tabs, /role="tabpanel"/u);
-    assert.match(workbench, /优秀文案分析与分类/u);
+    assert.match(workbench, /新增文案分析/u);
     assert.match(workbench, /优秀文案/u);
     assert.match(workbench, /分析 Prompt/u);
     assert.match(workbench, /useState\(''\)/u);
+    assert.match(workbench, /<DialogTitle>新增文案分析<\/DialogTitle>/u);
     assert.match(workbench, /<CopyKnowledgeLibrary/u);
     assert.match(library, /按标签查看/u);
+    assert.match(library, /placeholder="搜索分析标题"/u);
+    assert.match(library, /normalizedSearch\(item\.title\)\.includes\(query\)/u);
+    assert.match(library, /新增分析<\/button>/u);
+    assert.match(library, /查看<\/button>/u);
+    assert.match(library, /删除这条文案分析/u);
+    assert.match(library, /method: 'DELETE'/u);
+    assert.doesNotMatch(library, /<details className="copy-knowledge-details"/u);
     assert.match(workbench, /\/api\/control-plane\/v1\/copy-knowledge\/analyze/u);
     assert.match(workbench, /AI 分析并直接入库/u);
     assert.doesNotMatch(workbench, /\/api\/copy-analyses/u);
     assert.doesNotMatch(workbench, /\/api\/copy-knowledge-items/u);
-    assert.match(library, /编辑已保存内容/u);
+    assert.match(library, /编辑<\/button>/u);
     assert.match(library, /保存修改/u);
     assert.match(library, /取消/u);
     assert.match(library, /method:\s*'PATCH'/u);
@@ -75,5 +85,7 @@ describe('excellent copy analysis and classification UI', () => {
     assert.match(updateRoute, /\.min\(1\)\.max\(12\)/u);
     assert.match(updateRoute, /maxBytes:\s*192 \* 1024/u);
     assert.match(updateRoute, /notFound\('文案知识不存在'\)/u);
+    assert.match(updateRoute, /export async function DELETE/u);
+    assert.match(updateRoute, /store\.deleteCopyKnowledge\(id\)/u);
   });
 });

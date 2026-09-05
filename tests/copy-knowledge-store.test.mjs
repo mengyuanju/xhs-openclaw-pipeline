@@ -96,6 +96,20 @@ describe('copy knowledge store', () => {
     }
   });
 
+  it('deletes a saved analysis and removes it from reusable label counts', () => {
+    const store = createAdminStore(':memory:');
+    try {
+      const created = store.createCopyKnowledge(knowledgeInput({ labels: ['方法型', '清单'] }));
+
+      assert.equal(store.deleteCopyKnowledge(created.id), true);
+      assert.equal(store.deleteCopyKnowledge(created.id), false);
+      assert.equal(store.listCopyKnowledge().pagination.totalItems, 0);
+      assert.deepEqual(store.listCopyKnowledgeLabels(), []);
+    } finally {
+      store.close();
+    }
+  });
+
   it('rejects entries without a usable classification label', () => {
     const store = createAdminStore(':memory:');
     try {

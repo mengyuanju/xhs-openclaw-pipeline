@@ -26,6 +26,10 @@ test('mobile navigation stays compact and exposes the active page', async () => 
   assert.match(navigation, /aria-controls="primary-navigation"/);
   assert.match(styles, /@media \(max-width: 760px\)[\s\S]*\.nav-list\[data-open="true"\] \{ display: grid/);
   assert.match(styles, /@media \(max-width: 760px\)[\s\S]*\.nav-group-items \{[^}]*grid-template-columns: repeat\(2/);
+  assert.match(styles, /\.nav-list \{[^}]*scrollbar-color: #5d5954 transparent;[^}]*scrollbar-width: thin;[^}]*scrollbar-gutter: stable;/);
+  assert.match(styles, /\.nav-list::-webkit-scrollbar \{ width: 6px; \}/);
+  assert.match(styles, /\.nav-list::-webkit-scrollbar-track \{ background: transparent; \}/);
+  assert.match(styles, /\.nav-list::-webkit-scrollbar-button \{[^}]*display: none;/);
 });
 
 test('application shell groups product areas and keeps page context visible', async () => {
@@ -681,6 +685,9 @@ test('the unified knowledge base exposes visual and copy modules with accessible
   assert.match(navigation, /href: '\/knowledge', label: '知识库'/);
   assert.match(topbar, /pathname\.startsWith\('\/knowledge'\)[\s\S]*title: '知识库'/u);
   assert.match(page, /视觉经验与文案经验/u);
+  assert.match(page, /SHOW_KNOWLEDGE_PAGE_INTRO = false/u);
+  assert.match(tabs, /SHOW_KNOWLEDGE_TYPE_SWITCHER = false/u);
+  assert.match(tabs, /useState<KnowledgeView>\('COPY'\)/u);
   assert.match(tabs, /role="tablist"/u);
   assert.match(tabs, /aria-selected/u);
   assert.match(tabs, /aria-controls/u);

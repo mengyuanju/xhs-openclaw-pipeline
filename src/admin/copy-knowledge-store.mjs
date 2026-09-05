@@ -204,6 +204,8 @@ export function createCopyKnowledgeStore(db) {
     SET title = ?, source_copy = ?, source_copy_sha256 = ?, analysis_prompt = ?, summary = ?, analysis = ?
     WHERE id = ?
   `);
+  const deleteItem = db.prepare('DELETE FROM copy_knowledge_items WHERE id = ?');
+  const deleteItemImports = db.prepare("DELETE FROM knowledge_imports WHERE target_id = ? AND kind = 'COPY'");
   const unlinkLabels = db.prepare('DELETE FROM copy_knowledge_item_labels WHERE item_id = ?');
   const randomItemByLabel = db.prepare(`
     SELECT i.id
@@ -365,6 +367,20 @@ export function createCopyKnowledgeStore(db) {
         attachLabels(id, normalized.labels, nowIso());
         db.exec('COMMIT');
         return itemDetails(db, [id])[0];
+      } catch (error) {
+        if (db.isTransaction) db.exec('ROLLBACK');
+        throw error;
+      }
+    },
+
+    deleteCopyKnowledge(id) {
+      if (!Number.isSafeInteger(id) || id < 1) throw new TypeError('copy knowledge id is invalid');
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        deleteItemImports.run(id);
+        const deleted = Number(deleteItem.run(id).changes) > 0;
+        db.exec('COMMIT');
+        return deleted;
       } catch (error) {
         if (db.isTransaction) db.exec('ROLLBACK');
         throw error;

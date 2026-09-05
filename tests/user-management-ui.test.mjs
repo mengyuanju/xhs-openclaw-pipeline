@@ -5,10 +5,11 @@ import test from 'node:test';
 const source = (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 
 test('central user management exposes the three fixed roles and default-password workflow', async () => {
-  const [page, manager, profile, migration] = await Promise.all([
+  const [page, manager, profile, styles, migration] = await Promise.all([
     source('app/users/page.tsx'),
     source('app/users/user-manager.tsx'),
     source('app/profile/profile-manager.tsx'),
+    source('app/globals.css'),
     source('server/migrations/0005_user_management.sql'),
   ]);
   assert.match(page, /用户管理/u);
@@ -16,6 +17,7 @@ test('central user management exposes the three fixed roles and default-password
   assert.match(manager, /初始密码为 123456/u);
   assert.match(profile, /currentPassword/u);
   assert.match(profile, /newPassword/u);
+  assert.match(styles, /\.profile-password-grid \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);[^}]*align-items: start;[^}]*max-width: 560px;/u);
   assert.match(migration, /CREATE TABLE IF NOT EXISTS app_users/u);
 });
 

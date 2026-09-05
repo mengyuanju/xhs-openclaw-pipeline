@@ -66,6 +66,12 @@ export function createRemoteKnowledgeStore(client) {
       const item = (await client.listKnowledge()).find((i) => i.id === id && i.kind === 'COPY');
       return item ? saveCopy(input, copyItem(item), latest(item)?.id) : null;
     },
+    async deleteCopyKnowledge(id) {
+      const item = (await client.listKnowledge()).find((i) => i.id === id && i.kind === 'COPY' && i.status !== 'ARCHIVED');
+      if (!item) return false;
+      await client.retireKnowledge(id);
+      return true;
+    },
     listCopyAnalysisPrompts: () => client.listCopyAnalysisPrompts(),
     createCopyAnalysisPrompt: (input) => client.createCopyAnalysisPrompt(input),
     replaceCopyAnalysisPrompt: (id, input) => client.replaceCopyAnalysisPrompt(id, input),

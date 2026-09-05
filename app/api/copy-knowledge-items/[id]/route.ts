@@ -25,3 +25,12 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     return ok(updated);
   });
 }
+
+export async function DELETE(request: Request, context: { params: Promise<{ id: string }> }) {
+  return apiHandler(request, { mutation: true, roles: ['ADMIN', 'REVIEWER'] }, async (session) => {
+    const id = parsePositiveId((await context.params).id);
+    const deleted = await withKnowledgeStore((store: any) => store.deleteCopyKnowledge(id), session);
+    if (!deleted) notFound('文案知识不存在');
+    return ok({ id });
+  });
+}

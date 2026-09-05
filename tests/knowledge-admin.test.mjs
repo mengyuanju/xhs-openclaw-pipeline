@@ -32,6 +32,7 @@ test('remote knowledge adapter maps complete copy records and uses an atomic rev
   const store = createRemoteKnowledgeStore({
     listKnowledge: async () => [remote],
     createKnowledgeVersion: async (input) => { calls.push(input); return { itemId: 5, versionId: 11, status: 'PUBLISHED' }; },
+    retireKnowledge: async (id) => { calls.push({ retiredId: id }); },
   });
   assert.equal((await store.listCopyKnowledge()).data[0].sourceCopy, '原文');
   await store.updateCopyKnowledge(5, { ...item, title: '修改' });
@@ -40,4 +41,6 @@ test('remote knowledge adapter maps complete copy records and uses an atomic rev
   assert.equal(calls[0].expectedVersionId, 10);
   assert.equal(calls[0].content.createdAt, item.createdAt);
   assert.equal(calls[0].content.analysisModel, 'fake');
+  assert.equal(await store.deleteCopyKnowledge(5), true);
+  assert.equal(calls[1].retiredId, 5);
 });
