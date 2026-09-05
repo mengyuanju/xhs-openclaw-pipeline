@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { fork } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -58,4 +60,39 @@ test('rate limiting shares a timed cooldown without unlimited automatic retries'
   await assert.rejects(a.run(async () => { throw Object.assign(new Error('429'), { code: 'CODEX_RATE_LIMITED' }); }), { code: 'CODEX_RATE_LIMITED' });
   assert.throws(() => b.assertAvailable(), { code: 'CODEX_RATE_LIMITED' });
   assert.ok(b.status().retryAt > Date.now());
+});
+
+test('separate Node processes obey the same concurrency limits', { timeout: 15_000 }, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'xhs-codex-process-limits-'));
+  const databasePath = join(root, 'limits.sqlite');
+  const children = [];
+  t.after(async () => {
+    for (const child of children) if (child.exitCode === null && child.signalCode === null) { const closed = once(child, 'close'); child.kill(); await closed; }
+    await rm(root, { recursive: true, force: true });
+  });
+  for (const image of ['image', 'text', 'image', 'text']) {
+    const child = fork(new URL('./fixtures/codex-limit-child.mjs', import.meta.url), [databasePath, image],
+      { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true });
+    children.push(child);
+    assert.equal((await once(child, 'message'))[0].type, 'ready');
+  }
+  const entered = children.map((child) => once(child, 'message'));
+  children[0].send('go'); children[1].send('go');
+  await Promise.all(entered.slice(0, 2));
+  children[2].send('go'); children[3].send('go');
+  let queuedEntered = false;
+  void Promise.race(entered.slice(2)).then(() => { queuedEntered = true; });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(queuedEntered, false);
+  const limits = createCodexRuntime({ databasePath });
+  assert.equal(limits.status().active, 2);
+  assert.equal(limits.status().images, 1);
+  children[0].send('release'); children[1].send('release');
+  await Promise.all(entered.slice(2));
+  assert.equal(limits.status().active, 2);
+  assert.equal(limits.status().images, 1);
+  const closed = children.slice(2).map((child) => once(child, 'close'));
+  children[2].send('release'); children[3].send('release');
+  await Promise.all(closed);
+  assert.equal(limits.status().active, 0);
 });

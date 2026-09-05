@@ -8,7 +8,7 @@ import sharp from 'sharp';
 import { effectiveModelApiConfig, validatedCopyGenerationThinking, validatedModelRef } from './model-api-config.mjs';
 import { traceModelCall } from './model-call-trace.mjs';
 import { codexFailure, parseCodexOutput } from './codex-protocol.mjs';
-import { codexChildEnvironment, resolveCodexExecutable, runCodexProcess } from './codex-process.mjs';
+import { checkCodexLogin, codexChildEnvironment, resolveCodexExecutable, runCodexProcess } from './codex-process.mjs';
 import { codexRuntimePath, createCodexRuntime } from './codex-runtime.mjs';
 import { withWebSearchProvider } from './web-search-service.mjs';
 
@@ -38,6 +38,14 @@ function timeout(value, minimum = 5000, maximum = 540_000) {
 function within(root, path) {
   const relation = relative(root, path);
   return relation !== '' && !relation.startsWith('..') && !isAbsolute(relation);
+}
+
+function validSearchResult(item) {
+  if (!item || typeof item.title !== 'string' || typeof item.snippet !== 'string' || typeof item.url !== 'string') return false;
+  try {
+    const url = new URL(item.url);
+    return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password;
+  } catch { return false; }
 }
 
 async function prepareImages(inputPaths, directory, { maximum = 5, preview = true } = {}) {
@@ -115,6 +123,7 @@ export function createCodexClient({
         const result = await asyncRunner(command(), args, { input: prompt, cwd: directory,
           env: codexChildEnvironment(environment, image ? (config.imageProxyUrl || config.modelProxyUrl) : config.modelProxyUrl),
           timeoutMs, signal, onSpawn });
+        signal?.throwIfAborted();
         if (result.error?.name === 'AbortError') throw result.error;
         if (result.error || result.status !== 0) {
           // A failed turn can contain a more precise structured error than stderr.
@@ -124,7 +133,7 @@ export function createCodexClient({
           throw codexFailure({ code: result.error?.code, message: result.stderr || result.error?.message || `exit ${result.status}` },
             result.error?.code?.startsWith('CODEX_') ? result.error.code : 'CODEX_EXEC_FAILED');
         }
-        const parsed = parseCodexOutput(result.stdout);
+        const parsed = parseCodexOutput(result.stdout, { requireText: !image });
         capture.response({ ...parsed, images: parsed.images, usage: parsed.usage });
         const execution = { runtime: 'codex-exec', sessionId: parsed.threadId, runId, usage: parsed.usage };
         if (image) {
@@ -135,13 +144,19 @@ export function createCodexClient({
         try { answer = JSON.parse(parsed.rawText); }
         catch { throw codexFailure({ message: 'final response is not valid JSON' }, 'MODEL_OUTPUT_INCOMPLETE'); }
         if (search) {
-          if (!parsed.searched || !Array.isArray(answer.results) || !answer.results.length || typeof answer.summary !== 'string') {
+          if (!parsed.searched || !Array.isArray(answer?.results) || !answer.results.length
+            || answer.results.length > 10 || !answer.results.every(validSearchResult) || typeof answer.summary !== 'string') {
             throw codexFailure({ message: 'missing live search evidence or sources' }, 'CODEX_SEARCH_UNVERIFIED');
           }
           return { provider: 'codex', result: answer, execution };
         }
         if (typeof answer?.rawText !== 'string' || !answer.rawText.trim()) throw codexFailure({}, 'MODEL_OUTPUT_INCOMPLETE');
         return { rawText: answer.rawText, model: resolvedModel, thinking: effort, provider: 'codex', execution };
+      } catch (error) {
+        if (image && !signal?.aborted && !error.code?.startsWith('CODEX_')) {
+          throw Object.assign(codexFailure({ message: error.message }, 'CODEX_IMAGE_UNVERIFIED'), { cause: error });
+        }
+        throw error;
       } finally { await rm(directory, { recursive: true, force: true }); }
     }), { image, signal });
   }
@@ -156,16 +171,15 @@ export function createCodexClient({
       const image = modelName(imageModel, config.imageModel);
       if (image !== 'openai/gpt-image-2') throw new TypeError('Codex built-in image generation requires openai/gpt-image-2');
       limits.assertAvailable();
-      const result = runner(command(), ['-c', 'forced_login_method="chatgpt"', 'login', 'status'],
-        { shell: false, windowsHide: true, encoding: 'utf8', timeout: timeoutMs, env: codexChildEnvironment(environment), maxBuffer: 1024 * 1024 });
-      if (result.error || result.status !== 0 || !/logged in using ChatGPT/iu.test(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)) {
-        throw codexFailure({ code: 'authentication_required', message: 'codex login status must report ChatGPT authentication' });
-      }
+      checkCodexLogin({ environment, executable: command(), runner, timeoutMs });
       return { provider: 'codex', textModel: text, imageModel: image, imageCapability: 'requires-live-verification' };
     },
     async runText(input) { return execute({ ...input, prompt: promptText(input.prompt), operation: 'TEXT' }); },
     async runReview(input) { return execute({ ...input, prompt: promptText(input.prompt), model: input.model ?? configuration().reviewModel, operation: 'REVIEW' }); },
-    async runVision(input) { return execute({ ...input, prompt: promptText(input.prompt, 1, 30_000), timeoutMs: input.timeoutMs ?? 300_000, operation: 'VISION' }); },
+    async runVision(input) {
+      if (!Array.isArray(input.inputPaths) || input.inputPaths.length < 1 || input.inputPaths.length > 5) throw new RangeError('vision requires 1-5 input images');
+      return execute({ ...input, prompt: promptText(input.prompt, 1, 30_000), timeoutMs: input.timeoutMs ?? 300_000, operation: 'VISION' });
+    },
     async runWebSearch({ query, provider = 'codex', limit = 5, timeoutMs = 120_000, signal }) {
       promptText(query, 1, 500);
       if (provider !== 'codex' || !Number.isInteger(limit) || limit < 1 || limit > 10) throw new TypeError('Codex search provider/limit is invalid');

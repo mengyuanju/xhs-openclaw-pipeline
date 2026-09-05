@@ -1,5 +1,14 @@
 import { safeTraceText } from './model-call-trace.mjs';
 
+export function codexErrorCode(error) {
+  const seen = new Set();
+  for (let current = error; current && typeof current === 'object' && !seen.has(current); current = current.cause) {
+    seen.add(current);
+    if (typeof current.code === 'string' && current.code.startsWith('CODEX_')) return current.code;
+  }
+  return null;
+}
+
 export function codexFailure(error = {}, fallbackCode = 'CODEX_EXEC_FAILED') {
   // Inspect transport metadata only; never classify words in a model's answer.
   const detail = [error.code, error.type, error.kind, error.message].filter(Boolean).join(' ');
@@ -20,7 +29,7 @@ export function codexFailure(error = {}, fallbackCode = 'CODEX_EXEC_FAILED') {
   });
 }
 
-export function parseCodexOutput(stdout) {
+export function parseCodexOutput(stdout, { requireText = true } = {}) {
   let events;
   try {
     events = String(stdout ?? '').split(/\r?\n/u).filter((line) => line.trim()).map((line) => JSON.parse(line));
@@ -58,6 +67,6 @@ export function parseCodexOutput(stdout) {
       if (typeof path === 'string' && path) images.push({ id: item.id, path });
     }
   }
-  if (!completed || !rawText.trim()) throw codexFailure({ message: 'missing completed turn or final message' }, 'MODEL_OUTPUT_INCOMPLETE');
+  if (!completed || (requireText && !rawText.trim())) throw codexFailure({ message: 'missing completed turn or final message' }, 'MODEL_OUTPUT_INCOMPLETE');
   return { rawText, threadId, usage, searched, images };
 }

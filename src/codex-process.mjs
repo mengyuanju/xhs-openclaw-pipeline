@@ -1,4 +1,5 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { codexFailure } from './codex-protocol.mjs';
 import { existsSync } from 'node:fs';
 import { join, delimiter, isAbsolute } from 'node:path';
 
@@ -35,6 +36,16 @@ export function resolveCodexExecutable(environment = process.env) {
   const found = candidates.find((path) => isAbsolute(path) && existsSync(path));
   if (!found) throw new Error('Codex executable not found; install Codex CLI or set XHS_CODEX_BIN to its native executable');
   return found;
+}
+
+export function checkCodexLogin({ environment = process.env, executable, runner = spawnSync, timeoutMs = 15_000 } = {}) {
+  const command = executable ?? resolveCodexExecutable(environment);
+  const result = runner(command, ['-c', 'forced_login_method="chatgpt"', 'login', 'status'],
+    { shell: false, windowsHide: true, encoding: 'utf8', timeout: timeoutMs, env: codexChildEnvironment(environment), maxBuffer: 1024 * 1024 });
+  if (result.error || result.status !== 0 || !/logged in using ChatGPT/iu.test(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)) {
+    throw codexFailure({ code: 'authentication_required', message: 'codex login status must report ChatGPT authentication' });
+  }
+  return { authentication: 'chatgpt' };
 }
 
 function terminateTree(child) {

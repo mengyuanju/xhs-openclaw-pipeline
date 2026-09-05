@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
@@ -95,4 +95,57 @@ test('invalid image bytes and non-OpenAI models fail before success can be repor
   });
   await assert.rejects(client.runText({ prompt: 'hello', model: 'other/model' }), /openai/u);
   await assert.rejects(client.runImage({ prompt: 'Generate a clear infographic.', outputPath: join(root, 'bad.png') }));
+});
+
+test('image edits attach copies, accept image-only native completion and never overwrite the target', async (t) => {
+  let attachment;
+  const { client, root } = await fixture(t, async (_command, args, options) => {
+    attachment = args[args.indexOf('--image') + 1];
+    assert.equal((await sharp(attachment).metadata()).format, 'png');
+    const path = join(options.cwd, 'edited.png');
+    await sharp(attachment).negate().png().toFile(path);
+    return { status: 0, stdout: [
+      { type: 'item.completed', item: { type: 'image_generation', id: 'i', status: 'completed', saved_path: path } },
+      { type: 'turn.completed' },
+    ].map(JSON.stringify).join('\n') };
+  });
+  const target = join(root, 'target.png');
+  await sharp({ create: { width: 24, height: 32, channels: 3, background: '#aabbcc' } }).png().toFile(target);
+  const original = await readFile(target);
+  const result = await client.runImageEdit({ prompt: 'Make the background lighter.', inputPaths: [target], outputPath: join(root, 'edited.png') });
+  assert.equal(result.provider, 'codex-image-edit');
+  assert.deepEqual(await readFile(target), original);
+  await assert.rejects(readFile(attachment), { code: 'ENOENT' });
+  await assert.rejects(client.runImageEdit({ prompt: 'Make the background lighter.', inputPaths: [target], outputPath: target }));
+  assert.deepEqual(await readFile(target), original);
+});
+
+test('image paths outside the native output roots and stale files are rejected', async (t) => {
+  let path;
+  let stale = false;
+  const { client, root } = await fixture(t, async (_command, _args, options) => {
+    if (stale) {
+      path = join(options.cwd, 'stale.png');
+      await sharp({ create: { width: 24, height: 32, channels: 3, background: '#aabbcc' } }).png().toFile(path);
+      await utimes(path, new Date(0), new Date(0));
+    }
+    return success({ rawText: 'done' }, [{ type: 'image_generation', id: 'i', status: 'completed', saved_path: path }]);
+  });
+  path = join(root, 'private.png');
+  await sharp({ create: { width: 24, height: 32, channels: 3, background: '#aabbcc' } }).png().toFile(path);
+  for (const value of [false, true]) {
+    stale = value;
+    await assert.rejects(client.runImage({ prompt: 'Generate a clear infographic.', outputPath: join(root, 'output.png') }), { code: 'CODEX_IMAGE_UNVERIFIED' });
+  }
+});
+
+test('vision requires an attachment and search rejects unsafe source URLs', async (t) => {
+  let calls = 0;
+  const { client } = await fixture(t, async () => {
+    calls++;
+    return success({ summary: 'result', results: [{ title: 'bad', url: 'javascript:alert(1)', snippet: 'bad' }] }, [{ type: 'web_search' }]);
+  });
+  await assert.rejects(client.runVision({ prompt: 'analyse' }), /input images/u);
+  assert.equal(calls, 0);
+  await assert.rejects(client.runWebSearch({ query: 'testing' }), { code: 'CODEX_SEARCH_UNVERIFIED' });
 });
