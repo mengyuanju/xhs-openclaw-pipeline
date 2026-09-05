@@ -255,7 +255,7 @@ export class PostgresControlPlaneRepository {
 
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
-    return { ok: true, databaseTime: result.rows[0].now };
+    return { ok: true, databaseTime: result.rows[0].now, capabilities: { executionRetryControl: true, imageResume: true } };
   }
 
   async registerNode({ nodeId: rawNodeId, name: rawName, imageWorkerEnabled = false }) {
@@ -512,7 +512,7 @@ export class PostgresControlPlaneRepository {
       const queuedState = kind === 'COPY' ? 'COPY_QUEUED' : 'IMAGE_QUEUED';
       const runningState = kind === 'COPY' ? 'COPY_RUNNING' : 'IMAGE_RUNNING';
       const ownership = kind === 'COPY' ? 'AND copy_executor_node_id = $2'
-        : "AND (pending_snapshot->'imageRetry'->>'nodeId' IS NULL OR pending_snapshot->'imageRetry'->>'nodeId' = $2)";
+        : "AND (pending_snapshot->'imageRetry'->>'nodeId' IS NULL OR pending_snapshot->'imageRetry'->>'nodeId' = $2) AND (pending_snapshot->'imageRecovery'->>'nodeId' IS NULL OR pending_snapshot->'imageRecovery'->>'nodeId' = $2)";
       // Retry on the original image node, with a cooldown between complete executions.
       const retryDelay = kind === 'IMAGE'
         ? "AND (error IS NULL OR last_activity_at <= now() - interval '5 seconds')" : '';
@@ -725,7 +725,8 @@ export class PostgresControlPlaneRepository {
     });
   }
 
-  async failExecution(rawExecutionId, rawError) {
+  async failExecution(rawExecutionId, rawError, { autoRetry = true } = {}) {
+    if (typeof autoRetry !== 'boolean') throw new TypeError('autoRetry must be a boolean');
     const executionId = normalizeUuid(rawExecutionId, 'executionId');
     const message = redactExecutionError(rawError);
     // Both progress columns are varchar(500); keep longer diagnostics in error (text).
@@ -733,17 +734,19 @@ export class PostgresControlPlaneRepository {
     return transaction(this.pool, async (client) => {
       const execution = await lockedExecution(client, executionId);
       const isImage = execution.kind === 'IMAGE';
+      const manual = isImage && !autoRetry;
       // The executor reports only after its entire run (including internal retries) fails.
       // Persist the budget in the next execution's snapshot, not in process-local memory.
       const failedAttempts = isImage ? (execution.snapshot?.imageRetry?.failedAttempts ?? 0) + 1 : 0;
       const exhausted = isImage && failedAttempts >= MAX_IMAGE_ATTEMPTS;
-      const nextState = isImage ? (exhausted ? 'COPY_REVIEW_PENDING' : 'IMAGE_QUEUED') : 'COPY_FAILED';
-      const retrySnapshot = isImage && !exhausted ? {
+      const nextState = isImage ? (manual ? 'IMAGE_FAILED' : exhausted ? 'COPY_REVIEW_PENDING' : 'IMAGE_QUEUED') : 'COPY_FAILED';
+      const retrySnapshot = isImage && !exhausted && !manual ? {
         ...execution.snapshot,
         imageRetry: { failedAttempts, nodeId: execution.node_id },
       } : null;
       const taskMessage = isImage
-        ? exhausted ? '生图3次失败，已停止自动重试，等待人工文案审核'
+        ? manual ? '执行失败，已停止自动重试；请检查额度与检查点后人工续跑'
+          : exhausted ? '生图3次失败，已停止自动重试，等待人工文案审核'
           : `生图第${failedAttempts}次失败，等待原执行机重试（最多${MAX_IMAGE_ATTEMPTS}次）`
         : progressMessage;
       await client.query(`
@@ -758,9 +761,9 @@ export class PostgresControlPlaneRepository {
         `, [executionId]);
       }
       const lifecycle = isImage
-        ? `current_stage = '${exhausted ? 'IMAGE_RETRY_EXHAUSTED' : 'IMAGE_QUEUED'}', progress_percent = 0,
-           current_image_run_id = ${exhausted ? 'current_image_run_id' : 'NULL'}, pending_snapshot = $6,
-           execution_started_at = NULL, finished_at = ${exhausted ? 'now()' : 'NULL'},`
+        ? `current_stage = '${manual ? 'FAILED' : exhausted ? 'IMAGE_RETRY_EXHAUSTED' : 'IMAGE_QUEUED'}', progress_percent = 0,
+           current_image_run_id = ${exhausted || manual ? 'current_image_run_id' : 'NULL'}, pending_snapshot = $6,
+           execution_started_at = NULL, finished_at = ${exhausted || manual ? 'now()' : 'NULL'},`
         : "current_stage = 'FAILED', finished_at = now(),";
       const values = [execution.task_id, nextState, taskMessage, message, executionId];
       if (isImage) values.push(retrySnapshot);
@@ -789,11 +792,13 @@ export class PostgresControlPlaneRepository {
         throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'only running or failed work can be retried');
       }
       let snapshot = null;
+      let sourceExecution = null;
       if (task.current_execution_id) {
         const execution = await client.query(`
           SELECT * FROM task_executions WHERE id = $1 FOR UPDATE
         `, [task.current_execution_id]);
         if (execution.rows[0]?.status === 'RUNNING') {
+          sourceExecution = execution.rows[0];
           snapshot = execution.rows[0].snapshot;
           await client.query(`
             UPDATE task_executions SET
@@ -811,11 +816,22 @@ export class PostgresControlPlaneRepository {
         }
       } else if (!useLatestConfig) {
         const previous = await client.query(`
-          SELECT snapshot FROM task_executions
+          SELECT id, node_id, snapshot FROM task_executions
           WHERE task_id = $1 AND kind = $2
           ORDER BY started_at DESC LIMIT 1
         `, [taskId, isCopy ? 'COPY' : 'IMAGE']);
         snapshot = previous.rows[0]?.snapshot ?? null;
+        sourceExecution = previous.rows[0];
+      }
+      if (isImage && !useLatestConfig) {
+        if (!snapshot || !sourceExecution?.id || !sourceExecution.node_id) {
+          throw new ControlPlaneConflictError('IMAGE_RECOVERY_UNAVAILABLE', '原生图执行快照缺失，无法安全续跑；请恢复快照或明确使用最新配置重新生成');
+        }
+        const priorRunIds = snapshot.imageRecovery?.runIds ?? [];
+        snapshot = { ...snapshot, imageRecovery: {
+          nodeId: sourceExecution.node_id,
+          runIds: [...new Set([sourceExecution.id, ...priorRunIds])],
+        } };
       }
       const nextState = isCopy ? 'COPY_QUEUED' : 'IMAGE_QUEUED';
       const updated = await client.query(`

@@ -206,7 +206,8 @@ function installRoutes(router, repository, storageRoot) {
     json(ctx, 200, await repository.completeImage(ctx.params.executionId, requireJson(ctx).result));
   });
   router.post('/v1/executions/:executionId/fail', async (ctx) => {
-    json(ctx, 200, await repository.failExecution(ctx.params.executionId, requireJson(ctx).error));
+    const body = requireJson(ctx);
+    json(ctx, 200, await repository.failExecution(ctx.params.executionId, body.error, { autoRetry: body.autoRetry }));
   });
   router.put('/v1/executions/:executionId/assets', async (ctx) => {
     const result = await uploadAsset({

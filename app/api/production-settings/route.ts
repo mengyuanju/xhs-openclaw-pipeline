@@ -25,6 +25,7 @@ const dotsModelSchema = z.string().trim().min(1).max(200)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u, 'Dots 模型名称格式无效');
 
 const modelApiPatchSchema = z.object({
+  agentProvider: z.enum(['CODEX', 'OPENCLAW']).nullable().optional(),
   textModel: modelRefSchema.nullable().optional(),
   screeningModel: modelRefSchema.nullable().optional(),
   reviewModel: modelRefSchema.nullable().optional(),

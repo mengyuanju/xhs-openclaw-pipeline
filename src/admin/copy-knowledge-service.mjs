@@ -1,4 +1,4 @@
-import { createOpenClawClient } from '../openclaw.mjs';
+import { createAgentClient as createOpenClawClient } from '../agent-client.mjs';
 import { normalizeCopyKnowledgeLabels } from './copy-knowledge-store.mjs';
 
 function requiredText(value, name, maxLength) {

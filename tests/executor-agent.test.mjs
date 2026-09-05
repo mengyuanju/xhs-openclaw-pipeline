@@ -77,8 +77,9 @@ test('executor readiness completes control-plane and work-directory checks befor
   const calls = [];
   try {
     const result = await checkExecutorReady({
+      modelClient: { checkReady() {} },
       controlPlane: {
-        health: async () => { calls.push('health'); return { ok: true }; },
+        health: async () => { calls.push('health'); return { ok: true, capabilities: { executionRetryControl: true } }; },
       },
       workRoot,
     });
@@ -88,6 +89,15 @@ test('executor readiness completes control-plane and work-directory checks befor
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('Codex readiness rejects older centers before login or task claiming', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'xhs-codex-old-center-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await assert.rejects(checkExecutorReady({ workRoot: root, environment: { XHS_AGENT_PROVIDER: 'CODEX' },
+    controlPlane: { health: async () => ({ ok: true }) },
+    modelClient: { checkReady() { assert.fail('old center must be rejected first'); } },
+  }), /executionRetryControl/u);
 });
 
 test('executor retries an unreported failure before claiming more work, without rerunning the model', async () => {

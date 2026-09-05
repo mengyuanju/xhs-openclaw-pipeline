@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { processNext } from './pipeline.mjs';
 import { createQueue } from './queue.mjs';
 import { effectiveModelApiConfig } from './model-api-config.mjs';
-import { createOpenClawClient } from './openclaw.mjs';
+import { createAgentClient as createOpenClawClient } from './agent-client.mjs';
 import { createAdminStore } from './admin/admin-store.mjs';
 import { processNextImageEdit } from './admin/image-edit-worker.mjs';
 import { createAdminWorkerIntegration } from './admin/worker-service.mjs';
@@ -137,6 +137,7 @@ export async function main(
           assetRoot,
           workerId,
           mock,
+          openclaw,
         });
       }
       writeJson(stdout, result);
@@ -191,6 +192,7 @@ export async function main(
         failed: 0,
       };
       let authenticationRequired = false;
+      let pauseReason = 'authentication_required';
       while (summary.processed < max) {
         const slots = Math.min(concurrency, max - summary.processed);
         const contentResults = await Promise.all(Array.from({ length: slots }, (_value, slot) =>
@@ -219,16 +221,29 @@ export async function main(
             recovery?.manualRequired === true).length;
           summary.processed += claimedContent.filter(({ status }) =>
             status === 'completed' || status === 'failed').length;
-          authenticationRequired = claimedContent.some(({ recovery }) =>
-            recovery?.failureClass === 'AUTH' && recovery?.haltWorker === true);
+          authenticationRequired = claimedContent.some(({ recovery }) => recovery?.haltWorker === true);
+          if (claimedContent.some(({ recovery }) => recovery?.reason === 'quota_exhausted')) pauseReason = 'quota_exhausted';
           if (authenticationRequired) break;
           continue;
         }
         if (blockedContent.some(({ haltWorker }) => haltWorker === true)) {
           authenticationRequired = true;
+          if (blockedContent.some(({ reason }) => reason === 'CODEX_QUOTA_EXHAUSTED')) pauseReason = 'quota_exhausted';
           break;
         }
-        const edit = await processImageEditTask({ store: adminStore, assetRoot, workerId, mock });
+        if (blockedContent.some(({ reason }) => reason === 'CODEX_RATE_LIMITED')) {
+          const retryAt = Math.max(...blockedContent.map((item) => item.retryAt || Date.now() + 60_000));
+          await sleep(Math.max(1, Math.min(retryAt - Date.now(), 60_000)));
+          continue;
+        }
+        const edit = await processImageEditTask({ store: adminStore, assetRoot, workerId, mock, openclaw });
+        if (edit.haltWorker) {
+          if (edit.status === 'failed') { summary.failed++; summary.processed++; summary.attempted++; }
+          authenticationRequired = true;
+          if (edit.reason === 'CODEX_QUOTA_EXHAUSTED') pauseReason = 'quota_exhausted';
+          break;
+        }
+        if (edit.status === 'blocked') { await sleep(60_000); continue; }
         if (edit.status === 'idle') {
           const delayMs = queue.nextClaimDelayMs();
           if (delayMs === null) break;
@@ -240,7 +255,7 @@ export async function main(
         if (edit.status === 'completed') summary.imageEditsCompleted += 1;
         else summary.failed += 1;
       }
-      if (authenticationRequired) summary.status = 'authentication_required';
+      if (authenticationRequired) summary.status = pauseReason;
       else if (summary.failed > 0) summary.status = 'completed_with_failures';
       writeJson(stdout, summary);
       return authenticationRequired || summary.failed > 0 ? 1 : 0;

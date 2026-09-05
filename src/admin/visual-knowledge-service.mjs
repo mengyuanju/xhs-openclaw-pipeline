@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import sharp from 'sharp';
 
-import { createOpenClawClient } from '../openclaw.mjs';
+import { createAgentClient as createOpenClawClient } from '../agent-client.mjs';
 import {
   assertVisualPromptVariables,
   VISUAL_GENERATION_TARGETS,

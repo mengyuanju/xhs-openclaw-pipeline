@@ -1,6 +1,6 @@
 import { createDotsChatClient } from './dots-chat-client.mjs';
 import { effectiveModelApiConfig } from './model-api-config.mjs';
-import { createOpenClawClient } from './openclaw.mjs';
+import { createAgentClient as createOpenClawClient } from './agent-client.mjs';
 import { withWebSearchProvider } from './web-search-service.mjs';
 
 export function createCopyGenerationClient({

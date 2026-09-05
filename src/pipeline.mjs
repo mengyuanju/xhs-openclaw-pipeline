@@ -5,7 +5,7 @@ import { join, relative, resolve } from 'node:path';
 import { renderDeliveryImages } from './images.mjs';
 import { createImageAlignmentValidator, imagePageUsesPortrait } from './image-alignment.mjs';
 import { effectiveModelApiConfig } from './model-api-config.mjs';
-import { createOpenClawClient } from './openclaw.mjs';
+import { createAgentClient as createOpenClawClient } from './agent-client.mjs';
 import { createDeliveryQualityAssessor } from './quality-assessment.mjs';
 import { fullPageInstructionForLayout } from './layout-contract.mjs';
 import {
@@ -357,6 +357,13 @@ export async function processNext({
       reason: 'authentication_required',
       haltWorker: true,
     };
+  }
+  if (!mock) {
+    try { openclaw?.assertAvailable?.(); }
+    catch (error) {
+      if (!error.code?.startsWith('CODEX_')) throw error;
+      return { status: 'blocked', reason: error.code, haltWorker: error.code !== 'CODEX_RATE_LIMITED', retryAt: error.retryAt };
+    }
   }
   const task = queue.claimNext({ workerId, leaseMs });
   if (!task) return { status: 'idle' };
@@ -870,7 +877,7 @@ export async function processNext({
       imageCount,
       productionSettings,
       generatedAt: new Date().toISOString(),
-      text: { provider: mock ? 'mock' : 'openclaw', model: textModel },
+      text: { provider: mock ? 'mock' : (client.provider ?? 'openclaw'), model: textModel },
       research: researchSnapshot ? {
         status: researchSnapshot.status,
         provider: researchSnapshot.provider,
@@ -879,7 +886,7 @@ export async function processNext({
       } : null,
       stageReviews,
       visualPlan: {
-        provider: mock ? 'mock' : 'openclaw',
+        provider: mock ? 'mock' : (client.provider ?? 'openclaw'),
         model: visualPlanModel,
         sha256: visualPlanSha256,
       },

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { codexErrorCode } from './codex-protocol.mjs';
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 
@@ -139,6 +140,7 @@ function sanitizedFailureDetail(error) {
 }
 
 function isTransientModelFailure(error) {
+  if (codexErrorCode(error)) return false;
   const detail = errorChainText(error);
   return !AUTHORIZATION_FAILURE.test(detail) && TRANSIENT_MODEL_FAILURE.test(detail);
 }

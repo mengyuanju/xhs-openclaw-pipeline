@@ -6,7 +6,7 @@ import {
   runQueryReview,
   runTextReview,
 } from './content-stage-review.mjs';
-import { createOpenClawClient } from './openclaw.mjs';
+import { createAgentClient as createOpenClawClient } from './agent-client.mjs';
 import {
   buildPostPrompt,
   filterAllowedSourceReferences,

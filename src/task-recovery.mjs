@@ -1,3 +1,5 @@
+import { codexErrorCode } from './codex-protocol.mjs';
+
 const AUTH_FAILURE = /\b401\b|token[_ -]?invalidated|invalid[_ -]?token|authentication (?:failed|unavailable|required)|oauth[^\n]{0,80}(?:expired|invalid|unavailable)|login required|not authenticated|unauthorized/iu;
 const TRANSIENT_FAILURE = /\b(?:ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET|429)\b|fetch failed|connection error|other side closed|socket hang up|timed? out|server_is_overloaded|service_unavailable|temporar(?:y|ily) unavailable|temporary (?:transport|network|image|model).*?(?:failure|outage)|model service[^\n]{0,80}unavailable|rate limit/iu;
 const QUALITY_FAILURE = /质量门禁未通过|(?:三|3)分(?:质量门禁|终审).*未通过|quality gate.*(?:blocked|failed)|final review.*(?:blocked|failed)/iu;
@@ -24,6 +26,11 @@ function nonNegativeInteger(value, name) {
 }
 
 export function classifyTaskFailure(error) {
+  const code = codexErrorCode(error);
+  if (code === 'CODEX_AUTH_REQUIRED') return 'AUTH';
+  if (code === 'CODEX_QUOTA_EXHAUSTED') return 'CONFIGURATION';
+  if (code === 'CODEX_RATE_LIMITED') return 'TRANSIENT';
+  if (code) return 'UNKNOWN';
   const text = failureText(error);
   if (AUTH_FAILURE.test(text)) return 'AUTH';
   if (TRANSIENT_FAILURE.test(text)) return 'TRANSIENT';
@@ -41,6 +48,10 @@ export function planTaskRecovery({
   const classAttempts = nonNegativeInteger(recoveryAttempts, 'recoveryAttempts');
   const totalAttempts = nonNegativeInteger(recoveryTotalAttempts, 'recoveryTotalAttempts');
   const failureClass = classifyTaskFailure(error);
+
+  if (codexErrorCode(error) === 'CODEX_QUOTA_EXHAUSTED') {
+    return { failureClass, action: 'MANUAL', delayMs: null, manualRequired: true, haltWorker: true, reason: 'quota_exhausted' };
+  }
 
   if (failureClass === 'AUTH') {
     return {
@@ -68,7 +79,7 @@ export function planTaskRecovery({
     return {
       failureClass,
       action: 'RETRY',
-      delayMs: rule.delaysMs[classAttempts],
+      delayMs: codexErrorCode(error) === 'CODEX_RATE_LIMITED' ? 65_000 : rule.delaysMs[classAttempts],
       manualRequired: false,
       haltWorker: false,
       reason: `${failureClass.toLowerCase()}_failure`,

@@ -1,6 +1,6 @@
 import { ApiError } from '../../../src/admin/http.mjs';
 import { withAdminStore } from '../../../src/admin/runtime.mjs';
-import { createOpenClawClient } from '../../../src/openclaw.mjs';
+import { createAgentClient as createOpenClawClient } from '../../../src/agent-client.mjs';
 import {
   StandaloneImageAlignmentError,
   StandaloneImageCancellationError,

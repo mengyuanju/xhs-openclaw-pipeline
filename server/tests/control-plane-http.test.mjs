@@ -22,6 +22,18 @@ async function withServer(repository, action, { storageRoot = 'test-storage' } =
   }
 }
 
+test('failure HTTP route forwards optional retry control without changing legacy calls', async () => {
+  const calls = [];
+  await withServer({ failExecution: async (...args) => { calls.push(args); return { state: 'IMAGE_FAILED' }; } }, async (root) => {
+    const response = await fetch(`${root}/v1/executions/test/fail`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: 'outcome unknown', autoRetry: false }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(calls, [['test', 'outcome unknown', { autoRetry: false }]]);
+  });
+});
+
 test('model trace HTTP routes forward execution uploads and task-scoped lazy reads', async () => {
   const calls = [];
   const repository = {

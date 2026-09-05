@@ -81,11 +81,11 @@ async function main() {
         if (!stopping) await new Promise((resolvePromise) => setTimeout(resolvePromise, configuration.pollMs));
         continue;
       }
-      if (outcome) {
+      if (outcome && outcome.status !== 'PAUSED') {
         console.log(`${kind} task ${outcome.taskId}: ${outcome.status}`);
       }
       if (configuration.once || stopping) break;
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, outcome ? 0 : configuration.pollMs));
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, outcome && outcome.status !== 'PAUSED' ? 0 : configuration.pollMs));
     }
   }
 

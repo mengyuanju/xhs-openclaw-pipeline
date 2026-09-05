@@ -1,4 +1,5 @@
 import { isIP } from 'node:net';
+import { codexErrorCode } from './codex-protocol.mjs';
 
 const RESEARCH_SCHEMA_VERSION = 1;
 const DEFAULT_PROVIDERS = ['codex'];
@@ -280,6 +281,7 @@ export async function createResearchSnapshot({
           bestFallback = candidate;
         }
       } catch (error) {
+        if (codexErrorCode(error)) throw error;
         unavailableProviders.add(provider);
         attempts.push({ provider, status: 'FAILED', error: redactedError(error) });
       }

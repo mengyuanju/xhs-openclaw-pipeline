@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { effectiveModelApiConfig } from '../model-api-config.mjs';
-import { createOpenClawClient } from '../openclaw.mjs';
+import { createAgentClient as createOpenClawClient } from '../agent-client.mjs';
 
 const MAX_ROWS_PER_BATCH = 50;
 const MAX_DATA_CHARACTERS = 20_000;
@@ -192,7 +192,7 @@ export async function screenImportRowsWithOpenClaw({
         admitted: decision.demandLevel === 'STRONG' || decision.demandLevel === 'MEDIUM',
         demandLevel: decision.demandLevel,
         reason: decision.reason,
-        source: 'OPENCLAW',
+        source: (generated.provider ?? client.provider) === 'codex' ? 'CODEX' : 'OPENCLAW',
         model: generatedModel,
       });
     }

@@ -318,7 +318,7 @@ async function runReview({ client, stage, subject, prompt, thinking, mock, now }
       return {
         ...policyApplied,
         stage,
-        source: 'OPENCLAW',
+        source: (generated.provider ?? client.provider) === 'codex' ? 'CODEX' : 'OPENCLAW',
         model: typeof generated.model === 'string' ? generated.model.slice(0, 200) : null,
         reviewedAt: reviewedAt(now),
         subjectSha256: subjectSha256(subject),
@@ -380,7 +380,7 @@ export function runTextReview({
 export function isReusableStageReview(review, { stage, subject }) {
   if (!isRecord(review) || !STAGES.includes(stage) || review.stage !== stage
     || review.schemaVersion !== REVIEW_SCHEMA_VERSION || !DECISIONS.includes(review.decision)
-    || !['OPENCLAW', 'MOCK', 'COMPATIBILITY'].includes(review.source)
+    || !['CODEX', 'OPENCLAW', 'MOCK', 'COMPATIBILITY'].includes(review.source)
     || review.subjectSha256 !== subjectSha256(subject)) return false;
   try {
     parseStageReviewOutput(JSON.stringify(review));
