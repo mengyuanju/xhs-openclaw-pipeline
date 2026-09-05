@@ -353,7 +353,7 @@ describe('image alignment contract', () => {
     assert.match(calls[0].prompt, /AI生成/);
   });
 
-  it('requires and accepts a bottom-right AI disclosure for portrait pages', async () => {
+  it('does not restore an AI disclosure for portrait pages when the setting is disabled', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'xhs-alignment-portrait-'));
     directories.push(directory);
     const imagePath = join(directory, '02-steps.png');
@@ -375,7 +375,7 @@ describe('image alignment contract', () => {
             rawText: JSON.stringify(passingOutput({
               recognizedText: {
                 ...passingOutput().recognizedText,
-                otherText: ['AI生成'],
+                otherText: [],
               },
             })),
             model: 'fake-vision',
@@ -391,7 +391,7 @@ describe('image alignment contract', () => {
     const result = await validator({ imagePath, pageIndex: 2, attempt: 1 });
 
     assert.equal(result.passed, true);
-    assert.match(validationPrompt, /右下角.*AI生成/u);
+    assert.doesNotMatch(validationPrompt, /AI生成/u);
   });
 
   it('retries a bounded malformed vision response before failing image alignment', async () => {

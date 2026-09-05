@@ -11,7 +11,7 @@ export function TaskProgressRefresh({ active }: { active: boolean }) {
     const refreshWhenVisible = () => {
       if (document.visibilityState === 'visible') router.refresh();
     };
-    const timer = window.setInterval(refreshWhenVisible, 15_000);
+    const timer = window.setInterval(refreshWhenVisible, 30_000);
     document.addEventListener('visibilitychange', refreshWhenVisible);
     return () => {
       window.clearInterval(timer);
@@ -20,6 +20,6 @@ export function TaskProgressRefresh({ active }: { active: boolean }) {
   }, [active, router]);
 
   return active
-    ? <span className="progress-refresh subtle" role="status">执行状态每 15 秒自动更新</span>
+    ? <span className="progress-refresh subtle" role="status">执行状态每 30 秒自动更新</span>
     : null;
 }

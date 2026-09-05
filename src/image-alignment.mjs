@@ -369,10 +369,7 @@ export function createImageAlignmentValidator({
   return async function validateImage({ imagePath, pageIndex, attempt }) {
     const page = visualPage ?? visualPlan?.pages?.[pageIndex - 1];
     if (!page) throw new TypeError(`visual plan page ${pageIndex} is missing`);
-    const requiredDisclosures = [
-      complianceDisclosure,
-      imagePageUsesPortrait(page) ? 'AI生成' : '',
-    ].filter(Boolean);
+    const requiredDisclosures = [complianceDisclosure].filter(Boolean);
     const allowedVisibleText = requiredDisclosures.length > 0
       ? {
         ...page.allowedVisibleText,

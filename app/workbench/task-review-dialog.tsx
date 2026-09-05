@@ -46,8 +46,9 @@ type CopyRevision = {
 type TaskDetail = {
   id: number;
   query: string;
+  aiDisclosureEnabled: boolean;
   state: TaskState;
-  copyExecutorNodeId: string;
+  copyExecutorNodeId: string | null;
   currentCopyRevisionId: number | null;
   currentImageRunId: string | null;
   currentExecutionId: string | null;
@@ -87,7 +88,7 @@ type TaskDetail = {
 };
 
 const STATE_LABELS: Record<TaskState, string> = {
-  COPY_QUEUED: '待执行',
+  COPY_QUEUED: '待文案执行',
   COPY_RUNNING: '文案生成中',
   COPY_REVIEW_PENDING: '待文案审核',
   COPY_FAILED: '文案生成失败',
@@ -116,7 +117,7 @@ const STAGE_LABELS: Record<string, string> = {
   ALIGNING: '图片校验与对齐',
   QUALITY_CHECK: '图片质检',
   FINALIZING: '图片整理',
-  COPY_QUEUED: '待执行',
+  COPY_QUEUED: '待文案执行',
   COPY_RUNNING: '文案生成中',
   COPY_REVIEW_PENDING: '待文案审核',
   COPY_FAILED: '文案生成失败',
@@ -183,6 +184,7 @@ export function TaskReviewDialog({
   const [draft, setDraft] = useState<ReviewDraft | null>(null);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [aiDisclosureEnabled, setAiDisclosureEnabled] = useState(true);
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
@@ -192,6 +194,7 @@ export function TaskReviewDialog({
       const next = await apiRequest<TaskDetail>(apiPath(`/v1/tasks/${taskId}`));
       setDetail(next);
       setDraft(draftFromRevision(currentRevision(next)));
+      setAiDisclosureEnabled(next.aiDisclosureEnabled !== false);
       setError('');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '任务详情读取失败');
@@ -204,6 +207,7 @@ export function TaskReviewDialog({
     if (!taskId) {
       setDetail(null);
       setDraft(null);
+      setAiDisclosureEnabled(true);
       setError('');
       return;
     }
@@ -261,7 +265,12 @@ export function TaskReviewDialog({
       await apiRequest(apiPath(`/v1/tasks/${detail.id}/approve-copy`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ revisionId: revision.id, nodeId, edits: draft }),
+        body: JSON.stringify({
+          revisionId: revision.id,
+          nodeId,
+          edits: draft,
+          aiDisclosureEnabled,
+        }),
       });
       await onUpdated('文案修改已保存并审核通过，任务已进入全局生图队列。');
       onOpenChange(false);
@@ -286,6 +295,15 @@ export function TaskReviewDialog({
           {detail?.state === 'MANUAL_ARCHIVE' && <a className="button small primary" href={apiPath(`/v1/tasks/${detail.id}/archive`)} download>
             <Download size={14} />下载资源
           </a>}
+          {detail && <label className="switch-field workbench-ai-disclosure-toggle" title="开启后，生成图片会显示“AI生成”水印">
+            <input
+              type="checkbox"
+              checked={aiDisclosureEnabled}
+              disabled={!editable || loading || submitting}
+              onChange={(event) => setAiDisclosureEnabled(event.target.checked)}
+            />
+            <span>AI生成</span>
+          </label>}
           <button className="button small" type="button" disabled={loading || submitting} onClick={() => { void load(); }}>
             <RefreshCw className={loading ? 'animate-spin' : ''} size={14} />刷新
           </button>
@@ -301,7 +319,7 @@ export function TaskReviewDialog({
               <dl className="workbench-review-facts">
                 <div className="wide"><dt>Query 原文</dt><dd>{detail.query}</dd></div>
                 <div><dt>当前状态</dt><dd><span className={`pill ${isImageRetryExhausted(detail) ? 'pill-rejected' : `workbench-state-${detail.state.toLowerCase()}`}`}>{isImageRetryExhausted(detail) ? IMAGE_RETRY_EXHAUSTED_LABEL : STATE_LABELS[detail.state]}</span></dd></div>
-                <div><dt>文案执行机</dt><dd className="mono">{detail.copyExecutorNodeId}</dd></div>
+                <div><dt>文案执行机</dt><dd className="mono">{detail.copyExecutorNodeId ?? '待领取'}</dd></div>
                 <div><dt>创建时间</dt><dd>{dateTime(detail.createdAt)}</dd></div>
                 <div><dt>开始时间</dt><dd>{dateTime(detail.executionStartedAt)}</dd></div>
                 <div><dt>当前阶段</dt><dd>{stageLabel(detail)}</dd></div>

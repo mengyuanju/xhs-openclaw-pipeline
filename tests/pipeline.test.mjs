@@ -73,7 +73,8 @@ it('asks the image model to render the full page from the structured layout cont
     imageCount: 3,
     complianceDisclosure: '',
   });
-  assert.match(portraitPrompt, /右下角.*“AI生成”/u);
+  assert.doesNotMatch(portraitPrompt, /AI生成/u);
+  assert.match(portraitPrompt, /不得显示任何额外合规标识/u);
 
   const detailPrompt = buildDeliveryImageTaskPrompt({
     post,

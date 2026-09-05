@@ -50,6 +50,7 @@ function taskFrom(row) {
     requestedImageCount: row.requested_image_count === 'auto'
       ? 'auto'
       : Number(row.requested_image_count),
+    aiDisclosureEnabled: row.ai_disclosure_enabled ?? true,
     state: row.state,
     createdByNodeId: row.created_by_node_id,
     createdByUserId: row.created_by_user_id ?? null,
@@ -268,6 +269,7 @@ async function configurationSnapshots(client, tasks, kind) {
     task: {
       id: Number(task.id), query: task.query, input: task.input,
       requestedImageCount: task.requested_image_count === 'auto' ? 'auto' : Number(task.requested_image_count),
+      aiDisclosureEnabled: task.ai_disclosure_enabled ?? true,
     },
     copyRevision: revisions.get(String(task.current_copy_revision_id)) ?? null,
   }]));
@@ -509,10 +511,9 @@ export class PostgresControlPlaneRepository {
     return result.rows.map(nodeFrom);
   }
 
-  async createTasks({ nodeId: rawNodeId, copyExecutorNodeId: rawCopyExecutorNodeId, createdByUserId: rawCreator = null, tasks: rawTasks }) {
+  async createTasks({ nodeId: rawNodeId, createdByUserId: rawCreator = null, tasks: rawTasks }) {
     const nodeId = normalizeNodeId(rawNodeId);
     const createdByUserId = rawCreator === null ? null : normalizeCreatorUserId(rawCreator);
-    const copyExecutorNodeId = normalizeNodeId(rawCopyExecutorNodeId ?? rawNodeId);
     const tasks = normalizeTaskBatch(rawTasks);
     return transaction(this.pool, async (client) => {
       await client.query(`
@@ -520,29 +521,15 @@ export class PostgresControlPlaneRepository {
         VALUES ($1, $1, false, 'epoch'::timestamptz)
         ON CONFLICT(id) DO NOTHING
       `, [nodeId]);
-      const executor = await client.query(`
-        SELECT id, last_seen_at >= now() - interval '90 seconds' AS online
-        FROM executor_nodes
-        WHERE id = $1
-        FOR UPDATE
-      `, [copyExecutorNodeId]);
-      if (!executor.rows[0]) {
-        throw new ControlPlaneNotFoundError('copy executor node is not registered');
-      }
-      if (!executor.rows[0].online) {
-        throw new ControlPlaneConflictError(
-          'EXECUTOR_OFFLINE',
-          'copy executor node is offline; choose an online executor',
-        );
-      }
       const created = [];
       for (const task of tasks) {
         const result = await client.query(`
           INSERT INTO tasks(
-            query, input, requested_image_count, created_by_node_id, copy_executor_node_id, created_by_user_id
-          ) VALUES ($1, $2, $3, $4, $5, $6)
+            query, input, requested_image_count, created_by_node_id, created_by_user_id,
+            current_stage, progress_message
+          ) VALUES ($1, $2, $3, $4, $5, 'COPY_QUEUED', '等待文案执行机领取')
           RETURNING *
-        `, [task.query, task.input, String(task.imageCount), nodeId, copyExecutorNodeId, createdByUserId]);
+        `, [task.query, task.input, String(task.imageCount), nodeId, createdByUserId]);
         created.push(taskFrom(result.rows[0]));
       }
       return created;
@@ -758,19 +745,22 @@ export class PostgresControlPlaneRepository {
       const available = Math.min(limit, Math.max(0, capacity - Number(active.rows[0]?.count ?? 0)));
       const queuedState = kind === 'COPY' ? 'COPY_QUEUED' : 'IMAGE_QUEUED';
       const runningState = kind === 'COPY' ? 'COPY_RUNNING' : 'IMAGE_RUNNING';
-      const ownership = kind === 'COPY' ? 'AND copy_executor_node_id = $2'
+      const ownership = kind === 'COPY' ? ''
         : "AND (pending_snapshot->'imageRetry'->>'nodeId' IS NULL OR pending_snapshot->'imageRetry'->>'nodeId' = $2) AND (pending_snapshot->'imageRecovery'->>'nodeId' IS NULL OR pending_snapshot->'imageRecovery'->>'nodeId' = $2)";
       // Retry on the original image node, with a cooldown between complete executions.
       const retryDelay = kind === 'IMAGE'
         ? "AND (error IS NULL OR last_activity_at <= now() - interval '5 seconds')" : '';
       const order = kind === 'IMAGE' ? 'last_activity_at NULLS FIRST, id' : 'id';
-      const parameters = [queuedState, nodeId, available];
+      const parameters = kind === 'COPY'
+        ? [queuedState, available]
+        : [queuedState, nodeId, available];
+      const limitParameter = kind === 'COPY' ? '$2' : '$3';
       const candidate = available ? await client.query(`
         SELECT * FROM tasks
         WHERE state = $1 ${ownership} ${retryDelay}
         ORDER BY ${order}
         FOR UPDATE SKIP LOCKED
-        LIMIT $3
+        LIMIT ${limitParameter}
       `, parameters) : { rows: [] };
       const snapshots = await configurationSnapshots(client, candidate.rows.filter(task => task.pending_snapshot == null), kind);
       const claims = [];
@@ -794,6 +784,7 @@ export class PostgresControlPlaneRepository {
           UPDATE tasks SET
             state = $1,
             current_execution_id = $2,
+            copy_executor_node_id = CASE WHEN $3 = 'COPY' THEN $7 ELSE copy_executor_node_id END,
             current_image_run_id = CASE WHEN $3 = 'IMAGE' THEN $2 ELSE current_image_run_id END,
             current_stage = $4,
             progress_percent = 0,
@@ -806,7 +797,7 @@ export class PostgresControlPlaneRepository {
             updated_at = now()
           WHERE id = $5 AND state = $6
           RETURNING *
-        `, [runningState, executionId, kind, stage, task.id, queuedState]);
+        `, [runningState, executionId, kind, stage, task.id, queuedState, nodeId]);
         claims.push({
           task: taskFrom(updated.rows[0]),
           execution: executionFrom((await client.query(
@@ -892,11 +883,19 @@ export class PostgresControlPlaneRepository {
     });
   }
 
-  async approveCopy(rawTaskId, { revisionId: rawRevisionId, nodeId: rawNodeId, edits: rawEdits }) {
+  async approveCopy(rawTaskId, {
+    revisionId: rawRevisionId,
+    nodeId: rawNodeId,
+    edits: rawEdits,
+    aiDisclosureEnabled: rawAiDisclosureEnabled,
+  }) {
     const taskId = normalizeTaskId(rawTaskId);
     const revisionId = normalizeTaskId(rawRevisionId);
     const nodeId = normalizeNodeId(rawNodeId);
     const edits = rawEdits === undefined ? null : normalizeCopyReviewEdits(rawEdits);
+    if (rawAiDisclosureEnabled !== undefined && typeof rawAiDisclosureEnabled !== 'boolean') {
+      throw new TypeError('aiDisclosureEnabled must be a boolean');
+    }
     return transaction(this.pool, async (client) => {
       const taskResult = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
       const task = taskResult.rows[0];
@@ -904,6 +903,7 @@ export class PostgresControlPlaneRepository {
       if (task.state !== 'COPY_REVIEW_PENDING') {
         throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'task is not waiting for copy review');
       }
+      const aiDisclosureEnabled = rawAiDisclosureEnabled ?? task.ai_disclosure_enabled ?? true;
       if (Number(task.current_copy_revision_id) !== revisionId) {
         throw new ControlPlaneConflictError('STALE_COPY_REVISION', 'copy revision is no longer current');
       }
@@ -938,6 +938,7 @@ export class PostgresControlPlaneRepository {
       const updated = await client.query(`
         UPDATE tasks SET
           state = 'IMAGE_QUEUED', current_copy_revision_id = $2,
+          ai_disclosure_enabled = $3,
           current_image_run_id = NULL,
           current_stage = 'IMAGE_QUEUED', progress_percent = 0,
           progress_message = '文案审核通过，等待图片执行机领取',
@@ -945,7 +946,7 @@ export class PostgresControlPlaneRepository {
           error = NULL, pending_snapshot = NULL, updated_at = now()
         WHERE id = $1
         RETURNING *
-      `, [taskId, approvedRevisionId]);
+      `, [taskId, approvedRevisionId, aiDisclosureEnabled]);
       return taskFrom(updated.rows[0]);
     });
   }
@@ -1045,21 +1046,6 @@ export class PostgresControlPlaneRepository {
       if (!isCopy && !isImage) {
         throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'only running or failed work can be retried');
       }
-      let copyExecutorNodeId = null;
-      if (isCopy) {
-        const executor = await client.query(`
-          SELECT id FROM executor_nodes
-          WHERE id <> $1 AND last_seen_at >= now() - interval '90 seconds'
-          ORDER BY random() LIMIT 1
-        `, [task.copy_executor_node_id]);
-        if (!executor.rows[0]) {
-          throw new ControlPlaneConflictError(
-            'NO_ALTERNATIVE_COPY_EXECUTOR',
-            '当前没有其它在线文案执行机，无法重新分配；请启动其它执行机后重试。',
-          );
-        }
-        copyExecutorNodeId = executor.rows[0].id;
-      }
       let snapshot = null;
       let sourceExecution = null;
       if (task.current_execution_id) {
@@ -1104,12 +1090,11 @@ export class PostgresControlPlaneRepository {
       }
       const nextState = isCopy ? 'COPY_QUEUED' : 'IMAGE_QUEUED';
       const values = [taskId, nextState, useLatestConfig ? null : snapshot];
-      if (isCopy) values.push(copyExecutorNodeId);
       const updated = await client.query(`
         UPDATE tasks SET
           state = $2, current_execution_id = NULL, current_stage = $2,
-          ${isCopy ? 'copy_executor_node_id = $4,' : ''}
-          progress_percent = 0, progress_message = '等待重新执行',
+          ${isCopy ? 'copy_executor_node_id = NULL,' : ''}
+          progress_percent = 0, progress_message = ${isCopy ? "'等待文案执行机领取'" : "'等待重新执行'"},
           pending_snapshot = $3, execution_started_at = NULL,
           last_activity_at = now(), finished_at = NULL, error = NULL, updated_at = now()
         WHERE id = $1

@@ -9,7 +9,6 @@ import {
   ImageAlignmentResponseError,
   ImageAlignmentServiceError,
   createImageAlignmentValidator,
-  imagePageUsesPortrait,
 } from './image-alignment.mjs';
 import { renderDeliveryImages } from './images.mjs';
 import { fullPageInstructionForLayout } from './layout-contract.mjs';
@@ -693,7 +692,7 @@ function onePassImageSystemPrompt(content, complianceDisclosure) {
     : content.trimEnd();
   const disclosureRule = complianceDisclosure
     ? `并在右下角额外显示且只显示合规标识“${complianceDisclosure}”`
-    : '非人像页不得显示额外合规标识；涉及人像时必须在右下角显示“AI生成”';
+    : '不得显示任何额外合规标识';
   return `${baseContent}\n\n${ONE_PASS_IMAGE_MARKER}，直接输出 3:4、1086×1448 的完整页面。必须逐字渲染 allowedVisibleText，${disclosureRule}，不得新增其他文字；文字、卡片、图标、装饰与主体必须自然融合。最终文件继续执行 OCR 和图文语义验收，错字页只通过图像编辑修复。`;
 }
 
@@ -719,10 +718,7 @@ function buildDeliveryImageTaskPrompt({
     mustAvoid: visualPage.mustAvoid,
     originalVisualDirection: plan.prompt,
   }, null, 2);
-  const requiredDisclosures = [
-    complianceDisclosure,
-    imagePageUsesPortrait(visualPage, plan.prompt) ? 'AI生成' : '',
-  ].filter(Boolean);
+  const requiredDisclosures = [complianceDisclosure].filter(Boolean);
   const disclosureLabels = [...new Set(requiredDisclosures)];
   const disclosureRule = disclosureLabels.length > 0
     ? `并在右下角额外显示且只显示合规标识${disclosureLabels.map((value) => `“${value}”`).join('、')}`
@@ -841,6 +837,7 @@ export async function generateStandaloneImages({
     throwIfCancelled(signal);
     const planned = recovery?.planned ?? await generateVisualPlan({ client, post, outputDir,
       thinking: effectiveModelApiConfig(runtime.productionSettings?.modelApi).copyGenerationThinking,
+      complianceDisclosure,
       allowTransportFallback: isTransientModelFailure });
     throwIfCancelled(signal);
     const visualPlan = planned.visualPlan;

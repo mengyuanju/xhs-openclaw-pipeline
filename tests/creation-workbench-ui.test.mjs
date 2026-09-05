@@ -40,7 +40,7 @@ test('new creation workbench keeps the old dashboard and exposes lifecycle views
   assert.match(navigation, /aria-current=\{selected \? 'page' : undefined\}/u);
   assert.match(navigation, /href: '\/workbench', label: '作业中心'/u);
   assert.match(login, /homePath: user.mustChangePassword \? '\/profile' : '\/workbench\/personal'/u);
-  assert.match(loginPage, /: '\/workbench';/u);
+  assert.match(loginPage, /: '\/workbench\/personal';/u);
   assert.match(proxyPolicy, /legacyReviewer \? '\/reviews' : '\/workbench\/personal'/u);
   assert.match(oldDashboard, /export default function DashboardPage/u);
   assert.match(oldDashboard, /内容生产总览/u);
@@ -81,13 +81,15 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(workbench, /const \{ queries, error: validationError \} = queryBatch/u);
   assert.match(workbench, /已识别 \{queryBatch.queries.length\} 条 Query/u);
   assert.match(workbench, /中文逗号（，）、英文逗号（,）/u);
-  assert.match(workbench, /disabled=\{creating \|\| !selectedExecutor \|\| Boolean\(queryBatch.error\)\}/u);
+  assert.match(workbench, /disabled=\{creating \|\| Boolean\(queryBatch.error\)\}/u);
   assert.match(workbench, /createError && <div className="notice error" role="alert"/u);
   assert.doesNotMatch(workbench, /queryRows|nextQueryKey|添加一条 Query|workbench-remove-query/u);
   assert.match(workbench, /tasks: queries\.map\(\(query\)/u);
-  assert.match(workbench, /copyExecutorNodeId: selectedExecutor\.id/u);
+  assert.doesNotMatch(workbench, /copyExecutorNodeId:\s*selectedExecutor\.id|selectedExecutor|selectCopyExecutor/u);
   assert.match(workbench, /apiPath\('\/v1\/nodes'\)/u);
-  assert.match(workbench, /当前没有在线执行机/u);
+  assert.match(workbench, /共享文案队列/u);
+  assert.match(workbench, /待领取/u);
+  assert.doesNotMatch(workbench, /workbench-copy-executor|当前没有在线执行机/u);
   assert.match(workbench, /创建并加入队列/u);
   assert.doesNotMatch(workbench, /role="tablist"|role="tab"/u);
   assert.match(styles, /\.workbench-create-dialog\s*\{/u);
@@ -105,6 +107,9 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(reviewDialog, /本地流程联调兜底图/u);
   assert.match(reviewDialog, /resultImage\.source\.pageUrl/u);
   assert.match(reviewDialog, /edits: draft/u);
+  assert.match(reviewDialog, /aiDisclosureEnabled/u);
+  assert.match(reviewDialog, /workbench-ai-disclosure-toggle/u);
+  assert.match(reviewDialog, /<span>AI生成<\/span>/u);
   assert.match(reviewDialog, /const editable = detail\?\.state === 'COPY_REVIEW_PENDING'/u);
   assert.match(reviewDialog, /<ImagePreview src=\{apiPath\(asset\.url\)\}/u);
   assert.match(reviewDialog, />提交审核</u);

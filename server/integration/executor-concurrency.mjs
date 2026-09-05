@@ -58,8 +58,8 @@ test('isolated PostgreSQL: capacity, races, replay, rollback and node ownership'
   assert.equal((await repo.listNodes()).find(n => n.id === 'a').copyConcurrency, 3);
   for (const value of [null, '3', 33]) await assert.rejects(repo.registerNode({ nodeId: 'a', copyConcurrency: value }));
   async function enqueue(nodeId, state = 'COPY_QUEUED', snapshot = {}) {
-    const task = (await pool.query(`INSERT INTO tasks(query, created_by_node_id, copy_executor_node_id, state, pending_snapshot)
-      VALUES ('isolated fake task', $1, $1, $2, $3) RETURNING *`, [nodeId, state, snapshot])).rows[0];
+    const task = (await pool.query(`INSERT INTO tasks(query, created_by_node_id, state, pending_snapshot)
+      VALUES ('isolated fake task', $1, $2, $3) RETURNING *`, [nodeId, state, snapshot])).rows[0];
     if (state === 'IMAGE_QUEUED') {
       const id = randomUUID();
       await pool.query(`INSERT INTO task_executions(id, task_id, kind, node_id, status, stage, snapshot)

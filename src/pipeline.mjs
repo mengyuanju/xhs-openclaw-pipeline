@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 
 import { renderDeliveryImages } from './images.mjs';
-import { createImageAlignmentValidator, imagePageUsesPortrait } from './image-alignment.mjs';
+import { createImageAlignmentValidator } from './image-alignment.mjs';
 import { effectiveModelApiConfig } from './model-api-config.mjs';
 import { createAgentClient as createOpenClawClient } from './agent-client.mjs';
 import { createDeliveryQualityAssessor } from './quality-assessment.mjs';
@@ -65,7 +65,7 @@ const ONE_PASS_IMAGE_MARKER = '整套图片由图像模型一次性完成场景�
 function onePassImageRules(complianceDisclosure) {
   const disclosureRule = complianceDisclosure
     ? `并在右下角额外显示且只显示合规标识“${complianceDisclosure}”`
-    : '非人像页不得显示额外合规标识；涉及人像时必须在右下角显示“AI生成”';
+    : '不得显示任何额外合规标识';
   return `${ONE_PASS_IMAGE_MARKER}，直接输出 3:4、1086×1448 的完整页面。必须逐字渲染 allowedVisibleText，${disclosureRule}，不得新增其他文字；文字、卡片、图标、装饰与主体必须自然融合。最终文件继续执行 OCR 和图文语义验收，错字页只通过图像编辑修复。`;
 }
 
@@ -177,10 +177,7 @@ export function buildDeliveryImageTaskPrompt({
     : plan.kind === 'comparison'
       ? '比较关系必须在画面中通过列、行、箭头或视觉连接明确表达，不得把相关要点拆散。每条 allowedVisibleText 只能显示一次；不得在栏内、页脚结论或装饰标签中重复同一句。'
       : '';
-  const requiredDisclosures = [
-    complianceDisclosure,
-    imagePageUsesPortrait(visualPage, plan.prompt) ? 'AI生成' : '',
-  ].filter(Boolean);
+  const requiredDisclosures = [complianceDisclosure].filter(Boolean);
   const disclosureLabels = [...new Set(requiredDisclosures)];
   const disclosureRule = disclosureLabels.length > 0
     ? `并在右下角额外显示且只显示合规标识${disclosureLabels.map((value) => `“${value}”`).join('、')}`
@@ -581,7 +578,7 @@ export async function processNext({
       visualPlan = createMockVisualPlan(post, { imageCount });
     } else {
       const planned = await generateVisualPlan({ client, post, outputDir,
-        thinking: effectiveModelApi.copyGenerationThinking });
+        thinking: effectiveModelApi.copyGenerationThinking, complianceDisclosure });
       visualPlan = planned.visualPlan;
       visualPlanModel = planned.model;
     }

@@ -1069,6 +1069,8 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .workbench-table-wrap .query-cell { min-width: 220px; }
 .workbench-row-actions { display: flex; flex-wrap: wrap; gap: 6px; min-width: max-content; }
 .workbench-row-actions .button { display: inline-flex; align-items: center; gap: 5px; }
+.workbench-ai-disclosure-toggle { min-height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: #faf8f5; white-space: nowrap; }
+.workbench-ai-disclosure-toggle input { width: 16px; height: 16px; }
 .workbench-pagination { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 0 18px 18px; }
 .workbench-pagination > span { min-width: 84px; color: var(--muted); font-size: 11px; text-align: center; }
 .workbench-queue-position { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; white-space: nowrap; }

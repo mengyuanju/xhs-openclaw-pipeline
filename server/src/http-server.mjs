@@ -235,7 +235,6 @@ function installRoutes(router, repository, storageRoot, analyzeCopy) {
     const body = requireJson(ctx);
     json(ctx, 201, await repository.createTasks({
       nodeId: body.nodeId,
-      copyExecutorNodeId: body.copyExecutorNodeId,
       createdByUserId: actor.username,
       tasks: body.tasks,
     }));

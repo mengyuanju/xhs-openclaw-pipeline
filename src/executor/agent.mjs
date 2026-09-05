@@ -24,8 +24,11 @@ const COPY_PROGRESS = Object.freeze({
   REVIEWED_REVIEW: 92,
 });
 
-function productionSettings(snapshot) {
-  return snapshot.productionSettings?.production?.value ?? {};
+export function productionSettings(snapshot) {
+  const settings = snapshot.productionSettings?.production?.value ?? {};
+  return typeof snapshot.task?.aiDisclosureEnabled === 'boolean'
+    ? { ...settings, aiDisclosureEnabled: snapshot.task.aiDisclosureEnabled }
+    : settings;
 }
 
 function publishedPrompt(snapshot, kind) {

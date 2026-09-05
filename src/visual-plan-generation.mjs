@@ -38,9 +38,9 @@ function fallback(post, state, error, transport, calls) {
 }
 
 export async function generateVisualPlan({ client, post, thinking = 'low', outputDir,
-  allowTransportFallback = () => false }) {
+  complianceDisclosure = 'AI生成', allowTransportFallback = () => false }) {
   const effort = validatedCopyGenerationThinking(thinking);
-  const basePrompt = buildVisualPlanPrompt(post) + mustShowRules;
+  const basePrompt = buildVisualPlanPrompt(post, { complianceDisclosure }) + mustShowRules;
   let state = { candidate: null, errors: [] };
   let previousRaw = '';
   let lastError;

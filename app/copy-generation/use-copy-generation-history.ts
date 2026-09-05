@@ -9,7 +9,7 @@ import type {
 } from './copy-generation-comparison';
 
 const HISTORY_URL = '/api/copy-generations?page=1&pageSize=20';
-const RUNNING_JOB_POLL_MS = 2_500;
+const RUNNING_JOB_POLL_MS = 30_000;
 
 export type CopyGenerationStage =
   | 'QUERY_REVIEW'

@@ -93,7 +93,6 @@ test('control plane HTTP exposes node registration and batched task creation', a
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         nodeId: 'node-a',
-        copyExecutorNodeId: 'node-b',
         tasks: [{ query: '选题' }],
       }),
     });
@@ -101,7 +100,7 @@ test('control plane HTTP exposes node registration and batched task creation', a
     assert.deepEqual((await created.json()).data, [{ id: 1, state: 'COPY_QUEUED' }]);
   });
   assert.deepEqual(calls.map(([name]) => name), ['node', 'tasks']);
-  assert.equal(calls[1][1].copyExecutorNodeId, 'node-b');
+  assert.equal('copyExecutorNodeId' in calls[1][1], false);
 });
 
 test('control plane HTTP returns a structured stale execution conflict', async () => {
@@ -142,14 +141,14 @@ test('copy approval forwards the editable review payload as one operation', asyn
     const response = await fetch(`${root}/v1/tasks/7/approve-copy`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ revisionId: 12, nodeId: 'node-a', edits }),
+      body: JSON.stringify({ revisionId: 12, nodeId: 'node-a', edits, aiDisclosureEnabled: false }),
     });
     assert.equal(response.status, 200);
     assert.equal((await response.json()).data.state, 'IMAGE_QUEUED');
   });
   assert.deepEqual(received, {
     taskId: '7',
-    input: { revisionId: 12, nodeId: 'node-a', edits },
+    input: { revisionId: 12, nodeId: 'node-a', edits, aiDisclosureEnabled: false },
   });
 });
 
