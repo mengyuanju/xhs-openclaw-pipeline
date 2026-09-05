@@ -4,8 +4,9 @@ export const dynamic = 'force-dynamic';
 
 function safeReturnPath(value: string | string[] | undefined) {
   return typeof value === 'string' && value.startsWith('/') && !value.startsWith('//')
+    && value !== '/' && value !== '/workbench'
     ? value
-    : '/workbench';
+    : '/workbench/personal';
 }
 
 export default async function LoginPage({

@@ -40,7 +40,7 @@ test('new creation workbench keeps the old dashboard and exposes lifecycle views
   assert.match(navigation, /aria-current=\{selected \? 'page' : undefined\}/u);
   assert.match(navigation, /href: '\/workbench', label: '作业中心'/u);
   assert.match(login, /homePath: user.mustChangePassword \? '\/profile' : '\/workbench\/personal'/u);
-  assert.match(loginPage, /: '\/workbench';/u);
+  assert.match(loginPage, /: '\/workbench\/personal';/u);
   assert.match(proxyPolicy, /legacyReviewer \? '\/reviews' : '\/workbench\/personal'/u);
   assert.match(oldDashboard, /export default function DashboardPage/u);
   assert.match(oldDashboard, /内容生产总览/u);
