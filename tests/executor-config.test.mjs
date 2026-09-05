@@ -4,6 +4,13 @@ import { executorConfig } from '../src/executor/config.mjs';
 
 const environment = { CONTROL_PLANE_URL: 'http://localhost:4310', EXECUTOR_NODE_ID: 'test' };
 
+test('node identity is normalized before registration and claim response validation', () => {
+  assert.equal(executorConfig({ ...environment, EXECUTOR_NODE_ID: ' node-a ' }, []).nodeId, 'node-a');
+  assert.equal(executorConfig(environment, ['--node-id= node-b ']).nodeId, 'node-b');
+  assert.equal(executorConfig({ ...environment, DEEPSEEK_SIM_NODE_ID: ' sim ' }, [], { simulation: true }).nodeId, 'sim');
+  assert.throws(() => executorConfig(environment, ['--node-id=  ']), /required/);
+});
+
 test('executor task capacities default independently to one and read env overrides', () => {
   const defaults = executorConfig(environment, []);
   assert.equal(defaults.copyConcurrency, 1);

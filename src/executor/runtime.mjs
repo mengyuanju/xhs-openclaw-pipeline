@@ -7,7 +7,7 @@ export async function runExecutor({ agent, configuration, host = process, log = 
   log.log(`Executor ${configuration.nodeId} is ready; copy concurrency: ${configuration.copyConcurrency}; image concurrency: ${configuration.imageWorkerEnabled ? configuration.imageConcurrency : 0}.`);
   const scheduler = createExecutorScheduler({ agent, ...configuration,
     onOutcome: outcome => log.log(`${outcome.kind} task ${outcome.taskId}: ${outcome.status}`),
-    onError: (kind, error) => log.error(`${kind} polling/report failed; retrying: ${error instanceof Error ? error.message : error}`),
+    onError: (kind, error, context) => log.error(`${kind}${context ? ` task ${context.taskId} execution ${context.executionId}` : ' claim'} failed; retrying: ${error instanceof Error ? error.message : error}`),
   });
   const stop = () => scheduler.stop();
   host.once('SIGINT', stop);

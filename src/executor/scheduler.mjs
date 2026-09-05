@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createClaimRequestId } from '../control-plane/claim-request.mjs';
 import { executorConcurrency } from './config.mjs';
 
 export function createExecutorScheduler({ agent, copyConcurrency = 1, imageConcurrency = 1,
@@ -26,7 +26,7 @@ export function createExecutorScheduler({ agent, copyConcurrency = 1, imageConcu
         // executeClaim retries the saved failure report, never the generation.
         entry.running = false;
         entry.retryAt = Date.now() + pollMs;
-        notify(onError, kind, error);
+        notify(onError, kind, error, { taskId: entry.claim.task.id, executionId: entry.claim.execution.id });
       }).finally(() => pool.wake?.());
     }
     function wait(milliseconds) {
@@ -42,7 +42,7 @@ export function createExecutorScheduler({ agent, copyConcurrency = 1, imageConcu
       }
       const canStart = !stopping && !(once && attemptedOnce);
       if ((pool.request || (canStart && pool.active.size < capacity)) && nextPollAt <= Date.now()) {
-        if (!pool.request) pool.request = { requestId: randomUUID(), limit: once ? 1 : capacity - pool.active.size, reconcile: false };
+        if (!pool.request) pool.request = { requestId: createClaimRequestId(), limit: once ? 1 : capacity - pool.active.size, reconcile: false };
         try {
           const response = await agent.claimBatch(kind, pool.request);
           if (response.status === 'PAUSED') {
@@ -67,7 +67,12 @@ export function createExecutorScheduler({ agent, copyConcurrency = 1, imageConcu
           }
         } catch (error) {
           // The server may have committed before the response was lost. Keep its slots.
-          pool.request.reconcile = true;
+          if (['CLAIM_REQUEST_EXPIRED', 'CLAIM_REQUEST_CLOCK_SKEW'].includes(error?.code)) {
+            // Both errors are definitive non-claims: replay is checked first and
+            // no task selection can occur before request age/clock validation.
+            pool.request = null;
+            if (once) attemptedOnce = true;
+          } else pool.request.reconcile = true;
           nextPollAt = Date.now() + pollMs;
           notify(onError, kind, error);
         }

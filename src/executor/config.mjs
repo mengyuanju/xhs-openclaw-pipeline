@@ -14,9 +14,9 @@ export function executorConfig(environment = process.env, args = process.argv.sl
   const hasFlag = (name) => args.includes(`--${name}`);
   const serverUrl = option('server-url') ?? environment.CONTROL_PLANE_URL;
   const baseNodeId = environment.EXECUTOR_NODE_ID?.trim() || 'local';
-  const nodeId = option('node-id') ?? (simulation
+  const nodeId = (option('node-id') ?? (simulation
     ? environment.DEEPSEEK_SIM_NODE_ID ?? `${baseNodeId.slice(0, 50)}-deepseek-sim`
-    : environment.EXECUTOR_NODE_ID);
+    : environment.EXECUTOR_NODE_ID))?.trim();
   const nodeName = option('node-name') ?? (simulation
     ? environment.DEEPSEEK_SIM_NODE_NAME ?? `${nodeId}（DeepSeek 模拟）`
     : environment.EXECUTOR_NODE_NAME ?? nodeId);

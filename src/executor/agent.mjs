@@ -190,8 +190,9 @@ export async function executeImageClaim({
     ...result,
     images: uploadedImages,
   });
-  // Cleanup failure must not turn an accepted delivery into a failed task.
-  await rm(taskRoot, { recursive: true, force: true }).catch(() => {});
+  // Another execution may already use this task root when the completion response arrives.
+  // Keep other runs/recovery checkpoints; cleanup cannot fail an accepted delivery.
+  await rm(outputDirectory, { recursive: true, force: true }).catch(() => {});
   return completed;
 }
 

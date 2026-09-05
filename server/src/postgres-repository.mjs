@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { migrateDatabase } from './database-migrations.mjs';
+import { claimRequestExpiry } from './claim-request.mjs';
 import { saveModelCall, listModelCalls, getModelCall } from './model-call-traces.mjs';
 import { hashUserPassword, verifyUserPassword } from './user-auth.mjs';
 
@@ -200,38 +201,30 @@ async function transaction(pool, action) {
   }
 }
 
-async function configurationSnapshot(client, task, kind) {
-  const [settings, prompts, knowledge, revision] = await Promise.all([
-    client.query(`SELECT key, value, version FROM global_settings ORDER BY key`),
-    client.query(`
+async function configurationSnapshots(client, tasks, kind) {
+  if (!tasks.length) return new Map();
+  // pg serializes one connection; overlapping query() calls are deprecated.
+  const settings = await client.query(`SELECT key, value, version FROM global_settings ORDER BY key`);
+  const prompts = await client.query(`
       SELECT t.kind, t.name, v.id AS version_id, v.version, v.content, v.content_sha256
       FROM prompt_templates t
       LEFT JOIN prompt_versions v ON v.template_id = t.id AND v.status = 'PUBLISHED'
       ORDER BY t.kind
-    `),
-    client.query(`
+    `);
+  const knowledge = await client.query(`
       SELECT i.id, i.kind, i.name, v.id AS version_id, v.version, v.content,
              v.storage_path, v.content_sha256
       FROM knowledge_items i
       JOIN knowledge_versions v ON v.item_id = i.id AND v.status = 'PUBLISHED'
       WHERE i.status = 'ACTIVE'
       ORDER BY i.kind, i.id
-    `),
-    kind === 'IMAGE'
-      ? client.query('SELECT * FROM copy_revisions WHERE id = $1', [task.current_copy_revision_id])
-      : Promise.resolve({ rows: [] }),
-  ]);
-  return {
+    `);
+  const revision = kind === 'IMAGE'
+    ? await client.query('SELECT * FROM copy_revisions WHERE id = ANY($1::bigint[])', [tasks.map(task => task.current_copy_revision_id)])
+    : { rows: [] };
+  const shared = {
     schemaVersion: 1,
     capturedAt: new Date().toISOString(),
-    task: {
-      id: Number(task.id),
-      query: task.query,
-      input: task.input,
-      requestedImageCount: task.requested_image_count === 'auto'
-        ? 'auto'
-        : Number(task.requested_image_count),
-    },
     productionSettings: Object.fromEntries(
       settings.rows.map((row) => [row.key, { version: Number(row.version), value: row.value }]),
     ),
@@ -254,8 +247,16 @@ async function configurationSnapshot(client, task, kind) {
       storagePath: row.storage_path,
       sha256: row.content_sha256,
     })),
-    copyRevision: revisionFrom(revision.rows[0]),
   };
+  const revisions = new Map(revision.rows.map(row => [String(row.id), revisionFrom(row)]));
+  return new Map(tasks.map(task => [task.id, {
+    ...shared,
+    task: {
+      id: Number(task.id), query: task.query, input: task.input,
+      requestedImageCount: task.requested_image_count === 'auto' ? 'auto' : Number(task.requested_image_count),
+    },
+    copyRevision: revisions.get(String(task.current_copy_revision_id)) ?? null,
+  }]));
 }
 
 async function lockedExecution(client, executionId) {
@@ -717,6 +718,18 @@ export class PostgresControlPlaneRepository {
           return { requestId, claims: records.map(row => ({ task: taskFrom(row.task), execution: executionFrom(row) })) };
         }
       }
+      const expiresAt = requestId ? claimRequestExpiry(requestId) : null;
+      if (requestId) {
+        // The node lock serializes claims/GC. Terminal executions never return to RUNNING.
+        // A bounded batch avoids extending the claim transaction after long downtime.
+        await client.query(`DELETE FROM execution_claim_requests r USING (
+          SELECT request_id FROM execution_claim_requests old
+          WHERE node_id = $1 AND kind = $2 AND expires_at <= $3
+            AND NOT EXISTS (SELECT 1 FROM task_executions e
+              WHERE e.id = ANY(old.execution_ids) AND e.status = 'RUNNING')
+          ORDER BY expires_at LIMIT 100
+        ) expired WHERE r.node_id = $1 AND r.kind = $2 AND r.request_id = expired.request_id`, [nodeId, kind, new Date()]);
+      }
       if (kind === 'IMAGE' && !node.rows[0].image_worker_enabled) {
         throw new ControlPlaneConflictError(
           'IMAGE_WORKER_DISABLED',
@@ -745,11 +758,12 @@ export class PostgresControlPlaneRepository {
         FOR UPDATE SKIP LOCKED
         LIMIT $3
       `, parameters) : { rows: [] };
+      const snapshots = await configurationSnapshots(client, candidate.rows.filter(task => task.pending_snapshot == null), kind);
       const claims = [];
       for (const task of candidate.rows) {
         const executionId = randomUUID();
         const snapshot = task.pending_snapshot
-          ?? await configurationSnapshot(client, task, kind);
+          ?? snapshots.get(task.id);
         const stage = kind === 'COPY' ? 'STARTING_COPY' : 'STARTING_IMAGE';
         await client.query(`
           INSERT INTO task_executions(
@@ -788,8 +802,8 @@ export class PostgresControlPlaneRepository {
         });
       }
       if (requestId) {
-        await client.query(`INSERT INTO execution_claim_requests(node_id, kind, request_id, requested_limit, execution_ids)
-          VALUES ($1, $2, $3, $4, $5)`, [nodeId, kind, requestId, limit, claims.map(claim => claim.execution.id)]);
+        await client.query(`INSERT INTO execution_claim_requests(node_id, kind, request_id, requested_limit, execution_ids, expires_at)
+          VALUES ($1, $2, $3, $4, $5, $6)`, [nodeId, kind, requestId, limit, claims.map(claim => claim.execution.id), expiresAt]);
       }
       return { requestId, claims };
     });

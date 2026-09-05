@@ -71,6 +71,22 @@ test('uncertain batch claims reserve slots and reuse the same request even durin
   assert.equal(f.requests.length, 1);
 });
 
+for (const code of ['CLAIM_REQUEST_EXPIRED', 'CLAIM_REQUEST_CLOCK_SKEW']) {
+test(`${code} releases its reservation and shutdown does not claim again`, async () => {
+  const f = fixture({ imageWorkerEnabled: false });
+  let calls = 0;
+  f.agent.claimBatch = async () => {
+    calls++;
+    f.scheduler.stop();
+    throw Object.assign(new Error('claim not allocated'), { code });
+  };
+  await f.scheduler.start();
+  assert.equal(calls, 1);
+  assert.deepEqual(f.scheduler.status().COPY, { active: 0, reserved: 0 });
+  assert.equal(f.started.length, 0);
+});
+}
+
 test('empty capacity keeps polling while a slow task runs and paused responses do not spin', async () => {
   const f = fixture({ imageWorkerEnabled: false });
   const original = f.agent.claimBatch;
@@ -91,7 +107,8 @@ test('empty capacity keeps polling while a slow task runs and paused responses d
 });
 
 test('failure reports keep their slots and retry independently from other task completion', async () => {
-  const f = fixture({ imageWorkerEnabled: false, copyConcurrency: 2 });
+  const errors = [];
+  const f = fixture({ imageWorkerEnabled: false, copyConcurrency: 2, onError: (kind, error, context) => errors.push({ kind, context }) });
   const original = f.agent.executeClaim;
   let attempts = 0;
   f.agent.executeClaim = async (kind, claim) => {
@@ -103,6 +120,7 @@ test('failure reports keep their slots and retry independently from other task c
   assert.equal(f.requests.length, 1);
   assert.equal(f.scheduler.status().COPY.active, 2);
   assert.equal(attempts, 2);
+  assert.deepEqual(errors, [{ kind: 'COPY', context: { taskId: 1, executionId: '1' } }]);
   f.scheduler.stop();
   for (const work of f.work.values()) work.resolve();
   await running;
