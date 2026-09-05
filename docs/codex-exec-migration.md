@@ -4,7 +4,7 @@
 
 默认生成引擎为 `CODEX`，使用官方 CLI 已保存的 ChatGPT 登录。OpenClaw 代码、历史来源记录和注入接口保留，便于回切。现有发布限制、人工审核、图片尺寸/质量门槛不变；没有新增自动发布、生产定时器或常驻后台服务。
 
-这次完成的是实现与不消耗额度的验证。`agent:check` 只检查本机登录/版本，不调用模型，也不能证明模型权限、剩余额度、生图 JSONL 协议或持续吞吐量可用。真实生图/改图和持续并发验收仍待执行，不能承诺订阅账号 24/7 无中断。
+初次迁移仅进行了不消耗额度的验证；2026-09-05 随执行池改造补充了真实模型测试，过程、修复和数据见 [真实测试记录](executor-concurrency-live-results.md)。`agent:check` 仍只检查本机登录/版本，不能证明模型权限、剩余额度或持续吞吐量，也不能承诺订阅账号 24/7 无中断。
 
 官方参考：[非交互执行](https://learn.chatgpt.com/docs/non-interactive-mode)、[图片生成](https://learn.chatgpt.com/docs/image-generation)、[联网搜索](https://learn.chatgpt.com/docs/web-search)。订阅计费与 API 计费不是可互换的无限容量承诺，任务量大时仍应评估官方 API。
 
@@ -23,6 +23,14 @@
 
 原生图片事件支持 `image_generation` / `imageGeneration` 及 `saved_path` / `savedPath`；没有事件证据、目录越界、旧文件、坏 PNG、CLI 失败或覆盖现有目标都会报错，不会用 Sharp 绘制的占位图伪装成功。这里的 Sharp 只用于输入规范化和输出验证；后续原有业务图片处理继续保留。
 
+### 原生图片协议
+
+Codex CLI 0.152.1 的真实测试发现 `exec --json` 会遗漏原生图片项，出现文件已经生成、适配器却无法验证的失败。当前图片/改图通过同一 CLI 的 `app-server --stdio` 调用，按 `initialize → thread/start → turn/start` 运行一次临时会话，校验线程/回合 ID，接收 `item/completed` 的 `imageGeneration.savedPath` 并等待成功回合。终态中的图片项作为同 ID 去重补充；不会解析回答里的文件路径绕过验证。
+
+线程禁用已配置 MCP、插件、应用、shell 等非图片工具，使用临时目录、只读沙箱和 `approvalPolicy: never`；不处理工具执行或凭据请求。配置只对本次线程覆盖，不写用户配置。原生生成目录仍按原有路径、时间和 PNG 校验接收。子进程退出前保持共享许可，超时/取消终止本次进程树。协议依据本机 CLI 生成的版本化 schema 和 [官方 app-server 文档](https://github.com/openai/codex/tree/main/codex-rs/app-server)。
+
+普通文本继续使用 `exec --json`。显式 `Reconnecting... N/M (...)` 只有在之后出现新回答及成功回合时才视为已恢复；终态错误、额度错误和只有旧回答时仍失败。失败调用保留有界、脱敏的原始输出，成功调用记录重连次数及排队时间。
+
 ## 配置与回切
 
 优先级：后台 `modelApi.agentProvider` > `XHS_AGENT_PROVIDER` > `CODEX`。保存为 `null` 表示继承执行机环境，而非固定账号或固定引擎。
@@ -38,9 +46,11 @@
 
 默认状态库：`CODEX_HOME/xhs-runtime/limits.sqlite`，未配置 `CODEX_HOME` 时为当前用户 `.codex/xhs-runtime/limits.sqlite`。可用 `XHS_CODEX_RUNTIME_DB` 指定统一的本地绝对路径。
 
-同一主机、同一订阅账号的进程应共享此文件：总调用最多 2 个（`XHS_CODEX_CONCURRENCY=1` 可降为 1），其中生图/改图最多 1 个。任务内并发参数不能突破共享限制。SQLite 短事务跨进程抢占许可；父进程和模型子进程都已退出才回收崩溃遗留许可。进程超时/取消会终止该次进程树，等待退出后释放许可。
+同一主机、同一订阅账号的进程应共享此文件：`XHS_CODEX_CONCURRENCY` 控制总调用许可，默认 2；`XHS_CODEX_IMAGE_CONCURRENCY` 控制生图/改图许可，默认 1。均允许 1–32，图片许可不得大于总许可。任务池配置为 `EXECUTOR_COPY_CONCURRENCY` / `EXECUTOR_IMAGE_CONCURRENCY`，两者不能突破模型许可。SQLite 短事务跨进程抢占许可；父进程和模型子进程都已退出才回收崩溃遗留许可。进程超时/取消会终止该次进程树，等待退出后释放许可。
 
 此限制只覆盖使用本适配器和同一状态库的进程，不覆盖其他 Codex 窗口、OpenClaw、其他电脑或其他 `CODEX_HOME`。它不是全账号配额服务。不要把 SQLite 放到网络共享盘冒充跨主机锁；高并发多机应另做中心调度。限制值变化需所有进程统一配置并重启。
+
+共享状态库记录许可配置。在仍有调用运行时，其他调用方若配置不一致，会收到 `CODEX_CONCURRENCY_MISMATCH`。调整前先停止所有相关调用方，等其收尾后统一更新环境并重启，包含执行机、Web 和 Worker。默认值是应用的保守设置，不代表订阅账号的官方并发限额。并发任务配置与升级步骤见 [执行机并发配置](executor-concurrency.md)。
 
 - 认证失效、订阅额度耗尽：共享暂停；执行器不再领取新任务。原有在途调用不被强杀，但后续调用会检查暂停。
 - 429：共享约 60–65 秒冷却，无无限重试。冷却后可继续领取；本机队列允许有限重试。
@@ -59,17 +69,19 @@ npm run agent:resume
 ## 升级顺序
 
 1. 结束旧 Worker / 执行器，保留任务数据库、图片资产和 `data/executor-work/<task-id>/` 检查点。不要强删在途文件。
-2. 更新并重启中心服务（若使用分布式模式）。`/health` 必须报告 `capabilities.executionRetryControl: true`；Codex 执行器在缺少此能力时拒绝启动，避免旧服务忽略重试控制。此次还补齐了已有图片恢复契约：传递原执行 ID 链、限定原节点领取、快照缺失拒绝默默重画。
+2. 更新并重启中心服务（若使用分布式模式）。`/health` 必须报告 `capabilities.executionRetryControl: true` 和 `capabilities.executorConcurrency: true`；新执行器缺少能力时拒绝启动。保留图片恢复契约：传递原执行 ID 链、限定原节点领取、快照缺失拒绝默默重画。
 3. 更新本机 Web 与执行器，安装/保留 Codex CLI，在每台执行主机由账号持有人运行 `codex login`，然后运行 `npm run agent:check`。
 4. 配置生成引擎及统一状态库，先执行下面的小规模真实验收，再启动已有的有限批次命令。此文档不授权自动发布或新增生产定时任务。
 
-本机 SQLite 首次打开会扩展需求筛选来源约束以接受 `CODEX`，迁移保留现有导入行及历史模型字段。中心服务这次无新增业务表；失败上报新增可选布尔字段 `autoRetry`（默认 `true`），旧调用方行为不变。它属于 `POST /v1/executions/:id/fail` 请求体，与 `error` 并列。
+本机 SQLite 首次打开会扩展需求筛选来源约束以接受 `CODEX`，迁移保留现有导入行及历史模型字段。Codex 迁移的失败上报新增可选布尔字段 `autoRetry`（默认 `true`），旧调用方行为不变；它属于 `POST /v1/executions/:id/fail` 请求体，与 `error` 并列。后续并发改造另有中心迁移 `0007`、`0008`，升级时一并保留并应用。
 
-## 真实验收清单（尚未执行）
+## 真实验收与持续观察
+
+本机小批量结果见 [真实测试记录](executor-concurrency-live-results.md)，以下清单同时作为更换 CLI/账号或部署后复验步骤，不能把一次小批量通过解释为长期稳定性保证。
 
 1. 用一条不含敏感数据的需求验证文案、审核、检索与视觉分析，核对保存的 provider/model/执行记录。
-2. 生成一张图，再以这张图测试改图，确认 CLI 实际返回原生图片事件和可读 PNG；不能只看退出码或最终文字。此项尤其需要确认当前 CLI 的 exec JSONL 输出形态。
-3. 两条任务并发（至少一条含图片），核对共享槽位总数不超过 2、图片不超过 1，记录延迟与失败率。
+2. 生成一张图，再以这张图测试改图，确认 CLI app-server 实际返回原生图片事件和可读 PNG；不能只看退出码或最终文字。
+3. 按目标任务池容量并发执行，核对任务数与实际模型调用数分别不超过各自配置，记录延迟与失败率。默认 Codex 许可仍为总计 2、图片 1。
 4. 在可控测试环境模拟暂停、恢复与失败步骤继续，确认旧图不重画；不要为测试刻意耗尽账号额度。
 5. 小批量观察实际额度消耗；持续运行时长与吞吐量必须由实测给出，不能从订阅价格推算保障。
 
