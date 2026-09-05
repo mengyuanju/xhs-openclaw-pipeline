@@ -38,6 +38,7 @@ export function evaluateAdminProxyRequest(request, environment = process.env) {
         || url.pathname.startsWith('/knowledge/')
         || url.pathname.startsWith('/api/knowledge-')
         || url.pathname.startsWith('/api/copy-knowledge-')
+        || url.pathname === '/api/visual-analyses'
         || url.pathname.startsWith('/api/copy-analys');
       return allowed ? { type: 'next' } : { type: 'forbidden' };
     }

@@ -17,10 +17,10 @@ const updateSchema = z.object({
 }).strict();
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
-  return apiHandler(request, { mutation: true, roles: ['ADMIN', 'REVIEWER'] }, async () => {
+  return apiHandler(request, { mutation: true, roles: ['ADMIN', 'REVIEWER'] }, async (session) => {
     const id = parsePositiveId((await context.params).id);
     const input = await parseJson(request, updateSchema, { maxBytes: 192 * 1024 });
-    const updated = await withKnowledgeStore((store: any) => store.updateCopyKnowledge(id, input));
+    const updated = await withKnowledgeStore((store: any) => store.updateCopyKnowledge(id, input), session);
     if (!updated) notFound('文案知识不存在');
     return ok(updated);
   });

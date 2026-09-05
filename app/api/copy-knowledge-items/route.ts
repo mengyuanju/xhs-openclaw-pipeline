@@ -17,19 +17,19 @@ const bodySchema = z.object({
 }).strict();
 
 export function GET(request: Request) {
-  return apiHandler(request, { roles: ['ADMIN', 'REVIEWER'] }, async () => {
+  return apiHandler(request, { roles: ['ADMIN', 'REVIEWER'] }, async (session) => {
     const url = new URL(request.url);
     return ok(await withKnowledgeStore((store: any) => store.listCopyKnowledge({
       page: url.searchParams.get('page'), pageSize: url.searchParams.get('pageSize'),
       label: url.searchParams.get('label') || undefined,
-    })));
+    }), session));
   });
 }
 
 export async function POST(request: Request) {
-  return apiHandler(request, { mutation: true, roles: ['ADMIN', 'REVIEWER'] }, async () => {
+  return apiHandler(request, { mutation: true, roles: ['ADMIN', 'REVIEWER'] }, async (session) => {
     const input = await parseJson(request, bodySchema, { maxBytes: 192 * 1024 });
-    const created = await withKnowledgeStore((store: any) => store.createCopyKnowledge(input));
+    const created = await withKnowledgeStore((store: any) => store.createCopyKnowledge(input), session);
     return ok(created, { status: 201 });
   });
 }

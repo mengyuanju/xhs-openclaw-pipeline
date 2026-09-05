@@ -7,13 +7,13 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export function POST(request: Request) {
-  return apiHandler(request, { mutation: true }, async () => {
+  return apiHandler(request, { mutation: true, roles: ['ADMIN', 'REVIEWER'] }, async (session) => {
     assertRequestSize(request, 11 * 1024 * 1024);
     const form = await request.formData();
     const file = form.get('file');
     if (!(file instanceof File)) throw new TypeError('请选择需要分析的图片');
     if (file.size > 10 * 1024 * 1024) throw new RangeError('图片不能超过 10 MiB');
-    const modelApi = await withKnowledgeStore(readKnowledgeModelApi);
+    const modelApi = await withKnowledgeStore(readKnowledgeModelApi, session);
     const result = await analyzeVisualImage({
       buffer: Buffer.from(await file.arrayBuffer()),
       mimeType: file.type,

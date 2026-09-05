@@ -45,11 +45,12 @@ async function responseData(response) {
   return payload.data;
 }
 
-/** @param {{ baseUrl: string, fetchImpl?: typeof fetch, requestTimeoutMs?: number }} options */
+/** @param {{ baseUrl: string, fetchImpl?: typeof fetch, requestTimeoutMs?: number, headers?: Record<string, string> }} options */
 export function createControlPlaneClient({
   baseUrl,
   fetchImpl = fetch,
   requestTimeoutMs = 30_000,
+  headers: defaultHeaders = {},
 } = {}) {
   const root = normalizedBaseUrl(baseUrl);
   if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl must be a function');
@@ -58,6 +59,7 @@ export function createControlPlaneClient({
     const response = await fetchImpl(`${root}${path}`, {
       method,
       headers: {
+        ...defaultHeaders,
         ...(body === undefined || Buffer.isBuffer(body) ? {} : { 'Content-Type': 'application/json' }),
         ...headers,
       },

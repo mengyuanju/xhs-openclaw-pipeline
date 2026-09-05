@@ -5,16 +5,19 @@ import { apiHandler } from '../../_lib';
 import { ApiError, notFound, parsePositiveId } from '../../../../src/admin/http.mjs';
 import { adminKnowledgeRoot, withAdminStore } from '../../../../src/admin/runtime.mjs';
 import { controlPlaneUrl } from '../../../../src/control-plane/next-runtime.mjs';
+import { knowledgeActorHeaders } from '../../../../src/admin/knowledge-runtime.mjs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
-  return apiHandler(request, { roles: ['ADMIN', 'REVIEWER'] }, async () => {
+  return apiHandler(request, { roles: ['ADMIN', 'REVIEWER'] }, async (session) => {
     const assetId = parsePositiveId((await context.params).id);
     const remoteRoot = controlPlaneUrl();
     if (remoteRoot) {
-      const response = await fetch(`${remoteRoot}/v1/knowledge-versions/${assetId}/asset`, { cache: 'no-store', signal: AbortSignal.timeout(30_000) });
+      const response = await fetch(`${remoteRoot}/v1/knowledge-versions/${assetId}/asset`, {
+        headers: knowledgeActorHeaders(session), cache: 'no-store', signal: AbortSignal.timeout(30_000),
+      });
       if (!response.ok) throw new ApiError(response.status, 'KNOWLEDGE_ASSET_ERROR', '知识库图片读取失败');
       return new Response(response.body, { headers: { 'Content-Type': 'image/png', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' } });
     }

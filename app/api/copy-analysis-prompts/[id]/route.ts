@@ -12,10 +12,10 @@ const bodySchema = z.object({
 }).strict();
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
-  return apiHandler(request, { mutation: true, roles: ['ADMIN', 'REVIEWER'] }, async () => {
+  return apiHandler(request, { mutation: true, roles: ['ADMIN', 'REVIEWER'] }, async (session) => {
     const id = parsePositiveId((await context.params).id);
     const input = await parseJson(request, bodySchema, { maxBytes: 40 * 1024 });
-    const updated = await withKnowledgeStore((store: any) => store.replaceCopyAnalysisPrompt(id, input));
+    const updated = await withKnowledgeStore((store: any) => store.replaceCopyAnalysisPrompt(id, input), session);
     if (!updated) notFound('已保存的分析 Prompt 不存在');
     return ok(updated);
   });

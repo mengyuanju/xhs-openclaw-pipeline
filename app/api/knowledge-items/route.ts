@@ -41,7 +41,7 @@ function validateFormJson(value: FormDataEntryValue | null) {
 }
 
 export function GET(request: Request) {
-  return apiHandler(request, { roles: ['ADMIN', 'REVIEWER'] }, async () => {
+  return apiHandler(request, { roles: ['ADMIN', 'REVIEWER'] }, async (session) => {
     const url = new URL(request.url);
     return ok(await withKnowledgeStore((store: any) => store.listVisualKnowledge({
       page: url.searchParams.get('page'),
@@ -49,12 +49,12 @@ export function GET(request: Request) {
       status: url.searchParams.get('status') || undefined,
       type: url.searchParams.get('type') || undefined,
       query: url.searchParams.get('query') || undefined,
-    })));
+    }), session));
   });
 }
 
 export function POST(request: Request) {
-  return apiHandler(request, { mutation: true, roles: ['ADMIN', 'REVIEWER'] }, async () => {
+  return apiHandler(request, { mutation: true, roles: ['ADMIN', 'REVIEWER'] }, async (session) => {
     const contentType = request.headers.get('content-type')?.toLowerCase() || '';
     if (contentType.startsWith('application/json')) {
       const input = await parseJson(request, itemSchema);
@@ -62,7 +62,7 @@ export function POST(request: Request) {
         store,
         knowledgeRoot: adminKnowledgeRoot(),
         input,
-      }));
+      }), session);
       return ok(created, { status: 201 });
     }
     if (!contentType.startsWith('multipart/form-data')) {
@@ -81,7 +81,7 @@ export function POST(request: Request) {
       input,
       buffer,
       mimeType: file.type,
-    }));
+    }), session);
     return ok(created, { status: 201 });
   });
 }

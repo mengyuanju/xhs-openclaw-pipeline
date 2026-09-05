@@ -1,5 +1,5 @@
 import { createControlPlaneClient, ControlPlaneApiError } from '../control-plane/client.mjs';
-import { ApiError } from './http.mjs';
+import { ApiError, assertAuthorizedSession } from './http.mjs';
 import { withAdminStore } from './runtime.mjs';
 import { createRemoteKnowledgeStore } from './remote-knowledge-store.mjs';
 
@@ -8,10 +8,28 @@ export async function readKnowledgeModelApi(store) {
   return settings.modelApi;
 }
 
-export async function withKnowledgeStore(action) {
+export function knowledgeActorHeaders(session) {
+  if (!session) throw new ApiError(401, 'AUTH_REQUIRED', '请先登录后访问知识库');
+  assertAuthorizedSession(session, ['ADMIN', 'REVIEWER']);
+  const username = session.username || (session.subject === 'admin' ? 'admin' : '');
+  const role = session.subject === 'admin' ? 'ADMIN' : session.roles?.[0];
+  if (!username || !['ADMIN', 'REVIEWER'].includes(role)) {
+    throw new ApiError(403, 'FORBIDDEN', '当前账号没有知识库管理权限');
+  }
+  return {
+    'X-Actor-Username': username,
+    'X-Actor-Role': role,
+    'X-Actor-Credential-Version': String(session.credentialVersion || 1),
+  };
+}
+
+export async function withKnowledgeStore(action, session) {
   if (!process.env.CONTROL_PLANE_URL?.trim()) return withAdminStore(action);
   try {
-    return await action(createRemoteKnowledgeStore(createControlPlaneClient({ baseUrl: process.env.CONTROL_PLANE_URL })));
+    return await action(createRemoteKnowledgeStore(createControlPlaneClient({
+      baseUrl: process.env.CONTROL_PLANE_URL,
+      headers: knowledgeActorHeaders(session),
+    })));
   } catch (error) {
     if (error instanceof ControlPlaneApiError) {
       throw new ApiError(error.status, error.code, error.status === 404
