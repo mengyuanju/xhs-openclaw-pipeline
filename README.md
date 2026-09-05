@@ -229,6 +229,8 @@ npm run executor -- --enable-image-worker
 - `/copy-generation` 创建单条或批量 Query，不在页面请求中同步跑模型。
 - `/jobs` 展示所有节点的任务、阶段、开始时间、最后进度、人工文案审核、图文审核和重试。
 - `/workbench` 默认展示当前账号创建的任务，并可切换全部节点的待文案执行、执行中、失败、待审核、生图和已完成任务；创建笔记后由有空闲并发容量的文案执行机从共享队列领取。
+- `/workbench/personal` 和 `/workbench/images` 的任务行支持重新生图；已有审核文案的任务会清除旧恢复快照并回到全局待生图队列，未完成文案审核的任务不可绕过审核。
+- `/executors` 仅管理员可访问，展示全部执行机的心跳在线状态、文案/生图能力与当前并发占用。
 - `/prompts`、`/knowledge`、`/settings` 读写远端中心数据。
 - `/image-generation` 和 `/batch-image-generation` 不再直接生图，生图统一由启用图片能力的执行代理领取。
 

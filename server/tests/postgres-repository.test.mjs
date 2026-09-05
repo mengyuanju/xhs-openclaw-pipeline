@@ -370,6 +370,30 @@ test('copy approval submits reviewed copy to the image queue', async () => {
   assert.equal(taskUpdate.values[2], false);
 });
 
+test('executor inventory reports independent copy and image running capacity', async () => {
+  let selection;
+  const repository = new PostgresControlPlaneRepository({
+    pool: {
+      async query(sql) {
+        selection = String(sql);
+        return { rows: [{
+          id: 'node-a', name: '执行机 A', image_worker_enabled: true,
+          copy_concurrency: 4, image_concurrency: 2, online: true,
+          copy_queued_count: 0, copy_running_count: 3, image_running_count: 1,
+          last_seen_at: '2026-09-05T01:00:00Z',
+        }] };
+      },
+    },
+  });
+  const nodes = await repository.listNodes();
+  assert.equal(nodes[0].copyRunningCount, 3);
+  assert.equal(nodes[0].imageRunningCount, 1);
+  assert.equal(nodes[0].copyConcurrency, 4);
+  assert.equal(nodes[0].imageConcurrency, 2);
+  assert.match(selection, /e\.kind = 'IMAGE' AND e\.status = 'RUNNING'/u);
+  assert.match(selection, /t\.state = 'IMAGE_RUNNING'/u);
+});
+
 test('copy approval rejects a non-boolean AI disclosure setting before opening a transaction', async () => {
   const repository = new PostgresControlPlaneRepository({
     pool: { connect: async () => { throw new Error('must not connect'); } },

@@ -27,7 +27,7 @@ async function proxyRequest(
     throw new ApiError(403, 'FORBIDDEN', '当前账号尚未迁移到用户管理中心');
   }
   const routePath = `/${path.join('/')}`;
-  if (role === 'REVIEWER' && (/^\/v1\/(?:settings|prompts|prompt-versions|users)(?:\/|$)/u.test(routePath))) {
+  if (role === 'REVIEWER' && (/^\/v1\/(?:settings|prompts|prompt-versions|users|executor-statuses)(?:\/|$)/u.test(routePath))) {
     throw new ApiError(403, 'FORBIDDEN', '审核员没有该管理权限');
   }
   if (role === 'USER' && !/^\/v1\/(?:tasks|nodes|assets|profile)(?:\/|$)/u.test(routePath)) {

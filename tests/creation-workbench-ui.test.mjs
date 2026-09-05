@@ -66,6 +66,16 @@ test('running and failed copy tasks expose retry in personal and all-copy lists'
   assert.match(source, /useLatestConfig: true/u);
 });
 
+test('personal and image-work rows expose safe image requeue controls', async () => {
+  const source = await readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8');
+  assert.match(source, /async function retryImages\(task: DistributedTask\)/u);
+  assert.match(source, /\/v1\/tasks\/\$\{task\.id\}\/retry-image/u);
+  assert.match(source, /activeView === 'IMAGE_WORK'[\s\S]*\{retryImageButton\}/u);
+  assert.match(source, /activeView === 'PERSONAL' && retryImageButton/u);
+  assert.match(source, /文案尚未审核通过，暂不能重试生图/u);
+  assert.match(source, />重试生图<\/button>/u);
+});
+
 test('creation dialog accepts a single batch textarea and creates one remote batch', async () => {
   const [workbench, reviewDialog, styles, jobsPage, jobsWorkbench] = await Promise.all([
     readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
@@ -109,9 +119,12 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(reviewDialog, /edits: draft/u);
   assert.match(reviewDialog, /aiDisclosureEnabled/u);
   assert.match(reviewDialog, /workbench-ai-disclosure-toggle/u);
-  assert.match(reviewDialog, /<span>AI生成<\/span>/u);
+  assert.match(reviewDialog, /AI生成水印/u);
+  assert.match(reviewDialog, /aiDisclosureEnabled \? '已开启' : '已关闭'/u);
   assert.match(reviewDialog, /const editable = detail\?\.state === 'COPY_REVIEW_PENDING'/u);
-  assert.match(reviewDialog, /<ImagePreview src=\{apiPath\(asset\.url\)\}/u);
+  assert.match(reviewDialog, /isOpen=\{activeAssetIndex === index\}/u);
+  assert.match(reviewDialog, /onPrevious=\{index > 0/u);
+  assert.match(reviewDialog, /onNext=\{index < assets\.length - 1/u);
   assert.match(reviewDialog, />提交审核</u);
   assert.match(reviewDialog, /href=\{apiPath\(`\/v1\/tasks\/\$\{detail\.id\}\/archive`\)\}/u);
   assert.match(reviewDialog, /<Download size=\{14\} \/>下载资源/u);

@@ -144,6 +144,7 @@ function nodeFrom(row) {
     online: Boolean(row.online),
     copyQueuedCount: Number(row.copy_queued_count ?? 0),
     copyRunningCount: Number(row.copy_running_count ?? 0),
+    imageRunningCount: Number(row.image_running_count ?? 0),
     lastSeenAt: row.last_seen_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -501,11 +502,15 @@ export class PostgresControlPlaneRepository {
       SELECT
         n.*,
         n.last_seen_at >= now() - interval '90 seconds' AS online,
-        COUNT(t.id) FILTER (WHERE t.state = 'COPY_QUEUED') AS copy_queued_count,
-        COUNT(t.id) FILTER (WHERE t.state = 'COPY_RUNNING') AS copy_running_count
+        (SELECT COUNT(*) FROM tasks t
+          WHERE t.copy_executor_node_id = n.id AND t.state = 'COPY_QUEUED') AS copy_queued_count,
+        (SELECT COUNT(*) FROM tasks t
+          WHERE t.copy_executor_node_id = n.id AND t.state = 'COPY_RUNNING') AS copy_running_count,
+        (SELECT COUNT(*) FROM task_executions e
+          JOIN tasks t ON t.current_execution_id = e.id
+          WHERE e.node_id = n.id AND e.kind = 'IMAGE' AND e.status = 'RUNNING'
+            AND t.state = 'IMAGE_RUNNING') AS image_running_count
       FROM executor_nodes n
-      LEFT JOIN tasks t ON t.copy_executor_node_id = n.id
-      GROUP BY n.id
       ORDER BY online DESC, n.name, n.id
     `);
     return result.rows.map(nodeFrom);
@@ -1100,6 +1105,58 @@ export class PostgresControlPlaneRepository {
         WHERE id = $1
         RETURNING *
       `, values);
+      return taskFrom(updated.rows[0]);
+    });
+  }
+
+  async requeueImageTask(rawTaskId) {
+    const taskId = normalizeTaskId(rawTaskId);
+    return transaction(this.pool, async (client) => {
+      const result = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
+      const task = result.rows[0];
+      if (!task) throw new ControlPlaneNotFoundError('task not found');
+      if (!['IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'COPY_REVIEW_PENDING', 'MANUAL_ARCHIVE'].includes(task.state)) {
+        throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'task does not have approved copy that can be queued for image generation');
+      }
+      const revision = task.current_copy_revision_id === null ? { rows: [] } : await client.query(`
+        SELECT id FROM copy_revisions
+        WHERE id = $1 AND task_id = $2 AND approved_at IS NOT NULL
+        FOR UPDATE
+      `, [task.current_copy_revision_id, taskId]);
+      if (!revision.rows[0]) {
+        throw new ControlPlaneConflictError('IMAGE_RETRY_UNAVAILABLE', '文案尚未审核通过，不能进入待生图队列');
+      }
+      if (task.current_execution_id) {
+        const execution = await client.query(`
+          SELECT * FROM task_executions WHERE id = $1 FOR UPDATE
+        `, [task.current_execution_id]);
+        if (execution.rows[0]?.status === 'RUNNING') {
+          if (execution.rows[0].kind !== 'IMAGE') {
+            throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'current execution is not an image execution');
+          }
+          await client.query(`
+            UPDATE task_executions SET
+              status = 'ABANDONED', stage = 'ABANDONED',
+              progress_message = '已人工重试，等待重新生图',
+              last_activity_at = now(), finished_at = now()
+            WHERE id = $1
+          `, [task.current_execution_id]);
+          await client.query(`
+            UPDATE image_runs SET status = 'ABANDONED', finished_at = now()
+            WHERE id = $1 AND status = 'RUNNING'
+          `, [task.current_execution_id]);
+        }
+      }
+      const updated = await client.query(`
+        UPDATE tasks SET
+          state = 'IMAGE_QUEUED', current_execution_id = NULL,
+          current_image_run_id = NULL, current_stage = 'IMAGE_QUEUED',
+          progress_percent = 0, progress_message = '已人工重试，等待图片执行机领取',
+          pending_snapshot = NULL, execution_started_at = NULL,
+          last_activity_at = now(), finished_at = NULL, error = NULL, updated_at = now()
+        WHERE id = $1
+        RETURNING *
+      `, [taskId]);
       return taskFrom(updated.rows[0]);
     });
   }
