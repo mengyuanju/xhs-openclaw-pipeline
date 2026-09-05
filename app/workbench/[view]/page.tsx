@@ -13,11 +13,19 @@ export default async function WorkbenchListPage({ params }: { params: Promise<{ 
   if (!definition) notFound();
   const session = await readServerSession();
   if (!session) redirect('/login');
+  const role = session.roles?.[0] || 'USER';
+  if (role === 'USER' && definition.key !== 'PERSONAL') redirect('/workbench/personal');
 
   return <>
     <h1 className="sr-only">{definition.label}</h1>
     {controlPlaneUrl()
-      ? <CreationWorkbench key={definition.key} viewKey={definition.key} nodeId={executorNodeId()} creatorUserId={session.subject} />
+      ? <CreationWorkbench
+          key={definition.key}
+          viewKey={definition.key}
+          nodeId={executorNodeId()}
+          creatorUserId={session.username || 'admin'}
+          role={role}
+        />
       : <div className="panel empty-state">
         请先配置中心服务连接，然后重启界面服务。
       </div>}

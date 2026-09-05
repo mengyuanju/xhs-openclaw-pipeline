@@ -59,6 +59,7 @@ const navigationGroups: NavigationGroup[] = [
       { href: '/analytics', label: '数据统计', icon: BarChart3, hidden: true },
       { href: '/openclaw-traces', label: '模型链路', icon: Waypoints, hidden: true },
       { href: '/settings', label: '生产配置', icon: Settings2 },
+      { href: '/users', label: '用户管理', icon: Users },
     ],
   },
 ];
@@ -79,10 +80,22 @@ export function SideNav({ session }: { session: { subject: string; username?: st
   const [isWorkbenchOpen, setIsWorkbenchOpen] = useState(pathname.startsWith('/workbench'));
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState('');
-  const isAdmin = session?.roles?.includes('ADMIN') === true;
+  const role = session?.roles?.[0];
+  const isAdmin = role === 'ADMIN';
   const roleGroups = isAdmin
-    ? [...navigationGroups.slice(0, 2), ...reviewNavigation, ...navigationGroups.slice(2)]
-    : reviewNavigation.map((group) => ({ ...group, items: group.items.filter((item) => item.href === '/reviews') }));
+    ? navigationGroups
+    : role === 'REVIEWER'
+      ? navigationGroups.map((group) => ({
+          ...group,
+          items: group.items.filter((item) => item.href === '/workbench' || item.href === '/knowledge'),
+        }))
+      : navigationGroups.map((group) => ({
+          ...group,
+          items: group.items.filter((item) => item.href === '/workbench').map((item) => ({
+            ...item,
+            children: item.children?.filter((child) => child.href === '/workbench/personal'),
+          })),
+        }));
   const visibleGroups = roleGroups.filter((group) => !group.hidden)
     .map((group) => ({ ...group, items: group.items.filter((item) => !item.hidden) }))
     .filter((group) => group.items.length > 0);
@@ -176,8 +189,9 @@ export function SideNav({ session }: { session: { subject: string; username?: st
       <div className="sidebar-foot">
         <div className="sidebar-auth-summary">
           <span className="sidebar-auth-label"><span className="status-dot" /> 局域网认证已启用</span>
-          <small>{isAdmin ? '系统管理员' : `质检账号 · ${session?.username || '未识别'}`}</small>
+          <small>{isAdmin ? '管理员' : role === 'REVIEWER' ? '审核员' : '普通用户'} · {session?.username || 'admin'}</small>
         </div>
+        <Link className="sidebar-signout" href="/profile"><Users aria-hidden="true" size={14} />个人信息</Link>
         <button className="sidebar-signout" type="button" onClick={signOut} disabled={isSigningOut}>
           <LogOut aria-hidden="true" size={14} />
           {isSigningOut ? '正在退出…' : '退出后台'}

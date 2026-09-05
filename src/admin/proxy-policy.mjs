@@ -19,18 +19,38 @@ export function evaluateAdminProxyRequest(request, environment = process.env) {
   }
 
   if (url.pathname === '/login' && session && url.searchParams.get('reauth') !== '1') {
-    return { type: 'redirect', location: session.subject === 'admin' ? '/workbench' : '/reviews' };
+    const legacyReviewer = session.roles?.some((role) => ['QC_LEAD', 'QUERY_REVIEWER', 'COPY_REVIEWER'].includes(role));
+    return { type: 'redirect', location: legacyReviewer ? '/reviews' : '/workbench/personal' };
   }
   if (PUBLIC_PATHS.has(url.pathname)) return { type: 'next' };
-  if (session?.subject === 'admin') return { type: 'next' };
+  if (session?.subject === 'admin' || session?.roles?.includes('ADMIN')) return { type: 'next' };
   if (session?.subject === 'user') {
-    const isReviewPath = url.pathname === '/reviews'
+    const role = session.roles?.[0];
+    const alwaysAllowed = url.pathname === '/profile'
+      || url.pathname.startsWith('/api/profile')
+      || url.pathname === '/api/auth/logout'
+      || url.pathname.startsWith('/api/control-plane/');
+    if (alwaysAllowed) return { type: 'next' };
+    if (role === 'REVIEWER') {
+      const allowed = url.pathname === '/workbench'
+        || url.pathname.startsWith('/workbench/')
+        || url.pathname === '/knowledge'
+        || url.pathname.startsWith('/knowledge/')
+        || url.pathname.startsWith('/api/knowledge-')
+        || url.pathname.startsWith('/api/copy-knowledge-')
+        || url.pathname.startsWith('/api/copy-analys');
+      return allowed ? { type: 'next' } : { type: 'forbidden' };
+    }
+    if (role === 'USER') {
+      const allowed = url.pathname === '/workbench'
+        || url.pathname === '/workbench/personal';
+      return allowed ? { type: 'next' } : { type: 'forbidden' };
+    }
+    // Preserve the legacy review-center accounts until they are migrated.
+    const legacyReviewPath = url.pathname === '/reviews'
       || url.pathname.startsWith('/reviews/')
-      || url.pathname.startsWith('/api/review-work-items')
-      || url.pathname.startsWith('/api/review-task-assignments')
-      || url.pathname.startsWith('/api/review-users')
-      || url.pathname === '/api/auth/logout';
-    return isReviewPath ? { type: 'next' } : { type: 'forbidden' };
+      || url.pathname.startsWith('/api/review-');
+    return legacyReviewPath ? { type: 'next' } : { type: 'forbidden' };
   }
   if (url.pathname.startsWith('/api/')) return { type: 'unauthorized' };
 

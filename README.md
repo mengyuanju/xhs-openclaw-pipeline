@@ -149,6 +149,8 @@ npm run db:upgrade
 npm run db:upgrade -- --apply
 ```
 
+当前 `0006_manual_archive` 升级会把原“待图文审核”和“已完成”任务合并为“人工归档”；不会删除任务、文案版本、图片或执行历史。
+
 后续新增字段/索引时，在 `server/migrations/` 新增编号 SQL，见该目录 README；不要修改已执行迁移或基线 `server/src/schema.sql`。
 中心服务启动也会执行尚未应用的代码迁移，不会反复覆盖默认配置或用户数据。
 
@@ -183,7 +185,7 @@ npm run auth:setup
 npm run dev:lan
 ```
 
-执行机只使用项目根目录 `.env`。`npm run auth:setup` 会在其中新增或更新管理员密码哈希和会话密钥，不会覆盖下面的其他配置：
+执行机只使用项目根目录 `.env`。`npm run auth:setup` 会在其中生成会话密钥（并保留兼容旧版所需的管理员密码哈希），不会覆盖下面的其他配置。实际登录账号和密码统一保存在中心服务：
 
 ```dotenv
 CONTROL_PLANE_URL=http://中心服务器内网IP:4310
@@ -325,11 +327,12 @@ XHS_IMAGE_PROXY_URL=http://127.0.0.1:7897
 
 ## 启动后台
 
-首次使用先在主机终端配置管理员密码。输入过程不会回显，项目只保存 scrypt 哈希：
+首次使用先生成界面服务的会话密钥，并确保中心服务已经执行数据库升级：
 
 ```powershell
 npm install
 npm run auth:setup
+npm run server:db:upgrade -- --apply
 npm run dev
 ```
 
@@ -340,7 +343,7 @@ npm run build
 npm start
 ```
 
-打开 `http://127.0.0.1:3001`。数据库默认为 `data/queue.db`，生成交付在 `output/`，审核素材在 `data/assets/`；这些目录不会进入 Git。
+打开 `http://127.0.0.1:3001`。初始管理员账号为 `admin`，默认密码为 `123456`，首次登录会进入个人信息页修改密码。用户账号、姓名、角色、密码哈希以及任务创建者都保存在中心服务 PostgreSQL 中。数据库默认为 `data/queue.db`，生成交付在 `output/`，审核素材在 `data/assets/`；这些目录不会进入 Git。
 
 ### 局域网登录
 

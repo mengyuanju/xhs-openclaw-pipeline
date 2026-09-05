@@ -7,7 +7,7 @@ async function source(path) {
 }
 
 describe('review center HTTP and UI contracts', () => {
-  it('accepts an account name at login while retaining the administrator path', async () => {
+  it('authenticates every account against the central user service', async () => {
     const [form, route] = await Promise.all([
       source('app/login/login-form.tsx'),
       source('app/api/auth/login/route.ts'),
@@ -15,8 +15,9 @@ describe('review center HTTP and UI contracts', () => {
 
     assert.match(form, /name="username"/u);
     assert.match(form, /autoComplete="username"/u);
-    assert.match(route, /attemptReviewUserLogin/u);
-    assert.match(route, /username === 'admin'/u);
+    assert.match(route, /\/v1\/auth\/login/u);
+    assert.match(route, /createSessionToken/u);
+    assert.match(route, /roles: \[user.role\]/u);
   });
 
   it('exposes strictly validated people and work item routes with role allowlists', async () => {

@@ -19,7 +19,7 @@ import { resumeImageTask } from '../components/resume-image-task';
 type TaskState =
   | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_FAILED'
   | 'IMAGE_QUEUED' | 'IMAGE_RUNNING' | 'IMAGE_FAILED'
-  | 'DELIVERY_REVIEW_PENDING' | 'COMPLETED' | 'CANCELLED';
+  | 'MANUAL_ARCHIVE' | 'CANCELLED';
 
 type DistributedTask = {
   id: number;
@@ -70,8 +70,7 @@ const STATE_LABELS: Record<TaskState, string> = {
   IMAGE_QUEUED: '待生图',
   IMAGE_RUNNING: '生图中',
   IMAGE_FAILED: '生图失败',
-  DELIVERY_REVIEW_PENDING: '图文待审核',
-  COMPLETED: '已完成',
+  MANUAL_ARCHIVE: '人工归档',
   CANCELLED: '已取消',
 };
 
@@ -256,27 +255,6 @@ export function DistributedJobsWorkbench({
     }
   }
 
-  async function approveDelivery() {
-    if (!selected || selected.state !== 'DELIVERY_REVIEW_PENDING') return;
-    if (!await confirm({
-      title: '确认图文审核通过？',
-      description: '确认后任务进入已完成状态，图片运行及审核记录仍会保留。',
-      confirmLabel: '审核通过',
-    })) return;
-    setBusy(true);
-    try {
-      await apiRequest(apiPath(`/v1/tasks/${selected.id}/approve-delivery`), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
-      });
-      setMessage('图文审核已通过，任务完成。');
-      await refresh({ silent: true });
-    } catch (deliveryError) {
-      setError(deliveryError instanceof Error ? deliveryError.message : '图文审核提交失败');
-    } finally {
-      setBusy(false);
-    }
-  }
-
   const revision = selected?.copyRevisions.find((item) => item.id === selected.currentCopyRevisionId)
     ?? selected?.copyRevisions[0];
   const reviewed = copyFromRevision(revision);
@@ -372,7 +350,6 @@ export function DistributedJobsWorkbench({
       </div>}
       <div className="inline distributed-task-actions">
         {selected.state === 'COPY_REVIEW_PENDING' && <button className="button primary" type="button" disabled={busy} onClick={() => { void approveCopy(); }}><CheckCircle2 size={15} />审核通过，进入生图队列</button>}
-        {selected.state === 'DELIVERY_REVIEW_PENDING' && <button className="button primary" type="button" disabled={busy} onClick={() => { void approveDelivery(); }}><CheckCircle2 size={15} />图文审核通过</button>}
         {RETRY_STATES.has(selected.state) && <>
           <button className="button" type="button" disabled={busy} onClick={() => { void retryTask(false); }}><RotateCcw size={15} />{selected.state.startsWith('IMAGE_') ? '从失败步骤继续' : '复用原配置重试'}</button>
           <button className="button" type="button" disabled={busy} onClick={() => { void retryTask(true); }}>使用最新配置重新生成</button>

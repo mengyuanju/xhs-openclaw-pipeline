@@ -3,13 +3,12 @@ import { z } from 'zod';
 import { apiHandler, parseJson } from '../../_lib';
 import {
   LoginRateLimiter,
-  attemptAdminLogin,
-  attemptReviewUserLogin,
-  readAuthConfig,
+  createSessionToken,
+  readSessionConfig,
   serializeAdminSessionCookie,
 } from '../../../../src/admin/auth.mjs';
 import { ApiError } from '../../../../src/admin/http.mjs';
-import { withAdminStore } from '../../../../src/admin/runtime.mjs';
+import { controlPlaneUrl } from '../../../../src/control-plane/next-runtime.mjs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -48,41 +47,55 @@ export async function POST(request: Request) {
       });
     }
     const limiter = getLoginLimiter(username);
-    const result = username === 'admin'
-      ? await attemptAdminLogin(password, { limiter })
-      : await withAdminStore((store: any) => {
-        const config = readAuthConfig();
-        if (!config) return { status: 'invalid' } as const;
-        return attemptReviewUserLogin({
-          username,
-          password,
-          lookupUser: (candidate: string) => store.findReviewUserForLogin(candidate),
-          sessionSecret: config.sessionSecret,
-          limiter,
-        });
-      });
-    if (result.status === 'blocked') {
+    const accountRateLimit = limiter.check();
+    if (!accountRateLimit.allowed) {
       throw new ApiError(429, 'TOO_MANY_ATTEMPTS', '登录尝试过多，请稍后再试', {
-        retryAfterSeconds: result.retryAfterSeconds,
+        retryAfterSeconds: accountRateLimit.retryAfterSeconds,
       });
     }
-    if (result.status === 'invalid') {
+    const root = controlPlaneUrl();
+    const config = readSessionConfig();
+    if (!root || !config) throw new ApiError(503, 'AUTH_NOT_CONFIGURED', '中心服务或会话密钥尚未配置');
+    const userResponse = await fetch(`${root}/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(10_000),
+    }).catch(() => null);
+    if (!userResponse) throw new ApiError(503, 'CONTROL_PLANE_UNAVAILABLE', '无法连接中心服务');
+    if (!userResponse.ok) {
       globalLoginLimiter.recordFailure();
+      limiter.recordFailure();
       throw new ApiError(401, 'INVALID_CREDENTIALS', '登录失败');
     }
+    const user = (await userResponse.json()).data;
+    limiter.reset();
+    const token = createSessionToken(config.sessionSecret, {
+      actor: {
+        userId: user.id,
+        username: user.username,
+        displayName: user.displayName,
+        roles: [user.role],
+        credentialVersion: user.credentialVersion,
+        mustChangePassword: user.mustChangePassword,
+      },
+    });
 
     const response = Response.json({
       data: {
         authenticated: true,
-        homePath: username === 'admin' ? '/workbench' : '/reviews',
+        homePath: user.mustChangePassword ? '/profile' : '/workbench/personal',
+        role: user.role,
+        mustChangePassword: user.mustChangePassword,
       },
     });
     response.headers.set('cache-control', 'no-store');
     response.headers.set('set-cookie', serializeAdminSessionCookie(
-      result.token,
+      token,
       { secure: new URL(request.url).protocol === 'https:' },
     ));
-    response.headers.set('x-session-expires-in', String(result.expiresInSeconds));
+    response.headers.set('x-session-expires-in', String(8 * 60 * 60));
     return response;
   });
 }

@@ -17,17 +17,17 @@ test('queued images including retries are not presented as claimed', () => {
     imageExecutorNodeName: '上次执行机' }), '待领取');
 });
 
-test('delivery review shows the successful executor name with safe missing-data fallbacks', () => {
-  const task = { state: 'DELIVERY_REVIEW_PENDING', imageExecutorNodeId: 'image-b',
+test('manual archive shows the successful executor name with safe missing-data fallbacks', () => {
+  const task = { state: 'MANUAL_ARCHIVE', imageExecutorNodeId: 'image-b',
     imageExecutorNodeName: '成功生图机器 B' };
   assert.equal(imageExecutorLabel(task), '成功生图机器 B');
   assert.equal(imageExecutorLabel({ ...task, imageExecutorNodeName: null }), 'image-b');
-  assert.equal(imageExecutorLabel({ state: 'DELIVERY_REVIEW_PENDING' }), '执行机信息不可用');
+  assert.equal(imageExecutorLabel({ state: 'MANUAL_ARCHIVE' }), '执行机信息不可用');
 });
 
-test('delivery review adds an image executor column without replacing the copy column', async () => {
+test('manual archive adds an image executor column without replacing the copy column', async () => {
   const source = await readFile(new URL('../app/workbench/creation-workbench.tsx', import.meta.url), 'utf8');
-  assert.match(source, /activeView === 'DELIVERY_REVIEW' && <th>生图执行机<\/th>/u);
-  assert.match(source, /activeView === 'DELIVERY_REVIEW' && <td[^>]*data-label="生图执行机">\{imageExecutorLabel\(task\)\}/u);
+  assert.match(source, /activeView === 'MANUAL_ARCHIVE' && <th>生图执行机<\/th>/u);
+  assert.match(source, /activeView === 'MANUAL_ARCHIVE' && <td[^>]*data-label="生图执行机">\{imageExecutorLabel\(task\)\}/u);
   assert.match(source, /<th>\{executorColumnLabel\}<\/th>/u);
 });

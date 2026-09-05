@@ -14,7 +14,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 
 import {
   Dialog,
@@ -44,6 +44,7 @@ type DistributedTask = {
   imageExecutorNodeId?: string | null;
   imageExecutorNodeName?: string | null;
   createdByUserId: string | null;
+  createdByDisplayName: string | null;
   currentStage: string | null;
   progressPercent: number;
   progressMessage: string;
@@ -74,8 +75,7 @@ const STATE_LABELS: Record<TaskState, string> = {
   IMAGE_QUEUED: '待生图',
   IMAGE_RUNNING: '生图中',
   IMAGE_FAILED: '生图失败',
-  DELIVERY_REVIEW_PENDING: '图文待审核',
-  COMPLETED: '已完成',
+  MANUAL_ARCHIVE: '人工归档',
   CANCELLED: '已取消',
 };
 
@@ -105,8 +105,7 @@ const STAGE_LABELS: Record<string, string> = {
   IMAGE_QUEUED: '待生图',
   IMAGE_RUNNING: '生图中',
   IMAGE_FAILED: '生图失败',
-  DELIVERY_REVIEW_PENDING: '图文待审核',
-  COMPLETED: '已完成',
+  MANUAL_ARCHIVE: '人工归档',
   FAILED: '执行失败',
   CANCELLED: '已取消',
 };
@@ -117,7 +116,6 @@ function stageLabel(task: DistributedTask) {
 
 const STALE_AFTER_MS = 30 * 60_000;
 const PAGE_SIZE = 20;
-
 function apiPath(path: string) {
   return `/api/control-plane${path}`;
 }
@@ -142,7 +140,7 @@ function timeLabel(value: string | null) {
   return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '尚未开始';
 }
 
-export function CreationWorkbench({ nodeId, creatorUserId, viewKey: activeView }: { nodeId: string; creatorUserId: string; viewKey: ViewKey }) {
+export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: activeView }: { nodeId: string; creatorUserId: string; role: string; viewKey: ViewKey }) {
   const router = useRouter();
   const activeDefinition = WORKBENCH_VIEWS.find((view) => view.key === activeView)!;
   const executorColumnLabel = activeView === 'IMAGE_WORK' ? '生图执行机' : '文案执行机';
@@ -166,6 +164,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, viewKey: activeView }
   const [actingTaskId, setActingTaskId] = useState<number | null>(null);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const legacyStateFilterMode = useRef(false);
 
   const refresh = useCallback(async ({ silent = false } = {}) => {
     if (!silent) {
@@ -174,23 +173,39 @@ export function CreationWorkbench({ nodeId, creatorUserId, viewKey: activeView }
     }
     try {
       const view = activeDefinition;
-      const search = new URLSearchParams({
-        states: view.states.join(','),
-        limit: String(PAGE_SIZE),
-        offset: String((page - 1) * PAGE_SIZE),
-        includeTotal: 'true',
-      });
+      const search = new URLSearchParams(legacyStateFilterMode.current
+        ? { limit: '200', offset: '0' }
+        : {
+            states: view.states.join(','),
+            limit: String(PAGE_SIZE),
+            offset: String((page - 1) * PAGE_SIZE),
+            includeTotal: 'true',
+          });
       if (view.personalOnly) search.set('mine', 'true');
       if (searchKeyword) search.set('query', searchKeyword);
+      let compatibilityTasks: DistributedTask[] | null = null;
+      const taskPageRequest = apiRequest<TaskPage | DistributedTask[]>(apiPath(`/v1/tasks?${search}`))
+        .catch(async (caught) => {
+          if (!(caught instanceof Error) || caught.message !== 'task state filter is invalid') throw caught;
+          legacyStateFilterMode.current = true;
+          const compatibilitySearch = new URLSearchParams({ limit: '200', offset: '0' });
+          if (view.personalOnly) compatibilitySearch.set('mine', 'true');
+          compatibilityTasks = await apiRequest<DistributedTask[]>(apiPath(`/v1/tasks?${compatibilitySearch}`));
+          return compatibilityTasks;
+        });
       const [rawTaskPage, nextNodes] = await Promise.all([
-        apiRequest<TaskPage | DistributedTask[]>(apiPath(`/v1/tasks?${search}`)),
+        taskPageRequest,
         apiRequest<ExecutorNode[]>(apiPath('/v1/nodes')),
       ]);
       let taskPage: TaskPage;
       if (Array.isArray(rawTaskPage)) {
         // Older services return arrays. Filter by account explicitly; missing ownership
         // must never fall back to the creating or executing node.
-        const legacyTasks = await apiRequest<DistributedTask[]>(apiPath('/v1/tasks?limit=200&offset=0'));
+        const legacySearch = new URLSearchParams({ limit: '200', offset: '0' });
+        if (view.personalOnly) legacySearch.set('mine', 'true');
+        if (legacyStateFilterMode.current && compatibilityTasks === null) compatibilityTasks = rawTaskPage;
+        const legacyTasks = compatibilityTasks
+          ?? await apiRequest<DistributedTask[]>(apiPath(`/v1/tasks?${legacySearch}`));
         const keyword = searchKeyword.toLocaleLowerCase('zh-CN');
         const filtered = legacyTasks.filter((task) => matchesWorkbenchView(task, view, creatorUserId)
           && (!keyword || task.query.toLocaleLowerCase('zh-CN').includes(keyword)));
@@ -219,7 +234,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, viewKey: activeView }
       setLoading(false);
       if (!silent) setRefreshing(false);
     }
-  }, [activeDefinition, creatorUserId, page, searchKeyword]);
+  }, [activeDefinition, creatorUserId, page, role, searchKeyword]);
 
   useEffect(() => {
     void refresh();
@@ -295,26 +310,27 @@ export function CreationWorkbench({ nodeId, creatorUserId, viewKey: activeView }
 
   function taskActions(task: DistributedTask) {
     const busy = actingTaskId === task.id;
+    const canDiscard = role === 'ADMIN' || task.createdByUserId === creatorUserId;
     if (activeView === 'ALL_COPY') return <div className="workbench-row-actions">
       <button className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>
       {task.state === 'COPY_FAILED' && <button className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重新生文</button>}
-      <button className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</button>
+      {canDiscard && <button className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</button>}
     </div>;
-    if (activeView === 'COPY_REVIEW' || activeView === 'DELIVERY_REVIEW') return <div className="workbench-row-actions">
+    if (activeView === 'COPY_REVIEW') return <div className="workbench-row-actions">
       <button className="button small primary" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />审核</button>
-      <button className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</button>
+      {canDiscard && <button className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</button>}
     </div>;
     if (activeView === 'IMAGE_WORK') return <div className="workbench-row-actions">
       <button className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>
     </div>;
-    if (activeView === 'COMPLETED') return <div className="workbench-row-actions">
+    if (activeView === 'MANUAL_ARCHIVE') return <div className="workbench-row-actions">
       <button className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>
-      <button className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</button>
+      {canDiscard && <button className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</button>}
     </div>;
     return <div className="workbench-row-actions">
       <button className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>
       {activeView === 'PERSONAL' && task.state === 'COPY_FAILED' && <button className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</button>}
-      <button className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</button>
+      {canDiscard && <button className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</button>}
     </div>;
   }
 
@@ -493,17 +509,18 @@ export function CreationWorkbench({ nodeId, creatorUserId, viewKey: activeView }
           </div>
           : <div className="table-wrap mobile-cards workbench-table-wrap">
             <table>
-              <thead><tr><th>ID</th><th>Query</th><th>状态</th><th>{executorColumnLabel}</th>{activeView === 'DELIVERY_REVIEW' && <th>生图执行机</th>}<th>开始时间</th><th>阶段 / 进度</th><th>耗时</th><th>操作</th></tr></thead>
+              <thead><tr><th>ID</th><th>Query</th><th>创建者</th><th>状态</th><th>{executorColumnLabel}</th>{activeView === 'MANUAL_ARCHIVE' && <th>生图执行机</th>}<th>开始时间</th><th>阶段 / 进度</th><th>耗时</th><th>操作</th></tr></thead>
               <tbody>{visibleTasks.map((task) => <tr key={task.id}>
                 <td className="mono" data-label="ID">#{task.id}</td>
                 <td className="query-cell" data-label="Query">{task.query}</td>
+                <td data-label="创建者">{task.createdByDisplayName || task.createdByUserId || '历史任务'}</td>
                 <td data-label="状态">
                   <span className={`pill ${isImageRetryExhausted(task) ? 'pill-rejected' : `workbench-state-${task.state.toLowerCase()}`}${isStale(task) ? ' pill-rejected' : ''}`}>{isImageRetryExhausted(task) ? IMAGE_RETRY_EXHAUSTED_LABEL : STATE_LABELS[task.state]}</span>
                 </td>
                 <td className="mono" data-label={executorColumnLabel}>{activeView === 'IMAGE_WORK'
                   ? imageExecutorLabel(task)
                   : nodes.find((node) => node.id === task.copyExecutorNodeId)?.name ?? task.copyExecutorNodeId}</td>
-                {activeView === 'DELIVERY_REVIEW' && <td className="mono" data-label="生图执行机">{imageExecutorLabel(task)}</td>}
+                {activeView === 'MANUAL_ARCHIVE' && <td className="mono" data-label="生图执行机">{imageExecutorLabel(task)}</td>}
                 <td data-label="开始时间">{timeLabel(task.executionStartedAt)}</td>
                 <td data-label="阶段 / 进度">
                   <div className="distributed-progress">

@@ -6,6 +6,8 @@ import { bodyParser } from '@koa/bodyparser';
 import Router from '@koa/router';
 import Koa from 'koa';
 import { importCopyKnowledgeLabels, listCopyAnalysisPrompts, retireKnowledge, saveCopyAnalysisPrompt } from './knowledge-admin.mjs';
+import { analyzeAndSaveExcellentCopy, CopyAnalysisServiceError } from './deepseek-copy-analysis.mjs';
+import { archiveFileName, buildTaskArchive } from './task-archive.mjs';
 
 import {
   ControlPlaneConflictError,
@@ -26,6 +28,7 @@ class HttpError extends Error {
 
 function mappedError(error) {
   if (error instanceof HttpError) return error;
+  if (error instanceof CopyAnalysisServiceError) return new HttpError(error.status, error.code, error.message);
   if (error instanceof ControlPlaneNotFoundError) {
     return new HttpError(404, error.code, error.message);
   }
@@ -142,14 +145,74 @@ function json(ctx, status, data) {
   ctx.body = { data };
 }
 
-function installRoutes(router, repository, storageRoot) {
+const APP_ROLES = Object.freeze(['ADMIN', 'REVIEWER', 'USER']);
+
+function requestActor(ctx, allowedRoles = APP_ROLES) {
+  const actor = ctx.state.actor;
+  if (!actor) {
+    throw new HttpError(401, 'AUTH_REQUIRED', 'authenticated user context is required');
+  }
+  if (!allowedRoles.includes(actor.role)) throw new HttpError(403, 'FORBIDDEN', 'current role cannot perform this operation');
+  return actor;
+}
+
+async function assertTaskAccess(ctx, repository, { ownerOnly = false } = {}) {
+  const actor = requestActor(ctx);
+  if (typeof repository.getTask !== 'function') return { actor, task: null };
+  const task = await repository.getTask(ctx.params.taskId);
+  if (!task) throw new ControlPlaneNotFoundError('task not found');
+  if ((ownerOnly || actor.role === 'USER') && task.createdByUserId !== actor.username) {
+    throw new HttpError(403, 'FORBIDDEN', 'current user cannot access this task');
+  }
+  return { actor, task };
+}
+
+function installRoutes(router, repository, storageRoot, analyzeCopy) {
+  router.post('/v1/auth/login', async (ctx) => {
+    const body = requireJson(ctx);
+    const user = await repository.authenticateUser(body.username, body.password);
+    if (!user) throw new HttpError(401, 'INVALID_CREDENTIALS', '登录失败');
+    json(ctx, 200, user);
+  });
+  router.get('/v1/users', async (ctx) => {
+    requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.listUsers({ status: ctx.query.status || null }));
+  });
+  router.post('/v1/users', async (ctx) => {
+    requestActor(ctx, ['ADMIN']);
+    json(ctx, 201, await repository.createUser(requireJson(ctx)));
+  });
+  router.patch('/v1/users/:userId', async (ctx) => {
+    requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.updateUser(ctx.params.userId, requireJson(ctx)));
+  });
+  router.post('/v1/users/:userId/reset-password', async (ctx) => {
+    requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.resetUserPassword(ctx.params.userId));
+  });
+  router.get('/v1/profile', async (ctx) => {
+    const actor = requestActor(ctx);
+    const user = await repository.getUserByUsername(actor.username);
+    if (!user || user.status !== 'ACTIVE') throw new HttpError(401, 'SESSION_STALE', '账号状态已变化，请重新登录');
+    json(ctx, 200, user);
+  });
+  router.patch('/v1/profile', async (ctx) => {
+    const actor = requestActor(ctx);
+    json(ctx, 200, await repository.updateOwnProfile(actor.username, requireJson(ctx)));
+  });
+  router.post('/v1/profile/password', async (ctx) => {
+    const actor = requestActor(ctx);
+    json(ctx, 200, await repository.changeOwnPassword(actor.username, requireJson(ctx)));
+  });
   router.put('/v1/executions/:executionId/model-calls/:callId', async (ctx) => {
     json(ctx, 200, await repository.recordModelCall(ctx.params.executionId, ctx.params.callId, requireJson(ctx)));
   });
   router.get('/v1/tasks/:taskId/model-calls', async (ctx) => {
+    await assertTaskAccess(ctx, repository);
     json(ctx, 200, await repository.listModelCalls(ctx.params.taskId, { limit: ctx.query.limit, offset: ctx.query.offset }));
   });
   router.get('/v1/tasks/:taskId/model-calls/:callId', async (ctx) => {
+    await assertTaskAccess(ctx, repository);
     json(ctx, 200, await repository.getModelCall(ctx.params.taskId, ctx.params.callId));
   });
   router.get('/health', async (ctx) => json(ctx, 200, await repository.health()));
@@ -161,20 +224,22 @@ function installRoutes(router, repository, storageRoot) {
     json(ctx, 200, await repository.listNodes());
   });
   router.post('/v1/tasks', async (ctx) => {
+    const actor = requestActor(ctx);
     const body = requireJson(ctx);
     json(ctx, 201, await repository.createTasks({
       nodeId: body.nodeId,
       copyExecutorNodeId: body.copyExecutorNodeId,
-      createdByUserId: ctx.get('X-Task-Creator-Id') || null,
+      createdByUserId: actor.username,
       tasks: body.tasks,
     }));
   });
   router.get('/v1/tasks', async (ctx) => {
+    const actor = requestActor(ctx);
     json(ctx, 200, await repository.listTasks({
       state: ctx.query.state,
       states: ctx.query.states,
       nodeId: ctx.query.nodeId,
-      createdByUserId: ctx.query.createdByUserId,
+      createdByUserId: actor.role === 'USER' ? actor.username : ctx.query.createdByUserId,
       query: ctx.query.query,
       limit: ctx.query.limit,
       offset: ctx.query.offset,
@@ -185,9 +250,25 @@ function installRoutes(router, repository, storageRoot) {
     json(ctx, 200, await repository.taskCounts({ nodeId: ctx.query.nodeId }));
   });
   router.get('/v1/tasks/:taskId', async (ctx) => {
-    const result = await repository.getTask(ctx.params.taskId);
-    if (!result) throw new ControlPlaneNotFoundError('task not found');
-    json(ctx, 200, result);
+    const { task } = await assertTaskAccess(ctx, repository);
+    json(ctx, 200, task);
+  });
+  router.get('/v1/tasks/:taskId/archive', async (ctx) => {
+    const { task } = await assertTaskAccess(ctx, repository);
+    if (task.state !== 'MANUAL_ARCHIVE') {
+      throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'only manually archived tasks can be downloaded');
+    }
+    const content = await buildTaskArchive(task, async (assetId) => {
+      const asset = await repository.getAsset(assetId);
+      if (!asset || asset.taskId !== task.id) return null;
+      const path = safeStoragePath(storageRoot, relative(storageRoot, asset.storagePath));
+      return { ...asset, content: await readFile(path) };
+    });
+    const fileName = archiveFileName(task);
+    ctx.status = 200;
+    ctx.type = 'application/zip';
+    ctx.set('Content-Disposition', `attachment; filename="task-${task.id}-resources.zip"; filename*=UTF-8''${encodeURIComponent(fileName)}`);
+    ctx.body = content;
   });
 
   router.post('/v1/executions/claim-copy', async (ctx) => {
@@ -220,6 +301,8 @@ function installRoutes(router, repository, storageRoot) {
   router.get('/v1/assets/:assetId', async (ctx) => {
     const asset = await repository.getAsset(ctx.params.assetId);
     if (!asset) throw new ControlPlaneNotFoundError('asset not found');
+    ctx.params.taskId = String(asset.taskId);
+    await assertTaskAccess(ctx, repository);
     const path = safeStoragePath(storageRoot, relative(storageRoot, asset.storagePath));
     ctx.status = 200;
     ctx.type = asset.mediaType;
@@ -227,38 +310,46 @@ function installRoutes(router, repository, storageRoot) {
   });
 
   router.post('/v1/tasks/:taskId/approve-copy', async (ctx) => {
+    await assertTaskAccess(ctx, repository);
     json(ctx, 200, await repository.approveCopy(ctx.params.taskId, requireJson(ctx)));
   });
   router.post('/v1/tasks/:taskId/retry', async (ctx) => {
+    await assertTaskAccess(ctx, repository, { ownerOnly: requestActor(ctx).role !== 'ADMIN' });
     json(ctx, 200, await repository.retryTask(ctx.params.taskId, requireJson(ctx)));
   });
-  router.post('/v1/tasks/:taskId/approve-delivery', async (ctx) => {
-    json(ctx, 200, await repository.completeDeliveryReview(ctx.params.taskId));
-  });
   router.post('/v1/tasks/:taskId/cancel', async (ctx) => {
+    await assertTaskAccess(ctx, repository, { ownerOnly: requestActor(ctx).role !== 'ADMIN' });
     json(ctx, 200, await repository.cancelTask(ctx.params.taskId));
   });
 
   router.get('/v1/settings', async (ctx) => json(ctx, 200, await repository.listSettings()));
   router.put('/v1/settings/:key', async (ctx) => {
+    requestActor(ctx, ['ADMIN']);
     json(ctx, 200, await repository.upsertSetting(ctx.params.key, requireJson(ctx).value));
   });
   router.get('/v1/prompts', async (ctx) => json(ctx, 200, await repository.listPrompts()));
   router.post('/v1/prompts/versions', async (ctx) => {
+    requestActor(ctx, ['ADMIN']);
     json(ctx, 201, await repository.createPromptVersion(requireJson(ctx)));
   });
   router.post('/v1/prompt-versions/:versionId/publish', async (ctx) => {
+    requestActor(ctx, ['ADMIN']);
     json(ctx, 200, await repository.publishPromptVersion(ctx.params.versionId));
   });
 
   router.get('/v1/knowledge', async (ctx) => json(ctx, 200, await repository.listKnowledge()));
   router.get('/v1/knowledge/capabilities', (ctx) => json(ctx, 200, { workbenchVersion: 1 }));
-  router.get('/v1/copy-analysis-prompts', async (ctx) => json(ctx, 200, await listCopyAnalysisPrompts(repository.pool)));
-  router.post('/v1/copy-analysis-prompts', async (ctx) => json(ctx, 201, await saveCopyAnalysisPrompt(repository.pool, requireJson(ctx))));
-  router.patch('/v1/copy-analysis-prompts/:id', async (ctx) => json(ctx, 200, await saveCopyAnalysisPrompt(repository.pool, requireJson(ctx), ctx.params.id)));
-  router.post('/v1/knowledge/labels/import', async (ctx) => json(ctx, 200, await importCopyKnowledgeLabels(repository.pool, requireJson(ctx).labels)));
-  router.post('/v1/knowledge/:id/retire', async (ctx) => json(ctx, 200, await retireKnowledge(repository.pool, ctx.params.id)));
+  router.get('/v1/copy-analysis-prompts', async (ctx) => { requestActor(ctx, ['ADMIN', 'REVIEWER']); json(ctx, 200, await listCopyAnalysisPrompts(repository.pool)); });
+  router.post('/v1/copy-analysis-prompts', async (ctx) => { requestActor(ctx, ['ADMIN', 'REVIEWER']); json(ctx, 201, await saveCopyAnalysisPrompt(repository.pool, requireJson(ctx))); });
+  router.patch('/v1/copy-analysis-prompts/:id', async (ctx) => { requestActor(ctx, ['ADMIN', 'REVIEWER']); json(ctx, 200, await saveCopyAnalysisPrompt(repository.pool, requireJson(ctx), ctx.params.id)); });
+  router.post('/v1/knowledge/labels/import', async (ctx) => { requestActor(ctx, ['ADMIN', 'REVIEWER']); json(ctx, 200, await importCopyKnowledgeLabels(repository.pool, requireJson(ctx).labels)); });
+  router.post('/v1/copy-knowledge/analyze', async (ctx) => {
+    requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    json(ctx, 201, await analyzeCopy({ repository, input: requireJson(ctx) }));
+  });
+  router.post('/v1/knowledge/:id/retire', async (ctx) => { requestActor(ctx, ['ADMIN', 'REVIEWER']); json(ctx, 200, await retireKnowledge(repository.pool, ctx.params.id)); });
   router.post('/v1/knowledge/versions', async (ctx) => {
+    requestActor(ctx, ['ADMIN', 'REVIEWER']);
     const body = requireJson(ctx);
     json(ctx, 201, await repository.createKnowledgeVersion({
       itemId: body.itemId ?? null,
@@ -270,6 +361,7 @@ function installRoutes(router, repository, storageRoot) {
     }));
   });
   router.put('/v1/knowledge-versions/:versionId/asset', async (ctx) => {
+    requestActor(ctx, ['ADMIN', 'REVIEWER']);
     json(ctx, 201, await uploadKnowledgeAsset({
       ctx,
       repository,
@@ -286,11 +378,12 @@ function installRoutes(router, repository, storageRoot) {
     ctx.body = await readFile(path);
   });
   router.post('/v1/knowledge-versions/:versionId/publish', async (ctx) => {
+    requestActor(ctx, ['ADMIN', 'REVIEWER']);
     json(ctx, 200, await repository.publishKnowledgeVersion(ctx.params.versionId));
   });
 }
 
-export function createControlPlaneApp({ repository, storageRoot }) {
+export function createControlPlaneApp({ repository, storageRoot, enforceUserAuth = true, analyzeCopy = analyzeAndSaveExcellentCopy }) {
   if (!repository) throw new TypeError('repository is required');
   const resolvedStorageRoot = resolve(storageRoot);
   const app = new Koa();
@@ -323,7 +416,28 @@ export function createControlPlaneApp({ repository, storageRoot }) {
     if (rawUpload) return next();
     return parseJsonBody(ctx, next);
   });
-  installRoutes(router, repository, resolvedStorageRoot);
+  app.use(async (ctx, next) => {
+    const username = String(ctx.get('X-Actor-Username') || '').trim().toLowerCase();
+    if (!enforceUserAuth) {
+      ctx.state.actor = {
+        username: username || String(ctx.get('X-Task-Creator-Id') || 'admin'),
+        role: 'ADMIN',
+        userId: 1,
+      };
+      return next();
+    }
+    if (!username) return next();
+    const role = String(ctx.get('X-Actor-Role') || '').trim().toUpperCase();
+    const credentialVersion = Number(ctx.get('X-Actor-Credential-Version'));
+    const user = await repository.getUserByUsername(username).catch(() => null);
+    if (!user || user.status !== 'ACTIVE' || user.role !== role
+      || user.credentialVersion !== credentialVersion) {
+      throw new HttpError(401, 'SESSION_STALE', '账号状态已变化，请重新登录');
+    }
+    ctx.state.actor = { username: user.username, role: user.role, userId: user.id };
+    return next();
+  });
+  installRoutes(router, repository, resolvedStorageRoot, analyzeCopy);
   app.use(router.routes());
   app.use(router.allowedMethods());
   return app;

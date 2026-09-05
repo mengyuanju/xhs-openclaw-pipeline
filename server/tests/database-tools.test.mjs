@@ -79,6 +79,15 @@ test('task creator migration preserves unattributed history and adds an ownershi
   assert.doesNotMatch(migration.sql, /DEFAULT|NOT NULL|UPDATE tasks|DELETE|DROP/u);
 });
 
+test('manual archive migration merges both former delivery states without deleting task history', async () => {
+  const migration = (await loadMigrations()).find((item) => item.id === '0006_manual_archive');
+  assert.ok(migration);
+  assert.match(migration.sql, /WHERE state IN \('DELIVERY_REVIEW_PENDING', 'COMPLETED'\)/u);
+  assert.match(migration.sql, /state = 'MANUAL_ARCHIVE'/u);
+  assert.match(migration.sql, /ADD CONSTRAINT tasks_state_check/u);
+  assert.doesNotMatch(migration.sql, /DELETE|TRUNCATE|DROP TABLE/u);
+});
+
 test('failed upgrades roll back the enclosing schema-and-data transaction', async () => {
   const queries = [];
   const client = { query: async (sql) => {

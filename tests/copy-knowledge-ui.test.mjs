@@ -31,8 +31,10 @@ describe('excellent copy analysis and classification UI', () => {
     assert.match(workbench, /useState\(''\)/u);
     assert.match(workbench, /<CopyKnowledgeLibrary/u);
     assert.match(library, /按标签查看/u);
-    assert.match(workbench, /\/api\/copy-analyses/u);
-    assert.match(workbench, /\/api\/copy-knowledge-items/u);
+    assert.match(workbench, /\/api\/control-plane\/v1\/copy-knowledge\/analyze/u);
+    assert.match(workbench, /AI 分析并直接入库/u);
+    assert.doesNotMatch(workbench, /\/api\/copy-analyses/u);
+    assert.doesNotMatch(workbench, /\/api\/copy-knowledge-items/u);
     assert.match(library, /编辑已保存内容/u);
     assert.match(library, /保存修改/u);
     assert.match(library, /取消/u);
@@ -40,30 +42,31 @@ describe('excellent copy analysis and classification UI', () => {
     assert.match(library, /\/api\/copy-knowledge-items\/\$\{item\.id\}/u);
   });
 
-  it('validates both mutation endpoints with strict bounded schemas', async () => {
-    const [analysisRoute, storageRoute] = await Promise.all([
-      source('app/api/copy-analyses/route.ts'),
-      source('app/api/copy-knowledge-items/route.ts'),
+  it('delegates analysis and direct persistence exclusively to the control plane', async () => {
+    const [workbench, centerService, centerHttp] = await Promise.all([
+      source('app/knowledge/copy-knowledge-workbench.tsx'),
+      source('server/src/deepseek-copy-analysis.mjs'),
+      source('server/src/http-server.mjs'),
     ]);
-
-    for (const route of [analysisRoute, storageRoute]) {
-      assert.match(route, /apiHandler\(request, \{ mutation: true \}/u);
-      assert.match(route, /\.strict\(\)/u);
-      assert.match(route, /parseJson/u);
-    }
-    assert.match(analysisRoute, /sourceCopy/u);
-    assert.match(analysisRoute, /analysisPrompt/u);
-    assert.match(analysisRoute, /maxBytes:\s*128 \* 1024/u);
-    assert.match(storageRoute, /labels:\s*z\.array/u);
-    assert.match(storageRoute, /\.min\(1\)\.max\(12\)/u);
-    assert.match(storageRoute, /maxBytes:\s*192 \* 1024/u);
+    assert.match(workbench, /copy-knowledge\/analyze/u);
+    assert.match(centerHttp, /router\.post\('\/v1\/copy-knowledge\/analyze'/u);
+    assert.match(centerHttp, /requestActor\(ctx, \['ADMIN', 'REVIEWER'\]\)/u);
+    assert.match(centerService, /DEEPSEEK_API_KEY/u);
+    assert.match(centerService, /deepseek-v4-pro/u);
+    assert.match(centerService, /repository\.createKnowledgeVersion/u);
+    assert.match(centerService, /publish: true/u);
+    assert.doesNotMatch(workbench, /检查分析结果|按标签保存到知识库/u);
+    const legacyRoute = await source('app/api/copy-analyses/route.ts');
+    assert.match(legacyRoute, /status: 308/u);
+    assert.match(legacyRoute, /copy-knowledge\/analyze/u);
+    assert.doesNotMatch(legacyRoute, /analyzeExcellentCopy|createOpenClawClient/u);
   });
 
   it('validates saved-copy edits through a strict bounded PATCH endpoint', async () => {
     const updateRoute = await source('app/api/copy-knowledge-items/[id]/route.ts');
 
     assert.match(updateRoute, /export async function PATCH/u);
-    assert.match(updateRoute, /apiHandler\(request, \{ mutation: true \}/u);
+    assert.match(updateRoute, /apiHandler\(request, \{ mutation: true, roles: \['ADMIN', 'REVIEWER'\] \}/u);
     assert.match(updateRoute, /parsePositiveId/u);
     assert.match(updateRoute, /\.strict\(\)/u);
     assert.match(updateRoute, /sourceCopy/u);

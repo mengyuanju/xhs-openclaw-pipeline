@@ -1,6 +1,6 @@
 'use client';
 
-import { CheckCircle2, LoaderCircle, RefreshCw } from 'lucide-react';
+import { CheckCircle2, Download, LoaderCircle, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 
 import {
@@ -21,7 +21,7 @@ import { ImagePreview } from '../components/image-preview';
 type TaskState =
   | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_FAILED'
   | 'IMAGE_QUEUED' | 'IMAGE_RUNNING' | 'IMAGE_FAILED'
-  | 'DELIVERY_REVIEW_PENDING' | 'COMPLETED' | 'CANCELLED';
+  | 'MANUAL_ARCHIVE' | 'CANCELLED';
 
 type Copy = { title: string; body: string; tags: string[] };
 type ImagePlanItem = {
@@ -94,8 +94,7 @@ const STATE_LABELS: Record<TaskState, string> = {
   IMAGE_QUEUED: '待生图',
   IMAGE_RUNNING: '生图中',
   IMAGE_FAILED: '生图失败',
-  DELIVERY_REVIEW_PENDING: '图文待审核',
-  COMPLETED: '已完成',
+  MANUAL_ARCHIVE: '人工归档',
   CANCELLED: '已取消',
 };
 const STAGE_LABELS: Record<string, string> = {
@@ -124,8 +123,7 @@ const STAGE_LABELS: Record<string, string> = {
   IMAGE_QUEUED: '待生图',
   IMAGE_RUNNING: '生图中',
   IMAGE_FAILED: '生图失败',
-  DELIVERY_REVIEW_PENDING: '图文待审核',
-  COMPLETED: '已完成',
+  MANUAL_ARCHIVE: '人工归档',
   FAILED: '执行失败',
   CANCELLED: '已取消',
 };
@@ -274,40 +272,24 @@ export function TaskReviewDialog({
     }
   }
 
-  async function submitDeliveryReview() {
-    if (!detail || detail.state !== 'DELIVERY_REVIEW_PENDING') return;
-    if (!await confirm({
-      title: '提交图文审核？',
-      description: '确认后任务将进入已完成状态，当前图文版本会继续保留。',
-      confirmLabel: '提交审核',
-    })) return;
-    setSubmitting(true);
-    try {
-      await apiRequest(apiPath(`/v1/tasks/${detail.id}/approve-delivery`), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: '{}',
-      });
-      await onUpdated('图文审核已提交，任务已完成。');
-      onOpenChange(false);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '图文审核提交失败');
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
   return <Dialog open={taskId !== null} onOpenChange={(open) => { if (!submitting) onOpenChange(open); }}>
     <DialogContent className="workbench-review-dialog">
       <header className="workbench-review-heading">
         <div>
           <span className="section-kicker">Task {detail ? `#${detail.id}` : ''}</span>
-          <DialogTitle>任务详情与审核</DialogTitle>
-          <DialogDescription>核对任务信息，直接修改文案和配图策划后提交审核。</DialogDescription>
+          <DialogTitle>{detail?.state === 'MANUAL_ARCHIVE' ? '人工归档详情' : '任务详情与审核'}</DialogTitle>
+          <DialogDescription>{detail?.state === 'MANUAL_ARCHIVE'
+            ? '查看已生成的文案和图片，并下载完整资源包。'
+            : '核对任务信息，直接修改文案和配图策划后提交审核。'}</DialogDescription>
         </div>
-        <button className="button small" type="button" disabled={loading || submitting} onClick={() => { void load(); }}>
-          <RefreshCw className={loading ? 'animate-spin' : ''} size={14} />刷新
-        </button>
+        <div className="workbench-row-actions">
+          {detail?.state === 'MANUAL_ARCHIVE' && <a className="button small primary" href={apiPath(`/v1/tasks/${detail.id}/archive`)} download>
+            <Download size={14} />下载资源
+          </a>}
+          <button className="button small" type="button" disabled={loading || submitting} onClick={() => { void load(); }}>
+            <RefreshCw className={loading ? 'animate-spin' : ''} size={14} />刷新
+          </button>
+        </div>
       </header>
 
       {loading && !detail
@@ -431,9 +413,6 @@ export function TaskReviewDialog({
               <DialogClose asChild><button className="button" type="button" disabled={submitting}>关闭</button></DialogClose>
               {editable && <button className="button primary" type="submit" disabled={submitting}>
                 {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : <><CheckCircle2 size={15} />提交审核</>}
-              </button>}
-              {detail.state === 'DELIVERY_REVIEW_PENDING' && <button className="button primary" type="button" disabled={submitting} onClick={() => { void submitDeliveryReview(); }}>
-                <CheckCircle2 size={15} />提交图文审核
               </button>}
             </div>
           </footer>

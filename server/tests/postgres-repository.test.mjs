@@ -217,7 +217,7 @@ test('personal task pagination and totals filter the creator independently of ex
       queries.push({ sql, values });
       return { rows: sql.includes('COUNT(*) AS total')
         ? [{ total: '2' }]
-        : [taskRow(), taskRow({ id: 42, state: 'COMPLETED', copy_executor_node_id: 'node-c' })] };
+        : [taskRow(), taskRow({ id: 42, state: 'MANUAL_ARCHIVE', copy_executor_node_id: 'node-c' })] };
     },
   } });
   const page = await repository.listTasks({ createdByUserId: 'admin', query: '远端', includeTotal: true });
@@ -257,17 +257,17 @@ test('task pages expose the current running image executor independently of copy
   assert.doesNotMatch(selection, /n.id = .*copy_executor_node_id/u);
 });
 
-test('delivery review resolves the successful executor of the current image run', async () => {
+test('manual archive resolves the successful executor of the current image run', async () => {
   let selection;
   const repository = new PostgresControlPlaneRepository({ pool: {
     async query(sql) {
       selection = sql;
-      return { rows: [taskRow({ state: 'DELIVERY_REVIEW_PENDING', current_execution_id: null,
+      return { rows: [taskRow({ state: 'MANUAL_ARCHIVE', current_execution_id: null,
         copy_executor_node_id: 'copy-a', image_executor_node_id: 'successful-b',
         image_executor_node_name: '最后成功生图机器' })] };
     },
   } });
-  const [task] = await repository.listTasks({ state: 'DELIVERY_REVIEW_PENDING' });
+  const [task] = await repository.listTasks({ state: 'MANUAL_ARCHIVE' });
   assert.equal(task.imageExecutorNodeId, 'successful-b');
   assert.equal(task.imageExecutorNodeName, '最后成功生图机器');
   assert.equal(task.currentExecutionId, null);
@@ -276,6 +276,42 @@ test('delivery review resolves the successful executor of the current image run'
   assert.match(selection, /successful_image.id = delivered_run.execution_id/u);
   assert.match(selection, /successful_image.task_id = page.id/u);
   assert.match(selection, /successful_image.kind = 'IMAGE' AND successful_image.status = 'SUCCEEDED'/u);
+});
+
+test('successful image execution moves the task directly to manual archive', async () => {
+  const executionId = '47d841f5-3808-46f0-9f2a-fa9781379b38';
+  const queries = [];
+  const client = {
+    async query(sql, values) {
+      const source = String(sql);
+      queries.push({ sql: source, values });
+      if (source.includes('FROM task_executions e')) return { rows: [{
+        id: executionId,
+        task_id: 41,
+        kind: 'IMAGE',
+        status: 'RUNNING',
+        current_execution_id: executionId,
+      }] };
+      if (source.includes('UPDATE tasks SET')) return { rows: [taskRow({
+        state: 'MANUAL_ARCHIVE',
+        current_execution_id: null,
+        current_stage: 'MANUAL_ARCHIVE',
+        progress_percent: 100,
+        progress_message: '图片生成完成，等待人工归档',
+      })] };
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
+  const task = await repository.completeImage(executionId, { images: [] });
+  const taskUpdate = queries.find((query) => query.sql.includes('UPDATE tasks SET'));
+
+  assert.equal(task.state, 'MANUAL_ARCHIVE');
+  assert.match(taskUpdate.sql, /state = 'MANUAL_ARCHIVE'/u);
+  assert.match(taskUpdate.sql, /current_stage = 'MANUAL_ARCHIVE'/u);
+  assert.match(taskUpdate.sql, /等待人工归档/u);
+  assert.equal(queries.at(-1).sql, 'COMMIT');
 });
 
 test('copy approval submits reviewed copy to the image queue', async () => {
@@ -383,11 +419,12 @@ test('task counts no longer classify failed images as pending copy review', asyn
   let source;
   const repository = new PostgresControlPlaneRepository({ pool: { async query(sql) {
     source = sql;
-    return { rows: [{ local_copy: '0', all_copy: '0', copy_review: '2', image_work: '3', delivery_review: '0', completed: '1' }] };
+    return { rows: [{ local_copy: '0', all_copy: '0', copy_review: '2', image_work: '3', manual_archive: '1' }] };
   } } });
   const counts = await repository.taskCounts({ nodeId: 'node-b' });
   assert.equal(counts.copyReview, 2);
   assert.equal(counts.imageWork, 3);
+  assert.equal(counts.manualArchive, 1);
   assert.match(source, /WHERE state = 'COPY_REVIEW_PENDING'/u);
   assert.match(source, /WHERE state IN \('IMAGE_QUEUED', 'IMAGE_RUNNING'\)/u);
   assert.doesNotMatch(source, /IMAGE_FAILED/u);

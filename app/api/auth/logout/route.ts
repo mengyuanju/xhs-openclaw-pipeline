@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 export function POST(request: Request) {
   return apiHandler(request, {
     mutation: true,
-    roles: ['ADMIN', 'QC_LEAD', 'QUERY_REVIEWER', 'COPY_REVIEWER'],
+    roles: ['ADMIN', 'REVIEWER', 'USER', 'QC_LEAD', 'QUERY_REVIEWER', 'COPY_REVIEWER'],
   }, () => {
     const response = Response.json({ data: { authenticated: false } });
     response.headers.set('cache-control', 'no-store');

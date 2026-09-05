@@ -14,6 +14,7 @@ import {
   MessageSquareText,
   ClipboardCheck,
   Settings2,
+  Users,
   Waypoints,
   Workflow,
 } from 'lucide-react';
@@ -48,6 +49,8 @@ const routeMeta: Array<{ match: (pathname: string) => boolean; meta: RouteMeta }
   { match: (pathname) => pathname.startsWith('/analytics'), meta: { section: '运营与系统', title: '数据统计', icon: BarChart3 } },
   { match: (pathname) => pathname.startsWith('/openclaw-traces'), meta: { section: '运营与系统', title: '模型链路', icon: Waypoints } },
   { match: (pathname) => pathname.startsWith('/settings'), meta: { section: '运营与系统', title: '生产配置', icon: Settings2 } },
+  { match: (pathname) => pathname.startsWith('/users'), meta: { section: '运营与系统', title: '用户管理', icon: Users } },
+  { match: (pathname) => pathname.startsWith('/profile'), meta: { section: '账号', title: '个人信息', icon: Users } },
   { match: (pathname) => pathname.startsWith('/reviews/people'), meta: { section: '质检作业', title: '质检人员', icon: ClipboardCheck } },
   { match: (pathname) => pathname.startsWith('/reviews'), meta: { section: '质检作业', title: '质检中心', icon: ClipboardCheck } },
 ];

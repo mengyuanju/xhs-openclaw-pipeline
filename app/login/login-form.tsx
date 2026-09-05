@@ -14,15 +14,17 @@ export function LoginForm({ nextPath }: { nextPath: string }) {
     setError('');
     const form = new FormData(event.currentTarget);
     try {
-      const result = await apiRequest<{ homePath: string }>('/api/auth/login', {
+      const result = await apiRequest<{ homePath: string; role: string; mustChangePassword: boolean }>('/api/auth/login', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ username: form.get('username'), password: form.get('password') }),
       });
-      const safeNext = nextPath.startsWith('/') && !nextPath.startsWith('//') ? nextPath : result.homePath;
-      const target = result.homePath === '/reviews' && !safeNext.startsWith('/reviews')
-        ? '/reviews'
-        : safeNext;
+      const requested = nextPath.startsWith('/') && !nextPath.startsWith('//') ? nextPath : result.homePath;
+      const permitted = result.role === 'ADMIN'
+        || requested === '/profile'
+        || requested.startsWith('/workbench')
+        || (result.role === 'REVIEWER' && requested.startsWith('/knowledge'));
+      const target = result.mustChangePassword ? '/profile' : permitted ? requested : result.homePath;
       window.location.assign(target);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '登录失败');
@@ -56,7 +58,7 @@ export function LoginForm({ nextPath }: { nextPath: string }) {
           name="password"
           type="password"
           autoComplete="current-password"
-          minLength={12}
+          minLength={6}
           maxLength={1_024}
           required
         />
@@ -65,7 +67,7 @@ export function LoginForm({ nextPath }: { nextPath: string }) {
       <button className="button primary login-submit" type="submit" disabled={isBusy}>
         {isBusy ? '正在验证…' : '进入后台'}
       </button>
-      <p className="login-help">系统管理员账号为 <code>admin</code>；首次使用请在主机终端运行 <code>npm run auth:setup</code>。</p>
+      <p className="login-help">初始管理员账号为 <code>admin</code>，默认密码为 <code>123456</code>。首次登录后请在个人信息中修改密码。</p>
     </form>
   );
 }

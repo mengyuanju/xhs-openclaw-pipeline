@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { migrateDatabase } from './database-migrations.mjs';
 import { saveModelCall, listModelCalls, getModelCall } from './model-call-traces.mjs';
+import { hashUserPassword, verifyUserPassword } from './user-auth.mjs';
 
 import pg from 'pg';
 
@@ -36,6 +37,7 @@ function taskFrom(row) {
     state: row.state,
     createdByNodeId: row.created_by_node_id,
     createdByUserId: row.created_by_user_id ?? null,
+    createdByDisplayName: row.creator_display_name ?? (row.created_by_user_id === 'admin' ? '系统管理员' : null),
     copyExecutorNodeId: row.copy_executor_node_id,
     imageExecutorNodeId: row.image_executor_node_id ?? null,
     imageExecutorNodeName: row.image_executor_node_name ?? null,
@@ -51,6 +53,44 @@ function taskFrom(row) {
     lastActivityAt: row.last_activity_at,
     finishedAt: row.finished_at,
     error: row.error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+const USER_ROLES = Object.freeze(['ADMIN', 'REVIEWER', 'USER']);
+
+function normalizedUsername(value) {
+  const username = String(value ?? '').trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9._-]{2,49}$/u.test(username)) {
+    throw new TypeError('username must contain 3 to 50 lowercase letters, numbers, dots, underscores or hyphens');
+  }
+  return username;
+}
+
+function normalizedDisplayName(value) {
+  const displayName = String(value ?? '').replace(/\s+/gu, ' ').trim();
+  if (!displayName || [...displayName].length > 80) throw new TypeError('displayName must contain 1 to 80 characters');
+  return displayName;
+}
+
+function normalizedUserRole(value) {
+  const role = String(value ?? '').toUpperCase();
+  if (!USER_ROLES.includes(role)) throw new TypeError('role is invalid');
+  return role;
+}
+
+function publicUserFrom(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    username: row.username,
+    displayName: row.display_name,
+    role: row.role,
+    status: row.status,
+    mustChangePassword: row.must_change_password,
+    credentialVersion: Number(row.credential_version),
+    version: Number(row.version),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -258,6 +298,126 @@ export class PostgresControlPlaneRepository {
     return { ok: true, databaseTime: result.rows[0].now };
   }
 
+  async authenticateUser(rawUsername, password) {
+    let username;
+    try {
+      username = normalizedUsername(rawUsername);
+    } catch {
+      return null;
+    }
+    const result = await this.pool.query(
+      "SELECT * FROM app_users WHERE username = $1 AND status = 'ACTIVE'",
+      [username],
+    );
+    const row = result.rows[0];
+    if (!row || !await verifyUserPassword(password, row.password_hash)) return null;
+    return publicUserFrom(row);
+  }
+
+  async getUserByUsername(rawUsername) {
+    const username = normalizedUsername(rawUsername);
+    const result = await this.pool.query('SELECT * FROM app_users WHERE username = $1', [username]);
+    return publicUserFrom(result.rows[0]);
+  }
+
+  async listUsers({ status = null } = {}) {
+    if (status !== null && !['ACTIVE', 'DISABLED'].includes(status)) throw new TypeError('status is invalid');
+    const result = status
+      ? await this.pool.query('SELECT * FROM app_users WHERE status = $1 ORDER BY id', [status])
+      : await this.pool.query('SELECT * FROM app_users ORDER BY id');
+    return result.rows.map(publicUserFrom);
+  }
+
+  async createUser({ username: rawUsername, displayName: rawDisplayName, role: rawRole }) {
+    const username = normalizedUsername(rawUsername);
+    const displayName = normalizedDisplayName(rawDisplayName);
+    const role = normalizedUserRole(rawRole);
+    const passwordHash = await hashUserPassword('123456');
+    try {
+      const result = await this.pool.query(`
+        INSERT INTO app_users(username, display_name, role, password_hash, must_change_password)
+        VALUES ($1, $2, $3, $4, true)
+        RETURNING *
+      `, [username, displayName, role, passwordHash]);
+      return publicUserFrom(result.rows[0]);
+    } catch (error) {
+      if (error?.code === '23505') throw new ControlPlaneConflictError('USERNAME_EXISTS', 'username already exists');
+      throw error;
+    }
+  }
+
+  async updateUser(rawUserId, { displayName: rawDisplayName, role: rawRole, status, expectedVersion }) {
+    const userId = normalizeTaskId(rawUserId);
+    const displayName = normalizedDisplayName(rawDisplayName);
+    const role = normalizedUserRole(rawRole);
+    if (!['ACTIVE', 'DISABLED'].includes(status)) throw new TypeError('status is invalid');
+    if (!Number.isInteger(expectedVersion) || expectedVersion < 1) throw new TypeError('expectedVersion is invalid');
+    return transaction(this.pool, async (client) => {
+      const currentResult = await client.query('SELECT * FROM app_users WHERE id = $1 FOR UPDATE', [userId]);
+      const current = currentResult.rows[0];
+      if (!current) throw new ControlPlaneNotFoundError('user not found');
+      if (current.role === 'ADMIN' && (role !== 'ADMIN' || status !== 'ACTIVE')) {
+        const count = await client.query("SELECT COUNT(*) AS count FROM app_users WHERE role = 'ADMIN' AND status = 'ACTIVE'");
+        if (Number(count.rows[0].count) <= 1) {
+          throw new ControlPlaneConflictError('LAST_ADMIN', 'the last active administrator cannot be disabled or demoted');
+        }
+      }
+      const credentialChanged = current.role !== role || current.status !== status;
+      const result = await client.query(`
+        UPDATE app_users
+        SET display_name = $1, role = $2, status = $3,
+            credential_version = credential_version + $4, version = version + 1, updated_at = now()
+        WHERE id = $5 AND version = $6
+        RETURNING *
+      `, [displayName, role, status, credentialChanged ? 1 : 0, userId, expectedVersion]);
+      if (!result.rows[0]) throw new ControlPlaneConflictError('VERSION_CONFLICT', 'user was updated by another request');
+      return publicUserFrom(result.rows[0]);
+    });
+  }
+
+  async updateOwnProfile(rawUsername, { displayName: rawDisplayName, expectedVersion }) {
+    const username = normalizedUsername(rawUsername);
+    const displayName = normalizedDisplayName(rawDisplayName);
+    if (!Number.isInteger(expectedVersion) || expectedVersion < 1) throw new TypeError('expectedVersion is invalid');
+    const result = await this.pool.query(`
+      UPDATE app_users SET display_name = $1, version = version + 1, updated_at = now()
+      WHERE username = $2 AND version = $3 AND status = 'ACTIVE'
+      RETURNING *
+    `, [displayName, username, expectedVersion]);
+    if (!result.rows[0]) throw new ControlPlaneConflictError('VERSION_CONFLICT', 'profile was updated or is unavailable');
+    return publicUserFrom(result.rows[0]);
+  }
+
+  async changeOwnPassword(rawUsername, { currentPassword, newPassword }) {
+    const username = normalizedUsername(rawUsername);
+    const current = await this.pool.query(
+      "SELECT * FROM app_users WHERE username = $1 AND status = 'ACTIVE'",
+      [username],
+    );
+    if (!current.rows[0] || !await verifyUserPassword(currentPassword, current.rows[0].password_hash)) {
+      throw new ControlPlaneConflictError('CURRENT_PASSWORD_INVALID', 'current password is incorrect');
+    }
+    const passwordHash = await hashUserPassword(newPassword);
+    const result = await this.pool.query(`
+      UPDATE app_users SET password_hash = $1, must_change_password = false,
+        credential_version = credential_version + 1, version = version + 1, updated_at = now()
+      WHERE username = $2 RETURNING *
+    `, [passwordHash, username]);
+    return publicUserFrom(result.rows[0]);
+  }
+
+  async resetUserPassword(rawUserId) {
+    const userId = normalizeTaskId(rawUserId);
+    const passwordHash = await hashUserPassword('123456');
+    const result = await this.pool.query(`
+      UPDATE app_users SET password_hash = $1, must_change_password = true,
+        credential_version = credential_version + 1, version = version + 1, updated_at = now()
+      WHERE id = $2 RETURNING *
+    `, [passwordHash, userId]);
+    if (!result.rows[0]) throw new ControlPlaneNotFoundError('user not found');
+    return publicUserFrom(result.rows[0]);
+  }
+
   async registerNode({ nodeId: rawNodeId, name: rawName, imageWorkerEnabled = false }) {
     const nodeId = normalizeNodeId(rawNodeId);
     const name = normalizeNodeName(rawName, nodeId);
@@ -376,7 +536,7 @@ export class PostgresControlPlaneRepository {
     const [result, countResult] = await Promise.all([
       this.pool.query(`
       SELECT page.*, COALESCE(e.node_id, successful_image.node_id) AS image_executor_node_id,
-        n.name AS image_executor_node_name
+        n.name AS image_executor_node_name, creator.display_name AS creator_display_name
       FROM (
         SELECT * FROM tasks
         ${where}
@@ -387,11 +547,12 @@ export class PostgresControlPlaneRepository {
         AND e.kind = 'IMAGE' AND e.status = 'RUNNING' AND page.state = 'IMAGE_RUNNING'
       LEFT JOIN image_runs delivered_run ON delivered_run.id = page.current_image_run_id
         AND delivered_run.task_id = page.id AND delivered_run.status = 'COMPLETED'
-        AND page.state = 'DELIVERY_REVIEW_PENDING'
+        AND page.state = 'MANUAL_ARCHIVE'
       LEFT JOIN task_executions successful_image ON successful_image.id = delivered_run.execution_id
         AND successful_image.task_id = page.id
         AND successful_image.kind = 'IMAGE' AND successful_image.status = 'SUCCEEDED'
       LEFT JOIN executor_nodes n ON n.id = COALESCE(e.node_id, successful_image.node_id)
+      LEFT JOIN app_users creator ON creator.username = page.created_by_user_id
       ORDER BY page.id DESC
     `, pageValues),
       includeTotal
@@ -418,8 +579,7 @@ export class PostgresControlPlaneRepository {
         COUNT(*) FILTER (WHERE state IN ('COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED')) AS all_copy,
         COUNT(*) FILTER (WHERE state = 'COPY_REVIEW_PENDING') AS copy_review,
         COUNT(*) FILTER (WHERE state IN ('IMAGE_QUEUED', 'IMAGE_RUNNING')) AS image_work,
-        COUNT(*) FILTER (WHERE state = 'DELIVERY_REVIEW_PENDING') AS delivery_review,
-        COUNT(*) FILTER (WHERE state = 'COMPLETED') AS completed
+        COUNT(*) FILTER (WHERE state = 'MANUAL_ARCHIVE') AS manual_archive
       FROM tasks
       WHERE state <> 'CANCELLED'
     `, [nodeId]);
@@ -429,8 +589,7 @@ export class PostgresControlPlaneRepository {
       allCopy: Number(row.all_copy),
       copyReview: Number(row.copy_review),
       imageWork: Number(row.image_work),
-      deliveryReview: Number(row.delivery_review),
-      completed: Number(row.completed),
+      manualArchive: Number(row.manual_archive),
     };
   }
 
@@ -709,14 +868,14 @@ export class PostgresControlPlaneRepository {
       await client.query(`
         UPDATE task_executions SET
           status = 'SUCCEEDED', stage = 'COMPLETED', progress_percent = 100,
-          progress_message = '图片生成完成，等待图文审核', last_activity_at = now(), finished_at = now()
+          progress_message = '图片生成完成，等待人工归档', last_activity_at = now(), finished_at = now()
         WHERE id = $1
       `, [executionId]);
       const task = await client.query(`
         UPDATE tasks SET
-          state = 'DELIVERY_REVIEW_PENDING', current_execution_id = NULL,
-          current_stage = 'DELIVERY_REVIEW_PENDING', progress_percent = 100,
-          progress_message = '图片生成完成，等待图文审核',
+          state = 'MANUAL_ARCHIVE', current_execution_id = NULL,
+          current_stage = 'MANUAL_ARCHIVE', progress_percent = 100,
+          progress_message = '图片生成完成，等待人工归档',
           last_activity_at = now(), finished_at = now(), updated_at = now()
         WHERE id = $1 AND current_execution_id = $2
         RETURNING *
@@ -829,24 +988,6 @@ export class PostgresControlPlaneRepository {
       `, [taskId, nextState, useLatestConfig ? null : snapshot]);
       return taskFrom(updated.rows[0]);
     });
-  }
-
-  async completeDeliveryReview(rawTaskId) {
-    const taskId = normalizeTaskId(rawTaskId);
-    const result = await this.pool.query(`
-      UPDATE tasks SET
-        state = 'COMPLETED', current_stage = 'COMPLETED',
-        progress_message = '图文审核通过，任务完成', finished_at = now(), updated_at = now()
-      WHERE id = $1 AND state = 'DELIVERY_REVIEW_PENDING'
-      RETURNING *
-    `, [taskId]);
-    if (!result.rows[0]) {
-      throw new ControlPlaneConflictError(
-        'INVALID_TASK_STATE',
-        'task is not waiting for delivery review',
-      );
-    }
-    return taskFrom(result.rows[0]);
   }
 
   async cancelTask(rawTaskId) {

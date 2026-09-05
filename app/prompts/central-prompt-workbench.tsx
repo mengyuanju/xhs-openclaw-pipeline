@@ -136,9 +136,9 @@ export function CentralPromptWorkbench() {
     {loading && templates.length === 0 ? <div className="panel empty-state"><LoaderCircle className="animate-spin" size={20} />正在读取中心提示词…</div>
       : templates.length === 0 ? <div className="panel empty-state">{error ? '暂时无法读取提示词，请重试刷新。' : '中心暂无提示词，请先初始化中心服务的默认提示词。'}</div>
         : <section className="prompt-manager">
-          <div className="workbench-view-tabs" role="tablist" aria-label="提示词类型">
+          <div className="prompt-type-tabs" role="tablist" aria-label="提示词类型">
             {templates.map((template, index) => <button key={template.id} id={`prompt-tab-${template.id}`} type="button"
-              className="workbench-view-tab" role="tab" aria-selected={activeKind === template.kind}
+              className="prompt-type-tab" role="tab" aria-selected={activeKind === template.kind}
               aria-controls={`prompt-panel-${template.id}`} tabIndex={activeKind === template.kind ? 0 : -1}
               disabled={busy} onKeyDown={(event) => navigateTabs(event, index)} onClick={() => setActiveKind(template.kind)}>
               {TYPES[template.kind]?.label ?? template.name}{drafts[template.kind] && <small>未提交</small>}

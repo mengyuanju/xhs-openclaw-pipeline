@@ -120,9 +120,6 @@ export function createControlPlaneClient({
     retryTask: (taskId, input = {}) => request(`/v1/tasks/${taskId}/retry`, {
       method: 'POST', body: input,
     }),
-    approveDelivery: (taskId) => request(`/v1/tasks/${taskId}/approve-delivery`, {
-      method: 'POST', body: {},
-    }),
     cancelTask: (taskId) => request(`/v1/tasks/${taskId}/cancel`, {
       method: 'POST', body: {},
     }),

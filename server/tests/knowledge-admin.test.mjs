@@ -152,7 +152,7 @@ function knowledgePool({ kind = 'COPY' } = {}) {
 }
 
 async function withServer(repository, action) {
-  const app = createControlPlaneApp({ repository, storageRoot: 'test-storage' });
+  const app = createControlPlaneApp({ repository, storageRoot: 'test-storage', enforceUserAuth: false });
   let server;
   await new Promise((resolve, reject) => {
     server = app.listen(0, '127.0.0.1', resolve);

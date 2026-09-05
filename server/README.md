@@ -20,9 +20,18 @@ DATABASE_URL=postgresql://xhs_control:替换为数据库密码@127.0.0.1:5432/xh
 CONTROL_PLANE_HOST=0.0.0.0
 CONTROL_PLANE_PORT=4310
 CONTROL_PLANE_STORAGE_ROOT=server-storage
+DEEPSEEK_API_KEY=替换为中心服务使用的DeepSeek密钥
+# 可选，默认 deepseek-v4-pro
+DEEPSEEK_COPY_ANALYSIS_MODEL=deepseek-v4-pro
 ```
 
+优秀文案的 AI 分析由中心服务直接调用 DeepSeek；结构校验通过后立即创建并发布到中心知识库。密钥只配置在中心机器的 `server/.env`，不要配置到执行机，也不要提交到 Git。
+
 `npm run init` 可重复执行，首次运行会建表并安装默认生产配置和提示词。
+
+`0005_user_management` 迁移会创建中心用户表和三个固定角色（管理员、审核员、普通用户），并创建初始管理员 `admin / 123456`。升级已有服务时运行 `npm run db:upgrade -- --apply`，然后重启中心服务。默认密码必须在首次登录后的个人信息页修改。
+
+`0006_manual_archive` 会把旧的“待图文审核”和“已完成”任务统一迁移为“人工归档”，并让后续生图成功的任务直接进入该状态。升级命令仍为 `npm run db:upgrade -- --apply`；迁移保留任务、文案版本、图片和执行历史。
 
 默认监听 `127.0.0.1:4310`。需要局域网执行机访问时，把 `CONTROL_PLANE_HOST` 改为 `0.0.0.0`，并用防火墙仅允许可信内网网段。当前版本没有 TLS 和节点身份认证，不能直接暴露到公网。
 

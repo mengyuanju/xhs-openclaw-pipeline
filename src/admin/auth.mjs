@@ -19,6 +19,9 @@ const SCRYPT_OPTIONS = Object.freeze({
   maxmem: 64 * 1024 * 1024,
 });
 const REVIEW_ACCOUNT_ROLES = Object.freeze([
+  'ADMIN',
+  'REVIEWER',
+  'USER',
   'QC_LEAD',
   'QUERY_REVIEWER',
   'COPY_REVIEWER',
@@ -95,6 +98,10 @@ function signSessionPayload(payload, secret) {
   return createHmac('sha256', secret).update(payload).digest();
 }
 
+/**
+ * @param {string} secret
+ * @param {{nowSeconds?: number, actor?: null | {userId: number, username: string, displayName?: string, roles: string[], credentialVersion: number, mustChangePassword?: boolean}}} options
+ */
 export function createSessionToken(secret, {
   nowSeconds = Math.floor(Date.now() / 1_000),
   actor = null,
@@ -129,6 +136,10 @@ export function createSessionToken(secret, {
       usr: actor.username,
       roles,
       cv: actor.credentialVersion,
+      ...(typeof actor.displayName === 'string' && actor.displayName.trim()
+        ? { nam: actor.displayName.trim().slice(0, 80) }
+        : {}),
+      ...(actor.mustChangePassword === true ? { mcp: true } : {}),
     };
   }
   const payload = Buffer.from(JSON.stringify({
@@ -172,7 +183,9 @@ export function verifySessionToken(token, secret, {
     && new Set(payload.roles).size === payload.roles.length
     && payload.roles.every((role) => REVIEW_ACCOUNT_ROLES.includes(role))
     && Number.isSafeInteger(payload.cv)
-    && payload.cv > 0;
+    && payload.cv > 0
+    && (payload.nam === undefined || (typeof payload.nam === 'string' && payload.nam.length <= 80))
+    && (payload.mcp === undefined || payload.mcp === true);
   if (
     (!isAdmin && !isReviewer)
     || !Number.isSafeInteger(payload.iat)
@@ -191,6 +204,8 @@ export function verifySessionToken(token, secret, {
       username: payload.usr,
       roles: payload.roles,
       credentialVersion: payload.cv,
+      ...(payload.nam === undefined ? {} : { displayName: payload.nam }),
+      ...(payload.mcp === true ? { mustChangePassword: true } : {}),
       issuedAt: payload.iat,
       expiresAt: payload.exp,
     };
@@ -210,6 +225,12 @@ export function readAuthConfig(environment = process.env) {
   if (!parsePasswordHash(passwordHash)) return null;
   if (typeof sessionSecret !== 'string' || Buffer.byteLength(sessionSecret, 'utf8') < 32) return null;
   return { passwordHash, sessionSecret };
+}
+
+export function readSessionConfig(environment = process.env) {
+  const sessionSecret = environment.XHS_SESSION_SECRET;
+  if (typeof sessionSecret !== 'string' || Buffer.byteLength(sessionSecret, 'utf8') < 32) return null;
+  return { sessionSecret };
 }
 
 export class LoginRateLimiter {

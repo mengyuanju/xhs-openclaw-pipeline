@@ -10,7 +10,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
-  return apiHandler(request, {}, async () => {
+  return apiHandler(request, { roles: ['ADMIN', 'REVIEWER'] }, async () => {
     const assetId = parsePositiveId((await context.params).id);
     const remoteRoot = controlPlaneUrl();
     if (remoteRoot) {

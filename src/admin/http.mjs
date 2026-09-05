@@ -1,4 +1,4 @@
-import { ADMIN_SESSION_COOKIE, readAuthConfig, verifySessionToken } from './auth.mjs';
+import { ADMIN_SESSION_COOKIE, readSessionConfig, verifySessionToken } from './auth.mjs';
 
 export class ApiError extends Error {
   constructor(status, code, message, details) {
@@ -90,7 +90,7 @@ function readCookieValues(request, name) {
 }
 
 export function assertAuthenticatedRequest(request, environment = process.env) {
-  const config = readAuthConfig(environment);
+  const config = readSessionConfig(environment);
   const sessions = readCookieValues(request, ADMIN_SESSION_COOKIE);
   const session = config && sessions.length === 1
     ? verifySessionToken(sessions[0], config.sessionSecret)

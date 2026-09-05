@@ -13,11 +13,11 @@ const bodySchema = z.object({
 }).strict();
 
 export function GET(request: Request) {
-  return apiHandler(request, {}, async () => ok(await withKnowledgeStore((store: any) => store.listCopyAnalysisPrompts())));
+  return apiHandler(request, { roles: ['ADMIN', 'REVIEWER'] }, async () => ok(await withKnowledgeStore((store: any) => store.listCopyAnalysisPrompts())));
 }
 
 export async function POST(request: Request) {
-  return apiHandler(request, { mutation: true }, async () => {
+  return apiHandler(request, { mutation: true, roles: ['ADMIN', 'REVIEWER'] }, async () => {
     const input = await parseJson(request, bodySchema, { maxBytes: 40 * 1024 });
     try {
       const created = await withKnowledgeStore((store: any) => store.createCopyAnalysisPrompt(input));

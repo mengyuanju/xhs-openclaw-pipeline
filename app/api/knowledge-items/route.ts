@@ -41,7 +41,7 @@ function validateFormJson(value: FormDataEntryValue | null) {
 }
 
 export function GET(request: Request) {
-  return apiHandler(request, {}, async () => {
+  return apiHandler(request, { roles: ['ADMIN', 'REVIEWER'] }, async () => {
     const url = new URL(request.url);
     return ok(await withKnowledgeStore((store: any) => store.listVisualKnowledge({
       page: url.searchParams.get('page'),
@@ -54,7 +54,7 @@ export function GET(request: Request) {
 }
 
 export function POST(request: Request) {
-  return apiHandler(request, { mutation: true }, async () => {
+  return apiHandler(request, { mutation: true, roles: ['ADMIN', 'REVIEWER'] }, async () => {
     const contentType = request.headers.get('content-type')?.toLowerCase() || '';
     if (contentType.startsWith('application/json')) {
       const input = await parseJson(request, itemSchema);

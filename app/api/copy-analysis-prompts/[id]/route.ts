@@ -12,7 +12,7 @@ const bodySchema = z.object({
 }).strict();
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
-  return apiHandler(request, { mutation: true }, async () => {
+  return apiHandler(request, { mutation: true, roles: ['ADMIN', 'REVIEWER'] }, async () => {
     const id = parsePositiveId((await context.params).id);
     const input = await parseJson(request, bodySchema, { maxBytes: 40 * 1024 });
     const updated = await withKnowledgeStore((store: any) => store.replaceCopyAnalysisPrompt(id, input));

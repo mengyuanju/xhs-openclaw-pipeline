@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import JSZip from 'jszip';
 
 import { createControlPlaneApp } from '../src/http-server.mjs';
 import { ControlPlaneConflictError } from '../src/domain.mjs';
 
 async function withServer(repository, action, { storageRoot = 'test-storage' } = {}) {
-  const app = createControlPlaneApp({ repository, storageRoot });
+  const app = createControlPlaneApp({ repository, storageRoot, enforceUserAuth: false });
   let server;
   await new Promise((resolve, reject) => {
     server = app.listen(0, '127.0.0.1', resolve);
@@ -121,6 +122,45 @@ test('copy approval forwards the editable review payload as one operation', asyn
     taskId: '7',
     input: { revisionId: 12, nodeId: 'node-a', edits },
   });
+});
+
+test('manual archive download returns one ZIP with copy text and original image names', async () => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'xhs-task-archive-http-'));
+  const storagePath = join(storageRoot, 'tasks', '12', 'image-runs', 'run-1', 'stored-hash.png');
+  await mkdir(join(storageRoot, 'tasks', '12', 'image-runs', 'run-1'), { recursive: true });
+  await writeFile(storagePath, Buffer.from('png-content'));
+  const task = {
+    id: 12,
+    state: 'MANUAL_ARCHIVE',
+    createdByUserId: 'admin',
+    currentCopyRevisionId: 2,
+    currentImageRunId: 'run-1',
+    copyRevisions: [{ id: 2, content: { copy: { title: '归档任务', body: '文案正文', tags: ['#标签'] } } }],
+    assets: [{ id: 7, taskId: 12, imageRunId: 'run-1', mediaType: 'image/png', originalName: '01-cover.png' }],
+  };
+  try {
+    await withServer({
+      getTask: async () => task,
+      getAsset: async () => ({
+        id: 7,
+        taskId: 12,
+        imageRunId: 'run-1',
+        mediaType: 'image/png',
+        originalName: '01-cover.png',
+        storagePath,
+      }),
+    }, async (root) => {
+      const response = await fetch(`${root}/v1/tasks/12/archive`);
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('content-type'), 'application/zip');
+      assert.match(response.headers.get('content-disposition'), /filename\*=UTF-8''/u);
+      const zip = await JSZip.loadAsync(await response.arrayBuffer());
+      assert.ok(zip.file('归档任务.txt'));
+      assert.equal(await zip.file('01-cover.png').async('string'), 'png-content');
+    }, { storageRoot });
+  } finally {
+    await rm(storageRoot, { recursive: true, force: true });
+  }
 });
 
 test('task listing forwards server-side pagination, states and Query search', async () => {

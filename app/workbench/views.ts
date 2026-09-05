@@ -3,9 +3,9 @@ import { FileCheck2, FileText, Image as ImageIcon, UserRound } from 'lucide-reac
 export type TaskState =
   | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_FAILED'
   | 'IMAGE_QUEUED' | 'IMAGE_RUNNING' | 'IMAGE_FAILED'
-  | 'DELIVERY_REVIEW_PENDING' | 'COMPLETED' | 'CANCELLED';
+  | 'MANUAL_ARCHIVE' | 'CANCELLED';
 
-export type ViewKey = 'PERSONAL' | 'COPY_REVIEW' | 'IMAGE_WORK' | 'DELIVERY_REVIEW' | 'COMPLETED' | 'ALL_COPY';
+export type ViewKey = 'PERSONAL' | 'ALL_COPY' | 'COPY_REVIEW' | 'IMAGE_WORK' | 'MANUAL_ARCHIVE';
 
 export const WORKBENCH_VIEWS: Array<{
   key: ViewKey;
@@ -20,10 +20,21 @@ export const WORKBENCH_VIEWS: Array<{
     key: 'PERSONAL',
     href: '/workbench/personal',
     label: '个人作业中心',
-    description: '只显示当前账号创建的待文案执行、文案执行中和文案执行失败任务；失败任务可重试。',
+    description: '显示当前账号创建的全部 Query 任务，可跟踪进度、审核、重试或废弃。',
     icon: UserRound,
-    states: ['COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED'],
+    states: [
+      'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_FAILED',
+      'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE',
+    ],
     personalOnly: true,
+  },
+  {
+    key: 'ALL_COPY',
+    href: '/workbench/all-copy',
+    label: '全部文案任务',
+    description: '显示所有用户待执行、执行中和执行失败的文案任务，可进入详情重试。',
+    icon: FileText,
+    states: ['COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED'],
   },
   {
     key: 'COPY_REVIEW',
@@ -42,28 +53,12 @@ export const WORKBENCH_VIEWS: Array<{
     states: ['IMAGE_QUEUED', 'IMAGE_RUNNING'],
   },
   {
-    key: 'DELIVERY_REVIEW',
-    href: '/workbench/delivery-review',
-    label: '图文待审核',
-    description: '显示图片生成完成、等待人工审核的图文任务。',
+    key: 'MANUAL_ARCHIVE',
+    href: '/workbench/manual-archive',
+    label: '人工归档',
+    description: '显示所有用户图片生成成功、等待人工归档的图文任务。',
     icon: FileCheck2,
-    states: ['DELIVERY_REVIEW_PENDING'],
-  },
-  {
-    key: 'COMPLETED',
-    href: '/workbench/completed',
-    label: '已完成',
-    description: '显示已完成图文审核的任务。',
-    icon: FileCheck2,
-    states: ['COMPLETED'],
-  },
-  {
-    key: 'ALL_COPY',
-    href: '/workbench/all-copy',
-    label: '全部文案任务',
-    description: '显示所有节点待执行、执行中和执行失败的文案任务，可进入详情重试。',
-    icon: FileText,
-    states: ['COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED'],
+    states: ['MANUAL_ARCHIVE'],
   },
 ];
 
