@@ -129,7 +129,10 @@ export function DistributedJobsWorkbench({
   const refresh = useCallback(async ({ silent = false } = {}) => {
     try {
       const data = await apiRequest<DistributedTask[]>(apiPath('/v1/tasks?limit=100&offset=0'));
-      setTasks(data);
+      setTasks([...data].sort((left, right) => {
+        const createdAtDifference = Date.parse(right.createdAt) - Date.parse(left.createdAt);
+        return createdAtDifference || right.id - left.id;
+      }));
       setError('');
       if (selected) {
         const detail = await apiRequest<TaskDetail>(apiPath(`/v1/tasks/${selected.id}`));

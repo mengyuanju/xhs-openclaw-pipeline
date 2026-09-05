@@ -1413,7 +1413,7 @@ export function createAdminStore(databasePath) {
         FROM tasks t
         LEFT JOIN task_configs tc ON tc.task_id = t.id
         ${where}
-        ORDER BY t.id DESC LIMIT ? OFFSET ?
+        ORDER BY t.created_at DESC, t.id DESC LIMIT ? OFFSET ?
       `).all(
         ...parameters,
         pagination.pageSize,

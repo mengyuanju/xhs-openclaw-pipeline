@@ -540,7 +540,7 @@ export class PostgresControlPlaneRepository {
       FROM (
         SELECT * FROM tasks
         ${where}
-        ORDER BY id DESC
+        ORDER BY created_at DESC, id DESC
         LIMIT $${pageValues.length - 1} OFFSET $${pageValues.length}
       ) page
       LEFT JOIN task_executions e ON e.id = page.current_execution_id
@@ -553,7 +553,7 @@ export class PostgresControlPlaneRepository {
         AND successful_image.kind = 'IMAGE' AND successful_image.status = 'SUCCEEDED'
       LEFT JOIN executor_nodes n ON n.id = COALESCE(e.node_id, successful_image.node_id)
       LEFT JOIN app_users creator ON creator.username = page.created_by_user_id
-      ORDER BY page.id DESC
+      ORDER BY page.created_at DESC, page.id DESC
     `, pageValues),
       includeTotal
         ? this.pool.query(`SELECT COUNT(*) AS total FROM tasks ${where}`, values)

@@ -140,6 +140,11 @@ function timeLabel(value: string | null) {
   return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '尚未开始';
 }
 
+function compareTaskRecency(left: DistributedTask, right: DistributedTask) {
+  const createdAtDifference = Date.parse(right.createdAt) - Date.parse(left.createdAt);
+  return createdAtDifference || right.id - left.id;
+}
+
 export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: activeView }: { nodeId: string; creatorUserId: string; role: string; viewKey: ViewKey }) {
   const router = useRouter();
   const activeDefinition = WORKBENCH_VIEWS.find((view) => view.key === activeView)!;
@@ -208,7 +213,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
           ?? await apiRequest<DistributedTask[]>(apiPath(`/v1/tasks?${legacySearch}`));
         const keyword = searchKeyword.toLocaleLowerCase('zh-CN');
         const filtered = legacyTasks.filter((task) => matchesWorkbenchView(task, view, creatorUserId)
-          && (!keyword || task.query.toLocaleLowerCase('zh-CN').includes(keyword)));
+          && (!keyword || task.query.toLocaleLowerCase('zh-CN').includes(keyword)))
+          .sort(compareTaskRecency);
         taskPage = {
           items: filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
           total: filtered.length,

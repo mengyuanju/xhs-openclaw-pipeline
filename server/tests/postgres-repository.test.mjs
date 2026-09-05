@@ -208,6 +208,8 @@ test('task pages filter multiple states and Query text while returning a total',
   ]);
   assert.match(pageQuery.sql, /state = ANY\(\$1::varchar\[\]\)/u);
   assert.match(pageQuery.sql, /strpos\(lower\(query\), lower\(\$3\)\) > 0/u);
+  assert.match(pageQuery.sql, /ORDER BY created_at DESC, id DESC/u);
+  assert.match(pageQuery.sql, /ORDER BY page\.created_at DESC, page\.id DESC/u);
 });
 
 test('personal task pagination and totals filter the creator independently of execution nodes', async () => {
