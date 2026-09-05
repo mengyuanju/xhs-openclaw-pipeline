@@ -86,7 +86,8 @@ export type ImageGenerationProgressValue = {
   estimatedTotalMs: number;
   elapsedMs: number;
   estimatedRemainingMs: number | null;
-  estimateBasis: 'mode-and-page-count';
+  estimateBasis: 'mode-and-page-count' | 'stage-defaults' | 'stage-history';
+  estimateSampleSize?: number;
   estimateOverdue: boolean;
   canResume: boolean;
   retryReason: string | null;

@@ -8,6 +8,7 @@ import sharp from 'sharp';
 
 import { createMockPost } from '../src/pipeline.mjs';
 import { createMockVisualPlan } from '../src/visual-plan.mjs';
+import { imageTimingProfile, readImageTimingSamples, recordImageTimingSample } from '../src/image-stage-timing.mjs';
 import {
   StandaloneImageConfirmationError,
   StandaloneImageCancellationError,
@@ -28,6 +29,39 @@ const FAILURE_RUN_ID = '33333333-3333-4333-8333-333333333333';
 const RECOVERY_SOURCE_RUN_ID = '44444444-4444-4444-8444-444444444444';
 const RECOVERY_RUN_ID = '55555555-5555-4555-8555-555555555555';
 const CANCELLED_RUN_ID = '66666666-6666-4666-8666-666666666666';
+
+it('persists full-run stage history, uses it on the next run and excludes recovery runs', async (t) => {
+  const outputRoot = await mkdtemp(join(tmpdir(), 'xhs-stage-history-integration-'));
+  t.after(() => rm(outputRoot, { recursive: true, force: true }));
+  let clock = Date.now();
+  t.mock.method(Date, 'now', () => clock);
+  const source = validSource();
+  const run = async (runId, recovery) => {
+    const { client } = resumableLiveClient({ source });
+    client.provider = 'codex';
+    for (const key of ['runText', 'runVision', 'runImage', 'runImageEdit']) {
+      const original = client[key];
+      client[key] = (input) => { clock += key === 'runText' ? 30000 : 60000; return original(input); };
+    }
+    const events = [];
+    await generateStandaloneImages({ source, mode: 'LIVE', outputRoot, runId, recovery,
+      runtime: { client, imageConcurrency: 1 }, onProgress: (event) => events.push(event) });
+    return events;
+  };
+  await run(RUN_ID);
+  const history = { databasePath: join(outputRoot, 'image-stage-timing.sqlite'),
+    profile: imageTimingProfile({ provider: 'codex', imageCount: 3, concurrency: 1, modelApi: {} }) };
+  const samples = readImageTimingSamples(history);
+  assert.equal(samples.length, 1);
+  assert.equal(samples[0].PLANNING, 30000);
+  for (const runId of ['seed-a', 'seed-b']) recordImageTimingSample({ ...history, runId, stages: samples[0] });
+  const events = await run(FALLBACK_RUN_ID);
+  assert.equal(events[0].estimateBasis, 'stage-history');
+  assert.equal(events[0].estimateSampleSize, 3);
+  assert.equal(readImageTimingSamples(history).length, 4);
+  await run(RECOVERY_RUN_ID, {});
+  assert.equal(readImageTimingSamples(history).length, 4, 'resumed work must not contaminate full-run samples');
+});
 
 const QUALITY_DIMENSIONS = [
   'queryRelevance',
@@ -247,8 +281,11 @@ describe('standalone image generation service', () => {
           progressEvents.push(progress);
         },
         runtime: {
+          productionSettings: { modelApi: { copyGenerationThinking: 'medium' } },
           client: liveClient({
-            async runText() {
+            async runText({ thinking, outputSchema }) {
+              assert.equal(thinking, 'medium');
+              assert.ok(outputSchema.properties.pages);
               throw new Error('OpenClaw text inference failed: UND_ERR_SOCKET terminated');
             },
             onImage() { liveCalls += 1; },
@@ -275,6 +312,8 @@ describe('standalone image generation service', () => {
       assert.ok(result.qc.dimensions.some((dimension) => dimension.key === 'imageBaseQuality'));
       assert.ok(result.qc.limitations.length > 0);
       assert.equal(progressEvents[0].stage, 'PREPARING');
+      assert.equal(progressEvents[0].estimateBasis, 'stage-defaults');
+      assert.equal(progressEvents[0].estimateSampleSize, 0);
       assert.equal(progressEvents.at(-1).stage, 'COMPLETED');
       assert.equal(progressEvents.at(-1).progressPercent, 100);
       assert.ok(progressEvents.some((progress) => progress.stage === 'GENERATING'));
@@ -301,6 +340,7 @@ describe('standalone image generation service', () => {
       assert.equal(progress.completedImages, 3);
       assert.equal(progress.totalImages, 3);
       assert.equal(progress.estimatedRemainingMs, 0);
+      assert.equal(progress.estimateBasis, 'stage-defaults');
       assert.equal(progress.result.runId, RUN_ID);
       assert.equal(progress.result.images[0].layout.layoutTemplate, 'HERO_LEFT');
       assert.equal(progress.result.visualPlan.degraded, true);

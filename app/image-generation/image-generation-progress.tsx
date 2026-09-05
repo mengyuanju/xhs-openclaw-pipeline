@@ -81,6 +81,12 @@ export function ImageGenerationProgress({
         重新验收并继续
       </button>
     </div>}
-    <small>预计时间根据图片页数和当前阶段计算，会随实际耗时向上修正，仅供参考。</small>
+    <small>{progress.estimateBasis === 'stage-history'
+      ? `预计时间参考同配置最近 ${progress.estimateSampleSize ?? 0} 次运行的阶段耗时中位数。`
+      : progress.estimateBasis === 'stage-defaults'
+        ? '历史样本不足，预计时间按页数、思考等级和出图并发初步估算。'
+        : '旧记录使用按页数估算的预计时间。'}
+      {' '}随阶段完成更新；超出预估时不显示虚假的倒计时，仅供参考。
+    </small>
   </section>;
 }
