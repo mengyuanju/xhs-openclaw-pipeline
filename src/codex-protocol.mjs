@@ -64,7 +64,9 @@ export function parseCodexOutput(stdout, { requireText = true } = {}) {
       if (item.failure) throw codexFailure(item.failure);
       if (item.status !== 'completed') throw codexFailure({ message: 'image_generation did not complete' }, 'CODEX_IMAGE_UNVERIFIED');
       const path = item.saved_path ?? item.savedPath;
-      if (typeof path === 'string' && path) images.push({ id: item.id, path });
+      if (typeof path === 'string' && path && !images.some((image) => image.id === item.id && image.path === path)) {
+        images.push({ id: item.id, path });
+      }
     }
   }
   if (!completed || (requireText && !rawText.trim())) throw codexFailure({ message: 'missing completed turn or final message' }, 'MODEL_OUTPUT_INCOMPLETE');

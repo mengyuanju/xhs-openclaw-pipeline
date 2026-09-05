@@ -1,8 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { constants } from 'node:fs';
-import { copyFile, lstat, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { effectiveModelApiConfig, validatedCopyGenerationThinking, validatedModelRef } from './model-api-config.mjs';
@@ -11,6 +10,7 @@ import { codexFailure, parseCodexOutput } from './codex-protocol.mjs';
 import { checkCodexLogin, codexChildEnvironment, resolveCodexExecutable, runCodexProcess } from './codex-process.mjs';
 import { codexRuntimePath, createCodexRuntime } from './codex-runtime.mjs';
 import { withWebSearchProvider } from './web-search-service.mjs';
+import { verifiedPngBytes } from './image-output-reception.mjs';
 
 const TEXT_SCHEMA = { type: 'object', properties: { rawText: { type: 'string' } }, required: ['rawText'], additionalProperties: false };
 const SEARCH_SCHEMA = { type: 'object', properties: {
@@ -35,11 +35,6 @@ function timeout(value, minimum = 5000, maximum = 540_000) {
   return value;
 }
 
-function within(root, path) {
-  const relation = relative(root, path);
-  return relation !== '' && !relation.startsWith('..') && !isAbsolute(relation);
-}
-
 function validSearchResult(item) {
   if (!item || typeof item.title !== 'string' || typeof item.snippet !== 'string' || typeof item.url !== 'string') return false;
   try {
@@ -50,7 +45,7 @@ function validSearchResult(item) {
 
 async function prepareImages(inputPaths, directory, { maximum = 5, preview = true } = {}) {
   if (!Array.isArray(inputPaths) || inputPaths.length < 1 || inputPaths.length > maximum) throw new RangeError(`requires 1-${maximum} input images`);
-  return Promise.all(inputPaths.map(async (path, index) => {
+  const results = await Promise.allSettled(inputPaths.map(async (path, index) => {
     if (typeof path !== 'string' || !path || path.length > 1000) throw new TypeError('input image path is invalid');
     const target = join(directory, `input-${index + 1}.${preview ? 'jpg' : 'png'}`);
     let pipeline = sharp(path, { failOn: 'error', limitInputPixels: 40_000_000 }).rotate();
@@ -59,24 +54,21 @@ async function prepareImages(inputPaths, directory, { maximum = 5, preview = tru
     await pipeline.toFile(target);
     return target;
   }));
+  const failure = results.find((result) => result.status === 'rejected');
+  if (failure) {
+    // Wait for every conversion before cleanup, including those finishing after a rejection.
+    await Promise.all(inputPaths.map((_, index) => rm(join(directory,
+      `input-${index + 1}.${preview ? 'jpg' : 'png'}`), { force: true }).catch(() => {})));
+    throw failure.reason;
+  }
+  return results.map((result) => result.value);
 }
 
 async function verifiedImage(parsed, { directory, generatedRoot, outputPath, startedAt }) {
   if (parsed.images.length !== 1) throw codexFailure({ message: 'expected one native image generation with saved_path' }, 'CODEX_IMAGE_UNVERIFIED');
   const path = parsed.images[0].path;
-  if (!isAbsolute(path)) throw codexFailure({ message: 'image tool path is not absolute' }, 'CODEX_IMAGE_UNVERIFIED');
-  const actual = await realpath(path);
-  const roots = await Promise.all([directory, generatedRoot].map((root) => realpath(root).catch(() => resolve(root))));
-  const info = await lstat(path);
-  if (!roots.some((root) => within(root, actual)) || !info.isFile() || info.isSymbolicLink()
-    || info.size > 32 * 1024 * 1024 || info.mtimeMs < startedAt - 2000) {
-    throw codexFailure({ message: 'generated image is outside the allowed directory, stale or invalid' }, 'CODEX_IMAGE_UNVERIFIED');
-  }
-  const metadata = await sharp(actual, { failOn: 'error', limitInputPixels: 40_000_000 }).metadata();
-  if (metadata.format !== 'png' || !metadata.width || !metadata.height) throw codexFailure({ message: 'native output is not a valid PNG' }, 'CODEX_IMAGE_UNVERIFIED');
-  // Fully decode before accepting; metadata alone can accept truncated images.
-  await sharp(actual, { failOn: 'error', limitInputPixels: 40_000_000 }).stats();
-  await copyFile(actual, outputPath, constants.COPYFILE_EXCL);
+  const bytes = await verifiedPngBytes(path, { roots: [directory, generatedRoot], startedAt });
+  await writeFile(outputPath, bytes, { flag: 'wx' });
 }
 
 export function createCodexClient({
@@ -103,10 +95,13 @@ export function createCodexClient({
     }, async (capture) => {
       const directory = await mkdtemp(join(tmpdir(), 'xhs-codex-'));
       const startedAt = Date.now();
+      let preserveImages = false;
+      let attachments = [];
       try {
         const schemaPath = join(directory, 'response.schema.json');
         await writeFile(schemaPath, JSON.stringify(search ? SEARCH_SCHEMA : TEXT_SCHEMA), 'utf8');
         const images = inputPaths ? await prepareImages(inputPaths, directory, { maximum: image ? 10 : 5, preview: !image }) : [];
+        attachments = images;
         const instructions = image
           ? 'Use $imagegen and the native image generation tool exactly once to generate or edit one PNG, portrait 3:4. Attached image 1 is the edit target; later images are references. Save through the native tool. Do not synthesize images with code, download replacements, or use API keys. If the tool is unavailable, report failure. Return a JSON object with rawText describing the outcome.'
           : search
@@ -153,11 +148,19 @@ export function createCodexClient({
         if (typeof answer?.rawText !== 'string' || !answer.rawText.trim()) throw codexFailure({}, 'MODEL_OUTPUT_INCOMPLETE');
         return { rawText: answer.rawText, model: resolvedModel, thinking: effort, provider: 'codex', execution };
       } catch (error) {
+        preserveImages = image;
+        if (image) error.recoveryDirectory = directory;
         if (image && !signal?.aborted && !error.code?.startsWith('CODEX_')) {
-          throw Object.assign(codexFailure({ message: error.message }, 'CODEX_IMAGE_UNVERIFIED'), { cause: error });
+          throw Object.assign(codexFailure({ message: error.message }, 'CODEX_IMAGE_UNVERIFIED'), { cause: error, recoveryDirectory: directory });
         }
         throw error;
-      } finally { await rm(directory, { recursive: true, force: true }); }
+      } finally {
+        if (preserveImages) {
+          // Retain native candidates for recovery, never the copied reference images or schema.
+          await Promise.all([...attachments, join(directory, 'response.schema.json')]
+            .map((path) => rm(path, { force: true }).catch(() => {})));
+        } else await rm(directory, { recursive: true, force: true }).catch(() => {});
+      }
     }), { image, signal });
   }
 

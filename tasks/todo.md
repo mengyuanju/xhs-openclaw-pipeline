@@ -673,3 +673,13 @@
   - Verify：tests/copy-knowledge-generation.test.mjs、tests/deepseek-copy-simulator.test.mjs；npm test 全量653项、类型检查、生产构建通过。
   - Files：src/executor/deepseek-copy-simulator.mjs、tests/copy-knowledge-generation.test.mjs、docs/distributed-control-plane.md。
   - Dependencies：K3、K4。
+
+## 2026-09-05: 本机性能优化
+
+- [x] P1：图片产物接收、来源校验与多图歧义保护；fake 回归证明不因文件名重放模型。全量 717 项及构建通过；独立复查追加附件失败清理测试。
+- [ ] P2a：规划思考等级、失败输出留存与局部修复；两条生产入口使用相同流程。
+- [ ] P2b：规划业务结构化输出约束；假 CLI 验证 schema、原有文本接口兼容。
+- [ ] P3：充分证据一次搜索结束；补搜及失败保留边界，复用任务快照。
+- [ ] P4：记录模型排队时间，不在无证据时提高限流上限。
+- [ ] P5：本地分阶段历史预估、冷启动与旧进度兼容。
+- [ ] 最终：全量回归、类型检查、构建、浏览器验证及差异审查；不执行真实模型成本测试。

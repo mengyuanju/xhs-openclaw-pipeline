@@ -8,6 +8,10 @@ import sharp from 'sharp';
 
 import { createOpenClawClient as createProductionOpenClawClient } from '../src/openclaw.mjs';
 
+const TEST_PNG = await sharp({
+  create: { width: 24, height: 32, channels: 3, background: '#aabbcc' },
+}).png().toBuffer();
+
 function createOpenClawClient(options) {
   return createProductionOpenClawClient({
     ...options,
@@ -107,7 +111,7 @@ describe('OpenClaw client', () => {
       asyncRunner: async (_command, args, options) => {
         invocations.push({ args, options });
         const outputFlag = args.indexOf('--output');
-        if (outputFlag >= 0) writeFileSync(args[outputFlag + 1], 'generated image');
+        if (outputFlag >= 0) writeFileSync(args[outputFlag + 1], TEST_PNG);
         return {
           status: 0,
           stdout: args.includes('agent')
@@ -552,7 +556,9 @@ describe('OpenClaw client', () => {
     assert.equal(calls, 1);
   });
 
-  it('keeps the blocked image destination visible before noisy plugin warnings and command output', async () => {
+  it('keeps the blocked image destination visible before noisy plugin warnings and command output', async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'xhs-openclaw-blocked-image-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
     let calls = 0;
     const client = createOpenClawClient({
       entryPath: 'C:/openclaw/dist/index.js',
@@ -574,7 +580,7 @@ describe('OpenClaw client', () => {
     });
 
     await assert.rejects(
-      client.runImage({ prompt: 'generate an image blocked by fake IP DNS', outputPath: 'C:/tmp/blocked.png' }),
+      client.runImage({ prompt: 'generate an image blocked by fake IP DNS', outputPath: join(directory, 'blocked.png') }),
       (error) => {
         const visible = error.message.slice(0, 500);
         assert.match(visible, /安全.*拦截/u);
@@ -588,7 +594,9 @@ describe('OpenClaw client', () => {
     assert.equal(calls, 1);
   });
 
-  it('preserves the spawn timeout when OpenClaw also writes informational stderr', async () => {
+  it('preserves the spawn timeout when OpenClaw also writes informational stderr', async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'xhs-openclaw-timed-out-image-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
     let calls = 0;
     const client = createOpenClawClient({
       entryPath: 'C:/openclaw/dist/index.js',
@@ -607,7 +615,7 @@ describe('OpenClaw client', () => {
     await assert.rejects(
       client.runImage({
         prompt: 'generate an image that reaches the process timeout',
-        outputPath: 'C:/tmp/timed-out.png',
+        outputPath: join(directory, 'timed-out.png'),
       }),
       (error) => {
         assert.match(error.message, /ETIMEDOUT/u);
@@ -623,17 +631,21 @@ describe('OpenClaw client', () => {
     const outputPath = join(directory, 'raw.png');
     const delays = [];
     let calls = 0;
+    let partialPath;
     const client = createOpenClawClient({
       entryPath: 'C:/openclaw/dist/index.js',
       sleep: (milliseconds) => delays.push(milliseconds),
-      runner: () => {
+      runner: (_command, args) => {
         calls += 1;
+        const requestedPath = args[args.indexOf('--output') + 1];
         if (calls === 1) {
-          writeFileSync(outputPath, 'partial');
+          partialPath = requestedPath;
+          writeFileSync(partialPath, 'partial');
           return { status: 1, stdout: '', stderr: 'terminated | other side closed | UND_ERR_SOCKET' };
         }
-        assert.equal(existsSync(outputPath), false, 'partial output must be removed before retry');
-        writeFileSync(outputPath, 'complete');
+        assert.equal(existsSync(partialPath), false, 'partial output must be removed before retry');
+        assert.notEqual(requestedPath, partialPath, 'retry must not reuse the previous invocation directory');
+        writeFileSync(requestedPath, TEST_PNG);
         return { status: 0, stdout: '{"ok":true}', stderr: '' };
       },
     });
@@ -644,7 +656,7 @@ describe('OpenClaw client', () => {
         outputPath,
       });
       assert.equal(result.outputPath, outputPath);
-      assert.equal(readFileSync(outputPath, 'utf8'), 'complete');
+      assert.deepEqual(readFileSync(outputPath), TEST_PNG);
       assert.equal(calls, 2);
       assert.deepEqual(delays, [5_000]);
     } finally {
@@ -660,9 +672,9 @@ describe('OpenClaw client', () => {
     const client = createOpenClawClient({
       entryPath: 'C:/openclaw/dist/index.js',
       sleep: (milliseconds) => delays.push(milliseconds),
-      runner: () => {
+      runner: (_command, args) => {
         calls += 1;
-        if (calls === 2) writeFileSync(outputPath, 'complete');
+        if (calls === 2) writeFileSync(args[args.indexOf('--output') + 1], TEST_PNG);
         return { status: 0, stdout: calls === 1 ? '' : '{"ok":true}', stderr: '' };
       },
     });
@@ -686,13 +698,13 @@ describe('OpenClaw client', () => {
     const outputPath = join(directory, 'edited.png');
     const delays = [];
     let calls = 0;
-    writeFileSync(inputPath, 'input');
+    writeFileSync(inputPath, TEST_PNG);
     const client = createOpenClawClient({
       entryPath: 'C:/openclaw/dist/index.js',
       sleep: (milliseconds) => delays.push(milliseconds),
-      runner: () => {
+      runner: (_command, args) => {
         calls += 1;
-        if (calls === 2) writeFileSync(outputPath, 'complete');
+        if (calls === 2) writeFileSync(args[args.indexOf('--output') + 1], TEST_PNG);
         return { status: 0, stdout: '{"ok":true}', stderr: '' };
       },
     });
@@ -704,7 +716,8 @@ describe('OpenClaw client', () => {
         outputPath,
       });
       assert.equal(result.outputPath, outputPath);
-      assert.equal(readFileSync(outputPath, 'utf8'), 'complete');
+      assert.deepEqual(readFileSync(outputPath), TEST_PNG);
+      assert.deepEqual(readFileSync(inputPath), TEST_PNG);
       assert.equal(calls, 2);
       assert.deepEqual(delays, [5_000]);
     } finally {
@@ -727,7 +740,7 @@ describe('OpenClaw client', () => {
           return { status: 1, stdout: '', stderr: 'fetch failed: ECONNRESET before TLS' };
         }
         assert.equal(options.env?.HTTPS_PROXY, 'http://127.0.0.1:7897');
-        writeFileSync(outputPath, 'proxy connection image');
+        writeFileSync(args[args.indexOf('--output') + 1], TEST_PNG);
         return { status: 0, stdout: '{"ok":true}', stderr: '' };
       },
     });
@@ -837,8 +850,9 @@ describe('OpenClaw client', () => {
       entryPath: 'C:/openclaw/dist/index.js',
       runner: (command, args, options) => {
         invocation = { command, args, options };
-        writeFileSync(outputPath, Buffer.from('fake image'));
-        return { status: 0, stdout: JSON.stringify({ ok: true, outputs: [{ path: outputPath }] }), stderr: '' };
+        const requestedPath = args[args.indexOf('--output') + 1];
+        writeFileSync(requestedPath, TEST_PNG);
+        return { status: 0, stdout: JSON.stringify({ ok: true, outputs: [{ path: requestedPath }] }), stderr: '' };
       },
     });
 
@@ -917,7 +931,7 @@ describe('OpenClaw client', () => {
         if (started === 2) signalStarted();
         await gate;
         const outputPath = args[args.indexOf('--output') + 1];
-        writeFileSync(outputPath, 'generated');
+        writeFileSync(outputPath, TEST_PNG);
         active -= 1;
         return { status: 0, stdout: '{"ok":true}', stderr: '', options };
       },
@@ -950,14 +964,14 @@ describe('OpenClaw client', () => {
     const outputPath = join(directory, 'edited.png');
     const previousProxyUrl = process.env.XHS_IMAGE_PROXY_URL;
     process.env.XHS_IMAGE_PROXY_URL = 'http://127.0.0.1:7897';
-    writeFileSync(firstInput, 'first');
-    writeFileSync(secondInput, 'second');
+    writeFileSync(firstInput, TEST_PNG);
+    writeFileSync(secondInput, TEST_PNG);
     let invocation;
     const client = createOpenClawClient({
       entryPath: 'C:/openclaw/dist/index.js',
       runner: (command, args, options) => {
         invocation = { command, args, options };
-        writeFileSync(outputPath, Buffer.from('edited image'));
+        writeFileSync(args[args.indexOf('--output') + 1], TEST_PNG);
         return { status: 0, stdout: '{"ok":true}', stderr: '' };
       },
     });
@@ -975,6 +989,9 @@ describe('OpenClaw client', () => {
       );
       assert.match(invocation.args.join(' '), /--size 1152x1536/u);
       assert.equal(result.outputPath, outputPath);
+      assert.deepEqual(readFileSync(firstInput), TEST_PNG);
+      assert.deepEqual(readFileSync(secondInput), TEST_PNG);
+      assert.deepEqual(readFileSync(outputPath), TEST_PNG);
     } finally {
       if (previousProxyUrl === undefined) delete process.env.XHS_IMAGE_PROXY_URL;
       else process.env.XHS_IMAGE_PROXY_URL = previousProxyUrl;
@@ -991,13 +1008,13 @@ describe('OpenClaw client', () => {
     const outputPath = join(directory, 'edited.png');
     const previousTimeout = process.env.XHS_IMAGE_TIMEOUT_MS;
     process.env.XHS_IMAGE_TIMEOUT_MS = '420000';
-    writeFileSync(inputPath, 'input');
+    writeFileSync(inputPath, TEST_PNG);
     let invocation;
     const client = createOpenClawClient({
       entryPath: 'C:/openclaw/dist/index.js',
       runner: (command, args, options) => {
         invocation = { command, args, options };
-        writeFileSync(outputPath, 'edited');
+        writeFileSync(args[args.indexOf('--output') + 1], TEST_PNG);
         return { status: 0, stdout: '{"ok":true}', stderr: '' };
       },
     });
