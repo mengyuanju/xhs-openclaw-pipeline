@@ -26,6 +26,36 @@ async function fixture(t, runner) {
   return { root, client };
 }
 
+test('environment limits reach actual client runners and isolate concurrent output directories', { timeout: 10000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'xhs-codex-concurrent-clients-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const gate = Promise.withResolvers();
+  const entered = Promise.withResolvers();
+  const directories = new Set();
+  const client = createCodexClient({ executable: process.execPath,
+    environment: { CODEX_HOME: root, XHS_CODEX_CONCURRENCY: '3', XHS_CODEX_IMAGE_CONCURRENCY: '2' },
+    runner: () => ({ status: 0, stdout: '', stderr: 'Logged in using ChatGPT' }),
+    asyncRunner: async (_command, _args, options) => {
+      directories.add(options.cwd);
+      if (directories.size === 3) entered.resolve();
+      await gate.promise;
+      const path = join(options.cwd, 'generated.png');
+      await sharp({ create: { width: 24, height: 32, channels: 3, background: '#aabbcc' } }).png().toFile(path);
+      return success({ rawText: 'done' }, [{ type: 'image_generation', status: 'completed', saved_path: path }]);
+    },
+  });
+  const jobs = [client.runImage({ prompt: 'Generate image one.', outputPath: join(root, 'one.png') }),
+    client.runImage({ prompt: 'Generate image two.', outputPath: join(root, 'two.png') }), client.runText({ prompt: 'Write text.' })];
+  try {
+    await entered.promise;
+    const limits = createCodexRuntime({ databasePath: join(root, 'xhs-runtime', 'limits.sqlite') });
+    assert.equal(limits.status().active, 3);
+    assert.equal(limits.status().images, 2);
+  } finally { gate.resolve(); await Promise.all(jobs); }
+  assert.equal((await sharp(join(root, 'one.png')).metadata()).format, 'png');
+  assert.equal((await sharp(join(root, 'two.png')).metadata()).format, 'png');
+});
+
 test('text/review use model overrides, full stdin and the established rawText contract', async (t) => {
   const seen = [];
   const { client } = await fixture(t, async (command, args, options) => {

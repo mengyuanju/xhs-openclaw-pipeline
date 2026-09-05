@@ -8,7 +8,7 @@ import { effectiveModelApiConfig, validatedCopyGenerationThinking, validatedMode
 import { traceModelCall } from './model-call-trace.mjs';
 import { codexFailure, parseCodexOutput } from './codex-protocol.mjs';
 import { checkCodexLogin, codexChildEnvironment, resolveCodexExecutable, runCodexProcess } from './codex-process.mjs';
-import { codexRuntimePath, createCodexRuntime } from './codex-runtime.mjs';
+import { codexConcurrencyConfig, codexRuntimePath, createCodexRuntime } from './codex-runtime.mjs';
 import { withWebSearchProvider } from './web-search-service.mjs';
 import { verifiedPngBytes } from './image-output-reception.mjs';
 
@@ -76,7 +76,7 @@ export function createCodexClient({
   asyncRunner = runCodexProcess, runtime, fetchImpl = fetch,
 } = {}) {
   const limits = runtime ?? createCodexRuntime({ databasePath: codexRuntimePath(environment),
-    maxConcurrent: Number(environment.XHS_CODEX_CONCURRENCY || 2) });
+    ...codexConcurrencyConfig(environment) });
   const configuration = () => effectiveModelApiConfig(modelApi, environment);
   const command = () => executable ?? resolveCodexExecutable(environment);
   const generatedRoot = join(environment.CODEX_HOME || join(homedir(), '.codex'), 'generated_images');
