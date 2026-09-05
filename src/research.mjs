@@ -50,12 +50,12 @@ function normalizedPublicUrl(value) {
 function sourceAuthorityScore(source) {
   let hostname = '';
   try {
-    hostname = new URL(source?.url).hostname.toLowerCase();
+    hostname = new URL(source?.url).hostname.toLowerCase().replace(/\.$/u, '');
   } catch {
     return 0;
   }
-  if (/(?:^|\.)gov(?:\.|$)/u.test(hostname)) return 3;
-  if (/(?:^|\.)edu(?:\.|$)/u.test(hostname)) return 2;
+  if (/(?:^|\.)gov(?:\.[a-z]{2})?$/u.test(hostname)) return 3;
+  if (/(?:^|\.)edu(?:\.[a-z]{2})?$/u.test(hostname)) return 2;
   if (/^(?:www\.)?(?:who\.int|fao\.org|iso\.org)$/u.test(hostname)) return 2;
   return 0;
 }
@@ -128,6 +128,15 @@ function hasGroundedSummary(evidence, provider) {
     && evidence.sources.length > 0
     && (provider === 'codex'
       || evidence.sources.some((source) => typeof source.snippet === 'string' && source.snippet)));
+}
+
+function hasSufficientDeepSeekEvidence(evidence) {
+  if (!evidence.summary) return false;
+  // A hostname substituted for a missing title is not a complete source record.
+  const hosts = new Set(evidence.sources.filter((source) => source.snippet.trim()
+    && source.title !== new URL(source.url).hostname)
+    .map((source) => new URL(source.url).hostname.toLowerCase().replace(/^www\./u, '').replace(/\.$/u, '')));
+  return hosts.size >= 2;
 }
 
 function normalizedTimestamp(value, field) {
@@ -221,8 +230,10 @@ export async function createResearchSnapshot({
   providers = client?.webSearchProviders ?? DEFAULT_PROVIDERS,
   limit = MAX_SOURCES,
   now = () => new Date().toISOString(),
+  requireAuthoritative = false,
 }) {
   if (!client?.runWebSearch) throw new TypeError('OpenClaw web search client is required');
+  if (typeof requireAuthoritative !== 'boolean') throw new TypeError('requireAuthoritative must be boolean');
   const normalizedQuery = String(query ?? '').replace(/\s+/gu, ' ').trim().slice(0, 500);
   if (!normalizedQuery) throw new RangeError('research query is required');
   if (!Array.isArray(providers) || providers.length < 1 || providers.length > 5) {
@@ -254,16 +265,18 @@ export async function createResearchSnapshot({
         }
         const authorityScore = Math.max(...evidence.sources.map(sourceAuthorityScore));
         const groundedSummary = hasGroundedSummary(evidence, actualProvider);
-        if (authorityScore === 0 && !groundedSummary) {
+        if (authorityScore === 0 && (requireAuthoritative || !groundedSummary)) {
           attempts.push({
             provider,
             status: 'FAILED',
-            error: 'web search returned no authoritative or grounded evidence',
+            error: requireAuthoritative ? 'web search returned no authoritative evidence' : 'web search returned no authoritative or grounded evidence',
           });
           continue;
         }
         attempts.push({ provider, status: 'COMPLETED', error: null });
-        if (authorityScore > 0 || (actualProvider === 'codex' && groundedSummary)) {
+        if (authorityScore > 0 || (!requireAuthoritative && (
+          (actualProvider === 'codex' && groundedSummary)
+          || (actualProvider === 'deepseek' && hasSufficientDeepSeekEvidence(evidence))))) {
           return normalizeResearchSnapshot({
             schemaVersion: RESEARCH_SCHEMA_VERSION,
             status: 'COMPLETED',
