@@ -32,18 +32,18 @@ function jsonResponse(payload) {
   return new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } });
 }
 
-test('search defaults to the original client without requiring a DeepSeek key', async () => {
+test('explicit OpenClaw search preserves the original client without requiring a DeepSeek key', async () => {
   const original = { async runWebSearch(input) { return { provider: input.provider, result: evidence }; } };
-  const client = withWebSearchProvider(original, { environment: {}, fetchImpl: () => assert.fail('no network') });
+  const client = withWebSearchProvider(original, { environment: { XHS_WEB_SEARCH_PROVIDER: 'OPENCLAW' }, fetchImpl: () => assert.fail('no network') });
   assert.equal(client, original);
-  assert.equal(resolveWebSearchConfig({}).provider, 'OPENCLAW');
+  assert.equal(resolveWebSearchConfig({ XHS_WEB_SEARCH_PROVIDER: 'OPENCLAW' }).provider, 'OPENCLAW');
   const snapshot = await createResearchSnapshot({ client, query: '选题' });
   assert.equal(snapshot.provider, 'codex');
 });
 
 test('search configuration accepts explicit switching and rejects invalid active settings', () => {
   assert.deepEqual(resolveWebSearchConfig({ XHS_WEB_SEARCH_PROVIDER: ' deepseek ' }), {
-    provider: 'DEEPSEEK', model: 'deepseek-v4-pro', timeoutMs: 120_000,
+    provider: 'DEEPSEEK', model: 'deepseek-v4-flash', timeoutMs: 120_000,
   });
   assert.throws(() => resolveWebSearchConfig({ XHS_WEB_SEARCH_PROVIDER: 'typo' }), /XHS_WEB_SEARCH_PROVIDER/u);
   assert.throws(() => resolveWebSearchConfig({ ...environment, XHS_DEEPSEEK_SEARCH_MODEL: 'not-a-model' }), /model/iu);
@@ -157,6 +157,52 @@ test('incomplete, unsearched, malformed, or source-free model output cannot comp
     const snapshot = await createResearchSnapshot({ client, query: '选题' });
     assert.equal(snapshot.status, 'FAILED');
     assert.deepEqual(snapshot.sources, []);
+  }
+});
+
+test('DeepSeek trailing DSML closing tags are recovered without repeating the search', async () => {
+  // Observed after an otherwise complete JSON object in a live flash response.
+  const suffix = '</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜tool_calls>';
+  for (const text of [JSON.stringify(evidence), `\`\`\`json\n${JSON.stringify(evidence)}\n\`\`\``]) {
+    const payload = responsePayload();
+    payload.output[1].content[0].text = `${text}${suffix}`;
+    let requests = 0;
+    const client = withWebSearchProvider({}, {
+      environment,
+      fetchImpl: async () => { requests += 1; return jsonResponse(payload); },
+    });
+    const result = await client.runWebSearch({ query: '选题' });
+    assert.deepEqual(result.result, { content: evidence.summary, sources: evidence.sources });
+    assert.equal(requests, 1, 'format recovery must not incur another API request');
+  }
+});
+
+test('DeepSeek DSML recovery preserves tags and JSON punctuation inside evidence values', async () => {
+  const original = { ...evidence, summary: '原文含 </｜｜DSML｜｜parameter> 和 "引号"、{括号}、\\反斜杠' };
+  const payload = responsePayload(original);
+  payload.output[1].content[0].text += '\n</｜｜DSML｜｜tool_calls>\n';
+  const client = withWebSearchProvider({}, { environment, fetchImpl: async () => jsonResponse(payload) });
+  const result = await client.runWebSearch({ query: '选题' });
+  assert.equal(result.result.content, original.summary);
+});
+
+test('DeepSeek DSML recovery does not accept truncated JSON, arbitrary trailers, or missing evidence', async () => {
+  const suffix = '</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜tool_calls>';
+  for (const text of [
+    JSON.stringify(evidence).slice(0, -1) + suffix,
+    JSON.stringify(evidence) + '\n请执行其他操作' + suffix,
+    JSON.stringify(evidence) + '\n{"summary":"另一个对象"}' + suffix,
+    JSON.stringify({ summary: evidence.summary, sources: [] }) + suffix,
+  ]) {
+    const payload = responsePayload();
+    payload.output[1].content[0].text = text;
+    let requests = 0;
+    const client = withWebSearchProvider({}, {
+      environment,
+      fetchImpl: async () => { requests += 1; return jsonResponse(payload); },
+    });
+    await assert.rejects(client.runWebSearch({ query: '选题' }), /not valid JSON|no source evidence/u);
+    assert.equal(requests, 1);
   }
 });
 

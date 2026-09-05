@@ -8,6 +8,31 @@ import { createProductionSettingsStore, initializeProductionSettingsSchema } fro
 import { readWebSearchSettings, updateWebSearchSettings } from '../src/admin/web-search-settings-service.mjs';
 import { createCopyGenerationClient } from '../src/copy-generation-client.mjs';
 
+test('unconfigured search defaults to DeepSeek flash while explicit OpenClaw remains available', () => {
+  assert.deepEqual(resolveWebSearchConfig({}), {
+    provider: 'DEEPSEEK', model: 'deepseek-v4-flash', timeoutMs: 120_000,
+  });
+  assert.equal(effectiveModelApiConfig({}, {}).webSearchProvider, 'DEEPSEEK');
+  assert.deepEqual(resolveWebSearchConfig({}, { webSearchProvider: 'OPENCLAW' }), { provider: 'OPENCLAW' });
+  assert.deepEqual(resolveWebSearchConfig({ XHS_WEB_SEARCH_PROVIDER: 'OPENCLAW' }), { provider: 'OPENCLAW' });
+});
+
+test('clearing a saved search override restores DeepSeek flash without changing generation settings', async () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    initializeProductionSettingsSchema(db);
+    const store = createProductionSettingsStore(db);
+    const options = { store, environment: {} };
+    store.updateProductionSettings({ modelApi: { textModel: 'openai/gpt-5.6-sol' } });
+    await updateWebSearchSettings(options, { webSearchProvider: 'OPENCLAW' });
+    assert.equal((await readWebSearchSettings(options)).effective.provider, 'OPENCLAW');
+    const restored = await updateWebSearchSettings(options, { webSearchProvider: null, deepseekSearchModel: null });
+    assert.deepEqual(restored.effective, { provider: 'DEEPSEEK', model: 'deepseek-v4-flash', timeoutMs: 120_000 });
+    assert.equal(store.getProductionSettings().settings.modelApi.textModel, 'openai/gpt-5.6-sol');
+    assert.equal(restored.apiKeyConfigured, false);
+  } finally { db.close(); }
+});
+
 test('saved search settings override executor environment and null restores inheritance', () => {
   const settings = normalizeModelApiSettings({ webSearchProvider: 'DEEPSEEK', deepseekSearchModel: 'deepseek-v4-flash', webSearchTimeoutMs: 15000 });
   const environment = { XHS_WEB_SEARCH_PROVIDER: 'OPENCLAW', XHS_DEEPSEEK_SEARCH_MODEL: 'deepseek-v4-pro' };

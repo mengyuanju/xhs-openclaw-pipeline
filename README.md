@@ -222,9 +222,9 @@ npm run executor -- --enable-image-worker
 
 ### 联网搜索提供方配置
 
-正式文案流程可独立切换联网搜索提供方。默认或配置 `XHS_WEB_SEARCH_PROVIDER=OPENCLAW` 时，保留原有 OpenClaw/Codex 搜索及重试逻辑。切换为 DeepSeek 只替换研究阶段，文案生成（OpenClaw 或 Dots）、审核、生图及人工审核流程仍沿用原配置。
+正式文案流程可独立切换联网搜索提供方，项目默认使用 DeepSeek `deepseek-v4-flash`。显式配置 `XHS_WEB_SEARCH_PROVIDER=OPENCLAW` 时，保留原有 OpenClaw/Codex 搜索及重试逻辑。搜索切换只影响研究阶段，文案生成（OpenClaw 或 Dots）、审核、生图及人工审核流程仍沿用原配置。
 
-在“生产配置”页面上方的“联网搜索”面板，可直接选择 OpenClaw / DeepSeek、DeepSeek 搜索模型和超时，并点击“保存搜索配置”。本地和远端中心模式都支持；保存值优先于执行机环境变量。选择“继承执行机环境”或点击“恢复环境配置”后保存，即可恢复环境变量控制。此面板只修改搜索字段，不覆盖文案模型或其他生产配置。
+在“生产配置”页面上方的“联网搜索服务”面板，可直接选择 OpenClaw / DeepSeek、DeepSeek 搜索模型和超时，并点击“保存搜索配置”；也可点击“使用 DeepSeek Flash”填入推荐配置后保存。面板区分已保存配置与未保存修改，本地模式显示实际生效的服务。本地和远端中心模式都支持；保存值优先于执行机环境变量。选择“跟随默认配置”或点击“恢复环境配置”后保存，即可恢复环境变量控制；未设置环境覆盖时使用 DeepSeek Flash。此面板只修改搜索字段，不覆盖文案模型或其他生产配置。
 
 中心模式将配置保存在生产设置的 `modelApi.webSearchProvider`、`modelApi.deepseekSearchModel`、`modelApi.webSearchTimeoutMs` 中，后续创建的执行快照会携带这些值。各执行机须更新至支持这些字段的项目版本并重启一次；之后通过页面修改提供方或模型无需再次重启，已经领取的任务继续使用原快照。Key 始终由使用者在执行机提供，页面不接收、保存或下发密钥，也不把前端主机的 Key 状态当作远端执行机状态。
 
@@ -233,7 +233,7 @@ npm run executor -- --enable-image-worker
 ```dotenv
 XHS_WEB_SEARCH_PROVIDER=DEEPSEEK
 DEEPSEEK_API_KEY=
-XHS_DEEPSEEK_SEARCH_MODEL=deepseek-v4-pro
+XHS_DEEPSEEK_SEARCH_MODEL=deepseek-v4-flash
 XHS_DEEPSEEK_SEARCH_TIMEOUT_MS=120000
 ```
 
@@ -399,7 +399,7 @@ Live 生产顺序为“Query 审核 → 联网研究 → 正文生成与结构�
 
 ## 联网研究与来源保存
 
-Live 且需要生成新文案的任务会在文本模型之前执行 OpenClaw `infer web search --json`。默认先尝试 Codex Hosted Search，再尝试无需密钥的 DuckDuckGo 后备；Codex 搜索使用 OpenClaw 已有的 OpenAI/Codex 登录，不需要为本项目另装一个 Codex 包。DuckDuckGo 集成基于非官方网页结果，适合作为可用性后备，不应被当成权威来源本身。
+Live 且需要生成新文案的任务会在文本模型之前执行配置的联网搜索，项目默认使用 DeepSeek Flash。切换为 OpenClaw 时，通过 `infer web search --json` 调用默认的 Codex Hosted Search，使用 OpenClaw 已有的 OpenAI/Codex 登录；只有显式配置多个受支持提供方时才依次尝试，不会自动增加其他搜索后备。
 
 每次实际检索都会形成不可变研究快照：
 
@@ -409,7 +409,7 @@ Live 且需要生成新文案的任务会在文本模型之前执行 OpenClaw `i
 - 成功快照写入 checkpoint。图片阶段失败后重试会复用同一资料，不会重复搜索或让同一文案的依据漂移。
 - `post.sources` 只能从 Excel 的 `referenceUrls` 或本次 `webResearch.sources` 中选择；模型补出的其他 URL 会被结构校验拒绝并重试。
 
-若 Codex 和 DuckDuckGo 都失败，或没有返回可用的公开 HTTP(S) URL，任务会在文本生成前失败，同时保留失败快照；不会在无资料时继续生成并声称已经核验。Mock 和人工文案仅重生图片不会联网。
+若配置的搜索服务失败，或没有返回可用的公开 HTTP(S) URL，任务会在文本生成前失败，同时保留失败快照；不会在无资料时继续生成并声称已经核验。Mock 和人工文案仅重生图片不会联网。
 
 当前接入保存搜索结果的摘要或 Codex 归纳文本，不等于读取网页全文。OpenClaw 的 `web_fetch` 需要当前安装中存在可用 fetch provider；未配置时本项目不会伪造正文抓取记录。官方能力边界见 [OpenClaw Web Search](https://docs.openclaw.ai/tools/web) 和 [OpenClaw Web Fetch](https://docs.openclaw.ai/tools/web-fetch)。
 

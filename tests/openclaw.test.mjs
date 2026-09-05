@@ -6,7 +6,15 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import sharp from 'sharp';
 
-import { createOpenClawClient } from '../src/openclaw.mjs';
+import { createOpenClawClient as createProductionOpenClawClient } from '../src/openclaw.mjs';
+
+function createOpenClawClient(options) {
+  return createProductionOpenClawClient({
+    ...options,
+    modelApi: { ...options.modelApi, webSearchProvider: 'OPENCLAW' },
+    fetchImpl: () => assert.fail('OpenClaw tests must not call HTTP model APIs'),
+  });
+}
 
 describe('OpenClaw client', () => {
   it('runs stage reviews through a separately configurable model', async () => {

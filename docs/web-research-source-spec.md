@@ -2,15 +2,15 @@
 
 ## 目标
 
-正式文案生成在调用文本模型之前，通过配置的搜索服务执行可追溯的网页检索，默认保留 OpenClaw。文本模型只能使用本次研究快照和任务原始参考资料中的事实，最终 `post.sources` 只能引用这两类白名单 URL。
+正式文案生成在调用文本模型之前，通过配置的搜索服务执行可追溯的网页检索，默认使用 DeepSeek Flash。文本模型只能使用本次研究快照和任务原始参考资料中的事实，最终 `post.sources` 只能引用这两类白名单 URL。
 
 ## 运行边界
 
 - Live 且需要生成新文案的任务默认检索；Mock 不访问网络，人工文案仅重生图片时不重复检索。
 - 每个任务只提交经过长度限制的 `query`，不把目标人群、管理员提示词、凭据或其他任务字段发送给搜索提供方。
 - 默认最多保存 5 个去重后的公开 HTTP(S) 来源。
-- `XHS_WEB_SEARCH_PROVIDER=OPENCLAW`（默认）沿用现有 OpenClaw 逻辑，当前默认提供方为 `codex`，Codex Hosted Search 使用现有 OpenAI/Codex 登录。显式传入多个受支持提供方时，仍保留依次尝试的契约。
-- `XHS_WEB_SEARCH_PROVIDER=DEEPSEEK` 使用官方 Responses API 的服务端 `web_search`，Key 仅从实际执行机的 `DEEPSEEK_API_KEY` 读取。搜索模型和超时由独立配置模块解析，不改变文案、审核或生图模型。配置示例见 README 的“联网搜索提供方配置”。
+- `XHS_WEB_SEARCH_PROVIDER=OPENCLAW` 沿用现有 OpenClaw 逻辑，当前默认提供方为 `codex`，Codex Hosted Search 使用现有 OpenAI/Codex 登录。显式传入多个受支持提供方时，仍保留依次尝试的契约。
+- `XHS_WEB_SEARCH_PROVIDER=DEEPSEEK`（项目默认）使用官方 Responses API 的服务端 `web_search`，默认模型为 `deepseek-v4-flash`；Key 仅从实际执行机的 `DEEPSEEK_API_KEY` 读取。搜索模型和超时由独立配置模块解析，不改变文案、审核或生图模型。显式保存的服务或环境覆盖仍然优先。配置示例见 README 的“联网搜索提供方配置”。
 - “生产配置 → 联网搜索”面板在本地和中心模式均可保存提供方、模型及超时；保存到 `modelApi` 的非空覆盖值优先于执行机环境变量，`null` 恢复继承。中心执行使用领取时的配置快照，不改变运行中的任务。专用搜索配置接口仅接受这三个字段，并保留其他生产配置。
 - DeepSeek 响应必须完成并包含完成的 `web_search_call`，模型输出的摘要和来源仍是不可信数据，沿用公共 URL 校验、去重、权威性排序、最多 5 个来源和最多 5 次研究尝试的限制。不会把“执行过搜索”等同于独立核实了所有模型返回内容。
 - 当前 OpenClaw 安装没有可用的 `web.fetch` provider，因此本阶段保存搜索返回的标题、URL、摘要或归纳文本，不声称抓取过网页全文。
@@ -66,7 +66,7 @@
 - OpenClaw 适配器以无 shell 参数调用 `infer web search --json`，应用现有模型代理，并对错误脱敏。
 - 显式配置多个受支持的 OpenClaw 提供方时，第一个失败后可由后续提供方接管，快照保留完整尝试链；默认配置不新增后备提供方。
 - DeepSeek 的 Key 只放在 HTTP Authorization 请求头中，不进入搜索提示词、研究快照或错误信息。缺 Key、HTTP/网络失败、无完成搜索记录、非法 JSON、无有效来源均不能进入正文生成。
-- 正常 OpenClaw 客户端、独立文案客户端和执行机复用同一搜索配置，原有模拟执行机独立保留；未切换时旧搜索行为保持一致。
+- 正常 OpenClaw 客户端、独立文案客户端和执行机复用同一搜索配置，原有模拟执行机独立保留；显式选择 OpenClaw 时旧搜索行为保持一致。
 - 文本提示词明确区分“用户参考资料”和“本次联网研究快照”，并把两者都视为不可信证据数据。
 - 模型返回快照外 URL 时结构校验失败并触发现有文案修复重试。
 - `research.json`、manifest、SQLite 和 checkpoint 的定向测试通过；全量测试、类型检查和构建无回归。
