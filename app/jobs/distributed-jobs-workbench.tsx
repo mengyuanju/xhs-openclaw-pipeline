@@ -15,11 +15,7 @@ import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { apiRequest } from '../components/api-client';
 import { IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
 import { resumeImageTask } from '../components/resume-image-task';
-
-type TaskState =
-  | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_FAILED'
-  | 'IMAGE_QUEUED' | 'IMAGE_RUNNING' | 'IMAGE_FAILED'
-  | 'MANUAL_ARCHIVE' | 'CANCELLED';
+import { compareTasksByStatePriority, type TaskState } from '../workbench/views';
 
 type DistributedTask = {
   id: number;
@@ -129,10 +125,7 @@ export function DistributedJobsWorkbench({
   const refresh = useCallback(async ({ silent = false } = {}) => {
     try {
       const data = await apiRequest<DistributedTask[]>(apiPath('/v1/tasks?limit=100&offset=0'));
-      setTasks([...data].sort((left, right) => {
-        const createdAtDifference = Date.parse(right.createdAt) - Date.parse(left.createdAt);
-        return createdAtDifference || right.id - left.id;
-      }));
+      setTasks([...data].sort(compareTasksByStatePriority));
       setError('');
       if (selected) {
         const detail = await apiRequest<TaskDetail>(apiPath(`/v1/tasks/${selected.id}`));

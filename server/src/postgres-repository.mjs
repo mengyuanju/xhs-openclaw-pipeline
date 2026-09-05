@@ -25,6 +25,20 @@ import {
 const { Pool } = pg;
 const MAX_IMAGE_ATTEMPTS = 3;
 
+function taskStateOrder(column) {
+  if (!['state', 'page.state'].includes(column)) throw new TypeError('task state order column is invalid');
+  return `CASE
+    WHEN ${column} = 'COPY_REVIEW_PENDING' THEN 1
+    WHEN ${column} = 'COPY_RUNNING' THEN 2
+    WHEN ${column} = 'IMAGE_RUNNING' THEN 3
+    WHEN ${column} IN ('COPY_FAILED', 'IMAGE_FAILED') THEN 4
+    WHEN ${column} IN ('COPY_QUEUED', 'IMAGE_QUEUED') THEN 5
+    WHEN ${column} = 'MANUAL_ARCHIVE' THEN 6
+    WHEN ${column} = 'CANCELLED' THEN 7
+    ELSE 8
+  END`;
+}
+
 function taskFrom(row) {
   if (!row) return null;
   return {
@@ -566,7 +580,7 @@ export class PostgresControlPlaneRepository {
       FROM (
         SELECT * FROM tasks
         ${where}
-        ORDER BY created_at DESC, id DESC
+        ORDER BY ${taskStateOrder('state')}, created_at DESC, id DESC
         LIMIT $${pageValues.length - 1} OFFSET $${pageValues.length}
       ) page
       LEFT JOIN task_executions e ON e.id = page.current_execution_id
@@ -579,7 +593,7 @@ export class PostgresControlPlaneRepository {
         AND successful_image.kind = 'IMAGE' AND successful_image.status = 'SUCCEEDED'
       LEFT JOIN executor_nodes n ON n.id = COALESCE(e.node_id, successful_image.node_id)
       LEFT JOIN app_users creator ON creator.username = page.created_by_user_id
-      ORDER BY page.created_at DESC, page.id DESC
+      ORDER BY ${taskStateOrder('page.state')}, page.created_at DESC, page.id DESC
     `, pageValues),
       includeTotal
         ? this.pool.query(`SELECT COUNT(*) AS total FROM tasks ${where}`, values)

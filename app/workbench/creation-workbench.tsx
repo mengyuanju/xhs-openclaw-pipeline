@@ -34,7 +34,7 @@ import { selectCopyExecutor } from '../../src/control-plane/copy-executor-select
 import { imageExecutorLabel } from '../../src/control-plane/image-executor-label.mjs';
 import { TaskReviewDialog } from './task-review-dialog';
 
-import { WORKBENCH_VIEWS, matchesWorkbenchView, type TaskState, type ViewKey } from './views';
+import { compareTasksByStatePriority, WORKBENCH_VIEWS, matchesWorkbenchView, type TaskState, type ViewKey } from './views';
 
 type DistributedTask = {
   id: number;
@@ -140,11 +140,6 @@ function timeLabel(value: string | null) {
   return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '尚未开始';
 }
 
-function compareTaskRecency(left: DistributedTask, right: DistributedTask) {
-  const createdAtDifference = Date.parse(right.createdAt) - Date.parse(left.createdAt);
-  return createdAtDifference || right.id - left.id;
-}
-
 export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: activeView }: { nodeId: string; creatorUserId: string; role: string; viewKey: ViewKey }) {
   const router = useRouter();
   const activeDefinition = WORKBENCH_VIEWS.find((view) => view.key === activeView)!;
@@ -214,7 +209,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
         const keyword = searchKeyword.toLocaleLowerCase('zh-CN');
         const filtered = legacyTasks.filter((task) => matchesWorkbenchView(task, view, creatorUserId)
           && (!keyword || task.query.toLocaleLowerCase('zh-CN').includes(keyword)))
-          .sort(compareTaskRecency);
+          .sort(compareTasksByStatePriority);
         taskPage = {
           items: filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
           total: filtered.length,

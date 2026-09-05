@@ -208,8 +208,10 @@ test('task pages filter multiple states and Query text while returning a total',
   ]);
   assert.match(pageQuery.sql, /state = ANY\(\$1::varchar\[\]\)/u);
   assert.match(pageQuery.sql, /strpos\(lower\(query\), lower\(\$3\)\) > 0/u);
-  assert.match(pageQuery.sql, /ORDER BY created_at DESC, id DESC/u);
-  assert.match(pageQuery.sql, /ORDER BY page\.created_at DESC, page\.id DESC/u);
+  assert.match(pageQuery.sql, /WHEN state = 'COPY_REVIEW_PENDING' THEN 1[\s\S]*WHEN state = 'COPY_RUNNING' THEN 2[\s\S]*WHEN state = 'IMAGE_RUNNING' THEN 3/u);
+  assert.match(pageQuery.sql, /WHEN state IN \('COPY_FAILED', 'IMAGE_FAILED'\) THEN 4[\s\S]*WHEN state IN \('COPY_QUEUED', 'IMAGE_QUEUED'\) THEN 5/u);
+  assert.match(pageQuery.sql, /ORDER BY CASE[\s\S]*created_at DESC, id DESC/u);
+  assert.match(pageQuery.sql, /ORDER BY CASE[\s\S]*page\.created_at DESC, page\.id DESC/u);
 });
 
 test('personal task pagination and totals filter the creator independently of execution nodes', async () => {

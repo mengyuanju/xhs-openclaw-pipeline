@@ -118,6 +118,7 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(workbench, /compatibilitySearch\.set\('mine', 'true'\)/u);
   assert.match(workbench, /compatibilityTasks\s*\?\?/u);
   assert.match(workbench, /matchesWorkbenchView\(task, view, creatorUserId\)/u);
+  assert.match(workbench, /sort\(compareTasksByStatePriority\)/u);
   assert.match(workbench, /workbench-pagination/u);
   assert.match(workbench, />重试<\/button>/u);
   assert.match(workbench, />废弃<\/button>/u);

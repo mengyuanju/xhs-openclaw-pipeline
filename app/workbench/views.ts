@@ -7,6 +7,28 @@ export type TaskState =
 
 export type ViewKey = 'PERSONAL' | 'ALL_COPY' | 'COPY_REVIEW' | 'IMAGE_WORK' | 'MANUAL_ARCHIVE';
 
+export const TASK_STATE_PRIORITY: Record<TaskState, number> = {
+  COPY_REVIEW_PENDING: 1,
+  COPY_RUNNING: 2,
+  IMAGE_RUNNING: 3,
+  COPY_FAILED: 4,
+  IMAGE_FAILED: 4,
+  COPY_QUEUED: 5,
+  IMAGE_QUEUED: 5,
+  MANUAL_ARCHIVE: 6,
+  CANCELLED: 7,
+};
+
+export function compareTasksByStatePriority<T extends { id: number; state: TaskState; createdAt: string }>(left: T, right: T) {
+  const priorityDifference = TASK_STATE_PRIORITY[left.state] - TASK_STATE_PRIORITY[right.state];
+  if (priorityDifference) return priorityDifference;
+  const leftCreatedAt = Date.parse(left.createdAt);
+  const rightCreatedAt = Date.parse(right.createdAt);
+  const createdAtDifference = (Number.isFinite(rightCreatedAt) ? rightCreatedAt : 0)
+    - (Number.isFinite(leftCreatedAt) ? leftCreatedAt : 0);
+  return createdAtDifference || right.id - left.id;
+}
+
 export const WORKBENCH_VIEWS: Array<{
   key: ViewKey;
   href: string;
