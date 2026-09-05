@@ -20,6 +20,7 @@ const COPY_GENERATION_PROVIDERS = new Set(['OPENCLAW', 'DOTS']);
 const COPY_GENERATION_THINKING_LEVEL_SET = new Set(COPY_GENERATION_THINKING_LEVELS);
 
 const MODEL_API_FIELDS = new Set([
+  'agentProvider',
   ...Object.keys(DEFAULT_WEB_SEARCH_SETTINGS),
   'textModel',
   'screeningModel',
@@ -38,6 +39,7 @@ const MODEL_API_FIELDS = new Set([
 const LEGACY_PROVIDER = /^openai-codex\//iu;
 
 export const DEFAULT_MODEL_API_SETTINGS = Object.freeze({
+  agentProvider: null,
   ...DEFAULT_WEB_SEARCH_SETTINGS,
   textModel: null,
   screeningModel: null,
@@ -63,6 +65,15 @@ export function validatedModelRef(value, fallback, name) {
     throw new TypeError(`${name} uses legacy provider openai-codex; migrate it to openai/<model>`);
   }
   return model;
+}
+
+function optionalAgentProvider(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  const provider = String(value).trim().toUpperCase();
+  if (!['CODEX', 'OPENCLAW'].includes(provider)) {
+    throw new TypeError('agentProvider must be CODEX or OPENCLAW');
+  }
+  return provider;
 }
 
 function optionalModelRef(value, name) {
@@ -163,6 +174,7 @@ export function normalizeModelApiSettings(input = {}) {
     if (!MODEL_API_FIELDS.has(key)) throw new TypeError(`unknown model API setting: ${key}`);
   }
   return {
+    agentProvider: optionalAgentProvider(input.agentProvider),
     textModel: optionalModelRef(input.textModel, 'textModel'),
     ...normalizeWebSearchSettings(input),
     screeningModel: optionalModelRef(input.screeningModel, 'screeningModel'),
@@ -209,6 +221,7 @@ export function effectiveModelApiConfig(input = {}, environment = process.env) {
     'visionModel',
   );
   return {
+    agentProvider: optionalAgentProvider(settings.agentProvider ?? environment.XHS_AGENT_PROVIDER) ?? 'CODEX',
     copyGenerationProvider,
     webSearchProvider: search.provider,
     deepseekSearchModel: search.model ?? settings.deepseekSearchModel,
@@ -257,6 +270,7 @@ export function effectiveModelApiConfig(input = {}, environment = process.env) {
 export function publicModelApiStatus(input = {}, environment = process.env) {
   const effective = effectiveModelApiConfig(input, environment);
   return {
+    agentProvider: effective.agentProvider,
     copyGenerationProvider: effective.copyGenerationProvider,
     copyGenerationThinking: effective.copyGenerationThinking,
     dotsBaseUrl: effective.dotsBaseUrl,

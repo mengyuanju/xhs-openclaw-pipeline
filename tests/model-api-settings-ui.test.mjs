@@ -21,6 +21,7 @@ describe('model API production settings UI', () => {
     assert.match(route, /imageProxyUrl/u);
     assert.match(route, /imageTimeoutMs/u);
     assert.match(route, /copyGenerationProvider/u);
+    assert.match(route, /agentProvider: z\.enum\(\['CODEX', 'OPENCLAW'\]\)/u);
     assert.match(route, /copyGenerationThinking:\s*z\.enum\(\['minimal', 'low', 'medium', 'high', 'xhigh', 'max'\]\)/u);
     assert.match(route, /dotsBaseUrl/u);
     assert.match(route, /dotsModel/u);
@@ -42,6 +43,8 @@ describe('model API production settings UI', () => {
     assert.match(form, /<ModelApiSettingsSection/u);
     assert.match(form, /modelApi:\s*\{ \.\.\.current\.modelApi, \[key\]: value \}/u);
     assert.match(section, /模型 API 与网络/u);
+    assert.match(section, /生成引擎/u);
+    assert.match(form, /agentProvider: null/u);
     assert.match(section, /文本生成模型/u);
     assert.match(section, /需求检测模型/u);
     assert.match(section, /阶段审核模型/u);

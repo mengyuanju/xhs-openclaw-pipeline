@@ -8,6 +8,7 @@ export const DEFAULT_PRODUCTION_SETTINGS = Object.freeze({
   aiDisclosureEnabled: true,
   aiDisclosureText: 'AI生成',
   modelApi: Object.freeze({
+    agentProvider: null,
     webSearchProvider: null,
     deepseekSearchModel: null,
     webSearchTimeoutMs: null,

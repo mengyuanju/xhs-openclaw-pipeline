@@ -15,6 +15,7 @@ import { DotsCopyProviderFields } from './dots-copy-provider-fields';
 type CopyGenerationThinking = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export type ModelApiSettings = {
+  agentProvider: 'CODEX' | 'OPENCLAW' | null;
   copyGenerationProvider: 'OPENCLAW' | 'DOTS' | null;
   copyGenerationThinking: CopyGenerationThinking | null;
   dotsBaseUrl: string | null;
@@ -31,6 +32,7 @@ export type ModelApiSettings = {
 };
 
 export type EffectiveModelApi = {
+  agentProvider: 'CODEX' | 'OPENCLAW';
   copyGenerationProvider: 'OPENCLAW' | 'DOTS';
   copyGenerationThinking: CopyGenerationThinking;
   dotsBaseUrl: string;
@@ -123,10 +125,26 @@ export function ModelApiSettingsSection({
     </div>
 
     <div className="notice">
-      后台不保存 API Key、Token 或 OAuth 授权码。OpenClaw 认证由主机管理；Dots Key 仅从 <span className="mono">XHS_DOTS_API_KEY</span> 读取。
+      后台不保存 API Key、Token 或 OAuth 授权码。Codex / OpenClaw 认证由执行主机管理；Dots Key 仅从 <span className="mono">XHS_DOTS_API_KEY</span> 读取。
     </div>
 
     <div className="form-grid compact-settings-grid">
+      <div className="field">
+        <label htmlFor="model-api-agent-provider">生成引擎</label>
+        <Select
+          disabled={busy}
+          value={value.agentProvider ?? INHERIT_VALUE}
+          onValueChange={(selected) => onChange('agentProvider', selected === INHERIT_VALUE ? null : selected as 'CODEX' | 'OPENCLAW')}
+        >
+          <SelectTrigger id="model-api-agent-provider"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value={INHERIT_VALUE}>环境或默认值（{effective.agentProvider}）</SelectItem>
+            <SelectItem value="CODEX">Codex CLI（ChatGPT 订阅登录）</SelectItem>
+            <SelectItem value="OPENCLAW">OpenClaw（兼容回退）</SelectItem>
+          </SelectContent>
+        </Select>
+        <small>控制文本、审核、视觉和图片调用。Codex 同一运行状态库最多并发 2 个调用、其中图片 1 个；额度不足会暂停，不保证订阅吞吐量。已有批次 Worker 需重启后切换。</small>
+      </div>
       <DotsCopyProviderFields
         value={value}
         effective={effective}
@@ -152,7 +170,7 @@ export function ModelApiSettingsSection({
             ))}
           </SelectContent>
         </Select>
-        <small>用于 OpenClaw 文案生成与独立审核；Dots 正文关闭思考时，审核仍使用此值。</small>
+        <small>用于默认生成引擎的文案与独立审核；Dots 正文关闭思考时，审核仍使用此值。</small>
       </div>
 
       {MODEL_FIELDS.map((field) => <div className="field" key={field.key}>

@@ -129,6 +129,8 @@ function validateContentProfile(value) {
 }
 
 function requiredVisibleMustShowText(item) {
+  if (item.startsWith('画面：')) return null;
+  if (item.startsWith('文字：')) return item.slice(3).trim();
   const match = item.match(/^(.{2,60}?)(?:的)?(?:限制)?(?:提示|说明|标签|文字)$/u);
   return match?.[1]?.trim() || null;
 }
@@ -152,7 +154,13 @@ export function parseVisualPlanOutput(raw, { post, imageCount = post?.imagePlan?
     throw new RangeError(`visual plan pages must contain exactly ${imageCount} items`);
   }
   const finalizedText = `${finalized.title}\n${finalized.body}`;
-  const pages = root.pages.map((rawPage, arrayIndex) => {
+  const pages = root.pages.map((rawPage, arrayIndex) => validatePage(rawPage, arrayIndex, finalized, finalizedText));
+  return { schemaVersion: 1, contentProfile: validateContentProfile(root.contentProfile), pages };
+}
+
+export { parseFirstObject as parseVisualPlanCandidate };
+
+function validatePage(rawPage, arrayIndex, finalized, finalizedText) {
     if (!isRecord(rawPage)) throw new TypeError(`pages[${arrayIndex}] must be an object`);
     const expectedIndex = arrayIndex + 1;
     if (rawPage.index !== expectedIndex) throw new TypeError(`pages[${arrayIndex}].index must be ${expectedIndex}`);
@@ -220,8 +228,29 @@ export function parseVisualPlanOutput(raw, { post, imageCount = post?.imagePlan?
       mustShow,
       mustAvoid: textList(rawPage.mustAvoid, `pages[${arrayIndex}].mustAvoid`, { min: 1, max: 10, itemMax: 100 }),
     };
+}
+
+// The same validators power partial repair and final acceptance; repair never skips a gate.
+export function inspectVisualPlanOutput(raw, { post, imageCount = post?.imagePlan?.length } = {}) {
+  const finalized = validatePost(post, imageCount);
+  const candidate = parseFirstObject(raw);
+  const errors = [];
+  try {
+    if (candidate.schemaVersion !== 1) throw new TypeError('visual plan schemaVersion must be 1');
+    validateContentProfile(candidate.contentProfile);
+  } catch (error) { errors.push({ pageIndex: null, message: error.message }); }
+  if (!Array.isArray(candidate.pages)) throw new TypeError('visual plan pages must be an array');
+  const receivedPages = candidate.pages;
+  candidate.pages = finalized.imagePlan.map((_, index) => {
+    const matches = receivedPages.filter((page) => page?.index === index + 1);
+    // Missing/duplicate indices are repaired, while uniquely identified valid pages survive.
+    return matches.length === 1 ? matches[0] : null;
   });
-  return { schemaVersion: 1, contentProfile: validateContentProfile(root.contentProfile), pages };
+  for (const [index, page] of candidate.pages.entries()) {
+    try { validatePage(page, index, finalized, `${finalized.title}\n${finalized.body}`); }
+    catch (error) { errors.push({ pageIndex: index + 1, message: error.message }); }
+  }
+  return { candidate, errors };
 }
 
 export function createMockVisualPlan(post, { imageCount = post?.imagePlan?.length } = {}) {

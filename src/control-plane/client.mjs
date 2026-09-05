@@ -109,11 +109,13 @@ export function createControlPlaneClient({
       `/v1/executions/${executionId}/complete-image`,
       { method: 'POST', body: { result }, timeoutMs: 60_000 },
     ),
-    async failExecution(executionId, error) {
+    async failExecution(executionId, error, { autoRetry } = {}) {
       const message = error instanceof Error ? error.message : String(error);
+      if (autoRetry !== undefined && typeof autoRetry !== 'boolean') throw new TypeError('autoRetry must be a boolean');
+      const policy = autoRetry === undefined ? {} : { autoRetry };
       const path = `/v1/executions/${executionId}/fail`;
       try {
-        return await request(path, { method: 'POST', body: { error: message } });
+        return await request(path, { method: 'POST', body: { error: message, ...policy } });
       } catch (reportError) {
         // Older servers copied the full error into progress_message varchar(500).
         // Keep full diagnostics on upgraded servers; retry only that legacy shape.
@@ -121,7 +123,7 @@ export function createControlPlaneClient({
           || [...message].length <= 500) throw reportError;
         return request(path, {
           method: 'POST',
-          body: { error: [...message].slice(0, 499).join('') + '…' },
+          body: { error: [...message].slice(0, 499).join('') + '…', ...policy },
         });
       }
     },

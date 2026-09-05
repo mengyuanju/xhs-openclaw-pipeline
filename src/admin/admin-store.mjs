@@ -34,7 +34,7 @@ const REVIEW_STATUSES = ['NOT_READY', 'WAITING_REVIEW', 'APPROVED', 'REJECTED'];
 const TASK_STATUSES = ['pending', 'processing', 'completed', 'failed'];
 const IMPORT_STATUSES = ['PREVIEW', 'COMMITTED'];
 const DEMAND_LEVELS = ['STRONG', 'MEDIUM', 'WEAK', 'NONE'];
-const SCREENING_SOURCES = ['EXCEL', 'MANUAL', 'OPENCLAW'];
+const SCREENING_SOURCES = ['EXCEL', 'MANUAL', 'OPENCLAW', 'CODEX'];
 const ASSET_ALIGNMENT_STATUSES = [
   'NOT_APPLICABLE',
   'UNVERIFIED',
@@ -198,7 +198,7 @@ function migrateOpenClawScreeningSource(db) {
   const table = db.prepare(`
     SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'import_rows'
   `).get();
-  if (!table?.sql || table.sql.includes("'OPENCLAW'")) return;
+  if (!table?.sql || table.sql.includes("'CODEX'")) return;
 
   db.exec('BEGIN IMMEDIATE');
   try {
@@ -219,7 +219,7 @@ function migrateOpenClawScreeningSource(db) {
           CHECK (screening_status IN ('PENDING', 'COMPLETED', 'NOT_REQUIRED')),
         demand_level TEXT CHECK (demand_level IN ('STRONG', 'MEDIUM', 'WEAK', 'NONE')),
         screening_reason TEXT NOT NULL DEFAULT '',
-        screening_source TEXT CHECK (screening_source IN ('EXCEL', 'MANUAL', 'OPENCLAW')),
+        screening_source TEXT CHECK (screening_source IN ('EXCEL', 'MANUAL', 'OPENCLAW', 'CODEX')),
         screening_model TEXT,
         is_admitted INTEGER CHECK (is_admitted IN (0, 1)),
         task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
@@ -294,7 +294,7 @@ function initializeAdminSchema(db) {
         CHECK (screening_status IN ('PENDING', 'COMPLETED', 'NOT_REQUIRED')),
       demand_level TEXT CHECK (demand_level IN ('STRONG', 'MEDIUM', 'WEAK', 'NONE')),
       screening_reason TEXT NOT NULL DEFAULT '',
-      screening_source TEXT CHECK (screening_source IN ('EXCEL', 'MANUAL', 'OPENCLAW')),
+      screening_source TEXT CHECK (screening_source IN ('EXCEL', 'MANUAL', 'OPENCLAW', 'CODEX')),
       screening_model TEXT,
       is_admitted INTEGER CHECK (is_admitted IN (0, 1)),
       task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
@@ -400,7 +400,7 @@ function initializeAdminSchema(db) {
     ['screening_status', "TEXT NOT NULL DEFAULT 'PENDING' CHECK (screening_status IN ('PENDING', 'COMPLETED', 'NOT_REQUIRED'))"],
     ['demand_level', "TEXT CHECK (demand_level IN ('STRONG', 'MEDIUM', 'WEAK', 'NONE'))"],
     ['screening_reason', "TEXT NOT NULL DEFAULT ''"],
-    ['screening_source', "TEXT CHECK (screening_source IN ('EXCEL', 'MANUAL', 'OPENCLAW'))"],
+    ['screening_source', "TEXT CHECK (screening_source IN ('EXCEL', 'MANUAL', 'OPENCLAW', 'CODEX'))"],
     ['screening_model', 'TEXT'],
     ['is_admitted', 'INTEGER CHECK (is_admitted IN (0, 1))'],
   ];
@@ -731,7 +731,7 @@ export function createAdminStore(databasePath) {
           const decision = structurallyValid && row.screening
             ? normalizeDemandDecision(row.screening, row.screening.source ?? 'EXCEL')
             : null;
-          const screeningModel = decision?.source === 'OPENCLAW'
+          const screeningModel = ['OPENCLAW', 'CODEX'].includes(decision?.source)
             ? requiredText(row.screening.model, 'screening model', 200)
             : null;
           if (decision && row.screening.admitted !== decision.isAdmitted) {

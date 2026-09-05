@@ -30,6 +30,18 @@ function failureFixture(snapshot = {}) {
   return { queries, pool: { connect: async () => client } };
 }
 
+test('non-retryable executor failures keep image checkpoints and wait for manual continuation', async () => {
+  const fixture = failureFixture();
+  const repository = new PostgresControlPlaneRepository({ pool: fixture.pool });
+  const task = await repository.failExecution(executionId, 'Codex execution outcome unknown', { autoRetry: false });
+  assert.equal(task.state, 'IMAGE_FAILED');
+  assert.equal(task.currentStage, 'FAILED');
+  assert.match(task.progressMessage, /人工/u);
+  const update = fixture.queries.find(({ sql }) => sql.includes('UPDATE tasks SET'));
+  assert.match(update.sql, /current_image_run_id = current_image_run_id/u);
+  assert.equal(update.values[5], null);
+});
+
 for (const priorFailures of [0, 1, 2, 3]) {
   test(`image failure after ${priorFailures} recorded failures enforces the three-attempt budget`, async () => {
     const snapshot = { copyRevision: { id: 12 },

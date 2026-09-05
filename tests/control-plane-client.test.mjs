@@ -6,6 +6,16 @@ import {
   createControlPlaneClient,
 } from '../src/control-plane/client.mjs';
 
+test('failure reporting preserves explicit no-auto-retry policy on the wire', async () => {
+  let body;
+  const client = createControlPlaneClient({ baseUrl: 'http://127.0.0.1:4310', fetchImpl: async (_url, init) => {
+    body = JSON.parse(init.body);
+    return new Response(JSON.stringify({ data: { state: 'IMAGE_FAILED' } }), { headers: { 'Content-Type': 'application/json' } });
+  } });
+  await client.failExecution('execution', new Error('outcome unknown'), { autoRetry: false });
+  assert.deepEqual(body, { error: 'outcome unknown', autoRetry: false });
+});
+
 test('control plane client sends image claims only when called', async () => {
   const calls = [];
   const client = createControlPlaneClient({

@@ -208,7 +208,7 @@ export async function evaluateDelivery({
     observed: { actual: images.length, expected: expectedImageCount },
   });
   const nonModelImages = images.filter((image) =>
-    !['openclaw', 'openclaw-image-edit'].includes(image.provider));
+    !['openclaw', 'openclaw-image-edit', 'codex', 'codex-image-edit'].includes(image.provider));
   checks.push({
     id: 'model_image_sources',
     passed: mode !== 'live' || nonModelImages.length === 0,
@@ -306,7 +306,7 @@ export async function evaluateDelivery({
     issues.unshift({
       severity: 'blocking',
       label: '图片来源-Mock',
-      evidence: '主图是程序占位图，不是 OpenClaw 真实生成结果，禁止发布。',
+      evidence: '主图是程序占位图，不是真实模型生成结果，禁止发布。',
     });
   }
   const rubric = scoreQualityAssessment(mergeRubricAssessment(

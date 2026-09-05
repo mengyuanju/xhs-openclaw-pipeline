@@ -28,6 +28,7 @@ type Settings = {
 };
 
 const EMPTY_MODEL_API: ModelApiSettings = {
+  agentProvider: null,
   copyGenerationProvider: null,
   copyGenerationThinking: null,
   dotsBaseUrl: null,

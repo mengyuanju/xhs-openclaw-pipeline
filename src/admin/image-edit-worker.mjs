@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { codexErrorCode } from '../codex-protocol.mjs';
 import { mkdir, readFile, unlink } from 'node:fs/promises';
 import { dirname, relative, resolve } from 'node:path';
 import sharp from 'sharp';
@@ -6,7 +7,7 @@ import sharp from 'sharp';
 import { DELIVERY_IMAGE_HEIGHT, DELIVERY_IMAGE_WIDTH } from '../image-output-contract.mjs';
 import { applyDeterministicTextOverlay } from '../images.mjs';
 import { createImageAlignmentValidator } from '../image-alignment.mjs';
-import { createOpenClawClient } from '../openclaw.mjs';
+import { createAgentClient as createOpenClawClient } from '../agent-client.mjs';
 import { normalizeProductionSettings, productionDisclosure } from '../production-settings.mjs';
 import { renderPrompt } from './prompt-service.mjs';
 
@@ -32,6 +33,12 @@ export async function processNextImageEdit({
   mock = false,
   openclaw,
 }) {
+  try { if (!mock) openclaw?.assertAvailable?.(); }
+  catch (error) {
+    const code = codexErrorCode(error);
+    if (!code) throw error;
+    return { status: 'blocked', reason: code, haltWorker: error.haltWorker === true, retryAt: error.retryAt };
+  }
   const request = store.claimNextImageEdit({ workerId });
   if (!request) return { status: 'idle' };
   const source = store.getAsset(request.sourceAssetId);
@@ -47,6 +54,7 @@ export async function processNextImageEdit({
     if (!source || !config || !sourcePath) throw new Error('image edit source or task configuration is missing');
     await mkdir(dirname(outputPath), { recursive: true });
     let model = null;
+    let provider = 'openclaw';
     let alignment = null;
     if (mock) {
       await sharp(sourcePath, { failOn: 'error', limitInputPixels: 40_000_000 })
@@ -71,6 +79,7 @@ export async function processNextImageEdit({
         outputPath: rawPath,
       });
       model = generated.model;
+      provider = client.provider ?? 'openclaw';
       await sharp(generated.outputPath, { failOn: 'error', limitInputPixels: 40_000_000 })
         .resize(DELIVERY_IMAGE_WIDTH, DELIVERY_IMAGE_HEIGHT, { fit: 'cover', position: 'attention' })
         .png({ compressionLevel: 8 })
@@ -114,7 +123,7 @@ export async function processNextImageEdit({
       width: metadata.width,
       height: metadata.height,
       sha256: createHash('sha256').update(content).digest('hex'),
-      source: mock ? 'mock:image-edit' : `openclaw:image-edit:${model}`,
+      source: mock ? 'mock:image-edit' : `${provider}:image-edit:${model}`,
       sourceTextRevisionId: source.sourceTextRevisionId,
       pageIndex: source.pageIndex,
       visualPlanSha256: source.visualPlanSha256,
@@ -138,6 +147,8 @@ export async function processNextImageEdit({
       requestId: request.id,
       taskId: request.taskId,
       error: publicError(error),
+      reason: codexErrorCode(error),
+      haltWorker: ['CODEX_QUOTA_EXHAUSTED', 'CODEX_AUTH_REQUIRED'].includes(codexErrorCode(error)),
     };
   } finally {
     await unlink(rawPath).catch(() => {});

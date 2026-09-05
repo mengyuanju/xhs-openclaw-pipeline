@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { codexErrorCode } from './codex-protocol.mjs';
 import { copyFile, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import sharp from 'sharp';
@@ -13,6 +14,7 @@ const FONT_STACK = "'Microsoft YaHei','Noto Sans CJK SC','PingFang SC',sans-seri
 const TRANSIENT_IMAGE_EDIT_ERROR = /\b(?:ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET)\b|fetch failed|connection error|other side closed/iu;
 
 function isTransientImageEditError(error) {
+  if (codexErrorCode(error)) return false;
   return TRANSIENT_IMAGE_EDIT_ERROR.test(error instanceof Error ? error.message : String(error));
 }
 
@@ -768,19 +770,19 @@ export async function renderDeliveryImages({
               inputPaths: attemptInputPaths,
               outputPath: rawOutputPath,
             });
-            provider = 'openclaw-image-edit';
+            provider = generated.provider ?? `${openclaw.provider ?? 'openclaw'}-image-edit`;
           } catch (error) {
             if (!isTransientImageEditError(error) || !openclaw?.runImage) throw error;
             await unlink(rawOutputPath).catch(() => {});
             generated = await openclaw.runImage({ prompt, outputPath: rawOutputPath });
-            provider = 'openclaw';
+            provider = generated.provider ?? openclaw.provider ?? 'openclaw';
           }
         } else {
           if (!openclaw?.runImage) {
             throw new TypeError('openclaw image client is required in live mode');
           }
           generated = await openclaw.runImage({ prompt, outputPath: rawOutputPath });
-          provider = 'openclaw';
+          provider = generated.provider ?? openclaw.provider ?? 'openclaw';
         }
         model = generated.model;
         const checkpointImage = { file, provider, model, generationAttempts, prompt, alignment: null };

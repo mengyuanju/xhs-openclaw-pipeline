@@ -25,7 +25,13 @@ function searchEvidence(payload, limit) {
   if (!text || text.length > 200_000) throw new TypeError('DeepSeek search output is invalid');
   let result;
   try {
-    result = JSON.parse(text.replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, ''));
+    // Flash can append protocol closing tags after an otherwise valid JSON answer.
+    // Remove only this known suffix; never rewrite evidence strings or fill missing JSON.
+    const normalized = text
+      .replace(/(?:<\/｜｜DSML｜｜(?:parameter|invoke|tool_calls)>\s*)+$/u, '')
+      .trim()
+      .replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '');
+    result = JSON.parse(normalized);
   } catch {
     throw new TypeError('DeepSeek search output is not valid JSON');
   }

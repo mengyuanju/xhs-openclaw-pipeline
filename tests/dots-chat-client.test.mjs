@@ -96,6 +96,7 @@ describe('copy generation provider selection', () => {
     const client = createCopyGenerationClient({
       modelApi: {
         copyGenerationProvider: 'DOTS',
+        webSearchProvider: 'OPENCLAW',
         dotsBaseUrl: DOTS_BASE_URL,
         dotsModel: 'dots3-note-prev',
       },
@@ -136,6 +137,7 @@ describe('copy generation provider selection', () => {
     const client = createCopyGenerationClient({
       modelApi: {
         copyGenerationProvider: 'OPENCLAW',
+        webSearchProvider: 'OPENCLAW',
         copyGenerationThinking: 'xhigh',
       },
       environment: {},

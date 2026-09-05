@@ -3,7 +3,7 @@ import { tracedOpenClawRunner } from './model-call-trace.mjs';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { execFile, spawnSync } from 'node:child_process';
 import sharp from 'sharp';
 
@@ -12,6 +12,7 @@ import {
   validatedModelRef,
 } from './model-api-config.mjs';
 import { withWebSearchProvider } from './web-search-service.mjs';
+import { receiveOpenClawImage } from './image-output-reception.mjs';
 
 const DEFAULT_PREFLIGHT_TIMEOUT_MS = 120_000;
 const DEFAULT_VISION_TIMEOUT_MS = 300_000;
@@ -32,6 +33,7 @@ const TEXT_LENGTH_FINISH_REASONS = new Set(['length', 'max_tokens', 'max_output_
 let textInferenceTail = Promise.resolve();
 
 async function runTextExclusively(operation) {
+  const queuedAt = Date.now();
   const previous = textInferenceTail.catch(() => undefined);
   let release;
   textInferenceTail = new Promise((resolve) => {
@@ -39,7 +41,7 @@ async function runTextExclusively(operation) {
   });
   await previous;
   try {
-    return await operation();
+    return await operation(Math.max(0, Date.now() - queuedAt));
   } finally {
     release();
   }
@@ -132,7 +134,7 @@ async function runWithTransportRetryAsync({
       optionsForAttempt?.(attempt) ?? options,
     );
     const processSucceeded = !result.error && result.status === 0;
-    const succeeded = processSucceeded && (verifySuccess?.(result) ?? true);
+    const succeeded = processSucceeded && (await verifySuccess?.(result) ?? true);
     if (succeeded) return result;
     const missingExpectedOutput = processSucceeded && Boolean(verifySuccess);
     const detail = missingExpectedOutput ? 'expected output file missing' : failureDetail(result);
@@ -144,7 +146,7 @@ async function runWithTransportRetryAsync({
     if (!retryable || attempt === retryDelaysMs.length) {
       return result;
     }
-    beforeRetry?.();
+    await beforeRetry?.();
     await sleep(retryDelaysMs[attempt]);
   }
   return result;
@@ -376,6 +378,46 @@ export function createOpenClawClient({
   const resolvedAsyncSleep = asyncSleep ?? (async (milliseconds) => sleep(milliseconds));
   const currentModelApi = () => effectiveModelApiConfig(modelApi ?? {}, process.env);
 
+  async function executeImage(args, outputPath, configuration, timeoutMs, signal, failureLabel) {
+    let directory = await mkdtemp(join(dirname(resolve(outputPath)), '.image-output-'));
+    let requestedPath = join(directory, 'image.png');
+    let startedAt = Date.now();
+    let received = false;
+    const outputIndex = args.indexOf('--output') + 1;
+    args[outputIndex] = requestedPath;
+    try {
+      const result = await runWithTransportRetryAsync({
+        runner: resolvedAsyncRunner, nodePath, args, sleep: resolvedAsyncSleep,
+        beforeRetry: async () => {
+          // Start a fresh invocation boundary; an earlier attempt can never satisfy the new one.
+          removePartialOutput(requestedPath);
+          directory = await mkdtemp(join(dirname(resolve(outputPath)), '.image-output-'));
+          requestedPath = join(directory, 'image.png');
+          args[outputIndex] = requestedPath;
+          startedAt = Date.now();
+        },
+        verifySuccess: async (result) => {
+          received = await receiveOpenClawImage({ result, directory, requestedPath, outputPath, startedAt });
+          return received;
+        },
+        options: withImageProxy(withAbortSignal({
+          encoding: 'utf8', windowsHide: true, shell: false,
+          timeout: timeoutMs + 10_000, maxBuffer: 10 * 1024 * 1024,
+        }, signal), configuration.imageProxyUrl),
+      });
+      if (result.error || result.status !== 0) {
+        throw new Error(`OpenClaw ${failureLabel} failed: ${actionableImageFailureDetail(result)}`);
+      }
+      if (!received) throw new Error('OpenClaw reported success but did not create the image file');
+    } catch (error) {
+      error.recoveryDirectory = directory;
+      throw error;
+    } finally {
+      // Cleanup failure must not turn successfully received pixels into another model request.
+      if (received) await rm(directory, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
   return withWebSearchProvider({
     checkReady({ textModel, imageModel, timeoutMs = DEFAULT_PREFLIGHT_TIMEOUT_MS } = {}) {
       const configuration = currentModelApi();
@@ -489,7 +531,7 @@ export function createOpenClawClient({
         throw new TypeError('OpenClaw session prefix is invalid');
       }
 
-      return runTextExclusively(async () => {
+      return runTextExclusively(async (queueWaitMs) => {
         const sessionId = `${normalizedSessionPrefix}-${randomUUID()}`;
         const directory = await mkdtemp(join(tmpdir(), 'xhs-openclaw-text-'));
         const messagePath = join(directory, 'message.txt');
@@ -541,6 +583,7 @@ export function createOpenClawClient({
             model: resolvedModel,
             thinking: resolvedThinking,
             execution: {
+              queueWaitMs,
               runtime: String(harnessRuntime),
               sessionId,
               runId: typeof parsed.envelope?.runId === 'string' ? parsed.envelope.runId : null,
@@ -658,29 +701,7 @@ export function createOpenClawClient({
         '--prompt',
         prompt,
       ];
-      const processOptions = withAbortSignal({
-        encoding: 'utf8',
-        windowsHide: true,
-        shell: false,
-        timeout: resolvedTimeoutMs + 10_000,
-        maxBuffer: 10 * 1024 * 1024,
-      }, signal);
-      const result = await runWithTransportRetryAsync({
-        runner: resolvedAsyncRunner,
-        nodePath,
-        args,
-        sleep: resolvedAsyncSleep,
-        beforeRetry: () => removePartialOutput(outputPath),
-        verifySuccess: () => existsSync(outputPath),
-        options: withImageProxy(processOptions, configuration.imageProxyUrl),
-      });
-      if (result.error || result.status !== 0) {
-        const detail = actionableImageFailureDetail(result);
-        throw new Error(`OpenClaw image generation failed: ${detail}`);
-      }
-      if (!existsSync(outputPath)) {
-        throw new Error('OpenClaw reported success but did not create the image file');
-      }
+      await executeImage(args, outputPath, configuration, resolvedTimeoutMs, signal, 'image generation');
       return { outputPath, model: resolvedModel };
     },
 
@@ -731,29 +752,7 @@ export function createOpenClawClient({
         '--prompt',
         prompt,
       ];
-      const processOptions = withAbortSignal({
-        encoding: 'utf8',
-        windowsHide: true,
-        shell: false,
-        timeout: resolvedTimeoutMs + 10_000,
-        maxBuffer: 10 * 1024 * 1024,
-      }, signal);
-      const result = await runWithTransportRetryAsync({
-        runner: resolvedAsyncRunner,
-        nodePath,
-        args,
-        sleep: resolvedAsyncSleep,
-        beforeRetry: () => removePartialOutput(outputPath),
-        verifySuccess: () => existsSync(outputPath),
-        options: withImageProxy(processOptions, configuration.imageProxyUrl),
-      });
-      if (result.error || result.status !== 0) {
-        const detail = actionableImageFailureDetail(result);
-        throw new Error(`OpenClaw image edit failed: ${detail}`);
-      }
-      if (!existsSync(outputPath)) {
-        throw new Error('OpenClaw reported success but did not create the edited image file');
-      }
+      await executeImage(args, outputPath, configuration, resolvedTimeoutMs, signal, 'image edit');
       return { outputPath, model: resolvedModel };
     },
   }, { environment, fetchImpl, settings: modelApi ?? {} });

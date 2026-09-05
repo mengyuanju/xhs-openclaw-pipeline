@@ -52,12 +52,12 @@ export function DotsCopyProviderFields({
       >
         <SelectTrigger id="model-api-copy-provider"><SelectValue /></SelectTrigger>
         <SelectContent>
-          <SelectItem value={INHERIT_VALUE}>环境或默认值（{effective.copyGenerationProvider}）</SelectItem>
-          <SelectItem value="OPENCLAW">OpenClaw</SelectItem>
+          <SelectItem value={INHERIT_VALUE}>环境或默认值（{effective.copyGenerationProvider === 'DOTS' ? 'Dots' : '默认生成引擎'}）</SelectItem>
+          <SelectItem value="OPENCLAW">默认生成引擎（Codex / OpenClaw）</SelectItem>
           <SelectItem value="DOTS">Dots Chat Completions</SelectItem>
         </SelectContent>
       </Select>
-      <small>只切换独立文案的正文生成；检索使用联网搜索配置，独立审核仍由 OpenClaw 执行。</small>
+      <small>只切换独立文案的正文生成；检索使用联网搜索配置，独立审核仍由默认生成引擎执行。</small>
     </div>
 
     <div className="field">

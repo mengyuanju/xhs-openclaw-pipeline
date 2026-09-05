@@ -1,12 +1,15 @@
-import { constants } from 'node:fs';
+import { constants, existsSync } from 'node:fs';
 import { withModelCallTracing } from '../model-call-trace.mjs';
 import { createHash } from 'node:crypto';
 import { access, mkdir, readFile, rm } from 'node:fs/promises';
 import { basename, join, relative, resolve } from 'node:path';
 
 import { createCopyGenerationClient } from '../copy-generation-client.mjs';
+import { effectiveModelApiConfig } from '../model-api-config.mjs';
+import { codexErrorCode } from '../codex-protocol.mjs';
+import { codexRuntimePath, createCodexRuntime } from '../codex-runtime.mjs';
 import { generateCopy, toCopyGenerationResponse } from '../copy-generation.mjs';
-import { createOpenClawClient } from '../openclaw.mjs';
+import { createAgentClient as createOpenClawClient } from '../agent-client.mjs';
 import { generateStandaloneImages, retryStandaloneImageRun, standaloneImageRunDirectory } from '../standalone-image-generation.mjs';
 import { findImageRecoveryRun, imageRecoveryRunIds, loadUploadedImages, saveCheckpoint } from './image-checkpoints.mjs';
 
@@ -62,12 +65,30 @@ function copySource(revision) {
 export async function checkExecutorReady({
   controlPlane,
   workRoot,
+  environment = process.env,
+  modelClient,
 }) {
   const health = await controlPlane.health();
   if (!health?.ok) throw new Error('中心服务尚未准备完成');
   await mkdir(workRoot, { recursive: true });
   await access(workRoot, constants.R_OK | constants.W_OK);
+  const records = await controlPlane.listSettings?.();
+  const modelApi = records?.find((record) => record.key === 'production')?.value?.modelApi ?? {};
+  if (effectiveModelApiConfig(modelApi, environment).agentProvider === 'CODEX' && !health.capabilities?.executionRetryControl) {
+    throw new Error('使用 Codex 前请更新并重启中心服务：缺少 executionRetryControl，无法保证失败后不重复生成');
+  }
+  (modelClient ?? createOpenClawClient({ modelApi, environment })).checkReady();
   return { health, workRoot };
+}
+
+async function checkModelAvailability({ environment, controlPlane }) {
+  const path = codexRuntimePath(environment);
+  if (!existsSync(path)) return;
+  const limits = createCodexRuntime({ databasePath: path });
+  if (!limits.status().code) return;
+  const records = await controlPlane.listSettings?.();
+  const modelApi = records?.find((record) => record.key === 'production')?.value?.modelApi ?? {};
+  if (effectiveModelApiConfig(modelApi, environment).agentProvider === 'CODEX') limits.assertAvailable();
 }
 
 export async function executeCopyClaim({ claim, controlPlane, environment = process.env, client }) {
@@ -103,6 +124,7 @@ export async function executeImageClaim({
   controlPlane,
   workRoot,
   imageClient,
+  environment = process.env,
 }) {
   const { execution, task } = claim;
   const snapshot = execution.snapshot;
@@ -125,7 +147,7 @@ export async function executeImageClaim({
       productionSettings: settings,
       imageSystemPrompt: publishedPrompt(snapshot, 'IMAGE_SYSTEM'),
       visualReference: visualReference(snapshot),
-      client: imageClient ?? createOpenClawClient({ modelApi: settings.modelApi ?? {} }),
+      client: imageClient ?? createOpenClawClient({ modelApi: settings.modelApi ?? {}, environment }),
     },
     onProgress: async (progress) => controlPlane.updateProgress(execution.id, {
       stage: progress.stage,
@@ -181,6 +203,7 @@ export function createExecutorAgent({
   executeCopy = executeCopyClaim,
   executeImage = executeImageClaim,
   readinessCheck = checkExecutorReady,
+  availabilityCheck = checkModelAvailability,
   environment = process.env,
 }) {
   if (!controlPlane) throw new TypeError('controlPlane client is required');
@@ -190,7 +213,9 @@ export function createExecutorAgent({
 
   async function reportFailure(claim, error) {
     try {
-      await controlPlane.failExecution(claim.execution.id, error);
+      const code = codexErrorCode(error);
+      await controlPlane.failExecution(claim.execution.id, error,
+        code ? { autoRetry: false } : {});
     } catch (reportError) {
       if (reportError?.code !== 'STALE_EXECUTION') throw reportError;
     }
@@ -214,6 +239,11 @@ export function createExecutorAgent({
     // A failed report must be retried before claiming; the server still owns the
     // RUNNING lease. Never regenerate content just to retry a status update.
     if (pendingFailures.has(kind)) return finishFailure(kind, pendingFailures.get(kind));
+    try { await availabilityCheck({ environment, controlPlane }); }
+    catch (error) {
+      if (!codexErrorCode(error)) throw error;
+      return { kind, status: 'PAUSED', code: codexErrorCode(error), retryAt: error.retryAt ?? null };
+    }
     const claim = kind === 'COPY'
       ? await controlPlane.claimCopy(nodeId)
       : await controlPlane.claimImage(nodeId);

@@ -1,4 +1,5 @@
-export const DEFAULT_DEEPSEEK_SEARCH_MODEL = 'deepseek-v4-pro';
+export const DEFAULT_WEB_SEARCH_PROVIDER = 'DEEPSEEK';
+export const DEFAULT_DEEPSEEK_SEARCH_MODEL = 'deepseek-v4-flash';
 export const DEFAULT_WEB_SEARCH_TIMEOUT_MS = 120_000;
 export const DEFAULT_WEB_SEARCH_SETTINGS = Object.freeze({
   webSearchProvider: null,
@@ -29,7 +30,7 @@ export function validatedWebSearchTimeout(value) {
 // This configuration contains no credentials and is independent of generation models.
 export function resolveWebSearchConfig(environment = process.env, input = {}) {
   const settings = normalizeWebSearchSettings(input);
-  const provider = String(settings.webSearchProvider ?? (environment.XHS_WEB_SEARCH_PROVIDER || 'OPENCLAW')).trim().toUpperCase();
+  const provider = String(settings.webSearchProvider ?? (environment.XHS_WEB_SEARCH_PROVIDER || DEFAULT_WEB_SEARCH_PROVIDER)).trim().toUpperCase();
   if (!['OPENCLAW', 'DEEPSEEK'].includes(provider)) {
     throw new TypeError('XHS_WEB_SEARCH_PROVIDER must be OPENCLAW or DEEPSEEK');
   }

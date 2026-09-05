@@ -618,7 +618,9 @@ describe('content pipeline', () => {
     const textPrompts = [];
     let imageCalls = 0;
     const openclaw = {
-      runText({ prompt }) {
+      runText({ prompt, thinking, outputSchema }) {
+        assert.equal(thinking, 'medium');
+        assert.ok(outputSchema.properties.pages);
         textPrompts.push(prompt);
         const plan = createMockVisualPlan(post, { imageCount: 3 });
         if (textPrompts.length === 1) plan.pages[0].sourceEvidence = [];
@@ -645,13 +647,15 @@ describe('content pipeline', () => {
       outputRoot: join(directory, 'output'),
       mock: false,
       openclaw,
-      configProvider: () => ({ imageCount: 3, imageCountMode: 'fixed', postOverride: post }),
+      configProvider: () => ({ imageCount: 3, imageCountMode: 'fixed', postOverride: post,
+        productionSettings: { modelApi: { copyGenerationThinking: 'medium' } } }),
     });
 
     assert.equal(result.status, 'completed', result.error);
     assert.equal(queue.get(task.id).status, 'completed');
     assert.equal(textPrompts.length, 2);
-    assert.match(textPrompts[1], /上一次视觉规划输出未通过结构校验/);
+    assert.match(textPrompts[1], /局部修复/);
+    assert.match(textPrompts[1], /"repairPageIndices":\[1\]/);
     assert.match(textPrompts[1], /pages\[0\]\.sourceEvidence/);
     assert.ok(renewals.length >= 8);
     assert.ok(renewals.every((renewal) => renewal.id === task.id

@@ -4,6 +4,7 @@ import { Search, RotateCcw } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { apiRequest } from '../components/api-client';
+import { DEFAULT_DEEPSEEK_SEARCH_MODEL, DEFAULT_WEB_SEARCH_PROVIDER, DEFAULT_WEB_SEARCH_TIMEOUT_MS } from '../../src/web-search-config.mjs';
 
 type SearchSettings = {
   webSearchProvider: 'OPENCLAW' | 'DEEPSEEK' | null;
@@ -63,41 +64,53 @@ export function WebSearchSettingsPanel({ onSaved }: { onSaved?: () => Promise<vo
   const disabled = loading || busy || !record;
   const invalidTimeout = settings.webSearchTimeoutMs !== null
     && (!Number.isInteger(settings.webSearchTimeoutMs) || settings.webSearchTimeoutMs < 5000 || settings.webSearchTimeoutMs > 120000);
+  const hasChanges = record !== null && JSON.stringify(settings) !== JSON.stringify(record.settings);
+  const usesOpenClaw = settings.webSearchProvider === 'OPENCLAW'
+    || (settings.webSearchProvider === null && record?.effective?.provider === 'OPENCLAW');
+  const savedProvider = record?.effective?.provider ?? record?.settings.webSearchProvider;
+  const savedModel = record?.effective?.model ?? record?.settings.deepseekSearchModel;
 
   return <section className="panel settings-section" aria-labelledby="web-search-heading" aria-busy={loading || busy}>
     <div className="panel-head">
-      <div><span className="section-kicker">Web search</span><h2 id="web-search-heading">联网搜索</h2>
-        <p className="subtle">独立选择文案研究使用的搜索服务。文案生成、审核和生图沿用各自配置。</p></div>
+      <div><span className="section-kicker">Web search</span><h2 id="web-search-heading">联网搜索服务</h2>
+        <p className="subtle">选择文案检索使用的服务，默认 DeepSeek Flash。修改后点击保存，对后续任务生效。</p></div>
       <Search size={20} aria-hidden="true" />
     </div>
     {loading && <p className="subtle" role="status">正在读取搜索配置…</p>}
+    {record && <p className="notice" role="status">
+      {record.scope === 'local' ? '当前生效：' : '已保存的搜索服务：'}
+      {savedProvider === 'OPENCLAW' ? '默认生成引擎'
+        : savedProvider === 'DEEPSEEK' ? `DeepSeek · ${savedModel ?? '继承执行机模型（默认 Flash）'}`
+          : '继承执行机环境（项目默认 DeepSeek Flash）'}
+      {hasChanges && <span> · 有未保存的更改</span>}
+    </p>}
     <div className="form-grid compact-settings-grid">
       <div className="field">
-        <label htmlFor="web-search-provider">搜索提供方</label>
+        <label htmlFor="web-search-provider">搜索服务</label>
         <Select disabled={disabled} value={settings.webSearchProvider ?? INHERIT} onValueChange={(value) => {
           setMessage('');
           setSettings((current) => ({ ...current, webSearchProvider: value === INHERIT ? null : value as SearchSettings['webSearchProvider'] }));
         }}>
           <SelectTrigger id="web-search-provider"><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value={INHERIT}>继承执行机环境（默认 OpenClaw）</SelectItem>
-            <SelectItem value="OPENCLAW">OpenClaw（原有搜索）</SelectItem>
-            <SelectItem value="DEEPSEEK">DeepSeek 联网搜索</SelectItem>
+            <SelectItem value={INHERIT}>跟随默认配置（DeepSeek）</SelectItem>
+            <SelectItem value="DEEPSEEK">DeepSeek 联网搜索（推荐）</SelectItem>
+            <SelectItem value="OPENCLAW">默认生成引擎联网搜索</SelectItem>
           </SelectContent>
         </Select>
-        <small>页面保存值优先于执行机环境变量。</small>
+        <small>可随时切换服务；跟随默认配置时，执行机环境设置优先。</small>
       </div>
       <div className="field">
         <label htmlFor="deepseek-search-model">DeepSeek 搜索模型</label>
-        <Select disabled={disabled} value={settings.deepseekSearchModel ?? INHERIT} onValueChange={(value) => {
+        <Select disabled={disabled || usesOpenClaw} value={settings.deepseekSearchModel ?? INHERIT} onValueChange={(value) => {
           setMessage('');
           setSettings((current) => ({ ...current, deepseekSearchModel: value === INHERIT ? null : value as SearchSettings['deepseekSearchModel'] }));
         }}>
           <SelectTrigger id="deepseek-search-model"><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value={INHERIT}>继承执行机环境（默认 Pro）</SelectItem>
-            <SelectItem value="deepseek-v4-pro">deepseek-v4-pro</SelectItem>
-            <SelectItem value="deepseek-v4-flash">deepseek-v4-flash</SelectItem>
+            <SelectItem value={INHERIT}>跟随默认配置（Flash）</SelectItem>
+            <SelectItem value="deepseek-v4-flash">DeepSeek V4 Flash（推荐）</SelectItem>
+            <SelectItem value="deepseek-v4-pro">DeepSeek V4 Pro</SelectItem>
           </SelectContent>
         </Select>
         <small>仅在使用 DeepSeek 搜索时生效。</small>
@@ -105,7 +118,7 @@ export function WebSearchSettingsPanel({ onSaved }: { onSaved?: () => Promise<vo
       <div className="field">
         <label htmlFor="web-search-timeout">DeepSeek 搜索超时（毫秒）</label>
         <input id="web-search-timeout" className="input" type="number" min={5000} max={120000} step={1000}
-          disabled={disabled} value={settings.webSearchTimeoutMs ?? ''} placeholder="继承环境，默认 120000"
+          disabled={disabled || usesOpenClaw} value={settings.webSearchTimeoutMs ?? ''} placeholder="继承环境，默认 120000"
           aria-invalid={invalidTimeout} onChange={(event) => {
             setMessage('');
             setSettings((current) => ({ ...current, webSearchTimeoutMs: event.target.value === '' ? null : Number(event.target.value) }));
@@ -120,6 +133,10 @@ export function WebSearchSettingsPanel({ onSaved }: { onSaved?: () => Promise<vo
     {error && <div className="notice error" role="alert">{error}</div>}
     {message && <div className="notice success" role="status">{message}</div>}
     <div className="settings-actions">
+      <button type="button" className="button" disabled={disabled} onClick={() => {
+        setSettings({ webSearchProvider: DEFAULT_WEB_SEARCH_PROVIDER, deepseekSearchModel: DEFAULT_DEEPSEEK_SEARCH_MODEL, webSearchTimeoutMs: DEFAULT_WEB_SEARCH_TIMEOUT_MS });
+        setMessage('已选择 DeepSeek Flash 推荐配置，点击“保存搜索配置”后生效。');
+      }}>使用 DeepSeek Flash</button>
       <button type="button" className="button" disabled={disabled} onClick={() => { setSettings({ ...EMPTY_SETTINGS }); setMessage(''); }}>
         <RotateCcw size={15} aria-hidden="true" />恢复环境配置
       </button>

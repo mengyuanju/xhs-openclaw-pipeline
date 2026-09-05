@@ -180,7 +180,7 @@ describe('web research snapshots', () => {
           return {
             provider: 'codex',
             result: {
-              content: '\n<<<EXTERNAL_UNTRUSTED_CONTENT id="answer">>>\nSource: Web Search\n---\n结论见 https://gov.example.cn/rules 和 [研究](https://journal.example.org/paper)。\n<<<END_EXTERNAL_UNTRUSTED_CONTENT id="answer">>>',
+              content: '\n<<<EXTERNAL_UNTRUSTED_CONTENT id="answer">>>\nSource: Web Search\n---\n结论见 https://example.gov.cn/rules 和 [研究](https://journal.example.org/paper)。\n<<<END_EXTERNAL_UNTRUSTED_CONTENT id="answer">>>',
               searches: [{ query: '规则 研究' }],
             },
           };
@@ -192,9 +192,9 @@ describe('web research snapshots', () => {
     });
 
     assert.equal(snapshot.status, 'COMPLETED');
-    assert.equal(snapshot.summary, '结论见 https://gov.example.cn/rules 和 [研究](https://journal.example.org/paper)。');
+    assert.equal(snapshot.summary, '结论见 https://example.gov.cn/rules 和 [研究](https://journal.example.org/paper)。');
     assert.deepEqual(researchSourceUrls(snapshot), [
-      'https://gov.example.cn/rules',
+      'https://example.gov.cn/rules',
       'https://journal.example.org/paper',
     ]);
   });
