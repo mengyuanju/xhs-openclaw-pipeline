@@ -6,6 +6,19 @@ const lines = (...events) => events.map(JSON.stringify).join('\n');
 const message = (text) => ({ type: 'item.completed', item: { id: 'answer', type: 'agent_message', text } });
 const complete = { type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 5 } };
 
+test('a recovered CLI reconnect preserves a fresh completed answer without hiding terminal failures', () => {
+  const reconnect = { type: 'error', message: 'Reconnecting... 2/5 (stream disconnected before completion: IO error: unexpected EOF)' };
+  const recovered = parseCodexOutput(lines(reconnect, message('{"rawText":"recovered"}'), complete));
+  assert.equal(recovered.rawText, '{"rawText":"recovered"}');
+  assert.equal(recovered.reconnectCount, 1);
+  for (const stream of [lines(reconnect), lines(message('old'), complete, reconnect),
+    lines(message('old'), reconnect, complete), lines(reconnect, { type: 'turn.failed', error: { message: 'connection exhausted' } })]) {
+    assert.throws(() => parseCodexOutput(stream), { code: 'CODEX_EXEC_FAILED' });
+  }
+  assert.throws(() => parseCodexOutput(lines({ type: 'error', message: 'usage_limit_reached' }, message('fake success'), complete)),
+    { code: 'CODEX_QUOTA_EXHAUSTED' });
+});
+
 test('Codex accepts only completed turns and returns the last agent message with execution evidence', () => {
   const parsed = parseCodexOutput(lines({ type: 'thread.started', thread_id: 'thread-1' }, message('working'),
     { type: 'item.completed', item: { id: 'search-1', type: 'web_search', action: { type: 'search', query: 'official docs' } } },

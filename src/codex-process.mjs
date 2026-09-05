@@ -48,7 +48,7 @@ export function checkCodexLogin({ environment = process.env, executable, runner 
   return { authentication: 'chatgpt' };
 }
 
-function terminateTree(child) {
+export function terminateCodexTree(child) {
   if (!child.pid) return Promise.resolve();
   if (process.platform !== 'win32') {
     try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
@@ -74,7 +74,7 @@ export function runCodexProcess(command, args, {
     function stop(error) {
       if (failure) return;
       failure = error;
-      termination = terminateTree(child);
+      termination = terminateCodexTree(child);
     }
     const aborted = () => stop(signal.reason instanceof Error ? signal.reason : Object.assign(new Error('cancelled'), { name: 'AbortError' }));
     const timer = setTimeout(() => stop(Object.assign(new Error('Codex execution timed out; generation outcome may be unknown'),

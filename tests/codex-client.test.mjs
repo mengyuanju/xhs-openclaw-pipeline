@@ -115,6 +115,9 @@ test('search needs an actual web_search event and produces the existing research
 test('image generation requires native tool evidence and a valid fresh image before delivery', async (t) => {
   let evidence = true;
   const { client, root } = await fixture(t, async (_command, _args, options) => {
+    const instructions = _args.find(arg => arg.startsWith('developer_instructions='));
+    assert.match(instructions, /brand-new PNG/u);
+    assert.doesNotMatch(instructions, /image 1 is the edit target/u);
     const path = join(options.cwd, 'generated.png');
     await sharp({ create: { width: 24, height: 32, channels: 3, background: '#aabbcc' } }).png().toFile(path);
     return success({ rawText: 'generated' }, evidence ? [{ type: 'image_generation', id: 'image-1', status: 'completed', saved_path: path }] : []);
@@ -142,6 +145,7 @@ test('image edits attach copies, accept image-only native completion and never o
   let attachment;
   const { client, root } = await fixture(t, async (_command, args, options) => {
     attachment = args[args.indexOf('--image') + 1];
+    assert.match(args.find(arg => arg.startsWith('developer_instructions=')), /image 1 is the edit target/u);
     assert.equal((await sharp(attachment).metadata()).format, 'png');
     const path = join(options.cwd, 'edited.png');
     await sharp(attachment).negate().png().toFile(path);
