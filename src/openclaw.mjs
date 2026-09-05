@@ -22,6 +22,12 @@ const WEB_SEARCH_RETRY_DELAYS_MS = [2_000];
 const TRANSIENT_TRANSPORT_ERROR = /\b(?:EBUSY|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET)\b|fetch failed|connection error|other side closed|reconnecting|timed?\s*out/iu;
 const BLOCKED_NETWORK_TARGET_ERROR = /blocked URL fetch|Blocked hostname|Blocked: resolves to private\/internal\/special-use IP address/iu;
 const TEXT_THINKING_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+const TEXT_CONTEXT_ERROR_CODES = new Set([
+  'model_context_limit', 'context_length_exceeded', 'context_window_exceeded',
+  'context_overflow', 'cli_context_overflow', 'prompt_too_long',
+]);
+const TEXT_CONTEXT_ERROR_MESSAGE = /maximum context length|\b(?:prompt|input) is too long\b|\binput exceeds the context window\b|\bcontext (?:window|length|limit) (?:is |was )?exceeded\b/iu;
+const TEXT_LENGTH_FINISH_REASONS = new Set(['length', 'max_tokens', 'max_output_tokens']);
 
 let textInferenceTail = Promise.resolve();
 
@@ -275,6 +281,41 @@ function extractModelText(stdout) {
   }
 }
 
+function assertGatewayTextCapacity(envelope) {
+  // Only known envelope metadata is evidence. Never walk final/text/content/payloads.
+  const nodes = [
+    envelope, envelope?.result, envelope?.meta, envelope?.meta?.agentMeta,
+    envelope?.result?.meta, envelope?.result?.meta?.agentMeta,
+  ].filter((value) => value && typeof value === 'object' && !Array.isArray(value));
+  const codes = nodes.flatMap((node) => [node.code, node.error?.code, node.error?.type,
+    node.error?.kind, node.error?.reason])
+    .filter((value) => typeof value === 'string').map((value) => value.toLowerCase());
+  if (codes.some((code) => TEXT_CONTEXT_ERROR_CODES.has(code))
+    || nodes.some((node) => typeof node.error?.message === 'string'
+      && TEXT_CONTEXT_ERROR_MESSAGE.test(node.error.message))) {
+    throw Object.assign(new Error('OpenClaw Gateway text inference exceeded the model context limit'), {
+      code: 'MODEL_CONTEXT_LIMIT',
+    });
+  }
+  if (codes.includes('model_output_incomplete') || nodes.some((node) => node.status === 'incomplete'
+    || [node.finish_reason, node.finishReason, node.stopReason, node.choices?.[0]?.finish_reason]
+      .some((reason) => TEXT_LENGTH_FINISH_REASONS.has(reason)))) {
+    throw Object.assign(new Error('OpenClaw Gateway text inference output is incomplete'), {
+      code: 'MODEL_OUTPUT_INCOMPLETE',
+    });
+  }
+}
+
+function assertSerializedGatewayTextCapacity(value) {
+  let envelope;
+  try {
+    envelope = JSON.parse(String(value ?? ''));
+  } catch {
+    return;
+  }
+  assertGatewayTextCapacity(envelope);
+}
+
 function extractGatewayText(stdout) {
   const text = String(stdout ?? '').trim();
   let envelope;
@@ -283,6 +324,7 @@ function extractGatewayText(stdout) {
   } catch {
     throw new Error('OpenClaw Gateway returned invalid JSON');
   }
+  assertGatewayTextCapacity(envelope);
   if (typeof envelope?.status === 'string' && envelope.status !== 'ok') {
     const detail = findText(envelope.error ?? envelope.message ?? envelope.result) ?? envelope.status;
     throw new Error(`OpenClaw Gateway agent run ${envelope.status}: ${redact(detail)}`);
@@ -432,8 +474,8 @@ export function createOpenClawClient({
     },
 
     async runText({ prompt, model, thinking, timeoutMs = 180_000, signal }) {
-      if (typeof prompt !== 'string' || prompt.length === 0 || prompt.length > 30_000) {
-        throw new RangeError('prompt must contain between 1 and 30000 characters');
+      if (typeof prompt !== 'string' || prompt.length === 0) {
+        throw new RangeError('prompt must be a non-empty string');
       }
       const configuration = currentModelApi();
       const resolvedModel = validatedModelRef(model, configuration.textModel, 'textModel');
@@ -477,8 +519,18 @@ export function createOpenClawClient({
             timeout: timeoutMs + 45_000,
             maxBuffer: 10 * 1024 * 1024,
           }, signal);
-          const result = await resolvedAsyncRunner(nodePath, args, processOptions);
+          let result;
+          try {
+            result = await resolvedAsyncRunner(nodePath, args, processOptions);
+          } catch (error) {
+            // A runner message can contain the failed command/prompt; trust only its code.
+            assertGatewayTextCapacity({ code: error?.code });
+            throw error;
+          }
           if (result.error || result.status !== 0) {
+            assertGatewayTextCapacity({ code: result.error?.code });
+            assertSerializedGatewayTextCapacity(result.stdout);
+            assertSerializedGatewayTextCapacity(result.stderr);
             const detail = redact(failureDetail(result));
             throw new Error(`OpenClaw Gateway text inference failed: ${detail}`);
           }

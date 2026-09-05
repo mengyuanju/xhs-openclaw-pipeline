@@ -27,6 +27,34 @@ test('control plane client sends image claims only when called', async () => {
   assert.equal(calls[1].init.method, 'GET');
 });
 
+test('claim body timeouts propagate instead of pretending the queue is empty', async () => {
+  const timeout = new DOMException('response body timed out', 'TimeoutError');
+  const client = createControlPlaneClient({
+    baseUrl: 'http://127.0.0.1:4310',
+    fetchImpl: async () => ({
+      ok: true, status: 200, headers: new Headers({ 'Content-Type': 'application/json' }),
+      json: async () => { throw timeout; },
+    }),
+  });
+  await assert.rejects(client.claimCopy('node-a'), (error) => error === timeout);
+});
+
+test('claims reject malformed successful responses but accept an explicit empty queue', async () => {
+  for (const body of ['{"data":', '{}', 'null', '<html>unavailable</html>']) {
+    const client = createControlPlaneClient({
+      baseUrl: 'http://127.0.0.1:4310',
+      fetchImpl: async () => new Response(body, {
+        headers: { 'Content-Type': body.startsWith('<') ? 'text/html' : 'application/json' },
+      }),
+    });
+    await assert.rejects(client.claimCopy('node-a'), { code: 'INVALID_CONTROL_PLANE_RESPONSE' });
+  }
+  const client = createControlPlaneClient({
+    baseUrl: 'http://127.0.0.1:4310', fetchImpl: async () => Response.json({ data: null }),
+  });
+  assert.equal(await client.claimCopy('node-a'), null);
+});
+
 test('control plane client surfaces structured stale execution conflicts', async () => {
   const client = createControlPlaneClient({
     baseUrl: 'http://127.0.0.1:4310',

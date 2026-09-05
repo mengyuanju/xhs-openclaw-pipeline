@@ -240,6 +240,16 @@ describe('post output contract', () => {
     assert.throws(() => parsePostOutput(JSON.stringify(input), options), /body.*400.*600/iu);
   });
 
+  it('reports the exact production range even beyond the legacy body limits', () => {
+    for (const length of [199, 799]) {
+      const input = { ...validPost(), body: 'git pull\n'.repeat(100).slice(0, length) };
+      assert.throws(
+        () => parsePostOutput(JSON.stringify(input), { query: 'Git怎么配置SSH拉取代码' }),
+        new RegExp(`body must contain between 400 and 600 characters; received ${length}`, 'u'),
+      );
+    }
+  });
+
   it('rejects a title that copies the Query or uses a question form', () => {
     const input = editorialPost();
     const query = '自行车活鱼桶 装水防晃 技巧';
@@ -370,6 +380,9 @@ describe('post prompt', () => {
     assert.match(prompt, /imagePlan.*第一项.*hero/u);
     assert.match(prompt, /固定说明只约束机器可解析的返回结构/u);
     assert.match(prompt, /实体科普 \| 推荐 \| 盘点 \| 对比测评/);
+    assert.match(prompt, /headline.{0,15}18.{0,15}subtitle.{0,15}30/u);
+    assert.match(prompt, /checklist.{0,30}40.{0,30}其他.{0,30}30/u);
+    assert.match(prompt, /英文字母、数字、标点、空格和换行/u);
   });
 
   it('passes a fixed untrusted research snapshot without granting it instruction authority', () => {

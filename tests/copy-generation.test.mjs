@@ -7,6 +7,7 @@ import {
   CopyGenerationRejectedError,
   CopyGenerationTransportError,
   CopyGenerationUnchangedError,
+  createLivePost,
   generateCopy,
   toCopyGenerationResponse,
 } from '../src/copy-generation.mjs';
@@ -478,6 +479,61 @@ describe('standalone copy generation', () => {
     assert.match(textPrompts[1], /租房桌面低成本整理/u);
     assert.match(textPrompts[1], /正文目标480～540字/u);
     assert.doesNotMatch(textPrompts[1], /结构化写作步骤/u);
+  });
+
+  it('gives measured length guidance for code-heavy bodies and preserves accepted fields', async () => {
+    const draft = { ...createMockPost(3), body: 'git pull\n'.repeat(100).slice(0, 799) };
+    const prompts = [];
+    const generated = await createLivePost({
+      async runText({ prompt }) {
+        prompts.push(prompt);
+        return { model: 'fake-model', rawText: JSON.stringify(prompts.length === 1 ? draft : {
+          body: '文'.repeat(500),
+        }) };
+      },
+    }, { query: 'Git怎么配置SSH拉取代码' }, { imageCount: 3 });
+    assert.equal(prompts.length, 2);
+    assert.match(prompts[1], /当前正文为799个可见字符/u);
+    assert.match(prompts[1], /至少删减349个字符/u);
+    assert.match(prompts[1], /英文字母、数字、标点、空格和换行/u);
+    assert.match(prompts[1], /只返回.*body/u);
+    assert.doesNotMatch(prompts[1], /与上一版字段完全一致/u);
+    assert.equal(generated.post.title, draft.title);
+    assert.equal(generated.post.body.length, 500);
+    assert.deepEqual(generated.post.imagePlan, draft.imagePlan);
+  });
+
+  it('uses the merged post when a body-only repair reveals a later image error', async () => {
+    const draft = { ...createMockPost(3), body: '文'.repeat(799) };
+    const validImages = structuredClone(draft.imagePlan);
+    draft.imagePlan[1].bullets[0] = '长'.repeat(31);
+    const responses = [draft, { body: '文'.repeat(500) }, { imagePlan: validImages }];
+    const prompts = [];
+    const generated = await createLivePost({
+      async runText({ prompt }) {
+        prompts.push(prompt);
+        return { model: 'fake-model', rawText: JSON.stringify(responses[prompts.length - 1]) };
+      },
+    }, { query: 'Git怎么配置SSH拉取代码' }, { imageCount: 3 });
+    assert.ok(prompts[2].includes(draft.title));
+    assert.ok(prompts[2].includes(draft.imagePlan[1].headline));
+    assert.equal(generated.post.body.length, 500);
+    assert.deepEqual(generated.post.imagePlan, validImages);
+  });
+
+  it('reports the actual body length when all three generation attempts exceed the limit', async () => {
+    const lengths = [799, 713, 709];
+    let calls = 0;
+    await assert.rejects(createLivePost({
+      async runText() {
+        return { model: 'fake-model', rawText: JSON.stringify({
+          ...createMockPost(3), body: '文'.repeat(lengths[calls++]),
+        }) };
+      },
+    }, { query: 'Git怎么配置SSH拉取代码' }, { imageCount: 3 }),
+    (error) => error instanceof CopyGenerationContractError
+      && /正文必须控制在400～600字.*709/u.test(error.message));
+    assert.equal(calls, 3);
   });
 
   it('repairs only the rejected field and drops model-mutated source URLs', async () => {

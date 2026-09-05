@@ -8,6 +8,29 @@ import {
 
 const DEFAULT_TIMEOUT_MS = 180_000;
 const DEFAULT_MAX_TOKENS = 8_192;
+const CONTEXT_ERROR_CODES = new Set([
+  'model_context_limit', 'context_length_exceeded', 'context_window_exceeded',
+  'context_overflow', 'prompt_too_long',
+]);
+const CONTEXT_ERROR_MESSAGE = /maximum context length|\b(?:prompt|input) is too long\b|\binput exceeds the context window\b|\bcontext (?:window|length|limit) (?:is |was )?exceeded\b/iu;
+
+function assertTextCapacity(payload) {
+  // Inspect provider error/finish metadata only; assistant content is untrusted.
+  const error = payload?.error;
+  const codes = [error?.code, error?.type].filter((value) => typeof value === 'string')
+    .map((value) => value.toLowerCase());
+  if (codes.some((code) => CONTEXT_ERROR_CODES.has(code))
+    || (typeof error?.message === 'string' && CONTEXT_ERROR_MESSAGE.test(error.message))) {
+    throw Object.assign(new Error('Dots Chat Completions exceeded the model context limit'), {
+      code: 'MODEL_CONTEXT_LIMIT',
+    });
+  }
+  if (codes.includes('model_output_incomplete') || payload?.choices?.[0]?.finish_reason === 'length') {
+    throw Object.assign(new Error('Dots Chat Completions output is incomplete'), {
+      code: 'MODEL_OUTPUT_INCOMPLETE',
+    });
+  }
+}
 
 function requiredApiKey(value) {
   const apiKey = typeof value === 'string' ? value.trim() : '';
@@ -49,8 +72,8 @@ export function createDotsChatClient({
 
   return {
     async runText({ prompt, timeoutMs = DEFAULT_TIMEOUT_MS }) {
-      if (typeof prompt !== 'string' || prompt.length < 1 || prompt.length > 30_000) {
-        throw new RangeError('prompt must contain between 1 and 30000 characters');
+      if (typeof prompt !== 'string' || prompt.length < 1) {
+        throw new RangeError('prompt must be a non-empty string');
       }
       const secret = requiredApiKey(apiKey);
       let response;
@@ -74,15 +97,16 @@ export function createDotsChatClient({
       } catch {
         throw new Error('Dots Chat Completions network request failed');
       }
-      if (!response?.ok) {
-        const status = Number.isInteger(response?.status) ? response.status : 502;
-        throw new Error(`Dots Chat Completions failed with HTTP ${status}`);
-      }
       let payload;
       try {
         payload = await response.json();
       } catch {
-        throw new TypeError('Dots Chat Completions response is not valid JSON');
+        if (response?.ok) throw new TypeError('Dots Chat Completions response is not valid JSON');
+      }
+      assertTextCapacity(payload);
+      if (!response?.ok) {
+        const status = Number.isInteger(response?.status) ? response.status : 502;
+        throw new Error(`Dots Chat Completions failed with HTTP ${status}`);
       }
       return { rawText: responseContent(payload), model: configuredModel };
     },

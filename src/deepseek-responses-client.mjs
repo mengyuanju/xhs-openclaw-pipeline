@@ -2,6 +2,31 @@ import { tracedModelFetch } from './model-call-trace.mjs';
 
 const DEEPSEEK_RESPONSES_ENDPOINT = 'https://api.deepseek.com/responses';
 export const DEEPSEEK_SIMULATION_MODEL = 'deepseek-v4-pro';
+const CONTEXT_ERROR_CODES = new Set([
+  'model_context_limit', 'context_length_exceeded', 'context_window_exceeded',
+  'context_overflow', 'prompt_too_long',
+]);
+const CONTEXT_ERROR_MESSAGE = /maximum context length|\b(?:prompt|input) is too long\b|\binput exceeds the context window\b|\bcontext (?:window|length|limit) (?:is |was )?exceeded\b/iu;
+
+function assertTextCapacity(payload) {
+  // Do not infer capacity from generated text, HTTP status or token usage.
+  const error = payload?.error;
+  const codes = [error?.code, error?.type].filter((value) => typeof value === 'string')
+    .map((value) => value.toLowerCase());
+  if (codes.some((code) => CONTEXT_ERROR_CODES.has(code))
+    || (typeof error?.message === 'string' && CONTEXT_ERROR_MESSAGE.test(error.message))) {
+    throw Object.assign(new Error('DeepSeek Responses exceeded the model context limit'), {
+      code: 'MODEL_CONTEXT_LIMIT',
+    });
+  }
+  if (codes.includes('model_output_incomplete') || payload?.status === 'incomplete'
+    || payload?.choices?.[0]?.finish_reason === 'length'
+    || (Array.isArray(payload?.output) && payload.output.some((item) => item?.status === 'incomplete'))) {
+    throw Object.assign(new Error('DeepSeek Responses did not complete'), {
+      code: 'MODEL_OUTPUT_INCOMPLETE',
+    });
+  }
+}
 
 function requiredApiKey(value) {
   const apiKey = typeof value === 'string' ? value.trim() : '';
@@ -238,7 +263,10 @@ export function createDeepSeekResponsesClient({
   }
 
   async function createResponse({ prompt, timeoutMs = 180_000, webSearch = false }) {
-    if (typeof prompt !== 'string' || prompt.length < 1 || prompt.length > 30_000) {
+    if (typeof prompt !== 'string' || prompt.length < 1) {
+      throw new RangeError('prompt must be a non-empty string');
+    }
+    if (webSearch && prompt.length > 30_000) {
       throw new RangeError('prompt must contain between 1 and 30000 characters');
     }
     let response;
@@ -265,15 +293,16 @@ export function createDeepSeekResponsesClient({
     } catch {
       throw new Error('DeepSeek Responses network request failed');
     }
-    if (!response?.ok) {
-      const status = Number.isInteger(response?.status) ? response.status : 502;
-      throw new Error(`DeepSeek Responses failed with HTTP ${status}`);
-    }
     let payload;
     try {
       payload = await response.json();
     } catch {
-      throw new TypeError('DeepSeek Responses response is not valid JSON');
+      if (response?.ok) throw new TypeError('DeepSeek Responses response is not valid JSON');
+    }
+    assertTextCapacity(payload);
+    if (!response?.ok) {
+      const status = Number.isInteger(response?.status) ? response.status : 502;
+      throw new Error(`DeepSeek Responses failed with HTTP ${status}`);
     }
     if (payload?.status !== 'completed') {
       throw new Error(`DeepSeek Responses did not complete (${String(payload?.status ?? 'unknown')})`);

@@ -12,6 +12,7 @@ import { findImageRecoveryRun, imageRecoveryRunIds, loadUploadedImages, saveChec
 
 const COPY_PROGRESS = Object.freeze({
   QUERY_REVIEW: 5,
+  KNOWLEDGE_MATCH: 12,
   RESEARCH: 20,
   ORIGINAL_GENERATION: 45,
   ORIGINAL_REVIEW: 70,
@@ -27,32 +28,6 @@ function publishedPrompt(snapshot, kind) {
   const prompt = snapshot.prompts?.[kind];
   if (!prompt?.content) throw new Error(`published ${kind} prompt is unavailable on control plane`);
   return prompt.content;
-}
-
-function copyKnowledgeText(snapshot) {
-  const sections = snapshot.knowledge
-    .filter((item) => item.kind === 'COPY')
-    .map((item) => {
-      if (typeof item.content === 'string') return item.content;
-      if (typeof item.content?.text === 'string') return item.content.text;
-      if (typeof item.content?.summary === 'string') return item.content.summary;
-      return '';
-    })
-    .filter(Boolean);
-  return sections.join('\n\n').slice(0, 8_000);
-}
-
-function taskWithKnowledge(task, snapshot) {
-  const knowledge = copyKnowledgeText(snapshot);
-  if (!knowledge) return task;
-  const existing = String(task.input?.referenceText ?? '').trim();
-  return {
-    ...task,
-    input: {
-      ...task.input,
-      referenceText: [existing, `中心知识库：\n${knowledge}`].filter(Boolean).join('\n\n').slice(0, 12_000),
-    },
-  };
 }
 
 function visualReference(snapshot) {
@@ -95,24 +70,23 @@ export async function checkExecutorReady({
   return { health, workRoot };
 }
 
-export async function executeCopyClaim({ claim, controlPlane, environment = process.env }) {
-  const { execution, task } = claim;
+export async function executeCopyClaim({ claim, controlPlane, environment = process.env, client }) {
+  const { execution } = claim;
   const snapshot = execution.snapshot;
   const settings = productionSettings(snapshot);
-  const client = createCopyGenerationClient({ modelApi: settings.modelApi ?? {}, environment });
-  const sourceTask = taskWithKnowledge(snapshot.task, snapshot);
   const generated = await generateCopy({
-    client,
-    task: sourceTask,
+    client: client ?? createCopyGenerationClient({ modelApi: settings.modelApi ?? {}, environment }),
+    task: snapshot.task,
+    copyKnowledge: snapshot.knowledge ?? [],
     systemPrompt: publishedPrompt(snapshot, 'TEXT_SYSTEM'),
     imageCount: snapshot.task.requestedImageCount,
     autoReviseOnReject: false,
     textReviewEnabled: false,
-    onStageChange: async (stage) => controlPlane.updateProgress(execution.id, {
+    onStageChange: async (stage, details = {}) => controlPlane.updateProgress(execution.id, {
       stage,
       progressPercent: COPY_PROGRESS[stage] ?? 0,
-      message: `正在执行文案阶段：${stage}`,
-      details: {},
+      message: stage === 'KNOWLEDGE_MATCH' ? '正在匹配优秀文案案例' : `正在执行文案阶段：${stage}`,
+      details,
     }),
   });
   const result = toCopyGenerationResponse({

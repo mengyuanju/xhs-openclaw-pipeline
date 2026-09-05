@@ -12,7 +12,7 @@
 2. `taskJudgement.admitted` 必须为 `true`；`demandLevel` 和 `primaryType` 必须使用下方枚举。
 3. `platform.target` 必须为 `小红书`，`platform.expressionType` 必须为 `信息型`，`platform.iconDictionary` 必须为空对象；没有平台样本时，`sampleEvidence` 使用 `not_provided`。
 4. `tags` 必须包含 3–8 个字符串，每项以 `#` 开头且不含空格。
-5. {{DELIVERY_IMAGE_COUNT_RULE}} `imagePlan` 第一项的 `kind` 必须为 `hero`；其余项的 `kind` 从 `steps`、`checklist`、`comparison`、`detail`、`summary` 中选择。每项必须包含非空的 `headline`、`subtitle`、`bullets` 和 `prompt`；`bullets` 必须包含 2–5 个字符串。
+5. {{DELIVERY_IMAGE_COUNT_RULE}} `imagePlan` 第一项的 `kind` 必须为 `hero`；其余项的 `kind` 从 `steps`、`checklist`、`comparison`、`detail`、`summary` 中选择。每项必须包含非空的 `headline`、`subtitle`、`bullets` 和 `prompt`；`headline` 最多18个可见字符，`subtitle` 最多30个可见字符；`bullets` 必须包含2–5个字符串，`checklist` 每条最多40个可见字符，其他类型每条最多30个可见字符；`prompt` 为10–1000个可见字符。所有长度均按可见字符逐个计算，英文字母、数字、标点、空格和换行都计入，不能把英文单词或一整行代码算作一个字。配图要点用简短说明表达，完整长命令放在正文中，并计入正文长度。
 6. `sources` 必须是 URL 字符串数组，只能使用任务数据中 `referenceUrls` 或 `webResearch.sources` 已提供的 URL；没有可用来源时返回空数组。
 7. `expressionReferences`、`riskFlags` 和 `unverifiedClaims` 必须是字符串数组；`fabricatedExperience` 必须为 `false`。
 
