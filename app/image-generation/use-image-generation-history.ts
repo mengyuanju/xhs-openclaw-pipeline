@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { apiRequest } from '../components/api-client';
 
 const HISTORY_URL = '/api/image-generations?limit=50';
-const RUNNING_HISTORY_POLL_MS = 2_500;
+const RUNNING_HISTORY_POLL_MS = 30_000;
 
 export type ImageGenerationHistoryRecord = {
   runId: string;

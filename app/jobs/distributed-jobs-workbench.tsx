@@ -142,7 +142,7 @@ export function DistributedJobsWorkbench({
   const hasActiveTasks = useMemo(() => tasks.some((task) => ACTIVE_STATES.has(task.state)), [tasks]);
   useEffect(() => {
     if (!hasActiveTasks) return undefined;
-    const timer = window.setInterval(() => { void refresh({ silent: true }); }, 5_000);
+    const timer = window.setInterval(() => { void refresh({ silent: true }); }, 30_000);
     return () => window.clearInterval(timer);
   }, [hasActiveTasks, refresh]);
 

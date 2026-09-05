@@ -132,7 +132,7 @@ export function BatchCopyGenerationWorkbench() {
     if (!hasRecoveredRunningJob || !selectedBatchId) return undefined;
     const intervalId = window.setInterval(() => {
       void loadReviewQueue(selectedBatchId, true);
-    }, 2_500);
+    }, 30_000);
     return () => window.clearInterval(intervalId);
   }, [hasRecoveredRunningJob, loadReviewQueue, selectedBatchId]);
 

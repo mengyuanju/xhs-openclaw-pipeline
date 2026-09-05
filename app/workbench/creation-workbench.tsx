@@ -239,7 +239,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
 
   useEffect(() => {
     void refresh();
-    const timer = window.setInterval(() => { void refresh({ silent: true }); }, 5_000);
+    const timer = window.setInterval(() => { void refresh({ silent: true }); }, 30_000);
     return () => window.clearInterval(timer);
   }, [refresh]);
 
