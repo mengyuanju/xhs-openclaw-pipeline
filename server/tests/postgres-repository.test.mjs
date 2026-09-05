@@ -30,15 +30,16 @@ function taskRow(overrides = {}) {
   };
 }
 
-test('task creation keeps creator and selected copy executor separate', async () => {
+test('task creation keeps ownership but leaves copy execution unassigned', async () => {
   const queries = [];
   const client = {
     async query(sql, values) {
       queries.push({ sql: String(sql), values });
-      if (String(sql).includes('SELECT id, last_seen_at')) {
-        return { rows: [{ id: 'node-b', online: true }] };
-      }
-      if (String(sql).includes('INSERT INTO tasks')) return { rows: [taskRow()] };
+      if (String(sql).includes('INSERT INTO tasks')) return { rows: [taskRow({
+        copy_executor_node_id: null,
+        current_stage: 'COPY_QUEUED',
+        progress_message: '等待文案执行机领取',
+      })] };
       return { rows: [] };
     },
     release() {},
@@ -49,17 +50,17 @@ test('task creation keeps creator and selected copy executor separate', async ()
 
   const created = await repository.createTasks({
     nodeId: 'node-a',
-    copyExecutorNodeId: 'node-b',
     createdByUserId: 'admin',
     tasks: [{ query: '指定远端执行机' }],
   });
   const insert = queries.find((query) => query.sql.includes('INSERT INTO tasks'));
 
   assert.equal(created[0].createdByNodeId, 'node-a');
-  assert.equal(created[0].copyExecutorNodeId, 'node-b');
+  assert.equal(created[0].copyExecutorNodeId, null);
   assert.equal(created[0].createdByUserId, 'admin');
-  assert.deepEqual(insert.values.slice(3), ['node-a', 'node-b', 'admin']);
-  assert.match(insert.sql, /VALUES \(\$1, \$2, \$3, \$4, \$5, \$6\)/u);
+  assert.deepEqual(insert.values.slice(3), ['node-a', 'admin']);
+  assert.doesNotMatch(insert.sql, /copy_executor_node_id/u);
+  assert.match(insert.sql, /'COPY_QUEUED', '等待文案执行机领取'/u);
   assert.equal(queries.at(-1).sql, 'COMMIT');
 });
 

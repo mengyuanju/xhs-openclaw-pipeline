@@ -13,7 +13,7 @@ COPY_QUEUED -> COPY_RUNNING -> COPY_REVIEW_PENDING
       |              |
       |              +-> COPY_FAILED -> COPY_QUEUED（人工重试）
       |
-      + 指定文案执行机按自身容量并发执行
+      + 任一空闲文案执行机按自身容量从共享队列领取
 
 COPY_REVIEW_PENDING --审核指定 copyRevisionId--> IMAGE_QUEUED
 IMAGE_QUEUED --任意已启用图片能力的空闲节点原子领取--> IMAGE_RUNNING
@@ -23,9 +23,9 @@ IMAGE_RUNNING -> DELIVERY_REVIEW_PENDING -> COMPLETED
       +-> COPY_REVIEW_PENDING（第 3 次失败：生图3次失败，等待人工审核）
 ```
 
-文案任务不会被非指定机器领取。创建任务时，中心服务分别记录 `createdByNodeId` 和用户选择的 `copyExecutorNodeId`；执行代理只领取分配给自己的 `COPY_QUEUED`。图片任务无创建机优先级。
+创建任务时，中心服务只记录创建来源和账号归属，不设置 `copyExecutorNodeId`。未领取任务保持 `COPY_QUEUED`（界面显示“待文案执行”）；任一执行代理在自身 `COPY` 运行数小于注册的 `copyConcurrency` 时，都可从共享队列按任务 ID 原子领取。领取成功后中心才写入实际 `copyExecutorNodeId`。图片任务同样无创建机优先级。
 
-`COPY_RUNNING` 和 `COPY_FAILED` 均支持人工重试。中心服务从其它在线执行机中随机选择一台（最近 90 秒内有活动，排除当前绑定机器），在同一事务中作废旧执行、更新 `copyExecutorNodeId` 并进入 `COPY_QUEUED`；任务创建者及创建时间保持不变。没有其它在线执行机时返回 `NO_ALTERNATIVE_COPY_EXECUTOR`，不修改任务或旧执行。个人作业中心与全部文案任务列表均提供重试入口；管理员可以重试全部任务，其余角色只能重试自己的任务。列表重试使用最新配置，旧版详情中的复用快照选项同样会重新分配文案执行机。
+`COPY_RUNNING` 和 `COPY_FAILED` 均支持人工重试。中心服务在同一事务中作废旧执行、清空 `copyExecutorNodeId` 并重新进入共享 `COPY_QUEUED`；任务创建者及创建时间保持不变，不要求当时已有其它在线执行机。个人作业中心与全部文案任务列表均提供重试入口；管理员可以重试全部任务，其余角色只能重试自己的任务。列表重试使用最新配置，旧版详情中的复用快照选项也会回到共享队列。
 
 每轮人工审核通过后，生图最多执行 3 次（首次 + 最多 2 次自动重试）。只有整次执行在 OpenClaw 内部重试结束后仍失败，才记 1 次；内部模型重试和失败回报的网络重发不额外计数。每次失败仍保留 `task_executions` 和 `image_runs` 的 `FAILED` 历史及脱敏错误。
 

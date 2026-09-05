@@ -24,7 +24,7 @@ type DistributedTask = {
   requestedImageCount: 'auto' | number;
   state: TaskState;
   createdByNodeId: string;
-  copyExecutorNodeId: string;
+  copyExecutorNodeId: string | null;
   currentCopyRevisionId: number | null;
   currentImageRunId: string | null;
   currentExecutionId: string | null;
@@ -59,7 +59,7 @@ type TaskDetail = DistributedTask & {
 };
 
 const STATE_LABELS: Record<TaskState, string> = {
-  COPY_QUEUED: '准备中',
+  COPY_QUEUED: '待文案执行',
   COPY_RUNNING: '文案生成中',
   COPY_REVIEW_PENDING: '文案待审核',
   COPY_FAILED: '文案失败',
@@ -165,7 +165,6 @@ export function DistributedJobsWorkbench({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           nodeId,
-          copyExecutorNodeId: nodeId,
           tasks: queries.map((query) => ({
             query,
             input: {},
@@ -174,7 +173,7 @@ export function DistributedJobsWorkbench({
         }),
       });
       event.currentTarget.reset();
-      setMessage(`已创建 ${queries.length} 条远端任务，本机执行代理会按顺序生成文案。`);
+      setMessage(`已创建 ${queries.length} 条远端任务并加入共享文案队列。`);
       await refresh({ silent: true });
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : '任务创建失败');
@@ -229,7 +228,7 @@ export function DistributedJobsWorkbench({
     if (!await confirm({
       title: resumeImages ? '从失败步骤继续生图？' : '重新执行任务？',
       description: retryCopy
-        ? `会作废旧执行，随机绑定其它在线文案执行机并进入它的待执行队列，${useLatestConfig ? '使用当前最新提示词、知识库和生产配置' : '复用上次配置快照'}。`
+        ? `会作废旧执行并回到共享文案队列，等待任一有空闲容量的执行机领取，${useLatestConfig ? '使用当前最新提示词、知识库和生产配置' : '复用上次配置快照'}。`
         : useLatestConfig
         ? '会作废旧执行并使用当前最新提示词、知识库和生产配置。旧执行的迟到结果将被拒绝。'
         : resumeImages ? '保留已完成的规划、图片、验收和上传结果，由原执行机继续未完成步骤。剩余模型调用会产生费用。'
@@ -245,7 +244,7 @@ export function DistributedJobsWorkbench({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ useLatestConfig }),
       });
-      setMessage(retryCopy ? '任务已随机绑定其它在线文案执行机，进入该执行机的待执行队列。'
+      setMessage(retryCopy ? '任务已回到共享文案队列，等待空闲执行机领取。'
         : resumeImages ? '任务已等待原执行机从失败步骤继续。' : '任务已重新加入队列。');
       await refresh({ silent: true });
     } catch (retryError) {
@@ -272,7 +271,7 @@ export function DistributedJobsWorkbench({
         <div className="field full">
           <label htmlFor="distributed-queries">选题 Query</label>
           <textarea className="textarea" id="distributed-queries" name="queries" required maxLength={50_100} placeholder={'每行一个选题；支持单条或批量创建\n例如：租房桌面怎么低成本整理？'} />
-          <small>创建后立即写入远端中心；本机执行代理将严格按任务 ID 顺序逐条生成文案。</small>
+          <small>创建后立即写入远端中心；所有空闲执行机会按任务 ID 顺序从共享队列领取。</small>
         </div>
         <div className="field">
           <label htmlFor="distributed-image-count">配图页数</label>
@@ -282,10 +281,6 @@ export function DistributedJobsWorkbench({
             <option value="4">4 页</option>
             <option value="5">5 页</option>
           </select>
-        </div>
-        <div className="field distributed-node-field">
-          <label>文案执行节点</label>
-          <code>{nodeId}</code>
         </div>
         <div className="field full inline">
           <button className="button primary" type="submit" disabled={busy}>
@@ -314,7 +309,7 @@ export function DistributedJobsWorkbench({
                 <td className="mono" data-label="ID">#{task.id}</td>
                 <td className="query-cell" data-label="Query">{task.query}</td>
                 <td data-label="状态"><span className={`pill${isStale(task) || isImageRetryExhausted(task) ? ' pill-rejected' : ''}`}>{isImageRetryExhausted(task) ? IMAGE_RETRY_EXHAUSTED_LABEL : STATE_LABELS[task.state]}</span></td>
-                <td className="mono" data-label="节点">{task.copyExecutorNodeId}</td>
+                <td className="mono" data-label="节点">{task.copyExecutorNodeId ?? '待领取'}</td>
                 <td data-label="阶段 / 进度"><div className="distributed-progress"><span>{task.currentStage || '—'} · {task.progressPercent}%</span><small>{isStale(task) ? '长时间无进度，可人工重新执行' : task.progressMessage}</small></div></td>
                 <td data-label="耗时"><Clock3 aria-hidden="true" size={13} /> {elapsed(task)}</td>
                 <td data-label="操作"><button className="button small" type="button" onClick={() => { void openTask(task.id); }}>查看 / 审核</button></td>

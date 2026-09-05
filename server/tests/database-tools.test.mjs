@@ -95,6 +95,16 @@ test('task AI disclosure migration adds a default-on boolean without rewriting t
   assert.doesNotMatch(migration.sql, /UPDATE|DELETE|TRUNCATE|DROP/u);
 });
 
+test('shared copy queue migration unassigns only waiting copy tasks and replaces the queue index', async () => {
+  const migration = (await loadMigrations()).find((item) => item.id === '0010_shared_copy_queue');
+  assert.ok(migration);
+  assert.match(migration.sql, /ALTER COLUMN copy_executor_node_id DROP NOT NULL/u);
+  assert.match(migration.sql, /copy_executor_node_id = NULL/u);
+  assert.match(migration.sql, /WHERE state = 'COPY_QUEUED'/u);
+  assert.match(migration.sql, /ON public\.tasks\(id\) WHERE state = 'COPY_QUEUED'/u);
+  assert.doesNotMatch(migration.sql, /DELETE|TRUNCATE|DROP TABLE/u);
+});
+
 test('failed upgrades roll back the enclosing schema-and-data transaction', async () => {
   const queries = [];
   const client = { query: async (sql) => {

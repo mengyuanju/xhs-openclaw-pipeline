@@ -30,7 +30,6 @@ import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { apiRequest } from '../components/api-client';
 import { IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
 import { parseQueryBatch } from '../../src/control-plane/query-batch.mjs';
-import { selectCopyExecutor } from '../../src/control-plane/copy-executor-selection.mjs';
 import { imageExecutorLabel } from '../../src/control-plane/image-executor-label.mjs';
 import { TaskReviewDialog } from './task-review-dialog';
 
@@ -40,7 +39,7 @@ type DistributedTask = {
   id: number;
   query: string;
   state: TaskState;
-  copyExecutorNodeId: string;
+  copyExecutorNodeId: string | null;
   imageExecutorNodeId?: string | null;
   imageExecutorNodeName?: string | null;
   createdByUserId: string | null;
@@ -68,7 +67,7 @@ type ExecutorNode = {
 type TaskPage = { items: DistributedTask[]; total: number; limit: number; offset: number };
 
 const STATE_LABELS: Record<TaskState, string> = {
-  COPY_QUEUED: '待执行',
+  COPY_QUEUED: '待文案执行',
   COPY_RUNNING: '文案生成中',
   COPY_REVIEW_PENDING: '待文案审核',
   COPY_FAILED: '文案生成失败',
@@ -98,7 +97,7 @@ const STAGE_LABELS: Record<string, string> = {
   ALIGNING: '图片校验与对齐',
   QUALITY_CHECK: '图片质检',
   FINALIZING: '图片整理',
-  COPY_QUEUED: '待执行',
+  COPY_QUEUED: '待文案执行',
   COPY_RUNNING: '文案生成中',
   COPY_REVIEW_PENDING: '待文案审核',
   COPY_FAILED: '文案生成失败',
@@ -112,6 +111,11 @@ const STAGE_LABELS: Record<string, string> = {
 
 function stageLabel(task: DistributedTask) {
   return task.currentStage ? STAGE_LABELS[task.currentStage] ?? STATE_LABELS[task.state] : STATE_LABELS[task.state];
+}
+
+function copyExecutorLabel(task: DistributedTask, nodes: ExecutorNode[]) {
+  if (!task.copyExecutorNodeId) return task.state === 'COPY_QUEUED' ? '待领取' : '—';
+  return nodes.find((node) => node.id === task.copyExecutorNodeId)?.name ?? task.copyExecutorNodeId;
 }
 
 const STALE_AFTER_MS = 30 * 60_000;
@@ -155,7 +159,6 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
   const [createError, setCreateError] = useState('');
   const queryBatch = useMemo(() => parseQueryBatch(queryText), [queryText]);
   const [imageCount, setImageCount] = useState('auto');
-  const [targetNodeId, setTargetNodeId] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -227,7 +230,6 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
       const lastPage = Math.max(1, Math.ceil(taskPage.total / PAGE_SIZE));
       if (page > lastPage) setPage(lastPage);
       setNodes(nextNodes);
-      setTargetNodeId((current) => nextNodes.some((node) => node.online && node.id === current) ? current : '');
       setError('');
     } catch (caught) {
       if (!silent) setError(caught instanceof Error ? caught.message : '任务读取失败');
@@ -245,8 +247,6 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
 
   const visibleTasks = tasks;
 
-  const onlineNodes = useMemo(() => nodes.filter((node) => node.online), [nodes]);
-  const selectedExecutor = selectCopyExecutor(nodes, targetNodeId);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
@@ -265,19 +265,17 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
     if (!['COPY_RUNNING', 'COPY_FAILED'].includes(task.state)) return;
     if (!await confirm({
       title: '重新生成这条文案？',
-      description: '任务会随机绑定其它在线文案执行机，使用最新提示词、知识库和生产配置进入新执行机的待执行队列。正在进行的旧执行将作废。',
+      description: '任务会回到共享文案队列，使用最新提示词、知识库和生产配置，等待任一有空闲容量的执行机领取。正在进行的旧执行将作废。',
       confirmLabel: '重试',
     })) return;
     setActingTaskId(task.id);
     try {
-      const queuedTask = await apiRequest<DistributedTask>(apiPath(`/v1/tasks/${task.id}/retry`), {
+      await apiRequest<DistributedTask>(apiPath(`/v1/tasks/${task.id}/retry`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ useLatestConfig: true }),
       });
-      const executorName = nodes.find((node) => node.id === queuedTask.copyExecutorNodeId)?.name
-        || queuedTask.copyExecutorNodeId;
-      setMessage(`任务 #${task.id} 已重新绑定 ${executorName}，进入该执行机的文案待执行队列。`);
+      setMessage(`任务 #${task.id} 已回到共享文案队列，等待空闲执行机领取。`);
       setError('');
       await refresh({ silent: true });
     } catch (caught) {
@@ -348,10 +346,6 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
     event.preventDefault();
     if (creating) return;
     const { queries, error: validationError } = queryBatch;
-    if (!selectedExecutor) {
-      setCreateError('当前没有可分配的在线执行机，请先完整启动至少一台执行机。');
-      return;
-    }
     if (validationError) {
       setCreateError(validationError);
       return;
@@ -366,7 +360,6 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           nodeId,
-          copyExecutorNodeId: selectedExecutor.id,
           tasks: queries.map((query) => ({
             query,
             input: {},
@@ -380,7 +373,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
       setSearchInput('');
       setSearchKeyword('');
       if (activeView !== 'PERSONAL') router.push('/workbench/personal');
-      setMessage(`已创建 ${queries.length} 条笔记并分配给 ${selectedExecutor.name}；该执行机空闲后会从第一条开始依次生成文案。`);
+      setMessage(`已创建 ${queries.length} 条笔记并加入共享文案队列，空闲执行机会按队列顺序领取。`);
       await refresh({ silent: true });
     } catch (caught) {
       setCreateError(caught instanceof Error ? caught.message : '笔记创建失败');
@@ -405,7 +398,6 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
           <Dialog open={createOpen} onOpenChange={(open) => {
             if (creating) return;
             if (open) {
-              setTargetNodeId('');
               void refresh({ silent: true });
             }
             setCreateOpen(open);
@@ -418,13 +410,10 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
                 <span className="section-kicker">Create notes</span>
                 <DialogTitle>创建 Query 作业</DialogTitle>
                 <DialogDescription>
-                  可同时录入多条 Query。任务归属当前账号，由所选执行机按创建顺序逐条生成文案。
+                  可同时录入多条 Query。任务归属当前账号，并进入共享队列等待空闲文案执行机领取。
                 </DialogDescription>
               </div>
               <form className="workbench-create-form" onSubmit={createTasks}>
-                {onlineNodes.length === 0 && <div className="notice error" role="alert">
-                  当前没有在线执行机。执行机只有完成中心服务、工作目录和 OpenClaw 就绪检查后才会上线。
-                </div>}
                 <div className="field">
                   <label htmlFor="workbench-query-text">笔记选题（Query）</label>
                   <textarea
@@ -448,18 +437,6 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
                 {createError && <div className="notice error" role="alert">{createError}</div>}
                 <div className="workbench-create-options">
                   <div className="field">
-                    <label htmlFor="workbench-copy-executor">文案执行机</label>
-                    <Select value={selectedExecutor?.id ?? ''} onValueChange={setTargetNodeId} disabled={creating || onlineNodes.length === 0}>
-                      <SelectTrigger id="workbench-copy-executor" aria-describedby="workbench-executor-help"><SelectValue placeholder="暂无在线执行机" /></SelectTrigger>
-                      <SelectContent>
-                        {onlineNodes.map((node) => <SelectItem key={node.id} value={node.id}>
-                          {node.name}（待执行 {node.copyQueuedCount} / 执行中 {node.copyRunningCount}）
-                        </SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                    <p className="workbench-query-help" id="workbench-executor-help">默认选择文案任务最少的在线执行机，可手动调整。</p>
-                  </div>
-                  <div className="field">
                     <label htmlFor="workbench-image-count">配图页数</label>
                     <Select value={imageCount} onValueChange={setImageCount} disabled={creating}>
                       <SelectTrigger id="workbench-image-count"><SelectValue /></SelectTrigger>
@@ -476,7 +453,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
                   <span aria-live="polite">已识别 {queryBatch.queries.length} 条 Query，按输入顺序加入队列。</span>
                   <div>
                     <DialogClose asChild><button className="button" type="button" disabled={creating}>取消</button></DialogClose>
-                    <button className="button primary" type="submit" disabled={creating || !selectedExecutor || Boolean(queryBatch.error)}>
+                    <button className="button primary" type="submit" disabled={creating || Boolean(queryBatch.error)}>
                       {creating ? <><LoaderCircle className="animate-spin" size={16} />正在创建…</> : <>创建并加入队列</>}
                     </button>
                   </div>
@@ -523,7 +500,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
                 </td>
                 <td className="mono" data-label={executorColumnLabel}>{activeView === 'IMAGE_WORK'
                   ? imageExecutorLabel(task)
-                  : nodes.find((node) => node.id === task.copyExecutorNodeId)?.name ?? task.copyExecutorNodeId}</td>
+                  : copyExecutorLabel(task, nodes)}</td>
                 {activeView === 'MANUAL_ARCHIVE' && <td className="mono" data-label="生图执行机">{imageExecutorLabel(task)}</td>}
                 <td data-label="开始时间">{timeLabel(task.executionStartedAt)}</td>
                 <td data-label="阶段 / 进度">

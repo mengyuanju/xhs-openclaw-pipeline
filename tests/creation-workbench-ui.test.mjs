@@ -81,13 +81,15 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(workbench, /const \{ queries, error: validationError \} = queryBatch/u);
   assert.match(workbench, /已识别 \{queryBatch.queries.length\} 条 Query/u);
   assert.match(workbench, /中文逗号（，）、英文逗号（,）/u);
-  assert.match(workbench, /disabled=\{creating \|\| !selectedExecutor \|\| Boolean\(queryBatch.error\)\}/u);
+  assert.match(workbench, /disabled=\{creating \|\| Boolean\(queryBatch.error\)\}/u);
   assert.match(workbench, /createError && <div className="notice error" role="alert"/u);
   assert.doesNotMatch(workbench, /queryRows|nextQueryKey|添加一条 Query|workbench-remove-query/u);
   assert.match(workbench, /tasks: queries\.map\(\(query\)/u);
-  assert.match(workbench, /copyExecutorNodeId: selectedExecutor\.id/u);
+  assert.doesNotMatch(workbench, /copyExecutorNodeId:\s*selectedExecutor\.id|selectedExecutor|selectCopyExecutor/u);
   assert.match(workbench, /apiPath\('\/v1\/nodes'\)/u);
-  assert.match(workbench, /当前没有在线执行机/u);
+  assert.match(workbench, /共享文案队列/u);
+  assert.match(workbench, /待领取/u);
+  assert.doesNotMatch(workbench, /workbench-copy-executor|当前没有在线执行机/u);
   assert.match(workbench, /创建并加入队列/u);
   assert.doesNotMatch(workbench, /role="tablist"|role="tab"/u);
   assert.match(styles, /\.workbench-create-dialog\s*\{/u);

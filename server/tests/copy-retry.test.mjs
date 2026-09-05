@@ -5,7 +5,7 @@ import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 
 const executionId = '44444444-4444-4444-8444-444444444444';
 
-function retryFixture({ state = 'COPY_RUNNING', replacement = 'copy-new' } = {}) {
+function retryFixture({ state = 'COPY_RUNNING' } = {}) {
   const snapshot = { task: { id: 41, query: '文案重试' }, prompts: { TEXT_SYSTEM: { version: 2 } } };
   const task = {
     id: 41, query: '文案重试', state, input: {}, requested_image_count: 'auto',
@@ -26,13 +26,6 @@ function retryFixture({ state = 'COPY_RUNNING', replacement = 'copy-new' } = {})
       queries.push({ sql, values });
       if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(sql)) return { rows: [] };
       if (sql.includes('SELECT * FROM tasks WHERE id')) return { rows: [{ ...task }] };
-      if (sql.includes('SELECT id FROM executor_nodes')) {
-        assert.deepEqual(values, ['copy-old']);
-        assert.match(sql, /id <> \$1/u);
-        assert.match(sql, /last_seen_at >= now\(\) - interval '90 seconds'/u);
-        assert.match(sql, /ORDER BY random\(\) LIMIT 1/u);
-        return { rows: replacement ? [{ id: replacement }] : [] };
-      }
       if (sql.includes('FROM task_executions e')) {
         return { rows: [{ ...execution, current_execution_id: task.current_execution_id, task_state: task.state }] };
       }
@@ -44,14 +37,14 @@ function retryFixture({ state = 'COPY_RUNNING', replacement = 'copy-new' } = {})
         return { rows: [] };
       }
       if (sql.includes('UPDATE tasks SET')) {
-        assert.match(sql, /copy_executor_node_id = \$4/u);
+        assert.match(sql, /copy_executor_node_id = NULL/u);
         assert.match(sql, /current_execution_id = NULL/u);
         assert.match(sql, /execution_started_at = NULL/u);
         assert.match(sql, /finished_at = NULL, error = NULL/u);
         assert.equal(values[0], task.id);
         Object.assign(task, {
           state: values[1], current_stage: values[1], pending_snapshot: values[2],
-          copy_executor_node_id: values[3], current_execution_id: null,
+          copy_executor_node_id: null, current_execution_id: null,
           progress_percent: 0, execution_started_at: null, finished_at: null, error: null,
         });
         return { rows: [{ ...task }] };
@@ -67,11 +60,11 @@ function retryFixture({ state = 'COPY_RUNNING', replacement = 'copy-new' } = {})
 
 for (const state of ['COPY_RUNNING', 'COPY_FAILED']) {
   for (const useLatestConfig of [false, true]) {
-    test(`${state} retry rebinds its queue with ${useLatestConfig ? 'latest' : 'original'} configuration`, async () => {
+    test(`${state} retry returns to the shared queue with ${useLatestConfig ? 'latest' : 'original'} configuration`, async () => {
       const { repository, execution, snapshot, queries } = retryFixture({ state });
       const result = await repository.retryTask(41, { useLatestConfig });
       assert.equal(result.state, 'COPY_QUEUED');
-      assert.equal(result.copyExecutorNodeId, 'copy-new');
+      assert.equal(result.copyExecutorNodeId, null);
       assert.equal(result.createdByNodeId, 'creator-node');
       assert.equal(result.createdByUserId, 'alice');
       assert.equal(result.createdAt, '2026-09-04T01:00:00Z');
@@ -81,23 +74,13 @@ for (const state of ['COPY_RUNNING', 'COPY_FAILED']) {
       assert.equal(result.finishedAt, null);
       assert.equal(result.error, null);
       assert.deepEqual(queries.find(({ sql }) => sql.includes('UPDATE tasks SET')).values,
-        [41, 'COPY_QUEUED', useLatestConfig ? null : snapshot, 'copy-new']);
+        [41, 'COPY_QUEUED', useLatestConfig ? null : snapshot]);
       assert.equal(execution.status, state === 'COPY_RUNNING' ? 'ABANDONED' : 'FAILED');
       assert.equal(queries.at(-1).sql, 'COMMIT');
       await assert.rejects(repository.retryTask(41), { code: 'INVALID_TASK_STATE' });
     });
   }
 
-  test(`${state} retry leaves task and execution intact without another online node`, async () => {
-    const { repository, task, execution, queries } = retryFixture({ state, replacement: null });
-    const before = structuredClone({ task, execution });
-    await assert.rejects(repository.retryTask(41, { useLatestConfig: true }), {
-      code: 'NO_ALTERNATIVE_COPY_EXECUTOR',
-    });
-    assert.deepEqual({ task, execution }, before);
-    assert.equal(queries.some(({ sql }) => /^\s*UPDATE /u.test(sql)), false);
-    assert.equal(queries.at(-1).sql, 'ROLLBACK');
-  });
 }
 
 test('a replaced copy execution cannot report progress, success or failure over the new queue', async () => {
@@ -114,7 +97,7 @@ test('a replaced copy execution cannot report progress, success or failure over 
   assert.equal(queries.filter(({ sql }) => /^\s*UPDATE /u.test(sql)).length, writesBefore);
 });
 
-test('copy claims only select the queue bound to the requesting node', async () => {
+test('copy claims select the shared queue without executor ownership filtering', async () => {
   const selections = [];
   const client = {
     release() {},
@@ -128,12 +111,12 @@ test('copy claims only select the queue bound to the requesting node', async () 
   await repository.claimCopy('copy-old');
   await repository.claimCopy('copy-new');
   assert.deepEqual(selections.map(({ values }) => values), [
-    ['COPY_QUEUED', 'copy-old', 1], ['COPY_QUEUED', 'copy-new', 1],
+    ['COPY_QUEUED', 1], ['COPY_QUEUED', 1],
   ]);
-  for (const { sql } of selections) assert.match(sql, /copy_executor_node_id = \$2/u);
+  for (const { sql } of selections) assert.doesNotMatch(sql, /copy_executor_node_id/u);
 });
 
-test('copy retries reject tasks outside running and failed states before choosing a node', async () => {
+test('copy retries reject tasks outside running and failed states before changing the queue', async () => {
   for (const state of ['COPY_QUEUED', 'COPY_REVIEW_PENDING', 'IMAGE_QUEUED', 'MANUAL_ARCHIVE', 'CANCELLED']) {
     const { repository, queries } = retryFixture({ state });
     await assert.rejects(repository.retryTask(41), { code: 'INVALID_TASK_STATE' });

@@ -93,7 +93,6 @@ test('control plane HTTP exposes node registration and batched task creation', a
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         nodeId: 'node-a',
-        copyExecutorNodeId: 'node-b',
         tasks: [{ query: '选题' }],
       }),
     });
@@ -101,7 +100,7 @@ test('control plane HTTP exposes node registration and batched task creation', a
     assert.deepEqual((await created.json()).data, [{ id: 1, state: 'COPY_QUEUED' }]);
   });
   assert.deepEqual(calls.map(([name]) => name), ['node', 'tasks']);
-  assert.equal(calls[1][1].copyExecutorNodeId, 'node-b');
+  assert.equal('copyExecutorNodeId' in calls[1][1], false);
 });
 
 test('control plane HTTP returns a structured stale execution conflict', async () => {

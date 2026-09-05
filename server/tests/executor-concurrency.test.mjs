@@ -22,11 +22,16 @@ function fixture({ capacity = 3, running = 1, receipt, enabled = true, fresh = f
       if (sql.includes('SELECT * FROM executor_nodes')) return { rows: [node] };
       if (sql.includes('SELECT * FROM execution_claim_requests')) return { rows: receipt ? [receipt] : [] };
       if (sql.includes('COUNT(*)') && sql.includes('task_executions')) return { rows: [{ count: running }] };
-      if (sql.includes('FOR UPDATE SKIP LOCKED')) return { rows: [1, 2, 3].slice(0, args[2]).map(id => ({ id,
-        current_copy_revision_id: id, ai_disclosure_enabled: id % 2 === 1,
-        pending_snapshot: fresh ? null : { task: { id } } })) };
+      if (sql.includes('FOR UPDATE SKIP LOCKED')) {
+        const selectionLimit = args.length === 2 ? args[1] : args[2];
+        return { rows: [1, 2, 3].slice(0, selectionLimit).map(id => ({ id,
+          current_copy_revision_id: id, ai_disclosure_enabled: id % 2 === 1,
+          pending_snapshot: fresh ? null : { task: { id } } })) };
+      }
       if (sql.includes('INSERT INTO task_executions')) executions.set(args[0], { id: args[0], task_id: args[1], kind: args[2], status: 'RUNNING', snapshot: args[6] });
-      if (sql.includes('UPDATE tasks SET')) return { rows: [{ id: args[4], state: args[0] }] };
+      if (sql.includes('UPDATE tasks SET')) return { rows: [{
+        id: args[4], state: args[0], copy_executor_node_id: args[2] === 'COPY' ? args[6] : null,
+      }] };
       if (sql.includes('SELECT * FROM task_executions WHERE id =')) return { rows: [executions.get(args[0])] };
       return { rows: [] };
     },
@@ -41,7 +46,7 @@ test('batch claims use remaining center capacity and save an atomic receipt', as
   assert.equal(result.requestId, requestId);
   assert.equal(result.claims.length, 2);
   assert.equal(new Set(result.claims.map(c => c.execution.id)).size, 2);
-  assert.deepEqual(calls.find(c => c.sql.includes('FOR UPDATE SKIP LOCKED')).args, ['COPY_QUEUED', 'node-a', 2]);
+  assert.deepEqual(calls.find(c => c.sql.includes('FOR UPDATE SKIP LOCKED')).args, ['COPY_QUEUED', 2]);
   assert.ok(calls.find(c => c.sql.includes('INSERT INTO execution_claim_requests')));
   assert.equal(calls.at(-1).sql, 'COMMIT');
 });
@@ -53,6 +58,9 @@ test('each batch reads shared configuration once and preserves individual task s
       : repo.claimImageBatch({ nodeId: 'node-a', limit: 3, requestId: randomUUID() }));
     assert.deepEqual(result.claims.map(claim => claim.execution.snapshot.task.id), [1, 2, 3]);
     assert.deepEqual(result.claims.map(claim => claim.execution.snapshot.task.aiDisclosureEnabled), [true, false, true]);
+    if (kind === 'COPY') {
+      assert.ok(result.claims.every((claim) => claim.task.copyExecutorNodeId === 'node-a'));
+    }
     for (const source of ['FROM global_settings', 'FROM prompt_templates', 'FROM knowledge_items']) {
       assert.equal(calls.filter(c => c.sql.includes(source)).length, 1);
     }

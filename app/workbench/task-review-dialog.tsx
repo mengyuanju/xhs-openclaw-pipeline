@@ -48,7 +48,7 @@ type TaskDetail = {
   query: string;
   aiDisclosureEnabled: boolean;
   state: TaskState;
-  copyExecutorNodeId: string;
+  copyExecutorNodeId: string | null;
   currentCopyRevisionId: number | null;
   currentImageRunId: string | null;
   currentExecutionId: string | null;
@@ -88,7 +88,7 @@ type TaskDetail = {
 };
 
 const STATE_LABELS: Record<TaskState, string> = {
-  COPY_QUEUED: '待执行',
+  COPY_QUEUED: '待文案执行',
   COPY_RUNNING: '文案生成中',
   COPY_REVIEW_PENDING: '待文案审核',
   COPY_FAILED: '文案生成失败',
@@ -117,7 +117,7 @@ const STAGE_LABELS: Record<string, string> = {
   ALIGNING: '图片校验与对齐',
   QUALITY_CHECK: '图片质检',
   FINALIZING: '图片整理',
-  COPY_QUEUED: '待执行',
+  COPY_QUEUED: '待文案执行',
   COPY_RUNNING: '文案生成中',
   COPY_REVIEW_PENDING: '待文案审核',
   COPY_FAILED: '文案生成失败',
@@ -319,7 +319,7 @@ export function TaskReviewDialog({
               <dl className="workbench-review-facts">
                 <div className="wide"><dt>Query 原文</dt><dd>{detail.query}</dd></div>
                 <div><dt>当前状态</dt><dd><span className={`pill ${isImageRetryExhausted(detail) ? 'pill-rejected' : `workbench-state-${detail.state.toLowerCase()}`}`}>{isImageRetryExhausted(detail) ? IMAGE_RETRY_EXHAUSTED_LABEL : STATE_LABELS[detail.state]}</span></dd></div>
-                <div><dt>文案执行机</dt><dd className="mono">{detail.copyExecutorNodeId}</dd></div>
+                <div><dt>文案执行机</dt><dd className="mono">{detail.copyExecutorNodeId ?? '待领取'}</dd></div>
                 <div><dt>创建时间</dt><dd>{dateTime(detail.createdAt)}</dd></div>
                 <div><dt>开始时间</dt><dd>{dateTime(detail.executionStartedAt)}</dd></div>
                 <div><dt>当前阶段</dt><dd>{stageLabel(detail)}</dd></div>
