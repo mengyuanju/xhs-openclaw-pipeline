@@ -33,6 +33,7 @@ const TEXT_LENGTH_FINISH_REASONS = new Set(['length', 'max_tokens', 'max_output_
 let textInferenceTail = Promise.resolve();
 
 async function runTextExclusively(operation) {
+  const queuedAt = Date.now();
   const previous = textInferenceTail.catch(() => undefined);
   let release;
   textInferenceTail = new Promise((resolve) => {
@@ -40,7 +41,7 @@ async function runTextExclusively(operation) {
   });
   await previous;
   try {
-    return await operation();
+    return await operation(Math.max(0, Date.now() - queuedAt));
   } finally {
     release();
   }
@@ -530,7 +531,7 @@ export function createOpenClawClient({
         throw new TypeError('OpenClaw session prefix is invalid');
       }
 
-      return runTextExclusively(async () => {
+      return runTextExclusively(async (queueWaitMs) => {
         const sessionId = `${normalizedSessionPrefix}-${randomUUID()}`;
         const directory = await mkdtemp(join(tmpdir(), 'xhs-openclaw-text-'));
         const messagePath = join(directory, 'message.txt');
@@ -582,6 +583,7 @@ export function createOpenClawClient({
             model: resolvedModel,
             thinking: resolvedThinking,
             execution: {
+              queueWaitMs,
               runtime: String(harnessRuntime),
               sessionId,
               runId: typeof parsed.envelope?.runId === 'string' ? parsed.envelope.runId : null,

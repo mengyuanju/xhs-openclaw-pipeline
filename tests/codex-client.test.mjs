@@ -60,6 +60,17 @@ test('vision attaches normalized copies in an isolated directory and cleans them
   assert.equal((await sharp(input).metadata()).width, 20);
 });
 
+test('structured text writes the business output schema and keeps the public rawText response', async (t) => {
+  const outputSchema = { type: 'object', properties: { pages: { type: 'array', items: { type: 'string' } } }, required: ['pages'], additionalProperties: false };
+  const { client } = await fixture(t, async (_command, args) => {
+    const schema = JSON.parse(await readFile(args[args.indexOf('--output-schema') + 1], 'utf8'));
+    assert.deepEqual(schema, outputSchema);
+    return success({ pages: ['第一张'] });
+  });
+  const result = await client.runText({ prompt: 'plan', outputSchema });
+  assert.deepEqual(JSON.parse(result.rawText), { pages: ['第一张'] });
+});
+
 test('search needs an actual web_search event and produces the existing research snapshot', async (t) => {
   let searched = true;
   const answer = { summary: '官方资料说明测试方法。', results: [{ title: 'Official', url: 'https://www.nist.gov/testing', snippet: '测试依据' }] };
