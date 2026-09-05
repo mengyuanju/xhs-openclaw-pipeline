@@ -32,8 +32,9 @@ function initialDrafts(rows: any[]) {
 }
 
 function screeningSourceLabel(row: any) {
-  if (row.screeningSource === 'OPENCLAW') {
-    return row.screeningModel ? `OpenClaw · ${row.screeningModel}` : 'OpenClaw';
+  if (row.screeningSource === 'OPENCLAW' || row.screeningSource === 'CODEX') {
+    const label = row.screeningSource === 'CODEX' ? 'Codex' : 'OpenClaw';
+    return row.screeningModel ? `${label} · ${row.screeningModel}` : label;
   }
   if (row.screeningSource === 'EXCEL') return 'Excel';
   if (row.screeningSource === 'MANUAL') return '人工';
@@ -172,7 +173,7 @@ export function DemandScreeningPanel({
 
   return <section className="panel screening-panel" aria-labelledby="demand-screening-title">
     <div className="panel-head">
-      <div><h2 id="demand-screening-title">需求强度筛选与复核</h2><span className="subtle">OpenClaw 或 Excel 判定会自动带入；管理员可在入队前修正。</span></div>
+      <div><h2 id="demand-screening-title">需求强度筛选与复核</h2><span className="subtle">模型或 Excel 判定会自动带入；管理员可在入队前修正。</span></div>
       <StatusPill value={pendingScreeningRows === 0 ? 'SCREENED' : 'PENDING_SCREENING'} />
     </div>
 

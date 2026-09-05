@@ -28,6 +28,12 @@
 
 每一阶段先验证新增行为，再进入下一阶段；最终检查不覆盖既有未提交修改。
 
+## 完成情况
+
+六个实现阶段及无额度回归已完成，详见 `tasks/todo.md` 与 `docs/codex-exec-migration.md`。补充的安全决策：中心失败上报新增可选 `autoRetry`；Codex 已失败的分布式图片任务等待人工续跑，防止中心层重复提交结果未知的生成。旧中心缺少 `executionRetryControl` 能力时，Codex 执行器预检拒绝启动。原有断点续跑的中心接线缺口也已由现成回归测试定位并修复。
+
+真实模型调用、持续并发吞吐和生产部署没有执行，不能将本次代码交付表述为全部线上能力已获保证。
+
 ## 官方依据
 
 - [Codex 非交互模式](https://learn.chatgpt.com/docs/non-interactive-mode)：JSONL、JSON Schema、stdin、认证与沙箱。

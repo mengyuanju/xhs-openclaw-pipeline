@@ -42,7 +42,7 @@ export function QueueGenerationPanel({ maxTasks, timingStats }: { maxTasks: numb
         }),
       });
       setLaunchState('STARTED');
-      setMessage(`OpenClaw 后台生成已启动，本次最多处理 ${result.max} 条，同时生产 ${result.concurrency} 条。${estimatedBatchDurationMs === null
+      setMessage(`后台生成已启动，本次最多处理 ${result.max} 条，同时生产 ${result.concurrency} 条。${estimatedBatchDurationMs === null
         ? '首条完成后会自动形成估算。'
         : `预计总耗时约 ${formatDuration(estimatedBatchDurationMs)}。`}可在内容审核查看每条数据的预计完成时间。`);
     } catch (error) {
@@ -56,7 +56,7 @@ export function QueueGenerationPanel({ maxTasks, timingStats }: { maxTasks: numb
     : launchState === 'STARTED'
       ? '生成已启动'
       : boundedMax > 0
-        ? `启动 OpenClaw 生成（最多 ${boundedMax} 条）`
+        ? `启动后台生成（最多 ${boundedMax} 条）`
         : '没有可生成任务';
 
   return <section className="panel commit-panel generation-panel" aria-labelledby="queue-generation-title">

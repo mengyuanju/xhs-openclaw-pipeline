@@ -79,7 +79,7 @@ export function WebSearchSettingsPanel({ onSaved }: { onSaved?: () => Promise<vo
     {loading && <p className="subtle" role="status">正在读取搜索配置…</p>}
     {record && <p className="notice" role="status">
       {record.scope === 'local' ? '当前生效：' : '已保存的搜索服务：'}
-      {savedProvider === 'OPENCLAW' ? 'OpenClaw'
+      {savedProvider === 'OPENCLAW' ? '默认生成引擎'
         : savedProvider === 'DEEPSEEK' ? `DeepSeek · ${savedModel ?? '继承执行机模型（默认 Flash）'}`
           : '继承执行机环境（项目默认 DeepSeek Flash）'}
       {hasChanges && <span> · 有未保存的更改</span>}
@@ -95,7 +95,7 @@ export function WebSearchSettingsPanel({ onSaved }: { onSaved?: () => Promise<vo
           <SelectContent>
             <SelectItem value={INHERIT}>跟随默认配置（DeepSeek）</SelectItem>
             <SelectItem value="DEEPSEEK">DeepSeek 联网搜索（推荐）</SelectItem>
-            <SelectItem value="OPENCLAW">OpenClaw 联网搜索</SelectItem>
+            <SelectItem value="OPENCLAW">默认生成引擎联网搜索</SelectItem>
           </SelectContent>
         </Select>
         <small>可随时切换服务；跟随默认配置时，执行机环境设置优先。</small>

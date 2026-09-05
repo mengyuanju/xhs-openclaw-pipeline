@@ -55,10 +55,10 @@ export function ImportWorkbench({ initialBatch = null, timingStats }: { initialB
       setBatch(result);
       setActiveStep(2);
       const modelScreenedRows = result.rows.filter(
-        (row: any) => row.screeningSource === 'OPENCLAW',
+        (row: any) => ['CODEX', 'OPENCLAW'].includes(row.screeningSource),
       ).length;
       setMessage(modelScreenedRows > 0
-        ? `结构预检完成；OpenClaw 已自动判定 ${modelScreenedRows} 行，请复核后再入队。`
+        ? `结构预检完成；模型已自动判定 ${modelScreenedRows} 行，请复核后再入队。`
         : `已完成 ${result.totalRows} 行结构预检；现有 Excel 判定可继续人工复核。`);
       setMessageIsError(false);
       router.replace(`/imports?batchId=${result.id}`);
@@ -134,14 +134,14 @@ export function ImportWorkbench({ initialBatch = null, timingStats }: { initialB
               <span className="import-step-number" aria-hidden="true">2</span>
               <div className="import-step-copy">
                 <strong>上传填写好的文件</strong>
-                <span className="subtle">保存为 .xlsx 后选择文件，系统会先校验格式，再进行 OpenClaw 检测。</span>
+                <span className="subtle">保存为 .xlsx 后选择文件，系统会先校验格式，再进行模型检测。</span>
               </div>
             </div>
           </div>
           <div className="form-grid">
             <div className="field"><label htmlFor="batch-name">批次名称（可选）</label><input id="batch-name" className="input" name="name" maxLength={200} placeholder="如：8月收纳选题" /></div>
             <div className="field"><label htmlFor="excel-file">填写后的 Excel 文件</label><input id="excel-file" className="input file-input" name="file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required /></div>
-            <div className="field full inline"><button className="button primary" type="submit" disabled={busy}>{busy ? 'OpenClaw 检测中…' : '上传并调用 OpenClaw 检测'}</button><span className="subtle">未预筛选的有效行会调用文本模型，可能产生费用并延长上传时间。</span></div>
+            <div className="field full inline"><button className="button primary" type="submit" disabled={busy}>{busy ? '模型检测中…' : '上传并调用模型检测'}</button><span className="subtle">未预筛选的有效行会调用文本模型，消耗相应额度并延长上传时间。</span></div>
           </div>
         </form>
         {activeStep === 1 && messageNotice}

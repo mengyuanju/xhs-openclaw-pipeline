@@ -9,7 +9,7 @@ type StageReview = {
   decision?: 'PASS' | 'REJECT';
   summary?: string;
   issues?: ReviewIssue[];
-  source?: 'OPENCLAW' | 'MOCK' | 'COMPATIBILITY';
+  source?: 'CODEX' | 'OPENCLAW' | 'MOCK' | 'COMPATIBILITY';
   model?: string | null;
   reviewedAt?: string;
 };
@@ -20,6 +20,7 @@ type StageReviews = {
 };
 
 function sourceLabel(source: StageReview['source']) {
+  if (source === 'CODEX') return 'CODEX 独立模型';
   if (source === 'OPENCLAW') return 'OPENCLAW 独立模型';
   if (source === 'MOCK') return 'MOCK 模拟验证';
   if (source === 'COMPATIBILITY') return '兼容模式（未调用独立审核模型）';

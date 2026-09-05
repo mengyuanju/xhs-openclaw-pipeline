@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 
 import { apiRequest } from './api-client';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { WebSearchSettingsPanel } from '../settings/web-search-settings-panel';
 
 type Resource = 'prompts' | 'knowledge' | 'settings';
@@ -100,6 +101,8 @@ export function CentralDataWorkbench({ resource }: { resource: Resource }) {
     let value;
     try {
       value = JSON.parse(String(form.get('value') ?? '{}'));
+      const selected = String(form.get('agentProvider') ?? 'INHERIT');
+      value = { ...value, modelApi: { ...value.modelApi, agentProvider: selected === 'INHERIT' ? null : selected } };
     } catch {
       setError('生产配置必须是合法 JSON。');
       return;
@@ -169,8 +172,20 @@ export function CentralDataWorkbench({ resource }: { resource: Resource }) {
 
     {resource === 'settings' && <form className="panel" onSubmit={updateProduction} key={production?.version ?? 0}>
       <div className="panel-head"><div><span className="section-kicker">Remote settings</span><h2>生产配置 JSON</h2></div><Save size={18} /></div>
+      <div className="field">
+        <label htmlFor="central-agent-provider">生成引擎</label>
+        <Select name="agentProvider" disabled={busy || loading} defaultValue={production?.value?.modelApi?.agentProvider ?? 'INHERIT'}>
+          <SelectTrigger id="central-agent-provider"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="INHERIT">沿用执行机环境（项目默认 Codex）</SelectItem>
+            <SelectItem value="CODEX">Codex CLI（ChatGPT 订阅登录）</SelectItem>
+            <SelectItem value="OPENCLAW">OpenClaw（兼容回退）</SelectItem>
+          </SelectContent>
+        </Select>
+        <small>保存时以下 JSON 的 modelApi.agentProvider 以此选项为准。凭据仅在执行机管理；已有快照保持原配置，回切需选择“使用最新配置重新生成”。</small>
+      </div>
       <div className="field"><label htmlFor="central-production-settings">当前配置</label><textarea className="textarea central-json-editor" id="central-production-settings" name="value" required defaultValue={JSON.stringify(production?.value ?? {}, null, 2)} /></div>
-      <div className="inline"><button className="button primary" disabled={busy}>保存新版本</button><small>模型 API 密钥仍只通过执行机环境变量提供，不要写入这里。</small></div>
+      <div className="inline"><button className="button primary" disabled={busy || loading}>保存新版本</button><small>模型 API 密钥仍只通过执行机环境变量提供，不要写入这里。</small></div>
     </form>}
 
     {resource !== 'settings' && <section className="panel">
