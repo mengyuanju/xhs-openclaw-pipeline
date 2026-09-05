@@ -12,6 +12,7 @@ import { generateCopy, toCopyGenerationResponse } from '../copy-generation.mjs';
 import { createAgentClient as createOpenClawClient } from '../agent-client.mjs';
 import { generateStandaloneImages, retryStandaloneImageRun, standaloneImageRunDirectory } from '../standalone-image-generation.mjs';
 import { findImageRecoveryRun, imageRecoveryRunIds, loadUploadedImages, saveCheckpoint } from './image-checkpoints.mjs';
+import { executorConcurrency } from './config.mjs';
 
 const COPY_PROGRESS = Object.freeze({
   QUERY_REVIEW: 5,
@@ -199,6 +200,9 @@ export function createExecutorAgent({
   nodeId,
   nodeName = nodeId,
   imageWorkerEnabled = false,
+  copyConcurrency = 1,
+  imageConcurrency = 1,
+  concurrencyEnabled = false,
   workRoot = resolve('data/executor-work'),
   executeCopy = executeCopyClaim,
   executeImage = executeImageClaim,
@@ -208,8 +212,11 @@ export function createExecutorAgent({
 }) {
   if (!controlPlane) throw new TypeError('controlPlane client is required');
   if (typeof imageWorkerEnabled !== 'boolean') throw new TypeError('imageWorkerEnabled must be a boolean');
+  executorConcurrency(copyConcurrency, 'copyConcurrency');
+  executorConcurrency(imageConcurrency, 'imageConcurrency');
   let ready = false;
   const pendingFailures = new Map();
+  const activeExecutions = new Map();
 
   async function reportFailure(claim, error) {
     try {
@@ -223,7 +230,7 @@ export function createExecutorAgent({
 
   async function finishFailure(kind, { claim, error }) {
     await reportFailure(claim, error);
-    pendingFailures.delete(kind);
+    pendingFailures.delete(claim.execution.id);
     return {
       kind,
       taskId: claim.task.id,
@@ -233,21 +240,36 @@ export function createExecutorAgent({
     };
   }
 
-  async function claimAndExecute(kind) {
+  async function availability(kind) {
     if (!ready) throw new Error('executor is not ready; call prepare before claiming work');
-    if (kind === 'IMAGE' && !imageWorkerEnabled) return null;
-    // A failed report must be retried before claiming; the server still owns the
-    // RUNNING lease. Never regenerate content just to retry a status update.
-    if (pendingFailures.has(kind)) return finishFailure(kind, pendingFailures.get(kind));
     try { await availabilityCheck({ environment, controlPlane }); }
     catch (error) {
       if (!codexErrorCode(error)) throw error;
       return { kind, status: 'PAUSED', code: codexErrorCode(error), retryAt: error.retryAt ?? null };
     }
+    return null;
+  }
+
+  async function claimAndExecute(kind) {
+    if (!ready) throw new Error('executor is not ready; call prepare before claiming work');
+    if (kind === 'IMAGE' && !imageWorkerEnabled) return null;
+    const pending = [...pendingFailures.values()].find(failure => failure.kind === kind);
+    if (pending) return executeClaim(kind, pending.claim);
+    const paused = await availability(kind);
+    if (paused) return paused;
     const claim = kind === 'COPY'
       ? await controlPlane.claimCopy(nodeId)
       : await controlPlane.claimImage(nodeId);
     if (!claim) return null;
+    return executeClaim(kind, claim);
+  }
+
+  async function performClaim(kind, claim) {
+    const pending = pendingFailures.get(claim.execution.id);
+    if (pending) return finishFailure(kind, pending);
+    if (claim.execution.status && claim.execution.status !== 'RUNNING') {
+      return { kind, taskId: claim.task.id, executionId: claim.execution.id, status: 'ABANDONED' };
+    }
     try {
       await withModelCallTracing({ executionId: claim.execution.id, controlPlane }, async (tracedPlane) => {
         if (kind === 'COPY') {
@@ -258,10 +280,23 @@ export function createExecutorAgent({
       });
       return { kind, taskId: claim.task.id, executionId: claim.execution.id, status: 'SUCCEEDED' };
     } catch (error) {
-      const failure = { claim, error };
-      pendingFailures.set(kind, failure);
+      const failure = { kind, claim, error };
+      pendingFailures.set(claim.execution.id, failure);
       return finishFailure(kind, failure);
     }
+  }
+
+  function executeClaim(kind, claim) {
+    if (!ready) return Promise.reject(new Error('executor is not ready; call prepare before execution'));
+    if (!['COPY', 'IMAGE'].includes(kind) || (kind === 'IMAGE' && !imageWorkerEnabled)) {
+      return Promise.reject(new Error('execution kind is not enabled'));
+    }
+    const id = claim.execution.id;
+    if (activeExecutions.has(id)) return activeExecutions.get(id);
+    const running = Promise.resolve().then(() => performClaim(kind, claim))
+      .finally(() => activeExecutions.delete(id));
+    activeExecutions.set(id, running);
+    return running;
   }
 
   return {
@@ -274,19 +309,35 @@ export function createExecutorAgent({
         workRoot,
         environment,
       });
+      if (concurrencyEnabled && !result?.health?.capabilities?.executorConcurrency) {
+        throw new Error('请先更新中心服务：缺少 executorConcurrency 并发领取能力');
+      }
       ready = true;
       return result;
     },
 
     async register() {
       if (!ready) throw new Error('executor is not ready; call prepare before register');
-      return controlPlane.registerNode({ nodeId, name: nodeName, imageWorkerEnabled });
+      return controlPlane.registerNode({ nodeId, name: nodeName, imageWorkerEnabled, copyConcurrency, imageConcurrency });
     },
 
     async heartbeat() {
       if (!ready) throw new Error('executor is not ready; call prepare before heartbeat');
-      return controlPlane.registerNode({ nodeId, name: nodeName, imageWorkerEnabled });
+      return controlPlane.registerNode({ nodeId, name: nodeName, imageWorkerEnabled, copyConcurrency, imageConcurrency });
     },
+
+    async claimBatch(kind, { limit, requestId, reconcile = false }) {
+      if (!ready) throw new Error('executor is not ready; call prepare before claiming work');
+      if (kind === 'IMAGE' && !imageWorkerEnabled) return { requestId, claims: [] };
+      if (!['COPY', 'IMAGE'].includes(kind)) throw new TypeError('invalid execution kind');
+      // An uncertain claim may already own work. Reconcile it even while models are paused.
+      const paused = reconcile ? null : await availability(kind);
+      if (paused) return paused;
+      return kind === 'COPY'
+        ? controlPlane.claimCopyBatch({ nodeId, limit, requestId })
+        : controlPlane.claimImageBatch({ nodeId, limit, requestId });
+    },
+    executeClaim,
 
     runCopyOnce: () => claimAndExecute('COPY'),
     runImageOnce: () => claimAndExecute('IMAGE'),

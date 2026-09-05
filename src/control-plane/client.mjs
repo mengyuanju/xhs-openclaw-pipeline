@@ -71,6 +71,21 @@ export function createControlPlaneClient({
     return responseData(response);
   }
 
+  /** @param {'COPY'|'IMAGE'} kind @param {{nodeId: string, limit: number, requestId: string}} input */
+  async function claimBatch(kind, input) {
+    const result = await request(`/v1/executions/claim-${kind.toLowerCase()}-batch`, { method: 'POST', body: input });
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+    const valid = result?.requestId === input.requestId && Array.isArray(result.claims)
+      && result.claims.length <= input.limit && result.claims.every(({ task, execution } = {}) =>
+        Number.isSafeInteger(task?.id) && task.id > 0 && uuid.test(execution?.id)
+        && execution.taskId === task.id && execution.nodeId === input.nodeId && execution.kind === kind
+        && ['RUNNING', 'SUCCEEDED', 'FAILED', 'ABANDONED'].includes(execution.status));
+    if (!valid || new Set(result.claims.map(claim => claim.execution.id)).size !== result.claims.length) {
+      throw new ControlPlaneApiError(502, 'INVALID_CONTROL_PLANE_RESPONSE', '中心批量领取响应不完整，请使用原请求 ID 重试');
+    }
+    return result;
+  }
+
   return {
     health: () => request('/health'),
     registerNode: (input) => request('/v1/nodes', { method: 'POST', body: input }),
@@ -97,6 +112,8 @@ export function createControlPlaneClient({
     claimImage: (nodeId) => request('/v1/executions/claim-image', {
       method: 'POST', body: { nodeId },
     }),
+    claimCopyBatch: (input) => claimBatch('COPY', input),
+    claimImageBatch: (input) => claimBatch('IMAGE', input),
     updateProgress: (executionId, progress) => request(
       `/v1/executions/${executionId}/progress`,
       { method: 'PATCH', body: progress },
