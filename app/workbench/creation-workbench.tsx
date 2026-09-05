@@ -267,20 +267,22 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
   }
 
   async function retryCopy(task: DistributedTask) {
-    if (task.state !== 'COPY_FAILED') return;
+    if (!['COPY_RUNNING', 'COPY_FAILED'].includes(task.state)) return;
     if (!await confirm({
       title: '重新生成这条文案？',
-      description: '任务会使用最新提示词、知识库和生产配置重新进入原文案执行机队列。',
-      confirmLabel: '重新生文',
+      description: '任务会随机绑定其它在线文案执行机，使用最新提示词、知识库和生产配置进入新执行机的待执行队列。正在进行的旧执行将作废。',
+      confirmLabel: '重试',
     })) return;
     setActingTaskId(task.id);
     try {
-      await apiRequest(apiPath(`/v1/tasks/${task.id}/retry`), {
+      const queuedTask = await apiRequest<DistributedTask>(apiPath(`/v1/tasks/${task.id}/retry`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ useLatestConfig: true }),
       });
-      setMessage(`任务 #${task.id} 已重新加入文案生成队列。`);
+      const executorName = nodes.find((node) => node.id === queuedTask.copyExecutorNodeId)?.name
+        || queuedTask.copyExecutorNodeId;
+      setMessage(`任务 #${task.id} 已重新绑定 ${executorName}，进入该执行机的文案待执行队列。`);
       setError('');
       await refresh({ silent: true });
     } catch (caught) {
@@ -317,9 +319,10 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
   function taskActions(task: DistributedTask) {
     const busy = actingTaskId === task.id;
     const canDiscard = role === 'ADMIN' || task.createdByUserId === creatorUserId;
+    const canRetryCopy = canDiscard && ['COPY_RUNNING', 'COPY_FAILED'].includes(task.state);
     if (activeView === 'ALL_COPY') return <div className="workbench-row-actions">
       <button className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>
-      {task.state === 'COPY_FAILED' && <button className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重新生文</button>}
+      {canRetryCopy && <button className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</button>}
       {canDiscard && <button className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</button>}
     </div>;
     if (activeView === 'COPY_REVIEW') return <div className="workbench-row-actions">
@@ -335,7 +338,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
     </div>;
     return <div className="workbench-row-actions">
       <button className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>
-      {activeView === 'PERSONAL' && task.state === 'COPY_FAILED' && <button className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</button>}
+      {activeView === 'PERSONAL' && canRetryCopy && <button className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</button>}
       {canDiscard && <button className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</button>}
     </div>;
   }

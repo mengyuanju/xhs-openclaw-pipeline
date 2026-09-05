@@ -950,6 +950,21 @@ export class PostgresControlPlaneRepository {
       if (!isCopy && !isImage) {
         throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'only running or failed work can be retried');
       }
+      let copyExecutorNodeId = null;
+      if (isCopy) {
+        const executor = await client.query(`
+          SELECT id FROM executor_nodes
+          WHERE id <> $1 AND last_seen_at >= now() - interval '90 seconds'
+          ORDER BY random() LIMIT 1
+        `, [task.copy_executor_node_id]);
+        if (!executor.rows[0]) {
+          throw new ControlPlaneConflictError(
+            'NO_ALTERNATIVE_COPY_EXECUTOR',
+            '当前没有其它在线文案执行机，无法重新分配；请启动其它执行机后重试。',
+          );
+        }
+        copyExecutorNodeId = executor.rows[0].id;
+      }
       let snapshot = null;
       let sourceExecution = null;
       if (task.current_execution_id) {
@@ -993,15 +1008,18 @@ export class PostgresControlPlaneRepository {
         } };
       }
       const nextState = isCopy ? 'COPY_QUEUED' : 'IMAGE_QUEUED';
+      const values = [taskId, nextState, useLatestConfig ? null : snapshot];
+      if (isCopy) values.push(copyExecutorNodeId);
       const updated = await client.query(`
         UPDATE tasks SET
           state = $2, current_execution_id = NULL, current_stage = $2,
+          ${isCopy ? 'copy_executor_node_id = $4,' : ''}
           progress_percent = 0, progress_message = '等待重新执行',
           pending_snapshot = $3, execution_started_at = NULL,
           last_activity_at = now(), finished_at = NULL, error = NULL, updated_at = now()
         WHERE id = $1
         RETURNING *
-      `, [taskId, nextState, useLatestConfig ? null : snapshot]);
+      `, values);
       return taskFrom(updated.rows[0]);
     });
   }

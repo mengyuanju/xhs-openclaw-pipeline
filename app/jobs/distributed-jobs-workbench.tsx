@@ -232,9 +232,12 @@ export function DistributedJobsWorkbench({
   async function retryTask(useLatestConfig: boolean) {
     if (!selected || !RETRY_STATES.has(selected.state)) return;
     const resumeImages = !useLatestConfig && selected.state.startsWith('IMAGE_');
+    const retryCopy = selected.state.startsWith('COPY_');
     if (!await confirm({
       title: resumeImages ? '从失败步骤继续生图？' : '重新执行任务？',
-      description: useLatestConfig
+      description: retryCopy
+        ? `会作废旧执行，随机绑定其它在线文案执行机并进入它的待执行队列，${useLatestConfig ? '使用当前最新提示词、知识库和生产配置' : '复用上次配置快照'}。`
+        : useLatestConfig
         ? '会作废旧执行并使用当前最新提示词、知识库和生产配置。旧执行的迟到结果将被拒绝。'
         : resumeImages ? '保留已完成的规划、图片、验收和上传结果，由原执行机继续未完成步骤。剩余模型调用会产生费用。'
           : '会作废旧执行并复用上次配置快照。旧执行的迟到结果将被拒绝。',
@@ -249,7 +252,8 @@ export function DistributedJobsWorkbench({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ useLatestConfig }),
       });
-      setMessage(resumeImages ? '任务已等待原执行机从失败步骤继续。' : '任务已重新加入队列。');
+      setMessage(retryCopy ? '任务已随机绑定其它在线文案执行机，进入该执行机的待执行队列。'
+        : resumeImages ? '任务已等待原执行机从失败步骤继续。' : '任务已重新加入队列。');
       await refresh({ silent: true });
     } catch (retryError) {
       setError(retryError instanceof Error ? retryError.message : '重新执行失败');

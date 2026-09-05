@@ -25,6 +25,8 @@ IMAGE_RUNNING -> DELIVERY_REVIEW_PENDING -> COMPLETED
 
 文案任务不会被非指定机器领取。创建任务时，中心服务分别记录 `createdByNodeId` 和用户选择的 `copyExecutorNodeId`；执行代理只领取分配给自己的 `COPY_QUEUED`。图片任务无创建机优先级。
 
+`COPY_RUNNING` 和 `COPY_FAILED` 均支持人工重试。中心服务从其它在线执行机中随机选择一台（最近 90 秒内有活动，排除当前绑定机器），在同一事务中作废旧执行、更新 `copyExecutorNodeId` 并进入 `COPY_QUEUED`；任务创建者及创建时间保持不变。没有其它在线执行机时返回 `NO_ALTERNATIVE_COPY_EXECUTOR`，不修改任务或旧执行。个人作业中心与全部文案任务列表均提供重试入口；管理员可以重试全部任务，其余角色只能重试自己的任务。列表重试使用最新配置，旧版详情中的复用快照选项同样会重新分配文案执行机。
+
 每轮人工审核通过后，生图最多执行 3 次（首次 + 最多 2 次自动重试）。只有整次执行在 OpenClaw 内部重试结束后仍失败，才记 1 次；内部模型重试和失败回报的网络重发不额外计数。每次失败仍保留 `task_executions` 和 `image_runs` 的 `FAILED` 历史及脱敏错误。
 
 第 1、2 次失败回到 `IMAGE_QUEUED`，至少等待 5 秒后由原生图执行机再次领取，保留原配置快照，创建新执行 ID；原节点离线时等待，不转交其他节点。中心在已有 JSON 快照中写入 `imageRetry: { failedAttempts, nodeId }`，经 `pending_snapshot` 传递到下一次执行，进程重启不清零，无需改表。此预算按整次任务执行计数，不改变 OpenClaw 内部重试策略。

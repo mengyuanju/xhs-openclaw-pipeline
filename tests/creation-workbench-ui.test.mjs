@@ -55,10 +55,12 @@ test('all distributed task status displays distinguish exhausted image retries f
   }
 });
 
-test('personal copy failures expose retry using the existing guarded copy retry flow', async () => {
+test('running and failed copy tasks expose retry in personal and all-copy lists', async () => {
   const source = await readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8');
-  assert.match(source, /activeView === 'PERSONAL' && task.state === 'COPY_FAILED' && <button[^>]*disabled=\{busy\}[^>]*onClick=\{\(\) => \{ void retryCopy\(task\); \}\}[^>]*><RotateCcw[^>]*\/>重试<\/button>/u);
-  assert.match(source, /if \(task.state !== 'COPY_FAILED'\) return/u);
+  assert.match(source, /activeView === 'PERSONAL' && canRetryCopy && <button[^>]*disabled=\{busy\}[^>]*onClick=\{\(\) => \{ void retryCopy\(task\); \}\}[^>]*><RotateCcw[^>]*\/>重试<\/button>/u);
+  assert.match(source, /const canRetryCopy = canDiscard && \['COPY_RUNNING', 'COPY_FAILED'\]\.includes\(task.state\)/u);
+  assert.match(source, /activeView === 'ALL_COPY'[\s\S]*?\{canRetryCopy && <button/u);
+  assert.match(source, /if \(!\['COPY_RUNNING', 'COPY_FAILED'\]\.includes\(task.state\)\) return/u);
   assert.match(source, /if \(!await confirm\(/u);
   assert.match(source, /\/v1\/tasks\/\$\{task.id\}\/retry/u);
   assert.match(source, /useLatestConfig: true/u);
@@ -117,7 +119,7 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(workbench, /compatibilityTasks\s*\?\?/u);
   assert.match(workbench, /matchesWorkbenchView\(task, view, creatorUserId\)/u);
   assert.match(workbench, /workbench-pagination/u);
-  assert.match(workbench, />重新生文<\/button>/u);
+  assert.match(workbench, />重试<\/button>/u);
   assert.match(workbench, />废弃<\/button>/u);
   assert.match(workbench, />审核<\/button>/u);
   assert.match(workbench, />查看<\/button>/u);
