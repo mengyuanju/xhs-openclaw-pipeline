@@ -168,7 +168,7 @@ npm run db:upgrade -- --apply
 
 ### 每台执行机安装
 
-完整的新电脑安装、配置、验收和故障处理步骤见 [Windows 执行机部署指南](docs/windows-executor-deployment.md)。当前版本默认使用 Codex CLI 的 ChatGPT 登录，支持显式回切 OpenClaw；任务池和模型调用许可见 [执行机并发配置](docs/executor-concurrency.md)。
+当前 Codex 路径的工具安装、ChatGPT 登录、3/2 并发示例、启动和故障处理命令见 [Codex 执行机部署文档](docs/codex-executor-deployment.md)。包含 OpenClaw 回退路径的说明见 [Windows 执行机部署指南](docs/windows-executor-deployment.md)；任务池和模型调用许可见 [执行机并发配置](docs/executor-concurrency.md)。
 
 执行机需要 Node.js、项目依赖，以及当前生成引擎的本机授权；默认 Codex 的安装与 ChatGPT 登录见上方部署指南。以下是选择 OpenClaw 回退时的安装方式，Windows 可使用 [OpenClaw 官方安装器](https://docs.openclaw.ai/install)：
 
