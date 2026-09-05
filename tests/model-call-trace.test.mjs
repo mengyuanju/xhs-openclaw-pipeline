@@ -5,6 +5,8 @@ import { createDeepSeekResponsesClient } from '../src/deepseek-responses-client.
 import { createDotsChatClient } from '../src/dots-chat-client.mjs';
 import { createExecutorAgent } from '../src/executor/agent.mjs';
 import { createOpenClawClient } from '../src/openclaw.mjs';
+import { createCodexClient } from '../src/codex.mjs';
+import { runDeepSeekWebSearch } from '../src/deepseek-web-search.mjs';
 
 const meta = { provider: 'fake', operation: 'TEXT', prompt: '实际提示词', request: { model: 'fake' } };
 function fixture(executionId = 'execution-a') {
@@ -30,6 +32,38 @@ test('trace records start, exact prompt/raw response and failure without swallow
   assert.equal(f.records[1].response, '原始返回');
   assert.equal(f.records[1].stage, 'QUERY_REVIEW');
   assert.equal(f.records[3].error, 'transport failed');
+});
+
+test('Codex failed protocol parsing retains bounded redacted transport evidence without repeating the call', async () => {
+  const f = fixture();
+  let calls = 0;
+  const client = createCodexClient({ executable: process.execPath,
+    runtime: { run: action => action({ onSpawn() {} }) },
+    asyncRunner: async () => { calls++; return { status: 0, stdout: 'malformed-native-output',
+      stderr: 'Bearer private-token-123 transport failure' }; },
+  });
+  await f.run(() => assert.rejects(client.runText({ prompt: 'fixture' }), { code: 'MODEL_OUTPUT_INCOMPLETE' }));
+  const failure = f.records.at(-1);
+  assert.equal(failure.status, 'FAILED');
+  const response = JSON.parse(failure.response);
+  assert.equal(response.exitCode, 0);
+  assert.equal(response.stdout, 'malformed-native-output');
+  assert.match(response.stderr, /transport failure/);
+  assert.doesNotMatch(failure.response, /private-token-123/);
+  assert.equal(calls, 1);
+});
+
+test('production DeepSeek search retains malformed model JSON and marks semantic failure', async () => {
+  const f = fixture();
+  const payload = { status: 'completed', output: [{ type: 'web_search_call', status: 'completed' },
+    { type: 'message', content: [{ type: 'output_text', text: 'malformed secret-test-key' }] }] };
+  await f.run(() => assert.rejects(runDeepSeekWebSearch({ apiKey: 'secret-test-key', model: 'deepseek-v4-flash',
+    timeoutMs: 5000, fetchImpl: async () => Response.json(payload) }, { query: 'fixture' }), /not valid JSON/));
+  const record = f.records.at(-1);
+  assert.equal(record.status, 'FAILED');
+  assert.equal(record.operation, 'WEB_SEARCH');
+  assert.match(record.response, /malformed/);
+  assert.doesNotMatch(record.response, /secret-test-key/);
 });
 
 test('agent trace contexts keep parallel copy/image calls and stage updates isolated', async () => {

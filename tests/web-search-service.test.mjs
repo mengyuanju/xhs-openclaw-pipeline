@@ -90,6 +90,8 @@ test('DeepSeek replaces only search and produces the existing bounded research s
   assert.deepEqual(calls[0].body.tools, [{ type: 'web_search' }]);
   assert.deepEqual(calls[0].body.tool_choice, { type: 'web_search' });
   assert.equal(calls[0].body.max_output_tokens, 8192);
+  assert.equal(calls[0].body.text.format.type, 'json_schema');
+  assert.deepEqual(calls[0].body.text.format.schema.required, ['summary', 'sources']);
   assert.doesNotMatch(calls[0].init.body + JSON.stringify(snapshot), /test-search-secret/u);
 });
 
