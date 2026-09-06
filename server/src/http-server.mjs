@@ -216,10 +216,12 @@ function installRoutes(router, repository, storageRoot, analyzeCopy) {
     json(ctx, 200, await repository.recordModelCall(ctx.params.executionId, ctx.params.callId, requireJson(ctx)));
   });
   router.get('/v1/tasks/:taskId/model-calls', async (ctx) => {
+    requestActor(ctx, ['ADMIN']);
     await assertTaskAccess(ctx, repository);
     json(ctx, 200, await repository.listModelCalls(ctx.params.taskId, { limit: ctx.query.limit, offset: ctx.query.offset }));
   });
   router.get('/v1/tasks/:taskId/model-calls/:callId', async (ctx) => {
+    requestActor(ctx, ['ADMIN']);
     await assertTaskAccess(ctx, repository);
     json(ctx, 200, await repository.getModelCall(ctx.params.taskId, ctx.params.callId));
   });
@@ -264,8 +266,10 @@ function installRoutes(router, repository, storageRoot, analyzeCopy) {
     json(ctx, 200, await repository.taskCounts({ nodeId: ctx.query.nodeId }));
   });
   router.get('/v1/tasks/:taskId', async (ctx) => {
-    const { task } = await assertTaskAccess(ctx, repository);
-    json(ctx, 200, task);
+    const { task, actor } = await assertTaskAccess(ctx, repository);
+    // Execution snapshots include internal prompts and model configuration.
+    const { executions, ...reviewableTask } = task;
+    json(ctx, 200, actor.role === 'ADMIN' ? task : reviewableTask);
   });
   router.get('/v1/tasks/:taskId/archive', async (ctx) => {
     const { task } = await assertTaskAccess(ctx, repository);

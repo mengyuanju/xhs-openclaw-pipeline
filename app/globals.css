@@ -1116,6 +1116,15 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .workbench-executors > div { min-width: 0; display: grid; gap: 2px; }
 .workbench-row-actions { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .workbench-row-actions .button { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.workbench-task-actions { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.workbench-task-actions > .button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; padding-inline: 8px; }
+.workbench-task-actions > .workbench-action-menu-trigger { flex: 0 0 30px; width: 30px; min-height: 30px; padding: 0; }
+.workbench-action-menu { z-index: 70; min-width: 144px; max-width: calc(100vw - 24px); padding: 4px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); box-shadow: 0 6px 20px rgb(0 0 0 / .12); }
+.workbench-action-menu .button { display: flex; align-items: center; justify-content: flex-start; gap: 8px; width: 100%; min-height: 36px; padding: 8px 10px; border: 0; border-radius: 6px; background: transparent; box-shadow: none; text-align: left; }
+.workbench-action-menu .button[data-highlighted] { outline: none; background: var(--control-bg-muted); }
+.workbench-action-menu .button.danger { color: var(--red-dark); }
+.workbench-action-menu .button.danger[data-highlighted] { background: var(--control-ring); }
+.workbench-action-menu .button[data-disabled] { opacity: .45; cursor: not-allowed; }
 .workbench-ai-disclosure-toggle { position: relative; min-height: 36px; gap: 7px; padding: 0 9px; border: 1px solid #d5cec6; border-radius: 9px; background: #faf8f5; white-space: nowrap; transition: border-color .16s ease, background .16s ease, box-shadow .16s ease; }
 .workbench-ai-disclosure-toggle input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; }
 .workbench-ai-disclosure-switch { position: relative; width: 34px; height: 20px; flex: 0 0 auto; border: 1px solid #aaa29a; border-radius: 99px; background: #c8c1ba; transition: border-color .16s ease, background .16s ease, box-shadow .16s ease; }

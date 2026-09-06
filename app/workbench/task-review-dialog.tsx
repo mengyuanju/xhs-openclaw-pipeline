@@ -190,7 +190,7 @@ export function TaskReviewDialog({
   const [draft, setDraft] = useState<ReviewDraft | null>(null);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [aiDisclosureEnabled, setAiDisclosureEnabled] = useState(true);
+  const [aiDisclosureEnabled, setAiDisclosureEnabled] = useState(false);
   const [activeAssetIndex, setActiveAssetIndex] = useState<number | null>(null);
   const [error, setError] = useState('');
 
@@ -202,7 +202,8 @@ export function TaskReviewDialog({
       const next = await apiRequest<TaskDetail>(apiPath(`/v1/tasks/${taskId}`));
       setDetail(next);
       setDraft(draftFromRevision(currentRevision(next)));
-      setAiDisclosureEnabled(next.aiDisclosureEnabled !== false);
+      // Every copy review starts with an opt-in; completed tasks show their saved setting.
+      setAiDisclosureEnabled(next.state !== 'COPY_REVIEW_PENDING' && next.aiDisclosureEnabled === true);
       setError('');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '任务详情读取失败');
@@ -215,7 +216,7 @@ export function TaskReviewDialog({
     if (!taskId) {
       setDetail(null);
       setDraft(null);
-      setAiDisclosureEnabled(true);
+      setAiDisclosureEnabled(false);
       setActiveAssetIndex(null);
       setError('');
       return;
@@ -489,7 +490,7 @@ export function TaskReviewDialog({
               </section>}
             </>}
 
-            <ModelCallTrace key={detail.id} taskId={detail.id} />
+            {role === 'ADMIN' && <ModelCallTrace key={detail.id} taskId={detail.id} />}
           </div>
 
           <footer className="workbench-review-footer">

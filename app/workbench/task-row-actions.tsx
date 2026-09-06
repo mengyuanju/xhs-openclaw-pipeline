@@ -1,0 +1,40 @@
+'use client';
+
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
+import { Ellipsis } from 'lucide-react';
+import { Children, cloneElement, isValidElement, useRef, type ComponentProps, type ReactNode } from 'react';
+
+// Keep the first (primary) action visible; the remaining buttons retain their handlers and permissions.
+export function TaskRowActions({ taskId, busy, children }: {
+  taskId: number;
+  busy: boolean;
+  children: ReactNode;
+}) {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const [primaryAction, ...secondaryActions] = Children.toArray(children)
+    .filter(isValidElement<ComponentProps<'button'>>);
+
+  return <div className="workbench-task-actions">
+    {primaryAction}
+    {secondaryActions.length > 0 && <DropdownMenu.Root modal={false}>
+      <DropdownMenu.Trigger asChild>
+        <button ref={triggerRef} className="button small workbench-action-menu-trigger" type="button" disabled={busy}
+          aria-label={`任务 #${taskId} 的更多操作`} title="更多操作">
+          <Ellipsis size={16} aria-hidden="true" />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content className="workbench-action-menu" align="end" sideOffset={6} collisionPadding={12}
+          aria-label={`任务 #${taskId} 的操作`}>
+          {secondaryActions.map((action) => <DropdownMenu.Item key={action.key} asChild disabled={action.props.disabled}>
+            {cloneElement(action, { onClick: (event) => {
+              // ConfirmDialog must return focus to a button that survives menu dismissal.
+              triggerRef.current?.focus();
+              action.props.onClick?.(event);
+            } })}
+          </DropdownMenu.Item>)}
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>}
+  </div>;
+}

@@ -27,6 +27,9 @@ async function proxyRequest(
     throw new ApiError(403, 'FORBIDDEN', '当前账号尚未迁移到用户管理中心');
   }
   const routePath = `/${path.join('/')}`;
+  if (/^\/v1\/tasks\/[^/]+\/model-calls(?:\/|$)/u.test(routePath) && role !== 'ADMIN') {
+    throw new ApiError(403, 'FORBIDDEN', '仅管理员可查看模型执行链路');
+  }
   if (routePath === '/v1/tasks' && upstreamUrl.searchParams.has('createdByRole') && role !== 'ADMIN') {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可按创建者角色筛选任务');
   }

@@ -72,6 +72,45 @@ test('model trace HTTP routes forward execution uploads and task-scoped lazy rea
   assert.deepEqual(calls, [['exec', 'call', { sequence: 1 }], ['1', { limit: '20', offset: '40' }], ['1', 'call']]);
 });
 
+test('only administrators can read model traces, including traces of a users own task', async () => {
+  const roles = { admin: 'ADMIN', reviewer: 'REVIEWER', user: 'USER' };
+  let traceReads = 0;
+  const repository = {
+    getUserByUsername: async (username) => ({ id: 1, username, role: roles[username], status: 'ACTIVE', credentialVersion: 1 }),
+    getTask: async () => ({ id: 1, createdByUserId: 'user', query: 'reviewable task',
+      executions: [{ id: 'exec', snapshot: { prompts: 'private execution configuration' } }] }),
+    listModelCalls: async () => { traceReads++; return { items: [{ id: 'call' }], total: 1 }; },
+    getModelCall: async () => { traceReads++; return { id: 'call', prompt: 'private prompt', response: 'private response' }; },
+  };
+  await withServer(repository, async (root) => {
+    for (const [username, role] of Object.entries(roles)) {
+      const response = await fetch(`${root}/v1/tasks/1`, { headers: {
+        'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1',
+      } });
+      assert.equal(response.status, 200);
+      const { data } = await response.json();
+      assert.equal(data.query, 'reviewable task');
+      assert.equal('executions' in data, role === 'ADMIN', 'task details must also protect execution snapshots');
+    }
+    for (const suffix of ['', '/call']) {
+      for (const [username, role] of Object.entries(roles)) {
+        const response = await fetch(`${root}/v1/tasks/1/model-calls${suffix}`, { headers: {
+          'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1',
+        } });
+        assert.equal(response.status, role === 'ADMIN' ? 200 : 403, `${role} ${suffix || 'list'}`);
+        const body = await response.json();
+        if (role !== 'ADMIN') {
+          assert.equal(body.error.code, 'FORBIDDEN');
+          assert.equal(body.data, undefined);
+        }
+      }
+      const anonymous = await fetch(`${root}/v1/tasks/1/model-calls${suffix}`);
+      assert.equal(anonymous.status, 401);
+    }
+  }, { enforceUserAuth: true });
+  assert.equal(traceReads, 2, 'denied requests must not read model trace data');
+});
+
 test('control plane HTTP exposes node registration and batched task creation', async () => {
   const calls = [];
   const repository = {
