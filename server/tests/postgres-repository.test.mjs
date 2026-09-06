@@ -30,6 +30,38 @@ function taskRow(overrides = {}) {
   };
 }
 
+test('creator role filters apply equally to pages and totals and expose the current role', async () => {
+  for (const role of ['ADMIN', 'REVIEWER', 'USER', 'UNKNOWN']) {
+    const queries = [];
+    const repository = new PostgresControlPlaneRepository({ pool: {
+      async query(sql, values) {
+        queries.push({ sql, values });
+        return { rows: sql.includes('COUNT(*) AS total') ? [{ total: '251' }]
+          : [taskRow({ state: 'IMAGE_FAILED', creator_role: role === 'UNKNOWN' ? null : role })] };
+      },
+    } });
+    const page = await repository.listTasks({ createdByRole: role, state: 'IMAGE_FAILED',
+      limit: 20, offset: 240, includeTotal: true });
+    assert.equal(page.total, 251);
+    assert.equal(page.offset, 240);
+    assert.equal(page.items[0].createdByRole, role === 'UNKNOWN' ? null : role);
+    for (const { sql, values } of queries) {
+      assert.match(sql, /EXISTS\s*\([\s\S]*app_users[\s\S]*created_by_user_id/u);
+      if (role === 'UNKNOWN') assert.match(sql, /NOT EXISTS/u);
+      else assert.equal(values.includes(role), true);
+    }
+  }
+});
+
+test('invalid creator role never reaches the database', async () => {
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query() { assert.fail('invalid filter reached SQL'); },
+  } });
+  for (const role of ['', 'owner', "ADMIN' OR 1=1--", ['ADMIN', 'USER']]) {
+    await assert.rejects(repository.listTasks({ createdByRole: role }), /role.*invalid/u);
+  }
+});
+
 test('task creation keeps ownership but leaves copy execution unassigned', async () => {
   const queries = [];
   const client = {

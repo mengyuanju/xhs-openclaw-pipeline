@@ -12,6 +12,7 @@ import { archiveFileName, buildTaskArchive } from './task-archive.mjs';
 import {
   ControlPlaneConflictError,
   ControlPlaneNotFoundError,
+  normalizeTaskCreatorRole,
 } from './domain.mjs';
 
 const JSON_BODY_LIMIT = 12 * 1024 * 1024;
@@ -241,11 +242,14 @@ function installRoutes(router, repository, storageRoot, analyzeCopy) {
   });
   router.get('/v1/tasks', async (ctx) => {
     const actor = requestActor(ctx);
+    if (ctx.query.createdByRole !== undefined) requestActor(ctx, ['ADMIN']);
+    const createdByRole = normalizeTaskCreatorRole(ctx.query.createdByRole);
     json(ctx, 200, await repository.listTasks({
       state: ctx.query.state,
       states: ctx.query.states,
       nodeId: ctx.query.nodeId,
       createdByUserId: actor.role === 'USER' ? actor.username : ctx.query.createdByUserId,
+      ...(createdByRole !== null ? { createdByRole } : {}),
       query: ctx.query.query,
       limit: ctx.query.limit,
       offset: ctx.query.offset,

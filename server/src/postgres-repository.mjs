@@ -13,6 +13,7 @@ import {
   normalizeConcurrency,
   normalizeCopyReviewEdits,
   normalizeCreatorUserId,
+  normalizeTaskCreatorRole,
   normalizeCreateTask,
   normalizeJson,
   normalizeNodeId,
@@ -54,6 +55,7 @@ function taskFrom(row) {
     state: row.state,
     createdByNodeId: row.created_by_node_id,
     createdByUserId: row.created_by_user_id ?? null,
+    createdByRole: row.creator_role ?? null,
     createdByDisplayName: row.creator_display_name ?? (row.created_by_user_id === 'admin' ? '系统管理员' : null),
     copyExecutorNodeId: row.copy_executor_node_id,
     imageExecutorNodeId: row.image_executor_node_id ?? null,
@@ -316,7 +318,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { executionRetryControl: true, imageResume: true, executorConcurrency: true } };
+      capabilities: { executionRetryControl: true, imageResume: true, executorConcurrency: true, adminTaskFilters: true } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -541,6 +543,7 @@ export class PostgresControlPlaneRepository {
     states = null,
     nodeId = null,
     createdByUserId = null,
+    createdByRole = null,
     query = null,
     limit = 50,
     offset = 0,
@@ -564,6 +567,14 @@ export class PostgresControlPlaneRepository {
       values.push(normalizeCreatorUserId(createdByUserId));
       filters.push(`created_by_user_id = $${values.length}`);
     }
+    const creatorRole = normalizeTaskCreatorRole(createdByRole);
+    if (creatorRole === 'UNKNOWN') {
+      filters.push('NOT EXISTS (SELECT 1 FROM app_users role_creator WHERE role_creator.username = tasks.created_by_user_id)');
+    } else if (creatorRole !== null) {
+      values.push(creatorRole);
+      filters.push(`EXISTS (SELECT 1 FROM app_users role_creator
+        WHERE role_creator.username = tasks.created_by_user_id AND role_creator.role = $${values.length})`);
+    }
     const searchQuery = normalizedTaskQuery(query);
     if (searchQuery !== null) {
       values.push(searchQuery);
@@ -574,7 +585,8 @@ export class PostgresControlPlaneRepository {
     const [result, countResult] = await Promise.all([
       this.pool.query(`
       SELECT page.*, COALESCE(e.node_id, successful_image.node_id) AS image_executor_node_id,
-        n.name AS image_executor_node_name, creator.display_name AS creator_display_name
+        n.name AS image_executor_node_name, creator.display_name AS creator_display_name,
+        creator.role AS creator_role
       FROM (
         SELECT * FROM tasks
         ${where}

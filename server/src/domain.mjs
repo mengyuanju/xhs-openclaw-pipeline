@@ -11,6 +11,14 @@ export const TASK_STATES = Object.freeze([
 ]);
 
 export const EXECUTION_KINDS = Object.freeze(['COPY', 'IMAGE']);
+
+export function normalizeTaskCreatorRole(value) {
+  if (value === undefined || value === null) return null;
+  if (!['ADMIN', 'REVIEWER', 'USER', 'UNKNOWN'].includes(value)) {
+    throw new TypeError('task creator role filter is invalid');
+  }
+  return value;
+}
 export const EXECUTION_STATUSES = Object.freeze([
   'RUNNING',
   'SUCCEEDED',
