@@ -25,9 +25,9 @@ test('manual archive shows the successful executor name with safe missing-data f
   assert.equal(imageExecutorLabel({ state: 'MANUAL_ARCHIVE' }), '执行机信息不可用');
 });
 
-test('manual archive and all jobs show an image executor column alongside the copy column', async () => {
+test('manual archive and all jobs show both executors within the grouped executor column', async () => {
   const source = await readFile(new URL('../app/workbench/creation-workbench.tsx', import.meta.url), 'utf8');
-  assert.match(source, /\(activeView === 'MANUAL_ARCHIVE' \|\| isAllJobs\) && <th>生图执行机<\/th>/u);
-  assert.match(source, /\(activeView === 'MANUAL_ARCHIVE' \|\| isAllJobs\) && <td[^>]*data-label="生图执行机">\{imageExecutorLabel\(task\)\}/u);
-  assert.match(source, /<th>\{executorColumnLabel\}<\/th>/u);
+  assert.match(source, /<th[^>]*>执行机<\/th>/u);
+  assert.match(source, /\(activeView === 'MANUAL_ARCHIVE' \|\| isAllJobs\) && <div><small>生图执行机<\/small><span[^>]*>\{imageExecutorLabel\(task\)\}/u);
+  assert.match(source, /<small>\{executorColumnLabel\}<\/small>/u);
 });

@@ -33,6 +33,7 @@ import { parseQueryBatch } from '../../src/control-plane/query-batch.mjs';
 import { imageExecutorLabel } from '../../src/control-plane/image-executor-label.mjs';
 import { TaskReviewDialog } from './task-review-dialog';
 import { AdminJobFilters, CREATOR_ROLE_LABELS } from './admin-job-filters';
+import type { JobCreator } from './admin-creator-filter';
 import { loadAdminTaskPage } from '../../src/control-plane/admin-task-page.mjs';
 
 import { compareTasksByStatePriority, WORKBENCH_VIEWS, matchesWorkbenchView, type TaskState, type ViewKey } from './views';
@@ -163,6 +164,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
   const [searchInput, setSearchInput] = useState('');
   const [searchKeyword, setSearchKeyword] = useState('');
   const [creatorRoleFilter, setCreatorRoleFilter] = useState('ALL');
+  const [creatorFilter, setCreatorFilter] = useState<JobCreator | null>(null);
   const [stateFilter, setStateFilter] = useState('ALL');
   const [fetchError, setFetchError] = useState('');
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
@@ -201,6 +203,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
       if (searchKeyword) search.set('query', searchKeyword);
       let compatibilityTasks: DistributedTask[] | null = null;
       const taskPageRequest = isAllJobs ? loadAdminTaskPage(apiRequest, {
+        createdByUserId: creatorFilter?.username,
         createdByRole: creatorRoleFilter === 'ALL' ? undefined : creatorRoleFilter,
         state: stateFilter === 'ALL' ? undefined : stateFilter,
         query: searchKeyword,
@@ -262,7 +265,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
         setRefreshing(false);
       }
     }
-  }, [activeDefinition, creatorUserId, page, isAllJobs, creatorRoleFilter, stateFilter, searchKeyword]);
+  }, [activeDefinition, creatorUserId, page, isAllJobs, creatorFilter, creatorRoleFilter, stateFilter, searchKeyword]);
 
   useEffect(() => {
     void refresh();
@@ -495,7 +498,9 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
       {isAllJobs && <AdminJobFilters
         role={creatorRoleFilter}
         state={stateFilter}
+        creator={creatorFilter}
         stateLabels={STATE_LABELS}
+        onCreatorChange={(value) => { setCreatorFilter(value); setPage(1); }}
         onRoleChange={(value) => { setCreatorRoleFilter(value); setPage(1); }}
         onStateChange={(value) => { setStateFilter(value); setPage(1); }}
       />}
@@ -527,33 +532,40 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
         : fetchError && !lastUpdatedAt ? <div className="empty-state">暂时无法读取任务，请重试。</div>
         : visibleTasks.length === 0
           ? <div className="workbench-empty">
-            <span>{activeView === 'PERSONAL' ? '当前没有你创建的 Query 任务。' : `当前没有${activeDefinition.label}任务。`}</span>
+            <span>{isAllJobs ? '没有符合当前筛选条件的作业。' : activeView === 'PERSONAL' ? '当前没有你创建的 Query 任务。' : `当前没有${activeDefinition.label}任务。`}</span>
             {activeView === 'PERSONAL' && <button className="button small" type="button" onClick={() => setCreateOpen(true)}><Plus size={14} />创建第一条笔记</button>}
           </div>
-          : <div className="table-wrap mobile-cards workbench-table-wrap">
+          : <div className="table-wrap mobile-cards workbench-table-wrap" tabIndex={0} role="region" aria-label="作业列表，可横向滚动查看完整列">
             <table>
-              <thead><tr><th>ID</th><th>Query</th><th>创建者</th>{isAllJobs && <th>创建者角色</th>}<th>状态</th><th>{executorColumnLabel}</th>{(activeView === 'MANUAL_ARCHIVE' || isAllJobs) && <th>生图执行机</th>}<th>开始时间</th><th>阶段 / 进度</th><th>耗时</th><th>操作</th></tr></thead>
+              <thead><tr><th className="workbench-col-query">作业 / Query</th><th className="workbench-col-creator">作业员</th><th className="workbench-col-progress">状态 / 进度</th><th className="workbench-col-executor">执行机</th><th className="workbench-col-time">开始时间 / 耗时</th><th className="workbench-col-actions">操作</th></tr></thead>
               <tbody>{visibleTasks.map((task) => <tr key={task.id}>
-                <td className="mono" data-label="ID">#{task.id}</td>
-                <td className="query-cell" data-label="Query">{task.query}</td>
-                <td data-label="创建者">{task.createdByDisplayName || task.createdByUserId || '历史任务'}</td>
-                {isAllJobs && <td data-label="创建者角色">{CREATOR_ROLE_LABELS[task.createdByRole || 'UNKNOWN'] || '未知角色'}</td>}
-                <td data-label="状态">
-                  <span className={`pill ${isImageRetryExhausted(task) ? 'pill-rejected' : `workbench-state-${task.state.toLowerCase()}`}${isStale(task) ? ' pill-rejected' : ''}`}>{isImageRetryExhausted(task) ? IMAGE_RETRY_EXHAUSTED_LABEL : STATE_LABELS[task.state]}</span>
-                </td>
-                <td className="mono" data-label={executorColumnLabel}>{activeView === 'IMAGE_WORK'
-                  ? imageExecutorLabel(task)
-                  : copyExecutorLabel(task, nodes)}</td>
-                {(activeView === 'MANUAL_ARCHIVE' || isAllJobs) && <td className="mono" data-label="生图执行机">{imageExecutorLabel(task)}</td>}
-                <td data-label="开始时间">{timeLabel(task.executionStartedAt)}</td>
-                <td data-label="阶段 / 进度">
-                  <div className="distributed-progress">
-                    <span>{stageLabel(task)} · {task.progressPercent}%</span>
-                    <small>{isStale(task) ? '超过 30 分钟没有进度，请进入详情处理' : task.progressMessage}</small>
+                <td className="query-cell" data-label="作业 / Query">
+                  <div className="workbench-cell-stack">
+                    <span className="mono workbench-task-id">#{task.id}</span>
+                    <button className="workbench-query-preview workbench-text-preview" type="button" title={task.query} aria-label={`查看作业 #${task.id}：${task.query}`} onClick={() => setSelectedTaskId(task.id)}>{task.query}</button>
                   </div>
                 </td>
-                <td data-label="耗时"><span className="workbench-elapsed"><Clock3 aria-hidden="true" size={13} />{elapsed(task)}</span></td>
-                <td data-label="操作">{taskActions(task)}</td>
+                <td data-label="作业员"><div className="workbench-cell-stack">
+                  <span className="workbench-text-preview" title={task.createdByDisplayName || task.createdByUserId || '历史任务'}>{task.createdByDisplayName || task.createdByUserId || '历史任务'}</span>
+                  {task.createdByUserId && <small className="mono workbench-text-preview" title={task.createdByUserId}>{task.createdByUserId}</small>}
+                  {isAllJobs && <small>{CREATOR_ROLE_LABELS[task.createdByRole || 'UNKNOWN'] || '未知角色'}</small>}
+                </div></td>
+                <td data-label="状态 / 进度">
+                  <div className="distributed-progress">
+                    <span className={`pill ${isImageRetryExhausted(task) ? 'pill-rejected' : `workbench-state-${task.state.toLowerCase()}`}${isStale(task) ? ' pill-rejected' : ''}`}>{isImageRetryExhausted(task) ? IMAGE_RETRY_EXHAUSTED_LABEL : STATE_LABELS[task.state]}</span>
+                    <span>{stageLabel(task)} · {task.progressPercent}%</span>
+                    <small className="workbench-text-preview" title={isStale(task) ? '超过 30 分钟没有进度，请进入详情处理' : task.progressMessage}>{isStale(task) ? '超过 30 分钟没有进度，请进入详情处理' : task.progressMessage}</small>
+                  </div>
+                </td>
+                <td data-label="执行机"><div className="workbench-cell-stack workbench-executors">
+                  <div><small>{executorColumnLabel}</small><span className="mono workbench-text-preview" title={activeView === 'IMAGE_WORK' ? imageExecutorLabel(task) : copyExecutorLabel(task, nodes)}>{activeView === 'IMAGE_WORK' ? imageExecutorLabel(task) : copyExecutorLabel(task, nodes)}</span></div>
+                  {(activeView === 'MANUAL_ARCHIVE' || isAllJobs) && <div><small>生图执行机</small><span className="mono workbench-text-preview" title={imageExecutorLabel(task)}>{imageExecutorLabel(task)}</span></div>}
+                </div></td>
+                <td data-label="开始 / 耗时"><div className="workbench-cell-stack">
+                  <time dateTime={task.executionStartedAt || undefined}>{timeLabel(task.executionStartedAt)}</time>
+                  <small className="workbench-elapsed"><Clock3 aria-hidden="true" size={13} />{elapsed(task)}</small>
+                </div></td>
+                <td className="workbench-col-actions" data-label="操作">{taskActions(task)}</td>
               </tr>)}</tbody>
             </table>
           </div>}

@@ -29,6 +29,20 @@ test('all roles and states do not add ownership or lifecycle restrictions', asyn
   assert.deepEqual([...requested.searchParams.keys()].sort(), ['includeTotal', 'limit', 'offset']);
 });
 
+test('selected operator is sent as an exact account alongside role, state and Query filters', async () => {
+  let requested;
+  await loadAdminTaskPage(async (path) => {
+    if (path.endsWith('/health')) return { capabilities: { adminTaskFilters: true } };
+    requested = new URL(path, 'http://localhost');
+    return { items: [], total: 0, limit: 20, offset: 20 };
+  }, { createdByUserId: 'operator.02', createdByRole: 'USER', state: 'IMAGE_FAILED', query: '周末 & 徒步', offset: 20 });
+  assert.equal(requested.searchParams.get('createdByUserId'), 'operator.02');
+  assert.equal(requested.searchParams.get('createdByRole'), 'USER');
+  assert.equal(requested.searchParams.get('state'), 'IMAGE_FAILED');
+  assert.equal(requested.searchParams.get('query'), '周末 & 徒步');
+  assert.equal(requested.searchParams.get('offset'), '20');
+});
+
 test('old centers and malformed pages cannot be presented as complete results', async () => {
   let taskReads = 0;
   await assert.rejects(loadAdminTaskPage(async () => { taskReads += 1; return { capabilities: {} }; }), /更新.*中心/u);
