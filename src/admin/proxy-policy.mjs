@@ -24,6 +24,7 @@ export function evaluateAdminProxyRequest(request, environment = process.env) {
   }
   if (PUBLIC_PATHS.has(url.pathname)) return { type: 'next' };
   if (session?.subject === 'admin' || session?.roles?.includes('ADMIN')) return { type: 'next' };
+  if (session && /^\/workbench\/all\/?$/u.test(url.pathname)) return { type: 'forbidden' };
   if (session?.subject === 'user') {
     const role = session.roles?.[0];
     const alwaysAllowed = url.pathname === '/profile'

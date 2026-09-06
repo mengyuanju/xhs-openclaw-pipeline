@@ -87,7 +87,8 @@ export function SideNav({ session }: { session: { subject: string; username?: st
     : role === 'REVIEWER'
       ? navigationGroups.map((group) => ({
           ...group,
-          items: group.items.filter((item) => item.href === '/workbench' || item.href === '/knowledge'),
+          items: group.items.filter((item) => item.href === '/workbench' || item.href === '/knowledge')
+            .map((item) => ({ ...item, children: item.children?.filter((child) => child.href !== '/workbench/all') })),
         }))
       : navigationGroups.map((group) => ({
           ...group,

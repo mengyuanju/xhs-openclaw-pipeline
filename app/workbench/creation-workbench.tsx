@@ -32,6 +32,8 @@ import { IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/co
 import { parseQueryBatch } from '../../src/control-plane/query-batch.mjs';
 import { imageExecutorLabel } from '../../src/control-plane/image-executor-label.mjs';
 import { TaskReviewDialog } from './task-review-dialog';
+import { AdminJobFilters, CREATOR_ROLE_LABELS } from './admin-job-filters';
+import { loadAdminTaskPage } from '../../src/control-plane/admin-task-page.mjs';
 
 import { compareTasksByStatePriority, WORKBENCH_VIEWS, matchesWorkbenchView, type TaskState, type ViewKey } from './views';
 
@@ -44,6 +46,7 @@ type DistributedTask = {
   imageExecutorNodeName?: string | null;
   createdByUserId: string | null;
   createdByDisplayName: string | null;
+  createdByRole?: string | null;
   currentStage: string | null;
   progressPercent: number;
   progressMessage: string;
@@ -75,7 +78,7 @@ const STATE_LABELS: Record<TaskState, string> = {
   IMAGE_RUNNING: '生图中',
   IMAGE_FAILED: '生图失败',
   MANUAL_ARCHIVE: '人工归档',
-  CANCELLED: '已取消',
+  CANCELLED: '已废弃',
 };
 
 const STAGE_LABELS: Record<string, string> = {
@@ -106,7 +109,7 @@ const STAGE_LABELS: Record<string, string> = {
   IMAGE_FAILED: '生图失败',
   MANUAL_ARCHIVE: '人工归档',
   FAILED: '执行失败',
-  CANCELLED: '已取消',
+  CANCELLED: '已废弃',
 };
 
 function stageLabel(task: DistributedTask) {
@@ -147,6 +150,7 @@ function timeLabel(value: string | null) {
 export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: activeView }: { nodeId: string; creatorUserId: string; role: string; viewKey: ViewKey }) {
   const router = useRouter();
   const activeDefinition = WORKBENCH_VIEWS.find((view) => view.key === activeView)!;
+  const isAllJobs = activeView === 'ALL_JOBS';
   const executorColumnLabel = activeView === 'IMAGE_WORK' ? '生图执行机' : '文案执行机';
   const confirm = useConfirmDialog();
   const [tasks, setTasks] = useState<DistributedTask[]>([]);
@@ -155,6 +159,11 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
   const [page, setPage] = useState(1);
   const [searchInput, setSearchInput] = useState('');
   const [searchKeyword, setSearchKeyword] = useState('');
+  const [creatorRoleFilter, setCreatorRoleFilter] = useState('ALL');
+  const [stateFilter, setStateFilter] = useState('ALL');
+  const [fetchError, setFetchError] = useState('');
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
+  const refreshRequestId = useRef(0);
   const [queryText, setQueryText] = useState('');
   const [createError, setCreateError] = useState('');
   const queryBatch = useMemo(() => parseQueryBatch(queryText), [queryText]);
@@ -170,6 +179,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
   const legacyStateFilterMode = useRef(false);
 
   const refresh = useCallback(async ({ silent = false } = {}) => {
+    const requestId = ++refreshRequestId.current;
     if (!silent) {
       setRefreshing(true);
       setLoading(true);
@@ -187,7 +197,13 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
       if (view.personalOnly) search.set('mine', 'true');
       if (searchKeyword) search.set('query', searchKeyword);
       let compatibilityTasks: DistributedTask[] | null = null;
-      const taskPageRequest = apiRequest<TaskPage | DistributedTask[]>(apiPath(`/v1/tasks?${search}`))
+      const taskPageRequest = isAllJobs ? loadAdminTaskPage(apiRequest, {
+        createdByRole: creatorRoleFilter === 'ALL' ? undefined : creatorRoleFilter,
+        state: stateFilter === 'ALL' ? undefined : stateFilter,
+        query: searchKeyword,
+        limit: PAGE_SIZE,
+        offset: (page - 1) * PAGE_SIZE,
+      }) : apiRequest<TaskPage | DistributedTask[]>(apiPath(`/v1/tasks?${search}`))
         .catch(async (caught) => {
           if (!(caught instanceof Error) || caught.message !== 'task state filter is invalid') throw caught;
           legacyStateFilterMode.current = true;
@@ -225,24 +241,30 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
       if (view.personalOnly && taskPage.items.some((task) => task.createdByUserId !== creatorUserId)) {
         throw new Error('中心服务尚未支持个人任务筛选，请更新并重启中心服务。');
       }
+      if (requestId !== refreshRequestId.current) return;
       setTasks(taskPage.items);
       setTotal(taskPage.total);
       const lastPage = Math.max(1, Math.ceil(taskPage.total / PAGE_SIZE));
       if (page > lastPage) setPage(lastPage);
       setNodes(nextNodes);
-      setError('');
+      setFetchError('');
+      setLastUpdatedAt(new Date().toISOString());
     } catch (caught) {
-      if (!silent) setError(caught instanceof Error ? caught.message : '任务读取失败');
+      if (requestId === refreshRequestId.current) {
+        setFetchError(caught instanceof Error ? caught.message : '任务读取失败');
+      }
     } finally {
-      setLoading(false);
-      if (!silent) setRefreshing(false);
+      if (requestId === refreshRequestId.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, [activeDefinition, creatorUserId, page, role, searchKeyword]);
+  }, [activeDefinition, creatorUserId, page, isAllJobs, creatorRoleFilter, stateFilter, searchKeyword]);
 
   useEffect(() => {
     void refresh();
     const timer = window.setInterval(() => { void refresh({ silent: true }); }, 30_000);
-    return () => window.clearInterval(timer);
+    return () => { window.clearInterval(timer); refreshRequestId.current += 1; };
   }, [refresh]);
 
   const visibleTasks = tasks;
@@ -311,6 +333,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
 
   function taskActions(task: DistributedTask) {
     const busy = actingTaskId === task.id;
+    if (isAllJobs) return <button className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>;
     const canDiscard = role === 'ADMIN' || task.createdByUserId === creatorUserId;
     const canRetryCopy = canDiscard && ['COPY_RUNNING', 'COPY_FAILED'].includes(task.state);
     if (activeView === 'ALL_COPY') return <div className="workbench-row-actions">
@@ -464,6 +487,13 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
         </div>
       </div>
 
+      {isAllJobs && <AdminJobFilters
+        role={creatorRoleFilter}
+        state={stateFilter}
+        stateLabels={STATE_LABELS}
+        onRoleChange={(value) => { setCreatorRoleFilter(value); setPage(1); }}
+        onStateChange={(value) => { setStateFilter(value); setPage(1); }}
+      />}
       <div className="workbench-list-tools">
         <form className="workbench-query-search" role="search" onSubmit={submitSearch}>
           <label className="sr-only" htmlFor="workbench-query-search">搜索 Query</label>
@@ -478,11 +508,18 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
           {searchKeyword && <button className="button small" type="button" onClick={clearSearch}>清除</button>}
           <button className="button small" type="submit">搜索</button>
         </form>
-        <span>共 {total} 条{searchKeyword ? `匹配“${searchKeyword}”` : ''}</span>
+        <span>{lastUpdatedAt ? `共 ${total} 条${searchKeyword ? `匹配“${searchKeyword}”` : ''}` : '尚未读取任务'}</span>
       </div>
 
+      {fetchError && <div className="notice error workbench-refresh-notice" role="alert">
+        <div>刷新失败：{fetchError}{lastUpdatedAt && ' 以下保留上次成功读取的数据，可能不符合当前筛选或最新状态。'}</div>
+        <button className="button small" type="button" disabled={refreshing} onClick={() => { void refresh(); }}>重新读取</button>
+      </div>}
+      {lastUpdatedAt && <p className="workbench-updated-at">最近成功刷新：{timeLabel(lastUpdatedAt)} · 每 30 秒自动刷新</p>}
+
       {loading
-        ? <div className="empty-state"><LoaderCircle className="animate-spin" size={20} />正在读取远端任务…</div>
+        ? <div className="empty-state"><LoaderCircle className="animate-spin" size={20} />正在读取中心任务…</div>
+        : fetchError && !lastUpdatedAt ? <div className="empty-state">暂时无法读取任务，请重试。</div>
         : visibleTasks.length === 0
           ? <div className="workbench-empty">
             <span>{activeView === 'PERSONAL' ? '当前没有你创建的 Query 任务。' : `当前没有${activeDefinition.label}任务。`}</span>
@@ -490,18 +527,19 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
           </div>
           : <div className="table-wrap mobile-cards workbench-table-wrap">
             <table>
-              <thead><tr><th>ID</th><th>Query</th><th>创建者</th><th>状态</th><th>{executorColumnLabel}</th>{activeView === 'MANUAL_ARCHIVE' && <th>生图执行机</th>}<th>开始时间</th><th>阶段 / 进度</th><th>耗时</th><th>操作</th></tr></thead>
+              <thead><tr><th>ID</th><th>Query</th><th>创建者</th>{isAllJobs && <th>创建者角色</th>}<th>状态</th><th>{executorColumnLabel}</th>{(activeView === 'MANUAL_ARCHIVE' || isAllJobs) && <th>生图执行机</th>}<th>开始时间</th><th>阶段 / 进度</th><th>耗时</th><th>操作</th></tr></thead>
               <tbody>{visibleTasks.map((task) => <tr key={task.id}>
                 <td className="mono" data-label="ID">#{task.id}</td>
                 <td className="query-cell" data-label="Query">{task.query}</td>
                 <td data-label="创建者">{task.createdByDisplayName || task.createdByUserId || '历史任务'}</td>
+                {isAllJobs && <td data-label="创建者角色">{CREATOR_ROLE_LABELS[task.createdByRole || 'UNKNOWN'] || '未知角色'}</td>}
                 <td data-label="状态">
                   <span className={`pill ${isImageRetryExhausted(task) ? 'pill-rejected' : `workbench-state-${task.state.toLowerCase()}`}${isStale(task) ? ' pill-rejected' : ''}`}>{isImageRetryExhausted(task) ? IMAGE_RETRY_EXHAUSTED_LABEL : STATE_LABELS[task.state]}</span>
                 </td>
                 <td className="mono" data-label={executorColumnLabel}>{activeView === 'IMAGE_WORK'
                   ? imageExecutorLabel(task)
                   : copyExecutorLabel(task, nodes)}</td>
-                {activeView === 'MANUAL_ARCHIVE' && <td className="mono" data-label="生图执行机">{imageExecutorLabel(task)}</td>}
+                {(activeView === 'MANUAL_ARCHIVE' || isAllJobs) && <td className="mono" data-label="生图执行机">{imageExecutorLabel(task)}</td>}
                 <td data-label="开始时间">{timeLabel(task.executionStartedAt)}</td>
                 <td data-label="阶段 / 进度">
                   <div className="distributed-progress">

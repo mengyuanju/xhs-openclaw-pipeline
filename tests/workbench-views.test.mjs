@@ -5,10 +5,21 @@ import { compareTasksByStatePriority, TASK_STATE_PRIORITY, WORKBENCH_VIEWS, matc
 
 test('workbench routes place all copy directly under the personal list and omit completed', () => {
   assert.deepEqual(WORKBENCH_VIEWS.map((view) => view.label), [
-    '个人作业中心', '全部文案任务', '待文案审核', '生图中', '人工归档',
+    '个人作业中心', '全部文案任务', '待文案审核', '生图中', '人工归档', '全部作业',
   ]);
-  assert.equal(new Set(WORKBENCH_VIEWS.map((view) => view.href)).size, 5);
+  assert.equal(new Set(WORKBENCH_VIEWS.map((view) => view.href)).size, 6);
   assert.ok(WORKBENCH_VIEWS.every((view) => view.href.startsWith('/workbench/')));
+});
+
+test('administrator all jobs includes every task state and historical ownership', () => {
+  const all = WORKBENCH_VIEWS.find((view) => view.key === 'ALL_JOBS');
+  assert.ok(all);
+  assert.equal(all.adminOnly, true);
+  for (const state of Object.keys(TASK_STATE_PRIORITY)) {
+    for (const createdByUserId of ['admin', 'reviewer', 'alice', null]) {
+      assert.equal(matchesWorkbenchView({ state, createdByUserId }, all, 'admin'), true);
+    }
+  }
 });
 
 test('personal tasks include every active lifecycle state owned by the current user', () => {

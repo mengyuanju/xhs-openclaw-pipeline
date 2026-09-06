@@ -14,6 +14,7 @@ export default async function WorkbenchListPage({ params }: { params: Promise<{ 
   const session = await readServerSession();
   if (!session) redirect('/login');
   const role = session.roles?.[0] || 'USER';
+  if (definition.adminOnly && role !== 'ADMIN') redirect('/workbench/personal');
   if (role === 'USER' && definition.key !== 'PERSONAL') redirect('/workbench/personal');
 
   return <>

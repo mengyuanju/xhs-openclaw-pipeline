@@ -1059,6 +1059,12 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .workbench-toolbar p { max-width: 680px; margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
 .workbench-toolbar-actions { display: flex; align-items: center; gap: 9px; flex: 0 0 auto; }
 .workbench-list-tools { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 18px 0; }
+.workbench-admin-filters { display: flex; flex-wrap: wrap; gap: 16px; padding: 16px 18px 0; }
+.workbench-admin-filters > div { display: grid; gap: 6px; flex: 1 1 180px; max-width: 280px; }
+.workbench-admin-filters label { color: var(--muted); font-size: 12px; }
+.workbench-admin-filters button { width: 100%; }
+.workbench-refresh-notice { margin: 16px 18px 0; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.workbench-updated-at { padding: 0 18px; margin: 12px 0; color: var(--muted); font-size: 11px; }
 .workbench-list-tools > span { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .workbench-query-search { min-width: min(100%, 440px); display: flex; align-items: center; gap: 8px; padding: 5px 6px 5px 11px; border: 1px solid var(--line); border-radius: 10px; background: white; }
 .workbench-query-search:focus-within { border-color: var(--control-border-focus); box-shadow: 0 0 0 3px var(--control-ring); }

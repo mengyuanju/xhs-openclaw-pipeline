@@ -1,11 +1,11 @@
-import { FileCheck2, FileText, Image as ImageIcon, UserRound } from 'lucide-react';
+import { FileCheck2, FileText, Image as ImageIcon, ListChecks, UserRound } from 'lucide-react';
 
 export type TaskState =
   | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_FAILED'
   | 'IMAGE_QUEUED' | 'IMAGE_RUNNING' | 'IMAGE_FAILED'
   | 'MANUAL_ARCHIVE' | 'CANCELLED';
 
-export type ViewKey = 'PERSONAL' | 'ALL_COPY' | 'COPY_REVIEW' | 'IMAGE_WORK' | 'MANUAL_ARCHIVE';
+export type ViewKey = 'PERSONAL' | 'ALL_COPY' | 'COPY_REVIEW' | 'IMAGE_WORK' | 'MANUAL_ARCHIVE' | 'ALL_JOBS';
 
 export const TASK_STATE_PRIORITY: Record<TaskState, number> = {
   COPY_REVIEW_PENDING: 1,
@@ -37,6 +37,7 @@ export const WORKBENCH_VIEWS: Array<{
   icon: typeof FileText;
   states: TaskState[];
   personalOnly?: boolean;
+  adminOnly?: boolean;
 }> = [
   {
     key: 'PERSONAL',
@@ -81,6 +82,15 @@ export const WORKBENCH_VIEWS: Array<{
     description: '显示所有用户图片生成成功、等待人工归档的图文任务。',
     icon: FileCheck2,
     states: ['MANUAL_ARCHIVE'],
+  },
+  {
+    key: 'ALL_JOBS',
+    href: '/workbench/all',
+    label: '全部作业',
+    description: '查看所有账号和执行节点的任务，包含生图失败、已废弃与历史任务。角色按创建者当前角色筛选。',
+    icon: ListChecks,
+    states: Object.keys(TASK_STATE_PRIORITY) as TaskState[],
+    adminOnly: true,
   },
 ];
 

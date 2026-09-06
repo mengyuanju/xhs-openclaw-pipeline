@@ -744,3 +744,54 @@ EXECUTOR_POLL_MS=5000
 - C1–C7/C9 已实施；C8 不适用当前 Codex 提供方。新增中心迁移 0007/0008，回执按 UUIDv7 24 小时窗口、每次最多 100 条清理，保留在途回执。
 - 无额度回归、本机独立 PostgreSQL 事务竞争与 HTTP 执行池 3/2 验证通过；具体结果见 tasks/todo.md。
 - 用户追加要求测真实效率后，使用 scripts/benchmark-executor.mjs --live 在本机临时中心和 PostgreSQL 上复制已发布配置，不领取远程业务任务。发现并修正 Codex 生图指令与原生事件传输卡点；补充检索失败证据和 Schema/代码块兼容修复。最终真实图片 2/2 任务、6/6 图片通过，失败文案 178 秒复验成功；详细时长、重试和边界见 docs/executor-concurrency-live-results.md。
+
+## 2026-09-06 管理员全部作业与角色筛选（已实施）
+
+### 目标与已核实事实
+
+管理员可在独立的 `/workbench/all` 查看所有账号创建、所有执行节点执行、所有生命周期状态的任务，包括创建者为空的历史任务。保留普通用户个人任务隔离及审核员现有工作入口。用户追加确认需要按角色筛选并授权实施；本节方案已完成实现与验证。
+
+变更前中心 `GET /v1/tasks` 已支持管理员不按创建者过滤，支持 `state`、`states`、`query`、`limit`、`offset` 和 `includeTotal`。当前任务状态共九种：COPY_QUEUED、COPY_RUNNING、COPY_REVIEW_PENDING、COPY_FAILED、IMAGE_QUEUED、IMAGE_RUNNING、IMAGE_FAILED、MANUAL_ARCHIVE、CANCELLED；ABANDONED 属于执行记录状态，不作为任务状态。全局工作台缺少 IMAGE_FAILED 与 CANCELLED 入口，个人工作台限制当前创建者。正常查询已有服务端分页，旧兼容分支只读取前 200 条；旧 /jobs 只读取前 100 条。自动刷新当前吞掉错误。
+
+### A1：管理员全状态列表入口
+
+- 修改 `app/workbench/views.ts`：新增 ALL_JOBS 视图与管理员可见性规则，覆盖全部任务状态，不设置 personalOnly。
+- 修改 `app/components/side-nav.tsx` 和 `app/workbench/[view]/page.tsx`：管理员显示并可访问全部作业；普通用户、审核员直接输入新地址也不能访问。
+- 同步 `src/admin/proxy-policy.mjs` 的审核员路径规则，保留审核员已有全局业务列表与接口权限。
+- 修改 `app/workbench/creation-workbench.tsx`：全部视图不附带 mine、创建者或执行机限定；提供状态筛选及查看入口。CANCELLED 行展示历史，避免沿用默认的重复废弃操作。
+- 验收：管理员可见 ADMIN、REVIEWER、USER 创建的任务及无创建者历史任务，IMAGE_FAILED 与 CANCELLED 均不遗漏；USER 仍只能查询自己的任务。
+- 验证：视图覆盖测试与角色访问测试；本地模拟任务浏览器核验。依赖：无。范围：5 个业务文件。
+
+### A2：保证全量分页及状态可信度
+
+- 在 `app/workbench/creation-workbench.tsx` 复用现有服务端分页、准确 total 和稳定排序，切换筛选时返回第一页；状态筛选至少包含全部、生图失败、已废弃。
+- 新全部作业页要求中心返回分页对象。遇到旧中心数组响应或不支持的状态筛选时，明确提示升级中心，不将前 200 条包装成全量结果；无需一次性抓取所有任务。
+- 自动刷新失败时保留已有列表并显示“数据可能未更新”、最近成功刷新时间和重试入口；只有任务刷新成功才能清除其失败提示。
+- 新入口采用已有详情能力查看真实状态和错误，不将 IMAGE_FAILED 改写成 COPY_REVIEW_PENDING，不触发重试或模型任务。
+- 验收：超过 200 条任务仍可翻页找到尾部任务；筛选与总数一致；刷新失败不会显示成最新或空列表。
+- 验证：用 fake API 制造 250 条以上混合状态数据、旧中心响应和请求失败；检查分页边界与恢复。依赖：A1。范围：现有列表组件及必要测试辅助模块。
+
+### A3：回归与文档
+
+- 扩展 `tests/workbench-views.test.mjs`、`tests/creation-workbench-ui.test.mjs`；为管理员入口及 USER 接口隔离补充行为测试。
+- 扩展 `server/tests/user-management.test.mjs`、`server/tests/postgres-repository.test.mjs` 的跨用户、全状态分页证据，复用已有数据库模型及查询接口。
+- 更新 `docs/workbench-navigation.md`：当前文档仍包含已过时的菜单与“废弃后隐藏”说明，需注明全部作业保留废弃记录。
+- 验收：模拟任务覆盖用户引用的 357/IMAGE_FAILED 场景，验证所有角色来源、无创建者历史、CANCELLED、大于 200 条分页及刷新故障；用户提供的 14/2 数量是历史排查样本，不固定为当前数据断言。
+- 验证：根目录与中心相关测试、类型检查、生产构建、真实浏览器使用 fake 数据核验；测试不启动执行机且不消耗模型额度。依赖：A1、A2。
+
+### 已确认的角色契约与部署范围
+
+用户已确认角色筛选。中心 `GET /v1/tasks` 接受管理员专用 `createdByRole=ADMIN|REVIEWER|USER|UNKNOWN`，列表返回用户表中的当前角色，缺失用户记录返回 null。角色筛选在分页前生效，total 使用相同 SQL 条件；UNKNOWN 包含空创建者和已删除用户。非法参数返回 400；非管理员调用角色筛选返回 403，既有普通用户 own-only 权限不变。
+
+无需数据库迁移、执行机改动或生成/重试流程调整；需同步更新中心与 Web。中心通过 `adminTaskFilters` 能力声明防止旧中心忽略筛选；本机已运行的中心 watch 自动加载了新代码，健康检查返回该能力。远程中心未部署，连接地址配置未改动。
+
+### 验证记录
+
+- 根目录 804/804、中心 115/115 测试通过；类型检查和生产构建通过，无跳过测试。
+- 新 HTTP 回归在旧中心实现上 10 项失败、当前实现 13/13 通过；覆盖角色筛选、非法值、身份伪造和降权、权限保持与分页边界。
+- 真实本地 PostgreSQL 使用事务内临时表验证 257 条任务、9 种状态、全量分页、所有角色/未知角色、筛选总数及角色变更；事务回滚，业务表未修改。
+- 隔离生产构建浏览器验证：组合角色/状态/Query，357 生图失败详情，未知角色已废弃任务只有查看入口，257 条翻到第 13 页剩余 17 条，修改筛选回到第一页。
+- 注入中心故障后自动刷新保留原有 7 条列表并提示，恢复后成功清除错误；320/768/1024/1440 宽度无页面水平溢出，浏览器控制台最终无警告或错误。
+- 真实 Next 代理验证 ADMIN 页面/角色筛选 200，REVIEWER 与 USER 均 403；USER 伪造 createdByUserId 仍只查询自己的 64 条任务。浏览器审核员菜单无全部作业，普通用户只有个人作业中心。
+- 日志与可复现隔离脚本保存在 `.codex_artifacts/admin-jobs-*` 和 `.codex_artifacts/admin-role-postgres-check.mjs`；验证不调用模型。
+- 独立代码复核未发现功能或权限阻断；已还原构建产生的 next-env.d.ts 差异，避免纳入功能提交。
