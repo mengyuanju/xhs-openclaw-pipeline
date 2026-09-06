@@ -1,8 +1,6 @@
 'use client';
 
 import {
-  ChevronLeft,
-  ChevronRight,
   Clock3,
   Eye,
   FileCheck2,
@@ -35,6 +33,7 @@ import { TaskReviewDialog } from './task-review-dialog';
 import { AdminJobFilters, CREATOR_ROLE_LABELS } from './admin-job-filters';
 import type { JobCreator } from './admin-creator-filter';
 import { loadAdminTaskPage } from '../../src/control-plane/admin-task-page.mjs';
+import { WorkbenchPagination } from './workbench-pagination';
 
 import { compareTasksByStatePriority, WORKBENCH_VIEWS, matchesWorkbenchView, type TaskState, type ViewKey } from './views';
 
@@ -126,7 +125,6 @@ function copyExecutorLabel(task: DistributedTask, nodes: ExecutorNode[]) {
 }
 
 const STALE_AFTER_MS = 30 * 60_000;
-const PAGE_SIZE = 20;
 function apiPath(path: string) {
   return `/api/control-plane${path}`;
 }
@@ -161,6 +159,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
   const [total, setTotal] = useState(0);
   const [nodes, setNodes] = useState<ExecutorNode[]>([]);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [resultOffset, setResultOffset] = useState(0);
   const [searchInput, setSearchInput] = useState('');
   const [searchKeyword, setSearchKeyword] = useState('');
   const [creatorRoleFilter, setCreatorRoleFilter] = useState('ALL');
@@ -169,6 +169,9 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
   const [fetchError, setFetchError] = useState('');
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
   const refreshRequestId = useRef(0);
+  const activeRequest = useRef<AbortController | null>(null);
+  const listStart = useRef<HTMLDivElement | null>(null);
+  const scrollAfterPageLoad = useRef(false);
   const [queryText, setQueryText] = useState('');
   const [createError, setCreateError] = useState('');
   const queryBatch = useMemo(() => parseQueryBatch(queryText), [queryText]);
@@ -185,6 +188,10 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
 
   const refresh = useCallback(async ({ silent = false } = {}) => {
     const requestId = ++refreshRequestId.current;
+    activeRequest.current?.abort();
+    const controller = new AbortController();
+    activeRequest.current = controller;
+    const request = <T,>(path: string) => apiRequest<T>(path, { signal: controller.signal });
     if (!silent) {
       setRefreshing(true);
       setLoading(true);
@@ -195,32 +202,32 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
         ? { limit: '200', offset: '0' }
         : {
             states: view.states.join(','),
-            limit: String(PAGE_SIZE),
-            offset: String((page - 1) * PAGE_SIZE),
+            limit: String(pageSize),
+            offset: String((page - 1) * pageSize),
             includeTotal: 'true',
           });
       if (view.personalOnly) search.set('mine', 'true');
       if (searchKeyword) search.set('query', searchKeyword);
       let compatibilityTasks: DistributedTask[] | null = null;
-      const taskPageRequest = isAllJobs ? loadAdminTaskPage(apiRequest, {
+      const taskPageRequest = isAllJobs ? loadAdminTaskPage(request, {
         createdByUserId: creatorFilter?.username,
         createdByRole: creatorRoleFilter === 'ALL' ? undefined : creatorRoleFilter,
         state: stateFilter === 'ALL' ? undefined : stateFilter,
         query: searchKeyword,
-        limit: PAGE_SIZE,
-        offset: (page - 1) * PAGE_SIZE,
-      }) : apiRequest<TaskPage | DistributedTask[]>(apiPath(`/v1/tasks?${search}`))
+        limit: pageSize,
+        offset: (page - 1) * pageSize,
+      }) : request<TaskPage | DistributedTask[]>(apiPath(`/v1/tasks?${search}`))
         .catch(async (caught) => {
           if (!(caught instanceof Error) || caught.message !== 'task state filter is invalid') throw caught;
           legacyStateFilterMode.current = true;
           const compatibilitySearch = new URLSearchParams({ limit: '200', offset: '0' });
           if (view.personalOnly) compatibilitySearch.set('mine', 'true');
-          compatibilityTasks = await apiRequest<DistributedTask[]>(apiPath(`/v1/tasks?${compatibilitySearch}`));
+          compatibilityTasks = await request<DistributedTask[]>(apiPath(`/v1/tasks?${compatibilitySearch}`));
           return compatibilityTasks;
         });
       const [rawTaskPage, nextNodes] = await Promise.all([
         taskPageRequest,
-        apiRequest<ExecutorNode[]>(apiPath('/v1/nodes')),
+        request<ExecutorNode[]>(apiPath('/v1/nodes')),
       ]);
       let taskPage: TaskPage;
       if (Array.isArray(rawTaskPage)) {
@@ -230,16 +237,16 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
         if (view.personalOnly) legacySearch.set('mine', 'true');
         if (legacyStateFilterMode.current && compatibilityTasks === null) compatibilityTasks = rawTaskPage;
         const legacyTasks = compatibilityTasks
-          ?? await apiRequest<DistributedTask[]>(apiPath(`/v1/tasks?${legacySearch}`));
+          ?? await request<DistributedTask[]>(apiPath(`/v1/tasks?${legacySearch}`));
         const keyword = searchKeyword.toLocaleLowerCase('zh-CN');
         const filtered = legacyTasks.filter((task) => matchesWorkbenchView(task, view, creatorUserId)
           && (!keyword || task.query.toLocaleLowerCase('zh-CN').includes(keyword)))
           .sort(compareTasksByStatePriority);
         taskPage = {
-          items: filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+          items: filtered.slice((page - 1) * pageSize, page * pageSize),
           total: filtered.length,
-          limit: PAGE_SIZE,
-          offset: (page - 1) * PAGE_SIZE,
+          limit: pageSize,
+          offset: (page - 1) * pageSize,
         };
       } else {
         taskPage = rawTaskPage;
@@ -250,7 +257,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
       if (requestId !== refreshRequestId.current) return;
       setTasks(taskPage.items);
       setTotal(taskPage.total);
-      const lastPage = Math.max(1, Math.ceil(taskPage.total / PAGE_SIZE));
+      setResultOffset(taskPage.offset);
+      const lastPage = Math.max(1, Math.ceil(taskPage.total / pageSize));
       if (page > lastPage) setPage(lastPage);
       setNodes(nextNodes);
       setFetchError('');
@@ -260,22 +268,50 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
         setFetchError(caught instanceof Error ? caught.message : '任务读取失败');
       }
     } finally {
+      controller.abort();
       if (requestId === refreshRequestId.current) {
+        activeRequest.current = null;
         setLoading(false);
         setRefreshing(false);
       }
     }
-  }, [activeDefinition, creatorUserId, page, isAllJobs, creatorFilter, creatorRoleFilter, stateFilter, searchKeyword]);
+  }, [activeDefinition, creatorUserId, page, pageSize, isAllJobs, creatorFilter, creatorRoleFilter, stateFilter, searchKeyword]);
 
   useEffect(() => {
     void refresh();
-    const timer = window.setInterval(() => { void refresh({ silent: true }); }, 30_000);
-    return () => { window.clearInterval(timer); refreshRequestId.current += 1; };
+    const refreshVisible = () => {
+      if (document.visibilityState === 'visible' && !activeRequest.current) void refresh({ silent: true });
+    };
+    const timer = window.setInterval(refreshVisible, 30_000);
+    document.addEventListener('visibilitychange', refreshVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', refreshVisible);
+      refreshRequestId.current += 1;
+      activeRequest.current?.abort();
+      activeRequest.current = null;
+    };
   }, [refresh]);
+
+  useEffect(() => {
+    if (!loading && !fetchError && scrollAfterPageLoad.current) {
+      scrollAfterPageLoad.current = false;
+      listStart.current?.scrollIntoView({ block: 'start' });
+    }
+  }, [loading, fetchError, tasks]);
 
   const visibleTasks = tasks;
 
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const hasFilters = Boolean(searchInput || searchKeyword || creatorFilter || creatorRoleFilter !== 'ALL' || stateFilter !== 'ALL');
+
+  function clearFilters() {
+    setSearchInput('');
+    setSearchKeyword('');
+    setCreatorFilter(null);
+    setCreatorRoleFilter('ALL');
+    setStateFilter('ALL');
+    setPage(1);
+  }
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -519,15 +555,16 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
           <button className="button small" type="submit">搜索</button>
         </form>
         <span>{lastUpdatedAt ? `共 ${total} 条${searchKeyword ? `匹配“${searchKeyword}”` : ''}` : '尚未读取任务'}</span>
+        {hasFilters && <button className="button small" type="button" onClick={clearFilters}>清空筛选</button>}
       </div>
 
       {fetchError && <div className="notice error workbench-refresh-notice" role="alert">
         <div>刷新失败：{fetchError}{lastUpdatedAt && ' 以下保留上次成功读取的数据，可能不符合当前筛选或最新状态。'}</div>
         <button className="button small" type="button" disabled={refreshing} onClick={() => { void refresh(); }}>重新读取</button>
       </div>}
-      {lastUpdatedAt && <p className="workbench-updated-at">最近成功刷新：{timeLabel(lastUpdatedAt)} · 每 30 秒自动刷新</p>}
+      {lastUpdatedAt && <p className="workbench-updated-at" role="status">{loading ? `正在读取第 ${page} 页，暂时保留上次结果…` : `最近成功刷新：${timeLabel(lastUpdatedAt)} · 每 30 秒自动刷新`}</p>}
 
-      {loading
+      {loading && !lastUpdatedAt
         ? <div className="empty-state"><LoaderCircle className="animate-spin" size={20} />正在读取中心任务…</div>
         : fetchError && !lastUpdatedAt ? <div className="empty-state">暂时无法读取任务，请重试。</div>
         : visibleTasks.length === 0
@@ -535,7 +572,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
             <span>{isAllJobs ? '没有符合当前筛选条件的作业。' : activeView === 'PERSONAL' ? '当前没有你创建的 Query 任务。' : `当前没有${activeDefinition.label}任务。`}</span>
             {activeView === 'PERSONAL' && <button className="button small" type="button" onClick={() => setCreateOpen(true)}><Plus size={14} />创建第一条笔记</button>}
           </div>
-          : <div className="table-wrap mobile-cards workbench-table-wrap" tabIndex={0} role="region" aria-label="作业列表，可横向滚动查看完整列">
+          : <div ref={listStart} className="table-wrap mobile-cards workbench-table-wrap" tabIndex={0} role="region" aria-label="作业列表，可横向滚动查看完整列" aria-busy={loading} inert={loading}>
             <table>
               <thead><tr><th className="workbench-col-query">作业 / Query</th><th className="workbench-col-creator">作业员</th><th className="workbench-col-progress">状态 / 进度</th><th className="workbench-col-executor">执行机</th><th className="workbench-col-time">开始时间 / 耗时</th><th className="workbench-col-actions">操作</th></tr></thead>
               <tbody>{visibleTasks.map((task) => <tr key={task.id}>
@@ -570,15 +607,10 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
             </table>
           </div>}
 
-      {!loading && total > 0 && <nav className="workbench-pagination" aria-label="任务列表分页">
-        <button className="button small" type="button" disabled={page <= 1 || refreshing} onClick={() => setPage((value) => Math.max(1, value - 1))}>
-          <ChevronLeft size={14} />上一页
-        </button>
-        <span>第 {page} / {totalPages} 页</span>
-        <button className="button small" type="button" disabled={page >= totalPages || refreshing} onClick={() => setPage((value) => Math.min(totalPages, value + 1))}>
-          下一页<ChevronRight size={14} />
-        </button>
-      </nav>}
+      {lastUpdatedAt && <WorkbenchPagination page={page} pageSize={pageSize} total={total} offset={resultOffset} count={tasks.length} busy={loading || refreshing}
+        loadError={fetchError} onRetry={() => { void refresh(); }}
+        onPageChange={(nextPage) => { if (nextPage !== page) { scrollAfterPageLoad.current = true; setPage(nextPage); } }}
+        onPageSizeChange={(size) => { scrollAfterPageLoad.current = true; setPageSize(size); setPage(1); }} />}
     </section>
 
     <TaskReviewDialog

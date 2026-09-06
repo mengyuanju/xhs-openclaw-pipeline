@@ -46,11 +46,25 @@ test('selected operator is sent as an exact account alongside role, state and Qu
 test('old centers and malformed pages cannot be presented as complete results', async () => {
   let taskReads = 0;
   await assert.rejects(loadAdminTaskPage(async () => { taskReads += 1; return { capabilities: {} }; }), /更新.*中心/u);
-  assert.equal(taskReads, 1);
+  assert.equal(taskReads, 2);
   for (const response of [[], { items: [], total: 250 }, { items: [], total: -1, limit: 20, offset: 0 }]) {
     await assert.rejects(loadAdminTaskPage(async (path) => path.endsWith('/health')
       ? { capabilities: { adminTaskFilters: true } } : response), /分页/u);
   }
+});
+
+test('health and task page requests start together without a network waterfall', async () => {
+  const calls = [];
+  let releaseHealth;
+  const health = new Promise((resolve) => { releaseHealth = resolve; });
+  const pending = loadAdminTaskPage((path) => {
+    calls.push(path);
+    return path.endsWith('/health') ? health : Promise.resolve({ items: [], total: 0, limit: 20, offset: 0 });
+  });
+  try {
+    assert.equal(calls.length, 2, 'task query must start before health completes');
+  } finally { releaseHealth({ capabilities: { adminTaskFilters: true } }); }
+  await pending;
 });
 
 test('task read failures remain errors instead of becoming an empty page', async () => {
@@ -58,4 +72,18 @@ test('task read failures remain errors instead of becoming an empty page', async
     if (path.endsWith('/health')) return { capabilities: { adminTaskFilters: true } };
     throw new Error('test service unavailable');
   }), /test service unavailable/u);
+});
+
+test('unsupported centers fail promptly even if the concurrent task read stalls or rejects', async () => {
+  const { promise, resolve } = Promise.withResolvers();
+  const pending = loadAdminTaskPage((path) => path.endsWith('/health')
+    ? Promise.resolve({ capabilities: {} }) : promise);
+  const outcome = await Promise.race([
+    pending.then(() => 'unexpected success', (error) => error.message),
+    new Promise((done) => setImmediate(() => done('still waiting for tasks'))),
+  ]);
+  resolve({ items: [], total: 0, limit: 20, offset: 0 });
+  assert.match(outcome, /更新.*中心/u);
+  await assert.rejects(loadAdminTaskPage((path) => path.endsWith('/health')
+    ? Promise.resolve({ capabilities: {} }) : Promise.reject(new Error('legacy task endpoint failed'))), /更新.*中心/u);
 });
