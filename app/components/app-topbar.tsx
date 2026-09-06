@@ -31,6 +31,7 @@ type RouteMeta = {
 };
 
 const routeMeta: Array<{ match: (pathname: string) => boolean; meta: RouteMeta }> = [
+  { match: (pathname) => pathname === '/workbench-statistics', meta: { section: '运营与系统', title: '作业统计', icon: BarChart3 } },
   ...WORKBENCH_VIEWS.map((view) => ({
     match: (pathname: string) => pathname === view.href,
     meta: { section: '作业中心', title: view.label, icon: view.icon },

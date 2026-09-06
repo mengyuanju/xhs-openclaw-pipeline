@@ -20,7 +20,7 @@ test('new creation workbench keeps the old dashboard and exposes lifecycle views
 
   assert.match(page, /redirect\('\/workbench\/personal'\)/u);
   assert.match(listPage, /viewKey=\{definition.key\}/u);
-  assert.match(listPage, /key=\{definition.key\}/u);
+  assert.match(listPage, /key=\{[^\n]*definition\.key/u);
   assert.match(listPage, /creatorUserId=\{session.username \|\| 'admin'\}/u);
   assert.match(listPage, /role=\{role\}/u);
   assert.match(listPage, /if \(!definition\) notFound\(\)/u);

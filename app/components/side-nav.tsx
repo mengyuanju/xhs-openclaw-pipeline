@@ -57,6 +57,7 @@ const navigationGroups: NavigationGroup[] = [
   {
     label: '运营与系统',
     items: [
+      { href: '/workbench-statistics', label: '作业统计', icon: BarChart3 },
       { href: '/analytics', label: '数据统计', icon: BarChart3, hidden: true },
       { href: '/openclaw-traces', label: '模型链路', icon: Waypoints, hidden: true },
       { href: '/settings', label: '生产配置', icon: Settings2 },

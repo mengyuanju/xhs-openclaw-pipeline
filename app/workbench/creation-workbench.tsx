@@ -35,6 +35,9 @@ import { AdminJobFilters, CREATOR_ROLE_LABELS } from './admin-job-filters';
 import type { JobCreator } from './admin-creator-filter';
 import { loadAdminTaskPage } from '../../src/control-plane/admin-task-page.mjs';
 import { WorkbenchPagination } from './workbench-pagination';
+import { PersonalOverview } from '../workbench-statistics/personal-overview';
+import { STATE_GROUPS } from '../../src/web-statistics/summary.mjs';
+import type { StateGroup } from '../workbench-statistics/types';
 
 import { compareTasksByStatePriority, WORKBENCH_VIEWS, matchesWorkbenchView, type TaskState, type ViewKey } from './views';
 
@@ -157,7 +160,9 @@ function timeLabel(value: string | null) {
   return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '尚未开始';
 }
 
-export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: activeView }: { nodeId: string; creatorUserId: string; role: string; viewKey: ViewKey }) {
+export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: activeView, initialCreator = '', initialTaskId = null }: {
+  nodeId: string; creatorUserId: string; role: string; viewKey: ViewKey; initialCreator?: string; initialTaskId?: number | null;
+}) {
   const router = useRouter();
   const activeDefinition = WORKBENCH_VIEWS.find((view) => view.key === activeView)!;
   const isAllJobs = activeView === 'ALL_JOBS';
@@ -172,7 +177,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
   const [searchInput, setSearchInput] = useState('');
   const [searchKeyword, setSearchKeyword] = useState('');
   const [creatorRoleFilter, setCreatorRoleFilter] = useState('ALL');
-  const [creatorFilter, setCreatorFilter] = useState<JobCreator | null>(null);
+  const [creatorFilter, setCreatorFilter] = useState<JobCreator | null>(initialCreator && isAllJobs
+    ? { username: initialCreator, displayName: initialCreator, role: '', status: 'ACTIVE' } : null);
   const [stateFilter, setStateFilter] = useState('ALL');
   const [fetchError, setFetchError] = useState('');
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
@@ -185,7 +191,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
   const queryBatch = useMemo(() => parseQueryBatch(queryText), [queryText]);
   const [imageCount, setImageCount] = useState('auto');
   const [createOpen, setCreateOpen] = useState(false);
-  const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
+  const [selectedTaskId, setSelectedTaskId] = useState<number | null>(isAllJobs ? initialTaskId : null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -206,10 +212,12 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
     }
     try {
       const view = activeDefinition;
+      const personalStates = view.personalOnly ? Object.hasOwn(STATE_GROUPS, stateFilter)
+        ? STATE_GROUPS[stateFilter as StateGroup] : Object.values(STATE_GROUPS).flat() : null;
       const search = new URLSearchParams(legacyStateFilterMode.current
         ? { limit: '200', offset: '0' }
         : {
-            states: view.states.join(','),
+            states: (personalStates ?? view.states).join(','),
             limit: String(pageSize),
             offset: String((page - 1) * pageSize),
             includeTotal: 'true',
@@ -247,7 +255,9 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
         const legacyTasks = compatibilityTasks
           ?? await request<DistributedTask[]>(apiPath(`/v1/tasks?${legacySearch}`));
         const keyword = searchKeyword.toLocaleLowerCase('zh-CN');
-        const filtered = legacyTasks.filter((task) => matchesWorkbenchView(task, view, creatorUserId)
+        const filtered = legacyTasks.filter((task) => (personalStates
+          ? task.createdByUserId === creatorUserId && personalStates.includes(task.state)
+          : matchesWorkbenchView(task, view, creatorUserId))
           && (!keyword || task.query.toLocaleLowerCase('zh-CN').includes(keyword)))
           .sort(compareTasksByStatePriority);
         taskPage = {
@@ -493,6 +503,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
 
 
   return <div className="creation-workbench">
+    {activeView === 'PERSONAL' && <PersonalOverview filter={stateFilter} onFilter={value => { setStateFilter(value); setPage(1); }} />}
     <section className="panel workbench-task-panel">
       <div className="workbench-toolbar">
         <div>
@@ -611,7 +622,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
         : fetchError && !lastUpdatedAt ? <div className="empty-state">暂时无法读取任务，请重试。</div>
         : visibleTasks.length === 0
           ? <div className="workbench-empty">
-            <span>{isAllJobs ? '没有符合当前筛选条件的作业。' : activeView === 'PERSONAL' ? '当前没有你创建的 Query 任务。' : `当前没有${activeDefinition.label}任务。`}</span>
+            <span>{isAllJobs || hasFilters ? '没有符合当前筛选条件的作业。' : activeView === 'PERSONAL' ? '当前没有你创建的 Query 任务。' : `当前没有${activeDefinition.label}任务。`}</span>
             {activeView === 'PERSONAL' && <button className="button small" type="button" onClick={() => setCreateOpen(true)}><Plus size={14} />创建第一条笔记</button>}
           </div>
           : <div ref={listStart} className="table-wrap mobile-cards workbench-table-wrap" tabIndex={0} role="region" aria-label="作业列表，可横向滚动查看完整列" aria-busy={loading} inert={loading}>
