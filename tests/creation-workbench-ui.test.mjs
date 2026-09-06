@@ -35,7 +35,8 @@ test('new creation workbench keeps the old dashboard and exposes lifecycle views
   assert.match(views, /states: \['IMAGE_QUEUED', 'IMAGE_RUNNING'\]/u);
   assert.match(views, /label: '人工归档'/u);
   assert.match(views, /states: \['MANUAL_ARCHIVE'\]/u);
-  assert.doesNotMatch(views, /label: '已完成'|key: 'COMPLETED'/u);
+  assert.match(views, /label: '已完成'/u);
+  assert.match(views, /states: \['REVIEWED'\]/u);
   assert.match(navigation, /children: WORKBENCH_VIEWS/u);
   assert.match(navigation, /aria-current=\{selected \? 'page' : undefined\}/u);
   assert.match(navigation, /href: '\/workbench', label: '作业中心'/u);
@@ -143,11 +144,11 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
 
 test('task detail shows the image collection directly after copy and before planning', async () => {
   const source = await readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8');
-  const headings = ['标题、正文与标签', '当前生成图片', '配图策划', '联网资料来源'];
+  const headings = ['标题、正文与标签', '图片审核', '配图策划', '联网资料来源'];
   const positions = headings.map((heading) => source.indexOf(`<h3>${heading}</h3>`));
   assert.ok(positions.every((position) => position >= 0));
   assert.deepEqual([...positions].sort((a, b) => a - b), positions);
-  assert.equal(source.match(/<h3>当前生成图片<\/h3>/gu)?.length, 1);
+  assert.equal(source.match(/<h3>图片审核<\/h3>/gu)?.length, 1);
   assert.match(source, /assets\.length > 0 \? '04' : '03'/u);
   assert.match(source, /assets\.length > 0 \? '05' : '04'/u);
 });

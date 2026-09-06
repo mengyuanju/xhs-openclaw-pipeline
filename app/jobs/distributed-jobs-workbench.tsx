@@ -67,6 +67,7 @@ const STATE_LABELS: Record<TaskState, string> = {
   IMAGE_RUNNING: '生图中',
   IMAGE_FAILED: '生图失败',
   MANUAL_ARCHIVE: '人工归档',
+  REVIEWED: '已审核',
   CANCELLED: '已取消',
 };
 

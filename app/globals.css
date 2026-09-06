@@ -1083,7 +1083,7 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .workbench-elapsed { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .workbench-state-copy_running, .workbench-state-image_running { color: #8d571a; background: #fff1d9; }
 .workbench-state-copy_review_pending, .workbench-state-image_queued { color: #286b88; background: #e7f3f7; }
-.workbench-state-manual_archive { color: #126443; background: #e5f5ed; }
+.workbench-state-manual_archive, .workbench-state-reviewed { color: #126443; background: #e5f5ed; }
 .workbench-state-copy_failed { color: #a52232; background: #ffe8eb; }
 .workbench-empty { min-height: 230px; display: grid; place-items: center; align-content: center; gap: 14px; padding: 40px 20px; color: var(--muted); text-align: center; }
 .workbench-create-dialog { width: min(calc(100vw - 32px), 720px); max-height: min(88vh, 820px); display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; padding: 0; border: 1px solid var(--line); border-radius: 16px; color: var(--ink); background: var(--surface); box-shadow: 0 28px 80px rgba(45,35,28,.24); }

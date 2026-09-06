@@ -178,13 +178,16 @@ test('manual archive download returns one ZIP with copy text and original image 
         storagePath,
       }),
     }, async (root) => {
-      const response = await fetch(`${root}/v1/tasks/12/archive`);
-      assert.equal(response.status, 200);
-      assert.equal(response.headers.get('content-type'), 'application/zip');
-      assert.match(response.headers.get('content-disposition'), /filename\*=UTF-8''/u);
-      const zip = await JSZip.loadAsync(await response.arrayBuffer());
-      assert.ok(zip.file('归档任务.txt'));
-      assert.equal(await zip.file('01-cover.png').async('string'), 'png-content');
+      for (const state of ['MANUAL_ARCHIVE', 'REVIEWED']) {
+        task.state = state;
+        const response = await fetch(`${root}/v1/tasks/12/archive`);
+        assert.equal(response.status, 200);
+        assert.equal(response.headers.get('content-type'), 'application/zip');
+        assert.match(response.headers.get('content-disposition'), /filename\*=UTF-8''/u);
+        const zip = await JSZip.loadAsync(await response.arrayBuffer());
+        assert.ok(zip.file('归档任务.txt'));
+        assert.equal(await zip.file('01-cover.png').async('string'), 'png-content');
+      }
     }, { storageRoot });
   } finally {
     await rm(storageRoot, { recursive: true, force: true });

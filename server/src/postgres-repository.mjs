@@ -32,13 +32,14 @@ function taskStateOrder(column) {
   if (!['state', 'page.state'].includes(column)) throw new TypeError('task state order column is invalid');
   return `CASE
     WHEN ${column} = 'COPY_REVIEW_PENDING' THEN 1
-    WHEN ${column} = 'COPY_RUNNING' THEN 2
-    WHEN ${column} = 'IMAGE_RUNNING' THEN 3
-    WHEN ${column} IN ('COPY_FAILED', 'IMAGE_FAILED') THEN 4
-    WHEN ${column} IN ('COPY_QUEUED', 'IMAGE_QUEUED') THEN 5
-    WHEN ${column} = 'MANUAL_ARCHIVE' THEN 6
-    WHEN ${column} = 'CANCELLED' THEN 7
-    ELSE 8
+    WHEN ${column} = 'MANUAL_ARCHIVE' THEN 2
+    WHEN ${column} = 'COPY_RUNNING' THEN 3
+    WHEN ${column} = 'IMAGE_RUNNING' THEN 4
+    WHEN ${column} IN ('COPY_FAILED', 'IMAGE_FAILED') THEN 5
+    WHEN ${column} IN ('COPY_QUEUED', 'IMAGE_QUEUED') THEN 6
+    WHEN ${column} = 'REVIEWED' THEN 7
+    WHEN ${column} = 'CANCELLED' THEN 8
+    ELSE 9
   END`;
 }
 
@@ -53,6 +54,8 @@ function taskFrom(row) {
       : Number(row.requested_image_count),
     aiDisclosureEnabled: row.ai_disclosure_enabled ?? true,
     state: row.state,
+    imageReviewedAt: row.image_reviewed_at ?? null,
+    imageReviewedByUserId: row.image_reviewed_by_user_id ?? null,
     createdByNodeId: row.created_by_node_id,
     createdByUserId: row.created_by_user_id ?? null,
     createdByRole: row.creator_role ?? null,
@@ -597,7 +600,7 @@ export class PostgresControlPlaneRepository {
         AND e.kind = 'IMAGE' AND e.status = 'RUNNING' AND page.state = 'IMAGE_RUNNING'
       LEFT JOIN image_runs delivered_run ON delivered_run.id = page.current_image_run_id
         AND delivered_run.task_id = page.id AND delivered_run.status = 'COMPLETED'
-        AND page.state = 'MANUAL_ARCHIVE'
+        AND page.state IN ('MANUAL_ARCHIVE', 'REVIEWED')
       LEFT JOIN task_executions successful_image ON successful_image.id = delivered_run.execution_id
         AND successful_image.task_id = page.id
         AND successful_image.kind = 'IMAGE' AND successful_image.status = 'SUCCEEDED'
@@ -1043,6 +1046,50 @@ export class PostgresControlPlaneRepository {
         RETURNING *
       `, values);
       return taskFrom(task.rows[0]);
+    });
+  }
+
+  async reviewImages(rawTaskId, { imageRunId: rawImageRunId, decision, reviewerUserId: rawReviewerUserId }) {
+    const taskId = normalizeTaskId(rawTaskId);
+    const imageRunId = normalizeUuid(rawImageRunId, 'imageRunId');
+    const reviewerUserId = normalizeCreatorUserId(rawReviewerUserId);
+    if (!['APPROVE', 'RETRY', 'DISCARD'].includes(decision)) throw new TypeError('image review decision is invalid');
+    const retry = decision === 'RETRY';
+    const approved = decision === 'APPROVE';
+    const state = approved ? 'REVIEWED' : retry ? 'IMAGE_QUEUED' : 'CANCELLED';
+    const message = approved ? '图片审核通过，任务已完成'
+      : retry ? '审核员要求重新生成图片，等待图片执行机领取' : '任务已被审核员废弃';
+    return transaction(this.pool, async (client) => {
+      const result = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
+      const task = result.rows[0];
+      if (!task) throw new ControlPlaneNotFoundError('task not found');
+      if (task.state !== 'MANUAL_ARCHIVE') {
+        throw new ControlPlaneConflictError('INVALID_TASK_STATE', '任务已不在人工归档阶段，请刷新后重试');
+      }
+      if (task.current_image_run_id !== imageRunId) {
+        throw new ControlPlaneConflictError('STALE_IMAGE_RUN', '图片版本已变化，请刷新后重新审核');
+      }
+      if (approved) {
+        const run = await client.query(`
+          SELECT id FROM image_runs WHERE id = $1 AND task_id = $2
+            AND copy_revision_id = $3 AND status = 'COMPLETED'
+        `, [imageRunId, taskId, task.current_copy_revision_id]);
+        if (!run.rows[0]) throw new ControlPlaneConflictError('STALE_IMAGE_RUN', '当前文案对应的图片尚未生成完成');
+      }
+      const updated = await client.query(`
+        UPDATE tasks SET
+          state = $2, current_stage = $2, progress_message = $3,
+          current_execution_id = NULL, pending_snapshot = NULL, error = NULL,
+          current_image_run_id = ${retry ? 'NULL' : 'current_image_run_id'},
+          progress_percent = ${retry ? 0 : 100},
+          execution_started_at = ${retry ? 'NULL' : 'execution_started_at'},
+          finished_at = ${retry ? 'NULL' : 'COALESCE(finished_at, now())'},
+          image_reviewed_at = ${approved ? 'now()' : 'NULL'},
+          image_reviewed_by_user_id = $4,
+          last_activity_at = now(), updated_at = now()
+        WHERE id = $1 RETURNING *
+      `, [taskId, state, message, approved ? reviewerUserId : null]);
+      return taskFrom(updated.rows[0]);
     });
   }
 

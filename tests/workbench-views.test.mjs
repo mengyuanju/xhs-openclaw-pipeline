@@ -3,11 +3,11 @@ import test from 'node:test';
 
 import { compareTasksByStatePriority, TASK_STATE_PRIORITY, WORKBENCH_VIEWS, matchesWorkbenchView } from '../app/workbench/views.ts';
 
-test('workbench routes place all copy directly under the personal list and omit completed', () => {
+test('workbench routes include completed work after manual archive', () => {
   assert.deepEqual(WORKBENCH_VIEWS.map((view) => view.label), [
-    '个人作业中心', '全部文案任务', '待文案审核', '生图中', '人工归档', '全部作业',
+    '个人作业中心', '全部文案任务', '待文案审核', '生图中', '人工归档', '已完成', '全部作业',
   ]);
-  assert.equal(new Set(WORKBENCH_VIEWS.map((view) => view.href)).size, 6);
+  assert.equal(new Set(WORKBENCH_VIEWS.map((view) => view.href)).size, 7);
   assert.ok(WORKBENCH_VIEWS.every((view) => view.href.startsWith('/workbench/')));
 });
 
@@ -26,7 +26,7 @@ test('personal tasks include every active lifecycle state owned by the current u
   const personal = WORKBENCH_VIEWS[0];
   assert.deepEqual(personal.states, [
     'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_FAILED',
-    'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE',
+    'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'REVIEWED',
   ]);
   const tasks = [
     { id: 1, state: 'COPY_QUEUED', createdByUserId: 'alice', copyExecutorNodeId: 'other-node' },
@@ -54,14 +54,15 @@ test('personal tasks include every active lifecycle state owned by the current u
 test('task lists prioritize lifecycle state and use newest-first order within a state', () => {
   assert.deepEqual(TASK_STATE_PRIORITY, {
     COPY_REVIEW_PENDING: 1,
-    COPY_RUNNING: 2,
-    IMAGE_RUNNING: 3,
-    COPY_FAILED: 4,
-    IMAGE_FAILED: 4,
-    COPY_QUEUED: 5,
-    IMAGE_QUEUED: 5,
-    MANUAL_ARCHIVE: 6,
-    CANCELLED: 7,
+    MANUAL_ARCHIVE: 2,
+    COPY_RUNNING: 3,
+    IMAGE_RUNNING: 4,
+    COPY_FAILED: 5,
+    IMAGE_FAILED: 5,
+    COPY_QUEUED: 6,
+    IMAGE_QUEUED: 6,
+    REVIEWED: 7,
+    CANCELLED: 8,
   });
   const tasks = [
     { id: 1, state: 'MANUAL_ARCHIVE', createdAt: '2026-09-05T12:00:00.000Z' },
@@ -72,5 +73,15 @@ test('task lists prioritize lifecycle state and use newest-first order within a 
     { id: 6, state: 'COPY_FAILED', createdAt: '2026-09-05T15:00:00.000Z' },
     { id: 7, state: 'IMAGE_QUEUED', createdAt: '2026-09-05T16:00:00.000Z' },
   ];
-  assert.deepEqual(tasks.sort(compareTasksByStatePriority).map((task) => task.id), [4, 2, 3, 5, 6, 7, 1]);
+  assert.deepEqual(tasks.sort(compareTasksByStatePriority).map((task) => task.id), [4, 2, 1, 3, 5, 6, 7]);
+});
+
+test('only approved images enter completed work and remain visible to their creator', () => {
+  const completed = WORKBENCH_VIEWS.find((view) => view.key === 'COMPLETED');
+  assert.ok(completed);
+  assert.equal(completed.href, '/workbench/completed');
+  for (const state of Object.keys(TASK_STATE_PRIORITY)) {
+    assert.equal(matchesWorkbenchView({ state }, completed, 'reviewer'), state === 'REVIEWED');
+  }
+  assert.equal(matchesWorkbenchView({ state: 'REVIEWED', createdByUserId: 'alice' }, WORKBENCH_VIEWS[0], 'alice'), true);
 });
