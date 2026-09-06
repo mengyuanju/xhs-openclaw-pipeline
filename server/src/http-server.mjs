@@ -265,7 +265,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy) {
   });
   router.get('/v1/tasks/:taskId/archive', async (ctx) => {
     const { task } = await assertTaskAccess(ctx, repository);
-    if (task.state !== 'MANUAL_ARCHIVE') {
+    if (!['MANUAL_ARCHIVE', 'REVIEWED'].includes(task.state)) {
       throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'only manually archived tasks can be downloaded');
     }
     const content = await buildTaskArchive(task, async (assetId) => {
@@ -329,6 +329,14 @@ function installRoutes(router, repository, storageRoot, analyzeCopy) {
   router.post('/v1/tasks/:taskId/approve-copy', async (ctx) => {
     await assertTaskAccess(ctx, repository);
     json(ctx, 200, await repository.approveCopy(ctx.params.taskId, requireJson(ctx)));
+  });
+  router.post('/v1/tasks/:taskId/review-images', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    await assertTaskAccess(ctx, repository);
+    const { imageRunId, decision } = requireJson(ctx);
+    json(ctx, 200, await repository.reviewImages(ctx.params.taskId, {
+      imageRunId, decision, reviewerUserId: actor.username,
+    }));
   });
   router.post('/v1/tasks/:taskId/retry', async (ctx) => {
     await assertTaskAccess(ctx, repository, { ownerOnly: requestActor(ctx).role !== 'ADMIN' });

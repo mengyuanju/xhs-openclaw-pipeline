@@ -3,20 +3,21 @@ import { FileCheck2, FileText, Image as ImageIcon, UserRound } from 'lucide-reac
 export type TaskState =
   | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_FAILED'
   | 'IMAGE_QUEUED' | 'IMAGE_RUNNING' | 'IMAGE_FAILED'
-  | 'MANUAL_ARCHIVE' | 'CANCELLED';
+  | 'MANUAL_ARCHIVE' | 'REVIEWED' | 'CANCELLED';
 
-export type ViewKey = 'PERSONAL' | 'ALL_COPY' | 'COPY_REVIEW' | 'IMAGE_WORK' | 'MANUAL_ARCHIVE';
+export type ViewKey = 'PERSONAL' | 'ALL_COPY' | 'COPY_REVIEW' | 'IMAGE_WORK' | 'MANUAL_ARCHIVE' | 'COMPLETED';
 
 export const TASK_STATE_PRIORITY: Record<TaskState, number> = {
   COPY_REVIEW_PENDING: 1,
-  COPY_RUNNING: 2,
-  IMAGE_RUNNING: 3,
-  COPY_FAILED: 4,
-  IMAGE_FAILED: 4,
-  COPY_QUEUED: 5,
-  IMAGE_QUEUED: 5,
-  MANUAL_ARCHIVE: 6,
-  CANCELLED: 7,
+  MANUAL_ARCHIVE: 2,
+  COPY_RUNNING: 3,
+  IMAGE_RUNNING: 4,
+  COPY_FAILED: 5,
+  IMAGE_FAILED: 5,
+  COPY_QUEUED: 6,
+  IMAGE_QUEUED: 6,
+  REVIEWED: 7,
+  CANCELLED: 8,
 };
 
 export function compareTasksByStatePriority<T extends { id: number; state: TaskState; createdAt: string }>(left: T, right: T) {
@@ -46,7 +47,7 @@ export const WORKBENCH_VIEWS: Array<{
     icon: UserRound,
     states: [
       'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_FAILED',
-      'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE',
+      'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'REVIEWED',
     ],
     personalOnly: true,
   },
@@ -78,9 +79,17 @@ export const WORKBENCH_VIEWS: Array<{
     key: 'MANUAL_ARCHIVE',
     href: '/workbench/manual-archive',
     label: '人工归档',
-    description: '显示所有用户图片生成成功、等待人工归档的图文任务。',
+    description: '审核生成的图文，由审核员选择审核通过、重试生图或废弃。',
     icon: FileCheck2,
     states: ['MANUAL_ARCHIVE'],
+  },
+  {
+    key: 'COMPLETED',
+    href: '/workbench/completed',
+    label: '已完成',
+    description: '显示图片已审核通过的图文任务，可查看详情和下载资源。',
+    icon: FileCheck2,
+    states: ['REVIEWED'],
   },
 ];
 

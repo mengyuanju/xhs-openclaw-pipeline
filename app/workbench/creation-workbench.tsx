@@ -39,6 +39,7 @@ type DistributedTask = {
   id: number;
   query: string;
   state: TaskState;
+  currentImageRunId: string | null;
   copyExecutorNodeId: string | null;
   imageExecutorNodeId?: string | null;
   imageExecutorNodeName?: string | null;
@@ -76,7 +77,8 @@ const STATE_LABELS: Record<TaskState, string> = {
   IMAGE_RUNNING: '生图中',
   IMAGE_FAILED: '生图失败',
   MANUAL_ARCHIVE: '人工归档',
-  CANCELLED: '已取消',
+  REVIEWED: '已审核',
+  CANCELLED: '已废弃',
 };
 
 const STAGE_LABELS: Record<string, string> = {
@@ -106,6 +108,7 @@ const STAGE_LABELS: Record<string, string> = {
   IMAGE_RUNNING: '生图中',
   IMAGE_FAILED: '生图失败',
   MANUAL_ARCHIVE: '人工归档',
+  REVIEWED: '已审核',
   FAILED: '执行失败',
   CANCELLED: '已取消',
 };
@@ -325,10 +328,11 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
     })) return;
     setActingTaskId(task.id);
     try {
-      await apiRequest(apiPath(`/v1/tasks/${task.id}/cancel`), {
+      const imageReview = task.state === 'MANUAL_ARCHIVE' && ['ADMIN', 'REVIEWER'].includes(role);
+      await apiRequest(apiPath(imageReview ? `/v1/tasks/${task.id}/review-images` : `/v1/tasks/${task.id}/cancel`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: '{}',
+        body: imageReview ? JSON.stringify({ imageRunId: task.currentImageRunId, decision: 'DISCARD' }) : '{}',
       });
       setMessage(`任务 #${task.id} 已废弃。`);
       setError('');
@@ -365,9 +369,10 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
       <button className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>
       {retryImageButton}
     </div>;
-    if (activeView === 'MANUAL_ARCHIVE') return <div className="workbench-row-actions">
-      <button className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>
-      {canDiscard && <button className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</button>}
+    if (task.state === 'REVIEWED') return <button className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>;
+    if (task.state === 'MANUAL_ARCHIVE' && ['ADMIN', 'REVIEWER'].includes(role)) return <div className="workbench-row-actions">
+      <button className="button small primary" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />审核</button>
+      <button className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</button>
     </div>;
     return <div className="workbench-row-actions">
       <button className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>
@@ -570,6 +575,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
     <TaskReviewDialog
       taskId={selectedTaskId}
       nodeId={nodeId}
+      role={role}
       onOpenChange={(open) => { if (!open) setSelectedTaskId(null); }}
       onUpdated={async (notice) => {
         setMessage(notice);

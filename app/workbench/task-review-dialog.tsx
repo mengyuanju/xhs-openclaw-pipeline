@@ -1,6 +1,6 @@
 'use client';
 
-import { CheckCircle2, Download, LoaderCircle, RefreshCw } from 'lucide-react';
+import { CheckCircle2, Download, LoaderCircle, RefreshCw, RotateCcw, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 
 import {
@@ -21,7 +21,7 @@ import { ImagePreview } from '../components/image-preview';
 type TaskState =
   | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_FAILED'
   | 'IMAGE_QUEUED' | 'IMAGE_RUNNING' | 'IMAGE_FAILED'
-  | 'MANUAL_ARCHIVE' | 'CANCELLED';
+  | 'MANUAL_ARCHIVE' | 'REVIEWED' | 'CANCELLED';
 
 type Copy = { title: string; body: string; tags: string[] };
 type ImagePlanItem = {
@@ -48,6 +48,8 @@ type TaskDetail = {
   query: string;
   aiDisclosureEnabled: boolean;
   state: TaskState;
+  imageReviewedAt: string | null;
+  imageReviewedByUserId: string | null;
   copyExecutorNodeId: string | null;
   currentCopyRevisionId: number | null;
   currentImageRunId: string | null;
@@ -96,7 +98,8 @@ const STATE_LABELS: Record<TaskState, string> = {
   IMAGE_RUNNING: '生图中',
   IMAGE_FAILED: '生图失败',
   MANUAL_ARCHIVE: '人工归档',
-  CANCELLED: '已取消',
+  REVIEWED: '已审核',
+  CANCELLED: '已废弃',
 };
 const STAGE_LABELS: Record<string, string> = {
   IMAGE_RETRY_EXHAUSTED: IMAGE_RETRY_EXHAUSTED_LABEL,
@@ -125,8 +128,9 @@ const STAGE_LABELS: Record<string, string> = {
   IMAGE_RUNNING: '生图中',
   IMAGE_FAILED: '生图失败',
   MANUAL_ARCHIVE: '人工归档',
+  REVIEWED: '已审核',
   FAILED: '执行失败',
-  CANCELLED: '已取消',
+  CANCELLED: '已废弃',
 };
 const IMAGE_KINDS: ImagePlanItem['kind'][] = ['hero', 'steps', 'checklist', 'comparison', 'detail', 'summary'];
 const IMAGE_KIND_LABELS: Record<ImagePlanItem['kind'], string> = {
@@ -171,11 +175,13 @@ function draftFromRevision(revision: CopyRevision | undefined): ReviewDraft | nu
 export function TaskReviewDialog({
   taskId,
   nodeId,
+  role,
   onOpenChange,
   onUpdated,
 }: {
   taskId: number | null;
   nodeId: string;
+  role: string;
   onOpenChange: (open: boolean) => void;
   onUpdated: (message: string) => void | Promise<void>;
 }) {
@@ -220,6 +226,9 @@ export function TaskReviewDialog({
   const revision = currentRevision(detail);
   const editable = detail?.state === 'COPY_REVIEW_PENDING'
     && Boolean(revision && draft);
+  const canReviewImages = detail?.state === 'MANUAL_ARCHIVE'
+    && ['ADMIN', 'REVIEWER'].includes(role) && Boolean(detail.currentImageRunId);
+  const downloadable = detail && ['MANUAL_ARCHIVE', 'REVIEWED'].includes(detail.state);
   const sources = revision?.content.generation?.research?.sources ?? [];
   const assets = useMemo(() => detail?.assets.filter(
     (asset) => asset.imageRunId === detail.currentImageRunId,
@@ -288,18 +297,42 @@ export function TaskReviewDialog({
     }
   }
 
+  async function submitImageReview(decision: 'APPROVE' | 'RETRY' | 'DISCARD') {
+    if (!detail || !canReviewImages || submitting) return;
+    const options = {
+      APPROVE: { title: '确认图片审核通过？', description: '当前图文将标记为已审核，并移入已完成列表。', confirmLabel: '审核通过' },
+      RETRY: { title: '重新生成这条任务的图片？', description: '保留已审核文案，使用最新配置重新生成整套图片；旧图片保留在历史记录中，生成会产生模型费用。', confirmLabel: '重试生图' },
+      DISCARD: { title: '废弃这条图文任务？', description: '任务会移出业务列表，历史文案、执行记录和图片仍会保留。', confirmLabel: '确认废弃', tone: 'danger' as const },
+    };
+    if (!await confirm(options[decision])) return;
+    setSubmitting(true);
+    setError('');
+    try {
+      await apiRequest(apiPath(`/v1/tasks/${detail.id}/review-images`), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageRunId: detail.currentImageRunId, decision }),
+      });
+      await onUpdated(decision === 'APPROVE' ? '图片审核通过，任务已进入已完成列表。'
+        : decision === 'RETRY' ? '任务已回到生图队列，等待重新生成图片。' : '任务已废弃。');
+      onOpenChange(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '图片审核提交失败');
+    } finally { setSubmitting(false); }
+  }
+
   return <Dialog open={taskId !== null} onOpenChange={(open) => { if (!submitting) onOpenChange(open); }}>
     <DialogContent className="workbench-review-dialog">
       <header className="workbench-review-heading">
         <div>
           <span className="section-kicker">Task {detail ? `#${detail.id}` : ''}</span>
-          <DialogTitle>{detail?.state === 'MANUAL_ARCHIVE' ? '人工归档详情' : '任务详情与审核'}</DialogTitle>
+          <DialogTitle>{detail?.state === 'REVIEWED' ? '已完成任务详情' : detail?.state === 'MANUAL_ARCHIVE' ? '人工归档详情' : '任务详情与审核'}</DialogTitle>
           <DialogDescription>{detail?.state === 'MANUAL_ARCHIVE'
-            ? '查看已生成的文案和图片，并下载完整资源包。'
+            ? '核对文案与图片后，选择审核通过、重试生图或废弃。'
+            : detail?.state === 'REVIEWED' ? '图文已审核通过，可查看详情并下载完整资源包。'
             : '核对任务信息，直接修改文案和配图策划后提交审核。'}</DialogDescription>
         </div>
         <div className="workbench-row-actions">
-          {detail?.state === 'MANUAL_ARCHIVE' && <a className="button small primary" href={apiPath(`/v1/tasks/${detail.id}/archive`)} download>
+          {downloadable && <a className="button small primary" href={apiPath(`/v1/tasks/${detail.id}/archive`)} download>
             <Download size={14} />下载资源
           </a>}
           {detail && <label
@@ -337,6 +370,10 @@ export function TaskReviewDialog({
                 <div><dt>开始时间</dt><dd>{dateTime(detail.executionStartedAt)}</dd></div>
                 <div><dt>当前阶段</dt><dd>{stageLabel(detail)}</dd></div>
                 <div><dt>最后更新</dt><dd>{dateTime(detail.lastActivityAt)}</dd></div>
+                {detail.state === 'REVIEWED' && <>
+                  <div><dt>图片审核人</dt><dd>{detail.imageReviewedByUserId ?? '—'}</dd></div>
+                  <div><dt>审核时间</dt><dd>{dateTime(detail.imageReviewedAt)}</dd></div>
+                </>}
               </dl>
               {detail.progressMessage && <div className="workbench-review-progress">{detail.progressMessage}</div>}
               {detail.error && <div className="notice error" role="alert">{detail.error}</div>}
@@ -365,8 +402,9 @@ export function TaskReviewDialog({
 
             {!draft && <div className="workbench-review-empty">当前任务还没有可审核的文案版本。</div>}
 
-            {assets.length > 0 && <section className="workbench-review-section">
-              <div className="workbench-review-section-title"><span>{draft ? '03' : '02'}</span><div><h3>当前生成图片</h3><p>核对当前图片运行生成的完整图集。</p></div></div>
+            {(assets.length > 0 || canReviewImages) && <section className="workbench-review-section">
+              <div className="workbench-review-section-title"><span>{draft ? '03' : '02'}</span><div><h3>图片审核</h3><p>核对当前图片运行生成的完整图集。</p></div></div>
+              {assets.length === 0 && <p className="notice warning">当前没有可预览的图片，请刷新核对，或选择重试生图、废弃。</p>}
               {currentImageRun?.result?.simulation?.enabled && <div className="notice warning">
                 {currentImageRun.result.visualPlan?.warning?.message
                   ?? '当前图片来自联网搜索模拟，仅用于流程联调，请人工核对来源与使用范围。'}
@@ -400,6 +438,12 @@ export function TaskReviewDialog({
                   </figcaption>
                 </figure>;
               })}</div>
+              {canReviewImages && <div className="workbench-row-actions">
+                <button className="button primary" type="button" disabled={submitting || loading || assets.length === 0} onClick={() => { void submitImageReview('APPROVE'); }}><CheckCircle2 size={15} />审核通过</button>
+                <button className="button" type="button" disabled={submitting || loading} onClick={() => { void submitImageReview('RETRY'); }}><RotateCcw size={15} />重试生图</button>
+                <button className="button danger" type="button" disabled={submitting || loading} onClick={() => { void submitImageReview('DISCARD'); }}><Trash2 size={15} />废弃</button>
+                {submitting && <span role="status">正在提交…</span>}
+              </div>}
             </section>}
 
             {draft && <>
