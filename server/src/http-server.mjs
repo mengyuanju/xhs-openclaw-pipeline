@@ -231,6 +231,10 @@ function installRoutes(router, repository, storageRoot, analyzeCopy) {
   router.get('/v1/nodes', async (ctx) => {
     json(ctx, 200, await repository.listNodes());
   });
+  router.get('/v1/executor-statuses', async (ctx) => {
+    requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.listNodes());
+  });
   router.post('/v1/tasks', async (ctx) => {
     const actor = requestActor(ctx);
     const body = requireJson(ctx);
@@ -341,6 +345,10 @@ function installRoutes(router, repository, storageRoot, analyzeCopy) {
   router.post('/v1/tasks/:taskId/retry', async (ctx) => {
     await assertTaskAccess(ctx, repository, { ownerOnly: requestActor(ctx).role !== 'ADMIN' });
     json(ctx, 200, await repository.retryTask(ctx.params.taskId, requireJson(ctx)));
+  });
+  router.post('/v1/tasks/:taskId/retry-image', async (ctx) => {
+    await assertTaskAccess(ctx, repository, { ownerOnly: requestActor(ctx).role !== 'ADMIN' });
+    json(ctx, 200, await repository.requeueImageTask(ctx.params.taskId));
   });
   router.post('/v1/tasks/:taskId/cancel', async (ctx) => {
     await assertTaskAccess(ctx, repository, { ownerOnly: requestActor(ctx).role !== 'ADMIN' });

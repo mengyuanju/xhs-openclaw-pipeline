@@ -191,10 +191,12 @@ export function TaskReviewDialog({
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [aiDisclosureEnabled, setAiDisclosureEnabled] = useState(true);
+  const [activeAssetIndex, setActiveAssetIndex] = useState<number | null>(null);
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
     if (!taskId) return;
+    setActiveAssetIndex(null);
     setLoading(true);
     try {
       const next = await apiRequest<TaskDetail>(apiPath(`/v1/tasks/${taskId}`));
@@ -214,6 +216,7 @@ export function TaskReviewDialog({
       setDetail(null);
       setDraft(null);
       setAiDisclosureEnabled(true);
+      setActiveAssetIndex(null);
       setError('');
       return;
     }
@@ -238,6 +241,10 @@ export function TaskReviewDialog({
       .filter((image) => Number.isSafeInteger(image.assetId))
       .map((image) => [image.assetId as number, image]),
   ), [currentImageRun]);
+
+  useEffect(() => {
+    if (activeAssetIndex !== null && activeAssetIndex >= assets.length) setActiveAssetIndex(null);
+  }, [activeAssetIndex, assets.length]);
 
   function updateCopy(field: 'title' | 'body' | 'tags', value: string) {
     setDraft((current) => current ? {
@@ -328,14 +335,20 @@ export function TaskReviewDialog({
           {downloadable && <a className="button small primary" href={apiPath(`/v1/tasks/${detail.id}/archive`)} download>
             <Download size={14} />下载资源
           </a>}
-          {detail && <label className="switch-field workbench-ai-disclosure-toggle" title="开启后，生成图片会显示“AI生成”水印">
+          {detail && <label
+            className="switch-field workbench-ai-disclosure-toggle"
+            data-checked={aiDisclosureEnabled}
+            title="开启后，生成图片会显示“AI生成”水印"
+          >
             <input
               type="checkbox"
               checked={aiDisclosureEnabled}
               disabled={!editable || loading || submitting}
               onChange={(event) => setAiDisclosureEnabled(event.target.checked)}
             />
-            <span>AI生成</span>
+            <span className="workbench-ai-disclosure-switch" aria-hidden="true" />
+            <span className="workbench-ai-disclosure-label">AI生成水印</span>
+            <strong>{aiDisclosureEnabled ? '已开启' : '已关闭'}</strong>
           </label>}
           <button className="button small" type="button" disabled={loading || submitting} onClick={() => { void load(); }}>
             <RefreshCw className={loading ? 'animate-spin' : ''} size={14} />刷新
@@ -400,7 +413,17 @@ export function TaskReviewDialog({
                 const resultImage = resultImageByAssetId.get(asset.id);
                 const alt = asset.originalName || `任务 ${detail.id} 第 ${index + 1} 张图片`;
                 return <figure key={asset.id}>
-                  <ImagePreview src={apiPath(asset.url)} alt={alt} />
+                  <ImagePreview
+                    src={apiPath(asset.url)}
+                    alt={alt}
+                    isOpen={activeAssetIndex === index}
+                    position={index + 1}
+                    total={assets.length}
+                    onOpen={() => setActiveAssetIndex(index)}
+                    onClose={() => setActiveAssetIndex((current) => current === index ? null : current)}
+                    onPrevious={index > 0 ? () => setActiveAssetIndex(index - 1) : undefined}
+                    onNext={index < assets.length - 1 ? () => setActiveAssetIndex(index + 1) : undefined}
+                  />
                   <figcaption>
                     <strong>第 {resultImage?.pageIndex ?? index + 1} 张</strong>
                     <span>{resultImage?.provider === 'deepseek-web-image-simulation'

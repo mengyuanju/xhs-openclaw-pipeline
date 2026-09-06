@@ -108,7 +108,7 @@ test('control plane client surfaces structured stale execution conflicts', async
   );
 });
 
-test('control plane client supports paged task search, counts and logical cancellation', async () => {
+test('control plane client supports paged task search, counts, image retry and logical cancellation', async () => {
   const calls = [];
   const client = createControlPlaneClient({
     baseUrl: 'http://127.0.0.1:4310',
@@ -130,14 +130,17 @@ test('control plane client supports paged task search, counts and logical cancel
     includeTotal: true,
   });
   await client.taskCounts('node-a');
+  await client.retryImageTask(7);
   await client.cancelTask(7);
 
   assert.match(calls[0].url, /states=COPY_QUEUED%2CCOPY_FAILED/u);
   assert.match(calls[0].url, /query=%E9%BB%84%E5%B1%B1/u);
   assert.match(calls[0].url, /includeTotal=true/u);
   assert.equal(calls[1].url, 'http://127.0.0.1:4310/v1/task-counts?nodeId=node-a');
-  assert.equal(calls[2].url, 'http://127.0.0.1:4310/v1/tasks/7/cancel');
+  assert.equal(calls[2].url, 'http://127.0.0.1:4310/v1/tasks/7/retry-image');
   assert.equal(calls[2].init.method, 'POST');
+  assert.equal(calls[3].url, 'http://127.0.0.1:4310/v1/tasks/7/cancel');
+  assert.equal(calls[3].init.method, 'POST');
 });
 
 test('failure reporting falls back to a bounded message for an older control plane varchar limit', async () => {

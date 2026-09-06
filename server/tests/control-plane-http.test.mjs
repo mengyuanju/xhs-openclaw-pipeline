@@ -8,8 +8,8 @@ import JSZip from 'jszip';
 import { createControlPlaneApp } from '../src/http-server.mjs';
 import { ControlPlaneConflictError } from '../src/domain.mjs';
 
-async function withServer(repository, action, { storageRoot = 'test-storage' } = {}) {
-  const app = createControlPlaneApp({ repository, storageRoot, enforceUserAuth: false });
+async function withServer(repository, action, { storageRoot = 'test-storage', enforceUserAuth = false } = {}) {
+  const app = createControlPlaneApp({ repository, storageRoot, enforceUserAuth });
   let server;
   await new Promise((resolve, reject) => {
     server = app.listen(0, '127.0.0.1', resolve);
@@ -103,6 +103,33 @@ test('control plane HTTP exposes node registration and batched task creation', a
   assert.equal('copyExecutorNodeId' in calls[1][1], false);
 });
 
+test('executor status inventory is restricted to administrators', async () => {
+  const nodes = [{ id: 'node-a', online: true, imageRunningCount: 1 }];
+  const repository = {
+    listNodes: async () => nodes,
+    getUserByUsername: async (username) => ({
+      id: username === 'admin' ? 1 : 2,
+      username,
+      role: username === 'admin' ? 'ADMIN' : 'REVIEWER',
+      status: 'ACTIVE',
+      credentialVersion: 1,
+    }),
+  };
+  const headers = (username, role) => ({
+    'X-Actor-Username': username,
+    'X-Actor-Role': role,
+    'X-Actor-Credential-Version': '1',
+  });
+  await withServer(repository, async (root) => {
+    const admin = await fetch(`${root}/v1/executor-statuses`, { headers: headers('admin', 'ADMIN') });
+    assert.equal(admin.status, 200);
+    assert.deepEqual((await admin.json()).data, nodes);
+    const reviewer = await fetch(`${root}/v1/executor-statuses`, { headers: headers('reviewer', 'REVIEWER') });
+    assert.equal(reviewer.status, 403);
+    assert.equal((await reviewer.json()).error.code, 'FORBIDDEN');
+  }, { enforceUserAuth: true });
+});
+
 test('control plane HTTP returns a structured stale execution conflict', async () => {
   const repository = {
     updateProgress: async () => {
@@ -150,6 +177,21 @@ test('copy approval forwards the editable review payload as one operation', asyn
     taskId: '7',
     input: { revisionId: 12, nodeId: 'node-a', edits, aiDisclosureEnabled: false },
   });
+});
+
+test('manual image retry route sends the task back to the image queue', async () => {
+  let receivedTaskId;
+  await withServer({
+    requeueImageTask: async (taskId) => {
+      receivedTaskId = taskId;
+      return { id: Number(taskId), state: 'IMAGE_QUEUED' };
+    },
+  }, async (root) => {
+    const response = await fetch(`${root}/v1/tasks/9/retry-image`, { method: 'POST' });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).data.state, 'IMAGE_QUEUED');
+  });
+  assert.equal(receivedTaskId, '9');
 });
 
 test('manual archive download returns one ZIP with copy text and original image names', async () => {

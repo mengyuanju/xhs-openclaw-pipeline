@@ -30,7 +30,7 @@ async function proxyRequest(
   if (routePath === '/v1/tasks' && upstreamUrl.searchParams.has('createdByRole') && role !== 'ADMIN') {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可按创建者角色筛选任务');
   }
-  if (role === 'REVIEWER' && (/^\/v1\/(?:settings|prompts|prompt-versions|users)(?:\/|$)/u.test(routePath))) {
+  if (role === 'REVIEWER' && (/^\/v1\/(?:settings|prompts|prompt-versions|users|executor-statuses)(?:\/|$)/u.test(routePath))) {
     throw new ApiError(403, 'FORBIDDEN', '审核员没有该管理权限');
   }
   if (role === 'USER' && !/^\/v1\/(?:tasks|nodes|assets|profile)(?:\/|$)/u.test(routePath)) {

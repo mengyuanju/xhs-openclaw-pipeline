@@ -45,6 +45,7 @@ type DistributedTask = {
   copyExecutorNodeId: string | null;
   imageExecutorNodeId?: string | null;
   imageExecutorNodeName?: string | null;
+  currentCopyRevisionId: number | null;
   createdByUserId: string | null;
   createdByDisplayName: string | null;
   createdByRole?: string | null;
@@ -122,6 +123,12 @@ function stageLabel(task: DistributedTask) {
 function copyExecutorLabel(task: DistributedTask, nodes: ExecutorNode[]) {
   if (!task.copyExecutorNodeId) return task.state === 'COPY_QUEUED' ? '待领取' : '—';
   return nodes.find((node) => node.id === task.copyExecutorNodeId)?.name ?? task.copyExecutorNodeId;
+}
+
+function canRequeueImages(task: DistributedTask) {
+  return task.currentCopyRevisionId !== null
+    && (['IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE'].includes(task.state)
+      || isImageRetryExhausted(task));
 }
 
 const STALE_AFTER_MS = 30 * 60_000;
@@ -349,6 +356,30 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
     }
   }
 
+  async function retryImages(task: DistributedTask) {
+    if (!canRequeueImages(task)) return;
+    if (!await confirm({
+      title: '重新生成这组图片？',
+      description: '正在执行的生图任务会立即作废；系统将保留历史记录，清除旧恢复快照，并使用已审核文案重新进入全局待生图队列。',
+      confirmLabel: '重试生图',
+    })) return;
+    setActingTaskId(task.id);
+    try {
+      await apiRequest<DistributedTask>(apiPath(`/v1/tasks/${task.id}/retry-image`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      setMessage(`任务 #${task.id} 已进入待生图队列，等待图片执行机领取。`);
+      setError('');
+      await refresh({ silent: true });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '重新生成图片失败');
+    } finally {
+      setActingTaskId(null);
+    }
+  }
+
   async function discardTask(task: DistributedTask) {
     if (!await confirm({
       title: '废弃这条笔记创作？',
@@ -379,6 +410,14 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
     if (isAllJobs) return <button className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>;
     const canDiscard = role === 'ADMIN' || task.createdByUserId === creatorUserId;
     const canRetryCopy = canDiscard && ['COPY_RUNNING', 'COPY_FAILED'].includes(task.state);
+    const canRetryImages = canDiscard && canRequeueImages(task);
+    const retryImageButton = <button
+      className="button small"
+      type="button"
+      disabled={busy || !canRetryImages}
+      title={canRetryImages ? '重新进入待生图队列' : '文案尚未审核通过，暂不能重试生图'}
+      onClick={() => { void retryImages(task); }}
+    ><RotateCcw size={14} />重试生图</button>;
     if (activeView === 'ALL_COPY') return <div className="workbench-row-actions">
       <button className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>
       {canRetryCopy && <button className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</button>}
@@ -390,6 +429,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
     </div>;
     if (activeView === 'IMAGE_WORK') return <div className="workbench-row-actions">
       <button className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>
+      {retryImageButton}
     </div>;
     if (task.state === 'REVIEWED') return <button className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>;
     if (task.state === 'MANUAL_ARCHIVE' && ['ADMIN', 'REVIEWER'].includes(role)) return <div className="workbench-row-actions">
@@ -399,6 +439,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
     return <div className="workbench-row-actions">
       <button className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>
       {activeView === 'PERSONAL' && canRetryCopy && <button className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</button>}
+      {activeView === 'PERSONAL' && retryImageButton}
       {canDiscard && <button className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</button>}
     </div>;
   }

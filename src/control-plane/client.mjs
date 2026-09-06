@@ -156,6 +156,9 @@ export function createControlPlaneClient({
     retryTask: (taskId, input = {}) => request(`/v1/tasks/${taskId}/retry`, {
       method: 'POST', body: input,
     }),
+    retryImageTask: (taskId) => request(`/v1/tasks/${taskId}/retry-image`, {
+      method: 'POST', body: {},
+    }),
     cancelTask: (taskId) => request(`/v1/tasks/${taskId}/cancel`, {
       method: 'POST', body: {},
     }),
