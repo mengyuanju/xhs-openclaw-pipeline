@@ -17,6 +17,11 @@ test('all jobs is restricted to administrators without removing reviewer work qu
     assert.deepEqual(evaluateAdminProxyRequest(request('/workbench/all'), environment),
       { type: role === 'ADMIN' ? 'next' : 'forbidden' });
     assert.equal(evaluateAdminProxyRequest(request('/workbench/personal'), environment).type, 'next');
+    assert.equal(evaluateAdminProxyRequest(request('/api/workbench-statistics?scope=personal'), environment).type, 'next');
+    assert.equal(evaluateAdminProxyRequest(request('/workbench-statistics'), environment).type,
+      role === 'ADMIN' ? 'next' : 'forbidden');
+    assert.equal(evaluateAdminProxyRequest(request('/api/workbench-statistics/anything'), environment).type,
+      role === 'ADMIN' ? 'next' : 'forbidden');
     if (role === 'REVIEWER') {
       assert.equal(evaluateAdminProxyRequest(request('/workbench/copy-review'), environment).type, 'next');
     }

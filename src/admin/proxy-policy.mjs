@@ -30,6 +30,7 @@ export function evaluateAdminProxyRequest(request, environment = process.env) {
     const alwaysAllowed = url.pathname === '/profile'
       || url.pathname.startsWith('/api/profile')
       || url.pathname === '/api/auth/logout'
+      || (['USER', 'REVIEWER'].includes(role) && url.pathname === '/api/workbench-statistics')
       || url.pathname.startsWith('/api/control-plane/');
     if (alwaysAllowed) return { type: 'next' };
     if (role === 'REVIEWER') {

@@ -1,0 +1,93 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { normalizeRange, compactTask, compactDetail, summarizeCounts, summarizeEfficiency } from '../src/web-statistics/summary.mjs';
+
+const now = Date.parse('2026-09-06T08:00:00Z');
+const task = (id, patch = {}) => compactTask({ id, state: 'COPY_QUEUED', createdByUserId: 'alice',
+  createdAt: '2026-09-06T01:00:00Z', updatedAt: '2026-09-06T02:00:00Z', ...patch });
+
+test('Shanghai day boundaries and valid bounded calendar ranges', () => {
+  const range = normalizeRange({}, Date.parse('2026-09-05T16:00:00Z'));
+  assert.equal(range.from, '2026-09-06');
+  assert.equal(range.startMs, Date.parse('2026-09-05T16:00:00Z'));
+  assert.equal(range.endMs, Date.parse('2026-09-06T16:00:00Z'));
+  assert.equal(normalizeRange({ period: '7d' }, now).from, '2026-08-31');
+  for (const input of [{ period: 'custom', from: '2026-02-30', to: '2026-03-01' },
+    { period: 'custom', from: '2026-09-07', to: '2026-09-06' },
+    { period: 'custom', from: '2020-01-01', to: '2026-09-06' }]) assert.throws(() => normalizeRange(input, now));
+});
+
+test('counts deduplicate tasks, include discarded history and distinguish creation from completion', () => {
+  const rows = [task(1), task(2, { state: 'CANCELLED' }), task(3, { state: 'REVIEWED',
+    createdAt: '2026-09-04T01:00:00Z', imageReviewedAt: '2026-09-06T01:00:00Z' }),
+    task(4, { createdAt: '2026-09-05T15:59:59Z', state: 'COPY_REVIEW_PENDING', currentStage: 'IMAGE_RETRY_EXHAUSTED' }), task(1)];
+  const summary = summarizeCounts(rows, normalizeRange({}, now), now);
+  assert.equal(summary.total, 4);
+  assert.equal(summary.createdInPeriod, 2);
+  assert.equal(summary.completedInPeriod, 1);
+  assert.equal(summary.cancelled, 1);
+  assert.equal(summary.completed, 1);
+  assert.equal(summary.pending, 2);
+  assert.equal(summary.anomalies, 1);
+  assert.equal(summary.trend[0].created, 2);
+  assert.equal(summary.trend[0].completed, 1);
+});
+
+test('people include unassigned history and no-count periods still report cumulative totals', () => {
+  const summary = summarizeCounts([task(1, { createdByUserId: null }), task(2, { createdByUserId: 'bob',
+    createdAt: '2026-08-01T01:00:00Z' })], normalizeRange({}, now), now);
+  assert.equal(summary.people.find(p => p.username === 'bob').createdInPeriod, 0);
+  assert.equal(summary.people.find(p => p.username === 'bob').total, 1);
+  assert.equal(summary.people.find(p => p.username === null).total, 1);
+});
+
+test('cached task and detail facts never retain prompts, model responses or snapshots', () => {
+  const minimal = task(1, { input: { prompt: 'private' }, error: 'private error', secret: 'private' });
+  const detail = compactDetail({ id: 1, executions: [{ id: 'copy', kind: 'COPY', status: 'SUCCEEDED',
+    snapshot: { secret: 'private' }, progressDetails: { prompt: 'private' } }],
+    copyRevisions: [{ content: { body: 'private' } }], imageRuns: [], assets: [] });
+  assert.equal(JSON.stringify([minimal, detail]).includes('private'), false);
+});
+
+test('execution means exclude failures, abandoned and simulation; delivery and image output have separate units', () => {
+  const rows = [task(1, { state: 'REVIEWED', imageReviewedAt: '2026-09-06T02:00:00Z', currentImageRunId: 'run' })];
+  const execution = (id, kind, status, seconds) => ({ id, kind, status, startedAt: '2026-09-06T01:00:00Z',
+    finishedAt: new Date(Date.parse('2026-09-06T01:00:00Z') + seconds * 1000).toISOString() });
+  const detail = compactDetail({ id: 1, executions: [execution('c1', 'COPY', 'FAILED', 100),
+    execution('c2', 'COPY', 'SUCCEEDED', 20), execution('c3', 'COPY', 'SUCCEEDED', 40),
+    execution('i1', 'IMAGE', 'SUCCEEDED', 60), execution('sim', 'IMAGE', 'SUCCEEDED', 1),
+    execution('abandoned', 'IMAGE', 'ABANDONED', 90),
+    { id: 'invalid', kind: 'COPY', status: 'SUCCEEDED', finishedAt: '2026-09-06T01:00:00Z' }],
+    imageRuns: [{ id: 'run', executionId: 'i1' }, { id: 'simulation', executionId: 'sim', result: { simulation: { enabled: true } } }],
+    assets: [{ id: 1, imageRunId: 'run', mediaType: 'image/png' }, { id: 2, imageRunId: 'run', mediaType: 'image/png' },
+      { id: 3, imageRunId: 'old', mediaType: 'image/png' }, { id: 4, imageRunId: 'run', mediaType: 'text/plain' }] });
+  const summary = summarizeEfficiency(rows, new Map([[1, detail]]), normalizeRange({}, now));
+  assert.equal(summary.copy.meanMs, 30000);
+  assert.equal(summary.copy.samples, 2);
+  assert.equal(summary.copy.medianMs, 30000);
+  assert.equal(summary.copy.p90Ms, 40000);
+  assert.equal(summary.copy.failed, 1);
+  assert.equal(summary.copy.invalid, 1);
+  assert.equal(summary.image.meanMs, 60000);
+  assert.equal(summary.image.abandoned, 1);
+  assert.equal(summary.simulated, 1);
+  assert.equal(summary.effectiveImages, 2);
+  assert.equal(summary.delivery.meanMs, 3600000);
+  assert.equal(summarizeEfficiency([], new Map(), normalizeRange({}, now)).copy.meanMs, null);
+});
+
+test('terminal tasks with old retry markers are not current anomalies and unattached assets are not delivered images', () => {
+  const rows = [task(1, { state: 'CANCELLED', currentStage: 'IMAGE_RETRY_EXHAUSTED' }),
+    task(2, { state: 'REVIEWED', imageReviewedAt: '2026-09-06T02:00:00Z' })];
+  const range = normalizeRange({}, now);
+  assert.equal(summarizeCounts(rows, range, now).anomalies, 0);
+  const detail = compactDetail({ executions: [], imageRuns: [], assets: [{ id: 1, imageRunId: null, mediaType: 'image/png' }] });
+  assert.equal(summarizeEfficiency(rows, new Map([[2, detail]]), range).effectiveImages, 0);
+});
+
+test('malformed execution kinds fail closed and metadata cannot retain arbitrary objects', () => {
+  assert.throws(() => compactDetail({ executions: [{ id: 'bad', kind: '__proto__', status: 'SUCCEEDED' }], imageRuns: [], assets: [] }));
+  const row = task(1, { createdByDisplayName: { secret: 'private' }, createdAt: { private: true }, currentImageRunId: { private: true } });
+  assert.equal(row.createdByDisplayName, null);
+  assert.equal(JSON.stringify(row).includes('private'), false);
+});
