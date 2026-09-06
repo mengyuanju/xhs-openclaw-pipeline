@@ -105,7 +105,7 @@ describe('production settings contract', () => {
     }), /between 30000 and 540000/iu);
     assert.throws(() => normalizeProductionSettings({
       modelApi: { copyGenerationProvider: 'UNTRUSTED' },
-    }), /OPENCLAW or DOTS/iu);
+    }), /CODEX or DOTS/iu);
     assert.throws(() => normalizeProductionSettings({
       modelApi: { dotsBaseUrl: 'http://127.0.0.1:3000' },
     }), /documented Dots API origin/iu);

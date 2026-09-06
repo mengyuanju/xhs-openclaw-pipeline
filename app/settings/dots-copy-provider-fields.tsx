@@ -9,13 +9,13 @@ import {
 } from '@/components/ui/select';
 
 type DotsSettings = {
-  copyGenerationProvider: 'OPENCLAW' | 'DOTS' | null;
+  copyGenerationProvider: 'CODEX' | 'DOTS' | null;
   dotsBaseUrl: string | null;
   dotsModel: string | null;
 };
 
 type EffectiveDotsSettings = {
-  copyGenerationProvider: 'OPENCLAW' | 'DOTS';
+  copyGenerationProvider: 'CODEX' | 'DOTS';
   dotsBaseUrl: string;
   dotsModel: string;
   dotsApiKeyConfigured: boolean;
@@ -47,13 +47,13 @@ export function DotsCopyProviderFields({
       <Select
         value={value.copyGenerationProvider ?? INHERIT_VALUE}
         onValueChange={(selected) => onProviderChange(
-          selected === INHERIT_VALUE ? null : selected as 'OPENCLAW' | 'DOTS',
+          selected === INHERIT_VALUE ? null : selected as 'CODEX' | 'DOTS',
         )}
       >
         <SelectTrigger id="model-api-copy-provider"><SelectValue /></SelectTrigger>
         <SelectContent>
           <SelectItem value={INHERIT_VALUE}>环境或默认值（{effective.copyGenerationProvider === 'DOTS' ? 'Dots' : '默认生成引擎'}）</SelectItem>
-          <SelectItem value="OPENCLAW">默认生成引擎（Codex / OpenClaw）</SelectItem>
+          <SelectItem value="CODEX">默认生成引擎（Codex / Codex）</SelectItem>
           <SelectItem value="DOTS">Dots Chat Completions</SelectItem>
         </SelectContent>
       </Select>

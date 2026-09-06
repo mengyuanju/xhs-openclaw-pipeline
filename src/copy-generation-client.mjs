@@ -1,18 +1,18 @@
 import { createDotsChatClient } from './dots-chat-client.mjs';
 import { effectiveModelApiConfig } from './model-api-config.mjs';
-import { createAgentClient as createOpenClawClient } from './agent-client.mjs';
+import { createAgentClient } from './agent-client.mjs';
 import { withWebSearchProvider } from './web-search-service.mjs';
 
 export function createCopyGenerationClient({
   modelApi = {},
   environment = process.env,
-  openclaw,
+  agentClient,
   fetchImpl = fetch,
 } = {}) {
   const configuration = effectiveModelApiConfig(modelApi, environment);
-  const resolvedOpenClaw = openclaw
-    ? withWebSearchProvider(openclaw, { environment, fetchImpl, settings: modelApi })
-    : createOpenClawClient({ modelApi, environment, fetchImpl });
+  const resolvedAgent = agentClient
+    ? withWebSearchProvider(agentClient, { environment, fetchImpl, settings: modelApi })
+    : createAgentClient({ modelApi, environment, fetchImpl });
   const textClient = configuration.copyGenerationProvider === 'DOTS'
     ? createDotsChatClient({
       apiKey: environment.XHS_DOTS_API_KEY,
@@ -20,17 +20,17 @@ export function createCopyGenerationClient({
       model: configuration.dotsModel,
       fetchImpl,
     })
-    : resolvedOpenClaw;
+    : resolvedAgent;
   return {
-    ...resolvedOpenClaw,
+    ...resolvedAgent,
     runText(input) {
       return textClient.runText({ ...input, thinking: configuration.copyGenerationThinking });
     },
     runReview(input) {
-      return resolvedOpenClaw.runReview({ ...input, thinking: configuration.copyGenerationThinking });
+      return resolvedAgent.runReview({ ...input, thinking: configuration.copyGenerationThinking });
     },
     runWebSearch(input) {
-      return resolvedOpenClaw.runWebSearch(input);
+      return resolvedAgent.runWebSearch(input);
     },
   };
 }

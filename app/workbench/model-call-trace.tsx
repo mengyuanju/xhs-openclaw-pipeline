@@ -83,7 +83,7 @@ export function ModelCallTrace({ taskId }: { taskId: number }) {
   return <details className="model-call-trace workbench-review-section" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
     <summary><strong>模型调用链路</strong><span>{open ? '收起' : '展开查看每一步的提示词与返回内容'}</span></summary>
     {open && <div className="model-call-trace-content">
-      <p className="model-call-note">按执行轮次和调用顺序记录，重试单独保留。这里展示项目实际发送和收到的内容（已脱敏）；OpenClaw 内部未返回的子调用不可见。“已返回”不代表业务校验通过。</p>
+      <p className="model-call-note">按执行轮次和调用顺序记录，重试单独保留。这里展示项目实际发送和收到的内容（已脱敏）；Codex 内部未返回的子调用不可见。“已返回”不代表业务校验通过。</p>
       <div className="model-call-toolbar"><span>{data ? `共 ${data.total} 次调用` : '模型调用记录'}</span>
         <button type="button" className="button" onClick={() => setRevision((value) => value + 1)}>刷新记录</button></div>
       {error && <div role="alert" className="notice error">加载失败：{error}。请确认中心服务已升级，可点击刷新重试。</div>}

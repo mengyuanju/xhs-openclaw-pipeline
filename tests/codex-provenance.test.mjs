@@ -5,7 +5,6 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAdminStore } from '../src/admin/admin-store.mjs';
-import { screenImportRowsWithOpenClaw } from '../src/admin/demand-screening-service.mjs';
 import { runQueryReview, isReusableStageReview, queryReviewSubject } from '../src/content-stage-review.mjs';
 
 test('the previous OpenClaw-only SQLite constraint migrates without losing model provenance', async (t) => {
@@ -36,9 +35,8 @@ test('the previous OpenClaw-only SQLite constraint migrates without losing model
 test('Codex demand screening is persisted with its real provider and model', async () => {
   const store = createAdminStore(':memory:');
   try {
-    const rows = await screenImportRowsWithOpenClaw({ rows: [{ rowNumber: 2, query: '桌面如何整理', input: {}, imageCount: 3, errors: [], referenceImageFiles: [] }],
-      openclaw: { provider: 'codex', async runText() { return { provider: 'codex', model: 'openai/gpt-5.6-sol',
-        rawText: JSON.stringify({ decisions: [{ rowNumber: 2, demandLevel: 'STRONG', reason: '需要具体整理步骤' }] }) }; } } });
+    const rows = [{ rowNumber: 2, query: '桌面如何整理', input: {}, imageCount: 3, errors: [], referenceImageFiles: [],
+      screening: { source: 'CODEX', model: 'openai/gpt-5.6-sol', demandLevel: 'STRONG', reason: '需要具体整理步骤', admitted: true } }];
     assert.equal(rows[0].screening.source, 'CODEX');
     const batch = store.createImportBatch({ name: 'Codex import', sourceFileName: 'test.xlsx', rows });
     const row = store.getImportBatch(batch.id).rows[0];

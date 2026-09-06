@@ -1,17 +1,10 @@
 # Windows 执行机部署指南
 
-整理日期：2026-09-05。适用场景：在另一台 Windows 电脑部署执行代理，连接已经运行的中心服务。示例项目目录为 `C:\xhs`，示例中心地址为 `http://192.168.1.100:4310`；请替换为实际地址。
+整理日期：2026-09-06。适用场景：在另一台 Windows 电脑部署执行代理，连接已经运行的中心服务。示例项目目录为 `C:\xhs`，示例中心地址为 `http://192.168.1.100:4310`；请替换为实际地址。
 
 ## 1. 先确认部署的代码版本
 
-本文保留历史 OpenClaw 部署路径，并按当前包含 Codex 适配器与执行机并发队列的版本更新。不要把历史提交的引擎能力当作当前版本的能力。
-
-| 项目版本 | 执行引擎 | 安装与检查方式 |
-| --- | --- | --- |
-| 历史提交 `f2070c6` | OpenClaw | 按第 4.1 节安装；该历史版本没有 `agent:check`、`agent:status`、`agent:resume` 脚本 |
-| 当前 Codex 集成及并发版本 | Codex CLI，可回切 OpenClaw | 按第 4.2 节安装；提供 Codex 诊断脚本及文案/图片并发配置 |
-
-当前执行器通过 `src/agent-client.mjs` 选择引擎，默认使用 Codex CLI 的 ChatGPT 登录。历史 OpenClaw 版本只安装 Codex 或增加环境变量不能获得适配器功能，必须更新完整代码。当前并发版本还要求中心先更新 `0007`、`0008` 迁移与批量领取 API，见 [执行机并发配置](executor-concurrency.md)。
+当前版本仅支持 Codex CLI。旧 OpenClaw 执行器和回退路径已删除；中心须先更新 `0007`、`0008` 迁移与批量领取 API，见 [执行机并发配置](executor-concurrency.md)。
 
 部署前，在准备复制的源码目录检查：
 
@@ -34,7 +27,6 @@ Codex 集成版本至少应包含 `src/agent-client.mjs`、`src/codex.mjs`、`sc
 | --- | --- | --- |
 | Node.js 与 npm | 必需 | 项目要求 `>=24.19.0 <25`；可与本机保持一致，使用 Node.js 24.19.0 |
 | 项目源码和依赖 | 必需 | 保留 `package-lock.json`，在目标电脑执行 `npm.cmd ci` |
-| OpenClaw | OpenClaw 版本必需 | 当前 README 的集成基线为 2026.8.2，需在执行机完成模型授权 |
 | Codex CLI | Codex 集成版本必需 | 此前本机登录和版本预检使用 0.152.1；需在执行机完成 ChatGPT 登录 |
 | DeepSeek Key | 选择 DeepSeek 搜索时必需 | 由每台执行文案任务的电脑本地提供，中心不会下发密钥 |
 | Dots Key | 选择 Dots 文案时必需 | 配置 `XHS_DOTS_API_KEY`，并确认中心的文案提供方设置 |
@@ -72,42 +64,7 @@ npm.cmd ci
 
 ## 4. 安装生成引擎
 
-按第 1 节确认的项目版本选择一个方案。
-
-### 4.1 OpenClaw 回退或历史版本
-
-使用当前项目 README 的版本基线安装：
-
-```powershell
-npm.cmd install -g openclaw@2026.8.2 --allow-scripts=openclaw
-openclaw.cmd --version
-openclaw.cmd onboard
-```
-
-`--allow-scripts` 适用于 npm 11.16 及以上；更早的 npm 不支持该参数。安装方式和平台说明见 [OpenClaw 官方安装文档](https://docs.openclaw.ai/install)。
-
-在向导中完成本机配置和模型授权。首次联调采用前台运行方式，按向导启动 Gateway；具体界面随 CLI 版本变化。需要常驻服务时另行配置，不把执行代理自动启动和 Gateway 安装混为一件事。参见 [OpenClaw 入门说明](https://docs.openclaw.ai/start/getting-started)。
-
-当前项目 README 给出的 OpenAI/Codex 授权入口为：
-
-```powershell
-openclaw.cmd plugins enable openai
-openclaw.cmd models auth login --provider openai-codex
-```
-
-如果对应 CLI 不接受参数，先查看 `openclaw.cmd models auth login --help`，按已安装版本的授权入口操作。
-
-完成后检查：
-
-```powershell
-openclaw.cmd models status --check --json
-openclaw.cmd models list
-openclaw.cmd gateway status
-```
-
-模型状态和 Gateway 状态只证明各自的连接或配置情况；正式上线前还要按第 7 节完成实际任务验收。
-
-### 4.2 Codex 集成版本：Codex CLI
+### 4.1 Codex 集成版本：Codex CLI
 
 本节适用于包含 Codex 适配器的项目版本。本机使用 CLI 0.152.1 完成了登录检查及真实文案、生图和改图测试；具体成功率、耗时与边界见 [真实测试报告](executor-concurrency-live-results.md)。其他电脑仍需使用自己的环境完成验收。
 
@@ -146,7 +103,7 @@ EXECUTOR_POLL_MS=5000
 EXECUTOR_WORK_ROOT=data/executor-work
 IMAGE_WORKER_ENABLED=false
 
-XHS_COPY_GENERATION_PROVIDER=OPENCLAW
+XHS_COPY_GENERATION_PROVIDER=CODEX
 
 # 本示例显式选择 DeepSeek 搜索；不是对所有项目版本默认值的声明。
 XHS_WEB_SEARCH_PROVIDER=DEEPSEEK
@@ -166,7 +123,7 @@ XHS_CODEX_IMAGE_CONCURRENCY=1
 配置规则：
 
 1. 每台机器的 `EXECUTOR_NODE_ID` 必须唯一，重启后保持不变，例如 `xhs-executor-02`、`xhs-executor-03`。
-2. 当前版本的 `XHS_COPY_GENERATION_PROVIDER=OPENCLAW` 是兼容值，实际生成引擎由 `agentProvider` 决定；缺省为 Codex。
+2. 文案生成使用 CODEX 或 DOTS；生成引擎固定为 Codex。
 3. 中心保存的生产配置优先于本机环境默认值。核对文案、搜索、模型和生成引擎；新配置不会改写已领取任务的旧快照。
 4. 选择 Dots 时补充本机 `XHS_DOTS_API_KEY`，以及与中心配置一致的地址和模型。选择 DeepSeek 时必须提供本机 `DEEPSEEK_API_KEY`。
 5. `npm run executor` 自动加载根目录 `.env`，不自动加载 `.env.local`。执行器所需配置放在 `.env` 或进程环境中；修改后重启执行器。
@@ -203,7 +160,7 @@ npm.cmd run agent:check
 npm.cmd run agent:status
 ```
 
-`agent:check` 应通过本机 ChatGPT 登录检查，状态检查没有待处理的认证／额度暂停。历史 `f2070c6` 没有这些脚本，使用第 4.1 节的 OpenClaw 检查。
+`agent:check` 应通过本机 ChatGPT 登录检查，状态检查没有待处理的认证／额度暂停。
 
 `smoke` 使用独立的 `data/smoke.sqlite` 和 `output/smoke`，生成明确标为 mock 的文案、PNG 和 manifest。Mock QC 的 `mock_only`／占位图不可发布属于预期结果；该测试不证明真实模型、中心任务流或账号额度可用。
 
@@ -258,9 +215,9 @@ npm.cmd run build
 npm.cmd start
 ```
 
-`auth:setup` 会在 `.env` 中写入管理员密码哈希和会话密钥，并保留其他设置。打开 [本机 Web 后台](http://127.0.0.1:3001)，使用刚设置的账号入口登录。启动 Web 不会自动启动执行器，执行器需要另一个终端。
+`auth:setup` 会在 `.env` 中写入管理员密码哈希和会话密钥，并保留其他设置。打开 [本机 Web 后台](http://127.0.0.1:3000)，使用刚设置的账号入口登录。启动 Web 不会自动启动执行器，执行器需要另一个终端。
 
-如需可信局域网设备访问，将启动命令改为 `npm.cmd run start:lan`，并按实际网络设置该电脑的 3001 端口访问范围。4310 是中心服务端口，3001 是可选 Web 后台端口，两者用途不同。
+如需可信局域网设备访问，将启动命令改为 `npm.cmd run start:lan`，并按实际网络设置该电脑的 3000 端口访问范围。4310 是中心服务端口，3000 是可选 Web 后台端口，两者用途不同。
 
 ## 9. 日常运行、更新与恢复
 
@@ -291,17 +248,17 @@ npm.cmd run agent:resume
 | PowerShell 拒绝执行 `npm.ps1` | 使用文档中的 `npm.cmd`；npm 安装的 CLI 同理可使用 `.cmd` 启动器 |
 | `CONTROL_PLANE_URL` 或节点 ID 缺失 | 确认在项目根目录启动，文件确实叫 `.env`，字段不为空 |
 | 中心连接失败 | 检查中心 IP、服务状态、监听地址和内网防火墙；先看 TCP 和 `/health` 检查结果 |
-| 节点在线但任务失败 | 当前 OpenClaw 执行器上线检查不证明模型可用；检查本机授权、Gateway、配置模型和实际失败阶段 |
+| 节点在线但任务失败 | 节点在线不证明模型调用成功；检查 Codex 登录、额度暂停、配置模型和实际失败阶段 |
 | 配置了 Key 仍提示缺失 | 检查是否只写在 `.env.local`、是否写在中心而非执行机，以及进程是否已重启 |
 | 修改 `.env` 后提供方未改变 | 检查中心保存的生产配置，以及任务是否仍使用旧快照 |
-| Codex CLI 可运行，项目仍找不到它 | 按第 4.2 节设置真实 `codex.exe` 的绝对路径 |
+| Codex CLI 可运行，项目仍找不到它 | 按第 4.1 节设置真实 `codex.exe` 的绝对路径 |
 | 执行器拒绝启动并提示 `executorConcurrency` 或 `executionRetryControl` | 中心缺少批量领取或失败重试控制能力，先升级并重启中心 |
 | 开启生图后未领取测试任务 | 核对图片开关、人工文案审核状态、全局队列，以及是否被其他在线图片节点领取 |
 | 失败步骤继续提示缺少检查点 | 检查原节点、稳定工作目录和对应任务文件；不要先删除工作目录再尝试恢复 |
 
 ## 11. 交接检查表
 
-- [ ] 已记录部署源码版本，并确认使用 OpenClaw 或 Codex 对应的完整实现。
+- [ ] 已记录部署源码版本，并确认使用当前 Codex 完整实现。
 - [ ] Node.js 满足版本范围，项目依赖安装成功。
 - [ ] 目标 Windows 用户已完成模型登录和配置。
 - [ ] `.env` 的中心地址、唯一节点 ID、工作目录和图片开关正确。
@@ -317,4 +274,4 @@ npm.cmd run agent:resume
 
 项目说明：[README](../README.md)、[分布式控制中心](distributed-control-plane.md)、[图片断点恢复](image-resume-spec.md)、[Codex 迁移与验收](codex-exec-migration.md)、[执行机并发配置](executor-concurrency.md)。
 
-官方说明：[OpenClaw 安装](https://docs.openclaw.ai/install)、[OpenClaw 入门](https://docs.openclaw.ai/start/getting-started)、[Codex CLI](https://learn.chatgpt.com/zh-Hans/docs/codex/cli)、[OpenAI 身份验证](https://learn.chatgpt.com/docs/auth)。工具版本和官方默认安装方式可能变化；项目兼容版本以部署源码和实际验收为准。
+官方说明：[Codex CLI](https://learn.chatgpt.com/zh-Hans/docs/codex/cli)、[OpenAI 身份验证](https://learn.chatgpt.com/docs/auth)。工具版本和官方默认安装方式可能变化；项目兼容版本以部署源码和实际验收为准。

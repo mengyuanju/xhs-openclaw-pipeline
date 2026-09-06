@@ -89,19 +89,19 @@ describe('Dots Chat Completions client', () => {
 
 describe('copy generation provider selection', () => {
   it('uses Dots for copy text while keeping OpenClaw research and reviews', async () => {
-    const openclaw = {
+    const agentClient = {
       async runReview() { return { rawText: 'openclaw-review', model: 'openai/reviewer' }; },
       async runWebSearch() { return { result: 'openclaw-search' }; },
     };
     const client = createCopyGenerationClient({
       modelApi: {
         copyGenerationProvider: 'DOTS',
-        webSearchProvider: 'OPENCLAW',
+        webSearchProvider: 'CODEX',
         dotsBaseUrl: DOTS_BASE_URL,
         dotsModel: 'dots3-note-prev',
       },
       environment: { XHS_DOTS_API_KEY: 'dots-test-key' },
-      openclaw,
+      agentClient,
       async fetchImpl() {
         return new Response(JSON.stringify({
           choices: [{ message: { content: 'dots-copy' } }],
@@ -120,7 +120,7 @@ describe('copy generation provider selection', () => {
 
   it('uses the production-configured thinking effort for OpenClaw copy and review calls', async () => {
     const invocations = [];
-    const openclaw = {
+    const agentClient = {
       async runText(input) {
         invocations.push(['text', input]);
         return { rawText: 'copy', model: 'openai/copy', thinking: input.thinking };
@@ -136,12 +136,12 @@ describe('copy generation provider selection', () => {
     };
     const client = createCopyGenerationClient({
       modelApi: {
-        copyGenerationProvider: 'OPENCLAW',
-        webSearchProvider: 'OPENCLAW',
+        copyGenerationProvider: 'CODEX',
+        webSearchProvider: 'CODEX',
         copyGenerationThinking: 'xhigh',
       },
       environment: {},
-      openclaw,
+      agentClient,
     });
 
     await client.runText({ prompt: '生成。', thinking: 'high' });

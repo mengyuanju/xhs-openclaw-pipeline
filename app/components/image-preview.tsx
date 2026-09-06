@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useState } from 'react';
 
 import {
   Dialog,
@@ -17,8 +17,6 @@ type ImagePreviewProps = {
   alt: string;
   width?: number;
   height?: number;
-  needsCrop?: boolean;
-  busy?: boolean;
   isOpen?: boolean;
   position?: number;
   total?: number;
@@ -26,8 +24,6 @@ type ImagePreviewProps = {
   onClose?: () => void;
   onPrevious?: () => void;
   onNext?: () => void;
-  onCrop?: () => Promise<boolean>;
-  onAiEdit?: (instruction: string) => Promise<boolean>;
 };
 
 export function ImagePreview({
@@ -35,8 +31,6 @@ export function ImagePreview({
   alt,
   width,
   height,
-  needsCrop = false,
-  busy = false,
   isOpen,
   position,
   total,
@@ -44,22 +38,18 @@ export function ImagePreview({
   onClose,
   onPrevious,
   onNext,
-  onCrop,
-  onAiEdit,
 }: ImagePreviewProps) {
   const [internalOpen, setInternalOpen] = useState(false);
   const [viewMode, setViewMode] = useState<PreviewMode>('actual');
   const [zoom, setZoom] = useState(100);
   const [rotation, setRotation] = useState(0);
-  const [instruction, setInstruction] = useState('');
-  const [actionBusy, setActionBusy] = useState(false);
 
   useEffect(() => {
     if (isOpen === false) {
       setViewMode('actual');
       setZoom(100);
       setRotation(0);
-      setActionBusy(false);
+
     }
   }, [isOpen]);
 
@@ -67,7 +57,7 @@ export function ImagePreview({
     setViewMode('actual');
     setZoom(100);
     setRotation(0);
-    setActionBusy(false);
+
   }
 
   function setPreviewOpen(nextOpen: boolean) {
@@ -80,36 +70,6 @@ export function ImagePreview({
     onClose?.();
   }
 
-  function closePreview() {
-    setPreviewOpen(false);
-  }
-
-  async function cropImage() {
-    if (!onCrop) return;
-    setActionBusy(true);
-    try {
-      if (await onCrop()) closePreview();
-    } finally {
-      setActionBusy(false);
-    }
-  }
-
-  async function editWithAi(event: FormEvent) {
-    event.preventDefault();
-    const normalized = instruction.trim();
-    if (!onAiEdit || !normalized) return;
-    setActionBusy(true);
-    try {
-      if (await onAiEdit(normalized)) {
-        setInstruction('');
-        closePreview();
-      }
-    } finally {
-      setActionBusy(false);
-    }
-  }
-
-  const controlsDisabled = busy || actionBusy;
   const isQuarterTurn = Math.abs(rotation % 180) === 90;
   const hasNavigation = typeof position === 'number' && typeof total === 'number' && total > 1;
   const open = isOpen ?? internalOpen;
@@ -199,9 +159,6 @@ export function ImagePreview({
             <button className="button preview-button" type="button" onClick={() => setRotation((value) => value - 90)}>向左旋转</button>
             <button className="button preview-button" type="button" onClick={() => setRotation((value) => value + 90)}>向右旋转</button>
             <button className="button preview-button" type="button" onClick={() => { setViewMode('actual'); setZoom(100); setRotation(0); }}>恢复预览</button>
-            {needsCrop && onCrop
-              ? <button className="button preview-button emphasis" type="button" disabled={controlsDisabled} onClick={cropImage}>裁成 3:4</button>
-              : <span className="preview-size-ok">尺寸已符合 3:4，无需裁剪</span>}
           </div>
         </div>
 
@@ -219,21 +176,6 @@ export function ImagePreview({
           </div>
         </div>
 
-        {onAiEdit && <form className="image-preview-ai" onSubmit={editWithAi}>
-          <label htmlFor={`image-ai-${alt}`}>AI 图片修改要求</label>
-          <div className="inline">
-            <input
-              className="input"
-              id={`image-ai-${alt}`}
-              value={instruction}
-              maxLength={1_000}
-              placeholder="如：保留桌面主体，移除背景杂物，保持自然光"
-              onChange={(event) => setInstruction(event.target.value)}
-            />
-            <button className="button primary" type="submit" disabled={controlsDisabled || !instruction.trim()}>{actionBusy ? '处理中…' : '提交 AI 编辑'}</button>
-          </div>
-          <p>AI 编辑会生成一个可追溯的新版本；预览旋转不会修改文件。</p>
-        </form>}
       </div>
     </DialogContent>
   </Dialog>;

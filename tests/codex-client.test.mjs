@@ -21,7 +21,7 @@ async function fixture(t, runner) {
   const root = await mkdtemp(join(tmpdir(), 'xhs-codex-client-test-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const client = createCodexClient({ executable: process.execPath, asyncRunner: runner,
-    environment: { CODEX_HOME: root, XHS_WEB_SEARCH_PROVIDER: 'OPENCLAW' }, runtime: createCodexRuntime({ databasePath: join(root, 'limits.sqlite') }),
+    environment: { CODEX_HOME: root, XHS_WEB_SEARCH_PROVIDER: 'CODEX' }, runtime: createCodexRuntime({ databasePath: join(root, 'limits.sqlite') }),
     runner: () => ({ status: 0, stdout: '', stderr: 'Logged in using ChatGPT' }) });
   return { root, client };
 }

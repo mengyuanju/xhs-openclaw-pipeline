@@ -321,7 +321,7 @@ describe('image alignment contract', () => {
     await writeFile(imagePath, 'fake-image');
     const calls = [];
     const validator = createImageAlignmentValidator({
-      openclaw: {
+      agentClient: {
         runVision(input) {
           calls.push(input);
           const contract = JSON.parse(input.prompt.match(
@@ -368,7 +368,7 @@ describe('image alignment contract', () => {
     assert.equal(imagePageUsesPortrait(portraitPage), true);
 
     const validator = createImageAlignmentValidator({
-      openclaw: {
+      agentClient: {
         runVision(input) {
           validationPrompt = input.prompt;
           return {
@@ -401,7 +401,7 @@ describe('image alignment contract', () => {
     await writeFile(imagePath, 'fake-image');
     let calls = 0;
     const validator = createImageAlignmentValidator({
-      openclaw: {
+      agentClient: {
         async runVision() {
           calls += 1;
           return {
@@ -428,7 +428,7 @@ describe('image alignment contract', () => {
     const prompts = [];
     const invalidResponses = [];
     const validator = createImageAlignmentValidator({
-      openclaw: {
+      agentClient: {
         async runVision(input) {
           prompts.push(input.prompt);
           return { rawText: 'not-json', model: 'fake-vision' };
@@ -462,7 +462,7 @@ describe('image alignment contract', () => {
     const imagePath = join(directory, '02-steps.png');
     await writeFile(imagePath, 'fake-image');
     const validator = createImageAlignmentValidator({
-      openclaw: {
+      agentClient: {
         async runVision() {
           throw new Error('vision service timeout');
         },

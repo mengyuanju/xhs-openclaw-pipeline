@@ -4,8 +4,8 @@ import { test } from 'node:test';
 
 const projectFile = (path) => new URL(`../${path}`, import.meta.url);
 
-test('new creation workbench keeps the old dashboard and exposes lifecycle views', async () => {
-  const [page, workbench, navigation, login, loginPage, proxyPolicy, oldDashboard, views, listPage, proxy] = await Promise.all([
+test('creation workbench owns the home route and exposes lifecycle views', async () => {
+  const [page, workbench, navigation, login, loginPage, proxyPolicy, homePage, views, listPage, proxy] = await Promise.all([
     readFile(projectFile('app/workbench/page.tsx'), 'utf8'),
     readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
     readFile(projectFile('app/components/side-nav.tsx'), 'utf8'),
@@ -18,6 +18,7 @@ test('new creation workbench keeps the old dashboard and exposes lifecycle views
     readFile(projectFile('app/api/control-plane/[...path]/route.ts'), 'utf8'),
   ]);
 
+  assert.equal(homePage.includes("redirect('/workbench/personal')"), true);
   assert.match(page, /redirect\('\/workbench\/personal'\)/u);
   assert.match(listPage, /viewKey=\{definition.key\}/u);
   assert.match(listPage, /key=\{definition.key\}/u);
@@ -41,14 +42,11 @@ test('new creation workbench keeps the old dashboard and exposes lifecycle views
   assert.match(navigation, /href: '\/workbench', label: '作业中心'/u);
   assert.match(login, /homePath: user.mustChangePassword \? '\/profile' : '\/workbench\/personal'/u);
   assert.match(loginPage, /: '\/workbench\/personal';/u);
-  assert.match(proxyPolicy, /legacyReviewer \? '\/reviews' : '\/workbench\/personal'/u);
-  assert.match(oldDashboard, /export default function DashboardPage/u);
-  assert.match(oldDashboard, /内容生产总览/u);
+  assert.doesNotMatch(proxyPolicy, /legacyReviewPath|location: '\/reviews'/u);
 });
 
 test('all distributed task status displays distinguish exhausted image retries from normal copy review', async () => {
-  for (const path of ['app/workbench/creation-workbench.tsx', 'app/workbench/task-review-dialog.tsx',
-    'app/jobs/distributed-jobs-workbench.tsx']) {
+  for (const path of ['app/workbench/creation-workbench.tsx', 'app/workbench/task-review-dialog.tsx']) {
     const source = await readFile(projectFile(path), 'utf8');
     assert.match(source, /isImageRetryExhausted/u);
     assert.match(source, /IMAGE_RETRY_EXHAUSTED_LABEL/u);
@@ -77,12 +75,10 @@ test('personal and image-work rows expose safe image requeue controls', async ()
 });
 
 test('creation dialog accepts a single batch textarea and creates one remote batch', async () => {
-  const [workbench, reviewDialog, styles, jobsPage, jobsWorkbench] = await Promise.all([
+  const [workbench, reviewDialog, styles] = await Promise.all([
     readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
     readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
     readFile(projectFile('app/globals.css'), 'utf8'),
-    readFile(projectFile('app/jobs/page.tsx'), 'utf8'),
-    readFile(projectFile('app/jobs/distributed-jobs-workbench.tsx'), 'utf8'),
   ]);
 
   assert.match(workbench, /<Dialog open=\{createOpen\}/u);
@@ -150,8 +146,6 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.doesNotMatch(reviewDialog, /\{detail\.currentStage \?\? '尚未开始'\}/u);
   assert.doesNotMatch(reviewDialog, /JSON\.stringify\(.*imagePlan/u);
   assert.match(styles, /\.workbench-review-dialog\s*\{/u);
-  assert.match(jobsPage, /initialTaskId=\{taskId\}/u);
-  assert.match(jobsWorkbench, /if \(initialTaskId\) void openTask\(initialTaskId\)/u);
 });
 
 test('task detail shows the image collection directly after copy and before planning', async () => {

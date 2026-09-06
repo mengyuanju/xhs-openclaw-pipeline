@@ -27,7 +27,7 @@ XHS_CODEX_IMAGE_CONCURRENCY=2
 
 这是应用容量配置示例，不是订阅账号吞吐保证。认证、额度暂停、429 冷却和原有错误处理继续生效。一个任务可能经历规划、文本、OCR、生成、上传等阶段，因此任务池活跃数和实际 Codex 调用数可能不同。
 
-`XHS_IMAGE_CONCURRENCY` 是原有单个任务内部的图片并发，`XHS_TASK_CONCURRENCY` 是旧本机 drain 的完整任务并发；均不控制分布式执行池。OpenClaw 回退仍保留其文本串行限制，本次提供方许可扩展针对当前使用的 Codex。
+`XHS_IMAGE_CONCURRENCY` 是原有单个任务内部的图片并发，`XHS_TASK_CONCURRENCY` 是旧本机 drain 的完整任务并发；均不控制分布式执行池。生成引擎仅保留 Codex，其调用受共享状态库许可约束。
 
 ## 领取与恢复
 

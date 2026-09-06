@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { processNext } from './pipeline.mjs';
 import { createQueue } from './queue.mjs';
 import { effectiveModelApiConfig } from './model-api-config.mjs';
-import { createAgentClient as createOpenClawClient } from './agent-client.mjs';
+import { createAgentClient } from './agent-client.mjs';
 import { createAdminStore } from './admin/admin-store.mjs';
 import { processNextImageEdit } from './admin/image-edit-worker.mjs';
 import { createAdminWorkerIntegration } from './admin/worker-service.mjs';
@@ -47,7 +47,7 @@ export async function main(
     env = process.env,
     stdout = process.stdout,
     stderr = process.stderr,
-    createOpenClaw = createOpenClawClient,
+    createAgent = createAgentClient,
     processContentTask = processNext,
     processImageEditTask = processNextImageEdit,
     sleep = (milliseconds) => new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds)),
@@ -113,8 +113,8 @@ export async function main(
       adminStore = createAdminStore(databasePath);
       const productionSettings = adminStore.getProductionSettings().settings;
       const modelApi = effectiveModelApiConfig(productionSettings.modelApi, env);
-      const openclaw = mock ? undefined : createOpenClaw({ modelApi, environment: env });
-      openclaw?.checkReady({
+      const agentClient = mock ? undefined : createAgent({ modelApi, environment: env });
+      agentClient?.checkReady({
         textModel: modelApi.textModel,
         imageModel: modelApi.imageModel,
       });
@@ -125,7 +125,7 @@ export async function main(
         workerId,
         outputRoot,
         mock,
-        openclaw,
+        agentClient,
         configProvider: integration.getTaskConfig,
         onCompleted: integration.onCompleted,
         onFailed: integration.onFailed,
@@ -137,7 +137,7 @@ export async function main(
           assetRoot,
           workerId,
           mock,
-          openclaw,
+          agentClient,
         });
       }
       writeJson(stdout, result);
@@ -171,8 +171,8 @@ export async function main(
       adminStore = createAdminStore(databasePath);
       const productionSettings = adminStore.getProductionSettings().settings;
       const modelApi = effectiveModelApiConfig(productionSettings.modelApi, env);
-      const openclaw = mock ? undefined : createOpenClaw({ modelApi, environment: env });
-      openclaw?.checkReady({
+      const agentClient = mock ? undefined : createAgent({ modelApi, environment: env });
+      agentClient?.checkReady({
         textModel: modelApi.textModel,
         imageModel: modelApi.imageModel,
       });
@@ -201,7 +201,7 @@ export async function main(
             workerId: `${workerId}-${slot + 1}`,
             outputRoot,
             mock,
-            openclaw,
+            agentClient,
             imageConcurrency: concurrency > 1 ? 1 : undefined,
             configProvider: integration.getTaskConfig,
             onCompleted: integration.onCompleted,
@@ -236,7 +236,7 @@ export async function main(
           await sleep(Math.max(1, Math.min(retryAt - Date.now(), 60_000)));
           continue;
         }
-        const edit = await processImageEditTask({ store: adminStore, assetRoot, workerId, mock, openclaw });
+        const edit = await processImageEditTask({ store: adminStore, assetRoot, workerId, mock, agentClient });
         if (edit.haltWorker) {
           if (edit.status === 'failed') { summary.failed++; summary.processed++; summary.attempted++; }
           authenticationRequired = true;

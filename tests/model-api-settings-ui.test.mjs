@@ -21,7 +21,7 @@ describe('model API production settings UI', () => {
     assert.match(route, /imageProxyUrl/u);
     assert.match(route, /imageTimeoutMs/u);
     assert.match(route, /copyGenerationProvider/u);
-    assert.match(route, /agentProvider: z\.enum\(\['CODEX', 'OPENCLAW'\]\)/u);
+    assert.match(route, /agentProvider: z\.enum\(\['CODEX'\]\)/u);
     assert.match(route, /copyGenerationThinking:\s*z\.enum\(\['minimal', 'low', 'medium', 'high', 'xhigh', 'max'\]\)/u);
     assert.match(route, /dotsBaseUrl/u);
     assert.match(route, /dotsModel/u);

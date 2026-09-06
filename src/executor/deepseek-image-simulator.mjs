@@ -175,7 +175,7 @@ export async function downloadPublicImage(candidate, {
       signal: AbortSignal.timeout(timeoutMs),
       headers: {
         Accept: 'image/avif,image/webp,image/png,image/jpeg,image/gif;q=0.8',
-        'User-Agent': 'xhs-openclaw-image-simulation/0.1',
+        'User-Agent': 'xhs-image-simulation/0.1',
       },
     });
     if ([301, 302, 303, 307, 308].includes(response.status)) {
@@ -341,8 +341,8 @@ export async function executeDeepSeekImageSimulation({
       warning: {
         code: fallbackImages > 0 ? 'LOCAL_FALLBACK_SIMULATION' : 'SEARCH_IMAGE_SIMULATION',
         message: fallbackImages > 0
-          ? `其中 ${fallbackImages} 张是联网搜图不可用后的本地兜底图，仅用于流程联调，并非 OpenClaw 生成结果。`
-          : '这些图片来自联网搜索，仅用于流程联调，并非 OpenClaw 生成结果。',
+          ? `其中 ${fallbackImages} 张是联网搜图不可用后的本地兜底图，仅用于流程联调，并非 Codex 生成结果。`
+          : '这些图片来自联网搜索，仅用于流程联调，并非 Codex 生成结果。',
       },
     },
     qc: {

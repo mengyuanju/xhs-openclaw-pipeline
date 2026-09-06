@@ -1,25 +1,15 @@
 'use client';
 
 import {
-  BarChart3,
   ChevronDown,
-  FilePenLine,
-  FileUp,
   LayoutDashboard,
-  ImagePlus,
-  Images,
-  Layers3,
   LibraryBig,
-  ListChecks,
-  ClipboardCheck,
   LogOut,
   Menu,
   MessageSquareText,
   Settings2,
   ServerCog,
   Users,
-  Waypoints,
-  Workflow,
   X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -28,25 +18,11 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { WORKBENCH_VIEWS } from '../workbench/views';
 
-type NavigationItem = { href: string; label: string; icon: LucideIcon; children?: NavigationItem[]; hidden?: boolean };
-type NavigationGroup = { label: string; items: NavigationItem[]; hidden?: boolean };
+type NavigationItem = { href: string; label: string; icon: LucideIcon; children?: NavigationItem[] };
+type NavigationGroup = { label: string; items: NavigationItem[] };
 
-// Temporary presentation flags only: keep routes and their access rules unchanged.
 const navigationGroups: NavigationGroup[] = [
   { label: '创作工作台', items: [{ href: '/workbench', label: '作业中心', icon: LayoutDashboard, children: WORKBENCH_VIEWS }] },
-  {
-    label: '内容生产',
-    hidden: true,
-    items: [
-      { href: '/jobs', label: '远端作业中心', icon: Workflow },
-      { href: '/imports', label: '选题导入', icon: FileUp },
-      { href: '/copy-generation', label: '单独生成文案', icon: FilePenLine },
-      { href: '/batch-copy-generation', label: '批量生成文案', icon: Layers3 },
-      { href: '/image-generation', label: '单独生成图片', icon: ImagePlus },
-      { href: '/batch-image-generation', label: '批量生成图片', icon: Images },
-      { href: '/tasks', label: '任务中心', icon: ListChecks },
-    ],
-  },
   {
     label: '内容资产',
     items: [
@@ -57,23 +33,12 @@ const navigationGroups: NavigationGroup[] = [
   {
     label: '运营与系统',
     items: [
-      { href: '/analytics', label: '数据统计', icon: BarChart3, hidden: true },
-      { href: '/openclaw-traces', label: '模型链路', icon: Waypoints, hidden: true },
       { href: '/settings', label: '生产配置', icon: Settings2 },
       { href: '/executors', label: '执行机管理', icon: ServerCog },
       { href: '/users', label: '用户管理', icon: Users },
     ],
   },
 ];
-
-const reviewNavigation: NavigationGroup[] = [{
-  label: '质检作业',
-  hidden: true,
-  items: [
-    { href: '/reviews', label: '质检中心', icon: ClipboardCheck },
-    { href: '/reviews/people', label: '质检人员', icon: Users },
-  ],
-}];
 
 export function SideNav({ session }: { session: { subject: string; username?: string; roles?: string[] } | null }) {
   const pathname = usePathname();
@@ -98,9 +63,7 @@ export function SideNav({ session }: { session: { subject: string; username?: st
             children: item.children?.filter((child) => child.href === '/workbench/personal'),
           })),
         }));
-  const visibleGroups = roleGroups.filter((group) => !group.hidden)
-    .map((group) => ({ ...group, items: group.items.filter((item) => !item.hidden) }))
-    .filter((group) => group.items.length > 0);
+  const visibleGroups = roleGroups.filter((group) => group.items.length > 0);
 
   useEffect(() => setIsMenuOpen(false), [pathname]);
   useEffect(() => {
@@ -126,7 +89,7 @@ export function SideNav({ session }: { session: { subject: string; username?: st
       <div className="sidebar-head">
         <Link className="brand" href="/workbench" aria-label="内容工场作业中心">
           <span className="brand-mark">RED</span>
-          <div><strong>内容工场</strong><small>OpenClaw Console</small></div>
+          <div><strong>内容工场</strong><small>Codex Console</small></div>
         </Link>
         <button
           className="mobile-nav-toggle"

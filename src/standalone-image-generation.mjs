@@ -769,7 +769,7 @@ export async function generateStandaloneImages({
   const query = boundedText(source.query, 'query', 1, 500);
   const imageCount = post.imagePlan.length;
   if (mode !== 'LIVE') throw new TypeError('mode must be LIVE');
-  if (!runtime.client) throw new TypeError('Live mode requires an OpenClaw client');
+  if (!runtime.client) throw new TypeError('Live mode requires a model client');
   if (onProgress !== undefined && typeof onProgress !== 'function') {
     throw new TypeError('onProgress must be a function');
   }
@@ -885,7 +885,7 @@ export async function generateStandaloneImages({
     });
     await writeJsonAtomic(join(outputDir, 'image-prompts.json'), { prompts: imagePrompts });
     const validator = wrapAlignmentValidator(createImageAlignmentValidator({
-      openclaw: client,
+      agentClient: client,
       post,
       visualPlan,
       imageCount,
@@ -907,7 +907,7 @@ export async function generateStandaloneImages({
         post,
         outputDir,
         mock: false,
-        openclaw: client,
+        agentClient: client,
         imageCount,
         imagePrompts,
         visibleTextPlans: visualPlan.pages.map((page) => page.allowedVisibleText),
@@ -969,7 +969,7 @@ export async function generateStandaloneImages({
       message: recovery?.assessed ? '正在复用整套图片质量检查结果' : '正在进行整套图片质量检查',
     });
     const assessed = recovery?.assessed ?? await createDeliveryQualityAssessor({
-      openclaw: client,
+      agentClient: client,
       task: { query, input: {} },
       post,
       model: productionSettings.modelApi.qualityModel,

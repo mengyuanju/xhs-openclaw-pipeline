@@ -528,7 +528,7 @@ export async function renderDeliveryImages({
   post,
   outputDir,
   mock,
-  openclaw,
+  agentClient,
   imageCount = post.imagePlan.length,
   imagePrompts = post.imagePlan.map((plan) => plan.prompt),
   visibleTextPlans = null,
@@ -761,28 +761,28 @@ export async function renderDeliveryImages({
         const attemptInputPaths = attempt > 1 ? [outputPath] : inputPaths;
         let generated;
         if (attemptInputPaths.length > 0) {
-          if (!openclaw?.runImageEdit) {
-            throw new TypeError('openclaw image edit client is required when reference images are present');
+          if (!agentClient?.runImageEdit) {
+            throw new TypeError('model image edit client is required when reference images are present');
           }
           try {
-            generated = await openclaw.runImageEdit({
+            generated = await agentClient.runImageEdit({
               prompt,
               inputPaths: attemptInputPaths,
               outputPath: rawOutputPath,
             });
-            provider = generated.provider ?? `${openclaw.provider ?? 'openclaw'}-image-edit`;
+            provider = generated.provider ?? `${agentClient.provider ?? 'openclaw'}-image-edit`;
           } catch (error) {
-            if (!isTransientImageEditError(error) || !openclaw?.runImage) throw error;
+            if (!isTransientImageEditError(error) || !agentClient?.runImage) throw error;
             await unlink(rawOutputPath).catch(() => {});
-            generated = await openclaw.runImage({ prompt, outputPath: rawOutputPath });
-            provider = generated.provider ?? openclaw.provider ?? 'openclaw';
+            generated = await agentClient.runImage({ prompt, outputPath: rawOutputPath });
+            provider = generated.provider ?? agentClient.provider ?? 'openclaw';
           }
         } else {
-          if (!openclaw?.runImage) {
-            throw new TypeError('openclaw image client is required in live mode');
+          if (!agentClient?.runImage) {
+            throw new TypeError('model image client is required in live mode');
           }
-          generated = await openclaw.runImage({ prompt, outputPath: rawOutputPath });
-          provider = generated.provider ?? openclaw.provider ?? 'openclaw';
+          generated = await agentClient.runImage({ prompt, outputPath: rawOutputPath });
+          provider = generated.provider ?? agentClient.provider ?? 'openclaw';
         }
         model = generated.model;
         const checkpointImage = { file, provider, model, generationAttempts, prompt, alignment: null };

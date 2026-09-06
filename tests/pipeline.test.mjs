@@ -237,7 +237,7 @@ describe('content pipeline', () => {
   it('marks a task failed when live text inference fails', async () => {
     const { directory, queue } = await setup();
     const task = queue.enqueue({ query: '一个真实调用失败的任务' });
-    const openclaw = {
+    const agentClient = {
       runText() {
         throw new Error('OAuth unavailable with sk-abcdefghijklmnop');
       },
@@ -248,7 +248,7 @@ describe('content pipeline', () => {
       workerId: 'test-worker',
       outputRoot: join(directory, 'output'),
       mock: false,
-      openclaw,
+      agentClient,
     });
 
     assert.equal(result.status, 'failed');
@@ -268,7 +268,7 @@ describe('content pipeline', () => {
       workerId: 'query-review-worker',
       outputRoot: join(directory, 'output'),
       mock: false,
-      openclaw: {
+      agentClient: {
         runReview() {
           return {
             rawText: JSON.stringify(stageReviewOutput('REJECT', '选题包含明确的高风险操作指导。')),
@@ -321,7 +321,7 @@ describe('content pipeline', () => {
         imageCountMode: 'fixed',
         productionSettings: { modelApi: { copyGenerationThinking: 'xhigh' } },
       }),
-      openclaw: {
+      agentClient: {
         runReview({ thinking }) {
           reviewCalls += 1;
           reviewThinking.push(thinking);
@@ -375,7 +375,7 @@ describe('content pipeline', () => {
       outputRoot: join(directory, 'output'),
       mock: false,
       recoveryEnabled: true,
-      openclaw: {
+      agentClient: {
         runText() {
           throw new Error('fetch failed: UND_ERR_SOCKET');
         },
@@ -403,7 +403,7 @@ describe('content pipeline', () => {
       outputRoot: join(directory, 'output'),
       mock: false,
       recoveryEnabled: true,
-      openclaw: {
+      agentClient: {
         runText() {
           throw new Error('401 token_invalidated');
         },
@@ -437,7 +437,7 @@ describe('content pipeline', () => {
     const textPrompts = [];
     let researchCalls = 0;
     let imageIndex = 0;
-    const openclaw = {
+    const agentClient = {
       runWebSearch({ query, provider }) {
         researchCalls += 1;
         assert.equal(query, task.query);
@@ -482,7 +482,7 @@ describe('content pipeline', () => {
       workerId: 'test-worker',
       outputRoot: join(directory, 'output'),
       mock: false,
-      openclaw,
+      agentClient,
       configProvider: () => ({ imageCount: 3, imageCountMode: 'fixed' }),
     });
 
@@ -517,7 +517,7 @@ describe('content pipeline', () => {
       workerId: 'research-failure-worker',
       outputRoot: join(directory, 'output'),
       mock: false,
-      openclaw: {
+      agentClient: {
         runWebSearch() {
           searchCalls += 1;
           throw new Error('search transport unavailable');
@@ -618,7 +618,7 @@ describe('content pipeline', () => {
     }).png().toBuffer()));
     const textPrompts = [];
     let imageCalls = 0;
-    const openclaw = {
+    const agentClient = {
       runText({ prompt, thinking, outputSchema }) {
         assert.equal(thinking, 'medium');
         assert.ok(outputSchema.properties.pages);
@@ -647,7 +647,7 @@ describe('content pipeline', () => {
       workerId: 'test-worker',
       outputRoot: join(directory, 'output'),
       mock: false,
-      openclaw,
+      agentClient,
       configProvider: () => ({ imageCount: 3, imageCountMode: 'fixed', postOverride: post,
         productionSettings: { modelApi: { copyGenerationThinking: 'medium' } } }),
     });
@@ -672,7 +672,7 @@ describe('content pipeline', () => {
     }).png().toBuffer()));
     let textCalls = 0;
     let imageCalls = 0;
-    const openclaw = {
+    const agentClient = {
       runText() {
         textCalls += 1;
         const plan = createMockVisualPlan(post, { imageCount: 3 });
@@ -699,7 +699,7 @@ describe('content pipeline', () => {
       workerId: 'test-worker',
       outputRoot: join(directory, 'output'),
       mock: false,
-      openclaw,
+      agentClient,
       configProvider: () => ({ imageCount: 3, imageCountMode: 'fixed', postOverride: post }),
     });
 
@@ -725,7 +725,7 @@ describe('content pipeline', () => {
     let deliveredImages = 0;
     let allowImages = false;
     let configRevision = 'A';
-    const openclaw = {
+    const agentClient = {
       runReview() {
         reviewCalls += 1;
         return { rawText: JSON.stringify(stageReviewOutput('PASS')), model: 'fake-review' };
@@ -782,7 +782,7 @@ describe('content pipeline', () => {
       workerId: 'resume-worker',
       outputRoot: join(directory, 'output'),
       mock: false,
-      openclaw,
+      agentClient,
       configProvider,
     });
     assert.equal(first.status, 'failed');
@@ -798,7 +798,7 @@ describe('content pipeline', () => {
       workerId: 'resume-worker',
       outputRoot: join(directory, 'output'),
       mock: false,
-      openclaw,
+      agentClient,
       configProvider,
     });
     assert.equal(second.status, 'failed');
@@ -814,7 +814,7 @@ describe('content pipeline', () => {
       workerId: 'resume-worker',
       outputRoot: join(directory, 'output'),
       mock: false,
-      openclaw,
+      agentClient,
       configProvider,
     });
     assert.equal(third.status, 'completed', third.error);
@@ -834,7 +834,7 @@ describe('content pipeline', () => {
     let textCalls = 0;
     let imageCalls = 0;
     let failSecondPage = true;
-    const openclaw = {
+    const agentClient = {
       runText({ prompt }) {
         textCalls += 1;
         return {
@@ -877,7 +877,7 @@ describe('content pipeline', () => {
       workerId: 'page-resume-worker',
       outputRoot: join(directory, 'output'),
       mock: false,
-      openclaw,
+      agentClient,
       configProvider: () => ({ imageCount: 3, imageCountMode: 'fixed', postOverride: post }),
     });
     assert.equal(first.status, 'failed');
@@ -891,7 +891,7 @@ describe('content pipeline', () => {
       workerId: 'page-resume-worker',
       outputRoot: join(directory, 'output'),
       mock: false,
-      openclaw,
+      agentClient,
       configProvider: () => ({ imageCount: 3, imageCountMode: 'fixed', postOverride: post }),
     });
 
@@ -912,7 +912,7 @@ describe('content pipeline', () => {
     let visualPlanCalls = 0;
     let allowImages = false;
     let deliveredImages = 0;
-    const openclaw = {
+    const agentClient = {
       runText() {
         visualPlanCalls += 1;
         return { rawText: JSON.stringify(createMockVisualPlan(post)), model: 'fake-text' };
@@ -937,7 +937,7 @@ describe('content pipeline', () => {
       workerId: 'corrupt-checkpoint-worker',
       outputRoot: join(directory, 'output'),
       mock: false,
-      openclaw,
+      agentClient,
       configProvider: () => ({ imageCount: 3, imageCountMode: 'fixed', postOverride: post }),
     };
 
@@ -977,7 +977,7 @@ describe('content pipeline', () => {
     const rawPng = await sharp({
       create: { width: 1024, height: 1536, channels: 3, background: '#d7c7b0' },
     }).png().toBuffer();
-    const openclaw = {
+    const agentClient = {
       runText({ prompt }) {
         return {
           rawText: JSON.stringify(
@@ -1004,7 +1004,7 @@ describe('content pipeline', () => {
       workerId: 'test-worker',
       outputRoot: join(directory, 'output'),
       mock: false,
-      openclaw,
+      agentClient,
     });
 
     assert.equal(result.status, 'failed');
@@ -1028,7 +1028,7 @@ describe('content pipeline', () => {
       create: { width: 1024, height: 1536, channels: 3, background },
     }).png().toBuffer()));
     let imageIndex = 0;
-    const openclaw = {
+    const agentClient = {
       runText({ prompt }) {
         return {
           rawText: JSON.stringify(createMockVisualPlan(post, { imageCount: 3 })),
@@ -1058,7 +1058,7 @@ describe('content pipeline', () => {
       workerId: 'test-worker',
       outputRoot: join(directory, 'output'),
       mock: false,
-      openclaw,
+      agentClient,
       configProvider: () => ({ imageCount: 3, imageCountMode: 'fixed', postOverride: post }),
     });
 
@@ -1088,7 +1088,7 @@ describe('content pipeline', () => {
       create: { width: 1024, height: 1536, channels: 3, background },
     }).png().toBuffer()));
     let imageIndex = 0;
-    const openclaw = {
+    const agentClient = {
       runText() {
         return { rawText: JSON.stringify(createMockVisualPlan(post)), model: 'fake-text' };
       },
@@ -1116,7 +1116,7 @@ describe('content pipeline', () => {
         workerId: 'reviewable-worker',
         outputRoot: join(directory, 'output'),
         mock: false,
-        openclaw,
+        agentClient,
         configProvider: () => ({ imageCount: 3, imageCountMode: 'fixed', postOverride: post }),
       });
 
@@ -1156,7 +1156,7 @@ describe('content pipeline', () => {
       imageCall += 1;
       return { outputPath, model: 'fake-image' };
     };
-    const openclaw = {
+    const agentClient = {
       runText() {
         return { rawText: JSON.stringify(createMockVisualPlan(post)), model: 'fake-text' };
       },
@@ -1184,7 +1184,7 @@ describe('content pipeline', () => {
       workerId: 'test-worker',
       outputRoot: join(directory, 'output'),
       mock: false,
-      openclaw,
+      agentClient,
       configProvider: () => ({
         imageCount: 3,
         imageCountMode: 'fixed',
@@ -1235,7 +1235,7 @@ describe('content pipeline', () => {
       create: { width: 1024, height: 1536, channels: 3, background },
     }).png().toBuffer()));
     let imageIndex = 0;
-    const openclaw = {
+    const agentClient = {
       runText() {
         return { rawText: JSON.stringify(createMockVisualPlan(post)), model: 'fake-text' };
       },
@@ -1259,7 +1259,7 @@ describe('content pipeline', () => {
       workerId: 'test-worker',
       outputRoot: join(directory, 'output'),
       mock: false,
-      openclaw,
+      agentClient,
       configProvider: () => ({ imageCount: 3, imageCountMode: 'fixed', postOverride: post }),
     });
 
@@ -1286,7 +1286,7 @@ describe('content pipeline', () => {
     const imagePrompts = [];
     const imageInputPaths = [];
     let completedPromptTrace = null;
-    const openclaw = {
+    const agentClient = {
       runText({ prompt }) {
         textPrompts.push(prompt);
         const post = createMockPost(4);
@@ -1313,7 +1313,7 @@ describe('content pipeline', () => {
       workerId: 'pinned-worker',
       outputRoot: join(directory, 'output'),
       mock: false,
-      openclaw,
+      agentClient,
       configProvider: () => ({
         imageCount: 4,
         imageCountMode: 'fixed',
@@ -1375,7 +1375,7 @@ describe('content pipeline', () => {
     const textPrompts = [];
     let imageCalls = 0;
     let completion;
-    const openclaw = {
+    const agentClient = {
       runText({ prompt }) {
         textPrompts.push(prompt);
         return {
@@ -1405,7 +1405,7 @@ describe('content pipeline', () => {
       workerId: 'dynamic-count-worker',
       outputRoot: join(directory, 'output'),
       mock: false,
-      openclaw,
+      agentClient,
       onCompleted(payload) {
         completion = payload;
       },
@@ -1431,7 +1431,7 @@ describe('content pipeline', () => {
     let imageCalls = 0;
     let dynamicPlanCalls = 0;
     let completion;
-    const openclaw = {
+    const agentClient = {
       runText({ prompt }) {
         if (prompt.includes('图片分页规划步骤')) {
           dynamicPlanCalls += 1;
@@ -1469,7 +1469,7 @@ describe('content pipeline', () => {
       workerId: 'manual-dynamic-count-worker',
       outputRoot: join(directory, 'output'),
       mock: false,
-      openclaw,
+      agentClient,
       configProvider: () => ({
         imageCount: 3,
         imageCountMode: 'auto',

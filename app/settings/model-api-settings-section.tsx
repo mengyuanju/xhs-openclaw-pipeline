@@ -15,8 +15,8 @@ import { DotsCopyProviderFields } from './dots-copy-provider-fields';
 type CopyGenerationThinking = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export type ModelApiSettings = {
-  agentProvider: 'CODEX' | 'OPENCLAW' | null;
-  copyGenerationProvider: 'OPENCLAW' | 'DOTS' | null;
+  agentProvider: 'CODEX' | null;
+  copyGenerationProvider: 'CODEX' | 'DOTS' | null;
   copyGenerationThinking: CopyGenerationThinking | null;
   dotsBaseUrl: string | null;
   dotsModel: string | null;
@@ -32,8 +32,8 @@ export type ModelApiSettings = {
 };
 
 export type EffectiveModelApi = {
-  agentProvider: 'CODEX' | 'OPENCLAW';
-  copyGenerationProvider: 'OPENCLAW' | 'DOTS';
+  agentProvider: 'CODEX';
+  copyGenerationProvider: 'CODEX' | 'DOTS';
   copyGenerationThinking: CopyGenerationThinking;
   dotsBaseUrl: string;
   dotsModel: string;
@@ -125,25 +125,14 @@ export function ModelApiSettingsSection({
     </div>
 
     <div className="notice">
-      后台不保存 API Key、Token 或 OAuth 授权码。Codex / OpenClaw 认证由执行主机管理；Dots Key 仅从 <span className="mono">XHS_DOTS_API_KEY</span> 读取。
+      后台不保存 API Key、Token 或 OAuth 授权码。Codex 认证由执行主机管理；Dots Key 仅从 <span className="mono">XHS_DOTS_API_KEY</span> 读取。
     </div>
 
     <div className="form-grid compact-settings-grid">
       <div className="field">
-        <label htmlFor="model-api-agent-provider">生成引擎</label>
-        <Select
-          disabled={busy}
-          value={value.agentProvider ?? INHERIT_VALUE}
-          onValueChange={(selected) => onChange('agentProvider', selected === INHERIT_VALUE ? null : selected as 'CODEX' | 'OPENCLAW')}
-        >
-          <SelectTrigger id="model-api-agent-provider"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value={INHERIT_VALUE}>环境或默认值（{effective.agentProvider}）</SelectItem>
-            <SelectItem value="CODEX">Codex CLI（ChatGPT 订阅登录）</SelectItem>
-            <SelectItem value="OPENCLAW">OpenClaw（兼容回退）</SelectItem>
-          </SelectContent>
-        </Select>
-        <small>控制文本、审核、视觉和图片调用。Codex 同一运行状态库最多并发 2 个调用、其中图片 1 个；额度不足会暂停，不保证订阅吞吐量。已有批次 Worker 需重启后切换。</small>
+        <span>生成引擎</span>
+        <strong>Codex CLI</strong>
+        <small>由执行主机管理登录、并发与额度暂停状态。</small>
       </div>
       <DotsCopyProviderFields
         value={value}

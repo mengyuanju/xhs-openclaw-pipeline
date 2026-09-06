@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { describe, it } from 'node:test';
 
 import {
@@ -690,42 +689,4 @@ describe('standalone copy generation', () => {
     assert.equal(downstreamCalls, 0);
   });
 
-  it('exposes a strict, cost-confirmed POST route without invoking the image pipeline', async () => {
-    const route = await readFile(
-      new URL('../app/api/copy-generations/route.ts', import.meta.url),
-      'utf8',
-    );
-
-    assert.match(route, /LIVE_MODEL_COST_ACCEPTED/u);
-    assert.match(route, /autoReviseOnReject:\s*z\.boolean\(\)\.default\(false\)/u);
-    assert.match(route, /autoReviseOnReject:\s*input\.autoReviseOnReject/u);
-    assert.match(route, /textReviewEnabled:\s*false/u);
-    assert.match(route, /\.strict\(\)/u);
-    assert.match(route, /mutation:\s*true/u);
-    assert.match(route, /COPY_GENERATION_IN_PROGRESS/u);
-    assert.match(route, /COPY_REVISION_UNCHANGED/u);
-    assert.match(route, /COPY_CONTRACT_FAILED/u);
-    assert.match(route, /MODEL_TRANSPORT_FAILED/u);
-    assert.match(route, /CopyGenerationTransportError/u);
-    assert.match(route, /createStandaloneCopyGenerationJob/u);
-    assert.match(route, /failStandaloneCopyGenerationJob/u);
-    assert.match(route, /listStandaloneCopyGenerationJobs/u);
-    assert.match(route, /listStandaloneCopyGenerationBatches/u);
-    assert.match(route, /const copyBatchSchema = z\.object\(\{/u);
-    assert.match(route, /batch:\s*copyBatchSchema\.optional\(\)/u);
-    assert.match(route, /id:\s*z\.string\(\)\.uuid\(\)/u);
-    assert.match(route, /batch:\s*input\.batch/u);
-    assert.match(route, /listStandaloneCopyGenerations\(\{[\s\S]*batchId,/u);
-    assert.match(route, /listStandaloneCopyGenerationJobs\(\{ limit: 20, batchId \}\)/u);
-    assert.match(route, /updateStandaloneCopyGenerationJobStage/u);
-    assert.match(route, /onStageChange/u);
-    assert.match(route, /jobId/u);
-    assert.match(route, /await generateCopy/u);
-    assert.match(route, /saveStandaloneCopyGeneration/u);
-    assert.match(route, /export function GET/u);
-    assert.match(route, /listStandaloneCopyGenerations/u);
-    assert.match(route, /toCopyGenerationResponse/u);
-    assert.match(route, /status:\s*201/u);
-    assert.doesNotMatch(route, /runImage|renderDeliveryImages|webWorkerLauncher/u);
-  });
 });

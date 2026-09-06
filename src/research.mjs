@@ -232,7 +232,7 @@ export async function createResearchSnapshot({
   now = () => new Date().toISOString(),
   requireAuthoritative = false,
 }) {
-  if (!client?.runWebSearch) throw new TypeError('OpenClaw web search client is required');
+  if (!client?.runWebSearch) throw new TypeError('Model web search client is required');
   if (typeof requireAuthoritative !== 'boolean') throw new TypeError('requireAuthoritative must be boolean');
   const normalizedQuery = String(query ?? '').replace(/\s+/gu, ' ').trim().slice(0, 500);
   if (!normalizedQuery) throw new RangeError('research query is required');

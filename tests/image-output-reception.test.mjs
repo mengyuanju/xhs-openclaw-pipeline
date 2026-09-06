@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import sharp from 'sharp';
-import { createOpenClawClient } from '../src/openclaw.mjs';
 import { createCodexClient } from '../src/codex.mjs';
 import { parseCodexOutput } from '../src/codex-protocol.mjs';
 
@@ -19,159 +18,6 @@ async function temporaryRoot(t) {
   t.after(() => rm(root, { recursive: true, force: true }));
   return root;
 }
-
-// Matches OpenClaw's installed runImageGenerate/writeOutputAsset contract:
-// outputs[].path is the published file, including numbered multi-image names.
-function openClawSuccess(capability, paths) {
-  return { status: 0, stderr: '', stdout: JSON.stringify({
-    ok: true, capability, transport: 'local', provider: 'openai', model: 'gpt-image-2',
-    attempts: [], outputs: paths.map((path) => ({ path, mimeType: 'image/png' })),
-  }) };
-}
-
-function openClawFixture(runner) {
-  return createOpenClawClient({
-    entryPath: 'C:/fake-openclaw/dist/index.js',
-    modelApi: { webSearchProvider: 'OPENCLAW', imageModel: 'openai/gpt-image-2' },
-    runner: () => assert.fail('image tests must not start the real CLI'),
-    asyncRunner: runner,
-    asyncSleep: async () => {},
-    fetchImpl: () => assert.fail('image tests must not access model APIs'),
-  });
-}
-
-function requestedImagePath(args) {
-  assert.ok(args.includes('--output'));
-  return resolve(args[args.indexOf('--output') + 1]);
-}
-
-for (const operation of ['generate', 'edit']) {
-  test(`OpenClaw ${operation} receives a differently named PNG without replaying image generation`, async (t) => {
-    const root = await temporaryRoot(t);
-    const outputPath = join(root, 'page-1.png');
-    const inputPath = join(root, 'input.png');
-    const bytes = await imageBytes();
-    await writeFile(inputPath, bytes);
-    let calls = 0;
-    let requestedPath;
-    const client = openClawFixture(async (_command, args) => {
-      calls += 1;
-      requestedPath = requestedImagePath(args);
-      const actual = join(dirname(requestedPath), 'provider-generated-1.png');
-      await writeFile(actual, bytes);
-      return openClawSuccess(`image.${operation}`, [actual]);
-    });
-    const result = operation === 'generate'
-      ? await client.runImage({ prompt: IMAGE_PROMPT, outputPath })
-      : await client.runImageEdit({ prompt: IMAGE_PROMPT, outputPath, inputPaths: [inputPath] });
-    assert.equal(calls, 1, 'receiving an existing image must not consume another model call');
-    assert.equal(result.outputPath, outputPath);
-    assert.deepEqual(await readFile(outputPath), bytes);
-    assert.notEqual(dirname(requestedPath), dirname(outputPath), 'each image call must have its own output directory');
-    assert.deepEqual(await readFile(inputPath), bytes, 'the edit input must remain unchanged');
-  });
-}
-
-test('OpenClaw rejects two distinct native outputs without guessing or replaying, and preserves both', async (t) => {
-  const root = await temporaryRoot(t);
-  const outputPath = join(root, 'page-1.png');
-  const bytes = [await imageBytes('#112233'), await imageBytes('#ffeedd')];
-  let calls = 0;
-  let candidates;
-  const client = openClawFixture(async (_command, args) => {
-    calls += 1;
-    const requested = requestedImagePath(args);
-    candidates = [join(dirname(requested), 'raw-1.png'), join(dirname(requested), 'raw-2.png')];
-    await Promise.all(candidates.map((path, index) => writeFile(path, bytes[index])));
-    return openClawSuccess('image.generate', candidates);
-  });
-  await assert.rejects(client.runImage({ prompt: IMAGE_PROMPT, outputPath }), /ambiguous|multiple|one|多|候选/iu);
-  assert.equal(calls, 1);
-  await assert.rejects(readFile(outputPath), { code: 'ENOENT' });
-  for (const [index, path] of candidates.entries()) assert.deepEqual(await readFile(path), bytes[index]);
-});
-
-test('OpenClaw deduplicates repeated references to the same output file', async (t) => {
-  const root = await temporaryRoot(t);
-  const bytes = await imageBytes();
-  let calls = 0;
-  const client = openClawFixture(async (_command, args) => {
-    calls += 1;
-    const actual = join(dirname(requestedImagePath(args)), 'raw-1.png');
-    await writeFile(actual, bytes);
-    return openClawSuccess('image.generate', [actual, actual]);
-  });
-  const outputPath = join(root, 'page-1.png');
-  await client.runImage({ prompt: IMAGE_PROMPT, outputPath });
-  assert.equal(calls, 1);
-  assert.deepEqual(await readFile(outputPath), bytes);
-});
-
-for (const invalid of ['fake PNG', 'truncated PNG', 'stale PNG']) {
-  test(`OpenClaw refuses ${invalid} at its requested output path without replaying the model`, async (t) => {
-    const root = await temporaryRoot(t);
-    const validBytes = await imageBytes();
-    let calls = 0;
-    const client = openClawFixture(async (_command, args) => {
-      calls += 1;
-      const actual = requestedImagePath(args);
-      const bytes = invalid === 'fake PNG' ? Buffer.from('not PNG data')
-        : invalid === 'truncated PNG' ? validBytes.subarray(0, Math.floor(validBytes.length / 2)) : validBytes;
-      await writeFile(actual, bytes);
-      if (invalid === 'stale PNG') await utimes(actual, new Date(0), new Date(0));
-      return openClawSuccess('image.generate', [actual]);
-    });
-    await assert.rejects(client.runImage({ prompt: IMAGE_PROMPT, outputPath: join(root, 'page-1.png') }));
-    assert.equal(calls, 1, 'artifact validation failure must not call the provider again');
-  });
-}
-
-test('OpenClaw does not receive an unrelated file outside the current invocation directory', async (t) => {
-  const root = await temporaryRoot(t);
-  const externalRoot = await temporaryRoot(t);
-  const external = join(externalRoot, 'private.png');
-  const bytes = await imageBytes();
-  await writeFile(external, bytes);
-  let calls = 0;
-  const client = openClawFixture(async () => {
-    calls += 1;
-    return openClawSuccess('image.generate', [external]);
-  });
-  const outputPath = join(root, 'page-1.png');
-  await assert.rejects(client.runImage({ prompt: IMAGE_PROMPT, outputPath }));
-  assert.equal(calls, 1);
-  await assert.rejects(readFile(outputPath), { code: 'ENOENT' });
-  assert.deepEqual(await readFile(external), bytes);
-});
-
-test('OpenClaw never mistakes a pre-existing business output for this invocation succeeding', async (t) => {
-  const root = await temporaryRoot(t);
-  const outputPath = join(root, 'page-1.png');
-  const oldBytes = await imageBytes();
-  await writeFile(outputPath, oldBytes);
-  await utimes(outputPath, new Date(0), new Date(0));
-  const client = openClawFixture(async () => openClawSuccess('image.generate', []));
-  await assert.rejects(client.runImage({ prompt: IMAGE_PROMPT, outputPath }));
-  assert.deepEqual(await readFile(outputPath), oldBytes);
-});
-
-test('OpenClaw retains a generated image when publishing to the business output fails', async (t) => {
-  const root = await temporaryRoot(t);
-  const outputPath = join(root, 'occupied.png');
-  await mkdir(outputPath);
-  const bytes = await imageBytes();
-  let calls = 0;
-  let candidate;
-  const client = openClawFixture(async (_command, args) => {
-    calls += 1;
-    candidate = join(dirname(requestedImagePath(args)), 'provider-output.png');
-    await writeFile(candidate, bytes);
-    return openClawSuccess('image.generate', [candidate]);
-  });
-  await assert.rejects(client.runImage({ prompt: IMAGE_PROMPT, outputPath }));
-  assert.equal(calls, 1, 'publishing I/O errors must not replay image generation');
-  assert.deepEqual(await readFile(candidate), bytes);
-});
 
 function codexSuccess(images) {
   return { status: 0, stderr: '', stdout: [
@@ -195,7 +41,7 @@ function codexFixture(t, root, runner) {
     }
   });
   return createCodexClient({
-    executable: 'fake-codex', environment: { CODEX_HOME: root, XHS_WEB_SEARCH_PROVIDER: 'OPENCLAW' },
+    executable: 'fake-codex', environment: { CODEX_HOME: root, XHS_WEB_SEARCH_PROVIDER: 'CODEX' },
     runtime: { run: (operation) => operation({ onSpawn() {} }), assertAvailable() {} },
     runner: () => assert.fail('image tests must not start the real Codex CLI'),
     asyncRunner: async (command, args, options) => {

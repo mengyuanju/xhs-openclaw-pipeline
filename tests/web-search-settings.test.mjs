@@ -8,13 +8,13 @@ import { createProductionSettingsStore, initializeProductionSettingsSchema } fro
 import { readWebSearchSettings, updateWebSearchSettings } from '../src/admin/web-search-settings-service.mjs';
 import { createCopyGenerationClient } from '../src/copy-generation-client.mjs';
 
-test('unconfigured search defaults to DeepSeek flash while explicit OpenClaw remains available', () => {
+test('unconfigured search defaults to DeepSeek flash while explicit Codex remains available', () => {
   assert.deepEqual(resolveWebSearchConfig({}), {
     provider: 'DEEPSEEK', model: 'deepseek-v4-flash', timeoutMs: 120_000,
   });
   assert.equal(effectiveModelApiConfig({}, {}).webSearchProvider, 'DEEPSEEK');
-  assert.deepEqual(resolveWebSearchConfig({}, { webSearchProvider: 'OPENCLAW' }), { provider: 'OPENCLAW' });
-  assert.deepEqual(resolveWebSearchConfig({ XHS_WEB_SEARCH_PROVIDER: 'OPENCLAW' }), { provider: 'OPENCLAW' });
+  assert.deepEqual(resolveWebSearchConfig({}, { webSearchProvider: 'CODEX' }), { provider: 'CODEX' });
+  assert.deepEqual(resolveWebSearchConfig({ XHS_WEB_SEARCH_PROVIDER: 'CODEX' }), { provider: 'CODEX' });
 });
 
 test('clearing a saved search override restores DeepSeek flash without changing generation settings', async () => {
@@ -24,8 +24,8 @@ test('clearing a saved search override restores DeepSeek flash without changing 
     const store = createProductionSettingsStore(db);
     const options = { store, environment: {} };
     store.updateProductionSettings({ modelApi: { textModel: 'openai/gpt-5.6-sol' } });
-    await updateWebSearchSettings(options, { webSearchProvider: 'OPENCLAW' });
-    assert.equal((await readWebSearchSettings(options)).effective.provider, 'OPENCLAW');
+    await updateWebSearchSettings(options, { webSearchProvider: 'CODEX' });
+    assert.equal((await readWebSearchSettings(options)).effective.provider, 'CODEX');
     const restored = await updateWebSearchSettings(options, { webSearchProvider: null, deepseekSearchModel: null });
     assert.deepEqual(restored.effective, { provider: 'DEEPSEEK', model: 'deepseek-v4-flash', timeoutMs: 120_000 });
     assert.equal(store.getProductionSettings().settings.modelApi.textModel, 'openai/gpt-5.6-sol');
@@ -35,10 +35,10 @@ test('clearing a saved search override restores DeepSeek flash without changing 
 
 test('saved search settings override executor environment and null restores inheritance', () => {
   const settings = normalizeModelApiSettings({ webSearchProvider: 'DEEPSEEK', deepseekSearchModel: 'deepseek-v4-flash', webSearchTimeoutMs: 15000 });
-  const environment = { XHS_WEB_SEARCH_PROVIDER: 'OPENCLAW', XHS_DEEPSEEK_SEARCH_MODEL: 'deepseek-v4-pro' };
+  const environment = { XHS_WEB_SEARCH_PROVIDER: 'CODEX', XHS_DEEPSEEK_SEARCH_MODEL: 'deepseek-v4-pro' };
   assert.deepEqual(resolveWebSearchConfig(environment, settings), { provider: 'DEEPSEEK', model: 'deepseek-v4-flash', timeoutMs: 15000 });
   assert.equal(effectiveModelApiConfig(settings, environment).webSearchProvider, 'DEEPSEEK');
-  assert.equal(resolveWebSearchConfig(environment, { webSearchProvider: null }).provider, 'OPENCLAW');
+  assert.equal(resolveWebSearchConfig(environment, { webSearchProvider: null }).provider, 'CODEX');
   assert.throws(() => normalizeModelApiSettings({ webSearchProvider: 'typo' }));
   assert.throws(() => normalizeModelApiSettings({ deepseekSearchModel: 'unknown' }));
   assert.throws(() => normalizeModelApiSettings({ webSearchTimeoutMs: 1 }));
@@ -88,8 +88,8 @@ test('saved search configuration reaches the production copy client independentl
   const modelApi = normalizeModelApiSettings({ webSearchProvider: 'DEEPSEEK', deepseekSearchModel: 'deepseek-v4-flash' });
   const client = createCopyGenerationClient({
     modelApi,
-    environment: { XHS_WEB_SEARCH_PROVIDER: 'OPENCLAW', DEEPSEEK_API_KEY: 'test-secret' },
-    openclaw: { runWebSearch() { assert.fail('must use the saved provider'); } },
+    environment: { XHS_WEB_SEARCH_PROVIDER: 'CODEX', DEEPSEEK_API_KEY: 'test-secret' },
+    agentClient: { runWebSearch() { assert.fail('must use the saved provider'); } },
     async fetchImpl(_url, init) {
       body = JSON.parse(init.body);
       return new Response(JSON.stringify({ status: 'completed', output: [
