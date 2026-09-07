@@ -5,6 +5,7 @@ import { processNext } from './pipeline.mjs';
 import { createQueue } from './queue.mjs';
 import { effectiveModelApiConfig } from './model-api-config.mjs';
 import { createAgentClient as createOpenClawClient } from './agent-client.mjs';
+import { codexErrorCode, isCodexCooldown } from './codex-protocol.mjs';
 import { createAdminStore } from './admin/admin-store.mjs';
 import { processNextImageEdit } from './admin/image-edit-worker.mjs';
 import { createAdminWorkerIntegration } from './admin/worker-service.mjs';
@@ -39,6 +40,12 @@ function assertAllowedOptions(args, definitions) {
 
 function writeJson(stream, value) {
   stream.write(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+function cooldownDelayMs(retryAt) {
+  return Number.isFinite(retryAt)
+    ? Math.max(1, Math.min(retryAt - Date.now(), 60_000))
+    : 60_000;
 }
 
 export async function main(
@@ -173,10 +180,15 @@ export async function main(
       const productionSettings = adminStore.getProductionSettings().settings;
       const modelApi = effectiveModelApiConfig(productionSettings.modelApi, env);
       const openclaw = mock ? undefined : createOpenClaw({ modelApi, environment: env });
-      openclaw?.checkReady({
-        textModel: modelApi.textModel,
-        imageModel: modelApi.imageModel,
-      });
+      while (openclaw) {
+        try {
+          await openclaw.checkReady({ textModel: modelApi.textModel, imageModel: modelApi.imageModel });
+          break;
+        } catch (error) {
+          if (!isCodexCooldown(codexErrorCode(error))) throw error;
+          await sleep(cooldownDelayMs(error.retryAt));
+        }
+      }
       if (!mock) queue.closeCircuit('openclaw-auth');
       const integration = createAdminWorkerIntegration({ store: adminStore, assetRoot, knowledgeRoot });
       const summary = {
@@ -232,9 +244,9 @@ export async function main(
           if (blockedContent.some(({ reason }) => reason === 'CODEX_QUOTA_EXHAUSTED')) pauseReason = 'quota_exhausted';
           break;
         }
-        if (blockedContent.some(({ reason }) => reason === 'CODEX_RATE_LIMITED')) {
-          const retryAt = Math.max(...blockedContent.map((item) => item.retryAt || Date.now() + 60_000));
-          await sleep(Math.max(1, Math.min(retryAt - Date.now(), 60_000)));
+        const coolingContent = blockedContent.filter(({ reason }) => isCodexCooldown(reason));
+        if (coolingContent.length > 0) {
+          await sleep(Math.max(...coolingContent.map(({ retryAt }) => cooldownDelayMs(retryAt))));
           continue;
         }
         const edit = await processImageEditTask({ store: adminStore, assetRoot, outputRoot, workerId, mock, openclaw });
@@ -244,7 +256,7 @@ export async function main(
           if (edit.reason === 'CODEX_QUOTA_EXHAUSTED') pauseReason = 'quota_exhausted';
           break;
         }
-        if (edit.status === 'blocked') { await sleep(60_000); continue; }
+        if (edit.status === 'blocked') { await sleep(cooldownDelayMs(edit.retryAt)); continue; }
         if (edit.status === 'idle') {
           const delayMs = queue.nextClaimDelayMs();
           if (delayMs === null) break;

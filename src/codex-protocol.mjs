@@ -9,6 +9,10 @@ export function codexErrorCode(error) {
   return null;
 }
 
+export function isCodexCooldown(code) {
+  return code === 'CODEX_RATE_LIMITED' || code === 'CODEX_MODEL_AT_CAPACITY';
+}
+
 export function codexFailure(error = {}, fallbackCode = 'CODEX_EXEC_FAILED') {
   // Inspect transport metadata only; never classify words in a model's answer.
   const detail = [error.code, error.type, error.kind, error.message].filter(Boolean).join(' ');
