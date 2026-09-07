@@ -141,7 +141,13 @@ export function createCodexClient({
         if (result.error || result.status !== 0) {
           // A failed turn can contain a more precise structured error than stderr.
           try { parseCodexOutput(result.stdout); } catch (error) {
-            if (error.code !== 'MODEL_OUTPUT_INCOMPLETE') throw error;
+            if (error.code !== 'MODEL_OUTPUT_INCOMPLETE'
+              && !(result.error?.code === 'CODEX_EXEC_TIMEOUT' && error.code === 'CODEX_EXEC_FAILED')) throw error;
+          }
+          if (result.error?.code === 'CODEX_EXEC_TIMEOUT') {
+            // Startup diagnostics are captured above; they do not explain a transport timeout.
+            throw codexFailure({ message: `执行超过 ${timeoutMs / 1000} 秒，已停止本地进程；生成结果尚未确认。请检查模型连接后从失败步骤继续。` },
+              'CODEX_EXEC_TIMEOUT');
           }
           throw codexFailure({ code: result.error?.code, message: result.stderr || result.error?.message || `exit ${result.status}` },
             result.error?.code?.startsWith('CODEX_') ? result.error.code : 'CODEX_EXEC_FAILED');

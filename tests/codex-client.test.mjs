@@ -27,6 +27,30 @@ async function fixture(t, runner) {
   return { root, client };
 }
 
+test('timeout remains actionable when stderr contains unrelated skill loader errors', async (t) => {
+  let calls = 0;
+  const { client } = await fixture(t, async () => {
+    calls++;
+    return { status: null, error: Object.assign(new Error('timed out'), { code: 'CODEX_EXEC_TIMEOUT' }),
+      stderr: 'ERROR failed to load skill C:/skills/quota/SKILL.md: missing field description',
+      stdout: JSON.stringify({ type: 'error', message: 'Reconnecting... 1/5 (connection closed)' }) };
+  });
+  await assert.rejects(client.runText({ prompt: 'plan', timeoutMs: 300_000 }), error => {
+    assert.equal(error.code, 'CODEX_EXEC_TIMEOUT');
+    assert.match(error.message, /300 秒/u);
+    assert.doesNotMatch(error.message, /SKILL.md|Reconnecting/u);
+    assert.equal(error.haltWorker, false);
+    return true;
+  });
+  assert.equal(calls, 1);
+});
+
+test('skill loader diagnostics do not invalidate a completed response', async (t) => {
+  const { client } = await fixture(t, async () => ({ ...success({ rawText: 'done' }),
+    stderr: 'ERROR failed to load skill: missing YAML frontmatter delimited by ---' }));
+  assert.equal((await client.runText({ prompt: 'plan' })).rawText, 'done');
+});
+
 test('environment limits reach actual client runners and isolate concurrent output directories', { timeout: 10000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'xhs-codex-concurrent-clients-'));
   t.after(() => rm(root, { recursive: true, force: true }));

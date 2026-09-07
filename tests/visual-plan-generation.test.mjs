@@ -15,6 +15,7 @@ test('planning passes configured thinking and the business schema, not a rawText
   const result = await generateVisualPlan({ post, thinking: 'medium', client: { async runText(input) {
     calls += 1;
     assert.equal(input.thinking, 'medium');
+    assert.equal(input.timeoutMs, 300_000);
     assert.ok(input.outputSchema.properties.pages);
     assert.equal(input.outputSchema.properties.rawText, undefined);
     assert.match(input.prompt, /画面元素/u);
@@ -33,6 +34,7 @@ test('repairs only invalid pages using retained output and never replaces valid 
   const result = await generateVisualPlan({ post, thinking: 'low', outputDir, client: { async runText(input) {
     if (++calls === 1) return { rawText: JSON.stringify(original), model: 'fake' };
     assert.equal(input.thinking, 'low');
+    assert.equal(input.timeoutMs, 300_000);
     assert.match(input.prompt, /不存在的文字/);
     assert.match(input.prompt, /"repairPageIndices":\[1\]/);
     return { rawText: JSON.stringify({ pages: [valid().pages[0]] }), model: 'fake' };

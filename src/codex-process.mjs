@@ -58,7 +58,10 @@ export function terminateCodexTree(child) {
     const killer = spawn(join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe'),
       ['/PID', String(child.pid), '/T', '/F'], { shell: false, windowsHide: true, stdio: 'ignore' });
     killer.once('error', () => { child.kill(); resolve(); });
-    killer.once('close', resolve);
+    killer.once('close', (status) => {
+      if (status !== 0) child.kill();
+      resolve();
+    });
   });
 }
 
