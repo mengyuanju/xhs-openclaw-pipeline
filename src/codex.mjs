@@ -142,7 +142,8 @@ export function createCodexClient({
           // A failed turn can contain a more precise structured error than stderr.
           try { parseCodexOutput(result.stdout); } catch (error) {
             if (error.code !== 'MODEL_OUTPUT_INCOMPLETE'
-              && !(result.error?.code === 'CODEX_EXEC_TIMEOUT' && error.code === 'CODEX_EXEC_FAILED')) throw error;
+              && !(result.error?.code === 'CODEX_EXEC_TIMEOUT'
+                && ['CODEX_EXEC_FAILED', 'CODEX_TRANSPORT_FAILED'].includes(error.code))) throw error;
           }
           if (result.error?.code === 'CODEX_EXEC_TIMEOUT') {
             // Startup diagnostics are captured above; they do not explain a transport timeout.

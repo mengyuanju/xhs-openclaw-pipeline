@@ -9,19 +9,28 @@ export function codexErrorCode(error) {
   return null;
 }
 
+export function isCodexCooldown(code) {
+  return code === 'CODEX_RATE_LIMITED' || code === 'CODEX_MODEL_AT_CAPACITY';
+}
+
 export function codexFailure(error = {}, fallbackCode = 'CODEX_EXEC_FAILED') {
   // Inspect transport metadata only; never classify words in a model's answer.
   const detail = [error.code, error.type, error.kind, error.message].filter(Boolean).join(' ');
-  let code = fallbackCode;
+  let code = typeof error.code === 'string' && error.code.startsWith('CODEX_') ? error.code : fallbackCode;
   if (/usage[_ -]limit|quota|insufficient_quota|credits? (?:exhausted|depleted)|hit your.*limit/iu.test(detail)) code = 'CODEX_QUOTA_EXHAUSTED';
   else if (/invalid_grant|refresh_token|unauthoriz|not logged in|login required|authentication|\b401\b/iu.test(detail)) code = 'CODEX_AUTH_REQUIRED';
   else if (/rate[_ -]limit|too many requests|\b429\b/iu.test(detail)) code = 'CODEX_RATE_LIMITED';
+  else if (/model[^\n]{0,80}(?:at capacity|overloaded)|server_is_overloaded/iu.test(detail)) code = 'CODEX_MODEL_AT_CAPACITY';
+  else if (/TLS close_notify|stream disconnected|unexpected EOF|connection exhausted|ECONNRESET|UND_ERR_SOCKET|socket hang up/iu.test(detail)) code = 'CODEX_TRANSPORT_FAILED';
   else if (/context[_ -](?:length|window|limit)|input exceeds the context window|prompt.*too long/iu.test(detail)) code = 'MODEL_CONTEXT_LIMIT';
   else if (/max_output_tokens|output.*incomplete|\blength\b/iu.test(detail)) code = 'MODEL_OUTPUT_INCOMPLETE';
   const guidance = {
     CODEX_AUTH_REQUIRED: '请在执行主机运行 codex login，再运行 npm run agent:resume。',
     CODEX_QUOTA_EXHAUSTED: '订阅额度不足；额度恢复后运行 npm run agent:resume。',
     CODEX_RATE_LIMITED: '请求限流，已进入共享冷却期。',
+    CODEX_MODEL_AT_CAPACITY: '上游模型暂时满载，已进入共享冷却期；可稍后重试或人工切换模型。',
+    CODEX_TRANSPORT_FAILED: '传输中断，远端执行结果可能未知；请检查调用轨迹和检查点后续跑。',
+    CODEX_EXEC_TIMEOUT: '执行超时，远端执行结果可能未知；请检查调用轨迹和检查点后续跑。',
   }[code] ?? '';
   return Object.assign(new Error(`Codex ${code}: ${safeTraceText(detail).text.slice(0, 4000)} ${guidance}`.trim()), {
     code,
@@ -54,7 +63,7 @@ export function parseCodexOutput(stdout, { requireText = true } = {}) {
       const failure = codexFailure(event.error ?? event);
       // exec JSONL drops app-server's willRetry flag. Its explicit reconnect notice
       // is recoverable only if a fresh answer and completed turn follow it.
-      if (event.type === 'error' && failure.code === 'CODEX_EXEC_FAILED'
+      if (event.type === 'error' && ['CODEX_EXEC_FAILED', 'CODEX_TRANSPORT_FAILED'].includes(failure.code)
         && /^Reconnecting\.\.\. \d+\/\d+ \(/u.test(event.message ?? '')) {
         reconnectError = failure;
         reconnectCount++;

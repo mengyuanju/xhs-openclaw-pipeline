@@ -14,12 +14,14 @@ function failureFixture(snapshot = {}) {
       if (sql.includes('FROM task_executions e')) return { rows: [{
         id: executionId, task_id: 41, kind: 'IMAGE', node_id: 'image-node',
         status: active ? 'RUNNING' : 'FAILED',
+        stage: 'QUALITY_CHECK', progress_percent: 87, started_at: '2026-09-07T10:00:00.000Z',
         current_execution_id: active ? executionId : null, snapshot,
       }] };
       if (sql.includes('UPDATE tasks SET')) {
         active = false;
         return { rows: [{
-          id: 41, state: values[1], current_stage: sql.match(/current_stage = '([^']+)'/u)?.[1],
+          id: 41, state: values[1], current_stage: values[6] ?? sql.match(/current_stage = '([^']+)'/u)?.[1],
+          progress_percent: values[7], execution_started_at: values[8],
           progress_message: values[2], error: values[3], current_copy_revision_id: 12,
           current_execution_id: null, pending_snapshot: values[5],
         }] };
@@ -35,11 +37,15 @@ test('non-retryable executor failures keep image checkpoints and wait for manual
   const repository = new PostgresControlPlaneRepository({ pool: fixture.pool });
   const task = await repository.failExecution(executionId, 'Codex execution outcome unknown', { autoRetry: false });
   assert.equal(task.state, 'IMAGE_FAILED');
-  assert.equal(task.currentStage, 'FAILED');
+  assert.equal(task.currentStage, 'QUALITY_CHECK');
+  assert.equal(task.progressPercent, 87);
+  assert.equal(task.executionStartedAt, '2026-09-07T10:00:00.000Z');
   assert.match(task.progressMessage, /人工/u);
   const update = fixture.queries.find(({ sql }) => sql.includes('UPDATE tasks SET'));
   assert.match(update.sql, /current_image_run_id = current_image_run_id/u);
   assert.equal(update.values[5], null);
+  const executionUpdate = fixture.queries.find(({ sql }) => sql.includes('UPDATE task_executions SET'));
+  assert.doesNotMatch(executionUpdate.sql, /stage = 'FAILED'/u, 'failed executions must retain the failing stage');
 });
 
 for (const priorFailures of [0, 1, 2, 3]) {
@@ -56,6 +62,8 @@ for (const priorFailures of [0, 1, 2, 3]) {
     if (priorFailures < 2) {
       assert.equal(task.state, 'IMAGE_QUEUED');
       assert.equal(task.currentStage, 'IMAGE_QUEUED');
+      assert.equal(task.progressPercent, 0);
+      assert.equal(task.executionStartedAt, null);
       assert.deepEqual(update.values[5].imageRetry, {
         failedAttempts: priorFailures + 1, nodeId: 'image-node',
       });
@@ -64,6 +72,8 @@ for (const priorFailures of [0, 1, 2, 3]) {
     } else {
       assert.equal(task.state, 'COPY_REVIEW_PENDING');
       assert.equal(task.currentStage, 'IMAGE_RETRY_EXHAUSTED');
+      assert.equal(task.progressPercent, 87);
+      assert.equal(task.executionStartedAt, '2026-09-07T10:00:00.000Z');
       assert.match(task.progressMessage, /生图3次失败/u);
       assert.equal(update.values[5], null, 'human review must start a new retry cycle');
       assert.match(update.sql, /finished_at = now\(\)/u);

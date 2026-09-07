@@ -1,5 +1,6 @@
 import { businessPrompt, promptPolicy } from './prompt-runtime.mjs';
 import { createHash } from 'node:crypto';
+import { codexErrorCode } from './codex-protocol.mjs';
 
 const matchThreshold = () => promptPolicy().copyKnowledgeThreshold;
 const SCORING_RULE_VERSION = 1;
@@ -103,8 +104,9 @@ export async function matchCopyKnowledge({ query, knowledge, client, onProgress 
         const generated = await client.runText({ prompt });
         batchScores = parseScores(generated.rawText, batch, generated.model);
       } catch (error) {
-        // Unknown outcomes and explicit stops must not start a second model call.
-        if (error?.code?.startsWith('CODEX_') || error?.code?.startsWith('EXECUTION_')
+        // Preserve transport/provider failures, unknown outcomes and explicit stops;
+        // none of these should trigger a second model call as a score-format repair.
+        if (codexErrorCode(error) || error?.code?.startsWith('EXECUTION_')
           || error?.code === 'STALE_EXECUTION' || error?.name === 'AbortError') throw error;
         const capacity = ['MODEL_CONTEXT_LIMIT', 'MODEL_OUTPUT_INCOMPLETE'].includes(error?.code);
         if (capacity && batch.length > 1) {
