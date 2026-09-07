@@ -303,6 +303,9 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   router.post('/v1/executions/claim-copy', async (ctx) => {
     json(ctx, 200, await repository.claimCopy(requireJson(ctx).nodeId));
   });
+  router.post('/v1/executions/heartbeat', async (ctx) => {
+    json(ctx, 200, await repository.heartbeatExecutions(requireJson(ctx)));
+  });
   router.post('/v1/executions/claim-image', async (ctx) => {
     const body = requireJson(ctx);
     json(ctx, 200, await repository.claimImage(body.nodeId, body.imageControlsVersion, body.layoutCatalogVersion));

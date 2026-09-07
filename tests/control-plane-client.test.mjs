@@ -7,6 +7,23 @@ import {
   createControlPlaneClient,
 } from '../src/control-plane/client.mjs';
 
+test('task heartbeat responses must partition exactly the requested executions', async () => {
+  const id = randomUUID(), input = { nodeId: 'a', executionIds: [id] };
+  let payload = { activeExecutionIds: [id], staleExecutionIds: [] };
+  const client = createControlPlaneClient({ baseUrl: 'http://localhost', fetchImpl: async (url, options) => {
+    assert.ok(url.endsWith('/v1/executions/heartbeat'));
+    assert.deepEqual(JSON.parse(options.body), input);
+    return Response.json({ data: payload });
+  } });
+  assert.deepEqual(await client.heartbeatExecutions(input), payload);
+  for (const invalid of [null, {}, { activeExecutionIds: {}, staleExecutionIds: [] },
+    { activeExecutionIds: [], staleExecutionIds: [] }, { activeExecutionIds: [id], staleExecutionIds: [id] },
+    { activeExecutionIds: [randomUUID()], staleExecutionIds: [] }]) {
+    payload = invalid;
+    await assert.rejects(client.heartbeatExecutions(input), { code: 'INVALID_CONTROL_PLANE_RESPONSE' });
+  }
+});
+
 test('batch claims preserve request identity and reject malformed or duplicate executions', async () => {
   const requestId = randomUUID();
   const executionId = randomUUID();

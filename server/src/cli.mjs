@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { createControlPlaneApp } from './http-server.mjs';
 import { createPostgresControlPlaneRepository } from './postgres-repository.mjs';
 import { DEFAULT_PRODUCTION_SETTINGS, loadDefaultPrompts } from './defaults.mjs';
+import { startExecutionRecovery } from './execution-recovery.mjs';
 
 function configuration(environment = process.env) {
   const connectionString = environment.DATABASE_URL?.trim();
@@ -48,6 +49,7 @@ async function main() {
   }
 
   await repository.initialize();
+  await repository.recoverStaleExecutions();
   await mkdir(config.storageRoot, { recursive: true });
   const app = createControlPlaneApp({ repository, storageRoot: config.storageRoot });
   const server = await new Promise((resolvePromise, rejectPromise) => {
@@ -55,11 +57,13 @@ async function main() {
     listeningServer.once('error', rejectPromise);
   });
   console.log(`Control plane listening on http://${config.host}:${config.port}`);
+  const stopRecovery = startExecutionRecovery(repository);
 
   let stopping = false;
   async function stop() {
     if (stopping) return;
     stopping = true;
+    await stopRecovery();
     await new Promise((resolvePromise) => server.close(resolvePromise));
     await repository.close();
   }

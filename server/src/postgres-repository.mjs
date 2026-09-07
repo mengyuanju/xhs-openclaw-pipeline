@@ -11,6 +11,7 @@ import { migrateDatabase } from './database-migrations.mjs';
 import { claimRequestExpiry } from './claim-request.mjs';
 import { saveModelCall, listModelCalls, getModelCall } from './model-call-traces.mjs';
 import { hashUserPassword, verifyUserPassword } from './user-auth.mjs';
+import { heartbeatExecutions, recoverStaleExecutions } from './execution-recovery.mjs';
 
 import pg from 'pg';
 
@@ -353,6 +354,8 @@ async function queueApprovedCopy(client, taskId, revisionId, aiDisclosureEnabled
 }
 
 export class PostgresControlPlaneRepository {
+  heartbeatExecutions(input) { return heartbeatExecutions(this.pool, input); }
+  recoverStaleExecutions() { return recoverStaleExecutions(this.pool); }
   recordModelCall(executionId, callId, input) { return saveModelCall(this.pool, executionId, callId, input); }
   listModelCalls(taskId, options) { return listModelCalls(this.pool, taskId, options); }
   getModelCall(taskId, callId) { return getModelCall(this.pool, taskId, callId); }
@@ -376,7 +379,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { executionRetryControl: true, imageResume: true, executorConcurrency: true, adminTaskFilters: true, imageControlsVersion: 1 } };
+      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, adminTaskFilters: true, imageControlsVersion: 1 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -1749,9 +1752,9 @@ export class PostgresControlPlaneRepository {
     };
   }
 
-  async activeImageUploadContext(rawExecutionId) {
+  async activeImageUploadContext(rawExecutionId, queryable = this.pool) {
     const executionId = normalizeUuid(rawExecutionId, 'executionId');
-    const result = await this.pool.query(`
+    const result = await queryable.query(`
       SELECT e.id, e.task_id, r.id AS image_run_id
       FROM task_executions e
       JOIN tasks t ON t.current_execution_id = e.id
@@ -1779,36 +1782,42 @@ export class PostgresControlPlaneRepository {
     storagePath,
     originalName = null,
   }) {
-    const context = await this.activeImageUploadContext(rawExecutionId);
+    const executionId = normalizeUuid(rawExecutionId, 'executionId');
     if (![...Object.values(IMAGE_FORMATS).map(format => format.mediaType), 'application/json'].includes(mediaType)) {
       throw new TypeError('asset mediaType is invalid');
     }
     if (!Number.isSafeInteger(byteSize) || byteSize < 0) throw new TypeError('asset byteSize is invalid');
     if (!/^[0-9a-f]{64}$/u.test(sha256)) throw new TypeError('asset sha256 is invalid');
-    const result = await this.pool.query(`
-      INSERT INTO assets(
-        task_id, image_run_id, media_type, byte_size, sha256, storage_path, original_name
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-      RETURNING *
-    `, [
-      context.taskId,
-      context.imageRunId,
-      mediaType,
-      byteSize,
-      sha256,
-      storagePath,
-      originalName === null ? null : String(originalName).slice(0, 255),
-    ]);
-    const row = result.rows[0];
-    return {
-      id: Number(row.id),
-      taskId: Number(row.task_id),
-      imageRunId: row.image_run_id,
-      mediaType: row.media_type,
-      byteSize: Number(row.byte_size),
-      sha256: row.sha256,
-      createdAt: row.created_at,
-    };
+    return transaction(this.pool, async client => {
+      // Serialize validation and insertion with completion/recovery. An earlier
+      // HTTP upload check alone cannot fence a late write after recovery commits.
+      await lockedExecution(client, executionId);
+      const context = await this.activeImageUploadContext(executionId, client);
+      const result = await client.query(`
+        INSERT INTO assets(
+          task_id, image_run_id, media_type, byte_size, sha256, storage_path, original_name
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING *
+      `, [
+        context.taskId,
+        context.imageRunId,
+        mediaType,
+        byteSize,
+        sha256,
+        storagePath,
+        originalName === null ? null : String(originalName).slice(0, 255),
+      ]);
+      const row = result.rows[0];
+      return {
+        id: Number(row.id),
+        taskId: Number(row.task_id),
+        imageRunId: row.image_run_id,
+        mediaType: row.media_type,
+        byteSize: Number(row.byte_size),
+        sha256: row.sha256,
+        createdAt: row.created_at,
+      };
+    });
   }
 
   async imageReprocessAsset(rawExecutionId, rawAssetId) {

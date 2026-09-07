@@ -96,6 +96,18 @@ export function createControlPlaneClient({
     health: () => request('/health'),
     registerNode: (input) => request('/v1/nodes', { method: 'POST', body: input }),
     listNodes: () => request('/v1/nodes'),
+    async heartbeatExecutions(input) {
+      const result = await request('/v1/executions/heartbeat', { method: 'POST', body: input });
+      const { activeExecutionIds, staleExecutionIds } = result ?? {};
+      const returned = Array.isArray(activeExecutionIds) && Array.isArray(staleExecutionIds)
+        ? [...activeExecutionIds, ...staleExecutionIds] : [];
+      if (!Array.isArray(activeExecutionIds) || !Array.isArray(staleExecutionIds)
+        || returned.length !== input.executionIds.length || new Set(returned).size !== returned.length
+        || returned.some(id => !input.executionIds.includes(id))) {
+        throw new ControlPlaneApiError(502, 'INVALID_CONTROL_PLANE_RESPONSE', '任务心跳响应不完整，请检查中心连接');
+      }
+      return result;
+    },
     createTasks: (input) => request('/v1/tasks', { method: 'POST', body: input }),
     listTasks: ({ state, states, nodeId, query, limit = 50, offset = 0, includeTotal = false } = {}) => {
       const search = new URLSearchParams({ limit: String(limit), offset: String(offset) });

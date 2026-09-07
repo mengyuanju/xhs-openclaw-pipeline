@@ -61,7 +61,7 @@ export async function saveModelCall(pool, rawExecutionId, rawCallId, input) {
     INSERT INTO model_call_traces(id, task_id, execution_id, sequence, stage, provider, operation,
       model, status, prompt, request, response, error, truncated, started_at, finished_at, duration_ms)
     SELECT $1, e.task_id, e.id, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
-    FROM task_executions e WHERE e.id = $2
+    FROM (SELECT id, task_id FROM task_executions WHERE id = $2 AND status = 'RUNNING' FOR SHARE) e
     ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, response = EXCLUDED.response,
       error = EXCLUDED.error, truncated = model_call_traces.truncated OR EXCLUDED.truncated,
       finished_at = EXCLUDED.finished_at, duration_ms = EXCLUDED.duration_ms
