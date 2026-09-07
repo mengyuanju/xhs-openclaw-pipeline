@@ -30,6 +30,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 
 import { apiRequest } from '../components/api-client';
+import { resumeImageTask } from '../components/resume-image-task';
+import { canResumeImageTask } from '../../src/control-plane/image-resume.mjs';
 import { IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
 import { parseQueryBatch } from '../../src/control-plane/query-batch.mjs';
 import { imageExecutorLabel } from '../../src/control-plane/image-executor-label.mjs';
@@ -54,6 +56,7 @@ type DistributedTask = {
   imageExecutorNodeId?: string | null;
   imageExecutorNodeName?: string | null;
   currentCopyRevisionId: number | null;
+  currentExecutionId?: string | null;
   createdByUserId: string | null;
   createdByDisplayName: string | null;
   createdByRole?: string | null;
@@ -371,6 +374,24 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
     }
   }
 
+  async function resumeImages(task: DistributedTask) {
+    if (!canResumeImageTask(task)) return;
+    if (!await confirm({
+      title: '从失败步骤继续生图？',
+      description: '沿用已审核文案和原配置，复用已完成的规划、图片与检查点，只继续未完成步骤。原执行机离线时需等待其恢复；检查点缺失会明确报错。',
+      confirmLabel: '继续未完成步骤',
+    })) return;
+    setActingTaskId(task.id);
+    try {
+      await resumeImageTask(task.id);
+      setMessage(`任务 #${task.id} 已等待原执行机从失败步骤继续。`);
+      setError('');
+      await refresh({ silent: true });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '断点续跑提交失败');
+    } finally { setActingTaskId(null); }
+  }
+
   async function retryImages(task: DistributedTask) {
     if (!canRequeueImages(task)) return;
     if (!await confirm({
@@ -453,6 +474,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
     </TaskRowActions>;
     return <TaskRowActions taskId={task.id} busy={busy}>
       <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
+      {canDiscard && canResumeImageTask(task) && <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => { void resumeImages(task); }}><RotateCcw size={14} />从失败步骤继续</Button>}
       {activeView === 'PERSONAL' && canRetryCopy && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</Button>}
       {activeView === 'PERSONAL' && retryImageButton}
       {canDiscard && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</Button>}

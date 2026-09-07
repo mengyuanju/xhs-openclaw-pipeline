@@ -18,6 +18,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Disclosure, DisclosureContent, DisclosureTrigger } from '@/components/ui/disclosure';
 
 import { apiRequest } from '../components/api-client';
+import { resumeImageTask } from '../components/resume-image-task';
+import { canResumeImageTask } from '../../src/control-plane/image-resume.mjs';
+import { TaskQualitySummary } from './task-quality-summary';
 import { ModelCallTrace } from './model-call-trace';
 import { IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
 import { ImagePreview, ImagePreviewThumbnail } from '../components/image-preview';
@@ -75,6 +78,7 @@ type TaskDetail = {
   imageRuns: Array<{
     id: string;
     result: {
+      qc?: unknown;
       imageSettings?: ImageSettings;
       imagePlan?: ImagePlanItem[];
       processing?: { type: string };
@@ -159,6 +163,7 @@ export function TaskReviewDialog({
   const [invalidField, setInvalidField] = useState<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null>(null);
   const loadRequestRef = useRef(0);
   const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const imageSectionRef = useRef<HTMLElement | null>(null);
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
@@ -210,6 +215,7 @@ export function TaskReviewDialog({
   const canReviewImages = detail?.state === 'MANUAL_ARCHIVE'
     && ['ADMIN', 'REVIEWER'].includes(role) && Boolean(detail.currentImageRunId);
   const downloadable = detail && ['MANUAL_ARCHIVE', 'REVIEWED'].includes(detail.state);
+  const canResumeImages = canResumeImageTask(detail) && role !== 'REVIEWER';
   const canModifyImages = Boolean(detail && revision?.approvedAt && role !== 'REVIEWER'
     && ['MANUAL_ARCHIVE', 'REVIEWED', 'IMAGE_FAILED', 'IMAGE_QUEUED'].includes(detail.state) && !detail.currentExecutionId);
   const hasUnsavedChanges = editable
@@ -365,6 +371,20 @@ export function TaskReviewDialog({
     finally { setSubmitting(false); }
   }
 
+  async function resumeImages() {
+    if (!detail || !canResumeImages || submitting || loading) return;
+    if (!await confirm({ title: '从失败步骤继续生图？',
+      description: '沿用原配置和已审核文案，复用已完成的规划、图片与检查点，只继续未完成步骤。原执行机离线时需等待其恢复；检查点缺失会明确报错。',
+      confirmLabel: '继续未完成步骤' })) return;
+    setSubmitting(true); setError('');
+    try {
+      await resumeImageTask(detail.id);
+      await onUpdated('任务已等待原执行机从失败步骤继续。');
+      onOpenChange(false);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : '断点续跑提交失败'); }
+    finally { setSubmitting(false); }
+  }
+
   async function submitImageReview(decision: 'APPROVE' | 'RETRY' | 'DISCARD') {
     if (!detail || !canReviewImages || submitting || (decision === 'APPROVE' && imageConfigurationChanged)) return;
     const options = {
@@ -433,6 +453,8 @@ export function TaskReviewDialog({
           </div>}
           <div className="workbench-review-scroll" data-mobile-pane={mobilePane}>
             <div id="review-copy-pane" className="workbench-review-pane" data-review-pane="copy">
+              {!editable && currentImageRun && <TaskQualitySummary result={currentImageRun.result}
+                onShowImages={assets.length ? () => { imageSectionRef.current?.scrollIntoView({ block: 'start' }); imageSectionRef.current?.focus({ preventScroll: true }); } : undefined} />}
               <section className="workbench-review-section">
                 <div className="workbench-review-section-title"><span>01</span><div><h3>标题、正文与标签</h3><p>{editable ? '对照右侧图片文案规划修改，完成后一起提交。' : '当前状态只读，展示任务采用的文案版本。'}</p></div></div>
                 <div className="workbench-review-query">
@@ -464,7 +486,7 @@ export function TaskReviewDialog({
                   <b>{source.title || source.siteName || `来源 ${index + 1}`}</b><small>{source.url}</small>
                 </a>)}</div></DisclosureContent>
               </Disclosure>}
-            {(assets.length > 0 || canReviewImages) && <section className="workbench-review-section">
+            {(assets.length > 0 || canReviewImages) && <section className="workbench-review-section" ref={imageSectionRef} tabIndex={-1} aria-label="当前图片审核">
               <div className="workbench-review-section-title"><span>02</span><div><h3>图片审核</h3><p>核对当前图片运行生成的完整图集。</p></div></div>
               <ImagePreviewPreference />
               {assets.length === 0 && <p className="notice warning">当前没有可预览的图片，请刷新核对，或选择重试生图、废弃。</p>}
@@ -514,12 +536,6 @@ export function TaskReviewDialog({
               />}
               {currentImageRun?.result?.processing?.type === 'LOCAL' && <p className="notice warning">此版本已在本地转换格式或背景，未重新调用模型验收，请检查文字对比和透明边缘后审核。</p>}
               {imageConfigurationChanged && <p className="notice warning">下方配置尚未应用，当前预览仍是已有成品。请先提交转换或重新生图，或刷新恢复已保存的配置。</p>}
-              {canReviewImages && <div className="workbench-row-actions">
-                <Button unstyled className="button primary" type="button" disabled={submitting || loading || assets.length === 0 || imageConfigurationChanged} onClick={() => { void submitImageReview('APPROVE'); }}><CheckCircle2 size={15} />审核通过</Button>
-                <Button unstyled className="button" type="button" disabled={submitting || loading} onClick={() => { void submitImageReview('RETRY'); }}><RotateCcw size={15} />重试生图</Button>
-                <Button unstyled className="button danger" type="button" disabled={submitting || loading} onClick={() => { void submitImageReview('DISCARD'); }}><Trash2 size={15} />废弃</Button>
-                {submitting && <span role="status">正在提交…</span>}
-              </div>}
             </section>}
 
             <ImageHistoryCompare runs={detail.imageRuns} currentRunId={detail.currentImageRunId} assets={detail.assets}
@@ -582,9 +598,16 @@ export function TaskReviewDialog({
           </div>
 
           <footer className="workbench-review-footer">
+            {error && <div className="notice error workbench-review-footer-error" role="alert">{error}</div>}
             <span><strong className="workbench-review-dirty" role="status">{hasUnsavedChanges ? '有未提交修改 · ' : ''}</strong>{editable ? `提交后将创建人工修订版 v${(revision?.revision ?? 0) + 1}` : `当前文案版本 v${revision?.revision ?? '—'}`}</span>
             <div>
               <DialogClose asChild><Button unstyled className="button" type="button" disabled={submitting}>关闭</Button></DialogClose>
+              {canResumeImages && <Button unstyled className="button primary" type="button" disabled={submitting || loading} onClick={() => { void resumeImages(); }}><RotateCcw size={15} />从失败步骤继续</Button>}
+              {canReviewImages && <>
+                <Button unstyled className="button danger" type="button" disabled={submitting || loading} onClick={() => { void submitImageReview('DISCARD'); }}><Trash2 size={15} />废弃</Button>
+                <Button unstyled className="button" type="button" disabled={submitting || loading} onClick={() => { void submitImageReview('RETRY'); }}><RotateCcw size={15} />重试生图</Button>
+                <Button unstyled className="button primary" type="button" disabled={submitting || loading || assets.length === 0 || imageConfigurationChanged} onClick={() => { void submitImageReview('APPROVE'); }}><CheckCircle2 size={15} />{submitting ? '正在提交…' : '审核通过'}</Button>
+              </>}
               {editable && <Button unstyled className="button primary" type="submit" disabled={submitting || loading}>
                 {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : <><CheckCircle2 size={15} />审核通过并开始生图</>}
               </Button>}
@@ -592,7 +615,7 @@ export function TaskReviewDialog({
           </footer>
         </form>}
 
-      {error && <div className="notice error workbench-review-error" role="alert">{error}</div>}
+      {error && !detail && <div className="notice error workbench-review-error" role="alert">{error}</div>}
     </DialogContent>
   </Dialog>;
 }
