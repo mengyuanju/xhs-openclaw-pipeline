@@ -55,6 +55,7 @@ type CopyRevision = {
     generation?: { research?: { sources?: Array<{ title?: string; url: string; siteName?: string }> } };
   };
   approvedAt: string | null;
+  approvalMode?: 'MANUAL' | 'ADMIN_BYPASS' | null;
 };
 type TaskDetail = {
   id: number;
@@ -419,6 +420,7 @@ export function TaskReviewDialog({
             ? '核对文案与图片后，选择审核通过、重试生图或废弃。'
             : detail?.state === 'REVIEWED' ? '图文已审核通过，可查看详情并下载完整资源包。'
             : '核对任务信息，直接修改文案和配图策划后提交审核。'}</DialogDescription>
+          {revision?.approvalMode === 'ADMIN_BYPASS' && <p role="status">管理员免审核 · 当前文案已自动放行生图</p>}
         </div>
         <div className="workbench-row-actions">
           {downloadable && <a className="button small primary" href={apiPath(`/v1/tasks/${detail.id}/archive`)} download>

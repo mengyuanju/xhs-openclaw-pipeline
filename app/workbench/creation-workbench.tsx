@@ -1,7 +1,7 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/input';
+import { Checkbox, Textarea } from '@/components/ui/input';
 import { SearchInput } from '@/components/ui/search-input';
 
 import {
@@ -197,6 +197,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
   const [createError, setCreateError] = useState('');
   const queryBatch = useMemo(() => parseQueryBatch(queryText), [queryText]);
   const [imageCount, setImageCount] = useState('auto');
+  const [skipCopyReview, setSkipCopyReview] = useState(role === 'ADMIN');
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(isAllJobs ? initialTaskId : null);
   const [loading, setLoading] = useState(true);
@@ -485,6 +486,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
     setQueryText('');
     setCreateError('');
     setImageCount('auto');
+    setSkipCopyReview(role === 'ADMIN');
   }
 
   async function createTasks(event: FormEvent<HTMLFormElement>) {
@@ -505,6 +507,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           nodeId,
+          skipCopyReview: role === 'ADMIN' && skipCopyReview,
           tasks: queries.map((query) => ({
             query,
             input: {},
@@ -518,7 +521,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
       setSearchInput('');
       setSearchKeyword('');
       if (activeView !== 'PERSONAL') router.push('/workbench/personal');
-      setMessage(`已创建 ${queries.length} 条笔记并加入共享文案队列，空闲执行机会按队列顺序领取。`);
+      setMessage(`已创建 ${queries.length} 条笔记并加入共享文案队列，空闲执行机会按队列顺序领取。${role === 'ADMIN' && skipCopyReview ? '本批次免人工文案审核，文案生成后自动进入生图队列。' : ''}`);
       await refresh({ silent: true });
     } catch (caught) {
       setCreateError(caught instanceof Error ? caught.message : '笔记创建失败');
@@ -595,6 +598,15 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
                     </Select>
                   </div>
                 </div>
+                {role === 'ADMIN' && <div className="field">
+                  <label className="switch-field" htmlFor="workbench-skip-copy-review">
+                    <Checkbox id="workbench-skip-copy-review" checked={skipCopyReview} disabled={creating}
+                      aria-describedby="workbench-skip-copy-review-help"
+                      onChange={(event) => setSkipCopyReview(event.target.checked)} />
+                    <span>免人工文案审核，直接生图</span>
+                  </label>
+                  <p className="workbench-query-help" id="workbench-skip-copy-review-help">应用于本批次全部笔记。取消勾选后，文案生成完成会等待人工审核。</p>
+                </div>}
                 <div className="workbench-create-footer">
                   <span aria-live="polite">已识别 {queryBatch.queries.length} 条 Query，按输入顺序加入队列。</span>
                   <div>

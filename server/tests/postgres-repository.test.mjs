@@ -90,7 +90,7 @@ test('task creation keeps ownership but leaves copy execution unassigned', async
   assert.equal(created[0].createdByNodeId, 'node-a');
   assert.equal(created[0].copyExecutorNodeId, null);
   assert.equal(created[0].createdByUserId, 'admin');
-  assert.deepEqual(insert.values.slice(3), ['node-a', 'admin']);
+  assert.deepEqual(insert.values.slice(3), ['node-a', 'admin', false]);
   assert.doesNotMatch(insert.sql, /copy_executor_node_id/u);
   assert.match(insert.sql, /'COPY_QUEUED', '等待文案执行机领取'/u);
   assert.equal(queries.at(-1).sql, 'COMMIT');

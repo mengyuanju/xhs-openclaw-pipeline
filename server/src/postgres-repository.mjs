@@ -85,6 +85,7 @@ function taskFrom(row) {
       ? 'auto'
       : Number(row.requested_image_count),
     aiDisclosureEnabled: row.ai_disclosure_enabled ?? true,
+    skipCopyReview: row.skip_copy_review === true,
     state: row.state,
     imageReviewedAt: row.image_reviewed_at ?? null,
     imageReviewedByUserId: row.image_reviewed_by_user_id ?? null,
@@ -217,6 +218,7 @@ function revisionFrom(row) {
     revision: Number(row.revision),
     content: row.content,
     approvedAt: row.approved_at,
+    approvalMode: row.approval_mode ?? (row.approved_at ? 'MANUAL' : null),
     approvedByNodeId: row.approved_by_node_id,
     createdAt: row.created_at,
   };
@@ -316,7 +318,8 @@ async function configurationSnapshots(client, tasks, kind) {
 
 async function lockedExecution(client, executionId) {
   const result = await client.query(`
-    SELECT e.*, t.current_execution_id, t.state AS task_state
+    SELECT e.*, t.current_execution_id, t.state AS task_state,
+      t.skip_copy_review, t.created_by_node_id, t.ai_disclosure_enabled
     FROM task_executions e
     JOIN tasks t ON t.id = e.task_id
     WHERE e.id = $1
@@ -331,6 +334,22 @@ async function lockedExecution(client, executionId) {
     );
   }
   return row;
+}
+
+async function queueApprovedCopy(client, taskId, revisionId, aiDisclosureEnabled, message = '文案审核通过，等待图片执行机领取') {
+  const updated = await client.query(`
+    UPDATE tasks SET
+      state = 'IMAGE_QUEUED', current_copy_revision_id = $2,
+      ai_disclosure_enabled = $3,
+      current_execution_id = NULL, current_image_run_id = NULL,
+      current_stage = 'IMAGE_QUEUED', progress_percent = 0,
+      progress_message = $4,
+      execution_started_at = NULL, last_activity_at = now(), finished_at = NULL,
+      error = NULL, pending_snapshot = NULL, updated_at = now()
+    WHERE id = $1
+    RETURNING *
+  `, [taskId, revisionId, aiDisclosureEnabled, message]);
+  return taskFrom(updated.rows[0]);
 }
 
 export class PostgresControlPlaneRepository {
@@ -556,7 +575,8 @@ export class PostgresControlPlaneRepository {
     return result.rows.map(nodeFrom);
   }
 
-  async createTasks({ nodeId: rawNodeId, createdByUserId: rawCreator = null, tasks: rawTasks }) {
+  async createTasks({ nodeId: rawNodeId, createdByUserId: rawCreator = null, tasks: rawTasks, skipCopyReview = false }) {
+    if (typeof skipCopyReview !== 'boolean') throw new TypeError('skipCopyReview must be a boolean');
     const nodeId = normalizeNodeId(rawNodeId);
     const createdByUserId = rawCreator === null ? null : normalizeCreatorUserId(rawCreator);
     const tasks = normalizeTaskBatch(rawTasks);
@@ -571,10 +591,10 @@ export class PostgresControlPlaneRepository {
         const result = await client.query(`
           INSERT INTO tasks(
             query, input, requested_image_count, created_by_node_id, created_by_user_id,
-            current_stage, progress_message
-          ) VALUES ($1, $2, $3, $4, $5, 'COPY_QUEUED', '等待文案执行机领取')
+            skip_copy_review, current_stage, progress_message
+          ) VALUES ($1, $2, $3, $4, $5, $6, 'COPY_QUEUED', '等待文案执行机领取')
           RETURNING *
-        `, [task.query, task.input, String(task.imageCount), nodeId, createdByUserId]);
+        `, [task.query, task.input, String(task.imageCount), nodeId, createdByUserId, skipCopyReview]);
         created.push(taskFrom(result.rows[0]));
       }
       return created;
@@ -947,30 +967,51 @@ export class PostgresControlPlaneRepository {
     return transaction(this.pool, async (client) => {
       const execution = await lockedExecution(client, executionId);
       if (execution.kind !== 'COPY') throw new TypeError('execution is not a copy execution');
+      let bypass = execution.skip_copy_review === true;
+      let message = '文案生成完成，等待人工审核';
+      if (bypass) {
+        try {
+          normalizeCopyReviewEdits({
+            copy: result?.copy ?? result?.reviewed?.copy ?? result?.post,
+            imagePlan: result?.imagePlan ?? result?.reviewed?.imagePlan ?? result?.post?.imagePlan,
+          });
+          message = '管理员免审核，等待图片执行机领取';
+        } catch (error) {
+          if (!(error instanceof TypeError || error instanceof RangeError)) throw error;
+          bypass = false;
+          message = '文案格式校验未通过，等待人工审核';
+        }
+      }
       const revisionNumber = Number((await client.query(`
         SELECT COALESCE(MAX(revision), 0) + 1 AS revision
         FROM copy_revisions WHERE task_id = $1
       `, [execution.task_id])).rows[0].revision);
       const revision = await client.query(`
-        INSERT INTO copy_revisions(task_id, execution_id, revision, content)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO copy_revisions(task_id, execution_id, revision, content, approved_at, approved_by_node_id, approval_mode)
+        VALUES ($1, $2, $3, $4, CASE WHEN $5 THEN now() ELSE NULL END,
+          CASE WHEN $5 THEN $6 ELSE NULL END, CASE WHEN $5 THEN 'ADMIN_BYPASS' ELSE NULL END)
         RETURNING *
-      `, [execution.task_id, executionId, revisionNumber, result]);
+      `, [execution.task_id, executionId, revisionNumber, result, bypass, execution.created_by_node_id]);
       await client.query(`
         UPDATE task_executions SET
           status = 'SUCCEEDED', stage = 'COMPLETED', progress_percent = 100,
-          progress_message = '文案生成完成，等待人工审核', last_activity_at = now(), finished_at = now()
+          progress_message = $2, last_activity_at = now(), finished_at = now()
         WHERE id = $1
-      `, [executionId]);
+      `, [executionId, message]);
+      if (bypass) {
+        const task = await queueApprovedCopy(client, execution.task_id, revision.rows[0].id,
+          execution.ai_disclosure_enabled ?? true, message);
+        return { task, revision: revisionFrom(revision.rows[0]) };
+      }
       const task = await client.query(`
         UPDATE tasks SET
           state = 'COPY_REVIEW_PENDING', current_copy_revision_id = $2,
           current_execution_id = NULL, current_stage = 'COPY_REVIEW_PENDING',
-          progress_percent = 100, progress_message = '文案生成完成，等待人工审核',
+          progress_percent = 100, progress_message = $4,
           last_activity_at = now(), finished_at = now(), updated_at = now()
         WHERE id = $1 AND current_execution_id = $3
         RETURNING *
-      `, [execution.task_id, revision.rows[0].id, executionId]);
+      `, [execution.task_id, revision.rows[0].id, executionId, message]);
       return { task: taskFrom(task.rows[0]), revision: revisionFrom(revision.rows[0]) };
     });
   }
@@ -1017,29 +1058,17 @@ export class PostgresControlPlaneRepository {
         });
         const reviewedRevision = await client.query(`
           INSERT INTO copy_revisions(
-            task_id, execution_id, revision, content, approved_at, approved_by_node_id
-          ) VALUES ($1, NULL, $2, $3, now(), $4)
+            task_id, execution_id, revision, content, approved_at, approved_by_node_id, approval_mode
+          ) VALUES ($1, NULL, $2, $3, now(), $4, 'MANUAL')
           RETURNING *
         `, [taskId, revisionNumber, reviewedContent, nodeId]);
         approvedRevisionId = Number(reviewedRevision.rows[0].id);
       } else {
         await client.query(`
-          UPDATE copy_revisions SET approved_at = now(), approved_by_node_id = $2 WHERE id = $1
+          UPDATE copy_revisions SET approved_at = now(), approved_by_node_id = $2, approval_mode = 'MANUAL' WHERE id = $1
         `, [revisionId, nodeId]);
       }
-      const updated = await client.query(`
-        UPDATE tasks SET
-          state = 'IMAGE_QUEUED', current_copy_revision_id = $2,
-          ai_disclosure_enabled = $3,
-          current_image_run_id = NULL,
-          current_stage = 'IMAGE_QUEUED', progress_percent = 0,
-          progress_message = '文案审核通过，等待图片执行机领取',
-          execution_started_at = NULL, last_activity_at = now(), finished_at = NULL,
-          error = NULL, pending_snapshot = NULL, updated_at = now()
-        WHERE id = $1
-        RETURNING *
-      `, [taskId, approvedRevisionId, aiDisclosureEnabled]);
-      return taskFrom(updated.rows[0]);
+      return queueApprovedCopy(client, taskId, approvedRevisionId, aiDisclosureEnabled);
     });
   }
 
