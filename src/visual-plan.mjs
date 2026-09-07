@@ -3,6 +3,7 @@ import { visualEvidenceOptions } from './visual-plan-schema.mjs';
 import { imageControlsPrompt, requestedLayoutTemplate } from './image-layout-controls.mjs';
 import { catalogPageFields, catalogPageOptions, normalizeVisualStyle } from './catalog-planning.mjs';
 import { normalizeLayoutCatalog } from '../server/src/layout-catalog.mjs';
+import { unsupportedImageNumbers } from './image-numeric-evidence.mjs';
 import {
   defaultLayoutTemplate,
   layoutTemplatePromptRules,
@@ -77,10 +78,6 @@ function validatePost(post, imageCount) {
   return { title, body, imagePlan: post.imagePlan };
 }
 
-function numericClaims(values) {
-  return [...new Set(values.flatMap((value) => String(value).match(/\d+(?:\.\d+)?%?/gu) ?? []))];
-}
-
 function explicitLayoutItemCount(layoutDirection) {
   const match = layoutDirection.match(
     /([一二三四五六七八九十\d]+)(?:项|张|个|格)(?:[^。；]{0,6})(?:卡片|卡|节点|要点|检查|提示)/u,
@@ -90,7 +87,7 @@ function explicitLayoutItemCount(layoutDirection) {
   return CHINESE_COUNTS.get(match[1]) ?? null;
 }
 
-function validateVisibleText(value, name, finalizedText, bulletMax = 30) {
+function validateVisibleText(value, name, finalizedText, bulletMax = 30, kind) {
   if (!isRecord(value)) throw new TypeError(`${name} must be an object`);
   if (value.language !== 'zh-CN') throw new TypeError(`${name}.language must be zh-CN`);
   const visible = {
@@ -111,10 +108,8 @@ function validateVisibleText(value, name, finalizedText, bulletMax = 30) {
       throw new TypeError(`${name}.labels[${index}] duplicates existing visible text`);
     }
   }
-  for (const claim of numericClaims([visible.headline, visible.subtitle, ...visible.bullets])) {
-    if (!finalizedText.includes(claim)) {
-      throw new TypeError(`${name} contains numeric claim ${claim} that is absent from the finalized text`);
-    }
+  for (const claim of unsupportedImageNumbers(visible, finalizedText, kind)) {
+    throw new TypeError(`${name} contains numeric claim ${claim} that is absent from the finalized text or does not match the checklist count`);
   }
   return visible;
 }
@@ -211,6 +206,7 @@ function validatePage(rawPage, arrayIndex, finalized, finalizedText, direct = fa
       `pages[${arrayIndex}].allowedVisibleText`,
       finalizedText,
       expectedKind === 'checklist' ? 40 : 30,
+      expectedKind,
     );
     const explicitItemCount = explicitLayoutItemCount(layoutDirection);
     if (explicitItemCount !== null && explicitItemCount !== allowedVisibleText.bullets.length) {
