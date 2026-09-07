@@ -68,12 +68,12 @@ test('invalid variable names including hyphens cannot be saved or previewed', ()
   assert.equal(normalizePromptContent('围绕 {{ query }} 创作。'), '围绕 {{ query }} 创作。');
 });
 
-test('reads a full nineteen-template runtime larger than the old manifest limit without dropping rules', async (t) => {
+test('reads the complete prompt catalog larger than the old manifest limit without dropping rules', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'xhs-large-runtime-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const directory = join(root, 'standalone-image-generations', RUN_ID);
   await mkdir(directory, { recursive: true });
-  assert.equal(PROMPT_KINDS.length, 19);
+  assert.ok(PROMPT_KINDS.includes('LAYOUT_CATALOG_SYSTEM'));
   const runtime = createPromptRuntime({ capturedAt: '2026-09-07T08:00:00.000Z', prompts: Object.fromEntries(
     PROMPT_KINDS.map((kind, index) => [kind, { content: 'A'.repeat(15_000), version: index + 1, versionId: index + 1 }]),
   ) });
@@ -84,7 +84,7 @@ test('reads a full nineteen-template runtime larger than the old manifest limit 
 
   const loaded = await readStandaloneImagePromptRuntime(root, RUN_ID);
   assert.deepEqual(loaded, runtime);
-  assert.equal(Object.keys(loaded.prompts).length, 19);
+  assert.equal(Object.keys(loaded.prompts).length, PROMPT_KINDS.length);
   assert.ok(Object.values(loaded.prompts).every((item) => item.content.length === 15_000));
 });
 

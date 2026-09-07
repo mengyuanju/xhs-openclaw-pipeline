@@ -3,6 +3,7 @@ import {
   normalizeModelApiSettings,
 } from './model-api-config.mjs';
 import { normalizeLayoutPresets } from '../server/src/layout-library.mjs';
+import { normalizeLayoutCatalog } from '../server/src/layout-catalog.mjs';
 
 export const DEFAULT_PRODUCTION_SETTINGS = Object.freeze({
   qualityRepairEnabled: true,
@@ -86,6 +87,7 @@ export function normalizeProductionSettings(input = {}) {
     ),
     modelApi: normalizeModelApiSettings(input.modelApi ?? DEFAULT_MODEL_API_SETTINGS),
     layoutPresets: normalizeLayoutPresets(input.layoutPresets),
+    ...(input.layoutCatalog !== undefined ? { layoutCatalog: normalizeLayoutCatalog(input.layoutCatalog) } : {}),
   };
   if (settings.qualityRepairTargetScore <= settings.qualityRepairTriggerScore) {
     throw new RangeError('quality repair target score must be greater than trigger score');

@@ -2,6 +2,8 @@ import {
   DEFAULT_PRODUCTION_SETTINGS,
   normalizeProductionSettings,
 } from '../production-settings.mjs';
+import { BUILTIN_LAYOUT_CATALOG } from '../../server/src/layout-catalog.mjs';
+import { changeLayoutCatalog, layoutCatalogRecord } from '../../server/src/layout-catalog-settings.mjs';
 
 function rowToProductionSettings(row) {
   if (!row) return null;
@@ -23,12 +25,25 @@ export function initializeProductionSettingsSchema(db) {
   db.prepare(`
     INSERT OR IGNORE INTO production_settings (id, settings_json, updated_at)
     VALUES (1, ?, ?)
-  `).run(JSON.stringify(DEFAULT_PRODUCTION_SETTINGS), createdAt);
+  `).run(JSON.stringify({ ...DEFAULT_PRODUCTION_SETTINGS, layoutCatalog: BUILTIN_LAYOUT_CATALOG }), createdAt);
+  // Only bootstrap old records with no catalog field. An explicitly empty catalog stays empty.
+  db.prepare(`UPDATE production_settings SET settings_json = json_set(settings_json, '$.layoutCatalog', json(?)), updated_at = ?
+    WHERE id = 1 AND json_type(settings_json, '$.layoutCatalog') IS NULL`).run(JSON.stringify(BUILTIN_LAYOUT_CATALOG), createdAt);
 }
 
 export function createProductionSettingsStore(db) {
   const getRow = db.prepare('SELECT * FROM production_settings WHERE id = 1');
   return {
+    getLayoutCatalog() { return layoutCatalogRecord(this.getProductionSettings().settings); },
+
+    updateLayoutCatalog(input, options = {}) {
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const changed = changeLayoutCatalog(this.getProductionSettings().settings, input, options);
+        this.updateProductionSettings({ layoutCatalog: changed.settings.layoutCatalog });
+        db.exec('COMMIT'); return changed.record;
+      } catch (error) { if (db.isTransaction) db.exec('ROLLBACK'); throw error; }
+    },
     getProductionSettings() {
       const settings = rowToProductionSettings(getRow.get());
       if (!settings) throw new Error('production settings are not initialized');

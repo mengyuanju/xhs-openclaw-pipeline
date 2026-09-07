@@ -71,7 +71,7 @@ export async function savePromptPolicy(input, { store, controlPlane }) {
     const issues = promptCompatibilityIssues(kind, version.content);
     if (issues.length) throw new TypeError(`${kind}：${issues.join('；')}`);
   }
-  const missing = PROMPT_CATALOG.filter(({ kind }) => kind !== 'IMAGE_SEARCH_SYSTEM'
+  const missing = PROMPT_CATALOG.filter(({ kind }) => !['IMAGE_SEARCH_SYSTEM', 'LAYOUT_CATALOG_SYSTEM'].includes(kind)
     && (kind !== 'QUERY_REVIEW_SYSTEM' || value.queryReviewEnabled)
     && (kind !== 'VISUAL_PLAN_SYSTEM' || value.visualPlanningEnabled) && !published[kind]);
   if (missing.length) throw new TypeError(`请先发布以下提示词：${missing.map(({ label }) => label).join('、')}`);
