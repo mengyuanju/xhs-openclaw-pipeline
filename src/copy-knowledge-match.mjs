@@ -93,6 +93,7 @@ export async function matchCopyKnowledge({ query, knowledge, client, onProgress 
   fullText(query, 'Query');
   const scores = [];
   let modelCallCount = 0;
+  let skipReason;
   async function scoreBatch(batch) {
     const prompt = scoringPrompt(query, batch);
     let lastError;
@@ -128,16 +129,24 @@ export async function matchCopyKnowledge({ query, knowledge, client, onProgress 
   }
   if (candidates.length) {
     if (typeof client?.runText !== 'function') throw new TypeError('案例匹配需要文案模型客户端');
-    await scoreBatch(candidates);
+    try {
+      await scoreBatch(candidates);
+    } catch (error) {
+      // Case references are optional. Keep validated scores for diagnostics, but
+      // never choose a winner from incomplete scoring or swallow execution stops.
+      if (!(error instanceof CopyKnowledgeMatchError)) throw error;
+      skipReason = error.code;
+    }
   }
   scores.sort((left, right) => right.score - left.score || left.itemId - right.itemId || left.versionId - right.versionId);
-  const winner = scores.find((item) => item.score >= matchThreshold()) ?? null;
+  const winner = skipReason ? null : scores.find((item) => item.score >= matchThreshold()) ?? null;
   const selected = winner ? candidates.find((item) => item.versionId === winner.versionId) : null;
   return {
     reference: selected ? { itemId: selected.itemId, versionId: selected.versionId, score: winner.score, analysis: selected.analysis } : null,
     record: {
       schemaVersion: 1, scoringRuleVersion: SCORING_RULE_VERSION, threshold: matchThreshold(),
-      status: selected ? 'MATCHED' : candidates.length ? 'NO_MATCH' : 'EMPTY',
+      status: skipReason ? 'SKIPPED' : selected ? 'MATCHED' : candidates.length ? 'NO_MATCH' : 'EMPTY',
+      ...(skipReason ? { skipReason } : {}),
       candidateCount: candidates.length, scoredCount: scores.length, modelCallCount, scores,
       models: [...new Set(scores.map((item) => item.model).filter(Boolean))],
       selectedItemId: selected?.itemId ?? null, selectedVersionId: selected?.versionId ?? null,

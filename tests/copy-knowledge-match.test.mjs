@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { matchCopyKnowledge } from '../src/copy-knowledge-match.mjs';
 
 test('unknown Codex outcomes and cancellation never replay the matching call', async () => {
-  for (const code of ['CODEX_EXEC_TIMEOUT', 'CODEX_AUTH_REQUIRED', 'CODEX_QUOTA_EXHAUSTED', 'STALE_EXECUTION']) {
+  for (const code of ['CODEX_EXEC_TIMEOUT', 'CODEX_AUTH_REQUIRED', 'CODEX_QUOTA_EXHAUSTED', 'STALE_EXECUTION', 'EXECUTION_CANCELLED']) {
     let calls = 0;
     const failure = Object.assign(new Error('interrupted'), { code });
     await assert.rejects(matchCopyKnowledge({ query: '测试', knowledge: [entry(1)], client: {
@@ -107,11 +107,15 @@ test('actual context or output capacity failures split whole cases and preserve 
   }
 });
 
-test('a single oversized case fails without shortening it or treating it as no match', async () => {
+test('a single oversized case skips the optional reference without shortening it', async () => {
   let calls = 0;
-  await assert.rejects(matchCopyKnowledge({ query: '测试', knowledge: [entry(1)], client: {
+  const result = await matchCopyKnowledge({ query: '测试', knowledge: [entry(1)], client: {
     async runText() { calls++; throw Object.assign(new Error('too large'), { code: 'MODEL_CONTEXT_LIMIT' }); },
-  } }), (error) => error.code === 'MODEL_CONTEXT_LIMIT' && error.stage === 'KNOWLEDGE_MATCH');
+  } });
+  assert.equal(result.reference, null);
+  assert.equal(result.record.status, 'SKIPPED');
+  assert.equal(result.record.skipReason, 'MODEL_CONTEXT_LIMIT');
+  assert.equal(result.record.modelCallCount, 1);
   assert.equal(calls, 1);
 });
 
@@ -122,14 +126,56 @@ test('invalid scoring responses get a bounded retry and cannot pick a winner', a
     [{ ...good, score: '99' }], [{ ...good, score: null }], [{ ...good, reason: '' }],
   ].map((scores) => JSON.stringify({ scores }))]) {
     let calls = 0;
-    await assert.rejects(matchCopyKnowledge({ query: '测试', knowledge: [entry(1)], client: {
+    const result = await matchCopyKnowledge({ query: '测试', knowledge: [entry(1)], client: {
       async runText() { calls++; return { rawText, model: 'fake' }; },
-    } }), (error) => error.code === 'COPY_KNOWLEDGE_MATCH_FAILED');
+    } });
+    assert.equal(result.reference, null);
+    assert.equal(result.record.status, 'SKIPPED');
+    assert.equal(result.record.skipReason, 'COPY_KNOWLEDGE_MATCH_FAILED');
+    assert.equal(result.record.candidateCount, 1);
+    assert.equal(result.record.scoredCount, 0);
+    assert.deepEqual(result.record.scores, []);
+    assert.equal(result.record.selectedVersionId, null);
+    assert.equal(result.record.modelCallCount, 2);
     assert.equal(calls, 2);
   }
 });
 
-test('a transient provider failure retries but persistent failure blocks matching', async () => {
+test('incomplete split scoring keeps evidence but cannot select a partially scored winner', async () => {
+  const result = await matchCopyKnowledge({ query: '测试', knowledge: [entry(1), entry(2)], client: {
+    async runText({ prompt }) {
+      const { candidates } = inputFrom(prompt);
+      if (candidates.length > 1) throw Object.assign(new Error('split batch'), { code: 'MODEL_OUTPUT_INCOMPLETE' });
+      if (candidates[0].versionId === 102) return { rawText: '{"scores":[]}' };
+      return scoresFor(candidates, 99);
+    },
+  } });
+  assert.equal(result.reference, null);
+  assert.equal(result.record.status, 'SKIPPED');
+  assert.equal(result.record.skipReason, 'COPY_KNOWLEDGE_MATCH_FAILED');
+  assert.equal(result.record.candidateCount, 2);
+  assert.equal(result.record.scoredCount, 1);
+  assert.equal(result.record.scores[0].score, 99);
+  assert.equal(result.record.modelCallCount, 4);
+  assert.equal(result.record.selectedItemId, null);
+  assert.equal(result.record.selectedVersionId, null);
+  assert.equal(result.record.selectedScore, null);
+  assert.equal(result.record.analysisSha256, null);
+});
+
+test('progress reporting errors and explicit aborts still stop matching', async () => {
+  const failure = new Error('progress unavailable');
+  await assert.rejects(matchCopyKnowledge({ query: '测试', knowledge: [entry(1)],
+    client: { runText: async () => assert.fail('must not call model') },
+    onProgress: async () => { throw failure; },
+  }), error => error === failure);
+  const aborted = Object.assign(new Error('cancelled'), { name: 'AbortError' });
+  await assert.rejects(matchCopyKnowledge({ query: '测试', knowledge: [entry(1)],
+    client: { runText: async () => { throw aborted; } },
+  }), error => error === aborted);
+});
+
+test('a transient provider failure retries but persistent scoring failure skips the reference', async () => {
   let calls = 0;
   const result = await matchCopyKnowledge({ query: '测试', knowledge: [entry(1)], client: {
     async runText({ prompt }) {
@@ -139,7 +185,10 @@ test('a transient provider failure retries but persistent failure blocks matchin
   } });
   assert.equal(result.record.status, 'MATCHED');
   assert.equal(calls, 2);
-  await assert.rejects(matchCopyKnowledge({ query: '测试', knowledge: [entry(1)], client: {
+  const skipped = await matchCopyKnowledge({ query: '测试', knowledge: [entry(1)], client: {
     async runText() { throw new Error('network unavailable'); },
-  } }), (error) => error.code === 'COPY_KNOWLEDGE_MATCH_FAILED');
+  } });
+  assert.equal(skipped.reference, null);
+  assert.equal(skipped.record.status, 'SKIPPED');
+  assert.equal(skipped.record.modelCallCount, 2);
 });
