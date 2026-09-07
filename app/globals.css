@@ -421,10 +421,19 @@
 .job-stats-loading { display: grid; place-items: center; color: var(--muted); font-size: 12px; background: var(--control-bg-muted); }
 .job-stats-filters { display: grid; gap: 16px; }
 .job-stats-filter-row, .job-stats-date-form, .job-stats-segments { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.job-stats-filter-row { gap: 16px; }
-.job-stats-filter-row label { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); min-width: 0; }
+.job-stats-filter-row { align-items: flex-end; gap: 16px; min-width: 0; }
+.job-stats-filter-row label { font-size: 12px; color: var(--muted); min-width: 0; white-space: nowrap; }
+.job-stats-filter-row > label { display: grid; gap: 6px; flex: 0 1 176px; max-width: 100%; }
+.job-stats-filter-row > label + label { flex-basis: 288px; }
+.job-stats-filter-row > .job-stats-note { flex: 1 1 248px; margin: 0; padding-bottom: 10px; }
+.job-stats-filters .job-stats-segments { flex-wrap: nowrap; }
+.job-stats-filters .job-stats-segments button { flex: 0 0 auto; min-width: 64px; min-height: 44px; padding: 0 12px; white-space: nowrap; }
+.job-stats-date-form { flex: 1 1 432px; align-items: flex-end; gap: 12px; min-width: 0; max-width: 560px; }
+.job-stats-date-form .ui-date-field { flex: 1 1 160px; }
+.job-stats-date-form .ui-date-input { width: 100%; }
+.job-stats-date-form > .button.small { flex: 0 0 auto; min-width: 88px; min-height: 44px; border-radius: 6px; white-space: nowrap; }
 .job-stats-page input, .job-stats-page [data-slot="select-trigger"] { min-width: 0; max-width: 100%; width: auto; padding: 8px 10px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--control-bg); color: var(--ink); font-size: 12px; }
-.job-stats-page [data-slot="select-trigger"] { max-width: 280px; }
+.job-stats-filters [data-slot="select-trigger"] { width: 100%; max-width: 100%; white-space: nowrap; }
 .job-stats-page :is(button, a, input, [data-slot="select-trigger"], [data-slot="disclosure-trigger"], [tabindex]):focus-visible,
 .job-stats-personal :is(button, a, [data-slot="disclosure-trigger"]):focus-visible { outline: 2px solid var(--red); outline-offset: 3px; }
 .job-stats-table-scroll { min-width: 0; overflow-x: auto; margin-top: 12px; }
@@ -453,9 +462,8 @@
   .panel.job-stats-section, .panel.job-stats-personal, .panel.job-stats-filters { padding: 16px; }
   .job-stats-metric > strong { font-size: 24px; }
   .job-stats-metric { padding-right: 8px; }
-  .job-stats-filter-row label { flex-wrap: wrap; }
+  .job-stats-filter-row > label { flex-basis: 100%; }
   .job-stats-chart { height: 260px; }
-  .job-stats-page [data-slot="select-trigger"] { max-width: 220px; }
 }
 html, body { min-height: 100%; }
 body { margin: 0; color: var(--ink); background: var(--paper); font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
