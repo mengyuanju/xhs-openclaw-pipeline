@@ -13,7 +13,7 @@ test('a recovered CLI reconnect preserves a fresh completed answer without hidin
   assert.equal(recovered.reconnectCount, 1);
   for (const stream of [lines(reconnect), lines(message('old'), complete, reconnect),
     lines(message('old'), reconnect, complete), lines(reconnect, { type: 'turn.failed', error: { message: 'connection exhausted' } })]) {
-    assert.throws(() => parseCodexOutput(stream), { code: 'CODEX_EXEC_FAILED' });
+    assert.throws(() => parseCodexOutput(stream), { code: 'CODEX_TRANSPORT_FAILED' });
   }
   assert.throws(() => parseCodexOutput(lines({ type: 'error', message: 'usage_limit_reached' }, message('fake success'), complete)),
     { code: 'CODEX_QUOTA_EXHAUSTED' });

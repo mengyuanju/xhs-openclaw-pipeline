@@ -27,13 +27,14 @@ async function fixture(t, runner) {
   return { root, client };
 }
 
-test('timeout remains actionable when stderr contains unrelated skill loader errors', async (t) => {
+for (const disconnect of ['connection closed', 'stream disconnected before completion: peer closed connection without sending TLS close_notify']) {
+test(`timeout remains actionable after ${disconnect} despite unrelated skill loader errors`, async (t) => {
   let calls = 0;
   const { client } = await fixture(t, async () => {
     calls++;
     return { status: null, error: Object.assign(new Error('timed out'), { code: 'CODEX_EXEC_TIMEOUT' }),
       stderr: 'ERROR failed to load skill C:/skills/quota/SKILL.md: missing field description',
-      stdout: JSON.stringify({ type: 'error', message: 'Reconnecting... 1/5 (connection closed)' }) };
+      stdout: JSON.stringify({ type: 'error', message: `Reconnecting... 1/5 (${disconnect})` }) };
   });
   await assert.rejects(client.runText({ prompt: 'plan', timeoutMs: 300_000 }), error => {
     assert.equal(error.code, 'CODEX_EXEC_TIMEOUT');
@@ -44,6 +45,7 @@ test('timeout remains actionable when stderr contains unrelated skill loader err
   });
   assert.equal(calls, 1);
 });
+}
 
 test('skill loader diagnostics do not invalidate a completed response', async (t) => {
   const { client } = await fixture(t, async () => ({ ...success({ rawText: 'done' }),

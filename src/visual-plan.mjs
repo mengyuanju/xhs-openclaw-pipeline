@@ -87,7 +87,7 @@ function explicitLayoutItemCount(layoutDirection) {
   return CHINESE_COUNTS.get(match[1]) ?? null;
 }
 
-function validateVisibleText(value, name, finalizedText, bulletMax = 30) {
+function validateVisibleText(value, name, finalizedText, bulletMax = 30, kind) {
   if (!isRecord(value)) throw new TypeError(`${name} must be an object`);
   if (value.language !== 'zh-CN') throw new TypeError(`${name}.language must be zh-CN`);
   const visible = {
@@ -108,7 +108,7 @@ function validateVisibleText(value, name, finalizedText, bulletMax = 30) {
       throw new TypeError(`${name}.labels[${index}] duplicates existing visible text`);
     }
   }
-  const unsupported = findUnsupportedImageNumber(visible, finalizedText);
+  const unsupported = findUnsupportedImageNumber(visible, finalizedText, kind);
   if (unsupported) {
     throw new TypeError(`${name} contains numeric claim ${unsupported.number} that is absent from the finalized text (${unsupported.label}: ${unsupported.text})`);
   }
@@ -207,6 +207,7 @@ function validatePage(rawPage, arrayIndex, finalized, finalizedText, direct = fa
       `pages[${arrayIndex}].allowedVisibleText`,
       finalizedText,
       expectedKind === 'checklist' ? 40 : 30,
+      expectedKind,
     );
     const explicitItemCount = explicitLayoutItemCount(layoutDirection);
     if (explicitItemCount !== null && explicitItemCount !== allowedVisibleText.bullets.length) {

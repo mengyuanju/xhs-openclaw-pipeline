@@ -1,0 +1,940 @@
+{
+  "schemaVersion": 1,
+  "sourceUrl": "http://192.168.124.8:3001/workbench/personal",
+  "accountScope": "当前登录 admin 的个人作业中心；非全中心所有用户",
+  "date": "2026-09-07",
+  "timezone": "Asia/Shanghai",
+  "scope": "第一步：网页分类与证据汇总。未修改业务代码、远程配置或任务状态，未重试模型调用、未进行本地 bug 复现。",
+  "snapshot": {
+    "initialPageRead": "2026-09-07 23:01",
+    "initialStatisticsUpdatedAt": "2026-09-07 23:00:36",
+    "initialTotalTasks": 307,
+    "initialFailed": 44,
+    "initialImageRetryReview": 2,
+    "initialAnomalies": 46,
+    "supplementalSnapshot": "2026-09-07 23:07:27",
+    "supplementalTaskIds": [
+      490,
+      485
+    ],
+    "inspectedTotal": 48,
+    "note": "页面每30秒自动刷新，统计卡片和列表刷新时刻不同；此文件是固定清单，不代表读取报告时的实时全量。"
+  },
+  "verification": {
+    "detailAndTraceReviewed": 48,
+    "deepseekFinalPayloadInspected": 13,
+    "localBugReproduction": false,
+    "modelQuotaConsumedByTests": false,
+    "rawResponseArchive": false,
+    "note": "JSON为人工核对后整理的证据摘要与query清单，不是完整原始响应/检查点导出，也不是已执行的测试用例。"
+  },
+  "stageCounts": {
+    "联网研究": 13,
+    "画面规划": 11,
+    "图片验收/质检": 5,
+    "图片生成/编辑": 10,
+    "文案与配图策划": 4,
+    "案例匹配": 3,
+    "生图前置校验": 2
+  },
+  "categories": [
+    {
+      "id": "research_no_final",
+      "stage": "联网研究",
+      "label": "返回 completed，但没有最终答案",
+      "error": "联网研究失败：deepseek：DeepSeek search output is invalid",
+      "model": "deepseek-v4-flash",
+      "finding": "已逐条查看最新研究返回；output 仅有 reasoning/web_search_call，没有 message。不是已证实的 JSON 字段不合格。",
+      "count": 8
+    },
+    {
+      "id": "research_invalid_json",
+      "stage": "联网研究",
+      "label": "最终答案 JSON 格式不合法",
+      "error": "联网研究失败：deepseek：DeepSeek search output is not valid JSON",
+      "model": "deepseek-v4-flash",
+      "finding": "已查看最终消息并对原文执行 JSON.parse；4 条分别存在引号未转义、额外尾字符或正文前缀。",
+      "count": 4
+    },
+    {
+      "id": "research_extraction_suspect",
+      "stage": "联网研究",
+      "label": "终稿 JSON 有效，返回提取逻辑待核查",
+      "error": "联网研究失败：deepseek：DeepSeek search output is not valid JSON",
+      "model": "deepseek-v4-flash",
+      "finding": "返回含 commentary 和 final_answer 两条 message；final_answer 可独立 JSON.parse 且含 summary、5 个 sources。混入过程消息是高可信假设，尚未读代码或复现。",
+      "count": 1
+    },
+    {
+      "id": "example_call_failure",
+      "stage": "案例匹配",
+      "label": "案例匹配底层调用失败",
+      "error": "优秀案例匹配失败，未获得完整有效的评分，请重试",
+      "model": "openai/gpt-5.6-sol",
+      "finding": "界面提示评分不完整，但链路为两次文本调用失败；#465 最新调用为 TLS 断流，#466 为超时，#490 两次均约 180.4 秒（未展开底层错误）。",
+      "count": 3
+    },
+    {
+      "id": "copy_capacity",
+      "stage": "文案与配图策划",
+      "label": "模型容量不足",
+      "error": "Codex CODEX_EXEC_FAILED: error Selected model is at capacity. Please try a different model.",
+      "model": "openai/gpt-5.6-sol",
+      "finding": "错误原文明确 at capacity；不能据此断言账户余额或额度耗尽。",
+      "count": 3
+    },
+    {
+      "id": "copy_tls",
+      "stage": "文案与配图策划",
+      "label": "TLS 流式连接中断",
+      "error": "Codex CODEX_EXEC_FAILED: error Reconnecting... 3/5 (stream disconnected before completion: IO error: peer closed connection without sending TLS close_notify: https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof)",
+      "model": "openai/gpt-5.6-sol",
+      "finding": "错误可定位为连接中断；网络、代理、服务端及客户端超时的贡献仍需执行机日志核实。",
+      "count": 1
+    },
+    {
+      "id": "visual_timeout",
+      "stage": "画面规划",
+      "label": "画面规划约 180 秒超时",
+      "error": "视觉规划失败：Codex CODEX_EXEC_TIMEOUT: CODEX_EXEC_TIMEOUT Codex execution timed out; generation outcome may be unknown",
+      "model": "openai/gpt-5.6-sol",
+      "finding": "在画面规划文本调用阶段终止；不能解释为图片生成模型失败，超时结果也不等于服务端未生成。",
+      "count": 6
+    },
+    {
+      "id": "visual_capacity",
+      "stage": "画面规划",
+      "label": "画面规划模型容量不足",
+      "error": "视觉规划失败：Codex CODEX_EXEC_FAILED: error Selected model is at capacity. Please try a different model.",
+      "model": "openai/gpt-5.6-sol",
+      "finding": "规划文本调用返回容量错误；#448 是后续规划调用失败。",
+      "count": 5
+    },
+    {
+      "id": "image_capacity",
+      "stage": "图片生成/编辑",
+      "label": "图片生成或编辑容量不足",
+      "error": "图片生成失败：Codex CODEX_EXEC_FAILED: Selected model is at capacity. Please try a different model.",
+      "model": "openai/gpt-image-2",
+      "finding": "按详情当前终止原因归类；部分任务有已完成页面或后续已返回调用，需结合逐页检查点确认，不能认定整套图片不存在。",
+      "count": 9
+    },
+    {
+      "id": "image_timeout",
+      "stage": "图片生成/编辑",
+      "label": "图片调用约 300 秒超时",
+      "error": "图片生成失败：Codex CODEX_EXEC_TIMEOUT: CODEX_EXEC_TIMEOUT Codex CODEX_EXEC_TIMEOUT: image call timed out; outcome may be unknown",
+      "model": "openai/gpt-image-2",
+      "finding": "#458 图片生成调用 300.4 秒后失败，结果未知。",
+      "count": 1
+    },
+    {
+      "id": "acceptance_unavailable",
+      "stage": "图片验收/质检",
+      "label": "图片已生成，验收服务不可用",
+      "error": "图片已生成，但验收服务暂时不可用，可重新验收并继续",
+      "model": "openai/gpt-5.6-sol",
+      "finding": "#460、#462、#475 展开验收调用后均为 at capacity；#402 详情提示验收不可用，但最新轮次只有已返回的规划记录，根因待核查。",
+      "count": 4
+    },
+    {
+      "id": "quality_capacity",
+      "stage": "图片验收/质检",
+      "label": "质量检查容量不足，链路证据不完整",
+      "error": "质量检查失败：Codex CODEX_EXEC_FAILED: error Selected model is at capacity. Please try a different model.",
+      "model": "openai/gpt-5.6-sol",
+      "finding": "#437 详情明确容量错误，但展示的该轮生图/校验调用均已返回，未找到对应失败质检调用；不得以此判断图片质量不合格。",
+      "count": 1
+    },
+    {
+      "id": "numeric_guard",
+      "stage": "生图前置校验",
+      "label": "配图数字与正文一致性校验拦截",
+      "model": null,
+      "finding": "两条均在视觉规划/生图模型调用之前被拒绝；#467 为正文缺少的事实数字，#434 疑似清单计数误伤，不能合并为同一语义缺陷。",
+      "count": 2
+    }
+  ],
+  "tasks": [
+    {
+      "taskId": 483,
+      "query": "竹垫子放真皮沙发上可否",
+      "cohort": "initial",
+      "stage": "联网研究",
+      "categoryId": "research_extraction_suspect",
+      "uiError": "联网研究失败：deepseek：DeepSeek search output is not valid JSON",
+      "latestVisibleExecution": {
+        "id": "78d6d2bd-f8c6-4573-8873-b65eb4adeb45",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 80.4,
+      "notes": "response completed/error=null；commentary 47 字符，final_answer 1509 字符；终稿 JSON.parse 成功，summary 和 5 个 sources。尚未证实程序具体如何取文本。"
+    },
+    {
+      "taskId": 480,
+      "query": "福建人来北方看雪吃面推荐哪个城市",
+      "cohort": "initial",
+      "stage": "画面规划",
+      "categoryId": "visual_timeout",
+      "uiError": "视觉规划失败：Codex CODEX_EXEC_TIMEOUT: CODEX_EXEC_TIMEOUT Codex execution timed out; generation outcome may be unknown",
+      "latestVisibleExecution": {
+        "id": "a3cd86e5-7022-4984-a987-b04ddf897901",
+        "executor": "haimo2",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 180.4,
+      "notes": "在画面规划文本调用阶段终止；不能解释为图片生成模型失败，超时结果也不等于服务端未生成。"
+    },
+    {
+      "taskId": 475,
+      "query": "从会理到石河子怎么走方便（公共交通）",
+      "cohort": "initial",
+      "stage": "图片验收/质检",
+      "categoryId": "acceptance_unavailable",
+      "uiError": "图片已生成，但验收服务暂时不可用，可重新验收并继续",
+      "latestVisibleExecution": {
+        "id": "1f36849a-5dc9-4c10-8851-c7726a382307",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 13.8,
+      "notes": "12 次总调用；生图轮第 7 步校验 13.8 秒后 at capacity，第 8 步 21.5 秒已返回。当前仍提示验收不可用，需区分逐页结果及任务汇总状态。"
+    },
+    {
+      "taskId": 474,
+      "query": "什么印台适合盖在硫酸纸上",
+      "cohort": "initial",
+      "stage": "图片生成/编辑",
+      "categoryId": "image_capacity",
+      "uiError": "图片生成失败：Codex CODEX_EXEC_FAILED: Selected model is at capacity. Please try a different model.",
+      "latestVisibleExecution": {
+        "id": "cf9a54a7-da60-4237-8d8f-e67d3f6c07b0",
+        "executor": "haimo2",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 44.5,
+      "notes": "按详情当前终止原因归类；部分任务有已完成页面或后续已返回调用，需结合逐页检查点确认，不能认定整套图片不存在。"
+    },
+    {
+      "taskId": 473,
+      "query": "习酒天地人和酒口感评测",
+      "cohort": "initial",
+      "stage": "联网研究",
+      "categoryId": "research_invalid_json",
+      "uiError": "联网研究失败：deepseek：DeepSeek search output is not valid JSON",
+      "latestVisibleExecution": {
+        "id": "d9e5337d-bb11-4e0f-84ee-6dd9c962a183",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 57.8,
+      "notes": "final_answer 1697 字符；summary 内查询名周围的 ASCII 双引号未转义，JSON.parse 在位置 15 失败。"
+    },
+    {
+      "taskId": 470,
+      "query": "焖子做熟后里面有白色淀粉颗粒怎么办",
+      "cohort": "initial",
+      "stage": "画面规划",
+      "categoryId": "visual_timeout",
+      "uiError": "视觉规划失败：Codex CODEX_EXEC_TIMEOUT: CODEX_EXEC_TIMEOUT Codex execution timed out; generation outcome may be unknown",
+      "latestVisibleExecution": {
+        "id": "1912e18e-cd35-445a-b657-6443e86ccd38",
+        "executor": "haimo2",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 180.4,
+      "notes": "在画面规划文本调用阶段终止；不能解释为图片生成模型失败，超时结果也不等于服务端未生成。"
+    },
+    {
+      "taskId": 469,
+      "query": "炒凉粉适合单人摆摊的条件及夏天保存方法",
+      "cohort": "initial",
+      "stage": "文案与配图策划",
+      "categoryId": "copy_capacity",
+      "uiError": "Codex CODEX_EXEC_FAILED: error Selected model is at capacity. Please try a different model.",
+      "latestVisibleExecution": {
+        "id": "549da452-2d05-4bfb-9199-78e1a9fb357b",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 28.1,
+      "notes": "错误原文明确 at capacity；不能据此断言账户余额或额度耗尽。"
+    },
+    {
+      "taskId": 468,
+      "query": "丝绒南瓜香水使用场合推荐",
+      "cohort": "initial",
+      "stage": "画面规划",
+      "categoryId": "visual_timeout",
+      "uiError": "视觉规划失败：Codex CODEX_EXEC_TIMEOUT: CODEX_EXEC_TIMEOUT Codex execution timed out; generation outcome may be unknown",
+      "latestVisibleExecution": {
+        "id": "62910de9-7bf7-41da-8997-04b2c9316e80",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 180.2,
+      "notes": "在画面规划文本调用阶段终止；不能解释为图片生成模型失败，超时结果也不等于服务端未生成。"
+    },
+    {
+      "taskId": 466,
+      "query": "湖北黄石无籽黑皮西瓜口感评价",
+      "cohort": "initial",
+      "stage": "案例匹配",
+      "categoryId": "example_call_failure",
+      "uiError": "优秀案例匹配失败，未获得完整有效的评分，请重试",
+      "latestVisibleExecution": {
+        "id": "3eb5cd70-cc67-4b9e-a1bc-8a5602ec2b13",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 180.4,
+      "notes": "两次文本调用均 180.4 秒失败；展开最新调用确认 CODEX_EXEC_TIMEOUT。"
+    },
+    {
+      "taskId": 465,
+      "query": "润德教育红宝书和一本通对比选购建议 教材选择",
+      "cohort": "initial",
+      "stage": "案例匹配",
+      "categoryId": "example_call_failure",
+      "uiError": "优秀案例匹配失败，未获得完整有效的评分，请重试",
+      "latestVisibleExecution": {
+        "id": "a6c1c09c-93a7-4094-a0f5-914d0e1c0da4",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 180.4,
+      "notes": "两次文本调用分别 28.1、180.4 秒失败。最新底层错误 Reconnecting... 2/5，peer closed connection without sending TLS close_notify。"
+    },
+    {
+      "taskId": 464,
+      "query": "海肠炒粉条 烹饪方法",
+      "cohort": "initial",
+      "stage": "联网研究",
+      "categoryId": "research_no_final",
+      "uiError": "联网研究失败：deepseek：DeepSeek search output is invalid",
+      "latestVisibleExecution": {
+        "id": "70633a9d-e2fa-4472-b174-8da04fa8e8a2",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 37.1,
+      "notes": "已逐条查看最新研究返回；output 仅有 reasoning/web_search_call，没有 message。不是已证实的 JSON 字段不合格。",
+      "researchResponseEvidence": {
+        "status": "completed",
+        "error": null,
+        "incompleteDetails": null,
+        "messageCount": 0
+      }
+    },
+    {
+      "taskId": 462,
+      "query": "vivo Y500s 优缺点真实评测",
+      "cohort": "initial",
+      "stage": "图片验收/质检",
+      "categoryId": "acceptance_unavailable",
+      "uiError": "图片已生成，但验收服务暂时不可用，可重新验收并继续",
+      "latestVisibleExecution": {
+        "id": "27c2a9f8-8bb5-440f-a75a-ed333ff04131",
+        "executor": "haimo2",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 77.3,
+      "notes": "17 次总调用；生图轮第 13 步校验 77.3 秒后 at capacity，已有多次图片生成/编辑返回。"
+    },
+    {
+      "taskId": 461,
+      "query": "沈阳师范大学冬天真实气温冬天穿什么衣服",
+      "cohort": "initial",
+      "stage": "图片生成/编辑",
+      "categoryId": "image_capacity",
+      "uiError": "图片生成失败：Codex CODEX_EXEC_FAILED: Selected model is at capacity. Please try a different model.",
+      "latestVisibleExecution": {
+        "id": "a5dfc370-54bd-4a56-9deb-10063336ce38",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 26.9,
+      "notes": "按详情当前终止原因归类；部分任务有已完成页面或后续已返回调用，需结合逐页检查点确认，不能认定整套图片不存在。"
+    },
+    {
+      "taskId": 460,
+      "query": "opporeno16镜头膜 使用体验 综合评测",
+      "cohort": "initial",
+      "stage": "图片验收/质检",
+      "categoryId": "acceptance_unavailable",
+      "uiError": "图片已生成，但验收服务暂时不可用，可重新验收并继续",
+      "latestVisibleExecution": {
+        "id": "1cd6fc22-72a3-4281-b4f9-9b18c87df9a4",
+        "executor": "haimo2",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 23.8,
+      "notes": "生图轮：画面规划 134.8 秒返回→图片生成 141.0 秒返回→校验 23.8 秒 at capacity；保留已生成图片，适合作为验收续跑样例。"
+    },
+    {
+      "taskId": 459,
+      "query": "江泽民文选 学习方法",
+      "cohort": "initial",
+      "stage": "联网研究",
+      "categoryId": "research_invalid_json",
+      "uiError": "联网研究失败：deepseek：DeepSeek search output is not valid JSON",
+      "latestVisibleExecution": {
+        "id": "581319c4-0e2e-4613-bebe-aa97bd36247c",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 18.3,
+      "notes": "final_answer 1704 字符；JSON 完整对象后多出 ]，JSON.parse 在位置 1703 报额外字符。"
+    },
+    {
+      "taskId": 458,
+      "query": "mt8666芯片 规格 参数 评测",
+      "cohort": "initial",
+      "stage": "图片生成/编辑",
+      "categoryId": "image_timeout",
+      "uiError": "图片生成失败：Codex CODEX_EXEC_TIMEOUT: CODEX_EXEC_TIMEOUT Codex CODEX_EXEC_TIMEOUT: image call timed out; outcome may be unknown",
+      "latestVisibleExecution": {
+        "id": "7c0e5717-ac5b-4ed4-97fc-e89f99fcaf10",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 300.4,
+      "notes": "#458 图片生成调用 300.4 秒后失败，结果未知。"
+    },
+    {
+      "taskId": 457,
+      "query": "LG 86MRGB86BCA和Q10M pro对比",
+      "cohort": "initial",
+      "stage": "联网研究",
+      "categoryId": "research_invalid_json",
+      "uiError": "联网研究失败：deepseek：DeepSeek search output is not valid JSON",
+      "latestVisibleExecution": {
+        "id": "1850572c-f943-4ea2-ba60-eb0d8469aeb4",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 52.7,
+      "notes": "final_answer 2891 字符，以中文说明开头，后面包含 JSON；整段直接 JSON.parse 失败。"
+    },
+    {
+      "taskId": 456,
+      "query": "dr情侣照怎么挂墙上",
+      "cohort": "initial",
+      "stage": "文案与配图策划",
+      "categoryId": "copy_tls",
+      "uiError": "Codex CODEX_EXEC_FAILED: error Reconnecting... 3/5 (stream disconnected before completion: IO error: peer closed connection without sending TLS close_notify: https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof)",
+      "latestVisibleExecution": {
+        "id": "45d0b041-9fb7-49ad-84f9-288b87501161",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 180.4,
+      "notes": "错误可定位为连接中断；网络、代理、服务端及客户端超时的贡献仍需执行机日志核实。"
+    },
+    {
+      "taskId": 455,
+      "query": "C罗对足球战术体系的改变",
+      "cohort": "initial",
+      "stage": "画面规划",
+      "categoryId": "visual_timeout",
+      "uiError": "视觉规划失败：Codex CODEX_EXEC_TIMEOUT: CODEX_EXEC_TIMEOUT Codex execution timed out; generation outcome may be unknown",
+      "latestVisibleExecution": {
+        "id": "4f82d681-ba26-4ab7-8692-d8a62bd84f9c",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 180.4,
+      "notes": "在画面规划文本调用阶段终止；不能解释为图片生成模型失败，超时结果也不等于服务端未生成。"
+    },
+    {
+      "taskId": 454,
+      "query": "b866-s2当路由器用",
+      "cohort": "initial",
+      "stage": "画面规划",
+      "categoryId": "visual_capacity",
+      "uiError": "视觉规划失败：Codex CODEX_EXEC_FAILED: error Selected model is at capacity. Please try a different model.",
+      "latestVisibleExecution": {
+        "id": "951a173e-b7f9-4e2e-8a9d-efa37ca0d038",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 47.8,
+      "notes": "规划文本调用返回容量错误；#448 是后续规划调用失败。"
+    },
+    {
+      "taskId": 453,
+      "query": "9号不带C的N80电动自行车 使用反馈",
+      "cohort": "initial",
+      "stage": "文案与配图策划",
+      "categoryId": "copy_capacity",
+      "uiError": "Codex CODEX_EXEC_FAILED: error Selected model is at capacity. Please try a different model.",
+      "latestVisibleExecution": {
+        "id": "cb1ff762-9c70-429b-a132-d2e4a304e648",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 31,
+      "notes": "错误原文明确 at capacity；不能据此断言账户余额或额度耗尽。"
+    },
+    {
+      "taskId": 452,
+      "query": "540 透明底盘 各版本对比",
+      "cohort": "initial",
+      "stage": "画面规划",
+      "categoryId": "visual_capacity",
+      "uiError": "视觉规划失败：Codex CODEX_EXEC_FAILED: error Selected model is at capacity. Please try a different model.",
+      "latestVisibleExecution": {
+        "id": "3c1af3fa-1a88-4ddf-9f8b-2eb0e6edc738",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 17.9,
+      "notes": "规划文本调用返回容量错误；#448 是后续规划调用失败。"
+    },
+    {
+      "taskId": 450,
+      "query": "机械硬盘开MC云服务器配置要求",
+      "cohort": "initial",
+      "stage": "文案与配图策划",
+      "categoryId": "copy_capacity",
+      "uiError": "Codex CODEX_EXEC_FAILED: error Selected model is at capacity. Please try a different model.",
+      "latestVisibleExecution": {
+        "id": "d74b307c-2ade-471d-b358-03c17483bc4c",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 69.6,
+      "notes": "错误原文明确 at capacity；不能据此断言账户余额或额度耗尽。"
+    },
+    {
+      "taskId": 448,
+      "query": "日本工业污水处理设备厂家排名",
+      "cohort": "initial",
+      "stage": "画面规划",
+      "categoryId": "visual_capacity",
+      "uiError": "视觉规划失败：Codex CODEX_EXEC_FAILED: error Selected model is at capacity. Please try a different model.",
+      "latestVisibleExecution": {
+        "id": "aebbb7dd-42cc-4882-b382-b6d6e7ba8a13",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 21.9,
+      "notes": "规划文本调用返回容量错误；#448 是后续规划调用失败。"
+    },
+    {
+      "taskId": 447,
+      "query": "无锡太湖国际一街区 周边教育资源",
+      "cohort": "initial",
+      "stage": "联网研究",
+      "categoryId": "research_invalid_json",
+      "uiError": "联网研究失败：deepseek：DeepSeek search output is not valid JSON",
+      "latestVisibleExecution": {
+        "id": "f3831eed-5cca-4eaf-bae4-04354b651116",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 21.9,
+      "notes": "final_answer 1565 字符；JSON 对象尾部存在额外字符，JSON.parse 在位置 1563 报错。"
+    },
+    {
+      "taskId": 446,
+      "query": "按摩椅上面头部靠的位置的皮发霉了怎么清洗",
+      "cohort": "initial",
+      "stage": "图片生成/编辑",
+      "categoryId": "image_capacity",
+      "uiError": "图片生成失败：Codex CODEX_EXEC_FAILED: Selected model is at capacity. Please try a different model.",
+      "latestVisibleExecution": {
+        "id": "b6ef4242-7a27-463f-ab2f-67c1997357cf",
+        "executor": "haimo2",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 28.1,
+      "notes": "生图轮第 6 步图片编辑 28.1 秒容量失败；之后其他生成/校验仍返回，整任务失败不代表所有页面失败。"
+    },
+    {
+      "taskId": 444,
+      "query": "手机金属探测器APP推荐",
+      "cohort": "initial",
+      "stage": "画面规划",
+      "categoryId": "visual_capacity",
+      "uiError": "视觉规划失败：Codex CODEX_EXEC_FAILED: error Selected model is at capacity. Please try a different model.",
+      "latestVisibleExecution": {
+        "id": "eb376050-5fae-46f9-855d-a2f6d3e33245",
+        "executor": "haimo2",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 19.4,
+      "notes": "规划文本调用返回容量错误；#448 是后续规划调用失败。"
+    },
+    {
+      "taskId": 442,
+      "query": "怎么画m36的梅花扳手",
+      "cohort": "initial",
+      "stage": "联网研究",
+      "categoryId": "research_no_final",
+      "uiError": "联网研究失败：deepseek：DeepSeek search output is invalid",
+      "latestVisibleExecution": {
+        "id": "41743f64-6b63-4ec5-8cb1-fcc39cf042ec",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 63.8,
+      "notes": "已逐条查看最新研究返回；output 仅有 reasoning/web_search_call，没有 message。不是已证实的 JSON 字段不合格。",
+      "researchResponseEvidence": {
+        "status": "completed",
+        "error": null,
+        "incompleteDetails": null,
+        "messageCount": 0
+      }
+    },
+    {
+      "taskId": 441,
+      "query": "德施曼s2fmax评测",
+      "cohort": "initial",
+      "stage": "联网研究",
+      "categoryId": "research_no_final",
+      "uiError": "联网研究失败：deepseek：DeepSeek search output is invalid",
+      "latestVisibleExecution": {
+        "id": "5f17b357-649f-4dd9-a223-4ca37a950a4f",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 41.1,
+      "notes": "已逐条查看最新研究返回；output 仅有 reasoning/web_search_call，没有 message。不是已证实的 JSON 字段不合格。",
+      "researchResponseEvidence": {
+        "status": "completed",
+        "error": null,
+        "incompleteDetails": null,
+        "messageCount": 0,
+        "reasoningItemCount": 11,
+        "searchCallCount": 13
+      }
+    },
+    {
+      "taskId": 440,
+      "query": "彭州哪个平台上找工作",
+      "cohort": "initial",
+      "stage": "画面规划",
+      "categoryId": "visual_capacity",
+      "uiError": "视觉规划失败：Codex CODEX_EXEC_FAILED: error Selected model is at capacity. Please try a different model.",
+      "latestVisibleExecution": {
+        "id": "7d4980e9-e127-4381-abc7-3b9ea70b31e6",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 150.8,
+      "notes": "规划文本调用返回容量错误；#448 是后续规划调用失败。"
+    },
+    {
+      "taskId": 439,
+      "query": "弯曲的旅行 读书笔记与核心内容",
+      "cohort": "initial",
+      "stage": "联网研究",
+      "categoryId": "research_no_final",
+      "uiError": "联网研究失败：deepseek：DeepSeek search output is invalid",
+      "latestVisibleExecution": {
+        "id": "fc49693e-86a9-4c62-9bec-b2741843fc2b",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 50.8,
+      "notes": "已逐条查看最新研究返回；output 仅有 reasoning/web_search_call，没有 message。不是已证实的 JSON 字段不合格。",
+      "researchResponseEvidence": {
+        "status": "completed",
+        "error": null,
+        "incompleteDetails": null,
+        "messageCount": 0,
+        "reasoningItemCount": 11,
+        "searchCallCount": 25
+      }
+    },
+    {
+      "taskId": 437,
+      "query": "广州增城荔城2500-3000元电动车推荐",
+      "cohort": "initial",
+      "stage": "图片验收/质检",
+      "categoryId": "quality_capacity",
+      "uiError": "质量检查失败：Codex CODEX_EXEC_FAILED: error Selected model is at capacity. Please try a different model.",
+      "latestVisibleExecution": {
+        "id": "16d4af72-54d4-4e83-b6af-dbaeedf326a1",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": null,
+      "notes": "详情报质量检查 at capacity；展示的生图轮 14 次调用均已返回，未见对应失败质检调用，错误来源/链路覆盖待查。"
+    },
+    {
+      "taskId": 436,
+      "query": "魔杖鱼竿综合评测",
+      "cohort": "initial",
+      "stage": "图片生成/编辑",
+      "categoryId": "image_capacity",
+      "uiError": "图片生成失败：Codex CODEX_EXEC_FAILED: Selected model is at capacity. Please try a different model.",
+      "latestVisibleExecution": {
+        "id": "a2dcafcc-953b-410b-8aa3-744050e73b81",
+        "executor": "haimo2",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 42.1,
+      "notes": "按详情当前终止原因归类；部分任务有已完成页面或后续已返回调用，需结合逐页检查点确认，不能认定整套图片不存在。"
+    },
+    {
+      "taskId": 433,
+      "query": "复古巡航车边包和靠背怎么选",
+      "cohort": "initial",
+      "stage": "图片生成/编辑",
+      "categoryId": "image_capacity",
+      "uiError": "图片生成失败：Codex CODEX_EXEC_FAILED: Selected model is at capacity. Please try a different model.",
+      "latestVisibleExecution": {
+        "id": "f8ce4879-bc68-4242-9137-cf0cdc94a2bf",
+        "executor": "haimo2",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 55.3,
+      "notes": "按详情当前终止原因归类；部分任务有已完成页面或后续已返回调用，需结合逐页检查点确认，不能认定整套图片不存在。"
+    },
+    {
+      "taskId": 432,
+      "query": "饮水机水箱优先用sus316还是sus321",
+      "cohort": "initial",
+      "stage": "图片生成/编辑",
+      "categoryId": "image_capacity",
+      "uiError": "图片生成失败：Codex CODEX_EXEC_FAILED: Selected model is at capacity. Please try a different model.",
+      "latestVisibleExecution": {
+        "id": "999473cb-9022-4693-a6e4-d0b2a25a5321",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 50.4,
+      "notes": "按详情当前终止原因归类；部分任务有已完成页面或后续已返回调用，需结合逐页检查点确认，不能认定整套图片不存在。"
+    },
+    {
+      "taskId": 431,
+      "query": "飞科剃须刀LM51和LM55",
+      "cohort": "initial",
+      "stage": "图片生成/编辑",
+      "categoryId": "image_capacity",
+      "uiError": "图片生成失败：Codex CODEX_EXEC_FAILED: Selected model is at capacity. Please try a different model.",
+      "latestVisibleExecution": {
+        "id": "044fc0e3-a64d-458b-a5ce-046dcab43614",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 26.8,
+      "notes": "按详情当前终止原因归类；部分任务有已完成页面或后续已返回调用，需结合逐页检查点确认，不能认定整套图片不存在。"
+    },
+    {
+      "taskId": 430,
+      "query": "雷阿伦投篮包优缺点总结",
+      "cohort": "initial",
+      "stage": "图片生成/编辑",
+      "categoryId": "image_capacity",
+      "uiError": "图片生成失败：Codex CODEX_EXEC_FAILED: Selected model is at capacity. Please try a different model.",
+      "latestVisibleExecution": {
+        "id": "1544526b-f8e6-41dc-af29-dce2782f0bce",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": null,
+      "notes": "详情保留图片容量错误，但有后续图片与校验返回，须按页和轮次核对恢复状态。"
+    },
+    {
+      "taskId": 428,
+      "query": "除SCI85外高硬度不易磨损的粉末表活搭配推荐",
+      "cohort": "initial",
+      "stage": "联网研究",
+      "categoryId": "research_no_final",
+      "uiError": "联网研究失败：deepseek：DeepSeek search output is invalid",
+      "latestVisibleExecution": {
+        "id": "dc926cee-5e5a-4e10-9381-347a361cfe77",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 75.2,
+      "notes": "已逐条查看最新研究返回；output 仅有 reasoning/web_search_call，没有 message。不是已证实的 JSON 字段不合格。",
+      "researchResponseEvidence": {
+        "status": "completed",
+        "error": null,
+        "incompleteDetails": null,
+        "messageCount": 0,
+        "reasoningItemCount": 11,
+        "searchCallCount": 15
+      }
+    },
+    {
+      "taskId": 419,
+      "query": "大卫科波菲尔在半年学校生活留下深刻印象的一件事",
+      "cohort": "initial",
+      "stage": "联网研究",
+      "categoryId": "research_no_final",
+      "uiError": "联网研究失败：deepseek：DeepSeek search output is invalid",
+      "latestVisibleExecution": {
+        "id": "975ff171-8eaa-40c6-bd42-7ddd7bc8780d",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 78.4,
+      "notes": "已逐条查看最新研究返回；output 仅有 reasoning/web_search_call，没有 message。不是已证实的 JSON 字段不合格。",
+      "researchResponseEvidence": {
+        "status": "completed",
+        "error": null,
+        "incompleteDetails": null,
+        "messageCount": 0,
+        "reasoningItemCount": 11,
+        "searchCallCount": 19
+      }
+    },
+    {
+      "taskId": 409,
+      "query": "双鱼室外乒乓球台318E真实评测",
+      "cohort": "initial",
+      "stage": "联网研究",
+      "categoryId": "research_no_final",
+      "uiError": "联网研究失败：deepseek：DeepSeek search output is invalid",
+      "latestVisibleExecution": {
+        "id": "847352be-fdeb-4f4b-a9e9-caf3d58813a3",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 37.1,
+      "notes": "已逐条查看最新研究返回；output 仅有 reasoning/web_search_call，没有 message。不是已证实的 JSON 字段不合格。",
+      "researchResponseEvidence": {
+        "status": "completed",
+        "error": null,
+        "incompleteDetails": null,
+        "messageCount": 0,
+        "reasoningItemCount": 11,
+        "searchCallCount": 14
+      }
+    },
+    {
+      "taskId": 402,
+      "query": "美孚超级4t摩托车机油怎么样",
+      "cohort": "initial",
+      "stage": "图片验收/质检",
+      "categoryId": "acceptance_unavailable",
+      "uiError": "图片已生成，但验收服务暂时不可用，可重新验收并继续",
+      "latestVisibleExecution": {
+        "id": "922f7046-22b3-465c-9e74-7e636b46c5bd",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": null,
+      "notes": "详情提示验收不可用；最后轮次仅两次画面规划已返回。无法从现有最新轨迹确认验收底层错误。"
+    },
+    {
+      "taskId": 401,
+      "query": "罗村的冲电桩那里便宜点？",
+      "cohort": "initial",
+      "stage": "画面规划",
+      "categoryId": "visual_timeout",
+      "uiError": "视觉规划失败：Codex CODEX_EXEC_TIMEOUT: CODEX_EXEC_TIMEOUT Codex execution timed out; generation outcome may be unknown",
+      "latestVisibleExecution": {
+        "id": "601c1c40-a1ed-4299-abcd-d6def69f45aa",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 180.4,
+      "notes": "在画面规划文本调用阶段终止；不能解释为图片生成模型失败，超时结果也不等于服务端未生成。"
+    },
+    {
+      "taskId": 398,
+      "query": "北京买房组合贷250万15年等额本金还款计划",
+      "cohort": "initial",
+      "stage": "图片生成/编辑",
+      "categoryId": "image_capacity",
+      "uiError": "图片生成失败：Codex CODEX_EXEC_FAILED: Selected model is at capacity. Please try a different model.",
+      "latestVisibleExecution": {
+        "id": "c166d77e-1887-4394-910b-96d46629ef20",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": null,
+      "notes": "详情保留图片生成容量错误；最后轮次两次画面规划均已返回。需核对历史失败、逐页检查点和当前任务错误的对应关系。"
+    },
+    {
+      "taskId": 395,
+      "query": "凯迪仕611感应机械锁体怎么样",
+      "cohort": "initial",
+      "stage": "联网研究",
+      "categoryId": "research_no_final",
+      "uiError": "联网研究失败：deepseek：DeepSeek search output is invalid",
+      "latestVisibleExecution": {
+        "id": "110dca39-1a42-44e8-9b7a-899a87e2f77a",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 36.1,
+      "notes": "已逐条查看最新研究返回；output 仅有 reasoning/web_search_call，没有 message。不是已证实的 JSON 字段不合格。",
+      "researchResponseEvidence": {
+        "status": "completed",
+        "error": null,
+        "incompleteDetails": null,
+        "messageCount": 0,
+        "reasoningItemCount": 11,
+        "searchCallCount": 11
+      }
+    },
+    {
+      "taskId": 467,
+      "query": "北京轨道交通运输管理有限公司招聘条件",
+      "cohort": "initial",
+      "stage": "生图前置校验",
+      "categoryId": "numeric_guard",
+      "uiError": "生图3次失败 视觉规划失败：原配图第 4 页包含正文或标题未支持的数字 8，请先修订配图文案；未调用视觉规划或生图模型",
+      "latestVisibleExecution": {
+        "id": "8954ba37-d156-4ac0-a7e5-b68043b75026",
+        "executor": "haimo1",
+        "scope": "最近可见文案轮次；校验拦截没有模型调用"
+      },
+      "inspectedFailureCallSeconds": null,
+      "notes": "前置数字校验：第 4 页“工程师：至少8年经验”，正文仅泛述按层级核查经验，未含 8；未调用视觉规划或生图模型。应核实来源并对齐文案，不能直接移除校验。"
+    },
+    {
+      "taskId": 434,
+      "query": "驾驰火花塞 各型号 优缺点及真实评价",
+      "cohort": "initial",
+      "stage": "生图前置校验",
+      "categoryId": "numeric_guard",
+      "uiError": "生图3次失败 视觉规划失败：原配图第 4 页包含正文或标题未支持的数字 5，请先修订配图文案；未调用视觉规划或生图模型",
+      "latestVisibleExecution": {
+        "id": "a4362f1f-e8fb-4be6-b8c9-098a3c710f61",
+        "executor": "haimo1",
+        "scope": "最近可见文案轮次；校验拦截没有模型调用"
+      },
+      "inspectedFailureCallSeconds": null,
+      "notes": "前置数字校验：第 4 页“下单前核对5项”，其5条为热值、螺纹尺寸、伸出长度、间隙、电阻；正文也逐项列出这5个参数。疑似列表计数被当作新增事实。"
+    },
+    {
+      "taskId": 490,
+      "query": "联想小新2024款平板全面保修与换新服务对比",
+      "cohort": "supplemental",
+      "stage": "案例匹配",
+      "categoryId": "example_call_failure",
+      "uiError": "优秀案例匹配失败，未获得完整有效的评分，请重试",
+      "latestVisibleExecution": {
+        "id": "071d6aab-de3b-40ce-a3bd-9cf46f38556a",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 180.4,
+      "notes": "巡检中新增；两次文本调用均 180.4 秒失败。仅核对调用摘要，未展开错误原文，不能只凭耗时确认错误码。"
+    },
+    {
+      "taskId": 485,
+      "query": "紫菜泡多了怎么办",
+      "cohort": "supplemental",
+      "stage": "画面规划",
+      "categoryId": "visual_timeout",
+      "uiError": "视觉规划失败：Codex CODEX_EXEC_TIMEOUT: CODEX_EXEC_TIMEOUT Codex execution timed out; generation outcome may be unknown",
+      "latestVisibleExecution": {
+        "id": "ac9acf04-00b6-441e-b048-3b01d8fa1862",
+        "executor": "haimo1",
+        "scope": "最近可见执行轮次；不保证所有终止错误都在此轮展示"
+      },
+      "inspectedFailureCallSeconds": 180.4,
+      "notes": "巡检中新增；文案完成后，画面规划 180.4 秒 CODEX_EXEC_TIMEOUT。"
+    }
+  ]
+}

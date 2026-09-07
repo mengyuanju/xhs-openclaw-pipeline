@@ -32,3 +32,27 @@ test('model guard passes execution signals and prevents calls after cancellation
   assert.throws(() => model.runText({ prompt: 'late' }), { name: 'AbortError' });
   assert.equal(calls, 1);
 });
+
+for (const abortAt of ['before finalization', 'during finalization']) {
+  test(`DeepSeek search cancellation ${abortAt} prevents further work and preserves the execution reason`, async () => {
+    const controller = new AbortController();
+    const reason = Object.assign(new Error('execution revoked'), { code: 'STALE_EXECUTION' });
+    let calls = 0;
+    const searched = { status: 'completed', output: [{ type: 'web_search_call', id: 'fake-search', status: 'completed' }] };
+    await assert.rejects(runDeepSeekWebSearch({ apiKey: 'fixture-only', model: 'fake', timeoutMs: 5000,
+      fetchImpl: async (_url, { signal }) => {
+        calls++;
+        if (calls === 2) {
+          controller.abort(reason);
+          assert.equal(signal.aborted, true);
+          signal.throwIfAborted();
+        }
+        return { ok: true, status: 200, text: async () => {
+          if (abortAt === 'before finalization') controller.abort(reason);
+          return JSON.stringify(searched);
+        } };
+      },
+    }, { query: 'fake', signal: controller.signal }), error => error === reason);
+    assert.equal(calls, abortAt === 'before finalization' ? 1 : 2);
+  });
+}

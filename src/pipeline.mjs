@@ -10,6 +10,7 @@ import { renderDeliveryImages } from './images.mjs';
 import { createImageAlignmentValidator } from './image-alignment.mjs';
 import { effectiveModelApiConfig } from './model-api-config.mjs';
 import { createAgentClient as createOpenClawClient } from './agent-client.mjs';
+import { isCodexCooldown } from './codex-protocol.mjs';
 import { createDeliveryQualityAssessor } from './quality-assessment.mjs';
 import {
   describeStageReviewFailure,
@@ -283,7 +284,7 @@ export async function processNext({
     try { openclaw?.assertAvailable?.(); }
     catch (error) {
       if (!error.code?.startsWith('CODEX_')) throw error;
-      return { status: 'blocked', reason: error.code, haltWorker: error.code !== 'CODEX_RATE_LIMITED', retryAt: error.retryAt };
+      return { status: 'blocked', reason: error.code, haltWorker: !isCodexCooldown(error.code), retryAt: error.retryAt };
     }
   }
   const task = queue.claimNext({ workerId, leaseMs });

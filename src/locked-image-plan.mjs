@@ -13,7 +13,7 @@ export const imageTextHash = (post) => createHash('sha256').update(JSON.stringif
 export function assertImagePlanNumericEvidence(post) {
   const corpus = `${post.title}\n${post.body}`;
   for (const page of lockedImageText(post)) {
-    const unsupported = findUnsupportedImageNumber(page.allowedVisibleText, corpus);
+    const unsupported = findUnsupportedImageNumber(page.allowedVisibleText, corpus, page.kind);
     if (unsupported) {
       const { number, label, text } = unsupported;
       throw new TypeError(`原配图第 ${page.index} 页包含正文或标题未支持的数字 ${number}（${label}：“${String(text).slice(0, 120)}”），请先修订配图文案；未调用视觉规划或生图模型`);
