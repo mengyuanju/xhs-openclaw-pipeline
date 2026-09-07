@@ -95,6 +95,16 @@ test('rate limiting shares a timed cooldown without unlimited automatic retries'
   assert.ok(b.status().retryAt > Date.now());
 });
 
+test('model capacity shares a bounded cooldown instead of consuming more task attempts', async (t) => {
+  const [a, b] = await runtimeFixture(t);
+  await assert.rejects(a.run(async () => { throw Object.assign(new Error('at capacity'), { code: 'CODEX_MODEL_AT_CAPACITY' }); }),
+    { code: 'CODEX_MODEL_AT_CAPACITY' });
+  assert.throws(() => b.assertAvailable(), { code: 'CODEX_MODEL_AT_CAPACITY', haltWorker: false });
+  assert.ok(b.status().retryAt > Date.now());
+  assert.ok(b.status().retryAt <= Date.now() + 65_000);
+  assert.equal(b.status().active, 0);
+});
+
 for (const [total, images] of [[2, 1], [5, 2]]) {
 test(`separate Node processes obey shared ${total}/${images} concurrency limits`, { timeout: 15_000 }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'xhs-codex-process-limits-'));

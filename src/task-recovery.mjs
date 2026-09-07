@@ -29,7 +29,7 @@ export function classifyTaskFailure(error) {
   const code = codexErrorCode(error);
   if (code === 'CODEX_AUTH_REQUIRED') return 'AUTH';
   if (code === 'CODEX_QUOTA_EXHAUSTED') return 'CONFIGURATION';
-  if (code === 'CODEX_RATE_LIMITED') return 'TRANSIENT';
+  if (['CODEX_RATE_LIMITED', 'CODEX_MODEL_AT_CAPACITY'].includes(code)) return 'TRANSIENT';
   if (code) return 'UNKNOWN';
   const text = failureText(error);
   if (AUTH_FAILURE.test(text)) return 'AUTH';
@@ -79,7 +79,7 @@ export function planTaskRecovery({
     return {
       failureClass,
       action: 'RETRY',
-      delayMs: codexErrorCode(error) === 'CODEX_RATE_LIMITED' ? 65_000 : rule.delaysMs[classAttempts],
+      delayMs: ['CODEX_RATE_LIMITED', 'CODEX_MODEL_AT_CAPACITY'].includes(codexErrorCode(error)) ? 65_000 : rule.delaysMs[classAttempts],
       manualRequired: false,
       haltWorker: false,
       reason: `${failureClass.toLowerCase()}_failure`,

@@ -111,10 +111,11 @@ export function createCodexRuntime({ databasePath = codexRuntimePath(), pollMs =
           },
         });
       } catch (error) {
-        if (['CODEX_AUTH_REQUIRED', 'CODEX_QUOTA_EXHAUSTED', 'CODEX_RATE_LIMITED'].includes(error?.code)) {
+        if (['CODEX_AUTH_REQUIRED', 'CODEX_QUOTA_EXHAUSTED', 'CODEX_RATE_LIMITED', 'CODEX_MODEL_AT_CAPACITY'].includes(error?.code)) {
           transaction((db) => {
             const existing = db.prepare('SELECT retry_at FROM pause WHERE id = 1').get();
-            const retryAt = error.code === 'CODEX_RATE_LIMITED' ? Date.now() + 60_000 + Math.floor(Math.random() * 5000) : 0;
+            const retryAt = ['CODEX_RATE_LIMITED', 'CODEX_MODEL_AT_CAPACITY'].includes(error.code)
+              ? Date.now() + 60_000 + Math.floor(Math.random() * 5000) : 0;
             if (existing?.retry_at === 0 && retryAt > 0) return;
             db.prepare('INSERT INTO pause (id, code, retry_at) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET code = excluded.code, retry_at = excluded.retry_at')
               .run(error.code, retryAt);

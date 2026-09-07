@@ -1,5 +1,6 @@
 import { businessPrompt, promptPolicy } from './prompt-runtime.mjs';
 import { createHash } from 'node:crypto';
+import { codexErrorCode } from './codex-protocol.mjs';
 
 const matchThreshold = () => promptPolicy().copyKnowledgeThreshold;
 const SCORING_RULE_VERSION = 1;
@@ -103,6 +104,9 @@ export async function matchCopyKnowledge({ query, knowledge, client, onProgress 
         const generated = await client.runText({ prompt });
         batchScores = parseScores(generated.rawText, batch, generated.model);
       } catch (error) {
+        // Transport/provider failures are not invalid scores. Preserve their diagnostics
+        // and let the execution policy handle cooldowns or checkpoint continuation.
+        if (codexErrorCode(error)) throw error;
         const capacity = ['MODEL_CONTEXT_LIMIT', 'MODEL_OUTPUT_INCOMPLETE'].includes(error?.code);
         if (capacity && batch.length > 1) {
           // Retry with whole cases, never shorten an individual summary or accept partial scores.
