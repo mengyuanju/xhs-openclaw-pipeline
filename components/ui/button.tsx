@@ -31,14 +31,15 @@ function Button({
   variant,
   size,
   asChild = false,
+  unstyled = false,
   ...props
-}: React.ComponentProps<'button'> & VariantProps<typeof buttonVariants> & { asChild?: boolean }) {
+}: React.ComponentProps<'button'> & VariantProps<typeof buttonVariants> & { asChild?: boolean; unstyled?: boolean }) {
   const Component = asChild ? Slot : 'button';
 
   return (
     <Component
       data-slot="button"
-      className={cn(buttonVariants({ variant, size, className }))}
+      className={unstyled ? className : cn(buttonVariants({ variant, size, className }))}
       {...props}
     />
   );

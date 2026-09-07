@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import { IMAGE_FORMATS } from './image-options.mjs';
 
 function safeFileName(value, fallback) {
   const cleaned = String(value ?? '')
@@ -36,8 +37,17 @@ export function archiveFileName(task) {
 export async function buildTaskArchive(task, loadAsset) {
   const copy = currentCopy(task);
   if (!copy) throw new TypeError('task has no copy content to archive');
-  const assets = task.assets.filter((asset) => asset.imageRunId === task.currentImageRunId
+  const run = task.imageRuns?.find(item => item.id === task.currentImageRunId);
+  const selected = run?.result?.images;
+  const deliveryIds = selected?.some(image => image.deliveryAssetId)
+    ? selected.map(image => image.deliveryAssetId ?? image.assetId) : null;
+  const candidates = task.assets.filter((asset) => asset.imageRunId === task.currentImageRunId
     && String(asset.mediaType).startsWith('image/'));
+  const assets = deliveryIds ? deliveryIds.map(id => {
+    const asset = candidates.find(item => item.id === id);
+    if (!asset) throw new TypeError('交付图片资产缺失，请重新检查图片版本');
+    return asset;
+  }) : candidates;
   if (assets.length === 0) throw new TypeError('task has no generated images to archive');
 
   const zip = new JSZip();
@@ -52,7 +62,7 @@ export async function buildTaskArchive(task, loadAsset) {
     const asset = assets[index];
     const loaded = await loadAsset(asset.id);
     if (!loaded) throw new TypeError(`asset ${asset.id} is missing`);
-    const extension = loaded.mediaType === 'image/jpeg' ? '.jpg' : '.png';
+    const extension = `.${Object.values(IMAGE_FORMATS).find(format => format.mediaType === loaded.mediaType)?.extension ?? 'png'}`;
     const requestedName = safeFileName(loaded.originalName, `图片-${index + 1}${extension}`);
     const name = /\.[a-z0-9]{2,5}$/iu.test(requestedName) ? requestedName : `${requestedName}${extension}`;
     zip.file(uniqueFileName(name, usedNames), loaded.content);

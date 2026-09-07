@@ -1,3 +1,5 @@
+import { buildResearchPrompt } from './research-prompt.mjs';
+import { businessPrompt } from './prompt-runtime.mjs';
 import { tracedModelFetch } from './model-call-trace.mjs';
 
 const DEEPSEEK_RESPONSES_ENDPOINT = 'https://api.deepseek.com/responses';
@@ -325,7 +327,7 @@ export function createDeepSeekResponsesClient({
       if (!Number.isInteger(limit) || limit < 1 || limit > 10) {
         throw new RangeError('web search limit must be an integer between 1 and 10');
       }
-      const prompt = `请先使用联网搜索，再整理与下列选题直接相关的可靠资料。只返回合法 JSON，不要 Markdown。\n\n<untrusted_query>\n${JSON.stringify(normalizedQuery)}\n</untrusted_query>\n\n返回格式：{"summary":"基于搜索结果的资料摘要","sources":[{"title":"来源标题","url":"公开网页完整 URL","snippet":"支持摘要的原文要点","siteName":"网站名称"}]}。最多返回 ${limit} 个来源。每个来源必须确实来自本次联网搜索，不得编造 URL；优先政府、学校、标准组织、官方机构和权威媒体。`;
+      const prompt = buildResearchPrompt(normalizedQuery, limit);
       const generated = await createResponse({ prompt, timeoutMs, webSearch: true });
       return {
         provider: 'deepseek',
@@ -358,7 +360,8 @@ export function createDeepSeekResponsesClient({
           prompt: String(item?.prompt ?? '').slice(0, 1_000),
         })),
       };
-      const prompt = `请使用联网搜索，为下面每一页配图策划寻找可直接下载的相关图片。这只是内部流程联调，不是正式生图。只返回合法 JSON，不要 Markdown。\n\n<untrusted_image_brief>\n${JSON.stringify(searchInput)}\n</untrusted_image_brief>\n\n返回格式：{"pages":[{"pageIndex":1,"searchQuery":"实际检索词","candidates":[{"imageUrl":"可直接返回图片二进制的公开 HTTP(S) URL","sourcePageUrl":"包含该图片与授权说明的公开页面 URL","title":"图片标题","attribution":"作者或来源机构","license":"公开标注的许可证或使用说明"}]}]}。必须覆盖第 1 到 ${imagePlan.length} 页且顺序一致，每页返回 2 至 4 个不同候选。imageUrl 必须是图片原文件地址，不能是搜索结果页、data URL 或需要登录的地址；优先 Wikimedia Commons、Unsplash、Pexels 等有清楚来源和使用说明的公开图片，避免人物肖像、品牌标志、水印和敏感内容，不得编造 URL。`;
+      const prompt = businessPrompt('IMAGE_SEARCH_SYSTEM', { dataTag: 'untrusted_image_brief', data: searchInput,
+        contract: '只返回 JSON：{"pages":[{"pageIndex":1,"searchQuery":"检索词","candidates":[{"imageUrl":"图片 URL","sourcePageUrl":"来源页面 URL","title":"标题","attribution":"作者","license":"授权说明"}]}]}。页数和输入一一对应。URL 必须公开可访问且来自真实搜索。' });
       let lastError;
       for (let attempt = 1; attempt <= 3; attempt += 1) {
         const repairInstruction = attempt === 1

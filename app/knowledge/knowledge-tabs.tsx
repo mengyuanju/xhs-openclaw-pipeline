@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+
 import { useRef, useState, type KeyboardEvent } from 'react';
 
 import {
@@ -38,7 +40,7 @@ export function KnowledgeTabs({
 
   return <div className="knowledge-hub">
     {SHOW_KNOWLEDGE_TYPE_SWITCHER && <div className="knowledge-tabs" role="tablist" aria-label="知识库类型">
-      <button
+      <Button unstyled
         ref={visualTabRef}
         className="knowledge-tab"
         id="knowledge-tab-visual"
@@ -49,8 +51,8 @@ export function KnowledgeTabs({
         tabIndex={activeView === 'VISUAL' ? 0 : -1}
         onClick={() => setActiveView('VISUAL')}
         onKeyDown={selectFromKeyboard}
-      >视觉</button>
-      <button
+      >视觉</Button>
+      <Button unstyled
         ref={copyTabRef}
         className="knowledge-tab"
         id="knowledge-tab-copy"
@@ -61,7 +63,7 @@ export function KnowledgeTabs({
         tabIndex={activeView === 'COPY' ? 0 : -1}
         onClick={() => setActiveView('COPY')}
         onKeyDown={selectFromKeyboard}
-      >文案</button>
+      >文案</Button>
     </div>}
 
     <section

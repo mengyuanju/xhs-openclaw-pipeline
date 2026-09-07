@@ -1,5 +1,8 @@
 'use client';
 
+import { Input, Textarea } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+
 import { LoaderCircle, RefreshCw, Save, UploadCloud } from 'lucide-react';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 
@@ -8,6 +11,7 @@ import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { apiRequest } from './api-client';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { WebSearchSettingsPanel } from '../settings/web-search-settings-panel';
+import { RemoteLayoutPresetsSettings } from '../settings/layout-presets-settings';
 
 type Resource = 'prompts' | 'knowledge' | 'settings';
 
@@ -109,6 +113,8 @@ export function CentralDataWorkbench({ resource }: { resource: Resource }) {
     }
     setBusy(true);
     try {
+      const latest = await apiRequest<any[]>(endpoint('/v1/settings'));
+      value.layoutPresets = latest.find(item => item.key === 'production')?.value?.layoutPresets ?? [];
       await apiRequest(endpoint('/v1/settings/production'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -150,23 +156,24 @@ export function CentralDataWorkbench({ resource }: { resource: Resource }) {
 
   return <div className="central-data-stack">
     {resource === 'settings' && <WebSearchSettingsPanel onSaved={refresh} />}
+    {resource === 'settings' && !loading && <RemoteLayoutPresetsSettings key={production?.version ?? 0} initialPresets={production?.value?.layoutPresets ?? []} onSaved={async () => { await refresh(); setMessage('布局种类已保存，后续新任务会自动随机选择。'); }} />}
     {resource === 'prompts' && <form className="panel" onSubmit={createPrompt}>
       <div className="panel-head"><div><span className="section-kicker">Remote prompt</span><h2>新建提示词草稿</h2></div><Save size={18} /></div>
       <div className="form-grid">
-        <div className="field"><label htmlFor="central-prompt-kind">类型</label><input className="input" id="central-prompt-kind" name="kind" required placeholder="TEXT_SYSTEM" /></div>
-        <div className="field"><label htmlFor="central-prompt-name">名称</label><input className="input" id="central-prompt-name" name="name" required maxLength={160} /></div>
-        <div className="field full"><label htmlFor="central-prompt-content">内容</label><textarea className="textarea" id="central-prompt-content" name="content" required /></div>
-        <div className="field full"><button className="button primary" disabled={busy}>保存草稿</button></div>
+        <div className="field"><label htmlFor="central-prompt-kind">类型</label><Input className="input" id="central-prompt-kind" name="kind" required placeholder="TEXT_SYSTEM" /></div>
+        <div className="field"><label htmlFor="central-prompt-name">名称</label><Input className="input" id="central-prompt-name" name="name" required maxLength={160} /></div>
+        <div className="field full"><label htmlFor="central-prompt-content">内容</label><Textarea className="textarea" id="central-prompt-content" name="content" required /></div>
+        <div className="field full"><Button unstyled className="button primary" disabled={busy}>保存草稿</Button></div>
       </div>
     </form>}
 
     {resource === 'knowledge' && <form className="panel" onSubmit={createKnowledge}>
       <div className="panel-head"><div><span className="section-kicker">Remote knowledge</span><h2>新建知识版本</h2></div><Save size={18} /></div>
       <div className="form-grid">
-        <div className="field"><label htmlFor="central-knowledge-kind">类型</label><select className="input" id="central-knowledge-kind" name="kind"><option value="COPY">文案知识</option><option value="VISUAL">视觉知识</option></select></div>
-        <div className="field"><label htmlFor="central-knowledge-name">名称</label><input className="input" id="central-knowledge-name" name="name" required maxLength={200} /></div>
-        <div className="field full"><label htmlFor="central-knowledge-content">结构化内容 JSON</label><textarea className="textarea" id="central-knowledge-content" name="content" required defaultValue={'{\n  "text": ""\n}'} /></div>
-        <div className="field full"><button className="button primary" disabled={busy}>保存草稿</button></div>
+        <div className="field"><label htmlFor="central-knowledge-kind">类型</label><Select name="kind" defaultValue="COPY"><SelectTrigger id="central-knowledge-kind"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="COPY">文案知识</SelectItem><SelectItem value="VISUAL">视觉知识</SelectItem></SelectContent></Select></div>
+        <div className="field"><label htmlFor="central-knowledge-name">名称</label><Input className="input" id="central-knowledge-name" name="name" required maxLength={200} /></div>
+        <div className="field full"><label htmlFor="central-knowledge-content">结构化内容 JSON</label><Textarea className="textarea" id="central-knowledge-content" name="content" required defaultValue={'{\n  "text": ""\n}'} /></div>
+        <div className="field full"><Button unstyled className="button primary" disabled={busy}>保存草稿</Button></div>
       </div>
     </form>}
 
@@ -184,19 +191,19 @@ export function CentralDataWorkbench({ resource }: { resource: Resource }) {
         </Select>
         <small>保存时以下 JSON 的 modelApi.agentProvider 以此选项为准。凭据仅在执行机管理；已有快照保持原配置，回切需选择“使用最新配置重新生成”。</small>
       </div>
-      <div className="field"><label htmlFor="central-production-settings">当前配置</label><textarea className="textarea central-json-editor" id="central-production-settings" name="value" required defaultValue={JSON.stringify(production?.value ?? {}, null, 2)} /></div>
-      <div className="inline"><button className="button primary" disabled={busy || loading}>保存新版本</button><small>模型 API 密钥仍只通过执行机环境变量提供，不要写入这里。</small></div>
+      <div className="field"><label htmlFor="central-production-settings">其他生产配置</label><Textarea className="textarea central-json-editor" id="central-production-settings" name="value" required defaultValue={JSON.stringify(Object.fromEntries(Object.entries(production?.value ?? {}).filter(([key]) => key !== 'layoutPresets')), null, 2)} /></div>
+      <div className="inline"><Button unstyled className="button primary" disabled={busy || loading}>保存新版本</Button><small>模型 API 密钥仍只通过执行机环境变量提供，不要写入这里。</small></div>
     </form>}
 
     {resource !== 'settings' && <section className="panel">
-      <div className="panel-head"><div><span className="section-kicker">Published data</span><h2>中心版本列表</h2></div><button className="button small" type="button" onClick={() => { void refresh(); }}><RefreshCw size={14} />刷新</button></div>
+      <div className="panel-head"><div><span className="section-kicker">Published data</span><h2>中心版本列表</h2></div><Button unstyled className="button small" type="button" onClick={() => { void refresh(); }}><RefreshCw size={14} />刷新</Button></div>
       {loading ? <div className="empty-state"><LoaderCircle className="animate-spin" size={18} />正在读取…</div>
         : data.length === 0 ? <div className="empty-state">暂无版本。</div>
           : <div className="central-version-list">{data.map((item) => <article key={`${resource}-${item.id}`}>
             <div><strong>{item.name}</strong><span className="pill">{item.kind}</span></div>
             {(item.versions ?? []).map((version: any) => <div className="central-version-row" key={version.id}>
               <span>v{version.version} · {version.status}</span>
-              {version.status === 'DRAFT' && <button className="button small" type="button" disabled={busy} onClick={() => { void publish(resource === 'prompts' ? 'prompt' : 'knowledge', version.id); }}><UploadCloud size={13} />发布</button>}
+              {version.status === 'DRAFT' && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void publish(resource === 'prompts' ? 'prompt' : 'knowledge', version.id); }}><UploadCloud size={13} />发布</Button>}
             </div>)}
           </article>)}</div>}
     </section>}

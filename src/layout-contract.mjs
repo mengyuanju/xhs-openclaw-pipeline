@@ -106,6 +106,7 @@ export function layoutTemplatePromptRules() {
 }
 
 export function fullPageInstructionForLayout(template) {
+  if (template === 'CUSTOM') return '按本页人工图片配置完成完整图文设计，模型只补充未指定的构图细节。';
   const geometry = layoutGeometry(template);
-  return `layoutTemplate=${template}。主体区域：${geometry.subjectRegion}。文字排版区域：${geometry.textSafeRegion}。请在同一次生成中完成主体、标题、要点、标签、卡片和装饰，让文字成为画面设计的一部分；不得留下空白占位框，也不得使用后贴字幕式的悬浮黑框。`;
+  return `layoutTemplate=${template}。主体区域：${geometry.subjectRegion}。文字排版区域：${geometry.textSafeRegion}。这是当前选定版式的区域定义；字体、背景和审美要求使用已发布的图片规则。`;
 }

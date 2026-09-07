@@ -205,7 +205,8 @@ describe('admin worker integration', () => {
       assert.ok(generatedAssets.every((asset) => /^[a-f0-9]{64}$/.test(asset.visualPlanSha256)));
       assert.equal(detail.generationRuns[0].qcDisposition, 'mock_only');
       assert.equal(detail.generationRuns[0].visualPlan.pages.length, 5);
-      assert.equal(detail.generationRuns[0].stageReviews.query.source, 'MOCK');
+      assert.equal(detail.generationRuns[0].stageReviews.query.source, 'DISABLED');
+      assert.equal(detail.generationRuns[0].stageReviews.query.skipped, true);
       assert.equal(detail.generationRuns[0].stageReviews.text.source, 'MOCK');
       assert.throws(
         () => store.setReviewStatus(task.id, { status: 'APPROVED', note: '不应通过 Mock' }),

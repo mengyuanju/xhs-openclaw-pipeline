@@ -1,5 +1,6 @@
 import { generateCopy, toCopyGenerationResponse } from '../copy-generation.mjs';
 import { createDeepSeekResponsesClient } from '../deepseek-responses-client.mjs';
+import { promptRuntimeFromSnapshot } from '../admin/prompt-runtime-service.mjs';
 
 const COPY_PROGRESS = Object.freeze({
   QUERY_REVIEW: 5,
@@ -34,12 +35,13 @@ export async function executeDeepSeekCopySimulation({
   const snapshot = execution.snapshot;
   const generated = await generate({
     client,
+    promptRuntime: promptRuntimeFromSnapshot(snapshot),
     task: snapshot.task,
     copyKnowledge: snapshot.knowledge ?? [],
     systemPrompt: publishedTextPrompt(snapshot),
     imageCount: snapshot.task.requestedImageCount,
     autoReviseOnReject: false,
-    textReviewEnabled: false,
+    textReviewEnabled: Boolean(promptRuntimeFromSnapshot(snapshot)),
     onStageChange: async (stage, details = {}) => controlPlane.updateProgress(execution.id, {
       stage,
       progressPercent: COPY_PROGRESS[stage] ?? 0,

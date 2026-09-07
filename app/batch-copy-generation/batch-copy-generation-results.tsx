@@ -1,3 +1,6 @@
+import { Progress } from '@/components/ui/progress';
+import { Button } from '@/components/ui/button';
+import { Disclosure, DisclosureTrigger, DisclosureContent } from '@/components/ui/disclosure';
 import {
   CheckCircle2,
   CircleAlert,
@@ -88,10 +91,10 @@ export function BatchCopyGenerationResults({
               <strong>{settledCount}/{items.length} 条已生成或结束</strong>
               <span>{busy ? stopRequested ? '等待当前条结束后停止' : '正在顺序生成文案' : summary ? batchCopyResultMessage(summary) : batchName ? '已恢复该批次记录' : '已恢复待人工质检记录'}</span>
             </div>
-            <progress value={settledCount} max={items.length} aria-label={`批量文案进度：${settledCount}/${items.length}`} />
-            {busy && <button className="button small" type="button" disabled={stopRequested} onClick={onStop}>
+            <Progress value={settledCount} max={items.length} aria-label={`批量文案进度：${settledCount}/${items.length}`} />
+            {busy && <Button unstyled className="button small" type="button" disabled={stopRequested} onClick={onStop}>
               <CircleStop aria-hidden="true" size={15} />{stopRequested ? '已请求停止' : '完成当前条后停止'}
-            </button>}
+            </Button>}
           </div>
           <ol className="batch-generation-list">
             {items.map((item, index) => <li className="batch-generation-item" key={`${index}-${item.query}`}>
@@ -106,8 +109,8 @@ export function BatchCopyGenerationResults({
                 </span>
               </div>
               {item.error && <p className="batch-generation-error" role="alert">文案阶段：{item.error}</p>}
-              {item.copyResult && <details className="batch-copy-review">
-                <summary>展开质检内容</summary>
+              {item.copyResult && <Disclosure className="batch-copy-review">
+                <DisclosureTrigger>展开质检内容</DisclosureTrigger><DisclosureContent>
                 <h3>{item.copyResult.copy.title}</h3>
                 <p>{item.copyResult.copy.body}</p>
                 <div className="review-copy-tags" aria-label="文案标签">
@@ -122,12 +125,12 @@ export function BatchCopyGenerationResults({
                   </li>)}</ol>
                 </div>
                 <small>文案记录 #{item.copyResult.id}</small>
-              </details>}
+              </DisclosureContent></Disclosure>}
               {item.reviewError && <p className="batch-generation-error" role="alert">{item.reviewError}</p>}
               {(item.status === 'AWAITING_REVIEW' || item.status === 'APPROVING' || item.status === 'APPROVED') && <div className="batch-generation-item-meta">
-                <button className="button small" type="button" disabled={item.status !== 'AWAITING_REVIEW'} onClick={() => onApprove(index)}>
+                <Button unstyled className="button small" type="button" disabled={item.status !== 'AWAITING_REVIEW'} onClick={() => onApprove(index)}>
                   <FileCheck2 aria-hidden="true" size={14} />{item.status === 'APPROVED' ? '人工质检通过' : item.status === 'APPROVING' ? '正在保存…' : '确认人工质检通过'}
-                </button>
+                </Button>
               </div>}
             </li>)}
           </ol>

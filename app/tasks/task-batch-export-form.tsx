@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+
 import {
   type ChangeEvent,
   type FormEvent,
@@ -92,9 +94,9 @@ export function TaskBatchExportForm({ exportableCount, children }: TaskBatchExpo
     <section className="panel batch-export-toolbar" aria-label="批量导出任务">
       <div className="batch-export-copy"><strong>批量导出</strong><span className="subtle">处于待审核或已通过状态、且交付文件完整的任务均可导出，下载包会按任务分目录。</span></div>
       <div className="inline batch-export-actions">
-        <button className="button" type="button" disabled={busy || exportableCount < 1} aria-describedby="batch-export-guidance" title={busy || exportableCount < 1 ? guidance : undefined} onClick={toggleAll}>{allSelected ? '取消全选' : '全选本页可导出任务'}</button>
+        <Button unstyled className="button" type="button" disabled={busy || exportableCount < 1} aria-describedby="batch-export-guidance" title={busy || exportableCount < 1 ? guidance : undefined} onClick={toggleAll}>{allSelected ? '取消全选' : '全选本页可导出任务'}</Button>
         <span className="subtle batch-export-summary" aria-live="polite">本页可导出 {exportableCount} 条 · 已选 {selectedTaskIds.length} 条</span>
-        <button className="button primary" type="submit" disabled={busy || selectedTaskIds.length < 1} aria-describedby="batch-export-guidance" title={busy || selectedTaskIds.length < 1 ? guidance : undefined}>{busy ? '正在打包…' : `批量导出 ZIP（${selectedTaskIds.length}）`}</button>
+        <Button unstyled className="button primary" type="submit" disabled={busy || selectedTaskIds.length < 1} aria-describedby="batch-export-guidance" title={busy || selectedTaskIds.length < 1 ? guidance : undefined}>{busy ? '正在打包…' : `批量导出 ZIP（${selectedTaskIds.length}）`}</Button>
       </div>
       <p className="batch-export-guidance" id="batch-export-guidance" role="note" aria-live="polite">{guidance}</p>
       {message && <div className={messageIsError ? 'notice error batch-export-message' : 'notice success batch-export-message'} role={messageIsError ? 'alert' : 'status'} aria-live="polite">{message}</div>}

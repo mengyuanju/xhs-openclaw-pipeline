@@ -1,5 +1,8 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+import { Checkbox, Input } from '@/components/ui/input';
+
 import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
 
@@ -181,7 +184,7 @@ export function DemandScreeningPanel({
 
     <div className="screening-toolbar">
       <div className="filter-tabs" aria-label="筛选结果过滤">
-        {filters.map(([value, label]) => <button className="button small" type="button" aria-pressed={filter === value} key={value} onClick={() => changeFilter(value)}>{label}</button>)}
+        {filters.map(([value, label]) => <Button unstyled className="button small" type="button" aria-pressed={filter === value} key={value} onClick={() => changeFilter(value)}>{label}</Button>)}
       </div>
       <div className="inline">
         <label className="subtle" htmlFor="bulk-demand-level">批量判定</label>
@@ -189,17 +192,17 @@ export function DemandScreeningPanel({
           <SelectTrigger className="compact-control select-compact" id="bulk-demand-level"><SelectValue /></SelectTrigger>
           <SelectContent>{LEVELS.map((level) => <SelectItem value={level} key={level}>{LEVEL_COPY[level].label}</SelectItem>)}</SelectContent>
         </Select>
-        <button className="button small" type="button" disabled={selected.size === 0 || batch.status === 'COMMITTED'} onClick={applyBulkLevel}>应用到已选 {selected.size || ''}</button>
+        <Button unstyled className="button small" type="button" disabled={selected.size === 0 || batch.status === 'COMMITTED'} onClick={applyBulkLevel}>应用到已选 {selected.size || ''}</Button>
       </div>
     </div>
 
     <div className="table-wrap mobile-cards screening-table-wrap">
       <table>
-        <thead><tr><th><span className="sr-only">选择</span><input type="checkbox" aria-label="选择本页可筛选行" checked={allVisibleSelected} onChange={toggleVisibleRows} disabled={selectableVisibleRows.length === 0} /></th><th>行</th><th>选题</th><th>结构校验</th><th>需求强度</th><th>来源</th><th>判定理由</th></tr></thead>
+        <thead><tr><th><span className="sr-only">选择</span><Checkbox  aria-label="选择本页可筛选行" checked={allVisibleSelected} onChange={toggleVisibleRows} disabled={selectableVisibleRows.length === 0} /></th><th>行</th><th>选题</th><th>结构校验</th><th>需求强度</th><th>来源</th><th>判定理由</th></tr></thead>
         <tbody>{visibleRows.map((row: any) => {
           const draft = drafts[row.id];
           return <tr key={row.id}>
-            <td data-label="选择"><input type="checkbox" aria-label={`选择第 ${row.rowNumber} 行`} checked={selected.has(row.id)} onChange={() => toggleRow(row.id)} disabled={!row.isValid || batch.status === 'COMMITTED'} /></td>
+            <td data-label="选择"><Checkbox  aria-label={`选择第 ${row.rowNumber} 行`} checked={selected.has(row.id)} onChange={() => toggleRow(row.id)} disabled={!row.isValid || batch.status === 'COMMITTED'} /></td>
             <td data-label="行">{row.rowNumber}</td>
             <td className="query-cell" data-label="选题">{row.query || '—'}</td>
             <td data-label="结构校验">{row.isValid ? <StatusPill value="APPROVED" /> : <span className="pill pill-failed">{row.errors.join('；')}</span>}</td>
@@ -208,22 +211,22 @@ export function DemandScreeningPanel({
               <SelectContent>{LEVELS.map((level) => <SelectItem value={level} key={level}>{LEVEL_COPY[level].label}</SelectItem>)}</SelectContent>
             </Select> : '—'}</td>
             <td data-label="来源"><span className="subtle">{row.isValid ? screeningSourceLabel(row) : '—'}</span></td>
-            <td data-label="判定理由">{row.isValid && draft ? <input className="input screening-reason" aria-label={`第 ${row.rowNumber} 行判定理由`} value={draft.reason} maxLength={500} onChange={(event) => setReason(row.id, event.target.value)} disabled={batch.status === 'COMMITTED'} /> : <span className="subtle">{row.isValid ? batch.status === 'COMMITTED' ? '历史批次未记录需求档位' : '选择档位后自动填入，可修改' : '结构错误无需筛选'}</span>}</td>
+            <td data-label="判定理由">{row.isValid && draft ? <Input className="input screening-reason" aria-label={`第 ${row.rowNumber} 行判定理由`} value={draft.reason} maxLength={500} onChange={(event) => setReason(row.id, event.target.value)} disabled={batch.status === 'COMMITTED'} /> : <span className="subtle">{row.isValid ? batch.status === 'COMMITTED' ? '历史批次未记录需求档位' : '选择档位后自动填入，可修改' : '结构错误无需筛选'}</span>}</td>
           </tr>;
         })}</tbody>
       </table>
     </div>
     {rows.length === 0 && <div className="empty-state">当前条件下没有选题。</div>}
-    {totalPages > 1 && <nav className="pagination" aria-label="需求筛选分页"><span>第 {page} / {totalPages} 页 · 共 {rows.length} 条</span><div className="inline"><button className="button small" type="button" disabled={page === 1} onClick={() => setPage((current) => current - 1)}>上一页</button><button className="button small" type="button" disabled={page === totalPages} onClick={() => setPage((current) => current + 1)}>下一页</button></div></nav>}
+    {totalPages > 1 && <nav className="pagination" aria-label="需求筛选分页"><span>第 {page} / {totalPages} 页 · 共 {rows.length} 条</span><div className="inline"><Button unstyled className="button small" type="button" disabled={page === 1} onClick={() => setPage((current) => current - 1)}>上一页</Button><Button unstyled className="button small" type="button" disabled={page === totalPages} onClick={() => setPage((current) => current + 1)}>下一页</Button></div></nav>}
 
     <div className="screening-savebar">
       <div><strong>{pendingScreeningRows === 0 ? '筛选已完成' : `筛选未完成：${pendingScreeningRows} 条待判定`}</strong><p className="subtle">保存后仍可在入队前修正；每页最多显示 {PAGE_SIZE} 条。</p></div>
-      <button
+      <Button unstyled
         className="button primary"
         type="button"
         disabled={saving || batch.status === 'COMMITTED' || (dirtyRowIds.size === 0 && pendingScreeningRows > 0)}
         onClick={canComplete ? onComplete : saveScreening}
-      >{saving ? '保存中…' : canComplete ? '确认复核，下一步' : batch.status === 'COMMITTED' ? '批次已入队' : '保存筛选结果'}</button>
+      >{saving ? '保存中…' : canComplete ? '确认复核，下一步' : batch.status === 'COMMITTED' ? '批次已入队' : '保存筛选结果'}</Button>
     </div>
   </section>;
 }

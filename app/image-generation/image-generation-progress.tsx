@@ -1,3 +1,5 @@
+import { Progress } from '@/components/ui/progress';
+import { Button } from '@/components/ui/button';
 import { Ban, CircleCheck, Clock3, Images, LoaderCircle } from 'lucide-react';
 
 import { formatDuration } from '../components/time-format';
@@ -50,14 +52,14 @@ export function ImageGenerationProgress({
             : <><LoaderCircle aria-hidden="true" className="animate-spin" size={14} />{progress.progressPercent}%</>}
       </span>
     </div>
-    <progress
+    <Progress
       className="standalone-image-progress-bar"
       max={100}
       value={progress.progressPercent}
       aria-label="图片生成进度"
     >
       {progress.progressPercent}%
-    </progress>
+    </Progress>
     <p className="standalone-image-progress-message">{progress.message}</p>
     <dl className="standalone-image-progress-facts">
       <div><dt>当前阶段</dt><dd>{STAGE_LABELS[progress.stage]}</dd></div>
@@ -67,19 +69,19 @@ export function ImageGenerationProgress({
       <div><dt><CircleCheck aria-hidden="true" size={13} />已验收</dt><dd>{progress.validatedImages}/{progress.totalImages} 页</dd></div>
     </dl>
     {progress.status === 'RUNNING' && onCancel && <div className="standalone-image-progress-actions">
-      <button className="button small danger" type="button" onClick={onCancel} disabled={cancelling}>
+      <Button unstyled className="button small danger" type="button" onClick={onCancel} disabled={cancelling}>
         {cancelling
           ? <><LoaderCircle aria-hidden="true" className="animate-spin" size={14} />正在取消…</>
           : <><Ban aria-hidden="true" size={14} />取消生成</>}
-      </button>
+      </Button>
       <span>已产生的模型费用无法撤回；取消后不会继续发起后续页面生成。</span>
     </div>}
     {progress.canResume && onResume && <div className="notice warning standalone-image-resume">
       <span>已生成图片会先重新验收；通过的图片直接复用，只为剩余或不合格页面重新生成。</span>
-      <button className="button small" type="button" onClick={onResume} disabled={disabled}>
+      <Button unstyled className="button small" type="button" onClick={onResume} disabled={disabled}>
         {disabled && <LoaderCircle aria-hidden="true" className="animate-spin" size={14} />}
         重新验收并继续
-      </button>
+      </Button>
     </div>}
     <small>{progress.estimateBasis === 'stage-history'
       ? `预计时间参考同配置最近 ${progress.estimateSampleSize ?? 0} 次运行的阶段耗时中位数。`

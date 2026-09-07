@@ -13,6 +13,8 @@ import { createAgentClient as createOpenClawClient } from '../agent-client.mjs';
 import { generateStandaloneImages, retryStandaloneImageRun, standaloneImageRunDirectory } from '../standalone-image-generation.mjs';
 import { findImageRecoveryRun, imageRecoveryRunIds, loadUploadedImages, saveCheckpoint } from './image-checkpoints.mjs';
 import { executorConcurrency } from './config.mjs';
+import { reprocessStandaloneImages } from '../standalone-image-generation.mjs';
+import { IMAGE_ARTIFACT_FILE } from '../image-artifacts.mjs';
 
 const COPY_PROGRESS = Object.freeze({
   QUERY_REVIEW: 5,
@@ -63,7 +65,8 @@ function copySource(revision) {
   const copy = content.copy ?? content.reviewed?.copy ?? content.post;
   const imagePlan = content.imagePlan ?? content.reviewed?.imagePlan ?? content.post?.imagePlan;
   if (!copy || !Array.isArray(imagePlan)) throw new Error('approved copy revision is incomplete');
-  return { query: content.query ?? revision.query, copy, imagePlan };
+  return { query: content.query ?? revision.query, copy, imagePlan,
+    ...(content.imageSettings ? { imageSettings: content.imageSettings } : {}) };
 }
 
 export async function checkExecutorReady({
@@ -104,6 +107,7 @@ export async function executeCopyClaim({ claim, controlPlane, environment = proc
     task: snapshot.task,
     copyKnowledge: snapshot.knowledge ?? [],
     systemPrompt: publishedPrompt(snapshot, 'TEXT_SYSTEM'),
+    promptRuntime: promptRuntimeFromSnapshot(snapshot),
     imageCount: snapshot.task.requestedImageCount,
     autoReviseOnReject: false,
     textReviewEnabled: false,
@@ -140,16 +144,27 @@ export async function executeImageClaim({
   const sourceRunId = recoveryRunIds.length > 0
     ? await findImageRecoveryRun(taskRoot, recoveryRunIds)
     : null;
-  const generate = sourceRunId ? retryStandaloneImageRun : generateStandaloneImages;
+  const local = snapshot.copyRevision.content.imageReprocess;
+  const generate = local ? reprocessStandaloneImages : sourceRunId ? retryStandaloneImageRun : generateStandaloneImages;
   const result = await generate({
     source,
     mode: 'LIVE',
     outputRoot: taskRoot,
     runId: execution.id,
-    ...(sourceRunId ? { sourceRunId, expectedSource: source, allowInterrupted: true } : {}),
-    runtime: {
+    ...(local ? {
+      originalResult: local.originalResult,
+      originalAvailable: local.sources.every(item => item.originalAvailable),
+      loadSource: async (_image, index) => {
+        const pinned = local.sources[index];
+        const bytes = await controlPlane.downloadImageSource(execution.id, pinned.assetId);
+        if (createHash('sha256').update(bytes).digest('hex') !== pinned.sha256) throw new Error('原图片校验失败，请检查中心资产');
+        return bytes;
+      },
+    } : sourceRunId ? { sourceRunId, expectedSource: source, allowInterrupted: true } : {}),
+    runtime: local ? undefined : {
       productionSettings: settings,
       imageSystemPrompt: publishedPrompt(snapshot, 'IMAGE_SYSTEM'),
+      promptRuntime: promptRuntimeFromSnapshot(snapshot),
       visualReference: visualReference(snapshot),
       client: imageClient ?? createOpenClawClient({ modelApi: settings.modelApi ?? {}, environment }),
     },
@@ -172,19 +187,29 @@ export async function executeImageClaim({
     stage: 'UPLOADING', progressPercent: 97, message: '正在上传已生成的图片', details: {},
   });
   const uploadedImages = [];
-  for (const image of result.images) {
-    const fileName = basename(image.file);
-    if (fileName !== image.file || !/^\d{2}-[a-z0-9-]+\.png$/u.test(fileName)) {
+  async function upload(fileName, mediaType) {
+    if (basename(fileName) !== fileName || !IMAGE_ARTIFACT_FILE.test(fileName)) {
       throw new Error('generated image file name is invalid');
     }
     const content = await readFile(join(outputDirectory, fileName));
     const sha256 = createHash('sha256').update(content).digest('hex');
     const asset = uploads[fileName]?.sha256 === sha256
+      && (!result.imageControlsVersion || uploads[fileName].asset.imageRunId === execution.id)
       ? uploads[fileName].asset
-      : await controlPlane.uploadAsset(execution.id, { content, mediaType: 'image/png', fileName });
+      : await controlPlane.uploadAsset(execution.id, { content, mediaType, fileName });
     uploads[fileName] = { sha256, asset };
     await saveCheckpoint(join(outputDirectory, 'uploads.json'), uploads);
-    uploadedImages.push({ ...image, assetId: asset.id, url: asset.url });
+    return asset;
+  }
+  for (const image of result.images) {
+    const asset = await upload(image.file, 'image/png');
+    let artifacts = {};
+    if (image.imageSettings) {
+      const original = await upload(image.sourceFile, 'image/png');
+      const delivery = image.deliveryFile === image.file ? asset : await upload(image.deliveryFile, image.mediaType);
+      artifacts = { sourceAssetId: original.id, sourceUrl: original.url, deliveryAssetId: delivery.id, deliveryUrl: delivery.url };
+    }
+    uploadedImages.push({ ...image, ...artifacts, assetId: asset.id, url: asset.url });
   }
   await controlPlane.updateProgress(execution.id, {
     stage: 'FINALIZING', progressPercent: 99, message: '图片已上传，正在保存交付结果', details: {},
@@ -275,7 +300,7 @@ export function createExecutorAgent({
       return { kind, taskId: claim.task.id, executionId: claim.execution.id, status: 'ABANDONED' };
     }
     try {
-      await withModelCallTracing({ executionId: claim.execution.id, controlPlane }, async (tracedPlane) => {
+      await withModelCallTracing({ executionId: claim.execution.id, controlPlane, snapshot: claim.execution.snapshot }, async (tracedPlane) => {
         if (kind === 'COPY') {
           await executeCopy({ claim, controlPlane: tracedPlane, environment });
         } else {
@@ -347,3 +372,4 @@ export function createExecutorAgent({
     runImageOnce: () => claimAndExecute('IMAGE'),
   };
 }
+import { promptRuntimeFromSnapshot } from '../admin/prompt-runtime-service.mjs';

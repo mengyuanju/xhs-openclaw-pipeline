@@ -5,6 +5,19 @@ import JSZip from 'jszip';
 
 import { archiveFileName, buildTaskArchive } from '../src/task-archive.mjs';
 
+test('configured archive includes only version-pinned delivery assets, excluding PNG previews, sources and historical runs', async () => {
+  const task = { id: 1, currentCopyRevisionId: 1, currentImageRunId: 'new', copyRevisions: [{ id: 1, content: { copy: { title: '当前', body: '正文', tags: [] } } }],
+    imageRuns: [{ id: 'new', result: { images: [{ assetId: 1, sourceAssetId: 2, deliveryAssetId: 3 }] } }],
+    assets: [1, 2, 3, 4].map(id => ({ id, imageRunId: id === 4 ? 'old' : 'new', mediaType: id === 3 ? 'image/tiff' : 'image/png' })) };
+  const loaded = [];
+  const archive = await buildTaskArchive(task, async id => { loaded.push(id); return { content: Buffer.from('delivery'), mediaType: 'image/tiff', originalName: '01-hero.tiff' }; });
+  const zip = await JSZip.loadAsync(archive);
+  assert.deepEqual(loaded, [3]);
+  assert.deepEqual(Object.keys(zip.files).sort(), ['01-hero.tiff', '当前.txt'].sort());
+  task.assets = task.assets.filter(asset => asset.id !== 3);
+  await assert.rejects(buildTaskArchive(task, async () => assert.fail('must not substitute a preview')), /资产缺失/);
+});
+
 test('manual archive ZIP contains the current copy and current-run images under their original names', async () => {
   const task = {
     id: 42,

@@ -121,7 +121,7 @@ describe('visual knowledge pipeline integration', () => {
         const post = validPost();
         return {
           rawText: JSON.stringify(
-            prompt.includes('视觉规划步骤') ? createMockVisualPlan(post, { imageCount: 3 }) : post,
+            prompt.includes('<trusted_business_rules kind="VISUAL_PLAN_SYSTEM">') ? createMockVisualPlan(post, { imageCount: 3 }) : post,
           ),
           model: 'fake-text',
         };
@@ -139,7 +139,7 @@ describe('visual knowledge pipeline integration', () => {
       runVision({ prompt }) {
         return {
           rawText: JSON.stringify(
-            prompt.includes('独立于生成模型的图文交付终审员')
+            prompt.includes('<trusted_business_rules kind="DELIVERY_REVIEW_SYSTEM">')
               ? passingQualityAssessment()
               : passingAlignment(prompt),
           ),
@@ -172,7 +172,7 @@ describe('visual knowledge pipeline integration', () => {
 
     assert.equal(result.status, 'completed', result.error);
     assert.equal(textCalls.length, 2);
-    assert.match(textCalls[1], /视觉规划步骤/);
+    assert.match(textCalls[1], /<trusted_business_rules kind="VISUAL_PLAN_SYSTEM">/u);
     assert.equal(imageCalls.length, 3);
     for (const call of imageCalls) {
       assert.match(call.prompt, /保持 3:4 竖版构图/);
@@ -182,15 +182,20 @@ describe('visual knowledge pipeline integration', () => {
       assert.match(call.prompt, /allowedVisibleText/);
       assert.match(call.prompt, /sourceEvidence/);
       assert.match(call.prompt, /zh-CN/);
-      assert.match(call.prompt, /直接生成包含完整图文排版的最终页面/u);
+      assert.match(call.prompt, /最终输出一张3:4、1086×1448完整图文PNG/u);
       assert.match(call.prompt, /labels/);
-      assert.match(call.prompt, /逐字渲染 allowedVisibleText/u);
+      assert.match(call.prompt, /原文案锁定的 allowedVisibleText，逐字显示/u);
       assert.doesNotMatch(call.prompt, /不得生成任何可见文字、字母、数字、伪文字/u);
-      assert.match(call.prompt, /layoutTemplate 是唯一版式依据/u);
+      assert.match(call.prompt, /layoutTemplate=/u);
       assert.match(call.prompt, /主体区域：/u);
       assert.match(call.prompt, /文字排版区域：/u);
       assert.doesNotMatch(call.prompt, /画面上半部约 52%|下半部程序文字面板/);
-      assert.match(call.prompt, /必须生成全新场景与构图/);
+      assert.match(call.prompt, /不得增删、改写、翻译、编号或移动到其他页/u);
+      const input = JSON.parse(call.prompt.match(/<untrusted_task_data>\s*([\s\S]+?)\s*<\/untrusted_task_data>/u)[1]);
+      const originalPage = validPost().imagePlan[input.pageIndex - 1];
+      assert.equal(input.page.allowedVisibleText.headline, originalPage.headline);
+      assert.equal(input.page.allowedVisibleText.subtitle, originalPage.subtitle);
+      assert.deepEqual(input.page.allowedVisibleText.bullets, originalPage.bullets);
     }
     assert.match(imageCalls[0].prompt, /桌面整理先做减法/);
     assert.match(imageCalls[0].prompt, /真实主体居中/);

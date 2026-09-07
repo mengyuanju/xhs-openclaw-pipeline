@@ -19,7 +19,7 @@ describe('OpenClaw trace diagnostics UI', () => {
     assert.match(ui, /aria-label="链路阶段"/u);
     assert.match(ui, /完整脱敏 JSON/u);
     assert.match(ui, /原始 capability envelope/u);
-    assert.match(ui, /<details/u);
+    assert.match(ui, /<Disclosure/u);
     assert.match(dashboard, /typeof value !== 'number'/u);
   });
 

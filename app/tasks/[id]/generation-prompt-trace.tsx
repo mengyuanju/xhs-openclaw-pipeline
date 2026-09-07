@@ -1,3 +1,4 @@
+import { Disclosure, DisclosureTrigger, DisclosureContent } from '@/components/ui/disclosure';
 import { summarizeImagePrompt } from './image-prompt-presentation.mjs';
 import { summarizeTextPrompt } from './generation-evidence-presentation.mjs';
 
@@ -76,10 +77,10 @@ function ImagePromptContent({ prompt }: { prompt: PromptEntry }) {
 }
 
 function RawPromptDetails({ label, content }: { label: string; content: string }) {
-  return <details className="raw-prompt-details">
-    <summary>查看原始提示词</summary>
+  return <Disclosure className="raw-prompt-details">
+    <DisclosureTrigger>查看原始提示词</DisclosureTrigger><DisclosureContent>
     <pre className="prompt-content" tabIndex={0} aria-label={`${label}完整内容`}>{content}</pre>
-  </details>;
+  </DisclosureContent></Disclosure>;
 }
 
 function TextPromptContent({ prompt }: { prompt?: PromptEntry }) {

@@ -7,6 +7,7 @@ import sharp from 'sharp';
 import { createCodexClient } from '../src/codex.mjs';
 import { createCodexRuntime } from '../src/codex-runtime.mjs';
 import { createResearchSnapshot } from '../src/research.mjs';
+import { createPromptRuntime, withPromptRuntime } from '../src/prompt-runtime.mjs';
 
 function success(answer, items = []) {
   return { status: 0, stderr: '', stdout: [
@@ -110,6 +111,29 @@ test('search needs an actual web_search event and produces the existing research
   assert.equal(research.provider, 'codex');
   searched = false;
   await assert.rejects(client.runWebSearch({ query: 'testing' }), { code: 'CODEX_SEARCH_UNVERIFIED' });
+});
+
+test('governed Codex search passes the published source preference into the actual stdin request', async (t) => {
+  const query = '机械键盘轴体体验比较';
+  const preference = '管理员检索版本六：优先查找长期使用反馈，明确区分个人体验与产品规格。';
+  const calls = [];
+  const answer = { summary: '资料列出使用感受。', results: [{ title: '使用反馈', url: 'https://example.org/keyboard', snippet: '使用反馈摘录' }] };
+  const { client } = await fixture(t, async (_command, args, options) => {
+    calls.push({ args, options });
+    return success(answer, [{ type: 'web_search', id: 'research-event', query }]);
+  });
+  const runtime = createPromptRuntime({ prompts: {
+    RESEARCH_SYSTEM: { content: preference, versionId: 'research-test-6', version: 6 },
+  } });
+  const snapshot = await withPromptRuntime(runtime, () => createResearchSnapshot({ client, query }));
+
+  assert.equal(snapshot.status, 'COMPLETED');
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].options.input.includes(preference));
+  const input = JSON.parse(calls[0].options.input.match(/<untrusted_query>\s*([\s\S]+?)\s*<\/untrusted_query>/u)[1]);
+  assert.deepEqual(input, { query });
+  assert.doesNotMatch(calls[0].options.input + calls[0].args.join('\n'), /官方 标准 技术规范/u);
+  assert.equal(snapshot.sources[0].url, answer.results[0].url);
 });
 
 test('image generation requires native tool evidence and a valid fresh image before delivery', async (t) => {

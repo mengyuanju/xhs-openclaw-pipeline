@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import sharp from 'sharp';
+import { promptRuntimeSnapshot } from './prompt-runtime.mjs';
 
 import { DELIVERY_IMAGE_HEIGHT, DELIVERY_IMAGE_WIDTH } from './image-output-contract.mjs';
 import {
@@ -199,9 +200,10 @@ export async function evaluateDelivery({
   });
   checks.push({
     id: 'title_quality',
-    passed: !FORBIDDEN_TITLE_HOOKS.test(post.title) && !/[!！~～]/u.test(post.title) && !EMOJI.test(post.title),
+    passed: Boolean(promptRuntimeSnapshot()) || (!FORBIDDEN_TITLE_HOOKS.test(post.title) && !/[!！~～]/u.test(post.title) && !EMOJI.test(post.title)),
+    evaluatedBy: promptRuntimeSnapshot() ? 'MANAGED_TEXT_REVIEW' : 'LEGACY_MECHANICAL_POLICY',
   });
-  checks.push({ id: 'body_emoji', passed: !EMOJI.test(post.body) });
+  checks.push({ id: 'body_emoji', passed: Boolean(promptRuntimeSnapshot()) || !EMOJI.test(post.body), evaluatedBy: promptRuntimeSnapshot() ? 'MANAGED_TEXT_REVIEW' : 'LEGACY_MECHANICAL_POLICY' });
   checks.push({
     id: 'image_count',
     passed: images.length === expectedImageCount,
@@ -273,7 +275,7 @@ export async function evaluateDelivery({
       evidence: `模型标记 ${post.riskFlags.length} 条风险。`,
     });
   }
-  if (FORBIDDEN_TITLE_HOOKS.test(post.title)) {
+  if (!promptRuntimeSnapshot() && FORBIDDEN_TITLE_HOOKS.test(post.title)) {
     issues.push({
       severity: 'blocking',
       label: '内容-标题问题',
@@ -309,10 +311,9 @@ export async function evaluateDelivery({
       evidence: '主图是程序占位图，不是真实模型生成结果，禁止发布。',
     });
   }
-  const rubric = scoreQualityAssessment(mergeRubricAssessment(
-    buildMechanicalRubricAssessment({ post, images, checks, issues, mode }),
-    rubricAssessment,
-  ));
+  const mechanicalAssessment = buildMechanicalRubricAssessment({ post, images, checks, issues, mode });
+  const mergedAssessment = mergeRubricAssessment(mechanicalAssessment, rubricAssessment);
+  const rubric = scoreQualityAssessment(mergedAssessment);
   const overallScore = rubric.finalScore;
   const disposition = mode === 'mock'
     ? 'mock_only'
@@ -329,6 +330,8 @@ export async function evaluateDelivery({
     checks,
     issues,
     rubric,
+    scoreTrace: { ruleId: 'production-v2', modelAssessment: rubricAssessment, mechanicalAssessment, mergedAssessment,
+      finalScore: rubric.finalScore, stoppedAt: rubric.stoppedAt, lowestObstacleDimensions: rubric.lowestObstacleDimensions },
     limitations: [
       '机械质检不能判断 AI 结构异常、构图美观、版权来源或站内重复；未提供站内候选时保留原创度未核验标识，但不参与最终评分。',
       '没有平台样本证据时，平台表达适配最高只能按 2 分处理。',

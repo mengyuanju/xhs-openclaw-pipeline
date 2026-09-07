@@ -1,5 +1,8 @@
 'use client';
 
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
@@ -125,8 +128,8 @@ export function ReviewWorkbench({ actor, taskAssignments, queryItems, users, bat
           <SelectContent>{contentReviewers.map((user: any) => <SelectItem key={user.id} value={String(user.id)}>{user.displayName}</SelectItem>)}</SelectContent>
         </Select>
         <label htmlFor="allocation-count">条数</label>
-        <input className="input review-count-input" id="allocation-count" name="count" type="number" min="1" max="500" defaultValue="10" required />
-        <button className="button primary" type="submit" disabled={busyKey === 'allocate' || batches.length === 0 || contentReviewers.length === 0}>{busyKey === 'allocate' ? '分配中…' : '确认分配'}</button>
+        <Input className="input review-count-input" id="allocation-count" name="count" type="number" min="1" max="500" defaultValue="10" required />
+        <Button unstyled className="button primary" type="submit" disabled={busyKey === 'allocate' || batches.length === 0 || contentReviewers.length === 0}>{busyKey === 'allocate' ? '分配中…' : '确认分配'}</Button>
       </form>
     </section>}
 
@@ -154,7 +157,7 @@ export function ReviewWorkbench({ actor, taskAssignments, queryItems, users, bat
                   <SelectTrigger aria-label={`转派任务 #${assignment.taskId}`}><SelectValue /></SelectTrigger>
                   <SelectContent>{contentReviewers.map((user: any) => <SelectItem key={user.id} value={String(user.id)}>{user.displayName}</SelectItem>)}</SelectContent>
                 </Select>
-                <button className="button small" type="submit" disabled={busyKey === `reassign-${assignment.id}`}>整体转派</button>
+                <Button unstyled className="button small" type="submit" disabled={busyKey === `reassign-${assignment.id}`}>整体转派</Button>
               </form>}
             </div></td>
           </tr>)}</tbody>
@@ -177,7 +180,7 @@ export function ReviewWorkbench({ actor, taskAssignments, queryItems, users, bat
           <SelectTrigger id="query-seed-batch"><SelectValue placeholder="选择批次" /></SelectTrigger>
           <SelectContent>{batches.map((batch: any) => <SelectItem key={batch.id} value={String(batch.id)}>{batch.name}</SelectItem>)}</SelectContent>
         </Select>
-        <button className="button" type="submit" disabled={busyKey === 'seed-query' || batches.length === 0}>{busyKey === 'seed-query' ? '生成中…' : '生成质检单'}</button>
+        <Button unstyled className="button" type="submit" disabled={busyKey === 'seed-query' || batches.length === 0}>{busyKey === 'seed-query' ? '生成中…' : '生成质检单'}</Button>
       </form>}
       {queryItems.data.length === 0
         ? <div className="empty-state">还没有符合条件的质检作业。</div>
@@ -190,13 +193,13 @@ export function ReviewWorkbench({ actor, taskAssignments, queryItems, users, bat
             <td data-label="审核人">{item.assignee?.displayName || '未分配'}</td>
             <td data-label="操作"><div className="review-row-actions">
               <Link className="button small" href={`/reviews/${item.id}`}>打开</Link>
-              {!isManager && item.status === 'OPEN' && item.assignee === null && <button className="button small primary" type="button" disabled={busyKey === `claim-query-${item.id}`} onClick={() => claimQuery(item)}>领取</button>}
+              {!isManager && item.status === 'OPEN' && item.assignee === null && <Button unstyled className="button small primary" type="button" disabled={busyKey === `claim-query-${item.id}`} onClick={() => claimQuery(item)}>领取</Button>}
               {isManager && ['OPEN', 'IN_REVIEW'].includes(item.status) && <form className="review-assign-form" onSubmit={(event) => assignQuery(event, item)}>
                 <Select name="assigneeUserId" defaultValue={item.assignee ? String(item.assignee.id) : undefined} required>
                   <SelectTrigger aria-label={`为 Query 质检单 #${item.id} 选择审核人`}><SelectValue placeholder="选择人员" /></SelectTrigger>
                   <SelectContent>{queryReviewers.map((user: any) => <SelectItem key={user.id} value={String(user.id)}>{user.displayName}</SelectItem>)}</SelectContent>
                 </Select>
-                <button className="button small" type="submit" disabled={busyKey === `assign-query-${item.id}`}>派单</button>
+                <Button unstyled className="button small" type="submit" disabled={busyKey === `assign-query-${item.id}`}>派单</Button>
               </form>}
             </div></td>
           </tr>)}</tbody>

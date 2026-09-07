@@ -1,3 +1,5 @@
+import { promptRuntimeSnapshot, promptPolicy } from './prompt-runtime.mjs';
+import { createDirectVisualPlan, assertLockedImageText, imageTextHash, assertImagePlanNumericEvidence } from './locked-image-plan.mjs';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { safeTraceText } from './model-call-trace.mjs';
@@ -5,6 +7,7 @@ import { validatedCopyGenerationThinking } from './model-api-config.mjs';
 import { buildVisualPlanPrompt, createMockVisualPlan, inspectVisualPlanOutput,
   parseVisualPlanCandidate, parseVisualPlanOutput } from './visual-plan.mjs';
 import { visualPlanSchema } from './visual-plan-schema.mjs';
+import { attachPageLayout } from './image-layout-controls.mjs';
 
 const MAX_ATTEMPTS = 3;
 const detail = (value) => safeTraceText(String(value?.message ?? value)).text.slice(0, 500);
@@ -31,6 +34,7 @@ function fallback(post, state, error, transport, calls) {
     visualPlan.pages = visualPlan.pages.map((page, index) => failed.has(index + 1) ? page : state.candidate.pages[index]);
     if (!failed.has(null)) visualPlan.contentProfile = state.candidate.contentProfile;
   }
+  visualPlan.pages = visualPlan.pages.map((page, index) => attachPageLayout(page, post.imagePlan[index]));
   return { visualPlan, model: transport ? 'deterministic-transport-fallback' : 'deterministic-fallback',
     degraded: true, attempts: calls, warning: { stage: 'PLANNING',
       code: transport ? 'VISUAL_PLAN_TRANSPORT_FALLBACK' : 'VISUAL_PLAN_SCHEMA_FALLBACK',
@@ -39,6 +43,13 @@ function fallback(post, state, error, transport, calls) {
 
 export async function generateVisualPlan({ client, post, thinking = 'low', outputDir,
   complianceDisclosure = 'AI生成', allowTransportFallback = () => false }) {
+  const governed = Boolean(promptRuntimeSnapshot());
+  if (governed) assertImagePlanNumericEvidence(post);
+  if (governed && !promptPolicy().visualPlanningEnabled) {
+    const visualPlan = createDirectVisualPlan(post);
+    visualPlan.pages = visualPlan.pages.map((page, index) => attachPageLayout(page, post.imagePlan[index]));
+    return { visualPlan, model: null, skipped: true, degraded: false, warning: null, attempts: 0 };
+  }
   const effort = validatedCopyGenerationThinking(thinking);
   const basePrompt = buildVisualPlanPrompt(post, { complianceDisclosure }) + mustShowRules;
   let state = { candidate: null, errors: [] };
@@ -54,16 +65,17 @@ export async function generateVisualPlan({ client, post, thinking = 'low', outpu
     let planned;
     try { planned = await client.runText({ prompt, thinking: effort, outputSchema: visualPlanSchema(post, schemaIndices) }); }
     catch (error) {
-      if (!allowTransportFallback(error)) throw error;
+      if (governed || !allowTransportFallback(error)) throw error;
       return fallback(post, state, error, true, attempt);
     }
     const rawText = String(planned.rawText ?? '');
     let errors;
     try {
       const merged = mergeRepair(state.candidate, parseVisualPlanCandidate(rawText), state.errors);
+      if (governed) assertLockedImageText(merged, post);
       state = inspectVisualPlanOutput(JSON.stringify(merged), { post });
       errors = state.errors;
-      if (!errors.length) return { visualPlan: parseVisualPlanOutput(JSON.stringify(merged), { post }),
+      if (!errors.length) return { visualPlan: { ...parseVisualPlanOutput(JSON.stringify(merged), { post }), ...(governed ? { planningMode: 'MODEL', textContractSha256: imageTextHash(post) } : {}) },
         model: planned.model, degraded: false, warning: null, attempts: attempt };
       lastError = new TypeError(errors.map((error) => error.message).join('; '));
     } catch (error) {
@@ -78,5 +90,6 @@ export async function generateVisualPlan({ client, post, thinking = 'low', outpu
       errors: errors.map((error) => ({ ...error, message: detail(error.message) })),
     }), { encoding: 'utf8', flag: 'wx' });
   }
+  if (governed) throw new Error(`视觉规划未通过锁定文案或结构校验：${lastError?.message}`, { cause: lastError });
   return fallback(post, state, lastError, false, MAX_ATTEMPTS);
 }

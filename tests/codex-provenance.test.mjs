@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { createAdminStore } from '../src/admin/admin-store.mjs';
 import { screenImportRowsWithOpenClaw } from '../src/admin/demand-screening-service.mjs';
 import { runQueryReview, isReusableStageReview, queryReviewSubject } from '../src/content-stage-review.mjs';
+import { withPromptRuntime } from '../src/prompt-runtime.mjs';
+import { enabledQueryReviewRuntime } from './query-review-fixture.mjs';
 
 test('the previous OpenClaw-only SQLite constraint migrates without losing model provenance', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'xhs-codex-schema-'));
@@ -50,9 +52,9 @@ test('Codex demand screening is persisted with its real provider and model', asy
 
 test('Codex review checkpoints retain provider identity and remain reusable', async () => {
   const task = { query: '桌面如何整理', input: {} };
-  const review = await runQueryReview({ task, client: { provider: 'codex', async runReview() {
+  const review = await withPromptRuntime(enabledQueryReviewRuntime(), () => runQueryReview({ task, client: { provider: 'codex', async runReview() {
     return { provider: 'codex', model: 'openai/gpt-5.6-sol', rawText: JSON.stringify({ schemaVersion: 1, decision: 'PASS', summary: '需求清楚', issues: [] }) };
-  } } });
+  } } }));
   assert.equal(review.source, 'CODEX');
   assert.equal(isReusableStageReview(review, { stage: 'QUERY', subject: queryReviewSubject(task) }), true);
 });

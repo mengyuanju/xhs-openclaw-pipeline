@@ -46,6 +46,22 @@ afterEach(async () => {
 });
 
 describe('CLI', () => {
+  it('passes the configured output root to both worker-once content and image-edit stages', async () => {
+    const env = await makeEnvironment();
+    const stdout = memoryStream();
+    const stderr = memoryStream();
+    const calls = [];
+    const result = await main(['worker', '--once', '--mock'], {
+      env, stdout, stderr,
+      async processContentTask(options) { calls.push({ stage: 'content', options }); return { status: 'idle' }; },
+      async processImageEditTask(options) { calls.push({ stage: 'edit', options }); return { status: 'idle' }; },
+    });
+    assert.equal(result, 0, stderr.read());
+    assert.deepEqual(calls.map((call) => call.stage), ['content', 'edit']);
+    for (const call of calls) assert.equal(call.options.outputRoot, env.XHS_OUTPUT_ROOT);
+    assert.equal(calls[1].options.assetRoot, env.XHS_ASSET_ROOT);
+  });
+
   it('initializes, enqueues, reports status and runs one mock task', async () => {
     const env = await makeEnvironment();
 

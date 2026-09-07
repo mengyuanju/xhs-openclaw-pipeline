@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
@@ -26,5 +28,5 @@ export function RetryButton({ taskId }: { taskId: number }) {
       setError(caught instanceof Error ? caught.message : '重新入队失败');
     } finally { setBusy(false); }
   }
-  return <><button className="button danger" type="button" disabled={busy} onClick={retry}>{busy ? '重新入队中…' : '重新入队'}</button>{error && <span className="pill pill-failed" role="alert">{error}</span>}</>;
+  return <><Button unstyled className="button danger" type="button" disabled={busy} onClick={retry}>{busy ? '重新入队中…' : '重新入队'}</Button>{error && <span className="pill pill-failed" role="alert">{error}</span>}</>;
 }

@@ -1,3 +1,5 @@
+import { Button } from '@/components/ui/button';
+import { Disclosure, DisclosureTrigger, DisclosureContent } from '@/components/ui/disclosure';
 import type { ReactNode } from 'react';
 
 import { StatusPill } from '../components/status-pill';
@@ -31,7 +33,7 @@ export function ImportFlowStage({
     className={`import-flow-step${isActive ? ' is-active' : ''}${completed ? ' is-complete' : ''}`}
     data-import-step={step}
   >
-    <button
+    <Button unstyled
       className="import-flow-step-toggle"
       type="button"
       aria-expanded={isActive}
@@ -42,18 +44,18 @@ export function ImportFlowStage({
       <span className="import-flow-step-index" aria-hidden="true">{completed ? '✓' : step}</span>
       <span className="import-flow-step-copy"><strong>{step}. {title}</strong><small>{summary}</small></span>
       <span className="import-flow-step-state">{stateLabel}</span>
-    </button>
+    </Button>
     {isActive && <div className="import-flow-step-body">{children}</div>}
   </section>;
 }
 
 export function ImportBatchDetails({ batch }: { batch: any }) {
-  return <details className="import-batch-details">
-    <summary>
+  return <Disclosure className="import-batch-details">
+    <DisclosureTrigger>
       <span><strong>{batch.name}</strong><small>{batch.sourceFileName}</small></span>
       <span className="import-batch-details-counts">总计 {batch.totalRows} · 可入队 {batch.admittedRows} · 待筛选 {batch.pendingScreeningRows}</span>
       <StatusPill value={batch.status} />
-    </summary>
+    </DisclosureTrigger><DisclosureContent>
     <div className="stats-grid import-batch-stats">
       <div className="stat-card"><span className="label">总行数</span><strong>{batch.totalRows}</strong></div>
       <div className="stat-card"><span className="label">可入队（强/中需）</span><strong>{batch.admittedRows}</strong></div>
@@ -68,5 +70,5 @@ export function ImportBatchDetails({ batch }: { batch: any }) {
       <div><dt>平均运行耗时</dt><dd>{formatDuration(batch.statistics.averageRunDurationMs)}</dd></div>
       <div><dt>质量修复</dt><dd>{batch.statistics.qualityRepairAttempts} 次</dd></div>
     </dl>}
-  </details>;
+  </DisclosureContent></Disclosure>;
 }

@@ -10,6 +10,8 @@ import { createImageAlignmentValidator } from '../image-alignment.mjs';
 import { createAgentClient as createOpenClawClient } from '../agent-client.mjs';
 import { normalizeProductionSettings, productionDisclosure } from '../production-settings.mjs';
 import { renderPrompt } from './prompt-service.mjs';
+import { businessPrompt, promptRuntimeSnapshot } from '../prompt-runtime.mjs';
+import { withPromptExecution } from './prompt-execution.mjs';
 
 function safeAbsolute(root, child) {
   const rootPath = resolve(root);
@@ -29,6 +31,7 @@ function publicError(value) {
 export async function processNextImageEdit({
   store,
   assetRoot,
+  outputRoot = resolve(assetRoot, '..', 'output'),
   workerId,
   mock = false,
   openclaw,
@@ -52,6 +55,8 @@ export async function processNextImageEdit({
 
   try {
     if (!source || !config || !sourcePath) throw new Error('image edit source or task configuration is missing');
+    return await withPromptExecution({ outputRoot, configuration: { source: 'LOCAL_IMAGE_EDIT', promptRuntime: config.promptRuntime ?? null },
+      kind: mock ? 'IMAGE_EDIT_MOCK' : 'IMAGE_EDIT', query: config.query }, async () => {
     await mkdir(dirname(outputPath), { recursive: true });
     let model = null;
     let provider = 'openclaw';
@@ -65,14 +70,18 @@ export async function processNextImageEdit({
       const productionSettings = normalizeProductionSettings(config.productionSettings ?? {});
       const client = openclaw ?? createOpenClawClient({ modelApi: productionSettings.modelApi });
       const complianceDisclosure = productionDisclosure(productionSettings);
-      const prompt = renderPrompt(config.imageEditPromptContent, {
+      const variables = {
         query: config.query,
         category: config.input?.category,
         targetAudience: config.input?.targetAudience,
         imageIndex: 1,
         imageCount: config.imageCount,
         reviewInstruction: request.instruction,
-      });
+      };
+      const prompt = promptRuntimeSnapshot() ? businessPrompt('IMAGE_EDIT_SYSTEM', { variables,
+        contract: '编辑第一个附件，保留未要求修改的内容。已有交付页面仍需通过原锁定文字验收。输出单张 3:4 PNG。',
+        data: { query: config.query, reviewInstruction: request.instruction } })
+        : renderPrompt(config.imageEditPromptContent, variables);
       const generated = await client.runImageEdit({
         prompt,
         inputPaths: [sourcePath],
@@ -94,7 +103,7 @@ export async function processNextImageEdit({
         ]);
         const visualPage = visualPlan.pages?.[source.pageIndex - 1];
         if (!visualPage) throw new Error('image edit visual page is missing');
-        await applyDeterministicTextOverlay({
+        if (!promptRuntimeSnapshot()) await applyDeterministicTextOverlay({
           imagePath: outputPath,
           visibleText: visualPage.allowedVisibleText,
           disclosure: complianceDisclosure,
@@ -139,6 +148,7 @@ export async function processNextImageEdit({
     });
     store.completeImageEdit(request.id, { workerId, resultAssetId: asset.id });
     return { status: 'completed', requestId: request.id, taskId: request.taskId, assetId: asset.id };
+    });
   } catch (error) {
     await unlink(outputPath).catch(() => {});
     store.failImageEdit(request.id, { workerId, error });

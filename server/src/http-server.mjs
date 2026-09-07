@@ -8,6 +8,12 @@ import Koa from 'koa';
 import { importCopyKnowledgeLabels, listCopyAnalysisPrompts, retireKnowledge, saveCopyAnalysisPrompt } from './knowledge-admin.mjs';
 import { analyzeAndSaveExcellentCopy, CopyAnalysisServiceError } from './deepseek-copy-analysis.mjs';
 import { archiveFileName, buildTaskArchive } from './task-archive.mjs';
+import { IMAGE_FORMATS } from './image-options.mjs';
+import { normalizePromptContent } from '../../src/admin/prompt-service.mjs';
+import { assertPromptPublishable } from '../../src/admin/prompt-preview.mjs';
+import { readPromptConfiguration, savePromptPolicy } from '../../src/admin/prompt-runtime-service.mjs';
+import { analyzeVisualImage } from '../../src/admin/visual-knowledge-service.mjs';
+import { withPromptExecution, listPromptExecutions, readPromptExecution } from '../../src/admin/prompt-execution.mjs';
 
 import {
   ControlPlaneConflictError,
@@ -77,13 +83,8 @@ function safeStoragePath(storageRoot, ...segments) {
 
 async function uploadAsset({ ctx, repository, storageRoot, executionId }) {
   const mediaType = String(ctx.request.headers['content-type'] ?? '').split(';')[0].trim();
-  const extension = mediaType === 'image/png'
-    ? '.png'
-    : mediaType === 'image/jpeg'
-      ? '.jpg'
-      : mediaType === 'application/json'
-        ? '.json'
-        : null;
+  const imageFormat = Object.values(IMAGE_FORMATS).find(format => format.mediaType === mediaType);
+  const extension = imageFormat ? `.${imageFormat.extension}` : mediaType === 'application/json' ? '.json' : null;
   if (!extension) throw new HttpError(415, 'UNSUPPORTED_MEDIA_TYPE', 'asset type is not supported');
   const body = await readBody(ctx.req, ASSET_BODY_LIMIT);
   const context = await repository.activeImageUploadContext(executionId);
@@ -168,7 +169,7 @@ async function assertTaskAccess(ctx, repository, { ownerOnly = false } = {}) {
   return { actor, task };
 }
 
-function installRoutes(router, repository, storageRoot, analyzeCopy) {
+function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisual) {
   router.post('/v1/auth/login', async (ctx) => {
     const body = requireJson(ctx);
     const user = await repository.authenticateUser(body.username, body.password);
@@ -293,7 +294,8 @@ function installRoutes(router, repository, storageRoot, analyzeCopy) {
     json(ctx, 200, await repository.claimCopy(requireJson(ctx).nodeId));
   });
   router.post('/v1/executions/claim-image', async (ctx) => {
-    json(ctx, 200, await repository.claimImage(requireJson(ctx).nodeId));
+    const body = requireJson(ctx);
+    json(ctx, 200, await repository.claimImage(body.nodeId, body.imageControlsVersion));
   });
   router.post('/v1/executions/claim-copy-batch', async (ctx) => {
     json(ctx, 200, await repository.claimCopyBatch(requireJson(ctx)));
@@ -333,6 +335,12 @@ function installRoutes(router, repository, storageRoot, analyzeCopy) {
     ctx.type = asset.mediaType;
     ctx.body = await readFile(path);
   });
+  router.get('/v1/executions/:executionId/source-assets/:assetId', async (ctx) => {
+    const asset = await repository.imageReprocessAsset(ctx.params.executionId, ctx.params.assetId);
+    const path = safeStoragePath(storageRoot, relative(storageRoot, asset.storagePath));
+    ctx.type = asset.mediaType;
+    ctx.body = await readFile(path);
+  });
 
   router.post('/v1/tasks/:taskId/approve-copy', async (ctx) => {
     await assertTaskAccess(ctx, repository);
@@ -354,23 +362,49 @@ function installRoutes(router, repository, storageRoot, analyzeCopy) {
     await assertTaskAccess(ctx, repository, { ownerOnly: requestActor(ctx).role !== 'ADMIN' });
     json(ctx, 200, await repository.requeueImageTask(ctx.params.taskId));
   });
+  router.post('/v1/tasks/:taskId/image-revisions', async (ctx) => {
+    const actor = requestActor(ctx);
+    await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
+    json(ctx, 201, await repository.reviseImages(ctx.params.taskId, requireJson(ctx), actor.username));
+  });
+  router.get('/v1/tasks/:taskId/image-capabilities', async (ctx) => {
+    await assertTaskAccess(ctx, repository);
+    json(ctx, 200, { version: 1, formats: Object.keys(IMAGE_FORMATS) });
+  });
   router.post('/v1/tasks/:taskId/cancel', async (ctx) => {
     await assertTaskAccess(ctx, repository, { ownerOnly: requestActor(ctx).role !== 'ADMIN' });
     json(ctx, 200, await repository.cancelTask(ctx.params.taskId));
   });
 
-  router.get('/v1/settings', async (ctx) => json(ctx, 200, await repository.listSettings()));
+  router.get('/v1/settings', async (ctx) => {
+    // Existing executors have no user session. Startup only needs the provider;
+    // full configuration is delivered later in their existing claim snapshot.
+    if (!ctx.state.actor) {
+      const records = await repository.listSettings();
+      const agentProvider = records.find((record) => record.key === 'production')?.value?.modelApi?.agentProvider;
+      return json(ctx, 200, [{ key: 'production', value: { modelApi: agentProvider ? { agentProvider } : {} } }]);
+    }
+    requestActor(ctx, ['ADMIN']); json(ctx, 200, await repository.listSettings());
+  });
   router.put('/v1/settings/:key', async (ctx) => {
     requestActor(ctx, ['ADMIN']);
-    json(ctx, 200, await repository.upsertSetting(ctx.params.key, requireJson(ctx).value));
+    if (ctx.params.key === 'prompt_runtime') {
+      const controlPlane = { listPrompts: () => repository.listPrompts(), updateSetting: (key, value) => repository.upsertSetting(key, value) };
+      json(ctx, 200, await savePromptPolicy(requireJson(ctx).value, { controlPlane }));
+    } else json(ctx, 200, await repository.upsertSetting(ctx.params.key, requireJson(ctx).value));
   });
-  router.get('/v1/prompts', async (ctx) => json(ctx, 200, await repository.listPrompts()));
+  router.get('/v1/prompts', async (ctx) => { requestActor(ctx, ['ADMIN']); json(ctx, 200, await repository.listPrompts()); });
   router.post('/v1/prompts/versions', async (ctx) => {
     requestActor(ctx, ['ADMIN']);
-    json(ctx, 201, await repository.createPromptVersion(requireJson(ctx)));
+    const body = requireJson(ctx);
+    json(ctx, 201, await repository.createPromptVersion({ ...body, content: normalizePromptContent(body.content) }));
   });
   router.post('/v1/prompt-versions/:versionId/publish', async (ctx) => {
     requestActor(ctx, ['ADMIN']);
+    const templates = await repository.listPrompts();
+    const template = templates.find((item) => item.versions.some((version) => Number(version.id) === Number(ctx.params.versionId)));
+    const version = template?.versions.find((item) => Number(item.id) === Number(ctx.params.versionId));
+    if (version) assertPromptPublishable(template.kind, version.content);
     json(ctx, 200, await repository.publishPromptVersion(ctx.params.versionId));
   });
 
@@ -382,7 +416,23 @@ function installRoutes(router, repository, storageRoot, analyzeCopy) {
   router.post('/v1/knowledge/labels/import', async (ctx) => { requestActor(ctx, ['ADMIN', 'REVIEWER']); json(ctx, 200, await importCopyKnowledgeLabels(repository.pool, requireJson(ctx).labels)); });
   router.post('/v1/copy-knowledge/analyze', async (ctx) => {
     requestActor(ctx, ['ADMIN', 'REVIEWER']);
-    json(ctx, 201, await analyzeCopy({ repository, input: requireJson(ctx) }));
+    json(ctx, 201, await withPromptExecution({ outputRoot: storageRoot, configuration: { source: 'CENTER_ANALYSIS_TEMPLATE', promptRuntime: null },
+      kind: 'COPY_ANALYSIS' }, () => analyzeCopy({ repository, input: requireJson(ctx) })));
+  });
+  router.post('/v1/visual-knowledge/analyze', async (ctx) => {
+    requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    const body = requireJson(ctx);
+    if (typeof body.imageBase64 !== 'string' || body.imageBase64.length > 14_000_000) throw new TypeError('图片输入无效');
+    const controlPlane = { listPrompts: () => repository.listPrompts(), listSettings: () => repository.listSettings(), listKnowledge: () => repository.listKnowledge() };
+    const configuration = await readPromptConfiguration({ controlPlane });
+    const result = await withPromptExecution({ outputRoot: storageRoot, configuration, kind: 'VISUAL_ANALYSIS' }, () =>
+      analyzeVisual({ buffer: Buffer.from(body.imageBase64, 'base64'), mimeType: body.mimeType, fileName: body.fileName,
+        modelApi: configuration.productionSettings.modelApi }));
+    json(ctx, 201, result);
+  });
+  router.get('/v1/prompt-runs', async (ctx) => {
+    requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, ctx.query.id ? await readPromptExecution(storageRoot, String(ctx.query.id)) : await listPromptExecutions(storageRoot));
   });
   router.post('/v1/knowledge/:id/retire', async (ctx) => { requestActor(ctx, ['ADMIN', 'REVIEWER']); json(ctx, 200, await retireKnowledge(repository.pool, ctx.params.id)); });
   router.post('/v1/knowledge/versions', async (ctx) => {
@@ -420,7 +470,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy) {
   });
 }
 
-export function createControlPlaneApp({ repository, storageRoot, enforceUserAuth = true, analyzeCopy = analyzeAndSaveExcellentCopy }) {
+export function createControlPlaneApp({ repository, storageRoot, enforceUserAuth = true, analyzeCopy = analyzeAndSaveExcellentCopy, analyzeVisual = analyzeVisualImage }) {
   if (!repository) throw new TypeError('repository is required');
   const resolvedStorageRoot = resolve(storageRoot);
   const app = new Koa();
@@ -478,7 +528,14 @@ export function createControlPlaneApp({ repository, storageRoot, enforceUserAuth
     ctx.state.actor = { username: user.username, role: user.role, userId: user.id };
     return next();
   });
-  installRoutes(router, repository, resolvedStorageRoot, analyzeCopy);
+  installRoutes(router, repository, resolvedStorageRoot, analyzeCopy, analyzeVisual);
+  app.use(async (ctx, next) => {
+    const machineRoute = ctx.path.startsWith('/v1/executions/') || (ctx.path === '/v1/nodes' && ctx.method !== 'GET');
+    if (machineRoute && ctx.state.actor && ctx.state.actor.role !== 'ADMIN') {
+      throw new HttpError(403, 'FORBIDDEN', 'user sessions cannot use executor machine routes');
+    }
+    return next();
+  });
   app.use(router.routes());
   app.use(router.allowedMethods());
   return app;

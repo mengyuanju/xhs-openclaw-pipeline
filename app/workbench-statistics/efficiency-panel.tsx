@@ -1,5 +1,7 @@
 'use client';
 
+import { Disclosure, DisclosureTrigger, DisclosureContent } from '@/components/ui/disclosure';
+
 import { Chart, duration, Metric, number, percent } from './shared';
 import type { Efficiency } from './types';
 
@@ -15,13 +17,13 @@ export function EfficiencyPanel({ data }: { data: Efficiency | null }) {
       <Metric label="图片整套平均耗时" value={duration(data?.image.meanMs)} note={`${number(data?.image.samples)} 条成功执行样本${partial ? ' · 已读取部分' : ''}`} />
       <Metric label="平均交付耗时" value={duration(data?.delivery.meanMs)} note={`${number(data?.delivery.samples)} 项有效完成作业 · 含排队和人工审核`} />
     </div>
-    <details className="job-stats-methods"><summary>查看耗时分布与样本质量</summary>
+    <Disclosure className="job-stats-methods"><DisclosureTrigger>查看耗时分布与样本质量</DisclosureTrigger><DisclosureContent>
       <div className="job-stats-table-scroll"><table className="job-stats-table"><thead><tr><th>口径</th><th>中位数</th><th>P90</th><th>有效样本</th><th>无效耗时</th><th>已放弃执行</th></tr></thead>
         <tbody>{(['copy', 'image', 'delivery'] as const).map((key, i) => <tr key={key}><th>{['文案生成', '图片整套生成', '总交付'][i]}</th>
           <td>{duration(data?.[key].medianMs)}</td><td>{duration(data?.[key].p90Ms)}</td><td>{number(data?.[key].samples)}</td>
           <td>{key === 'delivery' ? '—' : number(data?.[key].invalid)}</td><td>{key === 'delivery' ? '不适用' : number(data?.[key].abandoned)}</td></tr>)}</tbody></table></div>
       <p className="job-stats-note">P90 表示 90% 的有效样本不超过该耗时。失败、已放弃、运行中和无效起止时间不计入成功耗时。</p>
-    </details>
+    </DisclosureContent></Disclosure>
     {data && <Chart label="每日文案和图片整套成功执行平均耗时（分钟），无样本日期留空" unit="分钟"
       labels={data.trend.map(day => day.date.slice(5))} series={[
         { name: '文案平均耗时', values: data.trend.map(day => day.copyMs === null ? null : Number((day.copyMs / 60_000).toFixed(2))) },

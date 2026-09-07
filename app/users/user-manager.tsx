@@ -1,5 +1,9 @@
 'use client';
 
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+
 import { KeyRound, Pencil, Plus, ShieldCheck, Trash2, UserRound, Users } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
@@ -138,7 +142,7 @@ export function UserManager({
     <section className="panel user-list-panel" aria-labelledby="user-list-title">
       <div className="panel-head user-list-head">
         <div><h2 id="user-list-title">用户列表</h2><p className="subtle">集中查看账号状态，并在弹窗中完成资料维护。</p></div>
-        <button className="button primary" type="button" onClick={() => setEditor({ mode: 'create' })}><Plus size={16} />新增用户</button>
+        <Button unstyled className="button primary" type="button" onClick={() => setEditor({ mode: 'create' })}><Plus size={16} />新增用户</Button>
       </div>
       {(message || error) && <div className={`notice ${error ? 'error' : 'success'} user-action-notice`} role={error ? 'alert' : 'status'}>{error || message}</div>}
       {initialUsers.length === 0
@@ -153,9 +157,9 @@ export function UserManager({
               <td data-label="状态"><span className={`pill pill-${user.status.toLowerCase()}`}>{STATUS_LABELS[user.status]}</span></td>
               <td data-label="密码"><span className={user.mustChangePassword ? 'user-password-pending' : 'user-password-ready'}>{user.mustChangePassword ? '待修改初始密码' : '已设置'}</span></td>
               <td className="row-action" data-label="操作"><div className="user-row-actions">
-                <button className="button small" type="button" disabled={Boolean(busy)} onClick={() => setEditor({ mode: 'edit', user })}><Pencil size={14} />编辑</button>
-                <button className="button small" type="button" disabled={Boolean(busy)} onClick={() => { void resetPassword(user); }}><KeyRound size={14} />重置密码</button>
-                <button className="button small danger user-delete-button" type="button" disabled={Boolean(busy) || isCurrentUser} title={isCurrentUser ? '不能删除当前登录账号' : '删除用户'} onClick={() => { void deleteUser(user); }}><Trash2 size={14} /><span>删除</span></button>
+                <Button unstyled className="button small" type="button" disabled={Boolean(busy)} onClick={() => setEditor({ mode: 'edit', user })}><Pencil size={14} />编辑</Button>
+                <Button unstyled className="button small" type="button" disabled={Boolean(busy)} onClick={() => { void resetPassword(user); }}><KeyRound size={14} />重置密码</Button>
+                <Button unstyled className="button small danger user-delete-button" type="button" disabled={Boolean(busy) || isCurrentUser} title={isCurrentUser ? '不能删除当前登录账号' : '删除用户'} onClick={() => { void deleteUser(user); }}><Trash2 size={14} /><span>删除</span></Button>
               </div></td>
             </tr>;
           })}</tbody>
@@ -169,14 +173,14 @@ export function UserManager({
           <div><DialogTitle>{editor?.mode === 'create' ? '新增用户' : '编辑用户'}</DialogTitle><DialogDescription>{editor?.mode === 'create' ? '填写账号资料。创建后初始密码为 123456。' : `调整 @${editorUser?.username} 的姓名、角色和账号状态。`}</DialogDescription></div>
         </div>
         <form className="stack" key={editor?.mode === 'edit' ? `edit-${editorUser?.id}` : 'create'} onSubmit={saveUser}>
-          {editor?.mode === 'create' && <div className="field"><label htmlFor="user-editor-username">登录账号</label><input className="input" id="user-editor-username" name="username" pattern="[a-z0-9][a-z0-9._-]{2,49}" placeholder="例如 zhangsan" autoComplete="off" required /><small>3–50 位小写字母、数字、点、下划线或连字符。</small></div>}
-          <div className="field"><label htmlFor="user-editor-display-name">姓名</label><input className="input" id="user-editor-display-name" name="displayName" defaultValue={editorUser?.displayName ?? ''} maxLength={80} placeholder="请输入用户姓名" required /></div>
+          {editor?.mode === 'create' && <div className="field"><label htmlFor="user-editor-username">登录账号</label><Input className="input" id="user-editor-username" name="username" pattern="[a-z0-9][a-z0-9._-]{2,49}" placeholder="例如 zhangsan" autoComplete="off" required /><small>3–50 位小写字母、数字、点、下划线或连字符。</small></div>}
+          <div className="field"><label htmlFor="user-editor-display-name">姓名</label><Input className="input" id="user-editor-display-name" name="displayName" defaultValue={editorUser?.displayName ?? ''} maxLength={80} placeholder="请输入用户姓名" required /></div>
           <div className="user-editor-fields">
-            <div className="field"><label htmlFor="user-editor-role">角色</label><select className="input select" id="user-editor-role" name="role" defaultValue={editorUser?.role ?? 'USER'}>{Object.entries(ROLE_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></div>
-            {editor?.mode === 'edit' && <div className="field"><label htmlFor="user-editor-status">账号状态</label><select className="input select" id="user-editor-status" name="status" defaultValue={editorUser?.status}>{Object.entries(STATUS_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></div>}
+            <div className="field"><label htmlFor="user-editor-role">角色</label><Select name="role" defaultValue={editorUser?.role ?? 'USER'}><SelectTrigger id="user-editor-role"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(ROLE_LABELS).map(([value, label]) => <SelectItem key={value} value={String(value)}>{label}</SelectItem>)}</SelectContent></Select></div>
+            {editor?.mode === 'edit' && <div className="field"><label htmlFor="user-editor-status">账号状态</label><Select name="status" defaultValue={editorUser?.status}><SelectTrigger id="user-editor-status"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(STATUS_LABELS).map(([value, label]) => <SelectItem key={value} value={String(value)}>{label}</SelectItem>)}</SelectContent></Select></div>}
           </div>
           {error && <div className="notice error" role="alert">{error}</div>}
-          <div className="user-editor-actions"><DialogClose asChild><button className="button" type="button" disabled={editorBusy}>取消</button></DialogClose><button className="button primary" disabled={editorBusy}>{editorBusy ? '保存中…' : editor?.mode === 'create' ? '创建用户' : '保存修改'}</button></div>
+          <div className="user-editor-actions"><DialogClose asChild><Button unstyled className="button" type="button" disabled={editorBusy}>取消</Button></DialogClose><Button unstyled className="button primary" disabled={editorBusy}>{editorBusy ? '保存中…' : editor?.mode === 'create' ? '创建用户' : '保存修改'}</Button></div>
         </form>
       </DialogContent>
     </Dialog>

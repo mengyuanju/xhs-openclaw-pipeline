@@ -1,5 +1,7 @@
 'use client';
 
+import { Input } from '@/components/ui/input';
+
 import {
   Select,
   SelectContent,
@@ -62,7 +64,7 @@ export function DotsCopyProviderFields({
 
     <div className="field">
       <label htmlFor="model-api-dots-base-url">Dots API 基础地址</label>
-      <input
+      <Input
         className="input mono"
         id="model-api-dots-base-url"
         type="url"

@@ -3,6 +3,7 @@ import { isAbsolute, normalize } from 'node:path';
 
 import { initializeQueueSchema } from '../queue.mjs';
 import { DEFAULT_PROMPTS } from './default-prompts.mjs';
+import { initializePromptGovernance, createPromptGovernanceStore } from './prompt-governance-store.mjs';
 import { createGenerationStore, initializeGenerationSchema } from './generation-store.mjs';
 import {
   createStandaloneCopyGenerationStore,
@@ -452,7 +453,7 @@ function publishedPromptMap(db) {
     WHERE pv.status = 'PUBLISHED'
   `).all();
   const byKind = new Map(rows.map((row) => [row.kind, row]));
-  for (const kind of PROMPT_KINDS) {
+  for (const kind of ['TEXT_SYSTEM', 'IMAGE_SYSTEM', 'IMAGE_EDIT_SYSTEM']) {
     if (!byKind.has(kind)) throw new Error(`published prompt missing for ${kind}`);
   }
   return byKind;
@@ -557,6 +558,7 @@ export function createAdminStore(databasePath) {
   const db = new DatabaseSync(databasePath, { timeout: 5_000 });
   initializeAdminSchema(db);
   seedPrompts(db);
+  initializePromptGovernance(db);
 
   const getPromptVersionRow = db.prepare('SELECT * FROM prompt_versions WHERE id = ?');
   const imageEditStore = createImageEditStore(db);
@@ -629,6 +631,8 @@ export function createAdminStore(databasePath) {
     close() {
       db.close();
     },
+
+    ...createPromptGovernanceStore(db),
 
     listPromptTemplates() {
       const templates = db.prepare('SELECT * FROM prompt_templates ORDER BY id').all().map((row) => ({
@@ -1008,6 +1012,9 @@ export function createAdminStore(databasePath) {
         textPromptContent: row.text_prompt_content,
         imagePromptContent: row.image_prompt_content,
         imageEditPromptContent: row.image_edit_prompt_content,
+        promptRuntime: createPromptGovernanceStore(db).pinTaskPromptRuntime(Number(taskId), {
+          TEXT_SYSTEM: row.text_prompt_content, IMAGE_SYSTEM: row.image_prompt_content, IMAGE_EDIT_SYSTEM: row.image_edit_prompt_content,
+        }),
         productionSettings: productionSettingsStore.getProductionSettings().settings,
         referenceAssets,
       };

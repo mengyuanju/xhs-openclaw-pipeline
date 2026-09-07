@@ -70,7 +70,7 @@ function generatingImageClient() {
     runImage: generate,
     runImageEdit: generate,
     async runVision({ prompt }) {
-      if (prompt.includes('独立于生成模型的图文交付终审员')) {
+      if (prompt.includes('<trusted_business_rules kind="DELIVERY_REVIEW_SYSTEM">')) {
         return {
           rawText: JSON.stringify({
             schemaVersion: 1,
@@ -225,6 +225,8 @@ test('executor retries completion reports across three runs without regenerating
     ]);
     for (const { executionId, result } of completions) {
       assert.equal(result.runId, executionId);
+      assert.deepEqual(result.imagePlan.map(page => page.layout), completions[0].result.imagePlan.map(page => page.layout),
+        'repeated recovery must retain the layouts originally selected at random');
       assert.deepEqual(result.images.map((image) => image.assetId), [201, 202, 203]);
     }
     await assert.rejects(access(join(workRoot, String(TASK_ID), 'standalone-image-generations', THIRD_RUN_ID)), { code: 'ENOENT' });

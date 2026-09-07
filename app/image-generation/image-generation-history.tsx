@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+
 import {
   CircleAlert,
   CircleCheck,
@@ -69,7 +71,7 @@ export function ImageGenerationHistory({
         <span className="section-kicker">Saved runs</span>
         <h2 id="image-history-heading">图片生成历史</h2>
       </div>
-      <button
+      <Button unstyled
         className="button small standalone-image-history-refresh"
         type="button"
         onClick={onRefresh}
@@ -77,13 +79,13 @@ export function ImageGenerationHistory({
         aria-label="刷新图片生成历史"
       >
         <RefreshCw aria-hidden="true" className={loading ? 'animate-spin' : undefined} size={15} />
-      </button>
+      </Button>
     </div>
     {!loading && !error && <p className="standalone-image-history-count">已保存 {total} 次运行，按生成时间从新到旧排列。</p>}
     {loading ? <div className="empty-state" role="status">正在读取图片历史…</div>
       : error ? <div className="standalone-image-history-error">
         <div className="notice error" role="alert">{error}</div>
-        <button className="button small" type="button" onClick={onRefresh}>重新读取</button>
+        <Button unstyled className="button small" type="button" onClick={onRefresh}>重新读取</Button>
       </div>
         : records.length === 0 ? <div className="empty-state">
           <ImageIcon aria-hidden="true" size={28} />
@@ -93,7 +95,7 @@ export function ImageGenerationHistory({
             {records.map((record) => {
               const opening = openingRunId === record.runId;
               return <li key={record.runId}>
-                <button
+                <Button unstyled
                   type="button"
                   aria-pressed={selectedRunId === record.runId}
                   disabled={disabled || opening}
@@ -113,7 +115,7 @@ export function ImageGenerationHistory({
                     {record.qcScore !== null && <span>QC {record.qcScore}/3</span>}
                   </span>
                   {record.error && <span className="standalone-image-history-failure">{record.error}</span>}
-                </button>
+                </Button>
               </li>;
             })}
           </ol>}

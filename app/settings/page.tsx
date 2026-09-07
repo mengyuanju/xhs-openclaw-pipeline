@@ -20,7 +20,7 @@ export default function ProductionSettingsPage() {
       <div>
         <span className="eyebrow">Production policy</span>
         <h1 className="sr-only">生产配置</h1>
-        <p className="subtle">统一控制模型 API、质量修复和图片合规标识。修改会用于后续模型请求，并使不匹配的旧检查点失效。</p>
+        <p className="subtle">统一管理布局种类、模型 API、质量修复和图片合规标识。修改会用于后续模型请求，并使不匹配的旧检查点失效。</p>
       </div>
     </header>
     <WebSearchSettingsPanel />

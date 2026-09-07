@@ -1,5 +1,8 @@
 'use client';
 
+import { Input, Checkbox } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+
 import { useRouter } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
 
@@ -67,11 +70,11 @@ export function ReviewPeopleManager({ users }: { users: any[] }) {
     <section className="panel review-person-create" aria-labelledby="create-reviewer-title">
       <div><span className="section-kicker">新增账号</span><h2 id="create-reviewer-title">创建质检人员</h2></div>
       <form className="stack" onSubmit={createUser}>
-        <div className="field"><label htmlFor="reviewer-username">登录账号</label><input className="input" id="reviewer-username" name="username" pattern="[a-z0-9][a-z0-9._-]{2,49}" minLength={3} maxLength={50} required /></div>
-        <div className="field"><label htmlFor="reviewer-display-name">显示名称</label><input className="input" id="reviewer-display-name" name="displayName" maxLength={80} required /></div>
-        <div className="field"><label htmlFor="reviewer-password">初始密码</label><input className="input" id="reviewer-password" name="password" type="password" autoComplete="new-password" minLength={12} maxLength={1_024} required /></div>
-        <fieldset className="review-role-options"><legend>岗位角色</legend>{Object.entries(ROLE_LABELS).map(([role, label]) => <label key={role}><input type="checkbox" name="roles" value={role} />{label}</label>)}</fieldset>
-        <button className="button primary" type="submit" disabled={busyKey === 'create'}>{busyKey === 'create' ? '创建中…' : '创建账号'}</button>
+        <div className="field"><label htmlFor="reviewer-username">登录账号</label><Input className="input" id="reviewer-username" name="username" pattern="[a-z0-9][a-z0-9._-]{2,49}" minLength={3} maxLength={50} required /></div>
+        <div className="field"><label htmlFor="reviewer-display-name">显示名称</label><Input className="input" id="reviewer-display-name" name="displayName" maxLength={80} required /></div>
+        <div className="field"><label htmlFor="reviewer-password">初始密码</label><Input className="input" id="reviewer-password" name="password" type="password" autoComplete="new-password" minLength={12} maxLength={1_024} required /></div>
+        <fieldset className="review-role-options"><legend>岗位角色</legend>{Object.entries(ROLE_LABELS).map(([role, label]) => <label key={role}><Checkbox  name="roles" value={role} />{label}</label>)}</fieldset>
+        <Button unstyled className="button primary" type="submit" disabled={busyKey === 'create'}>{busyKey === 'create' ? '创建中…' : '创建账号'}</Button>
       </form>
     </section>
     <section className="panel review-person-list" aria-labelledby="reviewer-list-title">
@@ -80,7 +83,7 @@ export function ReviewPeopleManager({ users }: { users: any[] }) {
       {users.length === 0 ? <div className="empty-state">还没有质检人员，请先创建账号。</div> : <div className="review-person-cards">{users.map((user) => <article className="review-person-card" key={user.id}>
         <div><strong>{user.displayName}</strong><span className="mono">@{user.username}</span></div>
         <div className="review-person-roles">{user.roles.map((role: string) => <span className="pill" key={role}>{ROLE_LABELS[role]}</span>)}</div>
-        <div className="inline"><span className={user.status === 'ACTIVE' ? 'pill pill-approved' : 'pill'}>{user.status === 'ACTIVE' ? '已启用' : '已停用'}</span><button className="button small" type="button" disabled={busyKey === `toggle-${user.id}`} onClick={() => toggleUser(user)}>{user.status === 'ACTIVE' ? '停用' : '启用'}</button></div>
+        <div className="inline"><span className={user.status === 'ACTIVE' ? 'pill pill-approved' : 'pill'}>{user.status === 'ACTIVE' ? '已启用' : '已停用'}</span><Button unstyled className="button small" type="button" disabled={busyKey === `toggle-${user.id}`} onClick={() => toggleUser(user)}>{user.status === 'ACTIVE' ? '停用' : '启用'}</Button></div>
       </article>)}</div>}
     </section>
   </div>;

@@ -1,3 +1,4 @@
+import { Disclosure, DisclosureTrigger, DisclosureContent } from '@/components/ui/disclosure';
 import { PromptTrace } from './generation-prompt-trace';
 import { StageReviewTrace } from './generation-stage-reviews';
 import { researchSourceRows } from './generation-evidence-presentation.mjs';
@@ -58,10 +59,10 @@ export function GenerationEvidencePanel({ run }: { run?: any }) {
             </section>
           </div>
 
-          <details className="evidence-prompt-details">
-            <summary>查看本批次用户提示词（中文审核摘要）</summary>
+          <Disclosure className="evidence-prompt-details">
+            <DisclosureTrigger>查看本批次用户提示词（中文审核摘要）</DisclosureTrigger><DisclosureContent>
             <PromptTrace run={run} />
-          </details>
+          </DisclosureContent></Disclosure>
         </>}
   </section>;
 }

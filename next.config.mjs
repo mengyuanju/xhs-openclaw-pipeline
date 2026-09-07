@@ -1,4 +1,11 @@
+import { networkInterfaces } from 'node:os';
+
 const isDevelopment = process.env.NODE_ENV !== 'production';
+// Binding to 0.0.0.0 requires explicitly allowing this machine's browser origins for HMR.
+const developmentOrigins = isDevelopment
+  ? [...new Set(['127.0.0.1', ...Object.values(networkInterfaces()).flatMap((addresses) =>
+    (addresses ?? []).filter(({ family }) => family === 'IPv4').map(({ address }) => address))])]
+  : undefined;
 const scriptPolicy = isDevelopment
   ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
   : "script-src 'self' 'unsafe-inline'";
@@ -13,6 +20,8 @@ const securityHeaders = [
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  distDir: process.env.XHS_NEXT_DIST_DIR || '.next',
+  allowedDevOrigins: developmentOrigins,
   serverExternalPackages: ['exceljs', 'sharp'],
   poweredByHeader: false,
   async headers() {

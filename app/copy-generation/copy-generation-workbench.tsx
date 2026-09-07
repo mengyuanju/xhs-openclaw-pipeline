@@ -1,5 +1,8 @@
 'use client';
 
+import { Textarea, Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+
 import { LoaderCircle, Sparkles } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 
@@ -136,25 +139,25 @@ export function CopyGenerationWorkbench() {
         <div className="form-grid">
           <div className="field full">
             <label htmlFor="copy-query">选题或文案目标</label>
-            <textarea className="textarea compact" id="copy-query" name="query" maxLength={500} required placeholder="例如：租房桌面怎么低成本整理？" />
+            <Textarea className="textarea compact" id="copy-query" name="query" maxLength={500} required placeholder="例如：租房桌面怎么低成本整理？" />
             <small>必填，最多 500 字。系统会先审核选题是否适合继续生成。</small>
           </div>
           <div className="field">
             <label htmlFor="copy-category">内容分类（可选）</label>
-            <input className="input" id="copy-category" name="category" maxLength={100} placeholder="如：家居收纳" />
+            <Input className="input" id="copy-category" name="category" maxLength={100} placeholder="如：家居收纳" />
           </div>
           <div className="field">
             <label htmlFor="copy-audience">目标受众（可选）</label>
-            <input className="input" id="copy-audience" name="targetAudience" maxLength={200} placeholder="如：一线城市租房上班族" />
+            <Input className="input" id="copy-audience" name="targetAudience" maxLength={200} placeholder="如：一线城市租房上班族" />
           </div>
           <div className="field full">
             <label htmlFor="copy-reference-text">参考资料（可选）</label>
-            <textarea className="textarea compact" id="copy-reference-text" name="referenceText" maxLength={12_000} placeholder="粘贴可核验的产品参数、事实资料或表达参考。" />
+            <Textarea className="textarea compact" id="copy-reference-text" name="referenceText" maxLength={12_000} placeholder="粘贴可核验的产品参数、事实资料或表达参考。" />
             <small>最多 12,000 字；参考内容会被当作不可信数据处理，不会覆盖系统规则。</small>
           </div>
           <div className="field full">
             <label htmlFor="copy-reference-urls">参考链接（可选）</label>
-            <textarea className="textarea compact" id="copy-reference-urls" name="referenceUrls" placeholder={'每行一个 HTTP(S) 链接，最多 8 条\nhttps://example.com/reference'} />
+            <Textarea className="textarea compact" id="copy-reference-urls" name="referenceUrls" placeholder={'每行一个 HTTP(S) 链接，最多 8 条\nhttps://example.com/reference'} />
           </div>
           <div className="field full">
             <label htmlFor="copy-image-count">配图策划页数</label>
@@ -173,7 +176,7 @@ export function CopyGenerationWorkbench() {
             <div className="notice">提交后会先保存生成任务，刷新或切换页面后仍可查看状态。自动文案质检当前已关闭，首稿生成后直接保存。</div>
           </div>
           <div className="field full inline">
-            <button className="button primary" type="submit" disabled={historyLoading || requestBusy || hasRunningJobs}>
+            <Button unstyled className="button primary" type="submit" disabled={historyLoading || requestBusy || hasRunningJobs}>
               {requestBusy
                 ? <><LoaderCircle aria-hidden="true" className="animate-spin" size={16} />正在生成文案…</>
                 : hasRunningJobs
@@ -181,7 +184,7 @@ export function CopyGenerationWorkbench() {
                   : historyLoading
                     ? <><LoaderCircle aria-hidden="true" className="animate-spin" size={16} />正在读取任务…</>
                     : <><Sparkles aria-hidden="true" size={16} />生成文案</>}
-            </button>
+            </Button>
             <span className="subtle">不会入队、发布或生成图片。</span>
           </div>
         </div>

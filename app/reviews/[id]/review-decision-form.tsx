@@ -1,5 +1,8 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+import { Radio, Checkbox, Textarea } from '@/components/ui/input';
+
 import { useRouter } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
 
@@ -75,12 +78,12 @@ export function ReviewDecisionForm({ item, actor }: { item: any; actor: any }) {
   return <aside className="panel review-submit-panel" aria-labelledby="review-submit-title">
     <div><span className="section-kicker">人工结论</span><h2 id="review-submit-title">提交审核结论</h2></div>
     <div className={`review-action-message ${isError ? 'notice error' : message ? 'notice success' : ''}`} role={isError ? 'alert' : 'status'} aria-live="polite">{message}</div>
-    {canClaim && <div className="review-claim-card"><p>该作业尚未分配。领取后会锁定给当前账号，其他人员不能同时提交。</p><button className="button primary" type="button" disabled={busy} onClick={claim}>领取</button></div>}
+    {canClaim && <div className="review-claim-card"><p>该作业尚未分配。领取后会锁定给当前账号，其他人员不能同时提交。</p><Button unstyled className="button primary" type="button" disabled={busy} onClick={claim}>领取</Button></div>}
     {canDecide && <form className="stack" onSubmit={decide}>
-      <fieldset className="review-decision-options"><legend>审核结果</legend><label><input type="radio" name="decision" value="APPROVED" defaultChecked />通过</label><label><input type="radio" name="decision" value="REJECTED" />驳回</label></fieldset>
-      <fieldset className="review-reason-options"><legend>问题原因（驳回时选择）</legend>{reasons.map(([code, label]) => <label key={code}><input type="checkbox" name="reasonCodes" value={code} />{label}</label>)}</fieldset>
-      <div className="field"><label htmlFor="review-note">审核说明</label><textarea className="textarea" id="review-note" name="note" maxLength={2_000} placeholder="记录具体证据或修改建议" /></div>
-      <button className="button primary" type="submit" disabled={busy}>{busy ? '提交中…' : '提交审核结论'}</button>
+      <fieldset className="review-decision-options"><legend>审核结果</legend><label><Radio  name="decision" value="APPROVED" defaultChecked />通过</label><label><Radio  name="decision" value="REJECTED" />驳回</label></fieldset>
+      <fieldset className="review-reason-options"><legend>问题原因（驳回时选择）</legend>{reasons.map(([code, label]) => <label key={code}><Checkbox  name="reasonCodes" value={code} />{label}</label>)}</fieldset>
+      <div className="field"><label htmlFor="review-note">审核说明</label><Textarea className="textarea" id="review-note" name="note" maxLength={2_000} placeholder="记录具体证据或修改建议" /></div>
+      <Button unstyled className="button primary" type="submit" disabled={busy}>{busy ? '提交中…' : '提交审核结论'}</Button>
     </form>}
     {!canClaim && !canDecide && <div className="empty-state">{item.decision ? `该作业已${item.decision.decision === 'APPROVED' ? '通过' : '驳回'}，结论不可覆盖。` : actor.subject === 'admin' ? '管理员负责派单，审核结论需由质检人员账号提交。' : '该作业当前不能由本账号处理。'}</div>}
   </aside>;

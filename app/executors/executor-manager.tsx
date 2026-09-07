@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+
 import { Cpu, Image as ImageIcon, RefreshCw, ServerCog } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
@@ -87,9 +89,9 @@ export function ExecutorManager({ initialNodes }: { initialNodes: ExecutorStatus
         </div>
         <div className="executor-refresh-area">
           <span>{lastRefreshedAt ? `更新于 ${dateTime(lastRefreshedAt)}` : '显示中心服务最新状态'}</span>
-          <button className="button small" type="button" disabled={refreshing} onClick={() => { void refresh(); }}>
+          <Button unstyled className="button small" type="button" disabled={refreshing} onClick={() => { void refresh(); }}>
             <RefreshCw className={refreshing ? 'animate-spin' : ''} size={14} />{refreshing ? '刷新中…' : '刷新'}
-          </button>
+          </Button>
         </div>
       </div>
       {error && <div className="notice error" role="alert">{error}</div>}

@@ -341,7 +341,7 @@ export function composeVisualImagePrompt({
   pageKind,
   taskPrompt,
 }) {
-  const sections = [optionalText(systemPrompt, 'image system prompt', 3_000)];
+  const sections = [optionalText(systemPrompt, 'image system prompt', 20_000)];
   if (visualReference) {
     const recipe = renderPrompt(
       requiredText(visualReference.promptTemplate, 'visual prompt template', 2_000),
@@ -360,9 +360,9 @@ export function composeVisualImagePrompt({
       }
     }
   }
-  sections.push(requiredText(taskPrompt, 'task image prompt', 4_000));
+  sections.push(requiredText(taskPrompt, 'task image prompt', 200_000));
   const prompt = sections.filter(Boolean).join('\n\n');
-  if (prompt.length > 8_000) throw new RangeError('composed image prompt cannot exceed 8000 characters');
+  if (Buffer.byteLength(prompt, 'utf8') > 200_000) throw new RangeError('composed image prompt cannot exceed 200000 bytes; input was not truncated');
   return prompt;
 }
 

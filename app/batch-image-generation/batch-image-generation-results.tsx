@@ -1,3 +1,5 @@
+import { Progress } from '@/components/ui/progress';
+import { Button } from '@/components/ui/button';
 import {
   CheckCircle2,
   CircleAlert,
@@ -59,8 +61,8 @@ export function BatchImageGenerationResults({ items, busy, stopRequested, summar
       : <>
           <div className="batch-generation-progress" aria-live="polite">
             <div><strong>{settledCount}/{items.length} 条已处理</strong><span>{busy ? stopRequested ? '等待当前条结束后停止' : '正在顺序生成图片' : summary ? batchImageResultMessage(summary) : '准备开始'}</span></div>
-            <progress value={settledCount} max={items.length} aria-label={`批量图片进度：${settledCount}/${items.length}`} />
-            {busy && <button className="button small" type="button" disabled={stopRequested} onClick={onStop}><CircleStop aria-hidden="true" size={15} />{stopRequested ? '已请求停止' : '完成当前条后停止'}</button>}
+            <Progress value={settledCount} max={items.length} aria-label={`批量图片进度：${settledCount}/${items.length}`} />
+            {busy && <Button unstyled className="button small" type="button" disabled={stopRequested} onClick={onStop}><CircleStop aria-hidden="true" size={15} />{stopRequested ? '已请求停止' : '完成当前条后停止'}</Button>}
           </div>
           <ol className="batch-generation-list">
             {items.map((item, index) => <li className="batch-generation-item" key={item.copyResult.id}>

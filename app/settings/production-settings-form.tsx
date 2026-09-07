@@ -1,5 +1,8 @@
 'use client';
 
+import { Switch, Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+
 import { useState } from 'react';
 
 import {
@@ -11,6 +14,7 @@ import {
 } from '@/components/ui/select';
 
 import { apiRequest } from '../components/api-client';
+import { LayoutPresetsEditor, type LayoutPreset } from './layout-presets-settings';
 import {
   ModelApiSettingsSection,
   type EffectiveModelApi,
@@ -18,6 +22,7 @@ import {
 } from './model-api-settings-section';
 
 type Settings = {
+  layoutPresets: LayoutPreset[];
   qualityRepairEnabled: boolean;
   qualityRepairTriggerScore: number;
   qualityRepairTargetScore: number;
@@ -95,6 +100,7 @@ export function ProductionSettingsForm({
 
   const targetOptions = [1, 2, 3].filter((score) => score > settings.qualityRepairTriggerScore);
   return <div className="settings-stack">
+    <LayoutPresetsEditor value={settings.layoutPresets ?? []} onChange={value => update('layoutPresets', value)} disabled={busy} />
     <ModelApiSettingsSection
       value={settings.modelApi}
       effective={effectiveModelApi}
@@ -105,7 +111,7 @@ export function ProductionSettingsForm({
     <section className="panel settings-section" aria-labelledby="quality-repair-heading">
       <div className="panel-head">
         <div><h2 id="quality-repair-heading">整套图片质量修复</h2><p className="subtle">只有首次终审命中触发分数时才开始；达到目标分数立即停止。</p></div>
-        <label className="switch-field"><input type="checkbox" checked={settings.qualityRepairEnabled} onChange={(event) => update('qualityRepairEnabled', event.target.checked)} /><span>启用自动修复</span></label>
+        <label className="switch-field"><Switch  checked={settings.qualityRepairEnabled} onChange={(event) => update('qualityRepairEnabled', event.target.checked)} /><span>启用自动修复</span></label>
       </div>
       <div className="form-grid compact-settings-grid">
         <div className="field">
@@ -142,12 +148,12 @@ export function ProductionSettingsForm({
     <section className="panel settings-section" aria-labelledby="ai-disclosure-heading">
       <div className="panel-head">
         <div><h2 id="ai-disclosure-heading">AI生成标识</h2><p className="subtle">同时控制图片提示词、OCR 白名单、Mock 排版和人工 AI 编辑后的叠层。</p></div>
-        <label className="switch-field"><input type="checkbox" checked={settings.aiDisclosureEnabled} onChange={(event) => update('aiDisclosureEnabled', event.target.checked)} /><span>显示标识</span></label>
+        <label className="switch-field"><Switch  checked={settings.aiDisclosureEnabled} onChange={(event) => update('aiDisclosureEnabled', event.target.checked)} /><span>显示标识</span></label>
       </div>
-      <div className="field disclosure-field"><label htmlFor="ai-disclosure-text">标识文字</label><input id="ai-disclosure-text" className="input" value={settings.aiDisclosureText} maxLength={12} pattern="[\\p{L}\\p{N}_-]+" disabled={!settings.aiDisclosureEnabled} onChange={(event) => update('aiDisclosureText', event.target.value)} /><small>最多 12 个字符，仅限文字、数字、下划线或短横线；关闭后生成和验收都不再要求该标识。</small></div>
+      <div className="field disclosure-field"><label htmlFor="ai-disclosure-text">标识文字</label><Input id="ai-disclosure-text" className="input" value={settings.aiDisclosureText} maxLength={12} pattern="[\\p{L}\\p{N}_-]+" disabled={!settings.aiDisclosureEnabled} onChange={(event) => update('aiDisclosureText', event.target.value)} /><small>最多 12 个字符，仅限文字、数字、下划线或短横线；关闭后生成和验收都不再要求该标识。</small></div>
     </section>
 
     {message && <div className={messageIsError ? 'notice error' : 'notice success'} role={messageIsError ? 'alert' : 'status'} aria-live="polite">{message}</div>}
-    <div className="settings-actions"><span className="subtle">上次保存：{new Date(updatedAt).toLocaleString('zh-CN')}</span><button className="button primary" type="button" disabled={busy || !settings.aiDisclosureText.trim()} onClick={save}>{busy ? '保存中…' : '保存生产配置'}</button></div>
+    <div className="settings-actions"><span className="subtle">上次保存：{new Date(updatedAt).toLocaleString('zh-CN')}</span><Button unstyled className="button primary" type="button" disabled={busy || !settings.aiDisclosureText.trim()} onClick={save}>{busy ? '保存中…' : '保存生产配置'}</Button></div>
   </div>;
 }

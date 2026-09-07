@@ -1,6 +1,9 @@
 'use client';
 
-import { Search, UserRound } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { SearchInput } from '@/components/ui/search-input';
+
+import { UserRound } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -50,32 +53,31 @@ export function AdminCreatorFilter({ value, roleLabels, onChange }: {
     <div className="workbench-creator-control">
       <Dialog open={open} onOpenChange={(nextOpen) => { setOpen(nextOpen); if (nextOpen) setSearch(''); }}>
         <DialogTrigger asChild>
-          <button className="select-trigger" id="workbench-creator" type="button" title={value ? `${value.displayName}（${value.username}）` : '全部作业员'}>
+          <Button unstyled className="select-trigger" id="workbench-creator" type="button" title={value ? `${value.displayName}（${value.username}）` : '全部作业员'}>
             <span>{value ? `${value.displayName}（${value.username}）` : '全部作业员'}</span><UserRound size={16} aria-hidden="true" />
-          </button>
+          </Button>
         </DialogTrigger>
         <DialogContent className="workbench-creator-dialog">
           <div className="workbench-creator-heading">
             <DialogTitle>选择作业员</DialogTitle>
             <DialogDescription>按姓名或账号搜索，选定后查看该账号创建的作业，可继续叠加角色、状态和 Query 筛选。</DialogDescription>
           </div>
-          <label className="workbench-creator-search">
-            <Search size={16} aria-hidden="true" />
-            <input aria-label="搜索作业员姓名或账号" placeholder="输入姓名或账号" value={search} maxLength={100} onChange={(event) => setSearch(event.target.value)} />
-          </label>
+          <div className="workbench-creator-search">
+            <SearchInput aria-label="搜索作业员姓名或账号" placeholder="输入姓名或账号" value={search} maxLength={100} onValueChange={(value) => setSearch(value)} />
+          </div>
           <div className="workbench-creator-results" aria-busy={loading}>
-            <button className="workbench-creator-option" type="button" aria-pressed={!value} onClick={() => choose(null)}>全部作业员</button>
+            <Button unstyled className="workbench-creator-option" type="button" aria-pressed={!value} onClick={() => choose(null)}>全部作业员</Button>
             {loading ? <p role="status">正在读取作业员…</p>
-              : error ? <div role="alert"><p>读取失败：{error}</p><button className="button small" type="button" onClick={() => setAttempt((count) => count + 1)}>重新读取作业员</button></div>
+              : error ? <div role="alert"><p>读取失败：{error}</p><Button unstyled className="button small" type="button" onClick={() => setAttempt((count) => count + 1)}>重新读取作业员</Button></div>
                 : matches.length === 0 ? <p role="status">没有匹配的作业员，请更换姓名或账号。</p>
-                  : matches.map((user) => <button className="workbench-creator-option" key={user.username} type="button" aria-pressed={value?.username === user.username} onClick={() => choose(user)}>
+                  : matches.map((user) => <Button unstyled className="workbench-creator-option" key={user.username} type="button" aria-pressed={value?.username === user.username} onClick={() => choose(user)}>
                     <span><strong>{user.displayName}</strong><small className="mono">{user.username}</small></span>
                     <small>{roleLabels[user.role] || '未知角色'}{user.status === 'DISABLED' ? ' · 已停用' : ''}</small>
-                  </button>)}
+                  </Button>)}
           </div>
         </DialogContent>
       </Dialog>
-      {value && <button className="button small" type="button" aria-label="清除作业员筛选" onClick={() => onChange(null)}>清除</button>}
+      {value && <Button unstyled className="button small" type="button" aria-label="清除作业员筛选" onClick={() => onChange(null)}>清除</Button>}
     </div>
   </div>;
 }

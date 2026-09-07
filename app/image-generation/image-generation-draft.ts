@@ -1,4 +1,5 @@
 export const IMAGE_GENERATION_DRAFT_STORAGE_KEY = 'xhs:image-generation-draft:v1';
+import type { ImageSettings, PageLayout } from '../components/image-controls';
 
 const IMAGE_KINDS = new Set(['hero', 'steps', 'checklist', 'comparison', 'detail', 'summary']);
 
@@ -8,6 +9,7 @@ export type ImageGenerationDraftPage = {
   subtitle: string;
   bullets: string[];
   prompt: string;
+  layout?: PageLayout;
 };
 
 export type ImageGenerationDraft = {
@@ -20,11 +22,12 @@ export type ImageGenerationDraft = {
     tags: string[];
   };
   imagePlan: ImageGenerationDraftPage[];
+  imageSettings?: ImageSettings;
 };
 
 type DraftStorage = Pick<Storage, 'getItem' | 'setItem'>;
 
-type ImageGenerationDraftInput = Pick<ImageGenerationDraft, 'query' | 'copy' | 'imagePlan'>;
+type ImageGenerationDraftInput = Pick<ImageGenerationDraft, 'query' | 'copy' | 'imagePlan' | 'imageSettings'>;
 
 function isBoundedString(value: unknown, minimum: number, maximum: number) {
   return typeof value === 'string'
@@ -68,6 +71,7 @@ export function createImageGenerationDraft(input: ImageGenerationDraftInput): Im
     version: 1,
     createdAt: new Date().toISOString(),
     query: input.query,
+    ...(input.imageSettings ? { imageSettings: input.imageSettings } : {}),
     copy: {
       title: input.copy.title,
       body: input.copy.body,

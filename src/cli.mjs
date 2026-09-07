@@ -135,6 +135,7 @@ export async function main(
         result = await processImageEditTask({
           store: adminStore,
           assetRoot,
+          outputRoot,
           workerId,
           mock,
           openclaw,
@@ -236,7 +237,7 @@ export async function main(
           await sleep(Math.max(1, Math.min(retryAt - Date.now(), 60_000)));
           continue;
         }
-        const edit = await processImageEditTask({ store: adminStore, assetRoot, workerId, mock, openclaw });
+        const edit = await processImageEditTask({ store: adminStore, assetRoot, outputRoot, workerId, mock, openclaw });
         if (edit.haltWorker) {
           if (edit.status === 'failed') { summary.failed++; summary.processed++; summary.attempted++; }
           authenticationRequired = true;

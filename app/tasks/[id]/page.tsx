@@ -1,3 +1,4 @@
+import { Button } from '@/components/ui/button';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
@@ -39,10 +40,10 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
           <nav className="task-review-nav" aria-label="审核题目导航">
             {adjacent.previousTaskId
               ? <Link className="button small" href={`/tasks/${adjacent.previousTaskId}`} rel="prev">上一题</Link>
-              : <button className="button small" type="button" disabled title="已经是第一题">上一题</button>}
+              : <Button unstyled className="button small" type="button" disabled title="已经是第一题">上一题</Button>}
             {adjacent.nextTaskId
               ? <Link className="button small" href={`/tasks/${adjacent.nextTaskId}`} rel="next">下一题</Link>
-              : <button className="button small" type="button" disabled title="已经是最后一题">下一题</button>}
+              : <Button unstyled className="button small" type="button" disabled title="已经是最后一题">下一题</Button>}
           </nav>
         </div>
         <h1>{task.query}</h1>

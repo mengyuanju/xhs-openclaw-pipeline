@@ -10,9 +10,16 @@ import { buildDeliveryImageTaskPrompt, createMockPost, processNext } from '../sr
 import { buildPostPrompt } from '../src/post-contract.mjs';
 import { createQueue } from '../src/queue.mjs';
 import { createMockVisualPlan } from '../src/visual-plan.mjs';
+import { enabledQueryReviewRuntime } from './query-review-fixture.mjs';
 
 const directories = [];
 const queues = [];
+
+function imageTaskData(prompt) {
+  const match = prompt.match(/<untrusted_task_data>\s*([\s\S]+?)\s*<\/untrusted_task_data>/u);
+  assert.ok(match, 'the prompt must contain the complete image task as untrusted JSON');
+  return JSON.parse(match[1]);
+}
 
 it('asks the image model to render the full page from the structured layout contract', () => {
   const post = createMockPost();
@@ -40,20 +47,23 @@ it('asks the image model to render the full page from the structured layout cont
     imageCount: 3,
   });
 
-  assert.match(prompt, /同一次生成中完成主体、标题、要点、标签、卡片和装饰/u);
-  assert.match(prompt, /严格生成且仅生成 5 个清单项/u);
+  assert.match(prompt, /原文案锁定的 allowedVisibleText，逐字显示 headline、subtitle、bullets、labels/u);
+  assert.match(prompt, /不得增删、改写、翻译、编号或移动到其他页/u);
+  const input = imageTaskData(prompt);
+  assert.deepEqual(input.page, visualPage);
+  assert.equal(input.page.allowedVisibleText.bullets.length, 5);
+  assert.equal(input.originalVisualDirection, '清单页');
+  assert.equal(input.imageCount, 3);
+  assert.equal(input.pageIndex, 1);
   assert.doesNotMatch(prompt, /程序会严格绘制/u);
-  assert.match(prompt, /"layoutTemplate": "CHECKLIST_RIGHT"/u);
+  assert.equal(input.page.layoutTemplate, 'CHECKLIST_RIGHT');
   assert.match(prompt, /主体区域：左侧/u);
   assert.match(prompt, /文字排版区域：右侧/u);
   assert.match(prompt, /3:4.*1086×1448/u);
-  assert.match(prompt, /禁止白色、深色和暗色背景/u);
-  assert.match(prompt, /字体不超过 3 种/u);
-  assert.match(prompt, /所有汉字和字母.*水平排列/u);
-  assert.match(prompt, /画面主体.*中心/u);
-  assert.match(prompt, /优先采用真实风格/u);
-  assert.match(prompt, /allowedVisibleText.*精简文字/u);
-  assert.match(prompt, /不得照搬正文中的其他长段落/u);
+  assert.match(prompt, /完整图文PNG/u);
+  assert.match(prompt, /字体、背景和审美要求使用已发布的图片规则/u);
+  assert.doesNotMatch(prompt, /禁止白色、深色和暗色背景|字体不超过 3 种/u);
+  assert.match(prompt, /不得照搬其他正文段落上图/u);
 
   const promptWithoutDisclosure = buildDeliveryImageTaskPrompt({
     post,
@@ -74,7 +84,8 @@ it('asks the image model to render the full page from the structured layout cont
     complianceDisclosure: '',
   });
   assert.doesNotMatch(portraitPrompt, /AI生成/u);
-  assert.match(portraitPrompt, /不得显示任何额外合规标识/u);
+  assert.equal(imageTaskData(portraitPrompt).requiredDisclosure, null);
+  assert.match(portraitPrompt, /合规标识为独立必需文字：关闭，不添加/u);
 
   const detailPrompt = buildDeliveryImageTaskPrompt({
     post,
@@ -83,7 +94,8 @@ it('asks the image model to render the full page from the structured layout cont
     imageIndex: 2,
     imageCount: 3,
   });
-  assert.match(detailPrompt, /避免悬浮黑框、后贴字幕和空白占位模板/u);
+  assert.equal(imageTaskData(detailPrompt).page.layoutDirection, '左右分栏。');
+  assert.deepEqual(imageTaskData(detailPrompt).page.allowedVisibleText, visualPage.allowedVisibleText);
 
   const comparisonPrompt = buildDeliveryImageTaskPrompt({
     post,
@@ -92,8 +104,9 @@ it('asks the image model to render the full page from the structured layout cont
     imageIndex: 2,
     imageCount: 3,
   });
-  assert.match(comparisonPrompt, /每条 allowedVisibleText 只能显示一次/u);
-  assert.match(comparisonPrompt, /不得在栏内、页脚结论或装饰标签中重复同一句/u);
+  assert.equal(imageTaskData(comparisonPrompt).page.layoutTemplate, 'COMPARISON_TWO_COLUMN');
+  assert.deepEqual(imageTaskData(comparisonPrompt).page.allowedVisibleText, visualPage.allowedVisibleText);
+  assert.match(comparisonPrompt, /不得增删、改写、翻译、编号或移动到其他页/u);
 });
 
 function passingAlignment(prompt) {
@@ -166,7 +179,7 @@ function stageReviewOutput(decision = 'PASS', message = '可以继续。') {
 }
 
 function passingVisionOutput(prompt) {
-  return prompt.includes('独立于生成模型的图文交付终审员')
+  return prompt.includes('<trusted_business_rules kind="DELIVERY_REVIEW_SYSTEM">')
     ? qualityAssessment(3)
     : passingAlignment(prompt);
 }
@@ -221,7 +234,8 @@ describe('content pipeline', () => {
     assert.equal(manifest.taskId, task.id);
     assert.equal(manifest.images.length, 3);
     assert.equal(manifest.files.length, 9);
-    assert.equal(manifest.stageReviews.query.source, 'MOCK');
+    assert.equal(manifest.stageReviews.query.source, 'DISABLED');
+    assert.equal(manifest.stageReviews.query.skipped, true);
     assert.equal(manifest.stageReviews.text.source, 'MOCK');
     assert.equal(manifest.visualPlan.provider, 'mock');
     assert.equal(qc.disposition, 'mock_only');
@@ -266,6 +280,7 @@ describe('content pipeline', () => {
     const result = await processNext({
       queue,
       workerId: 'query-review-worker',
+      configProvider: () => ({ promptRuntime: enabledQueryReviewRuntime() }),
       outputRoot: join(directory, 'output'),
       mock: false,
       openclaw: {
@@ -325,9 +340,7 @@ describe('content pipeline', () => {
         runReview({ thinking }) {
           reviewCalls += 1;
           reviewThinking.push(thinking);
-          const output = reviewCalls === 1
-            ? stageReviewOutput('PASS')
-            : stageReviewOutput('REJECT', '正文的关键结论与 Query 无关。');
+          const output = stageReviewOutput('REJECT', '正文的关键结论与 Query 无关。');
           return { rawText: JSON.stringify(output), model: 'fake-review' };
         },
         runWebSearch({ query }) {
@@ -354,9 +367,9 @@ describe('content pipeline', () => {
     });
 
     assert.equal(result.status, 'failed');
-    assert.equal(reviewCalls, 2);
+    assert.equal(reviewCalls, 1);
     assert.equal(textCalls, 1);
-    assert.deepEqual(reviewThinking, [undefined, 'xhigh']);
+    assert.deepEqual(reviewThinking, ['xhigh']);
     assert.deepEqual(textThinking, ['xhigh']);
     assert.equal(imageCalls, 0);
     assert.match(result.error, /文本审核未通过/u);
@@ -470,7 +483,7 @@ describe('content pipeline', () => {
         return { outputPath, model: 'fake-image' };
       },
       runVision({ prompt }) {
-        const output = prompt.includes('独立于生成模型的图文交付终审员')
+        const output = prompt.includes('<trusted_business_rules kind="DELIVERY_REVIEW_SYSTEM">')
           ? qualityAssessment(3)
           : passingAlignment(prompt);
         return { rawText: JSON.stringify(output), model: 'fake-vision' };
@@ -489,8 +502,9 @@ describe('content pipeline', () => {
     assert.equal(result.status, 'completed', result.error);
     assert.equal(researchCalls, 1);
     assert.equal(textPrompts.length, 3);
-    assert.match(textPrompts[1], /结构化文案定点修复器/u);
-    assert.match(textPrompts[1], /模型输出不是合法 JSON/u);
+    assert.match(textPrompts[1], /<trusted_business_rules kind="COPY_REPAIR_SYSTEM">/u);
+    assert.equal(imageTaskData(textPrompts[1]).validationError, 'model output does not contain a valid JSON object');
+    assert.equal(imageTaskData(textPrompts[1]).previousOutput, 'temporary malformed response');
     assert.match(textPrompts[0], /webResearch/u);
     assert.match(textPrompts[0], /https:\/\/www\.gov\.cn\/zhengce\/research-source/u);
     const research = JSON.parse(await readFile(join(result.outputDir, 'research.json'), 'utf8'));
@@ -747,7 +761,7 @@ describe('content pipeline', () => {
         textCalls += 1;
         return {
           rawText: JSON.stringify(
-            prompt.includes('视觉规划步骤') ? createMockVisualPlan(post, { imageCount: 3 }) : post,
+            prompt.includes('<trusted_business_rules kind="VISUAL_PLAN_SYSTEM">') ? createMockVisualPlan(post, { imageCount: 3 }) : post,
           ),
           model: 'fake-text',
         };
@@ -788,7 +802,7 @@ describe('content pipeline', () => {
     assert.equal(first.status, 'failed');
     assert.equal(researchCalls, 1);
     assert.equal(textCalls, 2);
-    assert.equal(reviewCalls, 2);
+    assert.equal(reviewCalls, 1);
     await access(join(directory, 'output', String(task.id), 'attempt-1', 'post.json'));
     await access(join(directory, 'output', String(task.id), 'attempt-1', 'visual-plan.json'));
 
@@ -804,7 +818,7 @@ describe('content pipeline', () => {
     assert.equal(second.status, 'failed');
     assert.equal(researchCalls, 1, 'unchanged config must reuse the research snapshot');
     assert.equal(textCalls, 2, 'unchanged config must reuse both completed text stages');
-    assert.equal(reviewCalls, 2, 'unchanged config must reuse both completed stage reviews');
+    assert.equal(reviewCalls, 1, 'unchanged config must reuse the completed text review; Query screening remains skipped');
 
     queue.retry(task.id);
     configRevision = 'B';
@@ -820,7 +834,7 @@ describe('content pipeline', () => {
     assert.equal(third.status, 'completed', third.error);
     assert.equal(researchCalls, 2, 'changed pinned config must create a new research snapshot');
     assert.equal(textCalls, 4, 'changed pinned config must invalidate both text checkpoints');
-    assert.equal(reviewCalls, 4, 'changed pinned config must invalidate both stage reviews');
+    assert.equal(reviewCalls, 2, 'changed pinned config must invalidate the text review; Query screening remains skipped');
     assert.equal(queue.get(task.id).attempts, 3);
   });
 
@@ -839,7 +853,7 @@ describe('content pipeline', () => {
         textCalls += 1;
         return {
           rawText: JSON.stringify(
-            prompt.includes('视觉规划步骤') ? createMockVisualPlan(post, { imageCount: 3 }) : post,
+            prompt.includes('<trusted_business_rules kind="VISUAL_PLAN_SYSTEM">') ? createMockVisualPlan(post, { imageCount: 3 }) : post,
           ),
           model: 'fake-text',
         };
@@ -856,7 +870,7 @@ describe('content pipeline', () => {
         return { outputPath, model: 'fake-image' };
       },
       runVision({ prompt }) {
-        if (prompt.includes('独立于生成模型的图文交付终审员')) {
+        if (prompt.includes('<trusted_business_rules kind="DELIVERY_REVIEW_SYSTEM">')) {
           return { rawText: JSON.stringify(qualityAssessment(3)), model: 'fake-vision' };
         }
         const contract = JSON.parse(prompt.match(
@@ -981,7 +995,7 @@ describe('content pipeline', () => {
       runText({ prompt }) {
         return {
           rawText: JSON.stringify(
-            prompt.includes('视觉规划步骤') ? createMockVisualPlan(post, { imageCount: 3 }) : post,
+            prompt.includes('<trusted_business_rules kind="VISUAL_PLAN_SYSTEM">') ? createMockVisualPlan(post, { imageCount: 3 }) : post,
           ),
           model: 'openai/gpt-5.6-sol',
         };
@@ -1046,7 +1060,7 @@ describe('content pipeline', () => {
         return { outputPath, model: 'fake-image' };
       },
       runVision({ prompt }) {
-        const output = prompt.includes('独立于生成模型的图文交付终审员')
+        const output = prompt.includes('<trusted_business_rules kind="DELIVERY_REVIEW_SYSTEM">')
           ? qualityAssessment(2)
           : passingAlignment(prompt);
         return { rawText: JSON.stringify(output), model: 'fake-vision' };
@@ -1103,7 +1117,7 @@ describe('content pipeline', () => {
         return { outputPath, model: 'fake-image-edit' };
       },
       runVision({ prompt }) {
-        const output = prompt.includes('独立于生成模型的图文交付终审员')
+        const output = prompt.includes('<trusted_business_rules kind="DELIVERY_REVIEW_SYSTEM">')
           ? qualityAssessment(2)
           : passingAlignment(prompt);
         return { rawText: JSON.stringify(output), model: 'fake-vision' };
@@ -1151,7 +1165,7 @@ describe('content pipeline', () => {
     let qualityCall = 0;
     const repairPrompts = [];
     const generate = ({ prompt, outputPath }) => {
-      if (prompt.includes('<untrusted_quality_repair>')) repairPrompts.push(prompt);
+      if (prompt.includes('<trusted_business_rules kind="IMAGE_REPAIR_SYSTEM">')) repairPrompts.push(prompt);
       writeFileSync(outputPath, rawImages[imageCall]);
       imageCall += 1;
       return { outputPath, model: 'fake-image' };
@@ -1163,7 +1177,7 @@ describe('content pipeline', () => {
       runImage: generate,
       runImageEdit: generate,
       runVision({ prompt }) {
-        if (!prompt.includes('独立于生成模型的图文交付终审员')) {
+        if (!prompt.includes('<trusted_business_rules kind="DELIVERY_REVIEW_SYSTEM">')) {
           return { rawText: JSON.stringify(passingAlignment(prompt)), model: 'fake-vision' };
         }
         qualityCall += 1;
@@ -1216,7 +1230,7 @@ describe('content pipeline', () => {
     assert.equal(qc.qualityRepair.attempts.length, 1);
     assert.equal(qc.qualityRepair.attempts[0].scoreAfter, 1);
     assert.match(qc.qualityRepair.attempts[0].reasons.join('\n'), /主体太小/u);
-    assert.match(qc.qualityRepair.attempts[0].methods.join('\n'), /主体|构图/u);
+    assert.match(qc.qualityRepair.attempts[0].methods.join('\n'), /imageBaseQuality|imageAesthetics/u);
     assert.ok(qc.qualityRepair.attempts[0].durationMs >= 0);
     const checkpoint = JSON.parse(await readFile(
       join(directory, 'output', String(task.id), 'checkpoint.json'),
@@ -1292,7 +1306,7 @@ describe('content pipeline', () => {
         const post = createMockPost(4);
         return {
           rawText: JSON.stringify(
-            prompt.includes('视觉规划步骤') ? createMockVisualPlan(post, { imageCount: 4 }) : post,
+            prompt.includes('<trusted_business_rules kind="VISUAL_PLAN_SYSTEM">') ? createMockVisualPlan(post, { imageCount: 4 }) : post,
           ),
           model: 'fake-text',
         };
@@ -1330,14 +1344,15 @@ describe('content pipeline', () => {
     assert.equal(textPrompts.length, 2);
     assert.match(textPrompts[0], /有参考图的玄关整理/);
     assert.match(textPrompts[0], /本任务最终交付 4 张图片/);
-    assert.match(textPrompts[1], /视觉规划步骤/);
+    assert.match(textPrompts[1], /<trusted_business_rules kind="VISUAL_PLAN_SYSTEM">/u);
     assert.equal(imagePrompts.length, 4);
     imagePrompts.forEach((prompt, index) => {
       assert.match(prompt, new RegExp(`生成第 ${index + 1} 张，共 4 张`));
       assert.match(prompt, /桌面总是收完没两天又乱/);
-      assert.match(prompt, /直接生成包含完整图文排版的最终页面/u);
-      assert.match(prompt, /整套图片由图像模型一次性完成场景与文字排版/u);
-      assert.match(prompt, /逐字渲染 allowedVisibleText/u);
+      assert.match(prompt, /最终输出一张3:4、1086×1448完整图文PNG/u);
+      assert.equal(imageTaskData(prompt).pageIndex, index + 1);
+      assert.equal(imageTaskData(prompt).imageCount, 4);
+      assert.match(prompt, /原文案锁定的 allowedVisibleText，逐字显示/u);
       assert.doesNotMatch(prompt, /不得生成任何可见文字/u);
     });
     assert.deepEqual(imageInputPaths[0], [referencePath]);
@@ -1354,7 +1369,7 @@ describe('content pipeline', () => {
     assert.deepEqual(completedPromptTrace.images.map(({ pageIndex, status }) => ({ pageIndex, status })),
       imagePrompts.map((_content, index) => ({ pageIndex: index + 1, status: 'SUBMITTED' })));
     completedPromptTrace.images.forEach(({ content }, index) => {
-      assert.match(content, /直接生成包含完整图文排版的最终页面/u);
+      assert.match(content, /最终输出一张3:4、1086×1448完整图文PNG/u);
       assert.doesNotMatch(content, /生成第 \d+ 张，共 4 张，主题/u);
       assert.ok(imagePrompts[index].includes(content));
     });
@@ -1380,7 +1395,7 @@ describe('content pipeline', () => {
         textPrompts.push(prompt);
         return {
           rawText: JSON.stringify(
-            prompt.includes('视觉规划步骤') ? createMockVisualPlan(post, { imageCount: 4 }) : post,
+            prompt.includes('<trusted_business_rules kind="VISUAL_PLAN_SYSTEM">') ? createMockVisualPlan(post, { imageCount: 4 }) : post,
           ),
           model: 'fake-text',
         };
@@ -1433,7 +1448,7 @@ describe('content pipeline', () => {
     let completion;
     const openclaw = {
       runText({ prompt }) {
-        if (prompt.includes('图片分页规划步骤')) {
+        if (prompt.includes('<trusted_business_rules kind="COPY_IMAGE_PLAN_SYSTEM">')) {
           dynamicPlanCalls += 1;
           if (dynamicPlanCalls === 1) {
             const invalidPlan = structuredClone(replannedPost.imagePlan);

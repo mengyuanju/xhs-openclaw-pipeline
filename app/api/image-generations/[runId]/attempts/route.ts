@@ -6,6 +6,7 @@ import { adminOutputRoot } from '../../../../../src/admin/runtime.mjs';
 import {
   StandaloneImageRecoveryError,
   retryStandaloneImageRun,
+  readStandaloneImagePromptRuntime,
 } from '../../../../../src/standalone-image-generation.mjs';
 import {
   imageGenerationApiError,
@@ -25,20 +26,23 @@ export async function POST(
   request: Request,
   context: { params: Promise<{ runId: string }> },
 ) {
-  return apiHandler(request, { mutation: true }, async () => {
+  return apiHandler(request, { mutation: true }, async (session) => {
     const input = await parseJson(request, retrySchema, {
       maxBytes: 4 * 1024,
       validationCode: 'VALIDATION_ERROR',
     });
     const { runId } = await context.params;
     try {
-      const result = await withImageGenerationLock(input.runId, (signal) => retryStandaloneImageRun({
+      const runtime = await imageGenerationRuntime(session);
+      runtime.promptRuntime = await readStandaloneImagePromptRuntime(adminOutputRoot(), runId);
+      const result = await withImageGenerationLock(input.runId, (signal) => withPromptExecution({ outputRoot: adminOutputRoot(),
+        configuration: runtime, kind: 'IMAGE_RETRY', query: runId }, () => retryStandaloneImageRun({
         sourceRunId: runId,
         runId: input.runId,
-        runtime: imageGenerationRuntime(),
+        runtime,
         outputRoot: adminOutputRoot(),
         signal,
-      }));
+      })));
       return ok(result, { status: 201 });
     } catch (error) {
       if (error instanceof StandaloneImageRecoveryError) {
@@ -48,3 +52,4 @@ export async function POST(
     }
   });
 }
+import { withPromptExecution } from '../../../../../src/admin/prompt-execution.mjs';

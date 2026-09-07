@@ -33,6 +33,12 @@ function onePointQc() {
   };
 }
 
+function repairDataFromPrompt(prompt) {
+  const match = prompt.match(/<untrusted_task_data>\s*([\s\S]*?)\s*<\/untrusted_task_data>/u);
+  assert.ok(match, 'QC evidence must be carried as data, outside the trusted repair rules');
+  return JSON.parse(match[1]);
+}
+
 describe('whole-delivery quality repair', () => {
   it('only repairs an initial score of 1 until the target or attempt limit is reached', () => {
     assert.equal(shouldRunQualityRepair({
@@ -75,17 +81,22 @@ describe('whole-delivery quality repair', () => {
     assert.deepEqual(plan.affectedPages, [1, 2, 3]);
     assert.match(plan.reasons.join('\n'), /第2页主体太小/u);
     assert.match(plan.reasons.join('\n'), /三张图片使用了相同构图/u);
-    assert.match(plan.methods.join('\n'), /主体|构图/u);
+    assert.match(plan.methods.join('\n'), /imageAesthetics/u);
 
     const prompt = appendQualityRepairPrompt('原始图片提示词', plan, { pageIndex: 2 });
-    assert.match(prompt, /<untrusted_quality_repair>/u);
-    assert.match(prompt, /修复轮次：1/u);
-    assert.match(prompt, /当前页：2\/3/u);
-    assert.match(prompt, /第2页主体太小/u);
-    assert.ok(prompt.length <= 8_000);
+    assert.ok(prompt.startsWith('原始图片提示词\n\n'));
+    assert.match(prompt, /<trusted_business_rules kind="IMAGE_REPAIR_SYSTEM">/u);
+    assert.deepEqual(repairDataFromPrompt(prompt), {
+      pageIndex: 2,
+      imageCount: 3,
+      round: 1,
+      scoreBefore: 1,
+      reasons: plan.reasons,
+      methods: plan.methods,
+    });
   });
 
-  it('assigns distinct full-page reconstruction strategies when repairing visual repetition', () => {
+  it('passes repetition evidence without assigning page-number-based reconstruction roles', () => {
     const qc = onePointQc();
     qc.rubric.lowestObstacleDimensions = ['imageDiversity'];
     qc.rubric.dimensions.imageDiversity = {
@@ -94,13 +105,35 @@ describe('whole-delivery quality repair', () => {
       applicable: true,
     };
     const plan = createQualityRepairPlan({ qc, round: 2, imageCount: 4 });
-    const prompts = Array.from({ length: 4 }, (_, index) =>
-      appendQualityRepairPrompt('原始图片提示词', plan, { pageIndex: index + 1 }));
+    const originalInstructions = [
+      '封面保留原先的核心主体和标题。',
+      '步骤页保持原文步骤与场景。',
+      '第三页是并列对比，不得改成行动清单。',
+      '总结页沿用已确认的信息层级。',
+    ];
+    const prompts = originalInstructions.map((prompt, index) =>
+      appendQualityRepairPrompt(prompt, plan, { pageIndex: index + 1 }));
 
-    assert.ok(prompts.every((prompt) => /本页差异化重构任务/u.test(prompt)));
-    assert.equal(new Set(prompts.map((prompt) =>
-      prompt.match(/本页差异化重构任务：([^\n]+)/u)?.[1])).size, 4);
-    assert.ok(prompts.every((prompt) => /不得只做局部改色、换字或延续原图的主体角度、背景和卡片骨架/u.test(prompt)));
+    for (const [index, prompt] of prompts.entries()) {
+      assert.ok(prompt.startsWith(originalInstructions[index]));
+      assert.equal(repairDataFromPrompt(prompt).pageIndex, index + 1);
+      assert.deepEqual(repairDataFromPrompt(prompt).reasons, plan.reasons);
+      assert.match(prompt, /四张图片重复使用同一主体、背景和卡片骨架/u);
+      assert.doesNotMatch(prompt, /本页差异化重构任务：/u);
+      assert.doesNotMatch(prompt, /不得只做局部改色、换字或延续原图的主体角度、背景和卡片骨架/u);
+      assert.doesNotMatch(prompt, /必须按本页差异化重构任务替换完整场景和信息组织/u);
+    }
+  });
+
+  it('preserves complete human rules within the prompt budget and explicitly rejects oversized input', () => {
+    const plan = createQualityRepairPlan({ qc: onePointQc(), round: 1, imageCount: 3 });
+    const original = `${'完整人工规则。'.repeat(1_500)}最后一条：只修复发现的问题。`;
+    const prompt = appendQualityRepairPrompt(original, plan, { pageIndex: 3 });
+    assert.ok(prompt.startsWith(`${original}\n\n`), 'human rules must not be shortened to make room for a suffix');
+    assert.throws(
+      () => appendQualityRepairPrompt('人工规则'.repeat(100_000), plan, { pageIndex: 3 }),
+      RangeError,
+    );
   });
 
   it('regenerates text checkpoints for content blockers but preserves them for image-only blockers', () => {

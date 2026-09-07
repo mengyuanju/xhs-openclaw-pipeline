@@ -1,5 +1,8 @@
 'use client';
 
+import { Radio, Checkbox, Textarea } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+
 import { useRouter } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
 
@@ -89,10 +92,10 @@ export function StageDecisionForm({
     </div>
     <div className={`review-action-message ${isError ? 'notice error' : message ? 'notice success' : ''}`} role={isError ? 'alert' : 'status'} aria-live="polite">{message}</div>
     {canDecide && <form className="stack" onSubmit={decide}>
-      <fieldset className="review-decision-options"><legend>审核结果</legend><label><input type="radio" name="decision" value="APPROVED" defaultChecked={canApprove} disabled={!canApprove} />通过</label><label><input type="radio" name="decision" value="REJECTED" defaultChecked={!canApprove} />驳回</label></fieldset>
-      <fieldset className="review-reason-options"><legend>问题原因（驳回时选择）</legend>{reasons.map(([code, label]) => <label key={code}><input type="checkbox" name="reasonCodes" value={code} />{label}</label>)}</fieldset>
-      <div className="field"><label htmlFor={`${stage.toLowerCase()}-review-note`}>审核说明</label><textarea className="textarea" id={`${stage.toLowerCase()}-review-note`} name="note" maxLength={2_000} placeholder="记录具体证据或修改建议" /></div>
-      <button className="button primary" type="submit" disabled={busy}>{busy ? '提交中…' : `提交${stage === 'COPY' ? '文案' : '图片'}结论`}</button>
+      <fieldset className="review-decision-options"><legend>审核结果</legend><label><Radio  name="decision" value="APPROVED" defaultChecked={canApprove} disabled={!canApprove} />通过</label><label><Radio  name="decision" value="REJECTED" defaultChecked={!canApprove} />驳回</label></fieldset>
+      <fieldset className="review-reason-options"><legend>问题原因（驳回时选择）</legend>{reasons.map(([code, label]) => <label key={code}><Checkbox  name="reasonCodes" value={code} />{label}</label>)}</fieldset>
+      <div className="field"><label htmlFor={`${stage.toLowerCase()}-review-note`}>审核说明</label><Textarea className="textarea" id={`${stage.toLowerCase()}-review-note`} name="note" maxLength={2_000} placeholder="记录具体证据或修改建议" /></div>
+      <Button unstyled className="button primary" type="submit" disabled={busy}>{busy ? '提交中…' : `提交${stage === 'COPY' ? '文案' : '图片'}结论`}</Button>
     </form>}
     {!canDecide && <p className="subtle review-stage-blocked">{!isOwner
       ? '只有当前负责人可以提交该阶段结论。'

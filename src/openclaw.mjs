@@ -1,4 +1,5 @@
 import { existsSync, unlinkSync } from 'node:fs';
+import { promptRuntimeSnapshot } from './prompt-runtime.mjs';
 import { tracedOpenClawRunner } from './model-call-trace.mjs';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -457,6 +458,7 @@ export function createOpenClawClient({
       limit = 5,
       timeoutMs = 120_000,
     }) {
+      if (promptRuntimeSnapshot()) throw new Error('当前 OpenClaw 原始搜索工具不支持传入人工检索规则；请在生产设置选择支持 RESEARCH_SYSTEM 的 Codex 或 DeepSeek 检索通道');
       const normalizedQuery = typeof query === 'string' ? query.trim() : '';
       const normalizedProvider = typeof provider === 'string' ? provider.trim().toLowerCase() : '';
       if (normalizedQuery.length < 1 || normalizedQuery.length > 500) {

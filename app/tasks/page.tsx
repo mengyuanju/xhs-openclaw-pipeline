@@ -1,3 +1,6 @@
+import { SearchInput } from '@/components/ui/search-input';
+import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/input';
 import {
   ArchiveRestore,
   CheckSquare2,
@@ -137,7 +140,7 @@ export default async function TasksPage({ searchParams }: { searchParams: Promis
         </div>
         <div className="field tasks-filter-query">
           <label htmlFor="query">搜索选题或外部 ID</label>
-          <input className="input" id="query" name="query" defaultValue={value('query')} maxLength={500} placeholder="输入关键词" />
+          <SearchInput className="input" id="query" name="query" defaultValue={value('query')} maxLength={500} placeholder="输入关键词" />
         </div>
         <div className="field">
           <label htmlFor="status">生成状态</label>
@@ -166,7 +169,7 @@ export default async function TasksPage({ searchParams }: { searchParams: Promis
           </Select>
         </div>
         <div className="tasks-filter-actions">
-          <button className="button primary" type="submit" disabled={batches.length === 0}>应用筛选</button>
+          <Button unstyled className="button primary" type="submit" disabled={batches.length === 0}>应用筛选</Button>
           <Link className="button" href={clearHref}>重置条件</Link>
         </div>
       </form>
@@ -184,7 +187,7 @@ export default async function TasksPage({ searchParams }: { searchParams: Promis
           <table>
             <thead><tr><th>选择</th><th>ID</th><th>选题</th><th>外部 ID</th><th>图片数</th><th>生成状态</th><th>耗时</th><th>审核状态</th><th>操作</th></tr></thead>
             <tbody>{result.data.map((task: any) => <tr key={task.id}>
-              <td data-label="选择"><input className="task-select" type="checkbox" name="taskId" value={task.id} aria-label={`选择任务 #${task.id}`} aria-describedby={task.exportAvailability.canExport ? undefined : `task-export-reason-${task.id}`} disabled={!task.exportAvailability.canExport} title={task.exportAvailability.canExport ? '选择此任务进行批量导出' : task.exportAvailability.reason} /></td>
+              <td data-label="选择"><Checkbox className="task-select"  name="taskId" value={task.id} aria-label={`选择任务 #${task.id}`} aria-describedby={task.exportAvailability.canExport ? undefined : `task-export-reason-${task.id}`} disabled={!task.exportAvailability.canExport} title={task.exportAvailability.canExport ? '选择此任务进行批量导出' : task.exportAvailability.reason} /></td>
               <td className="mono" data-label="ID">#{task.id}</td>
               <td className="query-cell" data-label="选题">{task.query}</td>
               <td className="mono" data-label="外部 ID">{task.config?.externalId || '—'}</td>
@@ -192,7 +195,7 @@ export default async function TasksPage({ searchParams }: { searchParams: Promis
               <td data-label="生成状态"><StatusPill value={task.status} /></td>
               <td data-label="耗时"><TaskTiming task={task} timingStats={timingStats} /></td>
               <td data-label="审核状态"><StatusPill value={task.config?.reviewStatus} /></td>
-              <td className="row-action" data-label="操作"><div className="task-row-actions"><div className="inline"><Link className="button small" href={`/tasks/${task.id}`}>打开审核</Link>{task.exportAvailability.canExport ? <a className="button small" href={`/api/tasks/${task.id}/export`} download={`xhs-task-${task.id}.zip`}>导出 ZIP</a> : <button className="button small" type="button" disabled aria-describedby={`task-export-reason-${task.id}`} title={task.exportAvailability.reason}>导出 ZIP</button>}</div>{!task.exportAvailability.canExport && <span className="action-reason" id={`task-export-reason-${task.id}`} role="note">不可导出：{task.exportAvailability.reason}</span>}</div></td>
+              <td className="row-action" data-label="操作"><div className="task-row-actions"><div className="inline"><Link className="button small" href={`/tasks/${task.id}`}>打开审核</Link>{task.exportAvailability.canExport ? <a className="button small" href={`/api/tasks/${task.id}/export`} download={`xhs-task-${task.id}.zip`}>导出 ZIP</a> : <Button unstyled className="button small" type="button" disabled aria-describedby={`task-export-reason-${task.id}`} title={task.exportAvailability.reason}>导出 ZIP</Button>}</div>{!task.exportAvailability.canExport && <span className="action-reason" id={`task-export-reason-${task.id}`} role="note">不可导出：{task.exportAvailability.reason}</span>}</div></td>
             </tr>)}</tbody>
           </table>
         </div>

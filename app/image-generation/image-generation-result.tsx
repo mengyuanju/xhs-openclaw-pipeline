@@ -1,3 +1,4 @@
+import { Disclosure, DisclosureTrigger, DisclosureContent } from '@/components/ui/disclosure';
 import {
   CircleCheck,
   ExternalLink,
@@ -8,6 +9,8 @@ import {
 } from 'lucide-react';
 
 import type { ImageGenerationResult } from './use-image-generation-run';
+import { ImagePreview } from '../components/image-preview';
+import { ImagePreviewPreference } from '../components/image-preview-preference';
 
 const DIMENSION_LABELS: Record<string, string> = {
   queryRelevance: '选题相关性',
@@ -67,7 +70,9 @@ export function ImageGenerationResultView({ result }: { result: ImageGenerationR
       <div><dt>图片</dt><dd>{result.imageCount} 张</dd></div>
       <div><dt>QC</dt><dd>{qualityScore(result.qc.overallScore)}</dd></div>
     </dl>
+    {result.processing?.type === 'LOCAL' && <p className="notice warning">本地格式 / 背景转换版本，未重新调用模型验收。{!result.processing.originalAvailable && '历史图片没有处理前源图，无法恢复已丢失的透明像素。'}</p>}
 
+    {result.visualPlan?.skipped && <p className="notice">视觉规划已关闭，本次直接使用原配图策划，未调用规划模型。</p>}
     {result.visualPlan?.degraded && <div className="notice warning standalone-image-plan-warning">
       <TriangleAlert aria-hidden="true" size={16} />
       <div>
@@ -82,7 +87,7 @@ export function ImageGenerationResultView({ result }: { result: ImageGenerationR
           <span className="section-kicker">Delivery preview</span>
           <h3 id="standalone-image-preview-heading">成品预览</h3>
         </div>
-        <span>{result.imageCount} 页 · 3:4 竖版</span>
+        <div className="inline"><ImagePreviewPreference /><span>{result.imageCount} 页 · 3:4 竖版</span></div>
       </div>
 
       <ol className="standalone-image-page-list">
@@ -94,26 +99,19 @@ export function ImageGenerationResultView({ result }: { result: ImageGenerationR
           return <li key={image.pageIndex}>
             <article className="standalone-image-page-card">
               <div className="standalone-image-preview">
-                <a href={image.url} target="_blank" rel="noreferrer" aria-label={`打开第 ${image.pageIndex} 页原图`}>
-                  <img
-                    src={image.url}
-                    alt={alt}
-                    width={1086}
-                    height={1448}
-                    loading="lazy"
-                  />
-                </a>
+                <ImagePreview src={image.url} alt={alt} width={1086} height={1448}
+                  sourceSrc={image.sourceUrl} deliverySrc={image.deliveryUrl} format={image.imageSettings?.format} transparency={image.transparency} />
                 <div className="standalone-image-preview-meta">
                   <strong>{String(image.pageIndex).padStart(2, '0')} · {image.kind}</strong>
                   <span>{image.provider}{image.model ? ` · ${image.model}` : ''}</span>
                   <div>
-                    <span className={image.alignmentPassed === false ? 'pill pill-warning' : 'pill pill-approved'}>
+                    <span className={image.alignmentPassed === true ? 'pill pill-approved' : 'pill pill-warning'}>
                       <ScanText aria-hidden="true" size={12} />{alignmentLabel(image.alignmentPassed)}
                     </span>
                     {image.generationAttempts !== null && <span>生成 {image.generationAttempts} 次</span>}
                   </div>
-                  <a href={image.url} target="_blank" rel="noreferrer">
-                    查看原图 <ExternalLink aria-hidden="true" size={13} />
+                  <a href={image.deliveryUrl ?? image.url} download>
+                    下载成品 {image.imageSettings?.format ?? 'PNG'} <ExternalLink aria-hidden="true" size={13} />
                   </a>
                 </div>
               </div>
@@ -199,10 +197,10 @@ export function ImageGenerationResultView({ result }: { result: ImageGenerationR
         </div>
         : <p className="standalone-image-empty">此历史结果没有保存逐项质检意见。</p>}
 
-      {result.qc.limitations.length > 0 && <details className="standalone-image-quality-limitations">
-        <summary>查看质检能力边界</summary>
+      {result.qc.limitations.length > 0 && <Disclosure className="standalone-image-quality-limitations">
+        <DisclosureTrigger>查看质检能力边界</DisclosureTrigger><DisclosureContent>
         <ul>{result.qc.limitations.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul>
-      </details>}
+      </DisclosureContent></Disclosure>}
     </section>
   </section>;
 }

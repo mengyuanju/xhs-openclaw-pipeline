@@ -1,5 +1,8 @@
 'use client';
 
+import { Checkbox } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+
 import { Images, LoaderCircle, RefreshCw, Sparkles } from 'lucide-react';
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
@@ -170,20 +173,20 @@ export function BatchImageGenerationWorkbench() {
         <div className="panel-head"><div><span className="section-kicker">Approved copy input</span><h2>选择已质检文案</h2></div><Images aria-hidden="true" size={20} /></div>
         <div className="notice">仅显示人工质检通过的文案；未确认的文案必须先回到批量生文完成质检。</div>
         <div className="batch-approved-toolbar">
-          <label className="batch-select-all"><input type="checkbox" aria-label="选择全部已质检文案" checked={allSelected} disabled={busy || approvedCopies.length === 0} onChange={(event) => event.target.checked ? selectAll() : setSelectedIds([])} /><span>选择当前列表（最多 20 条）</span></label>
-          <button className="button small" type="button" disabled={busy || loading} onClick={() => { void loadApprovedCopies(); }}><RefreshCw aria-hidden="true" className={loading ? 'animate-spin' : undefined} size={14} />刷新</button>
+          <label className="batch-select-all"><Checkbox  aria-label="选择全部已质检文案" checked={allSelected} disabled={busy || approvedCopies.length === 0} onChange={(event) => event.target.checked ? selectAll() : setSelectedIds([])} /><span>选择当前列表（最多 20 条）</span></label>
+          <Button unstyled className="button small" type="button" disabled={busy || loading} onClick={() => { void loadApprovedCopies(); }}><RefreshCw aria-hidden="true" className={loading ? 'animate-spin' : undefined} size={14} />刷新</Button>
         </div>
         {loading ? <div className="empty-state" role="status"><LoaderCircle aria-hidden="true" className="animate-spin" size={18} />正在读取已质检文案…</div>
           : loadError ? <div className="notice error" role="alert">{loadError}</div>
           : approvedCopies.length === 0 ? <div className="batch-generation-empty"><Images aria-hidden="true" size={26} /><strong>暂无已质检文案</strong><span>当前 {totalCopies} 条文案记录中没有人工质检通过的记录。</span><Link className="button small" href="/batch-copy-generation">返回批量生文质检</Link></div>
           : <ul className="batch-approved-list">
               {approvedCopies.map((record) => <li key={record.id}>
-                <label><input type="checkbox" checked={selectedIds.includes(record.id)} disabled={busy} onChange={() => toggleCopy(record.id)} /><span><strong>{record.copy.title}</strong><small>{record.query} · {record.imagePlan.length} 页 · #{record.id}</small></span></label>
+                <label><Checkbox  checked={selectedIds.includes(record.id)} disabled={busy} onChange={() => toggleCopy(record.id)} /><span><strong>{record.copy.title}</strong><small>{record.query} · {record.imagePlan.length} 页 · #{record.id}</small></span></label>
               </li>)}
             </ul>}
         <div className="form-grid batch-image-options">
           <div className="field full"><div className="notice warning">系统会逐条调用真实模型生成图片并执行 OCR 与质量检查，开始前会确认整批费用。</div></div>
-          <div className="field full inline batch-generation-actions"><button className="button primary" type="submit" disabled={busy || loading}><Sparkles aria-hidden="true" size={16} />开始批量生成图片（{selectedIds.length}）</button><span className="subtle">只使用人工质检通过的当前文案。</span></div>
+          <div className="field full inline batch-generation-actions"><Button unstyled className="button primary" type="submit" disabled={busy || loading}><Sparkles aria-hidden="true" size={16} />开始批量生成图片（{selectedIds.length}）</Button><span className="subtle">只使用人工质检通过的当前文案。</span></div>
         </div>
         {validationError && <div className="notice error batch-generation-message" role="alert">{validationError}</div>}
       </form>

@@ -1,5 +1,8 @@
 'use client';
 
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+
 import { useRouter } from 'next/navigation';
 import {
   useLayoutEffect,
@@ -139,9 +142,9 @@ export function ImportWorkbench({ initialBatch = null, timingStats }: { initialB
             </div>
           </div>
           <div className="form-grid">
-            <div className="field"><label htmlFor="batch-name">批次名称（可选）</label><input id="batch-name" className="input" name="name" maxLength={200} placeholder="如：8月收纳选题" /></div>
-            <div className="field"><label htmlFor="excel-file">填写后的 Excel 文件</label><input id="excel-file" className="input file-input" name="file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required /></div>
-            <div className="field full inline"><button className="button primary" type="submit" disabled={busy}>{busy ? '模型检测中…' : '上传并调用模型检测'}</button><span className="subtle">未预筛选的有效行会调用文本模型，消耗相应额度并延长上传时间。</span></div>
+            <div className="field"><label htmlFor="batch-name">批次名称（可选）</label><Input id="batch-name" className="input" name="name" maxLength={200} placeholder="如：8月收纳选题" /></div>
+            <div className="field"><label htmlFor="excel-file">填写后的 Excel 文件</label><Input id="excel-file" className="input file-input" name="file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required /></div>
+            <div className="field full inline"><Button unstyled className="button primary" type="submit" disabled={busy}>{busy ? '模型检测中…' : '上传并调用模型检测'}</Button><span className="subtle">未预筛选的有效行会调用文本模型，消耗相应额度并延长上传时间。</span></div>
           </div>
         </form>
         {activeStep === 1 && messageNotice}
@@ -190,7 +193,7 @@ export function ImportWorkbench({ initialBatch = null, timingStats }: { initialB
           <ImportBatchDetails batch={batch} />
           <section className="panel commit-panel">
             <div><h2>确认入队</h2><p className="subtle">仅强需和中需进入生产；弱需、无需及结构错误行保留在批次记录中。</p></div>
-            <button className="button primary" type="button" disabled={busy || committed || !screeningComplete} onClick={commit}>{commitButtonLabel(batch)}</button>
+            <Button unstyled className="button primary" type="button" disabled={busy || committed || !screeningComplete} onClick={commit}>{commitButtonLabel(batch)}</Button>
           </section>
         </>}
       </ImportFlowStage>

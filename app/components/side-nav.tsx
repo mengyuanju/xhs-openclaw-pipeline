@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+
 import {
   BarChart3,
   ChevronDown,
@@ -130,7 +132,7 @@ export function SideNav({ session }: { session: { subject: string; username?: st
           <span className="brand-mark">RED</span>
           <div><strong>内容工场</strong><small>OpenClaw Console</small></div>
         </Link>
-        <button
+        <Button unstyled
           className="mobile-nav-toggle"
           type="button"
           aria-label="切换主导航"
@@ -139,7 +141,7 @@ export function SideNav({ session }: { session: { subject: string; username?: st
           onClick={() => setIsMenuOpen((open) => !open)}
         >
           {isMenuOpen ? <X aria-hidden="true" size={19} /> : <Menu aria-hidden="true" size={19} />}
-        </button>
+        </Button>
       </div>
       <nav className="nav-list" id="primary-navigation" data-open={isMenuOpen} aria-label="主导航">
         {visibleGroups.map((group) => (
@@ -150,7 +152,7 @@ export function SideNav({ session }: { session: { subject: string; username?: st
                 const active = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
                 const Icon = item.icon;
                 if (item.children) return <div className="nav-item-group" key={item.href}>
-                  <button
+                  <Button unstyled
                     className="nav-item nav-parent"
                     type="button"
                     aria-expanded={isWorkbenchOpen}
@@ -160,7 +162,7 @@ export function SideNav({ session }: { session: { subject: string; username?: st
                     <Icon aria-hidden="true" size={17} strokeWidth={1.8} />
                     <span>{item.label}</span>
                     <ChevronDown aria-hidden="true" size={14} className="nav-parent-chevron" />
-                  </button>
+                  </Button>
                   <div className="nav-submenu" id="workbench-submenu" hidden={!isWorkbenchOpen}>
                     {item.children.map((child) => {
                       const ChildIcon = child.icon;
@@ -196,10 +198,10 @@ export function SideNav({ session }: { session: { subject: string; username?: st
           <small>{isAdmin ? '管理员' : role === 'REVIEWER' ? '审核员' : '普通用户'} · {session?.username || 'admin'}</small>
         </div>
         <Link className="sidebar-signout" href="/profile"><Users aria-hidden="true" size={14} />个人信息</Link>
-        <button className="sidebar-signout" type="button" onClick={signOut} disabled={isSigningOut}>
+        <Button unstyled className="sidebar-signout" type="button" onClick={signOut} disabled={isSigningOut}>
           <LogOut aria-hidden="true" size={14} />
           {isSigningOut ? '正在退出…' : '退出后台'}
-        </button>
+        </Button>
         {signOutError && <span className="sidebar-error" role="alert">{signOutError}</span>}
       </div>
     </aside>

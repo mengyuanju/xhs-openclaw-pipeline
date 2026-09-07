@@ -1,5 +1,8 @@
 'use client';
 
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+
 import { Cable, RotateCcw } from 'lucide-react';
 
 import {
@@ -195,7 +198,7 @@ export function ModelApiSettingsSection({
 
       <div className="field">
         <label htmlFor="model-api-model-proxy">文本与视觉代理</label>
-        <input
+        <Input
           className="input mono"
           id="model-api-model-proxy"
           type="url"
@@ -210,7 +213,7 @@ export function ModelApiSettingsSection({
 
       <div className="field">
         <label htmlFor="model-api-image-proxy">图片生成代理</label>
-        <input
+        <Input
           className="input mono"
           id="model-api-image-proxy"
           type="url"
@@ -225,7 +228,7 @@ export function ModelApiSettingsSection({
 
       <div className="field">
         <label htmlFor="model-api-image-timeout">图片调用超时</label>
-        <input
+        <Input
           className="input"
           id="model-api-image-timeout"
           type="number"
@@ -243,9 +246,9 @@ export function ModelApiSettingsSection({
       </div>
 
       <div className="field full inline">
-        <button className="button" type="button" disabled={busy} onClick={onReset}>
+        <Button unstyled className="button" type="button" disabled={busy} onClick={onReset}>
           <RotateCcw aria-hidden="true" size={15} />恢复环境配置
-        </button>
+        </Button>
         <span className="subtle">清空页面覆盖后仍需点击底部“保存生产配置”。</span>
       </div>
     </div>

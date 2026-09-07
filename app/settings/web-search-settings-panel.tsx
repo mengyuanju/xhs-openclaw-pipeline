@@ -1,5 +1,8 @@
 'use client';
 
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+
 import { Search, RotateCcw } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -117,7 +120,7 @@ export function WebSearchSettingsPanel({ onSaved }: { onSaved?: () => Promise<vo
       </div>
       <div className="field">
         <label htmlFor="web-search-timeout">DeepSeek 搜索超时（毫秒）</label>
-        <input id="web-search-timeout" className="input" type="number" min={5000} max={120000} step={1000}
+        <Input id="web-search-timeout" className="input" type="number" min={5000} max={120000} step={1000}
           disabled={disabled || usesOpenClaw} value={settings.webSearchTimeoutMs ?? ''} placeholder="继承环境，默认 120000"
           aria-invalid={invalidTimeout} onChange={(event) => {
             setMessage('');
@@ -133,15 +136,15 @@ export function WebSearchSettingsPanel({ onSaved }: { onSaved?: () => Promise<vo
     {error && <div className="notice error" role="alert">{error}</div>}
     {message && <div className="notice success" role="status">{message}</div>}
     <div className="settings-actions">
-      <button type="button" className="button" disabled={disabled} onClick={() => {
+      <Button unstyled type="button" className="button" disabled={disabled} onClick={() => {
         setSettings({ webSearchProvider: DEFAULT_WEB_SEARCH_PROVIDER, deepseekSearchModel: DEFAULT_DEEPSEEK_SEARCH_MODEL, webSearchTimeoutMs: DEFAULT_WEB_SEARCH_TIMEOUT_MS });
         setMessage('已选择 DeepSeek Flash 推荐配置，点击“保存搜索配置”后生效。');
-      }}>使用 DeepSeek Flash</button>
-      <button type="button" className="button" disabled={disabled} onClick={() => { setSettings({ ...EMPTY_SETTINGS }); setMessage(''); }}>
+      }}>使用 DeepSeek Flash</Button>
+      <Button unstyled type="button" className="button" disabled={disabled} onClick={() => { setSettings({ ...EMPTY_SETTINGS }); setMessage(''); }}>
         <RotateCcw size={15} aria-hidden="true" />恢复环境配置
-      </button>
-      {!record && !loading && <button type="button" className="button" onClick={() => { void load(); }}>重新读取</button>}
-      <button type="button" className="button primary" disabled={disabled || invalidTimeout} onClick={save}>{busy ? '保存中…' : '保存搜索配置'}</button>
+      </Button>
+      {!record && !loading && <Button unstyled type="button" className="button" onClick={() => { void load(); }}>重新读取</Button>}
+      <Button unstyled type="button" className="button primary" disabled={disabled || invalidTimeout} onClick={save}>{busy ? '保存中…' : '保存搜索配置'}</Button>
     </div>
   </section>;
 }

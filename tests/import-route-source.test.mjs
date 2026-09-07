@@ -7,10 +7,12 @@ it('screens parsed Excel rows with OpenClaw before creating the preview batch', 
     new URL('../app/api/import-batches/route.ts', import.meta.url),
     'utf8',
   );
-  const screeningCall = route.indexOf('await screenImportRowsWithOpenClaw');
+  const screeningCall = route.indexOf('screenImportRowsWithOpenClaw({');
   const createBatchCall = route.indexOf('store.createImportBatch');
 
   assert.ok(screeningCall >= 0, 'the import route must invoke OpenClaw demand screening');
   assert.ok(createBatchCall > screeningCall, 'screening must finish before the preview batch is written');
   assert.match(route, /OPENCLAW_SCREENING_FAILED/);
+  assert.match(route, /await withPromptExecution/);
+  assert.match(route, /await loadPromptConfiguration\(session\)/);
 });

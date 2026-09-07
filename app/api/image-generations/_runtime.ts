@@ -1,6 +1,6 @@
 import { ApiError } from '../../../src/admin/http.mjs';
-import { withAdminStore } from '../../../src/admin/runtime.mjs';
 import { createAgentClient as createOpenClawClient } from '../../../src/agent-client.mjs';
+import { loadPromptConfiguration } from '../_prompt-runtime';
 import {
   StandaloneImageAlignmentError,
   StandaloneImageCancellationError,
@@ -14,29 +14,11 @@ const runtimeState = globalThis as typeof globalThis & {
 };
 const imageGenerationState = runtimeState.__xhsStandaloneImageGenerationState ??= { active: null };
 
-export function imageGenerationRuntime() {
-  return withAdminStore((store: any) => {
-    const productionSettings = store.getProductionSettings().settings;
-    const template = store.listPromptTemplates()
-      .find((candidate: any) => candidate.kind === 'IMAGE_SYSTEM');
-    const published = template?.versions
-      .find((version: any) => version.status === 'PUBLISHED');
-    if (!published?.content) {
-      throw new StandaloneImageGenerationError('已发布的图片系统提示词不可用');
-    }
-    const visualReference = store.listVisualKnowledge({ status: 'PUBLISHED', pageSize: 100 }).data
-      .filter((item: any) => item.generationTarget === 'MODEL_IMAGE' && item.publishedVersion)
-      .sort((left: any, right: any) => (
-        right.publishedVersion.qualityScore - left.publishedVersion.qualityScore
-      ))[0]?.publishedVersion ?? null;
-    return {
-      productionSettings,
-      imageSystemPrompt: published.content,
-      visualReference,
-      client: createOpenClawClient({ modelApi: productionSettings.modelApi }),
-    };
-  });
+export async function imageGenerationRuntime(session: any) {
+  const configuration = await loadPromptConfiguration(session);
+  return { ...configuration, client: createOpenClawClient({ modelApi: configuration.productionSettings.modelApi }) };
 }
+
 
 export async function withImageGenerationLock<T>(
   runId: string,

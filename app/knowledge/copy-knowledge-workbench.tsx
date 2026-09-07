@@ -1,5 +1,8 @@
 'use client';
 
+import { Textarea } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+
 import { useRouter } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
 
@@ -92,7 +95,7 @@ export function CopyKnowledgeWorkbench({
         <form className="form-grid copy-analysis-create-form" onSubmit={analyze}>
         <div className="field full">
           <label htmlFor="excellent-copy-source">优秀文案</label>
-          <textarea
+          <Textarea
             className="textarea"
             id="excellent-copy-source"
             disabled={busy}
@@ -106,7 +109,7 @@ export function CopyKnowledgeWorkbench({
         </div>
         <div className="field full">
           <label htmlFor="excellent-copy-prompt">分析 Prompt</label>
-          <textarea
+          <Textarea
             className="textarea compact"
             id="excellent-copy-prompt"
             disabled={busy}
@@ -126,11 +129,11 @@ export function CopyKnowledgeWorkbench({
         </div>
         <div className="field full copy-analysis-create-actions">
           <DialogClose asChild>
-            <button className="button" type="button" disabled={busy}>取消</button>
+            <Button unstyled className="button" type="button" disabled={busy}>取消</Button>
           </DialogClose>
-          <button className="button primary" type="submit" disabled={busy || !sourceCopy.trim() || !analysisPrompt.trim()}>
+          <Button unstyled className="button primary" type="submit" disabled={busy || !sourceCopy.trim() || !analysisPrompt.trim()}>
             {busy ? '分析并入库中…' : 'AI 分析并直接入库'}
-          </button>
+          </Button>
         </div>
         </form>
       </DialogContent>

@@ -1,5 +1,8 @@
 'use client';
 
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+
 import { useState, type FormEvent } from 'react';
 
 import { apiRequest } from '../components/api-client';
@@ -37,7 +40,7 @@ export function LoginForm({ nextPath }: { nextPath: string }) {
     <form className="login-form" onSubmit={submit}>
       <div className="field">
         <label htmlFor="account-username">账号</label>
-        <input
+        <Input
           className="input login-input"
           id="account-username"
           name="username"
@@ -52,7 +55,7 @@ export function LoginForm({ nextPath }: { nextPath: string }) {
       </div>
       <div className="field">
         <label htmlFor="account-password">密码</label>
-        <input
+        <Input
           className="input login-input"
           id="account-password"
           name="password"
@@ -64,9 +67,9 @@ export function LoginForm({ nextPath }: { nextPath: string }) {
         />
       </div>
       {error && <div className="notice error" role="alert">{error}</div>}
-      <button className="button primary login-submit" type="submit" disabled={isBusy}>
+      <Button unstyled className="button primary login-submit" type="submit" disabled={isBusy}>
         {isBusy ? '正在验证…' : '进入后台'}
-      </button>
+      </Button>
       <p className="login-help">初始管理员账号为 <code>admin</code>，默认密码为 <code>123456</code>。首次登录后请在个人信息中修改密码。</p>
     </form>
   );

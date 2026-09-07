@@ -7,10 +7,38 @@ import {
   normalizeResearchSnapshot,
   researchSourceUrls,
 } from '../src/research.mjs';
+import { createPromptRuntime, withPromptRuntime } from '../src/prompt-runtime.mjs';
 
 const NOW = '2026-08-29T08:00:00.000Z';
 
 describe('web research snapshots', () => {
+  it('does not append a fixed authority query when governed search yields no sources', async () => {
+    const query = '机械键盘轴体体验比较';
+    const calls = [];
+    const runtime = createPromptRuntime({ prompts: {
+      RESEARCH_SYSTEM: { content: '优先检索用户长期使用反馈，按来源原文引用。', versionId: 'community-search-2', version: 2 },
+    } });
+    const snapshot = await withPromptRuntime(runtime, () => createResearchSnapshot({
+      client: {
+        async runWebSearch(input) {
+          calls.push(input);
+          return { provider: input.provider, result: { results: [] } };
+        },
+      },
+      query,
+      providers: ['codex', 'duckduckgo'],
+      now: () => NOW,
+    }));
+
+    assert.equal(snapshot.status, 'FAILED');
+    assert.deepEqual(calls.map(({ provider, query: submittedQuery }) => ({ provider, query: submittedQuery })), [
+      { provider: 'codex', query },
+      { provider: 'duckduckgo', query },
+    ]);
+    assert.ok(calls.every((call) => !call.query.includes('官方 标准 技术规范')));
+    assert.deepEqual(snapshot.sources, []);
+  });
+
   it('uses only search providers supported by the current OpenClaw release by default', async () => {
     const calls = [];
     const snapshot = await createResearchSnapshot({

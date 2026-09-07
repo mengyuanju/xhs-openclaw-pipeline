@@ -1,6 +1,10 @@
 'use client';
 
-import { Eye, Pencil, Plus, Search, Trash2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input, Textarea } from '@/components/ui/input';
+import { SearchInput } from '@/components/ui/search-input';
+
+import { Eye, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
 
@@ -113,7 +117,7 @@ function CopyKnowledgeEditor({ item }: { item: CopyKnowledgeItem }) {
   const fieldId = (name: string) => `copy-knowledge-${item.id}-${name}`;
 
   return <>
-    <button className="button small" type="button" onClick={() => changeOpen(true)}><Pencil aria-hidden="true" size={13} />编辑</button>
+    <Button unstyled className="button small" type="button" onClick={() => changeOpen(true)}><Pencil aria-hidden="true" size={13} />编辑</Button>
     <Dialog open={open} onOpenChange={changeOpen}>
       <DialogContent className="copy-knowledge-edit-dialog">
         <div className="copy-knowledge-dialog-head">
@@ -123,33 +127,33 @@ function CopyKnowledgeEditor({ item }: { item: CopyKnowledgeItem }) {
         {draft && <form className="form-grid copy-knowledge-edit-form" onSubmit={save}>
           <div className="field full">
             <label htmlFor={fieldId('title')}>分析标题</label>
-            <input className="input" id={fieldId('title')} value={draft.title} maxLength={200} onChange={(event) => updateDraft('title', event.target.value)} required />
+            <Input className="input" id={fieldId('title')} value={draft.title} maxLength={200} onChange={(event) => updateDraft('title', event.target.value)} required />
           </div>
           <div className="field full">
             <label htmlFor={fieldId('source')}>优秀文案</label>
-            <textarea className="textarea" id={fieldId('source')} value={draft.sourceCopy} maxLength={20_000} onChange={(event) => updateDraft('sourceCopy', event.target.value)} required />
+            <Textarea className="textarea" id={fieldId('source')} value={draft.sourceCopy} maxLength={20_000} onChange={(event) => updateDraft('sourceCopy', event.target.value)} required />
           </div>
           <div className="field full">
             <label htmlFor={fieldId('prompt')}>分析 Prompt</label>
-            <textarea className="textarea compact" id={fieldId('prompt')} value={draft.analysisPrompt} maxLength={8_000} onChange={(event) => updateDraft('analysisPrompt', event.target.value)} required />
+            <Textarea className="textarea compact" id={fieldId('prompt')} value={draft.analysisPrompt} maxLength={8_000} onChange={(event) => updateDraft('analysisPrompt', event.target.value)} required />
           </div>
           <div className="field full">
             <label htmlFor={fieldId('summary')}>分析摘要</label>
-            <textarea className="textarea compact" id={fieldId('summary')} value={draft.summary} maxLength={2_000} onChange={(event) => updateDraft('summary', event.target.value)} required />
+            <Textarea className="textarea compact" id={fieldId('summary')} value={draft.summary} maxLength={2_000} onChange={(event) => updateDraft('summary', event.target.value)} required />
           </div>
           <div className="field full">
             <label htmlFor={fieldId('analysis')}>完整分析</label>
-            <textarea className="textarea" id={fieldId('analysis')} value={draft.analysis} maxLength={15_000} onChange={(event) => updateDraft('analysis', event.target.value)} required />
+            <Textarea className="textarea" id={fieldId('analysis')} value={draft.analysis} maxLength={15_000} onChange={(event) => updateDraft('analysis', event.target.value)} required />
           </div>
           <div className="field full">
             <label htmlFor={fieldId('labels')}>分类标签（逗号或换行分隔）</label>
-            <input className="input" id={fieldId('labels')} value={labelText} maxLength={620} aria-describedby={fieldId('labels-help')} onChange={(event) => { setLabelText(event.target.value); setMessage(''); }} required />
+            <Input className="input" id={fieldId('labels')} value={labelText} maxLength={620} aria-describedby={fieldId('labels-help')} onChange={(event) => { setLabelText(event.target.value); setMessage(''); }} required />
             <small id={fieldId('labels-help')}>至少 1 个、最多 12 个标签；重复标签会自动合并。</small>
           </div>
           {message && <div className="notice error copy-knowledge-edit-message" role="alert" aria-live="polite">{message}</div>}
           <div className="field full copy-knowledge-edit-actions">
-            <button className="button" type="button" disabled={busy} onClick={() => changeOpen(false)}>取消</button>
-            <button className="button primary" type="submit" disabled={busy || !canSave}>{busy ? '保存中…' : '保存修改'}</button>
+            <Button unstyled className="button" type="button" disabled={busy} onClick={() => changeOpen(false)}>取消</Button>
+            <Button unstyled className="button primary" type="submit" disabled={busy || !canSave}>{busy ? '保存中…' : '保存修改'}</Button>
           </div>
         </form>}
       </DialogContent>
@@ -221,21 +225,20 @@ export function CopyKnowledgeLibrary({
       <div><span className="eyebrow">Classified library</span><h2 id="copy-knowledge-library-heading">文案知识库</h2></div>
       <div className="copy-knowledge-library-actions">
         <span className="subtle">{availableItems.length} 条</span>
-        <button className="button primary" type="button" onClick={onAddAnalysis}><Plus aria-hidden="true" size={15} />新增分析</button>
+        <Button unstyled className="button primary" type="button" onClick={onAddAnalysis}><Plus aria-hidden="true" size={15} />新增分析</Button>
       </div>
     </div>
     <div className="copy-label-filter-block">
       <span className="subtle" id="copy-label-filter-label">按标签查看</span>
       <div className="copy-label-filters" role="group" aria-labelledby="copy-label-filter-label">
-        <button className="button small" type="button" aria-pressed={selectedLabel === 'ALL'} onClick={() => onSelectLabel('ALL')}>全部 {availableItems.length}</button>
-        {labels.map((label) => <button className="button small" type="button" key={label.name} aria-pressed={selectedLabel === label.name} onClick={() => onSelectLabel(label.name)}>{label.name} {label.itemCount}</button>)}
+        <Button unstyled className="button small" type="button" aria-pressed={selectedLabel === 'ALL'} onClick={() => onSelectLabel('ALL')}>全部 {availableItems.length}</Button>
+        {labels.map((label) => <Button unstyled className="button small" type="button" key={label.name} aria-pressed={selectedLabel === label.name} onClick={() => onSelectLabel(label.name)}>{label.name} {label.itemCount}</Button>)}
       </div>
     </div>
-    <label className="copy-knowledge-search">
+    <div className="copy-knowledge-search">
       <span className="sr-only">根据分析标题搜索</span>
-      <Search aria-hidden="true" size={16} />
-      <input className="input" type="search" value={searchQuery} maxLength={200} placeholder="搜索分析标题" onChange={(event) => setSearchQuery(event.target.value)} />
-    </label>
+      <SearchInput className="input"  value={searchQuery} maxLength={200} placeholder="搜索分析标题" onValueChange={(value) => setSearchQuery(value)} />
+    </div>
     {message && <div className={messageIsError ? 'notice error copy-knowledge-library-message' : 'notice success copy-knowledge-library-message'} role={messageIsError ? 'alert' : 'status'} aria-live="polite">{message}</div>}
     {visibleItems.length === 0 ? <div className="empty-state">{emptyMessage}</div> : <ul className="copy-knowledge-list">
       {visibleItems.map((item) => <li key={item.id}>
@@ -244,9 +247,9 @@ export function CopyKnowledgeLibrary({
           <div className="copy-knowledge-item-side">
             <time dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleString('zh-CN')}</time>
             <div className="copy-knowledge-item-actions">
-              <button className="button small" type="button" onClick={() => setViewedItem(item)}><Eye aria-hidden="true" size={13} />查看</button>
+              <Button unstyled className="button small" type="button" onClick={() => setViewedItem(item)}><Eye aria-hidden="true" size={13} />查看</Button>
               <CopyKnowledgeEditor item={item} />
-              <button className="button small danger" type="button" disabled={deletingId !== null} onClick={() => { void deleteItem(item); }}><Trash2 aria-hidden="true" size={13} />{deletingId === item.id ? '删除中…' : '删除'}</button>
+              <Button unstyled className="button small danger" type="button" disabled={deletingId !== null} onClick={() => { void deleteItem(item); }}><Trash2 aria-hidden="true" size={13} />{deletingId === item.id ? '删除中…' : '删除'}</Button>
             </div>
           </div>
         </div>
@@ -268,7 +271,7 @@ export function CopyKnowledgeLibrary({
             <section><h3>完整分析</h3><p>{viewedItem.analysis}</p></section>
           </div>
           <div className="copy-knowledge-dialog-actions">
-            <DialogClose asChild><button className="button primary" type="button">关闭</button></DialogClose>
+            <DialogClose asChild><Button unstyled className="button primary" type="button">关闭</Button></DialogClose>
           </div>
         </>}
       </DialogContent>

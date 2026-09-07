@@ -160,7 +160,7 @@ describe('separate batch generation workspaces', () => {
     assert.match(imageWorkbench, /真实图片并执行 OCR 与质量检查/u);
     assert.match(imageWorkbench, /仅显示人工质检通过的文案/u);
     assert.match(interfaceSource, /完成当前条后停止/u);
-    assert.match(interfaceSource, /<progress/u);
+    assert.match(interfaceSource, /<Progress/u);
     assert.match(interfaceSource, /aria-live="polite"/u);
     assert.match(interfaceSource, /role="alert"/u);
     assert.match(interfaceSource, /批量文案已完成/u);

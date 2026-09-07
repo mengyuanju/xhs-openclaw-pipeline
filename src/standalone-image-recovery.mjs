@@ -1,3 +1,5 @@
+import { dirname } from 'node:path';
+import { copyImageArtifacts } from './image-artifacts.mjs';
 import { createHash } from 'node:crypto';
 import { appendFile, copyFile, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -8,6 +10,7 @@ import {
   DELIVERY_IMAGE_WIDTH,
 } from './image-output-contract.mjs';
 import { parseVisualPlanOutput } from './visual-plan.mjs';
+import { assertLockedImageText, imageTextHash } from './locked-image-plan.mjs';
 
 const ALIGNMENT_ATTEMPTS_FILE = 'alignment-attempts.jsonl';
 const IMAGE_FILE = /^\d{2}-[a-z][a-z0-9-]{0,30}\.png$/u;
@@ -39,6 +42,7 @@ export async function stageRecoveryImages({ images, outputDir }) {
     const rawFile = `.raw-${image.file.slice(0, 2)}-attempt-${image.generationAttempts}.png`;
     const outputPath = join(outputDir, image.needsNormalization ? rawFile : image.file);
     await copyFile(image.sourcePath, outputPath);
+    if (!image.needsNormalization) await copyImageArtifacts(image, dirname(image.sourcePath), outputDir);
     const hash = createHash('sha256').update(await readFile(outputPath)).digest('hex');
     if (hash !== image.sha256) throw new StandaloneImageRecoveryError('恢复图片在复制时发生变化');
     await writeImageCheckpoint({
@@ -113,6 +117,7 @@ export function sourceForStandaloneRecovery(storedSource) {
       tags: storedSource.post.tags,
     },
     imagePlan: storedSource.post.imagePlan,
+    ...(storedSource.post.imageSettings ? { imageSettings: storedSource.post.imageSettings } : {}),
   };
 }
 
@@ -126,6 +131,10 @@ export function plannedForStandaloneRecovery({ storedPlan, post, normalizeNotice
       post,
       imageCount: post.imagePlan.length,
     });
+    if (storedPlan.value.textContractSha256) {
+      if (storedPlan.value.textContractSha256 !== imageTextHash(post)) throw new TypeError('锁定文案 hash 不一致');
+      assertLockedImageText(visualPlan, post);
+    }
   } catch {
     throw new StandaloneImageRecoveryError('原运行的视觉规划无法通过结构校验');
   }

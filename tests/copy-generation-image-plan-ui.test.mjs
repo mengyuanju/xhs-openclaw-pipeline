@@ -21,8 +21,8 @@ describe('standalone copy image-plan presentation', () => {
     assert.match(comparison, /page\.bullets\.map/u);
     assert.match(comparison, /page\.prompt/u);
     assert.match(comparison, /<ol className="copy-image-plan-list">/u);
-    assert.match(comparison, /<details/u);
-    assert.match(comparison, /<summary>查看画面提示<\/summary>/u);
+    assert.match(comparison, /<Disclosure/u);
+    assert.match(comparison, /<DisclosureTrigger>查看画面提示<\/DisclosureTrigger>/u);
   });
 
   it('uses responsive image-plan styles without turning each page into raw JSON', async () => {

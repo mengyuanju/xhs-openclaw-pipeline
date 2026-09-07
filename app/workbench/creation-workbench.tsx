@@ -1,5 +1,9 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/input';
+import { SearchInput } from '@/components/ui/search-input';
+
 import {
   Clock3,
   Eye,
@@ -418,40 +422,40 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
 
   function taskActions(task: DistributedTask) {
     const busy = actingTaskId === task.id;
-    if (isAllJobs) return <button className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>;
+    if (isAllJobs) return <Button unstyled className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>;
     const canDiscard = role === 'ADMIN' || task.createdByUserId === creatorUserId;
     const canRetryCopy = canDiscard && ['COPY_RUNNING', 'COPY_FAILED'].includes(task.state);
     const canRetryImages = canDiscard && canRequeueImages(task);
-    const retryImageButton = <button
+    const retryImageButton = <Button unstyled
       className="button small"
       type="button"
       disabled={busy || !canRetryImages}
       title={canRetryImages ? '重新进入待生图队列' : '文案尚未审核通过，暂不能重试生图'}
       onClick={() => { void retryImages(task); }}
-    ><RotateCcw size={14} />重试生图</button>;
+    ><RotateCcw size={14} />重试生图</Button>;
     if (activeView === 'ALL_COPY') return <TaskRowActions taskId={task.id} busy={busy}>
-      <button className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>
-      {canRetryCopy && <button className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</button>}
-      {canDiscard && <button className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</button>}
+      <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
+      {canRetryCopy && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</Button>}
+      {canDiscard && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</Button>}
     </TaskRowActions>;
     if (activeView === 'COPY_REVIEW') return <TaskRowActions taskId={task.id} busy={busy}>
-      <button className="button small primary" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />审核</button>
-      {canDiscard && <button className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</button>}
+      <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />审核</Button>
+      {canDiscard && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</Button>}
     </TaskRowActions>;
     if (activeView === 'IMAGE_WORK') return <TaskRowActions taskId={task.id} busy={busy}>
-      <button className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>
+      <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
       {retryImageButton}
     </TaskRowActions>;
-    if (task.state === 'REVIEWED') return <button className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>;
+    if (task.state === 'REVIEWED') return <Button unstyled className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>;
     if (task.state === 'MANUAL_ARCHIVE' && ['ADMIN', 'REVIEWER'].includes(role)) return <TaskRowActions taskId={task.id} busy={busy}>
-      <button className="button small primary" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />审核</button>
-      <button className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</button>
+      <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />审核</Button>
+      <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</Button>
     </TaskRowActions>;
     return <TaskRowActions taskId={task.id} busy={busy}>
-      <button className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</button>
-      {activeView === 'PERSONAL' && canRetryCopy && <button className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</button>}
+      <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
+      {activeView === 'PERSONAL' && canRetryCopy && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</Button>}
       {activeView === 'PERSONAL' && retryImageButton}
-      {canDiscard && <button className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</button>}
+      {canDiscard && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</Button>}
     </TaskRowActions>;
   }
 
@@ -512,9 +516,9 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
           <p>{activeDefinition.description}</p>
         </div>
         <div className="workbench-toolbar-actions">
-          <button className="button small" type="button" disabled={refreshing} onClick={() => { void refresh(); }}>
+          <Button unstyled className="button small" type="button" disabled={refreshing} onClick={() => { void refresh(); }}>
             <RefreshCw className={refreshing ? 'animate-spin' : ''} aria-hidden="true" size={14} />刷新
-          </button>
+          </Button>
           <Dialog open={createOpen} onOpenChange={(open) => {
             if (creating) return;
             if (open) {
@@ -523,7 +527,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
             setCreateOpen(open);
           }}>
             <DialogTrigger asChild>
-              <button className="button primary" type="button"><Plus aria-hidden="true" size={16} />创建笔记</button>
+              <Button unstyled className="button primary" type="button"><Plus aria-hidden="true" size={16} />创建笔记</Button>
             </DialogTrigger>
             <DialogContent className="workbench-create-dialog">
               <div className="workbench-create-heading">
@@ -536,7 +540,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
               <form className="workbench-create-form" onSubmit={createTasks}>
                 <div className="field">
                   <label htmlFor="workbench-query-text">笔记选题（Query）</label>
-                  <textarea
+                  <Textarea
                     className="textarea workbench-query-textarea"
                     id="workbench-query-text"
                     value={queryText}
@@ -572,10 +576,10 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
                 <div className="workbench-create-footer">
                   <span aria-live="polite">已识别 {queryBatch.queries.length} 条 Query，按输入顺序加入队列。</span>
                   <div>
-                    <DialogClose asChild><button className="button" type="button" disabled={creating}>取消</button></DialogClose>
-                    <button className="button primary" type="submit" disabled={creating || Boolean(queryBatch.error)}>
+                    <DialogClose asChild><Button unstyled className="button" type="button" disabled={creating}>取消</Button></DialogClose>
+                    <Button unstyled className="button primary" type="submit" disabled={creating || Boolean(queryBatch.error)}>
                       {creating ? <><LoaderCircle className="animate-spin" size={16} />正在创建…</> : <>创建并加入队列</>}
-                    </button>
+                    </Button>
                   </div>
                 </div>
               </form>
@@ -596,24 +600,23 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
       <div className="workbench-list-tools">
         <form className="workbench-query-search" role="search" onSubmit={submitSearch}>
           <label className="sr-only" htmlFor="workbench-query-search">搜索 Query</label>
-          <Search aria-hidden="true" size={15} />
-          <input
+          <SearchInput
             id="workbench-query-search"
             value={searchInput}
             maxLength={500}
             placeholder="按 Query 关键字搜索"
-            onChange={(event) => setSearchInput(event.target.value)}
+            onValueChange={(value) => setSearchInput(value)}
           />
-          {searchKeyword && <button className="button small" type="button" onClick={clearSearch}>清除</button>}
-          <button className="button small" type="submit">搜索</button>
+          {searchKeyword && <Button unstyled className="button small" type="button" onClick={clearSearch}>清除</Button>}
+          <Button unstyled className="button small" type="submit">搜索</Button>
         </form>
         <span>{lastUpdatedAt ? `共 ${total} 条${searchKeyword ? `匹配“${searchKeyword}”` : ''}` : '尚未读取任务'}</span>
-        {hasFilters && <button className="button small" type="button" onClick={clearFilters}>清空筛选</button>}
+        {hasFilters && <Button unstyled className="button small" type="button" onClick={clearFilters}>清空筛选</Button>}
       </div>
 
       {fetchError && <div className="notice error workbench-refresh-notice" role="alert">
         <div>刷新失败：{fetchError}{lastUpdatedAt && ' 以下保留上次成功读取的数据，可能不符合当前筛选或最新状态。'}</div>
-        <button className="button small" type="button" disabled={refreshing} onClick={() => { void refresh(); }}>重新读取</button>
+        <Button unstyled className="button small" type="button" disabled={refreshing} onClick={() => { void refresh(); }}>重新读取</Button>
       </div>}
       {lastUpdatedAt && <p className="workbench-updated-at" role="status">{loading ? `正在读取第 ${page} 页，暂时保留上次结果…` : `最近成功刷新：${timeLabel(lastUpdatedAt)} · 每 30 秒自动刷新`}</p>}
 
@@ -623,7 +626,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
         : visibleTasks.length === 0
           ? <div className="workbench-empty">
             <span>{isAllJobs || hasFilters ? '没有符合当前筛选条件的作业。' : activeView === 'PERSONAL' ? '当前没有你创建的 Query 任务。' : `当前没有${activeDefinition.label}任务。`}</span>
-            {activeView === 'PERSONAL' && <button className="button small" type="button" onClick={() => setCreateOpen(true)}><Plus size={14} />创建第一条笔记</button>}
+            {activeView === 'PERSONAL' && <Button unstyled className="button small" type="button" onClick={() => setCreateOpen(true)}><Plus size={14} />创建第一条笔记</Button>}
           </div>
           : <div ref={listStart} className="table-wrap mobile-cards workbench-table-wrap" tabIndex={0} role="region" aria-label="作业列表，可横向滚动查看完整列" aria-busy={loading} inert={loading}>
             <table>
@@ -632,7 +635,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
                 <td className="query-cell" data-label="作业 / Query">
                   <div className="workbench-cell-stack">
                     <span className="mono workbench-task-id">#{task.id}</span>
-                    <button className="workbench-query-preview workbench-text-preview" type="button" title={task.query} aria-label={`查看作业 #${task.id}：${task.query}`} onClick={() => setSelectedTaskId(task.id)}>{task.query}</button>
+                    <Button unstyled className="workbench-query-preview workbench-text-preview" type="button" title={task.query} aria-label={`查看作业 #${task.id}：${task.query}`} onClick={() => setSelectedTaskId(task.id)}>{task.query}</Button>
                   </div>
                 </td>
                 <td data-label="作业员"><div className="workbench-cell-stack">

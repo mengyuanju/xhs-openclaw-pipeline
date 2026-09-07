@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { withPromptTraceContext, requestPromptProvenance } from './prompt-trace-context.mjs';
+import { promptRuntimeSnapshot } from './prompt-runtime.mjs';
 
 const contexts = new AsyncLocalStorage();
 const LIMIT = 200_000;
@@ -15,7 +17,7 @@ export function safeTraceText(value, secrets = []) {
   return { text: text.slice(0, LIMIT), truncated: text.length > LIMIT };
 }
 
-export function withModelCallTracing({ executionId, controlPlane }, action) {
+export function withModelCallTracing({ executionId, controlPlane, snapshot }, action) {
   if (typeof controlPlane.recordModelCall !== 'function') return action(controlPlane);
   const state = { sequence: 0, stage: 'STARTING', executionId, controlPlane };
   const tracedPlane = new Proxy(controlPlane, {
@@ -27,7 +29,7 @@ export function withModelCallTracing({ executionId, controlPlane }, action) {
       return typeof target[key] === 'function' ? target[key].bind(target) : target[key];
     },
   });
-  return contexts.run(state, () => action(tracedPlane));
+  return withPromptTraceContext(snapshot, () => contexts.run(state, () => action(tracedPlane)));
 }
 
 export async function traceModelCall(metadata, operation, secrets = []) {
@@ -35,9 +37,16 @@ export async function traceModelCall(metadata, operation, secrets = []) {
   if (!context) return operation({ response() {}, fail() {} });
   const started = Date.now();
   const prompt = safeTraceText(metadata.prompt, secrets);
-  const request = safeTraceText(metadata.request, secrets);
+  const request = safeTraceText({ format: 'xhs-model-request', schemaVersion: 1,
+    scope: metadata.requestScope ?? 'UNSPECIFIED', provenance: {
+      ...requestPromptProvenance(metadata.prompt),
+      runtime: promptRuntimeSnapshot() ? { source: promptRuntimeSnapshot().source,
+        capturedAt: promptRuntimeSnapshot().capturedAt, settings: promptRuntimeSnapshot().settings } : null,
+    }, payload: metadata.request }, secrets);
   const record = {
-    id: randomUUID(), sequence: ++context.sequence, stage: context.stage,
+    id: randomUUID(), sequence: ++context.sequence, stage: context.stage === 'STARTING'
+      ? [...prompt.text.matchAll(/<trusted_business_rules kind="([A-Z_]+)">/gu)].at(-1)?.[1] ?? metadata.operation ?? context.stage
+      : context.stage,
     provider: metadata.provider, operation: metadata.operation, model: metadata.model || '',
     prompt: prompt.text, request: request.text, response: null, error: null,
     truncated: prompt.truncated || request.truncated,
@@ -89,7 +98,7 @@ export function tracedModelFetch(fetchImpl, provider) {
       .map(([, value]) => String(value).replace(/^Bearer\s+/iu, ''));
     return traceModelCall({
       provider, model: body.model, operation: body.tools ? 'WEB_SEARCH' : 'TEXT',
-      prompt: body.input ?? body.messages, request: body,
+      prompt: body.input ?? body.messages, request: body, requestScope: 'HTTP_BODY',
     }, async (capture) => {
       const response = await fetchImpl(url, options);
       // Read a clone: preserve the original body's parsing and error behavior.
@@ -131,7 +140,8 @@ export function tracedOpenClawRunner(runner) {
       .map(([, value]) => value);
     return traceModelCall({
       provider: 'OpenClaw', operation, model: flag('--model'), prompt,
-      request: { operation, model: flag('--model'), thinking: flag('--thinking'),
+      requestScope: 'CLI_INPUT',
+      request: { args, input: prompt, operation, model: flag('--model'), thinking: flag('--thinking'),
         searchProvider: flag('--provider'), sessionId: flag('--session-id'),
         files: args.flatMap((arg, index) => arg === '--file' ? [args[index + 1]] : []) },
     }, async (capture) => {

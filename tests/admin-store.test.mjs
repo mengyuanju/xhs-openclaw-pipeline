@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
 
 import { createAdminStore } from '../src/admin/admin-store.mjs';
+import { PROMPT_KINDS } from '../src/prompt-catalog.mjs';
 import { createQueue } from '../src/queue.mjs';
 
 describe('admin prompt versions', () => {
@@ -15,7 +16,7 @@ describe('admin prompt versions', () => {
       const templates = store.listPromptTemplates();
       assert.deepEqual(
         templates.map((template) => template.kind).sort(),
-        ['IMAGE_EDIT_SYSTEM', 'IMAGE_SYSTEM', 'TEXT_SYSTEM'],
+        [...PROMPT_KINDS].sort(),
       );
 
       const textTemplate = templates.find((template) => template.kind === 'TEXT_SYSTEM');

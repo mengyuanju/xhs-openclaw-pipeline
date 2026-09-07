@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+
 import { CircleAlert, FileText, History, LoaderCircle } from 'lucide-react';
 
 import { formatDuration } from '../components/time-format';
@@ -90,7 +92,7 @@ export function CopyGenerationHistory({
           <p>还没有已保存的双版本文案。</p>
         </div> : <ol className="copy-history-list">
           {records.map((record) => <li key={record.id}>
-            <button type="button" aria-pressed={selectedId === record.id} onClick={() => onSelect(record)}>
+            <Button unstyled type="button" aria-pressed={selectedId === record.id} onClick={() => onSelect(record)}>
               <strong>{record.query}</strong>
               {record.batchName && <span className="pill">批次：{record.batchName}</span>}
               {record.reviewed.review.skipped
@@ -101,7 +103,7 @@ export function CopyGenerationHistory({
               <span>#{record.id} · {new Date(record.createdAt).toLocaleString('zh-CN')} · {record.generation.timing
                 ? formatDuration(record.generation.timing.totalMs)
                 : '耗时未记录'}</span>
-            </button>
+            </Button>
           </li>)}
         </ol>}
   </aside>;

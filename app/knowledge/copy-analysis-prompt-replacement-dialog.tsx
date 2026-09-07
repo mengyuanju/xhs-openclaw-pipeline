@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+
 import {
   Dialog,
   DialogClose,
@@ -87,16 +89,16 @@ export function CopyAnalysisPromptReplacementDialog({
       >{message}</p>}
       <div className="copy-analysis-prompt-dialog-actions">
         <DialogClose asChild>
-          <button className="button" type="button" disabled={busy}>取消</button>
+          <Button unstyled className="button" type="button" disabled={busy}>取消</Button>
         </DialogClose>
-        <button
+        <Button unstyled
           className="button primary"
           type="button"
           disabled={!replacementId || busy}
           onClick={onReplace}
         >
           {busy ? '替换中…' : '替换并保存'}
-        </button>
+        </Button>
       </div>
     </DialogContent>
   </Dialog>;

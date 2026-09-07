@@ -1,5 +1,8 @@
 'use client';
 
+import { Input, Textarea } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+
 import { Files, Sparkles } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 
@@ -278,17 +281,17 @@ export function BatchCopyGenerationWorkbench() {
           </div>}
           <div className="field full">
             <label htmlFor="batch-copy-name">新批次名称（可选）</label>
-            <input className="input" id="batch-copy-name" name="batchName" maxLength={100} placeholder="例如：9月3日混合选题；留空自动按时间命名" />
+            <Input className="input" id="batch-copy-name" name="batchName" maxLength={100} placeholder="例如：9月3日混合选题；留空自动按时间命名" />
           </div>
           <div className="field full">
             <label htmlFor="batch-copy-queries">选题列表</label>
-            <textarea className="textarea batch-generation-queries" id="batch-copy-queries" name="queries" maxLength={10_019} required placeholder={'每行一个选题，2–20 条\n租房桌面怎么低成本整理？\n小户型玄关有哪些收纳误区？'} />
+            <Textarea className="textarea batch-generation-queries" id="batch-copy-queries" name="queries" maxLength={10_019} required placeholder={'每行一个选题，2–20 条\n租房桌面怎么低成本整理？\n小户型玄关有哪些收纳误区？'} />
             <small>空行会自动忽略；重复选题会在提交前拦截。</small>
           </div>
-          <div className="field"><label htmlFor="batch-copy-category">内容分类（可选）</label><input className="input" id="batch-copy-category" name="category" maxLength={100} /></div>
-          <div className="field"><label htmlFor="batch-copy-audience">目标受众（可选）</label><input className="input" id="batch-copy-audience" name="targetAudience" maxLength={200} /></div>
-          <div className="field full"><label htmlFor="batch-copy-reference-text">共享参考资料（可选）</label><textarea className="textarea compact" id="batch-copy-reference-text" name="referenceText" maxLength={12_000} /></div>
-          <div className="field full"><label htmlFor="batch-copy-reference-urls">共享参考链接（可选）</label><textarea className="textarea compact" id="batch-copy-reference-urls" name="referenceUrls" maxLength={4_007} placeholder="每行一个 HTTP(S) 链接，最多 8 条" /></div>
+          <div className="field"><label htmlFor="batch-copy-category">内容分类（可选）</label><Input className="input" id="batch-copy-category" name="category" maxLength={100} /></div>
+          <div className="field"><label htmlFor="batch-copy-audience">目标受众（可选）</label><Input className="input" id="batch-copy-audience" name="targetAudience" maxLength={200} /></div>
+          <div className="field full"><label htmlFor="batch-copy-reference-text">共享参考资料（可选）</label><Textarea className="textarea compact" id="batch-copy-reference-text" name="referenceText" maxLength={12_000} /></div>
+          <div className="field full"><label htmlFor="batch-copy-reference-urls">共享参考链接（可选）</label><Textarea className="textarea compact" id="batch-copy-reference-urls" name="referenceUrls" maxLength={4_007} placeholder="每行一个 HTTP(S) 链接，最多 8 条" /></div>
           <div className="field full">
             <label htmlFor="batch-copy-image-count">每条配图策划页数</label>
             <Select value={imageCount} onValueChange={setImageCount}>
@@ -297,7 +300,7 @@ export function BatchCopyGenerationWorkbench() {
             </Select>
           </div>
           <div className="field full"><div className="notice">本批次只生成并保存文案。完成后必须人工质检通过，才会出现在批量生图页面。</div></div>
-          <div className="field full inline batch-generation-actions"><button className="button primary" type="submit"><Sparkles aria-hidden="true" size={16} />开始批量生成文案</button><span className="subtle">严格顺序执行，不会并发调用模型。</span></div>
+          <div className="field full inline batch-generation-actions"><Button unstyled className="button primary" type="submit"><Sparkles aria-hidden="true" size={16} />开始批量生成文案</Button><span className="subtle">严格顺序执行，不会并发调用模型。</span></div>
         </fieldset>
         {validationError && <div className="notice error batch-generation-message" role="alert">{validationError}</div>}
         {historyLoadError && <div className="notice error batch-generation-message" role="alert">待质检记录恢复失败：{historyLoadError}</div>}

@@ -1,8 +1,12 @@
 'use client';
 
+import { Disclosure, DisclosureTrigger, DisclosureContent } from '@/components/ui/disclosure';
+import { Button } from '@/components/ui/button';
+
 import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { apiRequest } from '../components/api-client';
+import { ModelRequestDetails } from './model-request-details';
 
 const ModelResponseView = dynamic(() => import('./model-response-view').then((module) => module.ModelResponseView), {
   loading: () => <p role="status">正在准备阅读视图…</p>,
@@ -47,28 +51,28 @@ function CallCard({ taskId, item }: { taskId: number; item: Call }) {
     return () => abort.abort();
   }, [open, taskId, item.id, revision]);
 
-  return <details className="model-call-card" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary>
+  return <Disclosure className="model-call-card" open={open} onOpenChange={setOpen}>
+    <DisclosureTrigger>
       <span><strong>第 {item.sequence} 步 · {STAGES[item.stage] ?? OPERATIONS[item.operation] ?? '模型调用'}</strong>
         <small>{item.provider} · {item.model || '未暴露模型名称'} · {OPERATIONS[item.operation] ?? '模型调用'}</small></span>
       <span className={`model-call-status ${item.status === 'FAILED' ? 'is-failed' : ''}`}>
         {STATUSES[item.status] ?? '未知状态'}{item.durationMs !== null ? ` · ${(item.durationMs / 1000).toFixed(1)} 秒` : ''}
       </span>
-    </summary>
+    </DisclosureTrigger><DisclosureContent>
     {open && <div className="model-call-body">
       <p className="model-call-note">调用时间：{formatTime(item.startedAt)}</p>
-      {error && <div role="alert" className="notice error">{error} <button className="button" type="button" onClick={() => setRevision((value) => value + 1)}>重试加载</button></div>}
+      {error && <div role="alert" className="notice error">{error} <Button unstyled className="button" type="button" onClick={() => setRevision((value) => value + 1)}>重试加载</Button></div>}
       {!detail && !error && <p role="status">正在加载提示词与返回内容…</p>}
       {detail && <>
         {detail.truncated && <p className="notice warning">记录内容过长，已截断展示；并非完整原文。</p>}
-        <h4>实际发送的提示词</h4><pre>{detail.prompt || '此调用未提供文本提示词。'}</pre>
+        <ModelRequestDetails detail={detail} />
+        <Disclosure className="model-call-request"><DisclosureTrigger>{detail.truncated ? '提示词记录（可能已截断）' : '完整提示词原文（已脱敏）'}</DisclosureTrigger><DisclosureContent><pre>{detail.prompt || '此调用未提供文本提示词。'}</pre></DisclosureContent></Disclosure>
         <h4>模型返回内容</h4>
         {detail.response != null ? <ModelResponseView text={detail.response} /> : <p className="model-call-note">{detail.status === 'RUNNING' ? '暂未记录返回：调用可能仍在执行，或执行机已中断。' : '未取得返回内容。'}</p>}
         {detail.error && <><h4>调用错误</h4><pre className="model-call-error">{detail.error}</pre></>}
-        <details className="model-call-request"><summary>查看请求参数（已脱敏）</summary><pre>{detail.request}</pre></details>
       </>}
     </div>}
-  </details>;
+  </DisclosureContent></Disclosure>;
 }
 
 export function ModelCallTrace({ taskId }: { taskId: number }) {
@@ -86,12 +90,12 @@ export function ModelCallTrace({ taskId }: { taskId: number }) {
     return () => abort.abort();
   }, [open, taskId, page, revision]);
 
-  return <details className="model-call-trace workbench-review-section" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary><strong>模型调用链路</strong><span>{open ? '收起' : '展开查看每一步的提示词与返回内容'}</span></summary>
+  return <Disclosure className="model-call-trace workbench-review-section" open={open} onOpenChange={setOpen}>
+    <DisclosureTrigger><strong>模型调用链路</strong><span>{open ? '收起' : '展开查看每一步的提示词与返回内容'}</span></DisclosureTrigger><DisclosureContent>
     {open && <div className="model-call-trace-content">
-      <p className="model-call-note">按执行轮次和调用顺序记录，重试单独保留。这里展示项目实际发送和收到的内容（已脱敏）；OpenClaw 内部未返回的子调用不可见。“已返回”不代表业务校验通过。</p>
+      <p className="model-call-note">按执行轮次和调用顺序记录，重试单独保留。这里展示项目实际发送和收到的内容（已脱敏）；模型客户端及服务商内部未返回的子调用不可见。“已返回”不代表业务校验通过。</p>
       <div className="model-call-toolbar"><span>{data ? `共 ${data.total} 次调用` : '模型调用记录'}</span>
-        <button type="button" className="button" onClick={() => setRevision((value) => value + 1)}>刷新记录</button></div>
+        <Button unstyled type="button" className="button" onClick={() => setRevision((value) => value + 1)}>刷新记录</Button></div>
       {error && <div role="alert" className="notice error">加载失败：{error}。请确认中心服务已升级，可点击刷新重试。</div>}
       {!data && !error && <p role="status">正在加载调用链路…</p>}
       {data?.items.length === 0 && <p className="model-call-empty">暂无模型调用记录。旧任务或未升级执行机的任务可能没有记录，无法还原当时的提示词与返回内容。</p>}
@@ -103,10 +107,10 @@ export function ModelCallTrace({ taskId }: { taskId: number }) {
         <CallCard taskId={taskId} item={item} />
       </div>)}
       {data && (data.total > PAGE_SIZE || page > 0) && <div className="model-call-toolbar">
-        <button type="button" className="button" disabled={page === 0} onClick={() => setPage(page - 1)}>上一页</button>
+        <Button unstyled type="button" className="button" disabled={page === 0} onClick={() => setPage(page - 1)}>上一页</Button>
         <span>第 {page + 1} 页 / 共 {Math.max(1, Math.ceil(data.total / PAGE_SIZE))} 页</span>
-        <button type="button" className="button" disabled={(page + 1) * PAGE_SIZE >= data.total} onClick={() => setPage(page + 1)}>下一页</button>
+        <Button unstyled type="button" className="button" disabled={(page + 1) * PAGE_SIZE >= data.total} onClick={() => setPage(page + 1)}>下一页</Button>
       </div>}
     </div>}
-  </details>;
+  </DisclosureContent></Disclosure>;
 }

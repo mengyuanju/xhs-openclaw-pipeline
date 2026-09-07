@@ -1,5 +1,10 @@
 'use client';
 
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
+import { Textarea } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+import { Disclosure, DisclosureTrigger, DisclosureContent } from '@/components/ui/disclosure';
+
 import {
   CheckCircle2,
   Clock3,
@@ -271,22 +276,22 @@ export function DistributedJobsWorkbench({
       <div className="form-grid">
         <div className="field full">
           <label htmlFor="distributed-queries">选题 Query</label>
-          <textarea className="textarea" id="distributed-queries" name="queries" required maxLength={50_100} placeholder={'每行一个选题；支持单条或批量创建\n例如：租房桌面怎么低成本整理？'} />
+          <Textarea className="textarea" id="distributed-queries" name="queries" required maxLength={50_100} placeholder={'每行一个选题；支持单条或批量创建\n例如：租房桌面怎么低成本整理？'} />
           <small>创建后立即写入远端中心；所有空闲执行机会按任务 ID 顺序从共享队列领取。</small>
         </div>
         <div className="field">
           <label htmlFor="distributed-image-count">配图页数</label>
-          <select className="input" id="distributed-image-count" name="imageCount" defaultValue="auto">
-            <option value="auto">自动（3–5 页）</option>
-            <option value="3">3 页</option>
-            <option value="4">4 页</option>
-            <option value="5">5 页</option>
-          </select>
+          <Select name="imageCount" defaultValue="auto"><SelectTrigger id="distributed-image-count"><SelectValue /></SelectTrigger><SelectContent>
+            <SelectItem value="auto">自动（3–5 页）</SelectItem>
+            <SelectItem value="3">3 页</SelectItem>
+            <SelectItem value="4">4 页</SelectItem>
+            <SelectItem value="5">5 页</SelectItem>
+          </SelectContent></Select>
         </div>
         <div className="field full inline">
-          <button className="button primary" type="submit" disabled={busy}>
+          <Button unstyled className="button primary" type="submit" disabled={busy}>
             {busy ? <><LoaderCircle className="animate-spin" size={16} />正在提交…</> : <>创建远端任务</>}
-          </button>
+          </Button>
           <span className="subtle">这里只创建任务，不在页面请求中直接调用模型。</span>
         </div>
       </div>
@@ -295,9 +300,9 @@ export function DistributedJobsWorkbench({
     {!creationOnly && <section className="panel">
       <div className="panel-head">
         <div><span className="section-kicker">Remote source of truth</span><h2>全部作业</h2></div>
-        <button className="button small" type="button" disabled={loading || busy} onClick={() => { void refresh(); }}>
+        <Button unstyled className="button small" type="button" disabled={loading || busy} onClick={() => { void refresh(); }}>
           <RefreshCw aria-hidden="true" size={14} />刷新
-        </button>
+        </Button>
       </div>
       {loading
         ? <div className="empty-state"><LoaderCircle className="animate-spin" size={20} />正在读取中心任务…</div>
@@ -313,7 +318,7 @@ export function DistributedJobsWorkbench({
                 <td className="mono" data-label="节点">{task.copyExecutorNodeId ?? '待领取'}</td>
                 <td data-label="阶段 / 进度"><div className="distributed-progress"><span>{task.currentStage || '—'} · {task.progressPercent}%</span><small>{isStale(task) ? '长时间无进度，可人工重新执行' : task.progressMessage}</small></div></td>
                 <td data-label="耗时"><Clock3 aria-hidden="true" size={13} /> {elapsed(task)}</td>
-                <td data-label="操作"><button className="button small" type="button" onClick={() => { void openTask(task.id); }}>查看 / 审核</button></td>
+                <td data-label="操作"><Button unstyled className="button small" type="button" onClick={() => { void openTask(task.id); }}>查看 / 审核</Button></td>
               </tr>)}</tbody>
             </table>
           </div>}
@@ -322,7 +327,7 @@ export function DistributedJobsWorkbench({
     {selected && <section className="panel distributed-task-detail" aria-live="polite">
       <div className="panel-head">
         <div><span className="section-kicker">Task #{selected.id}</span><h2>{selected.query}</h2></div>
-        <button className="button small" type="button" onClick={() => setSelected(null)}>关闭</button>
+        <Button unstyled className="button small" type="button" onClick={() => setSelected(null)}>关闭</Button>
       </div>
       <dl className="distributed-task-facts">
         <div><dt>状态</dt><dd>{isImageRetryExhausted(selected) ? IMAGE_RETRY_EXHAUSTED_LABEL : STATE_LABELS[selected.state]}</dd></div>
@@ -335,7 +340,7 @@ export function DistributedJobsWorkbench({
         <div className="panel-head"><div><span className="section-kicker">Copy revision {revision?.revision}</span><h3>{reviewed.copy.title}</h3></div></div>
         <div className="review-copy-body">{reviewed.copy.body}</div>
         <div className="review-copy-tags">{reviewed.copy.tags?.map((tag: string) => <span className="pill" key={tag}>{tag}</span>)}</div>
-        <details><summary>查看配图策划（{reviewed.imagePlan.length} 页）</summary><pre>{JSON.stringify(reviewed.imagePlan, null, 2)}</pre></details>
+        <Disclosure><DisclosureTrigger>查看配图策划（{reviewed.imagePlan.length} 页）</DisclosureTrigger><DisclosureContent><pre>{JSON.stringify(reviewed.imagePlan, null, 2)}</pre></DisclosureContent></Disclosure>
       </article>}
       {selectedAssets.length > 0 && <div className="distributed-asset-grid">
         {selectedAssets.map((asset) => <figure key={asset.id}>
@@ -345,10 +350,10 @@ export function DistributedJobsWorkbench({
         </figure>)}
       </div>}
       <div className="inline distributed-task-actions">
-        {selected.state === 'COPY_REVIEW_PENDING' && <button className="button primary" type="button" disabled={busy} onClick={() => { void approveCopy(); }}><CheckCircle2 size={15} />审核通过，进入生图队列</button>}
+        {selected.state === 'COPY_REVIEW_PENDING' && <Button unstyled className="button primary" type="button" disabled={busy} onClick={() => { void approveCopy(); }}><CheckCircle2 size={15} />审核通过，进入生图队列</Button>}
         {RETRY_STATES.has(selected.state) && <>
-          <button className="button" type="button" disabled={busy} onClick={() => { void retryTask(false); }}><RotateCcw size={15} />{selected.state.startsWith('IMAGE_') ? '从失败步骤继续' : '复用原配置重试'}</button>
-          <button className="button" type="button" disabled={busy} onClick={() => { void retryTask(true); }}>使用最新配置重新生成</button>
+          <Button unstyled className="button" type="button" disabled={busy} onClick={() => { void retryTask(false); }}><RotateCcw size={15} />{selected.state.startsWith('IMAGE_') ? '从失败步骤继续' : '复用原配置重试'}</Button>
+          <Button unstyled className="button" type="button" disabled={busy} onClick={() => { void retryTask(true); }}>使用最新配置重新生成</Button>
         </>}
       </div>
     </section>}

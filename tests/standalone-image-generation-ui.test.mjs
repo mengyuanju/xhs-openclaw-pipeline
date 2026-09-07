@@ -41,9 +41,10 @@ describe('standalone image generation workspace', () => {
     assert.match(route, /generateStandaloneImages/u);
     assert.match(runtime, /createOpenClawClient/u);
     assert.match(runtime, /withImageGenerationLock/u);
-    assert.match(runtime, /imageGenerationRuntime\(\)/u);
+    assert.match(runtime, /imageGenerationRuntime\(session: any\)/u);
+    assert.match(runtime, /await loadPromptConfiguration\(session\)/u);
     assert.doesNotMatch(runtime, /if \(!live\)/u);
-    assert.match(route, /imageGenerationRuntime\(\)/u);
+    assert.match(route, /await imageGenerationRuntime\(session\)/u);
   });
 
   it('requires explicit cost confirmation and a fresh run ID before resuming', async () => {
@@ -101,7 +102,8 @@ describe('standalone image generation workspace', () => {
     assert.match(resultView, /image\.layout/u);
     assert.match(resultView, /result\.qc\.dimensions\.map/u);
     assert.match(resultView, /result\.qc\.issues/u);
-    assert.match(resultView, /<img/u);
+    assert.match(resultView, /<ImagePreview src=\{image\.url\}/u);
+    assert.match(resultView, /deliverySrc=\{image\.deliveryUrl\}/u);
     assert.match(styles, /\.standalone-image-workspace/u);
     assert.match(styles, /\.standalone-image-page-list/u);
     assert.match(styles, /\.standalone-image-layout/u);
@@ -134,7 +136,7 @@ describe('standalone image generation workspace', () => {
     assert.match(runState, /`\/api\/image-generations\/\$\{[^}]+\}`/u);
     assert.match(runState, /cache: 'no-store'/u);
     assert.match(workbench, /<ImageGenerationProgress\s+progress=\{progress\}/u);
-    assert.match(progressView, /<progress/u);
+    assert.match(progressView, /<Progress/u);
     assert.match(progressView, /当前阶段/u);
     assert.match(progressView, /已用时间/u);
     assert.match(progressView, /预计剩余/u);
@@ -169,12 +171,12 @@ describe('standalone image generation workspace', () => {
     assert.match(history, /已取消/u);
   });
 
-  it('serves only manifest-owned PNG files from the isolated run directory', async () => {
+  it('serves manifest-owned image formats with their actual media type from the isolated run directory', async () => {
     const imageRoute = await source('app/api/image-generations/[runId]/images/[file]/route.ts');
 
     assert.match(imageRoute, /readStandaloneImageFile/u);
     assert.match(imageRoute, /adminOutputRoot/u);
-    assert.match(imageRoute, /Content-Type': 'image\/png'/u);
+    assert.match(imageRoute, /Content-Type': image\.mediaType/u);
     assert.match(imageRoute, /X-Content-Type-Options': 'nosniff'/u);
   });
 

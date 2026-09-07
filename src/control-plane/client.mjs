@@ -116,10 +116,10 @@ export function createControlPlaneClient({
       method: 'POST', body: { nodeId },
     }),
     claimImage: (nodeId) => request('/v1/executions/claim-image', {
-      method: 'POST', body: { nodeId },
+      method: 'POST', body: { nodeId, imageControlsVersion: 1 },
     }),
     claimCopyBatch: (input) => claimBatch('COPY', input),
-    claimImageBatch: (input) => claimBatch('IMAGE', input),
+    claimImageBatch: (input) => claimBatch('IMAGE', { ...input, imageControlsVersion: 1 }),
     updateProgress: (executionId, progress) => request(
       `/v1/executions/${executionId}/progress`,
       { method: 'PATCH', body: progress },
@@ -174,11 +174,28 @@ export function createControlPlaneClient({
         timeoutMs: 120_000,
       },
     ),
+    async downloadImageSource(executionId, assetId) {
+      if (!/^[a-f0-9-]{36}$/iu.test(executionId) || !Number.isSafeInteger(assetId) || assetId < 1) throw new TypeError('image source identifier is invalid');
+      const response = await fetchImpl(`${root}/v1/executions/${executionId}/source-assets/${assetId}`, {
+        headers: defaultHeaders, redirect: 'error', signal: AbortSignal.timeout(60_000),
+      });
+      if (!response.ok) return responseData(response);
+      if (Number(response.headers.get('content-length')) > 30 * 1024 * 1024) throw new Error('image source is too large');
+      const chunks = []; let size = 0;
+      for await (const chunk of response.body) {
+        size += chunk.byteLength;
+        if (size > 30 * 1024 * 1024) throw new Error('image source is too large');
+        chunks.push(chunk);
+      }
+      return Buffer.concat(chunks);
+    },
     listSettings: () => request('/v1/settings'),
     updateSetting: (key, value) => request(`/v1/settings/${encodeURIComponent(key)}`, {
       method: 'PUT', body: { value },
     }),
     listPrompts: () => request('/v1/prompts'),
+    listPromptRuns: (id) => request(`/v1/prompt-runs${id ? `?id=${encodeURIComponent(id)}` : ''}`),
+    analyzeVisualKnowledge: (input) => request('/v1/visual-knowledge/analyze', { method: 'POST', body: input, timeoutMs: 360_000 }),
     createPromptVersion: (input) => request('/v1/prompts/versions', {
       method: 'POST', body: input,
     }),

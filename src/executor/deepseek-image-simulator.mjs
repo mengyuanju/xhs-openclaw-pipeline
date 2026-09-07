@@ -2,6 +2,8 @@ import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 
 import sharp from 'sharp';
+import { promptRuntimeFromSnapshot } from '../admin/prompt-runtime-service.mjs';
+import { withPromptRuntime, businessPrompt } from '../prompt-runtime.mjs';
 
 import {
   createDeepSeekResponsesClient,
@@ -223,15 +225,17 @@ export async function executeDeepSeekImageSimulation({
   const { execution } = claim;
   const snapshot = execution.snapshot;
   const { copy, imagePlan } = copySource(snapshot);
+  const promptRuntime = promptRuntimeFromSnapshot(snapshot);
+  if (promptRuntime) withPromptRuntime(promptRuntime, () => businessPrompt('IMAGE_SEARCH_SYSTEM'));
   await report(controlPlane, execution.id, 'SEARCHING_IMAGES', 8, 'DeepSeek 正在联网搜索相关图片');
   let search = null;
   let searchError = null;
   try {
-    search = await client.runImageSearch({
+    search = await withPromptRuntime(promptRuntime, () => client.runImageSearch({
       query: snapshot.task.query,
       copy,
       imagePlan,
-    });
+    }));
   } catch (error) {
     searchError = String(error?.message ?? error ?? 'unknown search failure').slice(0, 300);
   }

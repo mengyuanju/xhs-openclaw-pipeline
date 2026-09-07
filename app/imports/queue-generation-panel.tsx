@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+
 import Link from 'next/link';
 import { useState } from 'react';
 
@@ -65,12 +67,12 @@ export function QueueGenerationPanel({ maxTasks, timingStats }: { maxTasks: numb
       <p className="subtle">按全局队列顺序异步处理，最多 2 条任务同时生产；网页可以继续使用，生成结果和失败原因在内容审核中查看。</p>
     </div>
     <div className="inline">
-      <button
+      <Button unstyled
         className="button primary"
         type="button"
         disabled={boundedMax < 1 || launchState === 'STARTING' || launchState === 'STARTED'}
         onClick={startGeneration}
-      >{buttonLabel}</button>
+      >{buttonLabel}</Button>
       <Link className="button small" href="/tasks">打开内容审核</Link>
     </div>
     <div className="generation-estimate" role="note">{typicalDurationMs === null

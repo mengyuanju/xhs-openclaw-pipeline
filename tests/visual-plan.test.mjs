@@ -6,6 +6,7 @@ import {
   createMockVisualPlan,
   parseVisualPlanOutput,
 } from '../src/visual-plan.mjs';
+import { visualPlanSchema } from '../src/visual-plan-schema.mjs';
 
 function postFixture() {
   return {
@@ -77,25 +78,28 @@ describe('visual plan contract', () => {
     assert.match(prompt, /租房桌面整理，先别急着买收纳盒/);
     assert.match(prompt, /最后设置一分钟复位/);
     assert.match(prompt, /sourceEvidence/);
-    assert.match(prompt, /sourceEvidence 必须是包含 1–3 项的 JSON 字符串数组/);
-    assert.match(prompt, /中国大陆规范简体中文/);
-    assert.match(prompt, /至少 3 种不同的.*layoutTemplate/u);
-    assert.match(prompt, /不得连续复用相同的标题位置、主体位置和阅读动线/);
-    assert.match(prompt, /封面标题最多 2 行/);
-    assert.match(prompt, /layoutDirection.*项目数量.*bullets/u);
-    assert.match(prompt, /mustShow.*具体可见文字.*allowedVisibleText/u);
-    assert.match(prompt, /不得要求或暗示 AI 生成的具体校貌、门店、人物或产品是可核验实景/u);
-    assert.match(prompt, /中性信息图或明确的示意场景/u);
-    assert.match(prompt, /严格按照正文行文顺序/u);
-    assert.match(prompt, /同一信息焦点.*同一页/u);
-    assert.match(prompt, /第一页.*标题.*核心结论/u);
-    assert.match(prompt, /不得完全照搬正文长句/u);
-    assert.match(prompt, /关键核心信息.*完整覆盖/u);
-    assert.match(prompt, /3:4.*1086×1448/u);
-    assert.match(prompt, /涉及人像.*右下角.*AI生成/u);
-    assert.match(prompt, /layoutSchemaVersion.*1/u);
-    assert.match(prompt, /layoutTemplate/u);
-    assert.match(prompt, /恰好包含 3 项/);
+    assert.match(prompt, /<trusted_business_rules kind="VISUAL_PLAN_SYSTEM">/u);
+    const input = JSON.parse(prompt.match(/<untrusted_task_data>\s*([\s\S]+?)\s*<\/untrusted_task_data>/u)[1]);
+    assert.deepEqual(input, postFixture(), 'the complete original page copy and visual direction must reach planning');
+    assert.match(prompt, /sourceEvidence 必须为标题或正文中的逐字片段/u);
+    assert.match(prompt, /保留原 headline\/subtitle\/bullets，labels=\[\]/u);
+    assert.match(prompt, /文字仅可引用已锁定字段/u);
+    assert.match(prompt, /输出 3 页/u);
+    assert.match(prompt, /1086×1448/u);
+    assert.match(prompt, /合规标识：AI生成/u);
+    assert.doesNotMatch(prompt, /不得完全照搬正文长句/u);
+    const schema = visualPlanSchema(postFixture());
+    assert.equal(schema.properties.pages.minItems, 3);
+    assert.equal(schema.properties.pages.maxItems, 3);
+    for (const [index, page] of schema.properties.pages.items.anyOf.entries()) {
+      assert.equal(page.properties.sourceEvidence.minItems, 1);
+      assert.equal(page.properties.sourceEvidence.maxItems, 3);
+      assert.deepEqual(page.properties.layoutSchemaVersion.enum, [1]);
+      assert.deepEqual(page.properties.index.enum, [index + 1]);
+      assert.deepEqual(page.properties.kind.enum, [postFixture().imagePlan[index].kind]);
+      assert.deepEqual(page.properties.allowedVisibleText.properties.language.enum, ['zh-CN']);
+      assert.equal(page.properties.mustShow.items.pattern, '^(画面|文字)：.+');
+    }
     assert.ok(prompt.length < 30_000);
 
     const promptWithoutDisclosure = buildVisualPlanPrompt(postFixture(), {
@@ -103,7 +107,7 @@ describe('visual plan contract', () => {
       complianceDisclosure: '',
     });
     assert.doesNotMatch(promptWithoutDisclosure, /右下角.*AI生成/u);
-    assert.match(promptWithoutDisclosure, /不得添加任何额外合规标识/u);
+    assert.match(promptWithoutDisclosure, /合规标识：关闭/u);
   });
 
   it('accepts a traceable visual plan with one page for every delivery image', () => {

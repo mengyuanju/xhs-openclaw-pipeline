@@ -8,6 +8,7 @@ import { createOpenClawClient } from '../src/openclaw.mjs';
 import { createCopyGenerationClient } from '../src/copy-generation-client.mjs';
 import { CopyGenerationResearchError, generateCopy } from '../src/copy-generation.mjs';
 import { createMockPost } from '../src/pipeline.mjs';
+import { createPromptRuntime, withPromptRuntime } from '../src/prompt-runtime.mjs';
 
 const environment = {
   XHS_WEB_SEARCH_PROVIDER: 'DEEPSEEK',
@@ -31,6 +32,32 @@ function responsePayload(result = evidence) {
 function jsonResponse(payload) {
   return new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } });
 }
+
+test('governed DeepSeek search sends the published source preference and the unchanged query', async () => {
+  const query = '机械键盘轴体体验比较';
+  const preference = '管理员检索版本五：优先参考长期使用者的社区反馈，区分个人体验与可核查规格。';
+  const runtime = createPromptRuntime({ prompts: {
+    RESEARCH_SYSTEM: { content: preference, versionId: 'research-test-5', version: 5 },
+  } });
+  const calls = [];
+  const client = withWebSearchProvider({}, { environment, async fetchImpl(url, init) {
+    calls.push({ url, body: JSON.parse(init.body) });
+    return jsonResponse(responsePayload());
+  } });
+  const snapshot = await withPromptRuntime(runtime, () => createResearchSnapshot({ client, query }));
+
+  assert.equal(snapshot.status, 'COMPLETED');
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].body.input, /<trusted_business_rules kind="RESEARCH_SYSTEM">/u);
+  assert.ok(calls[0].body.input.includes(preference));
+  const input = JSON.parse(calls[0].body.input.match(/<untrusted_query>\s*([\s\S]+?)\s*<\/untrusted_query>/u)[1]);
+  assert.deepEqual(input, { query });
+  assert.doesNotMatch(calls[0].body.input + calls[0].body.instructions, /官方 标准 技术规范/u);
+  assert.deepEqual(calls[0].body.tools, [{ type: 'web_search' }]);
+  assert.deepEqual(calls[0].body.tool_choice, { type: 'web_search' });
+  assert.deepEqual(calls[0].body.text.format.schema.required, ['summary', 'sources']);
+  assert.equal(snapshot.sources[0].url, evidence.sources[0].url);
+});
 
 test('a single intact terminal JSON fence after an introduction is accepted without another search', async () => {
   let calls = 0;
@@ -239,7 +266,7 @@ test('the production OpenClaw factory switches research without starting its CLI
   assert.equal(snapshot.provider, 'deepseek');
 });
 
-test('the copy workflow keeps original generation and reviews while using DeepSeek evidence', async () => {
+test('the copy workflow uses DeepSeek evidence with Query screening off by default', async () => {
   const stages = [];
   const calls = [];
   const client = createCopyGenerationClient({
@@ -270,8 +297,9 @@ test('the copy workflow keeps original generation and reviews while using DeepSe
     textReviewEnabled: false,
     onStageChange: (stage) => { stages.push(stage); },
   });
-  assert.deepEqual(calls, ['review', 'deepseek', 'text']);
-  assert.deepEqual(stages, ['QUERY_REVIEW', 'RESEARCH', 'ORIGINAL_GENERATION']);
+  assert.deepEqual(calls, ['deepseek', 'text']);
+  assert.deepEqual(stages, ['RESEARCH', 'ORIGINAL_GENERATION']);
+  assert.equal(generated.stageReviews.query.skipped, true);
   assert.equal(generated.originalModel, 'original-text');
   assert.equal(generated.researchSnapshot.provider, 'deepseek');
 });

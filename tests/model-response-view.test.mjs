@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import path from 'node:path';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
 import { createElement } from 'react';
@@ -7,12 +9,21 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { loadBindings, transformSync } from 'next/dist/build/swc/index.js';
 
 const componentUrl = new URL('../app/workbench/model-response-view.tsx', import.meta.url);
+const root = fileURLToPath(new URL('../', import.meta.url));
 await loadBindings();
 const hook = registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier.startsWith('@/')) {
+      const base = path.join(root, specifier.slice(2));
+      const resolved = ['.tsx', '.ts'].map(extension => base + extension).find(existsSync);
+      if (resolved) return { url: pathToFileURL(resolved).href, shortCircuit: true };
+    }
+    return nextResolve(specifier, context);
+  },
   load(url, context, nextLoad) {
-    if (url !== componentUrl.href) return nextLoad(url, context);
-    return { format: 'module', shortCircuit: true, source: transformSync(readFileSync(componentUrl, 'utf8'), {
-      filename: componentUrl.pathname, jsc: { parser: { syntax: 'typescript', tsx: true }, transform: { react: { runtime: 'automatic' } } }, module: { type: 'es6' },
+    if (!url.startsWith(pathToFileURL(root).href) || !/\.tsx?$/.test(url)) return nextLoad(url, context);
+    return { format: 'module', shortCircuit: true, source: transformSync(readFileSync(new URL(url), 'utf8'), {
+      filename: fileURLToPath(url), jsc: { parser: { syntax: 'typescript', tsx: url.endsWith('.tsx') }, transform: { react: { runtime: 'automatic' } } }, module: { type: 'es6' },
     }).code };
   },
 });

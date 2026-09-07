@@ -1,5 +1,8 @@
 'use client';
 
+import { SearchInput } from '@/components/ui/search-input';
+import { Button } from '@/components/ui/button';
+
 import Link from 'next/link';
 import { useState } from 'react';
 import type { Counts, Person } from './types';
@@ -18,14 +21,14 @@ export function PeopleTable({ people }: { people: Person[] }) {
     .toSorted((a, b) => (a[sort.key] - b[sort.key]) * (sort.ascending ? 1 : -1));
   return <section className="panel job-stats-section">
     <div className="job-stats-heading"><div><h2>作业员明细</h2><p className="job-stats-note">{people.length} 位有历史作业的创建者 · 角色按当前账号信息</p></div>
-      <input type="search" aria-label="搜索表内人员" placeholder="搜索姓名或账号" value={search} onChange={event => setSearch(event.target.value)} />
+      <SearchInput  aria-label="搜索表内人员" placeholder="搜索姓名或账号" value={search} onValueChange={(value) => setSearch(value)} />
     </div>
     <div className="job-stats-table-scroll" tabIndex={0} role="region" aria-label="作业员明细，可横向滚动">
       <table className="job-stats-table"><thead><tr><th scope="col">作业员</th>
         {columns.map(column => <th key={column.key} scope="col" aria-sort={sort.key === column.key ? sort.ascending ? 'ascending' : 'descending' : 'none'}>
-          <button type="button" onClick={() => setSort({ key: column.key, ascending: sort.key === column.key && !sort.ascending })}>
+          <Button unstyled type="button" onClick={() => setSort({ key: column.key, ascending: sort.key === column.key && !sort.ascending })}>
             {column.label}{sort.key === column.key ? sort.ascending ? ' ↑' : ' ↓' : ''}
-          </button></th>)}<th scope="col">操作</th></tr></thead><tbody>
+          </Button></th>)}<th scope="col">操作</th></tr></thead><tbody>
         {rows.map(person => <tr key={person.username ?? '__unassigned__'}>
           <th scope="row"><strong>{person.displayName}</strong><small>{person.username ?? '未记录账号'} · {ROLE_LABELS[person.role ?? ''] ?? '角色未知'}</small></th>
           {columns.map(column => <td key={column.key}>{number(person[column.key])}</td>)}

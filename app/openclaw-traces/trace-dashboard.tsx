@@ -1,3 +1,4 @@
+import { Disclosure, DisclosureTrigger, DisclosureContent } from '@/components/ui/disclosure';
 import {
   Bot,
   CheckCircle2,
@@ -109,8 +110,8 @@ export function TraceDashboard({ report }: { report: any }) {
       <div className={styles.detailsStack}>
         {report.chain.phases.filter((phase: any) => phase.sessionId).map((phase: any) => {
           const session: any = sessionsById.get(phase.sessionId);
-          return <details className={styles.detailCard} key={phase.sessionId}>
-            <summary><span><strong>{PHASE_LABELS[phase.phase] ?? phase.phase}</strong><small>{phase.sessionId}</small></span><span>{number(session?.usage?.totalTokens)} tokens</span></summary>
+          return <Disclosure className={styles.detailCard} key={phase.sessionId}>
+            <DisclosureTrigger><span><strong>{PHASE_LABELS[phase.phase] ?? phase.phase}</strong><small>{phase.sessionId}</small></span><span>{number(session?.usage?.totalTokens)} tokens</span></DisclosureTrigger><DisclosureContent>
             <dl className={styles.compactFacts}>
               <div><dt>Codex thread</dt><dd>{session?.threadId ?? '—'}</dd></div>
               <div><dt>Run / Turn</dt><dd>{session?.runId ?? '—'} / {session?.turnId ?? '—'}</dd></div>
@@ -121,8 +122,8 @@ export function TraceDashboard({ report }: { report: any }) {
               <div><h3>User prompt</h3><pre>{preview(session?.userText)}</pre></div>
               <div><h3>Assistant response</h3><pre>{preview(session?.assistantText)}</pre></div>
             </div>
-            <details className={styles.nestedDetail}><summary>查看 trajectory 预览（{session?.trajectory?.length ?? 0} 条）</summary><pre>{preview(session?.trajectory, 8_000)}</pre></details>
-          </details>;
+            <Disclosure className={styles.nestedDetail}><DisclosureTrigger>查看 trajectory 预览（{session?.trajectory?.length ?? 0} 条）</DisclosureTrigger><DisclosureContent><pre>{preview(session?.trajectory, 8_000)}</pre></DisclosureContent></Disclosure>
+          </DisclosureContent></Disclosure>;
         })}
       </div>
     </section>
@@ -130,8 +131,8 @@ export function TraceDashboard({ report }: { report: any }) {
     <section className={styles.panel}>
       <div className={styles.panelHead}><div><span>Codex persistence</span><h2>Rollout 与运行日志</h2></div><span className={styles.panelMeta}>{report.codex.threads.length} 个线程</span></div>
       <div className={styles.detailsStack}>
-        {report.codex.threads.map((item: any) => <details className={styles.detailCard} key={item.thread.id}>
-          <summary><span><strong>{item.thread.id}</strong><small>{item.thread.model_provider ?? 'Codex thread'}</small></span><span>{item.records.length} rollout · {item.logs.length} logs</span></summary>
+        {report.codex.threads.map((item: any) => <Disclosure className={styles.detailCard} key={item.thread.id}>
+          <DisclosureTrigger><span><strong>{item.thread.id}</strong><small>{item.thread.model_provider ?? 'Codex thread'}</small></span><span>{item.records.length} rollout · {item.logs.length} logs</span></DisclosureTrigger><DisclosureContent>
           <dl className={styles.compactFacts}>
             <div><dt>Reasoning</dt><dd>{item.thread.reasoning_effort ?? '—'}</dd></div>
             <div><dt>Tokens used</dt><dd>{number(item.thread.tokens_used)}</dd></div>
@@ -140,7 +141,7 @@ export function TraceDashboard({ report }: { report: any }) {
             <div><h3>Rollout 末尾预览</h3><pre>{preview(item.records.slice(-12), 8_000)}</pre></div>
             <div><h3>日志末尾预览</h3><pre>{preview(item.logs.slice(-20), 8_000)}</pre></div>
           </div>
-        </details>)}
+        </DisclosureContent></Disclosure>)}
       </div>
     </section>
 
@@ -152,7 +153,7 @@ export function TraceDashboard({ report }: { report: any }) {
           <small>{dateTime(event.occurred_at)} · {event.session_id ?? '无 session'} · {event.run_id ?? '无 run'}</small>
         </article>)}
       </div>
-      <details className={styles.sourceDisclosure}><summary>查看 {report.sources.length} 个来源文件及 SHA-256</summary><ul>{report.sources.map((source: any) => <li key={source.path}><span>{source.path}</span><code>{source.sha256}</code></li>)}</ul></details>
+      <Disclosure className={styles.sourceDisclosure}><DisclosureTrigger>查看 {report.sources.length} 个来源文件及 SHA-256</DisclosureTrigger><DisclosureContent><ul>{report.sources.map((source: any) => <li key={source.path}><span>{source.path}</span><code>{source.sha256}</code></li>)}</ul></DisclosureContent></Disclosure>
     </section>
   </div>;
 }

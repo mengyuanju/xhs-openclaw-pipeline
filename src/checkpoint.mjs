@@ -39,6 +39,7 @@ function fingerprintInput(task, workerConfig, mock) {
       textPromptContent: workerConfig?.textPromptContent ?? null,
       imagePromptContent: workerConfig?.imagePromptContent ?? null,
       imageEditPromptContent: workerConfig?.imageEditPromptContent ?? null,
+      ...(workerConfig?.promptRuntime ? { promptRuntime: workerConfig.promptRuntime } : {}),
       currentTextRevisionId: workerConfig?.currentTextRevisionId ?? null,
       postOverride: fingerprintPostOverride(workerConfig),
       referenceImagePaths: workerConfig?.referenceImagePaths ?? [],

@@ -1,6 +1,7 @@
 'use client';
 
 import * as AlertDialogPrimitive from '@radix-ui/react-alert-dialog';
+import { Button } from './button';
 import {
   createContext,
   useCallback,
@@ -82,18 +83,18 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
             </div>
             <div className="confirm-dialog-footer">
               <AlertDialogPrimitive.Cancel asChild>
-                <button className="button" type="button" onClick={() => settle(false)}>
+                <Button unstyled className="button" type="button" onClick={() => settle(false)}>
                   {request?.cancelLabel || '取消'}
-                </button>
+                </Button>
               </AlertDialogPrimitive.Cancel>
               <AlertDialogPrimitive.Action asChild>
-                <button
+                <Button unstyled
                   className={`button ${request?.tone === 'danger' ? 'danger' : 'primary'}`}
                   type="button"
                   onClick={() => settle(true)}
                 >
                   {request?.confirmLabel || '确认'}
-                </button>
+                </Button>
               </AlertDialogPrimitive.Action>
             </div>
           </AlertDialogPrimitive.Content>

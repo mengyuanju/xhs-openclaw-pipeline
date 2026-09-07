@@ -1,8 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { Disclosure, DisclosureTrigger, DisclosureContent } from '@/components/ui/disclosure';
 
-import { ImagePreview } from '../../components/image-preview';
+import { useRef, useState } from 'react';
+
+import { ImagePreview, ImagePreviewThumbnail } from '../../components/image-preview';
+import { ImagePreviewPreference } from '../../components/image-preview-preference';
 import { StatusPill } from '../../components/status-pill';
 import { formatDuration } from '../../components/time-format';
 import { PromptTrace } from './generation-prompt-trace';
@@ -68,13 +71,13 @@ function BatchQuality({ run, qualityScoreLabel }: { run: any; qualityScoreLabel:
         <div className="quality-repair-evidence"><strong>修复方法</strong><ul>{attempt.methods.map((method: string) => <li key={method}>{method}</li>)}</ul></div>
       </li>)}</ol>
     </section>}
-    {dimensions.length > 0 && <details className="quality-details">
-      <summary>查看全部逐项评分</summary>
+    {dimensions.length > 0 && <Disclosure className="quality-details">
+      <DisclosureTrigger>查看全部逐项评分</DisclosureTrigger><DisclosureContent>
       <dl>{dimensions.map((dimension: any) => <div key={dimension.key}>
         <dt>{dimension.label}<strong>{dimension.score ?? '—'} 分</strong></dt>
         <dd>{dimension.evidence.map((item: string) => <span key={item}>{item}</span>)}</dd>
       </div>)}</dl>
-    </details>}
+    </DisclosureContent></Disclosure>}
   </div>;
 }
 
@@ -88,6 +91,8 @@ export function ImageGenerationBatch({
   onEdit,
 }: ImageGenerationBatchProps) {
   const [activeAssetIndex, setActiveAssetIndex] = useState<number | null>(null);
+  const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const activeAsset = activeAssetIndex === null ? undefined : batch.assets[activeAssetIndex];
   const run = batch.run;
   const sourceTextRevisionId = batch.assets.find((asset: any) => asset.sourceTextRevisionId)?.sourceTextRevisionId;
   const isReference = batch.kind === 'reference';
@@ -98,15 +103,15 @@ export function ImageGenerationBatch({
 
   if (isEmptyFailure) {
     const [failureReason] = qualityReasons(run);
-    return <details className="image-generation-batch compact-failed-batch">
-      <summary>
+    return <Disclosure className="image-generation-batch compact-failed-batch">
+      <DisclosureTrigger>
         <span className="compact-failed-main">
           <strong>{batchTitle(batch)}</strong>
           <StatusPill value="FAILED" />
         </span>
         <span className="compact-failed-reason">{failureReason}</span>
         {run.finishedAt && <time dateTime={run.finishedAt}>{new Date(run.finishedAt).toLocaleString('zh-CN')}</time>}
-      </summary>
+      </DisclosureTrigger><DisclosureContent>
       <div className="compact-failed-body">
         <div className="batch-context-grid">
           <section className="batch-version-summary" aria-label="批次版本信息">
@@ -120,20 +125,20 @@ export function ImageGenerationBatch({
           <BatchQuality run={run} qualityScoreLabel={qualityScoreLabel} />
         </div>
         {runTiming && <p className="batch-timing-line">批次时间：{runTiming}</p>}
-        <details className="batch-trace">
-          <summary>查看 Query 与文本审核</summary>
+        <Disclosure className="batch-trace">
+          <DisclosureTrigger>查看 Query 与文本审核</DisclosureTrigger><DisclosureContent>
           <StageReviewTrace stageReviews={run?.stageReviews} />
-        </details>
-        <details className="batch-trace">
-          <summary>查看本批次用户提示词</summary>
+        </DisclosureContent></Disclosure>
+        <Disclosure className="batch-trace">
+          <DisclosureTrigger>查看本批次用户提示词</DisclosureTrigger><DisclosureContent>
           <PromptTrace run={run} />
-        </details>
-        <details className="batch-trace">
-          <summary>查看本批次 VisualPlan</summary>
+        </DisclosureContent></Disclosure>
+        <Disclosure className="batch-trace">
+          <DisclosureTrigger>查看本批次 VisualPlan</DisclosureTrigger><DisclosureContent>
           <VisualPlanTrace visualPlan={run?.visualPlan} />
-        </details>
+        </DisclosureContent></Disclosure>
       </div>
-    </details>;
+    </DisclosureContent></Disclosure>;
   }
 
   return <article className={`image-generation-batch${batch.isCurrent ? ' current' : ''}`}>
@@ -148,7 +153,7 @@ export function ImageGenerationBatch({
           ? '人工上传的参考素材，供后续生成和编辑使用。'
           : `${run?.mode === 'mock' ? 'Mock 生成' : run ? 'Live 生成' : '历史记录'} · ${batch.assets.length} 个图片版本`}</p>
       </div>
-      {runTiming && <span className="batch-timing-line">{runTiming}</span>}
+      <div className="inline"><ImagePreviewPreference />{runTiming && <span className="batch-timing-line">{runTiming}</span>}</div>
     </header>
 
     {!isReference && <div className="batch-context-grid">
@@ -169,22 +174,10 @@ export function ImageGenerationBatch({
           const requests = imageEditRequests.filter((request: any) => request.sourceAssetId === asset.id);
           const alt = `${assetKindLabel(asset.kind)} · 版本 ${asset.revision}${asset.pageIndex ? ` · 第 ${asset.pageIndex} 页` : ''}`;
           return <article className="asset-card" key={asset.id}>
-            <ImagePreview
+            <ImagePreviewThumbnail
               src={`/api/assets/${asset.id}?v=${asset.sha256}`}
               alt={alt}
-              width={asset.width}
-              height={asset.height}
-              needsCrop={imageNeedsCrop(asset.width, asset.height)}
-              busy={busy}
-              isOpen={activeAssetIndex === assetIndex}
-              position={assetIndex + 1}
-              total={batch.assets.length}
-              onOpen={() => setActiveAssetIndex(assetIndex)}
-              onClose={() => setActiveAssetIndex((current) => current === assetIndex ? null : current)}
-              onPrevious={assetIndex > 0 ? () => setActiveAssetIndex(assetIndex - 1) : undefined}
-              onNext={assetIndex < batch.assets.length - 1 ? () => setActiveAssetIndex(assetIndex + 1) : undefined}
-              onCrop={() => onEdit(asset.id, { type: 'crop-3x4' }, '3:4 裁切')}
-              onAiEdit={(instruction) => onEdit(asset.id, { type: 'ai-edit', instruction }, 'AI 编辑请求入队')}
+              onClick={event => { previewTriggerRef.current = event.currentTarget; setActiveAssetIndex(assetIndex); }}
             />
             <div className="asset-meta">
               <div className="asset-meta-title">
@@ -198,18 +191,37 @@ export function ImageGenerationBatch({
             </div>
           </article>;
         })}</div>}
+    {activeAsset && activeAssetIndex !== null && <ImagePreview
+      hideTrigger
+      isOpen
+      restoreFocusRef={previewTriggerRef}
+      src={`/api/assets/${activeAsset.id}?v=${activeAsset.sha256}`}
+      alt={`${assetKindLabel(activeAsset.kind)} · 版本 ${activeAsset.revision}${activeAsset.pageIndex ? ` · 第 ${activeAsset.pageIndex} 页` : ''}`}
+      width={activeAsset.width}
+      height={activeAsset.height}
+      needsCrop={imageNeedsCrop(activeAsset.width, activeAsset.height)}
+      busy={busy}
+      position={activeAssetIndex + 1}
+      total={batch.assets.length}
+      preloads={batch.assets.slice(Math.max(0, activeAssetIndex - 1), activeAssetIndex + 2).filter((asset: any) => asset.id !== activeAsset.id).map((asset: any) => `/api/assets/${asset.id}?v=${asset.sha256}`)}
+      onClose={() => setActiveAssetIndex(null)}
+      onPrevious={activeAssetIndex > 0 ? () => setActiveAssetIndex(index => index === null ? null : index - 1) : undefined}
+      onNext={activeAssetIndex < batch.assets.length - 1 ? () => setActiveAssetIndex(index => index === null ? null : index + 1) : undefined}
+      onCrop={() => onEdit(activeAsset.id, { type: 'crop-3x4' }, '3:4 裁切')}
+      onAiEdit={instruction => onEdit(activeAsset.id, { type: 'ai-edit', instruction }, 'AI 编辑请求入队')}
+    />}
 
-    {!isReference && <details className="batch-trace">
-      <summary>查看 Query 与文本审核</summary>
+    {!isReference && <Disclosure className="batch-trace">
+      <DisclosureTrigger>查看 Query 与文本审核</DisclosureTrigger><DisclosureContent>
       <StageReviewTrace stageReviews={run?.stageReviews} />
-    </details>}
-    {!isReference && <details className="batch-trace">
-      <summary>查看本批次用户提示词</summary>
+    </DisclosureContent></Disclosure>}
+    {!isReference && <Disclosure className="batch-trace">
+      <DisclosureTrigger>查看本批次用户提示词</DisclosureTrigger><DisclosureContent>
       <PromptTrace run={run} />
-    </details>}
-    {!isReference && <details className="batch-trace">
-      <summary>查看本批次 VisualPlan</summary>
+    </DisclosureContent></Disclosure>}
+    {!isReference && <Disclosure className="batch-trace">
+      <DisclosureTrigger>查看本批次 VisualPlan</DisclosureTrigger><DisclosureContent>
       <VisualPlanTrace visualPlan={run?.visualPlan} />
-    </details>}
+    </DisclosureContent></Disclosure>}
   </article>;
 }

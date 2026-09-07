@@ -1,5 +1,10 @@
 'use client';
 
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
+import { Button } from '@/components/ui/button';
+import { DatePicker } from '@/components/ui/date-picker';
+import { Disclosure, DisclosureTrigger, DisclosureContent } from '@/components/ui/disclosure';
+
 import Link from 'next/link';
 import { useState, type FormEvent } from 'react';
 import { useStatistics } from './use-statistics';
@@ -30,18 +35,18 @@ export function AdminStatistics() {
     <div className="job-stats-heading"><div><h1>作业统计</h1><p className="job-stats-note">查看团队产出、生成效率与当前待处理作业。</p></div><StatisticsStatus {...statistics} /></div>
     <section className="panel job-stats-filters" aria-label="统计筛选">
       <div className="job-stats-filter-row"><div className="job-stats-segments" aria-label="统计日期">
-        {(['today', '7d', '30d'] as const).map((value, i) => <button type="button" key={value} aria-pressed={period === value}
-          onClick={() => { setPeriod(value); setDateError(''); }}>{['今日', '近 7 天', '近 30 天'][i]}</button>)}
+        {(['today', '7d', '30d'] as const).map((value, i) => <Button unstyled type="button" key={value} aria-pressed={period === value}
+          onClick={() => { setPeriod(value); setDateError(''); }}>{['今日', '近 7 天', '近 30 天'][i]}</Button>)}
       </div>
-        <form onSubmit={applyDates} className="job-stats-date-form"><label>自定义开始<input name="from" type="date" required defaultValue={custom.from} /></label>
-          <label>结束<input name="to" type="date" required defaultValue={custom.to} /></label><button className="button small" type="submit">应用日期</button></form>
+        <form onSubmit={applyDates} className="job-stats-date-form"><DatePicker name="from" label="自定义开始" required defaultValue={custom.from} />
+          <DatePicker name="to" label="结束" required defaultValue={custom.to} /><Button unstyled className="button small" type="submit">应用日期</Button></form>
       </div>
       <div className="job-stats-filter-row">
-        <label>创建者角色<select value={role} onChange={event => { setRole(event.target.value); setUsername(''); }}><option value="">全部角色</option>
-          {Object.entries(ROLE_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
-        <label>作业员<select value={username} onChange={event => setUsername(event.target.value)}><option value="">全部作业员</option>
-          {creators?.filter(person => !role || person.role === role).map(person => <option key={person.username ?? '__unassigned__'} value={person.username ?? '__unassigned__'}>{person.displayName}{person.username ? `（${person.username}）` : ''}</option>)}
-        </select></label>
+        <label>创建者角色<Select value={role || '__all__'} onValueChange={(nextValue) => { setRole((nextValue === '__all__' ? '' : nextValue)); setUsername(''); }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__all__">全部角色</SelectItem>
+          {Object.entries(ROLE_LABELS).map(([value, label]) => <SelectItem key={value} value={String(value)}>{label}</SelectItem>)}</SelectContent></Select></label>
+        <label>作业员<Select value={username || '__all__'} onValueChange={(nextValue) => setUsername((nextValue === '__all__' ? '' : nextValue))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__all__">全部作业员</SelectItem>
+          {creators?.filter(person => !role || person.role === role).map(person => <SelectItem key={person.username ?? '__unassigned__'} value={String(person.username ?? '__unassigned__')}>{person.displayName}{person.username ? `（${person.username}）` : ''}</SelectItem>)}
+        </SelectContent></Select></label>
         <span className="job-stats-note">{data ? `${data.range.from} 至 ${data.range.to} · 北京时间` : '正在读取所选范围…'}</span>
       </div>{dateError && <p className="job-stats-warning" role="alert">{dateError}</p>}
     </section>
@@ -74,10 +79,10 @@ export function AdminStatistics() {
         {!summary.staleCount && <p className="job-stats-empty">暂无长期未更新作业</p>}
       </section></div>
     </>}
-    <details className="panel job-stats-section job-stats-methods"><summary>统计口径与更新说明</summary>
+    <Disclosure className="panel job-stats-section job-stats-methods"><DisclosureTrigger>统计口径与更新说明</DisclosureTrigger><DisclosureContent>
       <p>一条 Query 为一项作业，按任务 ID 去重；重试不新增作业。已废弃作业保留在累计创建中。人员表仅列出有历史作业的创建者，无归属任务独立统计。</p>
       <p>有效图片数只计算期间有效审核完成任务的当前图片资产。失败执行占比为失败 /（成功 + 失败）；多次执行任务占比基于期间有已结束执行的作业。</p>
       <p>页面打开时按需更新，后台标签页暂停轮询。数量通常缓存 60 秒，变化的明细增量读取；数据量大时显示进度，保留上次完整结果。当前分页接口不提供固定快照，统计为近实时参考。</p>
-    </details>
+    </DisclosureContent></Disclosure>
   </div>;
 }

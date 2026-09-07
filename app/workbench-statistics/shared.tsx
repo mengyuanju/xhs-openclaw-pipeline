@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+
 import dynamic from 'next/dynamic';
 import { RefreshCw } from 'lucide-react';
 import type { Statistics, StateGroup } from './types';
@@ -27,8 +29,8 @@ export function StatisticsStatus({ data, error, busy, cooldown, refresh }: {
       : `更新于 ${new Date(data.updatedAt!).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}`);
   return <div className="job-stats-status">
     <span role="status" className={error || data?.notice ? 'job-stats-warning' : ''}>{status}</span>
-    <button className="button small" type="button" disabled={busy || cooldown} onClick={refresh}>
+    <Button unstyled className="button small" type="button" disabled={busy || cooldown} onClick={refresh}>
       <RefreshCw size={13} aria-hidden="true" className={busy ? 'animate-spin' : ''} />{cooldown ? '稍后可刷新' : '刷新统计'}
-    </button>
+    </Button>
   </div>;
 }

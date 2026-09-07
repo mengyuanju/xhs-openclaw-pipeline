@@ -9,7 +9,8 @@ type StageReview = {
   decision?: 'PASS' | 'REJECT';
   summary?: string;
   issues?: ReviewIssue[];
-  source?: 'CODEX' | 'OPENCLAW' | 'MOCK' | 'COMPATIBILITY';
+  source?: 'CODEX' | 'OPENCLAW' | 'MOCK' | 'COMPATIBILITY' | 'DISABLED';
+  skipped?: boolean;
   model?: string | null;
   reviewedAt?: string;
 };
@@ -20,6 +21,7 @@ type StageReviews = {
 };
 
 function sourceLabel(source: StageReview['source']) {
+  if (source === 'DISABLED') return '筛选已关闭（未调用审核模型）';
   if (source === 'CODEX') return 'CODEX 独立模型';
   if (source === 'OPENCLAW') return 'OPENCLAW 独立模型';
   if (source === 'MOCK') return 'MOCK 模拟验证';
@@ -38,8 +40,8 @@ function StageReviewCard({ label, review }: { label: string; review?: StageRevie
   return <section className="stage-review-card">
     <div className="stage-review-head">
       <strong>{label}</strong>
-      <span className={review.decision === 'PASS' ? 'stage-review-pass' : 'stage-review-reject'}>
-        {review.decision === 'PASS' ? '通过' : '拒绝'}
+      <span className={review.skipped ? 'subtle' : review.decision === 'PASS' ? 'stage-review-pass' : 'stage-review-reject'}>
+        {review.skipped ? '已跳过' : review.decision === 'PASS' ? '通过' : '拒绝'}
       </span>
     </div>
     <p>{review.summary || '未记录审核摘要。'}</p>

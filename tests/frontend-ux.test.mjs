@@ -110,8 +110,8 @@ test('task rows provide readable mobile card labels instead of narrow table colu
   assert.match(taskDetail, /aria-label="审核题目导航"/);
   assert.match(taskDetail, />上一题<\/Link>/);
   assert.match(taskDetail, />下一题<\/Link>/);
-  assert.match(taskDetail, />上一题<\/button>/);
-  assert.match(taskDetail, />下一题<\/button>/);
+  assert.match(taskDetail, />上一题<\/Button>/);
+  assert.match(taskDetail, />下一题<\/Button>/);
   assert.match(taskDetail, /href=\{`\/tasks\/\$\{adjacent\.previousTaskId\}`\}/);
   assert.match(taskDetail, /href=\{`\/tasks\/\$\{adjacent\.nextTaskId\}`\}/);
   assert.match(taskTiming, /实际用时/);
@@ -242,7 +242,7 @@ test('Excel import focuses one progressive step at a time instead of expanding t
   assert.match(importWorkbench, /setActiveStep\(4\)/);
   assert.match(demandScreening, /dirtyRowIds\.size === 0 && pendingScreeningRows === 0/);
   assert.match(demandScreening, /确认复核，下一步/);
-  assert.match(importsPage, /<details className="panel recent-imports-disclosure" open=\{!initialBatch\}>/);
+  assert.match(importsPage, /<Disclosure className="panel recent-imports-disclosure" defaultOpen=\{!initialBatch\}>/);
   assert.match(styles, /\.import-flow-step\.is-active/);
   assert.match(styles, /\.import-flow-step-body \.screening-panel\s*\{[^}]*max-height: calc\(100vh -/);
   assert.match(styles, /\.import-flow-step-body \.screening-table-wrap\s*\{[^}]*overflow: auto/);
@@ -282,7 +282,7 @@ test('review decision appears before the image-heavy editor on narrow screens', 
   assert.ok(decisionIndex >= 0, 'review decision needs a stable layout class');
   assert.ok(assetsIndex >= 0, 'image editor needs a stable layout class');
   assert.ok(decisionIndex < assetsIndex, 'review decision must precede the image editor in source order');
-  assert.doesNotMatch(reviewPanel, /<button(?![^>]*type=)[^>]*onClick=/);
+  assert.doesNotMatch(reviewPanel, /<Button(?![^>]*type=)[^>]*onClick=/);
   assert.match(reviewPanel, /alignmentStatus/);
   assert.match(reviewFlow, /ocrConfidence/);
   assert.match(reviewPanel, /完整图集均通过当前文案版本的图文匹配验收/);
@@ -460,7 +460,7 @@ test('generated assets open in an accessible centered Radix dialog preview', asy
   assert.doesNotMatch(preview, /<dialog|showModal\(\)/);
   assert.match(preview, /aria-label="关闭图片预览"/);
   assert.match(preview, /预览与调整/);
-  assert.match(imageBatch, /import \{ ImagePreview \}/);
+  assert.match(imageBatch, /<ImagePreview\s/);
   assert.match(imageBatch, /src=\{`\/api\/assets\/\$\{asset\.id\}\?v=\$\{asset\.sha256\}`\}/);
   assert.match(dialog, /@radix-ui\/react-dialog/);
   assert.match(dialog, /fixed inset-0/);
@@ -478,6 +478,9 @@ test('application dropdowns use the shared Radix select instead of native select
     'app/imports/demand-screening-panel.tsx',
     'app/knowledge/knowledge-workbench.tsx',
     'app/settings/production-settings-form.tsx',
+    'app/components/image-preview.tsx',
+    'app/components/image-controls.tsx',
+    'app/components/image-history-compare.tsx',
   ];
   const [select, styles, ...screens] = await Promise.all([
     readFile(projectFile('components/ui/select.tsx'), 'utf8'),
@@ -537,8 +540,8 @@ test('reviewers can switch image previews between 100 percent and full-image mod
     readFile(projectFile('app/globals.css'), 'utf8'),
   ]);
 
-  assert.match(preview, /type PreviewMode = 'actual' \| 'fit'/);
-  assert.match(preview, /useState<PreviewMode>\('actual'\)/);
+  // Persistent defaults and switching behavior are checked in the browser regression.
+  assert.match(preview, /<ImagePreviewPreference/);
   assert.match(preview, /aria-label="图片显示模式"/);
   assert.match(preview, />100% 查看</);
   assert.match(preview, />完整显示</);
@@ -556,9 +559,8 @@ test('image previews navigate within a batch and keep fitted landscape images ge
   ]);
 
   assert.match(imageBatch, /useState<number \| null>\(null\)/);
-  assert.match(imageBatch, /isOpen=\{activeAssetIndex === assetIndex\}/);
-  assert.match(imageBatch, /onPrevious=\{assetIndex > 0/);
-  assert.match(imageBatch, /onNext=\{assetIndex < batch\.assets\.length - 1/);
+  assert.match(imageBatch, /onPrevious=\{activeAssetIndex > 0/);
+  assert.match(imageBatch, /onNext=\{activeAssetIndex < batch\.assets\.length - 1/);
   assert.match(preview, /aria-label="上一张图片"/);
   assert.match(preview, /aria-label="下一张图片"/);
   assert.match(preview, /\{position\} \/ \{total\}/);
@@ -629,14 +631,14 @@ test('image editing controls live in preview with local rotation and conditional
     readFile(projectFile('app/tasks/[id]/image-generation-batch.tsx'), 'utf8'),
   ]);
 
-  assert.match(preview, /type="range"/);
+  assert.match(preview, /<Slider/);
   assert.match(preview, /aria-label="调整预览倍数"/);
   assert.match(preview, /setRotation/);
   assert.match(preview, /needsCrop/);
   assert.match(preview, /裁成 3:4/);
   assert.match(preview, /AI 图片修改要求/);
   assert.doesNotMatch(reviewPanel, /editImage\(asset\.id, \{ type: 'rotate'/);
-  assert.match(imageBatch, /imageNeedsCrop\(asset\.width, asset\.height\)/);
+  assert.match(imageBatch, /imageNeedsCrop\(activeAsset\.width, activeAsset\.height\)/);
 });
 
 test('interactive editors announce operation results and use explicit button behavior', async () => {
@@ -651,7 +653,7 @@ test('interactive editors announce operation results and use explicit button beh
   assert.match(promptEditor, /role=\{messageIsError \? 'alert' : 'status'\}/);
   assert.match(retryButton, /role="alert"/);
   for (const source of [importWorkbench, demandScreening, promptEditor, retryButton]) {
-    assert.doesNotMatch(source, /<button(?![^>]*type=)[^>]*onClick=/);
+    assert.doesNotMatch(source, /<Button(?![^>]*type=)[^>]*onClick=/);
   }
 });
 
@@ -695,5 +697,5 @@ test('the unified knowledge base exposes visual and copy modules with accessible
   assert.match(workbench, /PROMPT_ONLY/);
   assert.match(workbench, /IMAGE_AND_PROMPT/);
   assert.match(workbench, /role=\{messageIsError \? 'alert' : 'status'\}/);
-  assert.doesNotMatch(workbench, /<button(?![^>]*type=)[^>]*onClick=/);
+  assert.doesNotMatch(workbench, /<Button(?![^>]*type=)[^>]*onClick=/);
 });

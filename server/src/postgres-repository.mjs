@@ -1,4 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { assertImageResultSettings, reviseTaskImages } from './image-revisions.mjs';
+import { IMAGE_FORMATS, hasImageControls } from './image-options.mjs';
+import { normalizeLayoutPresets } from './layout-library.mjs';
 import { migrateDatabase } from './database-migrations.mjs';
 import { claimRequestExpiry } from './claim-request.mjs';
 import { saveModelCall, listModelCalls, getModelCall } from './model-call-traces.mjs';
@@ -165,6 +168,7 @@ function contentWithReviewEdits(content, edits, { baseRevisionId, nodeId }) {
     ...original,
     copy: edits.copy,
     imagePlan: edits.imagePlan,
+    ...(edits.imageSettings ? { imageSettings: edits.imageSettings } : {}),
     ...(reviewed ? { reviewed } : {}),
     manualReview: {
       edited: true,
@@ -322,7 +326,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { executionRetryControl: true, imageResume: true, executorConcurrency: true, adminTaskFilters: true } };
+      capabilities: { executionRetryControl: true, imageResume: true, executorConcurrency: true, adminTaskFilters: true, imageControlsVersion: 1 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -702,19 +706,19 @@ export class PostgresControlPlaneRepository {
     return (await this.#claim({ kind: 'COPY', nodeId: rawNodeId, limit: 1 })).claims[0] ?? null;
   }
 
-  async claimImage(rawNodeId) {
-    return (await this.#claim({ kind: 'IMAGE', nodeId: rawNodeId, limit: 1 })).claims[0] ?? null;
+  async claimImage(rawNodeId, imageControlsVersion = 0) {
+    return (await this.#claim({ kind: 'IMAGE', nodeId: rawNodeId, limit: 1, imageControlsVersion })).claims[0] ?? null;
   }
 
   async claimCopyBatch({ nodeId, limit, requestId }) {
     return this.#claim({ kind: 'COPY', nodeId, limit, requestId: normalizeUuid(requestId, 'requestId') });
   }
 
-  async claimImageBatch({ nodeId, limit, requestId }) {
-    return this.#claim({ kind: 'IMAGE', nodeId, limit, requestId: normalizeUuid(requestId, 'requestId') });
+  async claimImageBatch({ nodeId, limit, requestId, imageControlsVersion = 0 }) {
+    return this.#claim({ kind: 'IMAGE', nodeId, limit, requestId: normalizeUuid(requestId, 'requestId'), imageControlsVersion });
   }
 
-  async #claim({ kind, nodeId: rawNodeId, limit, requestId }) {
+  async #claim({ kind, nodeId: rawNodeId, limit, requestId, imageControlsVersion = 0 }) {
     const nodeId = normalizeNodeId(rawNodeId);
     normalizeConcurrency(limit, 'limit');
     return transaction(this.pool, async (client) => {
@@ -788,6 +792,9 @@ export class PostgresControlPlaneRepository {
         const executionId = randomUUID();
         const snapshot = task.pending_snapshot
           ?? snapshots.get(task.id);
+        if (kind === 'IMAGE' && hasImageControls(snapshot?.copyRevision?.content) && imageControlsVersion !== 1) {
+          throw new ControlPlaneConflictError('IMAGE_CONTROLS_UPGRADE_REQUIRED', '当前任务使用新版图片配置，请更新图片执行机后再领取');
+        }
         const stage = kind === 'COPY' ? 'STARTING_COPY' : 'STARTING_IMAGE';
         await client.query(`
           INSERT INTO task_executions(
@@ -977,6 +984,7 @@ export class PostgresControlPlaneRepository {
     return transaction(this.pool, async (client) => {
       const execution = await lockedExecution(client, executionId);
       if (execution.kind !== 'IMAGE') throw new TypeError('execution is not an image execution');
+      assertImageResultSettings(execution.snapshot?.copyRevision?.content, result);
       await client.query(`
         UPDATE image_runs SET status = 'COMPLETED', result = $2, finished_at = now()
         WHERE id = $1
@@ -1168,6 +1176,10 @@ export class PostgresControlPlaneRepository {
     });
   }
 
+  async reviseImages(taskId, input, actorUsername) {
+    return transaction(this.pool, async client => taskFrom(await reviseTaskImages(client, taskId, input, actorUsername)));
+  }
+
   async requeueImageTask(rawTaskId) {
     const taskId = normalizeTaskId(rawTaskId);
     return transaction(this.pool, async (client) => {
@@ -1263,6 +1275,7 @@ export class PostgresControlPlaneRepository {
     const key = String(rawKey ?? '').trim();
     if (!/^[a-z][a-z0-9._-]{0,99}$/u.test(key)) throw new TypeError('setting key is invalid');
     const value = normalizeJson(rawValue, 'setting value', 1_000_000);
+    if (key === 'production' && value?.layoutPresets !== undefined) value.layoutPresets = normalizeLayoutPresets(value.layoutPresets);
     const result = await this.pool.query(`
       INSERT INTO global_settings(key, value) VALUES ($1, $2)
       ON CONFLICT(key) DO UPDATE SET
@@ -1638,7 +1651,7 @@ export class PostgresControlPlaneRepository {
     originalName = null,
   }) {
     const context = await this.activeImageUploadContext(rawExecutionId);
-    if (!['image/png', 'image/jpeg', 'application/json'].includes(mediaType)) {
+    if (![...Object.values(IMAGE_FORMATS).map(format => format.mediaType), 'application/json'].includes(mediaType)) {
       throw new TypeError('asset mediaType is invalid');
     }
     if (!Number.isSafeInteger(byteSize) || byteSize < 0) throw new TypeError('asset byteSize is invalid');
@@ -1669,9 +1682,23 @@ export class PostgresControlPlaneRepository {
     };
   }
 
-  async getAsset(rawAssetId) {
+  async imageReprocessAsset(rawExecutionId, rawAssetId) {
+    const executionId = normalizeUuid(rawExecutionId, 'executionId');
     const assetId = normalizeTaskId(rawAssetId);
-    const result = await this.pool.query('SELECT * FROM assets WHERE id = $1', [assetId]);
+    return transaction(this.pool, async client => {
+      const execution = await lockedExecution(client, executionId);
+      const local = execution.snapshot?.copyRevision?.content?.imageReprocess;
+      const pinned = local?.sources?.find(item => item.assetId === assetId);
+      if (execution.kind !== 'IMAGE' || !pinned) throw new ControlPlaneNotFoundError('source asset not found');
+      const asset = await this.getAsset(assetId, client);
+      if (!asset || asset.taskId !== Number(execution.task_id) || asset.imageRunId !== local.sourceRunId || asset.sha256 !== pinned.sha256) throw new ControlPlaneNotFoundError('source asset not found');
+      return asset;
+    });
+  }
+
+  async getAsset(rawAssetId, queryable = this.pool) {
+    const assetId = normalizeTaskId(rawAssetId);
+    const result = await queryable.query('SELECT * FROM assets WHERE id = $1', [assetId]);
     if (!result.rows[0]) return null;
     const row = result.rows[0];
     return {

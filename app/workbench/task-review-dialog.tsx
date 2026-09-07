@@ -1,7 +1,10 @@
 'use client';
 
+import { Checkbox, Input, Textarea } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+
 import { CheckCircle2, Download, LoaderCircle, RefreshCw, RotateCcw, Trash2 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 
 import {
   Dialog,
@@ -16,7 +19,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { apiRequest } from '../components/api-client';
 import { ModelCallTrace } from './model-call-trace';
 import { IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
-import { ImagePreview } from '../components/image-preview';
+import { ImagePreview, ImagePreviewThumbnail } from '../components/image-preview';
+import { ImagePreviewPreference } from '../components/image-preview-preference';
+import { ImageSettingsEditor, defaultImageSettings, type ImageSettings, type PageLayout } from '../components/image-controls';
+import { ImageHistoryCompare, type ImageArtifactInfo } from '../components/image-history-compare';
 
 type TaskState =
   | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_FAILED'
@@ -30,14 +36,16 @@ type ImagePlanItem = {
   subtitle: string;
   bullets: string[];
   prompt: string;
+  layout?: PageLayout;
 };
-type ReviewDraft = { copy: Copy; imagePlan: ImagePlanItem[] };
+type ReviewDraft = { copy: Copy; imagePlan: ImagePlanItem[]; imageSettings: ImageSettings };
 type CopyRevision = {
   id: number;
   revision: number;
   content: {
     copy?: Copy;
     imagePlan?: ImagePlanItem[];
+    imageSettings?: ImageSettings;
     reviewed?: { copy?: Copy; imagePlan?: ImagePlanItem[] };
     generation?: { research?: { sources?: Array<{ title?: string; url: string; siteName?: string }> } };
   };
@@ -66,7 +74,10 @@ type TaskDetail = {
   imageRuns: Array<{
     id: string;
     result: {
-      images?: Array<{
+      imageSettings?: ImageSettings;
+      imagePlan?: ImagePlanItem[];
+      processing?: { type: string };
+      images?: Array<ImageArtifactInfo & {
         assetId?: number;
         pageIndex?: number;
         provider?: string;
@@ -169,6 +180,7 @@ function draftFromRevision(revision: CopyRevision | undefined): ReviewDraft | nu
   return {
     copy: { title: copy.title, body: copy.body, tags: [...copy.tags] },
     imagePlan: imagePlan.map((item) => ({ ...item, bullets: [...item.bullets] })),
+    imageSettings: revision?.content.imageSettings ?? { ...defaultImageSettings },
   };
 }
 
@@ -192,6 +204,7 @@ export function TaskReviewDialog({
   const [submitting, setSubmitting] = useState(false);
   const [aiDisclosureEnabled, setAiDisclosureEnabled] = useState(false);
   const [activeAssetIndex, setActiveAssetIndex] = useState<number | null>(null);
+  const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
@@ -225,14 +238,20 @@ export function TaskReviewDialog({
   }, [load, taskId]);
 
   const revision = currentRevision(detail);
+  const savedDraft = draftFromRevision(revision);
+  const imageConfigurationChanged = Boolean(draft && savedDraft && JSON.stringify(draft.imageSettings) !== JSON.stringify(savedDraft.imageSettings));
   const editable = detail?.state === 'COPY_REVIEW_PENDING'
     && Boolean(revision && draft);
   const canReviewImages = detail?.state === 'MANUAL_ARCHIVE'
     && ['ADMIN', 'REVIEWER'].includes(role) && Boolean(detail.currentImageRunId);
   const downloadable = detail && ['MANUAL_ARCHIVE', 'REVIEWED'].includes(detail.state);
+  const canModifyImages = Boolean(detail && revision?.approvedAt && role !== 'REVIEWER'
+    && ['MANUAL_ARCHIVE', 'REVIEWED', 'IMAGE_FAILED', 'IMAGE_QUEUED'].includes(detail.state) && !detail.currentExecutionId);
   const sources = revision?.content.generation?.research?.sources ?? [];
   const assets = useMemo(() => detail?.assets.filter(
-    (asset) => asset.imageRunId === detail.currentImageRunId,
+    (asset) => asset.imageRunId === detail.currentImageRunId
+      && (!detail.imageRuns.find(run => run.id === detail.currentImageRunId)?.result?.images?.some(image => image.assetId)
+        || detail.imageRuns.find(run => run.id === detail.currentImageRunId)?.result?.images?.some(image => image.assetId === asset.id)),
   ) ?? [], [detail]);
   const currentImageRun = useMemo(() => detail?.imageRuns.find(
     (run) => run.id === detail.currentImageRunId,
@@ -242,6 +261,8 @@ export function TaskReviewDialog({
       .filter((image) => Number.isSafeInteger(image.assetId))
       .map((image) => [image.assetId as number, image]),
   ), [currentImageRun]);
+  const activeAsset = activeAssetIndex === null ? undefined : assets[activeAssetIndex];
+  const activeResultImage = activeAsset ? resultImageByAssetId.get(activeAsset.id) : undefined;
 
   useEffect(() => {
     if (activeAssetIndex !== null && activeAssetIndex >= assets.length) setActiveAssetIndex(null);
@@ -279,6 +300,7 @@ export function TaskReviewDialog({
     setSubmitting(true);
     setError('');
     try {
+      await requireImageControls();
       await apiRequest(apiPath(`/v1/tasks/${detail.id}/approve-copy`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -298,8 +320,34 @@ export function TaskReviewDialog({
     }
   }
 
+  async function requireImageControls() {
+    try {
+      const capability = await apiRequest<{ version: number }>(apiPath(`/v1/tasks/${detail!.id}/image-capabilities`));
+      if (capability.version !== 1) throw new Error('unsupported');
+    } catch { throw new Error('中心服务尚未支持图片配置，请更新中心与图片执行机后再提交。'); }
+  }
+
+  async function reviseImages(operation: 'REPROCESS' | 'REGENERATE') {
+    if (!detail || !revision || !draft || !canModifyImages || submitting) return;
+    if (operation === 'REGENERATE' && !await confirm({ title: '重新生成图片？', description: '保留已审核文案，按配置中的布局种类随机生成整套图片，会产生模型费用。旧版图片保留。', confirmLabel: '确认费用并生成' })) return;
+    setSubmitting(true); setError('');
+    try {
+      await requireImageControls();
+      await apiRequest(apiPath(`/v1/tasks/${detail.id}/image-revisions`), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ revisionId: revision.id, imageRunId: detail.currentImageRunId, nodeId, operation,
+          imageSettings: draft.imageSettings,
+          ...(operation === 'REGENERATE' ? { layouts: draft.imagePlan.map(() => ({ mode: 'AUTO' })) } : {}),
+          ...(operation === 'REGENERATE' ? { confirmation: 'LIVE_IMAGE_COST_ACCEPTED' } : {}) }),
+      });
+      await onUpdated(operation === 'REPROCESS' ? '格式与背景修改已进入图片队列，不调用模型。' : '已进入图片队列，将按配置随机选择布局。');
+      await load();
+    } catch (caught) { setError(caught instanceof Error ? caught.message : '图片修改提交失败'); }
+    finally { setSubmitting(false); }
+  }
+
   async function submitImageReview(decision: 'APPROVE' | 'RETRY' | 'DISCARD') {
-    if (!detail || !canReviewImages || submitting) return;
+    if (!detail || !canReviewImages || submitting || (decision === 'APPROVE' && imageConfigurationChanged)) return;
     const options = {
       APPROVE: { title: '确认图片审核通过？', description: '当前图文将标记为已审核，并移入已完成列表。', confirmLabel: '审核通过' },
       RETRY: { title: '重新生成这条任务的图片？', description: '保留已审核文案，使用最新配置重新生成整套图片；旧图片保留在历史记录中，生成会产生模型费用。', confirmLabel: '重试生图' },
@@ -341,8 +389,8 @@ export function TaskReviewDialog({
             data-checked={aiDisclosureEnabled}
             title="开启后，生成图片会显示“AI生成”水印"
           >
-            <input
-              type="checkbox"
+            <Checkbox
+
               checked={aiDisclosureEnabled}
               disabled={!editable || loading || submitting}
               onChange={(event) => setAiDisclosureEnabled(event.target.checked)}
@@ -351,9 +399,9 @@ export function TaskReviewDialog({
             <span className="workbench-ai-disclosure-label">AI生成水印</span>
             <strong>{aiDisclosureEnabled ? '已开启' : '已关闭'}</strong>
           </label>}
-          <button className="button small" type="button" disabled={loading || submitting} onClick={() => { void load(); }}>
+          <Button unstyled className="button small" type="button" disabled={loading || submitting} onClick={() => { void load(); }}>
             <RefreshCw className={loading ? 'animate-spin' : ''} size={14} />刷新
-          </button>
+          </Button>
         </div>
       </header>
 
@@ -386,15 +434,15 @@ export function TaskReviewDialog({
                 <div className="workbench-copy-fields">
                   <div className="field full">
                     <label htmlFor="review-copy-title">标题 <small>{draft.copy.title.length}/25</small></label>
-                    <input id="review-copy-title" className="input" value={draft.copy.title} maxLength={25} required readOnly={!editable} onChange={(event) => updateCopy('title', event.target.value)} />
+                    <Input id="review-copy-title" className="input" value={draft.copy.title} maxLength={25} required readOnly={!editable} onChange={(event) => updateCopy('title', event.target.value)} />
                   </div>
                   <div className="field full">
                     <label htmlFor="review-copy-body">正文 <small>{[...draft.copy.body].length}/400–600</small></label>
-                    <textarea id="review-copy-body" className="textarea workbench-copy-body-editor" value={draft.copy.body} minLength={400} maxLength={600} required readOnly={!editable} onChange={(event) => updateCopy('body', event.target.value)} />
+                    <Textarea id="review-copy-body" className="textarea workbench-copy-body-editor" value={draft.copy.body} minLength={400} maxLength={600} required readOnly={!editable} onChange={(event) => updateCopy('body', event.target.value)} />
                   </div>
                   <div className="field full">
                     <label htmlFor="review-copy-tags">标签 <small>3–8 个，用空格分隔</small></label>
-                    <input id="review-copy-tags" className="input" value={draft.copy.tags.join(' ')} required readOnly={!editable} onChange={(event) => updateCopy('tags', event.target.value)} />
+                    <Input id="review-copy-tags" className="input" value={draft.copy.tags.join(' ')} required readOnly={!editable} onChange={(event) => updateCopy('tags', event.target.value)} />
                   </div>
                 </div>
               </section>
@@ -405,6 +453,7 @@ export function TaskReviewDialog({
 
             {(assets.length > 0 || canReviewImages) && <section className="workbench-review-section">
               <div className="workbench-review-section-title"><span>{draft ? '03' : '02'}</span><div><h3>图片审核</h3><p>核对当前图片运行生成的完整图集。</p></div></div>
+              <ImagePreviewPreference />
               {assets.length === 0 && <p className="notice warning">当前没有可预览的图片，请刷新核对，或选择重试生图、废弃。</p>}
               {currentImageRun?.result?.simulation?.enabled && <div className="notice warning">
                 {currentImageRun.result.visualPlan?.warning?.message
@@ -414,16 +463,10 @@ export function TaskReviewDialog({
                 const resultImage = resultImageByAssetId.get(asset.id);
                 const alt = asset.originalName || `任务 ${detail.id} 第 ${index + 1} 张图片`;
                 return <figure key={asset.id}>
-                  <ImagePreview
+                  <ImagePreviewThumbnail
                     src={apiPath(asset.url)}
                     alt={alt}
-                    isOpen={activeAssetIndex === index}
-                    position={index + 1}
-                    total={assets.length}
-                    onOpen={() => setActiveAssetIndex(index)}
-                    onClose={() => setActiveAssetIndex((current) => current === index ? null : current)}
-                    onPrevious={index > 0 ? () => setActiveAssetIndex(index - 1) : undefined}
-                    onNext={index < assets.length - 1 ? () => setActiveAssetIndex(index + 1) : undefined}
+                    onClick={event => { previewTriggerRef.current = event.currentTarget; setActiveAssetIndex(index); }}
                   />
                   <figcaption>
                     <strong>第 {resultImage?.pageIndex ?? index + 1} 张</strong>
@@ -439,43 +482,70 @@ export function TaskReviewDialog({
                   </figcaption>
                 </figure>;
               })}</div>
+              {activeAsset && activeAssetIndex !== null && <ImagePreview
+                hideTrigger
+                isOpen
+                restoreFocusRef={previewTriggerRef}
+                src={apiPath(activeAsset.url)}
+                alt={activeAsset.originalName || `任务 ${detail.id} 第 ${activeAssetIndex + 1} 张图片`}
+                sourceSrc={activeResultImage?.sourceUrl ? apiPath(activeResultImage.sourceUrl) : undefined}
+                deliverySrc={activeResultImage?.deliveryUrl ? apiPath(activeResultImage.deliveryUrl) : undefined}
+                format={activeResultImage?.imageSettings?.format}
+                transparency={activeResultImage?.transparency}
+                position={activeAssetIndex + 1}
+                total={assets.length}
+                preloads={assets.slice(Math.max(0, activeAssetIndex - 1), activeAssetIndex + 2).filter(asset => asset.id !== activeAsset.id).map(asset => apiPath(asset.url))}
+                onClose={() => setActiveAssetIndex(null)}
+                onPrevious={activeAssetIndex > 0 ? () => setActiveAssetIndex(index => index === null ? null : index - 1) : undefined}
+                onNext={activeAssetIndex < assets.length - 1 ? () => setActiveAssetIndex(index => index === null ? null : index + 1) : undefined}
+              />}
+              {currentImageRun?.result?.processing?.type === 'LOCAL' && <p className="notice warning">此版本已在本地转换格式或背景，未重新调用模型验收，请检查文字对比和透明边缘后审核。</p>}
+              {imageConfigurationChanged && <p className="notice warning">下方配置尚未应用，当前预览仍是已有成品。请先提交转换或重新生图，或刷新恢复已保存的配置。</p>}
               {canReviewImages && <div className="workbench-row-actions">
-                <button className="button primary" type="button" disabled={submitting || loading || assets.length === 0} onClick={() => { void submitImageReview('APPROVE'); }}><CheckCircle2 size={15} />审核通过</button>
-                <button className="button" type="button" disabled={submitting || loading} onClick={() => { void submitImageReview('RETRY'); }}><RotateCcw size={15} />重试生图</button>
-                <button className="button danger" type="button" disabled={submitting || loading} onClick={() => { void submitImageReview('DISCARD'); }}><Trash2 size={15} />废弃</button>
+                <Button unstyled className="button primary" type="button" disabled={submitting || loading || assets.length === 0 || imageConfigurationChanged} onClick={() => { void submitImageReview('APPROVE'); }}><CheckCircle2 size={15} />审核通过</Button>
+                <Button unstyled className="button" type="button" disabled={submitting || loading} onClick={() => { void submitImageReview('RETRY'); }}><RotateCcw size={15} />重试生图</Button>
+                <Button unstyled className="button danger" type="button" disabled={submitting || loading} onClick={() => { void submitImageReview('DISCARD'); }}><Trash2 size={15} />废弃</Button>
                 {submitting && <span role="status">正在提交…</span>}
               </div>}
             </section>}
 
+            <ImageHistoryCompare runs={detail.imageRuns} currentRunId={detail.currentImageRunId} assets={detail.assets}
+              onRestore={canModifyImages && !submitting ? settings => setDraft(current => current ? { ...current, imageSettings: settings } : current) : undefined} />
+
             {draft && <>
               <section className="workbench-review-section">
                 <div className="workbench-review-section-title"><span>{assets.length > 0 ? '04' : '03'}</span><div><h3>配图策划</h3><p>每一页独立呈现图片角色、画面文字与生成指令。</p></div></div>
+                <ImageSettingsEditor value={draft.imageSettings} disabled={(!editable && !canModifyImages) || submitting} onChange={imageSettings => setDraft(current => current ? { ...current, imageSettings } : current)} />
+                {canModifyImages && <>
+                  <p className="subtle">调整格式或透明填色可直接转换。重新生成时按配置中的布局种类随机选择，旧图片保留。</p>
+                  <div className="image-revision-actions"><Button unstyled className="button" type="button" disabled={submitting || !assets.length} onClick={() => void reviseImages('REPROCESS')}>仅转换格式 / 背景（不调用模型）</Button><Button unstyled className="button primary" type="button" disabled={submitting} onClick={() => void reviseImages('REGENERATE')}>重新生成图片</Button></div>
+                </>}
                 <div className="workbench-image-plan-grid">
                   {draft.imagePlan.map((item, index) => <article className="workbench-image-plan-card" key={index}>
                     <div className="workbench-image-plan-head"><b>第 {index + 1} 页</b><span>{IMAGE_KIND_LABELS[item.kind]}</span></div>
                     <div className="workbench-image-plan-fields">
                       <div className="field">
                         <label htmlFor={`review-plan-kind-${index}`}>页面类型</label>
-                        <Select value={item.kind} disabled={!editable} onValueChange={(kind: ImagePlanItem['kind']) => updateImagePlan(index, { kind })}>
+                        <Select value={item.kind} disabled={!editable} onValueChange={(kind: ImagePlanItem['kind']) => updateImagePlan(index, { kind, layout: { mode: 'AUTO' } })}>
                           <SelectTrigger id={`review-plan-kind-${index}`}><SelectValue /></SelectTrigger>
                           <SelectContent>{IMAGE_KINDS.map((kind) => <SelectItem value={kind} key={kind}>{IMAGE_KIND_LABELS[kind]}</SelectItem>)}</SelectContent>
                         </Select>
                       </div>
                       <div className="field">
                         <label htmlFor={`review-plan-headline-${index}`}>页面标题</label>
-                        <input id={`review-plan-headline-${index}`} className="input" value={item.headline} maxLength={18} required readOnly={!editable} onChange={(event) => updateImagePlan(index, { headline: event.target.value })} />
+                        <Input id={`review-plan-headline-${index}`} className="input" value={item.headline} maxLength={18} required readOnly={!editable} onChange={(event) => updateImagePlan(index, { headline: event.target.value })} />
                       </div>
                       <div className="field full">
                         <label htmlFor={`review-plan-subtitle-${index}`}>页面副标题</label>
-                        <input id={`review-plan-subtitle-${index}`} className="input" value={item.subtitle} maxLength={30} required readOnly={!editable} onChange={(event) => updateImagePlan(index, { subtitle: event.target.value })} />
+                        <Input id={`review-plan-subtitle-${index}`} className="input" value={item.subtitle} maxLength={30} required readOnly={!editable} onChange={(event) => updateImagePlan(index, { subtitle: event.target.value })} />
                       </div>
                       <div className="field full">
                         <label htmlFor={`review-plan-bullets-${index}`}>画面要点 <small>每行一条，2–5 条</small></label>
-                        <textarea id={`review-plan-bullets-${index}`} className="textarea" value={item.bullets.join('\n')} required readOnly={!editable} onChange={(event) => updateImagePlan(index, { bullets: event.target.value.split(/\r?\n/u) })} />
+                        <Textarea id={`review-plan-bullets-${index}`} className="textarea" value={item.bullets.join('\n')} required readOnly={!editable} onChange={(event) => updateImagePlan(index, { bullets: event.target.value.split(/\r?\n/u) })} />
                       </div>
                       <div className="field full">
                         <label htmlFor={`review-plan-prompt-${index}`}>画面生成指令</label>
-                        <textarea id={`review-plan-prompt-${index}`} className="textarea" value={item.prompt} minLength={10} maxLength={1_000} required readOnly={!editable} onChange={(event) => updateImagePlan(index, { prompt: event.target.value })} />
+                        <Textarea id={`review-plan-prompt-${index}`} className="textarea" value={item.prompt} minLength={10} maxLength={1_000} required readOnly={!editable} onChange={(event) => updateImagePlan(index, { prompt: event.target.value })} />
                       </div>
                     </div>
                   </article>)}
@@ -496,10 +566,10 @@ export function TaskReviewDialog({
           <footer className="workbench-review-footer">
             <span>{editable ? `提交后将创建人工修订版 v${(revision?.revision ?? 0) + 1}` : `当前文案版本 v${revision?.revision ?? '—'}`}</span>
             <div>
-              <DialogClose asChild><button className="button" type="button" disabled={submitting}>关闭</button></DialogClose>
-              {editable && <button className="button primary" type="submit" disabled={submitting}>
+              <DialogClose asChild><Button unstyled className="button" type="button" disabled={submitting}>关闭</Button></DialogClose>
+              {editable && <Button unstyled className="button primary" type="submit" disabled={submitting}>
                 {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : <><CheckCircle2 size={15} />提交审核</>}
-              </button>}
+              </Button>}
             </div>
           </footer>
         </form>}

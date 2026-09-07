@@ -7,7 +7,7 @@ import { installRulePrompts } from '../src/admin/rule-prompt-installer.mjs';
 import { hashPrompt } from '../src/admin/prompt-service.mjs';
 
 describe('rule prompt installer', () => {
-  it('republishes the repository prompt versions without changing task snapshots', () => {
+  it('keeps the human published version while preparing repository candidates idempotently', () => {
     const store = createAdminStore(':memory:');
     try {
       const textTemplate = store.listPromptTemplates().find(({ kind }) => kind === 'TEXT_SYSTEM');
@@ -20,12 +20,12 @@ describe('rule prompt installer', () => {
       const first = installRulePrompts(store);
       const second = installRulePrompts(store);
 
-      assert.equal(first.find(({ kind }) => kind === 'TEXT_SYSTEM').action, 'republished');
-      assert.ok(second.every(({ action }) => action === 'unchanged'));
+      assert.equal(first.find(({ kind }) => kind === 'TEXT_SYSTEM').action, 'candidate_exists');
+      assert.deepEqual(second, first);
       for (const prompt of DEFAULT_PROMPTS) {
         const template = store.listPromptTemplates().find(({ kind }) => kind === prompt.kind);
         const published = template.versions.find(({ status }) => status === 'PUBLISHED');
-        assert.equal(published.contentSha256, hashPrompt(prompt.content));
+        assert.equal(published.contentSha256, prompt.kind === 'TEXT_SYSTEM' ? legacy.contentSha256 : hashPrompt(prompt.content));
       }
     } finally {
       store.close();

@@ -7,6 +7,7 @@ import {
   parseDynamicImagePlanOutput,
   parsePostOutput,
 } from '../src/post-contract.mjs';
+import { createPromptRuntime, withPromptRuntime } from '../src/prompt-runtime.mjs';
 
 function validPost(imageCount = 3) {
   const imagePlan = [
@@ -281,6 +282,60 @@ describe('post output contract', () => {
     );
   });
 
+  it('leaves negated or quoted experience claims to governed text review while preserving legacy keyword checks', () => {
+    const runtime = createPromptRuntime({ prompts: {
+      TEXT_REVIEW_SYSTEM: { versionId: 27, content: '结合上下文审核事实，不把引用或否定句误判为作者的亲身经历。' },
+    } });
+    for (const sentence of ['不要相信绝对有效的宣传。', '看到“我亲测”的说法时，应先核对来源和适用条件。']) {
+      const input = validPost();
+      input.body += `\n${sentence}`;
+      const raw = JSON.stringify(input);
+
+      const parsed = withPromptRuntime(runtime, () => parsePostOutput(raw));
+      assert.equal(parsed.body, input.body);
+      assert.equal(parsed.fabricatedExperience, false);
+      assert.throws(
+        () => withPromptRuntime(null, () => parsePostOutput(raw)),
+        /fabricated experience is not allowed/u,
+        'the same historical payload must retain its legacy keyword validation',
+      );
+    }
+  });
+
+  it('requires an explicit false fabricated-experience flag even under governed rules', () => {
+    const runtime = createPromptRuntime({ prompts: {
+      TEXT_REVIEW_SYSTEM: { versionId: 28, content: '审核正文中的事实和经历，不自动豁免虚构经历。' },
+    } });
+    for (const fabricatedExperience of [true, undefined, null, 'false']) {
+      const input = { ...validPost(), fabricatedExperience };
+      assert.throws(
+        () => withPromptRuntime(runtime, () => parsePostOutput(JSON.stringify(input))),
+        /fabricated experience is not allowed/u,
+      );
+    }
+    const input = validPost();
+    assert.equal(withPromptRuntime(runtime, () => parsePostOutput(JSON.stringify(input))).fabricatedExperience, false);
+  });
+
+  it('leaves itinerary wording to governed review without removing the legacy day-marker check', () => {
+    const runtime = createPromptRuntime({ prompts: {
+      TEXT_REVIEW_SYSTEM: { versionId: 29, content: '按正文实际内容审核行程覆盖，允许自然段表达，不限定逐日编号。' },
+    } });
+    const input = validPost(4);
+    input.title = '绵阳到北京自驾8天行程';
+    input.body = `${'先确认路线、天气、车辆状态和进京要求，再决定每天的驾驶节奏。'.repeat(14)}\n\n去程、北京停留和返程都要留出休息时间。`;
+    const options = { imageCount: 4, query: '绵阳到北京自驾8天行程' };
+    const raw = JSON.stringify(input);
+
+    const parsed = withPromptRuntime(runtime, () => parsePostOutput(raw, options));
+    assert.equal(parsed.body, input.body);
+    assert.deepEqual(parsed.imagePlan, input.imagePlan);
+    assert.throws(
+      () => withPromptRuntime(null, () => parsePostOutput(raw, options)),
+      /itinerary.*days 1-8/iu,
+    );
+  });
+
   it('rejects a counted multi-day itinerary that does not cover every promised day', () => {
     const input = validPost(4);
     input.title = '绵阳到北京自驾8天行程，逐日安排';
@@ -456,13 +511,14 @@ describe('post prompt', () => {
       JSON.stringify({ imagePlan: validPost(5).imagePlan }),
     );
 
-    assert.match(prompt, /<untrusted_finalized_post>/);
-    assert.match(prompt, /3[–-]5 张/);
-    assert.match(prompt, /最少且足够/);
-    assert.match(prompt, /明确规定页数、分组、行数或逐项覆盖/u);
-    assert.match(prompt, /不得合并为范围摘要/u);
-    assert.match(prompt, /清单索引页.*40 字/u);
-    assert.match(prompt, /其他页面.*30 字/u);
+    assert.match(prompt, /<trusted_business_rules kind="COPY_IMAGE_PLAN_SYSTEM">/u);
+    const input = JSON.parse(prompt.match(/<untrusted_task_data>\s*([\s\S]+?)\s*<\/untrusted_task_data>/u)[1]);
+    assert.deepEqual(input, { title: finalized.title, body: finalized.body });
+    assert.match(prompt, /3～5页，首项kind=hero/u);
+    assert.match(prompt, /headline≤18、subtitle≤30、bullets为2～5项/u);
+    assert.match(prompt, /checklist≤40否则≤30/u);
+    assert.match(prompt, /不得修改正文/u);
+    assert.match(prompt, /headline、subtitle、bullets 是最终逐字上图文字/u);
     assert.equal(imagePlan.length, 5);
   });
 });

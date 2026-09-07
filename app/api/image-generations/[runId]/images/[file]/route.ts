@@ -25,7 +25,7 @@ export async function GET(
     const body = Uint8Array.from(image.content).buffer;
     return new Response(body, {
       headers: {
-        'Content-Type': 'image/png',
+        'Content-Type': image.mediaType,
         'Content-Length': String(image.content.byteLength),
         'Cache-Control': 'private, max-age=31536000, immutable',
         'X-Content-Type-Options': 'nosniff',

@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+
 import { Component, useId, useState, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -50,8 +52,8 @@ export function ModelResponseView({ text }: { text: string }) {
   const contentId = useId();
   return <div className="model-response-view">
     <div className="model-response-toolbar" role="group" aria-label="模型返回显示方式">
-      <button className="button" type="button" aria-pressed={!raw} aria-controls={contentId} onClick={() => setRaw(false)}>阅读视图</button>
-      <button className="button" type="button" aria-pressed={raw} aria-controls={contentId} onClick={() => setRaw(true)}>原文</button>
+      <Button unstyled className="button" type="button" aria-pressed={!raw} aria-controls={contentId} onClick={() => setRaw(false)}>阅读视图</Button>
+      <Button unstyled className="button" type="button" aria-pressed={raw} aria-controls={contentId} onClick={() => setRaw(true)}>原文</Button>
       <span>原文随时可查</span>
     </div>
     <div id={contentId} className="model-response-content" role="region" aria-label={raw ? '模型返回原文' : '模型返回阅读视图'} tabIndex={0}>

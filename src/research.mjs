@@ -1,4 +1,5 @@
 import { isIP } from 'node:net';
+import { promptRuntimeSnapshot } from './prompt-runtime.mjs';
 import { codexErrorCode } from './codex-protocol.mjs';
 
 const RESEARCH_SCHEMA_VERSION = 1;
@@ -48,6 +49,7 @@ function normalizedPublicUrl(value) {
 }
 
 function sourceAuthorityScore(source) {
+  if (promptRuntimeSnapshot()) return 0;
   let hostname = '';
   try {
     hostname = new URL(source?.url).hostname.toLowerCase().replace(/\.$/u, '');
@@ -243,7 +245,7 @@ export async function createResearchSnapshot({
   const attempts = [];
   const unavailableProviders = new Set();
   const authorityQuery = `${normalizedQuery} 官方 标准 技术规范`.slice(0, 500);
-  const queryVariants = [...new Set([normalizedQuery, authorityQuery])];
+  const queryVariants = promptRuntimeSnapshot() ? [normalizedQuery] : [...new Set([normalizedQuery, authorityQuery])];
   let bestFallback = null;
   searchLoop:
   for (const searchQuery of queryVariants) {
@@ -265,7 +267,7 @@ export async function createResearchSnapshot({
         }
         const authorityScore = Math.max(...evidence.sources.map(sourceAuthorityScore));
         const groundedSummary = hasGroundedSummary(evidence, actualProvider);
-        if (authorityScore === 0 && (requireAuthoritative || !groundedSummary)) {
+        if (authorityScore === 0 && ((!promptRuntimeSnapshot() && requireAuthoritative) || !groundedSummary)) {
           attempts.push({
             provider,
             status: 'FAILED',
@@ -274,7 +276,7 @@ export async function createResearchSnapshot({
           continue;
         }
         attempts.push({ provider, status: 'COMPLETED', error: null });
-        if (authorityScore > 0 || (!requireAuthoritative && (
+        if ((promptRuntimeSnapshot() && groundedSummary) || authorityScore > 0 || (!requireAuthoritative && (
           (actualProvider === 'codex' && groundedSummary)
           || (actualProvider === 'deepseek' && hasSufficientDeepSeekEvidence(evidence))))) {
           return normalizeResearchSnapshot({

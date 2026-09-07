@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+
 import { useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { useStatistics } from './use-statistics';
@@ -20,17 +22,17 @@ export function PersonalOverview({ filter, onFilter }: { filter: string; onFilte
       <Metric label="累计已完成" value={number(summary?.completed)} note="当前审核通过的作业" />
     </div>
     <div className="job-stats-chips" aria-label="按当前状态筛选个人作业">
-      <button type="button" aria-pressed={filter === 'ALL'} onClick={() => onFilter('ALL')}>全部状态</button>
-      {(Object.keys(STATE_LABELS) as StateGroup[]).map(key => <button key={key} type="button" aria-pressed={filter === key}
-        disabled={!summary} onClick={() => onFilter(filter === key ? 'ALL' : key)}>{STATE_LABELS[key]} <b>{number(summary?.states[key])}</b></button>)}
+      <Button unstyled type="button" aria-pressed={filter === 'ALL'} onClick={() => onFilter('ALL')}>全部状态</Button>
+      {(Object.keys(STATE_LABELS) as StateGroup[]).map(key => <Button unstyled key={key} type="button" aria-pressed={filter === key}
+        disabled={!summary} onClick={() => onFilter(filter === key ? 'ALL' : key)}>{STATE_LABELS[key]} <b>{number(summary?.states[key])}</b></Button>)}
       {!!summary?.anomalies && <span className="job-stats-warning">待处理异常 {summary.anomalies} 项（含生图失败回审）</span>}
     </div>
-    <button className="job-stats-expand" type="button" aria-expanded={expanded} aria-controls="personal-statistics-trend"
-      onClick={() => setExpanded(value => !value)}><ChevronDown size={14} aria-hidden="true" />{expanded ? '收起趋势' : '展开作业趋势'}</button>
+    <Button unstyled className="job-stats-expand" type="button" aria-expanded={expanded} aria-controls="personal-statistics-trend"
+      onClick={() => setExpanded(value => !value)}><ChevronDown size={14} aria-hidden="true" />{expanded ? '收起趋势' : '展开作业趋势'}</Button>
     {expanded && <div id="personal-statistics-trend">
       <div className="job-stats-heading"><h3>新增与审核完成趋势</h3><div className="job-stats-segments">
-        {(['7d', '30d'] as const).map(value => <button key={value} type="button" aria-pressed={period === value}
-          onClick={() => setPeriod(value)}>近 {value === '7d' ? 7 : 30} 天</button>)}
+        {(['7d', '30d'] as const).map(value => <Button unstyled key={value} type="button" aria-pressed={period === value}
+          onClick={() => setPeriod(value)}>近 {value === '7d' ? 7 : 30} 天</Button>)}
       </div></div>
       {summary && <div className="job-stats-two-columns"><Chart label="每日新增与当前有效审核完成的个人作业数量" labels={summary.trend.map(day => day.date.slice(5))}
         series={[{ name: '新增作业', values: summary.trend.map(day => day.created) }, { name: '审核完成', values: summary.trend.map(day => day.completed) }]} />

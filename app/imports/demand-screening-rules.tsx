@@ -1,3 +1,4 @@
+import { Disclosure, DisclosureTrigger, DisclosureContent } from '@/components/ui/disclosure';
 import { StatusPill } from '../components/status-pill';
 
 export const DEMAND_LEVELS = ['STRONG', 'MEDIUM', 'WEAK', 'NONE'] as const;
@@ -27,8 +28,8 @@ export const DEMAND_LEVEL_COPY: Record<DemandLevel, { label: string; reason: str
 };
 
 export function DemandScreeningRules() {
-  return <details className="screening-rules-disclosure">
-    <summary><strong>判定规则与直接废弃红线</strong><span>需要时展开查看</span></summary>
+  return <Disclosure className="screening-rules-disclosure">
+    <DisclosureTrigger><strong>判定规则与直接废弃红线</strong><span>需要时展开查看</span></DisclosureTrigger><DisclosureContent>
     <div className="screening-rules" aria-label="需求强度判定规则">
       {DEMAND_LEVELS.map((level) => <div className="screening-rule" key={level}>
         <StatusPill value={level} />
@@ -36,5 +37,5 @@ export function DemandScreeningRules() {
       </div>)}
     </div>
     <p className="notice screening-redlines">直接废弃红线：一句话可闭环、硬广、缺乏优质素材、开放性问题、医疗诊疗与用药、投资博彩建议、无出处古诗名言、低价值简单成语。</p>
-  </details>;
+  </DisclosureContent></Disclosure>;
 }

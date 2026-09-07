@@ -1,3 +1,5 @@
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
+import { Button } from '@/components/ui/button';
 import { CircleAlert, Download, Waypoints } from 'lucide-react';
 
 import { adminDatabasePath, adminOpenClawRoot } from '../../src/admin/runtime.mjs';
@@ -51,12 +53,12 @@ export default async function OpenClawTracesPage({
       <section className={styles.toolbar} aria-label="链路任务选择">
         <form action="/openclaw-traces" className={styles.selector}>
           <label htmlFor="trace-job">已完成的文案任务</label>
-          <select id="trace-job" name="jobId" defaultValue={String(report.business.job.id)}>
-            {jobs.map((job: any) => <option key={job.id} value={job.id}>
+          <Select name="jobId" defaultValue={String(report.business.job.id)}><SelectTrigger id="trace-job"><SelectValue /></SelectTrigger><SelectContent>
+            {jobs.map((job: any) => <SelectItem key={job.id} value={String(job.id)}>
               #{job.id} · {job.query}
-            </option>)}
-          </select>
-          <button className="button" type="submit">查看任务</button>
+            </SelectItem>)}
+          </SelectContent></Select>
+          <Button unstyled className="button" type="submit">查看任务</Button>
         </form>
         <a className="button primary" href={`/api/openclaw-traces/${report.business.job.id}`}>
           <Download aria-hidden="true" size={15} />下载完整脱敏 JSON

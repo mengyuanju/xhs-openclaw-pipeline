@@ -4,7 +4,9 @@ import { apiHandler, ok } from '../_lib';
 import { ApiError, assertRequestSize } from '../../../src/admin/http.mjs';
 import { screenImportRowsWithOpenClaw } from '../../../src/admin/demand-screening-service.mjs';
 import { parseExcelImport } from '../../../src/admin/excel-import.mjs';
-import { withAdminStore } from '../../../src/admin/runtime.mjs';
+import { withAdminStore, adminOutputRoot } from '../../../src/admin/runtime.mjs';
+import { loadPromptConfiguration } from '../_prompt-runtime';
+import { withPromptExecution } from '../../../src/admin/prompt-execution.mjs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -21,7 +23,7 @@ export function GET(request: Request) {
 }
 
 export function POST(request: Request) {
-  return apiHandler(request, { mutation: true }, async () => {
+  return apiHandler(request, { mutation: true }, async (session) => {
     assertRequestSize(request, 6 * 1024 * 1024);
     const form = await request.formData();
     const file = form.get('file');
@@ -31,11 +33,12 @@ export function POST(request: Request) {
       buffer: Buffer.from(await file.arrayBuffer()),
       fileName: file.name,
     });
-    const modelApi = withAdminStore((store: any) =>
-      store.getProductionSettings().settings.modelApi);
+    const configuration = await loadPromptConfiguration(session);
+    const modelApi = configuration.productionSettings.modelApi;
     let screenedRows;
     try {
-      screenedRows = await screenImportRowsWithOpenClaw({ rows: parsed.rows, modelApi });
+      screenedRows = await withPromptExecution({ outputRoot: adminOutputRoot(), configuration, kind: 'DEMAND_SCREENING', query: file.name },
+        () => screenImportRowsWithOpenClaw({ rows: parsed.rows, modelApi }));
     } catch {
       throw new ApiError(
         502,

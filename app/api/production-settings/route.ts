@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { apiHandler, ok, parseJson } from '../_lib';
 import { withAdminStore } from '../../../src/admin/runtime.mjs';
+import { normalizeLayoutPresets } from '../../../server/src/layout-library.mjs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -42,6 +43,10 @@ const modelApiPatchSchema = z.object({
 }).strict().refine((value) => Object.keys(value).length > 0, '至少修改一项模型 API 配置');
 
 const settingsPatchSchema = z.object({
+  layoutPresets: z.unknown().transform((value, context) => {
+    try { return normalizeLayoutPresets(value); }
+    catch (error) { context.addIssue({ code: 'custom', message: error instanceof Error ? error.message : '布局种类无效' }); return z.NEVER; }
+  }).optional(),
   qualityRepairEnabled: z.boolean().optional(),
   qualityRepairTriggerScore: z.number().int().min(0).max(2).optional(),
   qualityRepairTargetScore: z.number().int().min(1).max(3).optional(),
@@ -59,7 +64,7 @@ export function GET(request: Request) {
 
 export async function PATCH(request: Request) {
   return apiHandler(request, { mutation: true }, async () => {
-    const patch = await parseJson(request, settingsPatchSchema);
+    const patch = await parseJson(request, settingsPatchSchema, { maxBytes: 256 * 1024 });
     return ok(withAdminStore((store: any) => store.updateProductionSettings(patch)));
   });
 }

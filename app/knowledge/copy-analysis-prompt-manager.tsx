@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+
 import { useState } from 'react';
 
 import {
@@ -143,14 +145,14 @@ export function CopyAnalysisPromptManager({
           </SelectContent>
         </Select>
       </div>
-      <button
+      <Button unstyled
         className="button"
         type="button"
         disabled={disabled || busy !== null || !normalizedCurrentPrompt}
         onClick={saveCurrentPrompt}
       >
         {busy === 'SAVE' ? '保存中…' : '保存当前 Prompt'}
-      </button>
+      </Button>
     </div>
     <small id="copy-analysis-prompt-help">
       最多保存 10 条；达到上限后，系统会要求你选择一条旧 Prompt 进行替换，不会自动覆盖。

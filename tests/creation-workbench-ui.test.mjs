@@ -58,9 +58,9 @@ test('all distributed task status displays distinguish exhausted image retries f
 
 test('running and failed copy tasks expose retry in personal and all-copy lists', async () => {
   const source = await readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8');
-  assert.match(source, /activeView === 'PERSONAL' && canRetryCopy && <button[^>]*disabled=\{busy\}[^>]*onClick=\{\(\) => \{ void retryCopy\(task\); \}\}[^>]*><RotateCcw[^>]*\/>重试<\/button>/u);
+  assert.match(source, /activeView === 'PERSONAL' && canRetryCopy && <Button[^>]*disabled=\{busy\}[^>]*onClick=\{\(\) => \{ void retryCopy\(task\); \}\}[^>]*><RotateCcw[^>]*\/>重试<\/Button>/u);
   assert.match(source, /const canRetryCopy = canDiscard && \['COPY_RUNNING', 'COPY_FAILED'\]\.includes\(task.state\)/u);
-  assert.match(source, /activeView === 'ALL_COPY'[\s\S]*?\{canRetryCopy && <button/u);
+  assert.match(source, /activeView === 'ALL_COPY'[\s\S]*?\{canRetryCopy && <Button/u);
   assert.match(source, /if \(!\['COPY_RUNNING', 'COPY_FAILED'\]\.includes\(task.state\)\) return/u);
   assert.match(source, /if \(!await confirm\(/u);
   assert.match(source, /\/v1\/tasks\/\$\{task.id\}\/retry/u);
@@ -74,7 +74,7 @@ test('personal and image-work rows expose safe image requeue controls', async ()
   assert.match(source, /activeView === 'IMAGE_WORK'[\s\S]*\{retryImageButton\}/u);
   assert.match(source, /activeView === 'PERSONAL' && retryImageButton/u);
   assert.match(source, /文案尚未审核通过，暂不能重试生图/u);
-  assert.match(source, />重试生图<\/button>/u);
+  assert.match(source, />重试生图<\/Button>/u);
 });
 
 test('creation dialog accepts a single batch textarea and creates one remote batch', async () => {
@@ -87,7 +87,7 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   ]);
 
   assert.match(workbench, /<Dialog open=\{createOpen\}/u);
-  assert.match(workbench, /<textarea[\s\S]*?id="workbench-query-text"/u);
+  assert.match(workbench, /<Textarea[\s\S]*?id="workbench-query-text"/u);
   assert.match(workbench, /parseQueryBatch\(queryText\)/u);
   assert.match(workbench, /const \{ queries, error: validationError \} = queryBatch/u);
   assert.match(workbench, /已识别 \{queryBatch.queries.length\} 条 Query/u);
@@ -123,9 +123,9 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(reviewDialog, /AI生成水印/u);
   assert.match(reviewDialog, /aiDisclosureEnabled \? '已开启' : '已关闭'/u);
   assert.match(reviewDialog, /const editable = detail\?\.state === 'COPY_REVIEW_PENDING'/u);
-  assert.match(reviewDialog, /isOpen=\{activeAssetIndex === index\}/u);
-  assert.match(reviewDialog, /onPrevious=\{index > 0/u);
-  assert.match(reviewDialog, /onNext=\{index < assets\.length - 1/u);
+  // Navigation continuity is exercised in scripts/test-image-preview.mjs.
+  assert.match(reviewDialog, /onPrevious=\{activeAssetIndex > 0/u);
+  assert.match(reviewDialog, /onNext=\{activeAssetIndex < assets\.length - 1/u);
   assert.match(reviewDialog, />提交审核</u);
   assert.match(reviewDialog, /href=\{apiPath\(`\/v1\/tasks\/\$\{detail\.id\}\/archive`\)\}/u);
   assert.match(reviewDialog, /<Download size=\{14\} \/>下载资源/u);
@@ -139,17 +139,18 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(workbench, /matchesWorkbenchView\(task, view, creatorUserId\)/u);
   assert.match(workbench, /sort\(compareTasksByStatePriority\)/u);
   assert.match(workbench, /workbench-pagination/u);
-  assert.match(workbench, />重试<\/button>/u);
-  assert.match(workbench, />废弃<\/button>/u);
-  assert.match(workbench, />审核<\/button>/u);
-  assert.match(workbench, />查看<\/button>/u);
+  assert.match(workbench, />重试<\/Button>/u);
+  assert.match(workbench, />废弃<\/Button>/u);
+  assert.match(workbench, />审核<\/Button>/u);
+  assert.match(workbench, />查看<\/Button>/u);
   assert.match(workbench, /\/v1\/tasks\/\$\{task\.id\}\/cancel/u);
   assert.match(workbench, /STAGE_LABELS\[task\.currentStage\] \?\? STATE_LABELS\[task\.state\]/u);
   assert.match(reviewDialog, /STAGE_LABELS\[detail\.currentStage\] \?\? STATE_LABELS\[detail\.state\]/u);
   assert.match(reviewDialog, /<dt>当前阶段<\/dt><dd>\{stageLabel\(detail\)\}<\/dd>/u);
   assert.doesNotMatch(workbench, /\{task\.currentStage \|\| STATE_LABELS/u);
   assert.doesNotMatch(reviewDialog, /\{detail\.currentStage \?\? '尚未开始'\}/u);
-  assert.doesNotMatch(reviewDialog, /JSON\.stringify\(.*imagePlan/u);
+  // Compare layouts internally while keeping raw image-plan JSON out of the rendered review.
+  assert.doesNotMatch(reviewDialog.slice(reviewDialog.indexOf('return <Dialog')), /JSON\.stringify\(.*imagePlan/u);
   assert.match(styles, /\.workbench-review-dialog\s*\{/u);
   assert.match(jobsPage, /initialTaskId=\{taskId\}/u);
   assert.match(jobsWorkbench, /if \(initialTaskId\) void openTask\(initialTaskId\)/u);

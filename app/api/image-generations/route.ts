@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { imageSettingsSchema, validatePageOptions } from './_image-options';
 
 import { z } from 'zod';
 
@@ -35,7 +36,8 @@ const imagePlanSchema = z.object({
   subtitle: z.string().trim().min(1).max(30),
   bullets: z.array(z.string().trim().min(1).max(40)).min(2).max(5),
   prompt: z.string().trim().min(10).max(1_000),
-}).strict();
+  layout: z.unknown().optional(),
+}).strict().superRefine(validatePageOptions);
 
 const imageGenerationSchema = z.object({
   runId: z.string().uuid().optional(),
@@ -46,6 +48,7 @@ const imageGenerationSchema = z.object({
     tags: z.array(z.string().trim().min(2).max(20).regex(/^#[^#\s]+$/u)).min(3).max(8),
   }).strict(),
   imagePlan: z.array(imagePlanSchema).min(3).max(5),
+  imageSettings: imageSettingsSchema.optional(),
   mode: z.literal('LIVE'),
   confirmation: z.literal('LIVE_IMAGE_COST_ACCEPTED').optional(),
 }).strict().superRefine((value, context) => {
@@ -88,7 +91,7 @@ export async function GET(request: Request) {
 }
 
 export function POST(request: Request) {
-  return apiHandler(request, { mutation: true }, async () => {
+  return apiHandler(request, { mutation: true }, async (session) => {
     const input = await parseJson(request, imageGenerationSchema, {
       maxBytes: 64 * 1024,
       validationCode: 'VALIDATION_ERROR',
@@ -103,21 +106,25 @@ export function POST(request: Request) {
     }
     try {
       const runId = input.runId ?? randomUUID();
-      const result = await withImageGenerationLock(runId, (signal) => generateStandaloneImages({
+      const runtime = await imageGenerationRuntime(session);
+      const result = await withImageGenerationLock(runId, (signal) => withPromptExecution({ outputRoot: adminOutputRoot(),
+        configuration: runtime, kind: 'IMAGE', query: input.query }, () => generateStandaloneImages({
         source: {
           query: input.query,
           copy: input.copy,
           imagePlan: input.imagePlan,
+          imageSettings: input.imageSettings,
         },
         mode: input.mode,
-        runtime: imageGenerationRuntime(),
+        runtime,
         outputRoot: adminOutputRoot(),
         runId,
         signal,
-      }));
+      })));
       return ok(result, { status: 201 });
     } catch (error) {
       throw imageGenerationApiError(error);
     }
   });
 }
+import { withPromptExecution } from '../../../src/admin/prompt-execution.mjs';

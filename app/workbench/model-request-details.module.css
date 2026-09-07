@@ -1,0 +1,18 @@
+.root { min-width: 0; margin-top: 14px; }
+.intro { padding: 12px; border: 1px solid var(--line, #dbe3e9); border-radius: 6px; background: var(--surface-soft, #f7f8fa); }
+.intro > strong { font-size: 14px; }
+.intro p { margin: 8px 0 0; font-size: 12px; line-height: 1.7; }
+.badge { display: inline-block; margin-left: 10px; font-size: 11px; color: var(--muted-foreground, #526174); }
+.section { min-width: 0; padding-bottom: 6px; }
+.part { min-width: 0; margin: 8px 0; border: 1px solid var(--line, #dbe3e9); border-radius: 6px; padding: 10px; font-size: 12px; }
+.part > [data-slot="disclosure-trigger"] { cursor: pointer; overflow-wrap: anywhere; line-height: 1.7; }
+.part > [data-slot="disclosure-trigger"]:focus-visible { outline: 2px solid var(--ink, #20201f); outline-offset: 4px; }
+.metadata { display: grid; grid-template-columns: minmax(90px, auto) minmax(0, 1fr); gap: 8px 12px; line-height: 1.7; }
+.metadata dt { color: var(--muted-foreground, #526174); }
+.metadata dd { margin: 0; overflow-wrap: anywhere; }
+.versions { min-width: 0; }
+@media (max-width: 480px) {
+  .badge { display: block; margin: 6px 0 0; }
+  .metadata { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+  .metadata dd { margin-bottom: 8px; }
+}

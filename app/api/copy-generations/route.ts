@@ -11,8 +11,10 @@ import {
   toCopyGenerationResponse,
 } from '../../../src/copy-generation.mjs';
 import { ApiError } from '../../../src/admin/http.mjs';
-import { withAdminStore } from '../../../src/admin/runtime.mjs';
+import { withAdminStore, adminOutputRoot } from '../../../src/admin/runtime.mjs';
+import { withPromptExecution } from '../../../src/admin/prompt-execution.mjs';
 import { createCopyGenerationClient } from '../../../src/copy-generation-client.mjs';
+import { loadPromptConfiguration } from '../_prompt-runtime';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -51,19 +53,6 @@ const copyGenerationSchema = z.object({
   confirmation: z.literal('LIVE_MODEL_COST_ACCEPTED'),
 }).strict();
 
-function copyGenerationRuntime() {
-  return withAdminStore((store: any) => {
-    const template = store.listPromptTemplates()
-      .find((candidate: any) => candidate.kind === 'TEXT_SYSTEM');
-    const published = template?.versions
-      .find((version: any) => version.status === 'PUBLISHED');
-    if (!published?.content) throw new Error('published text system prompt is unavailable');
-    return {
-      systemPrompt: published.content,
-      modelApi: store.getProductionSettings().settings.modelApi,
-    };
-  });
-}
 
 function copyGenerationJobFailureMessage(error: unknown) {
   if (error instanceof CopyGenerationRejectedError
@@ -100,7 +89,7 @@ export function GET(request: Request) {
 }
 
 export function POST(request: Request) {
-  return apiHandler(request, { mutation: true }, async () => {
+  return apiHandler(request, { mutation: true }, async (session) => {
     const input = await parseJson(request, copyGenerationSchema, { maxBytes: 32 * 1024 });
     if (copyGenerationInProgress) {
       throw new ApiError(
@@ -117,18 +106,21 @@ export function POST(request: Request) {
         batch: input.batch,
       }));
       jobId = job.id;
-      const runtime = copyGenerationRuntime();
-      const client = createCopyGenerationClient({ modelApi: runtime.modelApi });
-      const generated = await generateCopy({
+      const runtime = await loadPromptConfiguration(session);
+      const client = createCopyGenerationClient({ modelApi: runtime.productionSettings.modelApi });
+      const generated = await withPromptExecution({ outputRoot: adminOutputRoot(), configuration: runtime,
+        kind: 'COPY', query: input.query }, () => generateCopy({
         client,
         task: { query: input.query, input: input.input },
         systemPrompt: runtime.systemPrompt,
+        promptRuntime: runtime.promptRuntime,
+        copyKnowledge: runtime.knowledge,
         imageCount: input.imageCount,
         autoReviseOnReject: input.autoReviseOnReject,
-        textReviewEnabled: false,
+        textReviewEnabled: Boolean(runtime.promptRuntime),
         onStageChange: (stage) => withAdminStore((store: any) =>
-          store.updateStandaloneCopyGenerationJobStage(jobId, stage)),
-      });
+          store.updateStandaloneCopyGenerationJobStage(jobId, stage === 'KNOWLEDGE_MATCH' ? 'ORIGINAL_GENERATION' : stage)),
+      }));
       const saved = withAdminStore((store: any) => store.saveStandaloneCopyGeneration({
         jobId,
         query: input.query,

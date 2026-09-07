@@ -1,5 +1,8 @@
 'use client';
 
+import { Disclosure, DisclosureTrigger, DisclosureContent } from '@/components/ui/disclosure';
+import { Button } from '@/components/ui/button';
+
 import {
   ArrowRight,
   CheckCircle2,
@@ -97,6 +100,7 @@ export type CopyGenerationResult = {
     reviewedThinking: string | null;
     revisionAttempted: boolean;
     imageCount: number;
+    reviews?: { query?: StageReview };
     research: CopyGenerationResearch | null;
     timing: CopyGenerationTiming | null;
   };
@@ -154,10 +158,10 @@ function CopyImagePlan({
           <ul className="copy-image-plan-bullets">
             {page.bullets.map((bullet, bulletIndex) => <li key={`${bullet}-${bulletIndex}`}>{bullet}</li>)}
           </ul>
-          <details className="copy-image-plan-prompt">
-            <summary>查看画面提示</summary>
+          <Disclosure className="copy-image-plan-prompt">
+            <DisclosureTrigger>查看画面提示</DisclosureTrigger><DisclosureContent>
             <p>{page.prompt}</p>
-          </details>
+          </DisclosureContent></Disclosure>
         </article>
       </li>)}
     </ol>
@@ -308,6 +312,7 @@ export function CopyGenerationComparison({
   }
 
   return <section className="panel" aria-labelledby="copy-result-heading" aria-live="polite">
+    {result.generation.reviews?.query?.skipped && <p className="notice">Query 筛选已关闭，本次已跳过选题审核。</p>}
     <div className="panel-head copy-comparison-head">
       <div>
         <span className="section-kicker">Saved comparison #{result.id}</span>
@@ -315,13 +320,13 @@ export function CopyGenerationComparison({
         <small>{new Date(result.createdAt).toLocaleString('zh-CN')} · {result.generation.imageCount} 页配图策划</small>
       </div>
       <div className="inline">
-        <button className="button small" type="button" onClick={() => copyVersion(revisionAttempted ? '原始版' : '当前版', result.original.copy)}>
+        <Button unstyled className="button small" type="button" onClick={() => copyVersion(revisionAttempted ? '原始版' : '当前版', result.original.copy)}>
           <Copy aria-hidden="true" size={14} />{revisionAttempted ? '复制原始版' : '复制当前版'}
-        </button>
-        {revisionAttempted && <button className="button small" type="button" onClick={() => copyVersion('质检版', result.reviewed.copy)}>
+        </Button>
+        {revisionAttempted && <Button unstyled className="button small" type="button" onClick={() => copyVersion('质检版', result.reviewed.copy)}>
           <Copy aria-hidden="true" size={14} />复制质检版
-        </button>}
-        <button
+        </Button>}
+        <Button unstyled
           className="button small primary"
           type="button"
           aria-disabled={!canImportReviewedCopy}
@@ -329,10 +334,10 @@ export function CopyGenerationComparison({
           onClick={importReviewedCopy}
         >
           导入{activeVersionLabel}到图片生成<ArrowRight aria-hidden="true" size={14} />
-        </button>
-        <button className="button small" type="button" onClick={onClose}>
+        </Button>
+        <Button unstyled className="button small" type="button" onClick={onClose}>
           <RotateCcw aria-hidden="true" size={14} />关闭对比
-        </button>
+        </Button>
       </div>
     </div>
     {!reviewedCopyPassed && !reviewedCopySkipped && <div
@@ -353,7 +358,7 @@ export function CopyGenerationComparison({
         ? '已完成本次人工确认；自动质检证据仍保留，现在可导入图片生成。'
         : '文案仍可查看、复制并进行人工二次质检；人工确认前不能导入图片生成。'}</p>
       <div className="copy-manual-review-action">
-        <button
+        <Button unstyled
           className="button small"
           id="copy-manual-review-button"
           type="button"
@@ -367,7 +372,7 @@ export function CopyGenerationComparison({
             : manuallyApproved
             ? <><CheckCircle2 aria-hidden="true" size={14} />已人工审核通过</>
             : <><UserCheck aria-hidden="true" size={14} />人工审核通过</>}
-        </button>
+        </Button>
         <span>{manuallyApproved
           ? '已保留自动质检问题，可继续生成图片。'
           : '仅在你已逐项复核当前文案后确认。'}</span>

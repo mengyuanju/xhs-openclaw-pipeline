@@ -1,5 +1,9 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+import { Textarea, Input } from '@/components/ui/input';
+import { Disclosure, DisclosureTrigger, DisclosureContent } from '@/components/ui/disclosure';
+
 import { useRouter } from 'next/navigation';
 import { useState, type FormEvent, type KeyboardEvent } from 'react';
 
@@ -172,7 +176,7 @@ export function ReviewPanel({ task, exportAvailability }: { task: any; exportAva
 
   return <div className="review-grid">
     <nav className="review-stage-nav" role="tablist" aria-label="审核内容分区">
-      {reviewStages.map((stage, index) => <button
+      {reviewStages.map((stage, index) => <Button unstyled
         className="review-stage-tab"
         id={`review-stage-tab-${stage.id}`}
         key={stage.id}
@@ -187,7 +191,7 @@ export function ReviewPanel({ task, exportAvailability }: { task: any; exportAva
         <span className="review-stage-index" aria-hidden="true">{stage.index}</span>
         <span className="review-stage-copy"><strong>{stage.label}</strong><small>{stage.description}</small></span>
         <span className="review-stage-status">{stage.status}</span>
-      </button>)}
+      </Button>)}
     </nav>
 
     <div className="review-primary-grid">
@@ -210,12 +214,12 @@ export function ReviewPanel({ task, exportAvailability }: { task: any; exportAva
 
           <div className="field">
             <label htmlFor="review-note">审核备注 / 驳回原因</label>
-            <textarea className="textarea review-note" id="review-note" value={note} onChange={(event) => setNote(event.target.value)} maxLength={2_000} />
+            <Textarea className="textarea review-note" id="review-note" value={note} onChange={(event) => setNote(event.target.value)} maxLength={2_000} />
           </div>
           <div className="inline review-actions">
-            <button className="button primary" type="button" disabled={busy || approvalBlocked} aria-describedby="approval-help" title={busy ? '操作处理中，请稍候' : approvalBlocked ? approvalHelp : undefined} onClick={() => review('APPROVED')}>通过</button>
-            <button className="button danger" type="button" disabled={busy} title={busy ? '操作处理中，请稍候' : undefined} onClick={() => review('REJECTED')}>驳回</button>
-            {task.config?.reviewStatus === 'APPROVED' && <button className="button" type="button" disabled={busy} title={busy ? '操作处理中，请稍候' : undefined} onClick={() => review('WAITING_REVIEW')}>重新打开</button>}
+            <Button unstyled className="button primary" type="button" disabled={busy || approvalBlocked} aria-describedby="approval-help" title={busy ? '操作处理中，请稍候' : approvalBlocked ? approvalHelp : undefined} onClick={() => review('APPROVED')}>通过</Button>
+            <Button unstyled className="button danger" type="button" disabled={busy} title={busy ? '操作处理中，请稍候' : undefined} onClick={() => review('REJECTED')}>驳回</Button>
+            {task.config?.reviewStatus === 'APPROVED' && <Button unstyled className="button" type="button" disabled={busy} title={busy ? '操作处理中，请稍候' : undefined} onClick={() => review('WAITING_REVIEW')}>重新打开</Button>}
           </div>
           <p className="subtle review-help" id="approval-help">{approvalHelp}</p>
 
@@ -223,20 +227,20 @@ export function ReviewPanel({ task, exportAvailability }: { task: any; exportAva
             <strong className="batch-label">交付文件</strong>
             {exportAvailability.canExport
               ? <a className="button" href={`/api/tasks/${task.id}/export`} download={`xhs-task-${task.id}.zip`}>导出交付包</a>
-              : <button className="button" type="button" disabled aria-describedby="task-export-reason" title={exportAvailability.reason || undefined}>导出交付包</button>}
+              : <Button unstyled className="button" type="button" disabled aria-describedby="task-export-reason" title={exportAvailability.reason || undefined}>导出交付包</Button>}
             <span className={exportAvailability.canExport ? 'subtle' : 'action-reason'} id="task-export-reason" role="note">{exportAvailability.canExport
               ? '包含当前完整文案和交付图片；待审核和已通过任务均可下载 ZIP。'
               : <>暂不可导出：{exportAvailability.reason}</>}</span>
           </div>
 
-          {task.reviews.length > 0 && <details className="review-audit">
-            <summary>查看审核记录（{task.reviews.length}）</summary>
+          {task.reviews.length > 0 && <Disclosure className="review-audit">
+            <DisclosureTrigger>查看审核记录（{task.reviews.length}）</DisclosureTrigger><DisclosureContent>
             <div className="review-audit-list">{task.reviews.slice().reverse().map((reviewItem: any) => <div key={reviewItem.id}>
               <StatusPill value={reviewItem.status} />
               <span>{reviewItem.note || '无备注'}</span>
               <time dateTime={reviewItem.createdAt}>{new Date(reviewItem.createdAt).toLocaleString('zh-CN')}</time>
             </div>)}</div>
-          </details>}
+          </DisclosureContent></Disclosure>}
         </section>
         {message && <div className={messageIsError ? 'notice error' : 'notice success'} role={messageIsError ? 'alert' : 'status'} aria-live="polite">{message}</div>}
       </aside>
@@ -286,8 +290,8 @@ export function ReviewPanel({ task, exportAvailability }: { task: any; exportAva
             </div>
             {failedPreview && <div className="notice failed-preview" role="note"><strong>失败预览</strong>：质量门禁失败时保留的当次文案和图片仅供查看与修改，不可审批，也不可作为正式交付导出。</div>}
             <form className="inline upload-row" onSubmit={uploadImage}>
-              <input className="input file-input upload-input" name="file" type="file" accept="image/png,image/jpeg,image/webp" aria-label="上传参考图片" required />
-              <button className="button" type="submit" disabled={busy}>上传参考图</button>
+              <Input className="input file-input upload-input" name="file" type="file" accept="image/png,image/jpeg,image/webp" aria-label="上传参考图片" required />
+              <Button unstyled className="button" type="submit" disabled={busy}>上传参考图</Button>
             </form>
             {batches.length === 0
               ? <div className="empty-state">还没有图片或生成运行。完成生成后会按批次显示，也可以先上传参考图。</div>

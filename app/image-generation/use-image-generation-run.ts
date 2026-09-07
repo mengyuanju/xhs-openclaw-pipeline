@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { apiRequest } from '../components/api-client';
 import { createRunId } from './run-id';
+import type { ImageSettings } from '../components/image-controls';
+import type { ImageGenerationDraftPage } from './image-generation-draft';
 
 const ACTIVE_RUN_STORAGE_KEY = 'xhs:image-generation-active-run:v1';
 const PROGRESS_POLL_MS = 1_000;
@@ -15,10 +17,17 @@ export type ImageGenerationResult = {
   mode: 'LIVE';
   status: 'COMPLETED' | 'BLOCKED';
   imageCount: number;
+  imageSettings?: ImageSettings;
+  imagePlan?: ImageGenerationDraftPage[];
+  processing?: { type: string; sourceRunId: string; originalAvailable: boolean };
   images: Array<{
     pageIndex: number;
     kind: string;
     url: string;
+    sourceUrl?: string;
+    deliveryUrl?: string;
+    imageSettings?: ImageSettings;
+    transparency?: { source: boolean; delivery: boolean };
     provider: string;
     model: string | null;
     generationAttempts: number | null;
@@ -38,6 +47,9 @@ export type ImageGenerationResult = {
     } | null;
   }>;
   visualPlan: {
+    planningMode?: string;
+    skipped?: boolean;
+    textContractSha256?: string | null;
     model: string | null;
     degraded: boolean;
     warning: {
@@ -99,6 +111,7 @@ export type ImageGenerationRequest = {
   query: string;
   copy: { title: string; body: string; tags: string[] };
   imagePlan: unknown[];
+  imageSettings?: ImageSettings;
   mode: 'LIVE';
   confirmation: 'LIVE_IMAGE_COST_ACCEPTED';
 };

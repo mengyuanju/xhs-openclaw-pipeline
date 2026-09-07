@@ -18,12 +18,10 @@ export function installRulePrompts(store) {
       return { kind: prompt.kind, version: existing.version, action: 'unchanged', contentSha256 };
     }
     if (existing) {
-      const published = store.publishPromptVersion(existing.id);
-      return { kind: prompt.kind, version: published.version, action: 'republished', contentSha256 };
+      return { kind: prompt.kind, version: existing.version, action: 'candidate_exists', contentSha256 };
     }
 
     const created = store.createPromptVersion({ templateId: template.id, content });
-    const published = store.publishPromptVersion(created.id);
-    return { kind: prompt.kind, version: published.version, action: 'installed', contentSha256 };
+    return { kind: prompt.kind, version: created.version, action: 'draft_created', contentSha256 };
   });
 }

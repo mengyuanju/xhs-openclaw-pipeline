@@ -2,6 +2,7 @@ import {
   DEFAULT_MODEL_API_SETTINGS,
   normalizeModelApiSettings,
 } from './model-api-config.mjs';
+import { normalizeLayoutPresets } from '../server/src/layout-library.mjs';
 
 export const DEFAULT_PRODUCTION_SETTINGS = Object.freeze({
   qualityRepairEnabled: true,
@@ -11,6 +12,7 @@ export const DEFAULT_PRODUCTION_SETTINGS = Object.freeze({
   aiDisclosureEnabled: true,
   aiDisclosureText: 'AI生成',
   modelApi: DEFAULT_MODEL_API_SETTINGS,
+  layoutPresets: Object.freeze([]),
 });
 
 function booleanSetting(value, fallback, name) {
@@ -83,6 +85,7 @@ export function normalizeProductionSettings(input = {}) {
       12,
     ),
     modelApi: normalizeModelApiSettings(input.modelApi ?? DEFAULT_MODEL_API_SETTINGS),
+    layoutPresets: normalizeLayoutPresets(input.layoutPresets),
   };
   if (settings.qualityRepairTargetScore <= settings.qualityRepairTriggerScore) {
     throw new RangeError('quality repair target score must be greater than trigger score');

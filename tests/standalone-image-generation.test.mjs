@@ -162,7 +162,7 @@ function liveClient({ runText, runVision, onImage, imageOffset = 0 }) {
     runVision(input) {
       if (runVision) return runVision(input);
       const { prompt } = input;
-      const output = prompt.includes('独立于生成模型的图文交付终审员')
+      const output = prompt.includes('<trusted_business_rules kind="DELIVERY_REVIEW_SYSTEM">')
         ? qualityAssessment()
         : passingAlignment(prompt);
       return { rawText: JSON.stringify(output), model: 'fake-vision' };
@@ -189,7 +189,7 @@ function resumableLiveClient({
       if (imageIndex === failImageCall) throw new Error('simulated image service unavailable');
     },
     async runVision({ prompt }) {
-      if (prompt.includes('独立于生成模型的图文交付终审员')) {
+      if (prompt.includes('<trusted_business_rules kind="DELIVERY_REVIEW_SYSTEM">')) {
         calls.quality += 1;
         if (failQuality) throw new Error('simulated quality service unavailable');
         return { rawText: JSON.stringify(qualityAssessment()), model: 'fake-quality' };
@@ -205,6 +205,24 @@ function resumableLiveClient({
 }
 
 describe('standalone image generation service', () => {
+  it('rejects recovery with a missing execution configuration before using current settings or models', async (t) => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-missing-execution-config-'));
+    t.after(() => rm(outputRoot, { recursive: true, force: true }));
+    const original = resumableLiveClient({ failImageCall: 1 });
+    await assert.rejects(generateStandaloneImages({
+      source: validSource(), mode: 'LIVE', outputRoot, runId: RECOVERY_SOURCE_RUN_ID, runtime: original,
+    }), /simulated image service unavailable/u);
+    const sourceDirectory = join(outputRoot, 'standalone-image-generations', RECOVERY_SOURCE_RUN_ID);
+    assert.equal(JSON.parse(await readFile(join(sourceDirectory, 'prompt-runtime.json'), 'utf8')), null);
+    await unlink(join(sourceDirectory, 'image-execution-config.json'));
+    const resumed = resumableLiveClient();
+    await assert.rejects(retryStandaloneImageRun({
+      sourceRunId: RECOVERY_SOURCE_RUN_ID, runId: RECOVERY_RUN_ID, outputRoot,
+      runtime: { ...resumed, imageSystemPrompt: '不得拿当前规则补齐历史快照。' },
+    }), /image-execution-config\.json.*无法读取/u);
+    assert.deepEqual(resumed.calls, { planning: 0, images: 0, alignmentPages: [], quality: 0 });
+  });
+
   it('normalizes manually supplied copy and image plans through the production post contract', () => {
     const post = normalizeStandaloneImageSource(validSource(4));
 
@@ -304,7 +322,8 @@ describe('standalone image generation service', () => {
       assert.equal(result.visualPlan.model, 'deterministic-transport-fallback');
       assert.equal(result.visualPlan.degraded, true);
       assert.equal(result.visualPlan.warning.code, 'VISUAL_PLAN_TRANSPORT_FALLBACK');
-      assert.equal(result.images[0].layout.layoutTemplate, 'HERO_LEFT');
+      assert.ok(['HERO_LEFT', 'HERO_RIGHT'].includes(result.images[0].layout.layoutTemplate));
+      assert.equal(result.images[0].layout.layoutTemplate, result.imagePlan[0].layout.template);
       assert.equal(result.images[0].layout.allowedVisibleText.headline, source.imagePlan[0].headline);
       assert.deepEqual(result.images[0].layout.allowedVisibleText.bullets, source.imagePlan[0].bullets);
       assert.equal(result.qc.disposition, 'manual_review_required');
@@ -342,7 +361,7 @@ describe('standalone image generation service', () => {
       assert.equal(progress.estimatedRemainingMs, 0);
       assert.equal(progress.estimateBasis, 'stage-defaults');
       assert.equal(progress.result.runId, RUN_ID);
-      assert.equal(progress.result.images[0].layout.layoutTemplate, 'HERO_LEFT');
+      assert.equal(progress.result.images[0].layout.layoutTemplate, result.images[0].layout.layoutTemplate);
       assert.equal(progress.result.visualPlan.degraded, true);
       assert.equal(progress.result.qc.disposition, 'manual_review_required');
       assert.ok(progress.result.qc.dimensions.length > 0);
@@ -397,7 +416,9 @@ describe('standalone image generation service', () => {
       assert.equal(result.visualPlan.model, 'deterministic-transport-fallback');
       assert.equal(result.visualPlan.degraded, true);
       assert.equal(result.visualPlan.warning.code, 'VISUAL_PLAN_TRANSPORT_FALLBACK');
-      assert.equal(result.images[1].layout.layoutTemplate, 'STEPS_LEFT');
+      assert.ok(['STEPS_LEFT', 'STEPS_RIGHT', 'STEPS_DIAGONAL'].includes(result.images[1].layout.layoutTemplate));
+      const savedSource = JSON.parse(await readFile(join(outputRoot, 'standalone-image-generations', FALLBACK_RUN_ID, 'source.json'), 'utf8'));
+      assert.equal(result.images[1].layout.layoutTemplate, savedSource.post.imagePlan[1].layout.template);
       assert.equal(result.qc.disposition, 'manual_review_required');
       assert.equal(result.qc.action, 'priority_review');
       assert.equal(
@@ -595,6 +616,80 @@ describe('standalone image generation service', () => {
     } finally {
       await rm(outputRoot, { recursive: true, force: true });
     }
+  });
+
+  it('pins image business configuration across recovery while allowing current transport models', async (t) => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-frozen-business-config-'));
+    t.after(() => rm(outputRoot, { recursive: true, force: true }));
+    const initialRuntime = resumableLiveClient({ failImageCall: 1 });
+    const historicalPrompt = '历史图片规则：保留暖色摄影和原有文字。';
+    const historicalReference = {
+      versionId: 71,
+      promptTemplate: '历史视觉配方：自然暖光。',
+      negativePrompt: '保留原有场景信息。',
+      layoutRules: { hero: '历史封面布局。', steps: '历史步骤布局。', checklist: '历史清单布局。' },
+    };
+    const historicalSettings = {
+      qualityRepairEnabled: false,
+      qualityRepairTriggerScore: 1,
+      qualityRepairTargetScore: 2,
+      qualityRepairMaxAttempts: 1,
+      aiDisclosureEnabled: true,
+      aiDisclosureText: '历史标识',
+      modelApi: { qualityModel: 'openai/gpt-5.4', copyGenerationThinking: 'low' },
+    };
+    await assert.rejects(generateStandaloneImages({
+      source: validSource(), mode: 'LIVE', outputRoot, runId: RECOVERY_SOURCE_RUN_ID,
+      runtime: { ...initialRuntime, productionSettings: historicalSettings,
+        imageSystemPrompt: historicalPrompt, visualReference: historicalReference },
+    }), /simulated image service unavailable/u);
+    const readConfig = async (runId) => JSON.parse(await readFile(join(outputRoot,
+      'standalone-image-generations', runId, 'image-execution-config.json'), 'utf8'));
+    const originalConfig = await readConfig(RECOVERY_SOURCE_RUN_ID);
+    assert.equal(Object.hasOwn(originalConfig.productionSettings, 'modelApi'), false);
+    assert.deepEqual(originalConfig.productionSettings, {
+      qualityRepairEnabled: false, qualityRepairTriggerScore: 1, qualityRepairTargetScore: 2,
+      qualityRepairMaxAttempts: 1, aiDisclosureEnabled: true, aiDisclosureText: '历史标识', layoutPresets: [],
+    });
+
+    const resumedRuntime = resumableLiveClient();
+    const imageRequests = [];
+    const visionRequests = [];
+    for (const method of ['runImage', 'runImageEdit']) {
+      const generate = resumedRuntime.client[method];
+      resumedRuntime.client[method] = (input) => { imageRequests.push(input); return generate(input); };
+    }
+    const review = resumedRuntime.client.runVision;
+    resumedRuntime.client.runVision = (input) => { visionRequests.push(input); return review(input); };
+    const result = await retryStandaloneImageRun({
+      sourceRunId: RECOVERY_SOURCE_RUN_ID, runId: RECOVERY_RUN_ID, outputRoot,
+      runtime: { ...resumedRuntime,
+        imageSystemPrompt: '当前新规则：切换成冷色插画。',
+        visualReference: { ...historicalReference, versionId: 99, promptTemplate: '当前新视觉配方：蓝色夜景。' },
+        productionSettings: { qualityRepairEnabled: true, qualityRepairTriggerScore: 0, qualityRepairTargetScore: 3,
+          qualityRepairMaxAttempts: 2, aiDisclosureEnabled: false, aiDisclosureText: '当前标识',
+          modelApi: { qualityModel: 'openai/gpt-5.6-sol', copyGenerationThinking: 'medium' } },
+      },
+    });
+
+    assert.equal(result.status, 'COMPLETED');
+    assert.deepEqual(await readConfig(RECOVERY_RUN_ID), originalConfig);
+    assert.deepEqual(resumedRuntime.calls, { planning: 0, images: 3, alignmentPages: [1, 2, 3], quality: 1 });
+    assert.equal(imageRequests.length, 3);
+    for (const input of imageRequests) {
+      assert.ok(input.prompt.includes(historicalPrompt));
+      assert.ok(input.prompt.includes(historicalReference.promptTemplate));
+      assert.doesNotMatch(input.prompt, /当前新规则|当前新视觉配方|当前标识/u);
+    }
+    const alignmentRequests = visionRequests.filter((input) => input.prompt.includes('kind="IMAGE_ALIGNMENT_SYSTEM"'));
+    assert.equal(alignmentRequests.length, 3);
+    for (const input of alignmentRequests) {
+      const contract = JSON.parse(input.prompt.match(/<untrusted_alignment_contract>\s*([\s\S]+?)\s*<\/untrusted_alignment_contract>/u)[1]);
+      assert.ok(contract.page.allowedVisibleText.labels.includes('历史标识'));
+      assert.ok(!contract.page.allowedVisibleText.labels.includes('当前标识'));
+    }
+    const finalReview = visionRequests.find((input) => input.prompt.includes('kind="DELIVERY_REVIEW_SYSTEM"'));
+    assert.equal(finalReview.model, 'openai/gpt-5.6-sol', 'transport selection may change while business rules remain frozen');
   });
 
   it('resumes at a failed second page without generating or validating the accepted first page', async () => {

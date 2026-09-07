@@ -1,3 +1,4 @@
+import { normalizeImageSettings, normalizePageLayout } from './image-options.mjs';
 export const TASK_STATES = Object.freeze([
   'COPY_QUEUED',
   'COPY_RUNNING',
@@ -181,6 +182,7 @@ export function normalizeCopyReviewEdits(value) {
         min: 10,
         max: 1_000,
       }),
+      ...(rawItem.layout === undefined ? {} : { layout: normalizePageLayout(rawItem.layout, kind) }),
     };
   });
   if (imagePlan[0].kind !== 'hero' || imagePlan.slice(1).some((item) => item.kind === 'hero')) {
@@ -193,6 +195,7 @@ export function normalizeCopyReviewEdits(value) {
       tags,
     },
     imagePlan,
+    ...(value.imageSettings === undefined ? {} : { imageSettings: normalizeImageSettings(value.imageSettings) }),
   };
 }
 

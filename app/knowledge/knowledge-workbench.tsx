@@ -1,5 +1,8 @@
 'use client';
 
+import { Input, Textarea } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+
 import { useRouter } from 'next/navigation';
 import { useRef, useState, type FormEvent } from 'react';
 
@@ -129,15 +132,15 @@ export function KnowledgeWorkbench({ items }: { items: any[] }) {
     <form className="panel" onSubmit={analyze}>
       <div className="panel-head"><h2>从优秀图片提炼配方</h2><span className="subtle">PNG / JPEG / WebP · 最大 10 MiB</span></div>
       <div className="form-grid">
-        <div className="field full"><label htmlFor="knowledge-image">优秀作品图片</label><input ref={fileRef} className="input file-input" id="knowledge-image" type="file" accept="image/png,image/jpeg,image/webp" required /></div>
-        <div className="field full inline"><button className="button primary" type="submit" disabled={busy}>{busy ? '分析中…' : '分析图片'}</button><span className="subtle">图片文字视为不可信数据，模型只提炼视觉结构。</span></div>
+        <div className="field full"><label htmlFor="knowledge-image">优秀作品图片</label><Input ref={fileRef} className="input file-input" id="knowledge-image" type="file" accept="image/png,image/jpeg,image/webp" required /></div>
+        <div className="field full inline"><Button unstyled className="button primary" type="submit" disabled={busy}>{busy ? '分析中…' : '分析图片'}</Button><span className="subtle">图片文字视为不可信数据，模型只提炼视觉结构。</span></div>
       </div>
     </form>
 
     {draft.promptTemplate && <section className="panel">
       <div className="panel-head"><h2>检查并保存配方</h2><StatusPill value="DRAFT" /></div>
       <div className="form-grid">
-        <div className="field"><label htmlFor="knowledge-name">配方名称</label><input className="input" id="knowledge-name" value={draft.name} maxLength={200} onChange={(event) => setField('name', event.target.value)} /></div>
+        <div className="field"><label htmlFor="knowledge-name">配方名称</label><Input className="input" id="knowledge-name" value={draft.name} maxLength={200} onChange={(event) => setField('name', event.target.value)} /></div>
         <div className="field">
           <label htmlFor="knowledge-type">图片类型</label>
           <Select value={draft.type} onValueChange={(value) => setField('type', value)}>
@@ -152,12 +155,12 @@ export function KnowledgeWorkbench({ items }: { items: any[] }) {
             <SelectContent><SelectItem value="MODEL_IMAGE">模型生成图片</SelectItem><SelectItem value="LOCAL_CARD">本地信息卡</SelectItem></SelectContent>
           </Select>
         </div>
-        <div className="field"><label htmlFor="knowledge-score">人工质量分</label><input className="input" id="knowledge-score" type="number" min="1" max="5" step="0.1" value={draft.qualityScore} onChange={(event) => setField('qualityScore', event.target.value)} /></div>
-        <div className="field full"><label htmlFor="knowledge-prompt">提示词模板</label><textarea className="textarea" id="knowledge-prompt" maxLength={2_000} value={draft.promptTemplate} onChange={(event) => setField('promptTemplate', event.target.value)} /></div>
-        <div className="field full"><label htmlFor="knowledge-negative">负面约束</label><textarea className="textarea compact" id="knowledge-negative" maxLength={600} value={draft.negativePrompt} onChange={(event) => setField('negativePrompt', event.target.value)} /></div>
-        <div className="field"><label htmlFor="knowledge-tags">风格标签（逗号分隔）</label><input className="input" id="knowledge-tags" value={draft.styleTags} onChange={(event) => setField('styleTags', event.target.value)} /></div>
-        <div className="field"><label htmlFor="knowledge-categories">适用分类（逗号分隔）</label><input className="input" id="knowledge-categories" value={draft.categories} onChange={(event) => setField('categories', event.target.value)} /></div>
-        <div className="field full"><label htmlFor="knowledge-layout">布局规则 JSON</label><textarea className="textarea compact mono" id="knowledge-layout" value={draft.layoutRules} onChange={(event) => setField('layoutRules', event.target.value)} /></div>
+        <div className="field"><label htmlFor="knowledge-score">人工质量分</label><Input className="input" id="knowledge-score" type="number" min="1" max="5" step="0.1" value={draft.qualityScore} onChange={(event) => setField('qualityScore', event.target.value)} /></div>
+        <div className="field full"><label htmlFor="knowledge-prompt">提示词模板</label><Textarea className="textarea" id="knowledge-prompt" maxLength={2_000} value={draft.promptTemplate} onChange={(event) => setField('promptTemplate', event.target.value)} /></div>
+        <div className="field full"><label htmlFor="knowledge-negative">负面约束</label><Textarea className="textarea compact" id="knowledge-negative" maxLength={600} value={draft.negativePrompt} onChange={(event) => setField('negativePrompt', event.target.value)} /></div>
+        <div className="field"><label htmlFor="knowledge-tags">风格标签（逗号分隔）</label><Input className="input" id="knowledge-tags" value={draft.styleTags} onChange={(event) => setField('styleTags', event.target.value)} /></div>
+        <div className="field"><label htmlFor="knowledge-categories">适用分类（逗号分隔）</label><Input className="input" id="knowledge-categories" value={draft.categories} onChange={(event) => setField('categories', event.target.value)} /></div>
+        <div className="field full"><label htmlFor="knowledge-layout">布局规则 JSON</label><Textarea className="textarea compact mono" id="knowledge-layout" value={draft.layoutRules} onChange={(event) => setField('layoutRules', event.target.value)} /></div>
         <div className="field">
           <label htmlFor="knowledge-retention">保存方式</label>
           <Select value={draft.retentionMode} onValueChange={(value) => setField('retentionMode', value)}>
@@ -177,7 +180,7 @@ export function KnowledgeWorkbench({ items }: { items: any[] }) {
             </SelectContent>
           </Select>
         </div>
-        <div className="field full inline"><button className="button primary" type="button" disabled={busy} onClick={saveDraft}>保存草稿</button><span className="subtle">保留图片仅允许“自有图片”或“已授权”。</span></div>
+        <div className="field full inline"><Button unstyled className="button primary" type="button" disabled={busy} onClick={saveDraft}>保存草稿</Button><span className="subtle">保留图片仅允许“自有图片”或“已授权”。</span></div>
       </div>
     </section>}
 
@@ -193,7 +196,7 @@ export function KnowledgeWorkbench({ items }: { items: any[] }) {
           <td data-label="保存方式">{item.retentionMode === 'PROMPT_ONLY' ? '仅提示词' : '图片 + 提示词'}</td>
           <td data-label="质量分">{item.latestVersion?.qualityScore ?? '—'}</td>
           <td data-label="状态"><StatusPill value={item.latestVersion?.status} /></td>
-          <td data-label="操作"><div className="inline">{item.asset && <a className="button small" href={`/api/knowledge-assets/${item.asset.id}`} target="_blank" rel="noreferrer">查看图片</a>}{item.latestVersion?.status !== 'PUBLISHED' && item.latestVersion?.status !== 'RETIRED' && <button className="button small primary" type="button" disabled={busy} onClick={() => setStatus(item, 'PUBLISHED')}>发布</button>}{item.latestVersion?.status !== 'RETIRED' && <button className="button small" type="button" disabled={busy} onClick={() => setStatus(item, 'RETIRED')}>归档</button>}</div></td>
+          <td data-label="操作"><div className="inline">{item.asset && <a className="button small" href={`/api/knowledge-assets/${item.asset.id}`} target="_blank" rel="noreferrer">查看图片</a>}{item.latestVersion?.status !== 'PUBLISHED' && item.latestVersion?.status !== 'RETIRED' && <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => setStatus(item, 'PUBLISHED')}>发布</Button>}{item.latestVersion?.status !== 'RETIRED' && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setStatus(item, 'RETIRED')}>归档</Button>}</div></td>
         </tr>)}</tbody>
       </table></div>}
     </section>

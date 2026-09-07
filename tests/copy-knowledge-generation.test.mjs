@@ -5,6 +5,7 @@ import { generateCopy, toCopyGenerationResponse } from '../src/copy-generation.m
 import { buildPostPrompt } from '../src/post-contract.mjs';
 import { createMockPost } from '../src/pipeline.mjs';
 import { executeCopyClaim } from '../src/executor/agent.mjs';
+import { enabledQueryReviewRuntime } from './query-review-fixture.mjs';
 import { executeDeepSeekCopySimulation } from '../src/executor/deepseek-copy-simulator.mjs';
 
 const knowledge = [
@@ -91,8 +92,8 @@ test('invalid matching output blocks drafting and rejected queries never trigger
   client.runReview = async () => ({ model: 'fake-review', rawText: JSON.stringify({
     ...review, decision: 'REJECT', issues: [{ code: 'QUERY_WEAK_DEMAND', severity: 'BLOCKING', message: '需求不明确' }],
   }) });
-  await assert.rejects(generateCopy({ task, systemPrompt, copyKnowledge: knowledge, client }),
-    (error) => error.stage === 'QUERY');
+  await assert.rejects(generateCopy({ task, systemPrompt, copyKnowledge: knowledge, client,
+    promptRuntime: enabledQueryReviewRuntime() }), (error) => error.stage === 'QUERY');
   assert.equal(textCalls, 2);
 });
 
