@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/dialog';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Disclosure, DisclosureContent, DisclosureTrigger } from '@/components/ui/disclosure';
 
 import { apiRequest } from '../components/api-client';
 import { ModelCallTrace } from './model-call-trace';
@@ -100,49 +101,6 @@ type TaskDetail = {
   }>;
 };
 
-const STATE_LABELS: Record<TaskState, string> = {
-  COPY_QUEUED: '待文案执行',
-  COPY_RUNNING: '文案生成中',
-  COPY_REVIEW_PENDING: '待文案审核',
-  COPY_FAILED: '文案生成失败',
-  IMAGE_QUEUED: '待生图',
-  IMAGE_RUNNING: '生图中',
-  IMAGE_FAILED: '生图失败',
-  MANUAL_ARCHIVE: '人工归档',
-  REVIEWED: '已审核',
-  CANCELLED: '已废弃',
-};
-const STAGE_LABELS: Record<string, string> = {
-  IMAGE_RETRY_EXHAUSTED: IMAGE_RETRY_EXHAUSTED_LABEL,
-  STARTING_COPY: '准备生成文案',
-  STARTING_IMAGE: '准备生成图片',
-  SEARCHING_IMAGES: '联网搜索图片',
-  SELECTING_IMAGES: '筛选并校验图片',
-  UPLOADING_IMAGES: '上传图片到中心服务',
-  QUERY_REVIEW: '选题审核',
-  RESEARCH: '全网搜索与资料整理',
-  ORIGINAL_GENERATION: '标题、正文与配图策划生成',
-  ORIGINAL_REVIEW: '首稿质检',
-  REVIEWED_GENERATION: '文案改写',
-  REVIEWED_REVIEW: '改写稿质检',
-  PREPARING: '生图准备',
-  PLANNING: '画面规划',
-  GENERATING: '图片生成',
-  ALIGNING: '图片校验与对齐',
-  QUALITY_CHECK: '图片质检',
-  FINALIZING: '图片整理',
-  COPY_QUEUED: '待文案执行',
-  COPY_RUNNING: '文案生成中',
-  COPY_REVIEW_PENDING: '待文案审核',
-  COPY_FAILED: '文案生成失败',
-  IMAGE_QUEUED: '待生图',
-  IMAGE_RUNNING: '生图中',
-  IMAGE_FAILED: '生图失败',
-  MANUAL_ARCHIVE: '人工归档',
-  REVIEWED: '已审核',
-  FAILED: '执行失败',
-  CANCELLED: '已废弃',
-};
 const IMAGE_KINDS: ImagePlanItem['kind'][] = ['hero', 'steps', 'checklist', 'comparison', 'detail', 'summary'];
 const IMAGE_KIND_LABELS: Record<ImagePlanItem['kind'], string> = {
   hero: '封面',
@@ -155,16 +113,6 @@ const IMAGE_KIND_LABELS: Record<ImagePlanItem['kind'], string> = {
 
 function apiPath(path: string) {
   return `/api/control-plane${path}`;
-}
-
-function dateTime(value: string | null) {
-  return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '尚未开始';
-}
-
-function stageLabel(detail: TaskDetail) {
-  return detail.currentStage
-    ? STAGE_LABELS[detail.currentStage] ?? STATE_LABELS[detail.state]
-    : STATE_LABELS[detail.state];
 }
 
 function currentRevision(detail: TaskDetail | null) {
@@ -204,49 +152,98 @@ export function TaskReviewDialog({
   const [submitting, setSubmitting] = useState(false);
   const [aiDisclosureEnabled, setAiDisclosureEnabled] = useState(false);
   const [activeAssetIndex, setActiveAssetIndex] = useState<number | null>(null);
+  const [activePlanIndex, setActivePlanIndex] = useState(0);
+  const [mobilePane, setMobilePane] = useState<'copy' | 'plan'>('copy');
+  const [expandedPrompts, setExpandedPrompts] = useState<number[]>([]);
+  const [queryExpanded, setQueryExpanded] = useState(false);
+  const [invalidField, setInvalidField] = useState<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null>(null);
+  const loadRequestRef = useRef(0);
   const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
     if (!taskId) return;
+    const requestId = ++loadRequestRef.current;
     setActiveAssetIndex(null);
     setLoading(true);
     try {
       const next = await apiRequest<TaskDetail>(apiPath(`/v1/tasks/${taskId}`));
+      if (requestId !== loadRequestRef.current) return;
       setDetail(next);
       setDraft(draftFromRevision(currentRevision(next)));
       // Every copy review starts with an opt-in; completed tasks show their saved setting.
       setAiDisclosureEnabled(next.state !== 'COPY_REVIEW_PENDING' && next.aiDisclosureEnabled === true);
       setError('');
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '任务详情读取失败');
+      if (requestId === loadRequestRef.current) setError(caught instanceof Error ? caught.message : '任务详情读取失败');
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestRef.current) setLoading(false);
     }
   }, [taskId]);
 
   useEffect(() => {
+    setDetail(null);
+    setDraft(null);
+    setActivePlanIndex(0);
+    setMobilePane('copy');
+    setExpandedPrompts([]);
+    setQueryExpanded(false);
+    setInvalidField(null);
     if (!taskId) {
-      setDetail(null);
-      setDraft(null);
       setAiDisclosureEnabled(false);
       setActiveAssetIndex(null);
       setError('');
       return;
     }
     void load();
+    return () => { loadRequestRef.current += 1; };
   }, [load, taskId]);
 
   const revision = currentRevision(detail);
   const savedDraft = draftFromRevision(revision);
   const imageConfigurationChanged = Boolean(draft && savedDraft && JSON.stringify(draft.imageSettings) !== JSON.stringify(savedDraft.imageSettings));
+  const isAdmin = role === 'ADMIN';
   const editable = detail?.state === 'COPY_REVIEW_PENDING'
     && Boolean(revision && draft);
+  const fieldsReadOnly = !editable || loading || submitting;
+  const longQuery = Boolean(detail && (detail.query.length > 100 || detail.query.split('\n').length > 3));
   const canReviewImages = detail?.state === 'MANUAL_ARCHIVE'
     && ['ADMIN', 'REVIEWER'].includes(role) && Boolean(detail.currentImageRunId);
   const downloadable = detail && ['MANUAL_ARCHIVE', 'REVIEWED'].includes(detail.state);
   const canModifyImages = Boolean(detail && revision?.approvedAt && role !== 'REVIEWER'
     && ['MANUAL_ARCHIVE', 'REVIEWED', 'IMAGE_FAILED', 'IMAGE_QUEUED'].includes(detail.state) && !detail.currentExecutionId);
+  const hasUnsavedChanges = editable
+    ? JSON.stringify(draft) !== JSON.stringify(savedDraft) || aiDisclosureEnabled
+    : imageConfigurationChanged;
+
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warnBeforeUnload);
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload);
+  }, [hasUnsavedChanges]);
+
+  useEffect(() => {
+    if (!invalidField) return;
+    invalidField.focus();
+    invalidField.reportValidity();
+    setInvalidField(null);
+  }, [invalidField]);
+
+  async function discardChanges(action: 'close' | 'refresh') {
+    if (submitting || (action === 'refresh' && loading)) return;
+    if (hasUnsavedChanges && !await confirm({
+      title: action === 'close' ? '放弃修改并关闭？' : '放弃修改并刷新？',
+      description: '当前文案、图片文案规划或图片配置有未提交修改，继续操作会丢失这些修改。',
+      confirmLabel: action === 'close' ? '放弃修改并关闭' : '放弃修改并刷新',
+      cancelLabel: '继续编辑',
+    })) return;
+    if (action === 'close') onOpenChange(false);
+    else await load();
+  }
   const sources = revision?.content.generation?.research?.sources ?? [];
   const assets = useMemo(() => detail?.assets.filter(
     (asset) => asset.imageRunId === detail.currentImageRunId
@@ -267,6 +264,10 @@ export function TaskReviewDialog({
   useEffect(() => {
     if (activeAssetIndex !== null && activeAssetIndex >= assets.length) setActiveAssetIndex(null);
   }, [activeAssetIndex, assets.length]);
+
+  useEffect(() => {
+    if (draft && activePlanIndex >= draft.imagePlan.length) setActivePlanIndex(0);
+  }, [activePlanIndex, draft]);
 
   function updateCopy(field: 'title' | 'body' | 'tags', value: string) {
     setDraft((current) => current ? {
@@ -291,7 +292,24 @@ export function TaskReviewDialog({
 
   async function submitCopyReview(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!detail || !revision || !draft || !editable) return;
+    if (!detail || !revision || !draft || !editable || loading || submitting) return;
+    // Validate every mounted page, then reveal the first invalid field before focusing it.
+    const invalid = Array.from(event.currentTarget.elements).find((element) =>
+      (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement)
+      && element.willValidate && !element.validity.valid,
+    ) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | undefined;
+    if (invalid) {
+      const pane = invalid.closest<HTMLElement>('[data-review-pane]')?.dataset.reviewPane;
+      setMobilePane(pane === 'plan' ? 'plan' : 'copy');
+      const page = invalid.closest<HTMLElement>('[data-plan-index]')?.dataset.planIndex;
+      if (page !== undefined) {
+        const index = Number(page);
+        setActivePlanIndex(index);
+        if (invalid.id === `review-plan-prompt-${index}`) setExpandedPrompts(current => [...new Set([...current, index])]);
+      }
+      setInvalidField(invalid);
+      return;
+    }
     if (!await confirm({
       title: '提交当前修改并通过文案审核？',
       description: '系统会保存一个新的人工修订版本，并立即将任务送入全局生图队列。',
@@ -329,6 +347,7 @@ export function TaskReviewDialog({
 
   async function reviseImages(operation: 'REPROCESS' | 'REGENERATE') {
     if (!detail || !revision || !draft || !canModifyImages || submitting) return;
+    if (operation === 'REPROCESS' && !isAdmin) return;
     if (operation === 'REGENERATE' && !await confirm({ title: '重新生成图片？', description: '保留已审核文案，按配置中的布局种类随机生成整套图片，会产生模型费用。旧版图片保留。', confirmLabel: '确认费用并生成' })) return;
     setSubmitting(true); setError('');
     try {
@@ -369,7 +388,7 @@ export function TaskReviewDialog({
     } finally { setSubmitting(false); }
   }
 
-  return <Dialog open={taskId !== null} onOpenChange={(open) => { if (!submitting) onOpenChange(open); }}>
+  return <Dialog open={taskId !== null} onOpenChange={(open) => { if (!open) void discardChanges('close'); }}>
     <DialogContent className="workbench-review-dialog">
       <header className="workbench-review-heading">
         <div>
@@ -399,7 +418,7 @@ export function TaskReviewDialog({
             <span className="workbench-ai-disclosure-label">AI生成水印</span>
             <strong>{aiDisclosureEnabled ? '已开启' : '已关闭'}</strong>
           </label>}
-          <Button unstyled className="button small" type="button" disabled={loading || submitting} onClick={() => { void load(); }}>
+          <Button unstyled className="button small" type="button" disabled={loading || submitting} onClick={() => { void discardChanges('refresh'); }}>
             <RefreshCw className={loading ? 'animate-spin' : ''} size={14} />刷新
           </Button>
         </div>
@@ -407,52 +426,46 @@ export function TaskReviewDialog({
 
       {loading && !detail
         ? <div className="workbench-review-loading"><LoaderCircle className="animate-spin" size={22} />正在读取任务详情…</div>
-        : detail && <form className="workbench-review-form" onSubmit={submitCopyReview}>
-          <div className="workbench-review-scroll">
-            <section className="workbench-review-section">
-              <div className="workbench-review-section-title"><span>01</span><div><h3>当前任务概览</h3><p>确认 Query、状态和执行进度。</p></div></div>
-              <dl className="workbench-review-facts">
-                <div className="wide"><dt>Query 原文</dt><dd>{detail.query}</dd></div>
-                <div><dt>当前状态</dt><dd><span className={`pill ${isImageRetryExhausted(detail) ? 'pill-rejected' : `workbench-state-${detail.state.toLowerCase()}`}`}>{isImageRetryExhausted(detail) ? IMAGE_RETRY_EXHAUSTED_LABEL : STATE_LABELS[detail.state]}</span></dd></div>
-                <div><dt>文案执行机</dt><dd className="mono">{detail.copyExecutorNodeId ?? '待领取'}</dd></div>
-                <div><dt>创建时间</dt><dd>{dateTime(detail.createdAt)}</dd></div>
-                <div><dt>开始时间</dt><dd>{dateTime(detail.executionStartedAt)}</dd></div>
-                <div><dt>当前阶段</dt><dd>{stageLabel(detail)}</dd></div>
-                <div><dt>最后更新</dt><dd>{dateTime(detail.lastActivityAt)}</dd></div>
-                {detail.state === 'REVIEWED' && <>
-                  <div><dt>图片审核人</dt><dd>{detail.imageReviewedByUserId ?? '—'}</dd></div>
-                  <div><dt>审核时间</dt><dd>{dateTime(detail.imageReviewedAt)}</dd></div>
-                </>}
-              </dl>
-              {detail.progressMessage && <div className="workbench-review-progress">{detail.progressMessage}</div>}
-              {detail.error && <div className="notice error" role="alert">{detail.error}</div>}
-            </section>
-
-            {draft && <>
+        : detail && <form className="workbench-review-form" data-comparing={editable} noValidate onSubmit={submitCopyReview}>
+          {editable && <div className="workbench-review-pane-switch" aria-label="切换审核内容">
+            <Button unstyled type="button" aria-pressed={mobilePane === 'copy'} aria-controls="review-copy-pane" onClick={() => setMobilePane('copy')}>文案</Button>
+            <Button unstyled type="button" aria-pressed={mobilePane === 'plan'} aria-controls="review-plan-pane" onClick={() => setMobilePane('plan')}>图片文案规划</Button>
+          </div>}
+          <div className="workbench-review-scroll" data-mobile-pane={mobilePane}>
+            <div id="review-copy-pane" className="workbench-review-pane" data-review-pane="copy">
               <section className="workbench-review-section">
-                <div className="workbench-review-section-title"><span>02</span><div><h3>标题、正文与标签</h3><p>{editable ? '当前处于文案审核阶段，可直接修改后一起提交。' : '当前状态只读，展示任务采用的文案版本。'}</p></div></div>
+                <div className="workbench-review-section-title"><span>01</span><div><h3>标题、正文与标签</h3><p>{editable ? '对照右侧图片文案规划修改，完成后一起提交。' : '当前状态只读，展示任务采用的文案版本。'}</p></div></div>
+                <div className="workbench-review-query">
+                  <strong>Query 原文</strong>
+                  <div id="review-query-text" className="workbench-review-query-text" data-expanded={queryExpanded || !longQuery}>{detail.query}</div>
+                  {longQuery && <Button unstyled className="button small" type="button" aria-expanded={queryExpanded} aria-controls="review-query-text" onClick={() => setQueryExpanded(value => !value)}>{queryExpanded ? '收起原文' : '展开全文'}</Button>}
+                </div>
+                {isImageRetryExhausted(detail) && <div className="notice warning" role="status">{IMAGE_RETRY_EXHAUSTED_LABEL}</div>}
+                {detail.error && <div className="notice error" role="alert">{detail.error}</div>}
+                {draft ?
                 <div className="workbench-copy-fields">
                   <div className="field full">
                     <label htmlFor="review-copy-title">标题 <small>{draft.copy.title.length}/25</small></label>
-                    <Input id="review-copy-title" className="input" value={draft.copy.title} maxLength={25} required readOnly={!editable} onChange={(event) => updateCopy('title', event.target.value)} />
+                    <Input id="review-copy-title" className="input" value={draft.copy.title} maxLength={25} required readOnly={fieldsReadOnly} onChange={(event) => updateCopy('title', event.target.value)} />
                   </div>
                   <div className="field full">
                     <label htmlFor="review-copy-body">正文 <small>{[...draft.copy.body].length}/400–600</small></label>
-                    <Textarea id="review-copy-body" className="textarea workbench-copy-body-editor" value={draft.copy.body} minLength={400} maxLength={600} required readOnly={!editable} onChange={(event) => updateCopy('body', event.target.value)} />
+                    <Textarea id="review-copy-body" className="textarea workbench-copy-body-editor" value={draft.copy.body} minLength={400} maxLength={600} required readOnly={fieldsReadOnly} onChange={(event) => updateCopy('body', event.target.value)} />
                   </div>
                   <div className="field full">
                     <label htmlFor="review-copy-tags">标签 <small>3–8 个，用空格分隔</small></label>
-                    <Input id="review-copy-tags" className="input" value={draft.copy.tags.join(' ')} required readOnly={!editable} onChange={(event) => updateCopy('tags', event.target.value)} />
+                    <Input id="review-copy-tags" className="input" value={draft.copy.tags.join(' ')} required readOnly={fieldsReadOnly} onChange={(event) => updateCopy('tags', event.target.value)} />
                   </div>
-                </div>
+                </div> : <div className="workbench-review-empty">当前任务还没有可审核的文案版本。</div>}
               </section>
-
-            </>}
-
-            {!draft && <div className="workbench-review-empty">当前任务还没有可审核的文案版本。</div>}
-
+              {sources.length > 0 && <Disclosure className="workbench-review-section workbench-review-source-disclosure">
+                <DisclosureTrigger>联网资料来源 · {sources.length} 条</DisclosureTrigger>
+                <DisclosureContent><div className="workbench-review-sources">{sources.map((source, index) => <a href={source.url} target="_blank" rel="noreferrer" key={`${source.url}-${index}`}>
+                  <b>{source.title || source.siteName || `来源 ${index + 1}`}</b><small>{source.url}</small>
+                </a>)}</div></DisclosureContent>
+              </Disclosure>}
             {(assets.length > 0 || canReviewImages) && <section className="workbench-review-section">
-              <div className="workbench-review-section-title"><span>{draft ? '03' : '02'}</span><div><h3>图片审核</h3><p>核对当前图片运行生成的完整图集。</p></div></div>
+              <div className="workbench-review-section-title"><span>02</span><div><h3>图片审核</h3><p>核对当前图片运行生成的完整图集。</p></div></div>
               <ImagePreviewPreference />
               {assets.length === 0 && <p className="notice warning">当前没有可预览的图片，请刷新核对，或选择重试生图、废弃。</p>}
               {currentImageRun?.result?.simulation?.enabled && <div className="notice warning">
@@ -510,65 +523,70 @@ export function TaskReviewDialog({
             </section>}
 
             <ImageHistoryCompare runs={detail.imageRuns} currentRunId={detail.currentImageRunId} assets={detail.assets}
-              onRestore={canModifyImages && !submitting ? settings => setDraft(current => current ? { ...current, imageSettings: settings } : current) : undefined} />
+              onRestore={isAdmin && canModifyImages && !submitting ? settings => setDraft(current => current ? { ...current, imageSettings: settings } : current) : undefined} />
+            </div>
 
-            {draft && <>
+            {draft && <div id="review-plan-pane" className="workbench-review-pane" data-review-pane="plan">
               <section className="workbench-review-section">
-                <div className="workbench-review-section-title"><span>{assets.length > 0 ? '04' : '03'}</span><div><h3>配图策划</h3><p>每一页独立呈现图片角色、画面文字与生成指令。</p></div></div>
-                <ImageSettingsEditor value={draft.imageSettings} disabled={(!editable && !canModifyImages) || submitting} onChange={imageSettings => setDraft(current => current ? { ...current, imageSettings } : current)} />
-                {canModifyImages && <>
-                  <p className="subtle">调整格式或透明填色可直接转换。重新生成时按配置中的布局种类随机选择，旧图片保留。</p>
-                  <div className="image-revision-actions"><Button unstyled className="button" type="button" disabled={submitting || !assets.length} onClick={() => void reviseImages('REPROCESS')}>仅转换格式 / 背景（不调用模型）</Button><Button unstyled className="button primary" type="button" disabled={submitting} onClick={() => void reviseImages('REGENERATE')}>重新生成图片</Button></div>
-                </>}
+                <div className="workbench-review-section-title"><span>{assets.length > 0 ? '03' : '02'}</span><div><h3>图片文案规划</h3><p>逐页核对画面文字，切换页面会保留当前修改。</p></div></div>
+                <nav className="workbench-image-plan-nav" aria-label="图片规划页码">
+                  {draft.imagePlan.map((item, index) => <Button unstyled type="button" key={index} aria-pressed={activePlanIndex === index} aria-controls={`review-plan-page-${index}`} onClick={() => setActivePlanIndex(index)}>
+                    <span>第 {index + 1} 页 · {IMAGE_KIND_LABELS[item.kind]}</span><strong>{item.headline || '未填写页面标题'}</strong>
+                  </Button>)}
+                </nav>
                 <div className="workbench-image-plan-grid">
-                  {draft.imagePlan.map((item, index) => <article className="workbench-image-plan-card" key={index}>
+                  {draft.imagePlan.map((item, index) => <article id={`review-plan-page-${index}`} className="workbench-image-plan-card" key={index} data-plan-index={index} hidden={activePlanIndex !== index}>
                     <div className="workbench-image-plan-head"><b>第 {index + 1} 页</b><span>{IMAGE_KIND_LABELS[item.kind]}</span></div>
                     <div className="workbench-image-plan-fields">
                       <div className="field">
                         <label htmlFor={`review-plan-kind-${index}`}>页面类型</label>
-                        <Select value={item.kind} disabled={!editable} onValueChange={(kind: ImagePlanItem['kind']) => updateImagePlan(index, { kind, layout: { mode: 'AUTO' } })}>
+                        <Select value={item.kind} disabled={fieldsReadOnly} onValueChange={(kind: ImagePlanItem['kind']) => updateImagePlan(index, { kind, layout: { mode: 'AUTO' } })}>
                           <SelectTrigger id={`review-plan-kind-${index}`}><SelectValue /></SelectTrigger>
                           <SelectContent>{IMAGE_KINDS.map((kind) => <SelectItem value={kind} key={kind}>{IMAGE_KIND_LABELS[kind]}</SelectItem>)}</SelectContent>
                         </Select>
                       </div>
                       <div className="field">
                         <label htmlFor={`review-plan-headline-${index}`}>页面标题</label>
-                        <Input id={`review-plan-headline-${index}`} className="input" value={item.headline} maxLength={18} required readOnly={!editable} onChange={(event) => updateImagePlan(index, { headline: event.target.value })} />
+                        <Input id={`review-plan-headline-${index}`} className="input" value={item.headline} maxLength={18} required readOnly={fieldsReadOnly} onChange={(event) => updateImagePlan(index, { headline: event.target.value })} />
                       </div>
                       <div className="field full">
                         <label htmlFor={`review-plan-subtitle-${index}`}>页面副标题</label>
-                        <Input id={`review-plan-subtitle-${index}`} className="input" value={item.subtitle} maxLength={30} required readOnly={!editable} onChange={(event) => updateImagePlan(index, { subtitle: event.target.value })} />
+                        <Input id={`review-plan-subtitle-${index}`} className="input" value={item.subtitle} maxLength={30} required readOnly={fieldsReadOnly} onChange={(event) => updateImagePlan(index, { subtitle: event.target.value })} />
                       </div>
                       <div className="field full">
                         <label htmlFor={`review-plan-bullets-${index}`}>画面要点 <small>每行一条，2–5 条</small></label>
-                        <Textarea id={`review-plan-bullets-${index}`} className="textarea" value={item.bullets.join('\n')} required readOnly={!editable} onChange={(event) => updateImagePlan(index, { bullets: event.target.value.split(/\r?\n/u) })} />
+                        <Textarea id={`review-plan-bullets-${index}`} className="textarea" value={item.bullets.join('\n')} required readOnly={fieldsReadOnly} onChange={(event) => updateImagePlan(index, { bullets: event.target.value.split(/\r?\n/u) })} />
                       </div>
-                      <div className="field full">
+                      <Disclosure className="field full" open={expandedPrompts.includes(index)} onOpenChange={open => setExpandedPrompts(current => open ? [...current, index] : current.filter(value => value !== index))}>
+                        <DisclosureTrigger>画面生成指令</DisclosureTrigger>
+                        <DisclosureContent>
                         <label htmlFor={`review-plan-prompt-${index}`}>画面生成指令</label>
-                        <Textarea id={`review-plan-prompt-${index}`} className="textarea" value={item.prompt} minLength={10} maxLength={1_000} required readOnly={!editable} onChange={(event) => updateImagePlan(index, { prompt: event.target.value })} />
-                      </div>
+                        <Textarea id={`review-plan-prompt-${index}`} className="textarea" value={item.prompt} minLength={10} maxLength={1_000} required readOnly={fieldsReadOnly} onChange={(event) => updateImagePlan(index, { prompt: event.target.value })} />
+                        </DisclosureContent>
+                      </Disclosure>
                     </div>
                   </article>)}
                 </div>
               </section>
-
-              {sources.length > 0 && <section className="workbench-review-section">
-                <div className="workbench-review-section-title"><span>{assets.length > 0 ? '05' : '04'}</span><div><h3>联网资料来源</h3><p>审核时可核对文案所依据的公开来源。</p></div></div>
-                <div className="workbench-review-sources">{sources.map((source, index) => <a href={source.url} target="_blank" rel="noreferrer" key={`${source.url}-${index}`}>
-                  <b>{source.title || source.siteName || `来源 ${index + 1}`}</b><small>{source.url}</small>
-                </a>)}</div>
-              </section>}
-            </>}
-
-            {role === 'ADMIN' && <ModelCallTrace key={detail.id} taskId={detail.id} />}
+              {isAdmin && <Disclosure className="workbench-review-section">
+                <DisclosureTrigger>交付格式与背景</DisclosureTrigger>
+                <DisclosureContent>
+                  <ImageSettingsEditor value={draft.imageSettings} disabled={(!editable && !canModifyImages) || submitting} onChange={imageSettings => setDraft(current => current ? { ...current, imageSettings } : current)} />
+                  {canModifyImages && <Button unstyled className="button" type="button" disabled={submitting || !assets.length} onClick={() => void reviseImages('REPROCESS')}>仅转换格式 / 背景（不调用模型）</Button>}
+                </DisclosureContent>
+              </Disclosure>}
+              {canModifyImages && <div className="image-revision-actions"><Button unstyled className="button primary" type="button" disabled={submitting} onClick={() => void reviseImages('REGENERATE')}>重新生成图片</Button></div>}
+              {role === 'ADMIN' && <ModelCallTrace key={detail.id} taskId={detail.id} />}
+            </div>}
+            {!draft && role === 'ADMIN' && <ModelCallTrace key={detail.id} taskId={detail.id} />}
           </div>
 
           <footer className="workbench-review-footer">
-            <span>{editable ? `提交后将创建人工修订版 v${(revision?.revision ?? 0) + 1}` : `当前文案版本 v${revision?.revision ?? '—'}`}</span>
+            <span><strong className="workbench-review-dirty" role="status">{hasUnsavedChanges ? '有未提交修改 · ' : ''}</strong>{editable ? `提交后将创建人工修订版 v${(revision?.revision ?? 0) + 1}` : `当前文案版本 v${revision?.revision ?? '—'}`}</span>
             <div>
               <DialogClose asChild><Button unstyled className="button" type="button" disabled={submitting}>关闭</Button></DialogClose>
-              {editable && <Button unstyled className="button primary" type="submit" disabled={submitting}>
-                {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : <><CheckCircle2 size={15} />提交审核</>}
+              {editable && <Button unstyled className="button primary" type="submit" disabled={submitting || loading}>
+                {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : <><CheckCircle2 size={15} />审核通过并开始生图</>}
               </Button>}
             </div>
           </footer>

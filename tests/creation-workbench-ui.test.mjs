@@ -126,7 +126,7 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   // Navigation continuity is exercised in scripts/test-image-preview.mjs.
   assert.match(reviewDialog, /onPrevious=\{activeAssetIndex > 0/u);
   assert.match(reviewDialog, /onNext=\{activeAssetIndex < assets\.length - 1/u);
-  assert.match(reviewDialog, />提交审核</u);
+  assert.match(reviewDialog, />审核通过并开始生图</u);
   assert.match(reviewDialog, /href=\{apiPath\(`\/v1\/tasks\/\$\{detail\.id\}\/archive`\)\}/u);
   assert.match(reviewDialog, /<Download size=\{14\} \/>下载资源/u);
   assert.doesNotMatch(reviewDialog, /approve-delivery|提交图文审核/u);
@@ -145,8 +145,6 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(workbench, />查看<\/Button>/u);
   assert.match(workbench, /\/v1\/tasks\/\$\{task\.id\}\/cancel/u);
   assert.match(workbench, /STAGE_LABELS\[task\.currentStage\] \?\? STATE_LABELS\[task\.state\]/u);
-  assert.match(reviewDialog, /STAGE_LABELS\[detail\.currentStage\] \?\? STATE_LABELS\[detail\.state\]/u);
-  assert.match(reviewDialog, /<dt>当前阶段<\/dt><dd>\{stageLabel\(detail\)\}<\/dd>/u);
   assert.doesNotMatch(workbench, /\{task\.currentStage \|\| STATE_LABELS/u);
   assert.doesNotMatch(reviewDialog, /\{detail\.currentStage \?\? '尚未开始'\}/u);
   // Compare layouts internally while keeping raw image-plan JSON out of the rendered review.
@@ -156,15 +154,15 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(jobsWorkbench, /if \(initialTaskId\) void openTask\(initialTaskId\)/u);
 });
 
-test('task detail shows the image collection directly after copy and before planning', async () => {
+test('task detail keeps image review after copy and before planning', async () => {
   const source = await readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8');
-  const headings = ['标题、正文与标签', '图片审核', '配图策划', '联网资料来源'];
+  const headings = ['标题、正文与标签', '图片审核', '图片文案规划'];
   const positions = headings.map((heading) => source.indexOf(`<h3>${heading}</h3>`));
   assert.ok(positions.every((position) => position >= 0));
   assert.deepEqual([...positions].sort((a, b) => a - b), positions);
   assert.equal(source.match(/<h3>图片审核<\/h3>/gu)?.length, 1);
-  assert.match(source, /assets\.length > 0 \? '04' : '03'/u);
-  assert.match(source, /assets\.length > 0 \? '05' : '04'/u);
+  // Editing, role restrictions, validation, and responsive layout are exercised
+  // with the real component and in-memory API in scripts/test-task-review.mjs.
 });
 
 test('executor CLI gates registration and polling behind readiness', async () => {
