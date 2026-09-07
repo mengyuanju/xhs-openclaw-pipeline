@@ -22,14 +22,14 @@ export function LayoutPresetsEditor({ value, onChange, disabled = false }: {
   }
   return <section className="panel settings-section" aria-labelledby={`${id}-heading`}>
     <div className="panel-head">
-      <div><h2 id={`${id}-heading`}>布局种类</h2><p className="subtle">生成时按页面类型，从内置布局和已启用的自定义布局中随机选择。作业详情无需单独指定。</p></div>
+      <div><h2 id={`${id}-heading`}>旧版自定义布局</h2><p className="subtle">供未启用模板目录的旧版任务随机选择。新版自动规划使用上方布局模板库；人工已指定的页面保留原设计。</p></div>
       <Button unstyled className="button" type="button" disabled={disabled || value.length >= 50} onClick={() => {
         const presetId = crypto.randomUUID();
         setNewId(presetId);
         onChange([...value, { id: presetId, name: '新布局', kind: 'all', enabled: true, layout: { mode: 'CUSTOM' } }]);
       }}>新增布局种类</Button>
     </div>
-    {value.length === 0 && <p className="subtle">尚未添加自定义布局，当前使用内置布局随机生成。</p>}
+    {value.length === 0 && <p className="subtle">尚未添加旧版自定义布局。</p>}
     <div className="settings-stack">{value.map((preset, index) => <Disclosure className="layout-preset" key={preset.id} defaultOpen={preset.id === newId ? true : undefined}>
       <DisclosureTrigger>{preset.name || '未命名布局'} · {LAYOUT_KIND_LABELS[preset.kind as keyof typeof LAYOUT_KIND_LABELS]} · {preset.enabled ? '已启用' : '已停用'}</DisclosureTrigger><DisclosureContent>
       <fieldset className="layout-preset-fields" disabled={disabled}>
@@ -60,7 +60,7 @@ export function RemoteLayoutPresetsSettings({ initialPresets, onSaved }: {
       const current = records.find(record => record.key === 'production')?.value ?? {};
       await apiRequest('/api/control-plane/v1/settings/production', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: { ...current, layoutPresets } }) });
       setPresets(layoutPresets);
-      setMessage('布局种类已保存，后续新任务会自动随机选择。');
+      setMessage('旧版布局预设已保存。');
       await onSaved();
     } catch (caught) { setError(caught instanceof Error ? caught.message : '布局种类保存失败'); }
     finally { setBusy(false); }

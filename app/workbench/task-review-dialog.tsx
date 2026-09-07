@@ -1,4 +1,5 @@
 'use client';
+import { VisualPlanSummary } from '../components/visual-plan-summary';
 
 import { Checkbox, Input, Textarea } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -94,7 +95,7 @@ type TaskDetail = {
         };
       }>;
       simulation?: { enabled?: boolean; provider?: string };
-      visualPlan?: { warning?: { message?: string } };
+      visualPlan?: { warning?: { message?: string }; value?: unknown };
     } | null;
   }>;
   assets: Array<{
@@ -486,6 +487,7 @@ export function TaskReviewDialog({
                   <b>{source.title || source.siteName || `来源 ${index + 1}`}</b><small>{source.url}</small>
                 </a>)}</div></DisclosureContent>
               </Disclosure>}
+            <VisualPlanSummary value={currentImageRun?.result?.visualPlan?.value} />
             {(assets.length > 0 || canReviewImages) && <section className="workbench-review-section" ref={imageSectionRef} tabIndex={-1} aria-label="当前图片审核">
               <div className="workbench-review-section-title"><span>02</span><div><h3>图片审核</h3><p>核对当前图片运行生成的完整图集。</p></div></div>
               <ImagePreviewPreference />

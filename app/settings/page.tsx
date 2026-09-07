@@ -5,6 +5,7 @@ import { ProductionSettingsForm } from './production-settings-form';
 import { CentralDataWorkbench } from '../components/central-data-workbench';
 import { controlPlaneUrl } from '../../src/control-plane/next-runtime.mjs';
 import { WebSearchSettingsPanel } from './web-search-settings-panel';
+import { LayoutCatalogSettings } from './layout-catalog-settings';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,6 +25,7 @@ export default function ProductionSettingsPage() {
       </div>
     </header>
     <WebSearchSettingsPanel />
+    <LayoutCatalogSettings />
     <ProductionSettingsForm initialRecord={record} effectiveModelApi={effectiveModelApi} />
   </>;
 }

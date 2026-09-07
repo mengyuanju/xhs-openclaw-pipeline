@@ -12,6 +12,7 @@ import { apiRequest } from './api-client';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { WebSearchSettingsPanel } from '../settings/web-search-settings-panel';
 import { RemoteLayoutPresetsSettings } from '../settings/layout-presets-settings';
+import { LayoutCatalogSettings } from '../settings/layout-catalog-settings';
 
 type Resource = 'prompts' | 'knowledge' | 'settings';
 
@@ -155,8 +156,9 @@ export function CentralDataWorkbench({ resource }: { resource: Resource }) {
   const production = data.find((item) => item.key === 'production');
 
   return <div className="central-data-stack">
+    {resource === 'settings' && <LayoutCatalogSettings remote />}
     {resource === 'settings' && <WebSearchSettingsPanel onSaved={refresh} />}
-    {resource === 'settings' && !loading && <RemoteLayoutPresetsSettings key={production?.version ?? 0} initialPresets={production?.value?.layoutPresets ?? []} onSaved={async () => { await refresh(); setMessage('布局种类已保存，后续新任务会自动随机选择。'); }} />}
+    {resource === 'settings' && !loading && <RemoteLayoutPresetsSettings key={`layout-presets-${production?.version ?? 0}`} initialPresets={production?.value?.layoutPresets ?? []} onSaved={async () => { await refresh(); setMessage('旧版自定义布局已保存。新版布局请在布局模板库中维护。'); }} />}
     {resource === 'prompts' && <form className="panel" onSubmit={createPrompt}>
       <div className="panel-head"><div><span className="section-kicker">Remote prompt</span><h2>新建提示词草稿</h2></div><Save size={18} /></div>
       <div className="form-grid">
@@ -177,7 +179,7 @@ export function CentralDataWorkbench({ resource }: { resource: Resource }) {
       </div>
     </form>}
 
-    {resource === 'settings' && <form className="panel" onSubmit={updateProduction} key={production?.version ?? 0}>
+    {resource === 'settings' && <form className="panel" onSubmit={updateProduction} key={`production-settings-${production?.version ?? 0}`}>
       <div className="panel-head"><div><span className="section-kicker">Remote settings</span><h2>生产配置 JSON</h2></div><Save size={18} /></div>
       <div className="field">
         <label htmlFor="central-agent-provider">生成引擎</label>

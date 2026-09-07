@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
 import { StatusPill } from '../../components/status-pill';
+import { VisualPlanSummary } from '../../components/visual-plan-summary';
 import { TaskProgressRefresh } from '../../components/task-progress-refresh';
 import { TaskTiming } from '../../components/task-timing';
 import { attachGenerationVisualPlans } from '../../../src/admin/generation-artifact-reader.mjs';
@@ -52,6 +53,7 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
       <TaskProgressRefresh active={task.status === 'pending' || task.status === 'processing'} />
     </header>
     {task.error && <div className="notice error" style={{marginBottom: 18}}>生成失败：{task.error}</div>}
+    {task.status === 'processing' && <VisualPlanSummary value={task.currentVisualPlan} />}
     <ReviewPanel task={task} exportAvailability={exportAvailability} />
   </>;
 }

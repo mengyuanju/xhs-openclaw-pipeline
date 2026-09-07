@@ -1,3 +1,4 @@
+import { VisualPlanSummary } from '../../components/visual-plan-summary';
 type VisualPlan = Record<string, unknown>;
 
 export function VisualPlanTrace({ visualPlan }: { visualPlan?: VisualPlan | null }) {
@@ -6,6 +7,7 @@ export function VisualPlanTrace({ visualPlan }: { visualPlan?: VisualPlan | null
   }
 
   return <div className="prompt-content-list visual-plan-trace">
+    <VisualPlanSummary value={visualPlan} />
     <p className="subtle">显示本批次实际用于逐页图片生成的完整视觉计划。</p>
     <article className="prompt-content-card">
       <div className="prompt-content-meta">

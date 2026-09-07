@@ -1854,3 +1854,14 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .layout-preset > [data-slot="disclosure-trigger"] { cursor: pointer; font-weight: 600; overflow-wrap: anywhere; }
 .layout-preset-fields { border: 0; min-width: 0; padding: 16px 0 0; }
 @media (max-width: 560px) { .image-controls-grid { grid-template-columns: minmax(0, 1fr); } .image-controls { padding: 12px; } }
+
+.layout-catalog-section { min-width: 0; }
+.layout-catalog-table { overflow-x: auto; max-width: 100%; border: 1px solid var(--border); border-radius: var(--radius); }
+.layout-catalog-table table { width: 100%; min-width: 760px; border-collapse: collapse; font-size: .875rem; }
+.layout-catalog-table th, .layout-catalog-table td { padding: .875rem; text-align: left; vertical-align: top; border-bottom: 1px solid var(--border); }
+.layout-catalog-table th { font-weight: 600; }
+.layout-catalog-table small { display: block; margin-top: .375rem; }
+.layout-catalog-table code { font-size: .75rem; white-space: nowrap; }
+.layout-catalog-section details { border-top: 1px solid var(--border); padding-top: 1rem; }
+.layout-catalog-section summary { cursor: pointer; font-weight: 600; margin-bottom: .75rem; }
+.layout-catalog-section .textarea { width: 100%; min-width: 0; }

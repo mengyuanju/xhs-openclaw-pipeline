@@ -82,10 +82,11 @@ export function ProductionSettingsForm({
       const modelApi = Object.fromEntries(Object.keys(EMPTY_MODEL_API).map((key) => [
         key, settings.modelApi[key as keyof ModelApiSettings],
       ]));
+      const { layoutCatalog: _catalog, ...settingsPatch } = settings as Settings & { layoutCatalog?: unknown };
       const record = await apiRequest<{ settings: Settings; updatedAt: string }>('/api/production-settings', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...settings, modelApi }),
+        body: JSON.stringify({ ...settingsPatch, modelApi }),
       });
       setSettings(record.settings);
       setUpdatedAt(record.updatedAt);
