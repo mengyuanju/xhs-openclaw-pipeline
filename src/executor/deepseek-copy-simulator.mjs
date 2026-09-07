@@ -1,6 +1,7 @@
 import { generateCopy, toCopyGenerationResponse } from '../copy-generation.mjs';
 import { createDeepSeekResponsesClient } from '../deepseek-responses-client.mjs';
 import { promptRuntimeFromSnapshot } from '../admin/prompt-runtime-service.mjs';
+import { guardExecutionCalls } from './execution-signal.mjs';
 
 const COPY_PROGRESS = Object.freeze({
   QUERY_REVIEW: 5,
@@ -30,11 +31,12 @@ export async function executeDeepSeekCopySimulation({
   environment = process.env,
   client = createDeepSeekResponsesClient({ apiKey: environment.DEEPSEEK_API_KEY }),
   generate = generateCopy,
+  signal,
 }) {
   const { execution } = claim;
   const snapshot = execution.snapshot;
   const generated = await generate({
-    client,
+    client: signal ? guardExecutionCalls(client, signal, { model: true }) : client,
     promptRuntime: promptRuntimeFromSnapshot(snapshot),
     task: snapshot.task,
     copyKnowledge: snapshot.knowledge ?? [],

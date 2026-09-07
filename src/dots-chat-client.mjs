@@ -71,17 +71,19 @@ export function createDotsChatClient({
   }
 
   return {
-    async runText({ prompt, timeoutMs = DEFAULT_TIMEOUT_MS }) {
+    async runText({ prompt, timeoutMs = DEFAULT_TIMEOUT_MS, signal }) {
+      signal?.throwIfAborted();
       if (typeof prompt !== 'string' || prompt.length < 1) {
         throw new RangeError('prompt must be a non-empty string');
       }
       const secret = requiredApiKey(apiKey);
+      const deadline = AbortSignal.timeout(validatedTimeout(timeoutMs));
       let response;
       try {
         response = await fetchImpl(endpoint, {
           method: 'POST',
           redirect: 'error',
-          signal: AbortSignal.timeout(validatedTimeout(timeoutMs)),
+          signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
           headers: {
             'Content-Type': 'application/json',
             'api-key': secret,
@@ -95,12 +97,14 @@ export function createDotsChatClient({
           }),
         });
       } catch {
+        signal?.throwIfAborted();
         throw new Error('Dots Chat Completions network request failed');
       }
       let payload;
       try {
         payload = await response.json();
       } catch {
+        signal?.throwIfAborted();
         if (response?.ok) throw new TypeError('Dots Chat Completions response is not valid JSON');
       }
       assertTextCapacity(payload);

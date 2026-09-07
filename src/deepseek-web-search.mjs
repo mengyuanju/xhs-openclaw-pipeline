@@ -56,8 +56,9 @@ function searchEvidence(payload, limit) {
 
 export async function runDeepSeekWebSearch(
   { apiKey, model, timeoutMs: configuredTimeoutMs, fetchImpl = fetch },
-  { query, limit = 5, timeoutMs = configuredTimeoutMs },
+  { query, limit = 5, timeoutMs = configuredTimeoutMs, signal: executionSignal },
 ) {
+  executionSignal?.throwIfAborted();
   const key = requiredApiKey(apiKey);
   const normalizedQuery = typeof query === 'string' ? query.trim() : '';
   if (normalizedQuery.length < 1 || normalizedQuery.length > 500) {
@@ -78,7 +79,8 @@ export async function runDeepSeekWebSearch(
   };
   return traceModelCall({ provider: 'DeepSeek', operation: 'WEB_SEARCH', model, prompt: body.input,
     request: body, requestScope: 'HTTP_BODY' }, async capture => {
-    const signal = AbortSignal.timeout(validatedWebSearchTimeout(timeoutMs));
+    const deadline = AbortSignal.timeout(validatedWebSearchTimeout(timeoutMs));
+    const signal = executionSignal ? AbortSignal.any([executionSignal, deadline]) : deadline;
     let response;
     try {
       response = await fetchImpl(RESPONSES_ENDPOINT, {
@@ -89,6 +91,7 @@ export async function runDeepSeekWebSearch(
         body: JSON.stringify(body),
       });
     } catch (error) {
+      executionSignal?.throwIfAborted();
       throw new Error(signal.aborted || error?.name === 'TimeoutError'
         ? 'DeepSeek web search request timed out'
         : 'DeepSeek web search network request failed');
@@ -102,6 +105,7 @@ export async function runDeepSeekWebSearch(
     try {
       raw = await response.text();
     } catch (error) {
+      executionSignal?.throwIfAborted();
       // Headers can arrive before inference finishes. Body reads still share the
       // request deadline and may fail independently of JSON parsing.
       const timedOut = signal.aborted || error?.name === 'TimeoutError';

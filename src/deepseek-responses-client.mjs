@@ -264,7 +264,8 @@ export function createDeepSeekResponsesClient({
     throw new RangeError('DeepSeek maxOutputTokens must be between 1024 and 32768');
   }
 
-  async function createResponse({ prompt, timeoutMs = 180_000, webSearch = false }) {
+  async function createResponse({ prompt, timeoutMs = 180_000, webSearch = false, signal }) {
+    signal?.throwIfAborted();
     if (typeof prompt !== 'string' || prompt.length < 1) {
       throw new RangeError('prompt must be a non-empty string');
     }
@@ -272,11 +273,12 @@ export function createDeepSeekResponsesClient({
       throw new RangeError('prompt must contain between 1 and 30000 characters');
     }
     let response;
+    const deadline = AbortSignal.timeout(validatedTimeout(timeoutMs));
     try {
       response = await fetchImpl(DEEPSEEK_RESPONSES_ENDPOINT, {
         method: 'POST',
         redirect: 'error',
-        signal: AbortSignal.timeout(validatedTimeout(timeoutMs)),
+        signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${secret}`,
@@ -293,12 +295,14 @@ export function createDeepSeekResponsesClient({
         }),
       });
     } catch {
+      signal?.throwIfAborted();
       throw new Error('DeepSeek Responses network request failed');
     }
     let payload;
     try {
       payload = await response.json();
     } catch {
+      signal?.throwIfAborted();
       if (response?.ok) throw new TypeError('DeepSeek Responses response is not valid JSON');
     }
     assertTextCapacity(payload);
@@ -313,13 +317,13 @@ export function createDeepSeekResponsesClient({
   }
 
   return {
-    runText({ prompt, timeoutMs }) {
-      return createResponse({ prompt, timeoutMs });
+    runText({ prompt, timeoutMs, signal }) {
+      return createResponse({ prompt, timeoutMs, signal });
     },
-    runReview({ prompt, timeoutMs }) {
-      return createResponse({ prompt, timeoutMs });
+    runReview({ prompt, timeoutMs, signal }) {
+      return createResponse({ prompt, timeoutMs, signal });
     },
-    async runWebSearch({ query, limit = 5, timeoutMs = 120_000 }) {
+    async runWebSearch({ query, limit = 5, timeoutMs = 120_000, signal }) {
       const normalizedQuery = typeof query === 'string' ? query.trim() : '';
       if (normalizedQuery.length < 1 || normalizedQuery.length > 500) {
         throw new RangeError('web search query must contain between 1 and 500 characters');
@@ -328,13 +332,13 @@ export function createDeepSeekResponsesClient({
         throw new RangeError('web search limit must be an integer between 1 and 10');
       }
       const prompt = buildResearchPrompt(normalizedQuery, limit);
-      const generated = await createResponse({ prompt, timeoutMs, webSearch: true });
+      const generated = await createResponse({ prompt, timeoutMs, webSearch: true, signal });
       return {
         provider: 'deepseek',
         result: parsedSearchResult(generated.rawText),
       };
     },
-    async runImageSearch({ query, copy, imagePlan, timeoutMs = 120_000 }) {
+    async runImageSearch({ query, copy, imagePlan, timeoutMs = 120_000, signal }) {
       const normalizedQuery = typeof query === 'string' ? query.trim() : '';
       if (normalizedQuery.length < 1 || normalizedQuery.length > 500) {
         throw new RangeError('image search query must contain between 1 and 500 characters');
@@ -372,6 +376,7 @@ export function createDeepSeekResponsesClient({
             prompt: `${prompt}${repairInstruction}`,
             timeoutMs,
             webSearch: true,
+            signal,
           });
           return {
             provider: 'deepseek',
@@ -380,6 +385,7 @@ export function createDeepSeekResponsesClient({
             result: parsedImageSearchResult(generated.rawText, imagePlan.length),
           };
         } catch (error) {
+          signal?.throwIfAborted();
           lastError = error;
           if (!retryableImageSearchError(error) || attempt === 3) break;
         }

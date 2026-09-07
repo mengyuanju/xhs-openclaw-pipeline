@@ -35,6 +35,8 @@ DEEPSEEK_COPY_ANALYSIS_MODEL=deepseek-v4-pro
 
 默认监听 `127.0.0.1:4310`。需要局域网执行机访问时，把 `CONTROL_PLANE_HOST` 改为 `0.0.0.0`，并用防火墙仅允许可信内网网段。当前版本没有 TLS 和节点身份认证，不能直接暴露到公网。
 
+`0013_execution_heartbeats` 新增任务心跳和卡住执行回收。先升级并重启中心，再更新各执行机；旧卡住任务会保留产物并转为失败，供检查后重试或续跑。期限、兼容行为和验证步骤见 [执行恢复说明](../docs/execution-recovery.md)。
+
 ## 验证
 
 ```powershell

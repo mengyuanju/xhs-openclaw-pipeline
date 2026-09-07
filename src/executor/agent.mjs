@@ -17,6 +17,7 @@ import { findImageRecoveryRun, imageRecoveryRunIds, loadUploadedImages, readChec
 import { executorConcurrency } from './config.mjs';
 import { reprocessStandaloneImages } from '../standalone-image-generation.mjs';
 import { IMAGE_ARTIFACT_FILE } from '../image-artifacts.mjs';
+import { guardExecutionCalls, runWithExecutionSignal } from './execution-signal.mjs';
 
 const COPY_PROGRESS = Object.freeze({
   QUERY_REVIEW: 5,
@@ -100,12 +101,13 @@ async function checkModelAvailability({ environment, controlPlane }) {
   if (effectiveModelApiConfig(modelApi, environment).agentProvider === 'CODEX') limits.assertAvailable();
 }
 
-export async function executeCopyClaim({ claim, controlPlane, environment = process.env, client }) {
+export async function executeCopyClaim({ claim, controlPlane, environment = process.env, client, signal }) {
   const { execution } = claim;
   const snapshot = execution.snapshot;
   const settings = productionSettings(snapshot);
+  const modelClient = client ?? createCopyGenerationClient({ modelApi: settings.modelApi ?? {}, environment });
   const generated = await generateCopy({
-    client: client ?? createCopyGenerationClient({ modelApi: settings.modelApi ?? {}, environment }),
+    client: signal ? guardExecutionCalls(modelClient, signal, { model: true }) : modelClient,
     task: snapshot.task,
     copyKnowledge: snapshot.knowledge ?? [],
     systemPrompt: publishedPrompt(snapshot, 'TEXT_SYSTEM'),
@@ -135,6 +137,7 @@ export async function executeImageClaim({
   workRoot,
   imageClient,
   environment = process.env,
+  signal,
 }) {
   const { execution, task } = claim;
   const snapshot = execution.snapshot;
@@ -166,6 +169,7 @@ export async function executeImageClaim({
   } : null;
   const generate = local ? reprocessStandaloneImages : sourceRunId ? retryStandaloneImageRun : generateStandaloneImages;
   const result = await generate({
+    signal,
     source,
     mode: 'LIVE',
     outputRoot: taskRoot,
@@ -258,6 +262,7 @@ export function createExecutorAgent({
   readinessCheck = checkExecutorReady,
   availabilityCheck = checkModelAvailability,
   environment = process.env,
+  now = Date.now,
 }) {
   if (!controlPlane) throw new TypeError('controlPlane client is required');
   if (typeof imageWorkerEnabled !== 'boolean') throw new TypeError('imageWorkerEnabled must be a boolean');
@@ -266,10 +271,33 @@ export function createExecutorAgent({
   let ready = false;
   const pendingFailures = new Map();
   const activeExecutions = new Map();
+  const executionLeases = new Map();
+  let taskHeartbeatsEnabled = false;
+
+  async function renewExecutionHeartbeats(ids = [...executionLeases.keys()].filter(id => !pendingFailures.has(id))) {
+    if (!taskHeartbeatsEnabled || !ids.length) return;
+    try {
+      const response = await controlPlane.heartbeatExecutions({ nodeId, executionIds: ids });
+      for (const id of response.activeExecutionIds) {
+        const lease = executionLeases.get(id);
+        if (lease) lease.acknowledgedAt = now();
+      }
+      for (const id of response.staleExecutionIds) {
+        executionLeases.get(id)?.controller.abort(Object.assign(new Error('中心已结束或回收此执行，已停止本机后续调用'), { code: 'STALE_EXECUTION' }));
+      }
+    } finally {
+      for (const id of ids) {
+        const lease = executionLeases.get(id);
+        if (lease && now() - lease.acknowledgedAt >= 120_000) {
+          lease.controller.abort(Object.assign(new Error('超过2分钟未确认任务心跳，执行结果未确认；已停止本机后续调用'), { code: 'EXECUTION_HEARTBEAT_LOST' }));
+        }
+      }
+    }
+  }
 
   async function reportFailure(claim, error) {
     try {
-      const code = codexErrorCode(error);
+      const code = codexErrorCode(error) || error?.code?.startsWith('EXECUTION_') || error?.code === 'STALE_EXECUTION';
       await controlPlane.failExecution(claim.execution.id, error,
         code ? { autoRetry: false } : {});
     } catch (reportError) {
@@ -319,16 +347,20 @@ export function createExecutorAgent({
     if (claim.execution.status && claim.execution.status !== 'RUNNING') {
       return { kind, taskId: claim.task.id, executionId: claim.execution.id, status: 'ABANDONED' };
     }
+    const { signal } = executionLeases.get(claim.execution.id).controller;
     try {
-      await withModelCallTracing({ executionId: claim.execution.id, controlPlane, snapshot: claim.execution.snapshot }, async (tracedPlane) => {
+      await renewExecutionHeartbeats([claim.execution.id]);
+      await runWithExecutionSignal(signal, () => withModelCallTracing({ executionId: claim.execution.id,
+        controlPlane: guardExecutionCalls(controlPlane, signal), snapshot: claim.execution.snapshot }, async (tracedPlane) => {
         if (kind === 'COPY') {
-          await executeCopy({ claim, controlPlane: tracedPlane, environment });
+          await executeCopy({ claim, controlPlane: tracedPlane, environment, signal });
         } else {
-          await executeImage({ claim, controlPlane: tracedPlane, workRoot, environment });
+          await executeImage({ claim, controlPlane: tracedPlane, workRoot, environment, signal });
         }
-      });
+      }));
       return { kind, taskId: claim.task.id, executionId: claim.execution.id, status: 'SUCCEEDED' };
     } catch (error) {
+      if (signal.aborted) error = signal.reason;
       const failure = { kind, claim, error };
       pendingFailures.set(claim.execution.id, failure);
       return finishFailure(kind, failure);
@@ -342,8 +374,9 @@ export function createExecutorAgent({
     }
     const id = claim.execution.id;
     if (activeExecutions.has(id)) return activeExecutions.get(id);
+    executionLeases.set(id, { controller: new AbortController(), acknowledgedAt: now() });
     const running = Promise.resolve().then(() => performClaim(kind, claim))
-      .finally(() => activeExecutions.delete(id));
+      .finally(() => { activeExecutions.delete(id); executionLeases.delete(id); });
     activeExecutions.set(id, running);
     return running;
   }
@@ -361,6 +394,7 @@ export function createExecutorAgent({
       if (concurrencyEnabled && !result?.health?.capabilities?.executorConcurrency) {
         throw new Error('请先更新中心服务：缺少 executorConcurrency 并发领取能力');
       }
+      taskHeartbeatsEnabled = Boolean(result?.health?.capabilities?.executionHeartbeats);
       ready = true;
       return result;
     },
@@ -372,7 +406,13 @@ export function createExecutorAgent({
 
     async heartbeat() {
       if (!ready) throw new Error('executor is not ready; call prepare before heartbeat');
-      return controlPlane.registerNode({ nodeId, name: nodeName, imageWorkerEnabled, copyConcurrency, imageConcurrency });
+      // A failed node heartbeat must not prevent local task lease expiry checks.
+      const results = await Promise.allSettled([
+        controlPlane.registerNode({ nodeId, name: nodeName, imageWorkerEnabled, copyConcurrency, imageConcurrency }),
+        renewExecutionHeartbeats(),
+      ]);
+      for (const result of results) if (result.status === 'rejected') throw result.reason;
+      return results[0].value;
     },
 
     async claimBatch(kind, { limit, requestId, reconcile = false }) {

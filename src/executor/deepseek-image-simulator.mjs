@@ -221,6 +221,7 @@ export async function executeDeepSeekImageSimulation({
   client = createDeepSeekResponsesClient({ apiKey: environment.DEEPSEEK_API_KEY }),
   loadImage = downloadPublicImage,
   renderFallback = renderFallbackSimulationImage,
+  signal,
 }) {
   const { execution } = claim;
   const snapshot = execution.snapshot;
@@ -235,8 +236,10 @@ export async function executeDeepSeekImageSimulation({
       query: snapshot.task.query,
       copy,
       imagePlan,
+      signal,
     }));
   } catch (error) {
+    signal?.throwIfAborted();
     searchError = String(error?.message ?? error ?? 'unknown search failure').slice(0, 300);
   }
   await report(
@@ -259,8 +262,10 @@ export async function executeDeepSeekImageSimulation({
     plan,
   }));
   for (const page of pages) {
+    signal?.throwIfAborted();
     let selected = null;
     for (const candidate of page.candidates) {
+      signal?.throwIfAborted();
       try {
         const downloaded = await loadImage(candidate);
         selected = { candidate, ...downloaded };
