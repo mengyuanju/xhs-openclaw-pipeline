@@ -127,7 +127,7 @@ export async function main(
         mock,
         openclaw,
         configProvider: integration.getTaskConfig,
-        onCompleted: integration.onCompleted,
+        onVisualPlan: integration.onVisualPlan, onCompleted: integration.onCompleted,
         onFailed: integration.onFailed,
         recoveryEnabled: !mock,
       });
@@ -205,7 +205,7 @@ export async function main(
             openclaw,
             imageConcurrency: concurrency > 1 ? 1 : undefined,
             configProvider: integration.getTaskConfig,
-            onCompleted: integration.onCompleted,
+            onVisualPlan: integration.onVisualPlan, onCompleted: integration.onCompleted,
             onFailed: integration.onFailed,
             recoveryEnabled: !mock,
           })));

@@ -111,6 +111,9 @@ function runTiming(startedAt, finishedAt) {
 }
 
 export function initializeGenerationSchema(db) {
+  if (!db.prepare('PRAGMA table_info(tasks)').all().some(column => column.name === 'visual_plan_state_json')) {
+    db.exec('ALTER TABLE tasks ADD COLUMN visual_plan_state_json TEXT');
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS generation_runs (
       id INTEGER PRIMARY KEY,
@@ -162,7 +165,34 @@ export function initializeGenerationSchema(db) {
 }
 
 export function createGenerationStore(db) {
+  const taskState = taskId => db.prepare('SELECT attempts, visual_plan_state_json FROM tasks WHERE id = ?').get(taskId);
+  const readState = row => row?.visual_plan_state_json ? JSON.parse(row.visual_plan_state_json) : {};
   return {
+    pinTaskLayoutCatalog(taskId, catalog) {
+      const row = taskState(taskId);
+      if (!row) throw new TypeError('task not found');
+      const saved = readState(row);
+      if (!Object.hasOwn(saved, 'catalogSnapshot')) {
+        saved.catalogSnapshot = row.attempts > 1 ? null : catalog ?? null;
+        db.prepare('UPDATE tasks SET visual_plan_state_json = ? WHERE id = ?').run(JSON.stringify(saved), taskId);
+      }
+      return saved.catalogSnapshot ?? undefined;
+    },
+
+    saveTaskVisualPlan({ taskId, attempt, visualPlan }) {
+      const row = taskState(taskId);
+      if (!row || row.attempts !== attempt) throw new TypeError('visual planning attempt is no longer current');
+      const value = JSON.parse(boundedVisualPlan(visualPlan));
+      const saved = { ...readState(row), attempt, visualPlan: value, savedAt: new Date().toISOString() };
+      db.prepare('UPDATE tasks SET visual_plan_state_json = ? WHERE id = ? AND attempts = ?').run(JSON.stringify(saved), taskId, attempt);
+    },
+
+    getTaskVisualPlan(taskId) {
+      const row = taskState(taskId);
+      const saved = readState(row);
+      return saved.attempt === row?.attempts ? saved.visualPlan ?? null : null;
+    },
+
     listGenerationRuns(taskId) {
       return db.prepare(`
         SELECT * FROM generation_runs WHERE task_id = ? ORDER BY id

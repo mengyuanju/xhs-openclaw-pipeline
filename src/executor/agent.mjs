@@ -1,6 +1,7 @@
 import { constants, existsSync } from 'node:fs';
 import { withModelCallTracing } from '../model-call-trace.mjs';
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { access, mkdir, readFile, rm } from 'node:fs/promises';
 import { basename, join, relative, resolve } from 'node:path';
 
@@ -10,8 +11,9 @@ import { codexErrorCode } from '../codex-protocol.mjs';
 import { codexRuntimePath, createCodexRuntime } from '../codex-runtime.mjs';
 import { generateCopy, toCopyGenerationResponse } from '../copy-generation.mjs';
 import { createAgentClient as createOpenClawClient } from '../agent-client.mjs';
-import { generateStandaloneImages, retryStandaloneImageRun, standaloneImageRunDirectory } from '../standalone-image-generation.mjs';
-import { findImageRecoveryRun, imageRecoveryRunIds, loadUploadedImages, saveCheckpoint } from './image-checkpoints.mjs';
+import { generateStandaloneImages, normalizeStandaloneImageSource, retryStandaloneImageRun, standaloneImageRunDirectory } from '../standalone-image-generation.mjs';
+import { plannedForStandaloneRecovery } from '../standalone-image-recovery.mjs';
+import { findImageRecoveryRun, imageRecoveryRunIds, loadUploadedImages, readCheckpoint, saveCheckpoint } from './image-checkpoints.mjs';
 import { executorConcurrency } from './config.mjs';
 import { reprocessStandaloneImages } from '../standalone-image-generation.mjs';
 import { IMAGE_ARTIFACT_FILE } from '../image-artifacts.mjs';
@@ -141,10 +143,27 @@ export async function executeImageClaim({
   const source = copySource(snapshot.copyRevision);
   if (!source.query) source.query = snapshot.task.query;
   const recoveryRunIds = imageRecoveryRunIds(execution, taskRoot);
-  const sourceRunId = recoveryRunIds.length > 0
-    ? await findImageRecoveryRun(taskRoot, recoveryRunIds)
-    : null;
+  let sourceRunId = null;
+  const restorePlan = storedPlan => plannedForStandaloneRecovery({
+    storedPlan, post: normalizeStandaloneImageSource(source),
+    normalizeNotice: value => typeof value === 'string' ? value.slice(0, 1000) : null,
+  });
+  if (recoveryRunIds.length > 0) {
+    try {
+      sourceRunId = await findImageRecoveryRun(taskRoot, recoveryRunIds);
+      if (snapshot.visualPlanCheckpoint) {
+        const localPlan = restorePlan(await readCheckpoint(join(standaloneImageRunDirectory(taskRoot, sourceRunId), 'visual-plan.json')));
+        if (!isDeepStrictEqual(localPlan.visualPlan, restorePlan(snapshot.visualPlanCheckpoint).visualPlan)) sourceRunId = null;
+      }
+    } catch (error) {
+      if (!snapshot.visualPlanCheckpoint) throw error;
+      sourceRunId = null;
+    }
+  }
   const local = snapshot.copyRevision.content.imageReprocess;
+  const centralRecovery = !local && !sourceRunId && snapshot.visualPlanCheckpoint ? {
+    planned: restorePlan(snapshot.visualPlanCheckpoint),
+  } : null;
   const generate = local ? reprocessStandaloneImages : sourceRunId ? retryStandaloneImageRun : generateStandaloneImages;
   const result = await generate({
     source,
@@ -160,7 +179,7 @@ export async function executeImageClaim({
         if (createHash('sha256').update(bytes).digest('hex') !== pinned.sha256) throw new Error('原图片校验失败，请检查中心资产');
         return bytes;
       },
-    } : sourceRunId ? { sourceRunId, expectedSource: source, allowInterrupted: true } : {}),
+    } : sourceRunId ? { sourceRunId, expectedSource: source, allowInterrupted: true } : centralRecovery ? { recovery: centralRecovery } : {}),
     runtime: local ? undefined : {
       productionSettings: settings,
       imageSystemPrompt: publishedPrompt(snapshot, 'IMAGE_SYSTEM'),
@@ -180,9 +199,10 @@ export async function executeImageClaim({
         attempt: progress.attempt,
       },
     }),
+    onVisualPlan: settings.layoutCatalog && controlPlane.saveVisualPlan ? (plan) => controlPlane.saveVisualPlan(execution.id, plan) : undefined,
   });
   const outputDirectory = standaloneImageRunDirectory(taskRoot, execution.id);
-  const uploads = await loadUploadedImages(taskRoot, recoveryRunIds);
+  const uploads = centralRecovery ? {} : await loadUploadedImages(taskRoot, recoveryRunIds);
   await controlPlane.updateProgress(execution.id, {
     stage: 'UPLOADING', progressPercent: 97, message: '正在上传已生成的图片', details: {},
   });

@@ -15,6 +15,7 @@ import { assertPromptPublishable } from '../../src/admin/prompt-preview.mjs';
 import { readPromptConfiguration, savePromptPolicy } from '../../src/admin/prompt-runtime-service.mjs';
 import { analyzeVisualImage } from '../../src/admin/visual-knowledge-service.mjs';
 import { withPromptExecution, listPromptExecutions, readPromptExecution } from '../../src/admin/prompt-execution.mjs';
+import { generateAndImportLayouts } from '../../src/admin/layout-catalog-service.mjs';
 
 import {
   ControlPlaneConflictError,
@@ -35,6 +36,7 @@ class HttpError extends Error {
 }
 
 function mappedError(error) {
+  if (error?.code === 'CATALOG_CONFLICT') return new HttpError(409, error.code, error.message);
   if (error instanceof HttpError) return error;
   if (error instanceof AssetDeliveryError) return new HttpError(error.status, error.code, error.message);
   if (error instanceof CopyAnalysisServiceError) return new HttpError(error.status, error.code, error.message);
@@ -299,7 +301,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   });
   router.post('/v1/executions/claim-image', async (ctx) => {
     const body = requireJson(ctx);
-    json(ctx, 200, await repository.claimImage(body.nodeId, body.imageControlsVersion));
+    json(ctx, 200, await repository.claimImage(body.nodeId, body.imageControlsVersion, body.layoutCatalogVersion));
   });
   router.post('/v1/executions/claim-copy-batch', async (ctx) => {
     json(ctx, 200, await repository.claimCopyBatch(requireJson(ctx)));
@@ -309,6 +311,9 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   });
   router.patch('/v1/executions/:executionId/progress', async (ctx) => {
     json(ctx, 200, await repository.updateProgress(ctx.params.executionId, requireJson(ctx)));
+  });
+  router.put('/v1/executions/:executionId/visual-plan', async (ctx) => {
+    json(ctx, 200, await repository.saveVisualPlan(ctx.params.executionId, requireJson(ctx)));
   });
   router.post('/v1/executions/:executionId/complete-copy', async (ctx) => {
     json(ctx, 200, await repository.completeCopy(ctx.params.executionId, requireJson(ctx).result));
@@ -376,6 +381,19 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   router.post('/v1/tasks/:taskId/cancel', async (ctx) => {
     await assertTaskAccess(ctx, repository, { ownerOnly: requestActor(ctx).role !== 'ADMIN' });
     json(ctx, 200, await repository.cancelTask(ctx.params.taskId));
+  });
+
+  router.get('/v1/layout-catalog', async (ctx) => {
+    requestActor(ctx, ['ADMIN']); json(ctx, 200, await repository.getLayoutCatalog());
+  });
+  router.post('/v1/layout-catalog', async (ctx) => {
+    requestActor(ctx, ['ADMIN']); json(ctx, 200, await repository.updateLayoutCatalog(requireJson(ctx)));
+  });
+  router.post('/v1/layout-catalog/generate', async (ctx) => {
+    requestActor(ctx, ['ADMIN']);
+    const controlPlane = { listPrompts: () => repository.listPrompts(), listSettings: () => repository.listSettings(), listKnowledge: () => repository.listKnowledge() };
+    json(ctx, 201, await generateAndImportLayouts({ input: requireJson(ctx), outputRoot: storageRoot,
+      configuration: await readPromptConfiguration({ controlPlane }), readCatalog: () => repository.getLayoutCatalog(), updateCatalog: (change, options) => repository.updateLayoutCatalog(change, options) }));
   });
 
   router.get('/v1/settings', async (ctx) => {

@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { assertImageResultSettings, reviseTaskImages } from './image-revisions.mjs';
 import { IMAGE_FORMATS, hasImageControls } from './image-options.mjs';
 import { normalizeLayoutPresets } from './layout-library.mjs';
+import { BUILTIN_LAYOUT_CATALOG, normalizeLayoutCatalog } from './layout-catalog.mjs';
+import { changeLayoutCatalog, layoutCatalogRecord } from './layout-catalog-settings.mjs';
+import { parseVisualPlanOutput } from '../../src/visual-plan.mjs';
+import { assertLockedImageText, imageTextHash } from '../../src/locked-image-plan.mjs';
 import { migrateDatabase } from './database-migrations.mjs';
 import { claimRequestExpiry } from './claim-request.mjs';
 import { saveModelCall, listModelCalls, getModelCall } from './model-call-traces.mjs';
@@ -30,6 +35,30 @@ import {
 
 const { Pool } = pg;
 const MAX_IMAGE_ATTEMPTS = 3;
+
+function hasLayoutCatalog(snapshot) {
+  return Boolean(snapshot?.productionSettings?.production?.value?.layoutCatalog);
+}
+
+function visualPlanPost(snapshot) {
+  const content = snapshot?.copyRevision?.content;
+  if (!content || typeof content !== 'object') throw new TypeError('approved copy revision is unavailable');
+  const copy = content.copy ?? content.reviewed?.copy ?? content.post ?? content;
+  return { ...copy, imagePlan: content.imagePlan ?? content.reviewed?.imagePlan ?? content.post?.imagePlan };
+}
+
+function assertLayoutCapability(snapshot, version) {
+  if (hasLayoutCatalog(snapshot) && version !== 2) {
+    throw new ControlPlaneConflictError('LAYOUT_CATALOG_UNSUPPORTED', '执行机需要升级以支持版本2布局目录');
+  }
+}
+
+async function withSavedVisualPlan(client, executionId, snapshot) {
+  if (!hasLayoutCatalog(snapshot)) return snapshot;
+  const run = await client.query('SELECT result FROM image_runs WHERE execution_id = $1 FOR UPDATE', [executionId]);
+  const visualPlan = run.rows[0]?.result?.visualPlan;
+  return visualPlan?.value ? { ...snapshot, visualPlanCheckpoint: visualPlan } : snapshot;
+}
 
 function taskStateOrder(column) {
   if (!['state', 'page.state'].includes(column)) throw new TypeError('task state order column is invalid');
@@ -321,6 +350,8 @@ export class PostgresControlPlaneRepository {
 
   async initialize() {
     await migrateDatabase(this.pool);
+    await this.pool.query(`UPDATE global_settings SET value = value || jsonb_build_object('layoutCatalog', $1::jsonb), version = version + 1, updated_at = now()
+      WHERE key = 'production' AND NOT (value ? 'layoutCatalog')`, [JSON.stringify(BUILTIN_LAYOUT_CATALOG)]);
   }
 
   async health() {
@@ -712,19 +743,19 @@ export class PostgresControlPlaneRepository {
     return (await this.#claim({ kind: 'COPY', nodeId: rawNodeId, limit: 1 })).claims[0] ?? null;
   }
 
-  async claimImage(rawNodeId, imageControlsVersion = 0) {
-    return (await this.#claim({ kind: 'IMAGE', nodeId: rawNodeId, limit: 1, imageControlsVersion })).claims[0] ?? null;
+  async claimImage(rawNodeId, imageControlsVersion = 0, layoutCatalogVersion = 0) {
+    return (await this.#claim({ kind: 'IMAGE', nodeId: rawNodeId, limit: 1, imageControlsVersion, layoutCatalogVersion })).claims[0] ?? null;
   }
 
   async claimCopyBatch({ nodeId, limit, requestId }) {
     return this.#claim({ kind: 'COPY', nodeId, limit, requestId: normalizeUuid(requestId, 'requestId') });
   }
 
-  async claimImageBatch({ nodeId, limit, requestId, imageControlsVersion = 0 }) {
-    return this.#claim({ kind: 'IMAGE', nodeId, limit, requestId: normalizeUuid(requestId, 'requestId'), imageControlsVersion });
+  async claimImageBatch({ nodeId, limit, requestId, imageControlsVersion = 0, layoutCatalogVersion = 0 }) {
+    return this.#claim({ kind: 'IMAGE', nodeId, limit, requestId: normalizeUuid(requestId, 'requestId'), imageControlsVersion, layoutCatalogVersion });
   }
 
-  async #claim({ kind, nodeId: rawNodeId, limit, requestId, imageControlsVersion = 0 }) {
+  async #claim({ kind, nodeId: rawNodeId, limit, requestId, imageControlsVersion = 0, layoutCatalogVersion = 0 }) {
     const nodeId = normalizeNodeId(rawNodeId);
     normalizeConcurrency(limit, 'limit');
     return transaction(this.pool, async (client) => {
@@ -746,6 +777,7 @@ export class PostgresControlPlaneRepository {
             JOIN tasks t ON t.id = e.task_id WHERE e.id = ANY($1::uuid[])
             ORDER BY array_position($1::uuid[], e.id)
           `, [receipt.execution_ids])).rows : [];
+          if (kind === 'IMAGE') for (const row of records) assertLayoutCapability(row.snapshot, layoutCatalogVersion);
           return { requestId, claims: records.map(row => ({ task: taskFrom(row.task), execution: executionFrom(row) })) };
         }
       }
@@ -798,6 +830,7 @@ export class PostgresControlPlaneRepository {
         const executionId = randomUUID();
         const snapshot = task.pending_snapshot
           ?? snapshots.get(task.id);
+        if (kind === 'IMAGE') assertLayoutCapability(snapshot, layoutCatalogVersion);
         if (kind === 'IMAGE' && hasImageControls(snapshot?.copyRevision?.content) && imageControlsVersion !== 1) {
           throw new ControlPlaneConflictError('IMAGE_CONTROLS_UPGRADE_REQUIRED', '当前任务使用新版图片配置，请更新图片执行机后再领取');
         }
@@ -844,6 +877,32 @@ export class PostgresControlPlaneRepository {
           VALUES ($1, $2, $3, $4, $5, $6)`, [nodeId, kind, requestId, limit, claims.map(claim => claim.execution.id), expiresAt]);
       }
       return { requestId, claims };
+    });
+  }
+
+  async saveVisualPlan(rawExecutionId, input) {
+    const executionId = normalizeUuid(rawExecutionId, 'executionId');
+    const data = normalizeJson(input, 'visual plan', 1_000_000);
+    return transaction(this.pool, async client => {
+      const execution = await lockedExecution(client, executionId);
+      if (execution.kind !== 'IMAGE') throw new TypeError('execution is not an image execution');
+      const post = visualPlanPost(execution.snapshot);
+      const value = parseVisualPlanOutput(JSON.stringify(data.value), { post, layoutCatalog: execution.snapshot?.productionSettings?.production?.value?.layoutCatalog ?? null });
+      assertLockedImageText(value, post);
+      value.textContractSha256 = imageTextHash(post);
+      const checkpoint = execution.snapshot?.visualPlanCheckpoint?.value;
+      if (checkpoint && !isDeepStrictEqual(checkpoint, value)) {
+        throw new ControlPlaneConflictError('VISUAL_PLAN_CONFLICT', '恢复运行必须复用中心已冻结的视觉规划');
+      }
+      const visualPlan = { value, model: typeof data.model === 'string' ? data.model.slice(0, 200) : null, degraded: data.degraded === true, warning: data.warning ?? null,
+        planningMode: value.planningMode ?? 'MODEL', savedAt: new Date().toISOString() };
+      const existing = await client.query('SELECT result FROM image_runs WHERE execution_id = $1 FOR UPDATE', [executionId]);
+      if (!existing.rows[0]) throw new ControlPlaneNotFoundError('image run not found');
+      if (existing.rows[0]?.result?.visualPlan?.value && !isDeepStrictEqual(existing.rows[0].result.visualPlan.value, value)) {
+        throw new ControlPlaneConflictError('VISUAL_PLAN_CONFLICT', '本次运行已保存不同的规划，请创建新的图片运行');
+      }
+      if (!existing.rows[0]?.result?.visualPlan?.value) await client.query("UPDATE image_runs SET result = COALESCE(result, '{}'::jsonb) || $2::jsonb WHERE execution_id = $1", [executionId, { visualPlan }]);
+      return { saved: true, textContractSha256: value.textContractSha256 };
     });
   }
 
@@ -991,8 +1050,16 @@ export class PostgresControlPlaneRepository {
       const execution = await lockedExecution(client, executionId);
       if (execution.kind !== 'IMAGE') throw new TypeError('execution is not an image execution');
       assertImageResultSettings(execution.snapshot?.copyRevision?.content, result);
+      // Local reprocessing reuses the source run and does not create a new visual plan.
+      if (hasLayoutCatalog(execution.snapshot) && !execution.snapshot.copyRevision?.content?.imageReprocess) {
+        const run = await client.query('SELECT result FROM image_runs WHERE execution_id = $1 FOR UPDATE', [executionId]);
+        if (!run.rows[0]?.result?.visualPlan?.value) {
+          throw new ControlPlaneConflictError('VISUAL_PLAN_REQUIRED', '视觉规划尚未校验入库，无法完成本次图片运行');
+        }
+      }
       await client.query(`
-        UPDATE image_runs SET status = 'COMPLETED', result = $2, finished_at = now()
+        UPDATE image_runs SET status = 'COMPLETED', result = COALESCE(result, '{}'::jsonb) || $2::jsonb
+          || CASE WHEN result ? 'visualPlan' THEN jsonb_build_object('visualPlan', result->'visualPlan') ELSE '{}'::jsonb END, finished_at = now()
         WHERE id = $1
       `, [executionId, result]);
       await client.query(`
@@ -1030,8 +1097,10 @@ export class PostgresControlPlaneRepository {
       const exhausted = isImage && failedAttempts >= MAX_IMAGE_ATTEMPTS;
       const nextState = isImage ? (manual ? 'IMAGE_FAILED' : exhausted ? 'COPY_REVIEW_PENDING' : 'IMAGE_QUEUED') : 'COPY_FAILED';
       const retrySnapshot = isImage && !exhausted && !manual ? {
-        ...execution.snapshot,
+        ...await withSavedVisualPlan(client, executionId, execution.snapshot),
         imageRetry: { failedAttempts, nodeId: execution.node_id },
+        ...(hasLayoutCatalog(execution.snapshot) ? { imageRecovery: { nodeId: execution.node_id,
+          runIds: [...new Set([executionId, ...(execution.snapshot.imageRecovery?.runIds ?? [])])] } } : {}),
       } : null;
       const taskMessage = isImage
         ? manual ? '执行失败，已停止自动重试；请检查额度与检查点后人工续跑'
@@ -1160,6 +1229,7 @@ export class PostgresControlPlaneRepository {
         if (!snapshot || !sourceExecution?.id || !sourceExecution.node_id) {
           throw new ControlPlaneConflictError('IMAGE_RECOVERY_UNAVAILABLE', '原生图执行快照缺失，无法安全续跑；请恢复快照或明确使用最新配置重新生成');
         }
+        snapshot = await withSavedVisualPlan(client, sourceExecution.id, snapshot);
         const priorRunIds = snapshot.imageRecovery?.runIds ?? [];
         snapshot = { ...snapshot, imageRecovery: {
           nodeId: sourceExecution.node_id,
@@ -1282,10 +1352,17 @@ export class PostgresControlPlaneRepository {
     if (!/^[a-z][a-z0-9._-]{0,99}$/u.test(key)) throw new TypeError('setting key is invalid');
     const value = normalizeJson(rawValue, 'setting value', 1_000_000);
     if (key === 'production' && value?.layoutPresets !== undefined) value.layoutPresets = normalizeLayoutPresets(value.layoutPresets);
+    if (key === 'production' && value?.layoutCatalog !== undefined) {
+      value.layoutCatalog = normalizeLayoutCatalog(value.layoutCatalog);
+      const current = await this.getLayoutCatalog();
+      if (current.revision !== layoutCatalogRecord(value).revision) throw new TypeError('请在布局模板库中更新目录，避免覆盖其他编辑');
+    }
     const result = await this.pool.query(`
       INSERT INTO global_settings(key, value) VALUES ($1, $2)
       ON CONFLICT(key) DO UPDATE SET
-        value = excluded.value, version = global_settings.version + 1, updated_at = now()
+        value = CASE WHEN excluded.key = 'production' AND global_settings.value ? 'layoutCatalog'
+          THEN excluded.value || jsonb_build_object('layoutCatalog', global_settings.value->'layoutCatalog') ELSE excluded.value END,
+        version = global_settings.version + 1, updated_at = now()
       RETURNING *
     `, [key, value]);
     return {
@@ -1304,6 +1381,23 @@ export class PostgresControlPlaneRepository {
       version: Number(row.version),
       updatedAt: row.updated_at,
     }));
+  }
+
+  async getLayoutCatalog() {
+    const result = await this.pool.query("SELECT value FROM global_settings WHERE key = 'production'");
+    return layoutCatalogRecord(result.rows[0]?.value ?? {});
+  }
+
+  async updateLayoutCatalog(input, options = {}) {
+    return transaction(this.pool, async client => {
+      await client.query("INSERT INTO global_settings(key, value) VALUES ('production', '{}'::jsonb) ON CONFLICT(key) DO NOTHING");
+      const current = await client.query("SELECT value FROM global_settings WHERE key = 'production' FOR UPDATE");
+      const changed = changeLayoutCatalog(current.rows[0].value, input, options);
+      if (JSON.stringify(changed.settings) !== JSON.stringify(current.rows[0].value)) {
+        await client.query("UPDATE global_settings SET value = $1, version = version + 1, updated_at = now() WHERE key = 'production'", [changed.settings]);
+      }
+      return changed.record;
+    });
   }
 
   async seedSetting(rawKey, rawValue) {

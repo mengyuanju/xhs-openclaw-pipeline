@@ -8,6 +8,9 @@ import sharp from 'sharp';
 import { createExecutorAgent, executeImageClaim } from '../src/executor/agent.mjs';
 import { createMockPost } from '../src/pipeline.mjs';
 import { createMockVisualPlan } from '../src/visual-plan.mjs';
+import { catalogDirectPlan } from '../src/catalog-planning.mjs';
+import { BUILTIN_LAYOUT_CATALOG } from '../server/src/layout-catalog.mjs';
+import { imageTextHash } from '../src/locked-image-plan.mjs';
 
 const FIRST_RUN_ID = '11111111-1111-4111-8111-111111111111';
 const SECOND_RUN_ID = '22222222-2222-4222-8222-222222222222';
@@ -122,6 +125,38 @@ function noFurtherModelCalls() {
     method, async () => assert.fail(`completed image delivery must not call ${method} again`),
   ]));
 }
+
+for (const localState of ['missing', 'divergent']) test(`executor uses the center planning checkpoint when local run files are ${localState}`, async () => {
+  const workRoot = await mkdtemp(join(tmpdir(), 'executor-center-plan-'));
+  try {
+    const post = createMockPost(3);
+    const value = catalogDirectPlan(createMockVisualPlan(post), post, BUILTIN_LAYOUT_CATALOG);
+    value.textContractSha256 = imageTextHash(post);
+    const claim = imageClaim(SECOND_RUN_ID, [FIRST_RUN_ID]);
+    claim.execution.snapshot.productionSettings = { production: { value: { layoutCatalog: BUILTIN_LAYOUT_CATALOG } } };
+    claim.execution.snapshot.visualPlanCheckpoint = { value, model: 'saved-planner' };
+    if (localState === 'divergent') {
+      const directory = join(workRoot, String(TASK_ID), 'standalone-image-generations', FIRST_RUN_ID);
+      await mkdir(directory, { recursive: true });
+      const changed = structuredClone(value); changed.pages[0].selectionReason = '另一份有效规划';
+      await writeFile(join(directory, 'source.json'), JSON.stringify({ post }));
+      await writeFile(join(directory, 'progress.json'), JSON.stringify({ stage: 'GENERATING' }));
+      await writeFile(join(directory, 'visual-plan.json'), JSON.stringify({ value: changed }));
+    }
+    const imageClient = generatingImageClient();
+    imageClient.runText = async () => assert.fail('center checkpoint must skip planning model');
+    let saved = null; let uploads = 0;
+    const result = await executeImageClaim({ claim, workRoot, imageClient, controlPlane: {
+      async updateProgress() {},
+      async saveVisualPlan(_id, plan) { saved = plan; assert.equal(uploads, 0); },
+      async uploadAsset() { assert.ok(saved); uploads++; return { id: uploads, url: `/v1/assets/${uploads}` }; },
+      async completeImage(_id, result) { return result; },
+    } });
+    assert.equal(result.images.length, 3);
+    assert.deepEqual(saved.value, value);
+    assert.equal(result.visualPlan.model, 'saved-planner');
+  } finally { await rm(workRoot, { recursive: true, force: true }); }
+});
 
 test('executor resumes a failed second upload without repeating model work or the first upload', async () => {
   const workRoot = await mkdtemp(join(tmpdir(), 'executor-resume-upload-'));

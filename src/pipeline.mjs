@@ -1,5 +1,5 @@
 import { buildGovernedImageTaskPrompt, preserveImageSystemPrompt } from './image-prompt.mjs';
-import { assignRandomLayouts } from './image-layout-controls.mjs';
+import { preparePageLayouts } from './image-layout-controls.mjs';
 import { promptPolicy, promptRuntimeSnapshot } from './prompt-runtime.mjs';
 import { withPromptExecution } from './admin/prompt-execution.mjs';
 import { createHash } from 'node:crypto';
@@ -250,7 +250,7 @@ function restoreCheckpointVisualPlan(checkpoint, post, imageCount) {
   if (!checkpoint?.visualPlan?.value) return null;
   try {
     return {
-      value: parseVisualPlanOutput(JSON.stringify(checkpoint.visualPlan.value), { post, imageCount }),
+      value: parseVisualPlanOutput(JSON.stringify(checkpoint.visualPlan.value), { post, imageCount, allowStoredCatalog: true }),
       model: checkpoint.visualPlan.model ?? null,
     };
   } catch {
@@ -267,6 +267,7 @@ export async function processNext({
   configProvider,
   onCompleted,
   onFailed,
+  onVisualPlan,
   imageConcurrency,
   leaseMs = 10 * 60_000,
   recoveryEnabled = false,
@@ -460,7 +461,7 @@ export async function processNext({
       post = generated.post;
       textModel = generated.model;
     }
-    post = assignRandomLayouts(post, productionSettings.layoutPresets);
+    post = preparePageLayouts(post, productionSettings.layoutPresets, productionSettings.layoutCatalog);
     const imageCount = post.imagePlan.length;
     await writeAtomic(join(outputDir, 'post.json'), `${JSON.stringify(post, null, 2)}\n`);
     await writeAtomic(join(outputDir, 'post.md'), toMarkdown(task, post));
@@ -533,13 +534,14 @@ export async function processNext({
       visualPlan = createMockVisualPlan(post, { imageCount });
     } else {
       const planned = await generateVisualPlan({ client, post, outputDir,
-        thinking: effectiveModelApi.copyGenerationThinking, complianceDisclosure });
+        thinking: effectiveModelApi.copyGenerationThinking, complianceDisclosure, layoutCatalog: productionSettings.layoutCatalog });
       visualPlan = planned.visualPlan;
       visualPlanModel = planned.model;
     }
     const visualPlanContent = `${JSON.stringify(visualPlan, null, 2)}\n`;
     const visualPlanSha256 = createHash('sha256').update(visualPlanContent).digest('hex');
     await writeAtomic(join(outputDir, 'visual-plan.json'), visualPlanContent);
+    await onVisualPlan?.({ task, visualPlan });
     if (!mock) {
       checkpoint = await savePipelineCheckpoint({
         outputRoot,

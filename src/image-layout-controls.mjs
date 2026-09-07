@@ -1,5 +1,11 @@
 import { PAGE_TEMPLATES, normalizePageLayout, normalizeImageSettings } from '../server/src/image-options.mjs';
 import { normalizeLayoutPresets } from '../server/src/layout-library.mjs';
+import { normalizeLayoutCatalog } from '../server/src/layout-catalog.mjs';
+
+export function preparePageLayouts(post, presets = [], layoutCatalog = null) {
+  // Catalog selection happens inside visual planning. Explicit page layouts remain pinned.
+  return normalizeLayoutCatalog(layoutCatalog) ? post : assignRandomLayouts(post, presets);
+}
 
 // Resolve once before persisting the source/checkpoint; saved layouts survive retries.
 export function assignRandomLayouts(post, presets = [], random = Math.random) {

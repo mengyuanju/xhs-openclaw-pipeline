@@ -130,10 +130,12 @@ export function plannedForStandaloneRecovery({ storedPlan, post, normalizeNotice
     visualPlan = parseVisualPlanOutput(JSON.stringify(storedPlan.value), {
       post,
       imageCount: post.imagePlan.length,
+      allowStoredCatalog: true,
     });
     if (storedPlan.value.textContractSha256) {
       if (storedPlan.value.textContractSha256 !== imageTextHash(post)) throw new TypeError('锁定文案 hash 不一致');
       assertLockedImageText(visualPlan, post);
+      visualPlan.textContractSha256 = storedPlan.value.textContractSha256;
     }
   } catch {
     throw new StandaloneImageRecoveryError('原运行的视觉规划无法通过结构校验');

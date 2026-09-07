@@ -116,10 +116,11 @@ export function createControlPlaneClient({
       method: 'POST', body: { nodeId },
     }),
     claimImage: (nodeId) => request('/v1/executions/claim-image', {
-      method: 'POST', body: { nodeId, imageControlsVersion: 1 },
+      method: 'POST', body: { nodeId, imageControlsVersion: 1, layoutCatalogVersion: 2 },
     }),
     claimCopyBatch: (input) => claimBatch('COPY', input),
-    claimImageBatch: (input) => claimBatch('IMAGE', { ...input, imageControlsVersion: 1 }),
+    claimImageBatch: (input) => claimBatch('IMAGE', { ...input, imageControlsVersion: 1, layoutCatalogVersion: 2 }),
+    saveVisualPlan: (executionId, plan) => request(`/v1/executions/${executionId}/visual-plan`, { method: 'PUT', body: plan, timeoutMs: 60_000 }),
     updateProgress: (executionId, progress) => request(
       `/v1/executions/${executionId}/progress`,
       { method: 'PATCH', body: progress },

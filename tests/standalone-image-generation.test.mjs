@@ -8,6 +8,8 @@ import sharp from 'sharp';
 
 import { createMockPost } from '../src/pipeline.mjs';
 import { createMockVisualPlan } from '../src/visual-plan.mjs';
+import { catalogDirectPlan } from '../src/catalog-planning.mjs';
+import { BUILTIN_LAYOUT_CATALOG } from '../server/src/layout-catalog.mjs';
 import { imageTimingProfile, readImageTimingSamples, recordImageTimingSample } from '../src/image-stage-timing.mjs';
 import {
   StandaloneImageConfirmationError,
@@ -205,6 +207,28 @@ function resumableLiveClient({
 }
 
 describe('standalone image generation service', () => {
+  it('persists catalog planning before the first image and reuses it after failure with changed global templates', async (t) => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'catalog-persist-resume-'));
+    t.after(() => rm(outputRoot, { recursive: true, force: true }));
+    const source = validSource();
+    const post = normalizeStandaloneImageSource(source);
+    let planning = 0; let saved;
+    const client = liveClient({ runText: async () => { planning++; return { rawText: JSON.stringify(catalogDirectPlan(createMockVisualPlan(post), post, BUILTIN_LAYOUT_CATALOG)), model: 'fake' }; },
+      onImage() { assert.equal(saved.value.pages.length, 3); throw new Error('intentional first image failure'); } });
+    await assert.rejects(generateStandaloneImages({ source, mode: 'LIVE', outputRoot, runId: RECOVERY_SOURCE_RUN_ID,
+      runtime: { client, productionSettings: { layoutCatalog: BUILTIN_LAYOUT_CATALOG } }, onVisualPlan: plan => { saved = plan; } }), /intentional/);
+    assert.equal(planning, 1);
+    const changed = structuredClone(BUILTIN_LAYOUT_CATALOG); changed.templates.forEach(item => { item.enabled = false; });
+    const resumed = liveClient({ runText: () => assert.fail('planning must not run again') });
+    let savedAgain;
+    const result = await retryStandaloneImageRun({ sourceRunId: RECOVERY_SOURCE_RUN_ID, runId: RECOVERY_RUN_ID, outputRoot,
+      runtime: { client: resumed, productionSettings: { layoutCatalog: changed } }, onVisualPlan: plan => { savedAgain = plan; } });
+    assert.deepEqual(savedAgain.value, saved.value);
+    assert.equal(result.images[0].layout.layoutSchemaVersion, 2);
+    const progress = await readStandaloneImageProgress({ outputRoot, runId: RECOVERY_RUN_ID });
+    assert.equal(progress.result.visualPlan.value.pages[0].layoutTemplate, saved.value.pages[0].layoutTemplate);
+  });
+
   it('rejects recovery with a missing execution configuration before using current settings or models', async (t) => {
     const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-missing-execution-config-'));
     t.after(() => rm(outputRoot, { recursive: true, force: true }));

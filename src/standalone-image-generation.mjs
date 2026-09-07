@@ -2,7 +2,7 @@ import { buildGovernedImageTaskPrompt, preserveImageSystemPrompt } from './image
 import { withPromptRuntime, promptRuntimeSnapshot, createPromptRuntime } from './prompt-runtime.mjs';
 import { prepareImageArtifacts, publicImageArtifacts, IMAGE_ARTIFACT_FILE } from './image-artifacts.mjs';
 import { normalizeImageSettings } from '../server/src/image-options.mjs';
-import { assignRandomLayouts } from './image-layout-controls.mjs';
+import { preparePageLayouts } from './image-layout-controls.mjs';
 import { randomUUID } from 'node:crypto';
 import { codexErrorCode } from './codex-protocol.mjs';
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
@@ -371,6 +371,8 @@ function normalizedStoredResult(value, runId) {
     };
   });
   const storedVisualPlan = isRecord(value.visualPlan) ? value.visualPlan : null;
+  const storedPlanValue = isRecord(storedVisualPlan?.value) && Array.isArray(value.imagePlan)
+    ? storedVisualPlan.value : null;
   const storedQc = value.qc;
   return {
     runId,
@@ -383,6 +385,7 @@ function normalizedStoredResult(value, runId) {
     ...(Array.isArray(value.imagePlan) ? { imagePlan: value.imagePlan } : {}),
     ...(value.processing?.type === 'LOCAL' ? { processing: { type: 'LOCAL', sourceRunId: validatedRunId(value.processing.sourceRunId), originalAvailable: value.processing.originalAvailable === true } } : {}),
     visualPlan: storedVisualPlan === null ? null : {
+      ...(storedPlanValue ? { value: storedPlanValue, planningMode: storedPlanValue.planningMode ?? 'LEGACY', textContractSha256: storedPlanValue.textContractSha256 ?? null } : {}),
       model: storedVisualPlan.model === null
         ? null
         : boundedText(storedVisualPlan.model, 'visualPlan.model', 1, 200),
@@ -560,6 +563,8 @@ function publicLayout(page, field = 'layout') {
     throw new TypeError(`${field} is invalid`);
   }
   return {
+    ...(page.layoutSchemaVersion === 2 ? { layoutSchemaVersion: 2, templateVersion: page.templateVersion, layoutKind: page.layoutKind,
+      selectionReason: boundedText(page.selectionReason, `${field}.selectionReason`, 1, 300), catalogTemplate: page.catalogTemplate, visualStyle: page.visualStyle } : {}),
     layoutTemplate: boundedText(page.layoutTemplate, `${field}.layoutTemplate`, 1, 64),
     layoutDirection: boundedText(page.layoutDirection, `${field}.layoutDirection`, 1, 300),
     visualSubject: boundedText(page.visualSubject, `${field}.visualSubject`, 1, 1000),
@@ -686,6 +691,7 @@ function publicResult({ runId, mode, images, qc, visualPlan, planning, post, inp
       layout: publicLayout(visualPlan.pages[index], `visualPlan.pages[${index}]`),
     })),
     visualPlan: {
+      value: visualPlan,
       planningMode: visualPlan.planningMode ?? 'LEGACY',
       skipped: planning?.skipped === true || visualPlan.planningMode === 'DIRECT',
       textContractSha256: visualPlan.textContractSha256 ?? null,
@@ -756,12 +762,13 @@ async function generateStandaloneImagesInContext({
   outputRoot,
   runId: requestedRunId = String(randomUUID()),
   onProgress = undefined,
+  onVisualPlan = undefined,
   recovery = null,
   signal = /** @type {AbortSignal | undefined} */ (undefined),
 }) {
   const runId = validatedRunId(requestedRunId);
   const normalizedPost = normalizeStandaloneImageSource(source);
-  const post = recovery ? normalizedPost : assignRandomLayouts(normalizedPost, runtime.productionSettings?.layoutPresets);
+  const post = recovery ? normalizedPost : preparePageLayouts(normalizedPost, runtime.productionSettings?.layoutPresets, runtime.productionSettings?.layoutCatalog);
   const query = boundedText(source.query, 'query', 1, 500);
   const imageCount = post.imagePlan.length;
   if (mode !== 'LIVE') throw new TypeError('mode must be LIVE');
@@ -838,7 +845,7 @@ async function generateStandaloneImagesInContext({
     const planned = recovery?.planned ?? await generateVisualPlan({ client, post, outputDir,
       thinking: effectiveModelApiConfig(runtime.productionSettings?.modelApi).copyGenerationThinking,
       complianceDisclosure,
-      allowTransportFallback: isTransientModelFailure });
+      allowTransportFallback: isTransientModelFailure, layoutCatalog: productionSettings.layoutCatalog });
     throwIfCancelled(signal);
     const visualPlan = planned.visualPlan;
     await writeJsonAtomic(join(outputDir, 'visual-plan.json'), {
@@ -847,6 +854,7 @@ async function generateStandaloneImagesInContext({
       warning: planned.warning ?? null,
       value: visualPlan,
     });
+    if (onVisualPlan) await onVisualPlan({ value: visualPlan, model: planned.model ?? null, degraded: planned.degraded === true, warning: planned.warning ?? null });
     await reportProgress({
       stage: 'PLANNING',
       progressPercent: 18,
@@ -1081,6 +1089,7 @@ export async function retryStandaloneImageRun({
   runtime = {},
   outputRoot,
   onProgress = undefined,
+  onVisualPlan = undefined,
   signal = /** @type {AbortSignal | undefined} */ (undefined),
   allowInterrupted = false,
   expectedSource = undefined,
@@ -1143,6 +1152,7 @@ export async function retryStandaloneImageRun({
     outputRoot,
     runId,
     onProgress,
+    onVisualPlan,
     signal,
     recovery: {
       inputPost,

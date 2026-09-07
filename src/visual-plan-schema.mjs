@@ -1,6 +1,7 @@
 import { promptRuntimeSnapshot } from './prompt-runtime.mjs';
 import { LAYOUT_TEMPLATES_BY_KIND } from './layout-contract.mjs';
 import { requestedLayoutTemplate } from './image-layout-controls.mjs';
+import { catalogPageOptions } from './catalog-planning.mjs';
 
 const text = (maxLength) => ({ type: 'string', minLength: 1, maxLength });
 const list = (items, minItems, maxItems) => ({ type: 'array', items, minItems, maxItems });
@@ -15,13 +16,16 @@ export function visualEvidenceOptions(post) {
   }).filter(Boolean))];
 }
 
-export function visualPlanSchema(post, indices = post.imagePlan.map((_, index) => index + 1)) {
+export function visualPlanSchema(post, indices = post.imagePlan.map((_, index) => index + 1), layoutCatalog = null) {
   const variants = indices.map((index) => {
     const kind = post.imagePlan[index - 1].kind;
+    const candidates = catalogPageOptions(post.imagePlan[index - 1], layoutCatalog);
     return object({
       index: { type: 'integer', enum: [index] }, kind: { type: 'string', enum: [kind] },
-      layoutSchemaVersion: { type: 'integer', enum: [1] },
-      layoutTemplate: { type: 'string', enum: requestedLayoutTemplate(post.imagePlan[index - 1])
+      layoutSchemaVersion: { type: 'integer', enum: [candidates ? 2 : 1] },
+      ...(candidates ? { layoutKind: { type: 'string', enum: [...new Set(candidates.map(item => item.layoutKind))] },
+        templateVersion: { type: 'integer', enum: [...new Set(candidates.map(item => item.templateVersion))] }, selectionReason: text(300) } : {}),
+      layoutTemplate: { type: 'string', enum: candidates ? candidates.map(item => item.layoutTemplate) : requestedLayoutTemplate(post.imagePlan[index - 1])
         ? [requestedLayoutTemplate(post.imagePlan[index - 1])] : [...LAYOUT_TEMPLATES_BY_KIND[kind]] },
       sourceEvidence: list(promptRuntimeSnapshot() ? { type: 'string', enum: visualEvidenceOptions(post) } : text(200), 1, 3), visualSubject: text(300), layoutDirection: text(300),
       allowedVisibleText: object({
@@ -39,6 +43,7 @@ export function visualPlanSchema(post, indices = post.imagePlan.map((_, index) =
   });
   return object({
     schemaVersion: { type: 'integer', enum: [1] },
+    ...(layoutCatalog ? { visualStyle: object({ palette: list({ type: 'string', pattern: '^#[0-9a-fA-F]{6}$' }, 2, 5), tone: text(100) }) } : {}),
     contentProfile: object({ category: text(100), tones: list(text(30), 1, 5),
       visualMedium: { type: 'string', enum: ['PHOTO', 'ILLUSTRATION', 'INFOGRAPHIC', 'PHOTO_INFOGRAPHIC'] },
       informationDensity: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH'] },

@@ -177,6 +177,10 @@ export function createAdminWorkerIntegration({
       };
     },
 
+    async onVisualPlan({ task, visualPlan }) {
+      store.saveTaskVisualPlan({ taskId: task.id, attempt: task.attempts, visualPlan });
+    },
+
     async onCompleted({
       task,
       post,

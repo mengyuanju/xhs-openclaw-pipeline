@@ -614,6 +614,7 @@ export function createAdminStore(databasePath) {
       reviews,
       imageEditRequests: imageEditStore.listForTask(id),
       generationRuns: generationStore.listGenerationRuns(id),
+      currentVisualPlan: generationStore.getTaskVisualPlan(id),
       visualReference: visualKnowledgeStore.getTaskVisualReference(id),
       auditLogs,
     };
@@ -1001,6 +1002,7 @@ export function createAdminStore(databasePath) {
         WHERE t.id = ?
       `).get(taskId);
       if (!row) return null;
+      const currentSettings = productionSettingsStore.getProductionSettings().settings;
       const referenceAssets = db.prepare(`
         SELECT * FROM assets WHERE task_id = ? AND kind = 'REFERENCE' ORDER BY id
       `).all(taskId).map(rowToAsset);
@@ -1015,7 +1017,7 @@ export function createAdminStore(databasePath) {
         promptRuntime: createPromptGovernanceStore(db).pinTaskPromptRuntime(Number(taskId), {
           TEXT_SYSTEM: row.text_prompt_content, IMAGE_SYSTEM: row.image_prompt_content, IMAGE_EDIT_SYSTEM: row.image_edit_prompt_content,
         }),
-        productionSettings: productionSettingsStore.getProductionSettings().settings,
+        productionSettings: { ...currentSettings, layoutCatalog: generationStore.pinTaskLayoutCatalog(taskId, currentSettings.layoutCatalog) },
         referenceAssets,
       };
     },

@@ -13,6 +13,26 @@ function databaseWithTasks() {
   return db;
 }
 
+test('planning is queryable before completion and the task catalog stays pinned across retries', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('CREATE TABLE tasks (id INTEGER PRIMARY KEY, attempts INTEGER NOT NULL) STRICT; INSERT INTO tasks VALUES (1, 1), (2, 2);');
+    initializeGenerationSchema(db);
+    const store = createGenerationStore(db);
+    const catalog = { schemaVersion: 2, selectionMode: 'MODEL', templates: [] };
+    assert.deepEqual(store.pinTaskLayoutCatalog(1, catalog), catalog);
+    const visualPlan = { value: { pages: [{ index: 1 }], textContractSha256: 'a'.repeat(64) } };
+    store.saveTaskVisualPlan({ taskId: 1, attempt: 1, visualPlan });
+    assert.deepEqual(store.getTaskVisualPlan(1), visualPlan);
+    assert.equal(store.listGenerationRuns(1).length, 0);
+    db.exec('UPDATE tasks SET attempts = 2 WHERE id = 1');
+    assert.deepEqual(store.pinTaskLayoutCatalog(1, { ...catalog, selectionMode: 'RANDOM' }), catalog);
+    assert.equal(store.getTaskVisualPlan(1), null);
+    assert.throws(() => store.saveTaskVisualPlan({ taskId: 1, attempt: 1, visualPlan }), /no longer current/);
+    assert.equal(store.pinTaskLayoutCatalog(2, catalog), undefined, 'legacy retry keeps the old layout behavior');
+  } finally { db.close(); }
+});
+
 function researchSnapshot() {
   return {
     schemaVersion: 1,
