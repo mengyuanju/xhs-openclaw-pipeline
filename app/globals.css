@@ -1238,7 +1238,7 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .workbench-page-summary, .workbench-page-buttons, .workbench-page-jump { display: flex; align-items: center; gap: 8px; }
 .workbench-page-summary { flex-wrap: wrap; }
 .workbench-page-summary > span, .workbench-page-buttons > span, .workbench-page-jump { color: var(--muted); font-size: 12px; white-space: nowrap; }
-.workbench-page-summary .select-trigger { width: 112px; height: 34px; font-size: 12px; }
+.workbench-page-summary .select-trigger { width: 128px; flex-shrink: 0; height: 34px; font-size: 12px; }
 .workbench-page-buttons > span { min-width: 88px; text-align: center; }
 .workbench-page-jump input { width: 58px; min-width: 0; height: 32px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: var(--surface); font: inherit; text-align: center; }
 .workbench-page-error { flex-basis: 100%; margin: 0; color: var(--red-dark); font-size: 12px; }
