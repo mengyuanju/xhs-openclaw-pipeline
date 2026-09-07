@@ -655,6 +655,12 @@ export class PostgresControlPlaneRepository {
     };
   }
 
+  async getTaskAccess(rawTaskId) {
+    const result = await this.pool.query('SELECT id, created_by_user_id FROM tasks WHERE id = $1', [normalizeTaskId(rawTaskId)]);
+    const row = result.rows[0];
+    return row ? { id: Number(row.id), createdByUserId: row.created_by_user_id } : null;
+  }
+
   async getTask(rawTaskId) {
     const taskId = normalizeTaskId(rawTaskId);
     const [task, executions, revisions, imageRuns, assets] = await Promise.all([

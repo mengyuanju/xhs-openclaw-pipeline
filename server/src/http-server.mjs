@@ -9,6 +9,7 @@ import { importCopyKnowledgeLabels, listCopyAnalysisPrompts, retireKnowledge, sa
 import { analyzeAndSaveExcellentCopy, CopyAnalysisServiceError } from './deepseek-copy-analysis.mjs';
 import { archiveFileName, buildTaskArchive } from './task-archive.mjs';
 import { IMAGE_FORMATS } from './image-options.mjs';
+import { AssetDeliveryError, createAssetDelivery } from './asset-delivery.mjs';
 import { normalizePromptContent } from '../../src/admin/prompt-service.mjs';
 import { assertPromptPublishable } from '../../src/admin/prompt-preview.mjs';
 import { readPromptConfiguration, savePromptPolicy } from '../../src/admin/prompt-runtime-service.mjs';
@@ -35,6 +36,7 @@ class HttpError extends Error {
 
 function mappedError(error) {
   if (error instanceof HttpError) return error;
+  if (error instanceof AssetDeliveryError) return new HttpError(error.status, error.code, error.message);
   if (error instanceof CopyAnalysisServiceError) return new HttpError(error.status, error.code, error.message);
   if (error instanceof ControlPlaneNotFoundError) {
     return new HttpError(404, error.code, error.message);
@@ -158,10 +160,11 @@ function requestActor(ctx, allowedRoles = APP_ROLES) {
   return actor;
 }
 
-async function assertTaskAccess(ctx, repository, { ownerOnly = false } = {}) {
+async function assertTaskAccess(ctx, repository, { ownerOnly = false, summaryOnly = false } = {}) {
   const actor = requestActor(ctx);
-  if (typeof repository.getTask !== 'function') return { actor, task: null };
-  const task = await repository.getTask(ctx.params.taskId);
+  const readTask = summaryOnly && typeof repository.getTaskAccess === 'function' ? repository.getTaskAccess : repository.getTask;
+  if (typeof readTask !== 'function') return { actor, task: null };
+  const task = await readTask.call(repository, ctx.params.taskId);
   if (!task) throw new ControlPlaneNotFoundError('task not found');
   if ((ownerOnly || actor.role === 'USER') && task.createdByUserId !== actor.username) {
     throw new HttpError(403, 'FORBIDDEN', 'current user cannot access this task');
@@ -170,6 +173,7 @@ async function assertTaskAccess(ctx, repository, { ownerOnly = false } = {}) {
 }
 
 function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisual) {
+  const deliverAsset = createAssetDelivery({ storageRoot });
   router.post('/v1/auth/login', async (ctx) => {
     const body = requireJson(ctx);
     const user = await repository.authenticateUser(body.username, body.password);
@@ -329,11 +333,9 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     const asset = await repository.getAsset(ctx.params.assetId);
     if (!asset) throw new ControlPlaneNotFoundError('asset not found');
     ctx.params.taskId = String(asset.taskId);
-    await assertTaskAccess(ctx, repository);
+    await assertTaskAccess(ctx, repository, { summaryOnly: true });
     const path = safeStoragePath(storageRoot, relative(storageRoot, asset.storagePath));
-    ctx.status = 200;
-    ctx.type = asset.mediaType;
-    ctx.body = await readFile(path);
+    await deliverAsset(ctx, asset, path);
   });
   router.get('/v1/executions/:executionId/source-assets/:assetId', async (ctx) => {
     const asset = await repository.imageReprocessAsset(ctx.params.executionId, ctx.params.assetId);

@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ImagePreviewPreference, useDefaultPreviewMode, type PreviewMode } from './image-preview-preference';
+import { thumbnailUrl } from '../../src/control-plane/asset-proxy.mjs';
 
 type ImagePreviewProps = {
   src: string;
@@ -60,8 +61,11 @@ function detectImageAlpha(image: HTMLImageElement): boolean | null {
 }
 
 export function ImagePreviewThumbnail({ src, alt, ...props }: { src: string; alt: string } & ComponentProps<'button'>) {
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const previewSrc = thumbnailUrl(src);
   return <Button unstyled className="image-preview-trigger" type="button" aria-label={`预览图片：${alt}`} {...props}>
-    <img className="image-preview-thumbnail" src={src} alt="" />
+    <img className="image-preview-thumbnail" src={failedSrc === src ? src : previewSrc} alt="" loading="lazy" decoding="async"
+      onError={previewSrc !== src && failedSrc !== src ? () => setFailedSrc(src) : undefined} />
     <span className="image-preview-hint" aria-hidden="true">预览与调整</span>
   </Button>;
 }

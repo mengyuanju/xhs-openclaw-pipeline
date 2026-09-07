@@ -1,5 +1,6 @@
 import { ApiError } from '../../../../src/admin/http.mjs';
 import { controlPlaneUrl } from '../../../../src/control-plane/next-runtime.mjs';
+import { assetConditionalHeaders, assetResponseHeaders } from '../../../../src/control-plane/asset-proxy.mjs';
 import { apiHandler } from '../../_lib';
 
 export const runtime = 'nodejs';
@@ -59,6 +60,7 @@ async function proxyRequest(
     upstream = await fetch(upstreamUrl, {
       method: request.method,
       headers: {
+        ...assetConditionalHeaders(routePath, request),
         'X-Actor-Username': username,
         'X-Actor-Role': role,
         'X-Actor-Credential-Version': String(session.credentialVersion || 1),
@@ -77,11 +79,11 @@ async function proxyRequest(
     throw new ApiError(503, 'CONTROL_PLANE_UNAVAILABLE', '无法连接远端中心服务');
   }
   const contentDisposition = upstream.headers.get('content-disposition');
-  return new Response(upstream.body, {
+  return new Response(upstream.status === 304 || request.method === 'HEAD' ? null : upstream.body, {
     status: upstream.status,
     headers: {
-      'Cache-Control': 'no-store',
-      'Content-Type': upstream.headers.get('content-type') || 'application/json; charset=utf-8',
+      ...assetResponseHeaders(routePath, upstream),
+      ...(upstream.status === 304 ? {} : { 'Content-Type': upstream.headers.get('content-type') || 'application/json; charset=utf-8' }),
       ...(contentDisposition ? { 'Content-Disposition': contentDisposition } : {}),
     },
   });
@@ -99,6 +101,7 @@ function handler(
 }
 
 export const GET = handler;
+export const HEAD = handler;
 export const POST = handler;
 export const PUT = handler;
 export const PATCH = handler;
