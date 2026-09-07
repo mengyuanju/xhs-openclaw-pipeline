@@ -21,13 +21,13 @@ type Call = {
 type Page = { items: Call[]; total: number };
 const PAGE_SIZE = 20;
 const OPERATIONS: Record<string, string> = {
-  TEXT: '文本生成', WEB_SEARCH: '联网搜索', IMAGE: '图片生成', IMAGE_EDIT: '图片编辑', VISION: '图片分析',
+  TEXT: '文本生成', WEB_SEARCH: '联网搜索', WEB_SEARCH_FINALIZE: '整理搜索答案', IMAGE: '图片生成', IMAGE_EDIT: '图片编辑', VISION: '图片分析',
 };
 const STAGES: Record<string, string> = {
   SEARCHING_IMAGES: '联网搜索图片', PREPARING: '生图准备', PLANNING: '画面规划',
   ALIGNING: '图片校验与对齐', QUALITY_CHECK: '图片质检',
   ORIGINAL_REVIEW: '首稿质检', REVIEWED_GENERATION: '文案改写', REVIEWED_REVIEW: '改写稿质检',
-  STARTING: '准备中', QUERY_REVIEW: '选题审核', RESEARCH: '资料搜索与整理',
+  STARTING: '准备中', QUERY_REVIEW: '选题审核', KNOWLEDGE_MATCH: '优秀案例匹配', RESEARCH: '资料搜索与整理',
   ORIGINAL_GENERATION: '文案与配图策划', TEXT_GENERATION: '文案生成',
   TEXT_REVIEW: '文案质检', TEXT_REVISION: '文案改写', IMAGE_PLANNING: '配图策划',
   VISUAL_PLANNING: '视觉策划', IMAGE_GENERATION: '图片生成', IMAGE_REVIEW: '图片质检',

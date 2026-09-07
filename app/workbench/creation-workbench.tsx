@@ -103,6 +103,7 @@ const STAGE_LABELS: Record<string, string> = {
   SELECTING_IMAGES: '筛选并校验图片',
   UPLOADING_IMAGES: '上传图片到中心服务',
   QUERY_REVIEW: '选题审核',
+  KNOWLEDGE_MATCH: '优秀案例匹配',
   RESEARCH: '全网搜索与资料整理',
   ORIGINAL_GENERATION: '标题、正文与配图策划生成',
   ORIGINAL_REVIEW: '首稿质检',
@@ -128,7 +129,9 @@ const STAGE_LABELS: Record<string, string> = {
 };
 
 function stageLabel(task: DistributedTask) {
-  return task.currentStage ? STAGE_LABELS[task.currentStage] ?? STATE_LABELS[task.state] : STATE_LABELS[task.state];
+  const label = task.currentStage ? STAGE_LABELS[task.currentStage] ?? STATE_LABELS[task.state] : STATE_LABELS[task.state];
+  return task.state.endsWith('_FAILED') && task.currentStage && !['FAILED', task.state].includes(task.currentStage)
+    ? `失败阶段：${label}` : label;
 }
 
 function copyExecutorLabel(task: DistributedTask, nodes: ExecutorNode[]) {
@@ -163,8 +166,9 @@ function elapsed(task: DistributedTask) {
   return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`;
 }
 
-function timeLabel(value: string | null) {
-  return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '尚未开始';
+function timeLabel(value: string | null, state?: TaskState) {
+  if (value) return new Date(value).toLocaleString('zh-CN', { hour12: false });
+  return state && !state.endsWith('_QUEUED') ? '开始时间未记录' : '尚未开始';
 }
 
 export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: activeView, initialCreator = '', initialTaskId = null }: {
@@ -680,16 +684,17 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
                 <td data-label="状态 / 进度">
                   <div className="distributed-progress">
                     <span className={`pill ${isImageRetryExhausted(task) ? 'pill-rejected' : `workbench-state-${task.state.toLowerCase()}`}${isStale(task) ? ' pill-rejected' : ''}`}>{isImageRetryExhausted(task) ? IMAGE_RETRY_EXHAUSTED_LABEL : STATE_LABELS[task.state]}</span>
-                    <span>{stageLabel(task)} · {task.progressPercent}%</span>
+                    <span>{stageLabel(task)} · {task.state.endsWith('_FAILED') && !task.executionStartedAt && task.progressPercent === 0 ? '进度未记录' : `${task.progressPercent}%`}</span>
                     <small className="workbench-text-preview" title={isStale(task) ? '超过 30 分钟没有进度，请进入详情处理' : task.progressMessage}>{isStale(task) ? '超过 30 分钟没有进度，请进入详情处理' : task.progressMessage}</small>
                   </div>
                 </td>
                 <td data-label="执行机"><div className="workbench-cell-stack workbench-executors">
                   <div><small>{executorColumnLabel}</small><span className="mono workbench-text-preview" title={activeView === 'IMAGE_WORK' ? imageExecutorLabel(task) : copyExecutorLabel(task, nodes)}>{activeView === 'IMAGE_WORK' ? imageExecutorLabel(task) : copyExecutorLabel(task, nodes)}</span></div>
                   {(activeView === 'MANUAL_ARCHIVE' || isAllJobs) && <div><small>生图执行机</small><span className="mono workbench-text-preview" title={imageExecutorLabel(task)}>{imageExecutorLabel(task)}</span></div>}
+                  {activeView === 'PERSONAL' && (task.state.startsWith('IMAGE_') || task.imageExecutorNodeId || isImageRetryExhausted(task)) && <div><small>生图执行机</small><span className="mono workbench-text-preview" title={imageExecutorLabel(task)}>{imageExecutorLabel(task)}</span></div>}
                 </div></td>
                 <td data-label="开始 / 耗时"><div className="workbench-cell-stack">
-                  <time dateTime={task.executionStartedAt || undefined}>{timeLabel(task.executionStartedAt)}</time>
+                  <time dateTime={task.executionStartedAt || undefined}>{timeLabel(task.executionStartedAt, task.state)}</time>
                   <small className="workbench-elapsed"><Clock3 aria-hidden="true" size={13} />{elapsed(task)}</small>
                 </div></td>
                 <td className="workbench-col-actions" data-label="操作">{taskActions(task)}</td>

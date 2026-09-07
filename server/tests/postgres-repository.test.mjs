@@ -140,7 +140,7 @@ test('execution failure uses separate PostgreSQL parameters for varchar and text
 
   assert.equal(failed.state, 'COPY_FAILED');
   assert.deepEqual(executionUpdate.values, [executionId, 'simulated failure', 'simulated failure']);
-  assert.deepEqual(taskUpdate.values, [41, 'COPY_FAILED', 'simulated failure', 'simulated failure', executionId]);
+  assert.deepEqual(taskUpdate.values, [41, 'COPY_FAILED', 'simulated failure', 'simulated failure', executionId, 'QUERY_REVIEW']);
   assert.match(executionUpdate.sql, /progress_message = \$2[\s\S]*error = \$3/u);
   assert.match(taskUpdate.sql, /progress_message = \$3, error = \$4/u);
 });
@@ -189,13 +189,13 @@ for (const kind of ['COPY', 'IMAGE']) {
       const taskMessage = kind === 'IMAGE' ? '生图第1次失败，等待原执行机重试（最多3次）' : summary;
       assert.deepEqual(executionUpdate.values, [executionId, summary, detail]);
       assert.deepEqual(taskUpdate.values, [41, nextState, taskMessage, detail, executionId,
-        ...(kind === 'IMAGE' ? [{ ...snapshot, imageRetry: { failedAttempts: 1, nodeId: 'node-b' } }] : [])]);
+        ...(kind === 'IMAGE' ? [{ ...snapshot, imageRetry: { failedAttempts: 1, nodeId: 'node-b' } }, 'IMAGE_QUEUED', 0, null] : ['FAILED'])]);
       assert.equal(failed.state, nextState);
       assert.equal(failed.progressMessage, taskMessage);
       if (kind === 'IMAGE') {
-        assert.match(taskUpdate.sql, /current_stage = 'IMAGE_QUEUED', progress_percent = 0/u);
+        assert.match(taskUpdate.sql, /current_stage = \$7, progress_percent = \$8/u);
         assert.match(taskUpdate.sql, /current_image_run_id = NULL, pending_snapshot = \$6/u);
-        assert.match(taskUpdate.sql, /execution_started_at = NULL, finished_at = NULL/u);
+        assert.match(taskUpdate.sql, /execution_started_at = \$9, finished_at = NULL/u);
       }
       assert.equal(failed.error, detail);
       assert.ok(summary.isWellFormed());

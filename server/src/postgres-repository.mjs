@@ -1132,13 +1132,13 @@ export class PostgresControlPlaneRepository {
           runIds: [...new Set([executionId, ...(execution.snapshot.imageRecovery?.runIds ?? [])])] } } : {}),
       } : null;
       const taskMessage = isImage
-        ? manual ? '执行失败，已停止自动重试；请检查额度与检查点后人工续跑'
+        ? manual ? '执行失败，已停止自动重试；请检查错误详情与检查点后人工续跑'
           : exhausted ? '生图3次失败，已停止自动重试，等待人工文案审核'
           : `生图第${failedAttempts}次失败，等待原执行机重试（最多${MAX_IMAGE_ATTEMPTS}次）`
         : progressMessage;
       await client.query(`
         UPDATE task_executions SET
-          status = 'FAILED', stage = 'FAILED', progress_message = $2,
+          status = 'FAILED', progress_message = $2,
           error = $3, last_activity_at = now(), finished_at = now()
         WHERE id = $1
       `, [executionId, progressMessage, message]);
@@ -1148,12 +1148,18 @@ export class PostgresControlPlaneRepository {
         `, [executionId]);
       }
       const lifecycle = isImage
-        ? `current_stage = '${manual ? 'FAILED' : exhausted ? 'IMAGE_RETRY_EXHAUSTED' : 'IMAGE_QUEUED'}', progress_percent = 0,
+        ? `current_stage = $7, progress_percent = $8,
            current_image_run_id = ${exhausted || manual ? 'current_image_run_id' : 'NULL'}, pending_snapshot = $6,
-           execution_started_at = NULL, finished_at = ${exhausted || manual ? 'now()' : 'NULL'},`
-        : "current_stage = 'FAILED', finished_at = now(),";
+           execution_started_at = $9, finished_at = ${exhausted || manual ? 'now()' : 'NULL'},`
+        : 'current_stage = $6, finished_at = now(),';
       const values = [execution.task_id, nextState, taskMessage, message, executionId];
-      if (isImage) values.push(retrySnapshot);
+      // Terminal failures retain the last actual stage, progress and start time.
+      // A queued retry starts a new lifecycle and therefore resets only those fields.
+      if (isImage) values.push(retrySnapshot,
+        manual ? execution.stage ?? 'FAILED' : exhausted ? 'IMAGE_RETRY_EXHAUSTED' : 'IMAGE_QUEUED',
+        manual || exhausted ? Number(execution.progress_percent ?? 0) : 0,
+        manual || exhausted ? execution.started_at ?? null : null);
+      else values.push(execution.stage ?? 'FAILED');
       const task = await client.query(`
         UPDATE tasks SET
           state = $2, current_execution_id = NULL, ${lifecycle}
