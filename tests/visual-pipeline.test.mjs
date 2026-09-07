@@ -182,7 +182,8 @@ describe('visual knowledge pipeline integration', () => {
       assert.match(call.prompt, /allowedVisibleText/);
       assert.match(call.prompt, /sourceEvidence/);
       assert.match(call.prompt, /zh-CN/);
-      assert.match(call.prompt, /最终输出一张3:4、1086×1448完整图文PNG/u);
+      assert.match(call.prompt, /生成一张严格竖版3:4、宽1152×高1536像素的完整图文PNG/u);
+      assert.match(call.prompt, /1086×1448是程序后续等比缩小的交付尺寸/u);
       assert.match(call.prompt, /labels/);
       assert.match(call.prompt, /原文案锁定的 allowedVisibleText，逐字显示/u);
       assert.doesNotMatch(call.prompt, /不得生成任何可见文字、字母、数字、伪文字/u);

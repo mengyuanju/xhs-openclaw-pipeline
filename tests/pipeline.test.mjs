@@ -1349,7 +1349,8 @@ describe('content pipeline', () => {
     imagePrompts.forEach((prompt, index) => {
       assert.match(prompt, new RegExp(`生成第 ${index + 1} 张，共 4 张`));
       assert.match(prompt, /桌面总是收完没两天又乱/);
-      assert.match(prompt, /最终输出一张3:4、1086×1448完整图文PNG/u);
+      assert.match(prompt, /生成一张严格竖版3:4、宽1152×高1536像素的完整图文PNG/u);
+      assert.match(prompt, /1086×1448是程序后续等比缩小的交付尺寸/u);
       assert.equal(imageTaskData(prompt).pageIndex, index + 1);
       assert.equal(imageTaskData(prompt).imageCount, 4);
       assert.match(prompt, /原文案锁定的 allowedVisibleText，逐字显示/u);
@@ -1369,7 +1370,8 @@ describe('content pipeline', () => {
     assert.deepEqual(completedPromptTrace.images.map(({ pageIndex, status }) => ({ pageIndex, status })),
       imagePrompts.map((_content, index) => ({ pageIndex: index + 1, status: 'SUBMITTED' })));
     completedPromptTrace.images.forEach(({ content }, index) => {
-      assert.match(content, /最终输出一张3:4、1086×1448完整图文PNG/u);
+      assert.match(content, /生成一张严格竖版3:4、宽1152×高1536像素的完整图文PNG/u);
+      assert.match(content, /1086×1448是程序后续等比缩小的交付尺寸/u);
       assert.doesNotMatch(content, /生成第 \d+ 张，共 4 张，主题/u);
       assert.ok(imagePrompts[index].includes(content));
     });

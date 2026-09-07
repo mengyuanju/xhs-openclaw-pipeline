@@ -141,6 +141,9 @@ test('image generation requires native tool evidence and a valid fresh image bef
   const { client, root } = await fixture(t, async (_command, _args, options) => {
     const instructions = _args.find(arg => arg.startsWith('developer_instructions='));
     assert.match(instructions, /brand-new PNG/u);
+    assert.match(instructions, /1152x1536/u);
+    assert.match(instructions, /native tool's prompt/u);
+    assert.match(instructions, /1086x1448.*downstream/iu);
     assert.doesNotMatch(instructions, /image 1 is the edit target/u);
     const path = join(options.cwd, 'generated.png');
     await sharp({ create: { width: 24, height: 32, channels: 3, background: '#aabbcc' } }).png().toFile(path);
@@ -170,6 +173,7 @@ test('image edits attach copies, accept image-only native completion and never o
   const { client, root } = await fixture(t, async (_command, args, options) => {
     attachment = args[args.indexOf('--image') + 1];
     assert.match(args.find(arg => arg.startsWith('developer_instructions=')), /image 1 is the edit target/u);
+    assert.match(args.find(arg => arg.startsWith('developer_instructions=')), /1152x1536/u);
     assert.equal((await sharp(attachment).metadata()).format, 'png');
     const path = join(options.cwd, 'edited.png');
     await sharp(attachment).negate().png().toFile(path);

@@ -21,6 +21,10 @@
 
 模型引用仍保存为 `openai/<model>`；CLI 调用时去掉 `openai/` 前缀。内置图片模型只接受 `openai/gpt-image-2`，由文本模型驱动原生图片工具。模型和思考强度最终是否获账号支持，需要真实验收；不会静默降级到其他模型。
 
+生成尺寸统一为 `1152×1536`（精确竖版 3:4），交付仍为 `1086×1448`。GPT Image 2 的[官方尺寸规则](https://developers.openai.com/api/docs/guides/image-generation#size-and-quality-options)要求两边均为 16 的倍数，因此交付尺寸不能直接作为 API 的生成尺寸；比例正确的原图只需等比缩小，原有裁剪仅用于比例偏离时兜底。
+
+OpenClaw 生图和改图显式传递 `--size 1152x1536`。本机 Codex CLI 0.152.1 的原生 `image_gen.imagegen` 仅有 `prompt`、`referenced_image_paths`、`num_last_images_to_include` 三个参数，未开放 `size`，app-server 也未开放尺寸配置。因此 Codex 的生成/编辑指令明确要求把 `1152x1536` 和 3:4 写入原生工具提示词，并区分生成尺寸与后续交付尺寸；这是提示词约束，不能宣称已传递 API 尺寸参数或保证原始图片比例。若需参数级控制，必须使用支持 `size` 的图片接口，不能给 Codex 添加无效配置。此次验证使用假模型，不代表真实出图比例已验收。
+
 原生图片事件支持 `image_generation` / `imageGeneration` 及 `saved_path` / `savedPath`；没有事件证据、目录越界、旧文件、坏 PNG、CLI 失败或覆盖现有目标都会报错，不会用 Sharp 绘制的占位图伪装成功。这里的 Sharp 只用于输入规范化和输出验证；后续原有业务图片处理继续保留。
 
 ### 原生图片协议

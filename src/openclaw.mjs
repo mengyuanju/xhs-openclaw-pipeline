@@ -14,11 +14,11 @@ import {
 } from './model-api-config.mjs';
 import { withWebSearchProvider } from './web-search-service.mjs';
 import { receiveOpenClawImage } from './image-output-reception.mjs';
+import { GENERATION_IMAGE_SIZE } from './image-output-contract.mjs';
 
 const DEFAULT_PREFLIGHT_TIMEOUT_MS = 120_000;
 const DEFAULT_VISION_TIMEOUT_MS = 300_000;
 const DEFAULT_TEXT_THINKING = 'high';
-const IMAGE_GENERATION_SIZE = '1152x1536';
 const TRANSPORT_RETRY_DELAYS_MS = [5_000, 15_000, 30_000];
 const WEB_SEARCH_RETRY_DELAYS_MS = [2_000];
 const TRANSIENT_TRANSPORT_ERROR = /\b(?:EBUSY|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET)\b|fetch failed|connection error|other side closed|reconnecting|timed?\s*out/iu;
@@ -692,7 +692,7 @@ export function createOpenClawClient({
         '--count',
         '1',
         '--size',
-        IMAGE_GENERATION_SIZE,
+        GENERATION_IMAGE_SIZE,
         '--output-format',
         'png',
         '--output',
@@ -743,7 +743,7 @@ export function createOpenClawClient({
         resolvedModel,
         ...fileArgs,
         '--size',
-        IMAGE_GENERATION_SIZE,
+        GENERATION_IMAGE_SIZE,
         '--output-format',
         'png',
         '--output',
