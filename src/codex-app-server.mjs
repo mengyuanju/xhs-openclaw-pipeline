@@ -6,8 +6,10 @@ import { terminateCodexTree } from './codex-process.mjs';
 // Codex 0.152 exec JSONL omits imageGeneration items. The versioned app-server
 // protocol retains native savedPath evidence; never infer it from agent prose.
 export async function runCodexImageProcess(command, args, { input = '', cwd, env, timeoutMs = 300_000,
-  signal, onSpawn, maxBuffer = 32 * 1024 * 1024, spawnImpl = spawn } = {}) {
+  signal, onSpawn, maxBuffer = 32 * 1024 * 1024, spawnImpl = spawn,
+  shutdownGraceMs = 5_000, terminate = terminateCodexTree } = {}) {
   signal?.throwIfAborted();
+  if (!Number.isFinite(shutdownGraceMs) || shutdownGraceMs < 1) throw new RangeError('shutdownGraceMs must be positive');
   const flag = key => args[args.indexOf(key) + 1];
   const configuration = {};
   for (let i = 0; i < args.length; i++) if (args[i] === '-c') {
@@ -21,12 +23,31 @@ export async function runCodexImageProcess(command, args, { input = '', cwd, env
       cwd, env, windowsHide: true, shell: false, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
     });
     let buffer = '', rawStdout = '', stderr = '', bytes = 0, failure, termination, closing = false;
-    let threadId, turnId, usage = null, exitTimer;
+    let threadId, turnId, usage = null, exitTimer, shutdownTimer, settled = false;
     const events = [], items = new Map();
     const send = value => { if (!closing) child.stdin.write(JSON.stringify(value) + '\n'); };
+    function finish(status, terminationConfirmed) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer); clearTimeout(exitTimer); clearTimeout(shutdownTimer);
+      signal?.removeEventListener('abort', abort);
+      if (!terminationConfirmed) {
+        failure ??= codexFailure({ message: 'image process termination was not confirmed; outcome may be unknown' }, 'CODEX_EXEC_TIMEOUT');
+        child.unref(); child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
+      }
+      const completed = events.some(event => event.type === 'turn.completed' || event.type === 'turn.failed');
+      resolve({ status: !failure && completed ? 0 : status ?? 1, stdout: events.map(JSON.stringify).join('\n'), rawStdout, stderr,
+        error: failure ?? (!completed ? codexFailure({ message: 'image process exited before completing a turn' }) : undefined), terminationConfirmed });
+    }
+    function terminateProcess() {
+      if (termination || settled) return;
+      shutdownTimer = setTimeout(() => finish(null, false), shutdownGraceMs);
+      termination = Promise.resolve().then(() => terminate(child)).catch(() => {});
+    }
     function stop(error) {
+      if (settled) return;
       failure ??= error;
-      if (!termination) termination = terminateCodexTree(child);
+      terminateProcess();
       closing = true;
     }
     const abort = () => stop(signal.reason instanceof Error ? signal.reason : Object.assign(new Error('cancelled'), { name: 'AbortError' }));
@@ -90,7 +111,7 @@ export async function runCodexImageProcess(command, args, { input = '', cwd, env
         closing = true;
         child.stdin.end();
         // Bound app-server shutdown while retaining the permit until the process tree exits.
-        exitTimer = setTimeout(() => { if (!termination) termination = terminateCodexTree(child); }, 3000);
+        exitTimer = setTimeout(terminateProcess, 3000);
       }
     }
     child.stdout.setEncoding('utf8');
@@ -119,7 +140,7 @@ export async function runCodexImageProcess(command, args, { input = '', cwd, env
     });
     child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8000); });
     child.stdin.on('error', error => { if (error.code !== 'EPIPE') stop(error); });
-    child.once('error', error => { failure ??= error; });
+    child.once('error', error => { stop(error); });
     child.once('spawn', () => {
       try {
         onSpawn?.(child.pid);
@@ -129,11 +150,9 @@ export async function runCodexImageProcess(command, args, { input = '', cwd, env
       } catch (error) { stop(error); }
     });
     child.once('close', async status => {
-      clearTimeout(timer); clearTimeout(exitTimer); signal?.removeEventListener('abort', abort);
+      clearTimeout(timer); clearTimeout(exitTimer);
       await termination;
-      const completed = events.some(event => event.type === 'turn.completed' || event.type === 'turn.failed');
-      resolve({ status: !failure && completed ? 0 : status ?? 1, stdout: events.map(JSON.stringify).join('\n'), rawStdout, stderr,
-        error: failure ?? (!completed ? codexFailure({ message: 'image process exited before completing a turn' }) : undefined) });
+      finish(status, true);
     });
   });
 }

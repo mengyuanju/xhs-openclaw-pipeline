@@ -103,6 +103,9 @@ export async function matchCopyKnowledge({ query, knowledge, client, onProgress 
         const generated = await client.runText({ prompt });
         batchScores = parseScores(generated.rawText, batch, generated.model);
       } catch (error) {
+        // Unknown outcomes and explicit stops must not start a second model call.
+        if (error?.code?.startsWith('CODEX_') || error?.code?.startsWith('EXECUTION_')
+          || error?.code === 'STALE_EXECUTION' || error?.name === 'AbortError') throw error;
         const capacity = ['MODEL_CONTEXT_LIMIT', 'MODEL_OUTPUT_INCOMPLETE'].includes(error?.code);
         if (capacity && batch.length > 1) {
           // Retry with whole cases, never shorten an individual summary or accept partial scores.

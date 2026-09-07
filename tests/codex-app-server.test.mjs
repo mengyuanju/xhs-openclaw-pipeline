@@ -1,12 +1,28 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCodexImageProcess } from '../src/codex-app-server.mjs';
 import { parseCodexOutput } from '../src/codex-protocol.mjs';
+
+test('image timeout is bounded even when neither close nor tree termination finishes', { timeout: 1000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'xhs-image-stuck-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const schema = join(root, 'schema.json');
+  await writeFile(schema, '{"type":"object"}');
+  const child = Object.assign(new EventEmitter(), { pid: 12345, stdin: new PassThrough(),
+    stdout: new PassThrough(), stderr: new PassThrough(), unref() {} });
+  const result = await runCodexImageProcess('fake', ['--output-schema', schema], {
+    spawnImpl: () => child, terminate: () => new Promise(() => {}), timeoutMs: 10, shutdownGraceMs: 20,
+  });
+  assert.equal(result.error.code, 'CODEX_EXEC_TIMEOUT');
+  assert.equal(result.terminationConfirmed, false);
+});
 
 async function fixture(t, scenario) {
   const root = await mkdtemp(join(tmpdir(), 'xhs-image-protocol-test-'));

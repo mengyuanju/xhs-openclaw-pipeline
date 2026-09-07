@@ -4,6 +4,17 @@ import { createHash } from 'node:crypto';
 
 import { matchCopyKnowledge } from '../src/copy-knowledge-match.mjs';
 
+test('unknown Codex outcomes and cancellation never replay the matching call', async () => {
+  for (const code of ['CODEX_EXEC_TIMEOUT', 'CODEX_AUTH_REQUIRED', 'CODEX_QUOTA_EXHAUSTED', 'STALE_EXECUTION']) {
+    let calls = 0;
+    const failure = Object.assign(new Error('interrupted'), { code });
+    await assert.rejects(matchCopyKnowledge({ query: '测试', knowledge: [entry(1)], client: {
+      async runText() { calls++; throw failure; },
+    } }), error => error === failure);
+    assert.equal(calls, 1);
+  }
+});
+
 function entry(itemId, content = {}) {
   return { itemId, versionId: itemId + 100, kind: 'COPY', content: {
     summary: `案例${itemId}摘要`, analysis: `案例${itemId}完整分析`, ...content,

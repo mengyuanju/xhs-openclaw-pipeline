@@ -146,7 +146,7 @@ export function createCodexClient({
           }
           if (result.error?.code === 'CODEX_EXEC_TIMEOUT') {
             // Startup diagnostics are captured above; they do not explain a transport timeout.
-            throw codexFailure({ message: `执行超过 ${timeoutMs / 1000} 秒，已停止本地进程；生成结果尚未确认。请检查模型连接后从失败步骤继续。` },
+            throw codexFailure({ message: `执行超过 ${timeoutMs / 1000} 秒，${result.terminationConfirmed === false ? '已请求终止，但本地进程退出尚未确认' : '已停止本地进程'}；生成结果尚未确认。请检查模型连接后从失败步骤继续。` },
               'CODEX_EXEC_TIMEOUT');
           }
           throw codexFailure({ code: result.error?.code, message: result.stderr || result.error?.message || `exit ${result.status}` },

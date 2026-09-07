@@ -1,11 +1,27 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { fork } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { codexConcurrencyConfig, createCodexRuntime } from '../src/codex-runtime.mjs';
+
+test('a surviving child keeps its permit after timeout and releases it after actual exit', async t => {
+  const [runtime] = await runtimeFixture(t);
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { windowsHide: true, stdio: 'ignore' });
+  const closed = once(child, 'close');
+  t.after(async () => { child.kill(); await closed; });
+  await once(child, 'spawn');
+  await assert.rejects(runtime.run(async ({ onSpawn }) => {
+    onSpawn(child.pid);
+    throw Object.assign(new Error('termination not confirmed'), { code: 'CODEX_EXEC_TIMEOUT' });
+  }), { code: 'CODEX_EXEC_TIMEOUT' });
+  assert.equal(runtime.status().active, 1);
+  child.kill(); await closed;
+  assert.equal(runtime.status().active, 0);
+});
 
 test('Codex total and image capacity configuration is independent and strictly bounded', () => {
   assert.deepEqual(codexConcurrencyConfig({}), { maxConcurrent: 2, maxConcurrentImages: 1 });

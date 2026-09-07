@@ -122,7 +122,14 @@ export function createCodexRuntime({ databasePath = codexRuntimePath(), pollMs =
         }
         throw error;
       } finally {
-        transaction((db) => db.prepare('DELETE FROM permits WHERE id = ?').run(id));
+        transaction((db) => {
+          const permit = db.prepare('SELECT child_pid FROM permits WHERE id = ?').get(id);
+          if (alive(permit?.child_pid)) {
+            // The caller may have timed out before Windows confirmed termination.
+            // Keep the slot, but let snapshot reclaim it once the child exits.
+            db.prepare('UPDATE permits SET owner_pid = 0 WHERE id = ?').run(id);
+          } else db.prepare('DELETE FROM permits WHERE id = ?').run(id);
+        });
       }
     },
   };
