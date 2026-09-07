@@ -108,6 +108,7 @@ export async function executeCopyClaim({ claim, controlPlane, environment = proc
     copyKnowledge: snapshot.knowledge ?? [],
     systemPrompt: publishedPrompt(snapshot, 'TEXT_SYSTEM'),
     promptRuntime: promptRuntimeFromSnapshot(snapshot),
+    planningCatalog: settings.planningCatalog,
     imageCount: snapshot.task.requestedImageCount,
     autoReviseOnReject: false,
     textReviewEnabled: false,

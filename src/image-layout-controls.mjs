@@ -1,11 +1,20 @@
 import { PAGE_TEMPLATES, normalizePageLayout, normalizeImageSettings } from '../server/src/image-options.mjs';
 import { normalizeLayoutPresets } from '../server/src/layout-library.mjs';
+import { normalizePlanningCatalog, planningMetadata } from '../server/src/planning-catalog.mjs';
 
 // Resolve once before persisting the source/checkpoint; saved layouts survive retries.
-export function assignRandomLayouts(post, presets = [], random = Math.random) {
+export function assignRandomLayouts(post, presets = [], random = Math.random, planningCatalog) {
+  const catalog = planningCatalog === undefined ? null : normalizePlanningCatalog(planningCatalog);
   const library = normalizeLayoutPresets(presets).filter(item => item.enabled);
   return { ...post, imagePlan: post.imagePlan.map(page => {
     if (page.layout && page.layout.mode !== 'AUTO') return page;
+    if (catalog && page.pageTypeId) {
+      const typeId = page.pageTypeId ?? page.kind;
+      const candidates = catalog.layouts.filter(item => item.enabled && (item.kind === 'all' || item.kind === typeId));
+      if (!candidates.length) throw new TypeError(`页面类型 ${page.pageType?.name ?? typeId} 没有可用布局，请在图片规划配置中添加`);
+      const selected = candidates[Math.floor(random() * candidates.length)];
+      return { ...page, layout: { ...selected.layout }, layoutPreset: { id: selected.id, name: selected.name, description: selected.description } };
+    }
     const candidates = [
       ...(PAGE_TEMPLATES[page.kind] ?? []).map(template => ({ mode: 'TEMPLATE', template })),
       ...library.filter(item => item.kind === 'all' || item.kind === page.kind).map(item => item.layout),
@@ -23,13 +32,13 @@ export function requestedLayoutTemplate(page) {
 export function attachPageLayout(visualPage, page) {
   if (!page.layout) return visualPage;
   const manualLayout = normalizePageLayout(page.layout, page.kind);
-  return { ...visualPage, manualLayout, layoutTemplate: requestedLayoutTemplate(page) ?? visualPage.layoutTemplate };
+  return { ...visualPage, ...planningMetadata(page), manualLayout, layoutTemplate: requestedLayoutTemplate(page) ?? visualPage.layoutTemplate };
 }
 
 export function imageControlsPrompt(post, page) {
   const pages = page ? [page] : post.imagePlan;
   const layouts = pages.flatMap((item, index) => item.layout && item.layout.mode !== 'AUTO'
-    ? [{ pageIndex: page ? undefined : index + 1, kind: item.kind, ...normalizePageLayout(item.layout, item.kind) }] : []);
+    ? [{ pageIndex: page ? undefined : index + 1, kind: item.kind, ...planningMetadata(item), ...normalizePageLayout(item.layout, item.kind) }] : []);
   const settings = post.imageSettings ? normalizeImageSettings(post.imageSettings) : null;
   if (!layouts.length && !settings) return '';
   const data = JSON.stringify({ layouts, imageSettings: settings }).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e');

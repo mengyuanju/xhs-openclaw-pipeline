@@ -36,7 +36,8 @@ async function proxyRequest(
   if (role === 'REVIEWER' && (/^\/v1\/(?:settings|prompts|prompt-versions|users|executor-statuses)(?:\/|$)/u.test(routePath))) {
     throw new ApiError(403, 'FORBIDDEN', '审核员没有该管理权限');
   }
-  if (role === 'USER' && !/^\/v1\/(?:tasks|nodes|assets|profile)(?:\/|$)/u.test(routePath)) {
+  const canReadPlanningCatalog = request.method === 'GET' && routePath === '/v1/planning-catalog';
+  if (role === 'USER' && !canReadPlanningCatalog && !/^\/v1\/(?:tasks|nodes|assets|profile)(?:\/|$)/u.test(routePath)) {
     throw new ApiError(403, 'FORBIDDEN', '普通用户没有该操作权限');
   }
   if (path.join('/') === 'v1/tasks' && (upstreamUrl.searchParams.get('mine') === 'true' || role === 'USER')) {

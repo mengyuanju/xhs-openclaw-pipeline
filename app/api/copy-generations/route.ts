@@ -114,6 +114,7 @@ export function POST(request: Request) {
         task: { query: input.query, input: input.input },
         systemPrompt: runtime.systemPrompt,
         promptRuntime: runtime.promptRuntime,
+        planningCatalog: runtime.productionSettings.planningCatalog,
         copyKnowledge: runtime.knowledge,
         imageCount: input.imageCount,
         autoReviseOnReject: input.autoReviseOnReject,

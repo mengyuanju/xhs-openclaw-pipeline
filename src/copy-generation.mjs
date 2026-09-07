@@ -1,6 +1,8 @@
 import { businessPrompt, promptPolicy, promptRuntimeSnapshot, withPromptRuntime } from './prompt-runtime.mjs';
 import { performance } from 'node:perf_hooks';
 import { buildCopyKnowledgeReferencePrompt, matchCopyKnowledge } from './copy-knowledge-match.mjs';
+import { normalizePlanningCatalog, planningCatalogPrompt } from '../server/src/planning-catalog.mjs';
+import { assignRandomLayouts } from './image-layout-controls.mjs';
 
 import {
   describeStageReviewFailure,
@@ -111,7 +113,7 @@ function buildPostRepairPrompt(task, error, previousOutput, options = {}) {
     data: { query: task.query, validationError, previousOutput, receivedLength: receivedLength ? Number(receivedLength) : null,
       countingRule: '英文字母、数字、标点、空格和换行均逐个计数，英文单词不能按一个字计算',
       allowedFields: lengthRepair ? ['body'] : repairFieldsFor(error) },
-  });
+  }) + planningCatalogPrompt(options.planningCatalog);
 }
 
 const REPAIRABLE_POST_FIELDS = new Set([
@@ -296,12 +298,14 @@ async function createPostFromPrompt(client, task, basePrompt, options) {
       );
       previousCandidate = candidate;
       previousOutput = JSON.stringify(candidate);
-      return {
-        post: parsePostOutput(JSON.stringify(candidate), {
+      const post = parsePostOutput(JSON.stringify(candidate), {
           imageCount: options.imageCount,
           allowedSources: options.allowedSources,
           query: task.query,
-        }),
+          planningCatalog: options.planningCatalog,
+        });
+      return {
+        post: options.planningCatalog ? assignRandomLayouts(post, [], Math.random, options.planningCatalog) : post,
         model: generated.model,
         thinking: typeof generated.thinking === 'string' ? generated.thinking.slice(0, 20) : null,
       };
@@ -342,12 +346,14 @@ async function createReviewedPost(client, task, originalPost, originalReview, op
  *   autoReviseOnReject?: boolean,
  *   textReviewEnabled?: boolean,
  *   promptRuntime?: Parameters<typeof withPromptRuntime>[0],
+ *   planningCatalog?: Parameters<typeof normalizePlanningCatalog>[0],
  *   now?: () => number,
  *   onStageChange?: (stage: string, details?: Record<string, unknown>) => void | Promise<void>,
  * }} options
  */
 export function generateCopy(options) {
-  return withPromptRuntime(options.promptRuntime, () => generateCopyInContext(options));
+  const planningCatalog = options.planningCatalog === undefined ? undefined : normalizePlanningCatalog(options.planningCatalog);
+  return withPromptRuntime(options.promptRuntime, () => generateCopyInContext({ ...options, planningCatalog }));
 }
 
 async function generateCopyInContext({
@@ -355,6 +361,7 @@ async function generateCopyInContext({
   client = createOpenClawClient(),
   systemPrompt,
   copyKnowledge,
+  planningCatalog,
   imageCount = 'auto',
   autoReviseOnReject = false,
   textReviewEnabled = true,
@@ -438,6 +445,7 @@ async function generateCopyInContext({
     () => createLivePost(client, generationTask, {
       systemPrompt,
       knowledgeReference,
+      planningCatalog,
       imageCount,
       allowedSources,
     }),
@@ -475,7 +483,7 @@ async function generateCopyInContext({
           generationTask,
           original.post,
           originalTextReview,
-          { systemPrompt, imageCount, allowedSources, knowledgeReference },
+          { systemPrompt, imageCount, allowedSources, knowledgeReference, planningCatalog },
         ),
       );
       await onStageChange('REVIEWED_REVIEW');

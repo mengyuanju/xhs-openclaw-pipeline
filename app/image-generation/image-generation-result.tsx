@@ -1,4 +1,5 @@
 import { Disclosure, DisclosureTrigger, DisclosureContent } from '@/components/ui/disclosure';
+import { PlanningDetails } from '../components/planning-details';
 import {
   CircleCheck,
   ExternalLink,
@@ -125,6 +126,7 @@ export function ImageGenerationResultView({ result }: { result: ImageGenerationR
                   {image.layout && <code>{image.layout.layoutTemplate}</code>}
                 </div>
                 {image.layout ? <>
+                  <PlanningDetails page={image.layout} />
                   <div className="standalone-image-layout-copy">
                     <span>标题区</span>
                     <strong>{image.layout.allowedVisibleText.headline}</strong>

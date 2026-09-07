@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, relative, resolve } from 'node:path';
 
 import { normalizeProductionSettings } from './production-settings.mjs';
+import { normalizePlanningCatalog } from '../server/src/planning-catalog.mjs';
 
 const CHECKPOINT_SCHEMA_VERSION = 8;
 const MAX_CHECKPOINT_BYTES = 500_000;
@@ -55,6 +56,34 @@ export function createCheckpointFingerprint({ task, workerConfig, mock }) {
   return createHash('sha256')
     .update(JSON.stringify(fingerprintInput(task, workerConfig, mock)))
     .digest('hex');
+}
+
+// Bind the catalog before any model call. Other task/config changes retain their
+// existing checkpoint invalidation behavior; catalog edits apply to new work.
+export async function pinPipelinePlanningCatalog({ outputRoot, task, workerConfig, mock }) {
+  if (mock) return workerConfig;
+  const { planningCatalog, ...productionSettings } = workerConfig?.productionSettings ?? {};
+  const stableConfig = { ...workerConfig, productionSettings };
+  const fingerprint = createCheckpointFingerprint({ task, workerConfig: stableConfig, mock });
+  const path = resolve(dirname(checkpointPath(outputRoot, task.id)), 'planning-catalog-snapshot.json');
+  let saved = null;
+  try {
+    const content = await readFile(path, 'utf8');
+    if (Buffer.byteLength(content, 'utf8') > 200_000) throw new RangeError('planning catalog snapshot exceeds the size limit');
+    saved = JSON.parse(content);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  const catalog = saved?.version === 1 && saved.fingerprint === fingerprint
+    ? saved.catalog === null ? null : normalizePlanningCatalog(saved.catalog)
+    : planningCatalog === undefined ? null : normalizePlanningCatalog(planningCatalog);
+  if (saved?.version !== 1 || saved.fingerprint !== fingerprint) {
+    await mkdir(dirname(path), { recursive: true });
+    const temporaryPath = `${path}.tmp-${process.pid}-${Date.now()}`;
+    await writeFile(temporaryPath, JSON.stringify({ version: 1, fingerprint, catalog }), { encoding: 'utf8', flag: 'wx' });
+    await rename(temporaryPath, path);
+  }
+  return { ...stableConfig, productionSettings: { ...productionSettings, ...(catalog === null ? {} : { planningCatalog: catalog }) } };
 }
 
 export async function loadPipelineCheckpoint({ outputRoot, taskId, fingerprint }) {

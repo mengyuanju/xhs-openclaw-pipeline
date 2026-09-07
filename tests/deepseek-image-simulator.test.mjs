@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import sharp from 'sharp';
+import { assertImageResultSettings } from '../server/src/image-revisions.mjs';
+import { resolvePlanningCatalog, resolvePlannedPageType } from '../server/src/planning-catalog.mjs';
+import { assignRandomLayouts } from '../src/image-layout-controls.mjs';
 
 import { createDeepSeekResponsesClient } from '../src/deepseek-responses-client.mjs';
 import {
@@ -27,6 +30,36 @@ function candidate(pageIndex, suffix = '') {
     license: 'Example open license',
   };
 }
+
+test('simulation preserves planning snapshots and uploads configured image artifacts accepted by the center', async () => {
+  const catalog = resolvePlanningCatalog();
+  const imagePlan = assignRandomLayouts({ imagePlan: ['hero', 'steps', 'summary'].map(kind => ({
+    ...resolvePlannedPageType({ kind, pageTypeId: kind }, catalog), headline: '测试页面', subtitle: '示例', bullets: ['一', '二'], prompt: '测试画面',
+  })) }, [], () => 0, catalog).imagePlan;
+  const source = await sharp({ create: { width: 32, height: 32, channels: 4, background: '#00000000' } }).png().toBuffer();
+  for (const imageSettings of [undefined, { format: 'JPEG', background: 'SOLID', backgroundColor: '#ff0000', quality: 85 }]) {
+    const content = { copy: { title: '示例', body: '测试正文' }, imagePlan, ...(imageSettings ? { imageSettings } : {}) };
+    const uploads = [];
+    const result = await executeDeepSeekImageSimulation({
+      claim: { execution: { id: 'fake-execution', snapshot: { task: { query: '示例' }, copyRevision: { content } } } },
+      client: { runImageSearch: async () => { throw new Error('fake search unavailable'); } }, renderFallback: async () => source,
+      controlPlane: { updateProgress: async () => {}, uploadAsset: async (_, upload) => { uploads.push(upload); return { id: uploads.length, url: `/v1/assets/${uploads.length}` }; }, completeImage: async (_, value) => value },
+    });
+    assert.doesNotThrow(() => assertImageResultSettings(content, result));
+    assert.deepEqual(result.imagePlan, imagePlan);
+    assert.equal(result.simulation.enabled, true);
+    if (imageSettings) {
+      assert.equal(uploads.length, 9);
+      for (const image of result.images) {
+        const delivery = uploads[image.deliveryAssetId - 1];
+        assert.equal(delivery.mediaType, 'image/jpeg');
+        assert.equal((await sharp(delivery.content).metadata()).format, 'jpeg');
+        assert.equal((await sharp(uploads[image.sourceAssetId - 1].content).stats()).isOpaque, false);
+        assert.equal((await sharp(delivery.content).stats()).isOpaque, true);
+      }
+    }
+  }
+});
 
 test('DeepSeek image search returns one bounded candidate group for every plan page', async () => {
   let request;

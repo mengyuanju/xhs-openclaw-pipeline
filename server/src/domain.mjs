@@ -1,4 +1,5 @@
 import { normalizeImageSettings, normalizePageLayout } from './image-options.mjs';
+import { planningMetadata } from './planning-catalog.mjs';
 export const TASK_STATES = Object.freeze([
   'COPY_QUEUED',
   'COPY_RUNNING',
@@ -183,6 +184,7 @@ export function normalizeCopyReviewEdits(value) {
         max: 1_000,
       }),
       ...(rawItem.layout === undefined ? {} : { layout: normalizePageLayout(rawItem.layout, kind) }),
+      ...planningMetadata(rawItem),
     };
   });
   if (imagePlan[0].kind !== 'hero' || imagePlan.slice(1).some((item) => item.kind === 'hero')) {

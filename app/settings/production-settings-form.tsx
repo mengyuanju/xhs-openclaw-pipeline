@@ -14,7 +14,10 @@ import {
 } from '@/components/ui/select';
 
 import { apiRequest } from '../components/api-client';
-import { LayoutPresetsEditor, type LayoutPreset } from './layout-presets-settings';
+import type { LayoutPreset } from './layout-presets-settings';
+import { PlanningCatalogEditor } from './planning-catalog-editor';
+import type { PlanningCatalog } from './planning-catalog-types';
+import { normalizePlanningCatalog, resolvePlanningCatalog } from '../../server/src/planning-catalog.mjs';
 import {
   ModelApiSettingsSection,
   type EffectiveModelApi,
@@ -22,6 +25,7 @@ import {
 } from './model-api-settings-section';
 
 type Settings = {
+  planningCatalog?: PlanningCatalog;
   layoutPresets: LayoutPreset[];
   qualityRepairEnabled: boolean;
   qualityRepairTriggerScore: number;
@@ -85,7 +89,7 @@ export function ProductionSettingsForm({
       const record = await apiRequest<{ settings: Settings; updatedAt: string }>('/api/production-settings', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...settings, modelApi }),
+        body: JSON.stringify({ ...settings, modelApi, ...(settings.planningCatalog ? { planningCatalog: normalizePlanningCatalog(settings.planningCatalog) } : {}) }),
       });
       setSettings(record.settings);
       setUpdatedAt(record.updatedAt);
@@ -100,7 +104,7 @@ export function ProductionSettingsForm({
 
   const targetOptions = [1, 2, 3].filter((score) => score > settings.qualityRepairTriggerScore);
   return <div className="settings-stack">
-    <LayoutPresetsEditor value={settings.layoutPresets ?? []} onChange={value => update('layoutPresets', value)} disabled={busy} />
+    <PlanningCatalogEditor value={settings.planningCatalog ?? resolvePlanningCatalog(settings) as PlanningCatalog} onChange={value => update('planningCatalog', value)} disabled={busy} />
     <ModelApiSettingsSection
       value={settings.modelApi}
       effective={effectiveModelApi}

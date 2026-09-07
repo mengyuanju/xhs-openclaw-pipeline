@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { assertImageResultSettings, reviseTaskImages } from './image-revisions.mjs';
 import { IMAGE_FORMATS, hasImageControls } from './image-options.mjs';
 import { normalizeLayoutPresets } from './layout-library.mjs';
+import { normalizePlanningCatalog } from './planning-catalog.mjs';
 import { migrateDatabase } from './database-migrations.mjs';
 import { claimRequestExpiry } from './claim-request.mjs';
 import { saveModelCall, listModelCalls, getModelCall } from './model-call-traces.mjs';
@@ -1276,6 +1277,7 @@ export class PostgresControlPlaneRepository {
     if (!/^[a-z][a-z0-9._-]{0,99}$/u.test(key)) throw new TypeError('setting key is invalid');
     const value = normalizeJson(rawValue, 'setting value', 1_000_000);
     if (key === 'production' && value?.layoutPresets !== undefined) value.layoutPresets = normalizeLayoutPresets(value.layoutPresets);
+    if (key === 'production' && value?.planningCatalog !== undefined) value.planningCatalog = normalizePlanningCatalog(value.planningCatalog);
     const result = await this.pool.query(`
       INSERT INTO global_settings(key, value) VALUES ($1, $2)
       ON CONFLICT(key) DO UPDATE SET

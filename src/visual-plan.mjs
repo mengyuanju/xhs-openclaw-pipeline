@@ -1,6 +1,7 @@
 import { businessPrompt, promptRuntimeSnapshot } from './prompt-runtime.mjs';
 import { visualEvidenceOptions } from './visual-plan-schema.mjs';
 import { imageControlsPrompt, requestedLayoutTemplate } from './image-layout-controls.mjs';
+import { planningMetadata } from '../server/src/planning-catalog.mjs';
 import {
   defaultLayoutTemplate,
   layoutTemplatePromptRules,
@@ -227,6 +228,7 @@ function validatePage(rawPage, arrayIndex, finalized, finalizedText, direct = fa
     return {
       index: expectedIndex,
       kind: expectedKind,
+      ...planningMetadata(finalized.imagePlan[arrayIndex]),
       layoutSchemaVersion: 1,
       layoutTemplate,
       ...(finalized.imagePlan[arrayIndex].layout ? { manualLayout: finalized.imagePlan[arrayIndex].layout } : {}),
@@ -278,6 +280,7 @@ export function createMockVisualPlan(post, { imageCount = post?.imagePlan?.lengt
     pages: finalized.imagePlan.map((page, index) => ({
       index: index + 1,
       kind: page.kind,
+      ...planningMetadata(page),
       layoutSchemaVersion: 1,
       layoutTemplate: requestedLayoutTemplate(page) ?? defaultLayoutTemplate(page.kind),
       ...(page.layout ? { manualLayout: page.layout } : {}),

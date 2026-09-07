@@ -11,7 +11,7 @@ import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { apiRequest } from './api-client';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { WebSearchSettingsPanel } from '../settings/web-search-settings-panel';
-import { RemoteLayoutPresetsSettings } from '../settings/layout-presets-settings';
+import { RemotePlanningCatalogSettings } from '../settings/planning-catalog-settings';
 
 type Resource = 'prompts' | 'knowledge' | 'settings';
 
@@ -115,6 +115,8 @@ export function CentralDataWorkbench({ resource }: { resource: Resource }) {
     try {
       const latest = await apiRequest<any[]>(endpoint('/v1/settings'));
       value.layoutPresets = latest.find(item => item.key === 'production')?.value?.layoutPresets ?? [];
+      const planningCatalog = latest.find(item => item.key === 'production')?.value?.planningCatalog;
+      if (planningCatalog !== undefined) value.planningCatalog = planningCatalog;
       await apiRequest(endpoint('/v1/settings/production'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -156,7 +158,7 @@ export function CentralDataWorkbench({ resource }: { resource: Resource }) {
 
   return <div className="central-data-stack">
     {resource === 'settings' && <WebSearchSettingsPanel onSaved={refresh} />}
-    {resource === 'settings' && !loading && <RemoteLayoutPresetsSettings key={production?.version ?? 0} initialPresets={production?.value?.layoutPresets ?? []} onSaved={async () => { await refresh(); setMessage('布局种类已保存，后续新任务会自动随机选择。'); }} />}
+    {resource === 'settings' && !loading && <RemotePlanningCatalogSettings key={`planning-catalog-${production?.version ?? 0}`} initialSettings={production?.value ?? {}} onSaved={async () => { await refresh(); setMessage('图片规划配置已保存，后续新任务使用新配置，进行中的任务保留原快照。'); }} />}
     {resource === 'prompts' && <form className="panel" onSubmit={createPrompt}>
       <div className="panel-head"><div><span className="section-kicker">Remote prompt</span><h2>新建提示词草稿</h2></div><Save size={18} /></div>
       <div className="form-grid">
@@ -177,7 +179,7 @@ export function CentralDataWorkbench({ resource }: { resource: Resource }) {
       </div>
     </form>}
 
-    {resource === 'settings' && <form className="panel" onSubmit={updateProduction} key={production?.version ?? 0}>
+    {resource === 'settings' && <form className="panel" onSubmit={updateProduction} key={`production-settings-${production?.version ?? 0}`}>
       <div className="panel-head"><div><span className="section-kicker">Remote settings</span><h2>生产配置 JSON</h2></div><Save size={18} /></div>
       <div className="field">
         <label htmlFor="central-agent-provider">生成引擎</label>
@@ -191,7 +193,7 @@ export function CentralDataWorkbench({ resource }: { resource: Resource }) {
         </Select>
         <small>保存时以下 JSON 的 modelApi.agentProvider 以此选项为准。凭据仅在执行机管理；已有快照保持原配置，回切需选择“使用最新配置重新生成”。</small>
       </div>
-      <div className="field"><label htmlFor="central-production-settings">其他生产配置</label><Textarea className="textarea central-json-editor" id="central-production-settings" name="value" required defaultValue={JSON.stringify(Object.fromEntries(Object.entries(production?.value ?? {}).filter(([key]) => key !== 'layoutPresets')), null, 2)} /></div>
+      <div className="field"><label htmlFor="central-production-settings">其他生产配置</label><Textarea className="textarea central-json-editor" id="central-production-settings" name="value" required defaultValue={JSON.stringify(Object.fromEntries(Object.entries(production?.value ?? {}).filter(([key]) => !['layoutPresets', 'planningCatalog'].includes(key))), null, 2)} /></div>
       <div className="inline"><Button unstyled className="button primary" disabled={busy || loading}>保存新版本</Button><small>模型 API 密钥仍只通过执行机环境变量提供，不要写入这里。</small></div>
     </form>}
 

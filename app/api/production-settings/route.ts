@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { apiHandler, ok, parseJson } from '../_lib';
 import { withAdminStore } from '../../../src/admin/runtime.mjs';
 import { normalizeLayoutPresets } from '../../../server/src/layout-library.mjs';
+import { normalizePlanningCatalog } from '../../../server/src/planning-catalog.mjs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -43,6 +44,10 @@ const modelApiPatchSchema = z.object({
 }).strict().refine((value) => Object.keys(value).length > 0, '至少修改一项模型 API 配置');
 
 const settingsPatchSchema = z.object({
+  planningCatalog: z.unknown().transform((value, context) => {
+    try { return normalizePlanningCatalog(value); }
+    catch (error) { context.addIssue({ code: 'custom', message: error instanceof Error ? error.message : '图片规划配置无效' }); return z.NEVER; }
+  }).optional(),
   layoutPresets: z.unknown().transform((value, context) => {
     try { return normalizeLayoutPresets(value); }
     catch (error) { context.addIssue({ code: 'custom', message: error instanceof Error ? error.message : '布局种类无效' }); return z.NEVER; }

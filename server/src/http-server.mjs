@@ -9,6 +9,7 @@ import { importCopyKnowledgeLabels, listCopyAnalysisPrompts, retireKnowledge, sa
 import { analyzeAndSaveExcellentCopy, CopyAnalysisServiceError } from './deepseek-copy-analysis.mjs';
 import { archiveFileName, buildTaskArchive } from './task-archive.mjs';
 import { IMAGE_FORMATS } from './image-options.mjs';
+import { resolvePlanningCatalog } from './planning-catalog.mjs';
 import { normalizePromptContent } from '../../src/admin/prompt-service.mjs';
 import { assertPromptPublishable } from '../../src/admin/prompt-preview.mjs';
 import { readPromptConfiguration, savePromptPolicy } from '../../src/admin/prompt-runtime-service.mjs';
@@ -376,6 +377,11 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     json(ctx, 200, await repository.cancelTask(ctx.params.taskId));
   });
 
+  router.get('/v1/planning-catalog', async (ctx) => {
+    requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
+    const records = await repository.listSettings();
+    json(ctx, 200, resolvePlanningCatalog(records.find(record => record.key === 'production')?.value ?? {}));
+  });
   router.get('/v1/settings', async (ctx) => {
     // Existing executors have no user session. Startup only needs the provider;
     // full configuration is delivered later in their existing claim snapshot.

@@ -20,6 +20,8 @@ import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 
 import { apiRequest } from '../components/api-client';
 import { formatDuration } from '../components/time-format';
+import { PlanningDetails } from '../components/planning-details';
+import type { PlanningMetadata } from '../settings/planning-catalog-types';
 import {
   createImageGenerationDraft,
   writeImageGenerationDraft,
@@ -31,7 +33,7 @@ import {
 
 export type CopyText = { title: string; body: string; tags: string[] };
 
-type CopyImagePlanPage = {
+type CopyImagePlanPage = PlanningMetadata & {
   kind: 'hero' | 'steps' | 'checklist' | 'comparison' | 'detail' | 'summary';
   headline: string;
   subtitle: string;
@@ -150,11 +152,12 @@ function CopyImagePlan({
       {imagePlan.map((page, index) => <li className="copy-image-plan-page" key={`${page.kind}-${index}`}>
         <article>
           <div className="copy-image-plan-page-head">
-            <span>第{index + 1}页 · {IMAGE_KIND_LABELS[page.kind]}</span>
-            <code>{page.kind}</code>
+            <span>第{index + 1}页 · {page.pageType?.name ?? IMAGE_KIND_LABELS[page.kind]}</span>
+            <code>{page.pageTypeId ?? page.kind}</code>
           </div>
           <h5>{page.headline}</h5>
           <p>{page.subtitle}</p>
+          <PlanningDetails page={page} />
           <ul className="copy-image-plan-bullets">
             {page.bullets.map((bullet, bulletIndex) => <li key={`${bullet}-${bulletIndex}`}>{bullet}</li>)}
           </ul>

@@ -23,6 +23,9 @@ import { ImagePreview, ImagePreviewThumbnail } from '../components/image-preview
 import { ImagePreviewPreference } from '../components/image-preview-preference';
 import { ImageSettingsEditor, defaultImageSettings, type ImageSettings, type PageLayout } from '../components/image-controls';
 import { ImageHistoryCompare, type ImageArtifactInfo } from '../components/image-history-compare';
+import { PlanningDetails } from '../components/planning-details';
+import { PlanningPageTypeSelect } from '../components/planning-page-type-select';
+import type { PageType, PlanningMetadata } from '../settings/planning-catalog-types';
 
 type TaskState =
   | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_FAILED'
@@ -30,7 +33,7 @@ type TaskState =
   | 'MANUAL_ARCHIVE' | 'REVIEWED' | 'CANCELLED';
 
 type Copy = { title: string; body: string; tags: string[] };
-type ImagePlanItem = {
+type ImagePlanItem = PlanningMetadata & {
   kind: 'hero' | 'steps' | 'checklist' | 'comparison' | 'detail' | 'summary';
   headline: string;
   subtitle: string;
@@ -143,7 +146,6 @@ const STAGE_LABELS: Record<string, string> = {
   FAILED: '执行失败',
   CANCELLED: '已废弃',
 };
-const IMAGE_KINDS: ImagePlanItem['kind'][] = ['hero', 'steps', 'checklist', 'comparison', 'detail', 'summary'];
 const IMAGE_KIND_LABELS: Record<ImagePlanItem['kind'], string> = {
   hero: '封面',
   steps: '步骤',
@@ -206,6 +208,18 @@ export function TaskReviewDialog({
   const [activeAssetIndex, setActiveAssetIndex] = useState<number | null>(null);
   const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [error, setError] = useState('');
+  const [pageTypes, setPageTypes] = useState<PageType[] | null>(null);
+  const [catalogError, setCatalogError] = useState('');
+
+  useEffect(() => {
+    if (!taskId) return;
+    let active = true;
+    setPageTypes(null); setCatalogError('');
+    apiRequest<{ pageTypes: PageType[] }>(apiPath('/v1/planning-catalog'))
+      .then(catalog => { if (active) setPageTypes(catalog.pageTypes); })
+      .catch(() => { if (active) setCatalogError('页面类型配置暂时无法读取，当前类型已保留。'); });
+    return () => { active = false; };
+  }, [taskId]);
 
   const load = useCallback(async () => {
     if (!taskId) return;
@@ -522,14 +536,13 @@ export function TaskReviewDialog({
                 </>}
                 <div className="workbench-image-plan-grid">
                   {draft.imagePlan.map((item, index) => <article className="workbench-image-plan-card" key={index}>
-                    <div className="workbench-image-plan-head"><b>第 {index + 1} 页</b><span>{IMAGE_KIND_LABELS[item.kind]}</span></div>
+                    <div className="workbench-image-plan-head"><b>第 {index + 1} 页</b><span>{item.pageType?.name ?? IMAGE_KIND_LABELS[item.kind]}</span></div>
+                    <PlanningDetails page={item} />
                     <div className="workbench-image-plan-fields">
                       <div className="field">
                         <label htmlFor={`review-plan-kind-${index}`}>页面类型</label>
-                        <Select value={item.kind} disabled={!editable} onValueChange={(kind: ImagePlanItem['kind']) => updateImagePlan(index, { kind, layout: { mode: 'AUTO' } })}>
-                          <SelectTrigger id={`review-plan-kind-${index}`}><SelectValue /></SelectTrigger>
-                          <SelectContent>{IMAGE_KINDS.map((kind) => <SelectItem value={kind} key={kind}>{IMAGE_KIND_LABELS[kind]}</SelectItem>)}</SelectContent>
-                        </Select>
+                        <PlanningPageTypeSelect id={`review-plan-kind-${index}`} page={item} index={index} pageTypes={pageTypes} disabled={!editable} onChange={({ enabled, ...pageType }) => updateImagePlan(index, { kind: pageType.baseKind, pageTypeId: pageType.id, pageType, layout: { mode: 'AUTO' }, layoutPreset: undefined })} />
+                        {catalogError && <small role="status">{catalogError}</small>}
                       </div>
                       <div className="field">
                         <label htmlFor={`review-plan-headline-${index}`}>页面标题</label>

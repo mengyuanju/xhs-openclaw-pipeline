@@ -6,6 +6,7 @@ import { apiRequest } from '../components/api-client';
 import { createRunId } from './run-id';
 import type { ImageSettings } from '../components/image-controls';
 import type { ImageGenerationDraftPage } from './image-generation-draft';
+import type { PlanningMetadata } from '../settings/planning-catalog-types';
 
 const ACTIVE_RUN_STORAGE_KEY = 'xhs:image-generation-active-run:v1';
 const PROGRESS_POLL_MS = 1_000;
@@ -32,7 +33,7 @@ export type ImageGenerationResult = {
     model: string | null;
     generationAttempts: number | null;
     alignmentPassed: boolean | null;
-    layout: {
+    layout: PlanningMetadata & {
       layoutTemplate: string;
       layoutDirection: string;
       visualSubject: string;

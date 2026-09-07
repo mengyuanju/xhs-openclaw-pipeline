@@ -8,9 +8,11 @@ import {
   createCheckpointFingerprint,
   createImageCheckpointRecord,
   loadPipelineCheckpoint,
+  pinPipelinePlanningCatalog,
   resolveReusableImageCheckpoints,
   savePipelineCheckpoint,
 } from '../src/checkpoint.mjs';
+import { resolvePlanningCatalog } from '../server/src/planning-catalog.mjs';
 
 const directories = [];
 
@@ -19,6 +21,26 @@ afterEach(async () => {
 });
 
 describe('pipeline checkpoints', () => {
+  it('pins the planning catalog before generation and keeps it across retries while other config changes invalidate it', async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'xhs-planning-checkpoint-'));
+    directories.push(outputRoot);
+    const task = { id: 1, query: '桌面整理' };
+    const catalog = resolvePlanningCatalog();
+    const workerConfig = { imageCount: 3, textPromptContent: '规则 A', productionSettings: { planningCatalog: catalog } };
+    const initial = await pinPipelinePlanningCatalog({ outputRoot, task, workerConfig, mock: false });
+    const fingerprint = createCheckpointFingerprint({ task, workerConfig: initial, mock: false });
+    catalog.pageTypes[0].description = '后续修改';
+    const retried = await pinPipelinePlanningCatalog({ outputRoot, task, workerConfig, mock: false });
+    assert.notEqual(retried.productionSettings.planningCatalog.pageTypes[0].description, '后续修改');
+    assert.equal(createCheckpointFingerprint({ task, workerConfig: retried, mock: false }), fingerprint);
+    const changed = await pinPipelinePlanningCatalog({ outputRoot, task, workerConfig: { ...workerConfig, textPromptContent: '规则 B' }, mock: false });
+    assert.equal(changed.productionSettings.planningCatalog.pageTypes[0].description, '后续修改');
+    assert.notEqual(createCheckpointFingerprint({ task, workerConfig: changed, mock: false }), fingerprint);
+    const legacyTask = { ...task, id: 2 };
+    await pinPipelinePlanningCatalog({ outputRoot, task: legacyTask, workerConfig: {}, mock: false });
+    const legacyRetry = await pinPipelinePlanningCatalog({ outputRoot, task: legacyTask, workerConfig: { productionSettings: { planningCatalog: catalog } }, mock: false });
+    assert.equal(legacyRetry.productionSettings.planningCatalog, undefined);
+  });
   it('loads only the exact task and pinned-config fingerprint', async () => {
     const outputRoot = await mkdtemp(join(tmpdir(), 'xhs-checkpoint-'));
     directories.push(outputRoot);

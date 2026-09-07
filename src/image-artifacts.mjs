@@ -8,7 +8,7 @@ export const IMAGE_ARTIFACT_FILE = /^(?:source-)?\d{2}-[a-z][a-z0-9-]{0,30}\.(?:
 
 // Encode once, then decode the actual delivery bytes for browser preview and QC.
 // Source is the normalized full artwork before flattening, so a later revision can undo a fill.
-export async function prepareImageArtifacts({ source, outputDir, file, settings }) {
+export async function encodeImageArtifacts({ source, file, settings }) {
   if (!/^\d{2}-[a-z][a-z0-9-]{0,30}\.png$/u.test(file)) throw new TypeError('invalid image artifact file');
   const resolved = normalizeImageSettings(settings);
   const codec = IMAGE_FORMATS[resolved.format];
@@ -23,15 +23,20 @@ export async function prepareImageArtifacts({ source, outputDir, file, settings 
       : resolved.format === 'GIF' ? {} : { quality: resolved.quality };
   const delivery = await encoder.toFormat(resolved.format.toLowerCase(), options).toBuffer();
   const preview = resolved.format === 'PNG' ? delivery : await sharp(delivery).png().toBuffer();
-  await writeFile(join(outputDir, sourceFile), original);
-  await writeFile(join(outputDir, deliveryFile), delivery);
-  if (deliveryFile !== file) await writeFile(join(outputDir, file), preview);
-  return {
+  return { original, delivery, preview, metadata: {
     file, sourceFile, deliveryFile, mediaType: codec.mediaType, imageSettings: resolved,
     transparency: { source: sourceTransparent, delivery: !(await sharp(delivery).stats()).isOpaque },
     artifactHashes: Object.fromEntries([[sourceFile, original], [deliveryFile, delivery], [file, preview]]
       .map(([name, bytes]) => [name, createHash('sha256').update(bytes).digest('hex')])),
-  };
+  } };
+}
+
+export async function prepareImageArtifacts({ source, outputDir, file, settings }) {
+  const { original, delivery, preview, metadata } = await encodeImageArtifacts({ source, file, settings });
+  await writeFile(join(outputDir, metadata.sourceFile), original);
+  await writeFile(join(outputDir, metadata.deliveryFile), delivery);
+  if (metadata.deliveryFile !== file) await writeFile(join(outputDir, file), preview);
+  return metadata;
 }
 
 export async function copyImageArtifacts(image, sourceDir, outputDir) {

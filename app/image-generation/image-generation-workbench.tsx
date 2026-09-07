@@ -130,7 +130,7 @@ export function ImageGenerationWorkbench() {
         body: String(data.get('body') ?? '').trim(),
         tags: tagsFrom(String(data.get('tags') ?? '')),
       },
-      imagePlan: imagePlan.map(page => ({ ...(page as object), layout: { mode: 'AUTO' } })),
+      imagePlan,
       imageSettings,
       mode: 'LIVE',
       confirmation: 'LIVE_IMAGE_COST_ACCEPTED',

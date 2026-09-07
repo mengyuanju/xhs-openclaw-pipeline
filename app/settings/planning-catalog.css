@@ -1,0 +1,14 @@
+.planning-tabs { display: flex; gap: .5rem; border-bottom: 1px solid var(--border); margin-bottom: 1rem; }
+.planning-tabs button { background: transparent; color: var(--muted); border: 0; border-bottom: 2px solid transparent; padding: .75rem 1rem; cursor: pointer; font: inherit; }
+.planning-tabs button[aria-selected="true"] { border-bottom-color: currentColor; color: var(--foreground); font-weight: 600; }
+.planning-tabs button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.planning-catalog fieldset { min-width: 0; }
+.planning-catalog .field { min-width: 0; }
+.planning-row-actions { display: flex; align-items: center; justify-content: space-between; gap: .75rem; flex-wrap: wrap; }
+.planning-description { white-space: pre-wrap; overflow-wrap: anywhere; margin: .5rem 0; }
+.planning-description dt { font-weight: 600; }
+.planning-description dd { margin: .25rem 0 .75rem; color: var(--muted); }
+@media (max-width: 480px) {
+  .planning-catalog .panel-head { align-items: flex-start; flex-direction: column; }
+  .planning-tabs button { padding: .75rem .5rem; }
+}

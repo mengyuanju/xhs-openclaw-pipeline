@@ -39,7 +39,7 @@
   "tags": ["#标签"],
   "imagePlan": [
     {
-      "kind": "hero | steps | checklist | comparison | detail | summary",
+{{PAGE_TYPE_ID_FIELD}}      "kind": "hero | steps | checklist | comparison | detail | summary",
       "headline": "string",
       "subtitle": "string",
       "bullets": ["string"],

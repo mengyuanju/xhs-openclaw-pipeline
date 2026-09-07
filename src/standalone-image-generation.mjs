@@ -3,6 +3,7 @@ import { withPromptRuntime, promptRuntimeSnapshot, createPromptRuntime } from '.
 import { prepareImageArtifacts, publicImageArtifacts, IMAGE_ARTIFACT_FILE } from './image-artifacts.mjs';
 import { normalizeImageSettings } from '../server/src/image-options.mjs';
 import { assignRandomLayouts } from './image-layout-controls.mjs';
+import { planningMetadata } from '../server/src/planning-catalog.mjs';
 import { randomUUID } from 'node:crypto';
 import { codexErrorCode } from './codex-protocol.mjs';
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
@@ -560,6 +561,8 @@ function publicLayout(page, field = 'layout') {
     throw new TypeError(`${field} is invalid`);
   }
   return {
+    ...(page.pageType ? { kind: page.kind ?? page.pageType.baseKind } : {}),
+    ...planningMetadata({ ...page, kind: page.kind ?? page.pageType?.baseKind }),
     layoutTemplate: boundedText(page.layoutTemplate, `${field}.layoutTemplate`, 1, 64),
     layoutDirection: boundedText(page.layoutDirection, `${field}.layoutDirection`, 1, 300),
     visualSubject: boundedText(page.visualSubject, `${field}.visualSubject`, 1, 1000),
@@ -761,7 +764,7 @@ async function generateStandaloneImagesInContext({
 }) {
   const runId = validatedRunId(requestedRunId);
   const normalizedPost = normalizeStandaloneImageSource(source);
-  const post = recovery ? normalizedPost : assignRandomLayouts(normalizedPost, runtime.productionSettings?.layoutPresets);
+  const post = recovery ? normalizedPost : assignRandomLayouts(normalizedPost, runtime.productionSettings?.layoutPresets, Math.random, runtime.productionSettings?.planningCatalog);
   const query = boundedText(source.query, 'query', 1, 500);
   const imageCount = post.imagePlan.length;
   if (mode !== 'LIVE') throw new TypeError('mode must be LIVE');

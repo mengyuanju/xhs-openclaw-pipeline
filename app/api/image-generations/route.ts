@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { imageSettingsSchema, validatePageOptions } from './_image-options';
+import { imageSettingsSchema, imagePlanSchema } from './_image-options';
 
 import { z } from 'zod';
 
@@ -20,24 +20,6 @@ import {
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-const imageKindSchema = z.enum([
-  'hero',
-  'steps',
-  'checklist',
-  'comparison',
-  'detail',
-  'summary',
-]);
-
-const imagePlanSchema = z.object({
-  kind: imageKindSchema,
-  headline: z.string().trim().min(1).max(18),
-  subtitle: z.string().trim().min(1).max(30),
-  bullets: z.array(z.string().trim().min(1).max(40)).min(2).max(5),
-  prompt: z.string().trim().min(10).max(1_000),
-  layout: z.unknown().optional(),
-}).strict().superRefine(validatePageOptions);
 
 const imageGenerationSchema = z.object({
   runId: z.string().uuid().optional(),

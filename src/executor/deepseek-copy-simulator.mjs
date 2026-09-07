@@ -38,6 +38,7 @@ export async function executeDeepSeekCopySimulation({
     promptRuntime: promptRuntimeFromSnapshot(snapshot),
     task: snapshot.task,
     copyKnowledge: snapshot.knowledge ?? [],
+    planningCatalog: snapshot.productionSettings?.production?.value?.planningCatalog,
     systemPrompt: publishedTextPrompt(snapshot),
     imageCount: snapshot.task.requestedImageCount,
     autoReviseOnReject: false,

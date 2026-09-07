@@ -4,6 +4,8 @@ import { isIP } from 'node:net';
 import sharp from 'sharp';
 import { promptRuntimeFromSnapshot } from '../admin/prompt-runtime-service.mjs';
 import { withPromptRuntime, businessPrompt } from '../prompt-runtime.mjs';
+import { encodeImageArtifacts } from '../image-artifacts.mjs';
+import { normalizeImageSettings } from '../../server/src/image-options.mjs';
 
 import {
   createDeepSeekResponsesClient,
@@ -83,7 +85,7 @@ function copySource(snapshot) {
     || imagePlan.length < 3 || imagePlan.length > 5) {
     throw new TypeError('approved copy revision has no usable copy or image plan');
   }
-  return { copy, imagePlan };
+  return { copy, imagePlan, ...(content.imageSettings ? { imageSettings: normalizeImageSettings(content.imageSettings) } : {}) };
 }
 
 function isPrivateIpv4(address) {
@@ -224,7 +226,7 @@ export async function executeDeepSeekImageSimulation({
 }) {
   const { execution } = claim;
   const snapshot = execution.snapshot;
-  const { copy, imagePlan } = copySource(snapshot);
+  const { copy, imagePlan, imageSettings } = copySource(snapshot);
   const promptRuntime = promptRuntimeFromSnapshot(snapshot);
   if (promptRuntime) withPromptRuntime(promptRuntime, () => businessPrompt('IMAGE_SEARCH_SYSTEM'));
   await report(controlPlane, execution.id, 'SEARCHING_IMAGES', 8, 'DeepSeek 正在联网搜索相关图片');
@@ -298,12 +300,20 @@ export async function executeDeepSeekImageSimulation({
       },
     );
     const fileName = `${String(page.pageIndex).padStart(2, '0')}-${selected.fallback ? 'fallback' : 'search'}-simulation.png`;
+    const encoded = imageSettings ? await encodeImageArtifacts({ source: selected.content, file: fileName, settings: imageSettings }) : null;
     const asset = await controlPlane.uploadAsset(execution.id, {
-      content: selected.content,
+      content: encoded?.preview ?? selected.content,
       mediaType: 'image/png',
       fileName,
     });
+    let artifacts = {};
+    if (encoded) {
+      const original = await controlPlane.uploadAsset(execution.id, { content: encoded.original, mediaType: 'image/png', fileName: encoded.metadata.sourceFile });
+      const delivery = encoded.metadata.deliveryFile === fileName ? asset : await controlPlane.uploadAsset(execution.id, { content: encoded.delivery, mediaType: encoded.metadata.mediaType, fileName: encoded.metadata.deliveryFile });
+      artifacts = { ...encoded.metadata, sourceAssetId: original.id, sourceUrl: original.url, deliveryAssetId: delivery.id, deliveryUrl: delivery.url };
+    }
     images.push({
+      ...artifacts,
       pageIndex: page.pageIndex,
       kind: imagePlan[page.pageIndex - 1].kind,
       file: fileName,
@@ -338,6 +348,9 @@ export async function executeDeepSeekImageSimulation({
     mode: 'DEEPSEEK_IMAGE_SEARCH_SIMULATION',
     status: 'COMPLETED',
     imageCount: images.length,
+    imageControlsVersion: 1,
+    imagePlan,
+    ...(imageSettings ? { imageSettings } : {}),
     images,
     visualPlan: {
       model: search?.model ?? DEEPSEEK_SIMULATION_MODEL,

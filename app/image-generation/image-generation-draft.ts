@@ -1,9 +1,10 @@
 export const IMAGE_GENERATION_DRAFT_STORAGE_KEY = 'xhs:image-generation-draft:v1';
 import type { ImageSettings, PageLayout } from '../components/image-controls';
+import type { PlanningMetadata } from '../settings/planning-catalog-types';
 
 const IMAGE_KINDS = new Set(['hero', 'steps', 'checklist', 'comparison', 'detail', 'summary']);
 
-export type ImageGenerationDraftPage = {
+export type ImageGenerationDraftPage = PlanningMetadata & {
   kind: 'hero' | 'steps' | 'checklist' | 'comparison' | 'detail' | 'summary';
   headline: string;
   subtitle: string;
