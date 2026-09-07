@@ -553,7 +553,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
                     aria-describedby="workbench-query-help workbench-query-validation"
                     aria-invalid={Boolean(queryText && queryBatch.error)}
                   />
-                  <p className="workbench-query-help" id="workbench-query-help">每行一条，或用中文逗号（，）、英文逗号（,）分隔。空白项自动忽略；最多 100 条，每条不超过 500 个字符。</p>
+                  <p className="workbench-query-help" id="workbench-query-help">每行一条 Query，逗号属于正文，不会拆分。空行自动忽略；最多 100 条，每条不超过 500 个字符。</p>
                   <div id="workbench-query-validation" aria-live="polite">
                     {queryText && queryBatch.error && <p className="workbench-query-validation">{queryBatch.error}</p>}
                   </div>

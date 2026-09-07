@@ -91,7 +91,7 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(workbench, /parseQueryBatch\(queryText\)/u);
   assert.match(workbench, /const \{ queries, error: validationError \} = queryBatch/u);
   assert.match(workbench, /已识别 \{queryBatch.queries.length\} 条 Query/u);
-  assert.match(workbench, /中文逗号（，）、英文逗号（,）/u);
+  assert.match(workbench, /每行一条 Query，逗号属于正文，不会拆分/u);
   assert.match(workbench, /disabled=\{creating \|\| Boolean\(queryBatch.error\)\}/u);
   assert.match(workbench, /createError && <div className="notice error" role="alert"/u);
   assert.doesNotMatch(workbench, /queryRows|nextQueryKey|添加一条 Query|workbench-remove-query/u);

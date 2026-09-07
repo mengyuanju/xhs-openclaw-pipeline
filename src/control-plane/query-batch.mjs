@@ -1,6 +1,6 @@
 /** Split pasted topics in input order; blank segments never create tasks. */
 export function parseQueryBatch(value) {
-  const queries = String(value ?? '').split(/[\r\n,，]+/u).map((query) => query.trim()).filter(Boolean);
+  const queries = String(value ?? '').split(/[\r\n]+/u).map((query) => query.trim()).filter(Boolean);
   if (!queries.length) return { queries, error: '请至少输入一条 Query。' };
   if (queries.length > 100) return { queries, error: '一次最多创建 100 条笔记，请分批提交。' };
   const seen = new Map();
