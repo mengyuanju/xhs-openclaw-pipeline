@@ -241,9 +241,13 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   router.post('/v1/tasks', async (ctx) => {
     const actor = requestActor(ctx);
     const body = requireJson(ctx);
+    const { skipCopyReview = false } = body;
+    if (typeof skipCopyReview !== 'boolean') throw new TypeError('skipCopyReview must be a boolean');
+    if (skipCopyReview) requestActor(ctx, ['ADMIN']);
     json(ctx, 201, await repository.createTasks({
       nodeId: body.nodeId,
       createdByUserId: actor.username,
+      skipCopyReview,
       tasks: body.tasks,
     }));
   });
