@@ -1583,6 +1583,51 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .model-call-request { font-size: 12px; margin-top: 12px; }
 .model-call-request summary { cursor: pointer; }
 
+/* Model responses: schema-free reading view with an untouched source view. */
+.model-response-view { min-width: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.model-response-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--surface-soft); }
+.model-response-toolbar .button { min-height: 30px; padding: 4px 10px; font-size: 12px; }
+.model-response-toolbar .button[aria-pressed="true"] { color: var(--red-dark); border-color: var(--red-dark); background: var(--surface); }
+.model-response-toolbar > span { margin-left: auto; font-size: 11px; color: var(--muted); }
+.model-response-content { max-height: 560px; overflow: auto; padding: 16px; background: var(--surface); color: var(--ink); font-size: 13px; line-height: 1.8; overflow-wrap: anywhere; }
+.model-response-content:focus-visible, .model-response-toolbar button:focus-visible, .model-response-table:focus-visible { outline: 2px solid var(--red-dark); outline-offset: -2px; }
+.model-response-content pre { max-height: none; margin: 8px 0; }
+.model-response-content .model-response-text, .model-response-content .model-response-raw { margin: 0; padding: 0; border-radius: 0; background: transparent; white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; font-size: inherit; line-height: inherit; }
+.model-response-content .model-response-text { font-family: inherit; }
+.model-response-fields { margin: 0; }
+.model-response-fields > div { padding: 10px 0; border-top: 1px solid var(--line); }
+.model-response-fields > div:first-child { padding-top: 0; border-top: 0; }
+.model-response-fields > div:last-child { padding-bottom: 0; }
+.model-response-fields dt { margin-bottom: 4px; color: var(--muted); font-family: ui-monospace, monospace; font-size: 12px; font-weight: 650; white-space: pre-wrap; }
+.model-response-fields dd { min-width: 0; margin: 0; }
+.model-response-fields dd > .model-response-fields { padding-left: 12px; border-left: 2px solid var(--line); }
+.model-response-list { margin: 0; padding-left: 24px; list-style: decimal; }
+.model-response-list > li { padding: 4px 0 8px 4px; }
+.model-response-list > li::marker { color: var(--muted); font-size: 12px; }
+.model-response-scalar { font-size: 12px; }
+.model-response-markdown > :first-child { margin-top: 0; }
+.model-response-markdown > :last-child { margin-bottom: 0; }
+.model-response-markdown :is(h5, h6) { margin: 16px 0 8px; font-size: 15px; line-height: 1.6; font-weight: 750; }
+.model-response-markdown h6 { font-size: 13px; }
+.model-response-markdown p { margin: 8px 0; white-space: pre-wrap; }
+.model-response-markdown :is(ul, ol) { margin: 8px 0; padding-left: 24px; }
+.model-response-markdown ul { list-style: disc; }
+.model-response-markdown ol { list-style: decimal; }
+.model-response-markdown li { margin: 4px 0; white-space: pre-wrap; }
+.model-response-markdown blockquote { margin: 12px 0; padding: 4px 12px; border-left: 3px solid var(--line); color: var(--muted); }
+.model-response-markdown a { color: var(--red-dark); text-decoration: underline; text-underline-offset: 3px; }
+.model-response-markdown code { padding: 2px 4px; border-radius: 4px; background: var(--surface-soft); font-size: 12px; }
+.model-response-markdown pre { padding: 12px; background: var(--surface-soft); white-space: pre-wrap; }
+.model-response-markdown pre code { padding: 0; background: transparent; }
+.model-response-table { max-width: 100%; overflow-x: auto; margin: 12px 0; }
+.model-response-table table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.model-response-table :is(th, td) { padding: 8px 12px; border: 1px solid var(--line); text-align: left; white-space: pre-wrap; }
+.model-response-table th { background: var(--surface-soft); font-weight: 650; }
+@media (max-width: 760px) {
+  .model-response-content { padding: 12px; }
+  .model-response-fields dd > .model-response-fields { padding-left: 8px; }
+}
+
 /* Account management */
 .user-management-stack { display: grid; gap: 16px; }
 .user-summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }

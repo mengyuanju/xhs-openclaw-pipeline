@@ -1,7 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import dynamic from 'next/dynamic';
 import { apiRequest } from '../components/api-client';
+
+const ModelResponseView = dynamic(() => import('./model-response-view').then((module) => module.ModelResponseView), {
+  loading: () => <p role="status">正在准备阅读视图…</p>,
+});
 
 type Call = {
   id: string; executionId: string; sequence: number; stage: string; kind: string; nodeId: string;
@@ -57,7 +62,8 @@ function CallCard({ taskId, item }: { taskId: number; item: Call }) {
       {detail && <>
         {detail.truncated && <p className="notice warning">记录内容过长，已截断展示；并非完整原文。</p>}
         <h4>实际发送的提示词</h4><pre>{detail.prompt || '此调用未提供文本提示词。'}</pre>
-        <h4>模型返回内容</h4><pre>{detail.response ?? (detail.status === 'RUNNING' ? '暂未记录返回：调用可能仍在执行，或执行机已中断。' : '未取得返回内容。')}</pre>
+        <h4>模型返回内容</h4>
+        {detail.response != null ? <ModelResponseView text={detail.response} /> : <p className="model-call-note">{detail.status === 'RUNNING' ? '暂未记录返回：调用可能仍在执行，或执行机已中断。' : '未取得返回内容。'}</p>}
         {detail.error && <><h4>调用错误</h4><pre className="model-call-error">{detail.error}</pre></>}
         <details className="model-call-request"><summary>查看请求参数（已脱敏）</summary><pre>{detail.request}</pre></details>
       </>}

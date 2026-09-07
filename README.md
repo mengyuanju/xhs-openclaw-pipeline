@@ -398,6 +398,10 @@ Live 生产顺序为“Query 审核 → 联网研究 → 正文生成与结构�
 - `manifest.json` 与 SQLite `generation_runs.stage_reviews_json` 保存同一份有界证据；内容审核页按生成批次展示决策、模型、摘要和问题。
 - Mock 只标记为 `MOCK 模拟验证`，不声称已经真实模型审核。
 
+任务详情中的“模型调用链路 → 模型返回内容”默认使用阅读视图：JSON 按实际字段分层展示，嵌套 JSON 文本继续展开，Markdown 支持标题、列表、表格和代码块，普通文本保留换行。随时点击“原文”查看服务端记录的原始字符串；上游已脱敏或截断的内容仍以现有提示为准。
+
+展示层只解析完整的合法 JSON，不要求固定业务字段，不修复残缺 JSON，也不全局替换 `\\n` 或 Unicode 转义。无法识别、过长（超过 50,000 个字符）或层级过深的部分保留文本显示，避免格式变化影响阅读。格式化仅作用于界面，不改变存储和业务校验。Markdown 使用 [react-markdown](https://github.com/remarkjs/react-markdown) 和 [remark-gfm](https://github.com/remarkjs/remark-gfm)，模型中的 HTML 按文本显示，图片链接由用户点击查看。
+
 ## Query 预审与任务级内容质检
 
 管理员登录后可从左侧进入 `/reviews` 质检中心，并在“质检人员”中创建独立账号。账号可授予“Query 质检”“内容质检（文案+图片）”或“质检组长”角色；停用账号或修改角色后，旧会话会失效。内部角色名 `COPY_REVIEWER` 为兼容保留，实际岗位负责同一任务的文案与图片。

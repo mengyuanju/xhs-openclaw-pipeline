@@ -13,7 +13,7 @@ test('task dialogs expose lazy read-only model call history only to administrato
   assert.match(trace, /signal: abort\.signal/);
   assert.match(trace, /limit=\$\{PAGE_SIZE\}&offset=/);
   assert.match(trace, /<pre>\{detail\.prompt/);
-  assert.match(trace, /<pre>\{detail\.response/);
+  assert.match(trace, /<ModelResponseView text=\{detail\.response\}/);
   assert.doesNotMatch(trace, /dangerouslySetInnerHTML|type="submit"|setInterval/);
   assert.match(trace, /无法还原当时的提示词/);
 });
