@@ -1,4 +1,5 @@
 import { businessPrompt, promptRuntimeSnapshot } from './prompt-runtime.mjs';
+import { findUnsupportedImageNumber } from './image-numeric-evidence.mjs';
 import { visualEvidenceOptions } from './visual-plan-schema.mjs';
 import { imageControlsPrompt, requestedLayoutTemplate } from './image-layout-controls.mjs';
 import { catalogPageFields, catalogPageOptions, normalizeVisualStyle } from './catalog-planning.mjs';
@@ -77,10 +78,6 @@ function validatePost(post, imageCount) {
   return { title, body, imagePlan: post.imagePlan };
 }
 
-function numericClaims(values) {
-  return [...new Set(values.flatMap((value) => String(value).match(/\d+(?:\.\d+)?%?/gu) ?? []))];
-}
-
 function explicitLayoutItemCount(layoutDirection) {
   const match = layoutDirection.match(
     /([一二三四五六七八九十\d]+)(?:项|张|个|格)(?:[^。；]{0,6})(?:卡片|卡|节点|要点|检查|提示)/u,
@@ -111,10 +108,9 @@ function validateVisibleText(value, name, finalizedText, bulletMax = 30) {
       throw new TypeError(`${name}.labels[${index}] duplicates existing visible text`);
     }
   }
-  for (const claim of numericClaims([visible.headline, visible.subtitle, ...visible.bullets])) {
-    if (!finalizedText.includes(claim)) {
-      throw new TypeError(`${name} contains numeric claim ${claim} that is absent from the finalized text`);
-    }
+  const unsupported = findUnsupportedImageNumber(visible, finalizedText);
+  if (unsupported) {
+    throw new TypeError(`${name} contains numeric claim ${unsupported.number} that is absent from the finalized text (${unsupported.label}: ${unsupported.text})`);
   }
   return visible;
 }

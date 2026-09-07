@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { createMockPost } from '../src/pipeline.mjs';
-import { createMockVisualPlan } from '../src/visual-plan.mjs';
+import { createMockVisualPlan, parseVisualPlanOutput } from '../src/visual-plan.mjs';
 import { generateVisualPlan } from '../src/visual-plan-generation.mjs';
 import { createDirectVisualPlan, assertLockedImageText, assertImagePlanNumericEvidence } from '../src/locked-image-plan.mjs';
 import { createPromptRuntime, withPromptRuntime } from '../src/prompt-runtime.mjs';
@@ -38,6 +38,41 @@ function assertOriginalText(plan, post) {
 }
 
 describe('locked image copy and the optional visual planning stage', () => {
+  it('accepts grounded Chinese numbers and list markers throughout both planning modes', async () => {
+    for (const enabled of [false, true]) {
+      const post = createMockPost(3);
+      post.body += '\n留出五分钟归位物品。';
+      post.imagePlan[2].headline = '留出5分钟归位';
+      post.imagePlan[2].bullets[1] = '5. 物品放回原位';
+      let calls = 0;
+      const result = await withPromptRuntime(visualRuntime(enabled), () => generateVisualPlan({
+        post, client: { async runText() {
+          calls += 1;
+          return { rawText: JSON.stringify(createMockVisualPlan(post)), model: 'fake-number-planner' };
+        } },
+      }));
+      assert.equal(calls, enabled ? 1 : 0);
+      assert.equal(result.degraded, false);
+      assertOriginalText(result.visualPlan, post);
+      assert.doesNotThrow(() => parseVisualPlanOutput(JSON.stringify(result.visualPlan), { post }));
+    }
+  });
+
+  it('rejects unsupported quantities before either planning mode calls a model', async () => {
+    for (const enabled of [false, true]) {
+      for (const body of ['留出50分钟', '留出十五分钟', '比例为5%', '5. 归位物品']) {
+        const post = createMockPost(3);
+        post.body = body;
+        post.imagePlan[2].headline = '留出5分钟归位';
+        let calls = 0;
+        await assert.rejects(withPromptRuntime(visualRuntime(enabled), () => generateVisualPlan({
+          post, client: { async runText() { calls += 1; throw new Error('unexpected model call'); } },
+        })), /未支持的数字 5.*未调用视觉规划或生图模型/u);
+        assert.equal(calls, 0);
+      }
+    }
+  });
+
   it('rejects unsupported day and month before either planning mode calls a model, then permits a grounded date', async () => {
     for (const enabled of [false, true]) {
       const post = createMockPost(3);

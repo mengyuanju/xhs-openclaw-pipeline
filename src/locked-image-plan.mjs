@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { defaultLayoutTemplate } from './layout-contract.mjs';
+import { findUnsupportedImageNumber } from './image-numeric-evidence.mjs';
 
 export function lockedImageText(post) {
   if (!Array.isArray(post?.imagePlan) || post.imagePlan.length < 3 || post.imagePlan.length > 5) throw new TypeError('已确认的逐页配图策划不完整');
@@ -12,10 +13,10 @@ export const imageTextHash = (post) => createHash('sha256').update(JSON.stringif
 export function assertImagePlanNumericEvidence(post) {
   const corpus = `${post.title}\n${post.body}`;
   for (const page of lockedImageText(post)) {
-    const { headline, subtitle, bullets } = page.allowedVisibleText;
-    const numbers = [headline, subtitle, ...bullets].flatMap((text) => String(text).match(/\d+(?:\.\d+)?%?/gu) ?? []);
-    for (const number of numbers) if (!corpus.includes(number)) {
-      throw new TypeError(`原配图第 ${page.index} 页包含正文或标题未支持的数字 ${number}，请先修订配图文案；未调用视觉规划或生图模型`);
+    const unsupported = findUnsupportedImageNumber(page.allowedVisibleText, corpus);
+    if (unsupported) {
+      const { number, label, text } = unsupported;
+      throw new TypeError(`原配图第 ${page.index} 页包含正文或标题未支持的数字 ${number}（${label}：“${String(text).slice(0, 120)}”），请先修订配图文案；未调用视觉规划或生图模型`);
     }
   }
 }
