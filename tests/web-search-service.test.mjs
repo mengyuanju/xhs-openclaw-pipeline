@@ -9,6 +9,7 @@ import { createCopyGenerationClient } from '../src/copy-generation-client.mjs';
 import { CopyGenerationResearchError, generateCopy } from '../src/copy-generation.mjs';
 import { createMockPost } from '../src/pipeline.mjs';
 import { createPromptRuntime, withPromptRuntime } from '../src/prompt-runtime.mjs';
+import { withModelCallTracing } from '../src/model-call-trace.mjs';
 
 const environment = {
   XHS_WEB_SEARCH_PROVIDER: 'DEEPSEEK',
@@ -137,6 +138,8 @@ test('DeepSeek replaces only search and produces the existing bounded research s
   assert.deepEqual(calls[0].body.tools, [{ type: 'web_search' }]);
   assert.deepEqual(calls[0].body.tool_choice, { type: 'web_search' });
   assert.equal(calls[0].body.max_output_tokens, 8192);
+  assert.equal(calls[0].body.stream, false);
+  assert.equal(calls[0].init.headers.Accept, 'application/json');
   assert.equal(calls[0].body.text.format.type, 'json_schema');
   assert.deepEqual(calls[0].body.text.format.schema.required, ['summary', 'sources']);
   assert.doesNotMatch(calls[0].init.body + JSON.stringify(snapshot), /test-search-secret/u);
@@ -189,6 +192,67 @@ test('upstream HTTP, network, and JSON errors never expose response bodies or cr
     assert.equal(snapshot.status, 'FAILED');
     assert.equal(snapshot.attempts[0].provider, 'deepseek');
     assert.ok(!JSON.stringify(snapshot).includes(secret));
+  }
+});
+
+test('body timeout after successful HTTP headers is not misreported as invalid JSON', async () => {
+  let requests = 0;
+  const client = withWebSearchProvider({}, { environment, fetchImpl: async (_url, { signal }) => {
+    requests++;
+    return new Response(new ReadableStream({ start(controller) {
+      controller.enqueue(new TextEncoder().encode('\n\n'));
+      signal.addEventListener('abort', () => controller.error(signal.reason), { once: true });
+    } }));
+  } });
+  // Keep the event loop alive while AbortSignal.timeout's unref'd timer runs.
+  const keepAlive = setInterval(() => {}, 1000);
+  try {
+    await assert.rejects(client.runWebSearch({ query: 'fixture', timeoutMs: 5000 }), error => {
+      assert.match(error.message, /timed out while reading response body.*5000/);
+      assert.doesNotMatch(error.message, /JSON/);
+      return true;
+    });
+  } finally { clearInterval(keepAlive); }
+  assert.equal(requests, 1);
+});
+
+test('interrupted response bodies retain a transport error without exposing the upstream cause', async () => {
+  const client = withWebSearchProvider({}, { environment, fetchImpl: async () => new Response(
+    new ReadableStream({ start(controller) { controller.error(new TypeError(environment.DEEPSEEK_API_KEY)); } }),
+  ) });
+  await assert.rejects(client.runWebSearch({ query: 'fixture' }), error => {
+    assert.match(error.message, /body transfer was interrupted/);
+    assert.doesNotMatch(error.message, /not valid JSON|test-search-secret/);
+    return true;
+  });
+});
+
+test('non-streaming keep-alive whitespace is accepted without repeating research', async () => {
+  let requests = 0;
+  const client = withWebSearchProvider({}, { environment, fetchImpl: async () => {
+    requests++;
+    return new Response(`\r\n\n ${JSON.stringify(responsePayload())}\n`);
+  } });
+  assert.equal((await client.runWebSearch({ query: 'fixture' })).result.content, evidence.summary);
+  assert.equal(requests, 1);
+});
+
+test('invalid HTTP bodies have distinct safe diagnostics and cannot supply research evidence', async () => {
+  for (const [raw, expected, format] of [
+    ['\r\n\n', /empty response body/, 'EMPTY'],
+    [`<html>${environment.DEEPSEEK_API_KEY}</html>`, /HTML\/XML page/, 'HTML_OR_XML'],
+    ['event: response.completed\ndata: {}\n\n', /unexpected event stream/, 'EVENT_STREAM'],
+    ['{"status":"completed","output":', /malformed or truncated/, 'JSON_OR_TEXT'],
+  ]) {
+    const records = [];
+    const client = withWebSearchProvider({}, { environment, fetchImpl: async () => new Response(raw) });
+    await withModelCallTracing({ executionId: 'body-failure', controlPlane: {
+      async recordModelCall(_executionId, _id, record) { records.push(record); },
+    } }, () => assert.rejects(client.runWebSearch({ query: 'fixture' }), expected));
+    const last = records.at(-1);
+    assert.equal(last.status, 'FAILED');
+    assert.equal(JSON.parse(last.response).bodyFormat, format);
+    assert.doesNotMatch(JSON.stringify(records), /test-search-secret/);
   }
 });
 
