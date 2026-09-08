@@ -38,7 +38,9 @@ test('locked copy fields explain every rating prerequisite on pointer and keyboa
 
   assert.match(source, /请先完成机器原稿评分并填写反馈后再编辑/u);
   assert.match(source, /请先分配负责人，再进行文案评分和编辑/u);
-  assert.match(source, /detail\.assignedToUserId !== null/u);
+  assert.match(source, /detail\.assignedToUserId === currentUsername/u);
+  assert.match(source, /detail\.assignedToAccountId === currentAccountId/u);
+  assert.match(source, /当前任务已分配给其他负责人，你可以查看，但不能评分或编辑/u);
   assert.match(source, /请先完成当前修改稿评分并填写反馈后再编辑/u);
   assert.match(source, /当前稿评为 1 分，不支持编辑/u);
   assert.match(source, /当前稿评为 3 分，已达到直接放行标准，无需修改/u);

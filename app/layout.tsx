@@ -5,7 +5,7 @@ import { readServerSession } from './server-session';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: '内容工场 · OpenClaw',
+  title: '内容工场 · Codex',
   description: '小红书内容批量生成与审核后台',
 };
 

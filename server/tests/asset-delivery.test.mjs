@@ -55,7 +55,13 @@ async function assetFixture(t, { width = 1200, height = 800, lightweightOnly = f
     mediaType: 'image/png', originalName: '01-cover.png', byteSize: original.length,
     sha256: createHash('sha256').update(original).digest('hex'),
   };
-  const task = { id: 12, createdByUserId: 'alice' };
+  const task = {
+    id: 12,
+    createdByUserId: 'alice',
+    createdByAccountId: 2,
+    assignedToUserId: 'alice',
+    assignedToAccountId: 2,
+  };
   const users = {
     alice: { id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 },
     bob: { id: 3, username: 'bob', role: 'USER', status: 'ACTIVE', credentialVersion: 1 },

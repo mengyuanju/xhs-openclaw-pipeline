@@ -107,12 +107,13 @@ test('isolated PostgreSQL: assignment integrity and fairness survive upgrade and
   });
   await applyThrough(pool, '0016_human_quality_assessments');
   const repository = new PostgresControlPlaneRepository({ pool });
-  await repository.registerNode({
-    nodeId: 'upgrade-test',
-    imageWorkerEnabled: true,
-    copyConcurrency: 2,
-    imageConcurrency: 2,
-  });
+  // Seed through the 0016 schema rather than the current repository method,
+  // which may reference columns introduced by later migrations.
+  await pool.query(`
+    INSERT INTO executor_nodes(
+      id, name, image_worker_enabled, copy_concurrency, image_concurrency
+    ) VALUES ($1, $2, $3, $4, $5)
+  `, ['upgrade-test', 'upgrade-test', true, 2, 2]);
 
   // Reproduce the identity ambiguity present when 0017 was deployed: an old
   // account was deleted, then its username was reused before 0017 backfilled
@@ -235,6 +236,8 @@ test('isolated PostgreSQL: assignment integrity and fairness survive upgrade and
   const [explicitlyUnassigned] = await repository.createTasks({
     nodeId: 'upgrade-test',
     createdByUserId: 'legacy.worker',
+    assignedToUserId: 'legacy.worker',
+    assignmentSource: 'SELF',
     tasks: [{ query: '管理员明确撤回的任务' }],
   });
   await repository.assignTask(explicitlyUnassigned.id, {
@@ -291,6 +294,8 @@ test('isolated PostgreSQL: assignment integrity and fairness survive upgrade and
   const [deletedOwnerTask] = await repository.createTasks({
     nodeId: 'upgrade-test',
     createdByUserId: 'post17.worker',
+    assignedToUserId: 'post17.worker',
+    assignmentSource: 'SELF',
     tasks: [{ query: '负责人被旧逻辑删除的任务' }],
   });
   await pool.query("DELETE FROM app_users WHERE username = 'post17.worker'");
@@ -414,6 +419,16 @@ test('isolated PostgreSQL: assignment integrity and fairness survive upgrade and
     WHERE username = 'cursor.worker'
   `)).rows[0].count, '0');
 
+  assert.deepEqual(await applyThrough(pool, '0023_executor_node_retirement'), [
+    '0023_executor_node_retirement',
+  ]);
+  assert.equal((await pool.query(`
+    SELECT retired_at
+    FROM executor_nodes
+    WHERE id = 'upgrade-test'
+  `)).rows[0].retired_at, null);
+  assert.deepEqual(await applyThrough(pool, '0023_executor_node_retirement'), []);
+
   await repository.putAutoAssignmentWorker('pool.worker', {
     status: 'ACTIVE',
     assignmentLimit: 10,
@@ -424,35 +439,40 @@ test('isolated PostgreSQL: assignment integrity and fairness survive upgrade and
     expectedVersion: 1,
     actorUsername: 'admin',
   });
+  const [normalReviewTask] = await repository.createTasks({
+    nodeId: 'upgrade-test',
+    createdByUserId: 'admin',
+    assignedToUserId: null,
+    tasks: [{ query: '正常待文案审核任务' }],
+  });
+  await pool.query(`
+    UPDATE tasks SET state = 'COPY_REVIEW_PENDING', current_stage = 'COPY_REVIEW_PENDING',
+      current_execution_id = NULL, progress_message = '文案生成完成，等待分配负责人后审核'
+    WHERE id = $1
+  `, [normalReviewTask.id]);
   const replenished = await repository.replenishAutoAssignments();
   assert.equal(replenished.outcome, 'ASSIGNED');
-  assert.ok(replenished.assignedTaskIds.includes(legacyImage.id));
-  assert.ok(replenished.assignedTaskIds.includes(legacyImageFailed.id));
-  assert.ok(replenished.assignedTaskIds.includes(legacyImageExhausted.id));
-  assert.equal(replenished.assignedTaskIds.includes(legacyManualArchive.id), false);
+  assert.deepEqual(replenished.assignedTaskIds, [normalReviewTask.id]);
   const assignedImage = await repository.getTask(legacyImage.id);
   assert.equal(assignedImage.state, 'IMAGE_QUEUED');
-  assert.equal(assignedImage.assignedToUserId, 'pool.worker');
-  assert.equal(assignedImage.assignmentSource, 'AUTO');
-  assert.equal(assignedImage.progressMessage, '等待图片执行机领取');
+  assert.equal(assignedImage.assignedToUserId, null);
+  assert.equal(assignedImage.assignmentSource, null);
   const assignedFailure = await repository.getTask(legacyImageFailed.id);
-  assert.equal(assignedFailure.assignedToUserId, 'pool.worker');
+  assert.equal(assignedFailure.assignedToUserId, null);
   assert.equal(assignedFailure.state, 'IMAGE_FAILED');
   assert.equal(assignedFailure.error, 'legacy image failure');
-  assert.equal(assignedFailure.progressMessage, '图片生成失败，等待人工处理');
   const assignedExhausted = await repository.getTask(legacyImageExhausted.id);
-  assert.equal(assignedExhausted.assignedToUserId, 'pool.worker');
+  assert.equal(assignedExhausted.assignedToUserId, null);
   assert.equal(assignedExhausted.state, 'COPY_REVIEW_PENDING');
   assert.equal(assignedExhausted.currentStage, 'IMAGE_RETRY_EXHAUSTED');
   assert.equal(assignedExhausted.error, 'legacy image failure');
-  assert.equal(assignedExhausted.progressMessage, '图片重试次数已用尽，等待人工处理');
   const deferredArchive = await repository.getTask(legacyManualArchive.id);
   assert.equal(deferredArchive.assignedToUserId, null);
   assert.equal(deferredArchive.state, 'MANUAL_ARCHIVE');
   const overviewAfterRepair = await repository.getAutoAssignmentOverview();
-  assert.equal(overviewAfterRepair.unassignedTaskCount, 1);
+  assert.ok(overviewAfterRepair.unassignedTaskCount >= 4);
   assert.equal(overviewAfterRepair.autoAssignableTaskCount, 0);
-  assert.equal(overviewAfterRepair.manualAttentionTaskCount, 1);
+  assert.equal(overviewAfterRepair.manualAttentionTaskCount, overviewAfterRepair.unassignedTaskCount);
   const manuallyAssignedArchive = await repository.assignTask(legacyManualArchive.id, {
     assignedToUserId: 'pool.worker',
     actorUserId: 'admin',
@@ -485,6 +505,11 @@ test('isolated PostgreSQL: assignment integrity and fairness survive upgrade and
     assignedToUserId: null,
     tasks: [{ query: '公平游标任务一' }],
   });
+  await pool.query(`
+    UPDATE tasks SET state = 'COPY_REVIEW_PENDING', current_stage = 'COPY_REVIEW_PENDING',
+      current_execution_id = NULL
+    WHERE id = $1
+  `, [firstFairTask.id]);
   const firstFairRun = await repository.replenishAutoAssignments();
   assert.deepEqual(firstFairRun.assignedTaskIds, [firstFairTask.id]);
   assert.equal((await repository.getTask(firstFairTask.id)).assignedToUserId, 'fair.alice');
@@ -511,6 +536,11 @@ test('isolated PostgreSQL: assignment integrity and fairness survive upgrade and
     assignedToUserId: null,
     tasks: [{ query: '公平游标任务二' }],
   });
+  await pool.query(`
+    UPDATE tasks SET state = 'COPY_REVIEW_PENDING', current_stage = 'COPY_REVIEW_PENDING',
+      current_execution_id = NULL
+    WHERE id = $1
+  `, [secondFairTask.id]);
   const secondFairRun = await repository.replenishAutoAssignments();
   assert.deepEqual(secondFairRun.assignedTaskIds, [secondFairTask.id]);
   assert.equal((await repository.getTask(secondFairTask.id)).assignedToUserId, 'fair.bob');

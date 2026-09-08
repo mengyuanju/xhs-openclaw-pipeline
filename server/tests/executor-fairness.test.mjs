@@ -104,8 +104,8 @@ test('0020 creates and safely seeds only COPY and IMAGE cursors without touching
   assert.doesNotMatch(migration.sql, /UPDATE\s+tasks/u);
 });
 
-test('COPY claims lock the cursor, rank one task per owner and advance to the final claimed owner before the receipt', async () => {
-  const candidates = [queuedTask(11, 'carol'), queuedTask(12, 'alice')];
+test('COPY claims use a global FIFO that accepts unassigned work without touching owner cursors', async () => {
+  const candidates = [unassignedTask(11), queuedTask(12, 'alice')];
   const { repository, calls } = claimFixture({ candidates });
   const requestId = requestIdAt();
 
@@ -113,39 +113,29 @@ test('COPY claims lock the cursor, rank one task per owner and advance to the fi
   assert.deepEqual(result.claims.map(({ task }) => task.id), [11, 12]);
 
   const activeIndex = calls.findIndex(({ sql }) => sql.includes('COUNT(*)') && sql.includes('task_executions'));
-  const cursorIndex = calls.findIndex(({ sql }) => sql.includes('SELECT last_assignee_user_id'));
   const candidateIndex = calls.findIndex(({ sql }) => sql.includes('FOR UPDATE OF task SKIP LOCKED'));
-  const cursorUpdateIndex = calls.findIndex(({ sql }) => sql.includes('UPDATE execution_claim_cursors'));
   const receiptIndex = calls.findIndex(({ sql }) => sql.includes('INSERT INTO execution_claim_requests'));
-  assert.ok(activeIndex < cursorIndex && cursorIndex < candidateIndex);
-  assert.ok(candidateIndex < cursorUpdateIndex && cursorUpdateIndex < receiptIndex);
+  assert.ok(activeIndex < candidateIndex && candidateIndex < receiptIndex);
+  assert.equal(calls.some(({ sql }) => sql.includes('execution_claim_cursors')), false);
 
-  const cursorLock = calls[cursorIndex];
-  assert.deepEqual(cursorLock.values, ['COPY']);
-  assert.match(cursorLock.sql, /WHERE kind = \$1[\s\S]*FOR UPDATE/u);
   const selection = calls[candidateIndex];
-  assert.deepEqual(selection.values, ['COPY_QUEUED', 'bob', 2]);
-  assert.match(selection.sql, /WITH ranked_candidates AS MATERIALIZED/u);
-  assert.match(selection.sql, /queued\.assigned_to_user_id AS claim_owner/u);
-  assert.match(selection.sql, /row_number\(\) OVER \([\s\S]*PARTITION BY queued\.assigned_to_user_id[\s\S]*ORDER BY queued\.id/u);
-  assert.match(selection.sql, /JOIN tasks AS task ON task\.id = ranked\.task_id/u);
-  assert.match(selection.sql, /queued\.assigned_to_user_id IS NOT NULL/u);
-  assert.match(selection.sql, /task\.assigned_to_user_id IS NOT NULL/u);
-  assert.match(selection.sql, /task\.assigned_to_user_id IS NOT DISTINCT FROM ranked\.assigned_to_user_id/u);
-  assert.match(selection.sql, /ranked\.owner_row_number,[\s\S]*ranked\.claim_owner > \$2::varchar[\s\S]*ranked\.claim_owner,[\s\S]*ranked\.task_id/u);
-  assert.match(selection.sql, /FOR UPDATE OF task SKIP LOCKED[\s\S]*LIMIT \$3/u);
+  assert.deepEqual(selection.values, ['COPY_QUEUED', 2]);
+  assert.match(selection.sql, /FROM tasks AS task[\s\S]*WHERE task\.state = \$1[\s\S]*ORDER BY task\.id/u);
+  assert.match(selection.sql, /FOR UPDATE OF task SKIP LOCKED[\s\S]*LIMIT \$2/u);
+  assert.doesNotMatch(selection.sql, /assigned_to_user_id/u);
+  assert.doesNotMatch(selection.sql, /ranked_candidates/u);
   assert.doesNotMatch(selection.sql, /copy_executor_node_id/u);
-  assert.deepEqual(calls[cursorUpdateIndex].values, ['COPY', 'alice']);
 });
 
-test('COPY keeps a runtime guard against accidentally returned unassigned work', async () => {
+test('COPY can claim and persist unassigned work before its first human checkpoint', async () => {
   const fixture = claimFixture({ candidates: [unassignedTask(14)] });
-  await assert.rejects(
-    fixture.repository.claimCopyBatch({ nodeId: 'node-a', limit: 1, requestId: requestIdAt() }),
-    /copy task is missing its assignee/u,
-  );
+  const result = await fixture.repository.claimCopyBatch({
+    nodeId: 'node-a', limit: 1, requestId: requestIdAt(),
+  });
+  assert.equal(result.claims[0].task.id, 14);
+  assert.equal(result.claims[0].task.assignedToUserId, null);
   assert.equal(fixture.calls.some(({ sql }) => sql.includes('UPDATE execution_claim_cursors')), false);
-  assert.equal(fixture.calls.at(-1).sql, 'ROLLBACK');
+  assert.equal(fixture.calls.at(-1).sql, 'COMMIT');
 });
 
 test('IMAGE fairness retains retry ownership, recovery affinity, cooldown and original age order', async () => {
@@ -204,7 +194,7 @@ test('a successful non-empty receipt replay and full capacity do not touch the f
   assert.equal(full.calls.some(({ sql }) => sql.includes('execution_claim_cursors')), false);
 });
 
-test('a legacy receipt can replay an already-running unassigned COPY without making it newly claimable', async () => {
+test('a receipt can replay an already-running unassigned COPY without selecting it again', async () => {
   const requestId = requestIdAt();
   const executionId = '22222222-2222-4222-8222-222222222222';
   const legacyTask = unassignedTask(22, { state: 'COPY_RUNNING' });
@@ -223,12 +213,10 @@ test('a legacy receipt can replay an already-running unassigned COPY without mak
   assert.equal(replay.calls.some(({ sql }) => sql.includes('execution_claim_cursors')), false);
 });
 
-test('COPY and IMAGE claims lock and advance independent kind cursors', async () => {
+test('only IMAGE claims lock and advance the assignee fairness cursor', async () => {
   const copy = claimFixture({ candidates: [queuedTask(41, 'copy.owner')] });
   await copy.repository.claimCopy('node-a');
-  assert.deepEqual(copy.calls.find(({ sql }) => sql.includes('SELECT last_assignee_user_id')).values, ['COPY']);
-  assert.deepEqual(copy.calls.find(({ sql }) => sql.includes('UPDATE execution_claim_cursors')).values,
-    ['COPY', 'copy.owner']);
+  assert.equal(copy.calls.some(({ sql }) => sql.includes('execution_claim_cursors')), false);
 
   const imageTask = queuedTask(42, 'image.owner', {
     state: 'IMAGE_QUEUED', current_copy_revision_id: 7,
@@ -240,24 +228,25 @@ test('COPY and IMAGE claims lock and advance independent kind cursors', async ()
     ['IMAGE', 'image.owner']);
 });
 
-test('a missing cursor row or failed cursor update aborts the claim transaction', async () => {
-  const missing = claimFixture({ cursorPresent: false });
-  await assert.rejects(missing.repository.claimCopy('node-a'), /cursor is missing for COPY/u);
+test('a missing IMAGE cursor row or failed IMAGE cursor update aborts the claim transaction', async () => {
+  const missing = claimFixture({ kind: 'IMAGE', cursorPresent: false });
+  await assert.rejects(missing.repository.claimImage('node-a'), /cursor is missing for IMAGE/u);
   assert.equal(missing.calls.some(({ sql }) => sql.includes('FOR UPDATE OF task SKIP LOCKED')), false);
   assert.equal(missing.calls.at(-1).sql, 'ROLLBACK');
 
   const stale = claimFixture({
-    candidates: [queuedTask(43, 'alice')],
+    kind: 'IMAGE',
+    candidates: [queuedTask(43, 'alice', { state: 'IMAGE_QUEUED', current_copy_revision_id: 7 })],
     cursorUpdateResult: { rowCount: 0, rows: [] },
   });
-  await assert.rejects(stale.repository.claimCopy('node-a'), /cursor could not be advanced for COPY/u);
+  await assert.rejects(stale.repository.claimImage('node-a'), /cursor could not be advanced for IMAGE/u);
   assert.equal(stale.calls.at(-1).sql, 'ROLLBACK');
 });
 
-test('an empty queue keeps its cursor, and a failed claim rolls cursor changes back', async () => {
+test('COPY failures and empty queues never touch an assignee cursor', async () => {
   const empty = claimFixture();
   assert.equal(await empty.repository.claimCopy('node-a'), null);
-  assert.equal(empty.calls.some(({ sql }) => sql.includes('SELECT last_assignee_user_id')), true);
+  assert.equal(empty.calls.some(({ sql }) => sql.includes('SELECT last_assignee_user_id')), false);
   assert.equal(empty.calls.some(({ sql }) => sql.includes('UPDATE execution_claim_cursors')), false);
 
   const candidate = queuedTask(31, 'carol');
@@ -273,6 +262,6 @@ test('an empty queue keeps its cursor, and a failed claim rolls cursor changes b
   await assert.rejects(receiptFailure.repository.claimCopyBatch({
     nodeId: 'node-a', limit: 1, requestId: requestIdAt(),
   }), /simulated claim failure/u);
-  assert.equal(receiptFailure.calls.some(({ sql }) => sql.includes('UPDATE execution_claim_cursors')), true);
+  assert.equal(receiptFailure.calls.some(({ sql }) => sql.includes('UPDATE execution_claim_cursors')), false);
   assert.equal(receiptFailure.calls.at(-1).sql, 'ROLLBACK');
 });

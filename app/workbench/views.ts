@@ -74,7 +74,7 @@ export const WORKBENCH_VIEWS: Array<{
     key: 'PERSONAL',
     href: '/workbench/personal',
     label: '个人作业中心',
-    description: '显示分配给当前账号的全部 Query 任务，可跟踪进度、审核、重试或废弃。',
+    description: '显示当前账号提交或负责的 Query；机器阶段可跟踪进度，分配后按权限审核或处理。',
     icon: UserRound,
     states: [
       'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_FAILED',
@@ -85,13 +85,10 @@ export const WORKBENCH_VIEWS: Array<{
   {
     key: 'UNASSIGNED',
     href: '/workbench/unassigned',
-    label: '待分配任务池',
-    description: '显示全部未结束且尚未指定负责人的 Query。分配负责人后，任务才会进入对应的执行或人工处理环节。',
+    label: '待审核分配',
+    description: '显示文案已经生成、正在等待分配审核负责人的 Query。机器生成阶段不需要负责人。',
     icon: Inbox,
-    states: [
-      'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_FAILED',
-      'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE',
-    ],
+    states: ['COPY_REVIEW_PENDING'],
     unassignedOnly: true,
     adminOnly: true,
   },
@@ -147,14 +144,22 @@ export const WORKBENCH_VIEWS: Array<{
 ];
 
 export function matchesWorkbenchView(
-  task: { state: TaskState; assignedToUserId?: string | null; createdByUserId?: string | null },
+  task: { state: TaskState; assignedToUserId?: string | null; assignedToAccountId?: number | null;
+    createdByUserId?: string | null; createdByAccountId?: number | null },
   view: (typeof WORKBENCH_VIEWS)[number],
   userId: string,
+  userAccountId?: number | null,
 ) {
   const assigneeUserId = Object.hasOwn(task, 'assignedToUserId')
     ? task.assignedToUserId
     : task.createdByUserId;
+  const createdByCurrentAccount = task.createdByUserId === userId
+    && (userAccountId === undefined || userAccountId === null
+      || task.createdByAccountId === userAccountId);
+  const assignedToCurrentAccount = assigneeUserId === userId
+    && (userAccountId === undefined || userAccountId === null
+      || task.assignedToAccountId === userAccountId);
   return view.states.includes(task.state)
-    && (!view.personalOnly || assigneeUserId === userId)
+    && (!view.personalOnly || assignedToCurrentAccount || createdByCurrentAccount)
     && (!view.unassignedOnly || assigneeUserId === null);
 }

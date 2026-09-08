@@ -83,13 +83,13 @@ describe('excellent copy analysis and classification UI', () => {
   });
 
   it('keeps manual layout templates restricted to administrators', async () => {
-    const [centerHttp, imageWorkbench] = await Promise.all([
+    const [centerHttp, settingsPage] = await Promise.all([
       source('server/src/http-server.mjs'),
-      source('app/image-generation/image-generation-workbench.tsx'),
+      source('app/settings/page.tsx'),
     ]);
-    assert.match(centerHttp, /actor: access\.actor/u);
-    assert.match(centerHttp, /actor\.username, actor\.role/u);
-    assert.match(imageWorkbench, /只有管理员可以指定或维护布局模板/u);
+    assert.match(settingsPage, /<LayoutCatalogSettings/u);
+    assert.match(centerHttp, /router\.get\('\/v1\/layout-catalog'[\s\S]*?requestActor\(ctx, \['ADMIN'\]\)/u);
+    assert.match(centerHttp, /router\.post\('\/v1\/layout-catalog'[\s\S]*?requestActor\(ctx, \['ADMIN'\]\)/u);
   });
 
   it('validates saved-copy edits through a strict bounded PATCH endpoint', async () => {

@@ -12,7 +12,12 @@ const row = (id, patch = {}) => {
   const createdByAccountId = Object.hasOwn(patch, 'createdByAccountId')
     ? patch.createdByAccountId
     : USER_IDS[createdByUserId] ?? 99;
-  return { id, state: 'COPY_QUEUED', createdByUserId, createdByAccountId, assignedToUserId: 'alice',
+  const assignedToUserId = Object.hasOwn(patch, 'assignedToUserId') ? patch.assignedToUserId : 'alice';
+  const assignedToAccountId = Object.hasOwn(patch, 'assignedToAccountId')
+    ? patch.assignedToAccountId
+    : assignedToUserId === null ? null : USER_IDS[assignedToUserId] ?? 99;
+  return { id, state: 'COPY_QUEUED', createdByUserId, createdByAccountId,
+    assignedToUserId, assignedToAccountId,
     createdAt: '2026-09-06T00:00:00Z', updatedAt: '2026-09-06T00:00:00Z', ...patch };
 };
 function fixture(rows, options = {}) {
@@ -30,6 +35,12 @@ function fixture(rows, options = {}) {
       const id = Number(url.pathname.split('/').at(-1));
       if (id) return Response.json({ data: { id, executions: [], imageRuns: [], assets: [] } });
       const selected = rows.filter(task => (
+        url.searchParams.get('personal') !== 'true'
+          || task.createdByUserId === init.headers['X-Actor-Username']
+            && task.createdByAccountId === Number(init.headers['X-Actor-User-Id'])
+          || task.assignedToUserId === init.headers['X-Actor-Username']
+            && task.assignedToAccountId === Number(init.headers['X-Actor-User-Id'])
+      ) && (
         !url.searchParams.has('createdByUserId')
           || task.createdByUserId === url.searchParams.get('createdByUserId')
       ) && (
@@ -52,11 +63,12 @@ test('statistics identity is session-bound and admin analysis cannot be requeste
   }
   assert.equal(calls.length, 0);
   const result = await service.read({ root, session: session(), username: 'bob' });
-  assert.equal(result.summary.total, 1);
+  assert.equal(result.summary.total, 2);
   assert.equal(result.summary.people, undefined);
   assert.equal(result.creators, undefined);
   assert.equal(result.details, null);
-  assert.match(calls[0].url, /assignedToUserId=alice/);
+  assert.match(calls[0].url, /personal=true/);
+  assert.doesNotMatch(calls[0].url, /assignedToUserId=/);
   assert.doesNotMatch(calls[0].url, /createdByUserId=/);
   assert.equal(calls[0].init.method, 'GET');
   assert.equal(calls[0].init.headers['X-Actor-User-Id'], '2');
@@ -65,7 +77,8 @@ test('statistics identity is session-bound and admin analysis cannot be requeste
 test('personal statistics rejects a center response containing another assignee', async () => {
   const service = createStatisticsService({
     fetchImpl: async () => Response.json({ data: {
-      items: [row(1, { assignedToUserId: 'bob' })], total: 1, offset: 0, limit: 200,
+      items: [row(1, { createdByUserId: 'bob', createdByAccountId: 3,
+        assignedToUserId: 'bob', assignedToAccountId: 3 })], total: 1, offset: 0, limit: 200,
     } }),
   });
   await assert.rejects(

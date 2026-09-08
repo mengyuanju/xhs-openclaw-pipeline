@@ -99,8 +99,10 @@ test('0018 creates an opt-in empty worker pool with bounded settings and audit h
 });
 
 test('overview reports configured capacity separately from eligibility and switch state', async () => {
+  const queries = [];
   const pool = { async query(sql) {
     const source = String(sql);
+    queries.push(source);
     if (source.includes('task_auto_assignment_settings')) {
       return { rows: [settingsRow()] };
     }
@@ -134,6 +136,16 @@ test('overview reports configured capacity separately from eligibility and switc
     { username: 'bob', availableSlots: 1, canReceive: false },
   ]);
   assert.equal(overview.events[0].actorUsername, 'admin');
+  const workerSelection = queries.find((source) => source.includes('FROM task_auto_assignment_workers AS pool'));
+  assert.match(workerSelection, /assigned_task\.state = 'COPY_REVIEW_PENDING'/u);
+  assert.match(workerSelection, /assigned_task\.current_stage = 'COPY_REVIEW_PENDING'/u);
+  assert.match(workerSelection, /assigned_task\.current_execution_id IS NULL/u);
+  const pendingSelection = queries.find((source) => source.includes('assigned_to_user_id IS NULL'));
+  assert.match(pendingSelection, /state NOT IN \('REVIEWED', 'CANCELLED'\)/u);
+  assert.match(pendingSelection, /state = 'COPY_REVIEW_PENDING'/u);
+  assert.match(pendingSelection, /current_stage = 'COPY_REVIEW_PENDING'/u);
+  assert.match(pendingSelection, /current_execution_id IS NULL/u);
+  assert.doesNotMatch(pendingSelection, /state = ANY/u);
 });
 
 test('settings updates use an optimistic version and write one management audit', async () => {

@@ -37,12 +37,12 @@ test('only authenticated administrators can enable copy review bypass for a batc
     assert.equal(calls[0].createdByUserId, 'admin');
     assert.equal(calls[0].assignedToUserId, 'user');
     assert.equal(calls[0].tasks.length, 2);
-    assert.equal((await create('admin', {
+    const unassignedBypass = await create('admin', {
       skipCopyReview: true, assignedToUserId: null,
-    })).status, 201);
-    assert.equal(calls[1].skipCopyReview, true);
-    assert.equal(calls[1].assignedToUserId, null);
-    assert.equal(calls.length, 2);
+    });
+    assert.equal(unassignedBypass.status, 409);
+    assert.equal((await unassignedBypass.json()).error.code, 'SKIP_COPY_REVIEW_ASSIGNEE_REQUIRED');
+    assert.equal(calls.length, 1);
   });
 });
 
@@ -81,20 +81,35 @@ test('task creation persists the batch policy separately from untrusted task inp
       release() {},
     };
     const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
-    const tasks = await repository.createTasks({ nodeId: 'node-a', createdByUserId: 'admin', skipCopyReview,
-      tasks: [{ query: '一', input: { skipCopyReview: !skipCopyReview } }, { query: '二' }] });
+    const tasks = await repository.createTasks({
+      nodeId: 'node-a',
+      createdByUserId: 'admin',
+      skipCopyReview,
+      ...(skipCopyReview ? { assignedToUserId: 'admin', assignmentSource: 'SELF' } : {}),
+      tasks: [{ query: '一', input: { skipCopyReview: !skipCopyReview } }, { query: '二' }],
+    });
     assert.deepEqual(tasks.map(task => task.skipCopyReview), [skipCopyReview, skipCopyReview]);
     assert.equal(inserts[0][1].skipCopyReview, !skipCopyReview);
     if (skipCopyReview) {
-      const pendingTasks = await repository.createTasks({
+      const insertsBeforeRejectedRequest = inserts.length;
+      await assert.rejects(repository.createTasks({
         nodeId: 'node-a', createdByUserId: 'admin', assignedToUserId: null,
         skipCopyReview: true, tasks: [{ query: '待自动分配后连续执行' }],
-      });
-      assert.equal(pendingTasks[0].skipCopyReview, true);
-      assert.equal(inserts.at(-1)[6], null);
-      assert.equal(inserts.at(-1)[7], null);
+      }), { code: 'SKIP_COPY_REVIEW_ASSIGNEE_REQUIRED' });
+      assert.equal(inserts.length, insertsBeforeRejectedRequest);
     }
   }
+});
+
+test('repository rejects unassigned bypass tasks before opening a transaction', async () => {
+  const repository = new PostgresControlPlaneRepository({
+    pool: { connect: async () => assert.fail('unassigned bypass must not connect') },
+  });
+  await assert.rejects(repository.createTasks({
+    nodeId: 'node-a', createdByUserId: 'admin', skipCopyReview: true,
+    tasks: [{ query: '不能静默降级' }],
+  }), (error) => error?.code === 'SKIP_COPY_REVIEW_ASSIGNEE_REQUIRED'
+    && /必须明确指定负责人/u.test(error.message));
 });
 
 test('repository rejects malformed bypass flags before writing tasks', async () => {

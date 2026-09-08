@@ -5,11 +5,7 @@ import { normalizeAutoAssignmentLimit } from './task-auto-assignment-domain.mjs'
 export const AUTO_ASSIGNMENT_ACTOR = 'system:auto-assignment';
 export const AUTO_ASSIGNMENT_MAX_PER_RUN = 500;
 export const AUTO_ASSIGNABLE_TASK_STATES = Object.freeze([
-  'COPY_QUEUED',
   'COPY_REVIEW_PENDING',
-  'COPY_FAILED',
-  'IMAGE_QUEUED',
-  'IMAGE_FAILED',
 ]);
 
 const AUTO_ASSIGNMENT_LOCK_KEYS = Object.freeze([4310, 8205]);
@@ -200,7 +196,9 @@ export async function runAutoAssignmentReplenishment(pool, {
           SELECT COUNT(*)
           FROM tasks AS assigned_task
           WHERE assigned_task.assigned_to_user_id = locked_pool.username
-            AND assigned_task.state NOT IN ('MANUAL_ARCHIVE', 'REVIEWED', 'CANCELLED')
+            AND assigned_task.state = 'COPY_REVIEW_PENDING'
+            AND assigned_task.current_stage = 'COPY_REVIEW_PENDING'
+            AND assigned_task.current_execution_id IS NULL
         ) AS current_task_count,
         fairness_cursor.last_auto_event_id
       FROM task_auto_assignment_workers AS locked_pool
@@ -238,6 +236,7 @@ export async function runAutoAssignmentReplenishment(pool, {
       FROM tasks
       WHERE assigned_to_user_id IS NULL
         AND state = ANY($1::varchar[])
+        AND current_stage = 'COPY_REVIEW_PENDING'
         AND current_execution_id IS NULL
       ORDER BY id
       FOR UPDATE SKIP LOCKED
@@ -270,23 +269,13 @@ export async function runAutoAssignmentReplenishment(pool, {
           assignment_source = 'AUTO',
           assigned_at = now(),
           progress_message = CASE
-            WHEN task.state = 'COPY_QUEUED' THEN '等待文案执行机领取'
             WHEN task.progress_message IS NULL OR task.progress_message IN (
                 '等待管理员分配作业员',
                 '等待分配负责人',
                 '负责人待分配，等待文案执行机领取',
                 '文案生成完成，等待分配负责人后审核'
               )
-              THEN CASE
-                WHEN task.state = 'IMAGE_QUEUED' THEN '等待图片执行机领取'
-                WHEN task.state = 'COPY_REVIEW_PENDING'
-                  AND task.current_stage = 'IMAGE_RETRY_EXHAUSTED'
-                  THEN '图片重试次数已用尽，等待人工处理'
-                WHEN task.state = 'COPY_REVIEW_PENDING' THEN '文案生成完成，等待人工审核'
-                WHEN task.state = 'COPY_FAILED' THEN '文案生成失败，等待人工处理'
-                WHEN task.state = 'IMAGE_FAILED' THEN '图片生成失败，等待人工处理'
-                ELSE task.progress_message
-              END
+              THEN '文案生成完成，等待人工审核'
             ELSE task.progress_message
           END,
           updated_at = now()
@@ -294,6 +283,7 @@ export async function runAutoAssignmentReplenishment(pool, {
       WHERE task.id = planned.task_id
         AND task.assigned_to_user_id IS NULL
         AND task.state = ANY($3::varchar[])
+        AND task.current_stage = 'COPY_REVIEW_PENDING'
         AND task.current_execution_id IS NULL
       RETURNING task.id, task.assigned_to_user_id
     `, [taskIds, assignees, AUTO_ASSIGNABLE_TASK_STATES]);

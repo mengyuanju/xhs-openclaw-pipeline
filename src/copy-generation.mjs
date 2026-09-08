@@ -7,7 +7,7 @@ import {
   runQueryReview,
   runTextReview,
 } from './content-stage-review.mjs';
-import { createAgentClient as createOpenClawClient } from './agent-client.mjs';
+import { createAgentClient } from './agent-client.mjs';
 import {
   buildPostPrompt,
   filterAllowedSourceReferences,
@@ -273,7 +273,7 @@ export class CopyGenerationContractError extends Error {
 
 async function createPostFromPrompt(client, task, basePrompt, options) {
   if (typeof client?.runText !== 'function') {
-    throw new TypeError('OpenClaw text client is required');
+    throw new TypeError('Model text client is required');
   }
   let lastError;
   let previousOutput = '';
@@ -335,7 +335,7 @@ async function createReviewedPost(client, task, originalPost, originalReview, op
 /**
  * @param {{
  *   task: { query: string, input?: Record<string, unknown> },
- *   client?: ReturnType<typeof createOpenClawClient>,
+ *   client?: ReturnType<typeof createAgentClient>,
  *   systemPrompt?: string,
  *   copyKnowledge?: Array<Record<string, unknown>>,
  *   imageCount?: number | 'auto',
@@ -352,7 +352,7 @@ export function generateCopy(options) {
 
 async function generateCopyInContext({
   task,
-  client = createOpenClawClient(),
+  client = createAgentClient(),
   systemPrompt,
   copyKnowledge,
   imageCount = 'auto',

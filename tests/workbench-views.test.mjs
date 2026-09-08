@@ -5,7 +5,7 @@ import { compareTasksByStatePriority, TASK_STATE_PRIORITY, WORKBENCH_VIEWS, matc
 
 test('workbench routes include completed work after manual archive', () => {
   assert.deepEqual(WORKBENCH_VIEWS.map((view) => view.label), [
-    '个人作业中心', '待分配任务池', '全部文案任务', '待文案审核', '生图中', '人工归档', '已完成', '全部作业',
+    '个人作业中心', '待审核分配', '全部文案任务', '待文案审核', '生图中', '人工归档', '已完成', '全部作业',
   ]);
   assert.equal(new Set(WORKBENCH_VIEWS.map((view) => view.href)).size, 8);
   assert.ok(WORKBENCH_VIEWS.every((view) => view.href.startsWith('/workbench/')));
@@ -22,24 +22,19 @@ test('administrator all jobs includes every task state and historical ownership'
   }
 });
 
-test('pending pool exposes every unfinished task that has lost its assignee', () => {
+test('pending-assignment view exposes only unassigned normal copy review', () => {
   const pending = WORKBENCH_VIEWS.find((view) => view.key === 'UNASSIGNED');
   assert.ok(pending);
-  const unfinished = [
-    'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_FAILED',
-    'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE',
-  ];
-  assert.deepEqual(pending.states, unfinished);
-  for (const state of unfinished) {
-    assert.equal(matchesWorkbenchView({ state, assignedToUserId: null }, pending, 'admin'), true);
-    assert.equal(matchesWorkbenchView({ state, assignedToUserId: 'alice' }, pending, 'admin'), false);
-  }
-  for (const state of ['REVIEWED', 'CANCELLED']) {
+  assert.deepEqual(pending.states, ['COPY_REVIEW_PENDING']);
+  assert.equal(matchesWorkbenchView({ state: 'COPY_REVIEW_PENDING', assignedToUserId: null }, pending, 'admin'), true);
+  assert.equal(matchesWorkbenchView({ state: 'COPY_REVIEW_PENDING', assignedToUserId: 'alice' }, pending, 'admin'), false);
+  for (const state of ['COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED', 'IMAGE_QUEUED', 'IMAGE_RUNNING',
+    'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'REVIEWED', 'CANCELLED']) {
     assert.equal(matchesWorkbenchView({ state, assignedToUserId: null }, pending, 'admin'), false);
   }
 });
 
-test('personal tasks include every active lifecycle state owned by the current user', () => {
+test('personal tasks include every active lifecycle state submitted by or assigned to the current user', () => {
   const personal = WORKBENCH_VIEWS[0];
   assert.deepEqual(personal.states, [
     'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_FAILED',
@@ -62,13 +57,21 @@ test('personal tasks include every active lifecycle state owned by the current u
     { id: 14, state: 'COPY_RUNNING', createdByUserId: 'bob', assignedToUserId: 'bob' },
     { id: 15, state: 'COPY_FAILED', createdByUserId: 'bob', assignedToUserId: 'bob' },
   ];
-  assert.deepEqual(tasks.filter((task) => matchesWorkbenchView(task, personal, 'alice')).map((task) => task.id), [1, 2, 3, 4, 8, 9, 10, 11, 12, 13]);
-  assert.deepEqual(tasks.filter((task) => matchesWorkbenchView(task, personal, 'bob')).map((task) => task.id), [5, 14, 15]);
+  assert.deepEqual(tasks.filter((task) => matchesWorkbenchView(task, personal, 'alice')).map((task) => task.id), [1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13]);
+  assert.deepEqual(tasks.filter((task) => matchesWorkbenchView(task, personal, 'bob')).map((task) => task.id), [1, 5, 14, 15]);
+  assert.equal(matchesWorkbenchView({ state: 'COPY_QUEUED', createdByUserId: 'alice', createdByAccountId: 2,
+    assignedToUserId: null }, personal, 'alice', 1), false);
+  assert.equal(matchesWorkbenchView({ state: 'COPY_QUEUED', createdByUserId: 'alice', createdByAccountId: 1,
+    assignedToUserId: null }, personal, 'alice', 1), true);
+  assert.equal(matchesWorkbenchView({ state: 'COPY_QUEUED', createdByUserId: 'bob', createdByAccountId: 2,
+    assignedToUserId: 'alice', assignedToAccountId: 2 }, personal, 'alice', 1), false);
+  assert.equal(matchesWorkbenchView({ state: 'COPY_QUEUED', createdByUserId: 'bob', createdByAccountId: 2,
+    assignedToUserId: 'alice', assignedToAccountId: 1 }, personal, 'alice', 1), true);
   const allCopy = WORKBENCH_VIEWS.find((view) => view.key === 'ALL_COPY');
   assert.deepEqual(tasks.filter((task) => matchesWorkbenchView(task, allCopy, 'alice')).map((task) => task.id), [1, 5, 6, 8, 9, 14, 15]);
   const unassigned = WORKBENCH_VIEWS.find((view) => view.key === 'UNASSIGNED');
   assert.equal(unassigned.adminOnly, true);
-  assert.deepEqual(tasks.filter((task) => matchesWorkbenchView(task, unassigned, 'admin')).map((task) => task.id), [6]);
+  assert.deepEqual(tasks.filter((task) => matchesWorkbenchView(task, unassigned, 'admin')).map((task) => task.id), []);
 });
 
 test('task lists prioritize lifecycle state and use newest-first order within a state', () => {

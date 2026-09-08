@@ -196,22 +196,19 @@ test('runner locks settings, active users, pool members and pending tasks in ord
   assert.match(userSql, /FOR SHARE OF app_user/u);
   assert.match(memberLockSql, /pool.status = 'ACTIVE'[\s\S]*FOR UPDATE OF pool/u);
   assert.doesNotMatch(memberLockSql, /FROM tasks|task_assignment_events/u);
-  assert.match(workerMetricsSql, /state NOT IN \('MANUAL_ARCHIVE', 'REVIEWED', 'CANCELLED'\)/u);
-  assert.doesNotMatch(workerMetricsSql, /COPY_FAILED|IMAGE_FAILED/u);
+  assert.match(workerMetricsSql, /state = 'COPY_REVIEW_PENDING'[\s\S]*current_stage = 'COPY_REVIEW_PENDING'[\s\S]*current_execution_id IS NULL/u);
+  assert.doesNotMatch(workerMetricsSql, /COPY_QUEUED|COPY_FAILED|IMAGE_QUEUED|IMAGE_FAILED|IMAGE_RETRY_EXHAUSTED/u);
   assert.match(workerMetricsSql, /LEFT JOIN task_auto_assignment_cursors AS fairness_cursor/u);
   assert.doesNotMatch(workerMetricsSql, /FROM task_assignment_events/u);
   assert.doesNotMatch(workerMetricsSql, /FOR UPDATE/u);
-  assert.match(candidateSql, /assigned_to_user_id IS NULL[\s\S]*state = ANY\(\$1::varchar\[\]\)[\s\S]*current_execution_id IS NULL/u);
-  assert.deepEqual(AUTO_ASSIGNABLE_TASK_STATES, [
-    'COPY_QUEUED', 'COPY_REVIEW_PENDING', 'COPY_FAILED', 'IMAGE_QUEUED', 'IMAGE_FAILED',
-  ]);
-  assert.doesNotMatch(candidateSql, /IMAGE_RETRY_EXHAUSTED/u);
+  assert.match(candidateSql, /assigned_to_user_id IS NULL[\s\S]*state = ANY\(\$1::varchar\[\]\)[\s\S]*current_stage = 'COPY_REVIEW_PENDING'[\s\S]*current_execution_id IS NULL/u);
+  assert.deepEqual(AUTO_ASSIGNABLE_TASK_STATES, ['COPY_REVIEW_PENDING']);
+  assert.doesNotMatch(candidateSql, /COPY_QUEUED|COPY_FAILED|IMAGE_QUEUED|IMAGE_FAILED|IMAGE_RETRY_EXHAUSTED/u);
   assert.match(candidateSql, /ORDER BY id[\s\S]*FOR UPDATE SKIP LOCKED/u);
   assert.match(updatedSql, /assignment_source = 'AUTO'/u);
-  assert.match(updatedSql, /progress_message = CASE[\s\S]*COPY_QUEUED[\s\S]*IMAGE_QUEUED/u);
-  assert.match(updatedSql, /IMAGE_RETRY_EXHAUSTED'[\s\S]*'图片重试次数已用尽，等待人工处理'/u);
-  assert.match(updatedSql, /IMAGE_FAILED'[\s\S]*'图片生成失败，等待人工处理'/u);
-  assert.match(updatedSql, /assigned_to_user_id IS NULL[\s\S]*task\.state = ANY\(\$3::varchar\[\]\)[\s\S]*current_execution_id IS NULL/u);
+  assert.match(updatedSql, /progress_message = CASE[\s\S]*'文案生成完成，等待人工审核'/u);
+  assert.doesNotMatch(updatedSql, /COPY_QUEUED|COPY_FAILED|IMAGE_QUEUED|IMAGE_FAILED|IMAGE_RETRY_EXHAUSTED/u);
+  assert.match(updatedSql, /assigned_to_user_id IS NULL[\s\S]*task\.state = ANY\(\$3::varchar\[\]\)[\s\S]*task\.current_stage = 'COPY_REVIEW_PENDING'[\s\S]*current_execution_id IS NULL/u);
   assert.equal(auditValues[2], AUTO_ASSIGNMENT_ACTOR);
   assert.deepEqual(auditValues[1], ['bob', 'alice', 'bob']);
   assert.deepEqual(cursorValues, [['alice', 'bob'], ['12', '13']]);
@@ -362,9 +359,16 @@ test('manual assignment locks a target pool member before task rows without enfo
     if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
     if (sql.includes("status = 'ACTIVE' AND role = 'USER'")) return { rows: [{ username: 'alice' }] };
     if (sql.includes('SELECT username FROM task_auto_assignment_workers')) return { rows: [{ username: 'alice' }] };
-    if (sql.includes('SELECT * FROM tasks WHERE id = ANY')) return { rows: [taskRow(9)] };
+    if (sql.includes('SELECT * FROM tasks WHERE id = ANY')) return { rows: [taskRow(9, {
+      state: 'COPY_REVIEW_PENDING',
+      current_stage: 'COPY_REVIEW_PENDING',
+    })] };
     if (sql.includes('UPDATE tasks SET')) return { rows: [taskRow(9, {
-      assigned_to_user_id: values[1], assignment_source: 'MANUAL', assigned_at: new Date(),
+      state: 'COPY_REVIEW_PENDING',
+      current_stage: 'COPY_REVIEW_PENDING',
+      assigned_to_user_id: values[1],
+      assignment_source: 'MANUAL',
+      assigned_at: new Date(),
     })] };
     if (sql.includes('INSERT INTO task_assignment_events')) return { rows: [] };
     throw new Error(`unexpected query: ${sql}`);
@@ -382,7 +386,7 @@ test('manual assignment locks a target pool member before task rows without enfo
   assert.equal(database.calls.some(({ sql }) => sql.includes('assignment_limit')), false);
 });
 
-test('SELF task creation locks its account and pool member before inserting the task', async () => {
+test('explicit SELF task creation locks an active USER account and pool member before inserting', async () => {
   const database = fakePool(({ sql, values }) => {
     if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
     if (sql.includes('INSERT INTO executor_nodes')) return { rows: [] };
@@ -408,7 +412,7 @@ test('SELF task creation locks its account and pool member before inserting the 
   assert.ok(userLock > 0 && userLock < memberLock && memberLock < nodeInsert && nodeInsert < taskInsert);
   assert.match(database.calls[userLock].sql, /FOR UPDATE/u);
   assert.match(database.calls[userLock].sql, /status = 'ACTIVE'/u);
-  assert.doesNotMatch(database.calls[userLock].sql, /role = 'USER'/u);
+  assert.match(database.calls[userLock].sql, /role = 'USER'/u);
 });
 
 test('SELF task creation rejects a missing or inactive account before locking the pool or inserting tasks', async () => {

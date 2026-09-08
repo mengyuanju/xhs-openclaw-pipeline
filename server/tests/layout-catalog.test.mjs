@@ -17,6 +17,7 @@ test('center validates and saves full planning before images and accepts idempot
   const plan = catalogDirectPlan(createMockVisualPlan(post), post, BUILTIN_LAYOUT_CATALOG);
   let stored = null; let writes = 0; let active = true;
   const client = { release() {}, async query(sql, values = []) {
+    if (sql.includes('SELECT t.id') && sql.includes('SELECT e.task_id')) return { rows: [{ id: 1 }] };
     if (sql.includes('SELECT e.*')) return { rows: [{ id, kind: 'IMAGE', status: 'RUNNING', current_execution_id: active ? id : null, snapshot: { copyRevision: { content: { copy: { title: post.title, body: post.body, tags: post.tags }, imagePlan: post.imagePlan } }, productionSettings: { production: { value: { layoutCatalog: BUILTIN_LAYOUT_CATALOG } } } } }] };
     if (sql.startsWith('SELECT result FROM image_runs')) return { rows: [{ result: reorder(stored) }] };
     if (sql.startsWith('UPDATE image_runs SET result')) { writes++; stored = structuredClone(values[1]); }
@@ -44,6 +45,7 @@ test('catalog completion requires validated planning and retry snapshots retain 
   const execution = { id, task_id: 1, node_id: 'node-a', kind: 'IMAGE', status: 'RUNNING', current_execution_id: id, snapshot };
   let stored = null; const writes = [];
   const client = { release() {}, async query(sql, values = []) {
+    if (sql.includes('SELECT t.id') && sql.includes('SELECT e.task_id')) return { rows: [{ id: 1 }] };
     if (sql.includes('SELECT e.*')) return { rows: [execution] };
     if (sql.startsWith('SELECT result FROM image_runs')) return { rows: [{ result: stored }] };
     if (sql.startsWith('SELECT * FROM tasks')) return { rows: [{ id: 1, state: 'IMAGE_FAILED', current_execution_id: null }] };

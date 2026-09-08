@@ -5,18 +5,18 @@ import { effectiveModelApiConfig, normalizeModelApiSettings, publicModelApiStatu
 test('agent runtime defaults to Codex while retaining independent copy and search choices', () => {
   const config = effectiveModelApiConfig({}, {});
   assert.equal(config.agentProvider, 'CODEX');
-  assert.equal(config.copyGenerationProvider, 'OPENCLAW');
+  assert.equal(config.copyGenerationProvider, 'CODEX');
   const custom = effectiveModelApiConfig({ copyGenerationProvider: 'DOTS', webSearchProvider: 'DEEPSEEK' }, {});
   assert.equal(custom.agentProvider, 'CODEX');
   assert.equal(custom.copyGenerationProvider, 'DOTS');
   assert.equal(custom.webSearchProvider, 'DEEPSEEK');
 });
 
-test('saved runtime overrides environment and null restores inheritance for rollback', () => {
+test('historical runtime selections migrate to Codex and null keeps the current default', () => {
   const environment = { XHS_AGENT_PROVIDER: 'OPENCLAW' };
-  assert.equal(effectiveModelApiConfig({}, environment).agentProvider, 'OPENCLAW');
+  assert.equal(effectiveModelApiConfig({}, environment).agentProvider, 'CODEX');
   assert.equal(effectiveModelApiConfig({ agentProvider: 'CODEX' }, environment).agentProvider, 'CODEX');
-  assert.equal(effectiveModelApiConfig({ agentProvider: null }, environment).agentProvider, 'OPENCLAW');
+  assert.equal(effectiveModelApiConfig({ agentProvider: null }, environment).agentProvider, 'CODEX');
   assert.equal(normalizeModelApiSettings({ agentProvider: 'codex' }).agentProvider, 'CODEX');
 });
 

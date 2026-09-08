@@ -75,7 +75,7 @@ async function waitUntil(action, predicate, message, { timeoutMs = 5_000 } = {})
   assert.fail(`${message}; latest=${JSON.stringify(latest)}`);
 }
 
-test('isolated HTTP: account creation, opt-in assignment, visibility, fair claims and refill', {
+test('isolated HTTP: account lifecycle, delayed review assignment, visibility and refill', {
   timeout: 120_000,
 }, async (t) => {
   assert.ok(process.env.TEST_POSTGRES_BIN, 'set TEST_POSTGRES_BIN to a local PostgreSQL bin directory');
@@ -391,18 +391,28 @@ test('isolated HTTP: account creation, opt-in assignment, visibility, fair claim
       nodeId: 'http-flow',
       assignedToUserId: 'flow.bob',
       assignedToAccountId: createdAlice.id,
+      skipCopyReview: true,
       tasks: [{ query: '错误账号组合不得创建' }],
     },
     expectedStatus: 409,
   });
   assert.equal(staleManualTarget.code, 'ASSIGNEE_UNAVAILABLE');
+  const missingBypassAssignee = await nextRequest('/api/control-plane/v1/tasks', {
+    method: 'POST', cookie: adminCookie,
+    body: {
+      nodeId: 'http-flow',
+      skipCopyReview: true,
+      tasks: [{ query: '免审核任务必须明确负责人' }],
+    },
+    expectedStatus: 409,
+  });
+  assert.equal(missingBypassAssignee.code, 'SKIP_COPY_REVIEW_ASSIGNEE_REQUIRED');
 
   const pendingTasks = await nextRequest('/api/control-plane/v1/tasks', {
     method: 'POST', cookie: adminCookie,
     body: {
       nodeId: 'http-flow',
       assignedToUserId: null,
-      skipCopyReview: true,
       tasks: [{ query: '待分配任务 1' }, { query: '待分配任务 2' }],
     },
     expectedStatus: 201,
@@ -436,53 +446,25 @@ test('isolated HTTP: account creation, opt-in assignment, visibility, fair claim
     expectedStatus: 409,
   });
   assert.equal(staleBatchAssignment.code, 'ASSIGNEE_UNAVAILABLE');
-  const singleAssigned = await nextRequest(
+  const prematureSingleAssignment = await nextRequest(
     `/api/control-plane/v1/tasks/${manualRouteTasks[0].id}/assignee`,
     {
       method: 'PATCH', cookie: adminCookie,
       body: { assignedToUserId: 'flow.alice', assignedToAccountId: createdAlice.id },
+      expectedStatus: 409,
     },
   );
-  assert.equal(singleAssigned.assignedToUserId, 'flow.alice');
-  const batchAssigned = await nextRequest('/api/control-plane/v1/tasks/batch-assignee', {
+  assert.equal(prematureSingleAssignment.code, 'TASK_NOT_READY_FOR_ASSIGNMENT');
+  const prematureBatchAssignment = await nextRequest('/api/control-plane/v1/tasks/batch-assignee', {
     method: 'POST', cookie: adminCookie,
     body: {
       taskIds: [manualRouteTasks[1].id],
       assignedToUserId: 'flow.bob',
       assignedToAccountId: createdBob.id,
     },
+    expectedStatus: 409,
   });
-  assert.deepEqual(batchAssigned.map((task) => task.id), [manualRouteTasks[1].id]);
-  assert.equal(batchAssigned[0].assignedToUserId, 'flow.bob');
-  const singleAssignmentPage = await nextRequest(
-    `/api/control-plane/v1/tasks?taskId=${manualRouteTasks[0].id}`,
-    { cookie: adminCookie },
-  );
-  const batchAssignmentPage = await nextRequest(
-    `/api/control-plane/v1/tasks?taskId=${manualRouteTasks[1].id}`,
-    { cookie: adminCookie },
-  );
-  assert.equal(singleAssignmentPage[0].assignedToAccountId, createdAlice.id);
-  assert.equal(batchAssignmentPage[0].assignedToAccountId, createdBob.id);
-  const returnedToPool = await nextRequest('/api/control-plane/v1/tasks/batch-assignee', {
-    method: 'POST', cookie: adminCookie,
-    body: {
-      taskIds: manualRouteTasks.map((task) => task.id),
-      assignedToUserId: null,
-      assignedToAccountId: null,
-    },
-  });
-  assert.ok(returnedToPool.every((task) => task.assignedToUserId === null));
-  for (const task of manualRouteTasks) {
-    await nextRequest(`/api/control-plane/v1/tasks/${task.id}/cancel`, {
-      method: 'POST', cookie: adminCookie, body: {},
-    });
-  }
-  const prematureClaim = await request('/v1/executions/claim-copy-batch', {
-    method: 'POST',
-    body: { nodeId: 'http-flow', limit: 3, requestId: requestIdAt() },
-  });
-  assert.deepEqual(prematureClaim.claims, []);
+  assert.equal(prematureBatchAssignment.code, 'TASK_NOT_READY_FOR_ASSIGNMENT');
 
   const aliceTasks = await nextRequest('/api/control-plane/v1/tasks', {
     method: 'POST', cookie: aliceCookie,
@@ -492,18 +474,6 @@ test('isolated HTTP: account creation, opt-in assignment, visibility, fair claim
     },
     expectedStatus: 201,
   });
-  const blockedWorkerDisable = await nextRequest(`/api/control-plane/v1/users/${createdAlice.id}`, {
-    method: 'PATCH', cookie: adminCookie,
-    body: {
-      displayName: createdAlice.displayName,
-      role: 'USER',
-      status: 'DISABLED',
-      expectedVersion: createdAlice.version,
-    },
-    expectedStatus: 409,
-  });
-  assert.equal(blockedWorkerDisable.code, 'USER_HAS_ACTIVE_TASKS');
-
   async function nextPersonalTasks(username, cookie) {
     const response = await fetch(`${nextRoot}/api/control-plane/v1/tasks?mine=true&sortBy=createdAt&sortOrder=asc`, {
       headers: { cookie },
@@ -515,9 +485,14 @@ test('isolated HTTP: account creation, opt-in assignment, visibility, fair claim
 
   const aliceThroughNext = await nextPersonalTasks('flow.alice', aliceCookie);
   assert.deepEqual(aliceThroughNext.map((task) => task.id), aliceTasks.map((task) => task.id));
-  assert.ok(aliceThroughNext.every((task) => task.assignedToUserId === 'flow.alice'));
+  assert.ok(aliceThroughNext.every((task) => task.assignedToUserId === null));
   assert.deepEqual(await nextPersonalTasks('flow.reviewer', reviewerCookie), []);
-  assert.deepEqual(await nextPersonalTasks('admin', adminCookie), []);
+  const adminThroughNext = await nextPersonalTasks('admin', adminCookie);
+  assert.deepEqual(
+    adminThroughNext.map((task) => task.id),
+    [...pendingTasks, ...manualRouteTasks].map((task) => task.id),
+  );
+  assert.ok(adminThroughNext.every((task) => task.assignedToUserId === null));
   const reviewerStatistics = await nextRequest('/api/workbench-statistics?scope=personal&period=today', {
     cookie: reviewerCookie,
   });
@@ -646,7 +621,96 @@ test('isolated HTTP: account creation, opt-in assignment, visibility, fair claim
   const stillDisabled = await request('/v1/tasks?unassigned=true&state=COPY_QUEUED&sortBy=createdAt&sortOrder=asc', {
     actor: admin,
   });
-  assert.deepEqual(stillDisabled.map((task) => task.id), pendingTasks.map((task) => task.id));
+  const queuedTasks = [...pendingTasks, ...manualRouteTasks, ...aliceTasks];
+  assert.deepEqual(stillDisabled.map((task) => task.id), queuedTasks.map((task) => task.id));
+
+  const copyCompletions = new Map();
+  for (let offset = 0; offset < queuedTasks.length; offset += 3) {
+    const expectedTasks = queuedTasks.slice(offset, offset + 3);
+    const copyBatch = await request('/v1/executions/claim-copy-batch', {
+      method: 'POST',
+      body: { nodeId: 'http-flow', limit: 3, requestId: requestIdAt() },
+    });
+    assert.deepEqual(copyBatch.claims.map(({ task }) => ({
+      id: task.id,
+      assignee: task.assignedToUserId,
+    })), expectedTasks.map((task) => ({ id: task.id, assignee: null })));
+    for (const claim of copyBatch.claims) {
+      const completed = await request(
+        `/v1/executions/${claim.execution.id}/complete-copy`,
+        { method: 'POST', body: { result: validCopy } },
+      );
+      assert.equal(completed.task.state, 'COPY_REVIEW_PENDING');
+      assert.equal(completed.task.currentStage, 'COPY_REVIEW_PENDING');
+      assert.equal(completed.task.assignedToUserId, null);
+      copyCompletions.set(claim.task.id, completed);
+    }
+  }
+
+  const singleAssigned = await nextRequest(
+    `/api/control-plane/v1/tasks/${manualRouteTasks[0].id}/assignee`,
+    {
+      method: 'PATCH', cookie: adminCookie,
+      body: { assignedToUserId: 'flow.alice', assignedToAccountId: createdAlice.id },
+    },
+  );
+  assert.equal(singleAssigned.assignedToUserId, 'flow.alice');
+  const batchAssigned = await nextRequest('/api/control-plane/v1/tasks/batch-assignee', {
+    method: 'POST', cookie: adminCookie,
+    body: {
+      taskIds: [manualRouteTasks[1].id],
+      assignedToUserId: 'flow.bob',
+      assignedToAccountId: createdBob.id,
+    },
+  });
+  assert.deepEqual(batchAssigned.map((task) => task.id), [manualRouteTasks[1].id]);
+  assert.equal(batchAssigned[0].assignedToUserId, 'flow.bob');
+  const singleAssignmentPage = await nextRequest(
+    `/api/control-plane/v1/tasks?taskId=${manualRouteTasks[0].id}`,
+    { cookie: adminCookie },
+  );
+  const batchAssignmentPage = await nextRequest(
+    `/api/control-plane/v1/tasks?taskId=${manualRouteTasks[1].id}`,
+    { cookie: adminCookie },
+  );
+  assert.equal(singleAssignmentPage[0].assignedToAccountId, createdAlice.id);
+  assert.equal(batchAssignmentPage[0].assignedToAccountId, createdBob.id);
+  const returnedToPool = await nextRequest('/api/control-plane/v1/tasks/batch-assignee', {
+    method: 'POST', cookie: adminCookie,
+    body: {
+      taskIds: manualRouteTasks.map((task) => task.id),
+      assignedToUserId: null,
+      assignedToAccountId: null,
+    },
+  });
+  assert.ok(returnedToPool.every((task) => task.assignedToUserId === null));
+  for (const task of manualRouteTasks) {
+    await nextRequest(`/api/control-plane/v1/tasks/${task.id}/cancel`, {
+      method: 'POST', cookie: adminCookie, body: {},
+    });
+  }
+
+  const aliceAssigned = await nextRequest('/api/control-plane/v1/tasks/batch-assignee', {
+    method: 'POST', cookie: adminCookie,
+    body: {
+      taskIds: aliceTasks.map((task) => task.id),
+      assignedToUserId: 'flow.alice',
+      assignedToAccountId: createdAlice.id,
+    },
+  });
+  assert.deepEqual(aliceAssigned.map((task) => task.id), aliceTasks.map((task) => task.id));
+  assert.ok(aliceAssigned.every((task) => task.assignedToUserId === 'flow.alice'));
+  const blockedWorkerDisable = await nextRequest(`/api/control-plane/v1/users/${createdAlice.id}`, {
+    method: 'PATCH', cookie: adminCookie,
+    body: {
+      displayName: createdAlice.displayName,
+      role: 'USER',
+      status: 'DISABLED',
+      expectedVersion: createdAlice.version,
+    },
+    expectedStatus: 409,
+  });
+  assert.equal(blockedWorkerDisable.code, 'USER_HAS_ACTIVE_TASKS');
 
   await nextRequest('/api/control-plane/v1/auto-assignment/settings', {
     method: 'PATCH', cookie: adminCookie,
@@ -666,6 +730,7 @@ test('isolated HTTP: account creation, opt-in assignment, visibility, fair claim
 
   const aliceVisible = await request('/v1/tasks?sortBy=createdAt&sortOrder=asc', { actor: alice });
   assert.deepEqual(aliceVisible.map((task) => task.id), aliceTasks.map((task) => task.id));
+  assert.ok(aliceVisible.every((task) => task.assignedToUserId === 'flow.alice'));
   await request(`/v1/tasks/${pendingTasks[0].id}`, {
     actor: alice, expectedStatus: 403,
   });
@@ -674,34 +739,33 @@ test('isolated HTTP: account creation, opt-in assignment, visibility, fair claim
   });
   await request('/v1/auto-assignment', { actor: bob, expectedStatus: 403 });
 
-  const pendingAfterFill = await request('/v1/tasks?unassigned=true&state=COPY_QUEUED', { actor: admin });
+  const pendingAfterFill = await request('/v1/tasks?unassigned=true&state=COPY_REVIEW_PENDING', { actor: admin });
   assert.deepEqual(pendingAfterFill.map((task) => task.id), [pendingTasks[1].id]);
 
-  const firstCopyBatch = await request('/v1/executions/claim-copy-batch', {
+  const completedCopy = copyCompletions.get(pendingTasks[0].id);
+  const approvedCopy = await request(`/v1/tasks/${pendingTasks[0].id}/approve-copy`, {
     method: 'POST',
-    body: { nodeId: 'http-flow', limit: 2, requestId: requestIdAt() },
+    actor: bob,
+    body: {
+      revisionId: completedCopy.revision.id,
+      nodeId: 'http-flow',
+      decision: 'APPROVE',
+      originalScore: 2.5,
+      note: '验收测试通过文案审核后立即释放作业容量',
+      reviewSessionId: '11111111-1111-4111-8111-111111111111',
+    },
   });
-  assert.deepEqual(firstCopyBatch.claims.map(({ task }) => ({
-    id: task.id,
-    assignee: task.assignedToUserId,
-  })), [
-    { id: aliceTasks[0].id, assignee: 'flow.alice' },
-    { id: pendingTasks[0].id, assignee: 'flow.bob' },
-  ]);
+  assert.equal(approvedCopy.state, 'IMAGE_QUEUED');
 
-  const bobCopyClaim = firstCopyBatch.claims.find(
-    ({ task }) => task.assignedToUserId === 'flow.bob',
+  await waitUntil(
+    () => request('/v1/tasks?sortBy=createdAt&sortOrder=asc', { actor: bob }),
+    (tasks) => tasks.some((task) => task.id === pendingTasks[1].id
+      && task.assignedToUserId === 'flow.bob'
+      && task.assignmentSource === 'AUTO'),
+    'automatic assignment did not refill Bob after copy review approval',
   );
-  const completedCopy = await request(
-    `/v1/executions/${bobCopyClaim.execution.id}/complete-copy`,
-    { method: 'POST', body: { result: validCopy } },
-  );
-  assert.equal(completedCopy.task.state, 'IMAGE_QUEUED');
-  assert.equal(completedCopy.revision.approvalMode, 'ADMIN_BYPASS');
-
-  await new Promise((resolveWait) => setTimeout(resolveWait, 60));
-  const heldAtCapacity = await request('/v1/tasks?unassigned=true&state=COPY_QUEUED', { actor: admin });
-  assert.deepEqual(heldAtCapacity.map((task) => task.id), [pendingTasks[1].id]);
+  const refilledTask = await request(`/v1/tasks/${pendingTasks[1].id}`, { actor: bob });
+  assert.equal(refilledTask.assignedToUserId, 'flow.bob');
 
   const imageClaim = await request('/v1/executions/claim-image', {
     method: 'POST',
@@ -709,35 +773,6 @@ test('isolated HTTP: account creation, opt-in assignment, visibility, fair claim
   });
   assert.equal(imageClaim.task.id, pendingTasks[0].id);
   assert.equal(imageClaim.task.assignedToUserId, 'flow.bob');
-
-  const completedImage = await request(
-    `/v1/executions/${imageClaim.execution.id}/complete-image`,
-    { method: 'POST', body: { result: { images: [] } } },
-  );
-  assert.equal(completedImage.state, 'MANUAL_ARCHIVE');
-  assert.equal(completedImage.currentExecutionId, null);
-
-  await waitUntil(
-    () => request('/v1/tasks?sortBy=createdAt&sortOrder=asc', { actor: bob }),
-    (tasks) => tasks.some((task) => task.id === pendingTasks[1].id
-      && task.assignedToUserId === 'flow.bob'
-      && task.assignmentSource === 'AUTO'),
-    'automatic assignment did not refill Bob after MANUAL_ARCHIVE',
-  );
-  const refilledTask = await request(`/v1/tasks/${pendingTasks[1].id}`, { actor: bob });
-  assert.equal(refilledTask.assignedToUserId, 'flow.bob');
-
-  const secondCopyBatch = await request('/v1/executions/claim-copy-batch', {
-    method: 'POST',
-    body: { nodeId: 'http-flow', limit: 2, requestId: requestIdAt() },
-  });
-  assert.deepEqual(secondCopyBatch.claims.map(({ task }) => ({
-    id: task.id,
-    assignee: task.assignedToUserId,
-  })), [
-    { id: aliceTasks[1].id, assignee: 'flow.alice' },
-    { id: pendingTasks[1].id, assignee: 'flow.bob' },
-  ]);
 
   const automaticEvents = (await pool.query(`
     SELECT task_id, actor_username, assignee_user_id, source

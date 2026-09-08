@@ -1,6 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { withPromptTraceContext, requestPromptProvenance } from './prompt-trace-context.mjs';
 import { promptRuntimeSnapshot } from './prompt-runtime.mjs';
 
@@ -117,38 +116,6 @@ export function tracedModelFetch(fetchImpl, provider) {
       }
       if (!response?.ok) capture.fail(`HTTP ${response?.status ?? 'unknown'}`);
       return response;
-    }, secrets);
-  };
-}
-
-export function tracedOpenClawRunner(runner) {
-  return async (command, args, options) => {
-    if (!contexts.getStore()) return runner(command, args, options);
-    const flag = (key) => { const index = args.indexOf(key); return index < 0 ? undefined : args[index + 1]; };
-    let prompt = flag('--prompt') ?? flag('--query');
-    if (flag('--message-file')) {
-      try { prompt = await readFile(flag('--message-file'), 'utf8'); }
-      catch { return runner(command, args, options); }
-    }
-    if (prompt === undefined) return runner(command, args, options);
-    const operation = args.includes('agent') ? 'TEXT'
-      : args.includes('search') ? 'WEB_SEARCH'
-        : args.includes('image') ? (args.includes('edit') ? 'IMAGE_EDIT' : 'IMAGE') : 'VISION';
-    // Do not record process options: env can contain credentials.
-    const secrets = Object.entries(options?.env ?? process.env)
-      .filter(([key, value]) => /(?:API_KEY|TOKEN|PASSWORD|SECRET)$/iu.test(key) && typeof value === 'string' && value.length >= 8)
-      .map(([, value]) => value);
-    return traceModelCall({
-      provider: 'OpenClaw', operation, model: flag('--model'), prompt,
-      requestScope: 'CLI_INPUT',
-      request: { args, input: prompt, operation, model: flag('--model'), thinking: flag('--thinking'),
-        searchProvider: flag('--provider'), sessionId: flag('--session-id'),
-        files: args.flatMap((arg, index) => arg === '--file' ? [args[index + 1]] : []) },
-    }, async (capture) => {
-      const result = await runner(command, args, options);
-      capture.response({ stdout: String(result.stdout ?? ''), stderr: String(result.stderr ?? ''), exitCode: result.status });
-      if (result.error || result.status !== 0) capture.fail(result.error?.message ?? `OpenClaw exit ${result.status}`);
-      return result;
     }, secrets);
   };
 }

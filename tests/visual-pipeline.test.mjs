@@ -115,7 +115,7 @@ describe('visual knowledge pipeline integration', () => {
     }).png().toBuffer()));
     const imageCalls = [];
     const textCalls = [];
-    const openclaw = {
+    const agentClient = {
       runText({ prompt }) {
         textCalls.push(prompt);
         const post = validPost();
@@ -152,7 +152,7 @@ describe('visual knowledge pipeline integration', () => {
       queue,
       workerId: 'visual-worker',
       outputRoot: join(directory, 'output'),
-      openclaw,
+      agentClient,
       configProvider: () => ({
         imageCount: 3,
         imagePromptContent: '保持 3:4 竖版构图，主题 {{query}}。',

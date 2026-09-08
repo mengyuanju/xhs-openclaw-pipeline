@@ -8,22 +8,22 @@ async function source(path) {
 
 test('distributed mode routes copy creation and global data through the control plane', async () => {
   const [copyPage, promptsPage, knowledgePage, settingsPage, navigation] = await Promise.all([
-    source('app/copy-generation/page.tsx'),
+    source('app/workbench/[view]/page.tsx'),
     source('app/prompts/page.tsx'),
     source('app/knowledge/page.tsx'),
     source('app/settings/page.tsx'),
     source('app/components/side-nav.tsx'),
   ]);
   assert.match(copyPage, /controlPlaneUrl\(\)/u);
-  assert.match(copyPage, /DistributedJobsWorkbench/u);
+  assert.match(copyPage, /CreationWorkbench/u);
   assert.match(promptsPage, /CentralPromptWorkbench/u);
   assert.match(knowledgePage, /withKnowledgeStore/u);
   assert.match(knowledgePage, /<KnowledgeTabs/u);
   const knowledgeRuntime = await source('src/admin/knowledge-runtime.mjs');
   assert.match(knowledgeRuntime, /CONTROL_PLANE_URL/u);
   assert.match(knowledgeRuntime, /createRemoteKnowledgeStore/u);
-  assert.match(settingsPage, /CentralDataWorkbench resource="settings"/u);
-  assert.match(navigation, /href: '\/jobs', label: '远端作业中心'/u);
+  assert.match(settingsPage, /CentralDataWorkbench/u);
+  assert.match(navigation, /href: '\/workbench', label: '作业中心'/u);
 });
 
 test('image worker polling is opt-in and documented for separate machines', async () => {
@@ -40,7 +40,7 @@ test('image worker polling is opt-in and documented for separate machines', asyn
   assert.match(repository, /current_execution_id/u);
   assert.match(readme, /--disable-image-worker/u);
   assert.match(readme, /--enable-image-worker/u);
-  assert.match(readme, /中心机器不安装 OpenClaw/u);
+  assert.match(readme, /中心机器不需要安装 Codex/u);
 });
 
 test('remote control plane is an independently installable Koa package', async () => {

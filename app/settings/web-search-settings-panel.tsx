@@ -10,14 +10,14 @@ import { apiRequest } from '../components/api-client';
 import { DEFAULT_DEEPSEEK_SEARCH_MODEL, DEFAULT_WEB_SEARCH_PROVIDER, DEFAULT_WEB_SEARCH_TIMEOUT_MS } from '../../src/web-search-config.mjs';
 
 type SearchSettings = {
-  webSearchProvider: 'OPENCLAW' | 'DEEPSEEK' | null;
+  webSearchProvider: 'CODEX' | 'DEEPSEEK' | null;
   deepseekSearchModel: 'deepseek-v4-pro' | 'deepseek-v4-flash' | null;
   webSearchTimeoutMs: number | null;
 };
 type SearchRecord = {
   settings: SearchSettings;
   scope: 'central' | 'local';
-  effective: { provider: 'OPENCLAW' | 'DEEPSEEK'; model?: string; timeoutMs?: number } | null;
+  effective: { provider: 'CODEX' | 'DEEPSEEK'; model?: string; timeoutMs?: number } | null;
   apiKeyConfigured: boolean | null;
   updatedAt: string | null;
 };
@@ -68,8 +68,8 @@ export function WebSearchSettingsPanel({ onSaved }: { onSaved?: () => Promise<vo
   const invalidTimeout = settings.webSearchTimeoutMs !== null
     && (!Number.isInteger(settings.webSearchTimeoutMs) || settings.webSearchTimeoutMs < 5000 || settings.webSearchTimeoutMs > 120000);
   const hasChanges = record !== null && JSON.stringify(settings) !== JSON.stringify(record.settings);
-  const usesOpenClaw = settings.webSearchProvider === 'OPENCLAW'
-    || (settings.webSearchProvider === null && record?.effective?.provider === 'OPENCLAW');
+  const usesCodex = settings.webSearchProvider === 'CODEX'
+    || (settings.webSearchProvider === null && record?.effective?.provider === 'CODEX');
   const savedProvider = record?.effective?.provider ?? record?.settings.webSearchProvider;
   const savedModel = record?.effective?.model ?? record?.settings.deepseekSearchModel;
 
@@ -82,7 +82,7 @@ export function WebSearchSettingsPanel({ onSaved }: { onSaved?: () => Promise<vo
     {loading && <p className="subtle" role="status">正在读取搜索配置…</p>}
     {record && <p className="notice" role="status">
       {record.scope === 'local' ? '当前生效：' : '已保存的搜索服务：'}
-      {savedProvider === 'OPENCLAW' ? '默认生成引擎'
+      {savedProvider === 'CODEX' ? '默认生成引擎'
         : savedProvider === 'DEEPSEEK' ? `DeepSeek · ${savedModel ?? '继承执行机模型（默认 Flash）'}`
           : '继承执行机环境（项目默认 DeepSeek Flash）'}
       {hasChanges && <span> · 有未保存的更改</span>}
@@ -98,14 +98,14 @@ export function WebSearchSettingsPanel({ onSaved }: { onSaved?: () => Promise<vo
           <SelectContent>
             <SelectItem value={INHERIT}>跟随默认配置（DeepSeek）</SelectItem>
             <SelectItem value="DEEPSEEK">DeepSeek 联网搜索（推荐）</SelectItem>
-            <SelectItem value="OPENCLAW">默认生成引擎联网搜索</SelectItem>
+            <SelectItem value="CODEX">Codex 联网搜索</SelectItem>
           </SelectContent>
         </Select>
         <small>可随时切换服务；跟随默认配置时，执行机环境设置优先。</small>
       </div>
       <div className="field">
         <label htmlFor="deepseek-search-model">DeepSeek 搜索模型</label>
-        <Select disabled={disabled || usesOpenClaw} value={settings.deepseekSearchModel ?? INHERIT} onValueChange={(value) => {
+        <Select disabled={disabled || usesCodex} value={settings.deepseekSearchModel ?? INHERIT} onValueChange={(value) => {
           setMessage('');
           setSettings((current) => ({ ...current, deepseekSearchModel: value === INHERIT ? null : value as SearchSettings['deepseekSearchModel'] }));
         }}>
@@ -121,7 +121,7 @@ export function WebSearchSettingsPanel({ onSaved }: { onSaved?: () => Promise<vo
       <div className="field">
         <label htmlFor="web-search-timeout">DeepSeek 搜索超时（毫秒）</label>
         <Input id="web-search-timeout" className="input" type="number" min={5000} max={120000} step={1000}
-          disabled={disabled || usesOpenClaw} value={settings.webSearchTimeoutMs ?? ''} placeholder="继承环境，默认 120000"
+          disabled={disabled || usesCodex} value={settings.webSearchTimeoutMs ?? ''} placeholder="继承环境，默认 120000"
           aria-invalid={invalidTimeout} onChange={(event) => {
             setMessage('');
             setSettings((current) => ({ ...current, webSearchTimeoutMs: event.target.value === '' ? null : Number(event.target.value) }));

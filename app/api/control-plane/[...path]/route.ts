@@ -51,7 +51,15 @@ async function proxyRequest(
   if (role === 'USER' && !userCanAccessControlPlaneRoute(routePath, request.method)) {
     throw new ApiError(403, 'FORBIDDEN', '普通用户没有该操作权限');
   }
-  if (path.join('/') === 'v1/tasks' && (upstreamUrl.searchParams.get('mine') === 'true' || role === 'USER')) {
+  if (path.join('/') === 'v1/tasks' && upstreamUrl.searchParams.get('mine') === 'true') {
+    upstreamUrl.searchParams.set('personal', 'true');
+    upstreamUrl.searchParams.delete('assignedToUserId');
+    upstreamUrl.searchParams.delete('createdByUserId');
+    upstreamUrl.searchParams.delete('createdByAccountId');
+    upstreamUrl.searchParams.delete('nodeId');
+    upstreamUrl.searchParams.delete('unassigned');
+    upstreamUrl.searchParams.delete('mine');
+  } else if (path.join('/') === 'v1/tasks' && role === 'USER') {
     upstreamUrl.searchParams.set('assignedToUserId', username);
     upstreamUrl.searchParams.delete('createdByUserId');
     upstreamUrl.searchParams.delete('createdByAccountId');

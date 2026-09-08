@@ -1,10 +1,32 @@
-import { qualityDimensionRows } from '../tasks/[id]/review-presentation.mjs';
+const DIMENSION_LABELS = Object.freeze({
+  queryRelevance: '选题相关性',
+  contentOriginality: '内容原创性',
+  imageBaseQuality: '图片基础质量',
+  imageTextQuality: '图片文字质量',
+  imageConsistency: '图集一致性',
+  noteTone: '笔记语气',
+  platformAdaptation: '平台适配',
+  informationValue: '信息价值',
+  imageAesthetics: '图片美观度',
+  imageDiversity: '图集多样性',
+});
 
 const record = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 const text = (value, limit = 500) => typeof value === 'string' ? value.trim().slice(0, limit) : '';
 const score = value => Number.isInteger(value) && value >= 0 && value <= 3 ? value : null;
 const severityOrder = { redline: 0, blocking: 0, major: 1, warning: 2, minor: 3 };
 const severityLabels = { redline: '红线问题', blocking: '阻断问题', major: '主要问题', minor: '轻微问题' };
+
+function qualityDimensionRows(qc) {
+  const dimensions = record(record(qc).rubric).dimensions;
+  if (!dimensions || typeof dimensions !== 'object' || Array.isArray(dimensions)) return [];
+  return Object.entries(DIMENSION_LABELS).flatMap(([key, label]) => {
+    const dimension = record(dimensions[key]);
+    if (dimension.applicable === false || Object.keys(dimension).length === 0) return [];
+    return [{ key, label, score: score(dimension.score),
+      evidence: Array.isArray(dimension.evidence) ? dimension.evidence : [] }];
+  });
+}
 
 /** Normalize legacy and model-provided reports without presenting missing evidence as a pass.
  * @returns {{ score: number | null, converted: boolean, summary: string, needsAttention: boolean,
@@ -30,7 +52,7 @@ export function taskQualitySummary(result) {
       severityLabel: Object.hasOwn(severityLabels, severity) ? severityLabels[severity] : '待核对' }];
   }).sort((a, b) => (Object.hasOwn(severityOrder, a.severity) ? severityOrder[a.severity] : 2)
     - (Object.hasOwn(severityOrder, b.severity) ? severityOrder[b.severity] : 2));
-  const dimensions = (converted ? [] : qualityDimensionRows({ qcDetail: qc })).map(item => ({
+  const dimensions = (converted ? [] : qualityDimensionRows(qc)).map(item => ({
     label: item.label, score: score(item.score), evidence: item.evidence.slice(0, 20).map(value => text(value)).filter(Boolean),
   }));
   const obstacleSummary = dimensions.filter(item => item.score !== null && item.score < 2).slice(0, 3)

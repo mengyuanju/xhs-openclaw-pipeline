@@ -27,7 +27,7 @@ const dotsModelSchema = z.string().trim().min(1).max(200)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u, 'Dots 模型名称格式无效');
 
 const modelApiPatchSchema = z.object({
-  agentProvider: z.enum(['CODEX', 'OPENCLAW']).nullable().optional(),
+  agentProvider: z.enum(['CODEX']).nullable().optional(),
   textModel: modelRefSchema.nullable().optional(),
   capacityFallbackModel: modelRefSchema.nullable().optional(),
   modelCapacityCooldownMs: z.number().int().min(60_000).max(3_600_000).nullable().optional(),
@@ -39,7 +39,7 @@ const modelApiPatchSchema = z.object({
   modelProxyUrl: proxyUrlSchema.nullable().optional(),
   imageProxyUrl: proxyUrlSchema.nullable().optional(),
   imageTimeoutMs: z.number().int().min(30_000).max(540_000).nullable().optional(),
-  copyGenerationProvider: z.enum(['OPENCLAW', 'DOTS']).nullable().optional(),
+  copyGenerationProvider: z.enum(['CODEX', 'DOTS']).nullable().optional(),
   copyGenerationThinking: z.enum(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']).nullable().optional(),
   dotsBaseUrl: dotsBaseUrlSchema.nullable().optional(),
   dotsModel: dotsModelSchema.nullable().optional(),

@@ -137,6 +137,13 @@ test('human quality migration stores immutable version-bound ratings and idempot
   assert.doesNotMatch(migration.sql, /UPDATE tasks|UPDATE copy_revisions|UPDATE image_runs|DELETE FROM|TRUNCATE|DROP TABLE/u);
 });
 
+test('executor retirement migration adds a nullable marker without rewriting history', async () => {
+  const migration = (await loadMigrations()).find((item) => item.id === '0023_executor_node_retirement');
+  assert.ok(migration);
+  assert.match(migration.sql, /ALTER TABLE executor_nodes[\s\S]*ADD COLUMN retired_at timestamptz/u);
+  assert.doesNotMatch(migration.sql, /DEFAULT|NOT NULL|UPDATE|DELETE FROM|TRUNCATE|DROP/u);
+});
+
 test('failed upgrades roll back the enclosing schema-and-data transaction', async () => {
   const queries = [];
   const client = { query: async (sql) => {

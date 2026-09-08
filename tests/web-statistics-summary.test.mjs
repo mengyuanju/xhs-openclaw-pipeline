@@ -3,7 +3,8 @@ import test from 'node:test';
 import { normalizeRange, compactTask, compactDetail, summarizeCounts, summarizeEfficiency } from '../src/web-statistics/summary.mjs';
 
 const now = Date.parse('2026-09-06T08:00:00Z');
-const task = (id, patch = {}) => compactTask({ id, state: 'COPY_QUEUED', createdByUserId: 'alice', createdByAccountId: 2, assignedToUserId: 'alice',
+const task = (id, patch = {}) => compactTask({ id, state: 'COPY_QUEUED', createdByUserId: 'alice', createdByAccountId: 2,
+  assignedToUserId: 'alice', assignedToAccountId: 2,
   createdAt: '2026-09-06T01:00:00Z', updatedAt: '2026-09-06T02:00:00Z', ...patch });
 
 test('Shanghai day boundaries and valid bounded calendar ranges', () => {
@@ -65,6 +66,7 @@ test('cached task and detail facts never retain prompts, model responses or snap
       copyRevisionId: 1, reasonCodes: ['private'], note: 'private', createdAt: '2026-09-06T01:00:00Z' }] });
   assert.equal(JSON.stringify([minimal, detail]).includes('private'), false);
   assert.equal(minimal.assignedToUserId, 'alice');
+  assert.equal(minimal.assignedToAccountId, 2);
   assert.deepEqual(detail.assessments, [{ id: 1, stage: 'COPY', scoreX10: 25, ratingContext: 'ORIGINAL',
     createdAt: '2026-09-06T01:00:00Z', copyRevisionId: 1, imageRunId: null }]);
 });

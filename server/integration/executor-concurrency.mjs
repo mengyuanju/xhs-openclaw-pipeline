@@ -131,6 +131,118 @@ test('isolated PostgreSQL: capacity, races, replay, rollback and node ownership'
     await assert.rejects(repo.claimCopyBatch({ nodeId: 'a', limit: 1, requestId }), { code: 'CLAIM_REQUEST_EXPIRED' });
   }
 
+  // Hold the execution row so executor progress stops between its task and
+  // execution locks. A creator mutation must queue behind the task lock; the
+  // reverse lock order would deterministically form a deadlock after release.
+  await repo.registerNode({ nodeId: 'creator-race', imageWorkerEnabled: false, copyConcurrency: 1 });
+  const creatorUser = await repo.getUserByUsername('integration-worker');
+  const creatorActor = {
+    userId: creatorUser.id,
+    username: creatorUser.username,
+    role: creatorUser.role,
+    credentialVersion: creatorUser.credentialVersion,
+  };
+  const raceConnection = {
+    host: '127.0.0.1', port, user: 'postgres', database: 'postgres', max: 1,
+    connectionTimeoutMillis: 3000, statement_timeout: 8000, lock_timeout: 5000,
+  };
+  const executorRacePool = new pg.Pool({ ...raceConnection, application_name: 'creator-race-executor' });
+  const creatorRacePool = new pg.Pool({ ...raceConnection, application_name: 'creator-race-user' });
+  const executorRaceRepo = new PostgresControlPlaneRepository({ pool: executorRacePool });
+  const creatorRaceRepo = new PostgresControlPlaneRepository({ pool: creatorRacePool });
+
+  async function waitForLockWait(applicationName) {
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const waiting = await pool.query(`
+        SELECT 1 FROM pg_stat_activity
+        WHERE application_name = $1 AND state = 'active' AND wait_event_type = 'Lock'
+      `, [applicationName]);
+      if (waiting.rows[0]) return;
+      await new Promise(resolveWait => setTimeout(resolveWait, 10));
+    }
+    assert.fail(`${applicationName} did not reach the intended lock wait`);
+  }
+
+  async function settleRace(promises) {
+    let timer;
+    try {
+      return await Promise.race([
+        Promise.allSettled(promises),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('creator/executor race did not settle')), 10_000);
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function runningUnassignedCopy(label) {
+    const task = (await pool.query(`
+      INSERT INTO tasks(
+        query, created_by_node_id, created_by_user_id, state, current_stage,
+        progress_message, execution_started_at, last_activity_at
+      ) VALUES ($1, 'creator-race', $2, 'COPY_RUNNING', 'STARTING_COPY',
+        '并发验收执行中', now(), now())
+      RETURNING id
+    `, [`creator race ${label}`, creatorActor.username])).rows[0];
+    const executionId = randomUUID();
+    await pool.query(`
+      INSERT INTO task_executions(
+        id, task_id, kind, node_id, status, stage, progress_percent,
+        progress_message, snapshot
+      ) VALUES ($1, $2, 'COPY', 'creator-race', 'RUNNING', 'STARTING_COPY', 0,
+        '并发验收执行中', '{}'::jsonb)
+    `, [executionId, task.id]);
+    await pool.query('UPDATE tasks SET current_execution_id = $1 WHERE id = $2', [executionId, task.id]);
+    return { taskId: Number(task.id), executionId };
+  }
+
+  async function assertCreatorExecutorRace(action) {
+    const { taskId, executionId } = await runningUnassignedCopy(action);
+    const blocker = await pool.connect();
+    let blockerOpen = false;
+    try {
+      await blocker.query('BEGIN');
+      blockerOpen = true;
+      await blocker.query('SELECT id FROM task_executions WHERE id = $1 FOR UPDATE', [executionId]);
+
+      const progress = executorRaceRepo.updateProgress(executionId, {
+        stage: 'RACE_PROGRESS', progressPercent: 25, message: '并发验收进度',
+      });
+      await waitForLockWait('creator-race-executor');
+      const creatorMutation = action === 'cancel'
+        ? creatorRaceRepo.cancelTask(taskId, { actor: creatorActor })
+        : creatorRaceRepo.retryTask(taskId, { actor: creatorActor });
+      await waitForLockWait('creator-race-user');
+
+      await blocker.query('COMMIT');
+      blockerOpen = false;
+      const settled = await settleRace([progress, creatorMutation]);
+      for (const result of settled) {
+        if (result.status === 'fulfilled') continue;
+        assert.notEqual(result.reason?.code, '40P01', 'creator/executor race must not deadlock');
+        assert.equal(result.reason?.code, 'STALE_EXECUTION');
+      }
+      assert.equal(settled[1].status, 'fulfilled', `creator ${action} must complete`);
+      const finalTask = await repo.getTask(taskId);
+      assert.equal(finalTask.state, action === 'cancel' ? 'CANCELLED' : 'COPY_QUEUED');
+      assert.equal((await pool.query('SELECT status FROM task_executions WHERE id = $1', [executionId])).rows[0].status, 'ABANDONED');
+      if (action === 'retry') await creatorRaceRepo.cancelTask(taskId, { actor: creatorActor });
+    } finally {
+      if (blockerOpen) await blocker.query('ROLLBACK').catch(() => {});
+      blocker.release();
+    }
+  }
+
+  try {
+    await assertCreatorExecutorRace('cancel');
+    await assertCreatorExecutorRace('retry');
+  } finally {
+    await Promise.all([executorRacePool.end(), creatorRacePool.end()]);
+  }
+
   // Real local HTTP + client + executor pools, with fake work behind a controlled gate.
   const http = createControlPlaneApp({ repository: repo, storageRoot: join(root, 'assets'), enforceUserAuth: false }).listen(0, '127.0.0.1');
   await new Promise(ready => http.once('listening', ready));

@@ -8,7 +8,13 @@ test('image revision HTTP permissions enforce owner or admin and forward actor i
   const roles = { alice: 'USER', bob: 'USER', reviewer: 'REVIEWER', admin: 'ADMIN' };
   const app = createControlPlaneApp({ enforceUserAuth: true, storageRoot: 'unused', repository: {
     getUserByUsername: async username => ({ id: 1, username, role: roles[username], status: 'ACTIVE', credentialVersion: 1 }),
-    getTask: async () => ({ id: 1, createdByUserId: 'alice' }),
+    getTask: async () => ({
+      id: 1,
+      createdByUserId: 'alice',
+      createdByAccountId: 1,
+      assignedToUserId: 'alice',
+      assignedToAccountId: 1,
+    }),
     reviseImages: async (...args) => { calls.push(args); return { state: 'IMAGE_QUEUED' }; },
   } });
   const server = await new Promise(resolve => { const listener = app.listen(0, '127.0.0.1', () => resolve(listener)); });
@@ -47,7 +53,7 @@ test('executor source downloads are restricted to the active execution snapshot 
   const execution = { id: runId, task_id: 1, kind: 'IMAGE', status: 'RUNNING', current_execution_id: runId,
     snapshot: { copyRevision: { content: { imageReprocess: { sourceRunId, sources: [{ assetId: 5, sha256: hash }] } } } } };
   const asset = { id: 5, task_id: 1, image_run_id: sourceRunId, sha256: hash, media_type: 'image/png' };
-  const client = { release() {}, async query(sql) { return { rows: sql.includes('SELECT e.*') ? [execution] : sql.includes('SELECT * FROM assets') ? [asset] : [] }; } };
+  const client = { release() {}, async query(sql) { return { rows: sql.includes('SELECT t.id') && sql.includes('SELECT e.task_id') ? [{ id: 1 }] : sql.includes('SELECT e.*') ? [execution] : sql.includes('SELECT * FROM assets') ? [asset] : [] }; } };
   const repo = new PostgresControlPlaneRepository({ pool: { connect: async () => client, query: async () => assert.fail('source download must reuse the transaction connection') } });
   assert.equal((await repo.imageReprocessAsset(runId, 5)).taskId, 1);
   await assert.rejects(repo.imageReprocessAsset(runId, 6), /source asset/);

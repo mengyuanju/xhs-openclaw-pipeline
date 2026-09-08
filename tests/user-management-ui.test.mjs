@@ -21,7 +21,7 @@ test('central user management exposes the three fixed roles and default-password
   assert.match(migration, /CREATE TABLE IF NOT EXISTS app_users/u);
 });
 
-test('workbench separates assignee from creator and limits discard controls to assignees or administrators', async () => {
+test('workbench separates assignee from creator and limits controls to stable owners or unassigned creators', async () => {
   const [workbench, repository, server] = await Promise.all([
     source('app/workbench/creation-workbench.tsx'),
     source('server/src/postgres-repository.mjs'),
@@ -30,7 +30,8 @@ test('workbench separates assignee from creator and limits discard controls to a
   assert.match(workbench, /<th[^>]*>负责人 \/ 创建人<\/th>/u);
   assert.match(workbench, /task\.assignedToDisplayName/u);
   assert.match(workbench, /task.createdByDisplayName/u);
-  assert.match(workbench, /role === 'ADMIN' \|\| taskOwnerId\(task\) === creatorUserId/u);
+  assert.match(workbench, /const hasOwnerControl = role === 'ADMIN' \|\| isTaskAssignee\(task, creatorUserId, creatorAccountId\)/u);
+  assert.match(workbench, /const creatorCanControlMachineCopy = taskOwnerId\(task\) === null[\s\S]*isTaskCreator\(task, creatorUserId, creatorAccountId\)/u);
   assert.match(repository, /assignee\.display_name AS assigned_to_display_name/u);
   assert.match(repository, /creator\.display_name AS creator_display_name/u);
   assert.match(server, /ownerOnly: actor\.role !== 'ADMIN'/u);

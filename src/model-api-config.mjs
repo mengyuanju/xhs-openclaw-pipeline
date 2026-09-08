@@ -5,7 +5,7 @@ export const DEFAULT_CAPACITY_FALLBACK_MODEL = 'openai/gpt-5.6-terra';
 export const DEFAULT_MODEL_CAPACITY_COOLDOWN_MS = 300_000;
 export const DEFAULT_IMAGE_MODEL = 'openai/gpt-image-2';
 export const DEFAULT_IMAGE_TIMEOUT_MS = 300_000;
-export const DEFAULT_COPY_GENERATION_PROVIDER = 'OPENCLAW';
+export const DEFAULT_COPY_GENERATION_PROVIDER = 'CODEX';
 export const DEFAULT_COPY_GENERATION_THINKING = 'low';
 export const DEFAULT_DOTS_BASE_URL = 'https://note3-prev-api.askdiandian.com';
 export const DEFAULT_DOTS_MODEL = 'dots3-note-prev';
@@ -18,7 +18,7 @@ export const COPY_GENERATION_THINKING_LEVELS = Object.freeze([
   'max',
 ]);
 
-const COPY_GENERATION_PROVIDERS = new Set(['OPENCLAW', 'DOTS']);
+const COPY_GENERATION_PROVIDERS = new Set(['CODEX', 'DOTS']);
 const COPY_GENERATION_THINKING_LEVEL_SET = new Set(COPY_GENERATION_THINKING_LEVELS);
 
 const MODEL_API_FIELDS = new Set([
@@ -75,11 +75,17 @@ export function validatedModelRef(value, fallback, name) {
 
 function optionalAgentProvider(value) {
   if (value === undefined || value === null || String(value).trim() === '') return null;
-  const provider = String(value).trim().toUpperCase();
-  if (!['CODEX', 'OPENCLAW'].includes(provider)) {
-    throw new TypeError('agentProvider must be CODEX or OPENCLAW');
+  const provider = migratedProvider(value);
+  if (provider !== 'CODEX') {
+    throw new TypeError('agentProvider must be CODEX');
   }
   return provider;
+}
+
+// Read historical settings without retaining the retired engine or rewriting stored provenance.
+function migratedProvider(value) {
+  const provider = String(value).trim().toUpperCase();
+  return provider === 'OPENCLAW' ? 'CODEX' : provider;
 }
 
 function optionalModelRef(value, name) {
@@ -122,9 +128,9 @@ function optionalModelCapacityCooldown(value) {
 
 function optionalCopyGenerationProvider(value) {
   if (value === undefined || value === null || String(value).trim() === '') return null;
-  const provider = String(value).trim().toUpperCase();
+  const provider = migratedProvider(value);
   if (!COPY_GENERATION_PROVIDERS.has(provider)) {
-    throw new TypeError('copyGenerationProvider must be OPENCLAW or DOTS');
+    throw new TypeError('copyGenerationProvider must be CODEX or DOTS');
   }
   return provider;
 }

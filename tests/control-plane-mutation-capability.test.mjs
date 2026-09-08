@@ -15,12 +15,18 @@ test('assignment and opt-in pool mutations declare their version contracts', () 
     ['/v1/auto-assignment/settings', 'PATCH', 'autoAssignmentPoolVersion'],
     ['/v1/auto-assignment/workers/alice', 'PUT', 'autoAssignmentPoolVersion'],
     ['/v1/auto-assignment/workers/alice', 'DELETE', 'autoAssignmentPoolVersion'],
+    ['/v1/executor-statuses', 'DELETE', 'executorManagementVersion'],
   ]) {
-    assert.deepEqual(requiredMutationCapability(routePath, method), { capability, minimumVersion: 2 });
+    assert.deepEqual(requiredMutationCapability(routePath, method), {
+      capability,
+      minimumVersion: capability === 'executorManagementVersion' ? 1 : 3,
+    });
   }
   assert.equal(requiredMutationCapability('/v1/tasks', 'GET'), null);
   assert.equal(requiredMutationCapability('/v1/tasks/42/retry', 'POST'), null);
   assert.equal(requiredMutationCapability('/v1/auto-assignment', 'GET'), null);
+  assert.equal(requiredMutationCapability('/v1/executor-statuses', 'GET'), null);
+  assert.equal(requiredMutationCapability('/v1/executor-statuses/node-a', 'DELETE'), null);
 });
 
 test('mutation capability check allows only compatible center versions', async () => {
@@ -31,19 +37,29 @@ test('mutation capability check allows only compatible center versions', async (
     method: 'PATCH',
     fetchImpl: async (url, init) => {
       calls.push({ url, init });
-      return Response.json({ data: { capabilities: { taskAssignmentVersion: 2 } } });
+      return Response.json({ data: { capabilities: { taskAssignmentVersion: 3 } } });
     },
   });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, 'http://center.test/base/health');
   assert.equal(calls[0].init.cache, 'no-store');
+
+  await assertMutationCapability({
+    root: 'http://center.test',
+    routePath: '/v1/executor-statuses',
+    method: 'DELETE',
+    fetchImpl: async () => Response.json({
+      data: { capabilities: { executorManagementVersion: 1 } },
+    }),
+  });
 });
 
 test('mutation capability check fails closed for legacy, malformed and unavailable centers', async () => {
   for (const fetchImpl of [
     async () => Response.json({ data: { capabilities: { taskAssignmentVersion: 1 } } }),
+    async () => Response.json({ data: { capabilities: { taskAssignmentVersion: 2 } } }),
     async () => Response.json({ data: { capabilities: {} } }),
-    async () => Response.json({ capabilities: { taskAssignmentVersion: 2 } }),
+    async () => Response.json({ capabilities: { taskAssignmentVersion: 3 } }),
     async () => new Response('legacy', { status: 404 }),
     async () => new Response('method missing', { status: 405 }),
   ]) {
@@ -56,6 +72,32 @@ test('mutation capability check fails closed for legacy, malformed and unavailab
         && error.code === 'CONTROL_PLANE_UPGRADE_REQUIRED',
     );
   }
+
+  await assert.rejects(
+    assertMutationCapability({
+      root: 'http://center.test',
+      routePath: '/v1/auto-assignment/settings',
+      method: 'PATCH',
+      fetchImpl: async () => Response.json({
+        data: { capabilities: { autoAssignmentPoolVersion: 2 } },
+      }),
+    }),
+    (error) => error instanceof ApiError
+      && error.status === 503
+      && error.code === 'CONTROL_PLANE_UPGRADE_REQUIRED',
+  );
+
+  await assert.rejects(
+    assertMutationCapability({
+      root: 'http://center.test',
+      routePath: '/v1/executor-statuses',
+      method: 'DELETE',
+      fetchImpl: async () => Response.json({ data: { capabilities: {} } }),
+    }),
+    (error) => error instanceof ApiError
+      && error.status === 503
+      && error.code === 'CONTROL_PLANE_UPGRADE_REQUIRED',
+  );
 
   await assert.rejects(
     assertMutationCapability({

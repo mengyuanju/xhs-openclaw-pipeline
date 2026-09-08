@@ -1,9 +1,9 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
-import { Checkbox, Slider, Input } from '@/components/ui/input';
+import { Checkbox, Slider } from '@/components/ui/input';
 
-import { useEffect, useId, useLayoutEffect, useState, type ComponentProps, type FormEvent, type RefObject } from 'react';
+import { useEffect, useId, useLayoutEffect, useState, type ComponentProps, type RefObject } from 'react';
 
 import {
   Dialog,
@@ -25,8 +25,6 @@ type ImagePreviewProps = {
   transparency?: { source: boolean; delivery: boolean };
   width?: number;
   height?: number;
-  needsCrop?: boolean;
-  busy?: boolean;
   isOpen?: boolean;
   hideTrigger?: boolean;
   restoreFocusRef?: RefObject<HTMLElement | null>;
@@ -37,8 +35,6 @@ type ImagePreviewProps = {
   onClose?: () => void;
   onPrevious?: () => void;
   onNext?: () => void;
-  onCrop?: () => Promise<boolean>;
-  onAiEdit?: (instruction: string) => Promise<boolean>;
 };
 
 function detectImageAlpha(image: HTMLImageElement): boolean | null {
@@ -79,8 +75,6 @@ export function ImagePreview({
   transparency,
   width,
   height,
-  needsCrop = false,
-  busy = false,
   isOpen,
   hideTrigger = false,
   restoreFocusRef,
@@ -91,8 +85,6 @@ export function ImagePreview({
   onClose,
   onPrevious,
   onNext,
-  onCrop,
-  onAiEdit,
 }: ImagePreviewProps) {
   const id = useId();
   const [internalOpen, setInternalOpen] = useState(false);
@@ -101,8 +93,6 @@ export function ImagePreview({
   const viewMode = modeOverride ?? defaultMode;
   const [zoom, setZoom] = useState(100);
   const [rotation, setRotation] = useState(0);
-  const [instruction, setInstruction] = useState('');
-  const [actionBusy, setActionBusy] = useState(false);
   const [backdrop, setBackdrop] = useState('checker');
   const [showSource, setShowSource] = useState(false);
   const [detectedAlpha, setDetectedAlpha] = useState<boolean | null>(null);
@@ -110,7 +100,7 @@ export function ImagePreview({
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
   const open = isOpen ?? internalOpen;
-  useLayoutEffect(() => { setShowSource(false); setRotation(0); setInstruction(''); }, [src]);
+  useLayoutEffect(() => { setShowSource(false); setRotation(0); }, [src]);
   const previewSrc = showSource && sourceSrc ? sourceSrc : src;
   useEffect(() => { setDetectedAlpha(null); }, [previewSrc]);
   const transparent = transparency ? (showSource ? transparency.source : transparency.delivery) : detectedAlpha;
@@ -124,7 +114,6 @@ export function ImagePreview({
       setViewMode(null);
       setZoom(100);
       setRotation(0);
-      setActionBusy(false);
       setShowSource(false);
       setLoadedImage(null);
       setFailedSrc(null);
@@ -174,36 +163,6 @@ export function ImagePreview({
     onClose?.();
   }
 
-  function closePreview() {
-    setPreviewOpen(false);
-  }
-
-  async function cropImage() {
-    if (!onCrop || controlsDisabled) return;
-    setActionBusy(true);
-    try {
-      if (await onCrop()) closePreview();
-    } finally {
-      setActionBusy(false);
-    }
-  }
-
-  async function editWithAi(event: FormEvent) {
-    event.preventDefault();
-    const normalized = instruction.trim();
-    if (!onAiEdit || !normalized || controlsDisabled) return;
-    setActionBusy(true);
-    try {
-      if (await onAiEdit(normalized)) {
-        setInstruction('');
-        closePreview();
-      }
-    } finally {
-      setActionBusy(false);
-    }
-  }
-
-  const controlsDisabled = busy || actionBusy || imagePending;
   const isQuarterTurn = Math.abs(rotation % 180) === 90;
   const hasNavigation = typeof position === 'number' && typeof total === 'number' && total > 1;
 
@@ -230,7 +189,7 @@ export function ImagePreview({
               className="image-preview-nav-button"
               type="button"
               aria-label="上一张图片"
-              disabled={!onPrevious || busy || actionBusy}
+              disabled={!onPrevious}
               onClick={onPrevious}
             ><span aria-hidden="true">←</span> 上一张</Button>
             <span className="image-preview-position" aria-live="polite">{position} / {total}</span>
@@ -238,7 +197,7 @@ export function ImagePreview({
               className="image-preview-nav-button"
               type="button"
               aria-label="下一张图片"
-              disabled={!onNext || busy || actionBusy}
+              disabled={!onNext}
               onClick={onNext}
             >下一张 <span aria-hidden="true">→</span></Button>
           </nav>}
@@ -302,9 +261,6 @@ export function ImagePreview({
             <Button unstyled className="button preview-button" type="button" onClick={() => setRotation((value) => value - 90)}>向左旋转</Button>
             <Button unstyled className="button preview-button" type="button" onClick={() => setRotation((value) => value + 90)}>向右旋转</Button>
             <Button unstyled className="button preview-button" type="button" onClick={resetPreview}>恢复预览</Button>
-            {needsCrop && onCrop
-              ? <Button unstyled className="button preview-button emphasis" type="button" disabled={controlsDisabled} onClick={cropImage}>裁成 3:4</Button>
-              : <span className="preview-size-ok">尺寸已符合 3:4，无需裁剪</span>}
           </div>
         </div>
 
@@ -326,22 +282,6 @@ export function ImagePreview({
             </div>
           </div>
         </div>
-
-        {onAiEdit && <form className="image-preview-ai" onSubmit={editWithAi}>
-          <label htmlFor={`image-ai-${alt}`}>AI 图片修改要求</label>
-          <div className="inline">
-            <Input
-              className="input"
-              id={`image-ai-${alt}`}
-              value={instruction}
-              maxLength={1_000}
-              placeholder="如：保留桌面主体，移除背景杂物，保持自然光"
-              onChange={(event) => setInstruction(event.target.value)}
-            />
-            <Button unstyled className="button primary" type="submit" disabled={controlsDisabled || !instruction.trim()}>{actionBusy ? '处理中…' : '提交 AI 编辑'}</Button>
-          </div>
-          <p>AI 编辑会生成一个可追溯的新版本；预览旋转不会修改文件。</p>
-        </form>}
       </div>
     </DialogContent>
   </Dialog>;

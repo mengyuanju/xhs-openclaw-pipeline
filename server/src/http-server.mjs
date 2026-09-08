@@ -25,6 +25,7 @@ import {
   ControlPlaneNotFoundError,
   normalizeTaskCreatorRole,
 } from './domain.mjs';
+import { UNASSIGNED_CREATOR_COPY_CONTROL_STATES } from './task-assignment-domain.mjs';
 
 const JSON_BODY_LIMIT = 12 * 1024 * 1024;
 const ASSET_BODY_LIMIT = 20 * 1024 * 1024;
@@ -363,20 +364,50 @@ async function applyBatchPermanentDeletion(repository, storageRoot, taskIds, act
   return { action: 'PERMANENT_DELETE', succeeded: result.succeeded, failed: result.failed, cleanupPending };
 }
 
-async function assertTaskAccess(ctx, repository, { ownerOnly = false, summaryOnly = false } = {}) {
+async function assertTaskAccess(ctx, repository, {
+  ownerOnly = false,
+  summaryOnly = false,
+  allowCreatorRead = false,
+  allowUnassignedCreatorStates = [],
+} = {}) {
   const actor = requestActor(ctx);
-  const readTask = summaryOnly && typeof repository.getTaskAccess === 'function' ? repository.getTaskAccess : repository.getTask;
-  if (typeof readTask !== 'function') return { actor, task: null };
-  const task = await readTask.call(repository, ctx.params.taskId);
+  const readAccess = typeof repository.getTaskAccess === 'function'
+    ? repository.getTaskAccess
+    : repository.getTask;
+  if (typeof readAccess !== 'function') return { actor, task: null };
+  const accessTask = await readAccess.call(repository, ctx.params.taskId);
+  if (!accessTask) throw new ControlPlaneNotFoundError('task not found');
+  const authorize = (candidate) => {
+    const assignedToUserId = Object.hasOwn(candidate, 'assignedToUserId')
+      ? candidate.assignedToUserId
+      : candidate.createdByUserId;
+    // V3 authorization is account-bound. A username without its immutable
+    // account id is insufficient because deleted names can be reused.
+    const creatorAccountMatches = candidate.createdByAccountId === actor.userId;
+    const creatorStateAllowed = allowUnassignedCreatorStates.includes(candidate.state)
+      || (candidate.state === 'CANCELLED'
+        && allowUnassignedCreatorStates.includes(candidate.cancelledFromState));
+    const creatorRead = (allowCreatorRead || (assignedToUserId === null && creatorStateAllowed))
+      && candidate.createdByUserId === actor.username
+      && creatorAccountMatches;
+    const assigneeRead = assignedToUserId === actor.username
+      && candidate.assignedToAccountId === actor.userId;
+    if (actor.role !== 'ADMIN' && assignedToUserId === null && !creatorRead) {
+      throw new HttpError(403, 'FORBIDDEN', '未分配任务仅管理员可访问');
+    }
+    if ((ownerOnly || actor.role === 'USER') && !assigneeRead && !creatorRead) {
+      throw new HttpError(403, 'FORBIDDEN', 'current user cannot access this task');
+    }
+  };
+  authorize(accessTask);
+  const task = !summaryOnly && readAccess !== repository.getTask && typeof repository.getTask === 'function'
+    ? await repository.getTask(ctx.params.taskId)
+    : accessTask;
   if (!task) throw new ControlPlaneNotFoundError('task not found');
-  const assignedToUserId = Object.hasOwn(task, 'assignedToUserId')
-    ? task.assignedToUserId
-    : task.createdByUserId;
-  if (actor.role !== 'ADMIN' && assignedToUserId === null) {
-    throw new HttpError(403, 'FORBIDDEN', '未分配任务仅管理员可访问');
-  }
-  if ((ownerOnly || actor.role === 'USER') && assignedToUserId !== actor.username) {
-    throw new HttpError(403, 'FORBIDDEN', 'current user cannot access this task');
+  if (!summaryOnly && readAccess !== repository.getTask) {
+    const currentAccess = await readAccess.call(repository, ctx.params.taskId);
+    if (!currentAccess) throw new ControlPlaneNotFoundError('task not found');
+    authorize(currentAccess);
   }
   return { actor, task };
 }
@@ -536,6 +567,10 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     requestActor(ctx, ['ADMIN']);
     json(ctx, 200, await repository.listNodes());
   });
+  router.delete('/v1/executor-statuses', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.retireNode(requireJson(ctx).nodeId, actor));
+  });
   router.post('/v1/tasks', async (ctx) => {
     const actor = requestActor(ctx);
     const body = requireJson(ctx);
@@ -546,21 +581,42 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
       || Object.hasOwn(body, 'assignedToAccountId'))) {
       throw new HttpError(403, 'FORBIDDEN', '仅管理员可以指定任务负责人');
     }
-    const target = actor.role === 'ADMIN'
+    let target = actor.role === 'ADMIN'
       ? assignmentTarget(body)
-      : { assignedToUserId: actor.username, assignedToAccountId: actor.userId };
+      : { assignedToUserId: null, assignedToAccountId: null };
+    if (skipCopyReview && target.assignedToUserId === null) {
+      throw new ControlPlaneConflictError(
+        'SKIP_COPY_REVIEW_ASSIGNEE_REQUIRED',
+        '免人工文案审核的任务必须在创建时明确指定负责人',
+      );
+    }
+    if (!skipCopyReview && target.assignedToUserId !== null) {
+      throw new ControlPlaneConflictError(
+        'TASK_NOT_READY_FOR_ASSIGNMENT',
+        '普通任务将在文案生成完成后分配审核负责人',
+      );
+    }
+    if (!skipCopyReview) target = { assignedToUserId: null, assignedToAccountId: null };
     json(ctx, 201, await repository.createTasks({
       nodeId: body.nodeId,
       createdByUserId: actor.username,
       actor,
       ...target,
-      assignmentSource: target.assignedToUserId === null ? null : actor.role === 'ADMIN' ? 'MANUAL' : 'SELF',
+      assignmentSource: target.assignedToUserId === null ? null : 'MANUAL',
       skipCopyReview,
       tasks: body.tasks,
     }));
   });
   router.get('/v1/tasks', async (ctx) => {
     const actor = requestActor(ctx);
+    const personal = ctx.query.personal === 'true';
+    if (ctx.query.personal !== undefined && !['true', 'false'].includes(ctx.query.personal)) {
+      throw new TypeError('personal must be true or false');
+    }
+    if (personal && ['assignedToUserId', 'unassigned', 'createdByUserId', 'createdByAccountId', 'nodeId']
+      .some((key) => ctx.query[key] !== undefined)) {
+      throw new TypeError('personal task scope cannot be combined with ownership filters');
+    }
     if (ctx.query.createdByRole !== undefined) requestActor(ctx, ['ADMIN']);
     if (ctx.query.createdByAccountId !== undefined) requestActor(ctx, ['ADMIN']);
     if (ctx.query.attention !== undefined) requestActor(ctx, ['ADMIN']);
@@ -577,9 +633,11 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
       nodeId: ctx.query.nodeId,
       createdByUserId: ctx.query.createdByUserId,
       createdByAccountId: ctx.query.createdByAccountId,
-      assignedToUserId: actor.role === 'USER' ? actor.username : ctx.query.assignedToUserId,
-      unassignedOnly: actor.role === 'ADMIN' && ctx.query.unassigned === 'true',
-      excludeUnassigned: actor.role !== 'ADMIN',
+      assignedToUserId: personal ? undefined : actor.role === 'USER' ? actor.username : ctx.query.assignedToUserId,
+      visibleToUserId: personal ? actor.username : undefined,
+      visibleToAccountId: personal ? actor.userId : undefined,
+      unassignedOnly: !personal && actor.role === 'ADMIN' && ctx.query.unassigned === 'true',
+      excludeUnassigned: actor.role !== 'ADMIN' && !personal,
       ...(createdByRole !== null ? { createdByRole } : {}),
       ...(ctx.query.taskId !== undefined ? { taskId: ctx.query.taskId } : {}),
       query: ctx.query.query,
@@ -670,7 +728,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     json(ctx, 200, await repository.taskCounts({ nodeId: ctx.query.nodeId }));
   });
   router.get('/v1/tasks/:taskId', async (ctx) => {
-    const { task, actor } = await assertTaskAccess(ctx, repository);
+    const { task, actor } = await assertTaskAccess(ctx, repository, { allowCreatorRead: true });
     // Execution snapshots include internal prompts and model configuration.
     const { executions, ...reviewableTask } = task;
     json(ctx, 200, actor.role === 'ADMIN' ? task : reviewableTask);
@@ -686,7 +744,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     }));
   });
   router.get('/v1/tasks/:taskId/archive', async (ctx) => {
-    const { task } = await assertTaskAccess(ctx, repository);
+    const { task } = await assertTaskAccess(ctx, repository, { allowCreatorRead: true });
     if (!['MANUAL_ARCHIVE', 'REVIEWED'].includes(task.state)) {
       throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'only manually archived tasks can be downloaded');
     }
@@ -748,7 +806,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     const asset = await repository.getAsset(ctx.params.assetId);
     if (!asset) throw new ControlPlaneNotFoundError('asset not found');
     ctx.params.taskId = String(asset.taskId);
-    await assertTaskAccess(ctx, repository, { summaryOnly: true });
+    await assertTaskAccess(ctx, repository, { summaryOnly: true, allowCreatorRead: true });
     const path = safeStoragePath(storageRoot, relative(storageRoot, asset.storagePath));
     await deliverAsset(ctx, asset, path);
   });
@@ -776,7 +834,10 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   });
   router.post('/v1/tasks/:taskId/retry', async (ctx) => {
     const actor = requestActor(ctx);
-    await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
+    await assertTaskAccess(ctx, repository, {
+      ownerOnly: actor.role !== 'ADMIN',
+      allowUnassignedCreatorStates: UNASSIGNED_CREATOR_COPY_CONTROL_STATES,
+    });
     json(ctx, 200, await repository.retryTask(ctx.params.taskId, { ...requireJson(ctx), actor }));
   });
   router.post('/v1/tasks/:taskId/retry-image', async (ctx) => {
@@ -790,12 +851,15 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     json(ctx, 201, await repository.reviseImages(ctx.params.taskId, requireJson(ctx), actor.username, actor.role, actor));
   });
   router.get('/v1/tasks/:taskId/image-capabilities', async (ctx) => {
-    await assertTaskAccess(ctx, repository);
+    await assertTaskAccess(ctx, repository, { summaryOnly: true, allowCreatorRead: true });
     json(ctx, 200, { version: 1, formats: Object.keys(IMAGE_FORMATS) });
   });
   router.post('/v1/tasks/:taskId/cancel', async (ctx) => {
     const actor = requestActor(ctx);
-    await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
+    await assertTaskAccess(ctx, repository, {
+      ownerOnly: actor.role !== 'ADMIN',
+      allowUnassignedCreatorStates: UNASSIGNED_CREATOR_COPY_CONTROL_STATES,
+    });
     json(ctx, 200, await repository.cancelTask(ctx.params.taskId, { actor }));
   });
   router.post('/v1/tasks/:taskId/requeue', async (ctx) => {

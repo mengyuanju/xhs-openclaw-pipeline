@@ -104,7 +104,7 @@ export function createStatisticsService({ fetchImpl = fetch, now = Date.now, sle
         entry.scan ??= { rows: new Map(), offset: 0, total: null, restarts: 0 };
         const scan = entry.scan;
         const query = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(scan.offset), includeTotal: 'true' });
-        if (scope === 'personal') query.set('assignedToUserId', actor.username);
+        if (scope === 'personal') query.set('personal', 'true');
         const page = await request(root, actor, `/v1/tasks?${query}`);
         if (page?.total > maxTasks) throw Object.assign(new Error('统计范围过大'), { code: 'STATISTICS_TOO_LARGE' });
         if (!Array.isArray(page?.items) || !Number.isSafeInteger(page.total) || page.total < 0
@@ -112,7 +112,10 @@ export function createStatisticsService({ fetchImpl = fetch, now = Date.now, sle
           throw new Error('任务分页无法完整统计');
         }
         const rows = page.items.map(compactTask);
-        if (scope === 'personal' && rows.some(task => task.assignedToUserId !== actor.username)) {
+        if (scope === 'personal' && rows.some(task => !(
+          (task.assignedToUserId === actor.username && task.assignedToAccountId === actor.userId)
+            || (task.createdByUserId === actor.username && task.createdByAccountId === actor.userId)
+        ))) {
           throw new ApiError(403, 'STATISTICS_ACCESS_DENIED', '中心未正确隔离个人任务');
         }
         const changed = scan.total !== null && page.total !== scan.total;

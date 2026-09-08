@@ -73,6 +73,7 @@ type TaskDetail = {
   id: number;
   query: string;
   assignedToUserId?: string | null;
+  assignedToAccountId?: number | null;
   aiDisclosureEnabled: boolean;
   state: TaskState;
   imageReviewedAt: string | null;
@@ -181,6 +182,7 @@ type CopyEditArea = 'copy' | 'plan';
 function getCopyEditBlockMessage({
   editable,
   assigned,
+  canControl,
   busy,
   score,
   ratingComplete,
@@ -188,12 +190,14 @@ function getCopyEditBlockMessage({
 }: {
   editable: boolean;
   assigned: boolean;
+  canControl: boolean;
   busy: boolean;
   score: HumanScore | null;
   ratingComplete: boolean;
   machineOriginal: boolean;
 }) {
   if (!assigned) return '请先分配负责人，再进行文案评分和编辑。';
+  if (!canControl) return '当前任务已分配给其他负责人，你可以查看，但不能评分或编辑。';
   if (!editable) return '当前任务不在待文案审核阶段，文案内容仅供查看。';
   if (busy) return '审核内容正在处理，请稍候再编辑。';
   if (score === null) return machineOriginal
@@ -220,12 +224,16 @@ export function TaskReviewDialog({
   taskId,
   nodeId,
   role,
+  currentUsername,
+  currentAccountId,
   onOpenChange,
   onUpdated,
 }: {
   taskId: number | null;
   nodeId: string;
   role: string;
+  currentUsername: string;
+  currentAccountId: number;
   onOpenChange: (open: boolean) => void;
   onUpdated: (message: string) => void | Promise<void>;
 }) {
@@ -339,7 +347,12 @@ export function TaskReviewDialog({
   const isAdmin = role === 'ADMIN';
   const taskHasAssignee = Boolean(detail
     && (!Object.hasOwn(detail, 'assignedToUserId') || detail.assignedToUserId !== null));
-  const editable = taskHasAssignee && detail?.state === 'COPY_REVIEW_PENDING'
+  const currentUserIsAssignee = Boolean(detail
+    && detail.assignedToUserId === currentUsername
+    && detail.assignedToAccountId === currentAccountId);
+  const canReviewCopy = isAdmin || role === 'REVIEWER' || currentUserIsAssignee;
+  const hasOwnerControl = isAdmin || currentUserIsAssignee;
+  const editable = taskHasAssignee && canReviewCopy && detail?.state === 'COPY_REVIEW_PENDING'
     && Boolean(revision && draft);
   const originalCopyRatingComplete = ratingFeedbackComplete(copyOriginalScore, copyOriginalReasons, copyOriginalNote);
   const copyFieldsEditable = editable && originalCopyRatingComplete
@@ -353,16 +366,17 @@ export function TaskReviewDialog({
   const canApproveCopy = copyRatingComplete && isPassingHumanScore(effectiveCopyScore);
   const longQuery = Boolean(detail && (detail.query.length > 100 || detail.query.split('\n').length > 3));
   const canReviewImages = detail?.state === 'MANUAL_ARCHIVE'
-    && ['ADMIN', 'REVIEWER'].includes(role) && Boolean(detail.currentImageRunId);
+    && (isAdmin || role === 'REVIEWER' && taskHasAssignee) && Boolean(detail.currentImageRunId);
   const downloadable = detail && ['MANUAL_ARCHIVE', 'REVIEWED'].includes(detail.state);
-  const canResumeImages = canResumeImageTask(detail) && role !== 'REVIEWER';
-  const canModifyImages = Boolean(detail && revision?.approvedAt && role !== 'REVIEWER'
+  const canResumeImages = canResumeImageTask(detail) && hasOwnerControl && role !== 'REVIEWER';
+  const canModifyImages = Boolean(detail && revision?.approvedAt && hasOwnerControl && role !== 'REVIEWER'
     && ['MANUAL_ARCHIVE', 'REVIEWED', 'IMAGE_FAILED', 'IMAGE_QUEUED'].includes(detail.state) && !detail.currentExecutionId);
   const savedCopyRatings = detail ? copyRatingsFromDetail(detail) : { current: undefined };
   const currentCopyRatingLabel = revision?.executionId === null ? '当前修改稿评分' : '机器原稿初评';
   const copyEditBlockMessage = getCopyEditBlockMessage({
     editable,
     assigned: taskHasAssignee,
+    canControl: canReviewCopy,
     busy: loading || submitting,
     score: copyOriginalScore,
     ratingComplete: originalCopyRatingComplete,
@@ -729,6 +743,8 @@ export function TaskReviewDialog({
           <DialogTitle>{detail?.state === 'REVIEWED' ? '已完成任务详情' : detail?.state === 'MANUAL_ARCHIVE' ? '人工归档详情' : '任务详情与审核'}</DialogTitle>
           <DialogDescription>{detail?.state === 'COPY_REVIEW_PENDING' && !taskHasAssignee
             ? '机器文案已生成；请先在任务列表分配负责人，再开始人工评分与审核。'
+            : detail?.state === 'COPY_REVIEW_PENDING' && !canReviewCopy
+            ? '任务已分配给其他负责人；你可以查看生成结果，但不能评分、编辑或放行。'
             : detail?.state === 'MANUAL_ARCHIVE'
             ? '核对完整图集并完成人工评分，再选择审核通过、重试生图或废弃。'
             : detail?.state === 'REVIEWED' ? '图文已审核通过，可查看详情并下载完整资源包。'
@@ -775,6 +791,8 @@ export function TaskReviewDialog({
                 <div className="workbench-review-section-title"><span>01</span><div><h3>标题、正文与标签</h3><p>{editable ? '先评价机器原稿，再决定直接放行或修改。' : '当前状态只读，展示任务采用的文案版本。'}</p></div></div>
                 {detail.state === 'COPY_REVIEW_PENDING' && !taskHasAssignee
                   && <div className="notice warning" role="status">文案已生成，但任务尚未分配负责人。请先关闭窗口并完成分配，再进行评分或修改。</div>}
+                {detail.state === 'COPY_REVIEW_PENDING' && taskHasAssignee && !canReviewCopy
+                  && <div className="notice warning" role="status">当前任务由其他负责人处理；这里仅提供只读查看。</div>}
                 <div className="workbench-review-query">
                   <strong>Query 原文</strong>
                   <div id="review-query-text" className="workbench-review-query-text" data-expanded={queryExpanded || !longQuery}>{detail.query}</div>

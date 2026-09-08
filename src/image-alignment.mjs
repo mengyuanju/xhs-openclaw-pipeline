@@ -362,7 +362,7 @@ export function parseImageAlignmentOutput(raw, { allowedVisibleText } = {}) {
 }
 
 export function createImageAlignmentValidator({
-  openclaw,
+  agentClient,
   post,
   visualPlan,
   visualPage,
@@ -370,7 +370,7 @@ export function createImageAlignmentValidator({
   complianceDisclosure = '',
   onInvalidResponse,
 }) {
-  if (!openclaw?.runVision) throw new TypeError('OpenClaw vision client is required for image alignment');
+  if (!agentClient?.runVision) throw new TypeError('Model vision client is required for image alignment');
   if (onInvalidResponse !== undefined && typeof onInvalidResponse !== 'function') {
     throw new TypeError('onInvalidResponse must be a function');
   }
@@ -405,7 +405,7 @@ export function createImageAlignmentValidator({
         : `\n\n上一次响应未通过 JSON 契约（${lastContractError?.message ?? '结构无效'}）。这是格式纠正重试：只输出一个完整 JSON 对象，不要 Markdown、解释、前后缀或代码块。`;
       let generated;
       try {
-        generated = await openclaw.runVision({
+        generated = await agentClient.runVision({
           prompt: `${prompt}${correction}`,
           inputPaths: [imagePath],
         });

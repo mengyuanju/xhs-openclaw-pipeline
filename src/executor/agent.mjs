@@ -10,7 +10,7 @@ import { effectiveModelApiConfig } from '../model-api-config.mjs';
 import { codexErrorCode } from '../codex-protocol.mjs';
 import { codexConcurrencyConfig, codexRuntimePath, createCodexRuntime } from '../codex-runtime.mjs';
 import { generateCopy, toCopyGenerationResponse } from '../copy-generation.mjs';
-import { createAgentClient as createOpenClawClient } from '../agent-client.mjs';
+import { createAgentClient } from '../agent-client.mjs';
 import { generateStandaloneImages, normalizeStandaloneImageSource, retryStandaloneImageRun, standaloneImageRunDirectory } from '../standalone-image-generation.mjs';
 import { plannedForStandaloneRecovery } from '../standalone-image-recovery.mjs';
 import { findImageRecoveryRun, imageRecoveryRunIds, loadUploadedImages, readCheckpoint, saveCheckpoint } from './image-checkpoints.mjs';
@@ -88,7 +88,7 @@ export async function checkExecutorReady({
   if (effectiveModelApiConfig(modelApi, environment).agentProvider === 'CODEX' && !health.capabilities?.executionRetryControl) {
     throw new Error('使用 Codex 前请更新并重启中心服务：缺少 executionRetryControl，无法保证失败后不重复生成');
   }
-  (modelClient ?? createOpenClawClient({ modelApi, environment })).checkReady();
+  (modelClient ?? createAgentClient({ modelApi, environment })).checkReady();
   return { health, workRoot };
 }
 
@@ -195,7 +195,7 @@ export async function executeImageClaim({
       imageSystemPrompt: publishedPrompt(snapshot, 'IMAGE_SYSTEM'),
       promptRuntime: promptRuntimeFromSnapshot(snapshot),
       visualReference: visualReference(snapshot),
-      client: imageClient ?? createOpenClawClient({ modelApi: settings.modelApi ?? {}, environment }),
+      client: imageClient ?? createAgentClient({ modelApi: settings.modelApi ?? {}, environment }),
     },
     onProgress: async (progress) => controlPlane.updateProgress(execution.id, {
       stage: progress.stage,

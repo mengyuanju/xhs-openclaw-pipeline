@@ -188,7 +188,7 @@ describe('CLI', () => {
       env,
       stdout,
       stderr,
-      createOpenClaw() {
+      createAgent() {
         return {
           checkReady() {
             preflightCalls += 1;
@@ -226,7 +226,7 @@ describe('CLI', () => {
       env,
       stdout,
       stderr,
-      createOpenClaw() {
+      createAgent() {
         return { checkReady() { return { textModel: 'fake', imageModel: 'fake' }; } };
       },
       async processContentTask({ queue, workerId, recoveryEnabled }) {
@@ -286,7 +286,7 @@ describe('CLI', () => {
       env,
       stdout,
       stderr,
-      createOpenClaw() {
+      createAgent() {
         return { checkReady() {} };
       },
       async processContentTask() {

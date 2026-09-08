@@ -168,7 +168,7 @@ export function AutoAssignmentPoolManager({
     const form = new FormData(event.currentTarget);
     const assignmentLimit = Number(form.get('assignmentLimit'));
     if (!Number.isInteger(assignmentLimit) || assignmentLimit < 1 || assignmentLimit > 500) {
-      setError('在手任务上限必须是 1–500 之间的整数。');
+      setError('待审核任务上限必须是 1–500 之间的整数。');
       return;
     }
 
@@ -203,7 +203,7 @@ export function AutoAssignmentPoolManager({
         assignmentLimit,
         expectedVersion: worker.version,
       }),
-    }), `已更新 ${worker.displayName || worker.username} 的在手任务上限。`);
+    }), `已更新 ${worker.displayName || worker.username} 的待审核任务上限。`);
     if (saved) setEditor(null);
   }
 
@@ -258,8 +258,8 @@ export function AutoAssignmentPoolManager({
 
   return <div className="user-management-stack">
     <section className="user-summary-grid" aria-label="自动分配池概况">
-      <article className="user-summary-card"><span><ListChecks size={18} /></span><div><strong>{initialSnapshot.unassignedTaskCount}</strong><small>全部待分配</small></div></article>
-      <article className="user-summary-card"><span className="tone-green"><ListChecks size={18} /></span><div><strong>{autoAssignableTaskCount}</strong><small>可自动分配</small><div className="subtle">另有 {manualAttentionTaskCount} 条需人工处理或等待执行结束</div></div></article>
+      <article className="user-summary-card"><span><ListChecks size={18} /></span><div><strong>{initialSnapshot.unassignedTaskCount}</strong><small>无负责人任务</small></div></article>
+      <article className="user-summary-card"><span className="tone-green"><ListChecks size={18} /></span><div><strong>{autoAssignableTaskCount}</strong><small>待审核分配</small><div className="subtle">另有 {manualAttentionTaskCount} 条仍在机器阶段或需要管理员处理</div></div></article>
       <article className="user-summary-card"><span className="tone-green"><Users size={18} /></span><div><strong>{availableWorkerCount}</strong><small>可用池成员</small></div></article>
       <article className="user-summary-card"><span className="tone-amber"><CheckCircle2 size={18} /></span><div><strong>{effectiveAvailableSlots}</strong><small>当前可用名额</small></div></article>
     </section>
@@ -295,7 +295,7 @@ export function AutoAssignmentPoolManager({
       {initialSnapshot.workers.length === 0
         ? <div className="empty-state">人员池为空。请点击“加入作业员”明确选择需要自动接单的人员。</div>
         : <div className="table-wrap mobile-cards user-table-wrap"><table className="user-table">
-          <thead><tr><th>作业员</th><th>池状态</th><th>在手任务</th><th>接单状态</th><th className="user-actions-heading">操作</th></tr></thead>
+          <thead><tr><th>作业员</th><th>池状态</th><th>待审核任务</th><th>接单状态</th><th className="user-actions-heading">操作</th></tr></thead>
           <tbody>{initialSnapshot.workers.map((worker) => {
             const isAccountEligible = worker.userRole === 'USER' && worker.userStatus === 'ACTIVE';
             const availability = workerAvailability(initialSnapshot.settings.enabled, worker);
@@ -311,7 +311,7 @@ export function AutoAssignmentPoolManager({
                 </span>
                 {!isAccountEligible && <span className="pill tone-red">账号停用</span>}
               </div></td>
-              <td data-label="在手任务">
+              <td data-label="待审核任务">
                 <strong className="mono">{worker.currentTaskCount} / {worker.assignmentLimit}</strong>
                 <div className="subtle">剩余 {worker.availableSlots} 个配置名额</div>
               </td>
@@ -319,7 +319,7 @@ export function AutoAssignmentPoolManager({
               <td className="row-action" data-label="操作"><div className="user-row-actions">
                 <Button unstyled className="button small" type="button"
                   disabled={Boolean(busy) || !isAccountEligible}
-                  title={!isAccountEligible ? '请先启用该普通用户' : '编辑在手任务上限'}
+                  title={!isAccountEligible ? '请先启用该普通用户' : '编辑待审核任务上限'}
                   onClick={() => openWorkerEditor(worker)}><Pencil size={14} />编辑额度</Button>
                 <Button unstyled className="button small" type="button"
                   disabled={Boolean(busy) || (!isAccountEligible && worker.status === 'PAUSED')}
@@ -345,7 +345,7 @@ export function AutoAssignmentPoolManager({
             <DialogTitle>{editor?.mode === 'add' ? '加入自动分配池' : '编辑自动分配额度'}</DialogTitle>
             <DialogDescription>{editor?.mode === 'add'
               ? '明确选择一名作业员。保存前不会自动选择或加入任何用户。'
-              : `设置 ${editorWorker?.displayName || editorWorker?.username || '该作业员'} 的在手任务上限。`}</DialogDescription>
+              : `设置 ${editorWorker?.displayName || editorWorker?.username || '该作业员'} 的待审核任务上限。`}</DialogDescription>
           </div>
         </div>
         <form className="stack"
@@ -374,7 +374,7 @@ export function AutoAssignmentPoolManager({
           {editor?.mode === 'edit' && !editorWorker
             ? <div className="notice error" role="alert">该作业员已被其他管理员移出，请关闭弹窗后重试。</div>
             : <div className="field">
-              <label htmlFor="auto-assignment-limit">在手任务上限</label>
+              <label htmlFor="auto-assignment-limit">待审核任务上限</label>
               <Input id="auto-assignment-limit" name="assignmentLimit" type="number" min={1} max={500} step={1}
                 inputMode="numeric" defaultValue={editorWorker?.assignmentLimit ?? 10} disabled={Boolean(busy)} required />
               <small>允许范围为 1–500。作业员完成任务后，系统会继续补充到这个数量。</small>

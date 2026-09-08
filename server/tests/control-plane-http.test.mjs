@@ -74,9 +74,12 @@ test('model trace HTTP routes forward execution uploads and task-scoped lazy rea
 
 test('only administrators can read model traces, including traces of a users own task', async () => {
   const roles = { admin: 'ADMIN', reviewer: 'REVIEWER', user: 'USER' };
+  const ids = { admin: 1, reviewer: 2, user: 3 };
   let traceReads = 0;
   const repository = {
-    getUserByUsername: async (username) => ({ id: 1, username, role: roles[username], status: 'ACTIVE', credentialVersion: 1 }),
+    getUserByUsername: async (username) => ({ id: ids[username], username, role: roles[username], status: 'ACTIVE', credentialVersion: 1 }),
+    getTaskAccess: async () => ({ id: 1, state: 'COPY_REVIEW_PENDING', createdByUserId: 'user',
+      createdByAccountId: 3, assignedToUserId: 'user', assignedToAccountId: 3 }),
     getTask: async () => ({ id: 1, createdByUserId: 'user', query: 'reviewable task',
       executions: [{ id: 'exec', snapshot: { prompts: 'private execution configuration' } }] }),
     listModelCalls: async () => { traceReads++; return { items: [{ id: 'call' }], total: 1 }; },
@@ -85,7 +88,7 @@ test('only administrators can read model traces, including traces of a users own
   await withServer(repository, async (root) => {
     for (const [username, role] of Object.entries(roles)) {
       const response = await fetch(`${root}/v1/tasks/1`, { headers: {
-        'X-Actor-User-Id': '1', 'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1',
+        'X-Actor-User-Id': String(ids[username]), 'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1',
       } });
       assert.equal(response.status, 200);
       const { data } = await response.json();
@@ -95,7 +98,7 @@ test('only administrators can read model traces, including traces of a users own
     for (const suffix of ['', '/call']) {
       for (const [username, role] of Object.entries(roles)) {
         const response = await fetch(`${root}/v1/tasks/1/model-calls${suffix}`, { headers: {
-          'X-Actor-User-Id': '1', 'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1',
+          'X-Actor-User-Id': String(ids[username]), 'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1',
         } });
         assert.equal(response.status, role === 'ADMIN' ? 200 : 403, `${role} ${suffix || 'list'}`);
         const body = await response.json();
@@ -140,12 +143,77 @@ test('control plane HTTP exposes node registration and batched task creation', a
   });
   assert.deepEqual(calls.map(([name]) => name), ['node', 'tasks']);
   assert.equal('copyExecutorNodeId' in calls[1][1], false);
+  assert.equal(calls[1][1].assignedToUserId, null);
+  assert.equal(calls[1][1].assignedToAccountId, null);
+  assert.equal(calls[1][1].assignmentSource, null);
 });
 
-test('executor status inventory is restricted to administrators', async () => {
+test('normal task creation delays assignment while copy-review bypass requires an explicit owner', async () => {
+  const calls = [];
+  const users = {
+    admin: { id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credentialVersion: 1 },
+    alice: { id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 },
+  };
+  const repository = {
+    getUserByUsername: async (username) => users[username] ?? null,
+    createTasks: async (input) => { calls.push(input); return [{ id: calls.length, ...input }]; },
+  };
+  const headers = (username, role) => ({
+    'Content-Type': 'application/json',
+    'X-Actor-User-Id': String(users[username].id),
+    'X-Actor-Username': username,
+    'X-Actor-Role': role,
+    'X-Actor-Credential-Version': '1',
+  });
+  await withServer(repository, async (root) => {
+    const userCreated = await fetch(`${root}/v1/tasks`, {
+      method: 'POST', headers: headers('alice', 'USER'),
+      body: JSON.stringify({ nodeId: 'node-a', tasks: [{ query: '普通用户提交' }] }),
+    });
+    assert.equal(userCreated.status, 201);
+
+    const earlyAssignment = await fetch(`${root}/v1/tasks`, {
+      method: 'POST', headers: headers('admin', 'ADMIN'),
+      body: JSON.stringify({ nodeId: 'node-a', assignedToUserId: 'alice', assignedToAccountId: 2,
+        tasks: [{ query: '不能提前派单' }] }),
+    });
+    assert.equal(earlyAssignment.status, 409);
+    assert.equal((await earlyAssignment.json()).error.code, 'TASK_NOT_READY_FOR_ASSIGNMENT');
+
+    const missingBypassOwner = await fetch(`${root}/v1/tasks`, {
+      method: 'POST', headers: headers('admin', 'ADMIN'),
+      body: JSON.stringify({ nodeId: 'node-a', skipCopyReview: true, tasks: [{ query: '免审未指定' }] }),
+    });
+    assert.equal(missingBypassOwner.status, 409);
+    assert.equal((await missingBypassOwner.json()).error.code, 'SKIP_COPY_REVIEW_ASSIGNEE_REQUIRED');
+
+    const bypass = await fetch(`${root}/v1/tasks`, {
+      method: 'POST', headers: headers('admin', 'ADMIN'),
+      body: JSON.stringify({ nodeId: 'node-a', skipCopyReview: true,
+        assignedToUserId: 'admin', assignedToAccountId: 1, tasks: [{ query: '管理员自领免审' }] }),
+    });
+    assert.equal(bypass.status, 201);
+  }, { enforceUserAuth: true });
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].createdByUserId, 'alice');
+  assert.equal(calls[0].assignedToUserId, null);
+  assert.equal(calls[0].assignmentSource, null);
+  assert.equal(calls[1].assignedToUserId, 'admin');
+  assert.equal(calls[1].assignedToAccountId, 1);
+  assert.equal(calls[1].assignmentSource, 'MANUAL');
+  assert.equal(calls[1].skipCopyReview, true);
+});
+
+test('executor status inventory and retirement are restricted to administrators', async () => {
   const nodes = [{ id: 'node-a', online: true, imageRunningCount: 1 }];
+  const retired = [];
   const repository = {
     listNodes: async () => nodes,
+    retireNode: async (nodeId, actor) => {
+      retired.push({ nodeId, actor });
+      return { id: nodeId, name: '执行机 A', retiredAt: '2026-09-09T00:00:00Z' };
+    },
     getUserByUsername: async (username) => ({
       id: username === 'admin' ? 1 : 2,
       username,
@@ -167,6 +235,24 @@ test('executor status inventory is restricted to administrators', async () => {
     const reviewer = await fetch(`${root}/v1/executor-statuses`, { headers: headers('reviewer', 'REVIEWER') });
     assert.equal(reviewer.status, 403);
     assert.equal((await reviewer.json()).error.code, 'FORBIDDEN');
+
+    const deniedDelete = await fetch(`${root}/v1/executor-statuses`, {
+      method: 'DELETE', headers: headers('reviewer', 'REVIEWER'),
+    });
+    assert.equal(deniedDelete.status, 403);
+    assert.deepEqual(retired, []);
+
+    const deleted = await fetch(`${root}/v1/executor-statuses`, {
+      method: 'DELETE',
+      headers: { ...headers('admin', 'ADMIN'), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nodeId: '..' }),
+    });
+    assert.equal(deleted.status, 200);
+    assert.equal((await deleted.json()).data.id, '..');
+    assert.deepEqual(retired, [{
+      nodeId: '..',
+      actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
+    }]);
   }, { enforceUserAuth: true });
 });
 
@@ -408,6 +494,8 @@ test('task listing forwards server-side pagination, states and Query search', as
       createdByUserId: undefined,
       createdByAccountId: undefined,
       assignedToUserId: undefined,
+      visibleToUserId: undefined,
+      visibleToAccountId: undefined,
       unassignedOnly: false,
       excludeUnassigned: false,
       limit: '20',
@@ -416,6 +504,161 @@ test('task listing forwards server-side pagination, states and Query search', as
     }],
     ['counts', { nodeId: 'node-a' }],
   ]);
+});
+
+test('personal task scope is bound to the authenticated account and includes submitted work', async () => {
+  const calls = [];
+  const user = { id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 };
+  const repository = {
+    getUserByUsername: async (username) => username === user.username ? user : null,
+    listTasks: async (input) => { calls.push(input); return { items: [], total: 0, limit: 20, offset: 0 }; },
+  };
+  await withServer(repository, async (root) => {
+    const response = await fetch(`${root}/v1/tasks?personal=true&states=COPY_QUEUED,COPY_REVIEW_PENDING&limit=20&includeTotal=true`, {
+      headers: {
+        'X-Actor-User-Id': '2', 'X-Actor-Username': 'alice', 'X-Actor-Role': 'USER',
+        'X-Actor-Credential-Version': '1',
+      },
+    });
+    assert.equal(response.status, 200);
+  }, { enforceUserAuth: true });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].assignedToUserId, undefined);
+  assert.equal(calls[0].visibleToUserId, 'alice');
+  assert.equal(calls[0].visibleToAccountId, 2);
+  assert.equal(calls[0].excludeUnassigned, false);
+});
+
+test('an unassigned task creator can read and cancel machine work without gaining review access', async () => {
+  const users = {
+    alice: { id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 },
+    bob: { id: 3, username: 'bob', role: 'USER', status: 'ACTIVE', credentialVersion: 1 },
+  };
+  let approvalCalls = 0;
+  let cancellationCalls = 0;
+  let retryCalls = 0;
+  const access = {
+    id: 41, state: 'COPY_QUEUED', createdByUserId: 'alice', createdByAccountId: 2, assignedToUserId: null,
+  };
+  const repository = {
+    getUserByUsername: async (username) => users[username] ?? null,
+    getTaskAccess: async () => access,
+    getTask: async () => ({ ...access, query: '机器正在生成', executions: [{ snapshot: { private: true } }] }),
+    approveCopy: async () => { approvalCalls++; return access; },
+    cancelTask: async () => { cancellationCalls++; return { ...access, state: 'CANCELLED' }; },
+    retryTask: async () => { retryCalls++; return { ...access, state: 'COPY_QUEUED' }; },
+  };
+  const headers = (username) => ({
+    'X-Actor-User-Id': String(users[username].id), 'X-Actor-Username': username,
+    'X-Actor-Role': 'USER', 'X-Actor-Credential-Version': '1',
+  });
+  await withServer(repository, async (root) => {
+    const readable = await fetch(`${root}/v1/tasks/41`, { headers: headers('alice') });
+    assert.equal(readable.status, 200);
+    const body = await readable.json();
+    assert.equal(body.data.query, '机器正在生成');
+    assert.equal('executions' in body.data, false);
+
+    const cancelled = await fetch(`${root}/v1/tasks/41/cancel`, {
+      method: 'POST', headers: { ...headers('alice'), 'Content-Type': 'application/json' }, body: '{}',
+    });
+    assert.equal(cancelled.status, 200);
+    assert.equal((await cancelled.json()).data.state, 'CANCELLED');
+
+    access.state = 'COPY_RUNNING';
+    const retried = await fetch(`${root}/v1/tasks/41/retry`, {
+      method: 'POST', headers: { ...headers('alice'), 'Content-Type': 'application/json' }, body: '{}',
+    });
+    assert.equal(retried.status, 200);
+    assert.equal((await retried.json()).data.state, 'COPY_QUEUED');
+
+    access.state = 'COPY_REVIEW_PENDING';
+    const cannotCancelReview = await fetch(`${root}/v1/tasks/41/cancel`, {
+      method: 'POST', headers: { ...headers('alice'), 'Content-Type': 'application/json' }, body: '{}',
+    });
+    assert.equal(cannotCancelReview.status, 403);
+
+    assert.equal((await fetch(`${root}/v1/tasks/41`, { headers: headers('bob') })).status, 403);
+    const cannotReview = await fetch(`${root}/v1/tasks/41/approve-copy`, {
+      method: 'POST', headers: { ...headers('alice'), 'Content-Type': 'application/json' }, body: '{}',
+    });
+    assert.equal(cannotReview.status, 403);
+  }, { enforceUserAuth: true });
+  assert.equal(approvalCalls, 0);
+  assert.equal(cancellationCalls, 1);
+  assert.equal(retryCalls, 1);
+});
+
+test('a same-name replacement account cannot inherit an existing task assignment', async () => {
+  const user = { id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 };
+  let fullReads = 0;
+  let cancellationCalls = 0;
+  const repository = {
+    getUserByUsername: async () => user,
+    getTaskAccess: async () => ({
+      id: 42,
+      state: 'COPY_RUNNING',
+      createdByUserId: 'bob',
+      createdByAccountId: 3,
+      assignedToUserId: 'alice',
+      assignedToAccountId: 99,
+    }),
+    getTask: async () => { fullReads++; return null; },
+    cancelTask: async () => { cancellationCalls++; return null; },
+  };
+  const headers = {
+    'X-Actor-User-Id': '2', 'X-Actor-Username': 'alice', 'X-Actor-Role': 'USER',
+    'X-Actor-Credential-Version': '1',
+  };
+  await withServer(repository, async (root) => {
+    assert.equal((await fetch(`${root}/v1/tasks/42`, { headers })).status, 403);
+    assert.equal((await fetch(`${root}/v1/tasks/42/cancel`, {
+      method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: '{}',
+    })).status, 403);
+  }, { enforceUserAuth: true });
+  assert.equal(fullReads, 0);
+  assert.equal(cancellationCalls, 0);
+});
+
+test('task detail authorization is rechecked after a concurrent reassignment', async () => {
+  const user = { id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 };
+  let accessReads = 0;
+  const repository = {
+    getUserByUsername: async () => user,
+    getTaskAccess: async () => (++accessReads === 1
+      ? { id: 43, state: 'COPY_REVIEW_PENDING', createdByUserId: 'admin', createdByAccountId: 1,
+          assignedToUserId: 'alice', assignedToAccountId: 2 }
+      : { id: 43, state: 'COPY_REVIEW_PENDING', createdByUserId: 'admin', createdByAccountId: 1,
+          assignedToUserId: 'bob', assignedToAccountId: 3 }),
+    getTask: async () => ({ id: 43, query: '改派期间的任务内容', assignedToUserId: 'bob', executions: [] }),
+  };
+  await withServer(repository, async (root) => {
+    const response = await fetch(`${root}/v1/tasks/43`, { headers: {
+      'X-Actor-User-Id': '2', 'X-Actor-Username': 'alice', 'X-Actor-Role': 'USER',
+      'X-Actor-Credential-Version': '1',
+    } });
+    assert.equal(response.status, 403);
+    assert.doesNotMatch(await response.text(), /改派期间的任务内容/u);
+  }, { enforceUserAuth: true });
+  assert.equal(accessReads, 2);
+});
+
+test('non-admin task access fails closed when immutable account ids are unavailable', async () => {
+  const user = { id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 };
+  const repository = {
+    getUserByUsername: async () => user,
+    getTask: async () => ({ id: 44, state: 'COPY_REVIEW_PENDING', createdByUserId: 'alice',
+      assignedToUserId: 'alice', query: '缺少稳定身份的任务', executions: [] }),
+  };
+  await withServer(repository, async (root) => {
+    const response = await fetch(`${root}/v1/tasks/44`, { headers: {
+      'X-Actor-User-Id': '2', 'X-Actor-Username': 'alice', 'X-Actor-Role': 'USER',
+      'X-Actor-Credential-Version': '1',
+    } });
+    assert.equal(response.status, 403);
+    assert.doesNotMatch(await response.text(), /缺少稳定身份的任务/u);
+  }, { enforceUserAuth: true });
 });
 
 test('task ownership comes from the UI server identity and is forwarded to task filtering', async () => {

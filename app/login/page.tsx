@@ -20,7 +20,7 @@ export default async function LoginPage({
       <section className="login-story" aria-label="后台说明">
         <span className="login-brand">RED CONTENT STUDIO</span>
         <div>
-          <p className="eyebrow login-eyebrow">OpenClaw production console</p>
+          <p className="eyebrow login-eyebrow">Codex production console</p>
           <h1>从选题到定稿，<br />让每一步都有据可查。</h1>
           <p>Excel 批量入队、提示词版本、图文生成与人工审核，集中在一套局域网内容工作台中。</p>
         </div>

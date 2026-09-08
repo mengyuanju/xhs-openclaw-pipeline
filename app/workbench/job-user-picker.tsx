@@ -23,7 +23,9 @@ export function JobUserPicker({
   dialogDescription,
   roleLabels,
   eligibleRoles,
+  additionallyEligibleUserIds = [],
   activeOnly = false,
+  allowEmptyOption = true,
   disabled = false,
   onChange,
 }: {
@@ -37,7 +39,9 @@ export function JobUserPicker({
   dialogDescription: string;
   roleLabels: Record<string, string>;
   eligibleRoles?: string[];
+  additionallyEligibleUserIds?: number[];
   activeOnly?: boolean;
+  allowEmptyOption?: boolean;
   disabled?: boolean;
   onChange: (value: JobCreator | null) => void;
 }) {
@@ -63,7 +67,7 @@ export function JobUserPicker({
 
   const keyword = search.trim().toLocaleLowerCase('zh-CN');
   const matches = users.filter((user) => (
-    (!eligibleRoles || eligibleRoles.includes(user.role))
+    (!eligibleRoles || eligibleRoles.includes(user.role) || additionallyEligibleUserIds.includes(Number(user.id)))
     && (!activeOnly || user.status === 'ACTIVE')
     && (!keyword
       || user.username.toLocaleLowerCase('zh-CN').includes(keyword)
@@ -100,9 +104,9 @@ export function JobUserPicker({
               maxLength={100} onValueChange={setSearch} />
           </div>
           <div className="workbench-creator-results" aria-busy={loading}>
-            <Button unstyled className="workbench-creator-option" type="button"
+            {allowEmptyOption && <Button unstyled className="workbench-creator-option" type="button"
               aria-pressed={emptyOptionSelected ?? !value}
-              onClick={() => choose(null)}>{emptyOptionLabel}</Button>
+              onClick={() => choose(null)}>{emptyOptionLabel}</Button>}
             {loading ? <p role="status">正在读取作业员…</p>
               : error ? <div role="alert"><p>读取失败：{error}</p><Button unstyled className="button small" type="button"
                   onClick={() => setAttempt((count) => count + 1)}>重新读取作业员</Button></div>
@@ -115,7 +119,7 @@ export function JobUserPicker({
           </div>
         </DialogContent>
       </Dialog>
-      {value && <Button unstyled className="button small" type="button" disabled={disabled}
+      {allowEmptyOption && value && <Button unstyled className="button small" type="button" disabled={disabled}
         aria-label={`清除${label}`} onClick={() => onChange(null)}>清除</Button>}
     </div>
   </div>;

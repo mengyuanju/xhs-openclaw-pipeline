@@ -32,7 +32,7 @@ const validCopy = {
   },
 };
 
-test('isolated PostgreSQL: pending pool, opt-in replenishment, fair claims and refill after completion', {
+test('isolated PostgreSQL: copy generation precedes review assignment and review capacity refills immediately', {
   timeout: 90_000,
 }, async (t) => {
   assert.ok(process.env.TEST_POSTGRES_BIN, 'set TEST_POSTGRES_BIN to a local PostgreSQL bin directory');
@@ -131,22 +131,25 @@ test('isolated PostgreSQL: pending pool, opt-in replenishment, fair claims and r
     nodeId: 'flow',
     createdByUserId: 'flow-admin',
     assignedToUserId: null,
-    skipCopyReview: true,
     tasks: [{ query: '待分配任务 1' }, { query: '待分配任务 2' }],
   });
-  const prematureClaim = await repository.claimCopyBatch({
-    nodeId: 'flow',
-    limit: 3,
-    requestId: requestIdAt(),
-  });
-  assert.deepEqual(prematureClaim.claims, []);
-
-  // Alice represents the first worker who already filled their own allowance.
   const aliceTasks = await repository.createTasks({
     nodeId: 'flow',
     createdByUserId: 'alice',
     tasks: [{ query: 'Alice 旧任务 1' }, { query: 'Alice 旧任务 2' }],
   });
+  const [retryExhaustedTask] = await repository.createTasks({
+    nodeId: 'flow',
+    createdByUserId: 'flow-admin',
+    tasks: [{ query: '图片重试耗尽异常任务' }],
+  });
+  await pool.query(`
+    UPDATE tasks SET
+      state = 'COPY_REVIEW_PENDING',
+      current_stage = 'IMAGE_RETRY_EXHAUSTED',
+      progress_message = '图片重试次数已用尽，等待人工处理'
+    WHERE id = $1
+  `, [retryExhaustedTask.id]);
 
   const disabled = await repository.replenishAutoAssignments();
   assert.equal(disabled.outcome, 'DISABLED');
@@ -164,6 +167,60 @@ test('isolated PostgreSQL: pending pool, opt-in replenishment, fair claims and r
     actorUsername: 'flow-admin',
   });
   assert.equal(enabled.enabled, true);
+
+  const beforeCopyCompletion = await repository.replenishAutoAssignments();
+  assert.equal(beforeCopyCompletion.outcome, 'NO_PENDING_TASKS');
+  assert.deepEqual((await pool.query(`
+    SELECT assigned_to_user_id FROM tasks
+    WHERE id = ANY($1::bigint[]) ORDER BY id
+  `, [[...pendingTasks, ...aliceTasks].map((task) => task.id)])).rows, [
+    { assigned_to_user_id: null },
+    { assigned_to_user_id: null },
+    { assigned_to_user_id: null },
+    { assigned_to_user_id: null },
+  ]);
+
+  const firstCopyBatch = await repository.claimCopyBatch({
+    nodeId: 'flow',
+    limit: 3,
+    requestId: requestIdAt(),
+  });
+  assert.deepEqual(firstCopyBatch.claims.map(({ task }) => ({
+    id: task.id,
+    assignee: task.assignedToUserId,
+  })), [...pendingTasks, aliceTasks[0]].map((task) => ({
+    id: task.id,
+    assignee: null,
+  })));
+  const copyCompletions = new Map();
+  for (const claim of firstCopyBatch.claims) {
+    copyCompletions.set(claim.task.id, await repository.completeCopy(claim.execution.id, validCopy));
+  }
+  const secondCopyBatch = await repository.claimCopyBatch({
+    nodeId: 'flow',
+    limit: 3,
+    requestId: requestIdAt(),
+  });
+  assert.deepEqual(secondCopyBatch.claims.map(({ task }) => ({
+    id: task.id,
+    assignee: task.assignedToUserId,
+  })), [{ id: aliceTasks[1].id, assignee: null }]);
+  copyCompletions.set(
+    aliceTasks[1].id,
+    await repository.completeCopy(secondCopyBatch.claims[0].execution.id, validCopy),
+  );
+  assert.ok([...copyCompletions.values()].every(({ task }) => (
+    task.state === 'COPY_REVIEW_PENDING'
+      && task.currentStage === 'COPY_REVIEW_PENDING'
+      && task.assignedToUserId === null
+  )));
+
+  // Alice represents a worker whose review allowance is already full.
+  await repository.assignTasks(aliceTasks.map((task) => task.id), {
+    assignedToUserId: 'alice',
+    actorUserId: 'flow-admin',
+    reason: '验收测试预置 Alice 的审核工作量',
+  });
 
   const initialRuns = await Promise.all([
     repository.replenishAutoAssignments(),
@@ -193,60 +250,36 @@ test('isolated PostgreSQL: pending pool, opt-in replenishment, fair claims and r
     { id: pendingTasks[1].id, assignee: null, source: null },
   ]);
 
-  // Fair selection takes one oldest task per owner before Alice's second old task.
-  const firstCopyBatch = await repository.claimCopyBatch({
+  const completedCopy = copyCompletions.get(pendingTasks[0].id);
+  const approved = await repository.approveCopy(pendingTasks[0].id, {
+    revisionId: completedCopy.revision.id,
     nodeId: 'flow',
-    limit: 2,
-    requestId: requestIdAt(),
-  });
-  assert.deepEqual(firstCopyBatch.claims.map(({ task }) => ({
-    id: task.id,
-    assignee: task.assignedToUserId,
-  })), [
-    { id: aliceTasks[0].id, assignee: 'alice' },
-    { id: pendingTasks[0].id, assignee: 'bob' },
-  ]);
+    decision: 'APPROVE',
+    originalScore: 2.5,
+    note: '验收测试通过文案审核后立即释放作业容量',
+    reviewSessionId: '11111111-1111-4111-8111-111111111111',
+  }, { actorRole: 'USER', reviewerUserId: 'bob' });
+  assert.equal(approved.state, 'IMAGE_QUEUED');
 
-  const bobCopyClaim = firstCopyBatch.claims.find(({ task }) => task.assignedToUserId === 'bob');
-  const completedCopy = await repository.completeCopy(bobCopyClaim.execution.id, validCopy);
-  assert.equal(completedCopy.task.state, 'IMAGE_QUEUED');
-  assert.equal(completedCopy.revision.approvalMode, 'ADMIN_BYPASS');
-
-  const heldWhileImagePending = await repository.replenishAutoAssignments();
-  assert.equal(heldWhileImagePending.outcome, 'AT_CAPACITY');
-  assert.equal((await repository.getTask(pendingTasks[1].id)).assignedToUserId, null);
-
-  const imageClaim = await repository.claimImage('flow', 1, 2);
-  assert.equal(imageClaim.task.id, pendingTasks[0].id);
-  assert.equal(imageClaim.task.assignedToUserId, 'bob');
-  const completedImage = await repository.completeImage(imageClaim.execution.id, { images: [] });
-  assert.equal(completedImage.state, 'MANUAL_ARCHIVE');
-  assert.equal(completedImage.currentExecutionId, null);
-
-  const replenished = await repository.replenishAutoAssignments();
-  assert.equal(replenished.outcome, 'ASSIGNED');
-  assert.deepEqual(replenished.assignedTaskIds, [pendingTasks[1].id]);
-  assert.deepEqual(replenished.byWorker, [{
+  const refilledWhileImagePending = await repository.replenishAutoAssignments();
+  assert.equal(refilledWhileImagePending.outcome, 'ASSIGNED');
+  assert.deepEqual(refilledWhileImagePending.assignedTaskIds, [pendingTasks[1].id]);
+  assert.deepEqual(refilledWhileImagePending.byWorker, [{
     username: 'bob',
     assignmentLimit: 1,
     beforeCount: 0,
     assignedCount: 1,
     afterCount: 1,
   }]);
+  assert.equal((await repository.getTask(pendingTasks[1].id)).assignedToUserId, 'bob');
+  assert.equal((await repository.getTask(retryExhaustedTask.id)).assignedToUserId, null);
 
-  // The persisted COPY cursor wraps after Bob and again serves one task per owner.
-  const secondCopyBatch = await repository.claimCopyBatch({
-    nodeId: 'flow',
-    limit: 2,
-    requestId: requestIdAt(),
-  });
-  assert.deepEqual(secondCopyBatch.claims.map(({ task }) => ({
-    id: task.id,
-    assignee: task.assignedToUserId,
-  })), [
-    { id: aliceTasks[1].id, assignee: 'alice' },
-    { id: pendingTasks[1].id, assignee: 'bob' },
-  ]);
+  const imageClaim = await repository.claimImage('flow', 1, 2);
+  assert.equal(imageClaim.task.id, pendingTasks[0].id);
+  assert.equal(imageClaim.task.assignedToUserId, 'bob');
+
+  const heldByPendingReview = await repository.replenishAutoAssignments();
+  assert.equal(heldByPendingReview.outcome, 'AT_CAPACITY');
 
   const automaticEvents = (await pool.query(`
     SELECT task_id, actor_username, assignee_user_id, source
@@ -266,7 +299,11 @@ test('isolated PostgreSQL: pending pool, opt-in replenishment, fair claims and r
 
   const finalState = (await pool.query(`
     SELECT
-      COUNT(*) FILTER (WHERE assigned_to_user_id IS NULL AND state = 'COPY_QUEUED') AS pending,
+      COUNT(*) FILTER (
+        WHERE assigned_to_user_id IS NULL
+          AND state = 'COPY_REVIEW_PENDING'
+          AND current_stage = 'COPY_REVIEW_PENDING'
+      ) AS pending,
       COUNT(*) FILTER (WHERE assigned_to_user_id IN ('carol', 'dave')) AS ineligible_assignments
     FROM tasks
   `)).rows[0];
@@ -278,7 +315,7 @@ test('isolated PostgreSQL: pending pool, opt-in replenishment, fair claims and r
     FROM execution_claim_cursors ORDER BY kind
   `)).rows;
   assert.deepEqual(cursors, [
-    { kind: 'COPY', last_assignee_user_id: 'bob' },
+    { kind: 'COPY', last_assignee_user_id: null },
     { kind: 'IMAGE', last_assignee_user_id: 'bob' },
   ]);
 });

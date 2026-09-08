@@ -1,4 +1,4 @@
-// This acceptance test starts a production Next server against a synthetic V1
+// This acceptance test starts a production Next server against a synthetic V2
 // center. It uses no PostgreSQL, repository data, credentials or model calls.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -35,7 +35,7 @@ async function waitUntil(action, predicate, message, { timeoutMs = 30_000 } = {}
   assert.fail(`${message}; latest=${JSON.stringify(latest)}`);
 }
 
-test('production Next refuses assignment writes before forwarding them to a legacy center', {
+test('production Next refuses V3 assignment writes before forwarding them to a V2 center', {
   timeout: 60_000,
 }, async (t) => {
   assert.ok(process.env.TEST_NEXT_DIST_DIR, 'set TEST_NEXT_DIST_DIR to a production Next build');
@@ -67,7 +67,7 @@ test('production Next refuses assignment writes before forwarding them to a lega
       response.end(JSON.stringify({
         data: {
           ok: true,
-          capabilities: { taskAssignmentVersion: 1, autoAssignmentPoolVersion: 1 },
+          capabilities: { taskAssignmentVersion: 2, autoAssignmentPoolVersion: 2 },
         },
       }));
       return;

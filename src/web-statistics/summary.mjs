@@ -38,11 +38,17 @@ export function compactTask(row) {
       && (!Number.isSafeInteger(row.createdByAccountId) || row.createdByAccountId < 1)) {
     throw new TypeError('任务统计数据缺少稳定的创建者账号身份');
   }
+  if (!Object.hasOwn(row, 'assignedToAccountId')
+    || row.assignedToAccountId !== null
+      && (!Number.isSafeInteger(row.assignedToAccountId) || row.assignedToAccountId < 1)) {
+    throw new TypeError('任务统计数据缺少稳定的负责人账号身份');
+  }
   return {
     id: row.id, state: row.state, query: String(row.query ?? '').slice(0, 500),
     createdByUserId: textOrNull(row.createdByUserId),
     createdByAccountId: row.createdByAccountId,
     assignedToUserId: textOrNull(row.assignedToUserId),
+    assignedToAccountId: row.assignedToAccountId,
     createdByDisplayName: textOrNull(row.createdByDisplayName), createdByRole: textOrNull(row.createdByRole),
     createdAt: textOrNull(row.createdAt), updatedAt: textOrNull(row.updatedAt),
     imageReviewedAt: textOrNull(row.imageReviewedAt), lastActivityAt: textOrNull(row.lastActivityAt),

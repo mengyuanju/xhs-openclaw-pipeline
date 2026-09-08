@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { withModelCallTracing, traceModelCall, tracedOpenClawRunner, safeTraceText } from '../src/model-call-trace.mjs';
+import { withModelCallTracing, traceModelCall, safeTraceText } from '../src/model-call-trace.mjs';
 import { createDeepSeekResponsesClient } from '../src/deepseek-responses-client.mjs';
 import { createDotsChatClient } from '../src/dots-chat-client.mjs';
 import { createExecutorAgent } from '../src/executor/agent.mjs';
-import { createOpenClawClient } from '../src/openclaw.mjs';
 import { createCodexClient } from '../src/codex.mjs';
 import { runDeepSeekWebSearch } from '../src/deepseek-web-search.mjs';
 
@@ -148,29 +147,4 @@ test('DeepSeek image-search format retries retain every actual repair prompt and
   assert.deepEqual(completed.map((r) => r.sequence), [1, 2, 3]);
   assert.ok(completed.every((r) => r.operation === 'WEB_SEARCH' && r.response.includes('not json')));
   assert.notEqual(completed[0].prompt, completed[1].prompt);
-});
-
-test('OpenClaw captures message-file prompt before cleanup and preserves original CLI contract', async () => {
-  const f = fixture();
-  const client = createOpenClawClient({ entryPath: 'fake-entry.mjs', asyncRunner: async (_command, args, options) => {
-    assert.ok(args.includes('--message-file')); assert.equal(options.shell, false);
-    return { status: 0, stdout: JSON.stringify({ result: { payloads: [{ text: '{"ok":true}' }] } }), stderr: '' };
-  } });
-  await f.run(() => client.runText({ prompt: 'real file prompt' }));
-  assert.equal(f.records[1].prompt, 'real file prompt');
-  assert.match(f.records[1].response, /payloads/);
-});
-
-test('OpenClaw image attempts each retain their own raw result and do not capture env credentials', async () => {
-  const f = fixture();
-  let calls = 0;
-  const runner = tracedOpenClawRunner(async () => (++calls === 1
-    ? { status: 1, stdout: '', stderr: 'secret1234 failed' }
-    : { status: 0, stdout: '{"image":"1.png"}', stderr: '' }));
-  await f.run(async () => {
-    for (let i = 0; i < 2; i++) await runner('node', ['infer', 'image', 'generate', '--prompt', 'image prompt', '--model', 'fake-image'], { env: { API_KEY: 'secret1234' } });
-  });
-  assert.equal(f.records[1].status, 'FAILED'); assert.equal(f.records[3].status, 'SUCCEEDED');
-  assert.equal(f.records[3].operation, 'IMAGE'); assert.equal(f.records[3].sequence, 2);
-  assert.doesNotMatch(JSON.stringify(f.records), /secret1234|API_KEY/);
 });

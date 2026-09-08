@@ -12,7 +12,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const patchSchema = z.object({
-  webSearchProvider: z.enum(['OPENCLAW', 'DEEPSEEK']).nullable().optional(),
+  webSearchProvider: z.enum(['CODEX', 'DEEPSEEK']).nullable().optional(),
   deepseekSearchModel: z.enum(['deepseek-v4-pro', 'deepseek-v4-flash']).nullable().optional(),
   webSearchTimeoutMs: z.number().int().min(5_000).max(120_000).nullable().optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, '至少修改一项搜索配置');

@@ -1,4 +1,9 @@
 export const TASK_ASSIGNMENT_SOURCES = Object.freeze(['SELF', 'MANUAL', 'AUTO']);
+export const UNASSIGNED_CREATOR_COPY_CONTROL_STATES = Object.freeze([
+  'COPY_QUEUED',
+  'COPY_RUNNING',
+  'COPY_FAILED',
+]);
 
 export function normalizeAssigneeUserId(value, { allowNull = true } = {}) {
   if (value === null || value === undefined || value === '') {

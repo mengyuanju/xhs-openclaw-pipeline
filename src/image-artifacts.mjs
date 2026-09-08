@@ -46,14 +46,12 @@ export async function copyImageArtifacts(image, sourceDir, outputDir) {
   return Object.fromEntries(['sourceFile', 'deliveryFile', 'mediaType', 'imageSettings', 'transparency', 'artifactHashes'].map(key => [key, image[key]]));
 }
 
-export function publicImageArtifacts(image, runId) {
+export function publicImageArtifacts(image) {
   if (!image.imageSettings) return {};
   const settings = normalizeImageSettings(image.imageSettings);
   for (const name of [image.sourceFile, image.deliveryFile]) if (!IMAGE_ARTIFACT_FILE.test(name ?? '')) throw new TypeError('invalid image artifact');
   return { imageSettings: settings, sourceFile: image.sourceFile, deliveryFile: image.deliveryFile,
     sourceOriginal: image.sourceOriginal !== false,
     mediaType: IMAGE_FORMATS[settings.format].mediaType,
-    sourceUrl: `/api/image-generations/${runId}/images/${image.sourceFile}`,
-    deliveryUrl: `/api/image-generations/${runId}/images/${image.deliveryFile}`,
     transparency: { source: image.transparency?.source === true, delivery: image.transparency?.delivery === true } };
 }

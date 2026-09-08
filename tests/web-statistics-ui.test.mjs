@@ -27,8 +27,32 @@ test('statistics charts show concrete values and efficiency compares distributio
 
 test('personal statistics labels assignment ownership without claiming the worker created the task', async () => {
   const overview = await source('app/workbench-statistics/personal-overview.tsx');
-  assert.match(overview, /label="当前负责"/u);
+  assert.match(overview, /label="提交或负责"/u);
   assert.doesNotMatch(overview, /label="累计创建"/u);
+});
+
+test('personal status categories sit beside saved views without starting a second statistics poll', async () => {
+  const [overview, workbench, statisticsHook, styles] = await Promise.all([
+    source('app/workbench-statistics/personal-overview.tsx'),
+    source('app/workbench/creation-workbench.tsx'),
+    source('app/workbench-statistics/use-statistics.ts'),
+    source('app/globals.css'),
+  ]);
+  const overviewStart = overview.indexOf('export function PersonalOverview');
+  const filtersStart = overview.indexOf('export function PersonalStatusFilters');
+  const controlsStart = workbench.indexOf("{(role === 'ADMIN' || activeView === 'PERSONAL') && <div className=\"workbench-admin-list-controls\">");
+  const listToolsStart = workbench.indexOf('<div className="workbench-list-tools">', controlsStart);
+  assert.ok(overviewStart >= 0 && filtersStart > overviewStart);
+  assert.doesNotMatch(overview.slice(overviewStart, filtersStart), /job-stats-chips/u);
+  assert.match(overview.slice(filtersStart), /job-stats-chips workbench-personal-state-filters/u);
+  assert.ok(controlsStart >= 0 && listToolsStart > controlsStart);
+  const controls = workbench.slice(controlsStart, listToolsStart);
+  assert.match(controls, /role === 'ADMIN' && <div className="workbench-saved-views"/u);
+  assert.match(controls, /activeView === 'PERSONAL' && <PersonalStatusFilters/u);
+  assert.match(controls, /onFilter=\{\(value\) => \{ setStateFilter\(value\); setPage\(1\); \}\}/u);
+  assert.match(workbench, /useStatistics\([\s\S]*?activeView === 'PERSONAL',[\s\S]*?\)/u);
+  assert.match(statisticsHook, /export function useStatistics\(filters: Filters, enabled = true\)/u);
+  assert.match(styles, /\.workbench-personal-state-filters \{[^}]*justify-content: flex-end;[^}]*margin: 0 0 0 auto;[^}]*border: 0;/u);
 });
 
 test('historical account generations cannot navigate through the current-account creator filter', async () => {

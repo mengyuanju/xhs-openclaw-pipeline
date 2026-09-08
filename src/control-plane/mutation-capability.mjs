@@ -3,16 +3,22 @@ import { ApiError } from '../admin/http.mjs';
 const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
   Object.freeze({
     capability: 'taskAssignmentVersion',
-    minimumVersion: 2,
+    minimumVersion: 3,
     matches: (routePath, method) => (routePath === '/v1/tasks' && method === 'POST')
       || (routePath === '/v1/tasks/batch-assignee' && method === 'POST')
       || (/^\/v1\/tasks\/[^/]+\/assignee$/u.test(routePath) && method === 'PATCH'),
   }),
   Object.freeze({
     capability: 'autoAssignmentPoolVersion',
-    minimumVersion: 2,
+    minimumVersion: 3,
     matches: (routePath, method) => /^\/v1\/auto-assignment(?:\/|$)/u.test(routePath)
       && !['GET', 'HEAD'].includes(method),
+  }),
+  Object.freeze({
+    capability: 'executorManagementVersion',
+    minimumVersion: 1,
+    matches: (routePath, method) => routePath === '/v1/executor-statuses'
+      && method === 'DELETE',
   }),
 ]);
 

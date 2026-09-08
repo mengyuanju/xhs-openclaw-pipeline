@@ -29,30 +29,3 @@ test('production settings route and page expose validated repair and disclosure 
   assert.match(form, /aria-live="polite"/);
   assert.match(nav, /\/settings/);
 });
-
-test('analytics and review surfaces show explicit batch timing and repair evidence', async () => {
-  const [analytics, statisticsRoute, imageBatch, imports, styles, nav] = await Promise.all([
-    source('app/analytics/page.tsx'),
-    source('app/api/statistics/route.ts'),
-    source('app/tasks/[id]/image-generation-batch.tsx'),
-    source('app/imports/page.tsx'),
-    source('app/globals.css'),
-    source('app/components/side-nav.tsx'),
-  ]);
-
-  assert.match(statisticsRoute, /pageSize/);
-  assert.match(statisticsRoute, /listProductionStatistics/);
-  assert.match(analytics, /<h1 className="sr-only">数据统计<\/h1>/);
-  assert.match(analytics, /评分分布/);
-  assert.match(analytics, /质量修复/);
-  assert.match(analytics, /批次耗时/);
-  assert.match(imageBatch, /qualityRepair/);
-  assert.match(imageBatch, /修复原因/);
-  assert.match(imageBatch, /修复方法/);
-  assert.match(imageBatch, /durationMs/);
-  assert.match(imports, /statistics/);
-  assert.match(imports, /生成进度/);
-  assert.match(styles, /\.quality-repair-history/);
-  assert.match(styles, /\.analytics-score-grid/);
-  assert.match(nav, /\/analytics/);
-});

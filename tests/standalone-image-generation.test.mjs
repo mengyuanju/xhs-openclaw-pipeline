@@ -393,7 +393,7 @@ describe('standalone image generation service', () => {
 
       const hashes = new Set();
       for (const image of result.images) {
-        assert.match(image.url, new RegExp(`/api/image-generations/${RUN_ID}/images/`));
+        assert.equal(Object.hasOwn(image, 'url'), false);
         const file = await readStandaloneImageFile({
           outputRoot,
           runId: RUN_ID,

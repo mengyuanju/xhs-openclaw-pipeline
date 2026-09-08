@@ -122,7 +122,7 @@ describe('independent delivery quality assessment', () => {
   it('runs one final vision assessment across all delivery pages', async () => {
     const calls = [];
     const assessor = createDeliveryQualityAssessor({
-      openclaw: {
+      agentClient: {
         runVision(input) {
           calls.push(input);
           return { rawText: JSON.stringify(modelAssessment()), model: 'fake-quality-vlm' };
@@ -145,7 +145,7 @@ describe('independent delivery quality assessment', () => {
   it('retries one malformed final assessment with a bounded repair prompt', async () => {
     const calls = [];
     const assessor = createDeliveryQualityAssessor({
-      openclaw: {
+      agentClient: {
         runVision(input) {
           calls.push(input);
           return {
@@ -170,7 +170,7 @@ describe('independent delivery quality assessment', () => {
   it('stops after two malformed final assessments', async () => {
     let calls = 0;
     const assessor = createDeliveryQualityAssessor({
-      openclaw: {
+      agentClient: {
         runVision() {
           calls += 1;
           return { rawText: '{}', model: 'fake-quality-vlm' };

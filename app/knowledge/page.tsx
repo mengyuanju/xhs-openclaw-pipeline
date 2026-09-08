@@ -7,7 +7,6 @@ import { KnowledgeTabs } from './knowledge-tabs';
 import './knowledge.css';
 
 export const dynamic = 'force-dynamic';
-const SHOW_KNOWLEDGE_PAGE_INTRO = false;
 const COPY_KNOWLEDGE_PAGE_SIZES = new Set([10, 20, 50]);
 
 type KnowledgeSearchParams = Record<string, string | string[] | undefined>;
@@ -71,12 +70,6 @@ export default async function KnowledgePage({
   }
   return <>
     <h1 className="sr-only">知识库</h1>
-    {SHOW_KNOWLEDGE_PAGE_INTRO && <header className="page-header">
-      <div>
-        <span className="eyebrow">Content knowledge</span>
-        <p className="subtle">在同一入口沉淀视觉经验与文案经验，并按内容类型切换管理。</p>
-      </div>
-    </header>}
     <KnowledgeTabs
       visualItems={result.visualItems}
       copyItems={result.copyResult.data}

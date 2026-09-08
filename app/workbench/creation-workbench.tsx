@@ -52,7 +52,8 @@ import { TaskAssignmentDialog } from './task-assignment-dialog';
 import { loadAdminTaskPage } from '../../src/control-plane/admin-task-page.mjs';
 import { createActionLock } from '../../src/control-plane/action-lock.mjs';
 import { WorkbenchPagination } from './workbench-pagination';
-import { PersonalOverview } from '../workbench-statistics/personal-overview';
+import { PersonalOverview, PersonalStatusFilters } from '../workbench-statistics/personal-overview';
+import { useStatistics } from '../workbench-statistics/use-statistics';
 import { STATE_GROUPS } from '../../src/web-statistics/summary.mjs';
 import type { StateGroup } from '../workbench-statistics/types';
 import {
@@ -77,6 +78,7 @@ type DistributedTask = {
   id: number;
   query: string;
   state: TaskState;
+  skipCopyReview: boolean;
   cancelledFromState?: TaskState | null;
   currentImageRunId: string | null;
   copyExecutorNodeId: string | null;
@@ -115,7 +117,6 @@ type ExecutorNode = {
 };
 
 type TaskPage = { items: DistributedTask[]; total: number; limit: number; offset: number };
-type CreateAssignmentMode = 'MANUAL' | 'UNASSIGNED';
 
 type SavedTaskView = {
   id: number;
@@ -198,9 +199,46 @@ function taskOwnerId(task: Pick<DistributedTask, 'assignedToUserId' | 'createdBy
   return Object.hasOwn(task, 'assignedToUserId') ? task.assignedToUserId : task.createdByUserId;
 }
 
+function isTaskCreator(task: DistributedTask, username: string, accountId: number) {
+  return task.createdByUserId === username
+    && task.createdByAccountId === accountId;
+}
+
+function isTaskAssignee(task: DistributedTask, username: string, accountId: number) {
+  if (!Object.hasOwn(task, 'assignedToUserId')) return isTaskCreator(task, username, accountId);
+  return task.assignedToUserId === username
+    && task.assignedToAccountId === accountId;
+}
+
+function isPersonalTask(task: DistributedTask, username: string, accountId: number) {
+  return isTaskAssignee(task, username, accountId) || isTaskCreator(task, username, accountId);
+}
+
+function canManageTaskAssignment(task: DistributedTask) {
+  return task.assignedToUserId !== null
+    || ['COPY_REVIEW_PENDING', 'IMAGE_QUEUED', 'IMAGE_FAILED', 'MANUAL_ARCHIVE'].includes(task.state);
+}
+
+function assignmentLabel(task: DistributedTask) {
+  if (task.assignedToDisplayName || task.assignedToUserId) {
+    return task.assignedToDisplayName || task.assignedToUserId || '';
+  }
+  if (['COPY_QUEUED', 'COPY_RUNNING'].includes(task.state)) return '尚未到派单节点';
+  if (task.state === 'COPY_FAILED') return '未分配（生成异常）';
+  if (task.state === 'COPY_REVIEW_PENDING') return '待分配';
+  return '未分配';
+}
+
+function taskProgressMessage(task: DistributedTask) {
+  if (task.state === 'COPY_QUEUED' && taskOwnerId(task) === null
+    && ['等待分配负责人', '等待负责人分配'].includes(task.progressMessage)) {
+    return '等待文案执行机领取';
+  }
+  return task.progressMessage;
+}
+
 function copyExecutorLabel(task: DistributedTask, nodes: ExecutorNode[]) {
   if (!task.copyExecutorNodeId) {
-    if (task.state === 'COPY_QUEUED' && taskOwnerId(task) === null) return '待分配';
     return task.state === 'COPY_QUEUED' ? '待领取' : '—';
   }
   return nodes.find((node) => node.id === task.copyExecutorNodeId)?.name ?? task.copyExecutorNodeId;
@@ -392,6 +430,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     ? { id: initialListState.createdByAccountId, username: initialListState.createdByUserId,
         displayName: initialListState.createdByUserId, role: '', status: 'ACTIVE' } : null);
   const [stateFilter, setStateFilter] = useState(initialListState.state);
+  const [personalStatisticsPeriod, setPersonalStatisticsPeriod] = useState<'7d' | '30d'>('7d');
   const [attentionFilter, setAttentionFilter] = useState<TaskAttention>(initialListState.attention);
   const [fetchError, setFetchError] = useState('');
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
@@ -404,8 +443,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   const [createError, setCreateError] = useState('');
   const queryBatch = useMemo(() => parseQueryBatch(queryText), [queryText]);
   const [imageCount, setImageCount] = useState('auto');
-  const [skipCopyReview, setSkipCopyReview] = useState(role === 'ADMIN');
-  const [createAssignmentMode, setCreateAssignmentMode] = useState<CreateAssignmentMode>('UNASSIGNED');
+  const [skipCopyReview, setSkipCopyReview] = useState(false);
   const [createAssignee, setCreateAssignee] = useState<JobCreator | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(initialListState.taskId);
@@ -431,6 +469,17 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   const legacyStateFilterMode = useRef(false);
   const copyReviewBypassAllowed = role === 'ADMIN';
   const effectiveSkipCopyReview = copyReviewBypassAllowed && skipCopyReview;
+  const personalStatistics = useStatistics(
+    { scope: 'personal', period: personalStatisticsPeriod },
+    activeView === 'PERSONAL',
+  );
+  const currentAdmin = useMemo<JobCreator>(() => ({
+    id: creatorAccountId,
+    username: creatorUserId,
+    displayName: '我',
+    role: 'ADMIN',
+    status: 'ACTIVE',
+  }), [creatorAccountId, creatorUserId]);
 
   const refresh = useCallback(async ({ silent = false } = {}) => {
     const requestId = ++refreshRequestId.current;
@@ -507,8 +556,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
           ?? await request<DistributedTask[]>(apiPath(`/v1/tasks?${legacySearch}`));
         const keyword = searchKeyword.toLocaleLowerCase('zh-CN');
         const filtered = legacyTasks.filter((task) => (personalStates
-          ? taskOwnerId(task) === creatorUserId && personalStates.includes(task.state)
-          : matchesWorkbenchView(task, view, creatorUserId))
+          ? isPersonalTask(task, creatorUserId, creatorAccountId) && personalStates.includes(task.state)
+          : matchesWorkbenchView(task, view, creatorUserId, creatorAccountId))
           && matchesAttention(task, attentionFilter)
           && (!keyword || (searchedTaskId ? task.id === searchedTaskId : task.query.toLocaleLowerCase('zh-CN').includes(keyword))))
           .sort((left, right) => compareTasks(left, right, sort));
@@ -526,7 +575,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       } else {
         taskPage = rawTaskPage;
       }
-      if (view.personalOnly && taskPage.items.some((task) => taskOwnerId(task) !== creatorUserId)) {
+      if (view.personalOnly && taskPage.items.some((task) => !isPersonalTask(task, creatorUserId, creatorAccountId))) {
         throw new Error('中心服务尚未支持个人任务筛选，请更新并重启中心服务。');
       }
       if (requestId !== refreshRequestId.current) return;
@@ -551,7 +600,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         setRefreshing(false);
       }
     }
-  }, [activeDefinition, creatorUserId, page, pageSize, isAllJobs, creatorFilter, creatorRoleFilter, stateFilter, searchKeyword, deduplicateQuery, sort, attentionFilter, role]);
+  }, [activeDefinition, creatorUserId, creatorAccountId, page, pageSize, isAllJobs, creatorFilter, creatorRoleFilter, stateFilter, searchKeyword, deduplicateQuery, sort, attentionFilter, role]);
 
   useEffect(() => {
     if (leavingWorkbenchView.current) return;
@@ -622,6 +671,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     const selected = new Set(selectedTaskIds);
     return visibleTasks.filter((task) => selected.has(task.id));
   }, [selectedTaskIds, visibleTasks]);
+  const assignmentEligibleTasks = selectedTasks.filter(canManageTaskAssignment);
   const retryableTasks = selectedTasks.filter((task) => ['COPY_RUNNING', 'COPY_FAILED', 'IMAGE_RUNNING', 'IMAGE_FAILED'].includes(task.state)
     || isImageRetryExhausted(task));
   const queuedTasks = selectedTasks.filter((task) => ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state));
@@ -1021,8 +1071,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     const busy = actingTaskId === task.id;
     const queued = ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state);
     const canPermanentlyDelete = role === 'ADMIN' && isPermanentlyDeletableTask(task);
-    const visibleActionCount = role === 'ADMIN' ? 2 : 1;
-    const assignmentButton = role === 'ADMIN' && <Button unstyled className="button small" type="button"
+    const visibleActionCount = role === 'ADMIN' && activeView !== 'UNASSIGNED' ? 2 : 1;
+    const assignmentButton = role === 'ADMIN' && canManageTaskAssignment(task) && <Button unstyled className="button small" type="button"
       disabled={busy} onClick={() => setAssignmentTasks([task])}><UserRound size={14} />分配</Button>;
     const permanentDeleteButton = canPermanentlyDelete && <Button unstyled className="button small danger" type="button" disabled={busy || Boolean(batchAction) || batchPermanentDeleteTasks.length > 0} onClick={() => { setDeletionError(''); setDeletionPassword(''); setPermanentDeleteTask(task); }}><Trash2 size={14} />永久删除</Button>;
     if (isAllJobs) return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
@@ -1032,11 +1082,16 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       {permanentDeleteButton}
       {task.state === 'CANCELLED' && ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.cancelledFromState || '') && <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => { void requeueCancelledTask(task); }}><RotateCcw size={14} />一键排队</Button>}
     </TaskRowActions>;
-    const canDiscard = (role === 'ADMIN' || taskOwnerId(task) === creatorUserId) && task.state !== 'CANCELLED';
+    const hasOwnerControl = role === 'ADMIN' || isTaskAssignee(task, creatorUserId, creatorAccountId);
+    const creatorCanControlMachineCopy = taskOwnerId(task) === null
+      && isTaskCreator(task, creatorUserId, creatorAccountId)
+      && ['COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED'].includes(task.state);
+    const canDiscard = (hasOwnerControl || creatorCanControlMachineCopy) && task.state !== 'CANCELLED';
     const canDiscardQueue = role === 'ADMIN' && queued;
     const canRequeue = role === 'ADMIN' && task.state === 'CANCELLED' && ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.cancelledFromState || '');
-    const canRetryCopy = canDiscard && ['COPY_RUNNING', 'COPY_FAILED'].includes(task.state);
-    const canRetryImages = canDiscard && task.state !== 'MANUAL_ARCHIVE' && canRequeueImages(task);
+    const canRetryCopy = (hasOwnerControl || creatorCanControlMachineCopy)
+      && ['COPY_RUNNING', 'COPY_FAILED'].includes(task.state);
+    const canRetryImages = hasOwnerControl && task.state !== 'MANUAL_ARCHIVE' && canRequeueImages(task);
     const retryImageButton = <Button unstyled
       className="button small"
       type="button"
@@ -1089,8 +1144,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     setQueryText('');
     setCreateError('');
     setImageCount('auto');
-    setSkipCopyReview(role === 'ADMIN');
-    setCreateAssignmentMode('UNASSIGNED');
+    setSkipCopyReview(false);
     setCreateAssignee(null);
   }
 
@@ -1106,7 +1160,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     try {
       assignmentFields = createAssignmentFields({
         role,
-        mode: role === 'ADMIN' ? createAssignmentMode : CREATE_ASSIGNMENT_MODES.SELF,
+        mode: effectiveSkipCopyReview ? CREATE_ASSIGNMENT_MODES.MANUAL : CREATE_ASSIGNMENT_MODES.UNASSIGNED,
         assigneeUserId: createAssignee?.username ?? null,
         assigneeAccountId: createAssignee?.id ?? null,
       });
@@ -1142,12 +1196,10 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         leavingWorkbenchView.current = true;
         router.push('/workbench/personal');
       }
-      const assignmentMessage = role !== 'ADMIN'
-        ? '已分配给当前账号，空闲执行机会按队列顺序领取。'
-        : createAssignmentMode === 'MANUAL' && createAssignee
-          ? `已分配给 ${createAssignee.displayName}（${createAssignee.username}）。`
-          : '已进入待分配任务池；自动分配负责人后，执行机会按队列顺序领取。';
-      setMessage(`已创建 ${queries.length} 条笔记。${assignmentMessage}${effectiveSkipCopyReview ? '本批次免人工文案审核，文案生成后自动进入生图队列。' : ''}`);
+      const assignmentMessage = effectiveSkipCopyReview && createAssignee
+        ? `免审任务已由 ${createAssignee.displayName}（${createAssignee.username}）负责，文案生成后自动进入生图队列。`
+        : '已进入文案生成队列，文案完成后再分配审核负责人。';
+      setMessage(`已创建 ${queries.length} 条笔记。${assignmentMessage}`);
       await refresh({ silent: true });
     } catch (caught) {
       setCreateError(caught instanceof Error ? caught.message : '笔记创建失败');
@@ -1161,6 +1213,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     <TaskAssignmentDialog
       tasks={assignmentTasks}
       open={assignmentTasks.length > 0}
+      currentAdmin={currentAdmin}
       onOpenChange={(open) => { if (!open) setAssignmentTasks([]); }}
       onAssigned={async (notice) => {
         setMessage(notice);
@@ -1189,7 +1242,11 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       onCancel={() => { setBatchPermanentDeleteTasks([]); setDeletionPassword(''); setDeletionError(''); }}
       onConfirm={() => { void permanentlyDeleteSelectedTasks(); }}
     />
-    {activeView === 'PERSONAL' && <PersonalOverview filter={stateFilter} onFilter={value => { setStateFilter(value); setPage(1); }} />}
+    {activeView === 'PERSONAL' && <PersonalOverview
+      period={personalStatisticsPeriod}
+      statistics={personalStatistics}
+      onPeriod={setPersonalStatisticsPeriod}
+    />}
     <section className="panel workbench-task-panel">
       <div className="workbench-toolbar">
         <div>
@@ -1216,9 +1273,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
                 <span className="section-kicker">Create notes</span>
                 <DialogTitle>创建 Query 作业</DialogTitle>
                 <DialogDescription>
-                  {role === 'ADMIN'
-                    ? '可同时录入多条 Query。未指定负责人时，任务会先进入待分配池；自动分配负责人后再由执行机领取。'
-                    : '可同时录入多条 Query。任务会分配给当前账号，并进入共享队列等待空闲文案执行机领取。'}
+                  可同时录入多条 Query。任务先进入共享文案队列；文案生成完成后，系统才会分配审核负责人。
                 </DialogDescription>
               </div>
               <form className="workbench-create-form" onSubmit={createTasks}>
@@ -1256,49 +1311,46 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
                       </SelectContent>
                     </Select>
                   </div>
-                  {role === 'ADMIN' && <div className="field">
-                    <label htmlFor="workbench-assignment-mode">分配方式</label>
-                    <Select value={createAssignmentMode} disabled={creating}
-                      onValueChange={(value) => { setCreateAssignmentMode(value as CreateAssignmentMode); setCreateAssignee(null); setCreateError(''); }}>
-                      <SelectTrigger id="workbench-assignment-mode"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="UNASSIGNED">进入待分配任务池</SelectItem>
-                        <SelectItem value="MANUAL">指定作业员</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>}
-                  {role === 'ADMIN' && createAssignmentMode === 'MANUAL' && <JobUserPicker
-                    value={createAssignee}
-                    label="负责人"
-                    triggerId="workbench-create-assignee"
-                    emptyLabel="请选择作业员"
-                    dialogTitle="选择任务负责人"
-                    dialogDescription="仅显示已启用的普通作业员；不会默认选择列表中的第一个人。"
-                    roleLabels={CREATOR_ROLE_LABELS}
-                    eligibleRoles={['USER']}
-                    activeOnly
-                    disabled={creating}
-                    onChange={(value) => { setCreateAssignee(value); setCreateError(''); }}
-                  />}
                 </div>
                 {role === 'ADMIN' && <div className="field">
                   <label className="switch-field" htmlFor="workbench-skip-copy-review">
                     <Checkbox id="workbench-skip-copy-review" checked={effectiveSkipCopyReview}
                       disabled={creating || !copyReviewBypassAllowed}
                       aria-describedby="workbench-skip-copy-review-help"
-                      onChange={(event) => setSkipCopyReview(event.target.checked)} />
+                      onChange={(event) => {
+                        setSkipCopyReview(event.target.checked);
+                        if (!event.target.checked) setCreateAssignee(null);
+                        setCreateError('');
+                      }} />
                     <span>免人工文案审核，直接生图</span>
                   </label>
                   <p className="workbench-query-help" id="workbench-skip-copy-review-help">
-                    应用于本批次全部笔记。待分配任务会在自动分配负责人后执行；取消勾选后，文案生成完成会等待人工审核。
+                    免审任务不会经过文案派单节点，因此必须现在明确指定负责人；普通任务会在文案生成完成后自动派单。
                   </p>
                 </div>}
+                {role === 'ADMIN' && effectiveSkipCopyReview && <JobUserPicker
+                  value={createAssignee}
+                  label="免审任务负责人"
+                  triggerId="workbench-create-assignee"
+                  emptyLabel="请选择负责人"
+                  dialogTitle="选择免审任务负责人"
+                  dialogDescription="可选择已启用的普通作业员，或由当前管理员自己负责。"
+                  roleLabels={CREATOR_ROLE_LABELS}
+                  eligibleRoles={['USER']}
+                  additionallyEligibleUserIds={[creatorAccountId]}
+                  activeOnly
+                  allowEmptyOption={false}
+                  disabled={creating}
+                  onChange={(value) => { setCreateAssignee(value); setCreateError(''); }}
+                />}
                 <div className="workbench-create-footer">
-                  <span aria-live="polite">已识别 {queryBatch.queries.length} 条 Query。{role === 'ADMIN' && createAssignmentMode === 'UNASSIGNED' ? '将进入待分配任务池，分配负责人后再由执行机领取。' : '将按输入顺序加入队列。'}</span>
+                  <span aria-live="polite">已识别 {queryBatch.queries.length} 条 Query。{effectiveSkipCopyReview
+                    ? '指定负责人后将按免审流程执行。'
+                    : '文案执行不需要负责人，生成完成后再进入审核派单。'}</span>
                   <div>
                     <DialogClose asChild><Button unstyled className="button" type="button" disabled={creating}>取消</Button></DialogClose>
                     <Button unstyled className="button primary" type="submit"
-                      disabled={creating || Boolean(queryBatch.error) || (role === 'ADMIN' && createAssignmentMode === 'MANUAL' && !createAssignee)}>
+                      disabled={creating || Boolean(queryBatch.error) || (effectiveSkipCopyReview && !createAssignee)}>
                       {creating ? <><LoaderCircle className="animate-spin" size={16} />正在创建…</> : <>创建并加入队列</>}
                     </Button>
                   </div>
@@ -1318,8 +1370,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         onRoleChange={(value) => { setCreatorRoleFilter(value); setPage(1); }}
         onStateChange={(value) => { setStateFilter(value); setPage(1); }}
       />}
-      {role === 'ADMIN' && <div className="workbench-admin-list-controls">
-        <div className="workbench-saved-views">
+      {(role === 'ADMIN' || activeView === 'PERSONAL') && <div className="workbench-admin-list-controls">
+        {role === 'ADMIN' && <div className="workbench-saved-views">
           <span>常用视图</span>
           <Select value={savedViewId || undefined} onValueChange={(value) => {
             if (value === DEFAULT_TASK_VIEW_VALUE) {
@@ -1347,7 +1399,12 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
             </DialogContent>
           </Dialog>
           {savedViewId && savedViewId !== DEFAULT_TASK_VIEW_VALUE && <Button unstyled className="button small danger" type="button" onClick={() => { void deleteSavedView(); }}>删除视图</Button>}
-        </div>
+        </div>}
+        {activeView === 'PERSONAL' && <PersonalStatusFilters
+          filter={stateFilter}
+          summary={personalStatistics.data?.summary}
+          onFilter={(value) => { setStateFilter(value); setPage(1); }}
+        />}
         {isAllJobs && <div className="workbench-attention-entry" aria-label="异常任务集中处理">
           <span><AlertTriangle size={15} />集中处理</span>
           <Button unstyled className="button small" type="button" aria-pressed={attentionFilter === 'ANOMALY'} onClick={() => { setAttentionFilter(attentionFilter === 'ANOMALY' ? 'NONE' : 'ANOMALY'); setPage(1); }}>全部异常</Button>
@@ -1398,10 +1455,12 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       </div>}
       {lastUpdatedAt && <p className="workbench-updated-at" role="status">{loading ? `正在读取第 ${page} 页，暂时保留上次结果…` : `最近成功刷新：${timeLabel(lastUpdatedAt)} · 每 30 秒自动刷新`}</p>}
 
-      {role === 'ADMIN' && selectedTasks.length > 0 && <div className="workbench-batch-actions" role="region" aria-label="批量任务操作">
-        <strong>已选 {selectedTasks.length} 条（当前页）</strong>
-        <Button unstyled className="button small primary" type="button" disabled={Boolean(batchAction)}
-          onClick={() => setAssignmentTasks(selectedTasks)}><UserRound size={14} />批量分配 {selectedTasks.length}</Button>
+        {role === 'ADMIN' && selectedTasks.length > 0 && <div className="workbench-batch-actions" role="region" aria-label="批量任务操作">
+          <strong>已选 {selectedTasks.length} 条（当前页）</strong>
+        <Button unstyled className="button small primary" type="button"
+          disabled={Boolean(batchAction) || assignmentEligibleTasks.length === 0}
+          title={assignmentEligibleTasks.length === 0 ? '所选任务尚未进入可派单阶段' : '分配或改派可处理的任务'}
+          onClick={() => setAssignmentTasks(assignmentEligibleTasks)}><UserRound size={14} />批量分配 {assignmentEligibleTasks.length}</Button>
         <Button unstyled className="button small" type="button" disabled={Boolean(batchAction) || retryableTasks.length === 0} onClick={() => { void runBatchAction('RETRY', retryableTasks); }}><RotateCcw size={14} />重试 {retryableTasks.length}</Button>
         <Button unstyled className="button small danger" type="button" disabled={Boolean(batchAction) || queuedTasks.length === 0} onClick={() => { void runBatchAction('CANCEL_QUEUE', queuedTasks); }}><Trash2 size={14} />废弃排队中 {queuedTasks.length}</Button>
         <Button unstyled className="button small danger" type="button" title={permanentlyDeletableTasks.length > 20 ? '单次最多永久删除 20 条，请减少选择' : permanentDeletionSettlingTasks.length ? '所选任务仍在等待执行机停止，废弃满 3 分钟后可永久删除' : '仅永久删除已失败、已审核或已废弃且执行已停止的任务'} disabled={Boolean(batchAction) || Boolean(actingTaskId) || Boolean(permanentDeleteTask) || permanentlyDeletableTasks.length === 0 || permanentlyDeletableTasks.length > 20} onClick={() => { setDeletionError(''); setDeletionPassword(''); setBatchPermanentDeleteTasks(permanentlyDeletableTasks); }}><Trash2 size={14} />永久删除 {permanentlyDeletableTasks.length}</Button>
@@ -1416,7 +1475,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         : fetchError && !lastUpdatedAt ? <div className="empty-state">暂时无法读取任务，请重试。</div>
         : visibleTasks.length === 0
           ? <div className="workbench-empty">
-            <span>{isAllJobs || hasFilters ? '没有符合当前筛选条件的作业。' : activeView === 'PERSONAL' ? '当前没有分配给你的 Query 任务。' : `当前没有${activeDefinition.label}任务。`}</span>
+            <span>{isAllJobs || hasFilters ? '没有符合当前筛选条件的作业。' : activeView === 'PERSONAL' ? '当前没有你提交或负责的 Query 任务。' : `当前没有${activeDefinition.label}任务。`}</span>
             {activeView === 'PERSONAL' && <Button unstyled className="button small" type="button" onClick={() => setCreateOpen(true)}><Plus size={14} />创建第一条笔记</Button>}
           </div>
           : <div ref={listStart} className="table-wrap mobile-cards workbench-table-wrap" tabIndex={0} role="region" aria-label="作业列表，可横向滚动查看完整列" aria-busy={loading} inert={loading}>
@@ -1424,16 +1483,16 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
               <thead><tr>{role === 'ADMIN' && <th className="workbench-col-select"><Checkbox aria-label="选择当前页全部任务" checked={allVisibleSelected} onChange={(event) => setSelectedTaskIds(event.target.checked ? visibleTasks.map((task) => task.id) : [])} /></th>}<th className="workbench-col-query">作业 / Query</th><th className="workbench-col-creator">负责人 / 创建人</th><th className="workbench-col-progress">状态 / 进度</th><th className="workbench-col-executor">执行机</th><th className="workbench-col-time">创建 / 开始 / 耗时</th><th className="workbench-col-actions">操作</th></tr></thead>
               <tbody>{visibleTasks.map((task) => <tr key={task.id}>
                 {role === 'ADMIN' && <td className="workbench-col-select" data-label="选择"><Checkbox aria-label={`选择任务 #${task.id}`} checked={selectedTaskIds.includes(task.id)} onChange={(event) => toggleTaskSelection(task.id, event.target.checked)} /></td>}
-                <td className="query-cell" data-label="作业 / Query">
+                <td className="query-cell workbench-col-query" data-label="作业 / Query">
                   <div className="workbench-cell-stack">
                     <span className="mono workbench-task-id">#{task.id}</span>
                     <Button unstyled className="workbench-query-preview workbench-text-preview" type="button" title={task.query} aria-label={`查看作业 #${task.id}：${task.query}`} onClick={() => setSelectedTaskId(task.id)}>{task.query}</Button>
                   </div>
                 </td>
-                <td data-label="负责人 / 创建人"><div className="workbench-cell-stack">
-                  <span className={`workbench-text-preview${task.assignedToUserId ? '' : ' pill pill-rejected'}`}
-                    title={task.assignedToDisplayName || task.assignedToUserId || '待分配任务池'}>
-                    {task.assignedToDisplayName || task.assignedToUserId || '待分配'}
+                <td className="workbench-col-creator" data-label="负责人 / 创建人"><div className="workbench-cell-stack">
+                  <span className={`workbench-text-preview${!task.assignedToUserId && task.state === 'COPY_REVIEW_PENDING' ? ' pill pill-rejected' : ''}`}
+                    title={assignmentLabel(task)}>
+                    {assignmentLabel(task)}
                   </span>
                   {task.assignedToUserId && <small className="mono workbench-text-preview" title={task.assignedToUserId}>{task.assignedToUserId}</small>}
                   <small className="workbench-text-preview" title={task.createdByDisplayName || task.createdByUserId || '历史任务'}>
@@ -1441,19 +1500,19 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
                   </small>
                   {isAllJobs && <small>{CREATOR_ROLE_LABELS[task.createdByRole || 'UNKNOWN'] || '未知创建者角色'}</small>}
                 </div></td>
-                <td data-label="状态 / 进度">
+                <td className="workbench-col-progress" data-label="状态 / 进度">
                   <div className="distributed-progress">
                     <span className={`pill ${isImageRetryExhausted(task) ? 'pill-rejected' : `workbench-state-${task.state.toLowerCase()}`}${isStale(task) ? ' pill-rejected' : ''}`}>{isImageRetryExhausted(task) ? IMAGE_RETRY_EXHAUSTED_LABEL : STATE_LABELS[task.state]}</span>
                     <span>{stageLabel(task)} · {task.state.endsWith('_FAILED') && !task.executionStartedAt && task.progressPercent === 0 ? '进度未记录' : `${task.progressPercent}%`}</span>
-                    <small className="workbench-text-preview" title={isStale(task) ? '超过 30 分钟没有进度，请进入详情处理' : task.progressMessage}>{isStale(task) ? '超过 30 分钟没有进度，请进入详情处理' : task.progressMessage}</small>
+                    <small className="workbench-text-preview" title={isStale(task) ? '超过 30 分钟没有进度，请进入详情处理' : taskProgressMessage(task)}>{isStale(task) ? '超过 30 分钟没有进度，请进入详情处理' : taskProgressMessage(task)}</small>
                   </div>
                 </td>
-                <td data-label="执行机"><div className="workbench-cell-stack workbench-executors">
+                <td className="workbench-col-executor" data-label="执行机"><div className="workbench-cell-stack workbench-executors">
                   <div><small>{executorColumnLabel}</small><span className="mono workbench-text-preview" title={activeView === 'IMAGE_WORK' ? imageExecutorLabel(task) : copyExecutorLabel(task, nodes)}>{activeView === 'IMAGE_WORK' ? imageExecutorLabel(task) : copyExecutorLabel(task, nodes)}</span></div>
                   {(activeView === 'MANUAL_ARCHIVE' || isAllJobs) && <div><small>生图执行机</small><span className="mono workbench-text-preview" title={imageExecutorLabel(task)}>{imageExecutorLabel(task)}</span></div>}
                   {activeView === 'PERSONAL' && (task.state.startsWith('IMAGE_') || task.imageExecutorNodeId || isImageRetryExhausted(task)) && <div><small>生图执行机</small><span className="mono workbench-text-preview" title={imageExecutorLabel(task)}>{imageExecutorLabel(task)}</span></div>}
                 </div></td>
-                <td data-label="创建 / 开始 / 耗时"><div className="workbench-cell-stack">
+                <td className="workbench-col-time" data-label="创建 / 开始 / 耗时"><div className="workbench-cell-stack">
                   <time dateTime={task.createdAt}>{timeLabel(task.createdAt)}</time>
                   <small>开始：<time dateTime={task.executionStartedAt || undefined}>{timeLabel(task.executionStartedAt, task.state)}</time></small>
                   <small className="workbench-elapsed"><Clock3 aria-hidden="true" size={13} />{elapsed(task)}</small>
@@ -1473,6 +1532,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       taskId={selectedTaskId}
       nodeId={nodeId}
       role={role}
+      currentUsername={creatorUserId}
+      currentAccountId={creatorAccountId}
       onOpenChange={(open) => { if (!open) setSelectedTaskId(null); }}
       onUpdated={async (notice) => {
         setMessage(notice);

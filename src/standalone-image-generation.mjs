@@ -359,8 +359,7 @@ function normalizedStoredResult(value, runId) {
       pageIndex: index + 1,
       kind: file.replace(/^\d{2}-/u, '').replace(/\.png$/u, ''),
       file,
-      url: `/api/image-generations/${runId}/images/${file}`,
-      ...publicImageArtifacts(image, runId),
+      ...publicImageArtifacts(image),
       provider: boundedText(image.provider, `images[${index}].provider`, 1, 100),
       model: image.model === null ? null : boundedText(image.model, `images[${index}].model`, 1, 200),
       generationAttempts: Number.isInteger(image.generationAttempts) ? image.generationAttempts : null,
@@ -682,8 +681,7 @@ function publicResult({ runId, mode, images, qc, visualPlan, planning, post, inp
       pageIndex: index + 1,
       kind: image.file.replace(/^\d{2}-/u, '').replace(/\.png$/u, ''),
       file: image.file,
-      url: `/api/image-generations/${runId}/images/${image.file}`,
-      ...publicImageArtifacts(image, runId),
+      ...publicImageArtifacts(image),
       provider: image.provider,
       model: image.model ?? null,
       generationAttempts: image.generationAttempts ?? null,
@@ -772,7 +770,7 @@ async function generateStandaloneImagesInContext({
   const query = boundedText(source.query, 'query', 1, 500);
   const imageCount = post.imagePlan.length;
   if (mode !== 'LIVE') throw new TypeError('mode must be LIVE');
-  if (!runtime.client) throw new TypeError('Live mode requires an OpenClaw client');
+  if (!runtime.client) throw new TypeError('Live mode requires a model client');
   if (onProgress !== undefined && typeof onProgress !== 'function') {
     throw new TypeError('onProgress must be a function');
   }
@@ -894,7 +892,7 @@ async function generateStandaloneImagesInContext({
     });
     await writeJsonAtomic(join(outputDir, 'image-prompts.json'), { prompts: imagePrompts });
     const validator = wrapAlignmentValidator(createImageAlignmentValidator({
-      openclaw: client,
+      agentClient: client,
       post,
       visualPlan,
       imageCount,
@@ -916,7 +914,7 @@ async function generateStandaloneImagesInContext({
         post,
         outputDir,
         mock: false,
-        openclaw: client,
+        agentClient: client,
         imageCount,
         imagePrompts,
         visibleTextPlans: visualPlan.pages.map((page) => page.allowedVisibleText),
@@ -978,7 +976,7 @@ async function generateStandaloneImagesInContext({
       message: recovery?.assessed ? '正在复用整套图片质量检查结果' : '正在进行整套图片质量检查',
     });
     const assessed = recovery?.assessed ?? await createDeliveryQualityAssessor({
-      openclaw: client,
+      agentClient: client,
       task: { query, input: {} },
       post,
       model: productionSettings.modelApi.qualityModel,
@@ -1401,8 +1399,8 @@ export async function reprocessStandaloneImages({ source, originalResult, loadSo
       const bytes = await loadSource(image, index);
       const artifacts = await prepareImageArtifacts({ source: bytes, outputDir, file, settings: post.imageSettings });
       artifacts.sourceOriginal = originalAvailable;
-      images.push({ ...image, ...publicImageArtifacts(artifacts, runId), file,
-        pageIndex: index + 1, kind: post.imagePlan[index].kind, url: `/api/image-generations/${runId}/images/${file}`,
+      images.push({ ...image, ...publicImageArtifacts(artifacts), file,
+        pageIndex: index + 1, kind: post.imagePlan[index].kind,
         alignmentPassed: null });
       await report({ stage: 'FINALIZING', progressPercent: 10 + Math.round((index + 1) / post.imagePlan.length * 80),
         message: `已转换 ${index + 1}/${post.imagePlan.length} 张，等待人工检查`, completedImages: index + 1 });

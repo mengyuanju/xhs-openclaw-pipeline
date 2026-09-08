@@ -64,9 +64,9 @@ function parseUnderRuntime(output, runtime = alignmentRuntime()) {
   }));
 }
 
-function validatorFixture(openclaw) {
+function validatorFixture(agentClient) {
   return createImageAlignmentValidator({
-    openclaw,
+    agentClient,
     post: { title: '桌面整理', body: '先清空桌面，分开高频物品，每天复位一次。' },
     visualPage: {
       index: 1,

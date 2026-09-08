@@ -40,6 +40,12 @@ const copyReviewMetadata = Object.freeze({
   reviewSessionId: '77777777-7777-4777-8777-777777777777',
 });
 const copyReviewActor = Object.freeze({ reviewerUserId: 'admin' });
+const executorManagementActor = Object.freeze({
+  userId: 1,
+  username: 'admin',
+  role: 'ADMIN',
+  credentialVersion: 1,
+});
 
 test('creator role filters apply equally to pages and totals without joining a same-name replacement', async () => {
   for (const role of ['ADMIN', 'REVIEWER', 'USER', 'UNKNOWN']) {
@@ -87,7 +93,7 @@ test('invalid creator role never reaches the database', async () => {
   }
 });
 
-test('task creation keeps creator audit identity and defaults to self-assignment', async () => {
+test('task creation keeps creator audit identity and defaults to the unassigned machine queue', async () => {
   const queries = [];
   const client = {
     async query(sql, values) {
@@ -97,9 +103,9 @@ test('task creation keeps creator audit identity and defaults to self-assignment
       }
       if (String(sql).includes('INSERT INTO tasks')) return { rows: [taskRow({
         copy_executor_node_id: null,
-        assigned_to_user_id: 'admin',
-        assignment_source: 'SELF',
-        assigned_at: '2026-01-01T00:00:00.000Z',
+        assigned_to_user_id: values[6],
+        assignment_source: values[7],
+        assigned_at: null,
         current_stage: 'COPY_QUEUED',
         progress_message: '等待文案执行机领取',
       })] };
@@ -121,11 +127,12 @@ test('task creation keeps creator audit identity and defaults to self-assignment
   assert.equal(created[0].createdByNodeId, 'node-a');
   assert.equal(created[0].copyExecutorNodeId, null);
   assert.equal(created[0].createdByUserId, 'admin');
-  assert.equal(created[0].assignedToUserId, 'admin');
-  assert.equal(created[0].assignmentSource, 'SELF');
-  assert.deepEqual(insert.values.slice(3), ['node-a', 'admin', false, 'admin', 'SELF']);
+  assert.equal(created[0].assignedToUserId, null);
+  assert.equal(created[0].assignmentSource, null);
+  assert.deepEqual(insert.values.slice(3), ['node-a', 'admin', false, null, null]);
   assert.doesNotMatch(insert.sql, /copy_executor_node_id/u);
-  assert.match(insert.sql, /CASE WHEN \$7::varchar IS NULL THEN '等待分配负责人' ELSE '等待文案执行机领取' END/u);
+  assert.match(insert.sql, /'COPY_QUEUED',[\s\S]*'等待文案执行机领取'/u);
+  assert.equal(queries.some((query) => query.sql.includes('task_assignment_events')), false);
   assert.equal(queries.at(-1).sql, 'COMMIT');
 });
 
@@ -607,6 +614,101 @@ test('executor inventory reports independent copy and image running capacity', a
   assert.equal(nodes[0].imageConcurrency, 2);
   assert.match(selection, /e\.kind = 'IMAGE' AND e\.status = 'RUNNING'/u);
   assert.match(selection, /t\.state = 'IMAGE_RUNNING'/u);
+  assert.match(selection, /WHERE n\.retired_at IS NULL/u);
+});
+
+test('executor registration restores a previously retired node', async () => {
+  let registration;
+  const repository = new PostgresControlPlaneRepository({
+    pool: {
+      async query(sql, values) {
+        registration = { sql: String(sql), values };
+        return { rows: [{
+          id: 'node-a', name: '执行机 A', image_worker_enabled: false,
+          copy_concurrency: 1, image_concurrency: 1,
+          last_seen_at: '2026-09-09T00:00:00Z',
+        }] };
+      },
+    },
+  });
+  await repository.registerNode({ nodeId: 'node-a', name: '执行机 A' });
+  assert.match(registration.sql, /ON CONFLICT\(id\) DO UPDATE SET[\s\S]*retired_at = NULL/u);
+  assert.deepEqual(registration.values, ['node-a', '执行机 A', false, null, null]);
+});
+
+test('executor retirement hides only offline nodes without running work', async () => {
+  function fixture({
+    actorRow = { id: 1, username: 'admin', role: 'ADMIN' },
+    node = { id: 'node-a', name: '执行机 A', online: false },
+    running = [],
+  } = {}) {
+    const calls = [];
+    const client = {
+      async query(sql, values = []) {
+        const source = String(sql);
+        calls.push({ sql: source, values });
+        if (source.includes('SELECT * FROM app_users')) {
+          return { rows: actorRow ? [actorRow] : [] };
+        }
+        if (source.includes('FROM executor_nodes') && source.includes('FOR UPDATE')) {
+          return { rows: node ? [node] : [] };
+        }
+        if (source.includes('FROM task_executions')) return { rows: running };
+        if (source.includes('UPDATE executor_nodes')) return { rows: [{
+          id: node.id, name: node.name, retired_at: '2026-09-09T00:00:00Z',
+        }] };
+        return { rows: [] };
+      },
+      release() {},
+    };
+    return { calls, repository: new PostgresControlPlaneRepository({ pool: { connect: async () => client } }) };
+  }
+
+  const retired = fixture();
+  assert.deepEqual(await retired.repository.retireNode('node-a', executorManagementActor), {
+    id: 'node-a', name: '执行机 A', retiredAt: '2026-09-09T00:00:00Z',
+  });
+  const actorLock = retired.calls.find(({ sql }) => sql.includes('SELECT * FROM app_users'));
+  const update = retired.calls.find(({ sql }) => sql.includes('UPDATE executor_nodes'));
+  const runningCheck = retired.calls.find(({ sql }) => sql.includes('FROM task_executions'));
+  assert.deepEqual(actorLock.values, [1, 'admin', 'ADMIN', 1]);
+  assert.ok(retired.calls.indexOf(actorLock) < retired.calls.findIndex(({ sql }) => sql.includes('FROM executor_nodes')));
+  assert.deepEqual(update.values, ['node-a']);
+  assert.match(update.sql, /SET retired_at = now\(\), updated_at = now\(\)/u);
+  assert.doesNotMatch(runningCheck.sql, /FOR UPDATE/u);
+  assert.equal(retired.calls.some(({ sql }) => /DELETE FROM executor_nodes/u.test(sql)), false);
+  assert.equal(retired.calls.at(-1).sql, 'COMMIT');
+
+  const online = fixture({ node: { id: 'node-a', name: '执行机 A', online: true } });
+  await assert.rejects(online.repository.retireNode('node-a', executorManagementActor), { code: 'EXECUTOR_STILL_ONLINE' });
+  assert.equal(online.calls.some(({ sql }) => sql.includes('FROM task_executions')), false);
+  assert.equal(online.calls.at(-1).sql, 'ROLLBACK');
+
+  const active = fixture({ running: [{ id: 'execution-a' }] });
+  await assert.rejects(active.repository.retireNode('node-a', executorManagementActor), { code: 'EXECUTOR_HAS_RUNNING_TASKS' });
+  assert.equal(active.calls.some(({ sql }) => sql.includes('UPDATE executor_nodes')), false);
+  assert.equal(active.calls.at(-1).sql, 'ROLLBACK');
+
+  const missing = fixture({ node: null });
+  await assert.rejects(missing.repository.retireNode('node-a', executorManagementActor), { code: 'NOT_FOUND' });
+  assert.equal(missing.calls.at(-1).sql, 'ROLLBACK');
+
+  const staleActor = fixture({ actorRow: null });
+  await assert.rejects(
+    staleActor.repository.retireNode('node-a', executorManagementActor),
+    { code: 'SESSION_STALE' },
+  );
+  assert.equal(staleActor.calls.some(({ sql }) => sql.includes('FROM executor_nodes')), false);
+  assert.equal(staleActor.calls.some(({ sql }) => sql.includes('UPDATE executor_nodes')), false);
+
+  const reviewerActor = { ...executorManagementActor, userId: 2, username: 'reviewer', role: 'REVIEWER' };
+  const reviewer = fixture({ actorRow: { id: 2, username: 'reviewer', role: 'REVIEWER' } });
+  await assert.rejects(
+    reviewer.repository.retireNode('node-a', reviewerActor),
+    { code: 'FORBIDDEN' },
+  );
+  assert.equal(reviewer.calls.some(({ sql }) => sql.includes('FROM executor_nodes')), false);
+  assert.equal(reviewer.calls.some(({ sql }) => sql.includes('UPDATE executor_nodes')), false);
 });
 
 test('copy approval rejects a non-boolean AI disclosure setting before opening a transaction', async () => {

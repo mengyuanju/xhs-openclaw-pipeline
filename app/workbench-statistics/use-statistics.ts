@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Filters, Statistics } from './types';
 
-export function useStatistics(filters: Filters) {
+export function useStatistics(filters: Filters, enabled = true) {
   const query = new URLSearchParams(Object.entries(filters).filter(([, v]) => v !== undefined)
     .map(([k, v]) => [k, typeof v === 'boolean' ? v ? '1' : '0' : String(v)])).toString();
   const [snapshot, setSnapshot] = useState<{ query: string; data: Statistics } | null>(null);
@@ -14,6 +14,10 @@ export function useStatistics(filters: Filters) {
   const cooldownTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    if (!enabled) {
+      trigger.current = null;
+      return;
+    }
     let disposed = false, running = false, blocked = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | undefined;
@@ -66,13 +70,20 @@ export function useStatistics(filters: Filters) {
       trigger.current = null;
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [query]);
+  }, [enabled, query]);
   useEffect(() => () => { if (cooldownTimer.current) clearTimeout(cooldownTimer.current); }, []);
   const refresh = useCallback(() => {
-    if (cooldown || busy) return;
+    if (!enabled || cooldown || busy) return;
     trigger.current?.();
     setCooldown(true);
     cooldownTimer.current = setTimeout(() => setCooldown(false), 15_000);
-  }, [cooldown, busy]);
-  return { data: snapshot?.query === query ? snapshot.data : null, creators: snapshot?.data.creators, error, busy, cooldown, refresh };
+  }, [enabled, cooldown, busy]);
+  return {
+    data: enabled && snapshot?.query === query ? snapshot.data : null,
+    creators: enabled ? snapshot?.data.creators : undefined,
+    error: enabled ? error : '',
+    busy: enabled && busy,
+    cooldown: enabled && cooldown,
+    refresh,
+  };
 }

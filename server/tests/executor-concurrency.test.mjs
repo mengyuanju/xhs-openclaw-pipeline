@@ -54,7 +54,7 @@ test('batch claims use remaining center capacity and save an atomic receipt', as
   assert.equal(result.requestId, requestId);
   assert.equal(result.claims.length, 2);
   assert.equal(new Set(result.claims.map(c => c.execution.id)).size, 2);
-  assert.deepEqual(calls.find(c => c.sql.includes('FOR UPDATE OF task SKIP LOCKED')).args, ['COPY_QUEUED', null, 2]);
+  assert.deepEqual(calls.find(c => c.sql.includes('FOR UPDATE OF task SKIP LOCKED')).args, ['COPY_QUEUED', 2]);
   assert.ok(calls.find(c => c.sql.includes('INSERT INTO execution_claim_requests')));
   assert.equal(calls.at(-1).sql, 'COMMIT');
 });

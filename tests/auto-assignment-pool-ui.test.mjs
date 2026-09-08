@@ -62,7 +62,7 @@ test('automatic assignment pool exposes safe pause and removal semantics without
   assert.match(manager, /initialSnapshot\.manualAttentionTaskCount/u);
   assert.match(manager, /typeof initialSnapshot\.autoAssignableTaskCount === 'number'[\s\S]*: initialSnapshot\.unassignedTaskCount/u);
   assert.match(manager, /Math\.max\(0, initialSnapshot\.unassignedTaskCount - autoAssignableTaskCount\)/u);
-  assert.match(manager, /需人工处理或等待执行结束/u);
+  assert.match(manager, /仍在机器阶段或需要管理员处理/u);
   assert.match(manager, /不会回收已经分配的任务/u);
   assert.match(manager, /停用账号不能恢复自动接单/u);
   assert.match(manager, /worker\.userRole === 'USER' && worker\.userStatus === 'ACTIVE'/u);

@@ -14,6 +14,8 @@ import { JobUserPicker, type JobCreator } from './job-user-picker';
 export type AssignmentTask = {
   id: number;
   query: string;
+  state: string;
+  skipCopyReview?: boolean;
   assignedToUserId: string | null;
   assignedToAccountId?: number | null;
   assignedToDisplayName?: string | null;
@@ -32,9 +34,10 @@ function currentAssignee(tasks: AssignmentTask[]): JobCreator | null {
   };
 }
 
-export function TaskAssignmentDialog({ tasks, open, onOpenChange, onAssigned }: {
+export function TaskAssignmentDialog({ tasks, open, currentAdmin, onOpenChange, onAssigned }: {
   tasks: AssignmentTask[];
   open: boolean;
+  currentAdmin: JobCreator;
   onOpenChange: (open: boolean) => void;
   onAssigned: (message: string) => void | Promise<void>;
 }) {
@@ -43,13 +46,19 @@ export function TaskAssignmentDialog({ tasks, open, onOpenChange, onAssigned }: 
   const [reason, setReason] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const canReturnToPool = tasks.every((task) => (
+    ['COPY_QUEUED', 'COPY_REVIEW_PENDING'].includes(task.state)
+      && !(task.skipCopyReview === true && task.state === 'COPY_QUEUED')
+  ));
 
   useEffect(() => {
     if (!open) return;
-    setAssignee(currentAssignee(tasks));
+    const current = currentAssignee(tasks);
+    setAssignee(current);
     setDestinationRequired(selectedTasksHaveMixedAssignees(tasks)
       || tasks.some((task) => task.assignedToUserId !== null
-        && (!Number.isSafeInteger(task.assignedToAccountId) || Number(task.assignedToAccountId) < 1)));
+        && (!Number.isSafeInteger(task.assignedToAccountId) || Number(task.assignedToAccountId) < 1))
+      || (!canReturnToPool && current === null));
     setReason('');
     setError('');
   }, [open, tasks]);
@@ -58,7 +67,9 @@ export function TaskAssignmentDialog({ tasks, open, onOpenChange, onAssigned }: 
     event.preventDefault();
     if (submitting || tasks.length === 0) return;
     if (destinationRequired) {
-      setError('所选任务当前负责人不一致，请先明确选择新的负责人或待分配任务池。');
+      setError(canReturnToPool
+        ? '所选任务当前负责人不一致，请先明确选择新的负责人或待分配任务池。'
+        : '当前任务不能退回待分配池，请先明确选择新的负责人。');
       return;
     }
     setSubmitting(true);
@@ -93,7 +104,7 @@ export function TaskAssignmentDialog({ tasks, open, onOpenChange, onAssigned }: 
     <DialogContent className="workbench-save-view-dialog">
       <DialogTitle>{tasks.length > 1 ? `批量分配 ${tasks.length} 条任务` : '分配任务'}</DialogTitle>
       <DialogDescription>
-        只能选择已启用的普通作业员。选择“待分配任务池”会撤回尚未开始的文案任务，执行机不会领取待分配任务。
+        文案生成完成后可分配给普通作业员，或由当前管理员领取。负责人变更不会影响机器执行队列。
       </DialogDescription>
       <form className="workbench-create-form" onSubmit={submit}>
         <JobUserPicker
@@ -104,10 +115,12 @@ export function TaskAssignmentDialog({ tasks, open, onOpenChange, onAssigned }: 
           emptyOptionLabel="待分配任务池"
           emptyOptionSelected={!destinationRequired && assignee === null}
           dialogTitle="选择任务负责人"
-          dialogDescription="仅显示已启用的普通作业员。未加入自动分配池的人员仍可由管理员手动指定。"
+          dialogDescription="显示已启用的普通作业员和当前管理员；未加入自动分配池的普通作业员仍可手动指定。"
           roleLabels={CREATOR_ROLE_LABELS}
           eligibleRoles={['USER']}
+          additionallyEligibleUserIds={[Number(currentAdmin.id)]}
           activeOnly
+          allowEmptyOption={canReturnToPool}
           disabled={submitting}
           onChange={(nextAssignee) => {
             setAssignee(nextAssignee);
@@ -115,6 +128,15 @@ export function TaskAssignmentDialog({ tasks, open, onOpenChange, onAssigned }: 
             setError('');
           }}
         />
+        <div className="workbench-row-actions">
+          <Button unstyled className="button small" type="button" disabled={submitting}
+            onClick={() => {
+              setAssignee(currentAdmin);
+              setDestinationRequired(false);
+              setError('');
+            }}>我来处理</Button>
+          {!canReturnToPool && <small>当前状态只能改派负责人，不能退回待分配池。</small>}
+        </div>
         <div className="field">
           <label htmlFor="task-assignment-reason">分配说明（可选）</label>
           <Textarea id="task-assignment-reason" value={reason} maxLength={200} rows={3} disabled={submitting}

@@ -54,9 +54,9 @@ for (const code of TEMPORARY_CODES) {
     let contentClaims = 0;
     let imageClaims = 0;
     const content = () => processNext({ queue: { claimNext() { contentClaims++; return null; } },
-      workerId: 'content', outputRoot: root, openclaw: client });
+      workerId: 'content', outputRoot: root, agentClient: client });
     const image = () => processNextImageEdit({ store: { claimNextImageEdit() { imageClaims++; return null; } },
-      workerId: 'image', assetRoot: root, openclaw: client });
+      workerId: 'image', assetRoot: root, agentClient: client });
 
     const blocked = await Promise.all([content(), image()]);
     assert.deepEqual([contentClaims, imageClaims], [0, 0]);
@@ -78,9 +78,9 @@ for (const code of PERMANENT_CODES) {
     for (const elapsed of [0, 120_000]) {
       t.mock.timers.tick(elapsed);
       const content = await processNext({ queue: { claimNext() { assert.fail('permanent pause claimed content'); } },
-        workerId: 'content', outputRoot: root, openclaw: client });
+        workerId: 'content', outputRoot: root, agentClient: client });
       const image = await processNextImageEdit({ store: { claimNextImageEdit() { assert.fail('permanent pause claimed an image edit'); } },
-        workerId: 'image', assetRoot: root, openclaw: client });
+        workerId: 'image', assetRoot: root, agentClient: client });
       for (const result of [content, image]) {
         assert.equal(result.reason, code);
         assert.equal(result.haltWorker, true);
@@ -96,7 +96,7 @@ test('worker --once reports capacity as temporary without claiming work or enter
   const task = queue.enqueue({ query: '单次 worker 冷却期间保留任务' });
   const stdout = stream(), stderr = stream();
   const exitCode = await main(['worker', '--once'], { env, stdout, stderr,
-    createOpenClaw: () => client,
+    createAgent: () => client,
     processImageEditTask() { assert.fail('blocked content must not fall through to image edits'); },
     sleep() { assert.fail('--once must retain its single-pass contract'); },
   });
@@ -116,7 +116,7 @@ for (const code of TEMPORARY_CODES) {
     const stdout = stream(), stderr = stream(), sleeps = [];
     let models = 0;
     const exitCode = await main(['drain', '--live', '--max', '1', '--concurrency', '1'], {
-      env, stdout, stderr, createOpenClaw: () => client,
+      env, stdout, stderr, createAgent: () => client,
       async processContentTask(options) {
         if (runtime.status().code) return processNext(options);
         const claimed = options.queue.claimNext({ workerId: options.workerId });
@@ -149,7 +149,7 @@ test('live drain honors a non-halting capacity result without falling through to
   const stdout = stream(), stderr = stream(), sleeps = [];
   let contentCalls = 0;
   const exitCode = await main(['drain', '--live', '--max', '1', '--concurrency', '1'], {
-    env, stdout, stderr, createOpenClaw: () => client,
+    env, stdout, stderr, createAgent: () => client,
     async processContentTask() {
       contentCalls++;
       const state = runtime.status();
@@ -175,7 +175,7 @@ for (const code of TEMPORARY_CODES) {
     let readinessCalls = 0, contentCalls = 0;
     client.checkReady = () => { readinessCalls++; runtime.assertAvailable(); };
     const exitCode = await main(['drain', '--live', '--max', '1', '--concurrency', '1'], {
-      env, stdout, stderr, createOpenClaw: () => client,
+      env, stdout, stderr, createAgent: () => client,
       async processContentTask() {
         runtime.assertAvailable();
         contentCalls++;
@@ -211,7 +211,7 @@ for (const code of TEMPORARY_CODES) {
       throw Object.assign(new Error(code), { code });
     });
     const exitCode = await main(['drain', '--live', '--max', '1', '--concurrency', '1'], {
-      env, stdout, stderr, createOpenClaw: () => client,
+      env, stdout, stderr, createAgent: () => client,
       processContentTask: options => processNext({ ...options, configProvider: undefined, onFailed: undefined }),
       processImageEditTask() {
         runtime.assertAvailable();
@@ -250,7 +250,7 @@ for (const code of PERMANENT_CODES) {
     const stdout = stream(), stderr = stream();
     client.checkReady = () => runtime.assertAvailable();
     const exitCode = await main(['drain', '--live', '--max', '1'], {
-      env, stdout, stderr, createOpenClaw: () => client,
+      env, stdout, stderr, createAgent: () => client,
       processContentTask() { assert.fail('permanently paused startup claimed content'); },
       processImageEditTask() { assert.fail('permanently paused startup claimed an image edit'); },
       sleep() { assert.fail('auth/quota require an explicit recovery, not automatic sleep'); },

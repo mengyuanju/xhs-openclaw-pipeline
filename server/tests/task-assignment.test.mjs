@@ -16,8 +16,10 @@ function taskRow(id, patch = {}) {
     assigned_to_user_id: null,
     assignment_source: null,
     assigned_at: null,
+    current_execution_id: null,
+    current_stage: 'COPY_QUEUED',
     progress_percent: 0,
-    progress_message: '等待分配负责人',
+    progress_message: '等待文案执行机领取',
     ...patch,
   };
 }
@@ -54,8 +56,8 @@ test('health advertises the task assignment and pool contracts for Web compatibi
     pool: { query: async () => ({ rows: [{ now: new Date('2026-09-08T00:00:00.000Z') }] }) },
   });
   const health = await repository.health();
-  assert.equal(health.capabilities.taskAssignmentVersion, 2);
-  assert.equal(health.capabilities.autoAssignmentPoolVersion, 2);
+  assert.equal(health.capabilities.taskAssignmentVersion, 3);
+  assert.equal(health.capabilities.autoAssignmentPoolVersion, 3);
   assert.equal(health.capabilities.creatorAccountFilters, true);
 });
 
@@ -67,7 +69,7 @@ test('task creation keeps creator audit identity separate from its assignee', as
     if (source.includes("role = 'USER'")) return { rows: [{ username: 'alice' }] };
     if (source.includes('INSERT INTO tasks')) return { rows: [taskRow(1, {
       assigned_to_user_id: values[6], assignment_source: values[7], assigned_at: new Date(),
-      progress_message: values[6] === null ? '等待分配负责人' : '等待文案执行机领取',
+      progress_message: '等待文案执行机领取',
     })] };
     return { rows: [] };
   });
@@ -89,6 +91,47 @@ test('task creation keeps creator audit identity separate from its assignee', as
   });
   assert.equal(unassigned.assignedToUserId, null);
   assert.equal(calls.some(({ sql }) => sql.includes('task_assignment_events')), false);
+});
+
+test('an administrator can create an explicitly self-owned bypass task but cannot target another admin', async () => {
+  const actor = { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 };
+  let taskInserted = false;
+  const repository = transactionRepository(async (sql, values) => {
+    const source = String(sql);
+    if (source.includes('SELECT * FROM app_users')) {
+      return { rows: [{ id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credential_version: 1 }] };
+    }
+    if (source.includes('SELECT id, username FROM app_users') && !source.includes("role = 'USER'")) {
+      return { rows: [{ id: 1, username: 'admin' }] };
+    }
+    if (source.includes("role = 'USER'")) return { rows: [] };
+    if (source.includes('INSERT INTO tasks')) {
+      taskInserted = true;
+      return { rows: [taskRow(1, {
+        skip_copy_review: values[5], assigned_to_user_id: values[6],
+        assignment_source: values[7], assigned_at: new Date(),
+      })] };
+    }
+    return { rows: [] };
+  });
+
+  const [created] = await repository.createTasks({
+    nodeId: 'node-a', createdByUserId: 'admin', actor,
+    assignedToUserId: 'admin', assignedToAccountId: 1,
+    assignmentSource: 'MANUAL', skipCopyReview: true,
+    tasks: [{ query: '管理员连续执行' }],
+  });
+  assert.equal(created.assignedToUserId, 'admin');
+  assert.equal(created.skipCopyReview, true);
+
+  taskInserted = false;
+  await assert.rejects(repository.createTasks({
+    nodeId: 'node-a', createdByUserId: 'admin', actor,
+    assignedToUserId: 'other-admin', assignedToAccountId: 9,
+    assignmentSource: 'MANUAL', skipCopyReview: true,
+    tasks: [{ query: '不能指定其他管理员' }],
+  }), { code: 'ASSIGNEE_UNAVAILABLE' });
+  assert.equal(taskInserted, false);
 });
 
 test('authenticated task creation rechecks the immutable actor inside its transaction', async () => {
@@ -132,6 +175,123 @@ test('task cancellation rechecks the locked owner before any task mutation', asy
   assert.equal(calls.at(-1).sql, 'ROLLBACK');
 });
 
+test('a stable creator can cancel an unassigned queued copy but a replacement account cannot', async () => {
+  const taskCreatedAt = new Date('2026-09-08T02:00:00.000Z');
+  function run(actorCreatedAt, { state = 'COPY_QUEUED' } = {}) {
+    const calls = [];
+    const repository = transactionRepository(async (sql) => {
+      const source = String(sql);
+      calls.push(source);
+      if (source === 'BEGIN' || source === 'COMMIT' || source === 'ROLLBACK') return { rows: [] };
+      if (source.includes('SELECT * FROM app_users')) {
+        return { rows: [{
+          id: 2,
+          username: 'alice',
+          role: 'USER',
+          status: 'ACTIVE',
+          credential_version: 1,
+          created_at: actorCreatedAt,
+        }] };
+      }
+      if (source === 'SELECT * FROM tasks WHERE id = $1 FOR UPDATE') {
+        return { rows: [taskRow(9, {
+          state,
+          current_stage: state,
+          created_by_user_id: 'alice',
+          created_at: taskCreatedAt,
+          assigned_to_user_id: null,
+        })] };
+      }
+      if (source.includes('UPDATE tasks SET')) {
+        return { rows: [taskRow(9, {
+          state: 'CANCELLED',
+          current_stage: 'CANCELLED',
+          cancelled_from_state: 'COPY_QUEUED',
+          created_by_user_id: 'alice',
+          created_at: taskCreatedAt,
+          assigned_to_user_id: null,
+        })] };
+      }
+      throw new Error(`unexpected query: ${source}`);
+    });
+    const operation = repository.cancelTask(9, {
+      actor: { userId: 2, username: 'alice', role: 'USER', credentialVersion: 1 },
+    });
+    return { calls, operation };
+  }
+
+  const original = run(new Date('2026-09-08T01:00:00.000Z'));
+  assert.equal((await original.operation).state, 'CANCELLED');
+  assert.ok(original.calls.some((sql) => sql.includes('UPDATE tasks SET')));
+
+  const replacement = run(new Date('2026-09-08T03:00:00.000Z'));
+  await assert.rejects(replacement.operation, { code: 'FORBIDDEN' });
+  assert.equal(replacement.calls.some((sql) => sql.includes('UPDATE tasks SET')), false);
+
+  const reviewPending = run(new Date('2026-09-08T01:00:00.000Z'), {
+    state: 'COPY_REVIEW_PENDING',
+  });
+  await assert.rejects(reviewPending.operation, { code: 'FORBIDDEN' });
+  assert.equal(reviewPending.calls.some((sql) => sql.includes('UPDATE tasks SET')), false);
+});
+
+test('a stable creator can retry unassigned copy work but cannot retry after the review checkpoint', async () => {
+  const taskCreatedAt = new Date('2026-09-08T02:00:00.000Z');
+  function run({ actorCreatedAt, state }) {
+    const calls = [];
+    const repository = transactionRepository(async (sql, values) => {
+      const source = String(sql);
+      calls.push({ sql: source, values });
+      if (source === 'BEGIN' || source === 'COMMIT' || source === 'ROLLBACK') return { rows: [] };
+      if (source.includes('SELECT * FROM app_users')) {
+        return { rows: [{
+          id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credential_version: 1,
+          created_at: actorCreatedAt,
+        }] };
+      }
+      if (source === 'SELECT * FROM tasks WHERE id = $1 FOR UPDATE') {
+        return { rows: [taskRow(9, {
+          state, current_stage: state, created_by_user_id: 'alice', created_at: taskCreatedAt,
+          assigned_to_user_id: null, current_execution_id: null,
+        })] };
+      }
+      if (source.includes('SELECT id, node_id, snapshot FROM task_executions')) return { rows: [] };
+      if (source.includes('UPDATE tasks SET')) {
+        return { rows: [taskRow(9, {
+          state: 'COPY_QUEUED', current_stage: 'COPY_QUEUED',
+          created_by_user_id: 'alice', created_at: taskCreatedAt,
+          assigned_to_user_id: null,
+        })] };
+      }
+      throw new Error(`unexpected query: ${source}`);
+    });
+    return {
+      calls,
+      operation: repository.retryTask(9, {
+        actor: { userId: 2, username: 'alice', role: 'USER', credentialVersion: 1 },
+      }),
+    };
+  }
+
+  const original = run({
+    actorCreatedAt: new Date('2026-09-08T01:00:00.000Z'), state: 'COPY_FAILED',
+  });
+  assert.equal((await original.operation).state, 'COPY_QUEUED');
+  assert.ok(original.calls.some(({ sql }) => sql.includes('UPDATE tasks SET')));
+
+  const replacement = run({
+    actorCreatedAt: new Date('2026-09-08T03:00:00.000Z'), state: 'COPY_FAILED',
+  });
+  await assert.rejects(replacement.operation, { code: 'FORBIDDEN' });
+  assert.equal(replacement.calls.some(({ sql }) => sql.includes('UPDATE tasks SET')), false);
+
+  const reviewPending = run({
+    actorCreatedAt: new Date('2026-09-08T01:00:00.000Z'), state: 'COPY_REVIEW_PENDING',
+  });
+  await assert.rejects(reviewPending.operation, { code: 'FORBIDDEN' });
+  assert.equal(reviewPending.calls.some(({ sql }) => sql.includes('UPDATE tasks SET')), false);
+});
+
 test('manual assignment is atomic, audited and only targets active ordinary workers', async () => {
   const calls = [];
   const repository = transactionRepository(async (sql, values) => {
@@ -139,7 +299,10 @@ test('manual assignment is atomic, audited and only targets active ordinary work
     calls.push({ sql: source, values });
     if (source.includes("role = 'USER'")) return { rows: [{ username: 'alice' }] };
     if (source.includes('SELECT * FROM tasks WHERE id = ANY')) {
-      return { rows: [taskRow(1), taskRow(2, { assigned_to_user_id: 'bob', assignment_source: 'SELF' })] };
+      return { rows: [
+        taskRow(1, { state: 'COPY_REVIEW_PENDING', current_stage: 'COPY_REVIEW_PENDING' }),
+        taskRow(2, { assigned_to_user_id: 'bob', assignment_source: 'SELF' }),
+      ] };
     }
     if (source.includes('UPDATE tasks SET')) {
       return { rows: values[0].map((id) => taskRow(id, {
@@ -171,7 +334,97 @@ test('manual assignment is atomic, audited and only targets active ordinary work
   }), { code: 'ASSIGNEE_UNAVAILABLE' });
 });
 
-test('unassigning is limited to copy work that has not started', async () => {
+test('an authenticated administrator can manually assign work to self but not to another administrator', async () => {
+  const actor = { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 };
+  const calls = [];
+  const repository = transactionRepository(async (sql, values) => {
+    const source = String(sql);
+    calls.push({ sql: source, values });
+    if (source.includes('SELECT * FROM app_users')) {
+      return { rows: [{ id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credential_version: 1 }] };
+    }
+    if (source.includes('SELECT id, username FROM app_users') && !source.includes("role = 'USER'")) {
+      return { rows: [{ id: 1, username: 'admin' }] };
+    }
+    if (source.includes("role = 'USER'")) return { rows: [] };
+    if (source.includes('SELECT * FROM tasks WHERE id = ANY')) {
+      return { rows: [taskRow(1, {
+        state: 'COPY_REVIEW_PENDING', current_stage: 'COPY_REVIEW_PENDING',
+      })] };
+    }
+    if (source.includes('UPDATE tasks SET')) {
+      return { rows: [taskRow(1, {
+        state: 'COPY_REVIEW_PENDING', current_stage: 'COPY_REVIEW_PENDING',
+        assigned_to_user_id: values[1], assignment_source: 'MANUAL', assigned_at: new Date(),
+      })] };
+    }
+    return { rows: [] };
+  });
+
+  const assigned = await repository.assignTask(1, {
+    assignedToUserId: 'admin', assignedToAccountId: 1, actor,
+  });
+  assert.equal(assigned.assignedToUserId, 'admin');
+  assert.equal(calls.some(({ sql }) => sql.includes("role = 'USER'")), false);
+
+  await assert.rejects(repository.assignTask(1, {
+    assignedToUserId: 'other-admin', assignedToAccountId: 9, actor,
+  }), { code: 'ASSIGNEE_UNAVAILABLE' });
+});
+
+test('a task cannot receive its first manual owner before the copy review checkpoint', async () => {
+  for (const [state, currentStage, currentExecutionId = null] of [
+    ['COPY_QUEUED', 'COPY_QUEUED'],
+    ['COPY_RUNNING', 'COPY_RUNNING'],
+    ['COPY_FAILED', 'COPY_FAILED'],
+    ['COPY_REVIEW_PENDING', 'ORIGINAL_GENERATION'],
+    ['COPY_REVIEW_PENDING', 'COPY_REVIEW_PENDING', '11111111-1111-4111-8111-111111111111'],
+  ]) {
+    const repository = transactionRepository(async (sql) => {
+      const source = String(sql);
+      if (source.includes("role = 'USER'")) return { rows: [{ username: 'alice' }] };
+      if (source.includes('SELECT * FROM tasks WHERE id = ANY')) {
+        return { rows: [taskRow(1, {
+          state, current_stage: currentStage, current_execution_id: currentExecutionId,
+        })] };
+      }
+      return { rows: [] };
+    });
+    await assert.rejects(repository.assignTask(1, {
+      assignedToUserId: 'alice', actorUserId: 'admin',
+    }), { code: 'TASK_NOT_READY_FOR_ASSIGNMENT' });
+  }
+});
+
+test('first assignment is available at review and for later unowned recovery states', async () => {
+  for (const [state, currentStage] of [
+    ['COPY_REVIEW_PENDING', 'COPY_REVIEW_PENDING'],
+    ['COPY_REVIEW_PENDING', 'IMAGE_RETRY_EXHAUSTED'],
+    ['IMAGE_QUEUED', 'IMAGE_QUEUED'],
+    ['IMAGE_FAILED', 'IMAGE_FAILED'],
+    ['MANUAL_ARCHIVE', 'MANUAL_ARCHIVE'],
+  ]) {
+    const repository = transactionRepository(async (sql, values) => {
+      const source = String(sql);
+      if (source.includes("role = 'USER'")) return { rows: [{ username: 'alice' }] };
+      if (source.includes('SELECT * FROM tasks WHERE id = ANY')) {
+        return { rows: [taskRow(1, { state, current_stage: currentStage })] };
+      }
+      if (source.includes('UPDATE tasks SET')) {
+        return { rows: [taskRow(1, {
+          state, current_stage: currentStage, assigned_to_user_id: values[1],
+          assignment_source: 'MANUAL', assigned_at: new Date(),
+        })] };
+      }
+      return { rows: [] };
+    });
+    assert.equal((await repository.assignTask(1, {
+      assignedToUserId: 'alice', actorUserId: 'admin',
+    })).assignedToUserId, 'alice');
+  }
+});
+
+test('unassigning is limited to idle copy queue or copy review work', async () => {
   const repository = transactionRepository(async (sql) => {
     if (String(sql).includes('SELECT * FROM tasks WHERE id = ANY')) {
       return { rows: [taskRow(1, { state: 'COPY_RUNNING', assigned_to_user_id: 'alice' })] };
@@ -183,7 +436,64 @@ test('unassigning is limited to copy work that has not started', async () => {
   }), { code: 'TASK_ALREADY_STARTED' });
 });
 
-test('task lists and COPY claims both require an assigned owner', async () => {
+test('a queued copy-review bypass task cannot lose its required owner', async () => {
+  const calls = [];
+  const repository = transactionRepository(async (sql) => {
+    const source = String(sql);
+    calls.push(source);
+    if (source.includes('SELECT * FROM tasks WHERE id = ANY')) {
+      return { rows: [taskRow(1, {
+        state: 'COPY_QUEUED', current_stage: 'COPY_QUEUED',
+        skip_copy_review: true, assigned_to_user_id: 'admin',
+      })] };
+    }
+    return { rows: [] };
+  });
+  await assert.rejects(repository.assignTask(1, {
+    assignedToUserId: null, actorUserId: 'admin',
+  }), { code: 'SKIP_COPY_REVIEW_ASSIGNEE_REQUIRED' });
+  assert.equal(calls.some((sql) => sql.includes('UPDATE tasks SET')), false);
+});
+
+test('idle copy review work can return to the pool but active executions cannot', async () => {
+  const idle = transactionRepository(async (sql, values) => {
+    const source = String(sql);
+    if (source.includes('SELECT * FROM tasks WHERE id = ANY')) {
+      return { rows: [taskRow(1, {
+        state: 'COPY_REVIEW_PENDING', current_stage: 'COPY_REVIEW_PENDING',
+        assigned_to_user_id: 'alice', current_execution_id: null,
+      })] };
+    }
+    if (source.includes('UPDATE tasks SET')) {
+      return { rows: [taskRow(1, {
+        state: 'COPY_REVIEW_PENDING', current_stage: 'COPY_REVIEW_PENDING',
+        assigned_to_user_id: null, assignment_source: null,
+        progress_message: '文案生成完成，等待分配负责人后审核',
+      })] };
+    }
+    return { rows: [] };
+  });
+  const returned = await idle.assignTask(1, {
+    assignedToUserId: null, actorUserId: 'admin',
+  });
+  assert.equal(returned.assignedToUserId, null);
+  assert.equal(returned.progressMessage, '文案生成完成，等待分配负责人后审核');
+
+  const active = transactionRepository(async (sql) => {
+    if (String(sql).includes('SELECT * FROM tasks WHERE id = ANY')) {
+      return { rows: [taskRow(1, {
+        state: 'COPY_REVIEW_PENDING', current_stage: 'COPY_REVIEW_PENDING',
+        assigned_to_user_id: 'alice', current_execution_id: '11111111-1111-4111-8111-111111111111',
+      })] };
+    }
+    return { rows: [] };
+  });
+  await assert.rejects(active.assignTask(1, {
+    assignedToUserId: null, actorUserId: 'admin',
+  }), { code: 'TASK_ALREADY_STARTED' });
+});
+
+test('task lists can filter owners while COPY claims accept the global unassigned queue', async () => {
   const listCalls = [];
   const listing = new PostgresControlPlaneRepository({ pool: {
     async query(sql, values) {
@@ -211,10 +521,69 @@ test('task lists and COPY claims both require an assigned owner', async () => {
     return { rows: [] };
   });
   assert.equal(await claiming.claimCopy('node-a'), null);
-  assert.match(candidateSql, /queued\.assigned_to_user_id IS NOT NULL/u);
-  assert.match(candidateSql, /task\.assigned_to_user_id IS NOT NULL/u);
-  assert.doesNotMatch(candidateSql, /COALESCE\(queued\.assigned_to_user_id/u);
-  assert.match(candidateSql, /task\.assigned_to_user_id IS NOT DISTINCT FROM ranked\.assigned_to_user_id/u);
+  assert.match(candidateSql, /WHERE task\.state = \$1[\s\S]*ORDER BY task\.id/u);
+  assert.doesNotMatch(candidateSql, /assigned_to_user_id/u);
+  assert.equal(candidateSql.includes('LIMIT $2'), true);
+});
+
+test('personal visibility includes assigned work or tasks submitted by the same stable account', async () => {
+  const calls = [];
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql, values) {
+      calls.push({ sql: String(sql), values });
+      return String(sql).includes('COUNT(*) AS total') ? { rows: [{ total: 0 }] } : { rows: [] };
+    },
+  } });
+  await repository.listTasks({
+    visibleToUserId: 'alice', visibleToAccountId: 2, includeTotal: true,
+  });
+  assert.equal(calls.length, 2);
+  for (const { sql, values } of calls) {
+    assert.match(sql, /assigned_to_user_id = \$1[\s\S]*visible_assignee\.id = \$2[\s\S]*OR[\s\S]*created_by_user_id = \$1/u);
+    assert.match(sql, /visible_assignee\.created_at < tasks\.assigned_at/u);
+    assert.match(sql, /visible_creator\.id = \$2/u);
+    assert.match(sql, /visible_creator\.username = tasks\.created_by_user_id/u);
+    assert.match(sql, /visible_creator\.created_at < tasks\.created_at/u);
+    assert.deepEqual(values.slice(0, 2), ['alice', 2]);
+  }
+
+  for (const invalid of [
+    { visibleToUserId: 'alice' },
+    { visibleToAccountId: 2 },
+    { visibleToUserId: 'alice', visibleToAccountId: 2, assignedToUserId: 'alice' },
+    { visibleToUserId: 'alice', visibleToAccountId: 2, unassignedOnly: true },
+    { visibleToUserId: 'alice', visibleToAccountId: 2, excludeUnassigned: true },
+  ]) {
+    await assert.rejects(repository.listTasks(invalid), /requires|conflict/u);
+  }
+});
+
+test('task access exposes lifecycle and stable creator identity for read-only authorization', async () => {
+  let selection;
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql, values) {
+      selection = { sql: String(sql), values };
+      return { rows: [{
+        id: '9', state: 'COPY_RUNNING', created_by_user_id: 'alice',
+        creator_account_id: '2', assigned_to_user_id: null, assignee_account_id: null,
+      }] };
+    },
+  } });
+  assert.deepEqual(await repository.getTaskAccess(9), {
+    id: 9,
+    state: 'COPY_RUNNING',
+    cancelledFromState: null,
+    createdByUserId: 'alice',
+    createdByAccountId: 2,
+    assignedToUserId: null,
+    assignedToAccountId: null,
+    assignedAt: null,
+  });
+  assert.match(selection.sql, /creator\.username = task\.created_by_user_id/u);
+  assert.match(selection.sql, /creator\.created_at < task\.created_at/u);
+  assert.match(selection.sql, /assignee\.username = task\.assigned_to_user_id/u);
+  assert.match(selection.sql, /assignee\.created_at < task\.assigned_at/u);
+  assert.deepEqual(selection.values, [9]);
 });
 
 test('HTTP task creation, visibility and reassignment derive authority from the session', async () => {
@@ -225,7 +594,8 @@ test('HTTP task creation, visibility and reassignment derive authority from the 
     reviewer: { id: 4, username: 'reviewer', role: 'REVIEWER', status: 'ACTIVE', credentialVersion: 1 },
   };
   const calls = [];
-  let detail = { ...taskRow(9), createdByUserId: 'admin', assignedToUserId: 'bob', executions: [] };
+  let detail = { ...taskRow(9), createdByUserId: 'admin', createdByAccountId: 1,
+    assignedToUserId: 'bob', assignedToAccountId: 3, executions: [] };
   const repository = {
     ownsPool: true,
     getUserByUsername: async (username) => users[username] ?? null,
@@ -243,10 +613,16 @@ test('HTTP task creation, visibility and reassignment derive authority from the 
     });
     assert.equal(missingStableTarget.status, 400);
     assert.equal((await missingStableTarget.json()).error.code, 'VALIDATION_ERROR');
-    const adminCreate = await fetch(`${root}/v1/tasks`, {
+    const earlyAdminAssignment = await fetch(`${root}/v1/tasks`, {
       method: 'POST', headers: jsonHeaders('admin', 'ADMIN'),
       body: JSON.stringify({ nodeId: 'node-a', assignedToUserId: 'bob', assignedToAccountId: 3,
         tasks: [{ query: '代建' }] }),
+    });
+    assert.equal(earlyAdminAssignment.status, 409);
+    assert.equal((await earlyAdminAssignment.json()).error.code, 'TASK_NOT_READY_FOR_ASSIGNMENT');
+    const adminCreate = await fetch(`${root}/v1/tasks`, {
+      method: 'POST', headers: jsonHeaders('admin', 'ADMIN'),
+      body: JSON.stringify({ nodeId: 'node-a', tasks: [{ query: '代建' }] }),
     });
     assert.equal(adminCreate.status, 201);
     const userCreate = await fetch(`${root}/v1/tasks`, {
@@ -262,7 +638,7 @@ test('HTTP task creation, visibility and reassignment derive authority from the 
 
     assert.equal((await fetch(`${root}/v1/tasks/9`, { headers: actorHeaders('bob') })).status, 200);
     assert.equal((await fetch(`${root}/v1/tasks/9`, { headers: actorHeaders('alice') })).status, 403);
-    detail = { ...detail, assignedToUserId: null };
+    detail = { ...detail, assignedToUserId: null, assignedToAccountId: null };
     assert.equal((await fetch(`${root}/v1/tasks/9`, { headers: actorHeaders('reviewer', 'REVIEWER') })).status, 403);
     assert.equal((await fetch(`${root}/v1/tasks/9`, { headers: actorHeaders('admin', 'ADMIN') })).status, 200);
 
@@ -308,13 +684,13 @@ test('HTTP task creation, visibility and reassignment derive authority from the 
   assert.deepEqual(calls[0][1].actor, {
     userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1,
   });
-  assert.equal(calls[0][1].assignedToUserId, 'bob');
-  assert.equal(calls[0][1].assignedToAccountId, 3);
+  assert.equal(calls[0][1].assignedToUserId, null);
+  assert.equal(calls[0][1].assignedToAccountId, null);
   assert.equal(calls[1][1].createdByUserId, 'alice');
   assert.deepEqual(calls[1][1].actor, {
     userId: 2, username: 'alice', role: 'USER', credentialVersion: 1,
   });
-  assert.equal(calls[1][1].assignedToUserId, 'alice');
+  assert.equal(calls[1][1].assignedToUserId, null);
   assert.deepEqual(calls.find(([kind]) => kind === 'assign').slice(1), [
     '9', { assignedToUserId: 'alice', assignedToAccountId: 2,
       actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 }, reason: '重新分工' },

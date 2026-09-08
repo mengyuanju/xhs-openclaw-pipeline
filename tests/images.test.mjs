@@ -453,7 +453,7 @@ describe('delivery images', () => {
       create: { width: 1024, height: 1536, channels: 3, background },
     }).png().toBuffer()));
     const calls = [];
-    const openclaw = {
+    const agentClient = {
       runImage({ prompt, outputPath }) {
         calls.push({ method: 'generate', prompt, inputPaths: [] });
         writeFileSync(outputPath, rawImages[calls.length - 1]);
@@ -475,7 +475,7 @@ describe('delivery images', () => {
       post: postFixture(),
       outputDir: directory,
       mock: false,
-      openclaw,
+      agentClient,
       imagePrompts,
       visibleTextPlans: postFixture().imagePlan.map((page) => ({
         headline: page.headline,
@@ -526,7 +526,7 @@ describe('delivery images', () => {
     let signalLaterStarted;
     const laterCallsStarted = new Promise((resolve) => { signalLaterStarted = resolve; });
     const laterGate = new Promise((resolve) => { releaseLater = resolve; });
-    const openclaw = {
+    const agentClient = {
       async runImage({ outputPath }) {
         writeFileSync(outputPath, rawImage);
         firstCompleted = true;
@@ -550,7 +550,7 @@ describe('delivery images', () => {
       post: postFixture(),
       outputDir: directory,
       mock: false,
-      openclaw,
+      agentClient,
       imageConcurrency: 2,
       imagePrompts: ['第一页完整图片生成提示词', '第二页完整图片生成提示词', '第三页完整图片生成提示词'],
     });
@@ -580,7 +580,7 @@ describe('delivery images', () => {
         post: postFixture(),
         outputDir: directory,
         mock: false,
-        openclaw: {},
+        agentClient: {},
         imageConcurrency: 3,
         imagePrompts: ['第一页完整图片生成提示词', '第二页完整图片生成提示词', '第三页完整图片生成提示词'],
       }),
@@ -594,7 +594,7 @@ describe('delivery images', () => {
       create: { width: 1024, height: 1536, channels: 3, background: '#c9d8c0' },
     }).png().toBuffer();
     const calls = [];
-    const openclaw = {
+    const agentClient = {
       runImage({ outputPath }) {
         calls.push('generate');
         writeFileSync(outputPath, rawImage);
@@ -610,7 +610,7 @@ describe('delivery images', () => {
       post: postFixture(),
       outputDir: directory,
       mock: false,
-      openclaw,
+      agentClient,
       imagePrompts: ['第一页完整图片生成提示词', '第二页完整图片生成提示词', '第三页完整图片生成提示词'],
     });
 
@@ -628,7 +628,7 @@ describe('delivery images', () => {
     const imageCalls = [];
     const validationCalls = [];
     const heartbeats = [];
-    const openclaw = {
+    const agentClient = {
       runImage({ prompt, outputPath }) {
         imageCalls.push({ prompt, inputPaths: [] });
         writeFileSync(outputPath, rawImage);
@@ -645,7 +645,7 @@ describe('delivery images', () => {
       post: postFixture(),
       outputDir: directory,
       mock: false,
-      openclaw,
+      agentClient,
       imagePrompts: ['第一页完整模型图片提示词', '第二页完整模型图片提示词', '第三页完整模型图片提示词'],
       maxGenerationAttempts: 3,
       textRenderingMode: 'model-native',
@@ -689,7 +689,7 @@ describe('delivery images', () => {
     const rawImage = await sharp({
       create: { width: 1024, height: 1536, channels: 3, background: '#c7d7b0' },
     }).png().toBuffer();
-    const openclaw = {
+    const agentClient = {
       runImage({ outputPath }) {
         writeFileSync(outputPath, rawImage);
         return { outputPath, model: 'fake-image' };
@@ -704,7 +704,7 @@ describe('delivery images', () => {
       post: postFixture(),
       outputDir: directory,
       mock: false,
-      openclaw,
+      agentClient,
       imagePrompts: ['第一页完整模型图片提示词', '第二页完整模型图片提示词', '第三页完整模型图片提示词'],
       maxGenerationAttempts: 2,
       validateImage: async () => ({
