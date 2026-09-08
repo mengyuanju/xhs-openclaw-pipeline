@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { effectiveModelApiConfig, validatedCopyGenerationThinking, validatedModelRef } from './model-api-config.mjs';
 import { traceModelCall } from './model-call-trace.mjs';
-import { codexFailure, parseCodexOutput } from './codex-protocol.mjs';
+import { codexErrorCode, codexFailure, parseCodexOutput } from './codex-protocol.mjs';
 import { runCodexImageProcess } from './codex-app-server.mjs';
 import { checkCodexLogin, codexChildEnvironment, resolveCodexExecutable, runCodexProcess } from './codex-process.mjs';
 import { codexConcurrencyConfig, codexRuntimePath, createCodexRuntime } from './codex-runtime.mjs';
@@ -77,13 +77,15 @@ export function createCodexClient({
   modelApi = {}, environment = process.env, executable, runner = spawnSync,
   asyncRunner, runtime, fetchImpl = fetch,
 } = {}) {
-  const limits = runtime ?? createCodexRuntime({ databasePath: codexRuntimePath(environment),
-    ...codexConcurrencyConfig(environment) });
   const configuration = () => effectiveModelApiConfig(modelApi, environment);
+  const initialConfiguration = configuration();
+  const limits = runtime ?? createCodexRuntime({ databasePath: codexRuntimePath(environment),
+    ...codexConcurrencyConfig(environment), modelCapacityCooldownMs: initialConfiguration.modelCapacityCooldownMs });
   const command = () => executable ?? resolveCodexExecutable(environment);
   const generatedRoot = join(environment.CODEX_HOME || join(homedir(), '.codex'), 'generated_images');
 
-  async function execute({ prompt, model, thinking = 'low', timeoutMs = 180_000, inputPaths, operation = 'TEXT', outputPath, outputSchema, signal }) {
+  async function executeOnce({ prompt, model, thinking = 'low', timeoutMs = 180_000, inputPaths, operation = 'TEXT', outputPath, outputSchema, signal,
+    routing }) {
     const image = ['IMAGE', 'IMAGE_EDIT'].includes(operation);
     const search = operation === 'WEB_SEARCH';
     const config = configuration();
@@ -128,7 +130,10 @@ export function createCodexClient({
           model: image ? config.imageModel : resolvedModel, prompt, requestScope: 'CLI_INPUT',
           request: { transport: image ? 'codex-app-server adapter' : 'codex-exec', args, input: prompt,
             developerInstructions: instructions, outputSchema: schema,
-            model: resolvedModel, thinking: effort, inputCount: images.length, runId, queueWaitMs },
+            model: resolvedModel, requestedModel: routing.primaryModel, effectiveModel: resolvedModel,
+            fallbackUsed: routing.fallbackUsed, fallbackReason: routing.fallbackUsed ? 'CODEX_MODEL_AT_CAPACITY' : null,
+            ...(image ? { driverModel: resolvedModel } : {}),
+            thinking: effort, inputCount: images.length, runId, queueWaitMs },
         }, async (capture) => {
         const result = await runnerForCall(command(), args, { input: prompt, cwd: directory,
           env: codexChildEnvironment(environment, image ? (config.imageProxyUrl || config.modelProxyUrl) : config.modelProxyUrl),
@@ -156,7 +161,11 @@ export function createCodexClient({
         const parsed = parseCodexOutput(result.stdout, { requireText: !image });
         capture.response({ ...parsed, images: parsed.images, usage: parsed.usage });
         const execution = { runtime: image ? 'codex-app-server' : 'codex-exec', sessionId: parsed.threadId,
-          runId, usage: parsed.usage, queueWaitMs, reconnectCount: parsed.reconnectCount };
+          runId, usage: parsed.usage, queueWaitMs, reconnectCount: parsed.reconnectCount,
+          requestedModel: routing.primaryModel, effectiveModel: resolvedModel, fallbackUsed: routing.fallbackUsed,
+          ...(routing.fallbackUsed ? { fallback: { from: routing.primaryModel, to: resolvedModel,
+            reason: 'CODEX_MODEL_AT_CAPACITY' } } : {}),
+          ...(image ? { driverModel: resolvedModel } : {}) };
         if (image) {
           await verifiedImage(parsed, { directory, generatedRoot, outputPath, startedAt });
           return { outputPath, model: config.imageModel, provider: operation === 'IMAGE_EDIT' ? 'codex-image-edit' : 'codex', execution };
@@ -192,7 +201,33 @@ export function createCodexClient({
             .map((path) => rm(path, { force: true }).catch(() => {})));
         } else await rm(directory, { recursive: true, force: true }).catch(() => {});
       }
-    }, { image, signal });
+    }, { image, signal, model: resolvedModel });
+  }
+
+  async function execute(input) {
+    const operation = input.operation ?? 'TEXT';
+    const image = ['IMAGE', 'IMAGE_EDIT'].includes(operation);
+    const config = configuration();
+    const primaryModel = modelName(input.model, operation === 'VISION' ? config.visionModel : config.textModel);
+    const fallbackModel = image ? null : modelName(config.capacityFallbackModel, config.capacityFallbackModel);
+    const candidates = [...new Set([primaryModel, fallbackModel].filter(Boolean))];
+    const attempted = new Set();
+    let lastCapacityError;
+    while (attempted.size < candidates.length) {
+      const remaining = candidates.filter((candidate) => !attempted.has(candidate));
+      const selectedModel = typeof limits.selectModel === 'function'
+        ? limits.selectModel(remaining).model
+        : remaining[0];
+      try {
+        return await executeOnce({ ...input, operation, model: selectedModel,
+          routing: { primaryModel, fallbackUsed: selectedModel !== primaryModel } });
+      } catch (error) {
+        attempted.add(selectedModel);
+        if (image || codexErrorCode(error) !== 'CODEX_MODEL_AT_CAPACITY' || attempted.size >= candidates.length) throw error;
+        lastCapacityError = error;
+      }
+    }
+    throw lastCapacityError ?? codexFailure({ message: 'no model candidate is available' }, 'CODEX_MODEL_AT_CAPACITY');
   }
 
   const client = {

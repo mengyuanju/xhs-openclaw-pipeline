@@ -1,6 +1,7 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/input';
 
 import { useRef, useState, type KeyboardEvent } from 'react';
 
@@ -8,8 +9,10 @@ import {
   CopyKnowledgeWorkbench,
   type CopyAnalysisPrompt,
   type CopyKnowledgeItem,
+  type CopyKnowledgePagination,
 } from './copy-knowledge-workbench';
 import { KnowledgeWorkbench } from './knowledge-workbench';
+import { apiRequest } from '../components/api-client';
 
 type KnowledgeView = 'VISUAL' | 'COPY';
 type LabelSummary = { name: string; itemCount: number };
@@ -18,15 +21,27 @@ const SHOW_KNOWLEDGE_TYPE_SWITCHER = false;
 export function KnowledgeTabs({
   visualItems,
   copyItems,
+  copyPagination,
   copyLabels,
   copyAnalysisPrompts,
+  copySelectedLabel,
+  copySearchQuery,
+  knowledgeEnabled,
+  remote,
 }: {
   visualItems: any[];
   copyItems: CopyKnowledgeItem[];
+  copyPagination: CopyKnowledgePagination;
   copyLabels: LabelSummary[];
   copyAnalysisPrompts: CopyAnalysisPrompt[];
+  copySelectedLabel: string;
+  copySearchQuery: string;
+  knowledgeEnabled: boolean;
+  remote: boolean;
 }) {
   const [activeView, setActiveView] = useState<KnowledgeView>('COPY');
+  const [enabled, setEnabled] = useState(knowledgeEnabled);
+  const [savingEnabled, setSavingEnabled] = useState(false);
   const visualTabRef = useRef<HTMLButtonElement>(null);
   const copyTabRef = useRef<HTMLButtonElement>(null);
 
@@ -38,7 +53,34 @@ export function KnowledgeTabs({
     (nextView === 'VISUAL' ? visualTabRef : copyTabRef).current?.focus();
   }
 
+  async function setKnowledgeEnabled(next: boolean) {
+    setSavingEnabled(true);
+    try {
+      if (remote) {
+        const settings = await apiRequest<Array<{ key: string; value: Record<string, unknown> }>>('/api/control-plane/v1/settings');
+        const current = settings.find((item) => item.key === 'production')?.value ?? {};
+        await apiRequest('/api/control-plane/v1/settings/production', {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ value: { ...current, knowledgeEnabled: next } }),
+        });
+      } else {
+        await apiRequest('/api/production-settings', {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ knowledgeEnabled: next }),
+        });
+      }
+      setEnabled(next);
+    } finally {
+      setSavingEnabled(false);
+    }
+  }
+
   return <div className="knowledge-hub">
+    <section className="panel">
+      <div className="panel-head"><div><h2>知识库使用</h2><p className="subtle">关闭后，后续任务不会引用文案案例或视觉配方；已有内容不会删除。</p></div>
+        <label className="switch-field"><Switch aria-label="启用知识库" checked={enabled} disabled={savingEnabled} onChange={(event) => void setKnowledgeEnabled(event.target.checked)} /><span>{enabled ? '已启用' : '已关闭'}</span></label>
+      </div>
+    </section>
     {SHOW_KNOWLEDGE_TYPE_SWITCHER && <div className="knowledge-tabs" role="tablist" aria-label="知识库类型">
       <Button unstyled
         ref={visualTabRef}
@@ -85,7 +127,14 @@ export function KnowledgeTabs({
       hidden={activeView !== 'COPY'}
     >
       {SHOW_KNOWLEDGE_TYPE_SWITCHER && <div className="notice">文案分析会调用真实文本模型并可能产生费用。分析结果只有在人工检查并保存后才会进入知识库。</div>}
-      <CopyKnowledgeWorkbench items={copyItems} labels={copyLabels} prompts={copyAnalysisPrompts} />
+      <CopyKnowledgeWorkbench
+        items={copyItems}
+        pagination={copyPagination}
+        labels={copyLabels}
+        prompts={copyAnalysisPrompts}
+        selectedLabel={copySelectedLabel}
+        searchQuery={copySearchQuery}
+      />
     </section>
   </div>;
 }

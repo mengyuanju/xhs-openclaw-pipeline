@@ -1,17 +1,22 @@
 /**
  * Read a complete server page; old centers must not silently ignore admin filters.
  * @param {(path: string) => Promise<any>} request
- * @param {{createdByUserId?: string, createdByRole?: string, state?: string, query?: string, deduplicateQuery?: boolean, limit?: number, offset?: number}} options
+ * @param {{createdByUserId?: string, createdByRole?: string, state?: string, taskId?: number, query?: string, deduplicateQuery?: boolean, attention?: string, sortBy?: string, sortOrder?: string, limit?: number, offset?: number}} options
  */
 export async function loadAdminTaskPage(request, {
-  createdByUserId, createdByRole, state, query, deduplicateQuery = false, limit = 20, offset = 0,
+  createdByUserId, createdByRole, state, taskId, query, deduplicateQuery = false,
+  attention, sortBy, sortOrder, limit = 20, offset = 0,
 } = {}) {
   const search = new URLSearchParams({ limit: String(limit), offset: String(offset), includeTotal: 'true' });
   if (createdByUserId) search.set('createdByUserId', createdByUserId);
   if (createdByRole) search.set('createdByRole', createdByRole);
   if (state) search.set('state', state);
+  if (taskId) search.set('taskId', String(taskId));
   if (query) search.set('query', query);
   if (deduplicateQuery) search.set('deduplicateQuery', 'true');
+  if (attention) search.set('attention', attention);
+  if (sortBy) search.set('sortBy', sortBy);
+  if (sortOrder) search.set('sortOrder', sortOrder);
   const healthRequest = request('/api/control-plane/health');
   // Start both reads together, but keep the capability gate authoritative.
   // Observe task rejection immediately, even when health fails first.

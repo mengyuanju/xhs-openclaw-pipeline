@@ -490,6 +490,8 @@ export function TaskReviewDialog({
                 </a>)}</div></DisclosureContent>
               </Disclosure>}
             <VisualPlanSummary value={currentImageRun?.result?.visualPlan?.value} />
+            {currentImageRun?.result?.visualPlan?.warning?.message && !currentImageRun?.result?.simulation?.enabled
+              && <p className="notice warning">{currentImageRun.result.visualPlan.warning.message}</p>}
             {(assets.length > 0 || canReviewImages) && <section className="workbench-review-section" ref={imageSectionRef} tabIndex={-1} aria-label="当前图片审核">
               <div className="workbench-review-section-title"><span>02</span><div><h3>图片审核</h3><p>核对当前图片运行生成的完整图集。</p></div></div>
               <ImagePreviewPreference />

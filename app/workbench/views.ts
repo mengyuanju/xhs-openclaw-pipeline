@@ -6,6 +6,20 @@ export type TaskState =
   | 'MANUAL_ARCHIVE' | 'REVIEWED' | 'CANCELLED';
 
 export type ViewKey = 'PERSONAL' | 'ALL_COPY' | 'COPY_REVIEW' | 'IMAGE_WORK' | 'MANUAL_ARCHIVE' | 'COMPLETED' | 'ALL_JOBS';
+export type TaskSort = 'priority:desc' | 'createdAt:desc' | 'createdAt:asc' | 'id:desc' | 'id:asc';
+
+export const TASK_SORT_OPTIONS: Array<{ value: TaskSort; label: string }> = [
+  { value: 'priority:desc', label: '待处理优先' },
+  { value: 'createdAt:desc', label: '创建时间：最新在前' },
+  { value: 'createdAt:asc', label: '创建时间：最早在前' },
+  { value: 'id:desc', label: 'Query ID：从大到小' },
+  { value: 'id:asc', label: 'Query ID：从小到大' },
+];
+
+export function taskSortParams(sort: TaskSort) {
+  const [sortBy, sortOrder] = sort.split(':') as ['priority' | 'createdAt' | 'id', 'asc' | 'desc'];
+  return { sortBy, sortOrder };
+}
 
 export const TASK_STATE_PRIORITY: Record<TaskState, number> = {
   COPY_REVIEW_PENDING: 1,
@@ -28,6 +42,21 @@ export function compareTasksByStatePriority<T extends { id: number; state: TaskS
   const createdAtDifference = (Number.isFinite(rightCreatedAt) ? rightCreatedAt : 0)
     - (Number.isFinite(leftCreatedAt) ? leftCreatedAt : 0);
   return createdAtDifference || right.id - left.id;
+}
+
+export function compareTasks<T extends { id: number; state: TaskState; createdAt: string }>(
+  left: T,
+  right: T,
+  sort: TaskSort,
+) {
+  if (sort === 'priority:desc') return compareTasksByStatePriority(left, right);
+  const direction = sort.endsWith(':asc') ? 1 : -1;
+  if (sort.startsWith('id:')) return direction * (left.id - right.id);
+  const leftCreatedAt = Date.parse(left.createdAt);
+  const rightCreatedAt = Date.parse(right.createdAt);
+  const createdAtDifference = (Number.isFinite(leftCreatedAt) ? leftCreatedAt : 0)
+    - (Number.isFinite(rightCreatedAt) ? rightCreatedAt : 0);
+  return direction * (createdAtDifference || left.id - right.id);
 }
 
 export const WORKBENCH_VIEWS: Array<{

@@ -28,6 +28,8 @@ const dotsModelSchema = z.string().trim().min(1).max(200)
 const modelApiPatchSchema = z.object({
   agentProvider: z.enum(['CODEX', 'OPENCLAW']).nullable().optional(),
   textModel: modelRefSchema.nullable().optional(),
+  capacityFallbackModel: modelRefSchema.nullable().optional(),
+  modelCapacityCooldownMs: z.number().int().min(60_000).max(3_600_000).nullable().optional(),
   screeningModel: modelRefSchema.nullable().optional(),
   reviewModel: modelRefSchema.nullable().optional(),
   visionModel: modelRefSchema.nullable().optional(),
@@ -43,6 +45,7 @@ const modelApiPatchSchema = z.object({
 }).strict().refine((value) => Object.keys(value).length > 0, '至少修改一项模型 API 配置');
 
 const settingsPatchSchema = z.object({
+  knowledgeEnabled: z.boolean().optional(),
   layoutPresets: z.unknown().transform((value, context) => {
     try { return normalizeLayoutPresets(value); }
     catch (error) { context.addIssue({ code: 'custom', message: error instanceof Error ? error.message : '布局种类无效' }); return z.NEVER; }

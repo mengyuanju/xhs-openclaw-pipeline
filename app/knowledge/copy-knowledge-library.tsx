@@ -3,10 +3,11 @@
 import { Button } from '@/components/ui/button';
 import { Input, Textarea } from '@/components/ui/input';
 import { SearchInput } from '@/components/ui/search-input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
-import { Eye, Pencil, Plus, Trash2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Eye, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useState, useTransition, type FormEvent } from 'react';
 
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import {
@@ -21,6 +22,9 @@ import { apiRequest } from '../components/api-client';
 
 type LabelSummary = { name: string; itemCount: number };
 
+const VISIBLE_LABEL_FILTER_COUNT = 8;
+const COPY_KNOWLEDGE_PAGE_SIZES = [10, 20, 50];
+
 export type CopyKnowledgeItem = {
   id: number;
   title: string;
@@ -30,6 +34,13 @@ export type CopyKnowledgeItem = {
   analysis: string;
   labels: string[];
   createdAt: string;
+};
+
+export type CopyKnowledgePagination = {
+  page: number;
+  pageSize: number;
+  totalItems: number;
+  totalPages: number;
 };
 
 type CopyKnowledgeEditDraft = Pick<
@@ -163,33 +174,80 @@ function CopyKnowledgeEditor({ item }: { item: CopyKnowledgeItem }) {
 
 export function CopyKnowledgeLibrary({
   items,
+  pagination,
   labels,
   selectedLabel,
-  onSelectLabel,
+  searchQuery,
   onAddAnalysis,
 }: {
   items: CopyKnowledgeItem[];
+  pagination: CopyKnowledgePagination;
   labels: LabelSummary[];
   selectedLabel: string;
-  onSelectLabel: (label: string) => void;
+  searchQuery: string;
   onAddAnalysis: () => void;
 }) {
   const router = useRouter();
   const confirm = useConfirmDialog();
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchValue, setSearchValue] = useState(searchQuery);
   const [viewedItem, setViewedItem] = useState<CopyKnowledgeItem | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [removedIds, setRemovedIds] = useState<Set<number>>(() => new Set());
   const [message, setMessage] = useState('');
+  const [showAllLabels, setShowAllLabels] = useState(false);
+  const [isPending, startTransition] = useTransition();
 
   const availableItems = items.filter((item) => !removedIds.has(item.id));
-  const labelItems = selectedLabel === 'ALL'
-    ? availableItems
-    : availableItems.filter((item) => item.labels.includes(selectedLabel));
-  const query = normalizedSearch(searchQuery);
-  const visibleItems = query
-    ? labelItems.filter((item) => normalizedSearch(item.title).includes(query))
-    : labelItems;
+  const selectedLabelSummary = labels.find((label) => label.name === selectedLabel);
+  const visibleLabelFilters = showAllLabels
+    ? labels
+    : [
+      ...(selectedLabelSummary ? [selectedLabelSummary] : []),
+      ...labels.filter((label) => label.name !== selectedLabel).slice(0, VISIBLE_LABEL_FILTER_COUNT - (selectedLabelSummary ? 1 : 0)),
+    ];
+  const hasHiddenLabelFilters = labels.length > VISIBLE_LABEL_FILTER_COUNT;
+  const currentTotal = Math.max(0, pagination.totalItems - removedIds.size);
+  const itemStart = availableItems.length > 0 ? (pagination.page - 1) * pagination.pageSize + 1 : 0;
+  const itemEnd = availableItems.length > 0 ? itemStart + availableItems.length - 1 : 0;
+
+  const replaceView = useCallback((updates: Record<string, string | null>) => {
+    const params = new URLSearchParams(window.location.search);
+    for (const [key, value] of Object.entries(updates)) {
+      if (value) params.set(key, value);
+      else params.delete(key);
+    }
+    const query = params.toString();
+    startTransition(() => router.replace(query ? `/knowledge?${query}` : '/knowledge', { scroll: false }));
+  }, [router]);
+
+  useEffect(() => {
+    setSearchValue(searchQuery);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    if (normalizedSearch(searchValue) === normalizedSearch(searchQuery)) return;
+    const timer = window.setTimeout(() => {
+      replaceView({ copyQuery: searchValue.trim() || null, copyPage: null });
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [replaceView, searchQuery, searchValue]);
+
+  useEffect(() => {
+    const visibleIds = new Set(items.map((item) => item.id));
+    setRemovedIds((current) => new Set([...current].filter((id) => visibleIds.has(id))));
+  }, [items]);
+
+  function selectLabel(label: string) {
+    replaceView({ copyLabel: label === 'ALL' ? null : label, copyPage: null });
+  }
+
+  function selectPage(page: number) {
+    replaceView({ copyPage: page > 1 ? String(page) : null });
+  }
+
+  function selectPageSize(pageSize: number) {
+    replaceView({ copyPageSize: pageSize === 10 ? null : String(pageSize), copyPage: null });
+  }
 
   async function deleteItem(item: CopyKnowledgeItem) {
     if (!await confirm({
@@ -214,9 +272,9 @@ export function CopyKnowledgeLibrary({
   }
 
   const messageIsError = message.includes('失败');
-  const emptyMessage = availableItems.length === 0
+  const emptyMessage = pagination.totalItems === 0 && selectedLabel === 'ALL' && !searchQuery
     ? '还没有文案分析。点击“新增分析”，生成第一条分类知识。'
-    : query
+    : searchQuery
       ? `没有找到标题包含“${searchQuery.trim()}”的分析。`
       : '这个标签下还没有文案分析。';
 
@@ -224,24 +282,27 @@ export function CopyKnowledgeLibrary({
     <div className="panel-head">
       <div><span className="eyebrow">Classified library</span><h2 id="copy-knowledge-library-heading">文案知识库</h2></div>
       <div className="copy-knowledge-library-actions">
-        <span className="subtle">{availableItems.length} 条</span>
+        <span className="subtle">{currentTotal} 条</span>
         <Button unstyled className="button primary" type="button" onClick={onAddAnalysis}><Plus aria-hidden="true" size={15} />新增分析</Button>
       </div>
     </div>
     <div className="copy-label-filter-block">
       <span className="subtle" id="copy-label-filter-label">按标签查看</span>
       <div className="copy-label-filters" role="group" aria-labelledby="copy-label-filter-label">
-        <Button unstyled className="button small" type="button" aria-pressed={selectedLabel === 'ALL'} onClick={() => onSelectLabel('ALL')}>全部 {availableItems.length}</Button>
-        {labels.map((label) => <Button unstyled className="button small" type="button" key={label.name} aria-pressed={selectedLabel === label.name} onClick={() => onSelectLabel(label.name)}>{label.name} {label.itemCount}</Button>)}
+        <Button unstyled className="button small" type="button" disabled={isPending} aria-pressed={selectedLabel === 'ALL'} onClick={() => selectLabel('ALL')}>全部</Button>
+        {visibleLabelFilters.map((label) => <Button unstyled className="button small" type="button" disabled={isPending} key={label.name} aria-pressed={selectedLabel === label.name} onClick={() => selectLabel(label.name)}>{label.name} {label.itemCount}</Button>)}
+        {hasHiddenLabelFilters && <Button unstyled className="button small copy-label-filter-toggle" type="button" aria-expanded={showAllLabels} onClick={() => setShowAllLabels((current) => !current)}>
+          {showAllLabels ? '收起标签' : `展开全部（${labels.length}）`}
+        </Button>}
       </div>
     </div>
     <div className="copy-knowledge-search">
       <span className="sr-only">根据分析标题搜索</span>
-      <SearchInput className="input"  value={searchQuery} maxLength={200} placeholder="搜索分析标题" onValueChange={(value) => setSearchQuery(value)} />
+      <SearchInput className="input" value={searchValue} maxLength={200} placeholder="搜索分析标题" onValueChange={setSearchValue} />
     </div>
     {message && <div className={messageIsError ? 'notice error copy-knowledge-library-message' : 'notice success copy-knowledge-library-message'} role={messageIsError ? 'alert' : 'status'} aria-live="polite">{message}</div>}
-    {visibleItems.length === 0 ? <div className="empty-state">{emptyMessage}</div> : <ul className="copy-knowledge-list">
-      {visibleItems.map((item) => <li key={item.id}>
+    {availableItems.length === 0 ? <div className="empty-state">{emptyMessage}</div> : <ul className="copy-knowledge-list" aria-busy={isPending}>
+      {availableItems.map((item) => <li key={item.id}>
         <div className="copy-knowledge-item-head">
           <div><h3>{item.title}</h3><p>{item.summary}</p></div>
           <div className="copy-knowledge-item-side">
@@ -256,6 +317,22 @@ export function CopyKnowledgeLibrary({
         <div className="copy-knowledge-labels" aria-label="分类标签">{item.labels.map((label: string) => <span className="pill" key={label}>{label}</span>)}</div>
       </li>)}
     </ul>}
+
+    <nav className="copy-knowledge-pagination" aria-label="文案知识库分页">
+      <div className="copy-knowledge-page-summary">
+        <span>{isPending ? '正在读取…' : `显示 ${itemStart}–${itemEnd} 条，共 ${currentTotal} 条`}</span>
+        <label className="sr-only" htmlFor="copy-knowledge-page-size">每页条数</label>
+        <Select value={String(pagination.pageSize)} disabled={isPending} onValueChange={(value) => selectPageSize(Number(value))}>
+          <SelectTrigger id="copy-knowledge-page-size"><SelectValue /></SelectTrigger>
+          <SelectContent>{COPY_KNOWLEDGE_PAGE_SIZES.map((size) => <SelectItem key={size} value={String(size)}>{size} 条 / 页</SelectItem>)}</SelectContent>
+        </Select>
+      </div>
+      <div className="copy-knowledge-page-buttons">
+        <Button unstyled className="button small" type="button" disabled={pagination.page <= 1 || isPending} onClick={() => selectPage(pagination.page - 1)}><ChevronLeft aria-hidden="true" size={14} />上一页</Button>
+        <span role="status">第 {pagination.page} / {pagination.totalPages} 页</span>
+        <Button unstyled className="button small" type="button" disabled={pagination.page >= pagination.totalPages || isPending} onClick={() => selectPage(pagination.page + 1)}>下一页<ChevronRight aria-hidden="true" size={14} /></Button>
+      </div>
+    </nav>
 
     <Dialog open={Boolean(viewedItem)} onOpenChange={(open) => { if (!open) setViewedItem(null); }}>
       <DialogContent className="copy-knowledge-view-dialog">

@@ -12,6 +12,8 @@ describe('model API production settings UI', () => {
 
     assert.match(route, /modelApi:\s*modelApiPatchSchema\.optional\(\)/u);
     assert.match(route, /textModel/u);
+    assert.match(route, /capacityFallbackModel/u);
+    assert.match(route, /modelCapacityCooldownMs/u);
     assert.match(route, /screeningModel/u);
     assert.match(route, /reviewModel/u);
     assert.match(route, /visionModel/u);
@@ -46,6 +48,8 @@ describe('model API production settings UI', () => {
     assert.match(section, /生成引擎/u);
     assert.match(form, /agentProvider: null/u);
     assert.match(section, /文本生成模型/u);
+    assert.match(section, /容量备用模型/u);
+    assert.match(section, /主模型满载冷却时间/u);
     assert.match(section, /需求检测模型/u);
     assert.match(section, /阶段审核模型/u);
     assert.match(section, /视觉验收模型/u);

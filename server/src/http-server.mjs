@@ -1,13 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { relative, resolve } from 'node:path';
+import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { dirname, relative, resolve } from 'node:path';
 
 import { bodyParser } from '@koa/bodyparser';
 import Router from '@koa/router';
 import Koa from 'koa';
 import { importCopyKnowledgeLabels, listCopyAnalysisPrompts, retireKnowledge, saveCopyAnalysisPrompt } from './knowledge-admin.mjs';
 import { analyzeAndSaveExcellentCopy, CopyAnalysisServiceError } from './deepseek-copy-analysis.mjs';
-import { archiveFileName, buildTaskArchive } from './task-archive.mjs';
+import { archiveFileName, buildBatchTaskArchive, buildTaskArchive } from './task-archive.mjs';
 import { IMAGE_FORMATS } from './image-options.mjs';
 import { AssetDeliveryError, createAssetDelivery } from './asset-delivery.mjs';
 import { normalizePromptContent } from '../../src/admin/prompt-service.mjs';
@@ -16,6 +16,7 @@ import { readPromptConfiguration, savePromptPolicy } from '../../src/admin/promp
 import { analyzeVisualImage } from '../../src/admin/visual-knowledge-service.mjs';
 import { withPromptExecution, listPromptExecutions, readPromptExecution } from '../../src/admin/prompt-execution.mjs';
 import { generateAndImportLayouts } from '../../src/admin/layout-catalog-service.mjs';
+import { LoginRateLimiter } from '../../src/admin/auth.mjs';
 
 import {
   ControlPlaneConflictError,
@@ -162,6 +163,177 @@ function requestActor(ctx, allowedRoles = APP_ROLES) {
   return actor;
 }
 
+function normalizedBatchTaskIds(value, max) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > max) {
+    throw new RangeError(`taskIds must contain between 1 and ${max} items`);
+  }
+  const taskIds = [...new Set(value.map((entry) => Number(entry)))];
+  if (taskIds.some((taskId) => !Number.isSafeInteger(taskId) || taskId < 1)) {
+    throw new TypeError('taskIds must contain positive integers');
+  }
+  return taskIds;
+}
+
+async function applyBatchTaskAction(repository, taskIds, action) {
+  if (!['RETRY', 'CANCEL_QUEUE'].includes(action)) throw new TypeError('batch task action is invalid');
+  const succeeded = [];
+  const failed = [];
+  for (const taskId of taskIds) {
+    try {
+      const readSummary = repository.getTaskActionSummary ?? repository.getTask;
+      const task = await readSummary.call(repository, taskId);
+      if (!task) throw new ControlPlaneNotFoundError('task not found');
+      if (action === 'CANCEL_QUEUE') {
+        if (!['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state)) {
+          throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'only queued work can be cancelled in bulk');
+        }
+        await repository.cancelTask(taskId, { queuedOnly: true });
+      } else if (['COPY_RUNNING', 'COPY_FAILED'].includes(task.state)) {
+        await repository.retryTask(taskId, { useLatestConfig: true });
+      } else if (['IMAGE_RUNNING', 'IMAGE_FAILED'].includes(task.state)
+        || (task.state === 'COPY_REVIEW_PENDING' && task.currentStage === 'IMAGE_RETRY_EXHAUSTED')) {
+        await repository.requeueImageTask(taskId, { retryOnly: true });
+      } else {
+        throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'only running or failed work can be retried in bulk');
+      }
+      succeeded.push(taskId);
+    } catch (error) {
+      const safe = mappedError(error);
+      failed.push({ id: taskId, code: safe.code, message: safe.message });
+    }
+  }
+  return { action, succeeded, failed };
+}
+
+async function quarantineTaskStorage(storageRoot, taskId) {
+  const quarantineRoot = safeStoragePath(storageRoot, '.task-deletion-quarantine', `${taskId}-${randomUUID()}`);
+  const locations = [
+    { source: safeStoragePath(storageRoot, 'tasks', String(taskId)), target: safeStoragePath(quarantineRoot, 'task') },
+    { source: safeStoragePath(storageRoot, 'thumbnails', String(taskId)), target: safeStoragePath(quarantineRoot, 'thumbnails') },
+  ];
+  const moved = [];
+  async function restoreMovedLocations() {
+    const failures = [];
+    for (const location of [...moved].reverse()) {
+      try {
+        await mkdir(dirname(location.source), { recursive: true });
+        await rename(location.target, location.source);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(failures, 'failed to restore quarantined task files');
+    }
+    await rm(quarantineRoot, { recursive: true, force: true });
+  }
+  await mkdir(quarantineRoot, { recursive: true });
+  try {
+    for (const location of locations) {
+      try {
+        await rename(location.source, location.target);
+        moved.push(location);
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+    }
+  } catch (error) {
+    try {
+      await restoreMovedLocations();
+    } catch (restoreError) {
+      throw new AggregateError([error, restoreError], 'failed to quarantine task files safely');
+    }
+    throw error;
+  }
+  return {
+    quarantineRoot,
+    async markCommitted() {
+      await writeFile(safeStoragePath(quarantineRoot, 'COMMITTED'), new Date().toISOString(), { flag: 'wx' });
+    },
+    async restore() {
+      await restoreMovedLocations();
+    },
+  };
+}
+
+async function removeQuarantine(path, attempts = 3) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await rm(path, { recursive: true, force: true });
+      return true;
+    } catch {
+      if (attempt === attempts) return false;
+      await new Promise(resolvePromise => setTimeout(resolvePromise, attempt * 75));
+    }
+  }
+  return false;
+}
+
+function scheduleQuarantineCleanup(path, attempt = 1) {
+  const timer = setTimeout(async () => {
+    if (await removeQuarantine(path)) return;
+    scheduleQuarantineCleanup(path, attempt + 1);
+  }, Math.min(60_000, attempt * 5_000));
+  timer.unref?.();
+}
+
+async function cleanCommittedDeletionQuarantines(storageRoot) {
+  const root = safeStoragePath(storageRoot, '.task-deletion-quarantine');
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === 'ENOENT') return;
+    throw error;
+  }
+  await Promise.all(entries.filter(entry => entry.isDirectory()).map(async (entry) => {
+    const directory = safeStoragePath(root, entry.name);
+    try {
+      await readFile(safeStoragePath(directory, 'COMMITTED'), 'utf8');
+    } catch (error) {
+      if (error?.code === 'ENOENT') return;
+      throw error;
+    }
+    if (!await removeQuarantine(directory)) scheduleQuarantineCleanup(directory);
+  }));
+}
+
+async function applyBatchPermanentDeletion(repository, storageRoot, taskIds, actorUsername, deletionPassword) {
+  const quarantines = new Map();
+  let result;
+  try {
+    result = await repository.permanentlyDeleteTasks(taskIds, {
+      actorUsername,
+      deletionPassword,
+      beforeDelete: async (taskId) => {
+        quarantines.set(taskId, await quarantineTaskStorage(storageRoot, taskId));
+      },
+    });
+  } catch (error) {
+    for (const quarantine of [...quarantines.values()].reverse()) {
+      try {
+        await quarantine.restore();
+      } catch (restoreError) {
+        console.error('failed to restore quarantined task files', restoreError);
+      }
+    }
+    throw error;
+  }
+
+  const cleanupPending = [];
+  for (const taskId of result.succeeded) {
+    const quarantine = quarantines.get(taskId);
+    if (!quarantine) continue;
+    await quarantine.markCommitted().catch(error => console.error('failed to mark task deletion quarantine', error));
+    const cleaned = await removeQuarantine(quarantine.quarantineRoot);
+    if (!cleaned) {
+      cleanupPending.push(taskId);
+      scheduleQuarantineCleanup(quarantine.quarantineRoot);
+    }
+  }
+  return { action: 'PERMANENT_DELETE', succeeded: result.succeeded, failed: result.failed, cleanupPending };
+}
+
 async function assertTaskAccess(ctx, repository, { ownerOnly = false, summaryOnly = false } = {}) {
   const actor = requestActor(ctx);
   const readTask = summaryOnly && typeof repository.getTaskAccess === 'function' ? repository.getTaskAccess : repository.getTask;
@@ -176,6 +348,25 @@ async function assertTaskAccess(ctx, repository, { ownerOnly = false, summaryOnl
 
 function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisual) {
   const deliverAsset = createAssetDelivery({ storageRoot });
+  const passwordLimiters = new Map();
+  function passwordLimiter(username) {
+    const existing = passwordLimiters.get(username);
+    if (existing) {
+      passwordLimiters.delete(username);
+      passwordLimiters.set(username, existing);
+      return existing;
+    }
+    if (passwordLimiters.size >= 100) passwordLimiters.delete(passwordLimiters.keys().next().value);
+    const limiter = new LoginRateLimiter();
+    passwordLimiters.set(username, limiter);
+    return limiter;
+  }
+  function assertPasswordAttemptAllowed(ctx, limiter) {
+    const status = limiter.check();
+    if (status.allowed) return;
+    ctx.set('Retry-After', String(status.retryAfterSeconds));
+    throw new HttpError(429, 'TOO_MANY_ATTEMPTS', '密码尝试过多，请稍后再试');
+  }
   router.post('/v1/auth/login', async (ctx) => {
     const body = requireJson(ctx);
     const user = await repository.authenticateUser(body.username, body.password);
@@ -219,6 +410,20 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     const actor = requestActor(ctx);
     json(ctx, 200, await repository.changeOwnPassword(actor.username, requireJson(ctx)));
   });
+  router.post('/v1/profile/deletion-password', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    const limiter = passwordLimiter(actor.username);
+    assertPasswordAttemptAllowed(ctx, limiter);
+    try {
+      const result = await repository.setOwnDeletionPassword(actor.username, requireJson(ctx));
+      limiter.reset();
+      json(ctx, 200, result);
+    } catch (error) {
+      if (error?.code === 'CURRENT_PASSWORD_INVALID') limiter.recordFailure();
+      else limiter.reset();
+      throw error;
+    }
+  });
   router.put('/v1/executions/:executionId/model-calls/:callId', async (ctx) => {
     json(ctx, 200, await repository.recordModelCall(ctx.params.executionId, ctx.params.callId, requireJson(ctx)));
   });
@@ -260,6 +465,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   router.get('/v1/tasks', async (ctx) => {
     const actor = requestActor(ctx);
     if (ctx.query.createdByRole !== undefined) requestActor(ctx, ['ADMIN']);
+    if (ctx.query.attention !== undefined) requestActor(ctx, ['ADMIN']);
     const createdByRole = normalizeTaskCreatorRole(ctx.query.createdByRole);
     json(ctx, 200, await repository.listTasks({
       state: ctx.query.state,
@@ -267,12 +473,78 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
       nodeId: ctx.query.nodeId,
       createdByUserId: actor.role === 'USER' ? actor.username : ctx.query.createdByUserId,
       ...(createdByRole !== null ? { createdByRole } : {}),
+      ...(ctx.query.taskId !== undefined ? { taskId: ctx.query.taskId } : {}),
       query: ctx.query.query,
       deduplicateQuery: ctx.query.deduplicateQuery === 'true',
+      ...(ctx.query.attention !== undefined ? { attention: ctx.query.attention } : {}),
+      ...(ctx.query.sortBy !== undefined ? { sortBy: ctx.query.sortBy } : {}),
+      ...(ctx.query.sortOrder !== undefined ? { sortOrder: ctx.query.sortOrder } : {}),
       limit: ctx.query.limit,
       offset: ctx.query.offset,
       includeTotal: ctx.query.includeTotal === 'true',
     }));
+  });
+  router.get('/v1/task-views', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.listSavedTaskViews(actor.username));
+  });
+  router.post('/v1/task-views', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 201, await repository.saveTaskView(actor.username, requireJson(ctx)));
+  });
+  router.delete('/v1/task-views/:viewId', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.deleteSavedTaskView(actor.username, ctx.params.viewId));
+  });
+  router.post('/v1/tasks/batch-actions', async (ctx) => {
+    requestActor(ctx, ['ADMIN']);
+    const body = requireJson(ctx);
+    const taskIds = normalizedBatchTaskIds(body.taskIds, 100);
+    json(ctx, 200, await applyBatchTaskAction(repository, taskIds, String(body.action ?? '')));
+  });
+  router.post('/v1/tasks/batch-permanent-delete', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    const body = requireJson(ctx);
+    const taskIds = normalizedBatchTaskIds(body.taskIds, 20);
+    const limiter = passwordLimiter(actor.username);
+    assertPasswordAttemptAllowed(ctx, limiter);
+    try {
+      const result = await applyBatchPermanentDeletion(
+        repository,
+        storageRoot,
+        taskIds,
+        actor.username,
+        body.deletionPassword,
+      );
+      limiter.reset();
+      json(ctx, 200, result);
+    } catch (error) {
+      if (error?.code === 'DELETION_PASSWORD_INVALID') limiter.recordFailure();
+      else limiter.reset();
+      throw error;
+    }
+  });
+  router.post('/v1/tasks/batch-archive', async (ctx) => {
+    requestActor(ctx, ['ADMIN']);
+    const taskIds = normalizedBatchTaskIds(requireJson(ctx).taskIds, 20);
+    const tasks = await Promise.all(taskIds.map(async (taskId) => {
+      const task = await repository.getTask(taskId);
+      if (!task) throw new ControlPlaneNotFoundError('task not found');
+      if (!['MANUAL_ARCHIVE', 'REVIEWED'].includes(task.state)) {
+        throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'only manually archived tasks can be downloaded');
+      }
+      return task;
+    }));
+    const content = await buildBatchTaskArchive(tasks, async (task, assetId) => {
+      const asset = await repository.getAsset(assetId);
+      if (!asset || asset.taskId !== task.id) return null;
+      const path = safeStoragePath(storageRoot, relative(storageRoot, asset.storagePath));
+      return { ...asset, content: await readFile(path) };
+    });
+    ctx.status = 200;
+    ctx.type = 'application/zip';
+    ctx.set('Content-Disposition', `attachment; filename="task-resources-batch.zip"; filename*=UTF-8''${encodeURIComponent('批量作业资源.zip')}`);
+    ctx.body = content;
   });
   router.get('/v1/task-counts', async (ctx) => {
     json(ctx, 200, await repository.taskCounts({ nodeId: ctx.query.nodeId }));
@@ -358,8 +630,8 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   });
 
   router.post('/v1/tasks/:taskId/approve-copy', async (ctx) => {
-    await assertTaskAccess(ctx, repository);
-    json(ctx, 200, await repository.approveCopy(ctx.params.taskId, requireJson(ctx)));
+    const access = await assertTaskAccess(ctx, repository);
+    json(ctx, 200, await repository.approveCopy(ctx.params.taskId, requireJson(ctx), { actorRole: access.actor.role }));
   });
   router.post('/v1/tasks/:taskId/review-images', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
@@ -380,7 +652,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   router.post('/v1/tasks/:taskId/image-revisions', async (ctx) => {
     const actor = requestActor(ctx);
     await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
-    json(ctx, 201, await repository.reviseImages(ctx.params.taskId, requireJson(ctx), actor.username));
+    json(ctx, 201, await repository.reviseImages(ctx.params.taskId, requireJson(ctx), actor.username, actor.role));
   });
   router.get('/v1/tasks/:taskId/image-capabilities', async (ctx) => {
     await assertTaskAccess(ctx, repository);
@@ -389,6 +661,45 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   router.post('/v1/tasks/:taskId/cancel', async (ctx) => {
     await assertTaskAccess(ctx, repository, { ownerOnly: requestActor(ctx).role !== 'ADMIN' });
     json(ctx, 200, await repository.cancelTask(ctx.params.taskId));
+  });
+  router.post('/v1/tasks/:taskId/requeue', async (ctx) => {
+    requestActor(ctx, ['ADMIN']);
+    await assertTaskAccess(ctx, repository);
+    json(ctx, 200, await repository.requeueCancelledTask(ctx.params.taskId));
+  });
+  router.delete('/v1/tasks/:taskId/permanent', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    await assertTaskAccess(ctx, repository);
+    const limiter = passwordLimiter(actor.username);
+    assertPasswordAttemptAllowed(ctx, limiter);
+    let quarantine = null;
+    let deleted;
+    try {
+      deleted = await repository.permanentlyDeleteTask(ctx.params.taskId, {
+        actorUsername: actor.username,
+        deletionPassword: requireJson(ctx).deletionPassword,
+        beforeDelete: async (taskId) => {
+          quarantine = await quarantineTaskStorage(storageRoot, taskId);
+        },
+      });
+      limiter.reset();
+    } catch (error) {
+      if (error?.code === 'DELETION_PASSWORD_INVALID') limiter.recordFailure();
+      else limiter.reset();
+      if (quarantine) {
+        try { await quarantine.restore(); } catch (restoreError) {
+          console.error('failed to restore quarantined task files', restoreError);
+        }
+      }
+      throw error;
+    }
+    let cleaned = true;
+    if (quarantine) {
+      await quarantine.markCommitted().catch(error => console.error('failed to mark task deletion quarantine', error));
+      cleaned = await removeQuarantine(quarantine.quarantineRoot);
+      if (!cleaned) scheduleQuarantineCleanup(quarantine.quarantineRoot);
+    }
+    json(ctx, 200, { id: deleted.id, deleted: true, cleanupPending: !cleaned });
   });
 
   router.get('/v1/layout-catalog', async (ctx) => {
@@ -503,8 +814,11 @@ export function createControlPlaneApp({ repository, storageRoot, enforceUserAuth
   const resolvedStorageRoot = resolve(storageRoot);
   const app = new Koa();
   const router = new Router();
+  const staleDeletionCleanup = cleanCommittedDeletionQuarantines(resolvedStorageRoot)
+    .catch(error => console.error('failed to clean committed task deletion quarantine', error));
 
   app.use(async (ctx, next) => {
+    await staleDeletionCleanup;
     ctx.state.requestId = randomUUID();
     ctx.set('X-Request-Id', ctx.state.requestId);
     ctx.set('Cache-Control', 'no-store');

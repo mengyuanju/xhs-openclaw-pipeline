@@ -70,3 +70,15 @@ export async function buildTaskArchive(task, loadAsset) {
 
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
 }
+
+export async function buildBatchTaskArchive(tasks, loadAsset) {
+  if (!Array.isArray(tasks) || tasks.length < 1 || tasks.length > 20) {
+    throw new RangeError('batch archive must contain between 1 and 20 tasks');
+  }
+  const zip = new JSZip();
+  for (const task of tasks) {
+    const content = await buildTaskArchive(task, (assetId) => loadAsset(task, assetId));
+    zip.file(`任务-${task.id}-资源包.zip`, content);
+  }
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'STORE' });
+}

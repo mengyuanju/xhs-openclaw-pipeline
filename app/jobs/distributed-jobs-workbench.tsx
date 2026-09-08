@@ -20,7 +20,7 @@ import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { apiRequest } from '../components/api-client';
 import { IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
 import { resumeImageTask } from '../components/resume-image-task';
-import { compareTasksByStatePriority, type TaskState } from '../workbench/views';
+import { TASK_SORT_OPTIONS, compareTasks, taskSortParams, type TaskSort, type TaskState } from '../workbench/views';
 
 type DistributedTask = {
   id: number;
@@ -127,11 +127,14 @@ export function DistributedJobsWorkbench({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [sort, setSort] = useState<TaskSort>('priority:desc');
 
   const refresh = useCallback(async ({ silent = false } = {}) => {
     try {
-      const data = await apiRequest<DistributedTask[]>(apiPath('/v1/tasks?limit=100&offset=0'));
-      setTasks([...data].sort(compareTasksByStatePriority));
+      const { sortBy, sortOrder } = taskSortParams(sort);
+      const search = new URLSearchParams({ limit: '100', offset: '0', sortBy, sortOrder });
+      const data = await apiRequest<DistributedTask[]>(apiPath(`/v1/tasks?${search}`));
+      setTasks([...data].sort((left, right) => compareTasks(left, right, sort)));
       setError('');
       if (selected) {
         const detail = await apiRequest<TaskDetail>(apiPath(`/v1/tasks/${selected.id}`));
@@ -142,7 +145,7 @@ export function DistributedJobsWorkbench({
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [selected?.id]);
+  }, [selected?.id, sort]);
 
   useEffect(() => { void refresh(); }, [refresh]);
   const hasActiveTasks = useMemo(() => tasks.some((task) => ACTIVE_STATES.has(task.state)), [tasks]);
@@ -300,9 +303,15 @@ export function DistributedJobsWorkbench({
     {!creationOnly && <section className="panel">
       <div className="panel-head">
         <div><span className="section-kicker">Remote source of truth</span><h2>全部作业</h2></div>
-        <Button unstyled className="button small" type="button" disabled={loading || busy} onClick={() => { void refresh(); }}>
-          <RefreshCw aria-hidden="true" size={14} />刷新
-        </Button>
+        <div className="inline distributed-list-actions">
+          <Select value={sort} onValueChange={(value) => setSort(value as TaskSort)}>
+            <SelectTrigger aria-label="作业排序"><SelectValue /></SelectTrigger>
+            <SelectContent>{TASK_SORT_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+          </Select>
+          <Button unstyled className="button small" type="button" disabled={loading || busy} onClick={() => { void refresh(); }}>
+            <RefreshCw aria-hidden="true" size={14} />刷新
+          </Button>
+        </div>
       </div>
       {loading
         ? <div className="empty-state"><LoaderCircle className="animate-spin" size={20} />正在读取中心任务…</div>
@@ -310,13 +319,14 @@ export function DistributedJobsWorkbench({
           ? <div className="empty-state">中心服务还没有任务。</div>
           : <div className="table-wrap mobile-cards">
             <table>
-              <thead><tr><th>ID</th><th>Query</th><th>状态</th><th>节点</th><th>阶段 / 进度</th><th>耗时</th><th>操作</th></tr></thead>
+              <thead><tr><th>ID</th><th>Query</th><th>状态</th><th>节点</th><th>阶段 / 进度</th><th>创建时间</th><th>耗时</th><th>操作</th></tr></thead>
               <tbody>{tasks.map((task) => <tr key={task.id}>
                 <td className="mono" data-label="ID">#{task.id}</td>
                 <td className="query-cell" data-label="Query">{task.query}</td>
                 <td data-label="状态"><span className={`pill${isStale(task) || isImageRetryExhausted(task) ? ' pill-rejected' : ''}`}>{isImageRetryExhausted(task) ? IMAGE_RETRY_EXHAUSTED_LABEL : STATE_LABELS[task.state]}</span></td>
                 <td className="mono" data-label="节点">{task.copyExecutorNodeId ?? '待领取'}</td>
                 <td data-label="阶段 / 进度"><div className="distributed-progress"><span>{task.currentStage || '—'} · {task.progressPercent}%</span><small>{isStale(task) ? '长时间无进度，可人工重新执行' : task.progressMessage}</small></div></td>
+                <td data-label="创建时间"><time dateTime={task.createdAt}>{new Date(task.createdAt).toLocaleString('zh-CN', { hour12: false })}</time></td>
                 <td data-label="耗时"><Clock3 aria-hidden="true" size={13} /> {elapsed(task)}</td>
                 <td data-label="操作"><Button unstyled className="button small" type="button" onClick={() => { void openTask(task.id); }}>查看 / 审核</Button></td>
               </tr>)}</tbody>

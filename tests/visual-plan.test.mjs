@@ -207,15 +207,12 @@ describe('visual plan contract', () => {
     );
   });
 
-  it('rejects visible numeric claims that do not occur in the finalized text', () => {
+  it('does not use visual-plan parsing to recheck locked visible numeric claims', () => {
     const post = postFixture();
     const output = validVisualPlan(post);
     output.pages[0].allowedVisibleText.subtitle = '坚持 30 天就能稳定整洁';
 
-    assert.throws(
-      () => parseVisualPlanOutput(JSON.stringify(output), { post, imageCount: 3 }),
-      /numeric claim.*30/i,
-    );
+    assert.doesNotThrow(() => parseVisualPlanOutput(JSON.stringify(output), { post, imageCount: 3 }));
   });
 
   it('rejects a layout item count that conflicts with the visible bullet count', () => {

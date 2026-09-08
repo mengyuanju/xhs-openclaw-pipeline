@@ -105,6 +105,26 @@ test('shared copy queue migration unassigns only waiting copy tasks and replaces
   assert.doesNotMatch(migration.sql, /DELETE|TRUNCATE|DROP TABLE/u);
 });
 
+test('admin task deletion migration adds bounded nullable security fields without rewriting data', async () => {
+  const migration = (await loadMigrations()).find((item) => item.id === '0014_admin_task_deletion');
+  assert.ok(migration);
+  assert.match(migration.sql, /deletion_password_hash varchar\(500\)/u);
+  assert.match(migration.sql, /cancelled_from_state varchar\(40\)/u);
+  assert.match(migration.sql, /cancelled_from_state IS NULL OR cancelled_from_state IN/u);
+  assert.match(migration.sql, /'COPY_RUNNING'/u);
+  assert.match(migration.sql, /'IMAGE_RUNNING'/u);
+  assert.doesNotMatch(migration.sql, /UPDATE|DELETE|TRUNCATE|DROP/u);
+});
+
+test('saved task view migration keeps views owner-scoped without rewriting tasks', async () => {
+  const migration = (await loadMigrations()).find((item) => item.id === '0015_saved_task_views');
+  assert.ok(migration);
+  assert.match(migration.sql, /owner_username varchar\(50\) NOT NULL REFERENCES app_users\(username\) ON DELETE CASCADE/u);
+  assert.match(migration.sql, /filters jsonb NOT NULL/u);
+  assert.match(migration.sql, /UNIQUE\(owner_username, name\)/u);
+  assert.doesNotMatch(migration.sql, /UPDATE tasks|DELETE FROM tasks|TRUNCATE|DROP TABLE/u);
+});
+
 test('failed upgrades roll back the enclosing schema-and-data transaction', async () => {
   const queries = [];
   const client = { query: async (sql) => {

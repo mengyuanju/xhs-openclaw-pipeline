@@ -39,6 +39,8 @@ const EMPTY_MODEL_API: ModelApiSettings = {
   dotsBaseUrl: null,
   dotsModel: null,
   textModel: null,
+  capacityFallbackModel: null,
+  modelCapacityCooldownMs: null,
   screeningModel: null,
   reviewModel: null,
   visionModel: null,

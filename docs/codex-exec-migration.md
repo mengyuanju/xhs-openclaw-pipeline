@@ -19,7 +19,7 @@
 | 生图 / 改图 | 原生图片工具，最多 10 张改图附件；验证工具记录、受限目录、新鲜 PNG 和完整解码后交付 |
 | 本机 Worker / 分布式执行器 / 独立生成页面 | 统一 `createAgentClient`，保留原队列、审核、追踪和恢复流程 |
 
-模型引用仍保存为 `openai/<model>`；CLI 调用时去掉 `openai/` 前缀。内置图片模型只接受 `openai/gpt-image-2`，由文本模型驱动原生图片工具。模型和思考强度最终是否获账号支持，需要真实验收；不会静默降级到其他模型。
+模型引用仍保存为 `openai/<model>`；CLI 调用时去掉 `openai/` 前缀。内置图片模型只接受 `openai/gpt-image-2`，由文本模型驱动原生图片工具。模型和思考强度最终是否获账号支持，需要真实验收。只有终态错误被严格识别为 `CODEX_MODEL_AT_CAPACITY` 时，文本、审核、视觉和 Codex 检索才会使用明确配置并记录在调用轨迹中的容量备用模型；默认从 `openai/gpt-5.6-sol` 切到 `openai/gpt-5.6-terra`。图片生成和改图不降级驱动模型。
 
 生成尺寸统一为 `1152×1536`（精确竖版 3:4），交付仍为 `1086×1448`。GPT Image 2 的[官方尺寸规则](https://developers.openai.com/api/docs/guides/image-generation#size-and-quality-options)要求两边均为 16 的倍数，因此交付尺寸不能直接作为 API 的生成尺寸；比例正确的原图只需等比缩小，原有裁剪仅用于比例偏离时兜底。
 
@@ -43,6 +43,7 @@ Codex CLI 0.152.1 的真实测试发现 `exec --json` 会遗漏原生图片项�
 - 分布式：生产配置 → 生产配置 JSON → 生成引擎 → 保存新版本。下拉框覆盖同次提交 JSON 中的 `modelApi.agentProvider`，其他字段保留。
 - 旧字段 `copyGenerationProvider: OPENCLAW` / `webSearchProvider: OPENCLAW` 是兼容值，现表示“默认生成引擎”；真正的引擎由 `agentProvider` 决定。`DOTS` / `DEEPSEEK` 仍分别调用各自服务，凭据独立管理。
 - 模型切换不强行改写已有执行快照或重启在途任务。本机长批次 Worker 使用启动时的客户端，需结束后重启才能换引擎。已有失败快照要改引擎时，明确选择“使用最新配置重新生成”；“从失败步骤继续”保留旧快照。
+- `modelApi.capacityFallbackModel` / `XHS_CAPACITY_FALLBACK_MODEL` 配置容量备用模型，默认 `openai/gpt-5.6-terra`；`modelApi.modelCapacityCooldownMs` / `XHS_MODEL_CAPACITY_COOLDOWN_MS` 配置 60000–3600000 毫秒的初始模型冷却，默认 300000。
 
 回切选择 `OPENCLAW`，确保原 OpenClaw 登录/网关可用，再重启相应 Worker。后台已有显式配置时，只改环境变量不会覆盖它。Codex 的本地暂停不阻止显式 OpenClaw 回退。
 
@@ -58,8 +59,10 @@ Codex CLI 0.152.1 的真实测试发现 `exec --json` 会遗漏原生图片项�
 
 - 认证失效、订阅额度耗尽：共享暂停；执行器不再领取新任务。原有在途调用不被强杀，但后续调用会检查暂停。
 - 429：共享约 60–65 秒冷却，无无限重试。冷却后可继续领取；本机队列允许有限重试。
+- `CODEX_MODEL_AT_CAPACITY`：按模型记录冷却，不再暂停所有模型。文本、审核、视觉和 Codex 检索在当前调用内最多切换一次容量备用模型，后续调用在冷却期直接使用备用模型；冷却结束只放行一个主模型探测调用。使用默认初始冷却时，连续满载按 5、10、20、40、60 分钟延长；自定义初始值时按同样的指数规则延长，最长 60 分钟。调用轨迹记录请求模型、实际模型和降级原因。
+- 图片生成和改图：驱动模型不降级；其模型冷却期间图片执行通道不领取新任务，文案通道仍可使用备用模型。这样不会因更换驱动模型改变原生图片提示词解释、参考图处理或编辑范围。
 - 分布式 Codex 图片执行失败：上报 `autoRetry:false`，进入 `IMAGE_FAILED`，由人工检查额度/检查点后续跑（包括限流导致当前任务失败的情况）。避免中心服务把结果未知的超时重试为新一轮生图。OpenClaw 原有 3 次总尝试预算保留。
-- `agent:resume` 只清除暂停，不充值、不绕过额度、不自动重排失败任务；额度未恢复时再调用仍会暂停。
+- `agent:resume` 清除账号级暂停和模型级冷却，不充值、不绕过额度、不自动重排失败任务；额度未恢复时再调用仍会暂停。
 
 ```powershell
 npm run agent:check

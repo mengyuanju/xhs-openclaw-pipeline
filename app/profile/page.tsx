@@ -11,7 +11,7 @@ export default async function ProfilePage() {
   if (!session) redirect('/login?next=%2Fprofile');
   const user = await readCentralData('/v1/profile', session);
   return <>
-    <header className="page-header"><div><span className="eyebrow">My account</span><h1>个人信息</h1><p className="subtle">修改姓名或设置新的登录密码。</p></div></header>
+    <header className="page-header"><div><span className="eyebrow">My account</span><h1>个人信息</h1><p className="subtle">修改姓名、登录密码，或为永久删除设置二级密码。</p></div></header>
     <ProfileManager user={user} />
   </>;
 }

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
+import { hashUserPassword } from '../src/user-auth.mjs';
 
 function taskRow(overrides = {}) {
   return {
@@ -268,6 +269,73 @@ test('task pages can de-duplicate normalized Query values before pagination', as
   await assert.rejects(repository.listTasks({ deduplicateQuery: 'true' }), /deduplicateQuery/u);
 });
 
+test('task pages sort by creation time or Query ID and can locate an exact ID', async () => {
+  const queries = [];
+  const repository = new PostgresControlPlaneRepository({
+    pool: {
+      async query(sql, values) {
+        queries.push({ sql: String(sql), values });
+        return { rows: [] };
+      },
+    },
+  });
+
+  await repository.listTasks({ taskId: '42', sortBy: 'createdAt', sortOrder: 'asc' });
+  assert.match(queries[0].sql, /WHERE id = \$1/u);
+  assert.match(queries[0].sql, /ORDER BY created_at ASC, id ASC/u);
+  assert.match(queries[0].sql, /ORDER BY page\.created_at ASC, page\.id ASC/u);
+  assert.deepEqual(queries[0].values, [42, 50, 0]);
+
+  queries.length = 0;
+  await repository.listTasks({ sortBy: 'id', sortOrder: 'desc' });
+  assert.match(queries[0].sql, /ORDER BY id DESC/u);
+  assert.match(queries[0].sql, /ORDER BY page\.id DESC/u);
+
+  await assert.rejects(repository.listTasks({ sortBy: 'query' }), /sort field/u);
+  await assert.rejects(repository.listTasks({ sortOrder: 'sideways' }), /sort order/u);
+});
+
+test('administrator attention filters use fixed SQL for stale and failed work', async () => {
+  const queries = [];
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql, values) { queries.push({ sql: String(sql), values }); return { rows: [] }; },
+  } });
+  await repository.listTasks({ attention: 'ANOMALY' });
+  assert.match(queries[0].sql, /COALESCE\(last_activity_at, execution_started_at, updated_at, created_at\) <= now\(\) - interval '30 minutes'/u);
+  assert.match(queries[0].sql, /current_stage = 'IMAGE_RETRY_EXHAUSTED'/u);
+  assert.deepEqual(queries[0].values, [50, 0]);
+  await assert.rejects(repository.listTasks({ attention: 'ALL' }), /attention/u);
+});
+
+test('saved task views are owner-scoped and upsert a validated filter document', async () => {
+  const queries = [];
+  const pool = { async query(sql, values) {
+    const source = String(sql);
+    queries.push({ sql: source, values });
+    if (source.includes('INSERT INTO saved_task_views')) return { rows: [{
+      id: 8, owner_username: values[0], name: values[1], view_key: values[2], filters: values[3],
+      created_at: '2026-09-08T00:00:00Z', updated_at: '2026-09-08T00:00:00Z',
+    }] };
+    if (source.includes('DELETE FROM saved_task_views')) return { rows: [{ id: values[0] }] };
+    return { rows: [] };
+  } };
+  const repository = new PostgresControlPlaneRepository({ pool });
+  const saved = await repository.saveTaskView('admin', {
+    name: '我的失败任务', viewKey: 'ALL_JOBS', filters: { attention: 'FAILED', createdByUserId: 'admin' },
+  });
+  assert.equal(saved.id, 8);
+  assert.equal(saved.ownerUsername, 'admin');
+  assert.deepEqual(queries[0].values[3], {
+    query: '', deduplicateQuery: false, createdByUserId: 'admin', createdByRole: 'ALL', state: 'ALL',
+    sort: 'priority:desc', attention: 'FAILED', pageSize: 20,
+  });
+  assert.match(queries[0].sql, /ON CONFLICT\(owner_username, name\) DO UPDATE/u);
+  await repository.listSavedTaskViews('admin');
+  assert.match(queries[1].sql, /WHERE owner_username = \$1/u);
+  assert.deepEqual(await repository.deleteSavedTaskView('admin', 8), { id: 8, deleted: true });
+  assert.deepEqual(queries[2].values, [8, 'admin']);
+});
+
 test('personal task pagination and totals filter the creator independently of execution nodes', async () => {
   const queries = [];
   const repository = new PostgresControlPlaneRepository({ pool: {
@@ -422,6 +490,38 @@ test('copy approval submits reviewed copy to the image queue', async () => {
   assert.equal(taskUpdate.values[2], false);
 });
 
+test('non-admin approval without edits creates an automatic-layout revision instead of preserving manual layouts', async () => {
+  const queries = [];
+  const sourceContent = {
+    copy: { title: '标题', body: '正文', tags: ['#标签'] },
+    imagePlan: [
+      { kind: 'hero', layout: { mode: 'TEMPLATE', template: 'HERO_LEFT' } },
+      { kind: 'steps', layout: { mode: 'CUSTOM' } },
+      { kind: 'summary' },
+    ],
+  };
+  const client = {
+    async query(sql, values) {
+      const source = String(sql);
+      queries.push({ sql: source, values });
+      if (source === 'BEGIN' || source === 'COMMIT') return { rows: [] };
+      if (source.includes('SELECT * FROM tasks WHERE id')) return { rows: [taskRow({ state: 'COPY_REVIEW_PENDING', current_copy_revision_id: 12 })] };
+      if (source.includes('SELECT * FROM copy_revisions')) return { rows: [{ id: 12, task_id: 41, revision: 2, content: sourceContent }] };
+      if (source.includes('SELECT id FROM executor_nodes')) return { rows: [{ id: 'node-b' }] };
+      if (source.includes('MAX(revision)')) return { rows: [{ revision: 3 }] };
+      if (source.includes('INSERT INTO copy_revisions')) return { rows: [{ id: 13 }] };
+      if (source.includes('UPDATE tasks SET')) return { rows: [taskRow({ state: 'IMAGE_QUEUED', current_copy_revision_id: 13 })] };
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
+  await repository.approveCopy(41, { revisionId: 12, nodeId: 'node-b' }, { actorRole: 'USER' });
+  const saved = queries.find(item => item.sql.includes('INSERT INTO copy_revisions')).values[2];
+  assert.deepEqual(saved.imagePlan.map(page => page.layout), [{ mode: 'AUTO' }, { mode: 'AUTO' }, { mode: 'AUTO' }]);
+  assert.equal(saved.manualReview.layoutsForcedAutomatic, true);
+});
+
 test('executor inventory reports independent copy and image running capacity', async () => {
   let selection;
   const repository = new PostgresControlPlaneRepository({
@@ -546,7 +646,11 @@ test('logical task cancellation abandons an active image execution and keeps tas
         return { rows: [{ id: executionId, kind: 'IMAGE', status: 'RUNNING' }] };
       }
       if (source.includes('UPDATE tasks SET')) {
-        return { rows: [taskRow({ state: 'CANCELLED', current_execution_id: null })] };
+        return { rows: [taskRow({
+          state: 'CANCELLED',
+          cancelled_from_state: 'IMAGE_RUNNING',
+          current_execution_id: null,
+        })] };
       }
       return { rows: [] };
     },
@@ -557,7 +661,166 @@ test('logical task cancellation abandons an active image execution and keeps tas
   const cancelled = await repository.cancelTask(41);
 
   assert.equal(cancelled.state, 'CANCELLED');
+  assert.equal(cancelled.cancelledFromState, 'IMAGE_RUNNING');
   assert.ok(queries.some((item) => item.sql.includes("status = 'ABANDONED'")));
   assert.ok(queries.some((item) => item.sql.includes('UPDATE image_runs SET')));
+  assert.ok(queries.some((item) => item.sql.includes('cancelled_from_state = state')));
   assert.equal(queries.some((item) => item.sql.includes('DELETE FROM')), false);
+});
+
+test('bulk queue cancellation rechecks queued state inside the task lock', async () => {
+  const queries = [];
+  const client = {
+    async query(sql) {
+      const source = String(sql);
+      queries.push(source);
+      if (source.includes('SELECT * FROM tasks WHERE id')) return { rows: [taskRow({ state: 'COPY_RUNNING' })] };
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
+  await assert.rejects(repository.cancelTask(41, { queuedOnly: true }), { code: 'INVALID_TASK_STATE' });
+  assert.equal(queries.some((sql) => sql.includes('UPDATE tasks SET')), false);
+  assert.equal(queries.at(-1), 'ROLLBACK');
+});
+
+test('a cancelled queued task returns to its original queue exactly once', async () => {
+  const queries = [];
+  let state = 'CANCELLED';
+  let cancelledFromState = 'COPY_QUEUED';
+  const client = {
+    async query(sql, values) {
+      const source = String(sql);
+      queries.push({ sql: source, values });
+      if (source === 'BEGIN' || source === 'COMMIT') return { rows: [] };
+      if (source === 'ROLLBACK') return { rows: [] };
+      if (source.includes('SELECT * FROM tasks WHERE id')) {
+        return { rows: [taskRow({ state, cancelled_from_state: cancelledFromState })] };
+      }
+      if (source.includes('UPDATE tasks SET state = $2')) {
+        state = 'COPY_QUEUED';
+        cancelledFromState = null;
+        return { rows: [taskRow({ state, cancelled_from_state: cancelledFromState })] };
+      }
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
+
+  const task = await repository.requeueCancelledTask(41);
+
+  assert.equal(task.state, 'COPY_QUEUED');
+  assert.equal(task.cancelledFromState, null);
+  assert.ok(queries.some(({ sql }) => sql.includes('cancelled_from_state = NULL')));
+  await assert.rejects(() => repository.requeueCancelledTask(41), { code: 'REQUEUE_UNAVAILABLE' });
+});
+
+test('permanent deletion rejects active work and only deletes inactive tasks after preparation', async () => {
+  const passwordHash = await hashUserPassword('delete-secret');
+  async function run(state, { cancelledFromState = null, cancellationReady = true } = {}) {
+    const queries = [];
+    const client = {
+      async query(sql) {
+        const source = String(sql);
+        queries.push(source);
+        if (source === 'BEGIN' || source === 'COMMIT' || source === 'ROLLBACK') return { rows: [] };
+        if (source.includes('SELECT * FROM app_users')) return { rows: [{ username: 'admin', role: 'ADMIN', status: 'ACTIVE', deletion_password_hash: passwordHash }] };
+        if (source.includes('SELECT * FROM tasks WHERE id')) {
+          return { rows: [taskRow({ state, cancelled_from_state: cancelledFromState })] };
+        }
+        if (source.includes("updated_at <= now() - interval '3 minutes'")) {
+          return { rows: [{ ready: cancellationReady }] };
+        }
+        return { rows: [] };
+      },
+      release() {},
+    };
+    const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
+    let prepared = false;
+    const operation = repository.permanentlyDeleteTask(41, {
+      actorUsername: 'admin', deletionPassword: 'delete-secret', beforeDelete: async () => { prepared = true; },
+    });
+    return { operation, queries, prepared: () => prepared };
+  }
+
+  const running = await run('IMAGE_RUNNING');
+  await assert.rejects(running.operation, { code: 'TASK_MUST_BE_INACTIVE' });
+  assert.equal(running.prepared(), false);
+  assert.equal(running.queries.some(sql => sql.includes('DELETE FROM tasks')), false);
+
+  const settling = await run('CANCELLED', {
+    cancelledFromState: 'IMAGE_RUNNING',
+    cancellationReady: false,
+  });
+  await assert.rejects(settling.operation, { code: 'TASK_CANCELLATION_SETTLING' });
+  assert.equal(settling.prepared(), false);
+  assert.equal(settling.queries.some(sql => sql.includes('DELETE FROM tasks')), false);
+
+  const settled = await run('CANCELLED', {
+    cancelledFromState: 'COPY_RUNNING',
+    cancellationReady: true,
+  });
+  assert.deepEqual(await settled.operation, { id: 41 });
+  assert.equal(settled.prepared(), true);
+  assert.equal(settled.queries.some(sql => sql.includes('DELETE FROM tasks')), true);
+
+  const cancelled = await run('CANCELLED');
+  assert.deepEqual(await cancelled.operation, { id: 41 });
+  assert.equal(cancelled.prepared(), true);
+  assert.equal(cancelled.queries.some(sql => sql.includes('DELETE FROM tasks')), true);
+});
+
+test('batch permanent deletion verifies the administrator once and deletes eligible tasks atomically', async () => {
+  const passwordHash = await hashUserPassword('delete-secret');
+  const queries = [];
+  const deleted = [];
+  const tasks = new Map([
+    [41, taskRow({ state: 'REVIEWED' })],
+    [42, taskRow({ state: 'IMAGE_RUNNING' })],
+    [44, taskRow({ state: 'CANCELLED', cancelled_from_state: 'COPY_RUNNING' })],
+  ]);
+  const client = {
+    async query(sql, values = []) {
+      const source = String(sql);
+      queries.push({ sql: source, values });
+      if (source === 'BEGIN' || source === 'COMMIT' || source === 'ROLLBACK') return { rows: [] };
+      if (source.includes('SELECT * FROM app_users')) {
+        return { rows: [{ username: 'admin', role: 'ADMIN', status: 'ACTIVE', deletion_password_hash: passwordHash }] };
+      }
+      if (source.includes('SELECT * FROM tasks WHERE id')) {
+        const task = tasks.get(Number(values[0]));
+        return { rows: task ? [task] : [] };
+      }
+      if (source.includes("updated_at <= now() - interval '3 minutes'")) return { rows: [{ ready: false }] };
+      if (source.includes('DELETE FROM tasks WHERE id')) {
+        deleted.push(Number(values[0]));
+        return { rows: [] };
+      }
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
+  const prepared = [];
+
+  const result = await repository.permanentlyDeleteTasks([41, 42, 43, 44, 41], {
+    actorUsername: 'admin',
+    deletionPassword: 'delete-secret',
+    beforeDelete: async (taskId) => { prepared.push(taskId); },
+  });
+
+  assert.deepEqual(result, {
+    succeeded: [41],
+    failed: [
+      { id: 42, code: 'TASK_MUST_BE_INACTIVE', message: '请先取消排队或等待任务结束，再永久删除' },
+      { id: 43, code: 'NOT_FOUND', message: 'task not found' },
+      { id: 44, code: 'TASK_CANCELLATION_SETTLING', message: '执行机仍在确认取消，请在取消后等待3分钟再永久删除' },
+    ],
+  });
+  assert.equal(queries.filter(({ sql }) => sql.includes('SELECT * FROM app_users')).length, 1);
+  assert.deepEqual(prepared, [41]);
+  assert.deepEqual(deleted, [41]);
+  assert.equal(queries.at(-1).sql, 'COMMIT');
 });

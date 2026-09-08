@@ -76,6 +76,10 @@ function pagination(value, fallback) {
   return Math.max(1, Math.floor(Number(value) || fallback));
 }
 
+function escapedLikePattern(value) {
+  return `%${value.replace(/[\\%_]/gu, '\\$&')}%`;
+}
+
 function analysisPromptDetails(row) {
   if (!row) return null;
   return {
@@ -392,22 +396,34 @@ export function createCopyKnowledgeStore(db) {
       return row ? itemDetails(db, [Number(row.id)])[0] ?? null : null;
     },
 
-    listCopyKnowledge({ page = 1, pageSize = 20, label } = {}) {
+    listCopyKnowledge({ page = 1, pageSize = 20, label, query } = {}) {
       const normalizedPage = pagination(page, 1);
       const normalizedPageSize = Math.min(100, pagination(pageSize, 20));
       const labelKey = label === undefined || label === null || String(label).trim() === ''
         ? null
         : normalizeLabel(String(label)).key;
+      const normalizedQuery = query === undefined || query === null
+        ? ''
+        : String(query).normalize('NFKC').trim();
       const from = labelKey
         ? `FROM copy_knowledge_items i
            JOIN copy_knowledge_item_labels cil ON cil.item_id = i.id
-           JOIN copy_knowledge_labels l ON l.id = cil.label_id
-           WHERE l.normalized_name = ?`
+           JOIN copy_knowledge_labels l ON l.id = cil.label_id`
         : 'FROM copy_knowledge_items i';
-      const parameters = labelKey ? [labelKey] : [];
-      const totalItems = Number(db.prepare(`SELECT COUNT(*) AS count ${from}`).get(...parameters).count);
+      const conditions = [];
+      const parameters = [];
+      if (labelKey) {
+        conditions.push('l.normalized_name = ?');
+        parameters.push(labelKey);
+      }
+      if (normalizedQuery) {
+        conditions.push("i.title LIKE ? ESCAPE '\\' COLLATE NOCASE");
+        parameters.push(escapedLikePattern(normalizedQuery));
+      }
+      const filteredFrom = `${from}${conditions.length ? ` WHERE ${conditions.join(' AND ')}` : ''}`;
+      const totalItems = Number(db.prepare(`SELECT COUNT(*) AS count ${filteredFrom}`).get(...parameters).count);
       const ids = db.prepare(`
-        SELECT i.id ${from}
+        SELECT i.id ${filteredFrom}
         ORDER BY i.id DESC
         LIMIT ? OFFSET ?
       `).all(

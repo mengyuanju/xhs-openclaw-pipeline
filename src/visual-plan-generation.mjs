@@ -1,5 +1,5 @@
 import { promptRuntimeSnapshot, promptPolicy } from './prompt-runtime.mjs';
-import { createDirectVisualPlan, assertLockedImageText, imageTextHash, assertImagePlanNumericEvidence } from './locked-image-plan.mjs';
+import { createDirectVisualPlan, assertLockedImageText, imageTextHash } from './locked-image-plan.mjs';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { safeTraceText } from './model-call-trace.mjs';
@@ -16,6 +16,31 @@ const PLANNING_TIMEOUT_MS = 300_000;
 const detail = (value) => safeTraceText(String(value?.message ?? value)).text.slice(0, 500);
 const data = (value) => JSON.stringify(value).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e');
 const mustShowRules = '\n画面元素和可见文字必须分开：mustShow 每项用“画面：”描述无文字的场景、形状或动作，或用“文字：”声明 allowedVisibleText 中已经逐字存在的文字。不要把概括性的“限制提示”等画面意图误写成不存在的文字要求。';
+
+export class VisualPlanContractError extends Error {
+  constructor(issues, attempts) {
+    const safeIssues = (Array.isArray(issues) ? issues : []).slice(0, 10).map((issue) => ({
+      code: typeof issue?.code === 'string' ? issue.code : 'VISUAL_PLAN_INVALID',
+      pageIndex: Number.isInteger(issue?.pageIndex) ? issue.pageIndex : null,
+      message: detail(issue),
+    }));
+    super(`视觉规划结构校验或安全校验未通过（已尝试 ${attempts} 次）：${safeIssues.map((issue) => issue.message).join('；') || '模型输出无效'}`);
+    this.name = 'VisualPlanContractError';
+    this.code = 'VISUAL_PLAN_CONTRACT_INVALID';
+    this.stage = 'PLANNING';
+    this.issues = safeIssues;
+    this.attempts = attempts;
+  }
+}
+
+function diversityWarning(issues) {
+  if (!issues?.length) return null;
+  return {
+    stage: 'PLANNING',
+    code: 'VISUAL_PLAN_LAYOUT_DIVERSITY',
+    message: `视觉规划结构有效，但有 ${issues.length} 页存在可进一步优化的布局重复；已继续生成，请在审核中确认实际排版。`.slice(0, 500),
+  };
+}
 
 function mergeRepair(previous, repaired, errors) {
   if (!previous) return repaired;
@@ -48,7 +73,6 @@ export async function generateVisualPlan({ client, post, thinking = 'low', outpu
   complianceDisclosure = 'AI生成', allowTransportFallback = () => false, layoutCatalog: rawCatalog = null }) {
   const layoutCatalog = normalizeLayoutCatalog(rawCatalog);
   const governed = Boolean(promptRuntimeSnapshot());
-  if (governed || layoutCatalog) assertImagePlanNumericEvidence(post);
   if ((governed && !promptPolicy().visualPlanningEnabled) || layoutCatalog?.selectionMode === 'RANDOM') {
     const random = promptPolicy().visualPlanningEnabled && layoutCatalog?.selectionMode === 'RANDOM' ? Math.random : undefined;
     const visualPlan = catalogDirectPlan(createDirectVisualPlan(post), post, layoutCatalog, random);
@@ -58,7 +82,7 @@ export async function generateVisualPlan({ client, post, thinking = 'low', outpu
   }
   const effort = validatedCopyGenerationThinking(thinking);
   const basePrompt = buildVisualPlanPrompt(post, { complianceDisclosure, layoutCatalog }) + mustShowRules;
-  let state = { candidate: null, errors: [] };
+  let state = { candidate: null, errors: [], warnings: [] };
   let previousRaw = '';
   let lastError;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
@@ -83,11 +107,11 @@ export async function generateVisualPlan({ client, post, thinking = 'low', outpu
       state = inspectVisualPlanOutput(JSON.stringify(merged), { post, layoutCatalog });
       errors = state.errors;
       if (!errors.length) return { visualPlan: { ...parseVisualPlanOutput(JSON.stringify(merged), { post, layoutCatalog }), ...(governed || layoutCatalog ? { planningMode: 'MODEL', textContractSha256: imageTextHash(post) } : {}) },
-        model: planned.model, degraded: false, warning: null, attempts: attempt };
+        model: planned.model, degraded: false, warning: diversityWarning(state.warnings), attempts: attempt };
       lastError = new TypeError(errors.map((error) => error.message).join('; '));
     } catch (error) {
       lastError = error;
-      errors = [{ pageIndex: null, message: error.message }];
+      errors = [{ code: 'VISUAL_PLAN_RESPONSE_INVALID', pageIndex: null, message: error.message }];
       // Keep the last validated subset on malformed repairs, rather than resetting the plan.
       if (!state.candidate) state.errors = errors;
     }
@@ -95,8 +119,9 @@ export async function generateVisualPlan({ client, post, thinking = 'low', outpu
     if (outputDir) await writeFile(join(outputDir, `visual-plan-attempt-${attempt}.json`), JSON.stringify({
       attempt, thinking: effort, rawText: safeTraceText(rawText).text.slice(0, 50_000),
       errors: errors.map((error) => ({ ...error, message: detail(error.message) })),
+      warnings: (state.warnings ?? []).map((warning) => ({ ...warning, message: detail(warning.message) })),
     }), { encoding: 'utf8', flag: 'wx' });
   }
-  if (governed || layoutCatalog) throw new Error(`视觉规划未通过锁定文案或结构校验：${lastError?.message}`, { cause: lastError });
+  if (governed || layoutCatalog) throw new VisualPlanContractError(state.errors?.length ? state.errors : [{ message: lastError?.message }], MAX_ATTEMPTS);
   return fallback(post, state, lastError, false, MAX_ATTEMPTS);
 }

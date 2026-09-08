@@ -35,6 +35,12 @@ async function proxyRequest(
   if (routePath === '/v1/tasks' && upstreamUrl.searchParams.has('createdByRole') && role !== 'ADMIN') {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可按创建者角色筛选任务');
   }
+  if (role !== 'ADMIN' && (routePath === '/v1/task-views'
+    || /^\/v1\/task-views\//u.test(routePath)
+    || ['/v1/tasks/batch-actions', '/v1/tasks/batch-archive', '/v1/tasks/batch-permanent-delete'].includes(routePath)
+    || (routePath === '/v1/tasks' && upstreamUrl.searchParams.has('attention')))) {
+    throw new ApiError(403, 'FORBIDDEN', '仅管理员可使用任务集中处理功能');
+  }
   if (role === 'REVIEWER' && (/^\/v1\/(?:settings|prompts|prompt-versions|users|executor-statuses)(?:\/|$)/u.test(routePath))) {
     throw new ApiError(403, 'FORBIDDEN', '审核员没有该管理权限');
   }

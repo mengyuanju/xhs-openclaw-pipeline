@@ -2,7 +2,7 @@
 
 本项目把 Excel 选题批量转为 SQLite 任务，通过独立 worker 生成 3–5 张图的小红书图文草稿，再进入本机 Web 后台做文案修改、图片修订、图生图和人工审核。它不会自动发布到小红书。
 
-生成引擎现默认使用 **Codex CLI + ChatGPT 订阅登录**，保留 OpenClaw 兼容回退；Dots 文案、DeepSeek 检索独立配置不变。Codex 同机共享并发限制为总调用最多 2 个、图片最多 1 个，认证/额度失败暂停领取任务。
+生成引擎现默认使用 **Codex CLI + ChatGPT 订阅登录**，保留 OpenClaw 兼容回退；Dots 文案、DeepSeek 检索独立配置不变。Codex 同机共享并发限制为总调用最多 2 个、图片最多 1 个，认证/额度失败暂停领取任务。文本、审核、视觉和 Codex 检索在主模型明确满载后默认切换到 `openai/gpt-5.6-terra`；图片生成和改图始终等待原驱动模型，不执行模型降级。
 
 代码与无额度测试不等于真实生成验收。启用生产前请完成 [迁移、预检、真实验收与回切](docs/codex-exec-migration.md)。本次不自动部署、启动生产批次或新增定时任务；下文旧 OpenClaw 安装说明仅用于回退引擎。
 
@@ -320,6 +320,8 @@ OPENCLAW_NODE_PATH=C:\Program Files\nodejs\node.exe
 两道阶段审核可用 `XHS_REVIEW_MODEL=provider/model` 单独指定；未设置时沿用 `XHS_TEXT_MODEL`。
 逐页 OCR/图文验收可用 `XHS_VISION_MODEL=provider/model` 单独指定；最终 0–3 分终审可用
 `XHS_QUALITY_MODEL=provider/model` 指定不同模型，以减少生成模型自评偏差。
+
+主模型明确返回 `Selected model is at capacity` 时，文本、审核、视觉和 Codex 检索会在当前调用内改用容量备用模型，并在主模型冷却期间直接使用备用模型。默认备用模型为 `openai/gpt-5.6-terra`，可通过后台“容量备用模型”或 `XHS_CAPACITY_FALLBACK_MODEL=provider/model` 修改；模型级冷却默认 300000 毫秒，可通过 `XHS_MODEL_CAPACITY_COOLDOWN_MS` 设置为 60000–3600000。冷却结束后只允许一个调用探测主模型，成功后恢复，仍满载则延长冷却。图片生成和改图不使用备用驱动模型，`openai/gpt-image-2` 及其文本驱动模型都保持原配置。
 
 如 TUN/Fake-IP 会中断 OpenClaw 的长图片连接，可只为图片生成与编辑子进程配置本机代理，
 避免影响文本 Responses 链路：

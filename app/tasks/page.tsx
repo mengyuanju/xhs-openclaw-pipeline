@@ -31,6 +31,7 @@ import { controlPlaneUrl } from '../../src/control-plane/next-runtime.mjs';
 export const dynamic = 'force-dynamic';
 
 const ALL_FILTERS = '__all__';
+const TASK_SORTS = new Set(['createdAt:desc', 'createdAt:asc', 'id:desc', 'id:asc']);
 
 export default async function TasksPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   if (controlPlaneUrl()) redirect('/jobs');
@@ -39,6 +40,9 @@ export default async function TasksPage({ searchParams }: { searchParams: Promis
     const current = typeof params[key] === 'string' ? params[key] as string : '';
     return current === ALL_FILTERS ? '' : current;
   };
+  const requestedSort = value('sort');
+  const sort = TASK_SORTS.has(requestedSort) ? requestedSort : 'createdAt:desc';
+  const [sortBy, sortOrder] = sort.split(':');
   const requestedBatchId = Number(value('batchId'));
   const { result, timingStats, batches, selectedBatchId } = withAdminStore((store: any) => {
     const batches = store.listImportBatches({
@@ -58,6 +62,8 @@ export default async function TasksPage({ searchParams }: { searchParams: Promis
       status: value('status') || undefined,
       reviewStatus: value('reviewStatus') || undefined,
       query: value('query') || undefined,
+      sortBy,
+      sortOrder,
     });
     return {
       result: {
@@ -82,6 +88,7 @@ export default async function TasksPage({ searchParams }: { searchParams: Promis
     for (const key of ['query', 'status', 'reviewStatus']) {
       if (value(key)) query.set(key, value(key));
     }
+    if (sort !== 'createdAt:desc') query.set('sort', sort);
     query.set('page', String(page));
     return `/tasks?${query.toString()}`;
   };
@@ -168,6 +175,18 @@ export default async function TasksPage({ searchParams }: { searchParams: Promis
             </SelectContent>
           </Select>
         </div>
+        <div className="field">
+          <label htmlFor="sort">排序</label>
+          <Select name="sort" defaultValue={sort}>
+            <SelectTrigger id="sort"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="createdAt:desc">创建时间：最新在前</SelectItem>
+              <SelectItem value="createdAt:asc">创建时间：最早在前</SelectItem>
+              <SelectItem value="id:desc">Query ID：从大到小</SelectItem>
+              <SelectItem value="id:asc">Query ID：从小到大</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
         <div className="tasks-filter-actions">
           <Button unstyled className="button primary" type="submit" disabled={batches.length === 0}>应用筛选</Button>
           <Link className="button" href={clearHref}>重置条件</Link>
@@ -185,12 +204,13 @@ export default async function TasksPage({ searchParams }: { searchParams: Promis
       : <TaskBatchExportForm exportableCount={exportableCount}>
         <div className="table-wrap mobile-cards task-table-wrap">
           <table>
-            <thead><tr><th>选择</th><th>ID</th><th>选题</th><th>外部 ID</th><th>图片数</th><th>生成状态</th><th>耗时</th><th>审核状态</th><th>操作</th></tr></thead>
+            <thead><tr><th>选择</th><th>ID</th><th>选题</th><th>外部 ID</th><th>创建时间</th><th>图片数</th><th>生成状态</th><th>耗时</th><th>审核状态</th><th>操作</th></tr></thead>
             <tbody>{result.data.map((task: any) => <tr key={task.id}>
               <td data-label="选择"><Checkbox className="task-select"  name="taskId" value={task.id} aria-label={`选择任务 #${task.id}`} aria-describedby={task.exportAvailability.canExport ? undefined : `task-export-reason-${task.id}`} disabled={!task.exportAvailability.canExport} title={task.exportAvailability.canExport ? '选择此任务进行批量导出' : task.exportAvailability.reason} /></td>
               <td className="mono" data-label="ID">#{task.id}</td>
               <td className="query-cell" data-label="选题">{task.query}</td>
               <td className="mono" data-label="外部 ID">{task.config?.externalId || '—'}</td>
+              <td data-label="创建时间"><time dateTime={task.createdAt}>{new Date(task.createdAt).toLocaleString('zh-CN', { hour12: false })}</time></td>
               <td data-label="图片数">{task.config?.currentTextRevisionId ? `${task.config.imageCount}（自动）` : '自动 3–5'}</td>
               <td data-label="生成状态"><StatusPill value={task.status} /></td>
               <td data-label="耗时"><TaskTiming task={task} timingStats={timingStats} /></td>

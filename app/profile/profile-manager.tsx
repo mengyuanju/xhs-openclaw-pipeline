@@ -18,6 +18,7 @@ type ProfileUser = {
   status: string;
   mustChangePassword: boolean;
   version: number;
+  hasDeletionPassword?: boolean;
 };
 
 export function ProfileManager({ user }: { user: ProfileUser }) {
@@ -73,6 +74,28 @@ export function ProfileManager({ user }: { user: ProfileUser }) {
     }
   }
 
+  async function setDeletionPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const target = event.currentTarget;
+    const form = new FormData(target);
+    const next = String(form.get('deletionPassword') || '');
+    if (next !== form.get('confirmDeletionPassword')) {
+      setNotice(''); setError('两次输入的二级密码不一致'); return;
+    }
+    setBusy('deletion-password'); setNotice(''); setError('');
+    try {
+      await apiRequest('/api/control-plane/v1/profile/deletion-password', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ currentPassword: form.get('currentPassword'), deletionPassword: next }),
+      });
+      setNotice('删除二级密码已设置。');
+      target.reset();
+      router.refresh();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '二级密码设置失败');
+    } finally { setBusy(''); }
+  }
+
   return <div className="profile-layout">
     <aside className="panel profile-summary-card">
       <div className="profile-avatar" aria-hidden="true">{[...user.displayName][0]?.toUpperCase() || '?'}</div>
@@ -108,6 +131,15 @@ export function ProfileManager({ user }: { user: ProfileUser }) {
           <div className="profile-form-actions"><span>请勿与其他平台共用同一密码</span><Button unstyled className="button primary" disabled={Boolean(busy)}>{busy === 'password' ? '修改中…' : '修改密码'}</Button></div>
         </form>
       </section>
+      {user.role === 'ADMIN' && <section className="panel profile-section" aria-labelledby="deletion-password-title">
+        <div className="profile-section-head"><span><ShieldCheck size={19} /></span><div><h2 id="deletion-password-title">永久删除二级密码</h2><p>仅用于永久删除任务及其素材，不可恢复。{user.hasDeletionPassword ? '已设置，可随时在此更新。' : '请先设置后再使用永久删除。'}</p></div></div>
+        <div className="notice error profile-password-warning"><LockKeyhole size={16} /><span><strong>高风险操作</strong>永久删除会清除任务、生成记录和已保存图片，无法撤销或恢复。</span></div>
+        <form className="profile-form" onSubmit={setDeletionPassword}>
+          <div className="field"><label htmlFor="deletion-current-password">当前登录密码</label><Input className="input" id="deletion-current-password" name="currentPassword" type="password" autoComplete="current-password" minLength={6} required /></div>
+          <div className="profile-password-grid"><div className="field"><label htmlFor="deletion-password">二级密码</label><Input className="input" id="deletion-password" name="deletionPassword" type="password" autoComplete="new-password" minLength={6} maxLength={1024} required /><small>至少 6 个字符，请不要与登录密码相同。</small></div><div className="field"><label htmlFor="confirm-deletion-password">确认二级密码</label><Input className="input" id="confirm-deletion-password" name="confirmDeletionPassword" type="password" autoComplete="new-password" minLength={6} required /></div></div>
+          <div className="profile-form-actions"><span>设置后，永久删除仍会再次要求输入此密码。</span><Button unstyled className="button danger" disabled={Boolean(busy)}>{busy === 'deletion-password' ? '设置中…' : user.hasDeletionPassword ? '更新二级密码' : '设置二级密码'}</Button></div>
+        </form>
+      </section>}
     </div>
   </div>;
 }

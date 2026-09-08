@@ -17,9 +17,15 @@ describe('production settings contract', () => {
   it('provides conservative defaults for score repair and AI disclosure', () => {
     assert.deepEqual(normalizeProductionSettings({}), DEFAULT_PRODUCTION_SETTINGS);
     assert.equal(DEFAULT_PRODUCTION_SETTINGS.qualityRepairTriggerScore, 1);
+    assert.equal(DEFAULT_PRODUCTION_SETTINGS.knowledgeEnabled, true);
     assert.equal(DEFAULT_PRODUCTION_SETTINGS.qualityRepairTargetScore, 2);
     assert.equal(DEFAULT_PRODUCTION_SETTINGS.qualityRepairMaxAttempts, 2);
     assert.equal(productionDisclosure(DEFAULT_PRODUCTION_SETTINGS), 'AI生成');
+  });
+
+  it('allows knowledge retrieval to be disabled', () => {
+    assert.equal(normalizeProductionSettings({ knowledgeEnabled: false }).knowledgeEnabled, false);
+    assert.throws(() => normalizeProductionSettings({ knowledgeEnabled: 'false' }), /knowledgeEnabled/i);
   });
 
   it('allows disclosure to be disabled and rejects unsafe repair limits', () => {
@@ -68,6 +74,8 @@ describe('production settings contract', () => {
     assert.equal(effective.dotsModel, 'dots3-note-prev');
     assert.equal(settings.modelApi.reviewModel, null);
     assert.equal(effective.textModel, 'openai/gpt-5.6-terra');
+    assert.equal(effective.capacityFallbackModel, 'openai/gpt-5.6-terra');
+    assert.equal(effective.modelCapacityCooldownMs, 300_000);
     assert.equal(effective.reviewModel, 'openai/gpt-5.4');
     assert.equal(effective.screeningModel, 'openai/gpt-5.6-terra');
     assert.equal(effective.visionModel, 'openai/gpt-5.6-terra');
@@ -93,6 +101,23 @@ describe('production settings contract', () => {
     assert.equal(effectiveModelApiConfig({}, {}).copyGenerationThinking, 'low');
   });
 
+  it('resolves capacity fallback settings with strict environment validation', () => {
+    const configured = effectiveModelApiConfig({
+      capacityFallbackModel: 'openai/gpt-5.6-luna',
+      modelCapacityCooldownMs: 120_000,
+    }, {
+      XHS_CAPACITY_FALLBACK_MODEL: 'openai/gpt-5.6-terra',
+      XHS_MODEL_CAPACITY_COOLDOWN_MS: '180000',
+    });
+    assert.equal(configured.capacityFallbackModel, 'openai/gpt-5.6-luna');
+    assert.equal(configured.modelCapacityCooldownMs, 120_000);
+    assert.equal(effectiveModelApiConfig({}, {
+      XHS_CAPACITY_FALLBACK_MODEL: 'openai/gpt-5.6-luna',
+      XHS_MODEL_CAPACITY_COOLDOWN_MS: '180000',
+    }).modelCapacityCooldownMs, 180_000);
+    assert.throws(() => effectiveModelApiConfig({}, { XHS_MODEL_CAPACITY_COOLDOWN_MS: '1e5' }), /integer/iu);
+  });
+
   it('rejects unsafe model references, credential-bearing proxies and timeouts', () => {
     assert.throws(() => normalizeProductionSettings({
       modelApi: { textModel: 'gpt without provider' },
@@ -103,6 +128,9 @@ describe('production settings contract', () => {
     assert.throws(() => normalizeProductionSettings({
       modelApi: { imageTimeoutMs: 10_000 },
     }), /between 30000 and 540000/iu);
+    assert.throws(() => normalizeProductionSettings({
+      modelApi: { modelCapacityCooldownMs: 10_000 },
+    }), /between 60000 and 3600000/iu);
     assert.throws(() => normalizeProductionSettings({
       modelApi: { copyGenerationProvider: 'UNTRUSTED' },
     }), /OPENCLAW or DOTS/iu);

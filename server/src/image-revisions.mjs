@@ -13,7 +13,7 @@ export function assertImageResultSettings(content, result) {
   }
 }
 
-export async function reviseTaskImages(client, rawTaskId, input, actorUsername) {
+export async function reviseTaskImages(client, rawTaskId, input, actorUsername, actorRole = 'ADMIN') {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('图片修改参数无效');
   for (const key of Object.keys(input)) if (!['revisionId', 'imageRunId', 'nodeId', 'operation', 'imageSettings', 'layouts', 'confirmation'].includes(key)) throw new TypeError(`未知图片修改参数 ${key}`);
   const taskId = normalizeTaskId(rawTaskId);
@@ -32,8 +32,9 @@ export async function reviseTaskImages(client, rawTaskId, input, actorUsername) 
   const original = revision.content;
   const plan = original.imagePlan ?? original.reviewed?.imagePlan ?? original.post?.imagePlan;
   if (!Array.isArray(plan) || plan.length < 3 || plan.length > 5) throw new TypeError('图片计划不完整');
-  if (input.layouts !== undefined && (!Array.isArray(input.layouts) || input.layouts.length !== plan.length)) throw new TypeError('每页布局数量必须与图片计划一致');
-  const imagePlan = plan.map((page, index) => input.layouts === undefined ? { ...page } : { ...page, layout: normalizePageLayout(input.layouts[index], page.kind) });
+  const requestedLayouts = actorRole === 'ADMIN' ? input.layouts : plan.map(() => ({ mode: 'AUTO' }));
+  if (requestedLayouts !== undefined && (!Array.isArray(requestedLayouts) || requestedLayouts.length !== plan.length)) throw new TypeError('每页布局数量必须与图片计划一致');
+  const imagePlan = plan.map((page, index) => requestedLayouts === undefined ? { ...page } : { ...page, layout: normalizePageLayout(requestedLayouts[index], page.kind) });
   const previousLayouts = plan.map(page => normalizePageLayout(page.layout ?? { mode: 'AUTO' }, page.kind));
   const nextLayouts = imagePlan.map(page => normalizePageLayout(page.layout ?? { mode: 'AUTO' }, page.kind));
   const content = { ...original, imagePlan, imageSettings,

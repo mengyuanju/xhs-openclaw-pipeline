@@ -22,6 +22,7 @@ export function GET(request: Request) {
     return ok(await withKnowledgeStore((store: any) => store.listCopyKnowledge({
       page: url.searchParams.get('page'), pageSize: url.searchParams.get('pageSize'),
       label: url.searchParams.get('label') || undefined,
+      query: url.searchParams.get('query') || undefined,
     }), session));
   });
 }

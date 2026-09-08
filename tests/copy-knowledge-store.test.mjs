@@ -54,6 +54,25 @@ describe('copy knowledge store', () => {
     }
   });
 
+  it('paginates and searches copy knowledge without treating query wildcards as patterns', () => {
+    const store = createAdminStore(':memory:');
+    try {
+      store.createCopyKnowledge(knowledgeInput({ title: '第一条方法拆解', labels: ['方法型'] }));
+      store.createCopyKnowledge(knowledgeInput({ title: '第二条故事复盘', labels: ['故事型'] }));
+      store.createCopyKnowledge(knowledgeInput({ title: '含有 100% 信息的标题', labels: ['方法型'] }));
+
+      const firstPage = store.listCopyKnowledge({ page: 1, pageSize: 2 });
+      assert.equal(firstPage.data.length, 2);
+      assert.deepEqual(firstPage.pagination, { page: 1, pageSize: 2, totalItems: 3, totalPages: 2 });
+      assert.equal(store.listCopyKnowledge({ page: 2, pageSize: 2 }).data[0].title, '第一条方法拆解');
+      assert.equal(store.listCopyKnowledge({ query: '故事复盘' }).data[0].title, '第二条故事复盘');
+      assert.equal(store.listCopyKnowledge({ label: '方法型', query: '100%' }).pagination.totalItems, 1);
+      assert.equal(store.listCopyKnowledge({ query: '%' }).pagination.totalItems, 1);
+    } finally {
+      store.close();
+    }
+  });
+
   it('updates saved analysis content and label links without replacing its metadata', () => {
     const store = createAdminStore(':memory:');
     try {

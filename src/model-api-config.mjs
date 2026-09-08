@@ -1,6 +1,8 @@
 import { DEFAULT_WEB_SEARCH_SETTINGS, normalizeWebSearchSettings, resolveWebSearchConfig } from './web-search-config.mjs';
 
 export const DEFAULT_TEXT_MODEL = 'openai/gpt-5.6-sol';
+export const DEFAULT_CAPACITY_FALLBACK_MODEL = 'openai/gpt-5.6-terra';
+export const DEFAULT_MODEL_CAPACITY_COOLDOWN_MS = 300_000;
 export const DEFAULT_IMAGE_MODEL = 'openai/gpt-image-2';
 export const DEFAULT_IMAGE_TIMEOUT_MS = 300_000;
 export const DEFAULT_COPY_GENERATION_PROVIDER = 'OPENCLAW';
@@ -23,6 +25,8 @@ const MODEL_API_FIELDS = new Set([
   'agentProvider',
   ...Object.keys(DEFAULT_WEB_SEARCH_SETTINGS),
   'textModel',
+  'capacityFallbackModel',
+  'modelCapacityCooldownMs',
   'screeningModel',
   'reviewModel',
   'visionModel',
@@ -42,6 +46,8 @@ export const DEFAULT_MODEL_API_SETTINGS = Object.freeze({
   agentProvider: null,
   ...DEFAULT_WEB_SEARCH_SETTINGS,
   textModel: null,
+  capacityFallbackModel: null,
+  modelCapacityCooldownMs: null,
   screeningModel: null,
   reviewModel: null,
   visionModel: null,
@@ -102,6 +108,14 @@ function optionalImageTimeout(value) {
   if (value === undefined || value === null || value === '') return null;
   if (!Number.isInteger(value) || value < 30_000 || value > 540_000) {
     throw new RangeError('imageTimeoutMs must be an integer between 30000 and 540000');
+  }
+  return value;
+}
+
+function optionalModelCapacityCooldown(value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (!Number.isInteger(value) || value < 60_000 || value > 3_600_000) {
+    throw new RangeError('modelCapacityCooldownMs must be an integer between 60000 and 3600000');
   }
   return value;
 }
@@ -176,6 +190,8 @@ export function normalizeModelApiSettings(input = {}) {
   return {
     agentProvider: optionalAgentProvider(input.agentProvider),
     textModel: optionalModelRef(input.textModel, 'textModel'),
+    capacityFallbackModel: optionalModelRef(input.capacityFallbackModel, 'capacityFallbackModel'),
+    modelCapacityCooldownMs: optionalModelCapacityCooldown(input.modelCapacityCooldownMs),
     ...normalizeWebSearchSettings(input),
     screeningModel: optionalModelRef(input.screeningModel, 'screeningModel'),
     reviewModel: optionalModelRef(input.reviewModel, 'reviewModel'),
@@ -202,6 +218,17 @@ function effectiveTimeout(override, environmentValue) {
     throw new RangeError('imageTimeoutMs must be an integer between 30000 and 540000');
   }
   return timeoutMs;
+}
+
+function effectiveModelCapacityCooldown(override, environmentValue) {
+  if (override !== null) return override;
+  if (environmentValue === undefined || String(environmentValue).trim() === '') {
+    return DEFAULT_MODEL_CAPACITY_COOLDOWN_MS;
+  }
+  if (!/^[0-9]+$/u.test(String(environmentValue))) {
+    throw new RangeError('modelCapacityCooldownMs must be an integer between 60000 and 3600000');
+  }
+  return optionalModelCapacityCooldown(Number(environmentValue));
 }
 
 export function effectiveModelApiConfig(input = {}, environment = process.env) {
@@ -234,6 +261,15 @@ export function effectiveModelApiConfig(input = {}, environment = process.env) {
     ),
     dotsModel: validatedDotsModel(settings.dotsModel ?? environment.XHS_DOTS_MODEL),
     textModel,
+    capacityFallbackModel: validatedModelRef(
+      settings.capacityFallbackModel ?? environment.XHS_CAPACITY_FALLBACK_MODEL,
+      DEFAULT_CAPACITY_FALLBACK_MODEL,
+      'capacityFallbackModel',
+    ),
+    modelCapacityCooldownMs: effectiveModelCapacityCooldown(
+      settings.modelCapacityCooldownMs,
+      environment.XHS_MODEL_CAPACITY_COOLDOWN_MS,
+    ),
     screeningModel: validatedModelRef(
       settings.screeningModel ?? environment.XHS_SCREENING_MODEL,
       textModel,
@@ -277,6 +313,8 @@ export function publicModelApiStatus(input = {}, environment = process.env) {
     dotsModel: effective.dotsModel,
     dotsApiKeyConfigured: Boolean(String(environment.XHS_DOTS_API_KEY ?? '').trim()),
     textModel: effective.textModel,
+    capacityFallbackModel: effective.capacityFallbackModel,
+    modelCapacityCooldownMs: effective.modelCapacityCooldownMs,
     screeningModel: effective.screeningModel,
     reviewModel: effective.reviewModel,
     visionModel: effective.visionModel,

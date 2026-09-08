@@ -53,6 +53,81 @@ test('skill loader diagnostics do not invalidate a completed response', async (t
   assert.equal((await client.runText({ prompt: 'plan' })).rawText, 'done');
 });
 
+test('capacity falls back once for text and later calls skip the cooling primary model', async (t) => {
+  const models = [];
+  let primaryFailures = 0;
+  const { client } = await fixture(t, async (_command, args) => {
+    const model = args[args.indexOf('--model') + 1];
+    models.push(model);
+    if (model === 'gpt-5.6-sol' && primaryFailures++ === 0) {
+      return { status: 1, stderr: '', stdout: JSON.stringify({
+        type: 'turn.failed', error: { message: 'Selected model is at capacity. Please try a different model.' },
+      }) };
+    }
+    return success({ rawText: 'done' });
+  });
+
+  const first = await client.runText({ prompt: 'plan' });
+  assert.equal(first.model, 'openai/gpt-5.6-terra');
+  assert.equal(first.execution.fallbackUsed, true);
+  assert.deepEqual(first.execution.fallback, {
+    from: 'openai/gpt-5.6-sol',
+    to: 'openai/gpt-5.6-terra',
+    reason: 'CODEX_MODEL_AT_CAPACITY',
+  });
+  assert.deepEqual(models, ['gpt-5.6-sol', 'gpt-5.6-terra']);
+
+  const second = await client.runText({ prompt: 'plan again' });
+  assert.equal(second.model, 'openai/gpt-5.6-terra');
+  assert.equal(second.execution.fallbackUsed, true);
+  assert.deepEqual(models, ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-terra']);
+});
+
+test('image generation never downgrades its driver after capacity', async (t) => {
+  const models = [];
+  const { client, root } = await fixture(t, async (_command, args) => {
+    models.push(args[args.indexOf('--model') + 1]);
+    return { status: 1, stderr: '', stdout: JSON.stringify({
+      type: 'turn.failed', error: { message: 'Selected model is at capacity. Please try a different model.' },
+    }) };
+  });
+
+  await assert.rejects(client.runImage({ prompt: 'Generate a clear infographic.', outputPath: join(root, 'first.png') }),
+    { code: 'CODEX_MODEL_AT_CAPACITY' });
+  await assert.rejects(client.runImage({ prompt: 'Generate another clear infographic.', outputPath: join(root, 'second.png') }),
+    { code: 'CODEX_MODEL_AT_CAPACITY' });
+  assert.deepEqual(models, ['gpt-5.6-sol'], 'the second image call must wait for the original driver instead of using Terra');
+});
+
+test('image editing never downgrades its driver after capacity', async (t) => {
+  const models = [];
+  const { client, root } = await fixture(t, async (_command, args) => {
+    models.push(args[args.indexOf('--model') + 1]);
+    return { status: 1, stderr: '', stdout: JSON.stringify({
+      type: 'turn.failed', error: { message: 'Selected model is at capacity. Please try a different model.' },
+    }) };
+  });
+  const inputPath = join(root, 'edit-source.png');
+  await sharp({ create: { width: 24, height: 32, channels: 3, background: '#aabbcc' } }).png().toFile(inputPath);
+
+  await assert.rejects(client.runImageEdit({
+    prompt: 'Make the background lighter.', inputPaths: [inputPath], outputPath: join(root, 'edited.png'),
+  }), { code: 'CODEX_MODEL_AT_CAPACITY' });
+  assert.deepEqual(models, ['gpt-5.6-sol']);
+});
+
+test('rate limits and other failures never trigger capacity fallback', async (t) => {
+  const models = [];
+  const { client } = await fixture(t, async (_command, args) => {
+    models.push(args[args.indexOf('--model') + 1]);
+    return { status: 1, stderr: '', stdout: JSON.stringify({
+      type: 'turn.failed', error: { message: 'rate_limit_exceeded' },
+    }) };
+  });
+  await assert.rejects(client.runText({ prompt: 'plan' }), { code: 'CODEX_RATE_LIMITED' });
+  assert.deepEqual(models, ['gpt-5.6-sol']);
+});
+
 test('environment limits reach actual client runners and isolate concurrent output directories', { timeout: 10000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'xhs-codex-concurrent-clients-'));
   t.after(() => rm(root, { recursive: true, force: true }));

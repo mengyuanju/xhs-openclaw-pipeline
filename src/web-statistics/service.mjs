@@ -6,6 +6,8 @@ const PAGE_SIZE = 200;
 const COUNTS_TTL = 60_000;
 const DETAIL_TTL = 300_000;
 const RETRY_DELAY = 30_000;
+const DETAIL_CONCURRENCY = 8;
+const DETAIL_BATCH_SIZE = 32;
 const identity = task => JSON.stringify([task.state, task.currentImageRunId, task.currentCopyRevisionId]);
 const signature = task => JSON.stringify([identity(task), task.updatedAt]);
 const timestamp = value => value ? Date.parse(value) : NaN;
@@ -23,11 +25,14 @@ function freshEntry() {
 }
 
 export function createStatisticsService({ fetchImpl = fetch, now = Date.now, sleep,
-  maxTasks = 20_000, maxScopes = 12 } = {}) {
+  maxTasks = 20_000, maxScopes = 12, detailConcurrency = DETAIL_CONCURRENCY,
+  detailBatchSize = DETAIL_BATCH_SIZE } = {}) {
   const entries = new Map();
-  const schedule = createReadScheduler({ now, sleep });
+  const scheduleCounts = createReadScheduler({ now, sleep });
+  const scheduleDetails = createReadScheduler({ now, sleep, intervalMs: 0, maxConcurrent: detailConcurrency,
+    maxQueued: detailBatchSize, maxWaitMs: 30_000 });
 
-  async function request(root, actor, path) {
+  async function request(root, actor, path, schedule = scheduleCounts) {
     return schedule(async () => {
       let response;
       try {
@@ -125,18 +130,23 @@ export function createStatisticsService({ fetchImpl = fetch, now = Date.now, sle
 
   async function advanceDetails(entry, root, actor, candidates) {
     if (entry.detailFlight) return entry.detailFlight;
-    const task = candidates.find(task => !reusable(entry, task) && (entry.detailErrors.get(task.id)?.retryAt ?? 0) <= now());
-    if (!task) return;
+    const batch = candidates.filter(task => !reusable(entry, task)
+      && (entry.detailErrors.get(task.id)?.retryAt ?? 0) <= now()).slice(0, detailBatchSize);
+    if (!batch.length) return;
     entry.detailFlight = (async () => {
-      try {
-        const detail = await request(root, actor, `/v1/tasks/${task.id}`);
-        if (detail?.id !== task.id) throw new Error('任务明细不匹配');
-        entry.details.set(task.id, { signature: signature(task), identity: identity(task), readAt: now(), value: compactDetail(detail) });
-        entry.detailErrors.delete(task.id);
-      } catch (error) {
-        if (error instanceof ApiError && [401, 403].includes(error.status)) { fail(entry, error); return; }
-        entry.detailErrors.set(task.id, { retryAt: now() + RETRY_DELAY });
-      }
+      let accessError = null;
+      await Promise.all(batch.map(async task => {
+        try {
+          const detail = await request(root, actor, `/v1/tasks/${task.id}`, scheduleDetails);
+          if (detail?.id !== task.id) throw new Error('任务明细不匹配');
+          entry.details.set(task.id, { signature: signature(task), identity: identity(task), readAt: now(), value: compactDetail(detail) });
+          entry.detailErrors.delete(task.id);
+        } catch (error) {
+          if (error instanceof ApiError && [401, 403].includes(error.status)) accessError ??= error;
+          else entry.detailErrors.set(task.id, { retryAt: now() + RETRY_DELAY });
+        }
+      }));
+      if (accessError) fail(entry, accessError);
     })();
     try { await entry.detailFlight; } finally { entry.detailFlight = null; }
   }
@@ -158,20 +168,25 @@ export function createStatisticsService({ fetchImpl = fetch, now = Date.now, sle
       const rows = entry.rows ?? [];
       const filtered = scope === 'personal' ? rows : rows.filter(task => (!username || (username === '__unassigned__'
         ? task.createdByUserId === null : task.createdByUserId === username)) && (!role || task.createdByRole === role));
-      const summary = entry.rows ? summarizeCounts(filtered, range, now()) : null;
-      const creators = scope === 'admin' && entry.rows ? summarizeCounts(rows, range, now()).people.map(person => ({
+      const allSummary = entry.rows ? summarizeCounts(rows, range, now()) : null;
+      const summary = !entry.rows ? null : scope === 'admin' && (username || role) ? summarizeCounts(filtered, range, now()) : allSummary;
+      const creators = scope === 'admin' && allSummary ? allSummary.people.map(person => ({
         username: person.username, displayName: person.displayName, role: person.role,
       })) : undefined;
       if (scope === 'personal' && summary) { delete summary.people; delete summary.stale; }
       let detailSummary = null;
+      let detailRetryAfterMs = COUNTS_TTL;
       if (details && entry.rows) {
         // updatedAt is written whenever an execution changes; older rows cannot finish in this range.
         const candidates = filtered.filter(task => !Number.isFinite(timestamp(task.updatedAt)) || timestamp(task.updatedAt) >= range.startMs);
         if (!countsDue) await advanceDetails(entry, root, actor, candidates);
         const ready = candidates.filter(task => reusable(entry, task));
+        const pending = candidates.filter(task => !reusable(entry, task));
         const values = new Map(ready.map(task => [task.id, entry.details.get(task.id).value]));
         const failed = candidates.filter(task => entry.detailErrors.has(task.id)).length;
         const times = ready.map(task => entry.details.get(task.id).readAt);
+        const nextDetailRetry = pending.map(task => entry.detailErrors.get(task.id)?.retryAt ?? now()).toSorted((a, b) => a - b)[0];
+        detailRetryAfterMs = nextDetailRetry == null ? COUNTS_TTL : Math.max(1500, nextDetailRetry - now());
         detailSummary = { ...summarizeEfficiency(filtered, values, range), total: candidates.length, loaded: ready.length,
           state: ready.length === candidates.length ? 'ready' : failed ? 'partial' : 'loading', failed,
           updatedAt: times.length ? new Date(Math.min(...times)).toISOString() : null };
@@ -182,7 +197,7 @@ export function createStatisticsService({ fetchImpl = fetch, now = Date.now, sle
         progress: { loaded: entry.scan?.rows.size ?? rows.length, total: entry.scan?.total ?? (entry.rows ? rows.length : null) },
         updatedAt: entry.rows ? new Date(entry.updatedAt).toISOString() : null, notice: entry.error,
         retryAfterMs: entry.error ? Math.max(1000, entry.nextRetry - now())
-          : entry.scan || (details && detailSummary?.state !== 'ready') ? 1500 : COUNTS_TTL,
+          : entry.scan ? 1500 : details && detailSummary?.state !== 'ready' ? detailRetryAfterMs : COUNTS_TTL,
       };
     },
   };

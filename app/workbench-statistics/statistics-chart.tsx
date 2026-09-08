@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { init, use } from 'echarts/core';
 import { LineChart, BarChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent, LegendComponent, AriaComponent } from 'echarts/components';
+import { LabelLayout } from 'echarts/features';
 import { CanvasRenderer } from 'echarts/renderers';
-use([LineChart, BarChart, GridComponent, TooltipComponent, LegendComponent, AriaComponent, CanvasRenderer]);
+use([LineChart, BarChart, GridComponent, TooltipComponent, LegendComponent, AriaComponent, LabelLayout, CanvasRenderer]);
 
 export type ChartProps = {
   label: string; labels: string[]; series: { name: string; values: (number | null)[] }[];
@@ -14,13 +15,26 @@ export type ChartProps = {
 export default function StatisticsChart({ label, labels, series, bar = false, horizontal = false, unit = '项' }: ChartProps) {
   const container = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ReturnType<typeof init> | null>(null);
+  const [chartVersion, setChartVersion] = useState(0);
   useEffect(() => {
-    if (!container.current) return;
-    const chart = init(container.current);
-    chartRef.current = chart;
-    const observer = new ResizeObserver(() => chart.resize());
-    observer.observe(container.current);
-    return () => { observer.disconnect(); chart.dispose(); chartRef.current = null; };
+    const element = container.current;
+    if (!element) return;
+    const initializeOrResize = () => {
+      if (!element.clientWidth || !element.clientHeight) return;
+      if (!chartRef.current) {
+        chartRef.current = init(element);
+        setChartVersion(version => version + 1);
+      } else chartRef.current.resize();
+    };
+    const observer = new ResizeObserver(initializeOrResize);
+    observer.observe(element);
+    const frame = requestAnimationFrame(initializeOrResize);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      chartRef.current?.dispose();
+      chartRef.current = null;
+    };
   }, []);
   useEffect(() => {
     const chart = chartRef.current;
@@ -30,18 +44,22 @@ export default function StatisticsChart({ label, labels, series, bar = false, ho
     const category = { type: 'category' as const, data: labels, axisLabel: { color: token('--muted'), width: 84, overflow: 'truncate' as const } };
     const value = { type: 'value' as const, name: unit, minInterval: unit === '项' ? 1 : undefined,
       axisLabel: { color: token('--muted') }, splitLine: { lineStyle: { color: token('--line') } } };
+    const valueLabel = unit === '项' ? '{c}' : `{c} ${unit}`;
     chart.setOption({
       animation: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
       aria: { enabled: true, decal: { show: true }, label: { description: label } },
       color: [token('--red'), token('--green'), token('--amber')],
       textStyle: { fontFamily: 'inherit', color: token('--ink') },
-      tooltip: { trigger: 'axis', renderMode: 'richText' },
+      tooltip: { trigger: 'axis', renderMode: 'richText', valueFormatter: (raw: unknown) => raw == null ? '暂无样本' : `${raw}${unit === '项' ? ' 项' : ` ${unit}`}` },
       legend: { top: 0, textStyle: { color: token('--muted') } },
-      grid: { top: 45, left: horizontal ? 104 : 48, right: 24, bottom: 32 },
+      grid: { top: 54, left: horizontal ? 104 : 52, right: horizontal ? 76 : 28, bottom: 36 },
       xAxis: horizontal ? value : category, yAxis: horizontal ? { ...category, inverse: true } : value,
       series: series.map(item => ({ name: item.name, data: item.values, type: bar ? 'bar' : 'line',
-        barMaxWidth: 22, showSymbol: labels.length < 32, connectNulls: false })),
-    });
-  }, [label, labels, series, bar, horizontal, unit]);
+        barMaxWidth: 26, showSymbol: true, symbolSize: labels.length <= 14 ? 7 : 5, connectNulls: false,
+        label: { show: true, position: horizontal ? 'right' : 'top', distance: 6, formatter: valueLabel,
+          color: token('--ink'), fontSize: 11, backgroundColor: token('--surface'), borderRadius: 3, padding: [2, 3] },
+        labelLayout: { hideOverlap: true }, lineStyle: { width: 2 }, emphasis: { focus: 'series' } })),
+    }, { notMerge: true });
+  }, [label, labels, series, bar, horizontal, unit, chartVersion]);
   return <div className="job-stats-chart" ref={container} role="img" aria-label={label} />;
 }

@@ -52,9 +52,12 @@ export function createRemoteKnowledgeStore(client) {
     remote: true,
     client,
     async listCopyKnowledge(options = {}) {
-      const items = await copies();
+      let items = await copies();
       const label = options.label?.normalize('NFKC').trim().toLocaleLowerCase('zh-CN');
-      return pageOf(label ? items.filter((i) => i.labels.some((l) => l.toLocaleLowerCase('zh-CN') === label)) : items, options);
+      const query = options.query?.normalize('NFKC').trim().toLocaleLowerCase('zh-CN');
+      if (label) items = items.filter((i) => i.labels.some((l) => l.toLocaleLowerCase('zh-CN') === label));
+      if (query) items = items.filter((i) => i.title.normalize('NFKC').toLocaleLowerCase('zh-CN').includes(query));
+      return pageOf(items, options);
     },
     async listCopyKnowledgeLabels() {
       const counts = new Map();

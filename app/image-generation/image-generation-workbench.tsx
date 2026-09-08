@@ -215,7 +215,7 @@ export function ImageGenerationWorkbench() {
               </div>
             </div>
             <div className="field full"><ImageSettingsEditor value={imageSettings} disabled={busy || converting} onChange={setImageSettings} /></div>
-            <p className="field full subtle">布局按生产配置中的种类随机选择，可在配置模块新增布局种类。</p>
+            <p className="field full subtle">布局由系统按生产配置自动匹配；只有管理员可以指定或维护布局模板。</p>
             {result && <div className="field full"><div className="image-revision-actions"><Button unstyled className="button" type="button" disabled={busy || converting} onClick={() => void convertResult()}>{converting ? '正在转换…' : '转换当前成品的格式 / 背景（不调用模型）'}</Button>{result.imageSettings && <Button unstyled className="button" type="button" disabled={busy || converting} onClick={() => { setImageSettings(result.imageSettings!); if (result.imagePlan) updateForm('imagePlan', JSON.stringify(result.imagePlan, null, 2)); }}>恢复当前查看版本的参数</Button>}</div><small>转换仅使用此版本图片和上方格式配置，不应用布局修改。旧图片保留在历史记录中。</small></div>}
             <div className="field full inline">
               <Button unstyled className="button primary" type="submit" disabled={busy || converting}>

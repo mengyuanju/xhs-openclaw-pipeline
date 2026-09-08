@@ -1358,8 +1358,14 @@ export function createAdminStore(databasePath) {
       return readTaskTimingStats(db);
     },
 
-    listTasks({ page = 1, pageSize = 20, importBatchId, status, reviewStatus, query } = {}) {
+    listTasks({ page = 1, pageSize = 20, importBatchId, status, reviewStatus, query, sortBy = 'createdAt', sortOrder = 'desc' } = {}) {
       const pagination = normalizePagination(page, pageSize);
+      if (!['createdAt', 'id'].includes(sortBy)) throw new TypeError('task sort field is invalid');
+      if (!['asc', 'desc'].includes(sortOrder)) throw new TypeError('task sort order is invalid');
+      const orderDirection = sortOrder.toUpperCase();
+      const order = sortBy === 'id'
+        ? `t.id ${orderDirection}`
+        : `t.created_at ${orderDirection}, t.id ${orderDirection}`;
       const clauses = [];
       const parameters = [];
       if (importBatchId !== undefined && importBatchId !== '') {
@@ -1422,7 +1428,7 @@ export function createAdminStore(databasePath) {
         FROM tasks t
         LEFT JOIN task_configs tc ON tc.task_id = t.id
         ${where}
-        ORDER BY t.created_at DESC, t.id DESC LIMIT ? OFFSET ?
+        ORDER BY ${order} LIMIT ? OFFSET ?
       `).all(
         ...parameters,
         pagination.pageSize,

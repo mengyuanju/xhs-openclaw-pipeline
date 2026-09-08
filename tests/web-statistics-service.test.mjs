@@ -83,6 +83,35 @@ test('details are on-demand, incremental, and not fetched for a period preceding
   assert.equal(calls.filter(call => call.url.endsWith('/2')).length, 2);
 });
 
+test('admin detail analysis loads a bounded concurrent batch on each refresh', async () => {
+  const data = fixture(Array.from({ length: 40 }, (_, index) => row(index + 1)));
+  const input = { root, session: session('admin', 'ADMIN'), scope: 'admin', details: true };
+  assert.equal((await data.service.read(input)).details.loaded, 0, 'the first read completes the count scan');
+  const firstBatch = await data.service.read(input);
+  assert.equal(firstBatch.details.loaded, 32);
+  assert.equal(firstBatch.details.state, 'loading');
+  const complete = await data.service.read(input);
+  assert.equal(complete.details.loaded, 40);
+  assert.equal(complete.details.state, 'ready');
+});
+
+test('failed detail reads honor their retry window instead of polling continuously', async () => {
+  const data = fixture([row(1)], { fetchImpl: async rawUrl => {
+    const url = new URL(rawUrl);
+    if (url.pathname.endsWith('/1')) return Response.json({}, { status: 503 });
+    return Response.json({ data: { items: [row(1)], total: 1, offset: 0, limit: 200 } });
+  } });
+  const input = { root, session: session('admin', 'ADMIN'), scope: 'admin', details: true };
+  assert.equal((await data.service.read(input)).details.state, 'loading');
+  const partial = await data.service.read(input);
+  assert.equal(partial.details.state, 'partial');
+  assert.equal(partial.details.failed, 1);
+  assert.equal(partial.retryAfterMs, 30_000);
+  const callCount = data.calls.length;
+  assert.equal((await data.service.read(input)).retryAfterMs, 30_000);
+  assert.equal(data.calls.length, callCount);
+});
+
 test('incomplete legacy data and oversized scans do not become fake totals', async () => {
   const legacy = fixture([], { fetchImpl: async () => Response.json({ data: [row(1)] }) });
   const result = await legacy.service.read({ root, session: session() });
@@ -185,4 +214,22 @@ test('scheduler bounds pending work, serializes active reads, and releases the q
   assert.equal(peak, 1);
   assert.ok(starts[1] - starts[0] >= 1000);
   assert.equal(await schedule(async () => 4), 4);
+});
+
+test('scheduler can opt into a bounded concurrent pool without changing its conservative default', async () => {
+  let active = 0, peak = 0, release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const schedule = createReadScheduler({ intervalMs: 0, maxConcurrent: 3, maxQueued: 6 });
+  const reads = Array.from({ length: 6 }, (_, index) => schedule(async () => {
+    active++;
+    peak = Math.max(peak, active);
+    await gate;
+    active--;
+    return index;
+  }));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(peak, 3);
+  release();
+  assert.deepEqual(await Promise.all(reads), [0, 1, 2, 3, 4, 5]);
+  assert.equal(peak, 3);
 });

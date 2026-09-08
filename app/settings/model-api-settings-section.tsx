@@ -24,6 +24,8 @@ export type ModelApiSettings = {
   dotsBaseUrl: string | null;
   dotsModel: string | null;
   textModel: string | null;
+  capacityFallbackModel: string | null;
+  modelCapacityCooldownMs: number | null;
   screeningModel: string | null;
   reviewModel: string | null;
   visionModel: string | null;
@@ -42,6 +44,8 @@ export type EffectiveModelApi = {
   dotsModel: string;
   dotsApiKeyConfigured: boolean;
   textModel: string;
+  capacityFallbackModel: string;
+  modelCapacityCooldownMs: number;
   screeningModel: string;
   reviewModel: string;
   visionModel: string;
@@ -53,7 +57,7 @@ export type EffectiveModelApi = {
 };
 
 type ModelKey = 'textModel' | 'screeningModel' | 'reviewModel'
-  | 'visionModel' | 'qualityModel' | 'imageModel';
+  | 'visionModel' | 'qualityModel' | 'imageModel' | 'capacityFallbackModel';
 
 const MODEL_FIELDS: Array<{
   key: ModelKey;
@@ -61,6 +65,7 @@ const MODEL_FIELDS: Array<{
   description: string;
 }> = [
   { key: 'textModel', label: '文本生成模型', description: '生成正文与视觉策划。' },
+  { key: 'capacityFallbackModel', label: '容量备用模型', description: '文本、审核、视觉和检索遇到模型满载后使用；不用于图片生成或改图驱动。' },
   { key: 'screeningModel', label: '需求检测模型', description: 'Excel 导入时判断需求强度。' },
   { key: 'reviewModel', label: '阶段审核模型', description: 'Query 与成稿的独立审核。' },
   { key: 'visionModel', label: '视觉验收模型', description: '逐页 OCR、图文对齐与视觉分析。' },
@@ -86,6 +91,7 @@ const MODEL_OPTIONS: Record<ModelKey, readonly string[]> = {
   visionModel: TEXT_MODEL_OPTIONS,
   qualityModel: TEXT_MODEL_OPTIONS,
   imageModel: IMAGE_MODEL_OPTIONS,
+  capacityFallbackModel: TEXT_MODEL_OPTIONS,
 };
 const THINKING_OPTIONS: Array<{ value: CopyGenerationThinking; label: string }> = [
   { value: 'minimal', label: '极简（minimal）' },
@@ -195,6 +201,25 @@ export function ModelApiSettingsSection({
         </Select>
         <small>{field.description} 当前生效：<span className="mono">{effective[field.key]}</span></small>
       </div>)}
+
+      <div className="field">
+        <label htmlFor="model-api-capacity-cooldown">主模型满载冷却时间</label>
+        <Input
+          className="input"
+          id="model-api-capacity-cooldown"
+          type="number"
+          min={60_000}
+          max={3_600_000}
+          step={30_000}
+          value={value.modelCapacityCooldownMs ?? ''}
+          placeholder={String(effective.modelCapacityCooldownMs)}
+          onChange={(event) => onChange(
+            'modelCapacityCooldownMs',
+            event.target.value === '' ? null : Number(event.target.value),
+          )}
+        />
+        <small>单位毫秒；当前生效 {effective.modelCapacityCooldownMs.toLocaleString('zh-CN')} ms。冷却结束后只放行一个主模型探测调用。</small>
+      </div>
 
       <div className="field">
         <label htmlFor="model-api-model-proxy">文本与视觉代理</label>

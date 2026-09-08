@@ -35,12 +35,13 @@ export async function readPromptConfiguration({ store = null, controlPlane = nul
 }
 
 function configuration(templates, settings, productionSettings, knowledge, source) {
+  const enabledKnowledge = productionSettings?.knowledgeEnabled !== false ? knowledge : [];
   const prompts = publishedPromptVersions(templates);
   settings = settings ? normalizePromptPolicy(settings) : null;
-  return { templates, settings, productionSettings, knowledge, source,
+  return { templates, settings, productionSettings, knowledge: enabledKnowledge, source,
     promptRuntime: settings ? createPromptRuntime({ prompts, settings, source }) : null,
     systemPrompt: prompts.TEXT_SYSTEM?.content ?? '', imageSystemPrompt: prompts.IMAGE_SYSTEM?.content ?? '',
-    visualReference: knowledge.filter((item) => item.kind === 'VISUAL')
+    visualReference: enabledKnowledge.filter((item) => item.kind === 'VISUAL')
       .map((item) => ({ ...item.content, itemId: item.itemId, versionId: item.versionId }))
       .filter((item) => !item.generationTarget || item.generationTarget === 'MODEL_IMAGE')
       .sort((a, b) => Number(b.qualityScore ?? 0) - Number(a.qualityScore ?? 0))[0] ?? null };

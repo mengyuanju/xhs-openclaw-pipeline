@@ -121,6 +121,45 @@ test('model capacity shares a bounded cooldown instead of consuming more task at
   assert.equal(b.status().active, 0);
 });
 
+test('named model capacity opens only that model circuit and routes a fallback', async (t) => {
+  const [a, b] = await runtimeFixture(t);
+  const primary = 'openai/gpt-5.6-sol';
+  const fallback = 'openai/gpt-5.6-terra';
+  await assert.rejects(a.run(async () => {
+    throw Object.assign(new Error('at capacity'), { code: 'CODEX_MODEL_AT_CAPACITY' });
+  }, { model: primary }), { code: 'CODEX_MODEL_AT_CAPACITY' });
+
+  assert.equal(b.status().code, null, 'model capacity must not become an account-wide pause');
+  assert.equal(b.selectModel([primary, fallback]).model, fallback);
+  assert.throws(() => b.selectModel([primary]), { code: 'CODEX_MODEL_AT_CAPACITY' });
+  assert.equal(await b.run(async () => 'fallback-ok', { model: fallback }), 'fallback-ok');
+  assert.deepEqual(b.status().modelCooldowns.map(({ model }) => model), [primary]);
+});
+
+test('expired model cooldown permits one half-open probe and closes after success', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1_800_000_000_000 });
+  const root = await mkdtemp(join(tmpdir(), 'xhs-codex-probe-test-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const options = { databasePath: join(root, 'limits.sqlite'), pollMs: 5, modelCapacityCooldownMs: 60_000 };
+  const a = createCodexRuntime(options), b = createCodexRuntime(options);
+  const primary = 'openai/gpt-5.6-sol';
+  const fallback = 'openai/gpt-5.6-terra';
+  await assert.rejects(a.run(async () => {
+    throw Object.assign(new Error('at capacity'), { code: 'CODEX_MODEL_AT_CAPACITY' });
+  }, { model: primary }), { code: 'CODEX_MODEL_AT_CAPACITY' });
+  t.mock.timers.tick(60_000);
+
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const probe = a.run(async () => { entered.resolve(); await release.promise; return 'primary-ok'; }, { model: primary });
+  await entered.promise;
+  assert.equal(b.selectModel([primary, fallback]).model, fallback, 'parallel callers must not duplicate the probe');
+  release.resolve();
+  assert.equal(await probe, 'primary-ok');
+  assert.equal(b.selectModel([primary, fallback]).model, primary);
+  assert.equal(b.status().modelCooldowns.length, 0);
+});
+
 for (const [total, images] of [[2, 1], [5, 2]]) {
 test(`separate Node processes obey shared ${total}/${images} concurrency limits`, { timeout: 15_000 }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'xhs-codex-process-limits-'));

@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { createMockPost } from '../src/pipeline.mjs';
 import { createMockVisualPlan, parseVisualPlanOutput } from '../src/visual-plan.mjs';
 import { generateVisualPlan } from '../src/visual-plan-generation.mjs';
+import { classifyTaskFailure } from '../src/task-recovery.mjs';
+import { BUILTIN_LAYOUT_CATALOG } from '../server/src/layout-catalog.mjs';
 
 const post = createMockPost(3);
 const valid = () => createMockVisualPlan(post);
@@ -79,6 +81,21 @@ test('authentication errors propagate immediately without fallback or extra call
     calls += 1; throw Object.assign(new Error('login required'), { code: 'CODEX_AUTH_REQUIRED' });
   } } }), { code: 'CODEX_AUTH_REQUIRED' });
   assert.equal(calls, 1);
+});
+
+test('governed contract exhaustion carries an accurate code and remains a structure recovery failure', async () => {
+  const invalid = valid();
+  invalid.pages[0].sourceEvidence = ['不在文案中的证据'];
+  let thrown;
+  try {
+    await generateVisualPlan({ post, layoutCatalog: BUILTIN_LAYOUT_CATALOG, client: { async runText() {
+      return { rawText: JSON.stringify(invalid) };
+    } } });
+  } catch (error) { thrown = error; }
+  assert.equal(thrown?.code, 'VISUAL_PLAN_CONTRACT_INVALID');
+  assert.equal(thrown?.stage, 'PLANNING');
+  assert.equal(thrown?.attempts, 3);
+  assert.equal(classifyTaskFailure(thrown), 'STRUCTURE');
 });
 
 test('explicit graphical requirements avoid literal-text ambiguity but visible literals stay checked', () => {

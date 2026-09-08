@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { createControlPlaneApp } from '../src/http-server.mjs';
+import { ControlPlaneConflictError } from '../src/domain.mjs';
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import { hashUserPassword, verifyUserPassword } from '../src/user-auth.mjs';
 
@@ -145,4 +146,68 @@ test('user deletion rejects the current account and the last active administrato
       .deleteUser(2, { actorUsername: 'admin', expectedVersion: 1 }),
     { code: 'LAST_ADMIN' },
   );
+});
+
+test('deletion password failures are rate limited per administrator', async () => {
+  const admin = { id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credentialVersion: 1 };
+  const repository = {
+    ownsPool: true,
+    getUserByUsername: async () => admin,
+    getTask: async () => ({ id: 9, createdByUserId: 'admin' }),
+    permanentlyDeleteTask: async () => {
+      throw new ControlPlaneConflictError('DELETION_PASSWORD_INVALID', 'wrong password');
+    },
+  };
+  await withServer(repository, async (root) => {
+    const request = () => fetch(`${root}/v1/tasks/9/permanent`, {
+      method: 'DELETE', headers: { ...actorHeaders('admin', 'ADMIN'), 'content-type': 'application/json' },
+      body: JSON.stringify({ deletionPassword: 'wrong-password' }),
+    });
+    for (let attempt = 0; attempt < 5; attempt += 1) assert.equal((await request()).status, 409);
+    const blocked = await request();
+    assert.equal(blocked.status, 429);
+    assert.ok(Number(blocked.headers.get('retry-after')) > 0);
+  });
+});
+
+test('setting a deletion password rate limits invalid current passwords', async () => {
+  const admin = { id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credentialVersion: 1 };
+  const repository = {
+    ownsPool: true,
+    getUserByUsername: async () => admin,
+    setOwnDeletionPassword: async () => {
+      throw new ControlPlaneConflictError('CURRENT_PASSWORD_INVALID', 'wrong password');
+    },
+  };
+  await withServer(repository, async (root) => {
+    const request = () => fetch(`${root}/v1/profile/deletion-password`, {
+      method: 'POST', headers: { ...actorHeaders('admin', 'ADMIN'), 'content-type': 'application/json' },
+      body: JSON.stringify({ currentPassword: 'wrong-password', deletionPassword: 'delete-secret' }),
+    });
+    for (let attempt = 0; attempt < 5; attempt += 1) assert.equal((await request()).status, 409);
+    assert.equal((await request()).status, 429);
+  });
+});
+
+test('deletion password must differ from the verified login password', async () => {
+  const passwordHash = await hashUserPassword('login-secret');
+  let updateReached = false;
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql) {
+      if (String(sql).includes('SELECT * FROM app_users')) {
+        return { rows: [{ username: 'admin', status: 'ACTIVE', password_hash: passwordHash }] };
+      }
+      updateReached = true;
+      return { rows: [] };
+    },
+  } });
+
+  await assert.rejects(
+    repository.setOwnDeletionPassword('admin', {
+      currentPassword: 'login-secret',
+      deletionPassword: 'login-secret',
+    }),
+    { code: 'DELETION_PASSWORD_REUSED' },
+  );
+  assert.equal(updateReached, false);
 });

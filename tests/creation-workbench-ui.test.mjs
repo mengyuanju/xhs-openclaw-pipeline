@@ -77,6 +77,47 @@ test('personal and image-work rows expose safe image requeue controls', async ()
   assert.match(source, />重试生图<\/Button>/u);
 });
 
+test('admin queue cancellation and permanent deletion have distinct guarded controls', async () => {
+  const source = await readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8');
+  assert.match(source, /async function cancelQueuedTask\(task: DistributedTask\)/u);
+  assert.match(source, /已取消排队，可随时一键重新排队/u);
+  assert.match(source, /canDiscard && !canCancelQueue/u);
+  assert.doesNotMatch(source, /void discardTask\(task\); \}\}><Trash2 size=\{14\} \/>取消排队/u);
+  assert.match(source, /PERMANENT_DELETE_STATES\.includes\(task\.state\)/u);
+  assert.match(source, /CANCELLED_EXECUTION_SETTLE_MS = 3 \* 60_000/u);
+  assert.match(source, /cancelledExecutionSettled/u);
+  assert.match(source, /deletionError && <div className="notice error" role="alert"/u);
+  assert.match(source, /const permanentlyDeletableTasks = selectedTasks\.filter\(isPermanentlyDeletableTask\)/u);
+  assert.match(source, /\/v1\/tasks\/batch-permanent-delete/u);
+  assert.match(source, /批量永久删除 \{batchPermanentDeleteTasks\.length\} 条任务/u);
+  assert.match(source, /单次最多永久删除 20 条/u);
+});
+
+test('list state, saved views and centralized batch handling are available to administrators', async () => {
+  const [workbench, page, proxy, listState] = await Promise.all([
+    readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/[view]/page.tsx'), 'utf8'),
+    readFile(projectFile('app/api/control-plane/[...path]/route.ts'), 'utf8'),
+    readFile(projectFile('app/workbench/list-state.ts'), 'utf8'),
+  ]);
+  assert.match(page, /parseWorkbenchListState/u);
+  assert.match(page, /initialListState=\{initialListState\}/u);
+  assert.match(workbench, /workbenchListSearch/u);
+  assert.match(workbench, /router\.replace\(href, \{ scroll: false \}\)/u);
+  assert.match(listState, /createdByUserId|deduplicateQuery|attention|taskId/u);
+  assert.match(workbench, /<SelectItem value=\{DEFAULT_TASK_VIEW_VALUE\}>默认视图<\/SelectItem>/u);
+  assert.match(workbench, /function applyDefaultView\(\)[\s\S]*setSort\(DEFAULT_WORKBENCH_LIST_STATE\.sort\)[\s\S]*setPageSize\(DEFAULT_WORKBENCH_LIST_STATE\.pageSize\)/u);
+  assert.match(workbench, /保存当前视图/u);
+  assert.match(workbench, /我的失败任务/u);
+  assert.match(workbench, /长期无进度/u);
+  assert.match(workbench, /\/v1\/tasks\/batch-actions/u);
+  assert.match(workbench, /\/v1\/tasks\/batch-archive/u);
+  assert.match(workbench, /\/v1\/tasks\/batch-permanent-delete/u);
+  assert.match(workbench, /选择当前页全部任务/u);
+  assert.match(proxy, /\/v1\/tasks\/batch-permanent-delete/u);
+  assert.match(proxy, /仅管理员可使用任务集中处理功能/u);
+});
+
 test('creation dialog accepts a single batch textarea and creates one remote batch', async () => {
   const [workbench, reviewDialog, styles, jobsPage, jobsWorkbench] = await Promise.all([
     readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
@@ -130,7 +171,12 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(reviewDialog, /href=\{apiPath\(`\/v1\/tasks\/\$\{detail\.id\}\/archive`\)\}/u);
   assert.match(reviewDialog, /<Download size=\{14\} \/>下载资源/u);
   assert.doesNotMatch(reviewDialog, /approve-delivery|提交图文审核/u);
-  assert.match(workbench, /按 Query 关键字搜索/u);
+  assert.match(workbench, /Query 关键词或 #ID/u);
+  assert.match(workbench, /TASK_SORT_OPTIONS\.map/u);
+  assert.match(workbench, /search\.set\('sortBy', sortBy\)/u);
+  assert.match(workbench, /search\.set\('sortOrder', sortOrder\)/u);
+  assert.match(workbench, /search\.set\('taskId', String\(searchedTaskId\)\)/u);
+  assert.match(workbench, /创建 \/ 开始 \/ 耗时/u);
   assert.match(workbench, /按 Query 去重/u);
   assert.match(workbench, /去重后 \$\{total\} 个 Query/u);
   assert.match(workbench, /search\.set\('deduplicateQuery', 'true'\)/u);
@@ -140,7 +186,7 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(workbench, /compatibilitySearch\.set\('mine', 'true'\)/u);
   assert.match(workbench, /compatibilityTasks\s*\?\?/u);
   assert.match(workbench, /matchesWorkbenchView\(task, view, creatorUserId\)/u);
-  assert.match(workbench, /sort\(compareTasksByStatePriority\)/u);
+  assert.match(workbench, /sort\(\(left, right\) => compareTasks\(left, right, sort\)\)/u);
   assert.match(workbench, /workbench-pagination/u);
   assert.match(workbench, />重试<\/Button>/u);
   assert.match(workbench, />废弃<\/Button>/u);

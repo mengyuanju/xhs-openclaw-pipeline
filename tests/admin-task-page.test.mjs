@@ -8,12 +8,17 @@ test('admin task pages preserve server pagination beyond 200 and combine role, s
   const result = await loadAdminTaskPage(async (path) => {
     calls.push(path);
     return path.endsWith('/health') ? { capabilities: { adminTaskFilters: true } } : page;
-  }, { createdByRole: 'USER', state: 'IMAGE_FAILED', query: '城市 & 徒步', limit: 20, offset: 240 });
+  }, { createdByRole: 'USER', state: 'IMAGE_FAILED', taskId: 357, query: '城市 & 徒步',
+    attention: 'FAILED', sortBy: 'createdAt', sortOrder: 'asc', limit: 20, offset: 240 });
   assert.equal(result, page);
   const search = new URL(calls.at(-1), 'http://localhost').searchParams;
   assert.equal(search.get('createdByRole'), 'USER');
   assert.equal(search.get('state'), 'IMAGE_FAILED');
   assert.equal(search.get('query'), '城市 & 徒步');
+  assert.equal(search.get('taskId'), '357');
+  assert.equal(search.get('attention'), 'FAILED');
+  assert.equal(search.get('sortBy'), 'createdAt');
+  assert.equal(search.get('sortOrder'), 'asc');
   assert.equal(search.get('offset'), '240');
   assert.equal(search.get('includeTotal'), 'true');
   assert.equal(search.has('mine') || search.has('nodeId') || search.has('createdByUserId'), false);

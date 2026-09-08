@@ -6,6 +6,7 @@ import { normalizeLayoutPresets } from '../server/src/layout-library.mjs';
 import { normalizeLayoutCatalog } from '../server/src/layout-catalog.mjs';
 
 export const DEFAULT_PRODUCTION_SETTINGS = Object.freeze({
+  knowledgeEnabled: true,
   qualityRepairEnabled: true,
   qualityRepairTriggerScore: 1,
   qualityRepairTargetScore: 2,
@@ -48,6 +49,11 @@ export function normalizeProductionSettings(input = {}) {
     throw new TypeError('production settings must be an object');
   }
   const settings = {
+    knowledgeEnabled: booleanSetting(
+      input.knowledgeEnabled,
+      DEFAULT_PRODUCTION_SETTINGS.knowledgeEnabled,
+      'knowledgeEnabled',
+    ),
     qualityRepairEnabled: booleanSetting(
       input.qualityRepairEnabled,
       DEFAULT_PRODUCTION_SETTINGS.qualityRepairEnabled,

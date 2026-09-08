@@ -12,6 +12,7 @@ import { claimRequestExpiry } from './claim-request.mjs';
 import { saveModelCall, listModelCalls, getModelCall } from './model-call-traces.mjs';
 import { hashUserPassword, verifyUserPassword } from './user-auth.mjs';
 import { heartbeatExecutions, recoverStaleExecutions } from './execution-recovery.mjs';
+import { normalizeSavedTaskView, normalizeTaskAttention } from './task-view-filters.mjs';
 
 import pg from 'pg';
 
@@ -36,6 +37,7 @@ import {
 
 const { Pool } = pg;
 const MAX_IMAGE_ATTEMPTS = 3;
+const PERMANENT_DELETE_STATES = Object.freeze(['COPY_FAILED', 'IMAGE_FAILED', 'REVIEWED', 'CANCELLED']);
 
 function hasLayoutCatalog(snapshot) {
   return Boolean(snapshot?.productionSettings?.production?.value?.layoutCatalog);
@@ -88,6 +90,7 @@ function taskFrom(row) {
     aiDisclosureEnabled: row.ai_disclosure_enabled ?? true,
     skipCopyReview: row.skip_copy_review === true,
     state: row.state,
+    cancelledFromState: row.cancelled_from_state ?? null,
     imageReviewedAt: row.image_reviewed_at ?? null,
     imageReviewedByUserId: row.image_reviewed_by_user_id ?? null,
     createdByNodeId: row.created_by_node_id,
@@ -124,6 +127,40 @@ function normalizedUsername(value) {
   return username;
 }
 
+function normalizedPermanentDeletionTaskIds(value) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 20) {
+    throw new RangeError('taskIds must contain between 1 and 20 items');
+  }
+  return [...new Set(value.map((taskId) => normalizeTaskId(taskId)))].sort((left, right) => left - right);
+}
+
+async function assertPermanentDeletionActor(client, actorUsername, deletionPassword) {
+  const actor = await client.query("SELECT * FROM app_users WHERE username = $1 AND status = 'ACTIVE' FOR UPDATE", [actorUsername]);
+  const user = actor.rows[0];
+  if (!user || user.role !== 'ADMIN' || !user.deletion_password_hash
+    || !await verifyUserPassword(deletionPassword, user.deletion_password_hash)) {
+    throw new ControlPlaneConflictError('DELETION_PASSWORD_INVALID', 'deletion password is incorrect or has not been set');
+  }
+}
+
+async function assertPermanentlyDeletableTask(client, taskId) {
+  const task = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
+  if (!task.rows[0]) throw new ControlPlaneNotFoundError('task not found');
+  if (!PERMANENT_DELETE_STATES.includes(task.rows[0].state)) {
+    throw new ControlPlaneConflictError('TASK_MUST_BE_INACTIVE', '请先取消排队或等待任务结束，再永久删除');
+  }
+  if (task.rows[0].state === 'CANCELLED'
+    && ['COPY_RUNNING', 'IMAGE_RUNNING'].includes(task.rows[0].cancelled_from_state)) {
+    const settled = await client.query(`
+      SELECT updated_at <= now() - interval '3 minutes' AS ready
+      FROM tasks WHERE id = $1
+    `, [taskId]);
+    if (!settled.rows[0]?.ready) {
+      throw new ControlPlaneConflictError('TASK_CANCELLATION_SETTLING', '执行机仍在确认取消，请在取消后等待3分钟再永久删除');
+    }
+  }
+}
+
 function normalizedDisplayName(value) {
   const displayName = String(value ?? '').replace(/\s+/gu, ' ').trim();
   if (!displayName || [...displayName].length > 80) throw new TypeError('displayName must contain 1 to 80 characters');
@@ -145,6 +182,7 @@ function publicUserFrom(row) {
     role: row.role,
     status: row.status,
     mustChangePassword: row.must_change_password,
+    hasDeletionPassword: Boolean(row.deletion_password_hash),
     credentialVersion: Number(row.credential_version),
     version: Number(row.version),
     createdAt: row.created_at,
@@ -243,6 +281,62 @@ function normalizedTaskQuery(value) {
   return query || null;
 }
 
+function savedTaskViewFrom(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    ownerUsername: row.owner_username,
+    name: row.name,
+    viewKey: row.view_key,
+    filters: row.filters,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function normalizedTaskSort(sortBy = 'priority', sortOrder = 'desc') {
+  const field = String(sortBy || 'priority');
+  const direction = String(sortOrder || 'desc').toLowerCase();
+  if (!['priority', 'createdAt', 'id'].includes(field)) throw new TypeError('task sort field is invalid');
+  if (!['asc', 'desc'].includes(direction)) throw new TypeError('task sort order is invalid');
+  return { field, direction: direction.toUpperCase() };
+}
+
+function taskSortOrder({ field, direction }, prefix = '') {
+  if (!['', 'page.'].includes(prefix)) throw new TypeError('task sort prefix is invalid');
+  if (field === 'id') return `${prefix}id ${direction}`;
+  if (field === 'createdAt') return `${prefix}created_at ${direction}, ${prefix}id ${direction}`;
+  return `${taskStateOrder(`${prefix}state`)}, ${prefix}created_at DESC, ${prefix}id DESC`;
+}
+
+function automaticReviewImagePlan(plan) {
+  if (!Array.isArray(plan) || plan.length < 3 || plan.length > 5) throw new TypeError('approved copy image plan is unavailable');
+  return plan.map((page) => {
+    if (!page || typeof page !== 'object' || Array.isArray(page)) throw new TypeError('approved copy image plan is invalid');
+    return { ...page, layout: { mode: 'AUTO' } };
+  });
+}
+
+function contentWithAutomaticReviewLayouts(content, { baseRevisionId, nodeId }) {
+  const original = normalizeJson(content, 'copy revision content', 5_000_000);
+  const imagePlan = automaticReviewImagePlan(original.imagePlan ?? original.reviewed?.imagePlan ?? original.post?.imagePlan);
+  const reviewed = original.reviewed && typeof original.reviewed === 'object' && !Array.isArray(original.reviewed)
+    ? { ...original.reviewed, imagePlan }
+    : original.reviewed;
+  return {
+    ...original,
+    imagePlan,
+    ...(reviewed ? { reviewed } : {}),
+    manualReview: {
+      edited: false,
+      layoutsForcedAutomatic: true,
+      baseRevisionId,
+      reviewedByNodeId: nodeId,
+      submittedAt: new Date().toISOString(),
+    },
+  };
+}
+
 // Queries are entered by people, so insignificant casing and whitespace should
 // not produce separate rows when the task list is de-duplicated.
 function taskQueryIdentity(column = 'query') {
@@ -274,14 +368,15 @@ async function configurationSnapshots(client, tasks, kind) {
       LEFT JOIN prompt_versions v ON v.template_id = t.id AND v.status = 'PUBLISHED'
       ORDER BY t.kind
     `);
-  const knowledge = await client.query(`
+  const knowledgeEnabled = settings.rows.find((row) => row.key === 'production')?.value?.knowledgeEnabled !== false;
+  const knowledge = knowledgeEnabled ? await client.query(`
       SELECT i.id, i.kind, i.name, v.id AS version_id, v.version, v.content,
              v.storage_path, v.content_sha256
       FROM knowledge_items i
       JOIN knowledge_versions v ON v.item_id = i.id AND v.status = 'PUBLISHED'
       WHERE i.status = 'ACTIVE'
       ORDER BY i.kind, i.id
-    `);
+    `) : { rows: [] };
   const revision = kind === 'IMAGE'
     ? await client.query('SELECT * FROM copy_revisions WHERE id = ANY($1::bigint[])', [tasks.map(task => task.current_copy_revision_id)])
     : { rows: [] };
@@ -385,7 +480,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, adminTaskFilters: true, imageControlsVersion: 1 } };
+      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, adminTaskFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -522,6 +617,26 @@ export class PostgresControlPlaneRepository {
     return publicUserFrom(result.rows[0]);
   }
 
+  async setOwnDeletionPassword(rawUsername, { currentPassword, deletionPassword }) {
+    const username = normalizedUsername(rawUsername);
+    const current = await this.pool.query(
+      "SELECT * FROM app_users WHERE username = $1 AND status = 'ACTIVE'",
+      [username],
+    );
+    if (!current.rows[0] || !await verifyUserPassword(currentPassword, current.rows[0].password_hash)) {
+      throw new ControlPlaneConflictError('CURRENT_PASSWORD_INVALID', 'current password is incorrect');
+    }
+    if (deletionPassword === currentPassword) {
+      throw new ControlPlaneConflictError('DELETION_PASSWORD_REUSED', 'deletion password must differ from the login password');
+    }
+    const deletionPasswordHash = await hashUserPassword(deletionPassword);
+    const result = await this.pool.query(`
+      UPDATE app_users SET deletion_password_hash = $1, version = version + 1, updated_at = now()
+      WHERE username = $2 RETURNING *
+    `, [deletionPasswordHash, username]);
+    return publicUserFrom(result.rows[0]);
+  }
+
   async resetUserPassword(rawUserId) {
     const userId = normalizeTaskId(rawUserId);
     const passwordHash = await hashUserPassword('123456');
@@ -616,8 +731,12 @@ export class PostgresControlPlaneRepository {
     nodeId = null,
     createdByUserId = null,
     createdByRole = null,
+    taskId = null,
     query = null,
     deduplicateQuery = false,
+    attention = null,
+    sortBy = 'priority',
+    sortOrder = 'desc',
     limit = 50,
     offset = 0,
     includeTotal = false,
@@ -649,6 +768,17 @@ export class PostgresControlPlaneRepository {
       filters.push(`EXISTS (SELECT 1 FROM app_users role_creator
         WHERE role_creator.username = tasks.created_by_user_id AND role_creator.role = $${values.length})`);
     }
+    if (taskId !== null && taskId !== undefined && taskId !== '') {
+      values.push(normalizeTaskId(taskId));
+      filters.push(`id = $${values.length}`);
+    }
+    const taskAttention = normalizeTaskAttention(attention);
+    if (taskAttention) {
+      const stale = `(state IN ('COPY_RUNNING', 'IMAGE_RUNNING')
+        AND COALESCE(last_activity_at, execution_started_at, updated_at, created_at) <= now() - interval '30 minutes')`;
+      const failed = `(state IN ('COPY_FAILED', 'IMAGE_FAILED') OR current_stage = 'IMAGE_RETRY_EXHAUSTED')`;
+      filters.push(taskAttention === 'STALE' ? stale : taskAttention === 'FAILED' ? failed : `(${stale} OR ${failed})`);
+    }
     const searchQuery = normalizedTaskQuery(query);
     if (searchQuery !== null) {
       values.push(searchQuery);
@@ -656,6 +786,9 @@ export class PostgresControlPlaneRepository {
     }
     const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
     const queryIdentity = taskQueryIdentity('query');
+    const taskSort = normalizedTaskSort(sortBy, sortOrder);
+    const pageOrder = taskSortOrder(taskSort);
+    const resultOrder = taskSortOrder(taskSort, 'page.');
     const taskPage = deduplicateQuery ? `
         SELECT * FROM (
           SELECT DISTINCT ON (${queryIdentity}) * FROM tasks
@@ -677,7 +810,7 @@ export class PostgresControlPlaneRepository {
         creator.role AS creator_role
       FROM (
         ${taskPage}
-        ORDER BY ${taskStateOrder('state')}, created_at DESC, id DESC
+        ORDER BY ${pageOrder}
         LIMIT $${pageValues.length - 1} OFFSET $${pageValues.length}
       ) page
       LEFT JOIN task_executions e ON e.id = page.current_execution_id
@@ -690,7 +823,7 @@ export class PostgresControlPlaneRepository {
         AND successful_image.kind = 'IMAGE' AND successful_image.status = 'SUCCEEDED'
       LEFT JOIN executor_nodes n ON n.id = COALESCE(e.node_id, successful_image.node_id)
       LEFT JOIN app_users creator ON creator.username = page.created_by_user_id
-      ORDER BY ${taskStateOrder('page.state')}, page.created_at DESC, page.id DESC
+      ORDER BY ${resultOrder}
     `, pageValues),
       includeTotal
         ? this.pool.query(countSql, values)
@@ -1045,11 +1178,12 @@ export class PostgresControlPlaneRepository {
     nodeId: rawNodeId,
     edits: rawEdits,
     aiDisclosureEnabled: rawAiDisclosureEnabled,
-  }) {
+  }, { actorRole = 'ADMIN' } = {}) {
     const taskId = normalizeTaskId(rawTaskId);
     const revisionId = normalizeTaskId(rawRevisionId);
     const nodeId = normalizeNodeId(rawNodeId);
-    const edits = rawEdits === undefined ? null : normalizeCopyReviewEdits(rawEdits);
+    let edits = rawEdits === undefined ? null : normalizeCopyReviewEdits(rawEdits);
+    if (edits && actorRole !== 'ADMIN') edits = { ...edits, imagePlan: automaticReviewImagePlan(edits.imagePlan) };
     if (rawAiDisclosureEnabled !== undefined && typeof rawAiDisclosureEnabled !== 'boolean') {
       throw new TypeError('aiDisclosureEnabled must be a boolean');
     }
@@ -1071,15 +1205,16 @@ export class PostgresControlPlaneRepository {
       const node = await client.query('SELECT id FROM executor_nodes WHERE id = $1', [nodeId]);
       if (!node.rows[0]) throw new ControlPlaneNotFoundError('executor node is not registered');
       let approvedRevisionId = revisionId;
-      if (edits) {
+      const reviewedContent = edits
+        ? contentWithReviewEdits(revision.rows[0].content, edits, { baseRevisionId: revisionId, nodeId })
+        : actorRole !== 'ADMIN'
+          ? contentWithAutomaticReviewLayouts(revision.rows[0].content, { baseRevisionId: revisionId, nodeId })
+          : null;
+      if (reviewedContent) {
         const revisionNumber = Number((await client.query(`
           SELECT COALESCE(MAX(revision), 0) + 1 AS revision
           FROM copy_revisions WHERE task_id = $1
         `, [taskId])).rows[0].revision);
-        const reviewedContent = contentWithReviewEdits(revision.rows[0].content, edits, {
-          baseRevisionId: revisionId,
-          nodeId,
-        });
         const reviewedRevision = await client.query(`
           INSERT INTO copy_revisions(
             task_id, execution_id, revision, content, approved_at, approved_by_node_id, approval_mode
@@ -1311,16 +1446,77 @@ export class PostgresControlPlaneRepository {
     });
   }
 
-  async reviseImages(taskId, input, actorUsername) {
-    return transaction(this.pool, async client => taskFrom(await reviseTaskImages(client, taskId, input, actorUsername)));
+  async getTaskActionSummary(rawTaskId) {
+    const result = await this.pool.query('SELECT * FROM tasks WHERE id = $1', [normalizeTaskId(rawTaskId)]);
+    return taskFrom(result.rows[0]);
   }
 
-  async requeueImageTask(rawTaskId) {
+  async listSavedTaskViews(rawOwnerUsername) {
+    const ownerUsername = normalizedUsername(rawOwnerUsername);
+    const result = await this.pool.query(`
+      SELECT * FROM saved_task_views
+      WHERE owner_username = $1
+      ORDER BY updated_at DESC, id DESC
+    `, [ownerUsername]);
+    return result.rows.map(savedTaskViewFrom);
+  }
+
+  async saveTaskView(rawOwnerUsername, input) {
+    const ownerUsername = normalizedUsername(rawOwnerUsername);
+    const view = normalizeSavedTaskView(input);
+    const result = await this.pool.query(`
+      INSERT INTO saved_task_views(owner_username, name, view_key, filters)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT(owner_username, name) DO UPDATE SET
+        view_key = EXCLUDED.view_key, filters = EXCLUDED.filters, updated_at = now()
+      RETURNING *
+    `, [ownerUsername, view.name, view.viewKey, view.filters]);
+    return savedTaskViewFrom(result.rows[0]);
+  }
+
+  async deleteSavedTaskView(rawOwnerUsername, rawViewId) {
+    const ownerUsername = normalizedUsername(rawOwnerUsername);
+    const result = await this.pool.query(`
+      DELETE FROM saved_task_views WHERE id = $1 AND owner_username = $2 RETURNING id
+    `, [normalizeTaskId(rawViewId), ownerUsername]);
+    if (!result.rows[0]) throw new ControlPlaneNotFoundError('saved task view not found');
+    return { id: Number(result.rows[0].id), deleted: true };
+  }
+
+  async requeueCancelledTask(rawTaskId) {
     const taskId = normalizeTaskId(rawTaskId);
     return transaction(this.pool, async (client) => {
       const result = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
       const task = result.rows[0];
       if (!task) throw new ControlPlaneNotFoundError('task not found');
+      if (task.state !== 'CANCELLED' || !['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.cancelled_from_state)) {
+        throw new ControlPlaneConflictError('REQUEUE_UNAVAILABLE', 'only a cancelled queued task can be queued again');
+      }
+      const updated = await client.query(`
+        UPDATE tasks SET state = $2, cancelled_from_state = NULL, current_stage = $2,
+          progress_percent = 0, progress_message = $3, finished_at = NULL, error = NULL,
+          last_activity_at = now(), updated_at = now()
+        WHERE id = $1 RETURNING *
+      `, [taskId, task.cancelled_from_state, task.cancelled_from_state === 'IMAGE_QUEUED' ? '等待图片执行机领取' : '等待文案执行机领取']);
+      return taskFrom(updated.rows[0]);
+    });
+  }
+
+  async reviseImages(taskId, input, actorUsername, actorRole = 'ADMIN') {
+    return transaction(this.pool, async client => taskFrom(await reviseTaskImages(client, taskId, input, actorUsername, actorRole)));
+  }
+
+  async requeueImageTask(rawTaskId, { retryOnly = false } = {}) {
+    const taskId = normalizeTaskId(rawTaskId);
+    if (typeof retryOnly !== 'boolean') throw new TypeError('retryOnly must be a boolean');
+    return transaction(this.pool, async (client) => {
+      const result = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
+      const task = result.rows[0];
+      if (!task) throw new ControlPlaneNotFoundError('task not found');
+      if (retryOnly && !['IMAGE_RUNNING', 'IMAGE_FAILED'].includes(task.state)
+        && !(task.state === 'COPY_REVIEW_PENDING' && task.current_stage === 'IMAGE_RETRY_EXHAUSTED')) {
+        throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'only running or failed image work can be retried in bulk');
+      }
       if (!['IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'COPY_REVIEW_PENDING', 'MANUAL_ARCHIVE'].includes(task.state)) {
         throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'task does not have approved copy that can be queued for image generation');
       }
@@ -1367,12 +1563,16 @@ export class PostgresControlPlaneRepository {
     });
   }
 
-  async cancelTask(rawTaskId) {
+  async cancelTask(rawTaskId, { queuedOnly = false } = {}) {
     const taskId = normalizeTaskId(rawTaskId);
+    if (typeof queuedOnly !== 'boolean') throw new TypeError('queuedOnly must be a boolean');
     return transaction(this.pool, async (client) => {
       const result = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
       const task = result.rows[0];
       if (!task) throw new ControlPlaneNotFoundError('task not found');
+      if (queuedOnly && !['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state)) {
+        throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'only queued work can be cancelled in bulk');
+      }
       if (task.state === 'CANCELLED') return taskFrom(task);
       if (task.current_execution_id) {
         const execution = await client.query(`
@@ -1397,12 +1597,53 @@ export class PostgresControlPlaneRepository {
       const updated = await client.query(`
         UPDATE tasks SET
           state = 'CANCELLED', current_execution_id = NULL, current_stage = 'CANCELLED',
-          progress_message = '任务已被人工废弃', last_activity_at = now(),
+          cancelled_from_state = state,
+          progress_message = CASE WHEN state IN ('COPY_QUEUED', 'IMAGE_QUEUED')
+            THEN '已取消排队，可由管理员重新加入队列' ELSE '任务已被人工废弃' END,
+          last_activity_at = now(),
           finished_at = now(), updated_at = now()
         WHERE id = $1
         RETURNING *
       `, [taskId]);
       return taskFrom(updated.rows[0]);
+    });
+  }
+
+  async permanentlyDeleteTask(rawTaskId, { actorUsername: rawActorUsername, deletionPassword, beforeDelete = null }) {
+    const taskId = normalizeTaskId(rawTaskId);
+    const actorUsername = normalizedUsername(rawActorUsername);
+    if (beforeDelete !== null && typeof beforeDelete !== 'function') throw new TypeError('beforeDelete must be a function');
+    return transaction(this.pool, async (client) => {
+      await assertPermanentDeletionActor(client, actorUsername, deletionPassword);
+      await assertPermanentlyDeletableTask(client, taskId);
+      if (beforeDelete) await beforeDelete(taskId);
+      await client.query('DELETE FROM tasks WHERE id = $1', [taskId]);
+      return { id: taskId };
+    });
+  }
+
+  async permanentlyDeleteTasks(rawTaskIds, { actorUsername: rawActorUsername, deletionPassword, beforeDelete = null }) {
+    const taskIds = normalizedPermanentDeletionTaskIds(rawTaskIds);
+    const actorUsername = normalizedUsername(rawActorUsername);
+    if (beforeDelete !== null && typeof beforeDelete !== 'function') throw new TypeError('beforeDelete must be a function');
+    return transaction(this.pool, async (client) => {
+      await assertPermanentDeletionActor(client, actorUsername, deletionPassword);
+      const eligible = [];
+      const failed = [];
+      for (const taskId of taskIds) {
+        try {
+          await assertPermanentlyDeletableTask(client, taskId);
+          eligible.push(taskId);
+        } catch (error) {
+          if (!(error instanceof ControlPlaneNotFoundError) && !(error instanceof ControlPlaneConflictError)) throw error;
+          failed.push({ id: taskId, code: error.code, message: error.message });
+        }
+      }
+      for (const taskId of eligible) {
+        if (beforeDelete) await beforeDelete(taskId);
+        await client.query('DELETE FROM tasks WHERE id = $1', [taskId]);
+      }
+      return { succeeded: eligible, failed };
     });
   }
 

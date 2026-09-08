@@ -1,21 +1,25 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
-import { Checkbox, Textarea } from '@/components/ui/input';
+import { Checkbox, Input, Textarea } from '@/components/ui/input';
 import { SearchInput } from '@/components/ui/search-input';
 
 import {
+  AlertTriangle,
+  Ban,
   Clock3,
+  Download,
   Eye,
   FileCheck2,
   LoaderCircle,
   Plus,
   RefreshCw,
   RotateCcw,
+  Save,
   Search,
   Trash2,
 } from 'lucide-react';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 
 import {
@@ -44,13 +48,29 @@ import { WorkbenchPagination } from './workbench-pagination';
 import { PersonalOverview } from '../workbench-statistics/personal-overview';
 import { STATE_GROUPS } from '../../src/web-statistics/summary.mjs';
 import type { StateGroup } from '../workbench-statistics/types';
+import {
+  DEFAULT_WORKBENCH_LIST_STATE,
+  workbenchListSearch,
+  type TaskAttention,
+  type WorkbenchListState,
+} from './list-state';
 
-import { compareTasksByStatePriority, WORKBENCH_VIEWS, matchesWorkbenchView, type TaskState, type ViewKey } from './views';
+import {
+  TASK_SORT_OPTIONS,
+  compareTasks,
+  taskSortParams,
+  WORKBENCH_VIEWS,
+  matchesWorkbenchView,
+  type TaskSort,
+  type TaskState,
+  type ViewKey,
+} from './views';
 
 type DistributedTask = {
   id: number;
   query: string;
   state: TaskState;
+  cancelledFromState?: TaskState | null;
   currentImageRunId: string | null;
   copyExecutorNodeId: string | null;
   imageExecutorNodeId?: string | null;
@@ -82,6 +102,27 @@ type ExecutorNode = {
 
 type TaskPage = { items: DistributedTask[]; total: number; limit: number; offset: number };
 
+type SavedTaskView = {
+  id: number;
+  name: string;
+  viewKey: ViewKey;
+  filters: Omit<WorkbenchListState, 'page' | 'taskId'>;
+  updatedAt: string;
+};
+
+type BatchActionResult = {
+  action: 'RETRY' | 'CANCEL_QUEUE';
+  succeeded: number[];
+  failed: Array<{ id: number; code: string; message: string }>;
+};
+
+type BatchPermanentDeleteResult = {
+  action: 'PERMANENT_DELETE';
+  succeeded: number[];
+  failed: Array<{ id: number; code: string; message: string }>;
+  cleanupPending: number[];
+};
+
 const STATE_LABELS: Record<TaskState, string> = {
   COPY_QUEUED: '待文案执行',
   COPY_RUNNING: '文案生成中',
@@ -94,6 +135,9 @@ const STATE_LABELS: Record<TaskState, string> = {
   REVIEWED: '已审核',
   CANCELLED: '已废弃',
 };
+const PERMANENT_DELETE_STATES: TaskState[] = ['COPY_FAILED', 'IMAGE_FAILED', 'REVIEWED', 'CANCELLED'];
+const CANCELLED_EXECUTION_SETTLE_MS = 3 * 60_000;
+const DEFAULT_TASK_VIEW_VALUE = 'DEFAULT';
 
 const STAGE_LABELS: Record<string, string> = {
   IMAGE_RETRY_EXHAUSTED: IMAGE_RETRY_EXHAUSTED_LABEL,
@@ -151,9 +195,10 @@ function apiPath(path: string) {
 }
 
 function isStale(task: DistributedTask) {
+  const lastProgressAt = task.lastActivityAt || task.executionStartedAt || task.updatedAt || task.createdAt;
   return ['COPY_RUNNING', 'IMAGE_RUNNING'].includes(task.state)
-    && Boolean(task.lastActivityAt)
-    && Date.now() - Date.parse(task.lastActivityAt as string) >= STALE_AFTER_MS;
+    && Number.isFinite(Date.parse(lastProgressAt))
+    && Date.now() - Date.parse(lastProgressAt) >= STALE_AFTER_MS;
 }
 
 function elapsed(task: DistributedTask) {
@@ -171,10 +216,32 @@ function timeLabel(value: string | null, state?: TaskState) {
   return state && !state.endsWith('_QUEUED') ? '开始时间未记录' : '尚未开始';
 }
 
-export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: activeView, initialCreator = '', initialTaskId = null }: {
-  nodeId: string; creatorUserId: string; role: string; viewKey: ViewKey; initialCreator?: string; initialTaskId?: number | null;
+function matchesAttention(task: DistributedTask, attention: TaskAttention) {
+  const failed = ['COPY_FAILED', 'IMAGE_FAILED'].includes(task.state) || isImageRetryExhausted(task);
+  if (attention === 'NONE') return true;
+  if (attention === 'STALE') return isStale(task);
+  if (attention === 'FAILED') return failed;
+  return isStale(task) || failed;
+}
+
+function taskIdSearch(value: string) {
+  const match = value.trim().match(/^#(\d+)$/u);
+  if (!match) return null;
+  const id = Number(match[1]);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+function isPermanentlyDeletableTask(task: DistributedTask) {
+  const cancelledExecutionSettled = !['COPY_RUNNING', 'IMAGE_RUNNING'].includes(task.cancelledFromState || '')
+    || Date.now() - Date.parse(task.updatedAt) >= CANCELLED_EXECUTION_SETTLE_MS;
+  return PERMANENT_DELETE_STATES.includes(task.state) && cancelledExecutionSettled;
+}
+
+export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: activeView, initialListState = DEFAULT_WORKBENCH_LIST_STATE }: {
+  nodeId: string; creatorUserId: string; role: string; viewKey: ViewKey; initialListState?: WorkbenchListState;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
   const activeDefinition = WORKBENCH_VIEWS.find((view) => view.key === activeView)!;
   const isAllJobs = activeView === 'ALL_JOBS';
   const executorColumnLabel = activeView === 'IMAGE_WORK' ? '生图执行机' : '文案执行机';
@@ -182,33 +249,47 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
   const [tasks, setTasks] = useState<DistributedTask[]>([]);
   const [total, setTotal] = useState(0);
   const [nodes, setNodes] = useState<ExecutorNode[]>([]);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [page, setPage] = useState(initialListState.page);
+  const [pageSize, setPageSize] = useState(initialListState.pageSize);
   const [resultOffset, setResultOffset] = useState(0);
-  const [searchInput, setSearchInput] = useState('');
-  const [searchKeyword, setSearchKeyword] = useState('');
-  const [deduplicateQuery, setDeduplicateQuery] = useState(false);
-  const [creatorRoleFilter, setCreatorRoleFilter] = useState('ALL');
-  const [creatorFilter, setCreatorFilter] = useState<JobCreator | null>(initialCreator && isAllJobs
-    ? { username: initialCreator, displayName: initialCreator, role: '', status: 'ACTIVE' } : null);
-  const [stateFilter, setStateFilter] = useState('ALL');
+  const [searchInput, setSearchInput] = useState(initialListState.query);
+  const [searchKeyword, setSearchKeyword] = useState(initialListState.query);
+  const [sort, setSort] = useState<TaskSort>(initialListState.sort);
+  const [deduplicateQuery, setDeduplicateQuery] = useState(initialListState.deduplicateQuery);
+  const [creatorRoleFilter, setCreatorRoleFilter] = useState(initialListState.createdByRole);
+  const [creatorFilter, setCreatorFilter] = useState<JobCreator | null>(initialListState.createdByUserId && isAllJobs
+    ? { username: initialListState.createdByUserId, displayName: initialListState.createdByUserId, role: '', status: 'ACTIVE' } : null);
+  const [stateFilter, setStateFilter] = useState(initialListState.state);
+  const [attentionFilter, setAttentionFilter] = useState<TaskAttention>(initialListState.attention);
   const [fetchError, setFetchError] = useState('');
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
   const refreshRequestId = useRef(0);
   const activeRequest = useRef<AbortController | null>(null);
   const listStart = useRef<HTMLDivElement | null>(null);
   const scrollAfterPageLoad = useRef(false);
+  const leavingWorkbenchView = useRef(false);
   const [queryText, setQueryText] = useState('');
   const [createError, setCreateError] = useState('');
   const queryBatch = useMemo(() => parseQueryBatch(queryText), [queryText]);
   const [imageCount, setImageCount] = useState('auto');
   const [skipCopyReview, setSkipCopyReview] = useState(role === 'ADMIN');
   const [createOpen, setCreateOpen] = useState(false);
-  const [selectedTaskId, setSelectedTaskId] = useState<number | null>(isAllJobs ? initialTaskId : null);
+  const [selectedTaskId, setSelectedTaskId] = useState<number | null>(initialListState.taskId);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<number[]>([]);
+  const [batchAction, setBatchAction] = useState<'RETRY' | 'CANCEL_QUEUE' | 'EXPORT' | 'PERMANENT_DELETE' | null>(null);
+  const [savedViews, setSavedViews] = useState<SavedTaskView[]>([]);
+  const [savedViewId, setSavedViewId] = useState(DEFAULT_TASK_VIEW_VALUE);
+  const [saveViewOpen, setSaveViewOpen] = useState(false);
+  const [saveViewName, setSaveViewName] = useState('');
+  const [savingView, setSavingView] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [creating, setCreating] = useState(false);
   const [actingTaskId, setActingTaskId] = useState<number | null>(null);
+  const [permanentDeleteTask, setPermanentDeleteTask] = useState<DistributedTask | null>(null);
+  const [batchPermanentDeleteTasks, setBatchPermanentDeleteTasks] = useState<DistributedTask[]>([]);
+  const [deletionPassword, setDeletionPassword] = useState('');
+  const [deletionError, setDeletionError] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const legacyStateFilterMode = useRef(false);
@@ -236,15 +317,25 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
             includeTotal: 'true',
           });
       if (view.personalOnly) search.set('mine', 'true');
-      if (searchKeyword) search.set('query', searchKeyword);
+      const searchedTaskId = taskIdSearch(searchKeyword);
+      if (searchedTaskId) search.set('taskId', String(searchedTaskId));
+      else if (searchKeyword) search.set('query', searchKeyword);
       if (deduplicateQuery) search.set('deduplicateQuery', 'true');
+      if (role === 'ADMIN' && isAllJobs && attentionFilter !== 'NONE') search.set('attention', attentionFilter);
+      const { sortBy, sortOrder } = taskSortParams(sort);
+      search.set('sortBy', sortBy);
+      search.set('sortOrder', sortOrder);
       let compatibilityTasks: DistributedTask[] | null = null;
       const taskPageRequest = isAllJobs ? loadAdminTaskPage(request, {
         createdByUserId: creatorFilter?.username,
         createdByRole: creatorRoleFilter === 'ALL' ? undefined : creatorRoleFilter,
         state: stateFilter === 'ALL' ? undefined : stateFilter,
-        query: searchKeyword,
+        taskId: searchedTaskId ?? undefined,
+        query: searchedTaskId ? undefined : searchKeyword,
         deduplicateQuery,
+        attention: attentionFilter === 'NONE' ? undefined : attentionFilter,
+        sortBy,
+        sortOrder,
         limit: pageSize,
         offset: (page - 1) * pageSize,
       }) : request<TaskPage | DistributedTask[]>(apiPath(`/v1/tasks?${search}`))
@@ -273,8 +364,9 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
         const filtered = legacyTasks.filter((task) => (personalStates
           ? task.createdByUserId === creatorUserId && personalStates.includes(task.state)
           : matchesWorkbenchView(task, view, creatorUserId))
-          && (!keyword || task.query.toLocaleLowerCase('zh-CN').includes(keyword)))
-          .sort(compareTasksByStatePriority);
+          && matchesAttention(task, attentionFilter)
+          && (!keyword || (searchedTaskId ? task.id === searchedTaskId : task.query.toLocaleLowerCase('zh-CN').includes(keyword))))
+          .sort((left, right) => compareTasks(left, right, sort));
         const uniqueTasks = deduplicateQuery ? filtered.filter((task, index, all) => {
           const identity = task.query.trim().replace(/\s+/gu, ' ').toLocaleLowerCase('zh-CN');
           return all.findIndex((candidate) => candidate.query.trim().replace(/\s+/gu, ' ')
@@ -313,7 +405,40 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
         setRefreshing(false);
       }
     }
-  }, [activeDefinition, creatorUserId, page, pageSize, isAllJobs, creatorFilter, creatorRoleFilter, stateFilter, searchKeyword, deduplicateQuery]);
+  }, [activeDefinition, creatorUserId, page, pageSize, isAllJobs, creatorFilter, creatorRoleFilter, stateFilter, searchKeyword, deduplicateQuery, sort, attentionFilter, role]);
+
+  useEffect(() => {
+    if (leavingWorkbenchView.current) return;
+    const search = workbenchListSearch({
+      page,
+      pageSize: pageSize as WorkbenchListState['pageSize'],
+      query: searchKeyword,
+      sort,
+      deduplicateQuery,
+      createdByUserId: isAllJobs ? creatorFilter?.username ?? '' : '',
+      createdByRole: isAllJobs ? creatorRoleFilter : 'ALL',
+      state: activeView === 'PERSONAL' || isAllJobs ? stateFilter : 'ALL',
+      attention: isAllJobs ? attentionFilter : 'NONE',
+      taskId: selectedTaskId,
+    }, { includeAdminFilters: role === 'ADMIN' && isAllJobs });
+    const href = search.size ? `${pathname}?${search}` : pathname;
+    if (`${window.location.pathname}${window.location.search}` !== href) {
+      router.replace(href, { scroll: false });
+    }
+  }, [activeView, attentionFilter, creatorFilter, creatorRoleFilter, deduplicateQuery, isAllJobs,
+    page, pageSize, pathname, role, router, searchKeyword, selectedTaskId, sort, stateFilter]);
+
+  const loadSavedViews = useCallback(async () => {
+    if (role !== 'ADMIN') return;
+    try {
+      const views = await apiRequest<SavedTaskView[]>(apiPath('/v1/task-views'));
+      setSavedViews(views);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '常用视图读取失败');
+    }
+  }, [role]);
+
+  useEffect(() => { void loadSavedViews(); }, [loadSavedViews]);
 
   useEffect(() => {
     void refresh();
@@ -340,7 +465,189 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
 
   const visibleTasks = tasks;
 
-  const hasFilters = Boolean(searchInput || searchKeyword || deduplicateQuery || creatorFilter || creatorRoleFilter !== 'ALL' || stateFilter !== 'ALL');
+  useEffect(() => {
+    const visibleIds = new Set(tasks.map((task) => task.id));
+    setSelectedTaskIds((current) => current.filter((taskId) => visibleIds.has(taskId)));
+  }, [tasks]);
+
+  const selectedTasks = useMemo(() => {
+    const selected = new Set(selectedTaskIds);
+    return visibleTasks.filter((task) => selected.has(task.id));
+  }, [selectedTaskIds, visibleTasks]);
+  const retryableTasks = selectedTasks.filter((task) => ['COPY_RUNNING', 'COPY_FAILED', 'IMAGE_RUNNING', 'IMAGE_FAILED'].includes(task.state)
+    || isImageRetryExhausted(task));
+  const queuedTasks = selectedTasks.filter((task) => ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state));
+  const exportableTasks = selectedTasks.filter((task) => ['MANUAL_ARCHIVE', 'REVIEWED'].includes(task.state));
+  const permanentlyDeletableTasks = selectedTasks.filter(isPermanentlyDeletableTask);
+  const availableSavedViews = savedViews.filter((view) => view.viewKey === activeView);
+  const allVisibleSelected = visibleTasks.length > 0 && visibleTasks.every((task) => selectedTaskIds.includes(task.id));
+
+  const hasFilters = Boolean(searchInput || searchKeyword || deduplicateQuery || creatorFilter || creatorRoleFilter !== 'ALL'
+    || stateFilter !== 'ALL' || attentionFilter !== 'NONE');
+
+  function currentSavedFilters(): SavedTaskView['filters'] {
+    return {
+      query: searchKeyword,
+      sort,
+      deduplicateQuery,
+      createdByUserId: isAllJobs ? creatorFilter?.username ?? '' : '',
+      createdByRole: isAllJobs ? creatorRoleFilter : 'ALL',
+      state: activeView === 'PERSONAL' || isAllJobs ? stateFilter : 'ALL',
+      attention: isAllJobs ? attentionFilter : 'NONE',
+      pageSize: pageSize as WorkbenchListState['pageSize'],
+    };
+  }
+
+  function applyDefaultView() {
+    setSearchInput(DEFAULT_WORKBENCH_LIST_STATE.query);
+    setSearchKeyword(DEFAULT_WORKBENCH_LIST_STATE.query);
+    setSort(DEFAULT_WORKBENCH_LIST_STATE.sort);
+    setDeduplicateQuery(DEFAULT_WORKBENCH_LIST_STATE.deduplicateQuery);
+    setCreatorRoleFilter(DEFAULT_WORKBENCH_LIST_STATE.createdByRole);
+    setCreatorFilter(null);
+    setStateFilter(DEFAULT_WORKBENCH_LIST_STATE.state);
+    setAttentionFilter(DEFAULT_WORKBENCH_LIST_STATE.attention);
+    setPageSize(DEFAULT_WORKBENCH_LIST_STATE.pageSize);
+    setPage(DEFAULT_WORKBENCH_LIST_STATE.page);
+    setSelectedTaskId(DEFAULT_WORKBENCH_LIST_STATE.taskId);
+    setSavedViewId(DEFAULT_TASK_VIEW_VALUE);
+    setMessage('已恢复默认视图。');
+    setError('');
+  }
+
+  function applySavedView(view: SavedTaskView) {
+    setSearchInput(view.filters.query);
+    setSearchKeyword(view.filters.query);
+    setSort(view.filters.sort);
+    setDeduplicateQuery(view.filters.deduplicateQuery);
+    setCreatorRoleFilter(isAllJobs ? view.filters.createdByRole : 'ALL');
+    setCreatorFilter(isAllJobs && view.filters.createdByUserId
+      ? { username: view.filters.createdByUserId, displayName: view.filters.createdByUserId === creatorUserId ? '我' : view.filters.createdByUserId, role: '', status: 'ACTIVE' }
+      : null);
+    setStateFilter(activeView === 'PERSONAL' || isAllJobs ? view.filters.state : 'ALL');
+    setAttentionFilter(isAllJobs ? view.filters.attention : 'NONE');
+    setPageSize(view.filters.pageSize);
+    setPage(1);
+    setSavedViewId(String(view.id));
+    setMessage(`已应用常用视图“${view.name}”。`);
+    setError('');
+  }
+
+  async function saveCurrentView(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = saveViewName.replace(/\s+/gu, ' ').trim();
+    if (!name || savingView) return;
+    setSavingView(true);
+    try {
+      const saved = await apiRequest<SavedTaskView>(apiPath('/v1/task-views'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, viewKey: activeView, filters: currentSavedFilters() }),
+      });
+      await loadSavedViews();
+      setSavedViewId(String(saved.id));
+      setSaveViewName('');
+      setSaveViewOpen(false);
+      setMessage(`常用视图“${saved.name}”已保存；同名视图会自动更新。`);
+      setError('');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '常用视图保存失败');
+    } finally {
+      setSavingView(false);
+    }
+  }
+
+  async function deleteSavedView() {
+    const view = savedViews.find((item) => String(item.id) === savedViewId);
+    if (!view || !await confirm({
+      title: `删除常用视图“${view.name}”？`,
+      description: '只会删除保存的筛选组合，不会影响任何任务。',
+      confirmLabel: '删除视图',
+      tone: 'danger',
+    })) return;
+    try {
+      await apiRequest(apiPath(`/v1/task-views/${view.id}`), { method: 'DELETE' });
+      setSavedViewId('');
+      await loadSavedViews();
+      setMessage(`常用视图“${view.name}”已删除。`);
+      setError('');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '常用视图删除失败');
+    }
+  }
+
+  function showMyFailedTasks() {
+    setCreatorFilter({ username: creatorUserId, displayName: '我', role: role, status: 'ACTIVE' });
+    setCreatorRoleFilter('ALL');
+    setStateFilter('ALL');
+    setAttentionFilter('FAILED');
+    setPage(1);
+    setSavedViewId('');
+  }
+
+  function toggleTaskSelection(taskId: number, checked: boolean) {
+    setSelectedTaskIds((current) => checked
+      ? current.includes(taskId) ? current : [...current, taskId]
+      : current.filter((id) => id !== taskId));
+  }
+
+  async function runBatchAction(action: 'RETRY' | 'CANCEL_QUEUE', eligible: DistributedTask[]) {
+    if (eligible.length === 0 || batchAction) return;
+    const retry = action === 'RETRY';
+    if (!await confirm({
+      title: retry ? `批量重试 ${eligible.length} 条任务？` : `取消 ${eligible.length} 条任务的排队？`,
+      description: retry
+        ? '仅处理当前所选的执行中或失败任务；正在执行的旧流程会作废，并按文案或图片阶段重新排队。'
+        : '仅处理当前所选的待文案、待生图任务；数据会保留，之后仍可重新排队。',
+      confirmLabel: retry ? '批量重试' : '取消排队',
+      ...(retry ? {} : { tone: 'danger' as const }),
+    })) return;
+    setBatchAction(action);
+    try {
+      const result = await apiRequest<BatchActionResult>(apiPath('/v1/tasks/batch-actions'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, taskIds: eligible.map((task) => task.id) }),
+      });
+      setSelectedTaskIds((current) => current.filter((id) => !result.succeeded.includes(id)));
+      const label = retry ? '重试' : '取消排队';
+      setMessage(`批量${label}完成：成功 ${result.succeeded.length} 条${result.failed.length ? `，未处理 ${result.failed.length} 条` : ''}。`);
+      setError(result.failed.length ? result.failed.map((item) => `#${item.id}：${item.message}`).join('；') : '');
+      await refresh({ silent: true });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '批量操作失败');
+    } finally {
+      setBatchAction(null);
+    }
+  }
+
+  async function exportSelectedTasks() {
+    if (exportableTasks.length === 0 || exportableTasks.length > 20 || batchAction) return;
+    setBatchAction('EXPORT');
+    try {
+      const response = await fetch(apiPath('/v1/tasks/batch-archive'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskIds: exportableTasks.map((task) => task.id) }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.error?.message || `导出失败（${response.status}）`);
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = '批量作业资源.zip';
+      link.click();
+      URL.revokeObjectURL(url);
+      setMessage(`已导出 ${exportableTasks.length} 条任务的资源包。`);
+      setError('');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '批量导出失败');
+    } finally {
+      setBatchAction(null);
+    }
+  }
 
   function clearFilters() {
     setSearchInput('');
@@ -349,6 +656,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
     setCreatorFilter(null);
     setCreatorRoleFilter('ALL');
     setStateFilter('ALL');
+    setAttentionFilter('NONE');
+    setSavedViewId('');
     setPage(1);
   }
 
@@ -455,10 +764,93 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
     }
   }
 
+  async function cancelQueuedTask(task: DistributedTask) {
+    if (!['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state)) return;
+    if (!await confirm({
+      title: '取消这条任务的排队？',
+      description: '任务会停止等待执行机，但保留全部数据。之后可点击“一键排队”恢复到当前队列。',
+      confirmLabel: '确认取消排队',
+      tone: 'danger',
+    })) return;
+    setActingTaskId(task.id);
+    try {
+      await apiRequest(apiPath(`/v1/tasks/${task.id}/cancel`), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      setMessage(`任务 #${task.id} 已取消排队，可随时一键重新排队。`);
+      setError('');
+      await refresh({ silent: true });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '取消排队失败');
+    } finally { setActingTaskId(null); }
+  }
+
+  async function requeueCancelledTask(task: DistributedTask) {
+    if (!await confirm({ title: '重新加入队列？', description: '任务会恢复到取消前的队列，并由空闲执行机按顺序领取。', confirmLabel: '确认重新排队' })) return;
+    setActingTaskId(task.id);
+    try {
+      await apiRequest(apiPath(`/v1/tasks/${task.id}/requeue`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      setMessage(`任务 #${task.id} 已重新加入队列。`); setError(''); await refresh({ silent: true });
+    } catch (caught) { setError(caught instanceof Error ? caught.message : '重新排队失败'); } finally { setActingTaskId(null); }
+  }
+
+  async function permanentlyDeleteTask() {
+    if (!permanentDeleteTask || !deletionPassword) return;
+    setActingTaskId(permanentDeleteTask.id);
+    try {
+      const result = await apiRequest<{ id: number; deleted: boolean; cleanupPending?: boolean }>(apiPath(`/v1/tasks/${permanentDeleteTask.id}/permanent`), {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deletionPassword }),
+      });
+      setMessage(result.cleanupPending
+        ? `任务 #${permanentDeleteTask.id} 已删除；素材已隔离，中心服务将继续清理。`
+        : `任务 #${permanentDeleteTask.id} 及其关联数据已永久删除。`);
+      setError(''); setDeletionError(''); setDeletionPassword(''); setPermanentDeleteTask(null); await refresh({ silent: true });
+    } catch (caught) {
+      setDeletionError(caught instanceof Error ? caught.message : '永久删除失败');
+      setDeletionPassword('');
+    } finally { setActingTaskId(null); }
+  }
+
+  async function permanentlyDeleteSelectedTasks() {
+    if (!batchPermanentDeleteTasks.length || batchPermanentDeleteTasks.length > 20 || !deletionPassword || batchAction) return;
+    setBatchAction('PERMANENT_DELETE');
+    try {
+      const result = await apiRequest<BatchPermanentDeleteResult>(apiPath('/v1/tasks/batch-permanent-delete'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          taskIds: batchPermanentDeleteTasks.map((task) => task.id),
+          deletionPassword,
+        }),
+      });
+      setSelectedTaskIds((current) => current.filter((id) => !result.succeeded.includes(id)));
+      setMessage(`批量永久删除完成：成功 ${result.succeeded.length} 条${result.cleanupPending.length ? `，其中 ${result.cleanupPending.length} 条素材正在后台清理` : ''}${result.failed.length ? `，未删除 ${result.failed.length} 条` : ''}。`);
+      setError(result.failed.length ? result.failed.map((item) => `#${item.id}：${item.message}`).join('；') : '');
+      setDeletionError('');
+      setDeletionPassword('');
+      setBatchPermanentDeleteTasks([]);
+      await refresh({ silent: true });
+    } catch (caught) {
+      setDeletionError(caught instanceof Error ? caught.message : '批量永久删除失败');
+      setDeletionPassword('');
+    } finally {
+      setBatchAction(null);
+    }
+  }
+
   function taskActions(task: DistributedTask) {
     const busy = actingTaskId === task.id;
-    if (isAllJobs) return <Button unstyled className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>;
+    const canPermanentlyDelete = role === 'ADMIN' && isPermanentlyDeletableTask(task);
+    const permanentDeleteButton = canPermanentlyDelete && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { setDeletionError(''); setDeletionPassword(''); setPermanentDeleteTask(task); }}><Trash2 size={14} />永久删除</Button>;
+    if (isAllJobs) return <TaskRowActions taskId={task.id} busy={busy}>
+      <Button unstyled className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
+      {task.state === 'CANCELLED' && ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.cancelledFromState || '') && <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => { void requeueCancelledTask(task); }}><RotateCcw size={14} />一键排队</Button>}
+      {['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state) && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void cancelQueuedTask(task); }}><Trash2 size={14} />取消排队</Button>}
+      {permanentDeleteButton}
+    </TaskRowActions>;
     const canDiscard = role === 'ADMIN' || task.createdByUserId === creatorUserId;
+    const canCancelQueue = role === 'ADMIN' && ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state);
+    const canRequeue = role === 'ADMIN' && task.state === 'CANCELLED' && ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.cancelledFromState || '');
     const canRetryCopy = canDiscard && ['COPY_RUNNING', 'COPY_FAILED'].includes(task.state);
     const canRetryImages = canDiscard && canRequeueImages(task);
     const retryImageButton = <Button unstyled
@@ -472,26 +864,32 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
       <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
       {canRetryCopy && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</Button>}
       {canDiscard && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</Button>}
+      {permanentDeleteButton}
     </TaskRowActions>;
     if (activeView === 'COPY_REVIEW') return <TaskRowActions taskId={task.id} busy={busy}>
       <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />审核</Button>
       {canDiscard && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</Button>}
+      {permanentDeleteButton}
     </TaskRowActions>;
     if (activeView === 'IMAGE_WORK') return <TaskRowActions taskId={task.id} busy={busy}>
       <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
       {retryImageButton}
+      {permanentDeleteButton}
     </TaskRowActions>;
-    if (task.state === 'REVIEWED') return <Button unstyled className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>;
+    if (task.state === 'REVIEWED') return <TaskRowActions taskId={task.id} busy={busy}><Button unstyled className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>{permanentDeleteButton}</TaskRowActions>;
     if (task.state === 'MANUAL_ARCHIVE' && ['ADMIN', 'REVIEWER'].includes(role)) return <TaskRowActions taskId={task.id} busy={busy}>
       <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />审核</Button>
       <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</Button>
     </TaskRowActions>;
     return <TaskRowActions taskId={task.id} busy={busy}>
       <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
+      {canCancelQueue && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void cancelQueuedTask(task); }}><Trash2 size={14} />取消排队</Button>}
+      {canRequeue && <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => { void requeueCancelledTask(task); }}><RotateCcw size={14} />一键排队</Button>}
       {canDiscard && canResumeImageTask(task) && <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => { void resumeImages(task); }}><RotateCcw size={14} />从失败步骤继续</Button>}
       {activeView === 'PERSONAL' && canRetryCopy && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</Button>}
       {activeView === 'PERSONAL' && retryImageButton}
-      {canDiscard && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</Button>}
+      {canDiscard && !canCancelQueue && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</Button>}
+      {permanentDeleteButton}
     </TaskRowActions>;
   }
 
@@ -533,7 +931,10 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
       setPage(1);
       setSearchInput('');
       setSearchKeyword('');
-      if (activeView !== 'PERSONAL') router.push('/workbench/personal');
+      if (activeView !== 'PERSONAL') {
+        leavingWorkbenchView.current = true;
+        router.push('/workbench/personal');
+      }
       setMessage(`已创建 ${queries.length} 条笔记并加入共享文案队列，空闲执行机会按队列顺序领取。${role === 'ADMIN' && skipCopyReview ? '本批次免人工文案审核，文案生成后自动进入生图队列。' : ''}`);
       await refresh({ silent: true });
     } catch (caught) {
@@ -545,6 +946,24 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
 
 
   return <div className="creation-workbench">
+    <Dialog open={Boolean(permanentDeleteTask)} onOpenChange={(open) => { if (!open && !actingTaskId) { setPermanentDeleteTask(null); setDeletionPassword(''); setDeletionError(''); } }}>
+      <DialogContent className="workbench-create-dialog">
+        <div className="workbench-create-heading"><span className="section-kicker">Irreversible action</span><DialogTitle>永久删除任务 #{permanentDeleteTask?.id}</DialogTitle><DialogDescription>此操作会永久清除任务、执行记录、文案、图片和素材，无法撤销。请输入个人信息中设置的删除二级密码确认。</DialogDescription></div>
+        <div className="notice error">请确认这不是仅需“取消排队”或“废弃”的任务。</div>
+        {deletionError && <div className="notice error" role="alert">{deletionError}</div>}
+        <div className="field"><label htmlFor="task-deletion-password">删除二级密码</label><input className="input" id="task-deletion-password" type="password" value={deletionPassword} onChange={(event) => setDeletionPassword(event.target.value)} autoComplete="current-password" /></div>
+        <div className="profile-form-actions"><Button unstyled className="button" type="button" disabled={Boolean(actingTaskId)} onClick={() => { setPermanentDeleteTask(null); setDeletionPassword(''); }}>取消</Button><Button unstyled className="button danger" type="button" disabled={!deletionPassword || Boolean(actingTaskId)} onClick={() => { void permanentlyDeleteTask(); }}>{actingTaskId ? '删除中…' : '确认永久删除'}</Button></div>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={batchPermanentDeleteTasks.length > 0} onOpenChange={(open) => { if (!open && batchAction !== 'PERMANENT_DELETE') { setBatchPermanentDeleteTasks([]); setDeletionPassword(''); setDeletionError(''); } }}>
+      <DialogContent className="workbench-create-dialog">
+        <div className="workbench-create-heading"><span className="section-kicker">Irreversible batch action</span><DialogTitle>批量永久删除 {batchPermanentDeleteTasks.length} 条任务</DialogTitle><DialogDescription>此操作会永久清除所列任务、执行记录、文案、图片和素材，无法撤销。二级密码只校验一次，任务删除在同一数据库事务中完成。</DialogDescription></div>
+        <div className="notice error">即将永久删除：{batchPermanentDeleteTasks.map((task) => `#${task.id}`).join('、')}。请确认这些任务不再需要恢复或重新排队。</div>
+        {deletionError && <div className="notice error" role="alert">{deletionError}</div>}
+        <div className="field"><label htmlFor="batch-task-deletion-password">删除二级密码</label><input className="input" id="batch-task-deletion-password" type="password" value={deletionPassword} onChange={(event) => setDeletionPassword(event.target.value)} autoComplete="current-password" /></div>
+        <div className="profile-form-actions"><Button unstyled className="button" type="button" disabled={batchAction === 'PERMANENT_DELETE'} onClick={() => { setBatchPermanentDeleteTasks([]); setDeletionPassword(''); }}>取消</Button><Button unstyled className="button danger" type="button" disabled={!deletionPassword || batchAction === 'PERMANENT_DELETE'} onClick={() => { void permanentlyDeleteSelectedTasks(); }}>{batchAction === 'PERMANENT_DELETE' ? '删除中…' : `确认永久删除 ${batchPermanentDeleteTasks.length} 条`}</Button></div>
+      </DialogContent>
+    </Dialog>
     {activeView === 'PERSONAL' && <PersonalOverview filter={stateFilter} onFilter={value => { setStateFilter(value); setPage(1); }} />}
     <section className="panel workbench-task-panel">
       <div className="workbench-toolbar">
@@ -644,19 +1063,64 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
         onRoleChange={(value) => { setCreatorRoleFilter(value); setPage(1); }}
         onStateChange={(value) => { setStateFilter(value); setPage(1); }}
       />}
+      {role === 'ADMIN' && <div className="workbench-admin-list-controls">
+        <div className="workbench-saved-views">
+          <span>常用视图</span>
+          <Select value={savedViewId || undefined} onValueChange={(value) => {
+            if (value === DEFAULT_TASK_VIEW_VALUE) {
+              applyDefaultView();
+              return;
+            }
+            const view = savedViews.find((item) => String(item.id) === value);
+            if (view) applySavedView(view);
+          }}>
+            <SelectTrigger aria-label="选择常用筛选视图"><SelectValue placeholder="当前筛选" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value={DEFAULT_TASK_VIEW_VALUE}>默认视图</SelectItem>
+              {availableSavedViews.map((view) => <SelectItem key={view.id} value={String(view.id)}>{view.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Dialog open={saveViewOpen} onOpenChange={(open) => { if (!savingView) { setSaveViewOpen(open); if (open) setSaveViewName(''); } }}>
+            <DialogTrigger asChild><Button unstyled className="button small" type="button"><Save size={14} />保存当前视图</Button></DialogTrigger>
+            <DialogContent className="workbench-save-view-dialog">
+              <DialogTitle>保存常用筛选视图</DialogTitle>
+              <DialogDescription>保存当前列表的搜索、筛选、排序和每页条数。使用同名名称会更新原视图。</DialogDescription>
+              <form onSubmit={saveCurrentView}>
+                <div className="field"><label htmlFor="workbench-view-name">视图名称</label><Input id="workbench-view-name" value={saveViewName} maxLength={50} autoFocus required placeholder="例如：我的失败任务" onChange={(event) => setSaveViewName(event.target.value)} /></div>
+                <div className="profile-form-actions"><Button unstyled className="button" type="button" disabled={savingView} onClick={() => setSaveViewOpen(false)}>取消</Button><Button unstyled className="button primary" type="submit" disabled={savingView || !saveViewName.trim()}>{savingView ? '保存中…' : '保存视图'}</Button></div>
+              </form>
+            </DialogContent>
+          </Dialog>
+          {savedViewId && savedViewId !== DEFAULT_TASK_VIEW_VALUE && <Button unstyled className="button small danger" type="button" onClick={() => { void deleteSavedView(); }}>删除视图</Button>}
+        </div>
+        {isAllJobs && <div className="workbench-attention-entry" aria-label="异常任务集中处理">
+          <span><AlertTriangle size={15} />集中处理</span>
+          <Button unstyled className="button small" type="button" aria-pressed={attentionFilter === 'ANOMALY'} onClick={() => { setAttentionFilter(attentionFilter === 'ANOMALY' ? 'NONE' : 'ANOMALY'); setPage(1); }}>全部异常</Button>
+          <Button unstyled className="button small" type="button" aria-pressed={attentionFilter === 'STALE'} onClick={() => { setAttentionFilter(attentionFilter === 'STALE' ? 'NONE' : 'STALE'); setPage(1); }}>长期无进度</Button>
+          <Button unstyled className="button small" type="button" aria-pressed={attentionFilter === 'FAILED'} onClick={() => { setAttentionFilter(attentionFilter === 'FAILED' ? 'NONE' : 'FAILED'); setPage(1); }}>失败任务</Button>
+          <Button unstyled className="button small" type="button" onClick={showMyFailedTasks}>我的失败任务</Button>
+        </div>}
+      </div>}
       <div className="workbench-list-tools">
         <form className="workbench-query-search" role="search" onSubmit={submitSearch}>
-          <label className="sr-only" htmlFor="workbench-query-search">搜索 Query</label>
+          <label className="sr-only" htmlFor="workbench-query-search">搜索 Query 关键词或 Query ID</label>
           <SearchInput
             id="workbench-query-search"
             value={searchInput}
             maxLength={500}
-            placeholder="按 Query 关键字搜索"
+            placeholder="Query 关键词或 #ID（如 #1024）"
             onValueChange={(value) => setSearchInput(value)}
           />
           {searchKeyword && <Button unstyled className="button small" type="button" onClick={clearSearch}>清除</Button>}
           <Button unstyled className="button small" type="submit">搜索</Button>
         </form>
+        <div className="workbench-sort-control">
+          <label htmlFor="workbench-task-sort">排序</label>
+          <Select value={sort} onValueChange={(value) => { setSort(value as TaskSort); setPage(1); }}>
+            <SelectTrigger id="workbench-task-sort"><SelectValue /></SelectTrigger>
+            <SelectContent>{TASK_SORT_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+          </Select>
+        </div>
         <label className="switch-field workbench-query-deduplicate" htmlFor="workbench-query-deduplicate">
           <Checkbox
             id="workbench-query-deduplicate"
@@ -679,6 +1143,16 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
       </div>}
       {lastUpdatedAt && <p className="workbench-updated-at" role="status">{loading ? `正在读取第 ${page} 页，暂时保留上次结果…` : `最近成功刷新：${timeLabel(lastUpdatedAt)} · 每 30 秒自动刷新`}</p>}
 
+      {role === 'ADMIN' && selectedTasks.length > 0 && <div className="workbench-batch-actions" role="region" aria-label="批量任务操作">
+        <strong>已选 {selectedTasks.length} 条（当前页）</strong>
+        <Button unstyled className="button small" type="button" disabled={Boolean(batchAction) || retryableTasks.length === 0} onClick={() => { void runBatchAction('RETRY', retryableTasks); }}><RotateCcw size={14} />重试 {retryableTasks.length}</Button>
+        <Button unstyled className="button small danger" type="button" disabled={Boolean(batchAction) || queuedTasks.length === 0} onClick={() => { void runBatchAction('CANCEL_QUEUE', queuedTasks); }}><Ban size={14} />取消排队 {queuedTasks.length}</Button>
+        <Button unstyled className="button small danger" type="button" title={permanentlyDeletableTasks.length > 20 ? '单次最多永久删除 20 条，请减少选择' : '仅永久删除已失败、已审核或已废弃且执行已停止的任务'} disabled={Boolean(batchAction) || permanentlyDeletableTasks.length === 0 || permanentlyDeletableTasks.length > 20} onClick={() => { setDeletionError(''); setDeletionPassword(''); setBatchPermanentDeleteTasks(permanentlyDeletableTasks); }}><Trash2 size={14} />永久删除 {permanentlyDeletableTasks.length}</Button>
+        <Button unstyled className="button small" type="button" title={exportableTasks.length > 20 ? '单次最多导出 20 条，请减少选择' : '导出已审核或待人工归档任务'} disabled={Boolean(batchAction) || exportableTasks.length === 0 || exportableTasks.length > 20} onClick={() => { void exportSelectedTasks(); }}><Download size={14} />导出 {exportableTasks.length}</Button>
+        <Button unstyled className="button small" type="button" disabled={Boolean(batchAction)} onClick={() => setSelectedTaskIds([])}>清除选择</Button>
+        {batchAction && <span role="status">正在处理…</span>}
+      </div>}
+
       {loading && !lastUpdatedAt
         ? <div className="empty-state"><LoaderCircle className="animate-spin" size={20} />正在读取中心任务…</div>
         : fetchError && !lastUpdatedAt ? <div className="empty-state">暂时无法读取任务，请重试。</div>
@@ -689,8 +1163,9 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
           </div>
           : <div ref={listStart} className="table-wrap mobile-cards workbench-table-wrap" tabIndex={0} role="region" aria-label="作业列表，可横向滚动查看完整列" aria-busy={loading} inert={loading}>
             <table>
-              <thead><tr><th className="workbench-col-query">作业 / Query</th><th className="workbench-col-creator">作业员</th><th className="workbench-col-progress">状态 / 进度</th><th className="workbench-col-executor">执行机</th><th className="workbench-col-time">开始时间 / 耗时</th><th className="workbench-col-actions">操作</th></tr></thead>
+              <thead><tr>{role === 'ADMIN' && <th className="workbench-col-select"><Checkbox aria-label="选择当前页全部任务" checked={allVisibleSelected} onChange={(event) => setSelectedTaskIds(event.target.checked ? visibleTasks.map((task) => task.id) : [])} /></th>}<th className="workbench-col-query">作业 / Query</th><th className="workbench-col-creator">作业员</th><th className="workbench-col-progress">状态 / 进度</th><th className="workbench-col-executor">执行机</th><th className="workbench-col-time">创建 / 开始 / 耗时</th><th className="workbench-col-actions">操作</th></tr></thead>
               <tbody>{visibleTasks.map((task) => <tr key={task.id}>
+                {role === 'ADMIN' && <td className="workbench-col-select" data-label="选择"><Checkbox aria-label={`选择任务 #${task.id}`} checked={selectedTaskIds.includes(task.id)} onChange={(event) => toggleTaskSelection(task.id, event.target.checked)} /></td>}
                 <td className="query-cell" data-label="作业 / Query">
                   <div className="workbench-cell-stack">
                     <span className="mono workbench-task-id">#{task.id}</span>
@@ -714,8 +1189,9 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
                   {(activeView === 'MANUAL_ARCHIVE' || isAllJobs) && <div><small>生图执行机</small><span className="mono workbench-text-preview" title={imageExecutorLabel(task)}>{imageExecutorLabel(task)}</span></div>}
                   {activeView === 'PERSONAL' && (task.state.startsWith('IMAGE_') || task.imageExecutorNodeId || isImageRetryExhausted(task)) && <div><small>生图执行机</small><span className="mono workbench-text-preview" title={imageExecutorLabel(task)}>{imageExecutorLabel(task)}</span></div>}
                 </div></td>
-                <td data-label="开始 / 耗时"><div className="workbench-cell-stack">
-                  <time dateTime={task.executionStartedAt || undefined}>{timeLabel(task.executionStartedAt, task.state)}</time>
+                <td data-label="创建 / 开始 / 耗时"><div className="workbench-cell-stack">
+                  <time dateTime={task.createdAt}>{timeLabel(task.createdAt)}</time>
+                  <small>开始：<time dateTime={task.executionStartedAt || undefined}>{timeLabel(task.executionStartedAt, task.state)}</time></small>
                   <small className="workbench-elapsed"><Clock3 aria-hidden="true" size={13} />{elapsed(task)}</small>
                 </div></td>
                 <td className="workbench-col-actions" data-label="操作">{taskActions(task)}</td>
@@ -726,7 +1202,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
       {lastUpdatedAt && <WorkbenchPagination page={page} pageSize={pageSize} total={total} offset={resultOffset} count={tasks.length} busy={loading || refreshing}
         loadError={fetchError} onRetry={() => { void refresh(); }}
         onPageChange={(nextPage) => { if (nextPage !== page) { scrollAfterPageLoad.current = true; setPage(nextPage); } }}
-        onPageSizeChange={(size) => { scrollAfterPageLoad.current = true; setPageSize(size); setPage(1); }} />}
+        onPageSizeChange={(size) => { scrollAfterPageLoad.current = true; setPageSize(size as WorkbenchListState['pageSize']); setPage(1); }} />}
     </section>
 
     <TaskReviewDialog

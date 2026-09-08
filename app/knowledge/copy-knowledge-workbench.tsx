@@ -20,27 +20,37 @@ import {
   CopyAnalysisPromptManager,
   type CopyAnalysisPrompt,
 } from './copy-analysis-prompt-manager';
-import { CopyKnowledgeLibrary, type CopyKnowledgeItem } from './copy-knowledge-library';
+import {
+  CopyKnowledgeLibrary,
+  type CopyKnowledgeItem,
+  type CopyKnowledgePagination,
+} from './copy-knowledge-library';
 
 export type { CopyKnowledgeItem } from './copy-knowledge-library';
+export type { CopyKnowledgePagination } from './copy-knowledge-library';
 export type { CopyAnalysisPrompt } from './copy-analysis-prompt-manager';
 
 type LabelSummary = { name: string; itemCount: number };
 
 export function CopyKnowledgeWorkbench({
   items,
+  pagination,
   labels,
   prompts,
+  selectedLabel,
+  searchQuery,
 }: {
   items: CopyKnowledgeItem[];
+  pagination: CopyKnowledgePagination;
   labels: LabelSummary[];
   prompts: CopyAnalysisPrompt[];
+  selectedLabel: string;
+  searchQuery: string;
 }) {
   const router = useRouter();
   const confirm = useConfirmDialog();
   const [sourceCopy, setSourceCopy] = useState('');
   const [analysisPrompt, setAnalysisPrompt] = useState('');
-  const [selectedLabel, setSelectedLabel] = useState('ALL');
   const [analysisOpen, setAnalysisOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -67,7 +77,6 @@ export function CopyKnowledgeWorkbench({
       });
       setSourceCopy('');
       setAnalysisPrompt('');
-      setSelectedLabel('ALL');
       setMessage(`“${result.title}”已由 DeepSeek 分析并按 ${result.labels.length} 个标签保存到中心知识库。`);
       setAnalysisOpen(false);
       router.refresh();
@@ -141,6 +150,13 @@ export function CopyKnowledgeWorkbench({
 
     {message && <div className={messageIsError ? 'notice error' : 'notice success'} role={messageIsError ? 'alert' : 'status'} aria-live="polite">{message}</div>}
 
-    <CopyKnowledgeLibrary items={items} labels={labels} selectedLabel={selectedLabel} onSelectLabel={setSelectedLabel} onAddAnalysis={() => changeAnalysisOpen(true)} />
+    <CopyKnowledgeLibrary
+      items={items}
+      pagination={pagination}
+      labels={labels}
+      selectedLabel={selectedLabel}
+      searchQuery={searchQuery}
+      onAddAnalysis={() => changeAnalysisOpen(true)}
+    />
   </div>;
 }

@@ -15,4 +15,6 @@ server/server-storage/
 *.key
 npm-debug.log*
 .next/
+.next-local/
+server/test-storage/
 *.tsbuildinfo

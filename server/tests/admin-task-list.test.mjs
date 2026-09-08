@@ -168,6 +168,19 @@ test('ordinary users and reviewers cannot use creator role filtering', async () 
   });
 });
 
+test('only administrators can use the centralized attention filter', async () => {
+  const repository = taskRepository();
+  await withServer(repository, async (root) => {
+    const admin = await fetch(`${root}/v1/tasks?attention=STALE&includeTotal=true`, { headers: actorHeaders('admin') });
+    assert.equal(admin.status, 200);
+    for (const username of ['alice', 'reviewer']) {
+      const denied = await fetch(`${root}/v1/tasks?attention=FAILED`, { headers: actorHeaders(username) });
+      assert.equal(denied.status, 403);
+    }
+  });
+  assert.equal(repository.listCalls, 1);
+});
+
 test('role filters reject forged administrators and stale or missing identities', async () => {
   const repository = taskRepository();
   await withServer(repository, async (root) => {
