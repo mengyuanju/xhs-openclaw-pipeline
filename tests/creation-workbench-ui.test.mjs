@@ -132,6 +132,7 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.doesNotMatch(reviewDialog, /approve-delivery|提交图文审核/u);
   assert.match(workbench, /按 Query 关键字搜索/u);
   assert.match(workbench, /按 Query 去重/u);
+  assert.match(workbench, /去重后 \$\{total\} 个 Query/u);
   assert.match(workbench, /search\.set\('deduplicateQuery', 'true'\)/u);
   assert.match(workbench, /includeTotal: 'true'/u);
   assert.match(workbench, /Array\.isArray\(rawTaskPage\)/u);

@@ -665,7 +665,11 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
           />
           <span>按 Query 去重</span>
         </label>
-        <span>{lastUpdatedAt ? `共 ${total} 条${deduplicateQuery ? '（已按 Query 去重）' : ''}${searchKeyword ? `匹配“${searchKeyword}”` : ''}` : '尚未读取任务'}</span>
+        <span>{lastUpdatedAt
+          ? deduplicateQuery
+            ? `去重后 ${total} 个 Query${searchKeyword ? `匹配“${searchKeyword}”` : ''}`
+            : `共 ${total} 条${searchKeyword ? `匹配“${searchKeyword}”` : ''}`
+          : '尚未读取任务'}</span>
         {hasFilters && <Button unstyled className="button small" type="button" onClick={clearFilters}>清空筛选</Button>}
       </div>
 
