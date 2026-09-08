@@ -288,7 +288,7 @@ test('task listing forwards server-side pagination, states and Query search', as
     },
   };
   await withServer(repository, async (root) => {
-    const listed = await fetch(`${root}/v1/tasks?states=COPY_QUEUED,COPY_FAILED&nodeId=node-a&query=%E9%BB%84%E5%B1%B1&limit=20&offset=20&includeTotal=true`);
+    const listed = await fetch(`${root}/v1/tasks?states=COPY_QUEUED,COPY_FAILED&nodeId=node-a&query=%E9%BB%84%E5%B1%B1&deduplicateQuery=true&limit=20&offset=20&includeTotal=true`);
     assert.equal(listed.status, 200);
     assert.equal((await listed.json()).data.total, 0);
     const counts = await fetch(`${root}/v1/task-counts?nodeId=node-a`);
@@ -300,6 +300,7 @@ test('task listing forwards server-side pagination, states and Query search', as
       states: 'COPY_QUEUED,COPY_FAILED',
       nodeId: 'node-a',
       query: '黄山',
+      deduplicateQuery: true,
       createdByUserId: undefined,
       limit: '20',
       offset: '20',
