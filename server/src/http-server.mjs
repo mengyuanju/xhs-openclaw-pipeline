@@ -268,6 +268,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
       createdByUserId: actor.role === 'USER' ? actor.username : ctx.query.createdByUserId,
       ...(createdByRole !== null ? { createdByRole } : {}),
       query: ctx.query.query,
+      deduplicateQuery: ctx.query.deduplicateQuery === 'true',
       limit: ctx.query.limit,
       offset: ctx.query.offset,
       includeTotal: ctx.query.includeTotal === 'true',

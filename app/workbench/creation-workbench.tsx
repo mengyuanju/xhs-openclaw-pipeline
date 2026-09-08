@@ -187,6 +187,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
   const [resultOffset, setResultOffset] = useState(0);
   const [searchInput, setSearchInput] = useState('');
   const [searchKeyword, setSearchKeyword] = useState('');
+  const [deduplicateQuery, setDeduplicateQuery] = useState(false);
   const [creatorRoleFilter, setCreatorRoleFilter] = useState('ALL');
   const [creatorFilter, setCreatorFilter] = useState<JobCreator | null>(initialCreator && isAllJobs
     ? { username: initialCreator, displayName: initialCreator, role: '', status: 'ACTIVE' } : null);
@@ -236,12 +237,14 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
           });
       if (view.personalOnly) search.set('mine', 'true');
       if (searchKeyword) search.set('query', searchKeyword);
+      if (deduplicateQuery) search.set('deduplicateQuery', 'true');
       let compatibilityTasks: DistributedTask[] | null = null;
       const taskPageRequest = isAllJobs ? loadAdminTaskPage(request, {
         createdByUserId: creatorFilter?.username,
         createdByRole: creatorRoleFilter === 'ALL' ? undefined : creatorRoleFilter,
         state: stateFilter === 'ALL' ? undefined : stateFilter,
         query: searchKeyword,
+        deduplicateQuery,
         limit: pageSize,
         offset: (page - 1) * pageSize,
       }) : request<TaskPage | DistributedTask[]>(apiPath(`/v1/tasks?${search}`))
@@ -272,9 +275,14 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
           : matchesWorkbenchView(task, view, creatorUserId))
           && (!keyword || task.query.toLocaleLowerCase('zh-CN').includes(keyword)))
           .sort(compareTasksByStatePriority);
+        const uniqueTasks = deduplicateQuery ? filtered.filter((task, index, all) => {
+          const identity = task.query.trim().replace(/\s+/gu, ' ').toLocaleLowerCase('zh-CN');
+          return all.findIndex((candidate) => candidate.query.trim().replace(/\s+/gu, ' ')
+            .toLocaleLowerCase('zh-CN') === identity) === index;
+        }) : filtered;
         taskPage = {
-          items: filtered.slice((page - 1) * pageSize, page * pageSize),
-          total: filtered.length,
+          items: uniqueTasks.slice((page - 1) * pageSize, page * pageSize),
+          total: uniqueTasks.length,
           limit: pageSize,
           offset: (page - 1) * pageSize,
         };
@@ -305,7 +313,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
         setRefreshing(false);
       }
     }
-  }, [activeDefinition, creatorUserId, page, pageSize, isAllJobs, creatorFilter, creatorRoleFilter, stateFilter, searchKeyword]);
+  }, [activeDefinition, creatorUserId, page, pageSize, isAllJobs, creatorFilter, creatorRoleFilter, stateFilter, searchKeyword, deduplicateQuery]);
 
   useEffect(() => {
     void refresh();
@@ -332,11 +340,12 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
 
   const visibleTasks = tasks;
 
-  const hasFilters = Boolean(searchInput || searchKeyword || creatorFilter || creatorRoleFilter !== 'ALL' || stateFilter !== 'ALL');
+  const hasFilters = Boolean(searchInput || searchKeyword || deduplicateQuery || creatorFilter || creatorRoleFilter !== 'ALL' || stateFilter !== 'ALL');
 
   function clearFilters() {
     setSearchInput('');
     setSearchKeyword('');
+    setDeduplicateQuery(false);
     setCreatorFilter(null);
     setCreatorRoleFilter('ALL');
     setStateFilter('ALL');
@@ -648,7 +657,19 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
           {searchKeyword && <Button unstyled className="button small" type="button" onClick={clearSearch}>清除</Button>}
           <Button unstyled className="button small" type="submit">搜索</Button>
         </form>
-        <span>{lastUpdatedAt ? `共 ${total} 条${searchKeyword ? `匹配“${searchKeyword}”` : ''}` : '尚未读取任务'}</span>
+        <label className="switch-field workbench-query-deduplicate" htmlFor="workbench-query-deduplicate">
+          <Checkbox
+            id="workbench-query-deduplicate"
+            checked={deduplicateQuery}
+            onChange={(event) => { setDeduplicateQuery(event.target.checked); setPage(1); }}
+          />
+          <span>按 Query 去重</span>
+        </label>
+        <span>{lastUpdatedAt
+          ? deduplicateQuery
+            ? `去重后 ${total} 个 Query${searchKeyword ? `匹配“${searchKeyword}”` : ''}`
+            : `共 ${total} 条${searchKeyword ? `匹配“${searchKeyword}”` : ''}`
+          : '尚未读取任务'}</span>
         {hasFilters && <Button unstyled className="button small" type="button" onClick={clearFilters}>清空筛选</Button>}
       </div>
 

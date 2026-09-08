@@ -248,6 +248,26 @@ test('task pages filter multiple states and Query text while returning a total',
   assert.match(pageQuery.sql, /ORDER BY CASE[\s\S]*page\.created_at DESC, page\.id DESC/u);
 });
 
+test('task pages can de-duplicate normalized Query values before pagination', async () => {
+  const queries = [];
+  const repository = new PostgresControlPlaneRepository({
+    pool: {
+      async query(sql, values) {
+        queries.push({ sql: String(sql), values });
+        return { rows: String(sql).includes('COUNT(DISTINCT') ? [{ total: '3' }] : [taskRow()] };
+      },
+    },
+  });
+
+  const page = await repository.listTasks({ deduplicateQuery: true, includeTotal: true });
+  assert.equal(page.total, 3);
+  const pageQuery = queries.find((item) => item.sql.includes('SELECT DISTINCT ON'));
+  assert.match(pageQuery.sql, /DISTINCT ON \(lower\(regexp_replace\(btrim\(query\), '\\s\+', ' ', 'g'\)\)\)/u);
+  assert.match(pageQuery.sql, /ORDER BY lower\(regexp_replace\(btrim\(query\), '\\s\+', ' ', 'g'\)\), created_at DESC, id DESC/u);
+  assert.match(queries.find((item) => item.sql.includes('COUNT(DISTINCT')).sql, /COUNT\(DISTINCT lower\(regexp_replace/u);
+  await assert.rejects(repository.listTasks({ deduplicateQuery: 'true' }), /deduplicateQuery/u);
+});
+
 test('personal task pagination and totals filter the creator independently of execution nodes', async () => {
   const queries = [];
   const repository = new PostgresControlPlaneRepository({ pool: {

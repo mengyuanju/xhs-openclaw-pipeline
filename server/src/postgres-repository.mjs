@@ -243,6 +243,12 @@ function normalizedTaskQuery(value) {
   return query || null;
 }
 
+// Queries are entered by people, so insignificant casing and whitespace should
+// not produce separate rows when the task list is de-duplicated.
+function taskQueryIdentity(column = 'query') {
+  return `lower(regexp_replace(btrim(${column}), '\\s+', ' ', 'g'))`;
+}
+
 async function transaction(pool, action) {
   const client = await pool.connect();
   try {
@@ -611,6 +617,7 @@ export class PostgresControlPlaneRepository {
     createdByUserId = null,
     createdByRole = null,
     query = null,
+    deduplicateQuery = false,
     limit = 50,
     offset = 0,
     includeTotal = false,
@@ -618,6 +625,7 @@ export class PostgresControlPlaneRepository {
     const safeLimit = Math.max(1, Math.min(200, Number(limit) || 50));
     const safeOffset = Math.max(0, Number(offset) || 0);
     if (typeof includeTotal !== 'boolean') throw new TypeError('includeTotal must be a boolean');
+    if (typeof deduplicateQuery !== 'boolean') throw new TypeError('deduplicateQuery must be a boolean');
     const values = [];
     const filters = [];
     const stateFilters = normalizedTaskStates(state, states);
@@ -647,6 +655,20 @@ export class PostgresControlPlaneRepository {
       filters.push(`strpos(lower(query), lower($${values.length})) > 0`);
     }
     const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+    const queryIdentity = taskQueryIdentity('query');
+    const taskPage = deduplicateQuery ? `
+        SELECT * FROM (
+          SELECT DISTINCT ON (${queryIdentity}) * FROM tasks
+          ${where}
+          ORDER BY ${queryIdentity}, created_at DESC, id DESC
+        ) deduplicated_tasks
+      ` : `
+        SELECT * FROM tasks
+        ${where}
+      `;
+    const countSql = deduplicateQuery
+      ? `SELECT COUNT(DISTINCT ${queryIdentity}) AS total FROM tasks ${where}`
+      : `SELECT COUNT(*) AS total FROM tasks ${where}`;
     const pageValues = [...values, safeLimit, safeOffset];
     const [result, countResult] = await Promise.all([
       this.pool.query(`
@@ -654,8 +676,7 @@ export class PostgresControlPlaneRepository {
         n.name AS image_executor_node_name, creator.display_name AS creator_display_name,
         creator.role AS creator_role
       FROM (
-        SELECT * FROM tasks
-        ${where}
+        ${taskPage}
         ORDER BY ${taskStateOrder('state')}, created_at DESC, id DESC
         LIMIT $${pageValues.length - 1} OFFSET $${pageValues.length}
       ) page
@@ -672,7 +693,7 @@ export class PostgresControlPlaneRepository {
       ORDER BY ${taskStateOrder('page.state')}, page.created_at DESC, page.id DESC
     `, pageValues),
       includeTotal
-        ? this.pool.query(`SELECT COUNT(*) AS total FROM tasks ${where}`, values)
+        ? this.pool.query(countSql, values)
         : Promise.resolve(null),
     ]);
     const items = result.rows.map(taskFrom);

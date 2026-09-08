@@ -1,16 +1,17 @@
 /**
  * Read a complete server page; old centers must not silently ignore admin filters.
  * @param {(path: string) => Promise<any>} request
- * @param {{createdByUserId?: string, createdByRole?: string, state?: string, query?: string, limit?: number, offset?: number}} options
+ * @param {{createdByUserId?: string, createdByRole?: string, state?: string, query?: string, deduplicateQuery?: boolean, limit?: number, offset?: number}} options
  */
 export async function loadAdminTaskPage(request, {
-  createdByUserId, createdByRole, state, query, limit = 20, offset = 0,
+  createdByUserId, createdByRole, state, query, deduplicateQuery = false, limit = 20, offset = 0,
 } = {}) {
   const search = new URLSearchParams({ limit: String(limit), offset: String(offset), includeTotal: 'true' });
   if (createdByUserId) search.set('createdByUserId', createdByUserId);
   if (createdByRole) search.set('createdByRole', createdByRole);
   if (state) search.set('state', state);
   if (query) search.set('query', query);
+  if (deduplicateQuery) search.set('deduplicateQuery', 'true');
   const healthRequest = request('/api/control-plane/health');
   // Start both reads together, but keep the capability gate authoritative.
   // Observe task rejection immediately, even when health fails first.
