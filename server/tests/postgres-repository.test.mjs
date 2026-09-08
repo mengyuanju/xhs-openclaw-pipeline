@@ -665,6 +665,7 @@ test('logical task cancellation abandons an active image execution and keeps tas
   assert.ok(queries.some((item) => item.sql.includes("status = 'ABANDONED'")));
   assert.ok(queries.some((item) => item.sql.includes('UPDATE image_runs SET')));
   assert.ok(queries.some((item) => item.sql.includes('cancelled_from_state = state')));
+  assert.ok(queries.some((item) => item.sql.includes("THEN '排队任务已废弃，可由管理员重新加入队列'")));
   assert.equal(queries.some((item) => item.sql.includes('DELETE FROM')), false);
 });
 
@@ -814,7 +815,7 @@ test('batch permanent deletion verifies the administrator once and deletes eligi
   assert.deepEqual(result, {
     succeeded: [41],
     failed: [
-      { id: 42, code: 'TASK_MUST_BE_INACTIVE', message: '请先取消排队或等待任务结束，再永久删除' },
+      { id: 42, code: 'TASK_MUST_BE_INACTIVE', message: '请先废弃排队任务或等待任务结束，再永久删除' },
       { id: 43, code: 'NOT_FOUND', message: 'task not found' },
       { id: 44, code: 'TASK_CANCELLATION_SETTLING', message: '执行机仍在确认取消，请在取消后等待3分钟再永久删除' },
     ],

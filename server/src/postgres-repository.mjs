@@ -147,7 +147,7 @@ async function assertPermanentlyDeletableTask(client, taskId) {
   const task = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
   if (!task.rows[0]) throw new ControlPlaneNotFoundError('task not found');
   if (!PERMANENT_DELETE_STATES.includes(task.rows[0].state)) {
-    throw new ControlPlaneConflictError('TASK_MUST_BE_INACTIVE', '请先取消排队或等待任务结束，再永久删除');
+    throw new ControlPlaneConflictError('TASK_MUST_BE_INACTIVE', '请先废弃排队任务或等待任务结束，再永久删除');
   }
   if (task.rows[0].state === 'CANCELLED'
     && ['COPY_RUNNING', 'IMAGE_RUNNING'].includes(task.rows[0].cancelled_from_state)) {
@@ -1599,7 +1599,7 @@ export class PostgresControlPlaneRepository {
           state = 'CANCELLED', current_execution_id = NULL, current_stage = 'CANCELLED',
           cancelled_from_state = state,
           progress_message = CASE WHEN state IN ('COPY_QUEUED', 'IMAGE_QUEUED')
-            THEN '已取消排队，可由管理员重新加入队列' ELSE '任务已被人工废弃' END,
+            THEN '排队任务已废弃，可由管理员重新加入队列' ELSE '任务已被人工废弃' END,
           last_activity_at = now(),
           finished_at = now(), updated_at = now()
         WHERE id = $1

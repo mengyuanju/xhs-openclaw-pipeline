@@ -1,22 +1,24 @@
 'use client';
 
+import * as AlertDialogPrimitive from '@radix-ui/react-alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Checkbox, Input, Textarea } from '@/components/ui/input';
 import { SearchInput } from '@/components/ui/search-input';
 
 import {
   AlertTriangle,
-  Ban,
   Clock3,
   Download,
   Eye,
   FileCheck2,
   LoaderCircle,
+  LockKeyhole,
   Plus,
   RefreshCw,
   RotateCcw,
   Save,
   Search,
+  ShieldAlert,
   Trash2,
 } from 'lucide-react';
 import { usePathname, useRouter } from 'next/navigation';
@@ -44,6 +46,7 @@ import { TaskRowActions } from './task-row-actions';
 import { AdminJobFilters, CREATOR_ROLE_LABELS } from './admin-job-filters';
 import type { JobCreator } from './admin-creator-filter';
 import { loadAdminTaskPage } from '../../src/control-plane/admin-task-page.mjs';
+import { createActionLock } from '../../src/control-plane/action-lock.mjs';
 import { WorkbenchPagination } from './workbench-pagination';
 import { PersonalOverview } from '../workbench-statistics/personal-overview';
 import { STATE_GROUPS } from '../../src/web-statistics/summary.mjs';
@@ -137,6 +140,7 @@ const STATE_LABELS: Record<TaskState, string> = {
 };
 const PERMANENT_DELETE_STATES: TaskState[] = ['COPY_FAILED', 'IMAGE_FAILED', 'REVIEWED', 'CANCELLED'];
 const CANCELLED_EXECUTION_SETTLE_MS = 3 * 60_000;
+const LIST_REFRESH_TIMEOUT_MS = 15_000;
 const DEFAULT_TASK_VIEW_VALUE = 'DEFAULT';
 
 const STAGE_LABELS: Record<string, string> = {
@@ -237,6 +241,113 @@ function isPermanentlyDeletableTask(task: DistributedTask) {
   return PERMANENT_DELETE_STATES.includes(task.state) && cancelledExecutionSettled;
 }
 
+function PermanentDeleteDialog({
+  tasks,
+  batch,
+  password,
+  error,
+  busy,
+  onPasswordChange,
+  onCancel,
+  onConfirm,
+}: {
+  tasks: DistributedTask[];
+  batch: boolean;
+  password: string;
+  error: string;
+  busy: boolean;
+  onPasswordChange: (value: string) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const passwordHelpId = batch ? 'batch-task-deletion-password-help' : 'task-deletion-password-help';
+  const passwordErrorId = batch ? 'batch-task-deletion-password-error' : 'task-deletion-password-error';
+  const inputId = batch ? 'batch-task-deletion-password' : 'task-deletion-password';
+
+  return <AlertDialogPrimitive.Root open={tasks.length > 0} onOpenChange={(open) => { if (!open && !busy) onCancel(); }}>
+    <AlertDialogPrimitive.Portal>
+      <AlertDialogPrimitive.Overlay className="dialog-overlay fixed inset-0 z-50" />
+      <AlertDialogPrimitive.Content className="permanent-delete-dialog fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2">
+        <form className="permanent-delete-form" onSubmit={(event) => { event.preventDefault(); onConfirm(); }}>
+          <header className="permanent-delete-header">
+            <span className="permanent-delete-icon" aria-hidden="true"><Trash2 size={22} /></span>
+            <div>
+              <span className="section-kicker">高风险操作</span>
+              <AlertDialogPrimitive.Title className="permanent-delete-title">
+                {batch ? <>批量永久删除 {tasks.length} 条任务</> : <>永久删除任务 #{tasks[0]?.id}</>}
+              </AlertDialogPrimitive.Title>
+              <AlertDialogPrimitive.Description className="permanent-delete-description">
+                {batch
+                  ? '所选任务会在同一操作中删除，二级密码仅校验一次。'
+                  : '这条任务及其全部关联数据将从系统中移除。'}
+              </AlertDialogPrimitive.Description>
+            </div>
+          </header>
+
+          <div className="permanent-delete-body">
+            <section className="permanent-delete-warning" aria-labelledby={`${inputId}-warning`}>
+              <ShieldAlert aria-hidden="true" size={20} />
+              <div>
+                <strong id={`${inputId}-warning`}>删除后无法恢复</strong>
+                <p>任务记录、执行记录、文案版本、生成图片和已保存素材都会被永久清除。</p>
+                <div className="permanent-delete-impact" aria-label="将被删除的数据">
+                  <span>任务记录</span><span>执行记录</span><span>文案版本</span><span>图片素材</span>
+                </div>
+              </div>
+            </section>
+
+            <section className="permanent-delete-targets" aria-labelledby={`${inputId}-targets`}>
+              <div className="permanent-delete-targets-head">
+                <strong id={`${inputId}-targets`}>待删除任务</strong>
+                <span>{tasks.length} 条</span>
+              </div>
+              <ul className="permanent-delete-target-list">
+                {tasks.map((task) => <li key={task.id}>
+                  <div><strong>#{task.id}</strong><span>{STATE_LABELS[task.state]}</span></div>
+                  <p>{task.query || '未命名 Query'}</p>
+                </li>)}
+              </ul>
+              <p className="permanent-delete-alternative">如果仍可能恢复任务，请返回并从“更多操作”重新排队。</p>
+            </section>
+
+            {error && <div className="notice error permanent-delete-error" role="alert" id={passwordErrorId}><AlertTriangle aria-hidden="true" size={16} /><span>{error}</span></div>}
+
+            <div className="field permanent-delete-password-field">
+              <label htmlFor={inputId}><LockKeyhole aria-hidden="true" size={16} />删除二级密码</label>
+              <input
+                className="input"
+                id={inputId}
+                type="password"
+                value={password}
+                onChange={(event) => onPasswordChange(event.target.value)}
+                aria-describedby={`${passwordHelpId}${error ? ` ${passwordErrorId}` : ''}`}
+                aria-invalid={Boolean(error)}
+                autoComplete="current-password"
+                autoFocus
+                disabled={busy}
+                placeholder="请输入删除二级密码"
+              />
+              <small id={passwordHelpId}>请输入“个人信息”中设置的删除二级密码，确认操作由你本人发起。</small>
+            </div>
+          </div>
+
+          <footer className="permanent-delete-footer">
+            <span><ShieldAlert aria-hidden="true" size={15} />确认后将立即开始删除</span>
+            <div>
+              <Button unstyled className="button" type="button" disabled={busy} onClick={onCancel}>取消</Button>
+              <Button unstyled className="button permanent-delete-confirm" type="submit" disabled={!password || busy}>
+                {busy
+                  ? <><LoaderCircle aria-hidden="true" className="animate-spin" size={16} />删除中…</>
+                  : <><Trash2 aria-hidden="true" size={16} />{batch ? `永久删除 ${tasks.length} 条任务` : '永久删除这条任务'}</>}
+              </Button>
+            </div>
+          </footer>
+        </form>
+      </AlertDialogPrimitive.Content>
+    </AlertDialogPrimitive.Portal>
+  </AlertDialogPrimitive.Root>;
+}
+
 export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: activeView, initialListState = DEFAULT_WORKBENCH_LIST_STATE }: {
   nodeId: string; creatorUserId: string; role: string; viewKey: ViewKey; initialListState?: WorkbenchListState;
 }) {
@@ -292,12 +403,18 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
   const [deletionError, setDeletionError] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [permanentDeletionLock] = useState(createActionLock);
   const legacyStateFilterMode = useRef(false);
 
   const refresh = useCallback(async ({ silent = false } = {}) => {
     const requestId = ++refreshRequestId.current;
     activeRequest.current?.abort();
     const controller = new AbortController();
+    let timedOut = false;
+    const timeoutId = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, LIST_REFRESH_TIMEOUT_MS);
     activeRequest.current = controller;
     const request = <T,>(path: string) => apiRequest<T>(path, { signal: controller.signal });
     if (!silent) {
@@ -395,9 +512,10 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
       setLastUpdatedAt(new Date().toISOString());
     } catch (caught) {
       if (requestId === refreshRequestId.current) {
-        setFetchError(caught instanceof Error ? caught.message : '任务读取失败');
+        setFetchError(timedOut ? '任务读取超时，请重试' : caught instanceof Error ? caught.message : '任务读取失败');
       }
     } finally {
+      window.clearTimeout(timeoutId);
       controller.abort();
       if (requestId === refreshRequestId.current) {
         activeRequest.current = null;
@@ -479,6 +597,9 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
   const queuedTasks = selectedTasks.filter((task) => ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state));
   const exportableTasks = selectedTasks.filter((task) => ['MANUAL_ARCHIVE', 'REVIEWED'].includes(task.state));
   const permanentlyDeletableTasks = selectedTasks.filter(isPermanentlyDeletableTask);
+  const permanentDeletionSettlingTasks = selectedTasks.filter((task) => task.state === 'CANCELLED'
+    && ['COPY_RUNNING', 'IMAGE_RUNNING'].includes(task.cancelledFromState || '')
+    && !isPermanentlyDeletableTask(task));
   const availableSavedViews = savedViews.filter((view) => view.viewKey === activeView);
   const allVisibleSelected = visibleTasks.length > 0 && visibleTasks.every((task) => selectedTaskIds.includes(task.id));
 
@@ -595,11 +716,11 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
     if (eligible.length === 0 || batchAction) return;
     const retry = action === 'RETRY';
     if (!await confirm({
-      title: retry ? `批量重试 ${eligible.length} 条任务？` : `取消 ${eligible.length} 条任务的排队？`,
+      title: retry ? `批量重试 ${eligible.length} 条任务？` : `废弃 ${eligible.length} 条排队任务？`,
       description: retry
         ? '仅处理当前所选的执行中或失败任务；正在执行的旧流程会作废，并按文案或图片阶段重新排队。'
-        : '仅处理当前所选的待文案、待生图任务；数据会保留，之后仍可重新排队。',
-      confirmLabel: retry ? '批量重试' : '取消排队',
+        : '任务会立即退出文案或生图队列并标记为已废弃；数据仍会保留，之后可以永久删除或重新排队。',
+      confirmLabel: retry ? '批量重试' : '批量废弃',
       ...(retry ? {} : { tone: 'danger' as const }),
     })) return;
     setBatchAction(action);
@@ -610,7 +731,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
         body: JSON.stringify({ action, taskIds: eligible.map((task) => task.id) }),
       });
       setSelectedTaskIds((current) => current.filter((id) => !result.succeeded.includes(id)));
-      const label = retry ? '重试' : '取消排队';
+      const label = retry ? '重试' : '废弃';
       setMessage(`批量${label}完成：成功 ${result.succeeded.length} 条${result.failed.length ? `，未处理 ${result.failed.length} 条` : ''}。`);
       setError(result.failed.length ? result.failed.map((item) => `#${item.id}：${item.message}`).join('；') : '');
       await refresh({ silent: true });
@@ -764,12 +885,12 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
     }
   }
 
-  async function cancelQueuedTask(task: DistributedTask) {
+  async function discardQueuedTask(task: DistributedTask) {
     if (!['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state)) return;
     if (!await confirm({
-      title: '取消这条任务的排队？',
-      description: '任务会停止等待执行机，但保留全部数据。之后可点击“一键排队”恢复到当前队列。',
-      confirmLabel: '确认取消排队',
+      title: '废弃这条排队任务？',
+      description: '任务会立即退出队列并标记为已废弃，但保留全部数据。之后可以永久删除，也可以从“更多操作”重新排队。',
+      confirmLabel: '确认废弃',
       tone: 'danger',
     })) return;
     setActingTaskId(task.id);
@@ -777,11 +898,11 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
       await apiRequest(apiPath(`/v1/tasks/${task.id}/cancel`), {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
       });
-      setMessage(`任务 #${task.id} 已取消排队，可随时一键重新排队。`);
+      setMessage(`任务 #${task.id} 已废弃；现在可以永久删除，或从“更多操作”重新排队。`);
       setError('');
       await refresh({ silent: true });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '取消排队失败');
+      setError(caught instanceof Error ? caught.message : '废弃排队任务失败');
     } finally { setActingTaskId(null); }
   }
 
@@ -795,61 +916,83 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
   }
 
   async function permanentlyDeleteTask() {
-    if (!permanentDeleteTask || !deletionPassword) return;
-    setActingTaskId(permanentDeleteTask.id);
+    const task = permanentDeleteTask;
+    const password = deletionPassword;
+    if (!task || !password || !permanentDeletionLock.acquire()) return;
+    let refreshAfterDelete = false;
+    setActingTaskId(task.id);
     try {
-      const result = await apiRequest<{ id: number; deleted: boolean; cleanupPending?: boolean }>(apiPath(`/v1/tasks/${permanentDeleteTask.id}/permanent`), {
-        method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deletionPassword }),
+      const result = await apiRequest<{ id: number; deleted: boolean; cleanupPending?: boolean }>(apiPath(`/v1/tasks/${task.id}/permanent`), {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deletionPassword: password }),
       });
       setMessage(result.cleanupPending
-        ? `任务 #${permanentDeleteTask.id} 已删除；素材已隔离，中心服务将继续清理。`
-        : `任务 #${permanentDeleteTask.id} 及其关联数据已永久删除。`);
-      setError(''); setDeletionError(''); setDeletionPassword(''); setPermanentDeleteTask(null); await refresh({ silent: true });
+        ? `任务 #${task.id} 已删除；素材已隔离，中心服务将继续清理。`
+        : `任务 #${task.id} 及其关联数据已永久删除。`);
+      setTasks((current) => current.filter((item) => item.id !== task.id));
+      setSelectedTaskIds((current) => current.filter((id) => id !== task.id));
+      setError('');
+      setDeletionError('');
+      setDeletionPassword('');
+      setPermanentDeleteTask(null);
+      refreshAfterDelete = true;
     } catch (caught) {
       setDeletionError(caught instanceof Error ? caught.message : '永久删除失败');
       setDeletionPassword('');
-    } finally { setActingTaskId(null); }
+    } finally {
+      permanentDeletionLock.release();
+      setActingTaskId(null);
+    }
+    if (refreshAfterDelete) void refresh({ silent: true });
   }
 
   async function permanentlyDeleteSelectedTasks() {
-    if (!batchPermanentDeleteTasks.length || batchPermanentDeleteTasks.length > 20 || !deletionPassword || batchAction) return;
+    const tasksToDelete = batchPermanentDeleteTasks;
+    const password = deletionPassword;
+    if (!tasksToDelete.length || tasksToDelete.length > 20 || !password || batchAction || !permanentDeletionLock.acquire()) return;
+    let refreshAfterDelete = false;
     setBatchAction('PERMANENT_DELETE');
     try {
       const result = await apiRequest<BatchPermanentDeleteResult>(apiPath('/v1/tasks/batch-permanent-delete'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          taskIds: batchPermanentDeleteTasks.map((task) => task.id),
-          deletionPassword,
+          taskIds: tasksToDelete.map((task) => task.id),
+          deletionPassword: password,
         }),
       });
+      const succeeded = new Set(result.succeeded);
+      setTasks((current) => current.filter((task) => !succeeded.has(task.id)));
       setSelectedTaskIds((current) => current.filter((id) => !result.succeeded.includes(id)));
       setMessage(`批量永久删除完成：成功 ${result.succeeded.length} 条${result.cleanupPending.length ? `，其中 ${result.cleanupPending.length} 条素材正在后台清理` : ''}${result.failed.length ? `，未删除 ${result.failed.length} 条` : ''}。`);
       setError(result.failed.length ? result.failed.map((item) => `#${item.id}：${item.message}`).join('；') : '');
       setDeletionError('');
       setDeletionPassword('');
       setBatchPermanentDeleteTasks([]);
-      await refresh({ silent: true });
+      refreshAfterDelete = true;
     } catch (caught) {
       setDeletionError(caught instanceof Error ? caught.message : '批量永久删除失败');
       setDeletionPassword('');
     } finally {
+      permanentDeletionLock.release();
       setBatchAction(null);
     }
+    if (refreshAfterDelete) void refresh({ silent: true });
   }
 
   function taskActions(task: DistributedTask) {
     const busy = actingTaskId === task.id;
+    const queued = ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state);
     const canPermanentlyDelete = role === 'ADMIN' && isPermanentlyDeletableTask(task);
-    const permanentDeleteButton = canPermanentlyDelete && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { setDeletionError(''); setDeletionPassword(''); setPermanentDeleteTask(task); }}><Trash2 size={14} />永久删除</Button>;
-    if (isAllJobs) return <TaskRowActions taskId={task.id} busy={busy}>
+    const visibleActionCount = role === 'ADMIN' && (queued || task.state === 'CANCELLED') ? 2 : 1;
+    const permanentDeleteButton = canPermanentlyDelete && <Button unstyled className="button small danger" type="button" disabled={busy || Boolean(batchAction) || batchPermanentDeleteTasks.length > 0} onClick={() => { setDeletionError(''); setDeletionPassword(''); setPermanentDeleteTask(task); }}><Trash2 size={14} />永久删除</Button>;
+    if (isAllJobs) return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
       <Button unstyled className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
-      {task.state === 'CANCELLED' && ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.cancelledFromState || '') && <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => { void requeueCancelledTask(task); }}><RotateCcw size={14} />一键排队</Button>}
-      {['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state) && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void cancelQueuedTask(task); }}><Trash2 size={14} />取消排队</Button>}
+      {queued && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardQueuedTask(task); }}><Trash2 size={14} />废弃</Button>}
       {permanentDeleteButton}
+      {task.state === 'CANCELLED' && ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.cancelledFromState || '') && <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => { void requeueCancelledTask(task); }}><RotateCcw size={14} />一键排队</Button>}
     </TaskRowActions>;
-    const canDiscard = role === 'ADMIN' || task.createdByUserId === creatorUserId;
-    const canCancelQueue = role === 'ADMIN' && ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state);
+    const canDiscard = (role === 'ADMIN' || task.createdByUserId === creatorUserId) && task.state !== 'CANCELLED';
+    const canDiscardQueue = role === 'ADMIN' && queued;
     const canRequeue = role === 'ADMIN' && task.state === 'CANCELLED' && ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.cancelledFromState || '');
     const canRetryCopy = canDiscard && ['COPY_RUNNING', 'COPY_FAILED'].includes(task.state);
     const canRetryImages = canDiscard && canRequeueImages(task);
@@ -860,7 +1003,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
       title={canRetryImages ? '重新进入待生图队列' : '文案尚未审核通过，暂不能重试生图'}
       onClick={() => { void retryImages(task); }}
     ><RotateCcw size={14} />重试生图</Button>;
-    if (activeView === 'ALL_COPY') return <TaskRowActions taskId={task.id} busy={busy}>
+    if (activeView === 'ALL_COPY') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
       <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
       {canRetryCopy && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</Button>}
       {canDiscard && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</Button>}
@@ -871,8 +1014,9 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
       {canDiscard && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</Button>}
       {permanentDeleteButton}
     </TaskRowActions>;
-    if (activeView === 'IMAGE_WORK') return <TaskRowActions taskId={task.id} busy={busy}>
+    if (activeView === 'IMAGE_WORK') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
       <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
+      {canDiscardQueue && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardQueuedTask(task); }}><Trash2 size={14} />废弃</Button>}
       {retryImageButton}
       {permanentDeleteButton}
     </TaskRowActions>;
@@ -881,15 +1025,15 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
       <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />审核</Button>
       <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</Button>
     </TaskRowActions>;
-    return <TaskRowActions taskId={task.id} busy={busy}>
+    return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
       <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
-      {canCancelQueue && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void cancelQueuedTask(task); }}><Trash2 size={14} />取消排队</Button>}
+      {canDiscardQueue && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardQueuedTask(task); }}><Trash2 size={14} />废弃</Button>}
+      {permanentDeleteButton}
       {canRequeue && <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => { void requeueCancelledTask(task); }}><RotateCcw size={14} />一键排队</Button>}
       {canDiscard && canResumeImageTask(task) && <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => { void resumeImages(task); }}><RotateCcw size={14} />从失败步骤继续</Button>}
       {activeView === 'PERSONAL' && canRetryCopy && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</Button>}
       {activeView === 'PERSONAL' && retryImageButton}
-      {canDiscard && !canCancelQueue && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</Button>}
-      {permanentDeleteButton}
+      {canDiscard && !canDiscardQueue && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</Button>}
     </TaskRowActions>;
   }
 
@@ -946,24 +1090,26 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
 
 
   return <div className="creation-workbench">
-    <Dialog open={Boolean(permanentDeleteTask)} onOpenChange={(open) => { if (!open && !actingTaskId) { setPermanentDeleteTask(null); setDeletionPassword(''); setDeletionError(''); } }}>
-      <DialogContent className="workbench-create-dialog">
-        <div className="workbench-create-heading"><span className="section-kicker">Irreversible action</span><DialogTitle>永久删除任务 #{permanentDeleteTask?.id}</DialogTitle><DialogDescription>此操作会永久清除任务、执行记录、文案、图片和素材，无法撤销。请输入个人信息中设置的删除二级密码确认。</DialogDescription></div>
-        <div className="notice error">请确认这不是仅需“取消排队”或“废弃”的任务。</div>
-        {deletionError && <div className="notice error" role="alert">{deletionError}</div>}
-        <div className="field"><label htmlFor="task-deletion-password">删除二级密码</label><input className="input" id="task-deletion-password" type="password" value={deletionPassword} onChange={(event) => setDeletionPassword(event.target.value)} autoComplete="current-password" /></div>
-        <div className="profile-form-actions"><Button unstyled className="button" type="button" disabled={Boolean(actingTaskId)} onClick={() => { setPermanentDeleteTask(null); setDeletionPassword(''); }}>取消</Button><Button unstyled className="button danger" type="button" disabled={!deletionPassword || Boolean(actingTaskId)} onClick={() => { void permanentlyDeleteTask(); }}>{actingTaskId ? '删除中…' : '确认永久删除'}</Button></div>
-      </DialogContent>
-    </Dialog>
-    <Dialog open={batchPermanentDeleteTasks.length > 0} onOpenChange={(open) => { if (!open && batchAction !== 'PERMANENT_DELETE') { setBatchPermanentDeleteTasks([]); setDeletionPassword(''); setDeletionError(''); } }}>
-      <DialogContent className="workbench-create-dialog">
-        <div className="workbench-create-heading"><span className="section-kicker">Irreversible batch action</span><DialogTitle>批量永久删除 {batchPermanentDeleteTasks.length} 条任务</DialogTitle><DialogDescription>此操作会永久清除所列任务、执行记录、文案、图片和素材，无法撤销。二级密码只校验一次，任务删除在同一数据库事务中完成。</DialogDescription></div>
-        <div className="notice error">即将永久删除：{batchPermanentDeleteTasks.map((task) => `#${task.id}`).join('、')}。请确认这些任务不再需要恢复或重新排队。</div>
-        {deletionError && <div className="notice error" role="alert">{deletionError}</div>}
-        <div className="field"><label htmlFor="batch-task-deletion-password">删除二级密码</label><input className="input" id="batch-task-deletion-password" type="password" value={deletionPassword} onChange={(event) => setDeletionPassword(event.target.value)} autoComplete="current-password" /></div>
-        <div className="profile-form-actions"><Button unstyled className="button" type="button" disabled={batchAction === 'PERMANENT_DELETE'} onClick={() => { setBatchPermanentDeleteTasks([]); setDeletionPassword(''); }}>取消</Button><Button unstyled className="button danger" type="button" disabled={!deletionPassword || batchAction === 'PERMANENT_DELETE'} onClick={() => { void permanentlyDeleteSelectedTasks(); }}>{batchAction === 'PERMANENT_DELETE' ? '删除中…' : `确认永久删除 ${batchPermanentDeleteTasks.length} 条`}</Button></div>
-      </DialogContent>
-    </Dialog>
+    <PermanentDeleteDialog
+      tasks={permanentDeleteTask ? [permanentDeleteTask] : []}
+      batch={false}
+      password={deletionPassword}
+      error={deletionError}
+      busy={Boolean(actingTaskId) || batchAction === 'PERMANENT_DELETE'}
+      onPasswordChange={(value) => { setDeletionPassword(value); if (deletionError) setDeletionError(''); }}
+      onCancel={() => { setPermanentDeleteTask(null); setDeletionPassword(''); setDeletionError(''); }}
+      onConfirm={() => { void permanentlyDeleteTask(); }}
+    />
+    <PermanentDeleteDialog
+      tasks={batchPermanentDeleteTasks}
+      batch
+      password={deletionPassword}
+      error={deletionError}
+      busy={batchAction === 'PERMANENT_DELETE' || Boolean(actingTaskId)}
+      onPasswordChange={(value) => { setDeletionPassword(value); if (deletionError) setDeletionError(''); }}
+      onCancel={() => { setBatchPermanentDeleteTasks([]); setDeletionPassword(''); setDeletionError(''); }}
+      onConfirm={() => { void permanentlyDeleteSelectedTasks(); }}
+    />
     {activeView === 'PERSONAL' && <PersonalOverview filter={stateFilter} onFilter={value => { setStateFilter(value); setPage(1); }} />}
     <section className="panel workbench-task-panel">
       <div className="workbench-toolbar">
@@ -1146,10 +1292,11 @@ export function CreationWorkbench({ nodeId, creatorUserId, role, viewKey: active
       {role === 'ADMIN' && selectedTasks.length > 0 && <div className="workbench-batch-actions" role="region" aria-label="批量任务操作">
         <strong>已选 {selectedTasks.length} 条（当前页）</strong>
         <Button unstyled className="button small" type="button" disabled={Boolean(batchAction) || retryableTasks.length === 0} onClick={() => { void runBatchAction('RETRY', retryableTasks); }}><RotateCcw size={14} />重试 {retryableTasks.length}</Button>
-        <Button unstyled className="button small danger" type="button" disabled={Boolean(batchAction) || queuedTasks.length === 0} onClick={() => { void runBatchAction('CANCEL_QUEUE', queuedTasks); }}><Ban size={14} />取消排队 {queuedTasks.length}</Button>
-        <Button unstyled className="button small danger" type="button" title={permanentlyDeletableTasks.length > 20 ? '单次最多永久删除 20 条，请减少选择' : '仅永久删除已失败、已审核或已废弃且执行已停止的任务'} disabled={Boolean(batchAction) || permanentlyDeletableTasks.length === 0 || permanentlyDeletableTasks.length > 20} onClick={() => { setDeletionError(''); setDeletionPassword(''); setBatchPermanentDeleteTasks(permanentlyDeletableTasks); }}><Trash2 size={14} />永久删除 {permanentlyDeletableTasks.length}</Button>
+        <Button unstyled className="button small danger" type="button" disabled={Boolean(batchAction) || queuedTasks.length === 0} onClick={() => { void runBatchAction('CANCEL_QUEUE', queuedTasks); }}><Trash2 size={14} />废弃排队中 {queuedTasks.length}</Button>
+        <Button unstyled className="button small danger" type="button" title={permanentlyDeletableTasks.length > 20 ? '单次最多永久删除 20 条，请减少选择' : permanentDeletionSettlingTasks.length ? '所选任务仍在等待执行机停止，废弃满 3 分钟后可永久删除' : '仅永久删除已失败、已审核或已废弃且执行已停止的任务'} disabled={Boolean(batchAction) || Boolean(actingTaskId) || Boolean(permanentDeleteTask) || permanentlyDeletableTasks.length === 0 || permanentlyDeletableTasks.length > 20} onClick={() => { setDeletionError(''); setDeletionPassword(''); setBatchPermanentDeleteTasks(permanentlyDeletableTasks); }}><Trash2 size={14} />永久删除 {permanentlyDeletableTasks.length}</Button>
         <Button unstyled className="button small" type="button" title={exportableTasks.length > 20 ? '单次最多导出 20 条，请减少选择' : '导出已审核或待人工归档任务'} disabled={Boolean(batchAction) || exportableTasks.length === 0 || exportableTasks.length > 20} onClick={() => { void exportSelectedTasks(); }}><Download size={14} />导出 {exportableTasks.length}</Button>
         <Button unstyled className="button small" type="button" disabled={Boolean(batchAction)} onClick={() => setSelectedTaskIds([])}>清除选择</Button>
+        {permanentDeletionSettlingTasks.length > 0 && <span role="status">{permanentDeletionSettlingTasks.length} 条仍在等待执行停止，废弃满 3 分钟后可删除</span>}
         {batchAction && <span role="status">正在处理…</span>}
       </div>}
 

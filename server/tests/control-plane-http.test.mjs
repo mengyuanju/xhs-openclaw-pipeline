@@ -442,7 +442,7 @@ test('administrator batch permanent deletion removes eligible task storage and r
       await input.beforeDelete(7);
       return {
         succeeded: [7],
-        failed: [{ id: 8, code: 'TASK_MUST_BE_INACTIVE', message: '请先取消排队或等待任务结束，再永久删除' }],
+        failed: [{ id: 8, code: 'TASK_MUST_BE_INACTIVE', message: '请先废弃排队任务或等待任务结束，再永久删除' }],
       };
     },
   };
@@ -455,7 +455,7 @@ test('administrator batch permanent deletion removes eligible task storage and r
       assert.equal(response.status, 200);
       assert.deepEqual((await response.json()).data, {
         action: 'PERMANENT_DELETE', succeeded: [7],
-        failed: [{ id: 8, code: 'TASK_MUST_BE_INACTIVE', message: '请先取消排队或等待任务结束，再永久删除' }],
+        failed: [{ id: 8, code: 'TASK_MUST_BE_INACTIVE', message: '请先废弃排队任务或等待任务结束，再永久删除' }],
         cleanupPending: [],
       });
     }, { storageRoot });

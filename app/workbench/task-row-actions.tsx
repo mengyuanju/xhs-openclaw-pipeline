@@ -6,18 +6,20 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { Ellipsis } from 'lucide-react';
 import { Children, cloneElement, isValidElement, useRef, type ComponentProps, type ReactNode } from 'react';
 
-// Keep the first (primary) action visible; the remaining buttons retain their handlers and permissions.
-export function TaskRowActions({ taskId, busy, children }: {
+// Keep the primary actions visible; the remaining buttons retain their handlers and permissions.
+export function TaskRowActions({ taskId, busy, visibleActionCount = 1, children }: {
   taskId: number;
   busy: boolean;
+  visibleActionCount?: number;
   children: ReactNode;
 }) {
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const [primaryAction, ...secondaryActions] = Children.toArray(children)
-    .filter(isValidElement<ComponentProps<'button'>>);
+  const actions = Children.toArray(children).filter(isValidElement<ComponentProps<'button'>>);
+  const primaryActions = actions.slice(0, Math.max(1, Math.trunc(visibleActionCount)));
+  const secondaryActions = actions.slice(primaryActions.length);
 
   return <div className="workbench-task-actions">
-    {primaryAction}
+    {primaryActions}
     {secondaryActions.length > 0 && <DropdownMenu.Root modal={false}>
       <DropdownMenu.Trigger asChild>
         <Button unstyled ref={triggerRef} className="button small workbench-action-menu-trigger" type="button" disabled={busy}

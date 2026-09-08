@@ -77,20 +77,51 @@ test('personal and image-work rows expose safe image requeue controls', async ()
   assert.match(source, />重试生图<\/Button>/u);
 });
 
-test('admin queue cancellation and permanent deletion have distinct guarded controls', async () => {
-  const source = await readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8');
-  assert.match(source, /async function cancelQueuedTask\(task: DistributedTask\)/u);
-  assert.match(source, /已取消排队，可随时一键重新排队/u);
-  assert.match(source, /canDiscard && !canCancelQueue/u);
-  assert.doesNotMatch(source, /void discardTask\(task\); \}\}><Trash2 size=\{14\} \/>取消排队/u);
+test('admin queued tasks expose a direct discard then permanent-delete workflow', async () => {
+  const [source, rowActions] = await Promise.all([
+    readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/task-row-actions.tsx'), 'utf8'),
+  ]);
+  assert.match(source, /async function discardQueuedTask\(task: DistributedTask\)/u);
+  assert.match(source, /已废弃；现在可以永久删除/u);
+  assert.match(source, /canDiscard && !canDiscardQueue/u);
+  assert.match(source, /visibleActionCount=\{visibleActionCount\}/u);
+  assert.match(source, /queued && <Button[^>]*onClick=\{\(\) => \{ void discardQueuedTask\(task\); \}\}[^>]*><Trash2[^>]*\/>废弃<\/Button>/u);
+  assert.match(source, /\{permanentDeleteButton\}[\s\S]*\{task\.state === 'CANCELLED'/u);
+  assert.match(rowActions, /visibleActionCount = 1/u);
+  assert.match(rowActions, /actions\.slice\(0, Math\.max\(1, Math\.trunc\(visibleActionCount\)\)\)/u);
   assert.match(source, /PERMANENT_DELETE_STATES\.includes\(task\.state\)/u);
   assert.match(source, /CANCELLED_EXECUTION_SETTLE_MS = 3 \* 60_000/u);
   assert.match(source, /cancelledExecutionSettled/u);
-  assert.match(source, /deletionError && <div className="notice error" role="alert"/u);
+  assert.match(source, /function PermanentDeleteDialog/u);
+  assert.match(source, /AlertDialogPrimitive\.Content className="permanent-delete-dialog/u);
+  assert.match(source, /删除后无法恢复/u);
+  assert.match(source, /error && <div className="notice error permanent-delete-error" role="alert"/u);
   assert.match(source, /const permanentlyDeletableTasks = selectedTasks\.filter\(isPermanentlyDeletableTask\)/u);
   assert.match(source, /\/v1\/tasks\/batch-permanent-delete/u);
-  assert.match(source, /批量永久删除 \{batchPermanentDeleteTasks\.length\} 条任务/u);
+  assert.match(source, /批量永久删除 \{tasks\.length\} 条任务/u);
+  assert.match(source, /废弃排队中 \{queuedTasks\.length\}/u);
   assert.match(source, /单次最多永久删除 20 条/u);
+});
+
+test('permanent deletion rejects repeated submits and unlocks before refreshing the list', async () => {
+  const source = await readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8');
+  const singleStart = source.indexOf('async function permanentlyDeleteTask()');
+  const batchStart = source.indexOf('async function permanentlyDeleteSelectedTasks()');
+  const actionsStart = source.indexOf('function taskActions(', batchStart);
+  const singleDelete = source.slice(singleStart, batchStart);
+  const batchDelete = source.slice(batchStart, actionsStart);
+
+  assert.ok(singleStart >= 0 && batchStart > singleStart && actionsStart > batchStart);
+  for (const deletionFlow of [singleDelete, batchDelete]) {
+    assert.match(deletionFlow, /permanentDeletionLock\.acquire\(\)/u);
+    assert.match(deletionFlow, /finally \{[\s\S]*permanentDeletionLock\.release\(\)[\s\S]*\}[\s\S]*if \(refreshAfterDelete\) void refresh\(\{ silent: true \}\)/u);
+    assert.doesNotMatch(deletionFlow, /await refresh\(\{ silent: true \}\)/u);
+  }
+  assert.match(source, /setTasks\(\(current\) => current\.filter/u);
+  assert.match(source, /LIST_REFRESH_TIMEOUT_MS = 15_000/u);
+  assert.match(source, /setFetchError\(timedOut \? '任务读取超时，请重试'/u);
+  assert.match(source, /废弃满 3 分钟后可删除/u);
 });
 
 test('list state, saved views and centralized batch handling are available to administrators', async () => {
