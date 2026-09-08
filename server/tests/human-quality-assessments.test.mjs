@@ -19,10 +19,11 @@ const validEdits = {
   ],
 };
 
-function copyFixture() {
+function copyFixture({ assignedToUserId = 'reviewer' } = {}) {
   const task = {
     id: 41,
     state: 'COPY_REVIEW_PENDING',
+    assigned_to_user_id: assignedToUserId,
     current_copy_revision_id: 12,
     current_image_run_id: null,
     ai_disclosure_enabled: true,
@@ -200,6 +201,26 @@ test('copy score validation and the greater-than-two approval threshold happen b
   }
   await assert.rejects(repository.approveCopy(41, { ...base, decision: 'SAVE', originalScore: 2.5 }, actor),
     /requires at least one reason or a note/u);
+});
+
+test('unassigned copy review is rejected before idempotency or rating writes', async () => {
+  const fixture = copyFixture({ assignedToUserId: null });
+  await assert.rejects(fixture.repository.approveCopy(41, {
+    revisionId: 12,
+    nodeId: 'node-a',
+    decision: 'APPROVE',
+    score: 3,
+    reviewSessionId,
+  }, { reviewerUserId: 'reviewer' }), {
+    code: 'TASK_ASSIGNEE_REQUIRED',
+    message: '未分配任务不能进行文案审核，请先指定负责人',
+  });
+
+  assert.equal(fixture.assessments.length, 0);
+  assert.equal(fixture.queries.some(({ sql }) => sql.includes('human_quality_review_submissions')), false);
+  assert.equal(fixture.queries.some(({ sql }) => sql.includes('copy_revisions')), false);
+  assert.equal(fixture.queries.some(({ sql }) => /^\s*UPDATE\s+tasks\b/u.test(sql)), false);
+  assert.equal(fixture.queries.at(-1).sql, 'ROLLBACK');
 });
 
 test('discarding copy records its rating and cancels the task without creating an edited revision', async () => {

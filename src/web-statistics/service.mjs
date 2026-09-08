@@ -15,13 +15,18 @@ const timestamp = value => value ? Date.parse(value) : NaN;
 function actorFrom(session) {
   const role = session?.roles?.[0];
   const username = session?.username || (session?.subject === 'admin' ? 'admin' : '');
-  if (!username || !['USER', 'REVIEWER', 'ADMIN'].includes(role)) throw new ApiError(403, 'FORBIDDEN', '当前账号不能访问作业统计');
-  return { username, role, version: Number(session.credentialVersion) || 1 };
+  const userId = Number(session?.userId);
+  if (!Number.isSafeInteger(userId) || userId < 1 || !username
+    || !['USER', 'REVIEWER', 'ADMIN'].includes(role)) {
+    throw new ApiError(403, 'FORBIDDEN', '当前账号不能访问作业统计');
+  }
+  return { userId, username, role, version: Number(session.credentialVersion) || 1 };
 }
 
 function freshEntry() {
   return { rows: null, updatedAt: 0, scan: null, countsFlight: null, detailFlight: null,
-    error: null, nextRetry: 0, lastTouched: 0, details: new Map(), detailErrors: new Map() };
+    identityFlight: null, error: null, nextRetry: 0, lastTouched: 0,
+    details: new Map(), detailErrors: new Map() };
 }
 
 export function createStatisticsService({ fetchImpl = fetch, now = Date.now, sleep,
@@ -38,7 +43,8 @@ export function createStatisticsService({ fetchImpl = fetch, now = Date.now, sle
       try {
         response = await fetchImpl(`${root.replace(/\/$/u, '')}${path}`, {
           method: 'GET', cache: 'no-store', signal: AbortSignal.timeout(8000),
-          headers: { 'X-Actor-Username': actor.username, 'X-Actor-Role': actor.role,
+          headers: { 'X-Actor-User-Id': String(actor.userId),
+            'X-Actor-Username': actor.username, 'X-Actor-Role': actor.role,
             'X-Actor-Credential-Version': String(actor.version) },
         });
       } catch { throw new Error('中心暂时不可用，保留上次完整统计'); }
@@ -77,6 +83,20 @@ export function createStatisticsService({ fetchImpl = fetch, now = Date.now, sle
     entry.scan = null;
   }
 
+  async function validateCachedIdentity(entry, root, actor) {
+    if (!entry.identityFlight) {
+      entry.identityFlight = request(root, actor, '/v1/profile', action => action());
+    }
+    try {
+      await entry.identityFlight;
+    } catch (error) {
+      if (error instanceof ApiError && [401, 403].includes(error.status)) fail(entry, error);
+      throw new ApiError(503, 'STATISTICS_IDENTITY_UNVERIFIED', '暂时无法确认账号状态，请稍后重试');
+    } finally {
+      entry.identityFlight = null;
+    }
+  }
+
   async function advanceCounts(entry, root, actor, scope) {
     if (entry.countsFlight) return entry.countsFlight;
     entry.countsFlight = (async () => {
@@ -84,7 +104,7 @@ export function createStatisticsService({ fetchImpl = fetch, now = Date.now, sle
         entry.scan ??= { rows: new Map(), offset: 0, total: null, restarts: 0 };
         const scan = entry.scan;
         const query = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(scan.offset), includeTotal: 'true' });
-        if (scope === 'personal') query.set('createdByUserId', actor.username);
+        if (scope === 'personal') query.set('assignedToUserId', actor.username);
         const page = await request(root, actor, `/v1/tasks?${query}`);
         if (page?.total > maxTasks) throw Object.assign(new Error('统计范围过大'), { code: 'STATISTICS_TOO_LARGE' });
         if (!Array.isArray(page?.items) || !Number.isSafeInteger(page.total) || page.total < 0
@@ -92,7 +112,7 @@ export function createStatisticsService({ fetchImpl = fetch, now = Date.now, sle
           throw new Error('任务分页无法完整统计');
         }
         const rows = page.items.map(compactTask);
-        if (scope === 'personal' && rows.some(task => task.createdByUserId !== actor.username)) {
+        if (scope === 'personal' && rows.some(task => task.assignedToUserId !== actor.username)) {
           throw new ApiError(403, 'STATISTICS_ACCESS_DENIED', '中心未正确隔离个人任务');
         }
         const changed = scan.total !== null && page.total !== scan.total;
@@ -152,27 +172,40 @@ export function createStatisticsService({ fetchImpl = fetch, now = Date.now, sle
   }
 
   return {
-    async read({ root, session, scope = 'personal', period = 'today', from, to, username = '', role = '', details = false, refresh = false }) {
+    async read({ root, session, scope = 'personal', period = 'today', from, to, username = '',
+      createdByAccountId = null, role = '', details = false, refresh = false }) {
       const actor = actorFrom(session);
       if (!['personal', 'admin'].includes(scope)) throw new ApiError(400, 'INVALID_INPUT', '统计范围无效');
       if ((scope === 'admin' || details) && actor.role !== 'ADMIN') throw new ApiError(403, 'FORBIDDEN', '仅管理员可以查看团队和效率统计');
       if (details && scope !== 'admin') throw new ApiError(400, 'INVALID_INPUT', '个人统计不提供执行明细');
+      const accountFilter = createdByAccountId === null || createdByAccountId === undefined
+        ? null : Number(createdByAccountId);
+      const accountFilterInvalid = accountFilter !== null
+        && (!Number.isSafeInteger(accountFilter) || accountFilter < 1);
+      const accountFilterMismatched = Boolean(username && username !== '__unassigned__') !== (accountFilter !== null);
+      if (accountFilterInvalid || scope === 'admin' && accountFilterMismatched) {
+        throw new ApiError(400, 'INVALID_INPUT', '作业员筛选缺少稳定账号身份，请重新选择作业员');
+      }
       if (!root) throw new ApiError(503, 'CONTROL_PLANE_NOT_CONFIGURED', '请先配置中心服务');
       let range;
       try { range = normalizeRange({ period, from, to }, now()); } catch (error) { throw new ApiError(400, 'INVALID_INPUT', error.message); }
-      const key = JSON.stringify([root, actor.username, actor.role, actor.version, scope]);
+      const key = JSON.stringify([root, actor.userId, actor.username, actor.role, actor.version, scope]);
       const entry = entryFor(key);
       const forceDue = refresh && now() - entry.updatedAt >= 15_000;
       const countsDue = entry.scan || !entry.rows || now() - entry.updatedAt >= COUNTS_TTL || forceDue;
-      if (countsDue && now() >= entry.nextRetry) await advanceCounts(entry, root, actor, scope);
+      const refreshCounts = countsDue && now() >= entry.nextRetry;
+      if (entry.rows) await validateCachedIdentity(entry, root, actor);
+      if (refreshCounts) await advanceCounts(entry, root, actor, scope);
       const rows = entry.rows ?? [];
       const filtered = scope === 'personal' ? rows : rows.filter(task => (!username || (username === '__unassigned__'
-        ? task.createdByUserId === null : task.createdByUserId === username)) && (!role || task.createdByRole === role));
+        ? task.createdByUserId === null
+        : task.createdByUserId === username && task.createdByAccountId === accountFilter)) && (!role || task.createdByRole === role));
       const allSummary = entry.rows ? summarizeCounts(rows, range, now()) : null;
       const summary = !entry.rows ? null : scope === 'admin' && (username || role) ? summarizeCounts(filtered, range, now()) : allSummary;
-      const creators = scope === 'admin' && allSummary ? allSummary.people.map(person => ({
-        username: person.username, displayName: person.displayName, role: person.role,
-      })) : undefined;
+      const creators = scope === 'admin' && allSummary ? allSummary.people
+        .filter(person => person.accountId !== null || person.username === null)
+        .map(person => ({ accountId: person.accountId,
+          username: person.username, displayName: person.displayName, role: person.role })) : undefined;
       if (scope === 'personal' && summary) { delete summary.people; delete summary.stale; }
       let detailSummary = null;
       let detailRetryAfterMs = COUNTS_TTL;

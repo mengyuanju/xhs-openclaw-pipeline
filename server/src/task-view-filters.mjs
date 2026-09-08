@@ -37,7 +37,16 @@ export function normalizeSavedTaskView(value) {
   if (raw.deduplicateQuery !== undefined && typeof raw.deduplicateQuery !== 'boolean') {
     throw new TypeError('saved task view deduplicateQuery must be a boolean');
   }
-  const createdByUserId = raw.createdByUserId ? normalizeCreatorUserId(raw.createdByUserId) : '';
+  const hasCreatorUsername = raw.createdByUserId !== undefined && raw.createdByUserId !== null && raw.createdByUserId !== '';
+  const hasCreatorAccountId = raw.createdByAccountId !== undefined && raw.createdByAccountId !== null && raw.createdByAccountId !== '';
+  const createdByUserId = hasCreatorUsername ? normalizeCreatorUserId(raw.createdByUserId) : '';
+  if (hasCreatorUsername !== hasCreatorAccountId) {
+    throw new TypeError('saved task view creator username and account id must be provided together');
+  }
+  const createdByAccountId = hasCreatorAccountId ? Number(raw.createdByAccountId) : null;
+  if (hasCreatorAccountId && (!Number.isSafeInteger(createdByAccountId) || createdByAccountId < 1)) {
+    throw new TypeError('saved task view createdByAccountId must be a positive integer');
+  }
   const createdByRole = raw.createdByRole === 'ALL' || raw.createdByRole === undefined || raw.createdByRole === null
     ? 'ALL' : normalizeTaskCreatorRole(raw.createdByRole);
   const state = String(raw.state ?? 'ALL');
@@ -55,6 +64,7 @@ export function normalizeSavedTaskView(value) {
       query,
       deduplicateQuery: raw.deduplicateQuery === true,
       createdByUserId,
+      createdByAccountId,
       createdByRole,
       state,
       sort,

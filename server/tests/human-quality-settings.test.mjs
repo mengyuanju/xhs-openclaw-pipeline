@@ -16,6 +16,7 @@ const USERS = {
 
 function actorHeaders(username) {
   return {
+    'X-Actor-User-Id': String(USERS[username].id),
     'X-Actor-Username': username,
     'X-Actor-Role': USERS[username].role,
     'X-Actor-Credential-Version': '1',

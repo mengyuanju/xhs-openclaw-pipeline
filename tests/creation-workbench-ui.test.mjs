@@ -28,8 +28,9 @@ test('new creation workbench keeps the old dashboard and exposes lifecycle views
   assert.doesNotMatch(workbench, /LOCAL_COPY|localOnly|search.set\('nodeId'/u);
   assert.match(proxy, /searchParams.set\('assignedToUserId', username\)/u);
   assert.match(proxy, /searchParams.delete\('createdByUserId'\)/u);
-  assert.match(proxy, /'X-Actor-Username': username/u);
-  assert.match(proxy, /'X-Actor-Role': role/u);
+  assert.match(proxy, /searchParams.delete\('createdByAccountId'\)/u);
+  assert.match(proxy, /sessionActorHeaders\(session, \{ username, role \}\)/u);
+  assert.match(proxy, /sessionActorHeaders/u);
   assert.match(proxy, /'Content-Disposition': contentDisposition/u);
   assert.match(views, /生图连续3次失败的任务会回到此处，等待重新审核/u);
   assert.match(views, /states: \['COPY_REVIEW_PENDING'\]/u);
@@ -136,7 +137,7 @@ test('list state, saved views and centralized batch handling are available to ad
   assert.match(page, /initialListState=\{initialListState\}/u);
   assert.match(workbench, /workbenchListSearch/u);
   assert.match(workbench, /router\.replace\(href, \{ scroll: false \}\)/u);
-  assert.match(listState, /createdByUserId|deduplicateQuery|attention|taskId/u);
+  assert.match(listState, /createdByAccountId|createdByUserId|deduplicateQuery|attention|taskId/u);
   assert.match(workbench, /<SelectItem value=\{DEFAULT_TASK_VIEW_VALUE\}>默认视图<\/SelectItem>/u);
   assert.match(workbench, /function applyDefaultView\(\)[\s\S]*setSort\(DEFAULT_WORKBENCH_LIST_STATE\.sort\)[\s\S]*setPageSize\(DEFAULT_WORKBENCH_LIST_STATE\.pageSize\)/u);
   assert.match(workbench, /保存当前视图/u);
@@ -169,6 +170,7 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(workbench, /createError && <div className="notice error" role="alert"/u);
   assert.doesNotMatch(workbench, /queryRows|nextQueryKey|添加一条 Query|workbench-remove-query/u);
   assert.match(workbench, /tasks: queries\.map\(\(query\)/u);
+  assert.match(workbench, /assigneeAccountId: createAssignee\?\.id \?\? null/u);
   assert.doesNotMatch(workbench, /copyExecutorNodeId:\s*selectedExecutor\.id|selectedExecutor|selectCopyExecutor/u);
   assert.match(workbench, /apiPath\('\/v1\/nodes'\)/u);
   assert.match(workbench, /共享文案队列/u);
@@ -195,7 +197,7 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(reviewDialog, /workbench-ai-disclosure-toggle/u);
   assert.match(reviewDialog, /AI生成水印/u);
   assert.match(reviewDialog, /aiDisclosureEnabled \? '已开启' : '已关闭'/u);
-  assert.match(reviewDialog, /const editable = detail\?\.state === 'COPY_REVIEW_PENDING'/u);
+  assert.match(reviewDialog, /const editable = taskHasAssignee && detail\?\.state === 'COPY_REVIEW_PENDING'/u);
   // Navigation continuity is exercised in scripts/test-image-preview.mjs.
   assert.match(reviewDialog, /onPrevious=\{activeAssetIndex > 0/u);
   assert.match(reviewDialog, /onNext=\{activeAssetIndex < assets\.length - 1/u);

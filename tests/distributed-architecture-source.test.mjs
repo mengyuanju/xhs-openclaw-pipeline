@@ -58,3 +58,29 @@ test('remote control plane is an independently installable Koa package', async (
   assert.match(serverSource, /new Router\(\)/u);
   assert.match(serverSource, /bodyParser/u);
 });
+
+test('every session-backed control-plane request carries the immutable user id', async () => {
+  const adapters = await Promise.all([
+    source('app/api/control-plane/[...path]/route.ts'),
+    source('app/api/human-quality-settings/route.ts'),
+    source('app/api/_prompt-runtime.ts'),
+    source('app/api/web-search-settings/route.ts'),
+    source('app/central-user-client.ts'),
+    source('src/admin/knowledge-runtime.mjs'),
+  ]);
+  for (const value of adapters) assert.match(value, /sessionActorHeaders/u);
+  assert.match(await source('src/control-plane/session-actor-headers.mjs'), /'X-Actor-User-Id'/u);
+  assert.match(await source('src/web-statistics/service.mjs'), /'X-Actor-User-Id'/u);
+});
+
+test('direct Next adapters preserve stale-session failures and server pages request reauthentication', async () => {
+  assert.match(await source('app/api/_prompt-runtime.ts'), /forwardControlPlaneRequest/u);
+  assert.match(await source('app/api/visual-analyses/route.ts'), /forwardControlPlaneRequest/u);
+  assert.match(await source('app/api/knowledge-assets/[id]/route.ts'), /controlPlaneResponseError/u);
+  const centralUser = await source('app/central-user-client.ts');
+  assert.match(centralUser, /throw await controlPlaneResponseError\(response\)/u);
+  assert.match(centralUser, /redirect\(`\/login\?reauth=1&next=/u);
+  for (const page of ['app/users/page.tsx', 'app/executors/page.tsx', 'app/profile/page.tsx']) {
+    assert.match(await source(page), /readCentralPageData/u);
+  }
+});

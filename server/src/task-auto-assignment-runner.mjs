@@ -4,6 +4,13 @@ import { normalizeAutoAssignmentLimit } from './task-auto-assignment-domain.mjs'
 
 export const AUTO_ASSIGNMENT_ACTOR = 'system:auto-assignment';
 export const AUTO_ASSIGNMENT_MAX_PER_RUN = 500;
+export const AUTO_ASSIGNABLE_TASK_STATES = Object.freeze([
+  'COPY_QUEUED',
+  'COPY_REVIEW_PENDING',
+  'COPY_FAILED',
+  'IMAGE_QUEUED',
+  'IMAGE_FAILED',
+]);
 
 const AUTO_ASSIGNMENT_LOCK_KEYS = Object.freeze([4310, 8205]);
 const AUTO_ASSIGNMENT_REASON = '自动补充至作业员配额';
@@ -195,15 +202,10 @@ export async function runAutoAssignmentReplenishment(pool, {
           WHERE assigned_task.assigned_to_user_id = locked_pool.username
             AND assigned_task.state NOT IN ('MANUAL_ARCHIVE', 'REVIEWED', 'CANCELLED')
         ) AS current_task_count,
-        (
-          SELECT assignment_event.id
-          FROM task_assignment_events AS assignment_event
-          WHERE assignment_event.source = 'AUTO'
-            AND assignment_event.assignee_user_id = locked_pool.username
-          ORDER BY assignment_event.id DESC
-          LIMIT 1
-        ) AS last_auto_event_id
+        fairness_cursor.last_auto_event_id
       FROM task_auto_assignment_workers AS locked_pool
+      LEFT JOIN task_auto_assignment_cursors AS fairness_cursor
+        ON fairness_cursor.username = locked_pool.username
       WHERE locked_pool.status = 'ACTIVE'
         AND locked_pool.username = ANY($1::varchar[])
       ORDER BY locked_pool.username
@@ -235,12 +237,12 @@ export async function runAutoAssignmentReplenishment(pool, {
       SELECT id
       FROM tasks
       WHERE assigned_to_user_id IS NULL
-        AND state = 'COPY_QUEUED'
+        AND state = ANY($1::varchar[])
         AND current_execution_id IS NULL
       ORDER BY id
       FOR UPDATE SKIP LOCKED
-      LIMIT $1::integer
-    `, [candidateLimit]);
+      LIMIT $2::integer
+    `, [AUTO_ASSIGNABLE_TASK_STATES, candidateLimit]);
     if (!candidateResult.rows.length) {
       return summary('NO_PENDING_TASKS', {
         settingsVersion,
@@ -267,15 +269,34 @@ export async function runAutoAssignmentReplenishment(pool, {
       SET assigned_to_user_id = planned.assignee_username,
           assignment_source = 'AUTO',
           assigned_at = now(),
-          progress_message = '等待文案执行机领取',
+          progress_message = CASE
+            WHEN task.state = 'COPY_QUEUED' THEN '等待文案执行机领取'
+            WHEN task.progress_message IS NULL OR task.progress_message IN (
+                '等待管理员分配作业员',
+                '等待分配负责人',
+                '负责人待分配，等待文案执行机领取',
+                '文案生成完成，等待分配负责人后审核'
+              )
+              THEN CASE
+                WHEN task.state = 'IMAGE_QUEUED' THEN '等待图片执行机领取'
+                WHEN task.state = 'COPY_REVIEW_PENDING'
+                  AND task.current_stage = 'IMAGE_RETRY_EXHAUSTED'
+                  THEN '图片重试次数已用尽，等待人工处理'
+                WHEN task.state = 'COPY_REVIEW_PENDING' THEN '文案生成完成，等待人工审核'
+                WHEN task.state = 'COPY_FAILED' THEN '文案生成失败，等待人工处理'
+                WHEN task.state = 'IMAGE_FAILED' THEN '图片生成失败，等待人工处理'
+                ELSE task.progress_message
+              END
+            ELSE task.progress_message
+          END,
           updated_at = now()
       FROM planned
       WHERE task.id = planned.task_id
         AND task.assigned_to_user_id IS NULL
-        AND task.state = 'COPY_QUEUED'
+        AND task.state = ANY($3::varchar[])
         AND task.current_execution_id IS NULL
       RETURNING task.id, task.assigned_to_user_id
-    `, [taskIds, assignees]);
+    `, [taskIds, assignees, AUTO_ASSIGNABLE_TASK_STATES]);
     const expectedAssignments = new Map(assignments.map((assignment) => [
       assignment.taskId,
       assignment.assignedToUserId,
@@ -297,10 +318,53 @@ export async function runAutoAssignmentReplenishment(pool, {
       FROM unnest($1::bigint[], $2::varchar[])
         WITH ORDINALITY AS assignment(task_id, assignee_username, ordinal)
       ORDER BY assignment.ordinal
-      RETURNING task_id
+      RETURNING id, task_id, assignee_user_id
     `, [taskIds, assignees, AUTO_ASSIGNMENT_ACTOR, AUTO_ASSIGNMENT_REASON]);
-    if (auditResult.rows.length !== assignments.length) {
+    const latestEventByAssignee = new Map();
+    const auditedTaskIds = new Set();
+    for (const row of auditResult.rows) {
+      const taskId = normalizeTaskId(row.task_id);
+      const assignee = normalizeAssigneeUserId(row.assignee_user_id, { allowNull: false });
+      if (auditedTaskIds.has(taskId) || expectedAssignments.get(taskId) !== assignee) {
+        throw new Error('automatic assignment audit is incomplete');
+      }
+      auditedTaskIds.add(taskId);
+      const eventId = normalizeEventRank(row.id, assignee);
+      const currentEventId = latestEventByAssignee.get(assignee);
+      if (currentEventId === undefined || eventId > currentEventId) {
+        latestEventByAssignee.set(assignee, eventId);
+      }
+    }
+    if (auditedTaskIds.size !== assignments.length) {
       throw new Error('automatic assignment audit is incomplete');
+    }
+
+    const cursorEntries = [...latestEventByAssignee.entries()]
+      .sort(([left], [right]) => left.localeCompare(right));
+    const cursorUsernames = cursorEntries.map(([username]) => username);
+    const cursorEventIds = cursorEntries.map(([, eventId]) => eventId.toString());
+    const cursorResult = await client.query(`
+      INSERT INTO task_auto_assignment_cursors AS current_cursor(
+        username, last_auto_event_id
+      )
+      SELECT cursor_value.username, cursor_value.event_id
+      FROM unnest($1::varchar[], $2::bigint[])
+        AS cursor_value(username, event_id)
+      ON CONFLICT(username) DO UPDATE SET
+        last_auto_event_id = GREATEST(
+          current_cursor.last_auto_event_id,
+          excluded.last_auto_event_id
+        ),
+        updated_at = now()
+      RETURNING username, last_auto_event_id
+    `, [cursorUsernames, cursorEventIds]);
+    const expectedCursorByUser = new Map(cursorEntries);
+    if (cursorResult.rows.length !== cursorEntries.length
+      || cursorResult.rows.some((row) => {
+        const username = normalizeAssigneeUserId(row.username, { allowNull: false });
+        return expectedCursorByUser.get(username) !== normalizeEventRank(row.last_auto_event_id, username);
+      })) {
+      throw new Error('automatic assignment fairness cursor is incomplete');
     }
 
     const assignedCounts = new Map();

@@ -11,15 +11,17 @@ import { useStatistics } from './use-statistics';
 import { Chart, Metric, number, ROLE_LABELS, STATE_LABELS, StatisticsStatus } from './shared';
 import { PeopleTable } from './people-table';
 import { EfficiencyPanel } from './efficiency-panel';
-import type { Period, StateGroup } from './types';
+import type { Creator, Period, StateGroup } from './types';
 
 export function AdminStatistics() {
   const [period, setPeriod] = useState<Period>('today');
   const [custom, setCustom] = useState({ from: '', to: '' });
   const [dateError, setDateError] = useState('');
-  const [username, setUsername] = useState('');
+  const [creator, setCreator] = useState<Creator | null>(null);
   const [role, setRole] = useState('');
-  const statistics = useStatistics({ scope: 'admin', period, ...(period === 'custom' ? custom : {}), username, role, details: true });
+  const username = creator ? creator.username ?? '__unassigned__' : '';
+  const statistics = useStatistics({ scope: 'admin', period, ...(period === 'custom' ? custom : {}),
+    username, ...(creator?.accountId ? { createdByAccountId: creator.accountId } : {}), role, details: true });
   const { data, creators } = statistics;
   const summary = data?.summary;
   const leaders = summary?.people?.toSorted((a, b) => b.createdInPeriod - a.createdInPeriod).slice(0, 10) ?? [];
@@ -42,10 +44,11 @@ export function AdminStatistics() {
           <DatePicker name="to" label="结束" required defaultValue={custom.to} /><Button unstyled className="button small" type="submit">应用日期</Button></form>
       </div>
       <div className="job-stats-filter-row">
-        <label>创建者角色<Select value={role || '__all__'} onValueChange={(nextValue) => { setRole((nextValue === '__all__' ? '' : nextValue)); setUsername(''); }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__all__">全部角色</SelectItem>
+        <label>创建者角色<Select value={role || '__all__'} onValueChange={(nextValue) => { setRole((nextValue === '__all__' ? '' : nextValue)); setCreator(null); }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__all__">全部角色</SelectItem>
           {Object.entries(ROLE_LABELS).map(([value, label]) => <SelectItem key={value} value={String(value)}>{label}</SelectItem>)}</SelectContent></Select></label>
-        <label>作业员<Select value={username || '__all__'} onValueChange={(nextValue) => setUsername((nextValue === '__all__' ? '' : nextValue))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__all__">全部作业员</SelectItem>
-          {creators?.filter(person => !role || person.role === role).map(person => <SelectItem key={person.username ?? '__unassigned__'} value={String(person.username ?? '__unassigned__')}>{person.displayName}{person.username ? `（${person.username}）` : ''}</SelectItem>)}
+        <label>作业员<Select value={creator ? String(creator.accountId ?? '__unassigned__') : '__all__'} onValueChange={(nextValue) => setCreator(nextValue === '__all__' ? null
+          : creators?.find(person => String(person.accountId ?? '__unassigned__') === nextValue) ?? null)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__all__">全部作业员</SelectItem>
+          {creators?.filter(person => !role || person.role === role).map(person => <SelectItem key={`${person.accountId ?? 'unassigned'}:${person.username ?? ''}`} value={String(person.accountId ?? '__unassigned__')}>{person.displayName}{person.username ? `（${person.username}）` : ''}</SelectItem>)}
         </SelectContent></Select></label>
         <span className="job-stats-note">{data ? `${data.range.from} 至 ${data.range.to} · 北京时间` : '正在读取所选范围…'}</span>
       </div>{dateError && <p className="job-stats-warning" role="alert">{dateError}</p>}

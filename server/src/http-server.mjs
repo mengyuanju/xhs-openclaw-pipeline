@@ -19,6 +19,8 @@ import { generateAndImportLayouts } from '../../src/admin/layout-catalog-service
 import { LoginRateLimiter } from '../../src/admin/auth.mjs';
 
 import {
+  ControlPlaneAuthenticationError,
+  ControlPlaneAuthorizationError,
   ControlPlaneConflictError,
   ControlPlaneNotFoundError,
   normalizeTaskCreatorRole,
@@ -41,6 +43,12 @@ function mappedError(error) {
   if (error instanceof HttpError) return error;
   if (error instanceof AssetDeliveryError) return new HttpError(error.status, error.code, error.message);
   if (error instanceof CopyAnalysisServiceError) return new HttpError(error.status, error.code, error.message);
+  if (error instanceof ControlPlaneAuthenticationError) {
+    return new HttpError(401, error.code, error.message);
+  }
+  if (error instanceof ControlPlaneAuthorizationError) {
+    return new HttpError(403, error.code, error.message);
+  }
   if (error instanceof ControlPlaneNotFoundError) {
     return new HttpError(404, error.code, error.message);
   }
@@ -174,7 +182,27 @@ function normalizedBatchTaskIds(value, max) {
   return taskIds;
 }
 
-async function applyBatchTaskAction(repository, taskIds, action) {
+function assignmentTarget(body) {
+  const assignedToUserId = body.assignedToUserId ?? null;
+  const rawAccountId = body.assignedToAccountId ?? null;
+  if (assignedToUserId === null) {
+    if (rawAccountId !== null) throw new TypeError('assignedToAccountId requires assignedToUserId');
+    return { assignedToUserId: null, assignedToAccountId: null };
+  }
+  const assignedToAccountId = Number(rawAccountId);
+  if (!Number.isSafeInteger(assignedToAccountId) || assignedToAccountId < 1) {
+    throw new TypeError('请选择有效的作业员账号后重试');
+  }
+  return { assignedToUserId, assignedToAccountId };
+}
+
+function requiredAccountId(value, message = '请选择有效的作业员账号后重试') {
+  const accountId = Number(value);
+  if (!Number.isSafeInteger(accountId) || accountId < 1) throw new TypeError(message);
+  return accountId;
+}
+
+async function applyBatchTaskAction(repository, taskIds, action, actor) {
   if (!['RETRY', 'CANCEL_QUEUE'].includes(action)) throw new TypeError('batch task action is invalid');
   const succeeded = [];
   const failed = [];
@@ -187,17 +215,18 @@ async function applyBatchTaskAction(repository, taskIds, action) {
         if (!['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state)) {
           throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'only queued work can be cancelled in bulk');
         }
-        await repository.cancelTask(taskId, { queuedOnly: true });
+        await repository.cancelTask(taskId, { queuedOnly: true, actor });
       } else if (['COPY_RUNNING', 'COPY_FAILED'].includes(task.state)) {
-        await repository.retryTask(taskId, { useLatestConfig: true });
+        await repository.retryTask(taskId, { useLatestConfig: true, actor });
       } else if (['IMAGE_RUNNING', 'IMAGE_FAILED'].includes(task.state)
         || (task.state === 'COPY_REVIEW_PENDING' && task.currentStage === 'IMAGE_RETRY_EXHAUSTED')) {
-        await repository.requeueImageTask(taskId, { retryOnly: true });
+        await repository.requeueImageTask(taskId, { retryOnly: true, actor });
       } else {
         throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'only running or failed work can be retried in bulk');
       }
       succeeded.push(taskId);
     } catch (error) {
+      if (error instanceof ControlPlaneAuthenticationError) throw error;
       const safe = mappedError(error);
       failed.push({ id: taskId, code: safe.code, message: safe.message });
     }
@@ -298,12 +327,12 @@ async function cleanCommittedDeletionQuarantines(storageRoot) {
   }));
 }
 
-async function applyBatchPermanentDeletion(repository, storageRoot, taskIds, actorUsername, deletionPassword) {
+async function applyBatchPermanentDeletion(repository, storageRoot, taskIds, actor, deletionPassword) {
   const quarantines = new Map();
   let result;
   try {
     result = await repository.permanentlyDeleteTasks(taskIds, {
-      actorUsername,
+      actor,
       deletionPassword,
       beforeDelete: async (taskId) => {
         quarantines.set(taskId, await quarantineTaskStorage(storageRoot, taskId));
@@ -352,19 +381,35 @@ async function assertTaskAccess(ctx, repository, { ownerOnly = false, summaryOnl
   return { actor, task };
 }
 
+async function assertCurrentActorIdentity(repository, actor) {
+  if (!actor) return;
+  const current = typeof repository.getUserByIdentity === 'function'
+    ? await repository.getUserByIdentity(actor)
+    : typeof repository.getUserByUsername === 'function'
+      ? await repository.getUserByUsername(actor.username)
+      : null;
+  if (typeof repository.getUserByIdentity !== 'function'
+    && typeof repository.getUserByUsername !== 'function') return;
+  if (!current || current.id !== actor.userId || current.username !== actor.username
+    || current.role !== actor.role || current.status !== 'ACTIVE'
+    || current.credentialVersion !== actor.credentialVersion) {
+    throw new ControlPlaneAuthenticationError();
+  }
+}
+
 function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisual) {
   const deliverAsset = createAssetDelivery({ storageRoot });
   const passwordLimiters = new Map();
-  function passwordLimiter(username) {
-    const existing = passwordLimiters.get(username);
+  function passwordLimiter(userId) {
+    const existing = passwordLimiters.get(userId);
     if (existing) {
-      passwordLimiters.delete(username);
-      passwordLimiters.set(username, existing);
+      passwordLimiters.delete(userId);
+      passwordLimiters.set(userId, existing);
       return existing;
     }
     if (passwordLimiters.size >= 100) passwordLimiters.delete(passwordLimiters.keys().next().value);
     const limiter = new LoginRateLimiter();
-    passwordLimiters.set(username, limiter);
+    passwordLimiters.set(userId, limiter);
     return limiter;
   }
   function assertPasswordAttemptAllowed(ctx, limiter) {
@@ -412,7 +457,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     json(ctx, 200, await repository.updateAutoAssignmentSettings({
       enabled: body.enabled,
       expectedVersion: body.expectedVersion,
-      actorUsername: actor.username,
+      actor,
     }));
   });
   router.put('/v1/auto-assignment/workers/:username', async (ctx) => {
@@ -422,7 +467,8 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
       status: body.status,
       assignmentLimit: body.assignmentLimit,
       expectedVersion: body.expectedVersion,
-      actorUsername: actor.username,
+      accountId: requiredAccountId(body.accountId),
+      actor,
     }));
   });
   router.delete('/v1/auto-assignment/workers/:username', async (ctx) => {
@@ -430,29 +476,33 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     const body = requireJson(ctx);
     json(ctx, 200, await repository.removeAutoAssignmentWorker(ctx.params.username, {
       expectedVersion: body.expectedVersion,
-      actorUsername: actor.username,
+      accountId: requiredAccountId(body.accountId),
+      actor,
     }));
   });
   router.get('/v1/profile', async (ctx) => {
     const actor = requestActor(ctx);
-    const user = await repository.getUserByUsername(actor.username);
+    const readUser = repository.getUserByIdentity ?? repository.getUserByUsername;
+    const user = repository.getUserByIdentity
+      ? await readUser.call(repository, actor)
+      : await readUser.call(repository, actor.username);
     if (!user || user.status !== 'ACTIVE') throw new HttpError(401, 'SESSION_STALE', '账号状态已变化，请重新登录');
     json(ctx, 200, user);
   });
   router.patch('/v1/profile', async (ctx) => {
     const actor = requestActor(ctx);
-    json(ctx, 200, await repository.updateOwnProfile(actor.username, requireJson(ctx)));
+    json(ctx, 200, await repository.updateOwnProfile(actor, requireJson(ctx)));
   });
   router.post('/v1/profile/password', async (ctx) => {
     const actor = requestActor(ctx);
-    json(ctx, 200, await repository.changeOwnPassword(actor.username, requireJson(ctx)));
+    json(ctx, 200, await repository.changeOwnPassword(actor, requireJson(ctx)));
   });
   router.post('/v1/profile/deletion-password', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
-    const limiter = passwordLimiter(actor.username);
+    const limiter = passwordLimiter(actor.userId);
     assertPasswordAttemptAllowed(ctx, limiter);
     try {
-      const result = await repository.setOwnDeletionPassword(actor.username, requireJson(ctx));
+      const result = await repository.setOwnDeletionPassword(actor, requireJson(ctx));
       limiter.reset();
       json(ctx, 200, result);
     } catch (error) {
@@ -492,17 +542,19 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     const { skipCopyReview = false } = body;
     if (typeof skipCopyReview !== 'boolean') throw new TypeError('skipCopyReview must be a boolean');
     if (skipCopyReview) requestActor(ctx, ['ADMIN']);
-    if (actor.role !== 'ADMIN' && Object.hasOwn(body, 'assignedToUserId')) {
+    if (actor.role !== 'ADMIN' && (Object.hasOwn(body, 'assignedToUserId')
+      || Object.hasOwn(body, 'assignedToAccountId'))) {
       throw new HttpError(403, 'FORBIDDEN', '仅管理员可以指定任务负责人');
     }
-    const assignedToUserId = actor.role === 'ADMIN'
-      ? (body.assignedToUserId ?? null)
-      : actor.username;
+    const target = actor.role === 'ADMIN'
+      ? assignmentTarget(body)
+      : { assignedToUserId: actor.username, assignedToAccountId: actor.userId };
     json(ctx, 201, await repository.createTasks({
       nodeId: body.nodeId,
       createdByUserId: actor.username,
-      assignedToUserId,
-      assignmentSource: assignedToUserId === null ? null : actor.role === 'ADMIN' ? 'MANUAL' : 'SELF',
+      actor,
+      ...target,
+      assignmentSource: target.assignedToUserId === null ? null : actor.role === 'ADMIN' ? 'MANUAL' : 'SELF',
       skipCopyReview,
       tasks: body.tasks,
     }));
@@ -510,14 +562,21 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   router.get('/v1/tasks', async (ctx) => {
     const actor = requestActor(ctx);
     if (ctx.query.createdByRole !== undefined) requestActor(ctx, ['ADMIN']);
+    if (ctx.query.createdByAccountId !== undefined) requestActor(ctx, ['ADMIN']);
     if (ctx.query.attention !== undefined) requestActor(ctx, ['ADMIN']);
-    if (ctx.query.assignedToUserId !== undefined || ctx.query.unassigned !== undefined) requestActor(ctx, ['ADMIN']);
+    if (ctx.query.unassigned !== undefined
+      || (ctx.query.assignedToUserId !== undefined
+        && actor.role !== 'ADMIN'
+        && ctx.query.assignedToUserId !== actor.username)) {
+      requestActor(ctx, ['ADMIN']);
+    }
     const createdByRole = normalizeTaskCreatorRole(ctx.query.createdByRole);
     json(ctx, 200, await repository.listTasks({
       state: ctx.query.state,
       states: ctx.query.states,
       nodeId: ctx.query.nodeId,
       createdByUserId: ctx.query.createdByUserId,
+      createdByAccountId: ctx.query.createdByAccountId,
       assignedToUserId: actor.role === 'USER' ? actor.username : ctx.query.assignedToUserId,
       unassignedOnly: actor.role === 'ADMIN' && ctx.query.unassigned === 'true',
       excludeUnassigned: actor.role !== 'ADMIN',
@@ -539,25 +598,26 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   });
   router.post('/v1/task-views', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
-    json(ctx, 201, await repository.saveTaskView(actor.username, requireJson(ctx)));
+    json(ctx, 201, await repository.saveTaskView(actor.username, requireJson(ctx), { actor }));
   });
   router.delete('/v1/task-views/:viewId', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
-    json(ctx, 200, await repository.deleteSavedTaskView(actor.username, ctx.params.viewId));
+    json(ctx, 200, await repository.deleteSavedTaskView(actor.username, ctx.params.viewId, { actor }));
   });
   router.post('/v1/tasks/batch-actions', async (ctx) => {
-    requestActor(ctx, ['ADMIN']);
+    const actor = requestActor(ctx, ['ADMIN']);
     const body = requireJson(ctx);
     const taskIds = normalizedBatchTaskIds(body.taskIds, 100);
-    json(ctx, 200, await applyBatchTaskAction(repository, taskIds, String(body.action ?? '')));
+    json(ctx, 200, await applyBatchTaskAction(repository, taskIds, String(body.action ?? ''), actor));
   });
   router.post('/v1/tasks/batch-assignee', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
     const body = requireJson(ctx);
     const taskIds = normalizedBatchTaskIds(body.taskIds, 100);
+    const target = assignmentTarget(body);
     json(ctx, 200, await repository.assignTasks(taskIds, {
-      assignedToUserId: body.assignedToUserId ?? null,
-      actorUserId: actor.username,
+      ...target,
+      actor,
       reason: body.reason,
     }));
   });
@@ -565,14 +625,14 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     const actor = requestActor(ctx, ['ADMIN']);
     const body = requireJson(ctx);
     const taskIds = normalizedBatchTaskIds(body.taskIds, 20);
-    const limiter = passwordLimiter(actor.username);
+    const limiter = passwordLimiter(actor.userId);
     assertPasswordAttemptAllowed(ctx, limiter);
     try {
       const result = await applyBatchPermanentDeletion(
         repository,
         storageRoot,
         taskIds,
-        actor.username,
+        actor,
         body.deletionPassword,
       );
       limiter.reset();
@@ -584,7 +644,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     }
   });
   router.post('/v1/tasks/batch-archive', async (ctx) => {
-    requestActor(ctx, ['ADMIN']);
+    const actor = requestActor(ctx, ['ADMIN']);
     const taskIds = normalizedBatchTaskIds(requireJson(ctx).taskIds, 20);
     const tasks = await Promise.all(taskIds.map(async (taskId) => {
       const task = await repository.getTask(taskId);
@@ -600,6 +660,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
       const path = safeStoragePath(storageRoot, relative(storageRoot, asset.storagePath));
       return { ...asset, content: await readFile(path) };
     });
+    await assertCurrentActorIdentity(repository, actor);
     ctx.status = 200;
     ctx.type = 'application/zip';
     ctx.set('Content-Disposition', `attachment; filename="task-resources-batch.zip"; filename*=UTF-8''${encodeURIComponent('批量作业资源.zip')}`);
@@ -617,9 +678,10 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   router.patch('/v1/tasks/:taskId/assignee', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
     const body = requireJson(ctx);
+    const target = assignmentTarget(body);
     json(ctx, 200, await repository.assignTask(ctx.params.taskId, {
-      assignedToUserId: body.assignedToUserId ?? null,
-      actorUserId: actor.username,
+      ...target,
+      actor,
       reason: body.reason,
     }));
   });
@@ -700,8 +762,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   router.post('/v1/tasks/:taskId/approve-copy', async (ctx) => {
     const access = await assertTaskAccess(ctx, repository);
     json(ctx, 200, await repository.approveCopy(ctx.params.taskId, requireJson(ctx), {
-      actorRole: access.actor.role,
-      reviewerUserId: access.actor.username,
+      actor: access.actor,
     }));
   });
   router.post('/v1/tasks/:taskId/review-images', async (ctx) => {
@@ -710,45 +771,48 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     const { imageRunId, decision, score, reasons, note, problemAssetIds, reviewSessionId } = requireJson(ctx);
     json(ctx, 200, await repository.reviewImages(ctx.params.taskId, {
       imageRunId, decision, score, reasons, note, problemAssetIds, reviewSessionId,
-      reviewerUserId: actor.username,
+      actor,
     }));
   });
   router.post('/v1/tasks/:taskId/retry', async (ctx) => {
-    await assertTaskAccess(ctx, repository, { ownerOnly: requestActor(ctx).role !== 'ADMIN' });
-    json(ctx, 200, await repository.retryTask(ctx.params.taskId, requireJson(ctx)));
+    const actor = requestActor(ctx);
+    await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
+    json(ctx, 200, await repository.retryTask(ctx.params.taskId, { ...requireJson(ctx), actor }));
   });
   router.post('/v1/tasks/:taskId/retry-image', async (ctx) => {
-    await assertTaskAccess(ctx, repository, { ownerOnly: requestActor(ctx).role !== 'ADMIN' });
-    json(ctx, 200, await repository.requeueImageTask(ctx.params.taskId));
+    const actor = requestActor(ctx);
+    await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
+    json(ctx, 200, await repository.requeueImageTask(ctx.params.taskId, { actor }));
   });
   router.post('/v1/tasks/:taskId/image-revisions', async (ctx) => {
     const actor = requestActor(ctx);
     await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
-    json(ctx, 201, await repository.reviseImages(ctx.params.taskId, requireJson(ctx), actor.username, actor.role));
+    json(ctx, 201, await repository.reviseImages(ctx.params.taskId, requireJson(ctx), actor.username, actor.role, actor));
   });
   router.get('/v1/tasks/:taskId/image-capabilities', async (ctx) => {
     await assertTaskAccess(ctx, repository);
     json(ctx, 200, { version: 1, formats: Object.keys(IMAGE_FORMATS) });
   });
   router.post('/v1/tasks/:taskId/cancel', async (ctx) => {
-    await assertTaskAccess(ctx, repository, { ownerOnly: requestActor(ctx).role !== 'ADMIN' });
-    json(ctx, 200, await repository.cancelTask(ctx.params.taskId));
+    const actor = requestActor(ctx);
+    await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
+    json(ctx, 200, await repository.cancelTask(ctx.params.taskId, { actor }));
   });
   router.post('/v1/tasks/:taskId/requeue', async (ctx) => {
-    requestActor(ctx, ['ADMIN']);
+    const actor = requestActor(ctx, ['ADMIN']);
     await assertTaskAccess(ctx, repository);
-    json(ctx, 200, await repository.requeueCancelledTask(ctx.params.taskId));
+    json(ctx, 200, await repository.requeueCancelledTask(ctx.params.taskId, { actor }));
   });
   router.delete('/v1/tasks/:taskId/permanent', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
     await assertTaskAccess(ctx, repository);
-    const limiter = passwordLimiter(actor.username);
+    const limiter = passwordLimiter(actor.userId);
     assertPasswordAttemptAllowed(ctx, limiter);
     let quarantine = null;
     let deleted;
     try {
       deleted = await repository.permanentlyDeleteTask(ctx.params.taskId, {
-        actorUsername: actor.username,
+        actor,
         deletionPassword: requireJson(ctx).deletionPassword,
         beforeDelete: async (taskId) => {
           quarantine = await quarantineTaskStorage(storageRoot, taskId);
@@ -912,6 +976,10 @@ export function createControlPlaneApp({ repository, storageRoot, enforceUserAuth
     } catch (error) {
       const mapped = mappedError(error);
       if (mapped.status === 500) console.error(error);
+      for (const header of ['Content-Disposition', 'Content-Range', 'Accept-Ranges', 'ETag', 'Last-Modified']) {
+        ctx.remove(header);
+      }
+      ctx.set('Cache-Control', 'no-store');
       ctx.status = mapped.status;
       ctx.type = 'application/json';
       ctx.body = { error: { code: mapped.code, message: mapped.message } };
@@ -937,19 +1005,31 @@ export function createControlPlaneApp({ repository, storageRoot, enforceUserAuth
         username: username || String(ctx.get('X-Task-Creator-Id') || 'admin'),
         role: 'ADMIN',
         userId: 1,
+        credentialVersion: 1,
       };
       return next();
     }
     if (!username) return next();
+    const rawUserId = String(ctx.get('X-Actor-User-Id') || '').trim();
+    const actorUserId = /^[1-9]\d*$/u.test(rawUserId) ? Number(rawUserId) : NaN;
     const role = String(ctx.get('X-Actor-Role') || '').trim().toUpperCase();
     const credentialVersion = Number(ctx.get('X-Actor-Credential-Version'));
     const user = await repository.getUserByUsername(username).catch(() => null);
-    if (!user || user.status !== 'ACTIVE' || user.role !== role
+    if (!Number.isSafeInteger(actorUserId) || !user || user.id !== actorUserId
+      || user.status !== 'ACTIVE' || user.role !== role
       || user.credentialVersion !== credentialVersion) {
       throw new HttpError(401, 'SESSION_STALE', '账号状态已变化，请重新登录');
     }
-    ctx.state.actor = { username: user.username, role: user.role, userId: user.id };
-    return next();
+    ctx.state.actor = {
+      username: user.username,
+      role: user.role,
+      userId: user.id,
+      credentialVersion: user.credentialVersion,
+    };
+    await next();
+    if (['GET', 'HEAD'].includes(ctx.method)) {
+      await assertCurrentActorIdentity(repository, ctx.state.actor);
+    }
   });
   installRoutes(router, repository, resolvedStorageRoot, analyzeCopy, analyzeVisual);
   app.use(async (ctx, next) => {

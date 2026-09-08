@@ -22,6 +22,15 @@ function queuedTask(id, assignee, patch = {}) {
   };
 }
 
+function unassignedTask(id, patch = {}) {
+  return queuedTask(id, null, {
+    created_by_user_id: 'admin',
+    assignment_source: null,
+    assigned_at: null,
+    ...patch,
+  });
+}
+
 function claimFixture({
   kind = 'COPY',
   capacity = 3,
@@ -117,13 +126,26 @@ test('COPY claims lock the cursor, rank one task per owner and advance to the fi
   const selection = calls[candidateIndex];
   assert.deepEqual(selection.values, ['COPY_QUEUED', 'bob', 2]);
   assert.match(selection.sql, /WITH ranked_candidates AS MATERIALIZED/u);
+  assert.match(selection.sql, /queued\.assigned_to_user_id AS claim_owner/u);
   assert.match(selection.sql, /row_number\(\) OVER \([\s\S]*PARTITION BY queued\.assigned_to_user_id[\s\S]*ORDER BY queued\.id/u);
   assert.match(selection.sql, /JOIN tasks AS task ON task\.id = ranked\.task_id/u);
-  assert.match(selection.sql, /task\.state = \$1[\s\S]*task\.assigned_to_user_id IS NOT NULL[\s\S]*task\.assigned_to_user_id = ranked\.assigned_to_user_id/u);
-  assert.match(selection.sql, /ranked\.owner_row_number,[\s\S]*ranked\.assigned_to_user_id > \$2::varchar[\s\S]*ranked\.assigned_to_user_id,[\s\S]*ranked\.task_id/u);
+  assert.match(selection.sql, /queued\.assigned_to_user_id IS NOT NULL/u);
+  assert.match(selection.sql, /task\.assigned_to_user_id IS NOT NULL/u);
+  assert.match(selection.sql, /task\.assigned_to_user_id IS NOT DISTINCT FROM ranked\.assigned_to_user_id/u);
+  assert.match(selection.sql, /ranked\.owner_row_number,[\s\S]*ranked\.claim_owner > \$2::varchar[\s\S]*ranked\.claim_owner,[\s\S]*ranked\.task_id/u);
   assert.match(selection.sql, /FOR UPDATE OF task SKIP LOCKED[\s\S]*LIMIT \$3/u);
   assert.doesNotMatch(selection.sql, /copy_executor_node_id/u);
   assert.deepEqual(calls[cursorUpdateIndex].values, ['COPY', 'alice']);
+});
+
+test('COPY keeps a runtime guard against accidentally returned unassigned work', async () => {
+  const fixture = claimFixture({ candidates: [unassignedTask(14)] });
+  await assert.rejects(
+    fixture.repository.claimCopyBatch({ nodeId: 'node-a', limit: 1, requestId: requestIdAt() }),
+    /copy task is missing its assignee/u,
+  );
+  assert.equal(fixture.calls.some(({ sql }) => sql.includes('UPDATE execution_claim_cursors')), false);
+  assert.equal(fixture.calls.at(-1).sql, 'ROLLBACK');
 });
 
 test('IMAGE fairness retains retry ownership, recovery affinity, cooldown and original age order', async () => {
@@ -142,10 +164,23 @@ test('IMAGE fairness retains retry ownership, recovery affinity, cooldown and or
   assert.match(selection.sql, /task\.pending_snapshot->'imageRecovery'->>'nodeId' IS NULL/u);
   assert.match(selection.sql, /task\.pending_snapshot->'imageRecovery'->>'nodeId' = \$2/u);
   assert.match(selection.sql, /task\.error IS NULL OR task\.last_activity_at <= now\(\) - interval '5 seconds'/u);
+  assert.match(selection.sql, /queued\.assigned_to_user_id IS NOT NULL/u);
+  assert.match(selection.sql, /task\.assigned_to_user_id IS NOT NULL/u);
+  assert.match(selection.sql, /task\.assigned_to_user_id IS NOT DISTINCT FROM ranked\.assigned_to_user_id/u);
   assert.match(selection.sql, /PARTITION BY queued\.assigned_to_user_id[\s\S]*ORDER BY queued\.last_activity_at NULLS FIRST, queued\.id/u);
   assert.match(selection.sql, /ranked\.last_activity_at NULLS FIRST, ranked\.task_id/u);
   assert.match(selection.sql, /LIMIT \$4/u);
   assert.equal(calls.some(({ sql }) => sql.includes('UPDATE execution_claim_cursors')), false);
+});
+
+test('IMAGE keeps a runtime guard against accidentally returned unassigned work', async () => {
+  const fixture = claimFixture({
+    kind: 'IMAGE',
+    candidates: [unassignedTask(16, { state: 'IMAGE_QUEUED', current_copy_revision_id: 7 })],
+  });
+  await assert.rejects(fixture.repository.claimImage('node-a'), /image task is missing its assignee/u);
+  assert.equal(fixture.calls.some(({ sql }) => sql.includes('UPDATE execution_claim_cursors')), false);
+  assert.equal(fixture.calls.at(-1).sql, 'ROLLBACK');
 });
 
 test('a successful non-empty receipt replay and full capacity do not touch the fairness cursor', async () => {
@@ -167,6 +202,25 @@ test('a successful non-empty receipt replay and full capacity do not touch the f
   const full = claimFixture({ capacity: 1, running: 1 });
   assert.equal(await full.repository.claimCopy('node-a'), null);
   assert.equal(full.calls.some(({ sql }) => sql.includes('execution_claim_cursors')), false);
+});
+
+test('a legacy receipt can replay an already-running unassigned COPY without making it newly claimable', async () => {
+  const requestId = requestIdAt();
+  const executionId = '22222222-2222-4222-8222-222222222222';
+  const legacyTask = unassignedTask(22, { state: 'COPY_RUNNING' });
+  const replay = claimFixture({
+    receipt: { requested_limit: 1, execution_ids: [executionId] },
+    receiptRecords: [{
+      id: executionId, task_id: 22, kind: 'COPY', node_id: 'node-a', status: 'RUNNING',
+      stage: 'STARTING_COPY', snapshot: { task: { id: 22 } }, task: legacyTask,
+    }],
+  });
+
+  const result = await replay.repository.claimCopyBatch({ nodeId: 'node-a', limit: 1, requestId });
+  assert.equal(result.claims[0].execution.id, executionId);
+  assert.equal(result.claims[0].task.assignedToUserId, null);
+  assert.equal(replay.calls.some(({ sql }) => sql.includes('FOR UPDATE OF task SKIP LOCKED')), false);
+  assert.equal(replay.calls.some(({ sql }) => sql.includes('execution_claim_cursors')), false);
 });
 
 test('COPY and IMAGE claims lock and advance independent kind cursors', async () => {

@@ -9,6 +9,7 @@ export type WorkbenchListState = {
   sort: TaskSort;
   deduplicateQuery: boolean;
   createdByUserId: string;
+  createdByAccountId: number | null;
   createdByRole: string;
   state: string;
   attention: TaskAttention;
@@ -22,6 +23,7 @@ export const DEFAULT_WORKBENCH_LIST_STATE: WorkbenchListState = Object.freeze({
   sort: 'priority:desc',
   deduplicateQuery: false,
   createdByUserId: '',
+  createdByAccountId: null,
   createdByRole: 'ALL',
   state: 'ALL',
   attention: 'NONE',
@@ -57,6 +59,8 @@ export function parseWorkbenchListState(
   const state = one(search.state);
   const attention = one(search.attention) as TaskAttention | undefined;
   const creator = one(search.createdByUserId)?.trim() ?? '';
+  const creatorAccountId = positiveInteger(one(search.createdByAccountId), 0);
+  const validCreator = allowAdminFilters && /^[a-zA-Z0-9._:-]{1,100}$/u.test(creator) && creatorAccountId > 0;
   const query = one(search.query)?.trim() ?? '';
   const taskId = positiveInteger(one(search.taskId), 0);
   return {
@@ -65,7 +69,8 @@ export function parseWorkbenchListState(
     query: [...query].slice(0, 500).join(''),
     sort: sort && SORTS.has(sort as TaskSort) ? sort as TaskSort : 'priority:desc',
     deduplicateQuery: ['1', 'true'].includes(one(search.deduplicateQuery) ?? ''),
-    createdByUserId: allowAdminFilters && /^[a-zA-Z0-9._:-]{1,100}$/u.test(creator) ? creator : '',
+    createdByUserId: validCreator ? creator : '',
+    createdByAccountId: validCreator ? creatorAccountId : null,
     createdByRole: allowAdminFilters && role && CREATOR_ROLES.has(role) ? role : 'ALL',
     state: state && TASK_STATES.has(state) ? state : 'ALL',
     attention: allowAdminFilters && attention && ATTENTION.has(attention) ? attention : 'NONE',
@@ -82,7 +87,10 @@ export function workbenchListSearch(state: WorkbenchListState, { includeAdminFil
   if (state.deduplicateQuery) search.set('deduplicateQuery', '1');
   if (state.state !== 'ALL') search.set('state', state.state);
   if (includeAdminFilters) {
-    if (state.createdByUserId) search.set('createdByUserId', state.createdByUserId);
+    if (state.createdByUserId && state.createdByAccountId) {
+      search.set('createdByUserId', state.createdByUserId);
+      search.set('createdByAccountId', String(state.createdByAccountId));
+    }
     if (state.createdByRole !== 'ALL') search.set('createdByRole', state.createdByRole);
     if (state.attention !== 'NONE') search.set('attention', state.attention);
   }

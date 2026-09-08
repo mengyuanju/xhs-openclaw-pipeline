@@ -1,7 +1,9 @@
 import { ApiError } from '../../../../src/admin/http.mjs';
 import { controlPlaneUrl } from '../../../../src/control-plane/next-runtime.mjs';
 import { assetConditionalHeaders, assetResponseHeaders } from '../../../../src/control-plane/asset-proxy.mjs';
+import { assertMutationCapability } from '../../../../src/control-plane/mutation-capability.mjs';
 import { userCanAccessControlPlaneRoute } from '../../../../src/control-plane/proxy-access.mjs';
+import { sessionActorHeaders } from '../../../../src/control-plane/session-actor-headers.mjs';
 import { apiHandler } from '../../_lib';
 
 export const runtime = 'nodejs';
@@ -12,7 +14,7 @@ const MAX_PROXY_BODY_BYTES = 20 * 1024 * 1024;
 async function proxyRequest(
   request: Request,
   context: { params: Promise<{ path: string[] }> },
-  session: { subject: string; username?: string; roles: string[]; credentialVersion?: number },
+  session: { subject: string; userId?: number; username?: string; roles: string[]; credentialVersion?: number },
 ) {
   const root = controlPlaneUrl();
   if (!root) throw new ApiError(503, 'CONTROL_PLANE_NOT_CONFIGURED', '远端中心服务尚未配置');
@@ -52,6 +54,7 @@ async function proxyRequest(
   if (path.join('/') === 'v1/tasks' && (upstreamUrl.searchParams.get('mine') === 'true' || role === 'USER')) {
     upstreamUrl.searchParams.set('assignedToUserId', username);
     upstreamUrl.searchParams.delete('createdByUserId');
+    upstreamUrl.searchParams.delete('createdByAccountId');
     upstreamUrl.searchParams.delete('nodeId');
     upstreamUrl.searchParams.delete('mine');
   }
@@ -65,15 +68,14 @@ async function proxyRequest(
   if (body && body.byteLength > MAX_PROXY_BODY_BYTES) {
     throw new ApiError(413, 'PAYLOAD_TOO_LARGE', '请求内容过大');
   }
+  await assertMutationCapability({ root, routePath, method: request.method });
   let upstream: Response;
   try {
     upstream = await fetch(upstreamUrl, {
       method: request.method,
       headers: {
         ...assetConditionalHeaders(routePath, request),
-        'X-Actor-Username': username,
-        'X-Actor-Role': role,
-        'X-Actor-Credential-Version': String(session.credentialVersion || 1),
+        ...sessionActorHeaders(session, { username, role }),
         ...(request.headers.get('content-type')
           ? { 'Content-Type': request.headers.get('content-type') as string }
           : {}),

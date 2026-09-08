@@ -29,6 +29,7 @@ const TASKS = [
 
 function actorHeaders(username, role = USERS[username]?.role, credentialVersion = 1) {
   return {
+    'X-Actor-User-Id': String(USERS[username]?.id ?? ''),
     'X-Actor-Username': username,
     'X-Actor-Role': role,
     'X-Actor-Credential-Version': String(credentialVersion),
@@ -168,6 +169,41 @@ test('ordinary users and reviewers cannot use creator role filtering', async () 
       assert.equal(response.status, 403, `${username} must not use administrator role filters`);
     }
     assert.equal(repository.listCalls, 0);
+  });
+});
+
+test('assignee filters allow self-service without exposing another worker or the pending pool', async () => {
+  const repository = taskRepository();
+  await withServer(repository, async (root) => {
+    const ownWorkerTasks = await fetch(`${root}/v1/tasks?assignedToUserId=alice`, {
+      headers: actorHeaders('alice'),
+    });
+    assert.equal(ownWorkerTasks.status, 200);
+    assert.deepEqual((await ownWorkerTasks.json()).data.map((task) => task.id), [1, 4, 5, 7, 10, 13, 14]);
+
+    const ownReviewerTasks = await fetch(`${root}/v1/tasks?assignedToUserId=reviewer`, {
+      headers: actorHeaders('reviewer'),
+    });
+    assert.equal(ownReviewerTasks.status, 200);
+    assert.deepEqual((await ownReviewerTasks.json()).data, []);
+
+    for (const username of ['alice', 'reviewer']) {
+      const anotherWorker = await fetch(`${root}/v1/tasks?assignedToUserId=bob`, {
+        headers: actorHeaders(username),
+      });
+      assert.equal(anotherWorker.status, 403, `${username} must not filter another worker`);
+
+      const pendingPool = await fetch(`${root}/v1/tasks?unassigned=true`, {
+        headers: actorHeaders(username),
+      });
+      assert.equal(pendingPool.status, 403, `${username} must not inspect the pending pool`);
+    }
+
+    const administrator = await fetch(`${root}/v1/tasks?assignedToUserId=bob`, {
+      headers: actorHeaders('admin'),
+    });
+    assert.equal(administrator.status, 200);
+    assert.deepEqual((await administrator.json()).data.map((task) => task.id), [2, 3, 6, 8, 9, 11, 12]);
   });
 });
 

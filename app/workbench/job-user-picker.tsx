@@ -17,6 +17,8 @@ export function JobUserPicker({
   label,
   triggerId,
   emptyLabel,
+  emptyOptionLabel = emptyLabel,
+  emptyOptionSelected,
   dialogTitle,
   dialogDescription,
   roleLabels,
@@ -29,6 +31,8 @@ export function JobUserPicker({
   label: string;
   triggerId: string;
   emptyLabel: string;
+  emptyOptionLabel?: string;
+  emptyOptionSelected?: boolean;
   dialogTitle: string;
   dialogDescription: string;
   roleLabels: Record<string, string>;
@@ -96,14 +100,15 @@ export function JobUserPicker({
               maxLength={100} onValueChange={setSearch} />
           </div>
           <div className="workbench-creator-results" aria-busy={loading}>
-            <Button unstyled className="workbench-creator-option" type="button" aria-pressed={!value}
-              onClick={() => choose(null)}>{emptyLabel}</Button>
+            <Button unstyled className="workbench-creator-option" type="button"
+              aria-pressed={emptyOptionSelected ?? !value}
+              onClick={() => choose(null)}>{emptyOptionLabel}</Button>
             {loading ? <p role="status">正在读取作业员…</p>
               : error ? <div role="alert"><p>读取失败：{error}</p><Button unstyled className="button small" type="button"
                   onClick={() => setAttempt((count) => count + 1)}>重新读取作业员</Button></div>
                 : matches.length === 0 ? <p role="status">没有可选的作业员，请更换姓名或账号。</p>
-                  : matches.map((user) => <Button unstyled className="workbench-creator-option" key={user.username}
-                      type="button" aria-pressed={value?.username === user.username} onClick={() => choose(user)}>
+                  : matches.map((user) => <Button unstyled className="workbench-creator-option" key={user.id}
+                      type="button" aria-pressed={value?.id === user.id} onClick={() => choose(user)}>
                     <span><strong>{user.displayName}</strong><small className="mono">{user.username}</small></span>
                     <small>{roleLabels[user.role] || '未知角色'}{user.status === 'DISABLED' ? ' · 已停用' : ''}</small>
                   </Button>)}

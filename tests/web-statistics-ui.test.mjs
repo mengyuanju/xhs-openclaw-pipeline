@@ -24,3 +24,21 @@ test('statistics charts show concrete values and efficiency compares distributio
   assert.match(efficiency, /无评分作业不进入样本/);
   assert.match(efficiency, /job-stats-efficiency-progress/);
 });
+
+test('personal statistics labels assignment ownership without claiming the worker created the task', async () => {
+  const overview = await source('app/workbench-statistics/personal-overview.tsx');
+  assert.match(overview, /label="当前负责"/u);
+  assert.doesNotMatch(overview, /label="累计创建"/u);
+});
+
+test('historical account generations cannot navigate through the current-account creator filter', async () => {
+  const [people, types] = await Promise.all([
+    source('app/workbench-statistics/people-table.tsx'),
+    source('app/workbench-statistics/types.ts'),
+  ]);
+  assert.match(types, /accountId: number \| null/u);
+  assert.match(people, /person\.accountId !== null && person\.username/u);
+  assert.match(people, /createdByAccountId=\$\{person\.accountId\}/u);
+  assert.match(people, /已删除账号单列为历史账号/u);
+  assert.match(people, /person\.accountId \?\? 'historical'/u);
+});

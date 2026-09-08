@@ -92,7 +92,7 @@ test('catalog HTTP endpoints reject non-administrators and preserve version conf
   try {
     const root = `http://127.0.0.1:${server.address().port}`;
     for (const username of ['admin', 'user']) {
-      const headers = { 'X-Actor-Username': username, 'X-Actor-Role': username === 'admin' ? 'ADMIN' : 'USER', 'X-Actor-Credential-Version': '1', 'Content-Type': 'application/json' };
+      const headers = { 'X-Actor-User-Id': '1', 'X-Actor-Username': username, 'X-Actor-Role': username === 'admin' ? 'ADMIN' : 'USER', 'X-Actor-Credential-Version': '1', 'Content-Type': 'application/json' };
       const response = await fetch(`${root}/v1/layout-catalog`, { headers });
       assert.equal(response.status, username === 'admin' ? 200 : 403);
       const mutation = await fetch(`${root}/v1/layout-catalog`, { method: 'POST', headers, body: '{}' });

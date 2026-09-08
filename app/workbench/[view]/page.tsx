@@ -36,6 +36,7 @@ export default async function WorkbenchListPage({ params, searchParams }: {
           viewKey={definition.key}
           nodeId={executorNodeId()}
           creatorUserId={session.username || 'admin'}
+          creatorAccountId={Number(session.userId)}
           role={role}
           initialListState={initialListState}
         />

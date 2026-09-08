@@ -5,6 +5,8 @@ import { withAdminStore } from '../../../src/admin/runtime.mjs';
 import { readWebSearchSettings, updateWebSearchSettings } from '../../../src/admin/web-search-settings-service.mjs';
 import { createControlPlaneClient } from '../../../src/control-plane/client.mjs';
 import { controlPlaneUrl } from '../../../src/control-plane/next-runtime.mjs';
+import { forwardControlPlaneRequest } from '../../../src/control-plane/next-api-error.mjs';
+import { sessionActorHeaders } from '../../../src/control-plane/session-actor-headers.mjs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -17,11 +19,16 @@ const patchSchema = z.object({
 
 type SearchPatch = z.infer<typeof patchSchema>;
 
-async function settingsRequest(patch?: SearchPatch) {
+async function settingsRequest(session: any, patch?: SearchPatch) {
   const baseUrl = controlPlaneUrl();
   if (baseUrl) {
-    const options = { controlPlane: createControlPlaneClient({ baseUrl }) };
-    return patch ? updateWebSearchSettings(options, patch) : readWebSearchSettings(options);
+    const options = { controlPlane: createControlPlaneClient({
+      baseUrl,
+      headers: sessionActorHeaders(session),
+    }) };
+    return forwardControlPlaneRequest(() => patch
+      ? updateWebSearchSettings(options, patch)
+      : readWebSearchSettings(options));
   }
   return withAdminStore((store: any) => patch
     ? updateWebSearchSettings({ store }, patch)
@@ -29,11 +36,11 @@ async function settingsRequest(patch?: SearchPatch) {
 }
 
 export function GET(request: Request) {
-  return apiHandler(request, {}, async () => ok(await settingsRequest()));
+  return apiHandler(request, {}, async (session) => ok(await settingsRequest(session)));
 }
 
 export function PATCH(request: Request) {
-  return apiHandler(request, { mutation: true }, async () => ok(
-    await settingsRequest(await parseJson(request, patchSchema)),
+  return apiHandler(request, { mutation: true }, async (session) => ok(
+    await settingsRequest(session, await parseJson(request, patchSchema)),
   ));
 }

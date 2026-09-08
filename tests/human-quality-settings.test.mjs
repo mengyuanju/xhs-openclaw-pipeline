@@ -8,6 +8,8 @@ import {
   normalizeHumanQualitySettings,
   normalizeHumanQualitySettingsUpdate,
 } from '../src/human-quality-settings.mjs';
+import { createSessionToken } from '../src/admin/auth.mjs';
+import { evaluateAdminProxyRequest } from '../src/admin/proxy-policy.mjs';
 import {
   createProductionSettingsStore,
   initializeProductionSettingsSchema,
@@ -79,8 +81,8 @@ test('production settings and review clients expose the dedicated editable reaso
   assert.match(panel, /method: 'PUT'/u);
   assert.match(route, /roles: \['ADMIN', 'REVIEWER', 'USER'\]/u);
   assert.match(route, /roles: \['ADMIN'\]/u);
-  assert.match(route, /ControlPlaneApiError/u);
-  assert.match(route, /new ApiError\(error\.status, error\.code, error\.message\)/u);
+  assert.match(route, /forwardControlPlaneRequest/u);
+  assert.match(route, /sessionActorHeaders/u);
   assert.match(hook, /loadHumanQualitySettings/u);
   assert.match(hook, /settings, loading, error, refresh/u);
   assert.match(reviewDialog, /useHumanQualitySettings\(taskId\)/u);
@@ -89,4 +91,17 @@ test('production settings and review clients expose the dedicated editable reaso
   assert.match(center, /get\('\/v1\/human-quality-settings'/u);
   assert.match(center, /put\('\/v1\/human-quality-settings'/u);
   assert.match(proxy, /human-quality-settings/u);
+});
+
+test('signed-in workers and reviewers can read shared human quality reasons through the web proxy', () => {
+  const environment = { XHS_SESSION_SECRET: 'human-quality-proxy-test-secret-32-characters' };
+  for (const role of ['USER', 'REVIEWER']) {
+    const token = createSessionToken(environment.XHS_SESSION_SECRET, {
+      actor: { subject: 'user', userId: role === 'USER' ? 2 : 3, username: role.toLowerCase(), roles: [role], credentialVersion: 1 },
+    });
+    const request = new Request('http://127.0.0.1:3001/api/human-quality-settings', {
+      headers: { cookie: `xhs_admin_session=${token}` },
+    });
+    assert.deepEqual(evaluateAdminProxyRequest(request, environment), { type: 'next' });
+  }
 });

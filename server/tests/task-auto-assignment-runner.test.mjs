@@ -5,6 +5,7 @@ import test from 'node:test';
 import { loadMigrations } from '../src/database-migrations.mjs';
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import {
+  AUTO_ASSIGNABLE_TASK_STATES,
   AUTO_ASSIGNMENT_ACTOR,
   planAutoAssignments,
   runAutoAssignmentReplenishment,
@@ -84,6 +85,17 @@ test('0019 indexes the AUTO audit cursor without rewriting task or member data',
   assert.doesNotMatch(migration.sql, /UPDATE|DELETE|TRUNCATE|DROP|INSERT/u);
 });
 
+test('0022 persists AUTO fairness independently from task lifecycle records', async () => {
+  const migration = (await loadMigrations()).find((item) => item.id === '0022_auto_assignment_cursor');
+  assert.ok(migration);
+  assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS task_auto_assignment_cursors/u);
+  assert.match(migration.sql, /last_auto_event_id bigint NOT NULL/u);
+  assert.match(migration.sql, /MAX\(assignment_event\.id\)/u);
+  assert.match(migration.sql, /ON CONFLICT\(username\)[\s\S]*GREATEST/u);
+  assert.doesNotMatch(migration.sql, /REFERENCES tasks/u);
+  assert.doesNotMatch(migration.sql, /DELETE FROM tasks|TRUNCATE|DROP TABLE tasks/u);
+});
+
 test('disabled settings are a transactionally locked no-op before members or tasks are read', async () => {
   const database = fakePool(({ sql }) => {
     if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
@@ -122,6 +134,7 @@ test('runner locks settings, active users, pool members and pending tasks in ord
   let workerMetricsSql = '';
   let userSql = '';
   let auditValues;
+  let cursorValues;
   const database = fakePool(({ sql, values }) => {
     if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
     if (sql.includes('pg_try_advisory_xact_lock')) return { rows: [{ acquired: true }] };
@@ -146,7 +159,7 @@ test('runner locks settings, active users, pool members and pending tasks in ord
     }
     if (sql.includes('FOR UPDATE SKIP LOCKED')) {
       candidateSql = sql;
-      assert.equal(values[0], 4);
+      assert.deepEqual(values, [AUTO_ASSIGNABLE_TASK_STATES, 4]);
       return { rows: [{ id: '101' }, { id: '102' }, { id: '103' }] };
     }
     if (sql.includes('UPDATE tasks AS task')) {
@@ -155,7 +168,18 @@ test('runner locks settings, active users, pool members and pending tasks in ord
     }
     if (sql.includes('INSERT INTO task_assignment_events')) {
       auditValues = values;
-      return { rows: values[0].map((taskId) => ({ task_id: taskId })) };
+      return { rows: values[0].map((taskId, index) => ({
+        id: String(11 + index),
+        task_id: taskId,
+        assignee_user_id: values[1][index],
+      })) };
+    }
+    if (sql.includes('INSERT INTO task_auto_assignment_cursors')) {
+      cursorValues = values;
+      return { rows: values[0].map((username, index) => ({
+        username,
+        last_auto_event_id: values[1][index],
+      })) };
     }
     throw new Error(`unexpected query: ${sql}`);
   });
@@ -174,14 +198,23 @@ test('runner locks settings, active users, pool members and pending tasks in ord
   assert.doesNotMatch(memberLockSql, /FROM tasks|task_assignment_events/u);
   assert.match(workerMetricsSql, /state NOT IN \('MANUAL_ARCHIVE', 'REVIEWED', 'CANCELLED'\)/u);
   assert.doesNotMatch(workerMetricsSql, /COPY_FAILED|IMAGE_FAILED/u);
-  assert.match(workerMetricsSql, /assignment_event.source = 'AUTO'[\s\S]*ORDER BY assignment_event.id DESC/u);
+  assert.match(workerMetricsSql, /LEFT JOIN task_auto_assignment_cursors AS fairness_cursor/u);
+  assert.doesNotMatch(workerMetricsSql, /FROM task_assignment_events/u);
   assert.doesNotMatch(workerMetricsSql, /FOR UPDATE/u);
-  assert.match(candidateSql, /assigned_to_user_id IS NULL[\s\S]*state = 'COPY_QUEUED'[\s\S]*current_execution_id IS NULL/u);
+  assert.match(candidateSql, /assigned_to_user_id IS NULL[\s\S]*state = ANY\(\$1::varchar\[\]\)[\s\S]*current_execution_id IS NULL/u);
+  assert.deepEqual(AUTO_ASSIGNABLE_TASK_STATES, [
+    'COPY_QUEUED', 'COPY_REVIEW_PENDING', 'COPY_FAILED', 'IMAGE_QUEUED', 'IMAGE_FAILED',
+  ]);
+  assert.doesNotMatch(candidateSql, /IMAGE_RETRY_EXHAUSTED/u);
   assert.match(candidateSql, /ORDER BY id[\s\S]*FOR UPDATE SKIP LOCKED/u);
   assert.match(updatedSql, /assignment_source = 'AUTO'/u);
-  assert.match(updatedSql, /assigned_to_user_id IS NULL[\s\S]*state = 'COPY_QUEUED'[\s\S]*current_execution_id IS NULL/u);
+  assert.match(updatedSql, /progress_message = CASE[\s\S]*COPY_QUEUED[\s\S]*IMAGE_QUEUED/u);
+  assert.match(updatedSql, /IMAGE_RETRY_EXHAUSTED'[\s\S]*'图片重试次数已用尽，等待人工处理'/u);
+  assert.match(updatedSql, /IMAGE_FAILED'[\s\S]*'图片生成失败，等待人工处理'/u);
+  assert.match(updatedSql, /assigned_to_user_id IS NULL[\s\S]*task\.state = ANY\(\$3::varchar\[\]\)[\s\S]*current_execution_id IS NULL/u);
   assert.equal(auditValues[2], AUTO_ASSIGNMENT_ACTOR);
   assert.deepEqual(auditValues[1], ['bob', 'alice', 'bob']);
+  assert.deepEqual(cursorValues, [['alice', 'bob'], ['12', '13']]);
 
   const lockOrder = [
     'task_auto_assignment_settings',
@@ -217,7 +250,8 @@ test('runner caps each transaction at 500 assignments even when total capacity i
       ] };
     }
     if (sql.includes('FOR UPDATE SKIP LOCKED')) {
-      candidateLimit = values[0];
+      assert.deepEqual(values[0], AUTO_ASSIGNABLE_TASK_STATES);
+      candidateLimit = values[1];
       return { rows: [] };
     }
     throw new Error(`unexpected query: ${sql}`);
@@ -246,7 +280,8 @@ test('worker metrics use a new statement after a waited member lock', async () =
         current_task_count: '1', last_auto_event_id: null }] };
     }
     if (sql.includes('FOR UPDATE SKIP LOCKED')) {
-      assert.equal(values[0], 1, 'a manual assignment committed before the member lock must consume capacity');
+      assert.deepEqual(values[0], AUTO_ASSIGNABLE_TASK_STATES);
+      assert.equal(values[1], 1, 'a manual assignment committed before the member lock must consume capacity');
       return { rows: [] };
     }
     throw new Error(`unexpected query: ${sql}`);
@@ -289,6 +324,39 @@ test('a changed locked batch rolls the whole transaction back before writing aud
   assert.equal(database.released, true);
 });
 
+test('a fairness cursor write failure rolls task and audit changes back together', async () => {
+  let auditWritten = false;
+  const database = fakePool(({ sql, values }) => {
+    if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
+    if (sql.includes('pg_try_advisory_xact_lock')) return { rows: [{ acquired: true }] };
+    if (sql.includes('FROM task_auto_assignment_settings')) return { rows: [{ enabled: true, version: 1 }] };
+    if (sql.includes('FROM app_users AS app_user')) return { rows: [{ username: 'alice' }] };
+    if (sql.includes('FROM task_auto_assignment_workers AS pool')) {
+      return { rows: [{ username: 'alice', assignment_limit: 1 }] };
+    }
+    if (sql.includes('FROM task_auto_assignment_workers AS locked_pool')) {
+      return { rows: [{ username: 'alice', assignment_limit: 1,
+        current_task_count: '0', last_auto_event_id: null }] };
+    }
+    if (sql.includes('FOR UPDATE SKIP LOCKED')) return { rows: [{ id: '71' }] };
+    if (sql.includes('UPDATE tasks AS task')) {
+      return { rows: [{ id: values[0][0], assigned_to_user_id: values[1][0] }] };
+    }
+    if (sql.includes('INSERT INTO task_assignment_events')) {
+      auditWritten = true;
+      return { rows: [{ id: '91', task_id: values[0][0], assignee_user_id: values[1][0] }] };
+    }
+    if (sql.includes('INSERT INTO task_auto_assignment_cursors')) {
+      throw new Error('cursor storage unavailable');
+    }
+    throw new Error(`unexpected query: ${sql}`);
+  });
+  await assert.rejects(runAutoAssignmentReplenishment(database.pool), /cursor storage unavailable/u);
+  assert.equal(auditWritten, true);
+  assert.equal(database.calls.at(-1).sql, 'ROLLBACK');
+  assert.equal(database.released, true);
+});
+
 test('manual assignment locks a target pool member before task rows without enforcing its limit', async () => {
   const database = fakePool(({ sql, values }) => {
     if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
@@ -318,7 +386,7 @@ test('SELF task creation locks its account and pool member before inserting the 
   const database = fakePool(({ sql, values }) => {
     if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
     if (sql.includes('INSERT INTO executor_nodes')) return { rows: [] };
-    if (sql.includes('SELECT username FROM app_users')) return { rows: [{ username: 'alice' }] };
+    if (sql.includes('FROM app_users')) return { rows: [{ id: 2, username: 'alice' }] };
     if (sql.includes('SELECT username FROM task_auto_assignment_workers')) return { rows: [{ username: 'alice' }] };
     if (sql.includes('INSERT INTO tasks')) return { rows: [taskRow(12, {
       created_by_user_id: 'alice', assigned_to_user_id: values[6],
@@ -333,10 +401,11 @@ test('SELF task creation locks its account and pool member before inserting the 
     assignmentSource: 'SELF', tasks: [{ query: '用户自建任务' }],
   });
   assert.equal(task.assignedToUserId, 'alice');
-  const userLock = database.calls.findIndex(({ sql }) => sql.includes('SELECT username FROM app_users'));
+  const userLock = database.calls.findIndex(({ sql }) => sql.includes('FROM app_users'));
   const memberLock = database.calls.findIndex(({ sql }) => sql.includes('SELECT username FROM task_auto_assignment_workers'));
+  const nodeInsert = database.calls.findIndex(({ sql }) => sql.includes('INSERT INTO executor_nodes'));
   const taskInsert = database.calls.findIndex(({ sql }) => sql.includes('INSERT INTO tasks'));
-  assert.ok(userLock > 0 && userLock < memberLock && memberLock < taskInsert);
+  assert.ok(userLock > 0 && userLock < memberLock && memberLock < nodeInsert && nodeInsert < taskInsert);
   assert.match(database.calls[userLock].sql, /FOR UPDATE/u);
   assert.match(database.calls[userLock].sql, /status = 'ACTIVE'/u);
   assert.doesNotMatch(database.calls[userLock].sql, /role = 'USER'/u);
@@ -348,7 +417,7 @@ test('SELF task creation rejects a missing or inactive account before locking th
   const database = fakePool(({ sql }) => {
     if (sql === 'BEGIN' || sql === 'ROLLBACK') return { rows: [] };
     if (sql.includes('INSERT INTO executor_nodes')) return { rows: [] };
-    if (sql.includes('SELECT username FROM app_users')) return { rows: [] };
+    if (sql.includes('FROM app_users')) return { rows: [] };
     if (sql.includes('SELECT username FROM task_auto_assignment_workers')) {
       poolLocked = true;
       return { rows: [] };

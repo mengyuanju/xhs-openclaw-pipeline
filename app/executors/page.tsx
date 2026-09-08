@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 
-import { readCentralData } from '../central-user-client';
+import { readCentralPageData } from '../central-user-client';
 import { readServerSession } from '../server-session';
 import { ExecutorManager, type ExecutorStatus } from './executor-manager';
 
@@ -10,7 +10,7 @@ export default async function ExecutorsPage() {
   const session = await readServerSession();
   if (!session) redirect('/login?next=%2Fexecutors');
   if (!session.roles?.includes('ADMIN')) redirect('/workbench/personal');
-  const nodes = await readCentralData('/v1/executor-statuses', session) as ExecutorStatus[];
+  const nodes = await readCentralPageData('/v1/executor-statuses', session, '/executors') as ExecutorStatus[];
   return <>
     <header className="page-header executor-page-header">
       <div>

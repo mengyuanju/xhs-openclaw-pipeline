@@ -17,7 +17,7 @@ function taskRow(id, patch = {}) {
     assignment_source: null,
     assigned_at: null,
     progress_percent: 0,
-    progress_message: '等待管理员分配作业员',
+    progress_message: '等待分配负责人',
     ...patch,
   };
 }
@@ -42,18 +42,21 @@ async function withServer(repository, action) {
 
 function actorHeaders(username, role = 'USER') {
   return {
+    'X-Actor-User-Id': String(username === 'admin' ? 1 : username === 'alice' ? 2 : username === 'bob' ? 3 : username === 'reviewer' ? 4 : ''),
     'X-Actor-Username': username,
     'X-Actor-Role': role,
     'X-Actor-Credential-Version': '1',
   };
 }
 
-test('health advertises the task assignment contract before the UI enables it', async () => {
+test('health advertises the task assignment and pool contracts for Web compatibility checks', async () => {
   const repository = new PostgresControlPlaneRepository({
     pool: { query: async () => ({ rows: [{ now: new Date('2026-09-08T00:00:00.000Z') }] }) },
   });
   const health = await repository.health();
-  assert.equal(health.capabilities.taskAssignmentVersion, 1);
+  assert.equal(health.capabilities.taskAssignmentVersion, 2);
+  assert.equal(health.capabilities.autoAssignmentPoolVersion, 2);
+  assert.equal(health.capabilities.creatorAccountFilters, true);
 });
 
 test('task creation keeps creator audit identity separate from its assignee', async () => {
@@ -64,7 +67,7 @@ test('task creation keeps creator audit identity separate from its assignee', as
     if (source.includes("role = 'USER'")) return { rows: [{ username: 'alice' }] };
     if (source.includes('INSERT INTO tasks')) return { rows: [taskRow(1, {
       assigned_to_user_id: values[6], assignment_source: values[7], assigned_at: new Date(),
-      progress_message: values[6] === null ? '等待管理员分配作业员' : '等待文案执行机领取',
+      progress_message: values[6] === null ? '等待分配负责人' : '等待文案执行机领取',
     })] };
     return { rows: [] };
   });
@@ -88,6 +91,47 @@ test('task creation keeps creator audit identity separate from its assignee', as
   assert.equal(calls.some(({ sql }) => sql.includes('task_assignment_events')), false);
 });
 
+test('authenticated task creation rechecks the immutable actor inside its transaction', async () => {
+  const calls = [];
+  const repository = transactionRepository(async (sql, values) => {
+    const source = String(sql);
+    calls.push({ sql: source, values });
+    if (source.includes('SELECT * FROM app_users')) return { rows: [] };
+    return { rows: [] };
+  });
+  await assert.rejects(repository.createTasks({
+    nodeId: 'node-a',
+    createdByUserId: 'alice',
+    actor: { userId: 2, username: 'alice', role: 'USER', credentialVersion: 1 },
+    tasks: [{ query: '旧会话不得落到同名新账号' }],
+  }), { code: 'SESSION_STALE' });
+  assert.deepEqual(calls[1].values, [2, 'alice', 'USER', 1]);
+  assert.equal(calls.some(({ sql }) => sql.includes('INSERT INTO executor_nodes')), false);
+  assert.equal(calls.some(({ sql }) => sql.includes('INSERT INTO tasks')), false);
+});
+
+test('task cancellation rechecks the locked owner before any task mutation', async () => {
+  const calls = [];
+  const repository = transactionRepository(async (sql, values) => {
+    const source = String(sql);
+    calls.push({ sql: source, values });
+    if (source === 'BEGIN' || source === 'ROLLBACK') return { rows: [] };
+    if (source.includes('SELECT * FROM app_users')) {
+      return { rows: [{ id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credential_version: 1 }] };
+    }
+    if (source === 'SELECT * FROM tasks WHERE id = $1 FOR UPDATE') {
+      return { rows: [taskRow(9, { assigned_to_user_id: 'bob' })] };
+    }
+    throw new Error(`unexpected query: ${source}`);
+  });
+
+  await assert.rejects(repository.cancelTask(9, {
+    actor: { userId: 2, username: 'alice', role: 'USER', credentialVersion: 1 },
+  }), { code: 'FORBIDDEN' });
+  assert.equal(calls.some(({ sql }) => /UPDATE\s+(?:tasks|task_executions|image_runs)/u.test(sql)), false);
+  assert.equal(calls.at(-1).sql, 'ROLLBACK');
+});
+
 test('manual assignment is atomic, audited and only targets active ordinary workers', async () => {
   const calls = [];
   const repository = transactionRepository(async (sql, values) => {
@@ -109,6 +153,10 @@ test('manual assignment is atomic, audited and only targets active ordinary work
   });
   assert.deepEqual(tasks.map((task) => task.id), [1, 2]);
   assert.ok(tasks.every((task) => task.assignedToUserId === 'alice'));
+  const assignmentUpdate = calls.find(({ sql }) => sql.includes('UPDATE tasks SET'));
+  assert.match(assignmentUpdate.sql, /IMAGE_QUEUED'[\s\S]*'等待图片执行机领取'/u);
+  assert.match(assignmentUpdate.sql, /IMAGE_RETRY_EXHAUSTED'[\s\S]*'图片重试次数已用尽，等待人工处理'/u);
+  assert.match(assignmentUpdate.sql, /MANUAL_ARCHIVE'[\s\S]*'图片生成完成，等待人工归档'/u);
   const auditWrites = calls.filter(({ sql }) => sql.includes('INSERT INTO task_assignment_events'));
   assert.equal(auditWrites.length, 2);
   assert.ok(auditWrites.every(({ values }) => values[1] === 'admin' && values[3] === 'alice'));
@@ -135,7 +183,7 @@ test('unassigning is limited to copy work that has not started', async () => {
   }), { code: 'TASK_ALREADY_STARTED' });
 });
 
-test('task list and executor claims use assignee ownership and exclude the pending pool', async () => {
+test('task lists and COPY claims both require an assigned owner', async () => {
   const listCalls = [];
   const listing = new PostgresControlPlaneRepository({ pool: {
     async query(sql, values) {
@@ -163,7 +211,10 @@ test('task list and executor claims use assignee ownership and exclude the pendi
     return { rows: [] };
   });
   assert.equal(await claiming.claimCopy('node-a'), null);
-  assert.match(candidateSql, /assigned_to_user_id IS NOT NULL/u);
+  assert.match(candidateSql, /queued\.assigned_to_user_id IS NOT NULL/u);
+  assert.match(candidateSql, /task\.assigned_to_user_id IS NOT NULL/u);
+  assert.doesNotMatch(candidateSql, /COALESCE\(queued\.assigned_to_user_id/u);
+  assert.match(candidateSql, /task\.assigned_to_user_id IS NOT DISTINCT FROM ranked\.assigned_to_user_id/u);
 });
 
 test('HTTP task creation, visibility and reassignment derive authority from the session', async () => {
@@ -186,9 +237,16 @@ test('HTTP task creation, visibility and reassignment derive authority from the 
   };
   await withServer(repository, async (root) => {
     const jsonHeaders = (username, role) => ({ ...actorHeaders(username, role), 'content-type': 'application/json' });
+    const missingStableTarget = await fetch(`${root}/v1/tasks`, {
+      method: 'POST', headers: jsonHeaders('admin', 'ADMIN'),
+      body: JSON.stringify({ nodeId: 'node-a', assignedToUserId: 'bob', tasks: [{ query: '缺少账号 ID' }] }),
+    });
+    assert.equal(missingStableTarget.status, 400);
+    assert.equal((await missingStableTarget.json()).error.code, 'VALIDATION_ERROR');
     const adminCreate = await fetch(`${root}/v1/tasks`, {
       method: 'POST', headers: jsonHeaders('admin', 'ADMIN'),
-      body: JSON.stringify({ nodeId: 'node-a', assignedToUserId: 'bob', tasks: [{ query: '代建' }] }),
+      body: JSON.stringify({ nodeId: 'node-a', assignedToUserId: 'bob', assignedToAccountId: 3,
+        tasks: [{ query: '代建' }] }),
     });
     assert.equal(adminCreate.status, 201);
     const userCreate = await fetch(`${root}/v1/tasks`, {
@@ -208,9 +266,16 @@ test('HTTP task creation, visibility and reassignment derive authority from the 
     assert.equal((await fetch(`${root}/v1/tasks/9`, { headers: actorHeaders('reviewer', 'REVIEWER') })).status, 403);
     assert.equal((await fetch(`${root}/v1/tasks/9`, { headers: actorHeaders('admin', 'ADMIN') })).status, 200);
 
+    const missingSingleAssigneeAccount = await fetch(`${root}/v1/tasks/9/assignee`, {
+      method: 'PATCH', headers: jsonHeaders('admin', 'ADMIN'),
+      body: JSON.stringify({ assignedToUserId: 'alice', reason: '缺少账号 ID' }),
+    });
+    assert.equal(missingSingleAssigneeAccount.status, 400);
+    assert.equal((await missingSingleAssigneeAccount.json()).error.code, 'VALIDATION_ERROR');
+
     const assign = await fetch(`${root}/v1/tasks/9/assignee`, {
       method: 'PATCH', headers: jsonHeaders('admin', 'ADMIN'),
-      body: JSON.stringify({ assignedToUserId: 'alice', reason: '重新分工' }),
+      body: JSON.stringify({ assignedToUserId: 'alice', assignedToAccountId: 2, reason: '重新分工' }),
     });
     assert.equal(assign.status, 200);
     const denied = await fetch(`${root}/v1/tasks/9/assignee`, {
@@ -219,9 +284,17 @@ test('HTTP task creation, visibility and reassignment derive authority from the 
     });
     assert.equal(denied.status, 403);
 
+    const missingBatchAssigneeAccount = await fetch(`${root}/v1/tasks/batch-assignee`, {
+      method: 'POST', headers: jsonHeaders('admin', 'ADMIN'),
+      body: JSON.stringify({ taskIds: [9, 10], assignedToUserId: 'alice', reason: '缺少账号 ID' }),
+    });
+    assert.equal(missingBatchAssigneeAccount.status, 400);
+    assert.equal((await missingBatchAssigneeAccount.json()).error.code, 'VALIDATION_ERROR');
+
     const batch = await fetch(`${root}/v1/tasks/batch-assignee`, {
       method: 'POST', headers: jsonHeaders('admin', 'ADMIN'),
-      body: JSON.stringify({ taskIds: [9, 10], assignedToUserId: 'alice', reason: '批量调整' }),
+      body: JSON.stringify({ taskIds: [9, 10], assignedToUserId: 'alice', assignedToAccountId: 2,
+        reason: '批量调整' }),
     });
     assert.equal(batch.status, 200);
     const deniedBatch = await fetch(`${root}/v1/tasks/batch-assignee`, {
@@ -232,13 +305,22 @@ test('HTTP task creation, visibility and reassignment derive authority from the 
   });
 
   assert.equal(calls[0][1].createdByUserId, 'admin');
+  assert.deepEqual(calls[0][1].actor, {
+    userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1,
+  });
   assert.equal(calls[0][1].assignedToUserId, 'bob');
+  assert.equal(calls[0][1].assignedToAccountId, 3);
   assert.equal(calls[1][1].createdByUserId, 'alice');
+  assert.deepEqual(calls[1][1].actor, {
+    userId: 2, username: 'alice', role: 'USER', credentialVersion: 1,
+  });
   assert.equal(calls[1][1].assignedToUserId, 'alice');
   assert.deepEqual(calls.find(([kind]) => kind === 'assign').slice(1), [
-    '9', { assignedToUserId: 'alice', actorUserId: 'admin', reason: '重新分工' },
+    '9', { assignedToUserId: 'alice', assignedToAccountId: 2,
+      actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 }, reason: '重新分工' },
   ]);
   assert.deepEqual(calls.find(([kind]) => kind === 'assign-batch').slice(1), [
-    [9, 10], { assignedToUserId: 'alice', actorUserId: 'admin', reason: '批量调整' },
+    [9, 10], { assignedToUserId: 'alice', assignedToAccountId: 2,
+      actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 }, reason: '批量调整' },
   ]);
 });

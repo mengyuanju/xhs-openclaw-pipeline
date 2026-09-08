@@ -1,4 +1,5 @@
 import { createControlPlaneClient, ControlPlaneApiError } from '../control-plane/client.mjs';
+import { sessionActorHeaders } from '../control-plane/session-actor-headers.mjs';
 import { ApiError, assertAuthorizedSession } from './http.mjs';
 import { withAdminStore } from './runtime.mjs';
 import { createRemoteKnowledgeStore } from './remote-knowledge-store.mjs';
@@ -16,11 +17,7 @@ export function knowledgeActorHeaders(session) {
   if (!username || !['ADMIN', 'REVIEWER'].includes(role)) {
     throw new ApiError(403, 'FORBIDDEN', '当前账号没有知识库管理权限');
   }
-  return {
-    'X-Actor-Username': username,
-    'X-Actor-Role': role,
-    'X-Actor-Credential-Version': String(session.credentialVersion || 1),
-  };
+  return sessionActorHeaders(session, { username, role });
 }
 
 export async function withKnowledgeStore(action, session) {

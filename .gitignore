@@ -5,6 +5,7 @@ debug.log
 output/
 outputs/
 server/server-storage/
+server/backups/
 
 .codex_artifacts/
 .tmp-control-plane/

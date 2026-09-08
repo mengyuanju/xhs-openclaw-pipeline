@@ -25,7 +25,7 @@ const RUN = { id: RUN_ID, kind: 'VISUAL_ANALYSIS', status: 'SUCCEEDED',
   runtime: { prompts: { TEXT_SYSTEM: { content: PRIVATE_RULE } } }, calls: [CALL] };
 
 function actorHeaders(username) {
-  return { 'X-Actor-Username': username, 'X-Actor-Role': ROLES[username],
+  return { 'X-Actor-User-Id': '1', 'X-Actor-Username': username, 'X-Actor-Role': ROLES[username],
     'X-Actor-Credential-Version': '1' };
 }
 

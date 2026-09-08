@@ -35,3 +35,17 @@ test('task assignment migration separates assignee from creator without deleting
   assert.match(migration.sql, /'PERSONAL', 'UNASSIGNED', 'ALL_COPY'/u);
   assert.doesNotMatch(migration.sql, /DELETE FROM|TRUNCATE|DROP TABLE/u);
 });
+
+test('assignment integrity upgrade repairs metadata and prevents account deletion from orphaning tasks', async () => {
+  const migration = (await loadMigrations()).find((item) => item.id === '0021_task_assignment_integrity');
+  assert.ok(migration);
+  assert.match(migration.sql, /NOT EXISTS[\s\S]*task_assignment_events/u);
+  assert.match(migration.sql, /creator\.role = 'USER'[\s\S]*creator\.status = 'ACTIVE'/u);
+  assert.match(migration.sql, /task\.assignment_source IS NULL/u);
+  assert.match(migration.sql, /task\.assigned_at IS NULL/u);
+  assert.match(migration.sql, /assignment_source = NULL[\s\S]*assigned_at = NULL/u);
+  assert.match(migration.sql, /ON DELETE RESTRICT/u);
+  assert.match(migration.sql, /tasks_assignment_metadata_check/u);
+  assert.match(migration.sql, /tasks_unassigned_active_state_id_idx/u);
+  assert.doesNotMatch(migration.sql, /DELETE FROM tasks|TRUNCATE|DROP TABLE tasks/u);
+});

@@ -22,6 +22,23 @@ test('administrator all jobs includes every task state and historical ownership'
   }
 });
 
+test('pending pool exposes every unfinished task that has lost its assignee', () => {
+  const pending = WORKBENCH_VIEWS.find((view) => view.key === 'UNASSIGNED');
+  assert.ok(pending);
+  const unfinished = [
+    'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_FAILED',
+    'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE',
+  ];
+  assert.deepEqual(pending.states, unfinished);
+  for (const state of unfinished) {
+    assert.equal(matchesWorkbenchView({ state, assignedToUserId: null }, pending, 'admin'), true);
+    assert.equal(matchesWorkbenchView({ state, assignedToUserId: 'alice' }, pending, 'admin'), false);
+  }
+  for (const state of ['REVIEWED', 'CANCELLED']) {
+    assert.equal(matchesWorkbenchView({ state, assignedToUserId: null }, pending, 'admin'), false);
+  }
+});
+
 test('personal tasks include every active lifecycle state owned by the current user', () => {
   const personal = WORKBENCH_VIEWS[0];
   assert.deepEqual(personal.states, [

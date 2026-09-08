@@ -17,7 +17,7 @@ test('administrator-only executor management shows live capacity and heartbeat s
   ]);
 
   assert.match(page, /if \(!session\.roles\?\.includes\('ADMIN'\)\) redirect\('\/workbench\/personal'\)/u);
-  assert.match(page, /readCentralData\('\/v1\/executor-statuses'/u);
+  assert.match(page, /readCentralPageData\('\/v1\/executor-statuses', session, '\/executors'\)/u);
   assert.match(navigation, /href: '\/executors', label: '执行机管理'/u);
   assert.match(topbar, /pathname\.startsWith\('\/executors'\)[\s\S]*title: '执行机管理'/u);
   assert.match(proxy, /executor-statuses/u);

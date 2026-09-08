@@ -14,6 +14,8 @@ function taskRow(overrides = {}) {
     state: 'COPY_QUEUED',
     created_by_node_id: 'node-a',
     created_by_user_id: 'admin',
+    creator_account_id: '1',
+    assigned_to_user_id: 'alice',
     copy_executor_node_id: 'node-b',
     current_copy_revision_id: null,
     current_image_run_id: null,
@@ -39,7 +41,7 @@ const copyReviewMetadata = Object.freeze({
 });
 const copyReviewActor = Object.freeze({ reviewerUserId: 'admin' });
 
-test('creator role filters apply equally to pages and totals and expose the current role', async () => {
+test('creator role filters apply equally to pages and totals without joining a same-name replacement', async () => {
   for (const role of ['ADMIN', 'REVIEWER', 'USER', 'UNKNOWN']) {
     const queries = [];
     const repository = new PostgresControlPlaneRepository({ pool: {
@@ -56,10 +58,24 @@ test('creator role filters apply equally to pages and totals and expose the curr
     assert.equal(page.items[0].createdByRole, role === 'UNKNOWN' ? null : role);
     for (const { sql, values } of queries) {
       assert.match(sql, /EXISTS\s*\([\s\S]*app_users[\s\S]*created_by_user_id/u);
+      assert.match(sql, /role_creator\.created_at < tasks\.created_at/u);
       if (role === 'UNKNOWN') assert.match(sql, /NOT EXISTS/u);
       else assert.equal(values.includes(role), true);
     }
   }
+});
+
+test('task pages resolve creator and assignee labels only to accounts that predate those relationships', async () => {
+  const queries = [];
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql) {
+      queries.push(String(sql));
+      return { rows: [taskRow()] };
+    },
+  } });
+  await repository.listTasks();
+  assert.match(queries[0], /creator\.created_at < page\.created_at/u);
+  assert.match(queries[0], /assignee\.created_at < page\.assigned_at/u);
 });
 
 test('invalid creator role never reaches the database', async () => {
@@ -76,8 +92,8 @@ test('task creation keeps creator audit identity and defaults to self-assignment
   const client = {
     async query(sql, values) {
       queries.push({ sql: String(sql), values });
-      if (String(sql).includes('SELECT username FROM app_users')) {
-        return { rows: [{ username: 'admin' }] };
+      if (String(sql).includes('FROM app_users')) {
+        return { rows: [{ id: 1, username: 'admin' }] };
       }
       if (String(sql).includes('INSERT INTO tasks')) return { rows: [taskRow({
         copy_executor_node_id: null,
@@ -109,7 +125,7 @@ test('task creation keeps creator audit identity and defaults to self-assignment
   assert.equal(created[0].assignmentSource, 'SELF');
   assert.deepEqual(insert.values.slice(3), ['node-a', 'admin', false, 'admin', 'SELF']);
   assert.doesNotMatch(insert.sql, /copy_executor_node_id/u);
-  assert.match(insert.sql, /CASE WHEN \$7::varchar IS NULL THEN '等待管理员分配作业员' ELSE '等待文案执行机领取' END/u);
+  assert.match(insert.sql, /CASE WHEN \$7::varchar IS NULL THEN '等待分配负责人' ELSE '等待文案执行机领取' END/u);
   assert.equal(queries.at(-1).sql, 'COMMIT');
 });
 
@@ -337,12 +353,12 @@ test('saved task views are owner-scoped and upsert a validated filter document',
   } };
   const repository = new PostgresControlPlaneRepository({ pool });
   const saved = await repository.saveTaskView('admin', {
-    name: '我的失败任务', viewKey: 'ALL_JOBS', filters: { attention: 'FAILED', createdByUserId: 'admin' },
+    name: '我的失败任务', viewKey: 'ALL_JOBS', filters: { attention: 'FAILED', createdByUserId: 'admin', createdByAccountId: 1 },
   });
   assert.equal(saved.id, 8);
   assert.equal(saved.ownerUsername, 'admin');
   assert.deepEqual(queries[0].values[3], {
-    query: '', deduplicateQuery: false, createdByUserId: 'admin', createdByRole: 'ALL', state: 'ALL',
+    query: '', deduplicateQuery: false, createdByUserId: 'admin', createdByAccountId: 1, createdByRole: 'ALL', state: 'ALL',
     sort: 'priority:desc', attention: 'FAILED', pageSize: 20,
   });
   assert.match(queries[0].sql, /ON CONFLICT\(owner_username, name\) DO UPDATE/u);
@@ -350,6 +366,27 @@ test('saved task views are owner-scoped and upsert a validated filter document',
   assert.match(queries[1].sql, /WHERE owner_username = \$1/u);
   assert.deepEqual(await repository.deleteSavedTaskView('admin', 8), { id: 8, deleted: true });
   assert.deepEqual(queries[2].values, [8, 'admin']);
+});
+
+test('saved view writes reject a stale administrator before changing a replacement account view', async () => {
+  let viewMutationReached = false;
+  const client = {
+    async query(sql) {
+      const source = String(sql);
+      if (source === 'BEGIN' || source === 'ROLLBACK') return { rows: [] };
+      if (source.includes('FROM app_users')) return { rows: [] };
+      if (source.includes('saved_task_views')) viewMutationReached = true;
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
+  const actor = { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 };
+  await assert.rejects(repository.saveTaskView('admin', {
+    name: '旧会话视图', viewKey: 'ALL_JOBS', filters: {},
+  }, { actor }), { code: 'SESSION_STALE' });
+  await assert.rejects(repository.deleteSavedTaskView('admin', 8, { actor }), { code: 'SESSION_STALE' });
+  assert.equal(viewMutationReached, false);
 });
 
 test('personal task pagination and totals filter the creator independently of execution nodes', async () => {
@@ -362,16 +399,22 @@ test('personal task pagination and totals filter the creator independently of ex
         : [taskRow(), taskRow({ id: 42, state: 'MANUAL_ARCHIVE', copy_executor_node_id: 'node-c' })] };
     },
   } });
-  const page = await repository.listTasks({ createdByUserId: 'admin', query: '远端', includeTotal: true });
+  const page = await repository.listTasks({ createdByUserId: 'admin', createdByAccountId: 1, query: '远端', includeTotal: true });
   assert.equal(page.total, 2);
   assert.deepEqual(page.items.map((task) => task.createdByUserId), ['admin', 'admin']);
+  assert.deepEqual(page.items.map((task) => task.createdByAccountId), [1, 1]);
   assert.deepEqual(page.items.map((task) => task.copyExecutorNodeId), ['node-b', 'node-c']);
   for (const { sql, values } of queries) {
     assert.match(sql, /created_by_user_id = \$1/u);
+    assert.match(sql, /exact_creator\.id = \$2/u);
+    assert.match(sql, /exact_creator\.created_at < tasks\.created_at/u);
     assert.doesNotMatch(sql, /copy_executor_node_id =/u);
-    assert.deepEqual(values.slice(0, 2), ['admin', '远端']);
+    assert.deepEqual(values.slice(0, 3), ['admin', 1, '远端']);
   }
+  assert.match(queries.find(({ sql }) => !sql.includes('COUNT(*) AS total')).sql,
+    /creator\.id AS creator_account_id/u);
   await assert.rejects(repository.listTasks({ createdByUserId: '' }), /createdByUserId/u);
+  await assert.rejects(repository.listTasks({ createdByAccountId: 1 }), /requires createdByUserId/u);
 });
 
 test('task pages expose the current running image executor independently of copy ownership', async () => {
@@ -801,6 +844,28 @@ test('permanent deletion rejects active work and only deletes inactive tasks aft
   assert.deepEqual(await cancelled.operation, { id: 41 });
   assert.equal(cancelled.prepared(), true);
   assert.equal(cancelled.queries.some(sql => sql.includes('DELETE FROM tasks')), true);
+});
+
+test('permanent deletion rejects a stale administrator before task or file mutation', async () => {
+  const queries = [];
+  const client = {
+    async query(sql, values) {
+      queries.push({ sql: String(sql), values });
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
+  let prepared = false;
+  await assert.rejects(repository.permanentlyDeleteTask(41, {
+    actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
+    deletionPassword: 'delete-secret',
+    beforeDelete: async () => { prepared = true; },
+  }), { code: 'SESSION_STALE' });
+  assert.equal(prepared, false);
+  assert.equal(queries.some(({ sql }) => sql === 'SELECT * FROM tasks WHERE id = $1 FOR UPDATE'), false);
+  assert.equal(queries.some(({ sql }) => sql.startsWith('DELETE FROM tasks')), false);
+  assert.equal(queries.at(-1).sql, 'ROLLBACK');
 });
 
 test('batch permanent deletion verifies the administrator once and deletes eligible tasks atomically', async () => {

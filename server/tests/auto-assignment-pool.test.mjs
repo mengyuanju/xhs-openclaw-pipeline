@@ -57,6 +57,7 @@ async function withServer(repository, action) {
 
 function actorHeaders(username, role = 'USER') {
   return {
+    'X-Actor-User-Id': String(username === 'admin' ? 1 : username === 'alice' ? 2 : username === 'reviewer' ? 3 : ''),
     'X-Actor-Username': username,
     'X-Actor-Role': role,
     'X-Actor-Credential-Version': '1',
@@ -111,7 +112,9 @@ test('overview reports configured capacity separately from eligibility and switc
         user_status: 'ACTIVE', current_task_count: '1',
       })] };
     }
-    if (source.includes('assigned_to_user_id IS NULL')) return { rows: [{ count: '17' }] };
+    if (source.includes('assigned_to_user_id IS NULL')) {
+      return { rows: [{ count: '17', auto_assignable_count: '11' }] };
+    }
     if (source.includes('task_auto_assignment_admin_events')) {
       return { rows: [{ id: '9', actor_username: 'admin', action: 'WORKER_ADDED',
         worker_username: 'alice', details: { next: { assignmentLimit: 5 } },
@@ -122,6 +125,8 @@ test('overview reports configured capacity separately from eligibility and switc
   const overview = await new PostgresControlPlaneRepository({ pool }).getAutoAssignmentOverview();
   assert.equal(overview.settings.enabled, false);
   assert.equal(overview.unassignedTaskCount, 17);
+  assert.equal(overview.autoAssignableTaskCount, 11);
+  assert.equal(overview.manualAttentionTaskCount, 6);
   assert.deepEqual(overview.workers.map(({ username, availableSlots, canReceive }) => ({
     username, availableSlots, canReceive,
   })), [
@@ -169,6 +174,22 @@ test('settings updates use an optimistic version and write one management audit'
   }), { code: 'VERSION_CONFLICT' });
   assert.equal(calls.at(-1), 'ROLLBACK');
   assert.equal(audits.length, 1);
+});
+
+test('automatic assignment settings recheck the immutable administrator identity', async () => {
+  const calls = [];
+  const repository = transactionRepository(async (sql, values) => {
+    const source = String(sql);
+    calls.push({ sql: source, values });
+    return { rows: [] };
+  });
+  await assert.rejects(repository.updateAutoAssignmentSettings({
+    enabled: true,
+    expectedVersion: 1,
+    actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
+  }), { code: 'SESSION_STALE' });
+  assert.equal(calls.some(({ sql }) => sql.includes('task_auto_assignment_settings')), false);
+  assert.equal(calls.at(-1).sql, 'ROLLBACK');
 });
 
 test('worker CRUD accepts only active ordinary users, locks versions and audits changes', async () => {
@@ -299,6 +320,30 @@ test('an identical concurrent worker creation is idempotent and does not duplica
   assert.equal(auditCount, 0);
 });
 
+test('a stale pool editor cannot pause or update a same-name replacement account', async () => {
+  const calls = [];
+  const repository = transactionRepository(async (sql, values) => {
+    const source = String(sql);
+    calls.push({ sql: source, values });
+    if (['BEGIN', 'ROLLBACK'].includes(source)) return { rows: [] };
+    if (source.includes('SELECT * FROM app_users')) {
+      return { rows: [{ id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credential_version: 1 }] };
+    }
+    if (source.includes('WHERE id = $1 AND username = $2')) return { rows: [] };
+    throw new Error(`unexpected query: ${source}`);
+  });
+
+  await assert.rejects(repository.putAutoAssignmentWorker('alice', {
+    accountId: 2,
+    status: 'PAUSED',
+    assignmentLimit: 8,
+    expectedVersion: 1,
+    actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
+  }), { code: 'ASSIGNEE_UNAVAILABLE' });
+  assert.equal(calls.some(({ sql }) => sql.includes('task_auto_assignment_workers')), false);
+  assert.equal(calls.at(-1).sql, 'ROLLBACK');
+});
+
 test('creating an account does not implicitly add it to the automatic assignment pool', async () => {
   const calls = [];
   const repository = new PostgresControlPlaneRepository({ pool: { async query(sql, values) {
@@ -337,17 +382,31 @@ test('automatic assignment management HTTP routes are administrator-only and tru
     })).status, 200);
     assert.equal((await fetch(`${root}/v1/auto-assignment`, { headers: actorHeaders('alice') })).status, 403);
 
+    const missingWorkerAccount = await fetch(`${root}/v1/auto-assignment/workers/alice`, {
+      method: 'PUT', headers: adminJson,
+      body: JSON.stringify({ status: 'ACTIVE', assignmentLimit: 5 }),
+    });
+    assert.equal(missingWorkerAccount.status, 400);
+    assert.equal((await missingWorkerAccount.json()).error.code, 'VALIDATION_ERROR');
+
+    const missingDeleteWorkerAccount = await fetch(`${root}/v1/auto-assignment/workers/alice`, {
+      method: 'DELETE', headers: adminJson,
+      body: JSON.stringify({ expectedVersion: 1 }),
+    });
+    assert.equal(missingDeleteWorkerAccount.status, 400);
+    assert.equal((await missingDeleteWorkerAccount.json()).error.code, 'VALIDATION_ERROR');
+
     assert.equal((await fetch(`${root}/v1/auto-assignment/settings`, {
       method: 'PATCH', headers: adminJson,
       body: JSON.stringify({ enabled: true, expectedVersion: 1, actorUsername: 'forged' }),
     })).status, 200);
     assert.equal((await fetch(`${root}/v1/auto-assignment/workers/alice`, {
       method: 'PUT', headers: adminJson,
-      body: JSON.stringify({ status: 'ACTIVE', assignmentLimit: 5, actorUsername: 'forged' }),
+      body: JSON.stringify({ accountId: 2, status: 'ACTIVE', assignmentLimit: 5, actorUsername: 'forged' }),
     })).status, 200);
     assert.equal((await fetch(`${root}/v1/auto-assignment/workers/alice`, {
       method: 'DELETE', headers: adminJson,
-      body: JSON.stringify({ expectedVersion: 1, actorUsername: 'forged' }),
+      body: JSON.stringify({ accountId: 2, expectedVersion: 1, actorUsername: 'forged' }),
     })).status, 200);
     assert.equal((await fetch(`${root}/v1/auto-assignment/settings`, {
       method: 'PATCH', headers: userJson,
@@ -389,9 +448,11 @@ test('automatic assignment management HTTP routes are administrator-only and tru
   });
 
   assert.deepEqual(calls, [
-    ['settings', { enabled: true, expectedVersion: 1, actorUsername: 'admin' }],
-    ['put', 'alice', { status: 'ACTIVE', assignmentLimit: 5,
-      expectedVersion: undefined, actorUsername: 'admin' }],
-    ['delete', 'alice', { expectedVersion: 1, actorUsername: 'admin' }],
+    ['settings', { enabled: true, expectedVersion: 1,
+      actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 } }],
+    ['put', 'alice', { status: 'ACTIVE', assignmentLimit: 5, expectedVersion: undefined,
+      accountId: 2, actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 } }],
+    ['delete', 'alice', { expectedVersion: 1, accountId: 2,
+      actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 } }],
   ]);
 });

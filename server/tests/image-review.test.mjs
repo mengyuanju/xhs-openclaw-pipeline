@@ -150,7 +150,7 @@ test('image review validates and stores low-score feedback and current-run probl
 test('image review allows reviewers across owners, rejects ordinary users and derives reviewer identity from session', async () => {
   const calls = [];
   const repository = {
-    getUserByUsername: async (username) => ({ username, role: username === 'alice' ? 'USER' : username === 'admin' ? 'ADMIN' : 'REVIEWER', status: 'ACTIVE', credentialVersion: 1 }),
+    getUserByUsername: async (username) => ({ id: 1, username, role: username === 'alice' ? 'USER' : username === 'admin' ? 'ADMIN' : 'REVIEWER', status: 'ACTIVE', credentialVersion: 1 }),
     getTask: async () => ({ id: 7, state: 'MANUAL_ARCHIVE', createdByUserId: 'alice' }),
     reviewImages: async (...args) => { calls.push(args); return { state: 'REVIEWED' }; },
   };
@@ -159,13 +159,13 @@ test('image review allows reviewers across owners, rejects ordinary users and de
   try {
     for (const [username, role, status] of [['reviewer', 'REVIEWER', 200], ['admin', 'ADMIN', 200], ['alice', 'USER', 403]]) {
       const response = await fetch(`http://127.0.0.1:${server.address().port}/v1/tasks/7/review-images`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1' },
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Actor-User-Id': '1', 'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1' },
         body: JSON.stringify({ imageRunId: runId, decision: 'APPROVE', score: 2.5,
           note: '轻微问题', reviewSessionId, reviewerUserId: 'spoofed' }),
       });
       assert.equal(response.status, status);
     }
-    assert.deepEqual(calls.map(([, input]) => input.reviewerUserId), ['reviewer', 'admin']);
+    assert.deepEqual(calls.map(([, input]) => input.actor.username), ['reviewer', 'admin']);
     assert.deepEqual(calls[0][1], {
       imageRunId: runId,
       decision: 'APPROVE',
@@ -174,7 +174,7 @@ test('image review allows reviewers across owners, rejects ordinary users and de
       note: '轻微问题',
       problemAssetIds: undefined,
       reviewSessionId,
-      reviewerUserId: 'reviewer',
+      actor: { userId: 1, username: 'reviewer', role: 'REVIEWER', credentialVersion: 1 },
     });
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });

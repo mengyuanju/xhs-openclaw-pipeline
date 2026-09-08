@@ -37,6 +37,10 @@ test('task creation never defaults to the first worker and keeps ordinary-user a
   assert.match(workbench, /\.\.\.assignmentFields/u);
   assert.match(workbench, /指定作业员/u);
   assert.match(workbench, /进入待分配任务池/u);
+  assert.match(workbench, /skipCopyReview: effectiveSkipCopyReview/u);
+  assert.match(workbench, /待分配任务会在自动分配负责人后执行/u);
+  assert.match(workbench, /const copyReviewBypassAllowed = role === 'ADMIN'/u);
+  assert.match(workbench, /disabled=\{creating \|\| !copyReviewBypassAllowed\}/u);
   assert.match(picker, /eligibleRoles\.includes\(user\.role\)/u);
   assert.match(picker, /user\.status === 'ACTIVE'/u);
   assert.doesNotMatch(workbench, /assignmentSource\s*:/u);
@@ -51,6 +55,9 @@ test('pending-pool and personal views are based on assignee rather than creator'
   assert.equal(pending.href, '/workbench/unassigned');
   assert.equal(pending.adminOnly, true);
   assert.equal(matchesWorkbenchView({ state: 'COPY_QUEUED', assignedToUserId: null }, pending, 'admin'), true);
+  assert.equal(matchesWorkbenchView({ state: 'COPY_RUNNING', assignedToUserId: null }, pending, 'admin'), true);
+  assert.equal(matchesWorkbenchView({ state: 'COPY_REVIEW_PENDING', assignedToUserId: null }, pending, 'admin'), true);
+  assert.equal(matchesWorkbenchView({ state: 'COPY_FAILED', assignedToUserId: null }, pending, 'admin'), true);
   assert.equal(matchesWorkbenchView({ state: 'COPY_QUEUED', assignedToUserId: 'alice' }, pending, 'admin'), false);
   assert.equal(matchesWorkbenchView({ state: 'COPY_QUEUED', createdByUserId: 'admin', assignedToUserId: 'alice' }, personal, 'alice'), true);
   assert.equal(matchesWorkbenchView({ state: 'COPY_QUEUED', createdByUserId: 'alice', assignedToUserId: 'bob' }, personal, 'alice'), false);
@@ -58,6 +65,12 @@ test('pending-pool and personal views are based on assignee rather than creator'
   assert.match(workbench, /taskOwnerId\(task\) === creatorUserId/u);
   assert.match(workbench, /assignedToDisplayName/u);
   assert.match(workbench, /创建：\{task\.createdByDisplayName/u);
+  assert.match(workbench, /自动分配负责人后，执行机会按队列顺序领取/u);
+  assert.match(workbench, /分配负责人后再由执行机领取/u);
+  assert.match(workbench, /task\.state === 'COPY_QUEUED' && taskOwnerId\(task\) === null\) return '待分配'/u);
+  assert.doesNotMatch(workbench, /未指定负责人时，文案执行机仍会先生成机器稿/u);
+  assert.doesNotMatch(workbench, /待分配任务池，并等待文案执行机领取/u);
+  assert.match(workbench, /taskOwnerId\(task\) === null[\s\S]*<Eye[^>]*\/>查看/u);
 });
 
 test('administrators can assign one task or the current selection through protected proxy routes', async () => {
@@ -72,10 +85,22 @@ test('administrators can assign one task or the current selection through protec
   assert.match(dialog, /\/api\/control-plane\/v1\/tasks\/batch-assignee/u);
   assert.match(dialog, /method: 'POST'/u);
   assert.match(dialog, /taskIds: tasks\.map/u);
+  const singleRequestStart = dialog.indexOf('`/api/control-plane/v1/tasks/${tasks[0].id}/assignee`');
+  const batchRequestStart = dialog.indexOf("'/api/control-plane/v1/tasks/batch-assignee'", singleRequestStart);
+  const requestSuccessStart = dialog.indexOf('const destination =', batchRequestStart);
+  assert.ok(singleRequestStart >= 0 && batchRequestStart > singleRequestStart
+    && requestSuccessStart > batchRequestStart);
+  assert.match(dialog.slice(singleRequestStart, batchRequestStart),
+    /assignedToAccountId: assignee\?\.id \?\? null/u);
+  assert.match(dialog.slice(batchRequestStart, requestSuccessStart),
+    /assignedToAccountId: assignee\?\.id \?\? null/u);
+  assert.match(dialog, /selectedTasksHaveMixedAssignees\(tasks\)/u);
+  assert.match(dialog, /负责人不一致，请重新选择/u);
+  assert.match(dialog, /disabled=\{submitting \|\| tasks\.length === 0 \|\| destinationRequired\}/u);
   assert.match(workbench, /setAssignmentTasks\(\[task\]\)/u);
   assert.match(workbench, /setAssignmentTasks\(selectedTasks\)/u);
   assert.match(workbench, /setSelectedTaskIds\(\[\]\)/u);
   assert.match(proxy, /'\/v1\/tasks\/batch-assignee'/u);
   assert.match(proxy, /assignee\$\//u);
-  assert.match(repository, /taskAssignmentVersion: 1/u);
+  assert.match(repository, /taskAssignmentVersion: 2/u);
 });

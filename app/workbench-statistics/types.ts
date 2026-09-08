@@ -3,7 +3,7 @@ export type Counts = {
   total: number; createdInPeriod: number; completedInPeriod: number; todayCreated: number;
   todayCompleted: number; completed: number; pending: number; cancelled: number; anomalies: number;
 };
-export type Creator = { username: string | null; displayName: string; role: string | null };
+export type Creator = { accountId: number | null; username: string | null; displayName: string; role: string | null };
 export type Person = Creator & Counts;
 export type Summary = Counts & {
   states: Record<StateGroup, number>; people?: Person[];
@@ -33,4 +33,4 @@ export type Statistics = {
   updatedAt: string | null; notice: string | null; retryAfterMs: number;
 };
 export type Period = 'today' | '7d' | '30d' | 'custom';
-export type Filters = { scope: 'personal' | 'admin'; period: Period; from?: string; to?: string; username?: string; role?: string; details?: boolean };
+export type Filters = { scope: 'personal' | 'admin'; period: Period; from?: string; to?: string; username?: string; createdByAccountId?: number; role?: string; details?: boolean };

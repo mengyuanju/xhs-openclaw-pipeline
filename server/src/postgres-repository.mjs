@@ -12,7 +12,10 @@ import { claimRequestExpiry } from './claim-request.mjs';
 import { saveModelCall, listModelCalls, getModelCall } from './model-call-traces.mjs';
 import { hashUserPassword, verifyUserPassword } from './user-auth.mjs';
 import { heartbeatExecutions, recoverStaleExecutions } from './execution-recovery.mjs';
-import { runAutoAssignmentReplenishment } from './task-auto-assignment-runner.mjs';
+import {
+  AUTO_ASSIGNABLE_TASK_STATES,
+  runAutoAssignmentReplenishment,
+} from './task-auto-assignment-runner.mjs';
 import { normalizeSavedTaskView, normalizeTaskAttention } from './task-view-filters.mjs';
 import { normalizeAssigneeUserId, normalizeAssignmentSource } from './task-assignment-domain.mjs';
 import {
@@ -29,6 +32,8 @@ import {
 import pg from 'pg';
 
 import {
+  ControlPlaneAuthenticationError,
+  ControlPlaneAuthorizationError,
   ControlPlaneConflictError,
   ControlPlaneNotFoundError,
   TASK_STATES,
@@ -92,6 +97,11 @@ function taskStateOrder(column) {
 
 function taskFrom(row) {
   if (!row) return null;
+  const hasCreatorAccountId = Object.hasOwn(row, 'creator_account_id');
+  const hasAssigneeAccountId = Object.hasOwn(row, 'assignee_account_id');
+  const creatorAccountId = hasCreatorAccountId && row.creator_account_id !== null
+    ? Number(row.creator_account_id)
+    : null;
   return {
     id: Number(row.id),
     query: row.query,
@@ -107,9 +117,12 @@ function taskFrom(row) {
     imageReviewedByUserId: row.image_reviewed_by_user_id ?? null,
     createdByNodeId: row.created_by_node_id,
     createdByUserId: row.created_by_user_id ?? null,
-    createdByRole: row.creator_role ?? null,
-    createdByDisplayName: row.creator_display_name ?? (row.created_by_user_id === 'admin' ? '系统管理员' : null),
+    ...(hasCreatorAccountId ? { createdByAccountId: creatorAccountId } : {}),
+    createdByRole: creatorAccountId === null ? null : row.creator_role ?? null,
+    createdByDisplayName: creatorAccountId === null ? null : row.creator_display_name ?? null,
     assignedToUserId: row.assigned_to_user_id ?? null,
+    ...(hasAssigneeAccountId ? { assignedToAccountId: row.assignee_account_id === null
+      ? null : Number(row.assignee_account_id) } : {}),
     assignedToDisplayName: row.assigned_to_display_name ?? null,
     assigneeStatus: row.assignee_status ?? null,
     assignmentSource: row.assignment_source ?? null,
@@ -151,9 +164,22 @@ function normalizedPermanentDeletionTaskIds(value) {
   return [...new Set(value.map((taskId) => normalizeTaskId(taskId)))].sort((left, right) => left - right);
 }
 
-async function assertPermanentDeletionActor(client, actorUsername, deletionPassword) {
-  const actor = await client.query("SELECT * FROM app_users WHERE username = $1 AND status = 'ACTIVE' FOR UPDATE", [actorUsername]);
-  const user = actor.rows[0];
+async function assertPermanentDeletionActor(client, rawActor, deletionPassword) {
+  let user;
+  if (rawActor && typeof rawActor === 'object' && !Array.isArray(rawActor)) {
+    const locked = await lockCurrentActor(client, rawActor);
+    if (locked.actor.role !== 'ADMIN') {
+      throw new ControlPlaneAuthorizationError('only administrators can permanently delete tasks');
+    }
+    user = locked.row;
+  } else {
+    const actorUsername = normalizedUsername(rawActor);
+    const actor = await client.query(
+      "SELECT * FROM app_users WHERE username = $1 AND status = 'ACTIVE' FOR UPDATE",
+      [actorUsername],
+    );
+    user = actor.rows[0];
+  }
   if (!user || user.role !== 'ADMIN' || !user.deletion_password_hash
     || !await verifyUserPassword(deletionPassword, user.deletion_password_hash)) {
     throw new ControlPlaneConflictError('DELETION_PASSWORD_INVALID', 'deletion password is incorrect or has not been set');
@@ -280,6 +306,57 @@ function revisionFrom(row) {
   };
 }
 
+function normalizedActorIdentity(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('actor identity is required');
+  }
+  const credentialVersion = Number(value.credentialVersion);
+  if (!Number.isSafeInteger(credentialVersion) || credentialVersion < 1) {
+    throw new TypeError('actor credentialVersion must be a positive integer');
+  }
+  return {
+    userId: normalizeTaskId(value.userId),
+    username: normalizedUsername(value.username),
+    role: normalizedUserRole(value.role),
+    credentialVersion,
+  };
+}
+
+async function lockCurrentActor(client, rawActor) {
+  const actor = normalizedActorIdentity(rawActor);
+  const result = await client.query(`
+    SELECT * FROM app_users
+    WHERE id = $1 AND username = $2 AND role = $3
+      AND status = 'ACTIVE' AND credential_version = $4
+    FOR UPDATE
+  `, [actor.userId, actor.username, actor.role, actor.credentialVersion]);
+  if (!result.rows[0]) throw new ControlPlaneAuthenticationError();
+  return { actor, row: result.rows[0] };
+}
+
+function assertTaskActorAccess(task, actor, { ownerOnly = false, allowedRoles = USER_ROLES } = {}) {
+  if (!allowedRoles.includes(actor.role)) {
+    throw new ControlPlaneAuthorizationError('current role cannot perform this operation');
+  }
+  const assignedToUserId = task.assigned_to_user_id ?? null;
+  if (actor.role !== 'ADMIN' && assignedToUserId === null) {
+    throw new ControlPlaneAuthorizationError('未分配任务仅管理员可操作');
+  }
+  if ((ownerOnly || actor.role === 'USER') && assignedToUserId !== actor.username) {
+    throw new ControlPlaneAuthorizationError('任务负责人已变化，请刷新后重试');
+  }
+}
+
+async function lockTaskForActor(client, rawTaskId, rawActor, options = {}) {
+  const { actor } = await lockCurrentActor(client, rawActor);
+  const taskId = normalizeTaskId(rawTaskId);
+  const result = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
+  const task = result.rows[0];
+  if (!task) throw new ControlPlaneNotFoundError('task not found');
+  assertTaskActorAccess(task, actor, options);
+  return { actor, task };
+}
+
 function autoAssignmentSettingsFrom(row) {
   if (!row) return null;
   return {
@@ -299,6 +376,8 @@ function autoAssignmentWorkerFrom(row) {
   const userStatus = row.user_status ?? null;
   const status = row.status;
   return {
+    accountId: row.account_id === null || row.account_id === undefined
+      ? null : Number(row.account_id),
     username: row.username,
     displayName: row.display_name ?? null,
     userRole,
@@ -331,6 +410,7 @@ function autoAssignmentAdminEventFrom(row) {
 const AUTO_ASSIGNMENT_WORKER_RECORD_SQL = `
   SELECT
     pool.*,
+    app_user.id AS account_id,
     app_user.display_name,
     app_user.role AS user_role,
     app_user.status AS user_status,
@@ -380,23 +460,46 @@ function normalizedAssignmentTaskIds(value) {
   return taskIds;
 }
 
-async function assertActiveAssignableUser(client, username) {
-  const result = await client.query(`
-    SELECT username FROM app_users
-    WHERE username = $1 AND status = 'ACTIVE' AND role = 'USER'
-    FOR UPDATE
-  `, [username]);
+async function assertActiveAssignableUser(client, username, accountId = null) {
+  const result = accountId === null
+    ? await client.query(`
+      SELECT id, username FROM app_users
+      WHERE username = $1 AND status = 'ACTIVE' AND role = 'USER'
+      FOR UPDATE
+    `, [username])
+    : await client.query(`
+      SELECT id, username FROM app_users
+      WHERE id = $1 AND username = $2 AND status = 'ACTIVE' AND role = 'USER'
+      FOR UPDATE
+    `, [accountId, username]);
   if (!result.rows[0]) {
     throw new ControlPlaneConflictError('ASSIGNEE_UNAVAILABLE', '指定的作业员不存在、已停用或不是普通作业员');
   }
 }
 
-async function lockAssignmentUser(client, username) {
+async function lockAccountIdentity(client, username, accountId) {
   const result = await client.query(`
-    SELECT username FROM app_users
-    WHERE username = $1 AND status = 'ACTIVE'
+    SELECT id, username FROM app_users
+    WHERE id = $1 AND username = $2
     FOR UPDATE
-  `, [username]);
+  `, [accountId, username]);
+  if (!result.rows[0]) {
+    throw new ControlPlaneConflictError('ASSIGNEE_UNAVAILABLE', '指定的作业员账号已变化，请刷新后重试');
+  }
+}
+
+async function lockAssignmentUser(client, username, accountId = null) {
+  const result = accountId === null
+    ? await client.query(`
+      SELECT id, username FROM app_users
+      WHERE username = $1 AND status = 'ACTIVE'
+      FOR UPDATE
+    `, [username])
+    : await client.query(`
+      SELECT id, username FROM app_users
+      WHERE id = $1 AND username = $2 AND status = 'ACTIVE'
+      FOR UPDATE
+    `, [accountId, username]);
   if (!result.rows[0]) {
     throw new ControlPlaneConflictError('ASSIGNEE_UNAVAILABLE', '任务负责人不存在或已停用');
   }
@@ -628,6 +731,12 @@ async function transaction(pool, action) {
   }
 }
 
+async function lockAdministratorRoster(client) {
+  // User updates and deletions are rare. One transaction lock makes the
+  // last-active-administrator invariant safe across different account rows.
+  await client.query('SELECT pg_advisory_xact_lock(4310, 8301)');
+}
+
 async function configurationSnapshots(client, tasks, kind) {
   if (!tasks.length) return new Map();
   // pg serializes one connection; overlapping query() calls are deprecated.
@@ -691,7 +800,8 @@ async function configurationSnapshots(client, tasks, kind) {
 async function lockedExecution(client, executionId) {
   const result = await client.query(`
     SELECT e.*, t.current_execution_id, t.state AS task_state,
-      t.skip_copy_review, t.created_by_node_id, t.ai_disclosure_enabled
+      t.skip_copy_review, t.created_by_node_id, t.ai_disclosure_enabled,
+      t.assigned_to_user_id
     FROM task_executions e
     JOIN tasks t ON t.id = e.task_id
     WHERE e.id = $1
@@ -751,7 +861,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, adminTaskFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 1, autoAssignmentPoolVersion: 1 } };
+      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, adminTaskFilters: true, creatorAccountFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 2, autoAssignmentPoolVersion: 2 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -784,18 +894,33 @@ export class PostgresControlPlaneRepository {
     return result.rows.map(publicUserFrom);
   }
 
+  async getUserByIdentity(rawActor) {
+    const actor = normalizedActorIdentity(rawActor);
+    const result = await this.pool.query(`
+      SELECT * FROM app_users
+      WHERE id = $1 AND username = $2 AND role = $3
+        AND status = 'ACTIVE' AND credential_version = $4
+    `, [actor.userId, actor.username, actor.role, actor.credentialVersion]);
+    return publicUserFrom(result.rows[0]);
+  }
+
   async getAutoAssignmentOverview() {
     const [settingsResult, workersResult, pendingResult, eventsResult] = await Promise.all([
       this.pool.query('SELECT * FROM task_auto_assignment_settings WHERE singleton = 1'),
       this.pool.query(`${AUTO_ASSIGNMENT_WORKER_RECORD_SQL}
         ORDER BY CASE pool.status WHEN 'ACTIVE' THEN 0 ELSE 1 END, pool.username`),
       this.pool.query(`
-        SELECT COUNT(*) AS count
+        SELECT
+          COUNT(*) FILTER (
+            WHERE state NOT IN ('REVIEWED', 'CANCELLED')
+          ) AS count,
+          COUNT(*) FILTER (
+            WHERE state = ANY($1::varchar[])
+              AND current_execution_id IS NULL
+          ) AS auto_assignable_count
         FROM tasks
         WHERE assigned_to_user_id IS NULL
-          AND state = 'COPY_QUEUED'
-          AND current_execution_id IS NULL
-      `),
+      `, [AUTO_ASSIGNABLE_TASK_STATES]),
       this.pool.query(`
         SELECT * FROM task_auto_assignment_admin_events
         ORDER BY created_at DESC, id DESC
@@ -804,10 +929,14 @@ export class PostgresControlPlaneRepository {
     ]);
     const settings = autoAssignmentSettingsFrom(settingsResult.rows[0]);
     if (!settings) throw new ControlPlaneNotFoundError('automatic assignment settings not found');
+    const unassignedTaskCount = Number(pendingResult.rows[0]?.count ?? 0);
+    const autoAssignableTaskCount = Number(pendingResult.rows[0]?.auto_assignable_count ?? 0);
     return {
       settings,
       workers: workersResult.rows.map(autoAssignmentWorkerFrom),
-      unassignedTaskCount: Number(pendingResult.rows[0]?.count ?? 0),
+      unassignedTaskCount,
+      autoAssignableTaskCount,
+      manualAttentionTaskCount: Math.max(0, unassignedTaskCount - autoAssignableTaskCount),
       events: eventsResult.rows.map(autoAssignmentAdminEventFrom),
     };
   }
@@ -822,12 +951,20 @@ export class PostgresControlPlaneRepository {
   async updateAutoAssignmentSettings({
     enabled: rawEnabled,
     expectedVersion: rawExpectedVersion,
+    actor: rawActor = null,
     actorUsername: rawActorUsername,
   }) {
     const enabled = normalizeAutoAssignmentEnabled(rawEnabled);
     const expectedVersion = normalizeAutoAssignmentExpectedVersion(rawExpectedVersion);
-    const actorUsername = normalizedUsername(rawActorUsername);
+    const actor = rawActor === null ? null : normalizedActorIdentity(rawActor);
+    const actorUsername = actor?.username ?? normalizedUsername(rawActorUsername);
     return transaction(this.pool, async (client) => {
+      if (actor !== null) {
+        const locked = await lockCurrentActor(client, actor);
+        if (locked.actor.role !== 'ADMIN') {
+          throw new ControlPlaneAuthorizationError('only administrators can update automatic assignment settings');
+        }
+      }
       const currentResult = await client.query(
         'SELECT * FROM task_auto_assignment_settings WHERE singleton = 1 FOR UPDATE',
       );
@@ -865,17 +1002,32 @@ export class PostgresControlPlaneRepository {
     status: rawStatus,
     assignmentLimit: rawAssignmentLimit,
     expectedVersion: rawExpectedVersion,
+    accountId: rawAccountId = null,
+    actor: rawActor = null,
     actorUsername: rawActorUsername,
   }) {
     const username = normalizedUsername(rawUsername);
     const status = normalizeAutoAssignmentWorkerStatus(rawStatus);
     const assignmentLimit = normalizeAutoAssignmentLimit(rawAssignmentLimit);
     const expectedVersion = normalizeAutoAssignmentExpectedVersion(rawExpectedVersion, { required: false });
-    const actorUsername = normalizedUsername(rawActorUsername);
+    const actor = rawActor === null ? null : normalizedActorIdentity(rawActor);
+    const actorUsername = actor?.username ?? normalizedUsername(rawActorUsername);
+    const accountId = rawAccountId === null || rawAccountId === undefined
+      ? null : normalizeTaskId(rawAccountId);
+    if (actor !== null && accountId === null) {
+      throw new TypeError('authenticated automatic assignment updates require a stable worker account id');
+    }
     return transaction(this.pool, async (client) => {
+      if (actor !== null) {
+        const locked = await lockCurrentActor(client, actor);
+        if (locked.actor.role !== 'ADMIN') {
+          throw new ControlPlaneAuthorizationError('only administrators can manage automatic assignment workers');
+        }
+      }
       // Lock an eligible account before its pool row so a concurrent role/status
       // change cannot make an ACTIVE membership stale as it is written.
-      if (status === 'ACTIVE') await assertActiveAssignableUser(client, username);
+      if (accountId !== null) await lockAccountIdentity(client, username, accountId);
+      if (status === 'ACTIVE') await assertActiveAssignableUser(client, username, accountId);
       const currentResult = await client.query(
         'SELECT * FROM task_auto_assignment_workers WHERE username = $1 FOR UPDATE',
         [username],
@@ -888,7 +1040,7 @@ export class PostgresControlPlaneRepository {
             'automatic assignment worker no longer matches the requested version',
           );
         }
-        if (status !== 'ACTIVE') await assertActiveAssignableUser(client, username);
+        if (status !== 'ACTIVE') await assertActiveAssignableUser(client, username, accountId);
         const insertedResult = await client.query(`
           INSERT INTO task_auto_assignment_workers(
             username, status, assignment_limit, created_by_username, updated_by_username
@@ -972,12 +1124,27 @@ export class PostgresControlPlaneRepository {
 
   async removeAutoAssignmentWorker(rawUsername, {
     expectedVersion: rawExpectedVersion,
+    accountId: rawAccountId = null,
+    actor: rawActor = null,
     actorUsername: rawActorUsername,
   }) {
     const username = normalizedUsername(rawUsername);
     const expectedVersion = normalizeAutoAssignmentExpectedVersion(rawExpectedVersion);
-    const actorUsername = normalizedUsername(rawActorUsername);
+    const actor = rawActor === null ? null : normalizedActorIdentity(rawActor);
+    const actorUsername = actor?.username ?? normalizedUsername(rawActorUsername);
+    const accountId = rawAccountId === null || rawAccountId === undefined
+      ? null : normalizeTaskId(rawAccountId);
+    if (actor !== null && accountId === null) {
+      throw new TypeError('authenticated automatic assignment updates require a stable worker account id');
+    }
     return transaction(this.pool, async (client) => {
+      if (actor !== null) {
+        const locked = await lockCurrentActor(client, actor);
+        if (locked.actor.role !== 'ADMIN') {
+          throw new ControlPlaneAuthorizationError('only administrators can manage automatic assignment workers');
+        }
+      }
+      if (accountId !== null) await lockAccountIdentity(client, username, accountId);
       const currentResult = await client.query(
         'SELECT * FROM task_auto_assignment_workers WHERE username = $1 FOR UPDATE',
         [username],
@@ -1037,13 +1204,33 @@ export class PostgresControlPlaneRepository {
     if (!['ACTIVE', 'DISABLED'].includes(status)) throw new TypeError('status is invalid');
     if (!Number.isInteger(expectedVersion) || expectedVersion < 1) throw new TypeError('expectedVersion is invalid');
     return transaction(this.pool, async (client) => {
+      await lockAdministratorRoster(client);
       const currentResult = await client.query('SELECT * FROM app_users WHERE id = $1 FOR UPDATE', [userId]);
       const current = currentResult.rows[0];
       if (!current) throw new ControlPlaneNotFoundError('user not found');
+      if (Number(current.version) !== expectedVersion) {
+        throw new ControlPlaneConflictError('VERSION_CONFLICT', 'user was updated by another request');
+      }
       if (current.role === 'ADMIN' && (role !== 'ADMIN' || status !== 'ACTIVE')) {
         const count = await client.query("SELECT COUNT(*) AS count FROM app_users WHERE role = 'ADMIN' AND status = 'ACTIVE'");
         if (Number(count.rows[0].count) <= 1) {
           throw new ControlPlaneConflictError('LAST_ADMIN', 'the last active administrator cannot be disabled or demoted');
+        }
+      }
+      if (role !== 'USER' || status !== 'ACTIVE') {
+        const unfinished = await client.query(`
+          SELECT id FROM tasks
+          WHERE assigned_to_user_id = $1
+            AND state NOT IN ('REVIEWED', 'CANCELLED')
+          ORDER BY id
+          LIMIT 1
+          FOR UPDATE
+        `, [current.username]);
+        if (unfinished.rows[0]) {
+          throw new ControlPlaneConflictError(
+            'USER_HAS_ACTIVE_TASKS',
+            '该账号仍有未完成任务，请先将任务转交其他作业员后再停用或更换角色',
+          );
         }
       }
       const credentialChanged = current.role !== role || current.status !== status;
@@ -1059,17 +1246,22 @@ export class PostgresControlPlaneRepository {
     });
   }
 
-  async updateOwnProfile(rawUsername, { displayName: rawDisplayName, expectedVersion }) {
-    const username = normalizedUsername(rawUsername);
+  async updateOwnProfile(rawActor, { displayName: rawDisplayName, expectedVersion }) {
     const displayName = normalizedDisplayName(rawDisplayName);
     if (!Number.isInteger(expectedVersion) || expectedVersion < 1) throw new TypeError('expectedVersion is invalid');
-    const result = await this.pool.query(`
-      UPDATE app_users SET display_name = $1, version = version + 1, updated_at = now()
-      WHERE username = $2 AND version = $3 AND status = 'ACTIVE'
-      RETURNING *
-    `, [displayName, username, expectedVersion]);
-    if (!result.rows[0]) throw new ControlPlaneConflictError('VERSION_CONFLICT', 'profile was updated or is unavailable');
-    return publicUserFrom(result.rows[0]);
+    return transaction(this.pool, async (client) => {
+      const { actor, row } = await lockCurrentActor(client, rawActor);
+      if (Number(row.version) !== expectedVersion) {
+        throw new ControlPlaneConflictError('VERSION_CONFLICT', 'profile was updated or is unavailable');
+      }
+      const result = await client.query(`
+        UPDATE app_users SET display_name = $1, version = version + 1, updated_at = now()
+        WHERE id = $2 AND version = $3
+        RETURNING *
+      `, [displayName, actor.userId, expectedVersion]);
+      if (!result.rows[0]) throw new ControlPlaneConflictError('VERSION_CONFLICT', 'profile was updated or is unavailable');
+      return publicUserFrom(result.rows[0]);
+    });
   }
 
   async deleteUser(rawUserId, { actorUsername: rawActorUsername, expectedVersion }) {
@@ -1077,9 +1269,13 @@ export class PostgresControlPlaneRepository {
     const actorUsername = normalizedUsername(rawActorUsername);
     if (!Number.isInteger(expectedVersion) || expectedVersion < 1) throw new TypeError('expectedVersion is invalid');
     return transaction(this.pool, async (client) => {
+      await lockAdministratorRoster(client);
       const currentResult = await client.query('SELECT * FROM app_users WHERE id = $1 FOR UPDATE', [userId]);
       const current = currentResult.rows[0];
       if (!current) throw new ControlPlaneNotFoundError('user not found');
+      if (Number(current.version) !== expectedVersion) {
+        throw new ControlPlaneConflictError('VERSION_CONFLICT', 'user was updated by another request');
+      }
       if (current.username === actorUsername) {
         throw new ControlPlaneConflictError('SELF_DELETE', 'current administrator cannot delete their own account');
       }
@@ -1088,6 +1284,39 @@ export class PostgresControlPlaneRepository {
         if (Number(count.rows[0].count) <= 1) {
           throw new ControlPlaneConflictError('LAST_ADMIN', 'the last active administrator cannot be deleted');
         }
+      }
+      const assignedTasks = await client.query(`
+        SELECT id, state FROM tasks
+        WHERE assigned_to_user_id = $1
+        ORDER BY id
+        FOR UPDATE
+      `, [current.username]);
+      const unfinished = assignedTasks.rows.find((task) => !['REVIEWED', 'CANCELLED'].includes(task.state));
+      if (unfinished) {
+        throw new ControlPlaneConflictError(
+          'USER_HAS_ACTIVE_TASKS',
+          '该账号仍有未完成任务，请先将任务转交其他作业员后再删除',
+        );
+      }
+      if (assignedTasks.rows.length > 0) {
+        await client.query(`
+          INSERT INTO task_assignment_events(
+            task_id, actor_username, previous_assignee_user_id,
+            assignee_user_id, source, reason
+          )
+          SELECT assigned_task.id, $2::varchar(50), $1::varchar(50), NULL,
+            'MANUAL', '删除账号时解除已结束任务负责人'
+          FROM tasks AS assigned_task
+          WHERE assigned_task.assigned_to_user_id = $1::varchar(50)
+        `, [current.username, actorUsername]);
+        await client.query(`
+          UPDATE tasks SET
+            assigned_to_user_id = NULL,
+            assignment_source = NULL,
+            assigned_at = NULL,
+            updated_at = now()
+          WHERE assigned_to_user_id = $1
+        `, [current.username]);
       }
       const result = await client.query(
         'DELETE FROM app_users WHERE id = $1 AND version = $2 RETURNING *',
@@ -1098,42 +1327,38 @@ export class PostgresControlPlaneRepository {
     });
   }
 
-  async changeOwnPassword(rawUsername, { currentPassword, newPassword }) {
-    const username = normalizedUsername(rawUsername);
-    const current = await this.pool.query(
-      "SELECT * FROM app_users WHERE username = $1 AND status = 'ACTIVE'",
-      [username],
-    );
-    if (!current.rows[0] || !await verifyUserPassword(currentPassword, current.rows[0].password_hash)) {
-      throw new ControlPlaneConflictError('CURRENT_PASSWORD_INVALID', 'current password is incorrect');
-    }
+  async changeOwnPassword(rawActor, { currentPassword, newPassword }) {
     const passwordHash = await hashUserPassword(newPassword);
-    const result = await this.pool.query(`
-      UPDATE app_users SET password_hash = $1, must_change_password = false,
-        credential_version = credential_version + 1, version = version + 1, updated_at = now()
-      WHERE username = $2 RETURNING *
-    `, [passwordHash, username]);
-    return publicUserFrom(result.rows[0]);
+    return transaction(this.pool, async (client) => {
+      const { actor, row } = await lockCurrentActor(client, rawActor);
+      if (!await verifyUserPassword(currentPassword, row.password_hash)) {
+        throw new ControlPlaneConflictError('CURRENT_PASSWORD_INVALID', 'current password is incorrect');
+      }
+      const result = await client.query(`
+        UPDATE app_users SET password_hash = $1, must_change_password = false,
+          credential_version = credential_version + 1, version = version + 1, updated_at = now()
+        WHERE id = $2 RETURNING *
+      `, [passwordHash, actor.userId]);
+      return publicUserFrom(result.rows[0]);
+    });
   }
 
-  async setOwnDeletionPassword(rawUsername, { currentPassword, deletionPassword }) {
-    const username = normalizedUsername(rawUsername);
-    const current = await this.pool.query(
-      "SELECT * FROM app_users WHERE username = $1 AND status = 'ACTIVE'",
-      [username],
-    );
-    if (!current.rows[0] || !await verifyUserPassword(currentPassword, current.rows[0].password_hash)) {
-      throw new ControlPlaneConflictError('CURRENT_PASSWORD_INVALID', 'current password is incorrect');
-    }
-    if (deletionPassword === currentPassword) {
-      throw new ControlPlaneConflictError('DELETION_PASSWORD_REUSED', 'deletion password must differ from the login password');
-    }
+  async setOwnDeletionPassword(rawActor, { currentPassword, deletionPassword }) {
     const deletionPasswordHash = await hashUserPassword(deletionPassword);
-    const result = await this.pool.query(`
-      UPDATE app_users SET deletion_password_hash = $1, version = version + 1, updated_at = now()
-      WHERE username = $2 RETURNING *
-    `, [deletionPasswordHash, username]);
-    return publicUserFrom(result.rows[0]);
+    return transaction(this.pool, async (client) => {
+      const { actor, row } = await lockCurrentActor(client, rawActor);
+      if (!await verifyUserPassword(currentPassword, row.password_hash)) {
+        throw new ControlPlaneConflictError('CURRENT_PASSWORD_INVALID', 'current password is incorrect');
+      }
+      if (deletionPassword === currentPassword) {
+        throw new ControlPlaneConflictError('DELETION_PASSWORD_REUSED', 'deletion password must differ from the login password');
+      }
+      const result = await client.query(`
+        UPDATE app_users SET deletion_password_hash = $1, version = version + 1, updated_at = now()
+        WHERE id = $2 RETURNING *
+      `, [deletionPasswordHash, actor.userId]);
+      return publicUserFrom(result.rows[0]);
+    });
   }
 
   async resetUserPassword(rawUserId) {
@@ -1201,7 +1426,9 @@ export class PostgresControlPlaneRepository {
   async createTasks({
     nodeId: rawNodeId,
     createdByUserId: rawCreator = null,
+    actor: rawActor = null,
     assignedToUserId: rawAssignee,
+    assignedToAccountId: rawAssigneeAccountId = null,
     assignmentSource: rawAssignmentSource,
     tasks: rawTasks,
     skipCopyReview = false,
@@ -1209,9 +1436,22 @@ export class PostgresControlPlaneRepository {
     if (typeof skipCopyReview !== 'boolean') throw new TypeError('skipCopyReview must be a boolean');
     const nodeId = normalizeNodeId(rawNodeId);
     const createdByUserId = rawCreator === null ? null : normalizeCreatorUserId(rawCreator);
+    const actor = rawActor === null ? null : normalizedActorIdentity(rawActor);
+    if (actor !== null && actor.username !== createdByUserId) {
+      throw new TypeError('task creator must match the authenticated actor');
+    }
     const assignedToUserId = normalizeAssigneeUserId(
       rawAssignee === undefined ? createdByUserId : rawAssignee,
     );
+    const assignedToAccountId = rawAssigneeAccountId === null || rawAssigneeAccountId === undefined
+      ? (actor !== null && assignedToUserId === actor.username ? actor.userId : null)
+      : normalizeTaskId(rawAssigneeAccountId);
+    if (assignedToUserId === null && assignedToAccountId !== null) {
+      throw new TypeError('assignedToAccountId requires assignedToUserId');
+    }
+    if (actor !== null && assignedToUserId !== null && assignedToAccountId === null) {
+      throw new TypeError('authenticated task assignment requires a stable assignee account id');
+    }
     const assignmentSource = assignedToUserId === null
       ? null
       : normalizeAssignmentSource(rawAssignmentSource
@@ -1222,20 +1462,27 @@ export class PostgresControlPlaneRepository {
     if (assignmentSource === 'SELF' && assignedToUserId !== createdByUserId) {
       throw new TypeError('self assignment must target the task creator');
     }
+    if (assignmentSource === 'SELF' && actor !== null && assignedToAccountId !== actor.userId) {
+      throw new TypeError('self assignment must target the authenticated account');
+    }
     const tasks = normalizeTaskBatch(rawTasks);
     return transaction(this.pool, async (client) => {
+      if (actor !== null) await lockCurrentActor(client, actor);
+      if (assignedToUserId !== null) {
+        if (assignmentSource === 'SELF') {
+          await lockAssignmentUser(client, assignedToUserId, assignedToAccountId);
+        } else {
+          await assertActiveAssignableUser(client, assignedToUserId, assignedToAccountId);
+        }
+        // A self-created or administrator-created task contributes to the same
+        // in-hand count used by automatic replenishment.
+        await lockAutoAssignmentMember(client, assignedToUserId);
+      }
       await client.query(`
         INSERT INTO executor_nodes(id, name, image_worker_enabled, last_seen_at)
         VALUES ($1, $1, false, 'epoch'::timestamptz)
         ON CONFLICT(id) DO NOTHING
       `, [nodeId]);
-      if (assignedToUserId !== null) {
-        if (assignmentSource === 'SELF') await lockAssignmentUser(client, assignedToUserId);
-        else await assertActiveAssignableUser(client, assignedToUserId);
-        // A self-created or administrator-created task contributes to the same
-        // in-hand count used by automatic replenishment.
-        await lockAutoAssignmentMember(client, assignedToUserId);
-      }
       const created = [];
       for (const task of tasks) {
         const result = await client.query(`
@@ -1246,7 +1493,7 @@ export class PostgresControlPlaneRepository {
           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
             CASE WHEN $7::varchar IS NULL THEN NULL ELSE now() END,
             'COPY_QUEUED',
-            CASE WHEN $7::varchar IS NULL THEN '等待管理员分配作业员' ELSE '等待文案执行机领取' END)
+            CASE WHEN $7::varchar IS NULL THEN '等待分配负责人' ELSE '等待文案执行机领取' END)
           RETURNING *
         `, [task.query, task.input, String(task.imageCount), nodeId, createdByUserId,
           skipCopyReview, assignedToUserId, assignmentSource]);
@@ -1270,12 +1517,26 @@ export class PostgresControlPlaneRepository {
 
   async assignTasks(rawTaskIds, {
     assignedToUserId: rawAssignee,
-    actorUserId: rawActor,
+    assignedToAccountId: rawAssigneeAccountId = null,
+    actor: rawActorIdentity = null,
+    actorUserId: rawLegacyActor,
     reason: rawReason = null,
   }) {
     const taskIds = normalizedAssignmentTaskIds(rawTaskIds);
     const assignedToUserId = normalizeAssigneeUserId(rawAssignee);
-    const actorUserId = normalizeCreatorUserId(rawActor);
+    const assignedToAccountId = rawAssigneeAccountId === null || rawAssigneeAccountId === undefined
+      ? null : normalizeTaskId(rawAssigneeAccountId);
+    if (assignedToUserId === null && assignedToAccountId !== null) {
+      throw new TypeError('assignedToAccountId requires assignedToUserId');
+    }
+    const actor = rawActorIdentity === null ? null : normalizedActorIdentity(rawActorIdentity);
+    if (actor !== null && actor.role !== 'ADMIN') {
+      throw new ControlPlaneAuthorizationError('仅管理员可以分配任务');
+    }
+    if (actor !== null && assignedToUserId !== null && assignedToAccountId === null) {
+      throw new TypeError('authenticated task assignment requires a stable assignee account id');
+    }
+    const actorUserId = actor?.username ?? normalizeCreatorUserId(rawLegacyActor);
     if (rawReason !== null && rawReason !== undefined && typeof rawReason !== 'string') {
       throw new TypeError('reason must be a string');
     }
@@ -1283,8 +1544,9 @@ export class PostgresControlPlaneRepository {
       ? null : String(rawReason).replace(/\s+/gu, ' ').trim();
     if (reason !== null && [...reason].length > 200) throw new RangeError('reason cannot exceed 200 characters');
     return transaction(this.pool, async (client) => {
+      if (actor !== null) await lockCurrentActor(client, actor);
       if (assignedToUserId !== null) {
-        await assertActiveAssignableUser(client, assignedToUserId);
+        await assertActiveAssignableUser(client, assignedToUserId, assignedToAccountId);
         // The limit is an automatic replenishment target, not a hard cap for
         // administrators. Locking a member still makes its count linearizable
         // with a concurrent replenishment run before either side locks tasks.
@@ -1305,8 +1567,25 @@ export class PostgresControlPlaneRepository {
           assignment_source = CASE WHEN $2::varchar IS NULL THEN NULL ELSE 'MANUAL' END,
           assigned_at = CASE WHEN $2::varchar IS NULL THEN NULL ELSE now() END,
           progress_message = CASE
-            WHEN $2::varchar IS NULL AND state = 'COPY_QUEUED' THEN '等待管理员分配作业员'
+            WHEN $2::varchar IS NULL AND state = 'COPY_QUEUED' THEN '等待分配负责人'
             WHEN $2::varchar IS NOT NULL AND state = 'COPY_QUEUED' THEN '等待文案执行机领取'
+            WHEN $2::varchar IS NOT NULL
+              AND (progress_message IS NULL OR progress_message IN (
+                '等待管理员分配作业员',
+                '等待分配负责人',
+                '负责人待分配，等待文案执行机领取',
+                '文案生成完成，等待分配负责人后审核'
+              ))
+              THEN CASE
+                WHEN state = 'IMAGE_QUEUED' THEN '等待图片执行机领取'
+                WHEN state = 'COPY_REVIEW_PENDING' AND current_stage = 'IMAGE_RETRY_EXHAUSTED'
+                  THEN '图片重试次数已用尽，等待人工处理'
+                WHEN state = 'COPY_REVIEW_PENDING' THEN '文案生成完成，等待人工审核'
+                WHEN state = 'COPY_FAILED' THEN '文案生成失败，等待人工处理'
+                WHEN state = 'IMAGE_FAILED' THEN '图片生成失败，等待人工处理'
+                WHEN state = 'MANUAL_ARCHIVE' THEN '图片生成完成，等待人工归档'
+                ELSE progress_message
+              END
             ELSE progress_message
           END,
           updated_at = now()
@@ -1330,6 +1609,7 @@ export class PostgresControlPlaneRepository {
     states = null,
     nodeId = null,
     createdByUserId = null,
+    createdByAccountId = null,
     assignedToUserId = null,
     unassignedOnly = false,
     excludeUnassigned = false,
@@ -1362,9 +1642,25 @@ export class PostgresControlPlaneRepository {
       values.push(normalizeNodeId(nodeId));
       filters.push(`copy_executor_node_id = $${values.length}`);
     }
+    if (createdByAccountId !== null && createdByUserId === null) {
+      throw new TypeError('createdByAccountId requires createdByUserId');
+    }
     if (createdByUserId !== null) {
       values.push(normalizeCreatorUserId(createdByUserId));
-      filters.push(`created_by_user_id = $${values.length}`);
+      const creatorParameter = values.length;
+      let accountPredicate = '';
+      if (createdByAccountId !== null) {
+        values.push(normalizeTaskId(createdByAccountId));
+        accountPredicate = `AND exact_creator.id = $${values.length}`;
+      }
+      filters.push(`created_by_user_id = $${creatorParameter}
+        AND EXISTS (
+          SELECT 1 FROM app_users exact_creator
+          WHERE exact_creator.username = tasks.created_by_user_id
+            AND exact_creator.username = $${creatorParameter}
+            ${accountPredicate}
+            AND exact_creator.created_at < tasks.created_at
+        )`);
     }
     if (assignedToUserId !== null) {
       values.push(normalizeAssigneeUserId(assignedToUserId, { allowNull: false }));
@@ -1376,11 +1672,15 @@ export class PostgresControlPlaneRepository {
     }
     const creatorRole = normalizeTaskCreatorRole(createdByRole);
     if (creatorRole === 'UNKNOWN') {
-      filters.push('NOT EXISTS (SELECT 1 FROM app_users role_creator WHERE role_creator.username = tasks.created_by_user_id)');
+      filters.push(`NOT EXISTS (SELECT 1 FROM app_users role_creator
+        WHERE role_creator.username = tasks.created_by_user_id
+          AND role_creator.created_at < tasks.created_at)`);
     } else if (creatorRole !== null) {
       values.push(creatorRole);
       filters.push(`EXISTS (SELECT 1 FROM app_users role_creator
-        WHERE role_creator.username = tasks.created_by_user_id AND role_creator.role = $${values.length})`);
+        WHERE role_creator.username = tasks.created_by_user_id
+          AND role_creator.created_at < tasks.created_at
+          AND role_creator.role = $${values.length})`);
     }
     if (taskId !== null && taskId !== undefined && taskId !== '') {
       values.push(normalizeTaskId(taskId));
@@ -1420,8 +1720,10 @@ export class PostgresControlPlaneRepository {
     const [result, countResult] = await Promise.all([
       this.pool.query(`
       SELECT page.*, COALESCE(e.node_id, successful_image.node_id) AS image_executor_node_id,
-        n.name AS image_executor_node_name, creator.display_name AS creator_display_name,
-        creator.role AS creator_role, assignee.display_name AS assigned_to_display_name,
+        n.name AS image_executor_node_name, creator.id AS creator_account_id,
+        creator.display_name AS creator_display_name,
+        creator.role AS creator_role, assignee.id AS assignee_account_id,
+        assignee.display_name AS assigned_to_display_name,
         assignee.status AS assignee_status
       FROM (
         ${taskPage}
@@ -1438,7 +1740,9 @@ export class PostgresControlPlaneRepository {
         AND successful_image.kind = 'IMAGE' AND successful_image.status = 'SUCCEEDED'
       LEFT JOIN executor_nodes n ON n.id = COALESCE(e.node_id, successful_image.node_id)
       LEFT JOIN app_users creator ON creator.username = page.created_by_user_id
+        AND creator.created_at < page.created_at
       LEFT JOIN app_users assignee ON assignee.username = page.assigned_to_user_id
+        AND assignee.created_at < page.assigned_at
       ORDER BY ${resultOrder}
     `, pageValues),
       includeTotal
@@ -1634,6 +1938,9 @@ export class PostgresControlPlaneRepository {
         ? 'queued.last_activity_at NULLS FIRST, queued.id' : 'queued.id';
       const finalOrder = kind === 'IMAGE'
         ? 'ranked.last_activity_at NULLS FIRST, ranked.task_id' : 'ranked.task_id';
+      const claimOwner = 'queued.assigned_to_user_id';
+      const queuedAssigneeRequirement = 'AND queued.assigned_to_user_id IS NOT NULL';
+      const lockedAssigneeRequirement = 'AND task.assigned_to_user_id IS NOT NULL';
       const parameters = kind === 'COPY'
         ? [queuedState, cursor?.last_assignee_user_id ?? null, available]
         : [queuedState, nodeId, cursor?.last_assignee_user_id ?? null, available];
@@ -1645,13 +1952,14 @@ export class PostgresControlPlaneRepository {
             queued.id AS task_id,
             queued.assigned_to_user_id,
             queued.last_activity_at,
+            ${claimOwner} AS claim_owner,
             row_number() OVER (
-              PARTITION BY queued.assigned_to_user_id
+              PARTITION BY ${claimOwner}
               ORDER BY ${ownerOrder}
             ) AS owner_row_number
           FROM tasks AS queued
           WHERE queued.state = $1
-            AND queued.assigned_to_user_id IS NOT NULL
+            ${queuedAssigneeRequirement}
             ${ownership}
             ${retryDelay}
         )
@@ -1659,15 +1967,15 @@ export class PostgresControlPlaneRepository {
         FROM ranked_candidates AS ranked
         JOIN tasks AS task ON task.id = ranked.task_id
         WHERE task.state = $1
-          AND task.assigned_to_user_id IS NOT NULL
-          AND task.assigned_to_user_id = ranked.assigned_to_user_id
+          ${lockedAssigneeRequirement}
+          AND task.assigned_to_user_id IS NOT DISTINCT FROM ranked.assigned_to_user_id
           ${lockedOwnership}
           ${lockedRetryDelay}
         ORDER BY
           ranked.owner_row_number,
           CASE WHEN ${cursorParameter}::varchar IS NULL
-              OR ranked.assigned_to_user_id > ${cursorParameter}::varchar THEN 0 ELSE 1 END,
-          ranked.assigned_to_user_id,
+              OR ranked.claim_owner > ${cursorParameter}::varchar THEN 0 ELSE 1 END,
+          ranked.claim_owner,
           ${finalOrder}
         FOR UPDATE OF task SKIP LOCKED
         LIMIT ${limitParameter}
@@ -1722,7 +2030,9 @@ export class PostgresControlPlaneRepository {
       }
       if (claims.length) {
         const lastClaimedAssignee = claims.at(-1).task?.assignedToUserId;
-        if (!lastClaimedAssignee) throw new Error('claimed task is missing its assignee');
+        if (!lastClaimedAssignee) {
+          throw new Error(`claimed ${kind.toLowerCase()} task is missing its assignee`);
+        }
         const cursorUpdate = await client.query(`
           UPDATE execution_claim_cursors
           SET last_assignee_user_id = $2, updated_at = now()
@@ -1809,8 +2119,10 @@ export class PostgresControlPlaneRepository {
     return transaction(this.pool, async (client) => {
       const execution = await lockedExecution(client, executionId);
       if (execution.kind !== 'COPY') throw new TypeError('execution is not a copy execution');
-      let bypass = execution.skip_copy_review === true;
-      let message = '文案生成完成，等待人工审核';
+      let bypass = execution.skip_copy_review === true && execution.assigned_to_user_id != null;
+      let message = execution.assigned_to_user_id == null
+        ? '文案生成完成，等待分配负责人后审核'
+        : '文案生成完成，等待人工审核';
       if (bypass) {
         try {
           normalizeCopyReviewEdits({
@@ -1873,11 +2185,13 @@ export class PostgresControlPlaneRepository {
     reasonCodes: rawReasonCodes,
     note: rawNote,
     reviewSessionId: rawReviewSessionId,
-  }, { actorRole = 'ADMIN', reviewerUserId: rawReviewerUserId } = {}) {
+  }, { actor: rawActor = null, actorRole: rawActorRole = 'ADMIN', reviewerUserId: rawReviewerUserId } = {}) {
     const taskId = normalizeTaskId(rawTaskId);
     const revisionId = normalizeTaskId(rawRevisionId);
     const nodeId = normalizeNodeId(rawNodeId);
-    const reviewerUsername = normalizeCreatorUserId(rawReviewerUserId);
+    const actorIdentity = rawActor === null ? null : normalizedActorIdentity(rawActor);
+    const actorRole = actorIdentity?.role ?? rawActorRole;
+    const reviewerUsername = normalizeCreatorUserId(actorIdentity?.username ?? rawReviewerUserId);
     const reviewSessionId = normalizeUuid(rawReviewSessionId, 'reviewSessionId');
     const decision = String(rawDecision ?? '').trim().toUpperCase();
     if (!['SAVE', 'APPROVE', 'DISCARD'].includes(decision)) throw new TypeError('copy review decision is invalid');
@@ -1911,9 +2225,16 @@ export class PostgresControlPlaneRepository {
       reviewerUsername,
     });
     return transaction(this.pool, async (client) => {
-      const taskResult = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
-      const task = taskResult.rows[0];
+      const task = actorIdentity === null
+        ? (await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId])).rows[0]
+        : (await lockTaskForActor(client, taskId, actorIdentity)).task;
       if (!task) throw new ControlPlaneNotFoundError('task not found');
+      if (task.assigned_to_user_id == null) {
+        throw new ControlPlaneConflictError(
+          'TASK_ASSIGNEE_REQUIRED',
+          '未分配任务不能进行文案审核，请先指定负责人',
+        );
+      }
       if (await claimQualityReviewSubmission(client, {
         taskId, stage: 'COPY', reviewerUsername, reviewSessionId, requestFingerprint,
       })) return taskFrom(task);
@@ -2123,10 +2444,12 @@ export class PostgresControlPlaneRepository {
     problemAssetIds: rawProblemAssetIds,
     reviewerUserId: rawReviewerUserId,
     reviewSessionId: rawReviewSessionId,
+    actor: rawActor = null,
   }) {
     const taskId = normalizeTaskId(rawTaskId);
     const imageRunId = normalizeUuid(rawImageRunId, 'imageRunId');
-    const reviewerUsername = normalizeCreatorUserId(rawReviewerUserId);
+    const actorIdentity = rawActor === null ? null : normalizedActorIdentity(rawActor);
+    const reviewerUsername = normalizeCreatorUserId(actorIdentity?.username ?? rawReviewerUserId);
     const reviewSessionId = normalizeUuid(rawReviewSessionId, 'reviewSessionId');
     const scoreX10 = normalizedHumanQualityScore(rawScore);
     const reasonCodes = normalizedQualityReasonCodes(rawReasons ?? rawReasonCodes);
@@ -2148,8 +2471,11 @@ export class PostgresControlPlaneRepository {
     const message = approved ? '图片审核通过，任务已完成'
       : retry ? '审核员要求重新生成图片，等待图片执行机领取' : '任务已被审核员废弃';
     return transaction(this.pool, async (client) => {
-      const result = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
-      const task = result.rows[0];
+      const task = actorIdentity === null
+        ? (await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId])).rows[0]
+        : (await lockTaskForActor(client, taskId, actorIdentity, {
+          allowedRoles: ['ADMIN', 'REVIEWER'],
+        })).task;
       if (!task) throw new ControlPlaneNotFoundError('task not found');
       if (await claimQualityReviewSubmission(client, {
         taskId, stage: 'IMAGE', reviewerUsername, reviewSessionId, requestFingerprint,
@@ -2200,12 +2526,16 @@ export class PostgresControlPlaneRepository {
     });
   }
 
-  async retryTask(rawTaskId, { useLatestConfig = false } = {}) {
+  async retryTask(rawTaskId, { useLatestConfig = false, actor: rawActor = null } = {}) {
     const taskId = normalizeTaskId(rawTaskId);
+    const actorIdentity = rawActor === null ? null : normalizedActorIdentity(rawActor);
     if (typeof useLatestConfig !== 'boolean') throw new TypeError('useLatestConfig must be a boolean');
     return transaction(this.pool, async (client) => {
-      const result = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
-      const task = result.rows[0];
+      const task = actorIdentity === null
+        ? (await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId])).rows[0]
+        : (await lockTaskForActor(client, taskId, actorIdentity, {
+          ownerOnly: actorIdentity.role !== 'ADMIN',
+        })).task;
       if (!task) throw new ControlPlaneNotFoundError('task not found');
       const isCopy = ['COPY_RUNNING', 'COPY_FAILED'].includes(task.state);
       const isImage = ['IMAGE_RUNNING', 'IMAGE_FAILED'].includes(task.state);
@@ -2286,33 +2616,60 @@ export class PostgresControlPlaneRepository {
     return result.rows.map(savedTaskViewFrom);
   }
 
-  async saveTaskView(rawOwnerUsername, input) {
+  async saveTaskView(rawOwnerUsername, input, { actor: rawActor = null } = {}) {
     const ownerUsername = normalizedUsername(rawOwnerUsername);
     const view = normalizeSavedTaskView(input);
-    const result = await this.pool.query(`
-      INSERT INTO saved_task_views(owner_username, name, view_key, filters)
-      VALUES ($1, $2, $3, $4)
-      ON CONFLICT(owner_username, name) DO UPDATE SET
-        view_key = EXCLUDED.view_key, filters = EXCLUDED.filters, updated_at = now()
-      RETURNING *
-    `, [ownerUsername, view.name, view.viewKey, view.filters]);
-    return savedTaskViewFrom(result.rows[0]);
-  }
-
-  async deleteSavedTaskView(rawOwnerUsername, rawViewId) {
-    const ownerUsername = normalizedUsername(rawOwnerUsername);
-    const result = await this.pool.query(`
-      DELETE FROM saved_task_views WHERE id = $1 AND owner_username = $2 RETURNING id
-    `, [normalizeTaskId(rawViewId), ownerUsername]);
-    if (!result.rows[0]) throw new ControlPlaneNotFoundError('saved task view not found');
-    return { id: Number(result.rows[0].id), deleted: true };
-  }
-
-  async requeueCancelledTask(rawTaskId) {
-    const taskId = normalizeTaskId(rawTaskId);
+    const actor = rawActor === null ? null : normalizedActorIdentity(rawActor);
+    const save = async (queryable) => {
+      const result = await queryable.query(`
+        INSERT INTO saved_task_views(owner_username, name, view_key, filters)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT(owner_username, name) DO UPDATE SET
+          view_key = EXCLUDED.view_key, filters = EXCLUDED.filters, updated_at = now()
+        RETURNING *
+      `, [ownerUsername, view.name, view.viewKey, view.filters]);
+      return savedTaskViewFrom(result.rows[0]);
+    };
+    if (actor === null) return save(this.pool);
     return transaction(this.pool, async (client) => {
-      const result = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
-      const task = result.rows[0];
+      const locked = await lockCurrentActor(client, actor);
+      if (locked.actor.role !== 'ADMIN' || locked.actor.username !== ownerUsername) {
+        throw new ControlPlaneAuthorizationError('saved task views belong to the current administrator');
+      }
+      return save(client);
+    });
+  }
+
+  async deleteSavedTaskView(rawOwnerUsername, rawViewId, { actor: rawActor = null } = {}) {
+    const ownerUsername = normalizedUsername(rawOwnerUsername);
+    const viewId = normalizeTaskId(rawViewId);
+    const actor = rawActor === null ? null : normalizedActorIdentity(rawActor);
+    const remove = async (queryable) => {
+      const result = await queryable.query(`
+        DELETE FROM saved_task_views WHERE id = $1 AND owner_username = $2 RETURNING id
+      `, [viewId, ownerUsername]);
+      if (!result.rows[0]) throw new ControlPlaneNotFoundError('saved task view not found');
+      return { id: Number(result.rows[0].id), deleted: true };
+    };
+    if (actor === null) return remove(this.pool);
+    return transaction(this.pool, async (client) => {
+      const locked = await lockCurrentActor(client, actor);
+      if (locked.actor.role !== 'ADMIN' || locked.actor.username !== ownerUsername) {
+        throw new ControlPlaneAuthorizationError('saved task views belong to the current administrator');
+      }
+      return remove(client);
+    });
+  }
+
+  async requeueCancelledTask(rawTaskId, { actor: rawActor = null } = {}) {
+    const taskId = normalizeTaskId(rawTaskId);
+    const actorIdentity = rawActor === null ? null : normalizedActorIdentity(rawActor);
+    return transaction(this.pool, async (client) => {
+      const task = actorIdentity === null
+        ? (await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId])).rows[0]
+        : (await lockTaskForActor(client, taskId, actorIdentity, {
+          allowedRoles: ['ADMIN'],
+        })).task;
       if (!task) throw new ControlPlaneNotFoundError('task not found');
       if (task.state !== 'CANCELLED' || !['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.cancelled_from_state)) {
         throw new ControlPlaneConflictError('REQUEUE_UNAVAILABLE', 'only a cancelled queued task can be queued again');
@@ -2327,16 +2684,29 @@ export class PostgresControlPlaneRepository {
     });
   }
 
-  async reviseImages(taskId, input, actorUsername, actorRole = 'ADMIN') {
-    return transaction(this.pool, async client => taskFrom(await reviseTaskImages(client, taskId, input, actorUsername, actorRole)));
+  async reviseImages(taskId, input, actorUsername, actorRole = 'ADMIN', rawActor = null) {
+    const actorIdentity = rawActor === null ? null : normalizedActorIdentity(rawActor);
+    return transaction(this.pool, async (client) => {
+      if (actorIdentity !== null) {
+        await lockTaskForActor(client, taskId, actorIdentity, {
+          ownerOnly: actorIdentity.role !== 'ADMIN',
+        });
+      }
+      return taskFrom(await reviseTaskImages(client, taskId, input,
+        actorIdentity?.username ?? actorUsername, actorIdentity?.role ?? actorRole));
+    });
   }
 
-  async requeueImageTask(rawTaskId, { retryOnly = false } = {}) {
+  async requeueImageTask(rawTaskId, { retryOnly = false, actor: rawActor = null } = {}) {
     const taskId = normalizeTaskId(rawTaskId);
+    const actorIdentity = rawActor === null ? null : normalizedActorIdentity(rawActor);
     if (typeof retryOnly !== 'boolean') throw new TypeError('retryOnly must be a boolean');
     return transaction(this.pool, async (client) => {
-      const result = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
-      const task = result.rows[0];
+      const task = actorIdentity === null
+        ? (await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId])).rows[0]
+        : (await lockTaskForActor(client, taskId, actorIdentity, {
+          ownerOnly: actorIdentity.role !== 'ADMIN',
+        })).task;
       if (!task) throw new ControlPlaneNotFoundError('task not found');
       if (retryOnly && !['IMAGE_RUNNING', 'IMAGE_FAILED'].includes(task.state)
         && !(task.state === 'COPY_REVIEW_PENDING' && task.current_stage === 'IMAGE_RETRY_EXHAUSTED')) {
@@ -2388,12 +2758,16 @@ export class PostgresControlPlaneRepository {
     });
   }
 
-  async cancelTask(rawTaskId, { queuedOnly = false } = {}) {
+  async cancelTask(rawTaskId, { queuedOnly = false, actor: rawActor = null } = {}) {
     const taskId = normalizeTaskId(rawTaskId);
+    const actorIdentity = rawActor === null ? null : normalizedActorIdentity(rawActor);
     if (typeof queuedOnly !== 'boolean') throw new TypeError('queuedOnly must be a boolean');
     return transaction(this.pool, async (client) => {
-      const result = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
-      const task = result.rows[0];
+      const task = actorIdentity === null
+        ? (await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId])).rows[0]
+        : (await lockTaskForActor(client, taskId, actorIdentity, {
+          ownerOnly: actorIdentity.role !== 'ADMIN',
+        })).task;
       if (!task) throw new ControlPlaneNotFoundError('task not found');
       if (queuedOnly && !['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state)) {
         throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'only queued work can be cancelled in bulk');
@@ -2434,12 +2808,17 @@ export class PostgresControlPlaneRepository {
     });
   }
 
-  async permanentlyDeleteTask(rawTaskId, { actorUsername: rawActorUsername, deletionPassword, beforeDelete = null }) {
+  async permanentlyDeleteTask(rawTaskId, {
+    actor: rawActor = null,
+    actorUsername: rawActorUsername,
+    deletionPassword,
+    beforeDelete = null,
+  }) {
     const taskId = normalizeTaskId(rawTaskId);
-    const actorUsername = normalizedUsername(rawActorUsername);
+    const actor = rawActor === null ? normalizedUsername(rawActorUsername) : normalizedActorIdentity(rawActor);
     if (beforeDelete !== null && typeof beforeDelete !== 'function') throw new TypeError('beforeDelete must be a function');
     return transaction(this.pool, async (client) => {
-      await assertPermanentDeletionActor(client, actorUsername, deletionPassword);
+      await assertPermanentDeletionActor(client, actor, deletionPassword);
       await assertPermanentlyDeletableTask(client, taskId);
       if (beforeDelete) await beforeDelete(taskId);
       await client.query('DELETE FROM tasks WHERE id = $1', [taskId]);
@@ -2447,12 +2826,17 @@ export class PostgresControlPlaneRepository {
     });
   }
 
-  async permanentlyDeleteTasks(rawTaskIds, { actorUsername: rawActorUsername, deletionPassword, beforeDelete = null }) {
+  async permanentlyDeleteTasks(rawTaskIds, {
+    actor: rawActor = null,
+    actorUsername: rawActorUsername,
+    deletionPassword,
+    beforeDelete = null,
+  }) {
     const taskIds = normalizedPermanentDeletionTaskIds(rawTaskIds);
-    const actorUsername = normalizedUsername(rawActorUsername);
+    const actor = rawActor === null ? normalizedUsername(rawActorUsername) : normalizedActorIdentity(rawActor);
     if (beforeDelete !== null && typeof beforeDelete !== 'function') throw new TypeError('beforeDelete must be a function');
     return transaction(this.pool, async (client) => {
-      await assertPermanentDeletionActor(client, actorUsername, deletionPassword);
+      await assertPermanentDeletionActor(client, actor, deletionPassword);
       const eligible = [];
       const failed = [];
       for (const taskId of taskIds) {

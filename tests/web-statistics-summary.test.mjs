@@ -3,7 +3,7 @@ import test from 'node:test';
 import { normalizeRange, compactTask, compactDetail, summarizeCounts, summarizeEfficiency } from '../src/web-statistics/summary.mjs';
 
 const now = Date.parse('2026-09-06T08:00:00Z');
-const task = (id, patch = {}) => compactTask({ id, state: 'COPY_QUEUED', createdByUserId: 'alice',
+const task = (id, patch = {}) => compactTask({ id, state: 'COPY_QUEUED', createdByUserId: 'alice', createdByAccountId: 2, assignedToUserId: 'alice',
   createdAt: '2026-09-06T01:00:00Z', updatedAt: '2026-09-06T02:00:00Z', ...patch });
 
 test('Shanghai day boundaries and valid bounded calendar ranges', () => {
@@ -34,11 +34,26 @@ test('counts deduplicate tasks, include discarded history and distinguish creati
 });
 
 test('people include unassigned history and no-count periods still report cumulative totals', () => {
-  const summary = summarizeCounts([task(1, { createdByUserId: null }), task(2, { createdByUserId: 'bob',
+  const summary = summarizeCounts([task(1, { createdByUserId: null, createdByAccountId: null }), task(2, { createdByUserId: 'bob', createdByAccountId: 3,
     createdAt: '2026-08-01T01:00:00Z' })], normalizeRange({}, now), now);
   assert.equal(summary.people.find(p => p.username === 'bob').createdInPeriod, 0);
   assert.equal(summary.people.find(p => p.username === 'bob').total, 1);
   assert.equal(summary.people.find(p => p.username === null).total, 1);
+});
+
+test('people statistics keep a deleted account separate from a same-name replacement', () => {
+  const summary = summarizeCounts([
+    task(1, { createdByAccountId: null, createdByDisplayName: null, createdByRole: null }),
+    task(2, { createdByAccountId: 9, createdByDisplayName: '新 Alice', createdByRole: 'USER' }),
+  ], normalizeRange({}, now), now);
+  assert.equal(summary.people.length, 2);
+  const historical = summary.people.find(person => person.accountId === null);
+  const replacement = summary.people.find(person => person.accountId === 9);
+  assert.equal(historical.displayName, '历史账号（alice）');
+  assert.equal(historical.total, 1);
+  assert.equal(historical.role, null);
+  assert.equal(replacement.displayName, '新 Alice');
+  assert.equal(replacement.total, 1);
 });
 
 test('cached task and detail facts never retain prompts, model responses or snapshots', () => {
@@ -49,6 +64,7 @@ test('cached task and detail facts never retain prompts, model responses or snap
     humanQualityAssessments: [{ id: 1, stage: 'COPY', score: 2.5, ratingContext: 'ORIGINAL',
       copyRevisionId: 1, reasonCodes: ['private'], note: 'private', createdAt: '2026-09-06T01:00:00Z' }] });
   assert.equal(JSON.stringify([minimal, detail]).includes('private'), false);
+  assert.equal(minimal.assignedToUserId, 'alice');
   assert.deepEqual(detail.assessments, [{ id: 1, stage: 'COPY', scoreX10: 25, ratingContext: 'ORIGINAL',
     createdAt: '2026-09-06T01:00:00Z', copyRevisionId: 1, imageRunId: null }]);
 });
@@ -121,6 +137,8 @@ test('terminal tasks with old retry markers are not current anomalies and unatta
 });
 
 test('malformed execution kinds fail closed and metadata cannot retain arbitrary objects', () => {
+  assert.throws(() => compactTask({ id: 1, state: 'COPY_QUEUED' }), /账号身份/u);
+  assert.throws(() => compactTask({ id: 1, state: 'COPY_QUEUED', createdByAccountId: '2' }), /账号身份/u);
   assert.throws(() => compactDetail({ executions: [{ id: 'bad', kind: '__proto__', status: 'SUCCEEDED' }], imageRuns: [], assets: [] }));
   assert.throws(() => compactDetail({ executions: [], imageRuns: [], assets: [],
     humanQualityAssessments: [{ id: 1, stage: 'COPY', score: 2.1 }] }));

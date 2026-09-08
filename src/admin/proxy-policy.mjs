@@ -31,6 +31,7 @@ export function evaluateAdminProxyRequest(request, environment = process.env) {
       || url.pathname.startsWith('/api/profile')
       || url.pathname === '/api/auth/logout'
       || (['USER', 'REVIEWER'].includes(role) && url.pathname === '/api/workbench-statistics')
+      || (['USER', 'REVIEWER'].includes(role) && url.pathname === '/api/human-quality-settings')
       || url.pathname.startsWith('/api/control-plane/');
     if (alwaysAllowed) return { type: 'next' };
     if (role === 'REVIEWER') {

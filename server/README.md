@@ -37,6 +37,8 @@ DEEPSEEK_COPY_ANALYSIS_MODEL=deepseek-v4-pro
 
 `0013_execution_heartbeats` 新增任务心跳和卡住执行回收。先升级并重启中心，再更新各执行机；旧卡住任务会保留产物并转为失败，供检查后重试或续跑。期限、兼容行为和验证步骤见 [执行恢复说明](../docs/execution-recovery.md)。
 
+`0021_task_assignment_integrity` 和 `0022_auto_assignment_cursor` 支持管理员待分配任务池、显式人员池、按在手上限自动补位及持久化公平轮转。未分配任务不会被文案执行机抢先领取；只有加入且启用的普通用户会自动接单。手工分配与人员池管理使用 V2 契约，同时校验账号名和不可复用的数字账号 ID，避免删除账号后同名重建时旧页面误操作新账号。升级涉及历史任务修复和约束变更，请按 [迁移说明](migrations/README.md#0021--0022-自动分配升级) 在维护窗口备份、预览并先升级中心服务。
+
 ## 验证
 
 ```powershell

@@ -1,10 +1,11 @@
 import { z } from 'zod';
 
 import { apiHandler, ok, parseJson } from '../_lib';
-import { ApiError } from '../../../src/admin/http.mjs';
 import { withAdminStore } from '../../../src/admin/runtime.mjs';
-import { ControlPlaneApiError, createControlPlaneClient } from '../../../src/control-plane/client.mjs';
+import { createControlPlaneClient } from '../../../src/control-plane/client.mjs';
+import { forwardControlPlaneRequest } from '../../../src/control-plane/next-api-error.mjs';
 import { controlPlaneUrl } from '../../../src/control-plane/next-runtime.mjs';
+import { sessionActorHeaders } from '../../../src/control-plane/session-actor-headers.mjs';
 import {
   normalizeHumanQualitySettings,
   normalizeHumanQualitySettingsUpdate,
@@ -27,6 +28,7 @@ const settingsSchema = z.unknown().transform((value, context) => {
 
 type Session = {
   subject: string;
+  userId?: number;
   username?: string;
   roles: string[];
   credentialVersion?: number;
@@ -39,28 +41,13 @@ function centralClient(session: Session) {
   const role = session.roles[0];
   return createControlPlaneClient({
     baseUrl,
-    headers: {
-      'X-Actor-Username': username,
-      'X-Actor-Role': role,
-      'X-Actor-Credential-Version': String(session.credentialVersion || 1),
-    },
+    headers: sessionActorHeaders(session, { username, role }),
   });
-}
-
-async function forwardControlPlane<T>(request: () => Promise<T>) {
-  try {
-    return await request();
-  } catch (error) {
-    if (error instanceof ControlPlaneApiError) {
-      throw new ApiError(error.status, error.code, error.message);
-    }
-    throw error;
-  }
 }
 
 async function readSettings(session: Session) {
   const client = centralClient(session);
-  if (client) return forwardControlPlane(() => client.getHumanQualitySettings());
+  if (client) return forwardControlPlaneRequest(() => client.getHumanQualitySettings());
   return withAdminStore((store: any) => normalizeHumanQualitySettings(
     store.getProductionSettings().settings.humanQualityReasons,
   ));
@@ -69,7 +56,7 @@ async function readSettings(session: Session) {
 async function updateSettings(session: Session, input: unknown) {
   const settings = normalizeHumanQualitySettingsUpdate(input);
   const client = centralClient(session);
-  if (client) return forwardControlPlane(() => client.updateHumanQualitySettings(settings));
+  if (client) return forwardControlPlaneRequest(() => client.updateHumanQualitySettings(settings));
   return withAdminStore((store: any) => store.updateProductionSettings({
     humanQualityReasons: settings,
   }).settings.humanQualityReasons);

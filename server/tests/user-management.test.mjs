@@ -22,8 +22,9 @@ async function withServer(repository, action) {
   }
 }
 
-function actorHeaders(username, role, credentialVersion = 1) {
+function actorHeaders(username, role, credentialVersion = 1, userId) {
   return {
+    'X-Actor-User-Id': String(userId ?? (username === 'admin' ? 1 : username === 'alice' ? 2 : username === 'reviewer' ? 3 : '')),
     'X-Actor-Username': username,
     'X-Actor-Role': role,
     'X-Actor-Credential-Version': String(credentialVersion),
@@ -130,7 +131,7 @@ test('user deletion rejects the current account and the last active administrato
   function repositoryFor(current, adminCount = 2) {
     const client = {
       async query(sql) {
-        if (sql.includes('SELECT * FROM app_users')) return { rows: [current] };
+        if (sql.includes('SELECT * FROM app_users')) return { rows: [{ version: 1, ...current }] };
         if (sql.includes('SELECT COUNT(*)')) return { rows: [{ count: String(adminCount) }] };
         return { rows: [] };
       },
@@ -149,6 +150,137 @@ test('user deletion rejects the current account and the last active administrato
       .deleteUser(2, { actorUsername: 'admin', expectedVersion: 1 }),
     { code: 'LAST_ADMIN' },
   );
+});
+
+test('user deletion blocks unfinished assignments and safely detaches terminal history', async () => {
+  function deletionRepository(assignedTasks) {
+    const calls = [];
+    const user = {
+      id: 2,
+      username: 'alice',
+      display_name: 'Alice',
+      role: 'USER',
+      status: 'ACTIVE',
+      version: 1,
+    };
+    const client = {
+      async query(sql, values = []) {
+        const source = String(sql);
+        calls.push({ sql: source, values });
+        if (source.includes('SELECT * FROM app_users WHERE id')) return { rows: [user] };
+        if (source.includes('SELECT id, state FROM tasks')) return { rows: assignedTasks };
+        if (source.includes('UPDATE tasks')) return { rows: [] };
+        if (source.includes('DELETE FROM app_users')) return { rows: [user] };
+        return { rows: [] };
+      },
+      release() {},
+    };
+    return {
+      calls,
+      repository: new PostgresControlPlaneRepository({ pool: { connect: async () => client } }),
+    };
+  }
+
+  for (const [index, state] of [
+    'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_FAILED',
+    'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE',
+  ].entries()) {
+    const active = deletionRepository([{ id: 41 + index, state }]);
+    await assert.rejects(
+      active.repository.deleteUser(2, { actorUsername: 'admin', expectedVersion: 1 }),
+      { code: 'USER_HAS_ACTIVE_TASKS' },
+      `${state} must block account deletion`,
+    );
+    assert.equal(active.calls.some(({ sql }) => sql.includes('DELETE FROM app_users')), false);
+  }
+
+  const terminal = deletionRepository([
+    { id: 51, state: 'REVIEWED' },
+    { id: 52, state: 'CANCELLED' },
+  ]);
+  const deleted = await terminal.repository.deleteUser(2, { actorUsername: 'admin', expectedVersion: 1 });
+  assert.equal(deleted.username, 'alice');
+  const detach = terminal.calls.find(({ sql }) => sql.includes('UPDATE tasks'));
+  assert.ok(detach);
+  assert.deepEqual(detach.values, ['alice']);
+  assert.match(detach.sql, /assigned_to_user_id = NULL[\s\S]*assignment_source = NULL[\s\S]*assigned_at = NULL/u);
+  const audit = terminal.calls.find(({ sql }) => sql.includes('INSERT INTO task_assignment_events'));
+  assert.ok(audit);
+  assert.deepEqual(audit.values, ['alice', 'admin']);
+  assert.ok(terminal.calls.findIndex(({ sql }) => sql.includes('INSERT INTO task_assignment_events'))
+    < terminal.calls.findIndex(({ sql }) => sql.includes('UPDATE tasks')));
+  assert.ok(terminal.calls.findIndex(({ sql }) => sql.includes('UPDATE tasks'))
+    < terminal.calls.findIndex(({ sql }) => sql.includes('DELETE FROM app_users')));
+  assert.equal(terminal.calls[1].sql, 'SELECT pg_advisory_xact_lock(4310, 8301)');
+});
+
+test('user updates and deletions share one roster lock before reading an account', async () => {
+  function lockedRepository() {
+    const calls = [];
+    const client = {
+      async query(sql) {
+        const source = String(sql);
+        calls.push(source);
+        if (source.includes('SELECT * FROM app_users WHERE id')) return { rows: [{
+          id: 2, username: 'alice', display_name: 'Alice', role: 'USER', status: 'ACTIVE', version: 1,
+        }] };
+        if (source.includes('UPDATE app_users')) return { rows: [{
+          id: 2, username: 'alice', display_name: 'Alice 2', role: 'USER', status: 'ACTIVE', version: 2,
+        }] };
+        if (source.includes('SELECT id, state FROM tasks')) return { rows: [] };
+        if (source.includes('DELETE FROM app_users')) return { rows: [{
+          id: 2, username: 'alice', display_name: 'Alice', role: 'USER', status: 'ACTIVE', version: 1,
+        }] };
+        return { rows: [] };
+      },
+      release() {},
+    };
+    return { calls, repository: new PostgresControlPlaneRepository({ pool: { connect: async () => client } }) };
+  }
+
+  const update = lockedRepository();
+  await update.repository.updateUser(2, {
+    displayName: 'Alice 2', role: 'USER', status: 'ACTIVE', expectedVersion: 1,
+  });
+  assert.deepEqual(update.calls.slice(0, 3), [
+    'BEGIN',
+    'SELECT pg_advisory_xact_lock(4310, 8301)',
+    'SELECT * FROM app_users WHERE id = $1 FOR UPDATE',
+  ]);
+
+  const deletion = lockedRepository();
+  await deletion.repository.deleteUser(2, { actorUsername: 'admin', expectedVersion: 1 });
+  assert.deepEqual(deletion.calls.slice(0, 3), [
+    'BEGIN',
+    'SELECT pg_advisory_xact_lock(4310, 8301)',
+    'SELECT * FROM app_users WHERE id = $1 FOR UPDATE',
+  ]);
+});
+
+test('a worker with unfinished assignments cannot be disabled or moved out of the worker role', async () => {
+  for (const update of [
+    { displayName: 'Alice', role: 'USER', status: 'DISABLED', expectedVersion: 1 },
+    { displayName: 'Alice', role: 'REVIEWER', status: 'ACTIVE', expectedVersion: 1 },
+  ]) {
+    const calls = [];
+    const client = {
+      async query(sql) {
+        const source = String(sql);
+        calls.push(source);
+        if (source.includes('SELECT * FROM app_users WHERE id')) return { rows: [{
+          id: 2, username: 'alice', display_name: 'Alice', role: 'USER', status: 'ACTIVE', version: 1,
+        }] };
+        if (source.includes('SELECT id FROM tasks')) return { rows: [{ id: 41 }] };
+        return { rows: [] };
+      },
+      release() {},
+    };
+    const repository = new PostgresControlPlaneRepository({
+      pool: { connect: async () => client },
+    });
+    await assert.rejects(repository.updateUser(2, update), { code: 'USER_HAS_ACTIVE_TASKS' });
+    assert.equal(calls.some((sql) => sql.includes('UPDATE app_users')), false);
+  }
 });
 
 test('deletion password failures are rate limited per administrator', async () => {
@@ -192,21 +324,49 @@ test('setting a deletion password rate limits invalid current passwords', async 
   });
 });
 
+test('a same-name replacement administrator does not inherit the deleted account password limiter', async () => {
+  let admin = { id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credentialVersion: 1 };
+  const repository = {
+    ownsPool: true,
+    getUserByUsername: async () => admin,
+    setOwnDeletionPassword: async () => {
+      throw new ControlPlaneConflictError('CURRENT_PASSWORD_INVALID', 'wrong password');
+    },
+  };
+  await withServer(repository, async (root) => {
+    const request = (userId) => fetch(`${root}/v1/profile/deletion-password`, {
+      method: 'POST',
+      headers: { ...actorHeaders('admin', 'ADMIN', 1, userId), 'content-type': 'application/json' },
+      body: JSON.stringify({ currentPassword: 'wrong-password', deletionPassword: 'delete-secret' }),
+    });
+    for (let attempt = 0; attempt < 5; attempt += 1) assert.equal((await request(1)).status, 409);
+    assert.equal((await request(1)).status, 429);
+    admin = { ...admin, id: 9 };
+    assert.equal((await request(9)).status, 409);
+  });
+});
+
 test('deletion password must differ from the verified login password', async () => {
   const passwordHash = await hashUserPassword('login-secret');
   let updateReached = false;
-  const repository = new PostgresControlPlaneRepository({ pool: {
+  const client = {
     async query(sql) {
-      if (String(sql).includes('SELECT * FROM app_users')) {
-        return { rows: [{ username: 'admin', status: 'ACTIVE', password_hash: passwordHash }] };
+      const source = String(sql);
+      if (source.includes('SELECT * FROM app_users')) {
+        return { rows: [{ id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE',
+          credential_version: 1, password_hash: passwordHash }] };
       }
-      updateReached = true;
+      if (source.includes('UPDATE app_users')) updateReached = true;
       return { rows: [] };
     },
-  } });
+    release() {},
+  };
+  const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
 
   await assert.rejects(
-    repository.setOwnDeletionPassword('admin', {
+    repository.setOwnDeletionPassword({
+      userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1,
+    }, {
       currentPassword: 'login-secret',
       deletionPassword: 'login-secret',
     }),

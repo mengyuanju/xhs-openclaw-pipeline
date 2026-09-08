@@ -33,9 +33,16 @@ export function compactTask(row) {
   if (!row || !Number.isSafeInteger(row.id) || row.id < 1 || !STATES.includes(row.state)) {
     throw new TypeError('任务统计数据不完整');
   }
+  if (!Object.hasOwn(row, 'createdByAccountId')
+    || row.createdByAccountId !== null
+      && (!Number.isSafeInteger(row.createdByAccountId) || row.createdByAccountId < 1)) {
+    throw new TypeError('任务统计数据缺少稳定的创建者账号身份');
+  }
   return {
     id: row.id, state: row.state, query: String(row.query ?? '').slice(0, 500),
     createdByUserId: textOrNull(row.createdByUserId),
+    createdByAccountId: row.createdByAccountId,
+    assignedToUserId: textOrNull(row.assignedToUserId),
     createdByDisplayName: textOrNull(row.createdByDisplayName), createdByRole: textOrNull(row.createdByRole),
     createdAt: textOrNull(row.createdAt), updatedAt: textOrNull(row.updatedAt),
     imageReviewedAt: textOrNull(row.imageReviewedAt), lastActivityAt: textOrNull(row.lastActivityAt),
@@ -120,9 +127,15 @@ export function summarizeCounts(rawTasks, range, now = Date.now()) {
   let missingDates = 0;
   for (const task of tasks) {
     countTask(summary, task, range, today);
-    const key = task.createdByUserId;
-    if (!people.has(key)) people.set(key, { ...emptyCounts(), username: key,
-      displayName: task.createdByDisplayName || key || '历史无归属', role: task.createdByRole });
+    const historicalAccount = task.createdByAccountId === null && task.createdByUserId !== null;
+    const key = task.createdByAccountId === null
+      ? `historical:${task.createdByUserId ?? ''}`
+      : `account:${task.createdByAccountId}`;
+    if (!people.has(key)) people.set(key, { ...emptyCounts(), accountId: task.createdByAccountId,
+      username: task.createdByUserId,
+      displayName: historicalAccount ? `历史账号（${task.createdByUserId}）`
+        : task.createdByDisplayName || task.createdByUserId || '历史无归属',
+      role: historicalAccount ? null : task.createdByRole });
     countTask(people.get(key), task, range, today);
     for (const [group, values] of Object.entries(STATE_GROUPS)) if (values.includes(task.state)) states[group]++;
     if (within(task.createdAt, range)) trend.get(chinaDay(dateMs(task.createdAt))).created++;

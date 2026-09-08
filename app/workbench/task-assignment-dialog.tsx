@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/compone
 import { Textarea } from '@/components/ui/input';
 
 import { apiRequest } from '../components/api-client';
+import { selectedTasksHaveMixedAssignees } from '../../src/control-plane/task-assignment.mjs';
 import { CREATOR_ROLE_LABELS } from './admin-job-filters';
 import { JobUserPicker, type JobCreator } from './job-user-picker';
 
@@ -14,13 +15,16 @@ export type AssignmentTask = {
   id: number;
   query: string;
   assignedToUserId: string | null;
+  assignedToAccountId?: number | null;
   assignedToDisplayName?: string | null;
 };
 
 function currentAssignee(tasks: AssignmentTask[]): JobCreator | null {
   const username = tasks[0]?.assignedToUserId;
   if (!username || tasks.some((task) => task.assignedToUserId !== username)) return null;
+  const accountId = Number(tasks[0]?.assignedToAccountId);
   return {
+    id: Number.isSafeInteger(accountId) && accountId > 0 ? accountId : null,
     username,
     displayName: tasks[0].assignedToDisplayName || username,
     role: 'USER',
@@ -35,6 +39,7 @@ export function TaskAssignmentDialog({ tasks, open, onOpenChange, onAssigned }: 
   onAssigned: (message: string) => void | Promise<void>;
 }) {
   const [assignee, setAssignee] = useState<JobCreator | null>(null);
+  const [destinationRequired, setDestinationRequired] = useState(false);
   const [reason, setReason] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -42,6 +47,9 @@ export function TaskAssignmentDialog({ tasks, open, onOpenChange, onAssigned }: 
   useEffect(() => {
     if (!open) return;
     setAssignee(currentAssignee(tasks));
+    setDestinationRequired(selectedTasksHaveMixedAssignees(tasks)
+      || tasks.some((task) => task.assignedToUserId !== null
+        && (!Number.isSafeInteger(task.assignedToAccountId) || Number(task.assignedToAccountId) < 1)));
     setReason('');
     setError('');
   }, [open, tasks]);
@@ -49,6 +57,10 @@ export function TaskAssignmentDialog({ tasks, open, onOpenChange, onAssigned }: 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (submitting || tasks.length === 0) return;
+    if (destinationRequired) {
+      setError('所选任务当前负责人不一致，请先明确选择新的负责人或待分配任务池。');
+      return;
+    }
     setSubmitting(true);
     setError('');
     try {
@@ -56,13 +68,15 @@ export function TaskAssignmentDialog({ tasks, open, onOpenChange, onAssigned }: 
       if (tasks.length === 1) {
         await apiRequest(`/api/control-plane/v1/tasks/${tasks[0].id}/assignee`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ assignedToUserId: assignee?.username ?? null, reason: reasonValue }),
+          body: JSON.stringify({ assignedToUserId: assignee?.username ?? null,
+            assignedToAccountId: assignee?.id ?? null, reason: reasonValue }),
         });
       } else {
         await apiRequest('/api/control-plane/v1/tasks/batch-assignee', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ taskIds: tasks.map((task) => task.id),
-            assignedToUserId: assignee?.username ?? null, reason: reasonValue }),
+            assignedToUserId: assignee?.username ?? null,
+            assignedToAccountId: assignee?.id ?? null, reason: reasonValue }),
         });
       }
       const destination = assignee ? `${assignee.displayName}（${assignee.username}）` : '待分配任务池';
@@ -86,14 +100,20 @@ export function TaskAssignmentDialog({ tasks, open, onOpenChange, onAssigned }: 
           value={assignee}
           label="负责人"
           triggerId="task-assignment-user"
-          emptyLabel="待分配任务池"
+          emptyLabel={destinationRequired ? '负责人不一致，请重新选择' : '待分配任务池'}
+          emptyOptionLabel="待分配任务池"
+          emptyOptionSelected={!destinationRequired && assignee === null}
           dialogTitle="选择任务负责人"
           dialogDescription="仅显示已启用的普通作业员。未加入自动分配池的人员仍可由管理员手动指定。"
           roleLabels={CREATOR_ROLE_LABELS}
           eligibleRoles={['USER']}
           activeOnly
           disabled={submitting}
-          onChange={setAssignee}
+          onChange={(nextAssignee) => {
+            setAssignee(nextAssignee);
+            setDestinationRequired(false);
+            setError('');
+          }}
         />
         <div className="field">
           <label htmlFor="task-assignment-reason">分配说明（可选）</label>
@@ -105,7 +125,8 @@ export function TaskAssignmentDialog({ tasks, open, onOpenChange, onAssigned }: 
           <span aria-live="polite">{tasks.length === 1 ? `Query #${tasks[0]?.id}` : `已选择 ${tasks.length} 条任务`}</span>
           <div>
             <Button unstyled className="button" type="button" disabled={submitting} onClick={() => onOpenChange(false)}>取消</Button>
-            <Button unstyled className="button primary" type="submit" disabled={submitting || tasks.length === 0}>
+            <Button unstyled className="button primary" type="submit"
+              disabled={submitting || tasks.length === 0 || destinationRequired}>
               {submitting ? '正在分配…' : '确认分配'}
             </Button>
           </div>

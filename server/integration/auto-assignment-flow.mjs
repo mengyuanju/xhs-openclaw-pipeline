@@ -127,18 +127,25 @@ test('isolated PostgreSQL: pending pool, opt-in replenishment, fair claims and r
     status: 'PAUSED', assignmentLimit: 5, actorUsername: 'flow-admin',
   });
 
-  // Alice represents the first worker who already filled their own allowance.
-  const aliceTasks = await repository.createTasks({
-    nodeId: 'flow',
-    createdByUserId: 'alice',
-    tasks: [{ query: 'Alice 旧任务 1' }, { query: 'Alice 旧任务 2' }],
-  });
   const pendingTasks = await repository.createTasks({
     nodeId: 'flow',
     createdByUserId: 'flow-admin',
     assignedToUserId: null,
     skipCopyReview: true,
     tasks: [{ query: '待分配任务 1' }, { query: '待分配任务 2' }],
+  });
+  const prematureClaim = await repository.claimCopyBatch({
+    nodeId: 'flow',
+    limit: 3,
+    requestId: requestIdAt(),
+  });
+  assert.deepEqual(prematureClaim.claims, []);
+
+  // Alice represents the first worker who already filled their own allowance.
+  const aliceTasks = await repository.createTasks({
+    nodeId: 'flow',
+    createdByUserId: 'alice',
+    tasks: [{ query: 'Alice 旧任务 1' }, { query: 'Alice 旧任务 2' }],
   });
 
   const disabled = await repository.replenishAutoAssignments();

@@ -150,6 +150,7 @@ test('re-approving an exhausted task clears its failure budget and queues review
       if (sql.includes('INSERT INTO human_quality_review_submissions')) return { rows: [{ review_session_id: values[0] }] };
       if (sql.includes('SELECT * FROM tasks WHERE id')) return { rows: [{
         id: 41, state: 'COPY_REVIEW_PENDING', current_stage: 'IMAGE_RETRY_EXHAUSTED', current_copy_revision_id: 12,
+        assigned_to_user_id: 'alice',
       }] };
       if (sql.includes('SELECT * FROM copy_revisions')) return { rows: [{ id: 12, content: {} }] };
       if (sql.includes('SELECT id FROM executor_nodes')) return { rows: [{ id: 'reviewer' }] };

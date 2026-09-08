@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation';
 
 import { readServerSession } from '../server-session';
-import { readCentralData } from '../central-user-client';
+import { readCentralPageData } from '../central-user-client';
 import { AutoAssignmentPoolManager } from './auto-assignment-pool-manager';
 import { UserManager } from './user-manager';
 
@@ -12,8 +12,8 @@ export default async function UsersPage() {
   if (!session) redirect('/login?next=%2Fusers');
   if (!session.roles?.includes('ADMIN')) redirect('/workbench/personal');
   const [users, autoAssignment] = await Promise.all([
-    readCentralData('/v1/users', session),
-    readCentralData('/v1/auto-assignment', session),
+    readCentralPageData('/v1/users', session, '/users'),
+    readCentralPageData('/v1/auto-assignment', session, '/users'),
   ]);
   return <>
     <header className="page-header">

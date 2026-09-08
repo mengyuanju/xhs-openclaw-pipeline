@@ -117,7 +117,7 @@ export function UserManager({
   async function deleteUser(user: ManagedUser) {
     const approved = await confirm({
       title: '删除这个用户？',
-      description: `即将永久删除 ${user.displayName}（@${user.username}）的账号。已有任务记录仍会保留，但该账号将无法再登录。此操作无法撤销。`,
+      description: `即将永久删除 ${user.displayName}（@${user.username}）的账号。若该账号仍有未完成任务，系统会阻止删除并要求先转交；已完成任务记录会保留。此操作无法撤销。`,
       confirmLabel: '永久删除',
       tone: 'danger',
     });

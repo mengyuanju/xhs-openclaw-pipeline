@@ -72,6 +72,7 @@ type CopyRevision = {
 type TaskDetail = {
   id: number;
   query: string;
+  assignedToUserId?: string | null;
   aiDisclosureEnabled: boolean;
   state: TaskState;
   imageReviewedAt: string | null;
@@ -179,17 +180,20 @@ type CopyEditArea = 'copy' | 'plan';
 
 function getCopyEditBlockMessage({
   editable,
+  assigned,
   busy,
   score,
   ratingComplete,
   machineOriginal,
 }: {
   editable: boolean;
+  assigned: boolean;
   busy: boolean;
   score: HumanScore | null;
   ratingComplete: boolean;
   machineOriginal: boolean;
 }) {
+  if (!assigned) return '请先分配负责人，再进行文案评分和编辑。';
   if (!editable) return '当前任务不在待文案审核阶段，文案内容仅供查看。';
   if (busy) return '审核内容正在处理，请稍候再编辑。';
   if (score === null) return machineOriginal
@@ -333,7 +337,9 @@ export function TaskReviewDialog({
     !== JSON.stringify({ copy: savedDraft.copy, imagePlan: savedDraft.imagePlan }));
   const imageConfigurationChanged = Boolean(draft && savedDraft && JSON.stringify(draft.imageSettings) !== JSON.stringify(savedDraft.imageSettings));
   const isAdmin = role === 'ADMIN';
-  const editable = detail?.state === 'COPY_REVIEW_PENDING'
+  const taskHasAssignee = Boolean(detail
+    && (!Object.hasOwn(detail, 'assignedToUserId') || detail.assignedToUserId !== null));
+  const editable = taskHasAssignee && detail?.state === 'COPY_REVIEW_PENDING'
     && Boolean(revision && draft);
   const originalCopyRatingComplete = ratingFeedbackComplete(copyOriginalScore, copyOriginalReasons, copyOriginalNote);
   const copyFieldsEditable = editable && originalCopyRatingComplete
@@ -356,6 +362,7 @@ export function TaskReviewDialog({
   const currentCopyRatingLabel = revision?.executionId === null ? '当前修改稿评分' : '机器原稿初评';
   const copyEditBlockMessage = getCopyEditBlockMessage({
     editable,
+    assigned: taskHasAssignee,
     busy: loading || submitting,
     score: copyOriginalScore,
     ratingComplete: originalCopyRatingComplete,
@@ -720,7 +727,9 @@ export function TaskReviewDialog({
         <div>
           <span className="section-kicker">Task {detail ? `#${detail.id}` : ''}</span>
           <DialogTitle>{detail?.state === 'REVIEWED' ? '已完成任务详情' : detail?.state === 'MANUAL_ARCHIVE' ? '人工归档详情' : '任务详情与审核'}</DialogTitle>
-          <DialogDescription>{detail?.state === 'MANUAL_ARCHIVE'
+          <DialogDescription>{detail?.state === 'COPY_REVIEW_PENDING' && !taskHasAssignee
+            ? '机器文案已生成；请先在任务列表分配负责人，再开始人工评分与审核。'
+            : detail?.state === 'MANUAL_ARCHIVE'
             ? '核对完整图集并完成人工评分，再选择审核通过、重试生图或废弃。'
             : detail?.state === 'REVIEWED' ? '图文已审核通过，可查看详情并下载完整资源包。'
             : '先给机器原稿评分；2 分或 2.5 分可修改，修改后需要重新自评。'}</DialogDescription>
@@ -764,6 +773,8 @@ export function TaskReviewDialog({
                 onShowImages={assets.length ? () => { imageSectionRef.current?.scrollIntoView({ block: 'start' }); imageSectionRef.current?.focus({ preventScroll: true }); } : undefined} />}
               <section className="workbench-review-section">
                 <div className="workbench-review-section-title"><span>01</span><div><h3>标题、正文与标签</h3><p>{editable ? '先评价机器原稿，再决定直接放行或修改。' : '当前状态只读，展示任务采用的文案版本。'}</p></div></div>
+                {detail.state === 'COPY_REVIEW_PENDING' && !taskHasAssignee
+                  && <div className="notice warning" role="status">文案已生成，但任务尚未分配负责人。请先关闭窗口并完成分配，再进行评分或修改。</div>}
                 <div className="workbench-review-query">
                   <strong>Query 原文</strong>
                   <div id="review-query-text" className="workbench-review-query-text" data-expanded={queryExpanded || !longQuery}>{detail.query}</div>

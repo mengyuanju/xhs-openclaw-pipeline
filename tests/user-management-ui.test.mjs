@@ -33,5 +33,5 @@ test('workbench separates assignee from creator and limits discard controls to a
   assert.match(workbench, /role === 'ADMIN' \|\| taskOwnerId\(task\) === creatorUserId/u);
   assert.match(repository, /assignee\.display_name AS assigned_to_display_name/u);
   assert.match(repository, /creator\.display_name AS creator_display_name/u);
-  assert.match(server, /ownerOnly: requestActor\(ctx\)\.role !== 'ADMIN'/u);
+  assert.match(server, /ownerOnly: actor\.role !== 'ADMIN'/u);
 });

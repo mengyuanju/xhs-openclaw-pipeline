@@ -7,7 +7,7 @@ test('image revision HTTP permissions enforce owner or admin and forward actor i
   const calls = [];
   const roles = { alice: 'USER', bob: 'USER', reviewer: 'REVIEWER', admin: 'ADMIN' };
   const app = createControlPlaneApp({ enforceUserAuth: true, storageRoot: 'unused', repository: {
-    getUserByUsername: async username => ({ username, role: roles[username], status: 'ACTIVE', credentialVersion: 1 }),
+    getUserByUsername: async username => ({ id: 1, username, role: roles[username], status: 'ACTIVE', credentialVersion: 1 }),
     getTask: async () => ({ id: 1, createdByUserId: 'alice' }),
     reviseImages: async (...args) => { calls.push(args); return { state: 'IMAGE_QUEUED' }; },
   } });
@@ -15,7 +15,7 @@ test('image revision HTTP permissions enforce owner or admin and forward actor i
   t.after(() => new Promise(resolve => server.close(resolve)));
   for (const [username, role] of Object.entries(roles)) {
     const response = await fetch(`http://127.0.0.1:${server.address().port}/v1/tasks/1/image-revisions`, { method: 'POST', headers: {
-      'Content-Type': 'application/json', 'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1',
+      'Content-Type': 'application/json', 'X-Actor-User-Id': '1', 'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1',
     }, body: JSON.stringify({ operation: 'REPROCESS' }) });
     assert.equal(response.status, ['alice', 'admin'].includes(username) ? 201 : 403);
   }

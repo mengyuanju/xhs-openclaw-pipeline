@@ -6,7 +6,7 @@ import test from 'node:test';
 import JSZip from 'jszip';
 
 import { createControlPlaneApp } from '../src/http-server.mjs';
-import { ControlPlaneConflictError } from '../src/domain.mjs';
+import { ControlPlaneAuthenticationError, ControlPlaneConflictError } from '../src/domain.mjs';
 
 async function withServer(repository, action, { storageRoot = 'test-storage', enforceUserAuth = false } = {}) {
   const app = createControlPlaneApp({ repository, storageRoot, enforceUserAuth });
@@ -85,7 +85,7 @@ test('only administrators can read model traces, including traces of a users own
   await withServer(repository, async (root) => {
     for (const [username, role] of Object.entries(roles)) {
       const response = await fetch(`${root}/v1/tasks/1`, { headers: {
-        'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1',
+        'X-Actor-User-Id': '1', 'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1',
       } });
       assert.equal(response.status, 200);
       const { data } = await response.json();
@@ -95,7 +95,7 @@ test('only administrators can read model traces, including traces of a users own
     for (const suffix of ['', '/call']) {
       for (const [username, role] of Object.entries(roles)) {
         const response = await fetch(`${root}/v1/tasks/1/model-calls${suffix}`, { headers: {
-          'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1',
+          'X-Actor-User-Id': '1', 'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1',
         } });
         assert.equal(response.status, role === 'ADMIN' ? 200 : 403, `${role} ${suffix || 'list'}`);
         const body = await response.json();
@@ -155,6 +155,7 @@ test('executor status inventory is restricted to administrators', async () => {
     }),
   };
   const headers = (username, role) => ({
+    'X-Actor-User-Id': String(username === 'admin' ? 1 : 2),
     'X-Actor-Username': username,
     'X-Actor-Role': role,
     'X-Actor-Credential-Version': '1',
@@ -219,8 +220,103 @@ test('copy approval forwards the editable review payload as one operation', asyn
     input: { revisionId: 12, nodeId: 'node-a', edits, aiDisclosureEnabled: false,
       decision: 'APPROVE', originalScore: 2, originalReasons: ['STRUCTURE'], score: 2.5,
       reasons: ['EXPRESSION'], reviewSessionId: '77777777-7777-4777-8777-777777777777' },
-    actor: { actorRole: 'ADMIN', reviewerUserId: 'admin' },
+    actor: { actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 } },
   });
+});
+
+test('session actor identity requires the current immutable positive user id', async () => {
+  const current = {
+    id: 9, username: 'reused-reviewer', role: 'REVIEWER', status: 'ACTIVE', credentialVersion: 1,
+  };
+  const repository = {
+    getUserByUsername: async (username) => username === current.username ? current : null,
+    listTasks: async () => [],
+  };
+  const baseHeaders = {
+    'X-Actor-Username': current.username,
+    'X-Actor-Role': current.role,
+    'X-Actor-Credential-Version': '1',
+  };
+  await withServer(repository, async (root) => {
+    const accepted = await fetch(`${root}/v1/tasks`, {
+      headers: { ...baseHeaders, 'X-Actor-User-Id': String(current.id) },
+    });
+    assert.equal(accepted.status, 200);
+
+    for (const staleUserId of [undefined, '0', '1.5', '9007199254740992', '4']) {
+      const headers = { ...baseHeaders };
+      if (staleUserId !== undefined) headers['X-Actor-User-Id'] = staleUserId;
+      const rejected = await fetch(`${root}/v1/tasks`, { headers });
+      assert.equal(rejected.status, 401, `user id ${String(staleUserId)} must be rejected`);
+      assert.equal((await rejected.json()).error.code, 'SESSION_STALE');
+    }
+  }, { enforceUserAuth: true });
+});
+
+test('an in-flight task read cannot cross into a same-name replacement account', async () => {
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  let current = { id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 };
+  const repository = {
+    getUserByUsername: async () => current,
+    getUserByIdentity: async (actor) => current.id === actor.userId
+      && current.username === actor.username
+      && current.role === actor.role
+      && current.credentialVersion === actor.credentialVersion
+      ? current : null,
+    listTasks: async () => {
+      entered.resolve();
+      await release.promise;
+      return [{ id: 91, query: 'replacement account secret', assignedToUserId: 'alice' }];
+    },
+  };
+  await withServer(repository, async (root) => {
+    const pending = fetch(`${root}/v1/tasks`, {
+      headers: {
+        'X-Actor-User-Id': '2', 'X-Actor-Username': 'alice',
+        'X-Actor-Role': 'USER', 'X-Actor-Credential-Version': '1',
+      },
+    });
+    await entered.promise;
+    current = { ...current, id: 9 };
+    release.resolve();
+    const response = await pending;
+    const payload = await response.json();
+    assert.equal(response.status, 401);
+    assert.equal(payload.error.code, 'SESSION_STALE');
+    assert.doesNotMatch(JSON.stringify(payload), /replacement account secret/u);
+  }, { enforceUserAuth: true });
+});
+
+test('an in-flight HEAD task read also rechecks the immutable account identity', async () => {
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  let current = { id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 };
+  const repository = {
+    getUserByUsername: async () => current,
+    getUserByIdentity: async (actor) => current.id === actor.userId ? current : null,
+    listTasks: async () => {
+      entered.resolve();
+      await release.promise;
+      return [{ id: 92, query: 'replacement account secret', assignedToUserId: 'alice' }];
+    },
+  };
+  await withServer(repository, async (root) => {
+    const pending = fetch(`${root}/v1/tasks`, {
+      method: 'HEAD',
+      headers: {
+        'X-Actor-User-Id': '2', 'X-Actor-Username': 'alice',
+        'X-Actor-Role': 'USER', 'X-Actor-Credential-Version': '1',
+      },
+    });
+    await entered.promise;
+    current = { ...current, id: 9 };
+    release.resolve();
+    const response = await pending;
+    assert.equal(response.status, 401);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.equal((await response.arrayBuffer()).byteLength, 0);
+  }, { enforceUserAuth: true });
 });
 
 test('manual image retry route sends the task back to the image queue', async () => {
@@ -310,6 +406,7 @@ test('task listing forwards server-side pagination, states and Query search', as
       sortBy: 'createdAt',
       sortOrder: 'asc',
       createdByUserId: undefined,
+      createdByAccountId: undefined,
       assignedToUserId: undefined,
       unassignedOnly: false,
       excludeUnassigned: false,
@@ -333,11 +430,12 @@ test('task ownership comes from the UI server identity and is forwarded to task 
       body: JSON.stringify({ nodeId: 'node-a', createdByUserId: 'forged', tasks: [{ query: '我的任务' }] }),
     });
     assert.equal(created.status, 201);
-    const listed = await fetch(`${root}/v1/tasks?createdByUserId=admin&includeTotal=true`);
+    const listed = await fetch(`${root}/v1/tasks?createdByUserId=admin&createdByAccountId=1&includeTotal=true`);
     assert.equal(listed.status, 200);
   });
   assert.equal(calls[0].createdByUserId, 'admin');
   assert.equal(calls[1].createdByUserId, 'admin');
+  assert.equal(calls[1].createdByAccountId, '1');
   assert.equal(calls[1].nodeId, undefined);
 });
 
@@ -428,10 +526,38 @@ test('administrator batch actions retry only retryable work and report per-task 
     });
   });
   assert.deepEqual(calls, [
-    ['copy', 1, { useLatestConfig: true }],
-    ['image', 2, { retryOnly: true }],
-    ['cancel', 4, { queuedOnly: true }],
+    ['copy', 1, { useLatestConfig: true,
+      actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 } }],
+    ['image', 2, { retryOnly: true,
+      actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 } }],
+    ['cancel', 4, { queuedOnly: true,
+      actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 } }],
   ]);
+});
+
+test('batch actions stop and return 401 when the actor becomes stale', async () => {
+  const calls = [];
+  const repository = {
+    getTaskActionSummary: async (taskId) => {
+      calls.push(['read', taskId]);
+      return { id: taskId, state: 'COPY_FAILED' };
+    },
+    retryTask: async (taskId) => {
+      calls.push(['retry', taskId]);
+      throw new ControlPlaneAuthenticationError();
+    },
+  };
+  await withServer(repository, async (root) => {
+    const response = await fetch(`${root}/v1/tasks/batch-actions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'RETRY', taskIds: [1, 2] }),
+    });
+    assert.equal(response.status, 401);
+    assert.deepEqual((await response.json()).error, {
+      code: 'SESSION_STALE', message: '账号状态已变化，请重新登录',
+    });
+  });
+  assert.deepEqual(calls, [['read', 1], ['retry', 1]]);
 });
 
 test('administrator batch permanent deletion removes eligible task storage and reports skipped tasks', async () => {
@@ -445,7 +571,9 @@ test('administrator batch permanent deletion removes eligible task storage and r
   const repository = {
     permanentlyDeleteTasks: async (taskIds, input) => {
       assert.deepEqual(taskIds, [7, 8]);
-      assert.equal(input.actorUsername, 'admin');
+      assert.deepEqual(input.actor, {
+        userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1,
+      });
       assert.equal(input.deletionPassword, 'delete-secret');
       await input.beforeDelete(7);
       return {
@@ -469,6 +597,54 @@ test('administrator batch permanent deletion removes eligible task storage and r
     }, { storageRoot });
     await assert.rejects(() => readFile(deletedFile), { code: 'ENOENT' });
     assert.equal(await readFile(retainedFile, 'utf8'), 'keep-me');
+  } finally {
+    await rm(storageRoot, { recursive: true, force: true });
+  }
+});
+
+test('an in-flight batch archive is rejected when the administrator account is replaced', async () => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'xhs-task-batch-archive-stale-'));
+  const directory = join(storageRoot, 'tasks', '12', 'image-runs', 'run-12');
+  const storagePath = join(directory, 'image.png');
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  let current = { id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credentialVersion: 1 };
+  const task = {
+    id: 12, state: 'REVIEWED', currentCopyRevisionId: 1, currentImageRunId: 'run-12',
+    copyRevisions: [{ id: 1, content: { copy: { title: '旧会话不可下载', body: '正文', tags: [] } } }],
+    imageRuns: [], assets: [{ id: 12, taskId: 12, imageRunId: 'run-12', mediaType: 'image/png', originalName: '图片.png' }],
+  };
+  try {
+    await mkdir(directory, { recursive: true });
+    await writeFile(storagePath, 'image-12');
+    await withServer({
+      getUserByUsername: async () => current,
+      getUserByIdentity: async (actor) => current.id === actor.userId ? current : null,
+      getTask: async () => task,
+      getAsset: async () => {
+        entered.resolve();
+        await release.promise;
+        return { id: 12, taskId: 12, mediaType: 'image/png', originalName: '图片.png', storagePath };
+      },
+    }, async (root) => {
+      const pending = fetch(`${root}/v1/tasks/batch-archive`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'X-Actor-User-Id': '1', 'X-Actor-Username': 'admin',
+          'X-Actor-Role': 'ADMIN', 'X-Actor-Credential-Version': '1',
+        },
+        body: JSON.stringify({ taskIds: [12] }),
+      });
+      await entered.promise;
+      current = { ...current, id: 9 };
+      release.resolve();
+      const response = await pending;
+      assert.equal(response.status, 401);
+      assert.equal(response.headers.get('content-disposition'), null);
+      assert.equal(response.headers.get('cache-control'), 'no-store');
+      assert.equal((await response.json()).error.code, 'SESSION_STALE');
+    }, { storageRoot, enforceUserAuth: true });
   } finally {
     await rm(storageRoot, { recursive: true, force: true });
   }
@@ -511,10 +687,11 @@ test('saved views and batch operations are scoped to authenticated administrator
       role: username === 'admin' ? 'ADMIN' : 'REVIEWER', status: 'ACTIVE', credentialVersion: 1,
     }),
     listSavedTaskViews: async (username) => { calls.push(['list', username]); return []; },
-    saveTaskView: async (username, input) => { calls.push(['save', username, input]); return { id: 7, ...input }; },
-    deleteSavedTaskView: async (username, id) => { calls.push(['delete', username, id]); return { id: Number(id), deleted: true }; },
+    saveTaskView: async (username, input, options) => { calls.push(['save', username, input, options]); return { id: 7, ...input }; },
+    deleteSavedTaskView: async (username, id, options) => { calls.push(['delete', username, id, options]); return { id: Number(id), deleted: true }; },
   };
   const headers = (username, role) => ({
+    'X-Actor-User-Id': String(username === 'admin' ? 1 : 2),
     'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1',
   });
   await withServer(repository, async (root) => {
@@ -535,7 +712,12 @@ test('saved views and batch operations are scoped to authenticated administrator
       body: JSON.stringify({ taskIds: [1], deletionPassword: 'delete-secret' }),
     })).status, 403);
   }, { enforceUserAuth: true });
-  assert.deepEqual(calls, [['list', 'admin'], ['save', 'admin', { name: '我的失败任务', viewKey: 'ALL_JOBS', filters: { attention: 'FAILED' } }], ['delete', 'admin', '7']]);
+  const actor = { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 };
+  assert.deepEqual(calls, [
+    ['list', 'admin'],
+    ['save', 'admin', { name: '我的失败任务', viewKey: 'ALL_JOBS', filters: { attention: 'FAILED' } }, { actor }],
+    ['delete', 'admin', '7', { actor }],
+  ]);
 });
 
 test('permanent task deletion quarantines files and restores them when the database rejects deletion', async () => {

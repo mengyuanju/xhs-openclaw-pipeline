@@ -26,6 +26,7 @@ import {
 import { apiRequest } from '../components/api-client';
 
 type PoolUser = {
+  id: number;
   username: string;
   displayName: string;
   role: 'ADMIN' | 'REVIEWER' | 'USER';
@@ -41,6 +42,7 @@ type AutoAssignmentSettings = {
 };
 
 type AutoAssignmentWorker = {
+  accountId: number | null;
   username: string;
   displayName: string | null;
   userRole: 'ADMIN' | 'REVIEWER' | 'USER' | null;
@@ -61,6 +63,8 @@ type AutoAssignmentSnapshot = {
   settings: AutoAssignmentSettings;
   workers: AutoAssignmentWorker[];
   unassignedTaskCount: number;
+  autoAssignableTaskCount?: number;
+  manualAttentionTaskCount?: number;
 };
 
 type EditorState = { mode: 'add' } | { mode: 'edit'; username: string };
@@ -108,6 +112,16 @@ export function AutoAssignmentPoolManager({
     ? initialSnapshot.workers.filter((worker) => worker.canReceive)
       .reduce((total, worker) => total + worker.availableSlots, 0)
     : 0;
+  // Keep the web UI usable during a center-first rolling deployment. Older
+  // centers only return unassignedTaskCount until their process is restarted.
+  const autoAssignableTaskCount = typeof initialSnapshot.autoAssignableTaskCount === 'number'
+    && Number.isInteger(initialSnapshot.autoAssignableTaskCount)
+    ? initialSnapshot.autoAssignableTaskCount
+    : initialSnapshot.unassignedTaskCount;
+  const manualAttentionTaskCount = typeof initialSnapshot.manualAttentionTaskCount === 'number'
+    && Number.isInteger(initialSnapshot.manualAttentionTaskCount)
+    ? initialSnapshot.manualAttentionTaskCount
+    : Math.max(0, initialSnapshot.unassignedTaskCount - autoAssignableTaskCount);
 
   async function run(key: string, action: () => Promise<unknown>, success: string) {
     setBusy(key);
@@ -168,7 +182,7 @@ export function AutoAssignmentPoolManager({
       const saved = await run('save-worker', () => apiRequest(workerPath(user.username), {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ status: 'ACTIVE', assignmentLimit }),
+        body: JSON.stringify({ accountId: user.id, status: 'ACTIVE', assignmentLimit }),
       }), `已将 ${user.displayName} 加入自动分配池。`);
       if (saved) setEditor(null);
       return;
@@ -184,6 +198,7 @@ export function AutoAssignmentPoolManager({
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
+        accountId: worker.accountId,
         status: worker.status,
         assignmentLimit,
         expectedVersion: worker.version,
@@ -203,6 +218,7 @@ export function AutoAssignmentPoolManager({
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
+        accountId: worker.accountId,
         status: nextStatus,
         assignmentLimit: worker.assignmentLimit,
         expectedVersion: worker.version,
@@ -223,7 +239,7 @@ export function AutoAssignmentPoolManager({
     await run(`remove-${worker.username}`, () => apiRequest(workerPath(worker.username), {
       method: 'DELETE',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ expectedVersion: worker.version }),
+      body: JSON.stringify({ accountId: worker.accountId, expectedVersion: worker.version }),
     }), `已将 ${worker.displayName || worker.username} 移出自动分配池。`);
   }
 
@@ -242,7 +258,8 @@ export function AutoAssignmentPoolManager({
 
   return <div className="user-management-stack">
     <section className="user-summary-grid" aria-label="自动分配池概况">
-      <article className="user-summary-card"><span><ListChecks size={18} /></span><div><strong>{initialSnapshot.unassignedTaskCount}</strong><small>待分配任务</small></div></article>
+      <article className="user-summary-card"><span><ListChecks size={18} /></span><div><strong>{initialSnapshot.unassignedTaskCount}</strong><small>全部待分配</small></div></article>
+      <article className="user-summary-card"><span className="tone-green"><ListChecks size={18} /></span><div><strong>{autoAssignableTaskCount}</strong><small>可自动分配</small><div className="subtle">另有 {manualAttentionTaskCount} 条需人工处理或等待执行结束</div></div></article>
       <article className="user-summary-card"><span className="tone-green"><Users size={18} /></span><div><strong>{availableWorkerCount}</strong><small>可用池成员</small></div></article>
       <article className="user-summary-card"><span className="tone-amber"><CheckCircle2 size={18} /></span><div><strong>{effectiveAvailableSlots}</strong><small>当前可用名额</small></div></article>
     </section>

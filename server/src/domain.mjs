@@ -48,6 +48,22 @@ export class ControlPlaneNotFoundError extends Error {
   }
 }
 
+export class ControlPlaneAuthenticationError extends Error {
+  constructor(message = '账号状态已变化，请重新登录') {
+    super(message);
+    this.name = 'ControlPlaneAuthenticationError';
+    this.code = 'SESSION_STALE';
+  }
+}
+
+export class ControlPlaneAuthorizationError extends Error {
+  constructor(message = 'current user cannot perform this operation') {
+    super(message);
+    this.name = 'ControlPlaneAuthorizationError';
+    this.code = 'FORBIDDEN';
+  }
+}
+
 export function normalizeNodeId(value) {
   const nodeId = String(value ?? '').trim();
   if (!NODE_ID_PATTERN.test(nodeId)) {
