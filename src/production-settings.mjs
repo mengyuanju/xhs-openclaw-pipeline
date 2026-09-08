@@ -4,6 +4,10 @@ import {
 } from './model-api-config.mjs';
 import { normalizeLayoutPresets } from '../server/src/layout-library.mjs';
 import { normalizeLayoutCatalog } from '../server/src/layout-catalog.mjs';
+import {
+  DEFAULT_HUMAN_QUALITY_SETTINGS,
+  normalizeHumanQualitySettings,
+} from './human-quality-settings.mjs';
 
 export const DEFAULT_PRODUCTION_SETTINGS = Object.freeze({
   knowledgeEnabled: true,
@@ -15,6 +19,7 @@ export const DEFAULT_PRODUCTION_SETTINGS = Object.freeze({
   aiDisclosureText: 'AI生成',
   modelApi: DEFAULT_MODEL_API_SETTINGS,
   layoutPresets: Object.freeze([]),
+  humanQualityReasons: DEFAULT_HUMAN_QUALITY_SETTINGS,
 });
 
 function booleanSetting(value, fallback, name) {
@@ -93,6 +98,7 @@ export function normalizeProductionSettings(input = {}) {
     ),
     modelApi: normalizeModelApiSettings(input.modelApi ?? DEFAULT_MODEL_API_SETTINGS),
     layoutPresets: normalizeLayoutPresets(input.layoutPresets),
+    humanQualityReasons: normalizeHumanQualitySettings(input.humanQualityReasons),
     ...(input.layoutCatalog !== undefined ? { layoutCatalog: normalizeLayoutCatalog(input.layoutCatalog) } : {}),
   };
   if (settings.qualityRepairTargetScore <= settings.qualityRepairTriggerScore) {

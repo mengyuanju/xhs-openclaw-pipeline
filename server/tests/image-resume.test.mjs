@@ -41,13 +41,16 @@ test('image claim restricts checkpoint recovery to the node holding the files', 
     release() {},
     async query(sql, values) {
       if (sql.includes('SELECT * FROM executor_nodes')) return { rows: [{ id: 'other-node', image_worker_enabled: true }] };
-      if (sql.includes('FOR UPDATE SKIP LOCKED')) selection = { sql, values };
+      if (sql.includes('SELECT last_assignee_user_id FROM execution_claim_cursors')) {
+        return { rows: [{ last_assignee_user_id: null }] };
+      }
+      if (sql.includes('FOR UPDATE OF task SKIP LOCKED')) selection = { sql, values };
       return { rows: [] };
     },
   };
   const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
   assert.equal(await repository.claimImage('other-node'), null);
-  assert.deepEqual(selection.values, ['IMAGE_QUEUED', 'other-node', 1]);
+  assert.deepEqual(selection.values, ['IMAGE_QUEUED', 'other-node', null, 1]);
   assert.match(selection.sql, /imageRecovery[\s\S]*nodeId[\s\S]*\$2/u);
 });
 

@@ -110,17 +110,33 @@ try {
   const agent = createExecutorAgent({ controlPlane, nodeId, environment, copyConcurrency, imageConcurrency,
     imageWorkerEnabled: imageTasks > 0, concurrencyEnabled: true, workRoot: join(output, 'work') });
   await agent.prepare(); await agent.register();
-  for (const query of queries) {
+  for (const [queryIndex, query] of queries.entries()) {
     const state = imported ? 'COPY_REVIEW_PENDING' : 'COPY_QUEUED';
-    const task = (await pool.query(`INSERT INTO tasks(query, requested_image_count, created_by_node_id, copy_executor_node_id, state)
-      VALUES ($1, '3', $2, $2, $3) RETURNING id`, [query, nodeId, state])).rows[0];
+    const bypassCopyReview = queryIndex < imageTasks;
+    const task = (await pool.query(`INSERT INTO tasks(
+        query, requested_image_count, created_by_node_id, created_by_user_id,
+        assigned_to_user_id, assignment_source, assigned_at,
+        copy_executor_node_id, state, skip_copy_review
+      ) VALUES ($1, '3', $2, 'admin', 'admin', 'SELF', now(), $2, $3, $4)
+      RETURNING id`, [query, nodeId, state, !imported && bypassCopyReview])).rows[0];
     if (imported) {
       const sourceTask = imported.tasks.find(task => task.query === query);
       const sourceRevision = imported.revisions.filter(revision => revision.task_id === sourceTask?.id).at(-1);
       assert.ok(sourceRevision, 'copy import requires a previous real result');
       const revision = (await pool.query(`INSERT INTO copy_revisions(task_id, execution_id, revision, content)
         VALUES ($1, NULL, 1, $2) RETURNING id`, [task.id, sourceRevision.content])).rows[0];
-      await pool.query('UPDATE tasks SET current_copy_revision_id = $1 WHERE id = $2', [revision.id, task.id]);
+      if (bypassCopyReview) {
+        await pool.query(`UPDATE copy_revisions SET
+          approved_at = now(), approved_by_node_id = $2, approval_mode = 'ADMIN_BYPASS'
+          WHERE id = $1`, [revision.id, nodeId]);
+        await pool.query(`UPDATE tasks SET
+          state = 'IMAGE_QUEUED', current_copy_revision_id = $1, current_stage = 'IMAGE_QUEUED',
+          progress_percent = 0, progress_message = '基准测管理员免审，等待图片执行机领取',
+          last_activity_at = now(), finished_at = NULL, updated_at = now()
+          WHERE id = $2`, [revision.id, task.id]);
+      } else {
+        await pool.query('UPDATE tasks SET current_copy_revision_id = $1 WHERE id = $2', [revision.id, task.id]);
+      }
     }
   }
   event('ready', { output, queries, copyConcurrency, imageConcurrency, modelTotal: copyConcurrency + imageConcurrency,
@@ -131,7 +147,7 @@ try {
   checkInterrupted();
   heartbeat = setInterval(() => { void agent.heartbeat().catch(error => event('heartbeat-error', { message: error.message })); }, 15000);
   schedule = scheduler.start();
-  let approved = false;
+  let copyPhaseComplete = false;
   const deadline = Date.now() + 40 * 60_000;
   while (true) {
     if (interrupted) break;
@@ -140,12 +156,11 @@ try {
     }
     if (Date.now() > deadline) { scheduler.stop(); throw new Error('benchmark exceeded 40 minutes; draining in-flight work'); }
     const tasks = (await pool.query('SELECT id, state, current_copy_revision_id FROM tasks ORDER BY id')).rows;
-    if (!approved && tasks.every(task => !['COPY_QUEUED', 'COPY_RUNNING'].includes(task.state))) {
-      const selected = tasks.filter(task => task.state === 'COPY_REVIEW_PENDING').slice(0, imageTasks);
-      for (const task of selected) await repo.approveCopy(task.id, { revisionId: task.current_copy_revision_id, nodeId });
-      approved = true;
-      event('image-phase', { count: selected.length });
-    } else if (approved && tasks.every(task => !['COPY_QUEUED', 'COPY_RUNNING', 'IMAGE_QUEUED', 'IMAGE_RUNNING'].includes(task.state))
+    if (!copyPhaseComplete && tasks.every(task => !['COPY_QUEUED', 'COPY_RUNNING'].includes(task.state))) {
+      copyPhaseComplete = true;
+      event('image-phase', { count: Math.min(imageTasks, tasks.length), approvalMode: 'ADMIN_BYPASS' });
+    }
+    if (copyPhaseComplete && tasks.every(task => !['COPY_QUEUED', 'COPY_RUNNING', 'IMAGE_QUEUED', 'IMAGE_RUNNING'].includes(task.state))
       && Object.values(scheduler.status()).every(pool => pool.active === 0 && pool.reserved === 0)) break;
     await new Promise(done => setTimeout(done, 1000));
   }

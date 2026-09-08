@@ -45,8 +45,12 @@ test('cached task and detail facts never retain prompts, model responses or snap
   const minimal = task(1, { input: { prompt: 'private' }, error: 'private error', secret: 'private' });
   const detail = compactDetail({ id: 1, executions: [{ id: 'copy', kind: 'COPY', status: 'SUCCEEDED',
     snapshot: { secret: 'private' }, progressDetails: { prompt: 'private' } }],
-    copyRevisions: [{ content: { body: 'private' } }], imageRuns: [], assets: [] });
+    copyRevisions: [{ content: { body: 'private' } }], imageRuns: [], assets: [],
+    humanQualityAssessments: [{ id: 1, stage: 'COPY', score: 2.5, ratingContext: 'ORIGINAL',
+      copyRevisionId: 1, reasonCodes: ['private'], note: 'private', createdAt: '2026-09-06T01:00:00Z' }] });
   assert.equal(JSON.stringify([minimal, detail]).includes('private'), false);
+  assert.deepEqual(detail.assessments, [{ id: 1, stage: 'COPY', scoreX10: 25, ratingContext: 'ORIGINAL',
+    createdAt: '2026-09-06T01:00:00Z', copyRevisionId: 1, imageRunId: null }]);
 });
 
 test('execution means exclude failures, abandoned and simulation; delivery and image output have separate units', () => {
@@ -76,6 +80,37 @@ test('execution means exclude failures, abandoned and simulation; delivery and i
   assert.equal(summarizeEfficiency([], new Map(), normalizeRange({}, now)).copy.meanMs, null);
 });
 
+test('human quality uses one genuine first-rating sample per task and excludes edits, repeats, simulations and unrated work', () => {
+  const assessment = (id, stage, score, createdAt, patch = {}) => ({ id, stage, score, createdAt,
+    ratingContext: stage === 'COPY' ? 'ORIGINAL' : 'IMAGE', ...patch });
+  const first = compactDetail({ executions: [], assets: [], imageRuns: [
+    { id: 'simulated-run', result: { simulation: { enabled: true } } }, { id: 'real-run' },
+  ], humanQualityAssessments: [
+    assessment('edited', 'COPY', 3, '2026-09-06T00:55:00Z', { ratingContext: 'EDITED', copyRevisionId: 2 }),
+    assessment('copy-first', 'COPY', 2.5, '2026-09-06T01:00:00Z', { copyRevisionId: 1 }),
+    assessment('copy-repeat', 'COPY', 3, '2026-09-06T01:05:00Z', { copyRevisionId: 1 }),
+    assessment('image-simulated', 'IMAGE', 3, '2026-09-06T01:10:00Z', { imageRunId: 'simulated-run' }),
+    assessment('image-first-real', 'IMAGE', 2, '2026-09-06T01:15:00Z', { imageRunId: 'real-run' }),
+    assessment('image-repeat', 'IMAGE', 3, '2026-09-06T01:20:00Z', { imageRunId: 'real-run' }),
+  ] });
+  const second = compactDetail({ executions: [], assets: [], imageRuns: [{ id: 'second-run' }],
+    humanQualityAssessments: [
+      assessment('copy-second-task', 'COPY', 3, '2026-09-06T02:00:00Z', { copyRevisionId: 3 }),
+      assessment('image-second-task', 'IMAGE', 3, '2026-09-06T02:05:00Z', { imageRunId: 'second-run' }),
+    ] });
+  const outside = compactDetail({ executions: [], assets: [], imageRuns: [], humanQualityAssessments: [
+    assessment('outside-first', 'COPY', 1, '2026-09-04T01:00:00Z', { copyRevisionId: 1 }),
+    assessment('inside-repeat', 'COPY', 3, '2026-09-06T03:00:00Z', { copyRevisionId: 1 }),
+  ] });
+  const rows = [task(1), task(2), task(3), task(4)];
+  const summary = summarizeEfficiency(rows, new Map([[1, first], [2, second], [3, outside],
+    [4, compactDetail({ executions: [], assets: [], imageRuns: [], humanQualityAssessments: [] })]]), normalizeRange({}, now));
+  assert.deepEqual(summary.quality.copy, { samples: 2, threePoint: 1, qualified: 2,
+    threePointRate: .5, qualifiedRate: 1 });
+  assert.deepEqual(summary.quality.image, { samples: 2, threePoint: 1, qualified: 1,
+    threePointRate: .5, qualifiedRate: .5 });
+});
+
 test('terminal tasks with old retry markers are not current anomalies and unattached assets are not delivered images', () => {
   const rows = [task(1, { state: 'CANCELLED', currentStage: 'IMAGE_RETRY_EXHAUSTED' }),
     task(2, { state: 'REVIEWED', imageReviewedAt: '2026-09-06T02:00:00Z' })];
@@ -87,6 +122,8 @@ test('terminal tasks with old retry markers are not current anomalies and unatta
 
 test('malformed execution kinds fail closed and metadata cannot retain arbitrary objects', () => {
   assert.throws(() => compactDetail({ executions: [{ id: 'bad', kind: '__proto__', status: 'SUCCEEDED' }], imageRuns: [], assets: [] }));
+  assert.throws(() => compactDetail({ executions: [], imageRuns: [], assets: [],
+    humanQualityAssessments: [{ id: 1, stage: 'COPY', score: 2.1 }] }));
   const row = task(1, { createdByDisplayName: { secret: 'private' }, createdAt: { private: true }, currentImageRunId: { private: true } });
   assert.equal(row.createdByDisplayName, null);
   assert.equal(JSON.stringify(row).includes('private'), false);

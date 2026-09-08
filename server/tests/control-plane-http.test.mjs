@@ -194,8 +194,8 @@ test('control plane HTTP returns a structured stale execution conflict', async (
 test('copy approval forwards the editable review payload as one operation', async () => {
   let received;
   const repository = {
-    approveCopy: async (taskId, input) => {
-      received = { taskId, input };
+    approveCopy: async (taskId, input, actor) => {
+      received = { taskId, input, actor };
       return { id: Number(taskId), state: 'IMAGE_QUEUED' };
     },
   };
@@ -207,14 +207,19 @@ test('copy approval forwards the editable review payload as one operation', asyn
     const response = await fetch(`${root}/v1/tasks/7/approve-copy`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ revisionId: 12, nodeId: 'node-a', edits, aiDisclosureEnabled: false }),
+    body: JSON.stringify({ revisionId: 12, nodeId: 'node-a', edits, aiDisclosureEnabled: false,
+      decision: 'APPROVE', originalScore: 2, originalReasons: ['STRUCTURE'], score: 2.5,
+      reasons: ['EXPRESSION'], reviewSessionId: '77777777-7777-4777-8777-777777777777' }),
     });
     assert.equal(response.status, 200);
     assert.equal((await response.json()).data.state, 'IMAGE_QUEUED');
   });
   assert.deepEqual(received, {
     taskId: '7',
-    input: { revisionId: 12, nodeId: 'node-a', edits, aiDisclosureEnabled: false },
+    input: { revisionId: 12, nodeId: 'node-a', edits, aiDisclosureEnabled: false,
+      decision: 'APPROVE', originalScore: 2, originalReasons: ['STRUCTURE'], score: 2.5,
+      reasons: ['EXPRESSION'], reviewSessionId: '77777777-7777-4777-8777-777777777777' },
+    actor: { actorRole: 'ADMIN', reviewerUserId: 'admin' },
   });
 });
 
@@ -305,6 +310,9 @@ test('task listing forwards server-side pagination, states and Query search', as
       sortBy: 'createdAt',
       sortOrder: 'asc',
       createdByUserId: undefined,
+      assignedToUserId: undefined,
+      unassignedOnly: false,
+      excludeUnassigned: false,
       limit: '20',
       offset: '20',
       includeTotal: true,

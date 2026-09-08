@@ -15,9 +15,14 @@ export type Distribution = { samples: number; meanMs: number | null; medianMs: n
 export type ExecutionStats = Distribution & {
   failed: number; succeeded: number; abandoned: number; invalid: number; failureRate: number | null;
 };
+export type QualityStats = {
+  samples: number; threePoint: number; qualified: number;
+  threePointRate: number | null; qualifiedRate: number | null;
+};
 export type Efficiency = {
   copy: ExecutionStats; image: ExecutionStats; delivery: Distribution;
   effectiveImages: number; simulated: number; executionTasks: number; repeatedTasks: number; repeatRate: number | null;
+  quality: { copy: QualityStats; image: QualityStats };
   trend: { date: string; copyMs: number | null; imageMs: number | null }[];
   total: number; loaded: number; state: 'ready' | 'loading' | 'partial'; failed: number; updatedAt: string | null;
 };

@@ -115,7 +115,9 @@ export function CentralDataWorkbench({ resource }: { resource: Resource }) {
     setBusy(true);
     try {
       const latest = await apiRequest<any[]>(endpoint('/v1/settings'));
-      value.layoutPresets = latest.find(item => item.key === 'production')?.value?.layoutPresets ?? [];
+      const latestProduction = latest.find(item => item.key === 'production')?.value ?? {};
+      value.layoutPresets = latestProduction.layoutPresets ?? [];
+      value.humanQualityReasons = latestProduction.humanQualityReasons;
       await apiRequest(endpoint('/v1/settings/production'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -193,7 +195,7 @@ export function CentralDataWorkbench({ resource }: { resource: Resource }) {
         </Select>
         <small>保存时以下 JSON 的 modelApi.agentProvider 以此选项为准。凭据仅在执行机管理；已有快照保持原配置，回切需选择“使用最新配置重新生成”。</small>
       </div>
-      <div className="field"><label htmlFor="central-production-settings">其他生产配置</label><Textarea className="textarea central-json-editor" id="central-production-settings" name="value" required defaultValue={JSON.stringify(Object.fromEntries(Object.entries(production?.value ?? {}).filter(([key]) => key !== 'layoutPresets')), null, 2)} /></div>
+      <div className="field"><label htmlFor="central-production-settings">其他生产配置</label><Textarea className="textarea central-json-editor" id="central-production-settings" name="value" required defaultValue={JSON.stringify(Object.fromEntries(Object.entries(production?.value ?? {}).filter(([key]) => !['layoutPresets', 'humanQualityReasons'].includes(key))), null, 2)} /></div>
       <div className="inline"><Button unstyled className="button primary" disabled={busy || loading}>保存新版本</Button><small>模型 API 密钥仍只通过执行机环境变量提供，不要写入这里。</small></div>
     </form>}
 

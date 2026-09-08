@@ -31,6 +31,14 @@ function taskRow(overrides = {}) {
   };
 }
 
+const copyReviewMetadata = Object.freeze({
+  decision: 'APPROVE',
+  originalScore: 2.5,
+  note: '轻微措辞可后续优化',
+  reviewSessionId: '77777777-7777-4777-8777-777777777777',
+});
+const copyReviewActor = Object.freeze({ reviewerUserId: 'admin' });
+
 test('creator role filters apply equally to pages and totals and expose the current role', async () => {
   for (const role of ['ADMIN', 'REVIEWER', 'USER', 'UNKNOWN']) {
     const queries = [];
@@ -63,13 +71,19 @@ test('invalid creator role never reaches the database', async () => {
   }
 });
 
-test('task creation keeps ownership but leaves copy execution unassigned', async () => {
+test('task creation keeps creator audit identity and defaults to self-assignment', async () => {
   const queries = [];
   const client = {
     async query(sql, values) {
       queries.push({ sql: String(sql), values });
+      if (String(sql).includes('SELECT username FROM app_users')) {
+        return { rows: [{ username: 'admin' }] };
+      }
       if (String(sql).includes('INSERT INTO tasks')) return { rows: [taskRow({
         copy_executor_node_id: null,
+        assigned_to_user_id: 'admin',
+        assignment_source: 'SELF',
+        assigned_at: '2026-01-01T00:00:00.000Z',
         current_stage: 'COPY_QUEUED',
         progress_message: '等待文案执行机领取',
       })] };
@@ -91,9 +105,11 @@ test('task creation keeps ownership but leaves copy execution unassigned', async
   assert.equal(created[0].createdByNodeId, 'node-a');
   assert.equal(created[0].copyExecutorNodeId, null);
   assert.equal(created[0].createdByUserId, 'admin');
-  assert.deepEqual(insert.values.slice(3), ['node-a', 'admin', false]);
+  assert.equal(created[0].assignedToUserId, 'admin');
+  assert.equal(created[0].assignmentSource, 'SELF');
+  assert.deepEqual(insert.values.slice(3), ['node-a', 'admin', false, 'admin', 'SELF']);
   assert.doesNotMatch(insert.sql, /copy_executor_node_id/u);
-  assert.match(insert.sql, /'COPY_QUEUED', '等待文案执行机领取'/u);
+  assert.match(insert.sql, /CASE WHEN \$7::varchar IS NULL THEN '等待管理员分配作业员' ELSE '等待文案执行机领取' END/u);
   assert.equal(queries.at(-1).sql, 'COMMIT');
 });
 
@@ -447,6 +463,7 @@ test('copy approval submits reviewed copy to the image queue', async () => {
       const source = String(sql);
       queries.push({ sql: source, values });
       if (source === 'BEGIN' || source === 'COMMIT') return { rows: [] };
+      if (source.includes('INSERT INTO human_quality_review_submissions')) return { rows: [{ review_session_id: values[0] }] };
       if (source.includes('SELECT * FROM tasks WHERE id')) {
         return { rows: [taskRow({
           state: 'COPY_REVIEW_PENDING',
@@ -481,7 +498,8 @@ test('copy approval submits reviewed copy to the image queue', async () => {
     revisionId: 12,
     nodeId: 'node-b',
     aiDisclosureEnabled: false,
-  });
+    ...copyReviewMetadata,
+  }, copyReviewActor);
 
   assert.equal(approved.state, 'IMAGE_QUEUED');
   const taskUpdate = queries.find((item) => item.sql.includes("state = 'IMAGE_QUEUED'"));
@@ -505,6 +523,7 @@ test('non-admin approval without edits creates an automatic-layout revision inst
       const source = String(sql);
       queries.push({ sql: source, values });
       if (source === 'BEGIN' || source === 'COMMIT') return { rows: [] };
+      if (source.includes('INSERT INTO human_quality_review_submissions')) return { rows: [{ review_session_id: values[0] }] };
       if (source.includes('SELECT * FROM tasks WHERE id')) return { rows: [taskRow({ state: 'COPY_REVIEW_PENDING', current_copy_revision_id: 12 })] };
       if (source.includes('SELECT * FROM copy_revisions')) return { rows: [{ id: 12, task_id: 41, revision: 2, content: sourceContent }] };
       if (source.includes('SELECT id FROM executor_nodes')) return { rows: [{ id: 'node-b' }] };
@@ -516,7 +535,8 @@ test('non-admin approval without edits creates an automatic-layout revision inst
     release() {},
   };
   const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
-  await repository.approveCopy(41, { revisionId: 12, nodeId: 'node-b' }, { actorRole: 'USER' });
+  await repository.approveCopy(41, { revisionId: 12, nodeId: 'node-b', ...copyReviewMetadata },
+    { actorRole: 'USER', reviewerUserId: 'reviewer' });
   const saved = queries.find(item => item.sql.includes('INSERT INTO copy_revisions')).values[2];
   assert.deepEqual(saved.imagePlan.map(page => page.layout), [{ mode: 'AUTO' }, { mode: 'AUTO' }, { mode: 'AUTO' }]);
   assert.equal(saved.manualReview.layoutsForcedAutomatic, true);
@@ -554,20 +574,22 @@ test('copy approval rejects a non-boolean AI disclosure setting before opening a
     revisionId: 12,
     nodeId: 'node-b',
     aiDisclosureEnabled: 'false',
-  }), /aiDisclosureEnabled must be a boolean/u);
+    ...copyReviewMetadata,
+  }, copyReviewActor), /aiDisclosureEnabled must be a boolean/u);
 });
 
 test('requeued images cannot be edited through copy approval', async () => {
   const queries = [];
   const client = {
-    async query(sql) {
+    async query(sql, values) {
       queries.push(sql);
+      if (sql.includes('INSERT INTO human_quality_review_submissions')) return { rows: [{ review_session_id: values[0] }] };
       return { rows: sql.includes('SELECT * FROM tasks') ? [taskRow({ state: 'IMAGE_QUEUED' })] : [] };
     },
     release() {},
   };
   const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
-  await assert.rejects(repository.approveCopy(41, { revisionId: 12, nodeId: 'node-b' }),
+  await assert.rejects(repository.approveCopy(41, { revisionId: 12, nodeId: 'node-b', ...copyReviewMetadata }, copyReviewActor),
     (error) => error.code === 'INVALID_TASK_STATE');
   assert.equal(queries.at(-1), 'ROLLBACK');
   assert.equal(queries.some((sql) => /^\s*UPDATE\b/u.test(sql)), false);
@@ -583,27 +605,35 @@ test('image claims apply a shared retry cooldown and reuse the approved snapshot
     async query(sql, values) {
       queries.push({ sql, values });
       if (sql.includes('SELECT * FROM executor_nodes')) return { rows: [{ id: 'node-b', image_worker_enabled: true }] };
-      if (sql.includes('SELECT * FROM tasks')) return { rows: [taskRow({
+      if (sql.includes('SELECT last_assignee_user_id FROM execution_claim_cursors')) {
+        return { rows: [{ last_assignee_user_id: null }] };
+      }
+      if (sql.includes('FOR UPDATE OF task SKIP LOCKED')) return { rows: [taskRow({
         state: 'IMAGE_QUEUED', current_copy_revision_id: 12, pending_snapshot: snapshot,
+        assigned_to_user_id: 'alice',
       })] };
       if (sql.includes('INSERT INTO task_executions')) {
         execution = { id: values[0], task_id: values[1], kind: values[2], snapshot: values[6], status: 'RUNNING' };
       }
       if (sql.includes('UPDATE tasks SET')) return { rows: [taskRow({
         state: values[0], current_execution_id: values[1], current_copy_revision_id: 12,
+        assigned_to_user_id: 'alice',
       })] };
       if (sql.includes('SELECT * FROM task_executions')) return { rows: [execution] };
+      if (sql.includes('UPDATE execution_claim_cursors')) {
+        return { rowCount: 1, rows: [{ kind: values[0] }] };
+      }
       return { rows: [] };
     },
     release() {},
   };
   const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
   const claim = await repository.claimImage('node-b');
-  const candidate = queries.find((query) => query.sql.includes('SELECT * FROM tasks'));
-  assert.deepEqual(candidate.values, ['IMAGE_QUEUED', 'node-b', 1]);
-  assert.match(candidate.sql, /error IS NULL OR last_activity_at <= now\(\) - interval '5 seconds'/u);
-  assert.match(candidate.sql, /ORDER BY last_activity_at NULLS FIRST, id/u);
-  assert.match(candidate.sql, /FOR UPDATE SKIP LOCKED/u);
+  const candidate = queries.find((query) => query.sql.includes('FOR UPDATE OF task SKIP LOCKED'));
+  assert.deepEqual(candidate.values, ['IMAGE_QUEUED', 'node-b', null, 1]);
+  assert.match(candidate.sql, /queued\.error IS NULL OR queued\.last_activity_at <= now\(\) - interval '5 seconds'/u);
+  assert.match(candidate.sql, /ORDER BY queued\.last_activity_at NULLS FIRST, queued\.id/u);
+  assert.match(candidate.sql, /FOR UPDATE OF task SKIP LOCKED/u);
   assert.doesNotMatch(candidate.sql, /copy_executor_node_id/u);
   assert.notEqual(claim.execution.id, previousId);
   assert.deepEqual(claim.execution.snapshot, snapshot);

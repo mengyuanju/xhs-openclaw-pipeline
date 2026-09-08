@@ -54,17 +54,20 @@ test('task visibility and destructive actions are enforced from the central user
     ownsPool: true,
     getUserByUsername: async (username) => users[username] ?? null,
     listTasks: async (filters) => { lists.push(filters); return []; },
-    getTask: async (id) => ({ id: Number(id), createdByUserId: 'bob' }),
+    getTask: async (id) => ({ id: Number(id), createdByUserId: 'bob', assignedToUserId: 'alice' }),
     cancelTask: async (id) => { cancelled.push(id); return { id: Number(id), state: 'CANCELLED' }; },
   };
   await withServer(repository, async (root) => {
     const mine = await fetch(`${root}/v1/tasks?createdByUserId=bob`, { headers: actorHeaders('alice', 'USER') });
     assert.equal(mine.status, 200);
-    assert.equal(lists[0].createdByUserId, 'alice');
+    assert.equal(lists[0].createdByUserId, 'bob');
+    assert.equal(lists[0].assignedToUserId, 'alice');
 
     const all = await fetch(`${root}/v1/tasks`, { headers: actorHeaders('reviewer', 'REVIEWER') });
     assert.equal(all.status, 200);
     assert.equal(lists[1].createdByUserId, undefined);
+    assert.equal(lists[1].assignedToUserId, undefined);
+    assert.equal(lists[1].excludeUnassigned, true);
 
     const reviewerCancel = await fetch(`${root}/v1/tasks/9/cancel`, {
       method: 'POST', headers: { ...actorHeaders('reviewer', 'REVIEWER'), 'content-type': 'application/json' }, body: '{}',

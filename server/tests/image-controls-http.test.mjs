@@ -28,7 +28,10 @@ test('old image executors cannot claim configured tasks, and rejection rolls bac
     calls.push(sql);
     if (sql.includes('SELECT * FROM executor_nodes')) return { rows: [{ image_worker_enabled: true, image_concurrency: 1 }] };
     if (sql.includes('COUNT(*)')) return { rows: [{ count: 0 }] };
-    if (sql.includes('FOR UPDATE SKIP LOCKED')) return { rows: [{ id: 1, pending_snapshot: { copyRevision: { content: { imageSettings: { format: 'WEBP' } } } } }] };
+    if (sql.includes('SELECT last_assignee_user_id FROM execution_claim_cursors')) {
+      return { rows: [{ last_assignee_user_id: null }] };
+    }
+    if (sql.includes('FOR UPDATE OF task SKIP LOCKED')) return { rows: [{ id: 1, assigned_to_user_id: 'alice', pending_snapshot: { copyRevision: { content: { imageSettings: { format: 'WEBP' } } } } }] };
     return { rows: [] };
   } };
   const repo = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });

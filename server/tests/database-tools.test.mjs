@@ -125,6 +125,18 @@ test('saved task view migration keeps views owner-scoped without rewriting tasks
   assert.doesNotMatch(migration.sql, /UPDATE tasks|DELETE FROM tasks|TRUNCATE|DROP TABLE/u);
 });
 
+test('human quality migration stores immutable version-bound ratings and idempotency keys', async () => {
+  const migration = (await loadMigrations()).find((item) => item.id === '0016_human_quality_assessments');
+  assert.ok(migration);
+  assert.match(migration.sql, /score_x10 smallint NOT NULL CHECK \(score_x10 IN \(10, 20, 25, 30\)\)/u);
+  assert.match(migration.sql, /copy_revision_id bigint REFERENCES copy_revisions\(id\)/u);
+  assert.match(migration.sql, /image_run_id uuid REFERENCES image_runs\(id\)/u);
+  assert.match(migration.sql, /review_session_id uuid NOT NULL/u);
+  assert.match(migration.sql, /UNIQUE INDEX[\s\S]*review_session_id, copy_revision_id/u);
+  assert.match(migration.sql, /UNIQUE INDEX[\s\S]*review_session_id, image_run_id/u);
+  assert.doesNotMatch(migration.sql, /UPDATE tasks|UPDATE copy_revisions|UPDATE image_runs|DELETE FROM|TRUNCATE|DROP TABLE/u);
+});
+
 test('failed upgrades roll back the enclosing schema-and-data transaction', async () => {
   const queries = [];
   const client = { query: async (sql) => {

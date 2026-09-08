@@ -36,6 +36,8 @@ export function EfficiencyPanel({ data }: { data: Efficiency | null }) {
   const firstPassRate = data?.repeatRate == null ? null : 1 - data.repeatRate;
   const hasGenerationSamples = Boolean(data && data.copy.samples + data.image.samples > 0);
   const hasDeliverySamples = Boolean(data?.delivery.samples);
+  const qualityNote = (qualified: number | undefined, samples: number | undefined, label: string) =>
+    `${number(qualified)} / ${number(samples)} 项${label}${loading || partial ? '（已汇总明细）' : ''}`;
   return <section className="panel job-stats-section" aria-label="生成与交付效率">
     <div className="job-stats-heading"><div><h2>生成与交付效率</h2><p className="job-stats-note">平均值、中位数和 P90 直接对照；图片耗时按整套统计。</p></div>
       <span className={partial ? 'job-stats-warning' : 'job-stats-note'} role="status">{status}</span>
@@ -70,6 +72,18 @@ export function EfficiencyPanel({ data }: { data: Efficiency | null }) {
       <Metric label="图片执行成功率" value={percent(successRate(data?.image.failed, data?.image.succeeded))} note={`${number(data?.image.succeeded)} 次成功 / ${number(data ? data.image.failed + data.image.succeeded : null)} 次已结束`} />
       <Metric label="一次完成率" value={percent(firstPassRate)} note={`${number(data ? data.executionTasks - data.repeatedTasks : null)} / ${number(data?.executionTasks)} 项未发生同阶段重做`} />
     </div>
+    <div className="job-stats-quality-heading"><h3>人工首评质量</h3>
+      <p className="job-stats-note">达标指高于 2 分（即 2.5 或 3 分）；无评分作业不进入样本。</p></div>
+    <div className="job-stats-metrics job-stats-quality-metrics">
+      <Metric label="文案首评 3 分率" value={percent(data?.quality?.copy.threePointRate)}
+        note={qualityNote(data?.quality?.copy.threePoint, data?.quality?.copy.samples, '项为 3 分')} />
+      <Metric label="文案首评达标率" value={percent(data?.quality?.copy.qualifiedRate)}
+        note={qualityNote(data?.quality?.copy.qualified, data?.quality?.copy.samples, '项高于 2 分')} />
+      <Metric label="图片首轮 3 分率" value={percent(data?.quality?.image.threePointRate)}
+        note={qualityNote(data?.quality?.image.threePoint, data?.quality?.image.samples, '项为 3 分')} />
+      <Metric label="图片首轮达标率" value={percent(data?.quality?.image.qualifiedRate)}
+        note={qualityNote(data?.quality?.image.qualified, data?.quality?.image.samples, '项高于 2 分')} />
+    </div>
     <Disclosure className="job-stats-methods"><DisclosureTrigger>查看样本质量与统计口径</DisclosureTrigger><DisclosureContent>
       <div className="job-stats-table-scroll"><table className="job-stats-table"><thead><tr><th>口径</th><th>中位数</th><th>P90</th><th>有效样本</th><th>无效耗时</th><th>已放弃执行</th></tr></thead>
         <tbody>{(['copy', 'image', 'delivery'] as const).map((key, i) => <tr key={key}><th>{['文案生成', '图片整套生成', '总交付'][i]}</th>
@@ -84,7 +98,7 @@ export function EfficiencyPanel({ data }: { data: Efficiency | null }) {
           { name: '图片整套平均耗时', values: data.trend.map(day => minutes(day.imageMs)) },
         ]} />
     </DisclosureContent></Disclosure>}
-    <p className="job-stats-note">以上指标均基于已汇总明细。明确标注为模拟的图片运行已排除{data ? `（期间 ${number(data.simulated)} 次执行）` : ''}；历史未标明来源的记录仍计入。一次完成率按未发生同阶段重做的作业计算，不代表模型内部重试。</p>
+    <p className="job-stats-note">以上指标均基于已汇总明细。人工质量按首评发生日期统计，每项作业每阶段最多一个样本；文案只计原稿初评，修改或重做后的复评不改变首评率。明确标注为模拟的图片运行及其评分已排除{data ? `（期间 ${number(data.simulated)} 次执行）` : ''}；历史未标明来源的执行记录仍计入生成效率。一次完成率按未发生同阶段重做的作业计算，不代表模型内部重试。</p>
     {data?.updatedAt && <p className="job-stats-note">明细读取时间最早为 {new Date(data.updatedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}；未变化的明细持续复用。</p>}
   </section>;
 }

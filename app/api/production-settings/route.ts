@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { apiHandler, ok, parseJson } from '../_lib';
 import { withAdminStore } from '../../../src/admin/runtime.mjs';
 import { normalizeLayoutPresets } from '../../../server/src/layout-library.mjs';
+import { normalizeHumanQualitySettingsUpdate } from '../../../src/human-quality-settings.mjs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -56,6 +57,10 @@ const settingsPatchSchema = z.object({
   qualityRepairMaxAttempts: z.number().int().min(0).max(2).optional(),
   aiDisclosureEnabled: z.boolean().optional(),
   aiDisclosureText: z.string().trim().min(1).max(12).optional(),
+  humanQualityReasons: z.unknown().transform((value, context) => {
+    try { return normalizeHumanQualitySettingsUpdate(value); }
+    catch (error) { context.addIssue({ code: 'custom', message: error instanceof Error ? error.message : '人工评分原因配置无效' }); return z.NEVER; }
+  }).optional(),
   modelApi: modelApiPatchSchema.optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, '至少修改一项配置');
 

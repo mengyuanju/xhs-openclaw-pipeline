@@ -6,12 +6,14 @@ import { CentralDataWorkbench } from '../components/central-data-workbench';
 import { controlPlaneUrl } from '../../src/control-plane/next-runtime.mjs';
 import { WebSearchSettingsPanel } from './web-search-settings-panel';
 import { LayoutCatalogSettings } from './layout-catalog-settings';
+import { HumanQualitySettingsPanel } from './human-quality-settings-panel';
 
 export const dynamic = 'force-dynamic';
 
 export default function ProductionSettingsPage() {
   if (controlPlaneUrl()) return <>
     <header className="page-header"><div><span className="eyebrow">Central production policy</span><h1 className="sr-only">生产配置</h1><p className="subtle">全局配置由远端中心统一维护；模型凭据仍只保留在执行机。</p></div></header>
+    <HumanQualitySettingsPanel />
     <CentralDataWorkbench resource="settings" />
   </>;
   const record = withAdminStore((store: any) => store.getProductionSettings()) as any;
@@ -26,6 +28,7 @@ export default function ProductionSettingsPage() {
     </header>
     <WebSearchSettingsPanel />
     <LayoutCatalogSettings />
+    <HumanQualitySettingsPanel />
     <ProductionSettingsForm initialRecord={record} effectiveModelApi={effectiveModelApi} />
   </>;
 }

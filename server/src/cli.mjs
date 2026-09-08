@@ -6,6 +6,7 @@ import { createControlPlaneApp } from './http-server.mjs';
 import { createPostgresControlPlaneRepository } from './postgres-repository.mjs';
 import { DEFAULT_PRODUCTION_SETTINGS, loadDefaultPrompts } from './defaults.mjs';
 import { startExecutionRecovery } from './execution-recovery.mjs';
+import { startAutoAssignmentReplenishment } from './task-auto-assignment-runner.mjs';
 
 function configuration(environment = process.env) {
   const connectionString = environment.DATABASE_URL?.trim();
@@ -58,14 +59,17 @@ async function main() {
   });
   console.log(`Control plane listening on http://${config.host}:${config.port}`);
   const stopRecovery = startExecutionRecovery(repository);
+  const stopAutoAssignment = startAutoAssignmentReplenishment(repository);
 
-  let stopping = false;
-  async function stop() {
-    if (stopping) return;
-    stopping = true;
-    await stopRecovery();
-    await new Promise((resolvePromise) => server.close(resolvePromise));
-    await repository.close();
+  let stoppingPromise = null;
+  function stop() {
+    if (stoppingPromise) return stoppingPromise;
+    stoppingPromise = (async () => {
+      await Promise.all([stopRecovery(), stopAutoAssignment()]);
+      await new Promise((resolvePromise) => server.close(resolvePromise));
+      await repository.close();
+    })();
+    return stoppingPromise;
   }
   process.once('SIGINT', () => { void stop().then(() => process.exit(0)); });
   process.once('SIGTERM', () => { void stop().then(() => process.exit(0)); });

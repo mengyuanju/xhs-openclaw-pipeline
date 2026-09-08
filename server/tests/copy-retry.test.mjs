@@ -103,7 +103,10 @@ test('copy claims select the shared queue without executor ownership filtering',
     release() {},
     async query(sql, values) {
       if (sql.includes('SELECT * FROM executor_nodes')) return { rows: [{ id: values[0] }] };
-      if (sql.includes('FOR UPDATE SKIP LOCKED')) selections.push({ sql, values });
+      if (sql.includes('SELECT last_assignee_user_id FROM execution_claim_cursors')) {
+        return { rows: [{ last_assignee_user_id: null }] };
+      }
+      if (sql.includes('FOR UPDATE OF task SKIP LOCKED')) selections.push({ sql, values });
       return { rows: [] };
     },
   };
@@ -111,7 +114,7 @@ test('copy claims select the shared queue without executor ownership filtering',
   await repository.claimCopy('copy-old');
   await repository.claimCopy('copy-new');
   assert.deepEqual(selections.map(({ values }) => values), [
-    ['COPY_QUEUED', 1], ['COPY_QUEUED', 1],
+    ['COPY_QUEUED', null, 1], ['COPY_QUEUED', null, 1],
   ]);
   for (const { sql } of selections) assert.doesNotMatch(sql, /copy_executor_node_id/u);
 });

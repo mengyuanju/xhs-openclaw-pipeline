@@ -340,7 +340,13 @@ async function assertTaskAccess(ctx, repository, { ownerOnly = false, summaryOnl
   if (typeof readTask !== 'function') return { actor, task: null };
   const task = await readTask.call(repository, ctx.params.taskId);
   if (!task) throw new ControlPlaneNotFoundError('task not found');
-  if ((ownerOnly || actor.role === 'USER') && task.createdByUserId !== actor.username) {
+  const assignedToUserId = Object.hasOwn(task, 'assignedToUserId')
+    ? task.assignedToUserId
+    : task.createdByUserId;
+  if (actor.role !== 'ADMIN' && assignedToUserId === null) {
+    throw new HttpError(403, 'FORBIDDEN', '未分配任务仅管理员可访问');
+  }
+  if ((ownerOnly || actor.role === 'USER') && assignedToUserId !== actor.username) {
     throw new HttpError(403, 'FORBIDDEN', 'current user cannot access this task');
   }
   return { actor, task };
@@ -395,6 +401,37 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   router.post('/v1/users/:userId/reset-password', async (ctx) => {
     requestActor(ctx, ['ADMIN']);
     json(ctx, 200, await repository.resetUserPassword(ctx.params.userId));
+  });
+  router.get('/v1/auto-assignment', async (ctx) => {
+    requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.getAutoAssignmentOverview());
+  });
+  router.patch('/v1/auto-assignment/settings', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    const body = requireJson(ctx);
+    json(ctx, 200, await repository.updateAutoAssignmentSettings({
+      enabled: body.enabled,
+      expectedVersion: body.expectedVersion,
+      actorUsername: actor.username,
+    }));
+  });
+  router.put('/v1/auto-assignment/workers/:username', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    const body = requireJson(ctx);
+    json(ctx, 200, await repository.putAutoAssignmentWorker(ctx.params.username, {
+      status: body.status,
+      assignmentLimit: body.assignmentLimit,
+      expectedVersion: body.expectedVersion,
+      actorUsername: actor.username,
+    }));
+  });
+  router.delete('/v1/auto-assignment/workers/:username', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    const body = requireJson(ctx);
+    json(ctx, 200, await repository.removeAutoAssignmentWorker(ctx.params.username, {
+      expectedVersion: body.expectedVersion,
+      actorUsername: actor.username,
+    }));
   });
   router.get('/v1/profile', async (ctx) => {
     const actor = requestActor(ctx);
@@ -455,9 +492,17 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     const { skipCopyReview = false } = body;
     if (typeof skipCopyReview !== 'boolean') throw new TypeError('skipCopyReview must be a boolean');
     if (skipCopyReview) requestActor(ctx, ['ADMIN']);
+    if (actor.role !== 'ADMIN' && Object.hasOwn(body, 'assignedToUserId')) {
+      throw new HttpError(403, 'FORBIDDEN', '仅管理员可以指定任务负责人');
+    }
+    const assignedToUserId = actor.role === 'ADMIN'
+      ? (body.assignedToUserId ?? null)
+      : actor.username;
     json(ctx, 201, await repository.createTasks({
       nodeId: body.nodeId,
       createdByUserId: actor.username,
+      assignedToUserId,
+      assignmentSource: assignedToUserId === null ? null : actor.role === 'ADMIN' ? 'MANUAL' : 'SELF',
       skipCopyReview,
       tasks: body.tasks,
     }));
@@ -466,12 +511,16 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     const actor = requestActor(ctx);
     if (ctx.query.createdByRole !== undefined) requestActor(ctx, ['ADMIN']);
     if (ctx.query.attention !== undefined) requestActor(ctx, ['ADMIN']);
+    if (ctx.query.assignedToUserId !== undefined || ctx.query.unassigned !== undefined) requestActor(ctx, ['ADMIN']);
     const createdByRole = normalizeTaskCreatorRole(ctx.query.createdByRole);
     json(ctx, 200, await repository.listTasks({
       state: ctx.query.state,
       states: ctx.query.states,
       nodeId: ctx.query.nodeId,
-      createdByUserId: actor.role === 'USER' ? actor.username : ctx.query.createdByUserId,
+      createdByUserId: ctx.query.createdByUserId,
+      assignedToUserId: actor.role === 'USER' ? actor.username : ctx.query.assignedToUserId,
+      unassignedOnly: actor.role === 'ADMIN' && ctx.query.unassigned === 'true',
+      excludeUnassigned: actor.role !== 'ADMIN',
       ...(createdByRole !== null ? { createdByRole } : {}),
       ...(ctx.query.taskId !== undefined ? { taskId: ctx.query.taskId } : {}),
       query: ctx.query.query,
@@ -501,6 +550,16 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     const body = requireJson(ctx);
     const taskIds = normalizedBatchTaskIds(body.taskIds, 100);
     json(ctx, 200, await applyBatchTaskAction(repository, taskIds, String(body.action ?? '')));
+  });
+  router.post('/v1/tasks/batch-assignee', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    const body = requireJson(ctx);
+    const taskIds = normalizedBatchTaskIds(body.taskIds, 100);
+    json(ctx, 200, await repository.assignTasks(taskIds, {
+      assignedToUserId: body.assignedToUserId ?? null,
+      actorUserId: actor.username,
+      reason: body.reason,
+    }));
   });
   router.post('/v1/tasks/batch-permanent-delete', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
@@ -554,6 +613,15 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     // Execution snapshots include internal prompts and model configuration.
     const { executions, ...reviewableTask } = task;
     json(ctx, 200, actor.role === 'ADMIN' ? task : reviewableTask);
+  });
+  router.patch('/v1/tasks/:taskId/assignee', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    const body = requireJson(ctx);
+    json(ctx, 200, await repository.assignTask(ctx.params.taskId, {
+      assignedToUserId: body.assignedToUserId ?? null,
+      actorUserId: actor.username,
+      reason: body.reason,
+    }));
   });
   router.get('/v1/tasks/:taskId/archive', async (ctx) => {
     const { task } = await assertTaskAccess(ctx, repository);
@@ -631,14 +699,18 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
 
   router.post('/v1/tasks/:taskId/approve-copy', async (ctx) => {
     const access = await assertTaskAccess(ctx, repository);
-    json(ctx, 200, await repository.approveCopy(ctx.params.taskId, requireJson(ctx), { actorRole: access.actor.role }));
+    json(ctx, 200, await repository.approveCopy(ctx.params.taskId, requireJson(ctx), {
+      actorRole: access.actor.role,
+      reviewerUserId: access.actor.username,
+    }));
   });
   router.post('/v1/tasks/:taskId/review-images', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
     await assertTaskAccess(ctx, repository);
-    const { imageRunId, decision } = requireJson(ctx);
+    const { imageRunId, decision, score, reasons, note, problemAssetIds, reviewSessionId } = requireJson(ctx);
     json(ctx, 200, await repository.reviewImages(ctx.params.taskId, {
-      imageRunId, decision, reviewerUserId: actor.username,
+      imageRunId, decision, score, reasons, note, problemAssetIds, reviewSessionId,
+      reviewerUserId: actor.username,
     }));
   });
   router.post('/v1/tasks/:taskId/retry', async (ctx) => {
@@ -713,6 +785,15 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     const controlPlane = { listPrompts: () => repository.listPrompts(), listSettings: () => repository.listSettings(), listKnowledge: () => repository.listKnowledge() };
     json(ctx, 201, await generateAndImportLayouts({ input: requireJson(ctx), outputRoot: storageRoot,
       configuration: await readPromptConfiguration({ controlPlane }), readCatalog: () => repository.getLayoutCatalog(), updateCatalog: (change, options) => repository.updateLayoutCatalog(change, options) }));
+  });
+
+  router.get('/v1/human-quality-settings', async (ctx) => {
+    requestActor(ctx);
+    json(ctx, 200, await repository.getHumanQualitySettings());
+  });
+  router.put('/v1/human-quality-settings', async (ctx) => {
+    requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.updateHumanQualitySettings(requireJson(ctx)));
   });
 
   router.get('/v1/settings', async (ctx) => {

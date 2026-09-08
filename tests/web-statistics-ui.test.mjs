@@ -15,5 +15,12 @@ test('statistics charts show concrete values and efficiency compares distributio
   assert.match(efficiency, /总交付耗时分布/);
   assert.match(efficiency, /labels=\{\['平均值', '中位数', 'P90'\]\}/);
   assert.match(efficiency, /一次完成率/);
+  assert.match(efficiency, /人工首评质量/);
+  assert.match(efficiency, /文案首评 3 分率/);
+  assert.match(efficiency, /文案首评达标率/);
+  assert.match(efficiency, /图片首轮 3 分率/);
+  assert.match(efficiency, /图片首轮达标率/);
+  assert.match(efficiency, /高于 2 分/);
+  assert.match(efficiency, /无评分作业不进入样本/);
   assert.match(efficiency, /job-stats-efficiency-progress/);
 });

@@ -87,7 +87,7 @@ describe('excellent copy analysis and classification UI', () => {
       source('server/src/http-server.mjs'),
       source('app/image-generation/image-generation-workbench.tsx'),
     ]);
-    assert.match(centerHttp, /\{ actorRole: access\.actor\.role \}/u);
+    assert.match(centerHttp, /actorRole: access\.actor\.role[\s\S]*reviewerUserId: access\.actor\.username/u);
     assert.match(centerHttp, /actor\.username, actor\.role/u);
     assert.match(imageWorkbench, /只有管理员可以指定或维护布局模板/u);
   });

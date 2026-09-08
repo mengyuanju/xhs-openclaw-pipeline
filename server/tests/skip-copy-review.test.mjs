@@ -61,6 +61,7 @@ test('task creation persists the batch policy separately from untrusted task inp
     const inserts = [];
     const client = {
       async query(sql, values) {
+        if (sql.includes('SELECT username FROM app_users')) return { rows: [{ username: 'admin' }] };
         if (!sql.includes('INSERT INTO tasks')) return { rows: [] };
         inserts.push(values);
         return { rows: [{ id: inserts.length, query: values[0], input: values[1],

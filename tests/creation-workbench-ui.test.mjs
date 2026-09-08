@@ -26,7 +26,8 @@ test('new creation workbench keeps the old dashboard and exposes lifecycle views
   assert.match(listPage, /if \(!definition\) notFound\(\)/u);
   assert.match(workbench, /view.personalOnly\) search.set\('mine', 'true'\)/u);
   assert.doesNotMatch(workbench, /LOCAL_COPY|localOnly|search.set\('nodeId'/u);
-  assert.match(proxy, /searchParams.set\('createdByUserId', username\)/u);
+  assert.match(proxy, /searchParams.set\('assignedToUserId', username\)/u);
+  assert.match(proxy, /searchParams.delete\('createdByUserId'\)/u);
   assert.match(proxy, /'X-Actor-Username': username/u);
   assert.match(proxy, /'X-Actor-Role': role/u);
   assert.match(proxy, /'Content-Disposition': contentDisposition/u);
@@ -164,7 +165,7 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(workbench, /const \{ queries, error: validationError \} = queryBatch/u);
   assert.match(workbench, /已识别 \{queryBatch.queries.length\} 条 Query/u);
   assert.match(workbench, /中文逗号（，）、英文逗号（,）/u);
-  assert.match(workbench, /disabled=\{creating \|\| Boolean\(queryBatch.error\)\}/u);
+  assert.match(workbench, /disabled=\{creating \|\| Boolean\(queryBatch.error\) \|\| \(role === 'ADMIN'/u);
   assert.match(workbench, /createError && <div className="notice error" role="alert"/u);
   assert.doesNotMatch(workbench, /queryRows|nextQueryKey|添加一条 Query|workbench-remove-query/u);
   assert.match(workbench, /tasks: queries\.map\(\(query\)/u);

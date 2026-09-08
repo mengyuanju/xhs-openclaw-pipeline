@@ -51,6 +51,9 @@ test('isolated PostgreSQL: capacity, races, replay, rollback and node ownership'
     connectionTimeoutMillis: 3000, statement_timeout: 5000, lock_timeout: 3000 });
   await migrateDatabase(pool);
   assert.deepEqual(await migrateDatabase(pool), []);
+  await pool.query(`INSERT INTO app_users(
+      username, display_name, role, password_hash, status, must_change_password
+    ) VALUES ('integration-worker', 'Integration Worker', 'USER', 'unused-in-test', 'ACTIVE', false)`);
   const repo = new PostgresControlPlaneRepository({ pool });
   await repo.registerNode({ nodeId: 'a', imageWorkerEnabled: true, copyConcurrency: 3, imageConcurrency: 2 });
   await repo.registerNode({ nodeId: 'b', imageWorkerEnabled: true, copyConcurrency: 2, imageConcurrency: 2 });
@@ -58,8 +61,11 @@ test('isolated PostgreSQL: capacity, races, replay, rollback and node ownership'
   assert.equal((await repo.listNodes()).find(n => n.id === 'a').copyConcurrency, 3);
   for (const value of [null, '3', 33]) await assert.rejects(repo.registerNode({ nodeId: 'a', copyConcurrency: value }));
   async function enqueue(nodeId, state = 'COPY_QUEUED', snapshot = {}) {
-    const task = (await pool.query(`INSERT INTO tasks(query, created_by_node_id, state, pending_snapshot)
-      VALUES ('isolated fake task', $1, $2, $3) RETURNING *`, [nodeId, state, snapshot])).rows[0];
+    const task = (await pool.query(`INSERT INTO tasks(
+        query, created_by_node_id, created_by_user_id, assigned_to_user_id,
+        assignment_source, assigned_at, state, pending_snapshot
+      ) VALUES ('isolated fake task', $1, 'integration-worker', 'integration-worker', 'SELF', now(), $2, $3)
+      RETURNING *`, [nodeId, state, snapshot])).rows[0];
     if (state === 'IMAGE_QUEUED') {
       const id = randomUUID();
       await pool.query(`INSERT INTO task_executions(id, task_id, kind, node_id, status, stage, snapshot)
@@ -90,11 +96,20 @@ test('isolated PostgreSQL: capacity, races, replay, rollback and node ownership'
   assert.equal(new Set(images.map(c => c.task.id)).size, 4);
   const sameId = requestIdAt();
   const repeated = await Promise.all(Array.from({ length: 4 }, () => repo.claimCopyBatch({ nodeId: 'b', limit: 2, requestId: sameId })));
-  assert.ok(repeated.every(r => r.claims.length === 1 && r.claims[0].execution.id === repeated[0].claims[0].execution.id));
+  const repeatedExecutionIds = repeated[0].claims.map(claim => claim.execution.id);
+  assert.equal(repeatedExecutionIds.length, 2);
+  for (const result of repeated) {
+    assert.deepEqual(result.claims.map(claim => claim.execution.id), repeatedExecutionIds);
+  }
+  await repo.completeCopy(repeated[0].claims[0].execution.id, { fake: true });
   await enqueue('b');
   const brokenId = requestIdAt();
   await pool.query(`ALTER TABLE execution_claim_requests ADD CONSTRAINT test_reject_receipt CHECK (request_id <> '${brokenId}'::uuid)`);
+  const cursorBeforeRollback = (await pool.query(`SELECT last_assignee_user_id
+    FROM execution_claim_cursors WHERE kind = 'COPY'`)).rows[0].last_assignee_user_id;
   await assert.rejects(repo.claimCopyBatch({ nodeId: 'b', limit: 2, requestId: brokenId }));
+  assert.equal((await pool.query(`SELECT last_assignee_user_id
+    FROM execution_claim_cursors WHERE kind = 'COPY'`)).rows[0].last_assignee_user_id, cursorBeforeRollback);
   assert.equal((await repo.claimCopyBatch({ nodeId: 'b', limit: 2, requestId: requestIdAt() })).claims.length, 1);
 
   const oldIds = Array.from({ length: 205 }, () => requestIdAt(Date.now() - 172_800_000));

@@ -11,20 +11,20 @@ const USERS = {
 };
 
 const TASKS = [
-  { id: 1, createdByUserId: 'admin', state: 'COPY_QUEUED', query: 'summer' },
-  { id: 2, createdByUserId: 'reviewer', state: 'COPY_RUNNING', query: 'summer' },
-  { id: 3, createdByUserId: 'alice', state: 'COPY_FAILED', query: 'summer' },
-  { id: 4, createdByUserId: 'bob', state: 'COPY_REVIEW_PENDING', query: 'summer' },
-  { id: 5, createdByUserId: 'alice', state: 'IMAGE_QUEUED', query: 'summer' },
-  { id: 6, createdByUserId: 'reviewer', state: 'IMAGE_RUNNING', query: 'summer' },
-  { id: 7, createdByUserId: 'alice', state: 'IMAGE_FAILED', query: 'summer trip' },
-  { id: 8, createdByUserId: 'admin', state: 'MANUAL_ARCHIVE', query: 'summer' },
-  { id: 9, createdByUserId: 'bob', state: 'CANCELLED', query: 'summer' },
-  { id: 10, createdByUserId: null, state: 'IMAGE_FAILED', query: 'legacy' },
-  { id: 11, createdByUserId: 'deleted-account', state: 'CANCELLED', query: 'legacy' },
-  { id: 12, createdByUserId: 'bob', state: 'IMAGE_FAILED', query: 'summer beach' },
-  { id: 13, createdByUserId: 'reviewer', state: 'IMAGE_FAILED', query: 'summer trip' },
-  { id: 14, createdByUserId: 'alice', state: 'IMAGE_FAILED', query: 'winter trip' },
+  { id: 1, createdByUserId: 'admin', assignedToUserId: 'alice', state: 'COPY_QUEUED', query: 'summer' },
+  { id: 2, createdByUserId: 'reviewer', assignedToUserId: 'bob', state: 'COPY_RUNNING', query: 'summer' },
+  { id: 3, createdByUserId: 'alice', assignedToUserId: 'bob', state: 'COPY_FAILED', query: 'summer' },
+  { id: 4, createdByUserId: 'bob', assignedToUserId: 'alice', state: 'COPY_REVIEW_PENDING', query: 'summer' },
+  { id: 5, createdByUserId: 'alice', assignedToUserId: 'alice', state: 'IMAGE_QUEUED', query: 'summer' },
+  { id: 6, createdByUserId: 'reviewer', assignedToUserId: 'bob', state: 'IMAGE_RUNNING', query: 'summer' },
+  { id: 7, createdByUserId: 'alice', assignedToUserId: 'alice', state: 'IMAGE_FAILED', query: 'summer trip' },
+  { id: 8, createdByUserId: 'admin', assignedToUserId: 'bob', state: 'MANUAL_ARCHIVE', query: 'summer' },
+  { id: 9, createdByUserId: 'bob', assignedToUserId: 'bob', state: 'CANCELLED', query: 'summer' },
+  { id: 10, createdByUserId: null, assignedToUserId: 'alice', state: 'IMAGE_FAILED', query: 'legacy' },
+  { id: 11, createdByUserId: 'deleted-account', assignedToUserId: 'bob', state: 'CANCELLED', query: 'legacy' },
+  { id: 12, createdByUserId: 'bob', assignedToUserId: 'bob', state: 'IMAGE_FAILED', query: 'summer beach' },
+  { id: 13, createdByUserId: 'reviewer', assignedToUserId: 'alice', state: 'IMAGE_FAILED', query: 'summer trip' },
+  { id: 14, createdByUserId: 'alice', assignedToUserId: 'alice', state: 'IMAGE_FAILED', query: 'winter trip' },
 ];
 
 function actorHeaders(username, role = USERS[username]?.role, credentialVersion = 1) {
@@ -48,6 +48,9 @@ function taskRepository(tasks = TASKS, users = USERS) {
       const matches = tasks.filter((task) => (
         (!filters.createdByRole || (users[task.createdByUserId]?.role ?? 'UNKNOWN') === filters.createdByRole)
         && (!filters.createdByUserId || task.createdByUserId === filters.createdByUserId)
+        && (!filters.assignedToUserId || task.assignedToUserId === filters.assignedToUserId)
+        && (!filters.unassignedOnly || task.assignedToUserId === null)
+        && (!filters.excludeUnassigned || task.assignedToUserId !== null)
         && (states.length === 0 || states.includes(task.state))
         && (!filters.query || task.query.toLowerCase().includes(filters.query.toLowerCase()))
       ));
@@ -204,11 +207,14 @@ test('saved central role revocation prevents an old administrator from filtering
   });
 });
 
-test('without a role filter users remain restricted to their own tasks and reviewers retain global visibility', async () => {
+test('without a role filter users remain restricted by assignee and reviewers retain assigned visibility', async () => {
   await withServer(taskRepository(), async (root) => {
     const mine = await fetch(`${root}/v1/tasks?createdByUserId=bob`, { headers: actorHeaders('alice') });
     assert.equal(mine.status, 200);
-    assert.deepEqual((await mine.json()).data.map((task) => task.id), [3, 5, 7, 14]);
+    assert.deepEqual((await mine.json()).data.map((task) => task.id), [4]);
+
+    const allMine = await fetch(`${root}/v1/tasks`, { headers: actorHeaders('alice') });
+    assert.deepEqual((await allMine.json()).data.map((task) => task.id), [1, 4, 5, 7, 10, 13, 14]);
 
     const all = await fetch(`${root}/v1/tasks`, { headers: actorHeaders('reviewer') });
     assert.equal(all.status, 200);

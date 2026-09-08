@@ -21,15 +21,17 @@ test('central user management exposes the three fixed roles and default-password
   assert.match(migration, /CREATE TABLE IF NOT EXISTS app_users/u);
 });
 
-test('workbench displays creator names and limits discard controls to owners or administrators', async () => {
+test('workbench separates assignee from creator and limits discard controls to assignees or administrators', async () => {
   const [workbench, repository, server] = await Promise.all([
     source('app/workbench/creation-workbench.tsx'),
     source('server/src/postgres-repository.mjs'),
     source('server/src/http-server.mjs'),
   ]);
-  assert.match(workbench, /<th[^>]*>作业员<\/th>/u);
+  assert.match(workbench, /<th[^>]*>负责人 \/ 创建人<\/th>/u);
+  assert.match(workbench, /task\.assignedToDisplayName/u);
   assert.match(workbench, /task.createdByDisplayName/u);
-  assert.match(workbench, /role === 'ADMIN' \|\| task.createdByUserId === creatorUserId/u);
+  assert.match(workbench, /role === 'ADMIN' \|\| taskOwnerId\(task\) === creatorUserId/u);
+  assert.match(repository, /assignee\.display_name AS assigned_to_display_name/u);
   assert.match(repository, /creator\.display_name AS creator_display_name/u);
   assert.match(server, /ownerOnly: requestActor\(ctx\)\.role !== 'ADMIN'/u);
 });

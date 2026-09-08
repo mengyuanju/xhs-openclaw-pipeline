@@ -12,7 +12,19 @@ import { claimRequestExpiry } from './claim-request.mjs';
 import { saveModelCall, listModelCalls, getModelCall } from './model-call-traces.mjs';
 import { hashUserPassword, verifyUserPassword } from './user-auth.mjs';
 import { heartbeatExecutions, recoverStaleExecutions } from './execution-recovery.mjs';
+import { runAutoAssignmentReplenishment } from './task-auto-assignment-runner.mjs';
 import { normalizeSavedTaskView, normalizeTaskAttention } from './task-view-filters.mjs';
+import { normalizeAssigneeUserId, normalizeAssignmentSource } from './task-assignment-domain.mjs';
+import {
+  normalizeHumanQualitySettings,
+  normalizeHumanQualitySettingsUpdate,
+} from '../../src/human-quality-settings.mjs';
+import {
+  normalizeAutoAssignmentEnabled,
+  normalizeAutoAssignmentExpectedVersion,
+  normalizeAutoAssignmentLimit,
+  normalizeAutoAssignmentWorkerStatus,
+} from './task-auto-assignment-domain.mjs';
 
 import pg from 'pg';
 
@@ -97,6 +109,11 @@ function taskFrom(row) {
     createdByUserId: row.created_by_user_id ?? null,
     createdByRole: row.creator_role ?? null,
     createdByDisplayName: row.creator_display_name ?? (row.created_by_user_id === 'admin' ? '系统管理员' : null),
+    assignedToUserId: row.assigned_to_user_id ?? null,
+    assignedToDisplayName: row.assigned_to_display_name ?? null,
+    assigneeStatus: row.assignee_status ?? null,
+    assignmentSource: row.assignment_source ?? null,
+    assignedAt: row.assigned_at ?? null,
     copyExecutorNodeId: row.copy_executor_node_id,
     imageExecutorNodeId: row.image_executor_node_id ?? null,
     imageExecutorNodeName: row.image_executor_node_name ?? null,
@@ -261,6 +278,259 @@ function revisionFrom(row) {
     approvedByNodeId: row.approved_by_node_id,
     createdAt: row.created_at,
   };
+}
+
+function autoAssignmentSettingsFrom(row) {
+  if (!row) return null;
+  return {
+    enabled: row.enabled === true,
+    version: Number(row.version),
+    updatedByUsername: row.updated_by_username ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function autoAssignmentWorkerFrom(row) {
+  if (!row) return null;
+  const assignmentLimit = Number(row.assignment_limit);
+  const currentTaskCount = Number(row.current_task_count ?? 0);
+  const userRole = row.user_role ?? null;
+  const userStatus = row.user_status ?? null;
+  const status = row.status;
+  return {
+    username: row.username,
+    displayName: row.display_name ?? null,
+    userRole,
+    userStatus,
+    status,
+    assignmentLimit,
+    currentTaskCount,
+    availableSlots: Math.max(0, assignmentLimit - currentTaskCount),
+    canReceive: status === 'ACTIVE' && userRole === 'USER' && userStatus === 'ACTIVE',
+    version: Number(row.version),
+    createdByUsername: row.created_by_username,
+    updatedByUsername: row.updated_by_username,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function autoAssignmentAdminEventFrom(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    actorUsername: row.actor_username,
+    action: row.action,
+    workerUsername: row.worker_username ?? null,
+    details: row.details ?? {},
+    createdAt: row.created_at,
+  };
+}
+
+const AUTO_ASSIGNMENT_WORKER_RECORD_SQL = `
+  SELECT
+    pool.*,
+    app_user.display_name,
+    app_user.role AS user_role,
+    app_user.status AS user_status,
+    (
+      SELECT COUNT(*)
+      FROM tasks AS assigned_task
+      WHERE assigned_task.assigned_to_user_id = pool.username
+        AND assigned_task.state NOT IN ('MANUAL_ARCHIVE', 'REVIEWED', 'CANCELLED')
+    ) AS current_task_count
+  FROM task_auto_assignment_workers AS pool
+  JOIN app_users AS app_user ON app_user.username = pool.username
+`;
+
+async function readAutoAssignmentWorker(client, username) {
+  const result = await client.query(
+    `${AUTO_ASSIGNMENT_WORKER_RECORD_SQL} WHERE pool.username = $1`,
+    [username],
+  );
+  return autoAssignmentWorkerFrom(result.rows[0]);
+}
+
+async function recordAutoAssignmentAdminEvent(client, {
+  actorUsername,
+  action,
+  workerUsername = null,
+  details,
+}) {
+  await client.query(`
+    INSERT INTO task_auto_assignment_admin_events(
+      actor_username, action, worker_username, details
+    ) VALUES ($1, $2, $3, $4::jsonb)
+  `, [actorUsername, action, workerUsername, JSON.stringify(details)]);
+}
+
+function assertAutoAssignmentVersion(currentVersion, expectedVersion, subject) {
+  if (Number(currentVersion) !== expectedVersion) {
+    throw new ControlPlaneConflictError('VERSION_CONFLICT', `${subject} was updated by another request`);
+  }
+}
+
+function normalizedAssignmentTaskIds(value) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 100) {
+    throw new RangeError('taskIds must contain between 1 and 100 items');
+  }
+  const taskIds = [...new Set(value.map((taskId) => normalizeTaskId(taskId)))].sort((left, right) => left - right);
+  if (taskIds.length !== value.length) throw new TypeError('taskIds must not contain duplicates');
+  return taskIds;
+}
+
+async function assertActiveAssignableUser(client, username) {
+  const result = await client.query(`
+    SELECT username FROM app_users
+    WHERE username = $1 AND status = 'ACTIVE' AND role = 'USER'
+    FOR UPDATE
+  `, [username]);
+  if (!result.rows[0]) {
+    throw new ControlPlaneConflictError('ASSIGNEE_UNAVAILABLE', '指定的作业员不存在、已停用或不是普通作业员');
+  }
+}
+
+async function lockAssignmentUser(client, username) {
+  const result = await client.query(`
+    SELECT username FROM app_users
+    WHERE username = $1 AND status = 'ACTIVE'
+    FOR UPDATE
+  `, [username]);
+  if (!result.rows[0]) {
+    throw new ControlPlaneConflictError('ASSIGNEE_UNAVAILABLE', '任务负责人不存在或已停用');
+  }
+}
+
+async function lockAutoAssignmentMember(client, username) {
+  await client.query(`
+    SELECT username FROM task_auto_assignment_workers
+    WHERE username = $1
+    FOR UPDATE
+  `, [username]);
+}
+
+const HUMAN_QUALITY_SCORES = Object.freeze([1, 2, 2.5, 3]);
+
+function normalizedHumanQualityScore(value, name = 'score') {
+  if (typeof value !== 'number' || !HUMAN_QUALITY_SCORES.includes(value)) {
+    throw new TypeError(`${name} must be one of 1, 2, 2.5 or 3`);
+  }
+  return Math.round(value * 10);
+}
+
+function normalizedQualityReasonCodes(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 10) {
+    throw new RangeError('reasons must contain at most 10 items');
+  }
+  const reasons = value.map((entry, index) => {
+    if (typeof entry !== 'string') throw new TypeError(`reasons[${index}] must be a string`);
+    const reason = entry.trim();
+    if (!reason || [...reason].length > 50) {
+      throw new RangeError(`reasons[${index}] must contain between 1 and 50 characters`);
+    }
+    return reason;
+  });
+  if (new Set(reasons).size !== reasons.length) throw new TypeError('reasons must not contain duplicates');
+  return reasons.sort((left, right) => left.localeCompare(right));
+}
+
+function normalizedQualityProblemAssetIds(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 20) {
+    throw new RangeError('problemAssetIds must contain at most 20 items');
+  }
+  const ids = value.map((entry) => normalizeTaskId(entry));
+  if (new Set(ids).size !== ids.length) throw new TypeError('problemAssetIds must not contain duplicates');
+  return ids.sort((left, right) => left - right);
+}
+
+function normalizedQualityNote(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') throw new TypeError('note must be a string');
+  const note = value.replace(/\r\n?/gu, '\n').trim();
+  if ([...note].length > 1_000) throw new RangeError('note cannot exceed 1000 characters');
+  return note || null;
+}
+
+function assertQualityExplanation(scoreX10, reasonCodes, note, name = 'score') {
+  if (scoreX10 < 30 && reasonCodes.length === 0 && !note) {
+    throw new TypeError(`${name} below 3 requires at least one reason or a note`);
+  }
+}
+
+function qualityReviewFingerprint(input) {
+  return createHash('sha256').update(JSON.stringify(input)).digest('hex');
+}
+
+function qualityAssessmentFrom(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    taskId: Number(row.task_id),
+    stage: row.stage,
+    copyRevisionId: row.copy_revision_id === null ? null : Number(row.copy_revision_id),
+    imageRunId: row.image_run_id,
+    score: Number(row.score_x10) / 10,
+    scoreX10: Number(row.score_x10),
+    ratingContext: row.rating_context,
+    action: row.action,
+    reasonCodes: row.reason_codes ?? [],
+    problemAssetIds: (row.problem_asset_ids ?? []).map(Number),
+    note: row.note ?? null,
+    reviewerUsername: row.reviewer_username,
+    reviewSessionId: row.review_session_id,
+    createdAt: row.created_at,
+  };
+}
+
+async function claimQualityReviewSubmission(client, {
+  taskId, stage, reviewerUsername, reviewSessionId, requestFingerprint,
+}) {
+  const claimed = await client.query(`
+    INSERT INTO human_quality_review_submissions(
+      review_session_id, task_id, stage, reviewer_username, request_fingerprint
+    ) VALUES ($1, $2, $3, $4, $5)
+    ON CONFLICT(review_session_id) DO NOTHING
+    RETURNING review_session_id
+  `, [reviewSessionId, taskId, stage, reviewerUsername, requestFingerprint]);
+  if (claimed.rows[0]) return false;
+  const existing = await client.query(`
+    SELECT task_id, stage, reviewer_username, request_fingerprint
+    FROM human_quality_review_submissions
+    WHERE review_session_id = $1
+  `, [reviewSessionId]);
+  const row = existing.rows[0];
+  if (!row) throw new ControlPlaneConflictError('REVIEW_SESSION_CONFLICT', 'review session could not be reconciled');
+  if (Number(row.task_id) !== taskId || row.stage !== stage
+    || row.reviewer_username !== reviewerUsername || row.request_fingerprint !== requestFingerprint) {
+    throw new ControlPlaneConflictError(
+      'REVIEW_SESSION_CONFLICT',
+      'reviewSessionId was already used for a different review submission',
+    );
+  }
+  return true;
+}
+
+async function insertQualityAssessment(client, {
+  taskId, stage, copyRevisionId = null, imageRunId = null, scoreX10,
+  ratingContext, action, reasonCodes = [], problemAssetIds = [], note = null,
+  reviewerUsername, reviewSessionId, requestFingerprint,
+}) {
+  const result = await client.query(`
+    INSERT INTO human_quality_assessments(
+      task_id, stage, copy_revision_id, image_run_id, score_x10,
+      rating_context, action, reason_codes, problem_asset_ids, note,
+      reviewer_username, review_session_id, request_fingerprint
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    RETURNING *
+  `, [
+    taskId, stage, copyRevisionId, imageRunId, scoreX10,
+    ratingContext, action, reasonCodes, problemAssetIds, note,
+    reviewerUsername, reviewSessionId, requestFingerprint,
+  ]);
+  return qualityAssessmentFrom(result.rows[0]);
 }
 
 function normalizedTaskStates(state, states) {
@@ -457,6 +727,7 @@ async function queueApprovedCopy(client, taskId, revisionId, aiDisclosureEnabled
 export class PostgresControlPlaneRepository {
   heartbeatExecutions(input) { return heartbeatExecutions(this.pool, input); }
   recoverStaleExecutions() { return recoverStaleExecutions(this.pool); }
+  replenishAutoAssignments(options) { return runAutoAssignmentReplenishment(this.pool, options); }
   recordModelCall(executionId, callId, input) { return saveModelCall(this.pool, executionId, callId, input); }
   listModelCalls(taskId, options) { return listModelCalls(this.pool, taskId, options); }
   getModelCall(taskId, callId) { return getModelCall(this.pool, taskId, callId); }
@@ -480,7 +751,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, adminTaskFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1 } };
+      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, adminTaskFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 1, autoAssignmentPoolVersion: 1 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -511,6 +782,234 @@ export class PostgresControlPlaneRepository {
       ? await this.pool.query('SELECT * FROM app_users WHERE status = $1 ORDER BY id', [status])
       : await this.pool.query('SELECT * FROM app_users ORDER BY id');
     return result.rows.map(publicUserFrom);
+  }
+
+  async getAutoAssignmentOverview() {
+    const [settingsResult, workersResult, pendingResult, eventsResult] = await Promise.all([
+      this.pool.query('SELECT * FROM task_auto_assignment_settings WHERE singleton = 1'),
+      this.pool.query(`${AUTO_ASSIGNMENT_WORKER_RECORD_SQL}
+        ORDER BY CASE pool.status WHEN 'ACTIVE' THEN 0 ELSE 1 END, pool.username`),
+      this.pool.query(`
+        SELECT COUNT(*) AS count
+        FROM tasks
+        WHERE assigned_to_user_id IS NULL
+          AND state = 'COPY_QUEUED'
+          AND current_execution_id IS NULL
+      `),
+      this.pool.query(`
+        SELECT * FROM task_auto_assignment_admin_events
+        ORDER BY created_at DESC, id DESC
+        LIMIT 100
+      `),
+    ]);
+    const settings = autoAssignmentSettingsFrom(settingsResult.rows[0]);
+    if (!settings) throw new ControlPlaneNotFoundError('automatic assignment settings not found');
+    return {
+      settings,
+      workers: workersResult.rows.map(autoAssignmentWorkerFrom),
+      unassignedTaskCount: Number(pendingResult.rows[0]?.count ?? 0),
+      events: eventsResult.rows.map(autoAssignmentAdminEventFrom),
+    };
+  }
+
+  async getAutoAssignmentWorker(rawUsername) {
+    const username = normalizedUsername(rawUsername);
+    const worker = await readAutoAssignmentWorker(this.pool, username);
+    if (!worker) throw new ControlPlaneNotFoundError('automatic assignment worker not found');
+    return worker;
+  }
+
+  async updateAutoAssignmentSettings({
+    enabled: rawEnabled,
+    expectedVersion: rawExpectedVersion,
+    actorUsername: rawActorUsername,
+  }) {
+    const enabled = normalizeAutoAssignmentEnabled(rawEnabled);
+    const expectedVersion = normalizeAutoAssignmentExpectedVersion(rawExpectedVersion);
+    const actorUsername = normalizedUsername(rawActorUsername);
+    return transaction(this.pool, async (client) => {
+      const currentResult = await client.query(
+        'SELECT * FROM task_auto_assignment_settings WHERE singleton = 1 FOR UPDATE',
+      );
+      const current = currentResult.rows[0];
+      if (!current) throw new ControlPlaneNotFoundError('automatic assignment settings not found');
+      assertAutoAssignmentVersion(current.version, expectedVersion, 'automatic assignment settings');
+      if (current.enabled === enabled) return autoAssignmentSettingsFrom(current);
+      const updatedResult = await client.query(`
+        UPDATE task_auto_assignment_settings
+        SET enabled = $1, version = version + 1,
+            updated_by_username = $2, updated_at = now()
+        WHERE singleton = 1 AND version = $3
+        RETURNING *
+      `, [enabled, actorUsername, expectedVersion]);
+      const updated = updatedResult.rows[0];
+      if (!updated) {
+        throw new ControlPlaneConflictError(
+          'VERSION_CONFLICT',
+          'automatic assignment settings were updated by another request',
+        );
+      }
+      await recordAutoAssignmentAdminEvent(client, {
+        actorUsername,
+        action: 'SETTINGS_UPDATED',
+        details: {
+          previous: { enabled: current.enabled === true, version: Number(current.version) },
+          next: { enabled: updated.enabled === true, version: Number(updated.version) },
+        },
+      });
+      return autoAssignmentSettingsFrom(updated);
+    });
+  }
+
+  async putAutoAssignmentWorker(rawUsername, {
+    status: rawStatus,
+    assignmentLimit: rawAssignmentLimit,
+    expectedVersion: rawExpectedVersion,
+    actorUsername: rawActorUsername,
+  }) {
+    const username = normalizedUsername(rawUsername);
+    const status = normalizeAutoAssignmentWorkerStatus(rawStatus);
+    const assignmentLimit = normalizeAutoAssignmentLimit(rawAssignmentLimit);
+    const expectedVersion = normalizeAutoAssignmentExpectedVersion(rawExpectedVersion, { required: false });
+    const actorUsername = normalizedUsername(rawActorUsername);
+    return transaction(this.pool, async (client) => {
+      // Lock an eligible account before its pool row so a concurrent role/status
+      // change cannot make an ACTIVE membership stale as it is written.
+      if (status === 'ACTIVE') await assertActiveAssignableUser(client, username);
+      const currentResult = await client.query(
+        'SELECT * FROM task_auto_assignment_workers WHERE username = $1 FOR UPDATE',
+        [username],
+      );
+      let current = currentResult.rows[0];
+      if (!current) {
+        if (expectedVersion !== null) {
+          throw new ControlPlaneConflictError(
+            'VERSION_CONFLICT',
+            'automatic assignment worker no longer matches the requested version',
+          );
+        }
+        if (status !== 'ACTIVE') await assertActiveAssignableUser(client, username);
+        const insertedResult = await client.query(`
+          INSERT INTO task_auto_assignment_workers(
+            username, status, assignment_limit, created_by_username, updated_by_username
+          ) VALUES ($1, $2, $3, $4, $4)
+          ON CONFLICT(username) DO NOTHING
+          RETURNING *
+        `, [username, status, assignmentLimit, actorUsername]);
+        const inserted = insertedResult.rows[0];
+        if (inserted) {
+          await recordAutoAssignmentAdminEvent(client, {
+            actorUsername,
+            action: 'WORKER_ADDED',
+            workerUsername: username,
+            details: {
+              next: { status, assignmentLimit, version: Number(inserted.version) },
+            },
+          });
+          return readAutoAssignmentWorker(client, username);
+        }
+
+        // A concurrent identical PUT may have won the unique-key race. Reading
+        // the committed row makes retries idempotent without creating two audits.
+        const concurrentResult = await client.query(
+          'SELECT * FROM task_auto_assignment_workers WHERE username = $1 FOR UPDATE',
+          [username],
+        );
+        current = concurrentResult.rows[0];
+        if (current && current.status === status
+          && Number(current.assignment_limit) === assignmentLimit) {
+          return readAutoAssignmentWorker(client, username);
+        }
+        throw new ControlPlaneConflictError(
+          'VERSION_CONFLICT',
+          'automatic assignment worker was created by another request',
+        );
+      }
+
+      if (expectedVersion !== null) {
+        assertAutoAssignmentVersion(current.version, expectedVersion, 'automatic assignment worker');
+      }
+      if (current.status === status && Number(current.assignment_limit) === assignmentLimit) {
+        return readAutoAssignmentWorker(client, username);
+      }
+      if (expectedVersion === null) {
+        throw new TypeError('expectedVersion is required when updating an automatic assignment worker');
+      }
+      const updatedResult = await client.query(`
+        UPDATE task_auto_assignment_workers
+        SET status = $2, assignment_limit = $3,
+            version = version + 1, updated_by_username = $4, updated_at = now()
+        WHERE username = $1 AND version = $5
+        RETURNING *
+      `, [username, status, assignmentLimit, actorUsername, expectedVersion]);
+      const updated = updatedResult.rows[0];
+      if (!updated) {
+        throw new ControlPlaneConflictError(
+          'VERSION_CONFLICT',
+          'automatic assignment worker was updated by another request',
+        );
+      }
+      await recordAutoAssignmentAdminEvent(client, {
+        actorUsername,
+        action: 'WORKER_UPDATED',
+        workerUsername: username,
+        details: {
+          previous: {
+            status: current.status,
+            assignmentLimit: Number(current.assignment_limit),
+            version: Number(current.version),
+          },
+          next: {
+            status: updated.status,
+            assignmentLimit: Number(updated.assignment_limit),
+            version: Number(updated.version),
+          },
+        },
+      });
+      return readAutoAssignmentWorker(client, username);
+    });
+  }
+
+  async removeAutoAssignmentWorker(rawUsername, {
+    expectedVersion: rawExpectedVersion,
+    actorUsername: rawActorUsername,
+  }) {
+    const username = normalizedUsername(rawUsername);
+    const expectedVersion = normalizeAutoAssignmentExpectedVersion(rawExpectedVersion);
+    const actorUsername = normalizedUsername(rawActorUsername);
+    return transaction(this.pool, async (client) => {
+      const currentResult = await client.query(
+        'SELECT * FROM task_auto_assignment_workers WHERE username = $1 FOR UPDATE',
+        [username],
+      );
+      const current = currentResult.rows[0];
+      if (!current) throw new ControlPlaneNotFoundError('automatic assignment worker not found');
+      assertAutoAssignmentVersion(current.version, expectedVersion, 'automatic assignment worker');
+      const deletedResult = await client.query(`
+        DELETE FROM task_auto_assignment_workers
+        WHERE username = $1 AND version = $2
+        RETURNING *
+      `, [username, expectedVersion]);
+      if (!deletedResult.rows[0]) {
+        throw new ControlPlaneConflictError(
+          'VERSION_CONFLICT',
+          'automatic assignment worker was updated by another request',
+        );
+      }
+      await recordAutoAssignmentAdminEvent(client, {
+        actorUsername,
+        action: 'WORKER_REMOVED',
+        workerUsername: username,
+        details: {
+          previous: {
+            status: current.status,
+            assignmentLimit: Number(current.assignment_limit),
+            version: Number(current.version),
+          },
+        },
+      });
+      return { username, removed: true };
+    });
   }
 
   async createUser({ username: rawUsername, displayName: rawDisplayName, role: rawRole }) {
@@ -699,10 +1198,30 @@ export class PostgresControlPlaneRepository {
     return result.rows.map(nodeFrom);
   }
 
-  async createTasks({ nodeId: rawNodeId, createdByUserId: rawCreator = null, tasks: rawTasks, skipCopyReview = false }) {
+  async createTasks({
+    nodeId: rawNodeId,
+    createdByUserId: rawCreator = null,
+    assignedToUserId: rawAssignee,
+    assignmentSource: rawAssignmentSource,
+    tasks: rawTasks,
+    skipCopyReview = false,
+  }) {
     if (typeof skipCopyReview !== 'boolean') throw new TypeError('skipCopyReview must be a boolean');
     const nodeId = normalizeNodeId(rawNodeId);
     const createdByUserId = rawCreator === null ? null : normalizeCreatorUserId(rawCreator);
+    const assignedToUserId = normalizeAssigneeUserId(
+      rawAssignee === undefined ? createdByUserId : rawAssignee,
+    );
+    const assignmentSource = assignedToUserId === null
+      ? null
+      : normalizeAssignmentSource(rawAssignmentSource
+        ?? (assignedToUserId === createdByUserId ? 'SELF' : 'MANUAL'));
+    if (assignedToUserId === null && rawAssignmentSource !== undefined && rawAssignmentSource !== null) {
+      throw new TypeError('unassigned tasks cannot have an assignment source');
+    }
+    if (assignmentSource === 'SELF' && assignedToUserId !== createdByUserId) {
+      throw new TypeError('self assignment must target the task creator');
+    }
     const tasks = normalizeTaskBatch(rawTasks);
     return transaction(this.pool, async (client) => {
       await client.query(`
@@ -710,18 +1229,99 @@ export class PostgresControlPlaneRepository {
         VALUES ($1, $1, false, 'epoch'::timestamptz)
         ON CONFLICT(id) DO NOTHING
       `, [nodeId]);
+      if (assignedToUserId !== null) {
+        if (assignmentSource === 'SELF') await lockAssignmentUser(client, assignedToUserId);
+        else await assertActiveAssignableUser(client, assignedToUserId);
+        // A self-created or administrator-created task contributes to the same
+        // in-hand count used by automatic replenishment.
+        await lockAutoAssignmentMember(client, assignedToUserId);
+      }
       const created = [];
       for (const task of tasks) {
         const result = await client.query(`
           INSERT INTO tasks(
             query, input, requested_image_count, created_by_node_id, created_by_user_id,
-            skip_copy_review, current_stage, progress_message
-          ) VALUES ($1, $2, $3, $4, $5, $6, 'COPY_QUEUED', '等待文案执行机领取')
+            skip_copy_review, assigned_to_user_id, assignment_source, assigned_at,
+            current_stage, progress_message
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+            CASE WHEN $7::varchar IS NULL THEN NULL ELSE now() END,
+            'COPY_QUEUED',
+            CASE WHEN $7::varchar IS NULL THEN '等待管理员分配作业员' ELSE '等待文案执行机领取' END)
           RETURNING *
-        `, [task.query, task.input, String(task.imageCount), nodeId, createdByUserId, skipCopyReview]);
+        `, [task.query, task.input, String(task.imageCount), nodeId, createdByUserId,
+          skipCopyReview, assignedToUserId, assignmentSource]);
+        if (assignedToUserId !== null && createdByUserId !== null) {
+          await client.query(`
+            INSERT INTO task_assignment_events(
+              task_id, actor_username, previous_assignee_user_id, assignee_user_id, source, reason
+            ) VALUES ($1, $2, NULL, $3, $4, '任务创建时分配')
+          `, [result.rows[0].id, createdByUserId, assignedToUserId, assignmentSource]);
+        }
         created.push(taskFrom(result.rows[0]));
       }
       return created;
+    });
+  }
+
+  async assignTask(rawTaskId, input) {
+    const tasks = await this.assignTasks([rawTaskId], input);
+    return tasks[0];
+  }
+
+  async assignTasks(rawTaskIds, {
+    assignedToUserId: rawAssignee,
+    actorUserId: rawActor,
+    reason: rawReason = null,
+  }) {
+    const taskIds = normalizedAssignmentTaskIds(rawTaskIds);
+    const assignedToUserId = normalizeAssigneeUserId(rawAssignee);
+    const actorUserId = normalizeCreatorUserId(rawActor);
+    if (rawReason !== null && rawReason !== undefined && typeof rawReason !== 'string') {
+      throw new TypeError('reason must be a string');
+    }
+    const reason = rawReason === null || rawReason === undefined || rawReason === ''
+      ? null : String(rawReason).replace(/\s+/gu, ' ').trim();
+    if (reason !== null && [...reason].length > 200) throw new RangeError('reason cannot exceed 200 characters');
+    return transaction(this.pool, async (client) => {
+      if (assignedToUserId !== null) {
+        await assertActiveAssignableUser(client, assignedToUserId);
+        // The limit is an automatic replenishment target, not a hard cap for
+        // administrators. Locking a member still makes its count linearizable
+        // with a concurrent replenishment run before either side locks tasks.
+        await lockAutoAssignmentMember(client, assignedToUserId);
+      }
+      const current = await client.query(`
+        SELECT * FROM tasks WHERE id = ANY($1::bigint[]) ORDER BY id FOR UPDATE
+      `, [taskIds]);
+      if (current.rows.length !== taskIds.length) throw new ControlPlaneNotFoundError('task not found');
+      if (assignedToUserId === null && current.rows.some((task) => task.state !== 'COPY_QUEUED')) {
+        throw new ControlPlaneConflictError('TASK_ALREADY_STARTED', '只有尚未开始的文案任务可以退回待分配池');
+      }
+      const changed = current.rows.filter((task) => (task.assigned_to_user_id ?? null) !== assignedToUserId);
+      if (changed.length === 0) return current.rows.map(taskFrom);
+      const updated = await client.query(`
+        UPDATE tasks SET
+          assigned_to_user_id = $2,
+          assignment_source = CASE WHEN $2::varchar IS NULL THEN NULL ELSE 'MANUAL' END,
+          assigned_at = CASE WHEN $2::varchar IS NULL THEN NULL ELSE now() END,
+          progress_message = CASE
+            WHEN $2::varchar IS NULL AND state = 'COPY_QUEUED' THEN '等待管理员分配作业员'
+            WHEN $2::varchar IS NOT NULL AND state = 'COPY_QUEUED' THEN '等待文案执行机领取'
+            ELSE progress_message
+          END,
+          updated_at = now()
+        WHERE id = ANY($1::bigint[])
+        RETURNING *
+      `, [changed.map((task) => task.id), assignedToUserId]);
+      for (const task of changed) {
+        await client.query(`
+          INSERT INTO task_assignment_events(
+            task_id, actor_username, previous_assignee_user_id, assignee_user_id, source, reason
+          ) VALUES ($1, $2, $3, $4, 'MANUAL', $5)
+        `, [task.id, actorUserId, task.assigned_to_user_id ?? null, assignedToUserId, reason]);
+      }
+      const updatedById = new Map(updated.rows.map((task) => [Number(task.id), task]));
+      return current.rows.map((task) => taskFrom(updatedById.get(Number(task.id)) ?? task));
     });
   }
 
@@ -730,6 +1330,9 @@ export class PostgresControlPlaneRepository {
     states = null,
     nodeId = null,
     createdByUserId = null,
+    assignedToUserId = null,
+    unassignedOnly = false,
+    excludeUnassigned = false,
     createdByRole = null,
     taskId = null,
     query = null,
@@ -745,6 +1348,9 @@ export class PostgresControlPlaneRepository {
     const safeOffset = Math.max(0, Number(offset) || 0);
     if (typeof includeTotal !== 'boolean') throw new TypeError('includeTotal must be a boolean');
     if (typeof deduplicateQuery !== 'boolean') throw new TypeError('deduplicateQuery must be a boolean');
+    if (typeof unassignedOnly !== 'boolean') throw new TypeError('unassignedOnly must be a boolean');
+    if (typeof excludeUnassigned !== 'boolean') throw new TypeError('excludeUnassigned must be a boolean');
+    if (unassignedOnly && assignedToUserId !== null) throw new TypeError('assignee and unassigned filters conflict');
     const values = [];
     const filters = [];
     const stateFilters = normalizedTaskStates(state, states);
@@ -759,6 +1365,14 @@ export class PostgresControlPlaneRepository {
     if (createdByUserId !== null) {
       values.push(normalizeCreatorUserId(createdByUserId));
       filters.push(`created_by_user_id = $${values.length}`);
+    }
+    if (assignedToUserId !== null) {
+      values.push(normalizeAssigneeUserId(assignedToUserId, { allowNull: false }));
+      filters.push(`assigned_to_user_id = $${values.length}`);
+    } else if (unassignedOnly) {
+      filters.push('assigned_to_user_id IS NULL');
+    } else if (excludeUnassigned) {
+      filters.push('assigned_to_user_id IS NOT NULL');
     }
     const creatorRole = normalizeTaskCreatorRole(createdByRole);
     if (creatorRole === 'UNKNOWN') {
@@ -807,7 +1421,8 @@ export class PostgresControlPlaneRepository {
       this.pool.query(`
       SELECT page.*, COALESCE(e.node_id, successful_image.node_id) AS image_executor_node_id,
         n.name AS image_executor_node_name, creator.display_name AS creator_display_name,
-        creator.role AS creator_role
+        creator.role AS creator_role, assignee.display_name AS assigned_to_display_name,
+        assignee.status AS assignee_status
       FROM (
         ${taskPage}
         ORDER BY ${pageOrder}
@@ -823,6 +1438,7 @@ export class PostgresControlPlaneRepository {
         AND successful_image.kind = 'IMAGE' AND successful_image.status = 'SUCCEEDED'
       LEFT JOIN executor_nodes n ON n.id = COALESCE(e.node_id, successful_image.node_id)
       LEFT JOIN app_users creator ON creator.username = page.created_by_user_id
+      LEFT JOIN app_users assignee ON assignee.username = page.assigned_to_user_id
       ORDER BY ${resultOrder}
     `, pageValues),
       includeTotal
@@ -864,14 +1480,18 @@ export class PostgresControlPlaneRepository {
   }
 
   async getTaskAccess(rawTaskId) {
-    const result = await this.pool.query('SELECT id, created_by_user_id FROM tasks WHERE id = $1', [normalizeTaskId(rawTaskId)]);
+    const result = await this.pool.query('SELECT id, created_by_user_id, assigned_to_user_id FROM tasks WHERE id = $1', [normalizeTaskId(rawTaskId)]);
     const row = result.rows[0];
-    return row ? { id: Number(row.id), createdByUserId: row.created_by_user_id } : null;
+    return row ? {
+      id: Number(row.id),
+      createdByUserId: row.created_by_user_id,
+      assignedToUserId: row.assigned_to_user_id ?? null,
+    } : null;
   }
 
   async getTask(rawTaskId) {
     const taskId = normalizeTaskId(rawTaskId);
-    const [task, executions, revisions, imageRuns, assets] = await Promise.all([
+    const [task, executions, revisions, imageRuns, assets, humanQualityAssessments] = await Promise.all([
       this.pool.query('SELECT * FROM tasks WHERE id = $1', [taskId]),
       this.pool.query(`
         SELECT * FROM task_executions WHERE task_id = $1 ORDER BY started_at DESC
@@ -885,6 +1505,10 @@ export class PostgresControlPlaneRepository {
       this.pool.query(`
         SELECT id, task_id, image_run_id, media_type, byte_size, sha256, original_name, created_at
         FROM assets WHERE task_id = $1 ORDER BY id
+      `, [taskId]),
+      this.pool.query(`
+        SELECT * FROM human_quality_assessments
+        WHERE task_id = $1 ORDER BY created_at, id
       `, [taskId]),
     ]);
     if (!task.rows[0]) return null;
@@ -913,6 +1537,7 @@ export class PostgresControlPlaneRepository {
         url: `/v1/assets/${row.id}`,
         createdAt: row.created_at,
       })),
+      humanQualityAssessments: humanQualityAssessments.rows.map(qualityAssessmentFrom),
     };
   }
 
@@ -984,21 +1609,67 @@ export class PostgresControlPlaneRepository {
       const available = Math.min(limit, Math.max(0, capacity - Number(active.rows[0]?.count ?? 0)));
       const queuedState = kind === 'COPY' ? 'COPY_QUEUED' : 'IMAGE_QUEUED';
       const runningState = kind === 'COPY' ? 'COPY_RUNNING' : 'IMAGE_RUNNING';
+      let cursor = null;
+      if (available) {
+        const cursorResult = await client.query(`
+          SELECT last_assignee_user_id FROM execution_claim_cursors
+          WHERE kind = $1
+          FOR UPDATE
+        `, [kind]);
+        if (!cursorResult.rows[0]) {
+          throw new Error(`execution claim cursor is missing for ${kind}`);
+        }
+        cursor = cursorResult.rows[0];
+      }
       const ownership = kind === 'COPY' ? ''
-        : "AND (pending_snapshot->'imageRetry'->>'nodeId' IS NULL OR pending_snapshot->'imageRetry'->>'nodeId' = $2) AND (pending_snapshot->'imageRecovery'->>'nodeId' IS NULL OR pending_snapshot->'imageRecovery'->>'nodeId' = $2)";
+        : "AND (queued.pending_snapshot->'imageRetry'->>'nodeId' IS NULL OR queued.pending_snapshot->'imageRetry'->>'nodeId' = $2) AND (queued.pending_snapshot->'imageRecovery'->>'nodeId' IS NULL OR queued.pending_snapshot->'imageRecovery'->>'nodeId' = $2)";
+      const lockedOwnership = kind === 'COPY' ? ''
+        : "AND (task.pending_snapshot->'imageRetry'->>'nodeId' IS NULL OR task.pending_snapshot->'imageRetry'->>'nodeId' = $2) AND (task.pending_snapshot->'imageRecovery'->>'nodeId' IS NULL OR task.pending_snapshot->'imageRecovery'->>'nodeId' = $2)";
       // Retry on the original image node, with a cooldown between complete executions.
       const retryDelay = kind === 'IMAGE'
-        ? "AND (error IS NULL OR last_activity_at <= now() - interval '5 seconds')" : '';
-      const order = kind === 'IMAGE' ? 'last_activity_at NULLS FIRST, id' : 'id';
+        ? "AND (queued.error IS NULL OR queued.last_activity_at <= now() - interval '5 seconds')" : '';
+      const lockedRetryDelay = kind === 'IMAGE'
+        ? "AND (task.error IS NULL OR task.last_activity_at <= now() - interval '5 seconds')" : '';
+      const ownerOrder = kind === 'IMAGE'
+        ? 'queued.last_activity_at NULLS FIRST, queued.id' : 'queued.id';
+      const finalOrder = kind === 'IMAGE'
+        ? 'ranked.last_activity_at NULLS FIRST, ranked.task_id' : 'ranked.task_id';
       const parameters = kind === 'COPY'
-        ? [queuedState, available]
-        : [queuedState, nodeId, available];
-      const limitParameter = kind === 'COPY' ? '$2' : '$3';
+        ? [queuedState, cursor?.last_assignee_user_id ?? null, available]
+        : [queuedState, nodeId, cursor?.last_assignee_user_id ?? null, available];
+      const cursorParameter = kind === 'COPY' ? '$2' : '$3';
+      const limitParameter = kind === 'COPY' ? '$3' : '$4';
       const candidate = available ? await client.query(`
-        SELECT * FROM tasks
-        WHERE state = $1 ${ownership} ${retryDelay}
-        ORDER BY ${order}
-        FOR UPDATE SKIP LOCKED
+        WITH ranked_candidates AS MATERIALIZED (
+          SELECT
+            queued.id AS task_id,
+            queued.assigned_to_user_id,
+            queued.last_activity_at,
+            row_number() OVER (
+              PARTITION BY queued.assigned_to_user_id
+              ORDER BY ${ownerOrder}
+            ) AS owner_row_number
+          FROM tasks AS queued
+          WHERE queued.state = $1
+            AND queued.assigned_to_user_id IS NOT NULL
+            ${ownership}
+            ${retryDelay}
+        )
+        SELECT task.*
+        FROM ranked_candidates AS ranked
+        JOIN tasks AS task ON task.id = ranked.task_id
+        WHERE task.state = $1
+          AND task.assigned_to_user_id IS NOT NULL
+          AND task.assigned_to_user_id = ranked.assigned_to_user_id
+          ${lockedOwnership}
+          ${lockedRetryDelay}
+        ORDER BY
+          ranked.owner_row_number,
+          CASE WHEN ${cursorParameter}::varchar IS NULL
+              OR ranked.assigned_to_user_id > ${cursorParameter}::varchar THEN 0 ELSE 1 END,
+          ranked.assigned_to_user_id,
+          ${finalOrder}
+        FOR UPDATE OF task SKIP LOCKED
         LIMIT ${limitParameter}
       `, parameters) : { rows: [] };
       const snapshots = await configurationSnapshots(client, candidate.rows.filter(task => task.pending_snapshot == null), kind);
@@ -1048,6 +1719,20 @@ export class PostgresControlPlaneRepository {
             [executionId],
           )).rows[0]),
         });
+      }
+      if (claims.length) {
+        const lastClaimedAssignee = claims.at(-1).task?.assignedToUserId;
+        if (!lastClaimedAssignee) throw new Error('claimed task is missing its assignee');
+        const cursorUpdate = await client.query(`
+          UPDATE execution_claim_cursors
+          SET last_assignee_user_id = $2, updated_at = now()
+          WHERE kind = $1
+          RETURNING kind
+        `, [kind, lastClaimedAssignee]);
+        if (cursorUpdate.rows.length !== 1 || cursorUpdate.rows[0].kind !== kind
+            || (cursorUpdate.rowCount !== undefined && cursorUpdate.rowCount !== 1)) {
+          throw new Error(`execution claim cursor could not be advanced for ${kind}`);
+        }
       }
       if (requestId) {
         await client.query(`INSERT INTO execution_claim_requests(node_id, kind, request_id, requested_limit, execution_ids, expires_at)
@@ -1178,19 +1863,60 @@ export class PostgresControlPlaneRepository {
     nodeId: rawNodeId,
     edits: rawEdits,
     aiDisclosureEnabled: rawAiDisclosureEnabled,
-  }, { actorRole = 'ADMIN' } = {}) {
+    decision: rawDecision,
+    originalScore: rawOriginalScore,
+    score: rawScore,
+    originalReasons: rawOriginalReasons,
+    originalReasonCodes: rawOriginalReasonCodes,
+    originalNote: rawOriginalNote,
+    reasons: rawReasons,
+    reasonCodes: rawReasonCodes,
+    note: rawNote,
+    reviewSessionId: rawReviewSessionId,
+  }, { actorRole = 'ADMIN', reviewerUserId: rawReviewerUserId } = {}) {
     const taskId = normalizeTaskId(rawTaskId);
     const revisionId = normalizeTaskId(rawRevisionId);
     const nodeId = normalizeNodeId(rawNodeId);
+    const reviewerUsername = normalizeCreatorUserId(rawReviewerUserId);
+    const reviewSessionId = normalizeUuid(rawReviewSessionId, 'reviewSessionId');
+    const decision = String(rawDecision ?? '').trim().toUpperCase();
+    if (!['SAVE', 'APPROVE', 'DISCARD'].includes(decision)) throw new TypeError('copy review decision is invalid');
+    const originalScoreX10 = rawOriginalScore === undefined
+      ? null : normalizedHumanQualityScore(rawOriginalScore, 'originalScore');
     let edits = rawEdits === undefined ? null : normalizeCopyReviewEdits(rawEdits);
+    if (decision === 'DISCARD' && edits) throw new TypeError('discarding copy does not accept edits');
     if (edits && actorRole !== 'ADMIN') edits = { ...edits, imagePlan: automaticReviewImagePlan(edits.imagePlan) };
+    const submittedScoreX10 = rawScore === undefined ? null : normalizedHumanQualityScore(rawScore);
+    if (edits && submittedScoreX10 === null) throw new TypeError('score is required when saving edited copy');
+    const currentScoreX10 = submittedScoreX10 ?? originalScoreX10;
+    if (currentScoreX10 === null) throw new TypeError('score is required');
+    const originalReasonCodes = normalizedQualityReasonCodes(rawOriginalReasons ?? rawOriginalReasonCodes);
+    const originalNote = normalizedQualityNote(rawOriginalNote);
+    const currentReasonCodes = normalizedQualityReasonCodes(
+      rawReasons ?? rawReasonCodes ?? (edits ? undefined : originalReasonCodes),
+    );
+    const currentNote = normalizedQualityNote(rawNote ?? (edits ? undefined : originalNote));
+    assertQualityExplanation(currentScoreX10, currentReasonCodes, currentNote);
+    if (decision === 'APPROVE' && currentScoreX10 <= 20) {
+      throw new ControlPlaneConflictError('QUALITY_SCORE_TOO_LOW', 'copy score must be 2.5 or 3 to approve');
+    }
     if (rawAiDisclosureEnabled !== undefined && typeof rawAiDisclosureEnabled !== 'boolean') {
       throw new TypeError('aiDisclosureEnabled must be a boolean');
     }
+    const requestFingerprint = qualityReviewFingerprint({
+      stage: 'COPY', taskId, revisionId, nodeId, decision,
+      originalScoreX10, currentScoreX10, edits,
+      originalReasonCodes, originalNote, currentReasonCodes, currentNote,
+      aiDisclosureEnabled: rawAiDisclosureEnabled ?? null,
+      reviewerUsername,
+    });
     return transaction(this.pool, async (client) => {
       const taskResult = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
       const task = taskResult.rows[0];
       if (!task) throw new ControlPlaneNotFoundError('task not found');
+      if (await claimQualityReviewSubmission(client, {
+        taskId, stage: 'COPY', reviewerUsername, reviewSessionId, requestFingerprint,
+      })) return taskFrom(task);
       if (task.state !== 'COPY_REVIEW_PENDING') {
         throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'task is not waiting for copy review');
       }
@@ -1204,10 +1930,16 @@ export class PostgresControlPlaneRepository {
       if (!revision.rows[0]) throw new ControlPlaneNotFoundError('copy revision not found');
       const node = await client.query('SELECT id FROM executor_nodes WHERE id = $1', [nodeId]);
       if (!node.rows[0]) throw new ControlPlaneNotFoundError('executor node is not registered');
-      let approvedRevisionId = revisionId;
+      const sourceIsOriginal = revision.rows[0].execution_id !== null;
+      const sourceRatingContext = sourceIsOriginal ? 'ORIGINAL' : 'EDITED';
+      if (edits && sourceIsOriginal) {
+        if (originalScoreX10 === null) throw new TypeError('originalScore is required when editing generated copy');
+        assertQualityExplanation(originalScoreX10, originalReasonCodes, originalNote, 'originalScore');
+      }
+      let reviewedRevisionId = revisionId;
       const reviewedContent = edits
         ? contentWithReviewEdits(revision.rows[0].content, edits, { baseRevisionId: revisionId, nodeId })
-        : actorRole !== 'ADMIN'
+        : decision === 'APPROVE' && actorRole !== 'ADMIN'
           ? contentWithAutomaticReviewLayouts(revision.rows[0].content, { baseRevisionId: revisionId, nodeId })
           : null;
       if (reviewedContent) {
@@ -1218,16 +1950,66 @@ export class PostgresControlPlaneRepository {
         const reviewedRevision = await client.query(`
           INSERT INTO copy_revisions(
             task_id, execution_id, revision, content, approved_at, approved_by_node_id, approval_mode
-          ) VALUES ($1, NULL, $2, $3, now(), $4, 'MANUAL')
+          ) VALUES ($1, NULL, $2, $3,
+            CASE WHEN $5 = 'APPROVE' THEN now() ELSE NULL END,
+            CASE WHEN $5 = 'APPROVE' THEN $4 ELSE NULL END,
+            CASE WHEN $5 = 'APPROVE' THEN 'MANUAL' ELSE NULL END)
           RETURNING *
-        `, [taskId, revisionNumber, reviewedContent, nodeId]);
-        approvedRevisionId = Number(reviewedRevision.rows[0].id);
-      } else {
+        `, [taskId, revisionNumber, reviewedContent, nodeId, decision]);
+        reviewedRevisionId = Number(reviewedRevision.rows[0].id);
+      } else if (decision === 'APPROVE') {
         await client.query(`
           UPDATE copy_revisions SET approved_at = now(), approved_by_node_id = $2, approval_mode = 'MANUAL' WHERE id = $1
         `, [revisionId, nodeId]);
       }
-      return queueApprovedCopy(client, taskId, approvedRevisionId, aiDisclosureEnabled);
+      if (!reviewedContent || sourceIsOriginal) {
+        await insertQualityAssessment(client, {
+          taskId, stage: 'COPY', copyRevisionId: revisionId,
+          scoreX10: reviewedContent && edits ? originalScoreX10 : currentScoreX10,
+          ratingContext: sourceRatingContext,
+          action: reviewedContent ? 'SAVE' : decision,
+          reasonCodes: reviewedContent && edits ? originalReasonCodes : currentReasonCodes,
+          note: reviewedContent && edits ? originalNote : currentNote,
+          reviewerUsername, reviewSessionId, requestFingerprint,
+        });
+      }
+      if (reviewedContent) {
+        await insertQualityAssessment(client, {
+          taskId, stage: 'COPY', copyRevisionId: reviewedRevisionId,
+          scoreX10: currentScoreX10,
+          ratingContext: 'EDITED', action: decision,
+          reasonCodes: currentReasonCodes, note: currentNote,
+          reviewerUsername, reviewSessionId, requestFingerprint,
+        });
+      }
+      if (decision === 'APPROVE') {
+        return queueApprovedCopy(client, taskId, reviewedRevisionId, aiDisclosureEnabled);
+      }
+      if (decision === 'DISCARD') {
+        const discarded = await client.query(`
+          UPDATE tasks SET
+            state = 'CANCELLED', cancelled_from_state = state,
+            current_execution_id = NULL, current_stage = 'CANCELLED',
+            progress_percent = 100, progress_message = '文案已被审核员废弃',
+            last_activity_at = now(), finished_at = now(), updated_at = now()
+          WHERE id = $1
+          RETURNING *
+        `, [taskId]);
+        return taskFrom(discarded.rows[0]);
+      }
+      const saved = await client.query(`
+        UPDATE tasks SET
+          state = 'COPY_REVIEW_PENDING', current_copy_revision_id = $2,
+          ai_disclosure_enabled = $3,
+          current_image_run_id = CASE WHEN $4 THEN NULL ELSE current_image_run_id END,
+          current_execution_id = NULL, current_stage = 'COPY_REVIEW_PENDING',
+          progress_percent = 100, progress_message = $5,
+          last_activity_at = now(), finished_at = now(), updated_at = now()
+        WHERE id = $1
+        RETURNING *
+      `, [taskId, reviewedRevisionId, aiDisclosureEnabled, Boolean(reviewedContent),
+        reviewedContent ? '人工修改已保存，等待继续审核' : '人工评分已保存，等待继续审核']);
+      return taskFrom(saved.rows[0]);
     });
   }
 
@@ -1331,11 +2113,35 @@ export class PostgresControlPlaneRepository {
     });
   }
 
-  async reviewImages(rawTaskId, { imageRunId: rawImageRunId, decision, reviewerUserId: rawReviewerUserId }) {
+  async reviewImages(rawTaskId, {
+    imageRunId: rawImageRunId,
+    decision: rawDecision,
+    score: rawScore,
+    reasons: rawReasons,
+    reasonCodes: rawReasonCodes,
+    note: rawNote,
+    problemAssetIds: rawProblemAssetIds,
+    reviewerUserId: rawReviewerUserId,
+    reviewSessionId: rawReviewSessionId,
+  }) {
     const taskId = normalizeTaskId(rawTaskId);
     const imageRunId = normalizeUuid(rawImageRunId, 'imageRunId');
-    const reviewerUserId = normalizeCreatorUserId(rawReviewerUserId);
+    const reviewerUsername = normalizeCreatorUserId(rawReviewerUserId);
+    const reviewSessionId = normalizeUuid(rawReviewSessionId, 'reviewSessionId');
+    const scoreX10 = normalizedHumanQualityScore(rawScore);
+    const reasonCodes = normalizedQualityReasonCodes(rawReasons ?? rawReasonCodes);
+    const problemAssetIds = normalizedQualityProblemAssetIds(rawProblemAssetIds);
+    const note = normalizedQualityNote(rawNote);
+    assertQualityExplanation(scoreX10, reasonCodes, note);
+    const decision = String(rawDecision ?? '').trim().toUpperCase();
     if (!['APPROVE', 'RETRY', 'DISCARD'].includes(decision)) throw new TypeError('image review decision is invalid');
+    if (decision === 'APPROVE' && scoreX10 <= 20) {
+      throw new ControlPlaneConflictError('QUALITY_SCORE_TOO_LOW', 'image score must be 2.5 or 3 to approve');
+    }
+    const requestFingerprint = qualityReviewFingerprint({
+      stage: 'IMAGE', taskId, imageRunId, decision, scoreX10,
+      reasonCodes, problemAssetIds, note, reviewerUsername,
+    });
     const retry = decision === 'RETRY';
     const approved = decision === 'APPROVE';
     const state = approved ? 'REVIEWED' : retry ? 'IMAGE_QUEUED' : 'CANCELLED';
@@ -1345,19 +2151,38 @@ export class PostgresControlPlaneRepository {
       const result = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
       const task = result.rows[0];
       if (!task) throw new ControlPlaneNotFoundError('task not found');
+      if (await claimQualityReviewSubmission(client, {
+        taskId, stage: 'IMAGE', reviewerUsername, reviewSessionId, requestFingerprint,
+      })) return taskFrom(task);
       if (task.state !== 'MANUAL_ARCHIVE') {
         throw new ControlPlaneConflictError('INVALID_TASK_STATE', '任务已不在人工归档阶段，请刷新后重试');
       }
       if (task.current_image_run_id !== imageRunId) {
         throw new ControlPlaneConflictError('STALE_IMAGE_RUN', '图片版本已变化，请刷新后重新审核');
       }
-      if (approved) {
-        const run = await client.query(`
-          SELECT id FROM image_runs WHERE id = $1 AND task_id = $2
-            AND copy_revision_id = $3 AND status = 'COMPLETED'
-        `, [imageRunId, taskId, task.current_copy_revision_id]);
-        if (!run.rows[0]) throw new ControlPlaneConflictError('STALE_IMAGE_RUN', '当前文案对应的图片尚未生成完成');
+      const run = await client.query(`
+        SELECT id FROM image_runs WHERE id = $1 AND task_id = $2
+          AND copy_revision_id = $3 AND status = 'COMPLETED'
+      `, [imageRunId, taskId, task.current_copy_revision_id]);
+      if (!run.rows[0]) throw new ControlPlaneConflictError('STALE_IMAGE_RUN', '当前文案对应的图片尚未生成完成');
+      if (problemAssetIds.length) {
+        const assets = await client.query(`
+          SELECT id FROM assets
+          WHERE task_id = $1 AND image_run_id = $2 AND id = ANY($3::bigint[])
+        `, [taskId, imageRunId, problemAssetIds]);
+        if (assets.rows.length !== problemAssetIds.length) {
+          throw new ControlPlaneConflictError(
+            'INVALID_PROBLEM_ASSETS',
+            'problemAssetIds must belong to the current image run',
+          );
+        }
       }
+      await insertQualityAssessment(client, {
+        taskId, stage: 'IMAGE', imageRunId, scoreX10,
+        ratingContext: 'IMAGE', action: decision,
+        reasonCodes, problemAssetIds, note,
+        reviewerUsername, reviewSessionId, requestFingerprint,
+      });
       const updated = await client.query(`
         UPDATE tasks SET
           state = $2, current_stage = $2, progress_message = $3,
@@ -1370,7 +2195,7 @@ export class PostgresControlPlaneRepository {
           image_reviewed_by_user_id = $4,
           last_activity_at = now(), updated_at = now()
         WHERE id = $1 RETURNING *
-      `, [taskId, state, message, approved ? reviewerUserId : null]);
+      `, [taskId, state, message, approved ? reviewerUsername : null]);
       return taskFrom(updated.rows[0]);
     });
   }
@@ -1652,6 +2477,9 @@ export class PostgresControlPlaneRepository {
     if (!/^[a-z][a-z0-9._-]{0,99}$/u.test(key)) throw new TypeError('setting key is invalid');
     const value = normalizeJson(rawValue, 'setting value', 1_000_000);
     if (key === 'production' && value?.layoutPresets !== undefined) value.layoutPresets = normalizeLayoutPresets(value.layoutPresets);
+    if (key === 'production' && value?.humanQualityReasons !== undefined) {
+      value.humanQualityReasons = normalizeHumanQualitySettingsUpdate(value.humanQualityReasons);
+    }
     if (key === 'production' && value?.layoutCatalog !== undefined) {
       value.layoutCatalog = normalizeLayoutCatalog(value.layoutCatalog);
       const current = await this.getLayoutCatalog();
@@ -1660,8 +2488,13 @@ export class PostgresControlPlaneRepository {
     const result = await this.pool.query(`
       INSERT INTO global_settings(key, value) VALUES ($1, $2)
       ON CONFLICT(key) DO UPDATE SET
-        value = CASE WHEN excluded.key = 'production' AND global_settings.value ? 'layoutCatalog'
-          THEN excluded.value || jsonb_build_object('layoutCatalog', global_settings.value->'layoutCatalog') ELSE excluded.value END,
+        value = CASE WHEN excluded.key = 'production' THEN
+          excluded.value
+          || CASE WHEN global_settings.value ? 'layoutCatalog'
+            THEN jsonb_build_object('layoutCatalog', global_settings.value->'layoutCatalog') ELSE '{}'::jsonb END
+          || CASE WHEN global_settings.value ? 'humanQualityReasons' AND NOT excluded.value ? 'humanQualityReasons'
+            THEN jsonb_build_object('humanQualityReasons', global_settings.value->'humanQualityReasons') ELSE '{}'::jsonb END
+          ELSE excluded.value END,
         version = global_settings.version + 1, updated_at = now()
       RETURNING *
     `, [key, value]);
@@ -1681,6 +2514,27 @@ export class PostgresControlPlaneRepository {
       version: Number(row.version),
       updatedAt: row.updated_at,
     }));
+  }
+
+  async getHumanQualitySettings() {
+    const result = await this.pool.query("SELECT value FROM global_settings WHERE key = 'production'");
+    return normalizeHumanQualitySettings(result.rows[0]?.value?.humanQualityReasons);
+  }
+
+  async updateHumanQualitySettings(input) {
+    const settings = normalizeHumanQualitySettingsUpdate(input);
+    return transaction(this.pool, async client => {
+      await client.query("INSERT INTO global_settings(key, value) VALUES ('production', '{}'::jsonb) ON CONFLICT(key) DO NOTHING");
+      const result = await client.query(`
+        UPDATE global_settings SET
+          value = jsonb_set(value, '{humanQualityReasons}', $1::jsonb, true),
+          version = version + 1,
+          updated_at = now()
+        WHERE key = 'production'
+        RETURNING value
+      `, [JSON.stringify(settings)]);
+      return normalizeHumanQualitySettings(result.rows[0].value.humanQualityReasons);
+    });
   }
 
   async getLayoutCatalog() {

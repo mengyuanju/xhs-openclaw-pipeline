@@ -11,6 +11,7 @@ import { createMockVisualPlan } from '../src/visual-plan.mjs';
 import { catalogDirectPlan } from '../src/catalog-planning.mjs';
 import { BUILTIN_LAYOUT_CATALOG } from '../server/src/layout-catalog.mjs';
 import { imageTimingProfile, readImageTimingSamples, recordImageTimingSample } from '../src/image-stage-timing.mjs';
+import { DEFAULT_HUMAN_QUALITY_SETTINGS } from '../src/human-quality-settings.mjs';
 import {
   StandaloneImageConfirmationError,
   StandaloneImageCancellationError,
@@ -675,6 +676,7 @@ describe('standalone image generation service', () => {
     assert.deepEqual(originalConfig.productionSettings, {
       qualityRepairEnabled: false, qualityRepairTriggerScore: 1, qualityRepairTargetScore: 2,
       qualityRepairMaxAttempts: 1, knowledgeEnabled: true, aiDisclosureEnabled: true, aiDisclosureText: '历史标识', layoutPresets: [],
+      humanQualityReasons: DEFAULT_HUMAN_QUALITY_SETTINGS,
     });
 
     const resumedRuntime = resumableLiveClient();

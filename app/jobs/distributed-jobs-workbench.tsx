@@ -6,7 +6,6 @@ import { Button } from '@/components/ui/button';
 import { Disclosure, DisclosureTrigger, DisclosureContent } from '@/components/ui/disclosure';
 
 import {
-  CheckCircle2,
   Clock3,
   FilePlus2,
   LoaderCircle,
@@ -207,29 +206,6 @@ export function DistributedJobsWorkbench({
     if (initialTaskId) void openTask(initialTaskId);
   }, [initialTaskId]);
 
-  async function approveCopy() {
-    if (!selected?.currentCopyRevisionId) return;
-    if (!await confirm({
-      title: '审核通过并进入生图队列？',
-      description: '将锁定当前文案版本并进入全局生图队列；任意已启用图片能力的空闲执行机都可以领取。',
-      confirmLabel: '审核通过并排队',
-    })) return;
-    setBusy(true);
-    try {
-      await apiRequest(apiPath(`/v1/tasks/${selected.id}/approve-copy`), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ revisionId: selected.currentCopyRevisionId, nodeId }),
-      });
-      setMessage('文案已审核通过，任务已进入全局生图队列。');
-      await refresh({ silent: true });
-    } catch (approveError) {
-      setError(approveError instanceof Error ? approveError.message : '文案审核提交失败');
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function retryTask(useLatestConfig: boolean) {
     if (!selected || !RETRY_STATES.has(selected.state)) return;
     const resumeImages = !useLatestConfig && selected.state.startsWith('IMAGE_');
@@ -360,7 +336,7 @@ export function DistributedJobsWorkbench({
         </figure>)}
       </div>}
       <div className="inline distributed-task-actions">
-        {selected.state === 'COPY_REVIEW_PENDING' && <Button unstyled className="button primary" type="button" disabled={busy} onClick={() => { void approveCopy(); }}><CheckCircle2 size={15} />审核通过，进入生图队列</Button>}
+        {selected.state === 'COPY_REVIEW_PENDING' && <a className="button primary" href={`/workbench/personal?taskId=${selected.id}`}>进入评分审核</a>}
         {RETRY_STATES.has(selected.state) && <>
           <Button unstyled className="button" type="button" disabled={busy} onClick={() => { void retryTask(false); }}><RotateCcw size={15} />{selected.state.startsWith('IMAGE_') ? '从失败步骤继续' : '复用原配置重试'}</Button>
           <Button unstyled className="button" type="button" disabled={busy} onClick={() => { void retryTask(true); }}>使用最新配置重新生成</Button>

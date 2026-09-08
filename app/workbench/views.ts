@@ -1,11 +1,11 @@
-import { FileCheck2, FileText, Image as ImageIcon, ListChecks, UserRound } from 'lucide-react';
+import { FileCheck2, FileText, Image as ImageIcon, Inbox, ListChecks, UserRound } from 'lucide-react';
 
 export type TaskState =
   | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_FAILED'
   | 'IMAGE_QUEUED' | 'IMAGE_RUNNING' | 'IMAGE_FAILED'
   | 'MANUAL_ARCHIVE' | 'REVIEWED' | 'CANCELLED';
 
-export type ViewKey = 'PERSONAL' | 'ALL_COPY' | 'COPY_REVIEW' | 'IMAGE_WORK' | 'MANUAL_ARCHIVE' | 'COMPLETED' | 'ALL_JOBS';
+export type ViewKey = 'PERSONAL' | 'UNASSIGNED' | 'ALL_COPY' | 'COPY_REVIEW' | 'IMAGE_WORK' | 'MANUAL_ARCHIVE' | 'COMPLETED' | 'ALL_JOBS';
 export type TaskSort = 'priority:desc' | 'createdAt:desc' | 'createdAt:asc' | 'id:desc' | 'id:asc';
 
 export const TASK_SORT_OPTIONS: Array<{ value: TaskSort; label: string }> = [
@@ -67,19 +67,30 @@ export const WORKBENCH_VIEWS: Array<{
   icon: typeof FileText;
   states: TaskState[];
   personalOnly?: boolean;
+  unassignedOnly?: boolean;
   adminOnly?: boolean;
 }> = [
   {
     key: 'PERSONAL',
     href: '/workbench/personal',
     label: '个人作业中心',
-    description: '显示当前账号创建的全部 Query 任务，可跟踪进度、审核、重试或废弃。',
+    description: '显示分配给当前账号的全部 Query 任务，可跟踪进度、审核、重试或废弃。',
     icon: UserRound,
     states: [
       'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_FAILED',
       'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'REVIEWED',
     ],
     personalOnly: true,
+  },
+  {
+    key: 'UNASSIGNED',
+    href: '/workbench/unassigned',
+    label: '待分配任务池',
+    description: '显示尚未指定负责人的 Query。执行机不会领取这些任务，可由管理员单条或批量分配。',
+    icon: Inbox,
+    states: ['COPY_QUEUED'],
+    unassignedOnly: true,
+    adminOnly: true,
   },
   {
     key: 'ALL_COPY',
@@ -133,10 +144,14 @@ export const WORKBENCH_VIEWS: Array<{
 ];
 
 export function matchesWorkbenchView(
-  task: { state: TaskState; createdByUserId?: string | null },
+  task: { state: TaskState; assignedToUserId?: string | null; createdByUserId?: string | null },
   view: (typeof WORKBENCH_VIEWS)[number],
   userId: string,
 ) {
+  const assigneeUserId = Object.hasOwn(task, 'assignedToUserId')
+    ? task.assignedToUserId
+    : task.createdByUserId;
   return view.states.includes(task.state)
-    && (!view.personalOnly || task.createdByUserId === userId);
+    && (!view.personalOnly || assigneeUserId === userId)
+    && (!view.unassignedOnly || assigneeUserId === null);
 }

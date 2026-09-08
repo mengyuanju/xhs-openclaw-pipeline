@@ -37,7 +37,9 @@ async function proxyRequest(
   }
   if (role !== 'ADMIN' && (routePath === '/v1/task-views'
     || /^\/v1\/task-views\//u.test(routePath)
-    || ['/v1/tasks/batch-actions', '/v1/tasks/batch-archive', '/v1/tasks/batch-permanent-delete'].includes(routePath)
+    || /^\/v1\/auto-assignment(?:\/|$)/u.test(routePath)
+    || ['/v1/tasks/batch-actions', '/v1/tasks/batch-assignee', '/v1/tasks/batch-archive', '/v1/tasks/batch-permanent-delete'].includes(routePath)
+    || /^\/v1\/tasks\/[^/]+\/assignee$/u.test(routePath)
     || (routePath === '/v1/tasks' && upstreamUrl.searchParams.has('attention')))) {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可使用任务集中处理功能');
   }
@@ -48,7 +50,8 @@ async function proxyRequest(
     throw new ApiError(403, 'FORBIDDEN', '普通用户没有该操作权限');
   }
   if (path.join('/') === 'v1/tasks' && (upstreamUrl.searchParams.get('mine') === 'true' || role === 'USER')) {
-    upstreamUrl.searchParams.set('createdByUserId', username);
+    upstreamUrl.searchParams.set('assignedToUserId', username);
+    upstreamUrl.searchParams.delete('createdByUserId');
     upstreamUrl.searchParams.delete('nodeId');
     upstreamUrl.searchParams.delete('mine');
   }
