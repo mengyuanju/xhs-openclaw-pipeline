@@ -20,7 +20,7 @@ export function PeopleTable({ people }: { people: Person[] }) {
   const rows = people.filter(person => `${person.displayName} ${person.username ?? ''}`.toLocaleLowerCase('zh-CN').includes(keyword))
     .toSorted((a, b) => (a[sort.key] - b[sort.key]) * (sort.ascending ? 1 : -1));
   return <section className="panel job-stats-section">
-    <div className="job-stats-heading"><div><h2>作业员明细</h2><p className="job-stats-note">{people.length} 位有历史作业的创建者 · 角色按当前账号信息</p></div>
+    <div className="job-stats-heading"><div><h2>作业员明细</h2><p className="job-stats-note">{people.length} 位有历史作业的创建者 · 已删除账号单列为历史账号</p></div>
       <SearchInput  aria-label="搜索表内人员" placeholder="搜索姓名或账号" value={search} onValueChange={(value) => setSearch(value)} />
     </div>
     <div className="job-stats-table-scroll" tabIndex={0} role="region" aria-label="作业员明细，可横向滚动">
@@ -29,10 +29,10 @@ export function PeopleTable({ people }: { people: Person[] }) {
           <Button unstyled type="button" onClick={() => setSort({ key: column.key, ascending: sort.key === column.key && !sort.ascending })}>
             {column.label}{sort.key === column.key ? sort.ascending ? ' ↑' : ' ↓' : ''}
           </Button></th>)}<th scope="col">操作</th></tr></thead><tbody>
-        {rows.map(person => <tr key={person.username ?? '__unassigned__'}>
+        {rows.map(person => <tr key={`${person.accountId ?? 'historical'}:${person.username ?? 'unassigned'}`}>
           <th scope="row"><strong>{person.displayName}</strong><small>{person.username ?? '未记录账号'} · {ROLE_LABELS[person.role ?? ''] ?? '角色未知'}</small></th>
           {columns.map(column => <td key={column.key}>{number(person[column.key])}</td>)}
-          <td>{person.username ? <Link className="job-stats-link" href={`/workbench/all?createdByUserId=${encodeURIComponent(person.username)}`}>查看作业</Link> : '—'}</td>
+          <td>{person.accountId !== null && person.username ? <Link className="job-stats-link" href={`/workbench/all?createdByUserId=${encodeURIComponent(person.username)}&createdByAccountId=${person.accountId}`}>查看作业</Link> : '—'}</td>
         </tr>)}
         {!rows.length && <tr><td colSpan={9} className="job-stats-empty">{keyword ? '没有匹配的作业员' : '暂无作业记录'}</td></tr>}
       </tbody></table>

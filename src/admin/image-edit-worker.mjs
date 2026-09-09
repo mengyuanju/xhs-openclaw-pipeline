@@ -7,7 +7,7 @@ import sharp from 'sharp';
 import { DELIVERY_IMAGE_HEIGHT, DELIVERY_IMAGE_WIDTH } from '../image-output-contract.mjs';
 import { applyDeterministicTextOverlay } from '../images.mjs';
 import { createImageAlignmentValidator } from '../image-alignment.mjs';
-import { createAgentClient as createOpenClawClient } from '../agent-client.mjs';
+import { createAgentClient } from '../agent-client.mjs';
 import { normalizeProductionSettings, productionDisclosure } from '../production-settings.mjs';
 import { renderPrompt } from './prompt-service.mjs';
 import { businessPrompt, promptRuntimeSnapshot } from '../prompt-runtime.mjs';
@@ -34,9 +34,9 @@ export async function processNextImageEdit({
   outputRoot = resolve(assetRoot, '..', 'output'),
   workerId,
   mock = false,
-  openclaw,
+  agentClient,
 }) {
-  try { if (!mock) openclaw?.assertAvailable?.(); }
+  try { if (!mock) agentClient?.assertAvailable?.(); }
   catch (error) {
     const code = codexErrorCode(error);
     if (!code) throw error;
@@ -68,7 +68,7 @@ export async function processNextImageEdit({
         .toFile(outputPath);
     } else {
       const productionSettings = normalizeProductionSettings(config.productionSettings ?? {});
-      const client = openclaw ?? createOpenClawClient({ modelApi: productionSettings.modelApi });
+      const client = agentClient ?? createAgentClient({ modelApi: productionSettings.modelApi });
       const complianceDisclosure = productionDisclosure(productionSettings);
       const variables = {
         query: config.query,
@@ -111,7 +111,7 @@ export async function processNextImageEdit({
           layoutDirection: visualPage.layoutDirection,
         });
         const validateImage = createImageAlignmentValidator({
-          openclaw: client,
+          agentClient: client,
           post,
           visualPlan,
           imageCount: config.imageCount,

@@ -7,14 +7,14 @@ async function withServer(action) {
   const calls = [];
   const roles = { admin: 'ADMIN', reviewer: 'REVIEWER', user: 'USER' };
   const repository = {
-    getUserByUsername: async username => ({ username, role: roles[username], status: 'ACTIVE', credentialVersion: 1 }),
+    getUserByUsername: async username => ({ id: 1, username, role: roles[username], status: 'ACTIVE', credentialVersion: 1 }),
     createTasks: async input => { calls.push(input); return [{ id: 1 }]; },
   };
   const server = createControlPlaneApp({ repository, storageRoot: 'test-storage' }).listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
   const create = (username, fields, role = roles[username]) => fetch(`http://127.0.0.1:${server.address().port}/v1/tasks`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Actor-Username': username,
+    headers: { 'Content-Type': 'application/json', 'X-Actor-User-Id': '1', 'X-Actor-Username': username,
       'X-Actor-Role': role, 'X-Actor-Credential-Version': '1' },
     body: JSON.stringify({ nodeId: 'node-a', tasks: [{ query: '桌面收纳' }, { query: '书架收纳' }], ...fields }),
   });
@@ -29,10 +29,20 @@ test('only authenticated administrators can enable copy review bypass for a batc
     }
     assert.equal((await create('user', { skipCopyReview: true }, 'ADMIN')).status, 401);
     assert.equal(calls.length, 0);
-    assert.equal((await create('admin', { skipCopyReview: true, createdByUserId: 'someone-else' })).status, 201);
+    assert.equal((await create('admin', {
+      skipCopyReview: true, assignedToUserId: 'user', assignedToAccountId: 1,
+      createdByUserId: 'someone-else',
+    })).status, 201);
     assert.equal(calls[0].skipCopyReview, true);
     assert.equal(calls[0].createdByUserId, 'admin');
+    assert.equal(calls[0].assignedToUserId, 'user');
     assert.equal(calls[0].tasks.length, 2);
+    const unassignedBypass = await create('admin', {
+      skipCopyReview: true, assignedToUserId: null,
+    });
+    assert.equal(unassignedBypass.status, 409);
+    assert.equal((await unassignedBypass.json()).error.code, 'SKIP_COPY_REVIEW_ASSIGNEE_REQUIRED');
+    assert.equal(calls.length, 1);
   });
 });
 
@@ -61,6 +71,7 @@ test('task creation persists the batch policy separately from untrusted task inp
     const inserts = [];
     const client = {
       async query(sql, values) {
+        if (sql.includes('FROM app_users')) return { rows: [{ id: 1, username: 'admin' }] };
         if (!sql.includes('INSERT INTO tasks')) return { rows: [] };
         inserts.push(values);
         return { rows: [{ id: inserts.length, query: values[0], input: values[1],
@@ -70,11 +81,35 @@ test('task creation persists the batch policy separately from untrusted task inp
       release() {},
     };
     const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
-    const tasks = await repository.createTasks({ nodeId: 'node-a', createdByUserId: 'admin', skipCopyReview,
-      tasks: [{ query: '一', input: { skipCopyReview: !skipCopyReview } }, { query: '二' }] });
+    const tasks = await repository.createTasks({
+      nodeId: 'node-a',
+      createdByUserId: 'admin',
+      skipCopyReview,
+      ...(skipCopyReview ? { assignedToUserId: 'admin', assignmentSource: 'SELF' } : {}),
+      tasks: [{ query: '一', input: { skipCopyReview: !skipCopyReview } }, { query: '二' }],
+    });
     assert.deepEqual(tasks.map(task => task.skipCopyReview), [skipCopyReview, skipCopyReview]);
     assert.equal(inserts[0][1].skipCopyReview, !skipCopyReview);
+    if (skipCopyReview) {
+      const insertsBeforeRejectedRequest = inserts.length;
+      await assert.rejects(repository.createTasks({
+        nodeId: 'node-a', createdByUserId: 'admin', assignedToUserId: null,
+        skipCopyReview: true, tasks: [{ query: '待自动分配后连续执行' }],
+      }), { code: 'SKIP_COPY_REVIEW_ASSIGNEE_REQUIRED' });
+      assert.equal(inserts.length, insertsBeforeRejectedRequest);
+    }
   }
+});
+
+test('repository rejects unassigned bypass tasks before opening a transaction', async () => {
+  const repository = new PostgresControlPlaneRepository({
+    pool: { connect: async () => assert.fail('unassigned bypass must not connect') },
+  });
+  await assert.rejects(repository.createTasks({
+    nodeId: 'node-a', createdByUserId: 'admin', skipCopyReview: true,
+    tasks: [{ query: '不能静默降级' }],
+  }), (error) => error?.code === 'SKIP_COPY_REVIEW_ASSIGNEE_REQUIRED'
+    && /必须明确指定负责人/u.test(error.message));
 });
 
 test('repository rejects malformed bypass flags before writing tasks', async () => {
@@ -92,14 +127,20 @@ const validCopy = {
   },
 };
 
-function completionRepository({ skipCopyReview = false, failQueue = false, stale = false } = {}) {
+function completionRepository({
+  skipCopyReview = false,
+  assignedToUserId = 'admin',
+  failQueue = false,
+  stale = false,
+} = {}) {
   const queries = [];
   const client = {
     async query(sql, values) {
       queries.push({ sql, values });
       if (sql.includes('FROM task_executions e')) return { rows: [{ id: executionId, task_id: 41, kind: 'COPY',
         status: stale ? 'SUCCEEDED' : 'RUNNING', current_execution_id: executionId, task_state: 'COPY_RUNNING',
-        skip_copy_review: skipCopyReview, created_by_node_id: 'node-a', ai_disclosure_enabled: true }] };
+        skip_copy_review: skipCopyReview, created_by_node_id: 'node-a', ai_disclosure_enabled: true,
+        assigned_to_user_id: assignedToUserId }] };
       if (sql.includes('MAX(revision)')) return { rows: [{ revision: 1 }] };
       if (sql.includes('INSERT INTO copy_revisions')) return { rows: [{ id: 12, task_id: 41, execution_id: executionId,
         revision: 1, content: values[3], approved_at: values[4] ? new Date() : null,
@@ -136,6 +177,18 @@ test('model-supplied bypass flags cannot bypass manual review', async () => {
   assert.equal(task.state, 'COPY_REVIEW_PENDING');
   assert.equal(revision.approvedAt, null);
   assert.equal(revision.approvalMode, null);
+});
+
+test('historical unassigned bypass tasks stop for assignment and manual review', async () => {
+  const { repository, queries } = completionRepository({
+    skipCopyReview: true,
+    assignedToUserId: null,
+  });
+  const { task, revision } = await repository.completeCopy(executionId, validCopy);
+  assert.equal(task.state, 'COPY_REVIEW_PENDING');
+  assert.equal(revision.approvedAt, null);
+  assert.equal(revision.approvalMode, null);
+  assert.ok(queries.some(({ values }) => values?.includes('文案生成完成，等待分配负责人后审核')));
 });
 
 test('invalid copy stays available for manual review even when bypass was selected', async () => {

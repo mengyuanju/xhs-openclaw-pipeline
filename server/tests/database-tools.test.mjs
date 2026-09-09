@@ -105,6 +105,45 @@ test('shared copy queue migration unassigns only waiting copy tasks and replaces
   assert.doesNotMatch(migration.sql, /DELETE|TRUNCATE|DROP TABLE/u);
 });
 
+test('admin task deletion migration adds bounded nullable security fields without rewriting data', async () => {
+  const migration = (await loadMigrations()).find((item) => item.id === '0014_admin_task_deletion');
+  assert.ok(migration);
+  assert.match(migration.sql, /deletion_password_hash varchar\(500\)/u);
+  assert.match(migration.sql, /cancelled_from_state varchar\(40\)/u);
+  assert.match(migration.sql, /cancelled_from_state IS NULL OR cancelled_from_state IN/u);
+  assert.match(migration.sql, /'COPY_RUNNING'/u);
+  assert.match(migration.sql, /'IMAGE_RUNNING'/u);
+  assert.doesNotMatch(migration.sql, /UPDATE|DELETE|TRUNCATE|DROP/u);
+});
+
+test('saved task view migration keeps views owner-scoped without rewriting tasks', async () => {
+  const migration = (await loadMigrations()).find((item) => item.id === '0015_saved_task_views');
+  assert.ok(migration);
+  assert.match(migration.sql, /owner_username varchar\(50\) NOT NULL REFERENCES app_users\(username\) ON DELETE CASCADE/u);
+  assert.match(migration.sql, /filters jsonb NOT NULL/u);
+  assert.match(migration.sql, /UNIQUE\(owner_username, name\)/u);
+  assert.doesNotMatch(migration.sql, /UPDATE tasks|DELETE FROM tasks|TRUNCATE|DROP TABLE/u);
+});
+
+test('human quality migration stores immutable version-bound ratings and idempotency keys', async () => {
+  const migration = (await loadMigrations()).find((item) => item.id === '0016_human_quality_assessments');
+  assert.ok(migration);
+  assert.match(migration.sql, /score_x10 smallint NOT NULL CHECK \(score_x10 IN \(10, 20, 25, 30\)\)/u);
+  assert.match(migration.sql, /copy_revision_id bigint REFERENCES copy_revisions\(id\)/u);
+  assert.match(migration.sql, /image_run_id uuid REFERENCES image_runs\(id\)/u);
+  assert.match(migration.sql, /review_session_id uuid NOT NULL/u);
+  assert.match(migration.sql, /UNIQUE INDEX[\s\S]*review_session_id, copy_revision_id/u);
+  assert.match(migration.sql, /UNIQUE INDEX[\s\S]*review_session_id, image_run_id/u);
+  assert.doesNotMatch(migration.sql, /UPDATE tasks|UPDATE copy_revisions|UPDATE image_runs|DELETE FROM|TRUNCATE|DROP TABLE/u);
+});
+
+test('executor retirement migration adds a nullable marker without rewriting history', async () => {
+  const migration = (await loadMigrations()).find((item) => item.id === '0023_executor_node_retirement');
+  assert.ok(migration);
+  assert.match(migration.sql, /ALTER TABLE executor_nodes[\s\S]*ADD COLUMN retired_at timestamptz/u);
+  assert.doesNotMatch(migration.sql, /DEFAULT|NOT NULL|UPDATE|DELETE FROM|TRUNCATE|DROP/u);
+});
+
 test('failed upgrades roll back the enclosing schema-and-data transaction', async () => {
   const queries = [];
   const client = { query: async (sql) => {

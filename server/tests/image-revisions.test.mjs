@@ -64,3 +64,23 @@ test('reprocessing cannot change layout or reference an asset outside this task 
   f.result.images[0].sourceAssetId = 999;
   await assert.rejects(reviseTaskImages(f.client, 1, input, 'alice'), /源图/);
 });
+
+test('non-admin regeneration forces every inherited or submitted layout back to automatic', async () => {
+  const f = fixture();
+  f.content.imagePlan = f.content.imagePlan.map((page, index) => ({
+    ...page,
+    layout: index === 0 ? { mode: 'TEMPLATE', template: 'HERO_LEFT' } : { mode: 'CUSTOM' },
+  }));
+  await reviseTaskImages(f.client, 1, {
+    ...input,
+    operation: 'REGENERATE',
+    confirmation: 'LIVE_IMAGE_COST_ACCEPTED',
+    layouts: f.content.imagePlan.map(page => page.layout),
+  }, 'alice', 'USER');
+  const saved = f.calls.find(c => c.sql.includes('INSERT INTO copy_revisions')).values[2];
+  assert.deepEqual(saved.imagePlan.map(page => page.layout), [
+    { mode: 'AUTO' },
+    { mode: 'AUTO' },
+    { mode: 'AUTO' },
+  ]);
+});

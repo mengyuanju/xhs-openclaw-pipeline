@@ -206,6 +206,10 @@ export function createControlPlaneClient({
     updateSetting: (key, value) => request(`/v1/settings/${encodeURIComponent(key)}`, {
       method: 'PUT', body: { value },
     }),
+    getHumanQualitySettings: () => request('/v1/human-quality-settings'),
+    updateHumanQualitySettings: (input) => request('/v1/human-quality-settings', {
+      method: 'PUT', body: input,
+    }),
     listPrompts: () => request('/v1/prompts'),
     listPromptRuns: (id) => request(`/v1/prompt-runs${id ? `?id=${encodeURIComponent(id)}` : ''}`),
     analyzeVisualKnowledge: (input) => request('/v1/visual-knowledge/analyze', { method: 'POST', body: input, timeoutMs: 360_000 }),

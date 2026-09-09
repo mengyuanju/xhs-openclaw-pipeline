@@ -73,13 +73,17 @@ function canFinalize(payload, error) {
   if (!['DEEPSEEK_SEARCH_NO_FINAL', 'DEEPSEEK_SEARCH_INVALID_JSON'].includes(error?.code)) return false;
   const output = payload?.output;
   // DeepSeek is stateless: a completed search id is needed to restore its evidence.
-  // Replay the intact history only; never truncate it or promote model output to instructions.
-  return Array.isArray(output) && JSON.stringify(output).length <= 1_000_000
+  // A completed response may contain failed search branches alongside completed
+  // evidence. Replay those branches as history, but keep every non-search item
+  // completed and unprivileged; never repair or promote model output to instructions.
+  return payload?.status === 'completed' && !payload.error
+    && Array.isArray(output) && JSON.stringify(output).length <= 1_000_000
     && output.some(item => item?.type === 'web_search_call' && item.status === 'completed'
       && typeof item.id === 'string' && item.id.length > 0)
     && output.every(item => ['reasoning', 'web_search_call', 'message'].includes(item?.type)
       && (item.role == null || item.role === 'assistant')
-      && (item.status == null || item.status === 'completed'));
+      && (item.status == null || item.status === 'completed'
+        || (item.type === 'web_search_call' && item.status === 'failed')));
 }
 
 export async function runDeepSeekWebSearch(

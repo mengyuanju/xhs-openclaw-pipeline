@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { DEFAULT_HUMAN_QUALITY_SETTINGS } from '../../src/human-quality-settings.mjs';
 
 export const DEFAULT_PRODUCTION_SETTINGS = Object.freeze({
   qualityRepairEnabled: true,
@@ -7,12 +8,15 @@ export const DEFAULT_PRODUCTION_SETTINGS = Object.freeze({
   qualityRepairMaxAttempts: 2,
   aiDisclosureEnabled: true,
   aiDisclosureText: 'AI生成',
+  humanQualityReasons: DEFAULT_HUMAN_QUALITY_SETTINGS,
   modelApi: Object.freeze({
     agentProvider: null,
     webSearchProvider: null,
     deepseekSearchModel: null,
     webSearchTimeoutMs: null,
     textModel: null,
+    capacityFallbackModel: null,
+    modelCapacityCooldownMs: null,
     screeningModel: null,
     reviewModel: null,
     visionModel: null,

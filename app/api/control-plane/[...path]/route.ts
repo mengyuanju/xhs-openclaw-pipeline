@@ -1,7 +1,9 @@
 import { ApiError } from '../../../../src/admin/http.mjs';
 import { controlPlaneUrl } from '../../../../src/control-plane/next-runtime.mjs';
 import { assetConditionalHeaders, assetResponseHeaders } from '../../../../src/control-plane/asset-proxy.mjs';
+import { assertMutationCapability } from '../../../../src/control-plane/mutation-capability.mjs';
 import { userCanAccessControlPlaneRoute } from '../../../../src/control-plane/proxy-access.mjs';
+import { sessionActorHeaders } from '../../../../src/control-plane/session-actor-headers.mjs';
 import { apiHandler } from '../../_lib';
 
 export const runtime = 'nodejs';
@@ -12,7 +14,7 @@ const MAX_PROXY_BODY_BYTES = 20 * 1024 * 1024;
 async function proxyRequest(
   request: Request,
   context: { params: Promise<{ path: string[] }> },
-  session: { subject: string; username?: string; roles: string[]; credentialVersion?: number },
+  session: { subject: string; userId?: number; username?: string; roles: string[]; credentialVersion?: number },
 ) {
   const root = controlPlaneUrl();
   if (!root) throw new ApiError(503, 'CONTROL_PLANE_NOT_CONFIGURED', '远端中心服务尚未配置');
@@ -35,14 +37,32 @@ async function proxyRequest(
   if (routePath === '/v1/tasks' && upstreamUrl.searchParams.has('createdByRole') && role !== 'ADMIN') {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可按创建者角色筛选任务');
   }
+  if (role !== 'ADMIN' && (routePath === '/v1/task-views'
+    || /^\/v1\/task-views\//u.test(routePath)
+    || /^\/v1\/auto-assignment(?:\/|$)/u.test(routePath)
+    || ['/v1/tasks/batch-actions', '/v1/tasks/batch-assignee', '/v1/tasks/batch-archive', '/v1/tasks/batch-permanent-delete'].includes(routePath)
+    || /^\/v1\/tasks\/[^/]+\/assignee$/u.test(routePath)
+    || (routePath === '/v1/tasks' && upstreamUrl.searchParams.has('attention')))) {
+    throw new ApiError(403, 'FORBIDDEN', '仅管理员可使用任务集中处理功能');
+  }
   if (role === 'REVIEWER' && (/^\/v1\/(?:settings|prompts|prompt-versions|users|executor-statuses)(?:\/|$)/u.test(routePath))) {
     throw new ApiError(403, 'FORBIDDEN', '审核员没有该管理权限');
   }
   if (role === 'USER' && !userCanAccessControlPlaneRoute(routePath, request.method)) {
     throw new ApiError(403, 'FORBIDDEN', '普通用户没有该操作权限');
   }
-  if (path.join('/') === 'v1/tasks' && (upstreamUrl.searchParams.get('mine') === 'true' || role === 'USER')) {
-    upstreamUrl.searchParams.set('createdByUserId', username);
+  if (path.join('/') === 'v1/tasks' && upstreamUrl.searchParams.get('mine') === 'true') {
+    upstreamUrl.searchParams.set('personal', 'true');
+    upstreamUrl.searchParams.delete('assignedToUserId');
+    upstreamUrl.searchParams.delete('createdByUserId');
+    upstreamUrl.searchParams.delete('createdByAccountId');
+    upstreamUrl.searchParams.delete('nodeId');
+    upstreamUrl.searchParams.delete('unassigned');
+    upstreamUrl.searchParams.delete('mine');
+  } else if (path.join('/') === 'v1/tasks' && role === 'USER') {
+    upstreamUrl.searchParams.set('assignedToUserId', username);
+    upstreamUrl.searchParams.delete('createdByUserId');
+    upstreamUrl.searchParams.delete('createdByAccountId');
     upstreamUrl.searchParams.delete('nodeId');
     upstreamUrl.searchParams.delete('mine');
   }
@@ -56,15 +76,14 @@ async function proxyRequest(
   if (body && body.byteLength > MAX_PROXY_BODY_BYTES) {
     throw new ApiError(413, 'PAYLOAD_TOO_LARGE', '请求内容过大');
   }
+  await assertMutationCapability({ root, routePath, method: request.method });
   let upstream: Response;
   try {
     upstream = await fetch(upstreamUrl, {
       method: request.method,
       headers: {
         ...assetConditionalHeaders(routePath, request),
-        'X-Actor-Username': username,
-        'X-Actor-Role': role,
-        'X-Actor-Credential-Version': String(session.credentialVersion || 1),
+        ...sessionActorHeaders(session, { username, role }),
         ...(request.headers.get('content-type')
           ? { 'Content-Type': request.headers.get('content-type') as string }
           : {}),

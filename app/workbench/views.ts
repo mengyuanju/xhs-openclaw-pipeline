@@ -1,11 +1,25 @@
-import { FileCheck2, FileText, Image as ImageIcon, ListChecks, UserRound } from 'lucide-react';
+import { FileCheck2, FileText, Image as ImageIcon, Inbox, ListChecks, UserRound } from 'lucide-react';
 
 export type TaskState =
   | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_FAILED'
   | 'IMAGE_QUEUED' | 'IMAGE_RUNNING' | 'IMAGE_FAILED'
   | 'MANUAL_ARCHIVE' | 'REVIEWED' | 'CANCELLED';
 
-export type ViewKey = 'PERSONAL' | 'ALL_COPY' | 'COPY_REVIEW' | 'IMAGE_WORK' | 'MANUAL_ARCHIVE' | 'COMPLETED' | 'ALL_JOBS';
+export type ViewKey = 'PERSONAL' | 'UNASSIGNED' | 'ALL_COPY' | 'COPY_REVIEW' | 'IMAGE_WORK' | 'MANUAL_ARCHIVE' | 'COMPLETED' | 'ALL_JOBS';
+export type TaskSort = 'priority:desc' | 'createdAt:desc' | 'createdAt:asc' | 'id:desc' | 'id:asc';
+
+export const TASK_SORT_OPTIONS: Array<{ value: TaskSort; label: string }> = [
+  { value: 'priority:desc', label: '待处理优先' },
+  { value: 'createdAt:desc', label: '创建时间：最新在前' },
+  { value: 'createdAt:asc', label: '创建时间：最早在前' },
+  { value: 'id:desc', label: 'Query ID：从大到小' },
+  { value: 'id:asc', label: 'Query ID：从小到大' },
+];
+
+export function taskSortParams(sort: TaskSort) {
+  const [sortBy, sortOrder] = sort.split(':') as ['priority' | 'createdAt' | 'id', 'asc' | 'desc'];
+  return { sortBy, sortOrder };
+}
 
 export const TASK_STATE_PRIORITY: Record<TaskState, number> = {
   COPY_REVIEW_PENDING: 1,
@@ -30,6 +44,21 @@ export function compareTasksByStatePriority<T extends { id: number; state: TaskS
   return createdAtDifference || right.id - left.id;
 }
 
+export function compareTasks<T extends { id: number; state: TaskState; createdAt: string }>(
+  left: T,
+  right: T,
+  sort: TaskSort,
+) {
+  if (sort === 'priority:desc') return compareTasksByStatePriority(left, right);
+  const direction = sort.endsWith(':asc') ? 1 : -1;
+  if (sort.startsWith('id:')) return direction * (left.id - right.id);
+  const leftCreatedAt = Date.parse(left.createdAt);
+  const rightCreatedAt = Date.parse(right.createdAt);
+  const createdAtDifference = (Number.isFinite(leftCreatedAt) ? leftCreatedAt : 0)
+    - (Number.isFinite(rightCreatedAt) ? rightCreatedAt : 0);
+  return direction * (createdAtDifference || left.id - right.id);
+}
+
 export const WORKBENCH_VIEWS: Array<{
   key: ViewKey;
   href: string;
@@ -38,19 +67,30 @@ export const WORKBENCH_VIEWS: Array<{
   icon: typeof FileText;
   states: TaskState[];
   personalOnly?: boolean;
+  unassignedOnly?: boolean;
   adminOnly?: boolean;
 }> = [
   {
     key: 'PERSONAL',
     href: '/workbench/personal',
     label: '个人作业中心',
-    description: '显示当前账号创建的全部 Query 任务，可跟踪进度、审核、重试或废弃。',
+    description: '显示当前账号提交或负责的 Query；机器阶段可跟踪进度，分配后按权限审核或处理。',
     icon: UserRound,
     states: [
       'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_FAILED',
       'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'REVIEWED',
     ],
     personalOnly: true,
+  },
+  {
+    key: 'UNASSIGNED',
+    href: '/workbench/unassigned',
+    label: '待审核分配',
+    description: '显示文案已经生成、正在等待分配审核负责人的 Query。机器生成阶段不需要负责人。',
+    icon: Inbox,
+    states: ['COPY_REVIEW_PENDING'],
+    unassignedOnly: true,
+    adminOnly: true,
   },
   {
     key: 'ALL_COPY',
@@ -104,10 +144,22 @@ export const WORKBENCH_VIEWS: Array<{
 ];
 
 export function matchesWorkbenchView(
-  task: { state: TaskState; createdByUserId?: string | null },
+  task: { state: TaskState; assignedToUserId?: string | null; assignedToAccountId?: number | null;
+    createdByUserId?: string | null; createdByAccountId?: number | null },
   view: (typeof WORKBENCH_VIEWS)[number],
   userId: string,
+  userAccountId?: number | null,
 ) {
+  const assigneeUserId = Object.hasOwn(task, 'assignedToUserId')
+    ? task.assignedToUserId
+    : task.createdByUserId;
+  const createdByCurrentAccount = task.createdByUserId === userId
+    && (userAccountId === undefined || userAccountId === null
+      || task.createdByAccountId === userAccountId);
+  const assignedToCurrentAccount = assigneeUserId === userId
+    && (userAccountId === undefined || userAccountId === null
+      || task.assignedToAccountId === userAccountId);
   return view.states.includes(task.state)
-    && (!view.personalOnly || task.createdByUserId === userId);
+    && (!view.personalOnly || assignedToCurrentAccount || createdByCurrentAccount)
+    && (!view.unassignedOnly || assigneeUserId === null);
 }

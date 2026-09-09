@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import JSZip from 'jszip';
 
-import { archiveFileName, buildTaskArchive } from '../src/task-archive.mjs';
+import { archiveFileName, buildBatchTaskArchive, buildTaskArchive } from '../src/task-archive.mjs';
 
 test('configured archive includes only version-pinned delivery assets, excluding PNG previews, sources and historical runs', async () => {
   const task = { id: 1, currentCopyRevisionId: 1, currentImageRunId: 'new', copyRevisions: [{ id: 1, content: { copy: { title: '当前', body: '正文', tags: [] } } }],
@@ -76,4 +76,22 @@ test('manual archive ZIP de-duplicates repeated image names without using storag
   const zip = await JSZip.loadAsync(buffer);
   assert.ok(zip.file('封面图.jpg'));
   assert.ok(zip.file('封面图-2.jpg'));
+});
+
+test('batch archive keeps each task resource package separate', async () => {
+  const tasks = [21, 22].map((id) => ({
+    id,
+    currentCopyRevisionId: 1,
+    currentImageRunId: `run-${id}`,
+    copyRevisions: [{ id: 1, content: { copy: { title: `标题${id}`, body: '正文', tags: [] } } }],
+    imageRuns: [],
+    assets: [{ id, taskId: id, imageRunId: `run-${id}`, mediaType: 'image/png' }],
+  }));
+  const content = await buildBatchTaskArchive(tasks, async (task, assetId) => ({
+    id: assetId, taskId: task.id, mediaType: 'image/png', originalName: '图片.png', content: Buffer.from(String(task.id)),
+  }));
+  const outer = await JSZip.loadAsync(content);
+  assert.deepEqual(Object.keys(outer.files).sort(), ['任务-21-资源包.zip', '任务-22-资源包.zip']);
+  const inner = await JSZip.loadAsync(await outer.file('任务-21-资源包.zip').async('nodebuffer'));
+  assert.equal(await inner.file('图片.png').async('string'), '21');
 });

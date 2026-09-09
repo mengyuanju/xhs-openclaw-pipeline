@@ -4,6 +4,7 @@ import { withKnowledgeStore, readKnowledgeModelApi } from '../../../src/admin/kn
 import { analyzeVisualImage } from '../../../src/admin/visual-knowledge-service.mjs';
 import { controlPlaneUrl } from '../../../src/control-plane/next-runtime.mjs';
 import { createControlPlaneClient } from '../../../src/control-plane/client.mjs';
+import { forwardControlPlaneRequest } from '../../../src/control-plane/next-api-error.mjs';
 import { knowledgeActorHeaders } from '../../../src/admin/knowledge-runtime.mjs';
 import { withAdminStore, adminOutputRoot } from '../../../src/admin/runtime.mjs';
 import { readPromptConfiguration } from '../../../src/admin/prompt-runtime-service.mjs';
@@ -23,7 +24,9 @@ export function POST(request: Request) {
     const center = controlPlaneUrl();
     if (center) {
       const client = createControlPlaneClient({ baseUrl: center, headers: knowledgeActorHeaders(session) });
-      return ok(await client.analyzeVisualKnowledge({ imageBase64: buffer.toString('base64'), mimeType: file.type, fileName: file.name }));
+      return ok(await forwardControlPlaneRequest(() => client.analyzeVisualKnowledge({
+        imageBase64: buffer.toString('base64'), mimeType: file.type, fileName: file.name,
+      })));
     }
     const configuration = await withAdminStore((store: any) => readPromptConfiguration({ store }));
     const result = await withPromptExecution({ outputRoot: adminOutputRoot(), configuration, kind: 'VISUAL_ANALYSIS', query: file.name }, () => analyzeVisualImage({

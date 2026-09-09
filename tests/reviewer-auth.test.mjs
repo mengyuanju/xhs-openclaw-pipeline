@@ -101,7 +101,7 @@ describe('reviewer session authentication', () => {
     assert.deepEqual(missing, { status: 'invalid' });
   });
 
-  it('enforces role allowlists and keeps reviewers inside the review center', () => {
+  it('enforces role allowlists and rejects retired review-center routes', () => {
     const reviewerSession = {
       subject: 'user',
       userId: 7,
@@ -121,11 +121,11 @@ describe('reviewer session authentication', () => {
     assert.deepEqual(evaluateAdminProxyRequest(
       new Request('http://192.168.1.8:3000/reviews', { headers }),
       environment,
-    ), { type: 'next' });
+    ), { type: 'forbidden' });
     assert.deepEqual(evaluateAdminProxyRequest(
       new Request('http://192.168.1.8:3000/api/review-task-assignments/1/assets/2', { headers }),
       environment,
-    ), { type: 'next' });
+    ), { type: 'forbidden' });
     assert.deepEqual(evaluateAdminProxyRequest(
       new Request('http://192.168.1.8:3000/login?reauth=1', { headers }),
       environment,
@@ -141,6 +141,6 @@ describe('reviewer session authentication', () => {
     assert.deepEqual(evaluateAdminProxyRequest(
       new Request('http://192.168.1.8:3000/login', { headers }),
       environment,
-    ), { type: 'redirect', location: '/reviews' });
+    ), { type: 'next' });
   });
 });

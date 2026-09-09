@@ -11,24 +11,25 @@ const USERS = {
 };
 
 const TASKS = [
-  { id: 1, createdByUserId: 'admin', state: 'COPY_QUEUED', query: 'summer' },
-  { id: 2, createdByUserId: 'reviewer', state: 'COPY_RUNNING', query: 'summer' },
-  { id: 3, createdByUserId: 'alice', state: 'COPY_FAILED', query: 'summer' },
-  { id: 4, createdByUserId: 'bob', state: 'COPY_REVIEW_PENDING', query: 'summer' },
-  { id: 5, createdByUserId: 'alice', state: 'IMAGE_QUEUED', query: 'summer' },
-  { id: 6, createdByUserId: 'reviewer', state: 'IMAGE_RUNNING', query: 'summer' },
-  { id: 7, createdByUserId: 'alice', state: 'IMAGE_FAILED', query: 'summer trip' },
-  { id: 8, createdByUserId: 'admin', state: 'MANUAL_ARCHIVE', query: 'summer' },
-  { id: 9, createdByUserId: 'bob', state: 'CANCELLED', query: 'summer' },
-  { id: 10, createdByUserId: null, state: 'IMAGE_FAILED', query: 'legacy' },
-  { id: 11, createdByUserId: 'deleted-account', state: 'CANCELLED', query: 'legacy' },
-  { id: 12, createdByUserId: 'bob', state: 'IMAGE_FAILED', query: 'summer beach' },
-  { id: 13, createdByUserId: 'reviewer', state: 'IMAGE_FAILED', query: 'summer trip' },
-  { id: 14, createdByUserId: 'alice', state: 'IMAGE_FAILED', query: 'winter trip' },
+  { id: 1, createdByUserId: 'admin', assignedToUserId: 'alice', state: 'COPY_QUEUED', query: 'summer' },
+  { id: 2, createdByUserId: 'reviewer', assignedToUserId: 'bob', state: 'COPY_RUNNING', query: 'summer' },
+  { id: 3, createdByUserId: 'alice', assignedToUserId: 'bob', state: 'COPY_FAILED', query: 'summer' },
+  { id: 4, createdByUserId: 'bob', assignedToUserId: 'alice', state: 'COPY_REVIEW_PENDING', query: 'summer' },
+  { id: 5, createdByUserId: 'alice', assignedToUserId: 'alice', state: 'IMAGE_QUEUED', query: 'summer' },
+  { id: 6, createdByUserId: 'reviewer', assignedToUserId: 'bob', state: 'IMAGE_RUNNING', query: 'summer' },
+  { id: 7, createdByUserId: 'alice', assignedToUserId: 'alice', state: 'IMAGE_FAILED', query: 'summer trip' },
+  { id: 8, createdByUserId: 'admin', assignedToUserId: 'bob', state: 'MANUAL_ARCHIVE', query: 'summer' },
+  { id: 9, createdByUserId: 'bob', assignedToUserId: 'bob', state: 'CANCELLED', query: 'summer' },
+  { id: 10, createdByUserId: null, assignedToUserId: 'alice', state: 'IMAGE_FAILED', query: 'legacy' },
+  { id: 11, createdByUserId: 'deleted-account', assignedToUserId: 'bob', state: 'CANCELLED', query: 'legacy' },
+  { id: 12, createdByUserId: 'bob', assignedToUserId: 'bob', state: 'IMAGE_FAILED', query: 'summer beach' },
+  { id: 13, createdByUserId: 'reviewer', assignedToUserId: 'alice', state: 'IMAGE_FAILED', query: 'summer trip' },
+  { id: 14, createdByUserId: 'alice', assignedToUserId: 'alice', state: 'IMAGE_FAILED', query: 'winter trip' },
 ];
 
 function actorHeaders(username, role = USERS[username]?.role, credentialVersion = 1) {
   return {
+    'X-Actor-User-Id': String(USERS[username]?.id ?? ''),
     'X-Actor-Username': username,
     'X-Actor-Role': role,
     'X-Actor-Credential-Version': String(credentialVersion),
@@ -48,6 +49,9 @@ function taskRepository(tasks = TASKS, users = USERS) {
       const matches = tasks.filter((task) => (
         (!filters.createdByRole || (users[task.createdByUserId]?.role ?? 'UNKNOWN') === filters.createdByRole)
         && (!filters.createdByUserId || task.createdByUserId === filters.createdByUserId)
+        && (!filters.assignedToUserId || task.assignedToUserId === filters.assignedToUserId)
+        && (!filters.unassignedOnly || task.assignedToUserId === null)
+        && (!filters.excludeUnassigned || task.assignedToUserId !== null)
         && (states.length === 0 || states.includes(task.state))
         && (!filters.query || task.query.toLowerCase().includes(filters.query.toLowerCase()))
       ));
@@ -168,6 +172,54 @@ test('ordinary users and reviewers cannot use creator role filtering', async () 
   });
 });
 
+test('assignee filters allow self-service without exposing another worker or the pending pool', async () => {
+  const repository = taskRepository();
+  await withServer(repository, async (root) => {
+    const ownWorkerTasks = await fetch(`${root}/v1/tasks?assignedToUserId=alice`, {
+      headers: actorHeaders('alice'),
+    });
+    assert.equal(ownWorkerTasks.status, 200);
+    assert.deepEqual((await ownWorkerTasks.json()).data.map((task) => task.id), [1, 4, 5, 7, 10, 13, 14]);
+
+    const ownReviewerTasks = await fetch(`${root}/v1/tasks?assignedToUserId=reviewer`, {
+      headers: actorHeaders('reviewer'),
+    });
+    assert.equal(ownReviewerTasks.status, 200);
+    assert.deepEqual((await ownReviewerTasks.json()).data, []);
+
+    for (const username of ['alice', 'reviewer']) {
+      const anotherWorker = await fetch(`${root}/v1/tasks?assignedToUserId=bob`, {
+        headers: actorHeaders(username),
+      });
+      assert.equal(anotherWorker.status, 403, `${username} must not filter another worker`);
+
+      const pendingPool = await fetch(`${root}/v1/tasks?unassigned=true`, {
+        headers: actorHeaders(username),
+      });
+      assert.equal(pendingPool.status, 403, `${username} must not inspect the pending pool`);
+    }
+
+    const administrator = await fetch(`${root}/v1/tasks?assignedToUserId=bob`, {
+      headers: actorHeaders('admin'),
+    });
+    assert.equal(administrator.status, 200);
+    assert.deepEqual((await administrator.json()).data.map((task) => task.id), [2, 3, 6, 8, 9, 11, 12]);
+  });
+});
+
+test('only administrators can use the centralized attention filter', async () => {
+  const repository = taskRepository();
+  await withServer(repository, async (root) => {
+    const admin = await fetch(`${root}/v1/tasks?attention=STALE&includeTotal=true`, { headers: actorHeaders('admin') });
+    assert.equal(admin.status, 200);
+    for (const username of ['alice', 'reviewer']) {
+      const denied = await fetch(`${root}/v1/tasks?attention=FAILED`, { headers: actorHeaders(username) });
+      assert.equal(denied.status, 403);
+    }
+  });
+  assert.equal(repository.listCalls, 1);
+});
+
 test('role filters reject forged administrators and stale or missing identities', async () => {
   const repository = taskRepository();
   await withServer(repository, async (root) => {
@@ -191,11 +243,14 @@ test('saved central role revocation prevents an old administrator from filtering
   });
 });
 
-test('without a role filter users remain restricted to their own tasks and reviewers retain global visibility', async () => {
+test('without a role filter users remain restricted by assignee and reviewers retain assigned visibility', async () => {
   await withServer(taskRepository(), async (root) => {
     const mine = await fetch(`${root}/v1/tasks?createdByUserId=bob`, { headers: actorHeaders('alice') });
     assert.equal(mine.status, 200);
-    assert.deepEqual((await mine.json()).data.map((task) => task.id), [3, 5, 7, 14]);
+    assert.deepEqual((await mine.json()).data.map((task) => task.id), [4]);
+
+    const allMine = await fetch(`${root}/v1/tasks`, { headers: actorHeaders('alice') });
+    assert.deepEqual((await allMine.json()).data.map((task) => task.id), [1, 4, 5, 7, 10, 13, 14]);
 
     const all = await fetch(`${root}/v1/tasks`, { headers: actorHeaders('reviewer') });
     assert.equal(all.status, 200);

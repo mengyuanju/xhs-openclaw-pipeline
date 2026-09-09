@@ -4,7 +4,7 @@ import test from 'node:test';
 import { resolveWebSearchConfig } from '../src/web-search-config.mjs';
 import { withWebSearchProvider } from '../src/web-search-service.mjs';
 import { createResearchSnapshot } from '../src/research.mjs';
-import { createOpenClawClient } from '../src/openclaw.mjs';
+import { createAgentClient } from '../src/agent-client.mjs';
 import { createCopyGenerationClient } from '../src/copy-generation-client.mjs';
 import { CopyGenerationResearchError, generateCopy } from '../src/copy-generation.mjs';
 import { createMockPost } from '../src/pipeline.mjs';
@@ -80,11 +80,11 @@ test('search fence extraction rejects competing objects, extra fences and invali
   }
 });
 
-test('explicit OpenClaw search preserves the original client without requiring a DeepSeek key', async () => {
+test('explicit Codex search preserves the original client without requiring a DeepSeek key', async () => {
   const original = { async runWebSearch(input) { return { provider: input.provider, result: evidence }; } };
-  const client = withWebSearchProvider(original, { environment: { XHS_WEB_SEARCH_PROVIDER: 'OPENCLAW' }, fetchImpl: () => assert.fail('no network') });
+  const client = withWebSearchProvider(original, { environment: { XHS_WEB_SEARCH_PROVIDER: 'CODEX' }, fetchImpl: () => assert.fail('no network') });
   assert.equal(client, original);
-  assert.equal(resolveWebSearchConfig({ XHS_WEB_SEARCH_PROVIDER: 'OPENCLAW' }).provider, 'OPENCLAW');
+  assert.equal(resolveWebSearchConfig({ XHS_WEB_SEARCH_PROVIDER: 'CODEX' }).provider, 'CODEX');
   const snapshot = await createResearchSnapshot({ client, query: '选题' });
   assert.equal(snapshot.provider, 'codex');
 });
@@ -99,8 +99,8 @@ test('search configuration accepts explicit switching and rejects invalid active
     assert.throws(() => resolveWebSearchConfig({ ...environment, XHS_DEEPSEEK_SEARCH_TIMEOUT_MS: value }), /timeout/iu);
   }
   assert.equal(resolveWebSearchConfig({
-    XHS_WEB_SEARCH_PROVIDER: 'OPENCLAW', XHS_DEEPSEEK_SEARCH_MODEL: 'inactive-setting',
-  }).provider, 'OPENCLAW');
+    XHS_WEB_SEARCH_PROVIDER: 'CODEX', XHS_DEEPSEEK_SEARCH_MODEL: 'inactive-setting',
+  }).provider, 'CODEX');
 });
 
 test('DeepSeek replaces only search and produces the existing bounded research snapshot', async () => {
@@ -319,10 +319,10 @@ test('DeepSeek DSML recovery does not accept truncated JSON, arbitrary trailers,
   }
 });
 
-test('the production OpenClaw factory switches research without starting its CLI', async () => {
-  const client = createOpenClawClient({
-    entryPath: 'test-openclaw-entry', environment,
-    runner: () => assert.fail('search must not invoke OpenClaw'),
+test('the production Codex factory switches research without starting its CLI', async () => {
+  const client = createAgentClient({
+    executable: 'fake-codex', environment, runtime: { assertAvailable() {} },
+    runner: () => assert.fail('search must not invoke Codex'),
     fetchImpl: async () => jsonResponse(responsePayload()),
   });
   const snapshot = await createResearchSnapshot({ client, query: '选题' });
@@ -335,7 +335,7 @@ test('the copy workflow uses DeepSeek evidence with Query screening off by defau
   const calls = [];
   const client = createCopyGenerationClient({
     environment,
-    openclaw: {
+    agentClient: {
       async runReview() {
         calls.push('review');
         return { rawText: JSON.stringify({ schemaVersion: 1, decision: 'PASS', summary: '通过', issues: [] }), model: 'original-review' };
@@ -371,7 +371,7 @@ test('the copy workflow uses DeepSeek evidence with Query screening off by defau
 test('failed configured search stops the copy workflow before text generation', async () => {
   const client = createCopyGenerationClient({
     environment: { XHS_WEB_SEARCH_PROVIDER: 'DEEPSEEK' },
-    openclaw: {
+    agentClient: {
       async runReview() {
         return { rawText: JSON.stringify({ schemaVersion: 1, decision: 'PASS', summary: '通过', issues: [] }), model: 'review' };
       },
@@ -392,7 +392,7 @@ test('Dots text generation and DeepSeek search can be selected independently', a
   const client = createCopyGenerationClient({
     modelApi: { copyGenerationProvider: 'DOTS' },
     environment: { ...environment, XHS_DOTS_API_KEY: 'test-dots-secret' },
-    openclaw: { runWebSearch() { assert.fail('must use DeepSeek search'); } },
+    agentClient: { runWebSearch() { assert.fail('must use DeepSeek search'); } },
     async fetchImpl(url) {
       return url === 'https://api.deepseek.com/responses'
         ? jsonResponse(responsePayload())

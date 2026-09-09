@@ -13,6 +13,16 @@ const MIN_OCR_CONFIDENCE = 0.9;
 const MAX_ALIGNMENT_RESPONSE_ATTEMPTS = 3;
 const PORTRAIT_PATTERN = /(?:人像|人物|真人|模特|肖像|半身|全身|面部|人物操作|人物示范)/u;
 const PORTRAIT_EXCLUSION_PATTERN = /(?:无人物|无人像|不含人物|不出现人物|禁止人物|不要人物|没有人物)/u;
+const REQUIRED_TEXT_CONTEXT_PATTERN = /(?:allowedVisibleText|白名单|任务(?:要求|预期)文字|业务文案|关键文字|主标题|副标题|标题|要点|项目符号|正文|步骤|清单|标签|合规标识|headline|subtitle|bullet|label)/iu;
+const INCIDENTAL_UNREADABLE_TEXT_PATTERNS = [
+  /^(?:背景|远景)(?:书架)?书脊(?:上|处)的?(?:微小|细小|极小)(?:的)?(?:装饰字|装饰文字|装饰性文字)(?:无法辨认|看不清|不可读|模糊不清)[。.]?$/u,
+  /^(?:显示器|屏幕|设备)(?:边框|外壳)(?:上|处)的?(?:微小|细小|极小)(?:的)?(?:装饰字|装饰文字|装饰性文字)(?:无法辨认|看不清|不可读|模糊不清)[。.]?$/u,
+  /^(?:背景|远景)(?:墙面|道具|摆件|书本)(?:边缘|角落|纹理)(?:上|处)?的?(?:微小|细小|极小)(?:的)?(?:装饰字|装饰文字|装饰性文字)(?:无法辨认|看不清|不可读|模糊不清)[。.]?$/u,
+];
+const CELSIUS_EQUIVALENCE_METHOD = 'U+2103_EQUIVALENT_TO_U+00B0_LATIN_CAPITAL_C';
+const CELSIUS_FORM_PATTERN = /(?:℃|°C)/u;
+const CELSIUS_DESCRIPTION_SOURCE = '(?:温度单位写法|温度单位符号|温度符号写法|温度标注写法|摄氏度单位|摄氏度符号|摄氏度写法|摄氏单位符号)';
+const CELSIUS_DIFFERENCE_SOURCE = '(?:写法不同|写法不一致|符号不同|符号不一致|不同|不一致|存在差异|有差异|差异|等价写法|等价|相同|一致|无需修改|不应报错)';
 
 export class ImageAlignmentResponseError extends SyntaxError {
   constructor(cause, responseAttempts = MAX_ALIGNMENT_RESPONSE_ATTEMPTS) {
@@ -83,7 +93,7 @@ function ocrOtherTextList(value, name) {
   return value.map((item, index) => ocrText(item, `${name}[${index}]`, 300));
 }
 
-function normalizeOcrText(value) {
+function normalizeOcrTextWithoutCelsius(value) {
   if (promptRuntimeSnapshot() && promptPolicy().ocrComparison === 'LINE_BREAKS_ONLY') {
     return String(value ?? '').replace(/[\r\n]/gu, '');
   }
@@ -91,6 +101,106 @@ function normalizeOcrText(value) {
     .normalize('NFKC')
     .replace(/[“”‘’"']/gu, '')
     .replace(/\s+/gu, '');
+}
+
+function normalizeCelsiusNotation(value) {
+  return value.replace(/\u2103/gu, '°C');
+}
+
+function normalizeOcrText(value) {
+  return normalizeCelsiusNotation(normalizeOcrTextWithoutCelsius(value));
+}
+
+function isCelsiusRepresentationPair(left, right) {
+  const rawLeft = normalizeOcrTextWithoutCelsius(left);
+  const rawRight = normalizeOcrTextWithoutCelsius(right);
+  return rawLeft !== rawRight
+    && CELSIUS_FORM_PATTERN.test(rawLeft)
+    && CELSIUS_FORM_PATTERN.test(rawRight)
+    && normalizeCelsiusNotation(rawLeft) === normalizeCelsiusNotation(rawRight);
+}
+
+function boundedAuditText(value) {
+  return [...String(value ?? '')].slice(0, 300).join('');
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+function quotedExactPattern(values) {
+  const source = [...new Set(values)].sort((left, right) => right.length - left.length)
+    .map(escapeRegExp).join('|');
+  return `(?:${source}|“(?:${source})”|‘(?:${source})’|"(?:${source})"|'(?:${source})')`;
+}
+
+function celsiusApplicationValues(applications, key) {
+  const values = [];
+  for (const application of applications) {
+    const value = application[key];
+    values.push(value);
+    values.push(...(String(value).match(/[+-−－]?\d+(?:\.\d+)?(?:℃|°C)/gu) ?? []));
+    values.push(String(value).includes('℃') ? '℃' : '°C');
+  }
+  return values;
+}
+
+function celsiusEquivalenceApplications(recognizedText, allowedVisibleText) {
+  const applications = [];
+  const addPair = (field, recognized, allowed, index = null) => {
+    if (!isCelsiusRepresentationPair(recognized, allowed) || applications.length >= 10) return;
+    applications.push({
+      field,
+      ...(index === null ? {} : { index }),
+      recognized: boundedAuditText(recognized),
+      allowed: boundedAuditText(allowed),
+    });
+  };
+  addPair('headline', recognizedText.headline, allowedVisibleText.headline);
+  addPair('subtitle', recognizedText.subtitle, allowedVisibleText.subtitle);
+  for (const [field, recognizedValues, allowedValues] of [
+    ['bullets', recognizedText.bullets, allowedVisibleText.bullets],
+    ['otherText', recognizedText.otherText, allowedVisibleText.labels ?? []],
+  ]) {
+    const remaining = [...allowedValues];
+    for (const [recognizedIndex, recognized] of recognizedValues.entries()) {
+      const index = remaining.findIndex((allowed) =>
+        normalizeOcrText(recognized) === normalizeOcrText(allowed));
+      if (index < 0) continue;
+      addPair(field, recognized, remaining[index], recognizedIndex);
+      remaining.splice(index, 1);
+    }
+  }
+  return applications;
+}
+
+function isCelsiusNotationOnlyMessage(value, applications) {
+  const text = String(value ?? '').trim();
+  if (!text || !text.includes('℃') || !text.includes('°C') || applications.length === 0) return false;
+  const recognized = quotedExactPattern(celsiusApplicationValues(applications, 'recognized'));
+  const allowed = quotedExactPattern(celsiusApplicationValues(applications, 'allowed'));
+  const difference = new RegExp(`^(?:仅|只)?${CELSIUS_DESCRIPTION_SOURCE}${CELSIUS_DIFFERENCE_SOURCE}$`, 'u');
+  const observed = new RegExp(`^(?:图片文字为|图片为|画面文字为|画面为|实际显示为|显示为|识别为|OCR识别为)${recognized}$`, 'u');
+  const required = new RegExp(`^(?:allowedVisibleText要求|白名单要求|白名单为|要求为|要求|应为|原文为|正确文字为)${allowed}$`, 'u');
+  const pair = new RegExp(`^${recognized}(?:与|和|而非)${allowed}$`, 'u');
+  const repair = new RegExp(`^(?:请)?(?:将|把)?(?:${CELSIUS_DESCRIPTION_SOURCE})?(?:从)?${recognized}(?:改为|改成|替换为|替换成|调整为|统一为)${allowed}$`, 'u');
+  const compact = text.replace(/[\s　]/gu, '').replace(/[。.]$/u, '');
+  if (repair.test(compact)) return true;
+  const clauses = compact.split(/[：:，,；;]/u).filter(Boolean);
+  let differences = 0;
+  let observedValues = 0;
+  let requiredValues = 0;
+  let pairedValues = 0;
+  for (const clause of clauses) {
+    if (difference.test(clause)) differences += 1;
+    else if (observed.test(clause)) observedValues += 1;
+    else if (required.test(clause)) requiredValues += 1;
+    else if (pair.test(clause)) pairedValues += 1;
+    else return false;
+  }
+  return differences === 1
+    && ((observedValues >= 1 && requiredValues >= 1) || pairedValues >= 1)
+    && observedValues + requiredValues + pairedValues + differences === clauses.length;
 }
 
 function isQuoteVariantOnlyError(value) {
@@ -116,6 +226,19 @@ function validateRecognizedText(value) {
   };
 }
 
+function clearlyIncidentalUnreadableText(value, allowedVisibleText) {
+  if (REQUIRED_TEXT_CONTEXT_PATTERN.test(value)) return false;
+  const normalized = normalizeOcrText(value);
+  const expectedText = [
+    allowedVisibleText.headline,
+    allowedVisibleText.subtitle,
+    ...allowedVisibleText.bullets,
+    ...(allowedVisibleText.labels ?? []),
+  ].map(normalizeOcrText).filter(Boolean);
+  if (expectedText.some((item) => normalized.includes(item))) return false;
+  return INCIDENTAL_UNREADABLE_TEXT_PATTERNS.some((pattern) => pattern.test(value));
+}
+
 function compareRecognizedText(recognizedText, allowedVisibleText, {
   unreadableText,
   hasTraditionalChinese,
@@ -132,16 +255,10 @@ function compareRecognizedText(recognizedText, allowedVisibleText, {
   if (normalizeOcrText(recognizedText.subtitle) !== normalizeOcrText(allowedVisibleText.subtitle)) {
     mismatches.push('subtitle');
   }
-  const recognizedBullets = recognizedText.bullets.map(normalizeOcrText);
-  const allowedBullets = allowedVisibleText.bullets.map(normalizeOcrText);
-  if (recognizedBullets.length !== allowedBullets.length
-    || recognizedBullets.some((bullet, index) => bullet !== allowedBullets[index])) {
+  if (!compareTextMultiset(recognizedText.bullets, allowedVisibleText.bullets).passed) {
     mismatches.push('bullets');
   }
-  const recognizedLabels = recognizedText.otherText.map(normalizeOcrText).sort();
-  const allowedLabels = (allowedVisibleText.labels ?? []).map(normalizeOcrText).sort();
-  if (recognizedLabels.length !== allowedLabels.length
-    || recognizedLabels.some((label, index) => label !== allowedLabels[index])) {
+  if (!compareTextMultiset(recognizedText.otherText, allowedVisibleText.labels ?? []).passed) {
     mismatches.push('otherText');
   }
   if (unreadableText.length > 0) mismatches.push('unreadableText');
@@ -155,15 +272,16 @@ function boundedRepairItems(values, { maxItems = 10, maxLength = 80 } = {}) {
     [...String(value).trim()].slice(0, maxLength).join(''));
 }
 
-function compareLabelMultiset(recognizedLabels, allowedLabels) {
-  const allowedNormalized = allowedLabels.map(normalizeOcrText);
-  const remainingAllowed = allowedLabels.map((value, index) => ({
+function compareTextMultiset(recognizedValues, allowedValues) {
+  const recognizedNormalized = recognizedValues.map(normalizeOcrText);
+  const allowedNormalized = allowedValues.map(normalizeOcrText);
+  const remainingAllowed = allowedValues.map((value, index) => ({
     value,
     normalized: allowedNormalized[index],
   }));
   const unexpected = [];
   const duplicates = [];
-  for (const value of recognizedLabels) {
+  for (const value of recognizedValues) {
     const normalized = normalizeOcrText(value);
     const remainingIndex = remainingAllowed.findIndex((item) => item.normalized === normalized);
     if (remainingIndex >= 0) remainingAllowed.splice(remainingIndex, 1);
@@ -171,6 +289,9 @@ function compareLabelMultiset(recognizedLabels, allowedLabels) {
     else unexpected.push(value);
   }
   return {
+    passed: unexpected.length === 0 && duplicates.length === 0 && remainingAllowed.length === 0,
+    orderMatched: recognizedNormalized.length === allowedNormalized.length
+      && recognizedNormalized.every((value, index) => value === allowedNormalized[index]),
     unexpected,
     duplicates,
     missing: remainingAllowed.map((item) => item.value),
@@ -181,7 +302,7 @@ function buildOcrRepairInstruction(result, allowedVisibleText) {
   const instructions = [];
   if (result.ocrMismatches.includes('otherText')) {
     const allowedLabels = allowedVisibleText.labels ?? [];
-    const differences = compareLabelMultiset(result.recognizedText.otherText, allowedLabels);
+    const differences = compareTextMultiset(result.recognizedText.otherText, allowedLabels);
     const unexpected = boundedRepairItems(differences.unexpected, { maxItems: 5 });
     const duplicates = boundedRepairItems(differences.duplicates, { maxItems: 5 });
     const missing = boundedRepairItems(differences.missing, { maxItems: 5 });
@@ -276,11 +397,15 @@ function parseObject(raw) {
 export function buildImageAlignmentPrompt({ post, visualPage, pageIndex, imageCount }) {
   if (!isRecord(post) || !isRecord(visualPage)) throw new TypeError('post and visualPage are required');
   if (!Number.isInteger(pageIndex) || pageIndex < 1 || pageIndex > imageCount) throw new RangeError('pageIndex must be within the image set');
-  return businessPrompt('IMAGE_ALIGNMENT_SYSTEM', {
+  const prompt = businessPrompt('IMAGE_ALIGNMENT_SYSTEM', {
     dataTag: 'untrusted_alignment_contract',
     data: { title: post.title, body: post.body, pageIndex, imageCount, page: visualPage },
-    contract: '只返回 JSON：schemaVersion=1；subjectMatched、sceneMatched、headlineMatched、styleMatched、layoutMatched 为布尔值；bulletCoverage 为 0～1；contradictions、extraClaims、textErrors 为字符串数组；recognizedText 包含 headline、subtitle、bullets、otherText；unreadableText 为数组；hasTraditionalChinese 为布尔值；ocrConfidence 为 0～1；failureClass 为 PASS、MINOR_TEXT、SEMANTIC、EXTRA_FACT、STYLE_LAYOUT、OCR_MISMATCH、OCR_UNCERTAIN；repairInstruction 为字符串，通过时为空，失败时 5～1000 字。程序按当前 OCR 比较配置校验，模型原始结论完整保留。',
+    contract: '只返回 JSON：schemaVersion=1；subjectMatched、sceneMatched、headlineMatched、styleMatched、layoutMatched 为布尔值；bulletCoverage 为 0～1；contradictions、extraClaims、textErrors 为字符串数组；recognizedText 包含 headline、subtitle、bullets、otherText，其中 bullets 按画面自然读取顺序逐项抄录，程序以无序多重集合核对白名单完整性，逻辑或布局顺序错误由 layoutMatched、contradictions 和 failureClass 报告；unreadableText 只列 allowedVisibleText 或合规标识中不可读的任务预期文字，不要列背景书脊、屏幕边框等非预期装饰字；hasTraditionalChinese 为布尔值；ocrConfidence 为 0～1；failureClass 为 PASS、MINOR_TEXT、SEMANTIC、EXTRA_FACT、STYLE_LAYOUT、OCR_MISMATCH、OCR_UNCERTAIN；repairInstruction 为字符串，通过时为空，失败时 5～1000 字。程序按当前 OCR 比较配置校验，模型原始结论完整保留。',
   });
+  return prompt.replace(
+    '；hasTraditionalChinese 为布尔值；',
+    '；温度标注中连续的 ℃ 与 °C 是等价写法，不得仅因两者差异报错；hasTraditionalChinese 为布尔值；',
+  );
 }
 export function parseImageAlignmentOutput(raw, { allowedVisibleText } = {}) {
   const root = parseObject(raw);
@@ -289,6 +414,8 @@ export function parseImageAlignmentOutput(raw, { allowedVisibleText } = {}) {
   if (!Number.isFinite(bulletCoverage) || bulletCoverage < 0 || bulletCoverage > 1) {
     throw new RangeError('image alignment bulletCoverage must be between 0 and 1');
   }
+  const modelFailureClass = requiredText(root.failureClass, 'failureClass', { max: 50 });
+  if (!FAILURE_CLASSES.has(modelFailureClass)) throw new TypeError('image alignment failureClass is invalid');
   const recognizedText = validateRecognizedText(root.recognizedText);
   const unreadableText = textList(root.unreadableText, 'unreadableText');
   const hasTraditionalChinese = booleanValue(root.hasTraditionalChinese, 'hasTraditionalChinese');
@@ -296,16 +423,39 @@ export function parseImageAlignmentOutput(raw, { allowedVisibleText } = {}) {
   if (!Number.isFinite(ocrConfidence) || ocrConfidence < 0 || ocrConfidence > 1) {
     throw new RangeError('image alignment ocrConfidence must be between 0 and 1');
   }
-  const ocrMismatches = compareRecognizedText(recognizedText, allowedVisibleText, {
-    unreadableText,
+  const otherOcrMismatches = compareRecognizedText(recognizedText, allowedVisibleText, {
+    unreadableText: [],
     hasTraditionalChinese,
     ocrConfidence,
   });
+  const ignoredUnreadableText = modelFailureClass === 'PASS' && otherOcrMismatches.length === 0
+    ? unreadableText.filter((value) => clearlyIncidentalUnreadableText(value, allowedVisibleText))
+    : [];
+  const relevantUnreadableText = unreadableText.filter((value) => !ignoredUnreadableText.includes(value));
+  const bulletComparison = compareTextMultiset(recognizedText.bullets, allowedVisibleText.bullets);
+  const ocrMismatches = compareRecognizedText(recognizedText, allowedVisibleText, {
+    unreadableText: relevantUnreadableText,
+    hasTraditionalChinese,
+    ocrConfidence,
+  });
+  const celsiusApplications = celsiusEquivalenceApplications(recognizedText, allowedVisibleText);
   const rawTextErrors = textList(root.textErrors, 'textErrors');
-  const textErrors = !promptRuntimeSnapshot() && ocrMismatches.length === 0
-    ? rawTextErrors.filter((value) =>
-        !isQuoteVariantOnlyError(value) && !isSelfContradictoryExactMatchError(value))
-    : rawTextErrors;
+  const ignoredCelsiusTextErrors = celsiusApplications.length > 0 && ocrMismatches.length === 0
+    ? rawTextErrors.filter((value) => isCelsiusNotationOnlyMessage(value, celsiusApplications))
+    : [];
+  const textErrors = rawTextErrors.filter((value) => {
+    if (ignoredCelsiusTextErrors.includes(value)) return false;
+    return promptRuntimeSnapshot()
+      || ocrMismatches.length > 0
+      || (!isQuoteVariantOnlyError(value) && !isSelfContradictoryExactMatchError(value));
+  });
+  const celsiusOnlyModelRejection = promptRuntimeSnapshot()
+    && ['MINOR_TEXT', 'OCR_MISMATCH'].includes(modelFailureClass)
+    && celsiusApplications.length > 0
+    && ocrMismatches.length === 0
+    && textErrors.length === 0
+    && rawTextErrors.every((value) => isCelsiusNotationOnlyMessage(value, celsiusApplications))
+    && isCelsiusNotationOnlyMessage(root.repairInstruction, celsiusApplications);
   const result = {
     schemaVersion: 1,
     subjectMatched: booleanValue(root.subjectMatched, 'subjectMatched'),
@@ -323,10 +473,9 @@ export function parseImageAlignmentOutput(raw, { allowedVisibleText } = {}) {
     ocrConfidence,
     ocrMismatches,
     ocrExactMatch: ocrMismatches.length === 0,
-    failureClass: requiredText(root.failureClass, 'failureClass', { max: 50 }),
+    failureClass: modelFailureClass,
     repairInstruction: typeof root.repairInstruction === 'string' ? root.repairInstruction.trim() : '',
   };
-  if (!FAILURE_CLASSES.has(result.failureClass)) throw new TypeError('image alignment failureClass is invalid');
   result.passed = result.subjectMatched
     && result.sceneMatched
     && result.headlineMatched
@@ -337,7 +486,9 @@ export function parseImageAlignmentOutput(raw, { allowedVisibleText } = {}) {
     && result.extraClaims.length === 0
     && result.textErrors.length === 0
     && result.ocrExactMatch;
-  if (promptRuntimeSnapshot() && root.failureClass !== 'PASS') result.passed = false;
+  if (promptRuntimeSnapshot() && root.failureClass !== 'PASS' && !celsiusOnlyModelRejection) {
+    result.passed = false;
+  }
   if (result.passed) {
     result.failureClass = 'PASS';
     result.repairInstruction = '';
@@ -354,6 +505,24 @@ export function parseImageAlignmentOutput(raw, { allowedVisibleText } = {}) {
   result.programAssessment = {
     passed: result.passed, failureClass: result.failureClass, ocrExactMatch: result.ocrExactMatch,
     ocrMismatches: result.ocrMismatches,
+    ignoredUnreadableText,
+    celsiusEquivalence: {
+      method: CELSIUS_EQUIVALENCE_METHOD,
+      applied: celsiusApplications.length > 0,
+      applications: celsiusApplications,
+      ignoredTextErrors: ignoredCelsiusTextErrors,
+      normalizedModelRejection: Boolean(celsiusOnlyModelRejection),
+    },
+    bulletComparison: {
+      method: 'NORMALIZED_MULTISET',
+      passed: bulletComparison.passed,
+      orderMatched: bulletComparison.orderMatched,
+      recognizedOrder: [...recognizedText.bullets],
+      allowedOrder: [...allowedVisibleText.bullets],
+      missing: bulletComparison.missing,
+      unexpected: bulletComparison.unexpected,
+      duplicates: bulletComparison.duplicates,
+    },
     comparison: promptRuntimeSnapshot() ? promptPolicy().ocrComparison : 'LEGACY_NORMALIZED',
     minimumConfidence: promptRuntimeSnapshot() ? promptPolicy().ocrMinimumConfidence : MIN_OCR_CONFIDENCE,
     reason: '按可见验收契约逐项验证；模型原始结论独立保留',
@@ -362,7 +531,7 @@ export function parseImageAlignmentOutput(raw, { allowedVisibleText } = {}) {
 }
 
 export function createImageAlignmentValidator({
-  openclaw,
+  agentClient,
   post,
   visualPlan,
   visualPage,
@@ -370,7 +539,7 @@ export function createImageAlignmentValidator({
   complianceDisclosure = '',
   onInvalidResponse,
 }) {
-  if (!openclaw?.runVision) throw new TypeError('OpenClaw vision client is required for image alignment');
+  if (!agentClient?.runVision) throw new TypeError('Model vision client is required for image alignment');
   if (onInvalidResponse !== undefined && typeof onInvalidResponse !== 'function') {
     throw new TypeError('onInvalidResponse must be a function');
   }
@@ -405,7 +574,7 @@ export function createImageAlignmentValidator({
         : `\n\n上一次响应未通过 JSON 契约（${lastContractError?.message ?? '结构无效'}）。这是格式纠正重试：只输出一个完整 JSON 对象，不要 Markdown、解释、前后缀或代码块。`;
       let generated;
       try {
-        generated = await openclaw.runVision({
+        generated = await agentClient.runVision({
           prompt: `${prompt}${correction}`,
           inputPaths: [imagePath],
         });

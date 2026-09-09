@@ -41,7 +41,7 @@ test('renderer validates decoded delivery pixels, preserves alpha sources and re
   const bytes = await pixels(); let generated = 0; let checked = 0;
   const fake = { async runImage({ outputPath }) { generated++; await sharp(bytes).toFile(outputPath); return { outputPath, provider: 'fake-image-model', model: 'fake' }; } };
   fake.runImageEdit = fake.runImage;
-  const images = await renderDeliveryImages({ post, outputDir, mock: false, openclaw: fake, textRenderingMode: 'model-native', imageConcurrency: 1,
+  const images = await renderDeliveryImages({ post, outputDir, mock: false, agentClient: fake, textRenderingMode: 'model-native', imageConcurrency: 1,
     onImageCheckpoint: writeImageCheckpoint, onImageCompleted: options => writeImageCheckpoint({ ...options, completed: true }),
     validateImage: async ({ imagePath }) => {
       checked++; assert.equal((await sharp(imagePath).stats()).isOpaque, true);
@@ -54,7 +54,7 @@ test('renderer validates decoded delivery pixels, preserves alpha sources and re
   const recoveries = await discoverStandaloneRecoveryImages({ outputDir, post });
   const nextDir = join(outputDir, 'next'); await mkdir(nextDir);
   await stageRecoveryImages({ images: recoveries, outputDir: nextDir });
-  const resumed = await renderDeliveryImages({ post, outputDir: nextDir, mock: false, openclaw: { runImage() { assert.fail('must not call a model'); } }, recoveryImages: recoveries });
+  const resumed = await renderDeliveryImages({ post, outputDir: nextDir, mock: false, agentClient: { runImage() { assert.fail('must not call a model'); } }, recoveryImages: recoveries });
   assert.ok(resumed.every(image => image.deliveryFile.endsWith('.webp') && image.transparency.source));
   assert.equal((await sharp(join(nextDir, resumed[0].sourceFile)).stats()).isOpaque, false);
 });

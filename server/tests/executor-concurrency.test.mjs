@@ -22,17 +22,25 @@ function fixture({ capacity = 3, running = 1, receipt, enabled = true, fresh = f
       if (sql.includes('SELECT * FROM executor_nodes')) return { rows: [node] };
       if (sql.includes('SELECT * FROM execution_claim_requests')) return { rows: receipt ? [receipt] : [] };
       if (sql.includes('COUNT(*)') && sql.includes('task_executions')) return { rows: [{ count: running }] };
-      if (sql.includes('FOR UPDATE SKIP LOCKED')) {
-        const selectionLimit = args.length === 2 ? args[1] : args[2];
+      if (sql.includes('SELECT last_assignee_user_id FROM execution_claim_cursors')) {
+        return { rows: [{ last_assignee_user_id: null }] };
+      }
+      if (sql.includes('FOR UPDATE OF task SKIP LOCKED')) {
+        const selectionLimit = args.at(-1);
         return { rows: [1, 2, 3].slice(0, selectionLimit).map(id => ({ id,
+          assigned_to_user_id: `worker-${id}`,
           current_copy_revision_id: id, ai_disclosure_enabled: id % 2 === 1,
           pending_snapshot: fresh ? null : { task: { id } } })) };
       }
       if (sql.includes('INSERT INTO task_executions')) executions.set(args[0], { id: args[0], task_id: args[1], kind: args[2], status: 'RUNNING', snapshot: args[6] });
       if (sql.includes('UPDATE tasks SET')) return { rows: [{
         id: args[4], state: args[0], copy_executor_node_id: args[2] === 'COPY' ? args[6] : null,
+        assigned_to_user_id: `worker-${args[4]}`,
       }] };
       if (sql.includes('SELECT * FROM task_executions WHERE id =')) return { rows: [executions.get(args[0])] };
+      if (sql.includes('UPDATE execution_claim_cursors')) {
+        return { rowCount: 1, rows: [{ kind: args[0] }] };
+      }
       return { rows: [] };
     },
   };
@@ -46,7 +54,7 @@ test('batch claims use remaining center capacity and save an atomic receipt', as
   assert.equal(result.requestId, requestId);
   assert.equal(result.claims.length, 2);
   assert.equal(new Set(result.claims.map(c => c.execution.id)).size, 2);
-  assert.deepEqual(calls.find(c => c.sql.includes('FOR UPDATE SKIP LOCKED')).args, ['COPY_QUEUED', 2]);
+  assert.deepEqual(calls.find(c => c.sql.includes('FOR UPDATE OF task SKIP LOCKED')).args, ['COPY_QUEUED', 2]);
   assert.ok(calls.find(c => c.sql.includes('INSERT INTO execution_claim_requests')));
   assert.equal(calls.at(-1).sql, 'COMMIT');
 });
@@ -72,7 +80,7 @@ test('unknown expired requests never allocate tasks but expired saved receipts s
   const requestId = randomUUID(Date.now() - 86_400_001);
   const { repo, calls } = fixture();
   await assert.rejects(repo.claimCopyBatch({ nodeId: 'node-a', limit: 2, requestId }), { code: 'CLAIM_REQUEST_EXPIRED' });
-  assert.ok(!calls.some(c => c.sql.includes('FOR UPDATE SKIP LOCKED')));
+  assert.ok(!calls.some(c => c.sql.includes('FOR UPDATE OF task SKIP LOCKED')));
   const old = fixture({ receipt: { requested_limit: 2, execution_ids: [] } });
   assert.deepEqual(await old.repo.claimCopyBatch({ nodeId: 'node-a', limit: 2, requestId }), { requestId, claims: [] });
 });
@@ -80,14 +88,14 @@ test('unknown expired requests never allocate tasks but expired saved receipts s
 test('full nodes receive an empty receipt without selecting tasks', async () => {
   const { repo, calls } = fixture({ capacity: 2, running: 3 });
   assert.equal((await repo.claimCopyBatch({ nodeId: 'node-a', limit: 2, requestId: randomUUID() })).claims.length, 0);
-  assert.ok(!calls.some(c => c.sql.includes('FOR UPDATE SKIP LOCKED')));
+  assert.ok(!calls.some(c => c.sql.includes('FOR UPDATE OF task SKIP LOCKED')));
 });
 
 test('repeated empty claims stay empty and conflicting idempotency parameters are rejected', async () => {
   const { repo, calls } = fixture({ receipt: { requested_limit: 2, execution_ids: [] } });
   const requestId = randomUUID();
   assert.deepEqual(await repo.claimCopyBatch({ nodeId: 'node-a', limit: 2, requestId }), { requestId, claims: [] });
-  assert.ok(!calls.some(c => c.sql.includes('FOR UPDATE SKIP LOCKED')));
+  assert.ok(!calls.some(c => c.sql.includes('FOR UPDATE OF task SKIP LOCKED')));
   await assert.rejects(repo.claimCopyBatch({ nodeId: 'node-a', limit: 3, requestId }), { code: 'CLAIM_REQUEST_MISMATCH' });
 });
 

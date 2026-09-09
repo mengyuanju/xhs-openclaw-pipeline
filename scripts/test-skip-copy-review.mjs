@@ -101,6 +101,7 @@ try {
       await new Promise(resolve => { releaseSubmission = resolve; });
       data = [{ id: 900001 }];
     } else if (pathname === '/api/control-plane/v1/tasks') data = { items: [], total: 0, limit: 20, offset: 0 };
+    else if (pathname === '/api/control-plane/v1/task-views') data = [];
     else if (pathname === '/api/control-plane/v1/nodes') data = [];
     else if (pathname === '/api/workbench-statistics') data = { state: 'ready', updatedAt: new Date().toISOString(), retryAfterMs: 60000 };
     else if (pathname === '/api/control-plane/v1/tasks/900001') data = {

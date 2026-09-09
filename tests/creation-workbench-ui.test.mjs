@@ -4,8 +4,8 @@ import { test } from 'node:test';
 
 const projectFile = (path) => new URL(`../${path}`, import.meta.url);
 
-test('new creation workbench keeps the old dashboard and exposes lifecycle views', async () => {
-  const [page, workbench, navigation, login, loginPage, proxyPolicy, oldDashboard, views, listPage, proxy] = await Promise.all([
+test('new creation workbench owns the root route and exposes lifecycle views', async () => {
+  const [page, workbench, navigation, login, loginPage, proxyPolicy, homePage, views, listPage, proxy] = await Promise.all([
     readFile(projectFile('app/workbench/page.tsx'), 'utf8'),
     readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
     readFile(projectFile('app/components/side-nav.tsx'), 'utf8'),
@@ -18,6 +18,7 @@ test('new creation workbench keeps the old dashboard and exposes lifecycle views
     readFile(projectFile('app/api/control-plane/[...path]/route.ts'), 'utf8'),
   ]);
 
+  assert.equal(homePage.includes("redirect('/workbench/personal')"), true);
   assert.match(page, /redirect\('\/workbench\/personal'\)/u);
   assert.match(listPage, /viewKey=\{definition.key\}/u);
   assert.match(listPage, /key=\{[^\n]*definition\.key/u);
@@ -26,9 +27,12 @@ test('new creation workbench keeps the old dashboard and exposes lifecycle views
   assert.match(listPage, /if \(!definition\) notFound\(\)/u);
   assert.match(workbench, /view.personalOnly\) search.set\('mine', 'true'\)/u);
   assert.doesNotMatch(workbench, /LOCAL_COPY|localOnly|search.set\('nodeId'/u);
-  assert.match(proxy, /searchParams.set\('createdByUserId', username\)/u);
-  assert.match(proxy, /'X-Actor-Username': username/u);
-  assert.match(proxy, /'X-Actor-Role': role/u);
+  assert.match(proxy, /searchParams.set\('personal', 'true'\)/u);
+  assert.match(proxy, /searchParams.set\('assignedToUserId', username\)/u);
+  assert.match(proxy, /searchParams.delete\('createdByUserId'\)/u);
+  assert.match(proxy, /searchParams.delete\('createdByAccountId'\)/u);
+  assert.match(proxy, /sessionActorHeaders\(session, \{ username, role \}\)/u);
+  assert.match(proxy, /sessionActorHeaders/u);
   assert.match(proxy, /'Content-Disposition': contentDisposition/u);
   assert.match(views, /生图连续3次失败的任务会回到此处，等待重新审核/u);
   assert.match(views, /states: \['COPY_REVIEW_PENDING'\]/u);
@@ -42,14 +46,11 @@ test('new creation workbench keeps the old dashboard and exposes lifecycle views
   assert.match(navigation, /href: '\/workbench', label: '作业中心'/u);
   assert.match(login, /homePath: user.mustChangePassword \? '\/profile' : '\/workbench\/personal'/u);
   assert.match(loginPage, /: '\/workbench\/personal';/u);
-  assert.match(proxyPolicy, /legacyReviewer \? '\/reviews' : '\/workbench\/personal'/u);
-  assert.match(oldDashboard, /export default function DashboardPage/u);
-  assert.match(oldDashboard, /内容生产总览/u);
+  assert.doesNotMatch(proxyPolicy, /legacyReviewPath|location: '\/reviews'/u);
 });
 
 test('all distributed task status displays distinguish exhausted image retries from normal copy review', async () => {
-  for (const path of ['app/workbench/creation-workbench.tsx', 'app/workbench/task-review-dialog.tsx',
-    'app/jobs/distributed-jobs-workbench.tsx']) {
+  for (const path of ['app/workbench/creation-workbench.tsx', 'app/workbench/task-review-dialog.tsx']) {
     const source = await readFile(projectFile(path), 'utf8');
     assert.match(source, /isImageRetryExhausted/u);
     assert.match(source, /IMAGE_RETRY_EXHAUSTED_LABEL/u);
@@ -59,7 +60,7 @@ test('all distributed task status displays distinguish exhausted image retries f
 test('running and failed copy tasks expose retry in personal and all-copy lists', async () => {
   const source = await readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8');
   assert.match(source, /activeView === 'PERSONAL' && canRetryCopy && <Button[^>]*disabled=\{busy\}[^>]*onClick=\{\(\) => \{ void retryCopy\(task\); \}\}[^>]*><RotateCcw[^>]*\/>重试<\/Button>/u);
-  assert.match(source, /const canRetryCopy = canDiscard && \['COPY_RUNNING', 'COPY_FAILED'\]\.includes\(task.state\)/u);
+  assert.match(source, /const canRetryCopy = \(hasOwnerControl \|\| creatorCanControlMachineCopy\)[\s\S]*\['COPY_RUNNING', 'COPY_FAILED'\]\.includes\(task.state\)/u);
   assert.match(source, /activeView === 'ALL_COPY'[\s\S]*?\{canRetryCopy && <Button/u);
   assert.match(source, /if \(!\['COPY_RUNNING', 'COPY_FAILED'\]\.includes\(task.state\)\) return/u);
   assert.match(source, /if \(!await confirm\(/u);
@@ -77,13 +78,105 @@ test('personal and image-work rows expose safe image requeue controls', async ()
   assert.match(source, />重试生图<\/Button>/u);
 });
 
+test('admin queued tasks expose a direct discard then permanent-delete workflow', async () => {
+  const [source, rowActions, styles] = await Promise.all([
+    readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/task-row-actions.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+  ]);
+  assert.match(source, /async function discardQueuedTask\(task: DistributedTask\)/u);
+  assert.match(source, /已废弃；现在可以永久删除/u);
+  assert.match(source, /canDiscard && !canDiscardQueue/u);
+  assert.match(source, /creatorCanControlMachineCopy[\s\S]*\['COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED'\]\.includes\(task\.state\)/u);
+  assert.match(source, /visibleActionCount=\{visibleActionCount\}/u);
+  assert.match(source, /const visibleActionCount = role === 'ADMIN' && activeView !== 'UNASSIGNED' \? 2 : 1/u);
+  assert.match(styles, /\.workbench-col-actions \{ width: 216px; min-width: 216px; max-width: 216px; \}/u);
+  assert.match(source, /queued && <Button[^>]*onClick=\{\(\) => \{ void discardQueuedTask\(task\); \}\}[^>]*><Trash2[^>]*\/>废弃<\/Button>/u);
+  assert.match(source, /\{permanentDeleteButton\}[\s\S]*\{task\.state === 'CANCELLED'/u);
+  assert.match(rowActions, /visibleActionCount = 1/u);
+  assert.match(rowActions, /actions\.slice\(0, Math\.max\(1, Math\.trunc\(visibleActionCount\)\)\)/u);
+  assert.match(source, /PERMANENT_DELETE_STATES\.includes\(task\.state\)/u);
+  assert.match(source, /CANCELLED_EXECUTION_SETTLE_MS = 3 \* 60_000/u);
+  assert.match(source, /cancelledExecutionSettled/u);
+  assert.match(source, /function PermanentDeleteDialog/u);
+  assert.match(source, /AlertDialogPrimitive\.Content className="permanent-delete-dialog/u);
+  assert.match(source, /删除后无法恢复/u);
+  assert.match(source, /error && <div className="notice error permanent-delete-error" role="alert"/u);
+  assert.match(source, /const permanentlyDeletableTasks = selectedTasks\.filter\(isPermanentlyDeletableTask\)/u);
+  assert.match(source, /\/v1\/tasks\/batch-permanent-delete/u);
+  assert.match(source, /批量永久删除 \{tasks\.length\} 条任务/u);
+  assert.match(source, /废弃排队中 \{queuedTasks\.length\}/u);
+  assert.match(source, /单次最多永久删除 20 条/u);
+});
+
+test('workbench table columns resize automatically within readable limits', async () => {
+  const [source, styles] = await Promise.all([
+    readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+  ]);
+  assert.match(styles, /\.workbench-table-wrap table \{ min-width: 1040px; table-layout: auto; \}/u);
+  assert.match(styles, /\.workbench-col-query \{ width: clamp\(220px, 23%, 300px\); min-width: 220px; max-width: 300px; \}/u);
+  assert.match(styles, /\.workbench-col-creator \{ width: 13%; min-width: 120px; \}/u);
+  assert.match(styles, /\.workbench-col-progress \{ width: 16%; min-width: 150px; \}/u);
+  assert.match(styles, /\.workbench-col-executor \{ width: 10%; min-width: 96px; \}/u);
+  assert.match(styles, /\.workbench-col-time \{ width: 13%; min-width: 120px; \}/u);
+  assert.match(styles, /\.workbench-table-wrap \.query-cell > \.workbench-cell-stack \{ width: 100%; max-width: 300px; \}/u);
+  assert.match(source, /className="query-cell workbench-col-query"/u);
+  for (const column of ['creator', 'progress', 'executor', 'time']) {
+    assert.match(source, new RegExp(`className="workbench-col-${column}"`, 'u'));
+  }
+});
+
+test('permanent deletion rejects repeated submits and unlocks before refreshing the list', async () => {
+  const source = await readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8');
+  const singleStart = source.indexOf('async function permanentlyDeleteTask()');
+  const batchStart = source.indexOf('async function permanentlyDeleteSelectedTasks()');
+  const actionsStart = source.indexOf('function taskActions(', batchStart);
+  const singleDelete = source.slice(singleStart, batchStart);
+  const batchDelete = source.slice(batchStart, actionsStart);
+
+  assert.ok(singleStart >= 0 && batchStart > singleStart && actionsStart > batchStart);
+  for (const deletionFlow of [singleDelete, batchDelete]) {
+    assert.match(deletionFlow, /permanentDeletionLock\.acquire\(\)/u);
+    assert.match(deletionFlow, /finally \{[\s\S]*permanentDeletionLock\.release\(\)[\s\S]*\}[\s\S]*if \(refreshAfterDelete\) void refresh\(\{ silent: true \}\)/u);
+    assert.doesNotMatch(deletionFlow, /await refresh\(\{ silent: true \}\)/u);
+  }
+  assert.match(source, /setTasks\(\(current\) => current\.filter/u);
+  assert.match(source, /LIST_REFRESH_TIMEOUT_MS = 15_000/u);
+  assert.match(source, /setFetchError\(timedOut \? '任务读取超时，请重试'/u);
+  assert.match(source, /废弃满 3 分钟后可删除/u);
+});
+
+test('list state, saved views and centralized batch handling are available to administrators', async () => {
+  const [workbench, page, proxy, listState] = await Promise.all([
+    readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/[view]/page.tsx'), 'utf8'),
+    readFile(projectFile('app/api/control-plane/[...path]/route.ts'), 'utf8'),
+    readFile(projectFile('app/workbench/list-state.ts'), 'utf8'),
+  ]);
+  assert.match(page, /parseWorkbenchListState/u);
+  assert.match(page, /initialListState=\{initialListState\}/u);
+  assert.match(workbench, /workbenchListSearch/u);
+  assert.match(workbench, /router\.replace\(href, \{ scroll: false \}\)/u);
+  assert.match(listState, /createdByAccountId|createdByUserId|deduplicateQuery|attention|taskId/u);
+  assert.match(workbench, /<SelectItem value=\{DEFAULT_TASK_VIEW_VALUE\}>默认视图<\/SelectItem>/u);
+  assert.match(workbench, /function applyDefaultView\(\)[\s\S]*setSort\(DEFAULT_WORKBENCH_LIST_STATE\.sort\)[\s\S]*setPageSize\(DEFAULT_WORKBENCH_LIST_STATE\.pageSize\)/u);
+  assert.match(workbench, /保存当前视图/u);
+  assert.match(workbench, /我的失败任务/u);
+  assert.match(workbench, /长期无进度/u);
+  assert.match(workbench, /\/v1\/tasks\/batch-actions/u);
+  assert.match(workbench, /\/v1\/tasks\/batch-archive/u);
+  assert.match(workbench, /\/v1\/tasks\/batch-permanent-delete/u);
+  assert.match(workbench, /选择当前页全部任务/u);
+  assert.match(proxy, /\/v1\/tasks\/batch-permanent-delete/u);
+  assert.match(proxy, /仅管理员可使用任务集中处理功能/u);
+});
+
 test('creation dialog accepts a single batch textarea and creates one remote batch', async () => {
-  const [workbench, reviewDialog, styles, jobsPage, jobsWorkbench] = await Promise.all([
+  const [workbench, reviewDialog, styles] = await Promise.all([
     readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
     readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
     readFile(projectFile('app/globals.css'), 'utf8'),
-    readFile(projectFile('app/jobs/page.tsx'), 'utf8'),
-    readFile(projectFile('app/jobs/distributed-jobs-workbench.tsx'), 'utf8'),
   ]);
 
   assert.match(workbench, /<Dialog open=\{createOpen\}/u);
@@ -92,10 +185,11 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(workbench, /const \{ queries, error: validationError \} = queryBatch/u);
   assert.match(workbench, /已识别 \{queryBatch.queries.length\} 条 Query/u);
   assert.match(workbench, /中文逗号（，）、英文逗号（,）/u);
-  assert.match(workbench, /disabled=\{creating \|\| Boolean\(queryBatch.error\)\}/u);
+  assert.match(workbench, /disabled=\{creating \|\| Boolean\(queryBatch.error\) \|\| \(effectiveSkipCopyReview && !createAssignee\)\}/u);
   assert.match(workbench, /createError && <div className="notice error" role="alert"/u);
   assert.doesNotMatch(workbench, /queryRows|nextQueryKey|添加一条 Query|workbench-remove-query/u);
   assert.match(workbench, /tasks: queries\.map\(\(query\)/u);
+  assert.match(workbench, /assigneeAccountId: createAssignee\?\.id \?\? null/u);
   assert.doesNotMatch(workbench, /copyExecutorNodeId:\s*selectedExecutor\.id|selectedExecutor|selectCopyExecutor/u);
   assert.match(workbench, /apiPath\('\/v1\/nodes'\)/u);
   assert.match(workbench, /共享文案队列/u);
@@ -122,22 +216,37 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(reviewDialog, /workbench-ai-disclosure-toggle/u);
   assert.match(reviewDialog, /AI生成水印/u);
   assert.match(reviewDialog, /aiDisclosureEnabled \? '已开启' : '已关闭'/u);
-  assert.match(reviewDialog, /const editable = detail\?\.state === 'COPY_REVIEW_PENDING'/u);
-  // Navigation continuity is exercised in scripts/test-image-preview.mjs.
+  assert.match(reviewDialog, /const editable = taskHasAssignee && canReviewCopy && detail\?\.state === 'COPY_REVIEW_PENDING'/u);
+  assert.match(reviewDialog, /const canEditApprovedImagePlan = Boolean\(isAdmin && canReviewImages && canModifyImages\)/u);
+  assert.match(reviewDialog, /readOnly=\{planFieldsReadOnly\}/u);
+  assert.match(reviewDialog, /disabled=\{planKindDisabled\}/u);
+  assert.match(reviewDialog, /decision === 'RETRY' && imagePlanChanged[\s\S]*revisionId: revision!\.id[\s\S]*imagePlan: draft!\.imagePlan/u);
+  assert.match(reviewDialog, /reviewImagePlanEdits !== true/u);
+  assert.match(reviewDialog, /评分后重试会创建新的人工批准版本/u);
+  assert.match(workbench, /currentUsername=\{creatorUserId\}/u);
+  assert.match(workbench, /currentAccountId=\{creatorAccountId\}/u);
   assert.match(reviewDialog, /onPrevious=\{activeAssetIndex > 0/u);
   assert.match(reviewDialog, /onNext=\{activeAssetIndex < assets\.length - 1/u);
   assert.match(reviewDialog, />审核通过并开始生图</u);
   assert.match(reviewDialog, /href=\{apiPath\(`\/v1\/tasks\/\$\{detail\.id\}\/archive`\)\}/u);
   assert.match(reviewDialog, /<Download size=\{14\} \/>下载资源/u);
   assert.doesNotMatch(reviewDialog, /approve-delivery|提交图文审核/u);
-  assert.match(workbench, /按 Query 关键字搜索/u);
+  assert.match(workbench, /Query 关键词或 #ID/u);
+  assert.match(workbench, /TASK_SORT_OPTIONS\.map/u);
+  assert.match(workbench, /search\.set\('sortBy', sortBy\)/u);
+  assert.match(workbench, /search\.set\('sortOrder', sortOrder\)/u);
+  assert.match(workbench, /search\.set\('taskId', String\(searchedTaskId\)\)/u);
+  assert.match(workbench, /创建 \/ 开始 \/ 耗时/u);
+  assert.match(workbench, /按 Query 去重/u);
+  assert.match(workbench, /去重后 \$\{total\} 个 Query/u);
+  assert.match(workbench, /search\.set\('deduplicateQuery', 'true'\)/u);
   assert.match(workbench, /includeTotal: 'true'/u);
   assert.match(workbench, /Array\.isArray\(rawTaskPage\)/u);
   assert.match(workbench, /caught\.message !== 'task state filter is invalid'/u);
   assert.match(workbench, /compatibilitySearch\.set\('mine', 'true'\)/u);
   assert.match(workbench, /compatibilityTasks\s*\?\?/u);
-  assert.match(workbench, /matchesWorkbenchView\(task, view, creatorUserId\)/u);
-  assert.match(workbench, /sort\(compareTasksByStatePriority\)/u);
+  assert.match(workbench, /matchesWorkbenchView\(task, view, creatorUserId, creatorAccountId\)/u);
+  assert.match(workbench, /sort\(\(left, right\) => compareTasks\(left, right, sort\)\)/u);
   assert.match(workbench, /workbench-pagination/u);
   assert.match(workbench, />重试<\/Button>/u);
   assert.match(workbench, />废弃<\/Button>/u);
@@ -150,8 +259,6 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   // Compare layouts internally while keeping raw image-plan JSON out of the rendered review.
   assert.doesNotMatch(reviewDialog.slice(reviewDialog.indexOf('return <Dialog')), /JSON\.stringify\(.*imagePlan/u);
   assert.match(styles, /\.workbench-review-dialog\s*\{/u);
-  assert.match(jobsPage, /initialTaskId=\{taskId\}/u);
-  assert.match(jobsWorkbench, /if \(initialTaskId\) void openTask\(initialTaskId\)/u);
 });
 
 test('task detail keeps image review after copy and before planning', async () => {

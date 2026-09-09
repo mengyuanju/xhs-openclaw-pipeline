@@ -1,16 +1,26 @@
 /**
  * Read a complete server page; old centers must not silently ignore admin filters.
  * @param {(path: string) => Promise<any>} request
- * @param {{createdByUserId?: string, createdByRole?: string, state?: string, query?: string, limit?: number, offset?: number}} options
+ * @param {{createdByUserId?: string, createdByAccountId?: number, createdByRole?: string, state?: string, taskId?: number, query?: string, deduplicateQuery?: boolean, attention?: string, sortBy?: string, sortOrder?: string, limit?: number, offset?: number}} options
  */
 export async function loadAdminTaskPage(request, {
-  createdByUserId, createdByRole, state, query, limit = 20, offset = 0,
+  createdByUserId, createdByAccountId, createdByRole, state, taskId, query, deduplicateQuery = false,
+  attention, sortBy, sortOrder, limit = 20, offset = 0,
 } = {}) {
+  const hasCreator = Boolean(createdByUserId);
+  const hasCreatorAccount = Number.isSafeInteger(createdByAccountId) && createdByAccountId > 0;
+  if (hasCreator !== hasCreatorAccount) throw new TypeError('作业员筛选缺少稳定账号身份，请重新选择作业员。');
   const search = new URLSearchParams({ limit: String(limit), offset: String(offset), includeTotal: 'true' });
   if (createdByUserId) search.set('createdByUserId', createdByUserId);
+  if (hasCreatorAccount) search.set('createdByAccountId', String(createdByAccountId));
   if (createdByRole) search.set('createdByRole', createdByRole);
   if (state) search.set('state', state);
+  if (taskId) search.set('taskId', String(taskId));
   if (query) search.set('query', query);
+  if (deduplicateQuery) search.set('deduplicateQuery', 'true');
+  if (attention) search.set('attention', attention);
+  if (sortBy) search.set('sortBy', sortBy);
+  if (sortOrder) search.set('sortOrder', sortOrder);
   const healthRequest = request('/api/control-plane/health');
   // Start both reads together, but keep the capability gate authoritative.
   // Observe task rejection immediately, even when health fails first.
@@ -21,11 +31,15 @@ export async function loadAdminTaskPage(request, {
   if (health?.capabilities?.adminTaskFilters !== true) {
     throw new Error('请更新并重启中心服务，以支持全部作业和角色筛选。');
   }
+  if (hasCreator && health?.capabilities?.creatorAccountFilters !== true) {
+    throw new Error('请更新并重启中心服务，以支持精确账号筛选。');
+  }
   const result = await pageRequest;
   if ('error' in result) throw result.error;
   const page = result.page;
   if (!page || !Array.isArray(page.items) || !Number.isSafeInteger(page.total) || page.total < 0
-    || page.limit !== limit || page.offset !== offset || page.items.length > limit) {
+    || page.limit !== limit || page.offset !== offset || page.items.length > limit
+    || hasCreatorAccount && page.items.some((item) => item?.createdByAccountId !== createdByAccountId)) {
     throw new Error('中心服务返回的分页数据无效，请更新中心服务后重试。');
   }
   return page;

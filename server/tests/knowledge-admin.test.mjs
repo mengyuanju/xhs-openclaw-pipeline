@@ -357,7 +357,8 @@ describe('knowledge retirement', () => {
     assert.equal(pool.state.versions[0].status, 'PUBLISHED');
 
     const task = { id: 91, query: '新的生成任务', input: {}, requested_image_count: 'auto',
-      state: 'COPY_QUEUED', copy_executor_node_id: 'node-a', pending_snapshot: null };
+      state: 'COPY_QUEUED', copy_executor_node_id: 'node-a', assigned_to_user_id: 'alice',
+      pending_snapshot: null };
     let execution;
     const client = {
       async query(rawSql, values = []) {
@@ -366,7 +367,10 @@ describe('knowledge retirement', () => {
         if (sql.startsWith('SELECT * FROM executor_nodes')) return { rows: [{ id: 'node-a' }] };
         if (sql.startsWith('UPDATE executor_nodes')) return { rows: [] };
         if (sql.startsWith('SELECT COUNT(*) AS count FROM task_executions')) return { rows: [{ count: 0 }] };
-        if (sql.startsWith('SELECT * FROM tasks')) return { rows: [task] };
+        if (sql.startsWith('SELECT last_assignee_user_id FROM execution_claim_cursors')) {
+          return { rows: [{ last_assignee_user_id: null }] };
+        }
+        if (sql.includes('FOR UPDATE OF task SKIP LOCKED')) return { rows: [task] };
         if (sql.includes('FROM global_settings') || sql.includes('FROM prompt_templates')) return { rows: [] };
         if (sql.includes('FROM knowledge_items i')) {
           assert.match(sql, /WHERE i\.status = 'ACTIVE'/u);
@@ -379,6 +383,9 @@ describe('knowledge retirement', () => {
           return { rows: [] };
         }
         if (sql.startsWith('UPDATE tasks SET')) return { rows: [{ ...task, state: values[0] }] };
+        if (sql.startsWith('UPDATE execution_claim_cursors')) {
+          return { rowCount: 1, rows: [{ kind: values[0] }] };
+        }
         if (sql.startsWith('SELECT * FROM task_executions')) return { rows: [execution] };
         throw new Error(`Unmodeled claim query: ${sql}`);
       },

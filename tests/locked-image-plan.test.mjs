@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import { createMockPost } from '../src/pipeline.mjs';
 import { createMockVisualPlan, parseVisualPlanOutput } from '../src/visual-plan.mjs';
 import { generateVisualPlan } from '../src/visual-plan-generation.mjs';
-import { createDirectVisualPlan, assertLockedImageText, assertImagePlanNumericEvidence } from '../src/locked-image-plan.mjs';
+import { createDirectVisualPlan, assertLockedImageText } from '../src/locked-image-plan.mjs';
 import { createPromptRuntime, withPromptRuntime } from '../src/prompt-runtime.mjs';
 import { visualPlanSchema } from '../src/visual-plan-schema.mjs';
 
@@ -54,26 +54,31 @@ describe('locked image copy and the optional visual planning stage', () => {
       assert.equal(calls, enabled ? 1 : 0);
       assert.equal(result.degraded, false);
       assertOriginalText(result.visualPlan, post);
-      assert.doesNotThrow(() => parseVisualPlanOutput(JSON.stringify(result.visualPlan), { post }));
+      assert.doesNotThrow(() => parseVisualPlanOutput(JSON.stringify(result.visualPlan), {
+        post,
+        trustedPlanningMode: ['DIRECT', 'RANDOM'].includes(result.visualPlan.planningMode)
+          ? result.visualPlan.planningMode : null,
+      }));
     }
   });
 
-  it('rejects unsupported quantities before either planning mode calls a model', async () => {
+  it('preserves confirmed image-plan quantities without rechecking them in either planning mode', async () => {
     for (const enabled of [false, true]) {
       for (const body of ['留出50分钟', '留出十五分钟', '比例为5%', '5. 归位物品']) {
         const post = createMockPost(3);
         post.body = body;
         post.imagePlan[2].headline = '留出5分钟归位';
         let calls = 0;
-        await assert.rejects(withPromptRuntime(visualRuntime(enabled), () => generateVisualPlan({
-          post, client: { async runText() { calls += 1; throw new Error('unexpected model call'); } },
-        })), /未支持的数字 5.*未调用视觉规划或生图模型/u);
-        assert.equal(calls, 0);
+        const result = await withPromptRuntime(visualRuntime(enabled), () => generateVisualPlan({
+          post, client: { async runText() { calls += 1; return { rawText: JSON.stringify(createMockVisualPlan(post)), model: 'fake-number-planner' }; } },
+        }));
+        assert.equal(calls, enabled ? 1 : 0);
+        assertOriginalText(result.visualPlan, post);
       }
     }
   });
 
-  it('rejects unsupported day and month before either planning mode calls a model, then permits a grounded date', async () => {
+  it('does not relitigate confirmed dates during visual planning', async () => {
     for (const enabled of [false, true]) {
       const post = createMockPost(3);
       post.body += '\n资料仅注明发布于2023年。';
@@ -85,13 +90,6 @@ describe('locked image copy and the optional visual planning stage', () => {
           return { rawText: JSON.stringify(createMockVisualPlan(post)), model: 'fake-date-planner' };
         },
       };
-      assert.throws(() => assertImagePlanNumericEvidence(post), /未支持的数字/u);
-      await assert.rejects(withPromptRuntime(visualRuntime(enabled), () => generateVisualPlan({ post, client })),
-        /未支持的数字.*未调用视觉规划或生图模型/u);
-      assert.equal(calls, 0, `visualPlanningEnabled=${enabled} must validate source numbers before any model call`);
-
-      post.body += '\n完整发布日期为2023年10月30日。';
-      assert.doesNotThrow(() => assertImagePlanNumericEvidence(post));
       const result = await withPromptRuntime(visualRuntime(enabled), () => generateVisualPlan({ post, client }));
       assert.equal(calls, enabled ? 1 : 0);
       assert.equal(result.attempts, enabled ? 1 : 0);

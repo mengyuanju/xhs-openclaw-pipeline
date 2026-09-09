@@ -8,9 +8,9 @@ import { basename, join, relative, resolve } from 'node:path';
 import { createCopyGenerationClient } from '../copy-generation-client.mjs';
 import { effectiveModelApiConfig } from '../model-api-config.mjs';
 import { codexErrorCode } from '../codex-protocol.mjs';
-import { codexRuntimePath, createCodexRuntime } from '../codex-runtime.mjs';
+import { codexConcurrencyConfig, codexRuntimePath, createCodexRuntime } from '../codex-runtime.mjs';
 import { generateCopy, toCopyGenerationResponse } from '../copy-generation.mjs';
-import { createAgentClient as createOpenClawClient } from '../agent-client.mjs';
+import { createAgentClient } from '../agent-client.mjs';
 import { generateStandaloneImages, normalizeStandaloneImageSource, retryStandaloneImageRun, standaloneImageRunDirectory } from '../standalone-image-generation.mjs';
 import { plannedForStandaloneRecovery } from '../standalone-image-recovery.mjs';
 import { findImageRecoveryRun, imageRecoveryRunIds, loadUploadedImages, readCheckpoint, saveCheckpoint } from './image-checkpoints.mjs';
@@ -43,6 +43,7 @@ function publishedPrompt(snapshot, kind) {
 }
 
 function visualReference(snapshot) {
+  if (snapshot.productionSettings?.production?.value?.knowledgeEnabled === false) return null;
   return snapshot.knowledge
     .filter((item) => item.kind === 'VISUAL')
     .map((item) => item.content)
@@ -67,8 +68,13 @@ function copySource(revision) {
   if (!content || typeof content !== 'object') throw new Error('approved copy revision is unavailable');
   const copy = content.copy ?? content.reviewed?.copy ?? content.post;
   const imagePlan = content.imagePlan ?? content.reviewed?.imagePlan ?? content.post?.imagePlan;
+  const metadata = content.metadata ?? content.reviewed?.metadata ?? content.post?.metadata;
+  const research = content.generation?.research;
   if (!copy || !Array.isArray(imagePlan)) throw new Error('approved copy revision is incomplete');
   return { query: content.query ?? revision.query, copy, imagePlan,
+    ...(content.input === undefined ? {} : { input: content.input }),
+    ...(metadata === undefined ? {} : { metadata }),
+    ...(research === undefined ? {} : { research }),
     ...(content.imageSettings ? { imageSettings: content.imageSettings } : {}) };
 }
 
@@ -87,18 +93,23 @@ export async function checkExecutorReady({
   if (effectiveModelApiConfig(modelApi, environment).agentProvider === 'CODEX' && !health.capabilities?.executionRetryControl) {
     throw new Error('使用 Codex 前请更新并重启中心服务：缺少 executionRetryControl，无法保证失败后不重复生成');
   }
-  (modelClient ?? createOpenClawClient({ modelApi, environment })).checkReady();
+  (modelClient ?? createAgentClient({ modelApi, environment })).checkReady();
   return { health, workRoot };
 }
 
-async function checkModelAvailability({ environment, controlPlane }) {
+async function checkModelAvailability({ environment, controlPlane, kind = 'COPY' }) {
   const path = codexRuntimePath(environment);
   if (!existsSync(path)) return;
-  const limits = createCodexRuntime({ databasePath: path });
-  if (!limits.status().code) return;
   const records = await controlPlane.listSettings?.();
   const modelApi = records?.find((record) => record.key === 'production')?.value?.modelApi ?? {};
-  if (effectiveModelApiConfig(modelApi, environment).agentProvider === 'CODEX') limits.assertAvailable();
+  const config = effectiveModelApiConfig(modelApi, environment);
+  if (config.agentProvider !== 'CODEX') return;
+  const limits = createCodexRuntime({ databasePath: path, ...codexConcurrencyConfig(environment),
+    modelCapacityCooldownMs: config.modelCapacityCooldownMs });
+  limits.assertAvailable();
+  limits.assertAnyModelAvailable(kind === 'IMAGE'
+    ? [config.textModel]
+    : [config.textModel, config.capacityFallbackModel]);
 }
 
 export async function executeCopyClaim({ claim, controlPlane, environment = process.env, client, signal }) {
@@ -189,7 +200,7 @@ export async function executeImageClaim({
       imageSystemPrompt: publishedPrompt(snapshot, 'IMAGE_SYSTEM'),
       promptRuntime: promptRuntimeFromSnapshot(snapshot),
       visualReference: visualReference(snapshot),
-      client: imageClient ?? createOpenClawClient({ modelApi: settings.modelApi ?? {}, environment }),
+      client: imageClient ?? createAgentClient({ modelApi: settings.modelApi ?? {}, environment }),
     },
     onProgress: async (progress) => controlPlane.updateProgress(execution.id, {
       stage: progress.stage,
@@ -319,7 +330,7 @@ export function createExecutorAgent({
 
   async function availability(kind) {
     if (!ready) throw new Error('executor is not ready; call prepare before claiming work');
-    try { await availabilityCheck({ environment, controlPlane }); }
+    try { await availabilityCheck({ environment, controlPlane, kind }); }
     catch (error) {
       if (!codexErrorCode(error)) throw error;
       return { kind, status: 'PAUSED', code: codexErrorCode(error), retryAt: error.retryAt ?? null };

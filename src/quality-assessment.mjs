@@ -201,12 +201,12 @@ export function parseDeliveryQualityAssessmentOutput(raw) {
 }
 
 export function createDeliveryQualityAssessor({
-  openclaw,
+  agentClient,
   task,
   post,
   model = process.env.XHS_QUALITY_MODEL,
 }) {
-  if (!openclaw?.runVision) throw new TypeError('OpenClaw vision client is required for quality assessment');
+  if (!agentClient?.runVision) throw new TypeError('Model vision client is required for quality assessment');
   return async function assessDelivery({ imagePaths }) {
     if (!Array.isArray(imagePaths) || imagePaths.length < 3 || imagePaths.length > 5) {
       throw new RangeError('quality assessment requires between 3 and 5 images');
@@ -225,7 +225,7 @@ export function createDeliveryQualityAssessor({
         inputPaths: imagePaths,
       };
       if (model) request.model = model;
-      const generated = await openclaw.runVision(request);
+      const generated = await agentClient.runVision(request);
       try {
         return {
           assessment: parseDeliveryQualityAssessmentOutput(generated?.rawText),

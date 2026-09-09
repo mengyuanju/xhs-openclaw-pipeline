@@ -8,12 +8,17 @@ test('admin task pages preserve server pagination beyond 200 and combine role, s
   const result = await loadAdminTaskPage(async (path) => {
     calls.push(path);
     return path.endsWith('/health') ? { capabilities: { adminTaskFilters: true } } : page;
-  }, { createdByRole: 'USER', state: 'IMAGE_FAILED', query: '城市 & 徒步', limit: 20, offset: 240 });
+  }, { createdByRole: 'USER', state: 'IMAGE_FAILED', taskId: 357, query: '城市 & 徒步',
+    attention: 'FAILED', sortBy: 'createdAt', sortOrder: 'asc', limit: 20, offset: 240 });
   assert.equal(result, page);
   const search = new URL(calls.at(-1), 'http://localhost').searchParams;
   assert.equal(search.get('createdByRole'), 'USER');
   assert.equal(search.get('state'), 'IMAGE_FAILED');
   assert.equal(search.get('query'), '城市 & 徒步');
+  assert.equal(search.get('taskId'), '357');
+  assert.equal(search.get('attention'), 'FAILED');
+  assert.equal(search.get('sortBy'), 'createdAt');
+  assert.equal(search.get('sortOrder'), 'asc');
   assert.equal(search.get('offset'), '240');
   assert.equal(search.get('includeTotal'), 'true');
   assert.equal(search.has('mine') || search.has('nodeId') || search.has('createdByUserId'), false);
@@ -32,15 +37,25 @@ test('all roles and states do not add ownership or lifecycle restrictions', asyn
 test('selected operator is sent as an exact account alongside role, state and Query filters', async () => {
   let requested;
   await loadAdminTaskPage(async (path) => {
-    if (path.endsWith('/health')) return { capabilities: { adminTaskFilters: true } };
+    if (path.endsWith('/health')) return { capabilities: { adminTaskFilters: true, creatorAccountFilters: true } };
     requested = new URL(path, 'http://localhost');
     return { items: [], total: 0, limit: 20, offset: 20 };
-  }, { createdByUserId: 'operator.02', createdByRole: 'USER', state: 'IMAGE_FAILED', query: '周末 & 徒步', offset: 20 });
+  }, { createdByUserId: 'operator.02', createdByAccountId: 202, createdByRole: 'USER', state: 'IMAGE_FAILED', query: '周末 & 徒步', offset: 20 });
   assert.equal(requested.searchParams.get('createdByUserId'), 'operator.02');
+  assert.equal(requested.searchParams.get('createdByAccountId'), '202');
   assert.equal(requested.searchParams.get('createdByRole'), 'USER');
   assert.equal(requested.searchParams.get('state'), 'IMAGE_FAILED');
   assert.equal(requested.searchParams.get('query'), '周末 & 徒步');
   assert.equal(requested.searchParams.get('offset'), '20');
+});
+
+test('exact creator pages reject incomplete identities and centers without account filtering', async () => {
+  await assert.rejects(loadAdminTaskPage(async () => ({}), { createdByUserId: 'operator.02' }), /稳定账号身份/u);
+  await assert.rejects(loadAdminTaskPage(async (path) => path.endsWith('/health')
+    ? { capabilities: { adminTaskFilters: true } }
+    : { items: [], total: 0, limit: 20, offset: 0 }, {
+    createdByUserId: 'operator.02', createdByAccountId: 202,
+  }), /精确账号筛选/u);
 });
 
 test('old centers and malformed pages cannot be presented as complete results', async () => {

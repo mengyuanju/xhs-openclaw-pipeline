@@ -12,6 +12,7 @@ const querySchema = z.object({
   period: z.enum(['today', '7d', '30d', 'custom']).default('today'),
   from: z.string().max(10).optional(), to: z.string().max(10).optional(),
   username: z.string().max(128).default(''),
+  createdByAccountId: z.coerce.number().int().positive().optional(),
   role: z.enum(['', 'USER', 'REVIEWER', 'ADMIN']).default(''),
   details: z.enum(['0', '1']).default('0'), refresh: z.enum(['0', '1']).default('0'),
 }).strict();

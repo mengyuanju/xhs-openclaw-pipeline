@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { apiHandler, ok, parseJson } from '../_lib';
 import { withAdminStore } from '../../../src/admin/runtime.mjs';
 import { normalizeLayoutPresets } from '../../../server/src/layout-library.mjs';
+import { normalizeHumanQualitySettingsUpdate } from '../../../src/human-quality-settings.mjs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -26,8 +27,10 @@ const dotsModelSchema = z.string().trim().min(1).max(200)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u, 'Dots 模型名称格式无效');
 
 const modelApiPatchSchema = z.object({
-  agentProvider: z.enum(['CODEX', 'OPENCLAW']).nullable().optional(),
+  agentProvider: z.enum(['CODEX']).nullable().optional(),
   textModel: modelRefSchema.nullable().optional(),
+  capacityFallbackModel: modelRefSchema.nullable().optional(),
+  modelCapacityCooldownMs: z.number().int().min(60_000).max(3_600_000).nullable().optional(),
   screeningModel: modelRefSchema.nullable().optional(),
   reviewModel: modelRefSchema.nullable().optional(),
   visionModel: modelRefSchema.nullable().optional(),
@@ -36,13 +39,14 @@ const modelApiPatchSchema = z.object({
   modelProxyUrl: proxyUrlSchema.nullable().optional(),
   imageProxyUrl: proxyUrlSchema.nullable().optional(),
   imageTimeoutMs: z.number().int().min(30_000).max(540_000).nullable().optional(),
-  copyGenerationProvider: z.enum(['OPENCLAW', 'DOTS']).nullable().optional(),
+  copyGenerationProvider: z.enum(['CODEX', 'DOTS']).nullable().optional(),
   copyGenerationThinking: z.enum(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']).nullable().optional(),
   dotsBaseUrl: dotsBaseUrlSchema.nullable().optional(),
   dotsModel: dotsModelSchema.nullable().optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, '至少修改一项模型 API 配置');
 
 const settingsPatchSchema = z.object({
+  knowledgeEnabled: z.boolean().optional(),
   layoutPresets: z.unknown().transform((value, context) => {
     try { return normalizeLayoutPresets(value); }
     catch (error) { context.addIssue({ code: 'custom', message: error instanceof Error ? error.message : '布局种类无效' }); return z.NEVER; }
@@ -53,6 +57,10 @@ const settingsPatchSchema = z.object({
   qualityRepairMaxAttempts: z.number().int().min(0).max(2).optional(),
   aiDisclosureEnabled: z.boolean().optional(),
   aiDisclosureText: z.string().trim().min(1).max(12).optional(),
+  humanQualityReasons: z.unknown().transform((value, context) => {
+    try { return normalizeHumanQualitySettingsUpdate(value); }
+    catch (error) { context.addIssue({ code: 'custom', message: error instanceof Error ? error.message : '人工评分原因配置无效' }); return z.NEVER; }
+  }).optional(),
   modelApi: modelApiPatchSchema.optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, '至少修改一项配置');
 

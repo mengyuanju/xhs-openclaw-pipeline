@@ -24,6 +24,18 @@ test('center configuration cannot silently fall back to local rules', async () =
   }, store: { listPromptTemplates() { throw new Error('must not read local'); } } }), /center unavailable/);
 });
 
+test('disabled knowledge is omitted from new prompt configurations', async () => {
+  const store = createAdminStore(':memory:');
+  try {
+    const item = store.createCopyKnowledge({
+      title: '案例', sourceCopy: '原文', analysisPrompt: '分析', summary: '摘要', analysis: '完整分析', labels: ['测试'], analysisModel: 'test',
+    });
+    assert.equal(item.id, 1);
+    store.updateProductionSettings({ knowledgeEnabled: false });
+    assert.deepEqual((await readPromptConfiguration({ store })).knowledge, []);
+  } finally { store.close(); }
+});
+
 test('preparing candidates preserves existing center versions and does not publish', async () => {
   const writes = [];
   const controlPlane = { listPrompts: async () => [{ kind: 'TEXT_SYSTEM', versions: [{ content: '人工原文', status: 'PUBLISHED' }] }],

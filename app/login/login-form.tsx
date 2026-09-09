@@ -7,7 +7,7 @@ import { useState, type FormEvent } from 'react';
 
 import { apiRequest } from '../components/api-client';
 
-export function LoginForm({ nextPath }: { nextPath: string }) {
+export function LoginForm({ nextPath, passwordChanged = false }: { nextPath: string; passwordChanged?: boolean }) {
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -66,11 +66,12 @@ export function LoginForm({ nextPath }: { nextPath: string }) {
           required
         />
       </div>
+      {passwordChanged && <div className="notice success" role="status">密码已修改，请使用新密码重新登录。</div>}
       {error && <div className="notice error" role="alert">{error}</div>}
       <Button unstyled className="button primary login-submit" type="submit" disabled={isBusy}>
         {isBusy ? '正在验证…' : '进入后台'}
       </Button>
-      <p className="login-help">初始管理员账号为 <code>admin</code>，默认密码为 <code>123456</code>。首次登录后请在个人信息中修改密码。</p>
+      <p className="login-help">初始管理员账号为 <code>admin</code>，默认密码为 <code>123456</code>。首次登录必须先修改密码，重新登录后才能使用其他功能。</p>
     </form>
   );
 }

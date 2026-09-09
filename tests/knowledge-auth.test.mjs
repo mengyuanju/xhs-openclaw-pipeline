@@ -26,6 +26,7 @@ test('knowledge reads and writes keep each concurrent user identity, role and cr
     const headers = new Headers(init.headers);
     const user = users.find((entry) => entry.username === headers.get('X-Actor-Username'));
     if (!user) return Response.json({ error: { code: 'AUTH_REQUIRED', message: 'authenticated user context is required' } }, { status: 401 });
+    assert.equal(headers.get('X-Actor-User-Id'), String(user.userId));
     assert.equal(headers.get('X-Actor-Role'), user.roles[0]);
     assert.equal(headers.get('X-Actor-Credential-Version'), String(user.credentialVersion));
     assert.equal(headers.has('cookie'), false);

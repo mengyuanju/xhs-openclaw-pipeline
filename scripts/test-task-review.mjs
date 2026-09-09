@@ -72,11 +72,12 @@ function task(state = 'COPY_REVIEW_PENDING') {
     currentCopyRevisionId: 901, currentImageRunId: null, currentExecutionId: null,
     error: state === 'COPY_FAILED' ? '测试生成失败，请重试。' : null,
     copyRevisions: state === 'COPY_RUNNING' || state === 'COPY_FAILED' ? [] : [{ id: 901, revision: 1,
+      executionId: '00000000-0000-4000-8000-000000000901',
       approvedAt: state === 'COPY_REVIEW_PENDING' ? null : '2026-09-07T00:00:00Z', content: {
         copy, imageSettings: settings,
         imagePlan: Array.from({ length: 4 }, (_, index) => ({ kind: index ? 'steps' : 'hero', headline: `桌面整理第${index + 1}页`, subtitle: '从分类开始改善桌面空间', bullets: ['清理闲置物品', '集中管理线材'], prompt: '画面保持整洁明亮，展示收纳前后的桌面对比。', layout: { mode: 'AUTO' } })),
         generation: { research: { sources: [{ title: '测试资料', url: 'https://example.invalid/source' }] } },
-      } }], imageRuns: [], assets: [],
+      } }], humanQualityAssessments: [], imageRuns: [], assets: [],
   };
 }
 
@@ -130,9 +131,29 @@ try {
     else if (request.method() === 'GET' && requestUrl.pathname.endsWith('/image-capabilities')) data = { version: 1 };
     else if (request.method() === 'GET' && requestUrl.pathname.endsWith('/model-calls')) data = { items: [], total: 0 };
     else if (request.method() === 'POST' && requestUrl.pathname.endsWith('/approve-copy')) {
-      writes.push(request.postDataJSON());
+      const submitted = request.postDataJSON();
+      writes.push(submitted);
       if (failSubmission) return route.fulfill({ status: 409, json: { error: { message: '测试提交失败，保留草稿。' } } });
-      data = { state: 'IMAGE_QUEUED' };
+      if (submitted.decision === 'SAVE') {
+        const base = detail.copyRevisions.find(revision => revision.id === detail.currentCopyRevisionId);
+        const revisionId = submitted.edits ? base.id + 1 : base.id;
+        if (submitted.edits) detail.copyRevisions.push({
+          ...base, id: revisionId, revision: base.revision + 1, executionId: null, approvedAt: null,
+          content: { ...base.content, ...submitted.edits },
+        });
+        detail.currentCopyRevisionId = revisionId;
+        detail.humanQualityAssessments.push({
+          id: detail.humanQualityAssessments.length + 1, taskId: detail.id, stage: 'COPY', copyRevisionId: revisionId,
+          imageRunId: null, score: submitted.score, scoreX10: submitted.score * 10,
+          ratingContext: submitted.edits ? 'EDITED' : 'ORIGINAL', action: 'SAVE',
+          reasonCodes: submitted.reasons, problemAssetIds: [], note: submitted.note || null,
+          reviewerUsername: 'test-reviewer', reviewSessionId: submitted.reviewSessionId, createdAt: new Date().toISOString(),
+        });
+        data = detail;
+      } else data = { state: submitted.decision === 'DISCARD' ? 'CANCELLED' : 'IMAGE_QUEUED' };
+    } else if (request.method() === 'POST' && requestUrl.pathname.endsWith('/review-images')) {
+      writes.push(request.postDataJSON());
+      data = { state: 'REVIEWED' };
     } else { blocked.push(request.url()); return route.abort(); }
     return route.fulfill({ json: { data } });
   });
@@ -154,6 +175,18 @@ try {
     try { await fn(); console.log(`PASS ${name}`); }
     catch (error) { failures.push(name); console.error(`FAIL ${name}: ${error.message}`); }
   }
+  async function rateOriginalCopy(score = 2.5) {
+    await page.locator(`input[name^="copy-original-score-"][value="${score}"]`).check();
+    if (score < 3) await page.locator('.human-rating-panel:not([data-edited]) .human-rating-feedback input[type="checkbox"]').first().check();
+  }
+  async function rateEditedCopy(score = 2.5) {
+    await page.locator(`input[name^="copy-edited-score-"][value="${score}"]`).check();
+    if (score < 3) await page.locator('.human-rating-panel[data-edited] .human-rating-feedback input[type="checkbox"]').first().check();
+  }
+  async function rateImages(score = 2.5) {
+    await page.locator(`input[name^="image-score-"][value="${score}"]`).check();
+    if (score < 3) await page.locator('.human-image-rating .human-rating-feedback input[type="checkbox"]').first().check();
+  }
 
   await check('query remains verbatim inside copy, with no overview or non-admin image settings', async () => {
     await open();
@@ -166,6 +199,7 @@ try {
   if (!process.argv.includes('--baseline')) {
     await check('desktop panes scroll independently and page edits survive switching', async () => {
       await page.setViewportSize({ width: 1440, height: 800 });
+      await rateOriginalCopy();
       const left = page.locator('[data-review-pane="copy"]');
       const right = page.locator('[data-review-pane="plan"]');
       const l = await left.boundingBox(); const r = await right.boundingBox();
@@ -194,16 +228,53 @@ try {
     });
     await check('mock submit keeps all edits and original hidden settings; failure keeps the draft', async () => {
       failSubmission = true;
+      await rateEditedCopy();
       await page.getByRole('button', { name: '审核通过并开始生图', exact: true }).click();
-      await page.getByRole('alertdialog').getByRole('button', { name: '提交审核', exact: true }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: '确认放行', exact: true }).click();
       await page.getByText('测试提交失败，保留草稿。', { exact: true }).waitFor();
       assert.equal(await page.locator('#review-copy-title').inputValue(), '修改后的标题');
       assert.equal(writes.at(-1).edits.imagePlan[1].headline, '修改后的步骤');
       assert.deepEqual(writes.at(-1).edits.imageSettings, settings);
+      assert.equal(writes.at(-1).originalScore, 2.5);
+      assert.equal(writes.at(-1).score, 2.5);
+      assert.deepEqual(writes.at(-1).originalReasons, ['FACT_OR_COMPLIANCE']);
+      assert.deepEqual(writes.at(-1).reasons, ['FACT_OR_COMPLIANCE']);
+      const failedReviewSessionId = writes.at(-1).reviewSessionId;
       failSubmission = false;
       await page.getByRole('button', { name: '审核通过并开始生图', exact: true }).click();
-      await page.getByRole('alertdialog').getByRole('button', { name: '提交审核', exact: true }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: '确认放行', exact: true }).click();
       await dialog().waitFor({ state: 'detached' });
+      assert.equal(writes.at(-1).reviewSessionId, failedReviewSessionId);
+    });
+    await check('saved 2.5 edited rating remains the effective score when reopened and approved', async () => {
+      await open();
+      await rateOriginalCopy(2);
+      await page.locator('#review-copy-title').fill('保存后的合格修改稿');
+      await rateEditedCopy(2.5);
+      await page.getByRole('button', { name: '保存评分，暂不放行', exact: true }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: '保存待修改', exact: true }).click();
+      await page.locator('.human-rating-field legend').filter({ hasText: '当前修改稿评分' }).waitFor();
+      assert.equal(await page.locator('#review-copy-title').inputValue(), '保存后的合格修改稿');
+      const approve = page.getByRole('button', { name: '审核通过并开始生图', exact: true });
+      assert.equal(await approve.isEnabled(), true);
+      await approve.click();
+      await page.getByRole('alertdialog').getByRole('button', { name: '确认放行', exact: true }).click();
+      await dialog().waitFor({ state: 'detached' });
+      assert.equal(writes.at(-1).score, 2.5);
+      assert.equal('originalScore' in writes.at(-1), false);
+      assert.equal('edits' in writes.at(-1), false);
+    });
+    await check('one-point copy can be scored and discarded without unlocking edits', async () => {
+      await open();
+      await rateOriginalCopy(1);
+      assert.equal(await page.locator('#review-copy-title').isEditable(), false);
+      await page.getByRole('button', { name: '评分并废弃', exact: true }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: '评分并废弃', exact: true }).click();
+      await dialog().waitFor({ state: 'detached' });
+      assert.equal(writes.at(-1).decision, 'DISCARD');
+      assert.equal(writes.at(-1).score, 1);
+      assert.deepEqual(writes.at(-1).reasons, ['FACT_OR_COMPLIANCE']);
+      assert.equal('edits' in writes.at(-1), false);
     });
     await check('reviewer has no delivery controls; admin controls start collapsed', async () => {
       await open('REVIEWER');
@@ -218,6 +289,7 @@ try {
     await check('mobile switches panes without losing edits and reveals invalid hidden fields', async () => {
       await page.setViewportSize({ width: 390, height: 844 });
       await open();
+      await rateOriginalCopy(2);
       await page.locator('#review-copy-title').fill('手机修改的标题');
       await page.getByRole('button', { name: '图片文案规划', exact: true }).click();
       await page.getByRole('button', { name: /^第 2 页 ·/ }).click();
@@ -225,6 +297,7 @@ try {
       await page.getByRole('button', { name: /^第 1 页 ·/ }).click();
       await page.getByRole('button', { name: '文案', exact: true }).click();
       assert.equal(await page.locator('#review-copy-title').inputValue(), '手机修改的标题');
+      await rateEditedCopy();
       const before = writes.length;
       await page.getByRole('button', { name: '审核通过并开始生图', exact: true }).click();
       await page.locator('#review-plan-headline-1').waitFor({ state: 'visible' });
@@ -265,15 +338,37 @@ try {
         assert.equal(await page.getByRole('button', { name: '审核通过', exact: true }).count(), role === 'USER' ? 0 : 1);
       }
     });
+    await check('image review allows only a complete 2.5-or-3 rating to approve and submits issue pages', async () => {
+      await open('REVIEWER', 'MANUAL_ARCHIVE', withImages);
+      const approve = page.getByRole('button', { name: '审核通过', exact: true });
+      const retry = page.getByRole('button', { name: '重试生图', exact: true });
+      assert.equal(await approve.isDisabled(), true);
+      await rateImages(2);
+      assert.equal(await approve.isDisabled(), true);
+      assert.equal(await retry.isEnabled(), true);
+      await page.locator('input[name^="image-score-"][value="2.5"]').check();
+      await page.locator('.human-rating-pages input[type="checkbox"]').first().check();
+      assert.equal(await approve.isEnabled(), true);
+      await approve.click();
+      await page.getByRole('alertdialog').getByRole('button', { name: '确认通过', exact: true }).click();
+      await dialog().waitFor({ state: 'detached' });
+      assert.equal(writes.at(-1).score, 2.5);
+      assert.deepEqual(writes.at(-1).reasons, ['TEXT_ERROR']);
+      assert.deepEqual(writes.at(-1).problemAssetIds, [910]);
+      assert.match(writes.at(-1).reviewSessionId, /^[0-9a-f-]{36}$/u);
+    });
     await check('refresh confirmation restores saved content, and collapsed prompt errors are revealed', async () => {
       await open();
+      await rateOriginalCopy(2);
       await page.locator('#review-copy-title').fill('临时修改');
       await page.getByRole('button', { name: '刷新', exact: true }).click();
       await page.getByRole('button', { name: '放弃修改并刷新', exact: true }).click();
       await page.waitForFunction(() => document.querySelector('#review-copy-title')?.value === '小户型桌面整理指南');
+      await rateOriginalCopy(2);
       await page.getByRole('button', { name: '画面生成指令', exact: true }).click();
       await page.locator('#review-plan-prompt-0').fill('');
       await page.getByRole('button', { name: '画面生成指令', exact: true }).click();
+      await rateEditedCopy();
       const before = writes.length;
       await page.getByRole('button', { name: '审核通过并开始生图', exact: true }).click();
       await page.locator('#review-plan-prompt-0').waitFor({ state: 'visible' });

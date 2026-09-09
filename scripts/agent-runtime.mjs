@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { checkCodexLogin, codexChildEnvironment, resolveCodexExecutable } from '../src/codex-process.mjs';
 import { codexRuntimePath, createCodexRuntime } from '../src/codex-runtime.mjs';
 
-// Diagnostics never start a model turn. Resume clears only our local pause;
+// Diagnostics never start a model turn. Resume clears local account pauses and model cooldowns;
 // it cannot renew subscription quota or requeue a failed business task.
 export function main(args = process.argv.slice(2), { environment = process.env, runner = spawnSync,
   runtime, executable, stdout = process.stdout } = {}) {
@@ -23,7 +23,7 @@ export function main(args = process.argv.slice(2), { environment = process.env, 
   }
   const result = { action, ...login, version, runtime: limits.status(),
     imageCapability: 'requires-live-verification',
-    ...(action === 'resume' ? { note: '仅清除本机暂停；不补充额度。失败任务仍需在后台人工续跑。' } : {}) };
+    ...(action === 'resume' ? { note: '已清除本机账号暂停和模型冷却；不补充额度。失败任务仍需在后台人工续跑。' } : {}) };
   stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   return result;
 }

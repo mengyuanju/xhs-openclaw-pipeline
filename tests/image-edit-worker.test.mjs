@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -7,7 +8,6 @@ import { afterEach, describe, it } from 'node:test';
 import sharp from 'sharp';
 
 import { createAdminStore } from '../src/admin/admin-store.mjs';
-import { saveUploadedImage } from '../src/admin/asset-service.mjs';
 import { processNextImageEdit } from '../src/admin/image-edit-worker.mjs';
 import { createMockPost } from '../src/pipeline.mjs';
 import { createMockVisualPlan } from '../src/visual-plan.mjs';
@@ -50,7 +50,7 @@ describe('image edit worker', () => {
       failImageEdit(_id, { error }) { assert.fail(error.message); },
     };
     const result = await processNextImageEdit({ store, assetRoot: directory, outputRoot: join(directory, 'output'),
-      workerId: 'governed-edit-worker', mock: false, openclaw: {
+      workerId: 'governed-edit-worker', mock: false, agentClient: {
         runImageEdit({ prompt, outputPath }) {
           assert.match(prompt, /<trusted_business_rules kind="IMAGE_EDIT_SYSTEM">/u);
           assert.match(prompt, /执行 简化背景/u);
@@ -104,8 +104,11 @@ describe('image edit worker', () => {
       const buffer = await sharp({
         create: { width: 600, height: 800, channels: 3, background: '#d8c7b3' },
       }).png().toBuffer();
-      const source = await saveUploadedImage({
-        store, taskId: task.id, buffer, fileName: 'source.png', mimeType: 'image/png', uploadRoot: directory,
+      await writeFile(join(directory, 'source.png'), buffer);
+      const source = store.addAsset({
+        taskId: task.id, kind: 'REFERENCE', parentAssetId: null,
+        fileName: 'source.png', relativePath: 'source.png', mimeType: 'image/png',
+        width: 600, height: 800, sha256: createHash('sha256').update(buffer).digest('hex'), source: 'fixture',
       });
       store.createImageEditRequest(task.id, {
         sourceAssetId: source.id,
@@ -226,7 +229,7 @@ describe('image edit worker', () => {
         assetRoot: directory,
         workerId: 'edit-live-worker',
         mock: false,
-        openclaw: {
+        agentClient: {
           runImageEdit({ outputPath }) {
             writeFileSync(outputPath, imageBuffer);
             return { outputPath, model: 'fake-image' };

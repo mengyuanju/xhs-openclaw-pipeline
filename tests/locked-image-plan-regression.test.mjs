@@ -113,11 +113,15 @@ describe('remote numeric-evidence regressions', () => {
     assert.throws(() => assertImagePlanNumericEvidence(post), /未支持的数字 5/u);
   });
 
-  it('accepts the verified checklist count through the final visual-plan validator too', () => {
+  it('does not recheck confirmed numeric copy through the final visual-plan validator', () => {
     const post = sparkPlugPost();
     for (const page of post.imagePlan.slice(0, 3)) page.bullets.push('查阅车型手册');
-    assert.doesNotThrow(() => parseVisualPlanOutput(JSON.stringify(createDirectVisualPlan(post)), { post }));
+    assert.doesNotThrow(() => parseVisualPlanOutput(JSON.stringify(createDirectVisualPlan(post)), {
+      post, trustedPlanningMode: 'DIRECT',
+    }));
     post.imagePlan[3].subtitle = '工程师：至少8年经验';
-    assert.throws(() => parseVisualPlanOutput(JSON.stringify(createDirectVisualPlan(post)), { post }), /numeric claim 8/u);
+    assert.doesNotThrow(() => parseVisualPlanOutput(JSON.stringify(createDirectVisualPlan(post)), {
+      post, trustedPlanningMode: 'DIRECT',
+    }));
   });
 });

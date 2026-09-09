@@ -18,12 +18,14 @@ import { DotsCopyProviderFields } from './dots-copy-provider-fields';
 type CopyGenerationThinking = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export type ModelApiSettings = {
-  agentProvider: 'CODEX' | 'OPENCLAW' | null;
-  copyGenerationProvider: 'OPENCLAW' | 'DOTS' | null;
+  agentProvider: 'CODEX' | null;
+  copyGenerationProvider: 'CODEX' | 'DOTS' | null;
   copyGenerationThinking: CopyGenerationThinking | null;
   dotsBaseUrl: string | null;
   dotsModel: string | null;
   textModel: string | null;
+  capacityFallbackModel: string | null;
+  modelCapacityCooldownMs: number | null;
   screeningModel: string | null;
   reviewModel: string | null;
   visionModel: string | null;
@@ -35,13 +37,15 @@ export type ModelApiSettings = {
 };
 
 export type EffectiveModelApi = {
-  agentProvider: 'CODEX' | 'OPENCLAW';
-  copyGenerationProvider: 'OPENCLAW' | 'DOTS';
+  agentProvider: 'CODEX';
+  copyGenerationProvider: 'CODEX' | 'DOTS';
   copyGenerationThinking: CopyGenerationThinking;
   dotsBaseUrl: string;
   dotsModel: string;
   dotsApiKeyConfigured: boolean;
   textModel: string;
+  capacityFallbackModel: string;
+  modelCapacityCooldownMs: number;
   screeningModel: string;
   reviewModel: string;
   visionModel: string;
@@ -53,7 +57,7 @@ export type EffectiveModelApi = {
 };
 
 type ModelKey = 'textModel' | 'screeningModel' | 'reviewModel'
-  | 'visionModel' | 'qualityModel' | 'imageModel';
+  | 'visionModel' | 'qualityModel' | 'imageModel' | 'capacityFallbackModel';
 
 const MODEL_FIELDS: Array<{
   key: ModelKey;
@@ -61,6 +65,7 @@ const MODEL_FIELDS: Array<{
   description: string;
 }> = [
   { key: 'textModel', label: '文本生成模型', description: '生成正文与视觉策划。' },
+  { key: 'capacityFallbackModel', label: '容量备用模型', description: '文本、审核、视觉和检索遇到模型满载后使用；不用于图片生成或改图驱动。' },
   { key: 'screeningModel', label: '需求检测模型', description: 'Excel 导入时判断需求强度。' },
   { key: 'reviewModel', label: '阶段审核模型', description: 'Query 与成稿的独立审核。' },
   { key: 'visionModel', label: '视觉验收模型', description: '逐页 OCR、图文对齐与视觉分析。' },
@@ -86,6 +91,7 @@ const MODEL_OPTIONS: Record<ModelKey, readonly string[]> = {
   visionModel: TEXT_MODEL_OPTIONS,
   qualityModel: TEXT_MODEL_OPTIONS,
   imageModel: IMAGE_MODEL_OPTIONS,
+  capacityFallbackModel: TEXT_MODEL_OPTIONS,
 };
 const THINKING_OPTIONS: Array<{ value: CopyGenerationThinking; label: string }> = [
   { value: 'minimal', label: '极简（minimal）' },
@@ -128,25 +134,14 @@ export function ModelApiSettingsSection({
     </div>
 
     <div className="notice">
-      后台不保存 API Key、Token 或 OAuth 授权码。Codex / OpenClaw 认证由执行主机管理；Dots Key 仅从 <span className="mono">XHS_DOTS_API_KEY</span> 读取。
+      后台不保存 API Key、Token 或 OAuth 授权码。Codex 认证由执行主机管理；Dots Key 仅从 <span className="mono">XHS_DOTS_API_KEY</span> 读取。
     </div>
 
     <div className="form-grid compact-settings-grid">
       <div className="field">
-        <label htmlFor="model-api-agent-provider">生成引擎</label>
-        <Select
-          disabled={busy}
-          value={value.agentProvider ?? INHERIT_VALUE}
-          onValueChange={(selected) => onChange('agentProvider', selected === INHERIT_VALUE ? null : selected as 'CODEX' | 'OPENCLAW')}
-        >
-          <SelectTrigger id="model-api-agent-provider"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value={INHERIT_VALUE}>环境或默认值（{effective.agentProvider}）</SelectItem>
-            <SelectItem value="CODEX">Codex CLI（ChatGPT 订阅登录）</SelectItem>
-            <SelectItem value="OPENCLAW">OpenClaw（兼容回退）</SelectItem>
-          </SelectContent>
-        </Select>
-        <small>控制文本、审核、视觉和图片调用。Codex 同一运行状态库最多并发 2 个调用、其中图片 1 个；额度不足会暂停，不保证订阅吞吐量。已有批次 Worker 需重启后切换。</small>
+        <span>生成引擎</span>
+        <strong>Codex CLI</strong>
+        <small>由执行主机管理登录、并发与额度暂停状态。</small>
       </div>
       <DotsCopyProviderFields
         value={value}
@@ -195,6 +190,25 @@ export function ModelApiSettingsSection({
         </Select>
         <small>{field.description} 当前生效：<span className="mono">{effective[field.key]}</span></small>
       </div>)}
+
+      <div className="field">
+        <label htmlFor="model-api-capacity-cooldown">主模型满载冷却时间</label>
+        <Input
+          className="input"
+          id="model-api-capacity-cooldown"
+          type="number"
+          min={60_000}
+          max={3_600_000}
+          step={30_000}
+          value={value.modelCapacityCooldownMs ?? ''}
+          placeholder={String(effective.modelCapacityCooldownMs)}
+          onChange={(event) => onChange(
+            'modelCapacityCooldownMs',
+            event.target.value === '' ? null : Number(event.target.value),
+          )}
+        />
+        <small>单位毫秒；当前生效 {effective.modelCapacityCooldownMs.toLocaleString('zh-CN')} ms。冷却结束后只放行一个主模型探测调用。</small>
+      </div>
 
       <div className="field">
         <label htmlFor="model-api-model-proxy">文本与视觉代理</label>

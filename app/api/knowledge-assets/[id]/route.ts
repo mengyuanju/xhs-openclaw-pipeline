@@ -5,6 +5,7 @@ import { apiHandler } from '../../_lib';
 import { ApiError, notFound, parsePositiveId } from '../../../../src/admin/http.mjs';
 import { adminKnowledgeRoot, withAdminStore } from '../../../../src/admin/runtime.mjs';
 import { controlPlaneUrl } from '../../../../src/control-plane/next-runtime.mjs';
+import { controlPlaneResponseError } from '../../../../src/control-plane/next-api-error.mjs';
 import { knowledgeActorHeaders } from '../../../../src/admin/knowledge-runtime.mjs';
 
 export const runtime = 'nodejs';
@@ -18,7 +19,10 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       const response = await fetch(`${remoteRoot}/v1/knowledge-versions/${assetId}/asset`, {
         headers: knowledgeActorHeaders(session), cache: 'no-store', signal: AbortSignal.timeout(30_000),
       });
-      if (!response.ok) throw new ApiError(response.status, 'KNOWLEDGE_ASSET_ERROR', '知识库图片读取失败');
+      if (!response.ok) throw await controlPlaneResponseError(response, {
+        fallbackCode: 'KNOWLEDGE_ASSET_ERROR',
+        fallbackMessage: '知识库图片读取失败',
+      });
       return new Response(response.body, { headers: { 'Content-Type': 'image/png', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' } });
     }
     const asset = withAdminStore((store: any) => store.getVisualKnowledgeAsset(assetId));

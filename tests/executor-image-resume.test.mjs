@@ -49,7 +49,7 @@ function imageClaim(id, recoveryRunIds = []) {
   };
 }
 
-function generatingImageClient() {
+function generatingImageClient({ onQualityPrompt } = {}) {
   let imageIndex = 0;
   async function generate({ outputPath }) {
     imageIndex += 1;
@@ -74,6 +74,7 @@ function generatingImageClient() {
     runImageEdit: generate,
     async runVision({ prompt }) {
       if (prompt.includes('<trusted_business_rules kind="DELIVERY_REVIEW_SYSTEM">')) {
+        onQualityPrompt?.(prompt);
         return {
           rawText: JSON.stringify({
             schemaVersion: 1,
@@ -119,6 +120,49 @@ function generatingImageClient() {
     },
   };
 }
+
+test('executor carries approved revision research evidence into the final image quality review', async () => {
+  const workRoot = await mkdtemp(join(tmpdir(), 'executor-quality-evidence-'));
+  const sources = Array.from({ length: 5 }, (_, index) => ({
+    title: `来源 ${index + 1}`,
+    url: `https://evidence.example/article-${index + 1}`,
+  }));
+  const claim = imageClaim(FIRST_RUN_ID);
+  claim.execution.snapshot.copyRevision.content.metadata = {
+    sources: sources.map(item => item.url),
+    expressionReferences: ['清单表达'],
+    riskFlags: ['价格以实际购买为准'],
+    fabricatedExperience: false,
+    unverifiedClaims: ['个别价格会随地区变化'],
+  };
+  claim.execution.snapshot.copyRevision.content.generation = {
+    research: {
+      status: 'COMPLETED',
+      summary: '五条来源共同支持价格区间、操作顺序与日常维护建议。',
+      sources,
+    },
+  };
+  let contract;
+  const imageClient = generatingImageClient({ onQualityPrompt(prompt) {
+    const match = prompt.match(/<untrusted_delivery_contract>\n([\s\S]+?)\n<\/untrusted_delivery_contract>/u);
+    assert.ok(match);
+    contract = JSON.parse(match[1]);
+  } });
+  let assetId = 0;
+  try {
+    await executeImageClaim({ claim, workRoot, imageClient, controlPlane: {
+      async updateProgress() {},
+      async uploadAsset() { assetId += 1; return { id: assetId, url: `/v1/assets/${assetId}` }; },
+      async completeImage(_executionId, result) { return result; },
+    } });
+    assert.deepEqual(contract.sources, sources.map(item => item.url));
+    assert.equal(contract.inputReferenceText, '五条来源共同支持价格区间、操作顺序与日常维护建议。');
+    assert.deepEqual(contract.unverifiedClaims, ['个别价格会随地区变化']);
+    assert.deepEqual(contract.riskFlags, ['价格以实际购买为准']);
+  } finally {
+    await rm(workRoot, { recursive: true, force: true });
+  }
+});
 
 function noFurtherModelCalls() {
   return Object.fromEntries(['runText', 'runImage', 'runImageEdit', 'runVision'].map((method) => [

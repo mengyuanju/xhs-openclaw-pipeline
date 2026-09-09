@@ -28,7 +28,7 @@ export function codexFailure(error = {}, fallbackCode = 'CODEX_EXEC_FAILED') {
     CODEX_AUTH_REQUIRED: '请在执行主机运行 codex login，再运行 npm run agent:resume。',
     CODEX_QUOTA_EXHAUSTED: '订阅额度不足；额度恢复后运行 npm run agent:resume。',
     CODEX_RATE_LIMITED: '请求限流，已进入共享冷却期。',
-    CODEX_MODEL_AT_CAPACITY: '上游模型暂时满载，已进入共享冷却期；可稍后重试或人工切换模型。',
+    CODEX_MODEL_AT_CAPACITY: '上游模型暂时满载，已进入该模型冷却期；非图片调用可按生产配置切换容量备用模型。',
     CODEX_TRANSPORT_FAILED: '传输中断，远端执行结果可能未知；请检查调用轨迹和检查点后续跑。',
     CODEX_EXEC_TIMEOUT: '执行超时，远端执行结果可能未知；请检查调用轨迹和检查点后续跑。',
   }[code] ?? '';

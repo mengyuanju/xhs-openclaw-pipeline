@@ -11,6 +11,7 @@ import { assetConditionalHeaders } from '../../src/control-plane/asset-proxy.mjs
 
 function actorHeaders(username = 'alice', extra = {}) {
   return {
+    'X-Actor-User-Id': String(username === 'alice' ? 2 : username === 'bob' ? 3 : ''),
     'X-Actor-Username': username,
     'X-Actor-Role': 'USER',
     'X-Actor-Credential-Version': '1',
@@ -54,7 +55,13 @@ async function assetFixture(t, { width = 1200, height = 800, lightweightOnly = f
     mediaType: 'image/png', originalName: '01-cover.png', byteSize: original.length,
     sha256: createHash('sha256').update(original).digest('hex'),
   };
-  const task = { id: 12, createdByUserId: 'alice' };
+  const task = {
+    id: 12,
+    createdByUserId: 'alice',
+    createdByAccountId: 2,
+    assignedToUserId: 'alice',
+    assignedToAccountId: 2,
+  };
   const users = {
     alice: { id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 },
     bob: { id: 3, username: 'bob', role: 'USER', status: 'ACTIVE', credentialVersion: 1 },
@@ -90,6 +97,21 @@ test('asset reads preserve original bytes and require private cache revalidation
     assert.deepEqual(Buffer.from(await response.arrayBuffer()), fixture.original);
     assert.equal(response.headers.get('cache-control'), 'private, no-cache');
     assert.ok(response.headers.get('etag'), 'original image must have a validator');
+  });
+});
+
+test('a stale postflight response cannot retain asset validators or cache metadata', async (t) => {
+  const fixture = await assetFixture(t);
+  fixture.repository.getUserByIdentity = async () => null;
+  await withServer(fixture, async (url) => {
+    const response = await fetch(url, { headers: actorHeaders() });
+    assert.equal(response.status, 401);
+    assert.equal(response.headers.get('content-type'), 'application/json; charset=utf-8');
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.equal(response.headers.get('etag'), null);
+    assert.equal(response.headers.get('content-range'), null);
+    assert.equal(response.headers.get('accept-ranges'), null);
+    assert.equal((await response.json()).error.code, 'SESSION_STALE');
   });
 });
 

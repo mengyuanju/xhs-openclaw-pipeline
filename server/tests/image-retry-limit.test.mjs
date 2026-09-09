@@ -92,13 +92,16 @@ test('image retry claim is pinned to its previous executor while fresh work rema
     release() {},
     async query(sql, values) {
       if (sql.includes('SELECT * FROM executor_nodes')) return { rows: [{ id: 'other-node', image_worker_enabled: true }] };
-      if (sql.includes('FOR UPDATE SKIP LOCKED')) selection = { sql, values };
+      if (sql.includes('SELECT last_assignee_user_id FROM execution_claim_cursors')) {
+        return { rows: [{ last_assignee_user_id: null }] };
+      }
+      if (sql.includes('FOR UPDATE OF task SKIP LOCKED')) selection = { sql, values };
       return { rows: [] };
     },
   };
   const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
   assert.equal(await repository.claimImage('other-node'), null);
-  assert.deepEqual(selection.values, ['IMAGE_QUEUED', 'other-node', 1]);
+  assert.deepEqual(selection.values, ['IMAGE_QUEUED', 'other-node', null, 1]);
   assert.match(selection.sql, /pending_snapshot->'imageRetry'->>'nodeId' IS NULL/u);
   assert.match(selection.sql, /pending_snapshot->'imageRetry'->>'nodeId' = \$2/u);
   assert.match(selection.sql, /interval '5 seconds'/u);
@@ -144,8 +147,10 @@ test('re-approving an exhausted task clears its failure budget and queues review
   const client = {
     release() {},
     async query(sql, values) {
+      if (sql.includes('INSERT INTO human_quality_review_submissions')) return { rows: [{ review_session_id: values[0] }] };
       if (sql.includes('SELECT * FROM tasks WHERE id')) return { rows: [{
         id: 41, state: 'COPY_REVIEW_PENDING', current_stage: 'IMAGE_RETRY_EXHAUSTED', current_copy_revision_id: 12,
+        assigned_to_user_id: 'alice',
       }] };
       if (sql.includes('SELECT * FROM copy_revisions')) return { rows: [{ id: 12, content: {} }] };
       if (sql.includes('SELECT id FROM executor_nodes')) return { rows: [{ id: 'reviewer' }] };
@@ -157,7 +162,14 @@ test('re-approving an exhausted task clears its failure budget and queues review
     },
   };
   const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
-  const task = await repository.approveCopy(41, { revisionId: 12, nodeId: 'reviewer' });
+  const task = await repository.approveCopy(41, {
+    revisionId: 12,
+    nodeId: 'reviewer',
+    decision: 'APPROVE',
+    originalScore: 2.5,
+    note: '轻微问题可接受',
+    reviewSessionId: '77777777-7777-4777-8777-777777777777',
+  }, { reviewerUserId: 'reviewer' });
   assert.equal(task.state, 'IMAGE_QUEUED');
   assert.match(update.sql, /pending_snapshot = NULL/u);
   assert.match(update.sql, /current_stage = 'IMAGE_QUEUED'/u);

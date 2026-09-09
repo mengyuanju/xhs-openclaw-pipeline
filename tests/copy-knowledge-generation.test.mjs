@@ -22,13 +22,14 @@ function block(prompt, name) {
   return JSON.parse(prompt.match(new RegExp(`<${name}>\\n([\\s\\S]*?)\\n</${name}>`, 'u'))[1]);
 }
 
-function fakeClient(prompts, { score = 90, repair = false } = {}) {
+function fakeClient(prompts, { score = 90, repair = false, invalidScores = false } = {}) {
   let drafts = 0;
   return {
     async runReview() { return { rawText: JSON.stringify(review), model: 'fake-review' }; },
     async runText({ prompt }) {
       prompts.push(prompt);
       if (prompt.includes('<untrusted_copy_knowledge_match>')) {
+        if (invalidScores) return { rawText: '{"scores":[]}', model: 'fake-score' };
         return { model: 'fake-score', rawText: JSON.stringify({ scores: [
           { versionId: 11, score: 65, reason: '不适用' },
           { versionId: 22, score, reason: '主需求和结构适用' },
@@ -76,7 +77,29 @@ test('no qualifying match and empty knowledge still generate without a case refe
   }
 });
 
-test('invalid matching output blocks drafting and rejected queries never trigger matching', async () => {
+test('invalid matching output still generates and repairs copy without a case reference', async () => {
+  const prompts = [];
+  const stages = [];
+  const result = await generateCopy({ task, systemPrompt, copyKnowledge: knowledge,
+    client: fakeClient(prompts, { invalidScores: true, repair: true }), textReviewEnabled: false,
+    onStageChange: (stage) => stages.push(stage),
+  });
+  assert.equal(result.knowledgeMatch.status, 'SKIPPED');
+  assert.equal(result.knowledgeMatch.skipReason, 'COPY_KNOWLEDGE_MATCH_FAILED');
+  assert.equal(result.knowledgeMatch.selectedVersionId, null);
+  assert.equal(prompts.length, 4);
+  for (const prompt of prompts.slice(2)) {
+    assert.doesNotMatch(prompt, /untrusted_copy_knowledge_reference|完整内容|未选中的案例分析/u);
+  }
+  assert.match(prompts[2], /围绕 租房桌面如何整理 撰写文案/u);
+  assert.ok(stages.indexOf('ORIGINAL_GENERATION') > stages.indexOf('KNOWLEDGE_MATCH'));
+  const response = toCopyGenerationResponse(result);
+  assert.ok(response.copy.body.length > 100);
+  assert.equal(response.generation.knowledgeMatch.status, 'SKIPPED');
+  assert.ok(response.generation.timing.knowledgeMatchMs >= 0);
+});
+
+test('rejected queries never trigger matching or drafting', async () => {
   let textCalls = 0;
   const client = {
     runReview: async () => ({ rawText: JSON.stringify(review), model: 'fake-review' }),
@@ -86,15 +109,12 @@ test('invalid matching output blocks drafting and rejected queries never trigger
       return { rawText: '{"scores":[]}', model: 'fake-score' };
     },
   };
-  await assert.rejects(generateCopy({ task, systemPrompt, copyKnowledge: knowledge, client }),
-    (error) => error.stage === 'KNOWLEDGE_MATCH');
-  assert.equal(textCalls, 2);
   client.runReview = async () => ({ model: 'fake-review', rawText: JSON.stringify({
     ...review, decision: 'REJECT', issues: [{ code: 'QUERY_WEAK_DEMAND', severity: 'BLOCKING', message: '需求不明确' }],
   }) });
   await assert.rejects(generateCopy({ task, systemPrompt, copyKnowledge: knowledge, client,
     promptRuntime: enabledQueryReviewRuntime() }), (error) => error.stage === 'QUERY');
-  assert.equal(textCalls, 2);
+  assert.equal(textCalls, 0);
 });
 
 test('case analysis is appended after template expansion, with safe data boundaries and no truncation', () => {
@@ -109,6 +129,23 @@ test('case analysis is appended after template expansion, with safe data boundar
 });
 
 for (const [name, execute] of [['executor', executeCopyClaim], ['simulator', executeDeepSeekCopySimulation]]) {
+  test(`${name} completes copy after invalid case scoring`, async () => {
+    const prompts = [];
+    const progress = [];
+    let uploaded;
+    await execute({ claim: { task: { id: 7 }, execution: { id: 'execution-test', snapshot: {
+      task: { ...task, id: 7 }, prompts: { TEXT_SYSTEM: { content: systemPrompt } }, knowledge,
+    } } }, client: fakeClient(prompts, { invalidScores: true }), controlPlane: {
+      updateProgress: async (_id, value) => progress.push(value),
+      completeCopy: async (_id, value) => { uploaded = value; return value; },
+    } });
+    assert.ok(uploaded.copy.body.length > 100);
+    assert.equal(uploaded.generation.knowledgeMatch.status, 'SKIPPED');
+    assert.equal(uploaded.generation.knowledgeMatch.selectedVersionId, null);
+    assert.doesNotMatch(prompts.at(-1), /untrusted_copy_knowledge_reference|完整内容|未选中的案例分析/u);
+    assert.ok(progress.some(value => value.stage === 'ORIGINAL_GENERATION'));
+  });
+
   test(`${name} uses frozen knowledge and uploads match metadata and stage progress`, async () => {
     const prompts = [];
     const progress = [];

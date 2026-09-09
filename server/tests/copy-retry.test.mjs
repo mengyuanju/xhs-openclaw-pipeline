@@ -97,13 +97,59 @@ test('a replaced copy execution cannot report progress, success or failure over 
   assert.equal(queries.filter(({ sql }) => /^\s*UPDATE /u.test(sql)).length, writesBefore);
 });
 
+test('executor mutations lock the task before its execution to share one deadlock-safe order', async () => {
+  const calls = [];
+  const execution = {
+    id: executionId, task_id: 41, kind: 'COPY', node_id: 'copy-node', status: 'RUNNING',
+    stage: 'ORIGINAL_GENERATION', progress_percent: 10, progress_message: '生成中',
+    progress_details: null, snapshot: {}, current_execution_id: executionId,
+  };
+  const client = {
+    release() {},
+    async query(sql, values = []) {
+      const source = String(sql);
+      calls.push({ sql: source, values });
+      if (source === 'BEGIN' || source === 'COMMIT' || source === 'ROLLBACK') return { rows: [] };
+      if (source.includes('SELECT t.id') && source.includes('SELECT e.task_id')) {
+        return { rows: [{ id: 41 }] };
+      }
+      if (source.includes('JOIN tasks t ON t.id = e.task_id')) return { rows: [{ ...execution }] };
+      if (source.includes('UPDATE task_executions SET')) {
+        Object.assign(execution, {
+          stage: values[1], progress_percent: values[2], progress_message: values[3],
+          progress_details: values[4],
+        });
+        return { rows: [{ ...execution }] };
+      }
+      if (source.includes('UPDATE tasks SET') || source.includes('UPDATE executor_nodes SET')) {
+        return { rows: [] };
+      }
+      throw new Error(`Unexpected SQL: ${source}`);
+    },
+  };
+  const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
+  await repository.updateProgress(executionId, {
+    stage: 'ORIGINAL_GENERATION', progressPercent: 25, message: '继续生成',
+  });
+
+  const taskLock = calls.findIndex(({ sql }) => sql.includes('SELECT t.id') && sql.includes('FOR UPDATE OF t'));
+  const executionLock = calls.findIndex(({ sql }) => sql.includes('JOIN tasks t ON t.id = e.task_id'));
+  assert.ok(taskLock > 0);
+  assert.ok(executionLock > taskLock);
+  assert.match(calls[executionLock].sql, /FOR UPDATE OF e/u);
+  assert.doesNotMatch(calls[executionLock].sql, /FOR UPDATE OF e,\s*t/u);
+});
+
 test('copy claims select the shared queue without executor ownership filtering', async () => {
   const selections = [];
   const client = {
     release() {},
     async query(sql, values) {
       if (sql.includes('SELECT * FROM executor_nodes')) return { rows: [{ id: values[0] }] };
-      if (sql.includes('FOR UPDATE SKIP LOCKED')) selections.push({ sql, values });
+      if (sql.includes('SELECT last_assignee_user_id FROM execution_claim_cursors')) {
+        return { rows: [{ last_assignee_user_id: null }] };
+      }
+      if (sql.includes('FOR UPDATE OF task SKIP LOCKED')) selections.push({ sql, values });
       return { rows: [] };
     },
   };
@@ -113,7 +159,11 @@ test('copy claims select the shared queue without executor ownership filtering',
   assert.deepEqual(selections.map(({ values }) => values), [
     ['COPY_QUEUED', 1], ['COPY_QUEUED', 1],
   ]);
-  for (const { sql } of selections) assert.doesNotMatch(sql, /copy_executor_node_id/u);
+  for (const { sql } of selections) {
+    assert.doesNotMatch(sql, /copy_executor_node_id/u);
+    assert.doesNotMatch(sql, /assigned_to_user_id/u);
+    assert.match(sql, /ORDER BY task\.id/u);
+  }
 });
 
 test('copy retries reject tasks outside running and failed states before changing the queue', async () => {

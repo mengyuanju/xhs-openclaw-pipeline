@@ -5,6 +5,7 @@ debug.log
 output/
 outputs/
 server/server-storage/
+server/backups/
 
 .codex_artifacts/
 .tmp-control-plane/
@@ -15,4 +16,6 @@ server/server-storage/
 *.key
 npm-debug.log*
 .next/
+.next-local/
+server/test-storage/
 *.tsbuildinfo

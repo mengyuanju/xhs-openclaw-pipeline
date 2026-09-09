@@ -48,14 +48,20 @@ test('isolated PostgreSQL: execution recovery over HTTP', { timeout: 60000 }, as
     connectionTimeoutMillis: 3000, statement_timeout: 5000, lock_timeout: 3000 });
   await migrateDatabase(pool);
   assert.deepEqual(await migrateDatabase(pool), []);
+  await pool.query(`INSERT INTO app_users(
+      username, display_name, role, password_hash, status, must_change_password
+    ) VALUES ('integration-worker', 'Integration Worker', 'USER', 'unused-in-test', 'ACTIVE', false)`);
   const repo = new PostgresControlPlaneRepository({ pool });
   await repo.registerNode({ nodeId: 'a' });
   http = createControlPlaneApp({ repository: repo, storageRoot: join(root, 'assets') }).listen(0, '127.0.0.1');
   await new Promise(done => http.once('listening', done));
   const controlPlane = createControlPlaneClient({ baseUrl: `http://127.0.0.1:${http.address().port}` });
   async function enqueue(nodeId, state = 'COPY_QUEUED', snapshot = {}) {
-    const task = (await pool.query(`INSERT INTO tasks(query, created_by_node_id, state, pending_snapshot)
-      VALUES ('isolated fake task', $1, $2, $3) RETURNING *`, [nodeId, state, snapshot])).rows[0];
+    const task = (await pool.query(`INSERT INTO tasks(
+        query, created_by_node_id, created_by_user_id, assigned_to_user_id,
+        assignment_source, assigned_at, state, pending_snapshot
+      ) VALUES ('isolated fake task', $1, 'integration-worker', 'integration-worker', 'SELF', now(), $2, $3)
+      RETURNING *`, [nodeId, state, snapshot])).rows[0];
     if (state === 'IMAGE_QUEUED') {
       const id = randomUUID();
       await pool.query(`INSERT INTO task_executions(id, task_id, kind, node_id, status, stage, snapshot)

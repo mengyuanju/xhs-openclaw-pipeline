@@ -10,6 +10,16 @@ export function lockedImageText(post) {
 }
 export const imageTextHash = (post) => createHash('sha256').update(JSON.stringify(lockedImageText(post))).digest('hex');
 
+export function directSourceEvidence(post, index) {
+  const page = lockedImageText(post)[index];
+  if (!page) throw new RangeError(`direct visual-plan page ${index + 1} is unavailable`);
+  const text = page.allowedVisibleText;
+  const corpus = `${post.title}\n${post.body}`;
+  return [...new Set([text.headline, text.subtitle, ...text.bullets])]
+    .filter((value) => typeof value === 'string' && value.length <= 200 && corpus.includes(value))
+    .slice(0, 3);
+}
+
 export function assertImagePlanNumericEvidence(post) {
   const corpus = `${post.title}\n${post.body}`;
   for (const page of lockedImageText(post)) {
@@ -38,16 +48,17 @@ export function assertLockedImageText(plan, post) {
 }
 
 export function createDirectVisualPlan(post) {
-  const corpus = `${post.title}\n${post.body}`;
   const pages = lockedImageText(post).map((page, index) => {
     const text = page.allowedVisibleText;
-    const sourceEvidence = [...new Set([text.headline, text.subtitle, ...text.bullets])]
-      .filter((value) => typeof value === 'string' && value.length <= 200 && corpus.includes(value)).slice(0, 3);
+    const sourceEvidence = directSourceEvidence(post, index);
     return { ...page, layoutSchemaVersion: 1, layoutTemplate: defaultLayoutTemplate(page.kind),
       sourceEvidence, evidenceStatus: sourceEvidence.length ? 'VERBATIM_MATCH' : 'POST_REFERENCE_ONLY',
+      sourceEvidenceSanitization: { droppedCount: 0, reason: 'DIRECT_VERBATIM_EVIDENCE',
+        selectionMethod: 'DIRECT_VERBATIM' },
       visualSubject: post.imagePlan[index].prompt,
       layoutDirection: '依据原配图场景和当前默认版式安排主体与阅读顺序',
-      mustShow: [`文字：${text.headline}`, ...text.bullets.map((value) => `文字：${value}`)],
+      mustShow: [text.headline, text.subtitle, ...text.bullets].map((value) => `文字：${value}`),
+      mustShowSanitization: { droppedCount: 0, reason: 'LOCKED_TEXT_ONLY' },
       mustAvoid: ['未经确认的新事实', '文字契约外的新增文字'] };
   });
   return { schemaVersion: 1, planningMode: 'DIRECT', textContractSha256: imageTextHash(post),

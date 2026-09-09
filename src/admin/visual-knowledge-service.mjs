@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import sharp from 'sharp';
 
-import { createAgentClient as createOpenClawClient } from '../agent-client.mjs';
+import { createAgentClient } from '../agent-client.mjs';
 import {
   assertVisualPromptVariables,
   VISUAL_GENERATION_TARGETS,
@@ -133,7 +133,7 @@ export async function analyzeVisualImage({ buffer, mimeType, fileName: _fileName
       .rotate()
       .png({ compressionLevel: 8 })
       .toFile(normalizedPath);
-    const client = vision ?? createOpenClawClient({ modelApi });
+    const client = vision ?? createAgentClient({ modelApi });
     const result = await client.runVision({ prompt: businessPrompt('VISUAL_KNOWLEDGE_ANALYSIS_SYSTEM', { contract: ANALYSIS_CONTRACT }), inputPaths: [normalizedPath] });
     return {
       analysis: parseVisualAnalysisOutput(result.rawText, { model: result.model }),

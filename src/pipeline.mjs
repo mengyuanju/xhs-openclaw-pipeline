@@ -9,7 +9,7 @@ import { join, relative, resolve } from 'node:path';
 import { renderDeliveryImages } from './images.mjs';
 import { createImageAlignmentValidator } from './image-alignment.mjs';
 import { effectiveModelApiConfig } from './model-api-config.mjs';
-import { createAgentClient as createOpenClawClient } from './agent-client.mjs';
+import { createAgentClient } from './agent-client.mjs';
 import { isCodexCooldown } from './codex-protocol.mjs';
 import { createDeliveryQualityAssessor } from './quality-assessment.mjs';
 import {
@@ -247,11 +247,19 @@ function restoreCheckpointPost(checkpoint, requestedImageCount, allowedSources, 
   }
 }
 
-function restoreCheckpointVisualPlan(checkpoint, post, imageCount) {
+export function restoreCheckpointVisualPlan(checkpoint, post, imageCount) {
   if (!checkpoint?.visualPlan?.value) return null;
   try {
+    const storedMode = checkpoint.visualPlan.value.planningMode;
+    const trustedPlanningMode = checkpoint.visualPlan.model === null
+      && ['DIRECT', 'RANDOM'].includes(storedMode) ? storedMode : null;
     return {
-      value: parseVisualPlanOutput(JSON.stringify(checkpoint.visualPlan.value), { post, imageCount, allowStoredCatalog: true }),
+      value: parseVisualPlanOutput(JSON.stringify(checkpoint.visualPlan.value), {
+        post,
+        imageCount,
+        allowStoredCatalog: true,
+        trustedPlanningMode,
+      }),
       model: checkpoint.visualPlan.model ?? null,
     };
   } catch {
@@ -264,7 +272,7 @@ export async function processNext({
   workerId,
   outputRoot,
   mock = false,
-  openclaw,
+  agentClient,
   configProvider,
   onCompleted,
   onFailed,
@@ -281,7 +289,7 @@ export async function processNext({
     };
   }
   if (!mock) {
-    try { openclaw?.assertAvailable?.(); }
+    try { agentClient?.assertAvailable?.(); }
     catch (error) {
       if (!error.code?.startsWith('CODEX_')) throw error;
       return { status: 'blocked', reason: error.code, haltWorker: !isCodexCooldown(error.code), retryAt: error.retryAt };
@@ -330,7 +338,7 @@ export async function processNext({
     const configuredImageCount = workerConfig?.imageCount ?? 3;
     const automaticImageCount = !mock && workerConfig?.imageCountMode !== 'fixed';
     const requestedImageCount = automaticImageCount ? 'auto' : configuredImageCount;
-    const client = mock ? null : (openclaw ?? createOpenClawClient({ modelApi: productionSettings.modelApi }));
+    const client = mock ? null : (agentClient ?? createAgentClient({ modelApi: productionSettings.modelApi }));
     const checkpointFingerprint = createCheckpointFingerprint({ task, workerConfig, mock });
     let checkpoint = mock ? null : await loadPipelineCheckpoint({
       outputRoot,
@@ -617,7 +625,7 @@ export async function processNext({
     });
 
     const validateImage = mock ? undefined : createImageAlignmentValidator({
-      openclaw: client,
+      agentClient: client,
       post,
       visualPlan,
       imageCount,
@@ -631,7 +639,7 @@ export async function processNext({
       post,
       outputDir,
       mock,
-      openclaw: client,
+      agentClient: client,
       imageCount,
       imagePrompts: prompts,
       visibleTextPlans: visualPlan.pages.map((page) => page.allowedVisibleText),
@@ -681,7 +689,7 @@ export async function processNext({
       if (!mock) {
         await heartbeat({ stage: 'quality_assessment' });
         const assessed = await createDeliveryQualityAssessor({
-          openclaw: client,
+          agentClient: client,
           task,
           post,
           model: effectiveModelApi.qualityModel,

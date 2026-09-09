@@ -18,6 +18,9 @@ describe('excellent copy analysis and classification UI', () => {
 
     assert.match(page, /<KnowledgeTabs/u);
     assert.match(page, /listCopyKnowledge/u);
+    assert.match(page, /COPY_KNOWLEDGE_PAGE_SIZES = new Set\(\[10, 20, 50\]\)/u);
+    assert.match(page, /copyPagination=\{result\.copyResult\.pagination\}/u);
+    assert.doesNotMatch(page, /listAllKnowledge\(store, 'listCopyKnowledge'\)/u);
     assert.match(page, /listCopyKnowledgeLabels/u);
     assert.doesNotMatch(promptsPage, /CopyKnowledgeWorkbench|listCopyKnowledge/u);
     assert.match(tabs, /SHOW_KNOWLEDGE_TYPE_SWITCHER = false/u);
@@ -34,8 +37,15 @@ describe('excellent copy analysis and classification UI', () => {
     assert.match(workbench, /<DialogTitle>新增文案分析<\/DialogTitle>/u);
     assert.match(workbench, /<CopyKnowledgeLibrary/u);
     assert.match(library, /按标签查看/u);
+    assert.match(library, /VISIBLE_LABEL_FILTER_COUNT = 8/u);
+    assert.match(library, /展开全部（\$\{labels\.length\}）/u);
+    assert.match(library, /收起标签/u);
     assert.match(library, /placeholder="搜索分析标题"/u);
-    assert.match(library, /normalizedSearch\(item\.title\)\.includes\(query\)/u);
+    assert.match(library, /copyQuery: searchValue\.trim\(\) \|\| null/u);
+    assert.match(library, /aria-label="文案知识库分页"/u);
+    assert.match(library, /COPY_KNOWLEDGE_PAGE_SIZES = \[10, 20, 50\]/u);
+    assert.match(library, /上一页/u);
+    assert.match(library, /下一页/u);
     assert.match(library, /新增分析<\/Button>/u);
     assert.match(library, /查看<\/Button>/u);
     assert.match(library, /删除这条文案分析/u);
@@ -70,6 +80,16 @@ describe('excellent copy analysis and classification UI', () => {
     assert.match(legacyRoute, /status: 308/u);
     assert.match(legacyRoute, /copy-knowledge\/analyze/u);
     assert.doesNotMatch(legacyRoute, /analyzeExcellentCopy|createOpenClawClient/u);
+  });
+
+  it('keeps manual layout templates restricted to administrators', async () => {
+    const [centerHttp, settingsPage] = await Promise.all([
+      source('server/src/http-server.mjs'),
+      source('app/settings/page.tsx'),
+    ]);
+    assert.match(settingsPage, /<LayoutCatalogSettings/u);
+    assert.match(centerHttp, /router\.get\('\/v1\/layout-catalog'[\s\S]*?requestActor\(ctx, \['ADMIN'\]\)/u);
+    assert.match(centerHttp, /router\.post\('\/v1\/layout-catalog'[\s\S]*?requestActor\(ctx, \['ADMIN'\]\)/u);
   });
 
   it('validates saved-copy edits through a strict bounded PATCH endpoint', async () => {

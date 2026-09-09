@@ -6,6 +6,7 @@ import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 
 import { checkExecutorReady, createExecutorAgent } from '../src/executor/agent.mjs';
+import { createCodexRuntime } from '../src/codex-runtime.mjs';
 
 test('concurrent same-kind failures retain independent reports without rerunning either model', async () => {
   const claims = [1, 2].map(id => ({ task: { id }, execution: { id: randomUUID(), status: 'RUNNING' } }));
@@ -95,6 +96,32 @@ test('image-enabled executor runs an image lane while its copy lane is busy', as
   assert.equal(imageResult.status, 'SUCCEEDED');
   releaseCopy();
   assert.equal((await copyResult).status, 'SUCCEEDED');
+});
+
+test('a cooling image driver pauses only image claims while copy can use its fallback', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'xhs-image-driver-cooldown-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const databasePath = join(root, 'limits.sqlite');
+  const environment = { XHS_AGENT_PROVIDER: 'CODEX', XHS_CODEX_RUNTIME_DB: databasePath };
+  const runtime = createCodexRuntime({ databasePath });
+  await assert.rejects(runtime.run(async () => {
+    throw Object.assign(new Error('at capacity'), { code: 'CODEX_MODEL_AT_CAPACITY' });
+  }, { model: 'openai/gpt-5.6-sol' }), { code: 'CODEX_MODEL_AT_CAPACITY' });
+
+  let copyClaims = 0; let imageClaims = 0;
+  const agent = createExecutorAgent({ nodeId: 'lane-aware-capacity', imageWorkerEnabled: true, environment,
+    readinessCheck: async () => {}, executeCopy: async () => {}, executeImage: async () => assert.fail('cooling image driver ran'),
+    controlPlane: {
+      listSettings: async () => [{ key: 'production', value: { modelApi: {} } }],
+      claimCopy: async () => { copyClaims++; return { task: { id: 1 }, execution: { id: randomUUID(), status: 'RUNNING' } }; },
+      claimImage: async () => { imageClaims++; return null; },
+    } });
+  await agent.prepare();
+  assert.equal((await agent.runCopyOnce()).status, 'SUCCEEDED');
+  const image = await agent.runImageOnce();
+  assert.equal(image.status, 'PAUSED');
+  assert.equal(image.code, 'CODEX_MODEL_AT_CAPACITY');
+  assert.deepEqual([copyClaims, imageClaims], [1, 0]);
 });
 
 test('executor readiness completes control-plane and work-directory checks before registration', async () => {

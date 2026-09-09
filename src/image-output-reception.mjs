@@ -1,4 +1,4 @@
-import { lstat, readFile, realpath, writeFile } from 'node:fs/promises';
+import { lstat, readFile, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import sharp from 'sharp';
 
@@ -30,33 +30,4 @@ export async function verifiedPngBytes(path, { roots, startedAt }) {
     throw receptionError('Image output is not a complete valid PNG');
   }
   return bytes;
-}
-
-export async function receiveOpenClawImage({ result, directory, requestedPath, outputPath, startedAt }) {
-  let envelope;
-  try { envelope = JSON.parse(String(result.stdout ?? '')); } catch { /* Legacy CLI can omit JSON. */ }
-  let paths;
-  if (envelope && Object.hasOwn(envelope, 'outputs')) {
-    if (envelope.ok !== true || !Array.isArray(envelope.outputs) || envelope.outputs.length > 10) {
-      throw receptionError('Image output metadata is invalid');
-    }
-    if (envelope.outputs.some((item) => typeof item?.path !== 'string' || !isAbsolute(item.path))) {
-      throw receptionError('Image output metadata contains an invalid path');
-    }
-    paths = [...new Set(envelope.outputs.map((item) => resolve(item.path)))];
-  } else {
-    // Only the isolated, exact path can be accepted without structured metadata.
-    paths = await lstat(requestedPath).then(() => [requestedPath], (error) => {
-      if (error.code !== 'ENOENT') throw error;
-      return [];
-    });
-  }
-  if (paths.length === 0) return false;
-  if (paths.length !== 1) {
-    throw receptionError('Multiple image outputs are ambiguous; candidates retained, generation was not replayed', 'IMAGE_OUTPUT_AMBIGUOUS');
-  }
-  const bytes = await verifiedPngBytes(paths[0], { roots: [directory], startedAt });
-  // Never overwrite a prior output. I/O failure is reception failure, not a reason to regenerate.
-  await writeFile(outputPath, bytes, { flag: 'wx' });
-  return true;
 }

@@ -8,9 +8,10 @@ export const DEFAULT_WEB_SEARCH_SETTINGS = Object.freeze({
 });
 
 export function normalizeWebSearchSettings(input = {}) {
-  const webSearchProvider = input.webSearchProvider == null ? null : String(input.webSearchProvider).trim().toUpperCase();
-  if (webSearchProvider !== null && !['OPENCLAW', 'DEEPSEEK'].includes(webSearchProvider)) {
-    throw new TypeError('webSearchProvider must be OPENCLAW or DEEPSEEK');
+  const rawProvider = input.webSearchProvider == null ? null : String(input.webSearchProvider).trim().toUpperCase();
+  const webSearchProvider = rawProvider === 'OPENCLAW' ? 'CODEX' : rawProvider;
+  if (webSearchProvider !== null && !['CODEX', 'DEEPSEEK'].includes(webSearchProvider)) {
+    throw new TypeError('webSearchProvider must be CODEX or DEEPSEEK');
   }
   const deepseekSearchModel = input.deepseekSearchModel == null ? null : String(input.deepseekSearchModel).trim();
   if (deepseekSearchModel !== null && !['deepseek-v4-pro', 'deepseek-v4-flash'].includes(deepseekSearchModel)) {
@@ -30,11 +31,13 @@ export function validatedWebSearchTimeout(value) {
 // This configuration contains no credentials and is independent of generation models.
 export function resolveWebSearchConfig(environment = process.env, input = {}) {
   const settings = normalizeWebSearchSettings(input);
-  const provider = String(settings.webSearchProvider ?? (environment.XHS_WEB_SEARCH_PROVIDER || DEFAULT_WEB_SEARCH_PROVIDER)).trim().toUpperCase();
-  if (!['OPENCLAW', 'DEEPSEEK'].includes(provider)) {
-    throw new TypeError('XHS_WEB_SEARCH_PROVIDER must be OPENCLAW or DEEPSEEK');
+  const rawProvider = String(settings.webSearchProvider
+    ?? (environment.XHS_WEB_SEARCH_PROVIDER || DEFAULT_WEB_SEARCH_PROVIDER)).trim().toUpperCase();
+  const provider = rawProvider === 'OPENCLAW' ? 'CODEX' : rawProvider;
+  if (!['CODEX', 'DEEPSEEK'].includes(provider)) {
+    throw new TypeError('XHS_WEB_SEARCH_PROVIDER must be CODEX or DEEPSEEK');
   }
-  if (provider === 'OPENCLAW') return { provider };
+  if (provider === 'CODEX') return { provider };
   const model = String(settings.deepseekSearchModel ?? (environment.XHS_DEEPSEEK_SEARCH_MODEL || DEFAULT_DEEPSEEK_SEARCH_MODEL)).trim();
   if (!['deepseek-v4-pro', 'deepseek-v4-flash'].includes(model)) {
     throw new TypeError('DeepSeek search model must be deepseek-v4-pro or deepseek-v4-flash');

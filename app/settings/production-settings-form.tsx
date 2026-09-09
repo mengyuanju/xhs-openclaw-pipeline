@@ -39,6 +39,8 @@ const EMPTY_MODEL_API: ModelApiSettings = {
   dotsBaseUrl: null,
   dotsModel: null,
   textModel: null,
+  capacityFallbackModel: null,
+  modelCapacityCooldownMs: null,
   screeningModel: null,
   reviewModel: null,
   visionModel: null,
@@ -82,7 +84,10 @@ export function ProductionSettingsForm({
       const modelApi = Object.fromEntries(Object.keys(EMPTY_MODEL_API).map((key) => [
         key, settings.modelApi[key as keyof ModelApiSettings],
       ]));
-      const { layoutCatalog: _catalog, ...settingsPatch } = settings as Settings & { layoutCatalog?: unknown };
+      const { layoutCatalog: _catalog, humanQualityReasons: _qualityReasons, ...settingsPatch } = settings as Settings & {
+        layoutCatalog?: unknown;
+        humanQualityReasons?: unknown;
+      };
       const record = await apiRequest<{ settings: Settings; updatedAt: string }>('/api/production-settings', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },

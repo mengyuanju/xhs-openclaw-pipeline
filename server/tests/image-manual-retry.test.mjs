@@ -5,7 +5,7 @@ import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 
 const executionId = '55555555-5555-4555-8555-555555555555';
 
-function taskRow(state, { approved = true, running = false } = {}) {
+function taskRow(state, { approved = true, running = false, currentStage = state } = {}) {
   return {
     id: 51,
     query: '重新生图',
@@ -19,7 +19,7 @@ function taskRow(state, { approved = true, running = false } = {}) {
     current_copy_revision_id: 12,
     current_image_run_id: 'old-run',
     current_execution_id: running ? executionId : null,
-    current_stage: state,
+    current_stage: currentStage,
     progress_percent: running ? 40 : 0,
     progress_message: '旧状态',
     execution_started_at: running ? '2026-09-05T01:00:00Z' : null,
@@ -106,4 +106,13 @@ test('copy-only and cancelled tasks cannot be sent to image generation', async (
     const { repository } = fixture(state);
     await assert.rejects(repository.requeueImageTask(51), { code: 'INVALID_TASK_STATE' });
   }
+});
+
+test('bulk retry cannot use the broader manual image requeue states', async () => {
+  for (const state of ['IMAGE_QUEUED', 'MANUAL_ARCHIVE', 'COPY_REVIEW_PENDING']) {
+    const { repository } = fixture(state);
+    await assert.rejects(repository.requeueImageTask(51, { retryOnly: true }), { code: 'INVALID_TASK_STATE' });
+  }
+  const exhausted = fixture('COPY_REVIEW_PENDING', { currentStage: 'IMAGE_RETRY_EXHAUSTED' });
+  assert.equal((await exhausted.repository.requeueImageTask(51, { retryOnly: true })).state, 'IMAGE_QUEUED');
 });
