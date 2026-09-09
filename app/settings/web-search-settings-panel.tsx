@@ -24,7 +24,13 @@ type SearchRecord = {
 const EMPTY_SETTINGS: SearchSettings = { webSearchProvider: null, deepseekSearchModel: null, webSearchTimeoutMs: null };
 const INHERIT = 'INHERIT';
 
-export function WebSearchSettingsPanel({ onSaved }: { onSaved?: () => Promise<void> }) {
+export function WebSearchSettingsPanel({
+  onSaved,
+  onDirtyChange,
+}: {
+  onSaved?: () => Promise<void>;
+  onDirtyChange?: (dirty: boolean) => void;
+}) {
   const [record, setRecord] = useState<SearchRecord | null>(null);
   const [settings, setSettings] = useState<SearchSettings>(EMPTY_SETTINGS);
   const [loading, setLoading] = useState(true);
@@ -68,6 +74,10 @@ export function WebSearchSettingsPanel({ onSaved }: { onSaved?: () => Promise<vo
   const invalidTimeout = settings.webSearchTimeoutMs !== null
     && (!Number.isInteger(settings.webSearchTimeoutMs) || settings.webSearchTimeoutMs < 5000 || settings.webSearchTimeoutMs > 120000);
   const hasChanges = record !== null && JSON.stringify(settings) !== JSON.stringify(record.settings);
+  useEffect(() => {
+    onDirtyChange?.(hasChanges);
+    return () => { onDirtyChange?.(false); };
+  }, [hasChanges, onDirtyChange]);
   const usesCodex = settings.webSearchProvider === 'CODEX'
     || (settings.webSearchProvider === null && record?.effective?.provider === 'CODEX');
   const savedProvider = record?.effective?.provider ?? record?.settings.webSearchProvider;

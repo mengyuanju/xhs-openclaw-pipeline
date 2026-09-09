@@ -83,11 +83,13 @@ describe('excellent copy analysis and classification UI', () => {
   });
 
   it('keeps manual layout templates restricted to administrators', async () => {
-    const [centerHttp, settingsPage] = await Promise.all([
+    const [centerHttp, localSettings, centralSettings] = await Promise.all([
       source('server/src/http-server.mjs'),
-      source('app/settings/page.tsx'),
+      source('app/settings/production-settings-form.tsx'),
+      source('app/components/central-data-workbench.tsx'),
     ]);
-    assert.match(settingsPage, /<LayoutCatalogSettings/u);
+    assert.match(localSettings, /<LayoutCatalogSettings/u);
+    assert.match(centralSettings, /<LayoutCatalogSettings remote/u);
     assert.match(centerHttp, /router\.get\('\/v1\/layout-catalog'[\s\S]*?requestActor\(ctx, \['ADMIN'\]\)/u);
     assert.match(centerHttp, /router\.post\('\/v1\/layout-catalog'[\s\S]*?requestActor\(ctx, \['ADMIN'\]\)/u);
   });

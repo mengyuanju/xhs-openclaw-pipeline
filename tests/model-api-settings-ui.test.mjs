@@ -64,6 +64,7 @@ describe('model API production settings UI', () => {
     assert.match(section, /图片生成代理/u);
     assert.match(section, /图片调用超时/u);
     assert.match(section, /<DotsCopyProviderFields/u);
+    assert.match(section, /disabled=\{busy\}/u);
     assert.match(dotsFields, /独立文案提供方/u);
     assert.match(dotsFields, /Dots API 基础地址/u);
     assert.match(dotsFields, /Dots 模型/u);
@@ -72,6 +73,7 @@ describe('model API production settings UI', () => {
     assert.match(dotsFields, /<SelectTrigger/u);
     assert.match(dotsFields, /<SelectContent/u);
     assert.match(dotsFields, /DOTS_MODEL_OPTIONS/u);
+    assert.match(dotsFields, /disabled\?: boolean/u);
     assert.doesNotMatch(dotsFields, /<select/u);
     assert.match(section, /不保存 API Key、Token 或 OAuth 授权码/u);
     assert.match(section, /恢复环境配置/u);

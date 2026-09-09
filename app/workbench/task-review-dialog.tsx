@@ -38,7 +38,7 @@ import {
   type HumanQualityAssessment,
   type HumanScore,
 } from './human-quality-rating';
-import { useHumanQualitySettings } from './human-quality-settings';
+import { DEFAULT_SETTINGS, useHumanQualitySettings } from './human-quality-settings';
 
 type TaskState =
   | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_FAILED'
@@ -454,8 +454,12 @@ export function TaskReviewDialog({
     || expectedImageAssetIds.every(assetId => assets.some(asset => asset.id === assetId)));
   const imageRatingComplete = ratingFeedbackComplete(imageScore, imageReasons, imageReviewNote);
   const humanQualitySettingsUnavailable = humanQualitySettingsLoading || Boolean(humanQualitySettingsError);
-  const copyReasonOptions = humanQualitySettings?.copyReasons ?? [];
-  const imageReasonOptions = humanQualitySettings?.imageReasons ?? [];
+  const humanRatingSettings = humanQualitySettings ?? DEFAULT_SETTINGS;
+  const scoreDefinitions = humanRatingSettings.scoreDefinitions;
+  const copyReasonOptions = humanRatingSettings.copyReasons;
+  const imageReasonOptions = humanRatingSettings.imageReasons;
+  const copyScoreDefinition = scoreDefinitions.find(definition => definition.score === copyOriginalScore);
+  const imageScoreDefinition = scoreDefinitions.find(definition => definition.score === imageScore);
   const canApproveImages = imageSetComplete && imageRatingComplete && isPassingHumanScore(imageScore)
     && !imagePlanChanged && !imageConfigurationChanged;
   const copyAssessments = (detail?.humanQualityAssessments ?? []).filter(assessment => assessment.stage === 'COPY');
@@ -837,6 +841,7 @@ export function TaskReviewDialog({
                     id={`copy-original-score-${detail.id}`}
                     legend={currentCopyRatingLabel}
                     value={copyOriginalScore}
+                    scoreDefinitions={scoreDefinitions}
                     disabled={loading || submitting || humanQualitySettingsUnavailable || Boolean(savedCopyRatings.current) || copyMaterialChanged}
                     onChange={(score) => { updateCopyOriginalScore(score); setError(''); }}
                   />
@@ -845,18 +850,20 @@ export function TaskReviewDialog({
                     reasonOptions={copyReasonOptions}
                     reasons={copyOriginalReasons}
                     note={copyOriginalNote}
+                    notePlaceholder={humanRatingSettings.noteGuidance.copyPlaceholder}
                     disabled={loading || submitting || humanQualitySettingsUnavailable || Boolean(savedCopyRatings.current) || copyMaterialChanged}
                     onToggleReason={(code) => { toggleReason(code, setCopyOriginalReasons); setError(''); }}
                     onNoteChange={(note) => { setCopyOriginalNote(note); setError(''); }}
                   />}
                   {copyOriginalScore !== null && <p className="human-rating-guidance" role="status">
+                    {copyScoreDefinition && <><strong>{copyScoreDefinition.title}</strong> · {copyScoreDefinition.description}。 </>}
                     {copyOriginalScore === 1
-                      ? '1 分：当前稿不可用。填写原因或说明后，可保存评分或直接废弃任务。'
+                      ? '填写原因或说明后，可保存评分或直接废弃任务。'
                       : copyOriginalScore === 2
                         ? `${originalCopyRatingComplete ? '已解锁编辑' : '填写扣分原因或说明后即可编辑'}。完成结构性修改后，请进行修改后自评。`
-                        : copyOriginalScore === 2.5
-                          ? `2.5 分已达到放行标准；${originalCopyRatingComplete ? '也可以小修' : '填写扣分原因或说明后可以小修'}，修改后需重新自评。`
-                          : '3 分：原稿质量优良，可直接放行生图。'}
+                      : copyOriginalScore === 2.5
+                          ? `已达到放行标准；${originalCopyRatingComplete ? '也可以小修' : '填写扣分原因或说明后可以小修'}，修改后需重新自评。`
+                          : '原稿可直接放行生图。'}
                   </p>}
                 </div>}
                 {!editable && copyAssessments.length > 0 && <div className="human-rating-readonly">
@@ -891,6 +898,7 @@ export function TaskReviewDialog({
                     id={`copy-edited-score-${detail.id}`}
                     legend="修改后自评"
                     value={copyEditedScore}
+                    scoreDefinitions={scoreDefinitions}
                     disabled={loading || submitting || humanQualitySettingsUnavailable}
                     onChange={(score) => { updateCopyEditedScore(score); setError(''); }}
                   />
@@ -899,13 +907,14 @@ export function TaskReviewDialog({
                     reasonOptions={copyReasonOptions}
                     reasons={copyEditedReasons}
                     note={copyEditedNote}
+                    notePlaceholder={humanRatingSettings.noteGuidance.copyPlaceholder}
                     disabled={loading || submitting || humanQualitySettingsUnavailable}
                     onToggleReason={(code) => { toggleReason(code, setCopyEditedReasons); setError(''); }}
                     onNoteChange={(note) => { setCopyEditedNote(note); setError(''); }}
                   />}
                   <p className="human-rating-guidance" role="status">文案再次修改时，本次自评会自动清空，确保分数对应当前内容。</p>
                 </div>}
-                <HumanAssessmentHistory assessments={copyAssessments} />
+                <HumanAssessmentHistory assessments={copyAssessments} scoreDefinitions={scoreDefinitions} reasonOptions={copyReasonOptions} />
               </section>
               {sources.length > 0 && <Disclosure className="workbench-review-section workbench-review-source-disclosure">
                 <DisclosureTrigger>联网资料来源 · {sources.length} 条</DisclosureTrigger>
@@ -955,6 +964,7 @@ export function TaskReviewDialog({
                   id={`image-score-${detail.id}-${detail.currentImageRunId}`}
                   legend="整套图片评分"
                   value={imageScore}
+                  scoreDefinitions={scoreDefinitions}
                   disabled={loading || submitting || humanQualitySettingsUnavailable || Boolean(savedImageAssessment)}
                   onChange={(score) => { updateImageScore(score); setError(''); }}
                 />
@@ -964,6 +974,7 @@ export function TaskReviewDialog({
                     reasonOptions={imageReasonOptions}
                     reasons={imageReasons}
                     note={imageReviewNote}
+                    notePlaceholder={humanRatingSettings.noteGuidance.imagePlaceholder}
                     disabled={loading || submitting || humanQualitySettingsUnavailable || Boolean(savedImageAssessment)}
                     onToggleReason={(code) => { toggleImageReason(code); setError(''); }}
                     onNoteChange={(note) => { setImageReviewNote(note); setError(''); }}
@@ -986,16 +997,17 @@ export function TaskReviewDialog({
                   </fieldset>}
                 </div>}
                 {imageScore !== null && <p className="human-rating-guidance" role="status">
+                  {imageScoreDefinition && <><strong>{imageScoreDefinition.title}</strong> · {imageScoreDefinition.description}。 </>}
                   {isPassingHumanScore(imageScore)
-                    ? `${imageScore} 分已达到放行标准，也可根据需要重试或废弃。`
-                    : `${imageScore} 分未达到放行标准，请选择重试生图或废弃。`}
+                    ? '已达到放行标准，也可根据需要重试或废弃。'
+                    : '未达到放行标准，请选择重试生图或废弃。'}
                 </p>}
-                <HumanAssessmentHistory assessments={imageAssessments} />
+                <HumanAssessmentHistory assessments={imageAssessments} scoreDefinitions={scoreDefinitions} reasonOptions={imageReasonOptions} />
               </div>}
               {!canReviewImages && imageAssessments.length > 0 && <div className="human-rating-readonly">
                 <span>当前图集人工评分</span>
                 <HumanScoreBadge score={imageAssessments.at(-1)!.score} />
-                <HumanAssessmentHistory assessments={imageAssessments} />
+                <HumanAssessmentHistory assessments={imageAssessments} scoreDefinitions={scoreDefinitions} reasonOptions={imageReasonOptions} />
               </div>}
               {activeAsset && activeAssetIndex !== null && <ImagePreview
                 hideTrigger

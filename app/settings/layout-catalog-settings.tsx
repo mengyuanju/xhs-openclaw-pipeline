@@ -26,7 +26,13 @@ function filterCatalogTemplates(templates: CatalogTemplate[], family: string, st
     && `${item.name} ${item.layoutTemplate} ${item.description} ${item.suitableContent}`.toLowerCase().includes(query));
 }
 
-export function LayoutCatalogSettings({ remote = false }: { remote?: boolean }) {
+export function LayoutCatalogSettings({
+  remote = false,
+  onDirtyChange,
+}: {
+  remote?: boolean;
+  onDirtyChange?: (dirty: boolean) => void;
+}) {
   const endpoint = remote ? '/api/control-plane/v1/layout-catalog' : '/api/layout-catalog';
   const [record, setRecord] = useState<CatalogRecord | null>(null);
   const [busy, setBusy] = useState(false);
@@ -40,6 +46,11 @@ export function LayoutCatalogSettings({ remote = false }: { remote?: boolean }) 
   const [json, setJson] = useState('');
   const [brief, setBrief] = useState('');
   const [editing, setEditing] = useState<CatalogTemplate | null>(null);
+  const hasUnsavedEditor = Boolean(json.trim() || brief.trim() || editing);
+  useEffect(() => {
+    onDirtyChange?.(hasUnsavedEditor);
+    return () => { onDirtyChange?.(false); };
+  }, [hasUnsavedEditor, onDirtyChange]);
   function applyRecord(next: CatalogRecord) {
     const nextTemplates = next.catalog?.templates ?? [];
     const nextTotalPages = Math.max(1, Math.ceil(filterCatalogTemplates(nextTemplates, family, status, search).length / pageSize));
@@ -119,7 +130,7 @@ export function LayoutCatalogSettings({ remote = false }: { remote?: boolean }) 
       </details>
       <details><summary>用模型生成模板候选</summary><p className="subtle">使用已发布的“布局模板设计”规则；未发布时明确使用内置规则。生成会调用模型，结果自动入库为未启用候选，可在上表启用。</p>
         <label className="field">版式需求<textarea className="textarea" rows={3} maxLength={2000} placeholder="例如：适合四个食材知识点的杂志风卡片布局，清晰、留白充足。" value={brief} onChange={event => setBrief(event.target.value)} /></label>
-        <Button disabled={busy || !brief.trim()} onClick={() => void mutate({ brief }, '模型候选已保存，请在表格中检查并启用', true)}>{busy ? '正在处理…' : '生成并自动入库'}</Button>
+        <Button disabled={busy || !brief.trim()} onClick={() => void mutate({ brief }, '模型候选已保存，请在表格中检查并启用', true).then((saved) => { if (saved) setBrief(''); })}>{busy ? '正在处理…' : '生成并自动入库'}</Button>
       </details>
     </>}
   </section>;

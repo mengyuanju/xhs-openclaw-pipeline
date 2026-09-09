@@ -2,7 +2,9 @@
 
 import { Checkbox, Textarea } from '@/components/ui/input';
 
-export type HumanScore = 1 | 2 | 2.5 | 3;
+import type { HumanScore, HumanScoreDefinition } from './human-quality-settings';
+
+export type { HumanScore } from './human-quality-settings';
 
 export type HumanQualityAssessment = {
   id: number;
@@ -22,13 +24,6 @@ export type HumanQualityAssessment = {
   createdAt: string;
 };
 
-const SCORE_OPTIONS: Array<{ score: HumanScore; title: string; action: string }> = [
-  { score: 1, title: '不可用', action: '废弃或重新处理' },
-  { score: 2, title: '可修改', action: '改后需重新评分' },
-  { score: 2.5, title: '已达标', action: '可放行 · 小修易达 3 分' },
-  { score: 3, title: '优质可用', action: '无需修改 · 直接放行' },
-];
-
 export function isPassingHumanScore(score: HumanScore | null): score is 2.5 | 3 {
   return score === 2.5 || score === 3;
 }
@@ -37,19 +32,21 @@ export function HumanScoreField({
   id,
   legend,
   value,
+  scoreDefinitions,
   disabled = false,
   onChange,
 }: {
   id: string;
   legend: string;
   value: HumanScore | null;
+  scoreDefinitions: ReadonlyArray<HumanScoreDefinition>;
   disabled?: boolean;
   onChange: (score: HumanScore) => void;
 }) {
   return <fieldset className="human-rating-field" disabled={disabled}>
     <legend>{legend}<span>人工评分</span></legend>
     <div className="human-rating-options">
-      {SCORE_OPTIONS.map((option) => <label key={option.score} data-score={option.score}
+      {scoreDefinitions.map((option) => <label key={option.score} data-score={option.score}
         data-passing={isPassingHumanScore(option.score)} data-selected={value === option.score}>
         <input
           type="radio"
@@ -63,7 +60,7 @@ export function HumanScoreField({
             <span className="human-rating-card-score"><strong>{option.score}</strong><small>分</small></span>
             <strong className="human-rating-card-verdict">{option.title}</strong>
           </span>
-          <span className="human-rating-card-action">{option.action}</span>
+          <span className="human-rating-card-action">{option.description}</span>
         </span>
       </label>)}
     </div>
@@ -80,6 +77,7 @@ export function HumanRatingFeedback({
   reasonOptions,
   reasons,
   note,
+  notePlaceholder,
   disabled = false,
   onToggleReason,
   onNoteChange,
@@ -88,6 +86,7 @@ export function HumanRatingFeedback({
   reasonOptions: ReadonlyArray<{ code: string; label: string }>;
   reasons: string[];
   note: string;
+  notePlaceholder: string;
   disabled?: boolean;
   onToggleReason: (code: string) => void;
   onNoteChange: (note: string) => void;
@@ -110,7 +109,7 @@ export function HumanRatingFeedback({
         value={note}
         maxLength={500}
         readOnly={disabled}
-        placeholder="说明具体问题与建议处理方式"
+        placeholder={notePlaceholder}
         onChange={(event) => onNoteChange(event.target.value)}
       />
     </div>
@@ -149,21 +148,33 @@ const REASON_LABELS: Record<string, string> = {
   COMPLIANCE: '合规或版权风险',
 };
 
-export function HumanAssessmentHistory({ assessments }: { assessments: HumanQualityAssessment[] }) {
+export function HumanAssessmentHistory({
+  assessments,
+  scoreDefinitions,
+  reasonOptions,
+}: {
+  assessments: HumanQualityAssessment[];
+  scoreDefinitions: ReadonlyArray<HumanScoreDefinition>;
+  reasonOptions: ReadonlyArray<{ code: string; label: string }>;
+}) {
   if (assessments.length === 0) return null;
+  const configuredReasonLabels = new Map(reasonOptions.map((reason) => [reason.code, reason.label]));
   return <details className="human-rating-history">
     <summary>人工评分记录 · {assessments.length} 条</summary>
     <ol>
-      {[...assessments].reverse().map((assessment) => <li key={assessment.id}>
+      {[...assessments].reverse().map((assessment) => {
+        const scoreDefinition = scoreDefinitions.find((definition) => definition.score === assessment.score);
+        return <li key={assessment.id}>
         <div>
           <span>{CONTEXT_LABELS[assessment.ratingContext]} · {ACTION_LABELS[assessment.action] ?? assessment.action}</span>
           <HumanScoreBadge score={assessment.score} />
         </div>
         <small>{assessment.reviewerUsername || '历史审核人'} · {new Date(assessment.createdAt).toLocaleString('zh-CN')}</small>
-        {assessment.reasonCodes.length > 0 && <p>{assessment.reasonCodes.map(reason => REASON_LABELS[reason] ?? reason).join('、')}</p>}
+        {scoreDefinition && <p><strong>{scoreDefinition.title}</strong> · {scoreDefinition.description}</p>}
+        {assessment.reasonCodes.length > 0 && <p>{assessment.reasonCodes.map(reason => configuredReasonLabels.get(reason) ?? REASON_LABELS[reason] ?? reason).join('、')}</p>}
         {assessment.problemAssetIds.length > 0 && <p>问题图片：{assessment.problemAssetIds.map(id => `#${id}`).join('、')}</p>}
         {assessment.note && <p>{assessment.note}</p>}
-      </li>)}
+      </li>})}
     </ol>
   </details>;
 }

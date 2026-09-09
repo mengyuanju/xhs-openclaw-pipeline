@@ -257,6 +257,15 @@ describe('standalone image generation service', () => {
     assert.equal(post.fabricatedExperience, false);
     assert.deepEqual(post.sources, []);
 
+    for (const questionMark of ['？', '?']) {
+      const questionTitleSource = validSource();
+      questionTitleSource.copy.title = `没有烙铁怎么在衣服上贴热熔贴${questionMark}`;
+      assert.equal(
+        normalizeStandaloneImageSource(questionTitleSource).title,
+        questionTitleSource.copy.title,
+      );
+    }
+
     const invalid = validSource();
     invalid.imagePlan[0] = { ...invalid.imagePlan[0], kind: 'steps' };
     assert.throws(() => normalizeStandaloneImageSource(invalid), /first item must be hero/u);

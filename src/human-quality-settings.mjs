@@ -1,5 +1,26 @@
 export const MAX_HUMAN_QUALITY_REASONS = 10;
 export const MAX_HUMAN_QUALITY_REASON_LENGTH = 50;
+export const MAX_HUMAN_QUALITY_SCORE_TITLE_LENGTH = 20;
+export const MAX_HUMAN_QUALITY_SCORE_DESCRIPTION_LENGTH = 80;
+export const MAX_HUMAN_QUALITY_NOTE_PLACEHOLDER_LENGTH = 100;
+
+export const HUMAN_QUALITY_SCORES = Object.freeze([1, 2, 2.5, 3]);
+
+function frozenScoreDefinition(score, title, description) {
+  return Object.freeze({ score, title, description });
+}
+
+export const DEFAULT_HUMAN_SCORE_DEFINITIONS = Object.freeze([
+  frozenScoreDefinition(1, '不可用', '废弃或重新处理'),
+  frozenScoreDefinition(2, '可修改', '改后需重新评分'),
+  frozenScoreDefinition(2.5, '已达标', '可放行 · 小修易达 3 分'),
+  frozenScoreDefinition(3, '优质可用', '无需修改 · 直接放行'),
+]);
+
+export const DEFAULT_HUMAN_QUALITY_NOTE_GUIDANCE = Object.freeze({
+  copyPlaceholder: '说明文案的具体问题与建议处理方式',
+  imagePlaceholder: '说明图片的具体问题、问题页与建议处理方式',
+});
 
 function frozenReason(code, label) {
   return Object.freeze({ code, label });
@@ -28,18 +49,91 @@ export const DEFAULT_IMAGE_REASONS = Object.freeze([
 ]);
 
 export const DEFAULT_HUMAN_QUALITY_SETTINGS = Object.freeze({
+  scoreDefinitions: DEFAULT_HUMAN_SCORE_DEFINITIONS,
   copyReasons: DEFAULT_COPY_REASONS,
   imageReasons: DEFAULT_IMAGE_REASONS,
+  noteGuidance: DEFAULT_HUMAN_QUALITY_NOTE_GUIDANCE,
 });
 
-function normalizedReasonText(value, path) {
+function normalizedText(value, path, maximum) {
   if (typeof value !== 'string') throw new TypeError(`${path} must be a string`);
   const text = value.trim().normalize('NFC');
-  if (!text || [...text].length > MAX_HUMAN_QUALITY_REASON_LENGTH) {
-    throw new RangeError(`${path} must contain between 1 and ${MAX_HUMAN_QUALITY_REASON_LENGTH} characters`);
+  if (!text || [...text].length > maximum) {
+    throw new RangeError(`${path} must contain between 1 and ${maximum} characters`);
   }
   if (/\p{C}/u.test(text)) throw new TypeError(`${path} cannot contain control characters`);
   return text;
+}
+
+function normalizedReasonText(value, path) {
+  return normalizedText(value, path, MAX_HUMAN_QUALITY_REASON_LENGTH);
+}
+
+function normalizedScoreDefinitions(value) {
+  const source = value === undefined ? DEFAULT_HUMAN_SCORE_DEFINITIONS : value;
+  if (!Array.isArray(source) || source.length !== HUMAN_QUALITY_SCORES.length) {
+    throw new RangeError('scoreDefinitions must contain exactly four fixed score levels');
+  }
+  const definitions = source.map((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new TypeError(`scoreDefinitions[${index}] must be an object`);
+    }
+    const keys = Object.keys(entry);
+    if (keys.some((key) => !['score', 'title', 'description'].includes(key))
+      || !['score', 'title', 'description'].every((key) => keys.includes(key))) {
+      throw new TypeError(`scoreDefinitions[${index}] must contain only score, title and description`);
+    }
+    if (typeof entry.score !== 'number' || !HUMAN_QUALITY_SCORES.includes(entry.score)) {
+      throw new TypeError(`scoreDefinitions[${index}].score must be one of 1, 2, 2.5 or 3`);
+    }
+    return {
+      score: entry.score,
+      title: normalizedText(
+        entry.title,
+        `scoreDefinitions[${index}].title`,
+        MAX_HUMAN_QUALITY_SCORE_TITLE_LENGTH,
+      ),
+      description: normalizedText(
+        entry.description,
+        `scoreDefinitions[${index}].description`,
+        MAX_HUMAN_QUALITY_SCORE_DESCRIPTION_LENGTH,
+      ),
+    };
+  });
+  const byScore = new Map(definitions.map((definition) => [definition.score, definition]));
+  if (byScore.size !== HUMAN_QUALITY_SCORES.length
+    || HUMAN_QUALITY_SCORES.some((score) => !byScore.has(score))) {
+    throw new TypeError('scoreDefinitions must define each fixed score exactly once');
+  }
+  return HUMAN_QUALITY_SCORES.map((score) => {
+    const definition = byScore.get(score);
+    if (!definition) throw new TypeError(`scoreDefinitions is missing score ${score}`);
+    return definition;
+  });
+}
+
+function normalizedNoteGuidance(value) {
+  const source = value === undefined ? DEFAULT_HUMAN_QUALITY_NOTE_GUIDANCE : value;
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    throw new TypeError('noteGuidance must be an object');
+  }
+  const keys = Object.keys(source);
+  if (keys.some((key) => !['copyPlaceholder', 'imagePlaceholder'].includes(key))
+    || !['copyPlaceholder', 'imagePlaceholder'].every((key) => keys.includes(key))) {
+    throw new TypeError('noteGuidance must contain only copyPlaceholder and imagePlaceholder');
+  }
+  return {
+    copyPlaceholder: normalizedText(
+      source.copyPlaceholder,
+      'noteGuidance.copyPlaceholder',
+      MAX_HUMAN_QUALITY_NOTE_PLACEHOLDER_LENGTH,
+    ),
+    imagePlaceholder: normalizedText(
+      source.imagePlaceholder,
+      'noteGuidance.imagePlaceholder',
+      MAX_HUMAN_QUALITY_NOTE_PLACEHOLDER_LENGTH,
+    ),
+  };
 }
 
 function normalizedReasonList(value, fallback, path) {
@@ -72,19 +166,25 @@ export function normalizeHumanQualitySettings(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new TypeError('human quality settings must be an object');
   }
-  if (Object.keys(input).some((key) => !['copyReasons', 'imageReasons'].includes(key))) {
+  if (Object.keys(input).some((key) => ![
+    'scoreDefinitions', 'copyReasons', 'imageReasons', 'noteGuidance',
+  ].includes(key))) {
     throw new TypeError('human quality settings contain unsupported fields');
   }
   return {
+    scoreDefinitions: normalizedScoreDefinitions(input.scoreDefinitions),
     copyReasons: normalizedReasonList(input.copyReasons, DEFAULT_COPY_REASONS, 'copyReasons'),
     imageReasons: normalizedReasonList(input.imageReasons, DEFAULT_IMAGE_REASONS, 'imageReasons'),
+    noteGuidance: normalizedNoteGuidance(input.noteGuidance),
   };
 }
 
-export function normalizeHumanQualitySettingsUpdate(input) {
+/** @param {unknown} input @param {unknown} [current] */
+export function normalizeHumanQualitySettingsUpdate(input, current) {
   if (!input || typeof input !== 'object' || Array.isArray(input)
     || !Object.hasOwn(input, 'copyReasons') || !Object.hasOwn(input, 'imageReasons')) {
     throw new TypeError('copyReasons and imageReasons are required');
   }
-  return normalizeHumanQualitySettings(input);
+  const baseline = current === undefined ? DEFAULT_HUMAN_QUALITY_SETTINGS : current;
+  return normalizeHumanQualitySettings({ ...normalizeHumanQualitySettings(baseline), ...input });
 }
