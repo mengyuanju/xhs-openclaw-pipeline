@@ -4,31 +4,25 @@ import type { EffectiveModelApi } from './model-api-settings-section';
 import { ProductionSettingsForm } from './production-settings-form';
 import { CentralDataWorkbench } from '../components/central-data-workbench';
 import { controlPlaneUrl } from '../../src/control-plane/next-runtime.mjs';
-import { WebSearchSettingsPanel } from './web-search-settings-panel';
-import { LayoutCatalogSettings } from './layout-catalog-settings';
-import { HumanQualitySettingsPanel } from './human-quality-settings-panel';
 
 export const dynamic = 'force-dynamic';
 
 export default function ProductionSettingsPage() {
   if (controlPlaneUrl()) return <>
-    <header className="page-header"><div><span className="eyebrow">Central production policy</span><h1 className="sr-only">生产配置</h1><p className="subtle">全局配置由远端中心统一维护；模型凭据仍只保留在执行机。</p></div></header>
-    <HumanQualitySettingsPanel />
+    <header className="page-header settings-page-header"><div><span className="eyebrow">Central production policy</span><h1 className="sr-only">生产配置</h1><p className="subtle">按生成、质量、图片和高级设置分区维护；全局配置由远端中心统一保存。</p></div><span className="pill">中心模式</span></header>
     <CentralDataWorkbench />
   </>;
   const record = withAdminStore((store: any) => store.getProductionSettings()) as any;
   const effectiveModelApi = publicModelApiStatus(record.settings.modelApi) as EffectiveModelApi;
   return <>
-    <header className="page-header">
+    <header className="page-header settings-page-header">
       <div>
         <span className="eyebrow">Production policy</span>
         <h1 className="sr-only">生产配置</h1>
-        <p className="subtle">统一管理布局种类、模型 API、质量修复和图片合规标识。修改会用于后续模型请求，并使不匹配的旧检查点失效。</p>
+        <p className="subtle">按业务流程分区维护生成、评分、图片与兼容设置；切换分区不会丢失尚未保存的修改。</p>
       </div>
+      <span className="pill">本机模式</span>
     </header>
-    <WebSearchSettingsPanel />
-    <LayoutCatalogSettings />
-    <HumanQualitySettingsPanel />
     <ProductionSettingsForm initialRecord={record} effectiveModelApi={effectiveModelApi} />
   </>;
 }

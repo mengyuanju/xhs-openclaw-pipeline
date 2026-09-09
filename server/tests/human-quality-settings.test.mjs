@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
 
-import { normalizeHumanQualitySettings } from '../../src/human-quality-settings.mjs';
+import {
+  normalizeHumanQualitySettings,
+  normalizeHumanQualitySettingsUpdate,
+} from '../../src/human-quality-settings.mjs';
 import { createControlPlaneApp } from '../src/http-server.mjs';
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 
@@ -61,6 +64,7 @@ test('all signed-in roles can read reason options while only administrators can 
     assert.equal((await fetch(`${root}/v1/human-quality-settings`)).status, 401);
 
     const payload = { copyReasons: [{ code: '信息不完整', label: '信息不完整' }], imageReasons: [] };
+    const expected = normalizeHumanQualitySettings(payload);
     const forbidden = await fetch(`${root}/v1/human-quality-settings`, {
       method: 'PUT', headers: { ...actorHeaders('reviewer'), 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
     });
@@ -71,7 +75,7 @@ test('all signed-in roles can read reason options while only administrators can 
       method: 'PUT', headers: { ...actorHeaders('admin'), 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
     });
     assert.equal(saved.status, 200);
-    assert.deepEqual((await saved.json()).data, payload);
+    assert.deepEqual((await saved.json()).data, expected);
     assert.equal(updates, 1);
 
     const invalid = await fetch(`${root}/v1/human-quality-settings`, {
@@ -84,10 +88,23 @@ test('all signed-in roles can read reason options while only administrators can 
 });
 
 test('repository replaces only human quality reasons inside the production record', async () => {
-  let production = { existingPolicy: 'preserved', modelApi: { agentProvider: 'CODEX' } };
+  const currentReasons = normalizeHumanQualitySettings();
+  currentReasons.scoreDefinitions = currentReasons.scoreDefinitions.map((definition) => ({
+    ...definition,
+    title: `${definition.score} 分自定义`,
+  }));
+  currentReasons.noteGuidance = { copyPlaceholder: '自定义文案提示', imagePlaceholder: '自定义图片提示' };
+  let production = {
+    existingPolicy: 'preserved',
+    modelApi: { agentProvider: 'CODEX' },
+    humanQualityReasons: currentReasons,
+  };
   const client = {
     async query(sql, values = []) {
       if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK' || sql.startsWith('INSERT INTO global_settings')) return { rows: [] };
+      if (sql.includes("SELECT value FROM global_settings WHERE key = 'production' FOR UPDATE")) {
+        return { rows: [{ value: production }] };
+      }
       if (sql.includes('UPDATE global_settings SET')) {
         production = { ...production, humanQualityReasons: JSON.parse(values[0]) };
         return { rows: [{ value: production }] };
@@ -98,17 +115,20 @@ test('repository replaces only human quality reasons inside the production recor
   };
   const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
   const input = { copyReasons: [{ code: '结构松散', label: '结构松散' }], imageReasons: [] };
-  assert.deepEqual(await repository.updateHumanQualitySettings(input), input);
+  assert.deepEqual(
+    await repository.updateHumanQualitySettings(input),
+    normalizeHumanQualitySettingsUpdate(input, currentReasons),
+  );
   assert.equal(production.existingPolicy, 'preserved');
   assert.equal(production.modelApi.agentProvider, 'CODEX');
 });
 
-test('generic production upsert preserves independently managed reasons when omitted', async () => {
+test('generic production upsert preserves independently managed reasons even when submitted', async () => {
   const reasons = { copyReasons: [{ code: '内容太泛', label: '内容太泛' }], imageReasons: [] };
   const pool = {
     async query(sql) {
       assert.match(sql, /global_settings\.value \? 'humanQualityReasons'/u);
-      assert.match(sql, /NOT excluded\.value \? 'humanQualityReasons'/u);
+      assert.doesNotMatch(sql, /NOT excluded\.value \? 'humanQualityReasons'/u);
       return { rows: [{
         key: 'production',
         value: { knowledgeEnabled: false, humanQualityReasons: reasons },
@@ -118,6 +138,9 @@ test('generic production upsert preserves independently managed reasons when omi
     },
   };
   const repository = new PostgresControlPlaneRepository({ pool });
-  const result = await repository.upsertSetting('production', { knowledgeEnabled: false });
+  const result = await repository.upsertSetting('production', {
+    knowledgeEnabled: false,
+    humanQualityReasons: { copyReasons: [{ code: 'STALE', label: '旧页面原因' }], imageReasons: [] },
+  });
   assert.deepEqual(result.value.humanQualityReasons, reasons);
 });

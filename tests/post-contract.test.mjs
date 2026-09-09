@@ -251,7 +251,7 @@ describe('post output contract', () => {
     }
   });
 
-  it('rejects a title that copies the Query or uses a question form', () => {
+  it('rejects a title that copies the Query while allowing question marks', () => {
     const input = editorialPost();
     const query = '自行车活鱼桶 装水防晃 技巧';
 
@@ -261,11 +261,10 @@ describe('post output contract', () => {
       /title.*query/iu,
     );
 
-    input.title = '自行车活鱼桶装水防晃技巧？';
-    assert.throws(
-      () => parsePostOutput(JSON.stringify(input), { query }),
-      /title.*question/iu,
-    );
+    for (const title of ['活鱼桶装水总晃？这样固定更稳', '活鱼桶装水总晃?这样固定更稳']) {
+      input.title = title;
+      assert.doesNotThrow(() => parsePostOutput(JSON.stringify(input), { query }));
+    }
   });
 
   it('accepts an objective opening while still rejecting invented first-person experience', () => {

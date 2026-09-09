@@ -57,10 +57,7 @@ const settingsPatchSchema = z.object({
   qualityRepairMaxAttempts: z.number().int().min(0).max(2).optional(),
   aiDisclosureEnabled: z.boolean().optional(),
   aiDisclosureText: z.string().trim().min(1).max(12).optional(),
-  humanQualityReasons: z.unknown().transform((value, context) => {
-    try { return normalizeHumanQualitySettingsUpdate(value); }
-    catch (error) { context.addIssue({ code: 'custom', message: error instanceof Error ? error.message : '人工评分原因配置无效' }); return z.NEVER; }
-  }).optional(),
+  humanQualityReasons: z.unknown().optional(),
   modelApi: modelApiPatchSchema.optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, '至少修改一项配置');
 
@@ -73,6 +70,15 @@ export function GET(request: Request) {
 export async function PATCH(request: Request) {
   return apiHandler(request, { mutation: true }, async () => {
     const patch = await parseJson(request, settingsPatchSchema, { maxBytes: 256 * 1024 });
-    return ok(withAdminStore((store: any) => store.updateProductionSettings(patch)));
+    return ok(withAdminStore((store: any) => {
+      const mergedPatch = patch.humanQualityReasons === undefined ? patch : {
+        ...patch,
+        humanQualityReasons: normalizeHumanQualitySettingsUpdate(
+          patch.humanQualityReasons,
+          store.getProductionSettings().settings.humanQualityReasons,
+        ),
+      };
+      return store.updateProductionSettings(mergedPatch);
+    }));
   });
 }

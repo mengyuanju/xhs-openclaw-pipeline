@@ -14,17 +14,12 @@ import {
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const settingsSchema = z.unknown().transform((value, context) => {
-  try {
-    return normalizeHumanQualitySettingsUpdate(value);
-  } catch (error) {
-    context.addIssue({
-      code: 'custom',
-      message: error instanceof Error ? error.message : '人工评分原因配置无效',
-    });
-    return z.NEVER;
-  }
-});
+const settingsSchema = z.object({
+  scoreDefinitions: z.unknown().optional(),
+  copyReasons: z.unknown(),
+  imageReasons: z.unknown(),
+  noteGuidance: z.unknown().optional(),
+}).strict();
 
 type Session = {
   subject: string;
@@ -47,19 +42,28 @@ function centralClient(session: Session) {
 
 async function readSettings(session: Session) {
   const client = centralClient(session);
-  if (client) return forwardControlPlaneRequest(() => client.getHumanQualitySettings());
+  if (client) return normalizeHumanQualitySettings(
+    await forwardControlPlaneRequest(() => client.getHumanQualitySettings()),
+  );
   return withAdminStore((store: any) => normalizeHumanQualitySettings(
     store.getProductionSettings().settings.humanQualityReasons,
   ));
 }
 
 async function updateSettings(session: Session, input: unknown) {
-  const settings = normalizeHumanQualitySettingsUpdate(input);
   const client = centralClient(session);
-  if (client) return forwardControlPlaneRequest(() => client.updateHumanQualitySettings(settings));
-  return withAdminStore((store: any) => store.updateProductionSettings({
-    humanQualityReasons: settings,
-  }).settings.humanQualityReasons);
+  if (client) return normalizeHumanQualitySettings(
+    await forwardControlPlaneRequest(() => client.updateHumanQualitySettings(input)),
+  );
+  return withAdminStore((store: any) => {
+    const current = normalizeHumanQualitySettings(
+      store.getProductionSettings().settings.humanQualityReasons,
+    );
+    const settings = normalizeHumanQualitySettingsUpdate(input, current);
+    return store.updateProductionSettings({
+      humanQualityReasons: settings,
+    }).settings.humanQualityReasons;
+  });
 }
 
 export function GET(request: Request) {

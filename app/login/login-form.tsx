@@ -48,7 +48,6 @@ export function LoginForm({ nextPath, passwordChanged = false }: { nextPath: str
           autoComplete="username"
           minLength={3}
           maxLength={50}
-          defaultValue="admin"
           required
           autoFocus
         />

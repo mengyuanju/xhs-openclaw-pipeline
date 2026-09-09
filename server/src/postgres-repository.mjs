@@ -3176,7 +3176,7 @@ export class PostgresControlPlaneRepository {
           excluded.value
           || CASE WHEN global_settings.value ? 'layoutCatalog'
             THEN jsonb_build_object('layoutCatalog', global_settings.value->'layoutCatalog') ELSE '{}'::jsonb END
-          || CASE WHEN global_settings.value ? 'humanQualityReasons' AND NOT excluded.value ? 'humanQualityReasons'
+          || CASE WHEN global_settings.value ? 'humanQualityReasons'
             THEN jsonb_build_object('humanQualityReasons', global_settings.value->'humanQualityReasons') ELSE '{}'::jsonb END
           ELSE excluded.value END,
         version = global_settings.version + 1, updated_at = now()
@@ -3206,9 +3206,13 @@ export class PostgresControlPlaneRepository {
   }
 
   async updateHumanQualitySettings(input) {
-    const settings = normalizeHumanQualitySettingsUpdate(input);
     return transaction(this.pool, async client => {
       await client.query("INSERT INTO global_settings(key, value) VALUES ('production', '{}'::jsonb) ON CONFLICT(key) DO NOTHING");
+      const current = await client.query("SELECT value FROM global_settings WHERE key = 'production' FOR UPDATE");
+      const settings = normalizeHumanQualitySettingsUpdate(
+        input,
+        current.rows[0]?.value?.humanQualityReasons,
+      );
       const result = await client.query(`
         UPDATE global_settings SET
           value = jsonb_set(value, '{humanQualityReasons}', $1::jsonb, true),

@@ -12,6 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Disclosure, DisclosureContent, DisclosureTrigger } from '@/components/ui/disclosure';
 
 import { DotsCopyProviderFields } from './dots-copy-provider-fields';
 
@@ -65,7 +66,6 @@ const MODEL_FIELDS: Array<{
   description: string;
 }> = [
   { key: 'textModel', label: '文本生成模型', description: '生成正文与视觉策划。' },
-  { key: 'capacityFallbackModel', label: '容量备用模型', description: '文本、审核、视觉和检索遇到模型满载后使用；不用于图片生成或改图驱动。' },
   { key: 'screeningModel', label: '需求检测模型', description: 'Excel 导入时判断需求强度。' },
   { key: 'reviewModel', label: '阶段审核模型', description: 'Query 与成稿的独立审核。' },
   { key: 'visionModel', label: '视觉验收模型', description: '逐页 OCR、图文对齐与视觉分析。' },
@@ -123,7 +123,7 @@ export function ModelApiSettingsSection({
   onChange: <K extends keyof ModelApiSettings>(key: K, value: ModelApiSettings[K]) => void;
   onReset: () => void;
 }) {
-  return <section className="panel settings-section" aria-labelledby="model-api-heading">
+  return <section className="panel settings-section" aria-labelledby="model-api-heading" aria-busy={busy}>
     <div className="panel-head">
       <div>
         <span className="section-kicker">Model runtime</span>
@@ -137,7 +137,7 @@ export function ModelApiSettingsSection({
       后台不保存 API Key、Token 或 OAuth 授权码。Codex 认证由执行主机管理；Dots Key 仅从 <span className="mono">XHS_DOTS_API_KEY</span> 读取。
     </div>
 
-    <div className="form-grid compact-settings-grid">
+    <div className="form-grid compact-settings-grid model-api-primary-grid">
       <div className="field">
         <span>生成引擎</span>
         <strong>Codex CLI</strong>
@@ -146,6 +146,7 @@ export function ModelApiSettingsSection({
       <DotsCopyProviderFields
         value={value}
         effective={effective}
+        disabled={busy}
         onProviderChange={(nextValue) => onChange('copyGenerationProvider', nextValue)}
         onBaseUrlChange={(nextValue) => onChange('dotsBaseUrl', nextValue)}
         onModelChange={(nextValue) => onChange('dotsModel', nextValue)}
@@ -154,6 +155,7 @@ export function ModelApiSettingsSection({
       <div className="field">
         <label htmlFor="model-api-copy-thinking">文案思考强度</label>
         <Select
+          disabled={busy}
           value={value.copyGenerationThinking ?? INHERIT_VALUE}
           onValueChange={(selected) => onChange(
             'copyGenerationThinking',
@@ -170,101 +172,98 @@ export function ModelApiSettingsSection({
         </Select>
         <small>用于默认生成引擎的文案与独立审核；Dots 正文关闭思考时，审核仍使用此值。</small>
       </div>
-
-      {MODEL_FIELDS.map((field) => <div className="field" key={field.key}>
-        <label htmlFor={`model-api-${field.key}`}>{field.label}</label>
-        <Select
-          value={value[field.key] ?? INHERIT_VALUE}
-          onValueChange={(selected) => onChange(
-            field.key,
-            selected === INHERIT_VALUE ? null : selected,
-          )}
-        >
-          <SelectTrigger className="mono" id={`model-api-${field.key}`}><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value={INHERIT_VALUE}>环境或默认值（{effective[field.key]}）</SelectItem>
-            {availableModels(field.key, value[field.key], effective[field.key]).map((model) => (
-              <SelectItem key={model} value={model}>{model}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <small>{field.description} 当前生效：<span className="mono">{effective[field.key]}</span></small>
-      </div>)}
-
-      <div className="field">
-        <label htmlFor="model-api-capacity-cooldown">主模型满载冷却时间</label>
-        <Input
-          className="input"
-          id="model-api-capacity-cooldown"
-          type="number"
-          min={60_000}
-          max={3_600_000}
-          step={30_000}
-          value={value.modelCapacityCooldownMs ?? ''}
-          placeholder={String(effective.modelCapacityCooldownMs)}
-          onChange={(event) => onChange(
-            'modelCapacityCooldownMs',
-            event.target.value === '' ? null : Number(event.target.value),
-          )}
-        />
-        <small>单位毫秒；当前生效 {effective.modelCapacityCooldownMs.toLocaleString('zh-CN')} ms。冷却结束后只放行一个主模型探测调用。</small>
-      </div>
-
-      <div className="field">
-        <label htmlFor="model-api-model-proxy">文本与视觉代理</label>
-        <Input
-          className="input mono"
-          id="model-api-model-proxy"
-          type="url"
-          value={value.modelProxyUrl ?? ''}
-          maxLength={500}
-          placeholder="http://127.0.0.1:7897"
-          autoComplete="off"
-          onChange={(event) => onChange('modelProxyUrl', optionalText(event.target.value))}
-        />
-        <small>{effective.modelProxyConfigured ? '当前已有代理配置；这里只显示后台覆盖值。' : '当前直连；仅支持无账号密码的 HTTP(S) 地址。'}</small>
-      </div>
-
-      <div className="field">
-        <label htmlFor="model-api-image-proxy">图片生成代理</label>
-        <Input
-          className="input mono"
-          id="model-api-image-proxy"
-          type="url"
-          value={value.imageProxyUrl ?? ''}
-          maxLength={500}
-          placeholder="http://127.0.0.1:7897"
-          autoComplete="off"
-          onChange={(event) => onChange('imageProxyUrl', optionalText(event.target.value))}
-        />
-        <small>{effective.imageProxyConfigured ? '当前已有图片代理配置；这里只显示后台覆盖值。' : '当前直连；仅用于图片生成和编辑。'}</small>
-      </div>
-
-      <div className="field">
-        <label htmlFor="model-api-image-timeout">图片调用超时</label>
-        <Input
-          className="input"
-          id="model-api-image-timeout"
-          type="number"
-          min={30_000}
-          max={540_000}
-          step={1_000}
-          value={value.imageTimeoutMs ?? ''}
-          placeholder={String(effective.imageTimeoutMs)}
-          onChange={(event) => onChange(
-            'imageTimeoutMs',
-            event.target.value === '' ? null : Number(event.target.value),
-          )}
-        />
-        <small>单位毫秒，允许 30,000–540,000；当前生效 {effective.imageTimeoutMs.toLocaleString('zh-CN')} ms。</small>
-      </div>
-
-      <div className="field full inline">
-        <Button unstyled className="button" type="button" disabled={busy} onClick={onReset}>
-          <RotateCcw aria-hidden="true" size={15} />恢复环境配置
-        </Button>
-        <span className="subtle">清空页面覆盖后仍需点击底部“保存生产配置”。</span>
-      </div>
     </div>
+
+    <div className="model-api-detail-groups">
+      <Disclosure className="settings-disclosure" defaultOpen>
+        <DisclosureTrigger>
+          <span><strong>阶段模型分配</strong><small>按生成、筛选、审核与图片阶段覆盖默认模型</small></span>
+          <em>{MODEL_FIELDS.filter((field) => value[field.key]).length} 项覆盖</em>
+        </DisclosureTrigger>
+        <DisclosureContent>
+          <div className="form-grid compact-settings-grid">
+            {MODEL_FIELDS.map((field) => <div className="field" key={field.key}>
+              <label htmlFor={`model-api-${field.key}`}>{field.label}</label>
+              <Select
+                disabled={busy}
+                value={value[field.key] ?? INHERIT_VALUE}
+                onValueChange={(selected) => onChange(
+                  field.key,
+                  selected === INHERIT_VALUE ? null : selected,
+                )}
+              >
+                <SelectTrigger className="mono" id={`model-api-${field.key}`}><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={INHERIT_VALUE}>环境或默认值（{effective[field.key]}）</SelectItem>
+                  {availableModels(field.key, value[field.key], effective[field.key]).map((model) => (
+                    <SelectItem key={model} value={model}>{model}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <small>{field.description} 当前生效：<span className="mono">{effective[field.key]}</span></small>
+            </div>)}
+          </div>
+        </DisclosureContent>
+      </Disclosure>
+
+      <Disclosure className="settings-disclosure">
+        <DisclosureTrigger>
+          <span><strong>网络与稳定性</strong><small>备用模型、冷却时间、代理和图片超时</small></span>
+          <em>{[value.capacityFallbackModel, value.modelCapacityCooldownMs, value.modelProxyUrl, value.imageProxyUrl, value.imageTimeoutMs].filter(value => value !== null).length} 项覆盖</em>
+        </DisclosureTrigger>
+        <DisclosureContent>
+          <div className="form-grid compact-settings-grid">
+            <div className="field">
+              <label htmlFor="model-api-capacityFallbackModel">容量备用模型</label>
+              <Select disabled={busy} value={value.capacityFallbackModel ?? INHERIT_VALUE} onValueChange={(selected) => onChange('capacityFallbackModel', selected === INHERIT_VALUE ? null : selected)}>
+                <SelectTrigger className="mono" id="model-api-capacityFallbackModel"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={INHERIT_VALUE}>环境或默认值（{effective.capacityFallbackModel}）</SelectItem>
+                  {availableModels('capacityFallbackModel', value.capacityFallbackModel, effective.capacityFallbackModel).map((model) => <SelectItem key={model} value={model}>{model}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <small>模型满载后使用；不用于图片生成或改图驱动。</small>
+            </div>
+            <div className="field">
+              <label htmlFor="model-api-capacity-cooldown">主模型满载冷却时间</label>
+              <Input className="input" id="model-api-capacity-cooldown" type="number" min={60_000} max={3_600_000} step={30_000}
+                disabled={busy}
+                value={value.modelCapacityCooldownMs ?? ''} placeholder={String(effective.modelCapacityCooldownMs)}
+                onChange={(event) => onChange('modelCapacityCooldownMs', event.target.value === '' ? null : Number(event.target.value))} />
+              <small>单位毫秒；当前生效 {effective.modelCapacityCooldownMs.toLocaleString('zh-CN')} ms。</small>
+            </div>
+            <div className="field">
+              <label htmlFor="model-api-model-proxy">文本与视觉代理</label>
+              <Input className="input mono" id="model-api-model-proxy" type="url" value={value.modelProxyUrl ?? ''} maxLength={500}
+                disabled={busy}
+                placeholder="http://127.0.0.1:7897" autoComplete="off" onChange={(event) => onChange('modelProxyUrl', optionalText(event.target.value))} />
+              <small>{effective.modelProxyConfigured ? '当前已有代理配置；这里只显示后台覆盖值。' : '当前直连；仅支持无账号密码的 HTTP(S) 地址。'}</small>
+            </div>
+            <div className="field">
+              <label htmlFor="model-api-image-proxy">图片生成代理</label>
+              <Input className="input mono" id="model-api-image-proxy" type="url" value={value.imageProxyUrl ?? ''} maxLength={500}
+                disabled={busy}
+                placeholder="http://127.0.0.1:7897" autoComplete="off" onChange={(event) => onChange('imageProxyUrl', optionalText(event.target.value))} />
+              <small>{effective.imageProxyConfigured ? '当前已有图片代理配置；这里只显示后台覆盖值。' : '当前直连；仅用于图片生成和编辑。'}</small>
+            </div>
+            <div className="field">
+              <label htmlFor="model-api-image-timeout">图片调用超时</label>
+              <Input className="input" id="model-api-image-timeout" type="number" min={30_000} max={540_000} step={1_000}
+                disabled={busy}
+                value={value.imageTimeoutMs ?? ''} placeholder={String(effective.imageTimeoutMs)}
+                onChange={(event) => onChange('imageTimeoutMs', event.target.value === '' ? null : Number(event.target.value))} />
+              <small>允许 30,000–540,000 ms；当前生效 {effective.imageTimeoutMs.toLocaleString('zh-CN')} ms。</small>
+            </div>
+          </div>
+        </DisclosureContent>
+      </Disclosure>
+    </div>
+
+    <div className="inline model-api-reset-row">
+      <Button unstyled className="button" type="button" disabled={busy} onClick={onReset}>
+        <RotateCcw aria-hidden="true" size={15} />恢复环境配置
+      </Button>
+      <span className="subtle">清空页面覆盖后，使用当前分区底部的保存按钮提交。</span>
+      </div>
   </section>;
 }

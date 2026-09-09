@@ -33,12 +33,14 @@ function optionalText(value: string) {
 export function DotsCopyProviderFields({
   value,
   effective,
+  disabled = false,
   onProviderChange,
   onBaseUrlChange,
   onModelChange,
 }: {
   value: DotsSettings;
   effective: EffectiveDotsSettings;
+  disabled?: boolean;
   onProviderChange: (value: DotsSettings['copyGenerationProvider']) => void;
   onBaseUrlChange: (value: string | null) => void;
   onModelChange: (value: string | null) => void;
@@ -47,6 +49,7 @@ export function DotsCopyProviderFields({
     <div className="field">
       <label htmlFor="model-api-copy-provider">独立文案提供方</label>
       <Select
+        disabled={disabled}
         value={value.copyGenerationProvider ?? INHERIT_VALUE}
         onValueChange={(selected) => onProviderChange(
           selected === INHERIT_VALUE ? null : selected as 'CODEX' | 'DOTS',
@@ -71,6 +74,7 @@ export function DotsCopyProviderFields({
         value={value.dotsBaseUrl ?? ''}
         placeholder={effective.dotsBaseUrl}
         maxLength={500}
+        disabled={disabled}
         autoComplete="off"
         onChange={(event) => onBaseUrlChange(optionalText(event.target.value))}
       />
@@ -80,6 +84,7 @@ export function DotsCopyProviderFields({
     <div className="field">
       <label htmlFor="model-api-dots-model">Dots 模型</label>
       <Select
+        disabled={disabled}
         value={value.dotsModel ?? INHERIT_VALUE}
         onValueChange={(selected) => onModelChange(selected === INHERIT_VALUE ? null : selected)}
       >

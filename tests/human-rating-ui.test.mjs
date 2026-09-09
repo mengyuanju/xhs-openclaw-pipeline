@@ -5,21 +5,23 @@ import { test } from 'node:test';
 const projectFile = (path) => new URL(`../${path}`, import.meta.url);
 
 test('human rating control exposes four levels and only scores above two pass', async () => {
-  const [rating, qualitySummary, styles] = await Promise.all([
+  const [rating, settings, qualitySummary, styles] = await Promise.all([
     readFile(projectFile('app/workbench/human-quality-rating.tsx'), 'utf8'),
+    readFile(projectFile('src/human-quality-settings.mjs'), 'utf8'),
     readFile(projectFile('app/workbench/task-quality-summary.tsx'), 'utf8'),
     readFile(projectFile('app/globals.css'), 'utf8'),
   ]);
 
-  for (const score of ['1', '2', '2.5', '3']) {
-    assert.match(rating, new RegExp(`score: ${score.replace('.', '\\.')},`, 'u'));
-  }
+  assert.match(settings, /HUMAN_QUALITY_SCORES = Object\.freeze\(\[1, 2, 2\.5, 3\]\)/u);
+  assert.match(settings, /DEFAULT_HUMAN_SCORE_DEFINITIONS/u);
   assert.match(rating, /score === 2\.5 \|\| score === 3/u);
+  assert.match(rating, /scoreDefinitions\.map/u);
   assert.match(rating, />人工评分</u);
   assert.match(rating, /human-rating-card-score/u);
   assert.match(rating, /human-rating-card-verdict/u);
   assert.match(rating, /human-rating-card-action/u);
-  assert.match(rating, /可放行 · 小修易达 3 分/u);
+  assert.match(rating, /option\.description/u);
+  assert.doesNotMatch(rating, /可放行 · 小修易达 3 分/u);
   assert.match(styles, /\.human-rating-options \{[^}]*grid-template-columns: repeat\(2,/u);
   assert.match(styles, /@container \(min-width: 760px\)[\s\S]*\.human-rating-options \{[^}]*grid-template-columns: repeat\(4,/u);
   assert.match(styles, /@container \(max-width: 300px\)[\s\S]*\.human-rating-options \{[^}]*grid-template-columns: minmax\(0, 1fr\)/u);

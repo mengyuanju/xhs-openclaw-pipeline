@@ -6,14 +6,31 @@ import { apiRequest } from '../components/api-client';
 import { DEFAULT_HUMAN_QUALITY_SETTINGS } from '../../src/human-quality-settings.mjs';
 
 export type HumanQualityReasonOption = { code: string; label: string };
+export type HumanScore = 1 | 2 | 2.5 | 3;
+export type HumanScoreDefinition = {
+  score: HumanScore;
+  title: string;
+  description: string;
+};
+export type HumanQualityNoteGuidance = {
+  copyPlaceholder: string;
+  imagePlaceholder: string;
+};
 export type HumanQualitySettings = {
+  scoreDefinitions: HumanScoreDefinition[];
   copyReasons: HumanQualityReasonOption[];
   imageReasons: HumanQualityReasonOption[];
+  noteGuidance: HumanQualityNoteGuidance;
 };
 
 export const DEFAULT_SETTINGS: HumanQualitySettings = {
+  scoreDefinitions: DEFAULT_HUMAN_QUALITY_SETTINGS.scoreDefinitions.map((definition) => ({
+    ...definition,
+    score: definition.score as HumanScore,
+  })),
   copyReasons: DEFAULT_HUMAN_QUALITY_SETTINGS.copyReasons.map((reason) => ({ ...reason })),
   imageReasons: DEFAULT_HUMAN_QUALITY_SETTINGS.imageReasons.map((reason) => ({ ...reason })),
+  noteGuidance: { ...DEFAULT_HUMAN_QUALITY_SETTINGS.noteGuidance },
 };
 
 export async function loadHumanQualitySettings() {

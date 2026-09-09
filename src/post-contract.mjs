@@ -269,7 +269,6 @@ function validatePost(value, { imageCount = 3, allowedSources = [], query = '' }
   if (!promptRuntimeSnapshot()) validateExplicitItineraryCoverage(body, query);
 
   if (!promptRuntimeSnapshot() && /[!！~～]/u.test(title)) throw new TypeError('title cannot contain exclamation marks or decorative tildes');
-  if (!promptRuntimeSnapshot() && /[?？]/u.test(title)) throw new TypeError('title cannot use a question form');
   if (!promptRuntimeSnapshot() && hasQuery && normalizedTopicKey(title) === normalizedTopicKey(query)) {
     throw new TypeError('title cannot merely repeat the Query');
   }
