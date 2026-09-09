@@ -27,7 +27,7 @@ export function visualPlanSchema(post, indices = post.imagePlan.map((_, index) =
         templateVersion: { type: 'integer', enum: [...new Set(candidates.map(item => item.templateVersion))] }, selectionReason: text(300) } : {}),
       layoutTemplate: { type: 'string', enum: candidates ? candidates.map(item => item.layoutTemplate) : requestedLayoutTemplate(post.imagePlan[index - 1])
         ? [requestedLayoutTemplate(post.imagePlan[index - 1])] : [...LAYOUT_TEMPLATES_BY_KIND[kind]] },
-      sourceEvidence: list(promptRuntimeSnapshot() ? { type: 'string', enum: visualEvidenceOptions(post) } : text(200), 1, 3), visualSubject: text(300), layoutDirection: text(300),
+      sourceEvidence: list({ type: 'string', enum: visualEvidenceOptions(post) }, 1, 3), visualSubject: text(300), layoutDirection: text(300),
       allowedVisibleText: object({
         language: { type: 'string', enum: ['zh-CN'] }, headline: { ...text(18), ...(promptRuntimeSnapshot() ? { const: post.imagePlan[index - 1].headline } : {}) },
         subtitle: { ...text(30), ...(promptRuntimeSnapshot() ? { const: post.imagePlan[index - 1].subtitle } : {}) },
@@ -37,7 +37,7 @@ export function visualPlanSchema(post, indices = post.imagePlan.map((_, index) =
           ? list({ type: 'string', enum: [...new Set(post.imagePlan[index - 1].bullets)] }, post.imagePlan[index - 1].bullets.length, post.imagePlan[index - 1].bullets.length)
           : list(text(kind === 'checklist' ? 40 : 30), 2, 5), labels: list(text(20), 0, promptRuntimeSnapshot() ? 0 : 3),
       }),
-      mustShow: list({ ...text(100), pattern: '^(画面|文字)：.+' }, 1, 10),
+      mustShow: list({ ...text(100), pattern: '^画面：.+' }, 0, 10),
       mustAvoid: list(text(100), 1, 10),
     });
   });

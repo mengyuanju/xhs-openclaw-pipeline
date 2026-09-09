@@ -117,6 +117,9 @@ export function sourceForStandaloneRecovery(storedSource) {
       tags: storedSource.post.tags,
     },
     imagePlan: storedSource.post.imagePlan,
+    ...(isRecord(storedSource.qualityEvidence)
+      ? { qualityEvidence: storedSource.qualityEvidence }
+      : {}),
     ...(storedSource.post.imageSettings ? { imageSettings: storedSource.post.imageSettings } : {}),
   };
 }
@@ -127,10 +130,14 @@ export function plannedForStandaloneRecovery({ storedPlan, post, normalizeNotice
   }
   let visualPlan;
   try {
+    const storedMode = storedPlan.value.planningMode;
+    const trustedPlanningMode = storedPlan.model === null
+      && ['DIRECT', 'RANDOM'].includes(storedMode) ? storedMode : null;
     visualPlan = parseVisualPlanOutput(JSON.stringify(storedPlan.value), {
       post,
       imageCount: post.imagePlan.length,
       allowStoredCatalog: true,
+      trustedPlanningMode,
     });
     if (storedPlan.value.textContractSha256) {
       if (storedPlan.value.textContractSha256 !== imageTextHash(post)) throw new TypeError('锁定文案 hash 不一致');

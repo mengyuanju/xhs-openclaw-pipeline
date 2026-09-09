@@ -172,6 +172,14 @@ function requestActor(ctx, allowedRoles = APP_ROLES) {
   return actor;
 }
 
+function initialPasswordRequestAllowed(ctx) {
+  const matches = (path) => ctx.path === path || ctx.path === `${path}/`;
+  if (matches('/v1/auth/login')) return ctx.method === 'POST';
+  if (matches('/health')) return ['GET', 'HEAD'].includes(ctx.method);
+  if (matches('/v1/profile')) return ['GET', 'HEAD'].includes(ctx.method);
+  return matches('/v1/profile/password') && ctx.method === 'POST';
+}
+
 function normalizedBatchTaskIds(value, max) {
   if (!Array.isArray(value) || value.length < 1 || value.length > max) {
     throw new RangeError(`taskIds must contain between 1 and ${max} items`);
@@ -431,18 +439,21 @@ async function assertCurrentActorIdentity(repository, actor) {
 function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisual) {
   const deliverAsset = createAssetDelivery({ storageRoot });
   const passwordLimiters = new Map();
-  function passwordLimiter(userId) {
-    const existing = passwordLimiters.get(userId);
+  const currentPasswordLimiters = new Map();
+  function limiterFor(limiters, userId) {
+    const existing = limiters.get(userId);
     if (existing) {
-      passwordLimiters.delete(userId);
-      passwordLimiters.set(userId, existing);
+      limiters.delete(userId);
+      limiters.set(userId, existing);
       return existing;
     }
-    if (passwordLimiters.size >= 100) passwordLimiters.delete(passwordLimiters.keys().next().value);
+    if (limiters.size >= 100) limiters.delete(limiters.keys().next().value);
     const limiter = new LoginRateLimiter();
-    passwordLimiters.set(userId, limiter);
+    limiters.set(userId, limiter);
     return limiter;
   }
+  const passwordLimiter = (userId) => limiterFor(passwordLimiters, userId);
+  const currentPasswordLimiter = (userId) => limiterFor(currentPasswordLimiters, userId);
   function assertPasswordAttemptAllowed(ctx, limiter) {
     const status = limiter.check();
     if (status.allowed) return;
@@ -526,7 +537,16 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   });
   router.post('/v1/profile/password', async (ctx) => {
     const actor = requestActor(ctx);
-    json(ctx, 200, await repository.changeOwnPassword(actor, requireJson(ctx)));
+    const limiter = currentPasswordLimiter(actor.userId);
+    assertPasswordAttemptAllowed(ctx, limiter);
+    try {
+      const result = await repository.changeOwnPassword(actor, requireJson(ctx));
+      limiter.reset();
+      json(ctx, 200, result);
+    } catch (error) {
+      if (error?.code === 'CURRENT_PASSWORD_INVALID') limiter.recordFailure();
+      throw error;
+    }
   });
   router.post('/v1/profile/deletion-password', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
@@ -826,9 +846,10 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   router.post('/v1/tasks/:taskId/review-images', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
     await assertTaskAccess(ctx, repository);
-    const { imageRunId, decision, score, reasons, note, problemAssetIds, reviewSessionId } = requireJson(ctx);
+    const { imageRunId, revisionId, nodeId, imagePlan, decision, score, reasons, note, problemAssetIds, reviewSessionId } = requireJson(ctx);
     json(ctx, 200, await repository.reviewImages(ctx.params.taskId, {
       imageRunId, decision, score, reasons, note, problemAssetIds, reviewSessionId,
+      ...(imagePlan === undefined ? {} : { revisionId, nodeId, imagePlan }),
       actor,
     }));
   });
@@ -852,7 +873,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   });
   router.get('/v1/tasks/:taskId/image-capabilities', async (ctx) => {
     await assertTaskAccess(ctx, repository, { summaryOnly: true, allowCreatorRead: true });
-    json(ctx, 200, { version: 1, formats: Object.keys(IMAGE_FORMATS) });
+    json(ctx, 200, { version: 1, reviewImagePlanEdits: true, formats: Object.keys(IMAGE_FORMATS) });
   });
   router.post('/v1/tasks/:taskId/cancel', async (ctx) => {
     const actor = requestActor(ctx);
@@ -1083,6 +1104,9 @@ export function createControlPlaneApp({ repository, storageRoot, enforceUserAuth
       || user.status !== 'ACTIVE' || user.role !== role
       || user.credentialVersion !== credentialVersion) {
       throw new HttpError(401, 'SESSION_STALE', '账号状态已变化，请重新登录');
+    }
+    if (user.mustChangePassword && !initialPasswordRequestAllowed(ctx)) {
+      throw new HttpError(403, 'PASSWORD_CHANGE_REQUIRED', '必须先修改初始密码后才能使用其他功能');
     }
     ctx.state.actor = {
       username: user.username,

@@ -84,6 +84,37 @@ test('task pages resolve creator and assignee labels only to accounts that preda
   assert.match(queries[0], /assignee\.created_at < page\.assigned_at/u);
 });
 
+test('task detail exposes the stable assignee account identity used by review controls', async () => {
+  let taskSelection = '';
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql) {
+      const source = String(sql);
+      if (source.includes('SELECT * FROM tasks WHERE id = $1')) {
+        taskSelection = source;
+        const row = taskRow();
+        delete row.creator_account_id;
+        return { rows: source.includes('assignee.id AS assignee_account_id')
+          ? [{ ...row,
+            creator_account_id: '1', creator_display_name: '系统管理员', creator_role: 'ADMIN',
+            assignee_account_id: '6', assigned_to_display_name: '普通作业员 A', assignee_status: 'ACTIVE' }]
+          : [row] };
+      }
+      return { rows: [] };
+    },
+  } });
+
+  const detail = await repository.getTask(41);
+
+  assert.equal(detail.createdByAccountId, 1);
+  assert.equal(detail.assignedToAccountId, 6);
+  assert.equal(detail.assignedToDisplayName, '普通作业员 A');
+  assert.equal(detail.assigneeStatus, 'ACTIVE');
+  assert.match(taskSelection, /creator\.username = task\.created_by_user_id/u);
+  assert.match(taskSelection, /creator\.created_at < task\.created_at/u);
+  assert.match(taskSelection, /assignee\.username = task\.assigned_to_user_id/u);
+  assert.match(taskSelection, /assignee\.created_at < task\.assigned_at/u);
+});
+
 test('invalid creator role never reaches the database', async () => {
   const repository = new PostgresControlPlaneRepository({ pool: {
     async query() { assert.fail('invalid filter reached SQL'); },

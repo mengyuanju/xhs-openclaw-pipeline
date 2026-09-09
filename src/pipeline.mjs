@@ -247,11 +247,19 @@ function restoreCheckpointPost(checkpoint, requestedImageCount, allowedSources, 
   }
 }
 
-function restoreCheckpointVisualPlan(checkpoint, post, imageCount) {
+export function restoreCheckpointVisualPlan(checkpoint, post, imageCount) {
   if (!checkpoint?.visualPlan?.value) return null;
   try {
+    const storedMode = checkpoint.visualPlan.value.planningMode;
+    const trustedPlanningMode = checkpoint.visualPlan.model === null
+      && ['DIRECT', 'RANDOM'].includes(storedMode) ? storedMode : null;
     return {
-      value: parseVisualPlanOutput(JSON.stringify(checkpoint.visualPlan.value), { post, imageCount, allowStoredCatalog: true }),
+      value: parseVisualPlanOutput(JSON.stringify(checkpoint.visualPlan.value), {
+        post,
+        imageCount,
+        allowStoredCatalog: true,
+        trustedPlanningMode,
+      }),
       model: checkpoint.visualPlan.model ?? null,
     };
   } catch {

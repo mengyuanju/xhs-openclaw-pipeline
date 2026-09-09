@@ -116,8 +116,12 @@ describe('remote numeric-evidence regressions', () => {
   it('does not recheck confirmed numeric copy through the final visual-plan validator', () => {
     const post = sparkPlugPost();
     for (const page of post.imagePlan.slice(0, 3)) page.bullets.push('查阅车型手册');
-    assert.doesNotThrow(() => parseVisualPlanOutput(JSON.stringify(createDirectVisualPlan(post)), { post }));
+    assert.doesNotThrow(() => parseVisualPlanOutput(JSON.stringify(createDirectVisualPlan(post)), {
+      post, trustedPlanningMode: 'DIRECT',
+    }));
     post.imagePlan[3].subtitle = '工程师：至少8年经验';
-    assert.doesNotThrow(() => parseVisualPlanOutput(JSON.stringify(createDirectVisualPlan(post)), { post }));
+    assert.doesNotThrow(() => parseVisualPlanOutput(JSON.stringify(createDirectVisualPlan(post)), {
+      post, trustedPlanningMode: 'DIRECT',
+    }));
   });
 });

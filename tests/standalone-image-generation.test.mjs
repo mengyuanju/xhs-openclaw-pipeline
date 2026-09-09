@@ -21,6 +21,7 @@ import {
   generateStandaloneImages,
   listStandaloneImageRuns,
   normalizeStandaloneImageSource,
+  normalizeStandaloneQualityEvidence,
   readStandaloneImageFile,
   readStandaloneImageProgress,
   retryStandaloneImageRun,
@@ -259,6 +260,127 @@ describe('standalone image generation service', () => {
     const invalid = validSource();
     invalid.imagePlan[0] = { ...invalid.imagePlan[0], kind: 'steps' };
     assert.throws(() => normalizeStandaloneImageSource(invalid), /first item must be hero/u);
+  });
+
+  it('bounds approved quality evidence and only keeps cited URLs from its reference allowlist', () => {
+    const source = validSource();
+    const cited = Array.from({ length: 5 }, (_, index) => `https://evidence.example/source-${index + 1}`);
+    source.input = {
+      referenceUrls: ['https://operator.example/reference', 'javascript:alert(1)', 'https://user:secret@example.com/private'],
+      referenceText: `人工参考\n${'甲'.repeat(13_000)}`,
+    };
+    source.research = {
+      summary: `检索摘要\n${'乙'.repeat(13_000)}`,
+      sources: [...cited.map(url => ({ url })), { url: 'file:///etc/passwd' }, { url: { malicious: true } }],
+    };
+    source.metadata = {
+      sources: [...cited, 'https://uncited.example/injected', 'data:text/html,attack'],
+      expressionReferences: ['有效表达参考', { malicious: true }, '丙'.repeat(800)],
+      riskFlags: ['价格需复核', null, '丁'.repeat(500)],
+      fabricatedExperience: 'true',
+      unverifiedClaims: ['价格区间', { malicious: true }, '戊'.repeat(500)],
+    };
+
+    const evidence = normalizeStandaloneQualityEvidence(source);
+
+    assert.deepEqual(evidence.input.referenceUrls, ['https://operator.example/reference']);
+    assert.equal([...evidence.input.referenceText].length, 12_000);
+    assert.match(evidence.input.referenceText, /^人工参考/u);
+    assert.deepEqual(evidence.metadata.sources, cited);
+    assert.deepEqual(evidence.metadata.expressionReferences.map(value => [...value].length), [6, 500]);
+    assert.deepEqual(evidence.metadata.riskFlags.map(value => [...value].length), [5, 200]);
+    assert.equal(evidence.metadata.fabricatedExperience, false);
+    assert.deepEqual(evidence.metadata.unverifiedClaims.map(value => [...value].length), [4, 300]);
+  });
+
+  it('applies approved risk evidence to the final mechanical QC gate', async (t) => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-quality-evidence-qc-'));
+    t.after(() => rm(outputRoot, { recursive: true, force: true }));
+    const source = validSource();
+    source.metadata = {
+      sources: ['https://evidence.example/approved'],
+      expressionReferences: [],
+      riskFlags: ['价格承诺存在合规风险'],
+      fabricatedExperience: true,
+      unverifiedClaims: ['具体价格仍待核验'],
+    };
+    const runtime = resumableLiveClient({ source });
+
+    const result = await generateStandaloneImages({
+      source,
+      mode: 'LIVE',
+      outputRoot,
+      runId: RUN_ID,
+      runtime,
+    });
+
+    assert.equal(result.status, 'BLOCKED');
+    assert.equal(result.qc.passed, false);
+    assert.equal(result.qc.disposition, 'blocked');
+    assert.ok(result.qc.issues.some((issue) => issue.label === '参考资料-缺失'));
+    assert.ok(result.qc.issues.some((issue) => issue.label === '安全合规-严重问题'));
+    const storedQc = JSON.parse(await readFile(join(
+      outputRoot,
+      'standalone-image-generations',
+      RUN_ID,
+      'qc.json',
+    ), 'utf8'));
+    assert.equal(storedQc.checks.find((check) => check.id === 'fabricated_experience').passed, false);
+    assert.equal(storedQc.checks.find((check) => check.id === 'risk_flags').passed, false);
+    assert.equal(storedQc.checks.find((check) => check.id === 'unverified_claims').passed, false);
+    assert.equal(storedQc.disposition, 'blocked');
+  });
+
+  it('keeps old recovery files usable but reruns quality review when frozen evidence becomes available', async (t) => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-evidence-upgrade-'));
+    t.after(() => rm(outputRoot, { recursive: true, force: true }));
+    const originalSource = validSource();
+    const originalRuntime = resumableLiveClient({ source: originalSource });
+    await generateStandaloneImages({
+      source: originalSource,
+      mode: 'LIVE',
+      outputRoot,
+      runId: RECOVERY_SOURCE_RUN_ID,
+      runtime: originalRuntime,
+    });
+    const approvedSource = structuredClone(originalSource);
+    approvedSource.research = {
+      summary: '恢复时从冻结文案修订补入的联网证据摘要。',
+      sources: [{ url: 'https://evidence.example/recovered' }],
+    };
+    approvedSource.metadata = {
+      sources: ['https://evidence.example/recovered'],
+      expressionReferences: [],
+      riskFlags: [],
+      fabricatedExperience: false,
+      unverifiedClaims: [],
+    };
+    const resumedRuntime = resumableLiveClient({ source: approvedSource });
+    let finalContract;
+    const originalReview = resumedRuntime.client.runVision;
+    resumedRuntime.client.runVision = (input) => {
+      if (input.prompt.includes('<trusted_business_rules kind="DELIVERY_REVIEW_SYSTEM">')) {
+        finalContract = JSON.parse(input.prompt.match(
+          /<untrusted_delivery_contract>\n([\s\S]+?)\n<\/untrusted_delivery_contract>/u,
+        )[1]);
+      }
+      return originalReview(input);
+    };
+
+    await retryStandaloneImageRun({
+      sourceRunId: RECOVERY_SOURCE_RUN_ID,
+      runId: RECOVERY_RUN_ID,
+      outputRoot,
+      runtime: resumedRuntime,
+      allowInterrupted: true,
+      expectedSource: approvedSource,
+    });
+
+    assert.deepEqual(resumedRuntime.calls, {
+      planning: 0, images: 0, alignmentPages: [], quality: 1,
+    });
+    assert.equal(finalContract.inputReferenceText, '恢复时从冻结文案修订补入的联网证据摘要。');
+    assert.deepEqual(finalContract.sources, ['https://evidence.example/recovered']);
   });
 
   it('accepts a finalized copy when its historical query matches the approved title', () => {

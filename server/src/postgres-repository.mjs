@@ -42,6 +42,7 @@ import {
   TASK_STATES,
   normalizeConcurrency,
   normalizeCopyReviewEdits,
+  normalizeCopyReviewImagePlan,
   normalizeCreatorUserId,
   normalizeTaskCreatorRole,
   normalizeCreateTask,
@@ -290,6 +291,35 @@ function contentWithReviewEdits(content, edits, { baseRevisionId, nodeId }) {
       baseRevisionId,
       reviewedByNodeId: nodeId,
       submittedAt: new Date().toISOString(),
+    },
+  };
+}
+
+function contentWithImagePlanRetry(content, imagePlan, {
+  baseRevisionId,
+  baseImageRunId,
+  actorUsername,
+}) {
+  const original = normalizeJson(content, 'copy revision content', 5_000_000);
+  // A plan edit requests a brand-new image generation. Do not inherit a prior
+  // format/background-only reprocess marker, otherwise the executor would
+  // convert the old assets and silently skip the corrected plan.
+  delete original.imageReprocess;
+  const reviewed = original.reviewed && typeof original.reviewed === 'object' && !Array.isArray(original.reviewed)
+    ? { ...original.reviewed, imagePlan }
+    : original.reviewed;
+  return {
+    ...original,
+    imagePlan,
+    ...(reviewed ? { reviewed } : {}),
+    imageRevision: {
+      version: 1,
+      operation: 'REGENERATE',
+      planEdited: true,
+      baseRevisionId,
+      baseImageRunId,
+      actorUsername,
+      createdAt: new Date().toISOString(),
     },
   };
 }
@@ -1379,12 +1409,15 @@ export class PostgresControlPlaneRepository {
   }
 
   async changeOwnPassword(rawActor, { currentPassword, newPassword }) {
-    const passwordHash = await hashUserPassword(newPassword);
     return transaction(this.pool, async (client) => {
       const { actor, row } = await lockCurrentActor(client, rawActor);
       if (!await verifyUserPassword(currentPassword, row.password_hash)) {
-        throw new ControlPlaneConflictError('CURRENT_PASSWORD_INVALID', 'current password is incorrect');
+        throw new ControlPlaneConflictError('CURRENT_PASSWORD_INVALID', '当前密码不正确');
       }
+      if (newPassword === currentPassword) {
+        throw new ControlPlaneConflictError('PASSWORD_REUSED', '新密码不能与当前密码相同');
+      }
+      const passwordHash = await hashUserPassword(newPassword);
       const result = await client.query(`
         UPDATE app_users SET password_hash = $1, must_change_password = false,
           credential_version = credential_version + 1, version = version + 1, updated_at = now()
@@ -1399,10 +1432,10 @@ export class PostgresControlPlaneRepository {
     return transaction(this.pool, async (client) => {
       const { actor, row } = await lockCurrentActor(client, rawActor);
       if (!await verifyUserPassword(currentPassword, row.password_hash)) {
-        throw new ControlPlaneConflictError('CURRENT_PASSWORD_INVALID', 'current password is incorrect');
+        throw new ControlPlaneConflictError('CURRENT_PASSWORD_INVALID', '当前密码不正确');
       }
       if (deletionPassword === currentPassword) {
-        throw new ControlPlaneConflictError('DELETION_PASSWORD_REUSED', 'deletion password must differ from the login password');
+        throw new ControlPlaneConflictError('DELETION_PASSWORD_REUSED', '二级密码不能与登录密码相同');
       }
       const result = await client.query(`
         UPDATE app_users SET deletion_password_hash = $1, version = version + 1, updated_at = now()
@@ -2000,7 +2033,21 @@ export class PostgresControlPlaneRepository {
   async getTask(rawTaskId) {
     const taskId = normalizeTaskId(rawTaskId);
     const [task, executions, revisions, imageRuns, assets, humanQualityAssessments] = await Promise.all([
-      this.pool.query('SELECT * FROM tasks WHERE id = $1', [taskId]),
+      this.pool.query(`
+        WITH task AS (
+          SELECT * FROM tasks WHERE id = $1
+        )
+        SELECT task.*, creator.id AS creator_account_id,
+          creator.display_name AS creator_display_name,
+          creator.role AS creator_role, assignee.id AS assignee_account_id,
+          assignee.display_name AS assigned_to_display_name,
+          assignee.status AS assignee_status
+        FROM task
+        LEFT JOIN app_users AS creator ON creator.username = task.created_by_user_id
+          AND creator.created_at < task.created_at
+        LEFT JOIN app_users AS assignee ON assignee.username = task.assigned_to_user_id
+          AND assignee.created_at < task.assigned_at
+      `, [taskId]),
       this.pool.query(`
         SELECT * FROM task_executions WHERE task_id = $1 ORDER BY started_at DESC
       `, [taskId]),
@@ -2637,6 +2684,9 @@ export class PostgresControlPlaneRepository {
 
   async reviewImages(rawTaskId, {
     imageRunId: rawImageRunId,
+    revisionId: rawRevisionId,
+    nodeId: rawNodeId,
+    imagePlan: rawImagePlan,
     decision: rawDecision,
     score: rawScore,
     reasons: rawReasons,
@@ -2659,12 +2709,22 @@ export class PostgresControlPlaneRepository {
     assertQualityExplanation(scoreX10, reasonCodes, note);
     const decision = String(rawDecision ?? '').trim().toUpperCase();
     if (!['APPROVE', 'RETRY', 'DISCARD'].includes(decision)) throw new TypeError('image review decision is invalid');
+    const editedImagePlan = rawImagePlan === undefined ? null : normalizeCopyReviewImagePlan(rawImagePlan);
+    if (editedImagePlan && decision !== 'RETRY') {
+      throw new TypeError('imagePlan edits are only accepted when retrying images');
+    }
+    if (editedImagePlan && actorIdentity?.role !== 'ADMIN') {
+      throw new ControlPlaneAuthorizationError('only administrators can edit an approved image plan');
+    }
+    const revisionId = editedImagePlan ? normalizeTaskId(rawRevisionId) : null;
+    const nodeId = editedImagePlan ? normalizeNodeId(rawNodeId) : null;
     if (decision === 'APPROVE' && scoreX10 <= 20) {
       throw new ControlPlaneConflictError('QUALITY_SCORE_TOO_LOW', 'image score must be 2.5 or 3 to approve');
     }
     const requestFingerprint = qualityReviewFingerprint({
       stage: 'IMAGE', taskId, imageRunId, decision, scoreX10,
       reasonCodes, problemAssetIds, note, reviewerUsername,
+      ...(editedImagePlan ? { revisionId, nodeId, imagePlan: editedImagePlan } : {}),
     });
     const retry = decision === 'RETRY';
     const approved = decision === 'APPROVE';
@@ -2704,6 +2764,40 @@ export class PostgresControlPlaneRepository {
           );
         }
       }
+      let nextCopyRevisionId = Number(task.current_copy_revision_id);
+      if (editedImagePlan) {
+        if (nextCopyRevisionId !== revisionId) {
+          throw new ControlPlaneConflictError('STALE_COPY_REVISION', '文案规划版本已变化，请刷新后重新审核');
+        }
+        const revision = await client.query(`
+          SELECT * FROM copy_revisions WHERE id = $1 AND task_id = $2 FOR UPDATE
+        `, [revisionId, taskId]);
+        if (!revision.rows[0]?.approved_at) {
+          throw new ControlPlaneConflictError('COPY_NOT_APPROVED', '当前文案尚未审核通过');
+        }
+        const original = revision.rows[0].content;
+        const originalPlan = original.imagePlan ?? original.reviewed?.imagePlan ?? original.post?.imagePlan;
+        if (!Array.isArray(originalPlan) || originalPlan.length !== editedImagePlan.length
+          || originalPlan.some((page, index) => page?.kind !== editedImagePlan[index].kind)) {
+          throw new TypeError('图片审核只能修改现有页面的文字与画面指令，不能改变页数或页面类型');
+        }
+        const revisionNumber = Number((await client.query(`
+          SELECT COALESCE(MAX(revision), 0) + 1 AS revision
+          FROM copy_revisions WHERE task_id = $1
+        `, [taskId])).rows[0].revision);
+        const content = contentWithImagePlanRetry(original, editedImagePlan, {
+          baseRevisionId: revisionId,
+          baseImageRunId: imageRunId,
+          actorUsername: reviewerUsername,
+        });
+        const saved = await client.query(`
+          INSERT INTO copy_revisions(
+            task_id, execution_id, revision, content, approved_at, approved_by_node_id, approval_mode
+          ) VALUES ($1, NULL, $2, $3, now(), $4, 'MANUAL')
+          RETURNING *
+        `, [taskId, revisionNumber, content, nodeId]);
+        nextCopyRevisionId = Number(saved.rows[0].id);
+      }
       await insertQualityAssessment(client, {
         taskId, stage: 'IMAGE', imageRunId, scoreX10,
         ratingContext: 'IMAGE', action: decision,
@@ -2713,6 +2807,7 @@ export class PostgresControlPlaneRepository {
       const updated = await client.query(`
         UPDATE tasks SET
           state = $2, current_stage = $2, progress_message = $3,
+          current_copy_revision_id = $5,
           current_execution_id = NULL, pending_snapshot = NULL, error = NULL,
           current_image_run_id = ${retry ? 'NULL' : 'current_image_run_id'},
           progress_percent = ${retry ? 0 : 100},
@@ -2722,7 +2817,9 @@ export class PostgresControlPlaneRepository {
           image_reviewed_by_user_id = $4,
           last_activity_at = now(), updated_at = now()
         WHERE id = $1 RETURNING *
-      `, [taskId, state, message, approved ? reviewerUsername : null]);
+      `, [taskId, state, editedImagePlan
+        ? '管理员已修正图片文案规划，等待图片执行机重新生成'
+        : message, approved ? reviewerUsername : null, nextCopyRevisionId]);
       return taskFrom(updated.rows[0]);
     });
   }

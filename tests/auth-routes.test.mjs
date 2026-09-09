@@ -97,4 +97,72 @@ describe('Next.js authentication proxy', () => {
     assert.deepEqual(sessionDecision, { type: 'next' });
     assert.deepEqual(publicDecision, { type: 'forbidden' });
   });
+
+  it('confines accounts using an initial password to the profile password-change flow', () => {
+    const environment = { XHS_SESSION_SECRET: sessionSecret };
+    const requestFor = (role, path, mustChangePassword = true) => {
+      const token = createSessionToken(sessionSecret, {
+        actor: {
+          userId: role === 'ADMIN' ? 41 : role === 'REVIEWER' ? 42 : 43,
+          username: `initial-${role.toLowerCase()}`,
+          roles: [role],
+          credentialVersion: 1,
+          mustChangePassword,
+        },
+      });
+      return new Request(`http://127.0.0.1:3001${path}`, {
+        headers: { cookie: `${ADMIN_SESSION_COOKIE}=${token}` },
+      });
+    };
+
+    for (const role of ['ADMIN', 'REVIEWER', 'USER']) {
+      for (const path of [
+        '/profile',
+        '/profile?from=login',
+        '/api/auth/logout',
+        '/api/control-plane/v1/profile',
+        '/api/control-plane/v1/profile/password',
+      ]) {
+        assert.deepEqual(
+          evaluateAdminProxyRequest(requestFor(role, path), environment),
+          { type: 'next' },
+          `${role} must be able to use ${path}`,
+        );
+      }
+
+      for (const path of ['/', '/workbench/personal', '/workbench/all', '/users', '/knowledge']) {
+        assert.deepEqual(
+          evaluateAdminProxyRequest(requestFor(role, path), environment),
+          { type: 'redirect', location: '/profile' },
+          `${role} must be redirected away from ${path}`,
+        );
+      }
+
+      for (const path of [
+        '/api/workbench-statistics',
+        '/api/control-plane/v1/tasks',
+        '/api/control-plane/v1/profile/deletion-password',
+        '/api/control-plane/v1/profiled',
+      ]) {
+        assert.deepEqual(
+          evaluateAdminProxyRequest(requestFor(role, path), environment),
+          { type: 'forbidden' },
+          `${role} must be denied access to ${path}`,
+        );
+      }
+
+      assert.deepEqual(
+        evaluateAdminProxyRequest(requestFor(role, '/login'), environment),
+        { type: 'redirect', location: '/profile' },
+      );
+      assert.deepEqual(
+        evaluateAdminProxyRequest(requestFor(role, '/login?reauth=1'), environment),
+        { type: 'next' },
+      );
+      assert.deepEqual(
+        evaluateAdminProxyRequest(requestFor(role, '/workbench/personal', false), environment),
+        { type: 'next' },
+      );
+    }
+  });
 });

@@ -47,6 +47,9 @@ const IMAGE_FILE = /^\d{2}-[a-z][a-z0-9-]{0,30}\.png$/u;
 const MANIFEST_MAX_BYTES = 200_000;
 const IMAGE_MAX_BYTES = 30 * 1024 * 1024;
 const FAILURE_DETAIL_MAX_LENGTH = 400;
+const QUALITY_REFERENCE_TEXT_MAX_LENGTH = 12_000;
+const QUALITY_REFERENCE_URL_MAX_LENGTH = 500;
+const QUALITY_REFERENCE_URL_MAX_ITEMS = 8;
 const PROGRESS_FILE = 'progress.json';
 const PROGRESS_STAGES = new Set([
   'PREPARING',
@@ -494,6 +497,73 @@ function normalizedTags(value) {
   return value.map((tag, index) => boundedText(tag, `copy.tags[${index}]`, 2, 20));
 }
 
+function boundedOptionalText(value, maximum) {
+  if (typeof value !== 'string') return '';
+  return [...value.trim()].slice(0, maximum).join('');
+}
+
+function normalizedEvidenceUrls(value) {
+  if (!Array.isArray(value)) return [];
+  const urls = [];
+  const seen = new Set();
+  for (const candidate of value.slice(0, QUALITY_REFERENCE_URL_MAX_ITEMS * 4)) {
+    const raw = isRecord(candidate) ? candidate.url : candidate;
+    if (typeof raw !== 'string' || [...raw].length > QUALITY_REFERENCE_URL_MAX_LENGTH) continue;
+    try {
+      const parsed = new URL(raw.trim());
+      if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password
+        || seen.has(parsed.href)) continue;
+      seen.add(parsed.href);
+      urls.push(parsed.href);
+      if (urls.length === QUALITY_REFERENCE_URL_MAX_ITEMS) break;
+    } catch {
+      // Optional evidence is untrusted. Ignore malformed URLs rather than forwarding them.
+    }
+  }
+  return urls;
+}
+
+function normalizedEvidenceTextList(value, { maximum, itemMaximum }) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, maximum * 4)
+    .filter(item => typeof item === 'string')
+    .map(item => boundedOptionalText(item, itemMaximum))
+    .filter(Boolean)
+    .slice(0, maximum);
+}
+
+/** Keep approved copy evidence bounded and inert before it reaches the quality prompt. */
+export function normalizeStandaloneQualityEvidence(source) {
+  const root = isRecord(source?.qualityEvidence) ? source.qualityEvidence : source;
+  const input = isRecord(root?.input) ? root.input : {};
+  const metadata = isRecord(root?.metadata) ? root.metadata : {};
+  const research = isRecord(root?.research) ? root.research : {};
+  const inputReferenceUrls = normalizedEvidenceUrls(input.referenceUrls);
+  const researchSourceUrls = normalizedEvidenceUrls(research.sources);
+  const metadataSourceUrls = normalizedEvidenceUrls(metadata.sources);
+  const evidenceAllowlist = new Set([...inputReferenceUrls, ...researchSourceUrls]);
+  const allowedMetadataSources = evidenceAllowlist.size > 0
+    ? metadataSourceUrls.filter(url => evidenceAllowlist.has(url))
+    : metadataSourceUrls;
+  const referenceText = [
+    boundedOptionalText(input.referenceText, QUALITY_REFERENCE_TEXT_MAX_LENGTH),
+    boundedOptionalText(research.summary, QUALITY_REFERENCE_TEXT_MAX_LENGTH),
+  ].filter(Boolean).join('\n\n');
+  return {
+    input: {
+      referenceUrls: inputReferenceUrls,
+      referenceText: [...referenceText].slice(0, QUALITY_REFERENCE_TEXT_MAX_LENGTH).join(''),
+    },
+    metadata: {
+      sources: allowedMetadataSources,
+      expressionReferences: normalizedEvidenceTextList(metadata.expressionReferences, { maximum: 5, itemMaximum: 500 }),
+      riskFlags: normalizedEvidenceTextList(metadata.riskFlags, { maximum: 10, itemMaximum: 200 }),
+      fabricatedExperience: metadata.fabricatedExperience === true,
+      unverifiedClaims: normalizedEvidenceTextList(metadata.unverifiedClaims, { maximum: 10, itemMaximum: 300 }),
+    },
+  };
+}
+
 export function normalizeStandaloneImageSource(source) {
   if (!isRecord(source) || !isRecord(source.copy)) {
     throw new TypeError('standalone image source and copy must be objects');
@@ -768,6 +838,8 @@ async function generateStandaloneImagesInContext({
   const normalizedPost = normalizeStandaloneImageSource(source);
   const post = recovery ? normalizedPost : preparePageLayouts(normalizedPost, runtime.productionSettings?.layoutPresets, runtime.productionSettings?.layoutCatalog);
   const query = boundedText(source.query, 'query', 1, 500);
+  const qualityEvidence = normalizeStandaloneQualityEvidence(source);
+  const qualityPost = { ...post, ...qualityEvidence.metadata };
   const imageCount = post.imagePlan.length;
   if (mode !== 'LIVE') throw new TypeError('mode must be LIVE');
   if (!runtime.client) throw new TypeError('Live mode requires a model client');
@@ -809,7 +881,12 @@ async function generateStandaloneImagesInContext({
       message: '正在准备图片生成环境',
     });
     throwIfCancelled(signal);
-    await writeJsonAtomic(join(outputDir, 'source.json'), { query, post, inputPost: recovery?.inputPost ?? normalizedPost });
+    await writeJsonAtomic(join(outputDir, 'source.json'), {
+      query,
+      post,
+      inputPost: recovery?.inputPost ?? normalizedPost,
+      qualityEvidence,
+    });
     if (recovery?.images) await stageRecoveryImages({ images: recovery.images, outputDir });
     // Persist all inherited checkpoints before leaving PREPARING. If copying
     // fails, the executor can select the intact parent without losing work.
@@ -977,8 +1054,8 @@ async function generateStandaloneImagesInContext({
     });
     const assessed = recovery?.assessed ?? await createDeliveryQualityAssessor({
       agentClient: client,
-      task: { query, input: {} },
-      post,
+      task: { query, input: qualityEvidence.input },
+      post: qualityPost,
       model: productionSettings.modelApi.qualityModel,
     })({ imagePaths: images.map((image) => join(outputDir, image.file)) });
     const savedImages = await discoverStandaloneRecoveryImages({ outputDir, post });
@@ -994,7 +1071,7 @@ async function generateStandaloneImagesInContext({
       message: '正在汇总图片质量与机械检查结果',
     });
     const qc = await evaluateDelivery({
-      post,
+      post: qualityPost,
       images,
       outputDir,
       mode: 'live',
@@ -1123,6 +1200,12 @@ export async function retryStandaloneImageRun({
     || expectedSource.query !== source.query)) {
     throw new StandaloneImageRecoveryError('原运行文案与当前任务不一致，不能复用旧图片');
   }
+  const storedQualityEvidence = normalizeStandaloneQualityEvidence(source);
+  const qualityEvidence = expectedSource
+    ? normalizeStandaloneQualityEvidence(expectedSource)
+    : storedQualityEvidence;
+  source.qualityEvidence = qualityEvidence;
+  const qualityEvidenceChanged = JSON.stringify(qualityEvidence) !== JSON.stringify(storedQualityEvidence);
   const planned = storedPlan ? plannedForStandaloneRecovery({
     storedPlan,
     post,
@@ -1135,7 +1218,7 @@ export async function retryStandaloneImageRun({
     throw new StandaloneImageRecoveryError('原运行图片提示词检查点无效');
   }
   let assessed;
-  if (storedAssessment && planned && images.every((image) => image?.completed)
+  if (!qualityEvidenceChanged && storedAssessment && planned && images.every((image) => image?.completed)
     && JSON.stringify(storedAssessment.imageHashes) === JSON.stringify(images.map((image) => image.sha256))) {
     assessed = {
       assessment: parseDeliveryQualityAssessmentOutput(JSON.stringify(storedAssessment.assessment)),

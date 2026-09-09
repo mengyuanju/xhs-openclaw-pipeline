@@ -217,6 +217,12 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(reviewDialog, /AI生成水印/u);
   assert.match(reviewDialog, /aiDisclosureEnabled \? '已开启' : '已关闭'/u);
   assert.match(reviewDialog, /const editable = taskHasAssignee && canReviewCopy && detail\?\.state === 'COPY_REVIEW_PENDING'/u);
+  assert.match(reviewDialog, /const canEditApprovedImagePlan = Boolean\(isAdmin && canReviewImages && canModifyImages\)/u);
+  assert.match(reviewDialog, /readOnly=\{planFieldsReadOnly\}/u);
+  assert.match(reviewDialog, /disabled=\{planKindDisabled\}/u);
+  assert.match(reviewDialog, /decision === 'RETRY' && imagePlanChanged[\s\S]*revisionId: revision!\.id[\s\S]*imagePlan: draft!\.imagePlan/u);
+  assert.match(reviewDialog, /reviewImagePlanEdits !== true/u);
+  assert.match(reviewDialog, /评分后重试会创建新的人工批准版本/u);
   assert.match(workbench, /currentUsername=\{creatorUserId\}/u);
   assert.match(workbench, /currentAccountId=\{creatorAccountId\}/u);
   assert.match(reviewDialog, /onPrevious=\{activeAssetIndex > 0/u);

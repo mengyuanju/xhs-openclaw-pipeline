@@ -248,7 +248,7 @@ test('task detail exposes append-only human rating history without changing auto
   const automaticQc = { overallScore: 3 };
   const pool = { async query(sql) {
     const source = String(sql);
-    if (source === 'SELECT * FROM tasks WHERE id = $1') return { rows: [{
+    if (source.includes('SELECT * FROM tasks WHERE id = $1')) return { rows: [{
       id: 41, input: { qc: automaticQc }, requested_image_count: '3', state: 'COPY_REVIEW_PENDING', progress_percent: 100,
     }] };
     if (source.includes('FROM human_quality_assessments')) return { rows: [{

@@ -68,8 +68,13 @@ function copySource(revision) {
   if (!content || typeof content !== 'object') throw new Error('approved copy revision is unavailable');
   const copy = content.copy ?? content.reviewed?.copy ?? content.post;
   const imagePlan = content.imagePlan ?? content.reviewed?.imagePlan ?? content.post?.imagePlan;
+  const metadata = content.metadata ?? content.reviewed?.metadata ?? content.post?.metadata;
+  const research = content.generation?.research;
   if (!copy || !Array.isArray(imagePlan)) throw new Error('approved copy revision is incomplete');
   return { query: content.query ?? revision.query, copy, imagePlan,
+    ...(content.input === undefined ? {} : { input: content.input }),
+    ...(metadata === undefined ? {} : { metadata }),
+    ...(research === undefined ? {} : { research }),
     ...(content.imageSettings ? { imageSettings: content.imageSettings } : {}) };
 }
 

@@ -343,6 +343,8 @@ export function TaskReviewDialog({
   const draftChanged = Boolean(draft && savedDraft && JSON.stringify(draft) !== JSON.stringify(savedDraft));
   const copyMaterialChanged = Boolean(draft && savedDraft && JSON.stringify({ copy: draft.copy, imagePlan: draft.imagePlan })
     !== JSON.stringify({ copy: savedDraft.copy, imagePlan: savedDraft.imagePlan }));
+  const imagePlanChanged = Boolean(draft && savedDraft
+    && JSON.stringify(draft.imagePlan) !== JSON.stringify(savedDraft.imagePlan));
   const imageConfigurationChanged = Boolean(draft && savedDraft && JSON.stringify(draft.imageSettings) !== JSON.stringify(savedDraft.imageSettings));
   const isAdmin = role === 'ADMIN';
   const taskHasAssignee = Boolean(detail
@@ -357,7 +359,7 @@ export function TaskReviewDialog({
   const originalCopyRatingComplete = ratingFeedbackComplete(copyOriginalScore, copyOriginalReasons, copyOriginalNote);
   const copyFieldsEditable = editable && originalCopyRatingComplete
     && (copyOriginalScore === 2 || copyOriginalScore === 2.5);
-  const fieldsReadOnly = !copyFieldsEditable || loading || submitting;
+  const copyFieldsReadOnly = !copyFieldsEditable || loading || submitting;
   const effectiveCopyScore = copyMaterialChanged ? copyEditedScore : copyOriginalScore;
   const effectiveCopyReasons = copyMaterialChanged ? copyEditedReasons : copyOriginalReasons;
   const effectiveCopyNote = copyMaterialChanged ? copyEditedNote : copyOriginalNote;
@@ -371,6 +373,9 @@ export function TaskReviewDialog({
   const canResumeImages = canResumeImageTask(detail) && hasOwnerControl && role !== 'REVIEWER';
   const canModifyImages = Boolean(detail && revision?.approvedAt && hasOwnerControl && role !== 'REVIEWER'
     && ['MANUAL_ARCHIVE', 'REVIEWED', 'IMAGE_FAILED', 'IMAGE_QUEUED'].includes(detail.state) && !detail.currentExecutionId);
+  const canEditApprovedImagePlan = Boolean(isAdmin && canReviewImages && canModifyImages);
+  const planFieldsReadOnly = !(copyFieldsEditable || canEditApprovedImagePlan) || loading || submitting;
+  const planKindDisabled = !copyFieldsEditable || loading || submitting;
   const savedCopyRatings = detail ? copyRatingsFromDetail(detail) : { current: undefined };
   const currentCopyRatingLabel = revision?.executionId === null ? '当前修改稿评分' : '机器原稿初评';
   const copyEditBlockMessage = getCopyEditBlockMessage({
@@ -393,7 +398,7 @@ export function TaskReviewDialog({
     || imageReviewNote !== (savedImageAssessment?.note ?? ''));
   const hasUnsavedChanges = editable
     ? draftChanged || aiDisclosureEnabled || copyRatingChanged
-    : imageConfigurationChanged || imageRatingChanged;
+    : imagePlanChanged || imageConfigurationChanged || imageRatingChanged;
 
   useEffect(() => {
     setCopyEditNotice(null);
@@ -452,7 +457,7 @@ export function TaskReviewDialog({
   const copyReasonOptions = humanQualitySettings?.copyReasons ?? [];
   const imageReasonOptions = humanQualitySettings?.imageReasons ?? [];
   const canApproveImages = imageSetComplete && imageRatingComplete && isPassingHumanScore(imageScore)
-    && !imageConfigurationChanged;
+    && !imagePlanChanged && !imageConfigurationChanged;
   const copyAssessments = (detail?.humanQualityAssessments ?? []).filter(assessment => assessment.stage === 'COPY');
   const imageAssessments = (detail?.humanQualityAssessments ?? []).filter(assessment => assessment.stage === 'IMAGE'
     && assessment.imageRunId === detail?.currentImageRunId);
@@ -468,13 +473,14 @@ export function TaskReviewDialog({
   }, [activePlanIndex, draft]);
 
   function revealCopyEditNotice(area: CopyEditArea) {
-    if (!copyEditBlockMessage) return;
+    const message = area === 'plan' && canEditApprovedImagePlan ? null : copyEditBlockMessage;
+    if (!message) return;
     const now = Date.now();
     const last = lastCopyEditNoticeRef.current;
-    if (last && last.area === area && last.message === copyEditBlockMessage && now - last.at < 250) return;
-    lastCopyEditNoticeRef.current = { area, message: copyEditBlockMessage, at: now };
+    if (last && last.area === area && last.message === message && now - last.at < 250) return;
+    lastCopyEditNoticeRef.current = { area, message, at: now };
     copyEditNoticeSequenceRef.current += 1;
-    setCopyEditNotice({ area, message: copyEditBlockMessage, sequence: copyEditNoticeSequenceRef.current });
+    setCopyEditNotice({ area, message, sequence: copyEditNoticeSequenceRef.current });
   }
 
   function updateCopy(field: 'title' | 'body' | 'tags', value: string) {
@@ -648,16 +654,24 @@ export function TaskReviewDialog({
     await submitCopyDecision('APPROVE', event.currentTarget);
   }
 
-  async function requireImageControls() {
+  async function requireImageControls({ imagePlanEdits = false } = {}) {
     try {
-      const capability = await apiRequest<{ version: number }>(apiPath(`/v1/tasks/${detail!.id}/image-capabilities`));
-      if (capability.version !== 1) throw new Error('unsupported');
-    } catch { throw new Error('中心服务尚未支持图片配置，请更新中心与图片执行机后再提交。'); }
+      const capability = await apiRequest<{ version: number; reviewImagePlanEdits?: boolean }>(apiPath(`/v1/tasks/${detail!.id}/image-capabilities`));
+      if (capability.version !== 1 || imagePlanEdits && capability.reviewImagePlanEdits !== true) throw new Error('unsupported');
+    } catch {
+      throw new Error(imagePlanEdits
+        ? '中心服务尚未支持审核后修正图片文案规划，请更新中心与网页端后再提交。'
+        : '中心服务尚未支持图片配置，请更新中心与图片执行机后再提交。');
+    }
   }
 
   async function reviseImages(operation: 'REPROCESS' | 'REGENERATE') {
     if (!detail || !revision || !draft || !canModifyImages || submitting) return;
     if (operation === 'REPROCESS' && !isAdmin) return;
+    if (imagePlanChanged) {
+      setError('图片文案规划已有修改。请先完成本轮图片评分，再使用底部“重试生图”保存新规划并重新生成。');
+      return;
+    }
     if (operation === 'REGENERATE' && !await confirm({ title: '重新生成图片？', description: '保留已审核文案，按配置中的布局种类随机生成整套图片，会产生模型费用。旧版图片保留。', confirmLabel: '确认费用并生成' })) return;
     setSubmitting(true); setError('');
     try {
@@ -691,6 +705,10 @@ export function TaskReviewDialog({
 
   async function submitImageReview(decision: 'APPROVE' | 'RETRY' | 'DISCARD') {
     if (!detail || !canReviewImages || submitting) return;
+    if (imagePlanChanged && (!revision || !draft)) {
+      setError('当前图片文案规划版本不可用，请刷新后重试。');
+      return;
+    }
     if (!imageRatingComplete) {
       setError(imageScore === null ? '请先完成整套图片人工评分。' : '评分低于 3 分时，扣分原因或评分说明至少填写一项。');
       return;
@@ -698,20 +716,27 @@ export function TaskReviewDialog({
     if (decision === 'APPROVE' && !canApproveImages) {
       setError(!imageSetComplete
         ? '当前图集不完整，不能审核通过；请刷新核对、重试生图或废弃。'
+        : imagePlanChanged
+          ? '图片文案规划尚未应用，不能审核通过；请使用重试生图保存新规划并重新生成。'
         : imageConfigurationChanged
           ? '图片配置尚未应用，不能审核通过。'
           : '当前图片评分未高于 2 分，可以重试或废弃，但不能审核通过。');
       return;
     }
+    if (decision === 'RETRY' && imageConfigurationChanged) {
+      setError('交付格式或背景配置尚未应用。请先提交图片配置，或刷新恢复后再重试生图。');
+      return;
+    }
     const options = {
       APPROVE: { title: '确认图片评分达标并通过？', description: `当前整套图片人工评分为 ${imageScore} 分。图文将移入已完成列表。`, confirmLabel: '确认通过' },
-      RETRY: { title: '重新生成这条任务的图片？', description: `当前整套图片人工评分为 ${imageScore} 分。保留已审核文案并重新生成整套图片；旧图片与评分记录会保留，生成会产生模型费用。`, confirmLabel: '重试生图' },
+      RETRY: { title: '重新生成这条任务的图片？', description: `当前整套图片人工评分为 ${imageScore} 分。${imagePlanChanged ? '修改后的图片文案规划会保存为新的人工批准版本；' : '保留已审核文案；'}旧图片与评分记录会保留，生成会产生模型费用。`, confirmLabel: '重试生图' },
       DISCARD: { title: '废弃这条图文任务？', description: `当前整套图片人工评分为 ${imageScore} 分。任务会移出业务列表，历史文案、执行记录、图片与评分仍会保留。`, confirmLabel: '确认废弃', tone: 'danger' as const },
     };
     if (!await confirm(options[decision])) return;
     setSubmitting(true);
     setError('');
     try {
+      if (decision === 'RETRY' && imagePlanChanged) await requireImageControls({ imagePlanEdits: true });
       const requestPayload = {
         imageRunId: detail.currentImageRunId,
         decision,
@@ -719,6 +744,11 @@ export function TaskReviewDialog({
         reasons: imageScore === 3 ? [] : imageReasons,
         problemAssetIds: imageScore === 3 ? [] : imageProblemAssetIds,
         note: imageScore === 3 ? '' : imageReviewNote.trim(),
+        ...(decision === 'RETRY' && imagePlanChanged ? {
+          revisionId: revision!.id,
+          nodeId,
+          imagePlan: draft!.imagePlan,
+        } : {}),
       };
       await apiRequest(apiPath(`/v1/tasks/${detail.id}/review-images`), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -726,7 +756,9 @@ export function TaskReviewDialog({
       });
       reviewSessionRef.current = null;
       await onUpdated(decision === 'APPROVE' ? '图片审核通过，任务已进入已完成列表。'
-        : decision === 'RETRY' ? '任务已回到生图队列，等待重新生成图片。' : '任务已废弃。');
+        : decision === 'RETRY' ? imagePlanChanged
+          ? '图片评分与新规划版本已保存，任务已回到生图队列。'
+          : '任务已回到生图队列，等待重新生成图片。' : '任务已废弃。');
       onOpenChange(false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '图片审核提交失败');
@@ -840,17 +872,17 @@ export function TaskReviewDialog({
                   onFocusCapture={() => { if (Date.now() - copyEditPointerAtRef.current > 500) revealCopyEditNotice('copy'); }}>
                   <div className="field full">
                     <label htmlFor="review-copy-title">标题 <small>{draft.copy.title.length}/25</small></label>
-                    <Input id="review-copy-title" className="input" value={draft.copy.title} maxLength={25} required readOnly={fieldsReadOnly}
+                    <Input id="review-copy-title" className="input" value={draft.copy.title} maxLength={25} required readOnly={copyFieldsReadOnly}
                       onChange={(event) => updateCopy('title', event.target.value)} />
                   </div>
                   <div className="field full">
                     <label htmlFor="review-copy-body">正文 <small>{[...draft.copy.body].length}/400–600</small></label>
-                    <Textarea id="review-copy-body" className="textarea workbench-copy-body-editor" value={draft.copy.body} minLength={400} maxLength={600} required readOnly={fieldsReadOnly}
+                    <Textarea id="review-copy-body" className="textarea workbench-copy-body-editor" value={draft.copy.body} minLength={400} maxLength={600} required readOnly={copyFieldsReadOnly}
                       onChange={(event) => updateCopy('body', event.target.value)} />
                   </div>
                   <div className="field full">
                     <label htmlFor="review-copy-tags">标签 <small>3–8 个，用空格分隔</small></label>
-                    <Input id="review-copy-tags" className="input" value={draft.copy.tags.join(' ')} required readOnly={fieldsReadOnly}
+                    <Input id="review-copy-tags" className="input" value={draft.copy.tags.join(' ')} required readOnly={copyFieldsReadOnly}
                       onChange={(event) => updateCopy('tags', event.target.value)} />
                   </div>
                 </div> : <div className="workbench-review-empty">当前任务还没有可审核的文案版本。</div>}
@@ -992,7 +1024,10 @@ export function TaskReviewDialog({
 
             {draft && <div id="review-plan-pane" className="workbench-review-pane" data-review-pane="plan">
               <section className="workbench-review-section">
-                <div className="workbench-review-section-title"><span>{assets.length > 0 ? '03' : '02'}</span><div><h3>图片文案规划</h3><p>逐页核对画面文字，切换页面会保留当前修改。</p></div></div>
+                <div className="workbench-review-section-title"><span>{assets.length > 0 ? '03' : '02'}</span><div><h3>图片文案规划</h3><p>{canEditApprovedImagePlan
+                  ? '可修正逐页文字与画面指令；页面类型保持锁定，评分后重试会创建新的人工批准版本。'
+                  : editable ? '逐页核对画面文字，切换页面会保留当前修改。'
+                    : '当前状态仅供核对已审核的图片文案规划。'}</p></div></div>
                 <nav className="workbench-image-plan-nav" aria-label="图片规划页码">
                   {draft.imagePlan.map((item, index) => <Button unstyled type="button" key={index} aria-pressed={activePlanIndex === index} aria-controls={`review-plan-page-${index}`} onClick={() => setActivePlanIndex(index)}>
                     <span>第 {index + 1} 页 · {IMAGE_KIND_LABELS[item.kind]}</span><strong>{item.headline || '未填写页面标题'}</strong>
@@ -1001,7 +1036,7 @@ export function TaskReviewDialog({
                 <div className="workbench-image-plan-grid">
                   {draft.imagePlan.map((item, index) => <article id={`review-plan-page-${index}`} className="workbench-image-plan-card" key={index} data-plan-index={index} hidden={activePlanIndex !== index}>
                     <div className="workbench-image-plan-head"><b>第 {index + 1} 页</b><span>{IMAGE_KIND_LABELS[item.kind]}</span></div>
-                    <div className="workbench-image-plan-fields" data-edit-blocked={Boolean(copyEditBlockMessage)}
+                    <div className="workbench-image-plan-fields" data-edit-blocked={Boolean(copyEditBlockMessage) && !canEditApprovedImagePlan}
                       onPointerDownCapture={(event) => {
                         if (!(event.target as Element).closest('[data-edit-reminder-exempt]')) copyEditPointerAtRef.current = Date.now();
                       }}
@@ -1013,31 +1048,31 @@ export function TaskReviewDialog({
                       }}>
                       <div className="field">
                         <label htmlFor={`review-plan-kind-${index}`}>页面类型</label>
-                        <Select value={item.kind} disabled={fieldsReadOnly} onValueChange={(kind: ImagePlanItem['kind']) => updateImagePlan(index, { kind, layout: { mode: 'AUTO' } })}>
+                        <Select value={item.kind} disabled={planKindDisabled} onValueChange={(kind: ImagePlanItem['kind']) => updateImagePlan(index, { kind, layout: { mode: 'AUTO' } })}>
                           <SelectTrigger id={`review-plan-kind-${index}`}><SelectValue /></SelectTrigger>
                           <SelectContent>{IMAGE_KINDS.map((kind) => <SelectItem value={kind} key={kind}>{IMAGE_KIND_LABELS[kind]}</SelectItem>)}</SelectContent>
                         </Select>
                       </div>
                       <div className="field">
                         <label htmlFor={`review-plan-headline-${index}`}>页面标题</label>
-                        <Input id={`review-plan-headline-${index}`} className="input" value={item.headline} maxLength={18} required readOnly={fieldsReadOnly}
+                        <Input id={`review-plan-headline-${index}`} className="input" value={item.headline} maxLength={18} required readOnly={planFieldsReadOnly}
                           onChange={(event) => updateImagePlan(index, { headline: event.target.value })} />
                       </div>
                       <div className="field full">
                         <label htmlFor={`review-plan-subtitle-${index}`}>页面副标题</label>
-                        <Input id={`review-plan-subtitle-${index}`} className="input" value={item.subtitle} maxLength={30} required readOnly={fieldsReadOnly}
+                        <Input id={`review-plan-subtitle-${index}`} className="input" value={item.subtitle} maxLength={30} required readOnly={planFieldsReadOnly}
                           onChange={(event) => updateImagePlan(index, { subtitle: event.target.value })} />
                       </div>
                       <div className="field full">
                         <label htmlFor={`review-plan-bullets-${index}`}>画面要点 <small>每行一条，2–5 条</small></label>
-                        <Textarea id={`review-plan-bullets-${index}`} className="textarea" value={item.bullets.join('\n')} required readOnly={fieldsReadOnly}
+                        <Textarea id={`review-plan-bullets-${index}`} className="textarea" value={item.bullets.join('\n')} required readOnly={planFieldsReadOnly}
                           onChange={(event) => updateImagePlan(index, { bullets: event.target.value.split(/\r?\n/u) })} />
                       </div>
                       <Disclosure className="field full" open={expandedPrompts.includes(index)} onOpenChange={open => setExpandedPrompts(current => open ? [...current, index] : current.filter(value => value !== index))}>
                         <DisclosureTrigger data-edit-reminder-exempt>画面生成指令</DisclosureTrigger>
                         <DisclosureContent>
                         <label htmlFor={`review-plan-prompt-${index}`}>画面生成指令</label>
-                        <Textarea id={`review-plan-prompt-${index}`} className="textarea" value={item.prompt} minLength={10} maxLength={1_000} required readOnly={fieldsReadOnly}
+                        <Textarea id={`review-plan-prompt-${index}`} className="textarea" value={item.prompt} minLength={10} maxLength={1_000} required readOnly={planFieldsReadOnly}
                           onChange={(event) => updateImagePlan(index, { prompt: event.target.value })} />
                         </DisclosureContent>
                       </Disclosure>

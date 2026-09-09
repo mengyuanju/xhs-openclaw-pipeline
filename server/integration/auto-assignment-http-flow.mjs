@@ -23,6 +23,7 @@ import {
 import { requestIdAt } from '../tests/fixtures/claim-request-id.mjs';
 
 const DEFAULT_PASSWORD = '123456';
+const ACTIVE_PASSWORD = 'http-flow-password';
 const jsonHeaders = Object.freeze({ 'content-type': 'application/json' });
 const validCopy = {
   reviewed: {
@@ -197,9 +198,21 @@ test('isolated HTTP: account lifecycle, delayed review assignment, visibility an
     return payload.data ?? payload.error;
   }
 
-  const admin = await request('/v1/auth/login', {
-    method: 'POST', body: { username: 'admin', password: DEFAULT_PASSWORD },
-  });
+  async function activateInitialPasswordAccount(username) {
+    const initial = await request('/v1/auth/login', {
+      method: 'POST', body: { username, password: DEFAULT_PASSWORD },
+    });
+    assert.equal(initial.mustChangePassword, true);
+    const active = await request('/v1/profile/password', {
+      method: 'POST', actor: initial,
+      body: { currentPassword: DEFAULT_PASSWORD, newPassword: ACTIVE_PASSWORD },
+    });
+    assert.equal(active.mustChangePassword, false);
+    assert.equal(active.credentialVersion, initial.credentialVersion + 1);
+    return active;
+  }
+
+  const admin = await activateInitialPasswordAccount('admin');
   assert.deepEqual({ username: admin.username, role: admin.role }, {
     username: 'admin', role: 'ADMIN',
   });
@@ -243,11 +256,11 @@ test('isolated HTTP: account lifecycle, delayed review assignment, visibility an
     { timeoutMs: 30_000 },
   );
 
-  async function nextSession(username) {
+  async function nextSession(username, password = ACTIVE_PASSWORD) {
     const response = await fetch(`${nextRoot}/api/auth/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: nextRoot },
-      body: JSON.stringify({ username, password: DEFAULT_PASSWORD }),
+      body: JSON.stringify({ username, password }),
     });
     const payload = await response.json();
     assert.equal(response.status, 200, `Next login ${username}: ${JSON.stringify(payload)}`);
@@ -317,19 +330,15 @@ test('isolated HTTP: account lifecycle, delayed review assignment, visibility an
   assert.equal(createdAlice.mustChangePassword, true);
   assert.equal(createdBob.mustChangePassword, true);
   assert.equal(createdReviewer.mustChangePassword, true);
+  assert.equal(createdSecondaryAdmin.mustChangePassword, true);
 
-  const alice = await request('/v1/auth/login', {
-    method: 'POST', body: { username: 'flow.alice', password: DEFAULT_PASSWORD },
-  });
-  const bob = await request('/v1/auth/login', {
-    method: 'POST', body: { username: 'flow.bob', password: DEFAULT_PASSWORD },
-  });
+  const alice = await activateInitialPasswordAccount('flow.alice');
+  const bob = await activateInitialPasswordAccount('flow.bob');
   assert.equal(alice.role, 'USER');
   assert.equal(bob.role, 'USER');
-  const reviewer = await request('/v1/auth/login', {
-    method: 'POST', body: { username: 'flow.reviewer', password: DEFAULT_PASSWORD },
-  });
+  const reviewer = await activateInitialPasswordAccount('flow.reviewer');
   assert.equal(reviewer.role, 'REVIEWER');
+  const secondaryAdmin = await activateInitialPasswordAccount('flow.admin2');
   const aliceCookie = await nextSession('flow.alice');
   const bobCookie = await nextSession('flow.bob');
   const reviewerCookie = await nextSession('flow.reviewer');
@@ -514,7 +523,7 @@ test('isolated HTTP: account lifecycle, delayed review assignment, visibility an
 
   await nextRequest(`/api/control-plane/v1/users/${createdReviewer.id}`, {
     method: 'DELETE', cookie: adminCookie,
-    body: { expectedVersion: createdReviewer.version },
+    body: { expectedVersion: reviewer.version },
   });
   const replacementReviewer = await nextRequest('/api/control-plane/v1/users', {
     method: 'POST', cookie: adminCookie,
@@ -560,6 +569,7 @@ test('isolated HTTP: account lifecycle, delayed review assignment, visibility an
   });
   assert.equal(staleProfile.status, 307);
   assert.equal(staleProfile.headers.get('location'), '/login?reauth=1&next=%2Fprofile');
+  await activateInitialPasswordAccount('flow.reviewer');
   const replacementReviewerCookie = await nextSession('flow.reviewer');
   assert.deepEqual(await nextPersonalTasks('flow.reviewer', replacementReviewerCookie), []);
   const [replacementReviewerTask] = await nextRequest('/api/control-plane/v1/tasks', {
@@ -593,7 +603,7 @@ test('isolated HTTP: account lifecycle, delayed review assignment, visibility an
 
   await nextRequest(`/api/control-plane/v1/users/${createdSecondaryAdmin.id}`, {
     method: 'DELETE', cookie: adminCookie,
-    body: { expectedVersion: createdSecondaryAdmin.version },
+    body: { expectedVersion: secondaryAdmin.version },
   });
   const replacementSecondaryAdmin = await nextRequest('/api/control-plane/v1/users', {
     method: 'POST', cookie: adminCookie,
@@ -706,7 +716,7 @@ test('isolated HTTP: account lifecycle, delayed review assignment, visibility an
       displayName: createdAlice.displayName,
       role: 'USER',
       status: 'DISABLED',
-      expectedVersion: createdAlice.version,
+      expectedVersion: alice.version,
     },
     expectedStatus: 409,
   });

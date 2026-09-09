@@ -54,7 +54,11 @@ describe('locked image copy and the optional visual planning stage', () => {
       assert.equal(calls, enabled ? 1 : 0);
       assert.equal(result.degraded, false);
       assertOriginalText(result.visualPlan, post);
-      assert.doesNotThrow(() => parseVisualPlanOutput(JSON.stringify(result.visualPlan), { post }));
+      assert.doesNotThrow(() => parseVisualPlanOutput(JSON.stringify(result.visualPlan), {
+        post,
+        trustedPlanningMode: ['DIRECT', 'RANDOM'].includes(result.visualPlan.planningMode)
+          ? result.visualPlan.planningMode : null,
+      }));
     }
   });
 

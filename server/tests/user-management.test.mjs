@@ -43,6 +43,180 @@ test('default administrator password and user passwords use compatible scrypt ha
   assert.match(migration, /'admin'[\s\S]*'系统管理员'[\s\S]*'ADMIN'/u);
 });
 
+function passwordChangeRepository(passwordHash) {
+  const calls = [];
+  let updatedHash = null;
+  const current = {
+    id: 1,
+    username: 'admin',
+    display_name: '系统管理员',
+    role: 'ADMIN',
+    status: 'ACTIVE',
+    password_hash: passwordHash,
+    must_change_password: true,
+    credential_version: 1,
+    version: 1,
+  };
+  const client = {
+    async query(sql, values = []) {
+      const source = String(sql);
+      calls.push(source);
+      if (source.includes('SELECT * FROM app_users')) return { rows: [current] };
+      if (source.includes('UPDATE app_users SET password_hash')) {
+        updatedHash = values[0];
+        return { rows: [{
+          ...current,
+          password_hash: updatedHash,
+          must_change_password: false,
+          credential_version: 2,
+          version: 2,
+        }] };
+      }
+      return { rows: [] };
+    },
+    release() {},
+  };
+  return {
+    calls,
+    get updatedHash() { return updatedHash; },
+    repository: new PostgresControlPlaneRepository({ pool: { connect: async () => client } }),
+  };
+}
+
+const ADMIN_ACTOR = { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 };
+
+test('changing the login password rejects an invalid current password and password reuse', async () => {
+  const passwordHash = await hashUserPassword('123456');
+
+  const invalid = passwordChangeRepository(passwordHash);
+  await assert.rejects(
+    invalid.repository.changeOwnPassword(ADMIN_ACTOR, {
+      currentPassword: '654321', newPassword: 'new-secret',
+    }),
+    { code: 'CURRENT_PASSWORD_INVALID', message: '当前密码不正确' },
+  );
+  assert.equal(invalid.calls.some((sql) => sql.includes('UPDATE app_users SET password_hash')), false);
+
+  const reused = passwordChangeRepository(passwordHash);
+  await assert.rejects(
+    reused.repository.changeOwnPassword(ADMIN_ACTOR, {
+      currentPassword: '123456', newPassword: '123456',
+    }),
+    { code: 'PASSWORD_REUSED', message: '新密码不能与当前密码相同' },
+  );
+  assert.equal(reused.calls.some((sql) => sql.includes('UPDATE app_users SET password_hash')), false);
+});
+
+test('changing the login password clears the first-login gate and rotates credentials', async () => {
+  const passwordHash = await hashUserPassword('123456');
+  const change = passwordChangeRepository(passwordHash);
+  const user = await change.repository.changeOwnPassword(ADMIN_ACTOR, {
+    currentPassword: '123456', newPassword: 'new-secret',
+  });
+
+  assert.equal(user.mustChangePassword, false);
+  assert.equal(user.credentialVersion, 2);
+  assert.equal(user.version, 2);
+  assert.ok(change.updatedHash);
+  assert.equal(await verifyUserPassword('123456', change.updatedHash), false);
+  assert.equal(await verifyUserPassword('new-secret', change.updatedHash), true);
+});
+
+test('the central service confines initial-password accounts to profile setup routes', async () => {
+  const user = {
+    id: 2,
+    username: 'alice',
+    displayName: 'Alice',
+    role: 'USER',
+    status: 'ACTIVE',
+    mustChangePassword: true,
+    credentialVersion: 1,
+    version: 1,
+  };
+  const repository = {
+    ownsPool: true,
+    getUserByUsername: async () => user,
+    getUserByIdentity: async () => user,
+    authenticateUser: async () => user,
+    health: async () => ({ ok: true }),
+    updateOwnProfile: async () => user,
+    changeOwnPassword: async () => user,
+    listTasks: async () => assert.fail('business route must be blocked before repository access'),
+  };
+  await withServer(repository, async (root) => {
+    const headers = actorHeaders('alice', 'USER');
+    const forbidden = await fetch(`${root}/v1/tasks`, { headers });
+    assert.equal(forbidden.status, 403);
+    assert.equal((await forbidden.json()).error.code, 'PASSWORD_CHANGE_REQUIRED');
+
+    const nearMatch = await fetch(`${root}/v1/profiled`, { headers });
+    assert.equal(nearMatch.status, 403);
+    assert.equal((await nearMatch.json()).error.code, 'PASSWORD_CHANGE_REQUIRED');
+
+    const actorMachineRoute = await fetch(`${root}/v1/nodes`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ nodeId: 'must-change-user' }),
+    });
+    assert.equal(actorMachineRoute.status, 403);
+    assert.equal((await actorMachineRoute.json()).error.code, 'PASSWORD_CHANGE_REQUIRED');
+
+    assert.equal((await fetch(`${root}/v1/profile`, { headers })).status, 200);
+    const profileUpdate = await fetch(`${root}/v1/profile`, {
+      method: 'PATCH',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ displayName: 'Alice' }),
+    });
+    assert.equal(profileUpdate.status, 403);
+    assert.equal((await profileUpdate.json()).error.code, 'PASSWORD_CHANGE_REQUIRED');
+    assert.equal((await fetch(`${root}/v1/profile/password`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ currentPassword: '123456', newPassword: 'new-secret' }),
+    })).status, 200);
+    assert.equal((await fetch(`${root}/health`, { headers })).status, 200);
+    assert.equal((await fetch(`${root}/v1/auth/login`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'alice', password: '123456' }),
+    })).status, 200);
+  });
+});
+
+test('login password changes rate limit invalid current passwords', async () => {
+  const users = {
+    admin: {
+      id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE',
+      mustChangePassword: true, credentialVersion: 1,
+    },
+    alice: {
+      id: 2, username: 'alice', role: 'USER', status: 'ACTIVE',
+      mustChangePassword: true, credentialVersion: 1,
+    },
+  };
+  const repository = {
+    ownsPool: true,
+    getUserByUsername: async (username) => users[username],
+    changeOwnPassword: async (_actor, body) => {
+      if (body.newPassword === 'bad') throw new TypeError('new password is invalid');
+      throw new ControlPlaneConflictError('CURRENT_PASSWORD_INVALID', 'wrong password');
+    },
+  };
+  await withServer(repository, async (root) => {
+    const request = (username = 'admin', role = 'ADMIN', newPassword = 'new-secret') => fetch(`${root}/v1/profile/password`, {
+      method: 'POST', headers: { ...actorHeaders(username, role), 'content-type': 'application/json' },
+      body: JSON.stringify({ currentPassword: 'wrong-password', newPassword }),
+    });
+    for (let attempt = 0; attempt < 4; attempt += 1) assert.equal((await request()).status, 409);
+    assert.equal((await request('admin', 'ADMIN', 'bad')).status, 400);
+    assert.equal((await request()).status, 409);
+    const blocked = await request();
+    assert.equal(blocked.status, 429);
+    assert.ok(Number(blocked.headers.get('retry-after')) > 0);
+    assert.equal((await request('alice', 'USER')).status, 409);
+  });
+});
+
 test('task visibility and destructive actions are enforced from the central user role', async () => {
   const users = {
     alice: { id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 },

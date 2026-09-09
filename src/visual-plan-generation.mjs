@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { safeTraceText } from './model-call-trace.mjs';
 import { validatedCopyGenerationThinking } from './model-api-config.mjs';
 import { buildVisualPlanPrompt, createMockVisualPlan, inspectVisualPlanOutput,
-  parseVisualPlanCandidate, parseVisualPlanOutput } from './visual-plan.mjs';
+  parseVisualPlanCandidate, parseVisualPlanOutput, safeVisualPlanValidationMessage,
+  trustedPageEvidence } from './visual-plan.mjs';
 import { visualPlanSchema } from './visual-plan-schema.mjs';
 import { attachPageLayout } from './image-layout-controls.mjs';
 import { catalogDirectPlan } from './catalog-planning.mjs';
@@ -15,7 +16,76 @@ const MAX_ATTEMPTS = 3;
 const PLANNING_TIMEOUT_MS = 300_000;
 const detail = (value) => safeTraceText(String(value?.message ?? value)).text.slice(0, 500);
 const data = (value) => JSON.stringify(value).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e');
-const mustShowRules = '\n画面元素和可见文字必须分开：mustShow 每项用“画面：”描述无文字的场景、形状或动作，或用“文字：”声明 allowedVisibleText 中已经逐字存在的文字。不要把概括性的“限制提示”等画面意图误写成不存在的文字要求。';
+const mustShowRules = '\nmustShow 只规划非文字视觉元素：每项用“画面：”描述场景、形状或动作，不得包含“文字：”、标题、文案、标签、字样、二维码或任何要求画面写出的内容。程序会从锁定的 allowedVisibleText 确定性重建文字要求。';
+const sourceEvidenceRules = '\nsourceEvidence 每项只能从服务端给出的 sourceEvidenceOptions 中原样选择，禁止拼接、摘抄、改标点或混入其他内容；程序会丢弃非连续逐字候选并从已批准页面内容确定性重建。';
+
+function sanitizedPlanningOutput(rawText, post) {
+  try {
+    const candidate = parseVisualPlanCandidate(rawText);
+    const audits = [];
+    const sourceAudits = [];
+    if (Array.isArray(candidate.pages)) {
+      candidate.pages = candidate.pages.map((page, position) => {
+        if (!page || typeof page !== 'object' || Array.isArray(page)) return page;
+        const index = Number.isInteger(page.index) ? page.index : position + 1;
+        const pageArrayIndex = index >= 1 && index <= post.imagePlan.length
+          ? index - 1 : Math.min(position, post.imagePlan.length - 1);
+        const source = post.imagePlan[pageArrayIndex];
+        const canonical = source
+          ? [source.headline, source.subtitle, ...source.bullets].map((value) => `文字：${value}`)
+          : [];
+        const canonicalSet = new Set(canonical);
+        const droppedCount = Array.isArray(page.mustShow)
+          ? page.mustShow.reduce((count, item) =>
+              count + (typeof item === 'string' && canonicalSet.has(item.trim()) ? 0 : 1), 0)
+          : page.mustShow === undefined ? 0 : 1;
+        const audit = {
+          pageIndex: Number.isInteger(page.index) ? page.index : null,
+          droppedCount,
+          reason: droppedCount > 0 ? 'UNTRUSTED_MUST_SHOW_DROPPED' : 'LOCKED_TEXT_ONLY',
+        };
+        audits.push(audit);
+        const rawEvidence = Array.isArray(page.sourceEvidence) ? page.sourceEvidence : [];
+        const rawEvidenceCount = Array.isArray(page.sourceEvidence)
+          ? page.sourceEvidence.length : page.sourceEvidence === undefined ? 0 : 1;
+        const selected = trustedPageEvidence(post, pageArrayIndex);
+        const alreadyCanonical = rawEvidence.length === 1 && rawEvidence[0] === selected.value;
+        const sourceAudit = {
+          pageIndex: Number.isInteger(page.index) ? page.index : null,
+          droppedCount: rawEvidenceCount - (rawEvidence.includes(selected.value) ? 1 : 0),
+          reason: !selected.exactPageMatch
+            ? 'NO_EXACT_PAGE_EVIDENCE_SERVER_DEFAULT'
+            : alreadyCanonical
+              ? 'EXACT_SERVER_CANDIDATES'
+              : rawEvidenceCount === 0
+              ? 'MISSING_SOURCE_EVIDENCE_REBUILT' : 'UNTRUSTED_SOURCE_EVIDENCE_REBUILT',
+          selectionMethod: selected.selectionMethod,
+        };
+        sourceAudits.push(sourceAudit);
+        return { ...page,
+          sourceEvidence: [selected.value],
+          sourceEvidenceSanitization: { droppedCount: sourceAudit.droppedCount,
+            reason: sourceAudit.reason, selectionMethod: sourceAudit.selectionMethod },
+          mustShow: canonical,
+          mustShowSanitization: { droppedCount: audit.droppedCount, reason: audit.reason } };
+      });
+    }
+    return {
+      // inspectVisualPlanOutput supplies the only retained repair candidate.
+      // Never serialize this raw root: unknown root/page fields are model-
+      // controlled and may contain instructions outside the output contract.
+      safePreviousOutput: '',
+      audits: audits.slice(0, 10),
+      sourceAudits: sourceAudits.slice(0, 10),
+    };
+  } catch {
+    return {
+      safePreviousOutput: '',
+      audits: [{ pageIndex: null, droppedCount: 0, reason: 'UNPARSEABLE_OUTPUT_RAW_OMITTED' }],
+      sourceAudits: [{ pageIndex: null, droppedCount: 0, reason: 'UNPARSEABLE_OUTPUT_RAW_OMITTED' }],
+    };
+  }
+}
 
 export class VisualPlanContractError extends Error {
   constructor(issues, attempts) {
@@ -81,7 +151,8 @@ export async function generateVisualPlan({ client, post, thinking = 'low', outpu
     return { visualPlan, model: null, skipped: true, degraded: false, warning: null, attempts: 0 };
   }
   const effort = validatedCopyGenerationThinking(thinking);
-  const basePrompt = buildVisualPlanPrompt(post, { complianceDisclosure, layoutCatalog }) + mustShowRules;
+  const basePrompt = buildVisualPlanPrompt(post, { complianceDisclosure, layoutCatalog })
+    + mustShowRules + sourceEvidenceRules;
   let state = { candidate: null, errors: [], warnings: [] };
   let previousRaw = '';
   let lastError;
@@ -100,24 +171,31 @@ export async function generateVisualPlan({ client, post, thinking = 'low', outpu
       return fallback(post, state, error, true, attempt);
     }
     const rawText = String(planned.rawText ?? '');
+    const sanitizedOutput = sanitizedPlanningOutput(rawText, post);
     let errors;
     try {
       const merged = mergeRepair(state.candidate, parseVisualPlanCandidate(rawText), state.errors);
       if (governed || layoutCatalog) assertLockedImageText(merged, post);
       state = inspectVisualPlanOutput(JSON.stringify(merged), { post, layoutCatalog });
       errors = state.errors;
-      if (!errors.length) return { visualPlan: { ...parseVisualPlanOutput(JSON.stringify(merged), { post, layoutCatalog }), ...(governed || layoutCatalog ? { planningMode: 'MODEL', textContractSha256: imageTextHash(post) } : {}) },
+      if (!errors.length) return { visualPlan: { ...parseVisualPlanOutput(JSON.stringify(state.candidate), { post, layoutCatalog }),
+        planningMode: 'MODEL', textContractSha256: imageTextHash(post) },
         model: planned.model, degraded: false, warning: diversityWarning(state.warnings), attempts: attempt };
       lastError = new TypeError(errors.map((error) => error.message).join('; '));
     } catch (error) {
       lastError = error;
-      errors = [{ code: 'VISUAL_PLAN_RESPONSE_INVALID', pageIndex: null, message: error.message }];
+      errors = [{ code: 'VISUAL_PLAN_RESPONSE_INVALID', pageIndex: null,
+        message: safeVisualPlanValidationMessage(error, 'visual plan response') }];
       // Keep the last validated subset on malformed repairs, rather than resetting the plan.
       if (!state.candidate) state.errors = errors;
     }
-    previousRaw = safeTraceText(state.candidate ? JSON.stringify(state.candidate) : rawText).text.slice(0, 50_000);
+    previousRaw = state.candidate
+      ? safeTraceText(JSON.stringify(state.candidate)).text.slice(0, 50_000)
+      : sanitizedOutput.safePreviousOutput;
     if (outputDir) await writeFile(join(outputDir, `visual-plan-attempt-${attempt}.json`), JSON.stringify({
-      attempt, thinking: effort, rawText: safeTraceText(rawText).text.slice(0, 50_000),
+      attempt, thinking: effort, rawTextOmitted: true, responseLength: rawText.length,
+      mustShowSanitization: sanitizedOutput.audits,
+      sourceEvidenceSanitization: sanitizedOutput.sourceAudits,
       errors: errors.map((error) => ({ ...error, message: detail(error.message) })),
       warnings: (state.warnings ?? []).map((warning) => ({ ...warning, message: detail(warning.message) })),
     }), { encoding: 'utf8', flag: 'wx' });

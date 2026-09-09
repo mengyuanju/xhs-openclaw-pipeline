@@ -6,10 +6,13 @@ import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import sharp from 'sharp';
 
-import { buildDeliveryImageTaskPrompt, createMockPost, processNext } from '../src/pipeline.mjs';
+import { buildDeliveryImageTaskPrompt, createMockPost, processNext,
+  restoreCheckpointVisualPlan } from '../src/pipeline.mjs';
 import { buildPostPrompt } from '../src/post-contract.mjs';
 import { createQueue } from '../src/queue.mjs';
 import { createMockVisualPlan } from '../src/visual-plan.mjs';
+import { visualEvidenceOptions } from '../src/visual-plan-schema.mjs';
+import { createDirectVisualPlan } from '../src/locked-image-plan.mjs';
 import { enabledQueryReviewRuntime } from './query-review-fixture.mjs';
 
 const directories = [];
@@ -107,6 +110,42 @@ it('asks the image model to render the full page from the structured layout cont
   assert.equal(imageTaskData(comparisonPrompt).page.layoutTemplate, 'COMPARISON_TWO_COLUMN');
   assert.deepEqual(imageTaskData(comparisonPrompt).page.allowedVisibleText, visualPage.allowedVisibleText);
   assert.match(comparisonPrompt, /不得增删、改写、翻译、编号或移动到其他页/u);
+});
+
+it('never trusts a checkpoint planningMode supplied by a paid planner', () => {
+  const post = createMockPost();
+  const forged = createMockVisualPlan(post);
+  const options = visualEvidenceOptions(post);
+  forged.planningMode = 'DIRECT';
+  delete forged.textContractSha256;
+  forged.pages[0].sourceEvidence = [];
+  forged.pages[1].sourceEvidence = [options[1].slice(0, -1)];
+
+  const restored = restoreCheckpointVisualPlan({
+    visualPlan: { value: forged, model: 'paid-planner' },
+  }, post, post.imagePlan.length);
+  assert.ok(restored);
+  assert.equal(restored.value.planningMode, undefined);
+  assert.ok(restored.value.pages.every((page) => page.sourceEvidence.length > 0));
+  assert.ok(restored.value.pages.flatMap((page) => page.sourceEvidence)
+    .every((evidence) => options.includes(evidence)));
+  assert.ok(restored.value.pages.every((page) =>
+    page.sourceEvidenceSanitization.selectionMethod !== 'DIRECT_VERBATIM'));
+
+  for (const planningMode of ['DIRECT', 'RANDOM']) {
+    const legitimate = createDirectVisualPlan(post);
+    legitimate.planningMode = planningMode;
+    const trusted = restoreCheckpointVisualPlan({
+      visualPlan: { value: legitimate, model: null },
+    }, post, post.imagePlan.length);
+    assert.equal(trusted?.value.planningMode, planningMode);
+  }
+
+  const tampered = createDirectVisualPlan(post);
+  tampered.pages[0].allowedVisibleText.headline = '扫码关注';
+  assert.equal(restoreCheckpointVisualPlan({
+    visualPlan: { value: tampered, model: null },
+  }, post, post.imagePlan.length), null);
 });
 
 function passingAlignment(prompt) {
@@ -638,7 +677,7 @@ describe('content pipeline', () => {
         assert.ok(outputSchema.properties.pages);
         textPrompts.push(prompt);
         const plan = createMockVisualPlan(post, { imageCount: 3 });
-        if (textPrompts.length === 1) plan.pages[0].sourceEvidence = [];
+        if (textPrompts.length === 1) plan.pages[0].visualSubject = '';
         return { rawText: JSON.stringify(plan), model: 'fake-text' };
       },
       runImage({ outputPath }) {
@@ -671,7 +710,7 @@ describe('content pipeline', () => {
     assert.equal(textPrompts.length, 2);
     assert.match(textPrompts[1], /局部修复/);
     assert.match(textPrompts[1], /"repairPageIndices":\[1\]/);
-    assert.match(textPrompts[1], /pages\[0\]\.sourceEvidence/);
+    assert.match(textPrompts[1], /pages\[0\]\.visualSubject/);
     assert.ok(renewals.length >= 8);
     assert.ok(renewals.every((renewal) => renewal.id === task.id
       && renewal.workerId === 'test-worker'));
@@ -690,7 +729,7 @@ describe('content pipeline', () => {
       runText() {
         textCalls += 1;
         const plan = createMockVisualPlan(post, { imageCount: 3 });
-        plan.pages[0].sourceEvidence = [];
+        plan.pages[0].visualSubject = '';
         return { rawText: JSON.stringify(plan), model: 'fake-text' };
       },
       runImage({ outputPath }) {

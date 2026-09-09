@@ -31,7 +31,10 @@ export default async function LoginPage({
           <span className="login-kicker">TEAM ACCESS</span>
           <h2 id="login-title">登录内容工场</h2>
           <p className="subtle">管理员和质检人员使用各自账号进入对应工作区。</p>
-          <LoginForm nextPath={safeReturnPath(params.next)} />
+          <LoginForm
+            nextPath={safeReturnPath(params.next)}
+            passwordChanged={params.passwordChanged === '1'}
+          />
         </div>
       </section>
     </div>

@@ -158,26 +158,11 @@ function normalizedReviewTextList(value, field, { min, max, itemMax }) {
   return value.map((item, index) => normalizedReviewText(item, `${field}[${index}]`, { max: itemMax }));
 }
 
-export function normalizeCopyReviewEdits(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new TypeError('copy review edits must be an object');
-  }
-  const copy = value.copy;
-  if (!copy || typeof copy !== 'object' || Array.isArray(copy)) {
-    throw new TypeError('copy review edits.copy must be an object');
-  }
-  const tags = normalizedReviewTextList(copy.tags, 'copy review tags', {
-    min: 3,
-    max: 8,
-    itemMax: 20,
-  });
-  if (tags.some((tag) => !/^#[^#\s]+$/u.test(tag)) || new Set(tags).size !== tags.length) {
-    throw new TypeError('copy review tags must be unique hashtags without whitespace');
-  }
-  if (!Array.isArray(value.imagePlan) || value.imagePlan.length < 3 || value.imagePlan.length > 5) {
+export function normalizeCopyReviewImagePlan(value) {
+  if (!Array.isArray(value) || value.length < 3 || value.length > 5) {
     throw new RangeError('copy review imagePlan must contain between 3 and 5 items');
   }
-  const imagePlan = value.imagePlan.map((rawItem, index) => {
+  const imagePlan = value.map((rawItem, index) => {
     if (!rawItem || typeof rawItem !== 'object' || Array.isArray(rawItem)) {
       throw new TypeError(`copy review imagePlan[${index}] must be an object`);
     }
@@ -204,6 +189,26 @@ export function normalizeCopyReviewEdits(value) {
   if (imagePlan[0].kind !== 'hero' || imagePlan.slice(1).some((item) => item.kind === 'hero')) {
     throw new TypeError('copy review imagePlan must contain hero only as its first item');
   }
+  return imagePlan;
+}
+
+export function normalizeCopyReviewEdits(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('copy review edits must be an object');
+  }
+  const copy = value.copy;
+  if (!copy || typeof copy !== 'object' || Array.isArray(copy)) {
+    throw new TypeError('copy review edits.copy must be an object');
+  }
+  const tags = normalizedReviewTextList(copy.tags, 'copy review tags', {
+    min: 3,
+    max: 8,
+    itemMax: 20,
+  });
+  if (tags.some((tag) => !/^#[^#\s]+$/u.test(tag)) || new Set(tags).size !== tags.length) {
+    throw new TypeError('copy review tags must be unique hashtags without whitespace');
+  }
+  const imagePlan = normalizeCopyReviewImagePlan(value.imagePlan);
   return {
     copy: {
       title: normalizedReviewText(copy.title, 'copy review title', { max: 25 }),
