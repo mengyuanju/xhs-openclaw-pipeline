@@ -7,13 +7,15 @@ import { createControlPlaneClient } from '../../../src/control-plane/client.mjs'
 import { controlPlaneUrl } from '../../../src/control-plane/next-runtime.mjs';
 import { forwardControlPlaneRequest } from '../../../src/control-plane/next-api-error.mjs';
 import { sessionActorHeaders } from '../../../src/control-plane/session-actor-headers.mjs';
+import { DEEPSEEK_MODEL_ID_PATTERN } from '../../../src/web-search-config.mjs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const patchSchema = z.object({
   webSearchProvider: z.enum(['CODEX', 'DEEPSEEK']).nullable().optional(),
-  deepseekSearchModel: z.enum(['deepseek-v4-pro', 'deepseek-v4-flash']).nullable().optional(),
+  deepseekSearchModel: z.string().trim().min(1).max(128)
+    .regex(DEEPSEEK_MODEL_ID_PATTERN, 'DeepSeek 模型 ID 格式无效').nullable().optional(),
   webSearchTimeoutMs: z.number().int().min(5_000).max(120_000).nullable().optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, '至少修改一项搜索配置');
 

@@ -7,11 +7,11 @@ import { Search, RotateCcw } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { apiRequest } from '../components/api-client';
-import { DEFAULT_DEEPSEEK_SEARCH_MODEL, DEFAULT_WEB_SEARCH_PROVIDER, DEFAULT_WEB_SEARCH_TIMEOUT_MS } from '../../src/web-search-config.mjs';
+import { DEEPSEEK_MODEL_ID_PATTERN, DEFAULT_DEEPSEEK_SEARCH_MODEL, DEFAULT_WEB_SEARCH_PROVIDER, DEFAULT_WEB_SEARCH_TIMEOUT_MS } from '../../src/web-search-config.mjs';
 
 type SearchSettings = {
   webSearchProvider: 'CODEX' | 'DEEPSEEK' | null;
-  deepseekSearchModel: 'deepseek-v4-pro' | 'deepseek-v4-flash' | null;
+  deepseekSearchModel: string | null;
   webSearchTimeoutMs: number | null;
 };
 type SearchRecord = {
@@ -73,6 +73,8 @@ export function WebSearchSettingsPanel({
   const disabled = loading || busy || !record;
   const invalidTimeout = settings.webSearchTimeoutMs !== null
     && (!Number.isInteger(settings.webSearchTimeoutMs) || settings.webSearchTimeoutMs < 5000 || settings.webSearchTimeoutMs > 120000);
+  const invalidModel = settings.deepseekSearchModel !== null
+    && !DEEPSEEK_MODEL_ID_PATTERN.test(settings.deepseekSearchModel.trim());
   const hasChanges = record !== null && JSON.stringify(settings) !== JSON.stringify(record.settings);
   useEffect(() => {
     onDirtyChange?.(hasChanges);
@@ -115,18 +117,16 @@ export function WebSearchSettingsPanel({
       </div>
       <div className="field">
         <label htmlFor="deepseek-search-model">DeepSeek 搜索模型</label>
-        <Select disabled={disabled || usesCodex} value={settings.deepseekSearchModel ?? INHERIT} onValueChange={(value) => {
-          setMessage('');
-          setSettings((current) => ({ ...current, deepseekSearchModel: value === INHERIT ? null : value as SearchSettings['deepseekSearchModel'] }));
-        }}>
-          <SelectTrigger id="deepseek-search-model"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value={INHERIT}>跟随默认配置（Flash）</SelectItem>
-            <SelectItem value="deepseek-v4-flash">DeepSeek V4 Flash（推荐）</SelectItem>
-            <SelectItem value="deepseek-v4-pro">DeepSeek V4 Pro</SelectItem>
-          </SelectContent>
-        </Select>
-        <small>仅在使用 DeepSeek 搜索时生效。</small>
+        <Input id="deepseek-search-model" className="input" type="text" maxLength={128}
+          disabled={disabled || usesCodex} value={settings.deepseekSearchModel ?? ''}
+          placeholder={`继承环境，默认 ${DEFAULT_DEEPSEEK_SEARCH_MODEL}`} autoComplete="off" spellCheck={false}
+          aria-invalid={invalidModel} onChange={(event) => {
+            setMessage('');
+            setSettings((current) => ({ ...current, deepseekSearchModel: event.target.value === '' ? null : event.target.value }));
+          }} />
+        <small>{invalidModel
+          ? '模型 ID 须以字母或数字开头，最多 128 个字符。'
+          : '留空继承执行机环境；可直接填写 DeepSeek 后续发布的新模型 ID。'}</small>
       </div>
       <div className="field">
         <label htmlFor="web-search-timeout">DeepSeek 搜索超时（毫秒）</label>
@@ -154,7 +154,7 @@ export function WebSearchSettingsPanel({
         <RotateCcw size={15} aria-hidden="true" />恢复环境配置
       </Button>
       {!record && !loading && <Button unstyled type="button" className="button" onClick={() => { void load(); }}>重新读取</Button>}
-      <Button unstyled type="button" className="button primary" disabled={disabled || invalidTimeout} onClick={save}>{busy ? '保存中…' : '保存搜索配置'}</Button>
+      <Button unstyled type="button" className="button primary" disabled={disabled || invalidModel || invalidTimeout} onClick={save}>{busy ? '保存中…' : '保存搜索配置'}</Button>
     </div>
   </section>;
 }

@@ -10,7 +10,7 @@ import { createCopyGenerationClient } from '../src/copy-generation-client.mjs';
 
 test('unconfigured search defaults to DeepSeek flash while explicit Codex remains available', () => {
   assert.deepEqual(resolveWebSearchConfig({}), {
-    provider: 'DEEPSEEK', model: 'deepseek-v4-flash', timeoutMs: 120_000,
+    provider: 'DEEPSEEK', model: 'deepseek-flash', timeoutMs: 120_000,
   });
   assert.equal(effectiveModelApiConfig({}, {}).webSearchProvider, 'DEEPSEEK');
   assert.deepEqual(resolveWebSearchConfig({}, { webSearchProvider: 'CODEX' }), { provider: 'CODEX' });
@@ -27,20 +27,23 @@ test('clearing a saved search override restores DeepSeek flash without changing 
     await updateWebSearchSettings(options, { webSearchProvider: 'CODEX' });
     assert.equal((await readWebSearchSettings(options)).effective.provider, 'CODEX');
     const restored = await updateWebSearchSettings(options, { webSearchProvider: null, deepseekSearchModel: null });
-    assert.deepEqual(restored.effective, { provider: 'DEEPSEEK', model: 'deepseek-v4-flash', timeoutMs: 120_000 });
+    assert.deepEqual(restored.effective, { provider: 'DEEPSEEK', model: 'deepseek-flash', timeoutMs: 120_000 });
     assert.equal(store.getProductionSettings().settings.modelApi.textModel, 'openai/gpt-5.6-sol');
     assert.equal(restored.apiKeyConfigured, false);
   } finally { db.close(); }
 });
 
 test('saved search settings override executor environment and null restores inheritance', () => {
-  const settings = normalizeModelApiSettings({ webSearchProvider: 'DEEPSEEK', deepseekSearchModel: 'deepseek-v4-flash', webSearchTimeoutMs: 15000 });
+  const settings = normalizeModelApiSettings({ webSearchProvider: 'DEEPSEEK', deepseekSearchModel: 'deepseek-v5-search-preview', webSearchTimeoutMs: 15000 });
   const environment = { XHS_WEB_SEARCH_PROVIDER: 'CODEX', XHS_DEEPSEEK_SEARCH_MODEL: 'deepseek-v4-pro' };
-  assert.deepEqual(resolveWebSearchConfig(environment, settings), { provider: 'DEEPSEEK', model: 'deepseek-v4-flash', timeoutMs: 15000 });
+  assert.deepEqual(resolveWebSearchConfig(environment, settings), { provider: 'DEEPSEEK', model: 'deepseek-v5-search-preview', timeoutMs: 15000 });
   assert.equal(effectiveModelApiConfig(settings, environment).webSearchProvider, 'DEEPSEEK');
   assert.equal(resolveWebSearchConfig(environment, { webSearchProvider: null }).provider, 'CODEX');
   assert.throws(() => normalizeModelApiSettings({ webSearchProvider: 'typo' }));
-  assert.throws(() => normalizeModelApiSettings({ deepseekSearchModel: 'unknown' }));
+  assert.equal(normalizeModelApiSettings({ deepseekSearchModel: 'future-model' }).deepseekSearchModel, 'future-model');
+  for (const model of ['', 'bad model', `deepseek-${'x'.repeat(121)}`]) {
+    assert.throws(() => normalizeModelApiSettings({ deepseekSearchModel: model }), /model identifier/u);
+  }
   assert.throws(() => normalizeModelApiSettings({ webSearchTimeoutMs: 1 }));
 });
 
@@ -51,13 +54,13 @@ test('local search saves preserve generation settings and allow resetting to the
     const store = createProductionSettingsStore(db);
     store.updateProductionSettings({ modelApi: { textModel: 'openai/gpt-5.6-terra' }, aiDisclosureEnabled: false });
     const options = { store, environment: { DEEPSEEK_API_KEY: 'local-test-secret' } };
-    const record = await updateWebSearchSettings(options, { webSearchProvider: 'DEEPSEEK', deepseekSearchModel: 'deepseek-v4-flash' });
+    const record = await updateWebSearchSettings(options, { webSearchProvider: 'DEEPSEEK', deepseekSearchModel: 'deepseek-flash' });
     assert.equal(record.settings.webSearchProvider, 'DEEPSEEK');
     assert.equal(record.apiKeyConfigured, true);
     assert.ok(!JSON.stringify(record).includes('local-test-secret'));
     assert.equal(store.getProductionSettings().settings.modelApi.textModel, 'openai/gpt-5.6-terra');
     store.updateProductionSettings({ modelApi: { textModel: 'openai/gpt-5.6-sol' } });
-    assert.equal((await readWebSearchSettings(options)).settings.deepseekSearchModel, 'deepseek-v4-flash');
+    assert.equal((await readWebSearchSettings(options)).settings.deepseekSearchModel, 'deepseek-flash');
     await updateWebSearchSettings(options, { webSearchProvider: null });
     assert.equal((await readWebSearchSettings(options)).settings.webSearchProvider, null);
   } finally { db.close(); }
@@ -85,7 +88,7 @@ test('central search saves merge only search fields and never claim remote key r
 
 test('saved search configuration reaches the production copy client independently of environment', async () => {
   let body;
-  const modelApi = normalizeModelApiSettings({ webSearchProvider: 'DEEPSEEK', deepseekSearchModel: 'deepseek-v4-flash' });
+  const modelApi = normalizeModelApiSettings({ webSearchProvider: 'DEEPSEEK', deepseekSearchModel: 'deepseek-v5-search-preview' });
   const client = createCopyGenerationClient({
     modelApi,
     environment: { XHS_WEB_SEARCH_PROVIDER: 'CODEX', DEEPSEEK_API_KEY: 'test-secret' },
@@ -99,5 +102,5 @@ test('saved search configuration reaches the production copy client independentl
     },
   });
   assert.equal((await client.runWebSearch({ query: '选题' })).provider, 'deepseek');
-  assert.equal(body.model, 'deepseek-v4-flash');
+  assert.equal(body.model, 'deepseek-v5-search-preview');
 });

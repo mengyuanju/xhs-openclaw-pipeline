@@ -1,11 +1,20 @@
 export const DEFAULT_WEB_SEARCH_PROVIDER = 'DEEPSEEK';
-export const DEFAULT_DEEPSEEK_SEARCH_MODEL = 'deepseek-v4-flash';
+export const DEFAULT_DEEPSEEK_SEARCH_MODEL = 'deepseek-flash';
 export const DEFAULT_WEB_SEARCH_TIMEOUT_MS = 120_000;
+export const DEEPSEEK_MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/u;
 export const DEFAULT_WEB_SEARCH_SETTINGS = Object.freeze({
   webSearchProvider: null,
   deepseekSearchModel: null,
   webSearchTimeoutMs: null,
 });
+
+export function validatedDeepSeekSearchModel(value) {
+  const model = typeof value === 'string' ? value.trim() : '';
+  if (!DEEPSEEK_MODEL_ID_PATTERN.test(model)) {
+    throw new TypeError('DeepSeek search model must be a valid model identifier');
+  }
+  return model;
+}
 
 export function normalizeWebSearchSettings(input = {}) {
   const rawProvider = input.webSearchProvider == null ? null : String(input.webSearchProvider).trim().toUpperCase();
@@ -13,10 +22,9 @@ export function normalizeWebSearchSettings(input = {}) {
   if (webSearchProvider !== null && !['CODEX', 'DEEPSEEK'].includes(webSearchProvider)) {
     throw new TypeError('webSearchProvider must be CODEX or DEEPSEEK');
   }
-  const deepseekSearchModel = input.deepseekSearchModel == null ? null : String(input.deepseekSearchModel).trim();
-  if (deepseekSearchModel !== null && !['deepseek-v4-pro', 'deepseek-v4-flash'].includes(deepseekSearchModel)) {
-    throw new TypeError('DeepSeek search model must be deepseek-v4-pro or deepseek-v4-flash');
-  }
+  const deepseekSearchModel = input.deepseekSearchModel == null
+    ? null
+    : validatedDeepSeekSearchModel(input.deepseekSearchModel);
   const webSearchTimeoutMs = input.webSearchTimeoutMs == null ? null : validatedWebSearchTimeout(input.webSearchTimeoutMs);
   return { webSearchProvider, deepseekSearchModel, webSearchTimeoutMs };
 }
@@ -38,10 +46,9 @@ export function resolveWebSearchConfig(environment = process.env, input = {}) {
     throw new TypeError('XHS_WEB_SEARCH_PROVIDER must be CODEX or DEEPSEEK');
   }
   if (provider === 'CODEX') return { provider };
-  const model = String(settings.deepseekSearchModel ?? (environment.XHS_DEEPSEEK_SEARCH_MODEL || DEFAULT_DEEPSEEK_SEARCH_MODEL)).trim();
-  if (!['deepseek-v4-pro', 'deepseek-v4-flash'].includes(model)) {
-    throw new TypeError('DeepSeek search model must be deepseek-v4-pro or deepseek-v4-flash');
-  }
+  const model = validatedDeepSeekSearchModel(
+    settings.deepseekSearchModel ?? (environment.XHS_DEEPSEEK_SEARCH_MODEL || DEFAULT_DEEPSEEK_SEARCH_MODEL),
+  );
   const timeoutMs = validatedWebSearchTimeout(Number(
     settings.webSearchTimeoutMs ?? (environment.XHS_DEEPSEEK_SEARCH_TIMEOUT_MS || DEFAULT_WEB_SEARCH_TIMEOUT_MS),
   ));

@@ -91,10 +91,10 @@ test('explicit Codex search preserves the original client without requiring a De
 
 test('search configuration accepts explicit switching and rejects invalid active settings', () => {
   assert.deepEqual(resolveWebSearchConfig({ XHS_WEB_SEARCH_PROVIDER: ' deepseek ' }), {
-    provider: 'DEEPSEEK', model: 'deepseek-v4-flash', timeoutMs: 120_000,
+    provider: 'DEEPSEEK', model: 'deepseek-flash', timeoutMs: 120_000,
   });
   assert.throws(() => resolveWebSearchConfig({ XHS_WEB_SEARCH_PROVIDER: 'typo' }), /XHS_WEB_SEARCH_PROVIDER/u);
-  assert.throws(() => resolveWebSearchConfig({ ...environment, XHS_DEEPSEEK_SEARCH_MODEL: 'not-a-model' }), /model/iu);
+  assert.throws(() => resolveWebSearchConfig({ ...environment, XHS_DEEPSEEK_SEARCH_MODEL: 'not a model' }), /model/iu);
   for (const value of ['no', '4999', '120001', '5000.5']) {
     assert.throws(() => resolveWebSearchConfig({ ...environment, XHS_DEEPSEEK_SEARCH_TIMEOUT_MS: value }), /timeout/iu);
   }
@@ -112,7 +112,7 @@ test('DeepSeek replaces only search and produces the existing bounded research s
   };
   const calls = [];
   const client = withWebSearchProvider(original, {
-    environment: { ...environment, XHS_DEEPSEEK_SEARCH_MODEL: 'deepseek-v4-flash', XHS_DEEPSEEK_SEARCH_TIMEOUT_MS: '5000' },
+    environment: { ...environment, XHS_DEEPSEEK_SEARCH_MODEL: 'deepseek-v5-search-preview', XHS_DEEPSEEK_SEARCH_TIMEOUT_MS: '5000' },
     async fetchImpl(url, init) {
       calls.push({ url, init, body: JSON.parse(init.body) });
       return jsonResponse(responsePayload({
@@ -134,7 +134,7 @@ test('DeepSeek replaces only search and produces the existing bounded research s
   assert.equal(calls[0].init.redirect, 'error');
   assert.equal(calls[0].init.headers.Authorization, `Bearer ${environment.DEEPSEEK_API_KEY}`);
   assert.ok(calls[0].init.signal instanceof AbortSignal);
-  assert.equal(calls[0].body.model, 'deepseek-v4-flash');
+  assert.equal(calls[0].body.model, 'deepseek-v5-search-preview');
   assert.deepEqual(calls[0].body.tools, [{ type: 'web_search' }]);
   assert.deepEqual(calls[0].body.tool_choice, { type: 'web_search' });
   assert.equal(calls[0].body.max_output_tokens, 8192);

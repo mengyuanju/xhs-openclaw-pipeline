@@ -92,12 +92,14 @@ npm run executor -- --enable-image-worker
 XHS_AGENT_PROVIDER=CODEX
 XHS_COPY_GENERATION_PROVIDER=CODEX
 XHS_WEB_SEARCH_PROVIDER=DEEPSEEK
-XHS_DEEPSEEK_SEARCH_MODEL=deepseek-v4-flash
+XHS_DEEPSEEK_SEARCH_MODEL=deepseek-flash
 XHS_DEEPSEEK_SEARCH_TIMEOUT_MS=120000
 DEEPSEEK_API_KEY=
 ```
 
 Dots 使用 `XHS_DOTS_API_KEY`、`XHS_DOTS_BASE_URL`、`XHS_DOTS_MODEL`。Codex 模型和代理变量见 `.env.example`。模型调用使用参数数组、`shell:false`，模型输出和外部 Query 始终作为不可信输入验证。
+
+DeepSeek 搜索模型不使用版本白名单：生产配置或 `XHS_DEEPSEEK_SEARCH_MODEL` 可填写任意符合安全格式的模型 ID（最多 128 个字符），因此 DeepSeek 发布新模型时无需升级执行机代码。项目默认使用官方稳定 ID `deepseek-flash`；模型是否实际存在及是否支持服务端搜索由 DeepSeek API 在调用时判定。
 
 `executor:deepseek-sim` 仍是内部流程联调入口。搜图或本地兜底结果明确标记为模拟，不能视为 Codex 原生生成，也不能作为真实模型验收证据。
 
