@@ -15,6 +15,13 @@
       "when": 1789016221223,
       "tag": "0001_rich_doomsday",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1789028487339,
+      "tag": "0002_massive_pete_wisdom",
+      "breakpoints": true
     }
   ]
 }

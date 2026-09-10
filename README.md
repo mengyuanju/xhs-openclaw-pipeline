@@ -14,6 +14,17 @@ npm run dev -- --host 127.0.0.1 --port 3100
 
 首次拉取代码或新增数据库迁移后运行一次 `npm run db:local`。日常启动只需运行 `npm run dev -- --host 127.0.0.1 --port 3100`。
 
+### 管理员登录
+
+运行 `npm run auth:generate -- admin` 生成管理员账号、一次性密码和密码哈希。将账号和密码哈希写入本地 `.dev.vars`：
+
+```dotenv
+ADMIN_USERNAME="admin"
+ADMIN_PASSWORD_HASH="pbkdf2_sha256$..."
+```
+
+`.dev.vars` 已被忽略，不能提交到 Git。正式部署时把这两个值配置为运行环境 Secret，不要把明文密码或密码哈希写入源码。
+
 ## 存储原则
 
 - D1 只保存标题、正文、标签、状态、内容哈希和原图元数据。
@@ -30,6 +41,7 @@ npm run dev -- --host 127.0.0.1 --port 3100
 
 ```bash
 curl -X POST http://localhost:3100/api/v1/previews \
+  -H "Authorization: Bearer $PREVIEW_API_KEY" \
   -F "title=标题" \
   -F "body=正文" \
   -F "tags=标签一,标签二" \
@@ -50,6 +62,7 @@ curl -X POST http://localhost:3100/api/v1/previews \
 
 ```bash
 curl -X POST http://localhost:3100/api/v1/previews/batch \
+  -H "Authorization: Bearer $PREVIEW_API_KEY" \
   -F 'manifest={"items":[{"clientId":"item-a","title":"标题 A","body":"正文 A","tags":"标签一,标签二"},{"clientId":"item-b","title":"标题 B","body":"正文 B","tags":"标签三"}]}' \
   -F "images.item-a=@/absolute/path/a.png" \
   -F "images.item-b=@/absolute/path/b-1.png" \
@@ -62,13 +75,17 @@ curl -X POST http://localhost:3100/api/v1/previews/batch \
 
 ```text
 GET /api/v1/previews
+Authorization: Bearer <API_KEY>
 ```
 
 撤销公开访问：
 
 ```text
 POST /api/v1/previews/{previewId}/revoke
+Authorization: Bearer <API_KEY>
 ```
+
+登录管理端后可在“接口密钥”中创建密钥并选择创建、读取和撤销权限。密钥只显示一次，服务端仅保存其 SHA-256 哈希；主系统应把明文密钥放在自己的服务器 Secret 中。管理页面使用登录 Session，不会把 API 密钥发送到浏览器上传代码中。
 
 ## 验证
 
@@ -83,8 +100,11 @@ npm run smoke:batch
 
 单条冒烟测试会创建一条“本地闭环验证”记录，逐字节比对上传前后的 SHA-256，然后撤销链接并确认原图接口返回 404。批量冒烟测试还会验证两条内容统一创建、各自公开访问，以及无效批次不会留下部分元数据。
 
-## 上线前边界
+## 安全边界
 
-当前版本按“仅绑定本机”的阶段实现，没有加入账号系统。部署到公网前必须补充管理端登录和服务到服务的发布令牌；公开预览页保持匿名访问。对象存储桶不应直接公开，图片始终通过状态校验路由读取。
+- 首页及管理接口需要管理员登录，Session 使用 HttpOnly、SameSite Cookie；HTTPS 部署时同时启用 Secure。
+- `/api/v1/*` 只接受带有相应权限的 Bearer API Key，并按密钥限流。
+- 登录失败会记录并触发临时锁定，登录、密钥和预览写操作会留下审计记录。
+- 公开预览页保持匿名访问；对象存储桶不直接公开，图片始终通过状态校验路由读取。
 
 项目已声明独立的 D1 和 R2 绑定（`.openai/hosting.json`），后续部署时替换为正式资源并执行迁移即可，无需改动主系统的数据结构。

@@ -1,17 +1,18 @@
 import {
   auditAuthAction,
-  requireApiKey,
-  type ApiKeyAuthContext,
+  requireAdminSession,
+  type AdminAuthContext,
 } from '@/lib/server/auth';
-import { errorResponse } from '@/lib/server/http';
+import { assertSameOrigin, errorResponse } from '@/lib/server/http';
 import { createBatchPreviewResponse } from '@/lib/server/preview-api';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: Request) {
-  let actor: ApiKeyAuthContext | null = null;
+  let actor: AdminAuthContext | null = null;
   try {
-    actor = await requireApiKey(request, 'preview:create');
+    assertSameOrigin(request, { requireOrigin: true });
+    actor = await requireAdminSession(request);
     const response = await createBatchPreviewResponse(request);
     await auditAuthAction({
       actor,

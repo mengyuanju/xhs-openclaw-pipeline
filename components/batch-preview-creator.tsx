@@ -1,12 +1,6 @@
 'use client';
 
-import {
-  Layers3,
-  LoaderCircle,
-  Plus,
-  Trash2,
-  Upload,
-} from 'lucide-react';
+import { Layers3, LoaderCircle, Plus, Trash2, Upload } from 'lucide-react';
 import {
   useState,
   type Dispatch,
@@ -15,6 +9,7 @@ import {
 } from 'react';
 
 import { Textarea } from '@/components/ui/textarea';
+import { adminFetch } from '@/lib/admin-fetch';
 import {
   formatBytes,
   MAX_BATCH_IMAGE_COUNT,
@@ -127,7 +122,7 @@ export function BatchPreviewCreator({
     onStart();
     onError('');
     try {
-      const response = await fetch('/api/v1/previews/batch', {
+      const response = await adminFetch('/api/admin/previews/batch', {
         method: 'POST',
         body: formData,
       });
@@ -156,22 +151,22 @@ export function BatchPreviewCreator({
   return (
     <form
       onSubmit={createBatch}
-      className="overflow-hidden rounded-2xl border border-border bg-card shadow-[0_1px_2px_rgb(20_20_30/4%)]"
+      className="overflow-hidden rounded-[18px] border border-border bg-card shadow-[0_12px_34px_rgb(24_25_34/6%)]"
     >
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4 sm:px-6">
-        <h2 className="text-lg font-semibold">批量创建预览</h2>
+      <div className="flex min-h-[62px] flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-3.5">
+        <h2 className="text-lg font-medium">批量创建预览</h2>
         <button
           type="button"
           onClick={addDraft}
           disabled={drafts.length >= MAX_BATCH_PREVIEW_COUNT || submitting}
-          className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-border bg-background px-3 text-sm font-medium transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+          className="inline-flex h-9 items-center justify-center gap-1.5 rounded-[9px] border border-border bg-background px-3 text-sm font-medium transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
         >
           <Plus className="size-3.5" aria-hidden="true" />
           添加一条
         </button>
       </div>
 
-      <div className="grid gap-4 p-4 sm:p-5">
+      <div className="grid gap-3.5 p-5">
         {drafts.map((draft, index) => {
           const itemBytes = draft.files.reduce(
             (total, file) => total + file.size,
@@ -181,9 +176,9 @@ export function BatchPreviewCreator({
           return (
             <article
               key={draft.id}
-              className="overflow-hidden rounded-xl border border-border/90 bg-background/55"
+              className="overflow-hidden rounded-[12px] bg-muted/70"
             >
-              <div className="flex items-center justify-between border-b border-border/70 px-4 py-3">
+              <div className="flex items-center justify-between px-3.5 pt-3.5">
                 <span className="text-sm font-semibold">
                   第 {index + 1} 条预览
                 </span>
@@ -198,7 +193,7 @@ export function BatchPreviewCreator({
                 </button>
               </div>
 
-              <div className="grid gap-4 p-4">
+              <div className="grid gap-4 p-3.5 pt-3">
                 <div className="grid gap-2">
                   <label
                     htmlFor={`batch-title-${draft.id}`}
@@ -264,7 +259,7 @@ export function BatchPreviewCreator({
                   />
                   <label
                     htmlFor={imageInputId}
-                    className="flex min-h-20 cursor-pointer items-center gap-3 rounded-xl border border-dashed border-primary/35 bg-primary/[0.025] px-4 py-3 transition-colors hover:border-primary/60 hover:bg-primary/[0.045]"
+                    className="flex min-h-20 cursor-pointer items-center gap-3 rounded-[13px] border border-dashed border-primary/35 bg-card px-4 py-3 transition-colors hover:border-primary/60 hover:bg-primary/[0.045]"
                   >
                     <span className="grid size-9 shrink-0 place-items-center rounded-full bg-primary/10 text-primary">
                       <Upload className="size-4" aria-hidden="true" />
@@ -293,7 +288,7 @@ export function BatchPreviewCreator({
           );
         })}
 
-        <div className="flex flex-col gap-4 border-t border-border pt-5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-4 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs text-muted-foreground">
             {drafts.length}/{MAX_BATCH_PREVIEW_COUNT} 条 · {totalImageCount}/
             {MAX_BATCH_IMAGE_COUNT} 张 ·{' '}
@@ -302,7 +297,7 @@ export function BatchPreviewCreator({
           <button
             type="submit"
             disabled={submitting}
-            className="inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-primary px-5 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+            className="inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-[9px] bg-primary px-5 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
           >
             {submitting ? (
               <LoaderCircle
@@ -321,7 +316,7 @@ export function BatchPreviewCreator({
 }
 
 const batchInputClassName =
-  'h-11 w-full min-w-0 rounded-lg border border-input bg-card px-3 py-1 text-base outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 md:text-sm';
+  'h-11 w-full min-w-0 rounded-[10px] border border-input bg-card px-3 py-1 text-base outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 md:text-sm';
 
 function validateDrafts(drafts: BatchPreviewDraft[]) {
   if (drafts.length === 0 || drafts.length > MAX_BATCH_PREVIEW_COUNT) {

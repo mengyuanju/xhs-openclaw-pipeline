@@ -3,6 +3,11 @@ import { createHash } from 'node:crypto';
 const baseUrl = (
   process.env.PREVIEW_BASE_URL ?? 'http://localhost:3100'
 ).replace(/\/$/u, '');
+const apiKey = process.env.PREVIEW_API_KEY;
+if (!apiKey) {
+  throw new Error('Set PREVIEW_API_KEY before running the smoke test.');
+}
+const apiHeaders = { Authorization: `Bearer ${apiKey}` };
 const originalBytes = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
   'base64',
@@ -21,6 +26,7 @@ form.append(
 
 const createdResponse = await fetch(`${baseUrl}/api/v1/previews`, {
   method: 'POST',
+  headers: apiHeaders,
   body: form,
 });
 const created = await readJson(createdResponse, 201);
@@ -60,7 +66,7 @@ assert(
 
 const revokeResponse = await fetch(
   `${baseUrl}/api/v1/previews/${preview.id}/revoke`,
-  { method: 'POST' },
+  { method: 'POST', headers: apiHeaders },
 );
 const revoked = await readJson(revokeResponse, 200);
 assert(revoked.status === 'REVOKED', 'Preview was not revoked.');

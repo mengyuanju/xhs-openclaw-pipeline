@@ -1,9 +1,9 @@
 import {
   auditAuthAction,
-  requireApiKey,
-  type ApiKeyAuthContext,
+  requireAdminSession,
+  type AdminAuthContext,
 } from '@/lib/server/auth';
-import { errorResponse } from '@/lib/server/http';
+import { assertSameOrigin, errorResponse } from '@/lib/server/http';
 import {
   createPreviewResponse,
   listPreviewsResponse,
@@ -13,7 +13,7 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
   try {
-    await requireApiKey(request, 'preview:list');
+    await requireAdminSession(request);
     return await listPreviewsResponse();
   } catch (error) {
     return errorResponse(error);
@@ -21,9 +21,10 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  let actor: ApiKeyAuthContext | null = null;
+  let actor: AdminAuthContext | null = null;
   try {
-    actor = await requireApiKey(request, 'preview:create');
+    assertSameOrigin(request, { requireOrigin: true });
+    actor = await requireAdminSession(request);
     const response = await createPreviewResponse(request);
     await auditAuthAction({
       actor,

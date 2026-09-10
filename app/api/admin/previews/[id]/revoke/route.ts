@@ -1,9 +1,9 @@
 import {
   auditAuthAction,
-  requireApiKey,
-  type ApiKeyAuthContext,
+  requireAdminSession,
+  type AdminAuthContext,
 } from '@/lib/server/auth';
-import { errorResponse } from '@/lib/server/http';
+import { assertSameOrigin, errorResponse } from '@/lib/server/http';
 import { revokePreviewResponse } from '@/lib/server/preview-api';
 
 export const dynamic = 'force-dynamic';
@@ -12,10 +12,11 @@ export async function POST(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
-  let actor: ApiKeyAuthContext | null = null;
+  let actor: AdminAuthContext | null = null;
   let id: string | null = null;
   try {
-    actor = await requireApiKey(request, 'preview:revoke');
+    assertSameOrigin(request, { requireOrigin: true });
+    actor = await requireAdminSession(request);
     ({ id } = await context.params);
     const response = await revokePreviewResponse(id);
     await auditAuthAction({

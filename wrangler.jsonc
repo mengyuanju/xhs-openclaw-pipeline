@@ -3,6 +3,9 @@
   "name": "xhs-preview-service-local",
   "main": "vinext/server/fetch-handler",
   "compatibility_date": "2026-05-15",
+  "secrets": {
+    "required": ["ADMIN_USERNAME", "ADMIN_PASSWORD_HASH"],
+  },
   "d1_databases": [
     {
       "binding": "DB",
