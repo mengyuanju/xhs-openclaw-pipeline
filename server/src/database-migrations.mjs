@@ -5,6 +5,40 @@ export const MIGRATION_TABLE = 'control_plane_migrations';
 export const sha256 = (content) => createHash('sha256').update(content).digest('hex');
 export const normalizeMigrationSql = (sql) => sql.replace(/\r\n?/gu, '\n');
 
+// These are directional upgrades from migration drafts that were applied to
+// local databases before their hardened canonical forms were published. Keep
+// the recorded database checksum intact for auditability and only accept a
+// known source when the exact forward repair is present in the same package.
+export const LEGACY_MIGRATION_UPGRADES = Object.freeze([
+  Object.freeze({
+    id: '0026_final_delivery',
+    fromSha256: '99a236324d33b10f1b66c0822795b83954fa2a8edf2c322ae2017c6316df8437',
+    toSha256: '496437c949b78d6e73bdbdac281be56cdb645088494f08ebeaf2637f33750998',
+    repairedBy: '0029_final_delivery_compatibility_repair',
+    repairSha256: 'c0fb5534891b2c5d842ed48d9f2922bdd17443c368cc1c2ce393dc7c33b0fee6',
+  }),
+  Object.freeze({
+    id: '0027_delivery_archive_integrity',
+    fromSha256: 'bfeba2869813a17adf1119e688c965faa920a1206874ae95671b289ca296a2e3',
+    toSha256: '09164b5253709ee635acdeb8ea2caad8942325e7b87f735b1ce0b8a0937aff1b',
+    repairedBy: '0029_final_delivery_compatibility_repair',
+    repairSha256: 'c0fb5534891b2c5d842ed48d9f2922bdd17443c368cc1c2ce393dc7c33b0fee6',
+  }),
+]);
+
+export function isAppliedMigrationCompatible(entry, source, migrations) {
+  if (!source) return false;
+  if (source.sha256 === entry.sha256) return true;
+  const upgrade = LEGACY_MIGRATION_UPGRADES.find((candidate) => (
+    candidate.id === entry.id
+    && candidate.fromSha256 === entry.sha256
+    && candidate.toSha256 === source.sha256
+  ));
+  if (!upgrade) return false;
+  const repair = migrations.find((migration) => migration.id === upgrade.repairedBy);
+  return repair?.sha256 === upgrade.repairSha256;
+}
+
 export async function loadMigrations() {
   const baseline = normalizeMigrationSql(await readFile(new URL('./schema.sql', import.meta.url), 'utf8'));
   const migrations = [{ id: '0001_baseline', sql: baseline.replace(/^BEGIN;\s*/u, '').replace(/COMMIT;\s*$/u, '') }];
@@ -25,7 +59,7 @@ export async function pendingMigrations(client, migrations) {
     ? (await client.query('SELECT id, sha256 FROM public.control_plane_migrations ORDER BY id')).rows : [];
   for (const entry of applied) {
     const source = migrations.find((migration) => migration.id === entry.id);
-    if (!source || source.sha256 !== entry.sha256) {
+    if (!isAppliedMigrationCompatible(entry, source, migrations)) {
       throw new Error(`Migration ${entry.id} is missing or changed; use a compatible code/backup version.`);
     }
   }

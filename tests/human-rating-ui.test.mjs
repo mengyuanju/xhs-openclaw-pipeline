@@ -34,6 +34,8 @@ test('shared image rating keeps its passing rule while copy machine drafts use d
   assert.match(rating, /showDescriptions && <strong className="human-rating-card-verdict">/u);
   assert.match(rating, /showDescriptions && <span className="human-rating-card-action">/u);
   assert.match(rating, /showReasonOptions && <fieldset/u);
+  assert.match(rating, /feedbackRequired = true/u);
+  assert.match(rating, /feedbackRequired \? '原因或说明至少填写一项' : '选填'/u);
   assert.match(rating, /showScoreDescriptions && scoreDefinition/u);
   assert.match(rating, /showReasonOptions && assessment\.reasonCodes\.length/u);
   assert.doesNotMatch(rating, /可放行 · 小修易达 3 分/u);
@@ -103,13 +105,15 @@ test('copy review scores the machine draft once and auto-scores an edited approv
   assert.match(source, /最终修改稿无需再次自评/u);
 });
 
-test('copy review visibility settings hide copy guidance and reasons without changing image review', async () => {
+test('copy and image review visibility settings control their own guidance and reasons', async () => {
   const source = await readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8');
 
   assert.match(source, /humanRatingSettings\.copyReviewDisplay\.showScoreDescriptions/u);
   assert.match(source, /humanRatingSettings\.copyReviewDisplay\.showDeductionReasons/u);
+  assert.match(source, /humanRatingSettings\.imageReviewDisplay\.showDeductionReasons/u);
   assert.match(source, /<CopyMachineDraftScoreField[\s\S]{0,240}showDescriptions=\{showCopyScoreDescriptions\}/u);
   assert.match(source, /showReasonOptions=\{showCopyDeductionReasons\}/u);
+  assert.match(source, /showReasonOptions=\{showImageDeductionReasons\}/u);
   assert.match(source, /showScoreDescriptions=\{showCopyScoreDescriptions\} showReasonOptions=\{showCopyDeductionReasons\}/u);
   assert.match(source, /legend="整套图片评分"[\s\S]{0,180}scoreDefinitions=\{scoreDefinitions\}[\s\S]{0,180}disabled=/u);
   assert.match(source, /const canApproveImages = imageSetComplete && imageRatingComplete && isPassingHumanScore\(imageScore\)/u);
@@ -139,11 +143,14 @@ test('copy decisions use the shared payload builder and preserve the original as
   assert.match(source, /评分并废弃/u);
 });
 
-test('image review records whole-set score, reasons, note and problem pages before any decision', async () => {
+test('image review requires only a whole-set score while keeping feedback optional', async () => {
   const source = await readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8');
 
   assert.match(source, /legend="整套图片评分"/u);
-  assert.match(source, /ratingFeedbackComplete\(imageScore, imageReasons, imageReviewNote\)/u);
+  assert.match(source, /const imageRatingComplete = imageScore !== null/u);
+  assert.doesNotMatch(source, /ratingFeedbackComplete\(imageScore, imageReasons, imageReviewNote\)/u);
+  assert.match(source, /feedbackRequired=\{false\}/u);
+  assert.doesNotMatch(source, /评分低于 3 分时，扣分原因或评分说明至少填写一项/u);
   assert.match(source, /problemAssetIds: imageScore === 3 \? \[\] : imageProblemAssetIds/u);
   assert.match(source, /reasons: imageScore === 3 \? \[\] : imageReasons/u);
   assert.match(source, /note: imageScore === 3 \? '' : imageReviewNote\.trim\(\)/u);

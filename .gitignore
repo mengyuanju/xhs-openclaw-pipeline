@@ -12,6 +12,7 @@ server/backups/
 .tmp-deepseek-executor/
 .env
 .env.*.local
+.env.production
 *.pem
 *.key
 npm-debug.log*

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile as execFileCallback, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,7 +14,12 @@ import pg from 'pg';
 import { normalizeCopyQaList } from '../../app/copy-qa/types.ts';
 import { normalizePackageDetail, normalizePackageList } from '../../app/query-packages/types.ts';
 import { createClaimRequestId } from '../../src/control-plane/claim-request.mjs';
-import { applyMigrations, loadMigrations } from '../src/database-migrations.mjs';
+import {
+  applyMigrations,
+  loadMigrations,
+  normalizeMigrationSql,
+  sha256,
+} from '../src/database-migrations.mjs';
 import { createControlPlaneApp } from '../src/http-server.mjs';
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import {
@@ -371,6 +376,374 @@ test('delivery migration backfills only human copy edits against their nearest m
       { revision: 5, machine: false, origin: 'COPY_EDIT', changed: true },
       { revision: 6, machine: false, origin: 'PLAN_EDIT', changed: false },
     ]);
+  } finally {
+    await pool.end().catch(() => {});
+    await database.stop().catch(() => {});
+  }
+});
+
+test('legacy delivery migrations retain their checksums and upgrade through the compatibility repair', {
+  skip: RUN_POSTGRES_E2E ? false : 'set RUN_POSTGRES_E2E=1 to run the isolated PostgreSQL 18 migration test',
+  timeout: 120_000,
+}, async () => {
+  const database = await startTemporaryPostgres18();
+  const pool = new pg.Pool({ connectionString: database.connectionString, max: 2 });
+  try {
+    const migrations = await loadMigrations();
+    const throughSampling = migrations.filter(({ id }) => id <= '0025_copy_sampling');
+    const legacyMigrations = await Promise.all([
+      '0026_final_delivery',
+      '0027_delivery_archive_integrity',
+    ].map(async (id) => {
+      const sql = normalizeMigrationSql(await readFile(
+        new URL(`./fixtures/${id}.legacy.sql`, import.meta.url),
+        'utf8',
+      ));
+      return { id, sql, sha256: sha256(sql) };
+    }));
+
+    for (const legacy of legacyMigrations) {
+      assert.notEqual(
+        legacy.sha256,
+        migrations.find(({ id }) => id === legacy.id)?.sha256,
+        `${legacy.id} fixture must exercise a genuinely different historical checksum`,
+      );
+    }
+
+    async function applyInTransaction(selectedMigrations) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('SET LOCAL search_path TO public');
+        const applied = await applyMigrations(client, selectedMigrations);
+        await client.query('COMMIT');
+        return applied;
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+
+    async function applyLegacyInTransaction(legacy) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('SET LOCAL search_path TO public');
+        await client.query(legacy.sql);
+        await client.query(
+          'INSERT INTO control_plane_migrations(id, sha256) VALUES ($1, $2)',
+          [legacy.id, legacy.sha256],
+        );
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+
+    await applyInTransaction(throughSampling);
+    await pool.query("INSERT INTO executor_nodes(id, name) VALUES ('legacy-upgrade-node', 'Legacy Upgrade Node')");
+    const taskId = Number((await pool.query(`
+      INSERT INTO tasks(query, input, state, created_by_node_id, copy_executor_node_id)
+      VALUES ('legacy delivery compatibility fixture', '{}'::jsonb, 'COPY_REVIEW_PENDING',
+        'legacy-upgrade-node', 'legacy-upgrade-node')
+      RETURNING id
+    `)).rows[0].id);
+    const firstCopyExecutionId = randomUUID();
+    const secondCopyExecutionId = randomUUID();
+    const imageExecutionId = randomUUID();
+    await pool.query(`
+      INSERT INTO task_executions(
+        id, task_id, kind, node_id, status, stage, progress_percent, progress_message,
+        progress_details, snapshot, finished_at
+      ) VALUES
+        ($1, $4, 'COPY', 'legacy-upgrade-node', 'SUCCEEDED', 'done', 100, 'done', '{}'::jsonb, '{}'::jsonb, now()),
+        ($2, $4, 'COPY', 'legacy-upgrade-node', 'SUCCEEDED', 'done', 100, 'done', '{}'::jsonb, '{}'::jsonb, now()),
+        ($3, $4, 'IMAGE', 'legacy-upgrade-node', 'SUCCEEDED', 'done', 100, 'done', '{}'::jsonb, '{}'::jsonb, now())
+    `, [firstCopyExecutionId, secondCopyExecutionId, imageExecutionId, taskId]);
+
+    const firstMachineCopy = { title: '第一代机器稿', body: '第一代内容' };
+    const secondMachineCopy = { title: '第二代机器稿', body: '第二代内容' };
+    const firstMachineRevisionId = Number((await pool.query(`
+      INSERT INTO copy_revisions(task_id, execution_id, revision, content)
+      VALUES ($1, $2, 1, $3::jsonb)
+      RETURNING id
+    `, [taskId, firstCopyExecutionId, JSON.stringify({ copy: firstMachineCopy })])).rows[0].id);
+    const secondMachineRevisionId = Number((await pool.query(`
+      INSERT INTO copy_revisions(task_id, execution_id, revision, content)
+      VALUES ($1, $2, 2, $3::jsonb)
+      RETURNING id
+    `, [taskId, secondCopyExecutionId, JSON.stringify({ copy: secondMachineCopy })])).rows[0].id);
+    const unchangedHumanRevisionId = Number((await pool.query(`
+      INSERT INTO copy_revisions(task_id, revision, content, approved_at)
+      VALUES ($1, 3, $2::jsonb, now())
+      RETURNING id
+    `, [
+      taskId,
+      JSON.stringify({
+        copy: secondMachineCopy,
+        manualReview: { baseRevisionId: secondMachineRevisionId },
+      }),
+    ])).rows[0].id);
+    const oversizedReferenceRevisionId = Number((await pool.query(`
+      INSERT INTO copy_revisions(task_id, revision, content)
+      VALUES ($1, 4, $2::jsonb)
+      RETURNING id
+    `, [taskId, JSON.stringify({ copy: secondMachineCopy })])).rows[0].id);
+
+    const imageRunId = randomUUID();
+    await pool.query(`
+      INSERT INTO image_runs(id, task_id, execution_id, copy_revision_id, status, result, finished_at)
+      VALUES ($1, $2, $3, $4, 'COMPLETED', '{"images":[]}'::jsonb, now())
+    `, [imageRunId, taskId, imageExecutionId, unchangedHumanRevisionId]);
+    const assetId = Number((await pool.query(`
+      INSERT INTO assets(task_id, image_run_id, media_type, byte_size, sha256, storage_path)
+      VALUES ($1, $2, 'image/png', 1, $3, $4)
+      RETURNING id
+    `, [taskId, imageRunId, 'a'.repeat(64), `legacy-upgrade/${randomUUID()}.png`])).rows[0].id);
+    await pool.query('UPDATE image_runs SET result = $2::jsonb WHERE id = $1', [
+      imageRunId,
+      JSON.stringify({ images: [{ deliveryAssetId: assetId }] }),
+    ]);
+    await pool.query(`
+      UPDATE tasks
+      SET state = 'REVIEWED', current_copy_revision_id = $2, current_image_run_id = $3,
+        image_reviewed_by_user_id = 'legacy-reviewer', image_reviewed_at = now()
+      WHERE id = $1
+    `, [taskId, unchangedHumanRevisionId, imageRunId]);
+
+    await applyLegacyInTransaction(legacyMigrations[0]);
+    const legacyRevisionState = (await pool.query(`
+      SELECT id, parent_revision_id, revision_origin, copy_content_changed_from_machine
+      FROM copy_revisions
+      WHERE task_id = $1
+      ORDER BY revision
+    `, [taskId])).rows;
+    assert.deepEqual(legacyRevisionState.map((row) => ({
+      id: Number(row.id),
+      parentId: row.parent_revision_id === null ? null : Number(row.parent_revision_id),
+      origin: row.revision_origin,
+      changed: row.copy_content_changed_from_machine,
+    })), [
+      { id: firstMachineRevisionId, parentId: null, origin: 'GENERATION', changed: false },
+      { id: secondMachineRevisionId, parentId: null, origin: 'GENERATION', changed: true },
+      { id: unchangedHumanRevisionId, parentId: secondMachineRevisionId, origin: 'COPY_EDIT', changed: true },
+      { id: oversizedReferenceRevisionId, parentId: null, origin: null, changed: true },
+    ], 'legacy 0026 compares every later revision with the first machine generation');
+
+    await pool.query('UPDATE copy_revisions SET content = $2::jsonb WHERE id = $1', [
+      oversizedReferenceRevisionId,
+      JSON.stringify({
+        copy: secondMachineCopy,
+        manualReview: { baseRevisionId: '9223372036854775808' },
+      }),
+    ]);
+    await pool.query("UPDATE tasks SET state = 'MANUAL_ARCHIVE' WHERE id = $1", [taskId]);
+    await applyLegacyInTransaction(legacyMigrations[1]);
+
+    const legacyChecksums = (await pool.query(`
+      SELECT id, sha256 FROM control_plane_migrations
+      WHERE id = ANY($1::text[])
+      ORDER BY id
+    `, [legacyMigrations.map(({ id }) => id)])).rows;
+    assert.deepEqual(legacyChecksums, legacyMigrations.map(({ id, sha256: checksum }) => ({
+      id,
+      sha256: checksum,
+    })));
+    assert.deepEqual((await pool.query(`
+      SELECT status, withdrawn_at FROM delivery_entries WHERE task_id = $1
+    `, [taskId])).rows, [{ status: 'READY', withdrawn_at: null }],
+    'legacy 0027 leaves a valid-looking READY entry when its task is no longer REVIEWED');
+
+    const appliedUpgrade = await applyInTransaction(migrations);
+    assert.deepEqual(appliedUpgrade, [
+      '0028_mutation_receipt_actor_identity',
+      '0029_final_delivery_compatibility_repair',
+      '0030_delivery_asset_runtime_integrity',
+    ]);
+
+    const repairedRevisionState = (await pool.query(`
+      SELECT id, parent_revision_id, revision_origin, copy_content_changed_from_machine
+      FROM copy_revisions
+      WHERE task_id = $1
+      ORDER BY revision
+    `, [taskId])).rows;
+    assert.deepEqual(repairedRevisionState.map((row) => ({
+      id: Number(row.id),
+      parentId: row.parent_revision_id === null ? null : Number(row.parent_revision_id),
+      origin: row.revision_origin,
+      changed: row.copy_content_changed_from_machine,
+    })), [
+      { id: firstMachineRevisionId, parentId: null, origin: 'GENERATION', changed: false },
+      { id: secondMachineRevisionId, parentId: null, origin: 'GENERATION', changed: false },
+      { id: unchangedHumanRevisionId, parentId: secondMachineRevisionId, origin: 'PLAN_EDIT', changed: false },
+      { id: oversizedReferenceRevisionId, parentId: null, origin: 'PLAN_EDIT', changed: false },
+    ]);
+
+    const repairedDelivery = (await pool.query(`
+      SELECT status, withdrawn_at FROM delivery_entries WHERE task_id = $1
+    `, [taskId])).rows[0];
+    assert.equal(repairedDelivery.status, 'WITHDRAWN');
+    assert.ok(repairedDelivery.withdrawn_at instanceof Date);
+    assert.deepEqual((await pool.query(`
+      SELECT id, sha256 FROM control_plane_migrations
+      WHERE id = ANY($1::text[])
+      ORDER BY id
+    `, [legacyMigrations.map(({ id }) => id)])).rows, legacyChecksums,
+    'forward repair must preserve the historical migration checksums');
+    assert.deepEqual(await applyInTransaction(migrations), [], 'a second upgrade has no pending migrations');
+  } finally {
+    await pool.end().catch(() => {});
+    await database.stop().catch(() => {});
+  }
+});
+
+test('delivery runtime integrity migration withdraws JavaScript-unsafe asset ids without resetting anomaly time', {
+  skip: RUN_POSTGRES_E2E ? false : 'set RUN_POSTGRES_E2E=1 to run the isolated PostgreSQL 18 migration test',
+  timeout: 120_000,
+}, async () => {
+  const database = await startTemporaryPostgres18();
+  const pool = new pg.Pool({ connectionString: database.connectionString, max: 2 });
+  try {
+    const migrations = await loadMigrations();
+    const throughCompatibilityRepair = migrations.filter(
+      ({ id }) => id <= '0029_final_delivery_compatibility_repair',
+    );
+
+    async function applyInTransaction(selectedMigrations) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('SET LOCAL search_path TO public');
+        const applied = await applyMigrations(client, selectedMigrations);
+        await client.query('COMMIT');
+        return applied;
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+
+    await applyInTransaction(throughCompatibilityRepair);
+    await pool.query("INSERT INTO executor_nodes(id, name) VALUES ('runtime-integrity-node', 'Runtime Integrity Node')");
+    const taskId = Number((await pool.query(`
+      INSERT INTO tasks(query, input, state, created_by_node_id, copy_executor_node_id)
+      VALUES ('unsafe runtime asset id fixture', '{}'::jsonb, 'COPY_REVIEW_PENDING',
+        'runtime-integrity-node', 'runtime-integrity-node')
+      RETURNING id
+    `)).rows[0].id);
+    const copyExecutionId = randomUUID();
+    const imageExecutionId = randomUUID();
+    const imageRunId = randomUUID();
+    await pool.query(`
+      INSERT INTO task_executions(
+        id, task_id, kind, node_id, status, stage, progress_percent, progress_message,
+        progress_details, snapshot, finished_at
+      ) VALUES
+        ($1, $3, 'COPY', 'runtime-integrity-node', 'SUCCEEDED', 'done', 100, 'done', '{}'::jsonb, '{}'::jsonb, now()),
+        ($2, $3, 'IMAGE', 'runtime-integrity-node', 'SUCCEEDED', 'done', 100, 'done', '{}'::jsonb, '{}'::jsonb, now())
+    `, [copyExecutionId, imageExecutionId, taskId]);
+    const copyRevisionId = Number((await pool.query(`
+      INSERT INTO copy_revisions(task_id, execution_id, revision, content, approved_at)
+      VALUES ($1, $2, 1, $3::jsonb, now())
+      RETURNING id
+    `, [
+      taskId,
+      copyExecutionId,
+      JSON.stringify({ copy: { title: '运行时完整性稿', body: '隔离测试中的有效冻结文案。' } }),
+    ])).rows[0].id);
+    const unsafeAssetId = '9007199254740992';
+    await pool.query(`
+      INSERT INTO image_runs(id, task_id, execution_id, copy_revision_id, status, result, finished_at)
+      VALUES ($1, $2, $3, $4, 'COMPLETED', $5::jsonb, now())
+    `, [
+      imageRunId,
+      taskId,
+      imageExecutionId,
+      copyRevisionId,
+      JSON.stringify({ images: [{ deliveryAssetId: unsafeAssetId }] }),
+    ]);
+    const insertedAssetId = (await pool.query(`
+      INSERT INTO assets(id, task_id, image_run_id, media_type, byte_size, sha256, storage_path)
+      VALUES ($1::bigint, $2, $3, 'image/png', 1, $4, $5)
+      RETURNING id::text AS id
+    `, [
+      unsafeAssetId,
+      taskId,
+      imageRunId,
+      'b'.repeat(64),
+      `migration-0030/${randomUUID()}.png`,
+    ])).rows[0].id;
+    assert.equal(insertedAssetId, unsafeAssetId);
+    await pool.query(`
+      UPDATE tasks
+      SET state = 'REVIEWED', current_copy_revision_id = $2, current_image_run_id = $3,
+        image_reviewed_by_user_id = 'runtime-integrity-reviewer', image_reviewed_at = now()
+      WHERE id = $1
+    `, [taskId, copyRevisionId, imageRunId]);
+    await pool.query(`
+      INSERT INTO delivery_entries(
+        task_id, copy_revision_id, image_run_id, status, approved_by_username, approved_at
+      ) VALUES ($1, $2, $3, 'READY', 'runtime-integrity-reviewer', now())
+    `, [taskId, copyRevisionId, imageRunId]);
+    const firstDetectedAt = '2024-01-02T03:04:05.000Z';
+    await pool.query(`
+      INSERT INTO delivery_migration_anomalies(task_id, reason, detected_at)
+      VALUES ($1, 'LEGACY_REVIEWED_TASK_MISSING_FROZEN_DELIVERY_SOURCE', $2::timestamptz)
+    `, [taskId, firstDetectedAt]);
+
+    const beforeUpgrade = (await pool.query(`
+      SELECT delivery.status, task.state,
+        delivery.copy_revision_id = task.current_copy_revision_id AS copy_frozen,
+        delivery.image_run_id = task.current_image_run_id AS image_frozen,
+        revision.task_id = task.id AND revision.approved_at IS NOT NULL AS copy_source_valid,
+        image_run.task_id = task.id
+          AND image_run.copy_revision_id = revision.id
+          AND image_run.status = 'COMPLETED' AS image_source_valid,
+        asset.id::text AS asset_id,
+        image_run.result #>> '{images,0,deliveryAssetId}' AS result_asset_id
+      FROM delivery_entries AS delivery
+      JOIN tasks AS task ON task.id = delivery.task_id
+      JOIN copy_revisions AS revision ON revision.id = delivery.copy_revision_id
+      JOIN image_runs AS image_run ON image_run.id = delivery.image_run_id
+      JOIN assets AS asset
+        ON asset.task_id = task.id
+        AND asset.image_run_id = image_run.id
+        AND asset.media_type LIKE 'image/%'
+      WHERE delivery.task_id = $1
+    `, [taskId])).rows[0];
+    assert.deepEqual(beforeUpgrade, {
+      status: 'READY',
+      state: 'REVIEWED',
+      copy_frozen: true,
+      image_frozen: true,
+      copy_source_valid: true,
+      image_source_valid: true,
+      asset_id: unsafeAssetId,
+      result_asset_id: unsafeAssetId,
+    });
+
+    assert.deepEqual(await applyInTransaction(migrations), [
+      '0030_delivery_asset_runtime_integrity',
+    ]);
+    const repairedDelivery = (await pool.query(`
+      SELECT status, withdrawn_at FROM delivery_entries WHERE task_id = $1
+    `, [taskId])).rows[0];
+    assert.equal(repairedDelivery.status, 'WITHDRAWN');
+    assert.ok(repairedDelivery.withdrawn_at instanceof Date);
+    const anomaly = (await pool.query(`
+      SELECT reason, detected_at FROM delivery_migration_anomalies WHERE task_id = $1
+    `, [taskId])).rows[0];
+    assert.equal(anomaly.reason, 'READY_DELIVERY_SOURCE_NOT_ARCHIVABLE');
+    assert.equal(anomaly.detected_at.toISOString(), firstDetectedAt,
+      'the first anomaly detection timestamp must remain stable during reason repair');
+    assert.deepEqual(await applyInTransaction(migrations), [], 'a second upgrade has no pending migrations');
   } finally {
     await pool.end().catch(() => {});
     await database.stop().catch(() => {});

@@ -1092,7 +1092,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, finalDeliveryVersion: 2 } };
+      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -3060,7 +3060,6 @@ export class PostgresControlPlaneRepository {
     const reasonCodes = normalizedQualityReasonCodes(rawReasons ?? rawReasonCodes);
     const problemAssetIds = normalizedQualityProblemAssetIds(rawProblemAssetIds);
     const note = normalizedQualityNote(rawNote);
-    assertQualityExplanation(scoreX10, reasonCodes, note);
     const decision = String(rawDecision ?? '').trim().toUpperCase();
     if (!['APPROVE', 'RETRY', 'REWORK', 'DISCARD'].includes(decision)) throw new TypeError('image review decision is invalid');
     const reworkTarget = decision === 'RETRY' ? 'IMAGE'

@@ -23,6 +23,10 @@ export type PreparedDeliveryExport = {
   expiresAt: string;
 };
 
+export type DeliveryPoolExportInput =
+  | { scope: 'ALL_READY' }
+  | { scope: 'SELECTED'; taskIds: number[] };
+
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -80,18 +84,62 @@ export function mergeDeliveryPoolEntries(
   return [...entries.values()];
 }
 
-export function normalizePreparedDeliveryExport(value: unknown): PreparedDeliveryExport {
+export function parseDeliveryPoolSearchTerms(value: string): string[] {
+  const terms = value
+    .split(/\r\n?|\n/u)
+    .map((term) => term.trim().toLocaleLowerCase('zh-CN'))
+    .filter(Boolean);
+  return [...new Set(terms)];
+}
+
+export function filterDeliveryPoolEntries(
+  entries: DeliveryEntry[],
+  search: string,
+): DeliveryEntry[] {
+  const terms = parseDeliveryPoolSearchTerms(search);
+  if (terms.length === 0) return entries;
+  return entries.filter((entry) => {
+    const candidate = `${entry.taskId} ${entry.query}`.toLocaleLowerCase('zh-CN');
+    return terms.some((term) => candidate.includes(term));
+  });
+}
+
+export function buildDeliveryPoolExportInput(selectedTaskIds: number[]): DeliveryPoolExportInput {
+  if (!Array.isArray(selectedTaskIds)) throw new TypeError('交付池导出范围无效，请刷新后重试');
+  if (selectedTaskIds.length === 0) return { scope: 'ALL_READY' };
+  const taskIds = [...new Set(selectedTaskIds)];
+  if (taskIds.length > DELIVERY_POOL_SELECTION_LIMIT
+    || taskIds.some((taskId) => !Number.isSafeInteger(taskId) || taskId < 1)) {
+    throw new TypeError('交付池导出范围无效，请刷新后重试');
+  }
+  return { scope: 'SELECTED', taskIds };
+}
+
+function normalizePreparedDeliveryDownload(
+  value: unknown,
+  expectedExtension: '.zip' | '.xlsx',
+): PreparedDeliveryExport {
   const envelope = record(value);
   const item = record(envelope?.data) ?? envelope;
   const downloadId = typeof item?.downloadId === 'string' ? item.downloadId.trim() : '';
   const fileName = typeof item?.fileName === 'string' ? item.fileName.trim() : '';
   const taskCount = Number(item?.taskCount);
   const expiresAt = typeof item?.expiresAt === 'string' ? item.expiresAt : '';
+  const fileStem = fileName.slice(0, -expectedExtension.length).trim();
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(downloadId)
-    || !fileName.endsWith('.zip') || fileName.includes('/') || fileName.includes('\\')
+    || !fileName.endsWith(expectedExtension) || !fileStem || fileName.length > 180
+    || /[\\/\u0000-\u001f\u007f]/u.test(fileName)
     || !Number.isSafeInteger(taskCount) || taskCount < 1
     || !Number.isFinite(Date.parse(expiresAt))) {
     throw new TypeError('交付池下载凭证无效，请重新导出');
   }
   return { downloadId, fileName, taskCount, expiresAt };
+}
+
+export function normalizePreparedDeliveryExport(value: unknown): PreparedDeliveryExport {
+  return normalizePreparedDeliveryDownload(value, '.zip');
+}
+
+export function normalizePreparedDeliveryXlsxExport(value: unknown): PreparedDeliveryExport {
+  return normalizePreparedDeliveryDownload(value, '.xlsx');
 }

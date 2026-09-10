@@ -132,6 +132,7 @@ export function HumanRatingFeedback({
   note,
   notePlaceholder,
   showReasonOptions = true,
+  feedbackRequired = true,
   disabled = false,
   onToggleReason,
   onNoteChange,
@@ -142,13 +143,14 @@ export function HumanRatingFeedback({
   note: string;
   notePlaceholder: string;
   showReasonOptions?: boolean;
+  feedbackRequired?: boolean;
   disabled?: boolean;
   onToggleReason: (code: string) => void;
   onNoteChange: (note: string) => void;
 }) {
   return <div className="human-rating-feedback">
     {showReasonOptions && <fieldset disabled={disabled}>
-      <legend>扣分原因 <span>原因或说明至少填写一项</span></legend>
+      <legend>扣分原因 <span>{feedbackRequired ? '原因或说明至少填写一项' : '选填'}</span></legend>
       <div className="human-rating-reasons">
         {reasonOptions.map(reason => <label key={reason.code} data-selected={reasons.includes(reason.code)}>
           <Checkbox checked={reasons.includes(reason.code)} onChange={() => onToggleReason(reason.code)} />
@@ -157,7 +159,9 @@ export function HumanRatingFeedback({
       </div>
     </fieldset>}
     <div className="field full">
-      <label htmlFor={`${id}-note`}>评分说明 <small>{note.length}/500，{showReasonOptions ? '可代替原因选项' : '低于 3 分时必填'}</small></label>
+      <label htmlFor={`${id}-note`}>评分说明 <small>{note.length}/500，{feedbackRequired
+        ? showReasonOptions ? '可代替原因选项' : '低于 3 分时必填'
+        : '选填'}</small></label>
       <Textarea
         id={`${id}-note`}
         className="textarea human-rating-note"

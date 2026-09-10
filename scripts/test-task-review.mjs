@@ -364,15 +364,16 @@ try {
         assert.equal(await page.getByRole('button', { name: '审核通过', exact: true }).count(), role === 'USER' ? 0 : 1);
       }
     });
-    await check('image review allows only a complete 2.5-or-3 rating to approve and submits issue pages', async () => {
+    await check('image review enables decisions from the score alone and submits optional feedback', async () => {
       await open('REVIEWER', 'MANUAL_ARCHIVE', withImages);
       const approve = page.getByRole('button', { name: '审核通过', exact: true });
       const retry = page.getByRole('button', { name: '重试生图', exact: true });
       assert.equal(await approve.isDisabled(), true);
-      await rateImages(2);
+      await page.locator('input[name^="image-score-"][value="2"]').check();
       assert.equal(await approve.isDisabled(), true);
       assert.equal(await retry.isEnabled(), true);
       await page.locator('input[name^="image-score-"][value="2.5"]').check();
+      await page.locator('.human-image-rating .human-rating-feedback input[type="checkbox"]').first().check();
       await page.locator('.human-rating-pages input[type="checkbox"]').first().check();
       assert.equal(await approve.isEnabled(), true);
       await approve.click();

@@ -8,27 +8,28 @@ import {
 } from '../src/control-plane/mutation-capability.mjs';
 
 test('assignment and opt-in pool mutations declare their version contracts', () => {
-  for (const [routePath, method, capability] of [
-    ['/v1/tasks', 'POST', 'taskAssignmentVersion'],
-    ['/v1/tasks/42/assignee', 'PATCH', 'taskAssignmentVersion'],
-    ['/v1/tasks/batch-assignee', 'POST', 'taskAssignmentVersion'],
-    ['/v1/auto-assignment/settings', 'PATCH', 'autoAssignmentPoolVersion'],
-    ['/v1/auto-assignment/workers/alice', 'PUT', 'autoAssignmentPoolVersion'],
-    ['/v1/auto-assignment/workers/alice', 'DELETE', 'autoAssignmentPoolVersion'],
-    ['/v1/executor-statuses', 'DELETE', 'executorManagementVersion'],
-    ['/v1/delivery-pool', 'GET', 'finalDeliveryVersion'],
-    ['/v1/delivery-pool/archive', 'POST', 'finalDeliveryVersion'],
-    ['/v1/delivery-pool/archive/token', 'HEAD', 'finalDeliveryVersion'],
-    ['/v1/delivery-pool/archive/token', 'GET', 'finalDeliveryVersion'],
-    ['/v1/tasks/batch-archive', 'POST', 'finalDeliveryVersion'],
-    ['/v1/tasks/42/archive', 'HEAD', 'finalDeliveryVersion'],
-    ['/v1/tasks/42/archive', 'GET', 'finalDeliveryVersion'],
+  for (const [routePath, method, capability, minimumVersion] of [
+    ['/v1/tasks', 'POST', 'taskAssignmentVersion', 3],
+    ['/v1/tasks/42/assignee', 'PATCH', 'taskAssignmentVersion', 3],
+    ['/v1/tasks/batch-assignee', 'POST', 'taskAssignmentVersion', 3],
+    ['/v1/auto-assignment/settings', 'PATCH', 'autoAssignmentPoolVersion', 3],
+    ['/v1/auto-assignment/workers/alice', 'PUT', 'autoAssignmentPoolVersion', 3],
+    ['/v1/auto-assignment/workers/alice', 'DELETE', 'autoAssignmentPoolVersion', 3],
+    ['/v1/executor-statuses', 'DELETE', 'executorManagementVersion', 1],
+    ['/v1/delivery-pool', 'GET', 'finalDeliveryVersion', 2],
+    ['/v1/delivery-pool/archive', 'POST', 'finalDeliveryVersion', 2],
+    ['/v1/delivery-pool/archive/token', 'HEAD', 'finalDeliveryVersion', 2],
+    ['/v1/delivery-pool/archive/token', 'GET', 'finalDeliveryVersion', 2],
+    ['/v1/delivery-pool/xlsx', 'POST', 'deliverySpreadsheetVersion', 1],
+    ['/v1/delivery-pool/xlsx/token', 'HEAD', 'deliverySpreadsheetVersion', 1],
+    ['/v1/delivery-pool/xlsx/token', 'GET', 'deliverySpreadsheetVersion', 1],
+    ['/v1/tasks/batch-archive', 'POST', 'finalDeliveryVersion', 2],
+    ['/v1/tasks/42/archive', 'HEAD', 'finalDeliveryVersion', 2],
+    ['/v1/tasks/42/archive', 'GET', 'finalDeliveryVersion', 2],
   ]) {
     assert.deepEqual(requiredMutationCapability(routePath, method), {
       capability,
-      minimumVersion: capability === 'executorManagementVersion'
-        ? 1
-        : capability === 'finalDeliveryVersion' ? 2 : 3,
+      minimumVersion,
     });
   }
   assert.equal(requiredMutationCapability('/v1/tasks', 'GET'), null);
@@ -70,6 +71,15 @@ test('mutation capability check allows only compatible center versions', async (
       data: { capabilities: { finalDeliveryVersion: 2 } },
     }),
   });
+
+  await assertMutationCapability({
+    root: 'http://center.test',
+    routePath: '/v1/delivery-pool/xlsx',
+    method: 'POST',
+    fetchImpl: async () => Response.json({
+      data: { capabilities: { deliverySpreadsheetVersion: 1 } },
+    }),
+  });
 });
 
 test('mutation capability check fails closed for legacy, malformed and unavailable centers', async () => {
@@ -98,6 +108,20 @@ test('mutation capability check fails closed for legacy, malformed and unavailab
       method: 'PATCH',
       fetchImpl: async () => Response.json({
         data: { capabilities: { autoAssignmentPoolVersion: 2 } },
+      }),
+    }),
+    (error) => error instanceof ApiError
+      && error.status === 503
+      && error.code === 'CONTROL_PLANE_UPGRADE_REQUIRED',
+  );
+
+  await assert.rejects(
+    assertMutationCapability({
+      root: 'http://center.test',
+      routePath: '/v1/delivery-pool/xlsx',
+      method: 'POST',
+      fetchImpl: async () => Response.json({
+        data: { capabilities: { finalDeliveryVersion: 2 } },
       }),
     }),
     (error) => error instanceof ApiError

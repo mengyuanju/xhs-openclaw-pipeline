@@ -459,8 +459,8 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
       <div className={styles.toolbar}>
         <div>
           <SearchInput className={styles.search} value={search} onValueChange={setSearch} placeholder="搜索匿名编号、Query 或批次编号" />
-          <label>结果<Select value={status} onValueChange={(value) => setStatus(value as typeof status)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ALL">全部结果</SelectItem>{Object.entries(STATUS_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></label>
-          <label>评审模式<Select value={mode} onValueChange={(value) => setMode(value as typeof mode)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ALL">全部模式</SelectItem><SelectItem value="BLIND">独立盲评</SelectItem><SelectItem value="VISIBLE">非盲评</SelectItem></SelectContent></Select></label>
+          <label>结果<Select value={status} onValueChange={(value) => setStatus(value as typeof status)}><SelectTrigger className={styles.filterSelect}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ALL">全部结果</SelectItem>{Object.entries(STATUS_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></label>
+          <label>评审模式<Select value={mode} onValueChange={(value) => setMode(value as typeof mode)}><SelectTrigger className={styles.filterSelect}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ALL">全部模式</SelectItem><SelectItem value="BLIND">独立盲评</SelectItem><SelectItem value="VISIBLE">非盲评</SelectItem></SelectContent></Select></label>
         </div>
         <span className="pill">{role === 'ADMIN' ? '管理员保留随机首检整批打回权限' : items.some(canStartCopyQaBatchReturn) ? '当前允许随机首检整批打回' : '当前仅可单条打回；需要扩大范围时请联系管理员整批处置'}</span>
       </div>

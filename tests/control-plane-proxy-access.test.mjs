@@ -15,6 +15,8 @@ test('ordinary users can check resume capabilities without gaining management ac
   assert.equal(userCanAccessControlPlaneRoute('/v1/delivery-pool', 'POST'), false);
   assert.equal(userCanAccessControlPlaneRoute('/v1/delivery-pool/archive', 'POST'), false);
   assert.equal(userCanAccessControlPlaneRoute('/v1/delivery-pool/archive/token', 'GET'), false);
+  assert.equal(userCanAccessControlPlaneRoute('/v1/delivery-pool/xlsx', 'POST'), false);
+  assert.equal(userCanAccessControlPlaneRoute('/v1/delivery-pool/xlsx/token', 'GET'), false);
   assert.equal(userCanAccessControlPlaneRoute('/v1/tasks', 'POST'), false);
   assert.equal(userCanAccessControlPlaneRoute('/v1/tasks', 'GET'), true);
   assert.equal(userCanAccessControlPlaneRoute('/v1/tasks/7/retry', 'POST'), true);

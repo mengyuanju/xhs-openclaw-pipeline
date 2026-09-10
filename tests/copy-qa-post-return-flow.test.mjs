@@ -44,6 +44,16 @@ test('the single-return success state offers release-rest and batch-upgrade bran
   assert.doesNotMatch(source, /triggerSamplingItemId: selectedItems\[0\]\.id/u);
 });
 
+test('copy QA filters keep their longest option on one line', async () => {
+  const [source, styles] = await Promise.all([
+    readFile(new URL('../app/copy-qa/copy-qa-workbench.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../app/copy-qa/copy-qa.module.css', import.meta.url), 'utf8'),
+  ]);
+
+  assert.equal(source.match(/<SelectTrigger className=\{styles\.filterSelect\}>/gu)?.length, 2);
+  assert.match(styles, /\.filterSelect\s*\{[^}]*min-width:\s*128px;/su);
+});
+
 test('the local E2E fixture preserves a returned trigger while upgrading its full frozen scope', async () => {
   const source = await readFile(new URL('./fixtures/modular-workflow-e2e.mjs', import.meta.url), 'utf8');
   assert.match(source, /canReturnBatch: \['PENDING', 'RETURNED'\]\.includes\(item\.status\)/u);

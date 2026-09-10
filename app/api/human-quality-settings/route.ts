@@ -23,6 +23,9 @@ const settingsSchema = z.object({
     showScoreDescriptions: z.boolean(),
     showDeductionReasons: z.boolean(),
   }).strict().optional(),
+  imageReviewDisplay: z.object({
+    showDeductionReasons: z.boolean(),
+  }).strict().optional(),
 }).strict();
 
 type Session = {

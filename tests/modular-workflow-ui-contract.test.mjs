@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const queryWorkbenchUrl = new URL('../app/query-packages/query-package-workbench.tsx', import.meta.url);
+const queryStylesUrl = new URL('../app/query-packages/query-packages.module.css', import.meta.url);
 
 test('worker import switch does not disable screening or production of an assigned package', async () => {
   const source = await readFile(queryWorkbenchUrl, 'utf8');
@@ -11,6 +12,16 @@ test('worker import switch does not disable screening or production of an assign
   assert.doesNotMatch(source, /function screen[\s\S]{0,300}if \([^)]*!canImport/u);
   assert.doesNotMatch(source, /function createProductionBatch[\s\S]{0,300}if \([^)]*!canImport/u);
   assert.match(source, /作业人员始终可以筛选分配给自己的词包并将通过项投产/u);
+});
+
+test('query package filters keep their longest options on one line', async () => {
+  const [source, styles] = await Promise.all([
+    readFile(queryWorkbenchUrl, 'utf8'),
+    readFile(queryStylesUrl, 'utf8'),
+  ]);
+
+  assert.equal(source.match(/<SelectTrigger className=\{styles\.filterSelect\}>/gu)?.length, 2);
+  assert.match(styles, /\.filterSelect\s*\{[^}]*min-width:\s*148px;/su);
 });
 
 test('production can use selected itemIds so one package can be split into multiple batches', async () => {

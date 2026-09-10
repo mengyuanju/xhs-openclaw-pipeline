@@ -221,26 +221,36 @@ test('active blind QA tasks disappear from generic reviewer task APIs, including
   });
 });
 
-test('only administrators can request a delivery-pool batch export', async () => {
+test('only administrators can request delivery-pool batch exports', async () => {
   let snapshotReads = 0;
   const repository = {
     listAllDeliveryPoolTaskIds: async () => { snapshotReads += 1; return []; },
   };
   await withServer(repository, async (root) => {
     for (const username of ['worker', 'reviewer']) {
-      const response = await fetch(`${root}/v1/delivery-pool/archive`, {
-        method: 'POST',
-        headers: headers(username, true),
-        body: JSON.stringify({ scope: 'ALL_READY' }),
-      });
-      assert.equal(response.status, 403, username);
-      assert.equal((await response.json()).error.code, 'FORBIDDEN', username);
-      const download = await fetch(
-        `${root}/v1/delivery-pool/archive/11111111-1111-4111-8111-111111111111`,
-        { headers: headers(username) },
-      );
-      assert.equal(download.status, 403, username);
-      assert.equal((await download.json()).error.code, 'FORBIDDEN', username);
+      for (const endpoint of ['archive', 'xlsx']) {
+        const response = await fetch(`${root}/v1/delivery-pool/${endpoint}`, {
+          method: 'POST',
+          headers: headers(username, true),
+          body: JSON.stringify({ scope: 'ALL_READY' }),
+        });
+        assert.equal(response.status, 403, `${username}:${endpoint}`);
+        assert.equal(
+          (await response.json()).error.code,
+          'FORBIDDEN',
+          `${username}:${endpoint}`,
+        );
+        const download = await fetch(
+          `${root}/v1/delivery-pool/${endpoint}/11111111-1111-4111-8111-111111111111`,
+          { headers: headers(username) },
+        );
+        assert.equal(download.status, 403, `${username}:${endpoint}`);
+        assert.equal(
+          (await download.json()).error.code,
+          'FORBIDDEN',
+          `${username}:${endpoint}`,
+        );
+      }
     }
   });
   assert.equal(snapshotReads, 0, 'authorization must run before reading the delivery snapshot');

@@ -121,6 +121,41 @@ test('delivery archive integrity migration withdraws unarchivable legacy READY e
   assert.doesNotMatch(sql, /DELETE\s+FROM\s+tasks|TRUNCATE\s+tasks/u);
 });
 
+test('delivery compatibility repair safely converges legacy lineage and archive checks', async () => {
+  const sql = await migration('0029_final_delivery_compatibility_repair');
+  assert.ok(sql.includes("parent_revision_text ~ '^[1-9][0-9]{0,18}$'"));
+  assert.match(sql, /parent_revision_text <= '9223372036854775807'/u);
+  assert.match(sql, /THEN candidate\.parent_revision_text::bigint/u);
+  assert.match(sql, /WHERE id = '0026_final_delivery'/u,
+    'origin repair must be bounded by the original migration timestamp');
+  assert.match(sql, /revision\.created_at <= boundary\.applied_at/u);
+  assert.match(sql, /SET copy_content_changed_from_machine = false/u,
+    'legacy machine revisions must be reset to a non-human-edit state');
+  assert.match(sql, /ORDER BY generated\.revision DESC, generated\.id DESC/u);
+  assert.match(sql, /SET copy_content_changed_from_machine = evaluated\.changed_from_machine/u,
+    'human flags must be recomputed, including clearing legacy false positives');
+  assert.match(sql, /source\.task_state IS DISTINCT FROM 'REVIEWED'/u);
+  assert.match(sql, /source\.copy_revision_id IS DISTINCT FROM source\.current_copy_revision_id/u);
+  assert.match(sql, /source\.image_run_id IS DISTINCT FROM source\.current_image_run_id/u);
+  assert.match(sql, /source\.image_run_copy_revision_id IS DISTINCT FROM source\.copy_revision_id/u);
+  assert.match(sql, /READY_DELIVERY_SOURCE_NOT_ARCHIVABLE/u);
+  assert.doesNotMatch(sql, /copy_rework_satisfied/u,
+    'compatibility repair must not satisfy a pending mandatory rework');
+  assert.doesNotMatch(sql, /UPDATE\s+tasks|DELETE\s+FROM\s+tasks|TRUNCATE\s+tasks/u);
+});
+
+test('delivery runtime integrity uses safe numeric asset identities and preserves anomaly time', async () => {
+  const sql = await migration('0030_delivery_asset_runtime_integrity');
+  assert.equal((sql.match(/<= '9007199254740991'/gu) ?? []).length, 2);
+  assert.equal((sql.match(/\[0-9\]\{0,15\}/gu) ?? []).length, 2);
+  assert.match(sql, /source\.task_state IS DISTINCT FROM 'REVIEWED'/u);
+  assert.match(sql, /source\.image_run_copy_revision_id IS DISTINCT FROM source\.copy_revision_id/u);
+  assert.match(sql, /delivery_migration_anomalies\.reason IS DISTINCT FROM EXCLUDED\.reason/u,
+    'repeat integrity checks must preserve the first anomaly detection timestamp');
+  assert.doesNotMatch(sql, /detected_at\s*=\s*EXCLUDED\.detected_at/u);
+  assert.doesNotMatch(sql, /UPDATE\s+tasks|DELETE\s+FROM\s+tasks|TRUNCATE\s+tasks/u);
+});
+
 test('mutation receipt identities survive account deletion and cannot transfer by username', async () => {
   const sql = await migration('0028_mutation_receipt_actor_identity');
   assert.match(sql, /ALTER TABLE query_package_mutation_requests[\s\S]*ADD COLUMN actor_account_id bigint/u);

@@ -1,7 +1,16 @@
 .stack { display: grid; gap: 16px; }
 .toolbar { display: flex; align-items: end; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 15px; }
 .toolbar > div { display: flex; align-items: end; flex-wrap: wrap; gap: 9px; }
-.search { width: min(390px, 68vw); }
+.toolbar > .searchField { display: grid; align-items: stretch; gap: 6px; width: min(520px, 72vw); }
+.searchField label { color: #625f5a; font-size: 12px; font-weight: 750; }
+.searchField > span { color: var(--muted); font-size: 10px; line-height: 1.55; }
+.searchControl { position: relative; }
+.searchControl .search { min-height: 86px; max-height: 210px; padding: 10px 42px 10px 39px; }
+.searchIcon { position: absolute; top: 14px; left: 13px; z-index: 1; color: var(--muted); pointer-events: none; }
+.clearSearch { position: absolute; top: 7px; right: 6px; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 6px; color: var(--muted); background: transparent; cursor: pointer; }
+.clearSearch:hover { color: var(--ink); background: var(--control-bg-muted); }
+.clearSearch:focus-visible { outline: 3px solid var(--control-ring); outline-offset: 2px; }
+.toolbar > .searchStatus { max-width: 100%; white-space: normal; overflow-wrap: anywhere; line-height: 1.5; text-align: right; }
 .query { max-width: 520px; line-height: 1.7; }
 .version { display: grid; gap: 4px; color: var(--muted); font-size: 11px; }
 .actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
@@ -12,4 +21,4 @@
 .selectionStatus span:last-child { color: var(--muted); }
 .scopeNote { margin: -5px 0 12px; color: var(--muted); font-size: 11px; line-height: 1.65; }
 .loadMore { display: flex; justify-content: center; padding-top: 14px; }
-@media (max-width: 680px) { .toolbar { align-items: stretch; flex-direction: column; } .toolbar > div, .search, .toolbar button { width: 100%; } }
+@media (max-width: 680px) { .toolbar { align-items: stretch; flex-direction: column; } .toolbar > div, .toolbar > .searchField, .toolbar button { width: 100%; } .toolbar .clearSearch { width: 30px; } .toolbar > .searchStatus { text-align: left; } }

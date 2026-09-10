@@ -156,7 +156,7 @@ for (const [decision, expected] of [['APPROVE', 'REVIEWED'], ['RETRY', 'IMAGE_QU
   test(`image review ${decision} leaves manual archive as ${expected}`, async () => {
     const { repository, task, queries, assessments, deliveries } = fixture();
     const input = { imageRunId: runId, decision, score: decision === 'APPROVE' ? 2.5 : 2,
-      note: '记录本轮图片问题', reviewerUserId: 'reviewer', reviewSessionId };
+      reviewerUserId: 'reviewer', reviewSessionId };
     const result = await repository.reviewImages(7, input);
     assert.equal(result.state, expected);
     assert.equal(result.currentCopyRevisionId, 3);
@@ -170,6 +170,8 @@ for (const [decision, expected] of [['APPROVE', 'REVIEWED'], ['RETRY', 'IMAGE_QU
     assert.ok(queries.every(({ sql }) => !/DELETE|UPDATE image_runs|UPDATE copy_revisions/u.test(sql)));
     assert.equal(assessments.length, 1);
     assert.equal(assessments[0].score_x10, decision === 'APPROVE' ? 25 : 20);
+    assert.deepEqual(assessments[0].reason_codes, []);
+    assert.equal(assessments[0].note, null);
     assert.equal(deliveries.filter((entry) => entry.status === 'READY').length, decision === 'APPROVE' ? 1 : 0);
     assert.equal((await repository.reviewImages(7, input)).state, expected, 'same session is idempotent');
     assert.equal(assessments.length, 1);
@@ -328,7 +330,7 @@ test('approval rejects an unfinished image run or images from an older copy revi
   assert.ok(queries.every(({ sql }) => !sql.includes('UPDATE tasks')));
 });
 
-test('image review validates and stores low-score feedback and current-run problem assets', async () => {
+test('image review stores optional low-score feedback and validates current-run problem assets', async () => {
   const { repository, assessments } = fixture();
   await repository.reviewImages(7, {
     imageRunId: runId,
@@ -342,16 +344,15 @@ test('image review validates and stores low-score feedback and current-run probl
   assert.deepEqual(assessments[0].reason_codes, ['TEXT_ERROR']);
   assert.deepEqual(assessments[0].problem_asset_ids, [101, 102]);
 
-  for (const input of [
-    { decision: 'APPROVE', score: 2, reasons: ['TEXT_ERROR'] },
-    { decision: 'RETRY', score: 2 },
-  ]) {
-    const invalid = fixture();
-    await assert.rejects(invalid.repository.reviewImages(7, {
-      imageRunId: runId, reviewerUserId: 'reviewer', reviewSessionId, ...input,
-    }), input.decision === 'APPROVE' ? { code: 'QUALITY_SCORE_TOO_LOW' } : TypeError);
-    assert.equal(invalid.assessments.length, 0);
-  }
+  const invalidApproval = fixture();
+  await assert.rejects(invalidApproval.repository.reviewImages(7, {
+    imageRunId: runId,
+    decision: 'APPROVE',
+    score: 2,
+    reviewerUserId: 'reviewer',
+    reviewSessionId,
+  }), { code: 'QUALITY_SCORE_TOO_LOW' });
+  assert.equal(invalidApproval.assessments.length, 0);
 
   const staleAsset = fixture();
   await assert.rejects(staleAsset.repository.reviewImages(7, {

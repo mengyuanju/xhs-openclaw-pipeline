@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import ExcelJS from '@excel.js/exceljs';
 import JSZip from 'jszip';
+import sharp from 'sharp';
 
 import { createControlPlaneApp } from '../src/http-server.mjs';
 
@@ -47,6 +50,14 @@ function task(id, state) {
       originalName: '01.png',
     }],
   };
+}
+
+async function writeSolidPng(path, background) {
+  const content = await sharp({
+    create: { width: 24, height: 32, channels: 4, background },
+  }).png().toBuffer();
+  await writeFile(path, content);
+  return content;
 }
 
 test('single delivery download rejects every state before final image review', async () => {
@@ -203,6 +214,173 @@ test('selected delivery pool export accepts more than the legacy 20-task limit',
     const zip = await JSZip.loadAsync(await download.arrayBuffer());
     assert.equal(Object.keys(zip.files).length, 21);
   });
+});
+
+test('delivery spreadsheet exports one complete-article column plus ordered embedded images', async () => {
+  const selected = task(7, 'REVIEWED');
+  selected.copyRevisions[0].content.copy = {
+    title: '=这是一篇标题',
+    body: '+这是完整正文',
+    tags: ['不应导出'],
+  };
+  selected.imageRuns[0].result.images = [{ assetId: 209 }, { assetId: 207 }];
+  selected.assets = [
+    { id: 207, taskId: 7, imageRunId: 'run-7', mediaType: 'image/png' },
+    { id: 209, taskId: 7, imageRunId: 'run-7', mediaType: 'image/png' },
+    { id: 999, taskId: 7, imageRunId: 'run-7', mediaType: 'image/png' },
+  ];
+  const assets = new Map();
+  const sourceContentById = new Map();
+  const loadedAssetIds = [];
+  await withServer({
+    getTask: async (id) => (Number(id) === 7 ? selected : null),
+    assertTaskReadyForDelivery: async () => ({
+      taskId: 7,
+      copyRevisionId: 107,
+      imageRunId: 'run-7',
+    }),
+    assertTasksReadyForDelivery: async (bindings) => bindings,
+    getAsset: async (id) => {
+      loadedAssetIds.push(Number(id));
+      return assets.get(Number(id));
+    },
+  }, async (root, storageRoot) => {
+    const imageDirectory = join(storageRoot, 'tasks', '7', 'image-runs', 'run-7');
+    await mkdir(imageDirectory, { recursive: true });
+    for (const [id, name, background] of [
+      [209, 'first.png', '#DC2626'],
+      [207, 'second.png', '#2563EB'],
+    ]) {
+      const storagePath = join(imageDirectory, name);
+      const content = await writeSolidPng(storagePath, background);
+      sourceContentById.set(id, content);
+      assets.set(id, {
+        id,
+        taskId: 7,
+        imageRunId: 'run-7',
+        mediaType: 'image/png',
+        byteSize: content.length,
+        sha256: createHash('sha256').update(content).digest('hex'),
+        originalName: name,
+        storagePath,
+      });
+    }
+
+    const response = await fetch(`${root}/v1/delivery-pool/xlsx`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scope: 'SELECTED', taskIds: [7] }),
+    });
+    const responsePayload = await response.json();
+    assert.equal(response.status, 201, JSON.stringify(responsePayload));
+    const prepared = responsePayload.data;
+    assert.equal(prepared.taskCount, 1);
+    assert.match(prepared.fileName, /\.xlsx$/u);
+
+    const probe = await fetch(`${root}/v1/delivery-pool/xlsx/${prepared.downloadId}`, {
+      method: 'HEAD',
+    });
+    assert.equal(probe.status, 200);
+    assert.equal(
+      probe.headers.get('content-type'),
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    assert.equal(probe.headers.get('x-delivery-task-count'), '1');
+    assert.ok(Number(probe.headers.get('content-length')) > 0);
+
+    const download = await fetch(`${root}/v1/delivery-pool/xlsx/${prepared.downloadId}`);
+    assert.equal(download.status, 200);
+    assert.match(download.headers.get('content-disposition'), /delivery-pool\.xlsx/u);
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(Buffer.from(await download.arrayBuffer()));
+    const worksheet = workbook.getWorksheet('交付内容');
+    assert.ok(worksheet);
+    assert.equal(worksheet.getCell('A1').value, '完整文章');
+    assert.equal(worksheet.getCell('A2').value, '=这是一篇标题\n\n+这是完整正文');
+    assert.notEqual(worksheet.getCell('A2').font?.bold, true);
+    assert.equal(worksheet.getCell('B1').value, '图片 1');
+    assert.equal(worksheet.getCell('C1').value, '图片 2');
+    assert.equal(worksheet.actualColumnCount, 3);
+    const embeddedImages = worksheet.getImages();
+    assert.equal(embeddedImages.length, 2);
+    assert.deepEqual(
+      embeddedImages.map((image) => Buffer.from(workbook.getImage(Number(image.imageId)).buffer)),
+      [sourceContentById.get(209), sourceContentById.get(207)],
+      'the downloaded workbook must contain the exact original image bytes in result order',
+    );
+    assert.deepEqual(loadedAssetIds, [209, 207]);
+
+    const replay = await fetch(`${root}/v1/delivery-pool/xlsx/${prepared.downloadId}`);
+    assert.equal(replay.status, 404, 'the prepared spreadsheet token must be one-time');
+  });
+});
+
+test('delivery spreadsheet rejects unsupported original formats without leaving staged files or locking export', async () => {
+  const selected = task(7, 'REVIEWED');
+  selected.assets[0].mediaType = 'image/webp';
+  selected.assets[0].originalName = '01.webp';
+  let asset;
+  await withServer({
+    getTask: async (id) => (Number(id) === 7 ? selected : null),
+    assertTaskReadyForDelivery: async () => ({
+      taskId: 7,
+      copyRevisionId: 107,
+      imageRunId: 'run-7',
+    }),
+    assertTasksReadyForDelivery: async (bindings) => bindings,
+    getAsset: async () => asset,
+  }, async (root, storageRoot) => {
+    const imageDirectory = join(storageRoot, 'tasks', '7', 'image-runs', 'run-7');
+    const storagePath = join(imageDirectory, '01.webp');
+    await mkdir(imageDirectory, { recursive: true });
+    const content = await sharp({
+      create: {
+        width: 30,
+        height: 20,
+        channels: 3,
+        background: { r: 37, g: 99, b: 235 },
+      },
+    }).webp().toBuffer();
+    await writeFile(storagePath, content);
+    asset = {
+      ...selected.assets[0],
+      byteSize: content.length,
+      sha256: createHash('sha256').update(content).digest('hex'),
+      storagePath,
+    };
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await fetch(`${root}/v1/delivery-pool/xlsx`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ scope: 'SELECTED', taskIds: [7] }),
+      });
+      const payload = await response.json();
+      assert.equal(response.status, 400);
+      assert.equal(payload.error.code, 'VALIDATION_ERROR');
+      assert.match(payload.error.message, /仅支持 PNG、JPEG 或 GIF/u);
+      assert.equal(payload.data, undefined);
+    }
+
+    assert.deepEqual(await readdir(join(storageRoot, '.delivery-exports')), []);
+  });
+});
+
+test('all-ready spreadsheet export rejects more than 200 articles before loading tasks', async () => {
+  let taskReads = 0;
+  await withServer({
+    listAllDeliveryPoolTaskIds: async () => Array.from({ length: 201 }, (_, index) => index + 1),
+    getTask: async () => { taskReads += 1; },
+  }, async (root) => {
+    const response = await fetch(`${root}/v1/delivery-pool/xlsx`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scope: 'ALL_READY' }),
+    });
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error.code, 'DELIVERY_SPREADSHEET_TOO_LARGE');
+  });
+  assert.equal(taskReads, 0);
 });
 
 test('empty all-ready delivery export returns a clear conflict without reading tasks', async () => {

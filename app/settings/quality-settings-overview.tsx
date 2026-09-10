@@ -19,7 +19,7 @@ export function QualitySettingsOverview() {
       </article>
       <article className="quality-system-card" data-human>
         <div className="quality-system-card-head"><UserRoundCheck size={18} aria-hidden="true" /><span>人工审核评分</span><strong>1 / 2 / 2.5 / 3</strong></div>
-        <p>2.5 分和 3 分可以放行；低于 3 分时，扣分原因或评分说明至少填写一项。下方只配置展示文案，不改变固定工作流。</p>
+        <p>2.5 分和 3 分可以放行；文案低于 3 分时需填写扣分原因或评分说明，图文终审的原因与说明均为选填。</p>
       </article>
     </div>
   </section>;

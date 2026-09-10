@@ -42,7 +42,7 @@ async function proxyRequest(
     || /^\/v1\/task-views\//u.test(routePath)
     || /^\/v1\/auto-assignment(?:\/|$)/u.test(routePath)
     || ['/v1/tasks/batch-actions', '/v1/tasks/batch-assignee', '/v1/tasks/batch-archive', '/v1/tasks/batch-permanent-delete'].includes(routePath)
-    || /^\/v1\/delivery-pool\/archive(?:\/|$)/u.test(routePath)
+    || /^\/v1\/delivery-pool\/(?:archive|xlsx)(?:\/|$)/u.test(routePath)
     || /^\/v1\/tasks\/[^/]+\/assignee$/u.test(routePath)
     || (routePath === '/v1/tasks' && upstreamUrl.searchParams.has('attention')))) {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可使用任务集中处理功能');
@@ -97,10 +97,12 @@ async function proxyRequest(
   let upstream: Response;
   try {
     const deliveryTokenDownload = request.method === 'GET'
-      && /^\/v1\/delivery-pool\/archive\/[^/]+$/u.test(routePath);
-    const timeoutSignal = AbortSignal.timeout(/^\/v1\/delivery-pool\/archive(?:\/|$)/u.test(routePath)
+      && /^\/v1\/delivery-pool\/(?:archive|xlsx)\/[^/]+$/u.test(routePath);
+    const timeoutSignal = AbortSignal.timeout(
+      /^\/v1\/delivery-pool\/(?:archive|xlsx)(?:\/|$)/u.test(routePath)
       ? 60 * 60_000
-      : 130_000);
+      : 130_000,
+    );
     upstream = await fetch(upstreamUrl, {
       method: request.method,
       headers: {

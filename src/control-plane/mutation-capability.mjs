@@ -21,6 +21,12 @@ const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
       && method === 'DELETE',
   }),
   Object.freeze({
+    capability: 'deliverySpreadsheetVersion',
+    minimumVersion: 1,
+    matches: (routePath, method) => /^\/v1\/delivery-pool\/xlsx(?:\/|$)/u.test(routePath)
+      && ['GET', 'HEAD', 'POST'].includes(method),
+  }),
+  Object.freeze({
     capability: 'finalDeliveryVersion',
     minimumVersion: 2,
     matches: (routePath, method) => (/^\/v1\/delivery-pool(?:\/|$)/u.test(routePath)

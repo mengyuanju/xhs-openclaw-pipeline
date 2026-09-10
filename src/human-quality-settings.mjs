@@ -27,6 +27,10 @@ export const DEFAULT_COPY_REVIEW_DISPLAY = Object.freeze({
   showDeductionReasons: true,
 });
 
+export const DEFAULT_IMAGE_REVIEW_DISPLAY = Object.freeze({
+  showDeductionReasons: true,
+});
+
 function frozenReason(code, label) {
   return Object.freeze({ code, label });
 }
@@ -59,6 +63,7 @@ export const DEFAULT_HUMAN_QUALITY_SETTINGS = Object.freeze({
   imageReasons: DEFAULT_IMAGE_REASONS,
   noteGuidance: DEFAULT_HUMAN_QUALITY_NOTE_GUIDANCE,
   copyReviewDisplay: DEFAULT_COPY_REVIEW_DISPLAY,
+  imageReviewDisplay: DEFAULT_IMAGE_REVIEW_DISPLAY,
 });
 
 function normalizedText(value, path, maximum) {
@@ -164,6 +169,21 @@ function normalizedCopyReviewDisplay(value) {
   };
 }
 
+function normalizedImageReviewDisplay(value) {
+  const source = value === undefined ? DEFAULT_IMAGE_REVIEW_DISPLAY : value;
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    throw new TypeError('imageReviewDisplay must be an object');
+  }
+  const keys = Object.keys(source);
+  if (keys.some((key) => key !== 'showDeductionReasons') || !keys.includes('showDeductionReasons')) {
+    throw new TypeError('imageReviewDisplay must contain only showDeductionReasons');
+  }
+  if (typeof source.showDeductionReasons !== 'boolean') {
+    throw new TypeError('imageReviewDisplay.showDeductionReasons must be a boolean');
+  }
+  return { showDeductionReasons: source.showDeductionReasons };
+}
+
 function normalizedReasonList(value, fallback, path) {
   const source = value === undefined ? fallback : value;
   if (!Array.isArray(source) || source.length > MAX_HUMAN_QUALITY_REASONS) {
@@ -195,7 +215,7 @@ export function normalizeHumanQualitySettings(input = {}) {
     throw new TypeError('human quality settings must be an object');
   }
   if (Object.keys(input).some((key) => ![
-    'scoreDefinitions', 'copyReasons', 'imageReasons', 'noteGuidance', 'copyReviewDisplay',
+    'scoreDefinitions', 'copyReasons', 'imageReasons', 'noteGuidance', 'copyReviewDisplay', 'imageReviewDisplay',
   ].includes(key))) {
     throw new TypeError('human quality settings contain unsupported fields');
   }
@@ -205,6 +225,7 @@ export function normalizeHumanQualitySettings(input = {}) {
     imageReasons: normalizedReasonList(input.imageReasons, DEFAULT_IMAGE_REASONS, 'imageReasons'),
     noteGuidance: normalizedNoteGuidance(input.noteGuidance),
     copyReviewDisplay: normalizedCopyReviewDisplay(input.copyReviewDisplay),
+    imageReviewDisplay: normalizedImageReviewDisplay(input.imageReviewDisplay),
   };
 }
 

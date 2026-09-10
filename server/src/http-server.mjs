@@ -25,6 +25,11 @@ import {
   normalizeDeliveryExportRequest,
   resolveDeliveryExportTaskIds,
 } from './delivery-export.mjs';
+import {
+  DELIVERY_SPREADSHEET_MEDIA_TYPE,
+  MAX_DELIVERY_SPREADSHEET_TASKS,
+  writeDeliverySpreadsheet,
+} from './delivery-spreadsheet.mjs';
 import { IMAGE_FORMATS } from './image-options.mjs';
 import { AssetDeliveryError, createAssetDelivery } from './asset-delivery.mjs';
 import { normalizePromptContent } from '../../src/admin/prompt-service.mjs';
@@ -46,6 +51,9 @@ import { UNASSIGNED_CREATOR_COPY_CONTROL_STATES } from './task-assignment-domain
 
 const JSON_BODY_LIMIT = 12 * 1024 * 1024;
 const ASSET_BODY_LIMIT = 20 * 1024 * 1024;
+const DELIVERY_IMAGE_MEDIA_TYPES = new Set(
+  Object.values(IMAGE_FORMATS).map((format) => format.mediaType),
+);
 
 class HttpError extends Error {
   constructor(status, code, message, details = undefined) {
@@ -491,11 +499,17 @@ async function cleanStaleDeliveryExportDirectories(storageRoot, now = Date.now()
     .filter((entry) => entry.isDirectory() && DELIVERY_EXPORT_DIRECTORY_PATTERN.test(entry.name))
     .map(async (entry) => {
       const directory = safeStoragePath(root, entry.name);
-      const archivePath = safeStoragePath(directory, 'delivery-pool.zip');
-      const metadata = await stat(archivePath).catch(async (error) => {
-        if (error?.code !== 'ENOENT') throw error;
-        return stat(directory);
-      });
+      const artifacts = await Promise.all([
+        safeStoragePath(directory, 'delivery-pool.zip'),
+        safeStoragePath(directory, 'delivery-pool.xlsx'),
+      ].map((path) => stat(path).catch((error) => {
+        if (error?.code === 'ENOENT') return null;
+        throw error;
+      })));
+      const metadata = artifacts
+        .filter(Boolean)
+        .sort((left, right) => right.mtimeMs - left.mtimeMs)[0]
+        ?? await stat(directory);
       if (now - metadata.mtimeMs < DELIVERY_EXPORT_STALE_MS) return;
       await rm(directory, { recursive: true, force: true });
     }));
@@ -547,6 +561,79 @@ async function stageDeliveryPoolArchive(repository, storageRoot, taskIds, { sign
     await rm(exportDirectory, { recursive: true, force: true }).catch(() => {});
     throw error;
   }
+}
+
+async function stageDeliveryPoolSpreadsheet(repository, storageRoot, taskIds, { signal } = {}) {
+  if (taskIds.length > MAX_DELIVERY_SPREADSHEET_TASKS) {
+    throw new ControlPlaneConflictError(
+      'DELIVERY_SPREADSHEET_TOO_LARGE',
+      `Excel 图片导出一次最多 ${MAX_DELIVERY_SPREADSHEET_TASKS} 篇文章，请勾选后分批导出`,
+    );
+  }
+  const exportDirectory = safeStoragePath(
+    storageRoot,
+    DELIVERY_EXPORT_DIRECTORY,
+    randomUUID(),
+  );
+  const spreadsheetPath = safeStoragePath(exportDirectory, 'delivery-pool.xlsx');
+  await mkdir(exportDirectory, { recursive: true });
+  const bindings = [];
+  try {
+    async function* readyTasks() {
+      for (const taskId of taskIds) {
+        signal?.throwIfAborted();
+        const snapshot = await loadReadyDeliveryTask(repository, taskId);
+        bindings.push(snapshot.binding);
+        yield snapshot.task;
+      }
+    }
+    const result = await writeDeliverySpreadsheet(readyTasks(), async (task, assetId) => {
+      signal?.throwIfAborted();
+      const asset = await repository.getAsset(assetId);
+      signal?.throwIfAborted();
+      const byteSize = Number(asset?.byteSize);
+      const sha256 = String(asset?.sha256 ?? '').toLowerCase();
+      if (!asset || Number(asset.id) !== Number(assetId)
+          || Number(asset.taskId) !== Number(task.id)
+          || String(asset.imageRunId) !== String(task.currentImageRunId)
+          || !DELIVERY_IMAGE_MEDIA_TYPES.has(String(asset.mediaType))
+          || !Number.isSafeInteger(byteSize) || byteSize < 1 || byteSize > ASSET_BODY_LIMIT
+          || !/^[a-f0-9]{64}$/u.test(sha256)) return null;
+      const path = safeStoragePath(storageRoot, relative(storageRoot, asset.storagePath));
+      const metadata = await stat(path).catch((error) => {
+        if (error?.code === 'ENOENT') return null;
+        throw error;
+      });
+      signal?.throwIfAborted();
+      if (!metadata?.isFile() || metadata.size !== byteSize) return null;
+      const content = await readFile(path, { signal });
+      signal?.throwIfAborted();
+      if (createHash('sha256').update(content).digest('hex') !== sha256) return null;
+      return { ...asset, content };
+    }, spreadsheetPath, { signal, maxTasks: MAX_DELIVERY_SPREADSHEET_TASKS });
+    return {
+      spreadsheetPath,
+      byteSize: (await stat(spreadsheetPath)).size,
+      taskCount: result.taskCount,
+      bindings,
+      cleanup: () => rm(exportDirectory, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      }),
+    };
+  } catch (error) {
+    await rm(exportDirectory, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+function assertDeliveryExportArtifact(record, pathKey) {
+  if (typeof record?.staged?.[pathKey] !== 'string') {
+    throw new ControlPlaneNotFoundError('delivery export not found');
+  }
+  return record;
 }
 
 function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisual) {
@@ -1030,7 +1117,10 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   });
   router.head('/v1/delivery-pool/archive/:downloadId', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
-    const record = await deliveryExportRegistry.peek(ctx.params.downloadId, actor);
+    const record = assertDeliveryExportArtifact(
+      await deliveryExportRegistry.peek(ctx.params.downloadId, actor),
+      'archivePath',
+    );
     await assertDeliveryBindingsReady(repository, record.bindings);
     await assertCurrentActorIdentity(repository, actor);
     ctx.status = 200;
@@ -1042,6 +1132,10 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   router.get('/v1/delivery-pool/archive/:downloadId', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
     const { downloadId } = ctx.params;
+    assertDeliveryExportArtifact(
+      await deliveryExportRegistry.peek(downloadId, actor),
+      'archivePath',
+    );
     const record = await deliveryExportRegistry.take(downloadId, actor);
     try {
       await assertDeliveryBindingsReady(repository, record.bindings);
@@ -1083,6 +1177,118 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     ctx.length = record.staged.byteSize;
     ctx.set('X-Delivery-Task-Count', String(record.taskCount));
     ctx.set('Content-Disposition', `attachment; filename="delivery-pool.zip"; filename*=UTF-8''${encodeURIComponent(record.fileName)}`);
+    ctx.body = content;
+  });
+  router.post('/v1/delivery-pool/xlsx', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    const request = normalizeDeliveryExportRequest(requireJson(ctx));
+    const controller = new AbortController();
+    const cancellation = () => new DOMException(
+      'delivery spreadsheet client disconnected',
+      'AbortError',
+    );
+    const onRequestAborted = () => controller.abort(cancellation());
+    const onResponseClosed = () => {
+      if (!ctx.res.writableEnded) controller.abort(cancellation());
+    };
+    ctx.req.once('aborted', onRequestAborted);
+    ctx.res.once('close', onResponseClosed);
+    let releasePreparation = () => {};
+    let staged = null;
+    try {
+      releasePreparation = deliveryExportRegistry.beginPreparation(
+        actor,
+        (reason) => controller.abort(reason),
+      );
+      await initialDeliveryExportCleanup;
+      const taskIds = await resolveDeliveryExportTaskIds(repository, request, actor);
+      staged = await stageDeliveryPoolSpreadsheet(repository, storageRoot, taskIds, {
+        signal: controller.signal,
+      });
+      await assertDeliveryBindingsReady(repository, staged.bindings);
+      await assertCurrentActorIdentity(repository, actor);
+      controller.signal.throwIfAborted();
+      const fileName = request.scope === 'ALL_READY'
+        ? '交付池-全部文章与图片.xlsx'
+        : '交付池-已选文章与图片.xlsx';
+      const prepared = deliveryExportRegistry.issue(staged, actor, {
+        fileName,
+        taskCount: staged.taskCount,
+        bindings: staged.bindings,
+      });
+      staged = null;
+      json(ctx, 201, prepared);
+    } finally {
+      releasePreparation();
+      ctx.req.off('aborted', onRequestAborted);
+      ctx.res.off('close', onResponseClosed);
+      await staged?.cleanup().catch(() => {});
+    }
+  });
+  router.head('/v1/delivery-pool/xlsx/:downloadId', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    const record = assertDeliveryExportArtifact(
+      await deliveryExportRegistry.peek(ctx.params.downloadId, actor),
+      'spreadsheetPath',
+    );
+    await assertDeliveryBindingsReady(repository, record.bindings);
+    await assertCurrentActorIdentity(repository, actor);
+    ctx.status = 200;
+    ctx.type = DELIVERY_SPREADSHEET_MEDIA_TYPE;
+    ctx.length = record.staged.byteSize;
+    ctx.set('X-Delivery-Task-Count', String(record.taskCount));
+    ctx.set('Content-Disposition', `attachment; filename="delivery-pool.xlsx"; filename*=UTF-8''${encodeURIComponent(record.fileName)}`);
+  });
+  router.get('/v1/delivery-pool/xlsx/:downloadId', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    const { downloadId } = ctx.params;
+    assertDeliveryExportArtifact(
+      await deliveryExportRegistry.peek(downloadId, actor),
+      'spreadsheetPath',
+    );
+    const record = await deliveryExportRegistry.take(downloadId, actor);
+    try {
+      await assertDeliveryBindingsReady(repository, record.bindings);
+      await assertCurrentActorIdentity(repository, actor);
+      record.downloadSignal.throwIfAborted();
+    } catch (error) {
+      await deliveryExportRegistry.complete(downloadId, record);
+      throw error;
+    }
+    const content = new Transform({
+      transform(chunk, encoding, callback) {
+        deliveryExportRegistry.touch(downloadId, record);
+        callback(null, chunk);
+      },
+    });
+    const source = createReadStream(record.staged.spreadsheetPath, {
+      signal: record.downloadSignal,
+    });
+    void pipeline(source, content, { signal: record.downloadSignal }).catch((error) => {
+      if (!content.destroyed) content.destroy(error);
+    });
+    let cleanupStarted = false;
+    const onResponseClosed = () => {
+      if (!ctx.res.writableEnded) {
+        record.downloadController.abort(
+          new DOMException('delivery spreadsheet client disconnected', 'AbortError'),
+        );
+      }
+    };
+    ctx.res.once('close', onResponseClosed);
+    content.once('close', () => {
+      if (cleanupStarted) return;
+      cleanupStarted = true;
+      ctx.res.off('close', onResponseClosed);
+      void deliveryExportRegistry.complete(downloadId, record).catch((error) => {
+        console.error('failed to clean staged delivery spreadsheet', error);
+      });
+    });
+    ctx.status = 200;
+    ctx.type = DELIVERY_SPREADSHEET_MEDIA_TYPE;
+    ctx.length = record.staged.byteSize;
+    ctx.set('X-Delivery-Task-Count', String(record.taskCount));
+    ctx.set('Content-Disposition', `attachment; filename="delivery-pool.xlsx"; filename*=UTF-8''${encodeURIComponent(record.fileName)}`);
     ctx.body = content;
   });
   router.get('/v1/task-counts', async (ctx) => {

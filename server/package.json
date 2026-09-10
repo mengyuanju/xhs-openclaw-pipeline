@@ -16,12 +16,13 @@
     "test": "node --test"
   },
   "dependencies": {
+    "@excel.js/exceljs": "0.15.0",
     "@koa/bodyparser": "^6.1.0",
     "@koa/router": "^15.7.0",
     "archiver": "^8.0.0",
     "jszip": "^3.10.1",
     "koa": "^3.2.1",
     "pg": "^8.23.0",
-    "sharp": "0.35.3"
+    "sharp": "0.35.4"
   }
 }

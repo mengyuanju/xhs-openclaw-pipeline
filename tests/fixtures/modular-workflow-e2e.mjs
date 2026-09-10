@@ -296,7 +296,11 @@ const controlPlane = createServer(async (req, res) => {
       send(res, 200, {
         ok: true,
         fixture: true,
-        capabilities: { taskAssignmentVersion: 3, finalDeliveryVersion: 2 },
+        capabilities: {
+          taskAssignmentVersion: 3,
+          finalDeliveryVersion: 2,
+          deliverySpreadsheetVersion: 1,
+        },
       });
       return;
     }

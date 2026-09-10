@@ -6,6 +6,7 @@
 .toolbar { display: flex; align-items: end; justify-content: space-between; gap: 14px; padding: 16px 18px; }
 .toolbarGroup { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; }
 .toolbarGroup label { display: grid; gap: 6px; color: var(--muted); font-size: 11px; font-weight: 750; }
+.filterSelect { min-width: 148px; }
 .search { width: min(360px, 64vw); }
 .table { margin: 0 18px 18px; }
 .table table { min-width: 900px; }

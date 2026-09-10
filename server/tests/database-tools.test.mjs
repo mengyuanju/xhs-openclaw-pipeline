@@ -1,11 +1,17 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { configuration, parseOptions, packagePath, quoteId, rowBatches, safeError } from '../scripts/database-common.mjs';
 import { assertCompatibleTable, assertEmptyDatabase, identityCheckSql, mergeSql, upgradeDatabase } from '../scripts/manage-database.mjs';
-import { loadMigrations, normalizeMigrationSql, pendingMigrations } from '../src/database-migrations.mjs';
+import {
+  LEGACY_MIGRATION_UPGRADES,
+  loadMigrations,
+  normalizeMigrationSql,
+  pendingMigrations,
+  sha256,
+} from '../src/database-migrations.mjs';
 
 test('database options require explicit apply and reject unknown or malformed arguments', () => {
   assert.deepEqual(parseOptions(['--from=backup'], ['from','apply']), { from: 'backup' });
@@ -57,6 +63,71 @@ test('migration baseline has no nested transactions and detects checksum drift',
   assert.doesNotMatch(migrations[0].sql, /^BEGIN;|COMMIT;\s*$/u);
   const fake = { query: async (sql) => ({ rows: sql.includes('to_regclass') ? [{ name: 'present' }] : [{ id: migrations[0].id, sha256: 'changed' }] }) };
   await assert.rejects(pendingMigrations(fake, migrations), /missing or changed/u);
+});
+
+test('known legacy delivery checksums only allow their exact forward repair path', async () => {
+  const migrations = await loadMigrations();
+  const migrationById = new Map(migrations.map((migration) => [migration.id, migration]));
+  const legacyFiles = new Map([
+    ['0026_final_delivery', new URL('./fixtures/0026_final_delivery.legacy.sql', import.meta.url)],
+    ['0027_delivery_archive_integrity', new URL('./fixtures/0027_delivery_archive_integrity.legacy.sql', import.meta.url)],
+  ]);
+  for (const upgrade of LEGACY_MIGRATION_UPGRADES) {
+    const legacySql = normalizeMigrationSql(await readFile(legacyFiles.get(upgrade.id), 'utf8'));
+    assert.equal(sha256(legacySql), upgrade.fromSha256);
+    assert.equal(migrationById.get(upgrade.id)?.sha256, upgrade.toSha256);
+    assert.equal(migrationById.get(upgrade.repairedBy)?.sha256, upgrade.repairSha256);
+  }
+
+  const legacyApplied = LEGACY_MIGRATION_UPGRADES.map(({ id, fromSha256 }) => ({
+    id,
+    sha256: fromSha256,
+  }));
+  const clientWith = (rows) => ({
+    query: async (sql) => ({
+      rows: sql.includes('to_regclass') ? [{ name: 'present' }] : rows,
+    }),
+  });
+  const pending = await pendingMigrations(clientWith(legacyApplied), migrations);
+  assert.equal(pending.some(({ id }) => id === '0026_final_delivery'), false);
+  assert.equal(pending.some(({ id }) => id === '0027_delivery_archive_integrity'), false);
+  assert.equal(pending.some(({ id }) => id === '0029_final_delivery_compatibility_repair'), true);
+
+  const withoutRepair = migrations.filter(({ id }) => id !== '0029_final_delivery_compatibility_repair');
+  await assert.rejects(
+    pendingMigrations(clientWith([legacyApplied[0]]), withoutRepair),
+    /0026_final_delivery is missing or changed/u,
+  );
+  const tamperedRepair = migrations.map((migration) => (
+    migration.id === '0029_final_delivery_compatibility_repair'
+      ? { ...migration, sha256: '0'.repeat(64) }
+      : migration
+  ));
+  await assert.rejects(
+    pendingMigrations(clientWith([legacyApplied[0]]), tamperedRepair),
+    /0026_final_delivery is missing or changed/u,
+  );
+  await assert.rejects(
+    pendingMigrations(clientWith([{ id: '0026_final_delivery', sha256: '1'.repeat(64) }]), migrations),
+    /0026_final_delivery is missing or changed/u,
+  );
+  await assert.rejects(
+    pendingMigrations(clientWith([{ id: '0025_copy_sampling', sha256: legacyApplied[0].sha256 }]), migrations),
+    /0025_copy_sampling is missing or changed/u,
+  );
+
+  const reverseSource = migrations.map((migration) => (
+    migration.id === '0026_final_delivery'
+      ? { ...migration, sha256: legacyApplied[0].sha256 }
+      : migration
+  ));
+  await assert.rejects(
+    pendingMigrations(clientWith([{
+      id: '0026_final_delivery',
+      sha256: migrationById.get('0026_final_delivery').sha256,
+    }]), reverseSource),
+    /0026_final_delivery is missing or changed/u,
+  );
 });
 
 test('failed-image migration only requeues tasks and preserves approved copy and failure history', async () => {

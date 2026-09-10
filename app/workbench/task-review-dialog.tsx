@@ -482,7 +482,7 @@ export function TaskReviewDialog({
     .filter((assetId): assetId is number => Number.isSafeInteger(assetId));
   const imageSetComplete = assets.length > 0 && (expectedImageAssetIds.length === 0
     || expectedImageAssetIds.every(assetId => assets.some(asset => asset.id === assetId)));
-  const imageRatingComplete = ratingFeedbackComplete(imageScore, imageReasons, imageReviewNote);
+  const imageRatingComplete = imageScore !== null;
   const humanQualitySettingsUnavailable = humanQualitySettingsLoading || Boolean(humanQualitySettingsError);
   const humanRatingSettings = humanQualitySettings ?? DEFAULT_SETTINGS;
   const scoreDefinitions = humanRatingSettings.scoreDefinitions;
@@ -490,6 +490,7 @@ export function TaskReviewDialog({
   const imageReasonOptions = humanRatingSettings.imageReasons;
   const showCopyScoreDescriptions = humanRatingSettings.copyReviewDisplay.showScoreDescriptions;
   const showCopyDeductionReasons = humanRatingSettings.copyReviewDisplay.showDeductionReasons;
+  const showImageDeductionReasons = humanRatingSettings.imageReviewDisplay.showDeductionReasons;
   const copyFeedbackRequirement = showCopyDeductionReasons ? '扣分原因或评分说明' : '评分说明';
   const imageScoreDefinition = scoreDefinitions.find(definition => definition.score === imageScore);
   const canApproveImages = imageSetComplete && imageRatingComplete && isPassingHumanScore(imageScore)
@@ -740,7 +741,7 @@ export function TaskReviewDialog({
       return;
     }
     if (!imageRatingComplete) {
-      setError(imageScore === null ? '请先完成整套图片人工评分。' : '评分低于 3 分时，扣分原因或评分说明至少填写一项。');
+      setError('请先完成整套图片人工评分。');
       return;
     }
     if (decision === 'APPROVE' && !canApproveImages) {
@@ -987,6 +988,8 @@ export function TaskReviewDialog({
                     reasons={imageReasons}
                     note={imageReviewNote}
                     notePlaceholder={humanRatingSettings.noteGuidance.imagePlaceholder}
+                    showReasonOptions={showImageDeductionReasons}
+                    feedbackRequired={false}
                     disabled={loading || submitting || humanQualitySettingsUnavailable || Boolean(savedImageAssessment)}
                     onToggleReason={(code) => { toggleImageReason(code); setError(''); }}
                     onNoteChange={(note) => { setImageReviewNote(note); setError(''); }}
@@ -1014,12 +1017,12 @@ export function TaskReviewDialog({
                     ? '已达到放行标准，也可根据需要重试或废弃。'
                     : '未达到放行标准，请选择重试生图或废弃。'}
                 </p>}
-                <HumanAssessmentHistory assessments={imageAssessments} scoreDefinitions={scoreDefinitions} reasonOptions={imageReasonOptions} />
+                <HumanAssessmentHistory assessments={imageAssessments} scoreDefinitions={scoreDefinitions} reasonOptions={imageReasonOptions} showReasonOptions={showImageDeductionReasons} />
               </div>}
               {!canReviewImages && imageAssessments.length > 0 && <div className="human-rating-readonly">
                 <span>当前图集人工评分</span>
                 <HumanScoreBadge score={imageAssessments.at(-1)!.score} />
-                <HumanAssessmentHistory assessments={imageAssessments} scoreDefinitions={scoreDefinitions} reasonOptions={imageReasonOptions} />
+                <HumanAssessmentHistory assessments={imageAssessments} scoreDefinitions={scoreDefinitions} reasonOptions={imageReasonOptions} showReasonOptions={showImageDeductionReasons} />
               </div>}
               {activeAsset && activeAssetIndex !== null && <ImagePreview
                 hideTrigger

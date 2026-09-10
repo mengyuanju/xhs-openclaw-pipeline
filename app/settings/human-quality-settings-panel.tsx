@@ -32,6 +32,7 @@ function editableSignature(settings: HumanQualitySettings, copyText: string, ima
     imageLabels: imageText.split(/\r?\n/u).map((label) => label.trim()).filter(Boolean),
     noteGuidance: settings.noteGuidance,
     copyReviewDisplay: settings.copyReviewDisplay,
+    imageReviewDisplay: settings.imageReviewDisplay,
   });
 }
 
@@ -57,6 +58,7 @@ export function HumanQualitySettingsPanel({
       scoreDefinitions: settings.scoreDefinitions.map((definition) => ({ ...definition })),
       noteGuidance: { ...settings.noteGuidance },
       copyReviewDisplay: { ...settings.copyReviewDisplay },
+      imageReviewDisplay: { ...settings.imageReviewDisplay },
     });
     setCopyText(nextCopyText);
     setImageText(nextImageText);
@@ -101,6 +103,17 @@ export function HumanQualitySettingsPanel({
     } : settings);
   }
 
+  function updateImageReviewDisplay(
+    field: keyof HumanQualitySettings['imageReviewDisplay'],
+    value: boolean,
+  ) {
+    beginEdit();
+    setCurrent((settings) => settings ? {
+      ...settings,
+      imageReviewDisplay: { ...settings.imageReviewDisplay, [field]: value },
+    } : settings);
+  }
+
   useEffect(() => {
     let active = true;
     void apiRequest<HumanQualitySettings>('/api/human-quality-settings')
@@ -125,6 +138,7 @@ export function HumanQualitySettingsPanel({
           imageReasons: optionsFrom(imageText, current.imageReasons),
           noteGuidance: current.noteGuidance,
           copyReviewDisplay: current.copyReviewDisplay,
+          imageReviewDisplay: current.imageReviewDisplay,
         }),
       });
       applySettings(settings);
@@ -190,17 +204,28 @@ export function HumanQualitySettingsPanel({
 
       <div className="human-quality-config-block">
         <div className="human-quality-config-heading">
-          <div><span>02</span><div><h3>扣分原因</h3><p>每行一个原因，最多 10 项、每项最多 50 字；删除或改名不会改变历史评分记录。</p></div></div>
+          <div><span>02</span><div><h3>扣分原因</h3><p>每行一个原因，最多 10 项、每项最多 50 字；文案审核和图文终审可分别关闭展示。</p></div></div>
         </div>
-        <label className="switch-field">
-          <Switch
-            aria-label="文案审核中显示扣分原因"
-            checked={current.copyReviewDisplay.showDeductionReasons}
-            disabled={busy}
-            onChange={(event) => updateCopyReviewDisplay('showDeductionReasons', event.target.checked)}
-          />
-          <span>文案审核中显示扣分原因</span>
-        </label>
+        <div className="human-quality-display-switches">
+          <label className="switch-field">
+            <Switch
+              aria-label="文案审核中显示扣分原因"
+              checked={current.copyReviewDisplay.showDeductionReasons}
+              disabled={busy}
+              onChange={(event) => updateCopyReviewDisplay('showDeductionReasons', event.target.checked)}
+            />
+            <span>文案审核中显示扣分原因</span>
+          </label>
+          <label className="switch-field">
+            <Switch
+              aria-label="图文终审中显示扣分原因"
+              checked={current.imageReviewDisplay.showDeductionReasons}
+              disabled={busy}
+              onChange={(event) => updateImageReviewDisplay('showDeductionReasons', event.target.checked)}
+            />
+            <span>图文终审中显示扣分原因</span>
+          </label>
+        </div>
         <div className="form-grid human-reason-config-grid">
           <div className="field">
             <label htmlFor="copy-quality-reasons">文案扣分原因</label>
