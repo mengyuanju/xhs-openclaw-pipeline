@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
-import { Input, Textarea } from '@/components/ui/input';
+import { Input, Switch, Textarea } from '@/components/ui/input';
 
 import { apiRequest } from '../components/api-client';
 import type {
@@ -31,6 +31,7 @@ function editableSignature(settings: HumanQualitySettings, copyText: string, ima
     copyLabels: copyText.split(/\r?\n/u).map((label) => label.trim()).filter(Boolean),
     imageLabels: imageText.split(/\r?\n/u).map((label) => label.trim()).filter(Boolean),
     noteGuidance: settings.noteGuidance,
+    copyReviewDisplay: settings.copyReviewDisplay,
   });
 }
 
@@ -55,6 +56,7 @@ export function HumanQualitySettingsPanel({
       ...settings,
       scoreDefinitions: settings.scoreDefinitions.map((definition) => ({ ...definition })),
       noteGuidance: { ...settings.noteGuidance },
+      copyReviewDisplay: { ...settings.copyReviewDisplay },
     });
     setCopyText(nextCopyText);
     setImageText(nextImageText);
@@ -88,6 +90,17 @@ export function HumanQualitySettingsPanel({
     } : settings);
   }
 
+  function updateCopyReviewDisplay(
+    field: keyof HumanQualitySettings['copyReviewDisplay'],
+    value: boolean,
+  ) {
+    beginEdit();
+    setCurrent((settings) => settings ? {
+      ...settings,
+      copyReviewDisplay: { ...settings.copyReviewDisplay, [field]: value },
+    } : settings);
+  }
+
   useEffect(() => {
     let active = true;
     void apiRequest<HumanQualitySettings>('/api/human-quality-settings')
@@ -111,6 +124,7 @@ export function HumanQualitySettingsPanel({
           copyReasons: optionsFrom(copyText, current.copyReasons),
           imageReasons: optionsFrom(imageText, current.imageReasons),
           noteGuidance: current.noteGuidance,
+          copyReviewDisplay: current.copyReviewDisplay,
         }),
       });
       applySettings(settings);
@@ -146,6 +160,15 @@ export function HumanQualitySettingsPanel({
           <div><span>01</span><div><h3>评分档位说明</h3><p>只能修改审核页展示的名称和说明，不能增加档位或改变数值。</p></div></div>
           <small>固定档位：1 / 2 / 2.5 / 3</small>
         </div>
+        <label className="switch-field">
+          <Switch
+            aria-label="文案审核中显示评分档位说明"
+            checked={current.copyReviewDisplay.showScoreDescriptions}
+            disabled={busy}
+            onChange={(event) => updateCopyReviewDisplay('showScoreDescriptions', event.target.checked)}
+          />
+          <span>文案审核中显示评分档位说明</span>
+        </label>
         <div className="human-score-definition-grid">
           {current.scoreDefinitions.map((definition) => <fieldset key={definition.score} className="human-score-definition" data-score={definition.score}>
             <legend className="sr-only">{definition.score} 分评分档位</legend>
@@ -169,6 +192,15 @@ export function HumanQualitySettingsPanel({
         <div className="human-quality-config-heading">
           <div><span>02</span><div><h3>扣分原因</h3><p>每行一个原因，最多 10 项、每项最多 50 字；删除或改名不会改变历史评分记录。</p></div></div>
         </div>
+        <label className="switch-field">
+          <Switch
+            aria-label="文案审核中显示扣分原因"
+            checked={current.copyReviewDisplay.showDeductionReasons}
+            disabled={busy}
+            onChange={(event) => updateCopyReviewDisplay('showDeductionReasons', event.target.checked)}
+          />
+          <span>文案审核中显示扣分原因</span>
+        </label>
         <div className="form-grid human-reason-config-grid">
           <div className="field">
             <label htmlFor="copy-quality-reasons">文案扣分原因</label>

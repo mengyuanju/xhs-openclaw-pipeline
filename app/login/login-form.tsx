@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { useState, type FormEvent } from 'react';
 
 import { apiRequest } from '../components/api-client';
+import { resolveLoginReturnPath } from './return-path';
 
 export function LoginForm({ nextPath, passwordChanged = false }: { nextPath: string; passwordChanged?: boolean }) {
   const [isBusy, setIsBusy] = useState(false);
@@ -22,12 +23,12 @@ export function LoginForm({ nextPath, passwordChanged = false }: { nextPath: str
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ username: form.get('username'), password: form.get('password') }),
       });
-      const requested = nextPath.startsWith('/') && !nextPath.startsWith('//') ? nextPath : result.homePath;
-      const permitted = result.role === 'ADMIN'
-        || requested === '/profile'
-        || requested.startsWith('/workbench')
-        || (result.role === 'REVIEWER' && requested.startsWith('/knowledge'));
-      const target = result.mustChangePassword ? '/profile' : permitted ? requested : result.homePath;
+      const target = resolveLoginReturnPath({
+        requestedPath: nextPath,
+        homePath: result.homePath,
+        role: result.role,
+        mustChangePassword: result.mustChangePassword,
+      });
       window.location.assign(target);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '登录失败');

@@ -1,0 +1,21 @@
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.card { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.card[data-wide="true"] { grid-column: 1 / -1; }
+.cardText { display: grid; gap: 5px; min-width: 0; }
+.cardText label { color: var(--ink); font-size: 13px; font-weight: 750; cursor: pointer; }
+.cardText p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.rate { display: grid; grid-template-columns: minmax(0, 1fr) 112px; align-items: end; gap: 14px; grid-column: 1 / -1; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-soft, #f8f6f2); }
+.rateText { display: grid; gap: 6px; }
+.rateText label { font-size: 13px; font-weight: 750; }
+.rateText p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.rateControl { display: grid; gap: 6px; }
+.rateControl span { color: var(--muted); font-size: 10px; text-align: right; }
+.actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 9px; padding-top: 2px; }
+.modeSummary { display: flex; flex-wrap: wrap; gap: 7px; }
+
+@media (max-width: 700px) {
+  .grid { grid-template-columns: minmax(0, 1fr); }
+  .card[data-wide="true"], .rate { grid-column: auto; }
+  .rate { grid-template-columns: minmax(0, 1fr); }
+  .rateControl span { text-align: left; }
+}

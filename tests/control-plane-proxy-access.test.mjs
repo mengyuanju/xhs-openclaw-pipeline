@@ -9,6 +9,25 @@ test('ordinary users can check resume capabilities without gaining management ac
     assert.equal(userCanAccessControlPlaneRoute(path, 'GET'), true);
   }
   assert.equal(userCanAccessControlPlaneRoute('/v1/human-quality-settings', 'PUT'), false);
+  assert.equal(userCanAccessControlPlaneRoute('/v1/workflow-quality-settings', 'GET'), true);
+  assert.equal(userCanAccessControlPlaneRoute('/v1/workflow-quality-settings', 'PUT'), false);
+  assert.equal(userCanAccessControlPlaneRoute('/v1/delivery-pool', 'GET'), true);
+  assert.equal(userCanAccessControlPlaneRoute('/v1/delivery-pool', 'POST'), false);
+  assert.equal(userCanAccessControlPlaneRoute('/v1/delivery-pool/archive', 'POST'), false);
+  assert.equal(userCanAccessControlPlaneRoute('/v1/delivery-pool/archive/token', 'GET'), false);
+  assert.equal(userCanAccessControlPlaneRoute('/v1/tasks', 'POST'), false);
+  assert.equal(userCanAccessControlPlaneRoute('/v1/tasks', 'GET'), true);
+  assert.equal(userCanAccessControlPlaneRoute('/v1/tasks/7/retry', 'POST'), true);
+  for (const [path, method] of [
+    ['/v1/query-packages', 'GET'],
+    ['/v1/query-packages', 'POST'],
+    ['/v1/query-packages/7/screening', 'PUT'],
+    ['/v1/query-packages/7/production-batches', 'POST'],
+  ]) assert.equal(userCanAccessControlPlaneRoute(path, method), true);
+  assert.equal(userCanAccessControlPlaneRoute('/v1/query-packages/7/assignee', 'PATCH'), false);
+  assert.equal(userCanAccessControlPlaneRoute('/v1/query-packages/7/abandon', 'POST'), false);
+  assert.equal(userCanAccessControlPlaneRoute('/v1/query-packages/7/permanent-delete-preview', 'GET'), false);
+  assert.equal(userCanAccessControlPlaneRoute('/v1/query-packages/7/permanent', 'DELETE'), false);
   for (const path of ['/v1/settings', '/v1/users', '/v1/prompts', '/health/private', '/v1/tasks-admin']) {
     assert.equal(userCanAccessControlPlaneRoute(path, 'GET'), false);
   }

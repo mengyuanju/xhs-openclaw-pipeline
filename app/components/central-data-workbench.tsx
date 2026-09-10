@@ -12,6 +12,7 @@ import { RemoteLayoutPresetsSettings } from '../settings/layout-presets-settings
 import { LayoutCatalogSettings } from '../settings/layout-catalog-settings';
 import { HumanQualitySettingsPanel } from '../settings/human-quality-settings-panel';
 import { QualitySettingsOverview } from '../settings/quality-settings-overview';
+import { WorkflowQualitySettingsPanel } from '../settings/workflow-quality-settings-panel';
 import { SettingsWorkspace, type SettingsSectionId } from '../settings/settings-workspace';
 import { normalizeWebSearchSettings } from '../../src/web-search-config.mjs';
 
@@ -89,7 +90,7 @@ export function CentralDataWorkbench() {
           id: 'quality',
           title: '质量与审核',
           description: '评分标准、扣分原因与说明',
-          children: <><QualitySettingsOverview /><HumanQualitySettingsPanel /></>,
+          children: <><WorkflowQualitySettingsPanel /><QualitySettingsOverview /><HumanQualitySettingsPanel /></>,
         },
         {
           id: 'image',

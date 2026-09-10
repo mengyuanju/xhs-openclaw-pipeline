@@ -31,6 +31,44 @@ import {
   normalizeAutoAssignmentLimit,
   normalizeAutoAssignmentWorkerStatus,
 } from './task-auto-assignment-domain.mjs';
+import {
+  abandonQueryPackage,
+  assignQueryPackage,
+  createQueryPackage,
+  createQueryPackageProductionBatch,
+  getQueryPackage,
+  listQueryPackages,
+  permanentlyDeleteQueryPackage,
+  previewPermanentQueryPackageDeletion,
+  updateQueryPackageScreening,
+} from './query-packages.mjs';
+import {
+  batchReturnCopyQa,
+  freezeCopySamplingBatch,
+  getCopyQaItem,
+  getCopyQaBatchReturnPreview,
+  getCopyQaStatistics,
+  getProductionBatchSamplingReadiness,
+  listCopyQaItems,
+  passCopyQaItem,
+  releaseCopySamplingBatch,
+  releaseCopyQaFreeze,
+  returnCopyQaItem,
+  routeManualCopyApproval,
+  attemptAutomaticCopySamplingFreeze,
+} from './copy-quality-control.mjs';
+import {
+  readWorkflowQualitySettings,
+  updateWorkflowQualitySettings,
+} from './workflow-quality-settings.mjs';
+import {
+  assertTaskReadyForDelivery,
+  assertTasksReadyForDelivery,
+  createReadyDeliveryEntry,
+  listAllDeliveryPoolTaskIds,
+  listDeliveryPool,
+  withdrawReadyDeliveryEntries,
+} from './final-delivery.mjs';
 
 import pg from 'pg';
 
@@ -88,14 +126,15 @@ function taskStateOrder(column) {
   if (!['state', 'page.state'].includes(column)) throw new TypeError('task state order column is invalid');
   return `CASE
     WHEN ${column} = 'COPY_REVIEW_PENDING' THEN 1
-    WHEN ${column} = 'MANUAL_ARCHIVE' THEN 2
-    WHEN ${column} = 'COPY_RUNNING' THEN 3
-    WHEN ${column} = 'IMAGE_RUNNING' THEN 4
-    WHEN ${column} IN ('COPY_FAILED', 'IMAGE_FAILED') THEN 5
-    WHEN ${column} IN ('COPY_QUEUED', 'IMAGE_QUEUED') THEN 6
-    WHEN ${column} = 'REVIEWED' THEN 7
-    WHEN ${column} = 'CANCELLED' THEN 8
-    ELSE 9
+    WHEN ${column} = 'COPY_QC_PENDING' THEN 2
+    WHEN ${column} = 'MANUAL_ARCHIVE' THEN 3
+    WHEN ${column} = 'COPY_RUNNING' THEN 4
+    WHEN ${column} = 'IMAGE_RUNNING' THEN 5
+    WHEN ${column} IN ('COPY_FAILED', 'IMAGE_FAILED') THEN 6
+    WHEN ${column} IN ('COPY_QUEUED', 'IMAGE_QUEUED') THEN 7
+    WHEN ${column} = 'REVIEWED' THEN 8
+    WHEN ${column} = 'CANCELLED' THEN 9
+    ELSE 10
   END`;
 }
 
@@ -115,6 +154,15 @@ function taskFrom(row) {
       : Number(row.requested_image_count),
     aiDisclosureEnabled: row.ai_disclosure_enabled ?? true,
     skipCopyReview: row.skip_copy_review === true,
+    sourceQueryPackageId: row.source_query_package_id === undefined || row.source_query_package_id === null
+      ? null : Number(row.source_query_package_id),
+    sourceQueryPackageName: row.source_query_package_name ?? null,
+    sourceQueryPackageExternalId: row.source_query_package_external_id ?? null,
+    productionBatchId: row.production_batch_id === undefined || row.production_batch_id === null
+      ? null : Number(row.production_batch_id),
+    deliveryStatus: row.delivery_ready === true ? 'READY' : null,
+    mandatoryCopyQc: row.mandatory_copy_qc === true,
+    mandatoryCopyQcOrigin: row.mandatory_copy_qc_origin ?? null,
     state: row.state,
     cancelledFromState: row.cancelled_from_state ?? null,
     imageReviewedAt: row.image_reviewed_at ?? null,
@@ -206,6 +254,7 @@ async function assertPermanentlyDeletableTask(client, taskId) {
       throw new ControlPlaneConflictError('TASK_CANCELLATION_SETTLING', '执行机仍在确认取消，请在取消后等待3分钟再永久删除');
     }
   }
+  return task.rows[0];
 }
 
 function normalizedDisplayName(value) {
@@ -324,8 +373,47 @@ function contentWithImagePlanRetry(content, imagePlan, {
   };
 }
 
+function normalizedReviewCopy(content, imagePlan) {
+  const original = normalizeJson(content, 'copy revision content', 5_000_000);
+  return normalizeCopyReviewEdits({
+    copy: original.copy ?? original.reviewed?.copy ?? original.post,
+    // The caller only needs the normalized copy fields. Reusing the already
+    // normalized submitted plan avoids assigning edit semantics to the plan.
+    imagePlan: imagePlan ?? original.imagePlan ?? original.reviewed?.imagePlan ?? original.post?.imagePlan,
+  }).copy;
+}
+
+async function copyDiffersFromMachineAncestor(client, {
+  taskId,
+  revisionId,
+  revisionContent,
+  edits,
+}) {
+  const machine = await client.query(`
+    WITH RECURSIVE copy_lineage AS (
+      SELECT id, task_id, execution_id, parent_revision_id, content, 0 AS depth
+      FROM copy_revisions
+      WHERE id = $1 AND task_id = $2
+      UNION ALL
+      SELECT parent.id, parent.task_id, parent.execution_id, parent.parent_revision_id,
+        parent.content, child.depth + 1
+      FROM copy_revisions AS parent
+      JOIN copy_lineage AS child ON parent.id = child.parent_revision_id
+      WHERE parent.task_id = $2 AND child.depth < 1000
+    )
+    SELECT content FROM copy_lineage
+    WHERE execution_id IS NOT NULL
+    ORDER BY depth
+    LIMIT 1
+  `, [revisionId, taskId]);
+  if (!machine.rows[0]) return null;
+  const finalCopy = edits?.copy ?? normalizedReviewCopy(revisionContent);
+  return !isDeepStrictEqual(finalCopy, normalizedReviewCopy(machine.rows[0].content));
+}
+
 function revisionFrom(row) {
   if (!row) return null;
+  const rework = row.content?.qualityReturn ?? row.content?.finalRework ?? null;
   return {
     id: Number(row.id),
     taskId: Number(row.task_id),
@@ -335,6 +423,14 @@ function revisionFrom(row) {
     approvedAt: row.approved_at,
     approvalMode: row.approval_mode ?? (row.approved_at ? 'MANUAL' : null),
     approvedByNodeId: row.approved_by_node_id,
+    parentRevisionId: row.parent_revision_id === undefined || row.parent_revision_id === null
+      ? null : Number(row.parent_revision_id),
+    revisionOrigin: row.revision_origin ?? null,
+    copyContentChangedFromMachine: row.copy_content_changed_from_machine === true,
+    copyReworkSatisfied: row.copy_rework_satisfied === true,
+    reworkOrigin: rework?.origin ?? row.revision_origin ?? null,
+    reworkReasonCodes: Array.isArray(rework?.reasonCodes) ? rework.reasonCodes : [],
+    reworkNote: rework?.note ?? null,
     createdAt: row.created_at,
   };
 }
@@ -653,6 +749,7 @@ function qualityAssessmentFrom(row) {
     reasonCodes: row.reason_codes ?? [],
     problemAssetIds: (row.problem_asset_ids ?? []).map(Number),
     note: row.note ?? null,
+    ...(row.rework_target ? { reworkTarget: row.rework_target } : {}),
     reviewerUsername: row.reviewer_username,
     reviewSessionId: row.review_session_id,
     createdAt: row.created_at,
@@ -690,19 +787,19 @@ async function claimQualityReviewSubmission(client, {
 async function insertQualityAssessment(client, {
   taskId, stage, copyRevisionId = null, imageRunId = null, scoreX10,
   ratingContext, action, reasonCodes = [], problemAssetIds = [], note = null,
-  reviewerUsername, reviewSessionId, requestFingerprint,
+  reworkTarget = null, reviewerUsername, reviewSessionId, requestFingerprint,
 }) {
   const result = await client.query(`
     INSERT INTO human_quality_assessments(
       task_id, stage, copy_revision_id, image_run_id, score_x10,
       rating_context, action, reason_codes, problem_asset_ids, note,
-      reviewer_username, review_session_id, request_fingerprint
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      rework_target, reviewer_username, review_session_id, request_fingerprint
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
     RETURNING *
   `, [
     taskId, stage, copyRevisionId, imageRunId, scoreX10,
     ratingContext, action, reasonCodes, problemAssetIds, note,
-    reviewerUsername, reviewSessionId, requestFingerprint,
+    reworkTarget, reviewerUsername, reviewSessionId, requestFingerprint,
   ]);
   return qualityAssessmentFrom(result.rows[0]);
 }
@@ -921,6 +1018,60 @@ export class PostgresControlPlaneRepository {
   recordModelCall(executionId, callId, input) { return saveModelCall(this.pool, executionId, callId, input); }
   listModelCalls(taskId, options) { return listModelCalls(this.pool, taskId, options); }
   getModelCall(taskId, callId) { return getModelCall(this.pool, taskId, callId); }
+  listQueryPackages(options, { actor } = {}) { return listQueryPackages(this.pool, options, actor); }
+  createQueryPackage(input, { actor } = {}) { return createQueryPackage(this.pool, input, actor); }
+  getQueryPackage(id, { actor } = {}) { return getQueryPackage(this.pool, id, actor); }
+  assignQueryPackage(id, input, { actor } = {}) { return assignQueryPackage(this.pool, id, input, actor); }
+  updateQueryPackageScreening(id, input, { actor } = {}) {
+    return updateQueryPackageScreening(this.pool, id, input, actor);
+  }
+  createQueryPackageProductionBatch(id, input, { actor } = {}) {
+    return createQueryPackageProductionBatch(this.pool, id, input, actor);
+  }
+  permanentlyDeleteQueryPackage(id, input, { actor } = {}) {
+    return permanentlyDeleteQueryPackage(this.pool, id, input, actor);
+  }
+  previewPermanentQueryPackageDeletion(id, { actor } = {}) {
+    return previewPermanentQueryPackageDeletion(this.pool, id, actor);
+  }
+  abandonQueryPackage(id, input, { actor } = {}) {
+    return abandonQueryPackage(this.pool, id, input, actor);
+  }
+  getWorkflowQualitySettings() { return readWorkflowQualitySettings(this.pool); }
+  updateWorkflowQualitySettings(input, { actor } = {}) {
+    return updateWorkflowQualitySettings(this.pool, input, actor);
+  }
+  freezeCopySamplingBatch(id, input, { actor } = {}) {
+    return freezeCopySamplingBatch(this.pool, id, input, actor);
+  }
+  getProductionBatchSamplingReadiness(id, { actor } = {}) {
+    return getProductionBatchSamplingReadiness(this.pool, id, actor);
+  }
+  listCopyQaItems(options, { actor } = {}) { return listCopyQaItems(this.pool, options, actor); }
+  getCopyQaItem(id, { actor } = {}) { return getCopyQaItem(this.pool, id, actor); }
+  passCopyQaItem(id, input, { actor } = {}) { return passCopyQaItem(this.pool, id, input, actor); }
+  returnCopyQaItem(id, input, { actor, expectedTaskId = null } = {}) {
+    return returnCopyQaItem(this.pool, id, input, actor, expectedTaskId);
+  }
+  batchReturnCopyQa(input, { actor } = {}) { return batchReturnCopyQa(this.pool, input, actor); }
+  getCopyQaBatchReturnPreview(id, { actor } = {}) {
+    return getCopyQaBatchReturnPreview(this.pool, id, actor);
+  }
+  getCopyQaStatistics({ actor } = {}) { return getCopyQaStatistics(this.pool, actor); }
+  releaseCopyQaFreeze(id, input, { actor } = {}) {
+    return releaseCopyQaFreeze(this.pool, id, input, actor);
+  }
+  assertTaskReadyForDelivery(id) { return assertTaskReadyForDelivery(this.pool, id); }
+  assertTasksReadyForDelivery(bindings) {
+    return assertTasksReadyForDelivery(this.pool, bindings);
+  }
+  listDeliveryPool(options, { actor } = {}) { return listDeliveryPool(this.pool, options, actor); }
+  listAllDeliveryPoolTaskIds({ actor } = {}) {
+    return listAllDeliveryPoolTaskIds(this.pool, actor);
+  }
+  releaseCopySamplingBatch(id, input, { actor } = {}) {
+    return releaseCopySamplingBatch(this.pool, id, input, actor);
+  }
 
   constructor({ connectionString, pool } = {}) {
     if (!pool && !connectionString) throw new TypeError('PostgreSQL connection string is required');
@@ -941,7 +1092,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3 } };
+      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, finalDeliveryVersion: 2 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -1807,6 +1958,7 @@ export class PostgresControlPlaneRepository {
     limit = 50,
     offset = 0,
     includeTotal = false,
+    excludeActiveBlindQa = false,
   } = {}) {
     const safeLimit = Math.max(1, Math.min(200, Number(limit) || 50));
     const safeOffset = Math.max(0, Number(offset) || 0);
@@ -1814,6 +1966,7 @@ export class PostgresControlPlaneRepository {
     if (typeof deduplicateQuery !== 'boolean') throw new TypeError('deduplicateQuery must be a boolean');
     if (typeof unassignedOnly !== 'boolean') throw new TypeError('unassignedOnly must be a boolean');
     if (typeof excludeUnassigned !== 'boolean') throw new TypeError('excludeUnassigned must be a boolean');
+    if (typeof excludeActiveBlindQa !== 'boolean') throw new TypeError('excludeActiveBlindQa must be a boolean');
     if (unassignedOnly && assignedToUserId !== null) throw new TypeError('assignee and unassigned filters conflict');
     if (visibleToAccountId !== null && visibleToUserId === null) {
       throw new TypeError('visibleToAccountId requires visibleToUserId');
@@ -1827,6 +1980,19 @@ export class PostgresControlPlaneRepository {
     }
     const values = [];
     const filters = [];
+    if (excludeActiveBlindQa) {
+      filters.push(`NOT EXISTS (
+        SELECT 1 FROM copy_sampling_items blind_item
+        JOIN copy_sampling_freezes blind_freeze ON blind_freeze.id = blind_item.freeze_id
+        WHERE blind_item.task_id = tasks.id
+          AND blind_freeze.blind_review_enabled = true
+          AND (
+            blind_freeze.status IN ('INSPECTING', 'REVIEW_REQUIRED')
+            OR (blind_freeze.status = 'BATCH_RETURNED'
+              AND tasks.state IN ('COPY_REVIEW_PENDING', 'COPY_QC_PENDING'))
+          )
+      )`);
+    }
     const stateFilters = normalizedTaskStates(state, states);
     if (stateFilters.length > 0) {
       values.push(stateFilters);
@@ -1944,7 +2110,13 @@ export class PostgresControlPlaneRepository {
         creator.display_name AS creator_display_name,
         creator.role AS creator_role, assignee.id AS assignee_account_id,
         assignee.display_name AS assigned_to_display_name,
-        assignee.status AS assignee_status
+        assignee.status AS assignee_status,
+        EXISTS (
+          SELECT 1 FROM delivery_entries AS current_delivery
+          WHERE current_delivery.task_id = page.id AND current_delivery.status = 'READY'
+            AND current_delivery.copy_revision_id = page.current_copy_revision_id
+            AND current_delivery.image_run_id = page.current_image_run_id
+        ) AS delivery_ready
       FROM (
         ${taskPage}
         ORDER BY ${pageOrder}
@@ -2007,7 +2179,18 @@ export class PostgresControlPlaneRepository {
     const result = await this.pool.query(`
       SELECT task.id, task.state, task.cancelled_from_state, task.assigned_at,
         task.created_by_user_id, task.assigned_to_user_id,
-        creator.id AS creator_account_id, assignee.id AS assignee_account_id
+        creator.id AS creator_account_id, assignee.id AS assignee_account_id,
+        EXISTS (
+          SELECT 1 FROM copy_sampling_items AS blind_item
+          JOIN copy_sampling_freezes AS blind_freeze ON blind_freeze.id = blind_item.freeze_id
+          WHERE blind_item.task_id = task.id
+            AND blind_freeze.blind_review_enabled = true
+            AND (
+              blind_freeze.status IN ('INSPECTING', 'REVIEW_REQUIRED')
+              OR (blind_freeze.status = 'BATCH_RETURNED'
+                AND task.state IN ('COPY_REVIEW_PENDING', 'COPY_QC_PENDING'))
+            )
+        ) AS active_blind_qa
       FROM tasks AS task
       LEFT JOIN app_users AS creator ON creator.username = task.created_by_user_id
         AND creator.created_at < task.created_at
@@ -2027,6 +2210,7 @@ export class PostgresControlPlaneRepository {
       assignedToAccountId: row.assignee_account_id === null || row.assignee_account_id === undefined
         ? null : Number(row.assignee_account_id),
       assignedAt: row.assigned_at ?? null,
+      activeBlindQa: row.active_blind_qa === true,
     } : null;
   }
 
@@ -2041,7 +2225,13 @@ export class PostgresControlPlaneRepository {
           creator.display_name AS creator_display_name,
           creator.role AS creator_role, assignee.id AS assignee_account_id,
           assignee.display_name AS assigned_to_display_name,
-          assignee.status AS assignee_status
+          assignee.status AS assignee_status,
+          EXISTS (
+            SELECT 1 FROM delivery_entries AS current_delivery
+            WHERE current_delivery.task_id = task.id AND current_delivery.status = 'READY'
+              AND current_delivery.copy_revision_id = task.current_copy_revision_id
+              AND current_delivery.image_run_id = task.current_image_run_id
+          ) AS delivery_ready
         FROM task
         LEFT JOIN app_users AS creator ON creator.username = task.created_by_user_id
           AND creator.created_at < task.created_at
@@ -2093,6 +2283,66 @@ export class PostgresControlPlaneRepository {
         createdAt: row.created_at,
       })),
       humanQualityAssessments: humanQualityAssessments.rows.map(qualityAssessmentFrom),
+    };
+  }
+
+  async getTaskForDelivery(rawTaskId) {
+    const taskId = normalizeTaskId(rawTaskId);
+    const result = await this.pool.query(`
+      SELECT
+        task.id,
+        task.state,
+        task.current_copy_revision_id,
+        task.current_image_run_id,
+        revision.content AS copy_content,
+        image_run.result AS image_result,
+        COALESCE(
+          jsonb_agg(
+            jsonb_build_object(
+              'id', asset.id,
+              'taskId', asset.task_id,
+              'imageRunId', asset.image_run_id,
+              'mediaType', asset.media_type,
+              'originalName', asset.original_name
+            ) ORDER BY asset.id
+          ) FILTER (WHERE asset.id IS NOT NULL),
+          '[]'::jsonb
+        ) AS assets
+      FROM tasks AS task
+      JOIN copy_revisions AS revision
+        ON revision.id = task.current_copy_revision_id
+      JOIN image_runs AS image_run
+        ON image_run.id = task.current_image_run_id
+      JOIN delivery_entries AS delivery
+        ON delivery.task_id = task.id AND delivery.status = 'READY'
+        AND delivery.copy_revision_id = task.current_copy_revision_id
+        AND delivery.image_run_id = task.current_image_run_id
+      LEFT JOIN assets AS asset
+        ON asset.task_id = task.id AND asset.image_run_id = task.current_image_run_id
+        AND asset.media_type LIKE 'image/%'
+      WHERE task.id = $1 AND task.state = 'REVIEWED'
+      GROUP BY task.id, task.state, task.current_copy_revision_id,
+        task.current_image_run_id, revision.content, image_run.result
+    `, [taskId]);
+    const row = result.rows[0];
+    if (!row) return null;
+    const copyRevisionId = Number(row.current_copy_revision_id);
+    const imageRunId = row.current_image_run_id;
+    return {
+      task: {
+        id: Number(row.id),
+        state: row.state,
+        currentCopyRevisionId: copyRevisionId,
+        currentImageRunId: imageRunId,
+        copyRevisions: [{ id: copyRevisionId, content: row.copy_content }],
+        imageRuns: [{ id: imageRunId, result: row.image_result }],
+        assets: Array.isArray(row.assets) ? row.assets.map((asset) => ({
+          ...asset,
+          id: Number(asset.id),
+          taskId: Number(asset.taskId),
+        })) : [],
+      },
+      binding: { taskId: Number(row.id), copyRevisionId, imageRunId },
     };
   }
 
@@ -2389,9 +2639,11 @@ export class PostgresControlPlaneRepository {
         FROM copy_revisions WHERE task_id = $1
       `, [execution.task_id])).rows[0].revision);
       const revision = await client.query(`
-        INSERT INTO copy_revisions(task_id, execution_id, revision, content, approved_at, approved_by_node_id, approval_mode)
+        INSERT INTO copy_revisions(task_id, execution_id, revision, content, approved_at, approved_by_node_id,
+          approval_mode, revision_origin, copy_content_changed_from_machine, copy_rework_satisfied)
         VALUES ($1, $2, $3, $4, CASE WHEN $5 THEN now() ELSE NULL END,
-          CASE WHEN $5 THEN $6 ELSE NULL END, CASE WHEN $5 THEN 'ADMIN_BYPASS' ELSE NULL END)
+          CASE WHEN $5 THEN $6 ELSE NULL END, CASE WHEN $5 THEN 'ADMIN_BYPASS' ELSE NULL END,
+          'GENERATION', false, false)
         RETURNING *
       `, [execution.task_id, executionId, revisionNumber, result, bypass, execution.created_by_node_id]);
       await client.query(`
@@ -2449,18 +2701,18 @@ export class PostgresControlPlaneRepository {
     if (decision === 'DISCARD' && edits) throw new TypeError('discarding copy does not accept edits');
     if (edits && actorRole !== 'ADMIN') edits = { ...edits, imagePlan: automaticReviewImagePlan(edits.imagePlan) };
     const submittedScoreX10 = rawScore === undefined ? null : normalizedHumanQualityScore(rawScore);
-    if (edits && submittedScoreX10 === null) throw new TypeError('score is required when saving edited copy');
     const currentScoreX10 = submittedScoreX10 ?? originalScoreX10;
-    if (currentScoreX10 === null) throw new TypeError('score is required');
     const originalReasonCodes = normalizedQualityReasonCodes(rawOriginalReasons ?? rawOriginalReasonCodes);
     const originalNote = normalizedQualityNote(rawOriginalNote);
     const currentReasonCodes = normalizedQualityReasonCodes(
       rawReasons ?? rawReasonCodes ?? (edits ? undefined : originalReasonCodes),
     );
     const currentNote = normalizedQualityNote(rawNote ?? (edits ? undefined : originalNote));
-    assertQualityExplanation(currentScoreX10, currentReasonCodes, currentNote);
-    if (decision === 'APPROVE' && currentScoreX10 <= 20) {
-      throw new ControlPlaneConflictError('QUALITY_SCORE_TOO_LOW', 'copy score must be 2.5 or 3 to approve');
+      if (!edits && currentScoreX10 !== null) {
+        assertQualityExplanation(currentScoreX10, currentReasonCodes, currentNote);
+      }
+      if (decision === 'APPROVE' && currentScoreX10 !== null && currentScoreX10 !== 30) {
+        throw new ControlPlaneConflictError('QUALITY_SCORE_TOO_LOW', '文案仅在最终评分为 3 分时可以通过');
     }
     if (rawAiDisclosureEnabled !== undefined && typeof rawAiDisclosureEnabled !== 'boolean') {
       throw new TypeError('aiDisclosureEnabled must be a boolean');
@@ -2497,15 +2749,93 @@ export class PostgresControlPlaneRepository {
         SELECT * FROM copy_revisions WHERE id = $1 AND task_id = $2 FOR UPDATE
       `, [revisionId, taskId]);
       if (!revision.rows[0]) throw new ControlPlaneNotFoundError('copy revision not found');
+      const mandatoryRework = task.mandatory_copy_qc === true;
+      if (!mandatoryRework && currentScoreX10 === null) throw new TypeError('score is required');
       const node = await client.query('SELECT id FROM executor_nodes WHERE id = $1', [nodeId]);
       if (!node.rows[0]) throw new ControlPlaneNotFoundError('executor node is not registered');
       const sourceIsOriginal = revision.rows[0].execution_id !== null;
-      const sourceRatingContext = sourceIsOriginal ? 'ORIGINAL' : 'EDITED';
-      if (edits && sourceIsOriginal) {
-        if (originalScoreX10 === null) throw new TypeError('originalScore is required when editing generated copy');
-        assertQualityExplanation(originalScoreX10, originalReasonCodes, originalNote, 'originalScore');
+      let sourceRatingContext = sourceIsOriginal ? 'ORIGINAL' : 'EDITED';
+      let copyChanged = false;
+      let baseScoreX10 = originalScoreX10;
+      let baseReasonCodes = originalReasonCodes;
+      let baseNote = originalNote;
+      let baseRatingAlreadyStored = false;
+      const latestAssessment = await client.query(`
+        SELECT * FROM human_quality_assessments
+        WHERE task_id = $1 AND stage = 'COPY' AND copy_revision_id = $2
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+      `, [taskId, revisionId]);
+      const baseAssessment = qualityAssessmentFrom(latestAssessment.rows[0]);
+      if (baseAssessment) {
+        baseScoreX10 = baseAssessment.scoreX10;
+        baseReasonCodes = baseAssessment.reasonCodes;
+        baseNote = baseAssessment.note;
+        sourceRatingContext = baseAssessment.ratingContext;
+        baseRatingAlreadyStored = true;
+      }
+      if (edits) {
+        copyChanged = !isDeepStrictEqual(
+          edits.copy,
+          normalizedReviewCopy(revision.rows[0].content, edits.imagePlan),
+        );
+        if (!mandatoryRework && !baseAssessment && baseScoreX10 === null) {
+          if (sourceIsOriginal) {
+            throw new TypeError('originalScore is required when editing generated copy');
+          }
+          throw new ControlPlaneConflictError(
+            'COPY_BASE_RATING_REQUIRED',
+            '当前文案版本缺少可验证的评分，不能提交修改',
+          );
+        } else if (!mandatoryRework && !baseAssessment) {
+          // Legacy manual revisions and a machine draft's first edit can both
+          // predate a stored assessment. Accept only an explicitly submitted,
+          // fully validated base rating; the edited score never stands in for it.
+          assertQualityExplanation(baseScoreX10, baseReasonCodes, baseNote, 'originalScore');
+        }
+        if (!mandatoryRework && copyChanged && ![20, 25].includes(baseScoreX10)) {
+          throw new ControlPlaneConflictError(
+            'COPY_EDIT_SCORE_NOT_ALLOWED',
+            '当前文案仅在评分为 2 分或 2.5 分时可以修改标题、正文或标签',
+          );
+        }
+      }
+      const wasCopyEdited = revision.rows[0].copy_content_changed_from_machine === true;
+      const copyReworkSatisfied = revision.rows[0].copy_rework_satisfied === true || copyChanged;
+      let finalCopyEdited = wasCopyEdited || copyChanged;
+      if (decision === 'APPROVE' && !mandatoryRework && !sourceIsOriginal && wasCopyEdited) {
+        const differsFromMachine = await copyDiffersFromMachineAncestor(client, {
+          taskId,
+          revisionId,
+          revisionContent: revision.rows[0].content,
+          edits,
+        });
+        if (differsFromMachine !== null) finalCopyEdited = differsFromMachine;
+      }
+      if (!mandatoryRework && sourceIsOriginal
+          && (baseScoreX10 ?? currentScoreX10) === 10 && decision !== 'DISCARD') {
+        throw new ControlPlaneConflictError('SCORE_ONE_REQUIRES_DISCARD', '1 分机器初稿必须直接作废');
+      }
+      if (decision === 'APPROVE' && mandatoryRework && !copyReworkSatisfied) {
+        throw new ControlPlaneConflictError('COPY_REWORK_NOT_SATISFIED', '返工文案正文尚未修改，不能重新通过');
+      }
+      if (decision === 'APPROVE' && !mandatoryRework
+          && baseScoreX10 !== null && baseScoreX10 < 30 && !finalCopyEdited) {
+        throw new ControlPlaneConflictError('COPY_EDIT_REQUIRED', '低于 3 分的机器初稿必须修改正文后才能通过');
+      }
+      const carryBaseRating = decision !== 'APPROVE'
+        && !copyChanged && (Boolean(edits) || baseRatingAlreadyStored);
+      const assessmentScoreX10 = decision === 'APPROVE' ? 30
+        : carryBaseRating ? baseScoreX10 : currentScoreX10;
+      const assessmentReasonCodes = decision === 'APPROVE' ? []
+        : carryBaseRating ? baseReasonCodes : currentReasonCodes;
+      const assessmentNote = decision === 'APPROVE' ? null
+        : carryBaseRating ? baseNote : currentNote;
+      if (assessmentScoreX10 !== null) {
+        assertQualityExplanation(assessmentScoreX10, assessmentReasonCodes, assessmentNote);
       }
       let reviewedRevisionId = revisionId;
+      let reviewedRevisionRow = revision.rows[0];
       const reviewedContent = edits
         ? contentWithReviewEdits(revision.rows[0].content, edits, { baseRevisionId: revisionId, nodeId })
         : decision === 'APPROVE' && actorRole !== 'ADMIN'
@@ -2518,41 +2848,60 @@ export class PostgresControlPlaneRepository {
         `, [taskId])).rows[0].revision);
         const reviewedRevision = await client.query(`
           INSERT INTO copy_revisions(
-            task_id, execution_id, revision, content, approved_at, approved_by_node_id, approval_mode
+            task_id, execution_id, revision, content, approved_at, approved_by_node_id, approval_mode,
+            parent_revision_id, revision_origin, copy_content_changed_from_machine, copy_rework_satisfied
           ) VALUES ($1, NULL, $2, $3,
             CASE WHEN $5 = 'APPROVE' THEN now() ELSE NULL END,
             CASE WHEN $5 = 'APPROVE' THEN $4 ELSE NULL END,
-            CASE WHEN $5 = 'APPROVE' THEN 'MANUAL' ELSE NULL END)
+            CASE WHEN $5 = 'APPROVE' THEN 'MANUAL' ELSE NULL END,
+            $6, $7, $8, $9)
           RETURNING *
-        `, [taskId, revisionNumber, reviewedContent, nodeId, decision]);
+        `, [taskId, revisionNumber, reviewedContent, nodeId, decision, revisionId,
+          copyChanged ? 'COPY_EDIT' : 'PLAN_EDIT', finalCopyEdited,
+          task.mandatory_copy_qc === true && copyReworkSatisfied]);
         reviewedRevisionId = Number(reviewedRevision.rows[0].id);
+        reviewedRevisionRow = reviewedRevision.rows[0];
       } else if (decision === 'APPROVE') {
-        await client.query(`
-          UPDATE copy_revisions SET approved_at = now(), approved_by_node_id = $2, approval_mode = 'MANUAL' WHERE id = $1
+        const approvedRevision = await client.query(`
+          UPDATE copy_revisions SET approved_at = now(), approved_by_node_id = $2, approval_mode = 'MANUAL'
+          WHERE id = $1 RETURNING *
         `, [revisionId, nodeId]);
+        reviewedRevisionRow = approvedRevision.rows[0];
       }
-      if (!reviewedContent || sourceIsOriginal) {
-        await insertQualityAssessment(client, {
+      let finalAssessment = null;
+      if (assessmentScoreX10 !== null
+          && (!reviewedContent || (!mandatoryRework && copyChanged && !baseRatingAlreadyStored))) {
+        const storedAssessment = await insertQualityAssessment(client, {
           taskId, stage: 'COPY', copyRevisionId: revisionId,
-          scoreX10: reviewedContent && edits ? originalScoreX10 : currentScoreX10,
+          scoreX10: reviewedContent && copyChanged ? baseScoreX10 : assessmentScoreX10,
           ratingContext: sourceRatingContext,
           action: reviewedContent ? 'SAVE' : decision,
-          reasonCodes: reviewedContent && edits ? originalReasonCodes : currentReasonCodes,
-          note: reviewedContent && edits ? originalNote : currentNote,
+          reasonCodes: reviewedContent && copyChanged ? baseReasonCodes : assessmentReasonCodes,
+          note: reviewedContent && copyChanged ? baseNote : assessmentNote,
           reviewerUsername, reviewSessionId, requestFingerprint,
         });
+        if (!reviewedContent && decision === 'APPROVE') finalAssessment = storedAssessment;
       }
-      if (reviewedContent) {
-        await insertQualityAssessment(client, {
+      if (reviewedContent && (decision === 'APPROVE' || assessmentScoreX10 !== null)) {
+        finalAssessment = await insertQualityAssessment(client, {
           taskId, stage: 'COPY', copyRevisionId: reviewedRevisionId,
-          scoreX10: currentScoreX10,
-          ratingContext: 'EDITED', action: decision,
-          reasonCodes: currentReasonCodes, note: currentNote,
+          scoreX10: assessmentScoreX10,
+          ratingContext: copyChanged ? 'EDITED' : sourceRatingContext,
+          action: decision,
+          reasonCodes: assessmentReasonCodes, note: assessmentNote,
           reviewerUsername, reviewSessionId, requestFingerprint,
         });
       }
       if (decision === 'APPROVE') {
-        return queueApprovedCopy(client, taskId, reviewedRevisionId, aiDisclosureEnabled);
+        const routed = await routeManualCopyApproval(client, {
+          task,
+          revision: reviewedRevisionRow,
+          assessment: finalAssessment,
+          actor: actorIdentity ?? { userId: null, username: reviewerUsername, role: actorRole },
+          reviewSessionId,
+          aiDisclosureEnabled,
+        });
+        return taskFrom(routed.task);
       }
       if (decision === 'DISCARD') {
         const discarded = await client.query(`
@@ -2564,6 +2913,10 @@ export class PostgresControlPlaneRepository {
           WHERE id = $1
           RETURNING *
         `, [taskId]);
+        if (task.production_batch_id !== null) {
+          await attemptAutomaticCopySamplingFreeze(client, task.production_batch_id,
+            actorIdentity ?? { userId: null, username: reviewerUsername, role: actorRole });
+        }
         return taskFrom(discarded.rows[0]);
       }
       const saved = await client.query(`
@@ -2688,6 +3041,7 @@ export class PostgresControlPlaneRepository {
     nodeId: rawNodeId,
     imagePlan: rawImagePlan,
     decision: rawDecision,
+    reworkTarget: rawReworkTarget,
     score: rawScore,
     reasons: rawReasons,
     reasonCodes: rawReasonCodes,
@@ -2708,10 +3062,15 @@ export class PostgresControlPlaneRepository {
     const note = normalizedQualityNote(rawNote);
     assertQualityExplanation(scoreX10, reasonCodes, note);
     const decision = String(rawDecision ?? '').trim().toUpperCase();
-    if (!['APPROVE', 'RETRY', 'DISCARD'].includes(decision)) throw new TypeError('image review decision is invalid');
+    if (!['APPROVE', 'RETRY', 'REWORK', 'DISCARD'].includes(decision)) throw new TypeError('image review decision is invalid');
+    const reworkTarget = decision === 'RETRY' ? 'IMAGE'
+      : decision === 'REWORK' ? String(rawReworkTarget ?? '').trim().toUpperCase() : null;
+    if (decision === 'REWORK' && !['COPY', 'IMAGE', 'BOTH'].includes(reworkTarget)) {
+      throw new TypeError('reworkTarget must be COPY, IMAGE or BOTH');
+    }
     const editedImagePlan = rawImagePlan === undefined ? null : normalizeCopyReviewImagePlan(rawImagePlan);
-    if (editedImagePlan && decision !== 'RETRY') {
-      throw new TypeError('imagePlan edits are only accepted when retrying images');
+    if (editedImagePlan && reworkTarget !== 'IMAGE') {
+      throw new TypeError('imagePlan edits are only accepted for image-only rework');
     }
     if (editedImagePlan && actorIdentity?.role !== 'ADMIN') {
       throw new ControlPlaneAuthorizationError('only administrators can edit an approved image plan');
@@ -2723,14 +3082,17 @@ export class PostgresControlPlaneRepository {
     }
     const requestFingerprint = qualityReviewFingerprint({
       stage: 'IMAGE', taskId, imageRunId, decision, scoreX10,
-      reasonCodes, problemAssetIds, note, reviewerUsername,
+      reworkTarget, reasonCodes, problemAssetIds, note, reviewerUsername,
       ...(editedImagePlan ? { revisionId, nodeId, imagePlan: editedImagePlan } : {}),
     });
-    const retry = decision === 'RETRY';
+    const retry = reworkTarget !== null;
+    const copyRework = ['COPY', 'BOTH'].includes(reworkTarget);
     const approved = decision === 'APPROVE';
-    const state = approved ? 'REVIEWED' : retry ? 'IMAGE_QUEUED' : 'CANCELLED';
+    const state = approved ? 'REVIEWED' : copyRework ? 'COPY_REVIEW_PENDING'
+      : retry ? 'IMAGE_QUEUED' : 'CANCELLED';
     const message = approved ? '图片审核通过，任务已完成'
-      : retry ? '审核员要求重新生成图片，等待图片执行机领取' : '任务已被审核员废弃';
+      : copyRework ? '图文终审要求文案返工，修改后将强制重新质检'
+        : retry ? '审核员要求重新生成图片，等待图片执行机领取' : '任务已被审核员废弃';
     return transaction(this.pool, async (client) => {
       const task = actorIdentity === null
         ? (await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId])).rows[0]
@@ -2792,24 +3154,60 @@ export class PostgresControlPlaneRepository {
         });
         const saved = await client.query(`
           INSERT INTO copy_revisions(
-            task_id, execution_id, revision, content, approved_at, approved_by_node_id, approval_mode
-          ) VALUES ($1, NULL, $2, $3, now(), $4, 'MANUAL')
+            task_id, execution_id, revision, content, approved_at, approved_by_node_id, approval_mode,
+            parent_revision_id, revision_origin, copy_content_changed_from_machine, copy_rework_satisfied
+          ) VALUES ($1, NULL, $2, $3, now(), $4, 'MANUAL', $5, 'PLAN_EDIT', $6, $7)
           RETURNING *
-        `, [taskId, revisionNumber, content, nodeId]);
+        `, [taskId, revisionNumber, content, nodeId, revisionId,
+          revision.rows[0].copy_content_changed_from_machine === true,
+          revision.rows[0].copy_rework_satisfied === true]);
         nextCopyRevisionId = Number(saved.rows[0].id);
+      }
+      if (copyRework) {
+        const source = await client.query(`
+          SELECT * FROM copy_revisions WHERE id = $1 AND task_id = $2 FOR UPDATE
+        `, [task.current_copy_revision_id, taskId]);
+        if (!source.rows[0]) throw new ControlPlaneConflictError('COPY_NOT_APPROVED', '当前文案版本不存在');
+        const revisionNumber = Number((await client.query(`
+          SELECT COALESCE(MAX(revision), 0) + 1 AS revision
+          FROM copy_revisions WHERE task_id = $1
+        `, [taskId])).rows[0].revision);
+        const content = {
+          ...source.rows[0].content,
+          finalRework: {
+            target: reworkTarget,
+            reasonCodes,
+            note,
+            returnedByUsername: reviewerUsername,
+            returnedAt: new Date().toISOString(),
+          },
+        };
+        const placeholder = await client.query(`
+          INSERT INTO copy_revisions(
+            task_id, execution_id, revision, content, parent_revision_id, revision_origin,
+            copy_content_changed_from_machine, copy_rework_satisfied
+          ) VALUES ($1, NULL, $2, $3, $4, 'FINAL_REWORK', $5, false)
+          RETURNING *
+        `, [taskId, revisionNumber, content, task.current_copy_revision_id,
+          source.rows[0].copy_content_changed_from_machine === true]);
+        nextCopyRevisionId = Number(placeholder.rows[0].id);
       }
       await insertQualityAssessment(client, {
         taskId, stage: 'IMAGE', imageRunId, scoreX10,
-        ratingContext: 'IMAGE', action: decision,
+        ratingContext: 'IMAGE', action: decision === 'REWORK' ? 'RETRY' : decision,
         reasonCodes, problemAssetIds, note,
+        reworkTarget,
         reviewerUsername, reviewSessionId, requestFingerprint,
       });
+      if (!approved) await withdrawReadyDeliveryEntries(client, taskId);
       const updated = await client.query(`
         UPDATE tasks SET
           state = $2, current_stage = $2, progress_message = $3,
           current_copy_revision_id = $5,
           current_execution_id = NULL, pending_snapshot = NULL, error = NULL,
           current_image_run_id = ${retry ? 'NULL' : 'current_image_run_id'},
+          mandatory_copy_qc = ${copyRework ? 'true' : 'mandatory_copy_qc'},
+          mandatory_copy_qc_origin = ${copyRework ? "'FINAL_REWORK'" : 'mandatory_copy_qc_origin'},
           progress_percent = ${retry ? 0 : 100},
           execution_started_at = ${retry ? 'NULL' : 'execution_started_at'},
           finished_at = ${retry ? 'NULL' : 'COALESCE(finished_at, now())'},
@@ -2820,6 +3218,14 @@ export class PostgresControlPlaneRepository {
       `, [taskId, state, editedImagePlan
         ? '管理员已修正图片文案规划，等待图片执行机重新生成'
         : message, approved ? reviewerUsername : null, nextCopyRevisionId]);
+      if (approved) {
+        await createReadyDeliveryEntry(client, {
+          taskId,
+          copyRevisionId: nextCopyRevisionId,
+          imageRunId,
+          actor: actorIdentity ?? { userId: null, username: reviewerUsername },
+        });
+      }
       return taskFrom(updated.rows[0]);
     });
   }
@@ -3073,6 +3479,12 @@ export class PostgresControlPlaneRepository {
         throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'only queued work can be cancelled in bulk');
       }
       if (task.state === 'CANCELLED') return taskFrom(task);
+      if (task.state === 'COPY_QC_PENDING') {
+        throw new ControlPlaneConflictError(
+          'COPY_QC_CANCEL_FORBIDDEN',
+          '文案抽检冻结中的任务不能从通用入口取消，请通过质检处置',
+        );
+      }
       if (task.current_execution_id) {
         const execution = await client.query(`
           SELECT * FROM task_executions WHERE id = $1 FOR UPDATE
@@ -3104,6 +3516,9 @@ export class PostgresControlPlaneRepository {
         WHERE id = $1
         RETURNING *
       `, [taskId]);
+      if (task.production_batch_id !== null) {
+        await attemptAutomaticCopySamplingFreeze(client, task.production_batch_id, actorIdentity);
+      }
       return taskFrom(updated.rows[0]);
     });
   }
@@ -3119,9 +3534,13 @@ export class PostgresControlPlaneRepository {
     if (beforeDelete !== null && typeof beforeDelete !== 'function') throw new TypeError('beforeDelete must be a function');
     return transaction(this.pool, async (client) => {
       await assertPermanentDeletionActor(client, actor, deletionPassword);
-      await assertPermanentlyDeletableTask(client, taskId);
+      const task = await assertPermanentlyDeletableTask(client, taskId);
       if (beforeDelete) await beforeDelete(taskId);
       await client.query('DELETE FROM tasks WHERE id = $1', [taskId]);
+      if (task.production_batch_id !== null && task.production_batch_id !== undefined) {
+        await attemptAutomaticCopySamplingFreeze(client, task.production_batch_id,
+          typeof actor === 'object' ? actor : null);
+      }
       return { id: taskId };
     });
   }
@@ -3139,10 +3558,14 @@ export class PostgresControlPlaneRepository {
       await assertPermanentDeletionActor(client, actor, deletionPassword);
       const eligible = [];
       const failed = [];
+      const productionBatchIds = new Set();
       for (const taskId of taskIds) {
         try {
-          await assertPermanentlyDeletableTask(client, taskId);
+          const task = await assertPermanentlyDeletableTask(client, taskId);
           eligible.push(taskId);
+          if (task.production_batch_id !== null && task.production_batch_id !== undefined) {
+            productionBatchIds.add(Number(task.production_batch_id));
+          }
         } catch (error) {
           if (!(error instanceof ControlPlaneNotFoundError) && !(error instanceof ControlPlaneConflictError)) throw error;
           failed.push({ id: taskId, code: error.code, message: error.message });
@@ -3151,6 +3574,10 @@ export class PostgresControlPlaneRepository {
       for (const taskId of eligible) {
         if (beforeDelete) await beforeDelete(taskId);
         await client.query('DELETE FROM tasks WHERE id = $1', [taskId]);
+      }
+      for (const productionBatchId of [...productionBatchIds].sort((left, right) => left - right)) {
+        await attemptAutomaticCopySamplingFreeze(client, productionBatchId,
+          typeof actor === 'object' ? actor : null);
       }
       return { succeeded: eligible, failed };
     });

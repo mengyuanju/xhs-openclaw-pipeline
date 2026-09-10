@@ -8,6 +8,7 @@ import { apiHandler } from '../../_lib';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+export const maxDuration = 3600;
 
 const MAX_PROXY_BODY_BYTES = 20 * 1024 * 1024;
 
@@ -41,9 +42,25 @@ async function proxyRequest(
     || /^\/v1\/task-views\//u.test(routePath)
     || /^\/v1\/auto-assignment(?:\/|$)/u.test(routePath)
     || ['/v1/tasks/batch-actions', '/v1/tasks/batch-assignee', '/v1/tasks/batch-archive', '/v1/tasks/batch-permanent-delete'].includes(routePath)
+    || /^\/v1\/delivery-pool\/archive(?:\/|$)/u.test(routePath)
     || /^\/v1\/tasks\/[^/]+\/assignee$/u.test(routePath)
     || (routePath === '/v1/tasks' && upstreamUrl.searchParams.has('attention')))) {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可使用任务集中处理功能');
+  }
+  if (routePath === '/v1/workflow-quality-settings'
+    && role !== 'ADMIN'
+    && !(role === 'USER' && ['GET', 'HEAD'].includes(request.method))) {
+    throw new ApiError(403, 'FORBIDDEN', '仅管理员可修改流程质检配置');
+  }
+  if (routePath === '/v1/copy-qa/statistics' && role !== 'ADMIN') {
+    throw new ApiError(403, 'FORBIDDEN', '仅管理员可查看人员抽检正确率');
+  }
+  if (role === 'REVIEWER' && /^\/v1\/(?:query-packages|production-batches)(?:\/|$)/u.test(routePath)) {
+    throw new ApiError(403, 'FORBIDDEN', '质检员没有词包与生产批次管理权限');
+  }
+  if (role === 'REVIEWER' && (/^\/v1\/delivery-pool(?:\/|$)/u.test(routePath)
+    || /^\/v1\/tasks\/[^/]+\/archive$/u.test(routePath))) {
+    throw new ApiError(403, 'FORBIDDEN', '质检员没有交付池与交付包下载权限');
   }
   if (role === 'REVIEWER' && (/^\/v1\/(?:settings|prompts|prompt-versions|users|executor-statuses)(?:\/|$)/u.test(routePath))) {
     throw new ApiError(403, 'FORBIDDEN', '审核员没有该管理权限');
@@ -79,6 +96,11 @@ async function proxyRequest(
   await assertMutationCapability({ root, routePath, method: request.method });
   let upstream: Response;
   try {
+    const deliveryTokenDownload = request.method === 'GET'
+      && /^\/v1\/delivery-pool\/archive\/[^/]+$/u.test(routePath);
+    const timeoutSignal = AbortSignal.timeout(/^\/v1\/delivery-pool\/archive(?:\/|$)/u.test(routePath)
+      ? 60 * 60_000
+      : 130_000);
     upstream = await fetch(upstreamUrl, {
       method: request.method,
       headers: {
@@ -93,18 +115,26 @@ async function proxyRequest(
       },
       body,
       cache: 'no-store',
-      signal: AbortSignal.timeout(130_000),
+      signal: deliveryTokenDownload
+        ? request.signal
+        : AbortSignal.any([request.signal, timeoutSignal]),
     });
   } catch {
     throw new ApiError(503, 'CONTROL_PLANE_UNAVAILABLE', '无法连接远端中心服务');
   }
   const contentDisposition = upstream.headers.get('content-disposition');
+  const contentLength = upstream.headers.get('content-length');
+  const deliveryTaskCount = upstream.headers.get('x-delivery-task-count');
   return new Response(upstream.status === 304 || request.method === 'HEAD' ? null : upstream.body, {
     status: upstream.status,
     headers: {
       ...assetResponseHeaders(routePath, upstream),
       ...(upstream.status === 304 ? {} : { 'Content-Type': upstream.headers.get('content-type') || 'application/json; charset=utf-8' }),
       ...(contentDisposition ? { 'Content-Disposition': contentDisposition } : {}),
+      ...(contentLength && /^\d+$/u.test(contentLength) ? { 'Content-Length': contentLength } : {}),
+      ...(deliveryTaskCount && /^\d+$/u.test(deliveryTaskCount)
+        ? { 'X-Delivery-Task-Count': deliveryTaskCount }
+        : {}),
     },
   });
 }

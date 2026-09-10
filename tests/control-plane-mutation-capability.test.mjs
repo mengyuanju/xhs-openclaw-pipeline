@@ -16,10 +16,19 @@ test('assignment and opt-in pool mutations declare their version contracts', () 
     ['/v1/auto-assignment/workers/alice', 'PUT', 'autoAssignmentPoolVersion'],
     ['/v1/auto-assignment/workers/alice', 'DELETE', 'autoAssignmentPoolVersion'],
     ['/v1/executor-statuses', 'DELETE', 'executorManagementVersion'],
+    ['/v1/delivery-pool', 'GET', 'finalDeliveryVersion'],
+    ['/v1/delivery-pool/archive', 'POST', 'finalDeliveryVersion'],
+    ['/v1/delivery-pool/archive/token', 'HEAD', 'finalDeliveryVersion'],
+    ['/v1/delivery-pool/archive/token', 'GET', 'finalDeliveryVersion'],
+    ['/v1/tasks/batch-archive', 'POST', 'finalDeliveryVersion'],
+    ['/v1/tasks/42/archive', 'HEAD', 'finalDeliveryVersion'],
+    ['/v1/tasks/42/archive', 'GET', 'finalDeliveryVersion'],
   ]) {
     assert.deepEqual(requiredMutationCapability(routePath, method), {
       capability,
-      minimumVersion: capability === 'executorManagementVersion' ? 1 : 3,
+      minimumVersion: capability === 'executorManagementVersion'
+        ? 1
+        : capability === 'finalDeliveryVersion' ? 2 : 3,
     });
   }
   assert.equal(requiredMutationCapability('/v1/tasks', 'GET'), null);
@@ -52,6 +61,15 @@ test('mutation capability check allows only compatible center versions', async (
       data: { capabilities: { executorManagementVersion: 1 } },
     }),
   });
+
+  await assertMutationCapability({
+    root: 'http://center.test',
+    routePath: '/v1/delivery-pool/archive',
+    method: 'POST',
+    fetchImpl: async () => Response.json({
+      data: { capabilities: { finalDeliveryVersion: 2 } },
+    }),
+  });
 });
 
 test('mutation capability check fails closed for legacy, malformed and unavailable centers', async () => {
@@ -80,6 +98,20 @@ test('mutation capability check fails closed for legacy, malformed and unavailab
       method: 'PATCH',
       fetchImpl: async () => Response.json({
         data: { capabilities: { autoAssignmentPoolVersion: 2 } },
+      }),
+    }),
+    (error) => error instanceof ApiError
+      && error.status === 503
+      && error.code === 'CONTROL_PLANE_UPGRADE_REQUIRED',
+  );
+
+  await assert.rejects(
+    assertMutationCapability({
+      root: 'http://center.test',
+      routePath: '/v1/delivery-pool/archive',
+      method: 'POST',
+      fetchImpl: async () => Response.json({
+        data: { capabilities: { finalDeliveryVersion: 1 } },
       }),
     }),
     (error) => error instanceof ApiError

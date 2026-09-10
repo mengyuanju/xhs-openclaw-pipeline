@@ -24,6 +24,13 @@ test('all jobs is restricted to administrators without removing reviewer work qu
       role === 'ADMIN' ? 'next' : 'forbidden');
     if (role === 'REVIEWER') {
       assert.equal(evaluateAdminProxyRequest(request('/workbench/copy-review'), environment).type, 'next');
+      assert.equal(evaluateAdminProxyRequest(request('/copy-qa'), environment).type, 'next');
+      assert.equal(evaluateAdminProxyRequest(request('/query-packages'), environment).type, 'forbidden');
+    }
+    if (role === 'USER') {
+      assert.equal(evaluateAdminProxyRequest(request('/query-packages'), environment).type, 'next');
+      assert.equal(evaluateAdminProxyRequest(request('/delivery-pool'), environment).type, 'next');
+      assert.equal(evaluateAdminProxyRequest(request('/copy-qa'), environment).type, 'forbidden');
     }
   }
 });

@@ -20,6 +20,15 @@ const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
     matches: (routePath, method) => routePath === '/v1/executor-statuses'
       && method === 'DELETE',
   }),
+  Object.freeze({
+    capability: 'finalDeliveryVersion',
+    minimumVersion: 2,
+    matches: (routePath, method) => (/^\/v1\/delivery-pool(?:\/|$)/u.test(routePath)
+      && ['GET', 'HEAD', 'POST'].includes(method))
+      || (routePath === '/v1/tasks/batch-archive' && method === 'POST')
+      || (/^\/v1\/tasks\/[^/]+\/archive$/u.test(routePath)
+        && ['GET', 'HEAD'].includes(method)),
+  }),
 ]);
 
 export function requiredMutationCapability(routePath, rawMethod) {
@@ -34,7 +43,7 @@ function upgradeRequired() {
   return new ApiError(
     503,
     'CONTROL_PLANE_UPGRADE_REQUIRED',
-    '中心服务版本过旧，已停止本次写入；请先完成中心服务升级',
+    '中心服务版本过旧，已停止本次操作；请先完成中心服务升级',
   );
 }
 
@@ -56,12 +65,12 @@ export async function assertMutationCapability({
       signal: AbortSignal.timeout(5_000),
     });
   } catch {
-    throw new ApiError(503, 'CONTROL_PLANE_UNAVAILABLE', '无法确认中心服务版本，本次写入未执行');
+    throw new ApiError(503, 'CONTROL_PLANE_UNAVAILABLE', '无法确认中心服务版本，本次操作未执行');
   }
 
   if (!response.ok) {
     if ([404, 405].includes(response.status)) throw upgradeRequired();
-    throw new ApiError(503, 'CONTROL_PLANE_UNAVAILABLE', '中心服务暂时不可用，本次写入未执行');
+    throw new ApiError(503, 'CONTROL_PLANE_UNAVAILABLE', '中心服务暂时不可用，本次操作未执行');
   }
   const health = await response.json().catch(() => null);
   const availableVersion = Number(health?.data?.capabilities?.[requirement.capability]);

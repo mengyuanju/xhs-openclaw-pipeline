@@ -2,7 +2,7 @@
 const DAY = 86_400_000;
 export const STATE_GROUPS = Object.freeze({
   queued: ['COPY_QUEUED', 'IMAGE_QUEUED'], running: ['COPY_RUNNING', 'IMAGE_RUNNING'],
-  copyReview: ['COPY_REVIEW_PENDING'], imageReview: ['MANUAL_ARCHIVE'],
+  copyReview: ['COPY_REVIEW_PENDING', 'COPY_QC_PENDING'], imageReview: ['MANUAL_ARCHIVE'],
   failed: ['COPY_FAILED', 'IMAGE_FAILED'], completed: ['REVIEWED'], cancelled: ['CANCELLED'],
 });
 const STATES = Object.values(STATE_GROUPS).flat();

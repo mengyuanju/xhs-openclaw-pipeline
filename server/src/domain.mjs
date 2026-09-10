@@ -4,6 +4,7 @@ export const TASK_STATES = Object.freeze([
   'COPY_RUNNING',
   'COPY_REVIEW_PENDING',
   'COPY_FAILED',
+  'COPY_QC_PENDING',
   'IMAGE_QUEUED',
   'IMAGE_RUNNING',
   'IMAGE_FAILED',

@@ -59,11 +59,17 @@ test('all signed-in roles can read reason options while only administrators can 
     for (const username of Object.keys(USERS)) {
       const response = await fetch(`${root}/v1/human-quality-settings`, { headers: actorHeaders(username) });
       assert.equal(response.status, 200, username);
-      assert.equal((await response.json()).data.copyReasons.length, 8);
+      const data = (await response.json()).data;
+      assert.equal(data.copyReasons.length, 8);
+      assert.deepEqual(data.copyReviewDisplay, { showScoreDescriptions: true, showDeductionReasons: true });
     }
     assert.equal((await fetch(`${root}/v1/human-quality-settings`)).status, 401);
 
-    const payload = { copyReasons: [{ code: '信息不完整', label: '信息不完整' }], imageReasons: [] };
+    const payload = {
+      copyReasons: [{ code: '信息不完整', label: '信息不完整' }],
+      imageReasons: [],
+      copyReviewDisplay: { showScoreDescriptions: false, showDeductionReasons: false },
+    };
     const expected = normalizeHumanQualitySettings(payload);
     const forbidden = await fetch(`${root}/v1/human-quality-settings`, {
       method: 'PUT', headers: { ...actorHeaders('reviewer'), 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
@@ -76,6 +82,7 @@ test('all signed-in roles can read reason options while only administrators can 
     });
     assert.equal(saved.status, 200);
     assert.deepEqual((await saved.json()).data, expected);
+    assert.deepEqual(settings.copyReviewDisplay, { showScoreDescriptions: false, showDeductionReasons: false });
     assert.equal(updates, 1);
 
     const invalid = await fetch(`${root}/v1/human-quality-settings`, {
@@ -83,6 +90,16 @@ test('all signed-in roles can read reason options while only administrators can 
       body: JSON.stringify({ copyReasons: [{ code: '重复', label: '一' }, { code: '重复', label: '二' }], imageReasons: [] }),
     });
     assert.equal(invalid.status, 400);
+    assert.equal(updates, 1);
+
+    const invalidDisplay = await fetch(`${root}/v1/human-quality-settings`, {
+      method: 'PUT', headers: { ...actorHeaders('admin'), 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        copyReasons: [], imageReasons: [],
+        copyReviewDisplay: { showScoreDescriptions: true, showDeductionReasons: 'yes' },
+      }),
+    });
+    assert.equal(invalidDisplay.status, 400);
     assert.equal(updates, 1);
   });
 });
@@ -94,6 +111,7 @@ test('repository replaces only human quality reasons inside the production recor
     title: `${definition.score} 分自定义`,
   }));
   currentReasons.noteGuidance = { copyPlaceholder: '自定义文案提示', imagePlaceholder: '自定义图片提示' };
+  currentReasons.copyReviewDisplay = { showScoreDescriptions: false, showDeductionReasons: false };
   let production = {
     existingPolicy: 'preserved',
     modelApi: { agentProvider: 'CODEX' },
@@ -115,10 +133,10 @@ test('repository replaces only human quality reasons inside the production recor
   };
   const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
   const input = { copyReasons: [{ code: '结构松散', label: '结构松散' }], imageReasons: [] };
-  assert.deepEqual(
-    await repository.updateHumanQualitySettings(input),
-    normalizeHumanQualitySettingsUpdate(input, currentReasons),
-  );
+  const updated = await repository.updateHumanQualitySettings(input);
+  assert.deepEqual(updated, normalizeHumanQualitySettingsUpdate(input, currentReasons));
+  assert.deepEqual(updated.copyReviewDisplay, currentReasons.copyReviewDisplay,
+    'legacy PUT clients must not reset copy review display settings');
   assert.equal(production.existingPolicy, 'preserved');
   assert.equal(production.modelApi.agentProvider, 'CODEX');
 });

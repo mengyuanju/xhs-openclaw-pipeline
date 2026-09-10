@@ -104,6 +104,7 @@ type DistributedTask = {
   finishedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  deliveryStatus?: 'READY' | null;
 };
 
 type ExecutorNode = {
@@ -143,12 +144,13 @@ const STATE_LABELS: Record<TaskState, string> = {
   COPY_QUEUED: '待文案执行',
   COPY_RUNNING: '文案生成中',
   COPY_REVIEW_PENDING: '待文案审核',
+  COPY_QC_PENDING: '待文案抽检',
   COPY_FAILED: '文案生成失败',
   IMAGE_QUEUED: '待生图',
   IMAGE_RUNNING: '生图中',
   IMAGE_FAILED: '生图失败',
-  MANUAL_ARCHIVE: '人工归档',
-  REVIEWED: '已审核',
+  MANUAL_ARCHIVE: '待图文终审',
+  REVIEWED: '交付池',
   CANCELLED: '已废弃',
 };
 const PERMANENT_DELETE_STATES: TaskState[] = ['COPY_FAILED', 'IMAGE_FAILED', 'REVIEWED', 'CANCELLED'];
@@ -179,12 +181,13 @@ const STAGE_LABELS: Record<string, string> = {
   COPY_QUEUED: '待文案执行',
   COPY_RUNNING: '文案生成中',
   COPY_REVIEW_PENDING: '待文案审核',
+  COPY_QC_PENDING: '待文案抽检',
   COPY_FAILED: '文案生成失败',
   IMAGE_QUEUED: '待生图',
   IMAGE_RUNNING: '生图中',
   IMAGE_FAILED: '生图失败',
-  MANUAL_ARCHIVE: '人工归档',
-  REVIEWED: '已审核',
+  MANUAL_ARCHIVE: '待图文终审',
+  REVIEWED: '交付池',
   FAILED: '执行失败',
   CANCELLED: '已废弃',
 };
@@ -675,7 +678,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   const retryableTasks = selectedTasks.filter((task) => ['COPY_RUNNING', 'COPY_FAILED', 'IMAGE_RUNNING', 'IMAGE_FAILED'].includes(task.state)
     || isImageRetryExhausted(task));
   const queuedTasks = selectedTasks.filter((task) => ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state));
-  const exportableTasks = selectedTasks.filter((task) => ['MANUAL_ARCHIVE', 'REVIEWED'].includes(task.state));
+  const exportableTasks = selectedTasks.filter((task) => task.state === 'REVIEWED' && task.deliveryStatus === 'READY');
   const permanentlyDeletableTasks = selectedTasks.filter(isPermanentlyDeletableTask);
   const permanentDeletionSettlingTasks = selectedTasks.filter((task) => task.state === 'CANCELLED'
     && ['COPY_RUNNING', 'IMAGE_RUNNING'].includes(task.cancelledFromState || '')
@@ -1151,6 +1154,10 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   async function createTasks(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (creating) return;
+    if (role !== 'ADMIN') {
+      setCreateError('普通作业员请在 Query 词包中筛选已分配内容并投产。');
+      return;
+    }
     const { queries, error: validationError } = queryBatch;
     if (validationError) {
       setCreateError(validationError);
@@ -1258,7 +1265,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
           <Button unstyled className="button small" type="button" disabled={refreshing} onClick={() => { void refresh(); }}>
             <RefreshCw className={refreshing ? 'animate-spin' : ''} aria-hidden="true" size={14} />刷新
           </Button>
-          <Dialog open={createOpen} onOpenChange={(open) => {
+          {role === 'ADMIN' && <Dialog open={createOpen} onOpenChange={(open) => {
             if (creating) return;
             if (open) {
               void refresh({ silent: true });
@@ -1357,7 +1364,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
                 </div>
               </form>
             </DialogContent>
-          </Dialog>
+          </Dialog>}
         </div>
       </div>
 
@@ -1464,7 +1471,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         <Button unstyled className="button small" type="button" disabled={Boolean(batchAction) || retryableTasks.length === 0} onClick={() => { void runBatchAction('RETRY', retryableTasks); }}><RotateCcw size={14} />重试 {retryableTasks.length}</Button>
         <Button unstyled className="button small danger" type="button" disabled={Boolean(batchAction) || queuedTasks.length === 0} onClick={() => { void runBatchAction('CANCEL_QUEUE', queuedTasks); }}><Trash2 size={14} />废弃排队中 {queuedTasks.length}</Button>
         <Button unstyled className="button small danger" type="button" title={permanentlyDeletableTasks.length > 20 ? '单次最多永久删除 20 条，请减少选择' : permanentDeletionSettlingTasks.length ? '所选任务仍在等待执行机停止，废弃满 3 分钟后可永久删除' : '仅永久删除已失败、已审核或已废弃且执行已停止的任务'} disabled={Boolean(batchAction) || Boolean(actingTaskId) || Boolean(permanentDeleteTask) || permanentlyDeletableTasks.length === 0 || permanentlyDeletableTasks.length > 20} onClick={() => { setDeletionError(''); setDeletionPassword(''); setBatchPermanentDeleteTasks(permanentlyDeletableTasks); }}><Trash2 size={14} />永久删除 {permanentlyDeletableTasks.length}</Button>
-        <Button unstyled className="button small" type="button" title={exportableTasks.length > 20 ? '单次最多导出 20 条，请减少选择' : '导出已审核或待人工归档任务'} disabled={Boolean(batchAction) || exportableTasks.length === 0 || exportableTasks.length > 20} onClick={() => { void exportSelectedTasks(); }}><Download size={14} />导出 {exportableTasks.length}</Button>
+        <Button unstyled className="button small" type="button" title={exportableTasks.length > 20 ? '单次最多导出 20 条，请减少选择' : '仅可导出已进入交付池的任务'} disabled={Boolean(batchAction) || exportableTasks.length === 0 || exportableTasks.length > 20} onClick={() => { void exportSelectedTasks(); }}><Download size={14} />导出 {exportableTasks.length}</Button>
         <Button unstyled className="button small" type="button" disabled={Boolean(batchAction)} onClick={() => setSelectedTaskIds([])}>清除选择</Button>
         {permanentDeletionSettlingTasks.length > 0 && <span role="status">{permanentDeletionSettlingTasks.length} 条仍在等待执行停止，废弃满 3 分钟后可删除</span>}
         {batchAction && <span role="status">正在处理…</span>}
@@ -1475,8 +1482,12 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         : fetchError && !lastUpdatedAt ? <div className="empty-state">暂时无法读取任务，请重试。</div>
         : visibleTasks.length === 0
           ? <div className="workbench-empty">
-            <span>{isAllJobs || hasFilters ? '没有符合当前筛选条件的作业。' : activeView === 'PERSONAL' ? '当前没有你提交或负责的 Query 任务。' : `当前没有${activeDefinition.label}任务。`}</span>
-            {activeView === 'PERSONAL' && <Button unstyled className="button small" type="button" onClick={() => setCreateOpen(true)}><Plus size={14} />创建第一条笔记</Button>}
+            <span>{isAllJobs || hasFilters ? '没有符合当前筛选条件的作业。' : activeView === 'PERSONAL'
+              ? role === 'ADMIN' ? '当前没有你提交或负责的 Query 任务。' : '当前没有你负责的任务。请前往 Query 词包筛选已分配内容并投产。'
+              : `当前没有${activeDefinition.label}任务。`}</span>
+            {activeView === 'PERSONAL' && (role === 'ADMIN'
+              ? <Button unstyled className="button small" type="button" onClick={() => setCreateOpen(true)}><Plus size={14} />创建第一条笔记</Button>
+              : <Button unstyled className="button small primary" type="button" onClick={() => router.push('/query-packages')}>前往 Query 词包</Button>)}
           </div>
           : <div ref={listStart} className="table-wrap mobile-cards workbench-table-wrap" tabIndex={0} role="region" aria-label="作业列表，可横向滚动查看完整列" aria-busy={loading} inert={loading}>
             <table>

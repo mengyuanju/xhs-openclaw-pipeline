@@ -1,13 +1,30 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { createReadStream, createWriteStream } from 'node:fs';
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, relative, resolve } from 'node:path';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 
 import { bodyParser } from '@koa/bodyparser';
 import Router from '@koa/router';
 import Koa from 'koa';
 import { importCopyKnowledgeLabels, listCopyAnalysisPrompts, retireKnowledge, saveCopyAnalysisPrompt } from './knowledge-admin.mjs';
 import { analyzeAndSaveExcellentCopy, CopyAnalysisServiceError } from './deepseek-copy-analysis.mjs';
-import { archiveFileName, buildBatchTaskArchive, buildTaskArchive } from './task-archive.mjs';
+import {
+  archiveFileName,
+  buildBatchTaskArchive,
+  buildTaskArchive,
+  writeBatchTaskArchive,
+} from './task-archive.mjs';
+import {
+  assertDeliveryBindingsReady,
+  assertReadyDeliveryTask,
+  createDeliveryExportRegistry,
+  DELIVERY_EXPORT_TTL_MS,
+  loadReadyDeliveryTask,
+  normalizeDeliveryExportRequest,
+  resolveDeliveryExportTaskIds,
+} from './delivery-export.mjs';
 import { IMAGE_FORMATS } from './image-options.mjs';
 import { AssetDeliveryError, createAssetDelivery } from './asset-delivery.mjs';
 import { normalizePromptContent } from '../../src/admin/prompt-service.mjs';
@@ -31,11 +48,12 @@ const JSON_BODY_LIMIT = 12 * 1024 * 1024;
 const ASSET_BODY_LIMIT = 20 * 1024 * 1024;
 
 class HttpError extends Error {
-  constructor(status, code, message) {
+  constructor(status, code, message, details = undefined) {
     super(message);
     this.name = 'HttpError';
     this.status = status;
     this.code = code;
+    if (details !== undefined) this.details = details;
   }
 }
 
@@ -54,7 +72,10 @@ function mappedError(error) {
     return new HttpError(404, error.code, error.message);
   }
   if (error instanceof ControlPlaneConflictError) {
-    return new HttpError(409, error.code, error.message);
+    return new HttpError(409, error.code, error.message, error.details);
+  }
+  if (error?.name === 'AbortError') {
+    return new HttpError(499, 'REQUEST_CANCELLED', '请求已取消');
   }
   if (error?.status === 422 && error?.type === 'entity.parse.failed') {
     return new HttpError(400, 'INVALID_JSON', 'request body must be valid JSON');
@@ -386,6 +407,11 @@ async function assertTaskAccess(ctx, repository, {
   const accessTask = await readAccess.call(repository, ctx.params.taskId);
   if (!accessTask) throw new ControlPlaneNotFoundError('task not found');
   const authorize = (candidate) => {
+    if (actor.role === 'REVIEWER' && candidate.activeBlindQa === true) {
+      // A blind-QA task must be reachable only through its opaque QA assignment.
+      // Return 404 so guessed task ids do not reveal membership.
+      throw new HttpError(404, 'TASK_NOT_FOUND', 'task not found');
+    }
     const assignedToUserId = Object.hasOwn(candidate, 'assignedToUserId')
       ? candidate.assignedToUserId
       : candidate.createdByUserId;
@@ -436,8 +462,103 @@ async function assertCurrentActorIdentity(repository, actor) {
   }
 }
 
+function lazyFileStream(path) {
+  return Readable.from((async function* readWhenRequested() {
+    const source = createReadStream(path);
+    try {
+      for await (const chunk of source) yield chunk;
+    } finally {
+      source.destroy();
+    }
+  })());
+}
+
+const DELIVERY_EXPORT_DIRECTORY = '.delivery-exports';
+const DELIVERY_EXPORT_STALE_MS = Math.max(60 * 60_000, DELIVERY_EXPORT_TTL_MS * 2);
+const DELIVERY_EXPORT_SWEEP_MS = 15 * 60_000;
+const DELIVERY_EXPORT_DIRECTORY_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+async function cleanStaleDeliveryExportDirectories(storageRoot, now = Date.now()) {
+  const root = safeStoragePath(storageRoot, DELIVERY_EXPORT_DIRECTORY);
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === 'ENOENT') return;
+    throw error;
+  }
+  await Promise.all(entries
+    .filter((entry) => entry.isDirectory() && DELIVERY_EXPORT_DIRECTORY_PATTERN.test(entry.name))
+    .map(async (entry) => {
+      const directory = safeStoragePath(root, entry.name);
+      const archivePath = safeStoragePath(directory, 'delivery-pool.zip');
+      const metadata = await stat(archivePath).catch(async (error) => {
+        if (error?.code !== 'ENOENT') throw error;
+        return stat(directory);
+      });
+      if (now - metadata.mtimeMs < DELIVERY_EXPORT_STALE_MS) return;
+      await rm(directory, { recursive: true, force: true });
+    }));
+}
+
+async function stageDeliveryPoolArchive(repository, storageRoot, taskIds, { signal } = {}) {
+  const exportDirectory = safeStoragePath(
+    storageRoot,
+    DELIVERY_EXPORT_DIRECTORY,
+    randomUUID(),
+  );
+  const archivePath = safeStoragePath(exportDirectory, 'delivery-pool.zip');
+  await mkdir(exportDirectory, { recursive: true });
+  const bindings = [];
+  try {
+    async function* readyTasks() {
+      for (const taskId of taskIds) {
+        signal?.throwIfAborted();
+        const snapshot = await loadReadyDeliveryTask(repository, taskId);
+        bindings.push(snapshot.binding);
+        yield snapshot.task;
+      }
+    }
+    const output = createWriteStream(archivePath, { flags: 'wx', signal });
+    const result = await writeBatchTaskArchive(readyTasks(), async (task, assetId) => {
+      signal?.throwIfAborted();
+      const asset = await repository.getAsset(assetId);
+      signal?.throwIfAborted();
+      if (!asset || asset.taskId !== task.id) return null;
+      const path = safeStoragePath(storageRoot, relative(storageRoot, asset.storagePath));
+      const metadata = await stat(path);
+      signal?.throwIfAborted();
+      if (!metadata.isFile()) return null;
+      return { ...asset, content: lazyFileStream(path) };
+    }, output, { maxTasks: Number.POSITIVE_INFINITY, signal });
+    return {
+      archivePath,
+      byteSize: (await stat(archivePath)).size,
+      taskCount: result.taskCount,
+      bindings,
+      cleanup: () => rm(exportDirectory, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      }),
+    };
+  } catch (error) {
+    await rm(exportDirectory, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+}
+
 function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisual) {
   const deliverAsset = createAssetDelivery({ storageRoot });
+  const deliveryExportRegistry = createDeliveryExportRegistry();
+  const initialDeliveryExportCleanup = cleanStaleDeliveryExportDirectories(storageRoot)
+    .catch((error) => console.error('failed to clean stale delivery exports', error));
+  const deliveryExportSweep = setInterval(() => {
+    void cleanStaleDeliveryExportDirectories(storageRoot)
+      .catch((error) => console.error('failed to clean stale delivery exports', error));
+  }, DELIVERY_EXPORT_SWEEP_MS);
+  deliveryExportSweep.unref?.();
   const passwordLimiters = new Map();
   const currentPasswordLimiters = new Map();
   function limiterFor(limiters, userId) {
@@ -577,6 +698,119 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   });
   router.get('/health', async (ctx) => json(ctx, 200, await repository.health()));
 
+  router.get('/v1/workflow-quality-settings', async (ctx) => {
+    requestActor(ctx);
+    json(ctx, 200, await repository.getWorkflowQualitySettings());
+  });
+  router.put('/v1/workflow-quality-settings', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.updateWorkflowQualitySettings(requireJson(ctx), { actor }));
+  });
+  router.get('/v1/query-packages', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    json(ctx, 200, await repository.listQueryPackages({ limit: ctx.query.limit, offset: ctx.query.offset }, { actor }));
+  });
+  router.post('/v1/query-packages', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    json(ctx, 201, await repository.createQueryPackage(requireJson(ctx), { actor }));
+  });
+  router.get('/v1/query-packages/:packageId', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    json(ctx, 200, await repository.getQueryPackage(ctx.params.packageId, { actor }));
+  });
+  router.patch('/v1/query-packages/:packageId/assignee', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.assignQueryPackage(ctx.params.packageId, requireJson(ctx), { actor }));
+  });
+  router.put('/v1/query-packages/:packageId/screening', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    json(ctx, 200, await repository.updateQueryPackageScreening(ctx.params.packageId, requireJson(ctx), { actor }));
+  });
+  router.post('/v1/query-packages/:packageId/production-batches', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    json(ctx, 201, await repository.createQueryPackageProductionBatch(ctx.params.packageId, requireJson(ctx), { actor }));
+  });
+  router.post('/v1/query-packages/:packageId/abandon', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.abandonQueryPackage(ctx.params.packageId, requireJson(ctx), { actor }));
+  });
+  router.get('/v1/query-packages/:packageId/permanent-delete-preview', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.previewPermanentQueryPackageDeletion(ctx.params.packageId, { actor }));
+  });
+  router.delete('/v1/query-packages/:packageId/permanent', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    const limiter = passwordLimiter(actor.userId);
+    assertPasswordAttemptAllowed(ctx, limiter);
+    try {
+      const result = await repository.permanentlyDeleteQueryPackage(
+        ctx.params.packageId, requireJson(ctx), { actor },
+      );
+      limiter.reset();
+      json(ctx, 200, result);
+    } catch (error) {
+      if (error?.code === 'DELETION_PASSWORD_INVALID') limiter.recordFailure();
+      else limiter.reset();
+      throw error;
+    }
+  });
+  router.get('/v1/production-batches/:batchId/copy-sampling-readiness', async (ctx) => {
+    const actor = requestActor(ctx);
+    json(ctx, 200, await repository.getProductionBatchSamplingReadiness(ctx.params.batchId, { actor }));
+  });
+  router.post('/v1/production-batches/:batchId/copy-sampling-freeze', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.freezeCopySamplingBatch(ctx.params.batchId, requireJson(ctx), { actor }));
+  });
+  router.get('/v1/copy-qa/statistics', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.getCopyQaStatistics({ actor }));
+  });
+  router.get('/v1/copy-qa/items', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    json(ctx, 200, await repository.listCopyQaItems({
+      status: ctx.query.status,
+      limit: ctx.query.limit,
+      offset: ctx.query.offset,
+    }, { actor }));
+  });
+  router.get('/v1/copy-qa/items/:itemId', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    json(ctx, 200, await repository.getCopyQaItem(ctx.params.itemId, { actor }));
+  });
+  router.post('/v1/copy-qa/items/:itemId/pass', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    json(ctx, 200, await repository.passCopyQaItem(ctx.params.itemId, requireJson(ctx), { actor }));
+  });
+  router.post('/v1/copy-qa/items/:itemId/return', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    json(ctx, 200, await repository.returnCopyQaItem(ctx.params.itemId, requireJson(ctx), { actor }));
+  });
+  router.get('/v1/copy-qa/freezes/:freezePublicId/batch-return-preview', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    json(ctx, 200, await repository.getCopyQaBatchReturnPreview(ctx.params.freezePublicId, { actor }));
+  });
+  router.post('/v1/copy-qa/batch-return', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    json(ctx, 200, await repository.batchReturnCopyQa(requireJson(ctx), { actor }));
+  });
+  router.post('/v1/copy-qa/freezes/:freezePublicId/release-rest', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    json(ctx, 200, await repository.releaseCopyQaFreeze(ctx.params.freezePublicId, requireJson(ctx), { actor }));
+  });
+  router.post('/v1/tasks/:taskId/copy-qa-return', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    const body = requireJson(ctx);
+    json(ctx, 200, await repository.returnCopyQaItem(body.samplingItemId, body, {
+      actor,
+      expectedTaskId: ctx.params.taskId,
+    }));
+  });
+  router.post('/v1/tasks/batch-copy-qa-return', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    json(ctx, 200, await repository.batchReturnCopyQa(requireJson(ctx), { actor }));
+  });
+
   router.post('/v1/nodes', async (ctx) => {
     json(ctx, 200, await repository.registerNode(requireJson(ctx)));
   });
@@ -592,7 +826,10 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     json(ctx, 200, await repository.retireNode(requireJson(ctx).nodeId, actor));
   });
   router.post('/v1/tasks', async (ctx) => {
-    const actor = requestActor(ctx);
+    // Ordinary workers must enter production through an assigned Query package
+    // after screening. Keeping the legacy direct creator admin-only prevents a
+    // disabled import switch from being bypassed with raw task payloads.
+    const actor = requestActor(ctx, ['ADMIN']);
     const body = requireJson(ctx);
     const { skipCopyReview = false } = body;
     if (typeof skipCopyReview !== 'boolean') throw new TypeError('skipCopyReview must be a boolean');
@@ -668,6 +905,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
       limit: ctx.query.limit,
       offset: ctx.query.offset,
       includeTotal: ctx.query.includeTotal === 'true',
+      excludeActiveBlindQa: actor.role === 'REVIEWER',
     }));
   });
   router.get('/v1/task-views', async (ctx) => {
@@ -724,24 +962,127 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   router.post('/v1/tasks/batch-archive', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
     const taskIds = normalizedBatchTaskIds(requireJson(ctx).taskIds, 20);
-    const tasks = await Promise.all(taskIds.map(async (taskId) => {
+    const snapshots = await Promise.all(taskIds.map(async (taskId) => {
       const task = await repository.getTask(taskId);
       if (!task) throw new ControlPlaneNotFoundError('task not found');
-      if (!['MANUAL_ARCHIVE', 'REVIEWED'].includes(task.state)) {
-        throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'only manually archived tasks can be downloaded');
-      }
-      return task;
+      const binding = await assertReadyDeliveryTask(repository, task);
+      return { task, binding };
     }));
+    const tasks = snapshots.map((snapshot) => snapshot.task);
     const content = await buildBatchTaskArchive(tasks, async (task, assetId) => {
       const asset = await repository.getAsset(assetId);
       if (!asset || asset.taskId !== task.id) return null;
       const path = safeStoragePath(storageRoot, relative(storageRoot, asset.storagePath));
       return { ...asset, content: await readFile(path) };
     });
+    await assertDeliveryBindingsReady(repository, snapshots.map((snapshot) => snapshot.binding));
     await assertCurrentActorIdentity(repository, actor);
     ctx.status = 200;
     ctx.type = 'application/zip';
     ctx.set('Content-Disposition', `attachment; filename="task-resources-batch.zip"; filename*=UTF-8''${encodeURIComponent('批量作业资源.zip')}`);
+    ctx.body = content;
+  });
+  router.post('/v1/delivery-pool/archive', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    const request = normalizeDeliveryExportRequest(requireJson(ctx));
+    const controller = new AbortController();
+    const cancellation = () => new DOMException(
+      'delivery export client disconnected',
+      'AbortError',
+    );
+    const onRequestAborted = () => controller.abort(cancellation());
+    const onResponseClosed = () => {
+      if (!ctx.res.writableEnded) controller.abort(cancellation());
+    };
+    ctx.req.once('aborted', onRequestAborted);
+    ctx.res.once('close', onResponseClosed);
+    let releasePreparation = () => {};
+    let staged = null;
+    try {
+      releasePreparation = deliveryExportRegistry.beginPreparation(
+        actor,
+        (reason) => controller.abort(reason),
+      );
+      await initialDeliveryExportCleanup;
+      const taskIds = await resolveDeliveryExportTaskIds(repository, request, actor);
+      staged = await stageDeliveryPoolArchive(repository, storageRoot, taskIds, {
+        signal: controller.signal,
+      });
+      await assertDeliveryBindingsReady(repository, staged.bindings);
+      await assertCurrentActorIdentity(repository, actor);
+      controller.signal.throwIfAborted();
+      const fileName = request.scope === 'ALL_READY'
+        ? '交付池-全部可交付项.zip'
+        : '交付池-已选资源.zip';
+      const prepared = deliveryExportRegistry.issue(staged, actor, {
+        fileName,
+        taskCount: staged.taskCount,
+        bindings: staged.bindings,
+      });
+      staged = null;
+      json(ctx, 201, prepared);
+    } finally {
+      releasePreparation();
+      ctx.req.off('aborted', onRequestAborted);
+      ctx.res.off('close', onResponseClosed);
+      await staged?.cleanup().catch(() => {});
+    }
+  });
+  router.head('/v1/delivery-pool/archive/:downloadId', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    const record = await deliveryExportRegistry.peek(ctx.params.downloadId, actor);
+    await assertDeliveryBindingsReady(repository, record.bindings);
+    await assertCurrentActorIdentity(repository, actor);
+    ctx.status = 200;
+    ctx.type = 'application/zip';
+    ctx.length = record.staged.byteSize;
+    ctx.set('X-Delivery-Task-Count', String(record.taskCount));
+    ctx.set('Content-Disposition', `attachment; filename="delivery-pool.zip"; filename*=UTF-8''${encodeURIComponent(record.fileName)}`);
+  });
+  router.get('/v1/delivery-pool/archive/:downloadId', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    const { downloadId } = ctx.params;
+    const record = await deliveryExportRegistry.take(downloadId, actor);
+    try {
+      await assertDeliveryBindingsReady(repository, record.bindings);
+      await assertCurrentActorIdentity(repository, actor);
+      record.downloadSignal.throwIfAborted();
+    } catch (error) {
+      await deliveryExportRegistry.complete(downloadId, record);
+      throw error;
+    }
+    const content = new Transform({
+      transform(chunk, encoding, callback) {
+        deliveryExportRegistry.touch(downloadId, record);
+        callback(null, chunk);
+      },
+    });
+    const source = createReadStream(record.staged.archivePath, { signal: record.downloadSignal });
+    void pipeline(source, content, { signal: record.downloadSignal }).catch((error) => {
+      if (!content.destroyed) content.destroy(error);
+    });
+    let cleanupStarted = false;
+    const onResponseClosed = () => {
+      if (!ctx.res.writableEnded) {
+        record.downloadController.abort(
+          new DOMException('delivery export client disconnected', 'AbortError'),
+        );
+      }
+    };
+    ctx.res.once('close', onResponseClosed);
+    content.once('close', () => {
+      if (cleanupStarted) return;
+      cleanupStarted = true;
+      ctx.res.off('close', onResponseClosed);
+      void deliveryExportRegistry.complete(downloadId, record).catch((error) => {
+        console.error('failed to clean staged delivery export', error);
+      });
+    });
+    ctx.status = 200;
+    ctx.type = 'application/zip';
+    ctx.length = record.staged.byteSize;
+    ctx.set('X-Delivery-Task-Count', String(record.taskCount));
+    ctx.set('Content-Disposition', `attachment; filename="delivery-pool.zip"; filename*=UTF-8''${encodeURIComponent(record.fileName)}`);
     ctx.body = content;
   });
   router.get('/v1/task-counts', async (ctx) => {
@@ -763,17 +1104,32 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
       reason: body.reason,
     }));
   });
+  router.head('/v1/tasks/:taskId/archive', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    const { task } = await assertTaskAccess(ctx, repository, {
+      ownerOnly: actor.role !== 'ADMIN',
+    });
+    await assertReadyDeliveryTask(repository, task);
+    ctx.status = 200;
+    ctx.type = 'application/zip';
+    ctx.set('Content-Disposition', `attachment; filename="task-${task.id}-resources.zip"; filename*=UTF-8''${encodeURIComponent(archiveFileName(task))}`);
+  });
   router.get('/v1/tasks/:taskId/archive', async (ctx) => {
-    const { task } = await assertTaskAccess(ctx, repository, { allowCreatorRead: true });
-    if (!['MANUAL_ARCHIVE', 'REVIEWED'].includes(task.state)) {
-      throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'only manually archived tasks can be downloaded');
-    }
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    const { task } = await assertTaskAccess(ctx, repository, {
+      ownerOnly: actor.role !== 'ADMIN',
+    });
+    const binding = await assertReadyDeliveryTask(repository, task);
     const content = await buildTaskArchive(task, async (assetId) => {
       const asset = await repository.getAsset(assetId);
       if (!asset || asset.taskId !== task.id) return null;
       const path = safeStoragePath(storageRoot, relative(storageRoot, asset.storagePath));
       return { ...asset, content: await readFile(path) };
     });
+    await assertDeliveryBindingsReady(repository, [binding]);
+    if (actor.role === 'USER') {
+      await assertTaskAccess(ctx, repository, { ownerOnly: true, summaryOnly: true });
+    }
     const fileName = archiveFileName(task);
     ctx.status = 200;
     ctx.type = 'application/zip';
@@ -846,9 +1202,10 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   router.post('/v1/tasks/:taskId/review-images', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
     await assertTaskAccess(ctx, repository);
-    const { imageRunId, revisionId, nodeId, imagePlan, decision, score, reasons, note, problemAssetIds, reviewSessionId } = requireJson(ctx);
+    const { imageRunId, revisionId, nodeId, imagePlan, decision, reworkTarget,
+      score, reasons, note, problemAssetIds, reviewSessionId } = requireJson(ctx);
     json(ctx, 200, await repository.reviewImages(ctx.params.taskId, {
-      imageRunId, decision, score, reasons, note, problemAssetIds, reviewSessionId,
+      imageRunId, decision, reworkTarget, score, reasons, note, problemAssetIds, reviewSessionId,
       ...(imagePlan === undefined ? {} : { revisionId, nodeId, imagePlan }),
       actor,
     }));
@@ -939,6 +1296,15 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   router.get('/v1/human-quality-settings', async (ctx) => {
     requestActor(ctx);
     json(ctx, 200, await repository.getHumanQualitySettings());
+  });
+
+  router.get('/v1/delivery-pool', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    json(ctx, 200, await repository.listDeliveryPool({
+      limit: ctx.query.limit,
+      offset: ctx.query.offset,
+      includeTotal: ctx.query.includeTotal === 'true',
+    }, { actor }));
   });
   router.put('/v1/human-quality-settings', async (ctx) => {
     requestActor(ctx, ['ADMIN']);
@@ -1037,6 +1403,10 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     requestActor(ctx, ['ADMIN', 'REVIEWER']);
     json(ctx, 200, await repository.publishKnowledgeVersion(ctx.params.versionId));
   });
+  return async () => {
+    clearInterval(deliveryExportSweep);
+    await deliveryExportRegistry.dispose();
+  };
 }
 
 export function createControlPlaneApp({ repository, storageRoot, enforceUserAuth = true, analyzeCopy = analyzeAndSaveExcellentCopy, analyzeVisual = analyzeVisualImage }) {
@@ -1067,7 +1437,11 @@ export function createControlPlaneApp({ repository, storageRoot, enforceUserAuth
       ctx.set('Cache-Control', 'no-store');
       ctx.status = mapped.status;
       ctx.type = 'application/json';
-      ctx.body = { error: { code: mapped.code, message: mapped.message } };
+      ctx.body = { error: {
+        code: mapped.code,
+        message: mapped.message,
+        ...(mapped.details === undefined ? {} : { details: mapped.details }),
+      } };
     }
   });
 
@@ -1119,7 +1493,14 @@ export function createControlPlaneApp({ repository, storageRoot, enforceUserAuth
       await assertCurrentActorIdentity(repository, ctx.state.actor);
     }
   });
-  installRoutes(router, repository, resolvedStorageRoot, analyzeCopy, analyzeVisual);
+  const disposeRouteResources = installRoutes(
+    router,
+    repository,
+    resolvedStorageRoot,
+    analyzeCopy,
+    analyzeVisual,
+  );
+  app.context.disposeControlPlaneResources = disposeRouteResources;
   app.use(async (ctx, next) => {
     const machineRoute = ctx.path.startsWith('/v1/executions/') || (ctx.path === '/v1/nodes' && ctx.method !== 'GET');
     if (machineRoute && ctx.state.actor && ctx.state.actor.role !== 'ADMIN') {

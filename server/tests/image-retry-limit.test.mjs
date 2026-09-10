@@ -150,10 +150,17 @@ test('re-approving an exhausted task clears its failure budget and queues review
       if (sql.includes('INSERT INTO human_quality_review_submissions')) return { rows: [{ review_session_id: values[0] }] };
       if (sql.includes('SELECT * FROM tasks WHERE id')) return { rows: [{
         id: 41, state: 'COPY_REVIEW_PENDING', current_stage: 'IMAGE_RETRY_EXHAUSTED', current_copy_revision_id: 12,
-        assigned_to_user_id: 'alice',
+        assigned_to_user_id: 'alice', production_batch_id: null, mandatory_copy_qc: false,
+        ai_disclosure_enabled: true,
       }] };
       if (sql.includes('SELECT * FROM copy_revisions')) return { rows: [{ id: 12, content: {} }] };
       if (sql.includes('SELECT id FROM executor_nodes')) return { rows: [{ id: 'reviewer' }] };
+      if (sql.includes('UPDATE copy_revisions')) return { rows: [{ id: 12, content: {} }] };
+      if (sql.includes('INSERT INTO copy_approval_events')) return { rows: [{
+        id: 1, task_id: values[0], copy_revision_id: values[1], assessment_id: values[2],
+        approval_mode: values[3], approved_by_account_id: values[4], approved_by_username: values[5],
+        review_session_id: values[6], content_sha256: values[7],
+      }] };
       if (sql.includes('UPDATE tasks SET')) {
         update = { sql, values };
         return { rows: [{ id: 41, state: 'IMAGE_QUEUED', current_copy_revision_id: 12 }] };
@@ -166,11 +173,11 @@ test('re-approving an exhausted task clears its failure budget and queues review
     revisionId: 12,
     nodeId: 'reviewer',
     decision: 'APPROVE',
-    originalScore: 2.5,
-    note: '轻微问题可接受',
+    originalScore: 3,
     reviewSessionId: '77777777-7777-4777-8777-777777777777',
   }, { reviewerUserId: 'reviewer' });
   assert.equal(task.state, 'IMAGE_QUEUED');
   assert.match(update.sql, /pending_snapshot = NULL/u);
-  assert.match(update.sql, /current_stage = 'IMAGE_QUEUED'/u);
+  assert.match(update.sql, /current_stage = \$2/u);
+  assert.equal(update.values[1], 'IMAGE_QUEUED');
 });

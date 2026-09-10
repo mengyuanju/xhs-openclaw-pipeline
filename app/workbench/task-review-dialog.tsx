@@ -30,6 +30,8 @@ import { ImagePreviewPreference } from '../components/image-preview-preference';
 import { ImageSettingsEditor, defaultImageSettings, type ImageSettings, type PageLayout } from '../components/image-controls';
 import { ImageHistoryCompare, type ImageArtifactInfo } from '../components/image-history-compare';
 import {
+  COPY_MACHINE_DRAFT_SCORE_PRESENTATION,
+  CopyMachineDraftScoreField,
   HumanAssessmentHistory,
   HumanRatingFeedback,
   HumanScoreBadge,
@@ -39,9 +41,10 @@ import {
   type HumanScore,
 } from './human-quality-rating';
 import { DEFAULT_SETTINGS, useHumanQualitySettings } from './human-quality-settings';
+import { buildCopyReviewSubmission } from '../../src/copy-review-submission.mjs';
 
 type TaskState =
-  | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_FAILED'
+  | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_QC_PENDING' | 'COPY_FAILED'
   | 'IMAGE_QUEUED' | 'IMAGE_RUNNING' | 'IMAGE_FAILED'
   | 'MANUAL_ARCHIVE' | 'REVIEWED' | 'CANCELLED';
 
@@ -68,6 +71,13 @@ type CopyRevision = {
   };
   approvedAt: string | null;
   approvalMode?: 'MANUAL' | 'ADMIN_BYPASS' | null;
+  copyContentChangedFromMachine?: boolean;
+  copyReworkSatisfied?: boolean;
+  revisionOrigin?: string | null;
+  parentRevisionId?: number | null;
+  reworkOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | null;
+  reworkReasonCodes?: string[];
+  reworkNote?: string | null;
 };
 type TaskDetail = {
   id: number;
@@ -75,6 +85,9 @@ type TaskDetail = {
   assignedToUserId?: string | null;
   assignedToAccountId?: number | null;
   aiDisclosureEnabled: boolean;
+  mandatoryCopyQc?: boolean;
+  mandatoryCopyQcOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | null;
+  deliveryStatus?: 'READY' | null;
   state: TaskState;
   imageReviewedAt: string | null;
   imageReviewedByUserId: string | null;
@@ -186,7 +199,6 @@ function getCopyEditBlockMessage({
   busy,
   score,
   ratingComplete,
-  machineOriginal,
 }: {
   editable: boolean;
   assigned: boolean;
@@ -194,20 +206,36 @@ function getCopyEditBlockMessage({
   busy: boolean;
   score: HumanScore | null;
   ratingComplete: boolean;
-  machineOriginal: boolean;
 }) {
   if (!assigned) return '请先分配负责人，再进行文案评分和编辑。';
   if (!canControl) return '当前任务已分配给其他负责人，你可以查看，但不能评分或编辑。';
   if (!editable) return '当前任务不在待文案审核阶段，文案内容仅供查看。';
   if (busy) return '审核内容正在处理，请稍候再编辑。';
-  if (score === null) return machineOriginal
-    ? '请先完成机器原稿评分并填写反馈后再编辑'
-    : '请先完成当前修改稿评分并填写反馈后再编辑';
+  if (score === null) return '请先完成机器原稿评分；2 分或 2.5 分可编辑文案内容。';
   if (score === 1) return ratingComplete
-    ? '当前稿评为 1 分，不支持编辑；请保存评分或废弃任务。'
-    : '当前稿评为 1 分，不支持编辑；请填写扣分原因或评分说明后保存评分或废弃任务。';
+    ? '当前稿评为 1 分，不支持编辑；只能评分并废弃任务。'
+    : '当前稿评为 1 分，不支持编辑；请补充评分反馈后评分并废弃任务。';
   if (score === 3) return '当前稿评为 3 分，已达到直接放行标准，无需修改。';
-  if (!ratingComplete) return `当前稿已评为 ${score} 分；请先选择扣分原因或填写评分说明后再编辑。`;
+  return null;
+}
+
+function getPlanEditBlockMessage({
+  assigned,
+  canControl,
+  editable,
+  canEditApproved,
+  busy,
+}: {
+  assigned: boolean;
+  canControl: boolean;
+  editable: boolean;
+  canEditApproved: boolean;
+  busy: boolean;
+}) {
+  if (!assigned) return '请先分配负责人，再修改图片文案规划。';
+  if (!canControl) return '当前任务已分配给其他负责人，你可以查看，但不能修改图片文案规划。';
+  if (!editable && !canEditApproved) return '当前任务状态不支持修改图片文案规划。';
+  if (busy) return '审核内容正在处理，请稍候再编辑。';
   return null;
 }
 
@@ -256,9 +284,6 @@ export function TaskReviewDialog({
   const [copyOriginalScore, setCopyOriginalScore] = useState<HumanScore | null>(null);
   const [copyOriginalReasons, setCopyOriginalReasons] = useState<string[]>([]);
   const [copyOriginalNote, setCopyOriginalNote] = useState('');
-  const [copyEditedScore, setCopyEditedScore] = useState<HumanScore | null>(null);
-  const [copyEditedReasons, setCopyEditedReasons] = useState<string[]>([]);
-  const [copyEditedNote, setCopyEditedNote] = useState('');
   const [imageScore, setImageScore] = useState<HumanScore | null>(null);
   const [imageReasons, setImageReasons] = useState<string[]>([]);
   const [imageProblemAssetIds, setImageProblemAssetIds] = useState<number[]>([]);
@@ -289,9 +314,6 @@ export function TaskReviewDialog({
       setCopyOriginalScore(copyRatings.current?.score ?? null);
       setCopyOriginalReasons(copyRatings.current?.reasonCodes ?? []);
       setCopyOriginalNote(copyRatings.current?.note ?? '');
-      setCopyEditedScore(null);
-      setCopyEditedReasons([]);
-      setCopyEditedNote('');
       setImageScore(imageAssessment?.score ?? null);
       setImageReasons(imageAssessment?.reasonCodes ?? []);
       setImageProblemAssetIds(imageAssessment?.problemAssetIds ?? []);
@@ -317,9 +339,6 @@ export function TaskReviewDialog({
     setCopyOriginalScore(null);
     setCopyOriginalReasons([]);
     setCopyOriginalNote('');
-    setCopyEditedScore(null);
-    setCopyEditedReasons([]);
-    setCopyEditedNote('');
     setImageScore(null);
     setImageReasons([]);
     setImageProblemAssetIds([]);
@@ -341,8 +360,8 @@ export function TaskReviewDialog({
   const revision = currentRevision(detail);
   const savedDraft = draftFromRevision(revision);
   const draftChanged = Boolean(draft && savedDraft && JSON.stringify(draft) !== JSON.stringify(savedDraft));
-  const copyMaterialChanged = Boolean(draft && savedDraft && JSON.stringify({ copy: draft.copy, imagePlan: draft.imagePlan })
-    !== JSON.stringify({ copy: savedDraft.copy, imagePlan: savedDraft.imagePlan }));
+  const copyContentChanged = Boolean(draft && savedDraft
+    && JSON.stringify(draft.copy) !== JSON.stringify(savedDraft.copy));
   const imagePlanChanged = Boolean(draft && savedDraft
     && JSON.stringify(draft.imagePlan) !== JSON.stringify(savedDraft.imagePlan));
   const imageConfigurationChanged = Boolean(draft && savedDraft && JSON.stringify(draft.imageSettings) !== JSON.stringify(savedDraft.imageSettings));
@@ -356,42 +375,53 @@ export function TaskReviewDialog({
   const hasOwnerControl = isAdmin || currentUserIsAssignee;
   const editable = taskHasAssignee && canReviewCopy && detail?.state === 'COPY_REVIEW_PENDING'
     && Boolean(revision && draft);
+  const isCopyRework = Boolean(detail?.mandatoryCopyQc
+    || ['QA_RETURN', 'FINAL_REWORK'].includes(revision?.revisionOrigin ?? '')
+    || revision?.reworkOrigin);
+  const savedCopyRatings = detail ? copyRatingsFromDetail(detail) : { current: undefined };
   const originalCopyRatingComplete = ratingFeedbackComplete(copyOriginalScore, copyOriginalReasons, copyOriginalNote);
-  const copyFieldsEditable = editable && originalCopyRatingComplete
-    && (copyOriginalScore === 2 || copyOriginalScore === 2.5);
+  const copyFieldsEditable = editable && (isCopyRework || copyOriginalScore === 2 || copyOriginalScore === 2.5);
   const copyFieldsReadOnly = !copyFieldsEditable || loading || submitting;
-  const effectiveCopyScore = copyMaterialChanged ? copyEditedScore : copyOriginalScore;
-  const effectiveCopyReasons = copyMaterialChanged ? copyEditedReasons : copyOriginalReasons;
-  const effectiveCopyNote = copyMaterialChanged ? copyEditedNote : copyOriginalNote;
-  const copyRatingComplete = originalCopyRatingComplete
-    && ratingFeedbackComplete(effectiveCopyScore, effectiveCopyReasons, effectiveCopyNote);
-  const canApproveCopy = copyRatingComplete && isPassingHumanScore(effectiveCopyScore);
+  const copyContentChangedFromMachine = revision?.copyContentChangedFromMachine === true;
+  const hasEditedCopyVersion = copyContentChanged || copyContentChangedFromMachine;
+  const copyReworkSatisfied = copyContentChanged || revision?.copyReworkSatisfied === true;
+  const copyRatingComplete = isCopyRework || originalCopyRatingComplete;
+  const canApproveCopy = isCopyRework ? copyReworkSatisfied : copyRatingComplete && (copyOriginalScore === 3 && !copyContentChanged
+    || (copyOriginalScore === 2 || copyOriginalScore === 2.5) && hasEditedCopyVersion);
   const longQuery = Boolean(detail && (detail.query.length > 100 || detail.query.split('\n').length > 3));
   const canReviewImages = detail?.state === 'MANUAL_ARCHIVE'
     && (isAdmin || role === 'REVIEWER' && taskHasAssignee) && Boolean(detail.currentImageRunId);
-  const downloadable = detail && ['MANUAL_ARCHIVE', 'REVIEWED'].includes(detail.state);
+  const downloadable = detail?.state === 'REVIEWED' && detail.deliveryStatus === 'READY'
+    && role !== 'REVIEWER' && (isAdmin || currentUserIsAssignee);
   const canResumeImages = canResumeImageTask(detail) && hasOwnerControl && role !== 'REVIEWER';
   const canModifyImages = Boolean(detail && revision?.approvedAt && hasOwnerControl && role !== 'REVIEWER'
     && ['MANUAL_ARCHIVE', 'REVIEWED', 'IMAGE_FAILED', 'IMAGE_QUEUED'].includes(detail.state) && !detail.currentExecutionId);
   const canEditApprovedImagePlan = Boolean(isAdmin && canReviewImages && canModifyImages);
-  const planFieldsReadOnly = !(copyFieldsEditable || canEditApprovedImagePlan) || loading || submitting;
-  const planKindDisabled = !copyFieldsEditable || loading || submitting;
-  const savedCopyRatings = detail ? copyRatingsFromDetail(detail) : { current: undefined };
-  const currentCopyRatingLabel = revision?.executionId === null ? '当前修改稿评分' : '机器原稿初评';
-  const copyEditBlockMessage = getCopyEditBlockMessage({
+  const planFieldsReadOnly = !(editable || canEditApprovedImagePlan) || loading || submitting;
+  const planKindDisabled = !editable || loading || submitting;
+  const currentCopyRatingLabel = '机器原稿初评（保留）';
+  const standardCopyEditBlockMessage = getCopyEditBlockMessage({
     editable,
     assigned: taskHasAssignee,
     canControl: canReviewCopy,
     busy: loading || submitting,
     score: copyOriginalScore,
     ratingComplete: originalCopyRatingComplete,
-    machineOriginal: revision?.executionId !== null,
+  });
+  const copyEditBlockMessage = isCopyRework && editable && !loading && !submitting
+    ? null
+    : standardCopyEditBlockMessage;
+  const planEditBlockMessage = getPlanEditBlockMessage({
+    assigned: taskHasAssignee,
+    canControl: canReviewCopy,
+    editable,
+    canEditApproved: canEditApprovedImagePlan,
+    busy: loading || submitting,
   });
   const savedImageAssessment = detail ? imageAssessmentFromDetail(detail) : undefined;
   const copyRatingChanged = editable && (copyOriginalScore !== (savedCopyRatings.current?.score ?? null)
     || JSON.stringify(copyOriginalReasons) !== JSON.stringify(savedCopyRatings.current?.reasonCodes ?? [])
-    || copyOriginalNote !== (savedCopyRatings.current?.note ?? '')
-    || copyEditedScore !== null || copyEditedReasons.length > 0 || copyEditedNote.length > 0);
+    || copyOriginalNote !== (savedCopyRatings.current?.note ?? ''));
   const imageRatingChanged = canReviewImages && (imageScore !== (savedImageAssessment?.score ?? null)
     || JSON.stringify(imageReasons) !== JSON.stringify(savedImageAssessment?.reasonCodes ?? [])
     || JSON.stringify(imageProblemAssetIds) !== JSON.stringify(savedImageAssessment?.problemAssetIds ?? [])
@@ -403,7 +433,7 @@ export function TaskReviewDialog({
   useEffect(() => {
     setCopyEditNotice(null);
     lastCopyEditNoticeRef.current = null;
-  }, [copyEditBlockMessage, taskId]);
+  }, [copyEditBlockMessage, planEditBlockMessage, taskId]);
 
   useEffect(() => {
     if (!hasUnsavedChanges) return;
@@ -458,7 +488,9 @@ export function TaskReviewDialog({
   const scoreDefinitions = humanRatingSettings.scoreDefinitions;
   const copyReasonOptions = humanRatingSettings.copyReasons;
   const imageReasonOptions = humanRatingSettings.imageReasons;
-  const copyScoreDefinition = scoreDefinitions.find(definition => definition.score === copyOriginalScore);
+  const showCopyScoreDescriptions = humanRatingSettings.copyReviewDisplay.showScoreDescriptions;
+  const showCopyDeductionReasons = humanRatingSettings.copyReviewDisplay.showDeductionReasons;
+  const copyFeedbackRequirement = showCopyDeductionReasons ? '扣分原因或评分说明' : '评分说明';
   const imageScoreDefinition = scoreDefinitions.find(definition => definition.score === imageScore);
   const canApproveImages = imageSetComplete && imageRatingComplete && isPassingHumanScore(imageScore)
     && !imagePlanChanged && !imageConfigurationChanged;
@@ -477,7 +509,7 @@ export function TaskReviewDialog({
   }, [activePlanIndex, draft]);
 
   function revealCopyEditNotice(area: CopyEditArea) {
-    const message = area === 'plan' && canEditApprovedImagePlan ? null : copyEditBlockMessage;
+    const message = area === 'plan' ? planEditBlockMessage : copyEditBlockMessage;
     if (!message) return;
     const now = Date.now();
     const last = lastCopyEditNoticeRef.current;
@@ -488,9 +520,6 @@ export function TaskReviewDialog({
   }
 
   function updateCopy(field: 'title' | 'body' | 'tags', value: string) {
-    setCopyEditedScore(null);
-    setCopyEditedReasons([]);
-    setCopyEditedNote('');
     setDraft((current) => current ? {
       ...current,
       copy: {
@@ -503,9 +532,6 @@ export function TaskReviewDialog({
   }
 
   function updateImagePlan(index: number, patch: Partial<ImagePlanItem>) {
-    setCopyEditedScore(null);
-    setCopyEditedReasons([]);
-    setCopyEditedNote('');
     setDraft((current) => current ? {
       ...current,
       imagePlan: current.imagePlan.map((item, itemIndex) => itemIndex === index
@@ -516,20 +542,9 @@ export function TaskReviewDialog({
 
   function updateCopyOriginalScore(score: HumanScore) {
     setCopyOriginalScore(score);
-    setCopyEditedScore(null);
-    setCopyEditedReasons([]);
-    setCopyEditedNote('');
     if (score === 3) {
       setCopyOriginalReasons([]);
       setCopyOriginalNote('');
-    }
-  }
-
-  function updateCopyEditedScore(score: HumanScore) {
-    setCopyEditedScore(score);
-    if (score === 3) {
-      setCopyEditedReasons([]);
-      setCopyEditedNote('');
     }
   }
 
@@ -570,20 +585,24 @@ export function TaskReviewDialog({
 
   async function submitCopyDecision(decision: 'SAVE' | 'APPROVE' | 'DISCARD', form: HTMLFormElement) {
     if (!detail || !revision || !draft || !editable || loading || submitting) return;
+    if (!isCopyRework && decision === 'SAVE' && copyOriginalScore === 1) {
+      setError('机器原稿评为 1 分时只能评分并废弃，不能保存为待修改。');
+      return;
+    }
     if (!copyRatingComplete) {
-      setError(!originalCopyRatingComplete
-        ? '请完成机器原稿初评；低于 3 分时，扣分原因或评分说明至少填写一项。'
-        : '请完成修改后自评；低于 3 分时，扣分原因或评分说明至少填写一项。');
+      setError(`请完成机器原稿初评；低于 3 分时，${copyFeedbackRequirement}至少填写一项。`);
       return;
     }
     if (decision === 'APPROVE' && !canApproveCopy) {
-      setError('当前文案评分未高于 2 分，可以保存待修改，但不能放行生图。');
+      setError(isCopyRework
+        ? '返工稿正文尚未发生实际修改，不能提交通过；请按返工原因修改标题、正文或标签。'
+        : copyOriginalScore === 2 || copyOriginalScore === 2.5
+        ? '原稿为 2 分或 2.5 分时，请先修改标题、正文或标签；通过时系统会将最终修改稿记为 3 分。'
+        : '当前原稿评分不能直接放行，请按评分结果处理。');
       return;
     }
-    if (decision === 'DISCARD' && (effectiveCopyScore !== 1 || draftChanged)) {
-      setError(draftChanged
-        ? '请先保存当前修改及 1 分自评，再废弃任务，确保评分对应已保存版本。'
-        : '只有当前文案评为 1 分时才能从审核弹窗废弃任务。');
+    if (decision === 'DISCARD' && copyOriginalScore !== 1) {
+      setError('只有当前文案评为 1 分时才能从审核弹窗废弃任务。');
       return;
     }
     // Validate every mounted page, then reveal the first invalid field before focusing it.
@@ -603,13 +622,18 @@ export function TaskReviewDialog({
       setInvalidField(invalid);
       return;
     }
+    const submittedScore = isCopyRework || decision === 'APPROVE' && hasEditedCopyVersion ? 3 : copyOriginalScore;
     if (!await confirm({
       title: decision === 'APPROVE' ? '确认文案达标并开始生图？' : decision === 'DISCARD' ? '评分并废弃这条任务？' : '保存评分与当前修改？',
       description: decision === 'APPROVE'
-        ? `当前人工评分为 ${effectiveCopyScore} 分。系统会保存评分${draftChanged ? '和人工修订版本' : ''}，并将任务送入全局生图队列。`
+        ? isCopyRework
+          ? `${revision.reworkOrigin === 'QA_RETURN' || detail.mandatoryCopyQcOrigin === 'QA_RETURN' ? '抽检返工' : '终审返工'}已完成实际正文修改；最终稿将自动记为 3 分，并强制进入复检。`
+          : hasEditedCopyVersion
+          ? `机器原稿评分 ${copyOriginalScore} 分及其原因会原样保留；当前最终修改稿将自动记为 3 分并送入全局生图队列。`
+          : `机器原稿评分为 ${submittedScore} 分。系统会保存评分并将任务送入全局生图队列。`
         : decision === 'DISCARD'
           ? '当前文案评分为 1 分。任务会被标记为已废弃，历史文案、执行记录与评分仍会保留。'
-          : `当前人工评分为 ${effectiveCopyScore} 分。系统会保存评分${draftChanged ? '和人工修订版本' : ''}，任务继续留在文案审核。`,
+          : `机器原稿评分为 ${submittedScore} 分。系统会保存评分${draftChanged ? '和人工修订版本' : ''}，任务继续留在文案审核。`,
       confirmLabel: decision === 'APPROVE' ? '确认放行' : decision === 'DISCARD' ? '评分并废弃' : '保存待修改',
       ...(decision === 'DISCARD' ? { tone: 'danger' as const } : {}),
     })) return;
@@ -617,23 +641,20 @@ export function TaskReviewDialog({
     setError('');
     try {
       if (draftChanged) await requireImageControls();
-      const requestPayload = {
+      const requestPayload = buildCopyReviewSubmission({
         revisionId: revision.id,
         nodeId,
         decision,
-        score: effectiveCopyScore,
-        reasons: effectiveCopyScore === 3 ? [] : effectiveCopyReasons,
-        note: effectiveCopyScore === 3 ? '' : effectiveCopyNote.trim(),
-        ...(decision !== 'DISCARD' && draftChanged ? {
-          edits: draft,
-          ...(revision.executionId ? {
-            originalScore: copyOriginalScore,
-            originalReasons: copyOriginalScore === 3 ? [] : copyOriginalReasons,
-            originalNote: copyOriginalScore === 3 ? '' : copyOriginalNote.trim(),
-          } : {}),
-        } : {}),
+        draft,
+        draftChanged,
+        copyContentChanged,
+        copyContentChangedFromMachine,
+        copyRework: isCopyRework,
+        originalScore: copyOriginalScore,
+        originalReasons: copyOriginalReasons,
+        originalNote: copyOriginalNote,
         aiDisclosureEnabled,
-      };
+      });
       await apiRequest(apiPath(`/v1/tasks/${detail.id}/approve-copy`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -641,7 +662,11 @@ export function TaskReviewDialog({
       });
       reviewSessionRef.current = null;
       await onUpdated(decision === 'APPROVE'
-        ? '文案评分已保存并放行，任务已进入全局生图队列。'
+        ? isCopyRework
+          ? '返工稿已按最终 3 分通过，并进入强制复检。'
+          : hasEditedCopyVersion
+          ? '机器原稿评分已保留，最终修改稿已按 3 分放行并进入全局生图队列。'
+          : '文案评分已保存并放行，任务已进入全局生图队列。'
         : decision === 'DISCARD' ? '文案评分已保存，任务已废弃。'
           : '文案评分与当前修改已保存，任务继续留在文案审核。');
       if (decision === 'APPROVE' || decision === 'DISCARD') onOpenChange(false);
@@ -707,8 +732,9 @@ export function TaskReviewDialog({
     finally { setSubmitting(false); }
   }
 
-  async function submitImageReview(decision: 'APPROVE' | 'RETRY' | 'DISCARD') {
+  async function submitImageReview(decision: 'APPROVE' | 'REWORK' | 'DISCARD', reworkTarget?: 'COPY' | 'IMAGE' | 'BOTH') {
     if (!detail || !canReviewImages || submitting) return;
+    if (decision === 'REWORK' && !reworkTarget) return;
     if (imagePlanChanged && (!revision || !draft)) {
       setError('当前图片文案规划版本不可用，请刷新后重试。');
       return;
@@ -727,28 +753,30 @@ export function TaskReviewDialog({
           : '当前图片评分未高于 2 分，可以重试或废弃，但不能审核通过。');
       return;
     }
-    if (decision === 'RETRY' && imageConfigurationChanged) {
-      setError('交付格式或背景配置尚未应用。请先提交图片配置，或刷新恢复后再重试生图。');
+    if (decision === 'REWORK' && reworkTarget !== 'COPY' && imageConfigurationChanged) {
+      setError('交付格式或背景配置尚未应用。请先提交图片配置，或刷新恢复后再发起图片返工。');
       return;
     }
-    const options = {
-      APPROVE: { title: '确认图片评分达标并通过？', description: `当前整套图片人工评分为 ${imageScore} 分。图文将移入已完成列表。`, confirmLabel: '确认通过' },
-      RETRY: { title: '重新生成这条任务的图片？', description: `当前整套图片人工评分为 ${imageScore} 分。${imagePlanChanged ? '修改后的图片文案规划会保存为新的人工批准版本；' : '保留已审核文案；'}旧图片与评分记录会保留，生成会产生模型费用。`, confirmLabel: '重试生图' },
-      DISCARD: { title: '废弃这条图文任务？', description: `当前整套图片人工评分为 ${imageScore} 分。任务会移出业务列表，历史文案、执行记录、图片与评分仍会保留。`, confirmLabel: '确认废弃', tone: 'danger' as const },
-    };
-    if (!await confirm(options[decision])) return;
+    const targetLabel = reworkTarget === 'COPY' ? '文案' : reworkTarget === 'IMAGE' ? '图片' : '文案和图片';
+    const option = decision === 'APPROVE'
+      ? { title: '确认图文终审通过？', description: `当前整套图片人工评分为 ${imageScore} 分。通过后任务进入交付池，才可下载完整资源。`, confirmLabel: '通过到交付池' }
+      : decision === 'REWORK'
+        ? { title: `确认发起${targetLabel}返工？`, description: `当前整套图片人工评分为 ${imageScore} 分。只退回${targetLabel}环节；历史版本、图片与评分记录全部保留。`, confirmLabel: `确认${targetLabel}返工` }
+        : { title: '废弃这条图文任务？', description: `当前整套图片人工评分为 ${imageScore} 分。任务会移出业务列表，历史文案、执行记录、图片与评分仍会保留。`, confirmLabel: '确认废弃', tone: 'danger' as const };
+    if (!await confirm(option)) return;
     setSubmitting(true);
     setError('');
     try {
-      if (decision === 'RETRY' && imagePlanChanged) await requireImageControls({ imagePlanEdits: true });
+      if (decision === 'REWORK' && reworkTarget !== 'COPY' && imagePlanChanged) await requireImageControls({ imagePlanEdits: true });
       const requestPayload = {
         imageRunId: detail.currentImageRunId,
         decision,
+        ...(decision === 'REWORK' ? { reworkTarget } : {}),
         score: imageScore,
         reasons: imageScore === 3 ? [] : imageReasons,
         problemAssetIds: imageScore === 3 ? [] : imageProblemAssetIds,
         note: imageScore === 3 ? '' : imageReviewNote.trim(),
-        ...(decision === 'RETRY' && imagePlanChanged ? {
+        ...(decision === 'REWORK' && reworkTarget !== 'COPY' && imagePlanChanged ? {
           revisionId: revision!.id,
           nodeId,
           imagePlan: draft!.imagePlan,
@@ -759,10 +787,9 @@ export function TaskReviewDialog({
         body: JSON.stringify({ ...requestPayload, reviewSessionId: reviewSessionId(requestPayload) }),
       });
       reviewSessionRef.current = null;
-      await onUpdated(decision === 'APPROVE' ? '图片审核通过，任务已进入已完成列表。'
-        : decision === 'RETRY' ? imagePlanChanged
-          ? '图片评分与新规划版本已保存，任务已回到生图队列。'
-          : '任务已回到生图队列，等待重新生成图片。' : '任务已废弃。');
+      await onUpdated(decision === 'APPROVE' ? '图文终审通过，任务已进入交付池。'
+        : decision === 'REWORK' ? `${targetLabel}返工已发起；历史版本与评分继续保留。`
+          : '任务已废弃。');
       onOpenChange(false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '图片审核提交失败');
@@ -776,15 +803,15 @@ export function TaskReviewDialog({
       <header className="workbench-review-heading">
         <div>
           <span className="section-kicker">Task {detail ? `#${detail.id}` : ''}</span>
-          <DialogTitle>{detail?.state === 'REVIEWED' ? '已完成任务详情' : detail?.state === 'MANUAL_ARCHIVE' ? '人工归档详情' : '任务详情与审核'}</DialogTitle>
+          <DialogTitle>{detail?.state === 'REVIEWED' ? '交付池任务详情' : detail?.state === 'MANUAL_ARCHIVE' ? '图文终审详情' : '任务详情与审核'}</DialogTitle>
           <DialogDescription>{detail?.state === 'COPY_REVIEW_PENDING' && !taskHasAssignee
             ? '机器文案已生成；请先在任务列表分配负责人，再开始人工评分与审核。'
             : detail?.state === 'COPY_REVIEW_PENDING' && !canReviewCopy
             ? '任务已分配给其他负责人；你可以查看生成结果，但不能评分、编辑或放行。'
             : detail?.state === 'MANUAL_ARCHIVE'
-            ? '核对完整图集并完成人工评分，再选择审核通过、重试生图或废弃。'
-            : detail?.state === 'REVIEWED' ? '图文已审核通过，可查看详情并下载完整资源包。'
-            : '先给机器原稿评分；2 分或 2.5 分可修改，修改后需要重新自评。'}</DialogDescription>
+            ? '核对完整图文并完成人工评分，再明确选择通过到交付池、文案返工、图片返工、文案和图片返工，或废弃。'
+            : detail?.state === 'REVIEWED' ? '图文终审与交付门禁均已通过，可查看详情并下载完整资源包。'
+            : '先给机器原稿评分；2 分或 2.5 分可修改正文，图片文案规划不受评分档位影响。'}</DialogDescription>
           {revision?.approvalMode === 'ADMIN_BYPASS' && <p role="status">管理员免审核 · 当前文案已自动放行生图</p>}
         </div>
         <div className="workbench-row-actions">
@@ -824,7 +851,7 @@ export function TaskReviewDialog({
               {!editable && currentImageRun && <TaskQualitySummary result={currentImageRun.result}
                 onShowImages={assets.length ? () => { imageSectionRef.current?.scrollIntoView({ block: 'start' }); imageSectionRef.current?.focus({ preventScroll: true }); } : undefined} />}
               <section className="workbench-review-section">
-                <div className="workbench-review-section-title"><span>01</span><div><h3>标题、正文与标签</h3><p>{editable ? '先评价机器原稿，再决定直接放行或修改。' : '当前状态只读，展示任务采用的文案版本。'}</p></div></div>
+                <div className="workbench-review-section-title"><span>01</span><div><h3>标题、正文与标签</h3><p>{editable ? isCopyRework ? '按返工原因直接修改正文；无需重评机器初稿，实际修改后最终稿自动按 3 分提交强制复检。' : '先评价机器原稿，再决定直接放行或修改。' : '当前状态只读，展示任务采用的文案版本。'}</p></div></div>
                 {detail.state === 'COPY_REVIEW_PENDING' && !taskHasAssignee
                   && <div className="notice warning" role="status">文案已生成，但任务尚未分配负责人。请先关闭窗口并完成分配，再进行评分或修改。</div>}
                 {detail.state === 'COPY_REVIEW_PENDING' && taskHasAssignee && !canReviewCopy
@@ -834,15 +861,16 @@ export function TaskReviewDialog({
                   <div id="review-query-text" className="workbench-review-query-text" data-expanded={queryExpanded || !longQuery}>{detail.query}</div>
                   {longQuery && <Button unstyled className="button small" type="button" aria-expanded={queryExpanded} aria-controls="review-query-text" onClick={() => setQueryExpanded(value => !value)}>{queryExpanded ? '收起原文' : '展开全文'}</Button>}
                 </div>
-                {editable && <div className="human-rating-panel" aria-label="文案人工评分">
+                {editable && isCopyRework && <div className="notice warning" role="status"><strong>{revision?.reworkOrigin === 'QA_RETURN' || detail.mandatoryCopyQcOrigin === 'QA_RETURN' ? '文案抽检返工' : '图文终审文案返工'}</strong>{revision?.reworkReasonCodes?.length ? ` · 原因：${revision.reworkReasonCodes.join('、')}` : ''}{revision?.reworkNote ? ` · 要求：${revision.reworkNote}` : ''}<br />返工稿必须实际修改标题、正文或标签；保存后可继续编辑，通过时自动记为 3 分并强制复检。</div>}
+                {editable && !isCopyRework && <div className="human-rating-panel" aria-label="文案人工评分">
                   {humanQualitySettingsLoading && <p className="human-rating-config-status" role="status">正在读取评分选项…</p>}
                   {humanQualitySettingsError && <p className="human-rating-config-status" role="alert">评分选项读取失败，请刷新后重试。</p>}
-                  <HumanScoreField
+                  <CopyMachineDraftScoreField
                     id={`copy-original-score-${detail.id}`}
                     legend={currentCopyRatingLabel}
                     value={copyOriginalScore}
-                    scoreDefinitions={scoreDefinitions}
-                    disabled={loading || submitting || humanQualitySettingsUnavailable || Boolean(savedCopyRatings.current) || copyMaterialChanged}
+                    showDescriptions={showCopyScoreDescriptions}
+                    disabled={loading || submitting || humanQualitySettingsUnavailable || Boolean(savedCopyRatings.current) || copyContentChanged}
                     onChange={(score) => { updateCopyOriginalScore(score); setError(''); }}
                   />
                   {copyOriginalScore !== null && copyOriginalScore < 3 && <HumanRatingFeedback
@@ -851,24 +879,26 @@ export function TaskReviewDialog({
                     reasons={copyOriginalReasons}
                     note={copyOriginalNote}
                     notePlaceholder={humanRatingSettings.noteGuidance.copyPlaceholder}
-                    disabled={loading || submitting || humanQualitySettingsUnavailable || Boolean(savedCopyRatings.current) || copyMaterialChanged}
+                    showReasonOptions={showCopyDeductionReasons}
+                    disabled={loading || submitting || humanQualitySettingsUnavailable || Boolean(savedCopyRatings.current)}
                     onToggleReason={(code) => { toggleReason(code, setCopyOriginalReasons); setError(''); }}
                     onNoteChange={(note) => { setCopyOriginalNote(note); setError(''); }}
                   />}
                   {copyOriginalScore !== null && <p className="human-rating-guidance" role="status">
-                    {copyScoreDefinition && <><strong>{copyScoreDefinition.title}</strong> · {copyScoreDefinition.description}。 </>}
                     {copyOriginalScore === 1
-                      ? '填写原因或说明后，可保存评分或直接废弃任务。'
+                      ? `填写${copyFeedbackRequirement}后，只能评分并废弃任务。`
                       : copyOriginalScore === 2
-                        ? `${originalCopyRatingComplete ? '已解锁编辑' : '填写扣分原因或说明后即可编辑'}。完成结构性修改后，请进行修改后自评。`
+                        ? `已解锁标题、正文与标签编辑；${originalCopyRatingComplete ? '修改完成后可直接通过' : `提交前请填写${copyFeedbackRequirement}`}。通过时最终修改稿自动记为 3 分，原评分保持不变。`
                       : copyOriginalScore === 2.5
-                          ? `已达到放行标准；${originalCopyRatingComplete ? '也可以小修' : '填写扣分原因或说明后可以小修'}，修改后需重新自评。`
+                          ? `请完成必要的小修；${originalCopyRatingComplete ? '修改完成后可直接通过' : `提交前请填写${copyFeedbackRequirement}`}。通过时最终修改稿自动记为 3 分，原评分保持不变。`
                           : '原稿可直接放行生图。'}
                   </p>}
                 </div>}
                 {!editable && copyAssessments.length > 0 && <div className="human-rating-readonly">
                   <span>当前文案人工评分</span>
-                  <HumanScoreBadge score={copyAssessments.at(-1)!.score} />
+                  <HumanScoreBadge score={copyAssessments.at(-1)!.score}
+                    passingScores={copyAssessments.at(-1)!.ratingContext === 'ORIGINAL'
+                      ? COPY_MACHINE_DRAFT_SCORE_PRESENTATION.passingScores : undefined} />
                 </div>}
                 {isImageRetryExhausted(detail) && <div className="notice warning" role="status">{IMAGE_RETRY_EXHAUSTED_LABEL}</div>}
                 {detail.error && <div className="notice error" role="alert">{detail.error}</div>}
@@ -893,28 +923,10 @@ export function TaskReviewDialog({
                       onChange={(event) => updateCopy('tags', event.target.value)} />
                   </div>
                 </div> : <div className="workbench-review-empty">当前任务还没有可审核的文案版本。</div>}
-                {editable && copyMaterialChanged && <div className="human-rating-panel" data-edited>
-                  <HumanScoreField
-                    id={`copy-edited-score-${detail.id}`}
-                    legend="修改后自评"
-                    value={copyEditedScore}
-                    scoreDefinitions={scoreDefinitions}
-                    disabled={loading || submitting || humanQualitySettingsUnavailable}
-                    onChange={(score) => { updateCopyEditedScore(score); setError(''); }}
-                  />
-                  {copyEditedScore !== null && copyEditedScore < 3 && <HumanRatingFeedback
-                    id={`copy-edited-${detail.id}`}
-                    reasonOptions={copyReasonOptions}
-                    reasons={copyEditedReasons}
-                    note={copyEditedNote}
-                    notePlaceholder={humanRatingSettings.noteGuidance.copyPlaceholder}
-                    disabled={loading || submitting || humanQualitySettingsUnavailable}
-                    onToggleReason={(code) => { toggleReason(code, setCopyEditedReasons); setError(''); }}
-                    onNoteChange={(note) => { setCopyEditedNote(note); setError(''); }}
-                  />}
-                  <p className="human-rating-guidance" role="status">文案再次修改时，本次自评会自动清空，确保分数对应当前内容。</p>
-                </div>}
-                <HumanAssessmentHistory assessments={copyAssessments} scoreDefinitions={scoreDefinitions} reasonOptions={copyReasonOptions} />
+                {editable && copyContentChanged && <div className="notice success" role="status">最终修改稿无需再次自评；点击通过时系统会自动记为 3 分，机器原稿评分和原因继续保留。</div>}
+                <HumanAssessmentHistory assessments={copyAssessments} scoreDefinitions={scoreDefinitions} reasonOptions={copyReasonOptions}
+                  originalScorePresentation={COPY_MACHINE_DRAFT_SCORE_PRESENTATION}
+                  showScoreDescriptions={showCopyScoreDescriptions} showReasonOptions={showCopyDeductionReasons} />
               </section>
               {sources.length > 0 && <Disclosure className="workbench-review-section workbench-review-source-disclosure">
                 <DisclosureTrigger>联网资料来源 · {sources.length} 条</DisclosureTrigger>
@@ -1038,7 +1050,7 @@ export function TaskReviewDialog({
               <section className="workbench-review-section">
                 <div className="workbench-review-section-title"><span>{assets.length > 0 ? '03' : '02'}</span><div><h3>图片文案规划</h3><p>{canEditApprovedImagePlan
                   ? '可修正逐页文字与画面指令；页面类型保持锁定，评分后重试会创建新的人工批准版本。'
-                  : editable ? '逐页核对画面文字，切换页面会保留当前修改。'
+                    : editable ? '逐页核对画面文字；规划编辑不受文案评分档位影响。'
                     : '当前状态仅供核对已审核的图片文案规划。'}</p></div></div>
                 <nav className="workbench-image-plan-nav" aria-label="图片规划页码">
                   {draft.imagePlan.map((item, index) => <Button unstyled type="button" key={index} aria-pressed={activePlanIndex === index} aria-controls={`review-plan-page-${index}`} onClick={() => setActivePlanIndex(index)}>
@@ -1048,7 +1060,7 @@ export function TaskReviewDialog({
                 <div className="workbench-image-plan-grid">
                   {draft.imagePlan.map((item, index) => <article id={`review-plan-page-${index}`} className="workbench-image-plan-card" key={index} data-plan-index={index} hidden={activePlanIndex !== index}>
                     <div className="workbench-image-plan-head"><b>第 {index + 1} 页</b><span>{IMAGE_KIND_LABELS[item.kind]}</span></div>
-                    <div className="workbench-image-plan-fields" data-edit-blocked={Boolean(copyEditBlockMessage) && !canEditApprovedImagePlan}
+                    <div className="workbench-image-plan-fields" data-edit-blocked={Boolean(planEditBlockMessage)}
                       onPointerDownCapture={(event) => {
                         if (!(event.target as Element).closest('[data-edit-reminder-exempt]')) copyEditPointerAtRef.current = Date.now();
                       }}
@@ -1108,23 +1120,25 @@ export function TaskReviewDialog({
           <footer className="workbench-review-footer">
             {error && <div className="notice error workbench-review-footer-error" role="alert">{error}</div>}
             <span><strong className="workbench-review-dirty" role="status">{hasUnsavedChanges ? '有未提交内容 · ' : ''}</strong>{editable
-              ? copyMaterialChanged ? `保存后将创建人工修订版 v${(revision?.revision ?? 0) + 1}` : `当前文案版本 v${revision?.revision ?? '—'} · 等待评分决定`
+              ? copyContentChanged ? `保存后将创建人工修订版 v${(revision?.revision ?? 0) + 1}` : `当前文案版本 v${revision?.revision ?? '—'} · 等待评分决定`
               : `当前文案版本 v${revision?.revision ?? '—'}`}</span>
             <div>
               <DialogClose asChild><Button unstyled className="button" type="button" disabled={submitting}>关闭</Button></DialogClose>
               {canResumeImages && <Button unstyled className="button primary" type="button" disabled={submitting || loading} onClick={() => { void resumeImages(); }}><RotateCcw size={15} />从失败步骤继续</Button>}
               {canReviewImages && <>
                 <Button unstyled className="button danger" type="button" disabled={submitting || loading || !imageRatingComplete} onClick={() => { void submitImageReview('DISCARD'); }}><Trash2 size={15} />废弃</Button>
-                <Button unstyled className="button" type="button" disabled={submitting || loading || !imageRatingComplete} onClick={() => { void submitImageReview('RETRY'); }}><RotateCcw size={15} />重试生图</Button>
-                <Button unstyled className="button primary" type="button" disabled={submitting || loading || !canApproveImages} onClick={() => { void submitImageReview('APPROVE'); }}><CheckCircle2 size={15} />{submitting ? '正在提交…' : '审核通过'}</Button>
+                <Button unstyled className="button" type="button" disabled={submitting || loading || !imageRatingComplete} onClick={() => { void submitImageReview('REWORK', 'COPY'); }}><RotateCcw size={15} />文案返工</Button>
+                <Button unstyled className="button" type="button" disabled={submitting || loading || !imageRatingComplete} onClick={() => { void submitImageReview('REWORK', 'IMAGE'); }}><RotateCcw size={15} />图片返工</Button>
+                <Button unstyled className="button" type="button" disabled={submitting || loading || !imageRatingComplete} onClick={() => { void submitImageReview('REWORK', 'BOTH'); }}><RotateCcw size={15} />文案 + 图片返工</Button>
+                <Button unstyled className="button primary" type="button" disabled={submitting || loading || !canApproveImages} onClick={() => { void submitImageReview('APPROVE'); }}><CheckCircle2 size={15} />{submitting ? '正在提交…' : '通过到交付池'}</Button>
               </>}
               {editable && <>
-                {effectiveCopyScore === 1 && !draftChanged && <Button unstyled className="button danger" type="button" disabled={submitting || loading || !copyRatingComplete} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('DISCARD', event.currentTarget.form); }}><Trash2 size={15} />评分并废弃</Button>}
-                <Button unstyled className="button" type="button" disabled={submitting || loading || !copyRatingComplete} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('SAVE', event.currentTarget.form); }}>
-                  {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : '保存评分，暂不放行'}
-                </Button>
+                {!isCopyRework && copyOriginalScore === 1 && <Button unstyled className="button danger" type="button" disabled={submitting || loading || !copyRatingComplete} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('DISCARD', event.currentTarget.form); }}><Trash2 size={15} />评分并废弃</Button>}
+                {(isCopyRework || copyOriginalScore !== 1) && <Button unstyled className="button" type="button" disabled={submitting || loading || !copyRatingComplete || isCopyRework && !draftChanged} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('SAVE', event.currentTarget.form); }}>
+                  {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : isCopyRework ? '保存返工稿，暂不提交复检' : '保存评分，暂不放行'}
+                </Button>}
                 <Button unstyled className="button primary" type="submit" disabled={submitting || loading || !canApproveCopy}>
-                  {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : <><CheckCircle2 size={15} />审核通过并开始生图</>}
+                  {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : <><CheckCircle2 size={15} />{isCopyRework ? '提交返工稿并强制复检' : '审核通过并开始生图'}</>}
                 </Button>
               </>}
             </div>

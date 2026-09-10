@@ -34,7 +34,7 @@ const SORTS = new Set<TaskSort>(['priority:desc', 'createdAt:desc', 'createdAt:a
 const PAGE_SIZES = new Set([20, 50, 100]);
 const CREATOR_ROLES = new Set(['ALL', 'ADMIN', 'REVIEWER', 'USER', 'UNKNOWN']);
 const TASK_STATES = new Set([
-  'ALL', 'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_FAILED',
+  'ALL', 'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_QC_PENDING', 'COPY_FAILED',
   'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'REVIEWED', 'CANCELLED',
   'queued', 'running', 'copyReview', 'imageReview', 'failed', 'completed', 'cancelled',
 ]);

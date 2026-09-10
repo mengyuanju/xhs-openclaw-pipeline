@@ -16,11 +16,16 @@ export type HumanQualityNoteGuidance = {
   copyPlaceholder: string;
   imagePlaceholder: string;
 };
+export type CopyReviewDisplay = {
+  showScoreDescriptions: boolean;
+  showDeductionReasons: boolean;
+};
 export type HumanQualitySettings = {
   scoreDefinitions: HumanScoreDefinition[];
   copyReasons: HumanQualityReasonOption[];
   imageReasons: HumanQualityReasonOption[];
   noteGuidance: HumanQualityNoteGuidance;
+  copyReviewDisplay: CopyReviewDisplay;
 };
 
 export const DEFAULT_SETTINGS: HumanQualitySettings = {
@@ -31,6 +36,7 @@ export const DEFAULT_SETTINGS: HumanQualitySettings = {
   copyReasons: DEFAULT_HUMAN_QUALITY_SETTINGS.copyReasons.map((reason) => ({ ...reason })),
   imageReasons: DEFAULT_HUMAN_QUALITY_SETTINGS.imageReasons.map((reason) => ({ ...reason })),
   noteGuidance: { ...DEFAULT_HUMAN_QUALITY_SETTINGS.noteGuidance },
+  copyReviewDisplay: { ...DEFAULT_HUMAN_QUALITY_SETTINGS.copyReviewDisplay },
 };
 
 export async function loadHumanQualitySettings() {

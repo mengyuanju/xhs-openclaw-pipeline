@@ -578,6 +578,7 @@ test('task access exposes lifecycle and stable creator identity for read-only au
     assignedToUserId: null,
     assignedToAccountId: null,
     assignedAt: null,
+    activeBlindQa: false,
   });
   assert.match(selection.sql, /creator\.username = task\.created_by_user_id/u);
   assert.match(selection.sql, /creator\.created_at < task\.created_at/u);
@@ -629,7 +630,8 @@ test('HTTP task creation, visibility and reassignment derive authority from the 
       method: 'POST', headers: jsonHeaders('alice', 'USER'),
       body: JSON.stringify({ nodeId: 'node-a', tasks: [{ query: '自建' }] }),
     });
-    assert.equal(userCreate.status, 201);
+    assert.equal(userCreate.status, 403);
+    assert.equal((await userCreate.json()).error.code, 'FORBIDDEN');
     const forged = await fetch(`${root}/v1/tasks`, {
       method: 'POST', headers: jsonHeaders('alice', 'USER'),
       body: JSON.stringify({ nodeId: 'node-a', assignedToUserId: 'bob', tasks: [{ query: '伪造' }] }),
@@ -686,11 +688,7 @@ test('HTTP task creation, visibility and reassignment derive authority from the 
   });
   assert.equal(calls[0][1].assignedToUserId, null);
   assert.equal(calls[0][1].assignedToAccountId, null);
-  assert.equal(calls[1][1].createdByUserId, 'alice');
-  assert.deepEqual(calls[1][1].actor, {
-    userId: 2, username: 'alice', role: 'USER', credentialVersion: 1,
-  });
-  assert.equal(calls[1][1].assignedToUserId, null);
+  assert.equal(calls.filter(([kind]) => kind === 'create').length, 1);
   assert.deepEqual(calls.find(([kind]) => kind === 'assign').slice(1), [
     '9', { assignedToUserId: 'alice', assignedToAccountId: 2,
       actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 }, reason: '重新分工' },

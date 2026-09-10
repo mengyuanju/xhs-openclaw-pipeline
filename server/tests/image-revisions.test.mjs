@@ -28,6 +28,7 @@ function fixture() {
     if (sql.includes('SELECT id, sha256')) return { rows: [10, 11, 12].map(id => ({ id, sha256: 'a'.repeat(64), media_type: 'image/png' })) };
     if (sql.includes('MAX(revision)')) return { rows: [{ revision: 3 }] };
     if (sql.includes('INSERT INTO copy_revisions')) return { rows: [{ id: 5 }] };
+    if (sql.includes('UPDATE delivery_entries')) return { rows: [] };
     if (sql.includes('UPDATE tasks')) return { rows: [{ ...task, state: 'IMAGE_QUEUED' }] };
     throw new Error(sql);
   } };

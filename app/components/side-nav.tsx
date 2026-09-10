@@ -10,6 +10,9 @@ import {
   LogOut,
   Menu,
   MessageSquareText,
+  PackageSearch,
+  PackageCheck,
+  ShieldCheck,
   Settings2,
   ServerCog,
   Users,
@@ -21,11 +24,16 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { WORKBENCH_VIEWS } from '../workbench/views';
 
-type NavigationItem = { href: string; label: string; icon: LucideIcon; children?: NavigationItem[] };
+type NavigationItem = { href: string; label: string; icon: LucideIcon; children?: NavigationItem[]; adminOnly?: boolean };
 type NavigationGroup = { label: string; items: NavigationItem[] };
 
 const navigationGroups: NavigationGroup[] = [
-  { label: '创作工作台', items: [{ href: '/workbench', label: '作业中心', icon: LayoutDashboard, children: WORKBENCH_VIEWS }] },
+  { label: '创作工作台', items: [
+    { href: '/workbench', label: '作业中心', icon: LayoutDashboard, children: WORKBENCH_VIEWS },
+    { href: '/query-packages', label: 'Query 词包', icon: PackageSearch },
+    { href: '/copy-qa', label: '文案抽检', icon: ShieldCheck },
+    { href: '/delivery-pool', label: '交付池', icon: PackageCheck },
+  ] },
   {
     label: '内容资产',
     items: [
@@ -54,16 +62,25 @@ export function SideNav({ session }: { session: { subject: string; username?: st
   const role = session?.roles?.[0];
   const isAdmin = role === 'ADMIN';
   const roleGroups = isAdmin
-    ? navigationGroups
+    ? navigationGroups.map((group) => ({
+        ...group,
+        items: group.items.map((item) => ({
+          ...item,
+          // Administrators use the dedicated READY delivery pool; keep the
+          // historical completed-work route available without duplicating it
+          // as a second, identically named sidebar entry.
+          children: item.children?.filter((child) => child.href !== '/workbench/completed'),
+        })),
+      }))
     : role === 'REVIEWER'
       ? navigationGroups.map((group) => ({
           ...group,
-          items: group.items.filter((item) => item.href === '/workbench' || item.href === '/knowledge')
-            .map((item) => ({ ...item, children: item.children?.filter((child) => child.href !== '/workbench/all') })),
+          items: group.items.filter((item) => ['/workbench', '/knowledge', '/copy-qa'].includes(item.href))
+            .map((item) => ({ ...item, children: item.children?.filter((child) => !child.adminOnly) })),
         }))
       : navigationGroups.map((group) => ({
           ...group,
-          items: group.items.filter((item) => item.href === '/workbench').map((item) => ({
+          items: group.items.filter((item) => ['/workbench', '/query-packages', '/delivery-pool'].includes(item.href)).map((item) => ({
             ...item,
             children: item.children?.filter((child) => child.href === '/workbench/personal'),
           })),

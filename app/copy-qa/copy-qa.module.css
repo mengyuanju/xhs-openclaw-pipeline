@@ -1,0 +1,52 @@
+.stack { display: grid; gap: 16px; }
+.summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.summary article { display: grid; gap: 5px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.summary strong { font-size: 23px; font-variant-numeric: tabular-nums; }
+.summary span { color: var(--muted); font-size: 11px; }
+.toolbar { display: flex; align-items: end; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 16px 18px; }
+.toolbar > div { display: flex; align-items: end; flex-wrap: wrap; gap: 9px; }
+.toolbar label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; font-weight: 700; }
+.search { width: min(360px, 66vw); }
+.queue { margin: 0 18px 18px; }
+.queue table { min-width: 880px; }
+.code { display: grid; gap: 4px; }
+.code strong { font-size: 13px; }
+.code small { color: var(--muted); }
+.query { max-width: 430px; line-height: 1.65; }
+.actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 7px; }
+.modeSummary { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.blindNotice { display: flex; align-items: flex-start; gap: 10px; margin: 0 18px 14px; }
+.blindNotice svg { flex: 0 0 auto; margin-top: 1px; }
+.scopeNote { margin: -4px 18px 14px; color: var(--muted); font-size: 11px; line-height: 1.65; }
+.loadMore { display: flex; justify-content: center; padding: 0 18px 18px; }
+.dialog { width: min(calc(100vw - 24px), 900px); max-height: min(92dvh, 900px); display: grid; gap: 16px; overflow-y: auto; padding: 24px; border: 1px solid var(--line); border-radius: 16px; color: var(--ink); background: var(--surface); box-shadow: 0 28px 80px rgba(45,35,28,.24); }
+.dialogHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding-right: 38px; }
+.dialogHeader h2, .dialogHeader p { margin: 0; }
+.dialogHeader p { margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.metadata { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+.metadata > div { min-width: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: #f8f6f2; }
+.metadata small, .metadata strong { display: block; overflow-wrap: anywhere; }
+.metadata small { color: var(--muted); font-size: 10px; }
+.metadata strong { margin-top: 4px; font-size: 12px; }
+.copy { display: grid; gap: 13px; padding: 18px; border: 1px solid var(--line); border-radius: 13px; background: #fffdfa; }
+.copy h3 { margin: 0; font-size: 18px; }
+.copyBody { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.9; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.source { display: grid; gap: 11px; padding: 15px; border: 1px solid var(--line); border-radius: 12px; }
+.source h3 { margin: 0; }
+.history { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.history li { padding-top: 9px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 1.65; }
+.footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding-top: 4px; }
+.footer > div { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.reasonGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.reasonGrid label { display: flex; align-items: center; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 9px; font-size: 12px; }
+.impact { display: grid; gap: 6px; margin: 0; padding: 12px 14px; border: 1px solid #edbec4; border-radius: 10px; color: #7d2530; background: #fff5f6; }
+.impact strong { font-size: 13px; }
+.impact span { font-size: 11px; line-height: 1.65; }
+
+@media (max-width: 720px) {
+  .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .toolbar, .dialogHeader, .footer { align-items: stretch; flex-direction: column; }
+  .toolbar > div, .toolbar > div > *, .search, .footer > div, .footer button { width: 100%; }
+  .metadata, .reasonGrid { grid-template-columns: minmax(0, 1fr); }
+}

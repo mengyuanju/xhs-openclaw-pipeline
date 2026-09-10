@@ -7,6 +7,8 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import { DEFAULT_HUMAN_QUALITY_SETTINGS } from '../src/human-quality-settings.mjs';
+
 // A standalone copy of the UI: no application routes, credentials, database,
 // workers, or model clients. Every control-plane request is answered in memory.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -60,7 +62,9 @@ export default function Page() {
   return <ConfirmDialogProvider><main><h1>隔离审核测试 · 全部为假数据</h1>
     <label>测试角色<select value={role} onChange={event => setRole(event.target.value)}><option>USER</option><option>REVIEWER</option><option>ADMIN</option></select></label>
     <button onClick={() => setTaskId(900001)}>打开测试任务</button>
-    <TaskReviewDialog taskId={taskId} nodeId="test-only" role={role} onOpenChange={open => { if (!open) setTaskId(null); }} onUpdated={() => {}} />
+    <TaskReviewDialog taskId={taskId} nodeId="test-only" role={role}
+      currentUsername="test-reviewer" currentAccountId={77}
+      onOpenChange={open => { if (!open) setTaskId(null); }} onUpdated={() => {}} />
   </main></ConfirmDialogProvider>;
 }`);
 
@@ -69,6 +73,7 @@ function task(state = 'COPY_REVIEW_PENDING') {
   const copy = { title: '小户型桌面整理指南', body: '从清理桌面开始，把每天使用的物品放在伸手可及的位置。分类收纳以后，给充电线留出固定通道，避免影响日常操作。'.repeat(9), tags: ['桌面整理', '收纳', '小户型'] };
   return {
     id: 900001, query: '  小户型桌面如何整理？\n保留原始需求与空格。', state, aiDisclosureEnabled: false,
+    assignedToUserId: 'test-reviewer', assignedToAccountId: 77,
     currentCopyRevisionId: 901, currentImageRunId: null, currentExecutionId: null,
     error: state === 'COPY_FAILED' ? '测试生成失败，请重试。' : null,
     copyRevisions: state === 'COPY_RUNNING' || state === 'COPY_FAILED' ? [] : [{ id: 901, revision: 1,
@@ -124,6 +129,9 @@ try {
     const request = route.request();
     const requestUrl = new URL(request.url());
     if (requestUrl.origin !== url) { blocked.push(request.url()); return route.abort(); }
+    if (request.method() === 'GET' && requestUrl.pathname === '/api/human-quality-settings') {
+      return route.fulfill({ json: { data: DEFAULT_HUMAN_QUALITY_SETTINGS } });
+    }
     if (!requestUrl.pathname.startsWith('/api/control-plane/')) return route.continue();
     if (request.method() === 'GET' && /\/assets\/91[01]$/.test(requestUrl.pathname)) return route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="400"><rect width="300" height="400" fill="#e7ded0"/><text x="25" y="70" font-size="24">TEST IMAGE</text></svg>' });
     let data;
@@ -197,7 +205,25 @@ try {
     assert.equal(await page.locator('[data-review-pane="copy"] .workbench-review-query-text').count(), 1);
   });
   if (!process.argv.includes('--baseline')) {
+    await check('planning is editable before scoring and source feedback remains editable after copy changes', async () => {
+      await open();
+      assert.equal(await page.locator('#review-copy-title').isEditable(), false);
+      assert.equal(await page.locator('#review-plan-headline-0').isEditable(), true);
+      await page.locator('#review-plan-headline-0').fill('评分前也能调整规划');
+      await page.locator('input[name^="copy-original-score-"][value="2"]').check();
+      assert.equal(await page.locator('#review-copy-title').isEditable(), true);
+      await page.locator('#review-copy-title').fill('先改正文再补反馈');
+      const sourceNote = page.locator('.human-rating-panel:not([data-edited]) .human-rating-note');
+      assert.equal(await sourceNote.isEditable(), true);
+      await sourceNote.fill('正文修改后的原稿反馈仍可补充');
+      await rateEditedCopy(2.5);
+      assert.equal(await page.getByRole('button', { name: '保存评分，暂不放行', exact: true }).isEnabled(), true);
+      await page.getByRole('button', { name: '关闭', exact: true }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: '放弃修改并关闭', exact: true }).click();
+      await dialog().waitFor({ state: 'detached' });
+    });
     await check('desktop panes scroll independently and page edits survive switching', async () => {
+      await open();
       await page.setViewportSize({ width: 1440, height: 800 });
       await rateOriginalCopy();
       const left = page.locator('[data-review-pane="copy"]');
@@ -364,11 +390,10 @@ try {
       await page.getByRole('button', { name: '刷新', exact: true }).click();
       await page.getByRole('button', { name: '放弃修改并刷新', exact: true }).click();
       await page.waitForFunction(() => document.querySelector('#review-copy-title')?.value === '小户型桌面整理指南');
-      await rateOriginalCopy(2);
+      await rateOriginalCopy(2.5);
       await page.getByRole('button', { name: '画面生成指令', exact: true }).click();
       await page.locator('#review-plan-prompt-0').fill('');
       await page.getByRole('button', { name: '画面生成指令', exact: true }).click();
-      await rateEditedCopy();
       const before = writes.length;
       await page.getByRole('button', { name: '审核通过并开始生图', exact: true }).click();
       await page.locator('#review-plan-prompt-0').waitFor({ state: 'visible' });

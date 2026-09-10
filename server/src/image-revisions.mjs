@@ -55,8 +55,15 @@ export async function reviseTaskImages(client, rawTaskId, input, actorUsername, 
     content.imageReprocess = { version: 1, sourceRunId: imageRunId, sources, originalResult: run.result };
   }
   const revisionNumber = Number((await client.query('SELECT COALESCE(MAX(revision), 0) + 1 AS revision FROM copy_revisions WHERE task_id = $1', [taskId])).rows[0].revision);
-  const saved = (await client.query(`INSERT INTO copy_revisions(task_id, execution_id, revision, content, approved_at, approved_by_node_id)
-    VALUES ($1, NULL, $2, $3, now(), $4) RETURNING *`, [taskId, revisionNumber, content, nodeId])).rows[0];
+  const saved = (await client.query(`INSERT INTO copy_revisions(
+      task_id, execution_id, revision, content, approved_at, approved_by_node_id, approval_mode,
+      parent_revision_id, revision_origin, copy_content_changed_from_machine, copy_rework_satisfied
+    ) VALUES ($1, NULL, $2, $3, now(), $4, 'MANUAL', $5, 'PLAN_EDIT', $6, $7)
+    RETURNING *`, [taskId, revisionNumber, content, nodeId, revisionId,
+    revision.copy_content_changed_from_machine === true,
+    revision.copy_rework_satisfied === true])).rows[0];
+  await client.query(`UPDATE delivery_entries SET status = 'WITHDRAWN', withdrawn_at = now()
+    WHERE task_id = $1 AND status = 'READY'`, [taskId]);
   return (await client.query(`UPDATE tasks SET state = 'IMAGE_QUEUED', current_copy_revision_id = $2,
     current_image_run_id = NULL, current_execution_id = NULL, current_stage = 'IMAGE_QUEUED',
     progress_percent = 0, progress_message = '图片配置已保存，等待图片执行机处理', pending_snapshot = NULL,

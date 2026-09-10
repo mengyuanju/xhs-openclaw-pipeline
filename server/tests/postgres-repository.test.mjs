@@ -18,6 +18,7 @@ function taskRow(overrides = {}) {
     assigned_to_user_id: 'alice',
     copy_executor_node_id: 'node-b',
     current_copy_revision_id: null,
+    production_batch_id: null,
     current_image_run_id: null,
     current_execution_id: null,
     current_stage: null,
@@ -35,8 +36,9 @@ function taskRow(overrides = {}) {
 
 const copyReviewMetadata = Object.freeze({
   decision: 'APPROVE',
-  originalScore: 2.5,
-  note: '轻微措辞可后续优化',
+  score: 3,
+  originalScore: 3,
+  note: '',
   reviewSessionId: '77777777-7777-4777-8777-777777777777',
 });
 const copyReviewActor = Object.freeze({ reviewerUserId: 'admin' });
@@ -45,6 +47,44 @@ const executorManagementActor = Object.freeze({
   username: 'admin',
   role: 'ADMIN',
   credentialVersion: 1,
+});
+
+test('delivery export reads only the pinned copy, image run and current-run asset metadata', async () => {
+  const queries = [];
+  const imageRunId = '11111111-1111-4111-8111-111111111111';
+  const repository = new PostgresControlPlaneRepository({
+    pool: {
+      query: async (sql, values) => {
+        queries.push({ sql: String(sql), values });
+        return { rows: [{
+          id: '41',
+          state: 'REVIEWED',
+          current_copy_revision_id: '51',
+          current_image_run_id: imageRunId,
+          copy_content: { copy: { title: '当前', body: '正文', tags: [] } },
+          image_result: { images: [{ assetId: 61 }] },
+          assets: [{
+            id: 61,
+            taskId: 41,
+            imageRunId,
+            mediaType: 'image/png',
+            originalName: '图片.png',
+          }],
+        }] };
+      },
+    },
+  });
+  const snapshot = await repository.getTaskForDelivery(41);
+  assert.deepEqual(snapshot.binding, {
+    taskId: 41, copyRevisionId: 51, imageRunId,
+  });
+  assert.equal(snapshot.task.copyRevisions.length, 1);
+  assert.equal(snapshot.task.imageRuns.length, 1);
+  assert.equal(snapshot.task.assets.length, 1);
+  assert.equal(queries.length, 1);
+  assert.deepEqual(queries[0].values, [41]);
+  assert.match(queries[0].sql, /delivery\.status = 'READY'/u);
+  assert.doesNotMatch(queries[0].sql, /task_executions|human_quality_assessments/u);
 });
 
 test('creator role filters apply equally to pages and totals without joining a same-name replacement', async () => {
@@ -313,8 +353,8 @@ test('task pages filter multiple states and Query text while returning a total',
   ]);
   assert.match(pageQuery.sql, /state = ANY\(\$1::varchar\[\]\)/u);
   assert.match(pageQuery.sql, /strpos\(lower\(query\), lower\(\$3\)\) > 0/u);
-  assert.match(pageQuery.sql, /WHEN state = 'COPY_REVIEW_PENDING' THEN 1[\s\S]*WHEN state = 'MANUAL_ARCHIVE' THEN 2[\s\S]*WHEN state = 'COPY_RUNNING' THEN 3[\s\S]*WHEN state = 'IMAGE_RUNNING' THEN 4/u);
-  assert.match(pageQuery.sql, /WHEN state IN \('COPY_FAILED', 'IMAGE_FAILED'\) THEN 5[\s\S]*WHEN state IN \('COPY_QUEUED', 'IMAGE_QUEUED'\) THEN 6/u);
+  assert.match(pageQuery.sql, /WHEN state = 'COPY_REVIEW_PENDING' THEN 1[\s\S]*WHEN state = 'COPY_QC_PENDING' THEN 2[\s\S]*WHEN state = 'MANUAL_ARCHIVE' THEN 3[\s\S]*WHEN state = 'COPY_RUNNING' THEN 4[\s\S]*WHEN state = 'IMAGE_RUNNING' THEN 5/u);
+  assert.match(pageQuery.sql, /WHEN state IN \('COPY_FAILED', 'IMAGE_FAILED'\) THEN 6[\s\S]*WHEN state IN \('COPY_QUEUED', 'IMAGE_QUEUED'\) THEN 7/u);
   assert.match(pageQuery.sql, /ORDER BY CASE[\s\S]*created_at DESC, id DESC/u);
   assert.match(pageQuery.sql, /ORDER BY CASE[\s\S]*page\.created_at DESC, page\.id DESC/u);
 });
@@ -565,7 +605,21 @@ test('copy approval submits reviewed copy to the image queue', async () => {
         }] };
       }
       if (source.includes('SELECT id FROM executor_nodes')) return { rows: [{ id: 'node-b' }] };
-      if (source.includes('UPDATE copy_revisions')) return { rows: [] };
+      if (source.includes('UPDATE copy_revisions')) return { rows: [{
+        id: 12,
+        task_id: 41,
+        execution_id: null,
+        revision: 2,
+        content: {},
+        approved_at: new Date(),
+        approved_by_node_id: 'node-b',
+      }] };
+      if (source.includes('INSERT INTO copy_approval_events')) return { rows: [{
+        id: 31,
+        task_id: values[0],
+        copy_revision_id: values[1],
+        content_sha256: values[7],
+      }] };
       if (source.includes('UPDATE tasks SET')) {
         return { rows: [taskRow({ state: 'IMAGE_QUEUED', current_copy_revision_id: 12 })] };
       }
@@ -583,10 +637,11 @@ test('copy approval submits reviewed copy to the image queue', async () => {
   }, copyReviewActor);
 
   assert.equal(approved.state, 'IMAGE_QUEUED');
-  const taskUpdate = queries.find((item) => item.sql.includes("state = 'IMAGE_QUEUED'"));
+  const taskUpdate = queries.find((item) => item.sql.includes('UPDATE tasks SET') && item.values?.[1] === 'IMAGE_QUEUED');
   assert.ok(taskUpdate);
-  assert.match(taskUpdate.sql, /ai_disclosure_enabled = \$3/u);
-  assert.equal(taskUpdate.values[2], false);
+  assert.match(taskUpdate.sql, /state = \$2/u);
+  assert.match(taskUpdate.sql, /ai_disclosure_enabled = \$4/u);
+  assert.equal(taskUpdate.values[3], false);
 });
 
 test('non-admin approval without edits creates an automatic-layout revision instead of preserving manual layouts', async () => {
@@ -609,7 +664,18 @@ test('non-admin approval without edits creates an automatic-layout revision inst
       if (source.includes('SELECT * FROM copy_revisions')) return { rows: [{ id: 12, task_id: 41, revision: 2, content: sourceContent }] };
       if (source.includes('SELECT id FROM executor_nodes')) return { rows: [{ id: 'node-b' }] };
       if (source.includes('MAX(revision)')) return { rows: [{ revision: 3 }] };
-      if (source.includes('INSERT INTO copy_revisions')) return { rows: [{ id: 13 }] };
+      if (source.includes('INSERT INTO copy_revisions')) return { rows: [{
+        id: 13,
+        task_id: values[0],
+        revision: values[1],
+        content: values[2],
+      }] };
+      if (source.includes('INSERT INTO copy_approval_events')) return { rows: [{
+        id: 32,
+        task_id: values[0],
+        copy_revision_id: values[1],
+        content_sha256: values[7],
+      }] };
       if (source.includes('UPDATE tasks SET')) return { rows: [taskRow({ state: 'IMAGE_QUEUED', current_copy_revision_id: 13 })] };
       return { rows: [] };
     },

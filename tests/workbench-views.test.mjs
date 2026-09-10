@@ -5,7 +5,7 @@ import { compareTasksByStatePriority, TASK_STATE_PRIORITY, WORKBENCH_VIEWS, matc
 
 test('workbench routes include completed work after manual archive', () => {
   assert.deepEqual(WORKBENCH_VIEWS.map((view) => view.label), [
-    '个人作业中心', '待审核分配', '全部文案任务', '待文案审核', '生图中', '人工归档', '已完成', '全部作业',
+    '个人作业中心', '待审核分配', '全部文案任务', '待文案审核', '生图中', '图文终审', '交付池', '全部作业',
   ]);
   assert.equal(new Set(WORKBENCH_VIEWS.map((view) => view.href)).size, 8);
   assert.ok(WORKBENCH_VIEWS.every((view) => view.href.startsWith('/workbench/')));
@@ -37,7 +37,7 @@ test('pending-assignment view exposes only unassigned normal copy review', () =>
 test('personal tasks include every active lifecycle state submitted by or assigned to the current user', () => {
   const personal = WORKBENCH_VIEWS[0];
   assert.deepEqual(personal.states, [
-    'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_FAILED',
+    'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_QC_PENDING', 'COPY_FAILED',
     'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'REVIEWED',
   ]);
   const tasks = [
@@ -77,15 +77,16 @@ test('personal tasks include every active lifecycle state submitted by or assign
 test('task lists prioritize lifecycle state and use newest-first order within a state', () => {
   assert.deepEqual(TASK_STATE_PRIORITY, {
     COPY_REVIEW_PENDING: 1,
-    MANUAL_ARCHIVE: 2,
-    COPY_RUNNING: 3,
-    IMAGE_RUNNING: 4,
-    COPY_FAILED: 5,
-    IMAGE_FAILED: 5,
-    COPY_QUEUED: 6,
-    IMAGE_QUEUED: 6,
-    REVIEWED: 7,
-    CANCELLED: 8,
+    COPY_QC_PENDING: 2,
+    MANUAL_ARCHIVE: 3,
+    COPY_RUNNING: 4,
+    IMAGE_RUNNING: 5,
+    COPY_FAILED: 6,
+    IMAGE_FAILED: 6,
+    COPY_QUEUED: 7,
+    IMAGE_QUEUED: 7,
+    REVIEWED: 8,
+    CANCELLED: 9,
   });
   const tasks = [
     { id: 1, state: 'MANUAL_ARCHIVE', createdAt: '2026-09-05T12:00:00.000Z' },
@@ -103,6 +104,7 @@ test('only approved images enter completed work and remain visible to their crea
   const completed = WORKBENCH_VIEWS.find((view) => view.key === 'COMPLETED');
   assert.ok(completed);
   assert.equal(completed.href, '/workbench/completed');
+  assert.equal(completed.adminOnly, true);
   for (const state of Object.keys(TASK_STATE_PRIORITY)) {
     assert.equal(matchesWorkbenchView({ state }, completed, 'reviewer'), state === 'REVIEWED');
   }

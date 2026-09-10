@@ -66,7 +66,9 @@ async function main() {
     if (stoppingPromise) return stoppingPromise;
     stoppingPromise = (async () => {
       await Promise.all([stopRecovery(), stopAutoAssignment()]);
-      await new Promise((resolvePromise) => server.close(resolvePromise));
+      const serverClosed = new Promise((resolvePromise) => server.close(resolvePromise));
+      await app.context.disposeControlPlaneResources?.();
+      await serverClosed;
       await repository.close();
     })();
     return stoppingPromise;

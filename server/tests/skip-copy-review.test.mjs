@@ -46,14 +46,16 @@ test('only authenticated administrators can enable copy review bypass for a batc
   });
 });
 
-test('omitted or disabled bypass preserves manual review for every role', async () => {
+test('omitted or disabled bypass preserves manual review for administrators without reopening legacy worker creation', async () => {
   await withServer(async (create, calls) => {
-    for (const username of ['admin', 'reviewer', 'user']) {
-      for (const fields of [{}, { skipCopyReview: false }]) {
-        assert.equal((await create(username, fields)).status, 201);
-        assert.equal(calls.at(-1).skipCopyReview, false);
-      }
+    for (const fields of [{}, { skipCopyReview: false }]) {
+      assert.equal((await create('admin', fields)).status, 201);
+      assert.equal(calls.at(-1).skipCopyReview, false);
     }
+    for (const username of ['reviewer', 'user']) {
+      assert.equal((await create(username, { skipCopyReview: false })).status, 403);
+    }
+    assert.equal(calls.length, 2);
   });
 });
 
