@@ -103,15 +103,24 @@ test('mandatory copy rechecks have a dedicated workbench status and next-step ex
   assert.match(reviewDialog, /detail\.currentStage === 'QC_MANDATORY_RECHECK'[\s\S]{0,240}返工稿已提交强制复检；复检通过后才会进入待生图队列/u);
 });
 
-test('running and failed copy tasks expose retry in personal and all-copy lists', async () => {
-  const source = await readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8');
+test('running and failed copy tasks expose retry in personal, all-copy and all-jobs lists', async () => {
+  const [source, reviewDialog] = await Promise.all([
+    readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+  ]);
   assert.match(source, /activeView === 'PERSONAL' && canRetryCopy && <Button[^>]*disabled=\{busy\}[^>]*onClick=\{\(\) => \{ void retryCopy\(task\); \}\}[^>]*><RotateCcw[^>]*\/>重试<\/Button>/u);
   assert.match(source, /const canRetryCopy = \(hasOwnerControl \|\| creatorCanControlMachineCopy\)[\s\S]*\['COPY_RUNNING', 'COPY_FAILED'\]\.includes\(task.state\)/u);
   assert.match(source, /activeView === 'ALL_COPY'[\s\S]*?\{canRetryCopy && <Button/u);
+  assert.match(source, /if \(isAllJobs\)[\s\S]*?\{\['COPY_RUNNING', 'COPY_FAILED'\]\.includes\(task\.state\) && <Button[^>]*disabled=\{busy\}[^>]*onClick=\{\(\) => \{ void retryCopy\(task\); \}\}[^>]*><RotateCcw[^>]*\/>重试<\/Button>/u);
   assert.match(source, /if \(!\['COPY_RUNNING', 'COPY_FAILED'\]\.includes\(task.state\)\) return/u);
   assert.match(source, /if \(!await confirm\(/u);
   assert.match(source, /\/v1\/tasks\/\$\{task.id\}\/retry/u);
   assert.match(source, /useLatestConfig: true/u);
+  assert.match(reviewDialog, /const canRetryCopy = Boolean\(detail[\s\S]*?\['COPY_RUNNING', 'COPY_FAILED'\]\.includes\(detail\.state\)[\s\S]*?detail\.assignedToUserId === null && currentUserIsCreator/u);
+  assert.match(reviewDialog, /\/v1\/tasks\/\$\{detail\.id\}\/retry/u);
+  assert.match(reviewDialog, /body: JSON\.stringify\(\{ useLatestConfig: true \}\)/u);
+  assert.match(reviewDialog, /\{canRetryCopy && <Button[^>]*onClick=\{\(\) => \{ void retryCopy\(\); \}\}[^>]*><RotateCcw[^>]*\/>重试文案<\/Button>\}/u);
+  assert.match(reviewDialog, /detail\?\.state === 'COPY_FAILED'[\s\S]{0,220}重试文案/u);
 });
 
 test('personal and image-work rows expose safe image requeue controls', async () => {

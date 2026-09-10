@@ -83,6 +83,8 @@ type TaskDetail = {
   id: number;
   query: string;
   sourceQueryPackageName?: string | null;
+  createdByUserId?: string | null;
+  createdByAccountId?: number | null;
   xiaohongshuLinks: Array<{
     noteId: string;
     url: string;
@@ -407,8 +409,14 @@ export function TaskReviewDialog({
   const currentUserIsAssignee = Boolean(detail
     && detail.assignedToUserId === currentUsername
     && detail.assignedToAccountId === currentAccountId);
+  const currentUserIsCreator = Boolean(detail
+    && detail.createdByUserId === currentUsername
+    && detail.createdByAccountId === currentAccountId);
   const canReviewCopy = isAdmin || role === 'REVIEWER' || currentUserIsAssignee;
   const hasOwnerControl = isAdmin || currentUserIsAssignee;
+  const canRetryCopy = Boolean(detail
+    && ['COPY_RUNNING', 'COPY_FAILED'].includes(detail.state)
+    && (hasOwnerControl || detail.assignedToUserId === null && currentUserIsCreator));
   const editable = taskHasAssignee && canReviewCopy && detail?.state === 'COPY_REVIEW_PENDING'
     && Boolean(revision && draft);
   const isCopyRework = Boolean(detail?.mandatoryCopyQc
@@ -776,6 +784,25 @@ export function TaskReviewDialog({
     finally { setSubmitting(false); }
   }
 
+  async function retryCopy() {
+    if (!detail || !canRetryCopy || submitting || loading) return;
+    if (!await confirm({
+      title: '重新生成这条文案？',
+      description: '任务会回到共享文案队列，使用最新提示词、知识库和生产配置，等待任一有空闲容量的执行机领取。正在进行的旧执行将作废。',
+      confirmLabel: '重试',
+    })) return;
+    setSubmitting(true); setError('');
+    try {
+      await apiRequest(apiPath(`/v1/tasks/${detail.id}/retry`), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ useLatestConfig: true }),
+      });
+      await onUpdated(`任务 #${detail.id} 已回到共享文案队列，等待空闲执行机领取。`);
+      onOpenChange(false);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : '重新生成文案失败'); }
+    finally { setSubmitting(false); }
+  }
+
   async function submitImageReview(decision: 'APPROVE' | 'REWORK' | 'DISCARD', reworkTarget?: 'COPY' | 'IMAGE' | 'BOTH') {
     if (!detail || !canReviewImages || submitting) return;
     if (decision === 'REWORK' && !reworkTarget) return;
@@ -867,6 +894,10 @@ export function TaskReviewDialog({
               ? '返工稿已提交强制复检；复检通过后才会进入待生图队列。当前内容仅供查看。'
             : detail?.state === 'COPY_QC_PENDING'
               ? '当前最终稿正在等待文案质检；质检完成后才会进入待生图队列。当前内容仅供查看。'
+            : detail?.state === 'COPY_FAILED'
+              ? '文案生成失败；请核对失败阶段与调用记录，然后使用下方“重试文案”重新进入共享队列。'
+            : detail?.state === 'COPY_RUNNING'
+              ? '文案仍在执行；确认当前执行已经异常或需要作废时，可使用下方“重试文案”重新进入共享队列。'
             : '先给机器原稿评分；2 分或 2.5 分可修改正文，图片文案规划不受评分档位影响。'}</DialogDescription>
           {revision?.approvalMode === 'ADMIN_BYPASS' && <p role="status">管理员免审核 · 当前文案已自动放行生图</p>}
         </div>
@@ -1207,6 +1238,7 @@ export function TaskReviewDialog({
               : `当前文案版本 v${revision?.revision ?? '—'}`}</span>
             <div>
               <DialogClose asChild><Button unstyled className="button" type="button" disabled={submitting}>关闭</Button></DialogClose>
+              {canRetryCopy && <Button unstyled className="button primary" type="button" disabled={submitting || loading} onClick={() => { void retryCopy(); }}><RotateCcw size={15} />重试文案</Button>}
               {canResumeImages && <Button unstyled className="button primary" type="button" disabled={submitting || loading} onClick={() => { void resumeImages(); }}><RotateCcw size={15} />从失败步骤继续</Button>}
               {canReviewImages && <>
                 <Button unstyled className="button danger" type="button" disabled={submitting || loading || !imageRatingComplete} onClick={() => { void submitImageReview('DISCARD'); }}><Trash2 size={15} />废弃</Button>
