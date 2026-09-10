@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createSessionToken, ADMIN_SESSION_COOKIE } from '../src/admin/auth.mjs';
 import { evaluateAdminProxyRequest } from '../src/admin/proxy-policy.mjs';
 
-test('all jobs is restricted to administrators without removing reviewer work queues', () => {
+test('administrator-only pages stay closed without removing each role\'s work queue', () => {
   const secret = 'isolated-test-session-secret-for-all-jobs';
   for (const role of ['ADMIN', 'REVIEWER', 'USER']) {
     const token = createSessionToken(secret, {
@@ -22,14 +22,15 @@ test('all jobs is restricted to administrators without removing reviewer work qu
       role === 'ADMIN' ? 'next' : 'forbidden');
     assert.equal(evaluateAdminProxyRequest(request('/api/workbench-statistics/anything'), environment).type,
       role === 'ADMIN' ? 'next' : 'forbidden');
+    for (const path of ['/query-packages', '/query-packages/7', '/delivery-pool', '/delivery-pool/ready']) {
+      assert.equal(evaluateAdminProxyRequest(request(path), environment).type,
+        role === 'ADMIN' ? 'next' : 'forbidden', `${role} ${path}`);
+    }
     if (role === 'REVIEWER') {
       assert.equal(evaluateAdminProxyRequest(request('/workbench/copy-review'), environment).type, 'next');
       assert.equal(evaluateAdminProxyRequest(request('/copy-qa'), environment).type, 'next');
-      assert.equal(evaluateAdminProxyRequest(request('/query-packages'), environment).type, 'forbidden');
     }
     if (role === 'USER') {
-      assert.equal(evaluateAdminProxyRequest(request('/query-packages'), environment).type, 'next');
-      assert.equal(evaluateAdminProxyRequest(request('/delivery-pool'), environment).type, 'next');
       assert.equal(evaluateAdminProxyRequest(request('/copy-qa'), environment).type, 'forbidden');
     }
   }

@@ -16,6 +16,7 @@ import {
 } from '../app/delivery-pool/types.ts';
 
 const workbenchUrl = new URL('../app/delivery-pool/delivery-pool-workbench.tsx', import.meta.url);
+const pageUrl = new URL('../app/delivery-pool/page.tsx', import.meta.url);
 const proxyUrl = new URL('../app/api/control-plane/[...path]/route.ts', import.meta.url);
 
 function entry(id, overrides = {}) {
@@ -23,6 +24,7 @@ function entry(id, overrides = {}) {
     id,
     taskId: 100 + id,
     query: `query-${id}`,
+    queryPackageName: '九月选题',
     copyRevisionId: 200 + id,
     imageRunId: `run-${id}`,
     status: 'READY',
@@ -31,15 +33,27 @@ function entry(id, overrides = {}) {
   };
 }
 
-test('delivery pool list adapter preserves server total and rejects non-READY rows', () => {
+test('delivery pool list adapter preserves package names and valid package facets', () => {
   assert.equal(DELIVERY_POOL_LIST_LIMIT, 200);
   assert.equal(DELIVERY_POOL_SELECTION_LIMIT, 200);
   assert.deepEqual(normalizeDeliveryPoolPage({
     items: [entry(1), entry(2, { status: 'WITHDRAWN' })],
     total: 43,
-  }), { items: [entry(1)], total: 43 });
+    facets: {
+      queryPackages: [
+        { name: '  九月   选题 ', count: '12' },
+        { name: '', count: 3 },
+        { name: '无效', count: -1 },
+      ],
+    },
+  }), {
+    items: [entry(1)],
+    total: 43,
+    facets: { queryPackages: [{ name: '九月 选题', count: 12 }] },
+  });
   assert.equal(normalizeDeliveryPoolPage([entry(3)]).total, 1,
     'the legacy array response stays readable during a rolling deployment');
+  assert.deepEqual(normalizeDeliveryPoolPage([entry(3)]).facets, { queryPackages: [] });
 });
 
 test('selecting a filtered result preserves selections outside the current search', () => {
@@ -57,6 +71,10 @@ test('selected delivery rows are capped at the server contract without disabling
 
 test('Excel export uses selected task ids and otherwise requests the complete READY pool', () => {
   assert.deepEqual(buildDeliveryPoolExportInput([]), { scope: 'ALL_READY' });
+  assert.deepEqual(buildDeliveryPoolExportInput([], '  九月   选题  '), {
+    scope: 'QUERY_PACKAGE',
+    queryPackageName: '九月 选题',
+  });
   assert.deepEqual(buildDeliveryPoolExportInput([103, 101, 103]), {
     scope: 'SELECTED',
     taskIds: [103, 101],
@@ -81,11 +99,11 @@ test('loading another delivery page preserves prior rows and de-duplicates repea
 test('delivery pool search treats non-empty lines as independent OR conditions', () => {
   const entries = [
     entry(1, { query: '租房桌面收纳' }),
-    entry(2, { query: '通勤穿搭指南' }),
+    entry(2, { query: '通勤穿搭指南', queryPackageName: '秋季搭配词包' }),
     entry(3, { query: '周末露营装备' }),
   ];
   assert.deepEqual(
-    filterDeliveryPoolEntries(entries, ' 桌面收纳 \r\n\n通勤穿搭\r未命中'),
+    filterDeliveryPoolEntries(entries, ' 桌面收纳 \r\n\n秋季搭配词包\r未命中'),
     entries.slice(0, 2),
   );
 });
@@ -133,16 +151,23 @@ test('prepared Excel download accepts only a safe xlsx one-time reference', () =
   }), /下载凭证无效/u);
 });
 
-test('delivery pool exposes independent selected and all-ready export contracts', async () => {
-  const [source, proxy] = await Promise.all([
+test('administrator delivery pool exposes package facets, server filtering and package-scoped exports', async () => {
+  const [source, page, proxy] = await Promise.all([
     readFile(workbenchUrl, 'utf8'),
+    readFile(pageUrl, 'utf8'),
     readFile(proxyUrl, 'utf8'),
   ]);
-  assert.match(source, /delivery-pool\?limit=\$\{DELIVERY_POOL_LIST_LIMIT\}&offset=\$\{offset\}&includeTotal=true/u);
+  assert.match(page, /if \(role !== 'ADMIN'\) redirect\(role === 'REVIEWER' \? '\/copy-qa' : '\/workbench\/personal'\)/u);
+  assert.match(page, /<DeliveryPoolWorkbench role="ADMIN" \/>/u);
+  assert.match(source, /new URLSearchParams\(\{[\s\S]*limit: String\(DELIVERY_POOL_LIST_LIMIT\)[\s\S]*includeTotal: 'true'/u);
+  assert.match(source, /if \(queryPackageName\) query\.set\('queryPackageName', queryPackageName\)/u);
+  assert.match(source, /setQueryPackages\(page\.facets\.queryPackages\)/u);
+  assert.match(source, /id="delivery-pool-query-package"/u);
+  assert.match(source, /queryPackages\.map\(\(facet\)/u);
   assert.match(source, /<Textarea[\s\S]*id="delivery-pool-search"/u,
     'delivery pool search must accept pasted line breaks');
   assert.match(source, /filterDeliveryPoolEntries\(entries, search\)/u);
-  assert.match(source, /每行一条，匹配任意一条即显示/u);
+  assert.match(source, /每行一条，在已加载条目的 Query、词包名称或任务号中匹配任意一条/u);
   assert.match(source, /searchInputRef\.current\?\.focus\(\)/u,
     'clearing a multi-line search should return focus to its textarea');
   assert.match(source, /load\(nextOffset\)/u,
@@ -150,12 +175,13 @@ test('delivery pool exposes independent selected and all-ready export contracts'
   assert.doesNotMatch(source, /load\(entries\.length\)/u,
     'de-duplicated client row count must not be reused as the mutable server offset');
   assert.match(source, /\/v1\/delivery-pool\/archive/u);
-  assert.match(source, /scope === 'ALL_READY' \? \{ scope \} : \{ scope, taskIds: selected \}/u,
-    'ALL_READY must be a server-side scope and must not be built from the visible task ids');
+  assert.match(source, /scope === 'QUERY_PACKAGE'[\s\S]*\{ scope, queryPackageName \}/u,
+    'an unselected package export must remain a server-side package scope');
+  assert.match(source, /exportDelivery\(filteredExportScope\)/u);
   assert.match(source, /delivery-pool\/archive\/\$\{encodeURIComponent\(prepared\.downloadId\)\}/u);
   assert.match(source, /\/v1\/delivery-pool\/xlsx/u);
-  assert.match(source, /buildDeliveryPoolExportInput\(selectedTaskIds\)/u,
-    'the Excel scope must be derived from a stable snapshot of the checked task ids');
+  assert.match(source, /buildDeliveryPoolExportInput\(selectedTaskIds, queryPackageName\)/u,
+    'Excel must derive its scope from both the checked task ids and active package');
   assert.match(source, /delivery-pool\/xlsx\/\$\{encodeURIComponent\(prepared\.downloadId\)\}/u);
   assert.doesNotMatch(source, /response\.blob\(\)|URL\.createObjectURL/u,
     'delivery archives and Excel files must use native streamed downloads instead of page-memory Blobs');
@@ -169,7 +195,8 @@ test('delivery pool exposes independent selected and all-ready export contracts'
   assert.match(source, /Excel 一次最多导出.*请先勾选后分批导出/u);
   assert.match(source, /一键导出全部/u);
   assert.match(source, /批量下载（已选/u);
-  assert.match(source, /不受搜索或当前显示范围影响/u);
+  assert.match(source, /词包筛选由服务端覆盖该词包全部 READY 条目/u);
+  assert.match(source, /entry\.queryPackageName \|\| '未归属词包'/u);
   assert.doesNotMatch(source, /selected\.length > 20/u,
     'the UI must not disable the new delivery export contract at the legacy batch-archive limit');
   assert.match(source, /role="status" aria-live="polite"/u);

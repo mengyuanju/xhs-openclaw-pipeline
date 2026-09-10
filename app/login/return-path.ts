@@ -1,6 +1,6 @@
 const ROLE_RETURN_PATHS: Record<string, string[]> = {
-  REVIEWER: ['/profile', '/workbench', '/knowledge', '/copy-qa'],
-  USER: ['/profile', '/workbench', '/query-packages', '/delivery-pool'],
+  REVIEWER: ['/profile', '/workbench', '/copy-qa'],
+  USER: ['/profile', '/workbench/personal'],
 };
 
 function isLocalPath(path: string) {

@@ -77,6 +77,59 @@ test('control plane client sends image claims only when called', async () => {
   assert.equal(calls[1].init.method, 'GET');
 });
 
+test('Xiaohongshu search client authenticates and validates every state-changing response', async () => {
+  const leaseToken = randomUUID();
+  let payload = {
+    id: 5,
+    queryPackageItemId: 9,
+    taskId: null,
+    query: '桌面收纳',
+    status: 'RUNNING',
+    nodeId: 'host-xhs-search',
+    attempt: 1,
+    resultLimit: 5,
+    leaseToken,
+  };
+  const client = createControlPlaneClient({
+    baseUrl: 'http://localhost',
+    headers: { 'X-XHS-Search-Token': 'machine-secret' },
+    fetchImpl: async (_url, options) => {
+      assert.equal(options.headers['X-XHS-Search-Token'], 'machine-secret');
+      return Response.json({ data: payload });
+    },
+  });
+  assert.equal((await client.claimXhsQuerySearch({ nodeId: 'host-xhs-search' })).id, 5);
+  const validClaim = payload;
+  for (const resultLimit of [undefined, 0, 11, 1.5, '5']) {
+    payload = { ...validClaim, resultLimit };
+    await assert.rejects(
+      client.claimXhsQuerySearch({ nodeId: 'host-xhs-search' }),
+      { code: 'INVALID_CONTROL_PLANE_RESPONSE' },
+    );
+  }
+  payload = {
+    ...validClaim,
+    status: 'SUCCEEDED',
+    nodeId: null,
+    leaseToken: null,
+    resultCount: 1,
+    links: [{ noteId: '66f000000000000000000000', url: 'https://www.xiaohongshu.com/explore/66f000000000000000000000', title: null, rank: 1 }],
+  };
+  assert.equal((await client.completeXhsQuerySearch(5, { leaseToken, links: payload.links })).status, 'SUCCEEDED');
+  payload = null;
+  await assert.rejects(
+    client.failXhsQuerySearch(5, { leaseToken, error: 'network', retryable: true }),
+    { code: 'INVALID_CONTROL_PLANE_RESPONSE' },
+  );
+  payload = { retriedCount: 2 };
+  assert.deepEqual(await client.retryFailedXhsQuerySearch({ jobId: 5 }), payload);
+  payload = { retriedCount: -1 };
+  await assert.rejects(
+    client.retryFailedXhsQuerySearch({ jobId: 5 }),
+    { code: 'INVALID_CONTROL_PLANE_RESPONSE' },
+  );
+});
+
 test('claim body timeouts propagate instead of pretending the queue is empty', async () => {
   const timeout = new DOMException('response body timed out', 'TimeoutError');
   const client = createControlPlaneClient({

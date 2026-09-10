@@ -82,6 +82,7 @@ test('query package import writes all 5000 rows in bounded parameterized chunks'
   const result = await createQueryPackage(fixture.pool, {
     name: '5000 条 Query 词包',
     sourceFileName: 'full-boundary.json',
+    assignedToUserId: 'legacy-worker',
     requestId: '91919191-9191-4191-8191-919191919191',
     items: Array.from({ length: 5_000 }, (_, index) => ({
       externalId: `query-${index + 1}`,
@@ -93,10 +94,15 @@ test('query package import writes all 5000 rows in bounded parameterized chunks'
 
   assert.equal(result.counts.total, 5_000);
   assert.equal(result.counts.pending, 5_000);
+  assert.equal(result.assignedToUserId, null);
+  assert.equal(result.assignedToAccountId, null);
   assert.equal(fixture.state.items.length, 5_000);
   assert.equal(fixture.state.items[0].rowNumber, 1);
   assert.equal(fixture.state.items.at(-1).rowNumber, 5_000);
   const itemWrites = fixture.state.calls.filter(({ sql }) => sql.startsWith('INSERT INTO query_package_items'));
+  const packageWrite = fixture.state.calls.find(({ sql }) => sql.startsWith('INSERT INTO query_packages'));
+  assert.deepEqual(packageWrite.values.slice(4, 6), [null, null],
+    'deprecated assignee input must not establish ownership on new packages');
   assert.equal(itemWrites.length, 10, '5000 rows use ten bounded 500-row SQL round trips');
   assert.ok(itemWrites.every(({ sql, values }) => sql.includes('jsonb_array_elements($2::jsonb)')
     && values.length === 2 && values[0] === 9), 'all imported content stays in value parameters');

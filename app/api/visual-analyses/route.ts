@@ -14,7 +14,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export function POST(request: Request) {
-  return apiHandler(request, { mutation: true, roles: ['ADMIN', 'REVIEWER'] }, async (session) => {
+  return apiHandler(request, { mutation: true, roles: ['ADMIN'] }, async (session) => {
     assertRequestSize(request, 11 * 1024 * 1024);
     const form = await request.formData();
     const file = form.get('file');

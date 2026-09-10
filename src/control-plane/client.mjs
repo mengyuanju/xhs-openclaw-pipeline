@@ -1,3 +1,5 @@
+import { XIAOHONGSHU_SEARCH_MAX_LIMIT } from '../xhs-query-search.mjs';
+
 export class ControlPlaneApiError extends Error {
   constructor(status, code, message) {
     super(message);
@@ -92,6 +94,84 @@ export function createControlPlaneClient({
     return result;
   }
 
+  async function claimXhsQuerySearch(input) {
+    const result = await request('/v1/xhs-query-search/claim', { method: 'POST', body: input });
+    if (result === null) return null;
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+    const hasSource = (Number.isSafeInteger(result?.queryPackageItemId) && result.queryPackageItemId > 0)
+      || (Number.isSafeInteger(result?.taskId) && result.taskId > 0);
+    const valid = Number.isSafeInteger(result?.id) && result.id > 0 && hasSource
+      && typeof result?.query === 'string' && result.query.trim() !== '' && [...result.query].length <= 500
+      && result.status === 'RUNNING' && result.nodeId === input?.nodeId
+      && Number.isSafeInteger(result.attempt) && result.attempt > 0
+      && Number.isInteger(result.resultLimit) && result.resultLimit >= 1
+      && result.resultLimit <= XIAOHONGSHU_SEARCH_MAX_LIMIT
+      && uuid.test(result.leaseToken);
+    if (!valid) {
+      throw new ControlPlaneApiError(
+        502,
+        'INVALID_CONTROL_PLANE_RESPONSE',
+        '中心服务返回的小红书搜索任务不完整，请停止搜索执行机并检查版本',
+      );
+    }
+    return result;
+  }
+
+  function validXhsJob(result, jobId, statuses) {
+    return Number.isSafeInteger(result?.id) && result.id === Number(jobId)
+      && statuses.includes(result.status)
+      && Number.isSafeInteger(result?.attempt) && result.attempt > 0
+      && Number.isInteger(result?.resultLimit) && result.resultLimit >= 1
+      && result.resultLimit <= XIAOHONGSHU_SEARCH_MAX_LIMIT
+      && Number.isSafeInteger(result?.resultCount) && result.resultCount >= 0
+      && result.resultCount <= result.resultLimit;
+  }
+
+  function invalidXhsResponse() {
+    return new ControlPlaneApiError(
+      502,
+      'INVALID_CONTROL_PLANE_RESPONSE',
+      '中心服务返回的小红书搜索状态不完整，请停止搜索执行机并检查版本',
+    );
+  }
+
+  async function completeXhsQuerySearch(jobId, input) {
+    const result = await request(`/v1/xhs-query-search/${jobId}/complete`, { method: 'POST', body: input });
+    if (!validXhsJob(result, jobId, ['SUCCEEDED']) || !Array.isArray(result.links)
+        || result.links.length !== result.resultCount) throw invalidXhsResponse();
+    return result;
+  }
+
+  async function blockXhsQuerySearch(jobId, input) {
+    const result = await request(`/v1/xhs-query-search/${jobId}/block`, { method: 'POST', body: input });
+    if (!validXhsJob(result, jobId, ['BLOCKED']) || result.blockedReason !== input?.reason) {
+      throw invalidXhsResponse();
+    }
+    return result;
+  }
+
+  async function failXhsQuerySearch(jobId, input) {
+    const result = await request(`/v1/xhs-query-search/${jobId}/fail`, { method: 'POST', body: input });
+    if (!validXhsJob(result, jobId, ['PENDING', 'FAILED'])) throw invalidXhsResponse();
+    return result;
+  }
+
+  async function resumeXhsQuerySearch(input) {
+    const result = await request('/v1/xhs-query-search/resume', { method: 'POST', body: input });
+    if (!Number.isSafeInteger(result?.resumedCount) || result.resumedCount < 0) {
+      throw invalidXhsResponse();
+    }
+    return result;
+  }
+
+  async function retryFailedXhsQuerySearch(input) {
+    const result = await request('/v1/xhs-query-search/retry-failed', { method: 'POST', body: input });
+    if (!Number.isSafeInteger(result?.retriedCount) || result.retriedCount < 0) {
+      throw invalidXhsResponse();
+    }
+    return result;
+  }
+
   return {
     health: () => request('/health'),
     registerNode: (input) => request('/v1/nodes', { method: 'POST', body: input }),
@@ -132,6 +212,12 @@ export function createControlPlaneClient({
     }),
     claimCopyBatch: (input) => claimBatch('COPY', input),
     claimImageBatch: (input) => claimBatch('IMAGE', { ...input, imageControlsVersion: 1, layoutCatalogVersion: 2 }),
+    claimXhsQuerySearch,
+    completeXhsQuerySearch,
+    blockXhsQuerySearch,
+    failXhsQuerySearch,
+    resumeXhsQuerySearch,
+    retryFailedXhsQuerySearch,
     saveVisualPlan: (executionId, plan) => request(`/v1/executions/${executionId}/visual-plan`, { method: 'PUT', body: plan, timeoutMs: 60_000 }),
     updateProgress: (executionId, progress) => request(
       `/v1/executions/${executionId}/progress`,

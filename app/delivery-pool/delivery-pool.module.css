@@ -4,6 +4,9 @@
 .toolbar > .searchField { display: grid; align-items: stretch; gap: 6px; width: min(520px, 72vw); }
 .searchField label { color: #625f5a; font-size: 12px; font-weight: 750; }
 .searchField > span { color: var(--muted); font-size: 10px; line-height: 1.55; }
+.packageFilter { display: grid; align-items: stretch; gap: 6px; min-width: 230px; color: #625f5a; font-size: 12px; font-weight: 750; }
+.packageFilter small { max-width: 280px; color: var(--muted); font-size: 10px; font-weight: 400; line-height: 1.55; }
+.packageFilter :global(.select-trigger) { width: 100%; }
 .searchControl { position: relative; }
 .searchControl .search { min-height: 86px; max-height: 210px; padding: 10px 42px 10px 39px; }
 .searchIcon { position: absolute; top: 14px; left: 13px; z-index: 1; color: var(--muted); pointer-events: none; }
@@ -12,6 +15,7 @@
 .clearSearch:focus-visible { outline: 3px solid var(--control-ring); outline-offset: 2px; }
 .toolbar > .searchStatus { max-width: 100%; white-space: normal; overflow-wrap: anywhere; line-height: 1.5; text-align: right; }
 .query { max-width: 520px; line-height: 1.7; }
+.packageName { max-width: 260px; line-height: 1.6; overflow-wrap: anywhere; }
 .version { display: grid; gap: 4px; color: var(--muted); font-size: 11px; }
 .actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .summary { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: #f8f6f2; }
@@ -21,4 +25,4 @@
 .selectionStatus span:last-child { color: var(--muted); }
 .scopeNote { margin: -5px 0 12px; color: var(--muted); font-size: 11px; line-height: 1.65; }
 .loadMore { display: flex; justify-content: center; padding-top: 14px; }
-@media (max-width: 680px) { .toolbar { align-items: stretch; flex-direction: column; } .toolbar > div, .toolbar > .searchField, .toolbar button { width: 100%; } .toolbar .clearSearch { width: 30px; } .toolbar > .searchStatus { text-align: left; } }
+@media (max-width: 680px) { .toolbar { align-items: stretch; flex-direction: column; } .toolbar > div, .toolbar > .searchField, .toolbar > .packageFilter, .toolbar button { width: 100%; } .toolbar .clearSearch { width: 30px; } .toolbar > .searchStatus { text-align: left; } }

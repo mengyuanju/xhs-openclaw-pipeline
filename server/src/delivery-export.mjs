@@ -8,6 +8,7 @@ import {
 
 export const DELIVERY_EXPORT_SCOPES = Object.freeze({
   ALL_READY: 'ALL_READY',
+  QUERY_PACKAGE: 'QUERY_PACKAGE',
   SELECTED: 'SELECTED',
 });
 
@@ -25,23 +26,44 @@ function selectedTaskIds(value) {
   return [...new Set(value.map((entry) => normalizeTaskId(entry)))];
 }
 
+function queryPackageName(value) {
+  if (typeof value !== 'string') throw new TypeError('queryPackageName must be a string');
+  const name = value.replace(/\s+/gu, ' ').trim();
+  if (!name || [...name].length > 200) {
+    throw new RangeError('queryPackageName must contain between 1 and 200 characters');
+  }
+  return name;
+}
+
 export function normalizeDeliveryExportRequest(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new TypeError('delivery export request must be an object');
   }
   if (value.scope === DELIVERY_EXPORT_SCOPES.ALL_READY) {
-    if (value.taskIds !== undefined) {
-      throw new TypeError('ALL_READY export cannot include taskIds');
+    if (value.taskIds !== undefined || value.queryPackageName !== undefined) {
+      throw new TypeError('ALL_READY export cannot include taskIds or queryPackageName');
     }
     return { scope: DELIVERY_EXPORT_SCOPES.ALL_READY };
   }
+  if (value.scope === DELIVERY_EXPORT_SCOPES.QUERY_PACKAGE) {
+    if (value.taskIds !== undefined) {
+      throw new TypeError('QUERY_PACKAGE export cannot include taskIds');
+    }
+    return {
+      scope: DELIVERY_EXPORT_SCOPES.QUERY_PACKAGE,
+      queryPackageName: queryPackageName(value.queryPackageName),
+    };
+  }
   if (value.scope === DELIVERY_EXPORT_SCOPES.SELECTED) {
+    if (value.queryPackageName !== undefined) {
+      throw new TypeError('SELECTED export cannot include queryPackageName');
+    }
     return {
       scope: DELIVERY_EXPORT_SCOPES.SELECTED,
       taskIds: selectedTaskIds(value.taskIds),
     };
   }
-  throw new TypeError('delivery export scope must be ALL_READY or SELECTED');
+  throw new TypeError('delivery export scope must be ALL_READY, QUERY_PACKAGE or SELECTED');
 }
 
 export async function resolveDeliveryExportTaskIds(repository, request, actor) {
@@ -49,7 +71,12 @@ export async function resolveDeliveryExportTaskIds(repository, request, actor) {
   if (typeof repository.listAllDeliveryPoolTaskIds !== 'function') {
     throw new TypeError('delivery pool export is unavailable');
   }
-  const ids = await repository.listAllDeliveryPoolTaskIds({ actor });
+  const ids = await repository.listAllDeliveryPoolTaskIds({
+    actor,
+    ...(request.scope === DELIVERY_EXPORT_SCOPES.QUERY_PACKAGE
+      ? { queryPackageName: request.queryPackageName }
+      : {}),
+  });
   if (!Array.isArray(ids)) throw new TypeError('delivery pool export snapshot is invalid');
   const taskIds = [...new Set(ids.map((entry) => normalizeTaskId(entry)))];
   if (taskIds.length === 0) {

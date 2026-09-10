@@ -72,7 +72,7 @@ test('workflow list endpoints reject invalid pagination before database access',
   assert.equal(queryCount, 0);
 });
 
-test('Query package HTTP routes preserve item-scoped production input and immutable actor identity', async () => {
+test('Query package HTTP routes are administrator-only and preserve administrator identity', async () => {
   const calls = [];
   const repository = {
     listQueryPackages: async (...args) => { calls.push(['list', ...args]); return []; },
@@ -80,7 +80,7 @@ test('Query package HTTP routes preserve item-scoped production input and immuta
     createQueryPackageProductionBatch: async (...args) => { calls.push(['produce', ...args]); return { id: 301, taskIds: [501] }; },
   };
   await withServer(repository, async (root) => {
-    const listed = await fetch(`${root}/v1/query-packages?limit=25&offset=50`, { headers: headers('worker') });
+    const listed = await fetch(`${root}/v1/query-packages?limit=25&offset=50`, { headers: headers('admin') });
     assert.equal(listed.status, 200);
 
     const screening = {
@@ -89,7 +89,7 @@ test('Query package HTTP routes preserve item-scoped production input and immuta
       requestId: '11111111-1111-4111-8111-111111111111',
     };
     const screened = await fetch(`${root}/v1/query-packages/9/screening`, {
-      method: 'PUT', headers: headers('worker', true), body: JSON.stringify(screening),
+      method: 'PUT', headers: headers('admin', true), body: JSON.stringify(screening),
     });
     assert.equal(screened.status, 200);
 
@@ -99,23 +99,215 @@ test('Query package HTTP routes preserve item-scoped production input and immuta
       requestId: '22222222-2222-4222-8222-222222222222',
     };
     const produced = await fetch(`${root}/v1/query-packages/9/production-batches`, {
-      method: 'POST', headers: headers('worker', true), body: JSON.stringify(production),
+      method: 'POST', headers: headers('admin', true), body: JSON.stringify(production),
     });
     assert.equal(produced.status, 201);
 
-    const denied = await fetch(`${root}/v1/query-packages`, { headers: headers('reviewer') });
-    assert.equal(denied.status, 403);
-    assert.equal((await denied.json()).error.code, 'FORBIDDEN');
+    const retiredAssignment = await fetch(`${root}/v1/query-packages/9/assignee`, {
+      method: 'PATCH', headers: headers('admin', true), body: '{}',
+    });
+    assert.equal(retiredAssignment.status, 404, 'Query-package ownership mutation is no longer exposed');
+
+    for (const username of ['worker', 'reviewer']) {
+      for (const [path, method] of [
+        ['/v1/query-packages', 'GET'],
+        ['/v1/query-packages', 'POST'],
+        ['/v1/query-packages/9', 'GET'],
+        ['/v1/query-packages/9/screening', 'PUT'],
+        ['/v1/query-packages/9/production-batches', 'POST'],
+        ['/v1/query-packages/9/abandon', 'POST'],
+        ['/v1/query-packages/9/permanent-delete-preview', 'GET'],
+        ['/v1/query-packages/9/permanent', 'DELETE'],
+      ]) {
+        const denied = await fetch(`${root}${path}`, {
+          method,
+          headers: headers(username, true),
+          ...(['GET', 'HEAD'].includes(method) ? {} : { body: '{}' }),
+        });
+        assert.equal(denied.status, 403, `${username}:${method}:${path}`);
+        assert.equal((await denied.json()).error.code, 'FORBIDDEN');
+      }
+    }
 
     assert.deepEqual(calls[0], ['list', { limit: '25', offset: '50' }, {
-      actor: { userId: 22, username: 'worker', role: 'USER', credentialVersion: 1 },
+      actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
     }]);
     assert.deepEqual(calls[1], ['screen', '9', screening, {
-      actor: { userId: 22, username: 'worker', role: 'USER', credentialVersion: 1 },
+      actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
     }]);
     assert.deepEqual(calls[2], ['produce', '9', production, {
-      actor: { userId: 22, username: 'worker', role: 'USER', credentialVersion: 1 },
+      actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
     }]);
+    assert.equal(calls.length, 3, 'non-administrator denials must happen before repository access');
+  });
+});
+
+test('workflow quality settings are administrator-only and batch readiness excludes ordinary users', async () => {
+  let settingsReads = 0;
+  const readinessCalls = [];
+  const repository = {
+    getWorkflowQualitySettings: async () => {
+      settingsReads += 1;
+      return { queryPackage: { workerImportEnabled: false } };
+    },
+    getProductionBatchSamplingReadiness: async (...args) => {
+      readinessCalls.push(args);
+      return { batchId: 301, ready: true };
+    },
+  };
+  await withServer(repository, async (root) => {
+    const adminSettings = await fetch(`${root}/v1/workflow-quality-settings`, {
+      headers: headers('admin'),
+    });
+    assert.equal(adminSettings.status, 200);
+    assert.equal((await adminSettings.json()).data.queryPackage.workerImportEnabled, false);
+
+    for (const username of ['worker', 'reviewer']) {
+      const denied = await fetch(`${root}/v1/workflow-quality-settings`, {
+        headers: headers(username),
+      });
+      assert.equal(denied.status, 403, username);
+      assert.equal((await denied.json()).error.code, 'FORBIDDEN');
+    }
+    assert.equal(settingsReads, 1, 'non-administrator settings reads must stop before repository access');
+
+    const workerReadiness = await fetch(
+      `${root}/v1/production-batches/301/copy-sampling-readiness`,
+      { headers: headers('worker') },
+    );
+    assert.equal(workerReadiness.status, 403);
+    assert.equal((await workerReadiness.json()).error.code, 'FORBIDDEN');
+    assert.equal(readinessCalls.length, 0, 'ordinary-user readiness reads must stop before repository access');
+
+    for (const username of ['reviewer', 'admin']) {
+      const response = await fetch(`${root}/v1/production-batches/301/copy-sampling-readiness`, {
+        headers: headers(username),
+      });
+      assert.equal(response.status, 200, username);
+      assert.equal((await response.json()).data.ready, true);
+    }
+    assert.deepEqual(readinessCalls, [
+      ['301', { actor: { userId: 91, username: 'reviewer', role: 'REVIEWER', credentialVersion: 1 } }],
+      ['301', { actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 } }],
+    ]);
+  });
+});
+
+test('ordinary task responses remove package, delivery and Xiaohongshu search metadata', async () => {
+  const sensitiveFields = [
+    'sourceQueryPackageId',
+    'sourceQueryPackageName',
+    'sourceQueryPackageExternalId',
+    'productionBatchId',
+    'deliveryStatus',
+  ];
+  const xiaohongshuFields = [
+    'xiaohongshuSearchStatus',
+    'xiaohongshuSearchBlockedReason',
+    'xiaohongshuLinks',
+  ];
+  const task = {
+    id: 42,
+    query: '普通用户仍需处理的 Query',
+    state: 'COPY_REVIEW_PENDING',
+    createdByUserId: 'admin',
+    createdByAccountId: users.admin.id,
+    assignedToUserId: 'worker',
+    assignedToAccountId: users.worker.id,
+    sourceQueryPackageId: 7,
+    sourceQueryPackageName: '不可见词包',
+    sourceQueryPackageExternalId: 'secret-external-id',
+    productionBatchId: 9,
+    deliveryStatus: 'READY',
+    xiaohongshuSearchStatus: 'BLOCKED',
+    xiaohongshuSearchBlockedReason: 'CAPTCHA_REQUIRED',
+    xiaohongshuLinks: [{ noteId: 'secret-note', url: 'https://example.invalid/note' }],
+    executions: [{ id: 'internal-execution' }],
+  };
+  let listReads = 0;
+  const repository = {
+    listTasks: async () => {
+      listReads += 1;
+      return { items: [task], total: 1, limit: 50, offset: 0 };
+    },
+    getTaskAccess: async () => task,
+    getTask: async () => task,
+    approveCopy: async () => task,
+    retryTask: async () => task,
+    requeueImageTask: async () => task,
+    reviseImages: async () => task,
+    cancelTask: async () => task,
+  };
+  await withServer(repository, async (root) => {
+    const userList = await fetch(`${root}/v1/tasks?includeTotal=true`, { headers: headers('worker') });
+    assert.equal(userList.status, 200);
+    const userListTask = (await userList.json()).data.items[0];
+    assert.equal(userListTask.query, task.query);
+    for (const field of sensitiveFields) {
+      assert.equal(Object.hasOwn(userListTask, field), false, `USER list leaked ${field}`);
+    }
+    for (const field of xiaohongshuFields) {
+      assert.equal(Object.hasOwn(userListTask, field), false, `USER list leaked ${field}`);
+    }
+
+    const readsBeforeForbiddenFilter = listReads;
+    const forbiddenFilter = await fetch(
+      `${root}/v1/tasks?queryPackageName=${encodeURIComponent(task.sourceQueryPackageName)}`,
+      { headers: headers('worker') },
+    );
+    assert.equal(forbiddenFilter.status, 403);
+    assert.equal((await forbiddenFilter.json()).error.code, 'FORBIDDEN');
+    assert.equal(listReads, readsBeforeForbiddenFilter,
+      'package-name filtering must be rejected before task repository access');
+
+    const userDetail = await fetch(`${root}/v1/tasks/42`, { headers: headers('worker') });
+    assert.equal(userDetail.status, 200);
+    const userDetailTask = (await userDetail.json()).data;
+    assert.equal(userDetailTask.query, task.query);
+    assert.equal(Object.hasOwn(userDetailTask, 'executions'), false);
+    for (const field of sensitiveFields) {
+      assert.equal(Object.hasOwn(userDetailTask, field), false, `USER detail leaked ${field}`);
+    }
+    for (const field of xiaohongshuFields) {
+      assert.deepEqual(userDetailTask[field], task[field], `USER detail omitted ${field}`);
+    }
+
+    for (const [path, expectedStatus] of [
+      ['/v1/tasks/42/approve-copy', 200],
+      ['/v1/tasks/42/retry', 200],
+      ['/v1/tasks/42/retry-image', 200],
+      ['/v1/tasks/42/image-revisions', 201],
+      ['/v1/tasks/42/cancel', 200],
+    ]) {
+      const response = await fetch(`${root}${path}`, {
+        method: 'POST', headers: headers('worker', true), body: '{}',
+      });
+      assert.equal(response.status, expectedStatus, path);
+      const mutationTask = (await response.json()).data;
+      assert.equal(mutationTask.query, task.query);
+      for (const field of [...sensitiveFields, ...xiaohongshuFields]) {
+        assert.equal(Object.hasOwn(mutationTask, field), false, `USER ${path} leaked ${field}`);
+      }
+    }
+
+    const reviewerDetail = await fetch(`${root}/v1/tasks/42`, { headers: headers('reviewer') });
+    assert.equal(reviewerDetail.status, 200);
+    const reviewerTask = (await reviewerDetail.json()).data;
+    for (const field of [...sensitiveFields, ...xiaohongshuFields]) {
+      assert.deepEqual(reviewerTask[field], task[field], `REVIEWER lost ${field}`);
+    }
+    assert.equal(Object.hasOwn(reviewerTask, 'executions'), false,
+      'reviewer execution visibility must remain unchanged');
+
+    const adminList = await fetch(`${root}/v1/tasks?includeTotal=true`, { headers: headers('admin') });
+    assert.equal(adminList.status, 200);
+    const adminListTask = (await adminList.json()).data.items[0];
+    for (const field of [...sensitiveFields, ...xiaohongshuFields]) {
+      assert.deepEqual(adminListTask[field], task[field], `ADMIN list lost ${field}`);
+    }
+    const adminDetail = await fetch(`${root}/v1/tasks/42`, { headers: headers('admin') });
+    assert.equal(adminDetail.status, 200);
+    assert.deepEqual((await adminDetail.json()).data, task);
   });
 });
 
@@ -221,13 +413,17 @@ test('active blind QA tasks disappear from generic reviewer task APIs, including
   });
 });
 
-test('only administrators can request delivery-pool batch exports', async () => {
+test('delivery-pool list and batch exports are administrator-only', async () => {
   let snapshotReads = 0;
   const repository = {
+    listDeliveryPool: async () => { snapshotReads += 1; return []; },
     listAllDeliveryPoolTaskIds: async () => { snapshotReads += 1; return []; },
   };
   await withServer(repository, async (root) => {
     for (const username of ['worker', 'reviewer']) {
+      const listing = await fetch(`${root}/v1/delivery-pool`, { headers: headers(username) });
+      assert.equal(listing.status, 403, `${username}:list`);
+      assert.equal((await listing.json()).error.code, 'FORBIDDEN', `${username}:list`);
       for (const endpoint of ['archive', 'xlsx']) {
         const response = await fetch(`${root}/v1/delivery-pool/${endpoint}`, {
           method: 'POST',
@@ -256,7 +452,7 @@ test('only administrators can request delivery-pool batch exports', async () => 
   assert.equal(snapshotReads, 0, 'authorization must run before reading the delivery snapshot');
 });
 
-test('single delivery packages are hidden from reviewers and restricted to the stable worker assignee', async () => {
+test('single delivery packages are administrator-only', async () => {
   let accessReads = 0;
   const access = {
     id: 77,
@@ -301,10 +497,11 @@ test('single delivery packages are hidden from reviewers and restricted to the s
     assert.equal(reviewer.status, 403);
     assert.equal(accessReads, 0, 'reviewer denial must happen before task lookup');
 
-    const formerCreator = await fetch(`${root}/v1/tasks/77/archive`, {
+    const worker = await fetch(`${root}/v1/tasks/77/archive`, {
       method: 'HEAD', headers: headers('worker'),
     });
-    assert.equal(formerCreator.status, 403);
+    assert.equal(worker.status, 403);
+    assert.equal(accessReads, 0, 'non-admin denial must happen before task lookup');
 
     const administrator = await fetch(`${root}/v1/tasks/77/archive`, {
       method: 'HEAD', headers: headers('admin'),
@@ -314,70 +511,22 @@ test('single delivery packages are hidden from reviewers and restricted to the s
   });
 });
 
-test('single worker delivery rechecks stable ownership after building the archive', async () => {
-  let assignedToUserId = 'worker';
-  let assignedToAccountId = users.worker.id;
-  const entered = Promise.withResolvers();
-  const release = Promise.withResolvers();
-  let storagePath = '';
+test('single worker delivery is rejected before archive data is read', async () => {
+  let taskReads = 0;
+  let assetReads = 0;
   await withServer({
-    getTaskAccess: async () => ({
-      id: 78,
-      state: 'REVIEWED',
-      createdByUserId: 'worker',
-      createdByAccountId: users.worker.id,
-      assignedToUserId,
-      assignedToAccountId,
-    }),
-    getTask: async () => ({
-      id: 78,
-      state: 'REVIEWED',
-      currentCopyRevisionId: 178,
-      currentImageRunId: '78787878-7878-4878-8878-787878787878',
-      copyRevisions: [{
-        id: 178,
-        content: { copy: { title: '归属变化', body: '正文', tags: [] } },
-      }],
-      imageRuns: [{
-        id: '78787878-7878-4878-8878-787878787878',
-        result: { images: [{ assetId: 278 }] },
-      }],
-      assets: [{
-        id: 278,
-        taskId: 78,
-        imageRunId: '78787878-7878-4878-8878-787878787878',
-        mediaType: 'image/png',
-      }],
-    }),
-    assertTaskReadyForDelivery: async () => ({
-      taskId: 78,
-      copyRevisionId: 178,
-      imageRunId: '78787878-7878-4878-8878-787878787878',
-    }),
-    getAsset: async () => {
-      entered.resolve();
-      await release.promise;
-      return {
-        id: 278,
-        taskId: 78,
-        mediaType: 'image/png',
-        originalName: '图片.png',
-        storagePath,
-      };
-    },
-  }, async (root, storageRoot) => {
-    storagePath = join(storageRoot, 'tasks', '78', 'image-runs', 'run', 'image.png');
-    await mkdir(join(storageRoot, 'tasks', '78', 'image-runs', 'run'), { recursive: true });
-    await writeFile(storagePath, 'image');
-    const pending = fetch(`${root}/v1/tasks/78/archive`, { headers: headers('worker') });
-    await entered.promise;
-    assignedToUserId = 'another-worker';
-    assignedToAccountId = 33;
-    release.resolve();
-    const response = await pending;
+    getTaskAccess: async () => { taskReads += 1; return null; },
+    getTask: async () => { taskReads += 1; return null; },
+    getAsset: async () => { assetReads += 1; return null; },
+  }, async (root) => {
+    const response = await fetch(`${root}/v1/tasks/78/archive`, {
+      headers: headers('worker'),
+    });
     assert.equal(response.status, 403);
     assert.equal(response.headers.get('content-disposition'), null);
   });
+  assert.equal(taskReads, 0);
+  assert.equal(assetReads, 0);
 });
 
 test('disconnecting a delivery preparation cancels work and removes its staged files', async () => {

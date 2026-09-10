@@ -26,6 +26,10 @@ import {
   normalizeHumanQualitySettingsUpdate,
 } from '../../src/human-quality-settings.mjs';
 import {
+  XIAOHONGSHU_SEARCH_SETTINGS_KEY,
+  normalizeXiaohongshuSearchSettings,
+} from '../../src/xhs-query-search.mjs';
+import {
   normalizeAutoAssignmentEnabled,
   normalizeAutoAssignmentExpectedVersion,
   normalizeAutoAssignmentLimit,
@@ -33,7 +37,6 @@ import {
 } from './task-auto-assignment-domain.mjs';
 import {
   abandonQueryPackage,
-  assignQueryPackage,
   createQueryPackage,
   createQueryPackageProductionBatch,
   getQueryPackage,
@@ -42,6 +45,19 @@ import {
   previewPermanentQueryPackageDeletion,
   updateQueryPackageScreening,
 } from './query-packages.mjs';
+import {
+  blockXhsQuerySearch,
+  claimXhsQuerySearch,
+  completeXhsQuerySearch,
+  failXhsQuerySearch,
+  resumeXhsQuerySearch,
+  retryFailedXhsQuerySearch,
+} from './xhs-query-search.mjs';
+import {
+  discardDuplicateQueries,
+  previewDuplicateQueryDiscard,
+} from './query-duplicate-discard.mjs';
+import { taskQueryIdentitySql } from './task-query-identity.mjs';
 import {
   batchReturnCopyQa,
   freezeCopySamplingBatch,
@@ -822,6 +838,16 @@ function normalizedTaskQuery(value) {
   return query || null;
 }
 
+function normalizedQueryPackageNameFilter(value) {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value !== 'string') throw new TypeError('queryPackageName must be a string');
+  const name = value.replace(/\s+/gu, ' ').trim();
+  if (!name || [...name].length > 200) {
+    throw new RangeError('queryPackageName must contain between 1 and 200 characters');
+  }
+  return name;
+}
+
 function savedTaskViewFrom(row) {
   if (!row) return null;
   return {
@@ -876,12 +902,6 @@ function contentWithAutomaticReviewLayouts(content, { baseRevisionId, nodeId }) 
       submittedAt: new Date().toISOString(),
     },
   };
-}
-
-// Queries are entered by people, so insignificant casing and whitespace should
-// not produce separate rows when the task list is de-duplicated.
-function taskQueryIdentity(column = 'query') {
-  return `lower(regexp_replace(btrim(${column}), '\\s+', ' ', 'g'))`;
 }
 
 async function transaction(pool, action) {
@@ -1021,7 +1041,6 @@ export class PostgresControlPlaneRepository {
   listQueryPackages(options, { actor } = {}) { return listQueryPackages(this.pool, options, actor); }
   createQueryPackage(input, { actor } = {}) { return createQueryPackage(this.pool, input, actor); }
   getQueryPackage(id, { actor } = {}) { return getQueryPackage(this.pool, id, actor); }
-  assignQueryPackage(id, input, { actor } = {}) { return assignQueryPackage(this.pool, id, input, actor); }
   updateQueryPackageScreening(id, input, { actor } = {}) {
     return updateQueryPackageScreening(this.pool, id, input, actor);
   }
@@ -1036,6 +1055,18 @@ export class PostgresControlPlaneRepository {
   }
   abandonQueryPackage(id, input, { actor } = {}) {
     return abandonQueryPackage(this.pool, id, input, actor);
+  }
+  claimXhsQuerySearch(input) { return claimXhsQuerySearch(this.pool, input); }
+  completeXhsQuerySearch(id, input) { return completeXhsQuerySearch(this.pool, id, input); }
+  blockXhsQuerySearch(id, input) { return blockXhsQuerySearch(this.pool, id, input); }
+  failXhsQuerySearch(id, input) { return failXhsQuerySearch(this.pool, id, input); }
+  resumeXhsQuerySearch(input) { return resumeXhsQuerySearch(this.pool, input); }
+  retryFailedXhsQuerySearch(input) { return retryFailedXhsQuerySearch(this.pool, input); }
+  previewDuplicateQueryDiscard(input, { actor } = {}) {
+    return previewDuplicateQueryDiscard(this.pool, input, actor);
+  }
+  discardDuplicateQueries(input, { actor } = {}) {
+    return discardDuplicateQueries(this.pool, input, actor);
   }
   getWorkflowQualitySettings() { return readWorkflowQualitySettings(this.pool); }
   updateWorkflowQualitySettings(input, { actor } = {}) {
@@ -1066,8 +1097,8 @@ export class PostgresControlPlaneRepository {
     return assertTasksReadyForDelivery(this.pool, bindings);
   }
   listDeliveryPool(options, { actor } = {}) { return listDeliveryPool(this.pool, options, actor); }
-  listAllDeliveryPoolTaskIds({ actor } = {}) {
-    return listAllDeliveryPoolTaskIds(this.pool, actor);
+  listAllDeliveryPoolTaskIds({ actor, queryPackageName = null } = {}) {
+    return listAllDeliveryPoolTaskIds(this.pool, actor, { queryPackageName });
   }
   releaseCopySamplingBatch(id, input, { actor } = {}) {
     return releaseCopySamplingBatch(this.pool, id, input, actor);
@@ -1092,7 +1123,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1 } };
+      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 2, xiaohongshuQuerySearchVersion: 3, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -1951,6 +1982,7 @@ export class PostgresControlPlaneRepository {
     createdByRole = null,
     taskId = null,
     query = null,
+    queryPackageName = null,
     deduplicateQuery = false,
     attention = null,
     sortBy = 'priority',
@@ -2084,8 +2116,13 @@ export class PostgresControlPlaneRepository {
       values.push(searchQuery);
       filters.push(`strpos(lower(query), lower($${values.length})) > 0`);
     }
+    const searchQueryPackageName = normalizedQueryPackageNameFilter(queryPackageName);
+    if (searchQueryPackageName !== null) {
+      values.push(searchQueryPackageName);
+      filters.push(`strpos(lower(COALESCE(source_query_package_name, '')), lower($${values.length})) > 0`);
+    }
     const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
-    const queryIdentity = taskQueryIdentity('query');
+    const queryIdentity = taskQueryIdentitySql('query');
     const taskSort = normalizedTaskSort(sortBy, sortOrder);
     const pageOrder = taskSortOrder(taskSort);
     const resultOrder = taskSortOrder(taskSort, 'page.');
@@ -2226,6 +2263,27 @@ export class PostgresControlPlaneRepository {
           creator.role AS creator_role, assignee.id AS assignee_account_id,
           assignee.display_name AS assigned_to_display_name,
           assignee.status AS assignee_status,
+          COALESCE((
+            SELECT jsonb_agg(jsonb_build_object(
+              'noteId', link.note_id,
+              'url', link.url,
+              'title', link.title,
+              'rank', link.rank
+            ) ORDER BY link.rank, link.id)
+            FROM xhs_query_search_jobs AS search
+            JOIN xhs_query_links AS link ON link.search_job_id = search.id
+            WHERE search.task_id = task.id AND search.status = 'SUCCEEDED'
+          ), '[]'::jsonb) AS xiaohongshu_links,
+          (
+            SELECT search.status
+            FROM xhs_query_search_jobs AS search
+            WHERE search.task_id = task.id
+          ) AS xiaohongshu_search_status,
+          (
+            SELECT search.blocked_reason
+            FROM xhs_query_search_jobs AS search
+            WHERE search.task_id = task.id
+          ) AS xiaohongshu_search_blocked_reason,
           EXISTS (
             SELECT 1 FROM delivery_entries AS current_delivery
             WHERE current_delivery.task_id = task.id AND current_delivery.status = 'READY'
@@ -2259,6 +2317,16 @@ export class PostgresControlPlaneRepository {
     if (!task.rows[0]) return null;
     return {
       ...taskFrom(task.rows[0]),
+      xiaohongshuLinks: Array.isArray(task.rows[0].xiaohongshu_links)
+        ? task.rows[0].xiaohongshu_links.map((link) => ({
+          noteId: String(link.noteId),
+          url: String(link.url),
+          title: link.title === null || link.title === undefined ? null : String(link.title),
+          rank: Number(link.rank),
+        }))
+        : [],
+      xiaohongshuSearchStatus: task.rows[0].xiaohongshu_search_status ?? null,
+      xiaohongshuSearchBlockedReason: task.rows[0].xiaohongshu_search_blocked_reason ?? null,
       executions: executions.rows.map(executionFrom),
       copyRevisions: revisions.rows.map(revisionFrom),
       imageRuns: imageRuns.rows.map((row) => ({
@@ -2291,11 +2359,34 @@ export class PostgresControlPlaneRepository {
     const result = await this.pool.query(`
       SELECT
         task.id,
+        task.query,
+        task.source_query_package_name,
         task.state,
         task.current_copy_revision_id,
         task.current_image_run_id,
         revision.content AS copy_content,
         image_run.result AS image_result,
+        COALESCE((
+          SELECT jsonb_agg(jsonb_build_object(
+            'noteId', link.note_id,
+            'url', link.url,
+            'title', link.title,
+            'rank', link.rank
+          ) ORDER BY link.rank, link.id)
+          FROM xhs_query_search_jobs AS search
+          JOIN xhs_query_links AS link ON link.search_job_id = search.id
+          WHERE search.task_id = task.id AND search.status = 'SUCCEEDED'
+        ), '[]'::jsonb) AS xiaohongshu_links,
+        (
+          SELECT search.status
+          FROM xhs_query_search_jobs AS search
+          WHERE search.task_id = task.id
+        ) AS xiaohongshu_search_status,
+        (
+          SELECT search.blocked_reason
+          FROM xhs_query_search_jobs AS search
+          WHERE search.task_id = task.id
+        ) AS xiaohongshu_search_blocked_reason,
         COALESCE(
           jsonb_agg(
             jsonb_build_object(
@@ -2331,11 +2422,23 @@ export class PostgresControlPlaneRepository {
     return {
       task: {
         id: Number(row.id),
+        query: row.query,
+        sourceQueryPackageName: row.source_query_package_name ?? null,
         state: row.state,
         currentCopyRevisionId: copyRevisionId,
         currentImageRunId: imageRunId,
         copyRevisions: [{ id: copyRevisionId, content: row.copy_content }],
         imageRuns: [{ id: imageRunId, result: row.image_result }],
+        xiaohongshuLinks: Array.isArray(row.xiaohongshu_links)
+          ? row.xiaohongshu_links.map((link) => ({
+            noteId: String(link.noteId),
+            url: String(link.url),
+            title: link.title === null || link.title === undefined ? null : String(link.title),
+            rank: Number(link.rank),
+          }))
+          : [],
+        xiaohongshuSearchStatus: row.xiaohongshu_search_status ?? null,
+        xiaohongshuSearchBlockedReason: row.xiaohongshu_search_blocked_reason ?? null,
         assets: Array.isArray(row.assets) ? row.assets.map((asset) => ({
           ...asset,
           id: Number(asset.id),
@@ -2712,7 +2815,7 @@ export class PostgresControlPlaneRepository {
         assertQualityExplanation(currentScoreX10, currentReasonCodes, currentNote);
       }
       if (decision === 'APPROVE' && currentScoreX10 !== null && currentScoreX10 !== 30) {
-        throw new ControlPlaneConflictError('QUALITY_SCORE_TOO_LOW', '文案仅在最终评分为 3 分时可以通过');
+        throw new ControlPlaneConflictError('QUALITY_SCORE_TOO_LOW', '文案仅在最终评分为 3 分时可以提交达标审核结果');
     }
     if (rawAiDisclosureEnabled !== undefined && typeof rawAiDisclosureEnabled !== 'boolean') {
       throw new TypeError('aiDisclosureEnabled must be a boolean');
@@ -2817,11 +2920,17 @@ export class PostgresControlPlaneRepository {
         throw new ControlPlaneConflictError('SCORE_ONE_REQUIRES_DISCARD', '1 分机器初稿必须直接作废');
       }
       if (decision === 'APPROVE' && mandatoryRework && !copyReworkSatisfied) {
-        throw new ControlPlaneConflictError('COPY_REWORK_NOT_SATISFIED', '返工文案正文尚未修改，不能重新通过');
+        throw new ControlPlaneConflictError(
+          'COPY_REWORK_NOT_SATISFIED',
+          '返工稿尚未发生实际修改；请修改标题、正文或标签后再提交强制复检',
+        );
       }
       if (decision === 'APPROVE' && !mandatoryRework
           && baseScoreX10 !== null && baseScoreX10 < 30 && !finalCopyEdited) {
-        throw new ControlPlaneConflictError('COPY_EDIT_REQUIRED', '低于 3 分的机器初稿必须修改正文后才能通过');
+        throw new ControlPlaneConflictError(
+          'COPY_EDIT_REQUIRED',
+          '低于 3 分的机器初稿必须实际修改标题、正文或标签，才能提交达标审核结果',
+        );
       }
       const carryBaseRating = decision !== 'APPROVE'
         && !copyChanged && (Boolean(edits) || baseRatingAlreadyStored);
@@ -3090,7 +3199,7 @@ export class PostgresControlPlaneRepository {
     const state = approved ? 'REVIEWED' : copyRework ? 'COPY_REVIEW_PENDING'
       : retry ? 'IMAGE_QUEUED' : 'CANCELLED';
     const message = approved ? '图片审核通过，任务已完成'
-      : copyRework ? '图文终审要求文案返工，修改后将强制重新质检'
+      : copyRework ? '图文终审已退回文案；实际修改后须提交强制复检，复检通过后才进入待生图队列'
         : retry ? '审核员要求重新生成图片，等待图片执行机领取' : '任务已被审核员废弃';
     return transaction(this.pool, async (client) => {
       const task = actorIdentity === null
@@ -3384,6 +3493,21 @@ export class PostgresControlPlaneRepository {
           last_activity_at = now(), updated_at = now()
         WHERE id = $1 RETURNING *
       `, [taskId, task.cancelled_from_state, task.cancelled_from_state === 'IMAGE_QUEUED' ? '等待图片执行机领取' : '等待文案执行机领取']);
+      // Duplicate cleanup also pauses an unfinished Xiaohongshu acquisition.
+      // Requeue that paired job only when an immutable duplicate-discard audit
+      // proves why it was cancelled; successful searches remain untouched.
+      await client.query(`
+        UPDATE xhs_query_search_jobs AS search SET
+          status = 'PENDING', attempt_count = 0,
+          claimed_by_node_id = NULL, lease_token = NULL, lease_expires_at = NULL,
+          retry_after = NULL, blocked_reason = NULL, error = NULL,
+          result_count = 0, searched_at = NULL, updated_at = now()
+        WHERE search.task_id = $1 AND search.status = 'CANCELLED'
+          AND EXISTS (
+            SELECT 1 FROM task_duplicate_query_discard_audits AS audit
+            WHERE audit.discarded_task_id = $1
+          )
+      `, [taskId]);
       return taskFrom(updated.rows[0]);
     });
   }
@@ -3585,7 +3709,10 @@ export class PostgresControlPlaneRepository {
   async upsertSetting(rawKey, rawValue) {
     const key = String(rawKey ?? '').trim();
     if (!/^[a-z][a-z0-9._-]{0,99}$/u.test(key)) throw new TypeError('setting key is invalid');
-    const value = normalizeJson(rawValue, 'setting value', 1_000_000);
+    const jsonValue = normalizeJson(rawValue, 'setting value', 1_000_000);
+    const value = key === XIAOHONGSHU_SEARCH_SETTINGS_KEY
+      ? normalizeXiaohongshuSearchSettings(jsonValue)
+      : jsonValue;
     if (key === 'production' && value?.layoutPresets !== undefined) value.layoutPresets = normalizeLayoutPresets(value.layoutPresets);
     if (key === 'production' && value?.humanQualityReasons !== undefined) {
       value.humanQualityReasons = normalizeHumanQualitySettingsUpdate(value.humanQualityReasons);

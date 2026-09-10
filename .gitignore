@@ -19,4 +19,5 @@ npm-debug.log*
 .next/
 .next-local/
 server/test-storage/
+test-storage/
 *.tsbuildinfo

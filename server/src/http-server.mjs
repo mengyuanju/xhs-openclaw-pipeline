@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, relative, resolve } from 'node:path';
@@ -14,6 +14,7 @@ import {
   archiveFileName,
   buildBatchTaskArchive,
   buildTaskArchive,
+  queryPackageFileNameSegment,
   writeBatchTaskArchive,
 } from './task-archive.mjs';
 import {
@@ -54,6 +55,19 @@ const ASSET_BODY_LIMIT = 20 * 1024 * 1024;
 const DELIVERY_IMAGE_MEDIA_TYPES = new Set(
   Object.values(IMAGE_FORMATS).map((format) => format.mediaType),
 );
+
+function validXhsSearchMachineToken(value) {
+  const token = typeof value === 'string' ? value.trim() : '';
+  return token.length >= 32 && token.length <= 512 ? token : null;
+}
+
+function machineTokenMatches(expected, received) {
+  if (!expected || typeof received !== 'string') return false;
+  const expectedBytes = Buffer.from(expected);
+  const receivedBytes = Buffer.from(received);
+  return expectedBytes.length === receivedBytes.length
+    && timingSafeEqual(expectedBytes, receivedBytes);
+}
 
 class HttpError extends Error {
   constructor(status, code, message, details = undefined) {
@@ -188,6 +202,27 @@ async function uploadKnowledgeAsset({ ctx, repository, storageRoot, versionId })
 function json(ctx, status, data) {
   ctx.status = status;
   ctx.body = { data };
+}
+
+function userVisibleTask(task, { includeXhsSearch = false } = {}) {
+  const visible = { ...task };
+  delete visible.sourceQueryPackageId;
+  delete visible.sourceQueryPackageName;
+  delete visible.sourceQueryPackageExternalId;
+  delete visible.productionBatchId;
+  delete visible.deliveryStatus;
+  if (!includeXhsSearch) {
+    delete visible.xiaohongshuSearchStatus;
+    delete visible.xiaohongshuSearchBlockedReason;
+    delete visible.xiaohongshuLinks;
+  }
+  return visible;
+}
+
+function userVisibleTaskList(result) {
+  if (Array.isArray(result)) return result.map((task) => userVisibleTask(task));
+  if (!result || typeof result !== 'object' || !Array.isArray(result.items)) return result;
+  return { ...result, items: result.items.map((task) => userVisibleTask(task)) };
 }
 
 const APP_ROLES = Object.freeze(['ADMIN', 'REVIEWER', 'USER']);
@@ -786,7 +821,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   router.get('/health', async (ctx) => json(ctx, 200, await repository.health()));
 
   router.get('/v1/workflow-quality-settings', async (ctx) => {
-    requestActor(ctx);
+    requestActor(ctx, ['ADMIN']);
     json(ctx, 200, await repository.getWorkflowQualitySettings());
   });
   router.put('/v1/workflow-quality-settings', async (ctx) => {
@@ -794,27 +829,23 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     json(ctx, 200, await repository.updateWorkflowQualitySettings(requireJson(ctx), { actor }));
   });
   router.get('/v1/query-packages', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    const actor = requestActor(ctx, ['ADMIN']);
     json(ctx, 200, await repository.listQueryPackages({ limit: ctx.query.limit, offset: ctx.query.offset }, { actor }));
   });
   router.post('/v1/query-packages', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    const actor = requestActor(ctx, ['ADMIN']);
     json(ctx, 201, await repository.createQueryPackage(requireJson(ctx), { actor }));
   });
   router.get('/v1/query-packages/:packageId', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    const actor = requestActor(ctx, ['ADMIN']);
     json(ctx, 200, await repository.getQueryPackage(ctx.params.packageId, { actor }));
   });
-  router.patch('/v1/query-packages/:packageId/assignee', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN']);
-    json(ctx, 200, await repository.assignQueryPackage(ctx.params.packageId, requireJson(ctx), { actor }));
-  });
   router.put('/v1/query-packages/:packageId/screening', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    const actor = requestActor(ctx, ['ADMIN']);
     json(ctx, 200, await repository.updateQueryPackageScreening(ctx.params.packageId, requireJson(ctx), { actor }));
   });
   router.post('/v1/query-packages/:packageId/production-batches', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    const actor = requestActor(ctx, ['ADMIN']);
     json(ctx, 201, await repository.createQueryPackageProductionBatch(ctx.params.packageId, requireJson(ctx), { actor }));
   });
   router.post('/v1/query-packages/:packageId/abandon', async (ctx) => {
@@ -842,7 +873,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     }
   });
   router.get('/v1/production-batches/:batchId/copy-sampling-readiness', async (ctx) => {
-    const actor = requestActor(ctx);
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
     json(ctx, 200, await repository.getProductionBatchSamplingReadiness(ctx.params.batchId, { actor }));
   });
   router.post('/v1/production-batches/:batchId/copy-sampling-freeze', async (ctx) => {
@@ -857,6 +888,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
     json(ctx, 200, await repository.listCopyQaItems({
       status: ctx.query.status,
+      queryPackageName: ctx.query.queryPackageName,
       limit: ctx.query.limit,
       offset: ctx.query.offset,
     }, { actor }));
@@ -953,6 +985,9 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   });
   router.get('/v1/tasks', async (ctx) => {
     const actor = requestActor(ctx);
+    if (actor.role === 'USER' && ctx.query.queryPackageName !== undefined) {
+      throw new HttpError(403, 'FORBIDDEN', '普通用户不能按词包名称筛选任务');
+    }
     const personal = ctx.query.personal === 'true';
     if (ctx.query.personal !== undefined && !['true', 'false'].includes(ctx.query.personal)) {
       throw new TypeError('personal must be true or false');
@@ -971,7 +1006,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
       requestActor(ctx, ['ADMIN']);
     }
     const createdByRole = normalizeTaskCreatorRole(ctx.query.createdByRole);
-    json(ctx, 200, await repository.listTasks({
+    const result = await repository.listTasks({
       state: ctx.query.state,
       states: ctx.query.states,
       nodeId: ctx.query.nodeId,
@@ -985,6 +1020,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
       ...(createdByRole !== null ? { createdByRole } : {}),
       ...(ctx.query.taskId !== undefined ? { taskId: ctx.query.taskId } : {}),
       query: ctx.query.query,
+      queryPackageName: ctx.query.queryPackageName,
       deduplicateQuery: ctx.query.deduplicateQuery === 'true',
       ...(ctx.query.attention !== undefined ? { attention: ctx.query.attention } : {}),
       ...(ctx.query.sortBy !== undefined ? { sortBy: ctx.query.sortBy } : {}),
@@ -993,7 +1029,16 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
       offset: ctx.query.offset,
       includeTotal: ctx.query.includeTotal === 'true',
       excludeActiveBlindQa: actor.role === 'REVIEWER',
-    }));
+    });
+    json(ctx, 200, actor.role === 'USER' ? userVisibleTaskList(result) : result);
+  });
+  router.post('/v1/tasks/duplicate-query-discard-preview', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.previewDuplicateQueryDiscard(requireJson(ctx), { actor }));
+  });
+  router.post('/v1/tasks/duplicate-query-discard', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.discardDuplicateQueries(requireJson(ctx), { actor }));
   });
   router.get('/v1/task-views', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
@@ -1100,7 +1145,9 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
       controller.signal.throwIfAborted();
       const fileName = request.scope === 'ALL_READY'
         ? '交付池-全部可交付项.zip'
-        : '交付池-已选资源.zip';
+        : request.scope === 'QUERY_PACKAGE'
+          ? `${queryPackageFileNameSegment(request.queryPackageName)}-交付资源.zip`
+          : '交付池-已选资源.zip';
       const prepared = deliveryExportRegistry.issue(staged, actor, {
         fileName,
         taskCount: staged.taskCount,
@@ -1210,7 +1257,9 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
       controller.signal.throwIfAborted();
       const fileName = request.scope === 'ALL_READY'
         ? '交付池-全部文章与图片.xlsx'
-        : '交付池-已选文章与图片.xlsx';
+        : request.scope === 'QUERY_PACKAGE'
+          ? `${queryPackageFileNameSegment(request.queryPackageName)}-交付内容.xlsx`
+          : '交付池-已选文章与图片.xlsx';
       const prepared = deliveryExportRegistry.issue(staged, actor, {
         fileName,
         taskCount: staged.taskCount,
@@ -1298,7 +1347,11 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     const { task, actor } = await assertTaskAccess(ctx, repository, { allowCreatorRead: true });
     // Execution snapshots include internal prompts and model configuration.
     const { executions, ...reviewableTask } = task;
-    json(ctx, 200, actor.role === 'ADMIN' ? task : reviewableTask);
+    json(ctx, 200, actor.role === 'ADMIN'
+      ? task
+      : actor.role === 'USER'
+        ? userVisibleTask(reviewableTask, { includeXhsSearch: true })
+        : reviewableTask);
   });
   router.patch('/v1/tasks/:taskId/assignee', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
@@ -1311,7 +1364,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     }));
   });
   router.head('/v1/tasks/:taskId/archive', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    const actor = requestActor(ctx, ['ADMIN']);
     const { task } = await assertTaskAccess(ctx, repository, {
       ownerOnly: actor.role !== 'ADMIN',
     });
@@ -1321,7 +1374,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     ctx.set('Content-Disposition', `attachment; filename="task-${task.id}-resources.zip"; filename*=UTF-8''${encodeURIComponent(archiveFileName(task))}`);
   });
   router.get('/v1/tasks/:taskId/archive', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    const actor = requestActor(ctx, ['ADMIN']);
     const { task } = await assertTaskAccess(ctx, repository, {
       ownerOnly: actor.role !== 'ADMIN',
     });
@@ -1375,6 +1428,24 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     const body = requireJson(ctx);
     json(ctx, 200, await repository.failExecution(ctx.params.executionId, body.error, { autoRetry: body.autoRetry }));
   });
+  router.post('/v1/xhs-query-search/claim', async (ctx) => {
+    json(ctx, 200, await repository.claimXhsQuerySearch(requireJson(ctx)));
+  });
+  router.post('/v1/xhs-query-search/:jobId/complete', async (ctx) => {
+    json(ctx, 200, await repository.completeXhsQuerySearch(ctx.params.jobId, requireJson(ctx)));
+  });
+  router.post('/v1/xhs-query-search/:jobId/block', async (ctx) => {
+    json(ctx, 200, await repository.blockXhsQuerySearch(ctx.params.jobId, requireJson(ctx)));
+  });
+  router.post('/v1/xhs-query-search/:jobId/fail', async (ctx) => {
+    json(ctx, 200, await repository.failXhsQuerySearch(ctx.params.jobId, requireJson(ctx)));
+  });
+  router.post('/v1/xhs-query-search/resume', async (ctx) => {
+    json(ctx, 200, await repository.resumeXhsQuerySearch(requireJson(ctx)));
+  });
+  router.post('/v1/xhs-query-search/retry-failed', async (ctx) => {
+    json(ctx, 200, await repository.retryFailedXhsQuerySearch(requireJson(ctx)));
+  });
   router.put('/v1/executions/:executionId/assets', async (ctx) => {
     const result = await uploadAsset({
       ctx,
@@ -1401,9 +1472,10 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
 
   router.post('/v1/tasks/:taskId/approve-copy', async (ctx) => {
     const access = await assertTaskAccess(ctx, repository);
-    json(ctx, 200, await repository.approveCopy(ctx.params.taskId, requireJson(ctx), {
+    const task = await repository.approveCopy(ctx.params.taskId, requireJson(ctx), {
       actor: access.actor,
-    }));
+    });
+    json(ctx, 200, access.actor.role === 'USER' ? userVisibleTask(task) : task);
   });
   router.post('/v1/tasks/:taskId/review-images', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
@@ -1422,17 +1494,26 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
       ownerOnly: actor.role !== 'ADMIN',
       allowUnassignedCreatorStates: UNASSIGNED_CREATOR_COPY_CONTROL_STATES,
     });
-    json(ctx, 200, await repository.retryTask(ctx.params.taskId, { ...requireJson(ctx), actor }));
+    const task = await repository.retryTask(ctx.params.taskId, { ...requireJson(ctx), actor });
+    json(ctx, 200, actor.role === 'USER' ? userVisibleTask(task) : task);
   });
   router.post('/v1/tasks/:taskId/retry-image', async (ctx) => {
     const actor = requestActor(ctx);
     await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
-    json(ctx, 200, await repository.requeueImageTask(ctx.params.taskId, { actor }));
+    const task = await repository.requeueImageTask(ctx.params.taskId, { actor });
+    json(ctx, 200, actor.role === 'USER' ? userVisibleTask(task) : task);
   });
   router.post('/v1/tasks/:taskId/image-revisions', async (ctx) => {
     const actor = requestActor(ctx);
     await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
-    json(ctx, 201, await repository.reviseImages(ctx.params.taskId, requireJson(ctx), actor.username, actor.role, actor));
+    const task = await repository.reviseImages(
+      ctx.params.taskId,
+      requireJson(ctx),
+      actor.username,
+      actor.role,
+      actor,
+    );
+    json(ctx, 201, actor.role === 'USER' ? userVisibleTask(task) : task);
   });
   router.get('/v1/tasks/:taskId/image-capabilities', async (ctx) => {
     await assertTaskAccess(ctx, repository, { summaryOnly: true, allowCreatorRead: true });
@@ -1444,7 +1525,8 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
       ownerOnly: actor.role !== 'ADMIN',
       allowUnassignedCreatorStates: UNASSIGNED_CREATOR_COPY_CONTROL_STATES,
     });
-    json(ctx, 200, await repository.cancelTask(ctx.params.taskId, { actor }));
+    const task = await repository.cancelTask(ctx.params.taskId, { actor });
+    json(ctx, 200, actor.role === 'USER' ? userVisibleTask(task) : task);
   });
   router.post('/v1/tasks/:taskId/requeue', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
@@ -1505,11 +1587,12 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   });
 
   router.get('/v1/delivery-pool', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    const actor = requestActor(ctx, ['ADMIN']);
     json(ctx, 200, await repository.listDeliveryPool({
       limit: ctx.query.limit,
       offset: ctx.query.offset,
       includeTotal: ctx.query.includeTotal === 'true',
+      queryPackageName: ctx.query.queryPackageName,
     }, { actor }));
   });
   router.put('/v1/human-quality-settings', async (ctx) => {
@@ -1549,19 +1632,19 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     json(ctx, 200, await repository.publishPromptVersion(ctx.params.versionId));
   });
 
-  router.get('/v1/knowledge', async (ctx) => json(ctx, 200, await repository.listKnowledge()));
-  router.get('/v1/knowledge/capabilities', (ctx) => json(ctx, 200, { workbenchVersion: 1 }));
-  router.get('/v1/copy-analysis-prompts', async (ctx) => { requestActor(ctx, ['ADMIN', 'REVIEWER']); json(ctx, 200, await listCopyAnalysisPrompts(repository.pool)); });
-  router.post('/v1/copy-analysis-prompts', async (ctx) => { requestActor(ctx, ['ADMIN', 'REVIEWER']); json(ctx, 201, await saveCopyAnalysisPrompt(repository.pool, requireJson(ctx))); });
-  router.patch('/v1/copy-analysis-prompts/:id', async (ctx) => { requestActor(ctx, ['ADMIN', 'REVIEWER']); json(ctx, 200, await saveCopyAnalysisPrompt(repository.pool, requireJson(ctx), ctx.params.id)); });
-  router.post('/v1/knowledge/labels/import', async (ctx) => { requestActor(ctx, ['ADMIN', 'REVIEWER']); json(ctx, 200, await importCopyKnowledgeLabels(repository.pool, requireJson(ctx).labels)); });
+  router.get('/v1/knowledge', async (ctx) => { requestActor(ctx, ['ADMIN']); json(ctx, 200, await repository.listKnowledge()); });
+  router.get('/v1/knowledge/capabilities', (ctx) => { requestActor(ctx, ['ADMIN']); json(ctx, 200, { workbenchVersion: 1 }); });
+  router.get('/v1/copy-analysis-prompts', async (ctx) => { requestActor(ctx, ['ADMIN']); json(ctx, 200, await listCopyAnalysisPrompts(repository.pool)); });
+  router.post('/v1/copy-analysis-prompts', async (ctx) => { requestActor(ctx, ['ADMIN']); json(ctx, 201, await saveCopyAnalysisPrompt(repository.pool, requireJson(ctx))); });
+  router.patch('/v1/copy-analysis-prompts/:id', async (ctx) => { requestActor(ctx, ['ADMIN']); json(ctx, 200, await saveCopyAnalysisPrompt(repository.pool, requireJson(ctx), ctx.params.id)); });
+  router.post('/v1/knowledge/labels/import', async (ctx) => { requestActor(ctx, ['ADMIN']); json(ctx, 200, await importCopyKnowledgeLabels(repository.pool, requireJson(ctx).labels)); });
   router.post('/v1/copy-knowledge/analyze', async (ctx) => {
-    requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    requestActor(ctx, ['ADMIN']);
     json(ctx, 201, await withPromptExecution({ outputRoot: storageRoot, configuration: { source: 'CENTER_ANALYSIS_TEMPLATE', promptRuntime: null },
       kind: 'COPY_ANALYSIS' }, () => analyzeCopy({ repository, input: requireJson(ctx) })));
   });
   router.post('/v1/visual-knowledge/analyze', async (ctx) => {
-    requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    requestActor(ctx, ['ADMIN']);
     const body = requireJson(ctx);
     if (typeof body.imageBase64 !== 'string' || body.imageBase64.length > 14_000_000) throw new TypeError('图片输入无效');
     const controlPlane = { listPrompts: () => repository.listPrompts(), listSettings: () => repository.listSettings(), listKnowledge: () => repository.listKnowledge() };
@@ -1575,9 +1658,9 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     requestActor(ctx, ['ADMIN']);
     json(ctx, 200, ctx.query.id ? await readPromptExecution(storageRoot, String(ctx.query.id)) : await listPromptExecutions(storageRoot));
   });
-  router.post('/v1/knowledge/:id/retire', async (ctx) => { requestActor(ctx, ['ADMIN', 'REVIEWER']); json(ctx, 200, await retireKnowledge(repository.pool, ctx.params.id)); });
+  router.post('/v1/knowledge/:id/retire', async (ctx) => { requestActor(ctx, ['ADMIN']); json(ctx, 200, await retireKnowledge(repository.pool, ctx.params.id)); });
   router.post('/v1/knowledge/versions', async (ctx) => {
-    requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    requestActor(ctx, ['ADMIN']);
     const body = requireJson(ctx);
     json(ctx, 201, await repository.createKnowledgeVersion({
       itemId: body.itemId ?? null,
@@ -1589,7 +1672,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     }));
   });
   router.put('/v1/knowledge-versions/:versionId/asset', async (ctx) => {
-    requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    requestActor(ctx, ['ADMIN']);
     json(ctx, 201, await uploadKnowledgeAsset({
       ctx,
       repository,
@@ -1598,6 +1681,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     }));
   });
   router.get('/v1/knowledge-versions/:versionId/asset', async (ctx) => {
+    requestActor(ctx, ['ADMIN']);
     const asset = await repository.getKnowledgeAsset(ctx.params.versionId);
     if (!asset) throw new ControlPlaneNotFoundError('knowledge asset not found');
     const path = safeStoragePath(storageRoot, relative(storageRoot, asset.storagePath));
@@ -1606,7 +1690,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     ctx.body = await readFile(path);
   });
   router.post('/v1/knowledge-versions/:versionId/publish', async (ctx) => {
-    requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    requestActor(ctx, ['ADMIN']);
     json(ctx, 200, await repository.publishKnowledgeVersion(ctx.params.versionId));
   });
   return async () => {
@@ -1615,7 +1699,14 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   };
 }
 
-export function createControlPlaneApp({ repository, storageRoot, enforceUserAuth = true, analyzeCopy = analyzeAndSaveExcellentCopy, analyzeVisual = analyzeVisualImage }) {
+export function createControlPlaneApp({
+  repository,
+  storageRoot,
+  enforceUserAuth = true,
+  xhsSearchMachineToken = process.env.XHS_SEARCH_MACHINE_TOKEN,
+  analyzeCopy = analyzeAndSaveExcellentCopy,
+  analyzeVisual = analyzeVisualImage,
+}) {
   if (!repository) throw new TypeError('repository is required');
   const resolvedStorageRoot = resolve(storageRoot);
   const app = new Koa();
@@ -1708,7 +1799,19 @@ export function createControlPlaneApp({ repository, storageRoot, enforceUserAuth
   );
   app.context.disposeControlPlaneResources = disposeRouteResources;
   app.use(async (ctx, next) => {
-    const machineRoute = ctx.path.startsWith('/v1/executions/') || (ctx.path === '/v1/nodes' && ctx.method !== 'GET');
+    const xhsSearchMachineRoute = ctx.path.startsWith('/v1/xhs-query-search/');
+    if (xhsSearchMachineRoute && enforceUserAuth) {
+      const configuredToken = validXhsSearchMachineToken(xhsSearchMachineToken);
+      if (!configuredToken) {
+        throw new HttpError(503, 'XHS_SEARCH_NOT_CONFIGURED', '小红书搜索执行机密钥尚未配置');
+      }
+      if (!machineTokenMatches(configuredToken, ctx.get('X-XHS-Search-Token'))) {
+        throw new HttpError(401, 'INVALID_XHS_SEARCH_TOKEN', '小红书搜索执行机认证失败');
+      }
+    }
+    const machineRoute = ctx.path.startsWith('/v1/executions/')
+      || xhsSearchMachineRoute
+      || (ctx.path === '/v1/nodes' && ctx.method !== 'GET');
     if (machineRoute && ctx.state.actor && ctx.state.actor.role !== 'ADMIN') {
       throw new HttpError(403, 'FORBIDDEN', 'user sessions cannot use executor machine routes');
     }

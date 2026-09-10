@@ -4,6 +4,7 @@ import test from 'node:test';
 import { withKnowledgeStore, listAllKnowledge } from '../src/admin/knowledge-runtime.mjs';
 import { createSessionToken } from '../src/admin/auth.mjs';
 import { evaluateAdminProxyRequest } from '../src/admin/proxy-policy.mjs';
+import { isKnowledgeControlPlaneRoute } from '../src/control-plane/proxy-access.mjs';
 
 function remoteRuntime(t, fetchImpl) {
   const previous = process.env.CONTROL_PLANE_URL;
@@ -19,8 +20,8 @@ const actor = (username, role, credentialVersion = 3) => ({
   subject: 'user', userId: 2, username, roles: [role], credentialVersion,
 });
 
-test('knowledge reads and writes keep each concurrent user identity, role and credential version', async (t) => {
-  const users = [actor('manager', 'ADMIN', 5), actor('reviewer', 'REVIEWER', 8)];
+test('knowledge reads and writes keep each concurrent administrator identity and credential version', async (t) => {
+  const users = [actor('manager-a', 'ADMIN', 5), actor('manager-b', 'ADMIN', 8)];
   const calls = [];
   remoteRuntime(t, async (url, init) => {
     const headers = new Headers(init.headers);
@@ -72,10 +73,11 @@ test('knowledge reads and writes keep each concurrent user identity, role and cr
   }
 });
 
-test('anonymous, ordinary and legacy reviewer accounts cannot send knowledge management requests', async (t) => {
+test('anonymous, ordinary and reviewer accounts cannot send knowledge management requests', async (t) => {
   remoteRuntime(t, () => { assert.fail('unauthorized requests must not reach the control plane'); });
   for (const [session, status] of [
-    [null, 401], [actor('reader', 'USER'), 403], [actor('legacy', 'COPY_REVIEWER'), 403],
+    [null, 401], [actor('reader', 'USER'), 403], [actor('reviewer', 'REVIEWER'), 403],
+    [actor('legacy', 'COPY_REVIEWER'), 403],
     [{ subject: 'user', roles: ['ADMIN'], credentialVersion: 3 }, 403],
   ]) {
     await assert.rejects(withKnowledgeStore((store) => store.listCopyAnalysisPrompts(), session), { status });
@@ -86,20 +88,47 @@ test('central credential expiry remains a 401 response so the knowledge page can
   remoteRuntime(t, async () => Response.json({
     error: { code: 'SESSION_STALE', message: '账号状态已变化，请重新登录' },
   }, { status: 401 }));
-  await assert.rejects(withKnowledgeStore((store) => store.listCopyAnalysisPrompts(), actor('reviewer', 'REVIEWER')), {
+  await assert.rejects(withKnowledgeStore((store) => store.listCopyAnalysisPrompts(), actor('manager', 'ADMIN')), {
     status: 401, code: 'SESSION_STALE', message: '账号状态已变化，请重新登录',
   });
 });
 
-test('knowledge visual analysis is available to reviewers while ordinary users remain restricted', () => {
+test('knowledge pages and APIs are available only to administrators', () => {
   const environment = { XHS_SESSION_SECRET: 'knowledge-auth-test-secret-at-least-32-characters' };
-  for (const [role, expected] of [['ADMIN', 'next'], ['REVIEWER', 'next'], ['USER', 'forbidden']]) {
+  for (const [role, expected] of [['ADMIN', 'next'], ['REVIEWER', 'forbidden'], ['USER', 'forbidden']]) {
     const token = createSessionToken(environment.XHS_SESSION_SECRET, { actor: actor('tester', role) });
-    for (const path of ['/knowledge', '/api/visual-analyses', '/api/knowledge-items', '/api/copy-analysis-prompts']) {
+    for (const path of [
+      '/knowledge', '/api/visual-analyses', '/api/knowledge-items', '/api/knowledge-assets/1',
+      '/api/copy-analysis-prompts', '/api/copy-knowledge-items', '/api/copy-analyses',
+    ]) {
       const request = new Request(`http://127.0.0.1:3001${path}`, {
         headers: { cookie: `xhs_admin_session=${token}` },
       });
       assert.deepEqual(evaluateAdminProxyRequest(request, environment), { type: expected });
     }
   }
+});
+
+test('the generic control-plane proxy recognizes every knowledge management route', () => {
+  for (const path of [
+    '/v1/knowledge', '/v1/knowledge/labels/import', '/v1/knowledge-versions/1/asset',
+    '/v1/copy-analysis-prompts', '/v1/copy-knowledge/analyze', '/v1/visual-knowledge/analyze',
+  ]) assert.equal(isKnowledgeControlPlaneRoute(path), true, path);
+  for (const path of ['/v1/knowledgeable', '/v1/copy-qa/items', '/v1/tasks']) {
+    assert.equal(isKnowledgeControlPlaneRoute(path), false, path);
+  }
+});
+
+test('reviewer navigation and login return paths exclude the knowledge workbench', async () => {
+  const [navigation, controlPlaneProxy, returnPath] = await Promise.all([
+    import('node:fs/promises').then(({ readFile }) => readFile(new URL('../app/components/side-nav.tsx', import.meta.url), 'utf8')),
+    import('node:fs/promises').then(({ readFile }) => readFile(new URL('../app/api/control-plane/[...path]/route.ts', import.meta.url), 'utf8')),
+    import('../app/login/return-path.ts'),
+  ]);
+  assert.match(navigation, /role === 'REVIEWER'[\s\S]*?\['\/workbench', '\/copy-qa'\]/u);
+  assert.doesNotMatch(navigation, /role === 'REVIEWER'[\s\S]*?\['\/workbench', '\/knowledge', '\/copy-qa'\]/u);
+  assert.match(controlPlaneProxy, /role === 'REVIEWER' && isKnowledgeControlPlaneRoute\(routePath\)/u);
+  assert.equal(returnPath.resolveLoginReturnPath({
+    requestedPath: '/knowledge', homePath: '/workbench/personal', role: 'REVIEWER', mustChangePassword: false,
+  }), '/workbench/personal');
 });

@@ -77,6 +77,7 @@ import {
 type DistributedTask = {
   id: number;
   query: string;
+  sourceQueryPackageName?: string | null;
   state: TaskState;
   skipCopyReview: boolean;
   cancelledFromState?: TaskState | null;
@@ -140,11 +141,51 @@ type BatchPermanentDeleteResult = {
   cleanupPending: number[];
 };
 
+type DuplicateQueryTaskSummary = {
+  id: number;
+  query: string;
+  state: TaskState;
+  createdAt: string;
+  updatedAt: string;
+  createdByUserId: string | null;
+  assignedToUserId: string | null;
+  sourceQueryPackageName: string | null;
+};
+
+type DuplicateQuerySkippedTask = DuplicateQueryTaskSummary & {
+  reasonCode: 'DIFFERENT_BUSINESS_CONTEXT' | 'ALREADY_CANCELLED' | 'NOT_PRISTINE_COPY_QUEUED' | string;
+};
+
+type DuplicateQueryDiscardPreview = {
+  version: 1;
+  representativeTaskIds: number[];
+  previewFingerprint: string;
+  groups: Array<{
+    query: string;
+    keeper: DuplicateQueryTaskSummary | null;
+    discardable: DuplicateQueryTaskSummary[];
+    skipped: DuplicateQuerySkippedTask[];
+  }>;
+  summary: {
+    queryGroupCount: number;
+    discardableCount: number;
+    skippedCount: number;
+  };
+};
+
+type DuplicateQueryDiscardResult = {
+  requestId: string;
+  discardedTaskIds: number[];
+  keeperTaskIds: number[];
+  discardedCount: number;
+  skippedCount: number;
+};
+
 const STATE_LABELS: Record<TaskState, string> = {
   COPY_QUEUED: '待文案执行',
   COPY_RUNNING: '文案生成中',
   COPY_REVIEW_PENDING: '待文案审核',
-  COPY_QC_PENDING: '待文案抽检',
+  COPY_QC_PENDING: '待文案质检',
   COPY_FAILED: '文案生成失败',
   IMAGE_QUEUED: '待生图',
   IMAGE_RUNNING: '生图中',
@@ -181,7 +222,10 @@ const STAGE_LABELS: Record<string, string> = {
   COPY_QUEUED: '待文案执行',
   COPY_RUNNING: '文案生成中',
   COPY_REVIEW_PENDING: '待文案审核',
-  COPY_QC_PENDING: '待文案抽检',
+  COPY_QC_PENDING: '待文案质检',
+  QC_SAMPLE_PENDING: '待文案抽检',
+  QC_NON_SAMPLE_HELD: '等待批次抽检结果',
+  QC_MANDATORY_RECHECK: '待强制复检',
   COPY_FAILED: '文案生成失败',
   IMAGE_QUEUED: '待生图',
   IMAGE_RUNNING: '生图中',
@@ -192,10 +236,23 @@ const STAGE_LABELS: Record<string, string> = {
   CANCELLED: '已废弃',
 };
 
-function stageLabel(task: DistributedTask) {
-  const label = task.currentStage ? STAGE_LABELS[task.currentStage] ?? STATE_LABELS[task.state] : STATE_LABELS[task.state];
+function visibleStateLabel(state: TaskState, role: string) {
+  return role === 'USER' && state === 'REVIEWED' ? '已完成' : STATE_LABELS[state];
+}
+
+function stageLabel(task: DistributedTask, role: string) {
+  const internalLabel = task.currentStage
+    ? STAGE_LABELS[task.currentStage] ?? STATE_LABELS[task.state]
+    : STATE_LABELS[task.state];
+  const label = role === 'USER' && (task.currentStage === 'REVIEWED' || task.state === 'REVIEWED')
+    ? '已完成'
+    : internalLabel;
   return task.state.endsWith('_FAILED') && task.currentStage && !['FAILED', task.state].includes(task.currentStage)
     ? `失败阶段：${label}` : label;
+}
+
+function taskStateLabel(task: DistributedTask, role: string) {
+  return task.currentStage === 'QC_MANDATORY_RECHECK' ? '待强制复检' : visibleStateLabel(task.state, role);
 }
 
 function taskOwnerId(task: Pick<DistributedTask, 'assignedToUserId' | 'createdByUserId'>) {
@@ -233,6 +290,12 @@ function assignmentLabel(task: DistributedTask) {
 }
 
 function taskProgressMessage(task: DistributedTask) {
+  if (task.currentStage === 'QC_MANDATORY_RECHECK') {
+    return '返工稿已提交强制复检；复检通过后才进入待生图队列';
+  }
+  if (task.progressMessage === '图文终审要求文案返工，修改后将强制重新质检') {
+    return '图文终审已退回文案；实际修改后须提交强制复检，复检通过后才进入待生图队列';
+  }
   if (task.state === 'COPY_QUEUED' && taskOwnerId(task) === null
     && ['等待分配负责人', '等待负责人分配'].includes(task.progressMessage)) {
     return '等待文案执行机领取';
@@ -256,6 +319,107 @@ function canRequeueImages(task: DistributedTask) {
 const STALE_AFTER_MS = 30 * 60_000;
 function apiPath(path: string) {
   return `/api/control-plane${path}`;
+}
+
+class DuplicateQueryCleanupRequestError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'DuplicateQueryCleanupRequestError';
+    this.status = status;
+  }
+}
+
+async function duplicateQueryCleanupRequest<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(apiPath(path), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => null) as {
+    data?: unknown;
+    error?: { message?: unknown };
+  } | null;
+  if (!response.ok) {
+    if (response.status === 401 && typeof window !== 'undefined' && window.location.pathname !== '/login') {
+      const next = `${window.location.pathname}${window.location.search}`;
+      window.location.assign(`/login?next=${encodeURIComponent(next)}`);
+      throw new DuplicateQueryCleanupRequestError(401, '登录已过期，请重新登录');
+    }
+    const responseMessage = typeof payload?.error?.message === 'string'
+      ? payload.error.message
+      : `请求失败（${response.status}）`;
+    throw new DuplicateQueryCleanupRequestError(response.status, responseMessage);
+  }
+  return payload?.data as T;
+}
+
+function isPositiveTaskId(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
+}
+
+function sameTaskIds(left: number[], right: number[]) {
+  if (left.length !== right.length) return false;
+  const leftSorted = left.toSorted((first, second) => first - second);
+  const rightSorted = right.toSorted((first, second) => first - second);
+  return leftSorted.every((id, index) => id === rightSorted[index]);
+}
+
+function isDuplicateQueryTaskSummary(value: unknown): value is DuplicateQueryTaskSummary {
+  if (!value || typeof value !== 'object') return false;
+  const task = value as Record<string, unknown>;
+  return isPositiveTaskId(task.id)
+    && typeof task.query === 'string'
+    && typeof task.state === 'string'
+    && Object.hasOwn(STATE_LABELS, task.state)
+    && typeof task.createdAt === 'string'
+    && typeof task.updatedAt === 'string'
+    && (task.createdByUserId === null || typeof task.createdByUserId === 'string')
+    && (task.assignedToUserId === null || typeof task.assignedToUserId === 'string')
+    && (task.sourceQueryPackageName === null || typeof task.sourceQueryPackageName === 'string');
+}
+
+function isDuplicateQueryDiscardPreview(value: unknown): value is DuplicateQueryDiscardPreview {
+  if (!value || typeof value !== 'object') return false;
+  const preview = value as Record<string, unknown>;
+  if (preview.version !== 1
+    || !Array.isArray(preview.representativeTaskIds)
+    || !preview.representativeTaskIds.every(isPositiveTaskId)
+    || new Set(preview.representativeTaskIds).size !== preview.representativeTaskIds.length
+    || typeof preview.previewFingerprint !== 'string'
+    || !/^[0-9a-f]{64}$/u.test(preview.previewFingerprint)
+    || !Array.isArray(preview.groups)
+    || !preview.summary || typeof preview.summary !== 'object') return false;
+  const groups = preview.groups as Array<Record<string, unknown>>;
+  if (!groups.every((group) => typeof group.query === 'string'
+    && (group.keeper === null || isDuplicateQueryTaskSummary(group.keeper))
+    && Array.isArray(group.discardable)
+    && group.discardable.every(isDuplicateQueryTaskSummary)
+    && (group.discardable.length === 0 || group.keeper !== null)
+    && Array.isArray(group.skipped)
+    && group.skipped.every((task) => isDuplicateQueryTaskSummary(task)
+      && typeof (task as DuplicateQuerySkippedTask).reasonCode === 'string'))) return false;
+  const summary = preview.summary as Record<string, unknown>;
+  const discardableCount = groups.reduce((total, group) => total + (group.discardable as unknown[]).length, 0);
+  const skippedCount = groups.reduce((total, group) => total + (group.skipped as unknown[]).length, 0);
+  return summary.queryGroupCount === groups.length
+    && summary.discardableCount === discardableCount
+    && summary.skippedCount === skippedCount;
+}
+
+function isDuplicateQueryDiscardResult(value: unknown): value is DuplicateQueryDiscardResult {
+  if (!value || typeof value !== 'object') return false;
+  const result = value as Record<string, unknown>;
+  return typeof result.requestId === 'string'
+    && Array.isArray(result.discardedTaskIds)
+    && result.discardedTaskIds.every(isPositiveTaskId)
+    && Array.isArray(result.keeperTaskIds)
+    && result.keeperTaskIds.every(isPositiveTaskId)
+    && Number.isSafeInteger(result.discardedCount)
+    && Number(result.discardedCount) === result.discardedTaskIds.length
+    && Number.isSafeInteger(result.skippedCount)
+    && Number(result.skippedCount) >= 0;
 }
 
 function isStale(task: DistributedTask) {
@@ -408,6 +572,136 @@ function PermanentDeleteDialog({
   </AlertDialogPrimitive.Root>;
 }
 
+const DUPLICATE_QUERY_SKIP_LABELS: Record<string, string> = {
+  DIFFERENT_BUSINESS_CONTEXT: '业务设置不同，不能自动判断为同一任务',
+  ALREADY_CANCELLED: '已经废弃，无需重复处理',
+  NOT_PRISTINE_COPY_QUEUED: '已经开始处理或留有成果，为避免误伤已跳过',
+};
+
+function duplicateQuerySkipLabel(reasonCode: string) {
+  return DUPLICATE_QUERY_SKIP_LABELS[reasonCode] ?? '不符合安全废弃条件，已跳过';
+}
+
+function DuplicateQueryDiscardDialog({
+  preview,
+  error,
+  previewing,
+  discarding,
+  requestReady,
+  onClose,
+  onConfirm,
+  onRepreview,
+}: {
+  preview: DuplicateQueryDiscardPreview | null;
+  error: string;
+  previewing: boolean;
+  discarding: boolean;
+  requestReady: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+  onRepreview: () => void;
+}) {
+  const busy = previewing || discarding;
+
+  return <Dialog open={preview !== null} onOpenChange={(open) => { if (!open && !busy) onClose(); }}>
+    <DialogContent className="duplicate-query-dialog" showCloseButton={!busy}>
+      {preview && <>
+        <header className="duplicate-query-dialog-header">
+          <span className="duplicate-query-dialog-icon" aria-hidden="true"><Eye size={22} /></span>
+          <div>
+            <span className="section-kicker">安全去重</span>
+            <DialogTitle>预览重复 Query</DialogTitle>
+            <DialogDescription>
+              这里只预览所选 Query 的完整重复组。确认后只废弃尚未开始、没有成果且业务设置一致的排队任务。
+            </DialogDescription>
+          </div>
+        </header>
+
+        <div className="duplicate-query-dialog-body">
+          <section className="duplicate-query-summary" aria-label="重复 Query 处理汇总">
+            <div><strong>{preview.summary.queryGroupCount}</strong><span>组 Query</span></div>
+            <div><strong>{preview.summary.discardableCount}</strong><span>可安全废弃</span></div>
+            <div><strong>{preview.summary.skippedCount}</strong><span>跳过保护</span></div>
+          </section>
+
+          {preview.summary.discardableCount === 0 && <div className="duplicate-query-empty" role="status">
+            <ShieldAlert aria-hidden="true" size={18} />
+            <div>
+              <strong>没有可安全废弃的重复任务</strong>
+              <p>本次不会修改任何任务。请查看下方保留项与跳过原因；若任务刚刚变化，可重新预览。</p>
+            </div>
+          </div>}
+
+          {error && <div className="notice error duplicate-query-error" role="alert">
+            <AlertTriangle aria-hidden="true" size={16} /><span>{error}</span>
+          </div>}
+
+          <div className="duplicate-query-groups">
+            {preview.groups.length === 0
+              ? <p className="duplicate-query-no-groups">所选 Query 当前没有重复项，或重复项已经全部处理。</p>
+              : preview.groups.map((group, groupIndex) => <section className="duplicate-query-group" key={`${group.query}-${group.keeper?.id ?? 'none'}-${groupIndex}`}>
+                <header>
+                  <div>
+                    <span>Query</span>
+                    <strong title={group.query}>{group.query || '未命名 Query'}</strong>
+                  </div>
+                  <small>可废弃 {group.discardable.length} 条 · 跳过 {group.skipped.length} 条</small>
+                </header>
+
+                <div className="duplicate-query-keeper">
+                  <span>保留</span>
+                  {group.keeper
+                    ? <div>
+                      <strong>#{group.keeper.id}</strong>
+                      <span>{STATE_LABELS[group.keeper.state]}</span>
+                      <small>创建于 {timeLabel(group.keeper.createdAt)} · 词包：{group.keeper.sourceQueryPackageName || '未归属'}</small>
+                    </div>
+                    : <p>这一组没有仍需保留的有效任务。</p>}
+                </div>
+
+                <div className="duplicate-query-group-list">
+                  <strong>确认后废弃 <span>{group.discardable.length}</span></strong>
+                  {group.discardable.length === 0
+                    ? <p>这一组没有符合安全条件的待废弃任务。</p>
+                    : <ul>{group.discardable.map((task) => <li key={task.id}>
+                      <div><strong>#{task.id}</strong><span>{STATE_LABELS[task.state]}</span></div>
+                      <small>创建于 {timeLabel(task.createdAt)} · 词包：{task.sourceQueryPackageName || '未归属'}</small>
+                    </li>)}</ul>}
+                </div>
+
+                <div className="duplicate-query-group-list duplicate-query-skipped">
+                  <strong>为安全起见跳过 <span>{group.skipped.length}</span></strong>
+                  {group.skipped.length === 0
+                    ? <p>这一组没有需要额外保护的任务。</p>
+                    : <ul>{group.skipped.map((task) => <li key={task.id}>
+                      <div><strong>#{task.id}</strong><span>{STATE_LABELS[task.state]}</span></div>
+                      <small>{duplicateQuerySkipLabel(task.reasonCode)}</small>
+                    </li>)}</ul>}
+                </div>
+              </section>)}
+          </div>
+        </div>
+
+        <footer className="duplicate-query-dialog-footer">
+          <span><ShieldAlert aria-hidden="true" size={15} />不会永久删除；任务只会标记为已废弃</span>
+          <div>
+            <Button unstyled className="button" type="button" disabled={busy} onClick={onClose}>关闭</Button>
+            {error && <Button unstyled className="button" type="button" disabled={busy} onClick={onRepreview}>
+              {previewing ? <><LoaderCircle className="animate-spin" size={15} />重新预览中…</> : '重新预览'}
+            </Button>}
+            <Button unstyled className="button danger" type="button"
+              disabled={busy || !requestReady || preview.summary.discardableCount === 0} onClick={onConfirm}>
+              {discarding
+                ? <><LoaderCircle className="animate-spin" size={15} />正在废弃…</>
+                : <><Trash2 size={15} />确认废弃 {preview.summary.discardableCount} 条</>}
+            </Button>
+          </div>
+        </footer>
+      </>}
+    </DialogContent>
+  </Dialog>;
+}
+
 export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, role, viewKey: activeView, initialListState = DEFAULT_WORKBENCH_LIST_STATE }: {
   nodeId: string; creatorUserId: string; creatorAccountId: number; role: string; viewKey: ViewKey; initialListState?: WorkbenchListState;
 }) {
@@ -415,6 +709,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   const pathname = usePathname();
   const activeDefinition = WORKBENCH_VIEWS.find((view) => view.key === activeView)!;
   const isAllJobs = activeView === 'ALL_JOBS';
+  const canUseQueryPackageFilter = role !== 'USER';
   const executorColumnLabel = activeView === 'IMAGE_WORK' ? '生图执行机' : '文案执行机';
   const confirm = useConfirmDialog();
   const [tasks, setTasks] = useState<DistributedTask[]>([]);
@@ -425,6 +720,12 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   const [resultOffset, setResultOffset] = useState(0);
   const [searchInput, setSearchInput] = useState(initialListState.query);
   const [searchKeyword, setSearchKeyword] = useState(initialListState.query);
+  const [queryPackageInput, setQueryPackageInput] = useState(
+    canUseQueryPackageFilter ? initialListState.queryPackageName : '',
+  );
+  const [queryPackageName, setQueryPackageName] = useState(
+    canUseQueryPackageFilter ? initialListState.queryPackageName : '',
+  );
   const [sort, setSort] = useState<TaskSort>(initialListState.sort);
   const [deduplicateQuery, setDeduplicateQuery] = useState(initialListState.deduplicateQuery);
   const [creatorRoleFilter, setCreatorRoleFilter] = useState(initialListState.createdByRole);
@@ -453,6 +754,11 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   const [selectedTaskIds, setSelectedTaskIds] = useState<number[]>([]);
   const [assignmentTasks, setAssignmentTasks] = useState<DistributedTask[]>([]);
   const [batchAction, setBatchAction] = useState<'RETRY' | 'CANCEL_QUEUE' | 'EXPORT' | 'PERMANENT_DELETE' | null>(null);
+  const [duplicateQueryPreview, setDuplicateQueryPreview] = useState<DuplicateQueryDiscardPreview | null>(null);
+  const [duplicateQueryRequestId, setDuplicateQueryRequestId] = useState<string | null>(null);
+  const [duplicateQueryError, setDuplicateQueryError] = useState('');
+  const [duplicateQueryPreviewing, setDuplicateQueryPreviewing] = useState(false);
+  const [duplicateQueryDiscarding, setDuplicateQueryDiscarding] = useState(false);
   const [savedViews, setSavedViews] = useState<SavedTaskView[]>([]);
   const [savedViewId, setSavedViewId] = useState(DEFAULT_TASK_VIEW_VALUE);
   const [saveViewOpen, setSaveViewOpen] = useState(false);
@@ -469,9 +775,11 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [permanentDeletionLock] = useState(createActionLock);
+  const [duplicateQueryCleanupLock] = useState(createActionLock);
   const legacyStateFilterMode = useRef(false);
   const copyReviewBypassAllowed = role === 'ADMIN';
   const effectiveSkipCopyReview = copyReviewBypassAllowed && skipCopyReview;
+  const duplicateQueryCleanupBusy = duplicateQueryPreviewing || duplicateQueryDiscarding;
   const personalStatistics = useStatistics(
     { scope: 'personal', period: personalStatisticsPeriod },
     activeView === 'PERSONAL',
@@ -516,6 +824,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       const searchedTaskId = taskIdSearch(searchKeyword);
       if (searchedTaskId) search.set('taskId', String(searchedTaskId));
       else if (searchKeyword) search.set('query', searchKeyword);
+      if (canUseQueryPackageFilter && queryPackageName) search.set('queryPackageName', queryPackageName);
       if (deduplicateQuery) search.set('deduplicateQuery', 'true');
       if (role === 'ADMIN' && isAllJobs && attentionFilter !== 'NONE') search.set('attention', attentionFilter);
       const { sortBy, sortOrder } = taskSortParams(sort);
@@ -529,6 +838,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         state: stateFilter === 'ALL' ? undefined : stateFilter,
         taskId: searchedTaskId ?? undefined,
         query: searchedTaskId ? undefined : searchKeyword,
+        queryPackageName: canUseQueryPackageFilter ? queryPackageName || undefined : undefined,
         deduplicateQuery,
         attention: attentionFilter === 'NONE' ? undefined : attentionFilter,
         sortBy,
@@ -558,11 +868,15 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         const legacyTasks = compatibilityTasks
           ?? await request<DistributedTask[]>(apiPath(`/v1/tasks?${legacySearch}`));
         const keyword = searchKeyword.toLocaleLowerCase('zh-CN');
+        const packageKeyword = canUseQueryPackageFilter
+          ? queryPackageName.toLocaleLowerCase('zh-CN')
+          : '';
         const filtered = legacyTasks.filter((task) => (personalStates
           ? isPersonalTask(task, creatorUserId, creatorAccountId) && personalStates.includes(task.state)
           : matchesWorkbenchView(task, view, creatorUserId, creatorAccountId))
           && matchesAttention(task, attentionFilter)
-          && (!keyword || (searchedTaskId ? task.id === searchedTaskId : task.query.toLocaleLowerCase('zh-CN').includes(keyword))))
+          && (!keyword || (searchedTaskId ? task.id === searchedTaskId : task.query.toLocaleLowerCase('zh-CN').includes(keyword)))
+          && (!packageKeyword || (task.sourceQueryPackageName ?? '').toLocaleLowerCase('zh-CN').includes(packageKeyword)))
           .sort((left, right) => compareTasks(left, right, sort));
         const uniqueTasks = deduplicateQuery ? filtered.filter((task, index, all) => {
           const identity = task.query.trim().replace(/\s+/gu, ' ').toLocaleLowerCase('zh-CN');
@@ -603,7 +917,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         setRefreshing(false);
       }
     }
-  }, [activeDefinition, creatorUserId, creatorAccountId, page, pageSize, isAllJobs, creatorFilter, creatorRoleFilter, stateFilter, searchKeyword, deduplicateQuery, sort, attentionFilter, role]);
+  }, [activeDefinition, creatorUserId, creatorAccountId, page, pageSize, isAllJobs, creatorFilter, creatorRoleFilter, stateFilter, searchKeyword, queryPackageName, deduplicateQuery, sort, attentionFilter, role, canUseQueryPackageFilter]);
 
   useEffect(() => {
     if (leavingWorkbenchView.current) return;
@@ -611,6 +925,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       page,
       pageSize: pageSize as WorkbenchListState['pageSize'],
       query: searchKeyword,
+      queryPackageName: canUseQueryPackageFilter ? queryPackageName : '',
       sort,
       deduplicateQuery,
       createdByUserId: isAllJobs ? creatorFilter?.username ?? '' : '',
@@ -625,7 +940,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       router.replace(href, { scroll: false });
     }
   }, [activeView, attentionFilter, creatorFilter, creatorRoleFilter, deduplicateQuery, isAllJobs,
-    page, pageSize, pathname, role, router, searchKeyword, selectedTaskId, sort, stateFilter]);
+    page, pageSize, pathname, queryPackageName, role, router, searchKeyword, selectedTaskId, sort, stateFilter,
+    canUseQueryPackageFilter]);
 
   const loadSavedViews = useCallback(async () => {
     if (role !== 'ADMIN') return;
@@ -686,12 +1002,19 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   const availableSavedViews = savedViews.filter((view) => view.viewKey === activeView);
   const allVisibleSelected = visibleTasks.length > 0 && visibleTasks.every((task) => selectedTaskIds.includes(task.id));
 
-  const hasFilters = Boolean(searchInput || searchKeyword || deduplicateQuery || creatorFilter || creatorRoleFilter !== 'ALL'
+  const hasFilters = Boolean(searchInput || searchKeyword
+    || canUseQueryPackageFilter && (queryPackageInput || queryPackageName)
+    || deduplicateQuery || creatorFilter || creatorRoleFilter !== 'ALL'
     || stateFilter !== 'ALL' || attentionFilter !== 'NONE');
+  const searchScopeLabel = [
+    searchKeyword ? `Query“${searchKeyword}”` : '',
+    canUseQueryPackageFilter && queryPackageName ? `词包“${queryPackageName}”` : '',
+  ].filter(Boolean).join('、');
 
   function currentSavedFilters(): SavedTaskView['filters'] {
     return {
       query: searchKeyword,
+      queryPackageName: canUseQueryPackageFilter ? queryPackageName : '',
       sort,
       deduplicateQuery,
       createdByUserId: isAllJobs ? creatorFilter?.username ?? '' : '',
@@ -706,6 +1029,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   function applyDefaultView() {
     setSearchInput(DEFAULT_WORKBENCH_LIST_STATE.query);
     setSearchKeyword(DEFAULT_WORKBENCH_LIST_STATE.query);
+    setQueryPackageInput(DEFAULT_WORKBENCH_LIST_STATE.queryPackageName);
+    setQueryPackageName(DEFAULT_WORKBENCH_LIST_STATE.queryPackageName);
     setSort(DEFAULT_WORKBENCH_LIST_STATE.sort);
     setDeduplicateQuery(DEFAULT_WORKBENCH_LIST_STATE.deduplicateQuery);
     setCreatorRoleFilter(DEFAULT_WORKBENCH_LIST_STATE.createdByRole);
@@ -723,6 +1048,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   function applySavedView(view: SavedTaskView) {
     setSearchInput(view.filters.query);
     setSearchKeyword(view.filters.query);
+    setQueryPackageInput(view.filters.queryPackageName ?? '');
+    setQueryPackageName(view.filters.queryPackageName ?? '');
     setSort(view.filters.sort);
     setDeduplicateQuery(view.filters.deduplicateQuery);
     setCreatorRoleFilter(isAllJobs ? view.filters.createdByRole : 'ALL');
@@ -800,6 +1127,95 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       : current.filter((id) => id !== taskId));
   }
 
+  function closeDuplicateQueryPreview() {
+    if (duplicateQueryCleanupBusy || duplicateQueryCleanupLock.isLocked()) return;
+    setDuplicateQueryPreview(null);
+    setDuplicateQueryRequestId(null);
+    setDuplicateQueryError('');
+  }
+
+  async function previewDuplicateQueries(representativeTaskIds = selectedTasks.map((task) => task.id)) {
+    if (role !== 'ADMIN' || activeView !== 'ALL_JOBS' || !deduplicateQuery
+      || representativeTaskIds.length === 0 || !duplicateQueryCleanupLock.acquire()) return;
+    const replacingPreview = duplicateQueryPreview !== null;
+    setDuplicateQueryPreviewing(true);
+    setDuplicateQueryRequestId(null);
+    setDuplicateQueryError('');
+    if (!replacingPreview) {
+      setMessage('');
+      setError('');
+    }
+    try {
+      const nextPreview = await duplicateQueryCleanupRequest<unknown>(
+        '/v1/tasks/duplicate-query-discard-preview',
+        { representativeTaskIds },
+      );
+      if (!isDuplicateQueryDiscardPreview(nextPreview)
+        || !sameTaskIds(nextPreview.representativeTaskIds, representativeTaskIds)) {
+        throw new Error('预览内容不完整，请刷新列表后重试');
+      }
+      setDuplicateQueryPreview(nextPreview);
+      setDuplicateQueryRequestId(globalThis.crypto.randomUUID());
+      setDuplicateQueryError('');
+    } catch (caught) {
+      const detail = caught instanceof Error ? caught.message : '暂时无法读取重复项';
+      if (replacingPreview) {
+        setDuplicateQueryError(`重新预览失败：${detail}。原预览仍保留，请稍后再次重新预览。`);
+      } else {
+        setError(`重复项预览失败：${detail}`);
+      }
+    } finally {
+      duplicateQueryCleanupLock.release();
+      setDuplicateQueryPreviewing(false);
+    }
+  }
+
+  async function discardDuplicateQueries() {
+    const preview = duplicateQueryPreview;
+    const requestId = duplicateQueryRequestId;
+    if (!preview || !requestId || preview.summary.discardableCount === 0
+      || duplicateQueryDiscarding || !duplicateQueryCleanupLock.acquire()) return;
+    setDuplicateQueryDiscarding(true);
+    setDuplicateQueryError('');
+    try {
+      const result = await duplicateQueryCleanupRequest<unknown>('/v1/tasks/duplicate-query-discard', {
+        requestId,
+        representativeTaskIds: preview.representativeTaskIds,
+        previewFingerprint: preview.previewFingerprint,
+        confirmedDiscardCount: preview.summary.discardableCount,
+      });
+      const expectedDiscardedTaskIds = preview.groups.flatMap((group) => group.discardable.map((task) => task.id));
+      const expectedKeeperTaskIds = [...new Set(preview.groups
+        .filter((group) => group.discardable.length > 0 && group.keeper !== null)
+        .map((group) => group.keeper!.id))];
+      if (!isDuplicateQueryDiscardResult(result)
+        || result.requestId !== requestId
+        || !sameTaskIds(result.discardedTaskIds, expectedDiscardedTaskIds)
+        || !sameTaskIds(result.keeperTaskIds, expectedKeeperTaskIds)
+        || result.skippedCount !== preview.summary.skippedCount) {
+        throw new Error('处理结果不完整，暂时无法确认是否已经完成');
+      }
+      const handledRepresentativeIds = new Set(preview.representativeTaskIds);
+      setSelectedTaskIds((current) => current.filter((id) => !handledRepresentativeIds.has(id)));
+      setDuplicateQueryPreview(null);
+      setDuplicateQueryRequestId(null);
+      setDuplicateQueryError('');
+      setMessage(`重复 Query 处理完成：已废弃 ${result.discardedCount} 条，保留 ${result.keeperTaskIds.length} 条，跳过 ${result.skippedCount} 条。`);
+      setError('');
+      await refresh({ silent: true });
+    } catch (caught) {
+      if (caught instanceof DuplicateQueryCleanupRequestError && caught.status === 409) {
+        setDuplicateQueryError(`任务状态已经变化，本次没有执行废弃。${caught.message}。预览已保留，请重新预览后再确认。`);
+      } else {
+        const detail = caught instanceof Error ? caught.message : '请求未完成';
+        setDuplicateQueryError(`暂时无法确认处理结果：${detail}。预览已保留；可以再次确认，或重新预览核对最新状态。`);
+      }
+    } finally {
+      duplicateQueryCleanupLock.release();
+      setDuplicateQueryDiscarding(false);
+    }
+  }
+
   async function runBatchAction(action: 'RETRY' | 'CANCEL_QUEUE', eligible: DistributedTask[]) {
     if (eligible.length === 0 || batchAction) return;
     const retry = action === 'RETRY';
@@ -861,6 +1277,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   function clearFilters() {
     setSearchInput('');
     setSearchKeyword('');
+    setQueryPackageInput('');
+    setQueryPackageName('');
     setDeduplicateQuery(false);
     setCreatorFilter(null);
     setCreatorRoleFilter('ALL');
@@ -874,11 +1292,16 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     event.preventDefault();
     setPage(1);
     setSearchKeyword(searchInput.trim());
+    setQueryPackageName(canUseQueryPackageFilter
+      ? queryPackageInput.replace(/\s+/gu, ' ').trim()
+      : '');
   }
 
   function clearSearch() {
     setSearchInput('');
     setSearchKeyword('');
+    setQueryPackageInput('');
+    setQueryPackageName('');
     setPage(1);
   }
 
@@ -1155,7 +1578,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     event.preventDefault();
     if (creating) return;
     if (role !== 'ADMIN') {
-      setCreateError('普通作业员请在 Query 词包中筛选已分配内容并投产。');
+      setCreateError('普通用户不能直接创建作业。');
       return;
     }
     const { queries, error: validationError } = queryBatch;
@@ -1199,6 +1622,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       setPage(1);
       setSearchInput('');
       setSearchKeyword('');
+      setQueryPackageInput('');
+      setQueryPackageName('');
       if (role !== 'ADMIN' && activeView !== 'PERSONAL') {
         leavingWorkbenchView.current = true;
         router.push('/workbench/personal');
@@ -1248,6 +1673,18 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       onPasswordChange={(value) => { setDeletionPassword(value); if (deletionError) setDeletionError(''); }}
       onCancel={() => { setBatchPermanentDeleteTasks([]); setDeletionPassword(''); setDeletionError(''); }}
       onConfirm={() => { void permanentlyDeleteSelectedTasks(); }}
+    />
+    <DuplicateQueryDiscardDialog
+      preview={duplicateQueryPreview}
+      error={duplicateQueryError}
+      previewing={duplicateQueryPreviewing}
+      discarding={duplicateQueryDiscarding}
+      requestReady={Boolean(duplicateQueryRequestId)}
+      onClose={closeDuplicateQueryPreview}
+      onConfirm={() => { void discardDuplicateQueries(); }}
+      onRepreview={() => {
+        if (duplicateQueryPreview) void previewDuplicateQueries(duplicateQueryPreview.representativeTaskIds);
+      }}
     />
     {activeView === 'PERSONAL' && <PersonalOverview
       period={personalStatisticsPeriod}
@@ -1430,7 +1867,17 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
             placeholder="Query 关键词或 #ID（如 #1024）"
             onValueChange={(value) => setSearchInput(value)}
           />
-          {searchKeyword && <Button unstyled className="button small" type="button" onClick={clearSearch}>清除</Button>}
+          {canUseQueryPackageFilter && <>
+            <label className="sr-only" htmlFor="workbench-query-package-search">搜索词包名称</label>
+            <SearchInput
+              id="workbench-query-package-search"
+              value={queryPackageInput}
+              maxLength={200}
+              placeholder="词包名称"
+              onValueChange={(value) => setQueryPackageInput(value)}
+            />
+          </>}
+          {(searchKeyword || canUseQueryPackageFilter && queryPackageName) && <Button unstyled className="button small" type="button" onClick={clearSearch}>清除</Button>}
           <Button unstyled className="button small" type="submit">搜索</Button>
         </form>
         <div className="workbench-sort-control">
@@ -1450,8 +1897,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         </label>
         <span>{lastUpdatedAt
           ? deduplicateQuery
-            ? `去重后 ${total} 个 Query${searchKeyword ? `匹配“${searchKeyword}”` : ''}`
-            : `共 ${total} 条${searchKeyword ? `匹配“${searchKeyword}”` : ''}`
+            ? `去重后 ${total} 个 Query${searchScopeLabel ? ` · 匹配${searchScopeLabel}` : ''}`
+            : `共 ${total} 条${searchScopeLabel ? ` · 匹配${searchScopeLabel}` : ''}`
           : '尚未读取任务'}</span>
         {hasFilters && <Button unstyled className="button small" type="button" onClick={clearFilters}>清空筛选</Button>}
       </div>
@@ -1464,17 +1911,22 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
 
         {role === 'ADMIN' && selectedTasks.length > 0 && <div className="workbench-batch-actions" role="region" aria-label="批量任务操作">
           <strong>已选 {selectedTasks.length} 条（当前页）</strong>
+        {role === 'ADMIN' && activeView === 'ALL_JOBS' && deduplicateQuery && selectedTasks.length > 0 && <Button
+          unstyled className="button small" type="button" disabled={Boolean(batchAction) || duplicateQueryCleanupBusy}
+          title="先查看每个 Query 将保留、废弃和跳过哪些任务"
+          onClick={() => { void previewDuplicateQueries(); }}><Eye size={14} />预览重复项</Button>}
         <Button unstyled className="button small primary" type="button"
-          disabled={Boolean(batchAction) || assignmentEligibleTasks.length === 0}
+          disabled={Boolean(batchAction) || duplicateQueryCleanupBusy || assignmentEligibleTasks.length === 0}
           title={assignmentEligibleTasks.length === 0 ? '所选任务尚未进入可派单阶段' : '分配或改派可处理的任务'}
           onClick={() => setAssignmentTasks(assignmentEligibleTasks)}><UserRound size={14} />批量分配 {assignmentEligibleTasks.length}</Button>
-        <Button unstyled className="button small" type="button" disabled={Boolean(batchAction) || retryableTasks.length === 0} onClick={() => { void runBatchAction('RETRY', retryableTasks); }}><RotateCcw size={14} />重试 {retryableTasks.length}</Button>
-        <Button unstyled className="button small danger" type="button" disabled={Boolean(batchAction) || queuedTasks.length === 0} onClick={() => { void runBatchAction('CANCEL_QUEUE', queuedTasks); }}><Trash2 size={14} />废弃排队中 {queuedTasks.length}</Button>
-        <Button unstyled className="button small danger" type="button" title={permanentlyDeletableTasks.length > 20 ? '单次最多永久删除 20 条，请减少选择' : permanentDeletionSettlingTasks.length ? '所选任务仍在等待执行机停止，废弃满 3 分钟后可永久删除' : '仅永久删除已失败、已审核或已废弃且执行已停止的任务'} disabled={Boolean(batchAction) || Boolean(actingTaskId) || Boolean(permanentDeleteTask) || permanentlyDeletableTasks.length === 0 || permanentlyDeletableTasks.length > 20} onClick={() => { setDeletionError(''); setDeletionPassword(''); setBatchPermanentDeleteTasks(permanentlyDeletableTasks); }}><Trash2 size={14} />永久删除 {permanentlyDeletableTasks.length}</Button>
-        <Button unstyled className="button small" type="button" title={exportableTasks.length > 20 ? '单次最多导出 20 条，请减少选择' : '仅可导出已进入交付池的任务'} disabled={Boolean(batchAction) || exportableTasks.length === 0 || exportableTasks.length > 20} onClick={() => { void exportSelectedTasks(); }}><Download size={14} />导出 {exportableTasks.length}</Button>
-        <Button unstyled className="button small" type="button" disabled={Boolean(batchAction)} onClick={() => setSelectedTaskIds([])}>清除选择</Button>
+        <Button unstyled className="button small" type="button" disabled={Boolean(batchAction) || duplicateQueryCleanupBusy || retryableTasks.length === 0} onClick={() => { void runBatchAction('RETRY', retryableTasks); }}><RotateCcw size={14} />重试 {retryableTasks.length}</Button>
+        <Button unstyled className="button small danger" type="button" disabled={Boolean(batchAction) || duplicateQueryCleanupBusy || queuedTasks.length === 0} onClick={() => { void runBatchAction('CANCEL_QUEUE', queuedTasks); }}><Trash2 size={14} />废弃排队中 {queuedTasks.length}</Button>
+        <Button unstyled className="button small danger" type="button" title={permanentlyDeletableTasks.length > 20 ? '单次最多永久删除 20 条，请减少选择' : permanentDeletionSettlingTasks.length ? '所选任务仍在等待执行机停止，废弃满 3 分钟后可永久删除' : '仅永久删除已失败、已审核或已废弃且执行已停止的任务'} disabled={Boolean(batchAction) || duplicateQueryCleanupBusy || Boolean(actingTaskId) || Boolean(permanentDeleteTask) || permanentlyDeletableTasks.length === 0 || permanentlyDeletableTasks.length > 20} onClick={() => { setDeletionError(''); setDeletionPassword(''); setBatchPermanentDeleteTasks(permanentlyDeletableTasks); }}><Trash2 size={14} />永久删除 {permanentlyDeletableTasks.length}</Button>
+        <Button unstyled className="button small" type="button" title={exportableTasks.length > 20 ? '单次最多导出 20 条，请减少选择' : '仅可导出已进入交付池的任务'} disabled={Boolean(batchAction) || duplicateQueryCleanupBusy || exportableTasks.length === 0 || exportableTasks.length > 20} onClick={() => { void exportSelectedTasks(); }}><Download size={14} />导出 {exportableTasks.length}</Button>
+        <Button unstyled className="button small" type="button" disabled={Boolean(batchAction) || duplicateQueryCleanupBusy} onClick={() => setSelectedTaskIds([])}>清除选择</Button>
         {permanentDeletionSettlingTasks.length > 0 && <span role="status">{permanentDeletionSettlingTasks.length} 条仍在等待执行停止，废弃满 3 分钟后可删除</span>}
         {batchAction && <span role="status">正在处理…</span>}
+        {duplicateQueryPreviewing && <span role="status">正在核对重复项…</span>}
       </div>}
 
       {loading && !lastUpdatedAt
@@ -1483,11 +1935,10 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         : visibleTasks.length === 0
           ? <div className="workbench-empty">
             <span>{isAllJobs || hasFilters ? '没有符合当前筛选条件的作业。' : activeView === 'PERSONAL'
-              ? role === 'ADMIN' ? '当前没有你提交或负责的 Query 任务。' : '当前没有你负责的任务。请前往 Query 词包筛选已分配内容并投产。'
+              ? role === 'ADMIN' ? '当前没有你提交或负责的 Query 任务。' : '当前没有你负责的任务。'
               : `当前没有${activeDefinition.label}任务。`}</span>
-            {activeView === 'PERSONAL' && (role === 'ADMIN'
-              ? <Button unstyled className="button small" type="button" onClick={() => setCreateOpen(true)}><Plus size={14} />创建第一条笔记</Button>
-              : <Button unstyled className="button small primary" type="button" onClick={() => router.push('/query-packages')}>前往 Query 词包</Button>)}
+            {activeView === 'PERSONAL' && role === 'ADMIN'
+              && <Button unstyled className="button small" type="button" onClick={() => setCreateOpen(true)}><Plus size={14} />创建第一条笔记</Button>}
           </div>
           : <div ref={listStart} className="table-wrap mobile-cards workbench-table-wrap" tabIndex={0} role="region" aria-label="作业列表，可横向滚动查看完整列" aria-busy={loading} inert={loading}>
             <table>
@@ -1498,6 +1949,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
                   <div className="workbench-cell-stack">
                     <span className="mono workbench-task-id">#{task.id}</span>
                     <Button unstyled className="workbench-query-preview workbench-text-preview" type="button" title={task.query} aria-label={`查看作业 #${task.id}：${task.query}`} onClick={() => setSelectedTaskId(task.id)}>{task.query}</Button>
+                    {role !== 'USER' && <small className="workbench-text-preview" title={task.sourceQueryPackageName || '未归属词包'}>词包：{task.sourceQueryPackageName || '未归属词包'}</small>}
                   </div>
                 </td>
                 <td className="workbench-col-creator" data-label="负责人 / 创建人"><div className="workbench-cell-stack">
@@ -1513,8 +1965,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
                 </div></td>
                 <td className="workbench-col-progress" data-label="状态 / 进度">
                   <div className="distributed-progress">
-                    <span className={`pill ${isImageRetryExhausted(task) ? 'pill-rejected' : `workbench-state-${task.state.toLowerCase()}`}${isStale(task) ? ' pill-rejected' : ''}`}>{isImageRetryExhausted(task) ? IMAGE_RETRY_EXHAUSTED_LABEL : STATE_LABELS[task.state]}</span>
-                    <span>{stageLabel(task)} · {task.state.endsWith('_FAILED') && !task.executionStartedAt && task.progressPercent === 0 ? '进度未记录' : `${task.progressPercent}%`}</span>
+                    <span className={`pill ${isImageRetryExhausted(task) ? 'pill-rejected' : `workbench-state-${task.state.toLowerCase()}`}${isStale(task) ? ' pill-rejected' : ''}`}>{isImageRetryExhausted(task) ? IMAGE_RETRY_EXHAUSTED_LABEL : taskStateLabel(task, role)}</span>
+                    <span>{stageLabel(task, role)} · {task.state.endsWith('_FAILED') && !task.executionStartedAt && task.progressPercent === 0 ? '进度未记录' : `${task.progressPercent}%`}</span>
                     <small className="workbench-text-preview" title={isStale(task) ? '超过 30 分钟没有进度，请进入详情处理' : taskProgressMessage(task)}>{isStale(task) ? '超过 30 分钟没有进度，请进入详情处理' : taskProgressMessage(task)}</small>
                   </div>
                 </td>

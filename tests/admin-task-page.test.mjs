@@ -4,17 +4,19 @@ import { loadAdminTaskPage } from '../src/control-plane/admin-task-page.mjs';
 
 test('admin task pages preserve server pagination beyond 200 and combine role, state and search', async () => {
   const calls = [];
-  const page = { items: [{ id: 357, state: 'IMAGE_FAILED', createdByRole: 'USER' }], total: 251, limit: 20, offset: 240 };
+  const page = { items: [{ id: 357, state: 'IMAGE_FAILED', createdByRole: 'USER', sourceQueryPackageName: '九月选题' }], total: 251, limit: 20, offset: 240 };
   const result = await loadAdminTaskPage(async (path) => {
     calls.push(path);
     return path.endsWith('/health') ? { capabilities: { adminTaskFilters: true } } : page;
-  }, { createdByRole: 'USER', state: 'IMAGE_FAILED', taskId: 357, query: '城市 & 徒步',
+  }, { createdByRole: 'USER', state: 'IMAGE_FAILED', taskId: 357, query: '城市 & 徒步', queryPackageName: '九月 选题',
     attention: 'FAILED', sortBy: 'createdAt', sortOrder: 'asc', limit: 20, offset: 240 });
   assert.equal(result, page);
   const search = new URL(calls.at(-1), 'http://localhost').searchParams;
   assert.equal(search.get('createdByRole'), 'USER');
   assert.equal(search.get('state'), 'IMAGE_FAILED');
   assert.equal(search.get('query'), '城市 & 徒步');
+  assert.equal(search.get('queryPackageName'), '九月 选题');
+  assert.equal(result.items[0].sourceQueryPackageName, '九月选题');
   assert.equal(search.get('taskId'), '357');
   assert.equal(search.get('attention'), 'FAILED');
   assert.equal(search.get('sortBy'), 'createdAt');

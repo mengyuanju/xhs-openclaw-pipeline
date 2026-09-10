@@ -9,6 +9,7 @@ import {
 } from '../src/query-packages.mjs';
 import { hashUserPassword } from '../src/user-auth.mjs';
 
+const admin = Object.freeze({ userId: 1, username: 'admin', role: 'ADMIN' });
 const worker = Object.freeze({ userId: 22, username: 'worker-22', role: 'USER' });
 
 function packageRow(patch = {}) {
@@ -58,7 +59,6 @@ function fakeQueryPackageDatabase() {
     screeningResultOverride: null,
     deletionAudits: [],
     deletionPasswordHash: null,
-    assignee: { id: 22, username: 'worker-22', status: 'ACTIVE', role: 'USER' },
     activeActors: new Map([
       [1, { id: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 }],
       [22, { id: 22, username: 'worker-22', role: 'USER', credentialVersion: 1 }],
@@ -85,8 +85,7 @@ function fakeQueryPackageDatabase() {
         total_count: String(items.length),
         pending_count: String(items.filter((item) => item.status === 'READY'
           && item.screening_decision === 'PENDING').length),
-        selected_count: String(items.filter((item) => item.status === 'READY'
-          && item.screening_decision === 'SELECTED').length),
+        selected_count: String(items.filter((item) => item.screening_decision === 'SELECTED').length),
         rejected_count: String(items.filter((item) => item.screening_decision === 'REJECTED').length),
         produced_count: String(items.filter((item) => item.status === 'TASK_CREATED').length),
         invalid_count: String(items.filter((item) => item.status === 'INVALID').length),
@@ -98,12 +97,6 @@ function fakeQueryPackageDatabase() {
     }
     if (source.startsWith('SELECT * FROM query_packages WHERE id = $1 FOR UPDATE')) {
       return { rows: state.package && Number(values[0]) === state.package.id ? [{ ...state.package }] : [] };
-    }
-    if (source.startsWith('SELECT id, username FROM app_users') && source.includes('FOR KEY SHARE')) {
-      const user = state.assignee;
-      return { rows: user && user.id === Number(values[0]) && user.username === values[1]
-          && user.status === 'ACTIVE' && user.role === 'USER'
-        ? [{ id: user.id, username: user.username }] : [] };
     }
     if (source.includes('FROM query_package_mutation_requests') && source.startsWith('SELECT')) {
       const row = state.mutations.get(`${values[0]}:${values[1]}`);
@@ -164,12 +157,13 @@ function fakeQueryPackageDatabase() {
     }
     if (source.startsWith('SELECT COUNT(*) FILTER')
         && source.includes('AS pending_count') && source.includes('AS selected_count')) {
-      const items = [...state.items.values()].filter((item) => (
-        item.query_package_id === Number(values[0]) && item.status === 'READY'
-      ));
+      const items = [...state.items.values()].filter((item) => item.query_package_id === Number(values[0]));
       return { rows: [{
-        pending_count: String(items.filter((item) => item.screening_decision === 'PENDING').length),
-        selected_count: String(items.filter((item) => item.screening_decision === 'SELECTED').length),
+        pending_count: String(items.filter((item) => item.status === 'READY'
+          && item.screening_decision === 'PENDING').length),
+        selected_count: String(items.filter((item) => item.status === 'READY'
+          && item.screening_decision === 'SELECTED').length),
+        produced_count: String(items.filter((item) => item.status === 'TASK_CREATED').length),
       }] };
     }
     if (source.startsWith('SELECT * FROM query_package_items')
@@ -227,20 +221,37 @@ function fakeQueryPackageDatabase() {
     if (source.startsWith('WITH source_items AS MATERIALIZED')) {
       const packageId = Number(values[0]);
       const requestedIds = values[1].map(Number);
-      const batchId = Number(values[6]);
+      const batchId = Number(values[5]);
       const created = [];
       for (const sourceItemId of requestedIds) {
         const item = state.items.get(sourceItemId);
         if (!item || item.query_package_id !== packageId || item.status !== 'READY'
             || item.screening_decision !== 'SELECTED') continue;
         const taskId = state.tasks.length + 501;
-        state.tasks.push({ id: taskId, query: item.query, source_query_package_item_id: sourceItemId });
+        state.tasks.push({
+          id: taskId,
+          query: item.query,
+          state: 'COPY_QUEUED',
+          current_stage: 'COPY_QUEUED',
+          assigned_to_user_id: null,
+          assignment_source: null,
+          assigned_at: null,
+          source_query_package_id: packageId,
+          source_query_package_item_id: sourceItemId,
+          source_query_package_name: values[4],
+          source_query_package_external_id: item.external_id ?? null,
+          production_batch_id: batchId,
+        });
         state.batchItems.push({ productionBatchId: batchId, sourceItemId, taskId });
         item.status = 'TASK_CREATED';
         item.version += 1;
         created.push({ task_id: taskId, source_query_package_item_id: sourceItemId });
       }
       return { rows: created };
+    }
+    if (source.startsWith('WITH created AS MATERIALIZED')
+        && source.includes('UPDATE xhs_query_search_jobs AS job')) {
+      return { rows: JSON.parse(values[0]).map((_, index) => ({ id: index + 1 })) };
     }
     if (source.startsWith('INSERT INTO tasks')) {
       const row = { id: state.tasks.length + 501, query: values[0], source_query_package_item_id: Number(values[7]) };
@@ -283,6 +294,7 @@ function fakeQueryPackageDatabase() {
       }
       return { rows: [] };
     }
+    if (source.startsWith('DELETE FROM xhs_query_search_jobs AS job')) return { rows: [] };
     if (source.startsWith('DELETE FROM query_packages WHERE id = $1')) {
       state.package = null;
       state.items.clear();
@@ -307,51 +319,131 @@ function fakeQueryPackageDatabase() {
   return { state, pool: { connect: async () => client, query } };
 }
 
-test('an assigned worker can screen and produce while worker import is disabled', async () => {
+test('Query-package screening and production reject users before database access', async () => {
+  let databaseAccessCount = 0;
+  const pool = {
+    connect: async () => {
+      databaseAccessCount += 1;
+      throw new Error('database access is forbidden for users');
+    },
+    query: async () => {
+      databaseAccessCount += 1;
+      throw new Error('database access is forbidden for users');
+    },
+  };
+
+  await assert.rejects(updateQueryPackageScreening(pool, 9, {
+    expectedVersion: 1,
+    requestId: '10101010-1010-4010-8010-101010101010',
+    decisions: [{ itemId: 101, decision: 'SELECT' }],
+  }, worker), { code: 'FORBIDDEN' });
+  await assert.rejects(createQueryPackageProductionBatch(pool, 9, {
+    expectedVersion: 1,
+    requestId: '20202020-2020-4020-8020-202020202020',
+    itemIds: [101],
+    nodeId: 'query-package-test',
+  }, worker), { code: 'FORBIDDEN' });
+
+  assert.equal(databaseAccessCount, 0);
+});
+
+test('production creates unassigned copy work and never propagates a legacy package assignee', async () => {
   const fixture = fakeQueryPackageDatabase();
-  const screened = await updateQueryPackageScreening(fixture.pool, 9, {
+  const input = {
     expectedVersion: 1,
     requestId: '11111111-1111-4111-8111-111111111111',
     decisions: [
       { itemId: 101, decision: 'SELECT' },
       { itemId: 102, decision: 'SELECT' },
     ],
-  }, worker);
+  };
+  const screened = await updateQueryPackageScreening(fixture.pool, 9, input, admin);
+  const replay = await updateQueryPackageScreening(fixture.pool, 9, input, admin);
 
-  assert.equal(screened.status, 'READY');
+  assert.deepEqual(replay, screened);
+  assert.equal(screened.status, 'USED_UP');
   assert.equal(screened.version, 2);
   assert.equal(screened.counts.selected, 2, 'mutation responses retain current package counts');
+  assert.equal(screened.counts.produced, 2);
   assert.ok([...fixture.state.items.values()].every((item) => item.screening_decision === 'SELECTED'));
-
-  const first = await createQueryPackageProductionBatch(fixture.pool, 9, {
-    expectedVersion: 2,
-    requestId: '22222222-2222-4222-8222-222222222222',
-    itemIds: [101],
-    nodeId: 'query-package-test',
-  }, worker);
-  assert.deepEqual(first.taskIds, [501]);
-  assert.equal(fixture.state.package.status, 'PARTIALLY_USED');
-
-  const second = await createQueryPackageProductionBatch(fixture.pool, 9, {
-    expectedVersion: 3,
-    requestId: '33333333-3333-4333-8333-333333333333',
-    itemIds: [102],
-    nodeId: 'query-package-test',
-  }, worker);
-  assert.deepEqual(second.taskIds, [502]);
   assert.equal(fixture.state.package.status, 'USED_UP');
 
-  assert.equal(fixture.state.batches.length, 2, 'the selected rows were split into two production batches');
+  assert.equal(fixture.state.batches.length, 1,
+    'one screening request creates one production batch for all selected rows');
+  assert.deepEqual(fixture.state.batches.map((batch) => batch.query_package_name), [
+    '九月选题',
+  ], 'every production batch snapshots the package name');
+  assert.deepEqual(fixture.state.tasks.map((task) => ({
+    state: task.state,
+    currentStage: task.current_stage,
+    assignedToUserId: task.assigned_to_user_id,
+    assignmentSource: task.assignment_source,
+    assignedAt: task.assigned_at,
+    packageId: task.source_query_package_id,
+    packageName: task.source_query_package_name,
+    productionBatchId: task.production_batch_id,
+  })), [
+    { state: 'COPY_QUEUED', currentStage: 'COPY_QUEUED', assignedToUserId: null,
+      assignmentSource: null, assignedAt: null, packageId: 9, packageName: '九月选题', productionBatchId: 301 },
+    { state: 'COPY_QUEUED', currentStage: 'COPY_QUEUED', assignedToUserId: null,
+      assignmentSource: null, assignedAt: null, packageId: 9, packageName: '九月选题', productionBatchId: 301 },
+  ], 'formal tasks retain package provenance but do not inherit its legacy owner');
   assert.deepEqual(fixture.state.batchItems.map((item) => item.sourceItemId), [101, 102]);
   assert.equal(new Set(fixture.state.batchItems.map((item) => item.sourceItemId)).size, 2,
     'one source item can create at most one task');
+  assert.equal(fixture.state.sql.filter((sql) => (
+    sql.startsWith('WITH created AS MATERIALIZED')
+      && sql.includes('UPDATE xhs_query_search_jobs AS job')
+  )).length, 1, 'the same transaction binds every generated task to its search job once');
   const requestLock = fixture.state.sql.findIndex((sql) => sql.startsWith('SELECT pg_advisory_xact_lock'));
   const receiptRead = fixture.state.sql.findIndex((sql) => sql.includes('FROM query_package_mutation_requests'));
   assert.ok(requestLock >= 0 && requestLock < receiptRead,
     'the request lock must serialize simultaneous first attempts before reading the receipt');
 });
 
-test('screening all 5000 rows uses bounded set SQL and preserves audit input order', async () => {
+test('reject-only screening creates no production batch or task', async () => {
+  const fixture = fakeQueryPackageDatabase();
+  const screened = await updateQueryPackageScreening(fixture.pool, 9, {
+    expectedVersion: 1,
+    requestId: '21212121-2121-4121-8121-212121212121',
+    decisions: [
+      { itemId: 101, decision: 'REJECT', reason: '不进入生产' },
+      { itemId: 102, decision: 'REJECT', reason: '不进入生产' },
+    ],
+  }, admin);
+
+  assert.equal(screened.status, 'ABANDONED');
+  assert.equal(screened.counts.selected, 0);
+  assert.equal(screened.counts.produced, 0);
+  assert.equal(fixture.state.batches.length, 0);
+  assert.equal(fixture.state.tasks.length, 0);
+});
+
+test('reconfirming a historical READY and SELECTED row auto-produces it only once', async () => {
+  const fixture = fakeQueryPackageDatabase();
+  fixture.state.package = packageRow({ status: 'READY' });
+  fixture.state.items.get(101).screening_decision = 'SELECTED';
+  fixture.state.items.get(102).screening_decision = 'REJECTED';
+
+  const screened = await updateQueryPackageScreening(fixture.pool, 9, {
+    expectedVersion: 1,
+    requestId: '23232323-2323-4323-8323-232323232323',
+    decisions: [{ itemId: 101, decision: 'SELECT' }],
+  }, admin);
+
+  assert.equal(screened.status, 'USED_UP');
+  assert.equal(screened.counts.selected, 1);
+  assert.equal(screened.counts.produced, 1);
+  assert.equal(fixture.state.tasks.length, 1);
+  await assert.rejects(updateQueryPackageScreening(fixture.pool, 9, {
+    expectedVersion: 2,
+    requestId: '24242424-2424-4424-8424-242424242424',
+    decisions: [{ itemId: 101, decision: 'SELECT' }],
+  }, admin), { code: 'PACKAGE_NOT_SCREENABLE' });
+  assert.equal(fixture.state.tasks.length, 1);
+});
+
+test('screening all 5000 rows auto-produces selected rows with bounded set SQL', async () => {
   const fixture = fakeQueryPackageDatabase();
   fixture.state.items = new Map(Array.from({ length: 5_000 }, (_, index) => {
     const id = index + 1;
@@ -367,11 +459,14 @@ test('screening all 5000 rows uses bounded set SQL and preserves audit input ord
     expectedVersion: 1,
     requestId: '12121212-1212-4212-8212-121212121212',
     decisions,
-  }, worker);
+  }, admin);
 
-  assert.equal(screened.status, 'READY');
+  assert.equal(screened.status, 'USED_UP');
   assert.equal(screened.counts.pending, 0);
   assert.equal(screened.counts.selected, 2_500);
+  assert.equal(screened.counts.produced, 2_500);
+  assert.equal(fixture.state.tasks.length, 2_500);
+  assert.equal(fixture.state.batches.length, 1);
   assert.equal(fixture.state.screeningEvents.length, 5_000);
   assert.deepEqual(
     fixture.state.screeningEvents.map((event) => event.itemId),
@@ -402,7 +497,7 @@ test('bulk screening keeps duplicate, ownership, status, version, and affected-c
       { itemId: 101, decision: 'SELECT' },
       { itemId: 101, decision: 'REJECT' },
     ],
-  }, worker), /item ids must be unique/u);
+  }, admin), /item ids must be unique/u);
   assert.equal(duplicate.state.sql.length, 0, 'duplicate IDs fail before starting a transaction');
 
   for (const [name, configure, expectedCode] of [
@@ -420,7 +515,7 @@ test('bulk screening keeps duplicate, ownership, status, version, and affected-c
           ? '15151515-1515-4515-8515-151515151515'
           : '16161616-1616-4616-8616-161616161616',
       decisions: [{ itemId: 101, decision: 'SELECT' }],
-    }, worker), { code: expectedCode }, name);
+    }, admin), { code: expectedCode }, name);
     assert.equal(fixture.state.screeningEvents.length, 0, `${name} must not append an audit event`);
   }
 
@@ -430,7 +525,7 @@ test('bulk screening keeps duplicate, ownership, status, version, and affected-c
     expectedVersion: 1,
     requestId: '17171717-1717-4717-8717-171717171717',
     decisions: [{ itemId: 101, decision: 'SELECT' }],
-  }, worker), { code: 'ITEM_NOT_SCREENABLE' });
+  }, admin), { code: 'ITEM_NOT_SCREENABLE' });
 });
 
 test('permanent-delete preview aggregates items and batches on independent branches', async () => {
@@ -486,7 +581,7 @@ test('explicit production selections support the full 5000-row package contract'
     requestId: '34343434-3434-4434-8434-343434343434',
     itemIds,
     nodeId: 'large-query-package-test',
-  }, worker);
+  }, admin);
 
   assert.equal(created.taskIds.length, 5_000);
   assert.equal(fixture.state.tasks.length, 5_000);
@@ -500,35 +595,42 @@ test('explicit production selections support the full 5000-row package contract'
     expectedVersion: 2,
     requestId: '35353535-3535-4535-8535-353535353535',
     itemIds: Array.from({ length: 5_001 }, (_, index) => index + 1),
-  }, worker), /between 1 and 5000/u);
+  }, admin), /between 1 and 5000/u);
 });
 
-test('production rejects a deleted or same-name replacement assignee before creating tasks', async () => {
+test('an unassigned package can be produced without reading an assignee account', async () => {
   const fixture = fakeQueryPackageDatabase();
-  fixture.state.package = packageRow({ status: 'READY' });
+  fixture.state.package = packageRow({
+    status: 'READY',
+    assigned_to_account_id: null,
+    assigned_to_username: null,
+  });
   fixture.state.items.get(101).screening_decision = 'SELECTED';
-  fixture.state.assignee = { id: 99, username: 'worker-22', status: 'ACTIVE', role: 'USER' };
-  const admin = { userId: 1, username: 'admin', role: 'ADMIN' };
-
-  await assert.rejects(createQueryPackageProductionBatch(fixture.pool, 9, {
+  const created = await createQueryPackageProductionBatch(fixture.pool, 9, {
     expectedVersion: 1,
     requestId: '36363636-3636-4636-8636-363636363636',
     itemIds: [101],
     nodeId: 'query-package-test',
-  }, admin), { code: 'ASSIGNEE_UNAVAILABLE' });
-  assert.equal(fixture.state.tasks.length, 0);
-  assert.equal(fixture.state.batches.length, 0);
+  }, admin);
+  assert.deepEqual(created.taskIds, [501]);
+  assert.equal(fixture.state.tasks[0].state, 'COPY_QUEUED');
+  assert.equal(fixture.state.tasks[0].assigned_to_user_id, null);
+  assert.equal(fixture.state.tasks[0].assignment_source, null);
+  assert.equal(fixture.state.tasks[0].assigned_at, null);
+  assert.equal(fixture.state.sql.some((sql) => (
+    sql.startsWith('SELECT id, username FROM app_users') && sql.includes('FOR KEY SHARE')
+  )), false);
 });
 
 test('query-package mutations revalidate and lock the immutable actor before business locks or writes', async () => {
   const fixture = fakeQueryPackageDatabase();
-  fixture.state.activeActors.delete(worker.userId);
+  fixture.state.activeActors.delete(admin.userId);
 
   await assert.rejects(updateQueryPackageScreening(fixture.pool, 9, {
     expectedVersion: 1,
     requestId: '37373737-3737-4737-8737-373737373737',
     decisions: [{ itemId: 101, decision: 'SELECT' }],
-  }, worker), { code: 'SESSION_STALE' });
+  }, admin), { code: 'SESSION_STALE' });
 
   const actorLock = fixture.state.sql.findIndex((sql) => sql.startsWith('SELECT id FROM app_users'));
   const requestLock = fixture.state.sql.findIndex((sql) => sql.startsWith('SELECT pg_advisory_xact_lock'));
@@ -582,8 +684,8 @@ test('production retry is idempotent even after the package version advances', a
     nodeId: 'query-package-test',
   };
 
-  const created = await createQueryPackageProductionBatch(fixture.pool, 9, input, worker);
-  const replay = await createQueryPackageProductionBatch(fixture.pool, 9, input, worker);
+  const created = await createQueryPackageProductionBatch(fixture.pool, 9, input, admin);
+  const replay = await createQueryPackageProductionBatch(fixture.pool, 9, input, admin);
   assert.deepEqual(replay, created);
   assert.equal(fixture.state.tasks.length, 1);
   assert.equal(fixture.state.batches.length, 1);
@@ -591,7 +693,7 @@ test('production retry is idempotent even after the package version advances', a
   await assert.rejects(createQueryPackageProductionBatch(fixture.pool, 9, {
     ...input,
     itemIds: [102],
-  }, worker), { code: 'REQUEST_ID_CONFLICT' });
+  }, admin), { code: 'REQUEST_ID_CONFLICT' });
   assert.equal(fixture.state.tasks.length, 1);
 });
 
@@ -616,7 +718,6 @@ test('permanent package deletion is idempotent and detaches, rather than deletes
     deletionPassword: 'second-factor',
   };
 
-  const admin = { userId: 1, username: 'admin', role: 'ADMIN' };
   const removed = await permanentlyDeleteQueryPackage(fixture.pool, 9, input, admin);
   const replay = await permanentlyDeleteQueryPackage(fixture.pool, 9, input, admin);
 

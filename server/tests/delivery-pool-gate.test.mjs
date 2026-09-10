@@ -27,9 +27,17 @@ async function withServer(repository, action) {
   }
 }
 
-function task(id, state) {
+function task(id, state, sourceQueryPackageName = null) {
   return {
     id,
+    query: `Query ${id}`,
+    sourceQueryPackageName,
+    xiaohongshuLinks: [{
+      noteId: `note-${id}`,
+      url: `https://www.xiaohongshu.com/explore/note-${id}`,
+      title: `参考 ${id}`,
+      rank: 1,
+    }],
     state,
     createdByUserId: 'admin',
     currentCopyRevisionId: 100 + id,
@@ -165,13 +173,69 @@ test('delivery pool export packages the complete server-side snapshot beyond leg
     assert.match(download.headers.get('content-disposition'), /delivery-pool\.zip/u);
     const zip = await JSZip.loadAsync(await download.arrayBuffer());
     assert.equal(Object.keys(zip.files).length, 51);
-    assert.ok(zip.file('任务-1-资源包.zip'));
-    assert.ok(zip.file('任务-51-资源包.zip'));
+    assert.ok(zip.file('未归属词包/任务-1-资源包.zip'));
+    assert.ok(zip.file('未归属词包/任务-51-资源包.zip'));
     const replay = await fetch(`${root}/v1/delivery-pool/archive/${prepared.downloadId}`);
     assert.equal(replay.status, 404, 'the prepared archive token must be one-time');
   });
   assert.equal(snapshotActors.length, 1);
   assert.equal(snapshotActors[0].role, 'ADMIN');
+});
+
+test('package-scoped ZIP and Excel exports keep the exact package scope and safe package filenames', async () => {
+  const selected = task(7, 'REVIEWED', '秋季/收纳');
+  const snapshotCalls = [];
+  let asset;
+  await withServer({
+    listAllDeliveryPoolTaskIds: async (options) => {
+      snapshotCalls.push(options);
+      return [7];
+    },
+    getTask: async (id) => Number(id) === 7 ? selected : null,
+    assertTaskReadyForDelivery: async () => ({
+      taskId: 7,
+      copyRevisionId: 107,
+      imageRunId: 'run-7',
+    }),
+    assertTasksReadyForDelivery: async (bindings) => bindings,
+    getAsset: async () => asset,
+  }, async (root, storageRoot) => {
+    const directory = join(storageRoot, 'tasks', '7', 'image-runs', 'run-7');
+    const storagePath = join(directory, '01.png');
+    await mkdir(directory, { recursive: true });
+    const content = await writeSolidPng(storagePath, '#2563EB');
+    asset = {
+      ...selected.assets[0],
+      byteSize: content.length,
+      sha256: createHash('sha256').update(content).digest('hex'),
+      storagePath,
+    };
+
+    const input = { scope: 'QUERY_PACKAGE', queryPackageName: '  秋季/收纳  ' };
+    const zipResponse = await fetch(`${root}/v1/delivery-pool/archive`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    assert.equal(zipResponse.status, 201);
+    const zipPrepared = (await zipResponse.json()).data;
+    assert.equal(zipPrepared.fileName, '秋季_收纳-交付资源.zip');
+    const zipDownload = await fetch(`${root}/v1/delivery-pool/archive/${zipPrepared.downloadId}`);
+    const zip = await JSZip.loadAsync(await zipDownload.arrayBuffer());
+    assert.ok(zip.file('秋季_收纳/任务-7-资源包.zip'));
+
+    const xlsxResponse = await fetch(`${root}/v1/delivery-pool/xlsx`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    assert.equal(xlsxResponse.status, 201);
+    assert.equal((await xlsxResponse.json()).data.fileName, '秋季_收纳-交付内容.xlsx');
+  });
+  assert.deepEqual(snapshotCalls.map(({ queryPackageName }) => queryPackageName), [
+    '秋季/收纳', '秋季/收纳',
+  ]);
+  assert.ok(snapshotCalls.every(({ actor }) => actor.role === 'ADMIN'));
 });
 
 test('selected delivery pool export accepts more than the legacy 20-task limit', async () => {
@@ -295,12 +359,21 @@ test('delivery spreadsheet exports one complete-article column plus ordered embe
     await workbook.xlsx.load(Buffer.from(await download.arrayBuffer()));
     const worksheet = workbook.getWorksheet('交付内容');
     assert.ok(worksheet);
-    assert.equal(worksheet.getCell('A1').value, '完整文章');
-    assert.equal(worksheet.getCell('A2').value, '=这是一篇标题\n\n+这是完整正文');
-    assert.notEqual(worksheet.getCell('A2').font?.bold, true);
-    assert.equal(worksheet.getCell('B1').value, '图片 1');
-    assert.equal(worksheet.getCell('C1').value, '图片 2');
-    assert.equal(worksheet.actualColumnCount, 3);
+    assert.equal(worksheet.getCell('A1').value, '词包名称');
+    assert.equal(worksheet.getCell('A2').value, '未归属词包');
+    assert.equal(worksheet.getCell('B1').value, 'Query');
+    assert.equal(worksheet.getCell('B2').value, 'Query 7');
+    assert.equal(worksheet.getCell('C1').value, '完整文章');
+    assert.equal(worksheet.getCell('C2').value, '=这是一篇标题\n\n+这是完整正文');
+    assert.notEqual(worksheet.getCell('C2').font?.bold, true);
+    assert.equal(worksheet.getCell('D1').value, '小红书链接');
+    assert.equal(
+      worksheet.getCell('D2').value,
+      'https://www.xiaohongshu.com/explore/note-7',
+    );
+    assert.equal(worksheet.getCell('E1').value, '图片 1');
+    assert.equal(worksheet.getCell('F1').value, '图片 2');
+    assert.equal(worksheet.actualColumnCount, 6);
     const embeddedImages = worksheet.getImages();
     assert.equal(embeddedImages.length, 2);
     assert.deepEqual(

@@ -77,6 +77,16 @@ function normalizedNote(value, { required = false } = {}) {
   return note || null;
 }
 
+function normalizedQueryPackageNameFilter(value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string') throw new TypeError('queryPackageName must be a string');
+  const name = value.replace(/\s+/gu, ' ').trim();
+  if (!name || [...name].length > 200) {
+    throw new RangeError('queryPackageName must contain between 1 and 200 characters');
+  }
+  return name;
+}
+
 function normalizedRequest(input, operation) {
   const requestId = normalizeUuid(input?.requestId, 'requestId');
   const reasonCodes = normalizedReasons(input?.reasonCodes);
@@ -167,6 +177,7 @@ function qaItemFrom(row, actor) {
       ...common.productionBatch,
       id: Number(row.production_batch_id),
       publicId: row.production_batch_public_id,
+      queryPackageName: row.query_package_name ?? null,
     },
     source: {
       finalApproverAccountId: Number(row.final_approver_account_id),
@@ -309,7 +320,7 @@ async function releaseFrozenMembers(client, freezeId, actor, requestId, { withEx
   if (ids.length) {
     await client.query(`
       UPDATE tasks SET state = 'IMAGE_QUEUED', current_stage = 'IMAGE_QUEUED',
-        progress_percent = 0, progress_message = '抽检批次已放行，等待图片执行机领取',
+        progress_percent = 0, progress_message = '文案质检已通过，任务已进入待生图队列，等待图片执行机领取',
         current_execution_id = NULL, current_image_run_id = NULL,
         execution_started_at = NULL, finished_at = NULL, error = NULL,
         pending_snapshot = NULL, mandatory_copy_qc = false,
@@ -430,7 +441,7 @@ async function createFreeze(client, productionBatch, settings, actor, requestId)
       UPDATE tasks SET current_stage = $2, progress_message = $3,
         last_activity_at = now(), updated_at = now() WHERE id = $1
     `, [member.taskId, member.selected ? 'QC_SAMPLE_PENDING' : 'QC_NON_SAMPLE_HELD',
-      member.selected ? '当前最终通过版本已进入抽检' : '等待本批抽检完成后统一放行']);
+      member.selected ? '当前最终达标版本已进入文案抽检' : '等待本批文案抽检完成后进入待生图队列']);
   }
   await client.query(`
     UPDATE production_batches SET status = 'FROZEN', sampling_status = 'FROZEN',
@@ -466,7 +477,7 @@ export async function attemptAutomaticCopySamplingFreeze(client, productionBatch
     `, [productionBatchId])).rows.map((row) => Number(row.id));
     if (ids.length) await client.query(`
       UPDATE tasks SET state = 'IMAGE_QUEUED', current_stage = 'IMAGE_QUEUED',
-        progress_percent = 0, progress_message = '文案审核通过，等待图片执行机领取',
+        progress_percent = 0, progress_message = '文案审核已完成，任务已进入待生图队列，等待图片执行机领取',
         execution_started_at = NULL, finished_at = NULL, updated_at = now()
       WHERE id = ANY($1::bigint[])
     `, [ids]);
@@ -529,8 +540,8 @@ export async function routeManualCopyApproval(client, {
       throw new ControlPlaneConflictError(
         'MANDATORY_QA_PARENT_MISSING',
         mandatoryOrigin === 'QA_RETURN'
-          ? '返修任务缺少原始质检记录，不能创建强制复检'
-          : '返修任务缺少有效来源，不能创建强制复检',
+          ? '返工任务缺少原始质检记录，不能创建强制复检'
+          : '返工任务缺少有效来源，不能创建强制复检',
       );
     }
     // A mandatory recheck is an isolated one-task round. Reusing the original
@@ -582,7 +593,7 @@ export async function routeManualCopyApproval(client, {
         current_copy_revision_id = $3, ai_disclosure_enabled = $4,
         current_execution_id = NULL, current_image_run_id = NULL,
         current_stage = 'QC_MANDATORY_RECHECK', progress_percent = 100,
-        progress_message = '返修后的最终通过版本必须重新质检',
+        progress_message = '返工稿已记录为最终 3 分并提交强制复检；复检通过后才进入待生图队列',
         execution_started_at = NULL, finished_at = NULL, error = NULL,
         pending_snapshot = NULL, last_activity_at = now(), updated_at = now()
       WHERE id = $1 RETURNING *
@@ -603,7 +614,7 @@ export async function routeManualCopyApproval(client, {
     WHERE id = $1 RETURNING *
   `, [task.id, shouldHold ? 'COPY_QC_PENDING' : 'IMAGE_QUEUED', revision.id,
     aiDisclosureEnabled, shouldHold ? 100 : 0,
-    shouldHold ? '最终人工通过版本等待生产批次完成初审并冻结抽检范围' : '文案审核通过，等待图片执行机领取']);
+    shouldHold ? '最终达标版本等待生产批次完成初审并进入文案抽检' : '文案审核已完成，任务已进入待生图队列，等待图片执行机领取']);
   if (shouldHold) await attemptAutomaticCopySamplingFreeze(client, task.production_batch_id, actor);
   return { task: updated.rows[0], approval };
 }
@@ -643,6 +654,7 @@ const QA_ITEM_SQL = `
     sampling_freeze.blind_review_enabled, revision.revision AS copy_revision_number,
     revision.content AS copy_content, task.query, task.assigned_to_user_id,
     task.created_by_user_id, batch.public_id AS production_batch_public_id,
+    batch.query_package_name,
     settings.reviewer_batch_return_enabled
   FROM copy_sampling_items AS item
   JOIN copy_sampling_freezes AS sampling_freeze ON sampling_freeze.id = item.freeze_id
@@ -652,16 +664,36 @@ const QA_ITEM_SQL = `
   CROSS JOIN workflow_quality_settings AS settings
 `;
 
-export async function listCopyQaItems(pool, { status = 'PENDING', limit: rawLimit = 50, offset: rawOffset = 0 } = {}, rawActor) {
+export async function listCopyQaItems(pool, {
+  status = 'PENDING',
+  queryPackageName: rawQueryPackageName = null,
+  limit: rawLimit = 50,
+  offset: rawOffset = 0,
+} = {}, rawActor) {
   const actor = normalizeActor(rawActor);
   const allowedStatuses = ['ALL', 'PENDING', 'PASSED', 'RETURNED', 'BATCH_AFFECTED', 'BATCH_RETURNED', 'RELEASED'];
   if (!allowedStatuses.includes(status)) throw new TypeError('copy QA status is invalid');
+  const queryPackageName = normalizedQueryPackageNameFilter(rawQueryPackageName);
+  if (queryPackageName !== null && actor.role !== 'ADMIN') {
+    throw new ControlPlaneAuthorizationError('只有管理员可以按词包名称筛选文案抽检项');
+  }
   const { limit, offset } = normalizeListPagination(rawLimit, rawOffset);
+  const values = [status === 'ALL' ? null : status, actor.role === 'REVIEWER' ? actor.userId : null];
+  const packageFilter = queryPackageName === null ? '' : (() => {
+    values.push(queryPackageName);
+    return `AND strpos(lower(batch.query_package_name), lower($${values.length})) > 0`;
+  })();
+  values.push(limit, offset);
+  const limitParameter = values.length - 1;
+  const offsetParameter = values.length;
   const result = await pool.query(`${QA_ITEM_SQL}
     WHERE item.selected = true AND ($1::varchar IS NULL OR item.status = $1)
       AND ($2::bigint IS NULL OR item.final_approver_account_id <> $2)
-    ORDER BY item.created_at, item.id LIMIT $3 OFFSET $4
-  `, [status === 'ALL' ? null : status, actor.role === 'REVIEWER' ? actor.userId : null, limit, offset]);
+      ${packageFilter}
+    ORDER BY lower(batch.query_package_name) NULLS LAST, batch.query_package_name NULLS LAST,
+      item.created_at, item.id
+    LIMIT $${limitParameter} OFFSET $${offsetParameter}
+  `, values);
   return result.rows.map((row) => qaItemFrom(row, actor));
 }
 
@@ -876,12 +908,14 @@ async function appendReturnedRevision(client, item, actor, requestId, origin, { 
       UPDATE tasks SET state = 'COPY_REVIEW_PENDING', current_copy_revision_id = $2,
       current_image_run_id = NULL, current_execution_id = NULL,
       current_stage = 'COPY_REVIEW_PENDING', progress_percent = 100,
-      progress_message = '文案抽检发现问题，已仅退回当前任务修改',
+      progress_message = $3,
       pending_snapshot = NULL, mandatory_copy_qc = true,
       mandatory_copy_qc_origin = 'QA_RETURN', error = NULL, finished_at = now(),
       last_activity_at = now(), updated_at = now()
     WHERE id = $1
-  `, [item.task_id, created.rows[0].id]);
+  `, [item.task_id, created.rows[0].id, item.sample_kind === 'MANDATORY_RECHECK'
+    ? '强制复检未通过，已退回继续修改；实际修改后须再次提交强制复检'
+    : '文案抽检发现问题，已仅退回当前任务修改；实际修改后须提交强制复检']);
   return created.rows[0];
 }
 
@@ -1174,22 +1208,10 @@ export async function releaseCopySamplingBatch(pool, rawProductionBatchId, input
 }
 
 export async function getProductionBatchSamplingReadiness(pool, rawProductionBatchId, rawActor) {
-  const actor = normalizeActor(rawActor, ['ADMIN', 'REVIEWER', 'USER']);
+  const actor = normalizeActor(rawActor);
   const productionBatchId = normalizeTaskId(rawProductionBatchId);
-  const batch = await pool.query(`
-    SELECT batch.*, package.assigned_to_account_id, package.assigned_to_username
-    FROM production_batches AS batch
-    LEFT JOIN query_packages AS package ON package.id = batch.query_package_id
-    WHERE batch.id = $1
-  `, [productionBatchId]);
+  const batch = await pool.query('SELECT * FROM production_batches WHERE id = $1', [productionBatchId]);
   if (!batch.rows[0]) throw new ControlPlaneNotFoundError('生产批次不存在');
-  if (actor.role === 'USER'
-      && !(Number(batch.rows[0].assigned_to_account_id) === actor.userId
-        && batch.rows[0].assigned_to_username === actor.username)
-      && !(Number(batch.rows[0].created_by_account_id) === actor.userId
-        && batch.rows[0].created_by_username === actor.username)) {
-    throw new ControlPlaneAuthorizationError('当前账号不能查看这个生产批次');
-  }
   const readiness = await productionBatchReadiness(pool, productionBatchId);
   if (actor.role === 'ADMIN') return readiness;
   const { blockerTaskIds: _hidden, ...safeReadiness } = readiness;

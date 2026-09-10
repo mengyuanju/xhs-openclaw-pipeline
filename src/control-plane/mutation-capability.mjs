@@ -2,6 +2,12 @@ import { ApiError } from '../admin/http.mjs';
 
 const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
   Object.freeze({
+    capability: 'xiaohongshuQuerySearchVersion',
+    minimumVersion: 3,
+    matches: (routePath, method) => routePath === '/v1/settings/xhs_query_search'
+      && method === 'PUT',
+  }),
+  Object.freeze({
     capability: 'taskAssignmentVersion',
     minimumVersion: 3,
     matches: (routePath, method) => (routePath === '/v1/tasks' && method === 'POST')
@@ -19,6 +25,20 @@ const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
     minimumVersion: 1,
     matches: (routePath, method) => routePath === '/v1/executor-statuses'
       && method === 'DELETE',
+  }),
+  Object.freeze({
+    capability: 'duplicateQueryDiscardVersion',
+    minimumVersion: 1,
+    matches: (routePath, method) => [
+      '/v1/tasks/duplicate-query-discard-preview',
+      '/v1/tasks/duplicate-query-discard',
+    ].includes(routePath) && method === 'POST',
+  }),
+  Object.freeze({
+    capability: 'queryPackageVersion',
+    minimumVersion: 2,
+    matches: (routePath, method) => /^\/v1\/query-packages(?:\/|$)/u.test(routePath)
+      && !['GET', 'HEAD'].includes(method),
   }),
   Object.freeze({
     capability: 'deliverySpreadsheetVersion',

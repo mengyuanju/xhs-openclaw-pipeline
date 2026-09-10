@@ -95,7 +95,10 @@ test('a QA-return revision cannot be approved until copy changed relative to tha
   });
   await assert.rejects(fixture.repository.approveCopy(41,
     approveInput('22222222-2222-4222-8222-222222222222'),
-    { actorRole: 'ADMIN', reviewerUserId: 'reviewer' }), { code: 'COPY_REWORK_NOT_SATISFIED' });
+    { actorRole: 'ADMIN', reviewerUserId: 'reviewer' }), {
+    code: 'COPY_REWORK_NOT_SATISFIED',
+    message: /修改标题、正文或标签后再提交强制复检/u,
+  });
   assert.equal(fixture.queries.at(-1), 'ROLLBACK');
   assert.equal(fixture.queries.some((sql) => sql.startsWith('UPDATE copy_revisions')), false);
 });

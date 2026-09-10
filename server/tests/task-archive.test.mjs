@@ -21,6 +21,12 @@ test('configured archive includes only version-pinned delivery assets, excluding
 test('manual archive ZIP contains the current copy and current-run images under their original names', async () => {
   const task = {
     id: 42,
+    query: '桌面收纳',
+    sourceQueryPackageName: '收纳/专题',
+    xiaohongshuLinks: [
+      { noteId: 'second', url: 'https://www.xiaohongshu.com/explore/second', title: null, rank: 2 },
+      { noteId: 'first', url: 'https://www.xiaohongshu.com/explore/first', title: '第一篇参考', rank: 1 },
+    ],
     currentCopyRevisionId: 8,
     currentImageRunId: 'run-current',
     copyRevisions: [
@@ -47,14 +53,45 @@ test('manual archive ZIP contains the current copy and current-run images under 
   });
   const zip = await JSZip.loadAsync(buffer);
 
-  assert.equal(archiveFileName(task), '桌面_整理-资源包.zip');
+  assert.equal(archiveFileName(task), '收纳_专题-桌面_整理-资源包.zip');
   assert.deepEqual(loadedIds, [1, 2]);
-  assert.deepEqual(Object.keys(zip.files).sort(), ['01-cover.png', '02-detail.png', '桌面_整理.txt'].sort());
+  assert.deepEqual(
+    Object.keys(zip.files).sort(),
+    ['01-cover.png', '02-detail.png', '小红书链接.txt', '桌面_整理.txt'].sort(),
+  );
   assert.equal(await zip.file('01-cover.png').async('string'), 'image-1');
   const copy = await zip.file('桌面_整理.txt').async('string');
   assert.match(copy, /^\uFEFF标题：桌面\/整理/u);
   assert.match(copy, /文案内容：\r\n正文内容/u);
   assert.match(copy, /标签：#收纳 #租房/u);
+  const links = await zip.file('小红书链接.txt').async('string');
+  assert.match(links, /^\uFEFFQuery：桌面收纳/u);
+  assert.match(links, /1\. 第一篇参考\r\nhttps:\/\/www\.xiaohongshu\.com\/explore\/first/u);
+  assert.match(links, /2\. https:\/\/www\.xiaohongshu\.com\/explore\/second/u);
+  assert.ok(
+    links.indexOf('/explore/first') < links.indexOf('/explore/second'),
+    'links must be ordered by rank',
+  );
+  const emptyResultArchive = await buildTaskArchive({
+    ...task,
+    xiaohongshuLinks: [],
+    xiaohongshuSearchStatus: 'SUCCEEDED',
+  }, async (id) => ({
+    id,
+    mediaType: 'image/png',
+    originalName: `${id}.png`,
+    content: Buffer.from(`image-${id}`),
+  }));
+  const emptyResultZip = await JSZip.loadAsync(emptyResultArchive);
+  assert.match(
+    await emptyResultZip.file('小红书链接.txt').async('string'),
+    /搜索状态：搜索完成，暂无结果[\s\S]*暂无可用链接/u,
+  );
+  task.xiaohongshuSearchStatus = 'PENDING';
+  await assert.rejects(
+    buildTaskArchive(task, async () => assert.fail('pending search must stop before asset reads')),
+    /小红书搜索尚未完成/u,
+  );
 });
 
 test('manual archive ZIP de-duplicates repeated image names without using storage hashes', async () => {
@@ -80,9 +117,11 @@ test('manual archive ZIP de-duplicates repeated image names without using storag
   assert.ok(zip.file('封面图-2.jpg'));
 });
 
-test('batch archive keeps each task resource package separate', async () => {
-  const tasks = [21, 22].map((id) => ({
+test('batch archive groups tasks under safe package directories and isolates sanitized collisions', async () => {
+  const packageNames = new Map([[21, '分类/A'], [22, '分类\\A'], [23, null], [24, '分类/A']]);
+  const tasks = [21, 22, 23, 24].map((id) => ({
     id,
+    sourceQueryPackageName: packageNames.get(id),
     currentCopyRevisionId: 1,
     currentImageRunId: `run-${id}`,
     copyRevisions: [{ id: 1, content: { copy: { title: `标题${id}`, body: '正文', tags: [] } } }],
@@ -95,8 +134,15 @@ test('batch archive keeps each task resource package separate', async () => {
   assert.ok(content.includes(Buffer.from([0x50, 0x4b, 0x06, 0x06])),
     'the outer archive must carry a ZIP64 end-of-central-directory record');
   const outer = await JSZip.loadAsync(content);
-  assert.deepEqual(Object.keys(outer.files).sort(), ['任务-21-资源包.zip', '任务-22-资源包.zip']);
-  const inner = await JSZip.loadAsync(await outer.file('任务-21-资源包.zip').async('nodebuffer'));
+  assert.deepEqual(Object.keys(outer.files).sort(), [
+    '分类_A/任务-21-资源包.zip',
+    '分类_A/任务-24-资源包.zip',
+    '分类_A-2/任务-22-资源包.zip',
+    '未归属词包/任务-23-资源包.zip',
+  ].sort());
+  const inner = await JSZip.loadAsync(
+    await outer.file('分类_A/任务-21-资源包.zip').async('nodebuffer'),
+  );
   assert.equal(await inner.file('图片.png').async('string'), '21');
 });
 

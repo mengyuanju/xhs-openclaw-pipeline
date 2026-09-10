@@ -12,6 +12,7 @@
     "start": "wrangler dev --config dist/server/wrangler.json",
     "smoke": "node scripts/smoke.mjs",
     "smoke:batch": "node scripts/smoke-batch.mjs",
+    "auth:generate": "node scripts/generate-auth-config.mjs",
     "lint": "oxlint",
     "format": "oxfmt",
     "db:generate": "drizzle-kit generate",

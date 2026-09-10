@@ -5,11 +5,26 @@ import test from 'node:test';
 import {
   attemptAutomaticCopySamplingFreeze,
   freezeCopySamplingBatch,
+  getProductionBatchSamplingReadiness,
   insertCopyApprovalEvent,
 } from '../src/copy-quality-control.mjs';
 
 const FREEZE_ID = '81818181-8181-4818-8818-818181818181';
 const admin = Object.freeze({ userId: 1, username: 'admin', role: 'ADMIN' });
+
+test('production-batch readiness rejects ordinary users before database access', async () => {
+  let queryCount = 0;
+  const pool = { query: async () => { queryCount += 1; return { rows: [] }; } };
+  await assert.rejects(
+    getProductionBatchSamplingReadiness(pool, 55, {
+      userId: 41,
+      username: 'worker-41',
+      role: 'USER',
+    }),
+    { code: 'FORBIDDEN' },
+  );
+  assert.equal(queryCount, 0);
+});
 
 function freezeFixture() {
   const state = {

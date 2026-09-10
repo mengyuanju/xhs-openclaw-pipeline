@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic';
 const updateSchema = z.object({ status: z.enum(['PUBLISHED', 'RETIRED']) }).strict();
 
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
-  return apiHandler(request, { roles: ['ADMIN', 'REVIEWER'] }, async (session) => {
+  return apiHandler(request, { roles: ['ADMIN'] }, async (session) => {
     const id = parsePositiveId((await context.params).id);
     const item = await withKnowledgeStore((store: any) => store.getVisualKnowledge(id), session);
     if (!item) notFound('视觉配方不存在');
@@ -19,7 +19,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
 }
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
-  return apiHandler(request, { mutation: true, roles: ['ADMIN', 'REVIEWER'] }, async (session) => {
+  return apiHandler(request, { mutation: true, roles: ['ADMIN'] }, async (session) => {
     const id = parsePositiveId((await context.params).id);
     const input = await parseJson(request, updateSchema);
     return ok(await withKnowledgeStore(async (store: any) => {

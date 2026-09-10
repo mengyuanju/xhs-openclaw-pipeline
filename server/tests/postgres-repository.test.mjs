@@ -18,6 +18,7 @@ function taskRow(overrides = {}) {
     assigned_to_user_id: 'alice',
     copy_executor_node_id: 'node-b',
     current_copy_revision_id: null,
+    source_query_package_name: null,
     production_batch_id: null,
     current_image_run_id: null,
     current_execution_id: null,
@@ -58,6 +59,8 @@ test('delivery export reads only the pinned copy, image run and current-run asse
         queries.push({ sql: String(sql), values });
         return { rows: [{
           id: '41',
+          query: '黄山路线',
+          source_query_package_name: '九月选题',
           state: 'REVIEWED',
           current_copy_revision_id: '51',
           current_image_run_id: imageRunId,
@@ -81,9 +84,13 @@ test('delivery export reads only the pinned copy, image run and current-run asse
   assert.equal(snapshot.task.copyRevisions.length, 1);
   assert.equal(snapshot.task.imageRuns.length, 1);
   assert.equal(snapshot.task.assets.length, 1);
+  assert.equal(snapshot.task.query, '黄山路线');
+  assert.equal(snapshot.task.sourceQueryPackageName, '九月选题');
   assert.equal(queries.length, 1);
   assert.deepEqual(queries[0].values, [41]);
   assert.match(queries[0].sql, /delivery\.status = 'READY'/u);
+  assert.match(queries[0].sql, /task\.query/u);
+  assert.match(queries[0].sql, /task\.source_query_package_name/u);
   assert.doesNotMatch(queries[0].sql, /task_executions|human_quality_assessments/u);
 });
 
@@ -436,7 +443,7 @@ test('saved task views are owner-scoped and upsert a validated filter document',
   assert.equal(saved.id, 8);
   assert.equal(saved.ownerUsername, 'admin');
   assert.deepEqual(queries[0].values[3], {
-    query: '', deduplicateQuery: false, createdByUserId: 'admin', createdByAccountId: 1, createdByRole: 'ALL', state: 'ALL',
+    query: '', queryPackageName: '', deduplicateQuery: false, createdByUserId: 'admin', createdByAccountId: 1, createdByRole: 'ALL', state: 'ALL',
     sort: 'priority:desc', attention: 'FAILED', pageSize: 20,
   });
   assert.match(queries[0].sql, /ON CONFLICT\(owner_username, name\) DO UPDATE/u);
@@ -712,6 +719,41 @@ test('executor inventory reports independent copy and image running capacity', a
   assert.match(selection, /e\.kind = 'IMAGE' AND e\.status = 'RUNNING'/u);
   assert.match(selection, /t\.state = 'IMAGE_RUNNING'/u);
   assert.match(selection, /WHERE n\.retired_at IS NULL/u);
+});
+
+test('task pages partially match a normalized package name and expose its source snapshot', async () => {
+  const queries = [];
+  const repository = new PostgresControlPlaneRepository({
+    pool: {
+      async query(sql, values) {
+        const source = String(sql);
+        queries.push({ sql: source, values });
+        if (source.includes('COUNT(*) AS total')) return { rows: [{ total: '1' }] };
+        return { rows: [taskRow({ source_query_package_name: '九月 秋季选题' })] };
+      },
+    },
+  });
+
+  const page = await repository.listTasks({
+    queryPackageName: '  九月   秋季  ',
+    limit: 20,
+    offset: 20,
+    includeTotal: true,
+  });
+
+  assert.equal(page.total, 1);
+  assert.equal(page.items[0].sourceQueryPackageName, '九月 秋季选题');
+  const pageQuery = queries.find((item) => item.sql.includes('SELECT * FROM tasks'));
+  const countQuery = queries.find((item) => item.sql.includes('COUNT(*) AS total'));
+  assert.deepEqual(pageQuery.values, ['九月 秋季', 20, 20]);
+  assert.deepEqual(countQuery.values, ['九月 秋季']);
+  assert.match(pageQuery.sql,
+    /strpos\(lower\(COALESCE\(source_query_package_name, ''\)\), lower\(\$1\)\) > 0/u);
+  assert.match(countQuery.sql,
+    /strpos\(lower\(COALESCE\(source_query_package_name, ''\)\), lower\(\$1\)\) > 0/u);
+
+  await assert.rejects(repository.listTasks({ queryPackageName: ['九月'] }), /queryPackageName/u);
+  await assert.rejects(repository.listTasks({ queryPackageName: 'x'.repeat(201) }), /queryPackageName/u);
 });
 
 test('executor registration restores a previously retired node', async () => {

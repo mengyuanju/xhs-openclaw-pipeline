@@ -257,7 +257,7 @@ test('task visibility and destructive actions are enforced from the central user
   });
 });
 
-test('reviewers cannot mutate prompts or production settings and cannot manage users', async () => {
+test('reviewers cannot access knowledge, prompts, production settings or user management', async () => {
   const reviewer = { id: 3, username: 'reviewer', role: 'REVIEWER', status: 'ACTIVE', credentialVersion: 1 };
   const repository = {
     ownsPool: true,
@@ -275,7 +275,24 @@ test('reviewers cannot mutate prompts or production settings and cannot manage u
     assert.equal((await fetch(`${root}/v1/prompts/versions`, { method: 'POST', headers, body: '{}' })).status, 403);
     assert.equal((await fetch(`${root}/v1/users`, { headers })).status, 403);
     assert.equal((await fetch(`${root}/v1/users/1`, { method: 'DELETE', headers, body: JSON.stringify({ expectedVersion: 1 }) })).status, 403);
-    assert.equal((await fetch(`${root}/v1/knowledge`, { headers })).status, 200);
+    assert.equal((await fetch(`${root}/v1/workflow-quality-settings`, { headers })).status, 403);
+    assert.equal((await fetch(`${root}/v1/knowledge`, { headers })).status, 403);
+    assert.equal((await fetch(`${root}/v1/knowledge/capabilities`, { headers })).status, 403);
+    assert.equal((await fetch(`${root}/v1/copy-analysis-prompts`, { headers })).status, 403);
+    assert.equal((await fetch(`${root}/v1/knowledge-versions/1/asset`, { headers })).status, 403);
+    for (const path of [
+      '/v1/copy-analysis-prompts', '/v1/knowledge/labels/import', '/v1/copy-knowledge/analyze',
+      '/v1/visual-knowledge/analyze', '/v1/knowledge/1/retire', '/v1/knowledge/versions',
+      '/v1/knowledge-versions/1/publish',
+    ]) {
+      assert.equal((await fetch(`${root}${path}`, { method: 'POST', headers, body: '{}' })).status, 403, path);
+    }
+    assert.equal((await fetch(`${root}/v1/copy-analysis-prompts/1`, {
+      method: 'PATCH', headers, body: '{}',
+    })).status, 403);
+    assert.equal((await fetch(`${root}/v1/knowledge-versions/1/asset`, {
+      method: 'PUT', headers: { ...actorHeaders('reviewer', 'REVIEWER'), 'content-type': 'image/png' }, body: 'image',
+    })).status, 403);
   });
 });
 

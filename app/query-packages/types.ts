@@ -2,7 +2,7 @@ export type QueryPackageDecision = 'PENDING' | 'SELECTED' | 'REJECTED';
 export type QueryPackageValidationStatus = 'READY' | 'INVALID' | 'DUPLICATE' | 'TASK_CREATED';
 
 export const QUERY_PACKAGE_ITEM_PAGE_SIZE = 100;
-export const QUERY_PACKAGE_PRODUCTION_LIMIT = 5_000;
+export const QUERY_PACKAGE_SELECTION_LIMIT = 5_000;
 
 export type QueryPackageCounts = {
   total: number;
@@ -16,8 +16,6 @@ export type QueryPackageSummary = {
   id: number;
   name: string;
   status: string;
-  assignedToUserId: string | null;
-  assignedToDisplayName?: string | null;
   version: number;
   counts: QueryPackageCounts;
   createdAt: string;
@@ -104,8 +102,6 @@ export function normalizePackageSummary(value: unknown): QueryPackageSummary | n
     id,
     name: row.name.trim(),
     status: typeof row.status === 'string' ? row.status : 'SCREENING',
-    assignedToUserId: typeof row.assignedToUserId === 'string' ? row.assignedToUserId : null,
-    assignedToDisplayName: typeof row.assignedToDisplayName === 'string' ? row.assignedToDisplayName : null,
     version,
     counts: {
       total: finiteCount(counts.total),
@@ -158,12 +154,30 @@ export function updateQueryItemSelection(
   current: number[],
   candidates: Iterable<number>,
   checked: boolean,
-  limit = QUERY_PACKAGE_PRODUCTION_LIMIT,
+  limit = QUERY_PACKAGE_SELECTION_LIMIT,
 ) {
   const candidateIds = new Set([...candidates].filter((id) => Number.isSafeInteger(id) && id > 0));
   if (!checked) return current.filter((id) => !candidateIds.has(id));
-  const boundedLimit = Number.isSafeInteger(limit) && limit > 0 ? limit : QUERY_PACKAGE_PRODUCTION_LIMIT;
+  const boundedLimit = Number.isSafeInteger(limit) && limit > 0 ? limit : QUERY_PACKAGE_SELECTION_LIMIT;
   return [...new Set([...current, ...candidateIds])].slice(0, boundedLimit);
+}
+
+function normalizedStatusToken(value: unknown) {
+  return typeof value === 'string' ? value.trim().toUpperCase() : '';
+}
+
+function normalizePackageDecision(value: unknown): QueryPackageDecision {
+  const token = normalizedStatusToken(value);
+  if (['SELECT', 'SELECTED'].includes(token)) return 'SELECTED';
+  if (['REJECT', 'REJECTED'].includes(token)) return 'REJECTED';
+  return 'PENDING';
+}
+
+function normalizeValidationStatus(value: unknown): QueryPackageValidationStatus {
+  const token = normalizedStatusToken(value);
+  return ['INVALID', 'DUPLICATE', 'TASK_CREATED'].includes(token)
+    ? token as QueryPackageValidationStatus
+    : 'READY';
 }
 
 function normalizePackageItem(value: unknown): QueryPackageItem | null {
@@ -173,13 +187,11 @@ function normalizePackageItem(value: unknown): QueryPackageItem | null {
   const rowNumber = Number(row.rowNumber);
   const version = Number(row.version);
   const query = typeof row.query === 'string' ? row.query.trim() : '';
-  const decision = ['SELECTED', 'REJECTED'].includes(String(row.screeningDecision))
-    ? row.screeningDecision as QueryPackageDecision
-    : 'PENDING';
-  const rawValidation = row.validationStatus ?? row.status;
-  const validationStatus = ['INVALID', 'DUPLICATE', 'TASK_CREATED'].includes(String(rawValidation))
-    ? rawValidation as QueryPackageValidationStatus
-    : 'READY';
+  const rawStatus = row.validationStatus ?? row.validation_status ?? row.status;
+  const decision = normalizePackageDecision(
+    row.screeningDecision ?? row.screening_decision ?? row.decision ?? rawStatus,
+  );
+  const validationStatus = normalizeValidationStatus(rawStatus);
   if (!Number.isSafeInteger(id) || id < 1 || !query || !Number.isSafeInteger(version) || version < 1) return null;
   const requestedImageCount = row.requestedImageCount === 'auto'
     ? 'auto'
@@ -199,6 +211,36 @@ function normalizePackageItem(value: unknown): QueryPackageItem | null {
     screeningReason: typeof row.screeningReason === 'string' ? row.screeningReason : null,
     taskId: Number.isSafeInteger(taskId) && taskId > 0 ? taskId : null,
     version,
+  };
+}
+
+export type QueryPackageItemFilter = QueryPackageDecision | QueryPackageValidationStatus | 'ALL';
+
+export function queryPackageItemMatchesFilter(item: QueryPackageItem, filter: QueryPackageItemFilter) {
+  if (filter === 'ALL') return true;
+  if (['PENDING', 'SELECTED', 'REJECTED'].includes(filter)) return item.screeningDecision === filter;
+  return item.validationStatus === filter;
+}
+
+export function applyQueryPackageScreening(
+  detail: QueryPackageDetail,
+  summary: QueryPackageSummary,
+  itemIds: Iterable<number>,
+  decision: Exclude<QueryPackageDecision, 'PENDING'>,
+  reason?: string,
+): QueryPackageDetail {
+  if (detail.id !== summary.id || detail.version > summary.version) return detail;
+  const changedIds = new Set(itemIds);
+  return {
+    ...detail,
+    ...summary,
+    items: detail.items.map((item) => changedIds.has(item.id)
+      ? {
+          ...item,
+          screeningDecision: decision,
+          screeningReason: decision === 'REJECTED' ? reason?.trim() || null : null,
+        }
+      : item),
   };
 }
 

@@ -47,7 +47,9 @@ function serverRow(patch = {}) {
 test('blind QA normalization is an allowlist even when the server accidentally attaches identity history', () => {
   const item = normalizeCopyQaItem(serverRow({
     taskId: 991,
+    queryPackageName: 'SECRET-ROOT-PACKAGE',
     queryPackage: { id: 12, name: 'SECRET-PACKAGE' },
+    productionBatch: { anonymousCode: 'PB-7XQK', queryPackageName: 'SECRET-BATCH-PACKAGE' },
     source: {
       taskId: 991,
       creatorUsername: 'SECRET-CREATOR',
@@ -68,14 +70,14 @@ test('blind QA normalization is an allowlist even when the server accidentally a
   const { keys, values } = collectKeysAndScalarValues(item);
   const normalizedKeys = keys.map((key) => key.toLocaleLowerCase('en-US'));
   for (const forbidden of [
-    'taskid', 'querypackage', 'source', 'creatorusername', 'assignee', 'avatarurl',
+    'taskid', 'querypackage', 'querypackagename', 'source', 'creatorusername', 'assignee', 'avatarurl',
     'finalapprover', 'assessments', 'score', 'reviewerusername', 'reasoncodes', 'audithistory',
     'revision',
   ]) {
     assert.equal(normalizedKeys.includes(forbidden), false, forbidden);
   }
   for (const secret of [
-    '991', 'SECRET-PACKAGE', 'SECRET-CREATOR', 'SECRET-ASSIGNEE', 'SECRET-AVATAR',
+    '991', 'SECRET-PACKAGE', 'SECRET-ROOT-PACKAGE', 'SECRET-BATCH-PACKAGE', 'SECRET-CREATOR', 'SECRET-ASSIGNEE', 'SECRET-AVATAR',
     'SECRET-APPROVER', 'SECRET-REVIEWER', 'SECRET-REASON', 'SECRET-AUDITOR',
   ]) {
     assert.equal(values.includes(secret), false, secret);
@@ -150,11 +152,12 @@ test('non-blind normalization accepts current nested provenance and legacy root 
       revisionToken: 'c'.repeat(64),
       id: 902,
     },
-    productionBatch: { anonymousCode: 'PB-7XQK', id: 27, publicId: '91919191-9191-4919-8919-919191919191' },
+    productionBatch: { anonymousCode: 'PB-7XQK', id: 27, publicId: '91919191-9191-4919-8919-919191919191', queryPackageName: '  九月   选题  ' },
     source: { finalApproverAccountId: 64, finalApproverUsername: 'worker' },
   }));
   assert.ok(current && !current.blindReview);
   assert.equal(current.productionBatchId, 27);
+  assert.equal(current.productionBatch.queryPackageName, '九月 选题');
   assert.equal(current.finalApproverAccountId, 64);
   assert.equal(current.approvedRevision.id, 902);
 

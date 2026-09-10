@@ -1,0 +1,72 @@
+import { setTimeout as delay } from 'node:timers/promises';
+
+import {
+  XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
+  XiaohongshuSearchBlockedError,
+  normalizeXiaohongshuSearchResultLimit,
+} from '../xhs-query-search.mjs';
+
+export async function executeXhsQuerySearchOnce({
+  controlPlane,
+  browser,
+  nodeId,
+  nodeName,
+}) {
+  const claim = await controlPlane.claimXhsQuerySearch({
+    nodeId,
+    ...(nodeName ? { nodeName } : {}),
+    protocolVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
+  });
+  if (!claim) return { status: 'IDLE' };
+  const resultLimit = normalizeXiaohongshuSearchResultLimit(claim.resultLimit);
+  let links;
+  try {
+    links = await browser.search(claim.query, { limit: resultLimit });
+  } catch (error) {
+    if (error instanceof XiaohongshuSearchBlockedError) {
+      const job = await controlPlane.blockXhsQuerySearch(claim.id, {
+        leaseToken: claim.leaseToken,
+        reason: error.code,
+      });
+      return { status: 'BLOCKED', reason: error.code, claim, job };
+    }
+    const job = await controlPlane.failXhsQuerySearch(claim.id, {
+      leaseToken: claim.leaseToken,
+      error: error instanceof Error ? error.message : String(error),
+      retryable: true,
+    });
+    return { status: job.status, claim, job, error };
+  }
+  const job = await controlPlane.completeXhsQuerySearch(claim.id, {
+    leaseToken: claim.leaseToken,
+    links,
+  });
+  return { status: 'SUCCEEDED', claim, job };
+}
+
+export async function runXhsQuerySearch({
+  controlPlane,
+  browser,
+  nodeId,
+  nodeName,
+  pollMs = 8_000,
+  once = false,
+  signal,
+  wait = delay,
+  onOutcome = () => {},
+}) {
+  while (!signal?.aborted) {
+    const outcome = await executeXhsQuerySearchOnce({
+      controlPlane,
+      browser,
+      nodeId,
+      nodeName,
+    });
+    onOutcome(outcome);
+    if (once || outcome.status === 'BLOCKED') return outcome;
+    await wait(pollMs, undefined, signal ? { signal } : undefined).catch((error) => {
+      if (error?.name !== 'AbortError') throw error;
+    });
+  }
+  return { status: 'STOPPED' };
+}

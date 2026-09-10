@@ -80,7 +80,7 @@ export function WorkflowQualitySettingsPanel() {
       <div>
         <span className="section-kicker">Workflow quality</span>
         <h2 id="workflow-quality-settings-title">流程与文案抽检</h2>
-        <p className="subtle">集中控制词包导入、抽检比例、独立盲评和质检员整批打回权限。</p>
+        <p className="subtle">集中控制抽检比例、独立盲评和质检员整批打回权限。</p>
       </div>
       <ClipboardCheck size={20} aria-hidden="true" />
     </div>
@@ -89,24 +89,15 @@ export function WorkflowQualitySettingsPanel() {
     {!loading && !draft && <div className="empty-state"><p>流程质检配置暂不可用，已停用编辑以避免覆盖真实数据。</p><Button unstyled className="button" type="button" onClick={() => { void load(); }}>重新读取</Button></div>}
     {draft && <>
       <div className={styles.modeSummary} aria-label="当前配置摘要">
-        <span className="pill">词包导入：{draft.queryPackage.workerImportEnabled ? '作业员可用' : '仅管理员'}</span>
         <span className="pill">文案抽检：{draft.copySampling.enabled ? `${ratePercent}%` : '关闭'}</span>
         <span className="pill">质检视图：{draft.copySampling.blindReviewEnabled ? '盲评' : '非盲评'}</span>
         <span className="pill">质检员整批打回：{draft.copySampling.reviewerBatchReturnEnabled ? '允许' : '禁止'}</span>
       </div>
       <div className={styles.grid}>
-        <div className={styles.card} data-wide="true">
-          <div className={styles.cardText}>
-            <label htmlFor="worker-query-package-import">允许作业人员导入 Query 词包</label>
-            <p>只控制作业人员新建或导入词包。关闭后，他们仍可筛选已分配给自己的词包，并将通过项创建为正式作业；管理员始终可以导入。</p>
-          </div>
-          <Switch id="worker-query-package-import" checked={draft.queryPackage.workerImportEnabled} disabled={disabled}
-            onChange={(event) => { setMessage(''); setDraft((current) => current ? { ...current, queryPackage: { workerImportEnabled: event.target.checked } } : current); }} />
-        </div>
         <div className={styles.card}>
           <div className={styles.cardText}>
             <label htmlFor="copy-sampling-enabled">启用文案抽检</label>
-            <p>文案人工审核通过后，以最终人工通过版本为样本候选；未抽中的作业继续后续流程。</p>
+            <p>文案人工审核结果提交后，以最终达标版本为候选；同批任务等待抽检结论后再继续。关闭普通抽检不影响返工稿的强制复检。</p>
           </div>
           <Switch id="copy-sampling-enabled" checked={draft.copySampling.enabled} disabled={disabled}
             onChange={(event) => { setMessage(''); setDraft((current) => current ? { ...current, copySampling: { ...current.copySampling, enabled: event.target.checked } } : current); }} />

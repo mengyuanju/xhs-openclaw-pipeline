@@ -6,6 +6,7 @@ export type WorkbenchListState = {
   page: number;
   pageSize: 20 | 50 | 100;
   query: string;
+  queryPackageName: string;
   sort: TaskSort;
   deduplicateQuery: boolean;
   createdByUserId: string;
@@ -20,6 +21,7 @@ export const DEFAULT_WORKBENCH_LIST_STATE: WorkbenchListState = Object.freeze({
   page: 1,
   pageSize: 20,
   query: '',
+  queryPackageName: '',
   sort: 'priority:desc',
   deduplicateQuery: false,
   createdByUserId: '',
@@ -62,11 +64,13 @@ export function parseWorkbenchListState(
   const creatorAccountId = positiveInteger(one(search.createdByAccountId), 0);
   const validCreator = allowAdminFilters && /^[a-zA-Z0-9._:-]{1,100}$/u.test(creator) && creatorAccountId > 0;
   const query = one(search.query)?.trim() ?? '';
+  const queryPackageName = one(search.queryPackageName)?.replace(/\s+/gu, ' ').trim() ?? '';
   const taskId = positiveInteger(one(search.taskId), 0);
   return {
     page: positiveInteger(one(search.page), 1),
     pageSize: PAGE_SIZES.has(pageSize) ? pageSize as WorkbenchListState['pageSize'] : 20,
     query: [...query].slice(0, 500).join(''),
+    queryPackageName: [...queryPackageName].slice(0, 200).join(''),
     sort: sort && SORTS.has(sort as TaskSort) ? sort as TaskSort : 'priority:desc',
     deduplicateQuery: ['1', 'true'].includes(one(search.deduplicateQuery) ?? ''),
     createdByUserId: validCreator ? creator : '',
@@ -83,6 +87,7 @@ export function workbenchListSearch(state: WorkbenchListState, { includeAdminFil
   if (state.page > 1) search.set('page', String(state.page));
   if (state.pageSize !== 20) search.set('pageSize', String(state.pageSize));
   if (state.query) search.set('query', state.query);
+  if (state.queryPackageName) search.set('queryPackageName', state.queryPackageName);
   if (state.sort !== 'priority:desc') search.set('sort', state.sort);
   if (state.deduplicateQuery) search.set('deduplicateQuery', '1');
   if (state.state !== 'ALL') search.set('state', state.state);

@@ -44,6 +44,17 @@ test('the single-return success state offers release-rest and batch-upgrade bran
   assert.doesNotMatch(source, /triggerSamplingItemId: selectedItems\[0\]\.id/u);
 });
 
+test('mandatory recheck actions explain their dedicated gate before image generation', async () => {
+  const source = await readFile(new URL('../app/copy-qa/copy-qa-workbench.tsx', import.meta.url), 'utf8');
+
+  assert.match(source, /const mandatoryRecheck = item\.sampleKind === 'MANDATORY_RECHECK'/u);
+  assert.match(source, /title: mandatoryRecheck \? '确认返工稿通过强制复检？' : '确认当前最终稿通过抽检？'/u);
+  assert.match(source, /返工稿已按最终 3 分记录；通过强制复检后才会进入待生图队列/u);
+  assert.match(source, /confirmLabel: mandatoryRecheck \? '(?:确认)?通过强制复检' : '确认通过'/u);
+  assert.match(source, /已通过强制复检并进入待生图队列/u);
+  assert.match(source, /未通过强制复检[\s\S]{0,120}再次进入强制复检，通过前不会进入待生图队列/u);
+});
+
 test('copy QA filters keep their longest option on one line', async () => {
   const [source, styles] = await Promise.all([
     readFile(new URL('../app/copy-qa/copy-qa-workbench.tsx', import.meta.url), 'utf8'),

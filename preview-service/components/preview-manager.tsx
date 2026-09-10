@@ -9,6 +9,7 @@ import {
   Images,
   Link2,
   LoaderCircle,
+  LogOut,
   RefreshCw,
   Upload,
 } from 'lucide-react';
@@ -30,7 +31,7 @@ import {
   BatchPreviewCreator,
   type BatchPreviewDraft,
 } from '@/components/batch-preview-creator';
-import { Badge } from '@/components/ui/badge';
+import { ApiKeyManagerDialog } from '@/components/api-key-manager-dialog';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -44,6 +45,7 @@ import {
   MAX_IMAGE_COUNT,
   MAX_TITLE_LENGTH,
 } from '@/lib/preview-contract';
+import { adminFetch } from '@/lib/admin-fetch';
 import type { PreviewSummary } from '@/lib/preview-types';
 import { getPublicPreviewPath } from '@/lib/preview-url';
 import { cn } from '@/lib/utils';
@@ -54,11 +56,12 @@ interface ApiErrorBody {
 
 type CreationMode = 'single' | 'batch';
 
-export function PreviewManager() {
+export function PreviewManager({ username }: { username: string }) {
   const [previews, setPreviews] = useState<PreviewSummary[]>([]);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [creationMode, setCreationMode] = useState<CreationMode>('single');
@@ -92,7 +95,9 @@ export function PreviewManager() {
 
   const loadPreviews = useCallback(async () => {
     try {
-      const response = await fetch('/api/v1/previews', { cache: 'no-store' });
+      const response = await adminFetch('/api/admin/previews', {
+        cache: 'no-store',
+      });
       if (!response.ok) {
         throw new Error(await readApiError(response));
       }
@@ -126,7 +131,7 @@ export function PreviewManager() {
     setCreatedPublicIds([]);
     setCreatedLinksCopied(false);
     try {
-      const response = await fetch('/api/v1/previews', {
+      const response = await adminFetch('/api/admin/previews', {
         method: 'POST',
         body: new FormData(form),
       });
@@ -152,7 +157,7 @@ export function PreviewManager() {
     setRevokingId(id);
     setError('');
     try {
-      const response = await fetch(`/api/v1/previews/${id}/revoke`, {
+      const response = await adminFetch(`/api/admin/previews/${id}/revoke`, {
         method: 'POST',
       });
       if (!response.ok) {
@@ -216,6 +221,15 @@ export function PreviewManager() {
     setCreatedLinksCopied(false);
   }
 
+  async function logout() {
+    setLoggingOut(true);
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } finally {
+      window.location.assign('/login');
+    }
+  }
+
   const totalSelectedBytes = selectedFiles.reduce(
     (total, file) => total + file.size,
     0,
@@ -224,26 +238,51 @@ export function PreviewManager() {
   return (
     <main className="min-h-screen bg-background">
       <header className="border-b border-border bg-card">
-        <div className="mx-auto flex min-h-20 max-w-[1180px] items-center gap-3 px-4 py-4 sm:px-6 lg:px-8">
-          <Image
-            src="/favicon.png"
-            alt=""
-            width={44}
-            height={44}
-            unoptimized
-            className="size-11 rounded-xl"
-          />
-          <h1 className="text-xl font-semibold tracking-tight text-foreground sm:text-2xl">
-            海默信息小红书编辑器
-          </h1>
+        <div className="mx-auto flex min-h-[74px] max-w-[1100px] flex-wrap items-center justify-between gap-3 px-3.5 py-3.5 sm:px-6">
+          <div className="flex min-w-0 items-center gap-3">
+            <Image
+              src="/favicon.png"
+              alt=""
+              width={44}
+              height={44}
+              unoptimized
+              className="size-11 shrink-0 rounded-xl"
+            />
+            <h1 className="truncate text-xl font-medium tracking-tight text-foreground sm:text-2xl">
+              海默信息小红书编辑器
+            </h1>
+          </div>
+
+          <div className="ml-auto flex items-center gap-2">
+            <span className="hidden max-w-32 truncate text-sm text-muted-foreground lg:block">
+              {username}
+            </span>
+            <ApiKeyManagerDialog />
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={loggingOut}
+              onClick={() => void logout()}
+            >
+              {loggingOut ? (
+                <LoaderCircle
+                  className="animate-spin"
+                  data-icon="inline-start"
+                />
+              ) : (
+                <LogOut data-icon="inline-start" />
+              )}
+              退出
+            </Button>
+          </div>
         </div>
       </header>
 
-      <div className="mx-auto max-w-[1180px] px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
+      <div className="mx-auto max-w-[1100px] px-3.5 pb-[30px] pt-[26px] sm:px-6">
         {error ? (
           <div
             role="alert"
-            className="mb-5 flex items-start justify-between gap-4 rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive"
+            className="mb-[18px] flex items-start justify-between gap-4 rounded-[13px] border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive"
           >
             <span>{error}</span>
             <Button
@@ -258,7 +297,7 @@ export function PreviewManager() {
         ) : null}
 
         {createdPublicIds.length > 0 ? (
-          <section className="mb-5 grid gap-4 rounded-xl border border-emerald-700/20 bg-emerald-50/80 p-4 sm:grid-cols-[1fr_auto] sm:items-center">
+          <section className="mb-[18px] grid gap-4 rounded-[13px] border border-emerald-700/20 bg-emerald-50/80 p-4 sm:grid-cols-[1fr_auto] sm:items-center">
             <div className="flex items-start gap-3">
               <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-full bg-emerald-700 text-white">
                 <Check className="size-4" aria-hidden="true" />
@@ -306,12 +345,12 @@ export function PreviewManager() {
           </section>
         ) : null}
 
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)] lg:items-start">
+        <div className="grid gap-[22px] min-[761px]:grid-cols-[minmax(0,1.15fr)_minmax(330px,0.85fr)] min-[761px]:items-start">
           <section className="min-w-0">
             <div
               role="tablist"
               aria-label="创建方式"
-              className="mb-4 grid h-11 w-full grid-cols-2 rounded-xl bg-muted p-1 sm:w-[300px]"
+              className="mb-3.5 grid min-h-[46px] w-full grid-cols-2 rounded-[13px] bg-muted p-1 sm:w-[304px]"
             >
               <button
                 id="single-create-tab"
@@ -321,7 +360,7 @@ export function PreviewManager() {
                 aria-controls="single-create-panel"
                 onClick={() => setCreationMode('single')}
                 className={cn(
-                  'inline-flex items-center justify-center gap-1.5 rounded-lg px-4 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  'inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-[9px] px-4 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                   creationMode === 'single'
                     ? 'bg-card text-foreground shadow-sm'
                     : 'text-muted-foreground hover:text-foreground',
@@ -338,7 +377,7 @@ export function PreviewManager() {
                 aria-controls="batch-create-panel"
                 onClick={() => setCreationMode('batch')}
                 className={cn(
-                  'inline-flex items-center justify-center gap-1.5 rounded-lg px-4 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  'inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-[9px] px-4 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                   creationMode === 'batch'
                     ? 'bg-card text-foreground shadow-sm'
                     : 'text-muted-foreground hover:text-foreground',
@@ -358,13 +397,13 @@ export function PreviewManager() {
               <form
                 ref={formRef}
                 onSubmit={createPreview}
-                className="overflow-hidden rounded-2xl border border-border bg-card shadow-[0_1px_2px_rgb(20_20_30/4%)]"
+                className="overflow-hidden rounded-[18px] border border-border bg-card shadow-[0_12px_34px_rgb(24_25_34/6%)]"
               >
-                <div className="border-b border-border px-5 py-4 sm:px-6">
-                  <h2 className="text-lg font-semibold">创建预览</h2>
+                <div className="flex min-h-[62px] items-center border-b border-border px-5 py-3.5">
+                  <h2 className="text-lg font-medium">创建预览</h2>
                 </div>
 
-                <div className="grid gap-5 p-5 sm:p-6">
+                <div className="grid gap-[22px] p-5">
                   <div className="grid gap-2">
                     <label htmlFor="title" className="text-sm font-medium">
                       标题 <span className="text-primary">*</span>
@@ -388,7 +427,7 @@ export function PreviewManager() {
                       name="body"
                       maxLength={MAX_BODY_LENGTH}
                       placeholder="输入需要展示的文案……"
-                      className="min-h-40 resize-y bg-background px-3 py-3 leading-7"
+                      className="min-h-32 resize-y bg-background px-3 py-3 leading-7"
                     />
                   </div>
 
@@ -411,7 +450,7 @@ export function PreviewManager() {
                     <label
                       htmlFor="images"
                       aria-label="选择原始图片"
-                      className="group grid min-h-36 cursor-pointer place-items-center rounded-xl border border-dashed border-primary/35 bg-primary/[0.025] px-6 py-7 text-center transition-colors hover:border-primary/60 hover:bg-primary/[0.045] focus-within:ring-2 focus-within:ring-ring"
+                      className="group grid min-h-[126px] cursor-pointer place-items-center rounded-[13px] border border-dashed border-primary/35 bg-primary/[0.025] p-5 text-center transition-colors hover:border-primary/60 hover:bg-primary/[0.045] focus-within:ring-2 focus-within:ring-ring"
                     >
                       <span>
                         <span className="mx-auto mb-3 grid size-10 place-items-center rounded-full bg-primary/10 text-primary transition-transform group-hover:-translate-y-0.5">
@@ -465,7 +504,7 @@ export function PreviewManager() {
                     ) : null}
                   </div>
 
-                  <div className="flex justify-end border-t border-border pt-5">
+                  <div className="flex justify-end border-t border-border pt-4">
                     <Button
                       type="submit"
                       size="lg"
@@ -503,12 +542,12 @@ export function PreviewManager() {
             </div>
           </section>
 
-          <section className="min-w-0 overflow-hidden rounded-2xl border border-border bg-card shadow-[0_1px_2px_rgb(20_20_30/4%)] lg:sticky lg:top-6">
-            <div className="flex min-h-[65px] items-center justify-between gap-4 border-b border-border px-4 py-3 sm:px-5">
-              <div className="flex items-baseline gap-2">
-                <h2 className="text-lg font-semibold">预览记录</h2>
+          <section className="min-w-0 overflow-hidden rounded-[18px] border border-border bg-card shadow-[0_12px_34px_rgb(24_25_34/6%)] min-[761px]:sticky min-[761px]:top-[26px]">
+            <div className="flex min-h-[62px] items-center justify-between gap-4 border-b border-border px-5 py-3.5">
+              <div className="min-w-0">
+                <h2 className="text-lg font-medium">预览记录</h2>
                 {!loading ? (
-                  <span className="text-xs text-muted-foreground">
+                  <span className="mt-0.5 block text-xs text-muted-foreground">
                     {previews.length} 条
                   </span>
                 ) : null}
@@ -550,7 +589,7 @@ export function PreviewManager() {
                 </div>
               </div>
             ) : (
-              <div className="preview-copy-scrollbar grid gap-3 p-3 sm:p-4 lg:max-h-[calc(100dvh-11rem)] lg:overflow-y-auto">
+              <div className="preview-copy-scrollbar grid divide-y divide-border min-[761px]:max-h-[calc(100dvh-116px)] min-[761px]:overflow-y-auto">
                 {previews.map((preview) => (
                   <PreviewRow
                     key={preview.id}
@@ -596,11 +635,11 @@ function PreviewRow({
   return (
     <article
       className={cn(
-        'grid gap-3 rounded-xl border border-border bg-background p-3 sm:grid-cols-[64px_minmax(0,1fr)_auto] sm:items-center',
+        'grid grid-cols-[64px_minmax(0,1fr)] gap-[13px] p-4',
         !published && 'bg-muted/40',
       )}
     >
-      <div className="relative aspect-square overflow-hidden rounded-lg bg-muted">
+      <div className="relative size-16 overflow-hidden rounded-[10px] bg-muted">
         {published ? (
           <Image
             src={`/api/public/previews/${preview.publicId}/images/1`}
@@ -621,86 +660,99 @@ function PreviewRow({
       </div>
 
       <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge
-            variant={published ? 'outline' : 'secondary'}
-            className={
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span
+            className={cn(
+              'inline-flex items-center gap-1.5 font-medium',
               published
-                ? 'border-emerald-700/20 bg-emerald-50 text-emerald-800'
-                : 'text-muted-foreground'
-            }
+                ? 'text-emerald-700 dark:text-emerald-300'
+                : 'text-muted-foreground',
+            )}
           >
+            <span className="size-1.5 rounded-full bg-current" />
             {published ? '可访问' : '已撤销'}
-          </Badge>
+          </span>
           <span className="text-xs text-muted-foreground">
             {formatDate(preview.createdAt)}
           </span>
         </div>
-        <h3 className="mt-1.5 truncate text-base font-semibold">
-          {preview.title}
-        </h3>
-        <p className="mt-1 truncate font-mono text-xs text-muted-foreground">
+        <h3 className="mt-2 truncate text-sm font-medium">{preview.title}</h3>
+        <p className="mt-1 truncate text-xs text-muted-foreground">
           {getPublicPreviewPath(preview.publicId)}
         </p>
-      </div>
 
-      <div className="flex flex-wrap gap-2 sm:justify-end">
-        {published ? (
-          <>
-            <Button type="button" variant="outline" size="sm" onClick={onCopy}>
-              {copied ? (
-                <Check data-icon="inline-start" />
-              ) : (
-                <Copy data-icon="inline-start" />
-              )}
-              {copied ? '已复制' : '复制'}
-            </Button>
-            <a
-              href={getPublicPreviewPath(preview.publicId)}
-              target="_blank"
-              rel="noreferrer"
-              className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}
-            >
-              打开
-              <ArrowUpRight data-icon="inline-end" />
-            </a>
-            <AlertDialog open={dialogOpen} onOpenChange={setDialogOpen}>
-              <AlertDialogTrigger
-                render={
-                  <Button type="button" variant="destructive" size="sm" />
-                }
+        <div className="mt-3 flex flex-wrap gap-2">
+          {published ? (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onCopy}
               >
-                <Ban data-icon="inline-start" />
-                撤销
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>撤销这个公开链接？</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    访客将无法继续查看页面和原图。原图母版仍会保留在存储中，便于后续审计或恢复能力扩展。
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel disabled={revoking}>
-                    取消
-                  </AlertDialogCancel>
-                  <AlertDialogAction
-                    variant="destructive"
-                    disabled={revoking}
-                    onClick={() => void confirmRevoke()}
-                  >
-                    {revoking ? (
-                      <LoaderCircle className="animate-spin" />
-                    ) : null}
-                    确认撤销
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          </>
-        ) : (
-          <span className="text-xs text-muted-foreground">公开读取已停止</span>
-        )}
+                {copied ? (
+                  <Check data-icon="inline-start" />
+                ) : (
+                  <Copy data-icon="inline-start" />
+                )}
+                {copied ? '已复制' : '复制'}
+              </Button>
+              <a
+                href={getPublicPreviewPath(preview.publicId)}
+                target="_blank"
+                rel="noreferrer"
+                className={cn(
+                  buttonVariants({ variant: 'outline', size: 'sm' }),
+                )}
+              >
+                打开
+                <ArrowUpRight data-icon="inline-end" />
+              </a>
+              <AlertDialog open={dialogOpen} onOpenChange={setDialogOpen}>
+                <AlertDialogTrigger
+                  render={
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                    />
+                  }
+                >
+                  <Ban data-icon="inline-start" />
+                  撤销
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>撤销这个公开链接？</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      访客将无法继续查看页面和原图。原图母版仍会保留在存储中，便于后续审计或恢复能力扩展。
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel disabled={revoking}>
+                      取消
+                    </AlertDialogCancel>
+                    <AlertDialogAction
+                      variant="destructive"
+                      disabled={revoking}
+                      onClick={() => void confirmRevoke()}
+                    >
+                      {revoking ? (
+                        <LoaderCircle className="animate-spin" />
+                      ) : null}
+                      确认撤销
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </>
+          ) : (
+            <span className="text-xs text-muted-foreground">
+              公开读取已停止
+            </span>
+          )}
+        </div>
       </div>
     </article>
   );

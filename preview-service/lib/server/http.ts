@@ -29,9 +29,20 @@ export function errorResponse(error: unknown) {
   );
 }
 
-export function assertSameOrigin(request: Request) {
+export function assertSameOrigin(
+  request: Request,
+  options: { requireOrigin?: boolean } = {},
+) {
   const origin = request.headers.get('Origin');
+  if (!origin && options.requireOrigin) {
+    throw new ApiError('请求来源不受信任。', 403, 'UNTRUSTED_ORIGIN');
+  }
   if (origin && origin !== new URL(request.url).origin) {
+    throw new ApiError('请求来源不受信任。', 403, 'UNTRUSTED_ORIGIN');
+  }
+
+  const fetchSite = request.headers.get('Sec-Fetch-Site');
+  if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'none') {
     throw new ApiError('请求来源不受信任。', 403, 'UNTRUSTED_ORIGIN');
   }
 }

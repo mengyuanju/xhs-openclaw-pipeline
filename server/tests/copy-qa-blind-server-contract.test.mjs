@@ -18,6 +18,7 @@ function databaseRow(patch = {}) {
     freeze_public_id: FREEZE_PUBLIC_ID,
     production_batch_id: 27,
     production_batch_public_id: '27272727-2727-4727-8727-272727272727',
+    query_package_name: 'SECRET-PACKAGE',
     blind_review_enabled: true,
     reviewer_batch_return_enabled: false,
     task_id: 991,
@@ -58,13 +59,14 @@ function assertBlindAllowlist(payload) {
   for (const forbidden of [
     'taskid', 'freezeid', 'productionbatchid', 'copyrevisionid', 'revision',
     'accountid', 'userid', 'username', 'avatar', 'creator', 'assignee', 'finalapprover',
-    'assessment', 'score', 'reasoncodes', 'history', 'source', 'querypackage',
+    'assessment', 'score', 'reasoncodes', 'history', 'source', 'querypackage', 'querypackagename',
   ]) {
     assert.equal(keys.includes(forbidden), false, forbidden);
   }
   const serialized = JSON.stringify(payload);
   for (const secret of [
     '991', '902', 'SECRET-APPROVER', 'SECRET-ASSIGNEE', 'SECRET-CREATOR',
+    'SECRET-PACKAGE',
     '27272727-2727-4727-8727-272727272727',
   ]) assert.equal(serialized.includes(secret), false, secret);
   assert.equal(serialized.includes('QC-00000071'), false,
@@ -99,14 +101,35 @@ test('reviewer blind list and detail are recursively server-side allowlisted', a
 
 test('admin non-blind inspection retains traceable frozen identifiers', async () => {
   const admin = { userId: 1, username: 'admin', role: 'ADMIN' };
-  const pool = { query: async () => ({ rows: [databaseRow()] }) };
+  const queries = [];
+  const pool = { query: async (sql, values) => {
+    queries.push({ sql: String(sql), values });
+    return { rows: [databaseRow({ query_package_name: '九月 选题' })] };
+  } };
+  const [listed] = await listCopyQaItems(pool, {
+    status: 'PENDING', queryPackageName: '  九月   选题  ',
+  }, admin);
   const detail = await getCopyQaItem(pool, ITEM_PUBLIC_ID, admin);
   assert.equal(detail.blindReview, false,
     'blindReview describes the current redacted response; administrators receive a traceable view');
   assert.equal(detail.taskId, 991);
   assert.equal(detail.approvedRevision.id, 902);
   assert.equal(detail.productionBatch.id, 27);
+  assert.equal(listed.productionBatch.queryPackageName, '九月 选题');
+  assert.equal(detail.productionBatch.queryPackageName, '九月 选题');
   assert.equal(detail.source.finalApproverAccountId, 64);
+  assert.deepEqual(queries[0].values, ['PENDING', null, '九月 选题', 50, 0]);
+  assert.match(queries[0].sql,
+    /strpos\(lower\(batch\.query_package_name\), lower\(\$3\)\) > 0/u);
+});
+
+test('reviewers cannot request a package-name QA filter', async () => {
+  await assert.rejects(
+    listCopyQaItems({ query: async () => assert.fail('filter must fail before SQL') }, {
+      queryPackageName: '九月选题',
+    }, reviewer),
+    (error) => error?.code === 'FORBIDDEN',
+  );
 });
 
 test('reviewers cannot turn an unselected batch-scope identifier into copy detail', async () => {

@@ -16,7 +16,11 @@ const MAX_CELL_CHARACTERS = 32_767;
 const IMAGE_DISPLAY_MAX_WIDTH_PX = 150;
 const IMAGE_DISPLAY_MAX_HEIGHT_PX = 200;
 const IMAGE_COLUMN_WIDTH = 22;
+const PACKAGE_COLUMN_WIDTH = 30;
+const QUERY_COLUMN_WIDTH = 32;
 const ARTICLE_COLUMN_WIDTH = 72;
+const LINKS_COLUMN_WIDTH = 64;
+const TEXT_COLUMN_COUNT = 4;
 const DATA_ROW_HEIGHT_PT = 155;
 const FONT_NAME = 'Arial';
 const DELIVERY_IMAGE_MEDIA_TYPES = new Set(
@@ -75,6 +79,44 @@ function articleValue(copy) {
   return `${title}${separator}${body}`;
 }
 
+function rankedXiaohongshuLinks(task) {
+  if (!Array.isArray(task?.xiaohongshuLinks)) return [];
+  return task.xiaohongshuLinks
+    .map((item, index) => ({
+      index,
+      rank: Number.isSafeInteger(Number(item?.rank)) && Number(item.rank) > 0
+        ? Number(item.rank)
+        : index + 1,
+      url: String(item?.url ?? '').trim(),
+    }))
+    .filter((item) => item.url)
+    .sort((left, right) => left.rank - right.rank || left.index - right.index);
+}
+
+function xiaohongshuLinksValue(task) {
+  const links = rankedXiaohongshuLinks(task);
+  const statusText = {
+    PENDING: '等待搜索',
+    RUNNING: '搜索中',
+    SUCCEEDED: '搜索完成，暂无结果',
+    BLOCKED: task?.xiaohongshuSearchBlockedReason === 'CAPTCHA_REQUIRED'
+      ? '等待人工安全验证'
+      : '等待重新登录',
+    FAILED: '搜索失败',
+    CANCELLED: '搜索已取消',
+  }[task?.xiaohongshuSearchStatus] ?? '';
+  return spreadsheetText(
+    links.length > 0 ? links.map((item) => item.url).join('\n') : statusText,
+    '小红书链接',
+  );
+}
+
+function assertXiaohongshuSearchReady(task) {
+  if (task?.xiaohongshuSearchStatus && task.xiaohongshuSearchStatus !== 'SUCCEEDED') {
+    throw new TypeError('当前 Query 的小红书搜索尚未完成，不能导出交付文件');
+  }
+}
+
 function orientedDimensions(metadata) {
   const orientation = Number(metadata.orientation);
   return orientation >= 5 && orientation <= 8
@@ -125,12 +167,15 @@ async function originalImage(content, mediaType) {
 }
 
 function styleWorksheet(worksheet, rowCount, imageCount) {
-  const columnCount = Math.max(1, imageCount + 1);
-  worksheet.getColumn(1).width = ARTICLE_COLUMN_WIDTH;
+  const columnCount = TEXT_COLUMN_COUNT + imageCount;
+  worksheet.getColumn(1).width = PACKAGE_COLUMN_WIDTH;
+  worksheet.getColumn(2).width = QUERY_COLUMN_WIDTH;
+  worksheet.getColumn(3).width = ARTICLE_COLUMN_WIDTH;
+  worksheet.getColumn(4).width = LINKS_COLUMN_WIDTH;
   for (let index = 1; index <= imageCount; index += 1) {
-    const column = worksheet.getColumn(index + 1);
+    const column = worksheet.getColumn(index + TEXT_COLUMN_COUNT);
     column.width = IMAGE_COLUMN_WIDTH;
-    worksheet.getRow(1).getCell(index + 1).value = `图片 ${index}`;
+    worksheet.getRow(1).getCell(index + TEXT_COLUMN_COUNT).value = `图片 ${index}`;
   }
 
   const header = worksheet.getRow(1);
@@ -149,7 +194,7 @@ function styleWorksheet(worksheet, rowCount, imageCount) {
     for (let column = 1; column <= columnCount; column += 1) {
       const cell = row.getCell(column);
       cell.font = { name: FONT_NAME, size: 10, color: { argb: 'FF111827' } };
-      cell.alignment = column === 1
+      cell.alignment = column <= TEXT_COLUMN_COUNT
         ? { horizontal: 'left', vertical: 'top', wrapText: true }
         : { horizontal: 'center', vertical: 'middle' };
       cell.border = { bottom: { style: 'thin', color: { argb: 'FFE5E7EB' } } };
@@ -183,20 +228,24 @@ export async function writeDeliverySpreadsheet(tasks, loadAsset, outputPath, {
     properties: { defaultRowHeight: 18 },
     views: [{
       state: 'frozen',
-      xSplit: 1,
+      xSplit: TEXT_COLUMN_COUNT,
       ySplit: 1,
-      topLeftCell: 'B2',
+      topLeftCell: 'E2',
       showGridLines: false,
     }],
     pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
   });
-  worksheet.getCell('A1').value = '完整文章';
+  worksheet.getCell('A1').value = '词包名称';
+  worksheet.getCell('B1').value = 'Query';
+  worksheet.getCell('C1').value = '完整文章';
+  worksheet.getCell('D1').value = '小红书链接';
 
   let taskCount = 0;
   let maxImageCount = 0;
   let imageByteSize = 0;
   for await (const task of tasks) {
     signal?.throwIfAborted();
+    assertXiaohongshuSearchReady(task);
     taskCount += 1;
     if (taskCount > maxTasks) {
       throw new RangeError(`Excel 图片导出一次最多 ${maxTasks} 篇文章`);
@@ -205,7 +254,13 @@ export async function writeDeliverySpreadsheet(tasks, loadAsset, outputPath, {
     const { copy, assetIds } = currentDeliverySource(task);
     maxImageCount = Math.max(maxImageCount, assetIds.length);
     const row = worksheet.addRow([]);
-    row.getCell(1).value = articleValue(copy);
+    row.getCell(1).value = spreadsheetText(
+      task.sourceQueryPackageName ?? '未归属词包',
+      '词包名称',
+    );
+    row.getCell(2).value = spreadsheetText(task.query, 'Query');
+    row.getCell(3).value = articleValue(copy);
+    row.getCell(4).value = xiaohongshuLinksValue(task);
 
     for (let imageIndex = 0; imageIndex < assetIds.length; imageIndex += 1) {
       signal?.throwIfAborted();
@@ -231,7 +286,7 @@ export async function writeDeliverySpreadsheet(tasks, loadAsset, outputPath, {
         extension: image.extension,
       });
       worksheet.addImage(imageId, {
-        tl: { col: imageIndex + 1.08, row: row.number - 0.96 },
+        tl: { col: imageIndex + TEXT_COLUMN_COUNT + 0.08, row: row.number - 0.96 },
         ext: image.display,
         editAs: 'oneCell',
       });

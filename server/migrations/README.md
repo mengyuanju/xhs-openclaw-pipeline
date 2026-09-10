@@ -20,13 +20,13 @@ ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS remark text;
 
 `0021_task_assignment_integrity.sql` 会修复历史任务的负责人元数据、增加负责人外键和一致性约束；`0022_auto_assignment_cursor.sql` 会增加独立的公平轮转游标。`0021` 需要扫描并短暂锁定任务表，已有任务较多时应安排维护窗口。
 
-V3 将负责人分配推迟到文案待审核阶段。这次工作流变更复用已有字段，不新增数据库迁移，但任务创建、负责人写入和自动派单池写入的语义已经改变，因此 Web 必须通过 V3 capability 阻止请求落到 V2 中心。
+V3 将负责人分配推迟到文案待审核阶段。任务创建、负责人写入和自动派单池写入的语义已经改变，因此 Web 必须通过 V3 capability 阻止请求落到 V2 中心。普通任务复用已有字段；旧版 Query 词包任务的创建时预分配由 `0033_query_package_preassignment_repair.sql` 单独修复。
 
 生产升级顺序：
 
 1. 暂停 Web 写入并让中心服务、文案执行机和生图执行机停止领取新任务。
 2. 备份 PostgreSQL 和 `CONTROL_PLANE_STORAGE_ROOT`。先运行 `npm run db:upgrade` 预览，再在 `server` 目录运行 `npm run db:upgrade -- --apply`。
-3. 以停机切换或原子切流方式启动同一发布包中的新版中心服务和新版 Web，确认 `/health` 的 `taskAssignmentVersion=3`、`autoAssignmentPoolVersion=3`。不要让 V2/V3 中心处于同一个负载均衡池中滚动混跑：capability 检查和写请求是两个请求，混合后端不能保证命中同一版本。新版 Web 会在任务创建、负责人写入和自动派单池写入前校验对应的 V3 capability，V2 或更旧版本、版本缺失及无法确认版本时均拒绝写入；V3 的手工分配和人员池写入仍会同时校验账号名与不可复用的数字账号 ID。
+3. 以停机切换或原子切流方式启动同一发布包中的新版中心服务和新版 Web，确认 `/health` 的 `taskAssignmentVersion=3`、`autoAssignmentPoolVersion=3`、`queryPackageVersion=2`。不要让新旧中心处于同一个负载均衡池中滚动混跑：capability 检查和写请求是两个请求，混合后端不能保证命中同一版本。新版 Web 会在任务创建、负责人写入、自动派单池写入和 Query 词包写操作前校验对应 capability；版本过旧、版本缺失或无法确认时均拒绝写入。V3 的手工分配和人员池写入仍会同时校验账号名与不可复用的数字账号 ID。
 4. 在文案执行机仍停止时，先清点历史未分配文案积压：`SELECT id, query, created_at FROM tasks WHERE state = 'COPY_QUEUED' AND assigned_to_user_id IS NULL ORDER BY id;`。V3 会把这些任务视为可执行的机器队列；通过新版管理员界面废弃不应产生模型调用的旧任务，明确确认其余任务可以执行后再继续。
 5. 在管理员页面只把确实需要自动接单的普通用户加入人员池，设置各自的待审核任务额度，最后开启总开关。
 6. 恢复 Web 写入，再启动文案执行机和生图执行机。
@@ -39,12 +39,22 @@ V3 将负责人分配推迟到文案待审核阶段。这次工作流变更复�
 
 新版 Web 会在删除前校验中心的 `executorManagementVersion=1`，因此应先应用迁移并升级中心服务，再更新 Web。在线或仍有关联运行任务的执行机不能删除；先停止执行机并处理相关任务，等待其显示为离线后再操作。
 
-## `0024`–`0030` Query、抽检与交付闭环
+## `0024`–`0033` Query、抽检与交付闭环
 
 `0024`–`0028` 增加 Query 词包、文案抽检、冻结交付版本和账号身份幂等约束。`0029_final_delivery_compatibility_repair.sql` 用于收敛早期本地部署曾执行过的交付迁移草稿：它安全补齐文案父版本，按最近机器稿重新核对历史修改标记，并重新执行 READY 交付来源完整性检查；不会修改任务状态、删除业务数据或自动满足返工要求。
 
 `0030_delivery_asset_runtime_integrity.sql` 将交付资产编号限制与 JavaScript 安全整数上限统一，撤回运行时无法无损表示的 READY 记录，并保留异常记录的首次发现时间。
 
+`0033_query_package_preassignment_repair.sql` 只清理能被完整证明为旧版 Query 词包创建时预分配的任务：词包、明细、生产批次和批次明细的来源链必须完整一致，分配来源必须为 `MANUAL`，分配时间必须等于任务创建时间，且不存在任何负责人审计事件。迁移仅处理尚在文案生成阶段的任务，或 `state` 与 `current_stage` 均为 `COPY_REVIEW_PENDING` 的任务；跳过文案审核、已进入生图/交付后半程、被后续改派、来源已删除或任何无法证明的记录都保持不变。
+
+每条被清理的任务会在同一个迁移事务中写入一条 `task_assignment_events` 记录，固定操作人为 `migration-0033-query-preassignment`，并保留原负责人。升级前应暂停 Web 写入与派单进程，记录候选数量并备份数据库；升级后核对这一操作人的新增审计数量与清理数量相等，并确认上述排除项的负责人信息未变。`COPY_REVIEW_PENDING` 候选任务会改为“文案生成完成，等待分配负责人后审核”，升级后可由 V3 自动派单池接管。
+
 迁移器只允许两个明确、单向且由 `0029` 修复的历史校验值：`0026_final_delivery` 的 `99a236324d33b10f1b66c0822795b83954fa2a8edf2c322ae2017c6316df8437`，以及 `0027_delivery_archive_integrity` 的 `bfeba2869813a17adf1119e688c965faa920a1206874ae95671b289ca296a2e3`。数据库中的原校验值会保留作为真实审计记录；未知校验值、反向降级、缺少或被修改的 `0029` 仍会拒绝启动，不能通过手工更新 `control_plane_migrations` 绕过。
 
-`0029`、`0030` 会扫描文案版本和待交付记录。升级前应暂停写入并完成 PostgreSQL 与文件存储备份，先运行 `npm run db:upgrade` 预览，再运行 `npm run db:upgrade -- --apply`。升级完成后再次预览应显示没有待执行迁移。
+`0029`、`0030` 会扫描文案版本和待交付记录，`0033` 会扫描并锁定符合安全谓词的任务记录。升级前应暂停写入并完成 PostgreSQL 与文件存储备份，先运行 `npm run db:upgrade` 预览，再运行 `npm run db:upgrade -- --apply`。升级完成后再次预览应显示没有待执行迁移。
+
+## `0034` 小红书搜索结果条数
+
+`0034_xhs_query_search_result_limit.sql` 新增独立的 `xhs_query_search` 全局设置，默认每个 Query 保留 3 条按点赞量排序的结果，管理员可在 1–10 条之间调整。搜索任务在执行机领取时把当时的设置冻结到 `xhs_query_search_jobs.result_limit`；管理员之后修改配置不会改变已经运行中的搜索，只影响后续领取或重新领取的任务。
+
+升级时先停止小红书搜索执行机，再应用迁移并同步更新中心服务和搜索执行机。新版中心通过 `/health` 报告 `capabilities.xiaohongshuQuerySearchVersion=3`，并拒绝旧搜索协议领取任务，避免旧执行机继续固定保存 3 条而绕过管理员配置。

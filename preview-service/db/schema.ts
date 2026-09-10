@@ -59,3 +59,69 @@ export const previewAssets = sqliteTable(
     check('preview_assets_byte_size_check', sql`${table.byteSize} > 0`),
   ],
 );
+
+export const adminSessions = sqliteTable(
+  'admin_sessions',
+  {
+    id: text('id').primaryKey(),
+    tokenHash: text('token_hash').notNull(),
+    username: text('username').notNull(),
+    createdAt: integer('created_at').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+    revokedAt: integer('revoked_at'),
+  },
+  (table) => [
+    uniqueIndex('admin_sessions_token_hash_uq').on(table.tokenHash),
+    index('admin_sessions_expires_idx').on(table.expiresAt),
+  ],
+);
+
+export const apiKeys = sqliteTable(
+  'api_keys',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    keyPrefix: text('key_prefix').notNull(),
+    keyHash: text('key_hash').notNull(),
+    scopesJson: text('scopes_json').notNull(),
+    createdAt: integer('created_at').notNull(),
+    expiresAt: integer('expires_at'),
+    lastUsedAt: integer('last_used_at'),
+    revokedAt: integer('revoked_at'),
+  },
+  (table) => [
+    uniqueIndex('api_keys_key_prefix_uq').on(table.keyPrefix),
+    index('api_keys_created_idx').on(table.createdAt),
+  ],
+);
+
+export const apiRateLimits = sqliteTable('api_rate_limits', {
+  keyId: text('key_id')
+    .primaryKey()
+    .references(() => apiKeys.id, { onDelete: 'cascade' }),
+  windowStartedAt: integer('window_started_at').notNull(),
+  requestCount: integer('request_count').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
+
+export const authLoginAttempts = sqliteTable('auth_login_attempts', {
+  identifierHash: text('identifier_hash').primaryKey(),
+  windowStartedAt: integer('window_started_at').notNull(),
+  failedCount: integer('failed_count').notNull(),
+  lockedUntil: integer('locked_until'),
+  updatedAt: integer('updated_at').notNull(),
+});
+
+export const auditLogs = sqliteTable(
+  'audit_logs',
+  {
+    id: text('id').primaryKey(),
+    actorType: text('actor_type').notNull(),
+    actorId: text('actor_id'),
+    action: text('action').notNull(),
+    targetId: text('target_id'),
+    outcome: text('outcome').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [index('audit_logs_created_idx').on(table.createdAt)],
+);

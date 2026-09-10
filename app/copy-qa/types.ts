@@ -33,6 +33,7 @@ export type CopyQaNonBlindItem = CopyQaCommon & {
   blindReview: false;
   taskId: number | null;
   productionBatchId: number | null;
+  productionBatch: CopyQaCommon['productionBatch'] & { queryPackageName: string | null };
   freezeId: number | null;
   finalApproverAccountId: number | null;
   approvedRevision: ApprovedCopyRevision & { id: number | null };
@@ -135,6 +136,9 @@ export function normalizeCopyQaItem(value: unknown): CopyQaItem | null {
 
   // Blind records are reduced to a strict allow-list before they enter React state.
   if (common.blindReview) return { ...common, blindReview: true, query: null };
+  const rawQueryPackageName = typeof batch?.queryPackageName === 'string'
+    ? batch.queryPackageName.replace(/\s+/gu, ' ').trim()
+    : '';
   return {
     ...common,
     blindReview: false,
@@ -143,6 +147,12 @@ export function normalizeCopyQaItem(value: unknown): CopyQaItem | null {
     // productionBatch/source. Keep the root-field fallbacks for older servers
     // and local snapshots that predate that shape.
     productionBatchId: positiveInteger(row.productionBatchId ?? batch?.id),
+    productionBatch: {
+      ...common.productionBatch,
+      queryPackageName: rawQueryPackageName && [...rawQueryPackageName].length <= 200
+        ? rawQueryPackageName
+        : null,
+    },
     freezeId: positiveInteger(row.freezeId),
     finalApproverAccountId: positiveInteger(row.finalApproverAccountId ?? source?.finalApproverAccountId),
     approvedRevision: { ...common.approvedRevision, id: positiveInteger(revision.id) },

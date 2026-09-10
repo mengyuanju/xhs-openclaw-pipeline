@@ -90,7 +90,6 @@ export function normalizeWorkflowQualitySettings(input, current = DEFAULT_WORKFL
 
 export function assertQueryPackageImportAllowed(actor, settings) {
   if (actor?.role === 'ADMIN') return;
-  if (actor?.role === 'USER' && settings.queryPackage.workerImportEnabled) return;
   throw new ControlPlaneAuthorizationError('当前账号没有创建 Query 词包的权限');
 }
 

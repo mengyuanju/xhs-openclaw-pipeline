@@ -36,12 +36,12 @@ const DEFAULT_SCORE_GUIDANCE = '2.5 分和 3 分达到放行标准；1 分和 2 
 export const COPY_MACHINE_DRAFT_SCORE_PRESENTATION: HumanScorePresentation = Object.freeze({
   scoreDefinitions: Object.freeze([
     Object.freeze({ score: 1, title: '废弃', description: '原稿不可用，填写反馈后废弃任务' }),
-    Object.freeze({ score: 2, title: '必须修改', description: '完成真实修改后，最终稿自动记为 3 分' }),
-    Object.freeze({ score: 2.5, title: '必须小修', description: '完成真实修改后，最终稿自动记为 3 分' }),
-    Object.freeze({ score: 3, title: '可直接通过', description: '原稿无需修改，可直接通过' }),
+    Object.freeze({ score: 2, title: '必须修改', description: '人工确认修改达标后，最终稿记录为 3 分' }),
+    Object.freeze({ score: 2.5, title: '必须小修', description: '人工确认修改达标后，最终稿记录为 3 分' }),
+    Object.freeze({ score: 3, title: '可直接提交', description: '原稿无需修改，可直接提交审核结果' }),
   ]),
   passingScores: Object.freeze<HumanScore[]>([3]),
-  guidance: '机器原稿：1 分废弃；2 分和 2.5 分必须真实修改，修改后的最终稿自动记为 3 分；只有原稿 3 分可直接通过。',
+  guidance: '机器原稿：1 分废弃；2 分和 2.5 分必须真实修改，人工确认修改达标后系统将最终稿记录为 3 分；只有原稿 3 分可直接提交审核结果。后续按任务策略进入文案抽检或待生图队列。',
 });
 
 export function isPassingHumanScore(score: HumanScore | null): score is 2.5 | 3 {
@@ -177,13 +177,13 @@ export function HumanRatingFeedback({
 
 const CONTEXT_LABELS: Record<HumanQualityAssessment['ratingContext'], string> = {
   ORIGINAL: '机器原稿初评',
-  EDITED: '修改后自评',
+  EDITED: '人工修改终稿',
   IMAGE: '整套图片评分',
 };
 
 const ACTION_LABELS: Record<string, string> = {
   SAVE: '已保存',
-  APPROVE: '已放行',
+  APPROVE: '已确认达标',
   RETRY: '已重试',
   DISCARD: '已废弃',
 };

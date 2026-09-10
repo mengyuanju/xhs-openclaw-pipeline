@@ -3,6 +3,11 @@ import { createHash } from 'node:crypto';
 const baseUrl = (
   process.env.PREVIEW_BASE_URL ?? 'http://localhost:3100'
 ).replace(/\/$/u, '');
+const apiKey = process.env.PREVIEW_API_KEY;
+if (!apiKey) {
+  throw new Error('Set PREVIEW_API_KEY before running the smoke test.');
+}
+const apiHeaders = { Authorization: `Bearer ${apiKey}` };
 const originalBytes = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
   'base64',
@@ -30,6 +35,7 @@ const invalidForm = makeManifest([
 ]);
 const invalidResponse = await fetch(`${baseUrl}/api/v1/previews/batch`, {
   method: 'POST',
+  headers: apiHeaders,
   body: invalidForm,
 });
 assert(
@@ -62,6 +68,7 @@ const validForm = makeManifest([
 ]);
 const createdResponse = await fetch(`${baseUrl}/api/v1/previews/batch`, {
   method: 'POST',
+  headers: apiHeaders,
   body: validForm,
 });
 const created = await readJson(createdResponse, 201);
@@ -109,7 +116,7 @@ for (const [index, item] of created.items.entries()) {
 
   const revokeResponse = await fetch(
     `${baseUrl}/api/v1/previews/${preview.id}/revoke`,
-    { method: 'POST' },
+    { method: 'POST', headers: apiHeaders },
   );
   const revoked = await readJson(revokeResponse, 200);
   assert(
@@ -166,6 +173,7 @@ function makeManifest(items) {
 async function listPreviews() {
   const response = await fetch(`${baseUrl}/api/v1/previews`, {
     cache: 'no-store',
+    headers: apiHeaders,
   });
   const data = await readJson(response, 200);
   return data.previews ?? [];

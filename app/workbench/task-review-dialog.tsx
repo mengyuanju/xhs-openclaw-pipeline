@@ -82,6 +82,15 @@ type CopyRevision = {
 type TaskDetail = {
   id: number;
   query: string;
+  sourceQueryPackageName?: string | null;
+  xiaohongshuLinks: Array<{
+    noteId: string;
+    url: string;
+    title: string | null;
+    rank: number;
+  }>;
+  xiaohongshuSearchStatus?: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'BLOCKED' | 'FAILED' | 'CANCELLED' | null;
+  xiaohongshuSearchBlockedReason?: 'LOGIN_REQUIRED' | 'CAPTCHA_REQUIRED' | null;
   assignedToUserId?: string | null;
   assignedToAccountId?: number | null;
   aiDisclosureEnabled: boolean;
@@ -147,6 +156,33 @@ const IMAGE_KIND_LABELS: Record<ImagePlanItem['kind'], string> = {
 
 function apiPath(path: string) {
   return `/api/control-plane${path}`;
+}
+
+function safeXiaohongshuUrl(value: unknown) {
+  if (typeof value !== 'string') return null;
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    if (url.protocol !== 'https:' || url.username || url.password
+      || (hostname !== 'xiaohongshu.com' && !hostname.endsWith('.xiaohongshu.com'))) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function xiaohongshuEmptyMessage(detail: TaskDetail | null) {
+  if (detail?.xiaohongshuSearchStatus === 'PENDING') return '该 Query 已通过审核，正在等待小红书搜索执行机处理。';
+  if (detail?.xiaohongshuSearchStatus === 'RUNNING') return '正在电脑版小红书搜索该 Query，请稍后刷新任务详情。';
+  if (detail?.xiaohongshuSearchStatus === 'BLOCKED') {
+    return detail.xiaohongshuSearchBlockedReason === 'CAPTCHA_REQUIRED'
+      ? '小红书要求人工完成安全验证，处理并恢复搜索执行机后会继续。'
+      : '小红书登录状态已失效，重新登录并恢复搜索执行机后会继续。';
+  }
+  if (detail?.xiaohongshuSearchStatus === 'FAILED') return '该 Query 搜索失败，需要检查搜索执行机后再处理。';
+  if (detail?.xiaohongshuSearchStatus === 'CANCELLED') return '该 Query 的小红书搜索已取消。';
+  if (detail?.xiaohongshuSearchStatus === 'SUCCEEDED') return '搜索已完成，但没有找到可展示的小红书文章链接。';
+  return '当前 Query 尚未建立小红书搜索记录。';
 }
 
 function currentRevision(detail: TaskDetail | null) {
@@ -215,7 +251,7 @@ function getCopyEditBlockMessage({
   if (score === 1) return ratingComplete
     ? '当前稿评为 1 分，不支持编辑；只能评分并废弃任务。'
     : '当前稿评为 1 分，不支持编辑；请补充评分反馈后评分并废弃任务。';
-  if (score === 3) return '当前稿评为 3 分，已达到直接放行标准，无需修改。';
+  if (score === 3) return '当前稿评为 3 分，已达到直接提交标准，无需修改。';
   return null;
 }
 
@@ -391,8 +427,7 @@ export function TaskReviewDialog({
   const longQuery = Boolean(detail && (detail.query.length > 100 || detail.query.split('\n').length > 3));
   const canReviewImages = detail?.state === 'MANUAL_ARCHIVE'
     && (isAdmin || role === 'REVIEWER' && taskHasAssignee) && Boolean(detail.currentImageRunId);
-  const downloadable = detail?.state === 'REVIEWED' && detail.deliveryStatus === 'READY'
-    && role !== 'REVIEWER' && (isAdmin || currentUserIsAssignee);
+  const downloadable = isAdmin && detail?.state === 'REVIEWED' && detail.deliveryStatus === 'READY';
   const canResumeImages = canResumeImageTask(detail) && hasOwnerControl && role !== 'REVIEWER';
   const canModifyImages = Boolean(detail && revision?.approvedAt && hasOwnerControl && role !== 'REVIEWER'
     && ['MANUAL_ARCHIVE', 'REVIEWED', 'IMAGE_FAILED', 'IMAGE_QUEUED'].includes(detail.state) && !detail.currentExecutionId);
@@ -464,6 +499,10 @@ export function TaskReviewDialog({
     else await load();
   }
   const sources = revision?.content.generation?.research?.sources ?? [];
+  const xiaohongshuLinks = (detail?.xiaohongshuLinks ?? []).flatMap((link) => {
+    const url = safeXiaohongshuUrl(link.url);
+    return url ? [{ ...link, url }] : [];
+  });
   const assets = useMemo(() => detail?.assets.filter(
     (asset) => asset.imageRunId === detail.currentImageRunId
       && (!detail.imageRuns.find(run => run.id === detail.currentImageRunId)?.result?.images?.some(image => image.assetId)
@@ -596,10 +635,10 @@ export function TaskReviewDialog({
     }
     if (decision === 'APPROVE' && !canApproveCopy) {
       setError(isCopyRework
-        ? '返工稿正文尚未发生实际修改，不能提交通过；请按返工原因修改标题、正文或标签。'
+        ? '返工稿尚未实际修改标题、正文或标签，不能提交强制复检。请按返工原因完成修改。'
         : copyOriginalScore === 2 || copyOriginalScore === 2.5
-        ? '原稿为 2 分或 2.5 分时，请先修改标题、正文或标签；通过时系统会将最终修改稿记为 3 分。'
-        : '当前原稿评分不能直接放行，请按评分结果处理。');
+        ? '原稿为 2 分或 2.5 分时，请先修改标题、正文或标签；人工确认达标后，系统会将最终修改稿记录为 3 分。'
+        : '当前原稿评分不能提交为达标，请按评分结果处理。');
       return;
     }
     if (decision === 'DISCARD' && copyOriginalScore !== 1) {
@@ -625,17 +664,21 @@ export function TaskReviewDialog({
     }
     const submittedScore = isCopyRework || decision === 'APPROVE' && hasEditedCopyVersion ? 3 : copyOriginalScore;
     if (!await confirm({
-      title: decision === 'APPROVE' ? '确认文案达标并开始生图？' : decision === 'DISCARD' ? '评分并废弃这条任务？' : '保存评分与当前修改？',
+      title: decision === 'APPROVE'
+        ? isCopyRework ? '确认返工文案达标并提交强制复检？' : '确认文案达标并进入后续流程？'
+        : decision === 'DISCARD' ? '评分并废弃这条任务？' : '保存评分与当前修改？',
       description: decision === 'APPROVE'
         ? isCopyRework
-          ? `${revision.reworkOrigin === 'QA_RETURN' || detail.mandatoryCopyQcOrigin === 'QA_RETURN' ? '抽检返工' : '终审返工'}已完成实际正文修改；最终稿将自动记为 3 分，并强制进入复检。`
+          ? `${revision.reworkOrigin === 'QA_RETURN' || detail.mandatoryCopyQcOrigin === 'QA_RETURN' ? '抽检返工' : '终审返工'}稿已实际修改标题、正文或标签。人工确认达标后，系统将最终稿记录为 3 分并提交强制复检；复检通过后才会进入待生图队列。原稿评分和返工原因继续保留。`
           : hasEditedCopyVersion
-          ? `机器原稿评分 ${copyOriginalScore} 分及其原因会原样保留；当前最终修改稿将自动记为 3 分并送入全局生图队列。`
-          : `机器原稿评分为 ${submittedScore} 分。系统会保存评分并将任务送入全局生图队列。`
+          ? `机器原稿评分 ${copyOriginalScore} 分及其原因会原样保留；人工确认达标后，系统将当前最终修改稿记录为 3 分，并按任务策略进入文案抽检或待生图队列。`
+          : `机器原稿评分为 ${submittedScore} 分。系统会保存审核结果，并按任务策略进入文案抽检或待生图队列。`
         : decision === 'DISCARD'
           ? '当前文案评分为 1 分。任务会被标记为已废弃，历史文案、执行记录与评分仍会保留。'
           : `机器原稿评分为 ${submittedScore} 分。系统会保存评分${draftChanged ? '和人工修订版本' : ''}，任务继续留在文案审核。`,
-      confirmLabel: decision === 'APPROVE' ? '确认放行' : decision === 'DISCARD' ? '评分并废弃' : '保存待修改',
+      confirmLabel: decision === 'APPROVE'
+        ? isCopyRework ? '提交强制复检' : '提交审核结果'
+        : decision === 'DISCARD' ? '评分并废弃' : '保存待修改',
       ...(decision === 'DISCARD' ? { tone: 'danger' as const } : {}),
     })) return;
     setSubmitting(true);
@@ -664,10 +707,10 @@ export function TaskReviewDialog({
       reviewSessionRef.current = null;
       await onUpdated(decision === 'APPROVE'
         ? isCopyRework
-          ? '返工稿已按最终 3 分通过，并进入强制复检。'
+          ? '返工稿已记录为最终 3 分并提交强制复检；复检通过后才会进入待生图队列。'
           : hasEditedCopyVersion
-          ? '机器原稿评分已保留，最终修改稿已按 3 分放行并进入全局生图队列。'
-          : '文案评分已保存并放行，任务已进入全局生图队列。'
+          ? '机器原稿评分已保留，最终修改稿已按 3 分提交；任务将按策略进入文案抽检或待生图队列。'
+          : '文案审核结果已提交；任务将按策略进入文案抽检或待生图队列。'
         : decision === 'DISCARD' ? '文案评分已保存，任务已废弃。'
           : '文案评分与当前修改已保存，任务继续留在文案审核。');
       if (decision === 'APPROVE' || decision === 'DISCARD') onOpenChange(false);
@@ -804,14 +847,26 @@ export function TaskReviewDialog({
       <header className="workbench-review-heading">
         <div>
           <span className="section-kicker">Task {detail ? `#${detail.id}` : ''}</span>
-          <DialogTitle>{detail?.state === 'REVIEWED' ? '交付池任务详情' : detail?.state === 'MANUAL_ARCHIVE' ? '图文终审详情' : '任务详情与审核'}</DialogTitle>
+          <DialogTitle>{detail?.state === 'REVIEWED'
+            ? role === 'USER' ? '已完成任务详情' : '交付池任务详情'
+            : detail?.state === 'MANUAL_ARCHIVE' ? '图文终审详情' : '任务详情与审核'}</DialogTitle>
           <DialogDescription>{detail?.state === 'COPY_REVIEW_PENDING' && !taskHasAssignee
             ? '机器文案已生成；请先在任务列表分配负责人，再开始人工评分与审核。'
             : detail?.state === 'COPY_REVIEW_PENDING' && !canReviewCopy
-            ? '任务已分配给其他负责人；你可以查看生成结果，但不能评分、编辑或放行。'
+            ? '任务已分配给其他负责人；你可以查看生成结果，但不能评分、编辑或提交审核结果。'
             : detail?.state === 'MANUAL_ARCHIVE'
-            ? '核对完整图文并完成人工评分，再明确选择通过到交付池、文案返工、图片返工、文案和图片返工，或废弃。'
-            : detail?.state === 'REVIEWED' ? '图文终审与交付门禁均已通过，可查看详情并下载完整资源包。'
+            ? role === 'USER'
+              ? '图片已经生成，正在等待图文终审；当前内容仅供查看。'
+              : '核对完整图文并完成人工评分，再明确选择通过到交付池、文案返工、图片返工、文案和图片返工，或废弃。'
+            : detail?.state === 'REVIEWED' ? role === 'USER'
+              ? '任务已经完成，可查看最终内容。'
+              : downloadable
+                ? '图文终审与交付门禁均已通过，可查看详情并下载完整资源包。'
+                : '图文终审与交付门禁均已通过，可查看任务详情。'
+            : detail?.state === 'COPY_QC_PENDING' && detail.currentStage === 'QC_MANDATORY_RECHECK'
+              ? '返工稿已提交强制复检；复检通过后才会进入待生图队列。当前内容仅供查看。'
+            : detail?.state === 'COPY_QC_PENDING'
+              ? '当前最终稿正在等待文案质检；质检完成后才会进入待生图队列。当前内容仅供查看。'
             : '先给机器原稿评分；2 分或 2.5 分可修改正文，图片文案规划不受评分档位影响。'}</DialogDescription>
           {revision?.approvalMode === 'ADMIN_BYPASS' && <p role="status">管理员免审核 · 当前文案已自动放行生图</p>}
         </div>
@@ -852,7 +907,13 @@ export function TaskReviewDialog({
               {!editable && currentImageRun && <TaskQualitySummary result={currentImageRun.result}
                 onShowImages={assets.length ? () => { imageSectionRef.current?.scrollIntoView({ block: 'start' }); imageSectionRef.current?.focus({ preventScroll: true }); } : undefined} />}
               <section className="workbench-review-section">
-                <div className="workbench-review-section-title"><span>01</span><div><h3>标题、正文与标签</h3><p>{editable ? isCopyRework ? '按返工原因直接修改正文；无需重评机器初稿，实际修改后最终稿自动按 3 分提交强制复检。' : '先评价机器原稿，再决定直接放行或修改。' : '当前状态只读，展示任务采用的文案版本。'}</p></div></div>
+                <div className="workbench-review-section-title"><span>01</span><div><h3>标题、正文与标签</h3><p>{editable
+                  ? isCopyRework
+                    ? '按返工原因修改标题、正文或标签；无需重新评分。实际修改后提交强制复检，复检通过后才会进入待生图队列。'
+                    : '先评价机器原稿，再决定提交达标审核结果或修改。'
+                  : detail.currentStage === 'QC_MANDATORY_RECHECK'
+                    ? '返工稿已提交强制复检；复检通过后才会进入待生图队列。'
+                    : '当前状态只读，展示任务采用的文案版本。'}</p></div></div>
                 {detail.state === 'COPY_REVIEW_PENDING' && !taskHasAssignee
                   && <div className="notice warning" role="status">文案已生成，但任务尚未分配负责人。请先关闭窗口并完成分配，再进行评分或修改。</div>}
                 {detail.state === 'COPY_REVIEW_PENDING' && taskHasAssignee && !canReviewCopy
@@ -860,9 +921,10 @@ export function TaskReviewDialog({
                 <div className="workbench-review-query">
                   <strong>Query 原文</strong>
                   <div id="review-query-text" className="workbench-review-query-text" data-expanded={queryExpanded || !longQuery}>{detail.query}</div>
+                  {role !== 'USER' && <div className="subtle">词包：{detail.sourceQueryPackageName || '未归属词包'}</div>}
                   {longQuery && <Button unstyled className="button small" type="button" aria-expanded={queryExpanded} aria-controls="review-query-text" onClick={() => setQueryExpanded(value => !value)}>{queryExpanded ? '收起原文' : '展开全文'}</Button>}
                 </div>
-                {editable && isCopyRework && <div className="notice warning" role="status"><strong>{revision?.reworkOrigin === 'QA_RETURN' || detail.mandatoryCopyQcOrigin === 'QA_RETURN' ? '文案抽检返工' : '图文终审文案返工'}</strong>{revision?.reworkReasonCodes?.length ? ` · 原因：${revision.reworkReasonCodes.join('、')}` : ''}{revision?.reworkNote ? ` · 要求：${revision.reworkNote}` : ''}<br />返工稿必须实际修改标题、正文或标签；保存后可继续编辑，通过时自动记为 3 分并强制复检。</div>}
+                {editable && isCopyRework && <div className="notice warning" role="status"><strong>{revision?.reworkOrigin === 'QA_RETURN' || detail.mandatoryCopyQcOrigin === 'QA_RETURN' ? '文案抽检返工' : '图文终审文案返工'}</strong>{revision?.reworkReasonCodes?.length ? ` · 原因：${revision.reworkReasonCodes.join('、')}` : ''}{revision?.reworkNote ? ` · 要求：${revision.reworkNote}` : ''}<br />返工稿必须实际修改标题、正文或标签；仅保存不会提交复检。人工确认达标后，系统将最终稿记录为 3 分并提交强制复检；复检通过后才会进入待生图队列。</div>}
                 {editable && !isCopyRework && <div className="human-rating-panel" aria-label="文案人工评分">
                   {humanQualitySettingsLoading && <p className="human-rating-config-status" role="status">正在读取评分选项…</p>}
                   {humanQualitySettingsError && <p className="human-rating-config-status" role="alert">评分选项读取失败，请刷新后重试。</p>}
@@ -889,10 +951,10 @@ export function TaskReviewDialog({
                     {copyOriginalScore === 1
                       ? `填写${copyFeedbackRequirement}后，只能评分并废弃任务。`
                       : copyOriginalScore === 2
-                        ? `已解锁标题、正文与标签编辑；${originalCopyRatingComplete ? '修改完成后可直接通过' : `提交前请填写${copyFeedbackRequirement}`}。通过时最终修改稿自动记为 3 分，原评分保持不变。`
+                        ? `已解锁标题、正文与标签编辑；${originalCopyRatingComplete ? '修改完成后可提交审核结果' : `提交前请填写${copyFeedbackRequirement}`}。人工确认达标后，系统将最终修改稿记录为 3 分，原评分保持不变。`
                       : copyOriginalScore === 2.5
-                          ? `请完成必要的小修；${originalCopyRatingComplete ? '修改完成后可直接通过' : `提交前请填写${copyFeedbackRequirement}`}。通过时最终修改稿自动记为 3 分，原评分保持不变。`
-                          : '原稿可直接放行生图。'}
+                          ? `请完成必要的小修；${originalCopyRatingComplete ? '修改完成后可提交审核结果' : `提交前请填写${copyFeedbackRequirement}`}。人工确认达标后，系统将最终修改稿记录为 3 分，原评分保持不变。`
+                          : '原稿已达标，可直接提交审核结果；后续将按任务策略进入文案抽检或待生图队列。'}
                   </p>}
                 </div>}
                 {!editable && copyAssessments.length > 0 && <div className="human-rating-readonly">
@@ -924,10 +986,28 @@ export function TaskReviewDialog({
                       onChange={(event) => updateCopy('tags', event.target.value)} />
                   </div>
                 </div> : <div className="workbench-review-empty">当前任务还没有可审核的文案版本。</div>}
-                {editable && copyContentChanged && <div className="notice success" role="status">最终修改稿无需再次自评；点击通过时系统会自动记为 3 分，机器原稿评分和原因继续保留。</div>}
+                {editable && copyContentChanged && <div className="notice success" role="status">{isCopyRework
+                  ? '返工稿无需再次评分；提交强制复检时，系统会将最终稿记录为 3 分。复检通过后才会进入待生图队列。'
+                  : '最终修改稿无需再次评分；提交达标审核结果时，系统会将其记录为 3 分，机器原稿评分和原因继续保留。'}</div>}
                 <HumanAssessmentHistory assessments={copyAssessments} scoreDefinitions={scoreDefinitions} reasonOptions={copyReasonOptions}
                   originalScorePresentation={COPY_MACHINE_DRAFT_SCORE_PRESENTATION}
                   showScoreDescriptions={showCopyScoreDescriptions} showReasonOptions={showCopyDeductionReasons} />
+              </section>
+              <section className="workbench-review-section" aria-labelledby="review-xiaohongshu-links-title">
+                <div className="workbench-review-section-title"><span>参考</span><div>
+                  <h3 id="review-xiaohongshu-links-title">Query 对应小红书文章</h3>
+                  <p>按当前 Query 搜索，并按点赞量从高到低保留管理员设定的数量；仅供审核核对，不属于联网资料来源。</p>
+                </div></div>
+                {xiaohongshuLinks.length > 0
+                  ? <div className="workbench-review-sources" aria-label="Query 对应小红书文章链接">{xiaohongshuLinks.map((link, index) => {
+                    const rank = Number.isSafeInteger(link.rank) && link.rank > 0 ? link.rank : index + 1;
+                    const title = typeof link.title === 'string' ? link.title.trim() : '';
+                    return <a href={link.url} target="_blank" rel="noopener noreferrer" key={`${link.noteId}-${rank}-${index}`}>
+                      <b>{title || `小红书文章 ${rank}`}</b>
+                      <small>点赞量排序第 {rank} 条 · {link.url}</small>
+                    </a>;
+                  })}</div>
+                  : <div className="workbench-review-empty">{xiaohongshuEmptyMessage(detail)}</div>}
               </section>
               {sources.length > 0 && <Disclosure className="workbench-review-section workbench-review-source-disclosure">
                 <DisclosureTrigger>联网资料来源 · {sources.length} 条</DisclosureTrigger>
@@ -1138,10 +1218,10 @@ export function TaskReviewDialog({
               {editable && <>
                 {!isCopyRework && copyOriginalScore === 1 && <Button unstyled className="button danger" type="button" disabled={submitting || loading || !copyRatingComplete} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('DISCARD', event.currentTarget.form); }}><Trash2 size={15} />评分并废弃</Button>}
                 {(isCopyRework || copyOriginalScore !== 1) && <Button unstyled className="button" type="button" disabled={submitting || loading || !copyRatingComplete || isCopyRework && !draftChanged} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('SAVE', event.currentTarget.form); }}>
-                  {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : isCopyRework ? '保存返工稿，暂不提交复检' : '保存评分，暂不放行'}
+                  {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : isCopyRework ? '保存返工稿，暂不提交复检' : '保存评分，暂不提交'}
                 </Button>}
                 <Button unstyled className="button primary" type="submit" disabled={submitting || loading || !canApproveCopy}>
-                  {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : <><CheckCircle2 size={15} />{isCopyRework ? '提交返工稿并强制复检' : '审核通过并开始生图'}</>}
+                  {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : <><CheckCircle2 size={15} />{isCopyRework ? '提交强制复检' : '审核通过并进入后续流程'}</>}
                 </Button>
               </>}
             </div>

@@ -5,15 +5,22 @@ export type DeliveryEntry = {
   id: number;
   taskId: number;
   query: string;
+  queryPackageName: string | null;
   copyRevisionId: number;
   imageRunId: string;
   status: 'READY';
   approvedAt: string;
 };
 
+export type DeliveryQueryPackageFacet = {
+  name: string;
+  count: number;
+};
+
 export type DeliveryPoolPage = {
   items: DeliveryEntry[];
   total: number;
+  facets: { queryPackages: DeliveryQueryPackageFacet[] };
 };
 
 export type PreparedDeliveryExport = {
@@ -25,12 +32,19 @@ export type PreparedDeliveryExport = {
 
 export type DeliveryPoolExportInput =
   | { scope: 'ALL_READY' }
+  | { scope: 'QUERY_PACKAGE'; queryPackageName: string }
   | { scope: 'SELECTED'; taskIds: number[] };
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function normalizeQueryPackageName(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const name = value.replace(/\s+/gu, ' ').trim();
+  return name && [...name].length <= 200 ? name : null;
 }
 
 function normalizeEntry(value: unknown): DeliveryEntry | null {
@@ -49,6 +63,7 @@ function normalizeEntry(value: unknown): DeliveryEntry | null {
     imageRunId: item.imageRunId,
     status: 'READY',
     query: typeof item.query === 'string' ? item.query : '',
+    queryPackageName: normalizeQueryPackageName(item.queryPackageName),
     approvedAt: typeof item.approvedAt === 'string' ? item.approvedAt : '',
   };
 }
@@ -61,7 +76,20 @@ export function normalizeDeliveryPoolPage(value: unknown): DeliveryPoolPage {
   const items = rows.map(normalizeEntry).filter((item): item is DeliveryEntry => item !== null);
   const rawTotal = Number(payload?.total);
   const total = Number.isSafeInteger(rawTotal) && rawTotal >= items.length ? rawTotal : items.length;
-  return { items, total };
+  const facetEnvelope = record(payload?.facets);
+  const rawQueryPackages = Array.isArray(facetEnvelope?.queryPackages)
+    ? facetEnvelope.queryPackages
+    : [];
+  const queryPackageMap = new Map<string, DeliveryQueryPackageFacet>();
+  for (const value of rawQueryPackages.slice(0, 1_000)) {
+    const facet = record(value);
+    const name = normalizeQueryPackageName(facet?.name);
+    const count = Number(facet?.count);
+    if (!name || !Number.isSafeInteger(count) || count < 0 || queryPackageMap.has(name)) continue;
+    queryPackageMap.set(name, { name, count });
+  }
+  const queryPackages = [...queryPackageMap.values()];
+  return { items, total, facets: { queryPackages } };
 }
 
 export function updateTaskSelection(
@@ -99,14 +127,28 @@ export function filterDeliveryPoolEntries(
   const terms = parseDeliveryPoolSearchTerms(search);
   if (terms.length === 0) return entries;
   return entries.filter((entry) => {
-    const candidate = `${entry.taskId} ${entry.query}`.toLocaleLowerCase('zh-CN');
+    const candidate = `${entry.taskId} ${entry.query} ${entry.queryPackageName ?? '未归属词包'}`.toLocaleLowerCase('zh-CN');
     return terms.some((term) => candidate.includes(term));
   });
 }
 
-export function buildDeliveryPoolExportInput(selectedTaskIds: number[]): DeliveryPoolExportInput {
+export function buildDeliveryPoolExportInput(
+  selectedTaskIds: number[],
+  queryPackageName = '',
+): DeliveryPoolExportInput {
   if (!Array.isArray(selectedTaskIds)) throw new TypeError('交付池导出范围无效，请刷新后重试');
-  if (selectedTaskIds.length === 0) return { scope: 'ALL_READY' };
+  if (typeof queryPackageName !== 'string') {
+    throw new TypeError('交付池导出范围无效，请刷新后重试');
+  }
+  const normalizedPackageName = queryPackageName.replace(/\s+/gu, ' ').trim();
+  if (selectedTaskIds.length === 0) {
+    if ([...normalizedPackageName].length > 200) {
+      throw new TypeError('交付池导出范围无效，请刷新后重试');
+    }
+    return normalizedPackageName
+      ? { scope: 'QUERY_PACKAGE', queryPackageName: normalizedPackageName }
+      : { scope: 'ALL_READY' };
+  }
   const taskIds = [...new Set(selectedTaskIds)];
   if (taskIds.length > DELIVERY_POOL_SELECTION_LIMIT
     || taskIds.some((taskId) => !Number.isSafeInteger(taskId) || taskId < 1)) {

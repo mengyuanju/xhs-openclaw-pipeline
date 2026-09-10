@@ -27,7 +27,7 @@ type RouteMeta = {
 const routeMeta: Array<{ match: (pathname: string) => boolean; meta: RouteMeta }> = [
   { match: (pathname) => pathname === '/workbench-statistics', meta: { section: '运营与系统', title: '作业统计', icon: BarChart3 } },
   { match: (pathname) => pathname.startsWith('/query-packages'), meta: { section: '创作工作台', title: 'Query 词包', icon: PackageSearch } },
-  { match: (pathname) => pathname.startsWith('/copy-qa'), meta: { section: '质量与审核', title: '文案抽检', icon: ShieldCheck } },
+  { match: (pathname) => pathname.startsWith('/copy-qa'), meta: { section: '质量与审核', title: '文案质检', icon: ShieldCheck } },
   { match: (pathname) => pathname.startsWith('/delivery-pool'), meta: { section: '创作工作台', title: '交付池', icon: PackageCheck } },
   ...WORKBENCH_VIEWS.map((view) => ({
     match: (pathname: string) => pathname === view.href,

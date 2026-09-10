@@ -18,7 +18,7 @@ const settings = normalizeWorkflowQualitySettings({
   },
 });
 
-test('worker import and reviewer batch-return permissions remain independent', () => {
+test('Query-package import stays administrator-only while reviewer batch-return remains configurable', () => {
   assert.doesNotThrow(() => assertQueryPackageImportAllowed({ role: 'ADMIN' }, settings));
   assert.throws(() => assertQueryPackageImportAllowed({ role: 'USER' }, settings), { code: 'FORBIDDEN' });
   assert.throws(() => assertReviewerBatchReturnAllowed({ role: 'REVIEWER' }, settings), { code: 'FORBIDDEN' });
@@ -28,7 +28,7 @@ test('worker import and reviewer batch-return permissions remain independent', (
     queryPackage: { workerImportEnabled: true },
     copySampling: { reviewerBatchReturnEnabled: true },
   }, settings);
-  assert.doesNotThrow(() => assertQueryPackageImportAllowed({ role: 'USER' }, enabled));
+  assert.throws(() => assertQueryPackageImportAllowed({ role: 'USER' }, enabled), { code: 'FORBIDDEN' });
   assert.doesNotThrow(() => assertReviewerBatchReturnAllowed({ role: 'REVIEWER' }, enabled));
 });
 

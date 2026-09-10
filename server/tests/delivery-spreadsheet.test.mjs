@@ -38,14 +38,20 @@ async function solidPng(red, green, blue) {
 
 function deliveryTask({
   id = 7,
+  query = '收纳整理',
+  sourceQueryPackageName = null,
   title = '标题',
   body = '正文',
   assetIds = [701],
+  xiaohongshuLinks = [],
 } = {}) {
   const copyRevisionId = id * 10 + 1;
   const imageRunId = `run-${id}`;
   return {
     id,
+    query,
+    sourceQueryPackageName,
+    xiaohongshuLinks,
     currentCopyRevisionId: copyRevisionId,
     currentImageRunId: imageRunId,
     copyRevisions: [{
@@ -78,9 +84,14 @@ async function assertMissing(path) {
 test('writes one plain-text article cell and embeds selected PNG/JPEG bytes unchanged in result order', async () => {
   await withSpreadsheet(async (outputPath) => {
     const task = deliveryTask({
+      query: '小户型收纳',
       title: '收纳标题',
       body: '第一段\n第二段',
       assetIds: [709, 707],
+      xiaohongshuLinks: [
+        { noteId: 'later', url: 'https://www.xiaohongshu.com/explore/later', title: null, rank: 2 },
+        { noteId: 'first', url: 'https://www.xiaohongshu.com/explore/first', title: '第一篇', rank: 1 },
+      ],
     });
     task.assets = [
       task.assets[1],
@@ -136,18 +147,27 @@ test('writes one plain-text article cell and embeds selected PNG/JPEG bytes unch
     await workbook.xlsx.readFile(outputPath);
     const worksheet = workbook.getWorksheet('交付内容');
     assert.ok(worksheet);
-    assert.equal(worksheet.getCell('A1').value, '完整文章');
-    assert.equal(worksheet.getCell('A2').value, '收纳标题\n\n第一段\n第二段');
-    assert.equal(worksheet.getCell('A2').type, ExcelJS.ValueType.String);
-    assert.equal(typeof worksheet.getCell('A2').value, 'string');
-    assert.notEqual(worksheet.getCell('A2').font?.bold, true);
-    assert.equal(worksheet.getCell('B1').value, '图片 1');
-    assert.equal(worksheet.getCell('C1').value, '图片 2');
+    assert.equal(worksheet.getCell('A1').value, '词包名称');
+    assert.equal(worksheet.getCell('A2').value, '未归属词包');
+    assert.equal(worksheet.getCell('B1').value, 'Query');
+    assert.equal(worksheet.getCell('B2').value, '小户型收纳');
+    assert.equal(worksheet.getCell('C1').value, '完整文章');
+    assert.equal(worksheet.getCell('C2').value, '收纳标题\n\n第一段\n第二段');
+    assert.equal(worksheet.getCell('C2').type, ExcelJS.ValueType.String);
+    assert.equal(typeof worksheet.getCell('C2').value, 'string');
+    assert.notEqual(worksheet.getCell('C2').font?.bold, true);
+    assert.equal(worksheet.getCell('D1').value, '小红书链接');
+    assert.equal(
+      worksheet.getCell('D2').value,
+      'https://www.xiaohongshu.com/explore/first\nhttps://www.xiaohongshu.com/explore/later',
+    );
+    assert.equal(worksheet.getCell('E1').value, '图片 1');
+    assert.equal(worksheet.getCell('F1').value, '图片 2');
 
     const worksheetImages = worksheet.getImages();
     assert.equal(worksheetImages.length, 2);
-    assert.equal(worksheetImages[0].range.tl.nativeCol, 1);
-    assert.equal(worksheetImages[1].range.tl.nativeCol, 2);
+    assert.equal(worksheetImages[0].range.tl.nativeCol, 4);
+    assert.equal(worksheetImages[1].range.tl.nativeCol, 5);
     assert.deepEqual(worksheetImages[0].range.ext, { width: 140, height: 200 });
     assert.deepEqual(worksheetImages[1].range.ext, { width: 150, height: 74 });
     const firstImage = embeddedImage(workbook, worksheetImages[0].imageId);
@@ -237,11 +257,35 @@ test('rejects unsupported source image formats instead of transcoding them', asy
   });
 });
 
-test('keeps dangerous formula prefixes as text and emits no worksheet formula nodes', async () => {
+test('rejects delivery export while an approved Query is still waiting for Xiaohongshu search', async () => {
   await withSpreadsheet(async (outputPath) => {
+    const task = deliveryTask();
+    task.xiaohongshuSearchStatus = 'BLOCKED';
+    await assert.rejects(
+      writeDeliverySpreadsheet(
+        [task],
+        async () => assert.fail('pending search must stop before asset reads'),
+        outputPath,
+      ),
+      /小红书搜索尚未完成/u,
+    );
+    await assertMissing(outputPath);
+  });
+});
+
+test('keeps dangerous formula prefixes in Query, copy and links as text and emits no worksheet formula nodes', async () => {
+  await withSpreadsheet(async (outputPath) => {
+    const query = '=1+1';
     const title = '=HYPERLINK("https://example.invalid","点我")';
     const body = '+1\n-2\n@SUM(A1:A2)\n\t=cmd()';
-    const task = deliveryTask({ title, body });
+    const link = '=HYPERLINK("https://example.invalid/note","外链")';
+    const task = deliveryTask({
+      query,
+      sourceQueryPackageName: '=危险词包',
+      title,
+      body,
+      xiaohongshuLinks: [{ noteId: 'unsafe', url: link, title: null, rank: 1 }],
+    });
     const content = await solidPng(128, 128, 128);
 
     await writeDeliverySpreadsheet(
@@ -255,10 +299,23 @@ test('keeps dangerous formula prefixes as text and emits no worksheet formula no
 
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(outputPath);
-    const articleCell = workbook.getWorksheet('交付内容').getCell('A2');
+    const worksheet = workbook.getWorksheet('交付内容');
+    const packageCell = worksheet.getCell('A2');
+    const queryCell = worksheet.getCell('B2');
+    const articleCell = worksheet.getCell('C2');
+    const linksCell = worksheet.getCell('D2');
+    assert.equal(packageCell.value, '=危险词包');
+    assert.equal(packageCell.type, ExcelJS.ValueType.String);
+    assert.equal(packageCell.formula, undefined);
+    assert.equal(queryCell.value, query);
+    assert.equal(queryCell.type, ExcelJS.ValueType.String);
+    assert.equal(queryCell.formula, undefined);
     assert.equal(articleCell.value, `${title}\n\n${body}`);
     assert.equal(articleCell.type, ExcelJS.ValueType.String);
     assert.equal(articleCell.formula, undefined);
+    assert.equal(linksCell.value, link);
+    assert.equal(linksCell.type, ExcelJS.ValueType.String);
+    assert.equal(linksCell.formula, undefined);
 
     const archive = await JSZip.loadAsync(await readFile(outputPath));
     const worksheetEntries = Object.values(archive.files).filter(

@@ -52,12 +52,55 @@ test('new creation workbench owns the root route and exposes lifecycle views', a
   assert.doesNotMatch(proxyPolicy, /legacyReviewPath|location: '\/reviews'/u);
 });
 
+test('ordinary users do not render Query package provenance or delivery downloads', async () => {
+  const [workbench, reviewDialog, navigation] = await Promise.all([
+    readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+    readFile(projectFile('app/components/side-nav.tsx'), 'utf8'),
+  ]);
+
+  assert.match(navigation, /items\.filter\(\(item\) => item\.href === '\/workbench'\)/u,
+    'ordinary users must not receive Query package or delivery-pool navigation entries');
+  assert.match(workbench, /const canUseQueryPackageFilter = role !== 'USER'/u);
+  assert.match(workbench, /canUseQueryPackageFilter \? initialListState\.queryPackageName : ''/u,
+    'a package filter from the URL must not initialize for an ordinary user');
+  assert.match(workbench, /if \(canUseQueryPackageFilter && queryPackageName\) search\.set\('queryPackageName', queryPackageName\)/u,
+    'ordinary task requests must not submit the package-name filter');
+  assert.match(workbench, /\{canUseQueryPackageFilter && <>[\s\S]{0,500}id="workbench-query-package-search"/u,
+    'the package-name search control must not render for ordinary users');
+  assert.match(workbench, /\{role !== 'USER' && <small[^>]*[\s\S]{0,200}>词包：\{task\.sourceQueryPackageName/u,
+    'task rows must not render package provenance for ordinary users');
+  assert.match(workbench, /role === 'USER' && state === 'REVIEWED' \? '已完成' : STATE_LABELS\[state\]/u,
+    'ordinary users must see a completed state instead of the delivery-pool label');
+  assert.match(reviewDialog, /\{role !== 'USER' && <div className="subtle">词包：\{detail\.sourceQueryPackageName \|\| '未归属词包'\}<\/div>\}/u,
+    'task detail must not render package provenance for ordinary users');
+  assert.doesNotMatch(reviewDialog, /\{role !== 'USER' && <section className="workbench-review-section" aria-labelledby="review-xiaohongshu-links-title">/u,
+    'assigned operators must still see the Query-specific Xiaohongshu review links');
+  assert.match(reviewDialog, /role === 'USER' \? '已完成任务详情' : '交付池任务详情'/u);
+  assert.match(reviewDialog, /role === 'USER'[\s\S]{0,120}'任务已经完成，可查看最终内容。'/u);
+  assert.match(reviewDialog, /role === 'USER'[\s\S]{0,120}'图片已经生成，正在等待图文终审；当前内容仅供查看。'/u);
+  assert.doesNotMatch(reviewDialog, /const downloadable =[^;]*currentUserIsAssignee/u,
+    'ordinary assignees must not regain the administrator-only delivery download');
+  assert.match(reviewDialog, /const downloadable =[^;]*\bisAdmin\b[^;]*;/u);
+});
+
 test('all distributed task status displays distinguish exhausted image retries from normal copy review', async () => {
   for (const path of ['app/workbench/creation-workbench.tsx', 'app/workbench/task-review-dialog.tsx']) {
     const source = await readFile(projectFile(path), 'utf8');
     assert.match(source, /isImageRetryExhausted/u);
     assert.match(source, /IMAGE_RETRY_EXHAUSTED_LABEL/u);
   }
+});
+
+test('mandatory copy rechecks have a dedicated workbench status and next-step explanation', async () => {
+  const [workbench, reviewDialog] = await Promise.all([
+    readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+  ]);
+
+  assert.match(workbench, /QC_MANDATORY_RECHECK: '待强制复检'/u);
+  assert.match(workbench, /task\.currentStage === 'QC_MANDATORY_RECHECK'[\s\S]{0,240}复检通过后才进入待生图/u);
+  assert.match(reviewDialog, /detail\.currentStage === 'QC_MANDATORY_RECHECK'[\s\S]{0,240}返工稿已提交强制复检；复检通过后才会进入待生图队列/u);
 });
 
 test('running and failed copy tasks expose retry in personal and all-copy lists', async () => {
@@ -98,6 +141,10 @@ test('admin queued tasks expose a direct discard then permanent-delete workflow'
   assert.match(source, /\{permanentDeleteButton\}[\s\S]*\{task\.state === 'CANCELLED'/u);
   assert.match(rowActions, /visibleActionCount = 1/u);
   assert.match(rowActions, /actions\.slice\(0, Math\.max\(1, Math\.trunc\(visibleActionCount\)\)\)/u);
+  assert.match(styles, /\.workbench-action-menu \.button\.primary \{ color: white; background: var\(--red\); \}/u,
+    'primary actions inside the overflow menu must keep a visible filled background');
+  assert.match(styles, /\.workbench-action-menu \.button\.primary\[data-highlighted\] \{ background: var\(--red-dark\); \}/u,
+    'highlighted primary menu actions must remain legible');
   assert.match(source, /PERMANENT_DELETE_STATES\.includes\(task\.state\)/u);
   assert.match(source, /CANCELLED_EXECUTION_SETTLE_MS = 3 \* 60_000/u);
   assert.match(source, /cancelledExecutionSettled/u);
@@ -161,6 +208,7 @@ test('list state, saved views and centralized batch handling are available to ad
   assert.match(page, /initialListState=\{initialListState\}/u);
   assert.match(workbench, /workbenchListSearch/u);
   assert.match(workbench, /router\.replace\(href, \{ scroll: false \}\)/u);
+  assert.match(listState, /queryPackageName/u);
   assert.match(listState, /createdByAccountId|createdByUserId|deduplicateQuery|attention|taskId/u);
   assert.match(workbench, /<SelectItem value=\{DEFAULT_TASK_VIEW_VALUE\}>默认视图<\/SelectItem>/u);
   assert.match(workbench, /function applyDefaultView\(\)[\s\S]*setSort\(DEFAULT_WORKBENCH_LIST_STATE\.sort\)[\s\S]*setPageSize\(DEFAULT_WORKBENCH_LIST_STATE\.pageSize\)/u);
@@ -206,6 +254,20 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(workbench, /<TaskReviewDialog/u);
   assert.match(reviewDialog, /任务详情与审核/u);
   assert.match(reviewDialog, /Query 原文/u);
+  assert.match(reviewDialog, /xiaohongshuLinks: Array<\{/u);
+  assert.match(reviewDialog, /detail\?\.xiaohongshuLinks \?\? \[\]/u);
+  assert.match(reviewDialog, /<h3 id="review-xiaohongshu-links-title">Query 对应小红书文章<\/h3>/u);
+  assert.doesNotMatch(reviewDialog, /role !== 'USER' && <section[^>]*review-xiaohongshu-links-title/u);
+  assert.match(reviewDialog, /不属于联网资料来源/u);
+  assert.match(reviewDialog, /aria-label="Query 对应小红书文章链接"/u);
+  assert.match(reviewDialog, /按点赞量从高到低保留管理员设定的数量/u);
+  assert.match(reviewDialog, /点赞量排序第 \{rank\} 条/u);
+  assert.match(reviewDialog, /href=\{link\.url\} target="_blank" rel="noopener noreferrer"/u);
+  assert.match(reviewDialog, /url\.protocol !== 'https:'[\s\S]*hostname !== 'xiaohongshu\.com'[\s\S]*!hostname\.endsWith\('\.xiaohongshu\.com'\)/u);
+  assert.match(reviewDialog, /xiaohongshuSearchStatus\?:/u);
+  assert.match(reviewDialog, /搜索已完成，但没有找到可展示的小红书文章链接/u);
+  assert.match(reviewDialog, /xiaohongshuEmptyMessage\(detail\)/u);
+  assert.match(reviewDialog, /const sources = revision\?\.content\.generation\?\.research\?\.sources \?\? \[\];/u);
   assert.match(reviewDialog, /review-copy-title/u);
   assert.match(reviewDialog, /review-copy-body/u);
   assert.match(reviewDialog, /review-copy-tags/u);
@@ -232,7 +294,14 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(workbench, /currentAccountId=\{creatorAccountId\}/u);
   assert.match(reviewDialog, /onPrevious=\{activeAssetIndex > 0/u);
   assert.match(reviewDialog, /onNext=\{activeAssetIndex < assets\.length - 1/u);
-  assert.match(reviewDialog, /审核通过并开始生图/u);
+  assert.match(reviewDialog, /审核通过并进入后续流程/u);
+  assert.match(reviewDialog, /确认文案达标并进入后续流程？/u);
+  assert.match(reviewDialog, /提交审核结果/u);
+  assert.match(reviewDialog, /确认返工文案达标并提交强制复检？/u);
+  assert.match(reviewDialog, /提交强制复检/u);
+  assert.match(reviewDialog, /系统将最终稿记录为 3 分并提交强制复检；复检通过后才会进入待生图队列/u);
+  assert.match(reviewDialog, /按任务策略进入文案抽检或待生图队列/u);
+  assert.doesNotMatch(reviewDialog, /审核通过并开始生图|确认文案达标并开始生图/u);
   assert.match(reviewDialog, /href=\{apiPath\(`\/v1\/tasks\/\$\{detail\.id\}\/archive`\)\}/u);
   assert.match(reviewDialog, /<Download size=\{14\} \/>下载资源/u);
   assert.doesNotMatch(reviewDialog, /approve-delivery|提交图文审核/u);

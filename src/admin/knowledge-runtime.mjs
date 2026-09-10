@@ -11,10 +11,10 @@ export async function readKnowledgeModelApi(store) {
 
 export function knowledgeActorHeaders(session) {
   if (!session) throw new ApiError(401, 'AUTH_REQUIRED', '请先登录后访问知识库');
-  assertAuthorizedSession(session, ['ADMIN', 'REVIEWER']);
+  assertAuthorizedSession(session, ['ADMIN']);
   const username = session.username || (session.subject === 'admin' ? 'admin' : '');
   const role = session.subject === 'admin' ? 'ADMIN' : session.roles?.[0];
-  if (!username || !['ADMIN', 'REVIEWER'].includes(role)) {
+  if (!username || role !== 'ADMIN') {
     throw new ApiError(403, 'FORBIDDEN', '当前账号没有知识库管理权限');
   }
   return sessionActorHeaders(session, { username, role });

@@ -30,13 +30,13 @@ function allowed(action) {
   }
 }
 
-test('the complete Query-package import permission matrix is server-enforceable', () => {
+test('the retained worker-import setting never grants Query-package access to non-administrators', () => {
   for (const workerImportEnabled of [false, true]) {
     const current = settings({ workerImportEnabled });
     assert.equal(allowed(() => assertQueryPackageImportAllowed({ role: 'ADMIN' }, current)), true);
     assert.equal(
       allowed(() => assertQueryPackageImportAllowed({ role: 'USER' }, current)),
-      workerImportEnabled,
+      false,
     );
     assert.equal(allowed(() => assertQueryPackageImportAllowed({ role: 'REVIEWER' }, current)), false);
   }

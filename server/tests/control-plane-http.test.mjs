@@ -204,6 +204,65 @@ test('legacy task creation is admin-only and copy-review bypass requires an expl
   assert.equal(calls[0].skipCopyReview, true);
 });
 
+test('duplicate Query discard preview and confirmation are admin-only and forward actor context', async () => {
+  const calls = [];
+  const users = {
+    admin: { id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credentialVersion: 1 },
+    reviewer: { id: 2, username: 'reviewer', role: 'REVIEWER', status: 'ACTIVE', credentialVersion: 1 },
+    user: { id: 3, username: 'user', role: 'USER', status: 'ACTIVE', credentialVersion: 1 },
+  };
+  const repository = {
+    getUserByUsername: async (username) => users[username] ?? null,
+    previewDuplicateQueryDiscard: async (input, options) => {
+      calls.push(['preview', input, options]);
+      return { previewToken: 'preview-1', duplicateTaskCount: 2 };
+    },
+    discardDuplicateQueries: async (input, options) => {
+      calls.push(['discard', input, options]);
+      return { requestId: input.requestId, discardedTaskIds: [12, 13] };
+    },
+  };
+  const headers = (username) => ({
+    'Content-Type': 'application/json',
+    'X-Actor-User-Id': String(users[username].id),
+    'X-Actor-Username': username,
+    'X-Actor-Role': users[username].role,
+    'X-Actor-Credential-Version': '1',
+  });
+  const endpoints = [
+    ['/v1/tasks/duplicate-query-discard-preview', { representativeTaskIds: [11, 12, 13] }],
+    ['/v1/tasks/duplicate-query-discard', {
+      requestId: '11111111-1111-4111-8111-111111111111',
+      representativeTaskIds: [11, 12, 13],
+      previewFingerprint: 'a'.repeat(64),
+      confirmedDiscardCount: 2,
+    }],
+  ];
+
+  await withServer(repository, async (root) => {
+    for (const [path, input] of endpoints) {
+      for (const username of ['reviewer', 'user']) {
+        const denied = await fetch(`${root}${path}`, {
+          method: 'POST', headers: headers(username), body: JSON.stringify(input),
+        });
+        assert.equal(denied.status, 403, `${users[username].role} ${path}`);
+        assert.equal((await denied.json()).error.code, 'FORBIDDEN');
+      }
+
+      const allowed = await fetch(`${root}${path}`, {
+        method: 'POST', headers: headers('admin'), body: JSON.stringify(input),
+      });
+      assert.equal(allowed.status, 200, `ADMIN ${path}`);
+    }
+  }, { enforceUserAuth: true });
+
+  const actor = { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 };
+  assert.deepEqual(calls, [
+    ['preview', endpoints[0][1], { actor }],
+    ['discard', endpoints[1][1], { actor }],
+  ]);
+});
+
 test('executor status inventory and retirement are restricted to administrators', async () => {
   const nodes = [{ id: 'node-a', online: true, imageRunningCount: 1 }];
   const retired = [];
@@ -467,7 +526,7 @@ test('archive download is blocked before final review and returns the reviewed d
   }
 });
 
-test('task listing forwards server-side pagination, states and Query search', async () => {
+test('task listing forwards server-side pagination, states, Query and package-name search', async () => {
   const calls = [];
   const repository = {
     listTasks: async (input) => {
@@ -480,7 +539,7 @@ test('task listing forwards server-side pagination, states and Query search', as
     },
   };
   await withServer(repository, async (root) => {
-    const listed = await fetch(`${root}/v1/tasks?states=COPY_QUEUED,COPY_FAILED&nodeId=node-a&taskId=42&query=%E9%BB%84%E5%B1%B1&deduplicateQuery=true&sortBy=createdAt&sortOrder=asc&limit=20&offset=20&includeTotal=true`);
+    const listed = await fetch(`${root}/v1/tasks?states=COPY_QUEUED,COPY_FAILED&nodeId=node-a&taskId=42&query=%E9%BB%84%E5%B1%B1&queryPackageName=%E4%B9%9D%E6%9C%88%20%E9%80%89%E9%A2%98&deduplicateQuery=true&sortBy=createdAt&sortOrder=asc&limit=20&offset=20&includeTotal=true`);
     assert.equal(listed.status, 200);
     assert.equal((await listed.json()).data.total, 0);
     const counts = await fetch(`${root}/v1/task-counts?nodeId=node-a`);
@@ -493,6 +552,7 @@ test('task listing forwards server-side pagination, states and Query search', as
       nodeId: 'node-a',
       taskId: '42',
       query: '黄山',
+      queryPackageName: '九月 选题',
       deduplicateQuery: true,
       sortBy: 'createdAt',
       sortOrder: 'asc',
@@ -739,7 +799,10 @@ test('administrator batch archive returns one outer ZIP for selected deliverable
       assert.equal(response.status, 200);
       assert.match(response.headers.get('content-disposition'), /task-resources-batch\.zip/u);
       const zip = await JSZip.loadAsync(await response.arrayBuffer());
-      assert.deepEqual(Object.keys(zip.files).sort(), ['任务-12-资源包.zip', '任务-13-资源包.zip']);
+      assert.deepEqual(Object.keys(zip.files).sort(), [
+        '未归属词包/任务-12-资源包.zip',
+        '未归属词包/任务-13-资源包.zip',
+      ]);
     }, { storageRoot });
   } finally {
     await rm(storageRoot, { recursive: true, force: true });
@@ -906,6 +969,44 @@ test('an in-flight batch archive is rejected when the administrator account is r
   } finally {
     await rm(storageRoot, { recursive: true, force: true });
   }
+});
+
+test('delivery listing forwards an exact package name and returns package facets', async () => {
+  let received;
+  const page = {
+    items: [{ id: 1, taskId: 42, query: '收纳', queryPackageName: '九月选题' }],
+    total: 1,
+    facets: { queryPackages: [{ name: '九月选题', count: 1 }] },
+  };
+  await withServer({
+    listDeliveryPool: async (options) => {
+      received = options;
+      return page;
+    },
+  }, async (root) => {
+    const response = await fetch(`${root}/v1/delivery-pool?queryPackageName=%E4%B9%9D%E6%9C%88%E9%80%89%E9%A2%98&limit=20&offset=0&includeTotal=true`);
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).data, page);
+  });
+  assert.deepEqual(received, {
+    limit: '20', offset: '0', includeTotal: true, queryPackageName: '九月选题',
+  });
+});
+
+test('copy QA listing forwards package-name search only through the administrator route', async () => {
+  let received;
+  await withServer({
+    listCopyQaItems: async (options) => {
+      received = options;
+      return [];
+    },
+  }, async (root) => {
+    const response = await fetch(`${root}/v1/copy-qa/items?status=PENDING&queryPackageName=%E4%B9%9D%E6%9C%88%E9%80%89%E9%A2%98&limit=20&offset=0`);
+    assert.equal(response.status, 200);
+  });
+  assert.deepEqual(received, {
+    status: 'PENDING', queryPackageName: '九月选题', limit: '20', offset: '0',
+  });
 });
 
 test('a staged full delivery export is discarded when the administrator account is replaced', async () => {

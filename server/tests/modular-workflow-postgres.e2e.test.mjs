@@ -15,6 +15,11 @@ import { normalizeCopyQaList } from '../../app/copy-qa/types.ts';
 import { normalizePackageDetail, normalizePackageList } from '../../app/query-packages/types.ts';
 import { createClaimRequestId } from '../../src/control-plane/claim-request.mjs';
 import {
+  XIAOHONGSHU_SEARCH_DEFAULT_LIMIT,
+  XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
+  XIAOHONGSHU_SEARCH_SETTINGS_KEY,
+} from '../../src/xhs-query-search.mjs';
+import {
   applyMigrations,
   loadMigrations,
   normalizeMigrationSql,
@@ -24,7 +29,6 @@ import { createControlPlaneApp } from '../src/http-server.mjs';
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import {
   createQueryPackage,
-  createQueryPackageProductionBatch,
   updateQueryPackageScreening,
 } from '../src/query-packages.mjs';
 import { hashUserPassword } from '../src/user-auth.mjs';
@@ -279,6 +283,29 @@ function assertBlindQaAllowlist(item) {
   const serialized = JSON.stringify(item);
   for (const identity of ['worker-pg-e2e', 'reviewer-pg-e2e']) {
     assert.equal(serialized.includes(identity), false, `blind QA response exposed ${identity}`);
+  }
+}
+
+const USER_TASK_SENSITIVE_FIELDS = Object.freeze([
+  'sourceQueryPackageId',
+  'sourceQueryPackageName',
+  'sourceQueryPackageExternalId',
+  'productionBatchId',
+  'deliveryStatus',
+]);
+
+const USER_TASK_XHS_FIELDS = Object.freeze([
+  'xiaohongshuSearchStatus',
+  'xiaohongshuSearchBlockedReason',
+  'xiaohongshuLinks',
+]);
+
+function assertUserTaskHidesSensitiveFields(task, source, { includeXhsSearch = false } = {}) {
+  const hiddenFields = includeXhsSearch
+    ? USER_TASK_SENSITIVE_FIELDS
+    : [...USER_TASK_SENSITIVE_FIELDS, ...USER_TASK_XHS_FIELDS];
+  for (const field of hiddenFields) {
+    assert.equal(Object.hasOwn(task, field), false, `${source} exposed ${field}`);
   }
 }
 
@@ -564,6 +591,9 @@ test('legacy delivery migrations retain their checksums and upgrade through the 
       '0028_mutation_receipt_actor_identity',
       '0029_final_delivery_compatibility_repair',
       '0030_delivery_asset_runtime_integrity',
+      '0031_xhs_query_search',
+      '0032_duplicate_query_discard',
+      '0033_query_package_preassignment_repair',
     ]);
 
     const repairedRevisionState = (await pool.query(`
@@ -731,6 +761,9 @@ test('delivery runtime integrity migration withdraws JavaScript-unsafe asset ids
 
     assert.deepEqual(await applyInTransaction(migrations), [
       '0030_delivery_asset_runtime_integrity',
+      '0031_xhs_query_search',
+      '0032_duplicate_query_discard',
+      '0033_query_package_preassignment_repair',
     ]);
     const repairedDelivery = (await pool.query(`
       SELECT status, withdrawn_at FROM delivery_entries WHERE task_id = $1
@@ -1125,6 +1158,174 @@ test('mutation receipt migration isolates a same-name replacement and retains de
   }
 });
 
+test('Query-package preassignment repair clears only the proven legacy signature', {
+  skip: RUN_POSTGRES_E2E ? false : 'set RUN_POSTGRES_E2E=1 to run the isolated PostgreSQL 18 migration test',
+  timeout: 120_000,
+}, async () => {
+  const database = await startTemporaryPostgres18();
+  const pool = new pg.Pool({ connectionString: database.connectionString, max: 2 });
+  try {
+    const migrations = await loadMigrations();
+    const beforeRepair = migrations.filter(({ id }) => id < '0033_query_package_preassignment_repair');
+    const repair = migrations.find(({ id }) => id === '0033_query_package_preassignment_repair');
+    assert.ok(repair);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SET LOCAL search_path TO public');
+      await applyMigrations(client, beforeRepair);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    const worker = (await pool.query(`
+      INSERT INTO app_users(
+        username, display_name, role, password_hash, status,
+        must_change_password, credential_version, created_at, updated_at
+      ) VALUES (
+        'legacy-query-owner', '旧版词包负责人', 'USER', 'unused-migration-password-hash', 'ACTIVE',
+        false, 1, '2025-12-31T00:00:00Z', '2025-12-31T00:00:00Z'
+      ) RETURNING id, username
+    `)).rows[0];
+    await pool.query("INSERT INTO executor_nodes(id, name) VALUES ('legacy-query-node', 'Legacy Query Node')");
+    const queryPackage = (await pool.query(`
+      INSERT INTO query_packages(
+        name, status, created_by_account_id, created_by_username,
+        assigned_to_account_id, assigned_to_username
+      ) SELECT '旧版预分配迁移验证', 'PARTIALLY_USED', admin.id, admin.username, $1, $2
+        FROM app_users AS admin WHERE admin.username = 'admin'
+      RETURNING id
+    `, [worker.id, worker.username])).rows[0];
+    const productionBatch = (await pool.query(`
+      INSERT INTO production_batches(
+        public_id, query_package_id, query_package_name, created_by_account_id,
+        created_by_username, request_id, request_fingerprint
+      ) SELECT $1, $2, '旧版预分配迁移验证', admin.id, admin.username, $3, $4
+        FROM app_users AS admin WHERE admin.username = 'admin'
+      RETURNING id
+    `, [randomUUID(), queryPackage.id, randomUUID(), 'a'.repeat(64)])).rows[0];
+    const items = (await pool.query(`
+      INSERT INTO query_package_items(
+        query_package_id, row_number, raw_query, query, status, screening_decision
+      )
+      SELECT $1, ordinal, '迁移测试 Query ' || ordinal, '迁移测试 Query ' || ordinal,
+        'TASK_CREATED', 'SELECTED'
+      FROM generate_series(1, 9) AS ordinal
+      ORDER BY ordinal
+      RETURNING id, row_number
+    `, [queryPackage.id])).rows.toSorted((left, right) => Number(left.row_number) - Number(right.row_number));
+    const taskCases = [
+      { key: 'queued', state: 'COPY_QUEUED', stage: 'COPY_QUEUED', expectedCleared: true },
+      { key: 'running', state: 'COPY_RUNNING', stage: 'COPY_GENERATION', expectedCleared: true },
+      { key: 'failed', state: 'COPY_FAILED', stage: 'COPY_FAILED', expectedCleared: true },
+      { key: 'review', state: 'COPY_REVIEW_PENDING', stage: 'COPY_REVIEW_PENDING', expectedCleared: true },
+      { key: 'audited', state: 'COPY_QUEUED', stage: 'COPY_QUEUED', addEvent: true, expectedCleared: false },
+      { key: 'later-assignment', state: 'COPY_QUEUED', stage: 'COPY_QUEUED', assignedLater: true, expectedCleared: false },
+      { key: 'image', state: 'IMAGE_QUEUED', stage: 'IMAGE_QUEUED', expectedCleared: false },
+      { key: 'skip-review', state: 'COPY_QUEUED', stage: 'COPY_QUEUED', skipCopyReview: true, expectedCleared: false },
+      { key: 'image-recovery', state: 'COPY_REVIEW_PENDING', stage: 'IMAGE_RETRY_EXHAUSTED', expectedCleared: false },
+    ];
+    const taskIds = new Map();
+    for (const [index, taskCase] of taskCases.entries()) {
+      const item = items[index];
+      const createdAt = '2026-01-01T00:00:00Z';
+      const task = (await pool.query(`
+        INSERT INTO tasks(
+          query, input, created_by_node_id, created_by_user_id,
+          assigned_to_user_id, assignment_source, assigned_at,
+          state, current_stage, progress_message, skip_copy_review,
+          source_query_package_id, source_query_package_item_id,
+          source_query_package_name, production_batch_id, created_at, updated_at
+        ) VALUES (
+          $1, '{}'::jsonb, 'legacy-query-node', 'admin',
+          $2, 'MANUAL', $3::timestamptz,
+          $4, $5, $6, $7,
+          $8, $9, '旧版预分配迁移验证', $10, $11::timestamptz, $11::timestamptz
+        ) RETURNING id
+      `, [
+        `迁移测试 Query ${index + 1}`,
+        worker.username,
+        taskCase.assignedLater ? '2026-01-01T00:00:01Z' : createdAt,
+        taskCase.state,
+        taskCase.stage,
+        taskCase.key === 'review' ? '旧版等待审核' : '迁移前提示',
+        taskCase.skipCopyReview === true,
+        queryPackage.id,
+        item.id,
+        productionBatch.id,
+        createdAt,
+      ])).rows[0];
+      taskIds.set(taskCase.key, Number(task.id));
+      await pool.query(`
+        INSERT INTO production_batch_items(
+          production_batch_id, source_query_package_item_id, query_snapshot, task_id
+        ) VALUES ($1, $2, $3, $4)
+      `, [productionBatch.id, item.id, `迁移测试 Query ${index + 1}`, task.id]);
+      if (taskCase.addEvent) {
+        await pool.query(`
+          INSERT INTO task_assignment_events(
+            task_id, actor_username, previous_assignee_user_id,
+            assignee_user_id, source, reason
+          ) VALUES ($1, 'admin', NULL, $2, 'MANUAL', '后续人工分配')
+        `, [task.id, worker.username]);
+      }
+    }
+
+    const migrationClient = await pool.connect();
+    try {
+      await migrationClient.query('BEGIN');
+      await migrationClient.query('SET LOCAL search_path TO public');
+      assert.deepEqual(await applyMigrations(migrationClient, migrations), [repair.id]);
+      await migrationClient.query('COMMIT');
+    } catch (error) {
+      await migrationClient.query('ROLLBACK');
+      throw error;
+    } finally {
+      migrationClient.release();
+    }
+
+    const assignments = new Map((await pool.query(`
+      SELECT id, assigned_to_user_id, assignment_source, assigned_at, progress_message
+      FROM tasks WHERE id = ANY($1::bigint[])
+    `, [[...taskIds.values()]])).rows.map((row) => [Number(row.id), row]));
+    for (const taskCase of taskCases) {
+      const row = assignments.get(taskIds.get(taskCase.key));
+      if (taskCase.expectedCleared) {
+        assert.equal(row.assigned_to_user_id, null, taskCase.key);
+        assert.equal(row.assignment_source, null, taskCase.key);
+        assert.equal(row.assigned_at, null, taskCase.key);
+      } else {
+        assert.equal(row.assigned_to_user_id, worker.username, taskCase.key);
+        assert.equal(row.assignment_source, 'MANUAL', taskCase.key);
+        assert.ok(row.assigned_at instanceof Date, taskCase.key);
+      }
+    }
+    assert.equal(
+      assignments.get(taskIds.get('review')).progress_message,
+      '文案生成完成，等待分配负责人后审核',
+    );
+    const repairEvents = (await pool.query(`
+      SELECT task_id, previous_assignee_user_id, assignee_user_id
+      FROM task_assignment_events
+      WHERE actor_username = 'migration-0033-query-preassignment'
+      ORDER BY task_id
+    `)).rows;
+    assert.deepEqual(
+      repairEvents.map((row) => Number(row.task_id)),
+      ['queued', 'running', 'failed', 'review'].map((key) => taskIds.get(key)).toSorted((a, b) => a - b),
+    );
+    assert.ok(repairEvents.every((row) => row.previous_assignee_user_id === worker.username
+      && row.assignee_user_id === null));
+  } finally {
+    await pool.end().catch(() => {});
+    await database.stop().catch(() => {});
+  }
+});
+
 test('real PostgreSQL 18 screens and produces a full 5000-row Query package within bounded time', {
   skip: !RUN_POSTGRES_E2E,
   timeout: 180_000,
@@ -1159,6 +1360,9 @@ test('real PostgreSQL 18 screens and produces a full 5000-row Query package with
     const importElapsedMs = performance.now() - importStartedAt;
     assert.equal(imported.counts.total, QUERY_PACKAGE_SCALE_ROWS);
     assert.equal(imported.counts.pending, QUERY_PACKAGE_SCALE_ROWS);
+    assert.equal(imported.assignedToUserId, null,
+      'legacy create input must not assign newly imported Query packages');
+    assert.equal(imported.assignedToAccountId, null);
     assert.ok(importElapsedMs < QUERY_PACKAGE_SCALE_OPERATION_LIMIT_MS,
       `5000-row Query import took ${importElapsedMs.toFixed(0)}ms`);
 
@@ -1173,23 +1377,16 @@ test('real PostgreSQL 18 screens and produces a full 5000-row Query package with
       decisions: itemIds.map((itemId) => ({ itemId, decision: 'SELECT' })),
     }, admin);
     const screeningElapsedMs = performance.now() - screeningStartedAt;
-    assert.equal(screened.status, 'READY');
+    assert.equal(screened.status, 'USED_UP');
     assert.equal(screened.counts.selected, QUERY_PACKAGE_SCALE_ROWS);
+    assert.equal(screened.counts.produced, QUERY_PACKAGE_SCALE_ROWS);
     assert.ok(screeningElapsedMs < QUERY_PACKAGE_SCALE_OPERATION_LIMIT_MS,
-      `5000-row Query screening took ${screeningElapsedMs.toFixed(0)}ms`);
-
-    const productionStartedAt = performance.now();
-    const production = await createQueryPackageProductionBatch(repository.pool, imported.id, {
-      expectedVersion: screened.version,
-      requestId: randomUUID(),
-      itemIds,
-      nodeId: 'query-scale-node',
-    }, admin);
-    const productionElapsedMs = performance.now() - productionStartedAt;
-    assert.equal(production.taskIds.length, QUERY_PACKAGE_SCALE_ROWS);
-    assert.equal(new Set(production.taskIds).size, QUERY_PACKAGE_SCALE_ROWS);
-    assert.ok(productionElapsedMs < QUERY_PACKAGE_SCALE_OPERATION_LIMIT_MS,
-      `5000-row Query production took ${productionElapsedMs.toFixed(0)}ms`);
+      `5000-row Query screening and production took ${screeningElapsedMs.toFixed(0)}ms`);
+    const producedTaskIds = (await repository.pool.query(`
+      SELECT id FROM tasks WHERE source_query_package_id = $1 ORDER BY id
+    `, [imported.id])).rows.map((row) => Number(row.id));
+    assert.equal(producedTaskIds.length, QUERY_PACKAGE_SCALE_ROWS);
+    assert.equal(new Set(producedTaskIds).size, QUERY_PACKAGE_SCALE_ROWS);
 
     const persisted = (await repository.pool.query(`
       SELECT package.status,
@@ -1199,6 +1396,12 @@ test('real PostgreSQL 18 screens and produces a full 5000-row Query package with
           WHERE query_package_id = package.id AND status = 'TASK_CREATED') AS produced_item_count,
         (SELECT COUNT(*) FROM tasks
           WHERE source_query_package_id = package.id) AS task_count,
+        (SELECT COUNT(*) FROM tasks
+          WHERE source_query_package_id = package.id
+            AND state = 'COPY_QUEUED'
+            AND assigned_to_user_id IS NULL
+            AND assignment_source IS NULL
+            AND assigned_at IS NULL) AS unassigned_copy_task_count,
         (SELECT COUNT(*) FROM production_batch_items AS batch_item
           JOIN production_batches AS batch ON batch.id = batch_item.production_batch_id
           WHERE batch.query_package_id = package.id) AS batch_item_count
@@ -1210,16 +1413,18 @@ test('real PostgreSQL 18 screens and produces a full 5000-row Query package with
       itemCount: Number(persisted.item_count),
       producedItemCount: Number(persisted.produced_item_count),
       taskCount: Number(persisted.task_count),
+      unassignedCopyTaskCount: Number(persisted.unassigned_copy_task_count),
       batchItemCount: Number(persisted.batch_item_count),
     }, {
       status: 'USED_UP',
       itemCount: QUERY_PACKAGE_SCALE_ROWS,
       producedItemCount: QUERY_PACKAGE_SCALE_ROWS,
       taskCount: QUERY_PACKAGE_SCALE_ROWS,
+      unassignedCopyTaskCount: QUERY_PACKAGE_SCALE_ROWS,
       batchItemCount: QUERY_PACKAGE_SCALE_ROWS,
     });
     context.diagnostic(
-      `5000-row Query import ${importElapsedMs.toFixed(0)}ms; screening ${screeningElapsedMs.toFixed(0)}ms; production ${productionElapsedMs.toFixed(0)}ms`,
+      `5000-row Query import ${importElapsedMs.toFixed(0)}ms; screening and production ${screeningElapsedMs.toFixed(0)}ms`,
     );
   } finally {
     await repository.close().catch(() => {});
@@ -1269,7 +1474,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     controlPlane = await startRealControlPlane(repository);
     const health = await requestJson(controlPlane.root, '/health');
     assert.equal(health.data.ok, true);
-    assert.equal(health.data.capabilities.queryPackageVersion, 1);
+    assert.equal(health.data.capabilities.queryPackageVersion, 2);
     assert.equal(health.data.capabilities.copySamplingVersion, 1);
     assert.equal(health.data.capabilities.finalDeliveryVersion, 2);
 
@@ -1292,9 +1497,13 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     })).data;
     assert.equal(settings.copySampling.rateBps, 10_000);
     assert.equal(settings.copySampling.blindReviewEnabled, true);
-    assert.equal((await requestJson(
-      controlPlane.root, '/v1/workflow-quality-settings', { actor: worker },
-    )).data.queryPackage.workerImportEnabled, false);
+    const deniedWorkerSettings = await requestJson(
+      controlPlane.root, '/v1/workflow-quality-settings', {
+        actor: worker,
+        expectedStatus: 403,
+      },
+    );
+    assert.equal(deniedWorkerSettings.error.code, 'FORBIDDEN');
 
     const deniedWorkerImport = await requestJson(controlPlane.root, '/v1/query-packages', {
       actor: worker,
@@ -1354,37 +1563,49 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
       },
     })).data;
     assert.equal(disposablePackage.assignedToUserId, null);
-    const assignedDisposable = (await requestJson(
-      controlPlane.root, `/v1/query-packages/${disposablePackage.id}/assignee`, {
-        actor: admin,
-        method: 'PATCH',
-        body: {
-          expectedVersion: disposablePackage.version,
-          assignedToUserId: worker.username,
-          assignedToAccountId: worker.userId,
-        },
+    const deniedWorkerDisposableDetail = await requestJson(
+      controlPlane.root, `/v1/query-packages/${disposablePackage.id}`, {
+        actor: worker,
+        expectedStatus: 403,
       },
-    )).data;
-    assert.equal(assignedDisposable.assignedToUserId, worker.username);
+    );
+    assert.equal(deniedWorkerDisposableDetail.error.code, 'FORBIDDEN');
     const disposableDetail = (await requestJson(
-      controlPlane.root, `/v1/query-packages/${disposablePackage.id}`, { actor: worker },
+      controlPlane.root, `/v1/query-packages/${disposablePackage.id}`, { actor: admin },
     )).data;
-    const abandonedDisposable = (await requestJson(
+    const disposableScreeningBody = {
+      expectedVersion: disposableDetail.version,
+      requestId: randomUUID(),
+      decisions: [{
+        itemId: disposableDetail.items[0].id,
+        decision: 'REJECT',
+        reason: '隔离测试：该 Query 不适合生产',
+      }],
+    };
+    const deniedWorkerDisposableScreening = await requestJson(
       controlPlane.root, `/v1/query-packages/${disposablePackage.id}/screening`, {
         actor: worker,
         method: 'PUT',
-        body: {
-          expectedVersion: disposableDetail.version,
-          requestId: randomUUID(),
-          decisions: [{
-            itemId: disposableDetail.items[0].id,
-            decision: 'REJECT',
-            reason: '隔离测试：该 Query 不适合生产',
-          }],
-        },
+        body: disposableScreeningBody,
+        expectedStatus: 403,
+      },
+    );
+    assert.equal(deniedWorkerDisposableScreening.error.code, 'FORBIDDEN');
+    const abandonedDisposable = (await requestJson(
+      controlPlane.root, `/v1/query-packages/${disposablePackage.id}/screening`, {
+        actor: admin,
+        method: 'PUT',
+        body: disposableScreeningBody,
       },
     )).data;
     assert.equal(abandonedDisposable.status, 'ABANDONED');
+    const deniedWorkerDeletePreview = await requestJson(
+      controlPlane.root, `/v1/query-packages/${disposablePackage.id}/permanent-delete-preview`, {
+        actor: worker,
+        expectedStatus: 403,
+      },
+    );
+    assert.equal(deniedWorkerDeletePreview.error.code, 'FORBIDDEN');
     const deletePreview = (await requestJson(
       controlPlane.root, `/v1/query-packages/${disposablePackage.id}/permanent-delete-preview`,
       { actor: admin },
@@ -1402,17 +1623,27 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
       detachedTaskCount: 0,
       tasksWillBeDeleted: false,
     });
+    const permanentDeletionBody = {
+      expectedVersion: deletePreview.version,
+      reason: '隔离测试验证废弃词包真删除',
+      deletionPassword,
+      confirmationName: deletePreview.name,
+      requestId: randomUUID(),
+    };
+    const deniedWorkerPermanentDeletion = await requestJson(
+      controlPlane.root, `/v1/query-packages/${disposablePackage.id}/permanent`, {
+        actor: worker,
+        method: 'DELETE',
+        body: permanentDeletionBody,
+        expectedStatus: 403,
+      },
+    );
+    assert.equal(deniedWorkerPermanentDeletion.error.code, 'FORBIDDEN');
     const deletion = (await requestJson(
       controlPlane.root, `/v1/query-packages/${disposablePackage.id}/permanent`, {
         actor: admin,
         method: 'DELETE',
-        body: {
-          expectedVersion: deletePreview.version,
-          reason: '隔离测试验证废弃词包真删除',
-          deletionPassword,
-          confirmationName: deletePreview.name,
-          requestId: randomUUID(),
-        },
+        body: permanentDeletionBody,
       },
     )).data;
     assert.deepEqual(deletion, {
@@ -1453,50 +1684,172 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     })).data;
     assert.equal(createdPackage.status, 'IMPORTED');
     assert.equal(createdPackage.counts.pending, 2);
-    assert.equal(createdPackage.assignedToUserId, worker.username);
+    assert.equal(createdPackage.assignedToUserId, null,
+      'legacy assignee input is accepted but no longer establishes Query-package ownership');
+    assert.equal(createdPackage.assignedToAccountId, null);
 
-    const visiblePackages = (await requestJson(
-      controlPlane.root, '/v1/query-packages', { actor: worker },
+    const deniedWorkerPackageList = await requestJson(
+      controlPlane.root, '/v1/query-packages', {
+        actor: worker,
+        expectedStatus: 403,
+      },
+    );
+    assert.equal(deniedWorkerPackageList.error.code, 'FORBIDDEN');
+    const adminPackages = (await requestJson(
+      controlPlane.root, '/v1/query-packages', { actor: admin },
     )).data;
-    assert.deepEqual(visiblePackages.map((item) => item.id), [createdPackage.id]);
-    assert.deepEqual(normalizePackageList(visiblePackages).map((item) => item.id), [createdPackage.id]);
+    assert.ok(adminPackages.some((item) => item.id === createdPackage.id));
+    assert.ok(normalizePackageList(adminPackages).some((item) => item.id === createdPackage.id));
+    const deniedWorkerPackageDetail = await requestJson(
+      controlPlane.root, `/v1/query-packages/${createdPackage.id}`, {
+        actor: worker,
+        expectedStatus: 403,
+      },
+    );
+    assert.equal(deniedWorkerPackageDetail.error.code, 'FORBIDDEN');
     const packageDetail = (await requestJson(
-      controlPlane.root, `/v1/query-packages/${createdPackage.id}`, { actor: worker },
+      controlPlane.root, `/v1/query-packages/${createdPackage.id}`, { actor: admin },
     )).data;
     assert.ok(packageDetail.items.every((item) => item.status === 'READY'));
     const normalizedPackageDetail = normalizePackageDetail(packageDetail);
     assert.equal(normalizedPackageDetail.items.length, 2);
     assert.ok(normalizedPackageDetail.items.every((item) => item.validationStatus === 'READY'));
-    const screenedPackage = (await requestJson(
+    const screeningBody = {
+      expectedVersion: packageDetail.version,
+      requestId: randomUUID(),
+      decisions: packageDetail.items.map((item) => ({ itemId: item.id, decision: 'SELECT' })),
+    };
+    const deniedWorkerScreening = await requestJson(
       controlPlane.root, `/v1/query-packages/${createdPackage.id}/screening`, {
         actor: worker,
         method: 'PUT',
-        body: {
-          expectedVersion: packageDetail.version,
-          requestId: randomUUID(),
-          decisions: packageDetail.items.map((item) => ({ itemId: item.id, decision: 'SELECT' })),
-        },
+        body: screeningBody,
+        expectedStatus: 403,
+      },
+    );
+    assert.equal(deniedWorkerScreening.error.code, 'FORBIDDEN');
+    const screenedPackage = (await requestJson(
+      controlPlane.root, `/v1/query-packages/${createdPackage.id}/screening`, {
+        actor: admin,
+        method: 'PUT',
+        body: screeningBody,
       },
     )).data;
-    assert.equal(screenedPackage.status, 'READY');
+    assert.equal(screenedPackage.status, 'USED_UP');
+    assert.equal(screenedPackage.counts.selected, 2);
+    assert.equal(screenedPackage.counts.produced, 2);
 
-    const productionBatch = (await requestJson(
+    const productionBody = {
+      expectedVersion: screenedPackage.version,
+      requestId: randomUUID(),
+      itemIds: packageDetail.items.map((item) => item.id),
+      nodeId: 'pg18-e2e-node',
+    };
+    const deniedWorkerProduction = await requestJson(
       controlPlane.root, `/v1/query-packages/${createdPackage.id}/production-batches`, {
         actor: worker,
         method: 'POST',
-        expectedStatus: 201,
-        body: {
-          expectedVersion: screenedPackage.version,
-          requestId: randomUUID(),
-          itemIds: packageDetail.items.map((item) => item.id),
-          nodeId: 'pg18-e2e-node',
-        },
+        body: productionBody,
+        expectedStatus: 403,
+      },
+    );
+    assert.equal(deniedWorkerProduction.error.code, 'FORBIDDEN');
+    const producedPackageDetail = (await requestJson(
+      controlPlane.root, `/v1/query-packages/${createdPackage.id}`, { actor: admin },
+    )).data;
+    assert.equal(producedPackageDetail.productionBatches.length, 1);
+    const productionBatch = {
+      ...producedPackageDetail.productionBatches[0],
+      taskIds: (await repository.pool.query(`
+        SELECT task_id FROM production_batch_items
+        WHERE production_batch_id = $1 ORDER BY id
+      `, [producedPackageDetail.productionBatches[0].id])).rows.map((row) => Number(row.task_id)),
+    };
+    assert.equal(productionBatch.taskIds.length, 2);
+
+    const deniedWorkerReadiness = await requestJson(
+      controlPlane.root, `/v1/production-batches/${productionBatch.id}/copy-sampling-readiness`, {
+        actor: worker,
+        expectedStatus: 403,
+      },
+    );
+    assert.equal(deniedWorkerReadiness.error.code, 'FORBIDDEN');
+    const reviewerReadiness = (await requestJson(
+      controlPlane.root, `/v1/production-batches/${productionBatch.id}/copy-sampling-readiness`, {
+        actor: reviewer,
       },
     )).data;
-    assert.equal(productionBatch.taskIds.length, 2);
-    assert.equal((await requestJson(
-      controlPlane.root, `/v1/query-packages/${createdPackage.id}`, { actor: worker },
-    )).data.status, 'USED_UP');
+    assert.deepEqual({
+      totalCount: reviewerReadiness.totalCount,
+      approvedCount: reviewerReadiness.approvedCount,
+      cancelledCount: reviewerReadiness.cancelledCount,
+      blockerCount: reviewerReadiness.blockerCount,
+      ready: reviewerReadiness.ready,
+    }, {
+      totalCount: 2,
+      approvedCount: 0,
+      cancelledCount: 0,
+      blockerCount: 2,
+      ready: false,
+    });
+    assert.equal(Object.hasOwn(reviewerReadiness, 'blockerTaskIds'), false);
+    const adminReadiness = (await requestJson(
+      controlPlane.root, `/v1/production-batches/${productionBatch.id}/copy-sampling-readiness`, {
+        actor: admin,
+      },
+    )).data;
+    assert.deepEqual(adminReadiness.blockerTaskIds, productionBatch.taskIds);
+
+    const queuedTasks = (await repository.pool.query(`
+      SELECT id, state, current_stage, assigned_to_user_id, assignment_source, assigned_at
+      FROM tasks WHERE id = ANY($1::bigint[]) ORDER BY id
+    `, [productionBatch.taskIds])).rows;
+    assert.equal(queuedTasks.length, productionBatch.taskIds.length);
+    assert.ok(queuedTasks.every((task) => task.state === 'COPY_QUEUED'
+      && task.current_stage === 'COPY_QUEUED'
+      && task.assigned_to_user_id === null
+      && task.assignment_source === null
+      && task.assigned_at === null));
+    const workerTaskListBeforeAssignment = (await requestJson(
+      controlPlane.root, '/v1/tasks?limit=100', { actor: worker },
+    )).data;
+    assert.ok(productionBatch.taskIds.every(
+      (taskId) => !workerTaskListBeforeAssignment.some((task) => task.id === taskId),
+    ));
+
+    const searchedTaskIds = [];
+    for (let index = 0; index < productionBatch.taskIds.length; index += 1) {
+      const searchClaim = await repository.claimXhsQuerySearch({
+        nodeId: 'pg18-e2e-xhs-search',
+        nodeName: 'PostgreSQL 18 E2E Xiaohongshu search',
+        protocolVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
+      });
+      assert.ok(searchClaim);
+      assert.equal(searchClaim.resultLimit, XIAOHONGSHU_SEARCH_DEFAULT_LIMIT);
+      assert.ok(productionBatch.taskIds.includes(searchClaim.taskId));
+      searchedTaskIds.push(searchClaim.taskId);
+      const noteId = `${index + 1}`.padStart(24, '0');
+      const completedSearch = await repository.completeXhsQuerySearch(searchClaim.id, {
+        leaseToken: searchClaim.leaseToken,
+        links: [{
+          noteId,
+          url: `https://www.xiaohongshu.com/explore/${noteId}?xsec_token=e2e_${index}%3D&xsec_source=pc_search`,
+          title: `E2E 搜索结果 ${index + 1}`,
+          rank: 1,
+        }],
+      });
+      assert.equal(completedSearch.status, 'SUCCEEDED');
+      assert.equal(completedSearch.resultCount, 1);
+    }
+    assert.deepEqual(
+      searchedTaskIds.toSorted((left, right) => left - right),
+      productionBatch.taskIds,
+    );
+    assert.equal(await repository.claimXhsQuerySearch({
+      nodeId: 'pg18-e2e-xhs-search',
+      nodeName: 'PostgreSQL 18 E2E Xiaohongshu search',
+      protocolVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
+    }), null);
 
     await repository.registerNode({
       nodeId: 'pg18-e2e-node',
@@ -1517,7 +1870,37 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
       const completed = await repository.completeCopy(claim.execution.id, validCopyContent(index + 1));
       completedCopies.push(completed);
       assert.equal(completed.task.state, 'COPY_REVIEW_PENDING');
+      assert.equal(completed.task.assignedToUserId, null);
     }
+
+    const assignedCopies = await repository.assignTasks(productionBatch.taskIds, {
+      assignedToUserId: worker.username,
+      assignedToAccountId: worker.userId,
+      actor: admin,
+      reason: 'PostgreSQL 18 E2E 文案生成后派单',
+    });
+    assert.ok(assignedCopies.every((task) => task.assignedToUserId === worker.username));
+    const workerTaskList = (await requestJson(
+      controlPlane.root, '/v1/tasks?limit=100', { actor: worker },
+    )).data;
+    const producedWorkerTasks = workerTaskList.filter(
+      (task) => productionBatch.taskIds.includes(task.id),
+    );
+    assert.deepEqual(
+      producedWorkerTasks.map((task) => task.id).toSorted((left, right) => left - right),
+      productionBatch.taskIds,
+    );
+    producedWorkerTasks.forEach((task) => assertUserTaskHidesSensitiveFields(task, 'USER task list'));
+    const workerTaskDetail = (await requestJson(
+      controlPlane.root, `/v1/tasks/${productionBatch.taskIds[0]}`, { actor: worker },
+    )).data;
+    assert.equal(workerTaskDetail.id, productionBatch.taskIds[0]);
+    assertUserTaskHidesSensitiveFields(workerTaskDetail, 'USER task detail', {
+      includeXhsSearch: true,
+    });
+    assert.equal(workerTaskDetail.xiaohongshuSearchStatus, 'SUCCEEDED');
+    assert.equal(workerTaskDetail.xiaohongshuSearchBlockedReason, null);
+    assert.equal(workerTaskDetail.xiaohongshuLinks.length, 1);
 
     const firstApproved = (await requestJson(
       controlPlane.root, `/v1/tasks/${completedCopies[0].task.id}/approve-copy`, {
@@ -1533,6 +1916,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
       },
     )).data;
     assert.equal(firstApproved.state, 'COPY_QC_PENDING');
+    assertUserTaskHidesSensitiveFields(firstApproved, 'USER approve-copy response');
     assert.equal(Number((await repository.pool.query(
       'SELECT COUNT(*) AS count FROM copy_sampling_freezes WHERE production_batch_id = $1',
       [productionBatch.id],
@@ -1552,6 +1936,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
       },
     )).data;
     assert.equal(secondApproved.state, 'COPY_QC_PENDING');
+    assertUserTaskHidesSensitiveFields(secondApproved, 'USER approve-copy response');
 
     const frozen = (await repository.pool.query(`
       SELECT * FROM copy_sampling_freezes WHERE production_batch_id = $1
@@ -1660,6 +2045,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     )).data;
     assert.equal(resubmitted.state, 'COPY_QC_PENDING');
     assert.equal(resubmitted.mandatoryCopyQc, true);
+    assertUserTaskHidesSensitiveFields(resubmitted, 'USER approve-copy response');
 
     const pendingAfterResubmit = (await requestJson(
       controlPlane.root, '/v1/copy-qa/items?status=PENDING', { actor: reviewer },
@@ -1766,9 +2152,16 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
 
     await completeSyntheticImage(imageClaim, 'initial');
     assert.equal((await repository.getTask(imageClaim.task.id)).state, 'MANUAL_ARCHIVE');
-    const prematureArchive = await requestJson(
+    const deniedWorkerPrematureArchive = await requestJson(
       controlPlane.root, `/v1/tasks/${imageClaim.task.id}/archive`, {
         actor: worker,
+        expectedStatus: 403,
+      },
+    );
+    assert.equal(deniedWorkerPrematureArchive.error.code, 'FORBIDDEN');
+    const prematureArchive = await requestJson(
+      controlPlane.root, `/v1/tasks/${imageClaim.task.id}/archive`, {
+        actor: admin,
         expectedStatus: 409,
       },
     );
@@ -1816,6 +2209,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     )).data;
     assert.equal(finalReworkApproval.state, 'COPY_QC_PENDING');
     assert.equal(finalReworkApproval.mandatoryCopyQc, true);
+    assertUserTaskHidesSensitiveFields(finalReworkApproval, 'USER approve-copy response');
 
     const finalReworkQaItems = (await requestJson(
       controlPlane.root, '/v1/copy-qa/items?status=PENDING', { actor: reviewer },
@@ -1882,15 +2276,27 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     assert.equal(delivery.taskId, imageClaim.task.id);
     assert.equal(delivery.status, 'READY');
     assert.equal(delivery.imageRunId, finalImageClaim.execution.id);
-    const workerDeliveryPool = (await requestJson(
-      controlPlane.root, '/v1/delivery-pool', { actor: worker },
-    )).data;
-    assert.ok(workerDeliveryPool.some((entry) => entry.taskId === imageClaim.task.id));
+    const deniedWorkerDeliveryPool = await requestJson(
+      controlPlane.root, '/v1/delivery-pool', {
+        actor: worker,
+        expectedStatus: 403,
+      },
+    );
+    assert.equal(deniedWorkerDeliveryPool.error.code, 'FORBIDDEN');
     const adminDeliveryPage = (await requestJson(
       controlPlane.root, '/v1/delivery-pool?limit=200&offset=0&includeTotal=true', { actor: admin },
     )).data;
     assert.equal(adminDeliveryPage.total, 1);
     assert.equal(adminDeliveryPage.items[0].taskId, imageClaim.task.id);
+    const deniedWorkerDeliveryPreparation = await requestJson(
+      controlPlane.root, '/v1/delivery-pool/archive', {
+        actor: worker,
+        method: 'POST',
+        body: { scope: 'ALL_READY' },
+        expectedStatus: 403,
+      },
+    );
+    assert.equal(deniedWorkerDeliveryPreparation.error.code, 'FORBIDDEN');
     const preparedDelivery = (await requestJson(
       controlPlane.root, '/v1/delivery-pool/archive', {
         actor: admin,
@@ -1900,22 +2306,353 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
       },
     )).data;
     assert.equal(preparedDelivery.taskCount, 1);
+    const deniedWorkerDeliveryDownload = await requestJson(
+      controlPlane.root, `/v1/delivery-pool/archive/${preparedDelivery.downloadId}`, {
+        actor: worker,
+        expectedStatus: 403,
+      },
+    );
+    assert.equal(deniedWorkerDeliveryDownload.error.code, 'FORBIDDEN');
     const allDeliveryResponse = await fetch(
       `${controlPlane.root}/v1/delivery-pool/archive/${preparedDelivery.downloadId}`,
       { headers: actorHeaders(admin) },
     );
     assert.equal(allDeliveryResponse.status, 200);
     const allDeliveryArchive = await JSZip.loadAsync(await allDeliveryResponse.arrayBuffer());
-    assert.ok(allDeliveryArchive.file(`任务-${imageClaim.task.id}-资源包.zip`));
+    const deliveredTaskArchive = allDeliveryArchive.file(
+      `PostgreSQL 18 隔离端到端词包/任务-${imageClaim.task.id}-资源包.zip`,
+    );
+    assert.ok(deliveredTaskArchive);
+    const deliveredTaskFiles = await JSZip.loadAsync(await deliveredTaskArchive.async('nodebuffer'));
+    assert.match(
+      await deliveredTaskFiles.file('小红书链接.txt').async('string'),
+      /https:\/\/www\.xiaohongshu\.com\/explore\//u,
+    );
+    const deniedWorkerTaskArchive = await requestJson(
+      controlPlane.root, `/v1/tasks/${imageClaim.task.id}/archive`, {
+        actor: worker,
+        expectedStatus: 403,
+      },
+    );
+    assert.equal(deniedWorkerTaskArchive.error.code, 'FORBIDDEN');
     const archiveResponse = await fetch(
       `${controlPlane.root}/v1/tasks/${imageClaim.task.id}/archive`,
-      { headers: actorHeaders(worker) },
+      { headers: actorHeaders(admin) },
     );
     assert.equal(archiveResponse.status, 200);
     assert.match(archiveResponse.headers.get('content-type') ?? '', /application\/zip/u);
     assert.ok((await archiveResponse.arrayBuffer()).byteLength > 0);
   } finally {
     await controlPlane?.stop().catch(() => {});
+    await repository.close().catch(() => {});
+    await cluster.stop();
+  }
+});
+
+test('real PostgreSQL 18 discards only previewed pristine duplicate Query tasks and restores paired search safely', {
+  skip: !RUN_POSTGRES_E2E,
+  timeout: 120_000,
+}, async () => {
+  const cluster = await startTemporaryPostgres18();
+  const repository = new PostgresControlPlaneRepository({ connectionString: cluster.connectionString });
+  try {
+    await repository.initialize();
+    const admin = actorFrom(await repository.getUserByUsername('admin'));
+    const [plainTask, runningSearchTask, successfulSearchTask, differentContextTask] = await repository.createTasks({
+      nodeId: 'duplicate-query-e2e-node',
+      createdByUserId: admin.username,
+      actor: admin,
+      tasks: [
+        { query: 'Camping Guide', input: { audience: 'newcomer' } },
+        { query: '  camping   guide  ', input: { audience: 'newcomer' } },
+        { query: 'CAMPING GUIDE', input: { audience: 'newcomer' } },
+        { query: 'camping guide', input: { audience: 'expert' } },
+      ],
+    });
+
+    const runningJobId = Number((await repository.pool.query(`
+      INSERT INTO xhs_query_search_jobs(task_id, query_snapshot)
+      VALUES ($1, $2)
+      RETURNING id
+    `, [runningSearchTask.id, runningSearchTask.query])).rows[0].id);
+    const successfulJobId = Number((await repository.pool.query(`
+      INSERT INTO xhs_query_search_jobs(
+        task_id, query_snapshot, status, result_count, searched_at
+      ) VALUES ($1, $2, 'SUCCEEDED', 1, now())
+      RETURNING id
+    `, [successfulSearchTask.id, successfulSearchTask.query])).rows[0].id);
+    await repository.pool.query(`
+      INSERT INTO xhs_query_links(search_job_id, note_id, url, title, rank)
+      VALUES ($1, 'duplicate-e2e-note',
+        'https://www.xiaohongshu.com/explore/duplicate-e2e-note',
+        '隔离测试搜索成果', 1)
+    `, [successfulJobId]);
+    const claimedSearch = await repository.claimXhsQuerySearch({
+      nodeId: 'duplicate-query-xhs-e2e-node',
+      nodeName: 'Duplicate Query XHS E2E Node',
+      protocolVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
+    });
+    assert.equal(claimedSearch.id, runningJobId);
+    assert.equal(claimedSearch.taskId, runningSearchTask.id);
+
+    const preview = await repository.previewDuplicateQueryDiscard({
+      representativeTaskIds: [runningSearchTask.id],
+    }, { actor: admin });
+    assert.equal(preview.version, 1);
+    assert.equal(preview.groups.length, 1);
+    assert.equal(preview.groups[0].keeper.id, successfulSearchTask.id,
+      'a completed search is retained as existing work');
+    assert.deepEqual(
+      preview.groups[0].discardable.map(({ id }) => id),
+      [plainTask.id, runningSearchTask.id],
+    );
+    assert.deepEqual(
+      preview.groups[0].skipped.map(({ id, reasonCode }) => [id, reasonCode]),
+      [[differentContextTask.id, 'DIFFERENT_BUSINESS_CONTEXT']],
+    );
+
+    const requestId = randomUUID();
+    const request = {
+      requestId,
+      representativeTaskIds: preview.representativeTaskIds,
+      previewFingerprint: preview.previewFingerprint,
+      confirmedDiscardCount: preview.summary.discardableCount,
+    };
+    const [firstResult, concurrentRetry] = await Promise.all([
+      repository.discardDuplicateQueries(request, { actor: admin }),
+      repository.discardDuplicateQueries(request, { actor: admin }),
+    ]);
+    const expectedResult = {
+      requestId,
+      discardedTaskIds: [plainTask.id, runningSearchTask.id],
+      keeperTaskIds: [successfulSearchTask.id],
+      discardedCount: 2,
+      skippedCount: 1,
+    };
+    assert.deepEqual(firstResult, expectedResult);
+    assert.deepEqual(concurrentRetry, expectedResult, 'the same concurrent request replays one receipt');
+
+    const taskStates = (await repository.pool.query(`
+      SELECT id, state, cancelled_from_state
+      FROM tasks WHERE id = ANY($1::bigint[]) ORDER BY id
+    `, [[plainTask.id, runningSearchTask.id, successfulSearchTask.id, differentContextTask.id]])).rows;
+    assert.deepEqual(taskStates.map((row) => [Number(row.id), row.state, row.cancelled_from_state]), [
+      [plainTask.id, 'CANCELLED', 'COPY_QUEUED'],
+      [runningSearchTask.id, 'CANCELLED', 'COPY_QUEUED'],
+      [successfulSearchTask.id, 'COPY_QUEUED', null],
+      [differentContextTask.id, 'COPY_QUEUED', null],
+    ]);
+    const searchStates = (await repository.pool.query(`
+      SELECT id, status, lease_token, claimed_by_node_id
+      FROM xhs_query_search_jobs WHERE id = ANY($1::bigint[]) ORDER BY id
+    `, [[runningJobId, successfulJobId]])).rows;
+    assert.deepEqual(searchStates.map((row) => [
+      Number(row.id), row.status, row.lease_token, row.claimed_by_node_id,
+    ]), [
+      [runningJobId, 'CANCELLED', null, null],
+      [successfulJobId, 'SUCCEEDED', null, null],
+    ]);
+    assert.equal(Number((await repository.pool.query(`
+      SELECT COUNT(*) AS count FROM task_duplicate_query_discard_requests
+      WHERE actor_account_id = $1 AND request_id = $2
+    `, [admin.userId, requestId])).rows[0].count), 1);
+    const audits = (await repository.pool.query(`
+      SELECT discarded_task_id, keeper_task_id
+      FROM task_duplicate_query_discard_audits
+      WHERE actor_account_id = $1 AND request_id = $2
+      ORDER BY discarded_task_id
+    `, [admin.userId, requestId])).rows;
+    assert.deepEqual(audits.map((row) => [Number(row.discarded_task_id), Number(row.keeper_task_id)]), [
+      [plainTask.id, successfulSearchTask.id],
+      [runningSearchTask.id, successfulSearchTask.id],
+    ]);
+
+    await repository.requeueCancelledTask(runningSearchTask.id, { actor: admin });
+    const restoredSearch = (await repository.pool.query(`
+      SELECT status, attempt_count, lease_token, claimed_by_node_id, error
+      FROM xhs_query_search_jobs WHERE id = $1
+    `, [runningJobId])).rows[0];
+    assert.deepEqual(restoredSearch, {
+      status: 'PENDING', attempt_count: 0, lease_token: null, claimed_by_node_id: null, error: null,
+    });
+    await assert.rejects(
+      repository.completeXhsQuerySearch(runningJobId, {
+        leaseToken: claimedSearch.leaseToken,
+        links: [],
+      }),
+      { code: 'STALE_XHS_SEARCH_LEASE' },
+      'the lease cancelled by duplicate cleanup cannot write after recovery',
+    );
+
+    const historicalTasks = await repository.createTasks({
+      nodeId: 'duplicate-query-e2e-node',
+      createdByUserId: admin.username,
+      actor: admin,
+      tasks: [
+        { query: 'historical owner identity', input: {} },
+        { query: 'HISTORICAL   OWNER IDENTITY', input: {} },
+      ],
+    });
+    await repository.pool.query(`
+      UPDATE tasks SET created_by_user_id = 'reused-deleted-owner', updated_at = clock_timestamp()
+      WHERE id = ANY($1::bigint[])
+    `, [historicalTasks.map(({ id }) => id)]);
+    const unverifiableOwnerPreview = await repository.previewDuplicateQueryDiscard({
+      representativeTaskIds: [historicalTasks[1].id],
+    }, { actor: admin });
+    assert.equal(unverifiableOwnerPreview.summary.discardableCount, 0,
+      'tasks without a provable stable creator identity fail closed');
+
+    const unsafeNumberTasks = await repository.createTasks({
+      nodeId: 'duplicate-query-e2e-node',
+      createdByUserId: admin.username,
+      actor: admin,
+      tasks: [
+        { query: 'unsafe json number identity', input: {} },
+        { query: 'UNSAFE   JSON NUMBER IDENTITY', input: {} },
+      ],
+    });
+    await repository.pool.query(`
+      UPDATE tasks SET input = CASE id
+        WHEN $1::bigint THEN '{"sequence": 9007199254740992}'::jsonb
+        WHEN $2::bigint THEN '{"sequence": 9007199254740993}'::jsonb
+      END,
+      updated_at = clock_timestamp()
+      WHERE id = ANY($3::bigint[])
+    `, [unsafeNumberTasks[0].id, unsafeNumberTasks[1].id, unsafeNumberTasks.map(({ id }) => id)]);
+    const unsafeNumberPreview = await repository.previewDuplicateQueryDiscard({
+      representativeTaskIds: [unsafeNumberTasks[1].id],
+    }, { actor: admin });
+    assert.equal(unsafeNumberPreview.summary.discardableCount, 0,
+      'distinct jsonb integers above JavaScript safe precision remain different contexts');
+
+    const batchTasks = await repository.createTasks({
+      nodeId: 'duplicate-query-e2e-node',
+      createdByUserId: admin.username,
+      actor: admin,
+      tasks: [
+        { query: 'batch recovery boundary', input: {} },
+        { query: 'BATCH   RECOVERY BOUNDARY', input: {} },
+      ],
+    });
+    const productionBatchId = Number((await repository.pool.query(`
+      INSERT INTO production_batches(
+        public_id, query_package_name, created_by_account_id, created_by_username,
+        request_id, request_fingerprint
+      ) VALUES ($1, '隔离去重恢复边界', $2, $3, $4, $5)
+      RETURNING id
+    `, [randomUUID(), admin.userId, admin.username, randomUUID(), 'b'.repeat(64)])).rows[0].id);
+    await repository.pool.query(`
+      UPDATE tasks SET production_batch_id = $1, updated_at = clock_timestamp()
+      WHERE id = ANY($2::bigint[])
+    `, [productionBatchId, batchTasks.map(({ id }) => id)]);
+    const batchPreview = await repository.previewDuplicateQueryDiscard({
+      representativeTaskIds: [batchTasks[1].id],
+    }, { actor: admin });
+    assert.equal(batchPreview.summary.discardableCount, 0,
+      'production-batch decisions are outside recoverable duplicate cleanup');
+    const batchNoop = await repository.discardDuplicateQueries({
+      requestId: randomUUID(),
+      representativeTaskIds: batchPreview.representativeTaskIds,
+      previewFingerprint: batchPreview.previewFingerprint,
+      confirmedDiscardCount: 0,
+    }, { actor: admin });
+    assert.equal(batchNoop.discardedCount, 0);
+    const unchangedBatch = (await repository.pool.query(`
+      SELECT status, sampling_status FROM production_batches WHERE id = $1
+    `, [productionBatchId])).rows[0];
+    assert.deepEqual(unchangedBatch, { status: 'OPEN', sampling_status: 'OPEN' });
+    const unchangedBatchTasks = (await repository.pool.query(`
+      SELECT state FROM tasks WHERE id = ANY($1::bigint[]) ORDER BY id
+    `, [batchTasks.map(({ id }) => id)])).rows;
+    assert.deepEqual(unchangedBatchTasks.map(({ state }) => state), ['COPY_QUEUED', 'COPY_QUEUED']);
+
+    const staleTasks = await repository.createTasks({
+      nodeId: 'duplicate-query-e2e-node',
+      createdByUserId: admin.username,
+      actor: admin,
+      tasks: [
+        { query: 'stale preview guard', input: {} },
+        { query: 'STALE   PREVIEW GUARD', input: {} },
+      ],
+    });
+    const stalePreview = await repository.previewDuplicateQueryDiscard({
+      representativeTaskIds: [staleTasks[1].id],
+    }, { actor: admin });
+    assert.equal(stalePreview.summary.discardableCount, 1);
+    await repository.pool.query(`
+      UPDATE tasks SET ai_disclosure_enabled = false,
+        updated_at = clock_timestamp() + interval '1 second'
+      WHERE id = $1
+    `, [staleTasks[1].id]);
+    const staleRequestId = randomUUID();
+    await assert.rejects(repository.discardDuplicateQueries({
+      requestId: staleRequestId,
+      representativeTaskIds: stalePreview.representativeTaskIds,
+      previewFingerprint: stalePreview.previewFingerprint,
+      confirmedDiscardCount: stalePreview.summary.discardableCount,
+    }, { actor: admin }), { code: 'DUPLICATE_QUERY_PREVIEW_STALE' });
+    const unchangedStaleTasks = (await repository.pool.query(`
+      SELECT state FROM tasks WHERE id = ANY($1::bigint[]) ORDER BY id
+    `, [staleTasks.map(({ id }) => id)])).rows;
+    assert.deepEqual(unchangedStaleTasks.map(({ state }) => state), ['COPY_QUEUED', 'COPY_QUEUED']);
+    assert.equal(Number((await repository.pool.query(`
+      SELECT COUNT(*) AS count FROM task_duplicate_query_discard_requests
+      WHERE actor_account_id = $1 AND request_id = $2
+    `, [admin.userId, staleRequestId])).rows[0].count), 0);
+  } finally {
+    await repository.close().catch(() => {});
+    await cluster.stop();
+  }
+});
+
+test('real PostgreSQL 18 records retryable Xiaohongshu search failures without parameter type ambiguity', {
+  skip: !RUN_POSTGRES_E2E,
+  timeout: 120_000,
+}, async () => {
+  const cluster = await startTemporaryPostgres18();
+  const repository = new PostgresControlPlaneRepository({ connectionString: cluster.connectionString });
+  try {
+    await repository.initialize();
+    const admin = actorFrom(await repository.getUserByUsername('admin'));
+    const [task] = await repository.createTasks({
+      nodeId: 'xhs-failure-e2e-node',
+      createdByUserId: admin.username,
+      actor: admin,
+      tasks: [{ query: 'PostgreSQL parameter inference regression', input: {} }],
+    });
+    const jobId = Number((await repository.pool.query(`
+      INSERT INTO xhs_query_search_jobs(task_id, query_snapshot)
+      VALUES ($1, $2)
+      RETURNING id
+    `, [task.id, task.query])).rows[0].id);
+    await repository.upsertSetting(XIAOHONGSHU_SEARCH_SETTINGS_KEY, { resultLimit: 10 });
+    const claim = await repository.claimXhsQuerySearch({
+      nodeId: 'xhs-failure-e2e-node',
+      nodeName: 'Xiaohongshu failure PostgreSQL E2E node',
+      protocolVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
+    });
+    assert.equal(claim.id, jobId);
+    assert.equal(claim.resultLimit, 10);
+
+    const failed = await repository.failXhsQuerySearch(jobId, {
+      leaseToken: claim.leaseToken,
+      retryable: true,
+      error: 'isolated PostgreSQL failure-path test',
+    });
+    assert.equal(failed.status, 'PENDING');
+    assert.equal(failed.leaseToken, null);
+    const persisted = (await repository.pool.query(`
+      SELECT status, error, retry_after, lease_token, claimed_by_node_id, result_limit
+      FROM xhs_query_search_jobs WHERE id = $1
+    `, [jobId])).rows[0];
+    assert.equal(persisted.status, 'PENDING');
+    assert.equal(persisted.error, 'isolated PostgreSQL failure-path test');
+    assert.ok(persisted.retry_after instanceof Date);
+    assert.equal(persisted.lease_token, null);
+    assert.equal(persisted.claimed_by_node_id, null);
+    assert.equal(persisted.result_limit, 10);
+  } finally {
     await repository.close().catch(() => {});
     await cluster.stop();
   }

@@ -56,6 +56,7 @@ const state = {
   nextTaskId: 501,
   packages: [],
   batches: [],
+  tasks: [],
   requests: [],
   deliveryExports: [],
   deliveryArchives: new Map(),
@@ -139,9 +140,6 @@ if (process.env.MODULAR_E2E_PAGINATION_SEED === '1') {
       id: packageId,
       name: `分页词包-${String(index).padStart(4, '0')}`,
       status: 'SCREENING',
-      assignedToUserId: users.worker.username,
-      assignedToAccountId: users.worker.id,
-      assignedToDisplayName: users.worker.displayName,
       version: 1,
       createdAt,
       updatedAt: createdAt,
@@ -152,6 +150,7 @@ if (process.env.MODULAR_E2E_PAGINATION_SEED === '1') {
         query: `分页 Query ${index}`,
         input: {},
         requestedImageCount: 'auto',
+        status: 'READY',
         screeningDecision: 'PENDING',
         screeningReason: null,
         taskId: null,
@@ -191,11 +190,63 @@ function paginate(url, entries, maximumLimit = 200) {
 function counts(record) {
   return {
     total: record.items.length,
-    pending: record.items.filter((item) => item.screeningDecision === 'PENDING').length,
+    pending: record.items.filter((item) => item.status === 'READY'
+      && item.screeningDecision === 'PENDING').length,
     selected: record.items.filter((item) => item.screeningDecision === 'SELECTED').length,
     rejected: record.items.filter((item) => item.screeningDecision === 'REJECTED').length,
     produced: record.items.filter((item) => item.taskId).length,
   };
+}
+
+function packageStatus(record) {
+  const summary = counts(record);
+  const selectedReady = record.items.filter((item) => item.status === 'READY'
+    && item.screeningDecision === 'SELECTED').length;
+  if (summary.pending > 0) return summary.produced > 0 ? 'PARTIALLY_USED' : 'SCREENING';
+  if (selectedReady > 0) return summary.produced > 0 ? 'PARTIALLY_USED' : 'READY';
+  return summary.produced > 0 ? 'USED_UP' : 'ABANDONED';
+}
+
+function createFixtureProductionBatch(record, items, actorUsername = 'admin') {
+  if (!items.length) return null;
+  const batch = {
+    id: state.nextBatchId++,
+    publicId: randomUUID(),
+    queryPackageId: record.id,
+    queryPackageName: record.name,
+    status: 'OPEN',
+    samplingStatus: 'OPEN',
+    taskIds: [],
+  };
+  for (const item of items) {
+    const task = {
+      id: state.nextTaskId++,
+      query: item.query,
+      input: structuredClone(item.input),
+      requestedImageCount: item.requestedImageCount,
+      state: 'COPY_QUEUED',
+      currentStage: 'COPY_QUEUED',
+      progressMessage: '等待文案执行机领取',
+      createdByNodeId: 'web-query-packages',
+      createdByUserId: actorUsername,
+      assignedToUserId: null,
+      assignedToAccountId: null,
+      assignmentSource: null,
+      assignedAt: null,
+      sourceQueryPackageId: record.id,
+      sourceQueryPackageItemId: item.id,
+      sourceQueryPackageName: record.name,
+      sourceQueryPackageExternalId: item.externalId,
+      productionBatchId: batch.id,
+    };
+    state.tasks.push(task);
+    batch.taskIds.push(task.id);
+    item.taskId = task.id;
+    item.status = 'TASK_CREATED';
+    item.version += 1;
+  }
+  state.batches.push(batch);
+  return batch;
 }
 
 function packageSummary(record) {
@@ -203,9 +254,6 @@ function packageSummary(record) {
     id: record.id,
     name: record.name,
     status: record.status,
-    assignedToUserId: record.assignedToUserId,
-    assignedToAccountId: record.assignedToAccountId,
-    assignedToDisplayName: record.assignedToDisplayName,
     version: record.version,
     counts: counts(record),
     createdAt: record.createdAt,
@@ -217,6 +265,9 @@ function packageDetail(record) {
   return {
     ...packageSummary(record),
     items: record.items.map((item) => ({ ...item })),
+    productionBatches: state.batches
+      .filter((batch) => batch.queryPackageId === record.id)
+      .map((batch) => ({ ...batch, taskCount: batch.taskIds.length })),
   };
 }
 
@@ -228,10 +279,8 @@ function actorUser(req) {
   return Object.values(users).find((candidate) => candidate.username === req.headers['x-actor-username']) ?? null;
 }
 
-function canAccessPackage(req, record) {
-  const actor = actorUser(req);
-  return actor?.role === 'ADMIN' || (actor?.role === 'USER'
-    && record.assignedToUserId === actor.username && record.assignedToAccountId === actor.id);
+function canAccessPackage(req) {
+  return actorRole(req) === 'ADMIN';
 }
 
 function qaItemFor(req, item) {
@@ -298,6 +347,7 @@ const controlPlane = createServer(async (req, res) => {
         fixture: true,
         capabilities: {
           taskAssignmentVersion: 3,
+          queryPackageVersion: 2,
           finalDeliveryVersion: 2,
           deliverySpreadsheetVersion: 1,
         },
@@ -423,16 +473,11 @@ const controlPlane = createServer(async (req, res) => {
       return;
     }
     if (method === 'GET' && url.pathname === '/v1/query-packages') {
-      const actor = actorUser(req);
-      if (!actor || actor.role === 'REVIEWER') {
+      if (actorRole(req) !== 'ADMIN') {
         error(res, 403, 'FORBIDDEN', 'fixture query package access denied');
         return;
       }
-      const visiblePackages = actor.role === 'ADMIN'
-        ? state.packages
-        : state.packages.filter((record) => record.assignedToUserId === actor.username
-          && record.assignedToAccountId === actor.id);
-      const page = paginate(url, visiblePackages);
+      const page = paginate(url, state.packages);
       send(res, 200, page.items.map(packageSummary));
       return;
     }
@@ -443,21 +488,10 @@ const controlPlane = createServer(async (req, res) => {
       }
       const input = await jsonBody(req);
       const now = new Date().toISOString();
-      const requestedAssignee = input.assignedToUserId === undefined
-        ? null
-        : Object.values(users).find((candidate) => candidate.role === 'USER'
-          && candidate.status === 'ACTIVE' && candidate.username === String(input.assignedToUserId).toLowerCase());
-      if (input.assignedToUserId !== undefined && !requestedAssignee) {
-        error(res, 409, 'ASSIGNEE_UNAVAILABLE', 'fixture assignee is unavailable');
-        return;
-      }
       const record = {
         id: state.nextPackageId++,
         name: String(input.name),
-        status: 'SCREENING',
-        assignedToUserId: requestedAssignee?.username ?? null,
-        assignedToAccountId: requestedAssignee?.id ?? null,
-        assignedToDisplayName: requestedAssignee?.displayName ?? null,
+        status: 'IMPORTED',
         version: 1,
         createdAt: now,
         updatedAt: now,
@@ -468,6 +502,7 @@ const controlPlane = createServer(async (req, res) => {
           query: String(item.query),
           input: item.input ?? {},
           requestedImageCount: item.requestedImageCount ?? 'auto',
+          status: 'READY',
           screeningDecision: 'PENDING',
           screeningReason: null,
           taskId: null,
@@ -478,13 +513,24 @@ const controlPlane = createServer(async (req, res) => {
       send(res, 201, packageSummary(record));
       return;
     }
-    const assigneeMatch = url.pathname.match(/^\/v1\/query-packages\/(\d+)\/assignee$/u);
-    if (method === 'PATCH' && assigneeMatch) {
-      if (actorRole(req) !== 'ADMIN') {
-        error(res, 403, 'FORBIDDEN', 'fixture package assignment is admin-only');
+    const packageMatch = url.pathname.match(/^\/v1\/query-packages\/(\d+)$/u);
+    if (method === 'GET' && packageMatch) {
+      if (!canAccessPackage(req)) {
+        error(res, 403, 'FORBIDDEN', 'fixture query package access denied');
         return;
       }
-      const record = state.packages.find((entry) => entry.id === Number(assigneeMatch[1]));
+      const record = state.packages.find((entry) => entry.id === Number(packageMatch[1]));
+      if (!record) error(res, 404, 'QUERY_PACKAGE_NOT_FOUND', 'fixture package missing');
+      else send(res, 200, packageDetail(record));
+      return;
+    }
+    const screenMatch = url.pathname.match(/^\/v1\/query-packages\/(\d+)\/screening$/u);
+    if (method === 'PUT' && screenMatch) {
+      if (!canAccessPackage(req)) {
+        error(res, 403, 'FORBIDDEN', 'fixture query package access denied');
+        return;
+      }
+      const record = state.packages.find((entry) => entry.id === Number(screenMatch[1]));
       const input = await jsonBody(req);
       if (!record) {
         error(res, 404, 'QUERY_PACKAGE_NOT_FOUND', 'fixture package missing');
@@ -494,84 +540,61 @@ const controlPlane = createServer(async (req, res) => {
         error(res, 409, 'VERSION_CONFLICT', 'fixture package version is stale');
         return;
       }
-      const assignee = Object.values(users).find((candidate) => candidate.role === 'USER'
-        && candidate.status === 'ACTIVE' && candidate.username === String(input.assignedToUserId).toLowerCase());
-      if (!assignee) {
-        error(res, 409, 'ASSIGNEE_UNAVAILABLE', 'fixture assignee is unavailable');
+      const decisions = Array.isArray(input.decisions) ? input.decisions : [];
+      const decisionIds = decisions.map((decision) => Number(decision.itemId));
+      const requestedItems = decisionIds.map((itemId) => record.items.find((item) => item.id === itemId));
+      if (!decisions.length || new Set(decisionIds).size !== decisions.length
+          || requestedItems.some((item) => !item || item.status !== 'READY')) {
+        error(res, 409, 'ITEM_NOT_SCREENABLE', 'fixture screening scope is stale');
         return;
       }
-      record.assignedToUserId = assignee.username;
-      record.assignedToAccountId = assignee.id;
-      record.assignedToDisplayName = assignee.displayName;
-      record.version += 1;
-      record.updatedAt = new Date().toISOString();
-      send(res, 200, packageSummary(record));
-      return;
-    }
-    const packageMatch = url.pathname.match(/^\/v1\/query-packages\/(\d+)$/u);
-    if (method === 'GET' && packageMatch) {
-      const record = state.packages.find((entry) => entry.id === Number(packageMatch[1]));
-      if (!record) error(res, 404, 'QUERY_PACKAGE_NOT_FOUND', 'fixture package missing');
-      else if (!canAccessPackage(req, record)) error(res, 404, 'QUERY_PACKAGE_NOT_FOUND', 'fixture package missing');
-      else send(res, 200, packageDetail(record));
-      return;
-    }
-    const screenMatch = url.pathname.match(/^\/v1\/query-packages\/(\d+)\/screening$/u);
-    if (method === 'PUT' && screenMatch) {
-      const record = state.packages.find((entry) => entry.id === Number(screenMatch[1]));
-      const input = await jsonBody(req);
-      if (!record) {
-        error(res, 404, 'QUERY_PACKAGE_NOT_FOUND', 'fixture package missing');
-        return;
-      }
-      if (!canAccessPackage(req, record)) {
-        error(res, 404, 'QUERY_PACKAGE_NOT_FOUND', 'fixture package missing');
-        return;
-      }
-      for (const decision of input.decisions ?? []) {
-        const item = record.items.find((candidate) => candidate.id === Number(decision.itemId));
-        if (!item || item.taskId) continue;
+      const selectedItems = [];
+      for (let index = 0; index < decisions.length; index += 1) {
+        const decision = decisions[index];
+        const item = requestedItems[index];
         item.screeningDecision = decision.decision === 'SELECT' ? 'SELECTED' : 'REJECTED';
         item.screeningReason = decision.reason ?? null;
         item.version += 1;
+        if (item.screeningDecision === 'SELECTED') selectedItems.push(item);
       }
+      createFixtureProductionBatch(record, selectedItems, actorUser(req)?.username);
       record.version += 1;
       record.updatedAt = new Date().toISOString();
-      const remaining = counts(record);
-      record.status = remaining.pending ? 'SCREENING' : remaining.selected ? 'READY' : 'ABANDONED';
-      send(res, 200, packageDetail(record));
+      record.status = packageStatus(record);
+      send(res, 200, packageSummary(record));
       return;
     }
     const productionMatch = url.pathname.match(/^\/v1\/query-packages\/(\d+)\/production-batches$/u);
     if (method === 'POST' && productionMatch) {
+      if (!canAccessPackage(req)) {
+        error(res, 403, 'FORBIDDEN', 'fixture query package access denied');
+        return;
+      }
       const record = state.packages.find((entry) => entry.id === Number(productionMatch[1]));
       const input = await jsonBody(req);
       if (!record) {
         error(res, 404, 'QUERY_PACKAGE_NOT_FOUND', 'fixture package missing');
         return;
       }
-      if (!canAccessPackage(req, record)) {
-        error(res, 404, 'QUERY_PACKAGE_NOT_FOUND', 'fixture package missing');
+      if (Number(input.expectedVersion) !== record.version) {
+        error(res, 409, 'VERSION_CONFLICT', 'fixture package version is stale');
         return;
       }
-      const requested = new Set((input.itemIds ?? []).map(Number));
+      const itemIds = input.itemIds === undefined
+        ? record.items.filter((item) => item.status === 'READY'
+          && item.screeningDecision === 'SELECTED').map((item) => item.id)
+        : input.itemIds.map(Number);
+      const requested = new Set(itemIds);
       const items = record.items.filter((item) => requested.has(item.id)
-        && item.screeningDecision === 'SELECTED' && !item.taskId);
-      if (!items.length || items.length !== requested.size) {
+        && item.status === 'READY' && item.screeningDecision === 'SELECTED' && !item.taskId);
+      if (!items.length || items.length !== requested.size || requested.size !== itemIds.length) {
         error(res, 409, 'ITEM_SCOPE_CHANGED', 'fixture production scope is stale');
         return;
       }
-      const taskIds = items.map((item) => {
-        item.taskId = state.nextTaskId++;
-        item.version += 1;
-        return item.taskId;
-      });
-      const batch = { id: state.nextBatchId++, publicId: randomUUID(), queryPackageId: record.id, status: 'OPEN', taskIds };
-      state.batches.push(batch);
+      const batch = createFixtureProductionBatch(record, items, actorUser(req)?.username);
       record.version += 1;
       record.updatedAt = new Date().toISOString();
-      record.status = record.items.some((item) => item.screeningDecision === 'SELECTED' && !item.taskId)
-        ? 'PARTIALLY_USED' : 'USED_UP';
+      record.status = packageStatus(record);
       send(res, 201, batch);
       return;
     }
@@ -637,7 +660,9 @@ const controlPlane = createServer(async (req, res) => {
       return;
     }
     if (method === 'GET' && url.pathname === '/v1/tasks') {
-      send(res, 200, []);
+      send(res, 200, actorRole(req) === 'ADMIN'
+        ? structuredClone(state.tasks)
+        : state.tasks.filter((task) => task.assignedToUserId === actorUser(req)?.username));
       return;
     }
     if (method === 'GET' && url.pathname === '/v1/tasks/991' && actorRole(req) === 'REVIEWER') {
@@ -648,6 +673,7 @@ const controlPlane = createServer(async (req, res) => {
       send(res, 200, {
         packages: state.packages.map(packageDetail),
         batches: structuredClone(state.batches),
+        tasks: structuredClone(state.tasks),
         qaItems: state.qaItems.map((item) => ({ id: item.id, status: item.status })),
         deliveryExports: structuredClone(state.deliveryExports),
         requests: state.requests,

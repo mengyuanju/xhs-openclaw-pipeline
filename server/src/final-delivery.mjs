@@ -12,7 +12,21 @@ function normalizeActor(actor) {
       || !Number.isSafeInteger(Number(actor.userId))) {
     throw new ControlPlaneAuthorizationError('current role cannot access the delivery pool');
   }
-  return { ...actor, userId: Number(actor.userId), username: String(actor.username).toLowerCase() };
+  const normalized = { ...actor, userId: Number(actor.userId), username: String(actor.username).toLowerCase() };
+  if (normalized.role !== 'ADMIN') {
+    throw new ControlPlaneAuthorizationError('only administrators can access the delivery pool');
+  }
+  return normalized;
+}
+
+function normalizeQueryPackageName(value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string') throw new TypeError('queryPackageName must be a string');
+  const name = value.replace(/\s+/gu, ' ').trim();
+  if (!name || [...name].length > 200) {
+    throw new RangeError('queryPackageName must contain between 1 and 200 characters');
+  }
+  return name;
 }
 
 function deliveryFrom(row) {
@@ -20,6 +34,7 @@ function deliveryFrom(row) {
     id: Number(row.id),
     taskId: Number(row.task_id),
     query: row.query,
+    queryPackageName: row.source_query_package_name ?? null,
     copyRevisionId: Number(row.copy_revision_id),
     imageRunId: row.image_run_id,
     status: row.status,
@@ -104,7 +119,7 @@ export async function withdrawReadyDeliveryEntries(client, taskId) {
 export async function assertTaskReadyForDelivery(queryable, rawTaskId) {
   const taskId = normalizeTaskId(rawTaskId);
   const result = await queryable.query(`
-    SELECT delivery.*, task.query
+    SELECT delivery.*, task.query, task.source_query_package_name
     FROM tasks AS task
     JOIN delivery_entries AS delivery
       ON delivery.task_id = task.id AND delivery.status = 'READY'
@@ -170,11 +185,13 @@ export async function listDeliveryPool(pool, {
   limit: rawLimit = 50,
   offset: rawOffset = 0,
   includeTotal = false,
+  queryPackageName: rawQueryPackageName = null,
 } = {}, rawActor) {
   const actor = normalizeActor(rawActor);
   const { limit, offset } = normalizeListPagination(rawLimit, rawOffset);
+  const queryPackageName = normalizeQueryPackageName(rawQueryPackageName);
   const visibilityValues = actor.role === 'ADMIN' ? [] : [actor.username, actor.userId];
-  const values = [...visibilityValues, limit, offset];
+  const filteredValues = [...visibilityValues];
   const visibility = actor.role === 'ADMIN' ? '' : `
     AND task.assigned_to_user_id = $1
     AND EXISTS (
@@ -183,15 +200,20 @@ export async function listDeliveryPool(pool, {
         AND assignee.created_at < task.assigned_at
     )
   `;
-  const limitParameter = actor.role === 'ADMIN' ? 1 : 3;
+  const packageFilter = queryPackageName === null ? '' : (() => {
+    filteredValues.push(queryPackageName);
+    return `AND task.source_query_package_name = $${filteredValues.length}`;
+  })();
+  const limitParameter = filteredValues.length + 1;
+  const values = [...filteredValues, limit, offset];
   const pagePromise = pool.query(`
-    SELECT delivery.*, task.query
+    SELECT delivery.*, task.query, task.source_query_package_name
     FROM delivery_entries AS delivery
     JOIN tasks AS task ON task.id = delivery.task_id
       AND task.state = 'REVIEWED'
       AND task.current_copy_revision_id = delivery.copy_revision_id
       AND task.current_image_run_id = delivery.image_run_id
-    WHERE delivery.status = 'READY' ${visibility}
+    WHERE delivery.status = 'READY' ${visibility} ${packageFilter}
     ORDER BY delivery.approved_at DESC, delivery.id DESC
     LIMIT $${limitParameter} OFFSET $${limitParameter + 1}
   `, values);
@@ -199,26 +221,50 @@ export async function listDeliveryPool(pool, {
     const result = await pagePromise;
     return result.rows.map(deliveryFrom);
   }
-  const [result, count] = await Promise.all([pagePromise, pool.query(`
+  const [result, count, packageFacets] = await Promise.all([pagePromise, pool.query(`
     SELECT COUNT(*)::bigint AS total
     FROM delivery_entries AS delivery
     JOIN tasks AS task ON task.id = delivery.task_id
       AND task.state = 'REVIEWED'
       AND task.current_copy_revision_id = delivery.copy_revision_id
       AND task.current_image_run_id = delivery.image_run_id
+    WHERE delivery.status = 'READY' ${visibility} ${packageFilter}
+  `, filteredValues), pool.query(`
+    SELECT task.source_query_package_name AS name, COUNT(*)::bigint AS count
+    FROM delivery_entries AS delivery
+    JOIN tasks AS task ON task.id = delivery.task_id
+      AND task.state = 'REVIEWED'
+      AND task.current_copy_revision_id = delivery.copy_revision_id
+      AND task.current_image_run_id = delivery.image_run_id
     WHERE delivery.status = 'READY' ${visibility}
+      AND task.source_query_package_name IS NOT NULL
+    GROUP BY task.source_query_package_name
+    ORDER BY lower(task.source_query_package_name), task.source_query_package_name
   `, visibilityValues)]);
   return {
     items: result.rows.map(deliveryFrom),
     total: Number(count.rows[0]?.total ?? 0),
+    facets: {
+      queryPackages: packageFacets.rows
+        .filter((row) => typeof row.name === 'string' && row.name)
+        .map((row) => ({ name: row.name, count: Number(row.count ?? 0) })),
+    },
   };
 }
 
-export async function listAllDeliveryPoolTaskIds(pool, rawActor) {
+export async function listAllDeliveryPoolTaskIds(pool, rawActor, {
+  queryPackageName: rawQueryPackageName = null,
+} = {}) {
   const actor = normalizeActor(rawActor);
   if (actor.role !== 'ADMIN') {
     throw new ControlPlaneAuthorizationError('only administrators can export the full delivery pool');
   }
+  const queryPackageName = normalizeQueryPackageName(rawQueryPackageName);
+  const values = [];
+  const packageFilter = queryPackageName === null ? '' : (() => {
+    values.push(queryPackageName);
+    return `AND task.source_query_package_name = $${values.length}`;
+  })();
   const result = await pool.query(`
     SELECT task.id AS task_id
     FROM delivery_entries AS delivery
@@ -226,8 +272,8 @@ export async function listAllDeliveryPoolTaskIds(pool, rawActor) {
       AND task.state = 'REVIEWED'
       AND task.current_copy_revision_id = delivery.copy_revision_id
       AND task.current_image_run_id = delivery.image_run_id
-    WHERE delivery.status = 'READY'
+    WHERE delivery.status = 'READY' ${packageFilter}
     ORDER BY delivery.approved_at DESC, delivery.id DESC
-  `);
+  `, values);
   return result.rows.map((row) => Number(row.task_id));
 }

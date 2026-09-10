@@ -9,9 +9,9 @@ export default async function DeliveryPoolPage() {
   const session = await readServerSession();
   if (!session) redirect('/login?next=%2Fdelivery-pool');
   const role = session.roles?.[0] || 'USER';
-  if (!['ADMIN', 'USER'].includes(role)) redirect('/copy-qa');
+  if (role !== 'ADMIN') redirect(role === 'REVIEWER' ? '/copy-qa' : '/workbench/personal');
   return <>
     <header className="page-header"><div><span className="eyebrow">Delivery pool</span><h1>交付池</h1><p className="subtle">仅展示图文终审通过且版本绑定交付条目为 READY 的任务。</p></div></header>
-    <DeliveryPoolWorkbench role={role as 'ADMIN' | 'USER'} />
+    <DeliveryPoolWorkbench role="ADMIN" />
   </>;
 }

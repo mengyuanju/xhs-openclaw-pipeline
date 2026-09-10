@@ -25,6 +25,16 @@ export function normalizeTaskViewName(value) {
   return name;
 }
 
+function normalizeSavedQueryPackageName(value) {
+  if (value === undefined || value === null || value === '') return '';
+  if (typeof value !== 'string') throw new TypeError('saved task view queryPackageName must be a string');
+  const name = value.replace(/\s+/gu, ' ').trim();
+  if ([...name].length > 200) {
+    throw new RangeError('saved task view queryPackageName cannot exceed 200 characters');
+  }
+  return name;
+}
+
 export function normalizeSavedTaskView(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('saved task view must be an object');
   const name = normalizeTaskViewName(value.name);
@@ -33,6 +43,7 @@ export function normalizeSavedTaskView(value) {
   const raw = value.filters;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new TypeError('saved task view filters must be an object');
   const query = String(raw.query ?? '').trim();
+  const queryPackageName = normalizeSavedQueryPackageName(raw.queryPackageName);
   if ([...query].length > 500) throw new RangeError('saved task view query cannot exceed 500 characters');
   if (raw.deduplicateQuery !== undefined && typeof raw.deduplicateQuery !== 'boolean') {
     throw new TypeError('saved task view deduplicateQuery must be a boolean');
@@ -62,6 +73,7 @@ export function normalizeSavedTaskView(value) {
     viewKey,
     filters: {
       query,
+      queryPackageName,
       deduplicateQuery: raw.deduplicateQuery === true,
       createdByUserId,
       createdByAccountId,

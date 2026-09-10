@@ -14,6 +14,7 @@ import { HumanQualitySettingsPanel } from '../settings/human-quality-settings-pa
 import { QualitySettingsOverview } from '../settings/quality-settings-overview';
 import { WorkflowQualitySettingsPanel } from '../settings/workflow-quality-settings-panel';
 import { SettingsWorkspace, type SettingsSectionId } from '../settings/settings-workspace';
+import { XhsQuerySearchSettingsPanel } from '../settings/xhs-query-search-settings-panel';
 import { normalizeWebSearchSettings } from '../../src/web-search-config.mjs';
 
 const endpoint = (path: string) => `/api/control-plane${path}`;
@@ -84,7 +85,10 @@ export function CentralDataWorkbench() {
           id: 'generation',
           title: '生成与模型',
           description: '联网检索与中心生成策略',
-          children: <WebSearchSettingsPanel onSaved={refresh} />,
+          children: <>
+            <WebSearchSettingsPanel onSaved={refresh} />
+            <XhsQuerySearchSettingsPanel onSaved={refresh} />
+          </>,
         },
         {
           id: 'quality',

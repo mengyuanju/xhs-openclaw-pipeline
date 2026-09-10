@@ -62,23 +62,13 @@ export function evaluateAdminProxyRequest(request, environment = process.env) {
         || url.pathname === '/workbench'
         || url.pathname.startsWith('/workbench/')
         || url.pathname === '/copy-qa'
-        || url.pathname.startsWith('/copy-qa/')
-        || url.pathname === '/knowledge'
-        || url.pathname.startsWith('/knowledge/')
-        || url.pathname.startsWith('/api/knowledge-')
-        || url.pathname.startsWith('/api/copy-knowledge-')
-        || url.pathname === '/api/visual-analyses'
-        || url.pathname.startsWith('/api/copy-analys');
+        || url.pathname.startsWith('/copy-qa/');
       return allowed ? { type: 'next' } : { type: 'forbidden' };
     }
     if (role === 'USER') {
       const allowed = url.pathname === '/'
         || url.pathname === '/workbench'
-        || url.pathname === '/workbench/personal'
-        || url.pathname === '/query-packages'
-        || url.pathname.startsWith('/query-packages/')
-        || url.pathname === '/delivery-pool'
-        || url.pathname.startsWith('/delivery-pool/');
+        || url.pathname === '/workbench/personal';
       return allowed ? { type: 'next' } : { type: 'forbidden' };
     }
     return { type: 'forbidden' };

@@ -2,7 +2,7 @@ import { ApiError } from '../../../../src/admin/http.mjs';
 import { controlPlaneUrl } from '../../../../src/control-plane/next-runtime.mjs';
 import { assetConditionalHeaders, assetResponseHeaders } from '../../../../src/control-plane/asset-proxy.mjs';
 import { assertMutationCapability } from '../../../../src/control-plane/mutation-capability.mjs';
-import { userCanAccessControlPlaneRoute } from '../../../../src/control-plane/proxy-access.mjs';
+import { isKnowledgeControlPlaneRoute, userCanAccessControlPlaneRoute } from '../../../../src/control-plane/proxy-access.mjs';
 import { sessionActorHeaders } from '../../../../src/control-plane/session-actor-headers.mjs';
 import { apiHandler } from '../../_lib';
 
@@ -35,22 +35,28 @@ async function proxyRequest(
   if (/^\/v1\/tasks\/[^/]+\/model-calls(?:\/|$)/u.test(routePath) && role !== 'ADMIN') {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可查看模型执行链路');
   }
+  if (role !== 'ADMIN' && (/^\/v1\/(?:query-packages|delivery-pool)(?:\/|$)/u.test(routePath)
+    || /^\/v1\/tasks\/[^/]+\/archive(?:\/|$)/u.test(routePath))) {
+    throw new ApiError(403, 'FORBIDDEN', '仅管理员可访问词包与交付信息');
+  }
   if (routePath === '/v1/tasks' && upstreamUrl.searchParams.has('createdByRole') && role !== 'ADMIN') {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可按创建者角色筛选任务');
+  }
+  if (routePath === '/v1/tasks' && upstreamUrl.searchParams.has('queryPackageName') && role === 'USER') {
+    throw new ApiError(403, 'FORBIDDEN', '普通用户不能按词包名称筛选任务');
   }
   if (role !== 'ADMIN' && (routePath === '/v1/task-views'
     || /^\/v1\/task-views\//u.test(routePath)
     || /^\/v1\/auto-assignment(?:\/|$)/u.test(routePath)
-    || ['/v1/tasks/batch-actions', '/v1/tasks/batch-assignee', '/v1/tasks/batch-archive', '/v1/tasks/batch-permanent-delete'].includes(routePath)
+    || ['/v1/tasks/batch-actions', '/v1/tasks/batch-assignee', '/v1/tasks/batch-archive', '/v1/tasks/batch-permanent-delete',
+      '/v1/tasks/duplicate-query-discard-preview', '/v1/tasks/duplicate-query-discard'].includes(routePath)
     || /^\/v1\/delivery-pool\/(?:archive|xlsx)(?:\/|$)/u.test(routePath)
     || /^\/v1\/tasks\/[^/]+\/assignee$/u.test(routePath)
     || (routePath === '/v1/tasks' && upstreamUrl.searchParams.has('attention')))) {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可使用任务集中处理功能');
   }
-  if (routePath === '/v1/workflow-quality-settings'
-    && role !== 'ADMIN'
-    && !(role === 'USER' && ['GET', 'HEAD'].includes(request.method))) {
-    throw new ApiError(403, 'FORBIDDEN', '仅管理员可修改流程质检配置');
+  if (routePath === '/v1/workflow-quality-settings' && role !== 'ADMIN') {
+    throw new ApiError(403, 'FORBIDDEN', '仅管理员可访问流程质检配置');
   }
   if (routePath === '/v1/copy-qa/statistics' && role !== 'ADMIN') {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可查看人员抽检正确率');
@@ -64,6 +70,9 @@ async function proxyRequest(
   }
   if (role === 'REVIEWER' && (/^\/v1\/(?:settings|prompts|prompt-versions|users|executor-statuses)(?:\/|$)/u.test(routePath))) {
     throw new ApiError(403, 'FORBIDDEN', '审核员没有该管理权限');
+  }
+  if (role === 'REVIEWER' && isKnowledgeControlPlaneRoute(routePath)) {
+    throw new ApiError(403, 'FORBIDDEN', '审核员没有知识库管理权限');
   }
   if (role === 'USER' && !userCanAccessControlPlaneRoute(routePath, request.method)) {
     throw new ApiError(403, 'FORBIDDEN', '普通用户没有该操作权限');

@@ -1,10 +1,11 @@
 /**
  * Read a complete server page; old centers must not silently ignore admin filters.
  * @param {(path: string) => Promise<any>} request
- * @param {{createdByUserId?: string, createdByAccountId?: number, createdByRole?: string, state?: string, taskId?: number, query?: string, deduplicateQuery?: boolean, attention?: string, sortBy?: string, sortOrder?: string, limit?: number, offset?: number}} options
+ * @param {{createdByUserId?: string, createdByAccountId?: number, createdByRole?: string, state?: string, taskId?: number, query?: string, queryPackageName?: string, deduplicateQuery?: boolean, attention?: string, sortBy?: string, sortOrder?: string, limit?: number, offset?: number}} options
  */
 export async function loadAdminTaskPage(request, {
-  createdByUserId, createdByAccountId, createdByRole, state, taskId, query, deduplicateQuery = false,
+  createdByUserId, createdByAccountId, createdByRole, state, taskId, query, queryPackageName,
+  deduplicateQuery = false,
   attention, sortBy, sortOrder, limit = 20, offset = 0,
 } = {}) {
   const hasCreator = Boolean(createdByUserId);
@@ -17,6 +18,7 @@ export async function loadAdminTaskPage(request, {
   if (state) search.set('state', state);
   if (taskId) search.set('taskId', String(taskId));
   if (query) search.set('query', query);
+  if (queryPackageName) search.set('queryPackageName', queryPackageName);
   if (deduplicateQuery) search.set('deduplicateQuery', 'true');
   if (attention) search.set('attention', attention);
   if (sortBy) search.set('sortBy', sortBy);

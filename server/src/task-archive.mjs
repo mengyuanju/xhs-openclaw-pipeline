@@ -10,11 +10,15 @@ import {
 import { IMAGE_FORMATS } from './image-options.mjs';
 
 function safeFileName(value, fallback) {
-  const cleaned = String(value ?? '')
+  const clean = (candidate) => String(candidate ?? '')
     .replace(/[\u0000-\u001f<>:"/\\|?*]/gu, '_')
     .replace(/[. ]+$/gu, '')
     .trim();
-  return [...(cleaned || fallback)].slice(0, 120).join('');
+  return [...(clean(value) || clean(fallback) || '文件')].slice(0, 120).join('');
+}
+
+export function queryPackageFileNameSegment(value) {
+  return safeFileName(value, '未归属词包');
 }
 
 function uniqueFileName(name, used) {
@@ -36,12 +40,65 @@ function currentCopy(task) {
   return deliveryCopyFromContent(revision?.content);
 }
 
+function singleLine(value) {
+  return String(value ?? '')
+    .replace(/[\r\n]+/gu, ' ')
+    .replace(/[\u0000-\u001f\u007f]/gu, '\uFFFD')
+    .trim();
+}
+
+function rankedXiaohongshuLinks(task) {
+  if (!Array.isArray(task?.xiaohongshuLinks)) return [];
+  return task.xiaohongshuLinks
+    .map((item, index) => ({
+      index,
+      rank: Number.isSafeInteger(Number(item?.rank)) && Number(item.rank) > 0
+        ? Number(item.rank)
+        : index + 1,
+      title: singleLine(item?.title),
+      url: singleLine(item?.url),
+    }))
+    .filter((item) => item.url)
+    .sort((left, right) => left.rank - right.rank || left.index - right.index);
+}
+
+function xiaohongshuSearchStatusText(task, links) {
+  if (links.length > 0) return `已完成（${links.length} 条）`;
+  if (task?.xiaohongshuSearchStatus === 'PENDING') return '等待搜索';
+  if (task?.xiaohongshuSearchStatus === 'RUNNING') return '搜索中';
+  if (task?.xiaohongshuSearchStatus === 'BLOCKED') {
+    return task.xiaohongshuSearchBlockedReason === 'CAPTCHA_REQUIRED'
+      ? '等待人工安全验证'
+      : '等待重新登录';
+  }
+  if (task?.xiaohongshuSearchStatus === 'FAILED') return '搜索失败';
+  if (task?.xiaohongshuSearchStatus === 'CANCELLED') return '搜索已取消';
+  if (task?.xiaohongshuSearchStatus === 'SUCCEEDED') return '搜索完成，暂无结果';
+  return '未建立搜索记录';
+}
+
+function xiaohongshuLinksText(task, links) {
+  const entries = links.flatMap((item) => item.title
+    ? [`${item.rank}. ${item.title}`, item.url, '']
+    : [`${item.rank}. ${item.url}`, '']);
+  const body = entries.length > 0 ? entries.join('\r\n').trimEnd() : '暂无可用链接';
+  return `\uFEFFQuery：${singleLine(task.query)}\r\n搜索状态：${xiaohongshuSearchStatusText(task, links)}\r\n\r\n小红书链接：\r\n${body}\r\n`;
+}
+
+function assertXiaohongshuSearchReady(task) {
+  if (task?.xiaohongshuSearchStatus && task.xiaohongshuSearchStatus !== 'SUCCEEDED') {
+    throw new TypeError('当前 Query 的小红书搜索尚未完成，不能导出交付文件');
+  }
+}
+
 export function archiveFileName(task) {
   const title = safeFileName(currentCopy(task)?.title, `任务-${task.id}`);
-  return `${title}-资源包.zip`;
+  const label = `${queryPackageFileNameSegment(task.sourceQueryPackageName)}-${title}`;
+  return `${safeFileName(label, `任务-${task.id}`)}-资源包.zip`;
 }
 
 async function createTaskArchiveZip(task, loadAsset) {
+  assertXiaohongshuSearchReady(task);
   const revision = task.copyRevisions.find((item) => item.id === task.currentCopyRevisionId);
   const run = task.imageRuns?.find(item => item.id === task.currentImageRunId);
   const candidates = task.assets.filter((asset) => asset.imageRunId === task.currentImageRunId
@@ -58,9 +115,16 @@ async function createTaskArchiveZip(task, loadAsset) {
   const body = String(copy.body ?? '').trim();
   const tags = Array.isArray(copy.tags) ? copy.tags.map(String).join(' ') : '';
   const text = `\uFEFF标题：${title}\r\n\r\n文案内容：\r\n${body}\r\n\r\n标签：${tags}\r\n`;
-  zip.file(`${safeFileName(title, `任务-${task.id}`)}.txt`, text);
-
   const usedNames = new Set();
+  zip.file(uniqueFileName(`${safeFileName(title, `任务-${task.id}`)}.txt`, usedNames), text);
+  const xiaohongshuLinks = rankedXiaohongshuLinks(task);
+  if (xiaohongshuLinks.length > 0 || task.xiaohongshuSearchStatus) {
+    zip.file(
+      uniqueFileName('小红书链接.txt', usedNames),
+      xiaohongshuLinksText(task, xiaohongshuLinks),
+    );
+  }
+
   for (let index = 0; index < assets.length; index += 1) {
     const asset = assets[index];
     const loaded = await loadAsset(asset.id);
@@ -130,6 +194,27 @@ export async function writeBatchTaskArchive(tasks, loadAsset, output, {
     forceZip64: true,
     zlib: { level: 0 },
   });
+  const unassignedPackageDirectory = queryPackageFileNameSegment(null);
+  const packageDirectories = new Map([['', unassignedPackageDirectory]]);
+  const usedPackageDirectories = new Set([
+    unassignedPackageDirectory.toLocaleLowerCase('zh-CN'),
+  ]);
+
+  function packageDirectory(task) {
+    const packageName = String(task?.sourceQueryPackageName ?? '');
+    if (packageDirectories.has(packageName)) return packageDirectories.get(packageName);
+    const base = queryPackageFileNameSegment(packageName);
+    let candidate = base;
+    let suffix = 2;
+    while (usedPackageDirectories.has(candidate.toLocaleLowerCase('zh-CN'))) {
+      const ending = `-${suffix}`;
+      candidate = `${[...base].slice(0, 120 - ending.length).join('')}${ending}`;
+      suffix += 1;
+    }
+    usedPackageDirectories.add(candidate.toLocaleLowerCase('zh-CN'));
+    packageDirectories.set(packageName, candidate);
+    return candidate;
+  }
   let transferError = null;
   const transfer = pipeline(archive, output, { signal }).catch((error) => {
     transferError = error;
@@ -155,7 +240,7 @@ export async function writeBatchTaskArchive(tasks, loadAsset, output, {
         compression: 'DEFLATE',
         compressionOptions: { level: 6 },
       }), {
-        name: `任务-${task.id}-资源包.zip`,
+        name: `${packageDirectory(task)}/${safeFileName(`任务-${task.id}-资源包`, '任务-资源包')}.zip`,
         store: true,
       });
       await entryWritten;

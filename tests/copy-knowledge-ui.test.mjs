@@ -70,7 +70,7 @@ describe('excellent copy analysis and classification UI', () => {
     ]);
     assert.match(workbench, /copy-knowledge\/analyze/u);
     assert.match(centerHttp, /router\.post\('\/v1\/copy-knowledge\/analyze'/u);
-    assert.match(centerHttp, /requestActor\(ctx, \['ADMIN', 'REVIEWER'\]\)/u);
+    assert.match(centerHttp, /router\.post\('\/v1\/copy-knowledge\/analyze'[\s\S]*?requestActor\(ctx, \['ADMIN'\]\)/u);
     assert.match(centerService, /DEEPSEEK_API_KEY/u);
     assert.match(centerService, /deepseek-v4-pro/u);
     assert.match(centerService, /repository\.createKnowledgeVersion/u);
@@ -98,7 +98,7 @@ describe('excellent copy analysis and classification UI', () => {
     const updateRoute = await source('app/api/copy-knowledge-items/[id]/route.ts');
 
     assert.match(updateRoute, /export async function PATCH/u);
-    assert.match(updateRoute, /apiHandler\(request, \{ mutation: true, roles: \['ADMIN', 'REVIEWER'\] \}/u);
+    assert.match(updateRoute, /apiHandler\(request, \{ mutation: true, roles: \['ADMIN'\] \}/u);
     assert.match(updateRoute, /parsePositiveId/u);
     assert.match(updateRoute, /\.strict\(\)/u);
     assert.match(updateRoute, /sourceCopy/u);

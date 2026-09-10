@@ -165,7 +165,7 @@ export function HumanQualitySettingsPanel({
     <div className="panel-head">
       <div>
         <h2 id="human-quality-settings-heading">人工评分标准与反馈</h2>
-        <p className="subtle">统一维护审核页的档位说明、扣分原因和评分说明提示。分值、2.5 分放行线和工作流动作仍由系统固定。</p>
+        <p className="subtle">统一维护审核页的档位说明、扣分原因和评分说明提示。文案机器原稿只有 3 分可直接提交，图片 2.5 分起可通过；分值和工作流动作仍由系统固定。</p>
       </div>
     </div>
     {loading ? <div className="empty-state">正在读取人工评分标准…</div> : current && <>
@@ -188,7 +188,9 @@ export function HumanQualitySettingsPanel({
             <legend className="sr-only">{definition.score} 分评分档位</legend>
             <header>
               <strong>{definition.score}<small>分</small></strong>
-              <span data-passing={definition.score > 2}>{definition.score > 2 ? '可放行' : '需处理'}</span>
+              <span data-passing={definition.score > 2}>{definition.score === 3
+                ? '文案可提交 · 图片可通过'
+                : definition.score === 2.5 ? '文案需小修 · 图片可通过' : '需处理'}</span>
             </header>
             <div className="field">
               <label htmlFor={`human-score-title-${definition.score}`}>档位名称</label>

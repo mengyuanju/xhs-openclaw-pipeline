@@ -174,3 +174,42 @@ test('mutation receipt identities survive account deletion and cannot transfer b
   assert.doesNotMatch(sql, /actor_account_id bigint REFERENCES app_users/u,
     'receipt account IDs are immutable history and must remain after hard account deletion');
 });
+
+test('legacy Query-package preassignment repair is fail-closed and fully audited', async () => {
+  const sql = await migration('0033_query_package_preassignment_repair');
+
+  assert.match(sql, /WITH candidates AS MATERIALIZED/u,
+    'candidate selection and mutation must share one statement snapshot');
+  assert.match(sql, /FOR UPDATE OF task/u,
+    'candidate tasks must be locked before their assignment metadata is cleared');
+  assert.match(sql, /task\.source_query_package_id IS NOT NULL/u);
+  assert.match(sql, /task\.source_query_package_item_id IS NOT NULL/u);
+  assert.match(sql, /task\.production_batch_id IS NOT NULL/u);
+  assert.match(sql, /batch_item\.task_id = task\.id/u);
+  assert.match(sql, /batch_item\.production_batch_id = task\.production_batch_id/u);
+  assert.match(sql, /batch_item\.source_query_package_item_id = task\.source_query_package_item_id/u);
+  assert.match(sql, /batch\.query_package_id = task\.source_query_package_id/u,
+    'all Query-package and production-batch lineage must agree');
+
+  assert.match(sql, /task\.assigned_to_user_id IS NOT NULL/u);
+  assert.match(sql, /task\.assignment_source = 'MANUAL'/u);
+  assert.match(sql, /task\.assigned_at = task\.created_at/u,
+    'only the legacy creation-time assignment signature is safe to repair');
+  assert.match(sql, /COALESCE\(task\.skip_copy_review, false\) = false/u);
+  assert.match(sql, /NOT EXISTS \([\s\S]*FROM task_assignment_events AS assignment_event[\s\S]*assignment_event\.task_id = task\.id/u,
+    'a later manual or automatic assignment must always win');
+  assert.match(
+    sql,
+    /task\.state IN \('COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED'\)[\s\S]*task\.state = 'COPY_REVIEW_PENDING'[\s\S]*task\.current_stage = 'COPY_REVIEW_PENDING'/u,
+  );
+  assert.doesNotMatch(sql, /'IMAGE_(?:QUEUED|RUNNING|FAILED)'|'DELIVERY_REVIEW_PENDING'|'COMPLETED'|'CANCELLED'/u,
+    'the repair must not clear an owner after the copy-review boundary');
+
+  assert.match(sql, /SET assigned_to_user_id = NULL,[\s\S]*assignment_source = NULL,[\s\S]*assigned_at = NULL/u,
+    'the assignment metadata triplet must be cleared atomically');
+  assert.match(sql, /WHEN task\.state = 'COPY_REVIEW_PENDING'[\s\S]*文案生成完成，等待分配负责人后审核/u);
+  assert.match(sql, /INSERT INTO task_assignment_events/u);
+  assert.match(sql, /cleared\.previous_assignee_user_id,[\s\S]*NULL,[\s\S]*'MANUAL'/u);
+  assert.match(sql, /'migration-0033-query-preassignment'/u);
+  assert.doesNotMatch(sql, /DELETE\s+FROM\s+tasks|TRUNCATE\s+tasks/u);
+});

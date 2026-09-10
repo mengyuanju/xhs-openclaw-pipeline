@@ -46,7 +46,11 @@ function normalizeActor(actor) {
   if (!actor || !Number.isSafeInteger(Number(actor.userId)) || !['ADMIN', 'REVIEWER', 'USER'].includes(actor.role)) {
     throw new TypeError('authenticated actor is required');
   }
-  return { ...actor, userId: Number(actor.userId), username: String(actor.username).toLowerCase() };
+  const normalized = { ...actor, userId: Number(actor.userId), username: String(actor.username).toLowerCase() };
+  if (normalized.role !== 'ADMIN') {
+    throw new ControlPlaneAuthorizationError('only administrators can access Query packages');
+  }
+  return normalized;
 }
 
 async function lockActiveQueryPackageActor(client, actor) {
@@ -172,8 +176,6 @@ function productionBatchFrom(row) {
 
 function assertPackageAccess(row, actor) {
   if (actor.role === 'ADMIN') return;
-  if (actor.role === 'USER' && Number(row.assigned_to_account_id) === actor.userId
-      && row.assigned_to_username === actor.username) return;
   throw new ControlPlaneAuthorizationError('当前账号不能操作这个 Query 词包');
 }
 
@@ -209,37 +211,6 @@ async function lockMutationRequest(client, actor, requestId) {
   await client.query(`
     SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))
   `, [`query-package:${actor.userId}:${actor.username}`, requestId]);
-}
-
-async function lockProductionPackageAndAssignee(client, packageId, actor) {
-  // Lock the account before the package. User deletion locks in the same
-  // direction (account -> referencing rows), which avoids a package/account
-  // deadlock and keeps the username FK valid until task creation commits.
-  const snapshot = await client.query(`
-    SELECT * FROM query_packages WHERE id = $1
-  `, [packageId]);
-  if (!snapshot.rows[0]) throw new ControlPlaneNotFoundError('Query 词包不存在');
-  assertPackageAccess(snapshot.rows[0], actor);
-  const accountId = snapshot.rows[0].assigned_to_account_id === null
-    ? null : Number(snapshot.rows[0].assigned_to_account_id);
-  const username = snapshot.rows[0].assigned_to_username;
-  if (!Number.isSafeInteger(accountId) || !username) {
-    throw new ControlPlaneConflictError('ASSIGNEE_UNAVAILABLE', '词包负责人已失效，请重新指派后再投产');
-  }
-  const assignee = await client.query(`
-    SELECT id, username FROM app_users
-    WHERE id = $1 AND username = $2 AND status = 'ACTIVE' AND role = 'USER'
-    FOR KEY SHARE
-  `, [accountId, username]);
-  if (!assignee.rows[0]) {
-    throw new ControlPlaneConflictError('ASSIGNEE_UNAVAILABLE', '词包负责人已失效，请重新指派后再投产');
-  }
-  const current = await lockPackage(client, packageId, actor);
-  if (Number(current.assigned_to_account_id) !== accountId
-      || current.assigned_to_username !== username) {
-    throw new ControlPlaneConflictError('ASSIGNEE_CHANGED', '词包负责人已变更，请刷新后重试');
-  }
-  return current;
 }
 
 async function existingMutation(client, actor, requestId, operation, packageId, fingerprint) {
@@ -309,18 +280,12 @@ export async function createQueryPackage(pool, input, rawActor) {
     const replay = await existingMutation(client, actor, requestId, 'CREATE', null, fingerprint);
     if (replay) return replay;
     assertQueryPackageImportAllowed(actor, await readWorkflowQualitySettings(client));
-    let assignedAccountId = actor.role === 'USER' ? actor.userId : null;
-    let assignedUsername = actor.role === 'USER' ? actor.username : null;
-    if (actor.role === 'ADMIN' && input?.assignedToUserId !== undefined) {
-      const assignee = await client.query(`
-        SELECT id, username FROM app_users
-        WHERE username = $1 AND status = 'ACTIVE' AND role = 'USER'
-        FOR KEY SHARE
-      `, [String(input.assignedToUserId).toLowerCase()]);
-      if (!assignee.rows[0]) throw new ControlPlaneConflictError('ASSIGNEE_UNAVAILABLE', '指定作业人员不可用');
-      assignedAccountId = Number(assignee.rows[0].id);
-      assignedUsername = assignee.rows[0].username;
-    }
+    // Keep the legacy assignee columns readable for historical packages, but
+    // all newly imported packages are unassigned. The deprecated request field
+    // remains part of the fingerprint so retries of old client requests retain
+    // their idempotency boundary without creating a new ownership dependency.
+    const assignedAccountId = null;
+    const assignedUsername = null;
     const created = await client.query(`
       INSERT INTO query_packages(
         name, source_file_name, created_by_account_id, created_by_username,
@@ -347,7 +312,7 @@ const PACKAGE_SUMMARY_SQL = `
   SELECT package.*,
     COUNT(item.id) AS total_count,
     COUNT(item.id) FILTER (WHERE item.status = 'READY' AND item.screening_decision = 'PENDING') AS pending_count,
-    COUNT(item.id) FILTER (WHERE item.status = 'READY' AND item.screening_decision = 'SELECTED') AS selected_count,
+    COUNT(item.id) FILTER (WHERE item.screening_decision = 'SELECTED') AS selected_count,
     COUNT(item.id) FILTER (WHERE item.screening_decision = 'REJECTED') AS rejected_count,
     COUNT(item.id) FILTER (WHERE item.status = 'TASK_CREATED') AS produced_count,
     COUNT(item.id) FILTER (WHERE item.status = 'INVALID') AS invalid_count,
@@ -365,19 +330,130 @@ async function readPackageSummary(database, packageId) {
   return packageFrom(result.rows[0]);
 }
 
+async function readPackageLifecycleCounts(database, packageId) {
+  const result = await database.query(`
+    SELECT
+      COUNT(*) FILTER (
+        WHERE status = 'READY' AND screening_decision = 'PENDING'
+      ) AS pending_count,
+      COUNT(*) FILTER (
+        WHERE status = 'READY' AND screening_decision = 'SELECTED'
+      ) AS selected_count,
+      COUNT(*) FILTER (WHERE status = 'TASK_CREATED') AS produced_count
+    FROM query_package_items
+    WHERE query_package_id = $1
+  `, [packageId]);
+  return {
+    pending: Number(result.rows[0]?.pending_count ?? 0),
+    selected: Number(result.rows[0]?.selected_count ?? 0),
+    produced: Number(result.rows[0]?.produced_count ?? 0),
+  };
+}
+
+function packageStatusFromCounts({ pending, selected, produced }) {
+  if (pending > 0) return produced > 0 ? 'PARTIALLY_USED' : 'SCREENING';
+  if (selected > 0) return produced > 0 ? 'PARTIALLY_USED' : 'READY';
+  return produced > 0 ? 'USED_UP' : 'ABANDONED';
+}
+
+async function createProductionBatchTasks(client, {
+  actor,
+  packageRow: current,
+  itemIds,
+  nodeId,
+  requestId,
+  requestFingerprint,
+}) {
+  if (!itemIds.length) return null;
+  const packageId = Number(current.id);
+  await client.query(`
+    INSERT INTO executor_nodes(id, name, image_worker_enabled, last_seen_at)
+    VALUES ($1, $1, false, 'epoch'::timestamptz) ON CONFLICT(id) DO NOTHING
+  `, [nodeId]);
+  const batch = await client.query(`
+    INSERT INTO production_batches(
+      public_id, query_package_id, query_package_name, created_by_account_id, created_by_username,
+      request_id, request_fingerprint
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *
+  `, [randomUUID(), packageId, current.name, actor.userId, actor.username, requestId, requestFingerprint]);
+  const createdTasks = await client.query(`
+    WITH source_items AS MATERIALIZED (
+      SELECT item.id, item.query, item.input, item.requested_image_count, item.external_id
+      FROM query_package_items AS item
+      WHERE item.query_package_id = $1
+        AND item.id = ANY($2::bigint[])
+        AND item.status = 'READY'
+        AND item.screening_decision = 'SELECTED'
+      ORDER BY item.id
+    ), created_tasks AS (
+      INSERT INTO tasks(
+        query, input, requested_image_count, created_by_node_id, created_by_user_id,
+        assigned_to_user_id, assigned_at, assignment_source,
+        source_query_package_id, source_query_package_item_id,
+        source_query_package_name, source_query_package_external_id, production_batch_id,
+        state, current_stage, progress_message
+      )
+      SELECT item.query, item.input, item.requested_image_count, $3, $4,
+        NULL::varchar, NULL::timestamptz, NULL::varchar,
+        $1, item.id, $5, item.external_id, $6,
+        'COPY_QUEUED', 'COPY_QUEUED', '等待文案执行机领取'
+      FROM source_items AS item
+      ORDER BY item.id
+      RETURNING id, source_query_package_item_id
+    ), created_batch_items AS (
+      INSERT INTO production_batch_items(
+        production_batch_id, source_query_package_item_id, source_external_id,
+        query_snapshot, task_id
+      )
+      SELECT $6, item.id, item.external_id, item.query, task.id
+      FROM created_tasks AS task
+      JOIN source_items AS item ON item.id = task.source_query_package_item_id
+      ORDER BY item.id
+      RETURNING task_id, source_query_package_item_id
+    ), updated_items AS (
+      UPDATE query_package_items AS item
+      SET status = 'TASK_CREATED', version = item.version + 1, updated_at = now()
+      FROM created_tasks AS task
+      WHERE item.id = task.source_query_package_item_id
+      RETURNING item.id
+    )
+    SELECT batch_item.task_id, batch_item.source_query_package_item_id
+    FROM created_batch_items AS batch_item
+    JOIN updated_items AS updated ON updated.id = batch_item.source_query_package_item_id
+    ORDER BY batch_item.source_query_package_item_id
+  `, [packageId, itemIds, nodeId, actor.username, current.name, batch.rows[0].id]);
+  if (createdTasks.rows.length !== itemIds.length) {
+    throw new Error('query package production did not create every selected task');
+  }
+  const linkedSearches = await client.query(`
+    WITH created AS MATERIALIZED (
+      SELECT source.task_id, source.source_query_package_item_id
+      FROM jsonb_to_recordset($1::jsonb) AS source(
+        task_id bigint,
+        source_query_package_item_id bigint
+      )
+    )
+    UPDATE xhs_query_search_jobs AS job
+    SET task_id = created.task_id, updated_at = now()
+    FROM created
+    WHERE job.query_package_item_id = created.source_query_package_item_id
+    RETURNING job.id
+  `, [JSON.stringify(createdTasks.rows)]);
+  if (linkedSearches.rows.length !== createdTasks.rows.length) {
+    throw new Error('query package production did not bind every task to its Xiaohongshu search');
+  }
+  const taskIds = createdTasks.rows.map((row) => Number(row.task_id));
+  return { ...productionBatchFrom({ ...batch.rows[0], task_count: taskIds.length }), taskIds };
+}
+
 export async function listQueryPackages(pool, { limit: rawLimit = 50, offset: rawOffset = 0 } = {}, rawActor) {
-  const actor = normalizeActor(rawActor);
+  normalizeActor(rawActor);
   const { limit, offset } = normalizeListPagination(rawLimit, rawOffset);
-  if (actor.role === 'REVIEWER') return [];
-  const visibility = actor.role === 'ADMIN'
-    ? { sql: '', values: [] }
-    : { sql: 'WHERE package.assigned_to_account_id = $1 AND package.assigned_to_username = $2', values: [actor.userId, actor.username] };
   const result = await pool.query(`${PACKAGE_SUMMARY_SQL}
-    ${visibility.sql}
     GROUP BY package.id
     ORDER BY package.updated_at DESC, package.id DESC
-    LIMIT $${visibility.values.length + 1} OFFSET $${visibility.values.length + 2}
-  `, [...visibility.values, limit, offset]);
+    LIMIT $1 OFFSET $2
+  `, [limit, offset]);
   return result.rows.map(packageFrom);
 }
 
@@ -410,31 +486,6 @@ export async function getQueryPackage(pool, rawPackageId, rawActor) {
     items: items.rows.map(packageItemFrom),
     productionBatches: batches.rows.map(productionBatchFrom),
   };
-}
-
-export async function assignQueryPackage(pool, rawPackageId, input, rawActor) {
-  const actor = normalizeActor(rawActor);
-  if (actor.role !== 'ADMIN') throw new ControlPlaneAuthorizationError('only administrators can assign Query 词包');
-  const expectedVersion = version(input?.expectedVersion);
-  const username = String(input?.assignedToUserId ?? '').toLowerCase();
-  const accountId = normalizeTaskId(input?.assignedToAccountId);
-  return withTransaction(pool, async (client) => {
-    await lockActiveQueryPackageActor(client, actor);
-    const user = await client.query(`
-      SELECT id, username FROM app_users
-      WHERE id = $1 AND username = $2 AND status = 'ACTIVE' AND role = 'USER'
-      FOR KEY SHARE
-    `, [accountId, username]);
-    if (!user.rows[0]) throw new ControlPlaneConflictError('ASSIGNEE_UNAVAILABLE', '指定作业人员不可用');
-    const current = await lockPackage(client, rawPackageId, actor);
-    if (Number(current.version) !== expectedVersion) throw new ControlPlaneConflictError('VERSION_CONFLICT', '词包已被修改');
-    const updated = await client.query(`
-      UPDATE query_packages SET assigned_to_account_id = $2, assigned_to_username = $3,
-        version = version + 1, updated_at = now()
-      WHERE id = $1 RETURNING *
-    `, [current.id, user.rows[0].id, user.rows[0].username]);
-    return readPackageSummary(client, updated.rows[0].id);
-  });
 }
 
 export async function updateQueryPackageScreening(pool, rawPackageId, input, rawActor) {
@@ -494,6 +545,12 @@ export async function updateQueryPackageScreening(pool, rawPackageId, input, raw
       ...decision,
       previousDecision: lockedById.get(decision.itemId).screening_decision,
     }));
+    // Re-confirming a historical READY+SELECTED row also migrates it into the
+    // automatic production flow. TASK_CREATED rows are rejected by the lock
+    // guard above, so a source item can still create at most one task.
+    const selectedItemIds = mutations
+      .filter((decision) => decision.decision === 'SELECTED')
+      .map((decision) => decision.itemId);
     const changed = await client.query(`
       WITH requested AS MATERIALIZED (
         SELECT source.ordinality::integer AS ordinal,
@@ -528,26 +585,98 @@ export async function updateQueryPackageScreening(pool, rawPackageId, input, raw
         JOIN updated_items ON updated_items.id = requested.item_id
         ORDER BY requested.ordinal
         RETURNING id
+      ), queued_xhs_searches AS (
+        INSERT INTO xhs_query_search_jobs(query_package_item_id, query_snapshot)
+        SELECT item.id, item.query
+        FROM requested
+        JOIN updated_items ON updated_items.id = requested.item_id
+        JOIN query_package_items AS item ON item.id = requested.item_id
+        WHERE requested.decision = 'SELECTED'
+        ORDER BY requested.ordinal
+        ON CONFLICT(query_package_item_id) DO UPDATE SET
+          query_snapshot = EXCLUDED.query_snapshot,
+          status = CASE
+            WHEN xhs_query_search_jobs.status = 'CANCELLED' THEN 'PENDING'
+            ELSE xhs_query_search_jobs.status
+          END,
+          attempt_count = CASE
+            WHEN xhs_query_search_jobs.status = 'CANCELLED' THEN 0
+            ELSE xhs_query_search_jobs.attempt_count
+          END,
+          claimed_by_node_id = CASE
+            WHEN xhs_query_search_jobs.status = 'CANCELLED' THEN NULL
+            ELSE xhs_query_search_jobs.claimed_by_node_id
+          END,
+          lease_token = CASE
+            WHEN xhs_query_search_jobs.status = 'CANCELLED' THEN NULL
+            ELSE xhs_query_search_jobs.lease_token
+          END,
+          lease_expires_at = CASE
+            WHEN xhs_query_search_jobs.status = 'CANCELLED' THEN NULL
+            ELSE xhs_query_search_jobs.lease_expires_at
+          END,
+          retry_after = CASE
+            WHEN xhs_query_search_jobs.status = 'CANCELLED' THEN NULL
+            ELSE xhs_query_search_jobs.retry_after
+          END,
+          blocked_reason = CASE
+            WHEN xhs_query_search_jobs.status = 'CANCELLED' THEN NULL
+            ELSE xhs_query_search_jobs.blocked_reason
+          END,
+          error = CASE
+            WHEN xhs_query_search_jobs.status = 'CANCELLED' THEN NULL
+            ELSE xhs_query_search_jobs.error
+          END,
+          result_count = CASE
+            WHEN xhs_query_search_jobs.status = 'CANCELLED' THEN 0
+            ELSE xhs_query_search_jobs.result_count
+          END,
+          searched_at = CASE
+            WHEN xhs_query_search_jobs.status = 'CANCELLED' THEN NULL
+            ELSE xhs_query_search_jobs.searched_at
+          END,
+          updated_at = now()
+        RETURNING id
+      ), cancelled_xhs_searches AS (
+        UPDATE xhs_query_search_jobs AS job
+        SET status = 'CANCELLED', claimed_by_node_id = NULL,
+          lease_token = NULL, lease_expires_at = NULL, retry_after = NULL,
+          blocked_reason = NULL, error = NULL, updated_at = now()
+        FROM requested
+        JOIN updated_items ON updated_items.id = requested.item_id
+        WHERE job.query_package_item_id = requested.item_id
+          AND requested.decision = 'REJECTED'
+          AND job.status <> 'SUCCEEDED'
+        RETURNING job.id
       )
       SELECT
         (SELECT COUNT(*) FROM updated_items) AS updated_count,
-        (SELECT COUNT(*) FROM inserted_events) AS event_count
+        (SELECT COUNT(*) FROM inserted_events) AS event_count,
+        (SELECT COUNT(*) FROM queued_xhs_searches) AS queued_xhs_search_count,
+        (SELECT COUNT(*) FROM cancelled_xhs_searches) AS cancelled_xhs_search_count
     `, [packageId, JSON.stringify(mutations), actor.userId, actor.username, requestId]);
     if (Number(changed.rows[0]?.updated_count) !== decisions.length
         || Number(changed.rows[0]?.event_count) !== decisions.length) {
       throw new ControlPlaneConflictError('ITEM_NOT_SCREENABLE', '词包明细状态已变化，请刷新后重试');
     }
-    const counts = (await client.query(`
-      SELECT
-        COUNT(*) FILTER (WHERE screening_decision = 'PENDING') AS pending_count,
-        COUNT(*) FILTER (WHERE screening_decision = 'SELECTED') AS selected_count
-      FROM query_package_items
-      WHERE query_package_id = $1 AND status = 'READY'
-    `, [packageId])).rows[0];
-    const pending = Number(counts.pending_count);
-    const selected = Number(counts.selected_count);
-    const nextStatus = current.status === 'PARTIALLY_USED'
-      ? 'PARTIALLY_USED' : pending > 0 ? 'SCREENING' : selected > 0 ? 'READY' : 'ABANDONED';
+    if (selectedItemIds.length > 0) {
+      await createProductionBatchTasks(client, {
+        actor,
+        packageRow: current,
+        itemIds: selectedItemIds,
+        nodeId: normalizeNodeId('web-query-packages'),
+        requestId,
+        requestFingerprint: hashJson({
+          operation: 'SCREEN_AUTO_PRODUCE',
+          packageId,
+          screeningFingerprint: fingerprint,
+          itemIds: selectedItemIds,
+        }),
+      });
+    }
+    const nextStatus = packageStatusFromCounts(
+      await readPackageLifecycleCounts(client, packageId),
+    );
     const updated = await client.query(`
       UPDATE query_packages SET status = $2, version = version + 1, updated_at = now()
       WHERE id = $1 RETURNING *
@@ -578,7 +707,7 @@ export async function createQueryPackageProductionBatch(pool, rawPackageId, inpu
     await lockMutationRequest(client, actor, requestId);
     const replay = await existingMutation(client, actor, requestId, 'PRODUCE', packageId, fingerprint);
     if (replay) return replay;
-    const current = await lockProductionPackageAndAssignee(client, packageId, actor);
+    const current = await lockPackage(client, packageId, actor);
     if (!['READY', 'PARTIALLY_USED'].includes(current.status)) {
       throw new ControlPlaneConflictError('PACKAGE_NOT_READY', '必须先完成全部有效明细筛选');
     }
@@ -592,77 +721,21 @@ export async function createQueryPackageProductionBatch(pool, rawPackageId, inpu
     if (!candidates.rows.length || (itemIds !== null && candidates.rows.length !== itemIds.length)) {
       throw new ControlPlaneConflictError('PRODUCTION_ITEMS_INVALID', '投产明细必须全部是已通过且未投产的词包明细');
     }
-    await client.query(`
-      INSERT INTO executor_nodes(id, name, image_worker_enabled, last_seen_at)
-      VALUES ($1, $1, false, 'epoch'::timestamptz) ON CONFLICT(id) DO NOTHING
-    `, [nodeId]);
-    const batch = await client.query(`
-      INSERT INTO production_batches(
-        public_id, query_package_id, query_package_name, created_by_account_id, created_by_username,
-        request_id, request_fingerprint
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *
-    `, [randomUUID(), packageId, current.name, actor.userId, actor.username, requestId, fingerprint]);
-    const createdTasks = await client.query(`
-      WITH source_items AS MATERIALIZED (
-        SELECT item.id, item.query, item.input, item.requested_image_count, item.external_id
-        FROM query_package_items AS item
-        WHERE item.query_package_id = $1
-          AND item.id = ANY($2::bigint[])
-          AND item.status = 'READY'
-          AND item.screening_decision = 'SELECTED'
-        ORDER BY item.id
-      ), created_tasks AS (
-        INSERT INTO tasks(
-          query, input, requested_image_count, created_by_node_id, created_by_user_id,
-          assigned_to_user_id, assigned_at, assignment_source,
-          source_query_package_id, source_query_package_item_id,
-          source_query_package_name, source_query_package_external_id, production_batch_id,
-          current_stage, progress_message
-        )
-        SELECT item.query, item.input, item.requested_image_count, $3, $4, $5,
-          CASE WHEN $5::varchar IS NULL THEN NULL ELSE now() END,
-          CASE WHEN $5::varchar IS NULL THEN NULL ELSE 'MANUAL' END,
-          $1, item.id, $6, item.external_id, $7, 'COPY_QUEUED', '等待文案执行机领取'
-        FROM source_items AS item
-        ORDER BY item.id
-        RETURNING id, source_query_package_item_id
-      ), created_batch_items AS (
-        INSERT INTO production_batch_items(
-          production_batch_id, source_query_package_item_id, source_external_id,
-          query_snapshot, task_id
-        )
-        SELECT $7, item.id, item.external_id, item.query, task.id
-        FROM created_tasks AS task
-        JOIN source_items AS item ON item.id = task.source_query_package_item_id
-        ORDER BY item.id
-        RETURNING task_id, source_query_package_item_id
-      ), updated_items AS (
-        UPDATE query_package_items AS item
-        SET status = 'TASK_CREATED', version = item.version + 1, updated_at = now()
-        FROM created_tasks AS task
-        WHERE item.id = task.source_query_package_item_id
-        RETURNING item.id
-      )
-      SELECT batch_item.task_id, batch_item.source_query_package_item_id
-      FROM created_batch_items AS batch_item
-      JOIN updated_items AS updated ON updated.id = batch_item.source_query_package_item_id
-      ORDER BY batch_item.source_query_package_item_id
-    `, [packageId, candidates.rows.map((item) => item.id), nodeId, actor.username,
-      current.assigned_to_username, current.name, batch.rows[0].id]);
-    if (createdTasks.rows.length !== candidates.rows.length) {
-      throw new Error('query package production did not create every selected task');
-    }
-    const taskIds = createdTasks.rows.map((row) => Number(row.task_id));
-    const remaining = Number((await client.query(`
-      SELECT COUNT(*) AS count FROM query_package_items
-      WHERE query_package_id = $1 AND status = 'READY' AND screening_decision = 'SELECTED'
-    `, [packageId])).rows[0].count);
-    const packageStatus = remaining === 0 ? 'USED_UP' : 'PARTIALLY_USED';
+    const response = await createProductionBatchTasks(client, {
+      actor,
+      packageRow: current,
+      itemIds: candidates.rows.map((item) => Number(item.id)),
+      nodeId,
+      requestId,
+      requestFingerprint: fingerprint,
+    });
+    const packageStatus = packageStatusFromCounts(
+      await readPackageLifecycleCounts(client, packageId),
+    );
     await client.query(`
       UPDATE query_packages SET status = $2, version = version + 1, updated_at = now()
       WHERE id = $1
     `, [packageId, packageStatus]);
-    const response = { ...productionBatchFrom({ ...batch.rows[0], task_count: taskIds.length }), taskIds };
     await saveMutation(client, actor, requestId, 'PRODUCE', packageId, fingerprint, response);
     return response;
   });
@@ -715,6 +788,15 @@ export async function permanentlyDeleteQueryPackage(pool, rawPackageId, input, r
     `, [packageId]);
     // Save only the content-free deletion receipt for safe network retries.
     await saveMutation(client, actor, requestId, 'DELETE', packageId, fingerprint, response);
+    // Search rows bound to produced tasks are durable delivery history. Remove
+    // only taskless searches before the package cascade clears their item key.
+    await client.query(`
+      DELETE FROM xhs_query_search_jobs AS job
+      USING query_package_items AS item
+      WHERE item.id = job.query_package_item_id
+        AND item.query_package_id = $1
+        AND job.task_id IS NULL
+    `, [packageId]);
     await client.query('DELETE FROM query_packages WHERE id = $1', [packageId]);
     await client.query(`
       INSERT INTO query_package_deletion_audits(
@@ -750,6 +832,17 @@ export async function abandonQueryPackage(pool, rawPackageId, input, rawActor) {
     const updated = await client.query(`
       UPDATE query_packages SET status = 'ABANDONED', version = version + 1, updated_at = now()
       WHERE id = $1 RETURNING *
+    `, [packageId]);
+    await client.query(`
+      UPDATE xhs_query_search_jobs AS job
+      SET status = 'CANCELLED', claimed_by_node_id = NULL,
+        lease_token = NULL, lease_expires_at = NULL, retry_after = NULL,
+        blocked_reason = NULL, error = NULL, updated_at = now()
+      FROM query_package_items AS item
+      WHERE item.id = job.query_package_item_id
+        AND item.query_package_id = $1
+        AND job.task_id IS NULL
+        AND job.status NOT IN ('SUCCEEDED', 'CANCELLED')
     `, [packageId]);
     const response = await readPackageSummary(client, updated.rows[0].id);
     await saveMutation(client, actor, requestId, 'ABANDON', packageId, fingerprint, response);

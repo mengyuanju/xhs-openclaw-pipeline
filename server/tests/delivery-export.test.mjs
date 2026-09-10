@@ -14,6 +14,10 @@ test('delivery export request separates all-ready scope from selected task ids',
     scope: 'ALL_READY',
   });
   assert.deepEqual(normalizeDeliveryExportRequest({
+    scope: 'QUERY_PACKAGE',
+    queryPackageName: '  九月   选题  ',
+  }), { scope: 'QUERY_PACKAGE', queryPackageName: '九月 选题' });
+  assert.deepEqual(normalizeDeliveryExportRequest({
     scope: 'SELECTED',
     taskIds: ['2', 1, 2],
   }), { scope: 'SELECTED', taskIds: [2, 1] });
@@ -22,12 +26,39 @@ test('delivery export request separates all-ready scope from selected task ids',
     /cannot include taskIds/u,
   );
   assert.throws(
+    () => normalizeDeliveryExportRequest({ scope: 'QUERY_PACKAGE', queryPackageName: '九月', taskIds: [1] }),
+    /cannot include taskIds/u,
+  );
+  assert.throws(
+    () => normalizeDeliveryExportRequest({ scope: 'QUERY_PACKAGE', queryPackageName: '   ' }),
+    /between 1 and 200/u,
+  );
+  assert.throws(
+    () => normalizeDeliveryExportRequest({ scope: 'SELECTED', taskIds: [1], queryPackageName: '九月' }),
+    /cannot include queryPackageName/u,
+  );
+  assert.throws(
     () => normalizeDeliveryExportRequest({
       scope: 'SELECTED',
       taskIds: Array.from({ length: MAX_SELECTED_DELIVERY_TASKS + 1 }, (_, index) => index + 1),
     }),
     /between 1 and 200/u,
   );
+});
+
+test('query-package export resolves only that package and never falls back when it is empty', async () => {
+  const actor = { role: 'ADMIN', userId: 1, username: 'admin' };
+  const calls = [];
+  await assert.rejects(
+    resolveDeliveryExportTaskIds({
+      listAllDeliveryPoolTaskIds: async (options) => {
+        calls.push(options);
+        return [];
+      },
+    }, { scope: 'QUERY_PACKAGE', queryPackageName: '九月选题' }, actor),
+    (error) => error?.code === 'DELIVERY_POOL_EMPTY',
+  );
+  assert.deepEqual(calls, [{ actor, queryPackageName: '九月选题' }]);
 });
 
 test('all-ready task ids come from the repository snapshot and reject an empty pool', async () => {
