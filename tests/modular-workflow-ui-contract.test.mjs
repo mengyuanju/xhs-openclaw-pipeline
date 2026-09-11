@@ -40,6 +40,21 @@ test('the Query screening header keeps text clear of the close button', async ()
   assert.match(mobileStyles, /\.screeningHead\s*\{[^}]*padding-right:\s*64px;/su);
 });
 
+test('the Query screening dialog keeps optional notices from displacing an empty result toolbar', async () => {
+  const [source, styles] = await Promise.all([
+    readFile(queryWorkbenchUrl, 'utf8'),
+    readFile(queryStylesUrl, 'utf8'),
+  ]);
+
+  assert.match(source, /detail && !detailAllowsScreening && <div className="notice"/u,
+    'ended packages render an extra read-only notice before the toolbar');
+  assert.match(styles, /\.screeningDialog\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/su,
+    'the dialog must accept optional vertical sections without assigning them to fixed grid rows');
+  assert.match(styles, /\.screeningList\s*\{[^}]*min-height:\s*0;[^}]*flex:\s*1 1 auto;[^}]*overflow:\s*auto;/su,
+    'the results region, rather than the toolbar, must consume the remaining dialog height');
+  assert.doesNotMatch(styles, /\.screeningDialog\s*\{[^}]*grid-template-rows:/su);
+});
+
 test('Query package screening is pending-first, administrator-assignable, and has no manual production action', async () => {
   const source = await readFile(queryWorkbenchUrl, 'utf8');
   assert.match(source, /useState<QueryPackageItemFilter>\('PENDING'\)/u);

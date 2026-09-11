@@ -25,4 +25,7 @@
 .selectionStatus span:last-child { color: var(--muted); }
 .scopeNote { margin: -5px 0 12px; color: var(--muted); font-size: 11px; line-height: 1.65; }
 .loadMore { display: flex; justify-content: center; padding-top: 14px; }
+.previewUploadControl { display: grid !important; align-items: stretch !important; gap: 4px !important; min-width: 118px; }
+.previewUploadControl label { color: var(--muted); font-size: 10px; font-weight: 700; }
+.previewUploadControl :global(.select-trigger) { min-height: 32px; }
 @media (max-width: 680px) { .toolbar { align-items: stretch; flex-direction: column; } .toolbar > div, .toolbar > .searchField, .toolbar > .packageFilter, .toolbar button { width: 100%; } .toolbar .clearSearch { width: 30px; } .toolbar > .searchStatus { text-align: left; } }

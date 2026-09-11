@@ -6,6 +6,7 @@ import { ConfirmDialogProvider } from '@/components/ui/confirm-dialog';
 
 import { AppTopbar } from './app-topbar';
 import { SideNav } from './side-nav';
+import { XhsAccountAlert } from './xhs-account-alert';
 
 type ShellSession = { subject: string; username?: string; roles?: string[] } | null;
 
@@ -16,6 +17,7 @@ export function AppFrame({ children, session }: { children: React.ReactNode; ses
   }
   return (
     <ConfirmDialogProvider>
+      <XhsAccountAlert enabled={session?.roles?.includes('ADMIN') === true} />
       <div className="app-shell">
         <a className="skip-link" href="#main-content">跳到主要内容</a>
         <SideNav session={session} />

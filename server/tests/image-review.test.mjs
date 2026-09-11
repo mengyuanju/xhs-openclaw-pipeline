@@ -173,6 +173,13 @@ for (const [decision, expected] of [['APPROVE', 'REVIEWED'], ['RETRY', 'IMAGE_QU
     assert.deepEqual(assessments[0].reason_codes, []);
     assert.equal(assessments[0].note, null);
     assert.equal(deliveries.filter((entry) => entry.status === 'READY').length, decision === 'APPROVE' ? 1 : 0);
+    if (decision === 'APPROVE') {
+      const deliverySourceQuery = queries.find(({ sql }) => sql.includes('AS available_asset_ids'));
+      assert.match(deliverySourceQuery.sql, /asset\.media_type = ANY\(\$4::varchar\[\]\)/u);
+      assert.deepEqual([...deliverySourceQuery.values[3]].sort(), [
+        'image/avif', 'image/gif', 'image/jpeg', 'image/png', 'image/webp',
+      ]);
+    }
     assert.equal((await repository.reviewImages(7, input)).state, expected, 'same session is idempotent');
     assert.equal(assessments.length, 1);
   });

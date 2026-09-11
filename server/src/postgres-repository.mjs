@@ -51,6 +51,7 @@ import {
   claimXhsQuerySearch,
   completeXhsQuerySearch,
   failXhsQuerySearch,
+  listXhsQuerySearchNodes,
   resumeXhsQuerySearch,
   retryFailedXhsQuerySearch,
 } from './xhs-query-search.mjs';
@@ -83,7 +84,10 @@ import {
   assertTasksReadyForDelivery,
   createReadyDeliveryEntry,
   listAllDeliveryPoolTaskIds,
+  listDeliveryPoolTaskIdsForPreview,
   listDeliveryPool,
+  markDeliveryPreviewRevoked,
+  recordDeliveryPreviewLinks,
   withdrawReadyDeliveryEntries,
 } from './final-delivery.mjs';
 
@@ -1070,6 +1074,7 @@ export class PostgresControlPlaneRepository {
     return abandonQueryPackage(this.pool, id, input, actor);
   }
   claimXhsQuerySearch(input) { return claimXhsQuerySearch(this.pool, input); }
+  listXhsQuerySearchNodes() { return listXhsQuerySearchNodes(this.pool); }
   completeXhsQuerySearch(id, input) { return completeXhsQuerySearch(this.pool, id, input); }
   blockXhsQuerySearch(id, input) { return blockXhsQuerySearch(this.pool, id, input); }
   failXhsQuerySearch(id, input) { return failXhsQuerySearch(this.pool, id, input); }
@@ -1113,6 +1118,15 @@ export class PostgresControlPlaneRepository {
   listAllDeliveryPoolTaskIds({ actor, queryPackageName = null } = {}) {
     return listAllDeliveryPoolTaskIds(this.pool, actor, { queryPackageName });
   }
+  listDeliveryPoolTaskIdsForPreview({ actor, queryPackageName = null, limit = 50 } = {}) {
+    return listDeliveryPoolTaskIdsForPreview(this.pool, actor, { queryPackageName, limit });
+  }
+  recordDeliveryPreviewLinks(records, actor) {
+    return transaction(this.pool, (client) => recordDeliveryPreviewLinks(client, records, actor));
+  }
+  markDeliveryPreviewRevoked(previewId, revokedAt) {
+    return transaction(this.pool, (client) => markDeliveryPreviewRevoked(client, previewId, revokedAt));
+  }
   releaseCopySamplingBatch(id, input, { actor } = {}) {
     return releaseCopySamplingBatch(this.pool, id, input, actor);
   }
@@ -1136,7 +1150,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 3, xiaohongshuQuerySearchVersion: 3, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1 } };
+      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 3, xiaohongshuQuerySearchVersion: 3, xiaohongshuAccountStatusVersion: 1, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1, deliveryPreviewVersion: 1 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -2381,6 +2395,7 @@ export class PostgresControlPlaneRepository {
         task.state,
         task.current_copy_revision_id,
         task.current_image_run_id,
+        delivery.id AS delivery_entry_id,
         revision.content AS copy_content,
         image_run.result AS image_result,
         COALESCE((
@@ -2430,7 +2445,7 @@ export class PostgresControlPlaneRepository {
         AND asset.media_type LIKE 'image/%'
       WHERE task.id = $1 AND task.state = 'REVIEWED'
       GROUP BY task.id, task.state, task.current_copy_revision_id,
-        task.current_image_run_id, revision.content, image_run.result
+        task.current_image_run_id, revision.content, image_run.result, delivery.id
     `, [taskId]);
     const row = result.rows[0];
     if (!row) return null;
@@ -2462,7 +2477,12 @@ export class PostgresControlPlaneRepository {
           taskId: Number(asset.taskId),
         })) : [],
       },
-      binding: { taskId: Number(row.id), copyRevisionId, imageRunId },
+      binding: {
+        deliveryEntryId: Number(row.delivery_entry_id),
+        taskId: Number(row.id),
+        copyRevisionId,
+        imageRunId,
+      },
     };
   }
 

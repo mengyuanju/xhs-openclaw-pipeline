@@ -1,5 +1,5 @@
 import { MAX_IMAGE_COUNT } from '@/lib/preview-contract';
-import { getBindings } from '@/lib/server/bindings';
+import { getPreviewObjectStorage } from '@/lib/server/object-storage-runtime';
 import { getPublishedImage } from '@/lib/server/preview-repository';
 
 export const dynamic = 'force-dynamic';
@@ -25,8 +25,8 @@ export async function GET(
     return notFound();
   }
 
-  const { files } = getBindings();
-  const object = await files.get(asset.objectKey);
+  const storage = getPreviewObjectStorage();
+  const object = await storage.getObject(asset.objectKey);
   if (!object) {
     console.error('preview_original_missing', {
       previewId: asset.previewId,

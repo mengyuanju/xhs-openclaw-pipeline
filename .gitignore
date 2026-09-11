@@ -6,6 +6,7 @@ output/
 outputs/
 server/server-storage/
 server/backups/
+preview-service/backups/
 
 .codex_artifacts/
 .tmp-control-plane/

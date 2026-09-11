@@ -115,10 +115,16 @@ test('search runner saves browser results without adding them to any model reque
     controlPlane,
     browser,
     nodeId: 'search-node',
+    nodeName: '中心搜索节点',
+    accountLabel: '品牌主账号',
+    hostKind: 'CENTER',
   });
   assert.equal(outcome.status, 'SUCCEEDED');
   assert.deepEqual(calls[0], ['claim', {
     nodeId: 'search-node',
+    nodeName: '中心搜索节点',
+    accountLabel: '品牌主账号',
+    hostKind: 'CENTER',
     protocolVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
   }]);
   assert.deepEqual(calls[1], ['browser', '桌面收纳', { limit: 5 }]);
@@ -162,10 +168,14 @@ test('browser profile configuration rejects repository-local login state', () =>
     CONTROL_PLANE_URL: 'http://127.0.0.1:4310',
     LOCALAPPDATA: 'C:\\Users\\worker\\AppData\\Local',
     XHS_SEARCH_MACHINE_TOKEN: 'test-only-machine-token-32-characters',
+    XHS_SEARCH_ACCOUNT_LABEL: '品牌主账号',
+    XHS_SEARCH_HOST_KIND: 'CENTER',
   }, ['--once', '--retry-task-id=42'], workspace);
   assert.equal(config.once, true);
   assert.deepEqual(config.retryFailedRequest, { taskId: 42 });
   assert.equal(Object.hasOwn(config, 'resultLimit'), false);
+  assert.equal(config.accountLabel, '品牌主账号');
+  assert.equal(config.hostKind, 'CENTER');
   assert.equal(config.profileDir, join('C:\\Users\\worker\\AppData\\Local', 'xhs-query-search', 'edge-profile'));
   const legacyOverride = xhsSearchConfig({
     CONTROL_PLANE_URL: 'http://127.0.0.1:4310',
@@ -179,6 +189,12 @@ test('browser profile configuration rejects repository-local login state', () =>
     LOCALAPPDATA: 'C:\\Users\\worker\\AppData\\Local',
     XHS_SEARCH_MACHINE_TOKEN: 'test-only-machine-token-32-characters',
   }, ['--once'], workspace), /必须使用 HTTPS/u);
+  assert.throws(() => xhsSearchConfig({
+    CONTROL_PLANE_URL: 'http://127.0.0.1:4310',
+    LOCALAPPDATA: 'C:\\Users\\worker\\AppData\\Local',
+    XHS_SEARCH_MACHINE_TOKEN: 'test-only-machine-token-32-characters',
+    XHS_SEARCH_HOST_KIND: 'UNKNOWN',
+  }, ['--once'], workspace), /CENTER or EXECUTOR/u);
 });
 
 function fakeSearchPage({

@@ -11,9 +11,14 @@ import sharp from 'sharp';
 
 import { createControlPlaneApp } from '../src/http-server.mjs';
 
-async function withServer(repository, action) {
+async function withServer(repository, action, appOptions = {}) {
   const storageRoot = await mkdtemp(join(tmpdir(), 'xhs-delivery-pool-gate-'));
-  const app = createControlPlaneApp({ repository, storageRoot, enforceUserAuth: false });
+  const app = createControlPlaneApp({
+    repository,
+    storageRoot,
+    enforceUserAuth: false,
+    ...appOptions,
+  });
   let server;
   try {
     await new Promise((resolve, reject) => {
@@ -26,6 +31,20 @@ async function withServer(repository, action) {
     await rm(storageRoot, { recursive: true, force: true });
   }
 }
+
+test('delivery preview route fails closed when the server-side preview connection is absent', async () => {
+  await withServer({
+    recordDeliveryPreviewLinks: async () => assert.fail('must not write without preview service'),
+  }, async (root) => {
+    const response = await fetch(`${root}/v1/delivery-pool/previews`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scope: 'SELECTED', taskIds: [7], limit: 10 }),
+    });
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).error.code, 'PREVIEW_SERVICE_NOT_CONFIGURED');
+  }, { previewClient: null });
+});
 
 function task(id, state, sourceQueryPackageName = null) {
   return {

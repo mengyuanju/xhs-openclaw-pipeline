@@ -30,9 +30,9 @@ export function ImageSettingsEditor({ value, onChange, disabled = false }: { val
       <Choice disabled={disabled} label="文件格式" value={value.format} choices={Object.keys(IMAGE_FORMATS).map(format => [format, format === 'JPEG' ? 'JPEG / JPG' : format])} onChange={format => patch({ format, ...(format === 'JPEG' ? { background: 'SOLID' } : {}) })} />
       <Choice disabled={disabled} label="背景处理" value={value.background} choices={value.format === 'JPEG' ? [['SOLID', '实底（JPEG 不支持透明）']] : [['SOLID', '实底成品'], ['TRANSPARENT', '保留透明背景']]} onChange={background => patch({ background })} />
       <div className="field"><label htmlFor={`${id}-color`}>透明区域填充色</label><ColorPicker id={`${id}-color`} value={value.backgroundColor} disabled={disabled || value.background === 'TRANSPARENT'} onValueChange={backgroundColor => patch({ backgroundColor })} /></div>
-      <div className="field"><label htmlFor={`${id}-quality`}>编码质量 · {value.quality}</label><Slider id={`${id}-quality`}  min={1} max={100} value={value.quality} disabled={['PNG', 'TIFF', 'GIF'].includes(value.format)} onChange={event => patch({ quality: Number(event.target.value) })} /><small>{['PNG', 'TIFF', 'GIF'].includes(value.format) ? '此格式不使用质量滑杆' : '较高质量通常产生较大的文件'}</small></div>
+      <div className="field"><label htmlFor={`${id}-quality`}>编码质量 · {value.quality}</label><Slider id={`${id}-quality`}  min={1} max={100} value={value.quality} disabled={['PNG', 'GIF'].includes(value.format)} onChange={event => patch({ quality: Number(event.target.value) })} /><small>{['PNG', 'GIF'].includes(value.format) ? '此格式不使用质量滑杆' : '较高质量通常产生较大的文件'}</small></div>
     </div>
-    <p className="subtle">实底只填充透明像素，不会重绘已有背景；若棋盘格被画进图片，需重新生图。GIF 为静态图，半透明边缘会转为有限透明度；TIFF 使用 PNG 成品预览。尺寸沿用 1086 × 1448。</p>
+    <p className="subtle">实底只填充透明像素，不会重绘已有背景；若棋盘格被画进图片，需重新生图。GIF 为静态图，半透明边缘会转为有限透明度。尺寸沿用 1086 × 1448。</p>
   </fieldset>;
 }
 

@@ -74,7 +74,7 @@ async function proxyRequest(
     || /^\/v1\/tasks\/[^/]+\/archive$/u.test(routePath))) {
     throw new ApiError(403, 'FORBIDDEN', '质检员没有交付池与交付包下载权限');
   }
-  if (role === 'REVIEWER' && (/^\/v1\/(?:settings|prompts|prompt-versions|users|executor-statuses)(?:\/|$)/u.test(routePath))) {
+  if (role === 'REVIEWER' && (/^\/v1\/(?:settings|prompts|prompt-versions|users|executor-statuses|xhs-search-statuses)(?:\/|$)/u.test(routePath))) {
     throw new ApiError(403, 'FORBIDDEN', '审核员没有该管理权限');
   }
   if (role === 'REVIEWER' && isKnowledgeControlPlaneRoute(routePath)) {

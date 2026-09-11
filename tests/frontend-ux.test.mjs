@@ -60,6 +60,32 @@ test('application shell groups product areas and keeps page context visible', as
   assert.match(packageJson, /"lucide-react"/);
 });
 
+test('the main workbench has distinct Haimo branding without exposing bootstrap credentials', async () => {
+  const [layout, loginPage, loginForm, navigation, topbar, icon, proxy] = await Promise.all([
+    readFile(projectFile('app/layout.tsx'), 'utf8'),
+    readFile(projectFile('app/login/page.tsx'), 'utf8'),
+    readFile(projectFile('app/login/login-form.tsx'), 'utf8'),
+    readFile(projectFile('app/components/side-nav.tsx'), 'utf8'),
+    readFile(projectFile('app/components/app-topbar.tsx'), 'utf8'),
+    readFile(projectFile('app/icon.png')),
+    readFile(projectFile('proxy.ts'), 'utf8'),
+  ]);
+
+  assert.match(layout, /title: '海默内容工场'/u);
+  assert.match(loginPage, /title: '登录 \| 海默内容工场'/u);
+  assert.match(loginPage, /HAIMO CONTENT STUDIO/u);
+  assert.match(loginPage, /海默内容生产工作台/u);
+  assert.match(loginPage, /登录海默内容工场/u);
+  assert.match(navigation, /<strong>海默内容工场<\/strong>/u);
+  assert.match(navigation, /<img className="brand-mark" src="\/icon\.png"/u);
+  assert.match(topbar, />海默内容工场<\/Link>/u);
+  assert.doesNotMatch(loginForm, /初始管理员账号|默认密码|123456/u);
+  assert.equal(icon.subarray(1, 4).toString('ascii'), 'PNG');
+  assert.equal(icon.readUInt32BE(16), 512);
+  assert.equal(icon.readUInt32BE(20), 512);
+  assert.match(proxy, /favicon\.ico\|icon\.svg\|icon\.png/u);
+});
+
 test('the unified knowledge base remains grouped with reusable content assets', async () => {
   const navigation = await readFile(projectFile('app/components/side-nav.tsx'), 'utf8');
 

@@ -51,7 +51,7 @@ export function AppTopbar() {
     <header className="app-topbar">
       <nav className="topbar-breadcrumb" aria-label="当前位置">
         <ol>
-          <li className="topbar-home"><Link href="/workbench">内容工场</Link></li>
+          <li className="topbar-home"><Link href="/workbench">海默内容工场</Link></li>
           <li className="topbar-section"><ChevronRight aria-hidden="true" size={13} /><span>{current.section}</span></li>
           <li className="topbar-title" aria-current="page">
             <ChevronRight aria-hidden="true" size={13} />

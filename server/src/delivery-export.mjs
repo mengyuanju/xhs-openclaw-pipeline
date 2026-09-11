@@ -86,6 +86,7 @@ export async function resolveDeliveryExportTaskIds(repository, request, actor) {
 }
 
 function normalizedDeliveryBinding(value, taskId) {
+  const deliveryEntryId = Number(value?.deliveryEntryId ?? value?.id);
   const copyRevisionId = Number(value?.copyRevisionId);
   const imageRunId = String(value?.imageRunId ?? '');
   if (!value || Number(value.taskId) !== taskId
@@ -95,7 +96,14 @@ function normalizedDeliveryBinding(value, taskId) {
       '中心服务无法确认交付版本，请升级中心服务后重试',
     );
   }
-  return Object.freeze({ taskId, copyRevisionId, imageRunId });
+  return Object.freeze({
+    ...(Number.isSafeInteger(deliveryEntryId) && deliveryEntryId > 0
+      ? { deliveryEntryId }
+      : {}),
+    taskId,
+    copyRevisionId,
+    imageRunId,
+  });
 }
 
 async function currentDeliveryBinding(repository, taskId) {

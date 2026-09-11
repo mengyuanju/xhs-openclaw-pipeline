@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import sharp from 'sharp';
 import { IMAGE_FORMATS, normalizeImageSettings } from '../server/src/image-options.mjs';
 
-export const IMAGE_ARTIFACT_FILE = /^(?:source-)?\d{2}-[a-z][a-z0-9-]{0,30}\.(?:png|jpg|webp|avif|tiff|gif)$/u;
+export const IMAGE_ARTIFACT_FILE = /^(?:source-)?\d{2}-[a-z][a-z0-9-]{0,30}\.(?:png|jpg|webp|avif|gif)$/u;
 
 // Encode once, then decode the actual delivery bytes for browser preview and QC.
 // Source is the normalized full artwork before flattening, so a later revision can undo a fill.
@@ -19,8 +19,7 @@ export async function prepareImageArtifacts({ source, outputDir, file, settings 
   let encoder = sharp(original);
   if (resolved.background === 'SOLID') encoder = encoder.flatten({ background: resolved.backgroundColor });
   const options = resolved.format === 'PNG' ? { compressionLevel: 8 }
-    : resolved.format === 'TIFF' ? { compression: 'lzw' }
-      : resolved.format === 'GIF' ? {} : { quality: resolved.quality };
+    : resolved.format === 'GIF' ? {} : { quality: resolved.quality };
   const delivery = await encoder.toFormat(resolved.format.toLowerCase(), options).toBuffer();
   const preview = resolved.format === 'PNG' ? delivery : await sharp(delivery).png().toBuffer();
   await writeFile(join(outputDir, sourceFile), original);

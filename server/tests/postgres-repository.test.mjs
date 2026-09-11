@@ -64,6 +64,7 @@ test('delivery export reads only the pinned copy, image run and current-run asse
           state: 'REVIEWED',
           current_copy_revision_id: '51',
           current_image_run_id: imageRunId,
+          delivery_entry_id: '71',
           copy_content: { copy: { title: '当前', body: '正文', tags: [] } },
           image_result: { images: [{ assetId: 61 }] },
           assets: [{
@@ -79,7 +80,7 @@ test('delivery export reads only the pinned copy, image run and current-run asse
   });
   const snapshot = await repository.getTaskForDelivery(41);
   assert.deepEqual(snapshot.binding, {
-    taskId: 41, copyRevisionId: 51, imageRunId,
+    deliveryEntryId: 71, taskId: 41, copyRevisionId: 51, imageRunId,
   });
   assert.equal(snapshot.task.copyRevisions.length, 1);
   assert.equal(snapshot.task.imageRuns.length, 1);
@@ -91,6 +92,7 @@ test('delivery export reads only the pinned copy, image run and current-run asse
   assert.match(queries[0].sql, /delivery\.status = 'READY'/u);
   assert.match(queries[0].sql, /task\.query/u);
   assert.match(queries[0].sql, /task\.source_query_package_name/u);
+  assert.match(queries[0].sql, /delivery\.id AS delivery_entry_id/u);
   assert.doesNotMatch(queries[0].sql, /task_executions|human_quality_assessments/u);
 });
 

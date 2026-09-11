@@ -314,6 +314,44 @@ test('executor status inventory and retirement are restricted to administrators'
   }, { enforceUserAuth: true });
 });
 
+test('Xiaohongshu account status inventory includes every search host and is admin-only', async () => {
+  const statuses = [
+    { id: 'center-search', hostKind: 'CENTER', accountLabel: '品牌主账号', authStatus: 'READY' },
+    { id: 'worker-search', hostKind: 'EXECUTOR', accountLabel: '素材账号', authStatus: 'LOGIN_REQUIRED' },
+  ];
+  let reads = 0;
+  const repository = {
+    listXhsQuerySearchNodes: async () => { reads += 1; return statuses; },
+    getUserByUsername: async (username) => ({
+      id: username === 'admin' ? 1 : 2,
+      username,
+      role: username === 'admin' ? 'ADMIN' : 'REVIEWER',
+      status: 'ACTIVE',
+      credentialVersion: 1,
+    }),
+  };
+  const headers = (username, role) => ({
+    'X-Actor-User-Id': String(username === 'admin' ? 1 : 2),
+    'X-Actor-Username': username,
+    'X-Actor-Role': role,
+    'X-Actor-Credential-Version': '1',
+  });
+  await withServer(repository, async (root) => {
+    const reviewer = await fetch(`${root}/v1/xhs-search-statuses`, {
+      headers: headers('reviewer', 'REVIEWER'),
+    });
+    assert.equal(reviewer.status, 403);
+    assert.equal(reads, 0);
+
+    const admin = await fetch(`${root}/v1/xhs-search-statuses`, {
+      headers: headers('admin', 'ADMIN'),
+    });
+    assert.equal(admin.status, 200);
+    assert.deepEqual((await admin.json()).data, statuses);
+    assert.equal(reads, 1);
+  }, { enforceUserAuth: true });
+});
+
 test('control plane HTTP returns a structured stale execution conflict', async () => {
   const repository = {
     updateProgress: async () => {

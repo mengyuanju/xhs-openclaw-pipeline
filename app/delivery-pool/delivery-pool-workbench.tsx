@@ -3,7 +3,7 @@
 import { Button } from '@/components/ui/button';
 import { Checkbox, Textarea } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Download, FileSpreadsheet, LoaderCircle, RefreshCw, Search, X } from 'lucide-react';
+import { Download, ExternalLink, FileSpreadsheet, LoaderCircle, RefreshCw, Search, UploadCloud, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { apiRequest } from '../components/api-client';
@@ -11,12 +11,14 @@ import styles from './delivery-pool.module.css';
 import {
   DELIVERY_POOL_LIST_LIMIT,
   DELIVERY_POOL_SELECTION_LIMIT,
+  DELIVERY_PREVIEW_UPLOAD_LIMITS,
   buildDeliveryPoolExportInput,
   filterDeliveryPoolEntries,
   mergeDeliveryPoolEntries,
   normalizeDeliveryPoolPage,
   normalizePreparedDeliveryExport,
   normalizePreparedDeliveryXlsxExport,
+  normalizeDeliveryPreviewPublishResult,
   parseDeliveryPoolSearchTerms,
   updateTaskSelection,
   type DeliveryEntry,
@@ -40,6 +42,8 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [exporting, setExporting] = useState<ExportScope | null>(null);
   const [xlsxExporting, setXlsxExporting] = useState(false);
+  const [previewPublishing, setPreviewPublishing] = useState(false);
+  const [previewUploadLimit, setPreviewUploadLimit] = useState<number>(50);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const searchInputRef = useRef<HTMLTextAreaElement>(null);
@@ -99,7 +103,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
   const selectionCandidates = visible.slice(0, DELIVERY_POOL_SELECTION_LIMIT);
   const allChecked = selectionCandidates.length > 0
     && selectionCandidates.every((entry) => selected.includes(entry.taskId));
-  const exportBusy = exporting !== null || xlsxExporting;
+  const exportBusy = exporting !== null || xlsxExporting || previewPublishing;
   const xlsxExportCount = selected.length || total;
   const filteredExportScope: Exclude<ExportScope, 'SELECTED'> = queryPackageName
     ? 'QUERY_PACKAGE'
@@ -215,6 +219,51 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
     }
   }
 
+  async function publishPreviews() {
+    if (exportBusy || total === 0) return;
+    if (selected.length > previewUploadLimit) {
+      setMessage('');
+      setError(`当前已选 ${selected.length} 条，超过本次上传上限 ${previewUploadLimit} 条；请调大上限或减少选择。`);
+      return;
+    }
+    const scope: ExportScope = selected.length ? 'SELECTED' : filteredExportScope;
+    const scopeLabel = selected.length
+      ? `已选 ${selected.length} 条`
+      : queryPackageName
+        ? `词包“${queryPackageName}”中最多 ${previewUploadLimit} 条尚未上传的交付项`
+        : `最多 ${previewUploadLimit} 条尚未上传的交付项`;
+    if (!window.confirm(`确认将${scopeLabel}发布到独立预览系统？发布后会生成可分享链接。`)) return;
+    setPreviewPublishing(true);
+    setError('');
+    setMessage(`正在上传${scopeLabel}；系统会自动拆成安全的小批次。`);
+    try {
+      const input = scope === 'SELECTED'
+        ? { scope, taskIds: selected, limit: previewUploadLimit }
+        : scope === 'QUERY_PACKAGE'
+          ? { scope, queryPackageName, limit: previewUploadLimit }
+          : { scope, limit: previewUploadLimit };
+      const result = normalizeDeliveryPreviewPublishResult(await apiRequest<unknown>(
+        '/api/control-plane/v1/delivery-pool/previews',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(input),
+        },
+      ));
+      setMessage(`预览处理完成：新建 ${result.createdCount} 条，复用 ${result.reusedCount} 条${result.failedCount ? `，失败 ${result.failedCount} 条` : ''}。`);
+      if (result.failedCount) {
+        setError(result.failures.slice(0, 3).map((failure) => `任务 #${failure.taskId}：${failure.message}`).join('；'));
+      }
+      setSelected([]);
+      await load();
+    } catch (caught) {
+      setMessage('');
+      setError(caught instanceof Error ? caught.message : '预览上传失败');
+    } finally {
+      setPreviewPublishing(false);
+    }
+  }
+
   const packageSelectValue = queryPackageName
     ? `package:${queryPackageName}`
     : ALL_QUERY_PACKAGES;
@@ -241,6 +290,29 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
             <RefreshCw className={refreshing ? 'animate-spin' : ''} size={14} />刷新
           </Button>
           {role === 'ADMIN' && <>
+            <div className={styles.previewUploadControl}>
+              <label htmlFor="delivery-preview-upload-limit">本次预览上限</label>
+              <Select value={String(previewUploadLimit)} onValueChange={(value) => setPreviewUploadLimit(Number(value))}>
+                <SelectTrigger id="delivery-preview-upload-limit" aria-label="本次预览上传条数上限">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {DELIVERY_PREVIEW_UPLOAD_LIMITS.map((limit) => <SelectItem key={limit} value={String(limit)}>{limit} 条</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <Button
+              unstyled
+              className="button small primary"
+              type="button"
+              aria-busy={previewPublishing}
+              disabled={total === 0 || exportBusy}
+              onClick={() => { void publishPreviews(); }}
+            >
+              {previewPublishing
+                ? <><LoaderCircle className="animate-spin" size={14} />正在上传预览…</>
+                : <><UploadCloud size={14} />{selected.length ? `上传预览（已选 ${selected.length}）` : `上传预览（最多 ${previewUploadLimit}）`}</>}
+            </Button>
             <Button
               unstyled
               className="button small"
@@ -359,7 +431,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
               <thead>
                 <tr>
                   {role === 'ADMIN' && <th><Checkbox aria-label={`选择当前已加载的筛选结果（最多 ${DELIVERY_POOL_SELECTION_LIMIT} 条）`} checked={allChecked} disabled={exportBusy} onChange={(event) => changeSelection(selectionCandidates.map((entry) => entry.taskId), event.target.checked)} /></th>}
-                  <th>正式任务</th><th>Query</th><th>词包</th><th>版本绑定</th><th>终审时间</th><th>操作</th>
+                  <th>正式任务</th><th>Query</th><th>词包</th><th>版本绑定</th><th>预览</th><th>终审时间</th><th>操作</th>
                 </tr>
               </thead>
               <tbody>{visible.map((entry) => <tr key={entry.id}>
@@ -368,6 +440,13 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
                 <td className={styles.query} data-label="Query">{entry.query || '未记录'}</td>
                 <td className={styles.packageName} data-label="词包">{entry.queryPackageName || '未归属词包'}</td>
                 <td data-label="版本绑定"><div className={styles.version}><span>文案 #{entry.copyRevisionId}</span><span>图片 {entry.imageRunId.slice(0, 8)}…</span></div></td>
+                <td data-label="预览">{entry.preview?.status === 'PUBLISHED' && entry.preview.url
+                  ? <a className="button small" href={entry.preview.url} target="_blank" rel="noreferrer"><ExternalLink size={14} />打开预览</a>
+                  : entry.preview?.status === 'PUBLISHED'
+                    ? <span className="subtle">已上传，预览域名未配置</span>
+                  : entry.preview?.status === 'REVOKED'
+                    ? <span className="pill">已撤销</span>
+                    : <span className="subtle">未上传</span>}</td>
                 <td data-label="终审时间">{entry.approvedAt ? new Date(entry.approvedAt).toLocaleString('zh-CN', { hour12: false }) : '未记录'}</td>
                 <td className="row-action" data-label="操作"><div className={styles.actions}><a className="button small primary" href={`/api/control-plane/v1/tasks/${entry.taskId}/archive`} download><Download size={14} />下载资源</a></div></td>
               </tr>)}</tbody>

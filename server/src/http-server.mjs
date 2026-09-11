@@ -32,6 +32,13 @@ import {
   writeDeliverySpreadsheet,
 } from './delivery-spreadsheet.mjs';
 import { IMAGE_FORMATS } from './image-options.mjs';
+import {
+  addDeliveryPreviewUrls,
+  createDeliveryPreviewUrlResolver,
+  createPreviewServiceClient,
+  DeliveryPreviewServiceError,
+  publishDeliveryPreviews,
+} from './delivery-preview.mjs';
 import { AssetDeliveryError, createAssetDelivery } from './asset-delivery.mjs';
 import { normalizePromptContent } from '../../src/admin/prompt-service.mjs';
 import { assertPromptPublishable } from '../../src/admin/prompt-preview.mjs';
@@ -83,6 +90,9 @@ function mappedError(error) {
   if (error?.code === 'CATALOG_CONFLICT') return new HttpError(409, error.code, error.message);
   if (error instanceof HttpError) return error;
   if (error instanceof AssetDeliveryError) return new HttpError(error.status, error.code, error.message);
+  if (error instanceof DeliveryPreviewServiceError) {
+    return new HttpError(error.status, error.code, error.message, error.details);
+  }
   if (error instanceof CopyAnalysisServiceError) return new HttpError(error.status, error.code, error.message);
   if (error instanceof ControlPlaneAuthenticationError) {
     return new HttpError(401, error.code, error.message);
@@ -671,7 +681,15 @@ function assertDeliveryExportArtifact(record, pathKey) {
   return record;
 }
 
-function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisual) {
+function installRoutes(
+  router,
+  repository,
+  storageRoot,
+  analyzeCopy,
+  analyzeVisual,
+  previewClient,
+  previewUrlResolver,
+) {
   const deliverAsset = createAssetDelivery({ storageRoot });
   const deliveryExportRegistry = createDeliveryExportRegistry();
   const initialDeliveryExportCleanup = cleanStaleDeliveryExportDirectories(storageRoot)
@@ -943,6 +961,10 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
   router.get('/v1/executor-statuses', async (ctx) => {
     requestActor(ctx, ['ADMIN']);
     json(ctx, 200, await repository.listNodes());
+  });
+  router.get('/v1/xhs-search-statuses', async (ctx) => {
+    requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.listXhsQuerySearchNodes());
   });
   router.delete('/v1/executor-statuses', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
@@ -1592,12 +1614,33 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
 
   router.get('/v1/delivery-pool', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
-    json(ctx, 200, await repository.listDeliveryPool({
+    const deliveryPool = await repository.listDeliveryPool({
       limit: ctx.query.limit,
       offset: ctx.query.offset,
       includeTotal: ctx.query.includeTotal === 'true',
       queryPackageName: ctx.query.queryPackageName,
-    }, { actor }));
+    }, { actor });
+    json(ctx, 200, addDeliveryPreviewUrls(deliveryPool, previewUrlResolver));
+  });
+  router.post('/v1/delivery-pool/previews', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    const controller = new AbortController();
+    const cancel = () => controller.abort(
+      new DOMException('delivery preview client disconnected', 'AbortError'),
+    );
+    ctx.req.once('aborted', cancel);
+    try {
+      json(ctx, 200, await publishDeliveryPreviews({
+        repository,
+        storageRoot,
+        previewClient,
+        input: requireJson(ctx),
+        actor,
+        signal: controller.signal,
+      }));
+    } finally {
+      ctx.req.off('aborted', cancel);
+    }
   });
   router.put('/v1/human-quality-settings', async (ctx) => {
     requestActor(ctx, ['ADMIN']);
@@ -1710,6 +1753,11 @@ export function createControlPlaneApp({
   xhsSearchMachineToken = process.env.XHS_SEARCH_MACHINE_TOKEN,
   analyzeCopy = analyzeAndSaveExcellentCopy,
   analyzeVisual = analyzeVisualImage,
+  previewClient = createPreviewServiceClient({
+    baseUrl: process.env.PREVIEW_BASE_URL,
+    apiKey: process.env.PREVIEW_API_KEY,
+  }),
+  previewUrlResolver = createDeliveryPreviewUrlResolver(process.env.PREVIEW_BASE_URL),
 }) {
   if (!repository) throw new TypeError('repository is required');
   const resolvedStorageRoot = resolve(storageRoot);
@@ -1800,6 +1848,8 @@ export function createControlPlaneApp({
     resolvedStorageRoot,
     analyzeCopy,
     analyzeVisual,
+    previewClient,
+    previewUrlResolver,
   );
   app.context.disposeControlPlaneResources = disposeRouteResources;
   app.use(async (ctx, next) => {

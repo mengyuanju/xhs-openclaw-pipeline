@@ -36,7 +36,7 @@ test('central user management exposes the three fixed roles and default-password
   assert.match(profile, /window\.location\.replace\('\/login\?reauth=1&passwordChanged=1'\)/u);
   assert.match(loginPage, /passwordChanged=\{params\.passwordChanged === '1'\}/u);
   assert.match(loginForm, /密码已修改，请使用新密码重新登录/u);
-  assert.match(loginForm, /首次登录必须先修改密码，重新登录后才能使用其他功能/u);
+  assert.doesNotMatch(loginForm, /初始管理员账号|默认密码|123456/u);
   assert.doesNotMatch(loginForm, /defaultValue=["']admin["']/u);
   assert.match(styles, /\.profile-password-grid \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);[^}]*align-items: start;[^}]*max-width: 560px;/u);
   assert.match(styles, /\.forced-password-dialog \{[^}]*width: min\(calc\(100vw - 32px\), 560px\);[^}]*max-height: min\(92dvh, 720px\);/u);

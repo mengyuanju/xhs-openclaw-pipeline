@@ -3,8 +3,11 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
+  blockXhsQuerySearch,
   claimXhsQuerySearch,
   completeXhsQuerySearch,
+  listXhsQuerySearchNodes,
+  resumeXhsQuerySearch,
   retryFailedXhsQuerySearch,
 } from '../src/xhs-query-search.mjs';
 import { createControlPlaneApp } from '../src/http-server.mjs';
@@ -17,6 +20,7 @@ import {
 function fakeSearchDatabase({ resultLimit = 3 } = {}) {
   const state = {
     settings: { resultLimit },
+    node: null,
     job: {
       id: 51,
       query_package_item_id: 91,
@@ -39,8 +43,24 @@ function fakeSearchDatabase({ resultLimit = 3 } = {}) {
   const query = async (sql, values = []) => {
     const source = String(sql).replace(/\s+/gu, ' ').trim();
     if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(source)) return { rows: [] };
-    if (source.startsWith('INSERT INTO xhs_query_search_nodes')) return { rows: [] };
+    if (source.startsWith('INSERT INTO xhs_query_search_nodes')) {
+      state.node = {
+        id: values[0],
+        name: values[1],
+        account_label: values[2],
+        host_kind: values[3],
+        auth_status: state.node?.auth_status ?? 'UNKNOWN',
+        auth_status_changed_at: state.node?.auth_status_changed_at ?? new Date('2026-09-10T01:00:00.000Z'),
+        last_job_id: state.node?.last_job_id ?? null,
+      };
+      return { rows: [] };
+    }
     if (source.startsWith('SELECT id FROM xhs_query_search_nodes')) return { rows: [{ id: values[0] }] };
+    if (source.startsWith('UPDATE xhs_query_search_nodes')) {
+      if (values[1] !== null) state.node.auth_status = values[1];
+      if (values[2] !== null) state.node.last_job_id = Number(values[2]);
+      return { rows: [] };
+    }
     if (source.startsWith('SELECT pg_advisory_xact_lock')) return { rows: [{}] };
     if (source.startsWith('UPDATE xhs_query_search_jobs') && source.includes('lease_expires_at <= now()')) {
       return { rows: [] };
@@ -86,6 +106,26 @@ function fakeSearchDatabase({ resultLimit = 3 } = {}) {
       });
       return { rows: [{ ...state.job }] };
     }
+    if (source.startsWith('UPDATE xhs_query_search_jobs') && source.includes("SET status = 'BLOCKED'")) {
+      Object.assign(state.job, {
+        status: 'BLOCKED',
+        blocked_reason: values[1],
+        claimed_by_node_id: null,
+        lease_token: null,
+        lease_expires_at: null,
+      });
+      return { rows: [{ ...state.job }] };
+    }
+    if (source.startsWith('UPDATE xhs_query_search_jobs AS job')
+        && source.includes("WHERE job.status = 'BLOCKED'")) {
+      if (state.job.status !== 'BLOCKED') return { rows: [] };
+      Object.assign(state.job, {
+        status: 'PENDING',
+        attempt_count: 0,
+        blocked_reason: null,
+      });
+      return { rows: [{ id: state.job.id }] };
+    }
     if (source.startsWith('UPDATE xhs_query_search_jobs AS job')
         && source.includes("WHERE job.status = 'FAILED'")) {
       const matchesJob = values[0] === null || Number(values[0]) === state.job.id;
@@ -114,12 +154,17 @@ test('central search job claim and completion use a lease and store only normali
   const fixture = fakeSearchDatabase();
   const claim = await claimXhsQuerySearch(fixture.pool, {
     nodeId: 'search-node',
+    nodeName: '中心搜索',
+    accountLabel: '品牌主账号',
+    hostKind: 'CENTER',
     protocolVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
   });
   assert.equal(claim.query, '桌面收纳');
   assert.equal(claim.status, 'RUNNING');
   assert.equal(claim.attempt, 1);
   assert.equal(claim.resultLimit, 3);
+  assert.equal(fixture.state.node.account_label, '品牌主账号');
+  assert.equal(fixture.state.node.host_kind, 'CENTER');
   assert.match(claim.leaseToken, /^[0-9a-f-]{36}$/u);
   const completed = await completeXhsQuerySearch(fixture.pool, claim.id, {
     leaseToken: claim.leaseToken,
@@ -131,6 +176,8 @@ test('central search job claim and completion use a lease and store only normali
   });
   assert.equal(completed.status, 'SUCCEEDED');
   assert.equal(completed.resultCount, 3);
+  assert.equal(fixture.state.node.auth_status, 'READY');
+  assert.equal(fixture.state.node.last_job_id, claim.id);
   assert.deepEqual(fixture.state.links.map((link) => [link.title, link.rank]), [
     ['第一条', 1],
     ['第二条', 2],
@@ -209,6 +256,33 @@ test('completion enforces the limit frozen on its own claimed job', async () => 
   assert.deepEqual(fixture.state.links, []);
 });
 
+test('login blocks are attached to the exact search node and resume clears the alert state', async () => {
+  const fixture = fakeSearchDatabase();
+  const claim = await claimXhsQuerySearch(fixture.pool, {
+    nodeId: 'center-search',
+    nodeName: '中心服务器搜索',
+    accountLabel: '运营账号 A',
+    hostKind: 'CENTER',
+    protocolVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
+  });
+  await blockXhsQuerySearch(fixture.pool, claim.id, {
+    leaseToken: claim.leaseToken,
+    reason: 'LOGIN_REQUIRED',
+  });
+  assert.equal(fixture.state.node.auth_status, 'LOGIN_REQUIRED');
+  assert.equal(fixture.state.node.last_job_id, claim.id);
+
+  const resumed = await resumeXhsQuerySearch(fixture.pool, {
+    nodeId: 'center-search',
+    nodeName: '中心服务器搜索',
+    accountLabel: '运营账号 A',
+    hostKind: 'CENTER',
+  });
+  assert.equal(resumed.resumedCount, 1);
+  assert.equal(fixture.state.node.auth_status, 'UNKNOWN');
+  assert.equal(fixture.state.job.status, 'PENDING');
+});
+
 test('the administrator Xiaohongshu setting is strictly normalized before persistence', async () => {
   const writes = [];
   const repository = new PostgresControlPlaneRepository({ pool: {
@@ -247,6 +321,38 @@ test('health advertises the administrator-controlled Xiaohongshu search protocol
   } });
   const health = await repository.health();
   assert.equal(health.capabilities.xiaohongshuQuerySearchVersion, 3);
+  assert.equal(health.capabilities.xiaohongshuAccountStatusVersion, 1);
+});
+
+test('search-node inventory reports center and executor account state without credentials', async () => {
+  const queries = [];
+  const nodes = await listXhsQuerySearchNodes({ query: async (sql) => {
+    queries.push(String(sql));
+    return { rows: [{
+      id: 'center-xhs-search',
+      name: '中心搜索节点',
+      account_label: '品牌主账号',
+      host_kind: 'CENTER',
+      online: true,
+      auth_status: 'LOGIN_REQUIRED',
+      auth_status_changed_at: new Date('2026-09-11T01:00:00.000Z'),
+      auth_checked_at: new Date('2026-09-11T01:00:00.000Z'),
+      last_job_id: '51',
+      last_job_status: 'BLOCKED',
+      last_job_task_id: '42',
+      running_job_id: null,
+      last_seen_at: new Date('2026-09-11T01:00:01.000Z'),
+      created_at: new Date('2026-09-10T01:00:00.000Z'),
+      updated_at: new Date('2026-09-11T01:00:01.000Z'),
+    }] };
+  } });
+  assert.equal(nodes[0].hostKind, 'CENTER');
+  assert.equal(nodes[0].accountLabel, '品牌主账号');
+  assert.equal(nodes[0].authStatus, 'LOGIN_REQUIRED');
+  assert.equal(nodes[0].lastJobId, 51);
+  assert.equal(nodes[0].lastJobTaskId, 42);
+  assert.equal(Object.keys(nodes[0]).some((key) => /cookie|token|password/iu.test(key)), false);
+  assert.match(queries[0], /last_seen_at >= now\(\) - interval '90 seconds'/u);
 });
 
 test('screening SQL queues selected rows and cancels unfinished rejected rows atomically', async () => {

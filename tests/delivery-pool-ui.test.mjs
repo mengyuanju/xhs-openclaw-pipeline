@@ -5,12 +5,14 @@ import test from 'node:test';
 import {
   DELIVERY_POOL_LIST_LIMIT,
   DELIVERY_POOL_SELECTION_LIMIT,
+  DELIVERY_PREVIEW_UPLOAD_LIMITS,
   buildDeliveryPoolExportInput,
   filterDeliveryPoolEntries,
   mergeDeliveryPoolEntries,
   normalizeDeliveryPoolPage,
   normalizePreparedDeliveryExport,
   normalizePreparedDeliveryXlsxExport,
+  normalizeDeliveryPreviewPublishResult,
   parseDeliveryPoolSearchTerms,
   updateTaskSelection,
 } from '../app/delivery-pool/types.ts';
@@ -29,6 +31,7 @@ function entry(id, overrides = {}) {
     imageRunId: `run-${id}`,
     status: 'READY',
     approvedAt: '2026-09-09T00:00:00.000Z',
+    preview: null,
     ...overrides,
   };
 }
@@ -36,6 +39,7 @@ function entry(id, overrides = {}) {
 test('delivery pool list adapter preserves package names and valid package facets', () => {
   assert.equal(DELIVERY_POOL_LIST_LIMIT, 200);
   assert.equal(DELIVERY_POOL_SELECTION_LIMIT, 200);
+  assert.deepEqual([...DELIVERY_PREVIEW_UPLOAD_LIMITS], [10, 25, 50, 100, 200]);
   assert.deepEqual(normalizeDeliveryPoolPage({
     items: [entry(1), entry(2, { status: 'WITHDRAWN' })],
     total: 43,
@@ -54,6 +58,47 @@ test('delivery pool list adapter preserves package names and valid package facet
   assert.equal(normalizeDeliveryPoolPage([entry(3)]).total, 1,
     'the legacy array response stays readable during a rolling deployment');
   assert.deepEqual(normalizeDeliveryPoolPage([entry(3)]).facets, { queryPackages: [] });
+});
+
+test('delivery preview adapter preserves the note binding and rejects inconsistent counts', () => {
+  const result = {
+    scope: 'SELECTED',
+    limit: 50,
+    requestedCount: 2,
+    publishedCount: 1,
+    createdCount: 1,
+    reusedCount: 0,
+    failedCount: 1,
+    items: [{
+      taskId: 101,
+      deliveryEntryId: 1,
+      noteId: 'a'.repeat(32),
+      previewUrl: `https://preview.example/preview?noteId=${'a'.repeat(32)}`,
+      reused: false,
+    }],
+    failures: [{ taskId: 102, code: 'FAILED', message: '上传失败' }],
+  };
+  assert.deepEqual(normalizeDeliveryPreviewPublishResult(result), result);
+  assert.throws(
+    () => normalizeDeliveryPreviewPublishResult({ ...result, failedCount: 0 }),
+    /预览上传结果无效/u,
+  );
+});
+
+test('delivery list keeps a published preview visible when its domain is not configured', () => {
+  const preview = {
+    id: '22222222-2222-4222-8222-222222222222',
+    noteId: 'a'.repeat(32),
+    url: null,
+    contentHash: 'b'.repeat(64),
+    status: 'PUBLISHED',
+    publishedAt: '2026-09-11T00:00:00.000Z',
+    revokedAt: null,
+  };
+  assert.deepEqual(
+    normalizeDeliveryPoolPage({ items: [entry(1, { preview })], total: 1 }).items[0].preview,
+    preview,
+  );
 });
 
 test('selecting a filtered result preserves selections outside the current search', () => {
@@ -185,7 +230,7 @@ test('administrator delivery pool exposes package facets, server filtering and p
   assert.match(source, /delivery-pool\/xlsx\/\$\{encodeURIComponent\(prepared\.downloadId\)\}/u);
   assert.doesNotMatch(source, /response\.blob\(\)|URL\.createObjectURL/u,
     'delivery archives and Excel files must use native streamed downloads instead of page-memory Blobs');
-  assert.match(source, /const exportBusy = exporting !== null \|\| xlsxExporting/u);
+  assert.match(source, /const exportBusy = exporting !== null \|\| xlsxExporting \|\| previewPublishing/u);
   assert.match(source, /aria-busy=\{xlsxExporting\}/u);
   assert.match(source, /导出 Excel（已选/u);
   assert.match(source, /导出 Excel（全部/u);
@@ -195,6 +240,10 @@ test('administrator delivery pool exposes package facets, server filtering and p
   assert.match(source, /Excel 一次最多导出.*请先勾选后分批导出/u);
   assert.match(source, /一键导出全部/u);
   assert.match(source, /批量下载（已选/u);
+  assert.match(source, /delivery-pool\/previews/u);
+  assert.match(source, /本次预览上限/u);
+  assert.match(source, /DELIVERY_PREVIEW_UPLOAD_LIMITS/u);
+  assert.match(source, /打开预览/u);
   assert.match(source, /词包筛选由服务端覆盖该词包全部 READY 条目/u);
   assert.match(source, /entry\.queryPackageName \|\| '未归属词包'/u);
   assert.doesNotMatch(source, /selected\.length > 20/u,

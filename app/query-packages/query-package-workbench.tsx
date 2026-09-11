@@ -724,7 +724,11 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
         : visiblePackages.length === 0
           ? <div className="empty-state">{search || status !== 'ALL'
             ? `已加载范围内没有符合筛选条件的词包${hasMorePackages ? '；可继续加载后查找。' : '。'}`
-            : role === 'ADMIN' ? '还没有 Query 词包。' : '管理员暂未给你分配需要筛选的词包。'}</div>
+            : role === 'ADMIN'
+              ? '还没有 Query 词包。'
+              : role === 'USER'
+                ? '今天的词包已处理完成。'
+                : '管理员暂未给你分配需要筛选的词包。'}</div>
           : <div className={`table-wrap mobile-cards ${styles.table}`}><table>
             <thead><tr><th>词包</th><th>筛选进度</th><th>状态 / 筛选人</th><th>创建时间</th><th>操作</th></tr></thead>
             <tbody>{visiblePackages.map((item) => {

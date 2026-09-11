@@ -3,6 +3,8 @@
 import {
   ArrowUpRight,
   Ban,
+  ChevronLeft,
+  ChevronRight,
   Check,
   Copy,
   FileImage,
@@ -55,6 +57,21 @@ interface ApiErrorBody {
 }
 
 type CreationMode = 'single' | 'batch';
+type PreviewCategory = 'all' | 'published' | 'revoked' | 'not-found';
+type SearchField = 'title' | 'query';
+
+interface ListPreviewsResponse {
+  previews: PreviewSummary[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  statusCounts: {
+    all: number;
+    published: number;
+    revoked: number;
+  };
+}
 
 export function PreviewManager({ username }: { username: string }) {
   const [previews, setPreviews] = useState<PreviewSummary[]>([]);
@@ -64,7 +81,25 @@ export function PreviewManager({ username }: { username: string }) {
   const [loggingOut, setLoggingOut] = useState(false);
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [searchInput, setSearchInput] = useState('');
+  const [searchKeyword, setSearchKeyword] = useState('');
+  const [searchField, setSearchField] = useState<SearchField>('title');
+  const [pagination, setPagination] = useState({
+    total: 0,
+    page: 1,
+    pageSize: 20,
+    totalPages: 1,
+  });
   const [creationMode, setCreationMode] = useState<CreationMode>('single');
+  const [statusCategory, setStatusCategory] =
+    useState<PreviewCategory>('all');
+  const [statusCounts, setStatusCounts] = useState({
+    all: 0,
+    published: 0,
+    revoked: 0,
+  });
   const [batchDrafts, setBatchDrafts] = useState<BatchPreviewDraft[]>([
     createEmptyBatchDraft('batch-1'),
   ]);
@@ -94,26 +129,94 @@ export function PreviewManager({ username }: { username: string }) {
   usePreviewWebMcp({ previews, formRef, revoke, stageBatch, selectSingle });
 
   const loadPreviews = useCallback(async () => {
-    try {
-      const response = await adminFetch('/api/admin/previews', {
-        cache: 'no-store',
+    if (statusCategory === 'not-found') {
+      setPreviews([]);
+      setStatusCounts({ all: 0, published: 0, revoked: 0 });
+      setPagination({
+        total: 0,
+        page: 1,
+        pageSize,
+        totalPages: 1,
       });
+      setLoading(false);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const params = new URLSearchParams({
+        page: String(page),
+        pageSize: String(pageSize),
+      });
+      if (searchKeyword) {
+        params.set('q', searchKeyword);
+        params.set('searchField', searchField);
+      }
+      if (statusCategory === 'published') {
+        params.set('status', 'PUBLISHED');
+      }
+      if (statusCategory === 'revoked') {
+        params.set('status', 'REVOKED');
+      }
+
+      const response = await adminFetch(
+        `/api/admin/previews?${params.toString()}`,
+        {
+          cache: 'no-store',
+        },
+      );
       if (!response.ok) {
         throw new Error(await readApiError(response));
       }
-      const data = (await response.json()) as { previews: PreviewSummary[] };
+      const data = (await response.json()) as ListPreviewsResponse;
       setPreviews(data.previews);
+      setStatusCounts(data.statusCounts);
+      setPagination({
+        total: data.total,
+        page: data.page,
+        pageSize: data.pageSize,
+        totalPages: Math.max(1, data.totalPages),
+      });
+      if (data.page !== page) {
+        setPage(data.page);
+      }
     } catch (loadError) {
       setError(messageFrom(loadError));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [page, pageSize, searchKeyword, searchField, statusCategory]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadPreviews(), 0);
     return () => window.clearTimeout(timer);
   }, [loadPreviews]);
+
+  function applySearch(
+    event: React.SyntheticEvent<HTMLFormElement, SubmitEvent>,
+  ) {
+    event.preventDefault();
+    setSearchKeyword(searchInput.trim());
+    setPage(1);
+    setError('');
+  }
+
+  function clearSearch() {
+    setSearchInput('');
+    setSearchKeyword('');
+    setPage(1);
+  }
+
+  function applyCategory(category: PreviewCategory) {
+    setError('');
+    setStatusCategory(category);
+    setPage(1);
+  }
+
+  function applySearchField(nextSearchField: SearchField) {
+    setSearchField(nextSearchField);
+    setPage(1);
+  }
 
   async function createPreview(
     event: React.SyntheticEvent<HTMLFormElement, SubmitEvent>,
@@ -139,13 +242,11 @@ export function PreviewManager({ username }: { username: string }) {
         throw new Error(await readApiError(response));
       }
       const data = (await response.json()) as { preview: PreviewSummary };
-      setPreviews((current) => [
-        data.preview,
-        ...current.filter((item) => item.id !== data.preview.id),
-      ]);
       setCreatedPublicIds([data.preview.publicId]);
       setSelectedFiles([]);
       form.reset();
+      setPage(1);
+      await loadPreviews();
     } catch (submitError) {
       setError(messageFrom(submitError));
     } finally {
@@ -163,14 +264,8 @@ export function PreviewManager({ username }: { username: string }) {
       if (!response.ok) {
         throw new Error(await readApiError(response));
       }
-      const data = (await response.json()) as { revokedAt: number };
-      setPreviews((current) =>
-        current.map((preview) =>
-          preview.id === id
-            ? { ...preview, status: 'REVOKED', revokedAt: data.revokedAt }
-            : preview,
-        ),
-      );
+      await response.json();
+      await loadPreviews();
       return true;
     } catch (revokeError) {
       setError(messageFrom(revokeError));
@@ -206,13 +301,10 @@ export function PreviewManager({ username }: { username: string }) {
   }
 
   function acceptBatch(previews: PreviewSummary[]) {
-    const createdIds = new Set(previews.map((preview) => preview.id));
-    setPreviews((current) => [
-      ...previews,
-      ...current.filter((preview) => !createdIds.has(preview.id)),
-    ]);
     setCreatedPublicIds(previews.map((preview) => preview.publicId));
     setCreatedLinksCopied(false);
+    setPage(1);
+    void loadPreviews();
     setBatchDrafts([createEmptyBatchDraft(crypto.randomUUID())]);
   }
 
@@ -234,6 +326,30 @@ export function PreviewManager({ username }: { username: string }) {
     (total, file) => total + file.size,
     0,
   );
+  const pageInfo = pagination;
+  const visiblePreviews = statusCategory === 'not-found' ? [] : previews;
+
+  const statusCategoryOptions: Array<{
+    value: PreviewCategory;
+    label: string;
+    count: number;
+  }> = [
+    { value: 'all', label: '全部', count: statusCounts.all },
+    { value: 'published', label: '可访问', count: statusCounts.published },
+    { value: 'revoked', label: '已撤销', count: statusCounts.revoked },
+    { value: 'not-found', label: '未找到', count: 0 },
+  ];
+
+  const pageSizeOptions = [10, 20, 30, 50];
+  const isCategoryVisible = statusCategory !== 'not-found';
+  const canGoPrevious = pageInfo.page > 1;
+  const canGoNext = pageInfo.page < pageInfo.totalPages;
+
+  function handlePageSizeChange(event: React.ChangeEvent<HTMLSelectElement>) {
+    const nextPageSize = Number(event.target.value);
+    setPage(1);
+    setPageSize(nextPageSize);
+  }
 
   return (
     <main className="min-h-screen bg-background">
@@ -543,32 +659,106 @@ export function PreviewManager({ username }: { username: string }) {
           </section>
 
           <section className="min-w-0 overflow-hidden rounded-[18px] border border-border bg-card shadow-[0_12px_34px_rgb(24_25_34/6%)] min-[761px]:sticky min-[761px]:top-[26px]">
-            <div className="flex min-h-[62px] items-center justify-between gap-4 border-b border-border px-5 py-3.5">
-              <div className="min-w-0">
-                <h2 className="text-lg font-medium">预览记录</h2>
-                {!loading ? (
-                  <span className="mt-0.5 block text-xs text-muted-foreground">
-                    {previews.length} 条
-                  </span>
-                ) : null}
+            <div className="border-b border-border">
+              <div className="flex min-h-[62px] items-center justify-between gap-4 border-b border-border px-5 py-3.5">
+                <div className="min-w-0">
+                  <h2 className="text-lg font-medium">预览记录</h2>
+                  {!loading ? (
+                    <span className="mt-0.5 block text-xs text-muted-foreground">
+                      {isCategoryVisible ? `${pageInfo.total} 条` : '0 条'}
+                    </span>
+                  ) : null}
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setError('');
+                    void loadPreviews();
+                  }}
+                  disabled={loading}
+                  className="h-9 px-3"
+                >
+                  <RefreshCw
+                    className={loading ? 'animate-spin' : ''}
+                    data-icon="inline-start"
+                  />
+                  刷新
+                </Button>
               </div>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  setLoading(true);
-                  setError('');
-                  void loadPreviews();
-                }}
-                disabled={loading}
-                className="h-9 px-3"
+              <form
+                onSubmit={applySearch}
+                className="flex flex-wrap items-center gap-2 px-5 py-2.5"
               >
-                <RefreshCw
-                  className={loading ? 'animate-spin' : ''}
-                  data-icon="inline-start"
+                <label className="sr-only" htmlFor="preview-search-type">
+                  选择搜索方式
+                </label>
+                <select
+                  id="preview-search-type"
+                  value={searchField}
+                  onChange={(event) => {
+                    applySearchField(event.target.value as SearchField);
+                  }}
+                  className="h-9 min-w-[110px] rounded-[9px] border border-input bg-background px-2 text-sm"
+                  disabled={loading || statusCategory === 'not-found'}
+                >
+                  <option value="title">按标题</option>
+                  <option value="query">按 Query</option>
+                </select>
+                <label className="sr-only" htmlFor="preview-search-input">
+                  输入搜索文本
+                </label>
+                <Input
+                  id="preview-search-input"
+                  value={searchInput}
+                  onChange={(event) => setSearchInput(event.target.value)}
+                  placeholder={
+                    searchField === 'title'
+                      ? '输入标题'
+                      : '输入 query / publicId'
+                  }
+                  className="h-9 min-w-[220px] bg-background sm:max-w-xs"
+                  disabled={loading || statusCategory === 'not-found'}
                 />
-                刷新
-              </Button>
+                <Button
+                  type="submit"
+                  variant="secondary"
+                  size="sm"
+                  className="h-9"
+                  disabled={loading || statusCategory === 'not-found'}
+                >
+                  搜索
+                </Button>
+                {searchKeyword ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      clearSearch();
+                    }}
+                    className="h-9"
+                    disabled={loading || statusCategory === 'not-found'}
+                  >
+                    清空
+                  </Button>
+                ) : null}
+              </form>
+            </div>
+
+            <div className="flex flex-wrap gap-2 border-b border-border px-5 py-2.5">
+              {statusCategoryOptions.map((option) => (
+                <Button
+                  key={option.value}
+                  type="button"
+                  size="sm"
+                  variant={statusCategory === option.value ? 'secondary' : 'ghost'}
+                  onClick={() => applyCategory(option.value)}
+                  className="h-8"
+                >
+                  {option.label} ({option.count})
+                </Button>
+              ))}
             </div>
 
             {loading ? (
@@ -578,19 +768,27 @@ export function PreviewManager({ username }: { username: string }) {
                   正在读取记录…
                 </div>
               </div>
-            ) : previews.length === 0 ? (
+            ) : visiblePreviews.length === 0 ? (
               <div className="grid min-h-48 place-items-center px-6 text-center">
                 <div>
                   <Images className="mx-auto mb-3 size-6 text-muted-foreground" />
-                  <p className="text-sm font-medium">还没有预览记录</p>
+                  <p className="text-sm font-medium">
+                    {statusCategory === 'not-found'
+                      ? '当前分类下暂无未找到记录'
+                      : searchKeyword
+                        ? '没有匹配到结果'
+                        : '还没有预览记录'}
+                  </p>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    创建后，链接会显示在这里。
+                    {searchKeyword
+                      ? '可以修改关键词再试一次。'
+                      : '创建后，链接会显示在这里。'}
                   </p>
                 </div>
               </div>
             ) : (
               <div className="preview-copy-scrollbar grid divide-y divide-border min-[761px]:max-h-[calc(100dvh-116px)] min-[761px]:overflow-y-auto">
-                {previews.map((preview) => (
+                {visiblePreviews.map((preview) => (
                   <PreviewRow
                     key={preview.id}
                     preview={preview}
@@ -602,6 +800,60 @@ export function PreviewManager({ username }: { username: string }) {
                 ))}
               </div>
             )}
+            {isCategoryVisible && pageInfo.totalPages > 1 ? (
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-5 py-2.5">
+                <span className="text-xs text-muted-foreground">
+                  第 {pageInfo.page} / {Math.max(pageInfo.totalPages, 1)} 页，共{' '}
+                  {pageInfo.total} 条
+                </span>
+                <div className="flex items-center gap-2">
+                  <label
+                    htmlFor="page-size-select"
+                    className="text-xs text-muted-foreground"
+                  >
+                    每页
+                  </label>
+                  <select
+                    id="page-size-select"
+                    value={pageInfo.pageSize}
+                    onChange={handlePageSizeChange}
+                    className="h-8 rounded-[9px] border border-input bg-background px-2 text-xs"
+                    disabled={loading}
+                  >
+                    {pageSizeOptions.map((size) => (
+                      <option key={size} value={size}>
+                        {size}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="text-xs text-muted-foreground">条</span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage((value) => Math.max(1, value - 1))}
+                    disabled={loading || !canGoPrevious}
+                    className="h-8"
+                  >
+                    <ChevronLeft data-icon="inline-start" />
+                    上一页
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      setPage((value) => Math.min(value + 1, pageInfo.totalPages))
+                    }
+                    disabled={loading || !canGoNext}
+                    className="h-8"
+                  >
+                    下一页
+                    <ChevronRight data-icon="inline-end" />
+                  </Button>
+                </div>
+              </div>
+            ) : null}
           </section>
         </div>
       </div>
@@ -623,7 +875,13 @@ function PreviewRow({
   onRevoke: () => Promise<boolean>;
 }) {
   const [dialogOpen, setDialogOpen] = useState(false);
-  const published = preview.status === 'PUBLISHED';
+  const status = preview.status === 'PUBLISHED' ? 'published' : 'revoked';
+  const statusLabel = status === 'published' ? '可访问' : '已撤销';
+  const statusClass =
+    status === 'published'
+      ? 'text-emerald-700 dark:text-emerald-300'
+      : 'text-muted-foreground';
+  const canVisit = status === 'published';
 
   async function confirmRevoke() {
     const succeeded = await onRevoke();
@@ -636,11 +894,11 @@ function PreviewRow({
     <article
       className={cn(
         'grid grid-cols-[64px_minmax(0,1fr)] gap-[13px] p-4',
-        !published && 'bg-muted/40',
+        !canVisit && 'bg-muted/40',
       )}
     >
       <div className="relative size-16 overflow-hidden rounded-[10px] bg-muted">
-        {published ? (
+        {canVisit ? (
           <Image
             src={`/api/public/previews/${preview.publicId}/images/1`}
             alt=""
@@ -664,13 +922,11 @@ function PreviewRow({
           <span
             className={cn(
               'inline-flex items-center gap-1.5 font-medium',
-              published
-                ? 'text-emerald-700 dark:text-emerald-300'
-                : 'text-muted-foreground',
+              statusClass,
             )}
           >
             <span className="size-1.5 rounded-full bg-current" />
-            {published ? '可访问' : '已撤销'}
+            {statusLabel}
           </span>
           <span className="text-xs text-muted-foreground">
             {formatDate(preview.createdAt)}
@@ -682,7 +938,7 @@ function PreviewRow({
         </p>
 
         <div className="mt-3 flex flex-wrap gap-2">
-          {published ? (
+          {canVisit ? (
             <>
               <Button
                 type="button"

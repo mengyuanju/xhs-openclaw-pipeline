@@ -9,6 +9,10 @@ import {
 } from './delivery-source.mjs';
 import { IMAGE_FORMATS } from './image-options.mjs';
 
+const DELIVERY_IMAGE_FORMATS = new Map(
+  Object.values(IMAGE_FORMATS).map((format) => [format.mediaType, format]),
+);
+
 function safeFileName(value, fallback) {
   const clean = (candidate) => String(candidate ?? '')
     .replace(/[\u0000-\u001f<>:"/\\|?*]/gu, '_')
@@ -102,7 +106,7 @@ async function createTaskArchiveZip(task, loadAsset) {
   const revision = task.copyRevisions.find((item) => item.id === task.currentCopyRevisionId);
   const run = task.imageRuns?.find(item => item.id === task.currentImageRunId);
   const candidates = task.assets.filter((asset) => asset.imageRunId === task.currentImageRunId
-    && String(asset.mediaType).startsWith('image/'));
+    && DELIVERY_IMAGE_FORMATS.has(String(asset.mediaType)));
   const { copy, assetIds } = resolveDeliveryArchiveSource({
     content: revision?.content,
     imageResult: run?.result,
@@ -129,7 +133,11 @@ async function createTaskArchiveZip(task, loadAsset) {
     const asset = assets[index];
     const loaded = await loadAsset(asset.id);
     if (!loaded) throw new TypeError(`asset ${asset.id} is missing`);
-    const extension = `.${Object.values(IMAGE_FORMATS).find(format => format.mediaType === loaded.mediaType)?.extension ?? 'png'}`;
+    const format = DELIVERY_IMAGE_FORMATS.get(String(loaded.mediaType));
+    if (!format || loaded.mediaType !== asset.mediaType) {
+      throw new TypeError(`asset ${asset.id} has an unsupported delivery image format`);
+    }
+    const extension = `.${format.extension}`;
     const requestedName = safeFileName(loaded.originalName, `图片-${index + 1}${extension}`);
     const name = /\.[a-z0-9]{2,5}$/iu.test(requestedName) ? requestedName : `${requestedName}${extension}`;
     zip.file(uniqueFileName(name, usedNames), loaded.content);

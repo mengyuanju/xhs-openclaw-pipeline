@@ -17,6 +17,5 @@ export function getFilesBinding() {
 export function getBindings() {
   return {
     db: getDatabaseBinding(),
-    files: getFilesBinding(),
   };
 }

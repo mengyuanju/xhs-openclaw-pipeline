@@ -1,5 +1,16 @@
 export const DELIVERY_POOL_LIST_LIMIT = 200;
 export const DELIVERY_POOL_SELECTION_LIMIT = 200;
+export const DELIVERY_PREVIEW_UPLOAD_LIMITS = [10, 25, 50, 100, 200] as const;
+
+export type DeliveryPreviewLink = {
+  id: string;
+  noteId: string;
+  url: string | null;
+  contentHash: string;
+  status: 'PUBLISHED' | 'REVOKED';
+  publishedAt: string;
+  revokedAt: string | null;
+};
 
 export type DeliveryEntry = {
   id: number;
@@ -10,6 +21,7 @@ export type DeliveryEntry = {
   imageRunId: string;
   status: 'READY';
   approvedAt: string;
+  preview: DeliveryPreviewLink | null;
 };
 
 export type DeliveryQueryPackageFacet = {
@@ -34,6 +46,24 @@ export type DeliveryPoolExportInput =
   | { scope: 'ALL_READY' }
   | { scope: 'QUERY_PACKAGE'; queryPackageName: string }
   | { scope: 'SELECTED'; taskIds: number[] };
+
+export type DeliveryPreviewPublishResult = {
+  scope: 'ALL_READY' | 'QUERY_PACKAGE' | 'SELECTED';
+  limit: number;
+  requestedCount: number;
+  publishedCount: number;
+  createdCount: number;
+  reusedCount: number;
+  failedCount: number;
+  items: Array<{
+    taskId: number;
+    deliveryEntryId: number;
+    noteId: string;
+    previewUrl: string;
+    reused: boolean;
+  }>;
+  failures: Array<{ taskId: number; code: string; message: string }>;
+};
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -65,6 +95,85 @@ function normalizeEntry(value: unknown): DeliveryEntry | null {
     query: typeof item.query === 'string' ? item.query : '',
     queryPackageName: normalizeQueryPackageName(item.queryPackageName),
     approvedAt: typeof item.approvedAt === 'string' ? item.approvedAt : '',
+    preview: normalizePreviewLink(item.preview),
+  };
+}
+
+function normalizePreviewLink(value: unknown): DeliveryPreviewLink | null {
+  const item = record(value);
+  if (!item) return null;
+  const id = typeof item.id === 'string' ? item.id.toLowerCase() : '';
+  const noteId = typeof item.noteId === 'string' ? item.noteId.toLowerCase() : '';
+  const url = typeof item.url === 'string' ? item.url : null;
+  const contentHash = typeof item.contentHash === 'string' ? item.contentHash.toLowerCase() : '';
+  const status = item.status;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(id)
+    || !/^[0-9a-f]{32}$/u.test(noteId)
+    || (url !== null && !/^https?:\/\//u.test(url)) || !/^[0-9a-f]{64}$/u.test(contentHash)
+    || !['PUBLISHED', 'REVOKED'].includes(String(status))) return null;
+  return {
+    id,
+    noteId,
+    url,
+    contentHash,
+    status: status as 'PUBLISHED' | 'REVOKED',
+    publishedAt: typeof item.publishedAt === 'string' ? item.publishedAt : '',
+    revokedAt: typeof item.revokedAt === 'string' ? item.revokedAt : null,
+  };
+}
+
+export function normalizeDeliveryPreviewPublishResult(value: unknown): DeliveryPreviewPublishResult {
+  const payload = record(value);
+  const scope = payload?.scope;
+  const limit = Number(payload?.limit);
+  const requestedCount = Number(payload?.requestedCount);
+  const publishedCount = Number(payload?.publishedCount);
+  const createdCount = Number(payload?.createdCount);
+  const reusedCount = Number(payload?.reusedCount);
+  const failedCount = Number(payload?.failedCount);
+  const counts = [limit, requestedCount, publishedCount, createdCount, reusedCount, failedCount];
+  if (!['ALL_READY', 'QUERY_PACKAGE', 'SELECTED'].includes(String(scope))
+    || counts.some((count) => !Number.isSafeInteger(count) || count < 0)
+    || limit < 1 || limit > DELIVERY_POOL_SELECTION_LIMIT
+    || requestedCount !== publishedCount + failedCount
+    || publishedCount !== createdCount + reusedCount) {
+    throw new TypeError('预览上传结果无效，请刷新后核对');
+  }
+  const items = Array.isArray(payload?.items) ? payload.items.map((value) => {
+    const item = record(value);
+    const taskId = Number(item?.taskId);
+    const deliveryEntryId = Number(item?.deliveryEntryId);
+    const noteId = typeof item?.noteId === 'string' ? item.noteId.toLowerCase() : '';
+    const previewUrl = typeof item?.previewUrl === 'string' ? item.previewUrl : '';
+    if (!Number.isSafeInteger(taskId) || taskId < 1
+      || !Number.isSafeInteger(deliveryEntryId) || deliveryEntryId < 1
+      || !/^[0-9a-f]{32}$/u.test(noteId) || !/^https?:\/\//u.test(previewUrl)) {
+      throw new TypeError('预览上传结果无效，请刷新后核对');
+    }
+    return { taskId, deliveryEntryId, noteId, previewUrl, reused: item?.reused === true };
+  }) : [];
+  const failures = Array.isArray(payload?.failures) ? payload.failures.map((value) => {
+    const item = record(value);
+    const taskId = Number(item?.taskId);
+    if (!Number.isSafeInteger(taskId) || taskId < 1
+      || typeof item?.code !== 'string' || typeof item?.message !== 'string') {
+      throw new TypeError('预览上传结果无效，请刷新后核对');
+    }
+    return { taskId, code: item.code, message: item.message };
+  }) : [];
+  if (items.length !== publishedCount || failures.length !== failedCount) {
+    throw new TypeError('预览上传结果无效，请刷新后核对');
+  }
+  return {
+    scope: scope as DeliveryPreviewPublishResult['scope'],
+    limit,
+    requestedCount,
+    publishedCount,
+    createdCount,
+    reusedCount,
+    failedCount,
+    items,
+    failures,
   };
 }
 

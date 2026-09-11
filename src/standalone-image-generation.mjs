@@ -1454,7 +1454,7 @@ export async function readStandaloneImageFile({ outputRoot, runId: rawRunId, fil
   if (!relation || relation.startsWith('..')) throw new Error('standalone image path escaped the run');
   const content = await readFile(path);
   if (content.byteLength > IMAGE_MAX_BYTES) throw new Error('standalone image file is too large');
-  const extensions = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp', avif: 'image/avif', tiff: 'image/tiff', gif: 'image/gif' };
+  const extensions = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp', avif: 'image/avif', gif: 'image/gif' };
   return { content, file, mediaType: extensions[file.split('.').at(-1)] };
 }
 

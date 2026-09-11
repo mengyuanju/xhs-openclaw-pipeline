@@ -19,11 +19,133 @@ import {
 
 const MAX_ATTEMPTS = 3;
 const LEASE_SECONDS = 300;
+const XHS_SEARCH_HOST_KINDS = Object.freeze(['CENTER', 'EXECUTOR']);
 
 function normalizeBoolean(value, name, fallback) {
   if (value === undefined) return fallback;
   if (typeof value !== 'boolean') throw new TypeError(`${name} must be a boolean`);
   return value;
+}
+
+function normalizeAccountLabel(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  const label = String(value)
+    .replace(/[\u0000-\u001f\u007f-\u009f]/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  if (!label) return null;
+  if ([...label].length > 100) throw new RangeError('accountLabel cannot exceed 100 characters');
+  return label;
+}
+
+function normalizeHostKind(value) {
+  const hostKind = String(value ?? 'EXECUTOR').trim().toUpperCase();
+  if (!XHS_SEARCH_HOST_KINDS.includes(hostKind)) {
+    throw new TypeError('hostKind must be CENTER or EXECUTOR');
+  }
+  return hostKind;
+}
+
+async function registerXhsSearchNode(database, input) {
+  const nodeId = normalizeNodeId(input?.nodeId);
+  const nodeName = normalizeNodeName(input?.nodeName, nodeId);
+  const accountLabel = normalizeAccountLabel(input?.accountLabel);
+  const hostKind = normalizeHostKind(input?.hostKind);
+  await database.query(`
+    INSERT INTO xhs_query_search_nodes(id, name, account_label, host_kind, last_seen_at)
+    VALUES ($1, $2, $3, $4, now())
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      account_label = COALESCE(excluded.account_label, xhs_query_search_nodes.account_label),
+      host_kind = excluded.host_kind,
+      auth_status = CASE
+        WHEN excluded.account_label IS NOT NULL
+          AND excluded.account_label IS DISTINCT FROM xhs_query_search_nodes.account_label
+          THEN 'UNKNOWN'
+        ELSE xhs_query_search_nodes.auth_status
+      END,
+      auth_status_changed_at = CASE
+        WHEN excluded.account_label IS NOT NULL
+          AND excluded.account_label IS DISTINCT FROM xhs_query_search_nodes.account_label
+          THEN now()
+        ELSE xhs_query_search_nodes.auth_status_changed_at
+      END,
+      last_job_id = CASE
+        WHEN excluded.account_label IS NOT NULL
+          AND excluded.account_label IS DISTINCT FROM xhs_query_search_nodes.account_label
+          THEN NULL
+        ELSE xhs_query_search_nodes.last_job_id
+      END,
+      last_seen_at = now(), updated_at = now()
+  `, [nodeId, nodeName, accountLabel, hostKind]);
+  return { nodeId, nodeName, accountLabel, hostKind };
+}
+
+async function updateXhsSearchNodeObservation(database, nodeId, {
+  authStatus = null,
+  jobId = null,
+} = {}) {
+  await database.query(`
+    UPDATE xhs_query_search_nodes
+    SET auth_status = COALESCE($2::varchar, auth_status),
+      auth_status_changed_at = CASE
+        WHEN $2::varchar IS NOT NULL AND auth_status IS DISTINCT FROM $2::varchar THEN now()
+        ELSE auth_status_changed_at
+      END,
+      auth_checked_at = CASE
+        WHEN $2::varchar = 'UNKNOWN' THEN NULL
+        WHEN $2::varchar IS NOT NULL THEN now()
+        ELSE auth_checked_at
+      END,
+      last_job_id = COALESCE($3::bigint, last_job_id),
+      last_seen_at = now(), updated_at = now()
+    WHERE id = $1
+  `, [nodeId, authStatus, jobId]);
+}
+
+function xhsSearchNodeFrom(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    accountLabel: row.account_label ?? null,
+    hostKind: row.host_kind,
+    online: Boolean(row.online),
+    authStatus: row.auth_status,
+    authStatusChangedAt: row.auth_status_changed_at,
+    authCheckedAt: row.auth_checked_at ?? null,
+    lastJobId: row.last_job_id === null ? null : Number(row.last_job_id),
+    lastJobStatus: row.last_job_status ?? null,
+    lastJobTaskId: row.last_job_task_id === null || row.last_job_task_id === undefined
+      ? null : Number(row.last_job_task_id),
+    runningJobId: row.running_job_id === null || row.running_job_id === undefined
+      ? null : Number(row.running_job_id),
+    lastSeenAt: row.last_seen_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function listXhsQuerySearchNodes(pool) {
+  const result = await pool.query(`
+    SELECT node.*,
+      node.last_seen_at >= now() - interval '90 seconds' AS online,
+      last_job.status AS last_job_status,
+      last_job.task_id AS last_job_task_id,
+      running_job.id AS running_job_id
+    FROM xhs_query_search_nodes AS node
+    LEFT JOIN xhs_query_search_jobs AS last_job ON last_job.id = node.last_job_id
+    LEFT JOIN LATERAL (
+      SELECT job.id
+      FROM xhs_query_search_jobs AS job
+      WHERE job.claimed_by_node_id = node.id AND job.status = 'RUNNING'
+      ORDER BY job.id DESC
+      LIMIT 1
+    ) AS running_job ON true
+    ORDER BY
+      CASE WHEN node.auth_status IN ('LOGIN_REQUIRED', 'CAPTCHA_REQUIRED') THEN 0 ELSE 1 END,
+      online DESC, node.name, node.id
+  `);
+  return result.rows.map(xhsSearchNodeFrom);
 }
 
 function jobFrom(row) {
@@ -96,15 +218,8 @@ export async function claimXhsQuerySearch(pool, input) {
   if (input?.protocolVersion !== XIAOHONGSHU_SEARCH_PROTOCOL_VERSION) {
     throw new TypeError(`protocolVersion must be ${XIAOHONGSHU_SEARCH_PROTOCOL_VERSION}`);
   }
-  const nodeId = normalizeNodeId(input?.nodeId);
-  const nodeName = normalizeNodeName(input?.nodeName, nodeId);
   return withTransaction(pool, async (client) => {
-    await client.query(`
-      INSERT INTO xhs_query_search_nodes(id, name, last_seen_at)
-      VALUES ($1, $2, now())
-      ON CONFLICT(id) DO UPDATE SET
-        name = excluded.name, last_seen_at = now(), updated_at = now()
-    `, [nodeId, nodeName]);
+    const { nodeId } = await registerXhsSearchNode(client, input);
     const node = await client.query(`
       SELECT id FROM xhs_query_search_nodes WHERE id = $1 FOR UPDATE
     `, [nodeId]);
@@ -160,6 +275,7 @@ export async function claimXhsQuerySearch(pool, input) {
       WHERE id = $1
       RETURNING *
     `, [candidate.rows[0].id, nodeId, leaseToken, LEASE_SECONDS, resultLimit]);
+    await updateXhsSearchNodeObservation(client, nodeId, { jobId: candidate.rows[0].id });
     return jobFrom(claimed.rows[0]);
   });
 }
@@ -200,6 +316,10 @@ export async function completeXhsQuerySearch(pool, rawJobId, input) {
       WHERE id = $1
       RETURNING *
     `, [job.id, links.length]);
+    await updateXhsSearchNodeObservation(client, job.claimed_by_node_id, {
+      authStatus: 'READY',
+      jobId: job.id,
+    });
     return { ...jobFrom(updated.rows[0]), links };
   });
 }
@@ -219,6 +339,10 @@ export async function blockXhsQuerySearch(pool, rawJobId, input) {
       WHERE id = $1
       RETURNING *
     `, [job.id, reason]);
+    await updateXhsSearchNodeObservation(client, job.claimed_by_node_id, {
+      authStatus: reason,
+      jobId: job.id,
+    });
     return jobFrom(updated.rows[0]);
   });
 }
@@ -239,42 +363,39 @@ export async function failXhsQuerySearch(pool, rawJobId, input) {
       WHERE id = $1
       RETURNING *
     `, [job.id, retry ? 'PENDING' : 'FAILED', error]);
+    await updateXhsSearchNodeObservation(client, job.claimed_by_node_id, { jobId: job.id });
     return jobFrom(updated.rows[0]);
   });
 }
 
 export async function resumeXhsQuerySearch(pool, input) {
-  const nodeId = normalizeNodeId(input?.nodeId);
-  const nodeName = normalizeNodeName(input?.nodeName, nodeId);
-  await pool.query(`
-    INSERT INTO xhs_query_search_nodes(id, name, last_seen_at)
-    VALUES ($1, $2, now())
-    ON CONFLICT(id) DO UPDATE SET
-      name = excluded.name, last_seen_at = now(), updated_at = now()
-  `, [nodeId, nodeName]);
-  const node = await pool.query('SELECT id FROM xhs_query_search_nodes WHERE id = $1', [nodeId]);
-  if (!node.rows[0]) throw new ControlPlaneNotFoundError('executor node is not registered');
-  const result = await pool.query(`
-    UPDATE xhs_query_search_jobs AS job
-    SET status = 'PENDING', attempt_count = 0, claimed_by_node_id = NULL,
-      lease_token = NULL, lease_expires_at = NULL, retry_after = NULL,
-      blocked_reason = NULL, error = NULL, updated_at = now()
-    WHERE job.status = 'BLOCKED'
-      AND (
-        EXISTS (
-          SELECT 1
-          FROM query_package_items AS item
-          JOIN query_packages AS package ON package.id = item.query_package_id
-          WHERE item.id = job.query_package_item_id
-            AND item.screening_decision = 'SELECTED'
-            AND item.status IN ('READY', 'TASK_CREATED')
-            AND package.status <> 'ABANDONED'
+  return withTransaction(pool, async (client) => {
+    const { nodeId } = await registerXhsSearchNode(client, input);
+    const node = await client.query('SELECT id FROM xhs_query_search_nodes WHERE id = $1 FOR UPDATE', [nodeId]);
+    if (!node.rows[0]) throw new ControlPlaneNotFoundError('executor node is not registered');
+    const result = await client.query(`
+      UPDATE xhs_query_search_jobs AS job
+      SET status = 'PENDING', attempt_count = 0, claimed_by_node_id = NULL,
+        lease_token = NULL, lease_expires_at = NULL, retry_after = NULL,
+        blocked_reason = NULL, error = NULL, updated_at = now()
+      WHERE job.status = 'BLOCKED'
+        AND (
+          EXISTS (
+            SELECT 1
+            FROM query_package_items AS item
+            JOIN query_packages AS package ON package.id = item.query_package_id
+            WHERE item.id = job.query_package_item_id
+              AND item.screening_decision = 'SELECTED'
+              AND item.status IN ('READY', 'TASK_CREATED')
+              AND package.status <> 'ABANDONED'
+          )
+          OR EXISTS (SELECT 1 FROM tasks AS task WHERE task.id = job.task_id)
         )
-        OR EXISTS (SELECT 1 FROM tasks AS task WHERE task.id = job.task_id)
-      )
-    RETURNING job.id
-  `);
-  return { resumedCount: result.rows.length };
+      RETURNING job.id
+    `);
+    await updateXhsSearchNodeObservation(client, nodeId, { authStatus: 'UNKNOWN' });
+    return { resumedCount: result.rows.length };
+  });
 }
 
 export async function retryFailedXhsQuerySearch(pool, input = {}) {

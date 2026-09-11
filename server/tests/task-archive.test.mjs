@@ -8,12 +8,12 @@ import { archiveFileName, buildBatchTaskArchive, buildTaskArchive } from '../src
 test('configured archive includes only version-pinned delivery assets, excluding PNG previews, sources and historical runs', async () => {
   const task = { id: 1, currentCopyRevisionId: 1, currentImageRunId: 'new', copyRevisions: [{ id: 1, content: { copy: { title: '当前', body: '正文', tags: [] } } }],
     imageRuns: [{ id: 'new', result: { images: [{ assetId: 1, sourceAssetId: 2, deliveryAssetId: 3 }] } }],
-    assets: [1, 2, 3, 4].map(id => ({ id, imageRunId: id === 4 ? 'old' : 'new', mediaType: id === 3 ? 'image/tiff' : 'image/png' })) };
+    assets: [1, 2, 3, 4].map(id => ({ id, imageRunId: id === 4 ? 'old' : 'new', mediaType: id === 3 ? 'image/avif' : 'image/png' })) };
   const loaded = [];
-  const archive = await buildTaskArchive(task, async id => { loaded.push(id); return { content: Buffer.from('delivery'), mediaType: 'image/tiff', originalName: '01-hero.tiff' }; });
+  const archive = await buildTaskArchive(task, async id => { loaded.push(id); return { content: Buffer.from('delivery'), mediaType: 'image/avif', originalName: '01-hero.avif' }; });
   const zip = await JSZip.loadAsync(archive);
   assert.deepEqual(loaded, [3]);
-  assert.deepEqual(Object.keys(zip.files).sort(), ['01-hero.tiff', '当前.txt'].sort());
+  assert.deepEqual(Object.keys(zip.files).sort(), ['01-hero.avif', '当前.txt'].sort());
   task.assets = task.assets.filter(asset => asset.id !== 3);
   await assert.rejects(buildTaskArchive(task, async () => assert.fail('must not substitute a preview')), /资产缺失/);
 });
@@ -91,6 +91,21 @@ test('manual archive ZIP contains the current copy and current-run images under 
   await assert.rejects(
     buildTaskArchive(task, async () => assert.fail('pending search must stop before asset reads')),
     /小红书搜索尚未完成/u,
+  );
+});
+
+test('delivery ZIP rejects a legacy TIFF binding instead of relabeling its bytes', async () => {
+  const task = {
+    id: 9,
+    currentCopyRevisionId: 19,
+    currentImageRunId: 'run-9',
+    copyRevisions: [{ id: 19, content: { copy: { title: '标题', body: '', tags: [] } } }],
+    imageRuns: [{ id: 'run-9', result: { images: [{ assetId: 29 }] } }],
+    assets: [{ id: 29, imageRunId: 'run-9', mediaType: 'image/tiff' }],
+  };
+  await assert.rejects(
+    buildTaskArchive(task, async () => assert.fail('TIFF must be rejected before reading bytes')),
+    /资产缺失/u,
   );
 });
 

@@ -13,6 +13,7 @@ const originalBytes = Buffer.from(
   'base64',
 );
 const originalHash = createHash('sha256').update(originalBytes).digest('hex');
+const sourceRefSuffix = `${Date.now()}-${crypto.randomUUID()}`;
 
 const beforeIds = new Set((await listPreviews()).map((preview) => preview.id));
 const invalidForm = makeManifest([
@@ -48,9 +49,10 @@ assert(
   'Invalid batch left partial preview metadata behind.',
 );
 
-const validForm = makeManifest([
+const validItems = [
   {
     clientId: 'batch-a',
+    sourceRef: `smoke:batch:a:${sourceRefSuffix}`,
     title: '批量闭环验证 A',
     body: '第一条批量预览，用于验证独立链接和原图直存。',
     tags: 'batch，原图',
@@ -59,13 +61,15 @@ const validForm = makeManifest([
   },
   {
     clientId: 'batch-b',
+    sourceRef: `smoke:batch:b:${sourceRefSuffix}`,
     title: '批量闭环验证 B',
     body: '第二条批量预览，用于验证整批写入。',
     tags: 'batch，事务',
     bytes: originalBytes,
     fileName: 'batch-original-b.png',
   },
-]);
+];
+const validForm = makeManifest(validItems);
 const createdResponse = await fetch(`${baseUrl}/api/v1/previews/batch`, {
   method: 'POST',
   headers: apiHeaders,
@@ -76,6 +80,22 @@ assert(created.items?.length === 2, 'Batch response does not contain 2 items.');
 assert(
   created.items.map((item) => item.clientId).join(',') === 'batch-a,batch-b',
   'Batch response order or client ids changed.',
+);
+assert(
+  created.items.every((item) => item.reused === false),
+  'First idempotent batch unexpectedly reused an existing record.',
+);
+
+const retryResponse = await fetch(`${baseUrl}/api/v1/previews/batch`, {
+  method: 'POST',
+  headers: apiHeaders,
+  body: makeManifest(validItems),
+});
+const retried = await readJson(retryResponse, 201);
+assert(
+  retried.items?.every((item, index) =>
+    item.reused === true && item.preview?.id === created.items[index].preview.id),
+  'Idempotent batch retry did not reuse the original preview records.',
 );
 
 for (const [index, item] of created.items.entries()) {
@@ -140,6 +160,7 @@ console.log(
       publicUrls: created.items.map((item) => item.previewUrl),
       originalSha256: originalHash,
       originalBytesPreserved: true,
+      idempotentRetryReusedOriginals: true,
       revokedAfterVerification: true,
     },
     null,
@@ -152,8 +173,9 @@ function makeManifest(items) {
   form.set(
     'manifest',
     JSON.stringify({
-      items: items.map(({ clientId, title, body, tags }) => ({
+      items: items.map(({ clientId, sourceRef, title, body, tags }) => ({
         clientId,
+        sourceRef,
         title,
         body,
         tags,

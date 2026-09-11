@@ -5,6 +5,8 @@ import {
   assertTasksReadyForDelivery,
   listAllDeliveryPoolTaskIds,
   listDeliveryPool,
+  listDeliveryPoolTaskIdsForPreview,
+  recordDeliveryPreviewLinks,
 } from '../src/final-delivery.mjs';
 
 const admin = Object.freeze({
@@ -92,6 +94,72 @@ test('complete delivery snapshot is admin-only, exact-package scoped and has no 
   assert.doesNotMatch(sql, /\bLIMIT\b|\bOFFSET\b/u);
   assert.match(sql, /delivery\.status = 'READY'/u);
   assert.match(sql, /task\.source_query_package_name = \$1/u);
+});
+
+test('preview candidate snapshot is admin-limited and excludes entries already bound to a preview', async () => {
+  let sql;
+  let values;
+  const pool = {
+    query: async (statement, bindings) => {
+      sql = statement;
+      values = bindings;
+      return { rows: [{ task_id: '7' }, { task_id: '8' }] };
+    },
+  };
+  assert.deepEqual(await listDeliveryPoolTaskIdsForPreview(pool, admin, {
+    queryPackageName: '  九月选题  ',
+    limit: 200,
+  }), [7, 8]);
+  assert.deepEqual(values, ['九月选题', 200]);
+  assert.match(sql, /delivery\.preview_id IS NULL/u);
+  assert.match(sql, /task\.source_query_package_name = \$1/u);
+  assert.match(sql, /LIMIT \$2/u);
+});
+
+test('preview noteId is saved against the exact frozen delivery version', async () => {
+  const calls = [];
+  const imageRunId = '11111111-1111-4111-8111-111111111111';
+  const previewId = '22222222-2222-4222-8222-222222222222';
+  const noteId = '0123456789abcdef0123456789abcdef';
+  const queryable = {
+    query: async (sql, values) => {
+      calls.push({ sql, values });
+      if (/FOR UPDATE OF delivery/u.test(sql)) {
+        return { rows: [{
+          preview_id: null,
+          task_id: '7',
+          copy_revision_id: '107',
+          image_run_id: imageRunId,
+          status: 'READY',
+          state: 'REVIEWED',
+          current_copy_revision_id: '107',
+          current_image_run_id: imageRunId,
+        }] };
+      }
+      return { rows: [] };
+    },
+  };
+  const saved = await recordDeliveryPreviewLinks(queryable, [{
+    deliveryEntryId: 77,
+    taskId: 7,
+    copyRevisionId: 107,
+    imageRunId,
+    previewId,
+    noteId,
+    contentHash: 'a'.repeat(64),
+    publishedAt: 1_789_000_000_000,
+  }], admin);
+  assert.equal(saved[0].currentReady, true);
+  assert.equal(saved[0].noteId, noteId);
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].sql, /WHERE delivery\.id = \$1/u);
+  assert.deepEqual(calls[0].values, [77]);
+  assert.match(calls[1].sql, /preview_note_id = \$3/u);
+  assert.doesNotMatch(calls[1].sql, /preview_url/u);
+  assert.equal(calls[1].values[1], previewId);
+  assert.equal(calls[1].values[2], noteId);
+  assert.equal(calls[1].values[4], admin.userId);
+  assert.equal(calls[1].values[5], admin.username);
 });
 
 test('delivery-list services reject users before reading the database', async () => {

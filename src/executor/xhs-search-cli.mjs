@@ -67,6 +67,14 @@ export function xhsSearchConfig(environment = process.env, args = process.argv.s
   if (!['msedge', 'chrome'].includes(channel)) {
     throw new TypeError('XHS_SEARCH_BROWSER_CHANNEL must be msedge or chrome');
   }
+  const accountLabel = (option('account-label') ?? environment.XHS_SEARCH_ACCOUNT_LABEL)?.trim() || null;
+  if (accountLabel && [...accountLabel].length > 100) {
+    throw new RangeError('XHS_SEARCH_ACCOUNT_LABEL cannot exceed 100 characters');
+  }
+  const hostKind = (option('host-kind') || environment.XHS_SEARCH_HOST_KIND?.trim() || 'EXECUTOR').toUpperCase();
+  if (!['CENTER', 'EXECUTOR'].includes(hostKind)) {
+    throw new TypeError('XHS_SEARCH_HOST_KIND must be CENTER or EXECUTOR');
+  }
   const serverUrl = option('server-url') || environment.CONTROL_PLANE_URL?.trim();
   if (!login && !serverUrl) throw new Error('CONTROL_PLANE_URL or --server-url is required');
   if (!login) assertSecureMachineUrl(serverUrl);
@@ -83,6 +91,8 @@ export function xhsSearchConfig(environment = process.env, args = process.argv.s
     machineToken: machineToken || null,
     nodeId: baseNodeId,
     nodeName: option('node-name') || environment.XHS_SEARCH_NODE_NAME?.trim() || '小红书 Query 搜索执行机',
+    accountLabel,
+    hostKind,
     profileDir,
     channel,
     pollMs: integer(option('poll-ms') || environment.XHS_SEARCH_POLL_MS?.trim(), 'XHS_SEARCH_POLL_MS', 8_000, 3_000, 60_000),
@@ -121,6 +131,8 @@ export async function main() {
       const resumed = await controlPlane.resumeXhsQuerySearch({
         nodeId: config.nodeId,
         nodeName: config.nodeName,
+        ...(config.accountLabel ? { accountLabel: config.accountLabel } : {}),
+        hostKind: config.hostKind,
       });
       console.log(`已恢复 ${resumed.resumedCount} 条等待人工处理的小红书搜索任务。`);
     }
@@ -133,6 +145,8 @@ export async function main() {
       browser,
       nodeId: config.nodeId,
       nodeName: config.nodeName,
+      accountLabel: config.accountLabel,
+      hostKind: config.hostKind,
       pollMs: config.pollMs,
       once: config.once,
       signal: controller.signal,

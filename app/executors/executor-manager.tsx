@@ -3,10 +3,16 @@
 import { Button } from '@/components/ui/button';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 
-import { Cpu, Image as ImageIcon, RefreshCw, ServerCog, Trash2 } from 'lucide-react';
+import { Cpu, Image as ImageIcon, RefreshCw, Search, ServerCog, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { apiRequest } from '../components/api-client';
+import {
+  type XhsSearchNodeStatus,
+  xhsAuthStatusLabel,
+  xhsHostKindLabel,
+  xhsSearchNeedsAttention,
+} from '../components/xhs-search-status';
 
 export type ExecutorStatus = {
   id: string;
@@ -38,9 +44,16 @@ function dateTime(value: string) {
     : '从未上报';
 }
 
-export function ExecutorManager({ initialNodes }: { initialNodes: ExecutorStatus[] }) {
+export function ExecutorManager({
+  initialNodes,
+  initialXhsSearchNodes,
+}: {
+  initialNodes: ExecutorStatus[];
+  initialXhsSearchNodes: XhsSearchNodeStatus[];
+}) {
   const confirm = useConfirmDialog();
   const [nodes, setNodes] = useState(initialNodes);
+  const [xhsSearchNodes, setXhsSearchNodes] = useState(initialXhsSearchNodes);
   const [refreshing, setRefreshing] = useState(false);
   const [deletingNodeId, setDeletingNodeId] = useState('');
   const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null);
@@ -58,9 +71,13 @@ export function ExecutorManager({ initialNodes }: { initialNodes: ExecutorStatus
       setRefreshing(true);
     }
     try {
-      const next = await apiRequest<ExecutorStatus[]>('/api/control-plane/v1/executor-statuses');
+      const [next, nextXhsSearchNodes] = await Promise.all([
+        apiRequest<ExecutorStatus[]>('/api/control-plane/v1/executor-statuses'),
+        apiRequest<XhsSearchNodeStatus[]>('/api/control-plane/v1/xhs-search-statuses'),
+      ]);
       if (refreshId !== latestRefreshId.current) return;
       setNodes(next);
+      setXhsSearchNodes(nextXhsSearchNodes);
       setLastRefreshedAt(new Date().toISOString());
       setRefreshError('');
     } catch (caught) {
@@ -89,7 +106,9 @@ export function ExecutorManager({ initialNodes }: { initialNodes: ExecutorStatus
       .reduce((total, node) => total + node.imageRunningCount, 0),
     imageCapacity: nodes.filter((node) => node.online && node.imageWorkerEnabled)
       .reduce((total, node) => total + node.imageConcurrency, 0),
-  }), [nodes]);
+    xhsOnline: xhsSearchNodes.filter((node) => node.online).length,
+    xhsAttention: xhsSearchNodes.filter(xhsSearchNeedsAttention).length,
+  }), [nodes, xhsSearchNodes]);
 
   async function deleteNode(node: ExecutorStatus) {
     const approved = await confirm({
@@ -125,6 +144,7 @@ export function ExecutorManager({ initialNodes }: { initialNodes: ExecutorStatus
       <article><ServerCog aria-hidden="true" size={19} /><div><strong>{summary.online} / {nodes.length}</strong><span>在线执行机</span></div></article>
       <article><Cpu aria-hidden="true" size={19} /><div><strong>{summary.copyRunning} / {summary.copyCapacity}</strong><span>文案并发占用</span></div></article>
       <article><ImageIcon aria-hidden="true" size={19} /><div><strong>{summary.imageRunning} / {summary.imageCapacity}</strong><span>生图并发占用</span></div></article>
+      <article><Search aria-hidden="true" size={19} /><div><strong>{summary.xhsOnline} / {xhsSearchNodes.length}</strong><span>小红书搜索在线 · {summary.xhsAttention} 个需处理</span></div></article>
     </section>
 
     <section className="panel executor-panel">
@@ -171,6 +191,40 @@ export function ExecutorManager({ initialNodes }: { initialNodes: ExecutorStatus
                   {deletingNodeId === node.id ? '删除中…' : '删除'}
                 </Button>
               </div></td>
+            </tr>;
+          })}</tbody>
+        </table></div>}
+    </section>
+
+    <section className="panel executor-panel">
+      <div className="panel-head executor-panel-head">
+        <div>
+          <span className="section-kicker">Xiaohongshu account status</span>
+          <h2>小红书搜索节点</h2>
+          <p>中心服务器和普通执行机只要启动搜索进程，就会在这里统一上报；账号名称是主机配置的非敏感显示标签。</p>
+        </div>
+      </div>
+      {xhsSearchNodes.length === 0
+        ? <div className="executor-empty">当前还没有主机启动并注册小红书搜索功能。</div>
+        : <div className="table-wrap executor-table-wrap mobile-cards"><table>
+          <thead><tr><th>主机</th><th>小红书账号</th><th>账号状态</th><th>搜索进程</th><th>最近任务</th><th>最后心跳</th></tr></thead>
+          <tbody>{xhsSearchNodes.map((node) => {
+            const needsAttention = xhsSearchNeedsAttention(node);
+            const authClassName = needsAttention
+              ? 'executor-status-danger'
+              : node.authStatus === 'READY' ? 'executor-status-ready' : 'executor-status-busy';
+            const recentJob = node.runningJobId
+              ? `搜索任务 #${node.runningJobId} 执行中`
+              : node.lastJobId
+                ? `搜索任务 #${node.lastJobId}${node.lastJobTaskId ? ` · 作业 #${node.lastJobTaskId}` : ''}`
+                : '暂无搜索记录';
+            return <tr key={node.id}>
+              <td data-label="主机"><div className="executor-identity"><strong>{node.name}</strong><span>{xhsHostKindLabel(node)}</span><code>{node.id}</code></div></td>
+              <td data-label="小红书账号"><strong>{node.accountLabel || '未设置账号标识'}</strong></td>
+              <td data-label="账号状态"><div className="executor-capacity"><span className={`executor-status ${authClassName}`}><i aria-hidden="true" />{xhsAuthStatusLabel(node)}</span><span>{node.authCheckedAt ? `验证于 ${dateTime(node.authCheckedAt)}` : '尚未完成实际搜索验证'}</span></div></td>
+              <td data-label="搜索进程"><span className={`executor-status ${node.online ? 'executor-status-ready' : 'executor-status-offline'}`}><i aria-hidden="true" />{node.online ? '在线' : '离线'}</span></td>
+              <td data-label="最近任务"><div className="executor-capacity"><strong>{recentJob}</strong><span>{node.lastJobStatus || '尚未领取任务'}</span></div></td>
+              <td data-label="最后心跳"><time dateTime={node.lastSeenAt}>{dateTime(node.lastSeenAt)}</time></td>
             </tr>;
           })}</tbody>
         </table></div>}

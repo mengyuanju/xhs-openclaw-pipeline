@@ -3,9 +3,15 @@ import {
   ControlPlaneConflictError,
   ControlPlaneNotFoundError,
   normalizeTaskId,
+  normalizeUuid,
 } from './domain.mjs';
 import { resolveDeliveryArchiveSource } from './delivery-source.mjs';
+import { IMAGE_FORMATS } from './image-options.mjs';
 import { normalizeListPagination } from './list-pagination.mjs';
+
+const DELIVERY_IMAGE_MEDIA_TYPES = Object.freeze(
+  Object.values(IMAGE_FORMATS).map((format) => format.mediaType),
+);
 
 function normalizeActor(actor) {
   if (!actor || !['ADMIN', 'USER'].includes(actor.role)
@@ -30,6 +36,14 @@ function normalizeQueryPackageName(value) {
 }
 
 function deliveryFrom(row) {
+  const preview = row.preview_id ? {
+    id: row.preview_id,
+    noteId: row.preview_note_id,
+    contentHash: row.preview_content_hash,
+    status: row.preview_status,
+    publishedAt: row.preview_published_at,
+    revokedAt: row.preview_revoked_at,
+  } : null;
   return {
     id: Number(row.id),
     taskId: Number(row.task_id),
@@ -41,6 +55,34 @@ function deliveryFrom(row) {
     approvedByUserId: row.approved_by_username,
     approvedAt: row.approved_at,
     createdAt: row.created_at,
+    preview,
+  };
+}
+
+function normalizePreviewLimit(value) {
+  const limit = Number(value);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+    throw new RangeError('preview upload limit must be an integer from 1 to 200');
+  }
+  return limit;
+}
+
+function normalizePreviewBinding(value) {
+  const noteId = String(value?.noteId ?? '').trim().toLowerCase();
+  const contentHash = String(value?.contentHash ?? '').trim().toLowerCase();
+  const publishedAt = new Date(Number(value?.publishedAt));
+  if (!/^[0-9a-f]{32}$/u.test(noteId)) throw new TypeError('preview noteId is invalid');
+  if (!/^[0-9a-f]{64}$/u.test(contentHash)) throw new TypeError('preview content hash is invalid');
+  if (!Number.isFinite(publishedAt.valueOf())) throw new TypeError('preview publishedAt is invalid');
+  return {
+    deliveryEntryId: normalizeTaskId(value?.deliveryEntryId),
+    taskId: normalizeTaskId(value?.taskId),
+    copyRevisionId: normalizeTaskId(value?.copyRevisionId),
+    imageRunId: normalizeUuid(value?.imageRunId, 'imageRunId'),
+    previewId: normalizeUuid(value?.previewId, 'previewId'),
+    noteId,
+    contentHash,
+    publishedAt,
   };
 }
 
@@ -86,11 +128,11 @@ export async function assertDeliverySourceArchivable(queryable, {
       AND image_run.copy_revision_id = $2 AND image_run.status = 'COMPLETED'
     LEFT JOIN assets AS asset
       ON asset.task_id = $1 AND asset.image_run_id = image_run.id
-      AND asset.media_type LIKE 'image/%'
+      AND asset.media_type = ANY($4::varchar[])
     WHERE revision.id = $2 AND revision.task_id = $1
       AND revision.approved_at IS NOT NULL
     GROUP BY revision.content, image_run.result
-  `, [taskId, copyRevisionId, imageRunId]);
+  `, [taskId, copyRevisionId, imageRunId, DELIVERY_IMAGE_MEDIA_TYPES]);
   const source = result.rows[0];
   try {
     if (!source) throw new TypeError('delivery source is missing');
@@ -276,4 +318,111 @@ export async function listAllDeliveryPoolTaskIds(pool, rawActor, {
     ORDER BY delivery.approved_at DESC, delivery.id DESC
   `, values);
   return result.rows.map((row) => Number(row.task_id));
+}
+
+export async function listDeliveryPoolTaskIdsForPreview(pool, rawActor, {
+  queryPackageName: rawQueryPackageName = null,
+  limit: rawLimit = 50,
+} = {}) {
+  normalizeActor(rawActor);
+  const queryPackageName = normalizeQueryPackageName(rawQueryPackageName);
+  const limit = normalizePreviewLimit(rawLimit);
+  const values = [];
+  const packageFilter = queryPackageName === null ? '' : (() => {
+    values.push(queryPackageName);
+    return `AND task.source_query_package_name = $${values.length}`;
+  })();
+  values.push(limit);
+  const result = await pool.query(`
+    SELECT task.id AS task_id
+    FROM delivery_entries AS delivery
+    JOIN tasks AS task ON task.id = delivery.task_id
+      AND task.state = 'REVIEWED'
+      AND task.current_copy_revision_id = delivery.copy_revision_id
+      AND task.current_image_run_id = delivery.image_run_id
+    WHERE delivery.status = 'READY'
+      AND delivery.preview_id IS NULL
+      ${packageFilter}
+    ORDER BY delivery.approved_at DESC, delivery.id DESC
+    LIMIT $${values.length}
+  `, values);
+  return result.rows.map((row) => Number(row.task_id));
+}
+
+export async function recordDeliveryPreviewLinks(queryable, rawRecords, rawActor) {
+  const actor = normalizeActor(rawActor);
+  if (!Array.isArray(rawRecords) || rawRecords.length < 1 || rawRecords.length > 10) {
+    throw new RangeError('preview links must contain between 1 and 10 items');
+  }
+  const records = rawRecords.map(normalizePreviewBinding);
+  if (new Set(records.map((record) => record.deliveryEntryId)).size !== records.length
+      || new Set(records.map((record) => record.previewId)).size !== records.length
+      || new Set(records.map((record) => record.noteId)).size !== records.length) {
+    throw new TypeError('preview link bindings must be unique');
+  }
+
+  const saved = [];
+  for (const record of records) {
+    const locked = await queryable.query(`
+      SELECT delivery.preview_id, delivery.task_id, delivery.copy_revision_id,
+        delivery.image_run_id, delivery.status,
+        task.state, task.current_copy_revision_id, task.current_image_run_id
+      FROM delivery_entries AS delivery
+      JOIN tasks AS task ON task.id = delivery.task_id
+      WHERE delivery.id = $1
+      FOR UPDATE OF delivery
+    `, [record.deliveryEntryId]);
+    const row = locked.rows[0];
+    if (!row || Number(row.task_id) !== record.taskId
+        || Number(row.copy_revision_id) !== record.copyRevisionId
+        || String(row.image_run_id) !== record.imageRunId) {
+      throw new ControlPlaneConflictError(
+        'DELIVERY_VERSION_CHANGED',
+        '交付版本已变化，请刷新交付池后重试',
+      );
+    }
+    if (row.preview_id && String(row.preview_id) !== record.previewId) {
+      throw new ControlPlaneConflictError(
+        'DELIVERY_PREVIEW_CONFLICT',
+        '当前交付版本已经绑定其他预览链接',
+      );
+    }
+    await queryable.query(`
+      UPDATE delivery_entries
+      SET preview_id = $2,
+          preview_note_id = $3,
+          preview_content_hash = $4,
+          preview_status = 'PUBLISHED',
+          preview_uploaded_by_account_id = $5,
+          preview_uploaded_by_username = $6,
+          preview_published_at = $7,
+          preview_revoked_at = NULL
+      WHERE id = $1
+    `, [
+      record.deliveryEntryId,
+      record.previewId,
+      record.noteId,
+      record.contentHash,
+      actor.userId,
+      actor.username,
+      record.publishedAt,
+    ]);
+    const currentReady = row.status === 'READY'
+      && row.state === 'REVIEWED'
+      && Number(row.current_copy_revision_id) === record.copyRevisionId
+      && String(row.current_image_run_id) === record.imageRunId;
+    saved.push({ ...record, currentReady });
+  }
+  return saved;
+}
+
+export async function markDeliveryPreviewRevoked(queryable, rawPreviewId, revokedAt = new Date()) {
+  const previewId = normalizeUuid(rawPreviewId, 'previewId');
+  const timestamp = new Date(revokedAt);
+  if (!Number.isFinite(timestamp.valueOf())) throw new TypeError('preview revokedAt is invalid');
+  await queryable.query(`
+    UPDATE delivery_entries
+    SET preview_status = 'REVOKED', preview_revoked_at = $2
+    WHERE preview_id = $1
+  `, [previewId, timestamp]);
 }

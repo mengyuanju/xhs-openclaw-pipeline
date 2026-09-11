@@ -32,6 +32,7 @@ test('protected control-plane operations declare their version contracts', () =>
     ['/v1/delivery-pool/xlsx', 'POST', 'deliverySpreadsheetVersion', 1],
     ['/v1/delivery-pool/xlsx/token', 'HEAD', 'deliverySpreadsheetVersion', 1],
     ['/v1/delivery-pool/xlsx/token', 'GET', 'deliverySpreadsheetVersion', 1],
+    ['/v1/delivery-pool/previews', 'POST', 'deliveryPreviewVersion', 1],
     ['/v1/tasks/batch-archive', 'POST', 'finalDeliveryVersion', 2],
     ['/v1/tasks/42/archive', 'HEAD', 'finalDeliveryVersion', 2],
     ['/v1/tasks/42/archive', 'GET', 'finalDeliveryVersion', 2],
@@ -131,6 +132,15 @@ test('mutation capability check allows only compatible center versions', async (
       data: { capabilities: { deliverySpreadsheetVersion: 1 } },
     }),
   });
+
+  await assertMutationCapability({
+    root: 'http://center.test',
+    routePath: '/v1/delivery-pool/previews',
+    method: 'POST',
+    fetchImpl: async () => Response.json({
+      data: { capabilities: { deliveryPreviewVersion: 1 } },
+    }),
+  });
 });
 
 test('mutation capability check fails closed for legacy, malformed and unavailable centers', async () => {
@@ -141,6 +151,20 @@ test('mutation capability check fails closed for legacy, malformed and unavailab
       method: 'PUT',
       fetchImpl: async () => Response.json({
         data: { capabilities: { xiaohongshuQuerySearchVersion: 2 } },
+      }),
+    }),
+    (error) => error instanceof ApiError
+      && error.status === 503
+      && error.code === 'CONTROL_PLANE_UPGRADE_REQUIRED',
+  );
+
+  await assert.rejects(
+    assertMutationCapability({
+      root: 'http://center.test',
+      routePath: '/v1/delivery-pool/previews',
+      method: 'POST',
+      fetchImpl: async () => Response.json({
+        data: { capabilities: { finalDeliveryVersion: 2 } },
       }),
     }),
     (error) => error instanceof ApiError

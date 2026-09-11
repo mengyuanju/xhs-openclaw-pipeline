@@ -23,9 +23,14 @@ CONTROL_PLANE_STORAGE_ROOT=server-storage
 DEEPSEEK_API_KEY=替换为中心服务使用的DeepSeek密钥
 # 可选，默认 deepseek-v4-pro
 DEEPSEEK_COPY_ANALYSIS_MODEL=deepseek-v4-pro
+# 可选；配置后管理员可从交付池批量创建预览
+PREVIEW_BASE_URL=https://你的预览服务域名
+PREVIEW_API_KEY=仅含preview:create权限的接口密钥
 ```
 
 优秀文案的 AI 分析由中心服务直接调用 DeepSeek；结构校验通过后立即创建并发布到中心知识库。密钥只配置在中心机器的 `server/.env`，不要配置到执行机，也不要提交到 Git。
+
+交付池预览同样由中心服务直接调用预览服务，接口密钥不会下发到浏览器。管理员一次操作可选择 10、25、50、100 或 200 条；中心会按预览服务每批最多 10 条、60 张图片、60 MB 原图自动串行拆批，不放大单次远端请求。`0035_delivery_preview_links` 会把预览服务返回的 `preview.id`、`publicId`（noteId）和内容哈希关联到冻结的 `delivery_entries` 记录；`0036_delivery_preview_url_derivation` 不再持久化服务域名，公开链接按当前 `PREVIEW_BASE_URL` 和 noteId 动态生成。两套系统保持各自主键，通过这个关联审计和重试。
 
 `npm run init` 可重复执行，首次运行会建表并安装默认生产配置和提示词。
 
@@ -38,6 +43,10 @@ DEEPSEEK_COPY_ANALYSIS_MODEL=deepseek-v4-pro
 `0013_execution_heartbeats` 新增任务心跳和卡住执行回收。先升级并重启中心，再更新各执行机；旧卡住任务会保留产物并转为失败，供检查后重试或续跑。期限、兼容行为和验证步骤见 [执行恢复说明](../docs/execution-recovery.md)。
 
 `0021_task_assignment_integrity` 和 `0022_auto_assignment_cursor` 提供任务负责人、显式人员池与历史任务完整性基础。当前 V3 契约下，普通任务先以未分配状态进入全局文案队列，文案执行机可直接领取；文案生成完成、进入待文案审核后，才按待审核额度自动补位或由管理员手工分配。只有加入且启用的普通用户会自动接单，管理员只能手工把任务分给自己，不能进入自动池。显式跳过文案审核的任务是例外，创建时必须指定负责人。普通任务的 V3 工作流复用现有字段；`0033_query_package_preassignment_repair` 会另外清理旧版 Query 词包在任务创建时写入的预分配。词包通过即自动入队且支持管理员按包分配筛选人的中心需报告 `queryPackageVersion=3`；筛选人只获得本人受派词包的读取和筛选权限，正式任务仍以未分配状态创建。新版 Web 会拒绝向不支持相应写操作的旧中心提交请求。仍应按 [迁移说明](migrations/README.md#0021--0022-自动分配与-v3-工作流升级) 完成迁移，并先升级中心服务再更新界面。
+
+启用交付池预览前先部署带 `sourceRef` 幂等支持的预览服务并应用其 D1 迁移，再依次应用中心 `0035`、`0036` 迁移并同步更新中心服务和 Web。中心 `/health` 必须报告 `capabilities.deliveryPreviewVersion=1`；旧中心缺少该能力时，新 Web 会拒绝提交预览上传。
+
+生成入口、终审 READY 门禁、ZIP 交付和预览上传只接受 PNG、JPEG、WebP、AVIF、GIF；TIFF 不再受支持。历史 TIFF 交付不会被改名伪装成 PNG，而会在读取文件前明确拒绝。
 
 ## 验证
 

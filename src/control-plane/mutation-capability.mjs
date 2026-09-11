@@ -53,6 +53,12 @@ const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
       && ['GET', 'HEAD', 'POST'].includes(method),
   }),
   Object.freeze({
+    capability: 'deliveryPreviewVersion',
+    minimumVersion: 1,
+    matches: (routePath, method) => routePath === '/v1/delivery-pool/previews'
+      && method === 'POST',
+  }),
+  Object.freeze({
     capability: 'finalDeliveryVersion',
     minimumVersion: 2,
     matches: (routePath, method) => (/^\/v1\/delivery-pool(?:\/|$)/u.test(routePath)

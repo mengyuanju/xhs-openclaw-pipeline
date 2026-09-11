@@ -11,10 +11,14 @@ export async function executeXhsQuerySearchOnce({
   browser,
   nodeId,
   nodeName,
+  accountLabel,
+  hostKind,
 }) {
   const claim = await controlPlane.claimXhsQuerySearch({
     nodeId,
     ...(nodeName ? { nodeName } : {}),
+    ...(accountLabel ? { accountLabel } : {}),
+    ...(hostKind ? { hostKind } : {}),
     protocolVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
   });
   if (!claim) return { status: 'IDLE' };
@@ -49,6 +53,8 @@ export async function runXhsQuerySearch({
   browser,
   nodeId,
   nodeName,
+  accountLabel,
+  hostKind,
   pollMs = 8_000,
   once = false,
   signal,
@@ -61,6 +67,8 @@ export async function runXhsQuerySearch({
       browser,
       nodeId,
       nodeName,
+      accountLabel,
+      hostKind,
     });
     onOutcome(outcome);
     if (once || outcome.status === 'BLOCKED') return outcome;

@@ -156,6 +156,43 @@ test('delivery runtime integrity uses safe numeric asset identities and preserve
   assert.doesNotMatch(sql, /UPDATE\s+tasks|DELETE\s+FROM\s+tasks|TRUNCATE\s+tasks/u);
 });
 
+test('delivery preview migration keeps remote identifiers associated and nullable for existing rows', async () => {
+  const sql = await migration('0035_delivery_preview_links');
+  assert.match(sql, /ADD COLUMN preview_id uuid/u);
+  assert.match(sql, /ADD COLUMN preview_note_id varchar\(64\)/u);
+  assert.match(sql, /ADD COLUMN preview_content_hash char\(64\)/u);
+  assert.match(sql, /preview_status IN \('PUBLISHED', 'REVOKED'\)/u);
+  assert.match(sql, /preview_note_id ~ '\^\[0-9a-f\]\{32\}\$'/u);
+  assert.match(sql, /preview_content_hash ~ '\^\[0-9a-f\]\{64\}\$'/u);
+  assert.match(sql, /delivery_entries_preview_binding_check/u);
+  assert.match(sql, /delivery_entries_preview_id_uq/u);
+  assert.match(sql, /delivery_entries_preview_note_id_uq/u);
+  assert.doesNotMatch(sql, /ADD COLUMN preview_[a-z_]+ [^,;\n]+ NOT NULL/u,
+    'existing delivery rows must remain valid without a preview association');
+  assert.doesNotMatch(sql, /UPDATE\s+tasks|DELETE\s+FROM\s+tasks|TRUNCATE\s+tasks/u);
+});
+
+test('delivery preview URL derivation migration removes persisted domains', async () => {
+  const sql = await migration('0036_delivery_preview_url_derivation');
+  assert.match(sql, /DROP COLUMN preview_url/u);
+  assert.match(sql, /ADD CONSTRAINT delivery_entries_preview_binding_check/u);
+  assert.doesNotMatch(sql, /char_length\(preview_url\)/u);
+  assert.match(sql, /preview_note_id ~ '\^\[0-9a-f\]\{32\}\$'/u);
+  assert.match(sql, /preview_uploaded_by_account_id IS NOT NULL/u);
+});
+
+test('Xiaohongshu search account status keeps host and authentication state separate', async () => {
+  const sql = await migration('0037_xhs_search_account_status');
+  assert.match(sql, /ADD COLUMN account_label varchar\(100\)/u);
+  assert.match(sql, /host_kind IN \('CENTER', 'EXECUTOR'\)/u);
+  assert.match(sql, /auth_status IN \('UNKNOWN', 'READY', 'LOGIN_REQUIRED', 'CAPTCHA_REQUIRED'\)/u);
+  assert.match(sql, /ADD COLUMN auth_status_changed_at timestamptz NOT NULL/u);
+  assert.match(sql, /ADD COLUMN auth_checked_at timestamptz/u);
+  assert.match(sql, /ADD COLUMN last_job_id bigint REFERENCES xhs_query_search_jobs\(id\) ON DELETE SET NULL/u);
+  assert.doesNotMatch(sql, /password|cookie|token/iu,
+    'account status storage must not retain Xiaohongshu credentials or browser state');
+});
+
 test('mutation receipt identities survive account deletion and cannot transfer by username', async () => {
   const sql = await migration('0028_mutation_receipt_actor_identity');
   assert.match(sql, /ALTER TABLE query_package_mutation_requests[\s\S]*ADD COLUMN actor_account_id bigint/u);
