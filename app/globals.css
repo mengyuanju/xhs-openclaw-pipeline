@@ -308,6 +308,16 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .notice { padding: 12px 14px; border-radius: 10px; color: #6b4b1d; background: #fff4dc; font-size: 12px; line-height: 1.6; }
 .notice.error { color: #8f1f2d; background: #ffeaed; }
 .notice.success { color: #116443; background: #e7f7ef; }
+.feedback-message { --feedback-accent: #47708c; --feedback-border: #bfd4e1; --feedback-bg: #f2f8fc; --feedback-ink: #27485d; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 12px 13px; border: 1px solid var(--feedback-border); border-left: 4px solid var(--feedback-accent); border-radius: 10px; color: var(--feedback-ink); background: var(--feedback-bg); box-shadow: 0 3px 12px rgba(45, 35, 28, .05); }
+.feedback-message[data-tone="success"] { --feedback-accent: #23835d; --feedback-border: #b9dfcf; --feedback-bg: #edf9f3; --feedback-ink: #185c43; }
+.feedback-message[data-tone="warning"] { --feedback-accent: #b77a18; --feedback-border: #ecd5a9; --feedback-bg: #fff8e9; --feedback-ink: #725016; }
+.feedback-message[data-tone="error"] { --feedback-accent: #c73345; --feedback-border: #efc1c7; --feedback-bg: #fff1f3; --feedback-ink: #8f1f2d; }
+.feedback-message-icon { flex: 0 0 auto; margin-top: 1px; color: var(--feedback-accent); }
+.feedback-message-content { min-width: 0; font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.feedback-message-content > strong { display: block; margin-bottom: 1px; color: currentColor; font-size: 12px; font-weight: 800; }
+.feedback-message-dismiss { display: grid; place-items: center; width: 27px; height: 27px; margin: -4px -4px 0 0; padding: 0; border: 0; border-radius: 7px; color: currentColor; background: transparent; cursor: pointer; opacity: .72; }
+.feedback-message-dismiss:hover { background: color-mix(in srgb, var(--feedback-accent) 10%, transparent); opacity: 1; }
+.feedback-message-dismiss:focus-visible { outline: 2px solid var(--feedback-accent); outline-offset: 2px; }
 .stack { display: grid; gap: 16px; }
 .inline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .prompt-card { display: grid; gap: 12px; }

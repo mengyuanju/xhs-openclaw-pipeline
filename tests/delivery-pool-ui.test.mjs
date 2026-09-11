@@ -5,6 +5,7 @@ import test from 'node:test';
 import {
   DELIVERY_POOL_LIST_LIMIT,
   DELIVERY_POOL_SELECTION_LIMIT,
+  DELIVERY_PREVIEW_PACKAGE_SELECTION_LIMIT,
   DELIVERY_PREVIEW_UPLOAD_LIMITS,
   buildDeliveryPoolExportInput,
   filterDeliveryPoolEntries,
@@ -20,12 +21,14 @@ import {
 const workbenchUrl = new URL('../app/delivery-pool/delivery-pool-workbench.tsx', import.meta.url);
 const pageUrl = new URL('../app/delivery-pool/page.tsx', import.meta.url);
 const proxyUrl = new URL('../app/api/control-plane/[...path]/route.ts', import.meta.url);
+const feedbackMessageUrl = new URL('../components/ui/feedback-message.tsx', import.meta.url);
 
 function entry(id, overrides = {}) {
   return {
     id,
     taskId: 100 + id,
     query: `query-${id}`,
+    queryPackageId: 9,
     queryPackageName: '九月选题',
     copyRevisionId: 200 + id,
     imageRunId: `run-${id}`,
@@ -39,30 +42,38 @@ function entry(id, overrides = {}) {
 test('delivery pool list adapter preserves package names and valid package facets', () => {
   assert.equal(DELIVERY_POOL_LIST_LIMIT, 200);
   assert.equal(DELIVERY_POOL_SELECTION_LIMIT, 200);
-  assert.deepEqual([...DELIVERY_PREVIEW_UPLOAD_LIMITS], [10, 25, 50, 100, 200]);
+  assert.equal(DELIVERY_PREVIEW_PACKAGE_SELECTION_LIMIT, 200);
+  assert.deepEqual([...DELIVERY_PREVIEW_UPLOAD_LIMITS], [1, 10, 25, 50, 100, 200]);
   assert.deepEqual(normalizeDeliveryPoolPage({
     items: [entry(1), entry(2, { status: 'WITHDRAWN' })],
     total: 43,
     facets: {
       queryPackages: [
-        { name: '  九月   选题 ', count: '12' },
-        { name: '', count: 3 },
-        { name: '无效', count: -1 },
+        { id: '9', name: '  九月   选题 ', count: '12', unuploadedCount: '7', publishedCount: '4', revokedCount: '1' },
+        { id: 10, name: '', count: 3, unuploadedCount: 3, publishedCount: 0, revokedCount: 0 },
+        { id: 11, name: '无效', count: -1, unuploadedCount: 0, publishedCount: 0, revokedCount: 0 },
       ],
+      unassigned: { count: '34', unuploadedCount: '34', publishedCount: '0', revokedCount: '0' },
     },
   }), {
     items: [entry(1)],
     total: 43,
-    facets: { queryPackages: [{ name: '九月 选题', count: 12 }] },
+    facets: {
+      queryPackages: [{ id: 9, name: '九月 选题', count: 12, unuploadedCount: 7, publishedCount: 4, revokedCount: 1 }],
+      unassigned: { count: 34, unuploadedCount: 34, publishedCount: 0, revokedCount: 0 },
+    },
   });
   assert.equal(normalizeDeliveryPoolPage([entry(3)]).total, 1,
     'the legacy array response stays readable during a rolling deployment');
-  assert.deepEqual(normalizeDeliveryPoolPage([entry(3)]).facets, { queryPackages: [] });
+  assert.deepEqual(normalizeDeliveryPoolPage([entry(3)]).facets, {
+    queryPackages: [],
+    unassigned: null,
+  });
 });
 
 test('delivery preview adapter preserves the note binding and rejects inconsistent counts', () => {
   const result = {
-    scope: 'SELECTED',
+    scope: 'QUERY_PACKAGES',
     limit: 50,
     requestedCount: 2,
     publishedCount: 1,
@@ -197,10 +208,11 @@ test('prepared Excel download accepts only a safe xlsx one-time reference', () =
 });
 
 test('administrator delivery pool exposes package facets, server filtering and package-scoped exports', async () => {
-  const [source, page, proxy] = await Promise.all([
+  const [source, page, proxy, feedbackMessage] = await Promise.all([
     readFile(workbenchUrl, 'utf8'),
     readFile(pageUrl, 'utf8'),
     readFile(proxyUrl, 'utf8'),
+    readFile(feedbackMessageUrl, 'utf8'),
   ]);
   assert.match(page, /if \(role !== 'ADMIN'\) redirect\(role === 'REVIEWER' \? '\/copy-qa' : '\/workbench\/personal'\)/u);
   assert.match(page, /<DeliveryPoolWorkbench role="ADMIN" \/>/u);
@@ -243,6 +255,24 @@ test('administrator delivery pool exposes package facets, server filtering and p
   assert.match(source, /delivery-pool\/previews/u);
   assert.match(source, /本次预览上限/u);
   assert.match(source, /DELIVERY_PREVIEW_UPLOAD_LIMITS/u);
+  assert.match(source, /queryPackageIds: selectedPreviewPackageIds/u);
+  assert.match(source, /includeUnassigned: selectedPreviewUnassigned/u);
+  assert.match(source, /1 条（测试）/u);
+  assert.match(source, /testTaskId: entry\.taskId/u);
+  assert.match(source, /测试上传这一条/u);
+  assert.match(source, /publishSinglePreview\(entry\)/u);
+  assert.match(source, /selectedPreviewScopeCount === 0[\s\S]*selectedPreviewUnuploadedCount === 0 \|\| exportBusy/u,
+    'preview upload must remain disabled until a package or the unassigned-history range is explicitly selected');
+  assert.match(source, /历史未归属内容/u);
+  assert.match(source, /所选范围无需上传/u);
+  assert.match(source, /useConfirmDialog/u);
+  assert.doesNotMatch(source, /window\.confirm/u);
+  assert.match(source, /<FeedbackMessage tone="error"/u);
+  assert.match(source, /页面文本搜索、列表筛选和任务行勾选不会改变本次范围/u);
+  assert.match(feedbackMessage, /'info' \| 'success' \| 'warning' \| 'error'/u);
+  assert.match(feedbackMessage, /role=\{tone === 'error' \? 'alert' : 'status'\}/u);
+  assert.match(feedbackMessage, /aria-live=\{tone === 'error' \? 'assertive' : 'polite'\}/u);
+  assert.match(feedbackMessage, /aria-label="关闭反馈消息"/u);
   assert.match(source, /打开预览/u);
   assert.match(source, /词包筛选由服务端覆盖该词包全部 READY 条目/u);
   assert.match(source, /entry\.queryPackageName \|\| '未归属词包'/u);

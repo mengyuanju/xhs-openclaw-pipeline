@@ -1012,9 +1012,12 @@ test('an in-flight batch archive is rejected when the administrator account is r
 test('delivery listing forwards an exact package name and returns package facets', async () => {
   let received;
   const page = {
-    items: [{ id: 1, taskId: 42, query: '收纳', queryPackageName: '九月选题' }],
+    items: [{ id: 1, taskId: 42, query: '收纳', queryPackageId: 9, queryPackageName: '九月选题' }],
     total: 1,
-    facets: { queryPackages: [{ name: '九月选题', count: 1 }] },
+    facets: {
+      queryPackages: [{ id: 9, name: '九月选题', count: 1, unuploadedCount: 1, publishedCount: 0, revokedCount: 0 }],
+      unassigned: null,
+    },
   };
   await withServer({
     listDeliveryPool: async (options) => {

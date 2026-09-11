@@ -48,6 +48,10 @@ function deliveryFrom(row) {
     id: Number(row.id),
     taskId: Number(row.task_id),
     query: row.query,
+    queryPackageId: row.source_query_package_id === null
+      || row.source_query_package_id === undefined
+      ? null
+      : Number(row.source_query_package_id),
     queryPackageName: row.source_query_package_name ?? null,
     copyRevisionId: Number(row.copy_revision_id),
     imageRunId: row.image_run_id,
@@ -65,6 +69,18 @@ function normalizePreviewLimit(value) {
     throw new RangeError('preview upload limit must be an integer from 1 to 200');
   }
   return limit;
+}
+
+function normalizePreviewQueryPackageIds(value) {
+  if (!Array.isArray(value) || value.length > 200) {
+    throw new RangeError('queryPackageIds must contain between 0 and 200 items');
+  }
+  const ids = [...value];
+  if (ids.some((id) => typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
+      || new Set(ids).size !== ids.length) {
+    throw new TypeError('queryPackageIds must contain unique positive integers');
+  }
+  return ids;
 }
 
 function normalizePreviewBinding(value) {
@@ -161,7 +177,8 @@ export async function withdrawReadyDeliveryEntries(client, taskId) {
 export async function assertTaskReadyForDelivery(queryable, rawTaskId) {
   const taskId = normalizeTaskId(rawTaskId);
   const result = await queryable.query(`
-    SELECT delivery.*, task.query, task.source_query_package_name
+    SELECT delivery.*, task.query, task.source_query_package_id,
+      task.source_query_package_name
     FROM tasks AS task
     JOIN delivery_entries AS delivery
       ON delivery.task_id = task.id AND delivery.status = 'READY'
@@ -249,7 +266,8 @@ export async function listDeliveryPool(pool, {
   const limitParameter = filteredValues.length + 1;
   const values = [...filteredValues, limit, offset];
   const pagePromise = pool.query(`
-    SELECT delivery.*, task.query, task.source_query_package_name
+    SELECT delivery.*, task.query, task.source_query_package_id,
+      task.source_query_package_name
     FROM delivery_entries AS delivery
     JOIN tasks AS task ON task.id = delivery.task_id
       AND task.state = 'REVIEWED'
@@ -272,24 +290,45 @@ export async function listDeliveryPool(pool, {
       AND task.current_image_run_id = delivery.image_run_id
     WHERE delivery.status = 'READY' ${visibility} ${packageFilter}
   `, filteredValues), pool.query(`
-    SELECT task.source_query_package_name AS name, COUNT(*)::bigint AS count
+    SELECT task.source_query_package_id AS id,
+      task.source_query_package_name AS name,
+      COUNT(*)::bigint AS count,
+      COUNT(*) FILTER (WHERE delivery.preview_id IS NULL)::bigint AS unuploaded_count,
+      COUNT(*) FILTER (WHERE delivery.preview_status = 'PUBLISHED')::bigint AS published_count,
+      COUNT(*) FILTER (WHERE delivery.preview_status = 'REVOKED')::bigint AS revoked_count
     FROM delivery_entries AS delivery
     JOIN tasks AS task ON task.id = delivery.task_id
       AND task.state = 'REVIEWED'
       AND task.current_copy_revision_id = delivery.copy_revision_id
       AND task.current_image_run_id = delivery.image_run_id
     WHERE delivery.status = 'READY' ${visibility}
-      AND task.source_query_package_name IS NOT NULL
-    GROUP BY task.source_query_package_name
+    GROUP BY task.source_query_package_id, task.source_query_package_name
     ORDER BY lower(task.source_query_package_name), task.source_query_package_name
   `, visibilityValues)]);
+  const unassigned = packageFacets.rows
+    .filter((row) => row.id === null || row.id === undefined)
+    .reduce((summary, row) => ({
+      count: summary.count + Number(row.count ?? 0),
+      unuploadedCount: summary.unuploadedCount + Number(row.unuploaded_count ?? 0),
+      publishedCount: summary.publishedCount + Number(row.published_count ?? 0),
+      revokedCount: summary.revokedCount + Number(row.revoked_count ?? 0),
+    }), { count: 0, unuploadedCount: 0, publishedCount: 0, revokedCount: 0 });
   return {
     items: result.rows.map(deliveryFrom),
     total: Number(count.rows[0]?.total ?? 0),
     facets: {
       queryPackages: packageFacets.rows
-        .filter((row) => typeof row.name === 'string' && row.name)
-        .map((row) => ({ name: row.name, count: Number(row.count ?? 0) })),
+        .filter((row) => Number.isSafeInteger(Number(row.id)) && Number(row.id) > 0
+          && typeof row.name === 'string' && row.name)
+        .map((row) => ({
+          id: Number(row.id),
+          name: row.name,
+          count: Number(row.count ?? 0),
+          unuploadedCount: Number(row.unuploaded_count ?? 0),
+          publishedCount: Number(row.published_count ?? 0),
+          revokedCount: Number(row.revoked_count ?? 0),
+        })),
+      unassigned: unassigned.count > 0 ? unassigned : null,
     },
   };
 }
@@ -321,18 +360,29 @@ export async function listAllDeliveryPoolTaskIds(pool, rawActor, {
 }
 
 export async function listDeliveryPoolTaskIdsForPreview(pool, rawActor, {
-  queryPackageName: rawQueryPackageName = null,
+  queryPackageIds: rawQueryPackageIds,
+  includeUnassigned: rawIncludeUnassigned = false,
+  testTaskId: rawTestTaskId = null,
   limit: rawLimit = 50,
 } = {}) {
   normalizeActor(rawActor);
-  const queryPackageName = normalizeQueryPackageName(rawQueryPackageName);
+  const queryPackageIds = normalizePreviewQueryPackageIds(rawQueryPackageIds);
+  if (typeof rawIncludeUnassigned !== 'boolean') {
+    throw new TypeError('includeUnassigned must be a boolean');
+  }
+  const includeUnassigned = rawIncludeUnassigned;
+  if (queryPackageIds.length + Number(includeUnassigned) < 1
+      || queryPackageIds.length + Number(includeUnassigned) > 200) {
+    throw new RangeError('preview upload must explicitly select between 1 and 200 delivery sources');
+  }
   const limit = normalizePreviewLimit(rawLimit);
-  const values = [];
-  const packageFilter = queryPackageName === null ? '' : (() => {
-    values.push(queryPackageName);
-    return `AND task.source_query_package_name = $${values.length}`;
-  })();
-  values.push(limit);
+  const testTaskId = rawTestTaskId === null || rawTestTaskId === undefined
+    ? null
+    : normalizeTaskId(rawTestTaskId);
+  if (testTaskId !== null && limit !== 1) {
+    throw new RangeError('single-task preview testing requires limit 1');
+  }
+  const values = [queryPackageIds, includeUnassigned, testTaskId, limit];
   const result = await pool.query(`
     SELECT task.id AS task_id
     FROM delivery_entries AS delivery
@@ -342,9 +392,13 @@ export async function listDeliveryPoolTaskIdsForPreview(pool, rawActor, {
       AND task.current_image_run_id = delivery.image_run_id
     WHERE delivery.status = 'READY'
       AND delivery.preview_id IS NULL
-      ${packageFilter}
+      AND (
+        task.source_query_package_id = ANY($1::bigint[])
+        OR ($2::boolean AND task.source_query_package_id IS NULL)
+      )
+      AND ($3::bigint IS NULL OR task.id = $3)
     ORDER BY delivery.approved_at DESC, delivery.id DESC
-    LIMIT $${values.length}
+    LIMIT $4
   `, values);
   return result.rows.map((row) => Number(row.task_id));
 }

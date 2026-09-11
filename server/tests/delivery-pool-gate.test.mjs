@@ -39,7 +39,7 @@ test('delivery preview route fails closed when the server-side preview connectio
     const response = await fetch(`${root}/v1/delivery-pool/previews`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ scope: 'SELECTED', taskIds: [7], limit: 10 }),
+      body: JSON.stringify({ scope: 'QUERY_PACKAGES', queryPackageIds: [9], limit: 10 }),
     });
     assert.equal(response.status, 503);
     assert.equal((await response.json()).error.code, 'PREVIEW_SERVICE_NOT_CONFIGURED');

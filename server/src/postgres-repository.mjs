@@ -1118,8 +1118,12 @@ export class PostgresControlPlaneRepository {
   listAllDeliveryPoolTaskIds({ actor, queryPackageName = null } = {}) {
     return listAllDeliveryPoolTaskIds(this.pool, actor, { queryPackageName });
   }
-  listDeliveryPoolTaskIdsForPreview({ actor, queryPackageName = null, limit = 50 } = {}) {
-    return listDeliveryPoolTaskIdsForPreview(this.pool, actor, { queryPackageName, limit });
+  listDeliveryPoolTaskIdsForPreview({
+    actor, queryPackageIds, includeUnassigned = false, testTaskId = null, limit = 50,
+  } = {}) {
+    return listDeliveryPoolTaskIdsForPreview(this.pool, actor, {
+      queryPackageIds, includeUnassigned, testTaskId, limit,
+    });
   }
   recordDeliveryPreviewLinks(records, actor) {
     return transaction(this.pool, (client) => recordDeliveryPreviewLinks(client, records, actor));
@@ -1150,7 +1154,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 3, xiaohongshuQuerySearchVersion: 3, xiaohongshuAccountStatusVersion: 1, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1, deliveryPreviewVersion: 1 } };
+      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 3, xiaohongshuQuerySearchVersion: 3, xiaohongshuAccountStatusVersion: 1, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1, deliveryPreviewVersion: 4 } };
   }
 
   async authenticateUser(rawUsername, password) {

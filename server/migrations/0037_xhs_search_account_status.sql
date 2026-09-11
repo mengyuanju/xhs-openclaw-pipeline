@@ -5,7 +5,6 @@ ALTER TABLE xhs_query_search_nodes
   ADD COLUMN auth_status varchar(30) NOT NULL DEFAULT 'UNKNOWN'
     CHECK (auth_status IN ('UNKNOWN', 'READY', 'LOGIN_REQUIRED', 'CAPTCHA_REQUIRED')),
   ADD COLUMN auth_status_changed_at timestamptz NOT NULL DEFAULT now(),
-  ADD COLUMN auth_checked_at timestamptz,
   ADD COLUMN last_job_id bigint REFERENCES xhs_query_search_jobs(id) ON DELETE SET NULL;
 
 CREATE INDEX xhs_query_search_nodes_auth_attention_idx

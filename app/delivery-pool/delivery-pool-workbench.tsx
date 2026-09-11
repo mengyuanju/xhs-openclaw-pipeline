@@ -1,8 +1,10 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
-import { Checkbox, Textarea } from '@/components/ui/input';
+import { FeedbackMessage } from '@/components/ui/feedback-message';
+import { Checkbox, Input, Textarea } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Download, ExternalLink, FileSpreadsheet, LoaderCircle, RefreshCw, Search, UploadCloud, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
@@ -11,6 +13,7 @@ import styles from './delivery-pool.module.css';
 import {
   DELIVERY_POOL_LIST_LIMIT,
   DELIVERY_POOL_SELECTION_LIMIT,
+  DELIVERY_PREVIEW_PACKAGE_SELECTION_LIMIT,
   DELIVERY_PREVIEW_UPLOAD_LIMITS,
   buildDeliveryPoolExportInput,
   filterDeliveryPoolEntries,
@@ -23,12 +26,15 @@ import {
   updateTaskSelection,
   type DeliveryEntry,
   type DeliveryQueryPackageFacet,
+  type DeliveryUnassignedFacet,
 } from './types';
 
 type ExportScope = 'ALL_READY' | 'QUERY_PACKAGE' | 'SELECTED';
 const ALL_QUERY_PACKAGES = '__ALL_QUERY_PACKAGES__';
+const UNASSIGNED_PREVIEW_LABEL = '历史未归属内容';
 
 export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
+  const confirm = useConfirmDialog();
   const [entries, setEntries] = useState<DeliveryEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [nextOffset, setNextOffset] = useState(0);
@@ -37,6 +43,10 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
   const [search, setSearch] = useState('');
   const [queryPackageName, setQueryPackageName] = useState('');
   const [queryPackages, setQueryPackages] = useState<DeliveryQueryPackageFacet[]>([]);
+  const [previewUnassigned, setPreviewUnassigned] = useState<DeliveryUnassignedFacet | null>(null);
+  const [previewPackageSearch, setPreviewPackageSearch] = useState('');
+  const [selectedPreviewPackageIds, setSelectedPreviewPackageIds] = useState<number[]>([]);
+  const [selectedPreviewUnassigned, setSelectedPreviewUnassigned] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -46,6 +56,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
   const [previewUploadLimit, setPreviewUploadLimit] = useState<number>(50);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [messageTone, setMessageTone] = useState<'info' | 'success' | 'warning'>('info');
   const searchInputRef = useRef<HTMLTextAreaElement>(null);
   const listRequestId = useRef(0);
 
@@ -69,6 +80,10 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
       setEntries((current) => append ? mergeDeliveryPoolEntries(current, page.items) : page.items);
       setTotal(page.total);
       setQueryPackages(page.facets.queryPackages);
+      setPreviewUnassigned(page.facets.unassigned);
+      if (!page.facets.unassigned) setSelectedPreviewUnassigned(false);
+      const availablePackageIds = new Set(page.facets.queryPackages.map((facet) => facet.id));
+      setSelectedPreviewPackageIds((current) => current.filter((id) => availablePackageIds.has(id)));
       setNextOffset(followingOffset);
       setHasMore(page.items.length > 0 && followingOffset < page.total);
       if (!append) {
@@ -103,6 +118,27 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
   const selectionCandidates = visible.slice(0, DELIVERY_POOL_SELECTION_LIMIT);
   const allChecked = selectionCandidates.length > 0
     && selectionCandidates.every((entry) => selected.includes(entry.taskId));
+  const previewSearchTerm = previewPackageSearch.trim().toLocaleLowerCase('zh-CN');
+  const visiblePreviewPackages = useMemo(() => previewSearchTerm
+    ? queryPackages.filter((facet) => facet.name.toLocaleLowerCase('zh-CN').includes(previewSearchTerm))
+    : queryPackages, [previewSearchTerm, queryPackages]);
+  const visiblePreviewUnassigned = previewUnassigned !== null
+    && (!previewSearchTerm
+      || UNASSIGNED_PREVIEW_LABEL.toLocaleLowerCase('zh-CN').includes(previewSearchTerm));
+  const selectedPreviewPackages = useMemo(() => {
+    const selectedIds = new Set(selectedPreviewPackageIds);
+    return queryPackages.filter((facet) => selectedIds.has(facet.id));
+  }, [queryPackages, selectedPreviewPackageIds]);
+  const selectedPreviewScopeCount = selectedPreviewPackageIds.length
+    + Number(selectedPreviewUnassigned);
+  const selectedPreviewUnuploadedCount = selectedPreviewPackages.reduce(
+    (sum, facet) => sum + facet.unuploadedCount,
+    0,
+  ) + (selectedPreviewUnassigned ? previewUnassigned?.unuploadedCount ?? 0 : 0);
+  const visiblePreviewScopeCount = visiblePreviewPackages.length + Number(visiblePreviewUnassigned);
+  const allVisiblePreviewScopesChecked = visiblePreviewScopeCount > 0
+    && visiblePreviewPackages.every((facet) => selectedPreviewPackageIds.includes(facet.id))
+    && (!visiblePreviewUnassigned || selectedPreviewUnassigned);
   const exportBusy = exporting !== null || xlsxExporting || previewPublishing;
   const xlsxExportCount = selected.length || total;
   const filteredExportScope: Exclude<ExportScope, 'SELECTED'> = queryPackageName
@@ -114,8 +150,34 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
     const next = updateTaskSelection(selected, candidateIds, checked);
     setSelected(next);
     if (checked && requestedCount > DELIVERY_POOL_SELECTION_LIMIT) {
+      setMessageTone('warning');
       setMessage(`单次批量下载最多选择 ${DELIVERY_POOL_SELECTION_LIMIT} 条；其余条目可分批下载，或使用“一键导出全部”。`);
     }
+  }
+
+  function changePreviewScopeSelection(
+    candidateIds: number[],
+    candidateIncludesUnassigned: boolean,
+    checked: boolean,
+  ) {
+    const candidates = new Set(candidateIds);
+    if (!checked) {
+      setSelectedPreviewPackageIds((current) => current.filter((id) => !candidates.has(id)));
+      if (candidateIncludesUnassigned) setSelectedPreviewUnassigned(false);
+      return;
+    }
+    const requested = [...new Set([...selectedPreviewPackageIds, ...candidates])];
+    const includeUnassigned = selectedPreviewUnassigned || candidateIncludesUnassigned;
+    const requestedCount = requested.length + Number(includeUnassigned);
+    if (requestedCount > DELIVERY_PREVIEW_PACKAGE_SELECTION_LIMIT) {
+      setMessageTone('warning');
+      setMessage(`单次最多选择 ${DELIVERY_PREVIEW_PACKAGE_SELECTION_LIMIT} 个上传范围，请分批处理。`);
+    }
+    setSelectedPreviewUnassigned(includeUnassigned);
+    setSelectedPreviewPackageIds(requested.slice(
+      0,
+      DELIVERY_PREVIEW_PACKAGE_SELECTION_LIMIT - Number(includeUnassigned),
+    ));
   }
 
   async function exportDelivery(scope: ExportScope) {
@@ -124,6 +186,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
     const count = scope === 'SELECTED' ? selected.length : total;
     setExporting(scope);
     setError('');
+    setMessageTone('info');
     setMessage(scope === 'SELECTED'
       ? `正在打包已选 ${count} 条可交付项。`
       : scope === 'QUERY_PACKAGE'
@@ -156,6 +219,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
         : scope === 'QUERY_PACKAGE'
           ? `词包“${queryPackageName}”的 ${prepared.taskCount} 条可交付项已准备，下载已开始。`
           : `全部 ${prepared.taskCount} 条可交付项已准备，下载已开始。`);
+      setMessageTone('success');
     } catch (caught) {
       setMessage('');
       setError(caught instanceof Error ? caught.message : '交付池导出失败');
@@ -183,6 +247,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
     const count = input.scope === 'SELECTED' ? input.taskIds.length : total;
     setXlsxExporting(true);
     setError('');
+    setMessageTone('info');
     setMessage(input.scope === 'SELECTED'
       ? `正在生成已选 ${count} 条可交付项的 Excel；图片原文件不重新编码、不二次压缩。`
       : input.scope === 'QUERY_PACKAGE'
@@ -211,6 +276,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
         : input.scope === 'QUERY_PACKAGE'
           ? `词包“${input.queryPackageName}”的 ${prepared.taskCount} 条 READY 交付项 Excel 已准备，下载已开始。`
           : `全部 ${prepared.taskCount} 条 READY 交付项的 Excel 已准备，下载已开始。`);
+      setMessageTone('success');
     } catch (caught) {
       setMessage('');
       setError(caught instanceof Error ? caught.message : 'Excel 导出失败');
@@ -219,42 +285,43 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
     }
   }
 
-  async function publishPreviews() {
-    if (exportBusy || total === 0) return;
-    if (selected.length > previewUploadLimit) {
-      setMessage('');
-      setError(`当前已选 ${selected.length} 条，超过本次上传上限 ${previewUploadLimit} 条；请调大上限或减少选择。`);
-      return;
-    }
-    const scope: ExportScope = selected.length ? 'SELECTED' : filteredExportScope;
-    const scopeLabel = selected.length
-      ? `已选 ${selected.length} 条`
-      : queryPackageName
-        ? `词包“${queryPackageName}”中最多 ${previewUploadLimit} 条尚未上传的交付项`
-        : `最多 ${previewUploadLimit} 条尚未上传的交付项`;
-    if (!window.confirm(`确认将${scopeLabel}发布到独立预览系统？发布后会生成可分享链接。`)) return;
+  async function submitPreviewUpload({
+    queryPackageIds,
+    includeUnassigned,
+    limit,
+    testTaskId = null,
+    pendingMessage,
+  }: {
+    queryPackageIds: number[];
+    includeUnassigned: boolean;
+    limit: number;
+    testTaskId?: number | null;
+    pendingMessage: string;
+  }) {
     setPreviewPublishing(true);
     setError('');
-    setMessage(`正在上传${scopeLabel}；系统会自动拆成安全的小批次。`);
+    setMessageTone('info');
+    setMessage(pendingMessage);
     try {
-      const input = scope === 'SELECTED'
-        ? { scope, taskIds: selected, limit: previewUploadLimit }
-        : scope === 'QUERY_PACKAGE'
-          ? { scope, queryPackageName, limit: previewUploadLimit }
-          : { scope, limit: previewUploadLimit };
       const result = normalizeDeliveryPreviewPublishResult(await apiRequest<unknown>(
         '/api/control-plane/v1/delivery-pool/previews',
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(input),
+          body: JSON.stringify({
+            scope: 'QUERY_PACKAGES',
+            queryPackageIds,
+            includeUnassigned,
+            ...(testTaskId === null ? {} : { testTaskId }),
+            limit,
+          }),
         },
       ));
+      setMessageTone(result.failedCount ? 'warning' : 'success');
       setMessage(`预览处理完成：新建 ${result.createdCount} 条，复用 ${result.reusedCount} 条${result.failedCount ? `，失败 ${result.failedCount} 条` : ''}。`);
       if (result.failedCount) {
         setError(result.failures.slice(0, 3).map((failure) => `任务 #${failure.taskId}：${failure.message}`).join('；'));
       }
-      setSelected([]);
       await load();
     } catch (caught) {
       setMessage('');
@@ -262,6 +329,55 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
     } finally {
       setPreviewPublishing(false);
     }
+  }
+
+  async function publishPreviews() {
+    if (exportBusy || selectedPreviewScopeCount === 0) return;
+    if (selectedPreviewUnuploadedCount === 0) {
+      setError('');
+      setMessageTone('warning');
+      setMessage('所选范围当前没有尚未上传的 READY 交付项，无需重复上传。');
+      return;
+    }
+    const selectedNames = selectedPreviewPackages.map((facet) => `“${facet.name}”`);
+    if (selectedPreviewUnassigned) selectedNames.unshift(`“${UNASSIGNED_PREVIEW_LABEL}”`);
+    const namesPreview = selectedNames.length <= 3
+      ? selectedNames.join('、')
+      : `${selectedNames.slice(0, 3).join('、')}等 ${selectedNames.length} 个范围`;
+    const uploadCount = Math.min(selectedPreviewUnuploadedCount, previewUploadLimit);
+    if (!await confirm({
+      title: previewUploadLimit === 1 ? '确认测试上传 1 条预览？' : '确认上传所选范围的预览？',
+      description: `已勾选 ${selectedNames.length} 个上传范围：${namesPreview}。本次只会上传这些范围内尚未上传且版本仍有效的 READY 交付项，预计处理 ${uploadCount} 条${previewUploadLimit === 1 ? '；系统会按终审时间选择最新的一条' : ''}${selectedPreviewUnuploadedCount > previewUploadLimit ? `（另有 ${selectedPreviewUnuploadedCount - previewUploadLimit} 条受本次上限限制，将留待下次上传）` : ''}。页面文本搜索、列表筛选和任务行勾选不会改变本次范围。`,
+      confirmLabel: previewUploadLimit === 1 ? '测试上传 1 条' : `确认上传 ${uploadCount} 条`,
+    })) return;
+    await submitPreviewUpload({
+      queryPackageIds: selectedPreviewPackageIds,
+      includeUnassigned: selectedPreviewUnassigned,
+      limit: previewUploadLimit,
+      pendingMessage: previewUploadLimit === 1
+        ? '正在测试上传所选范围内最新的一条未上传内容。'
+        : `正在上传所选 ${selectedNames.length} 个范围内最多 ${previewUploadLimit} 条尚未上传的交付项；系统会自动拆成安全的小批次。`,
+    });
+  }
+
+  async function publishSinglePreview(entry: DeliveryEntry) {
+    if (exportBusy || entry.preview !== null) return;
+    const queryLabel = entry.query.trim() || '未记录 Query';
+    const sourceLabel = entry.queryPackageName
+      ? `词包“${entry.queryPackageName}”`
+      : `“${UNASSIGNED_PREVIEW_LABEL}”`;
+    if (!await confirm({
+      title: `测试上传任务 #${entry.taskId}？`,
+      description: `将从${sourceLabel}精确上传任务 #${entry.taskId}（${queryLabel}）。本次只处理这一条，不会上传同范围内的其他内容。`,
+      confirmLabel: '测试上传这一条',
+    })) return;
+    await submitPreviewUpload({
+      queryPackageIds: entry.queryPackageId === null ? [] : [entry.queryPackageId],
+      includeUnassigned: entry.queryPackageId === null,
+      testTaskId: entry.taskId,
+      limit: 1,
+      pendingMessage: `正在测试上传任务 #${entry.taskId}，本次只处理这一条。`,
+    });
   }
 
   const packageSelectValue = queryPackageName
@@ -282,9 +398,12 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
         </div>
         <div>
           <Button unstyled className="button small" type="button" disabled={refreshing || loadingMore || exportBusy} onClick={() => {
-            const hadSelection = selected.length > 0;
+            const hadSelection = selected.length > 0 || selectedPreviewScopeCount > 0;
             setSelected([]);
+            setSelectedPreviewPackageIds([]);
+            setSelectedPreviewUnassigned(false);
             if (hadSelection) setMessage('交付池已刷新，原选择已清空，请重新确认。');
+            if (hadSelection) setMessageTone('info');
             void load();
           }}>
             <RefreshCw className={refreshing ? 'animate-spin' : ''} size={14} />刷新
@@ -297,7 +416,9 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {DELIVERY_PREVIEW_UPLOAD_LIMITS.map((limit) => <SelectItem key={limit} value={String(limit)}>{limit} 条</SelectItem>)}
+                  {DELIVERY_PREVIEW_UPLOAD_LIMITS.map((limit) => <SelectItem key={limit} value={String(limit)}>
+                    {limit === 1 ? '1 条（测试）' : `${limit} 条`}
+                  </SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -306,12 +427,17 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
               className="button small primary"
               type="button"
               aria-busy={previewPublishing}
-              disabled={total === 0 || exportBusy}
+              disabled={selectedPreviewScopeCount === 0
+                || selectedPreviewUnuploadedCount === 0 || exportBusy}
               onClick={() => { void publishPreviews(); }}
             >
               {previewPublishing
                 ? <><LoaderCircle className="animate-spin" size={14} />正在上传预览…</>
-                : <><UploadCloud size={14} />{selected.length ? `上传预览（已选 ${selected.length}）` : `上传预览（最多 ${previewUploadLimit}）`}</>}
+                : <><UploadCloud size={14} />{selectedPreviewScopeCount === 0
+                  ? '请先勾选上传范围'
+                  : selectedPreviewUnuploadedCount === 0
+                    ? '所选范围无需上传'
+                    : `上传预览（${selectedPreviewScopeCount} 个范围 / 最多 ${previewUploadLimit} 条）`}</>}
             </Button>
             <Button
               unstyled
@@ -404,6 +530,67 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
       <div className={styles.scopeNote}>
         词包筛选由服务端覆盖该词包全部 READY 条目，并会限制无勾选时的 Excel 和一键 ZIP 导出；文本搜索只覆盖已加载条目，不会进一步缩小导出范围。
       </div>
+      {role === 'ADMIN' && <section className={styles.previewScope} aria-labelledby="delivery-preview-package-title">
+        <div className={styles.previewScopeHeader}>
+          <div>
+            <h3 id="delivery-preview-package-title">选择要上传预览的范围</h3>
+            <p>按词包明确勾选；早期未绑定词包的内容会作为独立范围显示。列表筛选、文本搜索和任务行选择均不会改变上传范围。</p>
+          </div>
+          <strong>{selectedPreviewScopeCount
+            ? `已选 ${selectedPreviewScopeCount} 个范围 · ${selectedPreviewUnuploadedCount} 条未上传`
+            : '尚未选择上传范围'}</strong>
+        </div>
+        <div className={styles.previewPackageTools}>
+          <Input
+            id="delivery-preview-package-search"
+            value={previewPackageSearch}
+            placeholder="搜索词包或历史未归属内容"
+            aria-label="搜索预览上传范围"
+            onChange={(event) => setPreviewPackageSearch(event.target.value)}
+          />
+          <Button
+            unstyled
+            className="button small"
+            type="button"
+            disabled={visiblePreviewScopeCount === 0 || exportBusy}
+            onClick={() => changePreviewScopeSelection(
+              visiblePreviewPackages.map((facet) => facet.id),
+              visiblePreviewUnassigned,
+              !allVisiblePreviewScopesChecked,
+            )}
+          >
+            {allVisiblePreviewScopesChecked ? '取消当前结果' : '勾选当前结果'}
+          </Button>
+          <Button unstyled className="button small" type="button" disabled={selectedPreviewScopeCount === 0 || exportBusy} onClick={() => {
+            setSelectedPreviewPackageIds([]);
+            setSelectedPreviewUnassigned(false);
+          }}>清空选择</Button>
+        </div>
+        <div className={styles.previewPackageList} role="group" aria-label="预览上传范围">
+          {visiblePreviewScopeCount
+            ? <>
+              {visiblePreviewUnassigned && previewUnassigned && <label className={`${styles.previewPackageOption} ${styles.previewUnassignedOption}`}>
+                <Checkbox
+                  checked={selectedPreviewUnassigned}
+                  disabled={exportBusy || (!selectedPreviewUnassigned
+                    && selectedPreviewScopeCount >= DELIVERY_PREVIEW_PACKAGE_SELECTION_LIMIT)}
+                  onChange={(event) => changePreviewScopeSelection([], true, event.target.checked)}
+                />
+                <span><strong>{UNASSIGNED_PREVIEW_LABEL}</strong><small>早期未绑定词包的交付项 · READY {previewUnassigned.count} · 未上传 {previewUnassigned.unuploadedCount} · 已发布 {previewUnassigned.publishedCount}{previewUnassigned.revokedCount ? ` · 已撤销 ${previewUnassigned.revokedCount}` : ''}</small></span>
+              </label>}
+              {visiblePreviewPackages.map((facet) => <label key={facet.id} className={styles.previewPackageOption}>
+                <Checkbox
+                  checked={selectedPreviewPackageIds.includes(facet.id)}
+                  disabled={exportBusy || (!selectedPreviewPackageIds.includes(facet.id)
+                    && selectedPreviewScopeCount >= DELIVERY_PREVIEW_PACKAGE_SELECTION_LIMIT)}
+                  onChange={(event) => changePreviewScopeSelection([facet.id], false, event.target.checked)}
+                />
+                <span><strong>{facet.name}</strong><small>READY {facet.count} · 未上传 {facet.unuploadedCount} · 已发布 {facet.publishedCount}{facet.revokedCount ? ` · 已撤销 ${facet.revokedCount}` : ''}</small></span>
+              </label>)}
+            </>
+            : <div className={styles.previewPackageEmpty}>没有匹配的可上传范围。</div>}
+        </div>
+      </section>}
       {role === 'ADMIN' && <div className={styles.selectionStatus}>
         <span>{selected.length
           ? `已选择 ${selected.length} / ${DELIVERY_POOL_SELECTION_LIMIT} 条；Excel 与批量下载均优先处理已选条目。`
@@ -416,8 +603,8 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
         <strong>交付门禁</strong>
         <span>图文终审通过 + 当前文案版本匹配 + 当前图片版本匹配 + READY 交付记录，四项缺一不可。</span>
       </div>
-      {error && <div className="notice error" role="alert">{error}</div>}
-      {message && <div className="notice" role="status" aria-live="polite">{message}</div>}
+      {error && <FeedbackMessage tone="error" onDismiss={() => setError('')}>{error}</FeedbackMessage>}
+      {message && <FeedbackMessage tone={messageTone} onDismiss={() => setMessage('')}>{message}</FeedbackMessage>}
       {loading
         ? <div className="empty-state"><LoaderCircle className="animate-spin" size={20} />正在读取交付池…</div>
         : visible.length === 0
@@ -448,7 +635,16 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
                     ? <span className="pill">已撤销</span>
                     : <span className="subtle">未上传</span>}</td>
                 <td data-label="终审时间">{entry.approvedAt ? new Date(entry.approvedAt).toLocaleString('zh-CN', { hour12: false }) : '未记录'}</td>
-                <td className="row-action" data-label="操作"><div className={styles.actions}><a className="button small primary" href={`/api/control-plane/v1/tasks/${entry.taskId}/archive`} download><Download size={14} />下载资源</a></div></td>
+                <td className="row-action" data-label="操作"><div className={styles.actions}>
+                  {entry.preview === null && <Button
+                    unstyled
+                    className="button small"
+                    type="button"
+                    disabled={exportBusy}
+                    onClick={() => { void publishSinglePreview(entry); }}
+                  ><UploadCloud size={14} />测试上传</Button>}
+                  <a className="button small primary" href={`/api/control-plane/v1/tasks/${entry.taskId}/archive`} download><Download size={14} />下载资源</a>
+                </div></td>
               </tr>)}</tbody>
             </table>
           </div>}

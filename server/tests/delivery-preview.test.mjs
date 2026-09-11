@@ -29,22 +29,59 @@ function groupItem(taskId, imageCount = 1, byteSize = 1) {
   };
 }
 
-test('administrator preview request accepts 200 items and splits remote calls at 10 items', () => {
-  const taskIds = Array.from({ length: 200 }, (_, index) => index + 1);
+test('administrator preview request requires explicit package ids and splits remote calls at 10 items', () => {
+  const queryPackageIds = Array.from({ length: 200 }, (_, index) => index + 1);
   assert.deepEqual(normalizeDeliveryPreviewRequest({
-    scope: 'SELECTED',
-    taskIds,
+    scope: 'QUERY_PACKAGES',
+    queryPackageIds,
     limit: 200,
-  }), { scope: 'SELECTED', taskIds, limit: 200 });
+  }), {
+    scope: 'QUERY_PACKAGES', queryPackageIds, includeUnassigned: false, testTaskId: null, limit: 200,
+  });
+  assert.deepEqual(normalizeDeliveryPreviewRequest({
+    scope: 'QUERY_PACKAGES',
+    queryPackageIds: [],
+    includeUnassigned: true,
+    limit: 50,
+  }), {
+    scope: 'QUERY_PACKAGES', queryPackageIds: [], includeUnassigned: true, testTaskId: null, limit: 50,
+  });
+  assert.deepEqual(normalizeDeliveryPreviewRequest({
+    scope: 'QUERY_PACKAGES',
+    queryPackageIds: [],
+    includeUnassigned: true,
+    testTaskId: 588,
+    limit: 1,
+  }), {
+    scope: 'QUERY_PACKAGES', queryPackageIds: [], includeUnassigned: true, testTaskId: 588, limit: 1,
+  });
   assert.throws(() => normalizeDeliveryPreviewRequest({
     scope: 'SELECTED',
     taskIds: [1, 2, 3],
-    limit: 2,
-  }), /administrator upload limit/u);
+    limit: 3,
+  }), /explicitly selected delivery sources/u);
   assert.throws(() => normalizeDeliveryPreviewRequest({
-    scope: 'ALL_READY',
+    scope: 'QUERY_PACKAGES',
+    queryPackageIds: [1],
     limit: 201,
   }), /1 to 200/u);
+  assert.throws(() => normalizeDeliveryPreviewRequest({
+    scope: 'QUERY_PACKAGES',
+    queryPackageIds: ['1'],
+    limit: 10,
+  }), /positive integers/u);
+  assert.throws(() => normalizeDeliveryPreviewRequest({
+    scope: 'QUERY_PACKAGES',
+    queryPackageIds: [],
+    includeUnassigned: false,
+    limit: 10,
+  }), /explicitly select/u);
+  assert.throws(() => normalizeDeliveryPreviewRequest({
+    scope: 'QUERY_PACKAGES',
+    queryPackageIds: [9],
+    testTaskId: 588,
+    limit: 10,
+  }), /requires limit 1/u);
 
   const groups = groupPreviewItems(
     Array.from({ length: 21 }, (_, index) => groupItem(index + 1)),
@@ -216,6 +253,16 @@ test('delivery preview upload binds the remote noteId to the immutable delivery 
     };
     let recorded;
     const repository = {
+      listDeliveryPoolTaskIdsForPreview: async ({
+        actor, queryPackageIds, includeUnassigned, testTaskId, limit,
+      }) => {
+        assert.equal(actor, admin);
+        assert.deepEqual(queryPackageIds, [9]);
+        assert.equal(includeUnassigned, false);
+        assert.equal(testTaskId, null);
+        assert.equal(limit, 200);
+        return [7];
+      },
       getTaskForDelivery: async () => ({ task, binding }),
       assertTasksReadyForDelivery: async (bindings) => {
         assert.deepEqual(bindings, [binding]);
@@ -252,13 +299,13 @@ test('delivery preview upload binds the remote noteId to the immutable delivery 
       repository,
       storageRoot,
       previewClient,
-      input: { scope: 'SELECTED', taskIds: [7], limit: 200 },
+      input: { scope: 'QUERY_PACKAGES', queryPackageIds: [9], limit: 200 },
       actor: admin,
     });
     assert.equal(recorded[0].deliveryEntryId, 77);
     assert.equal(recorded[0].noteId, noteId);
     assert.deepEqual(result, {
-      scope: 'SELECTED',
+      scope: 'QUERY_PACKAGES',
       limit: 200,
       requestedCount: 1,
       publishedCount: 1,
@@ -293,6 +340,7 @@ test('delivery preview upload rejects TIFF before calling the preview service', 
   let remoteCalls = 0;
   await assert.rejects(publishDeliveryPreviews({
     repository: {
+      listDeliveryPoolTaskIdsForPreview: async () => [7],
       getTaskForDelivery: async () => ({ task, binding }),
       getAsset: async () => ({
         id: 207,
@@ -304,7 +352,7 @@ test('delivery preview upload rejects TIFF before calling the preview service', 
     },
     storageRoot: 'C:\\safe-storage',
     previewClient: { publishBatch: async () => { remoteCalls += 1; } },
-    input: { scope: 'SELECTED', taskIds: [7], limit: 10 },
+    input: { scope: 'QUERY_PACKAGES', queryPackageIds: [9], limit: 10 },
     actor: admin,
   }), (error) => error?.code === 'DELIVERY_PREVIEW_FORMAT_UNSUPPORTED');
   assert.equal(remoteCalls, 0);

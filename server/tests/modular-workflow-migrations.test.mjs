@@ -183,14 +183,17 @@ test('delivery preview URL derivation migration removes persisted domains', asyn
 
 test('Xiaohongshu search account status keeps host and authentication state separate', async () => {
   const sql = await migration('0037_xhs_search_account_status');
+  const checkedAtSql = await migration('0038_xhs_search_auth_checked_at');
   assert.match(sql, /ADD COLUMN account_label varchar\(100\)/u);
   assert.match(sql, /host_kind IN \('CENTER', 'EXECUTOR'\)/u);
   assert.match(sql, /auth_status IN \('UNKNOWN', 'READY', 'LOGIN_REQUIRED', 'CAPTCHA_REQUIRED'\)/u);
   assert.match(sql, /ADD COLUMN auth_status_changed_at timestamptz NOT NULL/u);
-  assert.match(sql, /ADD COLUMN auth_checked_at timestamptz/u);
   assert.match(sql, /ADD COLUMN last_job_id bigint REFERENCES xhs_query_search_jobs\(id\) ON DELETE SET NULL/u);
+  assert.match(checkedAtSql, /ADD COLUMN auth_checked_at timestamptz/u);
   assert.doesNotMatch(sql, /password|cookie|token/iu,
     'account status storage must not retain Xiaohongshu credentials or browser state');
+  assert.doesNotMatch(checkedAtSql, /password|cookie|token/iu,
+    'account verification timestamps must not retain Xiaohongshu credentials or browser state');
 });
 
 test('mutation receipt identities survive account deletion and cannot transfer by username', async () => {

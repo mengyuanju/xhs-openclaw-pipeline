@@ -63,10 +63,14 @@ V3 将负责人分配推迟到文案待审核阶段。任务创建、负责人�
 
 `0035_delivery_preview_links.sql` 在冻结交付条目上增加预览服务的记录 ID、公开 noteId、内容哈希、状态和上传人审计字段；`0036_delivery_preview_url_derivation.sql` 移除早期草稿中持久化的公开链接，页面按当前预览服务地址和 noteId 动态生成链接，切换域名时无需批量改历史数据。两套系统不共享主键；中心以不可变 `delivery_entries.id` 生成 `sourceRef`，预览服务据此提供幂等创建，中心再保存远端标识的关联。
 
-生产升级时，先部署并迁移支持 `sourceRef` 的预览服务，再暂停中心 Web 写入，备份 PostgreSQL，依次应用 `0035`、`0036`（正常执行 `npm run db:upgrade -- --apply` 即可），最后同步切换新版中心服务和 Web。确认 `/health` 返回 `deliveryPreviewVersion=1` 后再开放管理员上传。预览 API 密钥只保存在中心服务 Secret 中，不写数据库、不发送到浏览器。
+生产升级时，先部署并迁移支持 `sourceRef` 的预览服务，再暂停中心 Web 写入，备份 PostgreSQL，依次应用 `0035`、`0036`（正常执行 `npm run db:upgrade -- --apply` 即可），最后同步切换新版中心服务和 Web。确认 `/health` 返回 `deliveryPreviewVersion=4` 后再开放管理员上传。版本 4 要求管理员明确勾选词包，并按稳定的 `source_query_package_id` 限定上传范围；早期没有词包关联的内容作为独立范围显式勾选，不会伪造词包归属。单任务测试上传还会把任务 ID 与来源范围同时提交并在中心校验。预览 API 密钥只保存在中心服务 Secret 中，不写数据库、不发送到浏览器。
 
 ## `0037` 小红书搜索账号状态
 
 `0037_xhs_search_account_status.sql` 为每个小红书搜索节点增加主机类型、非敏感账号标签、最新登录状态和最近搜索任务引用。中心服务器本机与普通执行机使用同一状态协议；搜索进程心跳与账号登录状态分开判断，机器离线不会被误写成账号掉线。
 
 升级时先停止小红书搜索进程，备份 PostgreSQL 并应用迁移，再同步更新中心服务、Web 和所有搜索主机。中心通过 `/health` 报告 `xiaohongshuAccountStatusVersion=1`。浏览器登录目录和 Cookie 仍只保存在各自主机的仓库外专用目录，不进入中心数据库。
+
+## `0038` 小红书登录状态验证时间
+
+`0038_xhs_search_auth_checked_at.sql` 增加最近一次明确验证小红书登录状态的时间。该时间只在搜索成功、检测到需要登录或验证码时更新；普通网络或搜索失败不会被误判为账号状态变化。

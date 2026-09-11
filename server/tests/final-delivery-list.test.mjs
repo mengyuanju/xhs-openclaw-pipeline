@@ -25,6 +25,7 @@ function deliveryRow(id) {
     id,
     task_id: 100 + id,
     query: `query-${id}`,
+    source_query_package_id: 9,
     source_query_package_name: '九月选题',
     copy_revision_id: 200 + id,
     image_run_id: `run-${id}`,
@@ -40,8 +41,12 @@ test('admin delivery pool page applies an exact package-name filter and returns 
   const pool = {
     query: async (sql, values) => {
       calls.push({ sql, values });
-      if (/AS name, COUNT\(\*\)/u.test(sql)) {
-        return { rows: [{ name: '九月选题', count: '51' }, { name: '十月选题', count: '7' }] };
+      if (/AS name,[\s\S]*COUNT\(\*\)/u.test(sql)) {
+        return { rows: [
+          { id: '9', name: '九月选题', count: '51', unuploaded_count: '40', published_count: '10', revoked_count: '1' },
+          { id: '10', name: '十月选题', count: '7', unuploaded_count: '7', published_count: '0', revoked_count: '0' },
+          { id: null, name: null, count: '34', unuploaded_count: '34', published_count: '0', revoked_count: '0' },
+        ] };
       }
       return /COUNT\(\*\)::bigint AS total/u.test(sql)
         ? { rows: [{ total: '51' }] }
@@ -58,11 +63,15 @@ test('admin delivery pool page applies an exact package-name filter and returns 
   assert.equal(page.items[0].taskId, 101);
   assert.equal(page.items[0].queryPackageName, '九月选题');
   assert.deepEqual(page.facets, {
-    queryPackages: [{ name: '九月选题', count: 51 }, { name: '十月选题', count: 7 }],
+    queryPackages: [
+      { id: 9, name: '九月选题', count: 51, unuploadedCount: 40, publishedCount: 10, revokedCount: 1 },
+      { id: 10, name: '十月选题', count: 7, unuploadedCount: 7, publishedCount: 0, revokedCount: 0 },
+    ],
+    unassigned: { count: 34, unuploadedCount: 34, publishedCount: 0, revokedCount: 0 },
   });
   const pageCall = calls.find(({ sql }) => /LIMIT \$2 OFFSET \$3/u.test(sql));
   const countCall = calls.find(({ sql }) => /COUNT\(\*\)::bigint AS total/u.test(sql));
-  const facetCall = calls.find(({ sql }) => /AS name, COUNT\(\*\)::bigint AS count/u.test(sql));
+  const facetCall = calls.find(({ sql }) => /AS name,[\s\S]*COUNT\(\*\)::bigint AS count/u.test(sql));
   assert.deepEqual(pageCall.values, ['九月选题', 200, 0]);
   assert.deepEqual(countCall.values, ['九月选题']);
   assert.deepEqual(facetCall.values, []);
@@ -73,7 +82,9 @@ test('admin delivery pool page applies an exact package-name filter and returns 
   assert.match(countCall.sql, /task\.source_query_package_name = \$1/u);
   assert.doesNotMatch(facetCall.sql, /source_query_package_name =/u,
     'facets describe every package visible to the actor, not only the active package');
-  assert.match(facetCall.sql, /source_query_package_name IS NOT NULL/u);
+  assert.doesNotMatch(facetCall.sql, /source_query_package_name IS NOT NULL/u);
+  assert.doesNotMatch(facetCall.sql, /source_query_package_id IS NOT NULL/u);
+  assert.match(facetCall.sql, /delivery\.preview_id IS NULL/u);
 });
 
 test('complete delivery snapshot is admin-only, exact-package scoped and has no pagination clause', async () => {
@@ -107,13 +118,33 @@ test('preview candidate snapshot is admin-limited and excludes entries already b
     },
   };
   assert.deepEqual(await listDeliveryPoolTaskIdsForPreview(pool, admin, {
-    queryPackageName: '  九月选题  ',
+    queryPackageIds: [9, 10],
+    includeUnassigned: true,
     limit: 200,
   }), [7, 8]);
-  assert.deepEqual(values, ['九月选题', 200]);
+  assert.deepEqual(values, [[9, 10], true, null, 200]);
   assert.match(sql, /delivery\.preview_id IS NULL/u);
-  assert.match(sql, /task\.source_query_package_name = \$1/u);
-  assert.match(sql, /LIMIT \$2/u);
+  assert.match(sql, /task\.source_query_package_id = ANY\(\$1::bigint\[\]\)/u);
+  assert.match(sql, /\$2::boolean AND task\.source_query_package_id IS NULL/u);
+  assert.match(sql, /\$3::bigint IS NULL OR task\.id = \$3/u);
+  assert.match(sql, /LIMIT \$4/u);
+  assert.deepEqual(await listDeliveryPoolTaskIdsForPreview(pool, admin, {
+    queryPackageIds: [],
+    includeUnassigned: true,
+    limit: 34,
+  }), [7, 8]);
+  assert.deepEqual(values, [[], true, null, 34]);
+  assert.deepEqual(await listDeliveryPoolTaskIdsForPreview(pool, admin, {
+    queryPackageIds: [],
+    includeUnassigned: true,
+    testTaskId: 588,
+    limit: 1,
+  }), [7, 8]);
+  assert.deepEqual(values, [[], true, 588, 1]);
+  await assert.rejects(listDeliveryPoolTaskIdsForPreview(pool, admin, {
+    queryPackageIds: ['9'],
+    limit: 10,
+  }), /positive integers/u);
 });
 
 test('preview noteId is saved against the exact frozen delivery version', async () => {

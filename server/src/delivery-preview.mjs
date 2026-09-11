@@ -5,9 +5,7 @@ import { relative, resolve } from 'node:path';
 import { deliveryCopyFromContent, resolveDeliveryArchiveSource } from './delivery-source.mjs';
 import {
   assertDeliveryBindingsReady,
-  DELIVERY_EXPORT_SCOPES,
   loadReadyDeliveryTask,
-  normalizeDeliveryExportRequest,
 } from './delivery-export.mjs';
 import { ControlPlaneConflictError } from './domain.mjs';
 
@@ -42,17 +40,50 @@ export class DeliveryPreviewServiceError extends Error {
 }
 
 export function normalizeDeliveryPreviewRequest(value) {
-  const scope = normalizeDeliveryExportRequest(value);
+  if (!value || typeof value !== 'object' || value.scope !== 'QUERY_PACKAGES') {
+    throw new TypeError('preview upload requires explicitly selected delivery sources');
+  }
+  if (!Array.isArray(value.queryPackageIds)
+      || value.queryPackageIds.length > MAX_DELIVERY_PREVIEW_TASKS) {
+    throw new RangeError(
+      `queryPackageIds must contain between 0 and ${MAX_DELIVERY_PREVIEW_TASKS} items`,
+    );
+  }
+  const queryPackageIds = [...value.queryPackageIds];
+  if (queryPackageIds.some((id) => typeof id !== 'number'
+      || !Number.isSafeInteger(id) || id < 1)
+      || new Set(queryPackageIds).size !== queryPackageIds.length) {
+    throw new TypeError('queryPackageIds must contain unique positive integers');
+  }
+  if (value.includeUnassigned !== undefined && typeof value.includeUnassigned !== 'boolean') {
+    throw new TypeError('includeUnassigned must be a boolean');
+  }
+  const includeUnassigned = value.includeUnassigned === true;
+  if (queryPackageIds.length + Number(includeUnassigned) < 1
+      || queryPackageIds.length + Number(includeUnassigned) > MAX_DELIVERY_PREVIEW_TASKS) {
+    throw new RangeError(
+      `preview upload must explicitly select between 1 and ${MAX_DELIVERY_PREVIEW_TASKS} delivery sources`,
+    );
+  }
+  const testTaskId = value.testTaskId === undefined || value.testTaskId === null
+    ? null
+    : value.testTaskId;
+  if (testTaskId !== null
+      && (typeof testTaskId !== 'number' || !Number.isSafeInteger(testTaskId) || testTaskId < 1)) {
+    throw new TypeError('testTaskId must be a positive integer');
+  }
   const limit = Number(value?.limit ?? DEFAULT_DELIVERY_PREVIEW_TASKS);
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_DELIVERY_PREVIEW_TASKS) {
     throw new RangeError(
       `preview upload limit must be an integer from 1 to ${MAX_DELIVERY_PREVIEW_TASKS}`,
     );
   }
-  if (scope.scope === DELIVERY_EXPORT_SCOPES.SELECTED && scope.taskIds.length > limit) {
-    throw new RangeError('selected preview tasks exceed the administrator upload limit');
+  if (testTaskId !== null && limit !== 1) {
+    throw new RangeError('single-task preview testing requires limit 1');
   }
-  return { ...scope, limit };
+  return {
+    scope: 'QUERY_PACKAGES', queryPackageIds, includeUnassigned, testTaskId, limit,
+  };
 }
 
 export function createPreviewServiceClient({
@@ -259,7 +290,6 @@ export async function publishDeliveryPreviews({
 }
 
 async function resolvePreviewTaskIds(repository, request, actor) {
-  if (request.scope === DELIVERY_EXPORT_SCOPES.SELECTED) return request.taskIds;
   if (typeof repository.listDeliveryPoolTaskIdsForPreview !== 'function') {
     throw new ControlPlaneConflictError(
       'DELIVERY_PREVIEW_UNAVAILABLE',
@@ -269,9 +299,9 @@ async function resolvePreviewTaskIds(repository, request, actor) {
   const taskIds = await repository.listDeliveryPoolTaskIdsForPreview({
     actor,
     limit: request.limit,
-    ...(request.scope === DELIVERY_EXPORT_SCOPES.QUERY_PACKAGE
-      ? { queryPackageName: request.queryPackageName }
-      : {}),
+    queryPackageIds: request.queryPackageIds,
+    includeUnassigned: request.includeUnassigned,
+    testTaskId: request.testTaskId,
   });
   if (!Array.isArray(taskIds) || taskIds.length === 0) {
     throw new ControlPlaneConflictError(

@@ -1,6 +1,7 @@
 export const DELIVERY_POOL_LIST_LIMIT = 200;
 export const DELIVERY_POOL_SELECTION_LIMIT = 200;
-export const DELIVERY_PREVIEW_UPLOAD_LIMITS = [10, 25, 50, 100, 200] as const;
+export const DELIVERY_PREVIEW_UPLOAD_LIMITS = [1, 10, 25, 50, 100, 200] as const;
+export const DELIVERY_PREVIEW_PACKAGE_SELECTION_LIMIT = 200;
 
 export type DeliveryPreviewLink = {
   id: string;
@@ -16,6 +17,7 @@ export type DeliveryEntry = {
   id: number;
   taskId: number;
   query: string;
+  queryPackageId: number | null;
   queryPackageName: string | null;
   copyRevisionId: number;
   imageRunId: string;
@@ -25,14 +27,28 @@ export type DeliveryEntry = {
 };
 
 export type DeliveryQueryPackageFacet = {
+  id: number;
   name: string;
   count: number;
+  unuploadedCount: number;
+  publishedCount: number;
+  revokedCount: number;
+};
+
+export type DeliveryUnassignedFacet = {
+  count: number;
+  unuploadedCount: number;
+  publishedCount: number;
+  revokedCount: number;
 };
 
 export type DeliveryPoolPage = {
   items: DeliveryEntry[];
   total: number;
-  facets: { queryPackages: DeliveryQueryPackageFacet[] };
+  facets: {
+    queryPackages: DeliveryQueryPackageFacet[];
+    unassigned: DeliveryUnassignedFacet | null;
+  };
 };
 
 export type PreparedDeliveryExport = {
@@ -48,7 +64,7 @@ export type DeliveryPoolExportInput =
   | { scope: 'SELECTED'; taskIds: number[] };
 
 export type DeliveryPreviewPublishResult = {
-  scope: 'ALL_READY' | 'QUERY_PACKAGE' | 'SELECTED';
+  scope: 'QUERY_PACKAGES';
   limit: number;
   requestedCount: number;
   publishedCount: number;
@@ -83,8 +99,13 @@ function normalizeEntry(value: unknown): DeliveryEntry | null {
   const id = Number(item.id);
   const taskId = Number(item.taskId);
   const copyRevisionId = Number(item.copyRevisionId);
+  const rawQueryPackageId = item.queryPackageId;
+  const queryPackageId = rawQueryPackageId === null || rawQueryPackageId === undefined
+    ? null
+    : Number(rawQueryPackageId);
   if (!Number.isSafeInteger(id) || id < 1 || !Number.isSafeInteger(taskId) || taskId < 1
     || !Number.isSafeInteger(copyRevisionId) || copyRevisionId < 1 || item.status !== 'READY'
+    || (queryPackageId !== null && (!Number.isSafeInteger(queryPackageId) || queryPackageId < 1))
     || typeof item.imageRunId !== 'string' || !item.imageRunId.trim()) return null;
   return {
     id,
@@ -93,6 +114,7 @@ function normalizeEntry(value: unknown): DeliveryEntry | null {
     imageRunId: item.imageRunId,
     status: 'READY',
     query: typeof item.query === 'string' ? item.query : '',
+    queryPackageId,
     queryPackageName: normalizeQueryPackageName(item.queryPackageName),
     approvedAt: typeof item.approvedAt === 'string' ? item.approvedAt : '',
     preview: normalizePreviewLink(item.preview),
@@ -132,7 +154,7 @@ export function normalizeDeliveryPreviewPublishResult(value: unknown): DeliveryP
   const reusedCount = Number(payload?.reusedCount);
   const failedCount = Number(payload?.failedCount);
   const counts = [limit, requestedCount, publishedCount, createdCount, reusedCount, failedCount];
-  if (!['ALL_READY', 'QUERY_PACKAGE', 'SELECTED'].includes(String(scope))
+  if (scope !== 'QUERY_PACKAGES'
     || counts.some((count) => !Number.isSafeInteger(count) || count < 0)
     || limit < 1 || limit > DELIVERY_POOL_SELECTION_LIMIT
     || requestedCount !== publishedCount + failedCount
@@ -189,16 +211,51 @@ export function normalizeDeliveryPoolPage(value: unknown): DeliveryPoolPage {
   const rawQueryPackages = Array.isArray(facetEnvelope?.queryPackages)
     ? facetEnvelope.queryPackages
     : [];
-  const queryPackageMap = new Map<string, DeliveryQueryPackageFacet>();
+  const queryPackageMap = new Map<number, DeliveryQueryPackageFacet>();
   for (const value of rawQueryPackages.slice(0, 1_000)) {
     const facet = record(value);
+    const id = Number(facet?.id);
     const name = normalizeQueryPackageName(facet?.name);
     const count = Number(facet?.count);
-    if (!name || !Number.isSafeInteger(count) || count < 0 || queryPackageMap.has(name)) continue;
-    queryPackageMap.set(name, { name, count });
+    const unuploadedCount = Number(facet?.unuploadedCount);
+    const publishedCount = Number(facet?.publishedCount);
+    const revokedCount = Number(facet?.revokedCount);
+    if (!Number.isSafeInteger(id) || id < 1 || !name
+      || [count, unuploadedCount, publishedCount, revokedCount]
+        .some((candidate) => !Number.isSafeInteger(candidate) || candidate < 0)
+      || unuploadedCount + publishedCount + revokedCount > count
+      || queryPackageMap.has(id)) continue;
+    queryPackageMap.set(id, {
+      id,
+      name,
+      count,
+      unuploadedCount,
+      publishedCount,
+      revokedCount,
+    });
   }
   const queryPackages = [...queryPackageMap.values()];
-  return { items, total, facets: { queryPackages } };
+  const rawUnassigned = record(facetEnvelope?.unassigned);
+  const unassignedCounts = rawUnassigned
+    ? [
+        Number(rawUnassigned.count),
+        Number(rawUnassigned.unuploadedCount),
+        Number(rawUnassigned.publishedCount),
+        Number(rawUnassigned.revokedCount),
+      ]
+    : [];
+  const unassigned = rawUnassigned
+    && unassignedCounts.every((count) => Number.isSafeInteger(count) && count >= 0)
+    && unassignedCounts[0] > 0
+    && unassignedCounts[1] + unassignedCounts[2] + unassignedCounts[3] <= unassignedCounts[0]
+    ? {
+        count: unassignedCounts[0],
+        unuploadedCount: unassignedCounts[1],
+        publishedCount: unassignedCounts[2],
+        revokedCount: unassignedCounts[3],
+      }
+    : null;
+  return { items, total, facets: { queryPackages, unassigned } };
 }
 
 export function updateTaskSelection(

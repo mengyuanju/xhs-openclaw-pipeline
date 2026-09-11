@@ -54,7 +54,7 @@ const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
   }),
   Object.freeze({
     capability: 'deliveryPreviewVersion',
-    minimumVersion: 1,
+    minimumVersion: 4,
     matches: (routePath, method) => routePath === '/v1/delivery-pool/previews'
       && method === 'POST',
   }),

@@ -28,4 +28,21 @@
 .previewUploadControl { display: grid !important; align-items: stretch !important; gap: 4px !important; min-width: 118px; }
 .previewUploadControl label { color: var(--muted); font-size: 10px; font-weight: 700; }
 .previewUploadControl :global(.select-trigger) { min-height: 32px; }
+.previewScope { display: grid; gap: 11px; margin-bottom: 12px; padding: 14px; border: 1px solid #d8d4cf; border-radius: 12px; background: #fbfaf8; }
+.previewScopeHeader { display: flex; align-items: start; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
+.previewScopeHeader h3 { margin: 0 0 3px; font-size: 13px; }
+.previewScopeHeader p { max-width: 760px; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.previewScopeHeader > strong { padding: 5px 9px; border-radius: 999px; color: #385333; background: #edf4e9; font-size: 11px; white-space: nowrap; }
+.previewPackageTools { display: grid; grid-template-columns: minmax(180px, 1fr) auto auto; gap: 8px; }
+.previewPackageList { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 8px; max-height: 280px; overflow-y: auto; padding: 2px; }
+.previewPackageOption { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 9px; align-items: start; min-width: 0; padding: 10px 11px; border: 1px solid var(--line); border-radius: 9px; background: white; cursor: pointer; }
+.previewUnassignedOption { border-style: dashed; background: #fffaf0; }
+.previewPackageOption:has(input:checked) { border-color: #a7c49e; background: #f3f8f0; box-shadow: inset 3px 0 #618357; }
+.previewPackageOption:focus-within { outline: 3px solid var(--control-ring); outline-offset: 1px; }
+.previewPackageOption input { margin-top: 2px; }
+.previewPackageOption span { display: grid; min-width: 0; gap: 3px; }
+.previewPackageOption strong { overflow: hidden; color: var(--ink); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.previewPackageOption small { color: var(--muted); font-size: 10px; line-height: 1.5; }
+.previewPackageEmpty { grid-column: 1 / -1; padding: 18px; color: var(--muted); font-size: 11px; text-align: center; }
 @media (max-width: 680px) { .toolbar { align-items: stretch; flex-direction: column; } .toolbar > div, .toolbar > .searchField, .toolbar > .packageFilter, .toolbar button { width: 100%; } .toolbar .clearSearch { width: 30px; } .toolbar > .searchStatus { text-align: left; } }
+@media (max-width: 680px) { .previewPackageTools { grid-template-columns: 1fr; } .previewPackageTools button { width: 100%; } .previewPackageList { grid-template-columns: 1fr; max-height: 360px; } }

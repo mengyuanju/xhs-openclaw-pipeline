@@ -32,7 +32,7 @@ test('protected control-plane operations declare their version contracts', () =>
     ['/v1/delivery-pool/xlsx', 'POST', 'deliverySpreadsheetVersion', 1],
     ['/v1/delivery-pool/xlsx/token', 'HEAD', 'deliverySpreadsheetVersion', 1],
     ['/v1/delivery-pool/xlsx/token', 'GET', 'deliverySpreadsheetVersion', 1],
-    ['/v1/delivery-pool/previews', 'POST', 'deliveryPreviewVersion', 1],
+    ['/v1/delivery-pool/previews', 'POST', 'deliveryPreviewVersion', 4],
     ['/v1/tasks/batch-archive', 'POST', 'finalDeliveryVersion', 2],
     ['/v1/tasks/42/archive', 'HEAD', 'finalDeliveryVersion', 2],
     ['/v1/tasks/42/archive', 'GET', 'finalDeliveryVersion', 2],
@@ -138,7 +138,7 @@ test('mutation capability check allows only compatible center versions', async (
     routePath: '/v1/delivery-pool/previews',
     method: 'POST',
     fetchImpl: async () => Response.json({
-      data: { capabilities: { deliveryPreviewVersion: 1 } },
+      data: { capabilities: { deliveryPreviewVersion: 4 } },
     }),
   });
 });

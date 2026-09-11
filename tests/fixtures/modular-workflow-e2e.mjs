@@ -64,6 +64,8 @@ const state = {
     id: 1,
     taskId: 701,
     query: '玄关收纳交付词',
+    queryPackageId: 9,
+    queryPackageName: '九月收纳词包',
     copyRevisionId: 801,
     imageRunId: '11111111-1111-4111-8111-111111111111',
     status: 'READY',
@@ -72,6 +74,8 @@ const state = {
     id: 2,
     taskId: 702,
     query: '厨房动线交付词',
+    queryPackageId: 9,
+    queryPackageName: '九月收纳词包',
     copyRevisionId: 802,
     imageRunId: '22222222-2222-4222-8222-222222222222',
     status: 'READY',
@@ -80,10 +84,22 @@ const state = {
     id: 3,
     taskId: 703,
     query: '衣柜分区交付词',
+    queryPackageId: 10,
+    queryPackageName: '十月整理词包',
     copyRevisionId: 803,
     imageRunId: '33333333-3333-4333-8333-333333333333',
     status: 'READY',
     approvedAt: '2026-09-09T08:32:00.000Z',
+  }, {
+    id: 4,
+    taskId: 704,
+    query: '历史独立交付词',
+    queryPackageId: null,
+    queryPackageName: null,
+    copyRevisionId: 804,
+    imageRunId: '44444444-4444-4444-8444-444444444444',
+    status: 'READY',
+    approvedAt: '2026-09-09T08:33:00.000Z',
   }],
   qaItems: [{
     id: '71717171-7171-4717-8717-717171717171',
@@ -379,6 +395,7 @@ const controlPlane = createServer(async (req, res) => {
           queryPackageVersion: 3,
           finalDeliveryVersion: 2,
           deliverySpreadsheetVersion: 1,
+          deliveryPreviewVersion: 4,
         },
       });
       return;
@@ -429,10 +446,92 @@ const controlPlane = createServer(async (req, res) => {
       }
       const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 50));
       const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
-      const items = state.deliveryEntries.slice(offset, offset + limit);
+      const queryPackageName = url.searchParams.get('queryPackageName');
+      const filtered = queryPackageName
+        ? state.deliveryEntries.filter((entry) => entry.queryPackageName === queryPackageName)
+        : state.deliveryEntries;
+      const items = filtered.slice(offset, offset + limit);
+      const facets = [...new Map(state.deliveryEntries.filter(
+        (entry) => entry.queryPackageId !== null,
+      ).map((entry) => [
+        entry.queryPackageId,
+        { id: entry.queryPackageId, name: entry.queryPackageName },
+      ])).values()].map((queryPackage) => {
+        const packageEntries = state.deliveryEntries.filter(
+          (entry) => entry.queryPackageId === queryPackage.id,
+        );
+        return {
+          ...queryPackage,
+          count: packageEntries.length,
+          unuploadedCount: packageEntries.filter((entry) => !entry.preview).length,
+          publishedCount: packageEntries.filter((entry) => entry.preview?.status === 'PUBLISHED').length,
+          revokedCount: packageEntries.filter((entry) => entry.preview?.status === 'REVOKED').length,
+        };
+      });
+      const unassignedEntries = state.deliveryEntries.filter((entry) => entry.queryPackageId === null);
+      const unassigned = unassignedEntries.length ? {
+        count: unassignedEntries.length,
+        unuploadedCount: unassignedEntries.filter((entry) => !entry.preview).length,
+        publishedCount: unassignedEntries.filter((entry) => entry.preview?.status === 'PUBLISHED').length,
+        revokedCount: unassignedEntries.filter((entry) => entry.preview?.status === 'REVOKED').length,
+      } : null;
       send(res, 200, url.searchParams.get('includeTotal') === 'true'
-        ? { items, total: state.deliveryEntries.length }
+        ? { items, total: filtered.length, facets: { queryPackages: facets, unassigned } }
         : items);
+      return;
+    }
+    if (method === 'POST' && url.pathname === '/v1/delivery-pool/previews') {
+      if (actorRole(req) !== 'ADMIN') {
+        error(res, 403, 'FORBIDDEN', 'fixture preview upload is admin-only');
+        return;
+      }
+      const input = await jsonBody(req);
+      const queryPackageIds = Array.isArray(input.queryPackageIds) ? input.queryPackageIds : [];
+      const includeUnassigned = input.includeUnassigned === true;
+      if (input.scope !== 'QUERY_PACKAGES'
+          || (queryPackageIds.length === 0 && !includeUnassigned)) {
+        error(res, 400, 'INVALID_PREVIEW_SCOPE', 'fixture requires a selected delivery source');
+        return;
+      }
+      const selectedIds = new Set(queryPackageIds.map(Number));
+      const limit = Math.min(200, Math.max(1, Number(input.limit) || 50));
+      const candidates = state.deliveryEntries.filter(
+        (entry) => (selectedIds.has(entry.queryPackageId)
+          || (includeUnassigned && entry.queryPackageId === null))
+          && (input.testTaskId === undefined || entry.taskId === Number(input.testTaskId))
+          && !entry.preview,
+      ).slice(0, limit);
+      const items = candidates.map((entry) => {
+        const id = randomUUID();
+        const noteId = randomUUID().replaceAll('-', '');
+        entry.preview = {
+          id,
+          noteId,
+          url: `${nextRoot}/preview?noteId=${noteId}`,
+          contentHash: 'a'.repeat(64),
+          status: 'PUBLISHED',
+          publishedAt: new Date().toISOString(),
+          revokedAt: null,
+        };
+        return {
+          taskId: entry.taskId,
+          deliveryEntryId: entry.id,
+          noteId,
+          previewUrl: entry.preview.url,
+          reused: false,
+        };
+      });
+      send(res, 200, {
+        scope: 'QUERY_PACKAGES',
+        limit,
+        requestedCount: items.length,
+        publishedCount: items.length,
+        createdCount: items.length,
+        reusedCount: 0,
+        failedCount: 0,
+        items,
+        failures: [],
+      });
       return;
     }
     if (method === 'POST' && url.pathname === '/v1/delivery-pool/archive') {
