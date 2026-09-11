@@ -1,5 +1,5 @@
 export const DEFAULT_WEB_SEARCH_PROVIDER = 'DEEPSEEK';
-export const DEFAULT_DEEPSEEK_SEARCH_MODEL = 'deepseek-flash';
+export const DEFAULT_DEEPSEEK_SEARCH_MODEL = 'deepseek-v4-pro';
 export const DEFAULT_WEB_SEARCH_TIMEOUT_MS = 120_000;
 export const DEEPSEEK_MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/u;
 export const DEFAULT_WEB_SEARCH_SETTINGS = Object.freeze({

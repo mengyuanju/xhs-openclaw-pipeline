@@ -10,7 +10,7 @@
 - 每个任务只提交经过长度限制的 `query`，不把目标人群、管理员提示词、凭据或其他任务字段发送给搜索提供方。
 - 默认最多保存 5 个去重后的公开 HTTP(S) 来源。
 - `XHS_WEB_SEARCH_PROVIDER=OPENCLAW` 沿用现有 OpenClaw 逻辑，当前默认提供方为 `codex`，Codex Hosted Search 使用现有 OpenAI/Codex 登录。显式传入多个受支持提供方时，仍保留依次尝试的契约。
-- `XHS_WEB_SEARCH_PROVIDER=DEEPSEEK`（项目默认）使用官方 Responses API 的服务端 `web_search`，默认模型为 `deepseek-flash`；Key 仅从实际执行机的 `DEEPSEEK_API_KEY` 读取。搜索模型 ID 采用格式校验而非版本白名单，DeepSeek 发布新模型后可直接通过生产配置或执行机环境切换。搜索模型和超时由独立配置模块解析，不改变文案、审核或生图模型。显式保存的服务或环境覆盖仍然优先。配置示例见 README 的“联网搜索提供方配置”。
+- `XHS_WEB_SEARCH_PROVIDER=DEEPSEEK`（项目默认）使用官方 Responses API 的服务端 `web_search`，默认模型为已验证能返回完成态 `web_search_call` 的 `deepseek-v4-pro`；Key 仅从实际执行机的 `DEEPSEEK_API_KEY` 读取。搜索模型 ID 采用格式校验而非版本白名单，DeepSeek 发布新模型后可通过生产配置或执行机环境切换，但上线前必须验证该模型确实支持服务端搜索。搜索模型和超时由独立配置模块解析，不改变文案、审核或生图模型。显式保存的服务或环境覆盖仍然优先。配置示例见 README 的“联网搜索提供方配置”。
 - “生产配置 → 联网搜索”面板在本地和中心模式均可保存提供方、模型及超时；保存到 `modelApi` 的非空覆盖值优先于执行机环境变量，`null` 恢复继承。中心执行使用领取时的配置快照，不改变运行中的任务。专用搜索配置接口仅接受这三个字段，并保留其他生产配置。
 - DeepSeek 响应必须完成并包含完成的 `web_search_call`，模型输出的摘要和来源仍是不可信数据，沿用公共 URL 校验、去重、权威性排序、最多 5 个来源和最多 5 次研究尝试的限制。不会把“执行过搜索”等同于独立核实了所有模型返回内容。
 - 当前 OpenClaw 安装没有可用的 `web.fetch` provider，因此本阶段保存搜索返回的标题、URL、摘要或归纳文本，不声称抓取过网页全文。

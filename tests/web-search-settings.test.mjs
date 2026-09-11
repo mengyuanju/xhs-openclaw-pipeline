@@ -8,16 +8,16 @@ import { createProductionSettingsStore, initializeProductionSettingsSchema } fro
 import { readWebSearchSettings, updateWebSearchSettings } from '../src/admin/web-search-settings-service.mjs';
 import { createCopyGenerationClient } from '../src/copy-generation-client.mjs';
 
-test('unconfigured search defaults to DeepSeek flash while explicit Codex remains available', () => {
+test('unconfigured search defaults to the verified DeepSeek web-search model while explicit Codex remains available', () => {
   assert.deepEqual(resolveWebSearchConfig({}), {
-    provider: 'DEEPSEEK', model: 'deepseek-flash', timeoutMs: 120_000,
+    provider: 'DEEPSEEK', model: 'deepseek-v4-pro', timeoutMs: 120_000,
   });
   assert.equal(effectiveModelApiConfig({}, {}).webSearchProvider, 'DEEPSEEK');
   assert.deepEqual(resolveWebSearchConfig({}, { webSearchProvider: 'CODEX' }), { provider: 'CODEX' });
   assert.deepEqual(resolveWebSearchConfig({ XHS_WEB_SEARCH_PROVIDER: 'CODEX' }), { provider: 'CODEX' });
 });
 
-test('clearing a saved search override restores DeepSeek flash without changing generation settings', async () => {
+test('clearing a saved search override restores the verified DeepSeek model without changing generation settings', async () => {
   const db = new DatabaseSync(':memory:');
   try {
     initializeProductionSettingsSchema(db);
@@ -27,7 +27,7 @@ test('clearing a saved search override restores DeepSeek flash without changing 
     await updateWebSearchSettings(options, { webSearchProvider: 'CODEX' });
     assert.equal((await readWebSearchSettings(options)).effective.provider, 'CODEX');
     const restored = await updateWebSearchSettings(options, { webSearchProvider: null, deepseekSearchModel: null });
-    assert.deepEqual(restored.effective, { provider: 'DEEPSEEK', model: 'deepseek-flash', timeoutMs: 120_000 });
+    assert.deepEqual(restored.effective, { provider: 'DEEPSEEK', model: 'deepseek-v4-pro', timeoutMs: 120_000 });
     assert.equal(store.getProductionSettings().settings.modelApi.textModel, 'openai/gpt-5.6-sol');
     assert.equal(restored.apiKeyConfigured, false);
   } finally { db.close(); }
@@ -54,13 +54,13 @@ test('local search saves preserve generation settings and allow resetting to the
     const store = createProductionSettingsStore(db);
     store.updateProductionSettings({ modelApi: { textModel: 'openai/gpt-5.6-terra' }, aiDisclosureEnabled: false });
     const options = { store, environment: { DEEPSEEK_API_KEY: 'local-test-secret' } };
-    const record = await updateWebSearchSettings(options, { webSearchProvider: 'DEEPSEEK', deepseekSearchModel: 'deepseek-flash' });
+    const record = await updateWebSearchSettings(options, { webSearchProvider: 'DEEPSEEK', deepseekSearchModel: 'deepseek-v4-pro' });
     assert.equal(record.settings.webSearchProvider, 'DEEPSEEK');
     assert.equal(record.apiKeyConfigured, true);
     assert.ok(!JSON.stringify(record).includes('local-test-secret'));
     assert.equal(store.getProductionSettings().settings.modelApi.textModel, 'openai/gpt-5.6-terra');
     store.updateProductionSettings({ modelApi: { textModel: 'openai/gpt-5.6-sol' } });
-    assert.equal((await readWebSearchSettings(options)).settings.deepseekSearchModel, 'deepseek-flash');
+    assert.equal((await readWebSearchSettings(options)).settings.deepseekSearchModel, 'deepseek-v4-pro');
     await updateWebSearchSettings(options, { webSearchProvider: null });
     assert.equal((await readWebSearchSettings(options)).settings.webSearchProvider, null);
   } finally { db.close(); }

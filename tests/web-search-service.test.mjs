@@ -91,7 +91,7 @@ test('explicit Codex search preserves the original client without requiring a De
 
 test('search configuration accepts explicit switching and rejects invalid active settings', () => {
   assert.deepEqual(resolveWebSearchConfig({ XHS_WEB_SEARCH_PROVIDER: ' deepseek ' }), {
-    provider: 'DEEPSEEK', model: 'deepseek-flash', timeoutMs: 120_000,
+    provider: 'DEEPSEEK', model: 'deepseek-v4-pro', timeoutMs: 120_000,
   });
   assert.throws(() => resolveWebSearchConfig({ XHS_WEB_SEARCH_PROVIDER: 'typo' }), /XHS_WEB_SEARCH_PROVIDER/u);
   assert.throws(() => resolveWebSearchConfig({ ...environment, XHS_DEEPSEEK_SEARCH_MODEL: 'not a model' }), /model/iu);
