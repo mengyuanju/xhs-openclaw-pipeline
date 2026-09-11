@@ -26,7 +26,7 @@ V3 将负责人分配推迟到文案待审核阶段。任务创建、负责人�
 
 1. 暂停 Web 写入并让中心服务、文案执行机和生图执行机停止领取新任务。
 2. 备份 PostgreSQL 和 `CONTROL_PLANE_STORAGE_ROOT`。先运行 `npm run db:upgrade` 预览，再在 `server` 目录运行 `npm run db:upgrade -- --apply`。
-3. 以停机切换或原子切流方式启动同一发布包中的新版中心服务和新版 Web，确认 `/health` 的 `taskAssignmentVersion=3`、`autoAssignmentPoolVersion=3`、`queryPackageVersion=2`。不要让新旧中心处于同一个负载均衡池中滚动混跑：capability 检查和写请求是两个请求，混合后端不能保证命中同一版本。新版 Web 会在任务创建、负责人写入、自动派单池写入和 Query 词包写操作前校验对应 capability；版本过旧、版本缺失或无法确认时均拒绝写入。V3 的手工分配和人员池写入仍会同时校验账号名与不可复用的数字账号 ID。
+3. 以停机切换或原子切流方式启动同一发布包中的新版中心服务和新版 Web，确认 `/health` 的 `taskAssignmentVersion=3`、`autoAssignmentPoolVersion=3`、`queryPackageVersion=3`。不要让新旧中心处于同一个负载均衡池中滚动混跑：capability 检查和写请求是两个请求，混合后端不能保证命中同一版本。新版 Web 会在任务创建、负责人写入、自动派单池写入和 Query 词包写操作前校验对应 capability；版本过旧、版本缺失或无法确认时均拒绝写入。V3 的任务分配、人员池写入和词包筛选人分配都会同时校验账号名与不可复用的数字账号 ID。
 4. 在文案执行机仍停止时，先清点历史未分配文案积压：`SELECT id, query, created_at FROM tasks WHERE state = 'COPY_QUEUED' AND assigned_to_user_id IS NULL ORDER BY id;`。V3 会把这些任务视为可执行的机器队列；通过新版管理员界面废弃不应产生模型调用的旧任务，明确确认其余任务可以执行后再继续。
 5. 在管理员页面只把确实需要自动接单的普通用户加入人员池，设置各自的待审核任务额度，最后开启总开关。
 6. 恢复 Web 写入，再启动文案执行机和生图执行机。

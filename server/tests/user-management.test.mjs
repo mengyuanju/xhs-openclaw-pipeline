@@ -398,11 +398,70 @@ test('user deletion blocks unfinished assignments and safely detaches terminal h
   const audit = terminal.calls.find(({ sql }) => sql.includes('INSERT INTO task_assignment_events'));
   assert.ok(audit);
   assert.deepEqual(audit.values, ['alice', 'admin']);
+  const queryPackageDetach = terminal.calls.find(({ sql }) => sql.includes('UPDATE query_packages'));
+  assert.ok(queryPackageDetach);
+  assert.deepEqual(queryPackageDetach.values, [2, 'alice']);
+  assert.match(queryPackageDetach.sql,
+    /assigned_to_account_id = NULL, assigned_to_username = NULL,[\s\S]*version = version \+ 1/u);
   assert.ok(terminal.calls.findIndex(({ sql }) => sql.includes('INSERT INTO task_assignment_events'))
     < terminal.calls.findIndex(({ sql }) => sql.includes('UPDATE tasks')));
   assert.ok(terminal.calls.findIndex(({ sql }) => sql.includes('UPDATE tasks'))
+    < terminal.calls.findIndex(({ sql }) => sql.includes('UPDATE query_packages')));
+  assert.ok(terminal.calls.findIndex(({ sql }) => sql.includes('UPDATE query_packages'))
     < terminal.calls.findIndex(({ sql }) => sql.includes('DELETE FROM app_users')));
   assert.equal(terminal.calls[1].sql, 'SELECT pg_advisory_xact_lock(4310, 8301)');
+});
+
+test('user eligibility changes clear Query-package assignments while USER and REVIEWER transitions retain them', async () => {
+  function updateRepository({ currentRole, nextRole, nextStatus }) {
+    const calls = [];
+    const client = {
+      async query(sql, values = []) {
+        const source = String(sql);
+        calls.push({ sql: source, values });
+        if (source.includes('SELECT * FROM app_users WHERE id')) return { rows: [{
+          id: 2, username: 'alice', display_name: 'Alice', role: currentRole, status: 'ACTIVE', version: 1,
+        }] };
+        if (source.includes('SELECT id FROM tasks')) return { rows: [] };
+        if (source.includes("SELECT COUNT(*) AS count FROM app_users")) return { rows: [{ count: '2' }] };
+        if (source.includes('UPDATE app_users')) return { rows: [{
+          id: 2, username: 'alice', display_name: 'Alice', role: nextRole, status: nextStatus, version: 2,
+        }] };
+        return { rows: [] };
+      },
+      release() {},
+    };
+    return {
+      calls,
+      repository: new PostgresControlPlaneRepository({ pool: { connect: async () => client } }),
+    };
+  }
+
+  for (const next of [
+    { role: 'USER', status: 'DISABLED' },
+    { role: 'ADMIN', status: 'ACTIVE' },
+  ]) {
+    const fixture = updateRepository({
+      currentRole: 'USER', nextRole: next.role, nextStatus: next.status,
+    });
+    await fixture.repository.updateUser(2, {
+      displayName: 'Alice', role: next.role, status: next.status, expectedVersion: 1,
+    });
+    const detach = fixture.calls.find(({ sql }) => sql.includes('UPDATE query_packages'));
+    assert.ok(detach, `${next.role}/${next.status}`);
+    assert.deepEqual(detach.values, [2, 'alice']);
+    assert.ok(fixture.calls.findIndex(({ sql }) => sql.includes('UPDATE app_users'))
+      < fixture.calls.findIndex(({ sql }) => sql.includes('UPDATE query_packages')));
+  }
+
+  for (const [currentRole, nextRole] of [['USER', 'REVIEWER'], ['REVIEWER', 'USER']]) {
+    const fixture = updateRepository({ currentRole, nextRole, nextStatus: 'ACTIVE' });
+    await fixture.repository.updateUser(2, {
+      displayName: 'Alice', role: nextRole, status: 'ACTIVE', expectedVersion: 1,
+    });
+    assert.equal(fixture.calls.some(({ sql }) => sql.includes('UPDATE query_packages')), false,
+      `${currentRole} -> ${nextRole}`);
+  }
 });
 
 test('user updates and deletions share one roster lock before reading an account', async () => {

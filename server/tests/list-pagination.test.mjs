@@ -73,3 +73,24 @@ test('Query, QA, and delivery lists pass normalized integer pagination to Postgr
   assert.deepEqual(calls[2].values, [200, 10]);
   assert.ok(calls.every(({ values }) => values.every((value) => value !== '200' && value !== '0010')));
 });
+
+test('delegated Query-package lists are scoped to the stable assigned account', async () => {
+  const calls = [];
+  const pool = {
+    query: async (sql, values = []) => {
+      calls.push({ sql: String(sql), values });
+      return { rows: [] };
+    },
+  };
+
+  await listQueryPackages(pool, { limit: '25', offset: '5' }, {
+    userId: 91,
+    username: 'reviewer',
+    role: 'REVIEWER',
+  });
+
+  assert.deepEqual(calls[0].values, [91, 'reviewer', 25, 5]);
+  assert.match(calls[0].sql,
+    /WHERE package\.assigned_to_account_id = \$1 AND package\.assigned_to_username = \$2/u);
+  assert.match(calls[0].sql, /LIMIT \$3 OFFSET \$4/u);
+});

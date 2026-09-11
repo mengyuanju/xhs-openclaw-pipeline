@@ -75,12 +75,12 @@ export function SideNav({ session }: { session: { subject: string; username?: st
     : role === 'REVIEWER'
       ? navigationGroups.map((group) => ({
           ...group,
-          items: group.items.filter((item) => ['/workbench', '/copy-qa'].includes(item.href))
+          items: group.items.filter((item) => ['/workbench', '/query-packages', '/copy-qa'].includes(item.href))
             .map((item) => ({ ...item, children: item.children?.filter((child) => !child.adminOnly) })),
         }))
       : navigationGroups.map((group) => ({
           ...group,
-          items: group.items.filter((item) => item.href === '/workbench').map((item) => ({
+          items: group.items.filter((item) => ['/workbench', '/query-packages'].includes(item.href)).map((item) => ({
             ...item,
             children: item.children?.filter((child) => child.href === '/workbench/personal'),
           })),

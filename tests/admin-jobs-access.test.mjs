@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createSessionToken, ADMIN_SESSION_COOKIE } from '../src/admin/auth.mjs';
 import { evaluateAdminProxyRequest } from '../src/admin/proxy-policy.mjs';
 
-test('administrator-only pages stay closed without removing each role\'s work queue', () => {
+test('word screening stays available to current roles while administrator-only pages stay closed', () => {
   const secret = 'isolated-test-session-secret-for-all-jobs';
   for (const role of ['ADMIN', 'REVIEWER', 'USER']) {
     const token = createSessionToken(secret, {
@@ -22,7 +22,12 @@ test('administrator-only pages stay closed without removing each role\'s work qu
       role === 'ADMIN' ? 'next' : 'forbidden');
     assert.equal(evaluateAdminProxyRequest(request('/api/workbench-statistics/anything'), environment).type,
       role === 'ADMIN' ? 'next' : 'forbidden');
-    for (const path of ['/query-packages', '/query-packages/7', '/delivery-pool', '/delivery-pool/ready']) {
+    for (const path of ['/query-packages', '/query-packages/7']) {
+      assert.equal(evaluateAdminProxyRequest(request(path), environment).type, 'next', `${role} ${path}`);
+    }
+    assert.equal(evaluateAdminProxyRequest(request('/query-packages-evil'), environment).type,
+      role === 'ADMIN' ? 'next' : 'forbidden');
+    for (const path of ['/delivery-pool', '/delivery-pool/ready']) {
       assert.equal(evaluateAdminProxyRequest(request(path), environment).type,
         role === 'ADMIN' ? 'next' : 'forbidden', `${role} ${path}`);
     }

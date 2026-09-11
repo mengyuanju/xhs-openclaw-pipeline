@@ -59,8 +59,8 @@ test('ordinary users do not render Query package provenance or delivery download
     readFile(projectFile('app/components/side-nav.tsx'), 'utf8'),
   ]);
 
-  assert.match(navigation, /items\.filter\(\(item\) => item\.href === '\/workbench'\)/u,
-    'ordinary users must not receive Query package or delivery-pool navigation entries');
+  assert.match(navigation, /items\.filter\(\(item\) => \['\/workbench', '\/query-packages'\]\.includes\(item\.href\)\)/u,
+    'ordinary users must receive their assigned Query packages without receiving the delivery pool');
   assert.match(workbench, /const canUseQueryPackageFilter = role !== 'USER'/u);
   assert.match(workbench, /canUseQueryPackageFilter \? initialListState\.queryPackageName : ''/u,
     'a package filter from the URL must not initialize for an ordinary user');

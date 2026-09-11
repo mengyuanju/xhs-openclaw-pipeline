@@ -82,7 +82,7 @@ test('copy QA keeps the review-mode control admin-only', async () => {
   assert.match(source, /样本评审模式由管理员预先决定，审核员不可切换或更改/u);
 });
 
-test('administrator Query packages page through the server and renders at most one detail page', async () => {
+test('visible Query packages page through the server and render at most one detail page', async () => {
   const source = await readFile(queryWorkbenchUrl, 'utf8');
   assert.match(source, /query-packages\?limit=\$\{QUERY_PACKAGE_LIST_LIMIT\}&offset=\$\{offset\}/u);
   assert.match(source, /load\(\{ silent: true, offset: nextPackageOffset \}\)/u);
@@ -112,23 +112,29 @@ test('administrator delivery pagination advances by the server page offset inste
   assert.match(source, /文本搜索只覆盖已加载条目/u);
 });
 
-test('development E2E fixture mirrors automatic Query production, pagination and held-item closure', async () => {
+test('development E2E fixture mirrors delegated screening, automatic Query production, pagination and held-item closure', async () => {
   const source = await readFile(modularE2eFixtureUrl, 'utf8');
   assert.match(source, /MODULAR_E2E_PAGINATION_SEED === '1'/u);
-  assert.match(source, /queryPackageVersion: 2/u);
+  assert.match(source, /queryPackageVersion: 3/u);
   assert.match(source, /send\(res, 200, page\.items\.map\(packageSummary\)\)/u,
     'Query package fixture pages must match the current bare-array server response');
-  assert.match(source, /if \(method === 'GET' && url\.pathname === '\/v1\/query-packages'\) \{[\s\S]*?actorRole\(req\) !== 'ADMIN'[\s\S]*?paginate\(url, state\.packages\)/u,
-    'Query packages in the browser fixture must be administrator-only and ownerless');
-  assert.match(source, /function createFixtureProductionBatch[\s\S]*?state: 'COPY_QUEUED'[\s\S]*?assignedToUserId: null[\s\S]*?assignmentSource: null[\s\S]*?item\.status = 'TASK_CREATED'/u,
-    'passing a Query must create unassigned copy work and mark the source row as produced');
+  assert.match(source, /const visiblePackages = actorRole\(req\) === 'ADMIN'[\s\S]*?state\.packages\.filter\(\(record\) => canAccessPackage\(req, record\)\)[\s\S]*?paginate\(url, visiblePackages\)/u,
+    'non-administrators must only receive Query packages assigned to their exact account');
+  assert.match(source, /function createFixtureProductionBatch[\s\S]*?createdByUserId: record\.createdByUserId \?\? 'admin'[\s\S]*?assignedToUserId: null[\s\S]*?assignmentSource: null[\s\S]*?item\.status = 'TASK_CREATED'/u,
+    'passing a Query must create unassigned copy work under the package creator and mark the source row as produced');
   assert.match(source, /if \(method === 'PUT' && screenMatch\)[\s\S]*?createFixtureProductionBatch\(record, selectedItems,[\s\S]*?record\.status = packageStatus\(record\)[\s\S]*?send\(res, 200, packageSummary\(record\)\)/u,
     'screening must atomically model the automatic production path');
   assert.match(source, /if \(item\.screeningDecision === 'SELECTED'\) selectedItems\.push\(item\)/u,
     'rejected Query rows must not enter the fixture production batch');
-  assert.doesNotMatch(source, /query-packages\\\/\(\\d\+\)\\\/assignee/u,
-    'the retired Query-package assignment route must not remain in the browser fixture');
-  assert.match(source, /if \(method === 'POST' && productionMatch\)[\s\S]*?createFixtureProductionBatch\(record, items,/u,
+  assert.match(source, /if \(method === 'PATCH' && assigneeMatch\)[\s\S]*?actorRole\(req\) !== 'ADMIN'[\s\S]*?hasUsername !== hasAccountId[\s\S]*?record\.assignedToAccountId = assignee\?\.id \?\? null/u,
+    'the fixture assignment route must be administrator-only and require a complete stable assignee identity');
+  assert.match(source, /function actorUser\(req\)[\s\S]*?x-actor-user-id[\s\S]*?x-actor-credential-version[\s\S]*?user\.id !== userId[\s\S]*?user\.credentialVersion !== credentialVersion/u,
+    'the fixture must authenticate the stable account id and credential version instead of trusting username or role headers');
+  assert.match(source, /const actor = actorUser\(req\);[\s\S]*?error\(res, 401, 'SESSION_STALE'/u,
+    'protected fixture routes must reject stale or forged actor identities before authorization');
+  assert.match(source, /url\.pathname === '\/v1\/users'[\s\S]*?actor\.role !== 'ADMIN'[\s\S]*?error\(res, 403, 'FORBIDDEN'/u,
+    'the fixture user directory must remain administrator-only');
+  assert.match(source, /if \(method === 'POST' && productionMatch\)[\s\S]*?actorRole\(req\) !== 'ADMIN'[\s\S]*?createFixtureProductionBatch\(record, items,/u,
     'the explicit production route remains only as a historical compatibility path');
   assert.match(source, /send\(res, 200, page\.items\.map\(\(item\) => qaItemFor\(req, item\)\)\)/u,
     'copy QA fixture pages must match the current bare-array server response');
@@ -138,13 +144,13 @@ test('development E2E fixture mirrors automatic Query production, pagination and
 
 test('login returns each role only to an authorized workflow page', () => {
   const base = { homePath: '/workbench/personal', mustChangePassword: false };
-  assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/query-packages' }), base.homePath);
+  assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/query-packages' }), '/query-packages');
   assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/delivery-pool?task=1' }), base.homePath);
   assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/workbench/completed' }), base.homePath);
   assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/workbench/personal?taskId=7' }), '/workbench/personal?taskId=7');
   assert.equal(resolveLoginReturnPath({ ...base, role: 'REVIEWER', requestedPath: '/copy-qa' }), '/copy-qa');
   assert.equal(resolveLoginReturnPath({ ...base, role: 'REVIEWER', requestedPath: '/knowledge' }), base.homePath);
-  assert.equal(resolveLoginReturnPath({ ...base, role: 'REVIEWER', requestedPath: '/query-packages' }), base.homePath);
+  assert.equal(resolveLoginReturnPath({ ...base, role: 'REVIEWER', requestedPath: '/query-packages' }), '/query-packages');
   assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/copy-qa' }), base.homePath);
   assert.equal(resolveLoginReturnPath({ ...base, role: 'ADMIN', requestedPath: '/settings' }), '/settings');
   assert.equal(resolveLoginReturnPath({ ...base, role: 'ADMIN', requestedPath: '//evil.example' }), base.homePath);

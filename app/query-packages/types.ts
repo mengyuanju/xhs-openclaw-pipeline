@@ -16,6 +16,11 @@ export type QueryPackageSummary = {
   id: number;
   name: string;
   status: string;
+  assignedToUserId: string | null;
+  assignedToAccountId: number | null;
+  assignedToDisplayName: string | null;
+  assignedToRole: 'REVIEWER' | 'USER' | null;
+  assigneeStatus: 'ACTIVE' | 'DISABLED' | null;
   version: number;
   counts: QueryPackageCounts;
   createdAt: string;
@@ -98,10 +103,28 @@ export function normalizePackageSummary(value: unknown): QueryPackageSummary | n
   const counts = row.counts && typeof row.counts === 'object'
     ? row.counts as Record<string, unknown>
     : {};
+  const assignedToAccountId = Number(row.assignedToAccountId);
+  const assignedToRole = ['REVIEWER', 'USER'].includes(String(row.assignedToRole))
+    ? row.assignedToRole as 'REVIEWER' | 'USER'
+    : null;
+  const assigneeStatus = ['ACTIVE', 'DISABLED'].includes(String(row.assigneeStatus))
+    ? row.assigneeStatus as 'ACTIVE' | 'DISABLED'
+    : null;
   return {
     id,
     name: row.name.trim(),
     status: typeof row.status === 'string' ? row.status : 'SCREENING',
+    assignedToUserId: typeof row.assignedToUserId === 'string' && row.assignedToUserId.trim()
+      ? row.assignedToUserId.trim()
+      : null,
+    assignedToAccountId: Number.isSafeInteger(assignedToAccountId) && assignedToAccountId > 0
+      ? assignedToAccountId
+      : null,
+    assignedToDisplayName: typeof row.assignedToDisplayName === 'string' && row.assignedToDisplayName.trim()
+      ? row.assignedToDisplayName.trim()
+      : null,
+    assignedToRole,
+    assigneeStatus,
     version,
     counts: {
       total: finiteCount(counts.total),

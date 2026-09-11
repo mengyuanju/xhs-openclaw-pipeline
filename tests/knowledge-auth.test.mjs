@@ -125,8 +125,8 @@ test('reviewer navigation and login return paths exclude the knowledge workbench
     import('node:fs/promises').then(({ readFile }) => readFile(new URL('../app/api/control-plane/[...path]/route.ts', import.meta.url), 'utf8')),
     import('../app/login/return-path.ts'),
   ]);
-  assert.match(navigation, /role === 'REVIEWER'[\s\S]*?\['\/workbench', '\/copy-qa'\]/u);
-  assert.doesNotMatch(navigation, /role === 'REVIEWER'[\s\S]*?\['\/workbench', '\/knowledge', '\/copy-qa'\]/u);
+  assert.match(navigation, /role === 'REVIEWER'[\s\S]*?\['\/workbench', '\/query-packages', '\/copy-qa'\]/u);
+  assert.doesNotMatch(navigation, /role === 'REVIEWER'[\s\S]*?\['\/workbench', '\/query-packages', '\/knowledge', '\/copy-qa'\]/u);
   assert.match(controlPlaneProxy, /role === 'REVIEWER' && isKnowledgeControlPlaneRoute\(routePath\)/u);
   assert.equal(returnPath.resolveLoginReturnPath({
     requestedPath: '/knowledge', homePath: '/workbench/personal', role: 'REVIEWER', mustChangePassword: false,

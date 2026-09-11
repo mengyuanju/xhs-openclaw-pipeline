@@ -2,7 +2,11 @@ import { ApiError } from '../../../../src/admin/http.mjs';
 import { controlPlaneUrl } from '../../../../src/control-plane/next-runtime.mjs';
 import { assetConditionalHeaders, assetResponseHeaders } from '../../../../src/control-plane/asset-proxy.mjs';
 import { assertMutationCapability } from '../../../../src/control-plane/mutation-capability.mjs';
-import { isKnowledgeControlPlaneRoute, userCanAccessControlPlaneRoute } from '../../../../src/control-plane/proxy-access.mjs';
+import {
+  isKnowledgeControlPlaneRoute,
+  nonAdminCanAccessQueryPackageRoute,
+  userCanAccessControlPlaneRoute,
+} from '../../../../src/control-plane/proxy-access.mjs';
 import { sessionActorHeaders } from '../../../../src/control-plane/session-actor-headers.mjs';
 import { apiHandler } from '../../_lib';
 
@@ -35,9 +39,11 @@ async function proxyRequest(
   if (/^\/v1\/tasks\/[^/]+\/model-calls(?:\/|$)/u.test(routePath) && role !== 'ADMIN') {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可查看模型执行链路');
   }
-  if (role !== 'ADMIN' && (/^\/v1\/(?:query-packages|delivery-pool)(?:\/|$)/u.test(routePath)
+  if (role !== 'ADMIN' && ((/^\/v1\/query-packages(?:\/|$)/u.test(routePath)
+      && !nonAdminCanAccessQueryPackageRoute(routePath, request.method))
+    || /^\/v1\/delivery-pool(?:\/|$)/u.test(routePath)
     || /^\/v1\/tasks\/[^/]+\/archive(?:\/|$)/u.test(routePath))) {
-    throw new ApiError(403, 'FORBIDDEN', '仅管理员可访问词包与交付信息');
+    throw new ApiError(403, 'FORBIDDEN', '仅管理员可管理词包与交付信息');
   }
   if (routePath === '/v1/tasks' && upstreamUrl.searchParams.has('createdByRole') && role !== 'ADMIN') {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可按创建者角色筛选任务');
@@ -61,8 +67,8 @@ async function proxyRequest(
   if (routePath === '/v1/copy-qa/statistics' && role !== 'ADMIN') {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可查看人员抽检正确率');
   }
-  if (role === 'REVIEWER' && /^\/v1\/(?:query-packages|production-batches)(?:\/|$)/u.test(routePath)) {
-    throw new ApiError(403, 'FORBIDDEN', '质检员没有词包与生产批次管理权限');
+  if (role === 'REVIEWER' && /^\/v1\/production-batches(?:\/|$)/u.test(routePath)) {
+    throw new ApiError(403, 'FORBIDDEN', '质检员没有生产批次管理权限');
   }
   if (role === 'REVIEWER' && (/^\/v1\/delivery-pool(?:\/|$)/u.test(routePath)
     || /^\/v1\/tasks\/[^/]+\/archive$/u.test(routePath))) {

@@ -61,6 +61,8 @@ export function evaluateAdminProxyRequest(request, environment = process.env) {
       const allowed = url.pathname === '/'
         || url.pathname === '/workbench'
         || url.pathname.startsWith('/workbench/')
+        || matchesExactPath(url.pathname, '/query-packages')
+        || url.pathname.startsWith('/query-packages/')
         || url.pathname === '/copy-qa'
         || url.pathname.startsWith('/copy-qa/');
       return allowed ? { type: 'next' } : { type: 'forbidden' };
@@ -68,7 +70,9 @@ export function evaluateAdminProxyRequest(request, environment = process.env) {
     if (role === 'USER') {
       const allowed = url.pathname === '/'
         || url.pathname === '/workbench'
-        || url.pathname === '/workbench/personal';
+        || url.pathname === '/workbench/personal'
+        || matchesExactPath(url.pathname, '/query-packages')
+        || url.pathname.startsWith('/query-packages/');
       return allowed ? { type: 'next' } : { type: 'forbidden' };
     }
     return { type: 'forbidden' };

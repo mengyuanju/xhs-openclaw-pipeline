@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  assignQueryPackage,
   createQueryPackageProductionBatch,
+  getQueryPackage,
   permanentlyDeleteQueryPackage,
   previewPermanentQueryPackageDeletion,
   updateQueryPackageScreening,
@@ -11,6 +13,7 @@ import { hashUserPassword } from '../src/user-auth.mjs';
 
 const admin = Object.freeze({ userId: 1, username: 'admin', role: 'ADMIN' });
 const worker = Object.freeze({ userId: 22, username: 'worker-22', role: 'USER' });
+const reviewer = Object.freeze({ userId: 91, username: 'reviewer-91', role: 'REVIEWER' });
 
 function packageRow(patch = {}) {
   return {
@@ -60,8 +63,9 @@ function fakeQueryPackageDatabase() {
     deletionAudits: [],
     deletionPasswordHash: null,
     activeActors: new Map([
-      [1, { id: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 }],
-      [22, { id: 22, username: 'worker-22', role: 'USER', credentialVersion: 1 }],
+      [1, { id: 1, username: 'admin', displayName: '管理员', role: 'ADMIN', status: 'ACTIVE', credentialVersion: 1 }],
+      [22, { id: 22, username: 'worker-22', displayName: '普通用户', role: 'USER', status: 'ACTIVE', credentialVersion: 1 }],
+      [91, { id: 91, username: 'reviewer-91', displayName: '审核员', role: 'REVIEWER', status: 'ACTIVE', credentialVersion: 1 }],
     ]),
     sql: [],
   };
@@ -73,15 +77,28 @@ function fakeQueryPackageDatabase() {
     if (source.startsWith('SELECT id FROM app_users') && source.includes('FOR SHARE')) {
       const actor = state.activeActors.get(Number(values[0]));
       return { rows: actor && actor.username === values[1] && actor.role === values[2]
+          && actor.status === 'ACTIVE'
           && (values[3] === null || actor.credentialVersion === Number(values[3]))
         ? [{ id: actor.id }] : [] };
+    }
+    if (source.startsWith('SELECT id, username FROM app_users') && source.includes('FOR SHARE')) {
+      const assignee = state.activeActors.get(Number(values[0]));
+      return { rows: assignee && assignee.username === values[1]
+          && assignee.status === 'ACTIVE'
+          && ['REVIEWER', 'USER'].includes(assignee.role)
+        ? [{ id: assignee.id, username: assignee.username }] : [] };
     }
     if (source.startsWith('SELECT pg_advisory_xact_lock')) return { rows: [{ pg_advisory_xact_lock: '' }] };
     if (source.startsWith('SELECT package.*') && source.includes('GROUP BY package.id')) {
       if (!state.package || Number(values[0]) !== state.package.id) return { rows: [] };
       const items = [...state.items.values()].filter((item) => item.query_package_id === state.package.id);
+      const assignee = state.activeActors.get(Number(state.package.assigned_to_account_id));
+      const stableAssignee = assignee?.username === state.package.assigned_to_username ? assignee : null;
       return { rows: [{
         ...state.package,
+        assigned_to_display_name: stableAssignee?.displayName ?? null,
+        assigned_to_role: stableAssignee?.role ?? null,
+        assignee_status: stableAssignee?.status ?? null,
         total_count: String(items.length),
         pending_count: String(items.filter((item) => item.status === 'READY'
           && item.screening_decision === 'PENDING').length),
@@ -91,6 +108,31 @@ function fakeQueryPackageDatabase() {
         invalid_count: String(items.filter((item) => item.status === 'INVALID').length),
         duplicate_count: String(items.filter((item) => item.status === 'DUPLICATE').length),
       }] };
+    }
+    if (source.startsWith('SELECT id, assigned_to_account_id, assigned_to_username')) {
+      return { rows: state.package && Number(values[0]) === state.package.id
+        ? [{
+            id: state.package.id,
+            assigned_to_account_id: state.package.assigned_to_account_id,
+            assigned_to_username: state.package.assigned_to_username,
+          }]
+        : [] };
+    }
+    if (source.startsWith('SELECT item.*, production_item.task_id')) {
+      return { rows: [...state.items.values()]
+        .filter((item) => item.query_package_id === Number(values[0]))
+        .map((item) => ({
+          ...item,
+          task_id: state.batchItems.find((batchItem) => batchItem.sourceItemId === item.id)?.taskId ?? null,
+        })) };
+    }
+    if (source.startsWith('SELECT batch.*, COUNT(item.id) AS task_count')) {
+      return { rows: state.batches
+        .filter((batch) => batch.query_package_id === Number(values[0]))
+        .map((batch) => ({
+          ...batch,
+          task_count: String(state.batchItems.filter((item) => item.productionBatchId === batch.id).length),
+        })) };
     }
     if (source === 'SELECT * FROM query_packages WHERE id = $1') {
       return { rows: state.package && Number(values[0]) === state.package.id ? [{ ...state.package }] : [] };
@@ -192,6 +234,13 @@ function fakeQueryPackageDatabase() {
       state.package.version += 1;
       return { rows: [{ ...state.package }] };
     }
+    if (source.startsWith('UPDATE query_packages SET assigned_to_account_id')) {
+      if (Number(values[3]) !== Number(state.package.version)) return { rows: [] };
+      state.package.assigned_to_account_id = values[1] === null ? null : Number(values[1]);
+      state.package.assigned_to_username = values[2];
+      state.package.version += 1;
+      return { rows: [{ ...state.package }] };
+    }
     if (source.startsWith('SELECT id FROM query_package_items') && source.includes("screening_decision = 'SELECTED'")) {
       const requested = values[1] === null ? null : new Set(values[1].map(Number));
       return { rows: [...state.items.values()].filter((item) => item.query_package_id === Number(values[0])
@@ -231,6 +280,7 @@ function fakeQueryPackageDatabase() {
         state.tasks.push({
           id: taskId,
           query: item.query,
+          created_by_user_id: values[3],
           state: 'COPY_QUEUED',
           current_stage: 'COPY_QUEUED',
           assigned_to_user_id: null,
@@ -319,7 +369,7 @@ function fakeQueryPackageDatabase() {
   return { state, pool: { connect: async () => client, query } };
 }
 
-test('Query-package screening and production reject users before database access', async () => {
+test('historical production and package assignment remain administrator-only before database access', async () => {
   let databaseAccessCount = 0;
   const pool = {
     connect: async () => {
@@ -332,19 +382,149 @@ test('Query-package screening and production reject users before database access
     },
   };
 
-  await assert.rejects(updateQueryPackageScreening(pool, 9, {
+  await assert.rejects(assignQueryPackage(pool, 9, {
+    expectedVersion: 1,
+    assignedToUserId: reviewer.username,
+    assignedToAccountId: reviewer.userId,
+  }, worker), { code: 'FORBIDDEN' });
+  for (const actor of [worker, reviewer]) {
+    await assert.rejects(createQueryPackageProductionBatch(pool, 9, {
+      expectedVersion: 1,
+      requestId: '20202020-2020-4020-8020-202020202020',
+      itemIds: [101],
+      nodeId: 'query-package-test',
+    }, actor), { code: 'FORBIDDEN' });
+  }
+
+  assert.equal(databaseAccessCount, 0);
+});
+
+test('administrator can assign or unassign active USER and REVIEWER accounts with stable identities', async () => {
+  const fixture = fakeQueryPackageDatabase();
+
+  const assignedReviewer = await assignQueryPackage(fixture.pool, 9, {
+    expectedVersion: 1,
+    assignedToUserId: reviewer.username,
+    assignedToAccountId: reviewer.userId,
+  }, admin);
+  assert.equal(assignedReviewer.assignedToAccountId, reviewer.userId);
+  assert.equal(assignedReviewer.assignedToUserId, reviewer.username);
+  assert.equal(assignedReviewer.assignedToDisplayName, '审核员');
+  assert.equal(assignedReviewer.assignedToRole, 'REVIEWER');
+  assert.equal(assignedReviewer.assigneeStatus, 'ACTIVE');
+  assert.equal(assignedReviewer.version, 2);
+
+  const assignedWorker = await assignQueryPackage(fixture.pool, 9, {
+    expectedVersion: 2,
+    assignedToUserId: worker.username,
+    assignedToAccountId: worker.userId,
+  }, admin);
+  assert.equal(assignedWorker.assignedToAccountId, worker.userId);
+  assert.equal(assignedWorker.assignedToUserId, worker.username);
+  assert.equal(assignedWorker.version, 3);
+  const unassigned = await assignQueryPackage(fixture.pool, 9, {
+    expectedVersion: 3,
+    assignedToUserId: null,
+    assignedToAccountId: null,
+  }, admin);
+  assert.equal(unassigned.assignedToAccountId, null);
+  assert.equal(unassigned.assignedToUserId, null);
+  assert.equal(unassigned.assignedToDisplayName, null);
+  assert.equal(unassigned.assignedToRole, null);
+  assert.equal(unassigned.assigneeStatus, null);
+  assert.equal(unassigned.version, 4);
+  assert.ok(fixture.state.sql.some((sql) => (
+    sql.startsWith('SELECT id, username FROM app_users')
+      && sql.includes("role IN ('REVIEWER', 'USER')")
+      && sql.includes('FOR SHARE')
+  )));
+
+  const sqlCount = fixture.state.sql.length;
+  for (const partialIdentity of [
+    { assignedToUserId: worker.username, assignedToAccountId: null },
+    { assignedToUserId: null, assignedToAccountId: worker.userId },
+  ]) {
+    await assert.rejects(assignQueryPackage(fixture.pool, 9, {
+      expectedVersion: 4,
+      ...partialIdentity,
+    }, admin), /must both be null or both identify an account/u);
+  }
+  assert.equal(fixture.state.sql.length, sqlCount, 'partial identities fail before database access');
+});
+
+test('only the stable assigned account can read or screen a package', async () => {
+  const fixture = fakeQueryPackageDatabase();
+  const detail = await getQueryPackage(fixture.pool, 9, worker);
+  assert.equal(detail.assignedToAccountId, worker.userId);
+  const readLock = fixture.state.sql.findIndex((sql) => (
+    sql.startsWith('SELECT id, assigned_to_account_id, assigned_to_username')
+      && sql.includes('FOR SHARE')
+  ));
+  const itemRead = fixture.state.sql.findIndex((sql) => sql.startsWith('SELECT item.*, production_item.task_id'));
+  assert.ok(readLock >= 0 && readLock < itemRead,
+    'the assignment must remain share-locked until the complete detail response is assembled');
+
+  await assert.rejects(getQueryPackage(fixture.pool, 9, reviewer), { code: 'FORBIDDEN' });
+  await assert.rejects(updateQueryPackageScreening(fixture.pool, 9, {
     expectedVersion: 1,
     requestId: '10101010-1010-4010-8010-101010101010',
     decisions: [{ itemId: 101, decision: 'SELECT' }],
-  }, worker), { code: 'FORBIDDEN' });
-  await assert.rejects(createQueryPackageProductionBatch(pool, 9, {
-    expectedVersion: 1,
-    requestId: '20202020-2020-4020-8020-202020202020',
-    itemIds: [101],
-    nodeId: 'query-package-test',
-  }, worker), { code: 'FORBIDDEN' });
+  }, reviewer), { code: 'FORBIDDEN' });
+  assert.equal(fixture.state.screeningEvents.length, 0);
+});
 
-  assert.equal(databaseAccessCount, 0);
+test('delegated screening records the screener but creates unassigned tasks for the package creator', async () => {
+  const fixture = fakeQueryPackageDatabase();
+  const screened = await updateQueryPackageScreening(fixture.pool, 9, {
+    expectedVersion: 1,
+    requestId: '30303030-3030-4030-8030-303030303030',
+    decisions: [
+      { itemId: 101, decision: 'SELECT' },
+      { itemId: 102, decision: 'REJECT', reason: '不进入生产' },
+    ],
+  }, worker);
+
+  assert.equal(screened.status, 'USED_UP');
+  assert.equal(fixture.state.items.get(101).screened_by_account_id, worker.userId);
+  assert.equal(fixture.state.items.get(101).screened_by_username, worker.username);
+  assert.equal(fixture.state.batches[0].created_by_account_id, worker.userId);
+  assert.equal(fixture.state.batches[0].created_by_username, worker.username);
+  assert.equal(fixture.state.tasks[0].created_by_user_id, admin.username);
+  assert.equal(fixture.state.tasks[0].assigned_to_user_id, null);
+  assert.equal(fixture.state.tasks[0].assignment_source, null);
+
+  const reviewerFixture = fakeQueryPackageDatabase();
+  reviewerFixture.state.package = packageRow({
+    assigned_to_account_id: reviewer.userId,
+    assigned_to_username: reviewer.username,
+  });
+  await updateQueryPackageScreening(reviewerFixture.pool, 9, {
+    expectedVersion: 1,
+    requestId: '31313131-3131-4131-8131-313131313131',
+    decisions: [
+      { itemId: 101, decision: 'REJECT', reason: '复核驳回' },
+      { itemId: 102, decision: 'REJECT', reason: '复核驳回' },
+    ],
+  }, reviewer);
+  assert.equal(reviewerFixture.state.items.get(101).screened_by_account_id, reviewer.userId);
+  assert.equal(reviewerFixture.state.items.get(101).screened_by_username, reviewer.username);
+});
+
+test('automatic tasks do not attribute a deleted package creator username to a replacement account', async () => {
+  const fixture = fakeQueryPackageDatabase();
+  fixture.state.package = packageRow({ created_by_account_id: null });
+
+  await updateQueryPackageScreening(fixture.pool, 9, {
+    expectedVersion: 1,
+    requestId: '32323232-3232-4232-8232-323232323232',
+    decisions: [
+      { itemId: 101, decision: 'SELECT' },
+      { itemId: 102, decision: 'REJECT', reason: '不进入生产' },
+    ],
+  }, worker);
+
+  assert.equal(fixture.state.tasks[0].created_by_user_id, null);
+  assert.equal(fixture.state.tasks[0].assigned_to_user_id, null);
 });
 
 test('production creates unassigned copy work and never propagates a legacy package assignee', async () => {
@@ -658,6 +838,7 @@ test('a same-name replacement account gets an isolated Query mutation receipt', 
     id: replacement.userId,
     username: replacement.username,
     role: replacement.role,
+    status: 'ACTIVE',
     credentialVersion: replacement.credentialVersion,
   });
 

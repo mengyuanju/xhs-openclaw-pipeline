@@ -29,11 +29,12 @@ test('Query package detail aborts and invalidates superseded or closed requests'
   assert.ok((source.match(/canCommitLatestRequest\(/gu) ?? []).length >= 3);
 });
 
-test('Query package screening refreshes detail without resetting the active filter', async () => {
+test('Query package screening refreshes detail without resetting the active filter and assignment reads reject stale results', async () => {
   const source = await readFile(queryWorkbenchUrl, 'utf8');
   assert.match(source, /if \(!preserveFilters\) \{[\s\S]*setItemStatus\('PENDING'\)/u);
   assert.match(source, /openPackage\(detail\.id, \{[\s\S]*preserveFilters: true,[\s\S]*confirmedScreening/u);
-  assert.doesNotMatch(source, /assignmentRequestController|openAssignment|closeAssignmentDialog/u);
+  assert.match(source, /function openAssignment[\s\S]*assignmentRequestController\.current\?\.abort\(\)[\s\S]*canCommitLatestRequest\(assignmentRequestId\.current, currentRequestId, controller\.signal\.aborted\)/u);
+  assert.match(source, /function closeAssignmentDialog\(\)[\s\S]*assignmentRequestId\.current \+= 1;[\s\S]*assignmentRequestController\.current\?\.abort\(\)/u);
 });
 
 test('Query package file reads commit filename and content together only for the latest selection', async () => {
@@ -41,7 +42,7 @@ test('Query package file reads commit filename and content together only for the
   assert.match(source, /const currentRequestId = importFileRequestId\.current \+ 1;[\s\S]*const content = await file\.text\(\);[\s\S]*canCommitLatestRequest\(importFileRequestId\.current, currentRequestId\)[\s\S]*setSourceFileName\(file\.name\.slice\(0, 255\)\);[\s\S]*setQueryText\(content\)/u);
   assert.match(source, /function changeImportText\(value: string\) \{[\s\S]*importFileRequestId\.current \+= 1;[\s\S]*setSourceFileName\(''\)/u);
   assert.match(source, /function closeImportDialog\(\) \{[\s\S]*importFileRequestId\.current \+= 1;[\s\S]*setReadingImportFile\(false\)/u);
-  assert.match(source, /if \(creating \|\| readingImportFile \|\| parsedImport\.error\) return/u);
+  assert.match(source, /if \(role !== 'ADMIN' \|\| creating \|\| readingImportFile \|\| parsedImport\.error\) return/u);
   assert.match(source, /<form className=\{styles\.importForm\} onSubmit=\{createPackage\}>[\s\S]*\{importError && <div className="notice error" role="alert">\{importError\}<\/div>\}/u,
     'file-read and import failures must remain visible inside the open import dialog');
   assert.match(source, /disabled=\{creating \|\| readingImportFile \|\| !packageName\.trim\(\)/u);

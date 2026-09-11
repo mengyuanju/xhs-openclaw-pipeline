@@ -36,6 +36,12 @@ const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
   }),
   Object.freeze({
     capability: 'queryPackageVersion',
+    minimumVersion: 3,
+    matches: (routePath, method) => /^\/v1\/query-packages\/[^/]+\/assignee$/u.test(routePath)
+      && method === 'PATCH',
+  }),
+  Object.freeze({
+    capability: 'queryPackageVersion',
     minimumVersion: 2,
     matches: (routePath, method) => /^\/v1\/query-packages(?:\/|$)/u.test(routePath)
       && !['GET', 'HEAD'].includes(method),

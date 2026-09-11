@@ -20,6 +20,7 @@ test('protected control-plane operations declare their version contracts', () =>
     ['/v1/tasks/duplicate-query-discard-preview', 'POST', 'duplicateQueryDiscardVersion', 1],
     ['/v1/tasks/duplicate-query-discard', 'POST', 'duplicateQueryDiscardVersion', 1],
     ['/v1/query-packages', 'POST', 'queryPackageVersion', 2],
+    ['/v1/query-packages/9/assignee', 'PATCH', 'queryPackageVersion', 3],
     ['/v1/query-packages/9/screening', 'PUT', 'queryPackageVersion', 2],
     ['/v1/query-packages/9/production-batches', 'POST', 'queryPackageVersion', 2],
     ['/v1/query-packages/9/abandon', 'POST', 'queryPackageVersion', 2],
@@ -101,6 +102,15 @@ test('mutation capability check allows only compatible center versions', async (
     method: 'PUT',
     fetchImpl: async () => Response.json({
       data: { capabilities: { queryPackageVersion: 2 } },
+    }),
+  });
+
+  await assertMutationCapability({
+    root: 'http://center.test',
+    routePath: '/v1/query-packages/9/assignee',
+    method: 'PATCH',
+    fetchImpl: async () => Response.json({
+      data: { capabilities: { queryPackageVersion: 3 } },
     }),
   });
 
@@ -188,6 +198,20 @@ test('mutation capability check fails closed for legacy, malformed and unavailab
       routePath,
     );
   }
+
+  await assert.rejects(
+    assertMutationCapability({
+      root: 'http://center.test',
+      routePath: '/v1/query-packages/9/assignee',
+      method: 'PATCH',
+      fetchImpl: async () => Response.json({
+        data: { capabilities: { queryPackageVersion: 2 } },
+      }),
+    }),
+    (error) => error instanceof ApiError
+      && error.status === 503
+      && error.code === 'CONTROL_PLANE_UPGRADE_REQUIRED',
+  );
 
   for (const routePath of [
     '/v1/query-packages',

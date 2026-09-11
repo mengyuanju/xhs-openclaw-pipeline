@@ -72,10 +72,12 @@ test('workflow list endpoints reject invalid pagination before database access',
   assert.equal(queryCount, 0);
 });
 
-test('Query package HTTP routes are administrator-only and preserve administrator identity', async () => {
+test('Query package HTTP routes separate delegated screening from administrator operations', async () => {
   const calls = [];
   const repository = {
     listQueryPackages: async (...args) => { calls.push(['list', ...args]); return []; },
+    getQueryPackage: async (...args) => { calls.push(['detail', ...args]); return { id: 9, version: 1 }; },
+    assignQueryPackage: async (...args) => { calls.push(['assign', ...args]); return { id: 9, version: 2 }; },
     updateQueryPackageScreening: async (...args) => { calls.push(['screen', ...args]); return { id: 9, version: 2 }; },
     createQueryPackageProductionBatch: async (...args) => { calls.push(['produce', ...args]); return { id: 301, taskIds: [501] }; },
   };
@@ -83,16 +85,21 @@ test('Query package HTTP routes are administrator-only and preserve administrato
     const listed = await fetch(`${root}/v1/query-packages?limit=25&offset=50`, { headers: headers('admin') });
     assert.equal(listed.status, 200);
 
+    const assignment = {
+      expectedVersion: 1,
+      assignedToUserId: 'worker',
+      assignedToAccountId: 22,
+    };
+    const assigned = await fetch(`${root}/v1/query-packages/9/assignee`, {
+      method: 'PATCH', headers: headers('admin', true), body: JSON.stringify(assignment),
+    });
+    assert.equal(assigned.status, 200);
+
     const screening = {
       expectedVersion: 1,
       decisions: [{ itemId: 101, decision: 'SELECT' }],
       requestId: '11111111-1111-4111-8111-111111111111',
     };
-    const screened = await fetch(`${root}/v1/query-packages/9/screening`, {
-      method: 'PUT', headers: headers('admin', true), body: JSON.stringify(screening),
-    });
-    assert.equal(screened.status, 200);
-
     const production = {
       expectedVersion: 2,
       itemIds: [101],
@@ -103,17 +110,19 @@ test('Query package HTTP routes are administrator-only and preserve administrato
     });
     assert.equal(produced.status, 201);
 
-    const retiredAssignment = await fetch(`${root}/v1/query-packages/9/assignee`, {
-      method: 'PATCH', headers: headers('admin', true), body: '{}',
-    });
-    assert.equal(retiredAssignment.status, 404, 'Query-package ownership mutation is no longer exposed');
-
     for (const username of ['worker', 'reviewer']) {
+      const listedForScreening = await fetch(`${root}/v1/query-packages`, { headers: headers(username) });
+      assert.equal(listedForScreening.status, 200, `${username}:list`);
+      const detail = await fetch(`${root}/v1/query-packages/9`, { headers: headers(username) });
+      assert.equal(detail.status, 200, `${username}:detail`);
+      const screened = await fetch(`${root}/v1/query-packages/9/screening`, {
+        method: 'PUT', headers: headers(username, true), body: JSON.stringify(screening),
+      });
+      assert.equal(screened.status, 200, `${username}:screen`);
+
       for (const [path, method] of [
-        ['/v1/query-packages', 'GET'],
         ['/v1/query-packages', 'POST'],
-        ['/v1/query-packages/9', 'GET'],
-        ['/v1/query-packages/9/screening', 'PUT'],
+        ['/v1/query-packages/9/assignee', 'PATCH'],
         ['/v1/query-packages/9/production-batches', 'POST'],
         ['/v1/query-packages/9/abandon', 'POST'],
         ['/v1/query-packages/9/permanent-delete-preview', 'GET'],
@@ -132,13 +141,17 @@ test('Query package HTTP routes are administrator-only and preserve administrato
     assert.deepEqual(calls[0], ['list', { limit: '25', offset: '50' }, {
       actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
     }]);
-    assert.deepEqual(calls[1], ['screen', '9', screening, {
+    assert.deepEqual(calls[1], ['assign', '9', assignment, {
       actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
     }]);
     assert.deepEqual(calls[2], ['produce', '9', production, {
       actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
     }]);
-    assert.equal(calls.length, 3, 'non-administrator denials must happen before repository access');
+    assert.deepEqual(calls.filter(([kind]) => kind === 'screen').map(([, , , context]) => context.actor), [
+      { userId: 22, username: 'worker', role: 'USER', credentialVersion: 1 },
+      { userId: 91, username: 'reviewer', role: 'REVIEWER', credentialVersion: 1 },
+    ]);
+    assert.equal(calls.length, 9, 'administrator-only denials must happen before repository access');
   });
 });
 

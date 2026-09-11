@@ -46,11 +46,7 @@ function normalizeActor(actor) {
   if (!actor || !Number.isSafeInteger(Number(actor.userId)) || !['ADMIN', 'REVIEWER', 'USER'].includes(actor.role)) {
     throw new TypeError('authenticated actor is required');
   }
-  const normalized = { ...actor, userId: Number(actor.userId), username: String(actor.username).toLowerCase() };
-  if (normalized.role !== 'ADMIN') {
-    throw new ControlPlaneAuthorizationError('only administrators can access Query packages');
-  }
-  return normalized;
+  return { ...actor, userId: Number(actor.userId), username: String(actor.username).toLowerCase() };
 }
 
 async function lockActiveQueryPackageActor(client, actor) {
@@ -125,6 +121,9 @@ function packageFrom(row) {
     createdByAccountId: row.created_by_account_id === null ? null : Number(row.created_by_account_id),
     assignedToUserId: row.assigned_to_username ?? null,
     assignedToAccountId: row.assigned_to_account_id === null ? null : Number(row.assigned_to_account_id),
+    assignedToDisplayName: row.assigned_to_display_name ?? null,
+    assignedToRole: ['REVIEWER', 'USER'].includes(row.assigned_to_role) ? row.assigned_to_role : null,
+    assigneeStatus: ['ACTIVE', 'DISABLED'].includes(row.assignee_status) ? row.assignee_status : null,
     version: Number(row.version),
     counts: {
       total: Number(row.total_count ?? 0),
@@ -176,7 +175,15 @@ function productionBatchFrom(row) {
 
 function assertPackageAccess(row, actor) {
   if (actor.role === 'ADMIN') return;
+  if (['REVIEWER', 'USER'].includes(actor.role)
+      && Number(row.assigned_to_account_id) === actor.userId
+      && row.assigned_to_username === actor.username) return;
   throw new ControlPlaneAuthorizationError('当前账号不能操作这个 Query 词包');
+}
+
+function assertQueryPackageAdministrator(actor, operation) {
+  if (actor.role === 'ADMIN') return;
+  throw new ControlPlaneAuthorizationError(`only administrators can ${operation} Query packages`);
 }
 
 async function withTransaction(pool, action) {
@@ -201,6 +208,16 @@ async function lockPackage(client, rawPackageId, actor) {
   if (!row) throw new ControlPlaneNotFoundError('Query 词包不存在');
   assertPackageAccess(row, actor);
   return row;
+}
+
+async function lockPackageReadAccess(client, packageId, actor) {
+  const result = await client.query(`
+    SELECT id, assigned_to_account_id, assigned_to_username
+    FROM query_packages WHERE id = $1 FOR SHARE
+  `, [packageId]);
+  const row = result.rows[0];
+  if (!row) throw new ControlPlaneNotFoundError('Query 词包不存在');
+  assertPackageAccess(row, actor);
 }
 
 async function lockMutationRequest(client, actor, requestId) {
@@ -267,6 +284,7 @@ async function insertQueryPackageItems(client, packageId, items) {
 
 export async function createQueryPackage(pool, input, rawActor) {
   const actor = normalizeActor(rawActor);
+  assertQueryPackageAdministrator(actor, 'create');
   const name = text(input?.name, 'name', 200);
   const sourceFileName = text(input?.sourceFileName, 'sourceFileName', 255, { optional: true });
   const items = normalizeQueryPackageItems(input?.items ?? input?.queries);
@@ -310,6 +328,9 @@ export async function createQueryPackage(pool, input, rawActor) {
 
 const PACKAGE_SUMMARY_SQL = `
   SELECT package.*,
+    assignee.display_name AS assigned_to_display_name,
+    assignee.role AS assigned_to_role,
+    assignee.status AS assignee_status,
     COUNT(item.id) AS total_count,
     COUNT(item.id) FILTER (WHERE item.status = 'READY' AND item.screening_decision = 'PENDING') AS pending_count,
     COUNT(item.id) FILTER (WHERE item.screening_decision = 'SELECTED') AS selected_count,
@@ -318,13 +339,16 @@ const PACKAGE_SUMMARY_SQL = `
     COUNT(item.id) FILTER (WHERE item.status = 'INVALID') AS invalid_count,
     COUNT(item.id) FILTER (WHERE item.status = 'DUPLICATE') AS duplicate_count
   FROM query_packages AS package
+  LEFT JOIN app_users AS assignee
+    ON assignee.id = package.assigned_to_account_id
+    AND assignee.username = package.assigned_to_username
   LEFT JOIN query_package_items AS item ON item.query_package_id = package.id
 `;
 
 async function readPackageSummary(database, packageId) {
   const result = await database.query(`${PACKAGE_SUMMARY_SQL}
     WHERE package.id = $1
-    GROUP BY package.id
+    GROUP BY package.id, assignee.id
   `, [packageId]);
   if (!result.rows[0]) throw new ControlPlaneNotFoundError('Query 词包不存在');
   return packageFrom(result.rows[0]);
@@ -366,6 +390,9 @@ async function createProductionBatchTasks(client, {
 }) {
   if (!itemIds.length) return null;
   const packageId = Number(current.id);
+  const taskCreatorUsername = current.created_by_account_id === null
+    ? null
+    : current.created_by_username;
   await client.query(`
     INSERT INTO executor_nodes(id, name, image_worker_enabled, last_seen_at)
     VALUES ($1, $1, false, 'epoch'::timestamptz) ON CONFLICT(id) DO NOTHING
@@ -421,7 +448,7 @@ async function createProductionBatchTasks(client, {
     FROM created_batch_items AS batch_item
     JOIN updated_items AS updated ON updated.id = batch_item.source_query_package_item_id
     ORDER BY batch_item.source_query_package_item_id
-  `, [packageId, itemIds, nodeId, actor.username, current.name, batch.rows[0].id]);
+  `, [packageId, itemIds, nodeId, taskCreatorUsername, current.name, batch.rows[0].id]);
   if (createdTasks.rows.length !== itemIds.length) {
     throw new Error('query package production did not create every selected task');
   }
@@ -447,45 +474,54 @@ async function createProductionBatchTasks(client, {
 }
 
 export async function listQueryPackages(pool, { limit: rawLimit = 50, offset: rawOffset = 0 } = {}, rawActor) {
-  normalizeActor(rawActor);
+  const actor = normalizeActor(rawActor);
   const { limit, offset } = normalizeListPagination(rawLimit, rawOffset);
+  const visibility = actor.role === 'ADMIN'
+    ? { sql: '', values: [] }
+    : {
+        sql: 'WHERE package.assigned_to_account_id = $1 AND package.assigned_to_username = $2',
+        values: [actor.userId, actor.username],
+      };
   const result = await pool.query(`${PACKAGE_SUMMARY_SQL}
-    GROUP BY package.id
+    ${visibility.sql}
+    GROUP BY package.id, assignee.id
     ORDER BY package.updated_at DESC, package.id DESC
-    LIMIT $1 OFFSET $2
-  `, [limit, offset]);
+    LIMIT $${visibility.values.length + 1} OFFSET $${visibility.values.length + 2}
+  `, [...visibility.values, limit, offset]);
   return result.rows.map(packageFrom);
 }
 
 export async function getQueryPackage(pool, rawPackageId, rawActor) {
   const actor = normalizeActor(rawActor);
   const packageId = normalizeTaskId(rawPackageId);
-  const result = await pool.query(`${PACKAGE_SUMMARY_SQL}
-    WHERE package.id = $1 GROUP BY package.id
-  `, [packageId]);
-  if (!result.rows[0]) throw new ControlPlaneNotFoundError('Query 词包不存在');
-  assertPackageAccess(result.rows[0], actor);
-  const [items, batches] = await Promise.all([
-    pool.query(`
+  return withTransaction(pool, async (client) => {
+    // Keep the package assignment stable while the complete detail snapshot is
+    // assembled. Reassignment then governs every subsequent detail request.
+    await lockPackageReadAccess(client, packageId, actor);
+    const result = await client.query(`${PACKAGE_SUMMARY_SQL}
+      WHERE package.id = $1 GROUP BY package.id, assignee.id
+    `, [packageId]);
+    if (!result.rows[0]) throw new ControlPlaneNotFoundError('Query 词包不存在');
+    const items = await client.query(`
       SELECT item.*, production_item.task_id
       FROM query_package_items AS item
       LEFT JOIN production_batch_items AS production_item
         ON production_item.source_query_package_item_id = item.id
       WHERE item.query_package_id = $1 ORDER BY item.row_number, item.id
-    `, [packageId]),
-    pool.query(`
+    `, [packageId]);
+    const batches = await client.query(`
       SELECT batch.*, COUNT(item.id) AS task_count
       FROM production_batches AS batch
       LEFT JOIN production_batch_items AS item ON item.production_batch_id = batch.id
       WHERE batch.query_package_id = $1
       GROUP BY batch.id ORDER BY batch.id DESC
-    `, [packageId]),
-  ]);
-  return {
-    ...packageFrom(result.rows[0]),
-    items: items.rows.map(packageItemFrom),
-    productionBatches: batches.rows.map(productionBatchFrom),
-  };
+    `, [packageId]);
+    return {
+      ...packageFrom(result.rows[0]),
+      items: items.rows.map(packageItemFrom),
+      productionBatches: batches.rows.map(productionBatchFrom),
+    };
+  });
 }
 
 export async function updateQueryPackageScreening(pool, rawPackageId, input, rawActor) {
@@ -512,9 +548,9 @@ export async function updateQueryPackageScreening(pool, rawPackageId, input, raw
   return withTransaction(pool, async (client) => {
     await lockActiveQueryPackageActor(client, actor);
     await lockMutationRequest(client, actor, requestId);
+    const current = await lockPackage(client, packageId, actor);
     const replay = await existingMutation(client, actor, requestId, 'SCREEN', packageId, fingerprint);
     if (replay) return replay;
-    const current = await lockPackage(client, packageId, actor);
     if (!PACKAGE_ACTIVE_STATUSES.includes(current.status)) {
       throw new ControlPlaneConflictError('PACKAGE_NOT_SCREENABLE', '词包已结束，不能继续筛选');
     }
@@ -687,8 +723,61 @@ export async function updateQueryPackageScreening(pool, rawPackageId, input, raw
   });
 }
 
+export async function assignQueryPackage(pool, rawPackageId, input, rawActor) {
+  const actor = normalizeActor(rawActor);
+  assertQueryPackageAdministrator(actor, 'assign');
+  const packageId = normalizeTaskId(rawPackageId);
+  const expectedVersion = version(input?.expectedVersion);
+  const hasUsername = input !== null && typeof input === 'object'
+    && Object.hasOwn(input, 'assignedToUserId');
+  const hasAccountId = input !== null && typeof input === 'object'
+    && Object.hasOwn(input, 'assignedToAccountId');
+  if (!hasUsername || !hasAccountId) {
+    throw new TypeError('assignedToUserId and assignedToAccountId are required');
+  }
+  const unassigned = input.assignedToUserId === null && input.assignedToAccountId === null;
+  if (!unassigned && (input.assignedToUserId === null || input.assignedToAccountId === null)) {
+    throw new TypeError('assignedToUserId and assignedToAccountId must both be null or both identify an account');
+  }
+  const username = unassigned
+    ? null : text(input.assignedToUserId, 'assignedToUserId', 50).toLowerCase();
+  const accountId = unassigned ? null : normalizeTaskId(input.assignedToAccountId);
+  return withTransaction(pool, async (client) => {
+    await lockActiveQueryPackageActor(client, actor);
+    let assignee = null;
+    if (!unassigned) {
+      const result = await client.query(`
+      SELECT id, username FROM app_users
+      WHERE id = $1 AND username = $2 AND status = 'ACTIVE'
+        AND role IN ('REVIEWER', 'USER')
+      FOR SHARE
+      `, [accountId, username]);
+      assignee = result.rows[0] ?? null;
+      if (!assignee) {
+        throw new ControlPlaneConflictError('ASSIGNEE_UNAVAILABLE', '指定筛选人员不可用');
+      }
+    }
+    const current = await lockPackage(client, packageId, actor);
+    if (Number(current.version) !== expectedVersion) {
+      throw new ControlPlaneConflictError('VERSION_CONFLICT', '词包已被修改');
+    }
+    const updated = await client.query(`
+      UPDATE query_packages
+      SET assigned_to_account_id = $2, assigned_to_username = $3,
+        version = version + 1, updated_at = now()
+      WHERE id = $1 AND version = $4
+      RETURNING *
+    `, [packageId, assignee === null ? null : Number(assignee.id), assignee?.username ?? null, expectedVersion]);
+    if (!updated.rows[0]) {
+      throw new ControlPlaneConflictError('VERSION_CONFLICT', '词包已被修改');
+    }
+    return readPackageSummary(client, packageId);
+  });
+}
+
 export async function createQueryPackageProductionBatch(pool, rawPackageId, input, rawActor) {
   const actor = normalizeActor(rawActor);
+  assertQueryPackageAdministrator(actor, 'create production batches for');
   const packageId = normalizeTaskId(rawPackageId);
   const expectedVersion = version(input?.expectedVersion);
   const requestId = normalizeUuid(input?.requestId, 'requestId');

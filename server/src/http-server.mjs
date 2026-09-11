@@ -829,7 +829,7 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     json(ctx, 200, await repository.updateWorkflowQualitySettings(requireJson(ctx), { actor }));
   });
   router.get('/v1/query-packages', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN']);
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
     json(ctx, 200, await repository.listQueryPackages({ limit: ctx.query.limit, offset: ctx.query.offset }, { actor }));
   });
   router.post('/v1/query-packages', async (ctx) => {
@@ -837,11 +837,15 @@ function installRoutes(router, repository, storageRoot, analyzeCopy, analyzeVisu
     json(ctx, 201, await repository.createQueryPackage(requireJson(ctx), { actor }));
   });
   router.get('/v1/query-packages/:packageId', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN']);
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
     json(ctx, 200, await repository.getQueryPackage(ctx.params.packageId, { actor }));
   });
-  router.put('/v1/query-packages/:packageId/screening', async (ctx) => {
+  router.patch('/v1/query-packages/:packageId/assignee', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.assignQueryPackage(ctx.params.packageId, requireJson(ctx), { actor }));
+  });
+  router.put('/v1/query-packages/:packageId/screening', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
     json(ctx, 200, await repository.updateQueryPackageScreening(ctx.params.packageId, requireJson(ctx), { actor }));
   });
   router.post('/v1/query-packages/:packageId/production-batches', async (ctx) => {

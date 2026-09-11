@@ -37,6 +37,7 @@ import {
 } from './task-auto-assignment-domain.mjs';
 import {
   abandonQueryPackage,
+  assignQueryPackage,
   createQueryPackage,
   createQueryPackageProductionBatch,
   getQueryPackage,
@@ -925,6 +926,15 @@ async function lockAdministratorRoster(client) {
   await client.query('SELECT pg_advisory_xact_lock(4310, 8301)');
 }
 
+async function clearQueryPackageAssignments(client, { id, username }) {
+  await client.query(`
+    UPDATE query_packages
+    SET assigned_to_account_id = NULL, assigned_to_username = NULL,
+      version = version + 1, updated_at = now()
+    WHERE assigned_to_account_id = $1 AND assigned_to_username = $2
+  `, [Number(id), username]);
+}
+
 async function configurationSnapshots(client, tasks, kind) {
   if (!tasks.length) return new Map();
   // pg serializes one connection; overlapping query() calls are deprecated.
@@ -1041,6 +1051,9 @@ export class PostgresControlPlaneRepository {
   listQueryPackages(options, { actor } = {}) { return listQueryPackages(this.pool, options, actor); }
   createQueryPackage(input, { actor } = {}) { return createQueryPackage(this.pool, input, actor); }
   getQueryPackage(id, { actor } = {}) { return getQueryPackage(this.pool, id, actor); }
+  assignQueryPackage(id, input, { actor } = {}) {
+    return assignQueryPackage(this.pool, id, input, actor);
+  }
   updateQueryPackageScreening(id, input, { actor } = {}) {
     return updateQueryPackageScreening(this.pool, id, input, actor);
   }
@@ -1123,7 +1136,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 2, xiaohongshuQuerySearchVersion: 3, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1 } };
+      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 3, xiaohongshuQuerySearchVersion: 3, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -1505,6 +1518,9 @@ export class PostgresControlPlaneRepository {
         RETURNING *
       `, [displayName, role, status, credentialChanged ? 1 : 0, userId, expectedVersion]);
       if (!result.rows[0]) throw new ControlPlaneConflictError('VERSION_CONFLICT', 'user was updated by another request');
+      if (status !== 'ACTIVE' || !['REVIEWER', 'USER'].includes(role)) {
+        await clearQueryPackageAssignments(client, current);
+      }
       return publicUserFrom(result.rows[0]);
     });
   }
@@ -1581,6 +1597,7 @@ export class PostgresControlPlaneRepository {
           WHERE assigned_to_user_id = $1
         `, [current.username]);
       }
+      await clearQueryPackageAssignments(client, current);
       const result = await client.query(
         'DELETE FROM app_users WHERE id = $1 AND version = $2 RETURNING *',
         [userId, expectedVersion],

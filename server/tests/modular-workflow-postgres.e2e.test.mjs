@@ -1474,7 +1474,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     controlPlane = await startRealControlPlane(repository);
     const health = await requestJson(controlPlane.root, '/health');
     assert.equal(health.data.ok, true);
-    assert.equal(health.data.capabilities.queryPackageVersion, 2);
+    assert.equal(health.data.capabilities.queryPackageVersion, 3);
     assert.equal(health.data.capabilities.copySamplingVersion, 1);
     assert.equal(health.data.capabilities.finalDeliveryVersion, 2);
 
@@ -1685,16 +1685,14 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     assert.equal(createdPackage.status, 'IMPORTED');
     assert.equal(createdPackage.counts.pending, 2);
     assert.equal(createdPackage.assignedToUserId, null,
-      'legacy assignee input is accepted but no longer establishes Query-package ownership');
+      'imports start unassigned even when a legacy assignee field is present');
     assert.equal(createdPackage.assignedToAccountId, null);
 
-    const deniedWorkerPackageList = await requestJson(
-      controlPlane.root, '/v1/query-packages', {
-        actor: worker,
-        expectedStatus: 403,
-      },
-    );
-    assert.equal(deniedWorkerPackageList.error.code, 'FORBIDDEN');
+    const unassignedWorkerPackageList = (await requestJson(
+      controlPlane.root, '/v1/query-packages', { actor: worker },
+    )).data;
+    assert.deepEqual(unassignedWorkerPackageList, [],
+      'workers can open the list but only see packages assigned to their stable account identity');
     const adminPackages = (await requestJson(
       controlPlane.root, '/v1/query-packages', { actor: admin },
     )).data;
@@ -1707,8 +1705,122 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
       },
     );
     assert.equal(deniedWorkerPackageDetail.error.code, 'FORBIDDEN');
+
+    const assignedToWorker = (await requestJson(
+      controlPlane.root, `/v1/query-packages/${createdPackage.id}/assignee`, {
+        actor: admin,
+        method: 'PATCH',
+        body: {
+          expectedVersion: createdPackage.version,
+          assignedToUserId: worker.username,
+          assignedToAccountId: worker.userId,
+        },
+      },
+    )).data;
+    assert.deepEqual({
+      assignedToUserId: assignedToWorker.assignedToUserId,
+      assignedToAccountId: assignedToWorker.assignedToAccountId,
+      assignedToDisplayName: assignedToWorker.assignedToDisplayName,
+      assignedToRole: assignedToWorker.assignedToRole,
+      assigneeStatus: assignedToWorker.assigneeStatus,
+    }, {
+      assignedToUserId: worker.username,
+      assignedToAccountId: worker.userId,
+      assignedToDisplayName: '隔离测试作业员',
+      assignedToRole: 'USER',
+      assigneeStatus: 'ACTIVE',
+    });
+    assert.equal(assignedToWorker.version, createdPackage.version + 1);
+
+    const workerPackages = (await requestJson(
+      controlPlane.root, '/v1/query-packages', { actor: worker },
+    )).data;
+    assert.deepEqual(workerPackages.map((item) => item.id), [createdPackage.id]);
+    assert.ok(normalizePackageList(workerPackages).some((item) => item.id === createdPackage.id));
+    const workerPackageDetail = (await requestJson(
+      controlPlane.root, `/v1/query-packages/${createdPackage.id}`, { actor: worker },
+    )).data;
+    assert.ok(workerPackageDetail.items.every((item) => item.status === 'READY'));
+    const unassignedReviewerPackageList = (await requestJson(
+      controlPlane.root, '/v1/query-packages', { actor: reviewer },
+    )).data;
+    assert.deepEqual(unassignedReviewerPackageList, []);
+    const deniedReviewerPackageDetail = await requestJson(
+      controlPlane.root, `/v1/query-packages/${createdPackage.id}`, {
+        actor: reviewer,
+        expectedStatus: 403,
+      },
+    );
+    assert.equal(deniedReviewerPackageDetail.error.code, 'FORBIDDEN');
+
+    const unassignedPackage = (await requestJson(
+      controlPlane.root, `/v1/query-packages/${createdPackage.id}/assignee`, {
+        actor: admin,
+        method: 'PATCH',
+        body: {
+          expectedVersion: assignedToWorker.version,
+          assignedToUserId: null,
+          assignedToAccountId: null,
+        },
+      },
+    )).data;
+    assert.equal(unassignedPackage.assignedToUserId, null);
+    assert.equal(unassignedPackage.assignedToAccountId, null);
+    assert.equal(unassignedPackage.version, assignedToWorker.version + 1);
+    const workerPackagesAfterUnassign = (await requestJson(
+      controlPlane.root, '/v1/query-packages', { actor: worker },
+    )).data;
+    assert.deepEqual(workerPackagesAfterUnassign, []);
+    const deniedFormerAssigneeDetail = await requestJson(
+      controlPlane.root, `/v1/query-packages/${createdPackage.id}`, {
+        actor: worker,
+        expectedStatus: 403,
+      },
+    );
+    assert.equal(deniedFormerAssigneeDetail.error.code, 'FORBIDDEN');
+
+    const assignedToReviewer = (await requestJson(
+      controlPlane.root, `/v1/query-packages/${createdPackage.id}/assignee`, {
+        actor: admin,
+        method: 'PATCH',
+        body: {
+          expectedVersion: unassignedPackage.version,
+          assignedToUserId: reviewer.username,
+          assignedToAccountId: reviewer.userId,
+        },
+      },
+    )).data;
+    assert.deepEqual({
+      assignedToUserId: assignedToReviewer.assignedToUserId,
+      assignedToAccountId: assignedToReviewer.assignedToAccountId,
+      assignedToDisplayName: assignedToReviewer.assignedToDisplayName,
+      assignedToRole: assignedToReviewer.assignedToRole,
+      assigneeStatus: assignedToReviewer.assigneeStatus,
+    }, {
+      assignedToUserId: reviewer.username,
+      assignedToAccountId: reviewer.userId,
+      assignedToDisplayName: '隔离测试质检员',
+      assignedToRole: 'REVIEWER',
+      assigneeStatus: 'ACTIVE',
+    });
+    const workerPackagesAfterReassignment = (await requestJson(
+      controlPlane.root, '/v1/query-packages', { actor: worker },
+    )).data;
+    assert.deepEqual(workerPackagesAfterReassignment, []);
+    const deniedPriorAssigneeDetail = await requestJson(
+      controlPlane.root, `/v1/query-packages/${createdPackage.id}`, {
+        actor: worker,
+        expectedStatus: 403,
+      },
+    );
+    assert.equal(deniedPriorAssigneeDetail.error.code, 'FORBIDDEN');
+
+    const reviewerPackages = (await requestJson(
+      controlPlane.root, '/v1/query-packages', { actor: reviewer },
+    )).data;
+    assert.deepEqual(reviewerPackages.map((item) => item.id), [createdPackage.id]);
     const packageDetail = (await requestJson(
-      controlPlane.root, `/v1/query-packages/${createdPackage.id}`, { actor: admin },
+      controlPlane.root, `/v1/query-packages/${createdPackage.id}`, { actor: reviewer },
     )).data;
     assert.ok(packageDetail.items.every((item) => item.status === 'READY'));
     const normalizedPackageDetail = normalizePackageDetail(packageDetail);
@@ -1730,7 +1842,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     assert.equal(deniedWorkerScreening.error.code, 'FORBIDDEN');
     const screenedPackage = (await requestJson(
       controlPlane.root, `/v1/query-packages/${createdPackage.id}/screening`, {
-        actor: admin,
+        actor: reviewer,
         method: 'PUT',
         body: screeningBody,
       },
@@ -1754,6 +1866,15 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
       },
     );
     assert.equal(deniedWorkerProduction.error.code, 'FORBIDDEN');
+    const deniedAssignedReviewerProduction = await requestJson(
+      controlPlane.root, `/v1/query-packages/${createdPackage.id}/production-batches`, {
+        actor: reviewer,
+        method: 'POST',
+        body: productionBody,
+        expectedStatus: 403,
+      },
+    );
+    assert.equal(deniedAssignedReviewerProduction.error.code, 'FORBIDDEN');
     const producedPackageDetail = (await requestJson(
       controlPlane.root, `/v1/query-packages/${createdPackage.id}`, { actor: admin },
     )).data;
@@ -1801,12 +1922,14 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     assert.deepEqual(adminReadiness.blockerTaskIds, productionBatch.taskIds);
 
     const queuedTasks = (await repository.pool.query(`
-      SELECT id, state, current_stage, assigned_to_user_id, assignment_source, assigned_at
+      SELECT id, state, current_stage, created_by_user_id,
+        assigned_to_user_id, assignment_source, assigned_at
       FROM tasks WHERE id = ANY($1::bigint[]) ORDER BY id
     `, [productionBatch.taskIds])).rows;
     assert.equal(queuedTasks.length, productionBatch.taskIds.length);
     assert.ok(queuedTasks.every((task) => task.state === 'COPY_QUEUED'
       && task.current_stage === 'COPY_QUEUED'
+      && task.created_by_user_id === admin.username
       && task.assigned_to_user_id === null
       && task.assignment_source === null
       && task.assigned_at === null));

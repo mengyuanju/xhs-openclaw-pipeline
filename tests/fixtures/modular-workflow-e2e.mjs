@@ -140,6 +140,10 @@ if (process.env.MODULAR_E2E_PAGINATION_SEED === '1') {
       id: packageId,
       name: `分页词包-${String(index).padStart(4, '0')}`,
       status: 'SCREENING',
+      createdByUserId: 'admin',
+      createdByAccountId: users.admin.id,
+      assignedToUserId: null,
+      assignedToAccountId: null,
       version: 1,
       createdAt,
       updatedAt: createdAt,
@@ -214,6 +218,7 @@ function createFixtureProductionBatch(record, items, actorUsername = 'admin') {
     publicId: randomUUID(),
     queryPackageId: record.id,
     queryPackageName: record.name,
+    createdByUserId: actorUsername,
     status: 'OPEN',
     samplingStatus: 'OPEN',
     taskIds: [],
@@ -228,7 +233,7 @@ function createFixtureProductionBatch(record, items, actorUsername = 'admin') {
       currentStage: 'COPY_QUEUED',
       progressMessage: '等待文案执行机领取',
       createdByNodeId: 'web-query-packages',
-      createdByUserId: actorUsername,
+      createdByUserId: record.createdByUserId ?? 'admin',
       assignedToUserId: null,
       assignedToAccountId: null,
       assignmentSource: null,
@@ -250,10 +255,19 @@ function createFixtureProductionBatch(record, items, actorUsername = 'admin') {
 }
 
 function packageSummary(record) {
+  const assignee = Object.values(users).find((candidate) => candidate.id === record.assignedToAccountId
+    && candidate.username === record.assignedToUserId) ?? null;
   return {
     id: record.id,
     name: record.name,
     status: record.status,
+    createdByUserId: record.createdByUserId ?? 'admin',
+    createdByAccountId: record.createdByAccountId ?? users.admin.id,
+    assignedToUserId: record.assignedToUserId ?? null,
+    assignedToAccountId: record.assignedToAccountId ?? null,
+    assignedToDisplayName: assignee?.displayName ?? null,
+    assignedToRole: assignee?.role === 'REVIEWER' || assignee?.role === 'USER' ? assignee.role : null,
+    assigneeStatus: assignee?.status ?? null,
     version: record.version,
     counts: counts(record),
     createdAt: record.createdAt,
@@ -271,16 +285,31 @@ function packageDetail(record) {
   };
 }
 
-function actorRole(req) {
-  return String(req.headers['x-actor-role'] ?? '').toUpperCase();
-}
-
 function actorUser(req) {
-  return Object.values(users).find((candidate) => candidate.username === req.headers['x-actor-username']) ?? null;
+  const username = String(req.headers['x-actor-username'] ?? '').trim().toLowerCase();
+  const rawUserId = String(req.headers['x-actor-user-id'] ?? '').trim();
+  const userId = /^[1-9]\d*$/u.test(rawUserId) ? Number(rawUserId) : NaN;
+  const role = String(req.headers['x-actor-role'] ?? '').trim().toUpperCase();
+  const credentialVersion = Number(req.headers['x-actor-credential-version']);
+  const user = Object.values(users).find((candidate) => candidate.username === username) ?? null;
+  if (!Number.isSafeInteger(userId) || !Number.isSafeInteger(credentialVersion)
+      || !user || user.id !== userId || user.status !== 'ACTIVE'
+      || user.role !== role || user.credentialVersion !== credentialVersion) return null;
+  return user;
 }
 
-function canAccessPackage(req) {
-  return actorRole(req) === 'ADMIN';
+function actorRole(req) {
+  return actorUser(req)?.role ?? '';
+}
+
+function canAccessPackage(req, record) {
+  if (actorRole(req) === 'ADMIN') return true;
+  const actor = actorUser(req);
+  return actor?.status === 'ACTIVE'
+    && actor.role === actorRole(req)
+    && ['REVIEWER', 'USER'].includes(actor.role)
+    && record?.assignedToAccountId === actor.id
+    && record?.assignedToUserId === actor.username;
 }
 
 function qaItemFor(req, item) {
@@ -347,7 +376,7 @@ const controlPlane = createServer(async (req, res) => {
         fixture: true,
         capabilities: {
           taskAssignmentVersion: 3,
-          queryPackageVersion: 2,
+          queryPackageVersion: 3,
           finalDeliveryVersion: 2,
           deliverySpreadsheetVersion: 1,
         },
@@ -364,13 +393,20 @@ const controlPlane = createServer(async (req, res) => {
       send(res, 200, user);
       return;
     }
+    const actor = actorUser(req);
+    if (url.pathname !== '/__fixture/state' && !actor) {
+      error(res, 401, 'SESSION_STALE', 'fixture actor identity is stale');
+      return;
+    }
     if (method === 'GET' && url.pathname === '/v1/profile') {
-      const user = Object.values(users).find((candidate) => candidate.username === req.headers['x-actor-username']);
-      if (!user) error(res, 401, 'AUTH_REQUIRED', 'fixture actor missing');
-      else send(res, 200, user);
+      send(res, 200, actor);
       return;
     }
     if (method === 'GET' && url.pathname === '/v1/workflow-quality-settings') {
+      if (actor.role !== 'ADMIN') {
+        error(res, 403, 'FORBIDDEN', 'fixture workflow settings are admin-only');
+        return;
+      }
       send(res, 200, {
         version: 7,
         queryPackage: { workerImportEnabled: false },
@@ -379,6 +415,10 @@ const controlPlane = createServer(async (req, res) => {
       return;
     }
     if (method === 'GET' && url.pathname === '/v1/users') {
+      if (actor.role !== 'ADMIN') {
+        error(res, 403, 'FORBIDDEN', 'fixture user list is admin-only');
+        return;
+      }
       send(res, 200, Object.values(users));
       return;
     }
@@ -473,11 +513,10 @@ const controlPlane = createServer(async (req, res) => {
       return;
     }
     if (method === 'GET' && url.pathname === '/v1/query-packages') {
-      if (actorRole(req) !== 'ADMIN') {
-        error(res, 403, 'FORBIDDEN', 'fixture query package access denied');
-        return;
-      }
-      const page = paginate(url, state.packages);
+      const visiblePackages = actorRole(req) === 'ADMIN'
+        ? state.packages
+        : state.packages.filter((record) => canAccessPackage(req, record));
+      const page = paginate(url, visiblePackages);
       send(res, 200, page.items.map(packageSummary));
       return;
     }
@@ -492,6 +531,10 @@ const controlPlane = createServer(async (req, res) => {
         id: state.nextPackageId++,
         name: String(input.name),
         status: 'IMPORTED',
+        createdByUserId: actorUser(req)?.username ?? 'admin',
+        createdByAccountId: actorUser(req)?.id ?? users.admin.id,
+        assignedToUserId: null,
+        assignedToAccountId: null,
         version: 1,
         createdAt: now,
         updatedAt: now,
@@ -515,25 +558,77 @@ const controlPlane = createServer(async (req, res) => {
     }
     const packageMatch = url.pathname.match(/^\/v1\/query-packages\/(\d+)$/u);
     if (method === 'GET' && packageMatch) {
-      if (!canAccessPackage(req)) {
+      const record = state.packages.find((entry) => entry.id === Number(packageMatch[1]));
+      if (!record) {
+        error(res, 404, 'QUERY_PACKAGE_NOT_FOUND', 'fixture package missing');
+        return;
+      }
+      if (!canAccessPackage(req, record)) {
         error(res, 403, 'FORBIDDEN', 'fixture query package access denied');
         return;
       }
-      const record = state.packages.find((entry) => entry.id === Number(packageMatch[1]));
-      if (!record) error(res, 404, 'QUERY_PACKAGE_NOT_FOUND', 'fixture package missing');
-      else send(res, 200, packageDetail(record));
+      send(res, 200, packageDetail(record));
+      return;
+    }
+    const assigneeMatch = url.pathname.match(/^\/v1\/query-packages\/(\d+)\/assignee$/u);
+    if (method === 'PATCH' && assigneeMatch) {
+      if (actorRole(req) !== 'ADMIN') {
+        error(res, 403, 'FORBIDDEN', 'fixture Query package assignment is admin-only');
+        return;
+      }
+      const record = state.packages.find((entry) => entry.id === Number(assigneeMatch[1]));
+      const input = await jsonBody(req);
+      if (!record) {
+        error(res, 404, 'QUERY_PACKAGE_NOT_FOUND', 'fixture package missing');
+        return;
+      }
+      if (Number(input.expectedVersion) !== record.version) {
+        error(res, 409, 'VERSION_CONFLICT', 'fixture package version is stale');
+        return;
+      }
+      const includesUsername = Object.hasOwn(input, 'assignedToUserId');
+      const includesAccountId = Object.hasOwn(input, 'assignedToAccountId');
+      if (!includesUsername || !includesAccountId) {
+        error(res, 400, 'INVALID_INPUT', 'fixture assignee identity fields are required');
+        return;
+      }
+      const hasUsername = input.assignedToUserId !== null;
+      const hasAccountId = input.assignedToAccountId !== null;
+      if (hasUsername !== hasAccountId) {
+        error(res, 400, 'INVALID_INPUT', 'fixture assignee identity must be complete');
+        return;
+      }
+      const assignee = hasUsername
+        ? Object.values(users).find((candidate) => candidate.id === Number(input.assignedToAccountId)
+          && candidate.username === String(input.assignedToUserId).trim().toLowerCase()
+          && candidate.status === 'ACTIVE'
+          && ['REVIEWER', 'USER'].includes(candidate.role))
+        : null;
+      if (hasUsername && !assignee) {
+        error(res, 409, 'ASSIGNEE_UNAVAILABLE', 'fixture assignee is unavailable');
+        return;
+      }
+      record.assignedToUserId = assignee?.username ?? null;
+      record.assignedToAccountId = assignee?.id ?? null;
+      record.version += 1;
+      record.updatedAt = new Date().toISOString();
+      send(res, 200, packageSummary(record));
       return;
     }
     const screenMatch = url.pathname.match(/^\/v1\/query-packages\/(\d+)\/screening$/u);
     if (method === 'PUT' && screenMatch) {
-      if (!canAccessPackage(req)) {
-        error(res, 403, 'FORBIDDEN', 'fixture query package access denied');
-        return;
-      }
       const record = state.packages.find((entry) => entry.id === Number(screenMatch[1]));
       const input = await jsonBody(req);
       if (!record) {
         error(res, 404, 'QUERY_PACKAGE_NOT_FOUND', 'fixture package missing');
+        return;
+      }
+      if (!canAccessPackage(req, record)) {
+        error(res, 403, 'FORBIDDEN', 'fixture query package access denied');
+        return;
+      }
+      if (!['IMPORTED', 'SCREENING', 'READY', 'PARTIALLY_USED'].includes(record.status)) {
+        error(res, 409, 'PACKAGE_NOT_SCREENABLE', 'fixture Query package is read-only');
         return;
       }
       if (Number(input.expectedVersion) !== record.version) {
@@ -566,8 +661,8 @@ const controlPlane = createServer(async (req, res) => {
     }
     const productionMatch = url.pathname.match(/^\/v1\/query-packages\/(\d+)\/production-batches$/u);
     if (method === 'POST' && productionMatch) {
-      if (!canAccessPackage(req)) {
-        error(res, 403, 'FORBIDDEN', 'fixture query package access denied');
+      if (actorRole(req) !== 'ADMIN') {
+        error(res, 403, 'FORBIDDEN', 'fixture production batch creation is admin-only');
         return;
       }
       const record = state.packages.find((entry) => entry.id === Number(productionMatch[1]));
@@ -703,50 +798,60 @@ async function reservePort() {
   return port;
 }
 
-const nextPort = await reservePort();
-const nextRoot = `http://127.0.0.1:${nextPort}`;
-const nextEnvironment = {
-  ...process.env,
-  CONTROL_PLANE_URL: `http://127.0.0.1:${controlPlane.address().port}`,
-  EXECUTOR_NODE_ID: 'modular-e2e-fixture',
-  XHS_SESSION_SECRET: randomBytes(32).toString('hex'),
-  XHS_NEXT_DIST_DIR: relative(projectRoot, buildRoot),
-  XHS_DB_PATH: join(dataRoot, 'unused.sqlite'),
-  XHS_OUTPUT_ROOT: join(dataRoot, 'unused-output'),
-  NEXT_TELEMETRY_DISABLED: '1',
-  NO_COLOR: '1',
-};
-delete nextEnvironment.NODE_ENV;
+const controlPlaneRoot = `http://127.0.0.1:${controlPlane.address().port}`;
+const controlPlaneOnly = process.env.MODULAR_E2E_CONTROL_PLANE_ONLY === '1';
+let next = null;
+let nextRoot = controlPlaneRoot;
+if (!controlPlaneOnly) {
+  const nextPort = await reservePort();
+  nextRoot = `http://127.0.0.1:${nextPort}`;
+  const nextEnvironment = {
+    ...process.env,
+    CONTROL_PLANE_URL: controlPlaneRoot,
+    EXECUTOR_NODE_ID: 'modular-e2e-fixture',
+    XHS_SESSION_SECRET: randomBytes(32).toString('hex'),
+    XHS_NEXT_DIST_DIR: relative(projectRoot, buildRoot),
+    XHS_DB_PATH: join(dataRoot, 'unused.sqlite'),
+    XHS_OUTPUT_ROOT: join(dataRoot, 'unused-output'),
+    NEXT_TELEMETRY_DISABLED: '1',
+    NO_COLOR: '1',
+  };
+  delete nextEnvironment.NODE_ENV;
 
-const next = spawn(process.execPath, [
-  'node_modules/next/dist/bin/next', 'dev', '-H', '127.0.0.1', '-p', String(nextPort),
-], {
-  cwd: projectRoot,
-  env: nextEnvironment,
-  shell: false,
-  windowsHide: true,
-  stdio: ['ignore', 'pipe', 'pipe'],
-});
-next.stdout.pipe(process.stdout);
-next.stderr.pipe(process.stderr);
+  next = spawn(process.execPath, [
+    'node_modules/next/dist/bin/next', 'dev', '-H', '127.0.0.1', '-p', String(nextPort),
+  ], {
+    cwd: projectRoot,
+    env: nextEnvironment,
+    shell: false,
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  next.stdout.pipe(process.stdout);
+  next.stderr.pipe(process.stderr);
 
-let ready = false;
-for (let attempt = 0; attempt < 240; attempt += 1) {
-  if (next.exitCode !== null) throw new Error(`Next development server exited early (${next.exitCode})`);
-  const response = await fetch(`${nextRoot}/login`).catch(() => null);
-  if (response?.ok) {
-    ready = true;
-    break;
+  let ready = false;
+  for (let attempt = 0; attempt < 240; attempt += 1) {
+    if (next.exitCode !== null) throw new Error(`Next development server exited early (${next.exitCode})`);
+    const response = await fetch(`${nextRoot}/login`).catch(() => null);
+    if (response?.ok) {
+      ready = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  await new Promise((resolve) => setTimeout(resolve, 250));
+  if (!ready) throw new Error('Next development server did not become ready within 60 seconds');
 }
-if (!ready) throw new Error('Next development server did not become ready within 60 seconds');
 
 console.log(`MODULAR_E2E_READY ${JSON.stringify({
   url: nextRoot,
-  admin: { username: 'admin', password: passwords.admin },
-  reviewer: { username: 'reviewer', password: passwords.reviewer },
-  worker: { username: 'worker', password: passwords.worker },
+  controlPlaneUrl: controlPlaneRoot,
+  admin: { userId: users.admin.id, username: users.admin.username, role: users.admin.role,
+    credentialVersion: users.admin.credentialVersion, password: passwords.admin },
+  reviewer: { userId: users.reviewer.id, username: users.reviewer.username, role: users.reviewer.role,
+    credentialVersion: users.reviewer.credentialVersion, password: passwords.reviewer },
+  worker: { userId: users.worker.id, username: users.worker.username, role: users.worker.role,
+    credentialVersion: users.worker.credentialVersion, password: passwords.worker },
   isolation: { fakeControlPlane: true, database: false, model: false, publishing: false },
 })}`);
 
@@ -754,10 +859,10 @@ let stop;
 const stopped = new Promise((resolve) => { stop = resolve; });
 process.once('SIGINT', stop);
 process.once('SIGTERM', stop);
-next.once('exit', stop);
+next?.once('exit', stop);
 await stopped;
 
-if (next.exitCode === null) {
+if (next?.exitCode === null) {
   next.kill('SIGTERM');
   await new Promise((resolve) => next.once('exit', resolve));
 }
