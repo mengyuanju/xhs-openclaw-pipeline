@@ -8,8 +8,10 @@ export const MAX_TITLE_LENGTH = 100;
 export const MAX_BODY_LENGTH = 30_000;
 export const MAX_TAG_COUNT = 20;
 export const MAX_TAG_LENGTH = 30;
+export const MAX_SOURCE_REF_LENGTH = 200;
 
 const BATCH_CLIENT_ID_PATTERN = /^[A-Za-z0-9_-]{1,40}$/u;
+const SOURCE_REF_PATTERN = /^[A-Za-z0-9:._-]+$/u;
 
 export class ApiError extends Error {
   constructor(
@@ -32,6 +34,7 @@ export interface CreatePreviewFields {
   body: string;
   tags: string[];
   files: File[];
+  sourceRef: string | null;
 }
 
 export interface BatchCreateFields extends CreatePreviewFields {
@@ -60,15 +63,20 @@ export function validatePreviewFields({
   bodyValue,
   tagsValue,
   files,
+  sourceRefValue,
 }: {
   titleValue: unknown;
   bodyValue: unknown;
   tagsValue: unknown;
   files: File[];
+  sourceRefValue?: unknown;
 }): CreatePreviewFields {
   const title = typeof titleValue === 'string' ? titleValue.trim() : '';
   const body = typeof bodyValue === 'string' ? bodyValue.trim() : '';
   const tags = parseTags(typeof tagsValue === 'string' ? tagsValue : '');
+  const sourceRef = typeof sourceRefValue === 'string'
+    ? sourceRefValue.trim()
+    : '';
 
   if (!title) {
     throw new ApiError('请填写预览标题。');
@@ -78,6 +86,13 @@ export function validatePreviewFields({
   }
   if (body.length > MAX_BODY_LENGTH) {
     throw new ApiError(`正文不能超过 ${MAX_BODY_LENGTH} 个字符。`);
+  }
+  if (
+    sourceRef &&
+    (sourceRef.length > MAX_SOURCE_REF_LENGTH ||
+      !SOURCE_REF_PATTERN.test(sourceRef))
+  ) {
+    throw new ApiError('sourceRef 格式不正确。');
   }
   if (files.length === 0) {
     throw new ApiError('请至少选择 1 张原图。');
@@ -108,7 +123,7 @@ export function validatePreviewFields({
     );
   }
 
-  return { title, body, tags, files };
+  return { title, body, tags, files, sourceRef: sourceRef || null };
 }
 
 export function readCreateFields(formData: FormData): CreatePreviewFields {
@@ -117,6 +132,7 @@ export function readCreateFields(formData: FormData): CreatePreviewFields {
     bodyValue: formData.get('body'),
     tagsValue: formData.get('tags'),
     files: readFiles(formData, 'images'),
+    sourceRefValue: formData.get('sourceRef'),
   });
 }
 
@@ -155,6 +171,7 @@ export function readBatchFields(formData: FormData): BatchCreateFields[] {
   }
 
   const clientIds = new Set<string>();
+  const sourceRefs = new Set<string>();
   const parsed = items.map((item, index): BatchCreateFields => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) {
       throw new ApiError(`第 ${index + 1} 条：内容格式不正确。`);
@@ -171,15 +188,23 @@ export function readBatchFields(formData: FormData): BatchCreateFields[] {
     clientIds.add(clientId);
 
     try {
-      return {
+      const parsedItem = {
         clientId,
         ...validatePreviewFields({
           titleValue: value.title,
           bodyValue: value.body,
           tagsValue: value.tags,
           files: readFiles(formData, `images.${clientId}`),
+          sourceRefValue: value.sourceRef,
         }),
       };
+      if (parsedItem.sourceRef) {
+        if (sourceRefs.has(parsedItem.sourceRef)) {
+          throw new ApiError('sourceRef 不能重复。');
+        }
+        sourceRefs.add(parsedItem.sourceRef);
+      }
+      return parsedItem;
     } catch (error) {
       if (error instanceof ApiError) {
         throw new ApiError(

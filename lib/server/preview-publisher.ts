@@ -5,11 +5,12 @@ import {
   type CreatePreviewFields,
 } from '@/lib/preview-contract';
 import type { PreviewAssetRecord, PreviewSummary } from '@/lib/preview-types';
+import type { PreviewObjectStorage } from '@/lib/server/object-storage';
 import type { CreatePreviewRecord } from '@/lib/server/preview-repository';
 
 export async function uploadPreviewOriginals(
   fields: CreatePreviewFields,
-  bucket: R2Bucket,
+  storage: PreviewObjectStorage,
   uploadedKeys: string[],
 ): Promise<CreatePreviewRecord> {
   const previewId = crypto.randomUUID();
@@ -37,9 +38,9 @@ export async function uploadPreviewOriginals(
       detected.extension,
     );
 
-    await bucket.put(objectKey, buffer, {
-      httpMetadata: { contentType: detected.mediaType },
-      customMetadata: { sha256 },
+    await storage.putObject(objectKey, buffer, {
+      contentType: detected.mediaType,
+      sha256,
     });
     uploadedKeys.push(objectKey);
 
@@ -56,13 +57,9 @@ export async function uploadPreviewOriginals(
     });
   }
 
-  const contentHash = await sha256Hex(
-    JSON.stringify({
-      title: fields.title,
-      body: fields.body,
-      tags: fields.tags,
-      images: assets.map((asset) => asset.sha256),
-    }),
+  const contentHash = contentHashFromFields(
+    fields,
+    assets.map((asset) => asset.sha256),
   );
   const preview: PreviewSummary = {
     id: previewId,
@@ -72,13 +69,35 @@ export async function uploadPreviewOriginals(
     tags: fields.tags,
     status: 'PUBLISHED',
     imageCount: assets.length,
-    contentHash,
+    contentHash: await contentHash,
     createdAt,
     publishedAt: createdAt,
     revokedAt: null,
   };
 
-  return { preview, assets };
+  return { preview, assets, sourceRef: fields.sourceRef };
+}
+
+export async function calculatePreviewContentHash(fields: CreatePreviewFields) {
+  const imageHashes: string[] = [];
+  for (const file of fields.files) {
+    imageHashes.push(await sha256Hex(await file.arrayBuffer()));
+  }
+  return contentHashFromFields(fields, imageHashes);
+}
+
+function contentHashFromFields(
+  fields: CreatePreviewFields,
+  imageHashes: string[],
+) {
+  return sha256Hex(
+    JSON.stringify({
+      title: fields.title,
+      body: fields.body,
+      tags: fields.tags,
+      images: imageHashes,
+    }),
+  );
 }
 
 function normalizeFileName(name: string, position: number, extension: string) {

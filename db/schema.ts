@@ -19,12 +19,14 @@ export const previews = sqliteTable(
     status: text('status').notNull(),
     imageCount: integer('image_count').notNull(),
     contentHash: text('content_hash').notNull(),
+    sourceRef: text('source_ref'),
     createdAt: integer('created_at').notNull(),
     publishedAt: integer('published_at').notNull(),
     revokedAt: integer('revoked_at'),
   },
   (table) => [
     uniqueIndex('previews_public_id_uq').on(table.publicId),
+    uniqueIndex('previews_source_ref_uq').on(table.sourceRef),
     index('previews_created_idx').on(table.createdAt),
     check(
       'previews_status_check',

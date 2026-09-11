@@ -14,7 +14,7 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: Request) {
   try {
     await requireApiKey(request, 'preview:list');
-    return await listPreviewsResponse();
+    return await listPreviewsResponse(request);
   } catch (error) {
     return errorResponse(error);
   }
