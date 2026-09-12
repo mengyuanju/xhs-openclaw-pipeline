@@ -21,7 +21,8 @@ test('protected control-plane operations declare their version contracts', () =>
     ['/v1/tasks/duplicate-query-discard', 'POST', 'duplicateQueryDiscardVersion', 1],
     ['/v1/query-packages', 'POST', 'queryPackageVersion', 2],
     ['/v1/query-packages/9/assignee', 'PATCH', 'queryPackageVersion', 3],
-    ['/v1/query-packages/9/screening', 'PUT', 'queryPackageVersion', 2],
+    ['/v1/query-packages/9/item-assignments', 'PUT', 'queryPackageVersion', 4],
+    ['/v1/query-packages/9/screening', 'PUT', 'queryPackageVersion', 4],
     ['/v1/query-packages/9/production-batches', 'POST', 'queryPackageVersion', 2],
     ['/v1/query-packages/9/abandon', 'POST', 'queryPackageVersion', 2],
     ['/v1/query-packages/9/permanent', 'DELETE', 'queryPackageVersion', 2],
@@ -32,7 +33,7 @@ test('protected control-plane operations declare their version contracts', () =>
     ['/v1/delivery-pool/xlsx', 'POST', 'deliverySpreadsheetVersion', 1],
     ['/v1/delivery-pool/xlsx/token', 'HEAD', 'deliverySpreadsheetVersion', 1],
     ['/v1/delivery-pool/xlsx/token', 'GET', 'deliverySpreadsheetVersion', 1],
-    ['/v1/delivery-pool/previews', 'POST', 'deliveryPreviewVersion', 4],
+    ['/v1/delivery-pool/previews', 'POST', 'deliveryPreviewVersion', 5],
     ['/v1/tasks/batch-archive', 'POST', 'finalDeliveryVersion', 2],
     ['/v1/tasks/42/archive', 'HEAD', 'finalDeliveryVersion', 2],
     ['/v1/tasks/42/archive', 'GET', 'finalDeliveryVersion', 2],
@@ -102,7 +103,16 @@ test('mutation capability check allows only compatible center versions', async (
     routePath: '/v1/query-packages/9/screening',
     method: 'PUT',
     fetchImpl: async () => Response.json({
-      data: { capabilities: { queryPackageVersion: 2 } },
+      data: { capabilities: { queryPackageVersion: 4 } },
+    }),
+  });
+
+  await assertMutationCapability({
+    root: 'http://center.test',
+    routePath: '/v1/query-packages/9/item-assignments',
+    method: 'PUT',
+    fetchImpl: async () => Response.json({
+      data: { capabilities: { queryPackageVersion: 4 } },
     }),
   });
 
@@ -138,7 +148,7 @@ test('mutation capability check allows only compatible center versions', async (
     routePath: '/v1/delivery-pool/previews',
     method: 'POST',
     fetchImpl: async () => Response.json({
-      data: { capabilities: { deliveryPreviewVersion: 4 } },
+      data: { capabilities: { deliveryPreviewVersion: 5 } },
     }),
   });
 });

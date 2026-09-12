@@ -399,6 +399,11 @@ test('user deletion blocks unfinished assignments and safely detaches terminal h
   assert.ok(audit);
   assert.deepEqual(audit.values, ['alice', 'admin']);
   const queryPackageDetach = terminal.calls.find(({ sql }) => sql.includes('UPDATE query_packages'));
+  const queryItemDetach = terminal.calls.find(({ sql }) => sql.includes('UPDATE query_package_items'));
+  assert.ok(queryItemDetach);
+  assert.deepEqual(queryItemDetach.values, [2, 'alice']);
+  assert.match(queryItemDetach.sql,
+    /screening_assigned_to_account_id = NULL,[\s\S]*screening_assigned_to_username = NULL/u);
   assert.ok(queryPackageDetach);
   assert.deepEqual(queryPackageDetach.values, [2, 'alice']);
   assert.match(queryPackageDetach.sql,
@@ -448,6 +453,9 @@ test('user eligibility changes clear Query-package assignments while USER and RE
       displayName: 'Alice', role: next.role, status: next.status, expectedVersion: 1,
     });
     const detach = fixture.calls.find(({ sql }) => sql.includes('UPDATE query_packages'));
+    const itemDetach = fixture.calls.find(({ sql }) => sql.includes('UPDATE query_package_items'));
+    assert.ok(itemDetach, `${next.role}/${next.status} item assignments`);
+    assert.deepEqual(itemDetach.values, [2, 'alice']);
     assert.ok(detach, `${next.role}/${next.status}`);
     assert.deepEqual(detach.values, [2, 'alice']);
     assert.ok(fixture.calls.findIndex(({ sql }) => sql.includes('UPDATE app_users'))
@@ -461,6 +469,8 @@ test('user eligibility changes clear Query-package assignments while USER and RE
     });
     assert.equal(fixture.calls.some(({ sql }) => sql.includes('UPDATE query_packages')), false,
       `${currentRole} -> ${nextRole}`);
+    assert.equal(fixture.calls.some(({ sql }) => sql.includes('UPDATE query_package_items')), false,
+      `${currentRole} -> ${nextRole} item assignments`);
   }
 });
 

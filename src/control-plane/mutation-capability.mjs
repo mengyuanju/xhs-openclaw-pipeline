@@ -36,6 +36,14 @@ const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
   }),
   Object.freeze({
     capability: 'queryPackageVersion',
+    minimumVersion: 4,
+    matches: (routePath, method) => (
+      /^\/v1\/query-packages\/[^/]+\/item-assignments$/u.test(routePath)
+        || /^\/v1\/query-packages\/[^/]+\/screening$/u.test(routePath)
+    ) && method === 'PUT',
+  }),
+  Object.freeze({
+    capability: 'queryPackageVersion',
     minimumVersion: 3,
     matches: (routePath, method) => /^\/v1\/query-packages\/[^/]+\/assignee$/u.test(routePath)
       && method === 'PATCH',
@@ -54,7 +62,7 @@ const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
   }),
   Object.freeze({
     capability: 'deliveryPreviewVersion',
-    minimumVersion: 4,
+    minimumVersion: 5,
     matches: (routePath, method) => routePath === '/v1/delivery-pool/previews'
       && method === 'POST',
   }),

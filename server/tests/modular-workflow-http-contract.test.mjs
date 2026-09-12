@@ -77,6 +77,8 @@ test('Query package HTTP routes separate delegated screening from administrator 
   const repository = {
     listQueryPackages: async (...args) => { calls.push(['list', ...args]); return []; },
     getQueryPackage: async (...args) => { calls.push(['detail', ...args]); return { id: 9, version: 1 }; },
+    getQueryPackageItemAssignmentSummary: async (...args) => { calls.push(['assignment-summary', ...args]); return { packageId: 9, packageVersion: 1 }; },
+    assignQueryPackageItems: async (...args) => { calls.push(['assign-items', ...args]); return { queryPackage: { id: 9, version: 2 } }; },
     assignQueryPackage: async (...args) => { calls.push(['assign', ...args]); return { id: 9, version: 2 }; },
     updateQueryPackageScreening: async (...args) => { calls.push(['screen', ...args]); return { id: 9, version: 2 }; },
     createQueryPackageProductionBatch: async (...args) => { calls.push(['produce', ...args]); return { id: 301, taskIds: [501] }; },
@@ -94,6 +96,21 @@ test('Query package HTTP routes separate delegated screening from administrator 
       method: 'PATCH', headers: headers('admin', true), body: JSON.stringify(assignment),
     });
     assert.equal(assigned.status, 200);
+
+    const assignmentSummary = await fetch(`${root}/v1/query-packages/9/item-assignment-summary`, {
+      headers: headers('admin'),
+    });
+    assert.equal(assignmentSummary.status, 200);
+    const itemAssignment = {
+      expectedVersion: 1,
+      strategy: 'EVEN',
+      assignees: [{ accountId: 22 }],
+      requestId: '10101010-1010-4010-8010-101010101010',
+    };
+    const itemsAssigned = await fetch(`${root}/v1/query-packages/9/item-assignments`, {
+      method: 'PUT', headers: headers('admin', true), body: JSON.stringify(itemAssignment),
+    });
+    assert.equal(itemsAssigned.status, 200);
 
     const screening = {
       expectedVersion: 1,
@@ -123,6 +140,8 @@ test('Query package HTTP routes separate delegated screening from administrator 
       for (const [path, method] of [
         ['/v1/query-packages', 'POST'],
         ['/v1/query-packages/9/assignee', 'PATCH'],
+        ['/v1/query-packages/9/item-assignment-summary', 'GET'],
+        ['/v1/query-packages/9/item-assignments', 'PUT'],
         ['/v1/query-packages/9/production-batches', 'POST'],
         ['/v1/query-packages/9/abandon', 'POST'],
         ['/v1/query-packages/9/permanent-delete-preview', 'GET'],
@@ -144,14 +163,20 @@ test('Query package HTTP routes separate delegated screening from administrator 
     assert.deepEqual(calls[1], ['assign', '9', assignment, {
       actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
     }]);
-    assert.deepEqual(calls[2], ['produce', '9', production, {
+    assert.deepEqual(calls.find(([kind]) => kind === 'assignment-summary'), ['assignment-summary', '9', {
+      actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
+    }]);
+    assert.deepEqual(calls.find(([kind]) => kind === 'assign-items'), ['assign-items', '9', itemAssignment, {
+      actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
+    }]);
+    assert.deepEqual(calls.find(([kind]) => kind === 'produce'), ['produce', '9', production, {
       actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
     }]);
     assert.deepEqual(calls.filter(([kind]) => kind === 'screen').map(([, , , context]) => context.actor), [
       { userId: 22, username: 'worker', role: 'USER', credentialVersion: 1 },
       { userId: 91, username: 'reviewer', role: 'REVIEWER', credentialVersion: 1 },
     ]);
-    assert.equal(calls.length, 9, 'administrator-only denials must happen before repository access');
+    assert.equal(calls.length, 11, 'administrator-only denials must happen before repository access');
   });
 });
 

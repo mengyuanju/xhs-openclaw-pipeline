@@ -23,7 +23,7 @@ test('only the latest open request may commit after a target switch or close', (
 test('Query package detail aborts and invalidates superseded or closed requests', async () => {
   const source = await readFile(queryWorkbenchUrl, 'utf8');
   assert.match(source, /packageDetailRequestController\.current\?\.abort\(\)/u);
-  assert.match(source, /query-packages\/\$\{id\}`\), \{ signal: controller\.signal \}/u);
+  assert.match(source, /query-packages\/\$\{id\}\?\$\{params\.toString\(\)\}`\),[\s\S]{0,100}\{ signal: controller\.signal \}/u);
   assert.match(source, /function closePackageDetail\(\)[\s\S]*packageDetailRequestId\.current \+= 1;[\s\S]*setDetailLoading\(false\)/u);
   assert.match(source, /onOpenChange=\{\(open\) => \{ if \(!open && !acting\) closePackageDetail\(\); \}\}/u);
   assert.ok((source.match(/canCommitLatestRequest\(/gu) ?? []).length >= 3);
@@ -32,7 +32,8 @@ test('Query package detail aborts and invalidates superseded or closed requests'
 test('Query package screening refreshes detail without resetting the active filter and assignment reads reject stale results', async () => {
   const source = await readFile(queryWorkbenchUrl, 'utf8');
   assert.match(source, /if \(!preserveFilters\) \{[\s\S]*setItemStatus\('PENDING'\)/u);
-  assert.match(source, /openPackage\(detail\.id, \{[\s\S]*preserveFilters: true,[\s\S]*confirmedScreening/u);
+  assert.match(source, /setStagedScreening\(\{\}\);[\s\S]*openPackage\(detail\.id, \{[\s\S]*preserveFilters: true/u,
+    'a confirmed mixed batch clears its staged decisions and refreshes the active filter');
   assert.match(source, /function openAssignment[\s\S]*assignmentRequestController\.current\?\.abort\(\)[\s\S]*canCommitLatestRequest\(assignmentRequestId\.current, currentRequestId, controller\.signal\.aborted\)/u);
   assert.match(source, /function closeAssignmentDialog\(\)[\s\S]*assignmentRequestId\.current \+= 1;[\s\S]*assignmentRequestController\.current\?\.abort\(\)/u);
 });

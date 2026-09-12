@@ -72,6 +72,20 @@ export function normalizeDeliveryPreviewRequest(value) {
       && (typeof testTaskId !== 'number' || !Number.isSafeInteger(testTaskId) || testTaskId < 1)) {
     throw new TypeError('testTaskId must be a positive integer');
   }
+  const taskIds = value.taskIds === undefined ? [] : value.taskIds;
+  if (!Array.isArray(taskIds) || taskIds.length > MAX_DELIVERY_PREVIEW_TASKS) {
+    throw new RangeError(
+      `taskIds must contain between 0 and ${MAX_DELIVERY_PREVIEW_TASKS} items`,
+    );
+  }
+  if (taskIds.some((id) => typeof id !== 'number'
+      || !Number.isSafeInteger(id) || id < 1)
+      || new Set(taskIds).size !== taskIds.length) {
+    throw new TypeError('taskIds must contain unique positive integers');
+  }
+  if (testTaskId !== null && taskIds.length > 0) {
+    throw new TypeError('testTaskId and taskIds cannot be used together');
+  }
   const limit = Number(value?.limit ?? DEFAULT_DELIVERY_PREVIEW_TASKS);
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_DELIVERY_PREVIEW_TASKS) {
     throw new RangeError(
@@ -81,8 +95,12 @@ export function normalizeDeliveryPreviewRequest(value) {
   if (testTaskId !== null && limit !== 1) {
     throw new RangeError('single-task preview testing requires limit 1');
   }
+  if (taskIds.length > 0 && limit !== taskIds.length) {
+    throw new RangeError('selected preview upload limit must match taskIds count');
+  }
   return {
-    scope: 'QUERY_PACKAGES', queryPackageIds, includeUnassigned, testTaskId, limit,
+    scope: 'QUERY_PACKAGES', queryPackageIds, includeUnassigned,
+    taskIds: [...taskIds], testTaskId, limit,
   };
 }
 
@@ -301,6 +319,7 @@ async function resolvePreviewTaskIds(repository, request, actor) {
     limit: request.limit,
     queryPackageIds: request.queryPackageIds,
     includeUnassigned: request.includeUnassigned,
+    taskIds: request.taskIds,
     testTaskId: request.testTaskId,
   });
   if (!Array.isArray(taskIds) || taskIds.length === 0) {

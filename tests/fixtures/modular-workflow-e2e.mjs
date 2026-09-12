@@ -284,6 +284,13 @@ function packageSummary(record) {
     assignedToDisplayName: assignee?.displayName ?? null,
     assignedToRole: assignee?.role === 'REVIEWER' || assignee?.role === 'USER' ? assignee.role : null,
     assigneeStatus: assignee?.status ?? null,
+    assignedItemCount: record.items.filter((item) => item.status === 'READY'
+      && item.screeningDecision === 'PENDING'
+      && Number.isSafeInteger(item.screeningAssignedToAccountId)).length,
+    assignedUserCount: new Set(record.items.filter((item) => item.status === 'READY'
+      && item.screeningDecision === 'PENDING'
+      && Number.isSafeInteger(item.screeningAssignedToAccountId))
+      .map((item) => item.screeningAssignedToAccountId)).size,
     version: record.version,
     counts: counts(record),
     createdAt: record.createdAt,
@@ -291,10 +298,17 @@ function packageSummary(record) {
   };
 }
 
-function packageDetail(record) {
+function packageDetail(record, req = null) {
+  const actor = req ? actorUser(req) : null;
+  const legacyAccess = actor && record.assignedToAccountId === actor.id
+    && record.assignedToUserId === actor.username;
+  const visibleItems = !actor || actor.role === 'ADMIN' || legacyAccess
+    ? record.items
+    : record.items.filter((item) => item.screeningAssignedToAccountId === actor.id
+      && item.screeningAssignedToUserId === actor.username);
   return {
     ...packageSummary(record),
-    items: record.items.map((item) => ({ ...item })),
+    items: visibleItems.map((item) => ({ ...item })),
     productionBatches: state.batches
       .filter((batch) => batch.queryPackageId === record.id)
       .map((batch) => ({ ...batch, taskCount: batch.taskIds.length })),
@@ -324,8 +338,41 @@ function canAccessPackage(req, record) {
   return actor?.status === 'ACTIVE'
     && actor.role === actorRole(req)
     && ['REVIEWER', 'USER'].includes(actor.role)
-    && record?.assignedToAccountId === actor.id
-    && record?.assignedToUserId === actor.username;
+    && ((record?.assignedToAccountId === actor.id
+      && record?.assignedToUserId === actor.username)
+      || record?.items.some((item) => item.screeningAssignedToAccountId === actor.id
+        && item.screeningAssignedToUserId === actor.username));
+}
+
+function fixtureItemAssignmentSummary(record) {
+  const eligible = record.items.filter((item) => item.status === 'READY'
+    && item.screeningDecision === 'PENDING');
+  const grouped = new Map();
+  for (const item of eligible) {
+    if (!Number.isSafeInteger(item.screeningAssignedToAccountId)) continue;
+    grouped.set(item.screeningAssignedToAccountId,
+      (grouped.get(item.screeningAssignedToAccountId) ?? 0) + 1);
+  }
+  const assignees = [...grouped.entries()].map(([accountId, count]) => {
+    const user = Object.values(users).find((candidate) => candidate.id === accountId);
+    return {
+      accountId,
+      username: user?.username ?? '',
+      displayName: user?.displayName ?? user?.username ?? '',
+      role: user?.role ?? null,
+      status: user?.status ?? null,
+      count,
+    };
+  });
+  const assignedTotal = assignees.reduce((sum, entry) => sum + entry.count, 0);
+  return {
+    packageId: record.id,
+    packageVersion: record.version,
+    eligibleTotal: eligible.length,
+    assignedTotal,
+    unassignedTotal: eligible.length - assignedTotal,
+    assignees,
+  };
 }
 
 function qaItemFor(req, item) {
@@ -392,10 +439,10 @@ const controlPlane = createServer(async (req, res) => {
         fixture: true,
         capabilities: {
           taskAssignmentVersion: 3,
-          queryPackageVersion: 3,
+          queryPackageVersion: 4,
           finalDeliveryVersion: 2,
           deliverySpreadsheetVersion: 1,
-          deliveryPreviewVersion: 4,
+          deliveryPreviewVersion: 5,
         },
       });
       return;
@@ -494,10 +541,14 @@ const controlPlane = createServer(async (req, res) => {
         return;
       }
       const selectedIds = new Set(queryPackageIds.map(Number));
+      const selectedTaskIds = Array.isArray(input.taskIds)
+        ? new Set(input.taskIds.map(Number))
+        : null;
       const limit = Math.min(200, Math.max(1, Number(input.limit) || 50));
       const candidates = state.deliveryEntries.filter(
         (entry) => (selectedIds.has(entry.queryPackageId)
           || (includeUnassigned && entry.queryPackageId === null))
+          && (!selectedTaskIds || selectedTaskIds.has(entry.taskId))
           && (input.testTaskId === undefined || entry.taskId === Number(input.testTaskId))
           && !entry.preview,
       ).slice(0, limit);
@@ -647,6 +698,8 @@ const controlPlane = createServer(async (req, res) => {
           status: 'READY',
           screeningDecision: 'PENDING',
           screeningReason: null,
+          screeningAssignedToAccountId: null,
+          screeningAssignedToUserId: null,
           taskId: null,
           version: 1,
         })),
@@ -666,7 +719,83 @@ const controlPlane = createServer(async (req, res) => {
         error(res, 403, 'FORBIDDEN', 'fixture query package access denied');
         return;
       }
-      send(res, 200, packageDetail(record));
+      send(res, 200, packageDetail(record, req));
+      return;
+    }
+    const assignmentSummaryMatch = url.pathname.match(
+      /^\/v1\/query-packages\/(\d+)\/item-assignment-summary$/u,
+    );
+    if (method === 'GET' && assignmentSummaryMatch) {
+      if (actorRole(req) !== 'ADMIN') {
+        error(res, 403, 'FORBIDDEN', 'fixture Query item assignment is admin-only');
+        return;
+      }
+      const record = state.packages.find((entry) => entry.id === Number(assignmentSummaryMatch[1]));
+      if (!record) {
+        error(res, 404, 'QUERY_PACKAGE_NOT_FOUND', 'fixture package missing');
+        return;
+      }
+      send(res, 200, fixtureItemAssignmentSummary(record));
+      return;
+    }
+    const itemAssignmentsMatch = url.pathname.match(
+      /^\/v1\/query-packages\/(\d+)\/item-assignments$/u,
+    );
+    if (method === 'PUT' && itemAssignmentsMatch) {
+      if (actorRole(req) !== 'ADMIN') {
+        error(res, 403, 'FORBIDDEN', 'fixture Query item assignment is admin-only');
+        return;
+      }
+      const record = state.packages.find((entry) => entry.id === Number(itemAssignmentsMatch[1]));
+      const input = await jsonBody(req);
+      if (!record) {
+        error(res, 404, 'QUERY_PACKAGE_NOT_FOUND', 'fixture package missing');
+        return;
+      }
+      if (Number(input.expectedVersion) !== record.version) {
+        error(res, 409, 'VERSION_CONFLICT', 'fixture package version is stale');
+        return;
+      }
+      const strategy = String(input.strategy).toUpperCase();
+      const assignees = Array.isArray(input.assignees) ? input.assignees.map((entry) => {
+        const user = Object.values(users).find((candidate) => candidate.id === Number(entry.accountId)
+          && candidate.status === 'ACTIVE' && ['REVIEWER', 'USER'].includes(candidate.role));
+        return user ? { ...user, count: Number(entry.count) } : null;
+      }) : [];
+      if (!['EVEN', 'COUNTS'].includes(strategy) || assignees.some((user) => user === null)) {
+        error(res, 400, 'INVALID_INPUT', 'fixture item assignment input is invalid');
+        return;
+      }
+      const eligible = record.items.filter((item) => item.status === 'READY'
+        && item.screeningDecision === 'PENDING');
+      const targets = [];
+      if (strategy === 'EVEN' && assignees.length > 0) {
+        const base = Math.floor(eligible.length / assignees.length);
+        let remainder = eligible.length % assignees.length;
+        for (const user of assignees) {
+          const count = base + (remainder-- > 0 ? 1 : 0);
+          targets.push(...Array.from({ length: count }, () => user));
+        }
+      } else if (strategy === 'COUNTS') {
+        for (const user of assignees) targets.push(...Array.from({ length: user.count }, () => user));
+      }
+      if (targets.length > eligible.length) {
+        error(res, 409, 'ASSIGNMENT_COUNT_EXCEEDED', 'fixture assignment exceeds pending items');
+        return;
+      }
+      eligible.forEach((item, index) => {
+        item.screeningAssignedToAccountId = targets[index]?.id ?? null;
+        item.screeningAssignedToUserId = targets[index]?.username ?? null;
+        item.version += 1;
+      });
+      record.assignedToAccountId = null;
+      record.assignedToUserId = null;
+      record.version += 1;
+      record.updatedAt = new Date().toISOString();
+      send(res, 200, {
+        queryPackage: packageSummary(record),
+        assignment: fixtureItemAssignmentSummary(record),
+      });
       return;
     }
     const assigneeMatch = url.pathname.match(/^\/v1\/query-packages\/(\d+)\/assignee$/u);
@@ -730,15 +859,22 @@ const controlPlane = createServer(async (req, res) => {
         error(res, 409, 'PACKAGE_NOT_SCREENABLE', 'fixture Query package is read-only');
         return;
       }
-      if (Number(input.expectedVersion) !== record.version) {
+      const decisions = Array.isArray(input.decisions) ? input.decisions : [];
+      const itemVersioned = decisions.length > 0
+        && decisions.every((decision) => Number.isSafeInteger(Number(decision.expectedItemVersion)));
+      if (!itemVersioned && Number(input.expectedVersion) !== record.version) {
         error(res, 409, 'VERSION_CONFLICT', 'fixture package version is stale');
         return;
       }
-      const decisions = Array.isArray(input.decisions) ? input.decisions : [];
       const decisionIds = decisions.map((decision) => Number(decision.itemId));
       const requestedItems = decisionIds.map((itemId) => record.items.find((item) => item.id === itemId));
+      const actor = actorUser(req);
       if (!decisions.length || new Set(decisionIds).size !== decisions.length
-          || requestedItems.some((item) => !item || item.status !== 'READY')) {
+          || requestedItems.some((item, index) => !item || item.status !== 'READY'
+            || (itemVersioned && item.version !== Number(decisions[index].expectedItemVersion))
+            || (itemVersioned && actor.role !== 'ADMIN'
+              && (item.screeningAssignedToAccountId !== actor.id
+                || item.screeningAssignedToUserId !== actor.username)))) {
         error(res, 409, 'ITEM_NOT_SCREENABLE', 'fixture screening scope is stale');
         return;
       }

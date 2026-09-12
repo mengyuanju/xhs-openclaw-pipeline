@@ -20,3 +20,11 @@ test('Query package intake rejects overlong rows and never truncates oversized p
   assert.deepEqual(oversized.queries, []);
   assert.match(oversized.error, /最多导入 2 条/u);
 });
+
+test('Query package intake accepts the 10000-row boundary and rejects one extra row', () => {
+  const boundary = Array.from({ length: 10_000 }, (_, index) => `Query ${index + 1}`).join('\n');
+  assert.equal(parseQueryPackageText(boundary).queries.length, 10_000);
+  const oversized = parseQueryPackageText(`${boundary}\nQuery 10001`);
+  assert.deepEqual(oversized.queries, []);
+  assert.match(oversized.error, /10,000/u);
+});

@@ -83,6 +83,18 @@ function normalizePreviewQueryPackageIds(value) {
   return ids;
 }
 
+function normalizePreviewTaskIds(value) {
+  if (!Array.isArray(value) || value.length > 200) {
+    throw new RangeError('taskIds must contain between 0 and 200 items');
+  }
+  const ids = [...value];
+  if (ids.some((id) => typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
+      || new Set(ids).size !== ids.length) {
+    throw new TypeError('taskIds must contain unique positive integers');
+  }
+  return ids;
+}
+
 function normalizePreviewBinding(value) {
   const noteId = String(value?.noteId ?? '').trim().toLowerCase();
   const contentHash = String(value?.contentHash ?? '').trim().toLowerCase();
@@ -362,6 +374,7 @@ export async function listAllDeliveryPoolTaskIds(pool, rawActor, {
 export async function listDeliveryPoolTaskIdsForPreview(pool, rawActor, {
   queryPackageIds: rawQueryPackageIds,
   includeUnassigned: rawIncludeUnassigned = false,
+  taskIds: rawTaskIds = [],
   testTaskId: rawTestTaskId = null,
   limit: rawLimit = 50,
 } = {}) {
@@ -379,10 +392,20 @@ export async function listDeliveryPoolTaskIdsForPreview(pool, rawActor, {
   const testTaskId = rawTestTaskId === null || rawTestTaskId === undefined
     ? null
     : normalizeTaskId(rawTestTaskId);
+  const taskIds = normalizePreviewTaskIds(rawTaskIds);
+  if (testTaskId !== null && taskIds.length > 0) {
+    throw new TypeError('testTaskId and taskIds cannot be used together');
+  }
   if (testTaskId !== null && limit !== 1) {
     throw new RangeError('single-task preview testing requires limit 1');
   }
-  const values = [queryPackageIds, includeUnassigned, testTaskId, limit];
+  if (taskIds.length > 0 && limit !== taskIds.length) {
+    throw new RangeError('selected preview upload limit must match taskIds count');
+  }
+  const selectedTaskIds = taskIds.length > 0
+    ? taskIds
+    : testTaskId === null ? [] : [testTaskId];
+  const values = [queryPackageIds, includeUnassigned, selectedTaskIds, limit];
   const result = await pool.query(`
     SELECT task.id AS task_id
     FROM delivery_entries AS delivery
@@ -396,11 +419,18 @@ export async function listDeliveryPoolTaskIdsForPreview(pool, rawActor, {
         task.source_query_package_id = ANY($1::bigint[])
         OR ($2::boolean AND task.source_query_package_id IS NULL)
       )
-      AND ($3::bigint IS NULL OR task.id = $3)
+      AND (cardinality($3::bigint[]) = 0 OR task.id = ANY($3::bigint[]))
     ORDER BY delivery.approved_at DESC, delivery.id DESC
     LIMIT $4
   `, values);
-  return result.rows.map((row) => Number(row.task_id));
+  const matchedTaskIds = result.rows.map((row) => Number(row.task_id));
+  if (selectedTaskIds.length > 0 && matchedTaskIds.length !== selectedTaskIds.length) {
+    throw new ControlPlaneConflictError(
+      'DELIVERY_PREVIEW_SELECTION_CHANGED',
+      '所选交付项已上传或版本已变化，请刷新交付池后重新选择',
+    );
+  }
+  return matchedTaskIds;
 }
 
 export async function recordDeliveryPreviewLinks(queryable, rawRecords, rawActor) {

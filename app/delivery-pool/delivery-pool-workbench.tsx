@@ -118,6 +118,12 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
   const selectionCandidates = visible.slice(0, DELIVERY_POOL_SELECTION_LIMIT);
   const allChecked = selectionCandidates.length > 0
     && selectionCandidates.every((entry) => selected.includes(entry.taskId));
+  const selectedTaskIdSet = useMemo(() => new Set(selected), [selected]);
+  const selectedPreviewEntries = useMemo(
+    () => entries.filter((entry) => selectedTaskIdSet.has(entry.taskId) && entry.preview === null),
+    [entries, selectedTaskIdSet],
+  );
+  const selectedPreviewEntryCount = selectedPreviewEntries.length;
   const previewSearchTerm = previewPackageSearch.trim().toLocaleLowerCase('zh-CN');
   const visiblePreviewPackages = useMemo(() => previewSearchTerm
     ? queryPackages.filter((facet) => facet.name.toLocaleLowerCase('zh-CN').includes(previewSearchTerm))
@@ -151,7 +157,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
     setSelected(next);
     if (checked && requestedCount > DELIVERY_POOL_SELECTION_LIMIT) {
       setMessageTone('warning');
-      setMessage(`单次批量下载最多选择 ${DELIVERY_POOL_SELECTION_LIMIT} 条；其余条目可分批下载，或使用“一键导出全部”。`);
+      setMessage(`单次最多选择 ${DELIVERY_POOL_SELECTION_LIMIT} 条；其余条目可分批上传或下载。`);
     }
   }
 
@@ -288,14 +294,14 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
   async function submitPreviewUpload({
     queryPackageIds,
     includeUnassigned,
+    taskIds = [],
     limit,
-    testTaskId = null,
     pendingMessage,
   }: {
     queryPackageIds: number[];
     includeUnassigned: boolean;
+    taskIds?: number[];
     limit: number;
-    testTaskId?: number | null;
     pendingMessage: string;
   }) {
     setPreviewPublishing(true);
@@ -312,7 +318,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
             scope: 'QUERY_PACKAGES',
             queryPackageIds,
             includeUnassigned,
-            ...(testTaskId === null ? {} : { testTaskId }),
+            ...(taskIds.length ? { taskIds } : {}),
             limit,
           }),
         },
@@ -367,16 +373,43 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
       ? `词包“${entry.queryPackageName}”`
       : `“${UNASSIGNED_PREVIEW_LABEL}”`;
     if (!await confirm({
-      title: `测试上传任务 #${entry.taskId}？`,
+      title: `上传任务 #${entry.taskId}？`,
       description: `将从${sourceLabel}精确上传任务 #${entry.taskId}（${queryLabel}）。本次只处理这一条，不会上传同范围内的其他内容。`,
-      confirmLabel: '测试上传这一条',
+      confirmLabel: '上传这一条',
     })) return;
     await submitPreviewUpload({
       queryPackageIds: entry.queryPackageId === null ? [] : [entry.queryPackageId],
       includeUnassigned: entry.queryPackageId === null,
-      testTaskId: entry.taskId,
+      taskIds: [entry.taskId],
       limit: 1,
-      pendingMessage: `正在测试上传任务 #${entry.taskId}，本次只处理这一条。`,
+      pendingMessage: `正在上传任务 #${entry.taskId}，本次只处理这一条。`,
+    });
+  }
+
+  async function publishSelectedPreviews() {
+    if (exportBusy || selectedPreviewEntryCount === 0) return;
+    const taskIds = selectedPreviewEntries.map((entry) => entry.taskId);
+    const queryPackageIds = [...new Set(selectedPreviewEntries.flatMap(
+      (entry) => entry.queryPackageId === null ? [] : [entry.queryPackageId],
+    ))];
+    const includeUnassigned = selectedPreviewEntries.some(
+      (entry) => entry.queryPackageId === null,
+    );
+    const taskPreview = taskIds.length <= 8
+      ? taskIds.map((taskId) => `#${taskId}`).join('、')
+      : `${taskIds.slice(0, 8).map((taskId) => `#${taskId}`).join('、')}等 ${taskIds.length} 条`;
+    const alreadyUploadedCount = selected.length - selectedPreviewEntryCount;
+    if (!await confirm({
+      title: `上传已指定的 ${selectedPreviewEntryCount} 条内容？`,
+      description: `本次将精确上传任务 ${taskPreview}，不会自动补充同词包内的其他内容${alreadyUploadedCount > 0 ? `；另有 ${alreadyUploadedCount} 条已选内容已有预览，不会重复上传` : ''}。提交时会再次校验所属词包、READY 状态和交付版本。`,
+      confirmLabel: `上传这 ${selectedPreviewEntryCount} 条`,
+    })) return;
+    await submitPreviewUpload({
+      queryPackageIds,
+      includeUnassigned,
+      taskIds,
+      limit: taskIds.length,
+      pendingMessage: `正在精确上传已指定的 ${taskIds.length} 条内容，不会处理同词包内的其他条目。`,
     });
   }
 
@@ -410,7 +443,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
           </Button>
           {role === 'ADMIN' && <>
             <div className={styles.previewUploadControl}>
-              <label htmlFor="delivery-preview-upload-limit">本次预览上限</label>
+              <label htmlFor="delivery-preview-upload-limit">整包上传上限</label>
               <Select value={String(previewUploadLimit)} onValueChange={(value) => setPreviewUploadLimit(Number(value))}>
                 <SelectTrigger id="delivery-preview-upload-limit" aria-label="本次预览上传条数上限">
                   <SelectValue />
@@ -424,7 +457,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
             </div>
             <Button
               unstyled
-              className="button small primary"
+              className="button small"
               type="button"
               aria-busy={previewPublishing}
               disabled={selectedPreviewScopeCount === 0
@@ -437,7 +470,24 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
                   ? '请先勾选上传范围'
                   : selectedPreviewUnuploadedCount === 0
                     ? '所选范围无需上传'
-                    : `上传预览（${selectedPreviewScopeCount} 个范围 / 最多 ${previewUploadLimit} 条）`}</>}
+                    : `整包上传（${selectedPreviewScopeCount} 个范围 / 最多 ${previewUploadLimit} 条）`}</>}
+            </Button>
+            <Button
+              unstyled
+              className="button small primary"
+              type="button"
+              aria-busy={previewPublishing}
+              aria-label={`上传已指定的 ${selectedPreviewEntryCount} 条尚未上传内容`}
+              disabled={selectedPreviewEntryCount === 0 || exportBusy}
+              onClick={() => { void publishSelectedPreviews(); }}
+              title={selected.length > 0 && selectedPreviewEntryCount === 0
+                ? '已选内容均已有预览，无需重复上传'
+                : undefined}
+            >
+              <UploadCloud size={14} />
+              {previewPublishing ? '正在上传预览…' : selectedPreviewEntryCount
+                ? `上传已选（${selectedPreviewEntryCount} 条）`
+                : '上传已选'}
             </Button>
             <Button
               unstyled
@@ -534,7 +584,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
         <div className={styles.previewScopeHeader}>
           <div>
             <h3 id="delivery-preview-package-title">选择要上传预览的范围</h3>
-            <p>按词包明确勾选；早期未绑定词包的内容会作为独立范围显示。列表筛选、文本搜索和任务行选择均不会改变上传范围。</p>
+            <p>按词包明确勾选后可整包上传；要指定具体数据，先按词包筛选列表并勾选任务行，再点“上传已选”。早期未绑定词包的内容会作为独立范围显示，任务行勾选不会改变这里的整包范围。</p>
           </div>
           <strong>{selectedPreviewScopeCount
             ? `已选 ${selectedPreviewScopeCount} 个范围 · ${selectedPreviewUnuploadedCount} 条未上传`
@@ -593,7 +643,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
       </section>}
       {role === 'ADMIN' && <div className={styles.selectionStatus}>
         <span>{selected.length
-          ? `已选择 ${selected.length} / ${DELIVERY_POOL_SELECTION_LIMIT} 条；Excel 与批量下载均优先处理已选条目。`
+          ? `已选择 ${selected.length} / ${DELIVERY_POOL_SELECTION_LIMIT} 条，其中 ${selectedPreviewEntryCount} 条尚未上传；“上传已选”、Excel 与批量下载均精确处理已选条目。`
           : queryPackageName
             ? `尚未选择条目；Excel 与一键 ZIP 将按词包“${queryPackageName}”导出。单次勾选最多 ${DELIVERY_POOL_SELECTION_LIMIT} 条。`
             : `尚未选择条目；Excel 与一键 ZIP 将导出后台全部 READY。单次勾选最多 ${DELIVERY_POOL_SELECTION_LIMIT} 条。`}</span>
@@ -642,7 +692,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
                     type="button"
                     disabled={exportBusy}
                     onClick={() => { void publishSinglePreview(entry); }}
-                  ><UploadCloud size={14} />测试上传</Button>}
+                  ><UploadCloud size={14} />上传这一条</Button>}
                   <a className="button small primary" href={`/api/control-plane/v1/tasks/${entry.taskId}/archive`} download><Download size={14} />下载资源</a>
                 </div></td>
               </tr>)}</tbody>

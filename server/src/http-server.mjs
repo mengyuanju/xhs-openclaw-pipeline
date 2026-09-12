@@ -856,11 +856,29 @@ function installRoutes(
   });
   router.get('/v1/query-packages/:packageId', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
-    json(ctx, 200, await repository.getQueryPackage(ctx.params.packageId, { actor }));
+    json(ctx, 200, await repository.getQueryPackage(ctx.params.packageId, {
+      actor,
+      itemPage: {
+        limit: ctx.query.itemLimit,
+        cursor: ctx.query.itemCursor,
+        filter: ctx.query.itemFilter,
+        search: ctx.query.itemSearch,
+      },
+    }));
   });
   router.patch('/v1/query-packages/:packageId/assignee', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
     json(ctx, 200, await repository.assignQueryPackage(ctx.params.packageId, requireJson(ctx), { actor }));
+  });
+  router.get('/v1/query-packages/:packageId/item-assignment-summary', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.getQueryPackageItemAssignmentSummary(ctx.params.packageId, { actor }));
+  });
+  router.put('/v1/query-packages/:packageId/item-assignments', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.assignQueryPackageItems(
+      ctx.params.packageId, requireJson(ctx), { actor },
+    ));
   });
   router.put('/v1/query-packages/:packageId/screening', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);

@@ -140,6 +140,14 @@ function fakeQueryPackageDatabase() {
     if (source.startsWith('SELECT * FROM query_packages WHERE id = $1 FOR UPDATE')) {
       return { rows: state.package && Number(values[0]) === state.package.id ? [{ ...state.package }] : [] };
     }
+    if (source.startsWith('SELECT EXISTS') && source.includes('screening_assigned_to_account_id')) {
+      const allowed = [...state.items.values()].some((item) => (
+        item.query_package_id === Number(values[0])
+        && item.screening_assigned_to_account_id === Number(values[1])
+        && item.screening_assigned_to_username === values[2]
+      ));
+      return { rows: [{ allowed }] };
+    }
     if (source.includes('FROM query_package_mutation_requests') && source.startsWith('SELECT')) {
       const row = state.mutations.get(`${values[0]}:${values[1]}`);
       return { rows: row ? [structuredClone(row)] : [] };

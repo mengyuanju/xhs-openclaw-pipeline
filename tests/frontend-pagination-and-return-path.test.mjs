@@ -82,8 +82,11 @@ test('copy QA keeps the review-mode control admin-only', async () => {
   assert.match(source, /样本评审模式由管理员预先决定，审核员不可切换或更改/u);
 });
 
-test('visible Query packages page through the server and render at most one detail page', async () => {
-  const source = await readFile(queryWorkbenchUrl, 'utf8');
+test('visible Query packages page through the server and virtualizes cursor-paged detail rows', async () => {
+  const [source, virtualList] = await Promise.all([
+    readFile(queryWorkbenchUrl, 'utf8'),
+    readFile(new URL('../app/query-packages/virtual-query-list.tsx', import.meta.url), 'utf8'),
+  ]);
   assert.match(source, /query-packages\?limit=\$\{QUERY_PACKAGE_LIST_LIMIT\}&offset=\$\{offset\}/u);
   assert.match(source, /load\(\{ silent: true, offset: nextPackageOffset \}\)/u);
   assert.equal(QUERY_PACKAGE_ITEM_PAGE_SIZE, 100);
@@ -95,9 +98,13 @@ test('visible Query packages page through the server and render at most one deta
     ...largePackage.slice(0, 100),
     ...largePackage.slice(200),
   ]);
-  assert.match(source, /queryPackageItemPage\(visibleItems, itemPage\)/u);
-  assert.match(source, /pagedItems\.map/u);
-  assert.doesNotMatch(source, /<tbody>\{visibleItems\.map/u);
+  assert.match(source, /itemLimit: String\(QUERY_PACKAGE_ITEM_FETCH_LIMIT\)/u);
+  assert.match(source, /params\.set\('itemCursor', cursor\)/u);
+  assert.match(source, /<VirtualQueryList/u);
+  assert.match(source, /onEndReached=\{\(\) => \{ void loadMoreQueryItems\(\); \}\}/u);
+  assert.match(virtualList, /Math\.floor\(scrollTop \/ rowHeight\)/u);
+  assert.match(virtualList, /transform: `translateY\(\$\{index \* rowHeight\}px\)`/u);
+  assert.doesNotMatch(source, /pagedItems\.map|<tbody>\{visibleItems\.map/u);
   assert.match(source, /new Set\(checkedItemIds\)/u);
   assert.match(source, /deletePreview\?\.packageId !== deletePackage\.id/u,
     'only the preview belonging to the currently open package may authorize deletion');
@@ -115,7 +122,7 @@ test('administrator delivery pagination advances by the server page offset inste
 test('development E2E fixture mirrors delegated screening, automatic Query production, pagination and held-item closure', async () => {
   const source = await readFile(modularE2eFixtureUrl, 'utf8');
   assert.match(source, /MODULAR_E2E_PAGINATION_SEED === '1'/u);
-  assert.match(source, /queryPackageVersion: 3/u);
+  assert.match(source, /queryPackageVersion: 4/u);
   assert.match(source, /send\(res, 200, page\.items\.map\(packageSummary\)\)/u,
     'Query package fixture pages must match the current bare-array server response');
   assert.match(source, /const visiblePackages = actorRole\(req\) === 'ADMIN'[\s\S]*?state\.packages\.filter\(\(record\) => canAccessPackage\(req, record\)\)[\s\S]*?paginate\(url, visiblePackages\)/u,

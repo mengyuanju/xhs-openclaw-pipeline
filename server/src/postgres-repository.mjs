@@ -38,9 +38,11 @@ import {
 import {
   abandonQueryPackage,
   assignQueryPackage,
+  assignQueryPackageItems,
   createQueryPackage,
   createQueryPackageProductionBatch,
   getQueryPackage,
+  getQueryPackageItemAssignmentSummary,
   listQueryPackages,
   permanentlyDeleteQueryPackage,
   previewPermanentQueryPackageDeletion,
@@ -932,6 +934,17 @@ async function lockAdministratorRoster(client) {
 
 async function clearQueryPackageAssignments(client, { id, username }) {
   await client.query(`
+    UPDATE query_package_items
+    SET screening_assigned_to_account_id = NULL,
+      screening_assigned_to_username = NULL,
+      screening_assigned_by_account_id = NULL,
+      screening_assigned_by_username = NULL,
+      screening_assigned_at = NULL,
+      version = version + 1, updated_at = now()
+    WHERE screening_assigned_to_account_id = $1
+      AND screening_assigned_to_username = $2
+  `, [Number(id), username]);
+  await client.query(`
     UPDATE query_packages
     SET assigned_to_account_id = NULL, assigned_to_username = NULL,
       version = version + 1, updated_at = now()
@@ -1054,7 +1067,13 @@ export class PostgresControlPlaneRepository {
   getModelCall(taskId, callId) { return getModelCall(this.pool, taskId, callId); }
   listQueryPackages(options, { actor } = {}) { return listQueryPackages(this.pool, options, actor); }
   createQueryPackage(input, { actor } = {}) { return createQueryPackage(this.pool, input, actor); }
-  getQueryPackage(id, { actor } = {}) { return getQueryPackage(this.pool, id, actor); }
+  getQueryPackage(id, { actor, itemPage } = {}) { return getQueryPackage(this.pool, id, actor, itemPage); }
+  getQueryPackageItemAssignmentSummary(id, { actor } = {}) {
+    return getQueryPackageItemAssignmentSummary(this.pool, id, actor);
+  }
+  assignQueryPackageItems(id, input, { actor } = {}) {
+    return assignQueryPackageItems(this.pool, id, input, actor);
+  }
   assignQueryPackage(id, input, { actor } = {}) {
     return assignQueryPackage(this.pool, id, input, actor);
   }
@@ -1119,10 +1138,10 @@ export class PostgresControlPlaneRepository {
     return listAllDeliveryPoolTaskIds(this.pool, actor, { queryPackageName });
   }
   listDeliveryPoolTaskIdsForPreview({
-    actor, queryPackageIds, includeUnassigned = false, testTaskId = null, limit = 50,
+    actor, queryPackageIds, includeUnassigned = false, taskIds = [], testTaskId = null, limit = 50,
   } = {}) {
     return listDeliveryPoolTaskIdsForPreview(this.pool, actor, {
-      queryPackageIds, includeUnassigned, testTaskId, limit,
+      queryPackageIds, includeUnassigned, taskIds, testTaskId, limit,
     });
   }
   recordDeliveryPreviewLinks(records, actor) {
@@ -1154,7 +1173,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 3, xiaohongshuQuerySearchVersion: 3, xiaohongshuAccountStatusVersion: 1, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1, deliveryPreviewVersion: 4 } };
+      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 4, xiaohongshuQuerySearchVersion: 3, xiaohongshuAccountStatusVersion: 1, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1, deliveryPreviewVersion: 5 } };
   }
 
   async authenticateUser(rawUsername, password) {

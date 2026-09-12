@@ -114,7 +114,9 @@ test('preview candidate snapshot is admin-limited and excludes entries already b
     query: async (statement, bindings) => {
       sql = statement;
       values = bindings;
-      return { rows: [{ task_id: '7' }, { task_id: '8' }] };
+      return { rows: bindings[2]?.length
+        ? bindings[2].map((taskId) => ({ task_id: String(taskId) }))
+        : [{ task_id: '7' }, { task_id: '8' }] };
     },
   };
   assert.deepEqual(await listDeliveryPoolTaskIdsForPreview(pool, admin, {
@@ -122,29 +124,47 @@ test('preview candidate snapshot is admin-limited and excludes entries already b
     includeUnassigned: true,
     limit: 200,
   }), [7, 8]);
-  assert.deepEqual(values, [[9, 10], true, null, 200]);
+  assert.deepEqual(values, [[9, 10], true, [], 200]);
   assert.match(sql, /delivery\.preview_id IS NULL/u);
   assert.match(sql, /task\.source_query_package_id = ANY\(\$1::bigint\[\]\)/u);
   assert.match(sql, /\$2::boolean AND task\.source_query_package_id IS NULL/u);
-  assert.match(sql, /\$3::bigint IS NULL OR task\.id = \$3/u);
+  assert.match(sql, /cardinality\(\$3::bigint\[\]\) = 0 OR task\.id = ANY\(\$3::bigint\[\]\)/u);
   assert.match(sql, /LIMIT \$4/u);
   assert.deepEqual(await listDeliveryPoolTaskIdsForPreview(pool, admin, {
     queryPackageIds: [],
     includeUnassigned: true,
     limit: 34,
   }), [7, 8]);
-  assert.deepEqual(values, [[], true, null, 34]);
+  assert.deepEqual(values, [[], true, [], 34]);
   assert.deepEqual(await listDeliveryPoolTaskIdsForPreview(pool, admin, {
     queryPackageIds: [],
     includeUnassigned: true,
     testTaskId: 588,
     limit: 1,
-  }), [7, 8]);
-  assert.deepEqual(values, [[], true, 588, 1]);
+  }), [588]);
+  assert.deepEqual(values, [[], true, [588], 1]);
+  assert.deepEqual(await listDeliveryPoolTaskIdsForPreview(pool, admin, {
+    queryPackageIds: [9],
+    taskIds: [8, 7],
+    limit: 2,
+  }), [8, 7]);
+  assert.deepEqual(values, [[9], false, [8, 7], 2]);
   await assert.rejects(listDeliveryPoolTaskIdsForPreview(pool, admin, {
     queryPackageIds: ['9'],
     limit: 10,
   }), /positive integers/u);
+  await assert.rejects(listDeliveryPoolTaskIdsForPreview(pool, admin, {
+    queryPackageIds: [9],
+    taskIds: [7, 8],
+    limit: 1,
+  }), /must match taskIds count/u);
+  await assert.rejects(listDeliveryPoolTaskIdsForPreview({
+    query: async () => ({ rows: [{ task_id: '7' }] }),
+  }, admin, {
+    queryPackageIds: [9],
+    taskIds: [7, 8],
+    limit: 2,
+  }), (error) => error?.code === 'DELIVERY_PREVIEW_SELECTION_CHANGED');
 });
 
 test('preview noteId is saved against the exact frozen delivery version', async () => {

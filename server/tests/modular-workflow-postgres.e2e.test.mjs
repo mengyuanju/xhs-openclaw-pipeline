@@ -36,6 +36,7 @@ import { hashUserPassword } from '../src/user-auth.mjs';
 const execFile = promisify(execFileCallback);
 const RUN_POSTGRES_E2E = process.env.RUN_POSTGRES_E2E === '1';
 const QUERY_PACKAGE_SCALE_ROWS = 5_000;
+const QUERY_PACKAGE_PAGING_SCALE_ROWS = 10_000;
 const QUERY_PACKAGE_SCALE_OPERATION_LIMIT_MS = 20_000;
 
 const POSTGRES_BIN_CANDIDATES = Object.freeze([
@@ -1432,6 +1433,185 @@ test('real PostgreSQL 18 screens and produces a full 5000-row Query package with
   }
 });
 
+test('real PostgreSQL 18 imports and cursor-pages a full 10000-row Query package within bounded time', {
+  skip: !RUN_POSTGRES_E2E,
+  timeout: 180_000,
+}, async (context) => {
+  const cluster = await startTemporaryPostgres18();
+  const repository = new PostgresControlPlaneRepository({ connectionString: cluster.connectionString });
+  try {
+    await repository.initialize();
+    const admin = actorFrom(await repository.getUserByUsername('admin'));
+    const importStartedAt = performance.now();
+    const imported = await createQueryPackage(repository.pool, {
+      name: 'PostgreSQL 18 10000 条 Query 分页验证',
+      sourceFileName: 'query-paging-scale-10000.json',
+      requestId: randomUUID(),
+      items: Array.from({ length: QUERY_PACKAGE_PAGING_SCALE_ROWS }, (_, index) => ({
+        externalId: `paging-scale-query-${index + 1}`,
+        query: `游标分页边界 Query ${index + 1}`,
+        input: { ordinal: index + 1 },
+        requestedImageCount: 'auto',
+      })),
+    }, admin);
+    const importElapsedMs = performance.now() - importStartedAt;
+    assert.equal(imported.counts.total, QUERY_PACKAGE_PAGING_SCALE_ROWS);
+    assert.ok(importElapsedMs < QUERY_PACKAGE_SCALE_OPERATION_LIMIT_MS,
+      `10000-row Query import took ${importElapsedMs.toFixed(0)}ms`);
+
+    const pagingStartedAt = performance.now();
+    const itemIds = [];
+    let cursor = null;
+    let pageCount = 0;
+    do {
+      const detail = await repository.getQueryPackage(imported.id, {
+        actor: admin,
+        itemPage: {
+          limit: '200',
+          filter: 'PENDING',
+          ...(cursor ? { cursor } : {}),
+        },
+      });
+      assert.equal(detail.itemPage.total, QUERY_PACKAGE_PAGING_SCALE_ROWS);
+      assert.ok(detail.items.length > 0 && detail.items.length <= 200);
+      itemIds.push(...detail.items.map((item) => item.id));
+      cursor = detail.itemPage.nextCursor;
+      pageCount += 1;
+      assert.equal(detail.itemPage.hasMore, cursor !== null);
+    } while (cursor);
+    const pagingElapsedMs = performance.now() - pagingStartedAt;
+    assert.equal(pageCount, QUERY_PACKAGE_PAGING_SCALE_ROWS / 200);
+    assert.equal(itemIds.length, QUERY_PACKAGE_PAGING_SCALE_ROWS);
+    assert.equal(new Set(itemIds).size, QUERY_PACKAGE_PAGING_SCALE_ROWS);
+    assert.ok(pagingElapsedMs < QUERY_PACKAGE_SCALE_OPERATION_LIMIT_MS,
+      `10000-row Query pagination took ${pagingElapsedMs.toFixed(0)}ms`);
+
+    const search = await repository.getQueryPackage(imported.id, {
+      actor: admin,
+      itemPage: { limit: '200', filter: 'PENDING', search: 'Query 9999' },
+    });
+    assert.equal(search.itemPage.total, 1);
+    assert.equal(search.items.length, 1);
+    assert.equal(search.items[0].rowNumber, 9_999);
+    const assignmentUsers = await repository.pool.query(`
+      INSERT INTO app_users(
+        username, display_name, role, password_hash, status,
+        must_change_password, credential_version
+      ) VALUES
+        ('scale-query-worker-a', '规模作业员 A', 'USER', 'unused', 'ACTIVE', false, 1),
+        ('scale-query-worker-b', '规模作业员 B', 'REVIEWER', 'unused', 'ACTIVE', false, 1)
+      RETURNING id
+    `);
+    const assignmentStartedAt = performance.now();
+    const assignment = await repository.assignQueryPackageItems(imported.id, {
+      expectedVersion: imported.version,
+      strategy: 'EVEN',
+      assignees: assignmentUsers.rows.map((row) => ({ accountId: Number(row.id) })),
+      requestId: randomUUID(),
+    }, { actor: admin });
+    const assignmentElapsedMs = performance.now() - assignmentStartedAt;
+    assert.deepEqual(assignment.assignment.assignees.map((entry) => entry.count), [5_000, 5_000]);
+    assert.equal(assignment.assignment.unassignedTotal, 0);
+    assert.ok(assignmentElapsedMs < QUERY_PACKAGE_SCALE_OPERATION_LIMIT_MS,
+      `10000-row Query assignment took ${assignmentElapsedMs.toFixed(0)}ms`);
+    context.diagnostic(
+      `10000-row Query import ${importElapsedMs.toFixed(0)}ms; 50 cursor pages ${pagingElapsedMs.toFixed(0)}ms; assignment ${assignmentElapsedMs.toFixed(0)}ms`,
+    );
+  } finally {
+    await repository.close().catch(() => {});
+    await cluster.stop();
+  }
+});
+
+test('real PostgreSQL 18 distributes Query items and accepts disjoint concurrent screening', {
+  skip: !RUN_POSTGRES_E2E,
+  timeout: 120_000,
+}, async () => {
+  const cluster = await startTemporaryPostgres18();
+  const repository = new PostgresControlPlaneRepository({ connectionString: cluster.connectionString });
+  try {
+    await repository.initialize();
+    const inserted = await repository.pool.query(`
+      INSERT INTO app_users(
+        username, display_name, role, password_hash, status,
+        must_change_password, credential_version
+      ) VALUES
+        ('query-worker-a', 'Query 作业员 A', 'USER', 'unused', 'ACTIVE', false, 1),
+        ('query-worker-b', 'Query 作业员 B', 'REVIEWER', 'unused', 'ACTIVE', false, 1)
+      RETURNING id, username, role, credential_version
+    `);
+    const admin = actorFrom(await repository.getUserByUsername('admin'));
+    const workers = inserted.rows.map((row) => ({
+      userId: Number(row.id),
+      username: row.username,
+      role: row.role,
+      credentialVersion: Number(row.credential_version),
+    }));
+    const imported = await repository.createQueryPackage({
+      name: 'Query 明细分配隔离验证',
+      requestId: randomUUID(),
+      items: Array.from({ length: 10 }, (_, index) => ({ query: `明细分配 Query ${index + 1}` })),
+    }, { actor: admin });
+
+    const evenlyAssigned = await repository.assignQueryPackageItems(imported.id, {
+      expectedVersion: imported.version,
+      strategy: 'EVEN',
+      assignees: workers.map((worker) => ({ accountId: worker.userId })),
+      requestId: randomUUID(),
+    }, { actor: admin });
+    assert.deepEqual(evenlyAssigned.assignment.assignees.map((entry) => entry.count), [5, 5]);
+    assert.equal(evenlyAssigned.assignment.unassignedTotal, 0);
+
+    const workerDetails = await Promise.all(workers.map((worker) => repository.getQueryPackage(
+      imported.id, { actor: worker, itemPage: { limit: 20, filter: 'PENDING' } },
+    )));
+    assert.deepEqual(workerDetails.map((detail) => detail.items.length), [5, 5]);
+    assert.equal(new Set(workerDetails.flatMap((detail) => detail.items.map((item) => item.id))).size, 10);
+    assert.equal(workerDetails[0].items.some((item) => (
+      workerDetails[1].items.some((other) => other.id === item.id)
+    )), false);
+
+    await Promise.all(workerDetails.map((detail, index) => repository.updateQueryPackageScreening(
+      imported.id,
+      {
+        expectedVersion: detail.version,
+        requestId: randomUUID(),
+        decisions: [{
+          itemId: detail.items[0].id,
+          expectedItemVersion: detail.items[0].version,
+          decision: index === 0 ? 'SELECT' : 'REJECT',
+        }],
+      },
+      { actor: workers[index] },
+    )));
+    const afterConcurrentScreening = await repository.getQueryPackageItemAssignmentSummary(
+      imported.id, { actor: admin },
+    );
+    assert.equal(afterConcurrentScreening.eligibleTotal, 8);
+    assert.deepEqual(afterConcurrentScreening.assignees.map((entry) => entry.count), [4, 4]);
+
+    const countedAssignment = await repository.assignQueryPackageItems(imported.id, {
+      expectedVersion: afterConcurrentScreening.packageVersion,
+      strategy: 'COUNTS',
+      assignees: [
+        { accountId: workers[0].userId, count: 3 },
+        { accountId: workers[1].userId, count: 2 },
+      ],
+      requestId: randomUUID(),
+    }, { actor: admin });
+    assert.deepEqual(countedAssignment.assignment.assignees.map((entry) => entry.count), [3, 2]);
+    assert.equal(countedAssignment.assignment.assignedTotal, 5);
+    assert.equal(countedAssignment.assignment.unassignedTotal, 3);
+    const reassignedDetails = await Promise.all(workers.map((worker) => repository.getQueryPackage(
+      imported.id, { actor: worker, itemPage: { limit: 20, filter: 'PENDING' } },
+    )));
+    assert.deepEqual(reassignedDetails.map((detail) => detail.items.length), [3, 2]);
+  } finally {
+    await repository.close().catch(() => {});
+    await cluster.stop();
+  }
+});
+
 test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind QA and mandatory recheck', {
   skip: !RUN_POSTGRES_E2E,
   timeout: 180_000,
@@ -1474,7 +1654,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     controlPlane = await startRealControlPlane(repository);
     const health = await requestJson(controlPlane.root, '/health');
     assert.equal(health.data.ok, true);
-    assert.equal(health.data.capabilities.queryPackageVersion, 3);
+    assert.equal(health.data.capabilities.queryPackageVersion, 4);
     assert.equal(health.data.capabilities.copySamplingVersion, 1);
     assert.equal(health.data.capabilities.finalDeliveryVersion, 2);
 

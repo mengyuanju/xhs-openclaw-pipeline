@@ -3,6 +3,7 @@ export type QueryPackageValidationStatus = 'READY' | 'INVALID' | 'DUPLICATE' | '
 
 export const QUERY_PACKAGE_ITEM_PAGE_SIZE = 100;
 export const QUERY_PACKAGE_SELECTION_LIMIT = 5_000;
+export const QUERY_PACKAGE_IMPORT_LIMIT = 10_000;
 
 export type QueryPackageCounts = {
   total: number;
@@ -21,6 +22,8 @@ export type QueryPackageSummary = {
   assignedToDisplayName: string | null;
   assignedToRole: 'REVIEWER' | 'USER' | null;
   assigneeStatus: 'ACTIVE' | 'DISABLED' | null;
+  assignedItemCount: number;
+  assignedUserCount: number;
   version: number;
   counts: QueryPackageCounts;
   createdAt: string;
@@ -43,12 +46,20 @@ export type QueryPackageItem = {
   validationStatus: QueryPackageValidationStatus;
   screeningDecision: QueryPackageDecision;
   screeningReason: string | null;
+  screeningAssignedToAccountId: number | null;
+  screeningAssignedToUserId: string | null;
   taskId?: number | null;
   version: number;
 };
 
 export type QueryPackageDetail = QueryPackageSummary & {
   items: QueryPackageItem[];
+  itemPage: {
+    total: number;
+    returnedCount: number;
+    hasMore: boolean;
+    nextCursor: string | null;
+  };
 };
 
 export type WorkflowQualitySettings = {
@@ -125,6 +136,8 @@ export function normalizePackageSummary(value: unknown): QueryPackageSummary | n
       : null,
     assignedToRole,
     assigneeStatus,
+    assignedItemCount: finiteCount(row.assignedItemCount),
+    assignedUserCount: finiteCount(row.assignedUserCount),
     version,
     counts: {
       total: finiteCount(counts.total),
@@ -220,6 +233,7 @@ function normalizePackageItem(value: unknown): QueryPackageItem | null {
     ? 'auto'
     : [3, 4, 5].includes(Number(row.requestedImageCount)) ? Number(row.requestedImageCount) : 'auto';
   const taskId = Number(row.taskId);
+  const screeningAssignedToAccountId = Number(row.screeningAssignedToAccountId);
   return {
     id,
     rowNumber: Number.isSafeInteger(rowNumber) && rowNumber > 0 ? rowNumber : id,
@@ -232,8 +246,67 @@ function normalizePackageItem(value: unknown): QueryPackageItem | null {
     validationStatus: Number.isSafeInteger(taskId) && taskId > 0 ? 'TASK_CREATED' : validationStatus,
     screeningDecision: decision,
     screeningReason: typeof row.screeningReason === 'string' ? row.screeningReason : null,
+    screeningAssignedToAccountId: Number.isSafeInteger(screeningAssignedToAccountId)
+      && screeningAssignedToAccountId > 0 ? screeningAssignedToAccountId : null,
+    screeningAssignedToUserId: typeof row.screeningAssignedToUserId === 'string'
+      && row.screeningAssignedToUserId.trim() ? row.screeningAssignedToUserId.trim() : null,
     taskId: Number.isSafeInteger(taskId) && taskId > 0 ? taskId : null,
     version,
+  };
+}
+
+export type QueryPackageItemAssignmentSummary = {
+  packageId: number;
+  packageVersion: number;
+  eligibleTotal: number;
+  assignedTotal: number;
+  unassignedTotal: number;
+  assignees: Array<{
+    accountId: number;
+    username: string;
+    displayName: string;
+    role: 'REVIEWER' | 'USER' | null;
+    status: 'ACTIVE' | 'DISABLED' | null;
+    count: number;
+  }>;
+};
+
+export function normalizeQueryPackageItemAssignmentSummary(
+  value: unknown,
+): QueryPackageItemAssignmentSummary | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  const packageId = Number(row.packageId);
+  const packageVersion = Number(row.packageVersion);
+  if (!Number.isSafeInteger(packageId) || packageId < 1
+      || !Number.isSafeInteger(packageVersion) || packageVersion < 1
+      || !Array.isArray(row.assignees)) return null;
+  const assignees = row.assignees.map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    const candidate = entry as Record<string, unknown>;
+    const accountId = Number(candidate.accountId);
+    const username = typeof candidate.username === 'string' ? candidate.username.trim() : '';
+    if (!Number.isSafeInteger(accountId) || accountId < 1 || !username) return null;
+    return {
+      accountId,
+      username,
+      displayName: typeof candidate.displayName === 'string' && candidate.displayName.trim()
+        ? candidate.displayName.trim() : username,
+      role: ['REVIEWER', 'USER'].includes(String(candidate.role))
+        ? candidate.role as 'REVIEWER' | 'USER' : null,
+      status: ['ACTIVE', 'DISABLED'].includes(String(candidate.status))
+        ? candidate.status as 'ACTIVE' | 'DISABLED' : null,
+      count: finiteCount(candidate.count),
+    };
+  });
+  if (assignees.some((entry) => entry === null)) return null;
+  return {
+    packageId,
+    packageVersion,
+    eligibleTotal: finiteCount(row.eligibleTotal),
+    assignedTotal: finiteCount(row.assignedTotal),
+    unassignedTotal: finiteCount(row.unassignedTotal),
+    assignees: assignees as QueryPackageItemAssignmentSummary['assignees'],
   };
 }
 
@@ -271,18 +344,34 @@ export function normalizePackageDetail(value: unknown): QueryPackageDetail | nul
   if (!value || typeof value !== 'object') return null;
   const payload = value as Record<string, unknown>;
   const candidate = payload.queryPackage && typeof payload.queryPackage === 'object'
-    ? { ...(payload.queryPackage as Record<string, unknown>), items: payload.items }
+    ? { ...(payload.queryPackage as Record<string, unknown>), items: payload.items, itemPage: payload.itemPage }
     : payload;
   const summary = normalizePackageSummary(candidate);
   if (!summary) return null;
   const items = Array.isArray(candidate.items) ? candidate.items : [];
+  const normalizedItems = items.map(normalizePackageItem).filter((item): item is QueryPackageItem => item !== null);
+  const rawItemPage = candidate.itemPage && typeof candidate.itemPage === 'object'
+    ? candidate.itemPage as Record<string, unknown>
+    : null;
+  const pageTotal = Number(rawItemPage?.total);
+  const returnedCount = Number(rawItemPage?.returnedCount);
   return {
     ...summary,
-    items: items.map(normalizePackageItem).filter((item): item is QueryPackageItem => item !== null),
+    items: normalizedItems,
+    itemPage: {
+      total: Number.isSafeInteger(pageTotal) && pageTotal >= 0 ? pageTotal : normalizedItems.length,
+      returnedCount: Number.isSafeInteger(returnedCount) && returnedCount >= 0
+        ? returnedCount
+        : normalizedItems.length,
+      hasMore: rawItemPage?.hasMore === true,
+      nextCursor: typeof rawItemPage?.nextCursor === 'string' && /^\d+:\d+$/u.test(rawItemPage.nextCursor)
+        ? rawItemPage.nextCursor
+        : null,
+    },
   };
 }
 
-export function parseQueryPackageText(raw: string, maximum = 5_000) {
+export function parseQueryPackageText(raw: string, maximum = QUERY_PACKAGE_IMPORT_LIMIT) {
   const seen = new Set<string>();
   const queries: string[] = [];
   let duplicates = 0;
@@ -300,7 +389,7 @@ export function parseQueryPackageText(raw: string, maximum = 5_000) {
     }
     seen.add(identity);
     queries.push(query);
-    if (queries.length > maximum) return { queries: [], duplicates, error: `单个词包最多导入 ${maximum} 条 Query。` };
+    if (queries.length > maximum) return { queries: [], duplicates, error: `单个词包最多导入 ${maximum.toLocaleString('zh-CN')} 条 Query。` };
   }
   return {
     queries,

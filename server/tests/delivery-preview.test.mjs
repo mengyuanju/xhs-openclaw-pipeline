@@ -36,7 +36,8 @@ test('administrator preview request requires explicit package ids and splits rem
     queryPackageIds,
     limit: 200,
   }), {
-    scope: 'QUERY_PACKAGES', queryPackageIds, includeUnassigned: false, testTaskId: null, limit: 200,
+    scope: 'QUERY_PACKAGES', queryPackageIds, includeUnassigned: false,
+    taskIds: [], testTaskId: null, limit: 200,
   });
   assert.deepEqual(normalizeDeliveryPreviewRequest({
     scope: 'QUERY_PACKAGES',
@@ -44,7 +45,8 @@ test('administrator preview request requires explicit package ids and splits rem
     includeUnassigned: true,
     limit: 50,
   }), {
-    scope: 'QUERY_PACKAGES', queryPackageIds: [], includeUnassigned: true, testTaskId: null, limit: 50,
+    scope: 'QUERY_PACKAGES', queryPackageIds: [], includeUnassigned: true,
+    taskIds: [], testTaskId: null, limit: 50,
   });
   assert.deepEqual(normalizeDeliveryPreviewRequest({
     scope: 'QUERY_PACKAGES',
@@ -53,7 +55,17 @@ test('administrator preview request requires explicit package ids and splits rem
     testTaskId: 588,
     limit: 1,
   }), {
-    scope: 'QUERY_PACKAGES', queryPackageIds: [], includeUnassigned: true, testTaskId: 588, limit: 1,
+    scope: 'QUERY_PACKAGES', queryPackageIds: [], includeUnassigned: true,
+    taskIds: [], testTaskId: 588, limit: 1,
+  });
+  assert.deepEqual(normalizeDeliveryPreviewRequest({
+    scope: 'QUERY_PACKAGES',
+    queryPackageIds: [9],
+    taskIds: [588, 589],
+    limit: 2,
+  }), {
+    scope: 'QUERY_PACKAGES', queryPackageIds: [9], includeUnassigned: false,
+    taskIds: [588, 589], testTaskId: null, limit: 2,
   });
   assert.throws(() => normalizeDeliveryPreviewRequest({
     scope: 'SELECTED',
@@ -82,6 +94,25 @@ test('administrator preview request requires explicit package ids and splits rem
     testTaskId: 588,
     limit: 10,
   }), /requires limit 1/u);
+  assert.throws(() => normalizeDeliveryPreviewRequest({
+    scope: 'QUERY_PACKAGES',
+    queryPackageIds: [9],
+    taskIds: [588, 588],
+    limit: 2,
+  }), /unique positive integers/u);
+  assert.throws(() => normalizeDeliveryPreviewRequest({
+    scope: 'QUERY_PACKAGES',
+    queryPackageIds: [9],
+    taskIds: [588, 589],
+    limit: 1,
+  }), /must match taskIds count/u);
+  assert.throws(() => normalizeDeliveryPreviewRequest({
+    scope: 'QUERY_PACKAGES',
+    queryPackageIds: [9],
+    taskIds: [588],
+    testTaskId: 588,
+    limit: 1,
+  }), /cannot be used together/u);
 
   const groups = groupPreviewItems(
     Array.from({ length: 21 }, (_, index) => groupItem(index + 1)),
@@ -254,13 +285,14 @@ test('delivery preview upload binds the remote noteId to the immutable delivery 
     let recorded;
     const repository = {
       listDeliveryPoolTaskIdsForPreview: async ({
-        actor, queryPackageIds, includeUnassigned, testTaskId, limit,
+        actor, queryPackageIds, includeUnassigned, taskIds, testTaskId, limit,
       }) => {
         assert.equal(actor, admin);
         assert.deepEqual(queryPackageIds, [9]);
         assert.equal(includeUnassigned, false);
+        assert.deepEqual(taskIds, [7]);
         assert.equal(testTaskId, null);
-        assert.equal(limit, 200);
+        assert.equal(limit, 1);
         return [7];
       },
       getTaskForDelivery: async () => ({ task, binding }),
@@ -299,14 +331,14 @@ test('delivery preview upload binds the remote noteId to the immutable delivery 
       repository,
       storageRoot,
       previewClient,
-      input: { scope: 'QUERY_PACKAGES', queryPackageIds: [9], limit: 200 },
+      input: { scope: 'QUERY_PACKAGES', queryPackageIds: [9], taskIds: [7], limit: 1 },
       actor: admin,
     });
     assert.equal(recorded[0].deliveryEntryId, 77);
     assert.equal(recorded[0].noteId, noteId);
     assert.deepEqual(result, {
       scope: 'QUERY_PACKAGES',
-      limit: 200,
+      limit: 1,
       requestedCount: 1,
       publishedCount: 1,
       createdCount: 1,

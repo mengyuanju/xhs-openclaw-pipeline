@@ -36,7 +36,7 @@
 .screeningHead p { margin-top: 6px; color: var(--muted); font-size: 12px; }
 .screeningStats { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 24px; background: var(--surface); }
 .screeningToolbar { display: flex; align-items: end; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 12px 24px; border-block: 1px solid var(--line); }
-.screeningList { min-height: 0; flex: 1 1 auto; overflow: auto; padding: 0 24px 18px; }
+.screeningList { min-height: 0; flex: 1 1 auto; display: flex; overflow: hidden; padding: 0 24px 18px; }
 .screeningList table { min-width: 920px; }
 .pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; color: var(--muted); font-size: 11px; }
 .pagination > div { display: flex; align-items: center; gap: 9px; }
@@ -44,6 +44,28 @@
 .reason { color: var(--muted); font-size: 11px; }
 .screeningFooter { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 24px; border-top: 1px solid var(--line); background: var(--surface); }
 .screeningFooter > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.virtualTable { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.virtualGrid { min-width: 1080px; display: grid; grid-template-columns: 48px 70px minmax(300px, 1fr) 130px 190px 100px; align-items: center; }
+.virtualHeader { min-height: 46px; padding: 0 12px; border-bottom: 1px solid var(--line-strong); color: var(--muted); background: var(--surface-soft); font-size: 11px; font-weight: 750; }
+.virtualViewport { min-width: 1080px; min-height: 0; flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.virtualInner { position: relative; min-width: 1080px; }
+.virtualRow { position: absolute; inset-inline: 0; top: 0; padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.virtualRow:nth-child(even) { background: var(--surface-soft); }
+.virtualRow > [role="cell"] { min-width: 0; padding-right: 12px; }
+.virtualRow .queryCell strong { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.virtualStatus { min-width: 1080px; min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border-top: 1px solid var(--line); color: var(--muted); background: var(--surface); font-size: 11px; }
+.virtualStatus > span { display: flex; align-items: center; gap: 7px; }
+.rowDecisionActions { display: flex; flex-wrap: wrap; gap: 6px; }
+.assignmentMode { display: grid; grid-template-columns: minmax(180px, 240px) 1fr; align-items: end; gap: 12px; }
+.assignmentPreview { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
+.assignmentPreview strong { font-size: 13px; }
+.assignmentPreview span { color: var(--muted); font-size: 11px; }
+.assignmentList { display: grid; max-height: 330px; overflow-y: auto; border: 1px solid var(--line); border-radius: 12px; }
+.assignmentUser { display: grid; grid-template-columns: 26px minmax(0, 1fr) 110px; align-items: center; gap: 10px; padding: 11px 12px; border-bottom: 1px solid var(--line); }
+.assignmentUser:last-child { border-bottom: 0; }
+.assignmentUser > span { display: grid; gap: 3px; min-width: 0; }
+.assignmentUser small { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.assignmentUser b { justify-self: end; font-size: 12px; font-variant-numeric: tabular-nums; }
 .dangerBox { display: grid; gap: 8px; padding: 13px; border: 1px solid #e7b7bd; border-radius: 12px; color: #7e202c; background: #fff4f5; }
 .dangerBox strong { font-size: 13px; }
 .dangerBox p { color: #80535a; font-size: 12px; line-height: 1.65; }
@@ -53,6 +75,7 @@
   .toolbar, .dialogFooter, .screeningHead, .screeningFooter { align-items: stretch; flex-direction: column; }
   .toolbarGroup, .search, .dialogButtons, .dialogButtons button { width: 100%; }
   .importFields { grid-template-columns: 1fr; }
+  .assignmentMode { grid-template-columns: 1fr; }
   .screeningDialog { width: calc(100vw - 12px); height: calc(100dvh - 12px); }
   .screeningHead, .screeningStats, .screeningToolbar, .screeningList, .screeningFooter { padding-inline: 14px; }
   .screeningHead { padding-right: 64px; }

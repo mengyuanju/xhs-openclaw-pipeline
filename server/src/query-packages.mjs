@@ -19,6 +19,10 @@ import {
 
 const PACKAGE_ACTIVE_STATUSES = Object.freeze(['IMPORTED', 'SCREENING', 'READY', 'PARTIALLY_USED']);
 const QUERY_PACKAGE_INSERT_CHUNK_SIZE = 500;
+const QUERY_PACKAGE_MAX_ITEMS = 10_000;
+const QUERY_PACKAGE_ITEM_FILTERS = new Set([
+  'ALL', 'PENDING', 'SELECTED', 'REJECTED', 'READY', 'INVALID', 'DUPLICATE', 'TASK_CREATED',
+]);
 
 function hashJson(value) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -75,8 +79,8 @@ function queryIdentity(value) {
 }
 
 export function normalizeQueryPackageItems(rawItems) {
-  if (!Array.isArray(rawItems) || rawItems.length < 1 || rawItems.length > 5_000) {
-    throw new RangeError('items must contain between 1 and 5000 rows');
+  if (!Array.isArray(rawItems) || rawItems.length < 1 || rawItems.length > QUERY_PACKAGE_MAX_ITEMS) {
+    throw new RangeError(`items must contain between 1 and ${QUERY_PACKAGE_MAX_ITEMS} rows`);
   }
   const identities = new Set();
   return rawItems.map((rawItem, index) => {
@@ -110,6 +114,32 @@ export function normalizeQueryPackageItems(rawItems) {
   });
 }
 
+export function normalizeQueryPackageItemPageOptions(rawOptions) {
+  if (!rawOptions || rawOptions.limit === undefined) return null;
+  const { limit } = normalizeListPagination(rawOptions.limit, 0);
+  const filter = String(rawOptions.filter ?? 'ALL').trim().toUpperCase();
+  if (!QUERY_PACKAGE_ITEM_FILTERS.has(filter)) throw new TypeError('itemFilter is invalid');
+  const search = rawOptions.search === undefined || rawOptions.search === null
+    ? ''
+    : String(rawOptions.search).replace(/\s+/gu, ' ').trim();
+  if ([...search].length > 200) throw new RangeError('itemSearch cannot exceed 200 characters');
+  const cursorSource = rawOptions.cursor === undefined || rawOptions.cursor === null
+    ? ''
+    : String(rawOptions.cursor).trim();
+  let cursor = null;
+  if (cursorSource) {
+    const match = /^(\d+):(\d+)$/u.exec(cursorSource);
+    const rowNumber = Number(match?.[1]);
+    const itemId = Number(match?.[2]);
+    if (!match || !Number.isSafeInteger(rowNumber) || rowNumber < 1
+        || !Number.isSafeInteger(itemId) || itemId < 1) {
+      throw new TypeError('itemCursor is invalid');
+    }
+    cursor = { rowNumber, itemId };
+  }
+  return { limit, filter, search, cursor };
+}
+
 function packageFrom(row) {
   if (!row) return null;
   return {
@@ -124,6 +154,8 @@ function packageFrom(row) {
     assignedToDisplayName: row.assigned_to_display_name ?? null,
     assignedToRole: ['REVIEWER', 'USER'].includes(row.assigned_to_role) ? row.assigned_to_role : null,
     assigneeStatus: ['ACTIVE', 'DISABLED'].includes(row.assignee_status) ? row.assignee_status : null,
+    assignedItemCount: Number(row.assigned_item_count ?? 0),
+    assignedUserCount: Number(row.assigned_user_count ?? 0),
     version: Number(row.version),
     counts: {
       total: Number(row.total_count ?? 0),
@@ -151,6 +183,10 @@ function packageItemFrom(row) {
     validationErrors: row.validation_errors ?? [],
     screeningDecision: row.screening_decision,
     screeningReason: row.screening_reason ?? null,
+    screeningAssignedToAccountId: row.screening_assigned_to_account_id === null
+      || row.screening_assigned_to_account_id === undefined
+      ? null : Number(row.screening_assigned_to_account_id),
+    screeningAssignedToUserId: row.screening_assigned_to_username ?? null,
     taskId: row.task_id === undefined || row.task_id === null ? null : Number(row.task_id),
     version: Number(row.version),
     updatedAt: row.updated_at,
@@ -181,6 +217,11 @@ function assertPackageAccess(row, actor) {
   throw new ControlPlaneAuthorizationError('当前账号不能操作这个 Query 词包');
 }
 
+function itemAssignmentMatchesActor(row, actor) {
+  return Number(row.screening_assigned_to_account_id) === actor.userId
+    && row.screening_assigned_to_username === actor.username;
+}
+
 function assertQueryPackageAdministrator(actor, operation) {
   if (actor.role === 'ADMIN') return;
   throw new ControlPlaneAuthorizationError(`only administrators can ${operation} Query packages`);
@@ -201,12 +242,24 @@ async function withTransaction(pool, action) {
   }
 }
 
-async function lockPackage(client, rawPackageId, actor) {
+async function lockPackage(client, rawPackageId, actor, { allowItemAccess = false } = {}) {
   const packageId = normalizeTaskId(rawPackageId);
   const result = await client.query('SELECT * FROM query_packages WHERE id = $1 FOR UPDATE', [packageId]);
   const row = result.rows[0];
   if (!row) throw new ControlPlaneNotFoundError('Query 词包不存在');
-  assertPackageAccess(row, actor);
+  if (actor.role !== 'ADMIN' && allowItemAccess) {
+    const itemAccess = await client.query(`
+      SELECT EXISTS (
+        SELECT 1 FROM query_package_items
+        WHERE query_package_id = $1
+          AND screening_assigned_to_account_id = $2
+          AND screening_assigned_to_username = $3
+      ) AS allowed
+    `, [packageId, actor.userId, actor.username]);
+    if (!itemAccess.rows[0]?.allowed) assertPackageAccess(row, actor);
+  } else {
+    assertPackageAccess(row, actor);
+  }
   return row;
 }
 
@@ -217,7 +270,19 @@ async function lockPackageReadAccess(client, packageId, actor) {
   `, [packageId]);
   const row = result.rows[0];
   if (!row) throw new ControlPlaneNotFoundError('Query 词包不存在');
-  assertPackageAccess(row, actor);
+  if (actor.role === 'ADMIN') return row;
+  if (Number(row.assigned_to_account_id) === actor.userId
+      && row.assigned_to_username === actor.username) return row;
+  const itemAccess = await client.query(`
+    SELECT EXISTS (
+      SELECT 1 FROM query_package_items
+      WHERE query_package_id = $1
+        AND screening_assigned_to_account_id = $2
+        AND screening_assigned_to_username = $3
+    ) AS allowed
+  `, [packageId, actor.userId, actor.username]);
+  if (!itemAccess.rows[0]?.allowed) assertPackageAccess(row, actor);
+  return row;
 }
 
 async function lockMutationRequest(client, actor, requestId) {
@@ -337,7 +402,15 @@ const PACKAGE_SUMMARY_SQL = `
     COUNT(item.id) FILTER (WHERE item.screening_decision = 'REJECTED') AS rejected_count,
     COUNT(item.id) FILTER (WHERE item.status = 'TASK_CREATED') AS produced_count,
     COUNT(item.id) FILTER (WHERE item.status = 'INVALID') AS invalid_count,
-    COUNT(item.id) FILTER (WHERE item.status = 'DUPLICATE') AS duplicate_count
+    COUNT(item.id) FILTER (WHERE item.status = 'DUPLICATE') AS duplicate_count,
+    COUNT(item.id) FILTER (
+      WHERE item.status = 'READY' AND item.screening_decision = 'PENDING'
+        AND item.screening_assigned_to_account_id IS NOT NULL
+    ) AS assigned_item_count,
+    COUNT(DISTINCT item.screening_assigned_to_account_id) FILTER (
+      WHERE item.status = 'READY' AND item.screening_decision = 'PENDING'
+        AND item.screening_assigned_to_account_id IS NOT NULL
+    ) AS assigned_user_count
   FROM query_packages AS package
   LEFT JOIN app_users AS assignee
     ON assignee.id = package.assigned_to_account_id
@@ -479,7 +552,15 @@ export async function listQueryPackages(pool, { limit: rawLimit = 50, offset: ra
   const visibility = actor.role === 'ADMIN'
     ? { sql: '', values: [] }
     : {
-        sql: 'WHERE package.assigned_to_account_id = $1 AND package.assigned_to_username = $2',
+        sql: `WHERE (
+          (package.assigned_to_account_id = $1 AND package.assigned_to_username = $2)
+          OR EXISTS (
+            SELECT 1 FROM query_package_items AS visible_item
+            WHERE visible_item.query_package_id = package.id
+              AND visible_item.screening_assigned_to_account_id = $1
+              AND visible_item.screening_assigned_to_username = $2
+          )
+        )`,
         values: [actor.userId, actor.username],
       };
   const result = await pool.query(`${PACKAGE_SUMMARY_SQL}
@@ -491,24 +572,100 @@ export async function listQueryPackages(pool, { limit: rawLimit = 50, offset: ra
   return result.rows.map(packageFrom);
 }
 
-export async function getQueryPackage(pool, rawPackageId, rawActor) {
+export async function getQueryPackage(pool, rawPackageId, rawActor, rawItemPageOptions) {
   const actor = normalizeActor(rawActor);
   const packageId = normalizeTaskId(rawPackageId);
+  const itemPageOptions = normalizeQueryPackageItemPageOptions(rawItemPageOptions);
   return withTransaction(pool, async (client) => {
     // Keep the package assignment stable while the complete detail snapshot is
     // assembled. Reassignment then governs every subsequent detail request.
-    await lockPackageReadAccess(client, packageId, actor);
+    const accessRow = await lockPackageReadAccess(client, packageId, actor);
+    const itemScoped = actor.role !== 'ADMIN'
+      && !(Number(accessRow.assigned_to_account_id) === actor.userId
+        && accessRow.assigned_to_username === actor.username);
     const result = await client.query(`${PACKAGE_SUMMARY_SQL}
       WHERE package.id = $1 GROUP BY package.id, assignee.id
     `, [packageId]);
     if (!result.rows[0]) throw new ControlPlaneNotFoundError('Query 词包不存在');
-    const items = await client.query(`
-      SELECT item.*, production_item.task_id
-      FROM query_package_items AS item
-      LEFT JOIN production_batch_items AS production_item
-        ON production_item.source_query_package_item_id = item.id
-      WHERE item.query_package_id = $1 ORDER BY item.row_number, item.id
-    `, [packageId]);
+    let itemRows;
+    let itemPage;
+    if (itemPageOptions) {
+      const where = ['item.query_package_id = $1'];
+      const values = [packageId];
+      if (itemScoped) {
+        values.push(actor.userId, actor.username);
+        where.push(`item.screening_assigned_to_account_id = $${values.length - 1}`);
+        where.push(`item.screening_assigned_to_username = $${values.length}`);
+      }
+      if (['PENDING', 'SELECTED', 'REJECTED'].includes(itemPageOptions.filter)) {
+        values.push(itemPageOptions.filter);
+        where.push(`item.screening_decision = $${values.length}`);
+      } else if (itemPageOptions.filter !== 'ALL') {
+        values.push(itemPageOptions.filter);
+        where.push(`item.status = $${values.length}`);
+      }
+      if (itemPageOptions.search) {
+        values.push(itemPageOptions.search.toLocaleLowerCase('zh-CN'));
+        where.push(`position($${values.length} in lower(
+          COALESCE(item.query, item.raw_query) || ' ' || COALESCE(item.external_id, '')
+        )) > 0`);
+      }
+      const matching = await client.query(`
+        SELECT COUNT(*) AS total
+        FROM query_package_items AS item
+        WHERE ${where.join(' AND ')}
+      `, values);
+      const pageWhere = [...where];
+      const pageValues = [...values];
+      if (itemPageOptions.cursor) {
+        pageValues.push(itemPageOptions.cursor.rowNumber, itemPageOptions.cursor.itemId);
+        pageWhere.push(`(
+          item.row_number > $${pageValues.length - 1}
+          OR (item.row_number = $${pageValues.length - 1} AND item.id > $${pageValues.length})
+        )`);
+      }
+      pageValues.push(itemPageOptions.limit + 1);
+      const items = await client.query(`
+        SELECT item.*, production_item.task_id
+        FROM query_package_items AS item
+        LEFT JOIN production_batch_items AS production_item
+          ON production_item.source_query_package_item_id = item.id
+        WHERE ${pageWhere.join(' AND ')}
+        ORDER BY item.row_number, item.id
+        LIMIT $${pageValues.length}
+      `, pageValues);
+      const hasMore = items.rows.length > itemPageOptions.limit;
+      itemRows = items.rows.slice(0, itemPageOptions.limit);
+      const lastItem = itemRows.at(-1);
+      itemPage = {
+        total: Number(matching.rows[0]?.total ?? 0),
+        returnedCount: itemRows.length,
+        hasMore,
+        nextCursor: hasMore && lastItem ? `${lastItem.row_number}:${lastItem.id}` : null,
+      };
+    } else {
+      const values = [packageId];
+      const where = ['item.query_package_id = $1'];
+      if (itemScoped) {
+        values.push(actor.userId, actor.username);
+        where.push(`item.screening_assigned_to_account_id = $2`);
+        where.push(`item.screening_assigned_to_username = $3`);
+      }
+      const items = await client.query(`
+        SELECT item.*, production_item.task_id
+        FROM query_package_items AS item
+        LEFT JOIN production_batch_items AS production_item
+          ON production_item.source_query_package_item_id = item.id
+        WHERE ${where.join(' AND ')} ORDER BY item.row_number, item.id
+      `, values);
+      itemRows = items.rows;
+      itemPage = {
+        total: itemRows.length,
+        returnedCount: itemRows.length,
+        hasMore: false,
+        nextCursor: null,
+      };
+    }
     const batches = await client.query(`
       SELECT batch.*, COUNT(item.id) AS task_count
       FROM production_batches AS batch
@@ -518,9 +675,229 @@ export async function getQueryPackage(pool, rawPackageId, rawActor) {
     `, [packageId]);
     return {
       ...packageFrom(result.rows[0]),
-      items: items.rows.map(packageItemFrom),
+      items: itemRows.map(packageItemFrom),
+      itemPage,
       productionBatches: batches.rows.map(productionBatchFrom),
     };
+  });
+}
+
+export function normalizeQueryPackageItemAssignmentInput(input) {
+  const expectedVersion = version(input?.expectedVersion);
+  const requestId = normalizeUuid(input?.requestId, 'requestId');
+  const strategy = String(input?.strategy ?? '').trim().toUpperCase();
+  if (!['EVEN', 'COUNTS'].includes(strategy)) {
+    throw new TypeError('strategy must be EVEN or COUNTS');
+  }
+  if (!Array.isArray(input?.assignees) || input.assignees.length > 100) {
+    throw new RangeError('assignees must contain between 0 and 100 users');
+  }
+  const assignees = input.assignees.map((entry, index) => {
+    const accountId = normalizeTaskId(entry?.accountId);
+    const count = strategy === 'COUNTS' ? Number(entry?.count) : null;
+    if (strategy === 'COUNTS' && (!Number.isSafeInteger(count) || count < 0 || count > QUERY_PACKAGE_MAX_ITEMS)) {
+      throw new TypeError(`assignees[${index}].count must be a non-negative integer`);
+    }
+    return { accountId, ...(strategy === 'COUNTS' ? { count } : {}) };
+  });
+  if (new Set(assignees.map((entry) => entry.accountId)).size !== assignees.length) {
+    throw new TypeError('assignee account ids must be unique');
+  }
+  return { expectedVersion, requestId, strategy, assignees };
+}
+
+async function readQueryPackageItemAssignmentSummary(database, packageId) {
+  const result = await database.query(`
+    SELECT item.screening_assigned_to_account_id AS account_id,
+      item.screening_assigned_to_username AS username,
+      assignee.display_name, assignee.role, assignee.status,
+      COUNT(*) AS item_count
+    FROM query_package_items AS item
+    LEFT JOIN app_users AS assignee
+      ON assignee.id = item.screening_assigned_to_account_id
+      AND assignee.username = item.screening_assigned_to_username
+    WHERE item.query_package_id = $1
+      AND item.status = 'READY'
+      AND item.screening_decision = 'PENDING'
+    GROUP BY item.screening_assigned_to_account_id,
+      item.screening_assigned_to_username, assignee.id
+    ORDER BY item.screening_assigned_to_account_id NULLS LAST
+  `, [packageId]);
+  const packageResult = await database.query(
+    'SELECT version FROM query_packages WHERE id = $1',
+    [packageId],
+  );
+  if (!packageResult.rows[0]) throw new ControlPlaneNotFoundError('Query 词包不存在');
+  const eligibleTotal = result.rows.reduce((sum, row) => sum + Number(row.item_count), 0);
+  const unassignedTotal = result.rows
+    .filter((row) => row.account_id === null)
+    .reduce((sum, row) => sum + Number(row.item_count), 0);
+  return {
+    packageId,
+    packageVersion: Number(packageResult.rows[0].version),
+    eligibleTotal,
+    assignedTotal: eligibleTotal - unassignedTotal,
+    unassignedTotal,
+    assignees: result.rows.filter((row) => row.account_id !== null).map((row) => ({
+      accountId: Number(row.account_id),
+      username: row.username,
+      displayName: row.display_name ?? row.username,
+      role: ['REVIEWER', 'USER'].includes(row.role) ? row.role : null,
+      status: ['ACTIVE', 'DISABLED'].includes(row.status) ? row.status : null,
+      count: Number(row.item_count),
+    })),
+  };
+}
+
+export async function getQueryPackageItemAssignmentSummary(pool, rawPackageId, rawActor) {
+  const actor = normalizeActor(rawActor);
+  assertQueryPackageAdministrator(actor, 'read item assignments for');
+  const packageId = normalizeTaskId(rawPackageId);
+  return withTransaction(pool, async (client) => {
+    await lockActiveQueryPackageActor(client, actor);
+    await lockPackageReadAccess(client, packageId, actor);
+    return readQueryPackageItemAssignmentSummary(client, packageId);
+  });
+}
+
+function buildQueryPackageItemAssignments(items, assignees, strategy) {
+  const targets = [];
+  if (strategy === 'EVEN' && assignees.length > 0) {
+    const base = Math.floor(items.length / assignees.length);
+    let remainder = items.length % assignees.length;
+    for (const assignee of assignees) {
+      const count = base + (remainder > 0 ? 1 : 0);
+      remainder = Math.max(0, remainder - 1);
+      targets.push(...Array.from({ length: count }, () => assignee));
+    }
+  } else if (strategy === 'COUNTS') {
+    for (const assignee of assignees) {
+      targets.push(...Array.from({ length: assignee.count }, () => assignee));
+    }
+  }
+  if (targets.length > items.length) {
+    throw new ControlPlaneConflictError('ASSIGNMENT_COUNT_EXCEEDED', '分配条数超过当前待筛 Query 数量');
+  }
+  return items.map((item, index) => ({
+    itemId: Number(item.id),
+    previousAssigneeAccountId: item.screening_assigned_to_account_id === null
+      ? null : Number(item.screening_assigned_to_account_id),
+    previousAssigneeUsername: item.screening_assigned_to_username ?? null,
+    assignedAccountId: targets[index]?.id === undefined ? null : Number(targets[index].id),
+    assignedUsername: targets[index]?.username ?? null,
+  })).filter((entry) => entry.previousAssigneeAccountId !== entry.assignedAccountId
+    || entry.previousAssigneeUsername !== entry.assignedUsername);
+}
+
+export async function assignQueryPackageItems(pool, rawPackageId, input, rawActor) {
+  const actor = normalizeActor(rawActor);
+  assertQueryPackageAdministrator(actor, 'assign items for');
+  const packageId = normalizeTaskId(rawPackageId);
+  const normalized = normalizeQueryPackageItemAssignmentInput(input);
+  const fingerprint = hashJson(normalized);
+  return withTransaction(pool, async (client) => {
+    await lockActiveQueryPackageActor(client, actor);
+    await lockMutationRequest(client, actor, normalized.requestId);
+    const replay = await existingMutation(
+      client, actor, normalized.requestId, 'ASSIGN_ITEMS', packageId, fingerprint,
+    );
+    if (replay) return replay;
+    const current = await lockPackage(client, packageId, actor);
+    if (!PACKAGE_ACTIVE_STATUSES.includes(current.status)) {
+      throw new ControlPlaneConflictError('PACKAGE_NOT_SCREENABLE', '词包已结束，不能继续分配');
+    }
+    if (Number(current.version) !== normalized.expectedVersion) {
+      throw new ControlPlaneConflictError('VERSION_CONFLICT', '词包已被修改');
+    }
+    const requestedIds = normalized.assignees.map((entry) => entry.accountId);
+    const userResult = requestedIds.length === 0 ? { rows: [] } : await client.query(`
+      SELECT id, username, display_name, role
+      FROM app_users
+      WHERE id = ANY($1::bigint[]) AND status = 'ACTIVE' AND role IN ('REVIEWER', 'USER')
+      ORDER BY array_position($1::bigint[], id)
+      FOR SHARE
+    `, [requestedIds]);
+    if (userResult.rows.length !== requestedIds.length) {
+      throw new ControlPlaneConflictError('ASSIGNEE_UNAVAILABLE', '存在已停用或不可分配的筛选人员');
+    }
+    const usersById = new Map(userResult.rows.map((row) => [Number(row.id), row]));
+    const assignees = normalized.assignees.map((entry) => ({
+      ...entry,
+      id: entry.accountId,
+      username: usersById.get(entry.accountId).username,
+    }));
+    const eligible = await client.query(`
+      SELECT id, screening_assigned_to_account_id, screening_assigned_to_username
+      FROM query_package_items
+      WHERE query_package_id = $1 AND status = 'READY' AND screening_decision = 'PENDING'
+      ORDER BY row_number, id
+      FOR UPDATE
+    `, [packageId]);
+    const mutations = buildQueryPackageItemAssignments(eligible.rows, assignees, normalized.strategy);
+    if (mutations.length > 0) {
+      const changed = await client.query(`
+        WITH requested AS MATERIALIZED (
+          SELECT source.ordinality::integer AS ordinal,
+            (source.entry ->> 'itemId')::bigint AS item_id,
+            NULLIF(source.entry ->> 'previousAssigneeAccountId', '')::bigint AS previous_account_id,
+            source.entry ->> 'previousAssigneeUsername' AS previous_username,
+            NULLIF(source.entry ->> 'assignedAccountId', '')::bigint AS assigned_account_id,
+            source.entry ->> 'assignedUsername' AS assigned_username
+          FROM jsonb_array_elements($2::jsonb) WITH ORDINALITY AS source(entry, ordinality)
+        ), updated_items AS (
+          UPDATE query_package_items AS item
+          SET screening_assigned_to_account_id = requested.assigned_account_id,
+            screening_assigned_to_username = requested.assigned_username,
+            screening_assigned_by_account_id = CASE WHEN requested.assigned_account_id IS NULL THEN NULL ELSE $3::bigint END,
+            screening_assigned_by_username = CASE WHEN requested.assigned_account_id IS NULL THEN NULL ELSE $4::varchar END,
+            screening_assigned_at = CASE WHEN requested.assigned_account_id IS NULL THEN NULL ELSE now() END,
+            version = item.version + 1, updated_at = now()
+          FROM requested
+          WHERE item.id = requested.item_id AND item.query_package_id = $1
+            AND item.status = 'READY' AND item.screening_decision = 'PENDING'
+            AND item.screening_assigned_to_account_id IS NOT DISTINCT FROM requested.previous_account_id
+            AND item.screening_assigned_to_username IS NOT DISTINCT FROM requested.previous_username
+          RETURNING item.id
+        ), inserted_events AS (
+          INSERT INTO query_package_item_assignment_events(
+            query_package_id, query_package_item_id, actor_account_id, actor_username,
+            previous_assignee_account_id, previous_assignee_username,
+            assignee_account_id, assignee_username, request_id
+          )
+          SELECT $1, requested.item_id, $3, $4, requested.previous_account_id,
+            requested.previous_username, requested.assigned_account_id,
+            requested.assigned_username, $5
+          FROM requested
+          JOIN updated_items ON updated_items.id = requested.item_id
+          ORDER BY requested.ordinal
+          RETURNING id
+        )
+        SELECT (SELECT COUNT(*) FROM updated_items) AS updated_count,
+          (SELECT COUNT(*) FROM inserted_events) AS event_count
+      `, [packageId, JSON.stringify(mutations), actor.userId, actor.username, normalized.requestId]);
+      if (Number(changed.rows[0]?.updated_count) !== mutations.length
+          || Number(changed.rows[0]?.event_count) !== mutations.length) {
+        throw new ControlPlaneConflictError('ITEM_ASSIGNMENT_CONFLICT', '待筛 Query 已变化，请刷新后重试');
+      }
+    }
+    const legacyAssignmentPresent = current.assigned_to_account_id !== null
+      || current.assigned_to_username !== null;
+    if (mutations.length > 0 || legacyAssignmentPresent) {
+      await client.query(`
+        UPDATE query_packages
+        SET assigned_to_account_id = NULL, assigned_to_username = NULL,
+          version = version + 1, updated_at = now()
+        WHERE id = $1
+      `, [packageId]);
+    }
+    const response = {
+      queryPackage: await readPackageSummary(client, packageId),
+      assignment: await readQueryPackageItemAssignmentSummary(client, packageId),
+    };
+    await saveMutation(
+      client, actor, normalized.requestId, 'ASSIGN_ITEMS', packageId, fingerprint, response,
+    );
+    return response;
   });
 }
 
@@ -539,22 +916,30 @@ export async function updateQueryPackageScreening(pool, rawPackageId, input, raw
       itemId: normalizeTaskId(entry.itemId),
       decision: decision === 'SELECT' ? 'SELECTED' : 'REJECTED',
       reason: text(entry.reason, `decisions[${index}].reason`, 500, { optional: true }),
+      expectedItemVersion: entry?.expectedItemVersion === undefined
+        ? null : version(entry.expectedItemVersion),
     };
   });
   if (new Set(decisions.map((entry) => entry.itemId)).size !== decisions.length) {
     throw new TypeError('screening item ids must be unique');
   }
+  const itemVersioned = decisions.every((entry) => entry.expectedItemVersion !== null);
+  if (!itemVersioned && decisions.some((entry) => entry.expectedItemVersion !== null)) {
+    throw new TypeError('expectedItemVersion is required for every decision or none');
+  }
   const fingerprint = hashJson({ expectedVersion, decisions });
   return withTransaction(pool, async (client) => {
     await lockActiveQueryPackageActor(client, actor);
     await lockMutationRequest(client, actor, requestId);
-    const current = await lockPackage(client, packageId, actor);
+    const current = await lockPackage(client, packageId, actor, { allowItemAccess: itemVersioned });
     const replay = await existingMutation(client, actor, requestId, 'SCREEN', packageId, fingerprint);
     if (replay) return replay;
     if (!PACKAGE_ACTIVE_STATUSES.includes(current.status)) {
       throw new ControlPlaneConflictError('PACKAGE_NOT_SCREENABLE', '词包已结束，不能继续筛选');
     }
-    if (Number(current.version) !== expectedVersion) throw new ControlPlaneConflictError('VERSION_CONFLICT', '词包已被修改');
+    if (!itemVersioned && Number(current.version) !== expectedVersion) {
+      throw new ControlPlaneConflictError('VERSION_CONFLICT', '词包已被修改');
+    }
     const decisionJson = JSON.stringify(decisions);
     // Lock the complete submitted set in one deterministic statement. The
     // package row above serializes screening within a package; ordering the
@@ -564,7 +949,8 @@ export async function updateQueryPackageScreening(pool, rawPackageId, input, raw
         SELECT (source.entry ->> 'itemId')::bigint AS item_id
         FROM jsonb_array_elements($2::jsonb) AS source(entry)
       )
-      SELECT item.id, item.status, item.screening_decision
+      SELECT item.id, item.status, item.screening_decision, item.version,
+        item.screening_assigned_to_account_id, item.screening_assigned_to_username
       FROM requested
       JOIN query_package_items AS item ON item.id = requested.item_id
       WHERE item.query_package_id = $1
@@ -572,7 +958,12 @@ export async function updateQueryPackageScreening(pool, rawPackageId, input, raw
       FOR UPDATE OF item
     `, [packageId, decisionJson]);
     const lockedById = new Map(lockedItems.rows.map((row) => [Number(row.id), row]));
-    const invalid = decisions.find((decision) => lockedById.get(decision.itemId)?.status !== 'READY');
+    const invalid = decisions.find((decision) => {
+      const item = lockedById.get(decision.itemId);
+      return item?.status !== 'READY'
+        || (itemVersioned && Number(item.version) !== decision.expectedItemVersion)
+        || (itemVersioned && actor.role !== 'ADMIN' && !itemAssignmentMatchesActor(item, actor));
+    });
     if (invalid) {
       throw new ControlPlaneConflictError('ITEM_NOT_SCREENABLE', `词包明细 ${invalid.itemId} 不可筛选`);
     }
@@ -593,7 +984,8 @@ export async function updateQueryPackageScreening(pool, rawPackageId, input, raw
           (source.entry ->> 'itemId')::bigint AS item_id,
           source.entry ->> 'decision' AS decision,
           source.entry ->> 'reason' AS reason,
-          source.entry ->> 'previousDecision' AS previous_decision
+          source.entry ->> 'previousDecision' AS previous_decision,
+          NULLIF(source.entry ->> 'expectedItemVersion', '')::bigint AS expected_item_version
         FROM jsonb_array_elements($2::jsonb) WITH ORDINALITY AS source(entry, ordinality)
       ), updated_items AS (
         UPDATE query_package_items AS item
@@ -609,6 +1001,7 @@ export async function updateQueryPackageScreening(pool, rawPackageId, input, raw
           AND item.query_package_id = $1
           AND item.status = 'READY'
           AND item.screening_decision = requested.previous_decision
+          AND ($6::boolean = false OR item.version = requested.expected_item_version)
         RETURNING item.id
       ), inserted_events AS (
         INSERT INTO query_package_screening_events(
@@ -690,7 +1083,7 @@ export async function updateQueryPackageScreening(pool, rawPackageId, input, raw
         (SELECT COUNT(*) FROM inserted_events) AS event_count,
         (SELECT COUNT(*) FROM queued_xhs_searches) AS queued_xhs_search_count,
         (SELECT COUNT(*) FROM cancelled_xhs_searches) AS cancelled_xhs_search_count
-    `, [packageId, JSON.stringify(mutations), actor.userId, actor.username, requestId]);
+    `, [packageId, JSON.stringify(mutations), actor.userId, actor.username, requestId, itemVersioned]);
     if (Number(changed.rows[0]?.updated_count) !== decisions.length
         || Number(changed.rows[0]?.event_count) !== decisions.length) {
       throw new ControlPlaneConflictError('ITEM_NOT_SCREENABLE', '词包明细状态已变化，请刷新后重试');

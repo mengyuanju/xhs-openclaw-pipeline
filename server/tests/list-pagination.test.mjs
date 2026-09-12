@@ -91,6 +91,8 @@ test('delegated Query-package lists are scoped to the stable assigned account', 
 
   assert.deepEqual(calls[0].values, [91, 'reviewer', 25, 5]);
   assert.match(calls[0].sql,
-    /WHERE package\.assigned_to_account_id = \$1 AND package\.assigned_to_username = \$2/u);
+    /package\.assigned_to_account_id = \$1 AND package\.assigned_to_username = \$2/u);
+  assert.match(calls[0].sql, /visible_item\.screening_assigned_to_account_id = \$1/u,
+    'delegated lists include packages with Query items assigned to the stable account');
   assert.match(calls[0].sql, /LIMIT \$3 OFFSET \$4/u);
 });
