@@ -17,10 +17,18 @@ import {
   XIAOHONGSHU_SEARCH_SETTINGS_KEY,
 } from '../../src/xhs-query-search.mjs';
 
-function fakeSearchDatabase({ resultLimit = 3 } = {}) {
+function fakeSearchDatabase({
+  resultLimit = 3,
+  searchMode = 'THOROUGH',
+  minimumIntervalSeconds = 60,
+  hourlyLimit = 30,
+  dailyLimit = 150,
+  rateGate = { interval_ready: true, hourly_ready: true, daily_ready: true },
+} = {}) {
   const state = {
-    settings: { resultLimit },
+    settings: { resultLimit, searchMode, minimumIntervalSeconds, hourlyLimit, dailyLimit },
     node: null,
+    attempts: [],
     job: {
       id: 51,
       query_package_item_id: 91,
@@ -34,6 +42,7 @@ function fakeSearchDatabase({ resultLimit = 3 } = {}) {
       retry_after: null,
       blocked_reason: null,
       result_limit: 3,
+      search_mode: 'THOROUGH',
       result_count: 0,
       searched_at: null,
       updated_at: new Date('2026-09-10T01:00:00.000Z'),
@@ -74,6 +83,9 @@ function fakeSearchDatabase({ resultLimit = 3 } = {}) {
       assert.equal(values[0], XIAOHONGSHU_SEARCH_SETTINGS_KEY);
       return { rows: [{ value: structuredClone(state.settings) }] };
     }
+    if (source.startsWith('SELECT NOT EXISTS') && source.includes('FROM xhs_query_search_attempts')) {
+      return { rows: [{ ...rateGate }] };
+    }
     if (source.startsWith('UPDATE xhs_query_search_jobs') && source.includes("status = 'RUNNING'")) {
       Object.assign(state.job, {
         status: 'RUNNING',
@@ -82,8 +94,19 @@ function fakeSearchDatabase({ resultLimit = 3 } = {}) {
         lease_token: values[2],
         lease_expires_at: new Date('2026-09-10T01:05:00.000Z'),
         result_limit: Number(values[4]),
+        search_mode: values[5],
       });
       return { rows: [{ ...state.job }] };
+    }
+    if (source.startsWith('INSERT INTO xhs_query_search_attempts')) {
+      state.attempts.push({
+        searchJobId: Number(values[0]),
+        nodeId: values[1],
+        minimumIntervalSeconds: Number(values[2]),
+        hourlyLimit: Number(values[3]),
+        dailyLimit: Number(values[4]),
+      });
+      return { rows: [] };
     }
     if (source.startsWith('SELECT job.*, job.lease_expires_at')) {
       return { rows: [{ ...state.job, source_active: true, lease_active: true }] };
@@ -163,6 +186,14 @@ test('central search job claim and completion use a lease and store only normali
   assert.equal(claim.status, 'RUNNING');
   assert.equal(claim.attempt, 1);
   assert.equal(claim.resultLimit, 3);
+  assert.equal(claim.searchMode, 'THOROUGH');
+  assert.deepEqual(fixture.state.attempts, [{
+    searchJobId: 51,
+    nodeId: 'search-node',
+    minimumIntervalSeconds: 60,
+    hourlyLimit: 30,
+    dailyLimit: 150,
+  }]);
   assert.equal(fixture.state.node.account_label, '品牌主账号');
   assert.equal(fixture.state.node.host_kind, 'CENTER');
   assert.match(claim.leaseToken, /^[0-9a-f-]{36}$/u);
@@ -211,11 +242,11 @@ test('central completion rejects unranked overflow and unusable bare links', asy
   }
 });
 
-test('claim requires protocol v3 and freezes the administrator result limit', async () => {
-  const fixture = fakeSearchDatabase({ resultLimit: 10 });
+test('claim requires protocol v4 and freezes the administrator search strategy', async () => {
+  const fixture = fakeSearchDatabase({ resultLimit: 10, searchMode: 'THOROUGH' });
   await assert.rejects(
     claimXhsQuerySearch(fixture.pool, { nodeId: 'legacy-search-node' }),
-    /protocolVersion must be 3/u,
+    /protocolVersion must be 4/u,
   );
   assert.equal(fixture.state.job.status, 'PENDING');
 
@@ -224,9 +255,12 @@ test('claim requires protocol v3 and freezes the administrator result limit', as
     protocolVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
   });
   assert.equal(claim.resultLimit, 10);
+  assert.equal(claim.searchMode, 'THOROUGH');
   assert.equal(fixture.state.job.result_limit, 10);
+  assert.equal(fixture.state.job.search_mode, 'THOROUGH');
 
   fixture.state.settings.resultLimit = 1;
+  fixture.state.settings.searchMode = 'FASTEST';
   const links = Array.from({ length: 4 }, (_, index) => ({
     url: `/explore/${String(index + 1).padStart(24, '0')}?xsec_token=frozen_${index}%3D&xsec_source=pc_search`,
     title: `冻结结果 ${index + 1}`,
@@ -236,8 +270,44 @@ test('claim requires protocol v3 and freezes the administrator result limit', as
     links,
   });
   assert.equal(completed.resultLimit, 10);
+  assert.equal(completed.searchMode, 'THOROUGH');
   assert.equal(completed.resultCount, 4);
   assert.equal(fixture.state.links.length, 4);
+});
+
+test('fastest claims always freeze one first-screen result regardless of the thorough limit', async () => {
+  const fixture = fakeSearchDatabase({ resultLimit: 10, searchMode: 'FASTEST' });
+  const claim = await claimXhsQuerySearch(fixture.pool, {
+    nodeId: 'search-node',
+    protocolVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
+  });
+  assert.equal(claim.resultLimit, 1);
+  assert.equal(claim.searchMode, 'FASTEST');
+  assert.equal(fixture.state.job.result_limit, 1);
+  assert.equal(fixture.state.job.search_mode, 'FASTEST');
+});
+
+test('central claim gate enforces interval, rolling-hour, and rolling-day limits before external search', async () => {
+  for (const blockedField of ['interval_ready', 'hourly_ready', 'daily_ready']) {
+    const fixture = fakeSearchDatabase({
+      minimumIntervalSeconds: 30,
+      hourlyLimit: 120,
+      dailyLimit: 2000,
+      rateGate: {
+        interval_ready: true,
+        hourly_ready: true,
+        daily_ready: true,
+        [blockedField]: false,
+      },
+    });
+    const claim = await claimXhsQuerySearch(fixture.pool, {
+      nodeId: 'search-node',
+      protocolVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
+    });
+    assert.equal(claim, null);
+    assert.equal(fixture.state.job.status, 'PENDING');
+    assert.deepEqual(fixture.state.attempts, []);
+  }
 });
 
 test('completion enforces the limit frozen on its own claimed job', async () => {
@@ -297,19 +367,32 @@ test('the administrator Xiaohongshu setting is strictly normalized before persis
 
   const saved = await repository.upsertSetting(XIAOHONGSHU_SEARCH_SETTINGS_KEY, {
     resultLimit: 10,
+    searchMode: 'THOROUGH',
+    minimumIntervalSeconds: 30,
+    hourlyLimit: 120,
+    dailyLimit: 2000,
   });
-  assert.deepEqual(saved.value, { resultLimit: 10 });
+  assert.deepEqual(saved.value, {
+    resultLimit: 10,
+    searchMode: 'THOROUGH',
+    minimumIntervalSeconds: 30,
+    hourlyLimit: 120,
+    dailyLimit: 2000,
+  });
   assert.equal(saved.version, 2);
   for (const value of [
     { resultLimit: 0 },
     { resultLimit: 11 },
     { resultLimit: 1.5 },
     { resultLimit: '5' },
+    { resultLimit: 5, searchMode: 'QUICK' },
+    { resultLimit: 5, minimumIntervalSeconds: 30, hourlyLimit: 200, dailyLimit: 150 },
+    { resultLimit: 5, minimumIntervalSeconds: 60, hourlyLimit: 2, dailyLimit: 49 },
     { resultLimit: 5, extra: true },
   ]) {
     await assert.rejects(
       repository.upsertSetting(XIAOHONGSHU_SEARCH_SETTINGS_KEY, value),
-      /resultLimit|unsupported fields/u,
+      /resultLimit|searchMode|hourlyLimit|dailyLimit|unsupported fields/u,
     );
   }
   assert.equal(writes.length, 1, 'invalid settings must be rejected before PostgreSQL is called');
@@ -320,7 +403,7 @@ test('health advertises the administrator-controlled Xiaohongshu search protocol
     query: async () => ({ rows: [{ now: new Date('2026-09-10T02:00:00.000Z') }] }),
   } });
   const health = await repository.health();
-  assert.equal(health.capabilities.xiaohongshuQuerySearchVersion, 3);
+  assert.equal(health.capabilities.xiaohongshuQuerySearchVersion, 4);
   assert.equal(health.capabilities.xiaohongshuAccountStatusVersion, 1);
 });
 
@@ -370,6 +453,14 @@ test('search rows bind to durable tasks and login resume never resets ordinary f
     new URL('../migrations/0034_xhs_query_search_result_limit.sql', import.meta.url),
     'utf8',
   );
+  const strategyMigration = await readFile(
+    new URL('../migrations/0041_xhs_search_strategy.sql', import.meta.url),
+    'utf8',
+  );
+  const rateLimitMigration = await readFile(
+    new URL('../migrations/0042_xhs_search_rate_limits.sql', import.meta.url),
+    'utf8',
+  );
   const service = await readFile(new URL('../src/xhs-query-search.mjs', import.meta.url), 'utf8');
   assert.match(migration, /query_package_item_id bigint UNIQUE[\s\S]*ON DELETE SET NULL/u);
   assert.match(migration, /task_id bigint UNIQUE REFERENCES tasks\(id\) ON DELETE CASCADE/u);
@@ -383,6 +474,17 @@ test('search rows bind to durable tasks and login resume never resets ordinary f
   assert.match(resultLimitMigration, /VALUES \('xhs_query_search', '\{"resultLimit":3\}'::jsonb\)/u);
   assert.match(resultLimitMigration, /ADD COLUMN result_limit smallint NOT NULL DEFAULT 3/u);
   assert.match(resultLimitMigration, /CHECK \(result_limit BETWEEN 1 AND 10\)/u);
+  assert.match(strategyMigration, /\{"searchMode":"FASTEST"\}/u);
+  assert.match(strategyMigration, /ADD COLUMN search_mode varchar\(20\) NOT NULL DEFAULT 'THOROUGH'/u);
+  assert.match(strategyMigration, /CHECK \(search_mode IN \('FASTEST', 'THOROUGH'\)\)/u);
+  assert.match(rateLimitMigration, /"minimumIntervalSeconds": 60/u);
+  assert.match(rateLimitMigration, /"hourlyLimit": 30/u);
+  assert.match(rateLimitMigration, /"dailyLimit": 150/u);
+  assert.match(rateLimitMigration, /CREATE TABLE xhs_query_search_attempts/u);
+  assert.match(rateLimitMigration, /started_at timestamptz NOT NULL DEFAULT now\(\)/u);
+  assert.match(service, /WHERE started_at > now\(\) - \(\$1::integer \* interval '1 second'\)/u);
+  assert.match(service, /WHERE started_at > now\(\) - interval '1 hour'/u);
+  assert.match(service, /WHERE started_at > now\(\) - interval '1 day'/u);
 });
 
 test('failed searches require an explicit manual retry and receive a fresh attempt budget', async () => {

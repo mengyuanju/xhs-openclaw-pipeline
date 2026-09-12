@@ -163,6 +163,7 @@ function jobFrom(row) {
     leaseExpiresAt: row.lease_expires_at ?? null,
     blockedReason: row.blocked_reason ?? null,
     resultLimit: Number(row.result_limit),
+    searchMode: row.search_mode,
     resultCount: Number(row.result_count ?? 0),
     searchedAt: row.searched_at ?? null,
     updatedAt: row.updated_at,
@@ -263,7 +264,26 @@ export async function claimXhsQuerySearch(pool, input) {
     const setting = await client.query(`
       SELECT value FROM global_settings WHERE key = $1 FOR SHARE
     `, [XIAOHONGSHU_SEARCH_SETTINGS_KEY]);
-    const { resultLimit } = normalizeXiaohongshuSearchSettings(setting.rows[0]?.value ?? {});
+    const settings = normalizeXiaohongshuSearchSettings(setting.rows[0]?.value ?? {});
+    const searchMode = settings.searchMode;
+    const resultLimit = searchMode === 'FASTEST' ? 1 : settings.resultLimit;
+    const rateGate = await client.query(`
+      SELECT
+        NOT EXISTS (
+          SELECT 1 FROM xhs_query_search_attempts
+          WHERE started_at > now() - ($1::integer * interval '1 second')
+        ) AS interval_ready,
+        (
+          SELECT COUNT(*) FROM xhs_query_search_attempts
+          WHERE started_at > now() - interval '1 hour'
+        ) < $2::integer AS hourly_ready,
+        (
+          SELECT COUNT(*) FROM xhs_query_search_attempts
+          WHERE started_at > now() - interval '1 day'
+        ) < $3::integer AS daily_ready
+    `, [settings.minimumIntervalSeconds, settings.hourlyLimit, settings.dailyLimit]);
+    const allowance = rateGate.rows[0];
+    if (!allowance?.interval_ready || !allowance?.hourly_ready || !allowance?.daily_ready) return null;
     const leaseToken = randomUUID();
     const claimed = await client.query(`
       UPDATE xhs_query_search_jobs
@@ -271,10 +291,21 @@ export async function claimXhsQuerySearch(pool, input) {
         claimed_by_node_id = $2, lease_token = $3,
         lease_expires_at = now() + ($4 * interval '1 second'),
         retry_after = NULL, blocked_reason = NULL, error = NULL,
-        result_limit = $5, updated_at = now()
+        result_limit = $5, search_mode = $6, updated_at = now()
       WHERE id = $1
       RETURNING *
-    `, [candidate.rows[0].id, nodeId, leaseToken, LEASE_SECONDS, resultLimit]);
+    `, [candidate.rows[0].id, nodeId, leaseToken, LEASE_SECONDS, resultLimit, searchMode]);
+    await client.query(`
+      INSERT INTO xhs_query_search_attempts(
+        search_job_id, node_id, minimum_interval_seconds, hourly_limit, daily_limit
+      ) VALUES ($1, $2, $3, $4, $5)
+    `, [
+      candidate.rows[0].id,
+      nodeId,
+      settings.minimumIntervalSeconds,
+      settings.hourlyLimit,
+      settings.dailyLimit,
+    ]);
     await updateXhsSearchNodeObservation(client, nodeId, { jobId: candidate.rows[0].id });
     return jobFrom(claimed.rows[0]);
   });
@@ -286,6 +317,7 @@ export async function completeXhsQuerySearch(pool, rawJobId, input) {
     const job = await lockActiveJob(client, rawJobId, input?.leaseToken);
     const { resultLimit } = normalizeXiaohongshuSearchSettings({
       resultLimit: Number(job.result_limit),
+      searchMode: job.search_mode,
     });
     if (Array.isArray(rawLinks) && rawLinks.length > resultLimit) {
       throw new RangeError(`Xiaohongshu search may submit at most ${resultLimit} ranked links`);

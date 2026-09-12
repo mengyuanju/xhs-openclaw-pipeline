@@ -42,7 +42,11 @@ import { canResumeImageTask } from '../../src/control-plane/image-resume.mjs';
 import { IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
 import { parseQueryBatch } from '../../src/control-plane/query-batch.mjs';
 import { imageExecutorLabel } from '../../src/control-plane/image-executor-label.mjs';
-import { CREATE_ASSIGNMENT_MODES, createAssignmentFields } from '../../src/control-plane/task-assignment.mjs';
+import {
+  CREATE_ASSIGNMENT_MODES,
+  canManageTaskAssignment,
+  createAssignmentFields,
+} from '../../src/control-plane/task-assignment.mjs';
 import { TaskReviewDialog } from './task-review-dialog';
 import { TaskRowActions } from './task-row-actions';
 import { AdminJobFilters, CREATOR_ROLE_LABELS } from './admin-job-filters';
@@ -210,6 +214,8 @@ const STAGE_LABELS: Record<string, string> = {
   KNOWLEDGE_MATCH: '优秀案例匹配',
   RESEARCH: '全网搜索与资料整理',
   ORIGINAL_GENERATION: '标题、正文与配图策划生成',
+  COPY_LENGTH_REPAIR: '正文长度修复',
+  COPY_CONTRACT_REPAIR: '文案格式修复',
   ORIGINAL_REVIEW: '首稿质检',
   REVIEWED_GENERATION: '文案改写',
   REVIEWED_REVIEW: '改写稿质检',
@@ -272,11 +278,6 @@ function isTaskAssignee(task: DistributedTask, username: string, accountId: numb
 
 function isPersonalTask(task: DistributedTask, username: string, accountId: number) {
   return isTaskAssignee(task, username, accountId) || isTaskCreator(task, username, accountId);
-}
-
-function canManageTaskAssignment(task: DistributedTask) {
-  return task.assignedToUserId !== null
-    || ['COPY_REVIEW_PENDING', 'IMAGE_QUEUED', 'IMAGE_FAILED', 'MANUAL_ARCHIVE'].includes(task.state);
 }
 
 function assignmentLabel(task: DistributedTask) {
@@ -1499,7 +1500,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     const canPermanentlyDelete = role === 'ADMIN' && isPermanentlyDeletableTask(task);
     const visibleActionCount = role === 'ADMIN' && activeView !== 'UNASSIGNED' ? 2 : 1;
     const assignmentButton = role === 'ADMIN' && canManageTaskAssignment(task) && <Button unstyled className="button small" type="button"
-      disabled={busy} onClick={() => setAssignmentTasks([task])}><UserRound size={14} />分配</Button>;
+      disabled={busy} onClick={() => setAssignmentTasks([task])}><UserRound size={14} />{task.assignedToUserId === null ? '分配' : '改派'}</Button>;
     const permanentDeleteButton = canPermanentlyDelete && <Button unstyled className="button small danger" type="button" disabled={busy || Boolean(batchAction) || batchPermanentDeleteTasks.length > 0} onClick={() => { setDeletionError(''); setDeletionPassword(''); setPermanentDeleteTask(task); }}><Trash2 size={14} />永久删除</Button>;
     if (isAllJobs) return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
       {assignmentButton}
@@ -1919,7 +1920,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         <Button unstyled className="button small primary" type="button"
           disabled={Boolean(batchAction) || duplicateQueryCleanupBusy || assignmentEligibleTasks.length === 0}
           title={assignmentEligibleTasks.length === 0 ? '所选任务尚未进入可派单阶段' : '分配或改派可处理的任务'}
-          onClick={() => setAssignmentTasks(assignmentEligibleTasks)}><UserRound size={14} />批量分配 {assignmentEligibleTasks.length}</Button>
+          onClick={() => setAssignmentTasks(assignmentEligibleTasks)}><UserRound size={14} />批量分配/改派 {assignmentEligibleTasks.length}</Button>
         <Button unstyled className="button small" type="button" disabled={Boolean(batchAction) || duplicateQueryCleanupBusy || retryableTasks.length === 0} onClick={() => { void runBatchAction('RETRY', retryableTasks); }}><RotateCcw size={14} />重试 {retryableTasks.length}</Button>
         <Button unstyled className="button small danger" type="button" disabled={Boolean(batchAction) || duplicateQueryCleanupBusy || queuedTasks.length === 0} onClick={() => { void runBatchAction('CANCEL_QUEUE', queuedTasks); }}><Trash2 size={14} />废弃排队中 {queuedTasks.length}</Button>
         <Button unstyled className="button small danger" type="button" title={permanentlyDeletableTasks.length > 20 ? '单次最多永久删除 20 条，请减少选择' : permanentDeletionSettlingTasks.length ? '所选任务仍在等待执行机停止，废弃满 3 分钟后可永久删除' : '仅永久删除已失败、已审核或已废弃且执行已停止的任务'} disabled={Boolean(batchAction) || duplicateQueryCleanupBusy || Boolean(actingTaskId) || Boolean(permanentDeleteTask) || permanentlyDeletableTasks.length === 0 || permanentlyDeletableTasks.length > 20} onClick={() => { setDeletionError(''); setDeletionPassword(''); setBatchPermanentDeleteTasks(permanentlyDeletableTasks); }}><Trash2 size={14} />永久删除 {permanentlyDeletableTasks.length}</Button>

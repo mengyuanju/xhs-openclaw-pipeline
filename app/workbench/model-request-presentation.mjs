@@ -54,6 +54,9 @@ export function summarizeModelRequest({ prompt = '', request = '', truncated = f
   const payload = current ? record.payload : null;
   const view = { complete: Boolean(current && !truncated && ['HTTP_BODY', 'CLI_INPUT'].includes(record.scope)),
     scope: current ? record.scope : 'LEGACY', rawRequest: request, payload,
+    stageContext: current && object(record.stageContext) && typeof record.stageContext.name === 'string'
+      ? { name: record.stageContext.name, details: object(record.stageContext.details) ? record.stageContext.details : {} }
+      : null,
     versions: current ? versionsFrom(record.provenance?.versions) : [],
     runtime: current && object(record.provenance?.runtime) ? record.provenance.runtime : null,
     business: [], program: [], taskData: [], references: [], constraints: [] };

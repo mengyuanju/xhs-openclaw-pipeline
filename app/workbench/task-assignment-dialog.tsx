@@ -34,6 +34,13 @@ function currentAssignee(tasks: AssignmentTask[]): JobCreator | null {
   };
 }
 
+function assignmentActionLabel(tasks: AssignmentTask[]) {
+  const assignedCount = tasks.filter((task) => task.assignedToUserId !== null).length;
+  if (assignedCount === 0) return '分配';
+  if (assignedCount === tasks.length) return '改派';
+  return '分配/改派';
+}
+
 export function TaskAssignmentDialog({ tasks, open, currentAdmin, onOpenChange, onAssigned }: {
   tasks: AssignmentTask[];
   open: boolean;
@@ -46,6 +53,7 @@ export function TaskAssignmentDialog({ tasks, open, currentAdmin, onOpenChange, 
   const [reason, setReason] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const actionLabel = assignmentActionLabel(tasks);
   const canReturnToPool = tasks.every((task) => (
     ['COPY_QUEUED', 'COPY_REVIEW_PENDING'].includes(task.state)
       && !(task.skipCopyReview === true && task.state === 'COPY_QUEUED')
@@ -102,7 +110,7 @@ export function TaskAssignmentDialog({ tasks, open, currentAdmin, onOpenChange, 
 
   return <Dialog open={open} onOpenChange={(nextOpen) => { if (!submitting) onOpenChange(nextOpen); }}>
     <DialogContent className="workbench-save-view-dialog">
-      <DialogTitle>{tasks.length > 1 ? `批量分配 ${tasks.length} 条任务` : '分配任务'}</DialogTitle>
+      <DialogTitle>{tasks.length > 1 ? `批量${actionLabel} ${tasks.length} 条任务` : `${actionLabel}任务`}</DialogTitle>
       <DialogDescription>
         文案生成完成后可分配给普通作业员，或由当前管理员领取。负责人变更不会影响机器执行队列。
       </DialogDescription>
@@ -135,10 +143,10 @@ export function TaskAssignmentDialog({ tasks, open, currentAdmin, onOpenChange, 
               setDestinationRequired(false);
               setError('');
             }}>我来处理</Button>
-          {!canReturnToPool && <small>当前状态只能改派负责人，不能退回待分配池。</small>}
+          {!canReturnToPool && <small>当前状态只能改派负责人，不能退回待分配池；已完成或已废弃的任务不能改派。</small>}
         </div>
         <div className="field">
-          <label htmlFor="task-assignment-reason">分配说明（可选）</label>
+          <label htmlFor="task-assignment-reason">{actionLabel}说明（可选）</label>
           <Textarea id="task-assignment-reason" value={reason} maxLength={200} rows={3} disabled={submitting}
             placeholder="例如：补充夜班作业量" onChange={(event) => setReason(event.target.value)} />
         </div>
@@ -149,7 +157,7 @@ export function TaskAssignmentDialog({ tasks, open, currentAdmin, onOpenChange, 
             <Button unstyled className="button" type="button" disabled={submitting} onClick={() => onOpenChange(false)}>取消</Button>
             <Button unstyled className="button primary" type="submit"
               disabled={submitting || tasks.length === 0 || destinationRequired}>
-              {submitting ? '正在分配…' : '确认分配'}
+              {submitting ? `正在${actionLabel}…` : `确认${actionLabel}`}
             </Button>
           </div>
         </div>

@@ -88,6 +88,7 @@ test('Xiaohongshu search client authenticates and validates every state-changing
     nodeId: 'host-xhs-search',
     attempt: 1,
     resultLimit: 5,
+    searchMode: 'THOROUGH',
     leaseToken,
   };
   const client = createControlPlaneClient({
@@ -102,6 +103,13 @@ test('Xiaohongshu search client authenticates and validates every state-changing
   const validClaim = payload;
   for (const resultLimit of [undefined, 0, 11, 1.5, '5']) {
     payload = { ...validClaim, resultLimit };
+    await assert.rejects(
+      client.claimXhsQuerySearch({ nodeId: 'host-xhs-search' }),
+      { code: 'INVALID_CONTROL_PLANE_RESPONSE' },
+    );
+  }
+  for (const searchMode of [undefined, 'QUICK', null]) {
+    payload = { ...validClaim, searchMode };
     await assert.rejects(
       client.claimXhsQuerySearch({ nodeId: 'host-xhs-search' }),
       { code: 'INVALID_CONTROL_PLANE_RESPONSE' },

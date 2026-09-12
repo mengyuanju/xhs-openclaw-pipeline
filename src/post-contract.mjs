@@ -26,6 +26,78 @@ const PRIMARY_TYPES = [
 const FABRICATED_EXPERIENCE = /(我亲测|亲测有效|我用了.{0,8}(个月|年)|本人购买|我家一直|绝对有效)/u;
 const GRAPHEME_SEGMENTER = new Intl.Segmenter('zh-CN', { granularity: 'grapheme' });
 
+const boundedString = (maxLength, minLength = 1) => ({ type: 'string', minLength, maxLength });
+const boundedStringArray = (maxItems, itemMaxLength, minItems = 0) => ({
+  type: 'array', minItems, maxItems, items: boundedString(itemMaxLength),
+});
+
+export function postOutputSchema(imageCount = AUTO_IMAGE_COUNT) {
+  const automatic = imageCount === AUTO_IMAGE_COUNT;
+  if (!automatic && (!Number.isInteger(imageCount)
+    || imageCount < MIN_IMAGE_COUNT || imageCount > MAX_IMAGE_COUNT)) {
+    throw new RangeError(`imageCount must be an integer between ${MIN_IMAGE_COUNT} and ${MAX_IMAGE_COUNT}`);
+  }
+  const imageMinimum = automatic ? MIN_IMAGE_COUNT : imageCount;
+  const imageMaximum = automatic ? MAX_IMAGE_COUNT : imageCount;
+  const imagePage = {
+    type: 'object', additionalProperties: false,
+    required: ['kind', 'headline', 'subtitle', 'bullets', 'prompt'],
+    properties: {
+      kind: { type: 'string', enum: IMAGE_KINDS },
+      headline: boundedString(18),
+      subtitle: boundedString(30),
+      bullets: boundedStringArray(5, 40, 2),
+      prompt: boundedString(1_000, 10),
+    },
+  };
+  return {
+    type: 'object', additionalProperties: false,
+    required: ['taskJudgement', 'platform', 'title', 'body', 'tags', 'imagePlan', 'sources',
+      'expressionReferences', 'riskFlags', 'fabricatedExperience', 'unverifiedClaims'],
+    properties: {
+      taskJudgement: {
+        type: 'object', additionalProperties: false,
+        required: ['admitted', 'demandLevel', 'primaryType', 'reason'],
+        properties: {
+          admitted: { type: 'boolean', enum: [true] },
+          demandLevel: { type: 'string', enum: ['strong', 'medium'] },
+          primaryType: { type: 'string', enum: PRIMARY_TYPES },
+          reason: boundedString(200),
+        },
+      },
+      platform: {
+        type: 'object', additionalProperties: false,
+        required: ['target', 'expressionType', 'audience', 'openingMethod', 'bodyStructure', 'iconDictionary', 'sampleEvidence'],
+        properties: {
+          target: { type: 'string', enum: ['小红书'] },
+          expressionType: { type: 'string', enum: ['信息型'] },
+          audience: boundedString(100),
+          openingMethod: boundedString(150),
+          bodyStructure: boundedString(150),
+          iconDictionary: { type: 'object', properties: {}, additionalProperties: false },
+          sampleEvidence: { type: 'string', enum: ['not_provided', 'limited', 'sufficient'] },
+        },
+      },
+      title: boundedString(25),
+      body: boundedString(600, 400),
+      tags: { ...boundedStringArray(8, 20, 3), items: { ...boundedString(20), pattern: '^#[^#\\s]+$' } },
+      imagePlan: { type: 'array', minItems: imageMinimum, maxItems: imageMaximum, items: imagePage },
+      sources: boundedStringArray(8, 500),
+      expressionReferences: boundedStringArray(5, 500),
+      riskFlags: boundedStringArray(10, 200),
+      fabricatedExperience: { type: 'boolean', enum: [false] },
+      unverifiedClaims: boundedStringArray(10, 300),
+    },
+  };
+}
+
+export function bodyRepairOutputSchema() {
+  return {
+    type: 'object', additionalProperties: false, required: ['body'],
+    properties: { body: boundedString(600, 400) },
+  };
+}
+
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

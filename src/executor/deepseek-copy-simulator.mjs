@@ -8,6 +8,13 @@ const COPY_PROGRESS = Object.freeze({
   KNOWLEDGE_MATCH: 12,
   RESEARCH: 20,
   ORIGINAL_GENERATION: 45,
+  COPY_LENGTH_REPAIR: 55,
+  COPY_CONTRACT_REPAIR: 55,
+});
+const COPY_STAGE_MESSAGES = Object.freeze({
+  KNOWLEDGE_MATCH: '正在匹配优秀文案案例',
+  COPY_LENGTH_REPAIR: '首稿长度未通过，正在仅修复正文',
+  COPY_CONTRACT_REPAIR: '首稿格式未通过，正在修复失败字段',
 });
 
 function publishedTextPrompt(snapshot) {
@@ -47,7 +54,7 @@ export async function executeDeepSeekCopySimulation({
     onStageChange: async (stage, details = {}) => controlPlane.updateProgress(execution.id, {
       stage,
       progressPercent: COPY_PROGRESS[stage] ?? 0,
-      message: stage === 'KNOWLEDGE_MATCH' ? 'DeepSeek 模拟执行：正在匹配优秀文案案例' : `DeepSeek 模拟执行文案阶段：${stage}`,
+      message: `DeepSeek 模拟执行：${COPY_STAGE_MESSAGES[stage] ?? `正在执行文案阶段：${stage}`}`,
       details: { ...details, simulation: true, provider: 'DEEPSEEK' },
     }),
   });

@@ -21,6 +21,7 @@ import {
   normalizeAssignmentSource,
   UNASSIGNED_CREATOR_COPY_CONTROL_STATES,
 } from './task-assignment-domain.mjs';
+import { isTaskAssignmentLocked } from '../../src/control-plane/task-assignment.mjs';
 import {
   normalizeHumanQualitySettings,
   normalizeHumanQualitySettingsUpdate,
@@ -1173,7 +1174,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 4, xiaohongshuQuerySearchVersion: 3, xiaohongshuAccountStatusVersion: 1, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1, deliveryPreviewVersion: 5 } };
+      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 4, xiaohongshuQuerySearchVersion: 4, xiaohongshuAccountStatusVersion: 1, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1, deliveryPreviewVersion: 5 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -1940,6 +1941,15 @@ export class PostgresControlPlaneRepository {
         SELECT * FROM tasks WHERE id = ANY($1::bigint[]) ORDER BY id FOR UPDATE
       `, [taskIds]);
       if (current.rows.length !== taskIds.length) throw new ControlPlaneNotFoundError('task not found');
+      if (current.rows.some((task) => (
+        isTaskAssignmentLocked(task)
+          && (task.assigned_to_user_id ?? null) !== assignedToUserId
+      ))) {
+        throw new ControlPlaneConflictError(
+          'TASK_ASSIGNMENT_LOCKED',
+          '已完成或已废弃的任务已锁定负责人，不能分配、改派或退回待分配池',
+        );
+      }
       if (assignedToUserId === null && current.rows.some((task) => (
         task.skip_copy_review === true && task.state === 'COPY_QUEUED'
       ))) {

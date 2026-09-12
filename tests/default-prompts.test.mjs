@@ -39,7 +39,9 @@ describe('runtime default prompts', () => {
     assert.match(prompt.content, /“主需关键词 \+ 回答核心信息 \+ 看点”/u);
     assert.match(prompt.content, /标题不得使用疑问句/u);
     assert.match(prompt.content, /标题总长不超过 25 个可见字符/u);
-    assert.match(prompt.content, /正文严格控制在 400～600 字/u);
+    assert.match(prompt.content, /正文硬性范围为 400～600 个可见字符/u);
+    assert.match(prompt.content, /建议成稿控制在 480～520 个可见字符/u);
+    assert.match(prompt.content, /超过 560 个可见字符.*重复解释、冗余开场和重复总结/u);
     assert.match(prompt.content, /严格使用“总—分—总”结构/u);
     assert.doesNotMatch(prompt.content, /正文以第一人称为主/u);
     assert.doesNotMatch(prompt.content, /第一段必须采用第一人称视角/u);
@@ -47,6 +49,10 @@ describe('runtime default prompts', () => {
     assert.match(prompt.content, /第一人称.*不得虚构/u);
     assert.match(prompt.content, /最后一段必须再次明确核心结论/u);
     assert.match(prompt.content, /后期配图/u);
+    assert.match(prompt.content, /【关键优化开始：正文与配图职责分离-V1】/u);
+    assert.match(prompt.content, /根据内容类型写清结论、依据、步骤、对比、建议或适用边界/u);
+    assert.match(prompt.content, /面向后期配图制作的说明统一写入 imagePlan/u);
+    assert.match(prompt.content, /【关键优化结束：正文与配图职责分离-V1】/u);
     assert.match(prompt.content, /涉及时效性信息.*时效说明/u);
     assert.match(prompt.content, /全文使用中文全角标点/u);
     assert.match(prompt.content, /联网研究由 Worker 在文本生成前完成/u);

@@ -21,7 +21,7 @@ test('trace records start, exact prompt/raw response and failure without swallow
   const f = fixture();
   const originalError = new Error('transport failed');
   await f.run(async (plane) => {
-    await plane.updateProgress('execution-a', { stage: 'QUERY_REVIEW' });
+    await plane.updateProgress('execution-a', { stage: 'QUERY_REVIEW', details: { validationError: 'fixture' } });
     assert.equal(await traceModelCall(meta, async (capture) => { capture.response('原始返回'); return 7; }), 7);
     await assert.rejects(traceModelCall(meta, async () => { throw originalError; }), (error) => error === originalError);
   });
@@ -30,6 +30,9 @@ test('trace records start, exact prompt/raw response and failure without swallow
   assert.equal(f.records[1].prompt, '实际提示词');
   assert.equal(f.records[1].response, '原始返回');
   assert.equal(f.records[1].stage, 'QUERY_REVIEW');
+  assert.deepEqual(JSON.parse(f.records[1].request).stageContext, {
+    name: 'QUERY_REVIEW', details: { validationError: 'fixture' },
+  });
   assert.equal(f.records[3].error, 'transport failed');
 });
 

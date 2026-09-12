@@ -11,7 +11,9 @@ import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 
 import { apiRequest } from '../components/api-client';
 import { PROMPT_CATALOG } from '../../src/prompt-catalog.mjs';
+import { missingPromptOptimizationGuards } from '../../src/prompt-optimization-guards.mjs';
 import { StatusPill } from '../components/status-pill';
+import { PromptOptimizationGuard } from './prompt-optimization-guard';
 import { PromptPreview } from './prompt-preview';
 
 const KIND_DESCRIPTIONS: Record<string, string> = Object.fromEntries(PROMPT_CATALOG.map((item) => [item.kind, item.description]));
@@ -26,6 +28,12 @@ export function PromptEditor({ template }: { template: any }) {
   const [failed, setFailed] = useState(false);
 
   async function saveAndPublish(publish = true) {
+    const missingGuards = missingPromptOptimizationGuards(template.kind, content);
+    if (missingGuards.length > 0 && !await confirm({
+      title: '关键优化规则可能被删除',
+      description: `缺少“${missingGuards.map((item: { title: string }) => item.title).join('、')}”的保护标识或有效内容。继续操作可能让后续文案重新出现重复、超长等问题。`,
+      confirmLabel: publish ? '仍然创建并发布' : '仍然保存草稿',
+    })) return;
     if (publish && !await confirm({
       title: '发布新的提示词版本？',
       description: '系统会创建一个不可覆盖的新版本，并用于之后取得新快照的执行；已冻结的执行保持原版本。',
@@ -62,6 +70,7 @@ export function PromptEditor({ template }: { template: any }) {
   return <article className="panel prompt-card">
     <div className="panel-head"><div><span className="eyebrow">{template.kind}</span><h2 style={{marginTop: 5}}>{template.name}</h2></div><StatusPill value={published ? "PUBLISHED" : "DRAFT"} /></div>
     <p className="subtle">{KIND_DESCRIPTIONS[template.kind]}</p>
+    <PromptOptimizationGuard kind={template.kind} content={content} />
     <div className="field"><label htmlFor={`prompt-${template.id}`}>系统提示词</label><Textarea id={`prompt-${template.id}`} className="textarea mono" value={content} onChange={(event) => setContent(event.target.value)} maxLength={20_000} /></div>
     <div className="code-hint">可用变量由系统白名单校验；未知变量会被拒绝。{published ? `当前 v${published.version} · ${published.contentSha256?.slice(0, 10)}…` : '尚未发布'}</div>
     <PromptPreview kind={template.kind} content={content} published={published?.content} />

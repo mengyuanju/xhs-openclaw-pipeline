@@ -9,7 +9,7 @@ import {
 
 test('protected control-plane operations declare their version contracts', () => {
   for (const [routePath, method, capability, minimumVersion] of [
-    ['/v1/settings/xhs_query_search', 'PUT', 'xiaohongshuQuerySearchVersion', 3],
+    ['/v1/settings/xhs_query_search', 'PUT', 'xiaohongshuQuerySearchVersion', 4],
     ['/v1/tasks', 'POST', 'taskAssignmentVersion', 3],
     ['/v1/tasks/42/assignee', 'PATCH', 'taskAssignmentVersion', 3],
     ['/v1/tasks/batch-assignee', 'POST', 'taskAssignmentVersion', 3],
@@ -76,7 +76,7 @@ test('mutation capability check allows only compatible center versions', async (
     routePath: '/v1/settings/xhs_query_search',
     method: 'PUT',
     fetchImpl: async () => Response.json({
-      data: { capabilities: { xiaohongshuQuerySearchVersion: 3 } },
+      data: { capabilities: { xiaohongshuQuerySearchVersion: 4 } },
     }),
   });
 
@@ -160,7 +160,7 @@ test('mutation capability check fails closed for legacy, malformed and unavailab
       routePath: '/v1/settings/xhs_query_search',
       method: 'PUT',
       fetchImpl: async () => Response.json({
-        data: { capabilities: { xiaohongshuQuerySearchVersion: 2 } },
+        data: { capabilities: { xiaohongshuQuerySearchVersion: 3 } },
       }),
     }),
     (error) => error instanceof ApiError

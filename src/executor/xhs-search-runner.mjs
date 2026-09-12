@@ -3,7 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import {
   XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
   XiaohongshuSearchBlockedError,
-  normalizeXiaohongshuSearchResultLimit,
+  xiaohongshuSearchExecutionOptions,
 } from '../xhs-query-search.mjs';
 
 export async function executeXhsQuerySearchOnce({
@@ -22,10 +22,13 @@ export async function executeXhsQuerySearchOnce({
     protocolVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
   });
   if (!claim) return { status: 'IDLE' };
-  const resultLimit = normalizeXiaohongshuSearchResultLimit(claim.resultLimit);
+  const searchOptions = xiaohongshuSearchExecutionOptions({
+    resultLimit: claim.resultLimit,
+    searchMode: claim.searchMode,
+  });
   let links;
   try {
-    links = await browser.search(claim.query, { limit: resultLimit });
+    links = await browser.search(claim.query, searchOptions);
   } catch (error) {
     if (error instanceof XiaohongshuSearchBlockedError) {
       const job = await controlPlane.blockXhsQuerySearch(claim.id, {

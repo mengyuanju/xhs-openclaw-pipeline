@@ -10,6 +10,8 @@ import { useCallback, useEffect, useState, type KeyboardEvent } from 'react';
 
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { PROMPT_CATALOG, promptTemplatesForEditing } from '../../src/prompt-catalog.mjs';
+import { missingPromptOptimizationGuards } from '../../src/prompt-optimization-guards.mjs';
+import { PromptOptimizationGuard } from './prompt-optimization-guard';
 import { PromptRuntimeSettings } from './prompt-runtime-settings';
 import { PromptPreview } from './prompt-preview';
 import { apiRequest } from '../components/api-client';
@@ -72,6 +74,12 @@ export function CentralPromptWorkbench({ catalog }: { catalog: Candidate[] }) {
   }
 
   async function save(template: Template, content: string, baseId: number | null, publish = true) {
+    const missingGuards = missingPromptOptimizationGuards(template.kind, content);
+    if (missingGuards.length > 0 && !await confirm({
+      title: '关键优化规则可能被删除',
+      description: `缺少“${missingGuards.map((item: { title: string }) => item.title).join('、')}”的保护标识或有效内容。继续操作可能让后续文案重新出现重复、超长等问题。`,
+      confirmLabel: publish ? '仍然提交更新' : '仍然保存草稿',
+    })) return;
     if (publish && !await confirm({
       title: `更新${TYPES[template.kind]?.label ?? template.name}提示词？`,
       description: '将保存并发布一个新版本，历史内容不会被覆盖。已冻结的任务配置不变。',
@@ -175,6 +183,7 @@ export function CentralPromptWorkbench({ catalog }: { catalog: Candidate[] }) {
                   <div className="prompt-version-meta"><span>发布时间：{dateTime(published?.publishedAt ?? null)}</span><span>历史版本：{template.versions.length} 个</span></div>
                   {template.id === null && <p className="notice">中心尚未创建此模板。下方默认内容可直接编辑；保存草稿或提交更新后创建首个版本。</p>}
                   {stale && <div className="notice warning">中心已发布版本已变化，当前保留的是你的旧版本修改。请核对历史版本后重新编辑。</div>}
+                  <PromptOptimizationGuard kind={template.kind} content={content} />
                   <div className="field"><label htmlFor={`central-prompt-content-${template.kind}`}>提示词内容</label>
                     <Textarea id={`central-prompt-content-${template.kind}`} className="textarea mono prompt-manager-editor"
                       value={content} required disabled={busy} spellCheck={false} onChange={(event) => {

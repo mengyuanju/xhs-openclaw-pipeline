@@ -4,6 +4,18 @@ export const CREATE_ASSIGNMENT_MODES = Object.freeze({
   UNASSIGNED: 'UNASSIGNED',
 });
 
+export const TASK_ASSIGNMENT_LOCKED_STATES = Object.freeze(['REVIEWED', 'CANCELLED']);
+
+export function isTaskAssignmentLocked(task) {
+  return TASK_ASSIGNMENT_LOCKED_STATES.includes(task?.state);
+}
+
+export function canManageTaskAssignment(task) {
+  if (isTaskAssignmentLocked(task)) return false;
+  return task?.assignedToUserId != null
+    || ['COPY_REVIEW_PENDING', 'IMAGE_QUEUED', 'IMAGE_FAILED', 'MANUAL_ARCHIVE'].includes(task?.state);
+}
+
 export function createAssignmentFields({ role, mode, assigneeUserId, assigneeAccountId }) {
   if (role !== 'ADMIN') return {};
   if (mode === CREATE_ASSIGNMENT_MODES.UNASSIGNED) {

@@ -447,6 +447,7 @@ describe('standalone copy generation', () => {
     };
     let textCalls = 0;
     const textPrompts = [];
+    const stages = [];
     const client = {
       async runReview() {
         return { rawText: passingReview(), model: 'review-model' };
@@ -476,11 +477,16 @@ describe('standalone copy generation', () => {
         client,
         task: { query: '租房桌面低成本整理', input: {} },
         imageCount: 3,
+        onStageChange: async (stage) => stages.push(stage),
       }),
       (error) => error instanceof CopyGenerationContractError
         && error.message.includes('标题不能照抄 Query'),
     );
     assert.equal(textCalls, 3);
+    assert.deepEqual(stages.filter((stage) => stage === 'COPY_CONTRACT_REPAIR'), [
+      'COPY_CONTRACT_REPAIR',
+      'COPY_CONTRACT_REPAIR',
+    ]);
     assert.match(textPrompts[1], /<trusted_business_rules kind="COPY_REPAIR_SYSTEM">/u);
     const repairData = repairDataFromPrompt(textPrompts[1]);
     assert.equal(repairData.query, '租房桌面低成本整理');
@@ -494,15 +500,28 @@ describe('standalone copy generation', () => {
   it('gives measured length guidance for code-heavy bodies and preserves accepted fields', async () => {
     const draft = { ...createMockPost(3), body: 'git pull\n'.repeat(100).slice(0, 799) };
     const prompts = [];
+    const schemas = [];
+    const stages = [];
     const generated = await createLivePost({
-      async runText({ prompt }) {
+      async runText({ prompt, outputSchema }) {
         prompts.push(prompt);
+        schemas.push(outputSchema);
         return { model: 'fake-model', rawText: JSON.stringify(prompts.length === 1 ? draft : {
           body: '文'.repeat(500),
         }) };
       },
-    }, { query: 'Git怎么配置SSH拉取代码' }, { imageCount: 3 });
+    }, { query: 'Git怎么配置SSH拉取代码' }, {
+      imageCount: 3,
+      onStageChange: async (stage, details) => stages.push({ stage, details }),
+    });
     assert.equal(prompts.length, 2);
+    assert.equal(schemas[0].properties.body.minLength, 400);
+    assert.equal(schemas[0].properties.body.maxLength, 600);
+    assert.equal(schemas[0].properties.imagePlan.minItems, 3);
+    assert.deepEqual(Object.keys(schemas[1].properties), ['body']);
+    assert.deepEqual(stages.map(({ stage }) => stage), ['COPY_LENGTH_REPAIR']);
+    assert.equal(stages[0].details.receivedLength, 799);
+    assert.deepEqual(stages[0].details.preservedFields, ['标题', '标签', '配图策划', '来源', '其他已通过字段']);
     assert.match(prompts[1], /<trusted_business_rules kind="COPY_LENGTH_REPAIR_SYSTEM">/u);
     const repairData = repairDataFromPrompt(prompts[1]);
     assert.equal(repairData.receivedLength, 799);
@@ -579,8 +598,8 @@ describe('standalone copy generation', () => {
     assert.deepEqual(generated.post.imagePlan, validImages);
   });
 
-  it('reports the actual body length when all three generation attempts exceed the limit', async () => {
-    const lengths = [799, 713, 709];
+  it('stops after one targeted body repair and reports its actual invalid length', async () => {
+    const lengths = [799, 713];
     let calls = 0;
     await assert.rejects(createLivePost({
       async runText() {
@@ -590,8 +609,8 @@ describe('standalone copy generation', () => {
       },
     }, { query: 'Git怎么配置SSH拉取代码' }, { imageCount: 3 }),
     (error) => error instanceof CopyGenerationContractError
-      && /正文必须控制在400～600字.*709/u.test(error.message));
-    assert.equal(calls, 3);
+      && /正文必须控制在400～600字.*713/u.test(error.message));
+    assert.equal(calls, 2);
   });
 
   it('repairs only the rejected field and drops model-mutated source URLs', async () => {

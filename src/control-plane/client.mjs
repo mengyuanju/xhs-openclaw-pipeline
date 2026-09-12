@@ -1,4 +1,7 @@
-import { XIAOHONGSHU_SEARCH_MAX_LIMIT } from '../xhs-query-search.mjs';
+import {
+  XIAOHONGSHU_SEARCH_MAX_LIMIT,
+  XIAOHONGSHU_SEARCH_MODES,
+} from '../xhs-query-search.mjs';
 
 export class ControlPlaneApiError extends Error {
   constructor(status, code, message) {
@@ -106,6 +109,7 @@ export function createControlPlaneClient({
       && Number.isSafeInteger(result.attempt) && result.attempt > 0
       && Number.isInteger(result.resultLimit) && result.resultLimit >= 1
       && result.resultLimit <= XIAOHONGSHU_SEARCH_MAX_LIMIT
+      && XIAOHONGSHU_SEARCH_MODES.includes(result.searchMode)
       && uuid.test(result.leaseToken);
     if (!valid) {
       throw new ControlPlaneApiError(
@@ -123,6 +127,7 @@ export function createControlPlaneClient({
       && Number.isSafeInteger(result?.attempt) && result.attempt > 0
       && Number.isInteger(result?.resultLimit) && result.resultLimit >= 1
       && result.resultLimit <= XIAOHONGSHU_SEARCH_MAX_LIMIT
+      && XIAOHONGSHU_SEARCH_MODES.includes(result?.searchMode)
       && Number.isSafeInteger(result?.resultCount) && result.resultCount >= 0
       && result.resultCount <= result.resultLimit;
   }

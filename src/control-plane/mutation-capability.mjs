@@ -3,7 +3,7 @@ import { ApiError } from '../admin/http.mjs';
 const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
   Object.freeze({
     capability: 'xiaohongshuQuerySearchVersion',
-    minimumVersion: 3,
+    minimumVersion: 4,
     matches: (routePath, method) => routePath === '/v1/settings/xhs_query_search'
       && method === 'PUT',
   }),

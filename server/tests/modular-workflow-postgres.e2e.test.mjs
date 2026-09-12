@@ -15,7 +15,7 @@ import { normalizeCopyQaList } from '../../app/copy-qa/types.ts';
 import { normalizePackageDetail, normalizePackageList } from '../../app/query-packages/types.ts';
 import { createClaimRequestId } from '../../src/control-plane/claim-request.mjs';
 import {
-  XIAOHONGSHU_SEARCH_DEFAULT_LIMIT,
+  XIAOHONGSHU_SEARCH_DEFAULT_MODE,
   XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
   XIAOHONGSHU_SEARCH_SETTINGS_KEY,
 } from '../../src/xhs-query-search.mjs';
@@ -595,6 +595,15 @@ test('legacy delivery migrations retain their checksums and upgrade through the 
       '0031_xhs_query_search',
       '0032_duplicate_query_discard',
       '0033_query_package_preassignment_repair',
+      '0034_xhs_query_search_result_limit',
+      '0035_delivery_preview_links',
+      '0036_delivery_preview_url_derivation',
+      '0037_xhs_search_account_status',
+      '0038_xhs_search_auth_checked_at',
+      '0039_query_package_item_paging',
+      '0040_query_package_item_assignments',
+      '0041_xhs_search_strategy',
+      '0042_xhs_search_rate_limits',
     ]);
 
     const repairedRevisionState = (await pool.query(`
@@ -765,6 +774,15 @@ test('delivery runtime integrity migration withdraws JavaScript-unsafe asset ids
       '0031_xhs_query_search',
       '0032_duplicate_query_discard',
       '0033_query_package_preassignment_repair',
+      '0034_xhs_query_search_result_limit',
+      '0035_delivery_preview_links',
+      '0036_delivery_preview_url_derivation',
+      '0037_xhs_search_account_status',
+      '0038_xhs_search_auth_checked_at',
+      '0039_query_package_item_paging',
+      '0040_query_package_item_assignments',
+      '0041_xhs_search_strategy',
+      '0042_xhs_search_rate_limits',
     ]);
     const repairedDelivery = (await pool.query(`
       SELECT status, withdrawn_at FROM delivery_entries WHERE task_id = $1
@@ -1280,7 +1298,18 @@ test('Query-package preassignment repair clears only the proven legacy signature
     try {
       await migrationClient.query('BEGIN');
       await migrationClient.query('SET LOCAL search_path TO public');
-      assert.deepEqual(await applyMigrations(migrationClient, migrations), [repair.id]);
+      assert.deepEqual(await applyMigrations(migrationClient, migrations), [
+        repair.id,
+        '0034_xhs_query_search_result_limit',
+        '0035_delivery_preview_links',
+        '0036_delivery_preview_url_derivation',
+        '0037_xhs_search_account_status',
+        '0038_xhs_search_auth_checked_at',
+        '0039_query_package_item_paging',
+        '0040_query_package_item_assignments',
+        '0041_xhs_search_strategy',
+        '0042_xhs_search_rate_limits',
+      ]);
       await migrationClient.query('COMMIT');
     } catch (error) {
       await migrationClient.query('ROLLBACK');
@@ -2128,7 +2157,8 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
         protocolVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
       });
       assert.ok(searchClaim);
-      assert.equal(searchClaim.resultLimit, XIAOHONGSHU_SEARCH_DEFAULT_LIMIT);
+      assert.equal(searchClaim.resultLimit, 1);
+      assert.equal(searchClaim.searchMode, XIAOHONGSHU_SEARCH_DEFAULT_MODE);
       assert.ok(productionBatch.taskIds.includes(searchClaim.taskId));
       searchedTaskIds.push(searchClaim.taskId);
       const noteId = `${index + 1}`.padStart(24, '0');
@@ -2143,6 +2173,13 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
       });
       assert.equal(completedSearch.status, 'SUCCEEDED');
       assert.equal(completedSearch.resultCount, 1);
+      if (index + 1 < productionBatch.taskIds.length) {
+        await repository.pool.query(`
+          UPDATE xhs_query_search_attempts
+          SET started_at = now() - interval '61 seconds'
+          WHERE search_job_id = $1
+        `, [searchClaim.id]);
+      }
     }
     assert.deepEqual(
       searchedTaskIds.toSorted((left, right) => left - right),
@@ -2929,7 +2966,10 @@ test('real PostgreSQL 18 records retryable Xiaohongshu search failures without p
       VALUES ($1, $2)
       RETURNING id
     `, [task.id, task.query])).rows[0].id);
-    await repository.upsertSetting(XIAOHONGSHU_SEARCH_SETTINGS_KEY, { resultLimit: 10 });
+    await repository.upsertSetting(XIAOHONGSHU_SEARCH_SETTINGS_KEY, {
+      resultLimit: 10,
+      searchMode: 'THOROUGH',
+    });
     const claim = await repository.claimXhsQuerySearch({
       nodeId: 'xhs-failure-e2e-node',
       nodeName: 'Xiaohongshu failure PostgreSQL E2E node',
@@ -2937,6 +2977,7 @@ test('real PostgreSQL 18 records retryable Xiaohongshu search failures without p
     });
     assert.equal(claim.id, jobId);
     assert.equal(claim.resultLimit, 10);
+    assert.equal(claim.searchMode, 'THOROUGH');
 
     const failed = await repository.failXhsQuerySearch(jobId, {
       leaseToken: claim.leaseToken,
@@ -2946,7 +2987,7 @@ test('real PostgreSQL 18 records retryable Xiaohongshu search failures without p
     assert.equal(failed.status, 'PENDING');
     assert.equal(failed.leaseToken, null);
     const persisted = (await repository.pool.query(`
-      SELECT status, error, retry_after, lease_token, claimed_by_node_id, result_limit
+      SELECT status, error, retry_after, lease_token, claimed_by_node_id, result_limit, search_mode
       FROM xhs_query_search_jobs WHERE id = $1
     `, [jobId])).rows[0];
     assert.equal(persisted.status, 'PENDING');
@@ -2955,6 +2996,114 @@ test('real PostgreSQL 18 records retryable Xiaohongshu search failures without p
     assert.equal(persisted.lease_token, null);
     assert.equal(persisted.claimed_by_node_id, null);
     assert.equal(persisted.result_limit, 10);
+    assert.equal(persisted.search_mode, 'THOROUGH');
+  } finally {
+    await repository.close().catch(() => {});
+    await cluster.stop();
+  }
+});
+
+test('real PostgreSQL 18 enforces Xiaohongshu interval, rolling-hour, and rolling-day claim limits', {
+  skip: !RUN_POSTGRES_E2E,
+  timeout: 120_000,
+}, async () => {
+  const cluster = await startTemporaryPostgres18();
+  const repository = new PostgresControlPlaneRepository({ connectionString: cluster.connectionString });
+  try {
+    await repository.initialize();
+    const admin = actorFrom(await repository.getUserByUsername('admin'));
+    const tasks = await repository.createTasks({
+      nodeId: 'xhs-rate-limit-e2e-node',
+      createdByUserId: admin.username,
+      actor: admin,
+      tasks: [
+        { query: 'rate limit first job', input: {} },
+        { query: 'rate limit second job', input: {} },
+      ],
+    });
+    const jobs = (await repository.pool.query(`
+      INSERT INTO xhs_query_search_jobs(task_id, query_snapshot)
+      SELECT source.id, source.query
+      FROM unnest($1::bigint[], $2::text[]) AS source(id, query)
+      ORDER BY source.id
+      RETURNING id, task_id
+    `, [tasks.map((task) => task.id), tasks.map((task) => task.query)])).rows;
+    await repository.upsertSetting(XIAOHONGSHU_SEARCH_SETTINGS_KEY, {
+      resultLimit: 3,
+      searchMode: 'FASTEST',
+      minimumIntervalSeconds: 60,
+      hourlyLimit: 30,
+      dailyLimit: 150,
+    });
+    const claimInput = {
+      nodeId: 'xhs-rate-limit-e2e-node',
+      nodeName: 'Xiaohongshu rate-limit PostgreSQL E2E node',
+      protocolVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
+    };
+    const firstClaim = await repository.claimXhsQuerySearch(claimInput);
+    assert.equal(firstClaim.id, Number(jobs[0].id));
+    await repository.failXhsQuerySearch(firstClaim.id, {
+      leaseToken: firstClaim.leaseToken,
+      retryable: false,
+      error: 'intentional isolated rate-limit test stop',
+    });
+    assert.equal(await repository.claimXhsQuerySearch(claimInput), null, 'minimum interval must block');
+
+    await repository.pool.query(`
+      UPDATE xhs_query_search_attempts SET started_at = now() - interval '30 minutes'
+    `);
+    await repository.upsertSetting(XIAOHONGSHU_SEARCH_SETTINGS_KEY, {
+      resultLimit: 3,
+      searchMode: 'FASTEST',
+      minimumIntervalSeconds: 10,
+      hourlyLimit: 1,
+      dailyLimit: 24,
+    });
+    assert.equal(await repository.claimXhsQuerySearch(claimInput), null, 'rolling-hour limit must block');
+
+    await repository.pool.query(`
+      UPDATE xhs_query_search_attempts SET started_at = now() - interval '2 hours'
+    `);
+    await repository.upsertSetting(XIAOHONGSHU_SEARCH_SETTINGS_KEY, {
+      resultLimit: 3,
+      searchMode: 'FASTEST',
+      minimumIntervalSeconds: 10,
+      hourlyLimit: 360,
+      dailyLimit: 1,
+    });
+    assert.equal(await repository.claimXhsQuerySearch(claimInput), null, 'rolling-day limit must block');
+
+    await repository.pool.query(`
+      UPDATE xhs_query_search_attempts SET started_at = now() - interval '2 days'
+    `);
+    const secondClaim = await repository.claimXhsQuerySearch(claimInput);
+    assert.equal(secondClaim.id, Number(jobs[1].id));
+    const attempts = (await repository.pool.query(`
+      SELECT search_job_id, node_id, minimum_interval_seconds, hourly_limit, daily_limit
+      FROM xhs_query_search_attempts ORDER BY id
+    `)).rows;
+    assert.deepEqual(attempts.map((attempt) => ({
+      searchJobId: Number(attempt.search_job_id),
+      nodeId: attempt.node_id,
+      minimumIntervalSeconds: attempt.minimum_interval_seconds,
+      hourlyLimit: attempt.hourly_limit,
+      dailyLimit: attempt.daily_limit,
+    })), [
+      {
+        searchJobId: Number(jobs[0].id),
+        nodeId: claimInput.nodeId,
+        minimumIntervalSeconds: 60,
+        hourlyLimit: 30,
+        dailyLimit: 150,
+      },
+      {
+        searchJobId: Number(jobs[1].id),
+        nodeId: claimInput.nodeId,
+        minimumIntervalSeconds: 10,
+        hourlyLimit: 360,
+        dailyLimit: 1,
+      },
+    ]);
   } finally {
     await repository.close().catch(() => {});
     await cluster.stop();

@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
+import {
+  canManageTaskAssignment,
+  isTaskAssignmentLocked,
+} from '../src/control-plane/task-assignment.mjs';
 import { WORKBENCH_VIEWS, matchesWorkbenchView } from '../app/workbench/views.ts';
 
 const source = (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
@@ -118,4 +122,16 @@ test('administrators can assign one task or the current selection through protec
   assert.match(proxy, /'\/v1\/tasks\/batch-assignee'/u);
   assert.match(proxy, /assignee\$\//u);
   assert.match(repository, /taskAssignmentVersion: 3/u);
+});
+
+test('assignment controls distinguish assignment from reassignment and lock terminal work', async () => {
+  const workbench = await source('app/workbench/creation-workbench.tsx');
+  assert.equal(canManageTaskAssignment({ state: 'COPY_REVIEW_PENDING', assignedToUserId: null }), true);
+  assert.equal(canManageTaskAssignment({ state: 'IMAGE_QUEUED', assignedToUserId: 'alice' }), true);
+  assert.equal(isTaskAssignmentLocked({ state: 'REVIEWED' }), true);
+  assert.equal(isTaskAssignmentLocked({ state: 'CANCELLED' }), true);
+  assert.equal(canManageTaskAssignment({ state: 'REVIEWED', assignedToUserId: 'alice' }), false);
+  assert.equal(canManageTaskAssignment({ state: 'CANCELLED', assignedToUserId: 'alice' }), false);
+  assert.match(workbench, /task\.assignedToUserId === null \? '分配' : '改派'/u);
+  assert.match(workbench, /批量分配\/改派/u);
 });

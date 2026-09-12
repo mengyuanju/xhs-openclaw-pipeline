@@ -124,8 +124,8 @@ export async function main() {
       headers: { 'X-XHS-Search-Token': config.machineToken },
     });
     const health = await controlPlane.health();
-    if (Number(health?.capabilities?.xiaohongshuQuerySearchVersion) < 3) {
-      throw new Error('请先升级中心服务：小红书 Query 搜索条数现由管理员统一配置');
+    if (Number(health?.capabilities?.xiaohongshuQuerySearchVersion) < 4) {
+      throw new Error('请先升级中心服务：小红书 Query 搜索模式现由管理员统一配置');
     }
     if (config.resume) {
       const resumed = await controlPlane.resumeXhsQuerySearch({

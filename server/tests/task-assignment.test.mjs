@@ -337,6 +337,49 @@ test('manual assignment is atomic, audited and only targets active ordinary work
   }), { code: 'ASSIGNEE_UNAVAILABLE' });
 });
 
+test('completed and cancelled tasks keep their final owner', async () => {
+  for (const state of ['REVIEWED', 'CANCELLED']) {
+    const calls = [];
+    const repository = transactionRepository(async (sql) => {
+      const source = String(sql);
+      calls.push(source);
+      if (source.includes("role = 'USER'")) return { rows: [{ username: 'bob' }] };
+      if (source.includes('SELECT * FROM tasks WHERE id = ANY')) {
+        return { rows: [taskRow(1, { state, assigned_to_user_id: 'alice' })] };
+      }
+      return { rows: [] };
+    });
+
+    await assert.rejects(repository.assignTask(1, {
+      assignedToUserId: 'bob', actorUserId: 'admin', reason: '终态不应改派',
+    }), { code: 'TASK_ASSIGNMENT_LOCKED' });
+    assert.equal(calls.some((sql) => sql.includes('UPDATE tasks SET')), false);
+    assert.equal(calls.some((sql) => sql.includes('INSERT INTO task_assignment_events')), false);
+  }
+});
+
+test('a batch reassignment is atomic when it contains completed work', async () => {
+  const calls = [];
+  const repository = transactionRepository(async (sql) => {
+    const source = String(sql);
+    calls.push(source);
+    if (source.includes("role = 'USER'")) return { rows: [{ username: 'bob' }] };
+    if (source.includes('SELECT * FROM tasks WHERE id = ANY')) {
+      return { rows: [
+        taskRow(1, { state: 'IMAGE_QUEUED', assigned_to_user_id: 'alice' }),
+        taskRow(2, { state: 'REVIEWED', assigned_to_user_id: 'alice' }),
+      ] };
+    }
+    return { rows: [] };
+  });
+
+  await assert.rejects(repository.assignTasks([1, 2], {
+    assignedToUserId: 'bob', actorUserId: 'admin', reason: '批量调整',
+  }), { code: 'TASK_ASSIGNMENT_LOCKED' });
+  assert.equal(calls.some((sql) => sql.includes('UPDATE tasks SET')), false);
+  assert.equal(calls.some((sql) => sql.includes('INSERT INTO task_assignment_events')), false);
+});
+
 test('an authenticated administrator can manually assign work to self but not to another administrator', async () => {
   const actor = { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 };
   const calls = [];

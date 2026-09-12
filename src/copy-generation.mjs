@@ -9,15 +9,18 @@ import {
 } from './content-stage-review.mjs';
 import { createAgentClient } from './agent-client.mjs';
 import {
+  bodyRepairOutputSchema,
   buildPostPrompt,
   filterAllowedSourceReferences,
   normalizeProseLineBreaks,
   parsePostCandidate,
   parsePostOutput,
+  postOutputSchema,
 } from './post-contract.mjs';
 import {
   attachResearchToTask,
   createResearchSnapshot,
+  requiresAuthoritativeResearch,
   researchSourceUrls,
 } from './research.mjs';
 
@@ -266,7 +269,7 @@ function contractFailureReason(error) {
 
 export class CopyGenerationContractError extends Error {
   constructor(error) {
-    super(`模型连续三次未按规则返回合格文案：${contractFailureReason(error)}`, { cause: error });
+    super(`模型多次未按规则返回合格文案：${contractFailureReason(error)}`, { cause: error });
     this.name = 'CopyGenerationContractError';
   }
 }
@@ -278,12 +281,28 @@ async function createPostFromPrompt(client, task, basePrompt, options) {
   let lastError;
   let previousOutput = '';
   let previousCandidate = null;
+  let lengthRepairAttempted = false;
   for (let attempt = 0; attempt < POST_MAX_ATTEMPTS; attempt += 1) {
+    const lengthRepair = attempt > 0
+      && /^body must contain between/u.test(String(lastError?.message ?? lastError));
+    if (lengthRepair && lengthRepairAttempted) break;
+    if (attempt > 0) {
+      if (lengthRepair) lengthRepairAttempted = true;
+      const validationError = String(lastError?.message ?? lastError);
+      const receivedLength = validationError.match(/received ([0-9]+)/u)?.[1];
+      await options.onStageChange?.(lengthRepair ? 'COPY_LENGTH_REPAIR' : 'COPY_CONTRACT_REPAIR', {
+        attempt: attempt + 1,
+        validationError,
+        ...(receivedLength ? { receivedLength: Number(receivedLength) } : {}),
+        preservedFields: lengthRepair ? ['标题', '标签', '配图策划', '来源', '其他已通过字段'] : [],
+      });
+    }
     const generated = await client.runText({
       prompt: attempt === 0
         ? basePrompt
         : `${buildPostRepairPrompt(task, lastError, previousOutput, options)}\n\n${buildCopyKnowledgeReferencePrompt(options.knowledgeReference)}`,
       thinking: options.thinking,
+      outputSchema: lengthRepair ? bodyRepairOutputSchema() : postOutputSchema(options.imageCount),
     });
     previousOutput = generated.rawText;
     try {
@@ -417,7 +436,11 @@ async function generateCopyInContext({
       timing,
       'researchMs',
       now,
-      () => createResearchSnapshot({ client, query: sourceTask.query }),
+      () => createResearchSnapshot({
+        client,
+        query: sourceTask.query,
+        requireAuthoritative: requiresAuthoritativeResearch(sourceTask),
+      }),
     );
     if (researchSnapshot.status !== 'COMPLETED') {
       throw new CopyGenerationResearchError(researchSnapshot);
@@ -440,6 +463,7 @@ async function generateCopyInContext({
       knowledgeReference,
       imageCount,
       allowedSources,
+      onStageChange,
     }),
   );
   let reviewed = original;
@@ -475,7 +499,7 @@ async function generateCopyInContext({
           generationTask,
           original.post,
           originalTextReview,
-          { systemPrompt, imageCount, allowedSources, knowledgeReference },
+          { systemPrompt, imageCount, allowedSources, knowledgeReference, onStageChange },
         ),
       );
       await onStageChange('REVIEWED_REVIEW');

@@ -5,6 +5,7 @@ import styles from './model-request-details.module.css';
 type Section = { label: string; content?: string; value?: unknown };
 type Version = { kind: string; versionId?: number | string | null; version?: number | null;
   source?: string; templateSha256?: string; renderedSha256?: string };
+type StageContext = { name: string; details: Record<string, unknown> };
 const print = (value: unknown) => typeof value === 'string' ? value : JSON.stringify(value, null, 2);
 const SOURCES: Record<string, string> = { BUNDLED_DEFAULT: '程序内置模板', EXECUTION_SNAPSHOT: '本次执行快照',
   UNVERSIONED: '未关联发布版本', AMBIGUOUS: '多个模板内容相同，无法确认具体版本', CENTER: '中心发布版本', LOCAL: '本地发布版本' };
@@ -21,11 +22,21 @@ function Sections({ title, items, empty }: { title: string; items: Section[]; em
 export function ModelRequestDetails({ detail }: { detail: { prompt?: string; request?: string; truncated: boolean } }) {
   const view = summarizeModelRequest(detail);
   const versions = view.versions as Version[];
+  const stageContext = view.stageContext as StageContext | null;
   return <div className={styles.root} aria-label="实际模型请求明细">
     <div className={styles.intro}>
       <strong>本次实际请求</strong><span className={styles.badge}>仅管理员 · 只读记录</span>
       <p>按实际发送内容展示。业务提示词可在版本管理中修改；JSON 格式、字段限制和工具协议仍由程序校验。</p>
     </div>
+    {stageContext && Object.keys(stageContext.details).length > 0 && <section className={styles.section}>
+      <h4>本阶段触发原因</h4>
+      <dl className={styles.metadata}>
+        <dt>阶段</dt><dd>{stageContext.name}</dd>
+        {stageContext.details.receivedLength !== undefined && <><dt>首稿长度</dt><dd>{String(stageContext.details.receivedLength)} 个可见字符</dd></>}
+        {stageContext.details.validationError !== undefined && <><dt>校验原因</dt><dd>{String(stageContext.details.validationError)}</dd></>}
+        {Array.isArray(stageContext.details.preservedFields) && <><dt>保留内容</dt><dd>{stageContext.details.preservedFields.join('、')}</dd></>}
+      </dl>
+    </section>}
     <section className={styles.section}>
       <h4>业务提示词版本</h4>
       {versions.length ? <div className={styles.versions}>{versions.map((version, index) => <Disclosure className={styles.part} key={index}>

@@ -16,4 +16,9 @@ test('task dialogs expose lazy read-only model call history only to administrato
   assert.match(trace, /<ModelResponseView text=\{detail\.response\}/);
   assert.doesNotMatch(trace, /dangerouslySetInnerHTML|type="submit"|setInterval/);
   assert.match(trace, /无法还原当时的提示词/);
+  assert.match(trace, /COPY_LENGTH_REPAIR: '正文长度修复'/u);
+  assert.match(trace, /COPY_CONTRACT_REPAIR: '文案格式修复'/u);
+  assert.match(trace, /WEB_SEARCH_RETRY: '联网搜索重试'/u);
+  assert.match(trace, /WEB_SEARCH_FINALIZE: '整理已有搜索结果'/u);
+  assert.match(trace, /仅修复正文，沿用标题、来源和配图策划/u);
 });

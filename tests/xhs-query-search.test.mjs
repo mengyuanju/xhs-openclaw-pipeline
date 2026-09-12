@@ -11,6 +11,8 @@ import {
   normalizeXiaohongshuSearchSettings,
   parseXiaohongshuLikeCount,
   rankXiaohongshuCandidatesByLikes,
+  xiaohongshuSearchRateCapacity,
+  xiaohongshuSearchExecutionOptions,
   xiaohongshuSearchUrl,
 } from '../src/xhs-query-search.mjs';
 import { executeXhsQuerySearchOnce } from '../src/executor/xhs-search-runner.mjs';
@@ -69,18 +71,95 @@ test('Xiaohongshu candidates are ranked by localized like counts with stable tie
   );
 });
 
-test('Xiaohongshu result-count settings default to three and allow administrators to choose one through ten', () => {
-  assert.deepEqual(normalizeXiaohongshuSearchSettings(), { resultLimit: 3 });
-  assert.deepEqual(normalizeXiaohongshuSearchSettings({ resultLimit: 1 }), { resultLimit: 1 });
-  assert.deepEqual(normalizeXiaohongshuSearchSettings({ resultLimit: 10 }), { resultLimit: 10 });
+test('Xiaohongshu settings default to fastest and allow administrators to choose the search strategy', () => {
+  const defaultPacing = {
+    minimumIntervalSeconds: 60,
+    hourlyLimit: 30,
+    dailyLimit: 150,
+  };
+  assert.deepEqual(normalizeXiaohongshuSearchSettings(), {
+    resultLimit: 3,
+    searchMode: 'FASTEST',
+    ...defaultPacing,
+  });
+  assert.deepEqual(normalizeXiaohongshuSearchSettings({ resultLimit: 1 }), {
+    resultLimit: 1,
+    searchMode: 'FASTEST',
+    ...defaultPacing,
+  });
+  assert.deepEqual(normalizeXiaohongshuSearchSettings({ resultLimit: 10, searchMode: 'THOROUGH' }), {
+    resultLimit: 10,
+    searchMode: 'THOROUGH',
+    ...defaultPacing,
+  });
+  assert.deepEqual(xiaohongshuSearchExecutionOptions({ resultLimit: 10, searchMode: 'FASTEST' }), {
+    limit: 1,
+    scrolls: 0,
+    settleMs: 3_000,
+    navigationTimeoutMs: 10_000,
+  });
+  assert.deepEqual(xiaohongshuSearchExecutionOptions({ resultLimit: 5, searchMode: 'THOROUGH' }), {
+    limit: 5,
+  });
   for (const value of [0, 11, 1.5, '5', null]) {
     assert.throws(() => normalizeXiaohongshuSearchSettings({ resultLimit: value }), /resultLimit/u);
+  }
+  for (const searchMode of ['', 'QUICK', null, 1]) {
+    assert.throws(
+      () => normalizeXiaohongshuSearchSettings({ resultLimit: 3, searchMode }),
+      /searchMode/u,
+    );
   }
   assert.throws(() => normalizeXiaohongshuSearchSettings([]), /must be an object/u);
   assert.throws(
     () => normalizeXiaohongshuSearchSettings({ resultLimit: 3, unexpected: true }),
     /unsupported fields/u,
   );
+});
+
+test('Xiaohongshu pacing limits are administrator-controlled but cannot exceed mathematical capacity', () => {
+  assert.deepEqual(xiaohongshuSearchRateCapacity(30, 80), {
+    maximumPerHour: 120,
+    maximumPerDay: 1920,
+  });
+  assert.deepEqual(normalizeXiaohongshuSearchSettings({
+    minimumIntervalSeconds: 30,
+    hourlyLimit: 120,
+    dailyLimit: 2000,
+  }), {
+    resultLimit: 3,
+    searchMode: 'FASTEST',
+    minimumIntervalSeconds: 30,
+    hourlyLimit: 120,
+    dailyLimit: 2000,
+  });
+  assert.throws(
+    () => normalizeXiaohongshuSearchSettings({
+      minimumIntervalSeconds: 30,
+      hourlyLimit: 200,
+      dailyLimit: 150,
+    }),
+    /hourlyLimit cannot exceed 120/u,
+  );
+  assert.throws(
+    () => normalizeXiaohongshuSearchSettings({
+      minimumIntervalSeconds: 60,
+      hourlyLimit: 2,
+      dailyLimit: 49,
+    }),
+    /dailyLimit cannot exceed 48/u,
+  );
+  for (const settings of [
+    { minimumIntervalSeconds: 9 },
+    { minimumIntervalSeconds: 3601 },
+    { minimumIntervalSeconds: '30' },
+    { hourlyLimit: 0 },
+    { hourlyLimit: '30' },
+    { dailyLimit: 0 },
+    { dailyLimit: '150' },
+  ]) {
+    assert.throws(() => normalizeXiaohongshuSearchSettings(settings), /Interval|Limit/u);
+  }
 });
 
 test('search runner saves browser results without adding them to any model request', async () => {
@@ -92,6 +171,7 @@ test('search runner saves browser results without adding them to any model reque
     status: 'RUNNING',
     attempt: 1,
     resultLimit: 5,
+    searchMode: 'FASTEST',
     nodeId: 'search-node',
     leaseToken: '11111111-1111-4111-8111-111111111111',
   };
@@ -127,7 +207,12 @@ test('search runner saves browser results without adding them to any model reque
     hostKind: 'CENTER',
     protocolVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
   }]);
-  assert.deepEqual(calls[1], ['browser', '桌面收纳', { limit: 5 }]);
+  assert.deepEqual(calls[1], ['browser', '桌面收纳', {
+    limit: 1,
+    scrolls: 0,
+    settleMs: 3_000,
+    navigationTimeoutMs: 10_000,
+  }]);
   assert.equal(calls[2][0], 'complete');
   assert.deepEqual(Object.keys(calls[2][2]).sort(), ['leaseToken', 'links']);
   assert.equal(
@@ -139,7 +224,13 @@ test('search runner saves browser results without adding them to any model reque
 test('login and captcha gates block the queue and never report a generic failure', async () => {
   for (const reason of ['LOGIN_REQUIRED', 'CAPTCHA_REQUIRED']) {
     const reports = [];
-    const claim = { id: 12, query: '桌面收纳', leaseToken: 'lease', resultLimit: 3 };
+    const claim = {
+      id: 12,
+      query: '桌面收纳',
+      leaseToken: 'lease',
+      resultLimit: 3,
+      searchMode: 'THOROUGH',
+    };
     const outcome = await executeXhsQuerySearchOnce({
       nodeId: 'search-node',
       browser: { search: async () => { throw new XiaohongshuSearchBlockedError(reason); } },

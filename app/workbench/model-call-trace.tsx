@@ -21,7 +21,7 @@ type Call = {
 type Page = { items: Call[]; total: number };
 const PAGE_SIZE = 20;
 const OPERATIONS: Record<string, string> = {
-  TEXT: '文本生成', WEB_SEARCH: '联网搜索', WEB_SEARCH_FINALIZE: '整理搜索答案', IMAGE: '图片生成', IMAGE_EDIT: '图片编辑', VISION: '图片分析',
+  TEXT: '文本生成', WEB_SEARCH: '联网搜索', WEB_SEARCH_RETRY: '联网搜索重试', WEB_SEARCH_FINALIZE: '整理已有搜索结果', IMAGE: '图片生成', IMAGE_EDIT: '图片编辑', VISION: '图片分析',
 };
 const STAGES: Record<string, string> = {
   SEARCHING_IMAGES: '联网搜索图片', PREPARING: '生图准备', PLANNING: '画面规划',
@@ -29,9 +29,21 @@ const STAGES: Record<string, string> = {
   ORIGINAL_REVIEW: '首稿质检', REVIEWED_GENERATION: '文案改写', REVIEWED_REVIEW: '改写稿质检',
   STARTING: '准备中', QUERY_REVIEW: '选题审核', KNOWLEDGE_MATCH: '优秀案例匹配', RESEARCH: '资料搜索与整理',
   ORIGINAL_GENERATION: '文案与配图策划', TEXT_GENERATION: '文案生成',
+  COPY_LENGTH_REPAIR: '正文长度修复', COPY_CONTRACT_REPAIR: '文案格式修复',
   TEXT_REVIEW: '文案质检', TEXT_REVISION: '文案改写', IMAGE_PLANNING: '配图策划',
   VISUAL_PLANNING: '视觉策划', IMAGE_GENERATION: '图片生成', IMAGE_REVIEW: '图片质检',
   GENERATING: '图片生成', VALIDATING: '图片校验', IMAGE_SEARCH: '图片搜索',
+};
+const stageLabel = (item: Call) => ['WEB_SEARCH_RETRY', 'WEB_SEARCH_FINALIZE'].includes(item.operation)
+  ? OPERATIONS[item.operation]
+  : STAGES[item.stage] ?? OPERATIONS[item.operation] ?? '模型调用';
+const STAGE_HINTS: Record<string, string> = {
+  COPY_LENGTH_REPAIR: '仅修复正文，沿用标题、来源和配图策划',
+  COPY_CONTRACT_REPAIR: '仅修复未通过校验的字段及必要联动',
+};
+const OPERATION_HINTS: Record<string, string> = {
+  WEB_SEARCH_RETRY: '搜索服务未返回完整调用，执行一次限次重试',
+  WEB_SEARCH_FINALIZE: '仅整理已有证据，不会再次联网搜索',
 };
 const STATUSES: Record<string, string> = { RUNNING: '等待返回', SUCCEEDED: '已返回', FAILED: '调用失败' };
 const formatTime = (value: string) => new Date(value).toLocaleString('zh-CN', { hour12: false });
@@ -53,8 +65,9 @@ function CallCard({ taskId, item }: { taskId: number; item: Call }) {
 
   return <Disclosure className="model-call-card" open={open} onOpenChange={setOpen}>
     <DisclosureTrigger>
-      <span><strong>第 {item.sequence} 步 · {STAGES[item.stage] ?? OPERATIONS[item.operation] ?? '模型调用'}</strong>
+      <span><strong>第 {item.sequence} 步 · {stageLabel(item)}</strong>
         <small>{item.provider} · {item.model || '未暴露模型名称'} · {OPERATIONS[item.operation] ?? '模型调用'}</small></span>
+      {(STAGE_HINTS[item.stage] || OPERATION_HINTS[item.operation]) && <small>{STAGE_HINTS[item.stage] ?? OPERATION_HINTS[item.operation]}</small>}
       <span className={`model-call-status ${item.status === 'FAILED' ? 'is-failed' : ''}`}>
         {STATUSES[item.status] ?? '未知状态'}{item.durationMs !== null ? ` · ${(item.durationMs / 1000).toFixed(1)} 秒` : ''}
       </span>

@@ -18,11 +18,15 @@ export function safeTraceText(value, secrets = []) {
 
 export function withModelCallTracing({ executionId, controlPlane, snapshot }, action) {
   if (typeof controlPlane.recordModelCall !== 'function') return action(controlPlane);
-  const state = { sequence: 0, stage: 'STARTING', executionId, controlPlane };
+  const state = { sequence: 0, stage: 'STARTING', stageDetails: {}, executionId, controlPlane };
   const tracedPlane = new Proxy(controlPlane, {
     get(target, key) {
       if (key === 'updateProgress') return (id, progress) => {
-        if (id === executionId) state.stage = progress.stage;
+        if (id === executionId) {
+          state.stage = progress.stage;
+          state.stageDetails = progress.details && typeof progress.details === 'object'
+            && !Array.isArray(progress.details) ? progress.details : {};
+        }
         return target.updateProgress(id, progress);
       };
       return typeof target[key] === 'function' ? target[key].bind(target) : target[key];
@@ -36,16 +40,18 @@ export async function traceModelCall(metadata, operation, secrets = []) {
   if (!context) return operation({ response() {}, fail() {} });
   const started = Date.now();
   const prompt = safeTraceText(metadata.prompt, secrets);
+  const stage = context.stage === 'STARTING'
+    ? [...prompt.text.matchAll(/<trusted_business_rules kind="([A-Z_]+)">/gu)].at(-1)?.[1] ?? metadata.operation ?? context.stage
+    : context.stage;
   const request = safeTraceText({ format: 'xhs-model-request', schemaVersion: 1,
+    stageContext: { name: stage, details: context.stageDetails },
     scope: metadata.requestScope ?? 'UNSPECIFIED', provenance: {
       ...requestPromptProvenance(metadata.prompt),
       runtime: promptRuntimeSnapshot() ? { source: promptRuntimeSnapshot().source,
         capturedAt: promptRuntimeSnapshot().capturedAt, settings: promptRuntimeSnapshot().settings } : null,
     }, payload: metadata.request }, secrets);
   const record = {
-    id: randomUUID(), sequence: ++context.sequence, stage: context.stage === 'STARTING'
-      ? [...prompt.text.matchAll(/<trusted_business_rules kind="([A-Z_]+)">/gu)].at(-1)?.[1] ?? metadata.operation ?? context.stage
-      : context.stage,
+    id: randomUUID(), sequence: ++context.sequence, stage,
     provider: metadata.provider, operation: metadata.operation, model: metadata.model || '',
     prompt: prompt.text, request: request.text, response: null, error: null,
     truncated: prompt.truncated || request.truncated,

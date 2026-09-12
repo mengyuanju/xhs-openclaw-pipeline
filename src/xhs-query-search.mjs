@@ -7,11 +7,26 @@ const XSEC_TOKEN = /^(?=.{1,1024}$)[a-zA-Z0-9_-]+={0,2}$/u;
 const XSEC_SOURCE = /^[a-zA-Z0-9_-]{1,100}$/u;
 
 export const XIAOHONGSHU_SEARCH_SETTINGS_KEY = 'xhs_query_search';
-export const XIAOHONGSHU_SEARCH_PROTOCOL_VERSION = 3;
+export const XIAOHONGSHU_SEARCH_PROTOCOL_VERSION = 4;
 export const XIAOHONGSHU_SEARCH_DEFAULT_LIMIT = 3;
 export const XIAOHONGSHU_SEARCH_MAX_LIMIT = 10;
+export const XIAOHONGSHU_SEARCH_MODES = Object.freeze(['FASTEST', 'THOROUGH']);
+export const XIAOHONGSHU_SEARCH_DEFAULT_MODE = 'FASTEST';
+export const XIAOHONGSHU_FASTEST_SETTLE_MS = 3_000;
+export const XIAOHONGSHU_FASTEST_NAVIGATION_TIMEOUT_MS = 10_000;
+export const XIAOHONGSHU_SEARCH_DEFAULT_MINIMUM_INTERVAL_SECONDS = 60;
+export const XIAOHONGSHU_SEARCH_MINIMUM_INTERVAL_SECONDS = 10;
+export const XIAOHONGSHU_SEARCH_MAXIMUM_INTERVAL_SECONDS = 3_600;
+export const XIAOHONGSHU_SEARCH_DEFAULT_HOURLY_LIMIT = 30;
+export const XIAOHONGSHU_SEARCH_MAX_HOURLY_LIMIT = 360;
+export const XIAOHONGSHU_SEARCH_DEFAULT_DAILY_LIMIT = 150;
+export const XIAOHONGSHU_SEARCH_MAX_DAILY_LIMIT = 8_640;
 export const DEFAULT_XIAOHONGSHU_SEARCH_SETTINGS = Object.freeze({
   resultLimit: XIAOHONGSHU_SEARCH_DEFAULT_LIMIT,
+  searchMode: XIAOHONGSHU_SEARCH_DEFAULT_MODE,
+  minimumIntervalSeconds: XIAOHONGSHU_SEARCH_DEFAULT_MINIMUM_INTERVAL_SECONDS,
+  hourlyLimit: XIAOHONGSHU_SEARCH_DEFAULT_HOURLY_LIMIT,
+  dailyLimit: XIAOHONGSHU_SEARCH_DEFAULT_DAILY_LIMIT,
 });
 export const XIAOHONGSHU_BLOCK_REASONS = Object.freeze([
   'LOGIN_REQUIRED',
@@ -27,6 +42,34 @@ export function normalizeXiaohongshuSearchResultLimit(value) {
   return value;
 }
 
+export function normalizeXiaohongshuSearchMode(value = XIAOHONGSHU_SEARCH_DEFAULT_MODE) {
+  const searchMode = String(value ?? '').trim().toUpperCase();
+  if (!XIAOHONGSHU_SEARCH_MODES.includes(searchMode)) {
+    throw new TypeError(`searchMode must be one of ${XIAOHONGSHU_SEARCH_MODES.join(', ')}`);
+  }
+  return searchMode;
+}
+
+export function xiaohongshuSearchRateCapacity(minimumIntervalSeconds, hourlyLimit) {
+  const interval = boundedInteger(
+    minimumIntervalSeconds,
+    'minimumIntervalSeconds',
+    XIAOHONGSHU_SEARCH_MINIMUM_INTERVAL_SECONDS,
+    XIAOHONGSHU_SEARCH_MAXIMUM_INTERVAL_SECONDS,
+  );
+  const maximumPerHour = Math.floor(3_600 / interval);
+  const normalizedHourlyLimit = boundedInteger(
+    hourlyLimit,
+    'hourlyLimit',
+    1,
+    XIAOHONGSHU_SEARCH_MAX_HOURLY_LIMIT,
+  );
+  return {
+    maximumPerHour,
+    maximumPerDay: Math.min(Math.floor(86_400 / interval), normalizedHourlyLimit * 24),
+  };
+}
+
 function boundedInteger(value, name, minimum, maximum) {
   const normalized = Number(value);
   if (!Number.isInteger(normalized) || normalized < minimum || normalized > maximum) {
@@ -35,18 +78,75 @@ function boundedInteger(value, name, minimum, maximum) {
   return normalized;
 }
 
+function boundedSettingInteger(value, name, minimum, maximum) {
+  if (!Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new RangeError(`${name} must be an integer from ${minimum} to ${maximum}`);
+  }
+  return value;
+}
+
 export function normalizeXiaohongshuSearchSettings(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new TypeError('Xiaohongshu search settings must be an object');
   }
   const keys = Object.keys(input);
-  if (keys.some((key) => key !== 'resultLimit')) {
+  if (keys.some((key) => ![
+    'resultLimit',
+    'searchMode',
+    'minimumIntervalSeconds',
+    'hourlyLimit',
+    'dailyLimit',
+  ].includes(key))) {
     throw new TypeError('Xiaohongshu search settings contain unsupported fields');
   }
   const resultLimit = input.resultLimit === undefined
     ? XIAOHONGSHU_SEARCH_DEFAULT_LIMIT
     : input.resultLimit;
-  return { resultLimit: normalizeXiaohongshuSearchResultLimit(resultLimit) };
+  const minimumIntervalSeconds = input.minimumIntervalSeconds === undefined
+    ? XIAOHONGSHU_SEARCH_DEFAULT_MINIMUM_INTERVAL_SECONDS
+    : boundedSettingInteger(
+      input.minimumIntervalSeconds,
+      'minimumIntervalSeconds',
+      XIAOHONGSHU_SEARCH_MINIMUM_INTERVAL_SECONDS,
+      XIAOHONGSHU_SEARCH_MAXIMUM_INTERVAL_SECONDS,
+    );
+  const hourlyLimit = input.hourlyLimit === undefined
+    ? XIAOHONGSHU_SEARCH_DEFAULT_HOURLY_LIMIT
+    : boundedSettingInteger(input.hourlyLimit, 'hourlyLimit', 1, XIAOHONGSHU_SEARCH_MAX_HOURLY_LIMIT);
+  const dailyLimit = input.dailyLimit === undefined
+    ? XIAOHONGSHU_SEARCH_DEFAULT_DAILY_LIMIT
+    : boundedSettingInteger(input.dailyLimit, 'dailyLimit', 1, XIAOHONGSHU_SEARCH_MAX_DAILY_LIMIT);
+  const capacity = xiaohongshuSearchRateCapacity(minimumIntervalSeconds, hourlyLimit);
+  if (hourlyLimit > capacity.maximumPerHour) {
+    throw new RangeError(
+      `hourlyLimit cannot exceed ${capacity.maximumPerHour} with a ${minimumIntervalSeconds}-second minimum interval`,
+    );
+  }
+  if (dailyLimit > capacity.maximumPerDay) {
+    throw new RangeError(
+      `dailyLimit cannot exceed ${capacity.maximumPerDay} with the configured interval and hourly limit`,
+    );
+  }
+  return {
+    resultLimit: normalizeXiaohongshuSearchResultLimit(resultLimit),
+    searchMode: normalizeXiaohongshuSearchMode(input.searchMode),
+    minimumIntervalSeconds,
+    hourlyLimit,
+    dailyLimit,
+  };
+}
+
+export function xiaohongshuSearchExecutionOptions(input = {}) {
+  const { resultLimit, searchMode } = normalizeXiaohongshuSearchSettings(input);
+  if (searchMode === 'FASTEST') {
+    return {
+      limit: 1,
+      scrolls: 0,
+      settleMs: XIAOHONGSHU_FASTEST_SETTLE_MS,
+      navigationTimeoutMs: XIAOHONGSHU_FASTEST_NAVIGATION_TIMEOUT_MS,
+    };
+  }
+  return { limit: resultLimit };
 }
 
 function normalizedQuery(value) {
