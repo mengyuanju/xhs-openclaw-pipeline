@@ -150,7 +150,6 @@ test('application dropdowns use the shared Radix select instead of native select
   const paths = [
     'app/knowledge/knowledge-workbench.tsx',
     'app/settings/production-settings-form.tsx',
-    'app/components/image-preview.tsx',
     'app/components/image-controls.tsx',
     'app/components/image-history-compare.tsx',
   ];

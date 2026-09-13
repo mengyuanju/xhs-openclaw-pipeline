@@ -72,7 +72,7 @@ test('ordinary users do not render Query package provenance or delivery download
     'task rows must not render package provenance for ordinary users');
   assert.match(workbench, /role === 'USER' && state === 'REVIEWED' \? '已完成' : STATE_LABELS\[state\]/u,
     'ordinary users must see a completed state instead of the delivery-pool label');
-  assert.match(reviewDialog, /\{role !== 'USER' && <div className="subtle">词包：\{detail\.sourceQueryPackageName \|\| '未归属词包'\}<\/div>\}/u,
+  assert.match(reviewDialog, /\{role !== 'USER' && <span>词包：\{detail\.sourceQueryPackageName \|\| '未归属词包'\}<\/span>\}/u,
     'task detail must not render package provenance for ordinary users');
   assert.doesNotMatch(reviewDialog, /\{role !== 'USER' && <section className="workbench-review-section" aria-labelledby="review-xiaohongshu-links-title">/u,
     'assigned operators must still see the Query-specific Xiaohongshu review links');
@@ -262,10 +262,13 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.doesNotMatch(workbench, /href=\{`\/jobs\?taskId=/u);
   assert.match(workbench, /<TaskReviewDialog/u);
   assert.match(reviewDialog, /任务详情与审核/u);
-  assert.match(reviewDialog, /Query 原文/u);
+  assert.match(reviewDialog, /aria-label="原始需求"/u);
+  assert.doesNotMatch(reviewDialog, /queryExpanded|展开全文|收起原文/u);
+  assert.ok(reviewDialog.indexOf('aria-label="原始需求"') < reviewDialog.indexOf('id="review-copy-title"'),
+    'the original request must appear before the title and body in the primary review area');
   assert.match(reviewDialog, /xiaohongshuLinks: Array<\{/u);
   assert.match(reviewDialog, /detail\?\.xiaohongshuLinks \?\? \[\]/u);
-  assert.match(reviewDialog, /<h3 id="review-xiaohongshu-links-title">Query 对应小红书文章<\/h3>/u);
+  assert.match(reviewDialog, /<h3 id="review-xiaohongshu-links-title" className="sr-only">Query 对应小红书文章<\/h3>/u);
   assert.doesNotMatch(reviewDialog, /role !== 'USER' && <section[^>]*review-xiaohongshu-links-title/u);
   assert.match(reviewDialog, /不属于联网资料来源/u);
   assert.match(reviewDialog, /aria-label="Query 对应小红书文章链接"/u);
@@ -284,7 +287,7 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(reviewDialog, /currentImageRun\?\.result\?\.simulation\?\.enabled/u);
   assert.match(reviewDialog, /联网搜索模拟图/u);
   assert.match(reviewDialog, /本地流程联调兜底图/u);
-  assert.match(reviewDialog, /resultImage\.source\.pageUrl/u);
+  assert.match(reviewDialog, /selectedResultImage\.source\.pageUrl/u);
   assert.match(reviewDialog, /buildCopyReviewSubmission\(\{[\s\S]*draft,[\s\S]*copyContentChangedFromMachine/u);
   assert.match(reviewDialog, /aiDisclosureEnabled/u);
   assert.match(reviewDialog, /workbench-ai-disclosure-toggle/u);
@@ -295,7 +298,27 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(reviewDialog, /const planFieldsReadOnly = !\(editable \|\| canEditApprovedImagePlan\)/u);
   assert.match(reviewDialog, /const planKindDisabled = !editable \|\| loading \|\| submitting/u);
   assert.match(reviewDialog, /readOnly=\{planFieldsReadOnly\}/u);
-  assert.match(reviewDialog, /disabled=\{planKindDisabled\}/u);
+  assert.match(reviewDialog, /<Select value=\{item\.kind\} disabled=\{planKindDisabled \|\| index === 0\}/u);
+  assert.match(reviewDialog, /IMAGE_KINDS\.filter\(\(kind\) => index === 0 \? kind === 'hero' : kind !== 'hero'\)/u);
+  assert.match(reviewDialog, /首图必须为封面/u);
+  assert.match(reviewDialog, /workbench-image-plan-nav-button/u);
+  assert.match(reviewDialog, /第 \{activePlanIndex \+ 1\} \/ \{draft\.imagePlan\.length\} 页/u);
+  assert.doesNotMatch(reviewDialog, /workbench-image-plan-head/u);
+  assert.match(reviewDialog, /function AutosizeTextarea/u);
+  assert.match(reviewDialog, /function ReviewScrollTextarea/u);
+  assert.match(reviewDialog, /\{!editable && <ReviewReferences detail=\{detail\}/u);
+  assert.match(reviewDialog, /\{editable && <ReviewReferences detail=\{detail\}/u);
+  assert.match(reviewDialog, /className="textarea workbench-copy-body-editor"/u);
+  assert.match(reviewDialog, /className="textarea workbench-plan-bullets-editor"/u);
+  assert.match(reviewDialog, /className="workbench-final-score-card"/u);
+  assert.match(styles, /\.workbench-review-form\[data-comparing="true"\] \.workbench-review-scroll \{[^}]*overflow-y: auto/u);
+  assert.match(styles, /\.workbench-review-form\[data-comparing="true"\] \.workbench-review-pane \{[^}]*overflow: visible/u);
+  assert.doesNotMatch(styles, /\.workbench-review-form\[data-comparing="true"\] \.workbench-review-pane \{[^}]*overflow-y: auto/u);
+  assert.match(styles, /\.workbench-autosize-textarea \{[^}]*overflow-y: hidden/u);
+  assert.match(styles, /\.workbench-copy-body-editor \{[^}]*overflow-y: auto;[^}]*scrollbar-width: none/u);
+  assert.match(styles, /\.workbench-scroll-textarea-track/u);
+  assert.match(styles, /\.workbench-image-plan-fields \{[^}]*align-items: start/u);
+  assert.match(styles, /\.workbench-review-pane\[data-review-pane="plan"\] \{[^}]*position: sticky/u);
   assert.match(reviewDialog, /decision === 'REWORK' && reworkTarget !== 'COPY' && imagePlanChanged[\s\S]*revisionId: revision!\.id[\s\S]*imagePlan: draft!\.imagePlan/u);
   assert.match(reviewDialog, /reviewImagePlanEdits !== true/u);
   assert.match(reviewDialog, /评分后重试会创建新的人工批准版本/u);
@@ -303,6 +326,11 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(workbench, /currentAccountId=\{creatorAccountId\}/u);
   assert.match(reviewDialog, /onPrevious=\{activeAssetIndex > 0/u);
   assert.match(reviewDialog, /onNext=\{activeAssetIndex < assets\.length - 1/u);
+  assert.match(reviewDialog, /workbench-image-review-stage/u);
+  assert.match(reviewDialog, /className="workbench-image-review-thumbnails"/u);
+  assert.match(reviewDialog, /className="workbench-image-review-decision"/u);
+  assert.match(styles, /\.workbench-image-review-section\[data-image-primary="true"\] \{[^}]*grid-template-columns/u);
+  assert.match(styles, /\.workbench-review-form\[data-image-review="true"\] \.workbench-copy-body-editor \{[^}]*height: 170px/u);
   assert.match(reviewDialog, /审核通过并进入后续流程/u);
   assert.match(reviewDialog, /确认文案达标并进入后续流程？/u);
   assert.match(reviewDialog, /提交审核结果/u);
@@ -344,15 +372,59 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(styles, /\.workbench-review-dialog\s*\{/u);
 });
 
-test('task detail keeps image review after copy and before planning', async () => {
-  const source = await readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8');
-  const headings = ['标题、正文与标签', '图片审核', '图片文案规划'];
-  const positions = headings.map((heading) => source.indexOf(`<h3>${heading}</h3>`));
-  assert.ok(positions.every((position) => position >= 0));
-  assert.deepEqual([...positions].sort((a, b) => a - b), positions);
-  assert.equal(source.match(/<h3>图片审核<\/h3>/gu)?.length, 1);
+test('task detail elevates the image workspace during final image review', async () => {
+  const [source, styles] = await Promise.all([
+    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+  ]);
+  assert.match(source, /isImageReviewView \? '图片终审' : '图片审核'/u);
+  assert.match(source, /isImageReviewView \? '已审文案对照' : '标题、正文与标签'/u);
+  assert.match(source, /workbench-image-plan-section/u);
+  assert.match(styles, /workbench-image-review-section \{ order: -20/u);
+  assert.match(styles, /workbench-copy-review-section \{ order: -10/u);
   // Editing, role restrictions, validation, and responsive layout are exercised
   // with the real component and in-memory API in scripts/test-task-review.mjs.
+});
+
+test('image review fits the complete image, supports exterior controls, and presents saved visual planning as structured cards', async () => {
+  const [reviewDialog, carouselNavigation, preview, backdropControl, visualPlan, styles] = await Promise.all([
+    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+    readFile(projectFile('app/components/image-carousel-navigation.tsx'), 'utf8'),
+    readFile(projectFile('app/components/image-preview.tsx'), 'utf8'),
+    readFile(projectFile('app/components/image-preview-background-control.tsx'), 'utf8'),
+    readFile(projectFile('app/components/visual-plan-summary.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+  ]);
+
+  assert.match(styles, /\.workbench-image-review-stage img \{[^}]*position: absolute;[^}]*inset: 12px;[^}]*object-fit: contain/u);
+  assert.match(reviewDialog, /<ImageCarouselNavigation[\s\S]*currentIndex=\{selectedAssetIndex\}[\s\S]*total=\{assets\.length\}/u);
+  assert.match(carouselNavigation, /export function ImageCarouselNavigation/u);
+  assert.match(carouselNavigation, /aria-label=\{previousLabel\}[\s\S]*disabled=\{!canPrevious\}/u);
+  assert.match(carouselNavigation, /aria-label=\{nextLabel\}[\s\S]*disabled=\{!canNext\}/u);
+  assert.match(carouselNavigation, /canPrevious \? `上一张图片，第 \$\{formatPage\(currentIndex\)\} 页` : '上一张图片，当前已经是首张'/u);
+  assert.match(styles, /\.image-carousel-navigation \{[^}]*grid-template-columns: 46px minmax\(0, 1fr\) 46px/u);
+  assert.match(styles, /\.workbench-image-review-section\[data-image-primary="true"\] \{[^}]*minmax\(0, 1\.75fr\)[^}]*minmax\(320px, \.75fr\)/u);
+  assert.match(styles, /\.image-carousel-navigation-button:hover:not\(:disabled\) \{[^}]*transform: translateY\(-2px\)/u);
+  assert.match(reviewDialog, /useState<PreviewBackdrop>\('white'\)/u);
+  assert.match(reviewDialog, /workbench-image-review-stage preview-background-\$\{previewBackdrop\}/u);
+  assert.match(reviewDialog, /workbench-review-section-title workbench-image-review-section-title[\s\S]*workbench-image-review-title-main[\s\S]*workbench-image-review-title-actions[\s\S]*<ImagePreviewBackgroundControl value=\{previewBackdrop\}/u);
+  assert.match(reviewDialog, /<ImagePreviewBackgroundControl value=\{previewBackdrop\} onChange=\{setPreviewBackdrop\}/u);
+  assert.match(preview, /useState<PreviewBackdrop>\('white'\)/u);
+  assert.match(preview, /<ImagePreviewBackgroundControl tone="dark" value=\{activeBackdrop\} onChange=\{setBackdrop\}/u);
+  assert.match(backdropControl, /export function ImagePreviewBackgroundControl/u);
+  assert.match(backdropControl, /value: 'white', label: '白底'/u);
+  assert.match(styles, /\.preview-background-white \{ background: #fff; \}/u);
+  assert.match(styles, /\.workbench-image-review-title-actions \{[^}]*margin-right: 52px;[^}]*margin-left: auto/u);
+  assert.match(styles, /\.workbench-image-review-section\[data-image-primary="true"\] > \.workbench-image-review-section-title \{[^}]*grid-template-columns: minmax\(0, 1\.75fr\) minmax\(320px, \.75fr\)/u);
+  assert.match(visualPlan, /<Disclosure className="visual-plan-summary">/u);
+  assert.match(visualPlan, /className="visual-plan-overview"/u);
+  assert.match(visualPlan, /className="visual-plan-page-card"/u);
+  assert.match(visualPlan, /选用理由/u);
+  assert.match(visualPlan, /画面主体/u);
+  assert.match(visualPlan, /排版设计/u);
+  assert.match(visualPlan, /主体区域/u);
+  assert.match(visualPlan, /文字区域/u);
+  assert.match(styles, /\.visual-plan-pages \{[^}]*grid-template-columns/u);
 });
 
 test('executor CLI gates registration and polling behind readiness', async () => {

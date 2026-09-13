@@ -1,11 +1,13 @@
 'use client';
 import { VisualPlanSummary } from '../components/visual-plan-summary';
+import { ImageCarouselNavigation } from '../components/image-carousel-navigation';
+import { ImagePreviewBackgroundControl, type PreviewBackdrop } from '../components/image-preview-background-control';
 
 import { Checkbox, Input, Textarea } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 
-import { CheckCircle2, Download, LoaderCircle, RefreshCw, RotateCcw, Trash2 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { CheckCircle2, ChevronLeft, ChevronRight, Download, LoaderCircle, RefreshCw, RotateCcw, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type FormEvent } from 'react';
 
 import {
   Dialog,
@@ -25,7 +27,7 @@ import { canResumeImageTask } from '../../src/control-plane/image-resume.mjs';
 import { TaskQualitySummary } from './task-quality-summary';
 import { ModelCallTrace } from './model-call-trace';
 import { IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
-import { ImagePreview, ImagePreviewThumbnail } from '../components/image-preview';
+import { ImagePreview } from '../components/image-preview';
 import { ImagePreviewPreference } from '../components/image-preview-preference';
 import { ImageSettingsEditor, defaultImageSettings, type ImageSettings, type PageLayout } from '../components/image-controls';
 import { ImageHistoryCompare, type ImageArtifactInfo } from '../components/image-history-compare';
@@ -156,6 +158,82 @@ const IMAGE_KIND_LABELS: Record<ImagePlanItem['kind'], string> = {
   summary: '总结',
 };
 
+function resizeTextarea(element: HTMLTextAreaElement | null) {
+  if (!element) return;
+  element.style.height = '0px';
+  element.style.height = `${element.scrollHeight + 2}px`;
+}
+
+function AutosizeTextarea({
+  className,
+  onChange,
+  resizeToken,
+  value,
+  ...props
+}: ComponentProps<'textarea'> & { resizeToken?: unknown }) {
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => resizeTextarea(ref.current), [resizeToken, value]);
+
+  return <Textarea
+    {...props}
+    ref={ref}
+    className={`workbench-autosize-textarea ${className ?? ''}`}
+    value={value}
+    onChange={(event) => {
+      resizeTextarea(event.currentTarget);
+      onChange?.(event);
+    }}
+  />;
+}
+
+function ReviewScrollTextarea({
+  className,
+  onScroll,
+  resizeToken,
+  value,
+  ...props
+}: ComponentProps<'textarea'> & { resizeToken?: unknown }) {
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+  const [scrollbar, setScrollbar] = useState({ visible: false, size: 100, top: 0 });
+  const syncScrollbar = useCallback((element: HTMLTextAreaElement) => {
+    const visible = element.scrollHeight > element.clientHeight + 1;
+    const size = visible ? Math.max(14, element.clientHeight / element.scrollHeight * 100) : 100;
+    const progress = visible && element.scrollHeight > element.clientHeight
+      ? element.scrollTop / (element.scrollHeight - element.clientHeight)
+      : 0;
+    setScrollbar({ visible, size, top: progress * (100 - size) });
+  }, []);
+
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const frame = window.requestAnimationFrame(() => syncScrollbar(element));
+    const handleResize = () => syncScrollbar(element);
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [resizeToken, syncScrollbar, value]);
+
+  return <div className="workbench-scroll-textarea" data-scrollable={scrollbar.visible}>
+    <Textarea
+      {...props}
+      ref={ref}
+      className={className}
+      value={value}
+      onScroll={(event) => {
+        syncScrollbar(event.currentTarget);
+        onScroll?.(event);
+      }}
+    />
+    <span className="workbench-scroll-textarea-track" aria-hidden="true">
+      <span style={{ height: `${scrollbar.size}%`, top: `${scrollbar.top}%` }} />
+    </span>
+  </div>;
+}
+
 function apiPath(path: string) {
   return `/api/control-plane${path}`;
 }
@@ -185,6 +263,46 @@ function xiaohongshuEmptyMessage(detail: TaskDetail | null) {
   if (detail?.xiaohongshuSearchStatus === 'CANCELLED') return '该 Query 的小红书搜索已取消。';
   if (detail?.xiaohongshuSearchStatus === 'SUCCEEDED') return '搜索已完成，但没有找到可展示的小红书文章链接。';
   return '当前 Query 尚未建立小红书搜索记录。';
+}
+
+function ReviewReferences({
+  detail,
+  sources,
+  xiaohongshuLinks,
+}: {
+  detail: TaskDetail;
+  sources: Array<{ title?: string; url: string; siteName?: string }>;
+  xiaohongshuLinks: TaskDetail['xiaohongshuLinks'];
+}) {
+  return <>
+    <Disclosure className="workbench-review-section workbench-review-reference-disclosure" aria-labelledby="review-xiaohongshu-links-title">
+      <h3 id="review-xiaohongshu-links-title" className="sr-only">Query 对应小红书文章</h3>
+      <DisclosureTrigger>
+        <span className="workbench-review-reference-badge">参考</span>
+        <span className="workbench-review-reference-title"><strong>Query 对应小红书文章</strong><small>仅供审核核对，不属于联网资料来源</small></span>
+        <em>{xiaohongshuLinks.length > 0 ? `${xiaohongshuLinks.length} 条` : '暂无记录'}</em>
+      </DisclosureTrigger>
+      <DisclosureContent>
+        <p className="workbench-review-reference-help">按当前 Query 搜索，并按点赞量从高到低保留管理员设定的数量。</p>
+        {xiaohongshuLinks.length > 0
+          ? <div className="workbench-review-sources" aria-label="Query 对应小红书文章链接">{xiaohongshuLinks.map((link, index) => {
+            const rank = Number.isSafeInteger(link.rank) && link.rank > 0 ? link.rank : index + 1;
+            const title = typeof link.title === 'string' ? link.title.trim() : '';
+            return <a href={link.url} target="_blank" rel="noopener noreferrer" key={`${link.noteId}-${rank}-${index}`}>
+              <b>{title || `小红书文章 ${rank}`}</b>
+              <small>点赞量排序第 {rank} 条 · {link.url}</small>
+            </a>;
+          })}</div>
+          : <div className="workbench-review-empty">{xiaohongshuEmptyMessage(detail)}</div>}
+      </DisclosureContent>
+    </Disclosure>
+    {sources.length > 0 && <Disclosure className="workbench-review-section workbench-review-source-disclosure">
+      <DisclosureTrigger>联网资料来源 · {sources.length} 条</DisclosureTrigger>
+      <DisclosureContent><div className="workbench-review-sources">{sources.map((source, index) => <a href={source.url} target="_blank" rel="noreferrer" key={`${source.url}-${index}`}>
+        <b>{source.title || source.siteName || `来源 ${index + 1}`}</b><small>{source.url}</small>
+      </a>)}</div></DisclosureContent>
+    </Disclosure>}
+  </>;
 }
 
 function currentRevision(detail: TaskDetail | null) {
@@ -315,10 +433,11 @@ export function TaskReviewDialog({
   const [submitting, setSubmitting] = useState(false);
   const [aiDisclosureEnabled, setAiDisclosureEnabled] = useState(false);
   const [activeAssetIndex, setActiveAssetIndex] = useState<number | null>(null);
+  const [selectedAssetIndex, setSelectedAssetIndex] = useState(0);
+  const [previewBackdrop, setPreviewBackdrop] = useState<PreviewBackdrop>('white');
   const [activePlanIndex, setActivePlanIndex] = useState(0);
   const [mobilePane, setMobilePane] = useState<'copy' | 'plan'>('copy');
   const [expandedPrompts, setExpandedPrompts] = useState<number[]>([]);
-  const [queryExpanded, setQueryExpanded] = useState(false);
   const [copyOriginalScore, setCopyOriginalScore] = useState<HumanScore | null>(null);
   const [copyOriginalReasons, setCopyOriginalReasons] = useState<string[]>([]);
   const [copyOriginalNote, setCopyOriginalNote] = useState('');
@@ -326,6 +445,7 @@ export function TaskReviewDialog({
   const [imageReasons, setImageReasons] = useState<string[]>([]);
   const [imageProblemAssetIds, setImageProblemAssetIds] = useState<number[]>([]);
   const [imageReviewNote, setImageReviewNote] = useState('');
+  const [imageReworkTarget, setImageReworkTarget] = useState<'COPY' | 'IMAGE' | 'BOTH'>('IMAGE');
   const [invalidField, setInvalidField] = useState<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null>(null);
   const [copyEditNotice, setCopyEditNotice] = useState<{ area: CopyEditArea; message: string; sequence: number } | null>(null);
   const loadRequestRef = useRef(0);
@@ -370,10 +490,10 @@ export function TaskReviewDialog({
   useEffect(() => {
     setDetail(null);
     setDraft(null);
+    setSelectedAssetIndex(0);
     setActivePlanIndex(0);
     setMobilePane('copy');
     setExpandedPrompts([]);
-    setQueryExpanded(false);
     setCopyOriginalScore(null);
     setCopyOriginalReasons([]);
     setCopyOriginalNote('');
@@ -381,6 +501,7 @@ export function TaskReviewDialog({
     setImageReasons([]);
     setImageProblemAssetIds([]);
     setImageReviewNote('');
+    setImageReworkTarget('IMAGE');
     setCopyEditNotice(null);
     lastCopyEditNoticeRef.current = null;
     reviewSessionRef.current = null;
@@ -421,7 +542,7 @@ export function TaskReviewDialog({
     && Boolean(revision && draft);
   const isCopyRework = Boolean(detail?.mandatoryCopyQc
     || ['QA_RETURN', 'FINAL_REWORK'].includes(revision?.revisionOrigin ?? '')
-    || revision?.reworkOrigin);
+    || ['QA_RETURN', 'FINAL_REWORK'].includes(revision?.reworkOrigin ?? ''));
   const savedCopyRatings = detail ? copyRatingsFromDetail(detail) : { current: undefined };
   const originalCopyRatingComplete = ratingFeedbackComplete(copyOriginalScore, copyOriginalReasons, copyOriginalNote);
   const copyFieldsEditable = editable && (isCopyRework || copyOriginalScore === 2 || copyOriginalScore === 2.5);
@@ -432,7 +553,8 @@ export function TaskReviewDialog({
   const copyRatingComplete = isCopyRework || originalCopyRatingComplete;
   const canApproveCopy = isCopyRework ? copyReworkSatisfied : copyRatingComplete && (copyOriginalScore === 3 && !copyContentChanged
     || (copyOriginalScore === 2 || copyOriginalScore === 2.5) && hasEditedCopyVersion);
-  const longQuery = Boolean(detail && (detail.query.length > 100 || detail.query.split('\n').length > 3));
+  const showCopyRating = detail?.state === 'COPY_REVIEW_PENDING' && !isCopyRework;
+  const isImageReviewView = detail?.state === 'MANUAL_ARCHIVE';
   const canReviewImages = detail?.state === 'MANUAL_ARCHIVE'
     && (isAdmin || role === 'REVIEWER' && taskHasAssignee) && Boolean(detail.currentImageRunId);
   const downloadable = isAdmin && detail?.state === 'REVIEWED' && detail.deliveryStatus === 'READY';
@@ -536,8 +658,9 @@ export function TaskReviewDialog({
   const copyReasonOptions = humanRatingSettings.copyReasons;
   const imageReasonOptions = humanRatingSettings.imageReasons;
   const showCopyScoreDescriptions = humanRatingSettings.copyReviewDisplay.showScoreDescriptions;
-  const showCopyDeductionReasons = humanRatingSettings.copyReviewDisplay.showDeductionReasons;
-  const showImageDeductionReasons = humanRatingSettings.imageReviewDisplay.showDeductionReasons;
+  // Visibility is fail-closed: never flash default reasons while task-specific settings are loading or unavailable.
+  const showCopyDeductionReasons = humanQualitySettings?.copyReviewDisplay.showDeductionReasons === true;
+  const showImageDeductionReasons = humanQualitySettings?.imageReviewDisplay.showDeductionReasons === true;
   const copyFeedbackRequirement = showCopyDeductionReasons ? '扣分原因或评分说明' : '评分说明';
   const imageScoreDefinition = scoreDefinitions.find(definition => definition.score === imageScore);
   const canApproveImages = imageSetComplete && imageRatingComplete && isPassingHumanScore(imageScore)
@@ -547,10 +670,18 @@ export function TaskReviewDialog({
     && assessment.imageRunId === detail?.currentImageRunId);
   const activeAsset = activeAssetIndex === null ? undefined : assets[activeAssetIndex];
   const activeResultImage = activeAsset ? resultImageByAssetId.get(activeAsset.id) : undefined;
+  const selectedAsset = assets[selectedAssetIndex];
+  const selectedResultImage = selectedAsset ? resultImageByAssetId.get(selectedAsset.id) : undefined;
+  const selectedAssetPage = selectedResultImage?.pageIndex ?? selectedAssetIndex + 1;
+  const selectedAssetAlt = selectedAsset?.originalName || `任务 ${detail?.id ?? ''} 第 ${selectedAssetPage} 张图片`;
 
   useEffect(() => {
     if (activeAssetIndex !== null && activeAssetIndex >= assets.length) setActiveAssetIndex(null);
   }, [activeAssetIndex, assets.length]);
+
+  useEffect(() => {
+    if (selectedAssetIndex >= assets.length) setSelectedAssetIndex(0);
+  }, [assets.length, selectedAssetIndex]);
 
   useEffect(() => {
     if (draft && activePlanIndex >= draft.imagePlan.length) setActivePlanIndex(0);
@@ -928,72 +1059,35 @@ export function TaskReviewDialog({
 
       {loading && !detail
         ? <div className="workbench-review-loading"><LoaderCircle className="animate-spin" size={22} />正在读取任务详情…</div>
-        : detail && <form className="workbench-review-form" data-comparing={editable} noValidate onSubmit={submitCopyReview}>
+        : detail && <form className="workbench-review-form" data-comparing={editable} data-image-review={isImageReviewView} noValidate onSubmit={submitCopyReview}>
           {editable && <div className="workbench-review-pane-switch" aria-label="切换审核内容">
             <Button unstyled type="button" aria-pressed={mobilePane === 'copy'} aria-controls="review-copy-pane" onClick={() => setMobilePane('copy')}>文案</Button>
             <Button unstyled type="button" aria-pressed={mobilePane === 'plan'} aria-controls="review-plan-pane" onClick={() => setMobilePane('plan')}>图片文案规划</Button>
           </div>}
           <div className="workbench-review-scroll" data-mobile-pane={mobilePane}>
             <div id="review-copy-pane" className="workbench-review-pane" data-review-pane="copy">
-              {!editable && currentImageRun && <TaskQualitySummary result={currentImageRun.result}
+              {!editable && !isImageReviewView && currentImageRun && <TaskQualitySummary result={currentImageRun.result}
                 onShowImages={assets.length ? () => { imageSectionRef.current?.scrollIntoView({ block: 'start' }); imageSectionRef.current?.focus({ preventScroll: true }); } : undefined} />}
-              <section className="workbench-review-section">
-                <div className="workbench-review-section-title"><span>01</span><div><h3>标题、正文与标签</h3><p>{editable
+              <section className="workbench-review-section workbench-copy-review-section">
+                <div className="workbench-review-section-title"><span>{isImageReviewView ? '02' : '01'}</span><div><h3>{isImageReviewView ? '已审文案对照' : '标题、正文与标签'}</h3><p>{editable
                   ? isCopyRework
                     ? '按返工原因修改标题、正文或标签；无需重新评分。实际修改后提交强制复检，复检通过后才会进入待生图队列。'
                     : '先评价机器原稿，再决定提交达标审核结果或修改。'
+                  : isImageReviewView
+                    ? '文案已完成前序审核，保留标题、正文与标签用于核对图片表达。'
                   : detail.currentStage === 'QC_MANDATORY_RECHECK'
                     ? '返工稿已提交强制复检；复检通过后才会进入待生图队列。'
                     : '当前状态只读，展示任务采用的文案版本。'}</p></div></div>
+                <div className="workbench-review-query" aria-label="原始需求">
+                  <strong>原始需求</strong>
+                  <div className="workbench-review-query-text">{detail.query}</div>
+                  {role !== 'USER' && <span>词包：{detail.sourceQueryPackageName || '未归属词包'}</span>}
+                </div>
                 {detail.state === 'COPY_REVIEW_PENDING' && !taskHasAssignee
                   && <div className="notice warning" role="status">文案已生成，但任务尚未分配负责人。请先关闭窗口并完成分配，再进行评分或修改。</div>}
                 {detail.state === 'COPY_REVIEW_PENDING' && taskHasAssignee && !canReviewCopy
                   && <div className="notice warning" role="status">当前任务由其他负责人处理；这里仅提供只读查看。</div>}
-                <div className="workbench-review-query">
-                  <strong>Query 原文</strong>
-                  <div id="review-query-text" className="workbench-review-query-text" data-expanded={queryExpanded || !longQuery}>{detail.query}</div>
-                  {role !== 'USER' && <div className="subtle">词包：{detail.sourceQueryPackageName || '未归属词包'}</div>}
-                  {longQuery && <Button unstyled className="button small" type="button" aria-expanded={queryExpanded} aria-controls="review-query-text" onClick={() => setQueryExpanded(value => !value)}>{queryExpanded ? '收起原文' : '展开全文'}</Button>}
-                </div>
                 {editable && isCopyRework && <div className="notice warning" role="status"><strong>{revision?.reworkOrigin === 'QA_RETURN' || detail.mandatoryCopyQcOrigin === 'QA_RETURN' ? '文案抽检返工' : '图文终审文案返工'}</strong>{revision?.reworkReasonCodes?.length ? ` · 原因：${revision.reworkReasonCodes.join('、')}` : ''}{revision?.reworkNote ? ` · 要求：${revision.reworkNote}` : ''}<br />返工稿必须实际修改标题、正文或标签；仅保存不会提交复检。人工确认达标后，系统将最终稿记录为 3 分并提交强制复检；复检通过后才会进入待生图队列。</div>}
-                {editable && !isCopyRework && <div className="human-rating-panel" aria-label="文案人工评分">
-                  {humanQualitySettingsLoading && <p className="human-rating-config-status" role="status">正在读取评分选项…</p>}
-                  {humanQualitySettingsError && <p className="human-rating-config-status" role="alert">评分选项读取失败，请刷新后重试。</p>}
-                  <CopyMachineDraftScoreField
-                    id={`copy-original-score-${detail.id}`}
-                    legend={currentCopyRatingLabel}
-                    value={copyOriginalScore}
-                    showDescriptions={showCopyScoreDescriptions}
-                    disabled={loading || submitting || humanQualitySettingsUnavailable || Boolean(savedCopyRatings.current) || copyContentChanged}
-                    onChange={(score) => { updateCopyOriginalScore(score); setError(''); }}
-                  />
-                  {copyOriginalScore !== null && copyOriginalScore < 3 && <HumanRatingFeedback
-                    id={`copy-original-${detail.id}`}
-                    reasonOptions={copyReasonOptions}
-                    reasons={copyOriginalReasons}
-                    note={copyOriginalNote}
-                    notePlaceholder={humanRatingSettings.noteGuidance.copyPlaceholder}
-                    showReasonOptions={showCopyDeductionReasons}
-                    disabled={loading || submitting || humanQualitySettingsUnavailable || Boolean(savedCopyRatings.current)}
-                    onToggleReason={(code) => { toggleReason(code, setCopyOriginalReasons); setError(''); }}
-                    onNoteChange={(note) => { setCopyOriginalNote(note); setError(''); }}
-                  />}
-                  {copyOriginalScore !== null && <p className="human-rating-guidance" role="status">
-                    {copyOriginalScore === 1
-                      ? `填写${copyFeedbackRequirement}后，只能评分并废弃任务。`
-                      : copyOriginalScore === 2
-                        ? `已解锁标题、正文与标签编辑；${originalCopyRatingComplete ? '修改完成后可提交审核结果' : `提交前请填写${copyFeedbackRequirement}`}。人工确认达标后，系统将最终修改稿记录为 3 分，原评分保持不变。`
-                      : copyOriginalScore === 2.5
-                          ? `请完成必要的小修；${originalCopyRatingComplete ? '修改完成后可提交审核结果' : `提交前请填写${copyFeedbackRequirement}`}。人工确认达标后，系统将最终修改稿记录为 3 分，原评分保持不变。`
-                          : '原稿已达标，可直接提交审核结果；后续将按任务策略进入文案抽检或待生图队列。'}
-                  </p>}
-                </div>}
-                {!editable && copyAssessments.length > 0 && <div className="human-rating-readonly">
-                  <span>当前文案人工评分</span>
-                  <HumanScoreBadge score={copyAssessments.at(-1)!.score}
-                    passingScores={copyAssessments.at(-1)!.ratingContext === 'ORIGINAL'
-                      ? COPY_MACHINE_DRAFT_SCORE_PRESENTATION.passingScores : undefined} />
-                </div>}
                 {isImageRetryExhausted(detail) && <div className="notice warning" role="status">{IMAGE_RETRY_EXHAUSTED_LABEL}</div>}
                 {detail.error && <div className="notice error" role="alert">{detail.error}</div>}
                 {draft ?
@@ -1008,8 +1102,8 @@ export function TaskReviewDialog({
                   </div>
                   <div className="field full">
                     <label htmlFor="review-copy-body">正文 <small>{[...draft.copy.body].length}/400–600</small></label>
-                    <Textarea id="review-copy-body" className="textarea workbench-copy-body-editor" value={draft.copy.body} minLength={400} maxLength={600} required readOnly={copyFieldsReadOnly}
-                      onChange={(event) => updateCopy('body', event.target.value)} />
+                    <ReviewScrollTextarea id="review-copy-body" className="textarea workbench-copy-body-editor" value={draft.copy.body} minLength={400} maxLength={600} required readOnly={copyFieldsReadOnly}
+                      resizeToken={mobilePane === 'copy'} onChange={(event) => updateCopy('body', event.target.value)} />
                   </div>
                   <div className="field full">
                     <label htmlFor="review-copy-tags">标签 <small>3–8 个，用空格分隔</small></label>
@@ -1017,6 +1111,51 @@ export function TaskReviewDialog({
                       onChange={(event) => updateCopy('tags', event.target.value)} />
                   </div>
                 </div> : <div className="workbench-review-empty">当前任务还没有可审核的文案版本。</div>}
+                {showCopyRating && <div className="human-rating-panel" aria-label="文案人工评分">
+                  {!editable && <p className="human-rating-config-status" role="status">评分模块当前为只读。请确认任务已分配给当前账号，并刷新任务详情后再评分。</p>}
+                  {humanQualitySettingsLoading && <p className="human-rating-config-status" role="status">正在读取评分选项…</p>}
+                  {humanQualitySettingsError && <p className="human-rating-config-status" role="alert">评分选项读取失败，请刷新后重试。</p>}
+                  <CopyMachineDraftScoreField
+                    id={`copy-original-score-${detail.id}`}
+                    legend={currentCopyRatingLabel}
+                    value={copyOriginalScore}
+                    showDescriptions={showCopyScoreDescriptions}
+                    disabled={!editable || loading || submitting || humanQualitySettingsUnavailable || Boolean(savedCopyRatings.current) || copyContentChanged}
+                    onChange={(score) => { updateCopyOriginalScore(score); setError(''); }}
+                  />
+                  {copyOriginalScore !== null && copyOriginalScore < 3 && <HumanRatingFeedback
+                    id={`copy-original-${detail.id}`}
+                    reasonOptions={copyReasonOptions}
+                    reasons={copyOriginalReasons}
+                    note={copyOriginalNote}
+                    notePlaceholder={humanRatingSettings.noteGuidance.copyPlaceholder}
+                    showReasonOptions={showCopyDeductionReasons}
+                    disabled={!editable || loading || submitting || humanQualitySettingsUnavailable || Boolean(savedCopyRatings.current)}
+                    onToggleReason={(code) => { toggleReason(code, setCopyOriginalReasons); setError(''); }}
+                    onNoteChange={(note) => { setCopyOriginalNote(note); setError(''); }}
+                  />}
+                  {copyOriginalScore !== null && <p className="human-rating-guidance" role="status">
+                    {copyOriginalScore === 1
+                      ? `填写${copyFeedbackRequirement}后，只能评分并废弃任务。`
+                      : copyOriginalScore === 2
+                        ? `已解锁标题、正文与标签编辑；${originalCopyRatingComplete ? '修改完成后可提交审核结果' : `提交前请填写${copyFeedbackRequirement}`}。人工确认达标后，系统将最终修改稿记录为 3 分，原评分保持不变。`
+                      : copyOriginalScore === 2.5
+                        ? `请完成必要的小修；${originalCopyRatingComplete ? '修改完成后可提交审核结果' : `提交前请填写${copyFeedbackRequirement}`}。人工确认达标后，系统将最终修改稿记录为 3 分，原评分保持不变。`
+                        : '原稿已达标，可直接提交审核结果；后续将按任务策略进入文案抽检或待生图队列。'}
+                  </p>}
+                </div>}
+                {!editable && copyAssessments.length > 0 && <div className="human-rating-readonly">
+                  <span>当前文案人工评分</span>
+                  <HumanScoreBadge score={copyAssessments.at(-1)!.score}
+                    passingScores={copyAssessments.at(-1)!.ratingContext === 'ORIGINAL'
+                      ? COPY_MACHINE_DRAFT_SCORE_PRESENTATION.passingScores : undefined} />
+                </div>}
+                {editable && canApproveCopy && <div className="workbench-final-score-card" role="status" aria-label="最终稿评分">
+                  <div><span>最终稿评分</span><HumanScoreBadge score={3} passingScores={COPY_MACHINE_DRAFT_SCORE_PRESENTATION.passingScores} /></div>
+                  <p>{copyOriginalScore === 3 && !copyContentChanged
+                    ? '机器原稿已达标，本次审核结果为 3 分。'
+                    : '提交达标后系统自动把最终修改稿记录为 3 分，并保留机器原稿评分与原因。'}</p>
+                </div>}
                 {editable && copyContentChanged && <div className="notice success" role="status">{isCopyRework
                   ? '返工稿无需再次评分；提交强制复检时，系统会将最终稿记录为 3 分。复检通过后才会进入待生图队列。'
                   : '最终修改稿无需再次评分；提交达标审核结果时，系统会将其记录为 3 分，机器原稿评分和原因继续保留。'}</div>}
@@ -1024,117 +1163,126 @@ export function TaskReviewDialog({
                   originalScorePresentation={COPY_MACHINE_DRAFT_SCORE_PRESENTATION}
                   showScoreDescriptions={showCopyScoreDescriptions} showReasonOptions={showCopyDeductionReasons} />
               </section>
-              <section className="workbench-review-section" aria-labelledby="review-xiaohongshu-links-title">
-                <div className="workbench-review-section-title"><span>参考</span><div>
-                  <h3 id="review-xiaohongshu-links-title">Query 对应小红书文章</h3>
-                  <p>按当前 Query 搜索，并按点赞量从高到低保留管理员设定的数量；仅供审核核对，不属于联网资料来源。</p>
-                </div></div>
-                {xiaohongshuLinks.length > 0
-                  ? <div className="workbench-review-sources" aria-label="Query 对应小红书文章链接">{xiaohongshuLinks.map((link, index) => {
-                    const rank = Number.isSafeInteger(link.rank) && link.rank > 0 ? link.rank : index + 1;
-                    const title = typeof link.title === 'string' ? link.title.trim() : '';
-                    return <a href={link.url} target="_blank" rel="noopener noreferrer" key={`${link.noteId}-${rank}-${index}`}>
-                      <b>{title || `小红书文章 ${rank}`}</b>
-                      <small>点赞量排序第 {rank} 条 · {link.url}</small>
-                    </a>;
-                  })}</div>
-                  : <div className="workbench-review-empty">{xiaohongshuEmptyMessage(detail)}</div>}
-              </section>
-              {sources.length > 0 && <Disclosure className="workbench-review-section workbench-review-source-disclosure">
-                <DisclosureTrigger>联网资料来源 · {sources.length} 条</DisclosureTrigger>
-                <DisclosureContent><div className="workbench-review-sources">{sources.map((source, index) => <a href={source.url} target="_blank" rel="noreferrer" key={`${source.url}-${index}`}>
-                  <b>{source.title || source.siteName || `来源 ${index + 1}`}</b><small>{source.url}</small>
-                </a>)}</div></DisclosureContent>
-              </Disclosure>}
+              {!editable && <ReviewReferences detail={detail} sources={sources} xiaohongshuLinks={xiaohongshuLinks} />}
             <VisualPlanSummary value={currentImageRun?.result?.visualPlan?.value} />
             {currentImageRun?.result?.visualPlan?.warning?.message && !currentImageRun?.result?.simulation?.enabled
               && <p className="notice warning">{currentImageRun.result.visualPlan.warning.message}</p>}
-            {(assets.length > 0 || canReviewImages) && <section className="workbench-review-section" ref={imageSectionRef} tabIndex={-1} aria-label="当前图片审核">
-              <div className="workbench-review-section-title"><span>02</span><div><h3>图片审核</h3><p>核对当前图片运行生成的完整图集。</p></div></div>
-              <ImagePreviewPreference />
+            {(assets.length > 0 || canReviewImages) && <section className="workbench-review-section workbench-image-review-section" data-image-primary={isImageReviewView} ref={imageSectionRef} tabIndex={-1} aria-label="当前图片审核">
+              <div className="workbench-review-section-title workbench-image-review-section-title">
+                <div className="workbench-image-review-title-main">
+                  <span>{isImageReviewView ? '01' : '02'}</span>
+                  <div><h3>{isImageReviewView ? '图片终审' : '图片审核'}</h3><p>{isImageReviewView
+                    ? '先逐页核对成品图，再结合自动质检证据完成人工评分。'
+                    : '核对当前图片运行生成的完整图集。'}</p></div>
+                  {selectedAsset && <div className="workbench-image-review-title-actions">
+                    <ImagePreviewBackgroundControl value={previewBackdrop} onChange={setPreviewBackdrop} />
+                  </div>}
+                </div>
+              </div>
               {assets.length === 0 && <p className="notice warning">当前没有可预览的图片，请刷新核对，或选择重试生图、废弃。</p>}
               {currentImageRun?.result?.simulation?.enabled && <div className="notice warning">
                 {currentImageRun.result.visualPlan?.warning?.message
                   ?? '当前图片来自联网搜索模拟，仅用于流程联调，请人工核对来源与使用范围。'}
               </div>}
-              <div className="distributed-asset-grid workbench-review-assets">{assets.map((asset, index) => {
-                const resultImage = resultImageByAssetId.get(asset.id);
-                const alt = asset.originalName || `任务 ${detail.id} 第 ${index + 1} 张图片`;
-                return <figure key={asset.id}>
-                  <ImagePreviewThumbnail
-                    src={apiPath(asset.url)}
-                    alt={alt}
-                    onClick={event => { previewTriggerRef.current = event.currentTarget; setActiveAssetIndex(index); }}
-                  />
-                  <figcaption>
-                    <strong>第 {resultImage?.pageIndex ?? index + 1} 张</strong>
-                    <span>{resultImage?.provider === 'deepseek-web-image-simulation'
+              <div className="workbench-image-review-gallery">
+                {selectedAsset && <>
+                  <ImageCarouselNavigation
+                    currentIndex={selectedAssetIndex}
+                    total={assets.length}
+                    onPrevious={() => setSelectedAssetIndex(index => Math.max(0, index - 1))}
+                    onNext={() => setSelectedAssetIndex(index => Math.min(assets.length - 1, index + 1))}
+                  >
+                    <Button unstyled className={`workbench-image-review-stage preview-background-${previewBackdrop}`} type="button" aria-label={`放大查看第 ${selectedAssetPage} 页：${selectedAssetAlt}`}
+                      onClick={event => { previewTriggerRef.current = event.currentTarget; setActiveAssetIndex(selectedAssetIndex); }}>
+                      <img src={apiPath(selectedAsset.url)} alt={selectedAssetAlt} decoding="async" />
+                      <span>完整图 · 点击放大</span>
+                    </Button>
+                  </ImageCarouselNavigation>
+                  <div className="workbench-image-review-current">
+                    <div><strong>第 {selectedAssetPage} / {assets.length} 页</strong><span>{selectedResultImage?.provider === 'deepseek-web-image-simulation'
                       ? '联网搜索模拟图'
-                      : resultImage?.provider === 'deterministic-fallback-simulation'
+                      : selectedResultImage?.provider === 'deterministic-fallback-simulation'
                         ? '本地流程联调兜底图'
-                        : asset.originalName || `图片 #${asset.id}`}</span>
-                    {resultImage?.source?.pageUrl && <a href={resultImage.source.pageUrl} target="_blank" rel="noreferrer">
-                      {resultImage.source.title || '查看图片来源'}
-                    </a>}
-                    {resultImage?.source?.attribution && <small>{resultImage.source.attribution}{resultImage.source.license ? ` · ${resultImage.source.license}` : ''}</small>}
-                  </figcaption>
-                </figure>;
-              })}</div>
-              {canReviewImages && <div className="human-rating-panel human-image-rating" aria-label="整套图片人工评分">
-                {!imageSetComplete && <p className="notice warning" role="status">当前图集文件不完整，不能审核通过。请刷新核对，或评分后选择重试生图、废弃。</p>}
-                {humanQualitySettingsLoading && <p className="human-rating-config-status" role="status">正在读取评分选项…</p>}
-                {humanQualitySettingsError && <p className="human-rating-config-status" role="alert">评分选项读取失败，请刷新后重试。</p>}
-                <HumanScoreField
-                  id={`image-score-${detail.id}-${detail.currentImageRunId}`}
-                  legend="整套图片评分"
-                  value={imageScore}
-                  scoreDefinitions={scoreDefinitions}
-                  disabled={loading || submitting || humanQualitySettingsUnavailable || Boolean(savedImageAssessment)}
-                  onChange={(score) => { updateImageScore(score); setError(''); }}
-                />
-                {imageScore !== null && imageScore < 3 && <div className="human-rating-followup">
-                  <HumanRatingFeedback
-                    id={`image-${detail.id}-${detail.currentImageRunId}`}
-                    reasonOptions={imageReasonOptions}
-                    reasons={imageReasons}
-                    note={imageReviewNote}
-                    notePlaceholder={humanRatingSettings.noteGuidance.imagePlaceholder}
-                    showReasonOptions={showImageDeductionReasons}
-                    feedbackRequired={false}
+                        : selectedAsset.originalName || `图片 #${selectedAsset.id}`}</span></div>
+                    {selectedResultImage?.source?.pageUrl && <a href={selectedResultImage.source.pageUrl} target="_blank" rel="noreferrer">{selectedResultImage.source.title || '查看图片来源'}</a>}
+                  </div>
+                </>}
+                {assets.length > 0 && <nav className="workbench-image-review-thumbnails" aria-label="选择审核图片">
+                  {assets.map((asset, index) => {
+                    const resultImage = resultImageByAssetId.get(asset.id);
+                    const pageIndex = resultImage?.pageIndex ?? index + 1;
+                    const alt = asset.originalName || `任务 ${detail.id} 第 ${pageIndex} 张图片`;
+                    return <Button unstyled className="workbench-image-review-thumbnail" type="button" key={asset.id}
+                      data-selected={selectedAssetIndex === index} aria-pressed={selectedAssetIndex === index}
+                      aria-label={`选择第 ${pageIndex} 页：${alt}`} onClick={() => setSelectedAssetIndex(index)}>
+                      <img src={apiPath(asset.url)} alt="" loading={index === 0 ? 'eager' : 'lazy'} decoding="async" />
+                      <span><strong>{String(pageIndex).padStart(2, '0')}</strong>{IMAGE_KIND_LABELS[draft?.imagePlan[index]?.kind ?? 'detail']}</span>
+                    </Button>;
+                  })}
+                </nav>}
+              </div>
+              <aside className="workbench-image-review-decision" aria-label="图片终审结论">
+                {isImageReviewView && currentImageRun && <TaskQualitySummary compact result={currentImageRun.result} />}
+                {canReviewImages && <div className="human-rating-panel human-image-rating" aria-label="整套图片人工评分">
+                  {!imageSetComplete && <p className="notice warning" role="status">当前图集文件不完整，不能审核通过。请刷新核对，或评分后选择重试生图、废弃。</p>}
+                  {humanQualitySettingsLoading && <p className="human-rating-config-status" role="status">正在读取评分选项…</p>}
+                  {humanQualitySettingsError && <p className="human-rating-config-status" role="alert">评分选项读取失败，请刷新后重试。</p>}
+                  <HumanScoreField
+                    id={`image-score-${detail.id}-${detail.currentImageRunId}`}
+                    legend="整套图片评分"
+                    value={imageScore}
+                    scoreDefinitions={scoreDefinitions}
                     disabled={loading || submitting || humanQualitySettingsUnavailable || Boolean(savedImageAssessment)}
-                    onToggleReason={(code) => { toggleImageReason(code); setError(''); }}
-                    onNoteChange={(note) => { setImageReviewNote(note); setError(''); }}
+                    onChange={(score) => { updateImageScore(score); setError(''); }}
                   />
-                  {assets.length > 0 && <fieldset>
-                    <legend>问题页 <span>可多选，也可不选</span></legend>
-                    <div className="human-rating-pages">
-                      {assets.map((asset, index) => {
-                        const pageIndex = resultImageByAssetId.get(asset.id)?.pageIndex ?? index + 1;
-                        return <label key={asset.id} data-selected={imageProblemAssetIds.includes(asset.id)}>
-                          <Checkbox
-                            checked={imageProblemAssetIds.includes(asset.id)}
-                            disabled={loading || submitting || Boolean(savedImageAssessment)}
-                            onChange={() => toggleProblemAsset(asset.id)}
-                          />
-                          <span>第 {pageIndex} 页</span>
-                        </label>;
-                      })}
-                    </div>
-                  </fieldset>}
+                  {imageScore !== null && imageScore < 3 && <div className="human-rating-followup">
+                    <HumanRatingFeedback
+                      id={`image-${detail.id}-${detail.currentImageRunId}`}
+                      reasonOptions={imageReasonOptions}
+                      reasons={imageReasons}
+                      note={imageReviewNote}
+                      notePlaceholder={humanRatingSettings.noteGuidance.imagePlaceholder}
+                      showReasonOptions={showImageDeductionReasons}
+                      feedbackRequired={false}
+                      disabled={loading || submitting || humanQualitySettingsUnavailable || Boolean(savedImageAssessment)}
+                      onToggleReason={(code) => { toggleImageReason(code); setError(''); }}
+                      onNoteChange={(note) => { setImageReviewNote(note); setError(''); }}
+                    />
+                    {assets.length > 0 && <fieldset>
+                      <legend>问题页 <span>可多选，也可不选</span></legend>
+                      <div className="human-rating-pages">
+                        {assets.map((asset, index) => {
+                          const pageIndex = resultImageByAssetId.get(asset.id)?.pageIndex ?? index + 1;
+                          return <label key={asset.id} data-selected={imageProblemAssetIds.includes(asset.id)}>
+                            <Checkbox
+                              checked={imageProblemAssetIds.includes(asset.id)}
+                              disabled={loading || submitting || Boolean(savedImageAssessment)}
+                              onChange={() => toggleProblemAsset(asset.id)}
+                            />
+                            <span>第 {pageIndex} 页</span>
+                          </label>;
+                        })}
+                      </div>
+                    </fieldset>}
+                  </div>}
+                  {imageScore !== null && <p className="human-rating-guidance" role="status">
+                    {imageScoreDefinition && <><strong>{imageScoreDefinition.title}</strong> · {imageScoreDefinition.description}。 </>}
+                    {isPassingHumanScore(imageScore)
+                      ? '已达到放行标准，也可根据需要重试或废弃。'
+                      : '未达到放行标准，请选择重试生图或废弃。'}
+                  </p>}
+                  <HumanAssessmentHistory assessments={imageAssessments} scoreDefinitions={scoreDefinitions} reasonOptions={imageReasonOptions} showReasonOptions={showImageDeductionReasons} />
                 </div>}
-                {imageScore !== null && <p className="human-rating-guidance" role="status">
-                  {imageScoreDefinition && <><strong>{imageScoreDefinition.title}</strong> · {imageScoreDefinition.description}。 </>}
-                  {isPassingHumanScore(imageScore)
-                    ? '已达到放行标准，也可根据需要重试或废弃。'
-                    : '未达到放行标准，请选择重试生图或废弃。'}
-                </p>}
-                <HumanAssessmentHistory assessments={imageAssessments} scoreDefinitions={scoreDefinitions} reasonOptions={imageReasonOptions} showReasonOptions={showImageDeductionReasons} />
-              </div>}
-              {!canReviewImages && imageAssessments.length > 0 && <div className="human-rating-readonly">
-                <span>当前图集人工评分</span>
-                <HumanScoreBadge score={imageAssessments.at(-1)!.score} />
-                <HumanAssessmentHistory assessments={imageAssessments} scoreDefinitions={scoreDefinitions} reasonOptions={imageReasonOptions} showReasonOptions={showImageDeductionReasons} />
-              </div>}
+                {!canReviewImages && imageAssessments.length > 0 && <div className="human-rating-readonly">
+                  <span>当前图集人工评分</span>
+                  <HumanScoreBadge score={imageAssessments.at(-1)!.score} />
+                  <HumanAssessmentHistory assessments={imageAssessments} scoreDefinitions={scoreDefinitions} reasonOptions={imageReasonOptions} showReasonOptions={showImageDeductionReasons} />
+                </div>}
+                {!canReviewImages && imageAssessments.length === 0 && isImageReviewView && <p className="notice">当前账号仅可查看图片和已审文案；图片终审操作由管理员或已分配审核员完成。</p>}
+                {currentImageRun?.result?.processing?.type === 'LOCAL' && <p className="notice warning">此版本已在本地转换格式或背景，未重新调用模型验收，请检查文字对比和透明边缘后审核。</p>}
+                {imageConfigurationChanged && <p className="notice warning">下方配置尚未应用，当前预览仍是已有成品。请先提交转换或重新生图，或刷新恢复已保存的配置。</p>}
+                <div className="workbench-image-review-preference"><ImagePreviewPreference /></div>
+              </aside>
               {activeAsset && activeAssetIndex !== null && <ImagePreview
                 hideTrigger
                 isOpen
@@ -1147,13 +1295,13 @@ export function TaskReviewDialog({
                 transparency={activeResultImage?.transparency}
                 position={activeAssetIndex + 1}
                 total={assets.length}
+                backdrop={previewBackdrop}
+                onBackdropChange={setPreviewBackdrop}
                 preloads={assets.slice(Math.max(0, activeAssetIndex - 1), activeAssetIndex + 2).filter(asset => asset.id !== activeAsset.id).map(asset => apiPath(asset.url))}
                 onClose={() => setActiveAssetIndex(null)}
                 onPrevious={activeAssetIndex > 0 ? () => setActiveAssetIndex(index => index === null ? null : index - 1) : undefined}
                 onNext={activeAssetIndex < assets.length - 1 ? () => setActiveAssetIndex(index => index === null ? null : index + 1) : undefined}
               />}
-              {currentImageRun?.result?.processing?.type === 'LOCAL' && <p className="notice warning">此版本已在本地转换格式或背景，未重新调用模型验收，请检查文字对比和透明边缘后审核。</p>}
-              {imageConfigurationChanged && <p className="notice warning">下方配置尚未应用，当前预览仍是已有成品。请先提交转换或重新生图，或刷新恢复已保存的配置。</p>}
             </section>}
 
             <ImageHistoryCompare runs={detail.imageRuns} currentRunId={detail.currentImageRunId} assets={detail.assets}
@@ -1161,19 +1309,23 @@ export function TaskReviewDialog({
             </div>
 
             {draft && <div id="review-plan-pane" className="workbench-review-pane" data-review-pane="plan">
-              <section className="workbench-review-section">
+              <section className="workbench-review-section workbench-image-plan-section">
                 <div className="workbench-review-section-title"><span>{assets.length > 0 ? '03' : '02'}</span><div><h3>图片文案规划</h3><p>{canEditApprovedImagePlan
                   ? '可修正逐页文字与画面指令；页面类型保持锁定，评分后重试会创建新的人工批准版本。'
                     : editable ? '逐页核对画面文字；规划编辑不受文案评分档位影响。'
                     : '当前状态仅供核对已审核的图片文案规划。'}</p></div></div>
                 <nav className="workbench-image-plan-nav" aria-label="图片规划页码">
-                  {draft.imagePlan.map((item, index) => <Button unstyled type="button" key={index} aria-pressed={activePlanIndex === index} aria-controls={`review-plan-page-${index}`} onClick={() => setActivePlanIndex(index)}>
-                    <span>第 {index + 1} 页 · {IMAGE_KIND_LABELS[item.kind]}</span><strong>{item.headline || '未填写页面标题'}</strong>
-                  </Button>)}
+                  <Button unstyled className="workbench-image-plan-nav-button" type="button" aria-label="上一页" disabled={activePlanIndex === 0}
+                    onClick={() => setActivePlanIndex(index => Math.max(0, index - 1))}><ChevronLeft size={16} /><span>上一页</span></Button>
+                  <div className="workbench-image-plan-current" aria-live="polite">
+                    <div><strong>第 {activePlanIndex + 1} / {draft.imagePlan.length} 页</strong><span>{IMAGE_KIND_LABELS[draft.imagePlan[activePlanIndex]?.kind] ?? '未设置类型'}</span></div>
+                    <p>{draft.imagePlan[activePlanIndex]?.headline || '未填写页面标题'}</p>
+                  </div>
+                  <Button unstyled className="workbench-image-plan-nav-button" type="button" aria-label="下一页" disabled={activePlanIndex >= draft.imagePlan.length - 1}
+                    onClick={() => setActivePlanIndex(index => Math.min(draft.imagePlan.length - 1, index + 1))}><span>下一页</span><ChevronRight size={16} /></Button>
                 </nav>
                 <div className="workbench-image-plan-grid">
                   {draft.imagePlan.map((item, index) => <article id={`review-plan-page-${index}`} className="workbench-image-plan-card" key={index} data-plan-index={index} hidden={activePlanIndex !== index}>
-                    <div className="workbench-image-plan-head"><b>第 {index + 1} 页</b><span>{IMAGE_KIND_LABELS[item.kind]}</span></div>
                     <div className="workbench-image-plan-fields" data-edit-blocked={Boolean(planEditBlockMessage)}
                       onPointerDownCapture={(event) => {
                         if (!(event.target as Element).closest('[data-edit-reminder-exempt]')) copyEditPointerAtRef.current = Date.now();
@@ -1185,11 +1337,14 @@ export function TaskReviewDialog({
                         if (Date.now() - copyEditPointerAtRef.current > 500 && !(event.target as Element).closest('[data-edit-reminder-exempt]')) revealCopyEditNotice('plan');
                       }}>
                       <div className="field">
-                        <label htmlFor={`review-plan-kind-${index}`}>页面类型</label>
-                        <Select value={item.kind} disabled={planKindDisabled} onValueChange={(kind: ImagePlanItem['kind']) => updateImagePlan(index, { kind, layout: { mode: 'AUTO' } })}>
-                          <SelectTrigger id={`review-plan-kind-${index}`}><SelectValue /></SelectTrigger>
-                          <SelectContent>{IMAGE_KINDS.map((kind) => <SelectItem value={kind} key={kind}>{IMAGE_KIND_LABELS[kind]}</SelectItem>)}</SelectContent>
+                        <label htmlFor={`review-plan-kind-${index}`}>页面类型 <small>{index === 0 ? '首图固定' : '影响页面版式'}</small></label>
+                        <Select value={item.kind} disabled={planKindDisabled || index === 0} onValueChange={(kind: ImagePlanItem['kind']) => updateImagePlan(index, { kind, layout: { mode: 'AUTO' } })}>
+                          <SelectTrigger id={`review-plan-kind-${index}`} aria-describedby={`review-plan-kind-help-${index}`}><SelectValue /></SelectTrigger>
+                          <SelectContent>{IMAGE_KINDS.filter((kind) => index === 0 ? kind === 'hero' : kind !== 'hero').map((kind) => <SelectItem value={kind} key={kind}>{IMAGE_KIND_LABELS[kind]}</SelectItem>)}</SelectContent>
                         </Select>
+                        <small id={`review-plan-kind-help-${index}`} className="workbench-image-plan-kind-help">{index === 0
+                          ? '首图必须为封面。'
+                          : '用于匹配可用版式；切换后将自动重新匹配布局。'}</small>
                       </div>
                       <div className="field">
                         <label htmlFor={`review-plan-headline-${index}`}>页面标题</label>
@@ -1203,8 +1358,8 @@ export function TaskReviewDialog({
                       </div>
                       <div className="field full">
                         <label htmlFor={`review-plan-bullets-${index}`}>画面要点 <small>每行一条，2–5 条</small></label>
-                        <Textarea id={`review-plan-bullets-${index}`} className="textarea" value={item.bullets.join('\n')} required readOnly={planFieldsReadOnly}
-                          onChange={(event) => updateImagePlan(index, { bullets: event.target.value.split(/\r?\n/u) })} />
+                        <AutosizeTextarea id={`review-plan-bullets-${index}`} className="textarea workbench-plan-bullets-editor" value={item.bullets.join('\n')} required readOnly={planFieldsReadOnly}
+                          resizeToken={activePlanIndex === index} onChange={(event) => updateImagePlan(index, { bullets: event.target.value.split(/\r?\n/u) })} />
                       </div>
                       <Disclosure className="field full" open={expandedPrompts.includes(index)} onOpenChange={open => setExpandedPrompts(current => open ? [...current, index] : current.filter(value => value !== index))}>
                         <DisclosureTrigger data-edit-reminder-exempt>画面生成指令</DisclosureTrigger>
@@ -1218,6 +1373,7 @@ export function TaskReviewDialog({
                   </article>)}
                 </div>
               </section>
+              {editable && <ReviewReferences detail={detail} sources={sources} xiaohongshuLinks={xiaohongshuLinks} />}
               {isAdmin && <Disclosure className="workbench-review-section">
                 <DisclosureTrigger>交付格式与背景</DisclosureTrigger>
                 <DisclosureContent>
@@ -1242,9 +1398,17 @@ export function TaskReviewDialog({
               {canResumeImages && <Button unstyled className="button primary" type="button" disabled={submitting || loading} onClick={() => { void resumeImages(); }}><RotateCcw size={15} />从失败步骤继续</Button>}
               {canReviewImages && <>
                 <Button unstyled className="button danger" type="button" disabled={submitting || loading || !imageRatingComplete} onClick={() => { void submitImageReview('DISCARD'); }}><Trash2 size={15} />废弃</Button>
-                <Button unstyled className="button" type="button" disabled={submitting || loading || !imageRatingComplete} onClick={() => { void submitImageReview('REWORK', 'COPY'); }}><RotateCcw size={15} />文案返工</Button>
-                <Button unstyled className="button" type="button" disabled={submitting || loading || !imageRatingComplete} onClick={() => { void submitImageReview('REWORK', 'IMAGE'); }}><RotateCcw size={15} />图片返工</Button>
-                <Button unstyled className="button" type="button" disabled={submitting || loading || !imageRatingComplete} onClick={() => { void submitImageReview('REWORK', 'BOTH'); }}><RotateCcw size={15} />文案 + 图片返工</Button>
+                <div className="workbench-image-rework-control">
+                  <Select value={imageReworkTarget} disabled={submitting || loading} onValueChange={(value: 'COPY' | 'IMAGE' | 'BOTH') => setImageReworkTarget(value)}>
+                    <SelectTrigger aria-label="返工范围"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="IMAGE">仅图片返工</SelectItem>
+                      <SelectItem value="COPY">仅文案返工</SelectItem>
+                      <SelectItem value="BOTH">文案 + 图片返工</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Button unstyled className="button" type="button" disabled={submitting || loading || !imageRatingComplete} onClick={() => { void submitImageReview('REWORK', imageReworkTarget); }}><RotateCcw size={15} />发起返工</Button>
+                </div>
                 <Button unstyled className="button primary" type="button" disabled={submitting || loading || !canApproveImages} onClick={() => { void submitImageReview('APPROVE'); }}><CheckCircle2 size={15} />{submitting ? '正在提交…' : '通过到交付池'}</Button>
               </>}
               {editable && <>

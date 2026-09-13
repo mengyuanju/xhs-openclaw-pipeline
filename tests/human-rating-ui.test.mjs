@@ -88,7 +88,12 @@ test('copy review scores the machine draft once and auto-scores an edited approv
   assert.doesNotMatch(source, /copyFieldsEditable = editable && originalCopyRatingComplete/u);
   assert.match(source, /const planFieldsReadOnly = !\(editable \|\| canEditApprovedImagePlan\)/u);
   assert.match(source, /const planKindDisabled = !editable \|\| loading \|\| submitting/u);
+  assert.match(source, /\['QA_RETURN', 'FINAL_REWORK'\]\.includes\(revision\?\.reworkOrigin \?\? ''\)/u);
   assert.match(source, /<CopyMachineDraftScoreField[\s\S]*legend=\{currentCopyRatingLabel\}/u);
+  assert.match(source, /const showCopyRating = detail\?\.state === 'COPY_REVIEW_PENDING' && !isCopyRework/u);
+  assert.match(source, /\{showCopyRating && <div className="human-rating-panel"/u);
+  assert.match(source, /disabled=\{!editable \|\| loading \|\| submitting \|\| humanQualitySettingsUnavailable/u);
+  assert.match(source, /评分模块当前为只读/u);
   assert.match(source, /const currentCopyRatingLabel = '机器原稿初评（保留）'/u);
   assert.doesNotMatch(source, /copyScoreDefinition/u);
   assert.match(source, /copyOriginalScore === 2\.5[\s\S]*请完成必要的小修/u);
@@ -103,7 +108,7 @@ test('copy review scores the machine draft once and auto-scores an edited approv
   assert.match(source, /const copyContentChangedFromMachine = revision\?\.copyContentChangedFromMachine === true/u);
   assert.match(source, /const hasEditedCopyVersion = copyContentChanged \|\| copyContentChangedFromMachine/u);
   assert.match(source, /const canApproveCopy = isCopyRework \? copyReworkSatisfied/u);
-  assert.match(source, /disabled=\{loading \|\| submitting \|\| humanQualitySettingsUnavailable \|\| Boolean\(savedCopyRatings\.current\) \|\| copyContentChanged\}/u);
+  assert.match(source, /disabled=\{!editable \|\| loading \|\| submitting \|\| humanQualitySettingsUnavailable \|\| Boolean\(savedCopyRatings\.current\) \|\| copyContentChanged\}/u);
   assert.match(source, /最终修改稿无需再次评分/u);
 });
 
@@ -111,14 +116,27 @@ test('copy and image review visibility settings control their own guidance and r
   const source = await readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8');
 
   assert.match(source, /humanRatingSettings\.copyReviewDisplay\.showScoreDescriptions/u);
-  assert.match(source, /humanRatingSettings\.copyReviewDisplay\.showDeductionReasons/u);
-  assert.match(source, /humanRatingSettings\.imageReviewDisplay\.showDeductionReasons/u);
+  assert.match(source, /humanQualitySettings\?\.copyReviewDisplay\.showDeductionReasons === true/u);
+  assert.match(source, /humanQualitySettings\?\.imageReviewDisplay\.showDeductionReasons === true/u);
+  assert.doesNotMatch(source, /const show(?:Copy|Image)DeductionReasons = humanRatingSettings/u);
   assert.match(source, /<CopyMachineDraftScoreField[\s\S]{0,240}showDescriptions=\{showCopyScoreDescriptions\}/u);
   assert.match(source, /showReasonOptions=\{showCopyDeductionReasons\}/u);
   assert.match(source, /showReasonOptions=\{showImageDeductionReasons\}/u);
   assert.match(source, /showScoreDescriptions=\{showCopyScoreDescriptions\} showReasonOptions=\{showCopyDeductionReasons\}/u);
   assert.match(source, /legend="整套图片评分"[\s\S]{0,180}scoreDefinitions=\{scoreDefinitions\}[\s\S]{0,180}disabled=/u);
   assert.match(source, /const canApproveImages = imageSetComplete && imageRatingComplete && isPassingHumanScore\(imageScore\)/u);
+});
+
+test('image review separates automatic evidence from configurable human deduction reasons', async () => {
+  const [dialog, qualitySummary] = await Promise.all([
+    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/task-quality-summary.tsx'), 'utf8'),
+  ]);
+
+  assert.match(dialog, /<TaskQualitySummary compact result=\{currentImageRun\.result\}/u);
+  assert.match(dialog, /data-image-review=\{isImageReviewView\}/u);
+  assert.match(qualitySummary, /系统检测证据，不是人工评分原因/u);
+  assert.match(qualitySummary, /查看自动质检证据/u);
 });
 
 test('copy decisions use the shared payload builder and preserve the original assessment', async () => {
