@@ -452,6 +452,31 @@ async function revokeStalePreview(repository, previewClient, previewId, signal) 
   }
 }
 
+export async function drainDeliveryPreviewRevocations(
+  repository,
+  previewClient,
+  { limit = 10, signal } = {},
+) {
+  if (!previewClient || typeof repository?.claimDeliveryPreviewRevocationJobs !== 'function') {
+    return { claimed: 0, revoked: 0, failed: 0 };
+  }
+  const jobs = await repository.claimDeliveryPreviewRevocationJobs(limit);
+  let revoked = 0;
+  let failed = 0;
+  for (const job of jobs) {
+    try {
+      signal?.throwIfAborted();
+      const result = await previewClient.revoke(job.previewId, { signal });
+      await repository.markDeliveryPreviewRevoked(job.previewId, new Date(result.revokedAt));
+      revoked += 1;
+    } catch (error) {
+      failed += 1;
+      await repository.failDeliveryPreviewRevocationJob(job.id, error);
+    }
+  }
+  return { claimed: jobs.length, revoked, failed };
+}
+
 function normalizeBaseUrl(value) {
   if (typeof value !== 'string' || !value.trim()) return null;
   let url;

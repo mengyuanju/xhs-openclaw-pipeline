@@ -2,6 +2,10 @@
   "name": "xhs-codex-pipeline",
   "version": "0.2.0",
   "private": true,
+  "workspaces": [
+    "server",
+    "preview-service"
+  ],
   "type": "module",
   "description": "Distributed Xiaohongshu content production powered by Codex.",
   "engines": {
@@ -15,6 +19,7 @@
     "start:lan": "next start -H 0.0.0.0 -p 3001",
     "typecheck": "tsc --noEmit",
     "typecheck:all": "npm run typecheck && npm --prefix preview-service run typecheck",
+    "build:all": "npm run build && npm --prefix preview-service run build",
     "db:init": "node src/cli.mjs init",
     "enqueue": "node src/cli.mjs enqueue",
     "status": "node src/cli.mjs status",
@@ -67,6 +72,7 @@
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
+    "postcss": "8.5.28",
     "typescript": "^7.0.2"
   }
 }

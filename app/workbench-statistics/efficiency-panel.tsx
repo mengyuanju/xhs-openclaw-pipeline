@@ -48,7 +48,7 @@ export function EfficiencyPanel({ data }: { data: Efficiency | null }) {
     </div>}
     <div className="job-stats-efficiency-grid">
       <EfficiencyStage label="文案生成" data={data?.copy} note="成功执行耗时" />
-      <EfficiencyStage label="图片整套生成" data={data?.image} note="成功执行耗时" />
+      <EfficiencyStage label="图片整套生成" data={data?.image} note="同一恢复链累计耗时" />
       <EfficiencyStage label="从创建到审核交付" data={data?.delivery} note="包含排队与人工审核" />
     </div>
     {data && <div className="job-stats-efficiency-chart-grid">
@@ -89,7 +89,7 @@ export function EfficiencyPanel({ data }: { data: Efficiency | null }) {
         <tbody>{(['copy', 'image', 'delivery'] as const).map((key, i) => <tr key={key}><th>{['文案生成', '图片整套生成', '总交付'][i]}</th>
           <td>{duration(data?.[key].medianMs)}</td><td>{duration(data?.[key].p90Ms)}</td><td>{number(data?.[key].samples)}</td>
           <td>{key === 'delivery' ? '—' : number(data?.[key].invalid)}</td><td>{key === 'delivery' ? '不适用' : number(data?.[key].abandoned)}</td></tr>)}</tbody></table></div>
-      <p className="job-stats-note">P90 表示 90% 的有效样本不超过该耗时。失败、已放弃、运行中和无效起止时间不计入成功耗时。</p>
+      <p className="job-stats-note">P90 表示 90% 的有效样本不超过该耗时。图片成功样本包含同一恢复链内失败、续跑及已放弃阶段的时间，并合并重叠区间；运行中和无效起止时间不计入。</p>
     </DisclosureContent></Disclosure>
     {data && data.trend.length > 1 && <Disclosure className="job-stats-methods job-stats-trend-disclosure"><DisclosureTrigger>查看每日平均耗时趋势</DisclosureTrigger><DisclosureContent>
       <Chart label="每日文案和图片整套成功执行平均耗时（分钟），无样本日期留空" unit="分钟"

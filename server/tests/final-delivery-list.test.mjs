@@ -43,8 +43,8 @@ test('admin delivery pool page applies an exact package-name filter and returns 
       calls.push({ sql, values });
       if (/AS name,[\s\S]*COUNT\(\*\)/u.test(sql)) {
         return { rows: [
-          { id: '9', name: '九月选题', count: '51', unuploaded_count: '40', published_count: '10', revoked_count: '1' },
-          { id: '10', name: '十月选题', count: '7', unuploaded_count: '7', published_count: '0', revoked_count: '0' },
+          { id: '9', name: '九月选题', deleted: false, count: '51', unuploaded_count: '40', published_count: '10', revoked_count: '1' },
+          { id: '10', name: '十月选题', deleted: true, count: '7', unuploaded_count: '7', published_count: '0', revoked_count: '0' },
           { id: null, name: null, count: '34', unuploaded_count: '34', published_count: '0', revoked_count: '0' },
         ] };
       }
@@ -64,8 +64,8 @@ test('admin delivery pool page applies an exact package-name filter and returns 
   assert.equal(page.items[0].queryPackageName, '九月选题');
   assert.deepEqual(page.facets, {
     queryPackages: [
-      { id: 9, name: '九月选题', count: 51, unuploadedCount: 40, publishedCount: 10, revokedCount: 1 },
-      { id: 10, name: '十月选题', count: 7, unuploadedCount: 7, publishedCount: 0, revokedCount: 0 },
+      { id: 9, name: '九月选题', deleted: false, count: 51, unuploadedCount: 40, publishedCount: 10, revokedCount: 1 },
+      { id: 10, name: '十月选题', deleted: true, count: 7, unuploadedCount: 7, publishedCount: 0, revokedCount: 0 },
     ],
     unassigned: { count: 34, unuploadedCount: 34, publishedCount: 0, revokedCount: 0 },
   });
@@ -126,8 +126,8 @@ test('preview candidate snapshot is admin-limited and excludes entries already b
   }), [7, 8]);
   assert.deepEqual(values, [[9, 10], true, [], 200]);
   assert.match(sql, /delivery\.preview_id IS NULL/u);
-  assert.match(sql, /task\.source_query_package_id = ANY\(\$1::bigint\[\]\)/u);
-  assert.match(sql, /\$2::boolean AND task\.source_query_package_id IS NULL/u);
+  assert.match(sql, /COALESCE\(task\.source_query_package_id, task\.source_query_package_snapshot_id\) = ANY\(\$1::bigint\[\]\)/u);
+  assert.match(sql, /\$2::boolean AND task\.source_query_package_id IS NULL[\s\S]*task\.source_query_package_snapshot_id IS NULL/u);
   assert.match(sql, /cardinality\(\$3::bigint\[\]\) = 0 OR task\.id = ANY\(\$3::bigint\[\]\)/u);
   assert.match(sql, /LIMIT \$4/u);
   assert.deepEqual(await listDeliveryPoolTaskIdsForPreview(pool, admin, {

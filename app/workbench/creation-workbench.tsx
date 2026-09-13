@@ -104,6 +104,9 @@ type DistributedTask = {
   currentStage: string | null;
   progressPercent: number;
   progressMessage: string;
+  imageProductionChainId?: string | null;
+  imageProductionStartedAt?: string | null;
+  imageProductionDurationMs?: number;
   executionStartedAt: string | null;
   lastActivityAt: string | null;
   finishedAt: string | null;
@@ -122,7 +125,14 @@ type ExecutorNode = {
   lastSeenAt: string;
 };
 
-type TaskPage = { items: DistributedTask[]; total: number; limit: number; offset: number };
+type TaskPage = {
+  items: DistributedTask[];
+  total: number;
+  limit: number;
+  offset: number;
+  previousCursor?: string | null;
+  nextCursor?: string | null;
+};
 
 type SavedTaskView = {
   id: number;
@@ -430,14 +440,27 @@ function isStale(task: DistributedTask) {
     && Date.now() - Date.parse(lastProgressAt) >= STALE_AFTER_MS;
 }
 
-function elapsed(task: DistributedTask) {
-  if (!task.executionStartedAt) return '—';
-  const end = task.finishedAt ? Date.parse(task.finishedAt) : Date.now();
-  const seconds = Math.max(0, Math.round((end - Date.parse(task.executionStartedAt)) / 1_000));
+function durationLabel(milliseconds: number) {
+  const seconds = Math.max(0, Math.round(milliseconds / 1_000));
   if (seconds < 60) return `${seconds} 秒`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes} 分 ${seconds % 60} 秒`;
   return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`;
+}
+
+function elapsed(task: DistributedTask) {
+  if (!task.executionStartedAt) return '—';
+  const end = task.finishedAt ? Date.parse(task.finishedAt) : Date.now();
+  return durationLabel(end - Date.parse(task.executionStartedAt));
+}
+
+function cumulativeImageElapsed(task: DistributedTask) {
+  if (!task.imageProductionChainId) return null;
+  const completedDuration = Number.isFinite(task.imageProductionDurationMs)
+    ? Math.max(0, Number(task.imageProductionDurationMs)) : 0;
+  const runningDuration = task.state === 'IMAGE_RUNNING' && task.executionStartedAt
+    ? Math.max(0, Date.now() - Date.parse(task.executionStartedAt)) : 0;
+  return durationLabel(completedDuration + runningDuration);
 }
 
 function timeLabel(value: string | null, state?: TaskState) {
@@ -740,7 +763,12 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   const [fetchError, setFetchError] = useState('');
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
   const refreshRequestId = useRef(0);
+  const nodesLoadedAt = useRef(0);
   const activeRequest = useRef<AbortController | null>(null);
+  const taskPageCursors = useRef<{ scope: string; values: Map<number, string | null> }>({
+    scope: '', values: new Map([[1, null]]),
+  });
+  const requestedLastPage = useRef<number | null>(null);
   const listStart = useRef<HTMLDivElement | null>(null);
   const scrollAfterPageLoad = useRef(false);
   const leavingWorkbenchView = useRef(false);
@@ -810,6 +838,17 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     }
     try {
       const view = activeDefinition;
+      const paginationScope = JSON.stringify([
+        activeView, creatorUserId, creatorAccountId, pageSize, creatorFilter?.username,
+        creatorFilter?.id, creatorRoleFilter, stateFilter, searchKeyword, queryPackageName,
+        deduplicateQuery, sort, attentionFilter, role,
+      ]);
+      if (taskPageCursors.current.scope !== paginationScope) {
+        taskPageCursors.current = { scope: paginationScope, values: new Map([[1, null]]) };
+        requestedLastPage.current = null;
+      }
+      const pageCursor = taskPageCursors.current.values.get(page);
+      const useLastPage = requestedLastPage.current === page;
       const personalStates = view.personalOnly ? Object.hasOwn(STATE_GROUPS, stateFilter)
         ? STATE_GROUPS[stateFilter as StateGroup] : Object.values(STATE_GROUPS).flat() : null;
       const search = new URLSearchParams(legacyStateFilterMode.current
@@ -827,6 +866,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       else if (searchKeyword) search.set('query', searchKeyword);
       if (canUseQueryPackageFilter && queryPackageName) search.set('queryPackageName', queryPackageName);
       if (deduplicateQuery) search.set('deduplicateQuery', 'true');
+      if (pageCursor) search.set('cursor', pageCursor);
+      if (useLastPage) search.set('lastPage', 'true');
       if (role === 'ADMIN' && isAllJobs && attentionFilter !== 'NONE') search.set('attention', attentionFilter);
       const { sortBy, sortOrder } = taskSortParams(sort);
       search.set('sortBy', sortBy);
@@ -846,6 +887,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         sortOrder,
         limit: pageSize,
         offset: (page - 1) * pageSize,
+        ...(pageCursor ? { cursor: pageCursor } : {}),
+        ...(useLastPage ? { lastPage: true } : {}),
       }) : request<TaskPage | DistributedTask[]>(apiPath(`/v1/tasks?${search}`))
         .catch(async (caught) => {
           if (!(caught instanceof Error) || caught.message !== 'task state filter is invalid') throw caught;
@@ -855,9 +898,11 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
           compatibilityTasks = await request<DistributedTask[]>(apiPath(`/v1/tasks?${compatibilitySearch}`));
           return compatibilityTasks;
         });
+      const shouldRefreshNodes = nodesLoadedAt.current === 0
+        || Date.now() - nodesLoadedAt.current >= 30_000;
       const [rawTaskPage, nextNodes] = await Promise.all([
         taskPageRequest,
-        request<ExecutorNode[]>(apiPath('/v1/nodes')),
+        shouldRefreshNodes ? request<ExecutorNode[]>(apiPath('/v1/nodes')) : Promise.resolve(null),
       ]);
       let taskPage: TaskPage;
       if (Array.isArray(rawTaskPage)) {
@@ -900,9 +945,21 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       setTasks(taskPage.items);
       setTotal(taskPage.total);
       setResultOffset(taskPage.offset);
+      if (typeof taskPage.previousCursor === 'string' && page > 1) {
+        taskPageCursors.current.values.set(page - 1, taskPage.previousCursor);
+      }
+      if (typeof taskPage.nextCursor === 'string') {
+        taskPageCursors.current.values.set(page + 1, taskPage.nextCursor);
+      } else {
+        taskPageCursors.current.values.delete(page + 1);
+      }
+      requestedLastPage.current = null;
       const lastPage = Math.max(1, Math.ceil(taskPage.total / pageSize));
       if (page > lastPage) setPage(lastPage);
-      setNodes(nextNodes);
+      if (nextNodes) {
+        setNodes(nextNodes);
+        nodesLoadedAt.current = Date.now();
+      }
       setFetchError('');
       setLastUpdatedAt(new Date().toISOString());
     } catch (caught) {
@@ -1434,7 +1491,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     const task = permanentDeleteTask;
     const password = deletionPassword;
     if (!task || !password || !permanentDeletionLock.acquire()) return;
-    let refreshAfterDelete = false;
+    let refreshPage: number | null = null;
     setActingTaskId(task.id);
     try {
       const result = await apiRequest<{ id: number; deleted: boolean; cleanupPending?: boolean }>(apiPath(`/v1/tasks/${task.id}/permanent`), {
@@ -1444,12 +1501,16 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         ? `任务 #${task.id} 已删除；素材已隔离，中心服务将继续清理。`
         : `任务 #${task.id} 及其关联数据已永久删除。`);
       setTasks((current) => current.filter((item) => item.id !== task.id));
+      const nextTotal = Math.max(0, total - 1);
+      const nextPage = Math.min(page, Math.max(1, Math.ceil(nextTotal / pageSize)));
+      setTotal(nextTotal);
+      setPage(nextPage);
+      refreshPage = nextPage;
       setSelectedTaskIds((current) => current.filter((id) => id !== task.id));
       setError('');
       setDeletionError('');
       setDeletionPassword('');
       setPermanentDeleteTask(null);
-      refreshAfterDelete = true;
     } catch (caught) {
       setDeletionError(caught instanceof Error ? caught.message : '永久删除失败');
       setDeletionPassword('');
@@ -1457,14 +1518,14 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       permanentDeletionLock.release();
       setActingTaskId(null);
     }
-    if (refreshAfterDelete) void refresh({ silent: true });
+    if (refreshPage === page) await refresh({ silent: true });
   }
 
   async function permanentlyDeleteSelectedTasks() {
     const tasksToDelete = batchPermanentDeleteTasks;
     const password = deletionPassword;
     if (!tasksToDelete.length || tasksToDelete.length > 20 || !password || batchAction || !permanentDeletionLock.acquire()) return;
-    let refreshAfterDelete = false;
+    let refreshPage: number | null = null;
     setBatchAction('PERMANENT_DELETE');
     try {
       const result = await apiRequest<BatchPermanentDeleteResult>(apiPath('/v1/tasks/batch-permanent-delete'), {
@@ -1477,13 +1538,17 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       });
       const succeeded = new Set(result.succeeded);
       setTasks((current) => current.filter((task) => !succeeded.has(task.id)));
+      const nextTotal = Math.max(0, total - result.succeeded.length);
+      const nextPage = Math.min(page, Math.max(1, Math.ceil(nextTotal / pageSize)));
+      setTotal(nextTotal);
+      setPage(nextPage);
+      refreshPage = nextPage;
       setSelectedTaskIds((current) => current.filter((id) => !result.succeeded.includes(id)));
       setMessage(`批量永久删除完成：成功 ${result.succeeded.length} 条${result.cleanupPending.length ? `，其中 ${result.cleanupPending.length} 条素材正在后台清理` : ''}${result.failed.length ? `，未删除 ${result.failed.length} 条` : ''}。`);
       setError(result.failed.length ? result.failed.map((item) => `#${item.id}：${item.message}`).join('；') : '');
       setDeletionError('');
       setDeletionPassword('');
       setBatchPermanentDeleteTasks([]);
-      refreshAfterDelete = true;
     } catch (caught) {
       setDeletionError(caught instanceof Error ? caught.message : '批量永久删除失败');
       setDeletionPassword('');
@@ -1491,7 +1556,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       permanentDeletionLock.release();
       setBatchAction(null);
     }
-    if (refreshAfterDelete) void refresh({ silent: true });
+    if (refreshPage === page) await refresh({ silent: true });
   }
 
   function taskActions(task: DistributedTask) {
@@ -1980,7 +2045,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
                 <td className="workbench-col-time" data-label="创建 / 开始 / 耗时"><div className="workbench-cell-stack">
                   <time dateTime={task.createdAt}>{timeLabel(task.createdAt)}</time>
                   <small>开始：<time dateTime={task.executionStartedAt || undefined}>{timeLabel(task.executionStartedAt, task.state)}</time></small>
-                  <small className="workbench-elapsed"><Clock3 aria-hidden="true" size={13} />{elapsed(task)}</small>
+                  <small className="workbench-elapsed"><Clock3 aria-hidden="true" size={13} />本次：{elapsed(task)}</small>
+                  {cumulativeImageElapsed(task) && <small className="workbench-elapsed" title="包含同一恢复链中失败运行与续跑的累计图片生产耗时"><Clock3 aria-hidden="true" size={13} />生图累计：{cumulativeImageElapsed(task)}</small>}
                 </div></td>
                 <td className="workbench-col-actions" data-label="操作">{taskActions(task)}</td>
               </tr>)}</tbody>
@@ -1989,8 +2055,12 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
 
       {lastUpdatedAt && <WorkbenchPagination page={page} pageSize={pageSize} total={total} offset={resultOffset} count={tasks.length} busy={loading || refreshing}
         loadError={fetchError} onRetry={() => { void refresh(); }}
-        onPageChange={(nextPage) => { if (nextPage !== page) { scrollAfterPageLoad.current = true; setPage(nextPage); } }}
-        onPageSizeChange={(size) => { scrollAfterPageLoad.current = true; setPageSize(size as WorkbenchListState['pageSize']); setPage(1); }} />}
+        onPageChange={(nextPage, intent) => { if (nextPage !== page) {
+          requestedLastPage.current = intent === 'last' ? nextPage : null;
+          scrollAfterPageLoad.current = true;
+          setPage(nextPage);
+        } }}
+        onPageSizeChange={(size) => { requestedLastPage.current = null; scrollAfterPageLoad.current = true; setPageSize(size as WorkbenchListState['pageSize']); setPage(1); }} />}
     </section>
 
     <TaskReviewDialog

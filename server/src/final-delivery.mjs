@@ -4,6 +4,7 @@ import {
   ControlPlaneNotFoundError,
   normalizeTaskId,
   normalizeUuid,
+  redactExecutionError,
 } from './domain.mjs';
 import { resolveDeliveryArchiveSource } from './delivery-source.mjs';
 import { IMAGE_FORMATS } from './image-options.mjs';
@@ -48,10 +49,12 @@ function deliveryFrom(row) {
     id: Number(row.id),
     taskId: Number(row.task_id),
     query: row.query,
-    queryPackageId: row.source_query_package_id === null
-      || row.source_query_package_id === undefined
-      ? null
-      : Number(row.source_query_package_id),
+    queryPackageId: row.source_query_package_id != null
+      ? Number(row.source_query_package_id)
+      : row.source_query_package_snapshot_id != null
+        ? Number(row.source_query_package_snapshot_id) : null,
+    queryPackageDeleted: row.source_query_package_id == null
+      && row.source_query_package_snapshot_id != null,
     queryPackageName: row.source_query_package_name ?? null,
     copyRevisionId: Number(row.copy_revision_id),
     imageRunId: row.image_run_id,
@@ -121,10 +124,7 @@ export async function createReadyDeliveryEntry(client, {
   actor,
 }) {
   await assertDeliverySourceArchivable(client, { taskId, copyRevisionId, imageRunId });
-  await client.query(`
-    UPDATE delivery_entries SET status = 'WITHDRAWN', withdrawn_at = now()
-    WHERE task_id = $1 AND status = 'READY'
-  `, [taskId]);
+  await withdrawReadyDeliveryEntries(client, taskId, 'SUPERSEDED_DELIVERY');
   const result = await client.query(`
     INSERT INTO delivery_entries(
       task_id, copy_revision_id, image_run_id,
@@ -179,17 +179,93 @@ export async function assertDeliverySourceArchivable(queryable, {
   return { taskId, copyRevisionId, imageRunId };
 }
 
-export async function withdrawReadyDeliveryEntries(client, taskId) {
-  await client.query(`
-    UPDATE delivery_entries SET status = 'WITHDRAWN', withdrawn_at = now()
+export async function withdrawReadyDeliveryEntries(client, rawTaskId, reason = 'TASK_LEFT_DELIVERY') {
+  const taskId = normalizeTaskId(rawTaskId);
+  const safeReason = String(reason ?? '').trim().toUpperCase();
+  if (!/^[A-Z][A-Z0-9_]{0,99}$/u.test(safeReason)) throw new TypeError('delivery withdrawal reason is invalid');
+  const withdrawn = await client.query(`
+    UPDATE delivery_entries
+    SET status = 'WITHDRAWN', withdrawn_at = COALESCE(withdrawn_at, now()),
+      preview_status = CASE
+        WHEN preview_status IN ('PUBLISHED', 'REVOKE_FAILED') THEN 'REVOKING'
+        ELSE preview_status
+      END
     WHERE task_id = $1 AND status = 'READY'
+    RETURNING id, task_id, preview_id, preview_status
   `, [taskId]);
+  const previews = withdrawn.rows.filter((row) => row.preview_id
+    && ['REVOKING', 'PUBLISHED', 'REVOKE_FAILED'].includes(row.preview_status));
+  for (const row of previews) {
+    await client.query(`
+      INSERT INTO delivery_preview_revocation_jobs(
+        preview_id, delivery_entry_id, task_id, reason, status, next_attempt_at
+      ) VALUES ($1, $2, $3, $4, 'PENDING', now())
+      ON CONFLICT(preview_id) DO UPDATE SET
+        reason = EXCLUDED.reason,
+        status = CASE
+          WHEN delivery_preview_revocation_jobs.status = 'COMPLETED' THEN 'COMPLETED'
+          ELSE 'PENDING'
+        END,
+        next_attempt_at = now(), lease_expires_at = NULL, updated_at = now()
+    `, [row.preview_id, row.id, row.task_id, safeReason]);
+  }
+  return { withdrawnCount: withdrawn.rows.length, revocationCount: previews.length };
+}
+
+export async function claimDeliveryPreviewRevocationJobs(queryable, rawLimit = 10) {
+  const limit = Number(rawLimit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+    throw new RangeError('revocation job limit must be between 1 and 50');
+  }
+  const result = await queryable.query(`
+    WITH candidates AS (
+      SELECT id FROM delivery_preview_revocation_jobs
+      WHERE (status IN ('PENDING', 'RETRY') AND next_attempt_at <= now())
+         OR (status = 'PROCESSING' AND lease_expires_at <= now())
+      ORDER BY next_attempt_at, id
+      LIMIT $1
+      FOR UPDATE SKIP LOCKED
+    )
+    UPDATE delivery_preview_revocation_jobs AS job
+    SET status = 'PROCESSING', attempt_count = attempt_count + 1,
+      lease_expires_at = now() + interval '5 minutes', updated_at = now()
+    FROM candidates
+    WHERE job.id = candidates.id
+    RETURNING job.id, job.preview_id, job.attempt_count
+  `, [limit]);
+  return result.rows.map((row) => ({
+    id: Number(row.id),
+    previewId: row.preview_id,
+    attemptCount: Number(row.attempt_count),
+  }));
+}
+
+export async function failDeliveryPreviewRevocationJob(queryable, rawJobId, error) {
+  const jobId = normalizeTaskId(rawJobId);
+  const message = [...redactExecutionError(error ?? 'preview revoke failed')]
+    .slice(0, 500).join('');
+  await queryable.query(`
+    WITH failed AS (
+      UPDATE delivery_preview_revocation_jobs
+      SET status = CASE WHEN attempt_count >= 12 THEN 'FAILED' ELSE 'RETRY' END,
+        next_attempt_at = now() + LEAST(interval '1 hour', interval '5 seconds' * power(2, LEAST(attempt_count, 10))),
+        lease_expires_at = NULL, last_error = $2, updated_at = now()
+      WHERE id = $1 AND status = 'PROCESSING'
+      RETURNING preview_id, status
+    )
+    UPDATE delivery_entries AS delivery
+    SET preview_status = 'REVOKE_FAILED'
+    FROM failed
+    WHERE delivery.preview_id = failed.preview_id
+      AND failed.status = 'FAILED'
+  `, [jobId, message]);
 }
 
 export async function assertTaskReadyForDelivery(queryable, rawTaskId) {
   const taskId = normalizeTaskId(rawTaskId);
   const result = await queryable.query(`
     SELECT delivery.*, task.query, task.source_query_package_id,
+      task.source_query_package_snapshot_id,
       task.source_query_package_name
     FROM tasks AS task
     JOIN delivery_entries AS delivery
@@ -279,6 +355,7 @@ export async function listDeliveryPool(pool, {
   const values = [...filteredValues, limit, offset];
   const pagePromise = pool.query(`
     SELECT delivery.*, task.query, task.source_query_package_id,
+      task.source_query_package_snapshot_id,
       task.source_query_package_name
     FROM delivery_entries AS delivery
     JOIN tasks AS task ON task.id = delivery.task_id
@@ -302,8 +379,10 @@ export async function listDeliveryPool(pool, {
       AND task.current_image_run_id = delivery.image_run_id
     WHERE delivery.status = 'READY' ${visibility} ${packageFilter}
   `, filteredValues), pool.query(`
-    SELECT task.source_query_package_id AS id,
+    SELECT COALESCE(task.source_query_package_id, task.source_query_package_snapshot_id) AS id,
       task.source_query_package_name AS name,
+      (task.source_query_package_id IS NULL
+        AND task.source_query_package_snapshot_id IS NOT NULL) AS deleted,
       COUNT(*)::bigint AS count,
       COUNT(*) FILTER (WHERE delivery.preview_id IS NULL)::bigint AS unuploaded_count,
       COUNT(*) FILTER (WHERE delivery.preview_status = 'PUBLISHED')::bigint AS published_count,
@@ -314,7 +393,9 @@ export async function listDeliveryPool(pool, {
       AND task.current_copy_revision_id = delivery.copy_revision_id
       AND task.current_image_run_id = delivery.image_run_id
     WHERE delivery.status = 'READY' ${visibility}
-    GROUP BY task.source_query_package_id, task.source_query_package_name
+    GROUP BY COALESCE(task.source_query_package_id, task.source_query_package_snapshot_id),
+      task.source_query_package_name,
+      (task.source_query_package_id IS NULL AND task.source_query_package_snapshot_id IS NOT NULL)
     ORDER BY lower(task.source_query_package_name), task.source_query_package_name
   `, visibilityValues)]);
   const unassigned = packageFacets.rows
@@ -335,6 +416,7 @@ export async function listDeliveryPool(pool, {
         .map((row) => ({
           id: Number(row.id),
           name: row.name,
+          deleted: row.deleted === true,
           count: Number(row.count ?? 0),
           unuploadedCount: Number(row.unuploaded_count ?? 0),
           publishedCount: Number(row.published_count ?? 0),
@@ -416,8 +498,9 @@ export async function listDeliveryPoolTaskIdsForPreview(pool, rawActor, {
     WHERE delivery.status = 'READY'
       AND delivery.preview_id IS NULL
       AND (
-        task.source_query_package_id = ANY($1::bigint[])
-        OR ($2::boolean AND task.source_query_package_id IS NULL)
+        COALESCE(task.source_query_package_id, task.source_query_package_snapshot_id) = ANY($1::bigint[])
+        OR ($2::boolean AND task.source_query_package_id IS NULL
+          AND task.source_query_package_snapshot_id IS NULL)
       )
       AND (cardinality($3::bigint[]) = 0 OR task.id = ANY($3::bigint[]))
     ORDER BY delivery.approved_at DESC, delivery.id DESC
@@ -505,6 +588,13 @@ export async function markDeliveryPreviewRevoked(queryable, rawPreviewId, revoke
   const timestamp = new Date(revokedAt);
   if (!Number.isFinite(timestamp.valueOf())) throw new TypeError('preview revokedAt is invalid');
   await queryable.query(`
+    WITH completed AS (
+      UPDATE delivery_preview_revocation_jobs
+      SET status = 'COMPLETED', completed_at = $2, lease_expires_at = NULL,
+        last_error = NULL, updated_at = now()
+      WHERE preview_id = $1
+      RETURNING preview_id
+    )
     UPDATE delivery_entries
     SET preview_status = 'REVOKED', preview_revoked_at = $2
     WHERE preview_id = $1

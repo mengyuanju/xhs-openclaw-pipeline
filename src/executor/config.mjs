@@ -1,4 +1,7 @@
+import { createHash } from 'node:crypto';
+import { hostname } from 'node:os';
 import { resolve } from 'node:path';
+import { codexConcurrencyConfig, codexRuntimePath } from '../codex-runtime.mjs';
 
 export function executorConcurrency(value, name) {
   if (value === undefined) return 1;
@@ -7,6 +10,18 @@ export function executorConcurrency(value, name) {
     throw new RangeError(`${name} must be an integer from 1 to 32`);
   }
   return Number(value);
+}
+
+export function codexPoolIdentity(environment = process.env) {
+  const explicit = environment.XHS_CODEX_POOL_ID?.trim();
+  if (explicit !== undefined) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/u.test(explicit)) {
+      throw new TypeError('XHS_CODEX_POOL_ID must contain 1 to 128 safe identifier characters');
+    }
+    return explicit;
+  }
+  const identity = `${hostname().toLowerCase()}\0${resolve(codexRuntimePath(environment)).toLowerCase()}`;
+  return `codex-${createHash('sha256').update(identity).digest('hex').slice(0, 32)}`;
 }
 
 export function executorConfig(environment = process.env, args = process.argv.slice(2), { simulation = false } = {}) {
@@ -37,8 +52,12 @@ export function executorConfig(environment = process.env, args = process.argv.sl
     }
     imageWorkerEnabled = environment.IMAGE_WORKER_ENABLED === 'true';
   }
+  const codexCapacity = codexConcurrencyConfig(environment);
   return {
     serverUrl, nodeId, nodeName, pollMs, imageWorkerEnabled,
+    codexPoolId: codexPoolIdentity(environment),
+    codexTotalConcurrency: codexCapacity.maxConcurrent,
+    codexImageConcurrency: codexCapacity.maxConcurrentImages,
     copyConcurrency: executorConcurrency(environment.EXECUTOR_COPY_CONCURRENCY, 'EXECUTOR_COPY_CONCURRENCY'),
     imageConcurrency: executorConcurrency(environment.EXECUTOR_IMAGE_CONCURRENCY, 'EXECUTOR_IMAGE_CONCURRENCY'),
     once: hasFlag('once'), workRoot: resolve(environment.EXECUTOR_WORK_ROOT || 'data/executor-work'),

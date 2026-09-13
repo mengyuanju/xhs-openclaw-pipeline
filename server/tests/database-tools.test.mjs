@@ -73,8 +73,11 @@ test('known legacy delivery checksums only allow their exact forward repair path
     ['0027_delivery_archive_integrity', new URL('./fixtures/0027_delivery_archive_integrity.legacy.sql', import.meta.url)],
   ]);
   for (const upgrade of LEGACY_MIGRATION_UPGRADES) {
-    const legacySql = normalizeMigrationSql(await readFile(legacyFiles.get(upgrade.id), 'utf8'));
-    assert.equal(sha256(legacySql), upgrade.fromSha256);
+    const legacyFile = legacyFiles.get(upgrade.id);
+    if (legacyFile) {
+      const legacySql = normalizeMigrationSql(await readFile(legacyFile, 'utf8'));
+      assert.equal(sha256(legacySql), upgrade.fromSha256);
+    }
     assert.equal(migrationById.get(upgrade.id)?.sha256, upgrade.toSha256);
     assert.equal(migrationById.get(upgrade.repairedBy)?.sha256, upgrade.repairSha256);
   }
@@ -84,9 +87,11 @@ test('known legacy delivery checksums only allow their exact forward repair path
     sha256: fromSha256,
   }));
   const clientWith = (rows) => ({
-    query: async (sql) => ({
-      rows: sql.includes('to_regclass') ? [{ name: 'present' }] : rows,
-    }),
+    query: async (sql) => {
+      if (sql.includes('to_regclass')) return { rows: [{ name: 'present' }] };
+      if (sql.includes('information_schema.columns')) return { rows: [{ data_type: 'timestamp with time zone', is_nullable: 'YES' }] };
+      return { rows };
+    },
   });
   const pending = await pendingMigrations(clientWith(legacyApplied), migrations);
   assert.equal(pending.some(({ id }) => id === '0026_final_delivery'), false);
@@ -128,6 +133,16 @@ test('known legacy delivery checksums only allow their exact forward repair path
     }]), reverseSource),
     /0026_final_delivery is missing or changed/u,
   );
+
+  const searchUpgrade = LEGACY_MIGRATION_UPGRADES.find(({ id }) => id === '0043_xhs_search_node_retirement');
+  const wrongSearchSchema = {
+    query: async (sql) => {
+      if (sql.includes('to_regclass')) return { rows: [{ name: 'present' }] };
+      if (sql.includes('information_schema.columns')) return { rows: [] };
+      return { rows: [{ id: searchUpgrade.id, sha256: searchUpgrade.fromSha256 }] };
+    },
+  };
+  await assert.rejects(pendingMigrations(wrongSearchSchema, migrations), /legacy schema is incompatible/u);
 });
 
 test('failed-image migration only requeues tasks and preserves approved copy and failure history', async () => {

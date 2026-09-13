@@ -532,6 +532,25 @@ function normalizedEvidenceTextList(value, { maximum, itemMaximum }) {
     .slice(0, maximum);
 }
 
+function normalizedRiskAssessments(value) {
+  if (!Array.isArray(value)) return undefined;
+  return value.slice(0, 10).flatMap((entry) => {
+    if (!isRecord(entry)) return [];
+    const severity = ['INFO', 'WARNING', 'BLOCKING'].includes(entry.severity)
+      ? entry.severity : null;
+    const status = ['MITIGATED', 'UNRESOLVED'].includes(entry.status)
+      ? entry.status : null;
+    const message = boundedOptionalText(entry.message, 200);
+    if (!severity || !status || !message) return [];
+    return [{
+      severity,
+      status,
+      message,
+      mitigation: boundedOptionalText(entry.mitigation, 300),
+    }];
+  });
+}
+
 /** Keep approved copy evidence bounded and inert before it reaches the quality prompt. */
 export function normalizeStandaloneQualityEvidence(source) {
   const root = isRecord(source?.qualityEvidence) ? source.qualityEvidence : source;
@@ -557,6 +576,8 @@ export function normalizeStandaloneQualityEvidence(source) {
     metadata: {
       sources: allowedMetadataSources,
       expressionReferences: normalizedEvidenceTextList(metadata.expressionReferences, { maximum: 5, itemMaximum: 500 }),
+      ...(normalizedRiskAssessments(metadata.riskAssessments) === undefined
+        ? {} : { riskAssessments: normalizedRiskAssessments(metadata.riskAssessments) }),
       riskFlags: normalizedEvidenceTextList(metadata.riskFlags, { maximum: 10, itemMaximum: 200 }),
       fabricatedExperience: metadata.fabricatedExperience === true,
       unverifiedClaims: normalizedEvidenceTextList(metadata.unverifiedClaims, { maximum: 10, itemMaximum: 300 }),

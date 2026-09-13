@@ -197,8 +197,11 @@ test('permanent deletion rejects repeated submits and unlocks before refreshing 
   assert.ok(singleStart >= 0 && batchStart > singleStart && actionsStart > batchStart);
   for (const deletionFlow of [singleDelete, batchDelete]) {
     assert.match(deletionFlow, /permanentDeletionLock\.acquire\(\)/u);
-    assert.match(deletionFlow, /finally \{[\s\S]*permanentDeletionLock\.release\(\)[\s\S]*\}[\s\S]*if \(refreshAfterDelete\) void refresh\(\{ silent: true \}\)/u);
-    assert.doesNotMatch(deletionFlow, /await refresh\(\{ silent: true \}\)/u);
+    assert.match(deletionFlow, /if \(refreshPage === page\) await refresh\(\{ silent: true \}\)/u);
+    assert.ok(
+      deletionFlow.indexOf('permanentDeletionLock.release()') < deletionFlow.indexOf('if (refreshPage === page)'),
+      'deletion lock must be released before the current page is refreshed',
+    );
   }
   assert.match(source, /setTasks\(\(current\) => current\.filter/u);
   assert.match(source, /LIST_REFRESH_TIMEOUT_MS = 15_000/u);
@@ -296,7 +299,7 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(reviewDialog, /const editable = taskHasAssignee && canReviewCopy && detail\?\.state === 'COPY_REVIEW_PENDING'/u);
   assert.match(reviewDialog, /const canEditApprovedImagePlan = Boolean\(isAdmin && canReviewImages && canModifyImages\)/u);
   assert.match(reviewDialog, /const planFieldsReadOnly = !\(editable \|\| canEditApprovedImagePlan\)/u);
-  assert.match(reviewDialog, /const planKindDisabled = !editable \|\| loading \|\| submitting/u);
+  assert.match(reviewDialog, /const planKindDisabled = !editable \|\| isCopyOnlyFinalRework \|\| loading \|\| submitting/u);
   assert.match(reviewDialog, /readOnly=\{planFieldsReadOnly\}/u);
   assert.match(reviewDialog, /<Select value=\{item\.kind\} disabled=\{planKindDisabled \|\| index === 0\}/u);
   assert.match(reviewDialog, /IMAGE_KINDS\.filter\(\(kind\) => index === 0 \? kind === 'hero' : kind !== 'hero'\)/u);

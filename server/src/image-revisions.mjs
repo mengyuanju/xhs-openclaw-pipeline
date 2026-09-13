@@ -1,5 +1,6 @@
 import { ControlPlaneConflictError, ControlPlaneNotFoundError, normalizeNodeId, normalizeTaskId, normalizeUuid } from './domain.mjs';
 import { normalizeImageSettings, normalizePageLayout } from './image-options.mjs';
+import { withdrawReadyDeliveryEntries } from './final-delivery.mjs';
 
 export function assertImageResultSettings(content, result) {
   if (!content?.imageSettings && !content?.imagePlan?.some(page => page.layout)) return;
@@ -62,11 +63,12 @@ export async function reviseTaskImages(client, rawTaskId, input, actorUsername, 
     RETURNING *`, [taskId, revisionNumber, content, nodeId, revisionId,
     revision.copy_content_changed_from_machine === true,
     revision.copy_rework_satisfied === true])).rows[0];
-  await client.query(`UPDATE delivery_entries SET status = 'WITHDRAWN', withdrawn_at = now()
-    WHERE task_id = $1 AND status = 'READY'`, [taskId]);
+  await withdrawReadyDeliveryEntries(client, taskId, 'IMAGE_REVISION');
   return (await client.query(`UPDATE tasks SET state = 'IMAGE_QUEUED', current_copy_revision_id = $2,
     current_image_run_id = NULL, current_execution_id = NULL, current_stage = 'IMAGE_QUEUED',
     progress_percent = 0, progress_message = '图片配置已保存，等待图片执行机处理', pending_snapshot = NULL,
+    image_production_chain_id = NULL, image_production_started_at = NULL,
+    image_production_duration_ms = 0,
     image_reviewed_at = NULL, image_reviewed_by_user_id = NULL, execution_started_at = NULL,
     last_activity_at = now(), finished_at = NULL, error = NULL, updated_at = now()
     WHERE id = $1 RETURNING *`, [taskId, Number(saved.id)])).rows[0];

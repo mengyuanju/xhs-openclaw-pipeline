@@ -253,3 +253,54 @@ test('legacy Query-package preassignment repair is fail-closed and fully audited
   assert.match(sql, /'migration-0033-query-preassignment'/u);
   assert.doesNotMatch(sql, /DELETE\s+FROM\s+tasks|TRUNCATE\s+tasks/u);
 });
+
+test('workflow integrity repair persists structured rework and durable preview revocation', async () => {
+  const sql = await migration('0045_workflow_integrity_repairs');
+
+  assert.equal((sql.match(/ALTER COLUMN status TYPE varchar\(32\)/gu) ?? []).length, 2,
+    'both long workflow status columns must accept their declared states');
+  assert.match(sql, /mandatory_copy_qc_origin IN \('QA_RETURN', 'FINAL_REWORK', 'IMAGE_RETRY_REVIEW'\)/u);
+  assert.match(sql, /ADD COLUMN rework_details jsonb/u);
+  assert.match(sql, /jsonb_typeof\(rework_details\) = 'object'/u);
+  assert.match(sql, /ADD COLUMN source_query_package_snapshot_id bigint/u);
+  assert.match(sql, /SET source_query_package_snapshot_id = source_query_package_id/u);
+  assert.match(sql, /preview_status IN \('PUBLISHED', 'REVOKING', 'REVOKE_FAILED', 'REVOKED'\)/u);
+  assert.match(sql, /CREATE TABLE delivery_preview_revocation_jobs/u);
+  assert.match(sql, /preview_id uuid NOT NULL UNIQUE/u);
+  assert.match(sql, /status IN \('PENDING', 'PROCESSING', 'RETRY', 'COMPLETED', 'FAILED'\)/u);
+  assert.match(sql, /delivery_preview_revocation_jobs_claim_idx/u);
+  assert.doesNotMatch(sql, /DELETE\s+FROM\s+tasks|TRUNCATE\s+tasks/u);
+});
+
+test('Codex pool and image lineage repair enforces shared capacity and stable artifacts', async () => {
+  const sql = await migration('0046_codex_pool_and_image_lineage');
+
+  assert.match(sql, /CREATE TABLE codex_concurrency_pools/u);
+  assert.match(sql, /CHECK \(image_concurrency <= total_concurrency\)/u);
+  assert.match(sql, /ADD COLUMN codex_pool_id varchar\(128\)/u);
+  assert.match(sql, /FOREIGN KEY \(codex_pool_id\) REFERENCES codex_concurrency_pools\(id\)/u);
+  assert.match(sql, /ADD COLUMN image_production_chain_id uuid/u);
+  assert.match(sql, /ADD COLUMN image_production_duration_ms bigint NOT NULL DEFAULT 0/u);
+  assert.match(sql, /WHEN execution\.finished_at IS NULL THEN 0/u,
+    'a running attempt must not be counted once during migration and again at completion');
+  assert.doesNotMatch(sql, /COALESCE\(execution\.finished_at, now\(\)\)/u);
+  assert.match(sql, /ADD COLUMN artifact_key varchar\(255\)/u);
+  assert.match(sql, /ADD COLUMN origin_image_run_id uuid/u);
+  assert.match(sql, /ADD COLUMN active boolean NOT NULL DEFAULT true/u);
+  assert.match(sql, /CREATE UNIQUE INDEX assets_chain_artifact_uq[\s\S]*image_production_chain_id, artifact_key/u);
+  assert.doesNotMatch(sql, /DELETE\s+FROM\s+tasks|TRUNCATE\s+tasks/u);
+});
+
+test('task-query performance migration indexes substring search and stable ordering', async () => {
+  const sql = await migration('0047_task_query_performance');
+
+  assert.match(sql, /CREATE EXTENSION IF NOT EXISTS pg_trgm/u);
+  assert.equal((sql.match(/USING gin/gu) ?? []).length, 3);
+  assert.match(sql, /lower\(query\) gin_trgm_ops/u);
+  assert.match(sql, /lower\(name\) gin_trgm_ops/u);
+  assert.match(sql, /lower\(COALESCE\(source_query_package_name, ''\)\) gin_trgm_ops/u);
+  assert.match(sql, /CREATE INDEX tasks_created_id_idx ON tasks\(created_at DESC, id DESC\)/u);
+  assert.match(sql, /CREATE INDEX tasks_state_created_id_idx ON tasks\(state, created_at DESC, id DESC\)/u);
+  assert.match(sql, /CREATE INDEX tasks_priority_created_id_idx/u);
+  assert.doesNotMatch(sql, /DELETE\s+FROM\s+tasks|TRUNCATE\s+tasks/u);
+});

@@ -8,7 +8,7 @@ export type DeliveryPreviewLink = {
   noteId: string;
   url: string | null;
   contentHash: string;
-  status: 'PUBLISHED' | 'REVOKED';
+  status: 'PUBLISHED' | 'REVOKING' | 'REVOKE_FAILED' | 'REVOKED';
   publishedAt: string;
   revokedAt: string | null;
 };
@@ -19,6 +19,7 @@ export type DeliveryEntry = {
   query: string;
   queryPackageId: number | null;
   queryPackageName: string | null;
+  queryPackageDeleted: boolean;
   copyRevisionId: number;
   imageRunId: string;
   status: 'READY';
@@ -29,6 +30,7 @@ export type DeliveryEntry = {
 export type DeliveryQueryPackageFacet = {
   id: number;
   name: string;
+  deleted: boolean;
   count: number;
   unuploadedCount: number;
   publishedCount: number;
@@ -116,6 +118,7 @@ function normalizeEntry(value: unknown): DeliveryEntry | null {
     query: typeof item.query === 'string' ? item.query : '',
     queryPackageId,
     queryPackageName: normalizeQueryPackageName(item.queryPackageName),
+    queryPackageDeleted: item.queryPackageDeleted === true,
     approvedAt: typeof item.approvedAt === 'string' ? item.approvedAt : '',
     preview: normalizePreviewLink(item.preview),
   };
@@ -132,13 +135,13 @@ function normalizePreviewLink(value: unknown): DeliveryPreviewLink | null {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(id)
     || !/^[0-9a-f]{32}$/u.test(noteId)
     || (url !== null && !/^https?:\/\//u.test(url)) || !/^[0-9a-f]{64}$/u.test(contentHash)
-    || !['PUBLISHED', 'REVOKED'].includes(String(status))) return null;
+    || !['PUBLISHED', 'REVOKING', 'REVOKE_FAILED', 'REVOKED'].includes(String(status))) return null;
   return {
     id,
     noteId,
     url,
     contentHash,
-    status: status as 'PUBLISHED' | 'REVOKED',
+    status: status as DeliveryPreviewLink['status'],
     publishedAt: typeof item.publishedAt === 'string' ? item.publishedAt : '',
     revokedAt: typeof item.revokedAt === 'string' ? item.revokedAt : null,
   };
@@ -228,6 +231,7 @@ export function normalizeDeliveryPoolPage(value: unknown): DeliveryPoolPage {
     queryPackageMap.set(id, {
       id,
       name,
+      deleted: facet?.deleted === true,
       count,
       unuploadedCount,
       publishedCount,

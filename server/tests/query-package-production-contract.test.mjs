@@ -340,6 +340,9 @@ function fakeQueryPackageDatabase() {
     if (source.startsWith('SELECT deletion_password_hash FROM app_users')) {
       return { rows: state.deletionPasswordHash ? [{ deletion_password_hash: state.deletionPasswordHash }] : [] };
     }
+    if (source.startsWith('SELECT NOT EXISTS') && source.includes('copy_sampling_freezes')) {
+      return { rows: [{ visible: true }] };
+    }
     if (source.startsWith('SELECT COUNT(*) AS item_count')) {
       return { rows: [{
         item_count: String(state.items.size),
@@ -353,6 +356,14 @@ function fakeQueryPackageDatabase() {
       return { rows: [] };
     }
     if (source.startsWith('DELETE FROM xhs_query_search_jobs AS job')) return { rows: [] };
+    if (source.startsWith('UPDATE tasks') && source.includes('source_query_package_snapshot_id')) {
+      for (const task of state.tasks) {
+        if (Number(task.source_query_package_id) === Number(values[0])) {
+          task.source_query_package_snapshot_id ??= Number(values[0]);
+        }
+      }
+      return { rows: [] };
+    }
     if (source.startsWith('DELETE FROM query_packages WHERE id = $1')) {
       state.package = null;
       state.items.clear();
@@ -915,6 +926,7 @@ test('permanent package deletion is idempotent and detaches, rather than deletes
   assert.equal(fixture.state.tasks.length, 1);
   assert.equal(fixture.state.tasks[0].source_query_package_id, null);
   assert.equal(fixture.state.tasks[0].source_query_package_item_id, null);
+  assert.equal(fixture.state.tasks[0].source_query_package_snapshot_id, 9);
   assert.equal(fixture.state.tasks[0].source_query_package_name, '九月选题', 'durable source snapshot remains');
   assert.equal(fixture.state.deletionAudits.length, 1);
   assert.equal(fixture.state.deletionAudits[0].reason, input.reason);

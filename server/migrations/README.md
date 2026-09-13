@@ -75,6 +75,18 @@ V3 将负责人分配推迟到文案待审核阶段。任务创建、负责人�
 
 新版 Web 会在移除前校验中心的 `xiaohongshuAccountStatusVersion=2`。升级时先停止小红书搜索进程并备份 PostgreSQL，应用迁移后同步启动新版中心与 Web；确认旧节点离线超过 90 秒后再移除记录。
 
+`0044_xhs_search_node_retirement_compatibility_repair.sql` 只用于收敛 2026-09-13 部署中已登记的一个已知 `0043` 草稿校验值。迁移器同时验证目标库确实存在预期的 nullable `timestamptz` 字段；未知校验值或结构不符仍会拒绝启动。不要手工改写迁移登记表。
+
+## `0045`–`0047` 工作流完整性、并发池与大数据量查询
+
+`0045_workflow_integrity_repairs.sql` 扩展长状态字段，保存结构化返工要求和已删除词包的稳定来源编号，并为公网预览撤销增加持久任务表。中心撤回 READY 交付时先原子写入 `REVOKING` 与撤销任务；后台成功撤销后才记为 `REVOKED`，临时失败按退避策略重试。对应中心报告 `deliveryPreviewVersion=6` 和 `queryPackageVersion=5`。
+
+`0046_codex_pool_and_image_lineage.sql` 将共用一个本机 Codex 运行时的执行机绑定到同一并发池，并为图片失败恢复链、累计耗时及资产幂等键增加持久字段。升级时必须停止全部执行机领取和上报；迁移不会预记尚未完成运行的耗时，恢复后由新版中心在完成或失败时统一累计。执行机只有在中心报告 `codexConcurrencyPoolVersion=1` 时才会启动并发领取。
+
+`0047_task_query_performance.sql` 安装 `pg_trgm`，为 Query/词包模糊搜索和任务稳定排序建立索引。全部作业页面的相邻页与尾页使用双向稳定游标，不再对大页码执行数据库 OFFSET；数字任意跳页入口已移除，防止重新引入大偏移扫描。中心报告 `taskCursorPaginationVersion=1`。创建扩展和 GIN 索引可能增加维护窗口内的 CPU、I/O 与临时磁盘占用，部署账号必须具有安装 `pg_trgm` 的权限。
+
+这三项必须作为同一个停机发布切换：暂停 Web 写入，停止中心和全部执行机，备份 PostgreSQL 与文件存储，先预览再应用迁移，然后同步启动新版中心、Web 与执行机。确认健康检查中的上述能力版本、预览撤销队列无失败项、执行机共享池容量正确后再恢复流量。不要让新旧中心或新旧执行机同时处理同一个数据库。回切到不理解新状态和新资产语义的版本时，只能恢复升级前数据库与文件备份。
+
 ## `0035` / `0036` 交付预览关联
 
 `0035_delivery_preview_links.sql` 在冻结交付条目上增加预览服务的记录 ID、公开 noteId、内容哈希、状态和上传人审计字段；`0036_delivery_preview_url_derivation.sql` 移除早期草稿中持久化的公开链接，页面按当前预览服务地址和 noteId 动态生成链接，切换域名时无需批量改历史数据。两套系统不共享主键；中心以不可变 `delivery_entries.id` 生成 `sourceRef`，预览服务据此提供幂等创建，中心再保存远端标识的关联。

@@ -37,6 +37,7 @@ import {
   createDeliveryPreviewUrlResolver,
   createPreviewServiceClient,
   DeliveryPreviewServiceError,
+  drainDeliveryPreviewRevocations,
   publishDeliveryPreviews,
 } from './delivery-preview.mjs';
 import { AssetDeliveryError, createAssetDelivery } from './asset-delivery.mjs';
@@ -47,6 +48,10 @@ import { analyzeVisualImage } from '../../src/admin/visual-knowledge-service.mjs
 import { withPromptExecution, listPromptExecutions, readPromptExecution } from '../../src/admin/prompt-execution.mjs';
 import { generateAndImportLayouts } from '../../src/admin/layout-catalog-service.mjs';
 import { LoginRateLimiter } from '../../src/admin/auth.mjs';
+import {
+  parseQueryPackageSpreadsheet,
+  QUERY_PACKAGE_SPREADSHEET_BYTES,
+} from './query-package-spreadsheet.mjs';
 
 import {
   ControlPlaneAuthenticationError,
@@ -121,6 +126,46 @@ function mappedError(error) {
   return new HttpError(500, 'INTERNAL_ERROR', 'control plane request failed');
 }
 
+function accessRoute(ctx) {
+  if (typeof ctx._matchedRoute === 'string' && ctx._matchedRoute) return ctx._matchedRoute;
+  return ctx.path
+    .replace(/\/[0-9a-f]{8}-[0-9a-f-]{27,35}(?=\/|$)/giu, '/:uuid')
+    .replace(/\/\d+(?=\/|$)/gu, '/:id');
+}
+
+function accessIdentifier(value, pattern) {
+  const text = String(value ?? '');
+  return pattern.test(text) ? text : null;
+}
+
+function accessLogRecord(ctx, startedAt, errorCode = null) {
+  const responseData = ctx.body?.data;
+  const taskId = accessIdentifier(ctx.params?.taskId
+    ?? ctx.path.match(/^\/v1\/tasks\/(\d+)(?:\/|$)/u)?.[1], /^[1-9]\d*$/u);
+  const executionId = accessIdentifier(ctx.params?.executionId
+    ?? ctx.path.match(/^\/v1\/executions\/([^/]+)(?:\/|$)/u)?.[1],
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu);
+  const rawStage = responseData?.currentStage ?? responseData?.stage ?? ctx.request.body?.stage;
+  const stage = accessIdentifier(rawStage, /^[A-Z][A-Z0-9_]{0,63}$/u);
+  return {
+    timestamp: new Date().toISOString(),
+    event: 'control_plane_access',
+    requestId: ctx.state.requestId,
+    method: ctx.method,
+    route: accessRoute(ctx),
+    status: ctx.status,
+    durationMs: Math.max(0, Number(process.hrtime.bigint() - startedAt) / 1_000_000),
+    ...(errorCode ? { errorCode } : {}),
+    ...(taskId ? { taskId: Number(taskId) } : {}),
+    ...(executionId ? { executionId } : {}),
+    ...(stage ? { stage } : {}),
+    ...(ctx.state.actor ? {
+      actorId: Number(ctx.state.actor.userId),
+      actorRole: String(ctx.state.actor.role),
+    } : {}),
+  };
+}
+
 function requireJson(ctx) {
   if (!ctx.is('application/json')) {
     throw new HttpError(415, 'UNSUPPORTED_MEDIA_TYPE', 'content-type must be application/json');
@@ -166,7 +211,7 @@ async function uploadAsset({ ctx, repository, storageRoot, executionId }) {
   const storagePath = safeStoragePath(directory, `${randomUUID()}${extension}`);
   await writeFile(storagePath, body, { flag: 'wx' });
   try {
-    return await repository.recordAsset({
+    const asset = await repository.recordAsset({
       executionId,
       mediaType,
       byteSize: body.length,
@@ -174,6 +219,8 @@ async function uploadAsset({ ctx, repository, storageRoot, executionId }) {
       storagePath,
       originalName: ctx.request.headers['x-file-name'] ?? null,
     });
+    if (asset.reused) await rm(storagePath, { force: true });
+    return asset;
   } catch (error) {
     await rm(storagePath, { force: true }).catch(() => {});
     throw error;
@@ -700,6 +747,17 @@ function installRoutes(
       .catch((error) => console.error('failed to clean stale delivery exports', error));
   }, DELIVERY_EXPORT_SWEEP_MS);
   deliveryExportSweep.unref?.();
+  let revocationDrain = Promise.resolve();
+  const drainRevocations = () => {
+    revocationDrain = revocationDrain.then(() => drainDeliveryPreviewRevocations(
+      repository,
+      previewClient,
+    )).catch((error) => console.error('failed to revoke withdrawn delivery previews', error));
+    return revocationDrain;
+  };
+  const previewRevocationSweep = setInterval(() => { void drainRevocations(); }, 5_000);
+  previewRevocationSweep.unref?.();
+  void drainRevocations();
   const passwordLimiters = new Map();
   const currentPasswordLimiters = new Map();
   function limiterFor(limiters, userId) {
@@ -857,6 +915,18 @@ function installRoutes(
   router.post('/v1/query-packages', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
     json(ctx, 201, await repository.createQueryPackage(requireJson(ctx), { actor }));
+  });
+  router.put('/v1/query-packages/import-preview', async (ctx) => {
+    requestActor(ctx, ['ADMIN']);
+    const mediaType = String(ctx.request.headers['content-type'] ?? '').split(';')[0].trim();
+    if (mediaType !== 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') {
+      throw new HttpError(415, 'UNSUPPORTED_MEDIA_TYPE', '请上传 .xlsx 工作簿');
+    }
+    const body = await readBody(ctx.req, QUERY_PACKAGE_SPREADSHEET_BYTES);
+    json(ctx, 200, await parseQueryPackageSpreadsheet(body, {
+      sheet: ctx.query.sheet,
+      column: ctx.query.column,
+    }));
   });
   router.get('/v1/query-packages/:packageId', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
@@ -1044,6 +1114,9 @@ function installRoutes(
     if (ctx.query.personal !== undefined && !['true', 'false'].includes(ctx.query.personal)) {
       throw new TypeError('personal must be true or false');
     }
+    if (ctx.query.lastPage !== undefined && !['true', 'false'].includes(ctx.query.lastPage)) {
+      throw new TypeError('lastPage must be true or false');
+    }
     if (personal && ['assignedToUserId', 'unassigned', 'createdByUserId', 'createdByAccountId', 'nodeId']
       .some((key) => ctx.query[key] !== undefined)) {
       throw new TypeError('personal task scope cannot be combined with ownership filters');
@@ -1079,6 +1152,8 @@ function installRoutes(
       ...(ctx.query.sortOrder !== undefined ? { sortOrder: ctx.query.sortOrder } : {}),
       limit: ctx.query.limit,
       offset: ctx.query.offset,
+      cursor: ctx.query.cursor,
+      lastPage: ctx.query.lastPage === 'true',
       includeTotal: ctx.query.includeTotal === 'true',
       excludeActiveBlindQa: actor.role === 'REVIEWER',
     });
@@ -1768,6 +1843,8 @@ function installRoutes(
   });
   return async () => {
     clearInterval(deliveryExportSweep);
+    clearInterval(previewRevocationSweep);
+    await revocationDrain;
     await deliveryExportRegistry.dispose();
   };
 }
@@ -1784,6 +1861,7 @@ export function createControlPlaneApp({
     apiKey: process.env.PREVIEW_API_KEY,
   }),
   previewUrlResolver = createDeliveryPreviewUrlResolver(process.env.PREVIEW_BASE_URL),
+  logger = console,
 }) {
   if (!repository) throw new TypeError('repository is required');
   const resolvedStorageRoot = resolve(storageRoot);
@@ -1793,6 +1871,8 @@ export function createControlPlaneApp({
     .catch(error => console.error('failed to clean committed task deletion quarantine', error));
 
   app.use(async (ctx, next) => {
+    const startedAt = process.hrtime.bigint();
+    let errorCode = null;
     await staleDeletionCleanup;
     ctx.state.requestId = randomUUID();
     ctx.set('X-Request-Id', ctx.state.requestId);
@@ -1805,7 +1885,7 @@ export function createControlPlaneApp({
       }
     } catch (error) {
       const mapped = mappedError(error);
-      if (mapped.status === 500) console.error(error);
+      errorCode = mapped.code;
       for (const header of ['Content-Disposition', 'Content-Range', 'Accept-Ranges', 'ETag', 'Last-Modified']) {
         ctx.remove(header);
       }
@@ -1817,6 +1897,10 @@ export function createControlPlaneApp({
         message: mapped.message,
         ...(mapped.details === undefined ? {} : { details: mapped.details }),
       } };
+    } finally {
+      const line = JSON.stringify(accessLogRecord(ctx, startedAt, errorCode));
+      if (ctx.status >= 500) logger.error?.(line);
+      else logger.info?.(line);
     }
   });
 
@@ -1828,7 +1912,8 @@ export function createControlPlaneApp({
   app.use(async (ctx, next) => {
     const rawUpload = ctx.method === 'PUT'
       && (/^\/v1\/executions\/[^/]+\/assets$/u.test(ctx.path)
-        || /^\/v1\/knowledge-versions\/[^/]+\/asset$/u.test(ctx.path));
+        || /^\/v1\/knowledge-versions\/[^/]+\/asset$/u.test(ctx.path)
+        || ctx.path === '/v1/query-packages/import-preview');
     if (rawUpload) return next();
     return parseJsonBody(ctx, next);
   });

@@ -40,7 +40,13 @@ test('image claim restricts checkpoint recovery to the node holding the files', 
   const client = {
     release() {},
     async query(sql, values) {
-      if (sql.includes('SELECT * FROM executor_nodes')) return { rows: [{ id: 'other-node', image_worker_enabled: true }] };
+      if (sql.includes('FROM executor_nodes n') && sql.includes('codex_concurrency_pools')) return { rows: [{
+        id: 'other-node', codex_pool_id: 'pool-a', image_worker_enabled: true,
+        codex_total_concurrency: 1, codex_image_concurrency: 1,
+      }] };
+      if (sql.includes('COUNT(*)') && sql.includes('task_executions')) {
+        return { rows: [{ total_count: 0, image_count: 0 }] };
+      }
       if (sql.includes('SELECT last_assignee_user_id FROM execution_claim_cursors')) {
         return { rows: [{ last_assignee_user_id: null }] };
       }

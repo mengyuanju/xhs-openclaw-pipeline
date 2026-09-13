@@ -24,6 +24,14 @@ export const LEGACY_MIGRATION_UPGRADES = Object.freeze([
     repairedBy: '0029_final_delivery_compatibility_repair',
     repairSha256: 'c0fb5534891b2c5d842ed48d9f2922bdd17443c368cc1c2ce393dc7c33b0fee6',
   }),
+  Object.freeze({
+    id: '0043_xhs_search_node_retirement',
+    fromSha256: '5fe8515be0d71cf5e2771659ab9563ed2b2a798d481f01990b416a1ad439ec2b',
+    toSha256: '3e77c608d7f945a39564c2a1100882e49ffb12a4dc72477bd56dd828033c5f7e',
+    repairedBy: '0044_xhs_search_node_retirement_compatibility_repair',
+    repairSha256: 'b1053fff6696176449ef9a20c79ad0d05a680cbc23f5c6f5a9d1026bb3de35ba',
+    schemaProbe: 'xhs-search-node-retired-at-v1',
+  }),
 ]);
 
 export function isAppliedMigrationCompatible(entry, source, migrations) {
@@ -37,6 +45,21 @@ export function isAppliedMigrationCompatible(entry, source, migrations) {
   if (!upgrade) return false;
   const repair = migrations.find((migration) => migration.id === upgrade.repairedBy);
   return repair?.sha256 === upgrade.repairSha256;
+}
+
+async function legacySchemaMatches(client, upgrade) {
+  if (!upgrade.schemaProbe) return true;
+  if (upgrade.schemaProbe === 'xhs-search-node-retired-at-v1') {
+    const result = await client.query(`SELECT data_type, is_nullable
+      FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'xhs_query_search_nodes'
+        AND column_name = 'retired_at'`);
+    return result.rows.length === 1
+      && result.rows[0].data_type === 'timestamp with time zone'
+      && result.rows[0].is_nullable === 'YES';
+  }
+  return false;
 }
 
 export async function loadMigrations() {
@@ -61,6 +84,14 @@ export async function pendingMigrations(client, migrations) {
     const source = migrations.find((migration) => migration.id === entry.id);
     if (!isAppliedMigrationCompatible(entry, source, migrations)) {
       throw new Error(`Migration ${entry.id} is missing or changed; use a compatible code/backup version.`);
+    }
+    const upgrade = source?.sha256 === entry.sha256 ? null : LEGACY_MIGRATION_UPGRADES.find((candidate) => (
+      candidate.id === entry.id
+      && candidate.fromSha256 === entry.sha256
+      && candidate.toSha256 === source?.sha256
+    ));
+    if (upgrade && !(await legacySchemaMatches(client, upgrade))) {
+      throw new Error(`Migration ${entry.id} legacy schema is incompatible; use a compatible code/backup version.`);
     }
   }
   return migrations.filter((migration) => !applied.some((entry) => entry.id === migration.id));

@@ -35,7 +35,8 @@ test('image worker polling is opt-in and documented for separate machines', asyn
   assert.match(executor, /runCopyOnce: \(\) => claimAndExecute\('COPY'\)/u);
   assert.match(executor, /runImageOnce: \(\) => claimAndExecute\('IMAGE'\)/u);
   assert.match(repository, /FOR UPDATE OF task SKIP LOCKED/u);
-  assert.match(repository, /node_id = \$1 AND kind = \$2 AND status = 'RUNNING'/u);
+  assert.match(repository, /JOIN executor_nodes owner ON owner\.id = execution\.node_id[\s\S]*WHERE owner\.codex_pool_id = \$1 AND execution\.status = 'RUNNING'/u);
+  assert.match(repository, /COUNT\(\*\) FILTER \(WHERE execution\.kind = 'IMAGE'\) AS image_count/u);
   assert.match(repository, /STALE_EXECUTION/u);
   assert.match(repository, /current_execution_id/u);
   assert.match(readme, /--disable-image-worker/u);

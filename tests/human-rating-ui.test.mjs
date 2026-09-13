@@ -87,7 +87,7 @@ test('copy review scores the machine draft once and auto-scores an edited approv
   assert.match(source, /const copyFieldsEditable = editable && \(isCopyRework \|\| copyOriginalScore === 2 \|\| copyOriginalScore === 2\.5\)/u);
   assert.doesNotMatch(source, /copyFieldsEditable = editable && originalCopyRatingComplete/u);
   assert.match(source, /const planFieldsReadOnly = !\(editable \|\| canEditApprovedImagePlan\)/u);
-  assert.match(source, /const planKindDisabled = !editable \|\| loading \|\| submitting/u);
+  assert.match(source, /const planKindDisabled = !editable \|\| isCopyOnlyFinalRework \|\| loading \|\| submitting/u);
   assert.match(source, /\['QA_RETURN', 'FINAL_REWORK'\]\.includes\(revision\?\.reworkOrigin \?\? ''\)/u);
   assert.match(source, /<CopyMachineDraftScoreField[\s\S]*legend=\{currentCopyRatingLabel\}/u);
   assert.match(source, /const showCopyRating = detail\?\.state === 'COPY_REVIEW_PENDING' && !isCopyRework/u);
@@ -171,9 +171,9 @@ test('image review requires only a whole-set score while keeping feedback option
   assert.doesNotMatch(source, /ratingFeedbackComplete\(imageScore, imageReasons, imageReviewNote\)/u);
   assert.match(source, /feedbackRequired=\{false\}/u);
   assert.doesNotMatch(source, /评分低于 3 分时，扣分原因或评分说明至少填写一项/u);
-  assert.match(source, /problemAssetIds: imageScore === 3 \? \[\] : imageProblemAssetIds/u);
-  assert.match(source, /reasons: imageScore === 3 \? \[\] : imageReasons/u);
-  assert.match(source, /note: imageScore === 3 \? '' : imageReviewNote\.trim\(\)/u);
+  assert.match(source, /problemAssetIds: decision === 'APPROVE' && imageScore === 3 \? \[\] : imageProblemAssetIds/u);
+  assert.match(source, /reasons: decision === 'APPROVE' && imageScore === 3 \? \[\] : imageReasons/u);
+  assert.match(source, /note: decision === 'APPROVE' && imageScore === 3 \? '' : imageReviewNote\.trim\(\)/u);
   assert.match(source, /const canApproveImages = imageSetComplete && imageRatingComplete && isPassingHumanScore\(imageScore\)/u);
   assert.match(source, /disabled=\{submitting \|\| loading \|\| !imageRatingComplete\}/u);
   assert.match(source, /disabled=\{submitting \|\| loading \|\| !canApproveImages\}/u);

@@ -74,7 +74,10 @@ test('catalog completion requires validated planning and retry snapshots retain 
 
 test('claim receipt replay rejects executors without catalog support', async () => {
   const client = { release() {}, async query(sql) {
-    if (sql.includes('SELECT * FROM executor_nodes')) return { rows: [{ id: 'node-a' }] };
+    if (sql.includes('FROM executor_nodes n') && sql.includes('codex_concurrency_pools')) return { rows: [{
+      id: 'node-a', codex_pool_id: 'pool-a', codex_total_concurrency: 1,
+      codex_image_concurrency: 1, image_worker_enabled: true,
+    }] };
     if (sql.includes('SELECT * FROM execution_claim_requests')) return { rows: [{ requested_limit: 1, execution_ids: [id] }] };
     if (sql.includes('SELECT e.*')) return { rows: [{ snapshot: { productionSettings: { production: { value: { layoutCatalog: BUILTIN_LAYOUT_CATALOG } } } } }] };
     return { rows: [] };

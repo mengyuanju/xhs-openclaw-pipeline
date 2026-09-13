@@ -147,7 +147,7 @@ export function UserManager({
       {(message || error) && <div className={`notice ${error ? 'error' : 'success'} user-action-notice`} role={error ? 'alert' : 'status'}>{error || message}</div>}
       {initialUsers.length === 0
         ? <div className="empty-state">还没有用户，点击“新增用户”创建第一个账号。</div>
-        : <div className="table-wrap mobile-cards user-table-wrap"><table className="user-table">
+        : <div className="table-wrap mobile-cards user-table-wrap" role="region" aria-label="用户列表，可横向滚动" tabIndex={0}><table className="user-table">
           <thead><tr><th>用户</th><th>角色</th><th>状态</th><th>密码</th><th className="user-actions-heading">操作</th></tr></thead>
           <tbody>{initialUsers.map((user) => {
             const isCurrentUser = user.username === currentUsername;

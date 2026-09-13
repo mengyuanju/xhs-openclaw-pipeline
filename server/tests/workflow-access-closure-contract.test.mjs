@@ -46,7 +46,8 @@ test('legacy raw task creation is administrator-only so workers cannot bypass Qu
 
 test('blind batch-return membership stops hiding a task once it reaches image work', async () => {
   const source = await readFile(new URL('../src/postgres-repository.mjs', import.meta.url), 'utf8');
-  assert.match(source, /blind_freeze\.status = 'BATCH_RETURNED'[\s\S]*tasks\.state IN \('COPY_REVIEW_PENDING', 'COPY_QC_PENDING'\)/u);
-  assert.match(source, /blind_freeze\.status = 'BATCH_RETURNED'[\s\S]*task\.state IN \('COPY_REVIEW_PENDING', 'COPY_QC_PENDING'\)/u);
+  assert.match(source, /function activeBlindQaSql\(taskAlias\)[\s\S]*blind_freeze\.status = 'BATCH_RETURNED'[\s\S]*\$\{taskAlias\}\.state IN \('COPY_REVIEW_PENDING', 'COPY_QC_PENDING'\)/u);
+  assert.match(source, /activeBlindQaSql\('tasks'\)/u);
+  assert.match(source, /activeBlindQaSql\('task'\)/u);
   assert.doesNotMatch(source, /blind_freeze\.status IN \('INSPECTING', 'REVIEW_REQUIRED', 'BATCH_RETURNED'\)/u);
 });

@@ -123,6 +123,7 @@ const REPAIRABLE_POST_FIELDS = new Set([
   'fabricatedExperience',
   'imagePlan',
   'platform',
+  'riskAssessments',
   'riskFlags',
   'sources',
   'tags',
@@ -554,6 +555,7 @@ function metadataFrom(post) {
   return {
     sources: post.sources,
     expressionReferences: post.expressionReferences,
+    riskAssessments: post.riskAssessments,
     riskFlags: post.riskFlags,
     fabricatedExperience: post.fabricatedExperience,
     unverifiedClaims: post.unverifiedClaims,

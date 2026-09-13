@@ -2,6 +2,12 @@ import { ApiError } from '../admin/http.mjs';
 
 const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
   Object.freeze({
+    capability: 'queryPackageVersion',
+    minimumVersion: 5,
+    matches: (routePath, method) => routePath === '/v1/query-packages/import-preview'
+      && method === 'PUT',
+  }),
+  Object.freeze({
     capability: 'xiaohongshuQuerySearchVersion',
     minimumVersion: 4,
     matches: (routePath, method) => routePath === '/v1/settings/xhs_query_search'

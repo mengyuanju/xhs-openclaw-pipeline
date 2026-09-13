@@ -647,6 +647,8 @@ test('task listing forwards server-side pagination, states, Query and package-na
       excludeActiveBlindQa: false,
       limit: '20',
       offset: '20',
+      cursor: undefined,
+      lastPage: false,
       includeTotal: true,
     }],
     ['counts', { nodeId: 'node-a' }],
@@ -1050,6 +1052,22 @@ test('an in-flight batch archive is rejected when the administrator account is r
   } finally {
     await rm(storageRoot, { recursive: true, force: true });
   }
+});
+
+test('task listing forwards cursor navigation and rejects an invalid tail-page flag', async () => {
+  const calls = [];
+  const repository = {
+    listTasks: async (input) => { calls.push(input); return { items: [], total: 0, limit: 20, offset: 0 }; },
+  };
+  await withServer(repository, async (root) => {
+    const listed = await fetch(`${root}/v1/tasks?limit=20&offset=0&includeTotal=true&cursor=opaque-token`);
+    assert.equal(listed.status, 200);
+    const invalid = await fetch(`${root}/v1/tasks?lastPage=yes&includeTotal=true`);
+    assert.equal(invalid.status, 400);
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].cursor, 'opaque-token');
+  assert.equal(calls[0].lastPage, false);
 });
 
 test('delivery listing forwards an exact package name and returns package facets', async () => {

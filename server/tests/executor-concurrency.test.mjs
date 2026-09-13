@@ -14,14 +14,18 @@ test('center capacities require bounded JSON integers', () => {
 function fixture({ capacity = 3, running = 1, receipt, enabled = true, fresh = false } = {}) {
   const calls = [];
   const executions = new Map();
-  const node = { id: 'node-a', copy_concurrency: capacity, image_concurrency: capacity, image_worker_enabled: enabled };
+  const node = { id: 'node-a', codex_pool_id: 'pool-a', copy_concurrency: capacity,
+    image_concurrency: capacity, codex_total_concurrency: capacity,
+    codex_image_concurrency: capacity, image_worker_enabled: enabled };
   const client = {
     release() {},
     async query(sql, args = []) {
       sql = String(sql); calls.push({ sql, args });
-      if (sql.includes('SELECT * FROM executor_nodes')) return { rows: [node] };
+      if (sql.includes('FROM executor_nodes n') && sql.includes('codex_concurrency_pools')) return { rows: [node] };
       if (sql.includes('SELECT * FROM execution_claim_requests')) return { rows: receipt ? [receipt] : [] };
-      if (sql.includes('COUNT(*)') && sql.includes('task_executions')) return { rows: [{ count: running }] };
+      if (sql.includes('COUNT(*)') && sql.includes('task_executions')) {
+        return { rows: [{ total_count: running, image_count: running }] };
+      }
       if (sql.includes('SELECT last_assignee_user_id FROM execution_claim_cursors')) {
         return { rows: [{ last_assignee_user_id: null }] };
       }

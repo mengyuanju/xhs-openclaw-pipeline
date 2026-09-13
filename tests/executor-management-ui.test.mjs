@@ -32,7 +32,7 @@ test('administrator-only executor management shows status and safely removes ret
   assert.match(repository, /EXECUTOR_STILL_ONLINE/u);
   assert.match(repository, /EXECUTOR_HAS_RUNNING_TASKS/u);
   assert.match(repository, /executorManagementVersion: 1/u);
-  assert.match(repository, /SELECT \* FROM executor_nodes WHERE id = \$1 AND retired_at IS NULL FOR UPDATE/u);
+  assert.match(repository, /SELECT \*, last_seen_at >= now\(\) - interval '90 seconds' AS online[\s\S]*FROM executor_nodes[\s\S]*WHERE id = \$1 AND retired_at IS NULL[\s\S]*FOR UPDATE/u);
   assert.match(manager, /每 15 秒自动刷新/u);
   assert.match(manager, /node\.copyRunningCount[\s\S]*node\.copyConcurrency/u);
   assert.match(manager, /node\.imageRunningCount[\s\S]*node\.imageConcurrency/u);

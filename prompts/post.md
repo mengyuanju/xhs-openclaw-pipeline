@@ -14,7 +14,7 @@
 4. `tags` 必须包含 3–8 个字符串，每项以 `#` 开头且不含空格。
 5. {{DELIVERY_IMAGE_COUNT_RULE}} `imagePlan` 第一项的 `kind` 必须为 `hero`；其余项的 `kind` 从 `steps`、`checklist`、`comparison`、`detail`、`summary` 中选择。每项必须包含非空的 `headline`、`subtitle`、`bullets` 和 `prompt`；`headline` 最多18个可见字符，`subtitle` 最多30个可见字符；`bullets` 必须包含2–5个字符串，`checklist` 每条最多40个可见字符，其他类型每条最多30个可见字符；`prompt` 为10–1000个可见字符。所有长度均按可见字符逐个计算，英文字母、数字、标点、空格和换行都计入，不能把英文单词或一整行代码算作一个字。
 6. `sources` 必须是 URL 字符串数组，只能使用任务数据中 `referenceUrls` 或 `webResearch.sources` 已提供的 URL；没有可用来源时返回空数组。
-7. `expressionReferences`、`riskFlags` 和 `unverifiedClaims` 必须是字符串数组；`fabricatedExperience` 必须为 `false`。
+7. `expressionReferences`、`riskFlags` 和 `unverifiedClaims` 必须是字符串数组；`fabricatedExperience` 必须为 `false`。`riskAssessments` 必须逐条记录风险严重度、是否已经通过文案规避，以及具体依据。只有可能直接造成人身、健康、重大财产、违法或平台红线后果的未解决风险才标为 `BLOCKING`；已经通过限定语或安全操作规避的风险标为 `MITIGATED`，普通提醒不得标为阻断。
 
 固定 JSON 结构如下：
 
@@ -49,6 +49,9 @@
   "sources": ["https://任务数据中已提供的来源"],
   "expressionReferences": [],
   "riskFlags": [],
+  "riskAssessments": [
+    { "severity": "INFO | WARNING | BLOCKING", "status": "MITIGATED | UNRESOLVED", "message": "string", "mitigation": "string" }
+  ],
   "fabricatedExperience": false,
   "unverifiedClaims": []
 }

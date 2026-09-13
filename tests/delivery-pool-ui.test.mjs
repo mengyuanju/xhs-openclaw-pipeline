@@ -30,6 +30,7 @@ function entry(id, overrides = {}) {
     query: `query-${id}`,
     queryPackageId: 9,
     queryPackageName: '九月选题',
+    queryPackageDeleted: false,
     copyRevisionId: 200 + id,
     imageRunId: `run-${id}`,
     status: 'READY',
@@ -59,7 +60,7 @@ test('delivery pool list adapter preserves package names and valid package facet
     items: [entry(1)],
     total: 43,
     facets: {
-      queryPackages: [{ id: 9, name: '九月 选题', count: 12, unuploadedCount: 7, publishedCount: 4, revokedCount: 1 }],
+      queryPackages: [{ id: 9, name: '九月 选题', deleted: false, count: 12, unuploadedCount: 7, publishedCount: 4, revokedCount: 1 }],
       unassigned: { count: 34, unuploadedCount: 34, publishedCount: 0, revokedCount: 0 },
     },
   });

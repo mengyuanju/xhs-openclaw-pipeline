@@ -11,7 +11,7 @@ import {
 export const previews = sqliteTable(
   'previews',
   {
-    id: text('id').primaryKey(),
+    id: text('id').notNull().primaryKey(),
     publicId: text('public_id').notNull(),
     title: text('title').notNull(),
     body: text('body').notNull(),
@@ -39,7 +39,7 @@ export const previews = sqliteTable(
 export const previewAssets = sqliteTable(
   'preview_assets',
   {
-    id: text('id').primaryKey(),
+    id: text('id').notNull().primaryKey(),
     previewId: text('preview_id')
       .notNull()
       .references(() => previews.id, { onDelete: 'cascade' }),
@@ -65,7 +65,7 @@ export const previewAssets = sqliteTable(
 export const adminSessions = sqliteTable(
   'admin_sessions',
   {
-    id: text('id').primaryKey(),
+    id: text('id').notNull().primaryKey(),
     tokenHash: text('token_hash').notNull(),
     username: text('username').notNull(),
     createdAt: integer('created_at').notNull(),
@@ -81,7 +81,7 @@ export const adminSessions = sqliteTable(
 export const apiKeys = sqliteTable(
   'api_keys',
   {
-    id: text('id').primaryKey(),
+    id: text('id').notNull().primaryKey(),
     name: text('name').notNull(),
     keyPrefix: text('key_prefix').notNull(),
     keyHash: text('key_hash').notNull(),
@@ -99,6 +99,7 @@ export const apiKeys = sqliteTable(
 
 export const apiRateLimits = sqliteTable('api_rate_limits', {
   keyId: text('key_id')
+    .notNull()
     .primaryKey()
     .references(() => apiKeys.id, { onDelete: 'cascade' }),
   windowStartedAt: integer('window_started_at').notNull(),
@@ -107,7 +108,7 @@ export const apiRateLimits = sqliteTable('api_rate_limits', {
 });
 
 export const authLoginAttempts = sqliteTable('auth_login_attempts', {
-  identifierHash: text('identifier_hash').primaryKey(),
+  identifierHash: text('identifier_hash').notNull().primaryKey(),
   windowStartedAt: integer('window_started_at').notNull(),
   failedCount: integer('failed_count').notNull(),
   lockedUntil: integer('locked_until'),
@@ -117,7 +118,7 @@ export const authLoginAttempts = sqliteTable('auth_login_attempts', {
 export const auditLogs = sqliteTable(
   'audit_logs',
   {
-    id: text('id').primaryKey(),
+    id: text('id').notNull().primaryKey(),
     actorType: text('actor_type').notNull(),
     actorId: text('actor_id'),
     action: text('action').notNull(),

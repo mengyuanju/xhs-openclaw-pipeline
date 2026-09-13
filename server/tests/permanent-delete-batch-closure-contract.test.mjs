@@ -34,6 +34,9 @@ test('batch permanent deletion closes original production batches after every ta
         tasks.delete(Number(values[0]));
         return { rows: [] };
       }
+      if (source.startsWith('UPDATE delivery_entries') && source.includes("status = 'WITHDRAWN'")) {
+        return { rows: [] };
+      }
       if (source === 'SELECT * FROM production_batches WHERE id = $1 FOR UPDATE') {
         return { rows: [{
           id: Number(values[0]), public_id: `batch-${values[0]}`,

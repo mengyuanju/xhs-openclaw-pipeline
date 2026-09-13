@@ -322,6 +322,8 @@ async function releaseFrozenMembers(client, freezeId, actor, requestId, { withEx
       UPDATE tasks SET state = 'IMAGE_QUEUED', current_stage = 'IMAGE_QUEUED',
         progress_percent = 0, progress_message = '文案质检已通过，任务已进入待生图队列，等待图片执行机领取',
         current_execution_id = NULL, current_image_run_id = NULL,
+        image_production_chain_id = NULL, image_production_started_at = NULL,
+        image_production_duration_ms = 0,
         execution_started_at = NULL, finished_at = NULL, error = NULL,
         pending_snapshot = NULL, mandatory_copy_qc = false,
         mandatory_copy_qc_origin = NULL, last_activity_at = now(), updated_at = now()
@@ -478,6 +480,8 @@ export async function attemptAutomaticCopySamplingFreeze(client, productionBatch
     if (ids.length) await client.query(`
       UPDATE tasks SET state = 'IMAGE_QUEUED', current_stage = 'IMAGE_QUEUED',
         progress_percent = 0, progress_message = '文案审核已完成，任务已进入待生图队列，等待图片执行机领取',
+        image_production_chain_id = NULL, image_production_started_at = NULL,
+        image_production_duration_ms = 0,
         execution_started_at = NULL, finished_at = NULL, updated_at = now()
       WHERE id = ANY($1::bigint[])
     `, [ids]);
@@ -497,6 +501,7 @@ export async function routeManualCopyApproval(client, {
   actor,
   reviewSessionId,
   aiDisclosureEnabled,
+  retryExhaustedCopyChanged = false,
 }) {
   const approval = await insertCopyApprovalEvent(client, {
     taskId: Number(task.id),
@@ -506,8 +511,12 @@ export async function routeManualCopyApproval(client, {
     reviewSessionId,
     content: revision.content,
   });
-  if (task.mandatory_copy_qc === true) {
-    const mandatoryOrigin = task.mandatory_copy_qc_origin;
+  const imageRetryReview = task.current_stage === 'IMAGE_RETRY_EXHAUSTED'
+    && retryExhaustedCopyChanged;
+  if (task.mandatory_copy_qc === true || imageRetryReview) {
+    const mandatoryOrigin = imageRetryReview
+      ? 'IMAGE_RETRY_REVIEW'
+      : task.mandatory_copy_qc_origin;
     let parent = null;
     let policyVersion;
     let blindReviewEnabled;
@@ -527,7 +536,7 @@ export async function routeManualCopyApproval(client, {
       parent = priorReturn.rows[0] ?? null;
       policyVersion = Number(parent?.parent_policy_version);
       blindReviewEnabled = parent?.parent_blind_review_enabled === true;
-    } else if (mandatoryOrigin === 'FINAL_REWORK') {
+    } else if (['FINAL_REWORK', 'IMAGE_RETRY_REVIEW'].includes(mandatoryOrigin)) {
       // A final image-review return has no random-sampling parent. Freeze a new
       // one-task QA round against the live policy instead of attaching it to an
       // unrelated historical return for the same task.
@@ -591,19 +600,22 @@ export async function routeManualCopyApproval(client, {
     const updated = await client.query(`
       UPDATE tasks SET state = 'COPY_QC_PENDING', production_batch_id = COALESCE(production_batch_id, $2),
         current_copy_revision_id = $3, ai_disclosure_enabled = $4,
+        mandatory_copy_qc = true, mandatory_copy_qc_origin = $5,
         current_execution_id = NULL, current_image_run_id = NULL,
         current_stage = 'QC_MANDATORY_RECHECK', progress_percent = 100,
         progress_message = '返工稿已记录为最终 3 分并提交强制复检；复检通过后才进入待生图队列',
         execution_started_at = NULL, finished_at = NULL, error = NULL,
         pending_snapshot = NULL, last_activity_at = now(), updated_at = now()
       WHERE id = $1 RETURNING *
-    `, [task.id, productionBatchId, revision.id, aiDisclosureEnabled]);
+    `, [task.id, productionBatchId, revision.id, aiDisclosureEnabled, mandatoryOrigin]);
     return { task: updated.rows[0], approval, samplingItem: recheck.rows[0] };
   }
   // Every production-batch member is held until the batch's initial review is
   // closed. The sampling policy is read exactly once at that boundary, so a
   // mid-batch settings change cannot let early approvals escape the snapshot.
-  const shouldHold = task.production_batch_id !== null;
+  const unchangedRetryExhaustion = task.current_stage === 'IMAGE_RETRY_EXHAUSTED'
+    && !retryExhaustedCopyChanged;
+  const shouldHold = task.production_batch_id !== null && !unchangedRetryExhaustion;
   const updated = await client.query(`
     UPDATE tasks SET
       state = $2, current_copy_revision_id = $3, ai_disclosure_enabled = $4,

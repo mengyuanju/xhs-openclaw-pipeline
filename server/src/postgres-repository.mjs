@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { assertImageResultSettings, reviseTaskImages } from './image-revisions.mjs';
-import { IMAGE_FORMATS, hasImageControls } from './image-options.mjs';
+import {
+  DEFAULT_IMAGE_SETTINGS,
+  IMAGE_FORMATS,
+  hasImageControls,
+  normalizeImageSettings,
+} from './image-options.mjs';
 import { normalizeLayoutPresets } from './layout-library.mjs';
 import { BUILTIN_LAYOUT_CATALOG, normalizeLayoutCatalog } from './layout-catalog.mjs';
 import { changeLayoutCatalog, layoutCatalogRecord } from './layout-catalog-settings.mjs';
@@ -85,7 +90,9 @@ import {
 import {
   assertTaskReadyForDelivery,
   assertTasksReadyForDelivery,
+  claimDeliveryPreviewRevocationJobs,
   createReadyDeliveryEntry,
+  failDeliveryPreviewRevocationJob,
   listAllDeliveryPoolTaskIds,
   listDeliveryPoolTaskIdsForPreview,
   listDeliveryPool,
@@ -147,7 +154,7 @@ async function withSavedVisualPlan(client, executionId, snapshot) {
 }
 
 function taskStateOrder(column) {
-  if (!['state', 'page.state'].includes(column)) throw new TypeError('task state order column is invalid');
+  if (!['state', 'page.state', 'cursor_page.state'].includes(column)) throw new TypeError('task state order column is invalid');
   return `CASE
     WHEN ${column} = 'COPY_REVIEW_PENDING' THEN 1
     WHEN ${column} = 'COPY_QC_PENDING' THEN 2
@@ -178,8 +185,12 @@ function taskFrom(row) {
       : Number(row.requested_image_count),
     aiDisclosureEnabled: row.ai_disclosure_enabled ?? true,
     skipCopyReview: row.skip_copy_review === true,
-    sourceQueryPackageId: row.source_query_package_id === undefined || row.source_query_package_id === null
-      ? null : Number(row.source_query_package_id),
+    sourceQueryPackageId: row.source_query_package_id !== undefined && row.source_query_package_id !== null
+      ? Number(row.source_query_package_id)
+      : row.source_query_package_snapshot_id !== undefined && row.source_query_package_snapshot_id !== null
+        ? Number(row.source_query_package_snapshot_id) : null,
+    sourceQueryPackageDeleted: row.source_query_package_id == null
+      && row.source_query_package_snapshot_id != null,
     sourceQueryPackageName: row.source_query_package_name ?? null,
     sourceQueryPackageExternalId: row.source_query_package_external_id ?? null,
     productionBatchId: row.production_batch_id === undefined || row.production_batch_id === null
@@ -210,6 +221,9 @@ function taskFrom(row) {
       ? null
       : Number(row.current_copy_revision_id),
     currentImageRunId: row.current_image_run_id,
+    imageProductionChainId: row.image_production_chain_id ?? null,
+    imageProductionStartedAt: row.image_production_started_at ?? null,
+    imageProductionDurationMs: Number(row.image_production_duration_ms ?? 0),
     currentExecutionId: row.current_execution_id,
     currentStage: row.current_stage,
     progressPercent: Number(row.progress_percent),
@@ -281,6 +295,21 @@ async function assertPermanentlyDeletableTask(client, taskId) {
   return task.rows[0];
 }
 
+function activeBlindQaSql(taskAlias) {
+  if (!['tasks', 'task'].includes(taskAlias)) throw new TypeError('blind QA task alias is invalid');
+  return `EXISTS (
+    SELECT 1 FROM copy_sampling_items AS blind_item
+    JOIN copy_sampling_freezes AS blind_freeze ON blind_freeze.id = blind_item.freeze_id
+    WHERE blind_item.task_id = ${taskAlias}.id
+      AND blind_freeze.blind_review_enabled = true
+      AND (
+        blind_freeze.status IN ('INSPECTING', 'REVIEW_REQUIRED')
+        OR (blind_freeze.status = 'BATCH_RETURNED'
+          AND ${taskAlias}.state IN ('COPY_REVIEW_PENDING', 'COPY_QC_PENDING'))
+      )
+  )`;
+}
+
 function normalizedDisplayName(value) {
   const displayName = String(value ?? '').replace(/\s+/gu, ' ').trim();
   if (!displayName || [...displayName].length > 80) throw new TypeError('displayName must contain 1 to 80 characters');
@@ -317,6 +346,7 @@ function executionFrom(row) {
     taskId: Number(row.task_id),
     kind: row.kind,
     nodeId: row.node_id,
+    imageProductionChainId: row.image_production_chain_id ?? null,
     status: row.status,
     stage: row.stage,
     progressPercent: Number(row.progress_percent),
@@ -338,6 +368,10 @@ function nodeFrom(row) {
     imageWorkerEnabled: row.image_worker_enabled,
     copyConcurrency: row.copy_concurrency ?? 1,
     imageConcurrency: row.image_concurrency ?? 1,
+    codexPoolId: row.codex_pool_id ?? null,
+    codexTotalConcurrency: Number(row.codex_total_concurrency ?? row.copy_concurrency ?? 1),
+    codexImageConcurrency: Number(row.codex_image_concurrency ?? row.image_concurrency ?? 1),
+    codexRunningCount: Number(row.codex_running_count ?? 0),
     online: Boolean(row.online),
     copyQueuedCount: Number(row.copy_queued_count ?? 0),
     copyRunningCount: Number(row.copy_running_count ?? 0),
@@ -366,6 +400,17 @@ function contentWithReviewEdits(content, edits, { baseRevisionId, nodeId }) {
       submittedAt: new Date().toISOString(),
     },
   };
+}
+
+function normalizedArtifactKey(originalName, mediaType, sha256) {
+  if (originalName === null || originalName === undefined || String(originalName).trim() === '') {
+    return `${mediaType}:${sha256}`;
+  }
+  const key = String(originalName).normalize('NFC').replaceAll('\\', '/').split('/').at(-1)?.trim();
+  if (!key || [...key].length > 255 || /[\u0000-\u001f\u007f]/u.test(key)) {
+    throw new TypeError('asset originalName is invalid');
+  }
+  return key;
 }
 
 function contentWithImagePlanRetry(content, imagePlan, {
@@ -455,6 +500,7 @@ function revisionFrom(row) {
     copyContentChangedFromMachine: row.copy_content_changed_from_machine === true,
     copyReworkSatisfied: row.copy_rework_satisfied === true,
     reworkOrigin,
+    reworkTarget: ['COPY', 'IMAGE', 'BOTH'].includes(rework?.target) ? rework.target : null,
     reworkReasonCodes: Array.isArray(rework?.reasonCodes) ? rework.reasonCodes : [],
     reworkNote: rework?.note ?? null,
     createdAt: row.created_at,
@@ -763,6 +809,24 @@ function normalizedQualityProblemAssetIds(value) {
   return ids.sort((left, right) => left - right);
 }
 
+const REWORK_COPY_FIELDS = Object.freeze(['TITLE', 'BODY', 'TAGS']);
+
+function normalizedReworkCopyFields(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > REWORK_COPY_FIELDS.length) {
+    throw new RangeError('copyFields must contain at most TITLE, BODY and TAGS');
+  }
+  const fields = value.map((entry, index) => {
+    const field = String(entry ?? '').trim().toUpperCase();
+    if (!REWORK_COPY_FIELDS.includes(field)) {
+      throw new TypeError(`copyFields[${index}] must be TITLE, BODY or TAGS`);
+    }
+    return field;
+  });
+  if (new Set(fields).size !== fields.length) throw new TypeError('copyFields must not contain duplicates');
+  return fields.toSorted();
+}
+
 function normalizedQualityNote(value) {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'string') throw new TypeError('note must be a string');
@@ -797,6 +861,7 @@ function qualityAssessmentFrom(row) {
     problemAssetIds: (row.problem_asset_ids ?? []).map(Number),
     note: row.note ?? null,
     ...(row.rework_target ? { reworkTarget: row.rework_target } : {}),
+    ...(row.rework_details ? { reworkDetails: row.rework_details } : {}),
     reviewerUsername: row.reviewer_username,
     reviewSessionId: row.review_session_id,
     createdAt: row.created_at,
@@ -834,19 +899,19 @@ async function claimQualityReviewSubmission(client, {
 async function insertQualityAssessment(client, {
   taskId, stage, copyRevisionId = null, imageRunId = null, scoreX10,
   ratingContext, action, reasonCodes = [], problemAssetIds = [], note = null,
-  reworkTarget = null, reviewerUsername, reviewSessionId, requestFingerprint,
+  reworkTarget = null, reworkDetails = null, reviewerUsername, reviewSessionId, requestFingerprint,
 }) {
   const result = await client.query(`
     INSERT INTO human_quality_assessments(
       task_id, stage, copy_revision_id, image_run_id, score_x10,
       rating_context, action, reason_codes, problem_asset_ids, note,
-      rework_target, reviewer_username, review_session_id, request_fingerprint
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      rework_target, reviewer_username, review_session_id, request_fingerprint, rework_details
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
     RETURNING *
   `, [
     taskId, stage, copyRevisionId, imageRunId, scoreX10,
     ratingContext, action, reasonCodes, problemAssetIds, note,
-    reworkTarget, reviewerUsername, reviewSessionId, requestFingerprint,
+    reworkTarget, reviewerUsername, reviewSessionId, requestFingerprint, reworkDetails,
   ]);
   return qualityAssessmentFrom(result.rows[0]);
 }
@@ -900,11 +965,106 @@ function normalizedTaskSort(sortBy = 'priority', sortOrder = 'desc') {
   return { field, direction: direction.toUpperCase() };
 }
 
-function taskSortOrder({ field, direction }, prefix = '') {
-  if (!['', 'page.'].includes(prefix)) throw new TypeError('task sort prefix is invalid');
-  if (field === 'id') return `${prefix}id ${direction}`;
-  if (field === 'createdAt') return `${prefix}created_at ${direction}, ${prefix}id ${direction}`;
-  return `${taskStateOrder(`${prefix}state`)}, ${prefix}created_at DESC, ${prefix}id DESC`;
+function taskStatePriority(state) {
+  if (state === 'COPY_REVIEW_PENDING') return 1;
+  if (state === 'COPY_QC_PENDING') return 2;
+  if (state === 'MANUAL_ARCHIVE') return 3;
+  if (state === 'COPY_RUNNING') return 4;
+  if (state === 'IMAGE_RUNNING') return 5;
+  if (['COPY_FAILED', 'IMAGE_FAILED'].includes(state)) return 6;
+  if (['COPY_QUEUED', 'IMAGE_QUEUED'].includes(state)) return 7;
+  if (state === 'REVIEWED') return 8;
+  if (state === 'CANCELLED') return 9;
+  return 10;
+}
+
+function taskSortOrder({ field, direction }, prefix = '', reverse = false) {
+  if (!['', 'page.', 'cursor_page.'].includes(prefix)) throw new TypeError('task sort prefix is invalid');
+  const effectiveDirection = reverse
+    ? direction === 'ASC' ? 'DESC' : 'ASC'
+    : direction;
+  if (field === 'id') return `${prefix}id ${effectiveDirection}`;
+  if (field === 'createdAt') {
+    return `${prefix}created_at ${effectiveDirection}, ${prefix}id ${effectiveDirection}`;
+  }
+  return reverse
+    ? `${taskStateOrder(`${prefix}state`)} DESC, ${prefix}created_at ASC, ${prefix}id ASC`
+    : `${taskStateOrder(`${prefix}state`)}, ${prefix}created_at DESC, ${prefix}id DESC`;
+}
+
+function taskPageCursor(sort, row, mode, scope) {
+  if (!row) return null;
+  const createdAt = new Date(row.created_at);
+  if (!Number.isFinite(createdAt.getTime())) throw new TypeError('task cursor date is invalid');
+  return Buffer.from(JSON.stringify({
+    v: 1,
+    mode,
+    sortBy: sort.field,
+    sortOrder: sort.direction.toLowerCase(),
+    scope,
+    id: normalizeTaskId(row.id),
+    createdAt: createdAt.toISOString(),
+    priority: taskStatePriority(row.state),
+  })).toString('base64url');
+}
+
+function normalizedTaskPageCursor(value, sort, scope) {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value !== 'string' || value.length > 1024 || !/^[A-Za-z0-9_-]+$/u.test(value)) {
+    throw new TypeError('task page cursor is invalid');
+  }
+  let decoded;
+  try {
+    decoded = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+  } catch {
+    throw new TypeError('task page cursor is invalid');
+  }
+  if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)
+      || decoded.v !== 1 || !['AFTER', 'BEFORE'].includes(decoded.mode)
+      || decoded.sortBy !== sort.field || decoded.sortOrder !== sort.direction.toLowerCase()
+      || decoded.scope !== scope) {
+    throw new TypeError('task page cursor does not match the requested filters and sort');
+  }
+  const createdAt = new Date(decoded.createdAt);
+  if (!Number.isFinite(createdAt.getTime())) throw new TypeError('task page cursor date is invalid');
+  const priority = Number(decoded.priority);
+  if (!Number.isInteger(priority) || priority < 1 || priority > 10) {
+    throw new TypeError('task page cursor priority is invalid');
+  }
+  return {
+    mode: decoded.mode,
+    id: normalizeTaskId(decoded.id),
+    createdAt: createdAt.toISOString(),
+    priority,
+  };
+}
+
+function taskCursorPredicate(cursor, sort, values, prefix = 'cursor_page.') {
+  if (!cursor) return '';
+  const after = cursor.mode === 'AFTER';
+  if (sort.field === 'id') {
+    values.push(cursor.id);
+    const ascending = sort.direction === 'ASC';
+    const operator = after === ascending ? '>' : '<';
+    return `${prefix}id ${operator} $${values.length}`;
+  }
+  values.push(cursor.createdAt, cursor.id);
+  const createdAtParameter = values.length - 1;
+  const idParameter = values.length;
+  if (sort.field === 'createdAt') {
+    const ascending = sort.direction === 'ASC';
+    const operator = after === ascending ? '>' : '<';
+    return `(${prefix}created_at, ${prefix}id) ${operator} ($${createdAtParameter}::timestamptz, $${idParameter}::bigint)`;
+  }
+  values.push(cursor.priority);
+  const priorityParameter = values.length;
+  const priority = taskStateOrder(`${prefix}state`);
+  const rankOperator = after ? '>' : '<';
+  const timeOperator = after ? '<' : '>';
+  return `((${priority}) ${rankOperator} $${priorityParameter}
+    OR ((${priority}) = $${priorityParameter}
+      AND (${prefix}created_at, ${prefix}id) ${timeOperator}
+        ($${createdAtParameter}::timestamptz, $${idParameter}::bigint)))`;
 }
 
 function automaticReviewImagePlan(plan) {
@@ -1074,6 +1234,8 @@ async function queueApprovedCopy(client, taskId, revisionId, aiDisclosureEnabled
       current_execution_id = NULL, current_image_run_id = NULL,
       current_stage = 'IMAGE_QUEUED', progress_percent = 0,
       progress_message = $4,
+      image_production_chain_id = NULL, image_production_started_at = NULL,
+      image_production_duration_ms = 0,
       execution_started_at = NULL, last_activity_at = now(), finished_at = NULL,
       error = NULL, pending_snapshot = NULL, updated_at = now()
     WHERE id = $1
@@ -1222,6 +1384,14 @@ export class PostgresControlPlaneRepository {
   markDeliveryPreviewRevoked(previewId, revokedAt) {
     return transaction(this.pool, (client) => markDeliveryPreviewRevoked(client, previewId, revokedAt));
   }
+
+  claimDeliveryPreviewRevocationJobs(limit = 10) {
+    return claimDeliveryPreviewRevocationJobs(this.pool, limit);
+  }
+
+  failDeliveryPreviewRevocationJob(jobId, error) {
+    return failDeliveryPreviewRevocationJob(this.pool, jobId, error);
+  }
   releaseCopySamplingBatch(id, input, { actor } = {}) {
     return releaseCopySamplingBatch(this.pool, id, input, actor);
   }
@@ -1245,7 +1415,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 4, xiaohongshuQuerySearchVersion: 4, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1, deliveryPreviewVersion: 5 } };
+      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 5, xiaohongshuQuerySearchVersion: 4, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1, deliveryPreviewVersion: 6 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -1765,7 +1935,9 @@ export class PostgresControlPlaneRepository {
     return publicUserFrom(result.rows[0]);
   }
 
-  async registerNode({ nodeId: rawNodeId, name: rawName, imageWorkerEnabled = false, copyConcurrency, imageConcurrency }) {
+  async registerNode({ nodeId: rawNodeId, name: rawName, imageWorkerEnabled = false,
+    copyConcurrency, imageConcurrency, codexPoolId: rawCodexPoolId,
+    codexTotalConcurrency, codexImageConcurrency }) {
     const nodeId = normalizeNodeId(rawNodeId);
     const name = normalizeNodeName(rawName, nodeId);
     if (copyConcurrency !== undefined) normalizeConcurrency(copyConcurrency, 'copyConcurrency');
@@ -1773,19 +1945,58 @@ export class PostgresControlPlaneRepository {
     if (typeof imageWorkerEnabled !== 'boolean') {
       throw new TypeError('imageWorkerEnabled must be a boolean');
     }
+    const codexPoolId = rawCodexPoolId === undefined ? nodeId : String(rawCodexPoolId).trim();
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/u.test(codexPoolId)) {
+      throw new TypeError('codexPoolId is invalid');
+    }
+    const totalConcurrency = codexTotalConcurrency === undefined
+      ? Math.max(copyConcurrency ?? 1, imageConcurrency ?? 1)
+      : normalizeConcurrency(codexTotalConcurrency, 'codexTotalConcurrency');
+    const poolImageConcurrency = codexImageConcurrency === undefined
+      ? imageConcurrency ?? 1
+      : normalizeConcurrency(codexImageConcurrency, 'codexImageConcurrency');
+    if (poolImageConcurrency > totalConcurrency) {
+      throw new RangeError('codexImageConcurrency cannot exceed codexTotalConcurrency');
+    }
     const result = await this.pool.query(`
-      INSERT INTO executor_nodes(id, name, image_worker_enabled, copy_concurrency, image_concurrency)
-      VALUES ($1, $2, $3, COALESCE($4, 1), COALESCE($5, 1))
+      WITH pool AS (
+        INSERT INTO codex_concurrency_pools(id, total_concurrency, image_concurrency)
+        VALUES ($6, $7, $8)
+        ON CONFLICT(id) DO UPDATE SET
+          total_concurrency = excluded.total_concurrency,
+          image_concurrency = excluded.image_concurrency,
+          updated_at = now()
+        WHERE (codex_concurrency_pools.total_concurrency, codex_concurrency_pools.image_concurrency)
+            = (excluded.total_concurrency, excluded.image_concurrency)
+          OR NOT EXISTS (
+            SELECT 1 FROM task_executions AS running
+            JOIN executor_nodes AS owner ON owner.id = running.node_id
+            WHERE owner.codex_pool_id = excluded.id AND running.status = 'RUNNING'
+          )
+        RETURNING *
+      )
+      INSERT INTO executor_nodes(id, name, image_worker_enabled, copy_concurrency, image_concurrency, codex_pool_id)
+      SELECT $1, $2, $3, COALESCE($4, 1), COALESCE($5, 1), pool.id FROM pool
       ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         image_worker_enabled = excluded.image_worker_enabled,
         copy_concurrency = COALESCE($4, executor_nodes.copy_concurrency),
         image_concurrency = COALESCE($5, executor_nodes.image_concurrency),
+        codex_pool_id = excluded.codex_pool_id,
         retired_at = NULL,
         last_seen_at = now(),
         updated_at = now()
-      RETURNING *
-    `, [nodeId, name, imageWorkerEnabled, copyConcurrency ?? null, imageConcurrency ?? null]);
+      RETURNING *,
+        (SELECT total_concurrency FROM pool) AS codex_total_concurrency,
+        (SELECT image_concurrency FROM pool) AS codex_image_concurrency
+    `, [nodeId, name, imageWorkerEnabled, copyConcurrency ?? null, imageConcurrency ?? null,
+      codexPoolId, totalConcurrency, poolImageConcurrency]);
+    if (!result.rows[0]) {
+      throw new ControlPlaneConflictError(
+        'CODEX_POOL_CONCURRENCY_MISMATCH',
+        '共享 Codex 并发池仍有运行任务，所有共用该池的执行机必须使用一致的并发配置',
+      );
+    }
     const row = result.rows[0];
     return {
       id: row.id,
@@ -1799,18 +2010,41 @@ export class PostgresControlPlaneRepository {
 
   async listNodes() {
     const result = await this.pool.query(`
+      WITH task_counts AS MATERIALIZED (
+        SELECT copy_executor_node_id AS node_id,
+          COUNT(*) FILTER (WHERE state = 'COPY_QUEUED') AS copy_queued_count
+        FROM tasks WHERE copy_executor_node_id IS NOT NULL
+        GROUP BY copy_executor_node_id
+      ), execution_counts AS MATERIALIZED (
+        SELECT e.node_id,
+          COUNT(*) FILTER (WHERE e.kind = 'COPY' AND e.status = 'RUNNING') AS copy_running_count,
+          COUNT(*) FILTER (WHERE e.kind = 'IMAGE' AND e.status = 'RUNNING'
+            AND t.state = 'IMAGE_RUNNING') AS image_running_count
+        FROM task_executions e
+        LEFT JOIN tasks t ON t.current_execution_id = e.id
+        WHERE e.status = 'RUNNING'
+        GROUP BY e.node_id
+      ), pool_counts AS MATERIALIZED (
+        SELECT owner.codex_pool_id, COUNT(*) AS codex_running_count
+        FROM task_executions e
+        JOIN executor_nodes owner ON owner.id = e.node_id
+        WHERE e.status = 'RUNNING' AND owner.codex_pool_id IS NOT NULL
+        GROUP BY owner.codex_pool_id
+      )
       SELECT
         n.*,
+        pool.total_concurrency AS codex_total_concurrency,
+        pool.image_concurrency AS codex_image_concurrency,
+        COALESCE(pool_count.codex_running_count, 0) AS codex_running_count,
         n.last_seen_at >= now() - interval '90 seconds' AS online,
-        (SELECT COUNT(*) FROM tasks t
-          WHERE t.copy_executor_node_id = n.id AND t.state = 'COPY_QUEUED') AS copy_queued_count,
-        (SELECT COUNT(*) FROM tasks t
-          WHERE t.copy_executor_node_id = n.id AND t.state = 'COPY_RUNNING') AS copy_running_count,
-        (SELECT COUNT(*) FROM task_executions e
-          JOIN tasks t ON t.current_execution_id = e.id
-          WHERE e.node_id = n.id AND e.kind = 'IMAGE' AND e.status = 'RUNNING'
-            AND t.state = 'IMAGE_RUNNING') AS image_running_count
+        COALESCE(task_count.copy_queued_count, 0) AS copy_queued_count,
+        COALESCE(execution_count.copy_running_count, 0) AS copy_running_count,
+        COALESCE(execution_count.image_running_count, 0) AS image_running_count
       FROM executor_nodes n
+      LEFT JOIN codex_concurrency_pools pool ON pool.id = n.codex_pool_id
+      LEFT JOIN task_counts task_count ON task_count.node_id = n.id
+      LEFT JOIN execution_counts execution_count ON execution_count.node_id = n.id
+      LEFT JOIN pool_counts pool_count ON pool_count.codex_pool_id = n.codex_pool_id
       WHERE n.retired_at IS NULL
       ORDER BY online DESC, n.name, n.id
     `);
@@ -2124,6 +2358,8 @@ export class PostgresControlPlaneRepository {
     sortOrder = 'desc',
     limit = 50,
     offset = 0,
+    cursor = null,
+    lastPage = false,
     includeTotal = false,
     excludeActiveBlindQa = false,
   } = {}) {
@@ -2134,6 +2370,8 @@ export class PostgresControlPlaneRepository {
     if (typeof unassignedOnly !== 'boolean') throw new TypeError('unassignedOnly must be a boolean');
     if (typeof excludeUnassigned !== 'boolean') throw new TypeError('excludeUnassigned must be a boolean');
     if (typeof excludeActiveBlindQa !== 'boolean') throw new TypeError('excludeActiveBlindQa must be a boolean');
+    if (typeof lastPage !== 'boolean') throw new TypeError('lastPage must be a boolean');
+    if (lastPage && !includeTotal) throw new TypeError('lastPage requires includeTotal');
     if (unassignedOnly && assignedToUserId !== null) throw new TypeError('assignee and unassigned filters conflict');
     if (visibleToAccountId !== null && visibleToUserId === null) {
       throw new TypeError('visibleToAccountId requires visibleToUserId');
@@ -2148,17 +2386,7 @@ export class PostgresControlPlaneRepository {
     const values = [];
     const filters = [];
     if (excludeActiveBlindQa) {
-      filters.push(`NOT EXISTS (
-        SELECT 1 FROM copy_sampling_items blind_item
-        JOIN copy_sampling_freezes blind_freeze ON blind_freeze.id = blind_item.freeze_id
-        WHERE blind_item.task_id = tasks.id
-          AND blind_freeze.blind_review_enabled = true
-          AND (
-            blind_freeze.status IN ('INSPECTING', 'REVIEW_REQUIRED')
-            OR (blind_freeze.status = 'BATCH_RETURNED'
-              AND tasks.state IN ('COPY_REVIEW_PENDING', 'COPY_QC_PENDING'))
-          )
-      )`);
+      filters.push(`NOT ${activeBlindQaSql('tasks')}`);
     }
     const stateFilters = normalizedTaskStates(state, states);
     if (stateFilters.length > 0) {
@@ -2249,17 +2477,21 @@ export class PostgresControlPlaneRepository {
     const searchQuery = normalizedTaskQuery(query);
     if (searchQuery !== null) {
       values.push(searchQuery);
-      filters.push(`strpos(lower(query), lower($${values.length})) > 0`);
+      filters.push(`lower(query) LIKE '%' || lower($${values.length}) || '%'`);
     }
     const searchQueryPackageName = normalizedQueryPackageNameFilter(queryPackageName);
     if (searchQueryPackageName !== null) {
       values.push(searchQueryPackageName);
-      filters.push(`strpos(lower(COALESCE(source_query_package_name, '')), lower($${values.length})) > 0`);
+      filters.push(`lower(COALESCE(source_query_package_name, '')) LIKE '%' || lower($${values.length}) || '%'`);
     }
     const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
     const queryIdentity = taskQueryIdentitySql('query');
     const taskSort = normalizedTaskSort(sortBy, sortOrder);
-    const pageOrder = taskSortOrder(taskSort);
+    const cursorScope = createHash('sha256')
+      .update(JSON.stringify({ where, values, deduplicateQuery }))
+      .digest('base64url');
+    const pageCursor = normalizedTaskPageCursor(cursor, taskSort, cursorScope);
+    if (lastPage && pageCursor) throw new TypeError('lastPage and cursor cannot be combined');
     const resultOrder = taskSortOrder(taskSort, 'page.');
     const taskPage = deduplicateQuery ? `
         SELECT * FROM (
@@ -2274,9 +2506,24 @@ export class PostgresControlPlaneRepository {
     const countSql = deduplicateQuery
       ? `SELECT COUNT(DISTINCT ${queryIdentity}) AS total FROM tasks ${where}`
       : `SELECT COUNT(*) AS total FROM tasks ${where}`;
-    const pageValues = [...values, safeLimit, safeOffset];
-    const [result, countResult] = await Promise.all([
-      this.pool.query(`
+    const countPromise = includeTotal ? this.pool.query(countSql, values) : Promise.resolve(null);
+    const countResult = lastPage ? await countPromise : null;
+    const knownTotal = countResult ? Number(countResult.rows[0].total) : null;
+    const lastPageSize = knownTotal === null || knownTotal === 0
+      ? 0
+      : knownTotal % safeLimit || safeLimit;
+    const reversePage = lastPage || pageCursor?.mode === 'BEFORE';
+    const cursorValues = [...values];
+    const cursorPredicate = taskCursorPredicate(pageCursor, taskSort, cursorValues);
+    const cursorWhere = cursorPredicate ? `WHERE ${cursorPredicate}` : '';
+    const queryLimit = lastPage ? lastPageSize : safeLimit + 1;
+    const pageValues = [...cursorValues, queryLimit];
+    const limitParameter = pageValues.length;
+    const usesOffset = !lastPage && !pageCursor;
+    if (usesOffset) pageValues.push(safeOffset);
+    const offsetSql = usesOffset ? `OFFSET $${pageValues.length}` : '';
+    const pageOrder = taskSortOrder(taskSort, 'cursor_page.', reversePage);
+    const pageRequest = this.pool.query(`
       SELECT page.*, COALESCE(e.node_id, successful_image.node_id) AS image_executor_node_id,
         n.name AS image_executor_node_name, creator.id AS creator_account_id,
         creator.display_name AS creator_display_name,
@@ -2290,9 +2537,12 @@ export class PostgresControlPlaneRepository {
             AND current_delivery.image_run_id = page.current_image_run_id
         ) AS delivery_ready
       FROM (
-        ${taskPage}
+        SELECT cursor_page.* FROM (
+          ${taskPage}
+        ) cursor_page
+        ${cursorWhere}
         ORDER BY ${pageOrder}
-        LIMIT $${pageValues.length - 1} OFFSET $${pageValues.length}
+        LIMIT $${limitParameter} ${offsetSql}
       ) page
       LEFT JOIN task_executions e ON e.id = page.current_execution_id
         AND e.kind = 'IMAGE' AND e.status = 'RUNNING' AND page.state = 'IMAGE_RUNNING'
@@ -2308,18 +2558,28 @@ export class PostgresControlPlaneRepository {
       LEFT JOIN app_users assignee ON assignee.username = page.assigned_to_user_id
         AND assignee.created_at < page.assigned_at
       ORDER BY ${resultOrder}
-    `, pageValues),
-      includeTotal
-        ? this.pool.query(countSql, values)
-        : Promise.resolve(null),
-    ]);
-    const items = result.rows.map(taskFrom);
+    `, pageValues);
+    const [result, resolvedCountResult] = lastPage
+      ? [await pageRequest, countResult]
+      : await Promise.all([pageRequest, countPromise]);
+    const hasExtra = !lastPage && result.rows.length > safeLimit;
+    const pageRows = pageCursor?.mode === 'BEFORE' && hasExtra
+      ? result.rows.slice(1)
+      : result.rows.slice(0, safeLimit);
+    const items = pageRows.map(taskFrom);
     if (!includeTotal) return items;
+    const total = Number(resolvedCountResult.rows[0].total);
+    const effectiveOffset = lastPage ? Math.max(0, total - pageRows.length) : safeOffset;
+    const hasPrevious = pageRows.length > 0 && effectiveOffset > 0;
+    const hasNext = pageRows.length > 0 && !lastPage
+      && (pageCursor?.mode === 'BEFORE' || hasExtra || effectiveOffset + pageRows.length < total);
     return {
       items,
-      total: Number(countResult.rows[0].total),
+      total,
       limit: safeLimit,
-      offset: safeOffset,
+      offset: effectiveOffset,
+      previousCursor: hasPrevious ? taskPageCursor(taskSort, pageRows[0], 'BEFORE', cursorScope) : null,
+      nextCursor: hasNext ? taskPageCursor(taskSort, pageRows.at(-1), 'AFTER', cursorScope) : null,
     };
   }
 
@@ -2352,17 +2612,7 @@ export class PostgresControlPlaneRepository {
       SELECT task.id, task.state, task.cancelled_from_state, task.assigned_at,
         task.created_by_user_id, task.assigned_to_user_id,
         creator.id AS creator_account_id, assignee.id AS assignee_account_id,
-        EXISTS (
-          SELECT 1 FROM copy_sampling_items AS blind_item
-          JOIN copy_sampling_freezes AS blind_freeze ON blind_freeze.id = blind_item.freeze_id
-          WHERE blind_item.task_id = task.id
-            AND blind_freeze.blind_review_enabled = true
-            AND (
-              blind_freeze.status IN ('INSPECTING', 'REVIEW_REQUIRED')
-              OR (blind_freeze.status = 'BATCH_RETURNED'
-                AND task.state IN ('COPY_REVIEW_PENDING', 'COPY_QC_PENDING'))
-            )
-        ) AS active_blind_qa
+        ${activeBlindQaSql('task')} AS active_blind_qa
       FROM tasks AS task
       LEFT JOIN app_users AS creator ON creator.username = task.created_by_user_id
         AND creator.created_at < task.created_at
@@ -2611,7 +2861,13 @@ export class PostgresControlPlaneRepository {
     normalizeConcurrency(limit, 'limit');
     return transaction(this.pool, async (client) => {
       const node = await client.query(`
-        SELECT * FROM executor_nodes WHERE id = $1 AND retired_at IS NULL FOR UPDATE
+        SELECT n.*,
+          pool.total_concurrency AS codex_total_concurrency,
+          pool.image_concurrency AS codex_image_concurrency
+        FROM executor_nodes n
+        JOIN codex_concurrency_pools pool ON pool.id = n.codex_pool_id
+        WHERE n.id = $1 AND n.retired_at IS NULL
+        FOR UPDATE OF n, pool
       `, [nodeId]);
       if (!node.rows[0]) throw new ControlPlaneNotFoundError('executor node is not registered');
       await client.query(`UPDATE executor_nodes SET last_seen_at = now() WHERE id = $1`, [nodeId]);
@@ -2651,11 +2907,18 @@ export class PostgresControlPlaneRepository {
         );
       }
       const active = await client.query(`
-        SELECT COUNT(*) AS count FROM task_executions
-        WHERE node_id = $1 AND kind = $2 AND status = 'RUNNING'
-      `, [nodeId, kind]);
-      const capacity = (kind === 'COPY' ? node.rows[0].copy_concurrency : node.rows[0].image_concurrency) ?? 1;
-      const available = Math.min(limit, Math.max(0, capacity - Number(active.rows[0]?.count ?? 0)));
+        SELECT COUNT(*) AS total_count,
+          COUNT(*) FILTER (WHERE execution.kind = 'IMAGE') AS image_count
+        FROM task_executions execution
+        JOIN executor_nodes owner ON owner.id = execution.node_id
+        WHERE owner.codex_pool_id = $1 AND execution.status = 'RUNNING'
+      `, [node.rows[0].codex_pool_id]);
+      const totalAvailable = Number(node.rows[0].codex_total_concurrency)
+        - Number(active.rows[0]?.total_count ?? 0);
+      const kindAvailable = kind === 'IMAGE'
+        ? Number(node.rows[0].codex_image_concurrency) - Number(active.rows[0]?.image_count ?? 0)
+        : totalAvailable;
+      const available = Math.min(limit, Math.max(0, totalAvailable), Math.max(0, kindAvailable));
       const queuedState = kind === 'COPY' ? 'COPY_QUEUED' : 'IMAGE_QUEUED';
       const runningState = kind === 'COPY' ? 'COPY_RUNNING' : 'IMAGE_RUNNING';
       let cursor = null;
@@ -2726,8 +2989,13 @@ export class PostgresControlPlaneRepository {
       const claims = [];
       for (const task of candidate.rows) {
         const executionId = randomUUID();
-        const snapshot = task.pending_snapshot
-          ?? snapshots.get(task.id);
+        const baseSnapshot = task.pending_snapshot ?? snapshots.get(task.id);
+        const imageProductionChainId = kind === 'IMAGE'
+          ? task.image_production_chain_id ?? baseSnapshot?.imageProductionChainId ?? randomUUID()
+          : null;
+        const snapshot = kind === 'IMAGE'
+          ? { ...baseSnapshot, imageProductionChainId }
+          : baseSnapshot;
         if (kind === 'IMAGE') assertLayoutCapability(snapshot, layoutCatalogVersion);
         if (kind === 'IMAGE' && hasImageControls(snapshot?.copyRevision?.content) && imageControlsVersion !== 1) {
           throw new ControlPlaneConflictError('IMAGE_CONTROLS_UPGRADE_REQUIRED', '当前任务使用新版图片配置，请更新图片执行机后再领取');
@@ -2735,14 +3003,17 @@ export class PostgresControlPlaneRepository {
         const stage = kind === 'COPY' ? 'STARTING_COPY' : 'STARTING_IMAGE';
         await client.query(`
           INSERT INTO task_executions(
-            id, task_id, kind, node_id, stage, progress_message, snapshot
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-        `, [executionId, task.id, kind, nodeId, stage, '执行机已领取任务', snapshot]);
+            id, task_id, kind, node_id, stage, progress_message, snapshot,
+            image_production_chain_id
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `, [executionId, task.id, kind, nodeId, stage, '执行机已领取任务', snapshot,
+          imageProductionChainId]);
         if (kind === 'IMAGE') {
           await client.query(`
-            INSERT INTO image_runs(id, task_id, execution_id, copy_revision_id)
-            VALUES ($1, $2, $1, $3)
-          `, [executionId, task.id, task.current_copy_revision_id]);
+            INSERT INTO image_runs(id, task_id, execution_id, copy_revision_id,
+              image_production_chain_id)
+            VALUES ($1, $2, $1, $3, $4)
+          `, [executionId, task.id, task.current_copy_revision_id, imageProductionChainId]);
         }
         const updated = await client.query(`
           UPDATE tasks SET
@@ -2750,6 +3021,9 @@ export class PostgresControlPlaneRepository {
             current_execution_id = $2,
             copy_executor_node_id = CASE WHEN $3 = 'COPY' THEN $7 ELSE copy_executor_node_id END,
             current_image_run_id = CASE WHEN $3 = 'IMAGE' THEN $2 ELSE current_image_run_id END,
+            image_production_chain_id = CASE WHEN $3 = 'IMAGE' THEN $8 ELSE image_production_chain_id END,
+            image_production_started_at = CASE WHEN $3 = 'IMAGE'
+              THEN COALESCE(image_production_started_at, now()) ELSE image_production_started_at END,
             current_stage = $4,
             progress_percent = 0,
             progress_message = '执行机已领取任务',
@@ -2761,7 +3035,8 @@ export class PostgresControlPlaneRepository {
             updated_at = now()
           WHERE id = $5 AND state = $6
           RETURNING *
-        `, [runningState, executionId, kind, stage, task.id, queuedState, nodeId]);
+        `, [runningState, executionId, kind, stage, task.id, queuedState, nodeId,
+          imageProductionChainId]);
         claims.push({
           task: taskFrom(updated.rows[0]),
           execution: executionFrom((await client.query(
@@ -2993,6 +3268,35 @@ export class PostgresControlPlaneRepository {
         SELECT * FROM copy_revisions WHERE id = $1 AND task_id = $2 FOR UPDATE
       `, [revisionId, taskId]);
       if (!revision.rows[0]) throw new ControlPlaneNotFoundError('copy revision not found');
+      const revisionRework = revision.rows[0].content?.finalRework;
+      const copyOnlyFinalRework = revision.rows[0].revision_origin === 'FINAL_REWORK'
+        && revisionRework?.target === 'COPY';
+      if (copyOnlyFinalRework) {
+        if (rawAiDisclosureEnabled !== undefined
+            && rawAiDisclosureEnabled !== (task.ai_disclosure_enabled ?? true)) {
+          throw new ControlPlaneConflictError(
+            'COPY_REWORK_SCOPE_VIOLATION',
+            '仅文案返工不能改变 AI 内容标识设置',
+          );
+        }
+        if (edits) {
+          const originalPlan = normalizeCopyReviewImagePlan(
+            revision.rows[0].content.imagePlan
+              ?? revision.rows[0].content.reviewed?.imagePlan
+              ?? revision.rows[0].content.post?.imagePlan,
+          );
+          const originalSettings = normalizeImageSettings(
+            revision.rows[0].content.imageSettings ?? DEFAULT_IMAGE_SETTINGS,
+          );
+          if (!isDeepStrictEqual(edits.imagePlan, originalPlan)
+              || !isDeepStrictEqual(edits.imageSettings ?? originalSettings, originalSettings)) {
+            throw new ControlPlaneConflictError(
+              'COPY_REWORK_SCOPE_VIOLATION',
+              '仅文案返工不能改变图片规划、格式或背景设置',
+            );
+          }
+        }
+      }
       const mandatoryRework = task.mandatory_copy_qc === true;
       if (!mandatoryRework && currentScoreX10 === null) throw new TypeError('score is required');
       const node = await client.query('SELECT id FROM executor_nodes WHERE id = $1', [nodeId]);
@@ -3150,6 +3454,7 @@ export class PostgresControlPlaneRepository {
           actor: actorIdentity ?? { userId: null, username: reviewerUsername, role: actorRole },
           reviewSessionId,
           aiDisclosureEnabled,
+          retryExhaustedCopyChanged: task.current_stage === 'IMAGE_RETRY_EXHAUSTED' && copyChanged,
         });
         return taskFrom(routed.task);
       }
@@ -3210,15 +3515,25 @@ export class PostgresControlPlaneRepository {
           progress_message = '图片生成完成，等待人工归档', last_activity_at = now(), finished_at = now()
         WHERE id = $1
       `, [executionId]);
+      const referencedAssetIds = [...new Set((Array.isArray(result.images) ? result.images : [])
+        .flatMap((image) => [image?.assetId, image?.sourceAssetId, image?.deliveryAssetId])
+        .map(Number)
+        .filter((id) => Number.isSafeInteger(id) && id > 0))];
+      await client.query(`
+        UPDATE assets SET active = id = ANY($3::bigint[])
+        WHERE task_id = $1 AND image_production_chain_id = $2
+      `, [execution.task_id, execution.image_production_chain_id, referencedAssetIds]);
       const task = await client.query(`
         UPDATE tasks SET
           state = 'MANUAL_ARCHIVE', current_execution_id = NULL,
           current_stage = 'MANUAL_ARCHIVE', progress_percent = 100,
           progress_message = '图片生成完成，等待人工归档',
+          image_production_duration_ms = image_production_duration_ms
+            + GREATEST(0, EXTRACT(EPOCH FROM (now() - $3::timestamptz)) * 1000)::bigint,
           last_activity_at = now(), finished_at = now(), updated_at = now()
         WHERE id = $1 AND current_execution_id = $2
         RETURNING *
-      `, [execution.task_id, executionId]);
+      `, [execution.task_id, executionId, execution.started_at]);
       return taskFrom(task.rows[0]);
     });
   }
@@ -3259,6 +3574,7 @@ export class PostgresControlPlaneRepository {
         await client.query(`
           UPDATE image_runs SET status = 'FAILED', finished_at = now() WHERE id = $1
         `, [executionId]);
+        await client.query('UPDATE assets SET active = false WHERE image_run_id = $1', [executionId]);
       }
       const lifecycle = isImage
         ? `current_stage = $7, progress_percent = $8,
@@ -3271,11 +3587,14 @@ export class PostgresControlPlaneRepository {
       if (isImage) values.push(retrySnapshot,
         manual ? execution.stage ?? 'FAILED' : exhausted ? 'IMAGE_RETRY_EXHAUSTED' : 'IMAGE_QUEUED',
         manual || exhausted ? Number(execution.progress_percent ?? 0) : 0,
-        manual || exhausted ? execution.started_at ?? null : null);
+        manual || exhausted ? execution.started_at ?? null : null,
+        execution.started_at ?? null);
       else values.push(execution.stage ?? 'FAILED');
       const task = await client.query(`
         UPDATE tasks SET
           state = $2, current_execution_id = NULL, ${lifecycle}
+          ${isImage ? `image_production_duration_ms = image_production_duration_ms
+            + GREATEST(0, EXTRACT(EPOCH FROM (now() - $10::timestamptz)) * 1000)::bigint,` : ''}
           progress_message = $3, error = $4, last_activity_at = now(),
           updated_at = now()
         WHERE id = $1 AND current_execution_id = $5
@@ -3297,6 +3616,7 @@ export class PostgresControlPlaneRepository {
     reasonCodes: rawReasonCodes,
     note: rawNote,
     problemAssetIds: rawProblemAssetIds,
+    copyFields: rawCopyFields,
     reviewerUserId: rawReviewerUserId,
     reviewSessionId: rawReviewSessionId,
     actor: rawActor = null,
@@ -3309,6 +3629,7 @@ export class PostgresControlPlaneRepository {
     const scoreX10 = normalizedHumanQualityScore(rawScore);
     const reasonCodes = normalizedQualityReasonCodes(rawReasons ?? rawReasonCodes);
     const problemAssetIds = normalizedQualityProblemAssetIds(rawProblemAssetIds);
+    const copyFields = normalizedReworkCopyFields(rawCopyFields);
     const note = normalizedQualityNote(rawNote);
     const decision = String(rawDecision ?? '').trim().toUpperCase();
     if (!['APPROVE', 'RETRY', 'REWORK', 'DISCARD'].includes(decision)) throw new TypeError('image review decision is invalid');
@@ -3316,6 +3637,19 @@ export class PostgresControlPlaneRepository {
       : decision === 'REWORK' ? String(rawReworkTarget ?? '').trim().toUpperCase() : null;
     if (decision === 'REWORK' && !['COPY', 'IMAGE', 'BOTH'].includes(reworkTarget)) {
       throw new TypeError('reworkTarget must be COPY, IMAGE or BOTH');
+    }
+    if (decision !== 'REWORK' && copyFields.length > 0) {
+      throw new TypeError('copyFields are only accepted for rework');
+    }
+    if (decision === 'REWORK') {
+      if (reasonCodes.length === 0) throw new TypeError('rework requires at least one reason code');
+      if (!note) throw new TypeError('rework requires precise change instructions');
+      if (['COPY', 'BOTH'].includes(reworkTarget) && copyFields.length === 0) {
+        throw new TypeError('copy rework requires at least one copyFields target');
+      }
+      if (['IMAGE', 'BOTH'].includes(reworkTarget) && problemAssetIds.length === 0) {
+        throw new TypeError('image rework requires at least one problemAssetIds target');
+      }
     }
     const editedImagePlan = rawImagePlan === undefined ? null : normalizeCopyReviewImagePlan(rawImagePlan);
     if (editedImagePlan && reworkTarget !== 'IMAGE') {
@@ -3331,7 +3665,7 @@ export class PostgresControlPlaneRepository {
     }
     const requestFingerprint = qualityReviewFingerprint({
       stage: 'IMAGE', taskId, imageRunId, decision, scoreX10,
-      reworkTarget, reasonCodes, problemAssetIds, note, reviewerUsername,
+      reworkTarget, reasonCodes, problemAssetIds, copyFields, note, reviewerUsername,
       ...(editedImagePlan ? { revisionId, nodeId, imagePlan: editedImagePlan } : {}),
     });
     const retry = reworkTarget !== null;
@@ -3426,6 +3760,9 @@ export class PostgresControlPlaneRepository {
           finalRework: {
             target: reworkTarget,
             reasonCodes,
+            copyFields,
+            problemAssetIds,
+            instructions: note,
             note,
             returnedByUsername: reviewerUsername,
             returnedAt: new Date().toISOString(),
@@ -3446,6 +3783,11 @@ export class PostgresControlPlaneRepository {
         ratingContext: 'IMAGE', action: decision === 'REWORK' ? 'RETRY' : decision,
         reasonCodes, problemAssetIds, note,
         reworkTarget,
+        reworkDetails: decision === 'REWORK' ? {
+          copyFields,
+          problemAssetIds,
+          instructions: note,
+        } : null,
         reviewerUsername, reviewSessionId, requestFingerprint,
       });
       if (!approved) await withdrawReadyDeliveryEntries(client, taskId);
@@ -3455,6 +3797,8 @@ export class PostgresControlPlaneRepository {
           current_copy_revision_id = $5,
           current_execution_id = NULL, pending_snapshot = NULL, error = NULL,
           current_image_run_id = ${retry ? 'NULL' : 'current_image_run_id'},
+          ${retry ? `image_production_chain_id = NULL, image_production_started_at = NULL,
+          image_production_duration_ms = 0,` : ''}
           mandatory_copy_qc = ${copyRework ? 'true' : 'mandatory_copy_qc'},
           mandatory_copy_qc_origin = ${copyRework ? "'FINAL_REWORK'" : 'mandatory_copy_qc_origin'},
           progress_percent = ${retry ? 0 : 100},
@@ -3546,6 +3890,8 @@ export class PostgresControlPlaneRepository {
           state = $2, current_execution_id = NULL, current_stage = $2,
           ${isCopy ? 'copy_executor_node_id = NULL,' : ''}
           progress_percent = 0, progress_message = ${isCopy ? "'等待文案执行机领取'" : "'等待重新执行'"},
+          ${isImage && useLatestConfig ? `image_production_chain_id = NULL,
+          image_production_started_at = NULL, image_production_duration_ms = 0,` : ''}
           pending_snapshot = $3, execution_started_at = NULL,
           last_activity_at = now(), finished_at = NULL, error = NULL, updated_at = now()
         WHERE id = $1
@@ -3628,6 +3974,7 @@ export class PostgresControlPlaneRepository {
       if (task.state !== 'CANCELLED' || !['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.cancelled_from_state)) {
         throw new ControlPlaneConflictError('REQUEUE_UNAVAILABLE', 'only a cancelled queued task can be queued again');
       }
+      await withdrawReadyDeliveryEntries(client, taskId, 'CANCELLED_TASK_REQUEUED');
       const updated = await client.query(`
         UPDATE tasks SET state = $2, cancelled_from_state = NULL, current_stage = $2,
           progress_percent = 0, progress_message = $3, finished_at = NULL, error = NULL,
@@ -3713,12 +4060,15 @@ export class PostgresControlPlaneRepository {
           `, [task.current_execution_id]);
         }
       }
+      await withdrawReadyDeliveryEntries(client, taskId, 'IMAGE_REQUEUE');
       const updated = await client.query(`
         UPDATE tasks SET
           state = 'IMAGE_QUEUED', current_execution_id = NULL,
           current_image_run_id = NULL, current_stage = 'IMAGE_QUEUED',
           progress_percent = 0, progress_message = '已人工重试，等待图片执行机领取',
           pending_snapshot = NULL, execution_started_at = NULL,
+          image_production_chain_id = NULL, image_production_started_at = NULL,
+          image_production_duration_ms = 0,
           last_activity_at = now(), finished_at = NULL, error = NULL, updated_at = now()
         WHERE id = $1
         RETURNING *
@@ -3769,6 +4119,7 @@ export class PostgresControlPlaneRepository {
           }
         }
       }
+      await withdrawReadyDeliveryEntries(client, taskId, 'TASK_CANCELLED');
       const updated = await client.query(`
         UPDATE tasks SET
           state = 'CANCELLED', current_execution_id = NULL, current_stage = 'CANCELLED',
@@ -3800,6 +4151,7 @@ export class PostgresControlPlaneRepository {
       await assertPermanentDeletionActor(client, actor, deletionPassword);
       const task = await assertPermanentlyDeletableTask(client, taskId);
       if (beforeDelete) await beforeDelete(taskId);
+      await withdrawReadyDeliveryEntries(client, taskId, 'TASK_PERMANENTLY_DELETED');
       await client.query('DELETE FROM tasks WHERE id = $1', [taskId]);
       if (task.production_batch_id !== null && task.production_batch_id !== undefined) {
         await attemptAutomaticCopySamplingFreeze(client, task.production_batch_id,
@@ -3837,6 +4189,7 @@ export class PostgresControlPlaneRepository {
       }
       for (const taskId of eligible) {
         if (beforeDelete) await beforeDelete(taskId);
+        await withdrawReadyDeliveryEntries(client, taskId, 'TASK_PERMANENTLY_DELETED');
         await client.query('DELETE FROM tasks WHERE id = $1', [taskId]);
       }
       for (const productionBatchId of [...productionBatchIds].sort((left, right) => left - right)) {
@@ -4259,7 +4612,7 @@ export class PostgresControlPlaneRepository {
   async activeImageUploadContext(rawExecutionId, queryable = this.pool) {
     const executionId = normalizeUuid(rawExecutionId, 'executionId');
     const result = await queryable.query(`
-      SELECT e.id, e.task_id, r.id AS image_run_id
+      SELECT e.id, e.task_id, e.image_production_chain_id, r.id AS image_run_id
       FROM task_executions e
       JOIN tasks t ON t.current_execution_id = e.id
       JOIN image_runs r ON r.execution_id = e.id
@@ -4275,6 +4628,7 @@ export class PostgresControlPlaneRepository {
       executionId,
       taskId: Number(result.rows[0].task_id),
       imageRunId: result.rows[0].image_run_id,
+      imageProductionChainId: result.rows[0].image_production_chain_id,
     };
   }
 
@@ -4292,15 +4646,42 @@ export class PostgresControlPlaneRepository {
     }
     if (!Number.isSafeInteger(byteSize) || byteSize < 0) throw new TypeError('asset byteSize is invalid');
     if (!/^[0-9a-f]{64}$/u.test(sha256)) throw new TypeError('asset sha256 is invalid');
+    const artifactKey = normalizedArtifactKey(originalName, mediaType, sha256);
     return transaction(this.pool, async client => {
       // Serialize validation and insertion with completion/recovery. An earlier
       // HTTP upload check alone cannot fence a late write after recovery commits.
       await lockedExecution(client, executionId);
       const context = await this.activeImageUploadContext(executionId, client);
+      const existing = await client.query(`
+        SELECT * FROM assets
+        WHERE image_production_chain_id = $1 AND artifact_key = $2
+        FOR UPDATE
+      `, [context.imageProductionChainId, artifactKey]);
+      if (existing.rows[0]) {
+        const row = existing.rows[0];
+        if (row.sha256 !== sha256 || row.media_type !== mediaType
+          || Number(row.byte_size) !== byteSize || Number(row.task_id) !== context.taskId) {
+          throw new ControlPlaneConflictError(
+            'ASSET_IDEMPOTENCY_CONFLICT',
+            '同一图片生产链中的同名产物内容不一致，请停止执行并检查恢复文件',
+          );
+        }
+        const reused = (await client.query(`
+          UPDATE assets SET image_run_id = $2, active = true
+          WHERE id = $1 RETURNING *
+        `, [row.id, context.imageRunId])).rows[0];
+        return {
+          id: Number(reused.id), taskId: Number(reused.task_id),
+          imageRunId: reused.image_run_id, mediaType: reused.media_type,
+          byteSize: Number(reused.byte_size), sha256: reused.sha256,
+          createdAt: reused.created_at, reused: true,
+        };
+      }
       const result = await client.query(`
         INSERT INTO assets(
-          task_id, image_run_id, media_type, byte_size, sha256, storage_path, original_name
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+          task_id, image_run_id, media_type, byte_size, sha256, storage_path, original_name,
+          image_production_chain_id, artifact_key, origin_image_run_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $2)
         RETURNING *
       `, [
         context.taskId,
@@ -4310,6 +4691,8 @@ export class PostgresControlPlaneRepository {
         sha256,
         storagePath,
         originalName === null ? null : String(originalName).slice(0, 255),
+        context.imageProductionChainId,
+        artifactKey,
       ]);
       const row = result.rows[0];
       return {
@@ -4320,6 +4703,7 @@ export class PostgresControlPlaneRepository {
         byteSize: Number(row.byte_size),
         sha256: row.sha256,
         createdAt: row.created_at,
+        reused: false,
       };
     });
   }

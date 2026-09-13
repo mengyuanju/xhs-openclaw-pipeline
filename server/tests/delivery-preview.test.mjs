@@ -9,6 +9,7 @@ import {
   addDeliveryPreviewUrls,
   createDeliveryPreviewUrlResolver,
   createPreviewServiceClient,
+  drainDeliveryPreviewRevocations,
   groupPreviewItems,
   normalizeDeliveryPreviewRequest,
   publishDeliveryPreviews,
@@ -388,4 +389,32 @@ test('delivery preview upload rejects TIFF before calling the preview service', 
     actor: admin,
   }), (error) => error?.code === 'DELIVERY_PREVIEW_FORMAT_UNSUPPORTED');
   assert.equal(remoteCalls, 0);
+});
+
+test('durable preview revocations complete successful jobs and retain failed jobs for retry', async () => {
+  const jobs = [
+    { id: 1, previewId: '33333333-3333-4333-8333-333333333333', attemptCount: 1 },
+    { id: 2, previewId: '44444444-4444-4444-8444-444444444444', attemptCount: 1 },
+  ];
+  const completed = [];
+  const failed = [];
+  const result = await drainDeliveryPreviewRevocations({
+    claimDeliveryPreviewRevocationJobs: async (limit) => {
+      assert.equal(limit, 10);
+      return jobs;
+    },
+    markDeliveryPreviewRevoked: async (id, revokedAt) => {
+      assert.ok(revokedAt instanceof Date);
+      completed.push(id);
+    },
+    failDeliveryPreviewRevocationJob: async (id, error) => failed.push([id, error.message]),
+  }, {
+    revoke: async (id) => {
+      if (id === jobs[1].previewId) throw new Error('preview service unavailable');
+      return { revokedAt: '2026-09-13T12:00:00.000Z' };
+    },
+  });
+  assert.deepEqual(result, { claimed: 2, revoked: 1, failed: 1 });
+  assert.deepEqual(completed, [jobs[0].previewId]);
+  assert.deepEqual(failed, [[2, 'preview service unavailable']]);
 });

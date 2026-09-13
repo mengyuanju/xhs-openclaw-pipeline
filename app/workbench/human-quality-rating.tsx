@@ -19,6 +19,12 @@ export type HumanQualityAssessment = {
   reasonCodes: string[];
   problemAssetIds: number[];
   note: string | null;
+  reworkTarget?: 'COPY' | 'IMAGE' | 'BOTH';
+  reworkDetails?: {
+    copyFields?: string[];
+    problemAssetIds?: number[];
+    instructions?: string;
+  };
   reviewerUsername: string;
   reviewSessionId: string;
   createdAt: string;

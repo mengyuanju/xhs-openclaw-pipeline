@@ -194,12 +194,15 @@ export function createControlPlaneClient({
       return result;
     },
     createTasks: (input) => request('/v1/tasks', { method: 'POST', body: input }),
-    listTasks: ({ state, states, nodeId, query, limit = 50, offset = 0, includeTotal = false } = {}) => {
+    listTasks: ({ state, states, nodeId, query, limit = 50, offset = 0, cursor, lastPage = false,
+      includeTotal = false } = {}) => {
       const search = new URLSearchParams({ limit: String(limit), offset: String(offset) });
       if (state) search.set('state', state);
       if (states) search.set('states', Array.isArray(states) ? states.join(',') : states);
       if (nodeId) search.set('nodeId', nodeId);
       if (query) search.set('query', query);
+      if (cursor) search.set('cursor', cursor);
+      if (lastPage) search.set('lastPage', 'true');
       if (includeTotal) search.set('includeTotal', 'true');
       return request(`/v1/tasks?${search}`);
     },

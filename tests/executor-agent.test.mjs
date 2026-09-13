@@ -31,6 +31,14 @@ test('concurrent executor refuses an old center before registration', async () =
   const agent = createExecutorAgent({ nodeId: 'a', concurrencyEnabled: true, controlPlane: {},
     readinessCheck: async () => ({ health: { ok: true } }) });
   await assert.rejects(agent.prepare(), /executorConcurrency/);
+  const partial = createExecutorAgent({ nodeId: 'a', concurrencyEnabled: true, controlPlane: {},
+    readinessCheck: async () => ({ health: { ok: true, capabilities: { executorConcurrency: true } } }) });
+  await assert.rejects(partial.prepare(), /共享 Codex 并发池/u);
+  const current = createExecutorAgent({ nodeId: 'a', concurrencyEnabled: true, controlPlane: {},
+    readinessCheck: async () => ({ health: { ok: true, capabilities: {
+      executorConcurrency: true, codexConcurrencyPoolVersion: 1,
+    } } }) });
+  await current.prepare();
 });
 
 test('executor never claims images when image capability is disabled', async () => {

@@ -273,6 +273,9 @@ export function createExecutorAgent({
   imageWorkerEnabled = false,
   copyConcurrency = 1,
   imageConcurrency = 1,
+  codexPoolId = nodeId,
+  codexTotalConcurrency = Math.max(copyConcurrency, imageConcurrency),
+  codexImageConcurrency = imageConcurrency,
   concurrencyEnabled = false,
   workRoot = resolve('data/executor-work'),
   executeCopy = executeCopyClaim,
@@ -286,6 +289,13 @@ export function createExecutorAgent({
   if (typeof imageWorkerEnabled !== 'boolean') throw new TypeError('imageWorkerEnabled must be a boolean');
   executorConcurrency(copyConcurrency, 'copyConcurrency');
   executorConcurrency(imageConcurrency, 'imageConcurrency');
+  executorConcurrency(codexTotalConcurrency, 'codexTotalConcurrency');
+  executorConcurrency(codexImageConcurrency, 'codexImageConcurrency');
+  if (codexImageConcurrency > codexTotalConcurrency) {
+    throw new RangeError('codexImageConcurrency cannot exceed codexTotalConcurrency');
+  }
+  const registration = () => ({ nodeId, name: nodeName, imageWorkerEnabled,
+    copyConcurrency, imageConcurrency, codexPoolId, codexTotalConcurrency, codexImageConcurrency });
   let ready = false;
   const pendingFailures = new Map();
   const activeExecutions = new Map();
@@ -412,6 +422,10 @@ export function createExecutorAgent({
       if (concurrencyEnabled && !result?.health?.capabilities?.executorConcurrency) {
         throw new Error('请先更新中心服务：缺少 executorConcurrency 并发领取能力');
       }
+      const poolCapabilityVersion = Number(result?.health?.capabilities?.codexConcurrencyPoolVersion);
+      if (concurrencyEnabled && (!Number.isInteger(poolCapabilityVersion) || poolCapabilityVersion < 1)) {
+        throw new Error('请先更新中心服务：缺少共享 Codex 并发池能力');
+      }
       taskHeartbeatsEnabled = Boolean(result?.health?.capabilities?.executionHeartbeats);
       ready = true;
       return result;
@@ -419,14 +433,14 @@ export function createExecutorAgent({
 
     async register() {
       if (!ready) throw new Error('executor is not ready; call prepare before register');
-      return controlPlane.registerNode({ nodeId, name: nodeName, imageWorkerEnabled, copyConcurrency, imageConcurrency });
+      return controlPlane.registerNode(registration());
     },
 
     async heartbeat() {
       if (!ready) throw new Error('executor is not ready; call prepare before heartbeat');
       // A failed node heartbeat must not prevent local task lease expiry checks.
       const results = await Promise.allSettled([
-        controlPlane.registerNode({ nodeId, name: nodeName, imageWorkerEnabled, copyConcurrency, imageConcurrency }),
+        controlPlane.registerNode(registration()),
         renewExecutionHeartbeats(),
       ]);
       for (const result of results) if (result.status === 'rejected') throw result.reason;

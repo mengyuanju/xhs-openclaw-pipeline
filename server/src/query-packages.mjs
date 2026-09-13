@@ -156,6 +156,8 @@ function packageFrom(row) {
     assigneeStatus: ['ACTIVE', 'DISABLED'].includes(row.assignee_status) ? row.assignee_status : null,
     assignedItemCount: Number(row.assigned_item_count ?? 0),
     assignedUserCount: Number(row.assigned_user_count ?? 0),
+    participantCount: Number(row.participant_count ?? 0),
+    participantNames: Array.isArray(row.participant_names) ? row.participant_names : [],
     version: Number(row.version),
     counts: {
       total: Number(row.total_count ?? 0),
@@ -217,6 +219,30 @@ function assertPackageAccess(row, actor) {
   throw new ControlPlaneAuthorizationError('当前账号不能操作这个 Query 词包');
 }
 
+const ACTIVE_BLIND_PACKAGE_SQL = `NOT EXISTS (
+  SELECT 1 FROM tasks AS blind_task
+  JOIN copy_sampling_items AS blind_item ON blind_item.task_id = blind_task.id
+  JOIN copy_sampling_freezes AS blind_freeze ON blind_freeze.id = blind_item.freeze_id
+  WHERE blind_task.source_query_package_id = package.id
+    AND blind_freeze.blind_review_enabled = true
+    AND (
+      blind_freeze.status IN ('INSPECTING', 'REVIEW_REQUIRED')
+      OR (blind_freeze.status = 'BATCH_RETURNED'
+        AND blind_task.state IN ('COPY_REVIEW_PENDING', 'COPY_QC_PENDING'))
+    )
+)`;
+
+async function assertPackageOutsideActiveBlindQa(client, packageId, actor) {
+  if (actor.role !== 'REVIEWER') return;
+  const result = await client.query(`
+    SELECT ${ACTIVE_BLIND_PACKAGE_SQL} AS visible
+    FROM query_packages AS package WHERE package.id = $1
+  `, [packageId]);
+  if (result.rows[0]?.visible !== true) {
+    throw new ControlPlaneNotFoundError('Query 词包不存在');
+  }
+}
+
 function itemAssignmentMatchesActor(row, actor) {
   return Number(row.screening_assigned_to_account_id) === actor.userId
     && row.screening_assigned_to_username === actor.username;
@@ -247,6 +273,7 @@ async function lockPackage(client, rawPackageId, actor, { allowItemAccess = fals
   const result = await client.query('SELECT * FROM query_packages WHERE id = $1 FOR UPDATE', [packageId]);
   const row = result.rows[0];
   if (!row) throw new ControlPlaneNotFoundError('Query 词包不存在');
+  await assertPackageOutsideActiveBlindQa(client, packageId, actor);
   if (actor.role !== 'ADMIN' && allowItemAccess) {
     const itemAccess = await client.query(`
       SELECT EXISTS (
@@ -270,6 +297,7 @@ async function lockPackageReadAccess(client, packageId, actor) {
   `, [packageId]);
   const row = result.rows[0];
   if (!row) throw new ControlPlaneNotFoundError('Query 词包不存在');
+  await assertPackageOutsideActiveBlindQa(client, packageId, actor);
   if (actor.role === 'ADMIN') return row;
   if (Number(row.assigned_to_account_id) === actor.userId
       && row.assigned_to_username === actor.username) return row;
@@ -410,18 +438,29 @@ const PACKAGE_SUMMARY_SQL = `
     COUNT(DISTINCT item.screening_assigned_to_account_id) FILTER (
       WHERE item.status = 'READY' AND item.screening_decision = 'PENDING'
         AND item.screening_assigned_to_account_id IS NOT NULL
-    ) AS assigned_user_count
+    ) AS assigned_user_count,
+    COALESCE(participants.participant_count, 0) AS participant_count,
+    COALESCE(participants.participant_names, ARRAY[]::varchar[]) AS participant_names
   FROM query_packages AS package
   LEFT JOIN app_users AS assignee
     ON assignee.id = package.assigned_to_account_id
     AND assignee.username = package.assigned_to_username
   LEFT JOIN query_package_items AS item ON item.query_package_id = package.id
+  LEFT JOIN LATERAL (
+    SELECT COUNT(DISTINCT event.assignee_account_id)::bigint AS participant_count,
+      ARRAY_AGG(DISTINCT event.assignee_username ORDER BY event.assignee_username)
+        FILTER (WHERE event.assignee_account_id IS NOT NULL
+          AND event.assignee_username IS NOT NULL) AS participant_names
+    FROM query_package_item_assignment_events AS event
+    WHERE event.query_package_id = package.id
+      AND event.assignee_account_id IS NOT NULL
+  ) AS participants ON true
 `;
 
 async function readPackageSummary(database, packageId) {
   const result = await database.query(`${PACKAGE_SUMMARY_SQL}
     WHERE package.id = $1
-    GROUP BY package.id, assignee.id
+    GROUP BY package.id, assignee.id, participants.participant_count, participants.participant_names
   `, [packageId]);
   if (!result.rows[0]) throw new ControlPlaneNotFoundError('Query 词包不存在');
   return packageFrom(result.rows[0]);
@@ -560,12 +599,12 @@ export async function listQueryPackages(pool, { limit: rawLimit = 50, offset: ra
               AND visible_item.screening_assigned_to_account_id = $1
               AND visible_item.screening_assigned_to_username = $2
           )
-        )`,
+        ) AND ${ACTIVE_BLIND_PACKAGE_SQL}`,
         values: [actor.userId, actor.username],
       };
   const result = await pool.query(`${PACKAGE_SUMMARY_SQL}
     ${visibility.sql}
-    GROUP BY package.id, assignee.id
+    GROUP BY package.id, assignee.id, participants.participant_count, participants.participant_names
     ORDER BY package.updated_at DESC, package.id DESC
     LIMIT $${visibility.values.length + 1} OFFSET $${visibility.values.length + 2}
   `, [...visibility.values, limit, offset]);
@@ -584,7 +623,8 @@ export async function getQueryPackage(pool, rawPackageId, rawActor, rawItemPageO
       && !(Number(accessRow.assigned_to_account_id) === actor.userId
         && accessRow.assigned_to_username === actor.username);
     const result = await client.query(`${PACKAGE_SUMMARY_SQL}
-      WHERE package.id = $1 GROUP BY package.id, assignee.id
+      WHERE package.id = $1
+      GROUP BY package.id, assignee.id, participants.participant_count, participants.participant_names
     `, [packageId]);
     if (!result.rows[0]) throw new ControlPlaneNotFoundError('Query 词包不存在');
     let itemRows;
@@ -673,8 +713,31 @@ export async function getQueryPackage(pool, rawPackageId, rawActor, rawItemPageO
       WHERE batch.query_package_id = $1
       GROUP BY batch.id ORDER BY batch.id DESC
     `, [packageId]);
+    let visibleCounts = packageFrom(result.rows[0]).counts;
+    if (itemScoped) {
+      const visible = await client.query(`
+        SELECT COUNT(*) AS total_count,
+          COUNT(*) FILTER (WHERE status = 'READY' AND screening_decision = 'PENDING') AS pending_count,
+          COUNT(*) FILTER (WHERE screening_decision = 'SELECTED') AS selected_count,
+          COUNT(*) FILTER (WHERE screening_decision = 'REJECTED') AS rejected_count,
+          COUNT(*) FILTER (WHERE status = 'TASK_CREATED') AS produced_count
+        FROM query_package_items
+        WHERE query_package_id = $1
+          AND screening_assigned_to_account_id = $2
+          AND screening_assigned_to_username = $3
+      `, [packageId, actor.userId, actor.username]);
+      visibleCounts = {
+        total: Number(visible.rows[0]?.total_count ?? 0),
+        pending: Number(visible.rows[0]?.pending_count ?? 0),
+        selected: Number(visible.rows[0]?.selected_count ?? 0),
+        rejected: Number(visible.rows[0]?.rejected_count ?? 0),
+        produced: Number(visible.rows[0]?.produced_count ?? 0),
+      };
+    }
     return {
       ...packageFrom(result.rows[0]),
+      visibleCounts,
+      countScope: itemScoped ? 'MY_ASSIGNMENT' : 'FULL_PACKAGE',
       items: itemRows.map(packageItemFrom),
       itemPage,
       productionBatches: batches.rows.map(productionBatchFrom),
@@ -1278,6 +1341,11 @@ export async function permanentlyDeleteQueryPackage(pool, rawPackageId, input, r
       WHERE item.id = job.query_package_item_id
         AND item.query_package_id = $1
         AND job.task_id IS NULL
+    `, [packageId]);
+    await client.query(`
+      UPDATE tasks
+      SET source_query_package_snapshot_id = COALESCE(source_query_package_snapshot_id, $1)
+      WHERE source_query_package_id = $1
     `, [packageId]);
     await client.query('DELETE FROM query_packages WHERE id = $1', [packageId]);
     await client.query(`

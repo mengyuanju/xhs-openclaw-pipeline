@@ -58,9 +58,11 @@ test('health advertises the task assignment and pool contracts for Web compatibi
   const health = await repository.health();
   assert.equal(health.capabilities.taskAssignmentVersion, 3);
   assert.equal(health.capabilities.autoAssignmentPoolVersion, 3);
-  assert.equal(health.capabilities.queryPackageVersion, 4);
+  assert.equal(health.capabilities.queryPackageVersion, 5);
   assert.equal(health.capabilities.deliverySpreadsheetVersion, 1);
-  assert.equal(health.capabilities.deliveryPreviewVersion, 5);
+  assert.equal(health.capabilities.deliveryPreviewVersion, 6);
+  assert.equal(health.capabilities.codexConcurrencyPoolVersion, 1);
+  assert.equal(health.capabilities.taskCursorPaginationVersion, 1);
   assert.equal(health.capabilities.creatorAccountFilters, true);
 });
 
@@ -204,6 +206,9 @@ test('a stable creator can cancel an unassigned queued copy but a replacement ac
           created_at: taskCreatedAt,
           assigned_to_user_id: null,
         })] };
+      }
+      if (source.includes('UPDATE delivery_entries') && source.includes("status = 'WITHDRAWN'")) {
+        return { rows: [] };
       }
       if (source.includes('UPDATE tasks SET')) {
         return { rows: [taskRow(9, {
@@ -566,10 +571,13 @@ test('task lists can filter owners while COPY claims accept the global unassigne
   let candidateSql = '';
   const claiming = transactionRepository(async (sql) => {
     const source = String(sql);
-    if (source.includes('SELECT * FROM executor_nodes')) {
-      return { rows: [{ id: 'node-a', copy_concurrency: 1, image_worker_enabled: false }] };
+    if (source.includes('FROM executor_nodes n') && source.includes('codex_concurrency_pools')) {
+      return { rows: [{ id: 'node-a', codex_pool_id: 'pool-a', codex_total_concurrency: 1,
+        codex_image_concurrency: 1, image_worker_enabled: false }] };
     }
-    if (source.includes('COUNT(*)') && source.includes('task_executions')) return { rows: [{ count: 0 }] };
+    if (source.includes('COUNT(*)') && source.includes('task_executions')) {
+      return { rows: [{ total_count: 0, image_count: 0 }] };
+    }
     if (source.includes('SELECT last_assignee_user_id FROM execution_claim_cursors')) {
       return { rows: [{ last_assignee_user_id: null }] };
     }

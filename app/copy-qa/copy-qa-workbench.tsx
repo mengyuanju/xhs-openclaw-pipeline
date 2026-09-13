@@ -469,7 +469,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
       {statisticsError && <div className="notice error" role="alert">{statisticsError}</div>}
       {!statistics && !statisticsError ? <div className="empty-state">正在读取正确率统计…</div>
         : statistics && statistics.random.length === 0 ? <div className="empty-state">还没有已决的随机首检样本，暂不能计算人员正确率。</div>
-          : statistics && <div className="table-wrap"><table><thead><tr><th>最终审核账号</th><th>随机首检已决</th><th>通过</th><th>打回</th><th>正确率</th></tr></thead><tbody>{statistics.random.map((metric) => <tr key={metric.finalApproverAccountId}><td>账号 #{metric.finalApproverAccountId}</td><td>{metric.decided}</td><td>{metric.passed}</td><td>{metric.returned}</td><td><strong>{(metric.accuracyRate * 100).toFixed(1)}%</strong></td></tr>)}</tbody></table></div>}
+          : statistics && <div className="table-wrap" role="region" aria-label="文案质检正确率，可横向滚动" tabIndex={0}><table><thead><tr><th>最终审核账号</th><th>随机首检已决</th><th>通过</th><th>打回</th><th>正确率</th></tr></thead><tbody>{statistics.random.map((metric) => <tr key={metric.finalApproverAccountId}><td>账号 #{metric.finalApproverAccountId}</td><td>{metric.decided}</td><td>{metric.passed}</td><td>{metric.returned}</td><td><strong>{(metric.accuracyRate * 100).toFixed(1)}%</strong></td></tr>)}</tbody></table></div>}
       {statistics && <div className={styles.modeSummary}><span className="pill">强制复检：通过 {statistics.mandatory.passed}</span><span className="pill">强制复检：打回 {statistics.mandatory.returned}</span><span className="pill">强制复检：待处理 {statistics.mandatory.pending}</span><span className="pill">整批受影响 {statistics.batchAffectedCount}</span></div>}
     </section>}
 
@@ -506,7 +506,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
       {error && <div className="notice error" role="alert">{error}</div>}
       {loading ? <div className="empty-state" role="status"><LoaderCircle className="animate-spin" size={20} />正在读取文案质检队列…</div>
         : visibleItems.length === 0 ? <div className="empty-state">{items.length ? '没有符合当前筛选条件的质检项。' : '当前没有待处理的文案质检项。'}</div>
-          : <div className={`table-wrap mobile-cards ${styles.queue}`}><table>
+          : <div className={`table-wrap mobile-cards ${styles.queue}`} role="region" aria-label="待质检队列，可横向滚动" tabIndex={0}><table>
             <thead><tr><th>整批触发项</th><th>样本</th><th>内容 / 最终稿</th><th>批次 / 模式</th><th>进入时间</th><th>操作</th></tr></thead>
             <tbody>{visibleItems.map((item) => {
               const itemCopy = copyRevisionView(item.approvedRevision.content);

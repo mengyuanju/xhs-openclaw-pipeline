@@ -80,7 +80,7 @@ test('execution means exclude failures, abandoned and simulation; delivery and i
     execution('i1', 'IMAGE', 'SUCCEEDED', 60), execution('sim', 'IMAGE', 'SUCCEEDED', 1),
     execution('abandoned', 'IMAGE', 'ABANDONED', 90),
     { id: 'invalid', kind: 'COPY', status: 'SUCCEEDED', finishedAt: '2026-09-06T01:00:00Z' }],
-    imageRuns: [{ id: 'run', executionId: 'i1' }, { id: 'simulation', executionId: 'sim', result: { simulation: { enabled: true } } }],
+    imageRuns: [{ id: 'run', executionId: 'i1', result: { images: [{ assetId: 1 }, { deliveryAssetId: 2 }] } }, { id: 'simulation', executionId: 'sim', result: { simulation: { enabled: true } } }],
     assets: [{ id: 1, imageRunId: 'run', mediaType: 'image/png' }, { id: 2, imageRunId: 'run', mediaType: 'image/png' },
       { id: 3, imageRunId: 'old', mediaType: 'image/png' }, { id: 4, imageRunId: 'run', mediaType: 'text/plain' }] });
   const summary = summarizeEfficiency(rows, new Map([[1, detail]]), normalizeRange({}, now));
@@ -96,6 +96,25 @@ test('execution means exclude failures, abandoned and simulation; delivery and i
   assert.equal(summary.effectiveImages, 2);
   assert.equal(summary.delivery.meanMs, 3600000);
   assert.equal(summarizeEfficiency([], new Map(), normalizeRange({}, now)).copy.meanMs, null);
+});
+
+test('image efficiency aggregates failed and resumed executions by chain without double-counting overlap', () => {
+  const rows = [task(1)];
+  const detail = compactDetail({
+    executions: [
+      { id: 'failed', kind: 'IMAGE', status: 'FAILED', imageProductionChainId: 'chain-a',
+        startedAt: '2026-09-06T01:00:00Z', finishedAt: '2026-09-06T01:10:00Z' },
+      { id: 'resumed', kind: 'IMAGE', status: 'SUCCEEDED', imageProductionChainId: 'chain-a',
+        startedAt: '2026-09-06T01:09:00Z', finishedAt: '2026-09-06T01:12:00Z' },
+    ],
+    imageRuns: [], assets: [],
+  });
+  const summary = summarizeEfficiency(rows, new Map([[1, detail]]), normalizeRange({}, now));
+  assert.equal(summary.image.samples, 1);
+  assert.equal(summary.image.meanMs, 12 * 60_000);
+  assert.equal(summary.image.failed, 1);
+  assert.equal(summary.image.succeeded, 1);
+  assert.equal(summary.trend[0].imageMs, 12 * 60_000);
 });
 
 test('human quality uses one genuine first-rating sample per task and excludes edits, repeats, simulations and unrated work', () => {

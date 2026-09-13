@@ -205,6 +205,7 @@ test('control plane client supports paged task search, counts, image retry and l
     query: '黄山',
     limit: 20,
     offset: 40,
+    cursor: 'opaque-cursor',
     includeTotal: true,
   });
   await client.taskCounts('node-a');
@@ -214,6 +215,7 @@ test('control plane client supports paged task search, counts, image retry and l
   assert.match(calls[0].url, /states=COPY_QUEUED%2CCOPY_FAILED/u);
   assert.match(calls[0].url, /query=%E9%BB%84%E5%B1%B1/u);
   assert.match(calls[0].url, /includeTotal=true/u);
+  assert.match(calls[0].url, /cursor=opaque-cursor/u);
   assert.equal(calls[1].url, 'http://127.0.0.1:4310/v1/task-counts?nodeId=node-a');
   assert.equal(calls[2].url, 'http://127.0.0.1:4310/v1/tasks/7/retry-image');
   assert.equal(calls[2].init.method, 'POST');

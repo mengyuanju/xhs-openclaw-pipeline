@@ -78,6 +78,7 @@ type CopyRevision = {
   revisionOrigin?: string | null;
   parentRevisionId?: number | null;
   reworkOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | null;
+  reworkTarget?: 'COPY' | 'IMAGE' | 'BOTH' | null;
   reworkReasonCodes?: string[];
   reworkNote?: string | null;
 };
@@ -99,7 +100,7 @@ type TaskDetail = {
   assignedToAccountId?: number | null;
   aiDisclosureEnabled: boolean;
   mandatoryCopyQc?: boolean;
-  mandatoryCopyQcOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | null;
+  mandatoryCopyQcOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | 'IMAGE_RETRY_REVIEW' | null;
   deliveryStatus?: 'READY' | null;
   state: TaskState;
   imageReviewedAt: string | null;
@@ -446,6 +447,7 @@ export function TaskReviewDialog({
   const [imageProblemAssetIds, setImageProblemAssetIds] = useState<number[]>([]);
   const [imageReviewNote, setImageReviewNote] = useState('');
   const [imageReworkTarget, setImageReworkTarget] = useState<'COPY' | 'IMAGE' | 'BOTH'>('IMAGE');
+  const [imageReworkCopyFields, setImageReworkCopyFields] = useState<Array<'TITLE' | 'BODY' | 'TAGS'>>([]);
   const [invalidField, setInvalidField] = useState<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null>(null);
   const [copyEditNotice, setCopyEditNotice] = useState<{ area: CopyEditArea; message: string; sequence: number } | null>(null);
   const loadRequestRef = useRef(0);
@@ -476,9 +478,15 @@ export function TaskReviewDialog({
       setImageReasons(imageAssessment?.reasonCodes ?? []);
       setImageProblemAssetIds(imageAssessment?.problemAssetIds ?? []);
       setImageReviewNote(imageAssessment?.note ?? '');
+      setImageReworkCopyFields((imageAssessment?.reworkDetails?.copyFields ?? []).filter(
+        (field): field is 'TITLE' | 'BODY' | 'TAGS' => ['TITLE', 'BODY', 'TAGS'].includes(field),
+      ));
       reviewSessionRef.current = null;
-      // Every copy review starts with an opt-in; completed tasks show their saved setting.
-      setAiDisclosureEnabled(next.state !== 'COPY_REVIEW_PENDING' && next.aiDisclosureEnabled === true);
+      // Initial generated-copy review is opt-in.  A returned copy revision keeps
+      // the already-approved disclosure choice instead of silently resetting it.
+      const returnedRevision = currentRevision(next)?.reworkOrigin != null;
+      setAiDisclosureEnabled((next.state !== 'COPY_REVIEW_PENDING' || returnedRevision)
+        && next.aiDisclosureEnabled === true);
       setError('');
     } catch (caught) {
       if (requestId === loadRequestRef.current) setError(caught instanceof Error ? caught.message : '任务详情读取失败');
@@ -502,6 +510,7 @@ export function TaskReviewDialog({
     setImageProblemAssetIds([]);
     setImageReviewNote('');
     setImageReworkTarget('IMAGE');
+    setImageReworkCopyFields([]);
     setCopyEditNotice(null);
     lastCopyEditNoticeRef.current = null;
     reviewSessionRef.current = null;
@@ -543,6 +552,8 @@ export function TaskReviewDialog({
   const isCopyRework = Boolean(detail?.mandatoryCopyQc
     || ['QA_RETURN', 'FINAL_REWORK'].includes(revision?.revisionOrigin ?? '')
     || ['QA_RETURN', 'FINAL_REWORK'].includes(revision?.reworkOrigin ?? ''));
+  const isCopyOnlyFinalRework = revision?.reworkOrigin === 'FINAL_REWORK'
+    && revision.reworkTarget === 'COPY';
   const savedCopyRatings = detail ? copyRatingsFromDetail(detail) : { current: undefined };
   const originalCopyRatingComplete = ratingFeedbackComplete(copyOriginalScore, copyOriginalReasons, copyOriginalNote);
   const copyFieldsEditable = editable && (isCopyRework || copyOriginalScore === 2 || copyOriginalScore === 2.5);
@@ -562,8 +573,9 @@ export function TaskReviewDialog({
   const canModifyImages = Boolean(detail && revision?.approvedAt && hasOwnerControl && role !== 'REVIEWER'
     && ['MANUAL_ARCHIVE', 'REVIEWED', 'IMAGE_FAILED', 'IMAGE_QUEUED'].includes(detail.state) && !detail.currentExecutionId);
   const canEditApprovedImagePlan = Boolean(isAdmin && canReviewImages && canModifyImages);
-  const planFieldsReadOnly = !(editable || canEditApprovedImagePlan) || loading || submitting;
-  const planKindDisabled = !editable || loading || submitting;
+  const planFieldsReadOnly = !(editable || canEditApprovedImagePlan)
+    || isCopyOnlyFinalRework || loading || submitting;
+  const planKindDisabled = !editable || isCopyOnlyFinalRework || loading || submitting;
   const currentCopyRatingLabel = '机器原稿初评（保留）';
   const standardCopyEditBlockMessage = getCopyEditBlockMessage({
     editable,
@@ -735,11 +747,6 @@ export function TaskReviewDialog({
 
   function updateImageScore(score: HumanScore) {
     setImageScore(score);
-    if (score === 3) {
-      setImageReasons([]);
-      setImageProblemAssetIds([]);
-      setImageReviewNote('');
-    }
   }
 
   function toggleImageReason(code: string) {
@@ -752,6 +759,12 @@ export function TaskReviewDialog({
     setImageProblemAssetIds(current => current.includes(assetId)
       ? current.filter(id => id !== assetId)
       : [...current, assetId]);
+  }
+
+  function toggleReworkCopyField(field: 'TITLE' | 'BODY' | 'TAGS') {
+    setImageReworkCopyFields(current => current.includes(field)
+      ? current.filter(value => value !== field)
+      : [...current, field]);
   }
 
   function reviewSessionId(payload: object) {
@@ -937,6 +950,24 @@ export function TaskReviewDialog({
   async function submitImageReview(decision: 'APPROVE' | 'REWORK' | 'DISCARD', reworkTarget?: 'COPY' | 'IMAGE' | 'BOTH') {
     if (!detail || !canReviewImages || submitting) return;
     if (decision === 'REWORK' && !reworkTarget) return;
+    if (decision === 'REWORK') {
+      if (imageReasons.length === 0) {
+        setError('发起返工前请至少选择一项问题原因。');
+        return;
+      }
+      if (!imageReviewNote.trim()) {
+        setError('发起返工前请填写明确、可执行的修改要求。');
+        return;
+      }
+      if (['COPY', 'BOTH'].includes(reworkTarget!) && imageReworkCopyFields.length === 0) {
+        setError('文案返工请至少选择标题、正文或标签中的一项。');
+        return;
+      }
+      if (['IMAGE', 'BOTH'].includes(reworkTarget!) && imageProblemAssetIds.length === 0) {
+        setError('图片返工请至少选择一个问题页。');
+        return;
+      }
+    }
     if (imagePlanChanged && (!revision || !draft)) {
       setError('当前图片文案规划版本不可用，请刷新后重试。');
       return;
@@ -975,9 +1006,10 @@ export function TaskReviewDialog({
         decision,
         ...(decision === 'REWORK' ? { reworkTarget } : {}),
         score: imageScore,
-        reasons: imageScore === 3 ? [] : imageReasons,
-        problemAssetIds: imageScore === 3 ? [] : imageProblemAssetIds,
-        note: imageScore === 3 ? '' : imageReviewNote.trim(),
+        reasons: decision === 'APPROVE' && imageScore === 3 ? [] : imageReasons,
+        problemAssetIds: decision === 'APPROVE' && imageScore === 3 ? [] : imageProblemAssetIds,
+        note: decision === 'APPROVE' && imageScore === 3 ? '' : imageReviewNote.trim(),
+        ...(decision === 'REWORK' ? { copyFields: imageReworkCopyFields } : {}),
         ...(decision === 'REWORK' && reworkTarget !== 'COPY' && imagePlanChanged ? {
           revisionId: revision!.id,
           nodeId,
@@ -1044,7 +1076,7 @@ export function TaskReviewDialog({
             <Checkbox
 
               checked={aiDisclosureEnabled}
-              disabled={!editable || loading || submitting}
+              disabled={!editable || isCopyOnlyFinalRework || loading || submitting}
               onChange={(event) => setAiDisclosureEnabled(event.target.checked)}
             />
             <span className="workbench-ai-disclosure-switch" aria-hidden="true" />
@@ -1235,7 +1267,7 @@ export function TaskReviewDialog({
                     disabled={loading || submitting || humanQualitySettingsUnavailable || Boolean(savedImageAssessment)}
                     onChange={(score) => { updateImageScore(score); setError(''); }}
                   />
-                  {imageScore !== null && imageScore < 3 && <div className="human-rating-followup">
+                  {imageScore !== null && <div className="human-rating-followup">
                     <HumanRatingFeedback
                       id={`image-${detail.id}-${detail.currentImageRunId}`}
                       reasonOptions={imageReasonOptions}
@@ -1248,8 +1280,21 @@ export function TaskReviewDialog({
                       onToggleReason={(code) => { toggleImageReason(code); setError(''); }}
                       onNoteChange={(note) => { setImageReviewNote(note); setError(''); }}
                     />
+                    {['COPY', 'BOTH'].includes(imageReworkTarget) && <fieldset>
+                      <legend>文案返工字段 <span>发起文案返工时至少选择一项</span></legend>
+                      <div className="human-rating-pages">
+                        {([['TITLE', '标题'], ['BODY', '正文'], ['TAGS', '标签']] as const).map(([field, label]) => <label key={field} data-selected={imageReworkCopyFields.includes(field)}>
+                          <Checkbox
+                            checked={imageReworkCopyFields.includes(field)}
+                            disabled={loading || submitting || Boolean(savedImageAssessment)}
+                            onChange={() => toggleReworkCopyField(field)}
+                          />
+                          <span>{label}</span>
+                        </label>)}
+                      </div>
+                    </fieldset>}
                     {assets.length > 0 && <fieldset>
-                      <legend>问题页 <span>可多选，也可不选</span></legend>
+                      <legend>问题页 <span>发起图片返工时至少选择一页</span></legend>
                       <div className="human-rating-pages">
                         {assets.map((asset, index) => {
                           const pageIndex = resultImageByAssetId.get(asset.id)?.pageIndex ?? index + 1;
@@ -1377,7 +1422,7 @@ export function TaskReviewDialog({
               {isAdmin && <Disclosure className="workbench-review-section">
                 <DisclosureTrigger>交付格式与背景</DisclosureTrigger>
                 <DisclosureContent>
-                  <ImageSettingsEditor value={draft.imageSettings} disabled={(!editable && !canModifyImages) || submitting} onChange={imageSettings => setDraft(current => current ? { ...current, imageSettings } : current)} />
+                  <ImageSettingsEditor value={draft.imageSettings} disabled={isCopyOnlyFinalRework || (!editable && !canModifyImages) || submitting} onChange={imageSettings => setDraft(current => current ? { ...current, imageSettings } : current)} />
                   {canModifyImages && <Button unstyled className="button" type="button" disabled={submitting || !assets.length} onClick={() => void reviseImages('REPROCESS')}>仅转换格式 / 背景（不调用模型）</Button>}
                 </DisclosureContent>
               </Disclosure>}

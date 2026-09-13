@@ -60,6 +60,8 @@ npm run auth:setup
 npm run dev
 ```
 
+根目录已声明 `server` 与 `preview-service` 工作区；这一次安装会同时锁定并安装主站、中心服务和独立预览服务依赖。安装后可直接运行 `npm run typecheck:all`，无需再进入子目录补装依赖。
+
 默认打开 `http://127.0.0.1:3001`。登录由中心账户服务验证，初始管理员需按界面提示修改密码。
 
 ```powershell

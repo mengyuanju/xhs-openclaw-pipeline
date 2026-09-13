@@ -78,16 +78,22 @@ export function compactDetail(detail) {
   const assets = new Map(detail.assets.filter(asset => typeof asset.mediaType === 'string' && asset.mediaType.startsWith('image/'))
     .map(asset => [asset.id, { id: asset.id, runId: asset.imageRunId }]));
   const runs = new Map(detail.imageRuns.map(run => [run.executionId, run]));
+  const selectedAssetIds = new Set(detail.imageRuns.flatMap((run) => {
+    const images = Array.isArray(run?.result?.images) ? run.result.images : [];
+    return images.map((image) => Number(image?.deliveryAssetId ?? image?.assetId))
+      .filter((id) => Number.isSafeInteger(id) && id > 0);
+  }));
   return {
     executions: [...new Map(detail.executions.map(execution => {
       const run = runs.get(execution.id);
       return [execution.id, {
         id: execution.id, kind: execution.kind, status: execution.status,
+        imageProductionChainId: textOrNull(execution.imageProductionChainId),
         startedAt: textOrNull(execution.startedAt), finishedAt: textOrNull(execution.finishedAt),
         simulated: run?.result?.simulation?.enabled === true,
       }];
     })).values()],
-    images: [...assets.values()],
+    images: [...selectedAssetIds].map((id) => assets.get(id)).filter(Boolean),
     simulatedRunIds: detail.imageRuns.filter(run => run.result?.simulation?.enabled === true).map(run => run.id),
     assessments: [...new Map(rawAssessments.map(assessment => [assessment.id, {
       id: assessment.id, stage: assessment.stage, scoreX10: scoreX10(assessment),
@@ -187,6 +193,24 @@ function firstAssessment(detail, stage) {
       || String(a.id).localeCompare(String(b.id), 'en', { numeric: true }))[0] ?? null;
 }
 
+function intervalUnionDuration(executions) {
+  const intervals = executions.map((execution) => [dateMs(execution.startedAt), dateMs(execution.finishedAt)])
+    .filter(([start, end]) => Number.isFinite(start) && Number.isFinite(end) && end >= start)
+    .toSorted((left, right) => left[0] - right[0] || left[1] - right[1]);
+  if (!intervals.length) return null;
+  let total = 0;
+  let [start, end] = intervals[0];
+  for (const [nextStart, nextEnd] of intervals.slice(1)) {
+    if (nextStart <= end) {
+      end = Math.max(end, nextEnd);
+    } else {
+      total += end - start;
+      [start, end] = [nextStart, nextEnd];
+    }
+  }
+  return total + end - start;
+}
+
 export function summarizeEfficiency(tasks, detailById, range) {
   const groups = { COPY: { values: [], failed: 0, succeeded: 0, abandoned: 0, invalid: 0 },
     IMAGE: { values: [], failed: 0, succeeded: 0, abandoned: 0, invalid: 0 } };
@@ -210,10 +234,16 @@ export function summarizeEfficiency(tasks, detailById, range) {
     }
     let hasFinishedInRange = false;
     const attempts = { COPY: 0, IMAGE: 0 };
+    const imageChains = new Map();
     for (const execution of detail.executions) {
       const group = groups[execution.kind];
       if (!group) continue;
       if (!execution.simulated) attempts[execution.kind]++;
+      if (execution.kind === 'IMAGE' && !execution.simulated) {
+        const chainId = execution.imageProductionChainId || `legacy:${execution.id}`;
+        if (!imageChains.has(chainId)) imageChains.set(chainId, []);
+        imageChains.get(chainId).push(execution);
+      }
       if (!within(execution.finishedAt, range)) continue;
       if (execution.simulated) { simulated++; continue; }
       if (execution.status === 'ABANDONED') { group.abandoned++; continue; }
@@ -223,8 +253,23 @@ export function summarizeEfficiency(tasks, detailById, range) {
       group.succeeded++;
       const elapsed = dateMs(execution.finishedAt) - dateMs(execution.startedAt);
       if (!Number.isFinite(elapsed) || elapsed < 0) { group.invalid++; continue; }
-      group.values.push(elapsed);
-      dayValues.get(chinaDay(dateMs(execution.finishedAt)))[execution.kind === 'COPY' ? 'copy' : 'image'].push(elapsed);
+      if (execution.kind === 'COPY') {
+        group.values.push(elapsed);
+        dayValues.get(chinaDay(dateMs(execution.finishedAt))).copy.push(elapsed);
+      }
+    }
+    for (const executions of imageChains.values()) {
+      const completion = executions.filter((execution) => execution.status === 'SUCCEEDED'
+        && within(execution.finishedAt, range))
+        .toSorted((left, right) => dateMs(right.finishedAt) - dateMs(left.finishedAt))[0];
+      if (!completion) continue;
+      if (!Number.isFinite(dateMs(completion.startedAt))
+          || dateMs(completion.finishedAt) < dateMs(completion.startedAt)) continue;
+      const elapsed = intervalUnionDuration(executions.filter((execution) =>
+        ['SUCCEEDED', 'FAILED', 'ABANDONED'].includes(execution.status)));
+      if (elapsed === null) continue;
+      groups.IMAGE.values.push(elapsed);
+      dayValues.get(chinaDay(dateMs(completion.finishedAt))).image.push(elapsed);
     }
     if (hasFinishedInRange) {
       executionTasks++;

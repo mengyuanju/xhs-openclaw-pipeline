@@ -14,6 +14,8 @@ npm run dev -- --host 127.0.0.1 --port 3100
 
 首次拉取代码或新增数据库迁移后运行一次 `npm run db:local`。日常启动只需运行 `npm run dev -- --host 127.0.0.1 --port 3100`。
 
+数据库结构由 `drizzle/` 中的 Drizzle 快照管理，Cloudflare D1 实际执行的 SQL 固定保存在 `d1-migrations/`。新增结构时必须运行 `npm run db:generate`，该命令会同步两处迁移并保留 SQLite 文本主键的非空约束；不要直接调用 `drizzle-kit generate`，也不要修改已经执行过的 D1 迁移文件。
+
 ### 管理员登录
 
 运行 `npm run auth:generate -- admin` 生成管理员账号、一次性密码和密码哈希。将账号和密码哈希写入本地 `.dev.vars`：

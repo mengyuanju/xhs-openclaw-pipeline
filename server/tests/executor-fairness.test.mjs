@@ -47,8 +47,11 @@ function claimFixture({
   const executions = new Map();
   const node = {
     id: 'node-a',
+    codex_pool_id: 'pool-a',
     copy_concurrency: capacity,
     image_concurrency: capacity,
+    codex_total_concurrency: capacity,
+    codex_image_concurrency: capacity,
     image_worker_enabled: true,
   };
   const client = {
@@ -57,10 +60,12 @@ function claimFixture({
       const sql = String(rawSql);
       calls.push({ sql, values });
       if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
-      if (sql.includes('SELECT * FROM executor_nodes')) return { rows: [node] };
+      if (sql.includes('FROM executor_nodes n') && sql.includes('codex_concurrency_pools')) return { rows: [node] };
       if (sql.includes('SELECT * FROM execution_claim_requests')) return { rows: receipt ? [receipt] : [] };
       if (sql.includes('JOIN tasks t ON t.id = e.task_id')) return { rows: receiptRecords };
-      if (sql.includes('COUNT(*)') && sql.includes('task_executions')) return { rows: [{ count: running }] };
+      if (sql.includes('COUNT(*)') && sql.includes('task_executions')) {
+        return { rows: [{ total_count: running, image_count: running }] };
+      }
       if (sql.includes('SELECT last_assignee_user_id FROM execution_claim_cursors')) {
         return { rows: cursorPresent ? [{ last_assignee_user_id: cursor }] : [] };
       }

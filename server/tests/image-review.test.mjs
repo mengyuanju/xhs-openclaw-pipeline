@@ -85,7 +85,7 @@ function fixture(overrides = {}, {
           task_id: values[0], stage: values[1], copy_revision_id: values[2], image_run_id: values[3],
           score_x10: values[4], rating_context: values[5], action: values[6], reason_codes: values[7],
           problem_asset_ids: values[8], note: values[9], rework_target: values[10], reviewer_username: values[11],
-          review_session_id: values[12], request_fingerprint: values[13], created_at: new Date(),
+          review_session_id: values[12], request_fingerprint: values[13], rework_details: values[14], created_at: new Date(),
         };
         assessments.push(row);
         return { rows: [row] };
@@ -194,6 +194,8 @@ for (const reworkTarget of ['COPY', 'BOTH']) {
       reworkTarget,
       score: 2,
       reasons: ['CONTENT_MISMATCH'],
+      copyFields: ['BODY'],
+      ...(reworkTarget === 'BOTH' ? { problemAssetIds: [101] } : {}),
       note: '图文终审要求修改文案后重新质检',
       reviewSessionId: reworkTarget === 'COPY'
         ? '96969696-9696-4696-8696-969696969696'
@@ -210,8 +212,30 @@ for (const reworkTarget of ['COPY', 'BOTH']) {
     assert.equal(revisions[0].content.finalRework.target, reworkTarget);
     assert.equal(assessments[0].action, 'RETRY');
     assert.equal(assessments[0].rework_target, reworkTarget);
+    assert.deepEqual(assessments[0].rework_details.copyFields, ['BODY']);
   });
 }
+
+test('rework rejects ambiguous feedback before opening a transaction', async () => {
+  for (const patch of [
+    { reasons: [], copyFields: ['BODY'], note: '修改正文' },
+    { reasons: ['CONTENT_MISMATCH'], copyFields: ['BODY'], note: '' },
+    { reasons: ['CONTENT_MISMATCH'], copyFields: [], note: '修改正文' },
+    { reworkTarget: 'IMAGE', reasons: ['TEXT_ERROR'], problemAssetIds: [], note: '重做问题页' },
+  ]) {
+    const { repository, queries } = fixture();
+    await assert.rejects(repository.reviewImages(7, {
+      imageRunId: runId,
+      decision: 'REWORK',
+      reworkTarget: 'COPY',
+      score: 2,
+      reviewSessionId,
+      reviewerUserId: 'reviewer',
+      ...patch,
+    }), TypeError);
+    assert.equal(queries.length, 0);
+  }
+});
 
 test('admin image retry saves edited plan as a new approved revision and keeps the reviewed revision immutable', async () => {
   const { repository, task, queries, assessments, revisions, sourceContent } = fixture();

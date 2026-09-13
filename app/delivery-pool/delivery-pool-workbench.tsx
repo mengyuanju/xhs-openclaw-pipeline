@@ -345,7 +345,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
       setMessage('所选范围当前没有尚未上传的 READY 交付项，无需重复上传。');
       return;
     }
-    const selectedNames = selectedPreviewPackages.map((facet) => `“${facet.name}”`);
+    const selectedNames = selectedPreviewPackages.map((facet) => `“${facet.name}${facet.deleted ? '（来源已删除）' : ''}”`);
     if (selectedPreviewUnassigned) selectedNames.unshift(`“${UNASSIGNED_PREVIEW_LABEL}”`);
     const namesPreview = selectedNames.length <= 3
       ? selectedNames.join('、')
@@ -567,7 +567,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
             <SelectContent>
               <SelectItem value={ALL_QUERY_PACKAGES}>全部词包</SelectItem>
               {queryPackages.map((facet) => <SelectItem key={facet.name} value={`package:${facet.name}`}>
-                {facet.name}（{facet.count}）
+                {facet.name}{facet.deleted ? '（来源已删除）' : ''}（{facet.count}）
               </SelectItem>)}
             </SelectContent>
           </Select>
@@ -635,7 +635,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
                     && selectedPreviewScopeCount >= DELIVERY_PREVIEW_PACKAGE_SELECTION_LIMIT)}
                   onChange={(event) => changePreviewScopeSelection([facet.id], false, event.target.checked)}
                 />
-                <span><strong>{facet.name}</strong><small>READY {facet.count} · 未上传 {facet.unuploadedCount} · 已发布 {facet.publishedCount}{facet.revokedCount ? ` · 已撤销 ${facet.revokedCount}` : ''}</small></span>
+                <span><strong>{facet.name}{facet.deleted ? '（来源已删除）' : ''}</strong><small>READY {facet.count} · 未上传 {facet.unuploadedCount} · 已发布 {facet.publishedCount}{facet.revokedCount ? ` · 已撤销 ${facet.revokedCount}` : ''}</small></span>
               </label>)}
             </>
             : <div className={styles.previewPackageEmpty}>没有匹配的可上传范围。</div>}
@@ -663,7 +663,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
             : queryPackageName
               ? `词包“${queryPackageName}”当前没有 READY 交付条目。`
               : '交付池当前为空；图文终审通过后会在这里生成就绪条目。'}</div>
-          : <div className="table-wrap mobile-cards">
+          : <div className="table-wrap mobile-cards" role="region" aria-label="交付内容列表，可横向滚动" tabIndex={0}>
             <table>
               <thead>
                 <tr>

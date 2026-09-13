@@ -79,6 +79,17 @@ type ConfirmedScreening = {
   reason?: string;
 };
 
+type SpreadsheetImportPreview = {
+  sheets: Array<{ name: string; columns: Array<{ key: string; number: number; label: string }> }>;
+  selectedSheet: string;
+  selectedColumn: string;
+  queries: string[];
+  duplicates: number;
+  blanks: number;
+  invalidRows: Array<{ rowNumber: number; message: string }>;
+  error: string | null;
+};
+
 type StagedScreening = {
   itemId: number;
   expectedItemVersion: number;
@@ -150,6 +161,9 @@ function timeLabel(value: string) {
 }
 
 function assigneeLabel(item: QueryPackageSummary) {
+  if (['USED_UP', 'ABANDONED'].includes(item.status) && item.participantCount > 0) {
+    return `已完成 · ${item.participantCount} 人参与筛选`;
+  }
   if (item.assignedUserCount > 0) {
     return `已按明细分给 ${item.assignedUserCount} 人 · ${item.assignedItemCount} 条待筛`;
   }
@@ -180,6 +194,8 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
   const [queryText, setQueryText] = useState('');
   const [importError, setImportError] = useState('');
   const [readingImportFile, setReadingImportFile] = useState(false);
+  const [spreadsheetFile, setSpreadsheetFile] = useState<File | null>(null);
+  const [spreadsheetPreview, setSpreadsheetPreview] = useState<SpreadsheetImportPreview | null>(null);
   const [creating, setCreating] = useState(false);
   const [detail, setDetail] = useState<QueryPackageDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -438,13 +454,76 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
     setQueryText('');
     setImportError('');
     try {
+      const spreadsheet = /\.xlsx$/iu.test(file.name)
+        || file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      if (spreadsheet) {
+        setSpreadsheetFile(file);
+        const preview = await apiRequest<SpreadsheetImportPreview>(
+          apiPath('/v1/query-packages/import-preview'),
+          {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              'X-File-Name': file.name,
+            },
+            body: file,
+          },
+        );
+        if (!canCommitLatestRequest(importFileRequestId.current, currentRequestId)) return;
+        setSpreadsheetPreview(preview);
+        setSourceFileName(file.name.slice(0, 255));
+        setQueryText(preview.queries.join('\n'));
+        setImportError(preview.error ?? (preview.invalidRows.length
+          ? `有 ${preview.invalidRows.length} 行未导入，请检查公式或超长内容。`
+          : ''));
+        return;
+      }
+      setSpreadsheetFile(null);
+      setSpreadsheetPreview(null);
       const content = await file.text();
       if (!canCommitLatestRequest(importFileRequestId.current, currentRequestId)) return;
       setSourceFileName(file.name.slice(0, 255));
       setQueryText(content);
-    } catch {
+    } catch (caught) {
       if (!canCommitLatestRequest(importFileRequestId.current, currentRequestId)) return;
-      setImportError('文件读取失败，请改用 UTF-8 文本文件或直接粘贴 Query。');
+      setImportError(caught instanceof Error
+        ? caught.message
+        : '文件读取失败；请检查 XLSX 工作表/列，或改用 UTF-8 文本文件。');
+    } finally {
+      if (canCommitLatestRequest(importFileRequestId.current, currentRequestId)) setReadingImportFile(false);
+    }
+  }
+
+  async function selectSpreadsheetSource(sheet: string, column?: string) {
+    if (!spreadsheetFile) return;
+    const currentRequestId = importFileRequestId.current + 1;
+    importFileRequestId.current = currentRequestId;
+    setReadingImportFile(true);
+    setImportError('');
+    try {
+      const params = new URLSearchParams({ sheet });
+      if (column) params.set('column', column);
+      const preview = await apiRequest<SpreadsheetImportPreview>(
+        apiPath(`/v1/query-packages/import-preview?${params}`),
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'X-File-Name': spreadsheetFile.name,
+          },
+          body: spreadsheetFile,
+        },
+      );
+      if (!canCommitLatestRequest(importFileRequestId.current, currentRequestId)) return;
+      setSpreadsheetPreview(preview);
+      setQueryText(preview.queries.join('\n'));
+      setImportError(preview.error ?? (preview.invalidRows.length
+        ? `有 ${preview.invalidRows.length} 行未导入，请检查公式或超长内容。`
+        : ''));
+    } catch (caught) {
+      if (canCommitLatestRequest(importFileRequestId.current, currentRequestId)) {
+        setImportError(caught instanceof Error ? caught.message : '表格读取失败');
+      }
     } finally {
       if (canCommitLatestRequest(importFileRequestId.current, currentRequestId)) setReadingImportFile(false);
     }
@@ -454,6 +533,8 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
     importFileRequestId.current += 1;
     setReadingImportFile(false);
     setSourceFileName('');
+    setSpreadsheetFile(null);
+    setSpreadsheetPreview(null);
     setQueryText(value);
     setImportError('');
   }
@@ -462,6 +543,8 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
     importFileRequestId.current += 1;
     setReadingImportFile(false);
     setImportError('');
+    setSpreadsheetFile(null);
+    setSpreadsheetPreview(null);
     setImportOpen(false);
   }
 
@@ -535,7 +618,18 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
         load({ silent: true }),
       ]);
     } catch (caught) {
-      setDetailError(caught instanceof Error ? caught.message : '筛选结果保存失败');
+      const failure = caught instanceof Error ? caught.message : '筛选结果保存失败';
+      // Any rejection may mean another reviewer already changed this package.
+      // Drop every optimistic choice and reload the authoritative versions before
+      // allowing another submission.
+      setCheckedItemIds([]);
+      setStagedScreening({});
+      setScreeningReason('');
+      setDetailError(`${failure}；已清除本地暂存并刷新最新状态。`);
+      await Promise.allSettled([
+        openPackage(detail.id, { preserveFilters: true }),
+        load({ silent: true }),
+      ]);
     } finally {
       setActing('');
     }
@@ -911,13 +1005,17 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
         <form className={styles.importForm} onSubmit={createPackage}>
           <div className={styles.importFields}>
             <div className="field"><label htmlFor="query-package-name">词包名称</label><Input id="query-package-name" value={packageName} maxLength={120} required disabled={creating} onChange={(event) => setPackageName(event.target.value)} /></div>
-            <div className="field"><label htmlFor="query-package-file">读取文本文件</label><Input id="query-package-file" type="file" accept=".txt,.csv,text/plain,text/csv" disabled={creating} onChange={(event) => { void readImportFile(event.target.files?.[0] ?? null); }} /></div>
+            <div className="field"><label htmlFor="query-package-file">读取文本或 XLSX 文件</label><Input id="query-package-file" type="file" accept=".txt,.csv,.xlsx,text/plain,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={creating} onChange={(event) => { void readImportFile(event.target.files?.[0] ?? null); }} /></div>
           </div>
+          {spreadsheetPreview && <div className={styles.importFields} aria-label="XLSX 数据范围">
+            <div className="field"><label>工作表</label><Select value={spreadsheetPreview.selectedSheet} disabled={creating || readingImportFile} onValueChange={(value) => { void selectSpreadsheetSource(value); }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{spreadsheetPreview.sheets.map((sheet) => <SelectItem key={sheet.name} value={sheet.name}>{sheet.name}</SelectItem>)}</SelectContent></Select></div>
+            <div className="field"><label>Query 列</label><Select value={spreadsheetPreview.selectedColumn} disabled={creating || readingImportFile} onValueChange={(value) => { void selectSpreadsheetSource(spreadsheetPreview.selectedSheet, value); }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{spreadsheetPreview.sheets.find((sheet) => sheet.name === spreadsheetPreview.selectedSheet)?.columns.map((column) => <SelectItem key={column.key} value={column.key}>{column.key} · {column.label}</SelectItem>)}</SelectContent></Select></div>
+          </div>}
           <div className="field"><label htmlFor="query-package-content">Query 内容</label><Textarea id="query-package-content" className={styles.queryInput} value={queryText} rows={12} required disabled={creating} placeholder={'每行一条，例如：\n租房桌面收纳\n通勤穿搭\n周末露营装备'} onChange={(event) => changeImportText(event.target.value)} /></div>
           {readingImportFile && <div className="notice" role="status"><LoaderCircle className="animate-spin" size={15} />正在读取文件…</div>}
           {importError && <div className="notice error" role="alert">{importError}</div>}
           {queryText && parsedImport.error && <div className="notice error" role="alert">{parsedImport.error}</div>}
-          <div className={styles.fileRow}><span>{sourceFileName ? `来源文件：${sourceFileName}` : '也可以直接粘贴纯文本或单列 CSV'}</span><small>识别 {parsedImport.queries.length} 条 · 重复 {parsedImport.duplicates} 条</small></div>
+          <div className={styles.fileRow}><span>{sourceFileName ? `来源文件：${sourceFileName}` : '也可以直接粘贴纯文本、单列 CSV，或从 XLSX 指定工作表和列'}</span><small>识别 {parsedImport.queries.length} 条 · 重复 {spreadsheetPreview?.duplicates ?? parsedImport.duplicates} 条</small></div>
           <div className={styles.dialogFooter}><span>这里只导入候选 Query；点击“通过”后会自动进入文案生成。</span><div className={styles.dialogButtons}><DialogClose asChild><Button unstyled className="button" type="button" disabled={creating}>取消</Button></DialogClose><Button unstyled className="button primary" disabled={creating || readingImportFile || !packageName.trim() || Boolean(parsedImport.error)}>{creating ? '导入中…' : readingImportFile ? '读取文件中…' : '创建词包'}</Button></div></div>
         </form>
       </DialogContent>
@@ -930,7 +1028,7 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
             ? `词包 #${detail.id} · 通过的 Query 会自动创建作业并进入文案生成。`
             : `词包 #${detail.id} · 词包已结束，只能查看历史筛选结果。`
           : '正在读取词包详情…'}</DialogDescription></div>{detail && <span className="pill">{PACKAGE_STATUS_LABELS[detail.status] ?? detail.status}</span>}</div>
-        {detail && <div className={styles.screeningStats}><span className="pill">全部 {detail.counts.total}</span><span className="pill">待筛 {detail.counts.pending}</span><span className="pill">通过 {detail.counts.selected}</span><span className="pill">淘汰 {detail.counts.rejected}</span><span className="pill">已创建作业 {detail.counts.produced}</span></div>}
+        {detail && <div className={styles.screeningStats}><span className="pill">{detail.countScope === 'MY_ASSIGNMENT' ? '我的分配' : '全词包'} {detail.visibleCounts.total}</span><span className="pill">待筛 {detail.visibleCounts.pending}</span><span className="pill">通过 {detail.visibleCounts.selected}</span><span className="pill">淘汰 {detail.visibleCounts.rejected}</span><span className="pill">已创建作业 {detail.visibleCounts.produced}</span></div>}
         {detail && !detailAllowsScreening && <div className="notice" role="status">词包已结束，仅可查看历史筛选结果，不能继续通过或淘汰 Query。</div>}
         {detail && <div className={styles.screeningToolbar}><form className={styles.toolbarGroup} onSubmit={applyItemSearch}><SearchInput className={styles.search} value={itemSearch} onValueChange={setItemSearch} placeholder="搜索 Query 或外部编号" /><Button unstyled className="button small" type="submit" disabled={detailLoading}>应用搜索</Button><Select value={itemStatus} onValueChange={(value) => changeItemStatus(value as QueryPackageItemFilter)} disabled={detailLoading}><SelectTrigger className={styles.filterSelect}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ALL">全部筛选结果</SelectItem><SelectItem value="PENDING">待筛选</SelectItem><SelectItem value="SELECTED">已通过</SelectItem><SelectItem value="REJECTED">已淘汰</SelectItem><SelectItem value="INVALID">内容无效</SelectItem><SelectItem value="DUPLICATE">重复项</SelectItem><SelectItem value="TASK_CREATED">已创建作业</SelectItem></SelectContent></Select></form><div className={styles.toolbarGroup}><Input value={screeningReason} maxLength={300} placeholder="淘汰原因（可选）" aria-label="筛选原因" disabled={!detailAllowsScreening} onChange={(event) => setScreeningReason(event.target.value)} /><Button unstyled className="button small primary" type="button" disabled={!detailAllowsScreening || !checkedItemIds.length || Boolean(acting)} onClick={() => screen('SELECT')}><CheckCircle2 size={14} />批量通过 {checkedItemIds.length || ''}</Button><Button unstyled className="button small danger" type="button" disabled={!detailAllowsScreening || !checkedItemIds.length || Boolean(acting)} onClick={() => screen('REJECT')}><XCircle size={14} />批量淘汰 {checkedItemIds.length || ''}</Button></div></div>}
         <div className={styles.screeningList}>

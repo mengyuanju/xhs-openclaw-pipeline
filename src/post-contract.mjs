@@ -85,6 +85,19 @@ export function postOutputSchema(imageCount = AUTO_IMAGE_COUNT) {
       sources: boundedStringArray(8, 500),
       expressionReferences: boundedStringArray(5, 500),
       riskFlags: boundedStringArray(10, 200),
+      riskAssessments: {
+        type: 'array', maxItems: 10,
+        items: {
+          type: 'object', additionalProperties: false,
+          required: ['severity', 'status', 'message'],
+          properties: {
+            severity: { type: 'string', enum: ['INFO', 'WARNING', 'BLOCKING'] },
+            status: { type: 'string', enum: ['MITIGATED', 'UNRESOLVED'] },
+            message: boundedString(200),
+            mitigation: boundedString(300, 0),
+          },
+        },
+      },
       fabricatedExperience: { type: 'boolean', enum: [false] },
       unverifiedClaims: boundedStringArray(10, 300),
     },
@@ -365,6 +378,27 @@ function validatePost(value, { imageCount = 3, allowedSources = [], query = '' }
   const admitted = expectBoolean(judgement.admitted, 'taskJudgement.admitted');
   if (!admitted) throw new TypeError('taskJudgement.admitted must be true for production');
 
+  const legacyRiskFlags = expectStringArray(root.riskFlags, 'riskFlags', { max: 10, itemMax: 200 });
+  const riskAssessments = root.riskAssessments === undefined
+    ? legacyRiskFlags.map((message) => ({
+        severity: 'WARNING', status: 'UNRESOLVED', message, mitigation: '',
+      }))
+    : (() => {
+        if (!Array.isArray(root.riskAssessments) || root.riskAssessments.length > 10) {
+          throw new TypeError('riskAssessments must be an array with at most 10 items');
+        }
+        return root.riskAssessments.map((value, index) => {
+          const assessment = expectRecord(value, `riskAssessments[${index}]`);
+          return {
+            severity: expectEnum(assessment.severity, `riskAssessments[${index}].severity`, ['INFO', 'WARNING', 'BLOCKING']),
+            status: expectEnum(assessment.status, `riskAssessments[${index}].status`, ['MITIGATED', 'UNRESOLVED']),
+            message: expectString(assessment.message, `riskAssessments[${index}].message`, { max: 200 }),
+            mitigation: assessment.mitigation === undefined
+              ? '' : expectString(assessment.mitigation, `riskAssessments[${index}].mitigation`, { max: 300, allowEmpty: true }),
+          };
+        });
+      })();
+
   return {
     taskJudgement: {
       admitted,
@@ -394,7 +428,8 @@ function validatePost(value, { imageCount = 3, allowedSources = [], query = '' }
       max: 5,
       itemMax: 500,
     }),
-    riskFlags: expectStringArray(root.riskFlags, 'riskFlags', { max: 10, itemMax: 200 }),
+    riskFlags: legacyRiskFlags,
+    riskAssessments,
     fabricatedExperience: expectBoolean(root.fabricatedExperience, 'fabricatedExperience'),
     unverifiedClaims: expectStringArray(root.unverifiedClaims, 'unverifiedClaims', { max: 10, itemMax: 300 }),
   };

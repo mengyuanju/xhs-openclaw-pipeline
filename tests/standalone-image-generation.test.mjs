@@ -310,6 +310,12 @@ describe('standalone image generation service', () => {
       sources: ['https://evidence.example/approved'],
       expressionReferences: [],
       riskFlags: ['价格承诺存在合规风险'],
+      riskAssessments: [{
+        severity: 'BLOCKING',
+        status: 'UNRESOLVED',
+        message: '价格承诺存在合规风险',
+        mitigation: '',
+      }],
       fabricatedExperience: true,
       unverifiedClaims: ['具体价格仍待核验'],
     };

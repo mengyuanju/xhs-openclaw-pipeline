@@ -100,4 +100,4 @@ Query 是用户给出的搜索词，用户希望从笔记中得到与 Query 对�
 6、采用“是否满足→是否可用→是否优质”的最低阻碍规则，任何基础维度低于 2 分或命中红线时不得标成优质。
 7、如果输入要求发布日期，日期必须在当前时间之前一年内，符合时效逻辑且不得预知未来。
 
-输出必须遵守基础 JSON 契约。标题和正文都不得使用 emoji，platform.iconDictionary 必须是空对象。来源只能填写 referenceUrls 或 webResearch.sources 中已经明确提供且直接支持内容的公开 URL，未提供的来源不得虚构。不确定事实写入 unverifiedClaims，风险写入 riskFlags，fabricatedExperience 必须为 false。
+输出必须遵守基础 JSON 契约。标题和正文都不得使用 emoji，platform.iconDictionary 必须是空对象。来源只能填写 referenceUrls 或 webResearch.sources 中已经明确提供且直接支持内容的公开 URL，未提供的来源不得虚构。不确定事实写入 unverifiedClaims。风险同时写入 riskFlags 与结构化 riskAssessments；riskAssessments 必须区分 INFO/WARNING/BLOCKING 和 MITIGATED/UNRESOLVED，只有会直接造成人身、健康、重大财产、违法或平台红线后果的未解决风险才可标为 BLOCKING。fabricatedExperience 必须为 false。

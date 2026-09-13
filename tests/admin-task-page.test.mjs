@@ -51,6 +51,22 @@ test('selected operator is sent as an exact account alongside role, state and Qu
   assert.equal(requested.searchParams.get('offset'), '20');
 });
 
+test('admin task pages forward opaque cursors and the indexed tail-page anchor', async () => {
+  const requested = [];
+  const request = async (path) => {
+    if (path.endsWith('/health')) return { capabilities: { adminTaskFilters: true } };
+    requested.push(new URL(path, 'http://localhost'));
+    return { items: [], total: 100, limit: 20, offset: 80, previousCursor: 'before-token', nextCursor: null };
+  };
+
+  await loadAdminTaskPage(request, { limit: 20, offset: 80, cursor: 'opaque-token' });
+  await loadAdminTaskPage(request, { limit: 20, offset: 80, lastPage: true });
+  assert.equal(requested[0].searchParams.get('cursor'), 'opaque-token');
+  assert.equal(requested[0].searchParams.has('lastPage'), false);
+  assert.equal(requested[1].searchParams.get('lastPage'), 'true');
+  assert.equal(requested[1].searchParams.has('cursor'), false);
+});
+
 test('exact creator pages reject incomplete identities and centers without account filtering', async () => {
   await assert.rejects(loadAdminTaskPage(async () => ({}), { createdByUserId: 'operator.02' }), /稳定账号身份/u);
   await assert.rejects(loadAdminTaskPage(async (path) => path.endsWith('/health')

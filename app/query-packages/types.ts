@@ -24,6 +24,8 @@ export type QueryPackageSummary = {
   assigneeStatus: 'ACTIVE' | 'DISABLED' | null;
   assignedItemCount: number;
   assignedUserCount: number;
+  participantCount: number;
+  participantNames: string[];
   version: number;
   counts: QueryPackageCounts;
   createdAt: string;
@@ -53,6 +55,8 @@ export type QueryPackageItem = {
 };
 
 export type QueryPackageDetail = QueryPackageSummary & {
+  visibleCounts: QueryPackageCounts;
+  countScope: 'FULL_PACKAGE' | 'MY_ASSIGNMENT';
   items: QueryPackageItem[];
   itemPage: {
     total: number;
@@ -138,6 +142,10 @@ export function normalizePackageSummary(value: unknown): QueryPackageSummary | n
     assigneeStatus,
     assignedItemCount: finiteCount(row.assignedItemCount),
     assignedUserCount: finiteCount(row.assignedUserCount),
+    participantCount: finiteCount(row.participantCount),
+    participantNames: Array.isArray(row.participantNames)
+      ? row.participantNames.filter((name): name is string => typeof name === 'string' && Boolean(name.trim()))
+      : [],
     version,
     counts: {
       total: finiteCount(counts.total),
@@ -355,8 +363,19 @@ export function normalizePackageDetail(value: unknown): QueryPackageDetail | nul
     : null;
   const pageTotal = Number(rawItemPage?.total);
   const returnedCount = Number(rawItemPage?.returnedCount);
+  const rawVisibleCounts = candidate.visibleCounts && typeof candidate.visibleCounts === 'object'
+    ? candidate.visibleCounts as Record<string, unknown>
+    : null;
   return {
     ...summary,
+    visibleCounts: rawVisibleCounts ? {
+      total: finiteCount(rawVisibleCounts.total),
+      pending: finiteCount(rawVisibleCounts.pending),
+      selected: finiteCount(rawVisibleCounts.selected),
+      rejected: finiteCount(rawVisibleCounts.rejected),
+      produced: finiteCount(rawVisibleCounts.produced),
+    } : summary.counts,
+    countScope: candidate.countScope === 'MY_ASSIGNMENT' ? 'MY_ASSIGNMENT' : 'FULL_PACKAGE',
     items: normalizedItems,
     itemPage: {
       total: Number.isSafeInteger(pageTotal) && pageTotal >= 0 ? pageTotal : normalizedItems.length,
