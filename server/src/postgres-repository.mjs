@@ -438,6 +438,8 @@ async function copyDiffersFromMachineAncestor(client, {
 function revisionFrom(row) {
   if (!row) return null;
   const rework = row.content?.qualityReturn ?? row.content?.finalRework ?? null;
+  const reworkOrigin = [rework?.origin, row.revision_origin]
+    .find((origin) => origin === 'QA_RETURN' || origin === 'FINAL_REWORK') ?? null;
   return {
     id: Number(row.id),
     taskId: Number(row.task_id),
@@ -452,7 +454,7 @@ function revisionFrom(row) {
     revisionOrigin: row.revision_origin ?? null,
     copyContentChangedFromMachine: row.copy_content_changed_from_machine === true,
     copyReworkSatisfied: row.copy_rework_satisfied === true,
-    reworkOrigin: rework?.origin ?? row.revision_origin ?? null,
+    reworkOrigin,
     reworkReasonCodes: Array.isArray(rework?.reasonCodes) ? rework.reasonCodes : [],
     reworkNote: rework?.note ?? null,
     createdAt: row.created_at,
@@ -658,6 +660,27 @@ async function assertActiveAssignableUser(client, username, accountId = null) {
   }
 }
 
+async function assertActiveNonAdminAssignee(client, username, accountId = null) {
+  const result = accountId === null
+    ? await client.query(`
+      SELECT id, username FROM app_users
+      WHERE username = $1 AND status = 'ACTIVE' AND role IN ('REVIEWER', 'USER')
+      FOR UPDATE
+    `, [username])
+    : await client.query(`
+      SELECT id, username FROM app_users
+      WHERE id = $1 AND username = $2 AND status = 'ACTIVE'
+        AND role IN ('REVIEWER', 'USER')
+      FOR UPDATE
+    `, [accountId, username]);
+  if (!result.rows[0]) {
+    throw new ControlPlaneConflictError(
+      'ASSIGNEE_UNAVAILABLE',
+      '指定的负责人不存在、已停用或是管理员',
+    );
+  }
+}
+
 async function assertActiveManualAssignee(client, username, accountId, actor = null) {
   if (actor?.role === 'ADMIN'
       && username === actor.username
@@ -665,7 +688,7 @@ async function assertActiveManualAssignee(client, username, accountId, actor = n
     await lockAssignmentUser(client, username, accountId);
     return;
   }
-  await assertActiveAssignableUser(client, username, accountId);
+  await assertActiveNonAdminAssignee(client, username, accountId);
 }
 
 async function lockAccountIdentity(client, username, accountId) {
@@ -1095,6 +1118,54 @@ export class PostgresControlPlaneRepository {
   }
   claimXhsQuerySearch(input) { return claimXhsQuerySearch(this.pool, input); }
   listXhsQuerySearchNodes() { return listXhsQuerySearchNodes(this.pool); }
+  async retireXhsQuerySearchNode(rawNodeId, rawActor) {
+    const nodeId = normalizeNodeId(rawNodeId);
+    return transaction(this.pool, async (client) => {
+      const { actor } = await lockCurrentActor(client, rawActor);
+      if (actor.role !== 'ADMIN') {
+        throw new ControlPlaneAuthorizationError('current role cannot perform this operation');
+      }
+      const currentResult = await client.query(`
+        SELECT *, last_seen_at >= now() - interval '90 seconds' AS online
+        FROM xhs_query_search_nodes
+        WHERE id = $1 AND retired_at IS NULL
+        FOR UPDATE
+      `, [nodeId]);
+      const current = currentResult.rows[0];
+      if (!current) throw new ControlPlaneNotFoundError('Xiaohongshu search node not found');
+      if (current.online) {
+        throw new ControlPlaneConflictError(
+          'XHS_SEARCH_NODE_STILL_ONLINE',
+          '小红书搜索节点仍在线，请先停止搜索进程并等待状态变为离线后再移除',
+        );
+      }
+      const running = await client.query(`
+        SELECT id
+        FROM xhs_query_search_jobs
+        WHERE claimed_by_node_id = $1 AND status = 'RUNNING'
+        ORDER BY id
+        LIMIT 1
+      `, [nodeId]);
+      if (running.rows[0]) {
+        throw new ControlPlaneConflictError(
+          'XHS_SEARCH_NODE_HAS_RUNNING_TASK',
+          '小红书搜索节点仍有关联的运行中任务，请先处理任务后再移除',
+        );
+      }
+      const result = await client.query(`
+        UPDATE xhs_query_search_nodes
+        SET retired_at = now(), updated_at = now()
+        WHERE id = $1 AND retired_at IS NULL
+        RETURNING id, name, retired_at
+      `, [nodeId]);
+      if (!result.rows[0]) throw new ControlPlaneNotFoundError('Xiaohongshu search node not found');
+      return {
+        id: result.rows[0].id,
+        name: result.rows[0].name,
+        retiredAt: result.rows[0].retired_at,
+      };
+    });
+  }
   completeXhsQuerySearch(id, input) { return completeXhsQuerySearch(this.pool, id, input); }
   blockXhsQuerySearch(id, input) { return blockXhsQuerySearch(this.pool, id, input); }
   failXhsQuerySearch(id, input) { return failXhsQuerySearch(this.pool, id, input); }
@@ -1174,7 +1245,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 4, xiaohongshuQuerySearchVersion: 4, xiaohongshuAccountStatusVersion: 1, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1, deliveryPreviewVersion: 5 } };
+      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 4, xiaohongshuQuerySearchVersion: 4, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1, deliveryPreviewVersion: 5 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -1531,7 +1602,7 @@ export class PostgresControlPlaneRepository {
           throw new ControlPlaneConflictError('LAST_ADMIN', 'the last active administrator cannot be disabled or demoted');
         }
       }
-      if (role !== 'USER' || status !== 'ACTIVE') {
+      if (role === 'ADMIN' || status !== 'ACTIVE') {
         const unfinished = await client.query(`
           SELECT id FROM tasks
           WHERE assigned_to_user_id = $1
@@ -1543,7 +1614,7 @@ export class PostgresControlPlaneRepository {
         if (unfinished.rows[0]) {
           throw new ControlPlaneConflictError(
             'USER_HAS_ACTIVE_TASKS',
-            '该账号仍有未完成任务，请先将任务转交其他作业员后再停用或更换角色',
+            '该账号仍有未完成任务，请先将任务转交其他负责人后再停用或改为管理员',
           );
         }
       }
@@ -1612,7 +1683,7 @@ export class PostgresControlPlaneRepository {
       if (unfinished) {
         throw new ControlPlaneConflictError(
           'USER_HAS_ACTIVE_TASKS',
-          '该账号仍有未完成任务，请先将任务转交其他作业员后再删除',
+          '该账号仍有未完成任务，请先将任务转交其他负责人后再删除',
         );
       }
       if (assignedTasks.rows.length > 0) {

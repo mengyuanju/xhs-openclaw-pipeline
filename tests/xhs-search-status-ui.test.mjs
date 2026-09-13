@@ -24,10 +24,18 @@ test('executor management shows center and worker search nodes with account stat
     source('../.env.example'),
   ]);
   assert.match(page, /\/v1\/xhs-search-statuses/u);
+  assert.match(page, /readCentralPageData\('\/health'/u);
+  assert.match(page, /xhsSearchMachineTokenConfigured/u);
   assert.match(manager, /小红书搜索节点/u);
   assert.match(manager, /xhsHostKindLabel/u);
   assert.match(manager, /xhsAuthStatusLabel/u);
   assert.match(manager, /未设置账号标识/u);
+  assert.match(manager, /中心服务器密钥：/u);
+  assert.match(manager, /密钥原文不会显示/u);
+  assert.match(manager, /当前验证通过/u);
+  assert.match(manager, /移除这条搜索节点记录/u);
+  assert.match(manager, /apiRequest\('\/api\/control-plane\/v1\/xhs-search-statuses'[\s\S]*method: 'DELETE'/u);
+  assert.match(manager, /node\.online \|\| Boolean\(node\.runningJobId\)/u);
   assert.match(config, /XHS_SEARCH_ACCOUNT_LABEL=/u);
   assert.match(config, /XHS_SEARCH_HOST_KIND=EXECUTOR/u);
 });

@@ -404,7 +404,7 @@ test('health advertises the administrator-controlled Xiaohongshu search protocol
   } });
   const health = await repository.health();
   assert.equal(health.capabilities.xiaohongshuQuerySearchVersion, 4);
-  assert.equal(health.capabilities.xiaohongshuAccountStatusVersion, 1);
+  assert.equal(health.capabilities.xiaohongshuAccountStatusVersion, 2);
 });
 
 test('search-node inventory reports center and executor account state without credentials', async () => {
@@ -436,6 +436,52 @@ test('search-node inventory reports center and executor account state without cr
   assert.equal(nodes[0].lastJobTaskId, 42);
   assert.equal(Object.keys(nodes[0]).some((key) => /cookie|token|password/iu.test(key)), false);
   assert.match(queries[0], /last_seen_at >= now\(\) - interval '90 seconds'/u);
+  assert.match(queries[0], /WHERE node\.retired_at IS NULL/u);
+});
+
+test('administrator safely retires an offline Xiaohongshu search node', async () => {
+  const queries = [];
+  const retiredAt = new Date('2026-09-13T01:00:00.000Z');
+  const client = {
+    query: async (sql) => {
+      const source = String(sql).replace(/\s+/gu, ' ').trim();
+      queries.push(source);
+      if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(source)) return { rows: [] };
+      if (source.startsWith('SELECT * FROM app_users')) return { rows: [{ id: 1, role: 'ADMIN' }] };
+      if (source.startsWith("SELECT *, last_seen_at >= now() - interval '90 seconds' AS online")) {
+        return { rows: [{ id: 'old-xhs-search', name: '旧搜索节点', online: false }] };
+      }
+      if (source.startsWith('SELECT id FROM xhs_query_search_jobs')) return { rows: [] };
+      if (source.startsWith('UPDATE xhs_query_search_nodes SET retired_at = now()')) {
+        return { rows: [{ id: 'old-xhs-search', name: '旧搜索节点', retired_at: retiredAt }] };
+      }
+      throw new Error(`unexpected SQL: ${source}`);
+    },
+    release() {},
+  };
+  const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
+  const retired = await repository.retireXhsQuerySearchNode('old-xhs-search', {
+    userId: 1,
+    username: 'admin',
+    role: 'ADMIN',
+    credentialVersion: 1,
+  });
+  assert.deepEqual(retired, { id: 'old-xhs-search', name: '旧搜索节点', retiredAt });
+  assert.ok(queries.some((source) => /WHERE id = \$1 AND retired_at IS NULL/u.test(source)));
+  assert.ok(queries.some((source) => source === 'COMMIT'));
+});
+
+test('search-node retirement is reversible registration metadata and never deletes history', async () => {
+  const [migration, service, repository] = await Promise.all([
+    readFile(new URL('../migrations/0043_xhs_search_node_retirement.sql', import.meta.url), 'utf8'),
+    readFile(new URL('../src/xhs-query-search.mjs', import.meta.url), 'utf8'),
+    readFile(new URL('../src/postgres-repository.mjs', import.meta.url), 'utf8'),
+  ]);
+  assert.match(migration, /ADD COLUMN retired_at timestamptz/u);
+  assert.doesNotMatch(migration, /DELETE FROM|DROP TABLE|TRUNCATE/u);
+  assert.match(service, /ON CONFLICT\(id\) DO UPDATE SET[\s\S]*retired_at = NULL/u);
+  assert.match(repository, /XHS_SEARCH_NODE_STILL_ONLINE/u);
+  assert.match(repository, /XHS_SEARCH_NODE_HAS_RUNNING_TASK/u);
 });
 
 test('screening SQL queues selected rows and cancels unfinished rejected rows atomically', async () => {

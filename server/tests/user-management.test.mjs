@@ -517,10 +517,10 @@ test('user updates and deletions share one roster lock before reading an account
   ]);
 });
 
-test('a worker with unfinished assignments cannot be disabled or moved out of the worker role', async () => {
+test('an assignee with unfinished work can move between non-admin roles but cannot be disabled or promoted', async () => {
   for (const update of [
     { displayName: 'Alice', role: 'USER', status: 'DISABLED', expectedVersion: 1 },
-    { displayName: 'Alice', role: 'REVIEWER', status: 'ACTIVE', expectedVersion: 1 },
+    { displayName: 'Alice', role: 'ADMIN', status: 'ACTIVE', expectedVersion: 1 },
   ]) {
     const calls = [];
     const client = {
@@ -541,6 +541,29 @@ test('a worker with unfinished assignments cannot be disabled or moved out of th
     await assert.rejects(repository.updateUser(2, update), { code: 'USER_HAS_ACTIVE_TASKS' });
     assert.equal(calls.some((sql) => sql.includes('UPDATE app_users')), false);
   }
+
+  const calls = [];
+  const client = {
+    async query(sql) {
+      const source = String(sql);
+      calls.push(source);
+      if (source.includes('SELECT * FROM app_users WHERE id')) return { rows: [{
+        id: 2, username: 'alice', display_name: 'Alice', role: 'USER', status: 'ACTIVE', version: 1,
+      }] };
+      if (source.includes('SELECT id FROM tasks')) return { rows: [{ id: 41 }] };
+      if (source.includes('UPDATE app_users')) return { rows: [{
+        id: 2, username: 'alice', display_name: 'Alice', role: 'REVIEWER', status: 'ACTIVE', version: 2,
+      }] };
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
+  const reviewer = await repository.updateUser(2, {
+    displayName: 'Alice', role: 'REVIEWER', status: 'ACTIVE', expectedVersion: 1,
+  });
+  assert.equal(reviewer.role, 'REVIEWER');
+  assert.equal(calls.some((sql) => sql.includes('SELECT id FROM tasks')), false);
 });
 
 test('deletion password failures are rate limited per administrator', async () => {

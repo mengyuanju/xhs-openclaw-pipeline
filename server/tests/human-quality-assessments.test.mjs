@@ -651,6 +651,12 @@ test('task detail exposes append-only human rating history without changing auto
     const source = String(sql);
     if (source.includes('SELECT * FROM tasks WHERE id = $1')) return { rows: [{
       id: 41, input: { qc: automaticQc }, requested_image_count: '3', state: 'COPY_REVIEW_PENDING', progress_percent: 100,
+      current_copy_revision_id: 12,
+    }] };
+    if (source.includes('SELECT * FROM copy_revisions')) return { rows: [{
+      id: 12, task_id: 41, revision: 1, execution_id: sourceExecutionId,
+      revision_origin: 'GENERATION', content: sourceEdits,
+      copy_content_changed_from_machine: false, copy_rework_satisfied: false,
     }] };
     if (source.includes('FROM human_quality_assessments')) return { rows: [{
       id: 9, task_id: 41, stage: 'COPY', copy_revision_id: 12, image_run_id: null,
@@ -663,6 +669,9 @@ test('task detail exposes append-only human rating history without changing auto
   const task = await new PostgresControlPlaneRepository({ pool }).getTask(41);
 
   assert.equal(task.input.qc, automaticQc);
+  assert.equal(task.copyRevisions[0].revisionOrigin, 'GENERATION');
+  assert.equal(task.copyRevisions[0].reworkOrigin, null,
+    'a machine-generated revision must not be exposed as copy rework');
   assert.deepEqual(task.humanQualityAssessments, [{
     id: 9, taskId: 41, stage: 'COPY', copyRevisionId: 12, imageRunId: null,
     score: 2.5, scoreX10: 25, ratingContext: 'ORIGINAL', action: 'SAVE', reasonCodes: ['STRUCTURE'],

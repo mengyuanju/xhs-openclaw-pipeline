@@ -17,6 +17,7 @@ test('protected control-plane operations declare their version contracts', () =>
     ['/v1/auto-assignment/workers/alice', 'PUT', 'autoAssignmentPoolVersion', 3],
     ['/v1/auto-assignment/workers/alice', 'DELETE', 'autoAssignmentPoolVersion', 3],
     ['/v1/executor-statuses', 'DELETE', 'executorManagementVersion', 1],
+    ['/v1/xhs-search-statuses', 'DELETE', 'xiaohongshuAccountStatusVersion', 2],
     ['/v1/tasks/duplicate-query-discard-preview', 'POST', 'duplicateQueryDiscardVersion', 1],
     ['/v1/tasks/duplicate-query-discard', 'POST', 'duplicateQueryDiscardVersion', 1],
     ['/v1/query-packages', 'POST', 'queryPackageVersion', 2],
@@ -49,6 +50,7 @@ test('protected control-plane operations declare their version contracts', () =>
   assert.equal(requiredMutationCapability('/v1/tasks/42/retry', 'POST'), null);
   assert.equal(requiredMutationCapability('/v1/auto-assignment', 'GET'), null);
   assert.equal(requiredMutationCapability('/v1/executor-statuses', 'GET'), null);
+  assert.equal(requiredMutationCapability('/v1/xhs-search-statuses', 'GET'), null);
   assert.equal(requiredMutationCapability('/v1/executor-statuses/node-a', 'DELETE'), null);
   assert.equal(requiredMutationCapability('/v1/tasks/duplicate-query-discard-preview', 'GET'), null);
   assert.equal(requiredMutationCapability('/v1/tasks/duplicate-query-discard', 'GET'), null);
@@ -86,6 +88,15 @@ test('mutation capability check allows only compatible center versions', async (
     method: 'DELETE',
     fetchImpl: async () => Response.json({
       data: { capabilities: { executorManagementVersion: 1 } },
+    }),
+  });
+
+  await assertMutationCapability({
+    root: 'http://center.test',
+    routePath: '/v1/xhs-search-statuses',
+    method: 'DELETE',
+    fetchImpl: async () => Response.json({
+      data: { capabilities: { xiaohongshuAccountStatusVersion: 2 } },
     }),
   });
 

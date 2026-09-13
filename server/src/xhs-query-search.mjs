@@ -76,6 +76,7 @@ async function registerXhsSearchNode(database, input) {
           THEN NULL
         ELSE xhs_query_search_nodes.last_job_id
       END,
+      retired_at = NULL,
       last_seen_at = now(), updated_at = now()
   `, [nodeId, nodeName, accountLabel, hostKind]);
   return { nodeId, nodeName, accountLabel, hostKind };
@@ -141,6 +142,7 @@ export async function listXhsQuerySearchNodes(pool) {
       ORDER BY job.id DESC
       LIMIT 1
     ) AS running_job ON true
+    WHERE node.retired_at IS NULL
     ORDER BY
       CASE WHEN node.auth_status IN ('LOGIN_REQUIRED', 'CAPTCHA_REQUIRED') THEN 0 ELSE 1 END,
       online DESC, node.name, node.id

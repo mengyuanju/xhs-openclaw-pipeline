@@ -689,6 +689,7 @@ function installRoutes(
   analyzeVisual,
   previewClient,
   previewUrlResolver,
+  xhsSearchMachineTokenConfigured,
 ) {
   const deliverAsset = createAssetDelivery({ storageRoot });
   const deliveryExportRegistry = createDeliveryExportRegistry();
@@ -836,7 +837,10 @@ function installRoutes(
     await assertTaskAccess(ctx, repository);
     json(ctx, 200, await repository.getModelCall(ctx.params.taskId, ctx.params.callId));
   });
-  router.get('/health', async (ctx) => json(ctx, 200, await repository.health()));
+  router.get('/health', async (ctx) => json(ctx, 200, {
+    ...await repository.health(),
+    xhsSearchMachineTokenConfigured,
+  }));
 
   router.get('/v1/workflow-quality-settings', async (ctx) => {
     requestActor(ctx, ['ADMIN']);
@@ -983,6 +987,10 @@ function installRoutes(
   router.get('/v1/xhs-search-statuses', async (ctx) => {
     requestActor(ctx, ['ADMIN']);
     json(ctx, 200, await repository.listXhsQuerySearchNodes());
+  });
+  router.delete('/v1/xhs-search-statuses', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.retireXhsQuerySearchNode(requireJson(ctx).nodeId, actor));
   });
   router.delete('/v1/executor-statuses', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
@@ -1868,6 +1876,7 @@ export function createControlPlaneApp({
     analyzeVisual,
     previewClient,
     previewUrlResolver,
+    validXhsSearchMachineToken(xhsSearchMachineToken) !== null,
   );
   app.context.disposeControlPlaneResources = disposeRouteResources;
   app.use(async (ctx, next) => {

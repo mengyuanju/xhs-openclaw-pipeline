@@ -357,7 +357,7 @@ test('a fairness cursor write failure rolls task and audit changes back together
 test('manual assignment locks a target pool member before task rows without enforcing its limit', async () => {
   const database = fakePool(({ sql, values }) => {
     if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
-    if (sql.includes("status = 'ACTIVE' AND role = 'USER'")) return { rows: [{ username: 'alice' }] };
+    if (sql.includes("status = 'ACTIVE' AND role IN ('REVIEWER', 'USER')")) return { rows: [{ username: 'alice' }] };
     if (sql.includes('SELECT username FROM task_auto_assignment_workers')) return { rows: [{ username: 'alice' }] };
     if (sql.includes('SELECT * FROM tasks WHERE id = ANY')) return { rows: [taskRow(9, {
       state: 'COPY_REVIEW_PENDING',
@@ -378,7 +378,7 @@ test('manual assignment locks a target pool member before task rows without enfo
     assignedToUserId: 'alice', actorUserId: 'admin', reason: '管理员明确超额也允许',
   });
   assert.equal(task.assignedToUserId, 'alice');
-  const userLock = database.calls.findIndex(({ sql }) => sql.includes("status = 'ACTIVE' AND role = 'USER'"));
+  const userLock = database.calls.findIndex(({ sql }) => sql.includes("status = 'ACTIVE' AND role IN ('REVIEWER', 'USER')"));
   const memberLock = database.calls.findIndex(({ sql }) => sql.includes('SELECT username FROM task_auto_assignment_workers'));
   const taskLock = database.calls.findIndex(({ sql }) => sql.includes('SELECT * FROM tasks WHERE id = ANY'));
   assert.ok(userLock > 0 && userLock < memberLock && memberLock < taskLock);
@@ -386,7 +386,7 @@ test('manual assignment locks a target pool member before task rows without enfo
   assert.equal(database.calls.some(({ sql }) => sql.includes('assignment_limit')), false);
 });
 
-test('explicit SELF task creation locks an active USER account and pool member before inserting', async () => {
+test('explicit SELF task creation locks an active non-admin account and pool member before inserting', async () => {
   const database = fakePool(({ sql, values }) => {
     if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
     if (sql.includes('INSERT INTO executor_nodes')) return { rows: [] };
@@ -412,7 +412,7 @@ test('explicit SELF task creation locks an active USER account and pool member b
   assert.ok(userLock > 0 && userLock < memberLock && memberLock < nodeInsert && nodeInsert < taskInsert);
   assert.match(database.calls[userLock].sql, /FOR UPDATE/u);
   assert.match(database.calls[userLock].sql, /status = 'ACTIVE'/u);
-  assert.match(database.calls[userLock].sql, /role = 'USER'/u);
+  assert.match(database.calls[userLock].sql, /role IN \('REVIEWER', 'USER'\)/u);
 });
 
 test('SELF task creation rejects a missing or inactive account before locking the pool or inserting tasks', async () => {

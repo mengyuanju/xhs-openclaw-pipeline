@@ -27,6 +27,12 @@ const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
       && method === 'DELETE',
   }),
   Object.freeze({
+    capability: 'xiaohongshuAccountStatusVersion',
+    minimumVersion: 2,
+    matches: (routePath, method) => routePath === '/v1/xhs-search-statuses'
+      && method === 'DELETE',
+  }),
+  Object.freeze({
     capability: 'duplicateQueryDiscardVersion',
     minimumVersion: 1,
     matches: (routePath, method) => [

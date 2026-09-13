@@ -111,6 +111,9 @@ test('administrators can assign one task or the current selection through protec
   assert.match(dialog, /负责人不一致，请重新选择/u);
   assert.match(dialog, /disabled=\{submitting \|\| tasks\.length === 0 \|\| destinationRequired\}/u);
   assert.match(dialog, /additionallyEligibleUserIds=\{\[Number\(currentAdmin\.id\)\]\}/u);
+  assert.match(dialog, /eligibleRoles=\{\['REVIEWER', 'USER'\]\}/u);
+  assert.match(dialog, /其他管理员不可选/u);
+  assert.match(workbench, /eligibleRoles=\{\['REVIEWER', 'USER'\]\}/u);
   assert.match(dialog, />我来处理<\/Button>/u);
   assert.match(dialog, /allowEmptyOption=\{canReturnToPool\}/u);
   assert.match(dialog, /task\.skipCopyReview === true && task\.state === 'COPY_QUEUED'/u);

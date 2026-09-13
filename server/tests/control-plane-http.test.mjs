@@ -8,8 +8,17 @@ import JSZip from 'jszip';
 import { createControlPlaneApp } from '../src/http-server.mjs';
 import { ControlPlaneAuthenticationError, ControlPlaneConflictError } from '../src/domain.mjs';
 
-async function withServer(repository, action, { storageRoot = 'test-storage', enforceUserAuth = false } = {}) {
-  const app = createControlPlaneApp({ repository, storageRoot, enforceUserAuth });
+async function withServer(repository, action, {
+  storageRoot = 'test-storage',
+  enforceUserAuth = false,
+  xhsSearchMachineToken,
+} = {}) {
+  const app = createControlPlaneApp({
+    repository,
+    storageRoot,
+    enforceUserAuth,
+    ...(xhsSearchMachineToken === undefined ? {} : { xhsSearchMachineToken }),
+  });
   let server;
   await new Promise((resolve, reject) => {
     server = app.listen(0, '127.0.0.1', resolve);
@@ -22,6 +31,17 @@ async function withServer(repository, action, { storageRoot = 'test-storage', en
     await new Promise((resolve) => server.close(resolve));
   }
 }
+
+test('health reports Xiaohongshu machine-token configuration without exposing the secret', async () => {
+  const machineToken = 'test-only-machine-token-that-is-never-returned';
+  await withServer({ health: async () => ({ ok: true, capabilities: {} }) }, async (root) => {
+    const response = await fetch(`${root}/health`);
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.data.xhsSearchMachineTokenConfigured, true);
+    assert.doesNotMatch(JSON.stringify(payload), new RegExp(machineToken, 'u'));
+  }, { xhsSearchMachineToken: machineToken });
+});
 
 test('batch claim routes forward request identity and return independent claims', async () => {
   for (const kind of ['copy', 'image']) {
@@ -320,8 +340,13 @@ test('Xiaohongshu account status inventory includes every search host and is adm
     { id: 'worker-search', hostKind: 'EXECUTOR', accountLabel: '素材账号', authStatus: 'LOGIN_REQUIRED' },
   ];
   let reads = 0;
+  const retired = [];
   const repository = {
     listXhsQuerySearchNodes: async () => { reads += 1; return statuses; },
+    retireXhsQuerySearchNode: async (nodeId, actor) => {
+      retired.push({ nodeId, actor });
+      return { id: nodeId, name: '历史搜索节点', retiredAt: '2026-09-13T00:00:00Z' };
+    },
     getUserByUsername: async (username) => ({
       id: username === 'admin' ? 1 : 2,
       username,
@@ -349,6 +374,24 @@ test('Xiaohongshu account status inventory includes every search host and is adm
     assert.equal(admin.status, 200);
     assert.deepEqual((await admin.json()).data, statuses);
     assert.equal(reads, 1);
+
+    const deniedDelete = await fetch(`${root}/v1/xhs-search-statuses`, {
+      method: 'DELETE', headers: headers('reviewer', 'REVIEWER'),
+    });
+    assert.equal(deniedDelete.status, 403);
+    assert.deepEqual(retired, []);
+
+    const deleted = await fetch(`${root}/v1/xhs-search-statuses`, {
+      method: 'DELETE',
+      headers: { ...headers('admin', 'ADMIN'), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nodeId: 'old-xhs-search' }),
+    });
+    assert.equal(deleted.status, 200);
+    assert.equal((await deleted.json()).data.id, 'old-xhs-search');
+    assert.deepEqual(retired, [{
+      nodeId: 'old-xhs-search',
+      actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
+    }]);
   }, { enforceUserAuth: true });
 });
 

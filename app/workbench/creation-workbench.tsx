@@ -1780,9 +1780,9 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
                   triggerId="workbench-create-assignee"
                   emptyLabel="请选择负责人"
                   dialogTitle="选择免审任务负责人"
-                  dialogDescription="可选择已启用的普通作业员，或由当前管理员自己负责。"
+                  dialogDescription="可选择已启用的审核员或普通作业员，也可由当前管理员自己负责；其他管理员不可选。"
                   roleLabels={CREATOR_ROLE_LABELS}
-                  eligibleRoles={['USER']}
+                  eligibleRoles={['REVIEWER', 'USER']}
                   additionallyEligibleUserIds={[creatorAccountId]}
                   activeOnly
                   allowEmptyOption={false}

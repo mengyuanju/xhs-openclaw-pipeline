@@ -47,19 +47,24 @@ function dateTime(value: string) {
 export function ExecutorManager({
   initialNodes,
   initialXhsSearchNodes,
+  xhsSearchMachineTokenConfigured,
 }: {
   initialNodes: ExecutorStatus[];
   initialXhsSearchNodes: XhsSearchNodeStatus[];
+  xhsSearchMachineTokenConfigured: boolean;
 }) {
   const confirm = useConfirmDialog();
   const [nodes, setNodes] = useState(initialNodes);
   const [xhsSearchNodes, setXhsSearchNodes] = useState(initialXhsSearchNodes);
   const [refreshing, setRefreshing] = useState(false);
   const [deletingNodeId, setDeletingNodeId] = useState('');
+  const [deletingXhsNodeId, setDeletingXhsNodeId] = useState('');
   const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null);
   const [message, setMessage] = useState('');
   const [refreshError, setRefreshError] = useState('');
   const [actionError, setActionError] = useState('');
+  const [xhsActionMessage, setXhsActionMessage] = useState('');
+  const [xhsActionError, setXhsActionError] = useState('');
   const latestRefreshId = useRef(0);
   const manualRefreshRunning = useRef(false);
 
@@ -139,6 +144,35 @@ export function ExecutorManager({
     }
   }
 
+  async function deleteXhsSearchNode(node: XhsSearchNodeStatus) {
+    const approved = await confirm({
+      title: '移除这条搜索节点记录？',
+      description: `将从当前清单移除 ${node.name}（${node.id}），搜索任务、结果和历史记录会继续保留。若该搜索进程再次启动并连接中心服务，它会自动恢复显示。`,
+      confirmLabel: '确认移除',
+      tone: 'danger',
+    });
+    if (!approved) return;
+    setDeletingXhsNodeId(node.id);
+    setXhsActionMessage('');
+    setXhsActionError('');
+    setRefreshError('');
+    try {
+      await apiRequest('/api/control-plane/v1/xhs-search-statuses', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nodeId: node.id }),
+      });
+      latestRefreshId.current += 1;
+      setXhsSearchNodes((current) => current.filter((candidate) => candidate.id !== node.id));
+      setLastRefreshedAt(new Date().toISOString());
+      setXhsActionMessage(`搜索节点 ${node.name} 的信息已移除。`);
+    } catch (caught) {
+      setXhsActionError(caught instanceof Error ? caught.message : '搜索节点信息移除失败');
+    } finally {
+      setDeletingXhsNodeId('');
+    }
+  }
+
   return <div className="executor-manager">
     <section className="executor-summary" aria-label="执行机概览">
       <article><ServerCog aria-hidden="true" size={19} /><div><strong>{summary.online} / {nodes.length}</strong><span>在线执行机</span></div></article>
@@ -201,13 +235,14 @@ export function ExecutorManager({
         <div>
           <span className="section-kicker">Xiaohongshu account status</span>
           <h2>小红书搜索节点</h2>
-          <p>中心服务器和普通执行机只要启动搜索进程，就会在这里统一上报；账号名称是主机配置的非敏感显示标签。</p>
+          <p id="xhs-search-delete-policy">中心服务器密钥：<strong>{xhsSearchMachineTokenConfigured ? '已配置' : '未配置'}</strong>。密钥原文不会显示；离线且无运行任务的节点记录可移除。</p>
         </div>
       </div>
+      {(xhsActionMessage || xhsActionError) && <div className={`notice ${xhsActionError ? 'error' : 'success'}`} role={xhsActionError ? 'alert' : 'status'}>{xhsActionError || xhsActionMessage}</div>}
       {xhsSearchNodes.length === 0
         ? <div className="executor-empty">当前还没有主机启动并注册小红书搜索功能。</div>
         : <div className="table-wrap executor-table-wrap mobile-cards"><table>
-          <thead><tr><th>主机</th><th>小红书账号</th><th>账号状态</th><th>搜索进程</th><th>最近任务</th><th>最后心跳</th></tr></thead>
+          <thead><tr><th>主机</th><th>小红书账号</th><th>账号状态</th><th>密钥认证</th><th>搜索进程</th><th>最近任务</th><th>最后心跳</th><th className="executor-actions-heading">操作</th></tr></thead>
           <tbody>{xhsSearchNodes.map((node) => {
             const needsAttention = xhsSearchNeedsAttention(node);
             const authClassName = needsAttention
@@ -218,13 +253,26 @@ export function ExecutorManager({
               : node.lastJobId
                 ? `搜索任务 #${node.lastJobId}${node.lastJobTaskId ? ` · 作业 #${node.lastJobTaskId}` : ''}`
                 : '暂无搜索记录';
+            const deletionDisabled = Boolean(deletingXhsNodeId) || node.online || Boolean(node.runningJobId);
+            const deleteTitle = node.online
+              ? '请先停止搜索进程并等待其显示为离线'
+              : node.runningJobId
+                ? '请先处理这个节点仍在运行的搜索任务'
+                : `移除 ${node.name} 的搜索节点记录`;
             return <tr key={node.id}>
               <td data-label="主机"><div className="executor-identity"><strong>{node.name}</strong><span>{xhsHostKindLabel(node)}</span><code>{node.id}</code></div></td>
               <td data-label="小红书账号"><strong>{node.accountLabel || '未设置账号标识'}</strong></td>
               <td data-label="账号状态"><div className="executor-capacity"><span className={`executor-status ${authClassName}`}><i aria-hidden="true" />{xhsAuthStatusLabel(node)}</span><span>{node.authCheckedAt ? `验证于 ${dateTime(node.authCheckedAt)}` : '尚未完成实际搜索验证'}</span></div></td>
+              <td data-label="密钥认证"><div className="executor-capacity"><strong>{node.online ? '当前验证通过' : '曾验证通过'}</strong><span>{node.online ? '正在使用匹配的执行机密钥' : '进程离线，无法验证当前配置'}</span></div></td>
               <td data-label="搜索进程"><span className={`executor-status ${node.online ? 'executor-status-ready' : 'executor-status-offline'}`}><i aria-hidden="true" />{node.online ? '在线' : '离线'}</span></td>
               <td data-label="最近任务"><div className="executor-capacity"><strong>{recentJob}</strong><span>{node.lastJobStatus || '尚未领取任务'}</span></div></td>
               <td data-label="最后心跳"><time dateTime={node.lastSeenAt}>{dateTime(node.lastSeenAt)}</time></td>
+              <td className="row-action" data-label="操作"><div className="executor-row-actions">
+                <Button unstyled className="button small danger" type="button" disabled={deletionDisabled} title={deleteTitle} aria-label={`移除搜索节点 ${node.name}`} aria-describedby={deletionDisabled ? 'xhs-search-delete-policy' : undefined} onClick={() => { void deleteXhsSearchNode(node); }}>
+                  {deletingXhsNodeId === node.id ? <RefreshCw className="animate-spin" size={14} /> : <Trash2 size={14} />}
+                  {deletingXhsNodeId === node.id ? '移除中…' : '移除'}
+                </Button>
+              </div></td>
             </tr>;
           })}</tbody>
         </table></div>}

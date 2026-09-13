@@ -69,6 +69,12 @@ V3 将负责人分配推迟到文案待审核阶段。任务创建、负责人�
 
 该变更升级搜索协议至 v4，中心通过 `/health` 报告 `capabilities.xiaohongshuQuerySearchVersion=4`。升级时必须先停止全部小红书搜索执行机，备份并应用迁移，再同步更新中心、Web 和搜索执行机；v3 执行机不能继续领取 v4 任务。
 
+## `0043` 小红书搜索节点安全移除
+
+`0043_xhs_search_node_retirement.sql` 为小红书搜索节点增加退役时间。管理员只能移除已离线且没有运行中搜索任务的节点；操作只会让节点退出当前管理清单，搜索任务、搜索结果和执行历史继续保留。同一节点 ID 再次注册时会自动恢复显示。
+
+新版 Web 会在移除前校验中心的 `xiaohongshuAccountStatusVersion=2`。升级时先停止小红书搜索进程并备份 PostgreSQL，应用迁移后同步启动新版中心与 Web；确认旧节点离线超过 90 秒后再移除记录。
+
 ## `0035` / `0036` 交付预览关联
 
 `0035_delivery_preview_links.sql` 在冻结交付条目上增加预览服务的记录 ID、公开 noteId、内容哈希、状态和上传人审计字段；`0036_delivery_preview_url_derivation.sql` 移除早期草稿中持久化的公开链接，页面按当前预览服务地址和 noteId 动态生成链接，切换域名时无需批量改历史数据。两套系统不共享主键；中心以不可变 `delivery_entries.id` 生成 `sourceRef`，预览服务据此提供幂等创建，中心再保存远端标识的关联。

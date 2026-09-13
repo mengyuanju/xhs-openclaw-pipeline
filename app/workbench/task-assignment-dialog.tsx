@@ -112,7 +112,7 @@ export function TaskAssignmentDialog({ tasks, open, currentAdmin, onOpenChange, 
     <DialogContent className="workbench-save-view-dialog">
       <DialogTitle>{tasks.length > 1 ? `批量${actionLabel} ${tasks.length} 条任务` : `${actionLabel}任务`}</DialogTitle>
       <DialogDescription>
-        文案生成完成后可分配给普通作业员，或由当前管理员领取。负责人变更不会影响机器执行队列。
+        文案生成完成后可分配给审核员或普通作业员，也可由当前管理员领取。负责人变更不会影响机器执行队列。
       </DialogDescription>
       <form className="workbench-create-form" onSubmit={submit}>
         <JobUserPicker
@@ -123,9 +123,9 @@ export function TaskAssignmentDialog({ tasks, open, currentAdmin, onOpenChange, 
           emptyOptionLabel="待分配任务池"
           emptyOptionSelected={!destinationRequired && assignee === null}
           dialogTitle="选择任务负责人"
-          dialogDescription="显示已启用的普通作业员和当前管理员；未加入自动分配池的普通作业员仍可手动指定。"
+          dialogDescription="显示已启用的审核员、普通作业员和当前管理员；其他管理员不可选。未加入自动分配池的普通作业员仍可手动指定。"
           roleLabels={CREATOR_ROLE_LABELS}
-          eligibleRoles={['USER']}
+          eligibleRoles={['REVIEWER', 'USER']}
           additionallyEligibleUserIds={[Number(currentAdmin.id)]}
           activeOnly
           allowEmptyOption={canReturnToPool}
