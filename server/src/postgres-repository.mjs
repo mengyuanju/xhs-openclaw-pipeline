@@ -1,3 +1,5 @@
+import { priorityFrom, priorityOrderSql, normalizePriorityMode } from './task-priority.mjs';
+import { adjustTaskPriority, readPriorityScope } from './task-priority-store.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { assertImageResultSettings, reviseTaskImages } from './image-revisions.mjs';
@@ -183,6 +185,8 @@ function taskFrom(row) {
     : null;
   return {
     id: Number(row.id),
+    ...priorityFrom(row),
+    reviewAssignedToAccountId: row.review_assigned_to_account_id == null ? null : Number(row.review_assigned_to_account_id),
     query: row.query,
     input: row.input,
     requestedImageCount: row.requested_image_count === 'auto'
@@ -995,8 +999,8 @@ function taskSortOrder({ field, direction }, prefix = '', reverse = false) {
     return `${prefix}created_at ${effectiveDirection}, ${prefix}id ${effectiveDirection}`;
   }
   return reverse
-    ? `${taskStateOrder(`${prefix}state`)} DESC, ${prefix}created_at ASC, ${prefix}id ASC`
-    : `${taskStateOrder(`${prefix}state`)}, ${prefix}created_at DESC, ${prefix}id DESC`;
+    ? `${prefix}priority_paused DESC, ${prefix}priority_sort_at DESC, ${prefix}id DESC`
+    : `${prefix}priority_paused ASC, ${prefix}priority_sort_at ASC, ${prefix}id ASC`;
 }
 
 function taskPageCursor(sort, row, mode, scope) {
@@ -1012,6 +1016,8 @@ function taskPageCursor(sort, row, mode, scope) {
     id: normalizeTaskId(row.id),
     createdAt: createdAt.toISOString(),
     priority: taskStatePriority(row.state),
+    priorityPaused: row.priority_paused === true,
+    prioritySortAt: new Date(row.priority_sort_at ?? row.created_at).toISOString(),
   })).toString('base64url');
 }
 
@@ -1043,6 +1049,12 @@ function normalizedTaskPageCursor(value, sort, scope) {
     id: normalizeTaskId(decoded.id),
     createdAt: createdAt.toISOString(),
     priority,
+    priorityPaused: decoded.priorityPaused === true,
+    prioritySortAt: (() => {
+      const date = new Date(decoded.prioritySortAt);
+      if (!Number.isFinite(date.getTime())) throw new TypeError('priority cursor is obsolete; refresh the queue');
+      return date.toISOString();
+    })(),
   };
 }
 
@@ -1055,23 +1067,15 @@ function taskCursorPredicate(cursor, sort, values, prefix = 'cursor_page.') {
     const operator = after === ascending ? '>' : '<';
     return `${prefix}id ${operator} $${values.length}`;
   }
-  values.push(cursor.createdAt, cursor.id);
-  const createdAtParameter = values.length - 1;
-  const idParameter = values.length;
   if (sort.field === 'createdAt') {
+    values.push(cursor.createdAt, cursor.id);
     const ascending = sort.direction === 'ASC';
     const operator = after === ascending ? '>' : '<';
-    return `(${prefix}created_at, ${prefix}id) ${operator} ($${createdAtParameter}::timestamptz, $${idParameter}::bigint)`;
+    return `(${prefix}created_at, ${prefix}id) ${operator} ($${values.length - 1}::timestamptz, $${values.length}::bigint)`;
   }
-  values.push(cursor.priority);
-  const priorityParameter = values.length;
-  const priority = taskStateOrder(`${prefix}state`);
-  const rankOperator = after ? '>' : '<';
-  const timeOperator = after ? '<' : '>';
-  return `((${priority}) ${rankOperator} $${priorityParameter}
-    OR ((${priority}) = $${priorityParameter}
-      AND (${prefix}created_at, ${prefix}id) ${timeOperator}
-        ($${createdAtParameter}::timestamptz, $${idParameter}::bigint)))`;
+  values.push(cursor.priorityPaused, cursor.prioritySortAt, cursor.id);
+  return `(${prefix}priority_paused, ${prefix}priority_sort_at, ${prefix}id)
+    ${after ? '>' : '<'} ($${values.length - 2}::boolean, $${values.length - 1}::timestamptz, $${values.length}::bigint)`;
 }
 
 function automaticReviewImagePlan(plan) {
@@ -1426,7 +1430,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 5, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1, deliveryPreviewVersion: 6 } };
+      capabilities: { taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 5, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1, deliveryPreviewVersion: 6 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -1764,7 +1768,8 @@ export class PostgresControlPlaneRepository {
           AND state = ANY($1::varchar[])
           AND current_stage = 'COPY_REVIEW_PENDING'
           AND current_execution_id IS NULL
-        ORDER BY id
+        AND priority_paused = false
+        ORDER BY ${priorityOrderSql()}
         FOR UPDATE SKIP LOCKED
         LIMIT $2::integer
       `, [AUTO_ASSIGNABLE_TASK_STATES, requestedCount]);
@@ -2580,6 +2585,8 @@ export class PostgresControlPlaneRepository {
     queryPackageName = null,
     deduplicateQuery = false,
     attention = null,
+    reviewAssignedToAccountId = null,
+    priorityMode = null,
     sortBy = 'priority',
     sortOrder = 'desc',
     limit = 50,
@@ -2614,6 +2621,15 @@ export class PostgresControlPlaneRepository {
     }
     const values = [];
     const filters = [];
+    if (reviewAssignedToAccountId !== null) {
+      values.push(normalizeTaskId(reviewAssignedToAccountId));
+      filters.push(`(state <> 'MANUAL_ARCHIVE' OR review_assigned_to_account_id = $${values.length}::bigint)`);
+    }
+    if (priorityMode !== null) {
+      normalizePriorityMode(priorityMode);
+      values.push(priorityMode);
+      filters.push(`priority_mode = $${values.length}::varchar`);
+    }
     if (excludeActiveBlindQa) {
       filters.push(`NOT ${activeBlindQaSql('tasks')}`);
     }
@@ -3082,6 +3098,29 @@ export class PostgresControlPlaneRepository {
     };
   }
 
+  async getPriorityScope(input, { actor } = {}) {
+    return transaction(this.pool, async (client) => {
+      const locked = await lockCurrentActor(client, actor);
+      if (locked.actor.role !== 'ADMIN') throw new ControlPlaneAuthorizationError('only administrators can inspect priority scopes');
+      return readPriorityScope(client, input);
+    });
+  }
+
+  async setTaskPriority(input, { actor } = {}) {
+    return transaction(this.pool, async (client) => {
+      const locked = await lockCurrentActor(client, actor);
+      return adjustTaskPriority(client, input, locked.actor);
+    });
+  }
+
+  async getTaskPriorityAudit(taskId, { actor } = {}) {
+    return transaction(this.pool, async (client) => {
+      const locked = await lockCurrentActor(client, actor);
+      if (locked.actor.role !== 'ADMIN') throw new ControlPlaneAuthorizationError('only administrators can read priority audit');
+      return (await client.query('SELECT * FROM task_priority_events WHERE task_id = $1 ORDER BY version', [normalizeTaskId(taskId)])).rows;
+    });
+  }
+
   async claimCopy(rawNodeId) {
     return (await this.#claim({ kind: 'COPY', nodeId: rawNodeId, limit: 1 })).claims[0] ?? null;
   }
@@ -3180,8 +3219,8 @@ export class PostgresControlPlaneRepository {
         candidate = await client.query(`
           SELECT task.*
           FROM tasks AS task
-          WHERE task.state = $1
-          ORDER BY task.id
+          WHERE task.state = $1 AND task.priority_paused = false
+          ORDER BY ${priorityOrderSql('task.')}
           FOR UPDATE OF task SKIP LOCKED
           LIMIT $2
         `, [queuedState, available]);
@@ -3195,10 +3234,10 @@ export class PostgresControlPlaneRepository {
               queued.assigned_to_user_id AS claim_owner,
               row_number() OVER (
                 PARTITION BY queued.assigned_to_user_id
-                ORDER BY queued.last_activity_at NULLS FIRST, queued.id
+                ORDER BY ${priorityOrderSql('queued.')}
               ) AS owner_row_number
             FROM tasks AS queued
-            WHERE queued.state = $1
+            WHERE queued.state = $1 AND queued.priority_paused = false
               AND queued.assigned_to_user_id IS NOT NULL
               AND (queued.pending_snapshot->'imageRetry'->>'nodeId' IS NULL
                 OR queued.pending_snapshot->'imageRetry'->>'nodeId' = $2)
@@ -3209,7 +3248,7 @@ export class PostgresControlPlaneRepository {
           SELECT task.*
           FROM ranked_candidates AS ranked
           JOIN tasks AS task ON task.id = ranked.task_id
-          WHERE task.state = $1
+          WHERE task.state = $1 AND task.priority_paused = false
             AND task.assigned_to_user_id IS NOT NULL
             AND task.assigned_to_user_id IS NOT DISTINCT FROM ranked.assigned_to_user_id
             AND (task.pending_snapshot->'imageRetry'->>'nodeId' IS NULL
@@ -3499,6 +3538,7 @@ export class PostgresControlPlaneRepository {
       if (await claimQualityReviewSubmission(client, {
         taskId, stage: 'COPY', reviewerUsername, reviewSessionId, requestFingerprint,
       })) return taskFrom(task);
+      if (task.priority_paused) throw new ControlPlaneConflictError('TASK_PRIORITY_PAUSED', '任务已暂停，请先恢复优先级');
       if (task.state !== 'COPY_REVIEW_PENDING') {
         throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'task is not waiting for copy review');
       }
@@ -3821,6 +3861,7 @@ export class PostgresControlPlaneRepository {
       const lifecycle = isImage
         ? `current_stage = $7, progress_percent = $8,
            current_image_run_id = ${exhausted || manual ? 'current_image_run_id' : 'NULL'}, pending_snapshot = $6,
+           requeue_reason = 'AUTO_RECOVERY',
            execution_started_at = $9, finished_at = ${exhausted || manual ? 'now()' : 'NULL'},`
         : 'current_stage = $6, finished_at = now(),';
       const values = [execution.task_id, nextState, taskMessage, message, executionId];
@@ -3928,6 +3969,7 @@ export class PostgresControlPlaneRepository {
       if (await claimQualityReviewSubmission(client, {
         taskId, stage: 'IMAGE', reviewerUsername, reviewSessionId, requestFingerprint,
       })) return taskFrom(task);
+      if (task.priority_paused) throw new ControlPlaneConflictError('TASK_PRIORITY_PAUSED', '任务已暂停，请先恢复优先级');
       if (task.state !== 'MANUAL_ARCHIVE') {
         throw new ControlPlaneConflictError('INVALID_TASK_STATE', '任务已不在人工归档阶段，请刷新后重试');
       }
@@ -4129,7 +4171,7 @@ export class PostgresControlPlaneRepository {
       const values = [taskId, nextState, useLatestConfig ? null : snapshot];
       const updated = await client.query(`
         UPDATE tasks SET
-          state = $2, current_execution_id = NULL, current_stage = $2,
+          state = $2, requeue_reason = 'MANUAL_RETRY', current_execution_id = NULL, current_stage = $2,
           ${isCopy ? 'copy_executor_node_id = NULL,' : ''}
           progress_percent = 0, progress_message = ${isCopy ? "'等待文案执行机领取'" : "'等待重新执行'"},
           ${isImage && useLatestConfig ? `image_production_chain_id = NULL,
@@ -4218,7 +4260,7 @@ export class PostgresControlPlaneRepository {
       }
       await withdrawReadyDeliveryEntries(client, taskId, 'CANCELLED_TASK_REQUEUED');
       const updated = await client.query(`
-        UPDATE tasks SET state = $2, cancelled_from_state = NULL, current_stage = $2,
+        UPDATE tasks SET state = $2, requeue_reason = 'MANUAL_RETRY', cancelled_from_state = NULL, current_stage = $2,
           progress_percent = 0, progress_message = $3, finished_at = NULL, error = NULL,
           last_activity_at = now(), updated_at = now()
         WHERE id = $1 RETURNING *
@@ -4305,7 +4347,7 @@ export class PostgresControlPlaneRepository {
       await withdrawReadyDeliveryEntries(client, taskId, 'IMAGE_REQUEUE');
       const updated = await client.query(`
         UPDATE tasks SET
-          state = 'IMAGE_QUEUED', current_execution_id = NULL,
+          state = 'IMAGE_QUEUED', requeue_reason = 'MANUAL_RETRY', current_execution_id = NULL,
           current_image_run_id = NULL, current_stage = 'IMAGE_QUEUED',
           progress_percent = 0, progress_message = '已人工重试，等待图片执行机领取',
           pending_snapshot = NULL, execution_started_at = NULL,

@@ -1,4 +1,6 @@
 'use client';
+
+import { TaskPriorityControl, PrioritySummary, type PriorityTask } from './task-priority-control';
 import { VisualPlanSummary } from '../components/visual-plan-summary';
 import { ImageCarouselNavigation } from '../components/image-carousel-navigation';
 import { ImagePreviewBackgroundControl, type PreviewBackdrop } from '../components/image-preview-background-control';
@@ -83,7 +85,7 @@ type CopyRevision = {
   reworkReasonCodes?: string[];
   reworkNote?: string | null;
 };
-type TaskDetail = {
+type TaskDetail = PriorityTask & {
   id: number;
   query: string;
   sourceQueryPackageName?: string | null;
@@ -1088,6 +1090,8 @@ export function TaskReviewDialog({
           {revision?.approvalMode === 'ADMIN_BYPASS' && <p role="status">管理员免审核 · 当前文案已自动放行生图</p>}
         </div>
         <div className="workbench-row-actions">
+          {detail && <PrioritySummary task={detail} />}
+          {detail && role === 'ADMIN' && <TaskPriorityControl tasks={[detail]} onChanged={() => load()} />}
           {downloadable && <a className="button small primary" href={apiPath(`/v1/tasks/${detail.id}/archive`)} download>
             <Download size={14} />下载资源
           </a>}

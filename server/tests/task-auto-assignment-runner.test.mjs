@@ -48,7 +48,7 @@ function taskRow(id, patch = {}) {
   };
 }
 
-test('planner fills proportionally and rotates equal loads by the durable AUTO audit order', () => {
+test('planner preserves queue priority and rotates equal loads by durable assignment order', () => {
   const assignments = planAutoAssignments({
     workers: [
       { username: 'alice', assignmentLimit: 3, currentTaskCount: 0, lastAutoEventId: 10 },
@@ -58,12 +58,12 @@ test('planner fills proportionally and rotates equal loads by the durable AUTO a
     tasks: [6, 3, 1, 5, 2, 4].map((id) => ({ id })),
   });
   assert.deepEqual(assignments, [
-    { taskId: 1, assignedToUserId: 'bob' },
+    { taskId: 6, assignedToUserId: 'bob' },
+    { taskId: 3, assignedToUserId: 'carol' },
+    { taskId: 1, assignedToUserId: 'alice' },
+    { taskId: 5, assignedToUserId: 'bob' },
     { taskId: 2, assignedToUserId: 'carol' },
-    { taskId: 3, assignedToUserId: 'alice' },
-    { taskId: 4, assignedToUserId: 'bob' },
-    { taskId: 5, assignedToUserId: 'carol' },
-    { taskId: 6, assignedToUserId: 'alice' },
+    { taskId: 4, assignedToUserId: 'alice' },
   ]);
 
   const bounded = planAutoAssignments({
@@ -216,12 +216,12 @@ test('runner locks settings, active users, pool members and pending tasks in ord
   assert.match(workerMetricsSql, /state = 'COPY_REVIEW_PENDING'[\s\S]*current_stage = 'COPY_REVIEW_PENDING'[\s\S]*current_execution_id IS NULL/u);
   assert.doesNotMatch(workerMetricsSql, /COPY_QUEUED|COPY_FAILED|IMAGE_QUEUED|IMAGE_FAILED|IMAGE_RETRY_EXHAUSTED/u);
   assert.match(workerMetricsSql, /LEFT JOIN task_auto_assignment_cursors AS fairness_cursor/u);
-  assert.doesNotMatch(workerMetricsSql, /FROM task_assignment_events/u);
+  assert.match(workerMetricsSql, /FROM task_assignment_events/u);
   assert.doesNotMatch(workerMetricsSql, /FOR UPDATE/u);
   assert.match(candidateSql, /assigned_to_user_id IS NULL[\s\S]*state = ANY\(\$1::varchar\[\]\)[\s\S]*current_stage = 'COPY_REVIEW_PENDING'[\s\S]*current_execution_id IS NULL/u);
   assert.deepEqual(AUTO_ASSIGNABLE_TASK_STATES, ['COPY_REVIEW_PENDING']);
   assert.doesNotMatch(candidateSql, /COPY_QUEUED|COPY_FAILED|IMAGE_QUEUED|IMAGE_FAILED|IMAGE_RETRY_EXHAUSTED/u);
-  assert.match(candidateSql, /ORDER BY id[\s\S]*FOR UPDATE SKIP LOCKED/u);
+  assert.match(candidateSql, /ORDER BY priority_paused ASC, priority_sort_at ASC, id ASC[\s\S]*FOR UPDATE SKIP LOCKED/u);
   assert.match(updatedSql, /assignment_source = 'AUTO'/u);
   assert.match(updatedSql, /progress_message = CASE[\s\S]*'文案生成完成，等待人工审核'/u);
   assert.doesNotMatch(updatedSql, /COPY_QUEUED|COPY_FAILED|IMAGE_QUEUED|IMAGE_FAILED|IMAGE_RETRY_EXHAUSTED/u);

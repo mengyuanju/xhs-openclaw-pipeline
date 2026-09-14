@@ -589,7 +589,7 @@ test('task lists can filter owners while COPY claims accept the global unassigne
     return { rows: [] };
   });
   assert.equal(await claiming.claimCopy('node-a'), null);
-  assert.match(candidateSql, /WHERE task\.state = \$1[\s\S]*ORDER BY task\.id/u);
+  assert.match(candidateSql, /WHERE task\.state = \$1[\s\S]*ORDER BY task\.priority_paused ASC, task\.priority_sort_at ASC, task\.id ASC/u);
   assert.doesNotMatch(candidateSql, /assigned_to_user_id/u);
   assert.equal(candidateSql.includes('LIMIT $2'), true);
 });

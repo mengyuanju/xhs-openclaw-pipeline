@@ -168,7 +168,7 @@ test('copy claims select the shared queue without executor ownership filtering',
   for (const { sql } of selections) {
     assert.doesNotMatch(sql, /copy_executor_node_id/u);
     assert.doesNotMatch(sql, /assigned_to_user_id/u);
-    assert.match(sql, /ORDER BY task\.id/u);
+    assert.match(sql, /ORDER BY task\.priority_paused ASC, task\.priority_sort_at ASC, task\.id ASC/u);
   }
 });
 

@@ -1,3 +1,4 @@
+import { priorityEvidenceHash } from '../src/task-priority-store.mjs';
 import assert from 'node:assert/strict';
 import { execFile as execFileCallback, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -604,6 +605,14 @@ test('legacy delivery migrations retain their checksums and upgrade through the 
       '0040_query_package_item_assignments',
       '0041_xhs_search_strategy',
       '0042_xhs_search_rate_limits',
+      '0043_xhs_search_node_retirement',
+      '0044_xhs_search_node_retirement_compatibility_repair',
+      '0045_workflow_integrity_repairs',
+      '0046_codex_pool_and_image_lineage',
+      '0047_task_query_performance',
+      '0048_admin_direct_copy_qa',
+      '0049_auto_assignment_modes',
+      '0050_queue_priority',
     ]);
 
     const repairedRevisionState = (await pool.query(`
@@ -783,6 +792,14 @@ test('delivery runtime integrity migration withdraws JavaScript-unsafe asset ids
       '0040_query_package_item_assignments',
       '0041_xhs_search_strategy',
       '0042_xhs_search_rate_limits',
+      '0043_xhs_search_node_retirement',
+      '0044_xhs_search_node_retirement_compatibility_repair',
+      '0045_workflow_integrity_repairs',
+      '0046_codex_pool_and_image_lineage',
+      '0047_task_query_performance',
+      '0048_admin_direct_copy_qa',
+      '0049_auto_assignment_modes',
+      '0050_queue_priority',
     ]);
     const repairedDelivery = (await pool.query(`
       SELECT status, withdrawn_at FROM delivery_entries WHERE task_id = $1
@@ -1309,6 +1326,14 @@ test('Query-package preassignment repair clears only the proven legacy signature
         '0040_query_package_item_assignments',
         '0041_xhs_search_strategy',
         '0042_xhs_search_rate_limits',
+      '0043_xhs_search_node_retirement',
+      '0044_xhs_search_node_retirement_compatibility_repair',
+      '0045_workflow_integrity_repairs',
+      '0046_codex_pool_and_image_lineage',
+      '0047_task_query_performance',
+      '0048_admin_direct_copy_qa',
+      '0049_auto_assignment_modes',
+      '0050_queue_priority',
       ]);
       await migrationClient.query('COMMIT');
     } catch (error) {
@@ -1683,7 +1708,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     controlPlane = await startRealControlPlane(repository);
     const health = await requestJson(controlPlane.root, '/health');
     assert.equal(health.data.ok, true);
-    assert.equal(health.data.capabilities.queryPackageVersion, 4);
+    assert.equal(health.data.capabilities.queryPackageVersion, 5);
     assert.equal(health.data.capabilities.copySamplingVersion, 1);
     assert.equal(health.data.capabilities.finalDeliveryVersion, 2);
 
@@ -2287,9 +2312,17 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     assert.equal(frozen.blind_review_enabled, true);
     assert.equal(frozen.status, 'INSPECTING');
 
-    const blindItems = (await requestJson(
+    const assignedBlindItems = (await requestJson(
       controlPlane.root, '/v1/copy-qa/items?status=PENDING', { actor: reviewer },
     )).data;
+    assert.equal(assignedBlindItems.length, 1, 'admin and reviewer receive disjoint balanced review work');
+    // Administrators can share opaque links without changing existing direct-link review rights.
+    async function allBlindQaItems() {
+      const all = (await requestJson(controlPlane.root, '/v1/copy-qa/items?status=PENDING', { actor: admin })).data;
+      return Promise.all(all.map(async item => (await requestJson(controlPlane.root,
+        `/v1/copy-qa/items/${encodeURIComponent(item.id)}`, { actor: reviewer })).data));
+    }
+    const blindItems = await allBlindQaItems();
     assert.equal(blindItems.length, 2);
     blindItems.forEach(assertBlindQaAllowlist);
     assert.equal(normalizeCopyQaList(blindItems).length, 2);
@@ -2307,6 +2340,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     assert.ok(normalizedAdminQaItems.every((item) => item.productionBatchId === productionBatch.id));
     assert.ok(normalizedAdminQaItems.every((item) => item.finalApproverAccountId === worker.userId));
 
+    await repository.listTasks({ reviewAssignedToAccountId: reviewer.userId, excludeActiveBlindQa: true, limit: 100 });
     const reviewerTaskList = (await requestJson(
       controlPlane.root, '/v1/tasks?limit=100', { actor: reviewer },
     )).data;
@@ -2387,9 +2421,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     assert.equal(resubmitted.mandatoryCopyQc, true);
     assertUserTaskHidesSensitiveFields(resubmitted, 'USER approve-copy response');
 
-    const pendingAfterResubmit = (await requestJson(
-      controlPlane.root, '/v1/copy-qa/items?status=PENDING', { actor: reviewer },
-    )).data;
+    const pendingAfterResubmit = await allBlindQaItems();
     const mandatoryItem = pendingAfterResubmit.find((item) => item.sampleKind === 'MANDATORY_RECHECK');
     const remainingRandomItem = pendingAfterResubmit.find((item) => item.sampleKind === 'RANDOM');
     assert.ok(mandatoryItem, 'returned copy must create a mandatory QA item');
@@ -2429,10 +2461,16 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     )).data;
     assert.equal(finalRandomPass.status, 'PASSED');
     const releasedTasks = await repository.pool.query(`
-      SELECT id, state, mandatory_copy_qc FROM tasks WHERE id = ANY($1::bigint[]) ORDER BY id
+      SELECT id, state, mandatory_copy_qc, rework_count, system_priority FROM tasks WHERE id = ANY($1::bigint[]) ORDER BY id
     `, [productionBatch.taskIds]);
     assert.deepEqual(releasedTasks.rows.map((row) => row.state), ['IMAGE_QUEUED', 'IMAGE_QUEUED']);
     assert.ok(releasedTasks.rows.every((row) => row.mandatory_copy_qc === false));
+    const firstPass = releasedTasks.rows.find(row => Number(row.id) !== returnedTaskId);
+    assert.equal(firstPass.rework_count, 0, 'normal QA approval must not count as rework');
+    assert.equal(firstPass.system_priority, 100);
+    const rechecked = releasedTasks.rows.find(row => Number(row.id) === returnedTaskId);
+    assert.equal(rechecked.rework_count, 1, 'successful recheck must not count the same return twice');
+    assert.equal(rechecked.system_priority, 300);
     const originalBatchClosure = (await repository.pool.query(`
       SELECT sampling_freeze.status AS freeze_status, batch.status AS batch_status,
         batch.sampling_status
@@ -2515,6 +2553,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
           imageRunId: imageClaim.execution.id,
           decision: 'REWORK',
           reworkTarget: 'COPY',
+          copyFields: ['BODY'],
           score: 2,
           reasons: ['CONTENT_MISMATCH'],
           note: '隔离测试：图片终审要求修改文案并重新经过强制质检',
@@ -2551,9 +2590,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     assert.equal(finalReworkApproval.mandatoryCopyQc, true);
     assertUserTaskHidesSensitiveFields(finalReworkApproval, 'USER approve-copy response');
 
-    const finalReworkQaItems = (await requestJson(
-      controlPlane.root, '/v1/copy-qa/items?status=PENDING', { actor: reviewer },
-    )).data;
+    const finalReworkQaItems = await allBlindQaItems();
     const finalReworkQaItem = finalReworkQaItems.find(
       (item) => item.sampleKind === 'MANDATORY_RECHECK' && item.taskId === imageClaim.task.id,
     );
@@ -2578,6 +2615,8 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     const taskAfterFinalRecheck = await repository.getTask(imageClaim.task.id);
     assert.equal(taskAfterFinalRecheck.state, 'IMAGE_QUEUED');
     assert.equal(taskAfterFinalRecheck.mandatoryCopyQc, false);
+    assert.equal(taskAfterFinalRecheck.reworkCount, 2);
+    assert.equal(taskAfterFinalRecheck.systemPriority, 400);
 
     let finalImageClaim = null;
     for (let attempt = 0; attempt < 2 && !finalImageClaim; attempt += 1) {
@@ -3108,4 +3147,186 @@ test('real PostgreSQL 18 enforces Xiaohongshu interval, rolling-hour, and rollin
     await repository.close().catch(() => {});
     await cluster.stop();
   }
+});
+
+test('queue priority migration, atomic admin changes, fair claims and frozen gates', {
+  skip: !RUN_POSTGRES_E2E, timeout: 120_000,
+}, async () => {
+  const cluster = await startTemporaryPostgres18();
+  const repository = new PostgresControlPlaneRepository({ connectionString: cluster.connectionString });
+  let http;
+  try {
+    await repository.initialize();
+    const pool = repository.pool;
+    const admin = actorFrom(await repository.getUserByUsername('admin'));
+    await pool.query(`INSERT INTO app_users(username,display_name,role,password_hash)
+      VALUES ('priority-worker','Worker','USER','unused'), ('priority-reviewer','Reviewer','REVIEWER','unused'), ('priority-admin2','Admin two','ADMIN','unused')`);
+    const worker = actorFrom(await repository.getUserByUsername('priority-worker'));
+    const secondAdmin = actorFrom(await repository.getUserByUsername('priority-admin2'));
+    await repository.registerNode({ nodeId: 'priority-a', name: 'A', imageWorkerEnabled: true, copyConcurrency: 8, imageConcurrency: 4 });
+    await repository.registerNode({ nodeId: 'priority-b', name: 'B', imageWorkerEnabled: true, copyConcurrency: 8, imageConcurrency: 4 });
+    async function task(state = 'COPY_QUEUED', overrides = {}) {
+      const row = (await pool.query(`INSERT INTO tasks(query,input,state,created_by_node_id,assigned_to_user_id,assignment_source,assigned_at,pending_snapshot)
+        VALUES ('priority fixture','{}',$1,'priority-a','priority-worker','MANUAL',now(),'{}') RETURNING *`, [state])).rows[0];
+      if (Object.keys(overrides).length) {
+        for (const [key, value] of Object.entries(overrides)) {
+          assert.ok(['mandatory_copy_qc','rework_count','queue_entered_at','priority_mode','production_batch_id'].includes(key));
+          await pool.query(`UPDATE tasks SET ${key} = $2 WHERE id = $1`, [row.id, value]);
+        }
+      }
+      return Number(row.id);
+    }
+    async function adjust(ids, mode, reason = 'priority integration test') {
+      const scope = await repository.getPriorityScope({ taskIds: ids }, { actor: admin });
+      return repository.setTaskPriority({ taskIds: ids, mode, reason,
+        expectedVersions: Object.fromEntries(scope.items.map(item => [item.id, item.priorityVersion])) }, { actor: admin });
+    }
+    const first = await task();
+    const rework = await task('COPY_QUEUED', { rework_count: 1 });
+    const forced = await task('COPY_QUEUED', { mandatory_copy_qc: true });
+    const paused = await task();
+    await adjust([paused], 'PAUSE');
+    const original = await repository.getPriorityScope({ taskIds: [first, rework] }, { actor: admin });
+    const mutation = { taskIds: [first, rework], mode: 'HIGH', reason: 'concurrent request',
+      expectedVersions: Object.fromEntries(original.items.map(item => [item.id, item.priorityVersion])) };
+    const concurrent = await Promise.allSettled([
+      repository.setTaskPriority(mutation, { actor: admin }), repository.setTaskPriority(mutation, { actor: secondAdmin }),
+    ]);
+    assert.equal(concurrent.filter(result => result.status === 'fulfilled').length, 1);
+    assert.equal(concurrent.find(result => result.status === 'rejected').reason.code, 'PRIORITY_VERSION_CONFLICT');
+    await assert.rejects(repository.setTaskPriority(mutation, { actor: worker }), /administrators/);
+    await assert.rejects(adjust([first], 'HIGH', ' '), /reason/);
+    await adjust([first, rework], 'SYSTEM');
+    const claims = await repository.claimCopyBatch({ nodeId: 'priority-a', limit: 3, requestId: createClaimRequestId() });
+    assert.deepEqual(claims.claims.map(claim => claim.task.id), [forced, rework, first]);
+    assert.equal((await pool.query('SELECT state FROM tasks WHERE id = $1',[paused])).rows[0].state, 'COPY_QUEUED');
+    const running = claims.claims[0];
+    await adjust([forced], 'PAUSE');
+    const runningRow = (await pool.query('SELECT * FROM tasks WHERE id = $1', [forced])).rows[0];
+    assert.equal(runningRow.state, 'COPY_RUNNING');
+    assert.equal(runningRow.current_execution_id, running.execution.id);
+    const audit = await repository.getTaskPriorityAudit(first, { actor: admin });
+    assert.equal(audit.length, 2);
+    for (const event of audit) assert.equal(priorityEvidenceHash(event.evidence), event.event_hash);
+    assert.equal(audit[1].previous_hash, audit[0].event_hash);
+    await assert.rejects(pool.query('DELETE FROM task_priority_events'), /append-only/);
+    const aged = await task('COPY_QUEUED', { queue_entered_at: new Date(Date.now() - 5 * 86_400_000) });
+    const urgent = await task('COPY_QUEUED', { priority_mode: 'HIGHEST' });
+    assert.equal((await repository.claimCopy('priority-b')).task.id, aged);
+    const blocker = await pool.connect();
+    await blocker.query('BEGIN'); await blocker.query('SELECT id FROM tasks WHERE id = $1 FOR UPDATE',[urgent]);
+    const unlocked = await task();
+    assert.equal((await repository.claimCopy('priority-b')).task.id, unlocked, 'SKIP LOCKED must skip a locked higher priority row');
+    await blocker.query('ROLLBACK'); blocker.release();
+    const frozen = await task('COPY_QC_PENDING', { mandatory_copy_qc: true });
+    await adjust([frozen], 'HIGHEST');
+    assert.equal((await pool.query('SELECT state FROM tasks WHERE id = $1',[frozen])).rows[0].state, 'COPY_QC_PENDING');
+    assert.equal(await repository.claimImage('priority-b'), null, 'priority cannot release frozen copy QA');
+    const batch = Number((await pool.query(`INSERT INTO production_batches(public_id,query_package_name,created_by_username,request_id,request_fingerprint)
+      VALUES ($1,'priority batch','admin',$2,$3) RETURNING id`,[randomUUID(),randomUUID(),'a'.repeat(64)])).rows[0].id);
+    await pool.query('UPDATE tasks SET production_batch_id = $2 WHERE id = ANY($1::bigint[])',[[frozen,paused],batch]);
+    const batchScope = await repository.getPriorityScope({ productionBatchId: batch }, { actor: admin });
+    await repository.setTaskPriority({ productionBatchId: batch, mode: 'DEFER', reason: 'batch delay',
+      expectedVersions: Object.fromEntries(batchScope.items.map(item => [item.id,item.priorityVersion])) }, { actor: admin });
+    assert.ok((await repository.getPriorityScope({ productionBatchId: batch }, { actor: admin })).items.every(item => item.manualPriority === 10));
+    await pool.query(`INSERT INTO app_users(username,display_name,role,password_hash)
+      VALUES ('priority-other','Other worker','USER','unused')`);
+    async function imageTask(owner, priority = 'SYSTEM', affinity = null) {
+      const id = await task('IMAGE_QUEUED', { priority_mode: priority });
+      const revision = (await pool.query(`INSERT INTO copy_revisions(task_id,revision,content,approved_at)
+        VALUES ($1,1,'{}',now()) RETURNING id`, [id])).rows[0].id;
+      await pool.query(`UPDATE tasks SET assigned_to_user_id = $2, current_copy_revision_id = $3,
+        pending_snapshot = $4 WHERE id = $1`, [id, owner, revision, affinity ? {imageRecovery:{nodeId:affinity}} : {}]);
+      return id;
+    }
+    const imageLow = await imageTask('priority-worker');
+    const imageHigh = await imageTask('priority-worker', 'HIGHEST');
+    const otherImage = await imageTask('priority-other');
+    const affinityImage = await imageTask('priority-worker', 'HIGHEST', 'priority-a');
+    const imageClaims = await repository.claimImageBatch({ nodeId: 'priority-b', limit: 3, requestId: createClaimRequestId() });
+    const imageIds = imageClaims.claims.map(claim => claim.task.id);
+    assert.equal(imageIds.length, 3);
+    assert.ok(imageIds.indexOf(imageHigh) < imageIds.indexOf(imageLow));
+    assert.ok(imageIds.indexOf(otherImage) < imageIds.indexOf(imageLow), 'owner round-robin survives priority');
+    assert.ok(!imageIds.includes(affinityImage));
+    assert.equal((await repository.claimImage('priority-a')).task.id, affinityImage);
+    // FIFO is explicit within a priority, independent of IDs and last activity.
+    const page = await repository.listTasks({ state: 'IMAGE_RUNNING', limit: 2, includeTotal: true });
+    assert.equal(page.items.length, 2);
+    const next = await repository.listTasks({ state: 'IMAGE_RUNNING', limit: 2, includeTotal: true, cursor: page.nextCursor });
+    assert.equal(new Set([...page.items, ...next.items].map(item => item.id)).size, 4);
+    const pausedTransition = await task('IMAGE_RUNNING', { priority_mode: 'PAUSE' });
+    await pool.query("UPDATE tasks SET state = 'MANUAL_ARCHIVE' WHERE id = $1", [pausedTransition]);
+    assert.equal((await pool.query('SELECT review_assigned_to_account_id FROM tasks WHERE id = $1',[pausedTransition])).rows[0].review_assigned_to_account_id, null);
+    await adjust([pausedTransition], 'SYSTEM');
+    assert.notEqual((await pool.query('SELECT review_assigned_to_account_id FROM tasks WHERE id = $1',[pausedTransition])).rows[0].review_assigned_to_account_id, null);
+    const reviews = [await task('MANUAL_ARCHIVE'), await task('MANUAL_ARCHIVE')];
+    const owners = (await pool.query('SELECT review_assigned_to_account_id FROM tasks WHERE id = ANY($1::bigint[]) ORDER BY id',[reviews])).rows;
+    assert.notEqual(owners[0].review_assigned_to_account_id, owners[1].review_assigned_to_account_id);
+    await adjust(reviews, 'HIGHEST');
+    assert.deepEqual((await pool.query('SELECT review_assigned_to_account_id FROM tasks WHERE id = ANY($1::bigint[]) ORDER BY id',[reviews])).rows, owners);
+    await pool.query('UPDATE app_users SET must_change_password = false');
+    http = await startRealControlPlane(repository);
+    for (const actor of [null, worker]) {
+      const response = await fetch(`${http.root}/v1/tasks/priority`, { method: 'POST', headers: actorHeaders(actor, { json: true }), body: JSON.stringify(mutation) });
+      assert.ok([401,403].includes(response.status));
+    }
+    const response = await fetch(`${http.root}/v1/tasks/priority-scope`, { method: 'POST', headers: actorHeaders(admin, { json: true }), body: JSON.stringify({taskIds:[frozen]}) });
+    assert.equal(response.status, 200);
+    const httpScope = (await response.json()).data;
+    const httpMutation = { taskIds: [frozen], mode: 'HIGH', reason: 'HTTP integration audit',
+      expectedVersions: Object.fromEntries(httpScope.items.map(item => [item.id,item.priorityVersion])) };
+    const send = () => fetch(`${http.root}/v1/tasks/priority`, { method: 'POST', headers: actorHeaders(admin, { json: true }), body: JSON.stringify(httpMutation) });
+    assert.equal((await send()).status, 200);
+    assert.equal((await send()).status, 409);
+    const high = await repository.listTasks({ priorityMode: 'HIGH', includeTotal: true });
+    assert.ok(high.items.some(item => item.id === frozen));
+    const reviewer = actorFrom(await repository.getUserByUsername('priority-reviewer'));
+    const reviewQueue = await repository.listTasks({ state: 'MANUAL_ARCHIVE', reviewAssignedToAccountId: reviewer.userId });
+    assert.ok(reviewQueue.every(item => item.reviewAssignedToAccountId === reviewer.userId));
+  } finally {
+    await http?.stop(); await repository.close(); await cluster.stop();
+  }
+});
+
+test('queue priority upgrade counts QA returns and excludes past review ownership from live load', {
+  skip: !RUN_POSTGRES_E2E, timeout: 120_000,
+}, async () => {
+  const cluster = await startTemporaryPostgres18();
+  const pool = new pg.Pool({ connectionString: cluster.connectionString });
+  try {
+    const migrations = await loadMigrations();
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await applyMigrations(client, migrations.filter(entry => entry.id < '0050_queue_priority'));
+      await client.query('COMMIT');
+    } finally { client.release(); }
+    await pool.query("INSERT INTO executor_nodes(id,name) VALUES ('priority-upgrade','Upgrade fixture')");
+    const id = (await pool.query(`INSERT INTO tasks(query,state,created_by_node_id,last_activity_at)
+      VALUES ('Historical QA returns','IMAGE_QUEUED','priority-upgrade','2026-09-01T00:00:00Z') RETURNING id`)).rows[0].id;
+    await pool.query(`INSERT INTO copy_revisions(task_id,revision,content,revision_origin)
+      VALUES ($1,1,'{}','QA_RETURN'),($1,2,'{}','COPY_EDIT'),($1,3,'{}','QA_RETURN')`, [id]);
+    const upgrade = await pool.connect();
+    try {
+      await upgrade.query('BEGIN');
+      assert.deepEqual(await applyMigrations(upgrade,migrations), ['0050_queue_priority']);
+      await upgrade.query('COMMIT');
+    } finally { upgrade.release(); }
+    const row = (await pool.query('SELECT * FROM tasks WHERE id = $1',[id])).rows[0];
+    assert.equal(row.rework_count,2);
+    assert.equal(row.system_priority,400);
+    assert.equal(row.queue_entered_at.toISOString(),'2026-09-01T00:00:00.000Z');
+    const admin = (await pool.query("SELECT id FROM app_users WHERE username = 'admin'")).rows[0].id;
+    const reviewer = (await pool.query(`INSERT INTO app_users(username,display_name,role,password_hash)
+      VALUES ('priority-load-reviewer','Load reviewer','REVIEWER','unused') RETURNING id`)).rows[0].id;
+    await pool.query('UPDATE tasks SET review_assigned_to_account_id = $2 WHERE id = $1', [id,admin]);
+    await pool.query(`INSERT INTO review_queue_assignment_events(account_id,task_id,queue_kind)
+      VALUES ($1,$2,'IMAGE_REVIEW')`,[reviewer,id]);
+    assert.equal((await pool.query('SELECT choose_priority_reviewer(NULL) AS id')).rows[0].id, admin,
+      'past reviewer has no current review work and wins the longest-unassigned tie');
+    await pool.query("UPDATE tasks SET state = 'MANUAL_ARCHIVE' WHERE id = $1",[id]);
+    assert.equal((await pool.query('SELECT choose_priority_reviewer(NULL) AS id')).rows[0].id, reviewer,
+      'active review work must count toward the current reviewer load');
+  } finally { await pool.end(); await cluster.stop(); }
 });

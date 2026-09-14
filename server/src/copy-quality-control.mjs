@@ -1,3 +1,4 @@
+import { priorityOrderSql, priorityFrom } from './task-priority.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 
 import {
@@ -139,6 +140,7 @@ function qaItemFrom(row, actor) {
     ? blindApprovedContent(row.copy_content)
     : row.copy_content;
   const common = {
+    ...(row.system_priority === undefined ? {} : { prioritySummary: `${row.priority_paused ? '已暂停' : `生效 ${row.effective_priority}`} · 系统 ${row.system_priority} / 人工 ${row.manual_priority ?? '—'}` }),
     id: row.public_id,
     freezePublicId: row.freeze_public_id,
     anonymousCode: opaqueCode('QC', row.public_id),
@@ -154,8 +156,8 @@ function qaItemFrom(row, actor) {
       anonymousCode: opaqueCode('QCB', row.freeze_public_id),
     },
     capabilities: {
-      canPass: ['ADMIN', 'REVIEWER'].includes(actor.role) && row.status === 'PENDING',
-      canReturnSingle: ['ADMIN', 'REVIEWER'].includes(actor.role) && row.status === 'PENDING',
+      canPass: ['ADMIN', 'REVIEWER'].includes(actor.role) && row.status === 'PENDING' && row.priority_paused !== true,
+      canReturnSingle: ['ADMIN', 'REVIEWER'].includes(actor.role) && row.status === 'PENDING' && row.priority_paused !== true,
       canReturnBatch: actor.role === 'ADMIN'
         || (actor.role === 'REVIEWER' && row.reviewer_batch_return_enabled === true),
     },
@@ -166,6 +168,7 @@ function qaItemFrom(row, actor) {
   if (blind) return common;
   return {
     ...common,
+    ...priorityFrom(row),
     query: row.query,
     taskId: Number(row.task_id),
     approvedRevision: {
@@ -673,7 +676,9 @@ const QA_ITEM_SQL = `
   SELECT item.*, sampling_freeze.public_id AS freeze_public_id, sampling_freeze.production_batch_id,
     sampling_freeze.blind_review_enabled, revision.revision AS copy_revision_number,
     revision.content AS copy_content, task.query, task.assigned_to_user_id,
-    task.created_by_user_id, batch.public_id AS production_batch_public_id,
+    task.created_by_user_id, task.system_priority, task.manual_priority, task.effective_priority,
+    task.priority_mode, task.priority_paused, task.queue_entered_at, task.priority_sort_at,
+    task.rework_count, task.requeue_reason, task.priority_version, batch.public_id AS production_batch_public_id,
     batch.query_package_name,
     settings.reviewer_batch_return_enabled
   FROM copy_sampling_items AS item
@@ -708,10 +713,10 @@ export async function listCopyQaItems(pool, {
   const offsetParameter = values.length;
   const result = await pool.query(`${QA_ITEM_SQL}
     WHERE item.selected = true AND ($1::varchar IS NULL OR item.status = $1)
-      AND ($2::bigint IS NULL OR item.final_approver_account_id <> $2)
+      AND ($2::bigint IS NULL OR (item.final_approver_account_id <> $2
+        AND (item.status <> 'PENDING' OR (item.assigned_review_account_id = $2 AND task.priority_paused = false))))
       ${packageFilter}
-    ORDER BY lower(batch.query_package_name) NULLS LAST, batch.query_package_name NULLS LAST,
-      item.created_at, item.id
+    ORDER BY ${priorityOrderSql('task.')}
     LIMIT $${limitParameter} OFFSET $${offsetParameter}
   `, values);
   return result.rows.map((row) => qaItemFrom(row, actor));
@@ -748,6 +753,7 @@ async function lockQaItem(client, rawItemId) {
   const located = location.rows[0];
   const task = await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [located.task_id]);
   if (!task.rows[0]) throw new ControlPlaneNotFoundError('抽检项不存在');
+  if (task.rows[0].priority_paused) throw new ControlPlaneConflictError('TASK_PRIORITY_PAUSED', '任务已暂停，请先恢复优先级');
   const freeze = await client.query(
     'SELECT * FROM copy_sampling_freezes WHERE id = $1 FOR UPDATE',
     [located.freeze_id],

@@ -50,6 +50,7 @@ import {
   createAssignmentFields,
 } from '../../src/control-plane/task-assignment.mjs';
 import { TaskReviewDialog } from './task-review-dialog';
+import { TaskPriorityControl, PrioritySummary, type PriorityTask } from './task-priority-control';
 import { TaskRowActions } from './task-row-actions';
 import { AdminJobFilters, CREATOR_ROLE_LABELS } from './admin-job-filters';
 import type { JobCreator } from './admin-creator-filter';
@@ -82,7 +83,7 @@ import {
   type ViewKey,
 } from './views';
 
-type DistributedTask = {
+type DistributedTask = PriorityTask & {
   id: number;
   query: string;
   sourceQueryPackageName?: string | null;
@@ -769,6 +770,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     canUseQueryPackageFilter ? initialListState.queryPackageName : '',
   );
   const [sort, setSort] = useState<TaskSort>(initialListState.sort);
+  const [priorityMode, setPriorityMode] = useState('');
   const [deduplicateQuery, setDeduplicateQuery] = useState(initialListState.deduplicateQuery);
   const [creatorRoleFilter, setCreatorRoleFilter] = useState(initialListState.createdByRole);
   const [creatorFilter, setCreatorFilter] = useState<JobCreator | null>(initialListState.createdByUserId
@@ -867,7 +869,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         activeView, creatorUserId, creatorAccountId, pageSize, creatorFilter?.username,
         creatorFilter?.id, assigneeFilter?.username, assigneeFilter?.id, creatorRoleFilter,
         personalScope, stateFilter, searchKeyword, queryPackageName,
-        deduplicateQuery, sort, attentionFilter, role,
+        deduplicateQuery, sort, priorityMode, attentionFilter, role,
       ]);
       if (taskPageCursors.current.scope !== paginationScope) {
         taskPageCursors.current = { scope: paginationScope, values: new Map([[1, null]]) };
@@ -900,6 +902,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       if (role === 'ADMIN' && isAllJobs && attentionFilter !== 'NONE') search.set('attention', attentionFilter);
       const { sortBy, sortOrder } = taskSortParams(sort);
       search.set('sortBy', sortBy);
+      if (priorityMode) search.set('priorityMode', priorityMode);
       search.set('sortOrder', sortOrder);
       let compatibilityTasks: DistributedTask[] | null = null;
       const taskPageRequest = isAllJobs ? loadAdminTaskPage(request, {
@@ -1017,7 +1020,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     }
   }, [activeDefinition, creatorUserId, creatorAccountId, page, pageSize, isAllJobs, creatorFilter,
     assigneeFilter, creatorRoleFilter, personalScope, stateFilter, searchKeyword, queryPackageName,
-    deduplicateQuery, sort, attentionFilter, role, canUseQueryPackageFilter]);
+    deduplicateQuery, sort, priorityMode, attentionFilter, role, canUseQueryPackageFilter]);
 
   useEffect(() => {
     if (leavingWorkbenchView.current) return;
@@ -2051,6 +2054,13 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
           <Button unstyled className="button small" type="submit">搜索</Button>
         </form>
         <div className="workbench-sort-control">
+          <label>优先级来源 / 调整
+            <Select value={priorityMode || "ALL"} onValueChange={value => { setPriorityMode(value === "ALL" ? "" : value); setPage(1); }}><SelectTrigger aria-label="优先级筛选"><SelectValue /></SelectTrigger><SelectContent>
+              <SelectItem value="ALL">全部优先级</SelectItem><SelectItem value="SYSTEM">跟随系统</SelectItem>
+              <SelectItem value="HIGHEST">最高优先</SelectItem><SelectItem value="HIGH">高优先</SelectItem>
+              <SelectItem value="NORMAL">普通</SelectItem><SelectItem value="DEFER">暂缓</SelectItem><SelectItem value="PAUSE">暂停</SelectItem>
+            </SelectContent></Select>
+          </label>
           <label htmlFor="workbench-task-sort">排序</label>
           <Select value={sort} onValueChange={(value) => { setSort(value as TaskSort); setPage(1); }}>
             <SelectTrigger id="workbench-task-sort"><SelectValue /></SelectTrigger>
@@ -2081,6 +2091,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
 
         {role === 'ADMIN' && selectedTasks.length > 0 && <div className="workbench-batch-actions" role="region" aria-label="批量任务操作">
           <strong>已选 {selectedTasks.length} 条（当前页）</strong>
+          <TaskPriorityControl tasks={selectedTasks} onChanged={() => refresh()} />
         {role === 'ADMIN' && activeView === 'ALL_JOBS' && deduplicateQuery && selectedTasks.length > 0 && <Button
           unstyled className="button small" type="button" disabled={Boolean(batchAction) || duplicateQueryCleanupBusy}
           title="先查看每个 Query 将保留、废弃和跳过哪些任务"
@@ -2138,6 +2149,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
                 </div></td>
                 <td className="workbench-col-progress" data-label="状态 / 进度">
                   <div className="distributed-progress">
+                    <small><PrioritySummary task={task} /></small>
+                    {role === 'ADMIN' && <TaskPriorityControl tasks={[task]} onChanged={() => refresh()} />}
                     <span className={`pill ${isImageRetryExhausted(task) ? 'pill-rejected' : `workbench-state-${task.state.toLowerCase()}`}${isStale(task) ? ' pill-rejected' : ''}`}>{isImageRetryExhausted(task) ? IMAGE_RETRY_EXHAUSTED_LABEL : taskStateLabel(task, role)}</span>
                     <span>{stageLabel(task, role)} · {task.state.endsWith('_FAILED') && !task.executionStartedAt && task.progressPercent === 0 ? '进度未记录' : `${task.progressPercent}%`}</span>
                     <small className="workbench-text-preview" title={isStale(task) ? '超过 30 分钟没有进度，请进入详情处理' : taskProgressMessage(task)}>{isStale(task) ? '超过 30 分钟没有进度，请进入详情处理' : taskProgressMessage(task)}</small>
