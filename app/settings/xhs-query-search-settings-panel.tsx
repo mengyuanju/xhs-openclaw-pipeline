@@ -234,6 +234,9 @@ export function XhsQuerySearchSettingsPanel({
             ? `按当前间隔和每小时上限，每 24 小时最多只能设置 ${maximumPerDay} 次。`
             : '';
   const invalid = resultLimitInvalid || Boolean(pacingError);
+  const pacingAtDefaults = minimumIntervalDraft === String(DEFAULT_MINIMUM_INTERVAL_SECONDS)
+    && hourlyLimitDraft === String(DEFAULT_HOURLY_LIMIT)
+    && dailyLimitDraft === String(DEFAULT_DAILY_LIMIT);
   const changed = loaded && (invalid
     || parsedResultLimit !== savedResultLimit
     || draftSearchMode !== savedSearchMode
@@ -241,6 +244,14 @@ export function XhsQuerySearchSettingsPanel({
     || parsedHourlyLimit !== savedHourlyLimit
     || parsedDailyLimit !== savedDailyLimit);
   const disabled = loading || busy || !loaded;
+
+  function restoreDefaultPacing() {
+    setMinimumIntervalDraft(String(DEFAULT_MINIMUM_INTERVAL_SECONDS));
+    setHourlyLimitDraft(String(DEFAULT_HOURLY_LIMIT));
+    setDailyLimitDraft(String(DEFAULT_DAILY_LIMIT));
+    setError('');
+    setMessage('已恢复系统默认频率；点击保存后生效。');
+  }
 
   async function save() {
     if (invalid) return;
@@ -404,6 +415,9 @@ export function XhsQuerySearchSettingsPanel({
           : '先填写有效的最短间隔和每小时上限。'}</small>
       </div>
     </div>
+    <p className="notice">
+      系统默认频率：两次搜索最短间隔 {DEFAULT_MINIMUM_INTERVAL_SECONDS} 秒 · 每 60 分钟最多 {DEFAULT_HOURLY_LIMIT} 次 · 每 24 小时最多 {DEFAULT_DAILY_LIMIT} 次。
+    </p>
     <p className="notice">两种模式都会按可确认的点赞量排序；区别是极速模式只比较首屏，深度模式会滚动收集更多候选。如果可访问的有效链接不足，实际保存数量可能少于设置值。</p>
     <p className="notice">账号保护按中心每次发放的搜索任务计数，随后搜索失败、出现验证码或登录失效也占用额度。三个限制同时生效，以最先达到的限制为准。</p>
     {pacingError && <div className="notice error" role="alert">{pacingError}</div>}
@@ -412,6 +426,9 @@ export function XhsQuerySearchSettingsPanel({
     {message && <div className="notice success" role="status">{message}</div>}
     <div className="settings-actions">
       {!loaded && !loading && <Button unstyled type="button" className="button" onClick={() => { void load(); }}>重新读取</Button>}
+      {loaded && <Button unstyled type="button" className="button" disabled={disabled || pacingAtDefaults} onClick={restoreDefaultPacing}>
+        恢复默认频率
+      </Button>}
       <Button unstyled type="button" className="button primary" disabled={disabled || invalid || !changed} onClick={() => { void save(); }}>
         {busy ? '保存中…' : '保存小红书搜索配置'}
       </Button>

@@ -27,6 +27,10 @@ test('administrator production settings expose fastest and thorough Xiaohongshu 
   assert.match(panel, /两次搜索最短间隔（秒）/u);
   assert.match(panel, /滚动 60 分钟最多搜索（次）/u);
   assert.match(panel, /滚动 24 小时最多搜索（次）/u);
+  assert.match(panel, /系统默认频率：两次搜索最短间隔 \{DEFAULT_MINIMUM_INTERVAL_SECONDS\} 秒/u);
+  assert.match(panel, /function restoreDefaultPacing\(\)[\s\S]*setMinimumIntervalDraft\(String\(DEFAULT_MINIMUM_INTERVAL_SECONDS\)\)[\s\S]*setHourlyLimitDraft\(String\(DEFAULT_HOURLY_LIMIT\)\)[\s\S]*setDailyLimitDraft\(String\(DEFAULT_DAILY_LIMIT\)\)/u);
+  assert.match(panel, /恢复默认频率/u);
+  assert.match(panel, /已恢复系统默认频率；点击保存后生效/u);
   assert.match(panel, /按中心每次发放的搜索任务计数/u);
   assert.match(panel, /搜索模式、链接条数和账号保护节奏已保存/u);
   assert.match(panel, /保存小红书搜索配置/u);

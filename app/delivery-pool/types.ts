@@ -215,7 +215,7 @@ export function normalizeDeliveryPoolPage(value: unknown): DeliveryPoolPage {
     ? facetEnvelope.queryPackages
     : [];
   const queryPackageMap = new Map<number, DeliveryQueryPackageFacet>();
-  for (const value of rawQueryPackages.slice(0, 1_000)) {
+  for (const value of rawQueryPackages) {
     const facet = record(value);
     const id = Number(facet?.id);
     const name = normalizeQueryPackageName(facet?.name);

@@ -72,6 +72,22 @@ test('delivery pool list adapter preserves package names and valid package facet
   });
 });
 
+test('delivery pool list adapter preserves every package facet returned by the server', () => {
+  const queryPackages = Array.from({ length: 1_005 }, (_, index) => ({
+    id: index + 1,
+    name: `词包-${String(index + 1).padStart(4, '0')}`,
+    count: 1,
+    unuploadedCount: 1,
+    publishedCount: 0,
+    revokedCount: 0,
+  }));
+
+  const page = normalizeDeliveryPoolPage({ items: [], total: 0, facets: { queryPackages } });
+
+  assert.equal(page.facets.queryPackages.length, queryPackages.length);
+  assert.equal(page.facets.queryPackages.at(-1)?.name, '词包-1005');
+});
+
 test('delivery preview adapter preserves the note binding and rejects inconsistent counts', () => {
   const result = {
     scope: 'QUERY_PACKAGES',

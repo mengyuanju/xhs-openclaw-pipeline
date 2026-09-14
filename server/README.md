@@ -17,6 +17,9 @@ npm start
 
 ```dotenv
 DATABASE_URL=postgresql://xhs_control:替换为数据库密码@127.0.0.1:5432/xhs_control
+# 可选：同一份 env 中配置正式库，使用 production 环境时自动替换 DATABASE_URL。
+XHS_PRODUCTION_DATABASE_URL=postgresql://xhs_control_prod:替换为正式库密码@127.0.0.1:5432/xhs_control_prod
+XHS_PRODUCTION_STORAGE_ROOT=D:\auto-claw\images_storage_prod
 CONTROL_PLANE_HOST=0.0.0.0
 CONTROL_PLANE_PORT=4310
 CONTROL_PLANE_STORAGE_ROOT=server-storage
@@ -33,6 +36,40 @@ PREVIEW_API_KEY=仅含preview:create权限的接口密钥
 交付池预览同样由中心服务直接调用预览服务，接口密钥不会下发到浏览器。管理员必须明确勾选一个或多个词包；Web 只提交稳定的词包 ID，中心只从这些词包选择尚未上传且仍为 READY 的交付项。早期没有词包关联的 READY 内容会显示为独立的“历史未归属内容”范围，只有单独勾选后才会上传，不会伪造词包归属。一次操作可选择 1 条测试，或批量选择 10、25、50、100、200 条；任务行的“测试上传”会同时提交该任务 ID 与它的稳定来源范围，中心双重校验后只处理这一条。中心会按预览服务每批最多 10 条、60 张图片、60 MB 原图自动串行拆批，不放大单次远端请求。`0035_delivery_preview_links` 会把预览服务返回的 `preview.id`、`publicId`（noteId）和内容哈希关联到冻结的 `delivery_entries` 记录；`0036_delivery_preview_url_derivation` 不再持久化服务域名，公开链接按当前 `PREVIEW_BASE_URL` 和 noteId 动态生成。两套系统保持各自主键，通过这个关联审计和重试。
 
 `npm run init` 可重复执行，首次运行会建表并安装默认生产配置和提示词。
+
+### 开发/生产环境切换
+
+中心服务显式支持 `development` 与 `production` 两个环境，两者都读取同一个未提交的 `.env`。默认环境使用
+`DATABASE_URL`；生产环境把 `XHS_PRODUCTION_DATABASE_URL` 作为实际数据库，并可用 `XHS_PRODUCTION_STORAGE_ROOT`
+覆盖正式文件目录。系统不会根据 `NODE_ENV` 猜测数据库，避免普通构建命令误连正式库。
+
+```powershell
+# 查看两个环境将使用的数据库与文件目录（不会显示密码）
+npm run env:status
+npm run env:status:production
+
+# 默认环境 / 正式环境
+npm start
+npm run start:production
+```
+
+也可以设置 `XHS_SERVER_ENV=production` 后运行普通命令，或向数据库维护命令传入
+`--environment=production`。命令行选项只选择固定环境名，不接受数据库 URL；数据库密码仍只保存在未提交的 `.env` 或进程 Secret 中。
+
+### 仅迁移基础配置到新库
+
+正式库需要继承现有生产设置、提示词、知识库和质量策略，但不需要任何作业数据时，先对空库运行
+`npm run init:production`，再使用选择性迁移工具。工具只接受固定环境名，不接受命令行数据库 URL，
+默认只预检，并拒绝同库迁移、待升级的 schema、含作业数据的目标库、已启用自动派单的目标库及包含文件路径的知识记录。
+
+```powershell
+npm run db:migrate:base-config -- --source-environment=development --target-environment=production
+npm run db:migrate:base-config -- --source-environment=development --target-environment=production --apply
+```
+
+迁移范围固定为 `global_settings`、提示词模板及版本、知识条目及版本、`workflow_quality_settings`。
+账号、派单人员、执行机、Query 词包、任务、执行、审核、素材和交付记录均不会迁移。目标库保留初始化生成的管理员账号，
+正式账号及派单人员应在验收后重新建立。
 
 `0005_user_management` 迁移会创建中心用户表和三个固定角色（管理员、审核员、普通用户），并创建初始管理员 `admin / 123456`。升级已有服务时运行 `npm run db:upgrade -- --apply`，然后重启中心服务。默认密码必须在首次登录后的个人信息页修改。
 

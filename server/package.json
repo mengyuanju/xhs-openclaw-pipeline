@@ -8,11 +8,16 @@
     "node": ">=24.19.0 <25"
   },
   "scripts": {
-    "init": "node --env-file-if-exists=.env src/cli.mjs init",
+    "init": "node src/cli.mjs init",
+    "init:production": "node src/cli.mjs init --environment=production",
+    "env:status": "node scripts/show-environment.mjs",
+    "env:status:production": "node scripts/show-environment.mjs --environment=production",
     "db:export": "node scripts/export-database.mjs",
     "db:init": "node scripts/manage-database.mjs init",
+    "db:migrate:base-config": "node scripts/migrate-base-configuration.mjs",
     "db:upgrade": "node scripts/manage-database.mjs upgrade",
-    "start": "node --env-file-if-exists=.env src/cli.mjs serve",
+    "start": "node src/cli.mjs serve",
+    "start:production": "node src/cli.mjs serve --environment=production",
     "test": "node --test"
   },
   "dependencies": {

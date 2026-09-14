@@ -129,10 +129,10 @@ export async function upgradeDatabase(client, backup, migrations) {
 export async function main() {
   const command = process.argv[2];
   if (!['init', 'upgrade'].includes(command)) throw new Error('Use manage-database.mjs init|upgrade');
-  const options = parseOptions(process.argv.slice(3), ['from', 'apply', 'help']);
-  if (options.help) { console.log(`npm run db:${command} -- ${command === 'init' ? '--from=BACKUP_FOLDER' : '[--from=BACKUP_FOLDER]'} [--apply]`); return; }
+  const options = parseOptions(process.argv.slice(3), ['from', 'environment', 'apply', 'help']);
+  if (options.help) { console.log(`npm run db:${command} -- ${command === 'init' ? '--from=BACKUP_FOLDER' : '[--from=BACKUP_FOLDER]'} [--environment=development|production] [--apply]`); return; }
   if (command === 'init' && !options.from) throw new Error('Full import requires --from=BACKUP_FOLDER');
-  const config = loadConfiguration();
+  const config = loadConfiguration({ profile: options.environment });
   const client = connectDatabase(config);
   try {
     const backup = options.from ? await readBackup(options.from) : null;
