@@ -568,11 +568,18 @@ function assertTaskActorAccess(task, actor, {
   allowedRoles = USER_ROLES,
   allowUnassignedCreatorStates = [],
   actorRow = null,
+  reviewAssignmentOnly = false,
 } = {}) {
   if (!allowedRoles.includes(actor.role)) {
     throw new ControlPlaneAuthorizationError('current role cannot perform this operation');
   }
   if (actor.role !== 'ADMIN' && actorRow?.copy_review_enabled === false) throw new ControlPlaneAuthorizationError('审核权限已关闭');
+  if (reviewAssignmentOnly && actor.role !== 'ADMIN') {
+    if (Number(task.review_assigned_to_account_id) !== actor.userId) {
+      throw new ControlPlaneAuthorizationError('图片审核任务已分配给其他账号，请刷新后重试');
+    }
+    return;
+  }
   const assignedToUserId = task.assigned_to_user_id ?? null;
   const creatorAccess = isStableUnassignedTaskCreator(
     task,
@@ -2046,6 +2053,18 @@ export class PostgresControlPlaneRepository {
         RETURNING *
       `, [displayName, role, status, credentialChanged ? 1 : 0, userId, expectedVersion, reviewEnabled, qcEnabled]);
       if (!result.rows[0]) throw new ControlPlaneConflictError('VERSION_CONFLICT', 'user was updated by another request');
+      await client.query(`UPDATE tasks SET review_assigned_to_account_id = NULL,
+          review_assigned_at = NULL, updated_at = now()
+        WHERE state = 'MANUAL_ARCHIVE' AND review_assigned_to_account_id = $1
+          AND NOT ($2 = 'ACTIVE' AND $3 = ANY(ARRAY['REVIEWER','USER']) AND $4::boolean)`,
+      [userId, status, role, reviewEnabled]);
+      await client.query(`UPDATE copy_sampling_items SET assigned_review_account_id = NULL,
+          assigned_review_at = NULL, updated_at = now()
+        WHERE selected AND status = 'PENDING' AND assigned_review_account_id = $1
+          AND NOT ($2 = 'ACTIVE' AND $3 = ANY(ARRAY['REVIEWER','USER']) AND $4::boolean)`,
+      [userId, status, role, qcEnabled]);
+      await client.query("UPDATE tasks SET state = state WHERE state = 'MANUAL_ARCHIVE' AND review_assigned_to_account_id IS NULL");
+      await client.query("UPDATE copy_sampling_items SET status = status WHERE selected AND status = 'PENDING' AND assigned_review_account_id IS NULL");
       await client.query(`INSERT INTO copy_quality_permission_events(account_id, actor_username, previous_permissions, permissions)
         VALUES ($1, $2, $3, $4)`, [userId, actorUsername,
         { review: current.copy_review_enabled, qc: current.copy_qc_enabled }, { review: reviewEnabled, qc: qcEnabled }]);
@@ -3993,7 +4012,8 @@ export class PostgresControlPlaneRepository {
       const task = actorIdentity === null
         ? (await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId])).rows[0]
         : (await lockTaskForActor(client, taskId, actorIdentity, {
-          allowedRoles: ['ADMIN', 'REVIEWER'],
+          allowedRoles: USER_ROLES,
+          reviewAssignmentOnly: true,
         })).task;
       if (!task) throw new ControlPlaneNotFoundError('task not found');
       if (await claimQualityReviewSubmission(client, {

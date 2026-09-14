@@ -1,6 +1,6 @@
 # 统一任务优先级与管理员调序
 
-开发基线：本地 `auto-clow-poker` 的 `4c8d63b`；分支 `codex/task-priority`。仅修改独立工作区，未修改主工作区，未发布，也未增加生产定时任务。
+开发基线：本地 `auto-clow-poker` 的 `4c8d63b`；原分支 `codex/task-priority` 已合并到 `codex/integrate-workflow-upgrades`。未发布，也未增加生产定时任务。
 
 ## 优先级规则
 
@@ -62,26 +62,18 @@
 
 ## 验证
 
-2026-09-15 提交前复核，Node.js 24.19.0 / 独立临时 PostgreSQL 18，测试不调用模型：
+2026-09-15 集成复核，Node.js 24 / 独立临时 PostgreSQL 18：
 
 | 检查 | 结果 |
 | --- | --- |
-| `npm run typecheck` | 通过 |
-| `npm run build` | 通过 |
+| `npm run typecheck:all` | 通过 |
+| `npm run build:all` | 通过 |
 | 优先级、界面契约、领取、派单和仓储针对性测试 | 74 通过，0 失败 |
-| `npm --prefix server test` | 557 通过，0 失败；15 条 PostgreSQL 测试默认跳过 |
+| `npm --prefix server test` | 559 通过，0 失败；18 条显式可选测试默认跳过 |
 | `RUN_POSTGRES_E2E=1 node --test server/tests/modular-workflow-postgres.e2e.test.mjs` | 15 通过，0 失败，包括 5000／10000 条数据测试 |
-| `npm test` | 1131 通过，3 条已有失败 |
+| `npm test` | 1145 通过，1 跳过，0 失败 |
+| `npm run smoke` | 通过 |
 
-已有失败：`tests/duplicate-query-cleanup-ui.test.mjs:37`、`tests/task-assignment-ui.test.mjs:59`、`tests/web-statistics-ui.test.mjs:34`。用 `4c8d63b` 的原始工作台文件重跑相同三组测试，复现相同三条失败；未修改这些无关界面断言。
+## 已完成的质检流程集成
 
-## 与“质检流程优化”分支合并的接口点
-
-当前工作区没有该分支的具体变更，需在合并时核对以下合同：
-
-1. 系统等级消费 `mandatory_copy_qc`／`mandatory_copy_qc_origin`、`human_quality_assessments.rework_target`、`copy_revisions.revision_origin = 'QA_RETURN'`、当前稿件 ID 及状态变化。若新分支改变返工元数据或使用原地修改稿件，须同步 `refresh_task_priority()` 的识别与回填规则，避免漏计或重复计数；正常放行与退回必须区分。
-2. 新增 `tasks.review_assigned_to_account_id` 和 `copy_sampling_items.assigned_review_account_id`。如新分支已有审核派单机制，需统一为同一个权威分配入口，保留当前生产负责人和图片轮转游标，避免两个分配器竞争。
-3. `copy_sampling_freezes`／`copy_sampling_items` 仍是冻结和强制复检的权威数据；优先级不能创建直通批准事件或改写放行条件。合并涉及批次／任务／冻结锁时，须复核所有路径的锁顺序。
-4. `queue_entered_at` 表示当前队列进入时间；单纯调序和心跳不得重置。新增同状态重排入口须明确写入新队列时间／原因。暂停必须在新增领取及审核提交入口继续生效。
-5. 管理员调序版本为独立 `priority_version`，不要与任务状态、抽检版本或提交幂等收据混用。盲审 DTO 不得直接展开含人员／自由文本原因的优先级审计。
-6. 保留本迁移名 `0050_queue_priority.sql`；若另一分支也占用 0050，合并时为其未应用迁移重新编号，不覆盖已落库校验和。
+0053 协调迁移已经统一优先级和质检的审核分配：图片审核候选按账号审核能力选取，文案质检候选按账号质检能力选取并排除最终初审人；管理员不自动占用队列但保留人工管理能力。`copy_sampling_freezes`／`copy_sampling_items` 继续作为冻结和强制复检权威数据，任何优先级都不能创建直通批准。`queue_entered_at`、独立 `priority_version`、盲审字段限制和行锁顺序均已保留，返工只计一次。

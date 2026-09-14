@@ -34,9 +34,11 @@ test('real PostgreSQL quality flow: isolation, concurrent freeze, batch return, 
   url.pathname = `/${name}`;
   const pool = new pg.Pool({ connectionString: url.href });
   t.after(async () => { await pool.end(); await admin.query(`DROP DATABASE ${name}`); await admin.end(); });
-  // Keep this test independent even after the priority branch's 0050 is merged.
-  const migrations = (await loadMigrations()).filter(migration => !migration.id.startsWith('0050_'));
+  // Exercise the merged production schema: 0053 reconciles the priority queue
+  // assignments from 0050 with the account permissions introduced by 0051.
+  const migrations = await loadMigrations();
   assert.ok(migrations.some(migration => migration.id === '0051_copy_quality_flow'));
+  assert.ok(migrations.some(migration => migration.id === '0053_account_review_assignment'));
   const migrationClient = await pool.connect();
   try {
     for (let run = 0; run < 2; run++) {
@@ -66,12 +68,14 @@ test('real PostgreSQL quality flow: isolation, concurrent freeze, batch return, 
   const tasks = [];
   for (let n = 0; n < 12; n++) {
     const task = (await pool.query(`INSERT INTO tasks(query, created_by_node_id, copy_executor_node_id, state, production_batch_id, assigned_to_user_id, assignment_source, assigned_at)
-      VALUES ($1, 'qc-test', 'qc-test', 'COPY_REVIEW_PENDING', $2, $3, 'MANUAL', now()) RETURNING *`, [`test ${n}`, batch.id, n < 6 ? 'alice' : 'bob'])).rows[0];
+      VALUES ($1, 'qc-test', 'qc-test', 'COPY_RUNNING', $2, $3, 'MANUAL', now()) RETURNING *`, [`test ${n}`, batch.id, n < 6 ? 'alice' : 'bob'])).rows[0];
     const revision = (await pool.query(`INSERT INTO copy_revisions(task_id, revision, content, approved_at) VALUES ($1, 1, $2, now()) RETURNING *`,
       [task.id, { copy: { title: `test ${n}`, body: 'body', tags: [] } }])).rows[0];
-    await pool.query('UPDATE tasks SET current_copy_revision_id = $2 WHERE id = $1', [task.id, revision.id]);
+    await pool.query(`UPDATE tasks SET current_copy_revision_id = $2,
+      state = 'COPY_REVIEW_PENDING', current_stage = 'COPY_REVIEW_PENDING' WHERE id = $1`, [task.id, revision.id]);
     await pool.query('INSERT INTO production_batch_items(production_batch_id, task_id, query_snapshot) VALUES ($1, $2, $3)', [batch.id, task.id, task.query]);
     task.current_copy_revision_id = revision.id;
+    task.state = 'COPY_REVIEW_PENDING';
     tasks.push({ task, revision, actor: n < 6 ? alice : bob });
   }
   async function tx(action) {
@@ -120,7 +124,9 @@ test('real PostgreSQL quality flow: isolation, concurrent freeze, batch return, 
   await qa.batchReturnCopyQa(pool, input, inspector);
   const returned = (await pool.query('SELECT * FROM tasks WHERE mandatory_copy_qc ORDER BY id')).rows;
   assert.equal(returned.length, 5);
-  assert.ok(returned.every(row => row.state === 'COPY_REVIEW_PENDING' && row.assigned_to_user_id === 'bob' && row.rework_count === 1));
+  assert.deepEqual([...new Set(returned.map(row => row.state))], ['COPY_REVIEW_PENDING']);
+  assert.deepEqual([...new Set(returned.map(row => row.assigned_to_user_id))], ['bob']);
+  assert.deepEqual([...new Set(returned.map(row => row.rework_count))], [1]);
   for (const row of returned) {
     const revision = (await pool.query('SELECT * FROM copy_revisions WHERE id = $1', [row.current_copy_revision_id])).rows[0];
     // The review API normally appends this edited revision; exercise the route with it.

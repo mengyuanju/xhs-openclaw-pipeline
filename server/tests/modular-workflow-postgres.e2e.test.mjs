@@ -613,6 +613,9 @@ test('legacy delivery migrations retain their checksums and upgrade through the 
       '0048_admin_direct_copy_qa',
       '0049_auto_assignment_modes',
       '0050_queue_priority',
+      '0051_copy_quality_flow',
+      '0052_image_editing',
+      '0053_account_review_assignment',
     ]);
 
     const repairedRevisionState = (await pool.query(`
@@ -800,6 +803,9 @@ test('delivery runtime integrity migration withdraws JavaScript-unsafe asset ids
       '0048_admin_direct_copy_qa',
       '0049_auto_assignment_modes',
       '0050_queue_priority',
+      '0051_copy_quality_flow',
+      '0052_image_editing',
+      '0053_account_review_assignment',
     ]);
     const repairedDelivery = (await pool.query(`
       SELECT status, withdrawn_at FROM delivery_entries WHERE task_id = $1
@@ -1334,6 +1340,9 @@ test('Query-package preassignment repair clears only the proven legacy signature
       '0048_admin_direct_copy_qa',
       '0049_auto_assignment_modes',
       '0050_queue_priority',
+      '0051_copy_quality_flow',
+      '0052_image_editing',
+      '0053_account_review_assignment',
       ]);
       await migrationClient.query('COMMIT');
     } catch (error) {
@@ -1680,11 +1689,11 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     const insertedUsers = await repository.pool.query(`
       INSERT INTO app_users(
         username, display_name, role, password_hash, status,
-        must_change_password, credential_version, created_at, updated_at
+        must_change_password, credential_version, copy_review_enabled, copy_qc_enabled, created_at, updated_at
       ) VALUES
-        ('worker-pg-e2e', '隔离测试作业员', 'USER', 'unused-e2e-password-hash', 'ACTIVE', false, 1,
+        ('worker-pg-e2e', '隔离测试作业员', 'USER', 'unused-e2e-password-hash', 'ACTIVE', false, 1, true, false,
           clock_timestamp() - interval '1 second', clock_timestamp() - interval '1 second'),
-        ('reviewer-pg-e2e', '隔离测试质检员', 'REVIEWER', 'unused-e2e-password-hash', 'ACTIVE', false, 1,
+        ('reviewer-pg-e2e', '隔离测试质检员', 'REVIEWER', 'unused-e2e-password-hash', 'ACTIVE', false, 1, true, true,
           clock_timestamp() - interval '1 second', clock_timestamp() - interval '1 second')
       RETURNING id, username, role, credential_version
     `);
@@ -2285,7 +2294,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     assert.equal(Number((await repository.pool.query(
       'SELECT COUNT(*) AS count FROM copy_sampling_freezes WHERE production_batch_id = $1',
       [productionBatch.id],
-    )).rows[0].count), 0, 'sampling must wait until the whole production batch finishes initial review');
+    )).rows[0].count), 1, '100% inspection freezes each reviewer-owned chunk as soon as it is ready');
 
     const secondApproved = (await requestJson(
       controlPlane.root, `/v1/tasks/${completedCopies[1].task.id}/approve-copy`, {
@@ -2303,19 +2312,21 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     assert.equal(secondApproved.state, 'COPY_QC_PENDING');
     assertUserTaskHidesSensitiveFields(secondApproved, 'USER approve-copy response');
 
-    const frozen = (await repository.pool.query(`
-      SELECT * FROM copy_sampling_freezes WHERE production_batch_id = $1
-    `, [productionBatch.id])).rows[0];
-    assert.equal(frozen.population_count, 2);
-    assert.equal(frozen.sample_count, 2);
-    assert.equal(frozen.rate_bps, 10_000);
-    assert.equal(frozen.blind_review_enabled, true);
-    assert.equal(frozen.status, 'INSPECTING');
+    const freezes = (await repository.pool.query(`
+      SELECT * FROM copy_sampling_freezes WHERE production_batch_id = $1 ORDER BY id
+    `, [productionBatch.id])).rows;
+    assert.equal(freezes.length, 2);
+    assert.ok(freezes.every(freeze => freeze.population_count === 1));
+    assert.ok(freezes.every(freeze => freeze.sample_count === 1));
+    assert.ok(freezes.every(freeze => freeze.rate_bps === 10_000));
+    assert.ok(freezes.every(freeze => freeze.blind_review_enabled === true));
+    assert.ok(freezes.every(freeze => freeze.status === 'INSPECTING'));
+    const frozen = freezes[0];
 
     const assignedBlindItems = (await requestJson(
       controlPlane.root, '/v1/copy-qa/items?status=PENDING', { actor: reviewer },
     )).data;
-    assert.equal(assignedBlindItems.length, 1, 'admin and reviewer receive disjoint balanced review work');
+    assert.equal(assignedBlindItems.length, 2, 'the only account with QC permission receives both reviewer-owned chunks');
     // Administrators can share opaque links without changing existing direct-link review rights.
     async function allBlindQaItems() {
       const all = (await requestJson(controlPlane.root, '/v1/copy-qa/items?status=PENDING', { actor: admin })).data;
@@ -3236,7 +3247,7 @@ test('queue priority migration, atomic admin changes, fair claims and frozen gat
       const revision = (await pool.query(`INSERT INTO copy_revisions(task_id,revision,content,approved_at)
         VALUES ($1,1,'{}',now()) RETURNING id`, [id])).rows[0].id;
       await pool.query(`UPDATE tasks SET assigned_to_user_id = $2, current_copy_revision_id = $3,
-        pending_snapshot = $4 WHERE id = $1`, [id, owner, revision, affinity ? {imageRecovery:{nodeId:affinity}} : {}]);
+        copy_qc_released_revision_id = $3, pending_snapshot = $4 WHERE id = $1`, [id, owner, revision, affinity ? {imageRecovery:{nodeId:affinity}} : {}]);
       return id;
     }
     const imageLow = await imageTask('priority-worker');
@@ -3260,6 +3271,8 @@ test('queue priority migration, atomic admin changes, fair claims and frozen gat
     assert.equal((await pool.query('SELECT review_assigned_to_account_id FROM tasks WHERE id = $1',[pausedTransition])).rows[0].review_assigned_to_account_id, null);
     await adjust([pausedTransition], 'SYSTEM');
     assert.notEqual((await pool.query('SELECT review_assigned_to_account_id FROM tasks WHERE id = $1',[pausedTransition])).rows[0].review_assigned_to_account_id, null);
+    await pool.query(`INSERT INTO app_users(username,display_name,role,password_hash,copy_review_enabled)
+      VALUES ('priority-review-user','Permission reviewer','USER','unused',true)`);
     const reviews = [await task('MANUAL_ARCHIVE'), await task('MANUAL_ARCHIVE')];
     const owners = (await pool.query('SELECT review_assigned_to_account_id FROM tasks WHERE id = ANY($1::bigint[]) ORDER BY id',[reviews])).rows;
     assert.notEqual(owners[0].review_assigned_to_account_id, owners[1].review_assigned_to_account_id);
@@ -3310,23 +3323,30 @@ test('queue priority upgrade counts QA returns and excludes past review ownershi
     const upgrade = await pool.connect();
     try {
       await upgrade.query('BEGIN');
-      assert.deepEqual(await applyMigrations(upgrade,migrations), ['0050_queue_priority']);
+      assert.deepEqual(await applyMigrations(upgrade,migrations), [
+        '0050_queue_priority',
+        '0051_copy_quality_flow',
+        '0052_image_editing',
+        '0053_account_review_assignment',
+      ]);
       await upgrade.query('COMMIT');
     } finally { upgrade.release(); }
     const row = (await pool.query('SELECT * FROM tasks WHERE id = $1',[id])).rows[0];
     assert.equal(row.rework_count,2);
     assert.equal(row.system_priority,400);
     assert.equal(row.queue_entered_at.toISOString(),'2026-09-01T00:00:00.000Z');
-    const admin = (await pool.query("SELECT id FROM app_users WHERE username = 'admin'")).rows[0].id;
-    const reviewer = (await pool.query(`INSERT INTO app_users(username,display_name,role,password_hash)
-      VALUES ('priority-load-reviewer','Load reviewer','REVIEWER','unused') RETURNING id`)).rows[0].id;
-    await pool.query('UPDATE tasks SET review_assigned_to_account_id = $2 WHERE id = $1', [id,admin]);
+    const reviewers = (await pool.query(`INSERT INTO app_users(username,display_name,role,password_hash,copy_review_enabled)
+      VALUES ('priority-past-reviewer','Past reviewer','REVIEWER','unused',true),
+        ('priority-never-reviewer','Never reviewer','USER','unused',true) RETURNING id, username`)).rows;
+    const pastReviewer = reviewers.find(entry => entry.username === 'priority-past-reviewer').id;
+    const neverReviewer = reviewers.find(entry => entry.username === 'priority-never-reviewer').id;
     await pool.query(`INSERT INTO review_queue_assignment_events(account_id,task_id,queue_kind)
-      VALUES ($1,$2,'IMAGE_REVIEW')`,[reviewer,id]);
-    assert.equal((await pool.query('SELECT choose_priority_reviewer(NULL) AS id')).rows[0].id, admin,
-      'past reviewer has no current review work and wins the longest-unassigned tie');
-    await pool.query("UPDATE tasks SET state = 'MANUAL_ARCHIVE' WHERE id = $1",[id]);
-    assert.equal((await pool.query('SELECT choose_priority_reviewer(NULL) AS id')).rows[0].id, reviewer,
+      VALUES ($1,$2,'IMAGE_REVIEW')`,[pastReviewer,id]);
+    assert.equal((await pool.query('SELECT choose_priority_reviewer(NULL) AS id')).rows[0].id, neverReviewer,
+      'past assignment is not live load; the account never assigned wins the tie');
+    await pool.query(`UPDATE tasks SET state = 'MANUAL_ARCHIVE',
+      review_assigned_to_account_id = $2, review_assigned_at = now() WHERE id = $1`,[id,neverReviewer]);
+    assert.equal((await pool.query('SELECT choose_priority_reviewer(NULL) AS id')).rows[0].id, pastReviewer,
       'active review work must count toward the current reviewer load');
   } finally { await pool.end(); await cluster.stop(); }
 });

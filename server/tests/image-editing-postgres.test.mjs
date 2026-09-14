@@ -48,7 +48,8 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
     const service=createImageEditingService({pool,storageRoot:root});
     let currentRun=runId,currentAsset=images[1].assetId,currentHash=sha256;
     const request=(extra={})=>({requestId:randomUUID(),sourceImageRunId:currentRun,sourceAssetId:currentAsset,copyRevisionId,sha256:currentHash,targetPage:2,operation:'TEXT',confirmation:'LIVE_IMAGE_COST_ACCEPTED',overlay:{text:'AI生成',textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',position:'bottom-right'},...extra});
-    const ocr=async path=>({engine:'fake:no-model',text:path.endsWith('result.png')?'真实参考AI生成':'真实参考',words:[{text:'真实参考',confidence:1,x:40,y:40,width:100,height:50},...(path.endsWith('result.png')?[{text:'AI生成',confidence:1,x:800,y:1300,width:100,height:40}]:[])]});
+    const validateImage=async({imagePath})=>({passed:true,model:'fake-vision',layoutMatched:true,ocrConfidence:1,
+      ocrMismatches:[],unreadableText:[],recognizedText:{headline:'真实参考',subtitle:'',bullets:[],otherText:imagePath.endsWith('result.png')?['AI生成']:[]}});
     const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{assert.match(prompt,/AI_TEXT_EDIT/u);assert.equal(inputPaths.length,1);await writeFile(outputPath,png);return{model:'fake-text-edit'};}};
     const action=async(id,name)=>{const e=await service.get(id);return service.action(id,name,{version:e.version,requestId:randomUUID(),reason:'test'},actor);};
     await t.test('permissions, copy gate and source conflicts fail before queue insertion',async()=>{
@@ -84,7 +85,7 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
     let edited;
     await t.test('AI text execution produces a validated preview without changing current run',async()=>{
       edited=await service.create(taskId,request(),actor);
-      const result=await processImageEdit({service,storageRoot:root,workerId:'fake',agentClient,ocr});assert.equal(result.status,'PREVIEW_READY',result.error);
+      const result=await processImageEdit({service,storageRoot:root,workerId:'fake',agentClient,validateImage});assert.equal(result.status,'PREVIEW_READY',result.error);
       assert.equal((await pool.query('SELECT current_image_run_id FROM tasks WHERE id=$1',[taskId])).rows[0].current_image_run_id,currentRun);
       const e=await service.get(edited.id),run=(await pool.query('SELECT result FROM image_runs WHERE id=$1',[e.result.image_run_id])).rows[0];
       assert.deepEqual(run.result.images[0],images[0]);assert.deepEqual(run.result.images[2],images[2]);assert.notEqual(run.result.images[1].assetId,images[1].assetId);
@@ -102,11 +103,11 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
     await t.test('failures can retry, rejection leaves current image untouched, restore needs preview acceptance',async()=>{
       const restore=await service.create(taskId,request({operation:'RESTORE',restoreRunId:runId,instruction:'恢复'}),actor);
       const claimed=await service.claim('failure');await service.fail(claimed,new Error('fake failure'));await action(restore.id,'retry');
-      const result=await processImageEdit({service,storageRoot:root,workerId:'restore',ocr:async()=>({engine:'fake',text:'真实参考',words:[{text:'真实参考',confidence:1,x:20,y:20,width:100,height:30}]})});
+      const result=await processImageEdit({service,storageRoot:root,workerId:'restore',validateImage:async()=>({passed:true,model:'fake-vision',layoutMatched:true,ocrConfidence:1,ocrMismatches:[],unreadableText:[],recognizedText:{headline:'真实参考',subtitle:'',bullets:[],otherText:[]}})});
       assert.equal(result.status,'PREVIEW_READY',result.error);await action(restore.id,'reject');
       assert.equal((await pool.query('SELECT current_image_run_id FROM tasks WHERE id=$1',[taskId])).rows[0].current_image_run_id,currentRun);
       const second=await service.create(taskId,request({operation:'RESTORE',restoreRunId:runId,instruction:'确认恢复'}),actor);
-      const secondResult=await processImageEdit({service,storageRoot:root,workerId:'restore',ocr:async()=>({engine:'fake',text:'真实参考',words:[{text:'真实参考',confidence:1,x:20,y:20,width:100,height:30}]})});
+      const secondResult=await processImageEdit({service,storageRoot:root,workerId:'restore',validateImage:async()=>({passed:true,model:'fake-vision',layoutMatched:true,ocrConfidence:1,ocrMismatches:[],unreadableText:[],recognizedText:{headline:'真实参考',subtitle:'',bullets:[],otherText:[]}})});
       assert.equal(secondResult.status,'PREVIEW_READY',secondResult.error);
       await action(second.id,'accept');
       const restored=(await pool.query('SELECT r.result FROM tasks t JOIN image_runs r ON r.id=t.current_image_run_id WHERE t.id=$1',[taskId])).rows[0].result;

@@ -1,6 +1,6 @@
 # 文案质检流程优化
 
-实现分支：`codex/copy-quality-flow`，基于 `4c8d63b`。原工作树起点 `af033ee` 没有 server 服务端；本次在干净的独立工作树切换到本机主项目当前提交后实现。
+原实现分支：`codex/copy-quality-flow`，现已合并到 `codex/integrate-workflow-upgrades`，共同基线为 `4c8d63b`。
 
 ## 入口与权限
 
@@ -42,34 +42,27 @@
 
 ## 迁移与优先级分支合并
 
-迁移采用 **`server/migrations/0051_copy_quality_flow.sql`**。0049 已被 `0049_auto_assignment_modes.sql` 占用；合并前将本分支质检迁移从 0050 改为 0051，为优先级分支保留 0050。质检迁移不依赖优先级迁移，独立数据库测试会明确排除 0050 后执行迁移与完整质检流程。仅在独立测试库验证，未操作开发或生产数据库。
+质检主体迁移为 **`server/migrations/0051_copy_quality_flow.sql`**；集成环境按 0050 优先级、0051 质检、0052 图片编辑、0053 账号审核分配协调的顺序完整应用。0053 让 USER/REVIEWER 都按账号的 `copy_review_enabled`、`copy_qc_enabled` 能力参与分配，管理员保留全局人工操作能力但不自动占用生产审核负载，并统一返工事件计数，避免质检打回重复累计。
 
 不引入 priority 字段、排序规则或优先级管理页。维护 `rework_count`、`requeue_reason`、原有 `mandatory_copy_qc_origin`；新增 `copy_quality_queue_events` 记录进入审核、质检和生图队列的事件，优先级模块可读取这些信息。
 
-合并注意：
-
-1. 以 `4c8d63b` 为共同基线；合并本分支代码与新迁移，不复制旧工作树内容。
-2. 优先级分支使用 0050，本分支使用 0051，避免编号冲突。这次重命名针对尚未应用到业务库的迁移；不要修改已应用迁移的记录或校验和。
-3. `postgres-repository.mjs` 的生图排序保持原样。合并排序冲突时必须保留两个领取查询中的 `copyQualityImageGate`。
-4. `rework_count`、`requeue_reason` 使用 `ADD COLUMN IF NOT EXISTS`。如另一分支有自己的事件递增逻辑，应统一到本次触发器，避免一次返工重复计数。
-5. `task-auto-assignment-runner.mjs` 仅新增账号审核权限过滤；合并时保留该过滤。
-6. 发布前须先应用迁移再运行依赖新字段/数据库函数的服务；本次没有发布或安排生产调度。
+集成后 `postgres-repository.mjs` 的优先级排序和两个生图领取查询均保留 `copyQualityImageGate`；管理员调序不能绕过冻结、强制复检或当前文案版本校验。账号关闭审核/质检能力时会释放不再合格的待办并触发重新均衡。此次只在隔离测试库执行迁移，没有发布或安排生产调度。
 
 ## 验证
 
-- 0051 重命名验证：相关迁移与质检测试 54 项全部通过、0 跳过；真实 PostgreSQL 测试明确排除所有 0050 迁移，验证独立安装、重复执行和完整质检流程。类型检查通过。
-- 服务端完整测试：566 项，553 通过、0 失败、13 原有可选测试跳过；本次真实 PostgreSQL 流程测试已启用执行。
+- 集成迁移与完整工作流 PostgreSQL 测试 15/15，通过真实行锁、`SKIP LOCKED`、权限分配、整批打回、强制复检、生图门禁和管理员优先级验证。
+- 服务端完整测试：559 通过、0 失败、18 个显式可选测试跳过。
 - 新增数学边界测试与真实 PostgreSQL 流程测试：独立随机测试数据库，全量迁移重复执行、人员隔离、冻结幂等、并发通过回放、整批返工/版本链、强制复检整批关卡、旧版本失效、单条打回、超时保底、终审文案返工、账号权限关闭及数据库领取门禁均通过。
 - `npm run typecheck` 通过。
-- 根测试：1132 项全部通过，0 失败、0 跳过。后续修复了原有 3 个过时的页面契约断言：请求 ID 使用公共函数、创建人标签以及包含范围筛选的个人统计布局；保留并加强了请求重试幂等和统计数据复用检查。相关定向测试 14 项全部通过。
-- 全部测试使用假模型或纯数据库数据，没有消耗模型额度。没有进行生产发布。
+- 根测试：1145 通过、1 跳过、0 失败；全仓类型检查、生产构建和 smoke 通过。
+- 默认测试使用假模型或纯数据库数据。另行显式执行的真实端到端测试证明质检通过前不能生图、整批打回后必须强制复检；测试没有发布内容。
 
 复跑数据库测试：将 `COPY_QUALITY_TEST_DATABASE_URL` 指向**本机专用测试 PostgreSQL** 的维护数据库，执行 `node --test server/tests/copy-quality-flow.test.mjs`。测试创建随机 `qc_test_*` 数据库并在结束时删除该测试库，不使用现有业务库。
 
 ## 主要文件
 
 - 服务端：`server/src/copy-quality-control.mjs`、`copy-quality-flow.mjs`、`stratified-copy-sampling.mjs`、`workflow-quality-settings.mjs`、`postgres-repository.mjs`、`task-auto-assignment-runner.mjs`、`http-server.mjs`。
-- 数据库：`server/migrations/0051_copy_quality_flow.sql`。
+- 数据库：`server/migrations/0051_copy_quality_flow.sql`、`server/migrations/0053_account_review_assignment.sql`。
 - 页面：`app/copy-flow/page.tsx`、用户权限编辑页、质检页、设置页、工作台与任务详情中的管理员质检操作。
 - 路由保护：`src/control-plane/proxy-access.mjs`、`src/admin/proxy-policy.mjs`、侧栏和登录返回路径。
 - 测试：`server/tests/copy-quality-flow.test.mjs` 及现有冻结、复检、权限、导航和页面契约测试。

@@ -1,6 +1,6 @@
 # 当前图片修改工作台
 
-基线：`auto-clow-poker` 的 `4c8d63b`。实现分支：`codex/current-image-editing`。
+基线：`auto-clow-poker` 的 `4c8d63b`。实现已合并到集成分支 `codex/integrate-workflow-upgrades`。
 只使用中央 PostgreSQL；没有调用旧 SQLite image-edit store/worker，没有启用发布或生产定时任务。
 
 ## 页面与操作
@@ -29,7 +29,7 @@ node server/src/cli.mjs image-edit-once --environment=development
 
 它只领取独立编辑队列，普通 IMAGE 任务领取不会领取编辑请求。此入口不安装后台服务、不自动轮询、不配置生产计划。部署者需要显式运行它；本次未新增远程 HTTP 领取/回传协议，也未将编辑任务接入现有普通 IMAGE 调度。
 
-运行机前置条件：现有 Node/Sharp/Codex 环境，以及 PATH 中的 Tesseract 和 `chi_sim`、`eng` 语言包。添加文字会调用图片编辑模型，并在每次结果后运行本地 OCR；精确合成/恢复只运行本地 OCR。文字结果要求指定短句只出现一次、位于指定安全区域、无错字、无白名单外文字、无低置信度字符且不遮挡已有文字；失败时沿用当前图片生成逻辑，以上一次结果为输入最多自动修复三次，仍失败则显式进入 FAILED，不能采用，也不会切换为程序叠字。当前开发机未检测到 Tesseract，所以真实中文 OCR 尚未人工验收。
+运行机只需要现有 Node/Sharp/Codex 环境，不安装或下载本地 OCR。源图和每次编辑结果都复用系统现有 `createImageAlignmentValidator` 与视觉模型进行文字、语义、布局和位置验收；其模型原始结论与程序比较结果一并保存。添加文字会调用图片编辑模型，失败时以上一次结果为输入最多自动修复三次，仍失败则显式进入 FAILED，不能采用，也不会切换为程序叠字。精确合成、局部修改和恢复同样经过现有视觉验收。
 
 全局 `productionDisclosure` 作为必需文字重新校验；新增文字也加入后续编辑的文字白名单。输出目标页为 1086×1448 PNG，其余页面复用原资产及原格式。源图不可覆盖。每次编辑新建完整 image run，目标页新资产，其他页通过成员关系引用原资产。结果包括父资产、源运行、文案版本、编辑操作、参考哈希、遮罩和校验记录。
 
@@ -71,7 +71,7 @@ node server/src/cli.mjs image-edit-once --environment=development
 
 ## 验证与合并
 
-新增测试包括真实的隔离 PostgreSQL 18 数据库、假 OCR/假模型、像素比较和真实无头浏览器交互。不会消耗模型额度，测试产物不代表真实 AI 输出。
+自动化测试包括真实的隔离 PostgreSQL 18 数据库、假视觉模型/假图片模型、像素比较和真实无头浏览器交互；默认不会消耗模型额度。另有默认跳过、必须显式开启的真实模型端到端测试。
 
 ```text
 node --test tests/current-image-editing.test.mjs server/tests/image-editing-http.test.mjs
@@ -85,8 +85,8 @@ npm test
 
 PowerShell 中先使用 `$env:RUN_POSTGRES_E2E='1'` 或 `$env:RUN_IMAGE_EDIT_BROWSER='1'`。浏览器测试默认使用已安装的 Edge，`IMAGE_EDIT_BROWSER_CHANNEL` 可指定 Chrome。测试依赖安装树中已有的 esbuild/playwright-core。
 
-验收记录：新增功能专项 21 项通过；类型检查、Next 生产构建通过。服务端全量 552 通过、14 跳过、0 失败（默认跳过显式启用的 PostgreSQL E2E）。根目录全量 1140 通过、1 跳过、3 项旧 UI 契约失败：duplicate-query-cleanup-ui、task-assignment-ui、web-statistics-ui；均在独立 `4c8d63b` 工作区复现。显式运行旧 modular-workflow PostgreSQL E2E 为 9 通过、4 失败，基线也为同样结果：三项历史迁移名单断言过时，一项工作流能力版本断言仍期望旧值。没有为本功能修改这些不相关契约。
+2026-09-15 集成验收：图片编辑单元测试 11/11、隔离 PostgreSQL 图片编辑闭环 8/8、合并工作流 PostgreSQL 闭环 15/15；根目录全量 1145 通过、1 跳过、0 失败；服务端全量 559 通过、18 跳过、0 失败；全仓类型检查、两套生产构建和 smoke 均通过。
 
-真实验收仍需：准备已批准文案对应的真实三页图集和中文 OCR；验证中文实际字形与安全区、真实产品裁剪/抠图、全图编辑、局部矩形/画笔编辑、参考实体一致性；确认费用后运行单次 worker；比较源/结果、明确采用、重新审核，并核对旧交付已撤销。当前未消耗真实模型额度。
+真实模型端到端测试完成了：管理员最高优先级、100% 按人员抽检、整批打回、强制复检、质检通过后才开放图片、指定单页添加“AI生成”、视觉模型核对原标题/新增文字/位置/版式、明确采用。最终通过轮次使用 1 次 `gpt-image-2` 编辑和 2 次原有视觉验收，识别结果为“低成本也能保持AI生成”，没有发布。测试产物保存在 `output/live-e2e/1789407594135/attempt-1`。此前 3 次图片调用的结果因验收不通过而未采用；整个真实测试共发生 4 次图片编辑调用，Codex 订阅未提供可换算的逐次货币账单。
 
-与并行分支合并：保留 0050 优先级、0051 质检迁移，不重编号为这些预留值；0052 独立新增。`http-server.mjs`、`postgres-repository.mjs`、`final-delivery.mjs`、`task-review-dialog.tsx` 是主要冲突点。保留本分支的图集成员视图和交付闸门，同时保留 0051 的文案强制复检条件。0050 后续若接管编辑队列，沿用独立租约和 IMAGE_MANUAL_EDIT 原因，不让普通任务领取路径误领；本分支未实现通用管理员优先级。
+迁移顺序已经集成为 0050 优先级、0051 文案质检、0052 图片编辑、0053 账号权限与审核分配协调。0053 统一权限过滤、分配与返工计数；图片编辑继续使用独立租约和 `IMAGE_MANUAL_EDIT` 原因，不会被普通图片任务误领。
