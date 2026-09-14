@@ -8,7 +8,7 @@ export const PROMPT_CATALOG = Object.freeze([
   entry('IMAGE_EDIT_SYSTEM', '图片编辑', '生成与规划', '人工编辑要求及保留范围'),
   entry('QUERY_REVIEW_SYSTEM', 'Query 筛选（选题审核）', '审核与修复', '文案生成前判断选题是否准入；筛选标准可编辑，执行配置中可关闭'),
   entry('TEXT_REVIEW_SYSTEM', '文案审核', '审核与修复', '依据本次编辑要求和证据审核，不自动降级'),
-  entry('COPY_LENGTH_REPAIR_SYSTEM', '长度修复', '审核与修复', '沿用原文风，仅修改正文长度'),
+  entry('COPY_LENGTH_REPAIR_SYSTEM', '正文定向修复', '审核与修复', '沿用原文风，修复正文长度或残句'),
   entry('COPY_REPAIR_SYSTEM', '格式修复', '审核与修复', '仅修复校验失败字段'),
   entry('COPY_REVISION_SYSTEM', '质检修订', '审核与修复', '修复阻断问题，保留已经合格内容'),
   entry('IMAGE_ALIGNMENT_SYSTEM', '图片验收', '审核与修复', '逐字抄录、语义和视觉验收'),

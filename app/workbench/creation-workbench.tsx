@@ -224,7 +224,7 @@ const STAGE_LABELS: Record<string, string> = {
   KNOWLEDGE_MATCH: '优秀案例匹配',
   RESEARCH: '全网搜索与资料整理',
   ORIGINAL_GENERATION: '标题、正文与配图策划生成',
-  COPY_LENGTH_REPAIR: '正文长度修复',
+  COPY_LENGTH_REPAIR: '正文定向修复',
   COPY_CONTRACT_REPAIR: '文案格式修复',
   ORIGINAL_REVIEW: '首稿质检',
   REVIEWED_GENERATION: '文案改写',

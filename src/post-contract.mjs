@@ -25,6 +25,13 @@ const PRIMARY_TYPES = [
 ];
 const FABRICATED_EXPERIENCE = /(我亲测|亲测有效|我用了.{0,8}(个月|年)|本人购买|我家一直|绝对有效)/u;
 const GRAPHEME_SEGMENTER = new Intl.Segmenter('zh-CN', { granularity: 'grapheme' });
+const BODY_OUTPUT_SCHEMA_MAX_LENGTH = 1_200;
+const BODY_SENTENCE_END = /[。！？.!?…](?:[”’"'」』）)\]】〕〉》]*)$/u;
+const BODY_DELIMITER_PAIRS = new Map([
+  ['（', '）'], ['(', ')'], ['[', ']'], ['【', '】'], ['“', '”'], ['‘', '’'],
+  ['「', '」'], ['『', '』'], ['《', '》'], ['〈', '〉'],
+]);
+const BODY_CLOSING_DELIMITERS = new Set(BODY_DELIMITER_PAIRS.values());
 
 const boundedString = (maxLength, minLength = 1) => ({ type: 'string', minLength, maxLength });
 const boundedStringArray = (maxItems, itemMaxLength, minItems = 0) => ({
@@ -79,7 +86,10 @@ export function postOutputSchema(imageCount = AUTO_IMAGE_COUNT) {
         },
       },
       title: boundedString(25),
-      body: boundedString(600, 400),
+      // The schema is a transport safety bound, not the 400–600 business gate.
+      // Keeping them separate prevents constrained decoding from closing a
+      // still-unfinished sentence exactly at the publishing limit.
+      body: boundedString(BODY_OUTPUT_SCHEMA_MAX_LENGTH),
       tags: { ...boundedStringArray(8, 20, 3), items: { ...boundedString(20), pattern: '^#[^#\\s]+$' } },
       imagePlan: { type: 'array', minItems: imageMinimum, maxItems: imageMaximum, items: imagePage },
       sources: boundedStringArray(8, 500),
@@ -107,7 +117,7 @@ export function postOutputSchema(imageCount = AUTO_IMAGE_COUNT) {
 export function bodyRepairOutputSchema() {
   return {
     type: 'object', additionalProperties: false, required: ['body'],
-    properties: { body: boundedString(600, 400) },
+    properties: { body: boundedString(BODY_OUTPUT_SCHEMA_MAX_LENGTH) },
   };
 }
 
@@ -117,6 +127,23 @@ function isRecord(value) {
 
 function visibleLength(value) {
   return [...GRAPHEME_SEGMENTER.segment(value)].length;
+}
+
+function assertCompleteBody(body) {
+  if (!BODY_SENTENCE_END.test(body)) {
+    throw new TypeError('body must end with a complete sentence');
+  }
+  const stack = [];
+  for (const character of body) {
+    if (BODY_DELIMITER_PAIRS.has(character)) {
+      stack.push(BODY_DELIMITER_PAIRS.get(character));
+    } else if (BODY_CLOSING_DELIMITERS.has(character) && stack.pop() !== character) {
+      throw new TypeError('body contains unbalanced brackets or quotation marks');
+    }
+  }
+  if (stack.length > 0) {
+    throw new TypeError('body contains unbalanced brackets or quotation marks');
+  }
 }
 
 export function normalizeProseLineBreaks(value) {
@@ -349,6 +376,7 @@ function validatePost(value, { imageCount = 3, allowedSources = [], query = '' }
     if (bodyLength < 400 || bodyLength > 600) {
       throw new RangeError(`body must contain between 400 and 600 characters; received ${bodyLength}`);
     }
+    assertCompleteBody(normalizedBody.trim());
   }
   const body = expectString(normalizedBody, 'body', { min: 200, max: 700 });
   if (!promptRuntimeSnapshot()) validateExplicitItineraryCoverage(body, query);

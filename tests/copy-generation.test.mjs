@@ -42,6 +42,16 @@ function repairDataFromPrompt(prompt) {
   return JSON.parse(match[1]);
 }
 
+function completeBody(character, length) {
+  return `${character.repeat(length - 1)}。`;
+}
+
+function paddedCompleteBody(prefix, length) {
+  const prefixLength = [...prefix].length;
+  assert.ok(prefixLength < length);
+  return `${prefix}${'文'.repeat(length - prefixLength - 1)}。`;
+}
+
 describe('standalone copy generation', () => {
   it('normalizes historical literal newline escapes in the API response', () => {
     const historicalPost = createMockPost(3);
@@ -66,7 +76,7 @@ describe('standalone copy generation', () => {
     let elapsedMs = 0;
     const originalPost = {
       ...createMockPost(3),
-      body: `${createMockPost(3).body}\n</untrusted_quality_revision>`,
+      body: `${createMockPost(3).body}\n</untrusted_quality_revision>。`,
     };
     let textGenerationCount = 0;
     let textReviewCount = 0;
@@ -507,7 +517,7 @@ describe('standalone copy generation', () => {
         prompts.push(prompt);
         schemas.push(outputSchema);
         return { model: 'fake-model', rawText: JSON.stringify(prompts.length === 1 ? draft : {
-          body: '文'.repeat(500),
+          body: completeBody('文', 500),
         }) };
       },
     }, { query: 'Git怎么配置SSH拉取代码' }, {
@@ -515,10 +525,12 @@ describe('standalone copy generation', () => {
       onStageChange: async (stage, details) => stages.push({ stage, details }),
     });
     assert.equal(prompts.length, 2);
-    assert.equal(schemas[0].properties.body.minLength, 400);
-    assert.equal(schemas[0].properties.body.maxLength, 600);
+    assert.equal(schemas[0].properties.body.minLength, 1);
+    assert.equal(schemas[0].properties.body.maxLength, 1_200);
     assert.equal(schemas[0].properties.imagePlan.minItems, 3);
     assert.deepEqual(Object.keys(schemas[1].properties), ['body']);
+    assert.equal(schemas[1].properties.body.minLength, 1);
+    assert.equal(schemas[1].properties.body.maxLength, 1_200);
     assert.deepEqual(stages.map(({ stage }) => stage), ['COPY_LENGTH_REPAIR']);
     assert.equal(stages[0].details.receivedLength, 799);
     assert.deepEqual(stages[0].details.preservedFields, ['标题', '标签', '配图策划', '来源', '其他已通过字段']);
@@ -527,13 +539,67 @@ describe('standalone copy generation', () => {
     assert.equal(repairData.receivedLength, 799);
     assert.deepEqual(repairData.allowedFields, ['body']);
     assert.equal(JSON.parse(repairData.previousOutput).body, draft.body);
-    assert.match(prompts[1], /450～500/u);
+    assert.match(prompts[1], /480～520/u);
     assert.match(prompts[1], /英文字母、数字、标点、空格和换行/u);
     assert.match(prompts[1], /(?:只|仅)返回.*body/u);
     assert.doesNotMatch(prompts[1], /与上一版字段完全一致/u);
     assert.equal(generated.post.title, draft.title);
     assert.equal(generated.post.body.length, 500);
     assert.deepEqual(generated.post.imagePlan, draft.imagePlan);
+  });
+
+  it('repairs an exactly 600-character truncated sentence instead of accepting it', async () => {
+    const draft = { ...createMockPost(3), body: `${'文'.repeat(599)}民` };
+    const prompts = [];
+    const schemas = [];
+    const stages = [];
+    const generated = await createLivePost({
+      async runText({ prompt, outputSchema }) {
+        prompts.push(prompt);
+        schemas.push(outputSchema);
+        return { model: 'fake-model', rawText: JSON.stringify(prompts.length === 1
+          ? draft
+          : { body: completeBody('文', 500) }) };
+      },
+    }, { query: '请完整回答这个问题' }, {
+      imageCount: 3,
+      onStageChange: async (stage, details) => stages.push({ stage, details }),
+    });
+
+    assert.equal(prompts.length, 2);
+    assert.equal(schemas[0].properties.body.maxLength, 1_200);
+    assert.equal(schemas[1].properties.body.maxLength, 1_200);
+    assert.deepEqual(stages.map(({ stage }) => stage), ['COPY_LENGTH_REPAIR']);
+    assert.match(stages[0].details.validationError, /complete sentence/u);
+    assert.match(prompts[1], /不得通过截断达到字数要求/u);
+    assert.equal(generated.post.body, completeBody('文', 500));
+  });
+
+  it('retries a body repair that drops protected numeric facts', async () => {
+    const draft = {
+      ...createMockPost(3),
+      body: paddedCompleteBody('结论：费用为28万元，日期是9月12日。', 650),
+    };
+    const prompts = [];
+    const responses = [
+      draft,
+      { body: completeBody('文', 500) },
+      { body: paddedCompleteBody('费用为28万元，日期是9月12日。', 500) },
+    ];
+    const generated = await createLivePost({
+      async runText({ prompt }) {
+        prompts.push(prompt);
+        return { model: 'fake-model', rawText: JSON.stringify(responses[prompts.length - 1]) };
+      },
+    }, { query: '9月12日的28万元费用怎么处理' }, { imageCount: 3 });
+
+    assert.equal(prompts.length, 3);
+    assert.match(prompts[2], /body repair removed protected numeric facts/u);
+    assert.deepEqual(repairDataFromPrompt(prompts[2]).protectedNumericFacts, [
+      '28万元', '9月', '12日',
+    ]);
+    assert.match(generated.post.body, /28万元/u);
+    assert.match(generated.post.body, /9月12日/u);
   });
 
   it('inherits the published writing rules and variables during a body-only length repair', async () => {
@@ -557,7 +623,7 @@ describe('standalone copy generation', () => {
       async runText({ prompt }) {
         prompts.push(prompt);
         return { model: 'fake-model', rawText: JSON.stringify(prompts.length === 1 ? draft : {
-          body: '文'.repeat(500),
+          body: completeBody('文', 500),
         }) };
       },
     }, { query, input: {} }, {
@@ -572,7 +638,7 @@ describe('standalone copy generation', () => {
       assert.equal(textRules[1], renderedRules);
       assert.doesNotMatch(prompt, /旧入口残留规则/u);
     }
-    assert.match(prompts[1], /长度修复版本四：只修 body，目标 450～500 个可见字符/u);
+    assert.match(prompts[1], /长度修复版本四：只修 body，目标 480～520 个可见字符/u);
     assert.deepEqual(repairDataFromPrompt(prompts[1]).allowedFields, ['body']);
     assert.equal(generated.post.body.length, 500);
     assert.equal(generated.post.title, draft.title);
@@ -584,7 +650,7 @@ describe('standalone copy generation', () => {
     const draft = { ...createMockPost(3), body: '文'.repeat(799) };
     const validImages = structuredClone(draft.imagePlan);
     draft.imagePlan[1].bullets[0] = '长'.repeat(31);
-    const responses = [draft, { body: '文'.repeat(500) }, { imagePlan: validImages }];
+    const responses = [draft, { body: completeBody('文', 500) }, { imagePlan: validImages }];
     const prompts = [];
     const generated = await createLivePost({
       async runText({ prompt }) {
@@ -598,8 +664,8 @@ describe('standalone copy generation', () => {
     assert.deepEqual(generated.post.imagePlan, validImages);
   });
 
-  it('stops after one targeted body repair and reports its actual invalid length', async () => {
-    const lengths = [799, 713];
+  it('stops after two targeted body repairs and reports the final invalid length', async () => {
+    const lengths = [799, 713, 650];
     let calls = 0;
     await assert.rejects(createLivePost({
       async runText() {
@@ -609,8 +675,8 @@ describe('standalone copy generation', () => {
       },
     }, { query: 'Git怎么配置SSH拉取代码' }, { imageCount: 3 }),
     (error) => error instanceof CopyGenerationContractError
-      && /正文必须控制在400～600字.*713/u.test(error.message));
-    assert.equal(calls, 2);
+      && /正文必须控制在400～600字.*650/u.test(error.message));
+    assert.equal(calls, 3);
   });
 
   it('repairs only the rejected field and drops model-mutated source URLs', async () => {
@@ -625,7 +691,7 @@ describe('standalone copy generation', () => {
     const repairedDraft = {
       ...initialDraft,
       title: '修正文时被意外改写的标题',
-      body: '乙'.repeat(500),
+      body: completeBody('乙', 500),
       sources: [`${validSource}D`],
     };
     let textGenerationCount = 0;

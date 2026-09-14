@@ -11,7 +11,7 @@ const freeze = (value) => {
   return value;
 };
 export const DEFAULT_PROMPT_POLICY = Object.freeze({ schemaVersion: 1, queryReviewEnabled: false, visualPlanningEnabled: true,
-  copyKnowledgeThreshold: 70, copyRepairTargetMin: 450, copyRepairTargetMax: 500,
+  copyKnowledgeThreshold: 70, copyRepairTargetMin: 480, copyRepairTargetMax: 520,
   ocrMinimumConfidence: 0.9, ocrComparison: 'LINE_BREAKS_ONLY' });
 
 export function normalizePromptPolicy(input = {}) {

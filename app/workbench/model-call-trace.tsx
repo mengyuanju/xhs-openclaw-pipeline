@@ -29,7 +29,7 @@ const STAGES: Record<string, string> = {
   ORIGINAL_REVIEW: '首稿质检', REVIEWED_GENERATION: '文案改写', REVIEWED_REVIEW: '改写稿质检',
   STARTING: '准备中', QUERY_REVIEW: '选题审核', KNOWLEDGE_MATCH: '优秀案例匹配', RESEARCH: '资料搜索与整理',
   ORIGINAL_GENERATION: '文案与配图策划', TEXT_GENERATION: '文案生成',
-  COPY_LENGTH_REPAIR: '正文长度修复', COPY_CONTRACT_REPAIR: '文案格式修复',
+  COPY_LENGTH_REPAIR: '正文定向修复', COPY_CONTRACT_REPAIR: '文案格式修复',
   TEXT_REVIEW: '文案质检', TEXT_REVISION: '文案改写', IMAGE_PLANNING: '配图策划',
   VISUAL_PLANNING: '视觉策划', IMAGE_GENERATION: '图片生成', IMAGE_REVIEW: '图片质检',
   GENERATING: '图片生成', VALIDATING: '图片校验', IMAGE_SEARCH: '图片搜索',
@@ -38,7 +38,7 @@ const stageLabel = (item: Call) => ['WEB_SEARCH_RETRY', 'WEB_SEARCH_FINALIZE'].i
   ? OPERATIONS[item.operation]
   : STAGES[item.stage] ?? OPERATIONS[item.operation] ?? '模型调用';
 const STAGE_HINTS: Record<string, string> = {
-  COPY_LENGTH_REPAIR: '仅修复正文，沿用标题、来源和配图策划',
+  COPY_LENGTH_REPAIR: '修复正文长度或残句，沿用标题、来源和配图策划',
   COPY_CONTRACT_REPAIR: '仅修复未通过校验的字段及必要联动',
 };
 const OPERATION_HINTS: Record<string, string> = {

@@ -13,7 +13,7 @@ const COPY_PROGRESS = Object.freeze({
 });
 const COPY_STAGE_MESSAGES = Object.freeze({
   KNOWLEDGE_MATCH: '正在匹配优秀文案案例',
-  COPY_LENGTH_REPAIR: '首稿长度未通过，正在仅修复正文',
+  COPY_LENGTH_REPAIR: '首稿长度或完整性未通过，正在定向修复正文',
   COPY_CONTRACT_REPAIR: '首稿格式未通过，正在修复失败字段',
 });
 

@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  bodyRepairOutputSchema,
   buildDynamicImagePlanPrompt,
   buildPostPrompt,
   parseDynamicImagePlanOutput,
   parsePostOutput,
+  postOutputSchema,
 } from '../src/post-contract.mjs';
 import { createPromptRuntime, withPromptRuntime } from '../src/prompt-runtime.mjs';
 
@@ -91,6 +93,18 @@ function editorialPost() {
 }
 
 describe('post output contract', () => {
+  it('keeps transport limits wider than the publishing length gate', () => {
+    const generationSchema = postOutputSchema(3);
+    const repairSchema = bodyRepairOutputSchema();
+
+    assert.deepEqual(generationSchema.properties.body, {
+      type: 'string', minLength: 1, maxLength: 1_200,
+    });
+    assert.deepEqual(repairSchema.properties.body, {
+      type: 'string', minLength: 1, maxLength: 1_200,
+    });
+  });
+
   it('accepts a valid JSON object and returns only allowlisted fields', () => {
     const input = { ...validPost(), ignored: 'do not keep me' };
 
@@ -265,6 +279,32 @@ describe('post output contract', () => {
       input.title = title;
       assert.doesNotThrow(() => parsePostOutput(JSON.stringify(input), { query }));
     }
+  });
+
+  it('rejects a body at the publishing limit when its final sentence is incomplete', () => {
+    const input = editorialPost();
+    input.body = '文'.repeat(599) + '民';
+
+    assert.throws(
+      () => parsePostOutput(JSON.stringify(input), { query: '请完整回答这个问题' }),
+      /body must end with a complete sentence/u,
+    );
+  });
+
+  it('rejects unbalanced prose delimiters even when the body ends with punctuation', () => {
+    const input = editorialPost();
+    input.body = `${'文'.repeat(500)}（仍需确认。`;
+
+    assert.throws(
+      () => parsePostOutput(JSON.stringify(input), { query: '请完整回答这个问题' }),
+      /body contains unbalanced brackets or quotation marks/u,
+    );
+
+    input.body = `${'文'.repeat(500)}“仍需确认。`;
+    assert.throws(
+      () => parsePostOutput(JSON.stringify(input), { query: '请完整回答这个问题' }),
+      /body contains unbalanced brackets or quotation marks/u,
+    );
   });
 
   it('accepts an objective opening while still rejecting invented first-person experience', () => {
