@@ -60,7 +60,7 @@ export function postOutputSchema(imageCount = AUTO_IMAGE_COUNT) {
   return {
     type: 'object', additionalProperties: false,
     required: ['taskJudgement', 'platform', 'title', 'body', 'tags', 'imagePlan', 'sources',
-      'expressionReferences', 'riskFlags', 'fabricatedExperience', 'unverifiedClaims'],
+      'expressionReferences', 'riskFlags', 'riskAssessments', 'fabricatedExperience', 'unverifiedClaims'],
     properties: {
       taskJudgement: {
         type: 'object', additionalProperties: false,
@@ -81,7 +81,7 @@ export function postOutputSchema(imageCount = AUTO_IMAGE_COUNT) {
           audience: boundedString(100),
           openingMethod: boundedString(150),
           bodyStructure: boundedString(150),
-          iconDictionary: { type: 'object', properties: {}, additionalProperties: false },
+          iconDictionary: { type: 'object', properties: {}, required: [], additionalProperties: false },
           sampleEvidence: { type: 'string', enum: ['not_provided', 'limited', 'sufficient'] },
         },
       },
@@ -99,7 +99,7 @@ export function postOutputSchema(imageCount = AUTO_IMAGE_COUNT) {
         type: 'array', maxItems: 10,
         items: {
           type: 'object', additionalProperties: false,
-          required: ['severity', 'status', 'message'],
+          required: ['severity', 'status', 'message', 'mitigation'],
           properties: {
             severity: { type: 'string', enum: ['INFO', 'WARNING', 'BLOCKING'] },
             status: { type: 'string', enum: ['MITIGATED', 'UNRESOLVED'] },

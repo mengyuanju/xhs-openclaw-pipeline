@@ -93,6 +93,27 @@ function editorialPost() {
 }
 
 describe('post output contract', () => {
+  it('keeps every structured-output object compatible with Codex strict schemas', () => {
+    const assertStrictObjects = (schema, path = 'schema') => {
+      if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return;
+      if (schema.type === 'object') {
+        assert.equal(schema.additionalProperties, false, `${path} must reject additional properties`);
+        assert.ok(Array.isArray(schema.required), `${path}.required must be an array`);
+        assert.deepEqual(
+          [...schema.required].sort(),
+          Object.keys(schema.properties ?? {}).sort(),
+          `${path}.required must contain every property`,
+        );
+      }
+      for (const [key, value] of Object.entries(schema)) {
+        assertStrictObjects(value, `${path}.${key}`);
+      }
+    };
+
+    assertStrictObjects(postOutputSchema(3));
+    assertStrictObjects(bodyRepairOutputSchema());
+  });
+
   it('keeps transport limits wider than the publishing length gate', () => {
     const generationSchema = postOutputSchema(3);
     const repairSchema = bodyRepairOutputSchema();
