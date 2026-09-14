@@ -42,14 +42,14 @@
 
 ## 迁移与优先级分支合并
 
-迁移采用 **`server/migrations/0050_copy_quality_flow.sql`**。0049 已被 `0049_auto_assignment_modes.sql` 占用，未改写原迁移。仅在独立测试库验证，未操作开发或生产数据库。
+迁移采用 **`server/migrations/0051_copy_quality_flow.sql`**。0049 已被 `0049_auto_assignment_modes.sql` 占用；合并前将本分支质检迁移从 0050 改为 0051，为优先级分支保留 0050。质检迁移不依赖优先级迁移，独立数据库测试会明确排除 0050 后执行迁移与完整质检流程。仅在独立测试库验证，未操作开发或生产数据库。
 
 不引入 priority 字段、排序规则或优先级管理页。维护 `rework_count`、`requeue_reason`、原有 `mandatory_copy_qc_origin`；新增 `copy_quality_queue_events` 记录进入审核、质检和生图队列的事件，优先级模块可读取这些信息。
 
 合并注意：
 
 1. 以 `4c8d63b` 为共同基线；合并本分支代码与新迁移，不复制旧工作树内容。
-2. 优先级分支若同样占用 0050，未应用前为其中一个迁移改成下一个空闲编号；不要修改已应用迁移的校验和。
+2. 优先级分支使用 0050，本分支使用 0051，避免编号冲突。这次重命名针对尚未应用到业务库的迁移；不要修改已应用迁移的记录或校验和。
 3. `postgres-repository.mjs` 的生图排序保持原样。合并排序冲突时必须保留两个领取查询中的 `copyQualityImageGate`。
 4. `rework_count`、`requeue_reason` 使用 `ADD COLUMN IF NOT EXISTS`。如另一分支有自己的事件递增逻辑，应统一到本次触发器，避免一次返工重复计数。
 5. `task-auto-assignment-runner.mjs` 仅新增账号审核权限过滤；合并时保留该过滤。
@@ -57,6 +57,7 @@
 
 ## 验证
 
+- 0051 重命名验证：相关迁移与质检测试 54 项全部通过、0 跳过；真实 PostgreSQL 测试明确排除所有 0050 迁移，验证独立安装、重复执行和完整质检流程。类型检查通过。
 - 服务端完整测试：566 项，553 通过、0 失败、13 原有可选测试跳过；本次真实 PostgreSQL 流程测试已启用执行。
 - 新增数学边界测试与真实 PostgreSQL 流程测试：独立随机测试数据库，全量迁移重复执行、人员隔离、冻结幂等、并发通过回放、整批返工/版本链、强制复检整批关卡、旧版本失效、单条打回、超时保底、终审文案返工、账号权限关闭及数据库领取门禁均通过。
 - `npm run typecheck` 通过。
@@ -68,7 +69,7 @@
 ## 主要文件
 
 - 服务端：`server/src/copy-quality-control.mjs`、`copy-quality-flow.mjs`、`stratified-copy-sampling.mjs`、`workflow-quality-settings.mjs`、`postgres-repository.mjs`、`task-auto-assignment-runner.mjs`、`http-server.mjs`。
-- 数据库：`server/migrations/0050_copy_quality_flow.sql`。
+- 数据库：`server/migrations/0051_copy_quality_flow.sql`。
 - 页面：`app/copy-flow/page.tsx`、用户权限编辑页、质检页、设置页、工作台与任务详情中的管理员质检操作。
 - 路由保护：`src/control-plane/proxy-access.mjs`、`src/admin/proxy-policy.mjs`、侧栏和登录返回路径。
 - 测试：`server/tests/copy-quality-flow.test.mjs` 及现有冻结、复检、权限、导航和页面契约测试。

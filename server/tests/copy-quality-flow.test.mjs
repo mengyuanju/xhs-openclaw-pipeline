@@ -24,7 +24,7 @@ test('real PostgreSQL quality flow: isolation, concurrent freeze, batch return, 
   skip: !process.env.COPY_QUALITY_TEST_DATABASE_URL,
 }, async t => {
   const { default: pg } = await import('pg');
-  const { migrateDatabase } = await import('../src/database-migrations.mjs');
+  const { applyMigrations, loadMigrations } = await import('../src/database-migrations.mjs');
   const qa = await import('../src/copy-quality-control.mjs');
   const url = new URL(process.env.COPY_QUALITY_TEST_DATABASE_URL);
   assert.ok(['127.0.0.1', 'localhost'].includes(url.hostname), 'test database must be local');
@@ -34,8 +34,24 @@ test('real PostgreSQL quality flow: isolation, concurrent freeze, batch return, 
   url.pathname = `/${name}`;
   const pool = new pg.Pool({ connectionString: url.href });
   t.after(async () => { await pool.end(); await admin.query(`DROP DATABASE ${name}`); await admin.end(); });
-  await migrateDatabase(pool);
-  await migrateDatabase(pool); // migration replay is a no-op
+  // Keep this test independent even after the priority branch's 0050 is merged.
+  const migrations = (await loadMigrations()).filter(migration => !migration.id.startsWith('0050_'));
+  assert.ok(migrations.some(migration => migration.id === '0051_copy_quality_flow'));
+  const migrationClient = await pool.connect();
+  try {
+    for (let run = 0; run < 2; run++) {
+      await migrationClient.query('BEGIN');
+      const applied = await applyMigrations(migrationClient, migrations);
+      if (run === 0) assert.ok(applied.includes('0051_copy_quality_flow'));
+      else assert.deepEqual(applied, [], 'migration replay is a no-op');
+      await migrationClient.query('COMMIT');
+    }
+  } catch (error) {
+    await migrationClient.query('ROLLBACK');
+    throw error;
+  } finally {
+    migrationClient.release();
+  }
   await pool.query("INSERT INTO executor_nodes(id, name) VALUES ('qc-test', 'test')");
   const actors = [];
   for (const username of ['alice', 'bob', 'inspector']) {
