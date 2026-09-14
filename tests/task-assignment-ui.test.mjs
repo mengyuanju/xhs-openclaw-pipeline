@@ -80,7 +80,7 @@ test('pending-assignment is review-only while personal view includes submitted a
   assert.match(workbench, /task\.createdByAccountId === accountId/u);
   assert.match(workbench, /task\.assignedToAccountId === accountId/u);
   assert.match(workbench, /assignedToDisplayName/u);
-  assert.match(workbench, /创建：\{task\.createdByDisplayName/u);
+  assert.match(workbench, /创建人：\{task\.createdByDisplayName \|\| task\.createdByUserId \|\| '历史任务'\}/u);
   assert.match(workbench, /\['COPY_QUEUED', 'COPY_RUNNING'\]\.includes\(task\.state\)\) return '尚未到派单节点'/u);
   assert.match(workbench, /task\.state === 'COPY_REVIEW_PENDING'\) return '待分配'/u);
   assert.match(workbench, /return '等待文案执行机领取'/u);

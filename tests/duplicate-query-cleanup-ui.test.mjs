@@ -44,12 +44,13 @@ test('duplicate Query confirmation is locked, idempotent, and preserves a stale 
 
   assert.ok(previewStart >= 0 && confirmStart > previewStart && nextFunction > confirmStart);
   assert.match(preview, /setDuplicateQueryRequestId\(null\)/u);
-  assert.match(preview, /setDuplicateQueryRequestId\(globalThis\.crypto\.randomUUID\(\)\)/u,
+  assert.match(source, /import \{ createRequestId \} from '\.\.\/components\/request-id'/u);
+  assert.match(preview, /setDuplicateQueryRequestId\(createRequestId\(\)\)/u,
     'one request ID is stored only after a new preview is accepted');
   assert.match(confirmation, /!duplicateQueryCleanupLock\.acquire\(\)/u);
   assert.match(confirmation, /'\/v1\/tasks\/duplicate-query-discard'/u);
   assert.match(confirmation, /requestId,[\s\S]*representativeTaskIds: preview\.representativeTaskIds,[\s\S]*previewFingerprint: preview\.previewFingerprint,[\s\S]*confirmedDiscardCount: preview\.summary\.discardableCount/u);
-  assert.doesNotMatch(confirmation, /randomUUID/u,
+  assert.doesNotMatch(confirmation, /randomUUID|createRequestId\(/u,
     'confirmation retries must reuse the request ID stored with the preview');
   assert.match(confirmation, /handledRepresentativeIds = new Set\(preview\.representativeTaskIds\)[\s\S]*current\.filter\(\(id\) => !handledRepresentativeIds\.has\(id\)\)/u);
   assert.match(confirmation, /caught instanceof DuplicateQueryCleanupRequestError && caught\.status === 409/u);
