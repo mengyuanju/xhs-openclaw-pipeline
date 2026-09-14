@@ -1,26 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp,writeFile,readFile,rm } from 'node:fs/promises';
+import { mkdtemp,writeFile,rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { normalizeManualOverlay, manualOverlaySvg, decodeReference, renderMask, mergeWithMask, assertOutsideMask } from '../src/image-edit-pixels.mjs';
-import { applyDeterministicTextOverlay } from '../src/images.mjs';
 import { normalizeEdit,replaceImagePage,editStoragePath,createImageEditingService } from '../server/src/image-editing.mjs';
 import { validateEditText,assertTextNotCovered,processImageEdit } from '../server/src/image-edit-renderer.mjs';
 
 const png=(color='white',width=1086,height=1448)=>sharp({create:{width,height,channels:4,background:color}}).png().toBuffer();
-const input=()=>({requestId:randomUUID(),sourceImageRunId:randomUUID(),sourceAssetId:1,copyRevisionId:1,sha256:'a'.repeat(64),targetPage:1,operation:'TEXT',overlay:{text:'AI生成'}});
-test('Chinese manual overlay is escaped, deterministic, and stays inside the safe area',async()=>{
-  const config=normalizeManualOverlay({text:'AI生成·真实参考',position:'top-left'});
-  assert.equal(config.text,'AI生成·真实参考');assert.ok(config.x>=32&&config.y>=32);
+const input=()=>({requestId:randomUUID(),sourceImageRunId:randomUUID(),sourceAssetId:1,copyRevisionId:1,sha256:'a'.repeat(64),targetPage:1,operation:'TEXT',confirmation:'LIVE_IMAGE_COST_ACCEPTED',overlay:{text:'AI生成',textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED'}});
+test('AI text layout contract is escaped, typed, and stays inside the safe area',()=>{
+  const config=normalizeManualOverlay({text:'AI生成·真实参考',textType:'LABEL',position:'top-left'});
+  assert.equal(config.text,'AI生成·真实参考');assert.equal(config.textType,'LABEL');assert.ok(config.x>=32&&config.y>=32);
   assert.match(manualOverlaySvg({text:'<真实&参考>'}),/&lt;真实&amp;参考&gt;/u);
   assert.throws(()=>normalizeManualOverlay({text:'汉'.repeat(48),size:100}));
   assert.throws(()=>normalizeManualOverlay({text:'测试',position:'custom',x:1080,y:10}));
   assert.throws(()=>normalizeManualOverlay({text:'测试',color:'url(file:///secret)'}));
-  const dir=await mkdtemp(join(tmpdir(),'image-edit-text-'));
-  try{const source=await png();const outputs=[];for(const name of ['one','two']){const path=join(dir,`${name}.png`);await writeFile(path,source);await applyDeterministicTextOverlay({imagePath:path,manualOverlay:config});outputs.push(await readFile(path));}assert.deepEqual(outputs[0],outputs[1]);assert.notDeepEqual(outputs[0],source);}finally{await rm(dir,{recursive:true,force:true});}
+  assert.throws(()=>normalizeManualOverlay({text:'AI生成',textType:'AI_DISCLOSURE'}),/合规标识/u);
 });
 test('reference decoding rejects MIME spoofing, SVG, truncation and excess bytes; strips metadata',async()=>{
   const source=await sharp(await png('red',30,40)).withMetadata({orientation:6}).jpeg().toBuffer();
@@ -41,7 +39,8 @@ for(const mask of [{type:'rect',x:20,y:30,width:100,height:110},{type:'brush',ra
 });
 test('edit inputs reject commands, paths, unconfirmed AI, duplicate references and oversized selections',()=>{
   assert.throws(()=>normalizeEdit({...input(),path:'../../secret'}));
-  assert.throws(()=>normalizeEdit({...input(),operation:'AI_FULL',instruction:'修改背景'}));
+  assert.throws(()=>normalizeEdit({...input(),confirmation:undefined}),/确认/u);
+  assert.throws(()=>normalizeEdit({...input(),operation:'AI_FULL',confirmation:undefined,instruction:'修改背景'}));
   assert.throws(()=>normalizeEdit({...input(),operation:'AI_LOCAL',confirmation:'LIVE_IMAGE_COST_ACCEPTED',instruction:'修改背景',mask:{type:'rect',x:1080,y:0,width:100,height:100}}));
   assert.throws(()=>normalizeEdit({...input(),references:[{assetId:1},{assetId:1}]}));
   assert.throws(()=>editStoragePath(join(tmpdir(),'owned'),join(tmpdir(),'other','secret')));
@@ -69,6 +68,20 @@ test('mock mode never calls image models or produces an adoptable AI edit',async
   const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_FULL',config:{}}),context:async()=>({source:{},refs:[],settings:{aiDisclosureEnabled:false},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}}}),readAsset:async()=>png(),fail:async()=>{failed=true;},complete:()=>assert.fail('must not complete')};
   const dir=await mkdtemp(join(tmpdir(),'image-edit-mock-'));
   try{const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',mock:true,ocr:async()=>({engine:'fake',text:'真实参考',words:[{text:'真实参考',confidence:1}]})});assert.equal(result.status,'FAILED');assert.equal(failed,true);}finally{await rm(dir,{recursive:true,force:true});}
+});
+test('AI text worker targets one image, retries OCR failures, and never uses a deterministic overlay',async()=>{
+  const source=await png('white'),generated=await png('#eeeeee');
+  const config={references:[],instruction:'使用简洁无衬线字体并融入画面',preserve:'保留原有标题',negative:'不要增加其他文字',overlay:normalizeManualOverlay({text:'AI生成',textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',position:'top-left'})};
+  let completed,failed=false,ocrCalls=0;
+  const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'TEXT',config}),context:async()=>({source:{id:1},refs:[],settings:{aiDisclosureEnabled:false},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}}}),readAsset:async()=>source,heartbeat:async()=>true,
+    fail:async()=>{failed=true;},complete:async(e,result)=>{completed=result;return{};}};
+  const prompts=[],inputs=[];
+  const agentClient={runImageEdit:async({prompt,inputPaths,outputPath,signal})=>{prompts.push(prompt);inputs.push(inputPaths);assert.equal(signal.aborted,false);await writeFile(outputPath,generated);return{model:'fake-text-edit'};}};
+  const ocr=async()=>{ocrCalls++;return ocrCalls===1?{engine:'fake',text:'真实参考',words:[{text:'真实参考',confidence:1,x:400,y:400,width:120,height:40}]}
+    :ocrCalls===2?{engine:'fake',text:'真实参考',words:[{text:'真实参考',confidence:1,x:400,y:400,width:120,height:40}]}
+      :{engine:'fake',text:'真实参考AI生成',words:[{text:'真实参考',confidence:1,x:400,y:400,width:120,height:40},{text:'AI生成',confidence:1,x:40,y:40,width:100,height:36}]};};
+  const dir=await mkdtemp(join(tmpdir(),'image-edit-ai-text-'));
+  try{const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,ocr});assert.equal(result.status,'PREVIEW_READY');assert.equal(failed,false);assert.equal(prompts.length,2);assert.match(prompts[0],/AI_TEXT_EDIT/u);assert.match(prompts[0],/AI_DISCLOSURE/u);assert.match(prompts[1],/未通过文字验收/u);assert.match(inputs[0][0],/source\.png$/u);assert.match(inputs[1][0],/result\.png$/u);assert.equal(completed.validation.generationAttempts,2);assert.equal(completed.validation.model,'fake-text-edit');assert.equal(completed.validation.text.targetOccurrences,1);assert.equal(completed.validation.text.placement.passed,true);}finally{await rm(dir,{recursive:true,force:true});}
 });
 test('AI local worker uses the existing edit adapter and enforces outside-mask pixels with a fake model',async()=>{
   const source=await png('red'),generated=await png('blue'),config={references:[],instruction:'改变选区颜色',preserve:'保留标题',negative:'不改变其他内容',mask:{type:'rect',x:20,y:20,width:100,height:100}};

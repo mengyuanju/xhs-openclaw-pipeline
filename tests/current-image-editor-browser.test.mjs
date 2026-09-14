@@ -36,12 +36,14 @@ test('image editor browser: tabs, fee gate, selected mask, reference upload, pre
     await page.getByRole('button',{name:'修改图片',exact:true}).click();
     await page.getByLabel('指定短句',{exact:true}).fill('真实参考');
     assert.equal(await page.locator('svg text').textContent(),'真实参考');
+    assert.equal(await page.getByLabel('文本类型').inputValue(),'CUSTOM');
+    assert.equal(await page.getByRole('button',{name:'生成修改预览',exact:true}).isDisabled(),true);
     await page.getByRole('tab',{name:'提示词修改'}).click();
     assert.equal(await page.getByRole('button',{name:'生成修改预览',exact:true}).isDisabled(),true);
     await page.getByLabel('局部修改（选区外像素不变）').check();
     await page.getByLabel('选区横坐标').fill('20');await page.getByLabel('选区纵坐标').fill('30');
     await page.getByLabel('图片修改要求').fill('改变选区颜色');
-    await page.getByLabel('确认调用图片编辑与实体校验模型，会产生费用；失败重试也可能收费。').check();
+    await page.getByLabel('确认调用图片编辑与实体校验模型，会产生费用；自动修复和人工重试也可能收费。').check();
     await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
     await page.getByRole('heading',{name:'修改前后滑动对比'}).waitFor();
     assert.equal(submitted.operation,'AI_LOCAL');assert.equal(submitted.mask.x,20);assert.equal(submitted.mask.y,30);

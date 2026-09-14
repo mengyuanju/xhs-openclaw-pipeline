@@ -9,7 +9,7 @@ import { createRequestId } from './request-id';
 type Asset = { id: number; sha256: string; url: string };
 type Ref = Asset & { purpose: string; x: number; y: number; width: number; height: number; opacity: number; z: number; removeBackground: boolean; crop?: {x:number;y:number;width:number;height:number} };
 type Edit = { id: string; version: number; status: string; operation: string; source_asset_id?:number; target_page:number; created_by:string; validation?:unknown; events?:Array<{action:string;actor:string;reason:string}>; error: string | null; config: {instruction:string}; result?: {asset_id: number; image_run_id: string; validation: unknown} };
-const labels: Record<string,string> = {DRAFT:'草稿',QUEUED:'排队中',RUNNING:'执行与校验中',PREVIEW_READY:'预览待确认',ACCEPTED:'已采用',REJECTED:'已拒绝',FAILED:'失败',CANCELLED:'已取消',TEXT:'文字叠加',COMPOSITE:'实体合成',AI_FUSION:'AI 融合',AI_LOCAL:'AI 局部修改',AI_FULL:'AI 整图修改',RESTORE:'恢复版本',REGENERATE:'重新生成',REPROCESS:'格式处理'};
+const labels: Record<string,string> = {DRAFT:'草稿',QUEUED:'排队中',RUNNING:'执行与校验中',PREVIEW_READY:'预览待确认',ACCEPTED:'已采用',REJECTED:'已拒绝',FAILED:'失败',CANCELLED:'已取消',TEXT:'AI 文字改图',COMPOSITE:'实体合成',AI_FUSION:'AI 融合',AI_LOCAL:'AI 局部修改',AI_FULL:'AI 整图修改',RESTORE:'恢复版本',REGENERATE:'重新生成',REPROCESS:'格式处理'};
 const path=(url:string)=>`/api/control-plane${url}`;
 const post=(url:string,body:unknown)=>apiRequest(path(url),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
 export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,page,runs,onChanged}: {
@@ -17,7 +17,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,page,runs,
   runs:Array<{id:string;result:{processing?:{type:string}}|null}>;onChanged:()=>Promise<void>;
 }) {
   const [open,setOpen]=useState(false),[tab,setTab]=useState('TEXT'),[fusion,setFusion]=useState(false),[local,setLocal]=useState(false);
-  const [text,setText]=useState('AI生成'),[disclosure,setDisclosure]=useState(true),[position,setPosition]=useState('bottom-right');
+  const [text,setText]=useState('AI生成'),[textType,setTextType]=useState('AI_DISCLOSURE'),[disclosure,setDisclosure]=useState(true),[position,setPosition]=useState('bottom-right');
   const [size,setSize]=useState(32),[margin,setMargin]=useState(32),[opacity,setOpacity]=useState(1),[color,setColor]=useState('#ffffff'),[background,setBackground]=useState('#111827');
   const [x,setX]=useState(100),[y,setY]=useState(500),[width,setWidth]=useState(300),[height,setHeight]=useState(300);
   const [instruction,setInstruction]=useState(''),[preserve,setPreserve]=useState('保留原有标题、正文要点、AI 标识'),[negative,setNegative]=useState('');
@@ -29,11 +29,11 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,page,runs,
   const refresh=useCallback(async()=>setEdits(await apiRequest<Edit[]>(path(`/v1/tasks/${taskId}/image-edits`))),[taskId]);
   useEffect(()=>{if(!open)return;let active=true;const poll=()=>{if(active)void refresh().catch(e=>setError(e.message));};poll();const timer=setInterval(poll,4000);return()=>{active=false;clearInterval(timer);};},[open,refresh]);
   const operation=tab==='TEXT'?'TEXT':tab==='ENTITY'?(fusion?'AI_FUSION':'COMPOSITE'):(local?'AI_LOCAL':'AI_FULL');
-  const ai=operation.startsWith('AI_');
+  const ai=operation==='TEXT'||operation.startsWith('AI_');
   const base=()=>({requestId:createRequestId(),sourceImageRunId:runId,sourceAssetId:asset.id,copyRevisionId,sha256:asset.sha256,targetPage:page});
   async function act(action:()=>Promise<unknown>) {setBusy(true);setError('');try{await action();await refresh();await onChanged();}catch(e){setError(e instanceof Error?e.message:'操作失败');}finally{setBusy(false);}}
   function submit(draft=false) {return act(()=>post(`/v1/tasks/${taskId}/image-edits`,{...base(),operation,instruction,preserve,negative,
-    overlay:{text,size,margin,opacity,color,background,position,x,y,disclosureType:disclosure?'AI_GENERATED':null},
+    overlay:{text,textType,size,margin,opacity,color,background,position,x,y,disclosureType:disclosure?'AI_GENERATED':null},
     references:tab==='ENTITY'?refs.map(r=>({...r,assetId:r.id})):[],mask:maskType==='rect'?{type:'rect',x,y,width,height}:{type:'brush',points,radius},
     confirmation:confirmed?'LIVE_IMAGE_COST_ACCEPTED':undefined,draft}));}
   async function upload(files:FileList|null) {
@@ -65,15 +65,16 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,page,runs,
           {tab==='PROMPT'&&local&&(maskType==='rect'?<rect x={x} y={y} width={width} height={height} fill="#22c55e66" stroke="#16a34a" strokeWidth="4"/>:<g fill="#22c55e88" stroke="#22c55e88" strokeWidth={radius*2} strokeLinecap="round"><polyline fill="none" points={points.map(p=>`${p.x},${p.y}`).join(' ')}/>{points.map((p,i)=><circle key={i} cx={p.x} cy={p.y} r={radius} stroke="none"/>)}</g>)}
         </svg>
         <label>缩放<input aria-label="预览缩放" type="range" min="1" max="3" step="0.1" value={zoom} onChange={e=>setZoom(Number(e.target.value))}/></label>
-        <p>位置为即时示意，最终文字字形、裁剪和抠图效果以处理后预览为准。遮挡必需文字的操作会被拒绝。</p>
+        <p>文字框仅用于向 AI 指定版式区域，不是程序叠字效果。最终结果以 AI 改图预览为准；错字、重复文字、位置偏离或遮挡原文都会被拒绝。</p>
       </div><div>
-        {tab==='TEXT'&&<><label>指定短句<input aria-label="指定短句" maxLength={48} value={text} onChange={e=>{setText(e.target.value);setDisclosure(false);}}/></label><Button onClick={()=>{setText('AI生成');setDisclosure(true);}}>AI生成预设</Button>
-          <label><input type="checkbox" checked={disclosure} onChange={e=>setDisclosure(e.target.checked)}/>记录为 AI 合规标识</label>
+        {tab==='TEXT'&&<><label>指定短句<input aria-label="指定短句" maxLength={48} value={text} onChange={e=>{setText(e.target.value);setDisclosure(false);if(textType==='AI_DISCLOSURE')setTextType('CUSTOM');}}/></label><Button onClick={()=>{setText('AI生成');setTextType('AI_DISCLOSURE');setDisclosure(true);}}>AI生成预设</Button>
+          <label>文本类型<select aria-label="文本类型" value={textType} onChange={e=>{setTextType(e.target.value);setDisclosure(e.target.value==='AI_DISCLOSURE');}}>{[['HEADLINE','标题'],['SUBTITLE','副标题'],['BULLET','正文要点'],['LABEL','标签'],['AI_DISCLOSURE','AI 生成标识'],['CUSTOM','自定义短句']].map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>
+          <label><input type="checkbox" checked={disclosure} onChange={e=>{setDisclosure(e.target.checked);if(e.target.checked)setTextType('AI_DISCLOSURE');else if(textType==='AI_DISCLOSURE')setTextType('CUSTOM');}}/>记录为 AI 合规标识</label>
           <label>位置<select aria-label="文字位置" value={position} onChange={e=>setPosition(e.target.value)}>{[['top-left','左上'],['top-right','右上'],['bottom-left','左下'],['bottom-right','右下'],['top','顶部'],['bottom','底部'],['custom','自定义安全区域']].map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>
           {numberField('字号',size,setSize,16,100)}{numberField('边距',margin,setMargin,16,160)}{numberField('透明度',opacity,setOpacity,.1,1,.05)}
           <label>文字颜色<input type="color" value={color} onChange={e=>setColor(e.target.value)}/></label><label>底色<input type="color" value={background} onChange={e=>setBackground(e.target.value)}/></label>
           {position==='custom'&&<>{numberField('横坐标',x,setX,16,1085)}{numberField('纵坐标',y,setY,16,1447)}</>}
-          <p>程序确定性叠加，不调用模型。需要本地中文 OCR 校验。</p></>}
+          <p>系统将按指定图片、短句、文本类型和版式要求调用 AI 图片编辑；本地 OCR 最多驱动 3 次自动修复，不会用程序叠字兜底。</p></>}
         {tab==='ENTITY'&&<><label>合成模式<select value={fusion?'AI':'EXACT'} onChange={e=>{setFusion(e.target.value==='AI');setConfirmed(false);}}><option value="EXACT">精确合成（推荐保留真实细节）</option><option value="AI">AI 融合</option></select></label><p>AI 融合可能改变实体细节。</p>
           <label>用途及来源说明<input aria-label="参考图来源说明" value={source} maxLength={1000} onChange={e=>setSource(e.target.value)}/></label><input aria-label="上传实体参考图" type="file" accept="image/png,image/jpeg,image/webp" multiple disabled={busy} onChange={e=>void upload(e.target.files)}/>
           {refs.map((r,i)=><fieldset key={r.id}><legend>参考图 {i+1}</legend><img src={path(r.url)} alt={`参考图 ${i+1}`} width={70}/><Button onClick={()=>setRefs(rs=>rs.filter(a=>a.id!==r.id))}>移除</Button>
@@ -83,7 +84,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,page,runs,
               {r.crop&&(['x','y','width','height'] as const).map(key=>numberField(`裁剪 ${key} ${i+1}`,r.crop![key],v=>setRefs(rs=>rs.map(a=>a.id===r.id?{...a,crop:{...a.crop!,[key]:v}}:a)),0,16000))}</>}
           </fieldset>)}</>}
         {tab==='PROMPT'&&<><label><input type="checkbox" checked={local} onChange={e=>setLocal(e.target.checked)}/>局部修改（选区外像素不变）</label>{local&&<><label>选区方式<select value={maskType} onChange={e=>setMaskType(e.target.value)}><option value="rect">矩形</option><option value="brush">画笔</option></select></label><p>在左侧图片拖动绘制选区。</p>{maskType==='brush'?numberField('画笔半径',radius,setRadius,2,150):<>{numberField('选区横坐标',x,setX,0,1085)}{numberField('选区纵坐标',y,setY,0,1447)}{numberField('选区宽度',width,setWidth,1,1086)}{numberField('选区高度',height,setHeight,1,1448)}</>}</>}</>}
-        {ai&&<><label>修改要求<textarea aria-label="图片修改要求" value={instruction} maxLength={2000} placeholder="替换背景、删除物体、改变颜色、增加物体、调整人物服装" onChange={e=>setInstruction(e.target.value)}/></label><label>必须保留<textarea value={preserve} maxLength={2000} onChange={e=>setPreserve(e.target.value)}/></label><label>负面要求<textarea value={negative} maxLength={2000} onChange={e=>setNegative(e.target.value)}/></label><label><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/>确认调用图片编辑与实体校验模型，会产生费用；失败重试也可能收费。</label></>}
+        {ai&&<><label>修改要求<textarea aria-label="图片修改要求" value={instruction} maxLength={2000} placeholder={tab==='TEXT'?'描述字体、排版、与画面融合方式；短句本身以上方输入为准':'替换背景、删除物体、改变颜色、增加物体、调整人物服装'} onChange={e=>setInstruction(e.target.value)}/></label><label>必须保留<textarea value={preserve} maxLength={2000} onChange={e=>setPreserve(e.target.value)}/></label><label>负面要求<textarea value={negative} maxLength={2000} onChange={e=>setNegative(e.target.value)}/></label><label><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/>确认调用图片编辑与实体校验模型，会产生费用；自动修复和人工重试也可能收费。</label></>}
         <div><Button disabled={busy||(ai&&!confirmed)} onClick={()=>void submit(true)}>保存草稿</Button><Button disabled={busy||(ai&&!confirmed)} onClick={()=>void submit()}>生成修改预览</Button></div>
         <label>历史图片版本<select value={history} onChange={e=>setHistory(e.target.value)}><option value="">选择要恢复的图集</option>{runs.filter(r=>r.id!==runId).map(r=><option key={r.id} value={r.id}>{labels[r.result?.processing?.type??'']??'原始生成'} · {r.id.slice(0,8)}</option>)}</select></label>
         <Button disabled={!history||busy} onClick={()=>void act(()=>post(`/v1/tasks/${taskId}/image-versions/${history}/restore`,{...base(),instruction:'恢复历史图片版本'}))}>生成恢复预览</Button>

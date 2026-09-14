@@ -28,7 +28,8 @@ export function normalizeEdit(input) {
   if(Object.keys(input).some(k => !allowed.includes(k))) throw new TypeError('未知修改参数');
   const operation = input.operation;
   if(!['TEXT','COMPOSITE','AI_FUSION','AI_FULL','AI_LOCAL','RESTORE'].includes(operation)) throw new TypeError('修改类型无效');
-  if(operation.startsWith('AI_') && input.confirmation !== 'LIVE_IMAGE_COST_ACCEPTED') throw new TypeError('请确认图片编辑及校验模型费用');
+  const usesImageModel = operation === 'TEXT' || operation.startsWith('AI_');
+  if(usesImageModel && input.confirmation !== 'LIVE_IMAGE_COST_ACCEPTED') throw new TypeError('请确认图片编辑及校验模型费用');
   if(!/^[a-f0-9]{64}$/u.test(input.sha256 ?? '')) throw new TypeError('源图校验值无效');
   const refs = input.references ?? [];
   if(!['COMPOSITE','AI_FUSION'].includes(operation) && refs.length) throw new TypeError('仅实体图片操作可附加参考图');
@@ -44,7 +45,7 @@ export function normalizeEdit(input) {
     instruction: shortText(input.instruction ?? '',2000,operation.startsWith('AI_')), preserve: shortText(input.preserve ?? '',2000,false), negative: shortText(input.negative ?? '',2000,false),
     overlay: operation === 'TEXT' ? normalizeManualOverlay(input.overlay) : null,
     mask: operation === 'AI_LOCAL' ? normalizeMask(input.mask) : null,
-    references, confirmation: operation.startsWith('AI_') ? input.confirmation : null, draft: input.draft === true,
+    references, confirmation: usesImageModel ? input.confirmation : null, draft: input.draft === true,
     restoreRunId: operation === 'RESTORE' ? normalizeUuid(input.restoreRunId,'restoreRunId') : null };
 }
 export function imageAssetIds(result) {

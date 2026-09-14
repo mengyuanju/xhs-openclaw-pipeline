@@ -37,7 +37,10 @@ export function normalizeManualOverlay(input) {
   const rect = safeRect({ x, y, width, height }, margin);
   const disclosureType = input.disclosureType ?? null;
   if (disclosureType !== null && disclosureType !== 'AI_GENERATED') throw new TypeError('标识类型无效');
-  return { text, size, margin, opacity, color, background, position, ...rect, disclosureType };
+  const textType = input.textType ?? (disclosureType === 'AI_GENERATED' ? 'AI_DISCLOSURE' : 'CUSTOM');
+  if (!['HEADLINE','SUBTITLE','BULLET','LABEL','AI_DISCLOSURE','CUSTOM'].includes(textType)) throw new TypeError('文字类型无效');
+  if (textType === 'AI_DISCLOSURE' && disclosureType !== 'AI_GENERATED') throw new TypeError('AI 标识文字必须记录合规标识类型');
+  return { text, textType, size, margin, opacity, color, background, position, ...rect, disclosureType };
 }
 export function manualOverlaySvg(input) {
   const o = normalizeManualOverlay(input);
