@@ -257,19 +257,24 @@ test('rejects unsupported source image formats instead of transcoding them', asy
   });
 });
 
-test('rejects delivery export while an approved Query is still waiting for Xiaohongshu search', async () => {
+test('exports delivery while Xiaohongshu search is unfinished', async () => {
   await withSpreadsheet(async (outputPath) => {
     const task = deliveryTask();
     task.xiaohongshuSearchStatus = 'BLOCKED';
-    await assert.rejects(
-      writeDeliverySpreadsheet(
-        [task],
-        async () => assert.fail('pending search must stop before asset reads'),
-        outputPath,
-      ),
-      /小红书搜索尚未完成/u,
+    const content = await solidPng(128, 128, 128);
+    const result = await writeDeliverySpreadsheet(
+      [task],
+      async (_loadedTask, assetId) => ({
+        ...task.assets.find((asset) => asset.id === assetId),
+        content,
+      }),
+      outputPath,
     );
-    await assertMissing(outputPath);
+    assert.deepEqual(result, { taskCount: 1, imageColumnCount: 1 });
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(outputPath);
+    assert.equal(workbook.getWorksheet('交付内容').getCell('D2').value, '等待重新登录');
   });
 });
 

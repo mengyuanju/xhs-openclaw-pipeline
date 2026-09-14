@@ -531,6 +531,7 @@ test('saved task views are owner-scoped and upsert a validated filter document',
   assert.equal(saved.ownerUsername, 'admin');
   assert.deepEqual(queries[0].values[3], {
     query: '', queryPackageName: '', deduplicateQuery: false, createdByUserId: 'admin', createdByAccountId: 1, createdByRole: 'ALL', state: 'ALL',
+    assignedToUserId: '', assignedToAccountId: null, personalScope: 'ALL',
     sort: 'priority:desc', attention: 'FAILED', pageSize: 20,
   });
   assert.match(queries[0].sql, /ON CONFLICT\(owner_username, name\) DO UPDATE/u);
@@ -587,6 +588,33 @@ test('personal task pagination and totals filter the creator independently of ex
     /creator\.id AS creator_account_id/u);
   await assert.rejects(repository.listTasks({ createdByUserId: '' }), /createdByUserId/u);
   await assert.rejects(repository.listTasks({ createdByAccountId: 1 }), /requires createdByUserId/u);
+});
+
+test('task pages combine exact creator and assignee account filters', async () => {
+  const queries = [];
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql, values) {
+      queries.push({ sql: String(sql), values });
+      return { rows: String(sql).includes('COUNT(*) AS total')
+        ? [{ total: '1' }]
+        : [taskRow({ assignee_account_id: '3', assigned_to_user_id: 'bob' })] };
+    },
+  } });
+  const page = await repository.listTasks({
+    createdByUserId: 'admin', createdByAccountId: 1,
+    assignedToUserId: 'bob', assignedToAccountId: 3,
+    includeTotal: true,
+  });
+  assert.equal(page.total, 1);
+  assert.equal(page.items[0].assignedToAccountId, 3);
+  for (const { sql, values } of queries) {
+    assert.match(sql, /exact_creator\.id = \$2/u);
+    assert.match(sql, /assigned_to_user_id = \$3/u);
+    assert.match(sql, /exact_assignee\.id = \$4/u);
+    assert.match(sql, /exact_assignee\.created_at < tasks\.assigned_at/u);
+    assert.deepEqual(values.slice(0, 4), ['admin', 1, 'bob', 3]);
+  }
+  await assert.rejects(repository.listTasks({ assignedToAccountId: 3 }), /requires assignedToUserId/u);
 });
 
 test('task pages expose the current running image executor independently of copy ownership', async () => {

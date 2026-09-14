@@ -8,7 +8,8 @@ test('saved task views retain only validated list controls', () => {
     name: '  我的 失败任务  ',
     viewKey: 'ALL_JOBS',
     filters: {
-      query: '超时', queryPackageName: '  九月   选题  ', deduplicateQuery: true, createdByUserId: 'alice', createdByAccountId: 2, createdByRole: 'USER',
+      query: '超时', queryPackageName: '  九月   选题  ', deduplicateQuery: true, createdByUserId: 'alice', createdByAccountId: 2,
+      assignedToUserId: 'bob', assignedToAccountId: 3, createdByRole: 'USER', personalScope: 'ASSIGNED',
       state: 'IMAGE_FAILED', sort: 'id:desc', attention: 'FAILED', pageSize: 50,
       taskId: 123, page: 9, unexpected: 'not persisted',
     },
@@ -16,7 +17,8 @@ test('saved task views retain only validated list controls', () => {
     name: '我的 失败任务',
     viewKey: 'ALL_JOBS',
     filters: {
-      query: '超时', queryPackageName: '九月 选题', deduplicateQuery: true, createdByUserId: 'alice', createdByAccountId: 2, createdByRole: 'USER',
+      query: '超时', queryPackageName: '九月 选题', deduplicateQuery: true, createdByUserId: 'alice', createdByAccountId: 2,
+      assignedToUserId: 'bob', assignedToAccountId: 3, createdByRole: 'USER', personalScope: 'ASSIGNED',
       state: 'IMAGE_FAILED', sort: 'id:desc', attention: 'FAILED', pageSize: 50,
     },
   });
@@ -30,6 +32,9 @@ test('saved task views reject untrusted filter values', () => {
   assert.throws(() => normalizeSavedTaskView({ name: 'x', viewKey: 'ALL_JOBS', filters: { createdByUserId: '../alice' } }), /createdByUserId/u);
   assert.throws(() => normalizeSavedTaskView({ name: 'x', viewKey: 'ALL_JOBS', filters: { createdByUserId: 'alice' } }), /account id/u);
   assert.throws(() => normalizeSavedTaskView({ name: 'x', viewKey: 'ALL_JOBS', filters: { createdByUserId: 'alice', createdByAccountId: -1 } }), /createdByAccountId/u);
+  assert.throws(() => normalizeSavedTaskView({ name: 'x', viewKey: 'ALL_JOBS', filters: { assignedToUserId: 'alice' } }), /account id/u);
+  assert.throws(() => normalizeSavedTaskView({ name: 'x', viewKey: 'ALL_JOBS', filters: { assignedToUserId: 'alice', assignedToAccountId: -1 } }), /assignedToAccountId/u);
+  assert.throws(() => normalizeSavedTaskView({ name: 'x', viewKey: 'PERSONAL', filters: { personalScope: 'SOMEONE_ELSE' } }), /personalScope/u);
   assert.throws(() => normalizeSavedTaskView({ name: 'x', viewKey: 'ALL_JOBS', filters: { queryPackageName: ['九月'] } }), /queryPackageName/u);
   assert.throws(() => normalizeSavedTaskView({ name: 'x', viewKey: 'ALL_JOBS', filters: { queryPackageName: 'x'.repeat(201) } }), /queryPackageName/u);
 });

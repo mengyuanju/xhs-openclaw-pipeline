@@ -64,6 +64,7 @@ test('health advertises the task assignment and pool contracts for Web compatibi
   assert.equal(health.capabilities.codexConcurrencyPoolVersion, 1);
   assert.equal(health.capabilities.taskCursorPaginationVersion, 1);
   assert.equal(health.capabilities.creatorAccountFilters, true);
+  assert.equal(health.capabilities.assigneeAccountFilters, true);
 });
 
 test('task creation keeps creator audit identity separate from its assignee', async () => {

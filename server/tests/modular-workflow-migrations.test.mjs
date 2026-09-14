@@ -304,3 +304,15 @@ test('task-query performance migration indexes substring search and stable order
   assert.match(sql, /CREATE INDEX tasks_priority_created_id_idx/u);
   assert.doesNotMatch(sql, /DELETE\s+FROM\s+tasks|TRUNCATE\s+tasks/u);
 });
+
+test('administrator direct copy-QA approval is revision-bound and auditable', async () => {
+  const sql = await migration('0048_admin_direct_copy_qa');
+  assert.match(sql, /CREATE TABLE copy_qa_admin_direct_approvals/u);
+  assert.match(sql, /UNIQUE\(task_id, copy_revision_id\)/u);
+  assert.match(sql, /approval_event_id bigint NOT NULL REFERENCES copy_approval_events\(id\)/u);
+  assert.match(sql, /UNIQUE\(actor_account_id, request_id\)/u);
+  assert.match(sql, /'ADMIN_DIRECT_PASS'/u);
+  assert.doesNotMatch(sql, /actor_account_id bigint NOT NULL REFERENCES app_users/u,
+    'the historical administrator identity must survive account deletion');
+  assert.doesNotMatch(sql, /UPDATE\s+tasks|DELETE\s+FROM\s+tasks|TRUNCATE\s+tasks/u);
+});

@@ -640,6 +640,7 @@ test('task listing forwards server-side pagination, states, Query and package-na
       createdByUserId: undefined,
       createdByAccountId: undefined,
       assignedToUserId: undefined,
+      assignedToAccountId: undefined,
       visibleToUserId: undefined,
       visibleToAccountId: undefined,
       unassignedOnly: false,
@@ -655,7 +656,7 @@ test('task listing forwards server-side pagination, states, Query and package-na
   ]);
 });
 
-test('personal task scope is bound to the authenticated account and includes submitted work', async () => {
+test('personal task scopes are bound to the authenticated account for all, assigned and created work', async () => {
   const calls = [];
   const user = { id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 };
   const repository = {
@@ -663,20 +664,32 @@ test('personal task scope is bound to the authenticated account and includes sub
     listTasks: async (input) => { calls.push(input); return { items: [], total: 0, limit: 20, offset: 0 }; },
   };
   await withServer(repository, async (root) => {
-    const response = await fetch(`${root}/v1/tasks?personal=true&states=COPY_QUEUED,COPY_REVIEW_PENDING&limit=20&includeTotal=true`, {
-      headers: {
-        'X-Actor-User-Id': '2', 'X-Actor-Username': 'alice', 'X-Actor-Role': 'USER',
-        'X-Actor-Credential-Version': '1',
-      },
-    });
-    assert.equal(response.status, 200);
+    const headers = {
+      'X-Actor-User-Id': '2', 'X-Actor-Username': 'alice', 'X-Actor-Role': 'USER',
+      'X-Actor-Credential-Version': '1',
+    };
+    for (const suffix of ['', '&personalScope=ASSIGNED', '&personalScope=CREATED']) {
+      const response = await fetch(`${root}/v1/tasks?personal=true&states=COPY_QUEUED,COPY_REVIEW_PENDING&limit=20&includeTotal=true${suffix}`, { headers });
+      assert.equal(response.status, 200);
+    }
+    assert.equal((await fetch(`${root}/v1/tasks?personalScope=ASSIGNED`, { headers })).status, 400);
+    assert.equal((await fetch(`${root}/v1/tasks?personal=true&personalScope=ANOTHER_USER`, { headers })).status, 400);
   }, { enforceUserAuth: true });
 
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 3);
   assert.equal(calls[0].assignedToUserId, undefined);
+  assert.equal(calls[0].assignedToAccountId, undefined);
   assert.equal(calls[0].visibleToUserId, 'alice');
   assert.equal(calls[0].visibleToAccountId, 2);
   assert.equal(calls[0].excludeUnassigned, false);
+  assert.equal(calls[1].assignedToUserId, 'alice');
+  assert.equal(calls[1].assignedToAccountId, 2);
+  assert.equal(calls[1].createdByUserId, undefined);
+  assert.equal(calls[1].visibleToUserId, undefined);
+  assert.equal(calls[2].createdByUserId, 'alice');
+  assert.equal(calls[2].createdByAccountId, 2);
+  assert.equal(calls[2].assignedToUserId, undefined);
+  assert.equal(calls[2].visibleToUserId, undefined);
 });
 
 test('an unassigned task creator can read and cancel machine work without gaining review access', async () => {
@@ -822,12 +835,14 @@ test('task ownership comes from the UI server identity and is forwarded to task 
       body: JSON.stringify({ nodeId: 'node-a', createdByUserId: 'forged', tasks: [{ query: '我的任务' }] }),
     });
     assert.equal(created.status, 201);
-    const listed = await fetch(`${root}/v1/tasks?createdByUserId=admin&createdByAccountId=1&includeTotal=true`);
+    const listed = await fetch(`${root}/v1/tasks?createdByUserId=admin&createdByAccountId=1&assignedToUserId=alice&assignedToAccountId=2&includeTotal=true`);
     assert.equal(listed.status, 200);
   });
   assert.equal(calls[0].createdByUserId, 'admin');
   assert.equal(calls[1].createdByUserId, 'admin');
   assert.equal(calls[1].createdByAccountId, '1');
+  assert.equal(calls[1].assignedToUserId, 'alice');
+  assert.equal(calls[1].assignedToAccountId, '2');
   assert.equal(calls[1].nodeId, undefined);
 });
 
@@ -1052,6 +1067,54 @@ test('an in-flight batch archive is rejected when the administrator account is r
   } finally {
     await rm(storageRoot, { recursive: true, force: true });
   }
+});
+
+test('only administrators can directly pass one pending copy QA task', async () => {
+  const calls = [];
+  const users = {
+    admin: { id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credentialVersion: 1 },
+    reviewer: { id: 2, username: 'reviewer', role: 'REVIEWER', status: 'ACTIVE', credentialVersion: 1 },
+    user: { id: 3, username: 'user', role: 'USER', status: 'ACTIVE', credentialVersion: 1 },
+  };
+  const repository = {
+    getUserByUsername: async (username) => users[username] ?? null,
+    getTaskAccess: async () => ({ id: 7, state: 'COPY_QC_PENDING', createdByUserId: 'user',
+      createdByAccountId: 3, assignedToUserId: 'user', assignedToAccountId: 3 }),
+    adminDirectApproveCopyQa: async (taskId, input, options) => {
+      calls.push({ taskId, input, options });
+      return { id: Number(taskId), state: 'IMAGE_QUEUED' };
+    },
+  };
+  const headers = (username) => ({
+    'Content-Type': 'application/json',
+    'X-Actor-User-Id': String(users[username].id),
+    'X-Actor-Username': username,
+    'X-Actor-Role': users[username].role,
+    'X-Actor-Credential-Version': '1',
+  });
+  const input = {
+    requestId: '88888888-8888-4888-8888-888888888888',
+    expectedCopyRevisionId: 901,
+  };
+  await withServer(repository, async (root) => {
+    for (const username of ['reviewer', 'user']) {
+      const denied = await fetch(`${root}/v1/tasks/7/admin-direct-copy-qa`, {
+        method: 'POST', headers: headers(username), body: JSON.stringify(input),
+      });
+      assert.equal(denied.status, 403);
+      assert.equal((await denied.json()).error.code, 'FORBIDDEN');
+    }
+    const allowed = await fetch(`${root}/v1/tasks/7/admin-direct-copy-qa`, {
+      method: 'POST', headers: headers('admin'), body: JSON.stringify(input),
+    });
+    assert.equal(allowed.status, 200);
+    assert.equal((await allowed.json()).data.state, 'IMAGE_QUEUED');
+  }, { enforceUserAuth: true });
+  assert.deepEqual(calls, [{
+    taskId: '7',
+    input,
+    options: { actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 } },
+  }]);
 });
 
 test('task listing forwards cursor navigation and rejects an invalid tail-page flag', async () => {

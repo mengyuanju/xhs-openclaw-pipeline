@@ -89,12 +89,6 @@ function xiaohongshuLinksText(task, links) {
   return `\uFEFFQuery：${singleLine(task.query)}\r\n搜索状态：${xiaohongshuSearchStatusText(task, links)}\r\n\r\n小红书链接：\r\n${body}\r\n`;
 }
 
-function assertXiaohongshuSearchReady(task) {
-  if (task?.xiaohongshuSearchStatus && task.xiaohongshuSearchStatus !== 'SUCCEEDED') {
-    throw new TypeError('当前 Query 的小红书搜索尚未完成，不能导出交付文件');
-  }
-}
-
 export function archiveFileName(task) {
   const title = safeFileName(currentCopy(task)?.title, `任务-${task.id}`);
   const label = `${queryPackageFileNameSegment(task.sourceQueryPackageName)}-${title}`;
@@ -102,7 +96,6 @@ export function archiveFileName(task) {
 }
 
 async function createTaskArchiveZip(task, loadAsset) {
-  assertXiaohongshuSearchReady(task);
   const revision = task.copyRevisions.find((item) => item.id === task.currentCopyRevisionId);
   const run = task.imageRuns?.find(item => item.id === task.currentImageRunId);
   const candidates = task.assets.filter((asset) => asset.imageRunId === task.currentImageRunId

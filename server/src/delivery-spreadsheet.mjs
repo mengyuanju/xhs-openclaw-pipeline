@@ -111,12 +111,6 @@ function xiaohongshuLinksValue(task) {
   );
 }
 
-function assertXiaohongshuSearchReady(task) {
-  if (task?.xiaohongshuSearchStatus && task.xiaohongshuSearchStatus !== 'SUCCEEDED') {
-    throw new TypeError('当前 Query 的小红书搜索尚未完成，不能导出交付文件');
-  }
-}
-
 function orientedDimensions(metadata) {
   const orientation = Number(metadata.orientation);
   return orientation >= 5 && orientation <= 8
@@ -245,7 +239,6 @@ export async function writeDeliverySpreadsheet(tasks, loadAsset, outputPath, {
   let imageByteSize = 0;
   for await (const task of tasks) {
     signal?.throwIfAborted();
-    assertXiaohongshuSearchReady(task);
     taskCount += 1;
     if (taskCount > maxTasks) {
       throw new RangeError(`Excel 图片导出一次最多 ${maxTasks} 篇文章`);

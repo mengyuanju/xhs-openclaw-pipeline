@@ -7,7 +7,7 @@ const XSEC_TOKEN = /^(?=.{1,1024}$)[a-zA-Z0-9_-]+={0,2}$/u;
 const XSEC_SOURCE = /^[a-zA-Z0-9_-]{1,100}$/u;
 
 export const XIAOHONGSHU_SEARCH_SETTINGS_KEY = 'xhs_query_search';
-export const XIAOHONGSHU_SEARCH_PROTOCOL_VERSION = 4;
+export const XIAOHONGSHU_SEARCH_PROTOCOL_VERSION = 5;
 export const XIAOHONGSHU_SEARCH_DEFAULT_LIMIT = 3;
 export const XIAOHONGSHU_SEARCH_MAX_LIMIT = 10;
 export const XIAOHONGSHU_SEARCH_MODES = Object.freeze(['FASTEST', 'THOROUGH']);
@@ -22,6 +22,7 @@ export const XIAOHONGSHU_SEARCH_MAX_HOURLY_LIMIT = 360;
 export const XIAOHONGSHU_SEARCH_DEFAULT_DAILY_LIMIT = 150;
 export const XIAOHONGSHU_SEARCH_MAX_DAILY_LIMIT = 8_640;
 export const DEFAULT_XIAOHONGSHU_SEARCH_SETTINGS = Object.freeze({
+  enabled: true,
   resultLimit: XIAOHONGSHU_SEARCH_DEFAULT_LIMIT,
   searchMode: XIAOHONGSHU_SEARCH_DEFAULT_MODE,
   minimumIntervalSeconds: XIAOHONGSHU_SEARCH_DEFAULT_MINIMUM_INTERVAL_SECONDS,
@@ -91,6 +92,7 @@ export function normalizeXiaohongshuSearchSettings(input = {}) {
   }
   const keys = Object.keys(input);
   if (keys.some((key) => ![
+    'enabled',
     'resultLimit',
     'searchMode',
     'minimumIntervalSeconds',
@@ -98,6 +100,10 @@ export function normalizeXiaohongshuSearchSettings(input = {}) {
     'dailyLimit',
   ].includes(key))) {
     throw new TypeError('Xiaohongshu search settings contain unsupported fields');
+  }
+  const enabled = input.enabled === undefined ? true : input.enabled;
+  if (typeof enabled !== 'boolean') {
+    throw new TypeError('enabled must be a boolean');
   }
   const resultLimit = input.resultLimit === undefined
     ? XIAOHONGSHU_SEARCH_DEFAULT_LIMIT
@@ -128,6 +134,7 @@ export function normalizeXiaohongshuSearchSettings(input = {}) {
     );
   }
   return {
+    enabled,
     resultLimit: normalizeXiaohongshuSearchResultLimit(resultLimit),
     searchMode: normalizeXiaohongshuSearchMode(input.searchMode),
     minimumIntervalSeconds,

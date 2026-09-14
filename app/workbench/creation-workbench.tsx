@@ -18,6 +18,7 @@ import {
   RotateCcw,
   Save,
   Search,
+  ShieldCheck,
   ShieldAlert,
   Trash2,
   UserRound,
@@ -37,6 +38,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 
 import { apiRequest } from '../components/api-client';
+import { createRequestId } from '../components/request-id';
 import { resumeImageTask } from '../components/resume-image-task';
 import { canResumeImageTask } from '../../src/control-plane/image-resume.mjs';
 import { IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
@@ -57,6 +59,7 @@ import { loadAdminTaskPage } from '../../src/control-plane/admin-task-page.mjs';
 import { createActionLock } from '../../src/control-plane/action-lock.mjs';
 import { WorkbenchPagination } from './workbench-pagination';
 import { PersonalOverview, PersonalStatusFilters } from '../workbench-statistics/personal-overview';
+import { PersonalTaskScopeFilter } from './personal-task-scope-filter';
 import { useStatistics } from '../workbench-statistics/use-statistics';
 import { STATE_GROUPS } from '../../src/web-statistics/summary.mjs';
 import type { StateGroup } from '../workbench-statistics/types';
@@ -64,6 +67,7 @@ import {
   DEFAULT_WORKBENCH_LIST_STATE,
   workbenchListSearch,
   type TaskAttention,
+  type PersonalTaskScope,
   type WorkbenchListState,
 } from './list-state';
 
@@ -288,6 +292,20 @@ function isTaskAssignee(task: DistributedTask, username: string, accountId: numb
 
 function isPersonalTask(task: DistributedTask, username: string, accountId: number) {
   return isTaskAssignee(task, username, accountId) || isTaskCreator(task, username, accountId);
+}
+
+function matchesPersonalScope(task: DistributedTask, scope: PersonalTaskScope, username: string, accountId: number) {
+  if (scope === 'ASSIGNED') return isTaskAssignee(task, username, accountId);
+  if (scope === 'CREATED') return isTaskCreator(task, username, accountId);
+  return isPersonalTask(task, username, accountId);
+}
+
+function personalOwnershipLabel(task: DistributedTask, username: string, accountId: number) {
+  const assigned = isTaskAssignee(task, username, accountId);
+  const created = isTaskCreator(task, username, accountId);
+  if (assigned && created) return '我创建并负责';
+  if (assigned) return '我负责';
+  return created ? '我创建' : '';
 }
 
 function assignmentLabel(task: DistributedTask) {
@@ -757,7 +775,14 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     && initialListState.createdByAccountId && isAllJobs
     ? { id: initialListState.createdByAccountId, username: initialListState.createdByUserId,
         displayName: initialListState.createdByUserId, role: '', status: 'ACTIVE' } : null);
+  const [assigneeFilter, setAssigneeFilter] = useState<JobCreator | null>(initialListState.assignedToUserId
+    && initialListState.assignedToAccountId && isAllJobs
+    ? { id: initialListState.assignedToAccountId, username: initialListState.assignedToUserId,
+        displayName: initialListState.assignedToUserId, role: '', status: 'ACTIVE' } : null);
   const [stateFilter, setStateFilter] = useState(initialListState.state);
+  const [personalScope, setPersonalScope] = useState<PersonalTaskScope>(
+    activeView === 'PERSONAL' ? initialListState.personalScope : 'ALL',
+  );
   const [personalStatisticsPeriod, setPersonalStatisticsPeriod] = useState<'7d' | '30d'>('7d');
   const [attentionFilter, setAttentionFilter] = useState<TaskAttention>(initialListState.attention);
   const [fetchError, setFetchError] = useState('');
@@ -840,7 +865,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       const view = activeDefinition;
       const paginationScope = JSON.stringify([
         activeView, creatorUserId, creatorAccountId, pageSize, creatorFilter?.username,
-        creatorFilter?.id, creatorRoleFilter, stateFilter, searchKeyword, queryPackageName,
+        creatorFilter?.id, assigneeFilter?.username, assigneeFilter?.id, creatorRoleFilter,
+        personalScope, stateFilter, searchKeyword, queryPackageName,
         deduplicateQuery, sort, attentionFilter, role,
       ]);
       if (taskPageCursors.current.scope !== paginationScope) {
@@ -859,7 +885,10 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
             offset: String((page - 1) * pageSize),
             includeTotal: 'true',
           });
-      if (view.personalOnly) search.set('mine', 'true');
+      if (view.personalOnly) {
+        search.set('mine', 'true');
+        if (personalScope !== 'ALL') search.set('personalScope', personalScope);
+      }
       if (view.unassignedOnly) search.set('unassigned', 'true');
       const searchedTaskId = taskIdSearch(searchKeyword);
       if (searchedTaskId) search.set('taskId', String(searchedTaskId));
@@ -876,6 +905,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       const taskPageRequest = isAllJobs ? loadAdminTaskPage(request, {
         createdByUserId: creatorFilter?.username,
         createdByAccountId: creatorFilter?.id ?? undefined,
+        assignedToUserId: assigneeFilter?.username,
+        assignedToAccountId: assigneeFilter?.id ?? undefined,
         createdByRole: creatorRoleFilter === 'ALL' ? undefined : creatorRoleFilter,
         state: stateFilter === 'ALL' ? undefined : stateFilter,
         taskId: searchedTaskId ?? undefined,
@@ -894,7 +925,10 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
           if (!(caught instanceof Error) || caught.message !== 'task state filter is invalid') throw caught;
           legacyStateFilterMode.current = true;
           const compatibilitySearch = new URLSearchParams({ limit: '200', offset: '0' });
-          if (view.personalOnly) compatibilitySearch.set('mine', 'true');
+          if (view.personalOnly) {
+            compatibilitySearch.set('mine', 'true');
+            if (personalScope !== 'ALL') compatibilitySearch.set('personalScope', personalScope);
+          }
           compatibilityTasks = await request<DistributedTask[]>(apiPath(`/v1/tasks?${compatibilitySearch}`));
           return compatibilityTasks;
         });
@@ -909,7 +943,10 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         // Older services return arrays. Filter by account explicitly; missing ownership
         // must never fall back to the creating or executing node.
         const legacySearch = new URLSearchParams({ limit: '200', offset: '0' });
-        if (view.personalOnly) legacySearch.set('mine', 'true');
+        if (view.personalOnly) {
+          legacySearch.set('mine', 'true');
+          if (personalScope !== 'ALL') legacySearch.set('personalScope', personalScope);
+        }
         if (legacyStateFilterMode.current && compatibilityTasks === null) compatibilityTasks = rawTaskPage;
         const legacyTasks = compatibilityTasks
           ?? await request<DistributedTask[]>(apiPath(`/v1/tasks?${legacySearch}`));
@@ -918,7 +955,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
           ? queryPackageName.toLocaleLowerCase('zh-CN')
           : '';
         const filtered = legacyTasks.filter((task) => (personalStates
-          ? isPersonalTask(task, creatorUserId, creatorAccountId) && personalStates.includes(task.state)
+          ? matchesPersonalScope(task, personalScope, creatorUserId, creatorAccountId)
+            && personalStates.includes(task.state)
           : matchesWorkbenchView(task, view, creatorUserId, creatorAccountId))
           && matchesAttention(task, attentionFilter)
           && (!keyword || (searchedTaskId ? task.id === searchedTaskId : task.query.toLocaleLowerCase('zh-CN').includes(keyword)))
@@ -938,7 +976,9 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       } else {
         taskPage = rawTaskPage;
       }
-      if (view.personalOnly && taskPage.items.some((task) => !isPersonalTask(task, creatorUserId, creatorAccountId))) {
+      if (view.personalOnly && taskPage.items.some((task) => (
+        !matchesPersonalScope(task, personalScope, creatorUserId, creatorAccountId)
+      ))) {
         throw new Error('中心服务尚未支持个人任务筛选，请更新并重启中心服务。');
       }
       if (requestId !== refreshRequestId.current) return;
@@ -975,7 +1015,9 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         setRefreshing(false);
       }
     }
-  }, [activeDefinition, creatorUserId, creatorAccountId, page, pageSize, isAllJobs, creatorFilter, creatorRoleFilter, stateFilter, searchKeyword, queryPackageName, deduplicateQuery, sort, attentionFilter, role, canUseQueryPackageFilter]);
+  }, [activeDefinition, creatorUserId, creatorAccountId, page, pageSize, isAllJobs, creatorFilter,
+    assigneeFilter, creatorRoleFilter, personalScope, stateFilter, searchKeyword, queryPackageName,
+    deduplicateQuery, sort, attentionFilter, role, canUseQueryPackageFilter]);
 
   useEffect(() => {
     if (leavingWorkbenchView.current) return;
@@ -988,7 +1030,10 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       deduplicateQuery,
       createdByUserId: isAllJobs ? creatorFilter?.username ?? '' : '',
       createdByAccountId: isAllJobs ? creatorFilter?.id ?? null : null,
+      assignedToUserId: isAllJobs ? assigneeFilter?.username ?? '' : '',
+      assignedToAccountId: isAllJobs ? assigneeFilter?.id ?? null : null,
       createdByRole: isAllJobs ? creatorRoleFilter : 'ALL',
+      personalScope: activeView === 'PERSONAL' ? personalScope : 'ALL',
       state: activeView === 'PERSONAL' || isAllJobs ? stateFilter : 'ALL',
       attention: isAllJobs ? attentionFilter : 'NONE',
       taskId: selectedTaskId,
@@ -997,9 +1042,9 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     if (`${window.location.pathname}${window.location.search}` !== href) {
       router.replace(href, { scroll: false });
     }
-  }, [activeView, attentionFilter, creatorFilter, creatorRoleFilter, deduplicateQuery, isAllJobs,
+  }, [activeView, assigneeFilter, attentionFilter, creatorFilter, creatorRoleFilter, deduplicateQuery, isAllJobs,
     page, pageSize, pathname, queryPackageName, role, router, searchKeyword, selectedTaskId, sort, stateFilter,
-    canUseQueryPackageFilter]);
+    canUseQueryPackageFilter, personalScope]);
 
   const loadSavedViews = useCallback(async () => {
     if (role !== 'ADMIN') return;
@@ -1062,7 +1107,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
 
   const hasFilters = Boolean(searchInput || searchKeyword
     || canUseQueryPackageFilter && (queryPackageInput || queryPackageName)
-    || deduplicateQuery || creatorFilter || creatorRoleFilter !== 'ALL'
+    || deduplicateQuery || creatorFilter || assigneeFilter || creatorRoleFilter !== 'ALL'
+    || personalScope !== 'ALL'
     || stateFilter !== 'ALL' || attentionFilter !== 'NONE');
   const searchScopeLabel = [
     searchKeyword ? `Query“${searchKeyword}”` : '',
@@ -1077,7 +1123,10 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       deduplicateQuery,
       createdByUserId: isAllJobs ? creatorFilter?.username ?? '' : '',
       createdByAccountId: isAllJobs ? creatorFilter?.id ?? null : null,
+      assignedToUserId: isAllJobs ? assigneeFilter?.username ?? '' : '',
+      assignedToAccountId: isAllJobs ? assigneeFilter?.id ?? null : null,
       createdByRole: isAllJobs ? creatorRoleFilter : 'ALL',
+      personalScope: activeView === 'PERSONAL' ? personalScope : 'ALL',
       state: activeView === 'PERSONAL' || isAllJobs ? stateFilter : 'ALL',
       attention: isAllJobs ? attentionFilter : 'NONE',
       pageSize: pageSize as WorkbenchListState['pageSize'],
@@ -1093,6 +1142,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     setDeduplicateQuery(DEFAULT_WORKBENCH_LIST_STATE.deduplicateQuery);
     setCreatorRoleFilter(DEFAULT_WORKBENCH_LIST_STATE.createdByRole);
     setCreatorFilter(null);
+    setAssigneeFilter(null);
+    setPersonalScope(DEFAULT_WORKBENCH_LIST_STATE.personalScope);
     setStateFilter(DEFAULT_WORKBENCH_LIST_STATE.state);
     setAttentionFilter(DEFAULT_WORKBENCH_LIST_STATE.attention);
     setPageSize(DEFAULT_WORKBENCH_LIST_STATE.pageSize);
@@ -1116,13 +1167,20 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
           displayName: view.filters.createdByUserId === creatorUserId ? '我' : view.filters.createdByUserId,
           role: '', status: 'ACTIVE' }
       : null);
+    setAssigneeFilter(isAllJobs && view.filters.assignedToUserId && view.filters.assignedToAccountId
+      ? { id: view.filters.assignedToAccountId, username: view.filters.assignedToUserId,
+          displayName: view.filters.assignedToUserId === creatorUserId ? '我' : view.filters.assignedToUserId,
+          role: '', status: 'ACTIVE' }
+      : null);
+    setPersonalScope(activeView === 'PERSONAL' ? view.filters.personalScope ?? 'ALL' : 'ALL');
     setStateFilter(activeView === 'PERSONAL' || isAllJobs ? view.filters.state : 'ALL');
     setAttentionFilter(isAllJobs ? view.filters.attention : 'NONE');
     setPageSize(view.filters.pageSize);
     setPage(1);
     setSavedViewId(String(view.id));
     setMessage(view.filters.createdByUserId && !view.filters.createdByAccountId
-      ? `已应用常用视图“${view.name}”；旧版创建者筛选已失效，请重新选择作业员。`
+      || view.filters.assignedToUserId && !view.filters.assignedToAccountId
+      ? `已应用常用视图“${view.name}”；旧版人员筛选已失效，请重新选择对应人员。`
       : `已应用常用视图“${view.name}”。`);
     setError('');
   }
@@ -1172,6 +1230,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
 
   function showMyFailedTasks() {
     setCreatorFilter({ id: creatorAccountId, username: creatorUserId, displayName: '我', role: role, status: 'ACTIVE' });
+    setAssigneeFilter(null);
     setCreatorRoleFilter('ALL');
     setStateFilter('ALL');
     setAttentionFilter('FAILED');
@@ -1213,7 +1272,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         throw new Error('预览内容不完整，请刷新列表后重试');
       }
       setDuplicateQueryPreview(nextPreview);
-      setDuplicateQueryRequestId(globalThis.crypto.randomUUID());
+      setDuplicateQueryRequestId(createRequestId());
       setDuplicateQueryError('');
     } catch (caught) {
       const detail = caught instanceof Error ? caught.message : '暂时无法读取重复项';
@@ -1339,7 +1398,9 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     setQueryPackageName('');
     setDeduplicateQuery(false);
     setCreatorFilter(null);
+    setAssigneeFilter(null);
     setCreatorRoleFilter('ALL');
+    setPersonalScope('ALL');
     setStateFilter('ALL');
     setAttentionFilter('NONE');
     setSavedViewId('');
@@ -1382,6 +1443,33 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       await refresh({ silent: true });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '重新生成文案失败');
+    } finally {
+      setActingTaskId(null);
+    }
+  }
+
+  async function adminDirectApproveCopyQa(task: DistributedTask) {
+    if (role !== 'ADMIN' || task.state !== 'COPY_QC_PENDING') return;
+    if (!await confirm({
+      title: '单独通过这条文案质检？',
+      description: '这条任务会绕过当前批次的文案质检池，立即进入待生图队列。系统会保留本次管理员审核记录。',
+      confirmLabel: '通过并进入生图',
+    })) return;
+    setActingTaskId(task.id);
+    try {
+      await apiRequest<DistributedTask>(apiPath(`/v1/tasks/${task.id}/admin-direct-copy-qa`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requestId: createRequestId(),
+          expectedCopyRevisionId: task.currentCopyRevisionId,
+        }),
+      });
+      setMessage(`任务 #${task.id} 已由管理员单独通过文案质检，并进入待生图队列。`);
+      setError('');
+      await refresh({ silent: true });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '单独通过文案质检失败');
     } finally {
       setActingTaskId(null);
     }
@@ -1567,8 +1655,15 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     const assignmentButton = role === 'ADMIN' && canManageTaskAssignment(task) && <Button unstyled className="button small" type="button"
       disabled={busy} onClick={() => setAssignmentTasks([task])}><UserRound size={14} />{task.assignedToUserId === null ? '分配' : '改派'}</Button>;
     const permanentDeleteButton = canPermanentlyDelete && <Button unstyled className="button small danger" type="button" disabled={busy || Boolean(batchAction) || batchPermanentDeleteTasks.length > 0} onClick={() => { setDeletionError(''); setDeletionPassword(''); setPermanentDeleteTask(task); }}><Trash2 size={14} />永久删除</Button>;
+    const directCopyQaButton = role === 'ADMIN' && task.state === 'COPY_QC_PENDING'
+      && <Button unstyled className="button small primary" type="button" disabled={busy}
+        onClick={() => { void adminDirectApproveCopyQa(task); }}
+        title="管理员单独审核通过，不等待整批完成">
+        <ShieldCheck size={14} />单独通过质检
+      </Button>;
     if (isAllJobs) return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
       {assignmentButton}
+      {directCopyQaButton}
       <Button unstyled className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
       {['COPY_RUNNING', 'COPY_FAILED'].includes(task.state) && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</Button>}
       {queued && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardQueuedTask(task); }}><Trash2 size={14} />废弃</Button>}
@@ -1596,6 +1691,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     ><RotateCcw size={14} />重试生图</Button>;
     if (activeView === 'ALL_COPY') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
       {assignmentButton}
+      {directCopyQaButton}
       <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
       {canRetryCopy && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</Button>}
       {canDiscard && !['COPY_REVIEW_PENDING', 'MANUAL_ARCHIVE'].includes(task.state) && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</Button>}
@@ -1622,6 +1718,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     </TaskRowActions>;
     return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
       {assignmentButton}
+      {directCopyQaButton}
       <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
       {canDiscardQueue && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardQueuedTask(task); }}><Trash2 size={14} />废弃</Button>}
       {permanentDeleteButton}
@@ -1876,8 +1973,10 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         role={creatorRoleFilter}
         state={stateFilter}
         creator={creatorFilter}
+        assignee={assigneeFilter}
         stateLabels={STATE_LABELS}
         onCreatorChange={(value) => { setCreatorFilter(value); setPage(1); }}
+        onAssigneeChange={(value) => { setAssigneeFilter(value); setPage(1); }}
         onRoleChange={(value) => { setCreatorRoleFilter(value); setPage(1); }}
         onStateChange={(value) => { setStateFilter(value); setPage(1); }}
       />}
@@ -1911,11 +2010,15 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
           </Dialog>
           {savedViewId && savedViewId !== DEFAULT_TASK_VIEW_VALUE && <Button unstyled className="button small danger" type="button" onClick={() => { void deleteSavedView(); }}>删除视图</Button>}
         </div>}
-        {activeView === 'PERSONAL' && <PersonalStatusFilters
-          filter={stateFilter}
-          summary={personalStatistics.data?.summary}
-          onFilter={(value) => { setStateFilter(value); setPage(1); }}
-        />}
+        {activeView === 'PERSONAL' && <>
+          <PersonalTaskScopeFilter value={personalScope}
+            onChange={(value) => { setPersonalScope(value); setPage(1); }} />
+          <PersonalStatusFilters
+            filter={stateFilter}
+            summary={personalStatistics.data?.summary}
+            onFilter={(value) => { setStateFilter(value); setPage(1); }}
+          />
+        </>}
         {isAllJobs && <div className="workbench-attention-entry" aria-label="异常任务集中处理">
           <span><AlertTriangle size={15} />集中处理</span>
           <Button unstyled className="button small" type="button" aria-pressed={attentionFilter === 'ANOMALY'} onClick={() => { setAttentionFilter(attentionFilter === 'ANOMALY' ? 'NONE' : 'ANOMALY'); setPage(1); }}>全部异常</Button>
@@ -2002,7 +2105,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         : visibleTasks.length === 0
           ? <div className="workbench-empty">
             <span>{isAllJobs || hasFilters ? '没有符合当前筛选条件的作业。' : activeView === 'PERSONAL'
-              ? role === 'ADMIN' ? '当前没有你提交或负责的 Query 任务。' : '当前没有你负责的任务。'
+              ? '当前没有符合所选归属和状态的个人作业。'
               : `当前没有${activeDefinition.label}任务。`}</span>
             {activeView === 'PERSONAL' && role === 'ADMIN'
               && <Button unstyled className="button small" type="button" onClick={() => setCreateOpen(true)}><Plus size={14} />创建第一条笔记</Button>}
@@ -2022,12 +2125,15 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
                 <td className="workbench-col-creator" data-label="负责人 / 创建人"><div className="workbench-cell-stack">
                   <span className={`workbench-text-preview${!task.assignedToUserId && task.state === 'COPY_REVIEW_PENDING' ? ' pill pill-rejected' : ''}`}
                     title={assignmentLabel(task)}>
-                    {assignmentLabel(task)}
+                    负责人：{assignmentLabel(task)}
                   </span>
                   {task.assignedToUserId && <small className="mono workbench-text-preview" title={task.assignedToUserId}>{task.assignedToUserId}</small>}
                   <small className="workbench-text-preview" title={task.createdByDisplayName || task.createdByUserId || '历史任务'}>
-                    创建：{task.createdByDisplayName || task.createdByUserId || '历史任务'}
+                    创建人：{task.createdByDisplayName || task.createdByUserId || '历史任务'}
                   </small>
+                  {activeView === 'PERSONAL' && <small className="pill">
+                    {personalOwnershipLabel(task, creatorUserId, creatorAccountId)}
+                  </small>}
                   {isAllJobs && <small>{CREATOR_ROLE_LABELS[task.createdByRole || 'UNKNOWN'] || '未知创建者角色'}</small>}
                 </div></td>
                 <td className="workbench-col-progress" data-label="状态 / 进度">

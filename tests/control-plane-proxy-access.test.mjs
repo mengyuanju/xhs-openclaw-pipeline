@@ -91,3 +91,14 @@ test('duplicate Query discard routes are guarded as administrator-only at the we
   assert.match(administratorOnlyGuard, /'\/v1\/tasks\/duplicate-query-discard-preview'/u);
   assert.match(administratorOnlyGuard, /'\/v1\/tasks\/duplicate-query-discard'/u);
 });
+
+test('administrator direct copy-QA approval is guarded at the web proxy', async () => {
+  const source = await readFile(
+    new URL('../app/api/control-plane/[...path]/route.ts', import.meta.url),
+    'utf8',
+  );
+  const guardStart = source.indexOf("if (role !== 'ADMIN' && (routePath === '/v1/task-views'");
+  const guardEnd = source.indexOf("throw new ApiError(403, 'FORBIDDEN', '仅管理员可使用任务集中处理功能');", guardStart);
+  const administratorOnlyGuard = source.slice(guardStart, guardEnd);
+  assert.match(administratorOnlyGuard, /admin-direct-copy-qa/u);
+});

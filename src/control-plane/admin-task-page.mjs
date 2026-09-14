@@ -1,19 +1,25 @@
 /**
  * Read a complete server page; old centers must not silently ignore admin filters.
  * @param {(path: string) => Promise<any>} request
- * @param {{createdByUserId?: string, createdByAccountId?: number, createdByRole?: string, state?: string, taskId?: number, query?: string, queryPackageName?: string, deduplicateQuery?: boolean, attention?: string, sortBy?: string, sortOrder?: string, limit?: number, offset?: number, cursor?: string, lastPage?: boolean}} options
+ * @param {{createdByUserId?: string, createdByAccountId?: number, assignedToUserId?: string, assignedToAccountId?: number, createdByRole?: string, state?: string, taskId?: number, query?: string, queryPackageName?: string, deduplicateQuery?: boolean, attention?: string, sortBy?: string, sortOrder?: string, limit?: number, offset?: number, cursor?: string, lastPage?: boolean}} options
  */
 export async function loadAdminTaskPage(request, {
-  createdByUserId, createdByAccountId, createdByRole, state, taskId, query, queryPackageName,
+  createdByUserId, createdByAccountId, assignedToUserId, assignedToAccountId,
+  createdByRole, state, taskId, query, queryPackageName,
   deduplicateQuery = false,
   attention, sortBy, sortOrder, limit = 20, offset = 0, cursor, lastPage = false,
 } = {}) {
   const hasCreator = Boolean(createdByUserId);
   const hasCreatorAccount = Number.isSafeInteger(createdByAccountId) && createdByAccountId > 0;
   if (hasCreator !== hasCreatorAccount) throw new TypeError('作业员筛选缺少稳定账号身份，请重新选择作业员。');
+  const hasAssignee = Boolean(assignedToUserId);
+  const hasAssigneeAccount = Number.isSafeInteger(assignedToAccountId) && assignedToAccountId > 0;
+  if (hasAssignee !== hasAssigneeAccount) throw new TypeError('负责人筛选缺少稳定账号身份，请重新选择负责人。');
   const search = new URLSearchParams({ limit: String(limit), offset: String(offset), includeTotal: 'true' });
   if (createdByUserId) search.set('createdByUserId', createdByUserId);
   if (hasCreatorAccount) search.set('createdByAccountId', String(createdByAccountId));
+  if (assignedToUserId) search.set('assignedToUserId', assignedToUserId);
+  if (hasAssigneeAccount) search.set('assignedToAccountId', String(assignedToAccountId));
   if (createdByRole) search.set('createdByRole', createdByRole);
   if (state) search.set('state', state);
   if (taskId) search.set('taskId', String(taskId));
@@ -38,6 +44,9 @@ export async function loadAdminTaskPage(request, {
   if (hasCreator && health?.capabilities?.creatorAccountFilters !== true) {
     throw new Error('请更新并重启中心服务，以支持精确账号筛选。');
   }
+  if (hasAssignee && health?.capabilities?.assigneeAccountFilters !== true) {
+    throw new Error('请更新并重启中心服务，以支持精确负责人筛选。');
+  }
   const result = await pageRequest;
   if ('error' in result) throw result.error;
   const page = result.page;
@@ -45,7 +54,8 @@ export async function loadAdminTaskPage(request, {
     || page.limit !== limit || page.offset !== offset || page.items.length > limit
     || page.previousCursor !== undefined && page.previousCursor !== null && typeof page.previousCursor !== 'string'
     || page.nextCursor !== undefined && page.nextCursor !== null && typeof page.nextCursor !== 'string'
-    || hasCreatorAccount && page.items.some((item) => item?.createdByAccountId !== createdByAccountId)) {
+    || hasCreatorAccount && page.items.some((item) => item?.createdByAccountId !== createdByAccountId)
+    || hasAssigneeAccount && page.items.some((item) => item?.assignedToAccountId !== assignedToAccountId)) {
     throw new Error('中心服务返回的分页数据无效，请更新中心服务后重试。');
   }
   return page;

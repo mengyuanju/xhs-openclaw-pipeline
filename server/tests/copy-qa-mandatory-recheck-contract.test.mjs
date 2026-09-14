@@ -329,7 +329,7 @@ test('release-rest excludes an unresolved returned task and updates only eligibl
       if (source.startsWith('SELECT COUNT(*) FILTER')) return { rows: [{ returned_random_count: '1' }] };
       if (source.startsWith('SELECT item.id, task.id AS task_id')) {
         assert.match(source, /returned\.status IN \('RETURNED', 'BATCH_AFFECTED', 'BATCH_RETURNED'\)/u);
-        assert.match(source, /recheck\.sample_kind = 'MANDATORY_RECHECK'[\s\S]*recheck\.status IN \('PASSED', 'RELEASED'\)/u);
+        assert.match(source, /recheck\.sample_kind = 'MANDATORY_RECHECK'[\s\S]*recheck\.status IN \('PASSED', 'RELEASED', 'SUPERSEDED'\)/u);
         return { rows: [{ id: 21, task_id: 102 }] };
       }
       if (source.startsWith("UPDATE tasks SET state = 'IMAGE_QUEUED'")) {

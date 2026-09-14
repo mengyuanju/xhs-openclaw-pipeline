@@ -818,6 +818,7 @@ function installRoutes(
     const body = requireJson(ctx);
     json(ctx, 200, await repository.updateAutoAssignmentSettings({
       enabled: body.enabled,
+      mode: body.mode,
       expectedVersion: body.expectedVersion,
       actor,
     }));
@@ -837,6 +838,15 @@ function installRoutes(
     const actor = requestActor(ctx, ['ADMIN']);
     const body = requireJson(ctx);
     json(ctx, 200, await repository.removeAutoAssignmentWorker(ctx.params.username, {
+      expectedVersion: body.expectedVersion,
+      accountId: requiredAccountId(body.accountId),
+      actor,
+    }));
+  });
+  router.post('/v1/auto-assignment/workers/:username/allocate', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    const body = requireJson(ctx);
+    json(ctx, 200, await repository.allocateAutoAssignmentWorker(ctx.params.username, {
       expectedVersion: body.expectedVersion,
       accountId: requiredAccountId(body.accountId),
       actor,
@@ -1114,15 +1124,23 @@ function installRoutes(
     if (ctx.query.personal !== undefined && !['true', 'false'].includes(ctx.query.personal)) {
       throw new TypeError('personal must be true or false');
     }
+    const personalScope = String(ctx.query.personalScope ?? 'ALL').toUpperCase();
+    if (!['ALL', 'ASSIGNED', 'CREATED'].includes(personalScope)) {
+      throw new TypeError('personalScope must be ALL, ASSIGNED or CREATED');
+    }
+    if (!personal && ctx.query.personalScope !== undefined) {
+      throw new TypeError('personalScope requires personal=true');
+    }
     if (ctx.query.lastPage !== undefined && !['true', 'false'].includes(ctx.query.lastPage)) {
       throw new TypeError('lastPage must be true or false');
     }
-    if (personal && ['assignedToUserId', 'unassigned', 'createdByUserId', 'createdByAccountId', 'nodeId']
+    if (personal && ['assignedToUserId', 'assignedToAccountId', 'unassigned', 'createdByUserId', 'createdByAccountId', 'nodeId']
       .some((key) => ctx.query[key] !== undefined)) {
       throw new TypeError('personal task scope cannot be combined with ownership filters');
     }
     if (ctx.query.createdByRole !== undefined) requestActor(ctx, ['ADMIN']);
     if (ctx.query.createdByAccountId !== undefined) requestActor(ctx, ['ADMIN']);
+    if (ctx.query.assignedToAccountId !== undefined) requestActor(ctx, ['ADMIN']);
     if (ctx.query.attention !== undefined) requestActor(ctx, ['ADMIN']);
     if (ctx.query.unassigned !== undefined
       || (ctx.query.assignedToUserId !== undefined
@@ -1135,11 +1153,14 @@ function installRoutes(
       state: ctx.query.state,
       states: ctx.query.states,
       nodeId: ctx.query.nodeId,
-      createdByUserId: ctx.query.createdByUserId,
-      createdByAccountId: ctx.query.createdByAccountId,
-      assignedToUserId: personal ? undefined : actor.role === 'USER' ? actor.username : ctx.query.assignedToUserId,
-      visibleToUserId: personal ? actor.username : undefined,
-      visibleToAccountId: personal ? actor.userId : undefined,
+      createdByUserId: personalScope === 'CREATED' ? actor.username : ctx.query.createdByUserId,
+      createdByAccountId: personalScope === 'CREATED' ? actor.userId : ctx.query.createdByAccountId,
+      assignedToUserId: personalScope === 'ASSIGNED'
+        ? actor.username : personal ? undefined : actor.role === 'USER' ? actor.username : ctx.query.assignedToUserId,
+      assignedToAccountId: personalScope === 'ASSIGNED'
+        ? actor.userId : personal ? undefined : actor.role === 'USER' ? actor.userId : ctx.query.assignedToAccountId,
+      visibleToUserId: personal && personalScope === 'ALL' ? actor.username : undefined,
+      visibleToAccountId: personal && personalScope === 'ALL' ? actor.userId : undefined,
       unassignedOnly: !personal && actor.role === 'ADMIN' && ctx.query.unassigned === 'true',
       excludeUnassigned: actor.role !== 'ADMIN' && !personal,
       ...(createdByRole !== null ? { createdByRole } : {}),
@@ -1603,6 +1624,15 @@ function installRoutes(
       actor: access.actor,
     });
     json(ctx, 200, access.actor.role === 'USER' ? userVisibleTask(task) : task);
+  });
+  router.post('/v1/tasks/:taskId/admin-direct-copy-qa', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    await assertTaskAccess(ctx, repository);
+    json(ctx, 200, await repository.adminDirectApproveCopyQa(
+      ctx.params.taskId,
+      requireJson(ctx),
+      { actor },
+    ));
   });
   router.post('/v1/tasks/:taskId/review-images', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);

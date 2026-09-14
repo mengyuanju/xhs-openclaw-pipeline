@@ -25,7 +25,7 @@ test('new creation workbench owns the root route and exposes lifecycle views', a
   assert.match(listPage, /creatorUserId=\{session.username \|\| 'admin'\}/u);
   assert.match(listPage, /role=\{role\}/u);
   assert.match(listPage, /if \(!definition\) notFound\(\)/u);
-  assert.match(workbench, /view.personalOnly\) search.set\('mine', 'true'\)/u);
+  assert.match(workbench, /if \(view\.personalOnly\) \{[\s\S]{0,160}search\.set\('mine', 'true'\)/u);
   assert.doesNotMatch(workbench, /LOCAL_COPY|localOnly|search.set\('nodeId'/u);
   assert.match(proxy, /searchParams.set\('personal', 'true'\)/u);
   assert.match(proxy, /searchParams.set\('assignedToUserId', username\)/u);
@@ -233,6 +233,26 @@ test('list state, saved views and centralized batch handling are available to ad
   assert.match(workbench, /选择当前页全部任务/u);
   assert.match(proxy, /\/v1\/tasks\/batch-permanent-delete/u);
   assert.match(proxy, /仅管理员可使用任务集中处理功能/u);
+});
+
+test('creator and assignee filters can be combined while personal work stays distinguishable', async () => {
+  const [workbench, adminFilters, assigneeFilter, personalFilter, listState] = await Promise.all([
+    readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/admin-job-filters.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/admin-assignee-filter.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/personal-task-scope-filter.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/list-state.ts'), 'utf8'),
+  ]);
+  assert.match(adminFilters, /<AdminCreatorFilter[\s\S]{0,240}<AdminAssigneeFilter/u);
+  assert.match(assigneeFilter, /label="负责人"[\s\S]{0,180}emptyLabel="全部负责人"/u);
+  assert.match(workbench, /assignedToUserId: assigneeFilter\?\.username/u);
+  assert.match(workbench, /assignedToAccountId: assigneeFilter\?\.id/u);
+  assert.match(listState, /assignedToUserId[\s\S]{0,100}assignedToAccountId/u);
+  assert.match(personalFilter, /全部相关[\s\S]{0,120}我负责的[\s\S]{0,120}我创建的/u);
+  assert.match(workbench, /if \(personalScope !== 'ALL'\) search\.set\('personalScope', personalScope\)/u);
+  assert.match(workbench, /负责人：\{assignmentLabel\(task\)\}/u);
+  assert.match(workbench, /创建人：\{task\.createdByDisplayName/u);
+  assert.match(workbench, /personalOwnershipLabel\(task, creatorUserId, creatorAccountId\)/u);
 });
 
 test('creation dialog accepts a single batch textarea and creates one remote batch', async () => {
@@ -449,4 +469,18 @@ test('executor CLI gates registration and polling behind readiness', async () =>
   assert.match(simulationCli, /await runExecutor\(/u);
   assert.match(simulationCli, /concurrencyEnabled: true/u);
   assert.doesNotMatch(simulationCli, /option\('max'\)|processed <|config\.max/u);
+});
+
+test('administrators can directly pass a pending copy QA item from list and detail views', async () => {
+  const [workbench, reviewDialog] = await Promise.all([
+    readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+  ]);
+  for (const source of [workbench, reviewDialog]) {
+    assert.match(source, /role === 'ADMIN'[\s\S]{0,160}detail\.state === 'COPY_QC_PENDING'|role === 'ADMIN'[\s\S]{0,160}task\.state === 'COPY_QC_PENDING'/u);
+    assert.match(source, /\/admin-direct-copy-qa/u);
+    assert.match(source, /requestId: createRequestId\(\)/u);
+    assert.match(source, /expectedCopyRevisionId:/u);
+    assert.match(source, /通过并进入生图/u);
+  }
 });

@@ -1,6 +1,6 @@
 'use client';
 
-import { CheckCircle2, ListChecks, Pencil, Plus, Trash2, UserRound, Users } from 'lucide-react';
+import { CheckCircle2, ListChecks, Pencil, Play, Plus, Trash2, UserRound, Users } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 
@@ -35,6 +35,7 @@ type PoolUser = {
 
 type AutoAssignmentSettings = {
   enabled: boolean;
+  mode?: 'CONTINUOUS' | 'FIXED_QUANTITY';
   version: number;
   updatedByUsername: string | null;
   createdAt: string;
@@ -49,6 +50,7 @@ type AutoAssignmentWorker = {
   userStatus: 'ACTIVE' | 'DISABLED' | null;
   status: 'ACTIVE' | 'PAUSED';
   assignmentLimit: number;
+  allocationCount?: number;
   currentTaskCount: number;
   availableSlots: number;
   canReceive: boolean;
@@ -68,16 +70,36 @@ type AutoAssignmentSnapshot = {
 };
 
 type EditorState = { mode: 'add' } | { mode: 'edit'; username: string };
+type AutoAssignmentMode = 'CONTINUOUS' | 'FIXED_QUANTITY';
+
+type FixedQuantityAllocationResult = {
+  outcome: 'ASSIGNED' | 'NO_PENDING_TASKS';
+  username: string;
+  requestedCount: number;
+  assignedCount: number;
+  unfilledCount: number;
+};
 
 function workerPath(username: string) {
   return `/api/control-plane/v1/auto-assignment/workers/${encodeURIComponent(username)}`;
 }
 
-function workerAvailability(settingsEnabled: boolean, worker: AutoAssignmentWorker) {
+function workerAllocationCount(worker: AutoAssignmentWorker) {
+  return worker.allocationCount ?? worker.assignmentLimit;
+}
+
+function workerAvailability(
+  settingsEnabled: boolean,
+  mode: AutoAssignmentMode,
+  worker: AutoAssignmentWorker,
+) {
   if (worker.userRole !== 'USER') return { label: '角色不再适用', tone: 'tone-red' };
   if (worker.userStatus !== 'ACTIVE') return { label: '账号已停用', tone: 'tone-red' };
   if (worker.status === 'PAUSED') return { label: '已暂停接单', tone: 'tone-amber' };
   if (!settingsEnabled) return { label: '总开关已关闭', tone: 'tone-neutral' };
+  if (mode === 'FIXED_QUANTITY') {
+    return { label: `单次 ${workerAllocationCount(worker)} 条`, tone: 'pill-active' };
+  }
   if (worker.availableSlots <= 0) return { label: '额度已满', tone: 'tone-neutral' };
   return { label: `可补 ${worker.availableSlots} 条`, tone: 'pill-active' };
 }
@@ -107,10 +129,13 @@ export function AutoAssignmentPoolManager({
   const editorWorker = editor?.mode === 'edit'
     ? initialSnapshot.workers.find((worker) => worker.username === editor.username) ?? null
     : null;
+  const assignmentMode = initialSnapshot.settings.mode ?? 'CONTINUOUS';
   const availableWorkerCount = initialSnapshot.workers.filter((worker) => worker.canReceive).length;
-  const effectiveAvailableSlots = initialSnapshot.settings.enabled
+  const effectiveAssignmentCount = initialSnapshot.settings.enabled
     ? initialSnapshot.workers.filter((worker) => worker.canReceive)
-      .reduce((total, worker) => total + worker.availableSlots, 0)
+      .reduce((total, worker) => total + (assignmentMode === 'CONTINUOUS'
+        ? worker.availableSlots
+        : workerAllocationCount(worker)), 0)
     : 0;
   // Keep the web UI usable during a center-first rolling deployment. Older
   // centers only return unassignedTaskCount until their process is restarted.
@@ -123,20 +148,24 @@ export function AutoAssignmentPoolManager({
     ? initialSnapshot.manualAttentionTaskCount
     : Math.max(0, initialSnapshot.unassignedTaskCount - autoAssignableTaskCount);
 
-  async function run(key: string, action: () => Promise<unknown>, success: string) {
+  async function run<Result>(
+    key: string,
+    action: () => Promise<Result>,
+    success: string | ((result: Result) => string),
+  ): Promise<Result | null> {
     setBusy(key);
     setMessage('');
     setError('');
     try {
-      await action();
-      setMessage(success);
+      const result = await action();
+      setMessage(typeof success === 'function' ? success(result) : success);
       router.refresh();
-      return true;
+      return result;
     } catch (caught) {
       const detail = caught instanceof Error ? caught.message : '未知错误';
       setError(`操作失败：${detail}。已重新读取最新配置，请确认后再试。`);
       router.refresh();
-      return false;
+      return null;
     } finally {
       setBusy('');
     }
@@ -157,9 +186,33 @@ export function AutoAssignmentPoolManager({
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         enabled,
+        mode: assignmentMode,
         expectedVersion: initialSnapshot.settings.version,
       }),
     }), enabled ? '自动分配已开启。' : '自动分配已关闭，现有任务保持原负责人。');
+  }
+
+  async function updateMode(mode: AutoAssignmentMode) {
+    if (mode === assignmentMode || busy) return;
+    const approved = await confirm({
+      title: mode === 'CONTINUOUS' ? '切换为持续补位？' : '切换为定量分配？',
+      description: mode === 'CONTINUOUS'
+        ? '开启总开关时，系统会持续把每名作业员的待审核任务补到配置上限。'
+        : '系统将停止循环补位。管理员点击作业员的“分配”按钮时，才会按配置数量执行一次。',
+      confirmLabel: '确认切换',
+    });
+    if (!approved) return;
+    await run('mode', () => apiRequest('/api/control-plane/v1/auto-assignment/settings', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        enabled: initialSnapshot.settings.enabled,
+        mode,
+        expectedVersion: initialSnapshot.settings.version,
+      }),
+    }), mode === 'CONTINUOUS'
+      ? '已切换为持续补位模式。'
+      : '已切换为定量分配模式；后续不会循环补位。');
   }
 
   async function saveWorker(event: FormEvent<HTMLFormElement>) {
@@ -168,7 +221,7 @@ export function AutoAssignmentPoolManager({
     const form = new FormData(event.currentTarget);
     const assignmentLimit = Number(form.get('assignmentLimit'));
     if (!Number.isInteger(assignmentLimit) || assignmentLimit < 1 || assignmentLimit > 500) {
-      setError('待审核任务上限必须是 1–500 之间的整数。');
+      setError(`${assignmentMode === 'CONTINUOUS' ? '待审核任务上限' : '单次分配数量'}必须是 1–500 之间的整数。`);
       return;
     }
 
@@ -203,8 +256,34 @@ export function AutoAssignmentPoolManager({
         assignmentLimit,
         expectedVersion: worker.version,
       }),
-    }), `已更新 ${worker.displayName || worker.username} 的待审核任务上限。`);
+    }), `已更新 ${worker.displayName || worker.username} 的${assignmentMode === 'CONTINUOUS' ? '待审核任务上限' : '单次分配数量'}。`);
     if (saved) setEditor(null);
+  }
+
+  async function allocateWorker(worker: AutoAssignmentWorker) {
+    if (assignmentMode !== 'FIXED_QUANTITY' || busy || !worker.canReceive
+      || !initialSnapshot.settings.enabled || worker.accountId === null) return;
+    const allocationCount = workerAllocationCount(worker);
+    const workerName = worker.displayName || worker.username;
+    const approved = await confirm({
+      title: `给 ${workerName} 分配 ${allocationCount} 条？`,
+      description: `本次会从待审核分配池中按任务顺序最多取 ${allocationCount} 条。执行结束即停止，作业员完成后不会自动补位。`,
+      confirmLabel: '确认分配',
+    });
+    if (!approved) return;
+    await run(`allocate-${worker.username}`, () => apiRequest<FixedQuantityAllocationResult>(
+      `${workerPath(worker.username)}/allocate`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          accountId: worker.accountId,
+          expectedVersion: worker.version,
+        }),
+      },
+    ), (result) => result.assignedCount === result.requestedCount
+      ? `已给 ${workerName} 分配 ${result.assignedCount} 条任务，本次分配已结束。`
+      : `已给 ${workerName} 分配 ${result.assignedCount} 条；当前可分配任务不足，少 ${result.unfilledCount} 条。本次分配已结束。`);
   }
 
   async function updateWorkerStatus(worker: AutoAssignmentWorker) {
@@ -261,16 +340,29 @@ export function AutoAssignmentPoolManager({
       <article className="user-summary-card"><span><ListChecks size={18} /></span><div><strong>{initialSnapshot.unassignedTaskCount}</strong><small>无负责人任务</small></div></article>
       <article className="user-summary-card"><span className="tone-green"><ListChecks size={18} /></span><div><strong>{autoAssignableTaskCount}</strong><small>待审核分配</small><div className="subtle">另有 {manualAttentionTaskCount} 条仍在机器阶段或需要管理员处理</div></div></article>
       <article className="user-summary-card"><span className="tone-green"><Users size={18} /></span><div><strong>{availableWorkerCount}</strong><small>可用池成员</small></div></article>
-      <article className="user-summary-card"><span className="tone-amber"><CheckCircle2 size={18} /></span><div><strong>{effectiveAvailableSlots}</strong><small>当前可用名额</small></div></article>
+      <article className="user-summary-card"><span className="tone-amber"><CheckCircle2 size={18} /></span><div><strong>{effectiveAssignmentCount}</strong><small>{assignmentMode === 'CONTINUOUS' ? '当前可补名额' : '配置单次数量'}</small></div></article>
     </section>
 
     <section className="panel user-list-panel" aria-labelledby="auto-assignment-pool-title">
       <div className="panel-head user-list-head">
         <div>
           <h2 id="auto-assignment-pool-title">自动分配人员池</h2>
-          <p className="subtle">新建用户默认不会加入自动分配池；只有明确加入且启用的普通作业员会自动接单。</p>
+          <p className="subtle">可选择持续补位或定量单次分配。新建用户默认不会加入自动分配池。</p>
         </div>
         <div className="inline">
+          <div className="auto-assignment-mode-control">
+            <Select value={assignmentMode} disabled={Boolean(busy)}
+              onValueChange={(value) => { void updateMode(value as AutoAssignmentMode); }}>
+              <SelectTrigger id="auto-assignment-mode" aria-label="自动分配方式">
+                <span className="auto-assignment-mode-prefix" aria-hidden="true">分配方式</span>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="CONTINUOUS">持续补位</SelectItem>
+                <SelectItem value="FIXED_QUANTITY">定量分配</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
           <label className="switch-field">
             <Switch
               aria-label="自动分配总开关"
@@ -278,7 +370,9 @@ export function AutoAssignmentPoolManager({
               disabled={Boolean(busy)}
               onChange={(event) => { void updateSettings(event.currentTarget.checked); }}
             />
-            <span>{initialSnapshot.settings.enabled ? '自动分配已开启' : '自动分配已关闭'}</span>
+            <span>{initialSnapshot.settings.enabled
+              ? assignmentMode === 'CONTINUOUS' ? '自动补位已开启' : '定量分配可执行'
+              : '自动分配已关闭'}</span>
           </label>
           <Button unstyled className="button primary" type="button"
             disabled={Boolean(busy) || eligibleUsers.length === 0}
@@ -295,11 +389,12 @@ export function AutoAssignmentPoolManager({
       {initialSnapshot.workers.length === 0
         ? <div className="empty-state">人员池为空。请点击“加入作业员”明确选择需要自动接单的人员。</div>
         : <div className="table-wrap mobile-cards user-table-wrap"><table className="user-table">
-          <thead><tr><th>作业员</th><th>池状态</th><th>待审核任务</th><th>接单状态</th><th className="user-actions-heading">操作</th></tr></thead>
+          <thead><tr><th>作业员</th><th>池状态</th><th>当前待审核</th><th>分配规则</th><th className="user-actions-heading">操作</th></tr></thead>
           <tbody>{initialSnapshot.workers.map((worker) => {
             const isAccountEligible = worker.userRole === 'USER' && worker.userStatus === 'ACTIVE';
-            const availability = workerAvailability(initialSnapshot.settings.enabled, worker);
+            const availability = workerAvailability(initialSnapshot.settings.enabled, assignmentMode, worker);
             const workerName = worker.displayName || worker.username;
+            const allocationCount = workerAllocationCount(worker);
             return <tr key={worker.username}>
               <td data-label="作业员"><div className="user-identity-cell">
                 <span className="user-avatar" aria-hidden="true">{[...workerName][0]?.toUpperCase() || '?'}</span>
@@ -311,16 +406,31 @@ export function AutoAssignmentPoolManager({
                 </span>
                 {!isAccountEligible && <span className="pill tone-red">账号停用</span>}
               </div></td>
-              <td data-label="待审核任务">
-                <strong className="mono">{worker.currentTaskCount} / {worker.assignmentLimit}</strong>
-                <div className="subtle">剩余 {worker.availableSlots} 个配置名额</div>
+              <td data-label="当前待审核">
+                <strong className="mono">{worker.currentTaskCount} 条</strong>
+                <div className="subtle">当前已分配且等待文案审核</div>
               </td>
-              <td data-label="接单状态"><span className={`pill ${availability.tone}`}>{availability.label}</span></td>
+              <td data-label="分配规则"><span className={`pill ${availability.tone}`}>{availability.label}</span>
+                <div className="subtle">{assignmentMode === 'CONTINUOUS'
+                  ? `待审核上限 ${worker.assignmentLimit} 条`
+                  : '只在管理员点击后执行一次'}</div>
+              </td>
               <td className="row-action" data-label="操作"><div className="user-row-actions">
+                {assignmentMode === 'FIXED_QUANTITY' && <Button unstyled className="button small primary" type="button"
+                  disabled={Boolean(busy) || !initialSnapshot.settings.enabled || !worker.canReceive
+                    || worker.accountId === null || autoAssignableTaskCount === 0}
+                  title={!initialSnapshot.settings.enabled
+                    ? '请先开启自动分配总开关'
+                    : autoAssignableTaskCount === 0 ? '当前没有可分配的待审核任务' : `单次分配 ${allocationCount} 条`}
+                  onClick={() => { void allocateWorker(worker); }}>
+                  <Play size={14} />分配 {allocationCount} 条
+                </Button>}
                 <Button unstyled className="button small" type="button"
                   disabled={Boolean(busy) || !isAccountEligible}
-                  title={!isAccountEligible ? '请先启用该普通用户' : '编辑待审核任务上限'}
-                  onClick={() => openWorkerEditor(worker)}><Pencil size={14} />编辑额度</Button>
+                  title={!isAccountEligible
+                    ? '请先启用该普通用户'
+                    : assignmentMode === 'CONTINUOUS' ? '编辑待审核任务上限' : '编辑单次分配数量'}
+                  onClick={() => openWorkerEditor(worker)}><Pencil size={14} />{assignmentMode === 'CONTINUOUS' ? '编辑上限' : '编辑数量'}</Button>
                 <Button unstyled className="button small" type="button"
                   disabled={Boolean(busy) || (!isAccountEligible && worker.status === 'PAUSED')}
                   title={!isAccountEligible && worker.status === 'PAUSED' ? '停用账号不能恢复自动接单' : undefined}
@@ -342,10 +452,14 @@ export function AutoAssignmentPoolManager({
         <div className="user-editor-head">
           <span className="user-editor-icon"><UserRound size={20} /></span>
           <div>
-            <DialogTitle>{editor?.mode === 'add' ? '加入自动分配池' : '编辑自动分配额度'}</DialogTitle>
+            <DialogTitle>{editor?.mode === 'add'
+              ? '加入自动分配池'
+              : assignmentMode === 'CONTINUOUS' ? '编辑补位上限' : '编辑单次数量'}</DialogTitle>
             <DialogDescription>{editor?.mode === 'add'
               ? '明确选择一名作业员。保存前不会自动选择或加入任何用户。'
-              : `设置 ${editorWorker?.displayName || editorWorker?.username || '该作业员'} 的待审核任务上限。`}</DialogDescription>
+              : assignmentMode === 'CONTINUOUS'
+                ? `设置 ${editorWorker?.displayName || editorWorker?.username || '该作业员'} 的待审核任务上限。`
+                : `设置 ${editorWorker?.displayName || editorWorker?.username || '该作业员'} 每次手动触发时分配的任务数量。`}</DialogDescription>
           </div>
         </div>
         <form className="stack"
@@ -374,17 +488,21 @@ export function AutoAssignmentPoolManager({
           {editor?.mode === 'edit' && !editorWorker
             ? <div className="notice error" role="alert">该作业员已被其他管理员移出，请关闭弹窗后重试。</div>
             : <div className="field">
-              <label htmlFor="auto-assignment-limit">待审核任务上限</label>
+              <label htmlFor="auto-assignment-limit">{assignmentMode === 'CONTINUOUS' ? '待审核任务上限' : '单次分配数量'}</label>
               <Input id="auto-assignment-limit" name="assignmentLimit" type="number" min={1} max={500} step={1}
                 inputMode="numeric" defaultValue={editorWorker?.assignmentLimit ?? 10} disabled={Boolean(busy)} required />
-              <small>允许范围为 1–500。作业员完成任务后，系统会继续补充到这个数量。</small>
+              <small>{assignmentMode === 'CONTINUOUS'
+                ? '允许范围为 1–500。作业员完成任务后，系统会继续补充到这个数量。'
+                : '允许范围为 1–500。每次点击分配只执行这一批，完成后不会自动补位。'}</small>
             </div>}
           {error && <div className="notice error" role="alert">{error}</div>}
           <div className="user-editor-actions">
             <DialogClose asChild><Button unstyled className="button" type="button" disabled={Boolean(busy)}>取消</Button></DialogClose>
             <Button unstyled className="button primary" type="submit"
               disabled={Boolean(busy) || (editor?.mode === 'edit' && !editorWorker)}>
-              {busy === 'save-worker' ? '保存中…' : editor?.mode === 'add' ? '确认加入' : '保存额度'}
+              {busy === 'save-worker'
+                ? '保存中…'
+                : editor?.mode === 'add' ? '确认加入' : assignmentMode === 'CONTINUOUS' ? '保存上限' : '保存数量'}
             </Button>
           </div>
         </form>

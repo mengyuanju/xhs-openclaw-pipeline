@@ -3,22 +3,27 @@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import type { TaskState } from './views';
 import { AdminCreatorFilter, type JobCreator } from './admin-creator-filter';
+import { AdminAssigneeFilter } from './admin-assignee-filter';
 
 export const CREATOR_ROLE_LABELS: Record<string, string> = {
   ADMIN: '管理员', REVIEWER: '审核员', USER: '普通用户', UNKNOWN: '未知角色',
 };
 
-export function AdminJobFilters({ role, state, creator, stateLabels, onRoleChange, onStateChange, onCreatorChange }: {
+export function AdminJobFilters({ role, state, creator, assignee, stateLabels,
+  onRoleChange, onStateChange, onCreatorChange, onAssigneeChange }: {
   role: string;
   state: string;
   creator: JobCreator | null;
+  assignee: JobCreator | null;
   stateLabels: Record<TaskState, string>;
   onRoleChange: (value: string) => void;
   onStateChange: (value: string) => void;
   onCreatorChange: (value: JobCreator | null) => void;
+  onAssigneeChange: (value: JobCreator | null) => void;
 }) {
   return <div className="workbench-admin-filters">
     <AdminCreatorFilter value={creator} roleLabels={CREATOR_ROLE_LABELS} onChange={onCreatorChange} />
+    <AdminAssigneeFilter value={assignee} roleLabels={CREATOR_ROLE_LABELS} onChange={onAssigneeChange} />
     <div>
       <label htmlFor="workbench-creator-role">创建者当前角色</label>
       <Select value={role} onValueChange={onRoleChange}>

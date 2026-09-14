@@ -6,6 +6,8 @@ output/
 outputs/
 server/server-storage/
 server/backups/
+server/logs/
+service-logs/
 server/reports/repair-backups/
 preview-service/backups/
 

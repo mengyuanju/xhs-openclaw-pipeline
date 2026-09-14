@@ -1,4 +1,5 @@
 import { TASK_STATES, normalizeCreatorUserId, normalizeTaskCreatorRole } from './domain.mjs';
+import { normalizeAssigneeUserId } from './task-assignment-domain.mjs';
 
 export const TASK_ATTENTION_FILTERS = Object.freeze(['ANOMALY', 'STALE', 'FAILED']);
 export const SAVED_TASK_VIEW_KEYS = Object.freeze([
@@ -58,6 +59,21 @@ export function normalizeSavedTaskView(value) {
   if (hasCreatorAccountId && (!Number.isSafeInteger(createdByAccountId) || createdByAccountId < 1)) {
     throw new TypeError('saved task view createdByAccountId must be a positive integer');
   }
+  const hasAssigneeUsername = raw.assignedToUserId !== undefined && raw.assignedToUserId !== null && raw.assignedToUserId !== '';
+  const hasAssigneeAccountId = raw.assignedToAccountId !== undefined && raw.assignedToAccountId !== null && raw.assignedToAccountId !== '';
+  const assignedToUserId = hasAssigneeUsername
+    ? normalizeAssigneeUserId(raw.assignedToUserId, { allowNull: false }) : '';
+  if (hasAssigneeUsername !== hasAssigneeAccountId) {
+    throw new TypeError('saved task view assignee username and account id must be provided together');
+  }
+  const assignedToAccountId = hasAssigneeAccountId ? Number(raw.assignedToAccountId) : null;
+  if (hasAssigneeAccountId && (!Number.isSafeInteger(assignedToAccountId) || assignedToAccountId < 1)) {
+    throw new TypeError('saved task view assignedToAccountId must be a positive integer');
+  }
+  const personalScope = String(raw.personalScope ?? 'ALL').toUpperCase();
+  if (!['ALL', 'ASSIGNED', 'CREATED'].includes(personalScope)) {
+    throw new TypeError('saved task view personalScope is invalid');
+  }
   const createdByRole = raw.createdByRole === 'ALL' || raw.createdByRole === undefined || raw.createdByRole === null
     ? 'ALL' : normalizeTaskCreatorRole(raw.createdByRole);
   const state = String(raw.state ?? 'ALL');
@@ -77,7 +93,10 @@ export function normalizeSavedTaskView(value) {
       deduplicateQuery: raw.deduplicateQuery === true,
       createdByUserId,
       createdByAccountId,
+      assignedToUserId,
+      assignedToAccountId,
       createdByRole,
+      personalScope,
       state,
       sort,
       attention,

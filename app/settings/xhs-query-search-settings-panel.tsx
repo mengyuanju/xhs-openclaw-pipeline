@@ -1,7 +1,8 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { useConfirmDialog } from '@/components/ui/confirm-dialog';
+import { Input, Switch } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 import { ListOrdered } from 'lucide-react';
@@ -26,6 +27,7 @@ const MAX_DAILY_LIMIT = 8640;
 type XiaohongshuSearchMode = 'FASTEST' | 'THOROUGH';
 
 type XiaohongshuQuerySearchSettings = {
+  enabled: boolean;
   resultLimit: number;
   searchMode: XiaohongshuSearchMode;
   minimumIntervalSeconds: number;
@@ -39,6 +41,17 @@ type GlobalSettingRecord = {
   version?: number;
   updatedAt?: string | null;
 };
+
+function enabledFrom(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('中心返回的小红书搜索配置无效');
+  }
+  const enabled = (value as Partial<XiaohongshuQuerySearchSettings>).enabled ?? true;
+  if (typeof enabled !== 'boolean') {
+    throw new TypeError('中心返回的小红书搜索总开关无效');
+  }
+  return enabled;
+}
 
 function resultLimitFrom(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -118,6 +131,7 @@ function settingFromList(value: unknown) {
     && !Array.isArray(candidate)
     && (candidate as Partial<GlobalSettingRecord>).key === 'xhs_query_search') as GlobalSettingRecord | undefined;
   if (!record) return {
+    enabled: true,
     resultLimit: DEFAULT_RESULT_LIMIT,
     searchMode: DEFAULT_SEARCH_MODE as XiaohongshuSearchMode,
     minimumIntervalSeconds: DEFAULT_MINIMUM_INTERVAL_SECONDS,
@@ -126,6 +140,7 @@ function settingFromList(value: unknown) {
     updatedAt: null,
   };
   return {
+    enabled: enabledFrom(record.value),
     resultLimit: resultLimitFrom(record.value),
     searchMode: searchModeFrom(record.value),
     ...pacingFrom(record.value),
@@ -142,6 +157,7 @@ function settingFromSave(value: unknown) {
     throw new TypeError('中心返回的小红书搜索配置不完整');
   }
   return {
+    enabled: enabledFrom(record.value),
     resultLimit: resultLimitFrom(record.value),
     searchMode: searchModeFrom(record.value),
     ...pacingFrom(record.value),
@@ -154,6 +170,8 @@ export function XhsQuerySearchSettingsPanel({
 }: {
   onSaved?: () => Promise<void>;
 }) {
+  const confirm = useConfirmDialog();
+  const [savedEnabled, setSavedEnabled] = useState(true);
   const [savedResultLimit, setSavedResultLimit] = useState(DEFAULT_RESULT_LIMIT);
   const [draft, setDraft] = useState(String(DEFAULT_RESULT_LIMIT));
   const [savedSearchMode, setSavedSearchMode] = useState<XiaohongshuSearchMode>(DEFAULT_SEARCH_MODE);
@@ -176,6 +194,7 @@ export function XhsQuerySearchSettingsPanel({
     setError('');
     try {
       const setting = settingFromList(await apiRequest<unknown>(SETTINGS_ENDPOINT, { cache: 'no-store' }));
+      setSavedEnabled(setting.enabled);
       setSavedResultLimit(setting.resultLimit);
       setDraft(String(setting.resultLimit));
       setSavedSearchMode(setting.searchMode);
@@ -253,6 +272,54 @@ export function XhsQuerySearchSettingsPanel({
     setMessage('已恢复系统默认频率；点击保存后生效。');
   }
 
+  async function updateEnabled(enabled: boolean) {
+    if (enabled === savedEnabled || busy || !loaded) return;
+    if (!enabled) {
+      const approved = await confirm({
+        title: '关闭小红书搜索？',
+        description: '关闭后，所有搜索节点会停止领取新任务。待处理任务和已有结果会保留，正在运行的单条搜索仍会正常收尾。',
+        confirmLabel: '确认关闭',
+      });
+      if (!approved) return;
+    }
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      const setting = settingFromSave(await apiRequest<unknown>(UPDATE_ENDPOINT, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: {
+          enabled,
+          resultLimit: savedResultLimit,
+          searchMode: savedSearchMode,
+          minimumIntervalSeconds: savedMinimumIntervalSeconds,
+          hourlyLimit: savedHourlyLimit,
+          dailyLimit: savedDailyLimit,
+        } }),
+      }));
+      setSavedEnabled(setting.enabled);
+      setSavedResultLimit(setting.resultLimit);
+      setSavedSearchMode(setting.searchMode);
+      setSavedMinimumIntervalSeconds(setting.minimumIntervalSeconds);
+      setSavedHourlyLimit(setting.hourlyLimit);
+      setSavedDailyLimit(setting.dailyLimit);
+      setUpdatedAt(setting.updatedAt);
+      setMessage(setting.enabled
+        ? '小红书搜索已开启，搜索节点可以继续领取待处理任务。'
+        : '小红书搜索已关闭，不再发放新搜索任务；待处理任务和已有结果均已保留。');
+      try {
+        await onSaved?.();
+      } catch {
+        setError('总开关已保存，但页面其他配置刷新失败，请稍后刷新页面。');
+      }
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : '小红书搜索总开关保存失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function save() {
     if (invalid) return;
     setBusy(true);
@@ -263,6 +330,7 @@ export function XhsQuerySearchSettingsPanel({
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ value: {
+          enabled: savedEnabled,
           resultLimit: parsedResultLimit,
           searchMode: draftSearchMode,
           minimumIntervalSeconds: parsedMinimumIntervalSeconds,
@@ -270,6 +338,7 @@ export function XhsQuerySearchSettingsPanel({
           dailyLimit: parsedDailyLimit,
         } }),
       }));
+      setSavedEnabled(setting.enabled);
       setSavedResultLimit(setting.resultLimit);
       setDraft(String(setting.resultLimit));
       setSavedSearchMode(setting.searchMode);
@@ -301,16 +370,28 @@ export function XhsQuerySearchSettingsPanel({
         <h2 id="xhs-query-search-heading">小红书 Query 查找</h2>
         <p className="subtle">控制每个 Query 使用首屏极速选择，或滚动多轮后再按点赞量排序。</p>
       </div>
-      <ListOrdered size={20} aria-hidden="true" />
+      <div className="inline">
+        <ListOrdered size={20} aria-hidden="true" />
+        {loaded && <label className="switch-field">
+          <Switch
+            aria-label="小红书搜索总开关"
+            checked={savedEnabled}
+            disabled={disabled}
+            onChange={(event) => { void updateEnabled(event.currentTarget.checked); }}
+          />
+          <span>{savedEnabled ? '搜索已开启' : '搜索已关闭'}</span>
+        </label>}
+      </div>
     </div>
     {loading && <p className="subtle" role="status">正在读取小红书搜索配置…</p>}
     {loaded && <p className="notice" role="status">
-      当前保存：{savedSearchMode === 'FASTEST'
+      当前保存：{savedEnabled ? '功能已开启' : '功能已关闭'} · {savedSearchMode === 'FASTEST'
         ? '极速模式 · 首屏点赞最高 1 条'
         : `深度排序 · 最多 ${savedResultLimit} 条`}
       {` · 最短 ${savedMinimumIntervalSeconds} 秒 · ${savedHourlyLimit} 次/60 分钟 · ${savedDailyLimit} 次/24 小时`}
       {changed && <span> · 有未保存的更改</span>}
     </p>}
+    {loaded && !savedEnabled && <p className="notice">关闭期间不会发放新的小红书搜索任务；待处理任务和已有结果继续保留，重新开启后会从队列继续处理。</p>}
     <div className="form-grid compact-settings-grid">
       <div className="field">
         <label htmlFor="xhs-query-search-mode">搜索模式</label>

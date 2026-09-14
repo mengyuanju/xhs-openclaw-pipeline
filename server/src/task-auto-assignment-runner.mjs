@@ -1,6 +1,9 @@
 import { normalizeTaskId } from './domain.mjs';
 import { normalizeAssigneeUserId } from './task-assignment-domain.mjs';
-import { normalizeAutoAssignmentLimit } from './task-auto-assignment-domain.mjs';
+import {
+  normalizeAutoAssignmentLimit,
+  normalizeAutoAssignmentMode,
+} from './task-auto-assignment-domain.mjs';
 
 export const AUTO_ASSIGNMENT_ACTOR = 'system:auto-assignment';
 export const AUTO_ASSIGNMENT_MAX_PER_RUN = 500;
@@ -151,6 +154,10 @@ export async function runAutoAssignmentReplenishment(pool, {
     if (!settings) throw new Error('automatic assignment settings are unavailable');
     const settingsVersion = Number(settings.version);
     if (settings.enabled !== true) return summary('DISABLED', { settingsVersion });
+    const assignmentMode = normalizeAutoAssignmentMode(settings.mode ?? 'CONTINUOUS');
+    if (assignmentMode !== 'CONTINUOUS') {
+      return summary('FIXED_QUANTITY_MODE', { settingsVersion });
+    }
 
     // Lock account rows before pool rows. User deletion takes the same order
     // before its membership is removed by the foreign-key cascade.

@@ -236,6 +236,11 @@ export async function claimXhsQuerySearch(pool, input) {
         error = COALESCE(error, '搜索租约超时，结果未确认'), updated_at = now()
       WHERE status = 'RUNNING' AND lease_expires_at <= now()
     `, [MAX_ATTEMPTS]);
+    const setting = await client.query(`
+      SELECT value FROM global_settings WHERE key = $1 FOR SHARE
+    `, [XIAOHONGSHU_SEARCH_SETTINGS_KEY]);
+    const settings = normalizeXiaohongshuSearchSettings(setting.rows[0]?.value ?? {});
+    if (!settings.enabled) return null;
     const blockedOrRunning = await client.query(`
       SELECT id FROM xhs_query_search_jobs
       WHERE status = 'RUNNING' OR status = 'BLOCKED'
@@ -263,10 +268,6 @@ export async function claimXhsQuerySearch(pool, input) {
       LIMIT 1
     `);
     if (!candidate.rows[0]) return null;
-    const setting = await client.query(`
-      SELECT value FROM global_settings WHERE key = $1 FOR SHARE
-    `, [XIAOHONGSHU_SEARCH_SETTINGS_KEY]);
-    const settings = normalizeXiaohongshuSearchSettings(setting.rows[0]?.value ?? {});
     const searchMode = settings.searchMode;
     const resultLimit = searchMode === 'FASTEST' ? 1 : settings.resultLimit;
     const rateGate = await client.query(`

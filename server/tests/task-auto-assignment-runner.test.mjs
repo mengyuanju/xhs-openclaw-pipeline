@@ -115,6 +115,23 @@ test('disabled settings are a transactionally locked no-op before members or tas
   assert.equal(database.released, true);
 });
 
+test('continuous runner never claims tasks while fixed-quantity mode is selected', async () => {
+  const database = fakePool(({ sql }) => {
+    if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
+    if (sql.includes('pg_try_advisory_xact_lock')) return { rows: [{ acquired: true }] };
+    if (sql.includes('FROM task_auto_assignment_settings')) {
+      return { rows: [{ enabled: true, mode: 'FIXED_QUANTITY', version: 5 }] };
+    }
+    throw new Error(`unexpected query: ${sql}`);
+  });
+  const result = await runAutoAssignmentReplenishment(database.pool);
+  assert.equal(result.outcome, 'FIXED_QUANTITY_MODE');
+  assert.equal(result.assignedCount, 0);
+  assert.equal(database.calls.some(({ sql }) => sql.includes('task_auto_assignment_workers')), false);
+  assert.equal(database.calls.some(({ sql }) => /UPDATE tasks/u.test(sql)), false);
+  assert.equal(database.calls.at(-1).sql, 'COMMIT');
+});
+
 test('a center that cannot acquire the advisory transaction lock skips without waiting', async () => {
   const database = fakePool(({ sql }) => {
     if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };

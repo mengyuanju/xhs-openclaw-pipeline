@@ -22,6 +22,7 @@ import { Disclosure, DisclosureContent, DisclosureTrigger } from '@/components/u
 import { TransientInfoBubble } from '@/components/ui/transient-info-bubble';
 
 import { apiRequest } from '../components/api-client';
+import { createRequestId } from '../components/request-id';
 import { resumeImageTask } from '../components/resume-image-task';
 import { canResumeImageTask } from '../../src/control-plane/image-resume.mjs';
 import { TaskQualitySummary } from './task-quality-summary';
@@ -397,12 +398,7 @@ function getPlanEditBlockMessage({
 }
 
 function newReviewSessionId() {
-  if (typeof globalThis.crypto.randomUUID === 'function') return globalThis.crypto.randomUUID();
-  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = [...bytes].map(byte => byte.toString(16).padStart(2, '0'));
-  return `${hex.slice(0, 4).join('')}-${hex.slice(4, 6).join('')}-${hex.slice(6, 8).join('')}-${hex.slice(8, 10).join('')}-${hex.slice(10).join('')}`;
+  return createRequestId();
 }
 
 export function TaskReviewDialog({
@@ -947,6 +943,33 @@ export function TaskReviewDialog({
     finally { setSubmitting(false); }
   }
 
+  async function adminDirectApproveCopyQa() {
+    if (!detail || role !== 'ADMIN' || detail.state !== 'COPY_QC_PENDING' || submitting || loading) return;
+    if (!await confirm({
+      title: '单独通过这条文案质检？',
+      description: '这条任务会绕过当前批次的文案质检池，立即进入待生图队列。系统会保留本次管理员审核记录。',
+      confirmLabel: '通过并进入生图',
+    })) return;
+    setSubmitting(true);
+    setError('');
+    try {
+      await apiRequest(apiPath(`/v1/tasks/${detail.id}/admin-direct-copy-qa`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requestId: createRequestId(),
+          expectedCopyRevisionId: detail.currentCopyRevisionId,
+        }),
+      });
+      await onUpdated(`任务 #${detail.id} 已由管理员单独通过文案质检，并进入待生图队列。`);
+      onOpenChange(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '单独通过文案质检失败');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function submitImageReview(decision: 'APPROVE' | 'REWORK' | 'DISCARD', reworkTarget?: 'COPY' | 'IMAGE' | 'BOTH') {
     if (!detail || !canReviewImages || submitting) return;
     if (decision === 'REWORK' && !reworkTarget) return;
@@ -1440,6 +1463,11 @@ export function TaskReviewDialog({
             <div>
               <DialogClose asChild><Button unstyled className="button" type="button" disabled={submitting}>关闭</Button></DialogClose>
               {canRetryCopy && <Button unstyled className="button primary" type="button" disabled={submitting || loading} onClick={() => { void retryCopy(); }}><RotateCcw size={15} />重试文案</Button>}
+              {role === 'ADMIN' && detail.state === 'COPY_QC_PENDING'
+                && <Button unstyled className="button primary" type="button" disabled={submitting || loading}
+                  onClick={() => { void adminDirectApproveCopyQa(); }}>
+                  <CheckCircle2 size={15} />{submitting ? '正在提交…' : '单独通过质检并生图'}
+                </Button>}
               {canResumeImages && <Button unstyled className="button primary" type="button" disabled={submitting || loading} onClick={() => { void resumeImages(); }}><RotateCcw size={15} />从失败步骤继续</Button>}
               {canReviewImages && <>
                 <Button unstyled className="button danger" type="button" disabled={submitting || loading || !imageRatingComplete} onClick={() => { void submitImageReview('DISCARD'); }}><Trash2 size={15} />废弃</Button>

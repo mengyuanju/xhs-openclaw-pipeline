@@ -18,6 +18,8 @@ import { saveModelCall, listModelCalls, getModelCall } from './model-call-traces
 import { hashUserPassword, verifyUserPassword } from './user-auth.mjs';
 import { heartbeatExecutions, recoverStaleExecutions } from './execution-recovery.mjs';
 import {
+  AUTO_ASSIGNABLE_TASK_STATES,
+  AUTO_ASSIGNMENT_ACTOR,
   runAutoAssignmentReplenishment,
 } from './task-auto-assignment-runner.mjs';
 import { normalizeSavedTaskView, normalizeTaskAttention } from './task-view-filters.mjs';
@@ -32,6 +34,7 @@ import {
   normalizeHumanQualitySettingsUpdate,
 } from '../../src/human-quality-settings.mjs';
 import {
+  XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
   XIAOHONGSHU_SEARCH_SETTINGS_KEY,
   normalizeXiaohongshuSearchSettings,
 } from '../../src/xhs-query-search.mjs';
@@ -39,6 +42,7 @@ import {
   normalizeAutoAssignmentEnabled,
   normalizeAutoAssignmentExpectedVersion,
   normalizeAutoAssignmentLimit,
+  normalizeAutoAssignmentMode,
   normalizeAutoAssignmentWorkerStatus,
 } from './task-auto-assignment-domain.mjs';
 import {
@@ -69,6 +73,7 @@ import {
 } from './query-duplicate-discard.mjs';
 import { taskQueryIdentitySql } from './task-query-identity.mjs';
 import {
+  adminDirectApproveCopyQa,
   batchReturnCopyQa,
   freezeCopySamplingBatch,
   getCopyQaItem,
@@ -588,6 +593,7 @@ function autoAssignmentSettingsFrom(row) {
   if (!row) return null;
   return {
     enabled: row.enabled === true,
+    mode: normalizeAutoAssignmentMode(row.mode ?? 'CONTINUOUS'),
     version: Number(row.version),
     updatedByUsername: row.updated_by_username ?? null,
     createdAt: row.created_at,
@@ -611,6 +617,7 @@ function autoAssignmentWorkerFrom(row) {
     userStatus,
     status,
     assignmentLimit,
+    allocationCount: assignmentLimit,
     currentTaskCount,
     availableSlots: Math.max(0, assignmentLimit - currentTaskCount),
     canReceive: status === 'ACTIVE' && userRole === 'USER' && userStatus === 'ACTIVE',
@@ -1352,6 +1359,10 @@ export class PostgresControlPlaneRepository {
   listCopyQaItems(options, { actor } = {}) { return listCopyQaItems(this.pool, options, actor); }
   getCopyQaItem(id, { actor } = {}) { return getCopyQaItem(this.pool, id, actor); }
   passCopyQaItem(id, input, { actor } = {}) { return passCopyQaItem(this.pool, id, input, actor); }
+  async adminDirectApproveCopyQa(id, input, { actor } = {}) {
+    const result = await adminDirectApproveCopyQa(this.pool, id, input, actor);
+    return taskFrom(result.task);
+  }
   returnCopyQaItem(id, input, { actor, expectedTaskId = null } = {}) {
     return returnCopyQaItem(this.pool, id, input, actor, expectedTaskId);
   }
@@ -1415,7 +1426,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 5, xiaohongshuQuerySearchVersion: 4, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1, deliveryPreviewVersion: 6 } };
+      capabilities: { executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 5, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1, deliveryPreviewVersion: 6 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -1505,11 +1516,13 @@ export class PostgresControlPlaneRepository {
 
   async updateAutoAssignmentSettings({
     enabled: rawEnabled,
+    mode: rawMode,
     expectedVersion: rawExpectedVersion,
     actor: rawActor = null,
     actorUsername: rawActorUsername,
   }) {
     const enabled = normalizeAutoAssignmentEnabled(rawEnabled);
+    const requestedMode = rawMode === undefined ? null : normalizeAutoAssignmentMode(rawMode);
     const expectedVersion = normalizeAutoAssignmentExpectedVersion(rawExpectedVersion);
     const actor = rawActor === null ? null : normalizedActorIdentity(rawActor);
     const actorUsername = actor?.username ?? normalizedUsername(rawActorUsername);
@@ -1526,14 +1539,16 @@ export class PostgresControlPlaneRepository {
       const current = currentResult.rows[0];
       if (!current) throw new ControlPlaneNotFoundError('automatic assignment settings not found');
       assertAutoAssignmentVersion(current.version, expectedVersion, 'automatic assignment settings');
-      if (current.enabled === enabled) return autoAssignmentSettingsFrom(current);
+      const currentMode = normalizeAutoAssignmentMode(current.mode ?? 'CONTINUOUS');
+      const mode = requestedMode ?? currentMode;
+      if (current.enabled === enabled && currentMode === mode) return autoAssignmentSettingsFrom(current);
       const updatedResult = await client.query(`
         UPDATE task_auto_assignment_settings
-        SET enabled = $1, version = version + 1,
-            updated_by_username = $2, updated_at = now()
-        WHERE singleton = 1 AND version = $3
+        SET enabled = $1, mode = $2, version = version + 1,
+            updated_by_username = $3, updated_at = now()
+        WHERE singleton = 1 AND version = $4
         RETURNING *
-      `, [enabled, actorUsername, expectedVersion]);
+      `, [enabled, mode, actorUsername, expectedVersion]);
       const updated = updatedResult.rows[0];
       if (!updated) {
         throw new ControlPlaneConflictError(
@@ -1545,8 +1560,16 @@ export class PostgresControlPlaneRepository {
         actorUsername,
         action: 'SETTINGS_UPDATED',
         details: {
-          previous: { enabled: current.enabled === true, version: Number(current.version) },
-          next: { enabled: updated.enabled === true, version: Number(updated.version) },
+          previous: {
+            enabled: current.enabled === true,
+            mode: currentMode,
+            version: Number(current.version),
+          },
+          next: {
+            enabled: updated.enabled === true,
+            mode: normalizeAutoAssignmentMode(updated.mode ?? mode),
+            version: Number(updated.version),
+          },
         },
       });
       return autoAssignmentSettingsFrom(updated);
@@ -1674,6 +1697,208 @@ export class PostgresControlPlaneRepository {
         },
       });
       return readAutoAssignmentWorker(client, username);
+    });
+  }
+
+  async allocateAutoAssignmentWorker(rawUsername, {
+    expectedVersion: rawExpectedVersion,
+    accountId: rawAccountId,
+    actor: rawActor,
+  }) {
+    const username = normalizedUsername(rawUsername);
+    const expectedVersion = normalizeAutoAssignmentExpectedVersion(rawExpectedVersion);
+    const accountId = normalizeTaskId(rawAccountId);
+    const actor = normalizedActorIdentity(rawActor);
+    return transaction(this.pool, async (client) => {
+      const lockedActor = await lockCurrentActor(client, actor);
+      if (lockedActor.actor.role !== 'ADMIN') {
+        throw new ControlPlaneAuthorizationError('only administrators can run fixed-quantity assignment');
+      }
+
+      const settingsResult = await client.query(`
+        SELECT enabled, mode, version
+        FROM task_auto_assignment_settings
+        WHERE singleton = 1
+        FOR SHARE
+      `);
+      const settings = settingsResult.rows[0];
+      if (!settings) throw new ControlPlaneNotFoundError('automatic assignment settings not found');
+      if (settings.enabled !== true) {
+        throw new ControlPlaneConflictError('AUTO_ASSIGNMENT_DISABLED', 'automatic assignment is disabled');
+      }
+      const mode = normalizeAutoAssignmentMode(settings.mode ?? 'CONTINUOUS');
+      if (mode !== 'FIXED_QUANTITY') {
+        throw new ControlPlaneConflictError(
+          'AUTO_ASSIGNMENT_MODE_CHANGED',
+          'automatic assignment is not in fixed-quantity mode',
+        );
+      }
+
+      // Keep the account and membership stable while selecting and assigning
+      // tasks. Manual assignment uses the same account -> member -> task order.
+      await lockAccountIdentity(client, username, accountId);
+      await assertActiveAssignableUser(client, username, accountId);
+      const memberResult = await client.query(`
+        SELECT *
+        FROM task_auto_assignment_workers
+        WHERE username = $1
+        FOR UPDATE
+      `, [username]);
+      const member = memberResult.rows[0];
+      if (!member) throw new ControlPlaneNotFoundError('automatic assignment worker not found');
+      assertAutoAssignmentVersion(member.version, expectedVersion, 'automatic assignment worker');
+      if (member.status !== 'ACTIVE') {
+        throw new ControlPlaneConflictError(
+          'AUTO_ASSIGNMENT_WORKER_PAUSED',
+          'automatic assignment worker is paused',
+        );
+      }
+      const requestedCount = normalizeAutoAssignmentLimit(Number(member.assignment_limit));
+      const workerBefore = await readAutoAssignmentWorker(client, username);
+      if (!workerBefore) throw new ControlPlaneNotFoundError('automatic assignment worker not found');
+
+      const candidateResult = await client.query(`
+        SELECT id
+        FROM tasks
+        WHERE assigned_to_user_id IS NULL
+          AND state = ANY($1::varchar[])
+          AND current_stage = 'COPY_REVIEW_PENDING'
+          AND current_execution_id IS NULL
+        ORDER BY id
+        FOR UPDATE SKIP LOCKED
+        LIMIT $2::integer
+      `, [AUTO_ASSIGNABLE_TASK_STATES, requestedCount]);
+      const taskIds = candidateResult.rows.map((row) => normalizeTaskId(row.id));
+      if (!taskIds.length) {
+        return {
+          outcome: 'NO_PENDING_TASKS',
+          mode,
+          settingsVersion: Number(settings.version),
+          username,
+          requestedCount,
+          assignedCount: 0,
+          unfilledCount: requestedCount,
+          assignedTaskIds: [],
+          currentTaskCountBefore: workerBefore.currentTaskCount,
+          currentTaskCountAfter: workerBefore.currentTaskCount,
+          workerVersion: Number(member.version),
+        };
+      }
+
+      const updatedResult = await client.query(`
+        UPDATE tasks AS task
+        SET assigned_to_user_id = $2,
+            assignment_source = 'AUTO',
+            assigned_at = now(),
+            progress_message = CASE
+              WHEN task.progress_message IS NULL OR task.progress_message IN (
+                  '等待管理员分配作业员',
+                  '等待分配负责人',
+                  '负责人待分配，等待文案执行机领取',
+                  '文案生成完成，等待分配负责人后审核'
+                )
+                THEN '文案生成完成，等待人工审核'
+              ELSE task.progress_message
+            END,
+            updated_at = now()
+        WHERE task.id = ANY($1::bigint[])
+          AND task.assigned_to_user_id IS NULL
+          AND task.state = ANY($3::varchar[])
+          AND task.current_stage = 'COPY_REVIEW_PENDING'
+          AND task.current_execution_id IS NULL
+        RETURNING task.id, task.assigned_to_user_id
+      `, [taskIds, username, AUTO_ASSIGNABLE_TASK_STATES]);
+      const updatedTaskIds = new Set(updatedResult.rows.map((row) => normalizeTaskId(row.id)));
+      if (updatedTaskIds.size !== taskIds.length
+        || taskIds.some((taskId) => !updatedTaskIds.has(taskId))
+        || updatedResult.rows.some((row) => row.assigned_to_user_id !== username)) {
+        throw new Error('fixed-quantity assignment changed while its tasks were locked');
+      }
+
+      const auditResult = await client.query(`
+        INSERT INTO task_assignment_events(
+          task_id, actor_username, previous_assignee_user_id,
+          assignee_user_id, source, reason
+        )
+        SELECT selected.task_id, $2, NULL, $3, 'AUTO', $4
+        FROM unnest($1::bigint[]) WITH ORDINALITY AS selected(task_id, ordinal)
+        ORDER BY selected.ordinal
+        RETURNING id, task_id, assignee_user_id
+      `, [
+        taskIds,
+        AUTO_ASSIGNMENT_ACTOR,
+        username,
+        '管理员按指定数量单次分配',
+      ]);
+      const auditedTaskIds = new Set(auditResult.rows.map((row) => normalizeTaskId(row.task_id)));
+      if (auditedTaskIds.size !== taskIds.length
+        || taskIds.some((taskId) => !auditedTaskIds.has(taskId))
+        || auditResult.rows.some((row) => row.assignee_user_id !== username)) {
+        throw new Error('fixed-quantity assignment audit is incomplete');
+      }
+      const lastAutoEventId = auditResult.rows.reduce((latest, row) => {
+        const eventId = BigInt(row.id);
+        return eventId > latest ? eventId : latest;
+      }, 0n);
+      const cursorResult = await client.query(`
+        INSERT INTO task_auto_assignment_cursors AS current_cursor(
+          username, last_auto_event_id
+        ) VALUES ($1, $2::bigint)
+        ON CONFLICT(username) DO UPDATE SET
+          last_auto_event_id = GREATEST(
+            current_cursor.last_auto_event_id,
+            excluded.last_auto_event_id
+          ),
+          updated_at = now()
+        RETURNING username, last_auto_event_id
+      `, [username, lastAutoEventId.toString()]);
+      if (cursorResult.rows.length !== 1 || cursorResult.rows[0].username !== username
+        || BigInt(cursorResult.rows[0].last_auto_event_id) < lastAutoEventId) {
+        throw new Error('fixed-quantity assignment cursor is incomplete');
+      }
+
+      const nextMemberResult = await client.query(`
+        UPDATE task_auto_assignment_workers
+        SET version = version + 1,
+            updated_by_username = $3,
+            updated_at = now()
+        WHERE username = $1 AND version = $2
+        RETURNING version
+      `, [username, expectedVersion, actor.username]);
+      const nextMember = nextMemberResult.rows[0];
+      if (!nextMember) {
+        throw new ControlPlaneConflictError(
+          'VERSION_CONFLICT',
+          'automatic assignment worker was updated by another request',
+        );
+      }
+      await recordAutoAssignmentAdminEvent(client, {
+        actorUsername: actor.username,
+        action: 'ALLOCATION_RUN',
+        workerUsername: username,
+        details: {
+          mode,
+          requestedCount,
+          assignedCount: taskIds.length,
+          unfilledCount: requestedCount - taskIds.length,
+          assignedTaskIds: taskIds,
+          previousVersion: Number(member.version),
+          nextVersion: Number(nextMember.version),
+        },
+      });
+      return {
+        outcome: 'ASSIGNED',
+        mode,
+        settingsVersion: Number(settings.version),
+        username,
+        requestedCount,
+        assignedCount: taskIds.length,
+        unfilledCount: requestedCount - taskIds.length,
+        assignedTaskIds: taskIds,
+        currentTaskCountBefore: workerBefore.currentTaskCount,
+        currentTaskCountAfter: workerBefore.currentTaskCount + taskIds.length,
+        workerVersion: Number(nextMember.version),
+      };
     });
   }
 
@@ -2344,6 +2569,7 @@ export class PostgresControlPlaneRepository {
     createdByUserId = null,
     createdByAccountId = null,
     assignedToUserId = null,
+    assignedToAccountId = null,
     visibleToUserId = null,
     visibleToAccountId = null,
     unassignedOnly = false,
@@ -2373,6 +2599,9 @@ export class PostgresControlPlaneRepository {
     if (typeof lastPage !== 'boolean') throw new TypeError('lastPage must be a boolean');
     if (lastPage && !includeTotal) throw new TypeError('lastPage requires includeTotal');
     if (unassignedOnly && assignedToUserId !== null) throw new TypeError('assignee and unassigned filters conflict');
+    if (assignedToAccountId !== null && assignedToUserId === null) {
+      throw new TypeError('assignedToAccountId requires assignedToUserId');
+    }
     if (visibleToAccountId !== null && visibleToUserId === null) {
       throw new TypeError('visibleToAccountId requires visibleToUserId');
     }
@@ -2419,7 +2648,20 @@ export class PostgresControlPlaneRepository {
     }
     if (assignedToUserId !== null) {
       values.push(normalizeAssigneeUserId(assignedToUserId, { allowNull: false }));
-      filters.push(`assigned_to_user_id = $${values.length}`);
+      const assigneeParameter = values.length;
+      if (assignedToAccountId !== null) {
+        values.push(normalizeTaskId(assignedToAccountId));
+        filters.push(`assigned_to_user_id = $${assigneeParameter}
+          AND EXISTS (
+            SELECT 1 FROM app_users exact_assignee
+            WHERE exact_assignee.username = tasks.assigned_to_user_id
+              AND exact_assignee.username = $${assigneeParameter}
+              AND exact_assignee.id = $${values.length}
+              AND exact_assignee.created_at < tasks.assigned_at
+          )`);
+      } else {
+        filters.push(`assigned_to_user_id = $${assigneeParameter}`);
+      }
     } else if (unassignedOnly) {
       filters.push('assigned_to_user_id IS NULL');
     } else if (excludeUnassigned) {

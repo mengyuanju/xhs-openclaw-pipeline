@@ -33,7 +33,7 @@ test('automatic assignment pool is explicit, versioned and built from shared con
   assert.doesNotMatch(userManager, /autoAssignment|assignmentLimit/u);
 
   assert.match(manager, /\/api\/control-plane\/v1\/auto-assignment\/settings/u);
-  assert.match(manager, /method: 'PATCH'[\s\S]*enabled[\s\S]*expectedVersion: initialSnapshot\.settings\.version/u);
+  assert.match(manager, /method: 'PATCH'[\s\S]*enabled[\s\S]*mode[\s\S]*expectedVersion: initialSnapshot\.settings\.version/u);
   const addStart = manager.indexOf("if (editor.mode === 'add')");
   const editStart = manager.indexOf('const worker = editorWorker;', addStart);
   const statusStart = manager.indexOf('async function updateWorkerStatus', editStart);
@@ -54,7 +54,7 @@ test('automatic assignment pool is explicit, versioned and built from shared con
   assert.match(manager, /method: 'DELETE'[\s\S]*expectedVersion: worker\.version/u);
 });
 
-test('automatic assignment pool exposes safe pause and removal semantics without a run-now action', async () => {
+test('automatic assignment pool lets administrators choose continuous or one-shot fixed quantities', async () => {
   const manager = await source('app/users/auto-assignment-pool-manager.tsx');
 
   assert.match(manager, /新建用户默认不会加入自动分配池/u);
@@ -67,5 +67,11 @@ test('automatic assignment pool exposes safe pause and removal semantics without
   assert.match(manager, /停用账号不能恢复自动接单/u);
   assert.match(manager, /worker\.userRole === 'USER' && worker\.userStatus === 'ACTIVE'/u);
   assert.match(manager, /disabled=\{Boolean\(busy\) \|\| \(!isAccountEligible && worker\.status === 'PAUSED'\)\}/u);
-  assert.doesNotMatch(manager, /run.?now|立即补充|立即调度/iu);
+  assert.match(manager, /<SelectItem value="CONTINUOUS">持续补位<\/SelectItem>/u);
+  assert.match(manager, /<SelectItem value="FIXED_QUANTITY">定量分配<\/SelectItem>/u);
+  assert.match(manager, /系统将停止循环补位/u);
+  assert.match(manager, /完成后不会自动补位/u);
+  assert.match(manager, /\$\{workerPath\(worker\.username\)\}\/allocate/u);
+  assert.match(manager, /method: 'POST'[\s\S]*accountId: worker\.accountId,[\s\S]*expectedVersion: worker\.version/u);
+  assert.match(manager, /assignmentMode === 'FIXED_QUANTITY'[\s\S]*分配 \{allocationCount\} 条/u);
 });

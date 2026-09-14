@@ -58,6 +58,7 @@ async function proxyRequest(
       '/v1/tasks/duplicate-query-discard-preview', '/v1/tasks/duplicate-query-discard'].includes(routePath)
     || /^\/v1\/delivery-pool\/(?:archive|xlsx)(?:\/|$)/u.test(routePath)
     || /^\/v1\/tasks\/[^/]+\/assignee$/u.test(routePath)
+    || /^\/v1\/tasks\/[^/]+\/admin-direct-copy-qa$/u.test(routePath)
     || (routePath === '/v1/tasks' && upstreamUrl.searchParams.has('attention')))) {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可使用任务集中处理功能');
   }
@@ -86,6 +87,7 @@ async function proxyRequest(
   if (path.join('/') === 'v1/tasks' && upstreamUrl.searchParams.get('mine') === 'true') {
     upstreamUrl.searchParams.set('personal', 'true');
     upstreamUrl.searchParams.delete('assignedToUserId');
+    upstreamUrl.searchParams.delete('assignedToAccountId');
     upstreamUrl.searchParams.delete('createdByUserId');
     upstreamUrl.searchParams.delete('createdByAccountId');
     upstreamUrl.searchParams.delete('nodeId');
@@ -93,6 +95,7 @@ async function proxyRequest(
     upstreamUrl.searchParams.delete('mine');
   } else if (path.join('/') === 'v1/tasks' && role === 'USER') {
     upstreamUrl.searchParams.set('assignedToUserId', username);
+    upstreamUrl.searchParams.delete('assignedToAccountId');
     upstreamUrl.searchParams.delete('createdByUserId');
     upstreamUrl.searchParams.delete('createdByAccountId');
     upstreamUrl.searchParams.delete('nodeId');

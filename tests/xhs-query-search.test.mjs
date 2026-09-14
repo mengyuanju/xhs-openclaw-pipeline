@@ -78,16 +78,23 @@ test('Xiaohongshu settings default to fastest and allow administrators to choose
     dailyLimit: 150,
   };
   assert.deepEqual(normalizeXiaohongshuSearchSettings(), {
+    enabled: true,
     resultLimit: 3,
     searchMode: 'FASTEST',
     ...defaultPacing,
   });
   assert.deepEqual(normalizeXiaohongshuSearchSettings({ resultLimit: 1 }), {
+    enabled: true,
     resultLimit: 1,
     searchMode: 'FASTEST',
     ...defaultPacing,
   });
-  assert.deepEqual(normalizeXiaohongshuSearchSettings({ resultLimit: 10, searchMode: 'THOROUGH' }), {
+  assert.deepEqual(normalizeXiaohongshuSearchSettings({
+    enabled: false,
+    resultLimit: 10,
+    searchMode: 'THOROUGH',
+  }), {
+    enabled: false,
     resultLimit: 10,
     searchMode: 'THOROUGH',
     ...defaultPacing,
@@ -110,6 +117,12 @@ test('Xiaohongshu settings default to fastest and allow administrators to choose
       /searchMode/u,
     );
   }
+  for (const enabled of [null, 0, 'false']) {
+    assert.throws(
+      () => normalizeXiaohongshuSearchSettings({ enabled }),
+      /enabled must be a boolean/u,
+    );
+  }
   assert.throws(() => normalizeXiaohongshuSearchSettings([]), /must be an object/u);
   assert.throws(
     () => normalizeXiaohongshuSearchSettings({ resultLimit: 3, unexpected: true }),
@@ -127,6 +140,7 @@ test('Xiaohongshu pacing limits are administrator-controlled but cannot exceed m
     hourlyLimit: 120,
     dailyLimit: 2000,
   }), {
+    enabled: true,
     resultLimit: 3,
     searchMode: 'FASTEST',
     minimumIntervalSeconds: 30,

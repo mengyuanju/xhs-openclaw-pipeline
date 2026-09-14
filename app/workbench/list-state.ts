@@ -1,6 +1,7 @@
 import type { TaskSort } from './views';
 
 export type TaskAttention = 'NONE' | 'ANOMALY' | 'STALE' | 'FAILED';
+export type PersonalTaskScope = 'ALL' | 'ASSIGNED' | 'CREATED';
 
 export type WorkbenchListState = {
   page: number;
@@ -11,7 +12,10 @@ export type WorkbenchListState = {
   deduplicateQuery: boolean;
   createdByUserId: string;
   createdByAccountId: number | null;
+  assignedToUserId: string;
+  assignedToAccountId: number | null;
   createdByRole: string;
+  personalScope: PersonalTaskScope;
   state: string;
   attention: TaskAttention;
   taskId: number | null;
@@ -26,7 +30,10 @@ export const DEFAULT_WORKBENCH_LIST_STATE: WorkbenchListState = Object.freeze({
   deduplicateQuery: false,
   createdByUserId: '',
   createdByAccountId: null,
+  assignedToUserId: '',
+  assignedToAccountId: null,
   createdByRole: 'ALL',
+  personalScope: 'ALL',
   state: 'ALL',
   attention: 'NONE',
   taskId: null,
@@ -41,6 +48,7 @@ const TASK_STATES = new Set([
   'queued', 'running', 'copyReview', 'imageReview', 'failed', 'completed', 'cancelled',
 ]);
 const ATTENTION = new Set<TaskAttention>(['NONE', 'ANOMALY', 'STALE', 'FAILED']);
+const PERSONAL_SCOPES = new Set<PersonalTaskScope>(['ALL', 'ASSIGNED', 'CREATED']);
 
 function one(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value;
@@ -63,6 +71,10 @@ export function parseWorkbenchListState(
   const creator = one(search.createdByUserId)?.trim() ?? '';
   const creatorAccountId = positiveInteger(one(search.createdByAccountId), 0);
   const validCreator = allowAdminFilters && /^[a-zA-Z0-9._:-]{1,100}$/u.test(creator) && creatorAccountId > 0;
+  const assignee = one(search.assignedToUserId)?.trim() ?? '';
+  const assigneeAccountId = positiveInteger(one(search.assignedToAccountId), 0);
+  const validAssignee = allowAdminFilters && /^[a-zA-Z0-9._:-]{1,100}$/u.test(assignee) && assigneeAccountId > 0;
+  const personalScope = one(search.personalScope) as PersonalTaskScope | undefined;
   const query = one(search.query)?.trim() ?? '';
   const queryPackageName = one(search.queryPackageName)?.replace(/\s+/gu, ' ').trim() ?? '';
   const taskId = positiveInteger(one(search.taskId), 0);
@@ -75,7 +87,10 @@ export function parseWorkbenchListState(
     deduplicateQuery: ['1', 'true'].includes(one(search.deduplicateQuery) ?? ''),
     createdByUserId: validCreator ? creator : '',
     createdByAccountId: validCreator ? creatorAccountId : null,
+    assignedToUserId: validAssignee ? assignee : '',
+    assignedToAccountId: validAssignee ? assigneeAccountId : null,
     createdByRole: allowAdminFilters && role && CREATOR_ROLES.has(role) ? role : 'ALL',
+    personalScope: personalScope && PERSONAL_SCOPES.has(personalScope) ? personalScope : 'ALL',
     state: state && TASK_STATES.has(state) ? state : 'ALL',
     attention: allowAdminFilters && attention && ATTENTION.has(attention) ? attention : 'NONE',
     taskId: taskId || null,
@@ -91,10 +106,15 @@ export function workbenchListSearch(state: WorkbenchListState, { includeAdminFil
   if (state.sort !== 'priority:desc') search.set('sort', state.sort);
   if (state.deduplicateQuery) search.set('deduplicateQuery', '1');
   if (state.state !== 'ALL') search.set('state', state.state);
+  if (state.personalScope !== 'ALL') search.set('personalScope', state.personalScope);
   if (includeAdminFilters) {
     if (state.createdByUserId && state.createdByAccountId) {
       search.set('createdByUserId', state.createdByUserId);
       search.set('createdByAccountId', String(state.createdByAccountId));
+    }
+    if (state.assignedToUserId && state.assignedToAccountId) {
+      search.set('assignedToUserId', state.assignedToUserId);
+      search.set('assignedToAccountId', String(state.assignedToAccountId));
     }
     if (state.createdByRole !== 'ALL') search.set('createdByRole', state.createdByRole);
     if (state.attention !== 'NONE') search.set('attention', state.attention);

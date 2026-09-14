@@ -71,6 +71,20 @@ npm start
 npm run start:lan
 ```
 
+### Windows 后台常驻
+
+中心机可把正式 Web 和小红书搜索进程注册为当前 Windows 账号的后台计划任务。任务在登录时自动启动，不依赖命令窗口，异常退出后每分钟重启，并拒绝同一计划任务重复运行。搜索进程使用当前账号的小红书登录资料，因此不应改为 SYSTEM 账号运行。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install-project-service-tasks.ps1
+```
+
+服务日志按日期保存在 `service-logs/`，默认保留 14 天。首次安装时不要和手工进程重复启动；安装后重启或重新登录即可由计划任务接管。也可在手工进程正常停止后运行桌面的“启动全部服务”程序。卸载任务不会删除日志：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/uninstall-project-service-tasks.ps1
+```
+
 执行机使用 `.env` 中的中心地址及稳定节点 ID，先完成预检：
 
 ```powershell

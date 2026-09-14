@@ -39,12 +39,18 @@ test('all roles and states do not add ownership or lifecycle restrictions', asyn
 test('selected operator is sent as an exact account alongside role, state and Query filters', async () => {
   let requested;
   await loadAdminTaskPage(async (path) => {
-    if (path.endsWith('/health')) return { capabilities: { adminTaskFilters: true, creatorAccountFilters: true } };
+    if (path.endsWith('/health')) return { capabilities: {
+      adminTaskFilters: true, creatorAccountFilters: true, assigneeAccountFilters: true,
+    } };
     requested = new URL(path, 'http://localhost');
     return { items: [], total: 0, limit: 20, offset: 20 };
-  }, { createdByUserId: 'operator.02', createdByAccountId: 202, createdByRole: 'USER', state: 'IMAGE_FAILED', query: '周末 & 徒步', offset: 20 });
+  }, { createdByUserId: 'operator.02', createdByAccountId: 202,
+    assignedToUserId: 'reviewer.03', assignedToAccountId: 303,
+    createdByRole: 'USER', state: 'IMAGE_FAILED', query: '周末 & 徒步', offset: 20 });
   assert.equal(requested.searchParams.get('createdByUserId'), 'operator.02');
   assert.equal(requested.searchParams.get('createdByAccountId'), '202');
+  assert.equal(requested.searchParams.get('assignedToUserId'), 'reviewer.03');
+  assert.equal(requested.searchParams.get('assignedToAccountId'), '303');
   assert.equal(requested.searchParams.get('createdByRole'), 'USER');
   assert.equal(requested.searchParams.get('state'), 'IMAGE_FAILED');
   assert.equal(requested.searchParams.get('query'), '周末 & 徒步');
@@ -74,6 +80,20 @@ test('exact creator pages reject incomplete identities and centers without accou
     : { items: [], total: 0, limit: 20, offset: 0 }, {
     createdByUserId: 'operator.02', createdByAccountId: 202,
   }), /精确账号筛选/u);
+  await assert.rejects(loadAdminTaskPage(async () => ({}), { assignedToUserId: 'reviewer.03' }), /负责人筛选缺少稳定账号身份/u);
+  await assert.rejects(loadAdminTaskPage(async (path) => path.endsWith('/health')
+    ? { capabilities: { adminTaskFilters: true } }
+    : { items: [], total: 0, limit: 20, offset: 0 }, {
+    assignedToUserId: 'reviewer.03', assignedToAccountId: 303,
+  }), /精确负责人筛选/u);
+});
+
+test('exact assignee pages fail closed when the center returns another account', async () => {
+  await assert.rejects(loadAdminTaskPage(async (path) => path.endsWith('/health')
+    ? { capabilities: { adminTaskFilters: true, assigneeAccountFilters: true } }
+    : { items: [{ id: 1, assignedToAccountId: 404 }], total: 1, limit: 20, offset: 0 }, {
+    assignedToUserId: 'reviewer.03', assignedToAccountId: 303,
+  }), /分页/u);
 });
 
 test('old centers and malformed pages cannot be presented as complete results', async () => {

@@ -87,10 +87,20 @@ test('manual archive ZIP contains the current copy and current-run images under 
     await emptyResultZip.file('小红书链接.txt').async('string'),
     /搜索状态：搜索完成，暂无结果[\s\S]*暂无可用链接/u,
   );
-  task.xiaohongshuSearchStatus = 'PENDING';
-  await assert.rejects(
-    buildTaskArchive(task, async () => assert.fail('pending search must stop before asset reads')),
-    /小红书搜索尚未完成/u,
+  const pendingResultArchive = await buildTaskArchive({
+    ...task,
+    xiaohongshuLinks: [],
+    xiaohongshuSearchStatus: 'PENDING',
+  }, async (id) => ({
+    id,
+    mediaType: 'image/png',
+    originalName: `${id}.png`,
+    content: Buffer.from(`image-${id}`),
+  }));
+  const pendingResultZip = await JSZip.loadAsync(pendingResultArchive);
+  assert.match(
+    await pendingResultZip.file('小红书链接.txt').async('string'),
+    /搜索状态：等待搜索[\s\S]*暂无可用链接/u,
   );
 });
 

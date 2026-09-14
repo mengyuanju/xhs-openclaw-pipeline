@@ -56,6 +56,28 @@ npm run start:production
 也可以设置 `XHS_SERVER_ENV=production` 后运行普通命令，或向数据库维护命令传入
 `--environment=production`。命令行选项只选择固定环境名，不接受数据库 URL；数据库密码仍只保存在未提交的 `.env` 或进程 Secret 中。
 
+### Windows 后台常驻
+
+中心机可使用 Windows 计划任务运行正式服务，无需保留命令窗口。项目根目录提供的安装脚本会禁止同一任务重复启动，并在异常退出后每分钟重启；运行日志按日期写入 `server/logs/control-plane-YYYY-MM-DD.log`，默认保留 14 天。
+
+普通方式安装后，任务会在当前 Windows 账号登录时自动启动：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install-control-plane-task.ps1
+```
+
+若中心服务必须在无人登录时也运行，请以管理员身份打开 PowerShell，并安装为 SYSTEM 开机任务：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install-control-plane-task.ps1 -RunAsSystem
+```
+
+首次切换时不要让手工进程和计划任务同时监听同一端口。可以安装后重启中心机，让计划任务接管；也可以先正常停止手工进程，再运行 `Start-ScheduledTask -TaskName XhsOpenClawControlPlane`。卸载命令如下，日志不会随任务删除：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/uninstall-control-plane-task.ps1
+```
+
 ### 仅迁移基础配置到新库
 
 正式库需要继承现有生产设置、提示词、知识库和质量策略，但不需要任何作业数据时，先对空库运行

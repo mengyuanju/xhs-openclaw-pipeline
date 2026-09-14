@@ -6,14 +6,16 @@ import { parseWorkbenchListState, workbenchListSearch } from '../app/workbench/l
 test('workbench list state safely round-trips filters and sorting through the URL', () => {
   const parsed = parseWorkbenchListState({
     page: '3', pageSize: '50', query: '  #42 ', queryPackageName: '  九月   选题  ', sort: 'createdAt:asc', deduplicateQuery: '1',
-    createdByUserId: 'alice', createdByAccountId: '2', createdByRole: 'USER', state: 'IMAGE_FAILED', attention: 'FAILED', taskId: '99',
+    createdByUserId: 'alice', createdByAccountId: '2', assignedToUserId: 'bob', assignedToAccountId: '3',
+    createdByRole: 'USER', personalScope: 'ASSIGNED', state: 'IMAGE_FAILED', attention: 'FAILED', taskId: '99',
   }, { allowAdminFilters: true });
   assert.deepEqual(parsed, {
     page: 3, pageSize: 50, query: '#42', queryPackageName: '九月 选题', sort: 'createdAt:asc', deduplicateQuery: true,
-    createdByUserId: 'alice', createdByAccountId: 2, createdByRole: 'USER', state: 'IMAGE_FAILED', attention: 'FAILED', taskId: 99,
+    createdByUserId: 'alice', createdByAccountId: 2, assignedToUserId: 'bob', assignedToAccountId: 3,
+    createdByRole: 'USER', personalScope: 'ASSIGNED', state: 'IMAGE_FAILED', attention: 'FAILED', taskId: 99,
   });
   assert.equal(workbenchListSearch(parsed, { includeAdminFilters: true }).toString(),
-    'page=3&pageSize=50&query=%2342&queryPackageName=%E4%B9%9D%E6%9C%88+%E9%80%89%E9%A2%98&sort=createdAt%3Aasc&deduplicateQuery=1&state=IMAGE_FAILED&createdByUserId=alice&createdByAccountId=2&createdByRole=USER&attention=FAILED&taskId=99');
+    'page=3&pageSize=50&query=%2342&queryPackageName=%E4%B9%9D%E6%9C%88+%E9%80%89%E9%A2%98&sort=createdAt%3Aasc&deduplicateQuery=1&state=IMAGE_FAILED&personalScope=ASSIGNED&createdByUserId=alice&createdByAccountId=2&assignedToUserId=bob&assignedToAccountId=3&createdByRole=USER&attention=FAILED&taskId=99');
 });
 
 test('workbench URL parsing drops invalid and unauthorized administrator filters', () => {
@@ -28,6 +30,9 @@ test('workbench URL parsing drops invalid and unauthorized administrator filters
   assert.equal(parsed.createdByUserId, '');
   assert.equal(parsed.createdByAccountId, null);
   assert.equal(parsed.createdByRole, 'ALL');
+  assert.equal(parsed.assignedToUserId, '');
+  assert.equal(parsed.assignedToAccountId, null);
+  assert.equal(parsed.personalScope, 'ALL');
   assert.equal(parsed.state, 'ALL');
   assert.equal(parsed.attention, 'NONE');
   assert.equal(parsed.taskId, null);
@@ -36,4 +41,6 @@ test('workbench URL parsing drops invalid and unauthorized administrator filters
 test('workbench URLs drop a creator name or account id when its identity pair is incomplete', () => {
   assert.equal(parseWorkbenchListState({ createdByUserId: 'alice' }, { allowAdminFilters: true }).createdByUserId, '');
   assert.equal(parseWorkbenchListState({ createdByAccountId: '2' }, { allowAdminFilters: true }).createdByAccountId, null);
+  assert.equal(parseWorkbenchListState({ assignedToUserId: 'alice' }, { allowAdminFilters: true }).assignedToUserId, '');
+  assert.equal(parseWorkbenchListState({ assignedToAccountId: '2' }, { allowAdminFilters: true }).assignedToAccountId, null);
 });

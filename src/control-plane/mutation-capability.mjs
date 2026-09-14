@@ -2,6 +2,12 @@ import { ApiError } from '../admin/http.mjs';
 
 const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
   Object.freeze({
+    capability: 'adminDirectCopyQaVersion',
+    minimumVersion: 1,
+    matches: (routePath, method) => /^\/v1\/tasks\/[^/]+\/admin-direct-copy-qa$/u.test(routePath)
+      && method === 'POST',
+  }),
+  Object.freeze({
     capability: 'queryPackageVersion',
     minimumVersion: 5,
     matches: (routePath, method) => routePath === '/v1/query-packages/import-preview'
@@ -9,7 +15,7 @@ const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
   }),
   Object.freeze({
     capability: 'xiaohongshuQuerySearchVersion',
-    minimumVersion: 4,
+    minimumVersion: 5,
     matches: (routePath, method) => routePath === '/v1/settings/xhs_query_search'
       && method === 'PUT',
   }),

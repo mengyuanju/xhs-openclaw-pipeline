@@ -4,6 +4,7 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { createControlPlaneClient } from '../control-plane/client.mjs';
+import { XIAOHONGSHU_SEARCH_PROTOCOL_VERSION } from '../xhs-query-search.mjs';
 import { createXiaohongshuBrowser } from './xhs-browser.mjs';
 import { runXhsQuerySearch } from './xhs-search-runner.mjs';
 
@@ -124,8 +125,8 @@ export async function main() {
       headers: { 'X-XHS-Search-Token': config.machineToken },
     });
     const health = await controlPlane.health();
-    if (Number(health?.capabilities?.xiaohongshuQuerySearchVersion) < 4) {
-      throw new Error('请先升级中心服务：小红书 Query 搜索模式现由管理员统一配置');
+    if (Number(health?.capabilities?.xiaohongshuQuerySearchVersion) < XIAOHONGSHU_SEARCH_PROTOCOL_VERSION) {
+      throw new Error('请先升级中心服务：小红书 Query 搜索总开关现由管理员统一配置');
     }
     if (config.resume) {
       const resumed = await controlPlane.resumeXhsQuerySearch({

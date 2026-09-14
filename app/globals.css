@@ -498,6 +498,7 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .workbench-saved-views > span, .workbench-attention-entry > span { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; font-weight: 700; }
 .workbench-saved-views .select-trigger { width: 210px; min-width: 0; background: var(--surface); }
 .workbench-personal-state-filters { flex: 1 1 560px; justify-content: flex-end; margin: 0 0 0 auto; padding: 0; border: 0; }
+.workbench-personal-scope-filter { flex: 0 1 auto; padding: 0; border: 0; }
 .workbench-personal-state-label { color: var(--muted); font-size: 11px; font-weight: 700; }
 .workbench-personal-state-filters button:focus-visible { outline: 2px solid var(--red); outline-offset: 3px; }
 .workbench-attention-entry .button[aria-pressed="true"] { color: white; border-color: var(--red); background: var(--red); }
@@ -1173,6 +1174,7 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
   .workbench-admin-list-controls { align-items: stretch; flex-direction: column; padding-inline: 12px; }
   .workbench-saved-views .select-trigger { flex: 1 1 180px; width: auto; }
   .workbench-personal-state-filters { flex-basis: auto; justify-content: flex-start; margin-left: 0; }
+  .workbench-personal-scope-filter { flex-basis: 100%; }
   .workbench-personal-state-label { flex-basis: 100%; }
   .workbench-batch-actions { margin-inline: 12px; }
   .workbench-toolbar-actions { width: 100%; }
@@ -1281,6 +1283,10 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .user-list-panel { min-width: 0; max-width: 100%; padding: 0; overflow: hidden; }
 .user-list-head { margin: 0; padding: 20px 22px; }
 .user-list-head .button, .user-row-actions .button { gap: 6px; white-space: nowrap; }
+.auto-assignment-mode-control { min-width: 0; }
+.auto-assignment-mode-control .select-trigger { width: 188px; min-height: 38px; padding-left: 11px; }
+.auto-assignment-mode-prefix { min-width: auto !important; flex: 0 0 auto; padding-right: 9px; border-right: 1px solid var(--line); color: var(--muted); font-size: 10px; font-weight: 750; line-height: 16px; overflow: visible !important; }
+.auto-assignment-mode-control [data-slot="select-value"] { flex: 1 1 auto; font-size: 13px; font-weight: 650; }
 .user-action-notice { margin: 0 22px 16px; }
 .user-table-wrap { contain: inline-size; border: 0; border-top: 1px solid var(--line); border-radius: 0; }
 .user-table th:first-child, .user-table td:first-child { padding-left: 22px; }
@@ -1297,7 +1303,7 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .user-role-reviewer { color: #285c79; background: #e8f2f7; }
 .user-password-pending, .user-password-ready { color: var(--muted); font-size: 11px; }
 .user-password-pending { color: #9b5e1a; }
-.user-row-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.user-row-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .user-delete-button { width: 34px; padding: 0; }
 .user-delete-button span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .user-editor-dialog { width: min(calc(100vw - 32px), 560px); max-height: calc(100vh - 32px); display: grid; gap: 22px; overflow-y: auto; padding: 24px; border: 1px solid var(--line); border-radius: 16px; color: var(--ink); background: var(--surface); box-shadow: 0 28px 80px rgba(45,35,28,.22); }
@@ -1378,6 +1384,9 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
   .user-summary-card { align-items: flex-start; flex-direction: column; gap: 8px; padding: 12px; }
   .user-summary-card > span { width: 31px; height: 31px; border-radius: 8px; }
   .user-list-head { align-items: stretch; flex-direction: column; }
+  .user-list-head > .inline { align-items: stretch; }
+  .auto-assignment-mode-control { width: 100%; }
+  .auto-assignment-mode-control .select-trigger { width: 100%; }
   .user-list-head .button { width: 100%; }
   .user-action-notice { margin-inline: 12px; }
   .user-table-wrap { margin: 0 12px 14px; border-top: 0; }

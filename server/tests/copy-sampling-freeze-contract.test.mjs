@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
+  adminDirectApproveCopyQa,
   attemptAutomaticCopySamplingFreeze,
   freezeCopySamplingBatch,
   getProductionBatchSamplingReadiness,
@@ -203,4 +204,99 @@ test('both APPROVE and the final DISCARD attempt automatic batch closure', async
     /if \(decision === 'APPROVE'\) \{[\s\S]{0,1200}routeManualCopyApproval\(client/u);
   assert.match(source,
     /if \(decision === 'DISCARD'\) \{[\s\S]{0,1800}attemptAutomaticCopySamplingFreeze\(client[\s\S]{0,500}return taskFrom\(discarded\.rows\[0\]\)/u);
+});
+
+test('administrator direct approval queues one task while the production batch is still incomplete', async () => {
+  const responseTask = {
+    id: '101', state: 'IMAGE_QUEUED', current_stage: 'IMAGE_QUEUED',
+    current_copy_revision_id: '901', production_batch_id: '55',
+  };
+  let storedResponse = null;
+  let taskLocks = 0;
+  const query = async (sql, values = []) => {
+    const source = String(sql).replace(/\s+/gu, ' ').trim();
+    if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(source)) return { rows: [] };
+    if (source.startsWith('SELECT id FROM app_users')) return { rows: [{ id: admin.userId }] };
+    if (source.startsWith('SELECT pg_advisory_xact_lock')) return { rows: [{}] };
+    if (source.startsWith('SELECT * FROM copy_sampling_mutation_requests')) {
+      return { rows: storedResponse ? [{ operation: 'ADMIN_DIRECT_PASS', request_fingerprint: values[1] ? undefined : '', response: storedResponse }] : [] };
+    }
+    if (source === 'SELECT * FROM tasks WHERE id = $1 FOR UPDATE') {
+      taskLocks += 1;
+      return { rows: [{ id: '101', state: 'COPY_QC_PENDING', current_copy_revision_id: '901', production_batch_id: '55' }] };
+    }
+    if (source.startsWith('SELECT * FROM copy_approval_events')) {
+      return { rows: [{ id: '801', task_id: '101', copy_revision_id: '901', approval_mode: 'MANUAL' }] };
+    }
+    if (source.startsWith('SELECT item.*, sampling_freeze.status AS freeze_status')) return { rows: [] };
+    if (source.startsWith('INSERT INTO copy_qa_admin_direct_approvals')) return { rows: [] };
+    if (source.startsWith("UPDATE tasks SET state = 'IMAGE_QUEUED'")) return { rows: [responseTask] };
+    if (source === 'SELECT * FROM production_batches WHERE id = $1 FOR UPDATE') {
+      return { rows: [{ id: '55', sampling_status: 'OPEN' }] };
+    }
+    if (source.startsWith('SELECT COUNT(*) AS total_count')) {
+      return { rows: [{ total_count: '2', approved_count: '1', cancelled_count: '0', blocker_task_ids: [102] }] };
+    }
+    if (source.startsWith('INSERT INTO copy_sampling_mutation_requests')) {
+      storedResponse = values[5];
+      return { rows: [] };
+    }
+    throw new Error(`unexpected SQL: ${source}`);
+  };
+  const client = { query, release() {} };
+  const result = await adminDirectApproveCopyQa({ connect: async () => client }, 101, {
+    requestId: '99999999-9999-4999-8999-999999999999',
+    expectedCopyRevisionId: 901,
+  }, admin);
+  assert.equal(result.task.state, 'IMAGE_QUEUED');
+  assert.deepEqual(result.supersededItemIds, []);
+  assert.equal(taskLocks, 1);
+});
+
+test('administrator direct approval closes the task current pending pool item before image queueing', async () => {
+  const calls = [];
+  const query = async (sql, values = []) => {
+    const source = String(sql).replace(/\s+/gu, ' ').trim();
+    calls.push({ source, values });
+    if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(source)) return { rows: [] };
+    if (source.startsWith('SELECT id FROM app_users')) return { rows: [{ id: admin.userId }] };
+    if (source.startsWith('SELECT pg_advisory_xact_lock')) return { rows: [{}] };
+    if (source.startsWith('SELECT * FROM copy_sampling_mutation_requests')) return { rows: [] };
+    if (source === 'SELECT * FROM tasks WHERE id = $1 FOR UPDATE') {
+      return { rows: [{ id: '101', state: 'COPY_QC_PENDING', current_copy_revision_id: '901', production_batch_id: '55' }] };
+    }
+    if (source.startsWith('SELECT * FROM copy_approval_events')) {
+      return { rows: [{ id: '801', approval_mode: 'MANUAL' }] };
+    }
+    if (source.startsWith('SELECT item.*, sampling_freeze.status AS freeze_status')) {
+      return { rows: [{ id: '701', freeze_id: '71', task_id: '101', copy_revision_id: '901',
+        sample_kind: 'RANDOM', parent_item_id: null, freeze_status: 'INSPECTING' }] };
+    }
+    if (source.startsWith("UPDATE copy_sampling_items SET status = 'SUPERSEDED'")) return { rows: [] };
+    if (source.startsWith('INSERT INTO copy_sampling_events')) return { rows: [] };
+    if (source.startsWith('INSERT INTO copy_qa_admin_direct_approvals')) return { rows: [] };
+    if (source.startsWith("UPDATE tasks SET state = 'IMAGE_QUEUED'")) {
+      return { rows: [{ id: '101', state: 'IMAGE_QUEUED', current_copy_revision_id: '901' }] };
+    }
+    if (source.startsWith('SELECT COUNT(*) AS count FROM copy_sampling_items')) {
+      return { rows: [{ count: '1' }] };
+    }
+    if (source === 'SELECT * FROM production_batches WHERE id = $1 FOR UPDATE') {
+      return { rows: [{ id: '55', sampling_status: 'FROZEN' }] };
+    }
+    if (source.startsWith('INSERT INTO copy_sampling_mutation_requests')) return { rows: [] };
+    throw new Error(`unexpected SQL: ${source}`);
+  };
+  const client = { query, release() {} };
+  const result = await adminDirectApproveCopyQa({ connect: async () => client }, 101, {
+    requestId: '12121212-1212-4212-8212-121212121212',
+    expectedCopyRevisionId: 901,
+  }, admin);
+
+  assert.deepEqual(result.supersededItemIds, [701]);
+  const itemUpdate = calls.find(({ source }) => source.startsWith("UPDATE copy_sampling_items SET status = 'SUPERSEDED'"));
+  assert.deepEqual(itemUpdate.values.slice(0, 3).map(String), ['701', '1', 'admin']);
+  const eventInsert = calls.find(({ source }) => source.startsWith('INSERT INTO copy_sampling_events'));
+  assert.match(eventInsert.source, /'SUPERSEDE'/u);
+  assert.equal(eventInsert.values[6].directAdminApproval, true);
 });

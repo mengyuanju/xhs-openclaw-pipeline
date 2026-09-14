@@ -18,6 +18,7 @@ import {
 } from '../../src/xhs-query-search.mjs';
 
 function fakeSearchDatabase({
+  enabled = true,
   resultLimit = 3,
   searchMode = 'THOROUGH',
   minimumIntervalSeconds = 60,
@@ -26,7 +27,7 @@ function fakeSearchDatabase({
   rateGate = { interval_ready: true, hourly_ready: true, daily_ready: true },
 } = {}) {
   const state = {
-    settings: { resultLimit, searchMode, minimumIntervalSeconds, hourlyLimit, dailyLimit },
+    settings: { enabled, resultLimit, searchMode, minimumIntervalSeconds, hourlyLimit, dailyLimit },
     node: null,
     attempts: [],
     job: {
@@ -242,11 +243,11 @@ test('central completion rejects unranked overflow and unusable bare links', asy
   }
 });
 
-test('claim requires protocol v4 and freezes the administrator search strategy', async () => {
+test('claim requires protocol v5 and freezes the administrator search strategy', async () => {
   const fixture = fakeSearchDatabase({ resultLimit: 10, searchMode: 'THOROUGH' });
   await assert.rejects(
     claimXhsQuerySearch(fixture.pool, { nodeId: 'legacy-search-node' }),
-    /protocolVersion must be 4/u,
+    /protocolVersion must be 5/u,
   );
   assert.equal(fixture.state.job.status, 'PENDING');
 
@@ -285,6 +286,18 @@ test('fastest claims always freeze one first-screen result regardless of the tho
   assert.equal(claim.searchMode, 'FASTEST');
   assert.equal(fixture.state.job.result_limit, 1);
   assert.equal(fixture.state.job.search_mode, 'FASTEST');
+});
+
+test('administrator can stop all nodes from claiming new Xiaohongshu searches', async () => {
+  const fixture = fakeSearchDatabase({ enabled: false });
+  const claim = await claimXhsQuerySearch(fixture.pool, {
+    nodeId: 'search-node',
+    protocolVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
+  });
+  assert.equal(claim, null);
+  assert.equal(fixture.state.job.status, 'PENDING');
+  assert.deepEqual(fixture.state.attempts, []);
+  assert.equal(fixture.state.node.id, 'search-node', 'disabled nodes still register a heartbeat');
 });
 
 test('central claim gate enforces interval, rolling-hour, and rolling-day limits before external search', async () => {
@@ -366,6 +379,7 @@ test('the administrator Xiaohongshu setting is strictly normalized before persis
   } });
 
   const saved = await repository.upsertSetting(XIAOHONGSHU_SEARCH_SETTINGS_KEY, {
+    enabled: false,
     resultLimit: 10,
     searchMode: 'THOROUGH',
     minimumIntervalSeconds: 30,
@@ -373,6 +387,7 @@ test('the administrator Xiaohongshu setting is strictly normalized before persis
     dailyLimit: 2000,
   });
   assert.deepEqual(saved.value, {
+    enabled: false,
     resultLimit: 10,
     searchMode: 'THOROUGH',
     minimumIntervalSeconds: 30,
@@ -385,6 +400,7 @@ test('the administrator Xiaohongshu setting is strictly normalized before persis
     { resultLimit: 11 },
     { resultLimit: 1.5 },
     { resultLimit: '5' },
+    { enabled: 'false' },
     { resultLimit: 5, searchMode: 'QUICK' },
     { resultLimit: 5, minimumIntervalSeconds: 30, hourlyLimit: 200, dailyLimit: 150 },
     { resultLimit: 5, minimumIntervalSeconds: 60, hourlyLimit: 2, dailyLimit: 49 },
@@ -392,7 +408,7 @@ test('the administrator Xiaohongshu setting is strictly normalized before persis
   ]) {
     await assert.rejects(
       repository.upsertSetting(XIAOHONGSHU_SEARCH_SETTINGS_KEY, value),
-      /resultLimit|searchMode|hourlyLimit|dailyLimit|unsupported fields/u,
+      /enabled|resultLimit|searchMode|hourlyLimit|dailyLimit|unsupported fields/u,
     );
   }
   assert.equal(writes.length, 1, 'invalid settings must be rejected before PostgreSQL is called');
@@ -403,7 +419,7 @@ test('health advertises the administrator-controlled Xiaohongshu search protocol
     query: async () => ({ rows: [{ now: new Date('2026-09-10T02:00:00.000Z') }] }),
   } });
   const health = await repository.health();
-  assert.equal(health.capabilities.xiaohongshuQuerySearchVersion, 4);
+  assert.equal(health.capabilities.xiaohongshuQuerySearchVersion, 5);
   assert.equal(health.capabilities.xiaohongshuAccountStatusVersion, 2);
 });
 
