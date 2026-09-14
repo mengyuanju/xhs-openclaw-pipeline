@@ -9,7 +9,7 @@ export type ViewKey = 'PERSONAL' | 'UNASSIGNED' | 'ALL_COPY' | 'COPY_REVIEW' | '
 export type TaskSort = 'priority:desc' | 'createdAt:desc' | 'createdAt:asc' | 'id:desc' | 'id:asc';
 
 export const TASK_SORT_OPTIONS: Array<{ value: TaskSort; label: string }> = [
-  { value: 'priority:desc', label: '待处理优先' },
+  { value: 'priority:desc', label: '任务优先级（含等待补偿）' },
   { value: 'createdAt:desc', label: '创建时间：最新在前' },
   { value: 'createdAt:asc', label: '创建时间：最早在前' },
   { value: 'id:desc', label: 'Query ID：从大到小' },
@@ -35,7 +35,13 @@ export const TASK_STATE_PRIORITY: Record<TaskState, number> = {
   CANCELLED: 9,
 };
 
-export function compareTasksByStatePriority<T extends { id: number; state: TaskState; createdAt: string }>(left: T, right: T) {
+export function compareTasksByStatePriority<T extends { id: number; state: TaskState; createdAt: string; priorityPaused?: boolean; queueEnteredAt?: string; effectivePriority?: number }>(left: T, right: T) {
+  if (left.queueEnteredAt && right.queueEnteredAt) {
+    const paused = Number(left.priorityPaused === true) - Number(right.priorityPaused === true);
+    const rank = (Date.parse(left.queueEnteredAt) - (left.effectivePriority ?? 100) * 600_000)
+      - (Date.parse(right.queueEnteredAt) - (right.effectivePriority ?? 100) * 600_000);
+    return paused || rank || left.id - right.id;
+  }
   const priorityDifference = TASK_STATE_PRIORITY[left.state] - TASK_STATE_PRIORITY[right.state];
   if (priorityDifference) return priorityDifference;
   const leftCreatedAt = Date.parse(left.createdAt);
@@ -45,7 +51,7 @@ export function compareTasksByStatePriority<T extends { id: number; state: TaskS
   return createdAtDifference || right.id - left.id;
 }
 
-export function compareTasks<T extends { id: number; state: TaskState; createdAt: string }>(
+export function compareTasks<T extends { id: number; state: TaskState; createdAt: string; priorityPaused?: boolean; queueEnteredAt?: string; effectivePriority?: number }>(
   left: T,
   right: T,
   sort: TaskSort,

@@ -1150,6 +1150,7 @@ function installRoutes(
     }
     const createdByRole = normalizeTaskCreatorRole(ctx.query.createdByRole);
     const result = await repository.listTasks({
+      ...(actor.role === 'REVIEWER' ? { reviewAssignedToAccountId: actor.userId } : {}),
       state: ctx.query.state,
       states: ctx.query.states,
       nodeId: ctx.query.nodeId,
@@ -1169,6 +1170,7 @@ function installRoutes(
       queryPackageName: ctx.query.queryPackageName,
       deduplicateQuery: ctx.query.deduplicateQuery === 'true',
       ...(ctx.query.attention !== undefined ? { attention: ctx.query.attention } : {}),
+      ...(ctx.query.priorityMode !== undefined ? { priorityMode: ctx.query.priorityMode } : {}),
       ...(ctx.query.sortBy !== undefined ? { sortBy: ctx.query.sortBy } : {}),
       ...(ctx.query.sortOrder !== undefined ? { sortOrder: ctx.query.sortOrder } : {}),
       limit: ctx.query.limit,
@@ -1199,6 +1201,18 @@ function installRoutes(
   router.delete('/v1/task-views/:viewId', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
     json(ctx, 200, await repository.deleteSavedTaskView(actor.username, ctx.params.viewId, { actor }));
+  });
+  router.post('/v1/tasks/priority-scope', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.getPriorityScope(requireJson(ctx), { actor }));
+  });
+  router.post('/v1/tasks/priority', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.setTaskPriority(requireJson(ctx), { actor }));
+  });
+  router.get('/v1/tasks/:taskId/priority-audit', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.getTaskPriorityAudit(ctx.params.taskId, { actor }));
   });
   router.post('/v1/tasks/batch-actions', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
@@ -1638,9 +1652,10 @@ function installRoutes(
     const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
     await assertTaskAccess(ctx, repository);
     const { imageRunId, revisionId, nodeId, imagePlan, decision, reworkTarget,
-      score, reasons, note, problemAssetIds, reviewSessionId } = requireJson(ctx);
+      score, reasons, note, problemAssetIds, copyFields, reviewSessionId } = requireJson(ctx);
     json(ctx, 200, await repository.reviewImages(ctx.params.taskId, {
       imageRunId, decision, reworkTarget, score, reasons, note, problemAssetIds, reviewSessionId,
+      ...(copyFields === undefined ? {} : { copyFields }),
       ...(imagePlan === undefined ? {} : { revisionId, nodeId, imagePlan }),
       actor,
     }));

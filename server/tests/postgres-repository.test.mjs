@@ -362,10 +362,10 @@ test('task pages filter multiple states and Query text while returning a total',
   ]);
   assert.match(pageQuery.sql, /state = ANY\(\$1::varchar\[\]\)/u);
   assert.match(pageQuery.sql, /lower\(query\) LIKE '%' \|\| lower\(\$3\) \|\| '%'/u);
-  assert.match(pageQuery.sql, /WHEN cursor_page\.state = 'COPY_REVIEW_PENDING' THEN 1[\s\S]*WHEN cursor_page\.state = 'COPY_QC_PENDING' THEN 2[\s\S]*WHEN cursor_page\.state = 'MANUAL_ARCHIVE' THEN 3[\s\S]*WHEN cursor_page\.state = 'COPY_RUNNING' THEN 4[\s\S]*WHEN cursor_page\.state = 'IMAGE_RUNNING' THEN 5/u);
-  assert.match(pageQuery.sql, /WHEN cursor_page\.state IN \('COPY_FAILED', 'IMAGE_FAILED'\) THEN 6[\s\S]*WHEN cursor_page\.state IN \('COPY_QUEUED', 'IMAGE_QUEUED'\) THEN 7/u);
-  assert.match(pageQuery.sql, /ORDER BY CASE[\s\S]*cursor_page\.created_at DESC, cursor_page\.id DESC/u);
-  assert.match(pageQuery.sql, /ORDER BY CASE[\s\S]*page\.created_at DESC, page\.id DESC/u);
+  assert.match(pageQuery.sql, /cursor_page\.priority_paused ASC, cursor_page\.priority_sort_at ASC, cursor_page\.id ASC/u);
+  assert.match(pageQuery.sql, /cursor_page\.priority_paused ASC, cursor_page\.priority_sort_at ASC, cursor_page\.id ASC/u);
+  assert.match(pageQuery.sql, /ORDER BY cursor_page\.priority_paused ASC, cursor_page\.priority_sort_at ASC, cursor_page\.id ASC/u);
+  assert.match(pageQuery.sql, /ORDER BY page\.priority_paused ASC, page\.priority_sort_at ASC, page\.id ASC/u);
 });
 
 test('task pages can de-duplicate normalized Query values before pagination', async () => {
@@ -1039,7 +1039,7 @@ test('image claims apply a shared retry cooldown and reuse the approved snapshot
   const candidate = queries.find((query) => query.sql.includes('FOR UPDATE OF task SKIP LOCKED'));
   assert.deepEqual(candidate.values, ['IMAGE_QUEUED', 'node-b', null, 1]);
   assert.match(candidate.sql, /queued\.error IS NULL OR queued\.last_activity_at <= now\(\) - interval '5 seconds'/u);
-  assert.match(candidate.sql, /ORDER BY queued\.last_activity_at NULLS FIRST, queued\.id/u);
+  assert.match(candidate.sql, /ORDER BY queued\.priority_paused ASC, queued\.priority_sort_at ASC, queued\.id ASC/u);
   assert.match(candidate.sql, /FOR UPDATE OF task SKIP LOCKED/u);
   assert.doesNotMatch(candidate.sql, /copy_executor_node_id/u);
   assert.notEqual(claim.execution.id, previousId);

@@ -14,6 +14,7 @@ export type ApprovedCopyRevision = {
 };
 
 export type CopyQaCommon = {
+  prioritySummary?: string;
   id: string;
   freezePublicId: string;
   anonymousCode: string;
@@ -119,6 +120,7 @@ export function normalizeCopyQaItem(value: unknown): CopyQaItem | null {
     blindReview: row.blindReview === true,
     status,
     sampleKind: row.sampleKind === 'MANDATORY_RECHECK' ? 'MANDATORY_RECHECK' : 'RANDOM',
+    ...(typeof row.prioritySummary === 'string' && /^(?:已暂停|生效 (?:10|100|150|200|300|350|400|500)) · 系统 (?:100|150|200|300|400) \/ 人工 (?:—|10|100|350|500)$/u.test(row.prioritySummary) ? { prioritySummary: row.prioritySummary } : {}),
     query: typeof row.query === 'string' && row.query.trim() ? row.query : null,
     approvedRevision: {
       content: revision.content ?? '',
