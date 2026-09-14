@@ -124,6 +124,8 @@ export async function createReadyDeliveryEntry(client, {
   actor,
 }) {
   await assertDeliverySourceArchivable(client, { taskId, copyRevisionId, imageRunId });
+  const pendingEdits = await client.query("SELECT id FROM image_edit_requests WHERE task_id=$1 AND source_image_run_id=$2 AND status IN ('DRAFT','QUEUED','RUNNING','PREVIEW_READY') LIMIT 1", [taskId, imageRunId]);
+  if (pendingEdits.rows.length) throw new TypeError('请先采用、拒绝或取消待处理的图片修改，再审核归档');
   await withdrawReadyDeliveryEntries(client, taskId, 'SUPERSEDED_DELIVERY');
   const result = await client.query(`
     INSERT INTO delivery_entries(
@@ -154,7 +156,7 @@ export async function assertDeliverySourceArchivable(queryable, {
     JOIN image_runs AS image_run
       ON image_run.id = $3 AND image_run.task_id = $1
       AND image_run.copy_revision_id = $2 AND image_run.status = 'COMPLETED'
-    LEFT JOIN assets AS asset
+    LEFT JOIN image_run_asset_view AS asset
       ON asset.task_id = $1 AND asset.image_run_id = image_run.id
       AND asset.media_type = ANY($4::varchar[])
     WHERE revision.id = $2 AND revision.task_id = $1

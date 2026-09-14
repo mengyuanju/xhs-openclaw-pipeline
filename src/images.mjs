@@ -491,8 +491,9 @@ export async function applyDeterministicTextOverlay({
   layoutDirection,
   repairInstruction,
   layoutTemplate,
+  manualOverlay,
 }) {
-  const svg = createDeterministicTextOverlaySvg({
+  const svg = manualOverlay ? (await import('./image-edit-pixels.mjs')).manualOverlaySvg(manualOverlay) : createDeterministicTextOverlaySvg({
     visibleText,
     disclosure,
     pageKind,

@@ -76,7 +76,8 @@ function fixture(overrides = {}, {
         revisions.push(row);
         return { rows: [row] };
       }
-      if (sql.includes('SELECT id FROM assets')) {
+      if (sql.includes('SELECT id FROM image_edit_requests')) return { rows: [] };
+      if (sql.includes('SELECT id FROM image_run_asset_view')) {
         return { rows: values[2].filter((id) => [101, 102].includes(id)).map((id) => ({ id })) };
       }
       if (sql.includes('INSERT INTO human_quality_assessments')) {

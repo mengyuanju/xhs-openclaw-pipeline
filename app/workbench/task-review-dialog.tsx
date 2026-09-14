@@ -34,6 +34,7 @@ import { ImagePreview } from '../components/image-preview';
 import { ImagePreviewPreference } from '../components/image-preview-preference';
 import { ImageSettingsEditor, defaultImageSettings, type ImageSettings, type PageLayout } from '../components/image-controls';
 import { ImageHistoryCompare, type ImageArtifactInfo } from '../components/image-history-compare';
+import { CurrentImageEditor } from '../components/current-image-editor';
 import {
   COPY_MACHINE_DRAFT_SCORE_PRESENTATION,
   CopyMachineDraftScoreField,
@@ -146,6 +147,7 @@ type TaskDetail = PriorityTask & {
   }>;
   assets: Array<{
     id: number;
+    sha256: string;
     imageRunId: string;
     originalName: string | null;
     url: string;
@@ -643,11 +645,15 @@ export function TaskReviewDialog({
     const url = safeXiaohongshuUrl(link.url);
     return url ? [{ ...link, url }] : [];
   });
-  const assets = useMemo(() => detail?.assets.filter(
-    (asset) => asset.imageRunId === detail.currentImageRunId
-      && (!detail.imageRuns.find(run => run.id === detail.currentImageRunId)?.result?.images?.some(image => image.assetId)
-        || detail.imageRuns.find(run => run.id === detail.currentImageRunId)?.result?.images?.some(image => image.assetId === asset.id)),
-  ) ?? [], [detail]);
+  const assets = useMemo(() => {
+    if (!detail) return [];
+    const members = detail.assets.filter(asset => asset.imageRunId === detail.currentImageRunId);
+    const images = detail.imageRuns.find(run => run.id === detail.currentImageRunId)?.result?.images;
+    return images?.some(image => image.assetId) ? images.flatMap(image => {
+      const asset = members.find(item => item.id === (image.deliveryAssetId ?? image.assetId));
+      return asset ? [asset] : [];
+    }) : members;
+  }, [detail]);
   const currentImageRun = useMemo(() => detail?.imageRuns.find(
     (run) => run.id === detail.currentImageRunId,
   ) ?? null, [detail]);
@@ -1238,6 +1244,10 @@ export function TaskReviewDialog({
                     : '核对当前图片运行生成的完整图集。'}</p></div>
                   {selectedAsset && <div className="workbench-image-review-title-actions">
                     <ImagePreviewBackgroundControl value={previewBackdrop} onChange={setPreviewBackdrop} />
+                    {isAdmin && canModifyImages && ['MANUAL_ARCHIVE','REVIEWED'].includes(detail.state) && detail.currentImageRunId && detail.currentCopyRevisionId && <CurrentImageEditor
+                      key={`${detail.currentImageRunId}-${selectedAsset.id}`} taskId={detail.id} runId={detail.currentImageRunId}
+                      copyRevisionId={detail.currentCopyRevisionId} asset={selectedAsset} page={selectedAssetIndex + 1}
+                      runs={detail.imageRuns} onChanged={load} />}
                   </div>}
                 </div>
               </div>

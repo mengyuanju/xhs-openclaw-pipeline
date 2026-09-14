@@ -2972,7 +2972,7 @@ export class PostgresControlPlaneRepository {
       `, [taskId]),
       this.pool.query(`
         SELECT id, task_id, image_run_id, media_type, byte_size, sha256, original_name, created_at
-        FROM assets WHERE task_id = $1 ORDER BY id
+        FROM image_run_asset_view WHERE task_id = $1 ORDER BY id
       `, [taskId]),
       this.pool.query(`
         SELECT * FROM human_quality_assessments
@@ -3074,7 +3074,7 @@ export class PostgresControlPlaneRepository {
         ON delivery.task_id = task.id AND delivery.status = 'READY'
         AND delivery.copy_revision_id = task.current_copy_revision_id
         AND delivery.image_run_id = task.current_image_run_id
-      LEFT JOIN assets AS asset
+      LEFT JOIN image_run_asset_view AS asset
         ON asset.task_id = task.id AND asset.image_run_id = task.current_image_run_id
         AND asset.media_type LIKE 'image/%'
       WHERE task.id = $1 AND task.state = 'REVIEWED'
@@ -4013,7 +4013,7 @@ export class PostgresControlPlaneRepository {
       if (!run.rows[0]) throw new ControlPlaneConflictError('STALE_IMAGE_RUN', '当前文案对应的图片尚未生成完成');
       if (problemAssetIds.length) {
         const assets = await client.query(`
-          SELECT id FROM assets
+          SELECT id FROM image_run_asset_view
           WHERE task_id = $1 AND image_run_id = $2 AND id = ANY($3::bigint[])
         `, [taskId, imageRunId, problemAssetIds]);
         if (assets.rows.length !== problemAssetIds.length) {

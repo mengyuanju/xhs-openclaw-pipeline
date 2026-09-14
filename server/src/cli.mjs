@@ -8,6 +8,8 @@ import { DEFAULT_PRODUCTION_SETTINGS, loadDefaultPrompts } from './defaults.mjs'
 import { startExecutionRecovery } from './execution-recovery.mjs';
 import { applyServerEnvironment, loadServerEnvironment } from './server-environment.mjs';
 import { startAutoAssignmentReplenishment } from './task-auto-assignment-runner.mjs';
+import { createImageEditingService } from './image-editing.mjs';
+import { processImageEdit } from './image-edit-renderer.mjs';
 
 export function configuration(environment = process.env) {
   const connectionString = environment.DATABASE_URL?.trim();
@@ -26,17 +28,24 @@ export function configuration(environment = process.env) {
 
 async function main() {
   const command = process.argv[2];
-  if (!['init', 'serve'].includes(command)) {
-    throw new Error('usage: node src/cli.mjs <init|serve>');
+  if (!['init', 'serve', 'image-edit-once'].includes(command)) {
+    throw new Error('usage: node src/cli.mjs <init|serve|image-edit-once>');
   }
   const args = process.argv.slice(3);
   if (args.some((arg) => !arg.startsWith('--environment='))) {
-    throw new Error('usage: node src/cli.mjs <init|serve> [--environment=development|production]');
+    throw new Error('usage: node src/cli.mjs <init|serve|image-edit-once> [--environment=development|production]');
   }
   const selectedEnvironment = loadServerEnvironment({ args });
   applyServerEnvironment(selectedEnvironment.environment);
   const config = configuration(selectedEnvironment.environment);
   const repository = createPostgresControlPlaneRepository(config);
+  if (command === 'image-edit-once') {
+    try {
+      const service = createImageEditingService({ pool: repository.pool, storageRoot: config.storageRoot });
+      console.log(JSON.stringify(await processImageEdit({ service, storageRoot: config.storageRoot, workerId: `manual-${process.pid}` })));
+    } finally { await repository.close(); }
+    return;
+  }
   if (command === 'init') {
     await repository.initialize();
     await mkdir(config.storageRoot, { recursive: true });

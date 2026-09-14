@@ -46,7 +46,7 @@ export async function reviseTaskImages(client, rawTaskId, input, actorUsername, 
     if (!imageRunId) throw new TypeError('没有可转换的图片版本');
     const run = (await client.query('SELECT * FROM image_runs WHERE id = $1 AND task_id = $2', [imageRunId, taskId])).rows[0];
     if (!Array.isArray(run?.result?.images) || run.result.images.length !== plan.length) throw new TypeError('原图片版本未完成');
-    const assets = (await client.query('SELECT id, sha256, media_type FROM assets WHERE task_id = $1 AND image_run_id = $2', [taskId, imageRunId])).rows;
+    const assets = (await client.query('SELECT id, sha256, media_type FROM image_run_asset_view WHERE task_id = $1 AND image_run_id = $2', [taskId, imageRunId])).rows;
     const sources = run.result.images.map(image => {
       const assetId = image.sourceAssetId ?? image.assetId;
       const asset = assets.find(item => Number(item.id) === assetId && item.media_type === 'image/png');

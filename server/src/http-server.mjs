@@ -33,6 +33,7 @@ import {
   writeDeliverySpreadsheet,
 } from './delivery-spreadsheet.mjs';
 import { IMAGE_FORMATS } from './image-options.mjs';
+import { createImageEditingService } from './image-editing.mjs';
 import {
   addDeliveryPreviewUrls,
   createDeliveryPreviewUrlResolver,
@@ -1693,6 +1694,45 @@ function installRoutes(
       actor,
     );
     json(ctx, 201, actor.role === 'USER' ? userVisibleTask(task) : task);
+  });
+  const imageEditing = createImageEditingService({ pool: repository.pool, storageRoot });
+  router.post('/v1/tasks/:taskId/image-edit-references', async ctx => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    await assertTaskAccess(ctx, repository);
+    json(ctx, 201, await imageEditing.upload(ctx.params.taskId, requireJson(ctx), actor));
+  });
+  router.post('/v1/tasks/:taskId/image-edits', async ctx => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    await assertTaskAccess(ctx, repository);
+    json(ctx, 201, await imageEditing.create(ctx.params.taskId, requireJson(ctx), actor));
+  });
+  router.get('/v1/tasks/:taskId/image-edits', async ctx => {
+    requestActor(ctx, ['ADMIN']);
+    await assertTaskAccess(ctx, repository);
+    json(ctx, 200, await imageEditing.list(ctx.params.taskId));
+  });
+  router.get('/v1/image-edits/:editId', async ctx => {
+    requestActor(ctx, ['ADMIN']);
+    const edit = await imageEditing.get(ctx.params.editId);
+    ctx.params.taskId = String(edit.task_id);
+    await assertTaskAccess(ctx, repository);
+    json(ctx, 200, edit);
+  });
+  for (const action of ['queue', 'retry', 'cancel', 'accept', 'reject']) {
+    router.post(`/v1/image-edits/:editId/${action}`, async ctx => {
+      const actor = requestActor(ctx, ['ADMIN']);
+      const edit = await imageEditing.get(ctx.params.editId);
+      ctx.params.taskId = String(edit.task_id);
+      await assertTaskAccess(ctx, repository);
+      json(ctx, 200, await imageEditing.action(ctx.params.editId, action, requireJson(ctx), actor));
+    });
+  }
+  router.post('/v1/tasks/:taskId/image-versions/:runId/restore', async ctx => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    await assertTaskAccess(ctx, repository);
+    json(ctx, 201, await imageEditing.create(ctx.params.taskId, {
+      ...requireJson(ctx), operation: 'RESTORE', restoreRunId: ctx.params.runId,
+    }, actor));
   });
   router.get('/v1/tasks/:taskId/image-capabilities', async (ctx) => {
     await assertTaskAccess(ctx, repository, { summaryOnly: true, allowCreatorRead: true });
