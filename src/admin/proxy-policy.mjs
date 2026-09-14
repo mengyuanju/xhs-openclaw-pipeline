@@ -58,7 +58,8 @@ export function evaluateAdminProxyRequest(request, environment = process.env) {
       || url.pathname.startsWith('/api/control-plane/');
     if (alwaysAllowed) return { type: 'next' };
     if (role === 'REVIEWER') {
-      const allowed = url.pathname === '/'
+      const allowed = url.pathname === '/copy-flow' || url.pathname === '/copy-qa'
+        || url.pathname === '/'
         || url.pathname === '/workbench'
         || url.pathname.startsWith('/workbench/')
         || matchesExactPath(url.pathname, '/query-packages')
@@ -68,7 +69,8 @@ export function evaluateAdminProxyRequest(request, environment = process.env) {
       return allowed ? { type: 'next' } : { type: 'forbidden' };
     }
     if (role === 'USER') {
-      const allowed = url.pathname === '/'
+      const allowed = url.pathname === '/copy-flow' || url.pathname === '/copy-qa'
+        || url.pathname === '/'
         || url.pathname === '/workbench'
         || url.pathname === '/workbench/personal'
         || matchesExactPath(url.pathname, '/query-packages')

@@ -91,10 +91,11 @@ function allocateQuotas(groups, target, populationCount, seed) {
  * Select an exact, reproducible sample from the final manually-approved copy
  * revisions. The caller persists every returned member, including non-samples.
  */
-export function selectStratifiedCopySample({ population, rateBps, seed }) {
+export function selectStratifiedCopySample({ population, rateBps, seed, sampleCount = null }) {
   const members = normalizePopulation(population);
   const normalizedSamplingSeed = normalizedSeed(seed);
-  const target = sampleTarget(members.length, rateBps);
+  const target = sampleCount ?? sampleTarget(members.length, rateBps);
+  if (!Number.isInteger(target) || target < 0 || target > members.length) throw new RangeError("invalid sampleCount");
   const groups = new Map();
   for (const member of members) {
     const group = groups.get(member.finalApproverAccountId) ?? [];

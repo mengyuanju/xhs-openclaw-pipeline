@@ -78,6 +78,8 @@ function assertBlindAllowlist(payload) {
 test('reviewer blind list and detail are recursively server-side allowlisted', async () => {
   const queries = [];
   const pool = { async query(sql, values) {
+      if (sql.includes('SELECT DISTINCT task.production_batch_id')) return { rows: [] };
+      if (sql.includes('SELECT id FROM app_users')) return { rows: [{ id: 1 }] };
     queries.push({ sql: String(sql), values });
     return { rows: [databaseRow()] };
   } };
@@ -103,6 +105,8 @@ test('admin non-blind inspection retains traceable frozen identifiers', async ()
   const admin = { userId: 1, username: 'admin', role: 'ADMIN' };
   const queries = [];
   const pool = { query: async (sql, values) => {
+    if (sql.includes('SELECT DISTINCT task.production_batch_id')) return { rows: [] };
+    if (sql.includes('SELECT id FROM app_users')) return { rows: [{ id: 1 }] };
     queries.push({ sql: String(sql), values });
     return { rows: [databaseRow({ query_package_name: '九月 选题' })] };
   } };

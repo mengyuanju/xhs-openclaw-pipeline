@@ -9,7 +9,7 @@ export default async function CopyQaPage() {
   const session = await readServerSession();
   if (!session) redirect('/login?next=%2Fcopy-qa');
   const role = session.roles?.[0] || 'USER';
-  if (!['ADMIN', 'REVIEWER'].includes(role)) redirect('/workbench/personal');
+  if (!['ADMIN', 'REVIEWER', 'USER'].includes(role)) redirect('/workbench/personal');
 
   return <>
     <header className="page-header">
@@ -19,6 +19,6 @@ export default async function CopyQaPage() {
         <p className="subtle">同时处理随机抽检与返工强制复检；强制复检通过后，返工任务才会进入待生图队列。</p>
       </div>
     </header>
-    <CopyQaWorkbench role={role as 'ADMIN' | 'REVIEWER'} />
+    <CopyQaWorkbench role={role as 'ADMIN' | 'REVIEWER' | 'USER'} />
   </>;
 }

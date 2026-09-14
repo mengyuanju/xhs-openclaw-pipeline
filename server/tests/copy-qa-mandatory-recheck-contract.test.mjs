@@ -154,11 +154,12 @@ function mandatoryRecheckFixture() {
         ? { rows: [{ id: state.item.id, task_id: state.item.task_id }] }
         : { rows: [] };
     }
-    if (source.startsWith("UPDATE tasks SET state = 'IMAGE_QUEUED'")) {
+    if (source.startsWith("UPDATE tasks task SET state = 'IMAGE_QUEUED'")) {
+      if (Number(values[0]) !== 18) return { rows: [] };
       state.taskState = 'IMAGE_QUEUED';
       state.mandatory = false;
-      state.releasedTaskIds.push(...values[0].map(Number));
-      return { rows: [] };
+      state.releasedTaskIds.push(Number(state.item.task_id));
+      return { rows: [{ id: state.item.task_id }] };
     }
     if (source.startsWith("UPDATE copy_sampling_items SET status = 'RELEASED'")) return { rows: [] };
     if (source.startsWith('UPDATE copy_sampling_freezes SET status = $2')) {
@@ -291,6 +292,7 @@ test('a synthetic mandatory round cannot be bypassed through release-rest', asyn
         return { rows: [{ id: 99, public_id: FREEZE_PUBLIC_ID, status: 'REVIEW_REQUIRED', blind_review_enabled: true }] };
       }
       if (source.startsWith('SELECT * FROM copy_sampling_mutation_requests')) return { rows: [] };
+      if (source.startsWith('INSERT INTO copy_sampling_events')) return { rows: [] };
       if (source.startsWith('SELECT COUNT(*) FILTER')) return { rows: [{ returned_random_count: '0' }] };
       throw new Error(`unexpected SQL: ${source}`);
     },
@@ -299,7 +301,7 @@ test('a synthetic mandatory round cannot be bypassed through release-rest', asyn
   await assert.rejects(releaseCopyQaFreeze({ connect: async () => client }, FREEZE_PUBLIC_ID, {
     note: '错误尝试跳过强制复检',
     requestId: '91919191-9191-4919-8919-919191919191',
-  }, reviewer), { code: 'BATCH_NOT_RELEASABLE' });
+  }, { ...reviewer, role: 'ADMIN' }), { code: 'BATCH_NOT_RELEASABLE' });
   assert.equal(calls.some(({ sql }) => sql.startsWith('SELECT item.id, task.id AS task_id')), false);
   assert.equal(calls.some(({ sql }) => sql.startsWith('UPDATE tasks SET')), false);
   assert.equal(calls.at(-1).sql, 'ROLLBACK');
@@ -329,12 +331,12 @@ test('release-rest excludes an unresolved returned task and updates only eligibl
       if (source.startsWith('SELECT COUNT(*) FILTER')) return { rows: [{ returned_random_count: '1' }] };
       if (source.startsWith('SELECT item.id, task.id AS task_id')) {
         assert.match(source, /returned\.status IN \('RETURNED', 'BATCH_AFFECTED', 'BATCH_RETURNED'\)/u);
-        assert.match(source, /recheck\.sample_kind = 'MANDATORY_RECHECK'[\s\S]*recheck\.status IN \('PASSED', 'RELEASED', 'SUPERSEDED'\)/u);
+        assert.match(source, /recheck\.sample_kind = 'MANDATORY_RECHECK'[\s\S]*recheck\.status IN \('PASSED', 'RELEASED'\)/u);
         return { rows: [{ id: 21, task_id: 102 }] };
       }
-      if (source.startsWith("UPDATE tasks SET state = 'IMAGE_QUEUED'")) {
-        releasedTaskIds.push(...values[0].map(Number));
-        return { rows: [] };
+      if (source.startsWith("UPDATE tasks task SET state = 'IMAGE_QUEUED'")) {
+        releasedTaskIds.push(102);
+        return { rows: [{ id: 102 }] };
       }
       if (source.startsWith("UPDATE copy_sampling_items SET status = 'RELEASED'")) {
         releasedItemIds.push(...values[0].map(Number));
@@ -353,8 +355,9 @@ test('release-rest excludes an unresolved returned task and updates only eligibl
   const result = await releaseCopyQaFreeze({ connect: async () => client }, FREEZE_PUBLIC_ID, {
     note: '退回项继续返工，只放行无关等待成员',
     requestId: '92929292-9292-4929-8929-929292929292',
-  }, reviewer);
+  }, { ...reviewer, role: 'ADMIN' });
   assert.deepEqual(result, {
+    taskIds: [102],
     freezePublicId: FREEZE_PUBLIC_ID,
     status: 'RELEASED_WITH_EXCEPTIONS',
     releasedCount: 1,

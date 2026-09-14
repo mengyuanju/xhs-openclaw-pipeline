@@ -1450,10 +1450,12 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
 
   async function adminDirectApproveCopyQa(task: DistributedTask) {
     if (role !== 'ADMIN' || task.state !== 'COPY_QC_PENDING') return;
+    const note = window.prompt('请填写本次文案质检通过的原因（必填）');
+    if (!note?.trim()) return;
     if (!await confirm({
       title: '单独通过这条文案质检？',
-      description: '这条任务会绕过当前批次的文案质检池，立即进入待生图队列。系统会保留本次管理员审核记录。',
-      confirmLabel: '通过并进入生图',
+      description: '本次通过当前已抽中的文案。仍须等待该人员批次的全部质检与强制复检完成；系统记录通过原因。',
+      confirmLabel: '记录质检通过',
     })) return;
     setActingTaskId(task.id);
     try {
@@ -1462,10 +1464,11 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           requestId: createRequestId(),
+          note: note.trim(),
           expectedCopyRevisionId: task.currentCopyRevisionId,
         }),
       });
-      setMessage(`任务 #${task.id} 已由管理员单独通过文案质检，并进入待生图队列。`);
+      setMessage(`任务 #${task.id} 已记录文案质检通过，批次关卡全部完成后进入生图。`);
       setError('');
       await refresh({ silent: true });
     } catch (caught) {

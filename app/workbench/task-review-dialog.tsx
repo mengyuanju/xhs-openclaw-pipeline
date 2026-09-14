@@ -945,10 +945,12 @@ export function TaskReviewDialog({
 
   async function adminDirectApproveCopyQa() {
     if (!detail || role !== 'ADMIN' || detail.state !== 'COPY_QC_PENDING' || submitting || loading) return;
+    const note = window.prompt('请填写本次文案质检通过的原因（必填）');
+    if (!note?.trim()) return;
     if (!await confirm({
       title: '单独通过这条文案质检？',
-      description: '这条任务会绕过当前批次的文案质检池，立即进入待生图队列。系统会保留本次管理员审核记录。',
-      confirmLabel: '通过并进入生图',
+      description: '本次通过当前已抽中的文案。仍须等待该人员批次的全部质检与强制复检完成；系统记录通过原因。',
+      confirmLabel: '记录质检通过',
     })) return;
     setSubmitting(true);
     setError('');
@@ -958,10 +960,11 @@ export function TaskReviewDialog({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           requestId: createRequestId(),
+          note: note.trim(),
           expectedCopyRevisionId: detail.currentCopyRevisionId,
         }),
       });
-      await onUpdated(`任务 #${detail.id} 已由管理员单独通过文案质检，并进入待生图队列。`);
+      await onUpdated(`任务 #${detail.id} 已记录文案质检通过，批次关卡全部完成后进入生图。`);
       onOpenChange(false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '单独通过文案质检失败');
@@ -1466,7 +1469,7 @@ export function TaskReviewDialog({
               {role === 'ADMIN' && detail.state === 'COPY_QC_PENDING'
                 && <Button unstyled className="button primary" type="button" disabled={submitting || loading}
                   onClick={() => { void adminDirectApproveCopyQa(); }}>
-                  <CheckCircle2 size={15} />{submitting ? '正在提交…' : '单独通过质检并生图'}
+                  <CheckCircle2 size={15} />{submitting ? '正在提交…' : '通过文案质检'}
                 </Button>}
               {canResumeImages && <Button unstyled className="button primary" type="button" disabled={submitting || loading} onClick={() => { void resumeImages(); }}><RotateCcw size={15} />从失败步骤继续</Button>}
               {canReviewImages && <>

@@ -31,6 +31,7 @@ const navigationGroups: NavigationGroup[] = [
   { label: '创作工作台', items: [
     { href: '/workbench', label: '作业中心', icon: LayoutDashboard, children: WORKBENCH_VIEWS },
     { href: '/query-packages', label: 'Query 词包', icon: PackageSearch },
+    { href: '/copy-flow', label: '文案工作入口', icon: ShieldCheck },
     { href: '/copy-qa', label: '文案质检', icon: ShieldCheck },
     { href: '/delivery-pool', label: '交付池', icon: PackageCheck },
   ] },
@@ -75,12 +76,12 @@ export function SideNav({ session }: { session: { subject: string; username?: st
     : role === 'REVIEWER'
       ? navigationGroups.map((group) => ({
           ...group,
-          items: group.items.filter((item) => ['/workbench', '/query-packages', '/copy-qa'].includes(item.href))
+          items: group.items.filter((item) => ['/workbench', '/query-packages', '/copy-flow', '/copy-qa'].includes(item.href))
             .map((item) => ({ ...item, children: item.children?.filter((child) => !child.adminOnly) })),
         }))
       : navigationGroups.map((group) => ({
           ...group,
-          items: group.items.filter((item) => ['/workbench', '/query-packages'].includes(item.href)).map((item) => ({
+          items: group.items.filter((item) => ['/workbench', '/query-packages', '/copy-flow', '/copy-qa'].includes(item.href)).map((item) => ({
             ...item,
             children: item.children?.filter((child) => child.href === '/workbench/personal'),
           })),
