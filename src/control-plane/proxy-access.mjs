@@ -13,6 +13,9 @@ export function nonAdminCanAccessQueryPackageRoute(path, method) {
 export function userCanAccessControlPlaneRoute(path, method) {
   return (path === '/health' && ['GET', 'HEAD'].includes(method))
     || (path === '/v1/human-quality-settings' && ['GET', 'HEAD'].includes(method))
+    || (path === '/v1/copy-quality/queues' && ['GET', 'HEAD'].includes(method))
+    || (/^\/v1\/copy-qa\/(?:items(?:\/[^/]+(?:\/(?:pass|return))?)?|freezes\/[^/]+\/batch-return-preview|batch-return)$/u.test(path)
+      && ['GET', 'HEAD', 'POST'].includes(method))
     || nonAdminCanAccessQueryPackageRoute(path, method)
     || (/^\/v1\/(?:tasks|nodes|assets|profile)(?:\/|$)/u.test(path)
       && !(path === '/v1/tasks' && method === 'POST')

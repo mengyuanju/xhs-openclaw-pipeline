@@ -1,3 +1,4 @@
+import { getCopyQualityQueues } from './copy-quality-control.mjs';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
@@ -795,8 +796,8 @@ function installRoutes(
     json(ctx, 201, await repository.createUser(requireJson(ctx)));
   });
   router.patch('/v1/users/:userId', async (ctx) => {
-    requestActor(ctx, ['ADMIN']);
-    json(ctx, 200, await repository.updateUser(ctx.params.userId, requireJson(ctx)));
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.updateUser(ctx.params.userId, { ...requireJson(ctx), actorUsername: actor.username }));
   });
   router.delete('/v1/users/:userId', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
@@ -1004,12 +1005,16 @@ function installRoutes(
     const actor = requestActor(ctx, ['ADMIN']);
     json(ctx, 200, await repository.freezeCopySamplingBatch(ctx.params.batchId, requireJson(ctx), { actor }));
   });
+  router.get('/v1/copy-quality/queues', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
+    json(ctx, 200, await getCopyQualityQueues(repository.pool, actor));
+  });
   router.get('/v1/copy-qa/statistics', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
     json(ctx, 200, await repository.getCopyQaStatistics({ actor }));
   });
   router.get('/v1/copy-qa/items', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
     json(ctx, 200, await repository.listCopyQaItems({
       status: ctx.query.status,
       queryPackageName: ctx.query.queryPackageName,
@@ -1018,31 +1023,31 @@ function installRoutes(
     }, { actor }));
   });
   router.get('/v1/copy-qa/items/:itemId', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
     json(ctx, 200, await repository.getCopyQaItem(ctx.params.itemId, { actor }));
   });
   router.post('/v1/copy-qa/items/:itemId/pass', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
     json(ctx, 200, await repository.passCopyQaItem(ctx.params.itemId, requireJson(ctx), { actor }));
   });
   router.post('/v1/copy-qa/items/:itemId/return', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
     json(ctx, 200, await repository.returnCopyQaItem(ctx.params.itemId, requireJson(ctx), { actor }));
   });
   router.get('/v1/copy-qa/freezes/:freezePublicId/batch-return-preview', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
     json(ctx, 200, await repository.getCopyQaBatchReturnPreview(ctx.params.freezePublicId, { actor }));
   });
   router.post('/v1/copy-qa/batch-return', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
     json(ctx, 200, await repository.batchReturnCopyQa(requireJson(ctx), { actor }));
   });
   router.post('/v1/copy-qa/freezes/:freezePublicId/release-rest', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
     json(ctx, 200, await repository.releaseCopyQaFreeze(ctx.params.freezePublicId, requireJson(ctx), { actor }));
   });
   router.post('/v1/tasks/:taskId/copy-qa-return', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
     const body = requireJson(ctx);
     json(ctx, 200, await repository.returnCopyQaItem(body.samplingItemId, body, {
       actor,
@@ -1050,7 +1055,7 @@ function installRoutes(
     }));
   });
   router.post('/v1/tasks/batch-copy-qa-return', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
     json(ctx, 200, await repository.batchReturnCopyQa(requireJson(ctx), { actor }));
   });
 
@@ -1565,6 +1570,7 @@ function installRoutes(
     json(ctx, 200, await repository.heartbeatExecutions(requireJson(ctx)));
   });
   router.post('/v1/executions/claim-image', async (ctx) => {
+    await repository.flushExpiredCopyQualityBatches?.();
     const body = requireJson(ctx);
     json(ctx, 200, await repository.claimImage(body.nodeId, body.imageControlsVersion, body.layoutCatalogVersion));
   });
@@ -1572,6 +1578,7 @@ function installRoutes(
     json(ctx, 200, await repository.claimCopyBatch(requireJson(ctx)));
   });
   router.post('/v1/executions/claim-image-batch', async (ctx) => {
+    await repository.flushExpiredCopyQualityBatches?.();
     json(ctx, 200, await repository.claimImageBatch(requireJson(ctx)));
   });
   router.patch('/v1/executions/:executionId/progress', async (ctx) => {

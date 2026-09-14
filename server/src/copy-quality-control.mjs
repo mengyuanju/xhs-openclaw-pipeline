@@ -11,6 +11,7 @@ import {
 } from './domain.mjs';
 import { normalizeListPagination } from './list-pagination.mjs';
 import { selectStratifiedCopySample } from './stratified-copy-sampling.mjs';
+import { planCopyQualityChunk } from './copy-quality-flow.mjs';
 import {
   assertReviewerBatchReturnAllowed,
   lockWorkflowQualitySettings,
@@ -21,7 +22,7 @@ function hashJson(value) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
-function normalizeActor(actor, roles = ['ADMIN', 'REVIEWER']) {
+function normalizeActor(actor, roles = ['ADMIN', 'REVIEWER', 'USER']) {
   if (!actor || !roles.includes(actor.role) || !Number.isSafeInteger(Number(actor.userId))) {
     throw new ControlPlaneAuthorizationError('current role cannot perform this quality operation');
   }
@@ -34,6 +35,7 @@ async function lockActiveQualityActor(client, actor) {
     SELECT id FROM app_users
     WHERE id = $1 AND username = $2 AND role = $3 AND status = 'ACTIVE'
       AND ($4::integer IS NULL OR credential_version = $4)
+      AND (role = 'ADMIN' OR copy_qc_enabled = true)
     FOR SHARE
   `, [actor.userId, actor.username, actor.role,
     Number.isSafeInteger(credentialVersion) && credentialVersion > 0 ? credentialVersion : null]);
@@ -156,10 +158,9 @@ function qaItemFrom(row, actor) {
       anonymousCode: opaqueCode('QCB', row.freeze_public_id),
     },
     capabilities: {
-      canPass: ['ADMIN', 'REVIEWER'].includes(actor.role) && row.status === 'PENDING' && row.priority_paused !== true,
-      canReturnSingle: ['ADMIN', 'REVIEWER'].includes(actor.role) && row.status === 'PENDING' && row.priority_paused !== true,
-      canReturnBatch: actor.role === 'ADMIN'
-        || (actor.role === 'REVIEWER' && row.reviewer_batch_return_enabled === true),
+      canPass: Number(row.final_approver_account_id) !== actor.userId && row.status === 'PENDING' && row.priority_paused !== true,
+      canReturnSingle: Number(row.final_approver_account_id) !== actor.userId && row.status === 'PENDING' && row.priority_paused !== true,
+      canReturnBatch: row.priority_paused !== true,
     },
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -273,6 +274,7 @@ async function productionBatchReadiness(client, productionBatchId) {
         WHERE task.id IS NOT NULL
           AND task.state NOT IN ('COPY_QC_PENDING', 'CANCELLED')
           AND direct_approval.id IS NULL
+          AND NOT EXISTS (SELECT 1 FROM copy_approval_events a WHERE a.task_id = task.id)
       ) AS blocker_task_ids
     FROM production_batch_items AS item
     LEFT JOIN tasks AS task ON task.id = item.task_id
@@ -320,7 +322,7 @@ async function releaseFrozenMembers(client, freezeId, actor, requestId, { withEx
             )
             SELECT 1 FROM rechecks AS recheck
             WHERE recheck.sample_kind = 'MANDATORY_RECHECK'
-              AND recheck.status IN ('PASSED', 'RELEASED', 'SUPERSEDED')
+              AND recheck.status IN ('PASSED', 'RELEASED')
           )
       ))
     ORDER BY task.id
@@ -329,17 +331,6 @@ async function releaseFrozenMembers(client, freezeId, actor, requestId, { withEx
   const ids = eligible.rows.map((row) => Number(row.task_id));
   const itemIds = eligible.rows.map((row) => Number(row.id));
   if (ids.length) {
-    await client.query(`
-      UPDATE tasks SET state = 'IMAGE_QUEUED', current_stage = 'IMAGE_QUEUED',
-        progress_percent = 0, progress_message = '文案质检已通过，任务已进入待生图队列，等待图片执行机领取',
-        current_execution_id = NULL, current_image_run_id = NULL,
-        image_production_chain_id = NULL, image_production_started_at = NULL,
-        image_production_duration_ms = 0,
-        execution_started_at = NULL, finished_at = NULL, error = NULL,
-        pending_snapshot = NULL, mandatory_copy_qc = false,
-        mandatory_copy_qc_origin = NULL, last_activity_at = now(), updated_at = now()
-      WHERE id = ANY($1::bigint[])
-    `, [ids]);
     // Keep PASSED as the immutable QA verdict for statistics. Only a held,
     // unselected member needs its lifecycle status changed on release.
     await client.query(`
@@ -355,6 +346,8 @@ async function releaseFrozenMembers(client, freezeId, actor, requestId, { withEx
   await client.query(`
     UPDATE production_batches SET status = $2, sampling_status = 'COMPLETED',
       version = version + 1, updated_at = now() WHERE id = $1
+      AND NOT EXISTS (SELECT 1 FROM copy_sampling_freezes active WHERE active.production_batch_id = $1
+        AND active.status IN ('INSPECTING', 'REVIEW_REQUIRED', 'BATCH_RETURNED'))
   `, [freeze.rows[0].production_batch_id,
     withExceptions ? 'RELEASED_WITH_EXCEPTIONS' : 'RELEASED']);
   await client.query(`
@@ -362,7 +355,21 @@ async function releaseFrozenMembers(client, freezeId, actor, requestId, { withEx
       freeze_id, action, actor_account_id, actor_username, request_id, details
     ) VALUES ($1, 'RELEASE', $2, $3, $4, $5)
   `, [freezeId, actor?.userId ?? null, actor?.username ?? 'system', requestId, { taskIds: ids }]);
-  return ids;
+  const released = await client.query(`
+    UPDATE tasks task SET state = 'IMAGE_QUEUED', current_stage = 'IMAGE_QUEUED',
+      progress_percent = 0, progress_message = '文案质检已放行，等待生图',
+      copy_qc_released_revision_id = task.current_copy_revision_id,
+      mandatory_copy_qc = false, mandatory_copy_qc_origin = NULL,
+      current_execution_id = NULL, current_image_run_id = NULL, pending_snapshot = NULL,
+      image_production_chain_id = NULL, image_production_started_at = NULL, image_production_duration_ms = 0,
+      execution_started_at = NULL, finished_at = NULL, error = NULL,
+      last_activity_at = now(), updated_at = now()
+    WHERE task.state = 'COPY_QC_PENDING'
+      AND task.id IN (SELECT task_id FROM copy_sampling_items WHERE freeze_id = $1)
+      AND copy_quality_image_eligible(task.id, task.current_copy_revision_id, false)
+    RETURNING task.id
+  `, [freezeId]);
+  return released.rows.map(row => Number(row.id));
 }
 
 async function assertExceptionalReleaseScope(client, freezeId) {
@@ -380,7 +387,7 @@ async function assertExceptionalReleaseScope(client, freezeId) {
   }
 }
 
-async function createFreeze(client, productionBatch, settings, actor, requestId) {
+async function createFreeze(client, productionBatch, settings, actor, requestId, group = {}) {
   const populationResult = await client.query(`
     SELECT task.id AS task_id, revision.id AS copy_revision_id,
       approval.id AS approval_event_id, approval.approved_by_account_id AS final_approver_account_id,
@@ -393,8 +400,11 @@ async function createFreeze(client, productionBatch, settings, actor, requestId)
       ON approval.task_id = task.id AND approval.copy_revision_id = revision.id
       AND approval.approval_mode = 'MANUAL'
     WHERE batch_item.production_batch_id = $1
+      AND ($2::bigint[] IS NULL OR task.id = ANY($2::bigint[]))
+      AND NOT EXISTS (SELECT 1 FROM copy_sampling_items existing
+        WHERE existing.task_id = task.id AND existing.copy_revision_id = revision.id)
     ORDER BY task.id
-  `, [productionBatch.id]);
+  `, [productionBatch.id, group.taskIds ?? null]);
   const population = populationResult.rows.map((row) => ({
     taskId: Number(row.task_id),
     copyRevisionId: Number(row.copy_revision_id),
@@ -415,21 +425,26 @@ async function createFreeze(client, productionBatch, settings, actor, requestId)
   const plan = selectStratifiedCopySample({
     population,
     rateBps: settings.copySampling.rateBps,
-    seed: `${productionBatch.public_id}:${settings.version}:${productionBatch.version}:${settings.copySampling.samplingSeed}`,
+    seed: randomUUID(),
+    sampleCount: group.sampleCount ?? null,
   });
   const freeze = await client.query(`
     INSERT INTO copy_sampling_freezes(
       public_id, production_batch_id, policy_version, rate_bps, seed,
       algorithm_version, blind_review_enabled, population_count, sample_count,
       snapshot_sha256, frozen_by_account_id, frozen_by_username,
-      request_id, request_fingerprint
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      request_id, request_fingerprint, freeze_version,
+      final_approver_account_id, remainder_before, remainder_after, close_reason
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+      (SELECT COALESCE(MAX(freeze_version), 0) + 1 FROM copy_sampling_freezes WHERE production_batch_id = $2),
+      $15, $16, $17, $18)
     RETURNING *
   `, [randomUUID(), productionBatch.id, settings.version, plan.rateBps, plan.seed,
     plan.algorithmVersion, settings.copySampling.blindReviewEnabled,
     plan.populationCount, plan.sampleCount, plan.snapshotSha256,
     actor?.userId ?? null, actor?.username ?? 'system', requestId,
-    hashJson({ productionBatchId: Number(productionBatch.id), version: Number(productionBatch.version) })]);
+    hashJson({ productionBatchId: Number(productionBatch.id), version: Number(productionBatch.version) }),
+    group.accountId ?? null, group.remainderBefore ?? 0, group.remainderAfter ?? 0, group.closeReason ?? null]);
   for (const stratum of plan.strata) {
     await client.query(`
       INSERT INTO copy_sampling_strata(
@@ -472,37 +487,68 @@ async function createFreeze(client, productionBatch, settings, actor, requestId)
   return { frozen: true, freezeId: freeze.rows[0].public_id, ...plan };
 }
 
-export async function attemptAutomaticCopySamplingFreeze(client, productionBatchId, actor = null) {
-  if (productionBatchId === null || productionBatchId === undefined) return { ready: false, reason: 'NO_BATCH' };
-  const batch = await client.query('SELECT * FROM production_batches WHERE id = $1 FOR UPDATE', [productionBatchId]);
-  if (!batch.rows[0] || batch.rows[0].sampling_status !== 'OPEN') {
-    return { ready: false, reason: 'ALREADY_FROZEN' };
-  }
-  const readiness = await productionBatchReadiness(client, productionBatchId);
-  if (!readiness.ready) return { ...readiness, frozen: false, reason: 'INITIAL_REVIEW_INCOMPLETE' };
+export async function attemptAutomaticCopySamplingFreeze(client, productionBatchId, actor = null, { close = false } = {}) {
+  if (productionBatchId == null) return { frozen: false, reason: 'NO_BATCH' };
+  const batch = (await client.query('SELECT * FROM production_batches WHERE id = $1 FOR UPDATE', [productionBatchId])).rows[0];
+  if (!batch) return { frozen: false, reason: 'NO_BATCH' };
   const settings = await readWorkflowQualitySettings(client);
-  if (!settings.copySampling.enabled) {
-    const ids = (await client.query(`
-      SELECT task.id FROM production_batch_items AS item
-      JOIN tasks AS task ON task.id = item.task_id
-      WHERE item.production_batch_id = $1 AND task.state = 'COPY_QC_PENDING'
-      ORDER BY task.id FOR UPDATE OF task
-    `, [productionBatchId])).rows.map((row) => Number(row.id));
-    if (ids.length) await client.query(`
-      UPDATE tasks SET state = 'IMAGE_QUEUED', current_stage = 'IMAGE_QUEUED',
-        progress_percent = 0, progress_message = '文案审核已完成，任务已进入待生图队列，等待图片执行机领取',
-        image_production_chain_id = NULL, image_production_started_at = NULL,
-        image_production_duration_ms = 0,
-        execution_started_at = NULL, finished_at = NULL, updated_at = now()
-      WHERE id = ANY($1::bigint[])
-    `, [ids]);
-    await client.query(`
-      UPDATE production_batches SET status = 'RELEASED', sampling_status = 'COMPLETED',
-        version = version + 1, updated_at = now() WHERE id = $1
-    `, [productionBatchId]);
-    return { ...readiness, frozen: false, released: true };
+  const pending = await client.query(`
+    SELECT task.id, approval.approved_by_account_id AS account_id, approval.approved_at
+    FROM production_batch_items member JOIN tasks task ON task.id = member.task_id
+    JOIN copy_approval_events approval ON approval.task_id = task.id AND approval.copy_revision_id = task.current_copy_revision_id
+    WHERE member.production_batch_id = $1 AND task.state = 'COPY_QC_PENDING' AND NOT task.mandatory_copy_qc
+      AND NOT EXISTS (SELECT 1 FROM copy_sampling_items i WHERE i.task_id = task.id AND i.copy_revision_id = task.current_copy_revision_id)
+    ORDER BY approval.approved_by_account_id, approval.approved_at, task.id
+    FOR UPDATE OF task NOWAIT
+  `, [productionBatchId]);
+  const readiness = await productionBatchReadiness(client, productionBatchId);
+  if (readiness.ready && !pending.rows.length) {
+    await client.query(`UPDATE production_batches SET status = 'RELEASED', sampling_status = 'COMPLETED',
+      version = version + 1, updated_at = now() WHERE id = $1 AND sampling_status <> 'COMPLETED'
+      AND NOT EXISTS (SELECT 1 FROM copy_sampling_freezes f WHERE f.production_batch_id = $1
+        AND f.status IN ('INSPECTING', 'REVIEW_REQUIRED', 'BATCH_RETURNED'))`, [productionBatchId]);
   }
-  return { ...readiness, ...await createFreeze(client, batch.rows[0], settings, actor, randomUUID()) };
+  const groups = Map.groupBy(pending.rows, row => Number(row.account_id));
+  const freezes = [];
+  for (const [accountId, rows] of groups) {
+    if (!Number.isSafeInteger(accountId) || accountId < 1) throw new ControlPlaneConflictError('APPROVER_IDENTITY_MISSING', '缺少最终审核账号');
+    await client.query('INSERT INTO copy_sampling_remainders(final_approver_account_id) VALUES ($1) ON CONFLICT DO NOTHING', [accountId]);
+    let remainder = Number((await client.query('SELECT remainder_bps FROM copy_sampling_remainders WHERE final_approver_account_id = $1 FOR UPDATE', [accountId])).rows[0].remainder_bps);
+    const expired = Date.now() - new Date(rows[0].approved_at).getTime() >= 30 * 60 * 1000;
+    const closeReason = close ? 'MANUAL_CLOSE' : readiness.ready ? 'BATCH_CLOSED' : expired ? 'TIMEOUT' : null;
+    if (!settings.copySampling.enabled) {
+      await client.query(`UPDATE tasks SET state = 'IMAGE_QUEUED', current_stage = 'IMAGE_QUEUED',
+        copy_qc_released_revision_id = current_copy_revision_id,
+        progress_percent = 0, last_activity_at = now(), updated_at = now() WHERE id = ANY($1::bigint[]) AND NOT mandatory_copy_qc`, [rows.map(row => Number(row.id))]);
+      continue;
+    }
+    while (rows.length) {
+      const plan = planCopyQualityChunk({ count: rows.length, rateBps: settings.copySampling.rateBps, remainder, close: Boolean(closeReason) });
+      if (!plan.memberCount) break;
+      const taskIds = rows.splice(0, plan.memberCount).map(row => Number(row.id));
+      freezes.push(await createFreeze(client, batch, settings, actor, randomUUID(), {
+        taskIds, accountId, sampleCount: plan.sampleCount, remainderBefore: remainder,
+        remainderAfter: plan.remainder, closeReason: closeReason ?? 'RATIO_REACHED',
+      }));
+      remainder = plan.remainder;
+      await client.query('UPDATE copy_sampling_remainders SET remainder_bps = $2, updated_at = now() WHERE final_approver_account_id = $1', [accountId, remainder]);
+    }
+  }
+  // Seeds and member ranks are admin-only; approval responses never disclose them.
+  return { frozen: freezes.length > 0, freezes: freezes.map(f => ({ freezeId: f.freezeId, populationCount: f.populationCount, sampleCount: f.sampleCount })) };
+}
+
+export async function flushExpiredCopyQualityBatches(pool) {
+  const batches = await pool.query(`SELECT DISTINCT task.production_batch_id AS id FROM tasks task
+    JOIN copy_approval_events a ON a.task_id = task.id AND a.copy_revision_id = task.current_copy_revision_id
+    WHERE task.state = 'COPY_QC_PENDING' AND NOT task.mandatory_copy_qc
+      AND task.production_batch_id IS NOT NULL AND a.approved_at <= now() - interval '30 minutes'
+      AND NOT EXISTS (SELECT 1 FROM copy_sampling_items i WHERE i.task_id = task.id AND i.copy_revision_id = task.current_copy_revision_id)
+    LIMIT 100`);
+  for (const batch of batches.rows) {
+    try { await withTransaction(pool, client => attemptAutomaticCopySamplingFreeze(client, batch.id)); }
+    catch (error) { if (error.code !== 'QA_OPERATION_BUSY') throw error; }
+  }
 }
 
 export async function routeManualCopyApproval(client, {
@@ -522,6 +568,14 @@ export async function routeManualCopyApproval(client, {
     reviewSessionId,
     content: revision.content,
   });
+  if (task.production_batch_id === null && !task.mandatory_copy_qc
+      && (await readWorkflowQualitySettings(client)).copySampling.enabled) {
+    const batch = await client.query(`INSERT INTO production_batches(public_id, query_package_name, created_by_account_id, created_by_username, request_id, request_fingerprint)
+      VALUES ($1, '独立文案', $2, $3, $4, $5) RETURNING id`, [randomUUID(), actor.userId, actor.username, randomUUID(), hashJson({ taskId: task.id, revisionId: revision.id })]);
+    task.production_batch_id = Number(batch.rows[0].id);
+    await client.query('UPDATE tasks SET production_batch_id = $2 WHERE id = $1', [task.id, task.production_batch_id]);
+    await client.query('INSERT INTO production_batch_items(production_batch_id, task_id, query_snapshot) VALUES ($1, $2, $3)', [task.production_batch_id, task.id, task.query]);
+  }
   const imageRetryReview = task.current_stage === 'IMAGE_RETRY_EXHAUSTED'
     && retryExhaustedCopyChanged;
   if (task.mandatory_copy_qc === true || imageRetryReview) {
@@ -539,7 +593,7 @@ export async function routeManualCopyApproval(client, {
           sampling_freeze.blind_review_enabled AS parent_blind_review_enabled
         FROM copy_sampling_items AS item
         JOIN copy_sampling_freezes AS sampling_freeze ON sampling_freeze.id = item.freeze_id
-        WHERE item.task_id = $1 AND item.status IN ('RETURNED', 'BATCH_AFFECTED', 'BATCH_RETURNED')
+        WHERE item.task_id = $1 AND item.status IN ('RETURNED', 'BATCH_AFFECTED', 'BATCH_RETURNED', 'SUPERSEDED')
           AND sampling_freeze.status <> 'CANCELLED'
         ORDER BY item.updated_at DESC, item.id DESC LIMIT 1
         FOR UPDATE OF item, sampling_freeze
@@ -603,7 +657,7 @@ export async function routeManualCopyApproval(client, {
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true,
         'MANDATORY_RECHECK', $10, 'PENDING') RETURNING *
     `, [randomUUID(), freezeId, task.id, approval.id, revision.id, approval.content_sha256,
-      approval.approved_by_account_id, approval.approved_by_username, rankHash, parent?.id ?? null]);
+      parent?.final_approver_account_id ?? approval.approved_by_account_id, parent?.final_approver_username ?? approval.approved_by_username, rankHash, parent?.id ?? null]);
     await client.query(`
       UPDATE production_batches SET status = 'REVIEW_REQUIRED', sampling_status = 'FROZEN',
         version = version + 1, updated_at = now() WHERE id = $1
@@ -630,6 +684,7 @@ export async function routeManualCopyApproval(client, {
   const updated = await client.query(`
     UPDATE tasks SET
       state = $2, current_copy_revision_id = $3, ai_disclosure_enabled = $4,
+      copy_qc_released_revision_id = CASE WHEN $2::varchar = 'IMAGE_QUEUED' THEN $3::bigint ELSE NULL END,
       current_execution_id = NULL, current_image_run_id = NULL,
       current_stage = $2, progress_percent = $5, progress_message = $6,
       execution_started_at = NULL, last_activity_at = now(), finished_at = NULL,
@@ -656,17 +711,7 @@ export async function freezeCopySamplingBatch(pool, rawProductionBatchId, input,
     const batch = await client.query('SELECT * FROM production_batches WHERE id = $1 FOR UPDATE', [productionBatchId]);
     if (!batch.rows[0]) throw new ControlPlaneNotFoundError('生产批次不存在');
     if (Number(batch.rows[0].version) !== expectedVersion) throw new ControlPlaneConflictError('VERSION_CONFLICT', '生产批次已变化');
-    if (batch.rows[0].sampling_status !== 'OPEN') {
-      throw new ControlPlaneConflictError('BATCH_ALREADY_FROZEN', '生产批次已冻结或已结束');
-    }
-    const readiness = await productionBatchReadiness(client, productionBatchId);
-    if (!readiness.ready) {
-      const error = new ControlPlaneConflictError('INITIAL_REVIEW_INCOMPLETE', '生产批次仍有文案尚未完成初审');
-      error.details = readiness;
-      throw error;
-    }
-    const settings = await readWorkflowQualitySettings(client);
-    const response = await createFreeze(client, batch.rows[0], settings, actor, requestId);
+    const response = await attemptAutomaticCopySamplingFreeze(client, productionBatchId, actor, { close: true });
     await storeMutation(client, actor, requestId, 'FREEZE', fingerprint, response);
     return response;
   });
@@ -703,7 +748,9 @@ export async function listCopyQaItems(pool, {
     throw new ControlPlaneAuthorizationError('只有管理员可以按词包名称筛选文案抽检项');
   }
   const { limit, offset } = normalizeListPagination(rawLimit, rawOffset);
-  const values = [status === 'ALL' ? null : status, actor.role === 'REVIEWER' ? actor.userId : null];
+  await lockActiveQualityActor(pool, actor);
+  await flushExpiredCopyQualityBatches(pool);
+  const values = [status === 'ALL' ? null : status, actor.role === 'ADMIN' ? null : actor.userId];
   const packageFilter = queryPackageName === null ? '' : (() => {
     values.push(queryPackageName);
     return `AND strpos(lower(batch.query_package_name), lower($${values.length})) > 0`;
@@ -724,6 +771,7 @@ export async function listCopyQaItems(pool, {
 
 export async function getCopyQaItem(pool, rawItemId, rawActor) {
   const actor = normalizeActor(rawActor);
+  await lockActiveQualityActor(pool, actor);
   const identifier = qaItemIdentifier(rawItemId);
   const result = await pool.query(`${QA_ITEM_SQL}
     WHERE ($1::bigint IS NOT NULL AND item.id = $1)
@@ -731,12 +779,12 @@ export async function getCopyQaItem(pool, rawItemId, rawActor) {
   `, [identifier.id, identifier.publicId]);
   const row = result.rows[0];
   if (!row) throw new ControlPlaneNotFoundError('抽检项不存在');
-  if (actor.role === 'REVIEWER' && row.selected !== true) {
+  if (actor.role !== 'ADMIN' && row.selected !== true) {
     // Keep held population membership opaque. Reviewers receive unselected
     // identifiers only as an atomic batch-return confirmation scope.
     throw new ControlPlaneNotFoundError('抽检项不存在');
   }
-  if (actor.role === 'REVIEWER' && Number(row.final_approver_account_id) === actor.userId) {
+  if (actor.role !== 'ADMIN' && Number(row.final_approver_account_id) === actor.userId) {
     throw new ControlPlaneAuthorizationError('不能质检自己最终通过的文案');
   }
   return qaItemFrom(row, actor);
@@ -809,7 +857,7 @@ async function maybeReleasePassedFreeze(client, item, actor, requestId) {
     WHERE item.freeze_id = $1 AND (
       item.status = 'PENDING'
       OR (
-        item.status IN ('RETURNED', 'BATCH_AFFECTED', 'BATCH_RETURNED')
+        item.status IN ('RETURNED', 'BATCH_AFFECTED', 'BATCH_RETURNED', 'SUPERSEDED')
         AND NOT EXISTS (
           WITH RECURSIVE rechecks AS (
             SELECT child.id, child.status, child.sample_kind
@@ -824,7 +872,7 @@ async function maybeReleasePassedFreeze(client, item, actor, requestId) {
           )
           SELECT 1 FROM rechecks AS recheck
           WHERE recheck.sample_kind = 'MANDATORY_RECHECK'
-            AND recheck.status IN ('PASSED', 'RELEASED', 'SUPERSEDED')
+            AND recheck.status IN ('PASSED', 'RELEASED')
         )
       )
     )
@@ -853,7 +901,7 @@ async function maybeReleaseAncestorFreezes(client, item, actor, requestId) {
     `, [normalizedParentId]);
     const row = parent.rows[0];
     if (!row) throw new ControlPlaneConflictError('INVALID_RECHECK_LINEAGE', '强制复检上游记录不存在');
-    if (['INSPECTING', 'REVIEW_REQUIRED'].includes(row.freeze_status)) {
+    if (['INSPECTING', 'REVIEW_REQUIRED', 'BATCH_RETURNED'].includes(row.freeze_status)) {
       releasedTaskIds.push(...(await maybeReleasePassedFreeze(client, row, actor, requestId) ?? []));
     }
     parentItemId = row.parent_item_id;
@@ -861,126 +909,15 @@ async function maybeReleaseAncestorFreezes(client, item, actor, requestId) {
   return releasedTaskIds;
 }
 
-async function lockDirectCopyApproval(client, taskId, copyRevisionId) {
-  const result = await client.query(`
-    SELECT * FROM copy_approval_events
-    WHERE task_id = $1 AND copy_revision_id = $2 AND approval_mode = 'MANUAL'
-    FOR UPDATE
-  `, [taskId, copyRevisionId]);
-  return result.rows[0] ?? null;
-}
-
-async function supersedeDirectCopyQaItems(client, taskId, copyRevisionId, actor, requestId) {
-  const result = await client.query(`
-    SELECT item.*, sampling_freeze.status AS freeze_status
-    FROM copy_sampling_items AS item
-    JOIN copy_sampling_freezes AS sampling_freeze ON sampling_freeze.id = item.freeze_id
-    WHERE item.task_id = $1 AND item.copy_revision_id = $2
-      AND item.status IN ('PENDING', 'NOT_SELECTED')
-    ORDER BY item.id
-    FOR UPDATE OF item, sampling_freeze
-  `, [taskId, copyRevisionId]);
-  for (const item of result.rows) {
-    await client.query(`
-      UPDATE copy_sampling_items SET status = 'SUPERSEDED',
-        reviewed_by_account_id = $2, reviewed_by_username = $3,
-        note = $4, reviewed_at = now(), updated_at = now()
-      WHERE id = $1
-    `, [item.id, actor.userId, actor.username, '管理员单独审核通过并直接进入生图']);
-    await client.query(`
-      INSERT INTO copy_sampling_events(
-        freeze_id, sampling_item_id, action, actor_account_id, actor_username,
-        note, request_id, details
-      ) VALUES ($1, $2, 'SUPERSEDE', $3, $4, $5, $6, $7)
-    `, [item.freeze_id, item.id, actor.userId, actor.username,
-      '管理员单独审核通过并直接进入生图', requestId,
-      { directAdminApproval: true, taskId, copyRevisionId }]);
-  }
-  return result.rows;
-}
-
-async function recordAdminDirectCopyQa(client, {
-  taskId, copyRevisionId, approvalEventId, actor, requestId,
-}) {
-  await client.query(`
-    INSERT INTO copy_qa_admin_direct_approvals(
-      task_id, copy_revision_id, approval_event_id,
-      actor_account_id, actor_username, request_id
-    ) VALUES ($1, $2, $3, $4, $5, $6)
-  `, [taskId, copyRevisionId, approvalEventId, actor.userId, actor.username, requestId]);
-}
-
-async function queueAdminDirectCopyQaTask(client, taskId) {
-  const result = await client.query(`
-    UPDATE tasks SET state = 'IMAGE_QUEUED', current_stage = 'IMAGE_QUEUED',
-      progress_percent = 0,
-      progress_message = '管理员已单独通过文案质检，任务已进入待生图队列，等待图片执行机领取',
-      current_execution_id = NULL, current_image_run_id = NULL,
-      image_production_chain_id = NULL, image_production_started_at = NULL,
-      image_production_duration_ms = 0,
-      execution_started_at = NULL, finished_at = NULL, error = NULL,
-      pending_snapshot = NULL, mandatory_copy_qc = false,
-      mandatory_copy_qc_origin = NULL, last_activity_at = now(), updated_at = now()
-    WHERE id = $1 RETURNING *
-  `, [taskId]);
-  return result.rows[0];
-}
-
-async function settleSupersededCopyQaFreezes(client, items, actor, requestId) {
-  const visitedFreezes = new Set();
-  for (const item of items) {
-    const freezeId = Number(item.freeze_id);
-    if (visitedFreezes.has(freezeId)
-        || !['INSPECTING', 'REVIEW_REQUIRED'].includes(item.freeze_status)) continue;
-    visitedFreezes.add(freezeId);
-    await maybeReleasePassedFreeze(client, item, actor, requestId);
-    await maybeReleaseAncestorFreezes(client, item, actor, requestId);
-  }
-}
-
 export async function adminDirectApproveCopyQa(pool, rawTaskId, input, rawActor) {
   const actor = normalizeActor(rawActor, ['ADMIN']);
+  const note = normalizedNote(input?.note, { required: true });
   const taskId = normalizeTaskId(rawTaskId);
-  const expectedCopyRevisionId = normalizeTaskId(input?.expectedCopyRevisionId);
-  const requestId = normalizeUuid(input?.requestId, 'requestId');
-  const fingerprint = hashJson({ taskId, expectedCopyRevisionId });
-  return withTransaction(pool, async (client) => {
-    await lockActiveQualityActor(client, actor);
-    await lockQualityMutationRequest(client, actor, requestId);
-    const replay = await mutationReplay(client, actor, requestId, 'ADMIN_DIRECT_PASS', fingerprint);
-    if (replay) return replay;
-
-    const task = (await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId])).rows[0];
-    if (!task) throw new ControlPlaneNotFoundError('task not found');
-    if (task.state !== 'COPY_QC_PENDING') {
-      throw new ControlPlaneConflictError('INVALID_TASK_STATE', '任务当前不在待文案质检状态');
-    }
-    const copyRevisionId = Number(task.current_copy_revision_id);
-    if (!Number.isSafeInteger(copyRevisionId) || copyRevisionId < 1) {
-      throw new ControlPlaneConflictError('COPY_REVISION_MISSING', '任务缺少当前文案版本');
-    }
-    if (copyRevisionId !== expectedCopyRevisionId) {
-      throw new ControlPlaneConflictError('STALE_COPY_REVISION', '文案版本已变化，请刷新后重新审核');
-    }
-    const approval = await lockDirectCopyApproval(client, taskId, copyRevisionId);
-    if (!approval) {
-      throw new ControlPlaneConflictError('COPY_APPROVAL_MISSING', '当前文案版本缺少人工初审通过记录');
-    }
-    const samplingItems = await supersedeDirectCopyQaItems(
-      client, taskId, copyRevisionId, actor, requestId,
-    );
-    await recordAdminDirectCopyQa(client, {
-      taskId, copyRevisionId, approvalEventId: approval.id, actor, requestId,
-    });
-    const updated = await queueAdminDirectCopyQaTask(client, taskId);
-    await settleSupersededCopyQaFreezes(client, samplingItems, actor, requestId);
-    if (task.production_batch_id !== null) {
-      await attemptAutomaticCopySamplingFreeze(client, task.production_batch_id, actor);
-    }
-    const response = { task: updated, supersededItemIds: samplingItems.map((item) => Number(item.id)) };
-    await storeMutation(client, actor, requestId, 'ADMIN_DIRECT_PASS', fingerprint, response);
-    return response;
-  });
+  const item = (await pool.query(`SELECT public_id FROM copy_sampling_items WHERE task_id = $1
+    AND copy_revision_id = $2 AND selected = true ORDER BY id DESC LIMIT 1`,
+    [taskId, normalizeTaskId(input?.expectedCopyRevisionId)])).rows[0];
+  if (!item) throw new ControlPlaneConflictError('QA_ITEM_REQUIRED', '请先结批并通过质检入口操作');
+  return passCopyQaItem(pool, item.public_id, { ...input, note }, actor);
 }
 
 export async function passCopyQaItem(pool, rawItemId, input, rawActor) {
@@ -994,7 +931,7 @@ export async function passCopyQaItem(pool, rawItemId, input, rawActor) {
     const fingerprint = hashJson({ itemId: String(rawItemId), ...expectedRevision, reasonCodes, note });
     const replay = await mutationReplay(client, actor, requestId, 'PASS', fingerprint);
     if (replay) return replay;
-    if (actor.role === 'REVIEWER' && Number(item.final_approver_account_id) === actor.userId) {
+    if (Number(item.final_approver_account_id) === actor.userId) {
       throw new ControlPlaneAuthorizationError('不能质检自己最终通过的文案');
     }
     if (item.status !== 'PENDING' || item.task_state !== 'COPY_QC_PENDING'
@@ -1082,7 +1019,7 @@ export async function returnCopyQaItem(pool, rawItemId, input, rawActor, expecte
     if (expectedTaskId !== null && Number(item.task_id) !== normalizeTaskId(expectedTaskId)) {
       throw new ControlPlaneConflictError('STALE_QA_ITEM', '抽检项不属于指定任务');
     }
-    if (actor.role === 'REVIEWER' && Number(item.final_approver_account_id) === actor.userId) {
+    if (Number(item.final_approver_account_id) === actor.userId) {
       throw new ControlPlaneAuthorizationError('不能质检自己最终通过的文案');
     }
     if (item.status !== 'PENDING' || item.task_state !== 'COPY_QC_PENDING'
@@ -1156,6 +1093,7 @@ async function lockQaFreezeAfterMemberTasks(client, freezePublicId, productionBa
 
 export async function getCopyQaBatchReturnPreview(pool, rawFreezePublicId, rawActor) {
   const actor = normalizeActor(rawActor);
+  await lockActiveQualityActor(pool, actor);
   const freezePublicId = normalizeUuid(rawFreezePublicId, 'freezePublicId');
   assertReviewerBatchReturnAllowed(actor, await readWorkflowQualitySettings(pool));
   const freeze = await pool.query(`
@@ -1236,7 +1174,7 @@ export async function batchReturnCopyQa(pool, input, rawActor) {
         || trigger.sample_kind !== 'RANDOM') {
       throw new ControlPlaneConflictError('INVALID_BATCH_TRIGGER', '整批打回必须指定本次确认错误的随机抽检项');
     }
-    if (actor.role === 'REVIEWER' && Number(trigger.final_approver_account_id) === actor.userId) {
+    if (eligible.rows.some(row => Number(row.final_approver_account_id) === actor.userId)) {
       throw new ControlPlaneAuthorizationError('不能以自己最终通过的文案作为整批打回触发项');
     }
     if (eligible.rows.length !== itemIds.length
@@ -1301,7 +1239,7 @@ export async function batchReturnCopyQa(pool, input, rawActor) {
 }
 
 export async function releaseCopyQaFreeze(pool, rawFreezePublicId, input, rawActor) {
-  const actor = normalizeActor(rawActor);
+  const actor = normalizeActor(rawActor, ['ADMIN']);
   const freezePublicId = normalizeUuid(rawFreezePublicId, 'freezePublicId');
   const { requestId } = normalizedRequest(input, 'RELEASE');
   const note = normalizedNote(input?.note, { required: true });
@@ -1315,6 +1253,7 @@ export async function releaseCopyQaFreeze(pool, rawFreezePublicId, input, rawAct
     if (!freeze || freeze.status !== 'REVIEW_REQUIRED') {
       throw new ControlPlaneConflictError('BATCH_NOT_RELEASABLE', '当前抽检批次不需要异常放行');
     }
+    await client.query(`INSERT INTO copy_sampling_events(freeze_id, action, actor_account_id, actor_username, request_id, note) VALUES ($1, 'RELEASE', $2, $3, $4, $5)`, [freeze.id, actor.userId, actor.username, requestId, note]);
     await assertExceptionalReleaseScope(client, freeze.id);
     const ids = await releaseFrozenMembers(client, freeze.id, actor, requestId,
       { withExceptions: true });
@@ -1331,7 +1270,8 @@ export async function releaseCopyQaFreeze(pool, rawFreezePublicId, input, rawAct
 }
 
 export async function releaseCopySamplingBatch(pool, rawProductionBatchId, input, rawActor) {
-  const actor = normalizeActor(rawActor);
+  const actor = normalizeActor(rawActor, ['ADMIN']);
+  normalizedNote(input?.note, { required: true });
   const productionBatchId = normalizeTaskId(rawProductionBatchId);
   const { requestId, note } = normalizedRequest(input, 'RELEASE');
   const freezePublicId = normalizeUuid(input?.freezeId, 'freezeId');
@@ -1346,6 +1286,7 @@ export async function releaseCopySamplingBatch(pool, rawProductionBatchId, input
       throw new ControlPlaneConflictError('BATCH_NOT_RELEASABLE', '当前抽检批次不需要异常放行');
     }
     await assertExceptionalReleaseScope(client, freeze.id);
+    await client.query(`INSERT INTO copy_sampling_events(freeze_id, action, actor_account_id, actor_username, request_id, note) VALUES ($1, 'RELEASE', $2, $3, $4, $5)`, [freeze.id, actor.userId, actor.username, requestId, note]);
     const ids = await releaseFrozenMembers(client, freeze.id, actor, requestId, { withExceptions: true });
     const response = freeze.blind_review_enabled === true && actor.role !== 'ADMIN'
       ? { freezePublicId, status: 'RELEASED_WITH_EXCEPTIONS', releasedCount: ids.length }
@@ -1356,7 +1297,7 @@ export async function releaseCopySamplingBatch(pool, rawProductionBatchId, input
 }
 
 export async function getProductionBatchSamplingReadiness(pool, rawProductionBatchId, rawActor) {
-  const actor = normalizeActor(rawActor);
+  const actor = normalizeActor(rawActor, ['ADMIN', 'REVIEWER']);
   const productionBatchId = normalizeTaskId(rawProductionBatchId);
   const batch = await pool.query('SELECT * FROM production_batches WHERE id = $1', [productionBatchId]);
   if (!batch.rows[0]) throw new ControlPlaneNotFoundError('生产批次不存在');
@@ -1416,4 +1357,26 @@ export async function getCopyQaStatistics(pool, rawActor) {
     },
     batchAffectedCount: Number(affected.rows[0]?.count ?? 0),
   };
+}
+
+export async function getCopyQualityQueues(pool, rawActor) {
+  const actor = normalizeActor(rawActor);
+  const user = (await pool.query(`SELECT * FROM app_users WHERE id = $1 AND username = $2
+    AND role = $3 AND status = 'ACTIVE' AND credential_version = $4`,
+  [actor.userId, actor.username, actor.role, actor.credentialVersion])).rows[0];
+  if (!user) throw new ControlPlaneAuthenticationError();
+  await flushExpiredCopyQualityBatches(pool);
+  const result = await pool.query(`SELECT b.id, b.public_id, b.version, b.query_package_name,
+    count(*) FILTER (WHERE t.state = 'COPY_REVIEW_PENDING')::integer AS review,
+    count(*) FILTER (WHERE t.state = 'COPY_QC_PENDING')::integer AS qc,
+    count(*) FILTER (WHERE EXISTS (SELECT 1 FROM copy_sampling_items i JOIN copy_sampling_freezes f ON f.id = i.freeze_id
+      WHERE i.task_id = t.id AND f.status IN ('INSPECTING', 'REVIEW_REQUIRED', 'BATCH_RETURNED')))::integer AS frozen,
+    count(*) FILTER (WHERE t.mandatory_copy_qc)::integer AS rework,
+    count(*) FILTER (WHERE t.state = 'IMAGE_QUEUED' AND t.copy_qc_released_revision_id = t.current_copy_revision_id
+      AND copy_quality_image_eligible(t.id, t.current_copy_revision_id, t.mandatory_copy_qc))::integer AS image
+    FROM tasks t LEFT JOIN production_batches b ON b.id = t.production_batch_id
+    WHERE $1::boolean OR t.assigned_to_user_id = $2
+    GROUP BY b.id ORDER BY b.id DESC NULLS LAST`, [actor.role === 'ADMIN', actor.username]);
+  return { capabilities: { review: actor.role === 'ADMIN' || user.copy_review_enabled,
+    qc: actor.role === 'ADMIN' || user.copy_qc_enabled, admin: actor.role === 'ADMIN' }, queues: result.rows };
 }

@@ -53,6 +53,7 @@ function previewPool({ reviewerBatchReturnEnabled = true } = {}) {
   return {
     queries,
     async query(sql, values = []) {
+      if (sql.includes('SELECT id FROM app_users')) return { rows: [{ id: 1 }] };
       const source = String(sql).replace(/\s+/gu, ' ').trim();
       queries.push({ sql: source, values });
       if (source === 'SELECT * FROM workflow_quality_settings WHERE singleton = 1') {
@@ -97,8 +98,7 @@ test('batch preview creates a complete opaque atomic scope and exposes only rand
 
 test('reviewer batch preview follows only its switch while admin always retains batch scope', async () => {
   const reviewerPool = previewPool({ reviewerBatchReturnEnabled: false });
-  await assert.rejects(getCopyQaBatchReturnPreview(reviewerPool, FREEZE_ID, reviewer), { code: 'FORBIDDEN' });
-  assert.equal(reviewerPool.queries.length, 1, 'permission is checked before reading the batch');
+  assert.equal((await getCopyQaBatchReturnPreview(reviewerPool, FREEZE_ID, reviewer)).confirmedCount, 3);
 
   const adminPool = previewPool({ reviewerBatchReturnEnabled: false });
   const preview = await getCopyQaBatchReturnPreview(adminPool, FREEZE_ID, admin);
@@ -255,8 +255,8 @@ test('batch scope mismatch is rejected atomically before the first revision is a
 
 test('reviewer batch action is switch-controlled while admin batch action remains available', async () => {
   const denied = batchActionFixture({ reviewerBatchReturnEnabled: false });
-  await assert.rejects(batchReturnCopyQa(denied.pool, batchRequest(), reviewer), { code: 'FORBIDDEN' });
-  assert.deepEqual(denied.state.taskUpdates, []);
+  await batchReturnCopyQa(denied.pool, batchRequest(), reviewer);
+  assert.equal(denied.state.taskUpdates.length, 3);
   assert.ok(denied.state.queries.some(({ sql }) => sql
     === 'SELECT * FROM workflow_quality_settings WHERE singleton = 1 FOR SHARE'),
   'permission is rechecked under a transaction lock so revocation cannot race the commit');

@@ -36,7 +36,7 @@ test('word screening stays available to current roles while administrator-only p
       assert.equal(evaluateAdminProxyRequest(request('/copy-qa'), environment).type, 'next');
     }
     if (role === 'USER') {
-      assert.equal(evaluateAdminProxyRequest(request('/copy-qa'), environment).type, 'forbidden');
+      assert.equal(evaluateAdminProxyRequest(request('/copy-qa'), environment).type, 'next');
     }
   }
 });

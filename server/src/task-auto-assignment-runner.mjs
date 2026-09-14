@@ -169,6 +169,7 @@ export async function runAutoAssignmentReplenishment(pool, {
       FROM app_users AS app_user
       WHERE app_user.role = 'USER'
         AND app_user.status = 'ACTIVE'
+        AND app_user.copy_review_enabled = true
         AND EXISTS (
           SELECT 1 FROM task_auto_assignment_workers AS membership
           WHERE membership.username = app_user.username

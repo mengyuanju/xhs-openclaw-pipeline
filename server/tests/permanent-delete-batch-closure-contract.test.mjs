@@ -17,7 +17,8 @@ test('batch permanent deletion closes original production batches after every ta
   const client = {
     release() {},
     async query(sql, values = []) {
-      const source = String(sql).replace(/\s+/gu, ' ').trim();
+      if (sql.includes('approval.approved_by_account_id AS account_id')) return { rows: [] };
+    const source = String(sql).replace(/\s+/gu, ' ').trim();
       calls.push({ sql: source, values });
       if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(source)) return { rows: [] };
       if (source.startsWith('SELECT * FROM app_users')) {

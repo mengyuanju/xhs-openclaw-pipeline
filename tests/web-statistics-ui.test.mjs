@@ -48,7 +48,11 @@ test('personal status categories sit beside saved views without starting a secon
   assert.ok(controlsStart >= 0 && listToolsStart > controlsStart);
   const controls = workbench.slice(controlsStart, listToolsStart);
   assert.match(controls, /role === 'ADMIN' && <div className="workbench-saved-views"/u);
-  assert.match(controls, /activeView === 'PERSONAL' && <PersonalStatusFilters/u);
+  const personalControls = controls.match(/activeView === 'PERSONAL' && <>([\s\S]*?)<\/>/u)?.[1];
+  assert.ok(personalControls, 'personal filters must remain inside the personal-view condition');
+  assert.match(personalControls, /<PersonalTaskScopeFilter\s+value=\{personalScope\}/u);
+  assert.match(personalControls, /<PersonalStatusFilters\s+filter=\{stateFilter\}\s+summary=\{personalStatistics\.data\?\.summary\}/u,
+    'status filters reuse the existing personal statistics response');
   assert.match(controls, /onFilter=\{\(value\) => \{ setStateFilter\(value\); setPage\(1\); \}\}/u);
   assert.match(workbench, /useStatistics\([\s\S]*?activeView === 'PERSONAL',[\s\S]*?\)/u);
   assert.match(statisticsHook, /export function useStatistics\(filters: Filters, enabled = true\)/u);

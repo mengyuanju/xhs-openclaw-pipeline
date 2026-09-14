@@ -80,7 +80,7 @@ export function WorkflowQualitySettingsPanel() {
       <div>
         <span className="section-kicker">Workflow quality</span>
         <h2 id="workflow-quality-settings-title">流程与文案抽检</h2>
-        <p className="subtle">集中控制抽检比例、独立盲评和质检员整批打回权限。</p>
+        <p className="subtle">配置抽检比例和盲评。审核与质检权限在用户管理中独立设置。</p>
       </div>
       <ClipboardCheck size={20} aria-hidden="true" />
     </div>
@@ -91,7 +91,7 @@ export function WorkflowQualitySettingsPanel() {
       <div className={styles.modeSummary} aria-label="当前配置摘要">
         <span className="pill">文案抽检：{draft.copySampling.enabled ? `${ratePercent}%` : '关闭'}</span>
         <span className="pill">质检视图：{draft.copySampling.blindReviewEnabled ? '盲评' : '非盲评'}</span>
-        <span className="pill">质检员整批打回：{draft.copySampling.reviewerBatchReturnEnabled ? '允许' : '禁止'}</span>
+        <span className="pill">质检权限包含单条和整批打回</span>
       </div>
       <div className={styles.grid}>
         <div className={styles.card}>
@@ -110,18 +110,10 @@ export function WorkflowQualitySettingsPanel() {
           <Switch id="copy-sampling-blind" checked={draft.copySampling.blindReviewEnabled} disabled={disabled}
             onChange={(event) => { setMessage(''); setDraft((current) => current ? { ...current, copySampling: { ...current.copySampling, blindReviewEnabled: event.target.checked } } : current); }} />
         </div>
-        <div className={styles.card} data-wide="true">
-          <div className={styles.cardText}>
-            <label htmlFor="reviewer-batch-return">允许质检员整批打回</label>
-            <p>质检员始终可以只打回当前错误项；开启后才可整批打回。管理员始终保留整批打回权限，且每次必须选中项目、二次确认、填写原因并留存审计。</p>
-          </div>
-          <Switch id="reviewer-batch-return" checked={draft.copySampling.reviewerBatchReturnEnabled} disabled={disabled}
-            onChange={(event) => { setMessage(''); setDraft((current) => current ? { ...current, copySampling: { ...current.copySampling, reviewerBatchReturnEnabled: event.target.checked } } : current); }} />
-        </div>
         <div className={styles.rate}>
           <div className={styles.rateText}>
             <label htmlFor="copy-sampling-rate">抽检比例</label>
-            <p>按批次分层抽取，支持 0–100%，精确到 0.01%。比例调整只影响之后冻结的抽检批次。</p>
+            <p>按最终审核人独立累计：20% 每满 5 条抽 1 条，100% 全检。结批或等待 30 分钟后，非空余量保底抽 1 条。开启抽检时 0% 仅在结批时保底抽检；关闭抽检不影响强制复检。比例修改只影响后续冻结。</p>
           </div>
           <div className={styles.rateControl}>
             <Input id="copy-sampling-rate" type="number" min={0} max={100} step={0.01} value={ratePercent} disabled={disabled || !draft.copySampling.enabled}

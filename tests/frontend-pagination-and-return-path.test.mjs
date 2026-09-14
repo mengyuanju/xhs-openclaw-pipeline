@@ -158,7 +158,7 @@ test('login returns each role only to an authorized workflow page', () => {
   assert.equal(resolveLoginReturnPath({ ...base, role: 'REVIEWER', requestedPath: '/copy-qa' }), '/copy-qa');
   assert.equal(resolveLoginReturnPath({ ...base, role: 'REVIEWER', requestedPath: '/knowledge' }), base.homePath);
   assert.equal(resolveLoginReturnPath({ ...base, role: 'REVIEWER', requestedPath: '/query-packages' }), '/query-packages');
-  assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/copy-qa' }), base.homePath);
+  assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/copy-qa' }), '/copy-qa');
   assert.equal(resolveLoginReturnPath({ ...base, role: 'ADMIN', requestedPath: '/settings' }), '/settings');
   assert.equal(resolveLoginReturnPath({ ...base, role: 'ADMIN', requestedPath: '//evil.example' }), base.homePath);
   assert.equal(resolveLoginReturnPath({ ...base, role: 'ADMIN', requestedPath: '/\\evil.example' }), base.homePath);

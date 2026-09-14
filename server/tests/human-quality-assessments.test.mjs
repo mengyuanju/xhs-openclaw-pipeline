@@ -48,6 +48,7 @@ function copyFixture({ assignedToUserId = 'reviewer' } = {}) {
   const client = {
     release() {},
     async query(sql, values = []) {
+      if (sql.includes('FROM workflow_quality_settings')) return { rows: [{ copy_sampling_enabled: false }] };
       const source = String(sql);
       queries.push({ sql: source, values });
       if (/^(BEGIN|COMMIT|ROLLBACK)$/u.test(source)) return { rows: [] };

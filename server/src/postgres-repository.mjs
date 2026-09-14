@@ -1,5 +1,7 @@
 import { priorityFrom, priorityOrderSql, normalizePriorityMode } from './task-priority.mjs';
 import { adjustTaskPriority, readPriorityScope } from './task-priority-store.mjs';
+import { flushExpiredCopyQualityBatches } from './copy-quality-control.mjs';
+import { copyQualityImageGate } from './copy-quality-flow.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { assertImageResultSettings, reviseTaskImages } from './image-revisions.mjs';
@@ -207,6 +209,8 @@ function taskFrom(row) {
     deliveryStatus: row.delivery_ready === true ? 'READY' : null,
     mandatoryCopyQc: row.mandatory_copy_qc === true,
     mandatoryCopyQcOrigin: row.mandatory_copy_qc_origin ?? null,
+    reworkCount: Number(row.rework_count ?? 0),
+    requeueReason: row.requeue_reason ?? null,
     state: row.state,
     cancelledFromState: row.cancelled_from_state ?? null,
     imageReviewedAt: row.image_reviewed_at ?? null,
@@ -341,6 +345,8 @@ function publicUserFrom(row) {
     status: row.status,
     mustChangePassword: row.must_change_password,
     hasDeletionPassword: Boolean(row.deletion_password_hash),
+    copyReviewEnabled: row.copy_review_enabled !== false,
+    copyQcEnabled: row.copy_qc_enabled === true,
     credentialVersion: Number(row.credential_version),
     version: Number(row.version),
     createdAt: row.created_at,
@@ -566,6 +572,7 @@ function assertTaskActorAccess(task, actor, {
   if (!allowedRoles.includes(actor.role)) {
     throw new ControlPlaneAuthorizationError('current role cannot perform this operation');
   }
+  if (actor.role !== 'ADMIN' && actorRow?.copy_review_enabled === false) throw new ControlPlaneAuthorizationError('审核权限已关闭');
   const assignedToUserId = task.assigned_to_user_id ?? null;
   const creatorAccess = isStableUnassignedTaskCreator(
     task,
@@ -576,7 +583,7 @@ function assertTaskActorAccess(task, actor, {
   if (actor.role !== 'ADMIN' && assignedToUserId === null && !creatorAccess) {
     throw new ControlPlaneAuthorizationError('未分配任务仅管理员可操作');
   }
-  if ((ownerOnly || actor.role === 'USER')
+  if ((ownerOnly || actor.role !== 'ADMIN')
       && assignedToUserId !== actor.username
       && !creatorAccess) {
     throw new ControlPlaneAuthorizationError('任务负责人已变化，请刷新后重试');
@@ -704,12 +711,12 @@ async function assertActiveAssignableUser(client, username, accountId = null) {
   const result = accountId === null
     ? await client.query(`
       SELECT id, username FROM app_users
-      WHERE username = $1 AND status = 'ACTIVE' AND role = 'USER'
+      WHERE username = $1 AND status = 'ACTIVE' AND role = 'USER' AND copy_review_enabled = true
       FOR UPDATE
     `, [username])
     : await client.query(`
       SELECT id, username FROM app_users
-      WHERE id = $1 AND username = $2 AND status = 'ACTIVE' AND role = 'USER'
+      WHERE id = $1 AND username = $2 AND status = 'ACTIVE' AND role = 'USER' AND copy_review_enabled = true
       FOR UPDATE
     `, [accountId, username]);
   if (!result.rows[0]) {
@@ -721,13 +728,13 @@ async function assertActiveNonAdminAssignee(client, username, accountId = null) 
   const result = accountId === null
     ? await client.query(`
       SELECT id, username FROM app_users
-      WHERE username = $1 AND status = 'ACTIVE' AND role IN ('REVIEWER', 'USER')
+      WHERE username = $1 AND status = 'ACTIVE' AND role IN ('REVIEWER', 'USER') AND copy_review_enabled = true
       FOR UPDATE
     `, [username])
     : await client.query(`
       SELECT id, username FROM app_users
       WHERE id = $1 AND username = $2 AND status = 'ACTIVE'
-        AND role IN ('REVIEWER', 'USER')
+        AND role IN ('REVIEWER', 'USER') AND copy_review_enabled = true
       FOR UPDATE
     `, [accountId, username]);
   if (!result.rows[0]) {
@@ -1240,7 +1247,7 @@ async function lockedExecution(client, executionId) {
 async function queueApprovedCopy(client, taskId, revisionId, aiDisclosureEnabled, message = '文案审核通过，等待图片执行机领取') {
   const updated = await client.query(`
     UPDATE tasks SET
-      state = 'IMAGE_QUEUED', current_copy_revision_id = $2,
+      state = 'IMAGE_QUEUED', current_copy_revision_id = $2, copy_qc_released_revision_id = $2,
       ai_disclosure_enabled = $3,
       current_execution_id = NULL, current_image_run_id = NULL,
       current_stage = 'IMAGE_QUEUED', progress_percent = 0,
@@ -1964,17 +1971,18 @@ export class PostgresControlPlaneRepository {
     });
   }
 
-  async createUser({ username: rawUsername, displayName: rawDisplayName, role: rawRole }) {
+  async createUser({ username: rawUsername, displayName: rawDisplayName, role: rawRole, copyReviewEnabled = true, copyQcEnabled = false }) {
     const username = normalizedUsername(rawUsername);
     const displayName = normalizedDisplayName(rawDisplayName);
     const role = normalizedUserRole(rawRole);
+    if (typeof copyReviewEnabled !== 'boolean' || typeof copyQcEnabled !== 'boolean') throw new TypeError('permissions must be boolean');
     const passwordHash = await hashUserPassword('123456');
     try {
       const result = await this.pool.query(`
-        INSERT INTO app_users(username, display_name, role, password_hash, must_change_password)
-        VALUES ($1, $2, $3, $4, true)
+        INSERT INTO app_users(username, display_name, role, password_hash, must_change_password, copy_review_enabled, copy_qc_enabled)
+        VALUES ($1, $2, $3, $4, true, $5, $6)
         RETURNING *
-      `, [username, displayName, role, passwordHash]);
+      `, [username, displayName, role, passwordHash, copyReviewEnabled, copyQcEnabled]);
       return publicUserFrom(result.rows[0]);
     } catch (error) {
       if (error?.code === '23505') throw new ControlPlaneConflictError('USERNAME_EXISTS', 'username already exists');
@@ -1982,7 +1990,7 @@ export class PostgresControlPlaneRepository {
     }
   }
 
-  async updateUser(rawUserId, { displayName: rawDisplayName, role: rawRole, status, expectedVersion }) {
+  async updateUser(rawUserId, { displayName: rawDisplayName, role: rawRole, status, expectedVersion, copyReviewEnabled, copyQcEnabled, actorUsername = null }) {
     const userId = normalizeTaskId(rawUserId);
     const displayName = normalizedDisplayName(rawDisplayName);
     const role = normalizedUserRole(rawRole);
@@ -2018,15 +2026,29 @@ export class PostgresControlPlaneRepository {
           );
         }
       }
-      const credentialChanged = current.role !== role || current.status !== status;
+      const reviewEnabled = copyReviewEnabled ?? current.copy_review_enabled ?? true;
+      const qcEnabled = copyQcEnabled ?? current.copy_qc_enabled ?? false;
+      if (typeof reviewEnabled !== 'boolean' || typeof qcEnabled !== 'boolean') throw new TypeError('permissions must be boolean');
+      if (!reviewEnabled && current.copy_review_enabled) {
+        // Released assignments remain visible to administrators for reassignment.
+        await client.query(`UPDATE tasks SET assigned_to_user_id = NULL, assignment_source = NULL, assigned_at = NULL, updated_at = now()
+          WHERE assigned_to_user_id = $1 AND state = 'COPY_REVIEW_PENDING'`, [current.username]);
+        await clearQueryPackageAssignments(client, current);
+      }
+      const credentialChanged = current.role !== role || current.status !== status
+        || reviewEnabled !== current.copy_review_enabled || qcEnabled !== current.copy_qc_enabled;
       const result = await client.query(`
         UPDATE app_users
         SET display_name = $1, role = $2, status = $3,
+            copy_review_enabled = $7, copy_qc_enabled = $8,
             credential_version = credential_version + $4, version = version + 1, updated_at = now()
         WHERE id = $5 AND version = $6
         RETURNING *
-      `, [displayName, role, status, credentialChanged ? 1 : 0, userId, expectedVersion]);
+      `, [displayName, role, status, credentialChanged ? 1 : 0, userId, expectedVersion, reviewEnabled, qcEnabled]);
       if (!result.rows[0]) throw new ControlPlaneConflictError('VERSION_CONFLICT', 'user was updated by another request');
+      await client.query(`INSERT INTO copy_quality_permission_events(account_id, actor_username, previous_permissions, permissions)
+        VALUES ($1, $2, $3, $4)`, [userId, actorUsername,
+        { review: current.copy_review_enabled, qc: current.copy_qc_enabled }, { review: reviewEnabled, qc: qcEnabled }]);
       if (status !== 'ACTIVE' || !['REVIEWER', 'USER'].includes(role)) {
         await clearQueryPackageAssignments(client, current);
       }
@@ -3121,6 +3143,10 @@ export class PostgresControlPlaneRepository {
     });
   }
 
+  async flushExpiredCopyQualityBatches() {
+    return flushExpiredCopyQualityBatches(this.pool);
+  }
+
   async claimCopy(rawNodeId) {
     return (await this.#claim({ kind: 'COPY', nodeId: rawNodeId, limit: 1 })).claims[0] ?? null;
   }
@@ -3237,7 +3263,9 @@ export class PostgresControlPlaneRepository {
                 ORDER BY ${priorityOrderSql('queued.')}
               ) AS owner_row_number
             FROM tasks AS queued
-            WHERE queued.state = $1 AND queued.priority_paused = false
+            WHERE queued.state = $1
+              AND queued.priority_paused = false
+              AND ${copyQualityImageGate('queued')}
               AND queued.assigned_to_user_id IS NOT NULL
               AND (queued.pending_snapshot->'imageRetry'->>'nodeId' IS NULL
                 OR queued.pending_snapshot->'imageRetry'->>'nodeId' = $2)
@@ -3249,6 +3277,7 @@ export class PostgresControlPlaneRepository {
           FROM ranked_candidates AS ranked
           JOIN tasks AS task ON task.id = ranked.task_id
           WHERE task.state = $1 AND task.priority_paused = false
+            AND ${copyQualityImageGate('task')}
             AND task.assigned_to_user_id IS NOT NULL
             AND task.assigned_to_user_id IS NOT DISTINCT FROM ranked.assigned_to_user_id
             AND (task.pending_snapshot->'imageRetry'->>'nodeId' IS NULL
@@ -3418,6 +3447,7 @@ export class PostgresControlPlaneRepository {
       const execution = await lockedExecution(client, executionId);
       if (execution.kind !== 'COPY') throw new TypeError('execution is not a copy execution');
       let bypass = execution.skip_copy_review === true && execution.assigned_to_user_id != null;
+      if (bypass && (await readWorkflowQualitySettings(client)).copySampling.enabled) bypass = false;
       let message = execution.assigned_to_user_id == null
         ? '文案生成完成，等待分配负责人后审核'
         : '文案生成完成，等待人工审核';

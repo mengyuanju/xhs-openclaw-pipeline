@@ -59,7 +59,7 @@ test('ordinary users do not render Query package provenance or delivery download
     readFile(projectFile('app/components/side-nav.tsx'), 'utf8'),
   ]);
 
-  assert.match(navigation, /items\.filter\(\(item\) => \['\/workbench', '\/query-packages'\]\.includes\(item\.href\)\)/u,
+  assert.match(navigation, /items\.filter\(\(item\) => \['\/workbench', '\/query-packages', '\/copy-flow', '\/copy-qa'\]\.includes\(item\.href\)\)/u,
     'ordinary users must receive their assigned Query packages without receiving the delivery pool');
   assert.match(workbench, /const canUseQueryPackageFilter = role !== 'USER'/u);
   assert.match(workbench, /canUseQueryPackageFilter \? initialListState\.queryPackageName : ''/u,
@@ -481,6 +481,6 @@ test('administrators can directly pass a pending copy QA item from list and deta
     assert.match(source, /\/admin-direct-copy-qa/u);
     assert.match(source, /requestId: createRequestId\(\)/u);
     assert.match(source, /expectedCopyRevisionId:/u);
-    assert.match(source, /通过并进入生图/u);
+    assert.match(source, /记录质检通过/u);
   }
 });

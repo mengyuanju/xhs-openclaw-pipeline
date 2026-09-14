@@ -95,7 +95,7 @@ export function assertQueryPackageImportAllowed(actor, settings) {
 
 export function assertReviewerBatchReturnAllowed(actor, settings) {
   if (actor?.role === 'ADMIN') return;
-  if (actor?.role === 'REVIEWER' && settings.copySampling.reviewerBatchReturnEnabled) return;
+  if (['REVIEWER', 'USER'].includes(actor?.role)) return;
   throw new ControlPlaneAuthorizationError('当前质检员没有整批打回权限');
 }
 

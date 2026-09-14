@@ -21,7 +21,7 @@ const settings = normalizeWorkflowQualitySettings({
 test('Query-package import stays administrator-only while reviewer batch-return remains configurable', () => {
   assert.doesNotThrow(() => assertQueryPackageImportAllowed({ role: 'ADMIN' }, settings));
   assert.throws(() => assertQueryPackageImportAllowed({ role: 'USER' }, settings), { code: 'FORBIDDEN' });
-  assert.throws(() => assertReviewerBatchReturnAllowed({ role: 'REVIEWER' }, settings), { code: 'FORBIDDEN' });
+  assert.doesNotThrow(() => assertReviewerBatchReturnAllowed({ role: 'REVIEWER' }, settings));
   assert.doesNotThrow(() => assertReviewerBatchReturnAllowed({ role: 'ADMIN' }, settings));
 
   const enabled = normalizeWorkflowQualitySettings({

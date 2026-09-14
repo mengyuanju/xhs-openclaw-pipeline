@@ -86,9 +86,10 @@ function nestedRecheckFixture() {
       if (source.startsWith('SELECT item.id, task.id AS task_id')) {
         return { rows: eligibleByFreeze.get(Number(values[0])) ?? [] };
       }
-      if (source.startsWith("UPDATE tasks SET state = 'IMAGE_QUEUED'")) {
-        state.releasedTaskIds.push(...values[0].map(Number));
-        return { rows: [] };
+      if (source.startsWith("UPDATE tasks task SET state = 'IMAGE_QUEUED'")) {
+        const ids = (eligibleByFreeze.get(Number(values[0])) ?? []).map(row => Number(row.task_id));
+        state.releasedTaskIds.push(...ids);
+        return { rows: ids.map(id => ({ id })) };
       }
       if (source.startsWith("UPDATE copy_sampling_items SET status = 'RELEASED'")) return { rows: [] };
       if (source.startsWith('UPDATE copy_sampling_freezes SET status = $2')) {

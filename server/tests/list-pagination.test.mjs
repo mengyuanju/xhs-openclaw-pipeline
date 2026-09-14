@@ -59,6 +59,8 @@ test('Query, QA, and delivery lists pass normalized integer pagination to Postgr
   const calls = [];
   const pool = {
     query: async (sql, values = []) => {
+      if (sql.includes('SELECT id FROM app_users')) return { rows: [{ id: 1 }] };
+      if (sql.includes('SELECT DISTINCT task.production_batch_id')) return { rows: [] };
       calls.push({ sql: String(sql), values });
       return { rows: [] };
     },

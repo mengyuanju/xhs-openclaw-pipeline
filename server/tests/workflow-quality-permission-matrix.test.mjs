@@ -57,11 +57,11 @@ test('reviewer batch return depends only on its own switch', () => {
         );
         assert.equal(
           allowed(() => assertReviewerBatchReturnAllowed({ role: 'REVIEWER' }, current)),
-          reviewerBatchReturnEnabled,
+          true,
         );
         assert.equal(
           allowed(() => assertReviewerBatchReturnAllowed({ role: 'USER' }, current)),
-          false,
+          true,
         );
       }
     }
