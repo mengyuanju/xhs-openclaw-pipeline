@@ -139,6 +139,9 @@ export function HumanRatingFeedback({
   notePlaceholder,
   showReasonOptions = true,
   feedbackRequired = true,
+  reasonRequirement,
+  noteLabel = '评分说明',
+  noteRequirement,
   disabled = false,
   onToggleReason,
   onNoteChange,
@@ -150,24 +153,25 @@ export function HumanRatingFeedback({
   notePlaceholder: string;
   showReasonOptions?: boolean;
   feedbackRequired?: boolean;
+  reasonRequirement?: string;
+  noteLabel?: string;
+  noteRequirement?: string;
   disabled?: boolean;
   onToggleReason: (code: string) => void;
   onNoteChange: (note: string) => void;
 }) {
   return <div className="human-rating-feedback">
-    {showReasonOptions && <fieldset disabled={disabled}>
-      <legend>扣分原因 <span>{feedbackRequired ? '原因或说明至少填写一项' : '选填'}</span></legend>
-      <div className="human-rating-reasons">
-        {reasonOptions.map(reason => <label key={reason.code} data-selected={reasons.includes(reason.code)}>
-          <Checkbox checked={reasons.includes(reason.code)} onChange={() => onToggleReason(reason.code)} />
-          <span>{reason.label}</span>
-        </label>)}
-      </div>
-    </fieldset>}
+    {showReasonOptions && <HumanReasonOptions
+      reasonOptions={reasonOptions}
+      reasons={reasons}
+      requirement={reasonRequirement ?? (feedbackRequired ? '原因或说明至少填写一项' : '选填')}
+      disabled={disabled}
+      onToggleReason={onToggleReason}
+    />}
     <div className="field full">
-      <label htmlFor={`${id}-note`}>评分说明 <small>{note.length}/500，{feedbackRequired
+      <label htmlFor={`${id}-note`}>{noteLabel} <small>{note.length}/500，{noteRequirement ?? (feedbackRequired
         ? showReasonOptions ? '可代替原因选项' : '低于 3 分时必填'
-        : '选填'}</small></label>
+        : '选填')}</small></label>
       <Textarea
         id={`${id}-note`}
         className="textarea human-rating-note"
@@ -179,6 +183,32 @@ export function HumanRatingFeedback({
       />
     </div>
   </div>;
+}
+
+export function HumanReasonOptions({
+  reasonOptions,
+  reasons,
+  legend = '扣分原因',
+  requirement,
+  disabled = false,
+  onToggleReason,
+}: {
+  reasonOptions: ReadonlyArray<{ code: string; label: string }>;
+  reasons: string[];
+  legend?: string;
+  requirement: string;
+  disabled?: boolean;
+  onToggleReason: (code: string) => void;
+}) {
+  return <fieldset disabled={disabled}>
+    <legend>{legend} <span>{requirement}</span></legend>
+    <div className="human-rating-reasons">
+      {reasonOptions.map(reason => <label key={reason.code} data-selected={reasons.includes(reason.code)}>
+        <Checkbox checked={reasons.includes(reason.code)} onChange={() => onToggleReason(reason.code)} />
+        <span>{reason.label}</span>
+      </label>)}
+    </div>
+  </fieldset>;
 }
 
 const CONTEXT_LABELS: Record<HumanQualityAssessment['ratingContext'], string> = {

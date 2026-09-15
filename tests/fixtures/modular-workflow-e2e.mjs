@@ -60,6 +60,7 @@ const state = {
   requests: [],
   deliveryExports: [],
   deliveryArchives: new Map(),
+  deliveryBatches: [],
   deliveryEntries: [{
     id: 1,
     taskId: 701,
@@ -440,7 +441,7 @@ const controlPlane = createServer(async (req, res) => {
         capabilities: {
           taskAssignmentVersion: 3,
           queryPackageVersion: 4,
-          finalDeliveryVersion: 2,
+          finalDeliveryVersion: 3,
           deliverySpreadsheetVersion: 1,
           deliveryPreviewVersion: 5,
         },
@@ -494,10 +495,20 @@ const controlPlane = createServer(async (req, res) => {
       const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 50));
       const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
       const queryPackageName = url.searchParams.get('queryPackageName');
-      const filtered = queryPackageName
+      const packingState = url.searchParams.get('packingState') ?? 'ALL';
+      const sourceFiltered = queryPackageName
         ? state.deliveryEntries.filter((entry) => entry.queryPackageName === queryPackageName)
         : state.deliveryEntries;
-      const items = filtered.slice(offset, offset + limit);
+      const filtered = sourceFiltered.filter((entry) => packingState === 'PACKED'
+        ? Boolean(entry.deliveryBatch)
+        : packingState === 'PENDING' ? !entry.deliveryBatch : true);
+      const responseEntry = (entry) => ({
+        ...entry,
+        packingState: entry.deliveryBatch ? 'PACKED' : 'UNPACKED',
+        deliveryBatch: entry.deliveryBatch ?? null,
+        previousDeliveryBatch: null,
+      });
+      const items = filtered.slice(offset, offset + limit).map(responseEntry);
       const facets = [...new Map(state.deliveryEntries.filter(
         (entry) => entry.queryPackageId !== null,
       ).map((entry) => [
@@ -513,6 +524,9 @@ const controlPlane = createServer(async (req, res) => {
           unuploadedCount: packageEntries.filter((entry) => !entry.preview).length,
           publishedCount: packageEntries.filter((entry) => entry.preview?.status === 'PUBLISHED').length,
           revokedCount: packageEntries.filter((entry) => entry.preview?.status === 'REVOKED').length,
+          pendingCount: packageEntries.filter((entry) => !entry.deliveryBatch).length,
+          packedCount: packageEntries.filter((entry) => entry.deliveryBatch).length,
+          updatedCount: 0,
         };
       });
       const unassignedEntries = state.deliveryEntries.filter((entry) => entry.queryPackageId === null);
@@ -521,10 +535,52 @@ const controlPlane = createServer(async (req, res) => {
         unuploadedCount: unassignedEntries.filter((entry) => !entry.preview).length,
         publishedCount: unassignedEntries.filter((entry) => entry.preview?.status === 'PUBLISHED').length,
         revokedCount: unassignedEntries.filter((entry) => entry.preview?.status === 'REVOKED').length,
+        pendingCount: unassignedEntries.filter((entry) => !entry.deliveryBatch).length,
+        packedCount: unassignedEntries.filter((entry) => entry.deliveryBatch).length,
+        updatedCount: 0,
       } : null;
       send(res, 200, url.searchParams.get('includeTotal') === 'true'
-        ? { items, total: filtered.length, facets: { queryPackages: facets, unassigned } }
+        ? {
+            items,
+            total: filtered.length,
+            facets: { queryPackages: facets, unassigned },
+            summary: {
+              readyCount: state.deliveryEntries.length,
+              pendingCount: state.deliveryEntries.filter((entry) => !entry.deliveryBatch).length,
+              packedCount: state.deliveryEntries.filter((entry) => entry.deliveryBatch).length,
+              updatedCount: 0,
+            },
+          }
         : items);
+      return;
+    }
+    if (method === 'GET' && url.pathname === '/v1/delivery-batches') {
+      if (actorRole(req) !== 'ADMIN') {
+        error(res, 403, 'FORBIDDEN', 'fixture delivery history is admin-only');
+        return;
+      }
+      const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 50));
+      const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
+      send(res, 200, {
+        items: state.deliveryBatches.slice(offset, offset + limit)
+          .map(({ items: _items, content: _content, ...batch }) => batch),
+        total: state.deliveryBatches.length,
+      });
+      return;
+    }
+    const deliveryBatchMatch = url.pathname.match(/^\/v1\/delivery-batches\/([0-9a-f-]+)$/u);
+    if (method === 'GET' && deliveryBatchMatch) {
+      if (actorRole(req) !== 'ADMIN') {
+        error(res, 403, 'FORBIDDEN', 'fixture delivery history is admin-only');
+        return;
+      }
+      const batch = state.deliveryBatches.find((entry) => entry.publicId === deliveryBatchMatch[1]);
+      if (!batch) {
+        error(res, 404, 'DELIVERY_BATCH_NOT_FOUND', 'fixture delivery batch is missing');
+        return;
+      }
+      const { content: _content, ...detail } = batch;
+      send(res, 200, detail);
       return;
     }
     if (method === 'POST' && url.pathname === '/v1/delivery-pool/previews') {
@@ -591,11 +647,18 @@ const controlPlane = createServer(async (req, res) => {
         return;
       }
       const input = await jsonBody(req);
-      const taskIds = input.scope === 'ALL_READY'
+      const requestedIds = input.scope === 'ALL_READY'
         ? state.deliveryEntries.map((entry) => entry.taskId)
-        : Array.isArray(input.taskIds) ? input.taskIds.map(Number) : [];
+        : input.scope === 'QUERY_PACKAGE'
+          ? state.deliveryEntries.filter((entry) => entry.queryPackageName === input.queryPackageName)
+            .map((entry) => entry.taskId)
+          : Array.isArray(input.taskIds) ? input.taskIds.map(Number) : [];
+      const selectedEntries = state.deliveryEntries.filter(
+        (entry) => requestedIds.includes(entry.taskId) && !entry.deliveryBatch,
+      );
+      const taskIds = selectedEntries.map((entry) => entry.taskId);
       if (!taskIds.length) {
-        error(res, 409, 'DELIVERY_POOL_EMPTY', 'fixture delivery pool is empty');
+        error(res, 409, 'DELIVERY_POOL_HAS_NO_PENDING_ITEMS', 'fixture delivery pool has no pending items');
         return;
       }
       state.deliveryExports.push({
@@ -609,15 +672,63 @@ const controlPlane = createServer(async (req, res) => {
       }
       const content = await zip.generateAsync({ type: 'nodebuffer' });
       const downloadId = randomUUID();
-      const fileName = input.scope === 'ALL_READY'
-        ? '交付池-全部可交付项.zip'
-        : '交付池-已选资源.zip';
-      state.deliveryArchives.set(downloadId, { content, fileName, taskCount: taskIds.length });
+      const publicId = randomUUID();
+      const code = `JF-${publicId.replaceAll('-', '').slice(0, 8).toUpperCase()}`;
+      const createdAt = new Date().toISOString();
+      const fileName = `${code}-交付包.zip`;
+      const queryPackageNames = [...new Set(selectedEntries
+        .map((entry) => entry.queryPackageName).filter(Boolean))];
+      const batch = {
+        id: state.deliveryBatches.length + 1,
+        publicId,
+        code,
+        scope: input.scope,
+        queryPackageName: input.scope === 'QUERY_PACKAGE' ? input.queryPackageName : null,
+        queryPackageNames,
+        status: 'GENERATED',
+        fileName,
+        byteSize: content.byteLength,
+        sha256: 'a'.repeat(64),
+        taskCount: taskIds.length,
+        createdByAccountId: actor.id,
+        createdByUsername: actor.username,
+        createdAt,
+        firstDownloadedAt: null,
+        lastDownloadedAt: null,
+        downloadCount: 0,
+        items: selectedEntries.map((entry, index) => ({
+          id: state.deliveryBatches.length * 1000 + index + 1,
+          ordinal: index + 1,
+          taskId: entry.taskId,
+          copyRevisionId: entry.copyRevisionId,
+          imageRunId: entry.imageRunId,
+          query: entry.query,
+          queryPackageId: entry.queryPackageId,
+          queryPackageName: entry.queryPackageName,
+        })),
+        content,
+      };
+      state.deliveryBatches.unshift(batch);
+      for (const entry of selectedEntries) {
+        entry.deliveryBatch = {
+          id: batch.id,
+          publicId,
+          code,
+          status: batch.status,
+          createdAt,
+          downloadedAt: null,
+        };
+      }
+      state.deliveryArchives.set(downloadId, {
+        content, fileName, taskCount: taskIds.length, batchPublicId: publicId,
+      });
       send(res, 201, {
         downloadId,
         fileName,
         taskCount: taskIds.length,
         expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+        batchId: publicId,
+        batchCode: code,
       });
       return;
     }
@@ -653,6 +764,22 @@ const controlPlane = createServer(async (req, res) => {
         return;
       }
       state.deliveryArchives.delete(deliveryDownloadMatch[1]);
+      const downloadedBatch = state.deliveryBatches.find(
+        (entry) => entry.publicId === archive.batchPublicId,
+      );
+      if (downloadedBatch) {
+        const downloadedAt = new Date().toISOString();
+        downloadedBatch.status = 'DOWNLOADED';
+        downloadedBatch.firstDownloadedAt ??= downloadedAt;
+        downloadedBatch.lastDownloadedAt = downloadedAt;
+        downloadedBatch.downloadCount += 1;
+        for (const entry of state.deliveryEntries.filter(
+          (item) => item.deliveryBatch?.publicId === downloadedBatch.publicId,
+        )) {
+          entry.deliveryBatch.status = 'DOWNLOADED';
+          entry.deliveryBatch.downloadedAt = downloadedAt;
+        }
+      }
       res.writeHead(200, {
         'Content-Type': 'application/zip',
         'Content-Disposition': 'attachment; filename="delivery-pool.zip"',
@@ -660,6 +787,38 @@ const controlPlane = createServer(async (req, res) => {
         'Cache-Control': 'no-store',
       });
       res.end(archive.content);
+      return;
+    }
+    const deliveryBatchArchiveMatch = url.pathname.match(
+      /^\/v1\/delivery-batches\/([0-9a-f-]+)\/archive$/u,
+    );
+    if (['HEAD', 'GET'].includes(method) && deliveryBatchArchiveMatch) {
+      if (actorRole(req) !== 'ADMIN') {
+        error(res, 403, 'FORBIDDEN', 'fixture delivery history is admin-only');
+        return;
+      }
+      const batch = state.deliveryBatches.find(
+        (entry) => entry.publicId === deliveryBatchArchiveMatch[1],
+      );
+      if (!batch) {
+        error(res, 404, 'DELIVERY_BATCH_NOT_FOUND', 'fixture delivery batch is missing');
+        return;
+      }
+      if (method === 'GET') {
+        const downloadedAt = new Date().toISOString();
+        batch.status = 'DOWNLOADED';
+        batch.firstDownloadedAt ??= downloadedAt;
+        batch.lastDownloadedAt = downloadedAt;
+        batch.downloadCount += 1;
+      }
+      res.writeHead(200, {
+        'Content-Type': 'application/zip',
+        'Content-Disposition': 'attachment; filename="delivery-batch.zip"',
+        'Content-Length': String(batch.content.byteLength),
+        'X-Delivery-Task-Count': String(batch.taskCount),
+        'Cache-Control': 'no-store',
+      });
+      res.end(method === 'GET' ? batch.content : undefined);
       return;
     }
     if (method === 'GET' && url.pathname === '/v1/query-packages') {

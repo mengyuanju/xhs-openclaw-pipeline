@@ -59,9 +59,15 @@ test('central settings validate layout kinds and keep them in the persisted prod
     saved = value;
     return { rows: [{ key, value, version: 1 }] };
   } } });
-  const result = await repository.upsertSetting('production', { layoutPresets: [preset()], existingPolicy: 'preserved' });
+  const result = await repository.upsertSetting('production', {
+    layoutPresets: [preset()],
+    imageEditRepairMaxAttempts: 1,
+    existingPolicy: 'preserved',
+  });
   assert.equal(result.value.layoutPresets[0].layout.textPosition, 'left');
+  assert.equal(result.value.imageEditRepairMaxAttempts, 1);
   assert.equal(result.value.existingPolicy, 'preserved');
   await assert.rejects(repository.upsertSetting('production', { layoutPresets: [preset({ kind: 'invalid' })] }), /布局/);
+  await assert.rejects(repository.upsertSetting('production', { imageEditRepairMaxAttempts: 3 }), /between 0 and 2/iu);
   assert.deepEqual(saved, result.value);
 });

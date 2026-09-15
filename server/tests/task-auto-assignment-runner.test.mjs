@@ -519,7 +519,7 @@ test('scheduler starts immediately, never overlaps, continues after errors and s
 test('CLI starts and stops replenishment with the center process lifecycle', async () => {
   const source = await readFile(new URL('../src/cli.mjs', import.meta.url), 'utf8');
   assert.match(source, /startAutoAssignmentReplenishment\(repository\)/u);
-  assert.match(source, /Promise\.all\(\[stopRecovery\(\), stopAutoAssignment\(\)\]\)/u);
+  assert.match(source, /Promise\.all\(\[stopRecovery\(\), stopAutoAssignment\(\), stopImageEdits\(\)\]\)/u);
   assert.match(source, /if \(stoppingPromise\) return stoppingPromise/u);
   assert.match(source, /stoppingPromise = \(async \(\) =>/u);
 });

@@ -45,6 +45,20 @@ function deliveryFrom(row) {
     publishedAt: row.preview_published_at,
     revokedAt: row.preview_revoked_at,
   } : null;
+  const batch = row.delivery_batch_public_id ? {
+    id: Number(row.delivery_batch_id),
+    publicId: row.delivery_batch_public_id,
+    code: row.delivery_batch_code,
+    status: row.delivery_batch_status,
+    createdAt: row.delivery_batch_created_at,
+    downloadedAt: row.delivery_batch_last_downloaded_at ?? null,
+  } : null;
+  const previousBatch = !batch && row.previous_delivery_batch_public_id ? {
+    id: Number(row.previous_delivery_batch_id),
+    publicId: row.previous_delivery_batch_public_id,
+    code: row.previous_delivery_batch_code,
+    createdAt: row.previous_delivery_batch_created_at,
+  } : null;
   return {
     id: Number(row.id),
     taskId: Number(row.task_id),
@@ -63,7 +77,18 @@ function deliveryFrom(row) {
     approvedAt: row.approved_at,
     createdAt: row.created_at,
     preview,
+    packingState: batch ? 'PACKED' : previousBatch ? 'VERSION_UPDATED' : 'UNPACKED',
+    deliveryBatch: batch,
+    previousDeliveryBatch: previousBatch,
   };
+}
+
+function normalizePackingState(value) {
+  const state = String(value ?? 'ALL').trim().toUpperCase();
+  if (!['ALL', 'PENDING', 'PACKED'].includes(state)) {
+    throw new TypeError('delivery packingState must be ALL, PENDING or PACKED');
+  }
+  return state;
 }
 
 function normalizePreviewLimit(value) {
@@ -335,10 +360,12 @@ export async function listDeliveryPool(pool, {
   offset: rawOffset = 0,
   includeTotal = false,
   queryPackageName: rawQueryPackageName = null,
+  packingState: rawPackingState = 'ALL',
 } = {}, rawActor) {
   const actor = normalizeActor(rawActor);
   const { limit, offset } = normalizeListPagination(rawLimit, rawOffset);
   const queryPackageName = normalizeQueryPackageName(rawQueryPackageName);
+  const packingState = normalizePackingState(rawPackingState);
   const visibilityValues = actor.role === 'ADMIN' ? [] : [actor.username, actor.userId];
   const filteredValues = [...visibilityValues];
   const visibility = actor.role === 'ADMIN' ? '' : `
@@ -353,18 +380,59 @@ export async function listDeliveryPool(pool, {
     filteredValues.push(queryPackageName);
     return `AND task.source_query_package_name = $${filteredValues.length}`;
   })();
+  const packingFilter = packingState === 'PENDING'
+    ? `AND NOT EXISTS (
+      SELECT 1 FROM delivery_batch_items AS packed_item
+      WHERE packed_item.task_id = delivery.task_id
+        AND packed_item.copy_revision_id = delivery.copy_revision_id
+        AND packed_item.image_run_id = delivery.image_run_id
+    )`
+    : packingState === 'PACKED'
+      ? `AND EXISTS (
+        SELECT 1 FROM delivery_batch_items AS packed_item
+        WHERE packed_item.task_id = delivery.task_id
+          AND packed_item.copy_revision_id = delivery.copy_revision_id
+          AND packed_item.image_run_id = delivery.image_run_id
+      )`
+      : '';
   const limitParameter = filteredValues.length + 1;
   const values = [...filteredValues, limit, offset];
   const pagePromise = pool.query(`
     SELECT delivery.*, task.query, task.source_query_package_id,
-      task.source_query_package_snapshot_id,
-      task.source_query_package_name
+      task.source_query_package_snapshot_id, task.source_query_package_name,
+      packed.id AS delivery_batch_id, packed.public_id AS delivery_batch_public_id,
+      packed.code AS delivery_batch_code, packed.status AS delivery_batch_status,
+      packed.created_at AS delivery_batch_created_at,
+      packed.last_downloaded_at AS delivery_batch_last_downloaded_at,
+      previous.id AS previous_delivery_batch_id,
+      previous.public_id AS previous_delivery_batch_public_id,
+      previous.code AS previous_delivery_batch_code,
+      previous.created_at AS previous_delivery_batch_created_at
     FROM delivery_entries AS delivery
     JOIN tasks AS task ON task.id = delivery.task_id
       AND task.state = 'REVIEWED'
       AND task.current_copy_revision_id = delivery.copy_revision_id
       AND task.current_image_run_id = delivery.image_run_id
-    WHERE delivery.status = 'READY' ${visibility} ${packageFilter}
+    LEFT JOIN LATERAL (
+      SELECT batch.id, batch.public_id, batch.code, batch.status,
+        batch.created_at, batch.last_downloaded_at
+      FROM delivery_batch_items AS item
+      JOIN delivery_batches AS batch ON batch.id = item.delivery_batch_id
+      WHERE item.task_id = delivery.task_id
+        AND item.copy_revision_id = delivery.copy_revision_id
+        AND item.image_run_id = delivery.image_run_id
+      ORDER BY batch.id LIMIT 1
+    ) AS packed ON true
+    LEFT JOIN LATERAL (
+      SELECT batch.id, batch.public_id, batch.code, batch.created_at
+      FROM delivery_batch_items AS item
+      JOIN delivery_batches AS batch ON batch.id = item.delivery_batch_id
+      WHERE item.task_id = task.id
+        AND (item.copy_revision_id <> delivery.copy_revision_id
+          OR item.image_run_id <> delivery.image_run_id)
+      ORDER BY item.id DESC LIMIT 1
+    ) AS previous ON packed.id IS NULL
+    WHERE delivery.status = 'READY' ${visibility} ${packageFilter} ${packingFilter}
     ORDER BY delivery.approved_at DESC, delivery.id DESC
     LIMIT $${limitParameter} OFFSET $${limitParameter + 1}
   `, values);
@@ -379,7 +447,7 @@ export async function listDeliveryPool(pool, {
       AND task.state = 'REVIEWED'
       AND task.current_copy_revision_id = delivery.copy_revision_id
       AND task.current_image_run_id = delivery.image_run_id
-    WHERE delivery.status = 'READY' ${visibility} ${packageFilter}
+    WHERE delivery.status = 'READY' ${visibility} ${packageFilter} ${packingFilter}
   `, filteredValues), pool.query(`
     SELECT COALESCE(task.source_query_package_id, task.source_query_package_snapshot_id) AS id,
       task.source_query_package_name AS name,
@@ -388,7 +456,30 @@ export async function listDeliveryPool(pool, {
       COUNT(*)::bigint AS count,
       COUNT(*) FILTER (WHERE delivery.preview_id IS NULL)::bigint AS unuploaded_count,
       COUNT(*) FILTER (WHERE delivery.preview_status = 'PUBLISHED')::bigint AS published_count,
-      COUNT(*) FILTER (WHERE delivery.preview_status = 'REVOKED')::bigint AS revoked_count
+      COUNT(*) FILTER (WHERE delivery.preview_status = 'REVOKED')::bigint AS revoked_count,
+      COUNT(*) FILTER (WHERE EXISTS (
+        SELECT 1 FROM delivery_batch_items AS packed_item
+        WHERE packed_item.task_id = delivery.task_id
+          AND packed_item.copy_revision_id = delivery.copy_revision_id
+          AND packed_item.image_run_id = delivery.image_run_id
+      ))::bigint AS packed_count,
+      COUNT(*) FILTER (WHERE NOT EXISTS (
+        SELECT 1 FROM delivery_batch_items AS packed_item
+        WHERE packed_item.task_id = delivery.task_id
+          AND packed_item.copy_revision_id = delivery.copy_revision_id
+          AND packed_item.image_run_id = delivery.image_run_id
+      ))::bigint AS pending_count,
+      COUNT(*) FILTER (WHERE NOT EXISTS (
+        SELECT 1 FROM delivery_batch_items AS packed_item
+        WHERE packed_item.task_id = delivery.task_id
+          AND packed_item.copy_revision_id = delivery.copy_revision_id
+          AND packed_item.image_run_id = delivery.image_run_id
+      ) AND EXISTS (
+        SELECT 1 FROM delivery_batch_items AS previous_item
+        WHERE previous_item.task_id = task.id
+          AND (previous_item.copy_revision_id <> delivery.copy_revision_id
+            OR previous_item.image_run_id <> delivery.image_run_id)
+      ))::bigint AS updated_count
     FROM delivery_entries AS delivery
     JOIN tasks AS task ON task.id = delivery.task_id
       AND task.state = 'REVIEWED'
@@ -407,7 +498,28 @@ export async function listDeliveryPool(pool, {
       unuploadedCount: summary.unuploadedCount + Number(row.unuploaded_count ?? 0),
       publishedCount: summary.publishedCount + Number(row.published_count ?? 0),
       revokedCount: summary.revokedCount + Number(row.revoked_count ?? 0),
-    }), { count: 0, unuploadedCount: 0, publishedCount: 0, revokedCount: 0 });
+      packedCount: summary.packedCount + Number(row.packed_count ?? 0),
+      pendingCount: summary.pendingCount + Number(row.pending_count ?? row.count ?? 0),
+      updatedCount: summary.updatedCount + Number(row.updated_count ?? 0),
+    }), { count: 0, unuploadedCount: 0, publishedCount: 0, revokedCount: 0,
+      packedCount: 0, pendingCount: 0, updatedCount: 0 });
+  const facetRows = packageFacets.rows.map((row) => ({
+    id: row.id == null ? null : Number(row.id),
+    name: row.name ?? null,
+    count: Number(row.count ?? 0),
+    pendingCount: Number(row.pending_count ?? row.count ?? 0),
+    packedCount: Number(row.packed_count ?? 0),
+    updatedCount: Number(row.updated_count ?? 0),
+  }));
+  const summaryRows = queryPackageName === null
+    ? facetRows
+    : facetRows.filter((row) => row.name === queryPackageName);
+  const summary = summaryRows.reduce((current, row) => ({
+    readyCount: current.readyCount + row.count,
+    pendingCount: current.pendingCount + row.pendingCount,
+    packedCount: current.packedCount + row.packedCount,
+    updatedCount: current.updatedCount + row.updatedCount,
+  }), { readyCount: 0, pendingCount: 0, packedCount: 0, updatedCount: 0 });
   return {
     items: result.rows.map(deliveryFrom),
     total: Number(count.rows[0]?.total ?? 0),
@@ -423,14 +535,19 @@ export async function listDeliveryPool(pool, {
           unuploadedCount: Number(row.unuploaded_count ?? 0),
           publishedCount: Number(row.published_count ?? 0),
           revokedCount: Number(row.revoked_count ?? 0),
+          pendingCount: Number(row.pending_count ?? row.count ?? 0),
+          packedCount: Number(row.packed_count ?? 0),
+          updatedCount: Number(row.updated_count ?? 0),
         })),
       unassigned: unassigned.count > 0 ? unassigned : null,
     },
+    summary,
   };
 }
 
 export async function listAllDeliveryPoolTaskIds(pool, rawActor, {
   queryPackageName: rawQueryPackageName = null,
+  unpackedOnly = false,
 } = {}) {
   const actor = normalizeActor(rawActor);
   if (actor.role !== 'ADMIN') {
@@ -442,6 +559,13 @@ export async function listAllDeliveryPoolTaskIds(pool, rawActor, {
     values.push(queryPackageName);
     return `AND task.source_query_package_name = $${values.length}`;
   })();
+  if (typeof unpackedOnly !== 'boolean') throw new TypeError('unpackedOnly must be boolean');
+  const packedFilter = unpackedOnly ? `AND NOT EXISTS (
+    SELECT 1 FROM delivery_batch_items AS packed_item
+    WHERE packed_item.task_id = delivery.task_id
+      AND packed_item.copy_revision_id = delivery.copy_revision_id
+      AND packed_item.image_run_id = delivery.image_run_id
+  )` : '';
   const result = await pool.query(`
     SELECT task.id AS task_id
     FROM delivery_entries AS delivery
@@ -449,7 +573,7 @@ export async function listAllDeliveryPoolTaskIds(pool, rawActor, {
       AND task.state = 'REVIEWED'
       AND task.current_copy_revision_id = delivery.copy_revision_id
       AND task.current_image_run_id = delivery.image_run_id
-    WHERE delivery.status = 'READY' ${packageFilter}
+    WHERE delivery.status = 'READY' ${packageFilter} ${packedFilter}
     ORDER BY delivery.approved_at DESC, delivery.id DESC
   `, values);
   return result.rows.map((row) => Number(row.task_id));

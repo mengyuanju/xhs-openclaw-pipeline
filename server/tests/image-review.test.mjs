@@ -22,6 +22,8 @@ function fixture(overrides = {}, {
   completedRun = true,
   archiveImageResult = { images: [101, 102, 103].map((assetId) => ({ assetId })) },
   archiveAssetIds = [101, 102, 103],
+  showImageDeductionReasons = true,
+  imageReasons,
 } = {}) {
   const task = { id: 7, state: 'MANUAL_ARCHIVE', current_image_run_id: runId,
     current_copy_revision_id: 3, created_by_user_id: 'alice', current_execution_id: null,
@@ -49,6 +51,12 @@ function fixture(overrides = {}, {
       }
       if (sql.includes('FROM human_quality_review_submissions')) {
         return { rows: submissions.filter((row) => row.review_session_id === values[0]) };
+      }
+      if (sql.includes("SELECT value FROM global_settings WHERE key = 'production'")) {
+        return { rows: [{ value: { humanQualityReasons: {
+          ...(imageReasons === undefined ? {} : { imageReasons }),
+          imageReviewDisplay: { showDeductionReasons: showImageDeductionReasons },
+        } } }] };
       }
       if (sql.includes('SELECT id FROM image_runs')) return { rows: completedRun ? [{ id: runId }] : [] };
       if (sql.includes('AS available_asset_ids')) return completedRun ? { rows: [{
@@ -217,7 +225,7 @@ for (const reworkTarget of ['COPY', 'BOTH']) {
   });
 }
 
-test('rework rejects ambiguous feedback before opening a transaction', async () => {
+test('rework rejects ambiguous feedback before changing task state', async () => {
   for (const patch of [
     { reasons: [], copyFields: ['BODY'], note: '修改正文' },
     { reasons: ['CONTENT_MISMATCH'], copyFields: ['BODY'], note: '' },
@@ -234,8 +242,48 @@ test('rework rejects ambiguous feedback before opening a transaction', async () 
       reviewerUserId: 'reviewer',
       ...patch,
     }), TypeError);
-    assert.equal(queries.length, 0);
+    if (patch.reasons.length === 0) {
+      assert.equal(queries.at(-1).sql, 'ROLLBACK');
+      assert.ok(queries.every(({ sql }) => !sql.includes('UPDATE tasks')));
+    } else {
+      assert.equal(queries.length, 0);
+    }
   }
+});
+
+test('rework accepts precise instructions without a reason when image reason display is disabled', async () => {
+  const { repository, assessments } = fixture({}, { showImageDeductionReasons: false });
+  const result = await repository.reviewImages(7, {
+    imageRunId: runId,
+    decision: 'REWORK',
+    reworkTarget: 'IMAGE',
+    score: 2,
+    reasons: [],
+    problemAssetIds: [101],
+    note: '重新生成第一页，修正标题文字并保持其余页面不变。',
+    reviewSessionId: '98989898-9898-4898-8898-989898989898',
+    actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
+  });
+
+  assert.equal(result.state, 'IMAGE_QUEUED');
+  assert.deepEqual(assessments[0].reason_codes, []);
+  assert.equal(assessments[0].note, '重新生成第一页，修正标题文字并保持其余页面不变。');
+});
+
+test('legacy enabled settings with no image reasons do not block rework', async () => {
+  const { repository } = fixture({}, { showImageDeductionReasons: true, imageReasons: [] });
+  const result = await repository.reviewImages(7, {
+    imageRunId: runId,
+    decision: 'REWORK',
+    reworkTarget: 'IMAGE',
+    score: 2,
+    problemAssetIds: [101],
+    note: '重新生成第一页，修正清晰度问题。',
+    reviewSessionId: '99999999-9999-4999-8999-999999999999',
+    actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
+  });
+
+  assert.equal(result.state, 'IMAGE_QUEUED');
 });
 
 test('admin image retry saves edited plan as a new approved revision and keeps the reviewed revision immutable', async () => {

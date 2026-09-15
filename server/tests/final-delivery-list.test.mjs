@@ -62,12 +62,16 @@ test('admin delivery pool page applies an exact package-name filter and returns 
   assert.equal(page.total, 51);
   assert.equal(page.items[0].taskId, 101);
   assert.equal(page.items[0].queryPackageName, '九月选题');
+  assert.equal(page.items[0].packingState, 'UNPACKED');
   assert.deepEqual(page.facets, {
     queryPackages: [
-      { id: 9, name: '九月选题', deleted: false, count: 51, unuploadedCount: 40, publishedCount: 10, revokedCount: 1 },
-      { id: 10, name: '十月选题', deleted: true, count: 7, unuploadedCount: 7, publishedCount: 0, revokedCount: 0 },
+      { id: 9, name: '九月选题', deleted: false, count: 51, unuploadedCount: 40, publishedCount: 10, revokedCount: 1, pendingCount: 51, packedCount: 0, updatedCount: 0 },
+      { id: 10, name: '十月选题', deleted: true, count: 7, unuploadedCount: 7, publishedCount: 0, revokedCount: 0, pendingCount: 7, packedCount: 0, updatedCount: 0 },
     ],
-    unassigned: { count: 34, unuploadedCount: 34, publishedCount: 0, revokedCount: 0 },
+    unassigned: { count: 34, unuploadedCount: 34, publishedCount: 0, revokedCount: 0, pendingCount: 34, packedCount: 0, updatedCount: 0 },
+  });
+  assert.deepEqual(page.summary, {
+    readyCount: 51, pendingCount: 51, packedCount: 0, updatedCount: 0,
   });
   const pageCall = calls.find(({ sql }) => /LIMIT \$2 OFFSET \$3/u.test(sql));
   const countCall = calls.find(({ sql }) => /COUNT\(\*\)::bigint AS total/u.test(sql));
@@ -105,6 +109,53 @@ test('complete delivery snapshot is admin-only, exact-package scoped and has no 
   assert.doesNotMatch(sql, /\bLIMIT\b|\bOFFSET\b/u);
   assert.match(sql, /delivery\.status = 'READY'/u);
   assert.match(sql, /task\.source_query_package_name = \$1/u);
+});
+
+test('delivery packing state follows the exact copy and image version instead of a recycled entry id', async () => {
+  const calls = [];
+  const pool = {
+    query: async (sql, values) => {
+      calls.push({ sql, values });
+      return { rows: [deliveryRow(1)] };
+    },
+  };
+  const items = await listDeliveryPool(pool, { packingState: 'PENDING' }, admin);
+  assert.equal(items[0].packingState, 'UNPACKED');
+  assert.match(calls[0].sql, /packed_item\.task_id = delivery\.task_id/u);
+  assert.match(calls[0].sql, /packed_item\.copy_revision_id = delivery\.copy_revision_id/u);
+  assert.match(calls[0].sql, /packed_item\.image_run_id = delivery\.image_run_id/u);
+  assert.doesNotMatch(calls[0].sql, /packed_item\.delivery_entry_id = delivery\.id/u);
+
+  calls.length = 0;
+  await listAllDeliveryPoolTaskIds(pool, admin, { unpackedOnly: true });
+  assert.match(calls[0].sql, /packed_item\.task_id = delivery\.task_id/u);
+  assert.match(calls[0].sql, /packed_item\.copy_revision_id = delivery\.copy_revision_id/u);
+  assert.match(calls[0].sql, /packed_item\.image_run_id = delivery\.image_run_id/u);
+});
+
+test('delivery rows distinguish a packed current version from a newly approved replacement', async () => {
+  const pool = { query: async () => ({ rows: [{
+    ...deliveryRow(1),
+    delivery_batch_id: '11',
+    delivery_batch_public_id: '11111111-1111-4111-8111-111111111111',
+    delivery_batch_code: 'JF-11111111',
+    delivery_batch_status: 'DOWNLOADED',
+    delivery_batch_created_at: '2026-09-09T01:00:00.000Z',
+    delivery_batch_last_downloaded_at: '2026-09-09T02:00:00.000Z',
+  }, {
+    ...deliveryRow(2),
+    previous_delivery_batch_id: '12',
+    previous_delivery_batch_public_id: '22222222-2222-4222-8222-222222222222',
+    previous_delivery_batch_code: 'JF-22222222',
+    previous_delivery_batch_created_at: '2026-09-09T03:00:00.000Z',
+  }] }) };
+  const items = await listDeliveryPool(pool, {}, admin);
+  assert.equal(items[0].packingState, 'PACKED');
+  assert.equal(items[0].deliveryBatch.code, 'JF-11111111');
+  assert.equal(items[0].deliveryBatch.status, 'DOWNLOADED');
+  assert.equal(items[1].packingState, 'VERSION_UPDATED');
+  assert.equal(items[1].deliveryBatch, null);
+  assert.equal(items[1].previousDeliveryBatch.code, 'JF-22222222');
 });
 
 test('preview candidate snapshot is admin-limited and excludes entries already bound to a preview', async () => {

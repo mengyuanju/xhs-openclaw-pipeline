@@ -88,6 +88,11 @@ test('human quality settings reject oversized, duplicated and structurally untru
   }), /imageReviewDisplay must contain only showDeductionReasons/iu);
   assert.throws(() => normalizeHumanQualitySettings({ copyReasons: [], imageReasons: [], unexpected: true }), /unsupported/iu);
   assert.throws(() => normalizeHumanQualitySettingsUpdate({ copyReasons: [] }), /copyReasons and imageReasons/iu);
+  assert.throws(() => normalizeHumanQualitySettingsUpdate({
+    copyReasons: [],
+    imageReasons: [],
+    imageReviewDisplay: { showDeductionReasons: true },
+  }), /必须至少填写一项图片扣分原因/u);
 });
 
 test('local production settings persist reason options without losing them on unrelated updates', () => {
@@ -95,7 +100,11 @@ test('local production settings persist reason options without losing them on un
   try {
     initializeProductionSettingsSchema(db);
     const store = createProductionSettingsStore(db);
-    const reasons = { copyReasons: [{ code: '内容太泛', label: '内容太泛' }], imageReasons: [] };
+    const reasons = {
+      copyReasons: [{ code: '内容太泛', label: '内容太泛' }],
+      imageReasons: [],
+      imageReviewDisplay: { showDeductionReasons: false },
+    };
     store.updateProductionSettings({ humanQualityReasons: reasons });
     store.updateProductionSettings({ aiDisclosureEnabled: false });
     const saved = store.getProductionSettings().settings.humanQualityReasons;
@@ -104,7 +113,7 @@ test('local production settings persist reason options without losing them on un
     assert.deepEqual(saved.scoreDefinitions, DEFAULT_HUMAN_SCORE_DEFINITIONS);
     assert.deepEqual(saved.noteGuidance, DEFAULT_HUMAN_QUALITY_NOTE_GUIDANCE);
     assert.deepEqual(saved.copyReviewDisplay, DEFAULT_COPY_REVIEW_DISPLAY);
-    assert.deepEqual(saved.imageReviewDisplay, DEFAULT_IMAGE_REVIEW_DISPLAY);
+    assert.deepEqual(saved.imageReviewDisplay, { showDeductionReasons: false });
   } finally {
     db.close();
   }
@@ -158,6 +167,9 @@ test('production settings and review clients expose the dedicated editable scori
   assert.match(panel, /文案审核中显示评分档位说明/u);
   assert.match(panel, /文案审核中显示扣分原因/u);
   assert.match(panel, /图文终审中显示扣分原因/u);
+  assert.match(panel, /审核员发起图片返工时必须选择原因/u);
+  assert.match(panel, /当前原因列表为空，无法保存/u);
+  assert.match(panel, /imageReasonsMissing/u);
   assert.match(panel, /copyReviewDisplay: current\.copyReviewDisplay/u);
   assert.match(panel, /imageReviewDisplay: current\.imageReviewDisplay/u);
   assert.match(panel, /<Switch/u);

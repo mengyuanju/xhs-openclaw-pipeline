@@ -10,6 +10,8 @@ import {
   buildDeliveryPoolExportInput,
   filterDeliveryPoolEntries,
   mergeDeliveryPoolEntries,
+  normalizeDeliveryBatchDetail,
+  normalizeDeliveryBatchPage,
   normalizeDeliveryPoolPage,
   normalizePreparedDeliveryExport,
   normalizePreparedDeliveryXlsxExport,
@@ -36,6 +38,9 @@ function entry(id, overrides = {}) {
     status: 'READY',
     approvedAt: '2026-09-09T00:00:00.000Z',
     preview: null,
+    packingState: 'UNPACKED',
+    deliveryBatch: null,
+    previousDeliveryBatch: null,
     ...overrides,
   };
 }
@@ -60,9 +65,10 @@ test('delivery pool list adapter preserves package names and valid package facet
     items: [entry(1)],
     total: 43,
     facets: {
-      queryPackages: [{ id: 9, name: '九月 选题', deleted: false, count: 12, unuploadedCount: 7, publishedCount: 4, revokedCount: 1 }],
-      unassigned: { count: 34, unuploadedCount: 34, publishedCount: 0, revokedCount: 0 },
+      queryPackages: [{ id: 9, name: '九月 选题', deleted: false, count: 12, unuploadedCount: 7, publishedCount: 4, revokedCount: 1, pendingCount: 12, packedCount: 0, updatedCount: 0 }],
+      unassigned: { count: 34, unuploadedCount: 34, publishedCount: 0, revokedCount: 0, pendingCount: 34, packedCount: 0, updatedCount: 0 },
     },
+    summary: { readyCount: 46, pendingCount: 46, packedCount: 0, updatedCount: 0 },
   });
   assert.equal(normalizeDeliveryPoolPage([entry(3)]).total, 1,
     'the legacy array response stays readable during a rolling deployment');
@@ -200,9 +206,46 @@ test('prepared delivery download accepts only a safe one-time archive reference'
     expiresAt: '2026-09-09T09:00:00.000Z',
   };
   assert.deepEqual(normalizePreparedDeliveryExport({ data: prepared }), prepared);
+  const withBatch = {
+    ...prepared,
+    batchId: '32345678-1234-4234-8234-123456789abc',
+    batchCode: 'JF-32345678',
+  };
+  assert.deepEqual(normalizePreparedDeliveryExport({ data: withBatch }), withBatch);
   assert.throws(() => normalizePreparedDeliveryExport({
     data: { ...prepared, fileName: '../escape.zip' },
   }), /下载凭证无效/u);
+});
+
+test('delivery batch adapters preserve immutable history and exact version members', () => {
+  const batch = {
+    id: 7,
+    publicId: '42345678-1234-4234-8234-123456789abc',
+    code: 'JF-42345678',
+    scope: 'QUERY_PACKAGE',
+    queryPackageName: '九月选题',
+    queryPackageNames: ['九月选题'],
+    status: 'DOWNLOADED',
+    fileName: 'JF-42345678-九月选题-交付资源.zip',
+    byteSize: 1024,
+    sha256: 'a'.repeat(64),
+    taskCount: 1,
+    createdByAccountId: 1,
+    createdByUsername: 'admin',
+    createdAt: '2026-09-15T01:00:00.000Z',
+    firstDownloadedAt: '2026-09-15T01:01:00.000Z',
+    lastDownloadedAt: '2026-09-15T01:01:00.000Z',
+    downloadCount: 1,
+  };
+  assert.deepEqual(normalizeDeliveryBatchPage({ items: [batch], total: 1 }), {
+    items: [batch], total: 1,
+  });
+  assert.deepEqual(normalizeDeliveryBatchDetail({
+    ...batch,
+    items: [{ id: 9, ordinal: 1, taskId: 101, copyRevisionId: 201,
+      imageRunId: 'run-1', query: '桌面收纳', queryPackageId: 5,
+      queryPackageName: '九月选题' }],
+  }).items[0].copyRevisionId, 201);
 });
 
 test('prepared Excel download accepts only a safe xlsx one-time reference', () => {
@@ -267,8 +310,12 @@ test('administrator delivery pool exposes package facets, server filtering and p
   assert.match(source, /只调整表格中的显示尺寸，不重新编码或二次压缩/u);
   assert.match(source, /图片原文件不重新编码、不二次压缩/u);
   assert.match(source, /Excel 一次最多导出.*请先勾选后分批导出/u);
-  assert.match(source, /一键导出全部/u);
-  assert.match(source, /批量下载（已选/u);
+  assert.match(source, /新建交付批次（待交付/u);
+  assert.match(source, /已选新建批次/u);
+  assert.match(source, /packingState/u);
+  assert.match(source, /交付历史/u);
+  assert.match(source, /delivery-batches/u);
+  assert.match(source, /版本更新待重交/u);
   assert.match(source, /delivery-pool\/previews/u);
   assert.match(source, /整包上传上限/u);
   assert.match(source, /DELIVERY_PREVIEW_UPLOAD_LIMITS/u);
@@ -296,7 +343,7 @@ test('administrator delivery pool exposes package facets, server filtering and p
   assert.match(feedbackMessage, /aria-live=\{tone === 'error' \? 'assertive' : 'polite'\}/u);
   assert.match(feedbackMessage, /aria-label="关闭反馈消息"/u);
   assert.match(source, /打开预览/u);
-  assert.match(source, /词包筛选由服务端覆盖该词包全部 READY 条目/u);
+  assert.match(source, /新建交付批次始终由服务端排除已经打包的相同版本/u);
   assert.match(source, /entry\.queryPackageName \|\| '未归属词包'/u);
   assert.doesNotMatch(source, /selected\.length > 20/u,
     'the UI must not disable the new delivery export contract at the legacy batch-archive limit');

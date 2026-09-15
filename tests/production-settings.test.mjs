@@ -20,6 +20,7 @@ describe('production settings contract', () => {
     assert.equal(DEFAULT_PRODUCTION_SETTINGS.knowledgeEnabled, true);
     assert.equal(DEFAULT_PRODUCTION_SETTINGS.qualityRepairTargetScore, 2);
     assert.equal(DEFAULT_PRODUCTION_SETTINGS.qualityRepairMaxAttempts, 2);
+    assert.equal(DEFAULT_PRODUCTION_SETTINGS.imageEditRepairMaxAttempts, 2);
     assert.equal(productionDisclosure(DEFAULT_PRODUCTION_SETTINGS), 'AI生成');
   });
 
@@ -38,6 +39,10 @@ describe('production settings contract', () => {
       ...DEFAULT_PRODUCTION_SETTINGS,
       qualityRepairMaxAttempts: 3,
     }), /between 0 and 2/iu);
+    assert.throws(() => normalizeProductionSettings({
+      ...DEFAULT_PRODUCTION_SETTINGS,
+      imageEditRepairMaxAttempts: 3,
+    }), /imageEditRepairMaxAttempts.*between 0 and 2/iu);
     assert.throws(() => normalizeProductionSettings({
       ...DEFAULT_PRODUCTION_SETTINGS,
       qualityRepairTriggerScore: 2,
@@ -153,11 +158,13 @@ describe('production settings store', () => {
       const updated = store.updateProductionSettings({
         aiDisclosureEnabled: false,
         qualityRepairMaxAttempts: 1,
+        imageEditRepairMaxAttempts: 0,
       });
 
       assert.equal(initial.settings.aiDisclosureEnabled, true);
       assert.equal(updated.settings.aiDisclosureEnabled, false);
       assert.equal(updated.settings.qualityRepairMaxAttempts, 1);
+      assert.equal(updated.settings.imageEditRepairMaxAttempts, 0);
       assert.equal(updated.settings.qualityRepairTargetScore, 2);
       assert.deepEqual(store.getProductionSettings(), updated);
     } finally {

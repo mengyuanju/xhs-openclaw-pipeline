@@ -19,6 +19,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
+import { useTextInputDialog } from '@/components/ui/text-input-dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Disclosure, DisclosureContent, DisclosureTrigger } from '@/components/ui/disclosure';
 import { TransientInfoBubble } from '@/components/ui/transient-info-bubble';
@@ -423,6 +424,7 @@ export function TaskReviewDialog({
   onUpdated: (message: string) => void | Promise<void>;
 }) {
   const confirm = useConfirmDialog();
+  const requestText = useTextInputDialog();
   const {
     settings: humanQualitySettings,
     loading: humanQualitySettingsLoading,
@@ -679,6 +681,7 @@ export function TaskReviewDialog({
   const showImageDeductionReasons = humanQualitySettings?.imageReviewDisplay.showDeductionReasons === true;
   const copyFeedbackRequirement = showCopyDeductionReasons ? '扣分原因或评分说明' : '评分说明';
   const imageScoreDefinition = scoreDefinitions.find(definition => definition.score === imageScore);
+  const imageReworkReasonRequired = showImageDeductionReasons && imageReasonOptions.length > 0;
   const canApproveImages = imageSetComplete && imageRatingComplete && isPassingHumanScore(imageScore)
     && !imagePlanChanged && !imageConfigurationChanged;
   const copyAssessments = (detail?.humanQualityAssessments ?? []).filter(assessment => assessment.stage === 'COPY');
@@ -953,8 +956,15 @@ export function TaskReviewDialog({
 
   async function adminDirectApproveCopyQa() {
     if (!detail || role !== 'ADMIN' || detail.state !== 'COPY_QC_PENDING' || submitting || loading) return;
-    const note = window.prompt('请填写本次文案质检通过的原因（必填）');
-    if (!note?.trim()) return;
+    const note = await requestText({
+      title: '填写质检通过原因',
+      description: '本次说明将写入质检记录，作为管理员单独通过当前文案的审计依据。',
+      label: '通过原因（必填）',
+      placeholder: '请说明当前文案符合质检要求的具体依据',
+      confirmLabel: '填写完成，继续',
+      maxLength: 1_000,
+    });
+    if (!note) return;
     if (!await confirm({
       title: '单独通过这条文案质检？',
       description: '本次通过当前已抽中的文案。仍须等待该人员批次的全部质检与强制复检完成；系统记录通过原因。',
@@ -968,7 +978,7 @@ export function TaskReviewDialog({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           requestId: createRequestId(),
-          note: note.trim(),
+          note,
           expectedCopyRevisionId: detail.currentCopyRevisionId,
         }),
       });
@@ -985,7 +995,7 @@ export function TaskReviewDialog({
     if (!detail || !canReviewImages || submitting) return;
     if (decision === 'REWORK' && !reworkTarget) return;
     if (decision === 'REWORK') {
-      if (imageReasons.length === 0) {
+      if (imageReworkReasonRequired && imageReasons.length === 0) {
         setError('发起返工前请至少选择一项问题原因。');
         return;
       }
@@ -1316,6 +1326,9 @@ export function TaskReviewDialog({
                       notePlaceholder={humanRatingSettings.noteGuidance.imagePlaceholder}
                       showReasonOptions={showImageDeductionReasons}
                       feedbackRequired={false}
+                      reasonRequirement="发起返工时至少选择一项"
+                      noteLabel="评分说明 / 修改要求"
+                      noteRequirement="发起返工时必填"
                       disabled={loading || submitting || humanQualitySettingsUnavailable || Boolean(savedImageAssessment)}
                       onToggleReason={(code) => { toggleImageReason(code); setError(''); }}
                       onNoteChange={(note) => { setImageReviewNote(note); setError(''); }}

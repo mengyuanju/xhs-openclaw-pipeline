@@ -201,6 +201,33 @@ test('confirmation prompts use one accessible Radix alert dialog provider', asyn
   }
 });
 
+test('required text prompts use the shared accessible dialog instead of the browser prompt', async () => {
+  const paths = [
+    'app/workbench/creation-workbench.tsx',
+    'app/workbench/task-review-dialog.tsx',
+  ];
+  const [textInputDialog, frame, styles, ...screens] = await Promise.all([
+    readFile(projectFile('components/ui/text-input-dialog.tsx'), 'utf8'),
+    readFile(projectFile('app/components/app-frame.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+    ...paths.map((path) => readFile(projectFile(path), 'utf8')),
+  ]);
+
+  assert.match(textInputDialog, /export function TextInputDialogProvider/u);
+  assert.match(textInputDialog, /export function useTextInputDialog/u);
+  assert.match(textInputDialog, /<DialogContent className="text-input-dialog-content">/u);
+  assert.match(textInputDialog, /<Textarea/u);
+  assert.match(textInputDialog, /aria-required=/u);
+  assert.match(textInputDialog, /returnFocusRef/u);
+  assert.match(frame, /<TextInputDialogProvider>/u);
+  assert.match(styles, /\.text-input-dialog-content/u);
+  for (const screen of screens) {
+    assert.doesNotMatch(screen, /window\.prompt/u);
+    assert.match(screen, /useTextInputDialog/u);
+    assert.match(screen, /maxLength: 1_000/u);
+  }
+});
+
 test('reviewers can switch image previews between 100 percent and full-image modes', async () => {
   const [preview, styles] = await Promise.all([
     readFile(projectFile('app/components/image-preview.tsx'), 'utf8'),

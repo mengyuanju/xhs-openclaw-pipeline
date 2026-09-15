@@ -40,6 +40,7 @@ export function normalizeManualOverlay(input) {
   const textType = input.textType ?? (disclosureType === 'AI_GENERATED' ? 'AI_DISCLOSURE' : 'CUSTOM');
   if (!['HEADLINE','SUBTITLE','BULLET','LABEL','AI_DISCLOSURE','CUSTOM'].includes(textType)) throw new TypeError('文字类型无效');
   if (textType === 'AI_DISCLOSURE' && disclosureType !== 'AI_GENERATED') throw new TypeError('AI 标识文字必须记录合规标识类型');
+  if (textType === 'AI_DISCLOSURE' && (!/^[\p{L}\p{N}_-]{1,12}$/u.test(text))) throw new TypeError('人工生成标识限 1 至 12 个文字、数字、下划线或短横线');
   return { text, textType, size, margin, opacity, color, background, position, ...rect, disclosureType };
 }
 export function manualOverlaySvg(input) {

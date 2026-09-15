@@ -125,6 +125,13 @@ export function HumanQualitySettingsPanel({
 
   async function save() {
     if (!current) return;
+    const nextCopyReasons = optionsFrom(copyText, current.copyReasons);
+    const nextImageReasons = optionsFrom(imageText, current.imageReasons);
+    if (current.imageReviewDisplay.showDeductionReasons && nextImageReasons.length === 0) {
+      setMessage('');
+      setError('已开启图文终审扣分原因，请至少填写一项图片扣分原因后再保存。');
+      return;
+    }
     setBusy(true);
     setMessage('');
     setError('');
@@ -134,8 +141,8 @@ export function HumanQualitySettingsPanel({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           scoreDefinitions: current.scoreDefinitions,
-          copyReasons: optionsFrom(copyText, current.copyReasons),
-          imageReasons: optionsFrom(imageText, current.imageReasons),
+          copyReasons: nextCopyReasons,
+          imageReasons: nextImageReasons,
           noteGuidance: current.noteGuidance,
           copyReviewDisplay: current.copyReviewDisplay,
           imageReviewDisplay: current.imageReviewDisplay,
@@ -154,6 +161,8 @@ export function HumanQualitySettingsPanel({
     && current.scoreDefinitions.every((definition) => definition.title.trim() && definition.description.trim())
     && current.noteGuidance.copyPlaceholder.trim()
     && current.noteGuidance.imagePlaceholder.trim());
+  const imageReasonsMissing = Boolean(current?.imageReviewDisplay.showDeductionReasons
+    && optionsFrom(imageText, current.imageReasons).length === 0);
   const hasChanges = Boolean(current
     && editableSignature(current, copyText, imageText) !== savedSignature);
   useEffect(() => {
@@ -228,13 +237,16 @@ export function HumanQualitySettingsPanel({
             <span>图文终审中显示扣分原因</span>
           </label>
         </div>
+        {current.imageReviewDisplay.showDeductionReasons && <p className={`notice ${imageReasonsMissing ? 'warning' : ''}`} role={imageReasonsMissing ? 'alert' : 'status'}>
+          审核员发起图片返工时必须选择原因，请至少保留一项图片扣分原因。{imageReasonsMissing ? '当前原因列表为空，无法保存。' : ''}
+        </p>}
         <div className="form-grid human-reason-config-grid">
           <div className="field">
             <label htmlFor="copy-quality-reasons">文案扣分原因</label>
             <Textarea id="copy-quality-reasons" className="textarea" rows={8} value={copyText} disabled={busy} onChange={(event) => { beginEdit(); setCopyText(event.target.value); }} />
           </div>
           <div className="field">
-            <label htmlFor="image-quality-reasons">图片扣分原因</label>
+            <label htmlFor="image-quality-reasons">图片扣分原因 <small>{current.imageReviewDisplay.showDeductionReasons ? '开启展示时至少填写一项' : '关闭展示时可留空'}</small></label>
             <Textarea id="image-quality-reasons" className="textarea" rows={8} value={imageText} disabled={busy} onChange={(event) => { beginEdit(); setImageText(event.target.value); }} />
           </div>
         </div>
@@ -260,7 +272,7 @@ export function HumanQualitySettingsPanel({
     {error && <div className="notice error" role="alert">{error}</div>}
     <div className="settings-actions">
       <span className="subtle">原因中的空行会自动忽略；所有展示文本保存时都会再次校验。</span>
-      <Button unstyled className="button primary" type="button" disabled={loading || busy || !complete || !hasChanges} onClick={() => { void save(); }}>{busy ? '保存中…' : '保存人工评分标准'}</Button>
+      <Button unstyled className="button primary" type="button" disabled={loading || busy || !complete || imageReasonsMissing || !hasChanges} onClick={() => { void save(); }}>{busy ? '保存中…' : '保存人工评分标准'}</Button>
     </div>
   </section>;
 }

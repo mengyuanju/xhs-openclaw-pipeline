@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation';
 import { useRef } from 'react';
 
 import { ConfirmDialogProvider } from '@/components/ui/confirm-dialog';
+import { TextInputDialogProvider } from '@/components/ui/text-input-dialog';
 
 import { AppTopbar } from './app-topbar';
 import { SideNav } from './side-nav';
@@ -15,21 +16,23 @@ export function AppFrame({ children, session }: { children: React.ReactNode; ses
   const pathname = usePathname();
   const mainRef = useRef<HTMLElement>(null);
   if (pathname === '/login') {
-    return <ConfirmDialogProvider><main className="auth-shell">{children}</main></ConfirmDialogProvider>;
+    return <ConfirmDialogProvider><TextInputDialogProvider><main className="auth-shell">{children}</main></TextInputDialogProvider></ConfirmDialogProvider>;
   }
   return (
     <ConfirmDialogProvider>
-      <XhsAccountAlert enabled={session?.roles?.includes('ADMIN') === true} />
-      <div className="app-shell">
-        <a className="skip-link" href="#main-content" onClick={() => {
-          window.requestAnimationFrame(() => mainRef.current?.focus());
-        }}>跳到主要内容</a>
-        <SideNav session={session} />
-        <div className="app-workspace">
-          <AppTopbar />
-          <main className="main-shell" id="main-content" ref={mainRef} tabIndex={-1}>{children}</main>
+      <TextInputDialogProvider>
+        <XhsAccountAlert enabled={session?.roles?.includes('ADMIN') === true} />
+        <div className="app-shell">
+          <a className="skip-link" href="#main-content" onClick={() => {
+            window.requestAnimationFrame(() => mainRef.current?.focus());
+          }}>跳到主要内容</a>
+          <SideNav session={session} />
+          <div className="app-workspace">
+            <AppTopbar />
+            <main className="main-shell" id="main-content" ref={mainRef} tabIndex={-1}>{children}</main>
+          </div>
         </div>
-      </div>
+      </TextInputDialogProvider>
     </ConfirmDialogProvider>
   );
 }

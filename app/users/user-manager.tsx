@@ -185,7 +185,13 @@ export function UserManager({
             <div className="field"><label htmlFor="user-editor-role">角色</label><Select name="role" defaultValue={editorUser?.role ?? 'USER'}><SelectTrigger id="user-editor-role"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(ROLE_LABELS).map(([value, label]) => <SelectItem key={value} value={String(value)}>{label}</SelectItem>)}</SelectContent></Select></div>
             {editor?.mode === 'edit' && <div className="field"><label htmlFor="user-editor-status">账号状态</label><Select name="status" defaultValue={editorUser?.status}><SelectTrigger id="user-editor-status"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(STATUS_LABELS).map(([value, label]) => <SelectItem key={value} value={String(value)}>{label}</SelectItem>)}</SelectContent></Select></div>}
           </div>
-          <div className="field"><label><input type="checkbox" name="copyReviewEnabled" defaultChecked={editorUser?.copyReviewEnabled ?? true} /> 文案审核</label><label><input type="checkbox" name="copyQcEnabled" defaultChecked={editorUser?.copyQcEnabled ?? false} /> 文案质检</label><small>两个权限可独立设置；关闭审核后，待审核任务释放给管理员转派。管理员始终拥有管理权限。</small></div>
+          <div className="field user-editor-permissions">
+            <div className="user-editor-permission-options">
+              <label><input type="checkbox" name="copyReviewEnabled" defaultChecked={editorUser?.copyReviewEnabled ?? true} /> 文案审核</label>
+              <label><input type="checkbox" name="copyQcEnabled" defaultChecked={editorUser?.copyQcEnabled ?? false} /> 文案质检</label>
+            </div>
+            <small>两个权限可独立设置；关闭审核后，待审核任务释放给管理员转派。管理员始终拥有管理权限。</small>
+          </div>
           {error && <div className="notice error" role="alert">{error}</div>}
           <div className="user-editor-actions"><DialogClose asChild><Button unstyled className="button" type="button" disabled={editorBusy}>取消</Button></DialogClose><Button unstyled className="button primary" disabled={editorBusy}>{editorBusy ? '保存中…' : editor?.mode === 'create' ? '创建用户' : '保存修改'}</Button></div>
         </form>

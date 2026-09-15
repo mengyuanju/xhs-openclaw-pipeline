@@ -13,8 +13,9 @@ test('personal queue compares priority, FIFO and waiting compensation consistent
 });
 
 test('list, details and batch controls show priority sources and submit reviewed scopes with versions', async () => {
-  const [control,list,detail] = await Promise.all(['app/workbench/task-priority-control.tsx',
-    'app/workbench/creation-workbench.tsx','app/workbench/task-review-dialog.tsx'].map(path => readFile(path,'utf8')));
+  const [control,list,detail,styles] = await Promise.all(['app/workbench/task-priority-control.tsx',
+    'app/workbench/creation-workbench.tsx','app/workbench/task-review-dialog.tsx',
+    'app/workbench/task-priority-control.module.css'].map(path => readFile(path,'utf8')));
   for (const mode of ['SYSTEM','HIGHEST','HIGH','NORMAL','DEFER','PAUSE']) assert.ok(control.includes(`'${mode}'`));
   assert.match(control, /expectedVersions: Object\.fromEntries/u);
   assert.match(control, /productionBatchId: batchId/u);
@@ -25,4 +26,7 @@ test('list, details and batch controls show priority sources and submit reviewed
   assert.match(detail, /role === 'ADMIN' && <TaskPriorityControl/u);
   assert.match(list, /search\.set\('priorityMode', priorityMode\)/u);
   assert.match(control, /系统 \$\{task\.systemPriority/u);
+  assert.match(control, /DialogContent className=\{styles\.dialog\}/u);
+  assert.match(styles, /background: var\(--surface\)/u);
+  assert.match(styles, /max-height: calc\(100dvh - 32px\)/u);
 });

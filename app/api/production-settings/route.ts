@@ -55,6 +55,7 @@ const settingsPatchSchema = z.object({
   qualityRepairTriggerScore: z.number().int().min(0).max(2).optional(),
   qualityRepairTargetScore: z.number().int().min(1).max(3).optional(),
   qualityRepairMaxAttempts: z.number().int().min(0).max(2).optional(),
+  imageEditRepairMaxAttempts: z.number().int().min(0).max(2).optional(),
   aiDisclosureEnabled: z.boolean().optional(),
   aiDisclosureText: z.string().trim().min(1).max(12).optional(),
   humanQualityReasons: z.unknown().optional(),

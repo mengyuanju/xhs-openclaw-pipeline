@@ -23,6 +23,10 @@ XHS_PRODUCTION_STORAGE_ROOT=D:\auto-claw\images_storage_prod
 CONTROL_PLANE_HOST=0.0.0.0
 CONTROL_PLANE_PORT=4310
 CONTROL_PLANE_STORAGE_ROOT=server-storage
+# 开发环境默认开启；正式环境需要显式设置为 true，使用中心机的 Codex 订阅登录处理图片修改队列。
+CONTROL_PLANE_IMAGE_EDIT_WORKER_ENABLED=true
+# 可选，默认每 2000 毫秒检查一次，单进程同一时间只处理一条。
+CONTROL_PLANE_IMAGE_EDIT_POLL_MS=2000
 DEEPSEEK_API_KEY=替换为中心服务使用的DeepSeek密钥
 # 可选，默认 deepseek-v4-pro
 DEEPSEEK_COPY_ANALYSIS_MODEL=deepseek-v4-pro
@@ -36,6 +40,11 @@ PREVIEW_API_KEY=仅含preview:create权限的接口密钥
 交付池预览同样由中心服务直接调用预览服务，接口密钥不会下发到浏览器。管理员必须明确勾选一个或多个词包；Web 只提交稳定的词包 ID，中心只从这些词包选择尚未上传且仍为 READY 的交付项。早期没有词包关联的 READY 内容会显示为独立的“历史未归属内容”范围，只有单独勾选后才会上传，不会伪造词包归属。一次操作可选择 1 条测试，或批量选择 10、25、50、100、200 条；任务行的“测试上传”会同时提交该任务 ID 与它的稳定来源范围，中心双重校验后只处理这一条。中心会按预览服务每批最多 10 条、60 张图片、60 MB 原图自动串行拆批，不放大单次远端请求。`0035_delivery_preview_links` 会把预览服务返回的 `preview.id`、`publicId`（noteId）和内容哈希关联到冻结的 `delivery_entries` 记录；`0036_delivery_preview_url_derivation` 不再持久化服务域名，公开链接按当前 `PREVIEW_BASE_URL` 和 noteId 动态生成。两套系统保持各自主键，通过这个关联审计和重试。
 
 `npm run init` 可重复执行，首次运行会建表并安装默认生产配置和提示词。
+
+“修改图片”产生的是独立图片编辑队列。开发环境随中心服务自动启动队列处理器；正式环境只有显式配置
+`CONTROL_PLANE_IMAGE_EDIT_WORKER_ENABLED=true` 才会自动处理。队列处理器使用中心机当前的 Codex ChatGPT
+订阅登录和同一份 PostgreSQL/资产目录，不使用 API Key；未开启时请求会保持“排队中”，也可用
+`node src/cli.mjs image-edit-once --environment=development` 手工处理一条。
 
 ### 开发/生产环境切换
 

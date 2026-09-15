@@ -65,6 +65,17 @@ test('copy QA filters keep their longest option on one line', async () => {
   assert.match(styles, /\.filterSelect\s*\{[^}]*min-width:\s*128px;/su);
 });
 
+test('copy QA detail compares final copy and image planning in responsive columns', async () => {
+  const [source, styles] = await Promise.all([
+    readFile(new URL('../app/copy-qa/copy-qa-workbench.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../app/copy-qa/copy-qa.module.css', import.meta.url), 'utf8'),
+  ]);
+
+  assert.match(source, /className=\{styles\.comparison\} aria-label="最终文案与图片文案规划对照"/u);
+  assert.match(styles, /\.comparison\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*\.95fr\)\s+minmax\(0,\s*1\.05fr\)/su);
+  assert.match(styles, /@media \(max-width:\s*900px\)[\s\S]*?\.comparison\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/u);
+});
+
 test('the local E2E fixture preserves a returned trigger while upgrading its full frozen scope', async () => {
   const source = await readFile(new URL('./fixtures/modular-workflow-e2e.mjs', import.meta.url), 'utf8');
   assert.match(source, /canReturnBatch: \['PENDING', 'RETURNED'\]\.includes\(item\.status\)/u);

@@ -49,7 +49,7 @@ test('all signed-in roles can read reason options while only administrators can 
     getUserByUsername: async username => USERS[username] ?? null,
     getHumanQualitySettings: async () => settings,
     updateHumanQualitySettings: async input => {
-      const normalized = normalizeHumanQualitySettings(input);
+      const normalized = normalizeHumanQualitySettingsUpdate(input, settings);
       updates++;
       settings = normalized;
       return settings;
@@ -114,6 +114,17 @@ test('all signed-in roles can read reason options while only administrators can 
     });
     assert.equal(invalidImageDisplay.status, 400);
     assert.equal(updates, 1);
+
+    const enabledWithoutImageReasons = await fetch(`${root}/v1/human-quality-settings`, {
+      method: 'PUT', headers: { ...actorHeaders('admin'), 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        copyReasons: [], imageReasons: [],
+        imageReviewDisplay: { showDeductionReasons: true },
+      }),
+    });
+    assert.equal(enabledWithoutImageReasons.status, 400);
+    assert.match((await enabledWithoutImageReasons.json()).error.message, /必须至少填写一项图片扣分原因/u);
+    assert.equal(updates, 1);
   });
 });
 
@@ -158,7 +169,11 @@ test('repository replaces only human quality reasons inside the production recor
 });
 
 test('generic production upsert preserves independently managed reasons even when submitted', async () => {
-  const reasons = { copyReasons: [{ code: '内容太泛', label: '内容太泛' }], imageReasons: [] };
+  const reasons = {
+    copyReasons: [{ code: '内容太泛', label: '内容太泛' }],
+    imageReasons: [],
+    imageReviewDisplay: { showDeductionReasons: false },
+  };
   const pool = {
     async query(sql) {
       assert.match(sql, /global_settings\.value \? 'humanQualityReasons'/u);
@@ -174,7 +189,11 @@ test('generic production upsert preserves independently managed reasons even whe
   const repository = new PostgresControlPlaneRepository({ pool });
   const result = await repository.upsertSetting('production', {
     knowledgeEnabled: false,
-    humanQualityReasons: { copyReasons: [{ code: 'STALE', label: '旧页面原因' }], imageReasons: [] },
+    humanQualityReasons: {
+      copyReasons: [{ code: 'STALE', label: '旧页面原因' }],
+      imageReasons: [{ code: 'STALE_IMAGE', label: '旧页面图片原因' }],
+      imageReviewDisplay: { showDeductionReasons: true },
+    },
   });
   assert.deepEqual(result.value.humanQualityReasons, reasons);
 });

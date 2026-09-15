@@ -4,6 +4,7 @@ import { resolve, relative, isAbsolute } from 'node:path';
 import { ControlPlaneConflictError, ControlPlaneAuthorizationError, ControlPlaneNotFoundError, normalizeTaskId, normalizeUuid } from './domain.mjs';
 import { withdrawReadyDeliveryEntries } from './final-delivery.mjs';
 import { boundedNumber, shortText, normalizeManualOverlay, normalizeMask, decodeReference, imageHash, safeRect } from '../../src/image-edit-pixels.mjs';
+import { normalizeImageEditRepairMaxAttempts } from '../../src/production-settings.mjs';
 
 const conflict = message => { throw new ControlPlaneConflictError('IMAGE_EDIT_CONFLICT', message); };
 const actorName = actor => { if(actor?.role !== 'ADMIN' || !actor.username) throw new ControlPlaneAuthorizationError('仅管理员可修改图片'); return actor.username; };
@@ -29,27 +30,59 @@ export function normalizeEdit(input) {
   const operation = input.operation;
   if(!['TEXT','COMPOSITE','AI_FUSION','AI_FULL','AI_LOCAL','RESTORE'].includes(operation)) throw new TypeError('修改类型无效');
   const usesImageModel = operation === 'TEXT' || operation.startsWith('AI_');
-  if(usesImageModel && input.confirmation !== 'LIVE_IMAGE_COST_ACCEPTED') throw new TypeError('请确认图片编辑及校验模型费用');
+  const draft=input.draft===true,confirmed=input.confirmation==='LIVE_IMAGE_COST_ACCEPTED';
+  if(usesImageModel && !draft && !confirmed) throw new TypeError('请确认图片编辑及校验模型费用');
   if(!/^[a-f0-9]{64}$/u.test(input.sha256 ?? '')) throw new TypeError('源图校验值无效');
   const refs = input.references ?? [];
   if(!['COMPOSITE','AI_FUSION'].includes(operation) && refs.length) throw new TypeError('仅实体图片操作可附加参考图');
   if(!Array.isArray(refs) || refs.length > 4 || (['COMPOSITE','AI_FUSION'].includes(operation) && !refs.length)) throw new TypeError('请选择 1 至 4 张参考图');
+  if(operation === 'AI_FUSION' && refs.length !== 1) throw new TypeError('真实产品替换只能上传 1 张参考图');
   const references = refs.map((r, i) => ({ assetId: normalizeTaskId(r.assetId), purpose: shortText(r.purpose ?? '实体参考',200),
     ...(operation === 'COMPOSITE' ? { ...safeRect(r), opacity: boundedNumber(r.opacity ?? 1,0.01,1,false), z: boundedNumber(r.z ?? i,0,10),
       crop: r.crop ? { x: boundedNumber(r.crop.x,0,16000), y: boundedNumber(r.crop.y,0,16000), width: boundedNumber(r.crop.width,1,16000), height: boundedNumber(r.crop.height,1,16000) } : null,
       removeBackground: r.removeBackground === true } : {}) }));
   if(new Set(references.map(r=>r.assetId)).size !== references.length) throw new TypeError('参考图重复');
+  const overlay=operation === 'TEXT' ? normalizeManualOverlay({...input.overlay,textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',
+    size:32,margin:32,opacity:1,color:'#ffffff',background:'#111827',position:'bottom-right'}) : null;
   return { requestId: normalizeUuid(input.requestId,'requestId'), sourceImageRunId: normalizeUuid(input.sourceImageRunId,'sourceImageRunId'),
     sourceAssetId: normalizeTaskId(input.sourceAssetId), copyRevisionId: normalizeTaskId(input.copyRevisionId), sha256: input.sha256,
     targetPage: boundedNumber(input.targetPage,1,5), operation,
     instruction: shortText(input.instruction ?? '',2000,operation.startsWith('AI_')), preserve: shortText(input.preserve ?? '',2000,false), negative: shortText(input.negative ?? '',2000,false),
-    overlay: operation === 'TEXT' ? normalizeManualOverlay(input.overlay) : null,
-    mask: operation === 'AI_LOCAL' ? normalizeMask(input.mask) : null,
-    references, confirmation: usesImageModel ? input.confirmation : null, draft: input.draft === true,
+    overlay,
+    // New local edits locate the target from the operator's prompt. Keep accepting
+    // a mask for already-created clients and queued historical requests.
+    mask: operation === 'AI_LOCAL' && input.mask != null ? normalizeMask(input.mask) : null,
+    references, confirmation: usesImageModel&&confirmed ? input.confirmation : null, draft,
     restoreRunId: operation === 'RESTORE' ? normalizeUuid(input.restoreRunId,'restoreRunId') : null };
 }
 export function imageAssetIds(result) {
   return [...new Set((result?.images ?? []).flatMap(i=>[i.assetId,i.sourceAssetId,i.deliveryAssetId]).filter(Number.isSafeInteger))];
+}
+function requestEditConfig(config) {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return config;
+  const { imageEditRepairMaxAttempts: _frozenRepairLimit, imageEditPrompt: _frozenPrompt, ...requestConfig } = config;
+  return requestConfig;
+}
+async function publishedImageEditPrompt(client, { required = true } = {}) {
+  const row = (await client.query(`
+    SELECT t.name, v.id AS version_id, v.version, v.content, v.content_sha256
+    FROM prompt_templates t
+    JOIN prompt_versions v ON v.template_id = t.id AND v.status = 'PUBLISHED'
+    WHERE t.kind = 'IMAGE_EDIT_SYSTEM'
+  `)).rows[0];
+  if (!row) {
+    if (required) throw new TypeError('请先在提示词管理中发布图片编辑提示词');
+    return null;
+  }
+  return {
+    kind: 'IMAGE_EDIT_SYSTEM',
+    name: row.name,
+    versionId: Number(row.version_id),
+    version: Number(row.version),
+    content: row.content,
+    sha256: row.content_sha256,
+    capturedAt: new Date().toISOString(),
+  };
 }
 export function replaceImagePage(result, page, asset) {
   if(!Array.isArray(result?.images) || !result.images[page-1]) throw new TypeError('目标页面不存在');
@@ -123,15 +156,22 @@ export function createImageEditingService({ pool, storageRoot }) {
       });
     },
     async create(taskId,input,actor) {
-      const username=actorName(actor), config=normalizeEdit(input); taskId=normalizeTaskId(taskId);
+      const username=actorName(actor), requestedConfig=normalizeEdit(input); taskId=normalizeTaskId(taskId);
       return tx(async c=> {
         await lockAdmin(c,actor);
         await c.query('SELECT id FROM tasks WHERE id=$1 FOR UPDATE',[taskId]);
-        const prior=(await c.query('SELECT * FROM image_edit_requests WHERE task_id=$1 AND request_id=$2',[taskId,config.requestId])).rows[0];
-        if(prior) { if(JSON.stringify(prior.config) !== JSON.stringify(JSON.parse(JSON.stringify(config)))) {
+        const prior=(await c.query('SELECT * FROM image_edit_requests WHERE task_id=$1 AND request_id=$2',[taskId,requestedConfig.requestId])).rows[0];
+        if(prior) { if(JSON.stringify(requestEditConfig(prior.config)) !== JSON.stringify(JSON.parse(JSON.stringify(requestedConfig)))) {
           // jsonb key order differs: compare normalized content structurally.
-          if(!sameJson(prior.config,config)) conflict('requestId 已用于不同请求');
+          if(!sameJson(requestEditConfig(prior.config),requestedConfig)) conflict('requestId 已用于不同请求');
         } return prior; }
+        const productionSettings=(await c.query("SELECT value FROM global_settings WHERE key='production'")).rows[0]?.value ?? {};
+        const usesImageModel=requestedConfig.operation==='TEXT'||requestedConfig.operation.startsWith('AI_');
+        const imageEditPrompt=usesImageModel?await publishedImageEditPrompt(c):null;
+        const config={...requestedConfig,
+          imageEditRepairMaxAttempts:normalizeImageEditRepairMaxAttempts(productionSettings.imageEditRepairMaxAttempts),
+          ...(imageEditPrompt?{imageEditPrompt}:{}),
+        };
         await assertEditSource(c,taskId,config);
         let bytes=0,pixels=0;
         for(const ref of config.references) {
@@ -162,6 +202,9 @@ export function createImageEditingService({ pool, storageRoot }) {
         if(e.version !== version) conflict('编辑状态已更新，请刷新');
         const states={queue:['DRAFT'],retry:['FAILED'],cancel:['DRAFT','QUEUED','RUNNING','PREVIEW_READY'],reject:['PREVIEW_READY'],accept:['PREVIEW_READY']};
         if(!states[action]?.includes(e.status)) conflict('当前编辑状态不允许此操作');
+        const usesImageModel=e.operation==='TEXT'||e.operation.startsWith('AI_');
+        const confirmsCost=e.config?.confirmation==='LIVE_IMAGE_COST_ACCEPTED'||input.confirmation==='LIVE_IMAGE_COST_ACCEPTED';
+        if(['queue','retry'].includes(action)&&usesImageModel&&!confirmsCost) throw new TypeError('请确认图片编辑及校验模型费用');
         if(['queue','retry','accept'].includes(action)) await assertEditSource(c,Number(e.task_id),e.config);
         if(action==='retry' && e.attempts >= 3) conflict('已达到三次执行上限，请创建新请求');
         if(action==='accept') {
@@ -174,7 +217,8 @@ export function createImageEditingService({ pool, storageRoot }) {
           await c.query("UPDATE tasks SET current_image_run_id=$2,state='MANUAL_ARCHIVE',current_stage='MANUAL_ARCHIVE',image_reviewed_at=NULL,image_reviewed_by_user_id=NULL,progress_message='图片修改已采用，请重新审核归档',updated_at=now() WHERE id=$1",[e.task_id,r.image_run_id]);
         }
         const next={queue:'QUEUED',retry:'QUEUED',cancel:'CANCELLED',reject:'REJECTED',accept:'ACCEPTED'}[action];
-        const updated=(await c.query('UPDATE image_edit_requests SET status=$2,version=version+1,error=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 RETURNING *',[id,next])).rows[0];
+        const config=usesImageModel&&input.confirmation==='LIVE_IMAGE_COST_ACCEPTED'?{...e.config,confirmation:'LIVE_IMAGE_COST_ACCEPTED'}:e.config;
+        const updated=(await c.query('UPDATE image_edit_requests SET status=$2,config=$3,version=version+1,error=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 RETURNING *',[id,next,config])).rows[0];
         await audit(c,e.task_id,id,action,username,reason,requestId);
         return updated;
       });
@@ -201,7 +245,9 @@ export function createImageEditingService({ pool, storageRoot }) {
         const settings=(await c.query("SELECT value FROM global_settings WHERE key='production'")).rows[0]?.value ?? {};
         const restored=e.operation==='RESTORE' ? (await c.query("SELECT * FROM image_runs WHERE id=$1 AND task_id=$2 AND copy_revision_id=$3 AND status='COMPLETED'",[e.config.restoreRunId,e.task_id,e.copy_revision_id])).rows[0] : null;
         if(e.operation==='RESTORE' && !restored) conflict('仅能恢复当前已批准文案对应的历史图集');
-        return {...source,refs,settings,restored};
+        const usesImageModel=e.operation==='TEXT'||e.operation.startsWith('AI_');
+        const imageEditPrompt=e.config.imageEditPrompt??(usesImageModel?await publishedImageEditPrompt(c):null);
+        return {...source,refs,settings,restored,imageEditPrompt};
       });
     },
     async readAsset(asset) { const bytes=await readFile(editStoragePath(storageRoot,asset.storage_path)); if(imageHash(bytes)!==asset.sha256) throw new Error('资产完整性校验失败'); return bytes; },

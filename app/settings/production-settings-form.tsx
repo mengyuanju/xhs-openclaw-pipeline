@@ -34,6 +34,7 @@ type Settings = {
   qualityRepairTriggerScore: number;
   qualityRepairTargetScore: number;
   qualityRepairMaxAttempts: number;
+  imageEditRepairMaxAttempts: number;
   aiDisclosureEnabled: boolean;
   aiDisclosureText: string;
   modelApi: ModelApiSettings;
@@ -81,6 +82,7 @@ function sectionValue(settings: Settings, section: SettingsSectionId) {
     qualityRepairMaxAttempts: settings.qualityRepairMaxAttempts,
   };
   if (section === 'image') return {
+    imageEditRepairMaxAttempts: settings.imageEditRepairMaxAttempts,
     aiDisclosureEnabled: settings.aiDisclosureEnabled,
     aiDisclosureText: settings.aiDisclosureText,
   };
@@ -104,6 +106,7 @@ function mergeSection(current: Settings, saved: Settings, section: SettingsSecti
   };
   if (section === 'image') return {
     ...current,
+    imageEditRepairMaxAttempts: saved.imageEditRepairMaxAttempts,
     aiDisclosureEnabled: saved.aiDisclosureEnabled,
     aiDisclosureText: saved.aiDisclosureText,
   };
@@ -177,6 +180,32 @@ function AiDisclosureSettings({
       <label className="switch-field"><Switch checked={settings.aiDisclosureEnabled} disabled={busy} onChange={(event) => update('aiDisclosureEnabled', event.target.checked)} /><span>显示标识</span></label>
     </div>
     <div className="field disclosure-field"><label htmlFor="ai-disclosure-text">标识文字</label><Input id="ai-disclosure-text" className="input" value={settings.aiDisclosureText} maxLength={12} pattern="[\\p{L}\\p{N}_-]+" disabled={busy || !settings.aiDisclosureEnabled} onChange={(event) => update('aiDisclosureText', event.target.value)} /><small>最多 12 个字符，仅限文字、数字、下划线或短横线；关闭后生成和验收都不再要求该标识。</small></div>
+  </section>;
+}
+
+function ImageEditRepairSettings({
+  settings,
+  busy,
+  update,
+}: {
+  settings: Settings;
+  busy: boolean;
+  update: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
+}) {
+  return <section className="panel settings-section" aria-labelledby="image-edit-repair-heading">
+    <div className="panel-head">
+      <div><h2 id="image-edit-repair-heading">图片文字编辑自动修复</h2><p className="subtle">控制单页“添加文字”未通过视觉质检后，自动打回图片模型重做的次数。</p></div>
+    </div>
+    <div className="form-grid compact-settings-grid">
+      <div className="field">
+        <label htmlFor="image-edit-repair-max-attempts">质检失败后最多自动修复</label>
+        <Select value={String(settings.imageEditRepairMaxAttempts)} disabled={busy} onValueChange={(value) => update('imageEditRepairMaxAttempts', Number(value))}>
+          <SelectTrigger id="image-edit-repair-max-attempts"><SelectValue /></SelectTrigger>
+          <SelectContent>{[0, 1, 2].map((count) => <SelectItem key={count} value={String(count)}>{count} 次</SelectItem>)}</SelectContent>
+        </Select>
+        <small>首次生成不计入修复次数；最高 2 次，即最多生成并质检 3 轮。设置在创建编辑请求时冻结。</small>
+      </div>
+    </div>
   </section>;
 }
 
@@ -305,6 +334,7 @@ export function ProductionSettingsForm({
       dirty: dirtyBySection.image,
       children: <>
         <LayoutCatalogSettings onDirtyChange={reportLayoutCatalogDirty} />
+        <ImageEditRepairSettings settings={settings} busy={busy} update={update} />
         <AiDisclosureSettings settings={settings} busy={busy} update={update} />
       </>,
     },

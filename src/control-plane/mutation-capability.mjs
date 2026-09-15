@@ -86,10 +86,15 @@ const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
   }),
   Object.freeze({
     capability: 'finalDeliveryVersion',
+    minimumVersion: 3,
+    matches: (routePath, method) => ((/^\/v1\/delivery-pool(?:\/|$)/u.test(routePath)
+      || /^\/v1\/delivery-batches(?:\/|$)/u.test(routePath))
+      && ['GET', 'HEAD', 'POST'].includes(method)),
+  }),
+  Object.freeze({
+    capability: 'finalDeliveryVersion',
     minimumVersion: 2,
-    matches: (routePath, method) => (/^\/v1\/delivery-pool(?:\/|$)/u.test(routePath)
-      && ['GET', 'HEAD', 'POST'].includes(method))
-      || (routePath === '/v1/tasks/batch-archive' && method === 'POST')
+    matches: (routePath, method) => (routePath === '/v1/tasks/batch-archive' && method === 'POST')
       || (/^\/v1\/tasks\/[^/]+\/archive$/u.test(routePath)
         && ['GET', 'HEAD'].includes(method)),
   }),

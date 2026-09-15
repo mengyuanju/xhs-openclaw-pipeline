@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   canReleaseCopyQaFreezeRest,
   canStartCopyQaBatchReturn,
+  copyRevisionView,
   normalizeCopyQaItem,
   normalizeCopyQaList,
 } from '../app/copy-qa/types.ts';
@@ -33,7 +34,16 @@ function serverRow(patch = {}) {
     status: 'PENDING',
     query: '如何整理小户型玄关',
     approvedRevision: {
-      content: { copy: { title: '最终人工修改稿', body: '最终正文', tags: ['收纳'] } },
+      content: {
+        copy: { title: '最终人工修改稿', body: '最终正文', tags: ['收纳'] },
+        imagePlan: [{
+          kind: 'hero',
+          headline: '玄关收纳先分区',
+          subtitle: '进门顺手归位',
+          bullets: ['鞋包分区', '钥匙定点'],
+          prompt: '明亮的小户型玄关，展示清晰的收纳分区。',
+        }],
+      },
       contentSha256: 'a'.repeat(64),
       revisionToken: 'a'.repeat(64),
     },
@@ -66,6 +76,13 @@ test('blind QA normalization is an allowlist even when the server accidentally a
   assert.equal(item.approvedRevision.revisionToken, 'a'.repeat(64),
     'the immutable final approved revision remains reviewable through an opaque token');
   assert.equal(item.approvedRevision.content.copy.title, '最终人工修改稿');
+  assert.deepEqual(copyRevisionView(item.approvedRevision.content).imagePlan, [{
+    kind: 'hero',
+    headline: '玄关收纳先分区',
+    subtitle: '进门顺手归位',
+    bullets: ['鞋包分区', '钥匙定点'],
+    prompt: '明亮的小户型玄关，展示清晰的收纳分区。',
+  }]);
 
   const { keys, values } = collectKeysAndScalarValues(item);
   const normalizedKeys = keys.map((key) => key.toLocaleLowerCase('en-US'));
@@ -84,6 +101,23 @@ test('blind QA normalization is an allowlist even when the server accidentally a
   }
   assert.deepEqual(values.filter((value) => /^\d+$/u.test(value)), [],
     'blind DTO contains no numeric task, batch or revision identifiers');
+});
+
+test('copy QA revision view reads image-copy planning from current and reviewed revision shapes', () => {
+  const current = copyRevisionView(serverRow().approvedRevision.content);
+  assert.equal(current.title, '最终人工修改稿');
+  assert.equal(current.imagePlan[0].headline, '玄关收纳先分区');
+
+  const legacy = copyRevisionView({
+    reviewed: {
+      copy: { title: '返工最终稿', body: '返工正文', tags: ['玄关'] },
+      imagePlan: [{ kind: 'steps', headline: '三步归位', subtitle: '', bullets: ['清空', '分区', '归位'], prompt: '三步流程图。' }],
+    },
+  });
+  assert.equal(legacy.title, '返工最终稿');
+  assert.deepEqual(legacy.imagePlan[0], {
+    kind: 'steps', headline: '三步归位', subtitle: '', bullets: ['清空', '分区', '归位'], prompt: '三步流程图。',
+  });
 });
 
 test('blind list normalization cannot be changed into a non-blind row by nested source fields', () => {
@@ -105,6 +139,22 @@ test('mandatory rechecks and batch-affected history retain the backend enum mean
   assert.ok(item);
   assert.equal(item.sampleKind, 'MANDATORY_RECHECK');
   assert.equal(item.status, 'BATCH_AFFECTED');
+});
+
+test('administrator normalization preserves direct-pass audit origin and superseded history', () => {
+  const item = normalizeCopyQaItem(serverRow({
+    blindReview: false,
+    status: 'SUPERSEDED',
+    reviewMethod: 'ADMIN_DIRECT',
+    taskId: 991,
+    approvedRevision: { ...serverRow().approvedRevision, id: 902 },
+    productionBatch: { anonymousCode: 'PB-7XQK', id: 27, queryPackageName: '九月选题' },
+    source: { finalApproverAccountId: 64 },
+  }));
+
+  assert.ok(item && !item.blindReview);
+  assert.equal(item.status, 'SUPERSEDED');
+  assert.equal(item.reviewMethod, 'ADMIN_DIRECT');
 });
 
 test('unknown QA state and omitted capabilities fail closed', () => {

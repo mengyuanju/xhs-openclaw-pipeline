@@ -1,11 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { apiRequest } from '@/app/components/api-client';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 import { Checkbox, Textarea } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { Dialog, DialogClose, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import styles from './task-priority-control.module.css';
 
 export type PriorityTask = { id: number; systemPriority?: number; manualPriority?: number | null;
   effectivePriority?: number; priorityMode?: string; priorityPaused?: boolean; queueEnteredAt?: string;
@@ -25,6 +26,7 @@ export function PrioritySummary({ task }: { task: PriorityTask }) {
 }
 
 export function TaskPriorityControl({ tasks, onChanged }: { tasks: PriorityTask[]; onChanged: () => void | Promise<void> }) {
+  const controlId = useId();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState('SYSTEM');
   const [reason, setReason] = useState('');
@@ -62,23 +64,52 @@ export function TaskPriorityControl({ tasks, onChanged }: { tasks: PriorityTask[
       setOpen(true); setPreview(null); setReason(''); setError(''); setWholeBatch(false); setMode('SYSTEM');
     }}>调整优先级</Button>
     <Dialog open={open} onOpenChange={value => { if (!busy) setOpen(value); }}>
-      <DialogContent><div><DialogTitle>调整任务优先级</DialogTitle>
-        <DialogDescription>只调整排队顺序。运行中的任务继续执行；审核和批次冻结关卡保持有效。</DialogDescription>
-      </div>
-        <label>优先级 <Select value={mode} disabled={busy} onValueChange={setMode}><SelectTrigger aria-label="优先级"><SelectValue /></SelectTrigger><SelectContent>
-          {MODES.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
-        </SelectContent></Select></label>
-        {canBatch && <label><Checkbox checked={wholeBatch} disabled={busy}
-          onChange={event => { setWholeBatch(event.target.checked); setPreview(null); }} />调整整个生产批次 #{batchId}</label>}
-        <label>调整原因（必填）<Textarea aria-label="调整原因" required maxLength={2000} value={reason}
-          disabled={busy} onChange={event => setReason(event.target.value)} /></label>
-        <p>同级先到先处理；每等待一小时补偿相当于 6 点的排序优势，避免长期等待。</p>
-        {preview && <div><strong>将调整 {preview.items.length} 条任务</strong>
-          <p>任务：{preview.items.slice(0, 20).map(task => `#${task.id}`).join('、')}
-            {preview.items.length > 20 ? `，另 ${preview.items.length - 20} 条同批任务` : ''}</p></div>}
-        {error && <p role="alert">{error}</p>}
-        {!preview ? <Button type="button" disabled={busy || !reason.trim()} onClick={() => { void prepare(); }}>预览调整范围</Button>
-          : <Button type="button" disabled={busy || !reason.trim()} onClick={() => { void submit(); }}>确认调整并记录原因</Button>}
+      <DialogContent className={styles.dialog} showCloseButton={!busy}>
+        <header className={styles.header}>
+          <span className={styles.eyebrow}>队列管理</span>
+          <DialogTitle className={styles.title}>调整任务优先级</DialogTitle>
+          <DialogDescription className={styles.description}>
+            只调整排队顺序。运行中的任务继续执行；审核和批次冻结关卡保持有效。
+          </DialogDescription>
+        </header>
+        <div className={styles.body}>
+          <div className={styles.field}>
+            <label className={styles.fieldLabel} htmlFor={`${controlId}-mode`}>优先级</label>
+            <Select value={mode} disabled={busy} onValueChange={value => { setMode(value); setPreview(null); }}>
+              <SelectTrigger id={`${controlId}-mode`} aria-label="优先级"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {MODES.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          {canBatch && <label className={styles.batchOption}>
+            <Checkbox checked={wholeBatch} disabled={busy}
+              onChange={event => { setWholeBatch(event.target.checked); setPreview(null); }} />
+            <span><strong>调整整个生产批次 #{batchId}</strong><small>预览后再确认具体影响的任务。</small></span>
+          </label>}
+          <div className={styles.field}>
+            <label className={styles.fieldLabel} htmlFor={`${controlId}-reason`}>
+              <span>调整原因 <b>必填</b></span><small>{reason.length} / 2000</small>
+            </label>
+            <Textarea id={`${controlId}-reason`} className={styles.reasonInput} required maxLength={2000} value={reason}
+              disabled={busy} placeholder="请说明本次调整的原因，便于后续追溯" onChange={event => setReason(event.target.value)} />
+            <p className={styles.helper}>同级先到先处理；每等待一小时补偿相当于 6 点的排序优势，避免长期等待。</p>
+          </div>
+          {preview && <div className={styles.preview}>
+            <strong>将调整 {preview.items.length} 条任务</strong>
+            <p>任务：{preview.items.slice(0, 20).map(task => `#${task.id}`).join('、')}
+              {preview.items.length > 20 ? `，另 ${preview.items.length - 20} 条同批任务` : ''}</p>
+          </div>}
+          {error && <p className={styles.error} role="alert">{error}</p>}
+        </div>
+        <footer className={styles.footer}>
+          <DialogClose asChild><Button type="button" variant="outline" disabled={busy}>取消</Button></DialogClose>
+          {!preview ? <Button type="button" disabled={busy || !reason.trim()} onClick={() => { void prepare(); }}>
+            {busy ? '正在读取范围…' : '预览调整范围'}
+          </Button> : <Button type="button" disabled={busy || !reason.trim()} onClick={() => { void submit(); }}>
+            {busy ? '正在调整…' : '确认调整并记录原因'}
+          </Button>}
+        </footer>
       </DialogContent>
     </Dialog>
   </>;

@@ -25,6 +25,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type 
 
 import { apiRequest } from '../components/api-client';
 import { canCommitLatestRequest } from '../components/latest-request';
+import { createRequestId } from '../components/request-id';
 import { buildCopyQaBatchReturnPayload } from '../../src/copy-qa-batch-return.mjs';
 import styles from './copy-qa.module.css';
 import {
@@ -54,6 +55,7 @@ const STATUS_LABELS: Record<CopyQaStatus, string> = {
   RELEASED: '已放行',
   BATCH_RETURNED: '整批已打回',
   BATCH_AFFECTED: '整批受影响',
+  SUPERSEDED: '旧版已失效',
 };
 const MANDATORY_RECHECK_STATUS_LABELS: Record<CopyQaStatus, string> = {
   PENDING: '待处理',
@@ -62,15 +64,20 @@ const MANDATORY_RECHECK_STATUS_LABELS: Record<CopyQaStatus, string> = {
   RELEASED: '已放行',
   BATCH_RETURNED: '整批已打回',
   BATCH_AFFECTED: '整批受影响',
+  SUPERSEDED: '旧版已失效',
+};
+const IMAGE_KIND_LABELS: Record<string, string> = {
+  hero: '封面',
+  steps: '步骤',
+  checklist: '清单',
+  comparison: '对比',
+  detail: '细节',
+  summary: '总结',
 };
 
 function timeLabel(value?: string) {
   const timestamp = Date.parse(value ?? '');
   return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleString('zh-CN', { hour12: false }) : '未记录';
-}
-
-function requestId() {
-  return crypto.randomUUID();
 }
 
 export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' }) {
@@ -87,7 +94,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
   const [search, setSearch] = useState('');
   const [packageSearchInput, setPackageSearchInput] = useState('');
   const [queryPackageName, setQueryPackageName] = useState('');
-  const [status, setStatus] = useState<CopyQaStatus | 'ALL'>('PENDING');
+  const [status, setStatus] = useState<CopyQaStatus | 'ALL' | 'ADMIN_DIRECT_PASSED'>('PENDING');
   const [mode, setMode] = useState<'ALL' | 'BLIND' | 'VISIBLE'>('ALL');
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
   const [detail, setDetail] = useState<CopyQaItem | null>(null);
@@ -191,7 +198,10 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
 
   const visibleItems = useMemo(() => {
     const keyword = search.trim().toLocaleLowerCase('zh-CN');
-    return items.filter((item) => (status === 'ALL' || item.status === status)
+    return items.filter((item) => (status === 'ALL'
+      || (status === 'ADMIN_DIRECT_PASSED'
+        ? !item.blindReview && item.reviewMethod === 'ADMIN_DIRECT'
+        : item.status === status))
       && (role !== 'ADMIN' || mode === 'ALL' || (mode === 'BLIND' ? item.blindReview : !item.blindReview))
       && (!keyword || `${item.anonymousCode} ${item.query ?? ''} ${item.productionBatch.anonymousCode} ${item.blindReview ? '' : item.productionBatch.queryPackageName ?? ''}`.toLocaleLowerCase('zh-CN').includes(keyword)));
   }, [items, mode, role, search, status]);
@@ -256,7 +266,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
       await apiRequest(apiPath(`/v1/copy-qa/items/${encodeURIComponent(item.id)}/pass`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ expectedRevisionToken: item.approvedRevision.revisionToken, requestId: requestId() }),
+        body: JSON.stringify({ expectedRevisionToken: item.approvedRevision.revisionToken, requestId: createRequestId() }),
       });
       setDetail(null);
       setMessage(mandatoryRecheck
@@ -297,7 +307,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
           expectedRevisionToken: returnItem.approvedRevision.revisionToken,
           reasonCodes: returnReasons,
           note: returnNote.trim(),
-          requestId: requestId(),
+          requestId: createRequestId(),
         }),
       });
       const returned = returnItem;
@@ -344,7 +354,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
     try {
       const result = await apiRequest<Record<string, unknown>>(apiPath(`/v1/copy-qa/freezes/${encodeURIComponent(releaseItem.freezePublicId)}/release-rest`), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ requestId: requestId(), note: releaseNote.trim() }),
+        body: JSON.stringify({ requestId: createRequestId(), note: releaseNote.trim() }),
       });
       const releasedCount = Math.max(0, Number(result.releasedCount) || 0);
       setReleaseItem(null);
@@ -421,7 +431,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
         preview: batchPreview,
         reasonCodes: batchReasons,
         note: batchNote,
-        requestId: requestId(),
+        requestId: createRequestId(),
       });
     } catch {
       setBatchError('服务端预检范围不完整，请重新打开预检后再操作。');
@@ -495,7 +505,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
               setQueryPackageName('');
             }}>清除词包</Button>}
           </form>}
-          <label>结果<Select value={status} onValueChange={(value) => setStatus(value as typeof status)}><SelectTrigger className={styles.filterSelect}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ALL">全部结果</SelectItem>{Object.entries(STATUS_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></label>
+          <label>结果<Select value={status} onValueChange={(value) => setStatus(value as typeof status)}><SelectTrigger className={styles.filterSelect}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ALL">全部结果</SelectItem>{role === 'ADMIN' && <SelectItem value="ADMIN_DIRECT_PASSED">管理员单独通过</SelectItem>}{Object.entries(STATUS_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></label>
           {role === 'ADMIN' && <label>评审模式<Select value={mode} onValueChange={(value) => setMode(value as typeof mode)}><SelectTrigger className={styles.filterSelect}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ALL">全部模式</SelectItem><SelectItem value="BLIND">独立盲评</SelectItem><SelectItem value="VISIBLE">非盲评</SelectItem></SelectContent></Select></label>}
         </div>
         <span className="pill">{role === 'ADMIN' ? '管理员保留随机首检整批打回权限' : items.some(canStartCopyQaBatchReturn) ? '当前允许随机首检整批打回' : '当前仅可单条打回；需要扩大范围时请联系管理员整批处置'}</span>
@@ -517,7 +527,9 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
                   : <Checkbox aria-label={`将 ${item.anonymousCode} 作为整批打回触发错误项`} checked={checkedIds.includes(item.id)} disabled={!canCheck} onChange={(event) => setCheckedIds(event.target.checked ? [item.id] : [])} />}</td>
                 <td data-label="样本"><div className={styles.code}><strong>{item.anonymousCode}</strong><small>{item.sampleKind === 'MANDATORY_RECHECK'
                   ? `强制复检 · ${MANDATORY_RECHECK_STATUS_LABELS[item.status]}`
-                  : `随机首检 · ${STATUS_LABELS[item.status]}`}</small></div></td>
+                  : !item.blindReview && item.reviewMethod === 'ADMIN_DIRECT'
+                    ? `管理员单独通过 · ${item.status === 'SUPERSEDED' ? '旧版已失效' : '已通过'}`
+                    : `随机首检 · ${STATUS_LABELS[item.status]}`}</small></div></td>
                 <td data-label="内容 / 最终稿" className={styles.query}>{item.query && <strong>{item.query}</strong>}<div className="subtle">{item.sampleKind === 'MANDATORY_RECHECK' ? '返工稿（已按最终 3 分记录）' : '最终人工通过稿'}{itemCopy.title ? ` · ${itemCopy.title}` : ''}</div></td>
                 <td data-label="批次 / 模式"><div className={styles.code}><strong>{item.productionBatch.anonymousCode}</strong>{!item.blindReview && <small>词包：{item.productionBatch.queryPackageName ?? '未归属词包'}</small>}<small>{item.blindReview ? '独立盲评' : item.taskId ? `非盲评 · 任务 #${item.taskId}` : '非盲评'}</small></div></td>
                 <td data-label="进入时间">{timeLabel(item.createdAt)}<small>{item.prioritySummary ?? '跟随系统优先级'}</small></td>
@@ -529,17 +541,30 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
     </section>
 
     <Dialog open={detail !== null || detailLoading} onOpenChange={(open) => { if (!open && !action) closeItemDetail(); }}>
-      <DialogContent className={styles.dialog}>
+      <DialogContent className={`${styles.dialog} ${styles.detailDialog}`}>
         <div className={styles.dialogHeader}><div><DialogTitle>{detail?.anonymousCode ?? '读取抽检详情'}</DialogTitle><DialogDescription>{detail
           ? detail.sampleKind === 'MANDATORY_RECHECK' ? '核对已按最终 3 分记录的返工稿' : '核对内容指纹绑定的最终人工通过稿'
-          : '正在读取抽检详情…'}</DialogDescription></div>{detail && <span className="pill">{detail.blindReview ? <><EyeOff size={13} />独立盲评</> : <><Eye size={13} />非盲评</>}</span>}</div>
+          : '正在读取抽检详情…'}</DialogDescription></div>{detail && <div className={styles.actions}><span className="pill">{detail.blindReview ? <><EyeOff size={13} />独立盲评</> : <><Eye size={13} />非盲评</>}</span>{!detail.blindReview && detail.reviewMethod === 'ADMIN_DIRECT' && <span className="pill"><CheckCircle2 size={13} />管理员单独通过</span>}</div>}</div>
         {detailLoading && !detail && <div className="empty-state"><LoaderCircle className="animate-spin" size={20} />正在读取详情…</div>}
         {detailError && !detail && <div className="notice error" role="alert">{detailError}</div>}
         {detail && copy && <>
           <div className={styles.metadata}>{detail.query && <div><small>Query</small><strong>{detail.query}</strong></div>}<div><small>匿名批次编号</small><strong>{detail.productionBatch.anonymousCode}</strong></div><div><small>内容指纹</small><strong>{detail.approvedRevision.contentSha256 ? `${detail.approvedRevision.contentSha256.slice(0, 12)}…` : '未提供'}</strong></div></div>
           {detail.blindReview && <div className="notice"><EyeOff size={15} aria-hidden="true" /> 当前为盲评，页面不会显示或保留任务身份、上游人员、原评分和原扣分原因。</div>}
-          <article className={styles.copy} aria-label={detail.sampleKind === 'MANDATORY_RECHECK' ? '强制复检返工文案' : '最终人工通过文案'}><span className="pill">{detail.sampleKind === 'MANDATORY_RECHECK' ? '返工稿 · 已按最终 3 分记录' : '最终人工通过稿'}</span>{copy.title && <h3>{copy.title}</h3>}<p className={styles.copyBody}>{copy.body || '最终稿正文为空'}</p>{copy.tags.length > 0 && <div className={styles.tags}>{copy.tags.map((tag) => <span className="pill" key={tag}>#{tag}</span>)}</div>}</article>
-          {!detail.blindReview && <section className={styles.source} aria-labelledby="copy-qa-source-title"><h3 id="copy-qa-source-title">管理员来源信息</h3><div className={styles.metadata}><div><small>词包名称</small><strong>{detail.productionBatch.queryPackageName ?? '未归属词包'}</strong></div><div><small>正式任务</small><strong>{detail.taskId ? `#${detail.taskId}` : '未记录'}</strong></div><div><small>最终审批账号</small><strong>{detail.finalApproverAccountId ? `账号 #${detail.finalApproverAccountId}` : '未记录'}</strong></div><div><small>生产批次</small><strong>{detail.productionBatchId ? `#${detail.productionBatchId}` : detail.productionBatch.anonymousCode}</strong></div></div></section>}
+          <div className={styles.comparison} aria-label="最终文案与图片文案规划对照">
+            <article className={styles.copy} aria-label={detail.sampleKind === 'MANDATORY_RECHECK' ? '强制复检返工文案' : '最终人工通过文案'}><span className="pill">{detail.sampleKind === 'MANDATORY_RECHECK' ? '返工稿 · 已按最终 3 分记录' : '最终人工通过稿'}</span>{copy.title && <h3>{copy.title}</h3>}<p className={styles.copyBody}>{copy.body || '最终稿正文为空'}</p>{copy.tags.length > 0 && <div className={styles.tags}>{copy.tags.map((tag) => <span className="pill" key={tag}>#{tag}</span>)}</div>}</article>
+            <section className={styles.plan} aria-labelledby="copy-qa-plan-title">
+              <div className={styles.planHeader}><div><h3 id="copy-qa-plan-title">图片文案规划</h3><p>逐页核对最终稿中的画面文字与生成要求。</p></div><span className="pill">{copy.imagePlan.length} 页</span></div>
+              {copy.imagePlan.length > 0
+                ? <div className={styles.planGrid}>{copy.imagePlan.map((page, index) => <article className={styles.planCard} key={`${index}-${page.kind}`}>
+                  <header><span className={styles.planIndex}>{String(index + 1).padStart(2, '0')}</span><div><small>第 {index + 1} 页 · {IMAGE_KIND_LABELS[page.kind] ?? (page.kind || '未设置类型')}</small><h4>{page.headline || '未填写页面标题'}</h4></div></header>
+                  <div className={styles.planField}><small>页面副标题</small><p>{page.subtitle || '未填写'}</p></div>
+                  <div className={styles.planField}><small>画面要点</small>{page.bullets.length > 0 ? <ul>{page.bullets.map((bullet, bulletIndex) => <li key={bulletIndex}>{bullet}</li>)}</ul> : <p>未填写</p>}</div>
+                  <div className={`${styles.planField} ${styles.planPrompt}`}><small>画面生成指令</small><p>{page.prompt || '未填写'}</p></div>
+                </article>)}</div>
+                : <div className={styles.planEmpty}>当前最终稿未记录图片文案规划。</div>}
+            </section>
+          </div>
+          {!detail.blindReview && <section className={styles.source} aria-labelledby="copy-qa-source-title"><h3 id="copy-qa-source-title">管理员来源信息</h3><div className={styles.metadata}><div><small>词包名称</small><strong>{detail.productionBatch.queryPackageName ?? '未归属词包'}</strong></div><div><small>正式任务</small><strong>{detail.taskId ? `#${detail.taskId}` : '未记录'}</strong></div><div><small>最终审批账号</small><strong>{detail.finalApproverAccountId ? `账号 #${detail.finalApproverAccountId}` : '未记录'}</strong></div><div><small>质检处理</small><strong>{detail.reviewMethod === 'ADMIN_DIRECT' ? '管理员单独通过' : '质检队列处理'}</strong></div><div><small>生产批次</small><strong>{detail.productionBatchId ? `#${detail.productionBatchId}` : detail.productionBatch.anonymousCode}</strong></div></div></section>}
           {detailError && <div className="notice error" role="alert">{detailError}</div>}
           <div className={styles.footer}><span className="subtle">{detail.sampleKind === 'MANDATORY_RECHECK'
             ? '返工稿已按最终 3 分记录；只有通过强制复检后才会进入待生图队列。'

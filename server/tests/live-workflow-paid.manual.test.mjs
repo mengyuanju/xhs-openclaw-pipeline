@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
@@ -9,17 +9,18 @@ import sharp from 'sharp';
 
 import { batchReturnCopyQa, getCopyQaBatchReturnPreview, passCopyQaItem, routeManualCopyApproval } from '../src/copy-quality-control.mjs';
 import { migrateDatabase } from '../src/database-migrations.mjs';
+import { loadDefaultPrompts } from '../src/defaults.mjs';
 import { processImageEdit } from '../src/image-edit-renderer.mjs';
 import { createImageEditingService } from '../src/image-editing.mjs';
+import { startImageEditProcessing } from '../src/image-edit-runner.mjs';
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import { createAgentClient } from '../../src/agent-client.mjs';
 import { imageHash } from '../../src/image-edit-pixels.mjs';
 
 const enabled=process.env.RUN_LIVE_WORKFLOW_PAID_E2E==='1';
 const maintenanceUrl=process.env.LIVE_E2E_DATABASE_URL;
-const replayPath=process.env.LIVE_IMAGE_EDIT_REPLAY_PATH?.trim()||null;
 
-test('paid live workflow: admin priority, whole-person QA return/recheck, and Codex AI disclosure edit', {
+test('paid live workflow: priority, whole-person QA return/recheck, and all current-image AI edit modes', {
   skip:!enabled,
   timeout:20*60_000,
 }, async t=>{
@@ -36,6 +37,10 @@ test('paid live workflow: admin priority, whole-person QA return/recheck, and Co
     repository=new PostgresControlPlaneRepository({connectionString:adminUrl.href});
     await repository.initialize();
     await migrateDatabase(repository.pool);
+    for (const prompt of await loadDefaultPrompts()) {
+      const version=await repository.createPromptVersion(prompt);
+      await repository.publishPromptVersion(version.id);
+    }
     const pool=repository.pool;
     const adminRow=await repository.getUserByUsername('admin');
     const admin={userId:Number(adminRow.id),username:adminRow.username,role:'ADMIN',credentialVersion:adminRow.credentialVersion};
@@ -142,10 +147,7 @@ test('paid live workflow: admin priority, whole-person QA return/recheck, and Co
     const liveClient=createAgentClient({modelApi:settings.modelApi});
     let imageGenerationCalls=0,visionValidationCalls=0;
     const measuredClient={provider:liveClient.provider,
-      runImageEdit:async input=>{
-        if(replayPath){await writeFile(input.outputPath,await readFile(replayPath));return{model:'gpt-image-2-replay'};}
-        imageGenerationCalls++;return liveClient.runImageEdit(input);
-      },
+      runImageEdit:async input=>{imageGenerationCalls++;return liveClient.runImageEdit(input);},
       runVision:async input=>{visionValidationCalls++;return liveClient.runVision(input);}};
     const rendered=await processImageEdit({service,storageRoot,workerId:'live-paid-worker',
       agentClient:measuredClient,maxGenerationAttempts:1});
@@ -167,23 +169,98 @@ test('paid live workflow: admin priority, whole-person QA return/recheck, and Co
     task=(await pool.query('SELECT * FROM tasks WHERE id=$1',[taskId])).rows[0];
     assert.equal(task.state,'MANUAL_ARCHIVE');
     assert.equal(task.current_image_run_id,completed.result.image_run_id);
+    const textCalls={imageGenerationCalls,visionValidationCalls};
+
+    const referenceSvg=Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512">
+      <rect width="512" height="512" fill="#f7f3ea"/>
+      <ellipse cx="250" cy="421" rx="145" ry="30" fill="#d7d0c4"/>
+      <rect x="126" y="126" width="220" height="275" rx="46" fill="#e65f4f"/>
+      <ellipse cx="236" cy="126" rx="110" ry="31" fill="#f47a68"/>
+      <ellipse cx="236" cy="126" rx="83" ry="20" fill="#45231f"/>
+      <path d="M346 188 C455 171 464 344 348 334" fill="none" stroke="#e65f4f" stroke-width="44"/>
+      <path d="M167 166 C151 236 155 313 177 353" fill="none" stroke="#ffaaa0" stroke-width="18" stroke-linecap="round" opacity="0.8"/>
+    </svg>`);
+    const referenceBytes=await sharp(referenceSvg).png().toBuffer();
+    const reference=await service.upload(taskId,{base64:referenceBytes.toString('base64'),mediaType:'image/png',
+      purpose:'珊瑚红陶瓷马克杯实体参考',source:'端到端测试自有矢量夹具'},admin);
+    const entityEdit=await service.create(taskId,{requestId:randomUUID(),sourceImageRunId:task.current_image_run_id,
+      sourceAssetId:Number(resultAsset.id),copyRevisionId:Number(editedRevision.id),sha256:resultAsset.sha256,
+      targetPage:1,operation:'AI_FUSION',instruction:'将参考附件中的珊瑚红陶瓷马克杯完整自然地融合到画面左下方，保留圆柱杯身、右侧 C 形杯把、珊瑚红颜色和浅色高光',
+      preserve:'逐字保留标题“低成本也能保持”和右下角“AI生成”标识，保持原有简洁留白构图',
+      negative:'不要增加文字、商标、第二个杯子或其他物体，不要改变原标题和AI标识',
+      confirmation:'LIVE_IMAGE_COST_ACCEPTED',references:[{assetId:reference.id,purpose:'必须保持形状和颜色的实体参考'}]},admin);
+    const entityStart={imageGenerationCalls,visionValidationCalls};
+    const entityRendered=await processImageEdit({service,storageRoot,workerId:'live-entity-worker',agentClient:measuredClient,maxGenerationAttempts:1});
+    if(entityRendered.status!=='PREVIEW_READY') {
+      const failedEdit=await service.get(entityEdit.id);
+      t.diagnostic(JSON.stringify({stage:'entityFusion',entityRendered,validation:failedEdit.validation,imageGenerationCalls,visionValidationCalls}));
+    }
+    assert.equal(entityRendered.status,'PREVIEW_READY',entityRendered.error);
+    const entityCompleted=await service.get(entityEdit.id);
+    assert.equal(entityCompleted.result.validation.passed,true);
+    assert.equal(entityCompleted.result.validation.entityConsistency.mode,'AI_REFERENCE_CHECK');
+    assert.equal(entityCompleted.result.validation.entityConsistency.passed,true);
+    const entityAsset=await service.asset(Number(entityCompleted.result.asset_id),taskId);
+    const entityBytes=await service.readAsset(entityAsset);
+    assert.notEqual(entityAsset.sha256,resultAsset.sha256);
+    await service.action(entityEdit.id,'accept',{version:entityCompleted.version,requestId:randomUUID(),reason:'真实实体融合测试校验通过并采用'},admin);
+    task=(await pool.query('SELECT * FROM tasks WHERE id=$1',[taskId])).rows[0];
+    assert.equal(task.current_image_run_id,entityCompleted.result.image_run_id);
+    const entityCalls={imageGenerationCalls:imageGenerationCalls-entityStart.imageGenerationCalls,
+      visionValidationCalls:visionValidationCalls-entityStart.visionValidationCalls};
+
+    const promptEdit=await service.create(taskId,{requestId:randomUUID(),sourceImageRunId:task.current_image_run_id,
+      sourceAssetId:Number(entityAsset.id),copyRevisionId:Number(editedRevision.id),sha256:entityAsset.sha256,
+      targetPage:1,operation:'AI_LOCAL',instruction:'只把画面中央、标题下方且左下角马克杯上方的米白色空白背景调整为非常浅的鼠尾草绿色柔和渐变，不添加或删除任何物体与文字',
+      preserve:'逐字保留标题“低成本也能保持”、右下角“AI生成”标识和左下角珊瑚红马克杯',
+      negative:'不要增加文字、图标、边框、人物或新的物体，不要修改说明之外的区域',
+      confirmation:'LIVE_IMAGE_COST_ACCEPTED'},admin);
+    const promptStart={imageGenerationCalls,visionValidationCalls};
+    const completedByRunner=Promise.withResolvers();
+    const stopImageEdits=startImageEditProcessing({service,storageRoot},{intervalMs:100,workerId:'live-prompt-worker',
+      processEdit:async input=>{const result=await processImageEdit({...input,agentClient:measuredClient,maxGenerationAttempts:1});if(result.status!=='idle')completedByRunner.resolve(result);return result;},log:{log(){},error(){}}});
+    const promptRendered=await completedByRunner.promise;
+    await stopImageEdits();
+    if(promptRendered.status!=='PREVIEW_READY') {
+      const failedEdit=await service.get(promptEdit.id);
+      t.diagnostic(JSON.stringify({stage:'promptLocal',promptRendered,validation:failedEdit.validation,imageGenerationCalls,visionValidationCalls}));
+    }
+    assert.equal(promptRendered.status,'PREVIEW_READY',promptRendered.error);
+    const promptCompleted=await service.get(promptEdit.id);
+    assert.equal(promptCompleted.result.validation.passed,true);
+    assert.equal(promptCompleted.result.validation.outsideMask,null);
+    assert.equal(promptCompleted.result.validation.localization.mode,'PROMPT');
+    const promptAsset=await service.asset(Number(promptCompleted.result.asset_id),taskId);
+    const promptBytes=await service.readAsset(promptAsset);
+    assert.notEqual(promptAsset.sha256,entityAsset.sha256);
+    await service.action(promptEdit.id,'accept',{version:promptCompleted.version,requestId:randomUUID(),reason:'真实提示词局部修改测试校验通过并采用'},admin);
+    task=(await pool.query('SELECT * FROM tasks WHERE id=$1',[taskId])).rows[0];
+    assert.equal(task.current_image_run_id,promptCompleted.result.image_run_id);
+    const promptCalls={imageGenerationCalls:imageGenerationCalls-promptStart.imageGenerationCalls,
+      visionValidationCalls:visionValidationCalls-promptStart.visionValidationCalls};
 
     const outputDir=resolve(process.cwd(),'output','live-e2e',String(taskId),'attempt-1');
     await mkdir(outputDir,{recursive:true});
     await Promise.all([
       writeFile(resolve(outputDir,'source.png'),sourceBytes,{flag:'wx'}),
-      writeFile(resolve(outputDir,'edited.png'),resultBytes,{flag:'wx'}),
+      writeFile(resolve(outputDir,'text-edited.png'),resultBytes,{flag:'wx'}),
+      writeFile(resolve(outputDir,'entity-reference.png'),referenceBytes,{flag:'wx'}),
+      writeFile(resolve(outputDir,'entity-edited.png'),entityBytes,{flag:'wx'}),
+      writeFile(resolve(outputDir,'prompt-local-edited.png'),promptBytes,{flag:'wx'}),
       writeFile(resolve(outputDir,'report.json'),JSON.stringify({taskId,priorityMode:task.priority_mode,
         sampling:{rateBps:freeze.rate_bps,population:freeze.population_count,sample:freeze.sample_count,
-          batchReturned:true,mandatoryRecheckPassed:true},imageEdit:{editId:edit.id,model:completed.result.validation.model,
-          generationAttempts:completed.result.validation.generationAttempts,imageGenerationCalls,visionValidationCalls,replay:Boolean(replayPath),
-          ocrEngine:completed.result.validation.text.engine,
+          batchReturned:true,batchReturnScope:'WHOLE_REVIEWER_FREEZE',mandatoryRecheckPassed:true,imageGateBlockedBeforeRecheck:true},
+        imageEdits:{text:{editId:edit.id,model:completed.result.validation.model,calls:textCalls,
           recognizedText:completed.result.validation.text.recognizedText,targetOccurrences:completed.result.validation.text.targetOccurrences,
-          placementPassed:completed.result.validation.text.placement.passed,accepted:true},published:false},null,2),{flag:'wx'}),
+          placementPassed:completed.result.validation.text.placement.passed,accepted:true},
+        entityFusion:{editId:entityEdit.id,model:entityCompleted.result.validation.model,calls:entityCalls,
+          entityConsistency:entityCompleted.result.validation.entityConsistency,accepted:true},
+        promptLocal:{editId:promptEdit.id,model:promptCompleted.result.validation.model,calls:promptCalls,
+          localization:promptCompleted.result.validation.localization,outsideMask:promptCompleted.result.validation.outsideMask,accepted:true}},
+        totals:{imageGenerationCalls,visionValidationCalls},published:false},null,2),{flag:'wx'}),
     ]);
     t.diagnostic(JSON.stringify({outputDir,taskId,model:completed.result.validation.model,
-      generationAttempts:completed.result.validation.generationAttempts,imageGenerationCalls,visionValidationCalls,replay:Boolean(replayPath),
-      recognizedText:completed.result.validation.text.recognizedText,published:false}));
+      imageGenerationCalls,visionValidationCalls,stages:['wholeBatchReturn','mandatoryRecheck','text','entityFusion','promptLocal'],published:false}));
   } finally {
     await repository?.close();
     await rm(storageRoot,{recursive:true,force:true});

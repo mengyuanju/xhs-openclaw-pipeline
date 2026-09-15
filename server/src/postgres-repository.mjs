@@ -37,6 +37,7 @@ import {
   normalizeHumanQualitySettings,
   normalizeHumanQualitySettingsUpdate,
 } from '../../src/human-quality-settings.mjs';
+import { normalizeImageEditRepairMaxAttempts } from '../../src/production-settings.mjs';
 import {
   XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
   XIAOHONGSHU_SEARCH_SETTINGS_KEY,
@@ -109,6 +110,13 @@ import {
   recordDeliveryPreviewLinks,
   withdrawReadyDeliveryEntries,
 } from './final-delivery.mjs';
+import {
+  createDeliveryBatch,
+  getDeliveryBatch,
+  getDeliveryBatchArtifact,
+  listDeliveryBatches,
+  recordDeliveryBatchDownload,
+} from './delivery-batches.mjs';
 
 import pg from 'pg';
 
@@ -1397,8 +1405,23 @@ export class PostgresControlPlaneRepository {
     return assertTasksReadyForDelivery(this.pool, bindings);
   }
   listDeliveryPool(options, { actor } = {}) { return listDeliveryPool(this.pool, options, actor); }
-  listAllDeliveryPoolTaskIds({ actor, queryPackageName = null } = {}) {
-    return listAllDeliveryPoolTaskIds(this.pool, actor, { queryPackageName });
+  listAllDeliveryPoolTaskIds({ actor, queryPackageName = null, unpackedOnly = false } = {}) {
+    return listAllDeliveryPoolTaskIds(this.pool, actor, { queryPackageName, unpackedOnly });
+  }
+  createDeliveryBatch(input, { actor } = {}) {
+    return transaction(this.pool, (client) => createDeliveryBatch(client, input, actor));
+  }
+  listDeliveryBatches(options, { actor } = {}) {
+    return listDeliveryBatches(this.pool, options, actor);
+  }
+  getDeliveryBatch(id, { actor } = {}) {
+    return getDeliveryBatch(this.pool, id, actor);
+  }
+  getDeliveryBatchArtifact(id, { actor } = {}) {
+    return getDeliveryBatchArtifact(this.pool, id, actor);
+  }
+  recordDeliveryBatchDownload(id, { actor } = {}) {
+    return transaction(this.pool, (client) => recordDeliveryBatchDownload(client, id, actor));
   }
   listDeliveryPoolTaskIdsForPreview({
     actor, queryPackageIds, includeUnassigned = false, taskIds = [], testTaskId = null, limit = 50,
@@ -1444,7 +1467,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 5, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, finalDeliveryVersion: 2, deliverySpreadsheetVersion: 1, deliveryPreviewVersion: 6 } };
+      capabilities: { taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 5, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, finalDeliveryVersion: 3, deliverySpreadsheetVersion: 1, deliveryPreviewVersion: 6 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -3974,7 +3997,6 @@ export class PostgresControlPlaneRepository {
       throw new TypeError('copyFields are only accepted for rework');
     }
     if (decision === 'REWORK') {
-      if (reasonCodes.length === 0) throw new TypeError('rework requires at least one reason code');
       if (!note) throw new TypeError('rework requires precise change instructions');
       if (['COPY', 'BOTH'].includes(reworkTarget) && copyFields.length === 0) {
         throw new TypeError('copy rework requires at least one copyFields target');
@@ -4025,6 +4047,16 @@ export class PostgresControlPlaneRepository {
       }
       if (task.current_image_run_id !== imageRunId) {
         throw new ControlPlaneConflictError('STALE_IMAGE_RUN', '图片版本已变化，请刷新后重新审核');
+      }
+      if (decision === 'REWORK') {
+        const settings = await client.query("SELECT value FROM global_settings WHERE key = 'production'");
+        const humanQualitySettings = normalizeHumanQualitySettings(
+          settings.rows[0]?.value?.humanQualityReasons,
+        );
+        if (humanQualitySettings.imageReviewDisplay.showDeductionReasons
+          && humanQualitySettings.imageReasons.length > 0 && reasonCodes.length === 0) {
+          throw new TypeError('rework requires at least one reason code while image reasons are enabled');
+        }
       }
       const run = await client.query(`
         SELECT id FROM image_runs WHERE id = $1 AND task_id = $2
@@ -4541,6 +4573,11 @@ export class PostgresControlPlaneRepository {
     const value = key === XIAOHONGSHU_SEARCH_SETTINGS_KEY
       ? normalizeXiaohongshuSearchSettings(jsonValue)
       : jsonValue;
+    if (key === 'production' && value?.imageEditRepairMaxAttempts !== undefined) {
+      value.imageEditRepairMaxAttempts = normalizeImageEditRepairMaxAttempts(
+        value.imageEditRepairMaxAttempts,
+      );
+    }
     if (key === 'production' && value?.layoutPresets !== undefined) value.layoutPresets = normalizeLayoutPresets(value.layoutPresets);
     if (key === 'production' && value?.humanQualityReasons !== undefined) {
       value.humanQualityReasons = normalizeHumanQualitySettingsUpdate(value.humanQualityReasons);

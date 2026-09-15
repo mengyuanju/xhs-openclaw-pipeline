@@ -56,16 +56,17 @@ await write('app/page.tsx', `'use client';
 import { useState } from 'react';
 import { TaskReviewDialog } from './workbench/task-review-dialog';
 import { ConfirmDialogProvider } from '@/components/ui/confirm-dialog';
+import { TextInputDialogProvider } from '@/components/ui/text-input-dialog';
 export default function Page() {
   const [taskId, setTaskId] = useState<number | null>(null);
   const [role, setRole] = useState('USER');
-  return <ConfirmDialogProvider><main><h1>隔离审核测试 · 全部为假数据</h1>
+  return <ConfirmDialogProvider><TextInputDialogProvider><main><h1>隔离审核测试 · 全部为假数据</h1>
     <label>测试角色<select value={role} onChange={event => setRole(event.target.value)}><option>USER</option><option>REVIEWER</option><option>ADMIN</option></select></label>
     <button onClick={() => setTaskId(900001)}>打开测试任务</button>
     <TaskReviewDialog taskId={taskId} nodeId="test-only" role={role}
       currentUsername="test-reviewer" currentAccountId={77}
       onOpenChange={open => { if (!open) setTaskId(null); }} onUpdated={() => {}} />
-  </main></ConfirmDialogProvider>;
+  </main></TextInputDialogProvider></ConfirmDialogProvider>;
 }`);
 
 const settings = { version: 1, format: 'WEBP', quality: 73, background: 'TRANSPARENT', backgroundColor: '#123456' };
@@ -137,6 +138,7 @@ try {
   browser = await chromium.launch({ headless: true, ...(process.platform === 'win32' ? { channel: 'msedge' } : {}) });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, serviceWorkers: 'block' });
   let detail = task();
+  let qualitySettings = DEFAULT_HUMAN_QUALITY_SETTINGS;
   let failSubmission = false;
   const writes = [];
   const blocked = [];
@@ -145,7 +147,7 @@ try {
     const requestUrl = new URL(request.url());
     if (requestUrl.origin !== url) { blocked.push(request.url()); return route.abort(); }
     if (request.method() === 'GET' && requestUrl.pathname === '/api/human-quality-settings') {
-      return route.fulfill({ json: { data: DEFAULT_HUMAN_QUALITY_SETTINGS } });
+      return route.fulfill({ json: { data: qualitySettings } });
     }
     if (!requestUrl.pathname.startsWith('/api/control-plane/')) return route.continue();
     if (request.method() === 'GET' && /\/assets\/91[01]$/.test(requestUrl.pathname)) return route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="400"><rect width="300" height="400" fill="#e7ded0"/><text x="25" y="70" font-size="24">TEST IMAGE</text></svg>' });
@@ -194,7 +196,7 @@ try {
     await page.goto(url);
     await page.getByLabel('测试角色').selectOption(role);
     await page.getByRole('button', { name: '打开测试任务' }).click();
-    await dialog().getByText('Query 原文', { exact: true }).waitFor();
+    await dialog().getByText('原始需求', { exact: true }).waitFor();
   }
   async function check(name, fn) {
     try { await fn(); console.log(`PASS ${name}`); }
@@ -419,6 +421,30 @@ try {
       assert.deepEqual(writes.at(-1).reasons, ['TEXT_ERROR']);
       assert.deepEqual(writes.at(-1).problemAssetIds, [910]);
       assert.match(writes.at(-1).reviewSessionId, /^[0-9a-f-]{36}$/u);
+    });
+    await check('image rework reasons remain selectable when optional deduction reasons are hidden', async () => {
+      qualitySettings = {
+        ...DEFAULT_HUMAN_QUALITY_SETTINGS,
+        imageReviewDisplay: { showDeductionReasons: false },
+      };
+      try {
+        await open('REVIEWER', 'MANUAL_ARCHIVE', withImages);
+        await page.locator('input[name^="image-score-"][value="2.5"]').check();
+        assert.equal(await page.getByRole('group', { name: /扣分原因/u }).count(), 0);
+        const reworkReasons = page.getByRole('group', { name: /返工原因/u });
+        await reworkReasons.waitFor();
+        await reworkReasons.locator('input[type="checkbox"]').first().check();
+        await page.locator('.human-image-rating .human-rating-note').fill('缺少 AI 生成标识，请补充后重新生成。');
+        await page.getByRole('group', { name: /问题页/u }).locator('input[type="checkbox"]').first().check();
+        await page.getByRole('button', { name: '发起返工', exact: true }).click();
+        await page.getByRole('alertdialog').getByRole('button', { name: '确认图片返工', exact: true }).click();
+        await dialog().waitFor({ state: 'detached' });
+        assert.deepEqual(writes.at(-1).reasons, ['TEXT_ERROR']);
+        assert.deepEqual(writes.at(-1).problemAssetIds, [910]);
+        assert.equal(writes.at(-1).note, '缺少 AI 生成标识，请补充后重新生成。');
+      } finally {
+        qualitySettings = DEFAULT_HUMAN_QUALITY_SETTINGS;
+      }
     });
     await check('refresh confirmation restores saved content, and collapsed prompt errors are revealed', async () => {
       await open();
