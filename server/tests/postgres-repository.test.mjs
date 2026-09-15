@@ -834,7 +834,7 @@ test('non-admin approval without edits creates an automatic-layout revision inst
   assert.equal(saved.manualReview.layoutsForcedAutomatic, true);
 });
 
-test('executor inventory reports independent copy and image running capacity', async () => {
+test('executor inventory counts every running image execution, including manual image edits', async () => {
   let selection;
   const repository = new PostgresControlPlaneRepository({
     pool: {
@@ -855,7 +855,8 @@ test('executor inventory reports independent copy and image running capacity', a
   assert.equal(nodes[0].copyConcurrency, 4);
   assert.equal(nodes[0].imageConcurrency, 2);
   assert.match(selection, /e\.kind = 'IMAGE' AND e\.status = 'RUNNING'/u);
-  assert.match(selection, /t\.state = 'IMAGE_RUNNING'/u);
+  assert.doesNotMatch(selection, /t\.state = 'IMAGE_RUNNING'/u);
+  assert.doesNotMatch(selection, /t\.current_execution_id = e\.id/u);
   assert.match(selection, /WHERE n\.retired_at IS NULL/u);
 });
 

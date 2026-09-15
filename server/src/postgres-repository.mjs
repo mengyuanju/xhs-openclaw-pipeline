@@ -2380,10 +2380,8 @@ export class PostgresControlPlaneRepository {
       ), execution_counts AS MATERIALIZED (
         SELECT e.node_id,
           COUNT(*) FILTER (WHERE e.kind = 'COPY' AND e.status = 'RUNNING') AS copy_running_count,
-          COUNT(*) FILTER (WHERE e.kind = 'IMAGE' AND e.status = 'RUNNING'
-            AND t.state = 'IMAGE_RUNNING') AS image_running_count
+          COUNT(*) FILTER (WHERE e.kind = 'IMAGE' AND e.status = 'RUNNING') AS image_running_count
         FROM task_executions e
-        LEFT JOIN tasks t ON t.current_execution_id = e.id
         WHERE e.status = 'RUNNING'
         GROUP BY e.node_id
       ), pool_counts AS MATERIALIZED (

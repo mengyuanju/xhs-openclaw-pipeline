@@ -163,6 +163,64 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       assert.equal((await pool.query('SELECT count(*)::integer AS count FROM image_edit_events WHERE request_id=$1',[input.requestId])).rows[0].count,1);
       await assert.rejects(()=>service.create(taskId,request({sourceImageRunId:runId,sourceAssetId:images[1].assetId,sha256}),actor),{code:'IMAGE_EDIT_CONFLICT'});
     });
+    await t.test('a disclosure adopted on one page is not required on another page source',async()=>{
+      const baseResult=(await pool.query('SELECT result FROM image_runs WHERE id=$1',[currentRun])).rows[0].result;
+      const sourceAssetId=Number(baseResult.images[0].deliveryAssetId??baseResult.images[0].assetId);
+      const source=await service.asset(sourceAssetId,taskId);
+      const pageOne=await service.create(taskId,request({sourceImageRunId:currentRun,sourceAssetId,
+        sha256:source.sha256,targetPage:1}),actor);
+      const processed=await processImageEdit({service,storageRoot:root,workerId:'page-scoped-disclosure',agentClient,validateImage});
+      assert.equal(processed.status,'PREVIEW_READY',processed.error);
+      await action(pageOne.id,'reject');
+    });
+    await t.test('an AI edit on another page does not infer the production disclosure default',async()=>{
+      await pool.query("UPDATE global_settings SET value=$1 WHERE key='production'",[{aiDisclosureEnabled:true,aiDisclosureText:'AI生成',imageEditRepairMaxAttempts:1}]);
+      const baseResult=(await pool.query('SELECT result FROM image_runs WHERE id=$1',[currentRun])).rows[0].result;
+      const sourceAssetId=Number(baseResult.images[0].deliveryAssetId??baseResult.images[0].assetId);
+      const source=await service.asset(sourceAssetId,taskId);
+      const localEdit=await service.create(taskId,request({sourceImageRunId:currentRun,sourceAssetId,
+        sha256:source.sha256,targetPage:1,operation:'AI_LOCAL',instruction:'只调整背景颜色'}),actor);
+      const localClient={runImageEdit:async({prompt,outputPath})=>{
+        assert.match(prompt,/LOCAL_PROMPT_EDIT/u);assert.doesNotMatch(prompt,/AI生成/u);
+        await writeFile(outputPath,png);return{model:'fake-local-edit'};
+      }};
+      const localValidation=async()=>({passed:true,model:'fake-vision',layoutMatched:true,ocrConfidence:1,
+        ocrMismatches:[],unreadableText:[],recognizedText:{headline:'真实参考',subtitle:'',bullets:[],otherText:[]}});
+      const processed=await processImageEdit({service,storageRoot:root,workerId:'page-scoped-ai-edit',agentClient:localClient,validateImage:localValidation});
+      assert.equal(processed.status,'PREVIEW_READY',processed.error);
+      assert.equal((await service.get(localEdit.id)).result.validation.disclosure.required,'');
+      await action(localEdit.id,'reject');
+      await pool.query("UPDATE global_settings SET value=$1 WHERE key='production'",[{aiDisclosureEnabled:false,imageEditRepairMaxAttempts:1}]);
+    });
+    await t.test('accepting previews for different pages rebases the later preview onto the latest image set',async()=>{
+      const baseRun=currentRun;
+      const baseResult=(await pool.query('SELECT result FROM image_runs WHERE id=$1',[baseRun])).rows[0].result;
+      const pageEdit=async targetPage=>{
+        const sourceAssetId=Number(baseResult.images[targetPage-1].deliveryAssetId??baseResult.images[targetPage-1].assetId);
+        const source=await service.asset(sourceAssetId,taskId);
+        return service.create(taskId,request({sourceImageRunId:baseRun,sourceAssetId,sha256:source.sha256,targetPage}),actor);
+      };
+      const firstPage=await pageEdit(1),thirdPage=await pageEdit(3);
+      for(let index=0;index<2;index++) {
+        const result=await processImageEdit({service,storageRoot:root,workerId:`merge-${index}`,agentClient,validateImage});
+        assert.equal(result.status,'PREVIEW_READY',result.error);
+      }
+      const firstPreview=await service.get(firstPage.id),thirdPreview=await service.get(thirdPage.id);
+      await action(firstPage.id,'accept');
+      const firstAdoptedRun=(await pool.query('SELECT current_image_run_id FROM tasks WHERE id=$1',[taskId])).rows[0].current_image_run_id;
+      await action(thirdPage.id,'accept');
+      const finalTask=(await pool.query('SELECT current_image_run_id FROM tasks WHERE id=$1',[taskId])).rows[0];
+      const finalRun=(await pool.query('SELECT result FROM image_runs WHERE id=$1',[finalTask.current_image_run_id])).rows[0];
+      const adoptedThird=await service.get(thirdPage.id);
+      assert.equal(Number(finalRun.result.images[0].deliveryAssetId),Number(firstPreview.result.asset_id));
+      assert.deepEqual(finalRun.result.images[1],baseResult.images[1]);
+      assert.equal(Number(finalRun.result.images[2].deliveryAssetId),Number(thirdPreview.result.asset_id));
+      assert.notEqual(adoptedThird.result.image_run_id,thirdPreview.result.image_run_id);
+      assert.equal(adoptedThird.result.image_run_id,finalTask.current_image_run_id);
+      assert.equal(finalRun.result.processing.parentRunId,firstAdoptedRun);
+      assert.equal(finalRun.result.processing.previewRunId,thirdPreview.result.image_run_id);
+      currentRun=finalTask.current_image_run_id;
+    });
     await t.test('failures can retry, rejection leaves current image untouched, restore needs preview acceptance',async()=>{
       const restore=await service.create(taskId,request({operation:'RESTORE',restoreRunId:runId,instruction:'恢复'}),actor);
       const claimed=await service.claim('failure');

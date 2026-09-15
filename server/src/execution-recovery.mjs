@@ -74,7 +74,7 @@ export async function recoverStaleExecutions(pool) {
         ? 'EXECUTION_PROGRESS_TIMEOUT：图片修改超过30分钟没有阶段进度，执行结果未确认，请重试'
         : 'EXECUTION_HEARTBEAT_EXPIRED：图片修改超过2分钟未收到执行机心跳，执行结果未确认，请重试';
       await client.query(`UPDATE task_executions SET status='FAILED',stage='FAILED',
-        progress_message=$2,error=$2,finished_at=now() WHERE id=$1`,[execution.id,message]);
+        progress_message=$2::text,error=$2::text,finished_at=now() WHERE id=$1`,[execution.id,message]);
       const failed=await client.query(`UPDATE image_edit_requests SET status='FAILED',error=$2,
         version=version+1,lease_token=NULL,lease_expires_at=NULL,updated_at=now()
         WHERE id=$1 AND status='RUNNING' RETURNING id`,[execution.edit_id,message]);
