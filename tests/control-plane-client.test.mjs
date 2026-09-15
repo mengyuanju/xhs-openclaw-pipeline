@@ -77,6 +77,41 @@ test('control plane client sends image claims only when called', async () => {
   assert.equal(calls[1].init.method, 'GET');
 });
 
+test('image claim and edit transfer protocol carries capability, lease and idempotent result replay',async()=>{
+  const requestId=randomUUID(),executionId=randomUUID(),editId=randomUUID(),leaseToken=randomUUID();
+  const edit={id:editId,task_id:'7',execution_id:executionId,claimed_by:'image-a',status:'RUNNING',lease_token:leaseToken};
+  const claim={task:{id:7,state:'MANUAL_ARCHIVE'},execution:{id:executionId,taskId:7,nodeId:'image-a',kind:'IMAGE',status:'RUNNING',snapshot:{imageEditRequestId:editId}},imageEdit:edit};
+  const seen=[];let resultAttempts=0;
+  const client=createControlPlaneClient({baseUrl:'http://localhost',fetchImpl:async(url,options={})=>{
+    const path=new URL(url).pathname;seen.push({path,options});
+    if(path.endsWith('/claim-image-batch'))return Response.json({data:{requestId,claims:[claim]}});
+    assert.equal(options.headers['X-Image-Edit-Id'],editId);
+    assert.equal(options.headers['X-Image-Edit-Lease'],leaseToken);
+    if(path.endsWith('/assets/31'))return new Response(Buffer.from('asset'),{headers:{'content-type':'image/png'}});
+    if(path.endsWith('/asset-metadata/31'))return Response.json({data:{id:'31',sha256:'a'.repeat(64)}});
+    if(path.endsWith('/heartbeat'))return Response.json({data:{active:true}});
+    if(path.endsWith('/validation'))return Response.json({data:{passed:true}});
+    if(path.endsWith('/result')){
+      resultAttempts++;
+      if(resultAttempts===1)throw new TypeError('response lost');
+      assert.deepEqual(Buffer.from(options.body),Buffer.from('png'));
+      return Response.json({data:{assetId:32,imageRunId:randomUUID()}});
+    }
+    if(path.endsWith('/context'))return Response.json({data:{task:{id:7}}});
+    assert.fail(`unexpected path ${path}`);
+  }});
+  assert.deepEqual(await client.claimImageBatch({nodeId:'image-a',requestId,limit:1}),{requestId,claims:[claim]});
+  const claimBody=JSON.parse(seen[0].options.body);
+  assert.equal(claimBody.imageEditExecutorVersion,1);
+  assert.deepEqual(await client.imageEditContext(executionId,edit),{task:{id:7}});
+  assert.deepEqual(await client.imageEditAsset(executionId,edit,31),Buffer.from('asset'));
+  assert.equal((await client.imageEditAssetMetadata(executionId,edit,31)).sha256,'a'.repeat(64));
+  assert.equal(await client.heartbeatImageEdit(executionId,edit),true);
+  await client.stageImageEditValidation(executionId,edit,{passed:true});
+  assert.equal((await client.completeImageEdit(executionId,edit,Buffer.from('png'))).assetId,32);
+  assert.equal(resultAttempts,2);
+});
+
 test('Xiaohongshu search client authenticates and validates every state-changing response', async () => {
   const leaseToken = randomUUID();
   let payload = {

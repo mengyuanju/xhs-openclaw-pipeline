@@ -55,13 +55,13 @@ test('mandatory recheck actions explain their dedicated gate before image genera
   assert.match(source, /未通过强制复检[\s\S]{0,120}再次进入强制复检，通过前不会进入待生图队列/u);
 });
 
-test('copy QA filters keep their longest option on one line', async () => {
+test('copy QA result filter keeps its longest option on one line', async () => {
   const [source, styles] = await Promise.all([
     readFile(new URL('../app/copy-qa/copy-qa-workbench.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../app/copy-qa/copy-qa.module.css', import.meta.url), 'utf8'),
   ]);
 
-  assert.equal(source.match(/<SelectTrigger className=\{styles\.filterSelect\}>/gu)?.length, 2);
+  assert.equal(source.match(/<SelectTrigger className=\{styles\.filterSelect\}>/gu)?.length, 1);
   assert.match(styles, /\.filterSelect\s*\{[^}]*min-width:\s*128px;/su);
 });
 

@@ -7,8 +7,8 @@
 | 配置 | 默认 | 含义 |
 | --- | --- | --- |
 | `EXECUTOR_COPY_CONCURRENCY` | 1 | 同时持有并处理的文案执行数 |
-| `EXECUTOR_IMAGE_CONCURRENCY` | 1 | 同时持有并处理的图片执行数 |
-| `IMAGE_WORKER_ENABLED` | false | 是否领取图片任务，关闭时有效图片容量为 0 |
+| `EXECUTOR_IMAGE_CONCURRENCY` | 1 | 同时持有并处理的普通生图与人工改图执行总数 |
+| `IMAGE_WORKER_ENABLED` | false | 是否领取普通生图和人工改图，关闭时有效图片容量为 0 |
 | `EXECUTOR_POLL_MS` | 5000 | 空队列、暂时错误与未确认回报的重试间隔；允许 1000–60000 毫秒 |
 | `XHS_CODEX_CONCURRENCY` | 2 | 同一运行状态库中所有进程的 Codex 总调用许可 |
 | `XHS_CODEX_IMAGE_CONCURRENCY` | 1 | 上述调用中生图/改图的许可 |
@@ -79,4 +79,4 @@ node --env-file-if-exists=.env scripts/benchmark-executor.mjs --live
 
 可用 `--copy-concurrency=3 --image-concurrency=2 --image-tasks=2` 调整规模；`--queries=<JSON字符串数组文件>` 指定需求；`--copy-results=<上次evidence.json>` 复用已有真实文案，只测图片；`--output=<目录>` 指定独立证据目录。同一状态库已有模型调用时拒绝启动，避免中途改变其许可配置。不要让两次运行覆盖同一个证据目录。
 
-生图和改图采用 Codex CLI 的 `app-server --stdio` 原生图片完成事件。文案和视觉审核仍使用 `exec --json`。两者共享现有 ChatGPT 登录和许可，不读取模型回答中的路径冒充工具证据。详见 [Codex 接线](codex-exec-migration.md) 和 [真实测试记录](executor-concurrency-live-results.md)。
+普通生图和人工改图都由图片执行机完成，并共享同一图片任务池、Codex 总许可与图片许可；中心按任务优先级和负责人轮转统一分派，不会让改图绕过已有排序。生图和改图采用 Codex CLI 的 `app-server --stdio` 原生图片完成事件。文案和视觉审核仍使用 `exec --json`。它们共享现有 ChatGPT 登录和许可，不读取模型回答中的路径冒充工具证据。详见 [Codex 接线](codex-exec-migration.md) 和 [真实测试记录](executor-concurrency-live-results.md)。

@@ -23,7 +23,13 @@
 .scopeNote { margin: -4px 18px 14px; color: var(--muted); font-size: 11px; line-height: 1.65; }
 .loadMore { display: flex; justify-content: center; padding: 0 18px 18px; }
 .dialog { width: min(calc(100vw - 24px), 900px); max-height: min(92dvh, 900px); display: grid; gap: 16px; overflow-y: auto; padding: 24px; border: 1px solid var(--line); border-radius: 16px; color: var(--ink); background: var(--surface); box-shadow: 0 28px 80px rgba(45,35,28,.24); }
-.detailDialog { width: min(calc(100vw - 24px), 1180px); }
+.detailDialog { width: min(calc(100vw - 24px), 1360px); height: min(94dvh, 960px); max-height: none; grid-template-rows: auto minmax(0, 1fr) auto; gap: 0; overflow: hidden; padding: 0; }
+.detailHeader { display: grid; gap: 10px; padding: 16px 20px 12px; border-bottom: 1px solid var(--line); background: linear-gradient(180deg, #fffdfa 0%, var(--surface) 100%); }
+.detailHeader .metadata > div { padding: 8px 10px; background: #f7f5f1; }
+.detailHeader .metadata strong { margin-top: 3px; }
+.detailBody { min-height: 0; display: grid; align-content: start; gap: 12px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 14px 16px 18px; background: #fbfaf7; }
+.detailFooter { flex-wrap: nowrap; padding: 11px 18px; border-top: 1px solid var(--line); background: var(--surface); box-shadow: 0 -10px 24px rgba(45,35,28,.045); }
+.detailFooter > span { max-width: 42%; font-size: 11px; line-height: 1.5; }
 .dialogHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding-right: 38px; }
 .dialogHeader h2, .dialogHeader p { margin: 0; }
 .dialogHeader p { margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.6; }
@@ -70,6 +76,21 @@
 .impact strong { font-size: 13px; }
 .impact span { font-size: 11px; line-height: 1.65; }
 
+@media (min-width: 1080px) {
+  .detailDialog .comparison { grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 12px; }
+  .detailDialog .copy { gap: 10px; padding: 15px; }
+  .detailDialog .copyBody { line-height: 1.75; }
+  .detailDialog .plan { gap: 9px; padding: 12px; }
+  .detailDialog .planGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .detailDialog .planCard { grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); grid-template-areas: "card-header subtitle" "bullets prompt"; gap: 7px 9px; padding: 10px; }
+  .detailDialog .planCard header { grid-area: card-header; }
+  .detailDialog .planCard > .planField:nth-of-type(1) { grid-area: subtitle; }
+  .detailDialog .planCard > .planField:nth-of-type(2) { grid-area: bullets; }
+  .detailDialog .planField p, .detailDialog .planField ul { line-height: 1.45; }
+  .detailDialog .planPrompt { grid-area: prompt; padding: 0 0 0 9px; border-top: 0; border-left: 1px dashed var(--line); }
+  .detailDialog .planCard:last-child:nth-child(odd) { grid-column: 1 / -1; grid-template-columns: minmax(0, .8fr) repeat(3, minmax(0, 1fr)); grid-template-areas: "card-header subtitle bullets prompt"; }
+}
+
 @media (max-width: 900px) {
   .comparison { grid-template-columns: minmax(0, 1fr); }
   .comparison > .copy { position: static; }
@@ -81,5 +102,10 @@
   .toolbar > div, .toolbar > div > *, .search, .packageSearch > *, .footer > div, .footer button { width: 100%; }
   .metadata, .reasonGrid { grid-template-columns: minmax(0, 1fr); }
   .queue table { min-width: 0; }
+  .detailDialog { width: min(calc(100vw - 12px), 1360px); height: calc(100dvh - 12px); border-radius: 12px; }
+  .detailHeader { padding: 14px 14px 10px; }
+  .detailBody { padding: 12px; }
+  .detailFooter { padding: 10px 12px; }
+  .detailFooter > span { max-width: none; }
 }
 @media (max-width: 420px) { .summary { grid-template-columns: minmax(0, 1fr); } }

@@ -18,7 +18,14 @@ export function LoginForm({ nextPath, passwordChanged = false }: { nextPath: str
     setError('');
     const form = new FormData(event.currentTarget);
     try {
-      const result = await apiRequest<{ homePath: string; role: string; mustChangePassword: boolean }>('/api/auth/login', {
+      const result = await apiRequest<{
+        homePath: string;
+        role: string;
+        mustChangePassword: boolean;
+        copyReviewEnabled: boolean;
+        copyQcEnabled: boolean;
+        imageQcEnabled: boolean;
+      }>('/api/auth/login', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ username: form.get('username'), password: form.get('password') }),
@@ -28,6 +35,9 @@ export function LoginForm({ nextPath, passwordChanged = false }: { nextPath: str
         homePath: result.homePath,
         role: result.role,
         mustChangePassword: result.mustChangePassword,
+        copyReviewEnabled: result.copyReviewEnabled,
+        copyQcEnabled: result.copyQcEnabled,
+        imageQcEnabled: result.imageQcEnabled,
       });
       window.location.assign(target);
     } catch (caught) {

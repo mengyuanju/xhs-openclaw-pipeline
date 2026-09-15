@@ -1365,6 +1365,7 @@ export async function getCopyQaStatistics(pool, rawActor) {
     pool.query(`
       SELECT item.final_approver_account_id,
         MAX(item.final_approver_username) AS final_approver_username,
+        MAX(approver.display_name) AS final_approver_display_name,
         COUNT(*) FILTER (WHERE item.status = 'RETURNED') AS returned_count,
         COUNT(*) FILTER (
           WHERE item.status <> 'RETURNED' AND EXISTS (
@@ -1374,6 +1375,7 @@ export async function getCopyQaStatistics(pool, rawActor) {
         ) AS passed_count,
         COUNT(*) FILTER (WHERE item.status = 'PENDING') AS pending_count
       FROM copy_sampling_items AS item
+      LEFT JOIN app_users AS approver ON approver.id = item.final_approver_account_id
       WHERE item.sample_kind = 'RANDOM' AND item.selected = true
       GROUP BY item.final_approver_account_id
       ORDER BY item.final_approver_account_id
@@ -1395,6 +1397,7 @@ export async function getCopyQaStatistics(pool, rawActor) {
       return {
         finalApproverAccountId: Number(row.final_approver_account_id),
         finalApproverUsername: row.final_approver_username,
+        finalApproverDisplayName: row.final_approver_display_name ?? null,
         passed,
         returned,
         pending: Number(row.pending_count ?? 0),

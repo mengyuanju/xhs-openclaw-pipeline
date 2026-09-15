@@ -23,10 +23,6 @@ XHS_PRODUCTION_STORAGE_ROOT=D:\auto-claw\images_storage_prod
 CONTROL_PLANE_HOST=0.0.0.0
 CONTROL_PLANE_PORT=4310
 CONTROL_PLANE_STORAGE_ROOT=server-storage
-# 开发环境默认开启；正式环境需要显式设置为 true，使用中心机的 Codex 订阅登录处理图片修改队列。
-CONTROL_PLANE_IMAGE_EDIT_WORKER_ENABLED=true
-# 可选，默认每 2000 毫秒检查一次，单进程同一时间只处理一条。
-CONTROL_PLANE_IMAGE_EDIT_POLL_MS=2000
 DEEPSEEK_API_KEY=替换为中心服务使用的DeepSeek密钥
 # 可选，默认 deepseek-v4-pro
 DEEPSEEK_COPY_ANALYSIS_MODEL=deepseek-v4-pro
@@ -41,10 +37,7 @@ PREVIEW_API_KEY=仅含preview:create权限的接口密钥
 
 `npm run init` 可重复执行，首次运行会建表并安装默认生产配置和提示词。
 
-“修改图片”产生的是独立图片编辑队列。开发环境随中心服务自动启动队列处理器；正式环境只有显式配置
-`CONTROL_PLANE_IMAGE_EDIT_WORKER_ENABLED=true` 才会自动处理。队列处理器使用中心机当前的 Codex ChatGPT
-订阅登录和同一份 PostgreSQL/资产目录，不使用 API Key；未开启时请求会保持“排队中”，也可用
-`node src/cli.mjs image-edit-once --environment=development` 手工处理一条。
+“修改图片”仍保留独立预览、采用和审计状态，但执行工作由普通图片执行机承担。中心把普通生图和改图放入同一个图片领取与容量裁决中，按既有任务优先级和负责人轮转分派；中心机不需要 Codex 登录，也不会运行改图模型。完成 `0056_executor_image_edits.sql` 后，确认 `/health` 返回 `imageEditExecutorVersion=1`，再启动新版图片执行机。至少一台图片执行机需要启用 `IMAGE_WORKER_ENABLED=true`。
 
 ### 开发/生产环境切换
 

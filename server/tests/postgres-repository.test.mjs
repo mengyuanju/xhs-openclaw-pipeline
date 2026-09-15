@@ -617,6 +617,29 @@ test('task pages combine exact creator and assignee account filters', async () =
   await assert.rejects(repository.listTasks({ assignedToAccountId: 3 }), /requires assignedToUserId/u);
 });
 
+test('copy QA return filtering uses the durable active-return provenance for pages and totals', async () => {
+  const queries = [];
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql) {
+      queries.push(String(sql));
+      return { rows: String(sql).includes('COUNT(*) AS total')
+        ? [{ total: '1' }]
+        : [taskRow({ state: 'COPY_REVIEW_PENDING', mandatory_copy_qc: true,
+          mandatory_copy_qc_origin: 'QA_RETURN' })] };
+    },
+  } });
+  const page = await repository.listTasks({
+    states: ['COPY_REVIEW_PENDING', 'COPY_QC_PENDING'], copyQaReturnedOnly: true, includeTotal: true,
+  });
+  assert.equal(page.total, 1);
+  assert.equal(page.items[0].mandatoryCopyQcOrigin, 'QA_RETURN');
+  for (const sql of queries) {
+    assert.match(sql, /state = ANY\(/u);
+    assert.match(sql, /mandatory_copy_qc = true AND mandatory_copy_qc_origin = 'QA_RETURN'/u);
+  }
+  await assert.rejects(repository.listTasks({ copyQaReturnedOnly: 'true' }), /copyQaReturnedOnly/u);
+});
+
 test('task pages expose the current running image executor independently of copy ownership', async () => {
   let selection;
   const repository = new PostgresControlPlaneRepository({ pool: {
@@ -881,14 +904,19 @@ test('executor registration restores a previously retired node and binds its sha
           id: 'node-a', name: '执行机 A', image_worker_enabled: false,
           copy_concurrency: 1, image_concurrency: 1, codex_pool_id: 'node-a',
           codex_total_concurrency: 1, codex_image_concurrency: 1,
+          image_edit_executor_version: 1,
           last_seen_at: '2026-09-09T00:00:00Z',
         }] };
       },
     },
   });
-  await repository.registerNode({ nodeId: 'node-a', name: '执行机 A' });
+  const registered = await repository.registerNode({
+    nodeId: 'node-a', name: '执行机 A', imageEditExecutorVersion: 1,
+  });
   assert.match(registration.sql, /ON CONFLICT\(id\) DO UPDATE SET[\s\S]*retired_at = NULL/u);
-  assert.deepEqual(registration.values, ['node-a', '执行机 A', false, null, null, 'node-a', 1, 1]);
+  assert.match(registration.sql, /image_edit_executor_version = excluded\.image_edit_executor_version/u);
+  assert.deepEqual(registration.values, ['node-a', '执行机 A', false, null, null, 'node-a', 1, 1, 1]);
+  assert.equal(registered.imageEditExecutorVersion, 1);
 });
 
 test('executor retirement hides only offline nodes without running work', async () => {
@@ -1037,9 +1065,9 @@ test('image claims apply a shared retry cooldown and reuse the approved snapshot
   const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
   const claim = await repository.claimImage('node-b');
   const candidate = queries.find((query) => query.sql.includes('FOR UPDATE OF task SKIP LOCKED'));
-  assert.deepEqual(candidate.values, ['IMAGE_QUEUED', 'node-b', null, 1]);
+  assert.deepEqual(candidate.values, ['IMAGE_QUEUED', 'node-b', null, 1, 0]);
   assert.match(candidate.sql, /queued\.error IS NULL OR queued\.last_activity_at <= now\(\) - interval '5 seconds'/u);
-  assert.match(candidate.sql, /ORDER BY queued\.priority_paused ASC, queued\.priority_sort_at ASC, queued\.id ASC/u);
+  assert.match(candidate.sql, /ORDER BY work\.priority_paused, work\.priority_sort_at, work\.task_id/u);
   assert.match(candidate.sql, /FOR UPDATE OF task SKIP LOCKED/u);
   assert.doesNotMatch(candidate.sql, /copy_executor_node_id/u);
   assert.notEqual(claim.execution.id, previousId);

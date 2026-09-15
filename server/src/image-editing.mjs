@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile, readFile, unlink } from 'node:fs/promises';
 import { resolve, relative, isAbsolute } from 'node:path';
+import sharp from 'sharp';
 import { ControlPlaneConflictError, ControlPlaneAuthorizationError, ControlPlaneNotFoundError, normalizeTaskId, normalizeUuid } from './domain.mjs';
 import { withdrawReadyDeliveryEntries } from './final-delivery.mjs';
-import { boundedNumber, shortText, normalizeManualOverlay, normalizeMask, decodeReference, imageHash, safeRect } from '../../src/image-edit-pixels.mjs';
+import { boundedNumber, shortText, normalizeManualOverlay, normalizeMask, decodeReference, imageHash, safeRect, renderMask, EDIT_WIDTH, EDIT_HEIGHT } from '../../src/image-edit-pixels.mjs';
 import { normalizeImageEditRepairMaxAttempts } from '../../src/production-settings.mjs';
 
 const conflict = message => { throw new ControlPlaneConflictError('IMAGE_EDIT_CONFLICT', message); };
@@ -133,6 +134,31 @@ export function createImageEditingService({ pool, storageRoot }) {
       VALUES($1,$2,'image/png',$3,$4,$5,$6,$7,$8,$2,false,$9,$10,$11) RETURNING *`,[taskId,run.id,bytes.length,imageHash(bytes),path,`${role.toLowerCase()}-${id}.png`,run.image_production_chain_id,id,parent,role,metadata])).rows[0]; }
     catch(error) { await unlink(path).catch(()=>{}); throw error; }
   }
+  async function lockedExecutorEdit(c,rawExecutionId,rawEditId,rawLeaseToken,{allowCompleted=false}={}) {
+    const executionId=normalizeUuid(rawExecutionId,'executionId');
+    const editId=normalizeUuid(rawEditId,'editId');
+    const leaseToken=normalizeUuid(rawLeaseToken,'leaseToken');
+    const row=(await c.query(`SELECT e.*,x.status AS execution_status,x.node_id
+      FROM image_edit_requests e JOIN task_executions x ON x.id=e.execution_id
+      WHERE e.id=$1 AND e.execution_id=$2 FOR UPDATE OF e,x`,[editId,executionId])).rows[0];
+    if(!row)throw new ControlPlaneNotFoundError('image edit execution not found');
+    if(allowCompleted&&row.status==='PREVIEW_READY')return row;
+    if(row.status!=='RUNNING'||row.execution_status!=='RUNNING'||row.lease_token!==leaseToken
+      ||new Date(row.lease_expires_at)<=new Date())conflict('图片修改执行已取消或租约过期');
+    return row;
+  }
+  async function loadContext(c,e) {
+    const source=await assertEditSource(c,Number(e.task_id),e.config);
+    const refs=(await c.query('SELECT a.* FROM image_edit_reference_assets r JOIN assets a ON a.id=r.asset_id WHERE r.request_id=$1 ORDER BY r.sort_order',[e.id])).rows;
+    const bindings=(await c.query('SELECT asset_id,sha256 FROM image_edit_reference_assets WHERE request_id=$1',[e.id])).rows;
+    if(refs.length!==e.config.references.length||refs.some(a=>!bindings.some(b=>Number(b.asset_id)===Number(a.id)&&b.sha256===a.sha256))) conflict('参考图绑定或校验值变化');
+    const settings=(await c.query("SELECT value FROM global_settings WHERE key='production'")).rows[0]?.value ?? {};
+    const restored=e.operation==='RESTORE' ? (await c.query("SELECT * FROM image_runs WHERE id=$1 AND task_id=$2 AND copy_revision_id=$3 AND status='COMPLETED'",[e.config.restoreRunId,e.task_id,e.copy_revision_id])).rows[0] : null;
+    if(e.operation==='RESTORE' && !restored) conflict('仅能恢复当前已批准文案对应的历史图集');
+    const usesImageModel=e.operation==='TEXT'||e.operation.startsWith('AI_');
+    const imageEditPrompt=e.config.imageEditPrompt??(usesImageModel?await publishedImageEditPrompt(c):null);
+    return {...source,refs,settings,restored,imageEditPrompt};
+  }
   async function get(id) {
     const row=(await pool.query(`SELECT e.*,row_to_json(r) AS result,
       (SELECT json_agg(a ORDER BY a.id) FROM image_edit_events a WHERE a.edit_id=e.id) AS events
@@ -143,6 +169,74 @@ export function createImageEditingService({ pool, storageRoot }) {
   return {
     get,
     async asset(id,taskId) { const a=(await pool.query('SELECT * FROM assets WHERE id=$1 AND task_id=$2',[normalizeTaskId(id),normalizeTaskId(taskId)])).rows[0];if(!a)throw new ControlPlaneNotFoundError('asset not found');return a; },
+    async executorContext(executionId,editId,leaseToken) {
+      return tx(async c=>loadContext(c,await lockedExecutorEdit(c,executionId,editId,leaseToken)));
+    },
+    async executorAsset(executionId,editId,leaseToken,assetId) {
+      return tx(async c=>{
+        const e=await lockedExecutorEdit(c,executionId,editId,leaseToken);
+        const context=await loadContext(c,e);
+        const allowed=new Set([Number(context.source.id),...context.refs.map(asset=>Number(asset.id))]);
+        if(context.restored)for(const image of context.restored.result?.images??[]) {
+          const id=Number(image.deliveryAssetId??image.assetId);
+          if(Number.isSafeInteger(id))allowed.add(id);
+        }
+        const normalized=normalizeTaskId(assetId);
+        if(!allowed.has(normalized))throw new ControlPlaneAuthorizationError('该资产不属于当前图片修改执行');
+        const asset=(await c.query('SELECT * FROM assets WHERE id=$1 AND task_id=$2',[normalized,e.task_id])).rows[0];
+        if(!asset)throw new ControlPlaneNotFoundError('asset not found');
+        const bytes=await readFile(editStoragePath(storageRoot,asset.storage_path));
+        if(imageHash(bytes)!==asset.sha256)throw new Error('资产完整性校验失败');
+        return {asset,bytes};
+      });
+    },
+    async heartbeatExecutor(executionId,editId,leaseToken) {
+      return tx(async c=>{
+        const e=await lockedExecutorEdit(c,executionId,editId,leaseToken);
+        await c.query("UPDATE image_edit_requests SET lease_expires_at=now()+interval '15 minutes' WHERE id=$1",[e.id]);
+        await c.query("UPDATE task_executions SET heartbeat_at=now() WHERE id=$1 AND status='RUNNING'",[e.execution_id]);
+        return true;
+      });
+    },
+    async stageExecutorValidation(executionId,editId,leaseToken,validation) {
+      if(!validation||typeof validation!=='object'||Array.isArray(validation)
+        ||JSON.stringify(validation).length>2_000_000)throw new TypeError('图片修改校验结果无效');
+      return tx(async c=>{
+        const e=await lockedExecutorEdit(c,executionId,editId,leaseToken,{allowCompleted:true});
+        if(e.status==='PREVIEW_READY')return e.validation;
+        await c.query("UPDATE image_edit_requests SET validation=$2,updated_at=now() WHERE id=$1",[e.id,validation]);
+        await c.query("UPDATE task_executions SET last_activity_at=now() WHERE id=$1 AND status='RUNNING'",[e.execution_id]);
+        return validation;
+      });
+    },
+    async completeExecutor(executionId,editId,leaseToken,bytes) {
+      if(!Buffer.isBuffer(bytes)||!bytes.length||bytes.length>20*1024*1024)throw new TypeError('图片修改结果无效');
+      const prepared=await tx(async c=>{
+        const e=await lockedExecutorEdit(c,executionId,editId,leaseToken,{allowCompleted:true});
+        if(e.status==='PREVIEW_READY') {
+          const result=(await c.query('SELECT * FROM image_edit_results WHERE request_id=$1',[e.id])).rows[0];
+          if(!result)conflict('图片修改结果尚未完成');
+          return {completed:{assetId:Number(result.asset_id),imageRunId:result.image_run_id}};
+        }
+        const context=await loadContext(c,e);
+        return {e,validation:e.validation,originalResult:context.restored?.result??null};
+      });
+      if(prepared.completed)return prepared.completed;
+      const mask=prepared.e.config.mask?await renderMask(prepared.e.config.mask):null;
+      return this.complete(prepared.e,{bytes,mask,validation:prepared.validation,originalResult:prepared.originalResult});
+    },
+    async failExecutor(executionId,editId,leaseToken,input={}) {
+      const e=await tx(c=>lockedExecutorEdit(c,executionId,editId,leaseToken,{allowCompleted:true}));
+      if(e.status==='PREVIEW_READY')return e;
+      const error=Object.assign(new Error(String(input.message??'图片修改失败').slice(0,1000)),{
+        validation:input.validation??null,
+        code:typeof input.code==='string'?input.code.slice(0,100):undefined,
+        serviceCode:typeof input.serviceCode==='string'?input.serviceCode.slice(0,100):undefined,
+        nonBillablePreflightFailure:input.nonBillablePreflightFailure===true,
+      });
+      await this.fail(e,error);
+      return get(e.id);
+    },
     async list(taskId) { return (await pool.query('SELECT e.*,row_to_json(r) AS result, (SELECT json_agg(a ORDER BY a.id) FROM image_edit_events a WHERE a.edit_id=e.id) AS events FROM image_edit_requests e LEFT JOIN image_edit_results r ON r.request_id=e.id WHERE task_id=$1 ORDER BY created_at DESC LIMIT 100',[normalizeTaskId(taskId)])).rows; },
     async upload(taskId,input,actor) {
       const username=actorName(actor); taskId=normalizeTaskId(taskId);
@@ -228,7 +322,11 @@ export function createImageEditingService({ pool, storageRoot }) {
         }
         const next={queue:'QUEUED',retry:'QUEUED',cancel:'CANCELLED',reject:'REJECTED',accept:'ACCEPTED'}[action];
         const config=usesImageModel&&input.confirmation==='LIVE_IMAGE_COST_ACCEPTED'?{...e.config,confirmation:'LIVE_IMAGE_COST_ACCEPTED'}:e.config;
-        const updated=(await c.query('UPDATE image_edit_requests SET status=$2,config=$3,version=version+1,error=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 RETURNING *',[id,next,config])).rows[0];
+        const updated=(await c.query("UPDATE image_edit_requests SET status=$2,config=$3,version=version+1,error=NULL,validation=CASE WHEN $2='QUEUED' THEN NULL ELSE validation END,lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 RETURNING *",[id,next,config])).rows[0];
+        if(action==='cancel'&&e.execution_id)await c.query(`UPDATE task_executions SET
+          status='ABANDONED',stage='CANCELLED',progress_message='图片修改已取消',
+          last_activity_at=now(),finished_at=now()
+          WHERE id=$1 AND status='RUNNING'`,[e.execution_id]);
         await audit(c,e.task_id,id,action,username,reason,requestId);
         return updated;
       });
@@ -237,37 +335,41 @@ export function createImageEditingService({ pool, storageRoot }) {
       shortText(worker,128);
       return tx(async c=> {
         // Expired attempts fail visibly; model calls are never silently replayed.
-        const expired=await c.query("UPDATE image_edit_requests SET status='FAILED',error='执行租约过期，请确认后重试',version=version+1,lease_token=NULL WHERE status='RUNNING' AND lease_expires_at < now() RETURNING *");
-        for(const item of expired.rows)await audit(c,item.task_id,item.id,'LEASE_EXPIRED',worker,'执行租约过期');
-        const e=(await c.query("SELECT * FROM image_edit_requests WHERE status='QUEUED' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1")).rows[0];
+        const expired=await c.query("UPDATE image_edit_requests SET status='FAILED',error='执行租约过期，请确认后重试',version=version+1,lease_token=NULL,lease_expires_at=NULL WHERE status='RUNNING' AND lease_expires_at < now() RETURNING *");
+        for(const item of expired.rows){
+          if(item.execution_id)await c.query("UPDATE task_executions SET status='FAILED',stage='FAILED',progress_message='图片修改执行租约过期',error='图片修改执行租约过期',finished_at=now() WHERE id=$1 AND status='RUNNING'",[item.execution_id]);
+          await audit(c,item.task_id,item.id,'LEASE_EXPIRED',worker,'执行租约过期');
+        }
+        const e=(await c.query(`SELECT edit.* FROM image_edit_requests edit
+          JOIN tasks task ON task.id=edit.task_id
+          WHERE edit.status='QUEUED' AND task.priority_paused=false
+          ORDER BY task.priority_sort_at,task.id,edit.created_at,edit.id
+          FOR UPDATE OF edit SKIP LOCKED LIMIT 1`)).rows[0];
         if(!e) return null;
-        const row=(await c.query("UPDATE image_edit_requests SET status='RUNNING',attempts=attempts+1,version=version+1,claimed_by=$2,lease_token=$3,lease_expires_at=now()+interval '15 minutes',updated_at=now() WHERE id=$1 RETURNING *",[e.id,worker,randomUUID()])).rows[0];
+        const row=(await c.query("UPDATE image_edit_requests SET status='RUNNING',attempts=attempts+1,version=version+1,claimed_by=$2,execution_id=NULL,lease_token=$3,lease_expires_at=now()+interval '15 minutes',updated_at=now() WHERE id=$1 RETURNING *",[e.id,worker,randomUUID()])).rows[0];
         await audit(c,e.task_id,e.id,'EXECUTE',worker,`attempt ${row.attempts}`); return row;
       });
     },
-    async heartbeat(e) { return (await pool.query("UPDATE image_edit_requests SET lease_expires_at=now()+interval '15 minutes' WHERE id=$1 AND lease_token=$2 AND status='RUNNING' AND lease_expires_at>now()",[e.id,e.lease_token])).rowCount===1; },
+    async heartbeat(e) { return tx(async c=> {
+      const updated=await c.query("UPDATE image_edit_requests SET lease_expires_at=now()+interval '15 minutes' WHERE id=$1 AND lease_token=$2 AND status='RUNNING' AND lease_expires_at>now() RETURNING execution_id",[e.id,e.lease_token]);
+      if(updated.rows[0]?.execution_id)await c.query("UPDATE task_executions SET heartbeat_at=now() WHERE id=$1 AND status='RUNNING'",[updated.rows[0].execution_id]);
+      return updated.rowCount===1;
+    }); },
     async context(e) {
-      return tx(async c=> {
-        const source=await assertEditSource(c,Number(e.task_id),e.config);
-        const refs=(await c.query('SELECT a.* FROM image_edit_reference_assets r JOIN assets a ON a.id=r.asset_id WHERE r.request_id=$1 ORDER BY r.sort_order',[e.id])).rows;
-        const bindings=(await c.query('SELECT asset_id,sha256 FROM image_edit_reference_assets WHERE request_id=$1',[e.id])).rows;
-        if(refs.length!==e.config.references.length||refs.some(a=>!bindings.some(b=>Number(b.asset_id)===Number(a.id)&&b.sha256===a.sha256))) conflict('参考图绑定或校验值变化');
-        const settings=(await c.query("SELECT value FROM global_settings WHERE key='production'")).rows[0]?.value ?? {};
-        const restored=e.operation==='RESTORE' ? (await c.query("SELECT * FROM image_runs WHERE id=$1 AND task_id=$2 AND copy_revision_id=$3 AND status='COMPLETED'",[e.config.restoreRunId,e.task_id,e.copy_revision_id])).rows[0] : null;
-        if(e.operation==='RESTORE' && !restored) conflict('仅能恢复当前已批准文案对应的历史图集');
-        const usesImageModel=e.operation==='TEXT'||e.operation.startsWith('AI_');
-        const imageEditPrompt=e.config.imageEditPrompt??(usesImageModel?await publishedImageEditPrompt(c):null);
-        return {...source,refs,settings,restored,imageEditPrompt};
-      });
+      return tx(c=>loadContext(c,e));
     },
     async readAsset(asset) { const bytes=await readFile(editStoragePath(storageRoot,asset.storage_path)); if(imageHash(bytes)!==asset.sha256) throw new Error('资产完整性校验失败'); return bytes; },
     async complete(e,{bytes,mask,validation,originalResult}) {
       return tx(async c=> {
         const source=await assertEditSource(c,Number(e.task_id),e.config);
         const locked=(await c.query('SELECT * FROM image_edit_requests WHERE id=$1 FOR UPDATE',[e.id])).rows[0];
-        if(locked.status!=='RUNNING' || locked.lease_token!==e.lease_token || new Date(locked.lease_expires_at)<=new Date()) conflict('执行已取消或租约过期');
+        if(!locked||locked.status!=='RUNNING' || locked.lease_token!==e.lease_token || new Date(locked.lease_expires_at)<=new Date()) conflict('执行已取消或租约过期');
+        if(!Buffer.isBuffer(bytes)||!bytes.length||bytes.length>20*1024*1024)throw new TypeError('图片修改结果无效');
+        const metadata=await sharp(bytes,{failOn:'warning',limitInputPixels:16_000_000,animated:true}).metadata();
+        if(metadata.format!=='png'||metadata.width!==EDIT_WIDTH||metadata.height!==EDIT_HEIGHT||(metadata.pages??1)!==1)throw new TypeError('图片修改结果必须为 1086×1448 单页 PNG');
+        if(validation?.integrity?.sha256!==imageHash(bytes))throw new TypeError('图片修改结果与校验哈希不一致');
         if(validation?.passed!==true) throw new TypeError('校验未通过');
-        const run=(await c.query("INSERT INTO image_runs(id,task_id,copy_revision_id,status,image_production_chain_id,finished_at) VALUES($1,$2,$3,'COMPLETED',$1,now()) RETURNING *",[randomUUID(),e.task_id,e.copy_revision_id])).rows[0];
+        const run=(await c.query("INSERT INTO image_runs(id,task_id,execution_id,copy_revision_id,status,image_production_chain_id,finished_at) VALUES($1,$2,$3,$4,'COMPLETED',$1,now()) RETURNING *",[randomUUID(),e.task_id,e.execution_id??null,e.copy_revision_id])).rows[0];
         const asset=await storeAsset(c,Number(e.task_id),run,bytes,'DELIVERY',{operation:e.operation,editId:e.id,disclosure:e.config.overlay?.disclosureType?{type:e.config.overlay.disclosureType,text:e.config.overlay.text}:null,validation},e.source_asset_id);
         const maskAsset=mask?await storeAsset(c,Number(e.task_id),run,mask,'MASK',{editId:e.id},e.source_asset_id):null;
         const result=replaceImagePage(originalResult??source.run.result,e.target_page,asset);
@@ -281,14 +383,25 @@ export function createImageEditingService({ pool, storageRoot }) {
         }
         await c.query('INSERT INTO image_edit_results(request_id,asset_id,image_run_id,mask_asset_id,validation) VALUES($1,$2,$3,$4,$5)',[e.id,asset.id,run.id,maskAsset?.id??null,validation]);
         await c.query("UPDATE image_edit_requests SET status='PREVIEW_READY',validation=$2,version=version+1,lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1",[e.id,validation]);
+        if(e.execution_id)await c.query(`UPDATE task_executions SET
+          status='SUCCEEDED',stage='COMPLETED',progress_percent=100,
+          progress_message='图片修改预览已生成',last_activity_at=now(),finished_at=now()
+          WHERE id=$1 AND status='RUNNING'`,[e.execution_id]);
         await audit(c,e.task_id,e.id,'PREVIEW_READY',e.claimed_by,'图片校验通过');
         return {assetId:Number(asset.id),imageRunId:run.id};
       });
     },
     async fail(e,error) {
       return tx(async c=> {
-        const updated=await c.query("UPDATE image_edit_requests SET status='FAILED',error=$3,validation=$4,version=version+1,lease_token=NULL,updated_at=now() WHERE id=$1 AND lease_token=$2 AND status='RUNNING' RETURNING id",[e.id,e.lease_token,String(error?.message??'图片修改失败').replace(/sk-[\w-]+|Bearer\s+\S+/gu,'[REDACTED]').slice(0,1000),error?.validation??null]);
-        if(updated.rowCount) await audit(c,e.task_id,e.id,'FAILED',e.claimed_by,'执行或校验失败');
+        const attemptRefunded=error?.nonBillablePreflightFailure===true;
+        const safeError=String(error?.message??'图片修改失败').replace(/sk-[\w-]+|Bearer\s+\S+/gu,'[REDACTED]').slice(0,1000);
+        const updated=await c.query("UPDATE image_edit_requests SET status='FAILED',error=$3,validation=$4,attempts=CASE WHEN $5 THEN GREATEST(attempts-1,0) ELSE attempts END,version=version+1,lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND lease_token=$2 AND status='RUNNING' RETURNING id,attempts,execution_id",[e.id,e.lease_token,safeError,error?.validation??null,attemptRefunded]);
+        if(updated.rows[0]?.execution_id)await c.query(`UPDATE task_executions SET
+          status='FAILED',stage='FAILED',progress_message=$2,error=$2,
+          last_activity_at=now(),finished_at=now()
+          WHERE id=$1 AND status='RUNNING'`,[updated.rows[0].execution_id,safeError]);
+        if(updated.rowCount) await audit(c,e.task_id,e.id,'FAILED',e.claimed_by,attemptRefunded?'前置视觉服务失败，未计入执行次数':'执行或校验失败',null,
+          {attemptRefunded,attempts:Number(updated.rows[0].attempts),code:error?.code??null,serviceCode:error?.serviceCode??null});
       });
     },
   };

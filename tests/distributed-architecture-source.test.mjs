@@ -26,11 +26,12 @@ test('distributed mode routes copy creation and global data through the control 
   assert.match(navigation, /href: '\/workbench', label: '作业中心'/u);
 });
 
-test('image worker polling is opt-in and documented for separate machines', async () => {
-  const [executor, repository, readme] = await Promise.all([
+test('image worker polling is opt-in and manual edits run on the same executor image lane', async () => {
+  const [executor, repository, readme,centerCli] = await Promise.all([
     source('src/executor/agent.mjs'),
     source('server/src/postgres-repository.mjs'),
     source('README.md'),
+    source('server/src/cli.mjs'),
   ]);
   assert.match(executor, /runCopyOnce: \(\) => claimAndExecute\('COPY'\)/u);
   assert.match(executor, /runImageOnce: \(\) => claimAndExecute\('IMAGE'\)/u);
@@ -39,9 +40,15 @@ test('image worker polling is opt-in and documented for separate machines', asyn
   assert.match(repository, /COUNT\(\*\) FILTER \(WHERE execution\.kind = 'IMAGE'\) AS image_count/u);
   assert.match(repository, /STALE_EXECUTION/u);
   assert.match(repository, /current_execution_id/u);
+  assert.match(repository,/imageEditExecutorVersion: 1/u);
+  assert.match(repository,/image_edit_request_id/u);
+  assert.match(executor,/executeImageEditClaim/u);
+  assert.match(executor,/claim\.imageEdit/u);
+  assert.doesNotMatch(centerCli,/startImageEditProcessing|image-edit-once/u);
   assert.match(readme, /--disable-image-worker/u);
   assert.match(readme, /--enable-image-worker/u);
   assert.match(readme, /中心机器不需要安装 Codex/u);
+  assert.match(readme,/同一个图片容量池/u);
 });
 
 test('remote control plane is an independently installable Koa package', async () => {

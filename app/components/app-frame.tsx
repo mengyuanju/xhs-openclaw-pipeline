@@ -10,7 +10,14 @@ import { AppTopbar } from './app-topbar';
 import { SideNav } from './side-nav';
 import { XhsAccountAlert } from './xhs-account-alert';
 
-type ShellSession = { subject: string; username?: string; roles?: string[] } | null;
+type ShellSession = {
+  subject: string;
+  username?: string;
+  roles?: string[];
+  copyReviewEnabled?: boolean;
+  copyQcEnabled?: boolean;
+  imageQcEnabled?: boolean;
+} | null;
 
 export function AppFrame({ children, session }: { children: React.ReactNode; session: ShellSession }) {
   const pathname = usePathname();

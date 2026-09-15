@@ -22,7 +22,10 @@ export default async function WorkbenchListPage({ params, searchParams }: {
   if (role === 'USER' && definition.key !== 'PERSONAL') redirect('/workbench/personal');
   const search = await searchParams;
   const initialListState = parseWorkbenchListState(search, { allowAdminFilters: role === 'ADMIN' });
-  const personalStates = new Set(['ALL', 'queued', 'running', 'copyReview', 'imageReview', 'failed', 'completed', 'cancelled']);
+  const personalStates = new Set([
+    'ALL', 'queued', 'running', 'copyReview', 'imageReview', 'failed', 'completed', 'cancelled',
+    'copyQaReturned',
+  ]);
   if (definition.key === 'PERSONAL' && !personalStates.has(initialListState.state)) initialListState.state = 'ALL';
   if (definition.key === 'ALL_JOBS' && !new Set<string>(['ALL', ...definition.states]).has(initialListState.state)) initialListState.state = 'ALL';
   if (definition.key !== 'PERSONAL' && definition.key !== 'ALL_JOBS') initialListState.state = 'ALL';

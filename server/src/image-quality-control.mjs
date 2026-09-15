@@ -33,7 +33,7 @@ async function lockActiveActor(client, actor, { quality = false } = {}) {
     SELECT id, username, role FROM app_users
     WHERE id = $1 AND username = $2 AND role = $3 AND status = 'ACTIVE'
       AND ($4::integer IS NULL OR credential_version = $4)
-      ${quality ? "AND (role = 'ADMIN' OR (role = 'REVIEWER' AND image_qc_enabled))" : "AND role = 'USER'"}
+      ${quality ? "AND (role = 'ADMIN' OR (role = 'REVIEWER' AND image_qc_enabled))" : "AND role IN ('ADMIN','USER')"}
     FOR SHARE
   `, [actor.userId, actor.username, actor.role,
     Number.isSafeInteger(credentialVersion) && credentialVersion > 0 ? credentialVersion : null]);
@@ -387,7 +387,7 @@ export async function attemptAutomaticImageSamplingFreeze(client, {
 
 export async function submitImageSelfReview(pool, rawTaskId, input, rawActor) {
   const taskId = normalizeTaskId(rawTaskId);
-  const actor = normalizeActor(rawActor, ['USER']);
+  const actor = normalizeActor(rawActor, ['ADMIN', 'USER']);
   const imageRunId = normalizeUuid(input?.imageRunId, 'imageRunId');
   const reviewSessionId = normalizeUuid(input?.reviewSessionId, 'reviewSessionId');
   return transaction(pool, async (client) => {

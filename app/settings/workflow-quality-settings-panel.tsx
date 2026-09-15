@@ -10,6 +10,7 @@ import {
   normalizeWorkflowQualitySettings,
   type WorkflowQualitySettings,
 } from '../query-packages/types';
+import { samplingRateBpsFromInput, samplingRateInputValue } from './sampling-rate-input';
 import styles from './workflow-quality-settings.module.css';
 
 const ENDPOINT = '/api/control-plane/v1/workflow-quality-settings';
@@ -29,6 +30,8 @@ export function WorkflowQualitySettingsPanel() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [copyRateInput, setCopyRateInput] = useState<string | null>(null);
+  const [imageRateInput, setImageRateInput] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -39,6 +42,8 @@ export function WorkflowQualitySettingsPanel() {
       if (!next) throw new Error('中心返回的流程质检配置不完整');
       setSaved(next);
       setDraft(editableSettings(next));
+      setCopyRateInput(null);
+      setImageRateInput(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '流程质检配置读取失败');
     } finally {
@@ -63,6 +68,8 @@ export function WorkflowQualitySettingsPanel() {
       if (!next) throw new Error('配置已提交，但中心没有返回有效的新版本');
       setSaved(next);
       setDraft(editableSettings(next));
+      setCopyRateInput(null);
+      setImageRateInput(null);
       setMessage('流程与抽检配置已保存；后续进入对应环节的作业使用新配置。');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '流程质检配置保存失败');
@@ -92,7 +99,7 @@ export function WorkflowQualitySettingsPanel() {
     {draft && <>
       <div className={styles.modeSummary} aria-label="当前配置摘要">
         <span className="pill">文案抽检：{draft.copySampling.enabled ? `${ratePercent}%` : '关闭'}</span>
-        <span className="pill">质检视图：{draft.copySampling.blindReviewEnabled ? '盲评' : '非盲评'}</span>
+        <span className="pill">审核员视图：{draft.copySampling.blindReviewEnabled ? '盲评' : '非盲评'}</span>
         <span className="pill">质检权限包含单条和整批打回</span>
         <span className="pill">图片抽检：{draft.imageSampling.enabled ? `${imageRatePercent}%` : '关闭'}</span>
       </div>
@@ -108,7 +115,7 @@ export function WorkflowQualitySettingsPanel() {
         <div className={styles.card}>
           <div className={styles.cardText}>
             <label htmlFor="copy-sampling-blind">启用独立盲评</label>
-            <p>开启后，质检页面不显示任务号、词包名称、上游人员身份、原评分和原因；此开关与抽检比例、打回权限彼此独立。</p>
+            <p>开启后，非管理员质检员看不到任务号、词包名称、上游人员身份、原评分和原因；管理员始终使用完整信息视图。此开关与抽检比例、打回权限彼此独立。</p>
           </div>
           <Switch id="copy-sampling-blind" checked={draft.copySampling.blindReviewEnabled} disabled={disabled}
             onChange={(event) => { setMessage(''); setDraft((current) => current ? { ...current, copySampling: { ...current.copySampling, blindReviewEnabled: event.target.checked } } : current); }} />
@@ -119,12 +126,15 @@ export function WorkflowQualitySettingsPanel() {
             <p>按最终审核人独立累计：20% 每满 5 条抽 1 条，100% 全检。结批或等待 30 分钟后，非空余量保底抽 1 条。开启抽检时 0% 仅在结批时保底抽检；关闭抽检不影响强制复检。比例修改只影响后续冻结。</p>
           </div>
           <div className={styles.rateControl}>
-            <Input id="copy-sampling-rate" type="number" min={0} max={100} step={0.01} value={ratePercent} disabled={disabled || !draft.copySampling.enabled}
+            <Input id="copy-sampling-rate" type="number" min={0} max={100} step={0.01} value={samplingRateInputValue(draft.copySampling.rateBps, copyRateInput)} disabled={disabled || !draft.copySampling.enabled}
+              onFocus={(event) => { setCopyRateInput(event.currentTarget.value); }}
               onChange={(event) => {
-                const percent = Math.min(100, Math.max(0, Number(event.target.value) || 0));
+                const input = event.target.value;
+                setCopyRateInput(input);
                 setMessage('');
-                setDraft((current) => current ? { ...current, copySampling: { ...current.copySampling, rateBps: Math.round(percent * 100) } } : current);
-              }} />
+                setDraft((current) => current ? { ...current, copySampling: { ...current.copySampling, rateBps: samplingRateBpsFromInput(input) } } : current);
+              }}
+              onBlur={() => { setCopyRateInput(null); }} />
             <span>{draft.copySampling.rateBps.toLocaleString('zh-CN')} / 10,000</span>
           </div>
         </div>
@@ -158,12 +168,15 @@ export function WorkflowQualitySettingsPanel() {
             <p>按生产批次和图片提交人独立累计整数余数；满块立即冻结，不足块等待 30 分钟。返修复检不受此比例影响，固定全检。</p>
           </div>
           <div className={styles.rateControl}>
-            <Input id="image-sampling-rate" type="number" min={0} max={100} step={0.01} value={imageRatePercent} disabled={disabled || !draft.imageSampling.enabled}
+            <Input id="image-sampling-rate" type="number" min={0} max={100} step={0.01} value={samplingRateInputValue(draft.imageSampling.rateBps, imageRateInput)} disabled={disabled || !draft.imageSampling.enabled}
+              onFocus={(event) => { setImageRateInput(event.currentTarget.value); }}
               onChange={(event) => {
-                const percent = Math.min(100, Math.max(0, Number(event.target.value) || 0));
+                const input = event.target.value;
+                setImageRateInput(input);
                 setMessage('');
-                setDraft((current) => current ? { ...current, imageSampling: { ...current.imageSampling, rateBps: Math.round(percent * 100) } } : current);
-              }} />
+                setDraft((current) => current ? { ...current, imageSampling: { ...current.imageSampling, rateBps: samplingRateBpsFromInput(input) } } : current);
+              }}
+              onBlur={() => { setImageRateInput(null); }} />
             <span>{draft.imageSampling.rateBps.toLocaleString('zh-CN')} / 10,000</span>
           </div>
         </div>
@@ -173,7 +186,7 @@ export function WorkflowQualitySettingsPanel() {
     {error && <div className="notice error" role="alert">{error}</div>}
     {message && <div className="notice success" role="status">{message}</div>}
     {draft && <div className={styles.actions}>
-      <Button unstyled className="button" type="button" disabled={disabled || !changed} onClick={() => { if (saved) setDraft(editableSettings(saved)); setMessage(''); }}>撤销更改</Button>
+      <Button unstyled className="button" type="button" disabled={disabled || !changed} onClick={() => { if (saved) setDraft(editableSettings(saved)); setCopyRateInput(null); setImageRateInput(null); setMessage(''); }}>撤销更改</Button>
       <Button unstyled className="button" type="button" disabled={loading || busy} onClick={() => { void load(); }}><RefreshCw size={15} aria-hidden="true" />重新读取</Button>
       <Button unstyled className="button primary" type="button" disabled={disabled || !changed} onClick={() => { void save(); }}><Save size={15} aria-hidden="true" />{busy ? '保存中…' : '保存流程配置'}</Button>
     </div>}

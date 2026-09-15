@@ -129,7 +129,7 @@ export const WORKBENCH_VIEWS: Array<{
     key: 'MANUAL_ARCHIVE',
     href: '/workbench/manual-archive',
     label: '图片初审与返修',
-    description: '作业员核对并修改自己负责的图片；初审完成后提交图片抽检，质检打回项在这里返修。',
+    description: '任务负责人核对并修改自己负责的图片；管理员改派给自己后也可初审和返修。',
     icon: FileCheck2,
     states: ['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING'],
   },

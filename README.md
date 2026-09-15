@@ -96,6 +96,8 @@ npm run executor -- --disable-image-worker
 npm run executor -- --enable-image-worker
 ```
 
+启用图片通道后，同一个图片容量池会按中心统一优先级领取普通生图和人工改图；中心机不执行改图模型。升级时先升级并迁移中心，再更新所有图片执行机；新版图片执行机发现中心缺少 `imageEditExecutorVersion=1` 会拒绝启动，旧执行机也不会误领改图。
+
 同机 Codex 默认总调用许可为 2、图片许可为 1；任务池容量和模型许可分别控制。详细配置见 [执行机并发](docs/executor-concurrency.md)。认证或额度失败会暂停新任务，解决原因后使用 `npm run agent:resume` 清除暂停。预检不消耗模型额度，也不能证明实际生成成功或持续吞吐量。
 
 ## 提供方与配置

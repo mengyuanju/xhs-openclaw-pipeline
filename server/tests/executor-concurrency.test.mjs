@@ -30,7 +30,7 @@ function fixture({ capacity = 3, running = 1, receipt, enabled = true, fresh = f
         return { rows: [{ last_assignee_user_id: null }] };
       }
       if (sql.includes('FOR UPDATE OF task SKIP LOCKED')) {
-        const selectionLimit = args.at(-1);
+        const selectionLimit = sql.includes('earliest_edits') ? args[3] : args.at(-1);
         return { rows: [1, 2, 3].slice(0, selectionLimit).map(id => ({ id,
           assigned_to_user_id: `worker-${id}`,
           current_copy_revision_id: id, ai_disclosure_enabled: id % 2 === 1,

@@ -39,6 +39,9 @@ test('concurrent executor refuses an old center before registration', async () =
       executorConcurrency: true, codexConcurrencyPoolVersion: 1,
     } } }) });
   await current.prepare();
+  const oldImageCenter=createExecutorAgent({nodeId:'a',concurrencyEnabled:true,imageWorkerEnabled:true,controlPlane:{},
+    readinessCheck:async()=>({health:{ok:true,capabilities:{executorConcurrency:true,codexConcurrencyPoolVersion:1}}})});
+  await assert.rejects(oldImageCenter.prepare(),/图片修改能力/u);
 });
 
 test('executor never claims images when image capability is disabled', async () => {
@@ -61,6 +64,7 @@ test('executor never claims images when image capability is disabled', async () 
   assert.equal(await agent.runImageOnce(), null);
   assert.deepEqual(calls.map(([name]) => name), ['ready', 'register', 'copy']);
   assert.equal(calls[1][1].imageWorkerEnabled, false);
+  assert.equal(calls[1][1].imageEditExecutorVersion, 0);
 });
 
 test('image-enabled executor runs an image lane while its copy lane is busy', async () => {
@@ -104,6 +108,26 @@ test('image-enabled executor runs an image lane while its copy lane is busy', as
   assert.equal(imageResult.status, 'SUCCEEDED');
   releaseCopy();
   assert.equal((await copyResult).status, 'SUCCEEDED');
+});
+
+test('image lane dispatches a manual edit to the edit processor without using normal generation',async()=>{
+  const editId=randomUUID(),executionId=randomUUID();
+  const claim={task:{id:23},execution:{id:executionId,status:'RUNNING',snapshot:{imageEditRequestId:editId}},
+    imageEdit:{id:editId,task_id:'23',execution_id:executionId,status:'RUNNING',lease_token:randomUUID()}};
+  let edits=0,registration;
+  const agent=createExecutorAgent({nodeId:'edit-node',imageWorkerEnabled:true,
+    readinessCheck:async()=>{},availabilityCheck:async()=>{},
+    controlPlane:{registerNode:async input=>{registration=input;},claimImage:async()=>claim,
+      failImageEdit:async()=>assert.fail('successful edit was failed')},
+    executeImage:async()=>assert.fail('manual edit reached normal image generation'),
+    executeImageEdit:async({claim:received})=>{assert.equal(received,claim);edits++;},
+  });
+  await agent.prepare();
+  await agent.register();
+  assert.equal(registration.imageEditExecutorVersion,1);
+  const outcome=await agent.runImageOnce();
+  assert.equal(outcome.status,'SUCCEEDED');
+  assert.equal(edits,1);
 });
 
 test('a cooling image driver pauses only image claims while copy can use its fallback', async (t) => {

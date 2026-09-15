@@ -100,7 +100,7 @@ function signSessionPayload(payload, secret) {
 
 /**
  * @param {string} secret
- * @param {{nowSeconds?: number, actor?: null | {userId: number, username: string, displayName?: string, roles: string[], credentialVersion: number, mustChangePassword?: boolean}}} options
+ * @param {{nowSeconds?: number, actor?: null | {userId: number, username: string, displayName?: string, roles: string[], credentialVersion: number, mustChangePassword?: boolean, copyReviewEnabled?: boolean, copyQcEnabled?: boolean, imageQcEnabled?: boolean}}} options
  */
 export function createSessionToken(secret, {
   nowSeconds = Math.floor(Date.now() / 1_000),
@@ -129,6 +129,11 @@ export function createSessionToken(secret, {
     if (!Number.isSafeInteger(actor.credentialVersion) || actor.credentialVersion < 1) {
       throw new TypeError('session credential version is invalid');
     }
+    if ((actor.copyReviewEnabled !== undefined && typeof actor.copyReviewEnabled !== 'boolean')
+      || (actor.copyQcEnabled !== undefined && typeof actor.copyQcEnabled !== 'boolean')
+      || (actor.imageQcEnabled !== undefined && typeof actor.imageQcEnabled !== 'boolean')) {
+      throw new TypeError('session workflow permissions are invalid');
+    }
     identity = {
       v: 2,
       sub: 'user',
@@ -140,6 +145,9 @@ export function createSessionToken(secret, {
         ? { nam: actor.displayName.trim().slice(0, 80) }
         : {}),
       ...(actor.mustChangePassword === true ? { mcp: true } : {}),
+      ...(typeof actor.copyReviewEnabled === 'boolean' ? { cre: actor.copyReviewEnabled } : {}),
+      ...(typeof actor.copyQcEnabled === 'boolean' ? { cqe: actor.copyQcEnabled } : {}),
+      ...(typeof actor.imageQcEnabled === 'boolean' ? { iqe: actor.imageQcEnabled } : {}),
     };
   }
   const payload = Buffer.from(JSON.stringify({
@@ -185,7 +193,10 @@ export function verifySessionToken(token, secret, {
     && Number.isSafeInteger(payload.cv)
     && payload.cv > 0
     && (payload.nam === undefined || (typeof payload.nam === 'string' && payload.nam.length <= 80))
-    && (payload.mcp === undefined || payload.mcp === true);
+    && (payload.mcp === undefined || payload.mcp === true)
+    && (payload.cre === undefined || typeof payload.cre === 'boolean')
+    && (payload.cqe === undefined || typeof payload.cqe === 'boolean')
+    && (payload.iqe === undefined || typeof payload.iqe === 'boolean');
   if (
     (!isAdmin && !isReviewer)
     || !Number.isSafeInteger(payload.iat)
@@ -206,6 +217,9 @@ export function verifySessionToken(token, secret, {
       credentialVersion: payload.cv,
       ...(payload.nam === undefined ? {} : { displayName: payload.nam }),
       ...(payload.mcp === true ? { mustChangePassword: true } : {}),
+      ...(typeof payload.cre === 'boolean' ? { copyReviewEnabled: payload.cre } : {}),
+      ...(typeof payload.cqe === 'boolean' ? { copyQcEnabled: payload.cqe } : {}),
+      ...(typeof payload.iqe === 'boolean' ? { imageQcEnabled: payload.iqe } : {}),
       issuedAt: payload.iat,
       expiresAt: payload.exp,
     };
@@ -331,6 +345,9 @@ export async function attemptReviewUserLogin({
         username: user.username,
         roles: user.roles,
         credentialVersion: user.credentialVersion,
+        copyReviewEnabled: user.copyReviewEnabled,
+        copyQcEnabled: user.copyQcEnabled,
+        imageQcEnabled: user.imageQcEnabled,
       },
     }),
     expiresInSeconds: ADMIN_SESSION_SECONDS,

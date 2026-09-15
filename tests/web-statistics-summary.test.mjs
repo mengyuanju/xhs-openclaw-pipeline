@@ -42,6 +42,17 @@ test('people include unassigned history and no-count periods still report cumula
   assert.equal(summary.people.find(p => p.username === null).total, 1);
 });
 
+test('personal counts expose only active copy QA returns as a dedicated filter total', () => {
+  const rows = [
+    task(1, { state: 'COPY_REVIEW_PENDING', mandatoryCopyQc: true, mandatoryCopyQcOrigin: 'QA_RETURN' }),
+    task(2, { state: 'COPY_QC_PENDING', mandatoryCopyQc: true, mandatoryCopyQcOrigin: 'QA_RETURN' }),
+    task(3, { state: 'COPY_REVIEW_PENDING', mandatoryCopyQc: true, mandatoryCopyQcOrigin: 'FINAL_REWORK' }),
+    task(4, { state: 'COPY_REVIEW_PENDING', mandatoryCopyQc: false, mandatoryCopyQcOrigin: 'QA_RETURN' }),
+  ];
+  const summary = summarizeCounts(rows, normalizeRange({}, now), now);
+  assert.equal(summary.copyQaReturned, 2);
+});
+
 test('people statistics keep a deleted account separate from a same-name replacement', () => {
   const summary = summarizeCounts([
     task(1, { createdByAccountId: null, createdByDisplayName: null, createdByRole: null }),

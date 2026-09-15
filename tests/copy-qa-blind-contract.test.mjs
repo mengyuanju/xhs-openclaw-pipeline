@@ -7,6 +7,7 @@ import {
   copyRevisionView,
   normalizeCopyQaItem,
   normalizeCopyQaList,
+  normalizeCopyQaStatistics,
 } from '../app/copy-qa/types.ts';
 
 function collectKeysAndScalarValues(value, keys = [], values = []) {
@@ -223,4 +224,24 @@ test('non-blind normalization accepts current nested provenance and legacy root 
   assert.equal(legacy.productionBatchId, 28);
   assert.equal(legacy.freezeId, 18);
   assert.equal(legacy.finalApproverAccountId, 65);
+});
+
+test('administrator statistics preserve the final approver username for display', () => {
+  const statistics = normalizeCopyQaStatistics({
+    random: [{
+      finalApproverAccountId: 64,
+      finalApproverUsername: '  worker  ',
+      finalApproverDisplayName: '  张三   质检员  ',
+      passed: 3,
+      returned: 1,
+      decided: 4,
+      accuracyRate: 0.75,
+    }],
+    mandatory: { passed: 0, returned: 0, pending: 0 },
+    batchAffectedCount: 0,
+  });
+
+  assert.ok(statistics);
+  assert.equal(statistics.random[0].finalApproverUsername, 'worker');
+  assert.equal(statistics.random[0].finalApproverDisplayName, '张三 质检员');
 });

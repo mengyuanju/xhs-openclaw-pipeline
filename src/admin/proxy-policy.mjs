@@ -1,4 +1,5 @@
 import { ApiError, assertAuthenticatedRequest, assertLocalRequest } from './http.mjs';
+import { canAccessWorkflowPage } from './workflow-access.mjs';
 
 const PUBLIC_PATHS = new Set(['/login', '/api/auth/login']);
 const PROFILE_PATH = '/profile';
@@ -57,8 +58,10 @@ export function evaluateAdminProxyRequest(request, environment = process.env) {
       || (['USER', 'REVIEWER'].includes(role) && url.pathname === '/api/human-quality-settings')
       || url.pathname.startsWith('/api/control-plane/');
     if (alwaysAllowed) return { type: 'next' };
+    if (!canAccessWorkflowPage(session, url.pathname)) return { type: 'forbidden' };
     if (role === 'REVIEWER') {
-      const allowed = url.pathname === '/copy-flow' || url.pathname === '/copy-qa' || url.pathname === '/image-qa'
+      const allowed = url.pathname === '/copy-flow' || url.pathname === '/copy-qa'
+        || url.pathname === '/image-qa' || url.pathname.startsWith('/image-qa/')
         || url.pathname === '/'
         || url.pathname === '/workbench'
         || url.pathname.startsWith('/workbench/')

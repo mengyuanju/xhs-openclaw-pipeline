@@ -45,6 +45,7 @@ test('personal status categories sit beside saved views without starting a secon
   assert.ok(overviewStart >= 0 && filtersStart > overviewStart);
   assert.doesNotMatch(overview.slice(overviewStart, filtersStart), /job-stats-chips/u);
   assert.match(overview.slice(filtersStart), /job-stats-chips workbench-personal-state-filters/u);
+  assert.match(overview.slice(filtersStart), /filter === 'copyQaReturned'[\s\S]*质检打回[\s\S]*summary\?\.copyQaReturned/u);
   assert.ok(controlsStart >= 0 && listToolsStart > controlsStart);
   const controls = workbench.slice(controlsStart, listToolsStart);
   assert.match(controls, /role === 'ADMIN' && <div className="workbench-saved-views"/u);
@@ -55,6 +56,7 @@ test('personal status categories sit beside saved views without starting a secon
     'status filters reuse the existing personal statistics response');
   assert.match(controls, /onFilter=\{\(value\) => \{ setStateFilter\(value\); setPage\(1\); \}\}/u);
   assert.match(workbench, /useStatistics\([\s\S]*?activeView === 'PERSONAL',[\s\S]*?\)/u);
+  assert.match(workbench, /stateFilter === 'copyQaReturned'[\s\S]*search\.set\('copyQaReturned', 'true'\)/u);
   assert.match(statisticsHook, /export function useStatistics\(filters: Filters, enabled = true\)/u);
   assert.match(styles, /\.workbench-personal-state-filters \{[^}]*justify-content: flex-end;[^}]*margin: 0 0 0 auto;[^}]*border: 0;/u);
 });

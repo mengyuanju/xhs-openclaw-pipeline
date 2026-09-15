@@ -79,6 +79,9 @@ export async function POST(request: Request) {
         roles: [user.role],
         credentialVersion: user.credentialVersion,
         mustChangePassword: user.mustChangePassword,
+        copyReviewEnabled: user.copyReviewEnabled,
+        copyQcEnabled: user.copyQcEnabled,
+        imageQcEnabled: user.imageQcEnabled,
       },
     });
 
@@ -88,6 +91,9 @@ export async function POST(request: Request) {
         homePath: user.mustChangePassword ? '/profile' : '/workbench/personal',
         role: user.role,
         mustChangePassword: user.mustChangePassword,
+        copyReviewEnabled: user.copyReviewEnabled,
+        copyQcEnabled: user.copyQcEnabled,
+        imageQcEnabled: user.imageQcEnabled,
       },
     });
     response.headers.set('cache-control', 'no-store');

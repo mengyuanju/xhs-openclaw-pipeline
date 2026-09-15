@@ -89,7 +89,18 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     await page.getByRole('tab',{name:'实体替换'}).click();
     assert.equal(await page.getByLabel('参考图来源说明').count(),0);
     assert.equal(await page.getByText('精确合成',{exact:true}).count(),0);
-    await page.getByLabel('上传真实产品参考图').setInputFiles({name:'reference.png',mimeType:'image/png',buffer:png});
+    const uploadInput=page.getByLabel('上传真实产品参考图'),uploadPicker=uploadInput.locator('..');
+    const [uploadBox,uploadStyle,inputStyle]=await Promise.all([
+      uploadPicker.boundingBox(),
+      uploadPicker.evaluate(element=>({borderStyle:getComputedStyle(element).borderStyle,borderWidth:getComputedStyle(element).borderWidth,backgroundColor:getComputedStyle(element).backgroundColor})),
+      uploadInput.evaluate(element=>({opacity:getComputedStyle(element).opacity,position:getComputedStyle(element).position})),
+    ]);
+    assert.ok(uploadBox&&uploadBox.height>=100,JSON.stringify({uploadBox,uploadStyle}));
+    assert.equal(uploadStyle.borderStyle,'dashed');assert.equal(uploadStyle.borderWidth,'2px');assert.notEqual(uploadStyle.backgroundColor,'rgba(0, 0, 0, 0)');
+    assert.deepEqual(inputStyle,{opacity:'0',position:'absolute'});
+    assert.equal(await page.getByText('点击选择产品图片',{exact:true}).count(),1);
+    assert.equal(await page.getByText('PNG / JPG / WebP · 最大 5 MB',{exact:true}).count(),1);
+    await uploadInput.setInputFiles({name:'reference.png',mimeType:'image/png',buffer:png});
     await page.getByRole('img',{name:'已上传的真实产品参考图',exact:true}).waitFor();
     assert.equal(await page.getByRole('button',{name:'生成修改预览',exact:true}).isDisabled(),false);
     await page.getByLabel('确认调用图片编辑与实体校验模型，会产生费用；自动修复和人工重试也可能收费。').check();

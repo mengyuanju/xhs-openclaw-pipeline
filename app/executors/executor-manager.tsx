@@ -19,6 +19,7 @@ export type ExecutorStatus = {
   name: string;
   online: boolean;
   imageWorkerEnabled: boolean;
+  imageEditExecutorVersion: number;
   copyConcurrency: number;
   imageConcurrency: number;
   copyRunningCount: number;
@@ -216,7 +217,7 @@ export function ExecutorManager({
               <td data-label="状态"><span className={`executor-status ${status.className}`}><i aria-hidden="true" />{status.label}</span></td>
               <td data-label="文案任务"><div className="executor-capacity"><strong>{node.copyRunningCount} / {node.copyConcurrency} 执行中</strong><span>空闲 {copyAvailable} 个槽位</span></div></td>
               <td data-label="生图任务">{node.imageWorkerEnabled
-                ? <div className="executor-capacity"><strong>{node.imageRunningCount} / {node.imageConcurrency} 执行中</strong><span>空闲 {imageAvailable} 个槽位</span></div>
+                ? <div className="executor-capacity"><strong>{node.imageRunningCount} / {node.imageConcurrency} 执行中</strong><span>空闲 {imageAvailable} 个槽位</span><span>{node.imageEditExecutorVersion >= 1 ? '支持人工改图' : '需更新执行机才能改图'}</span></div>
                 : <span className="executor-disabled">未启用生图</span>}</td>
               <td data-label="最后心跳"><time dateTime={node.lastSeenAt}>{dateTime(node.lastSeenAt)}</time></td>
               <td className="row-action" data-label="操作"><div className="executor-row-actions">

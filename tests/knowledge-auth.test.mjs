@@ -120,15 +120,20 @@ test('the generic control-plane proxy recognizes every knowledge management rout
 });
 
 test('reviewer navigation and login return paths exclude the knowledge workbench', async () => {
-  const [navigation, controlPlaneProxy, returnPath] = await Promise.all([
+  const [navigation, controlPlaneProxy, returnPath, workflowAccess] = await Promise.all([
     import('node:fs/promises').then(({ readFile }) => readFile(new URL('../app/components/side-nav.tsx', import.meta.url), 'utf8')),
     import('node:fs/promises').then(({ readFile }) => readFile(new URL('../app/api/control-plane/[...path]/route.ts', import.meta.url), 'utf8')),
     import('../app/login/return-path.ts'),
+    import('../src/admin/workflow-access.mjs'),
   ]);
-  assert.match(navigation, /role === 'REVIEWER'[\s\S]*?\['\/workbench', '\/query-packages', '\/copy-flow', '\/copy-qa'\]/u);
+  assert.match(navigation, /workflowNavigationHrefs\(session\)/u);
+  assert.deepEqual(workflowAccess.workflowNavigationHrefs({
+    subject: 'user', roles: ['REVIEWER'], copyReviewEnabled: true, copyQcEnabled: true,
+  }), ['/workbench', '/query-packages', '/copy-flow', '/copy-qa']);
   assert.doesNotMatch(navigation, /role === 'REVIEWER'[\s\S]*?\['\/workbench', '\/query-packages', '\/knowledge', '\/copy-qa'\]/u);
   assert.match(controlPlaneProxy, /role === 'REVIEWER' && isKnowledgeControlPlaneRoute\(routePath\)/u);
   assert.equal(returnPath.resolveLoginReturnPath({
     requestedPath: '/knowledge', homePath: '/workbench/personal', role: 'REVIEWER', mustChangePassword: false,
+    copyReviewEnabled: true, copyQcEnabled: true,
   }), '/workbench/personal');
 });

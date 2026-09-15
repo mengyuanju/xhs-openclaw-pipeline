@@ -133,12 +133,12 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
     return { imageRunId, images };
   }
 
-  async function createTask(sequence) {
+  async function createTask(sequence, assignee = worker) {
     const task = (await pool.query(`
       INSERT INTO tasks(query, state, created_by_node_id, copy_executor_node_id,
         assigned_to_user_id, assignment_source, assigned_at, production_batch_id)
       VALUES ($1,'COPY_RUNNING','image-qa-test','image-qa-test',$2,'MANUAL',now(),$3) RETURNING *
-    `, [`image qa task ${sequence}`, worker.username, batch.id])).rows[0];
+    `, [`image qa task ${sequence}`, assignee.username, batch.id])).rows[0];
     const revision = (await pool.query(`
       INSERT INTO copy_revisions(task_id, revision, content, approved_at)
       VALUES ($1,1,$2,now()) RETURNING *
@@ -271,9 +271,15 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
   assert.equal(directResult.state, 'REVIEWED');
   assert.equal((await pool.query('SELECT state FROM tasks WHERE id=$1', [direct.taskId])).rows[0].state, 'REVIEWED');
 
+  const adminDirect = await createTask(10, admin);
+  const adminDirectResult = await submitImageSelfReview(pool, adminDirect.taskId, {
+    imageRunId: adminDirect.imageRunId, reviewSessionId: randomUUID(),
+  }, admin);
+  assert.equal(adminDirectResult.state, 'REVIEWED');
+
   await pool.query(`UPDATE workflow_quality_settings SET image_sampling_enabled = true,
     image_sampling_rate_bps = 10000, image_blind_review_enabled = true`);
-  const httpTask = await createTask(10);
+  const httpTask = await createTask(11);
   const repository = new PostgresControlPlaneRepository({ pool });
   const app = createControlPlaneApp({ repository, storageRoot, logger: { info() {}, error() {} } });
   const server = app.listen(0, '127.0.0.1');

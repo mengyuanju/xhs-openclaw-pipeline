@@ -6,7 +6,7 @@ export type Counts = {
 export type Creator = { accountId: number | null; username: string | null; displayName: string; role: string | null };
 export type Person = Creator & Counts;
 export type Summary = Counts & {
-  states: Record<StateGroup, number>; people?: Person[];
+  states: Record<StateGroup, number>; copyQaReturned: number; people?: Person[];
   trend: { date: string; created: number; completed: number }[];
   missingDates: number; staleCount: number;
   stale?: { id: number; query: string; username: string | null; hours: number }[];

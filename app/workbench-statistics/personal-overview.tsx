@@ -59,5 +59,7 @@ export function PersonalStatusFilters({ filter, summary, onFilter }: {
     <Button unstyled type="button" aria-pressed={filter === 'ALL'} onClick={() => onFilter('ALL')}>全部状态</Button>
     {(Object.keys(STATE_LABELS) as StateGroup[]).map(key => <Button unstyled key={key} type="button" aria-pressed={filter === key}
       disabled={!summary} onClick={() => onFilter(filter === key ? 'ALL' : key)}>{STATE_LABELS[key]} <b>{number(summary?.states[key])}</b></Button>)}
+    <Button unstyled type="button" aria-pressed={filter === 'copyQaReturned'} disabled={!summary}
+      onClick={() => onFilter(filter === 'copyQaReturned' ? 'ALL' : 'copyQaReturned')}>质检打回 <b>{number(summary?.copyQaReturned)}</b></Button>
   </div>;
 }

@@ -692,6 +692,28 @@ test('personal task scopes are bound to the authenticated account for all, assig
   assert.equal(calls[2].visibleToUserId, undefined);
 });
 
+test('personal task listing forwards the copy QA return filter without trusting a synthetic task state', async () => {
+  const calls = [];
+  const user = { id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 };
+  const repository = {
+    getUserByUsername: async () => user,
+    listTasks: async (input) => { calls.push(input); return { items: [], total: 0, limit: 20, offset: 0 }; },
+  };
+  await withServer(repository, async (root) => {
+    const headers = {
+      'X-Actor-User-Id': '2', 'X-Actor-Username': 'alice', 'X-Actor-Role': 'USER',
+      'X-Actor-Credential-Version': '1',
+    };
+    const response = await fetch(`${root}/v1/tasks?personal=true&states=COPY_REVIEW_PENDING,COPY_QC_PENDING&copyQaReturned=true&includeTotal=true`, { headers });
+    assert.equal(response.status, 200);
+    assert.equal((await fetch(`${root}/v1/tasks?personal=true&copyQaReturned=maybe`, { headers })).status, 400);
+  }, { enforceUserAuth: true });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].copyQaReturnedOnly, true);
+  assert.equal(calls[0].state, undefined);
+  assert.equal(calls[0].states, 'COPY_REVIEW_PENDING,COPY_QC_PENDING');
+});
+
 test('an unassigned task creator can read and cancel machine work without gaining review access', async () => {
   const users = {
     alice: { id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 },

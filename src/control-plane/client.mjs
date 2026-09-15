@@ -78,6 +78,27 @@ export function createControlPlaneClient({
     return responseData(response);
   }
 
+  function imageEditHeaders(executionId,edit) {
+    const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+    if(!uuid.test(executionId??'')||!uuid.test(edit?.id??'')||!uuid.test(edit?.lease_token??'')) {
+      throw new TypeError('image edit execution identity is invalid');
+    }
+    return {'X-Image-Edit-Id':edit.id,'X-Image-Edit-Lease':edit.lease_token};
+  }
+
+  async function downloadImageEditAsset(executionId,edit,assetId) {
+    if(!Number.isSafeInteger(Number(assetId))||Number(assetId)<1)throw new TypeError('image edit asset identifier is invalid');
+    const response=await fetchImpl(`${root}/v1/executions/${executionId}/image-edit/assets/${assetId}`,{
+      headers:{...defaultHeaders,...imageEditHeaders(executionId,edit)},redirect:'error',
+      signal:AbortSignal.timeout(60_000),
+    });
+    if(!response.ok)return responseData(response);
+    if(Number(response.headers.get('content-length'))>30*1024*1024)throw new Error('image edit asset is too large');
+    const chunks=[];let size=0;
+    for await(const chunk of response.body){size+=chunk.byteLength;if(size>30*1024*1024)throw new Error('image edit asset is too large');chunks.push(chunk);}
+    return Buffer.concat(chunks);
+  }
+
   /** @param {'COPY'|'IMAGE'} kind @param {{nodeId: string, limit: number, requestId: string}} input */
   async function claimBatch(kind, input) {
     const result = await request(`/v1/executions/claim-${kind.toLowerCase()}-batch`, { method: 'POST', body: input });
@@ -85,11 +106,21 @@ export function createControlPlaneClient({
     const valid = result?.requestId === input.requestId && Array.isArray(result.claims)
       && result.claims.length <= input.limit && result.claims.every(claim => {
         const { task, execution } = claim ?? {};
+        const editId=execution?.snapshot?.imageEditRequestId;
+        const isEdit=kind==='IMAGE'&&uuid.test(editId??'');
+        const validEdit=isEdit&&claim?.imageEdit?.id===editId
+          && Number(claim.imageEdit.task_id)===task?.id
+          && (execution?.status!=='RUNNING'||(claim.imageEdit.status==='RUNNING'
+            && claim.imageEdit.execution_id===execution.id
+            && claim.imageEdit.claimed_by===input.nodeId
+            && uuid.test(claim.imageEdit.lease_token??'')));
         return Number.isSafeInteger(task?.id) && task.id > 0 && uuid.test(execution?.id)
         && execution.taskId === task.id && execution.nodeId === input.nodeId && execution.kind === kind
         && ['RUNNING', 'SUCCEEDED', 'FAILED', 'ABANDONED'].includes(execution.status)
-        && (execution.status !== 'RUNNING' || (task.currentExecutionId === execution.id && task.state === `${kind}_RUNNING`
-          && execution.snapshot !== null && typeof execution.snapshot === 'object' && !Array.isArray(execution.snapshot)));
+        && Boolean(claim?.imageEdit)===isEdit && (!isEdit||validEdit)
+        && (execution.status !== 'RUNNING' || (isEdit||(
+          task.currentExecutionId === execution.id && task.state === `${kind}_RUNNING`))
+          && execution.snapshot !== null && typeof execution.snapshot === 'object' && !Array.isArray(execution.snapshot));
       });
     if (!valid || new Set(result.claims.map(claim => claim.execution.id)).size !== result.claims.length) {
       throw new ControlPlaneApiError(502, 'INVALID_CONTROL_PLANE_RESPONSE', '中心批量领取响应不完整，请使用原请求 ID 重试');
@@ -216,10 +247,61 @@ export function createControlPlaneClient({
       method: 'POST', body: { nodeId },
     }),
     claimImage: (nodeId) => request('/v1/executions/claim-image', {
-      method: 'POST', body: { nodeId, imageControlsVersion: 1, layoutCatalogVersion: 2 },
+      method: 'POST', body: { nodeId, imageControlsVersion: 1, layoutCatalogVersion: 2, imageEditExecutorVersion: 1 },
     }),
     claimCopyBatch: (input) => claimBatch('COPY', input),
-    claimImageBatch: (input) => claimBatch('IMAGE', { ...input, imageControlsVersion: 1, layoutCatalogVersion: 2 }),
+    claimImageBatch: (input) => claimBatch('IMAGE', { ...input, imageControlsVersion: 1, layoutCatalogVersion: 2, imageEditExecutorVersion: 1 }),
+    imageEditContext: (executionId, edit) => request(`/v1/executions/${executionId}/image-edit/context`, {
+      headers: imageEditHeaders(executionId, edit),
+    }),
+    imageEditAsset: downloadImageEditAsset,
+    imageEditAssetMetadata: (executionId, edit, assetId) => request(
+      `/v1/executions/${executionId}/image-edit/asset-metadata/${assetId}`, {
+        headers: imageEditHeaders(executionId, edit),
+      },
+    ),
+    heartbeatImageEdit: async (executionId, edit) => {
+      const result = await request(`/v1/executions/${executionId}/image-edit/heartbeat`, {
+        method: 'POST', body: {}, headers: imageEditHeaders(executionId, edit),
+      });
+      return result?.active === true;
+    },
+    async stageImageEditValidation(executionId, edit, validation) {
+      const path = `/v1/executions/${executionId}/image-edit/validation`;
+      const options = {
+        method: 'POST', body: { validation }, headers: imageEditHeaders(executionId, edit), timeoutMs: 60_000,
+      };
+      try { return await request(path, options); }
+      catch (error) {
+        if (error instanceof ControlPlaneApiError && error.status < 500) throw error;
+        return request(path, options);
+      }
+    },
+    async completeImageEdit(executionId, edit, content) {
+      const path = `/v1/executions/${executionId}/image-edit/result`;
+      const options = {
+        method: 'PUT',
+        body: Buffer.from(content),
+        headers: { ...imageEditHeaders(executionId, edit), 'Content-Type': 'image/png' },
+        timeoutMs: 120_000,
+      };
+      try { return await request(path, options); }
+      catch (error) {
+        if (error instanceof ControlPlaneApiError && error.status < 500) throw error;
+        // The center may have committed before the response was lost. Completion
+        // is lease-bound and idempotent, so one replay never reruns the model.
+        return request(path, options);
+      }
+    },
+    failImageEdit: (executionId, edit, error) => request(
+      `/v1/executions/${executionId}/image-edit/fail`, {
+        method: 'POST', headers: imageEditHeaders(executionId, edit), body: {
+          message: error instanceof Error ? error.message : String(error), validation: error?.validation ?? null,
+          code: error?.code ?? null, serviceCode: error?.serviceCode ?? null,
+          nonBillablePreflightFailure: error?.nonBillablePreflightFailure === true,
+        },
+      },
+    ),
     claimXhsQuerySearch,
     completeXhsQuerySearch,
     blockXhsQuerySearch,

@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 
+import { canQualityCheckImage } from '../../src/admin/workflow-access.mjs';
 import { readServerSession } from '../server-session';
 import { ImageQaWorkbench } from './image-qa-workbench';
 
@@ -9,7 +10,7 @@ export default async function ImageQaPage() {
   const session = await readServerSession();
   if (!session) redirect('/login?next=%2Fimage-qa');
   const role = session.roles?.[0] || 'USER';
-  if (!['ADMIN', 'REVIEWER'].includes(role)) redirect('/workbench/personal');
+  if (!canQualityCheckImage(session)) redirect('/workbench/personal');
   return <>
     <header className="page-header">
       <div>

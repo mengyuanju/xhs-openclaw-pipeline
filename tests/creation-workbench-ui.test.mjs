@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
+import { workflowNavigationHrefs } from '../src/admin/workflow-access.mjs';
+
 const projectFile = (path) => new URL(`../${path}`, import.meta.url);
 
 test('new creation workbench owns the root route and exposes lifecycle views', async () => {
@@ -59,8 +61,20 @@ test('ordinary users do not render Query package provenance or delivery download
     readFile(projectFile('app/components/side-nav.tsx'), 'utf8'),
   ]);
 
-  assert.match(navigation, /items\.filter\(\(item\) => \['\/workbench', '\/query-packages', '\/copy-flow', '\/copy-qa'\]\.includes\(item\.href\)\)/u,
-    'ordinary users must receive their assigned Query packages without receiving the delivery pool');
+  assert.match(navigation, /workflowNavigationHrefs\(session\)/u);
+  assert.deepEqual(workflowNavigationHrefs({
+    subject: 'user', roles: ['USER'], copyReviewEnabled: true, copyQcEnabled: false,
+  }), ['/workbench', '/query-packages', '/copy-flow'],
+  'ordinary reviewers must receive review tools without receiving QA or delivery tools');
+  assert.deepEqual(workflowNavigationHrefs({
+    subject: 'user', roles: ['USER'], copyReviewEnabled: false, copyQcEnabled: false,
+  }), ['/workbench'], 'ordinary users without workflow permissions must only receive their workbench');
+  assert.deepEqual(workflowNavigationHrefs({
+    subject: 'user', roles: ['REVIEWER'], copyReviewEnabled: false, copyQcEnabled: false, imageQcEnabled: true,
+  }), ['/workbench', '/image-qa'], 'image QA reviewers must receive only their explicitly enabled workflow');
+  assert.deepEqual(workflowNavigationHrefs({
+    subject: 'user', roles: ['USER'], copyReviewEnabled: false, copyQcEnabled: false, imageQcEnabled: true,
+  }), ['/workbench'], 'image QA permission must remain reviewer-only');
   assert.match(workbench, /const canUseQueryPackageFilter = role !== 'USER'/u);
   assert.match(workbench, /canUseQueryPackageFilter \? initialListState\.queryPackageName : ''/u,
     'a package filter from the URL must not initialize for an ordinary user');
@@ -78,8 +92,14 @@ test('ordinary users do not render Query package provenance or delivery download
     'assigned operators must still see the Query-specific Xiaohongshu review links');
   assert.match(reviewDialog, /role === 'USER' \? '已完成任务详情' : '交付池任务详情'/u);
   assert.match(reviewDialog, /role === 'USER'[\s\S]{0,120}'任务已经完成，可查看最终内容。'/u);
-  assert.match(reviewDialog, /自检完成，提交图片抽检/u);
+  assert.match(reviewDialog, /初审完成，提交图片抽检/u);
   assert.match(reviewDialog, /\/v1\/tasks\/\$\{detail\.id\}\/submit-image-self-review/u);
+  assert.match(reviewDialog, /const canHandleAssignedImages = \(isAdmin \|\| role === 'USER'\) && currentUserIsAssignee/u,
+    'an administrator must become the exact task assignee before submitting image initial review');
+  assert.match(workbench, /const canHandleAssignedImages = \['ADMIN', 'USER'\]\.includes\(role\) && currentUserIsAssignee/u);
+  assert.match(workbench, /canHandleAssignedImages \? '图片初审' : '查看'/u);
+  assert.match(workbench, /const allJobsDetailButton = canHandleAssignedImages && task\.state === 'MANUAL_ARCHIVE'/u,
+    'an assigned administrator must see the image-review action even in the all-jobs list');
   assert.match(reviewDialog, /role !== 'REVIEWER'[\s\S]{0,160}\['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING'\]/u);
   assert.doesNotMatch(reviewDialog, /const downloadable =[^;]*currentUserIsAssignee/u,
     'ordinary assignees must not regain the administrator-only delivery download');
@@ -397,7 +417,7 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(workbench, /search\.set\('deduplicateQuery', 'true'\)/u);
   assert.match(workbench, /includeTotal: 'true'/u);
   assert.match(workbench, /Array\.isArray\(rawTaskPage\)/u);
-  assert.match(workbench, /caught\.message !== 'task state filter is invalid'/u);
+  assert.match(workbench, /isLegacyTaskStateFilterError\(caught\)/u);
   assert.match(workbench, /compatibilitySearch\.set\('mine', 'true'\)/u);
   assert.match(workbench, /compatibilityTasks\s*\?\?/u);
   assert.match(workbench, /matchesWorkbenchView\(task, view, creatorUserId, creatorAccountId\)/u);

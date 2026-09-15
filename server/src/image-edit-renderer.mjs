@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { normalizeImageEditRepairMaxAttempts, productionDisclosure } from '../../src/production-settings.mjs';
 import { createAgentClient } from '../../src/agent-client.mjs';
-import { createImageAlignmentValidator } from '../../src/image-alignment.mjs';
+import { ImageAlignmentServiceError, createImageAlignmentValidator } from '../../src/image-alignment.mjs';
 import { imageHash, renderMask, mergeWithMask, assertOutsideMask, EDIT_WIDTH, EDIT_HEIGHT } from '../../src/image-edit-pixels.mjs';
 import { businessPrompt, withPromptRuntime } from '../../src/prompt-runtime.mjs';
 
@@ -120,22 +120,25 @@ function visionTextCheck(alignment,targetText=null,placement=null) {
   return {...alignment,passed:alignment?.passed===true&&(!placementCheck||placementCheck.passed),engine:'existing-vision-alignment',
     recognizedFields:fields,recognizedText,targetOccurrences,placement:placementCheck,missing,extra,uncertain};
 }
-export async function processImageEdit({service,storageRoot,workerId,agentClient,validateImage,mock=false,maxGenerationAttempts}) {
+export async function processImageEdit({service,storageRoot,workerId,edit=null,signal,environment=process.env,agentClient,validateImage,mock=false,maxGenerationAttempts}) {
   if(maxGenerationAttempts!==undefined&&(!Number.isInteger(maxGenerationAttempts)||maxGenerationAttempts<1||maxGenerationAttempts>3)) throw new TypeError('图片生成尝试次数必须是 1 到 3 之间的整数');
   if(validateImage!==undefined&&typeof validateImage!=='function')throw new TypeError('图片视觉验收器无效');
-  const e=await service.claim(workerId);
+  const e=edit??await service.claim(workerId);
   if(!e)return {status:'idle'};
   const directory=resolve(storageRoot,'image-edit-work',String(Number(e.task_id)),randomUUID());
   let lostLease=false;
+  let imageModelRequested=false;
   const controller=new AbortController();
-  const stop=()=>{lostLease=true;controller.abort(new Error('图片编辑租约失效或已取消'));};
+  const stop=(reason=new Error('图片编辑租约失效或已取消'))=>{lostLease=true;if(!controller.signal.aborted)controller.abort(reason);};
+  const externalAbort=()=>stop(signal.reason);
+  if(signal?.aborted)externalAbort();else signal?.addEventListener('abort',externalAbort,{once:true});
   const heartbeat=setInterval(()=>{void service.heartbeat(e).then(ok=>{if(!ok)stop();}).catch(stop);},30_000);
   try {
     const context=await service.context(e),config=e.config;
     const generationAttemptLimit=maxGenerationAttempts??1+normalizeImageEditRepairMaxAttempts(
       config.imageEditRepairMaxAttempts??context.settings?.imageEditRepairMaxAttempts,
     );
-    const client=agentClient??(validateImage?null:createAgentClient({modelApi:context.settings.modelApi}));
+    const client=agentClient??(validateImage?null:createAgentClient({modelApi:context.settings.modelApi,environment}));
     const verify=input=>validateImage?validateImage(input):validateWithExistingVision({client,...input});
     await mkdir(directory,{recursive:true});
     let source=await service.readAsset(context.source);
@@ -178,6 +181,7 @@ export async function processImageEdit({service,storageRoot,workerId,agentClient
       for(let attempt=1;attempt<=generationAttemptLimit;attempt++) {
         generationAttempts=attempt;
         const generatedPath=resolve(directory,`generated-text-${attempt}.png`);
+        imageModelRequested=true;
         const generated=await client.runImageEdit({prompt,inputPaths:[attempt===1?inputPath:outputPath],outputPath:generatedPath,signal:controller.signal});
         model=generated.model??model;
         result=await sharp(await readFile(generatedPath),{limitInputPixels:16_000_000}).resize(EDIT_WIDTH,EDIT_HEIGHT,{fit:'fill'}).png().toBuffer();
@@ -196,6 +200,7 @@ export async function processImageEdit({service,storageRoot,workerId,agentClient
       for(const [i,ref]of refs.entries()){const path=resolve(directory,`reference-${i}.png`);await writeFile(path,ref.bytes);paths.push(path);}
       if(e.operation==='AI_LOCAL'&&config.mask) { mask=await renderMask(config.mask); const path=resolve(directory,'mask.png');await writeFile(path,mask);paths.push(path); }
       const prompt=aiEditPrompt(context,{...config,operation:e.operation,targetPage:Number(e.target_page)},required);
+      imageModelRequested=true;
       const generated=await client.runImageEdit({prompt,inputPaths:paths,outputPath:resolve(directory,'generated.png'),signal:controller.signal});
       model=generated.model??null;
       generationAttempts=1;
@@ -234,6 +239,13 @@ export async function processImageEdit({service,storageRoot,workerId,agentClient
     if(!validation.passed||!validation.dimensions.passed||validation.format!=='png')throw Object.assign(new Error('编辑结果视觉验收、必需文字、白名单或尺寸校验失败：'+JSON.stringify({missing:text.missing,extra:text.extra,uncertain:text.uncertain,targetOccurrences:text.targetOccurrences,placement:text.placement})),{validation});
     if(lostLease)throw new Error('执行租约失效');
     return {status:'PREVIEW_READY',...await service.complete(e,{bytes:result,mask,validation,originalResult:context.restored?.result})};
-  } catch(error) { await service.fail(e,error);return {status:'FAILED',error:String(error.message)}; }
-  finally {clearInterval(heartbeat);await rm(directory,{recursive:true,force:true});}
+  } catch(error) {
+    if(error instanceof ImageAlignmentServiceError && !imageModelRequested) {
+      error.nonBillablePreflightFailure=true;
+      error.validation={stage:'SOURCE_SERVICE',passed:false,retryable:error.retryable,
+        code:error.code,serviceCode:error.serviceCode,billedImageGeneration:false};
+    }
+    await service.fail(e,error);return {status:'FAILED',error:String(error.message)};
+  }
+  finally {clearInterval(heartbeat);signal?.removeEventListener('abort',externalAbort);await rm(directory,{recursive:true,force:true});}
 }

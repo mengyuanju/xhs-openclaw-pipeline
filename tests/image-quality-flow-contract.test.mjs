@@ -15,19 +15,23 @@ test('image initial review, independent QA and delivery have non-overlapping rol
     source('app/image-qa/page.tsx'),
   ]);
 
-  assert.match(server, /router\.post\('\/v1\/tasks\/:taskId\/submit-image-self-review'[\s\S]{0,160}requestActor\(ctx, \['USER'\]\)/u);
+  assert.match(server, /router\.post\('\/v1\/tasks\/:taskId\/submit-image-self-review'[\s\S]{0,160}requestActor\(ctx, \['ADMIN', 'USER'\]\)/u);
+  assert.match(server, /submit-image-self-review'[\s\S]{0,220}assertTaskAccess\(ctx, repository, \{ ownerOnly: true \}\)/u);
   assert.match(server, /router\.get\('\/v1\/image-qa\/items'[\s\S]{0,120}requestActor\(ctx, \['ADMIN', 'REVIEWER'\]\)/u);
   assert.match(server, /router\.post\('\/v1\/tasks\/:taskId\/review-images'[\s\S]{0,120}IMAGE_REVIEW_MOVED/u);
   assert.match(server, /router\.get\('\/v1\/delivery-pool'[\s\S]{0,120}requestActor\(ctx, \['ADMIN'\]\)/u);
   assert.match(imageQuality, /task\.assigned_to_user_id !== actor\.username/u);
+  assert.match(imageQuality, /normalizeActor\(rawActor, \['ADMIN', 'USER'\]\)/u);
+  assert.match(imageQuality, /role IN \('ADMIN','USER'\)/u);
   assert.match(imageQuality, /actor\.role !== 'ADMIN'[\s\S]{0,120}submitter_account_id/u);
   assert.match(editing, /\['ADMIN','USER'\]/u);
   assert.match(editing, /t\.state IN \('MANUAL_ARCHIVE','IMAGE_REWORK_PENDING'\)/u);
   assert.match(delivery, /IMAGE_QA_NOT_RELEASED/u);
   assert.match(proxy, /url\.pathname === '\/image-qa'/u);
-  assert.match(navigation, /'\/copy-qa', '\/image-qa'/u);
+  assert.match(navigation, /href: '\/image-qa'/u);
+  assert.match(navigation, /workflowNavigationHrefs\(session\)/u);
   assert.doesNotMatch(navigation.slice(navigation.indexOf(": navigationGroups.map", navigation.indexOf("role === 'REVIEWER'") + 20)), /'\/delivery-pool'/u);
-  assert.match(page, /!\['ADMIN', 'REVIEWER'\]\.includes\(role\)/u);
+  assert.match(page, /canQualityCheckImage\(session\)/u);
 });
 
 test('image sampling freezes batches and every returned image requires mandatory recheck', async () => {

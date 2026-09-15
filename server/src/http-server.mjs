@@ -176,6 +176,20 @@ function requireJson(ctx) {
   return ctx.request.body;
 }
 
+function imageEditExecutionIdentity(ctx) {
+  return {
+    executionId: ctx.params.executionId,
+    editId: ctx.get('X-Image-Edit-Id'),
+    leaseToken: ctx.get('X-Image-Edit-Lease'),
+  };
+}
+
+function imageEditExecutorAsset(asset) {
+  if(!asset||typeof asset!=='object')return asset;
+  const {storage_path:_storagePath,...safe}=asset;
+  return safe;
+}
+
 async function readBody(stream, maxBytes) {
   const chunks = [];
   let bytes = 0;
@@ -1242,6 +1256,9 @@ function installRoutes(
     if (ctx.query.lastPage !== undefined && !['true', 'false'].includes(ctx.query.lastPage)) {
       throw new TypeError('lastPage must be true or false');
     }
+    if (ctx.query.copyQaReturned !== undefined && !['true', 'false'].includes(ctx.query.copyQaReturned)) {
+      throw new TypeError('copyQaReturned must be true or false');
+    }
     if (personal && ['assignedToUserId', 'assignedToAccountId', 'unassigned', 'createdByUserId', 'createdByAccountId', 'nodeId']
       .some((key) => ctx.query[key] !== undefined)) {
       throw new TypeError('personal task scope cannot be combined with ownership filters');
@@ -1287,6 +1304,7 @@ function installRoutes(
       lastPage: ctx.query.lastPage === 'true',
       includeTotal: ctx.query.includeTotal === 'true',
       excludeActiveBlindQa: actor.role === 'REVIEWER',
+      ...(ctx.query.copyQaReturned === 'true' ? { copyQaReturnedOnly: true } : {}),
     });
     json(ctx, 200, actor.role === 'USER' ? userVisibleTaskList(result) : result);
   });
@@ -1753,7 +1771,8 @@ function installRoutes(
   router.post('/v1/executions/claim-image', async (ctx) => {
     await repository.flushExpiredCopyQualityBatches?.();
     const body = requireJson(ctx);
-    json(ctx, 200, await repository.claimImage(body.nodeId, body.imageControlsVersion, body.layoutCatalogVersion));
+    json(ctx, 200, await repository.claimImage(body.nodeId, body.imageControlsVersion,
+      body.layoutCatalogVersion, body.imageEditExecutorVersion));
   });
   router.post('/v1/executions/claim-copy-batch', async (ctx) => {
     json(ctx, 200, await repository.claimCopyBatch(requireJson(ctx)));
@@ -1837,7 +1856,7 @@ function installRoutes(
     ));
   });
   router.post('/v1/tasks/:taskId/submit-image-self-review', async (ctx) => {
-    const actor = requestActor(ctx, ['USER']);
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
     await assertTaskAccess(ctx, repository, { ownerOnly: true });
     json(ctx, 200, await repository.submitImageSelfReview(
       ctx.params.taskId,
@@ -1846,7 +1865,7 @@ function installRoutes(
     ));
   });
   router.post('/v1/tasks/:taskId/review-images', async () => {
-    throw new HttpError(410, 'IMAGE_REVIEW_MOVED', '图片初审已改由作业员提交；图片质检请在图片质检池处理');
+    throw new HttpError(410, 'IMAGE_REVIEW_MOVED', '图片初审已改由任务负责人提交；图片质检请在图片质检池处理');
   });
   router.post('/v1/tasks/:taskId/retry', async (ctx) => {
     const actor = requestActor(ctx);
@@ -1876,6 +1895,45 @@ function installRoutes(
     json(ctx, 201, actor.role === 'USER' ? userVisibleTask(task) : task);
   });
   const imageEditing = createImageEditingService({ pool: repository.pool, storageRoot });
+  router.get('/v1/executions/:executionId/image-edit/context', async ctx => {
+    const identity=imageEditExecutionIdentity(ctx);
+    const context=await imageEditing.executorContext(identity.executionId,identity.editId,identity.leaseToken);
+    json(ctx,200,{...context,source:imageEditExecutorAsset(context.source),
+      refs:context.refs.map(imageEditExecutorAsset)});
+  });
+  router.get('/v1/executions/:executionId/image-edit/assets/:assetId', async ctx => {
+    const identity=imageEditExecutionIdentity(ctx);
+    const result=await imageEditing.executorAsset(identity.executionId,identity.editId,identity.leaseToken,ctx.params.assetId);
+    ctx.type=result.asset.media_type;
+    ctx.body=result.bytes;
+  });
+  router.get('/v1/executions/:executionId/image-edit/asset-metadata/:assetId', async ctx => {
+    const identity=imageEditExecutionIdentity(ctx);
+    const result=await imageEditing.executorAsset(identity.executionId,identity.editId,identity.leaseToken,ctx.params.assetId);
+    json(ctx,200,imageEditExecutorAsset(result.asset));
+  });
+  router.post('/v1/executions/:executionId/image-edit/heartbeat', async ctx => {
+    const identity=imageEditExecutionIdentity(ctx);
+    json(ctx,200,{active:await imageEditing.heartbeatExecutor(identity.executionId,identity.editId,identity.leaseToken)});
+  });
+  router.post('/v1/executions/:executionId/image-edit/validation', async ctx => {
+    const identity=imageEditExecutionIdentity(ctx);
+    json(ctx,200,await imageEditing.stageExecutorValidation(identity.executionId,identity.editId,
+      identity.leaseToken,requireJson(ctx).validation));
+  });
+  router.put('/v1/executions/:executionId/image-edit/result', async ctx => {
+    if(String(ctx.request.headers['content-type']??'').split(';')[0].trim()!=='image/png') {
+      throw new HttpError(415,'UNSUPPORTED_MEDIA_TYPE','image edit result must be image/png');
+    }
+    const identity=imageEditExecutionIdentity(ctx);
+    json(ctx,200,await imageEditing.completeExecutor(identity.executionId,identity.editId,
+      identity.leaseToken,await readBody(ctx.req,ASSET_BODY_LIMIT)));
+  });
+  router.post('/v1/executions/:executionId/image-edit/fail', async ctx => {
+    const identity=imageEditExecutionIdentity(ctx);
+    json(ctx,200,await imageEditing.failExecutor(identity.executionId,identity.editId,
+      identity.leaseToken,requireJson(ctx)));
+  });
   router.post('/v1/tasks/:taskId/image-edit-references', async ctx => {
     const actor = requestActor(ctx, ['ADMIN', 'USER']);
     await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
@@ -2199,6 +2257,7 @@ export function createControlPlaneApp({
   app.use(async (ctx, next) => {
     const rawUpload = ctx.method === 'PUT'
       && (/^\/v1\/executions\/[^/]+\/assets$/u.test(ctx.path)
+        || /^\/v1\/executions\/[^/]+\/image-edit\/result$/u.test(ctx.path)
         || /^\/v1\/knowledge-versions\/[^/]+\/asset$/u.test(ctx.path)
         || ctx.path === '/v1/query-packages/import-preview');
     if (rawUpload) return next();

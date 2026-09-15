@@ -414,6 +414,7 @@ function nodeFrom(row) {
     id: row.id,
     name: row.name,
     imageWorkerEnabled: row.image_worker_enabled,
+    imageEditExecutorVersion: Number(row.image_edit_executor_version ?? 0),
     copyConcurrency: row.copy_concurrency ?? 1,
     imageConcurrency: row.image_concurrency ?? 1,
     codexPoolId: row.codex_pool_id ?? null,
@@ -1505,7 +1506,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 5, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, finalDeliveryVersion: 3, deliverySpreadsheetVersion: 1, deliveryPreviewVersion: 6 } };
+      capabilities: { taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 1, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 5, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, finalDeliveryVersion: 3, deliverySpreadsheetVersion: 1, deliveryPreviewVersion: 6 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -2292,13 +2293,16 @@ export class PostgresControlPlaneRepository {
 
   async registerNode({ nodeId: rawNodeId, name: rawName, imageWorkerEnabled = false,
     copyConcurrency, imageConcurrency, codexPoolId: rawCodexPoolId,
-    codexTotalConcurrency, codexImageConcurrency }) {
+    codexTotalConcurrency, codexImageConcurrency, imageEditExecutorVersion = 0 }) {
     const nodeId = normalizeNodeId(rawNodeId);
     const name = normalizeNodeName(rawName, nodeId);
     if (copyConcurrency !== undefined) normalizeConcurrency(copyConcurrency, 'copyConcurrency');
     if (imageConcurrency !== undefined) normalizeConcurrency(imageConcurrency, 'imageConcurrency');
     if (typeof imageWorkerEnabled !== 'boolean') {
       throw new TypeError('imageWorkerEnabled must be a boolean');
+    }
+    if (!Number.isInteger(imageEditExecutorVersion) || imageEditExecutorVersion < 0) {
+      throw new TypeError('imageEditExecutorVersion must be a non-negative integer');
     }
     const codexPoolId = rawCodexPoolId === undefined ? nodeId : String(rawCodexPoolId).trim();
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/u.test(codexPoolId)) {
@@ -2330,14 +2334,16 @@ export class PostgresControlPlaneRepository {
           )
         RETURNING *
       )
-      INSERT INTO executor_nodes(id, name, image_worker_enabled, copy_concurrency, image_concurrency, codex_pool_id)
-      SELECT $1, $2, $3, COALESCE($4, 1), COALESCE($5, 1), pool.id FROM pool
+      INSERT INTO executor_nodes(id, name, image_worker_enabled, copy_concurrency, image_concurrency,
+        codex_pool_id, image_edit_executor_version)
+      SELECT $1, $2, $3, COALESCE($4, 1), COALESCE($5, 1), pool.id, $9 FROM pool
       ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         image_worker_enabled = excluded.image_worker_enabled,
         copy_concurrency = COALESCE($4, executor_nodes.copy_concurrency),
         image_concurrency = COALESCE($5, executor_nodes.image_concurrency),
         codex_pool_id = excluded.codex_pool_id,
+        image_edit_executor_version = excluded.image_edit_executor_version,
         retired_at = NULL,
         last_seen_at = now(),
         updated_at = now()
@@ -2345,7 +2351,7 @@ export class PostgresControlPlaneRepository {
         (SELECT total_concurrency FROM pool) AS codex_total_concurrency,
         (SELECT image_concurrency FROM pool) AS codex_image_concurrency
     `, [nodeId, name, imageWorkerEnabled, copyConcurrency ?? null, imageConcurrency ?? null,
-      codexPoolId, totalConcurrency, poolImageConcurrency]);
+      codexPoolId, totalConcurrency, poolImageConcurrency, imageEditExecutorVersion]);
     if (!result.rows[0]) {
       throw new ControlPlaneConflictError(
         'CODEX_POOL_CONCURRENCY_MISMATCH',
@@ -2357,6 +2363,7 @@ export class PostgresControlPlaneRepository {
       id: row.id,
       name: row.name,
       imageWorkerEnabled: row.image_worker_enabled,
+      imageEditExecutorVersion: Number(row.image_edit_executor_version ?? 0),
       copyConcurrency: row.copy_concurrency ?? 1,
       imageConcurrency: row.image_concurrency ?? 1,
       lastSeenAt: row.last_seen_at,
@@ -2720,6 +2727,7 @@ export class PostgresControlPlaneRepository {
     lastPage = false,
     includeTotal = false,
     excludeActiveBlindQa = false,
+    copyQaReturnedOnly = false,
   } = {}) {
     const safeLimit = Math.max(1, Math.min(200, Number(limit) || 50));
     const safeOffset = Math.max(0, Number(offset) || 0);
@@ -2728,6 +2736,7 @@ export class PostgresControlPlaneRepository {
     if (typeof unassignedOnly !== 'boolean') throw new TypeError('unassignedOnly must be a boolean');
     if (typeof excludeUnassigned !== 'boolean') throw new TypeError('excludeUnassigned must be a boolean');
     if (typeof excludeActiveBlindQa !== 'boolean') throw new TypeError('excludeActiveBlindQa must be a boolean');
+    if (typeof copyQaReturnedOnly !== 'boolean') throw new TypeError('copyQaReturnedOnly must be a boolean');
     if (typeof lastPage !== 'boolean') throw new TypeError('lastPage must be a boolean');
     if (lastPage && !includeTotal) throw new TypeError('lastPage requires includeTotal');
     if (unassignedOnly && assignedToUserId !== null) throw new TypeError('assignee and unassigned filters conflict');
@@ -2757,6 +2766,9 @@ export class PostgresControlPlaneRepository {
     }
     if (excludeActiveBlindQa) {
       filters.push(`NOT ${activeBlindQaSql('tasks')}`);
+    }
+    if (copyQaReturnedOnly) {
+      filters.push("mandatory_copy_qc = true AND mandatory_copy_qc_origin = 'QA_RETURN'");
     }
     const stateFilters = normalizedTaskStates(state, states);
     if (stateFilters.length > 0) {
@@ -3254,19 +3266,19 @@ export class PostgresControlPlaneRepository {
     return (await this.#claim({ kind: 'COPY', nodeId: rawNodeId, limit: 1 })).claims[0] ?? null;
   }
 
-  async claimImage(rawNodeId, imageControlsVersion = 0, layoutCatalogVersion = 0) {
-    return (await this.#claim({ kind: 'IMAGE', nodeId: rawNodeId, limit: 1, imageControlsVersion, layoutCatalogVersion })).claims[0] ?? null;
+  async claimImage(rawNodeId, imageControlsVersion = 0, layoutCatalogVersion = 0, imageEditExecutorVersion = 0) {
+    return (await this.#claim({ kind: 'IMAGE', nodeId: rawNodeId, limit: 1, imageControlsVersion, layoutCatalogVersion, imageEditExecutorVersion })).claims[0] ?? null;
   }
 
   async claimCopyBatch({ nodeId, limit, requestId }) {
     return this.#claim({ kind: 'COPY', nodeId, limit, requestId: normalizeUuid(requestId, 'requestId') });
   }
 
-  async claimImageBatch({ nodeId, limit, requestId, imageControlsVersion = 0, layoutCatalogVersion = 0 }) {
-    return this.#claim({ kind: 'IMAGE', nodeId, limit, requestId: normalizeUuid(requestId, 'requestId'), imageControlsVersion, layoutCatalogVersion });
+  async claimImageBatch({ nodeId, limit, requestId, imageControlsVersion = 0, layoutCatalogVersion = 0, imageEditExecutorVersion = 0 }) {
+    return this.#claim({ kind: 'IMAGE', nodeId, limit, requestId: normalizeUuid(requestId, 'requestId'), imageControlsVersion, layoutCatalogVersion, imageEditExecutorVersion });
   }
 
-  async #claim({ kind, nodeId: rawNodeId, limit, requestId, imageControlsVersion = 0, layoutCatalogVersion = 0 }) {
+  async #claim({ kind, nodeId: rawNodeId, limit, requestId, imageControlsVersion = 0, layoutCatalogVersion = 0, imageEditExecutorVersion = 0 }) {
     const nodeId = normalizeNodeId(rawNodeId);
     normalizeConcurrency(limit, 'limit');
     return transaction(this.pool, async (client) => {
@@ -3290,12 +3302,20 @@ export class PostgresControlPlaneRepository {
             throw new ControlPlaneConflictError('CLAIM_REQUEST_MISMATCH', 'requestId was already used with another limit');
           }
           const records = receipt.execution_ids.length ? (await client.query(`
-            SELECT e.*, row_to_json(t) AS task FROM task_executions e
-            JOIN tasks t ON t.id = e.task_id WHERE e.id = ANY($1::uuid[])
+            SELECT e.*, row_to_json(t) AS task, row_to_json(edit) AS image_edit
+            FROM task_executions e
+            JOIN tasks t ON t.id = e.task_id
+            LEFT JOIN image_edit_requests edit ON edit.id = (e.snapshot->>'imageEditRequestId')::uuid
+            WHERE e.id = ANY($1::uuid[])
             ORDER BY array_position($1::uuid[], e.id)
           `, [receipt.execution_ids])).rows : [];
-          if (kind === 'IMAGE') for (const row of records) assertLayoutCapability(row.snapshot, layoutCatalogVersion);
-          return { requestId, claims: records.map(row => ({ task: taskFrom(row.task), execution: executionFrom(row) })) };
+          if (kind === 'IMAGE') for (const row of records) {
+            if (!row.image_edit) assertLayoutCapability(row.snapshot, layoutCatalogVersion);
+          }
+          return { requestId, claims: records.map(row => ({
+            task: taskFrom(row.task), execution: executionFrom(row),
+            ...(row.image_edit ? { imageEdit: row.image_edit } : {}),
+          })) };
         }
       }
       const expiresAt = requestId ? claimRequestExpiry(requestId) : null;
@@ -3355,16 +3375,24 @@ export class PostgresControlPlaneRepository {
         `, [queuedState, available]);
       } else if (available) {
         candidate = await client.query(`
-          WITH ranked_candidates AS MATERIALIZED (
+          WITH earliest_edits AS MATERIALIZED (
+            SELECT DISTINCT ON (edit.task_id) edit.task_id, edit.id AS edit_id
+            FROM image_edit_requests edit
+            JOIN tasks edit_task ON edit_task.id = edit.task_id
+            WHERE $5::integer >= 1
+              AND edit.status = 'QUEUED'
+              AND edit_task.priority_paused = false
+              AND edit_task.assigned_to_user_id IS NOT NULL
+            ORDER BY edit.task_id, edit.created_at, edit.id
+          ), work_candidates AS MATERIALIZED (
             SELECT
               queued.id AS task_id,
+              NULL::uuid AS edit_id,
               queued.assigned_to_user_id,
               queued.last_activity_at,
-              queued.assigned_to_user_id AS claim_owner,
-              row_number() OVER (
-                PARTITION BY queued.assigned_to_user_id
-                ORDER BY ${priorityOrderSql('queued.')}
-              ) AS owner_row_number
+              queued.priority_paused,
+              queued.priority_sort_at,
+              queued.assigned_to_user_id AS claim_owner
             FROM tasks AS queued
             WHERE queued.state = $1
               AND queued.priority_paused = false
@@ -3375,19 +3403,38 @@ export class PostgresControlPlaneRepository {
               AND (queued.pending_snapshot->'imageRecovery'->>'nodeId' IS NULL
                 OR queued.pending_snapshot->'imageRecovery'->>'nodeId' = $2)
               AND (queued.error IS NULL OR queued.last_activity_at <= now() - interval '5 seconds')
+            UNION ALL
+            SELECT queued.id, edit.edit_id, queued.assigned_to_user_id,
+              queued.last_activity_at, queued.priority_paused, queued.priority_sort_at,
+              queued.assigned_to_user_id
+            FROM earliest_edits edit
+            JOIN tasks queued ON queued.id = edit.task_id
+          ), ranked_candidates AS MATERIALIZED (
+            SELECT work.*,
+              row_number() OVER (
+                PARTITION BY work.assigned_to_user_id
+                ORDER BY work.priority_paused, work.priority_sort_at, work.task_id,
+                  work.edit_id NULLS FIRST
+              ) AS owner_row_number
+            FROM work_candidates work
           )
-          SELECT task.*
+          SELECT task.*, ranked.edit_id AS image_edit_request_id
           FROM ranked_candidates AS ranked
           JOIN tasks AS task ON task.id = ranked.task_id
-          WHERE task.state = $1 AND task.priority_paused = false
-            AND ${copyQualityImageGate('task')}
+          WHERE task.priority_paused = false
             AND task.assigned_to_user_id IS NOT NULL
             AND task.assigned_to_user_id IS NOT DISTINCT FROM ranked.assigned_to_user_id
-            AND (task.pending_snapshot->'imageRetry'->>'nodeId' IS NULL
-              OR task.pending_snapshot->'imageRetry'->>'nodeId' = $2)
-            AND (task.pending_snapshot->'imageRecovery'->>'nodeId' IS NULL
-              OR task.pending_snapshot->'imageRecovery'->>'nodeId' = $2)
-            AND (task.error IS NULL OR task.last_activity_at <= now() - interval '5 seconds')
+            AND ((ranked.edit_id IS NOT NULL AND EXISTS (
+                SELECT 1 FROM image_edit_requests current_edit
+                WHERE current_edit.id = ranked.edit_id AND current_edit.status = 'QUEUED'
+              )) OR (ranked.edit_id IS NULL
+                AND task.state = $1
+                AND ${copyQualityImageGate('task')}
+                AND (task.pending_snapshot->'imageRetry'->>'nodeId' IS NULL
+                  OR task.pending_snapshot->'imageRetry'->>'nodeId' = $2)
+                AND (task.pending_snapshot->'imageRecovery'->>'nodeId' IS NULL
+                  OR task.pending_snapshot->'imageRecovery'->>'nodeId' = $2)
+                AND (task.error IS NULL OR task.last_activity_at <= now() - interval '5 seconds')))
           ORDER BY
             ranked.owner_row_number,
             CASE WHEN $3::varchar IS NULL
@@ -3396,39 +3443,64 @@ export class PostgresControlPlaneRepository {
             ranked.last_activity_at NULLS FIRST, ranked.task_id
           FOR UPDATE OF task SKIP LOCKED
           LIMIT $4
-        `, [queuedState, nodeId, cursor?.last_assignee_user_id ?? null, available]);
+        `, [queuedState, nodeId, cursor?.last_assignee_user_id ?? null, available,
+          imageEditExecutorVersion]);
       }
-      const snapshots = await configurationSnapshots(client, candidate.rows.filter(task => task.pending_snapshot == null), kind);
+      const snapshots = await configurationSnapshots(client, candidate.rows.filter(task =>
+        !task.image_edit_request_id && task.pending_snapshot == null), kind);
       const claims = [];
       for (const task of candidate.rows) {
         const executionId = randomUUID();
-        const baseSnapshot = task.pending_snapshot ?? snapshots.get(task.id);
-        const imageProductionChainId = kind === 'IMAGE'
+        const imageEditRequestId = task.image_edit_request_id ?? null;
+        const baseSnapshot = imageEditRequestId
+          ? { imageEditRequestId, imageEditExecutorVersion: 1,
+            task: { id: Number(task.id), query: task.query } }
+          : task.pending_snapshot ?? snapshots.get(task.id);
+        const imageProductionChainId = kind === 'IMAGE' && !imageEditRequestId
           ? task.image_production_chain_id ?? baseSnapshot?.imageProductionChainId ?? randomUUID()
           : null;
-        const snapshot = kind === 'IMAGE'
+        const snapshot = kind === 'IMAGE' && !imageEditRequestId
           ? { ...baseSnapshot, imageProductionChainId }
           : baseSnapshot;
-        if (kind === 'IMAGE') assertLayoutCapability(snapshot, layoutCatalogVersion);
-        if (kind === 'IMAGE' && hasImageControls(snapshot?.copyRevision?.content) && imageControlsVersion !== 1) {
+        if (kind === 'IMAGE' && !imageEditRequestId) assertLayoutCapability(snapshot, layoutCatalogVersion);
+        if (kind === 'IMAGE' && !imageEditRequestId
+            && hasImageControls(snapshot?.copyRevision?.content) && imageControlsVersion !== 1) {
           throw new ControlPlaneConflictError('IMAGE_CONTROLS_UPGRADE_REQUIRED', '当前任务使用新版图片配置，请更新图片执行机后再领取');
         }
-        const stage = kind === 'COPY' ? 'STARTING_COPY' : 'STARTING_IMAGE';
+        const stage = imageEditRequestId ? 'IMAGE_EDIT' : kind === 'COPY' ? 'STARTING_COPY' : 'STARTING_IMAGE';
+        const progressMessage = imageEditRequestId ? '执行机已领取图片修改' : '执行机已领取任务';
         await client.query(`
           INSERT INTO task_executions(
             id, task_id, kind, node_id, stage, progress_message, snapshot,
             image_production_chain_id
           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        `, [executionId, task.id, kind, nodeId, stage, '执行机已领取任务', snapshot,
+        `, [executionId, task.id, kind, nodeId, stage, progressMessage, snapshot,
           imageProductionChainId]);
-        if (kind === 'IMAGE') {
+        let imageEdit = null;
+        if (imageEditRequestId) {
+          imageEdit = (await client.query(`UPDATE image_edit_requests SET
+              status='RUNNING', attempts=attempts+1, version=version+1,
+              claimed_by=$2, execution_id=$3, lease_token=$4,
+              lease_expires_at=now()+interval '15 minutes', validation=NULL,
+              error=NULL, updated_at=now()
+            WHERE id=$1 AND status='QUEUED'
+            RETURNING *`, [imageEditRequestId, nodeId, executionId, randomUUID()])).rows[0];
+          if (!imageEdit) {
+            await client.query('DELETE FROM task_executions WHERE id=$1', [executionId]);
+            continue;
+          }
+          await client.query(`INSERT INTO image_edit_events(
+              task_id,edit_id,action,actor,reason,detail)
+            VALUES($1,$2,'EXECUTE',$3,$4,$5)`, [task.id, imageEdit.id, nodeId,
+            `attempt ${imageEdit.attempts}`, { executionId }]);
+        } else if (kind === 'IMAGE') {
           await client.query(`
             INSERT INTO image_runs(id, task_id, execution_id, copy_revision_id,
               image_production_chain_id)
             VALUES ($1, $2, $1, $3, $4)
           `, [executionId, task.id, task.current_copy_revision_id, imageProductionChainId]);
         }
-        const updated = await client.query(`
+        const updated = imageEdit ? { rows: [task] } : await client.query(`
           UPDATE tasks SET
             state = $1,
             current_execution_id = $2,
@@ -3456,6 +3528,7 @@ export class PostgresControlPlaneRepository {
             'SELECT * FROM task_executions WHERE id = $1',
             [executionId],
           )).rows[0]),
+          ...(imageEdit ? { imageEdit } : {}),
         });
       }
       if (kind === 'IMAGE' && claims.length) {

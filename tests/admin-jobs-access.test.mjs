@@ -3,12 +3,13 @@ import test from 'node:test';
 import { createSessionToken, ADMIN_SESSION_COOKIE } from '../src/admin/auth.mjs';
 import { evaluateAdminProxyRequest } from '../src/admin/proxy-policy.mjs';
 
-test('word screening stays available to current roles while administrator-only pages stay closed', () => {
+test('permitted workflows stay available to current roles while administrator-only pages stay closed', () => {
   const secret = 'isolated-test-session-secret-for-all-jobs';
   for (const role of ['ADMIN', 'REVIEWER', 'USER']) {
     const token = createSessionToken(secret, {
       actor: { username: role.toLowerCase(), userId: 1,
-        displayName: role, roles: [role], credentialVersion: 1 },
+        displayName: role, roles: [role], credentialVersion: 1,
+        copyReviewEnabled: true, copyQcEnabled: true },
     });
     const request = (path) => new Request(`http://127.0.0.1:3001${path}`, {
       headers: { cookie: `${ADMIN_SESSION_COOKIE}=${token}` },
@@ -38,5 +39,24 @@ test('word screening stays available to current roles while administrator-only p
     if (role === 'USER') {
       assert.equal(evaluateAdminProxyRequest(request('/copy-qa'), environment).type, 'next');
     }
+  }
+});
+
+test('ordinary users cannot enter workflow pages whose permission switches are off', () => {
+  const secret = 'isolated-test-session-secret-for-workflow-permissions';
+  const token = createSessionToken(secret, {
+    actor: {
+      username: 'worker', userId: 2, roles: ['USER'], credentialVersion: 1,
+      copyReviewEnabled: false, copyQcEnabled: false,
+    },
+  });
+  const request = (path) => new Request(`http://127.0.0.1:3001${path}`, {
+    headers: { cookie: `${ADMIN_SESSION_COOKIE}=${token}` },
+  });
+  const environment = { XHS_SESSION_SECRET: secret };
+
+  assert.equal(evaluateAdminProxyRequest(request('/workbench/personal'), environment).type, 'next');
+  for (const path of ['/query-packages', '/copy-flow', '/copy-qa']) {
+    assert.equal(evaluateAdminProxyRequest(request(path), environment).type, 'forbidden', path);
   }
 });

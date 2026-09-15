@@ -568,8 +568,9 @@ export function TaskReviewDialog({
     || (copyOriginalScore === 2 || copyOriginalScore === 2.5) && hasEditedCopyVersion);
   const showCopyRating = detail?.state === 'COPY_REVIEW_PENDING' && !isCopyRework;
   const isImageReviewView = detail?.state === 'MANUAL_ARCHIVE' || detail?.state === 'IMAGE_REWORK_PENDING';
+  const canHandleAssignedImages = (isAdmin || role === 'USER') && currentUserIsAssignee;
   const canSubmitImageSelfReview = detail?.state === 'MANUAL_ARCHIVE'
-    && role === 'USER' && currentUserIsAssignee && Boolean(detail.currentImageRunId);
+    && canHandleAssignedImages && Boolean(detail.currentImageRunId);
   // Scored pass/return decisions moved to the dedicated image-QA pool.
   const canReviewImages = false;
   const downloadable = isAdmin && detail?.state === 'REVIEWED' && detail.deliveryStatus === 'READY';
@@ -1130,13 +1131,17 @@ export function TaskReviewDialog({
             : detail?.state === 'COPY_REVIEW_PENDING' && !canReviewCopy
             ? '任务已分配给其他负责人；你可以查看生成结果，但不能评分、编辑或提交审核结果。'
             : detail?.state === 'MANUAL_ARCHIVE'
-            ? role === 'USER'
+            ? canHandleAssignedImages
               ? '图片已经生成；请逐页核对并按需使用完整图片编辑功能，确认后提交图片初审。'
-              : '图片初审由任务作业员完成；审核员和管理员请在独立图片质检池处理抽中项。'
+              : isAdmin
+                ? '图片初审由任务负责人完成；如需代办，请先将任务改派给自己。'
+                : '图片初审由任务负责人完成；审核员请在独立图片质检池处理抽中项。'
             : detail?.state === 'IMAGE_REWORK_PENDING'
-              ? role === 'USER'
+              ? canHandleAssignedImages
                 ? '图片已被质检打回；请按要求修改并采用新版本，再重新提交初审和强制复检。'
-                : '图片正由任务作业员返修；新版本提交后将在图片质检池进行强制复检。'
+                : isAdmin
+                  ? '图片正由任务负责人返修；如需代办，请先将任务改派给自己。'
+                  : '图片正由任务负责人返修；新版本提交后将在图片质检池进行强制复检。'
             : detail?.state === 'REVIEWED' ? role === 'USER'
               ? '任务已经完成，可查看最终内容。'
               : downloadable
@@ -1295,7 +1300,7 @@ export function TaskReviewDialog({
                 <div className="workbench-image-review-title-main">
                   <span>{isImageReviewView ? '01' : '02'}</span>
                   <div><h3>{isImageReviewView ? detail.state === 'IMAGE_REWORK_PENDING' ? '图片返修' : '图片初审' : '图片审核'}</h3><p>{isImageReviewView
-                    ? detail.state === 'IMAGE_REWORK_PENDING' ? '图片质检已打回；可使用完整图片编辑能力，采用新版本后再完成初审。' : '由任务作业员逐页核对并修改；确认完成后提交图片抽检，无需给自己打回。'
+                    ? detail.state === 'IMAGE_REWORK_PENDING' ? '图片质检已打回；任务负责人可使用完整图片编辑能力，采用新版本后再完成初审。' : '由任务负责人逐页核对并修改；确认完成后提交图片抽检。'
                     : '核对当前图片运行生成的完整图集。'}</p></div>
                   {selectedAsset && <div className="workbench-image-review-title-actions">
                     <ImagePreviewBackgroundControl value={previewBackdrop} onChange={setPreviewBackdrop} />
@@ -1421,9 +1426,9 @@ export function TaskReviewDialog({
                   <HumanScoreBadge score={imageAssessments.at(-1)!.score} />
                   <HumanAssessmentHistory assessments={imageAssessments} scoreDefinitions={scoreDefinitions} reasonOptions={imageReasonOptions} showReasonOptions={showImageDeductionReasons} />
                 </div>}
-                {!canReviewImages && imageAssessments.length === 0 && isImageReviewView && <p className="notice">{role === 'USER'
+                {!canReviewImages && imageAssessments.length === 0 && isImageReviewView && <p className="notice">{canHandleAssignedImages
                   ? detail.state === 'IMAGE_REWORK_PENDING' ? '请完成返修并采用新图片版本；系统随后回到图片初审，提交后固定进入强制图片复检。' : '请逐页核对图片。需要调整时可直接编辑或重新生成；确认无误后在底部提交图片抽检。'
-                  : '图片初审由任务作业员完成；审核员和管理员在独立的图片质检池处理抽中项。'}</p>}
+                  : isAdmin ? '当前任务由其他负责人处理；如需代办，请先将任务改派给自己。' : '图片初审由任务负责人完成；审核员在独立图片质检池处理抽中项。'}</p>}
                 {currentImageRun?.result?.processing?.type === 'LOCAL' && <p className="notice warning">此版本已在本地转换格式或背景，未重新调用模型验收，请检查文字对比和透明边缘后审核。</p>}
                 {imageConfigurationChanged && <p className="notice warning">下方配置尚未应用，当前预览仍是已有成品。请先提交转换或重新生图，或刷新恢复已保存的配置。</p>}
                 <div className="workbench-image-review-preference"><ImagePreviewPreference /></div>
@@ -1549,7 +1554,7 @@ export function TaskReviewDialog({
               {canSubmitImageSelfReview && <Button unstyled className="button primary" type="button"
                 disabled={submitting || loading || !imageSetComplete || imagePlanChanged || imageConfigurationChanged}
                 onClick={() => { void submitImageSelfReview(); }}><CheckCircle2 size={15} />
-                {submitting ? '正在提交…' : '自检完成，提交图片抽检'}</Button>}
+                {submitting ? '正在提交…' : '初审完成，提交图片抽检'}</Button>}
               {canReviewImages && <>
                 <Button unstyled className="button danger" type="button" disabled={submitting || loading || !imageRatingComplete} onClick={() => { void submitImageReview('DISCARD'); }}><Trash2 size={15} />废弃</Button>
                 <div className="workbench-image-rework-control">

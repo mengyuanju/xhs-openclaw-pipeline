@@ -54,6 +54,7 @@ export function compactTask(row) {
     imageReviewedAt: textOrNull(row.imageReviewedAt), lastActivityAt: textOrNull(row.lastActivityAt),
     currentImageRunId: textOrNull(row.currentImageRunId),
     currentCopyRevisionId: Number.isSafeInteger(row.currentCopyRevisionId) ? row.currentCopyRevisionId : null,
+    copyQaReturned: row.mandatoryCopyQc === true && row.mandatoryCopyQcOrigin === 'QA_RETURN',
     retryExhausted: row.currentStage === 'IMAGE_RETRY_EXHAUSTED',
   };
 }
@@ -133,12 +134,14 @@ export function summarizeCounts(rawTasks, range, now = Date.now()) {
   const summary = emptyCounts();
   const today = normalizeRange({}, now);
   const states = Object.fromEntries(Object.keys(STATE_GROUPS).map(group => [group, 0]));
+  let copyQaReturned = 0;
   const people = new Map();
   const trend = new Map(daysInRange(range).map(date => [date, { date, created: 0, completed: 0 }]));
   const stale = [];
   let missingDates = 0;
   for (const task of tasks) {
     countTask(summary, task, range, today);
+    if (task.copyQaReturned) copyQaReturned++;
     const historicalAccount = task.createdByAccountId === null && task.createdByUserId !== null;
     const key = task.createdByAccountId === null
       ? `historical:${task.createdByUserId ?? ''}`
@@ -161,7 +164,7 @@ export function summarizeCounts(rawTasks, range, now = Date.now()) {
       stale.push({ id: task.id, query: task.query, username: task.createdByUserId, hours: Math.floor((now - last) / 3_600_000) });
     }
   }
-  return { ...summary, states, people: [...people.values()].sort((a, b) => b.createdInPeriod - a.createdInPeriod),
+  return { ...summary, states, copyQaReturned, people: [...people.values()].sort((a, b) => b.createdInPeriod - a.createdInPeriod),
     trend: [...trend.values()], missingDates, staleCount: stale.length,
     stale: stale.sort((a, b) => b.hours - a.hours).slice(0, 20) };
 }

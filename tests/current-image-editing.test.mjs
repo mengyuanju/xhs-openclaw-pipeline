@@ -84,6 +84,22 @@ test('source visual precheck retries once and stores both failures for operator 
   const dir=await mkdtemp(join(tmpdir(),'image-edit-source-check-'));
   try{const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',validateImage});assert.equal(result.status,'FAILED');assert.equal(validationCalls,2);assert.equal(failedError.validation.stage,'SOURCE');assert.equal(failedError.validation.checks.length,2);}finally{await rm(dir,{recursive:true,force:true});}
 });
+test('a source vision transport failure is explicit and does not consume a paid image attempt',async()=>{
+  let failedError=null;
+  const config={imageEditPrompt,references:[],instruction:'添加合规标识',preserve:'保留原有标题',negative:'不要增加其他文字',overlay:normalizeManualOverlay({text:'AI生成',textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',position:'bottom-right'})};
+  const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'TEXT',config}),context:async()=>({source:{id:1},refs:[],settings:{aiDisclosureEnabled:true,aiDisclosureText:'AI生成'},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),readAsset:async()=>png(),heartbeat:async()=>true,
+    fail:async(e,error)=>{failedError=error;},complete:()=>assert.fail('must not complete')};
+  const agentClient={runVision:async()=>{throw Object.assign(new Error('shared caller configuration differs'),{code:'CODEX_CONCURRENCY_MISMATCH'});},runImageEdit:()=>assert.fail('image model must not start')};
+  const dir=await mkdtemp(join(tmpdir(),'image-edit-source-service-'));
+  try {
+    const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient});
+    assert.equal(result.status,'FAILED');
+    assert.match(result.error,/CODEX_CONCURRENCY_MISMATCH/u);
+    assert.equal(failedError.nonBillablePreflightFailure,true);
+    assert.deepEqual(failedError.validation,{stage:'SOURCE_SERVICE',passed:false,retryable:true,
+      code:'ALIGNMENT_SERVICE_FAILED',serviceCode:'CODEX_CONCURRENCY_MISMATCH',billedImageGeneration:false});
+  } finally { await rm(dir,{recursive:true,force:true}); }
+});
 test('AI text worker targets one image, retries visual validation failures, and never uses a deterministic overlay',async()=>{
   const source=await png('white'),generated=await png('#eeeeee');
   const config={imageEditPrompt,references:[],instruction:'将人工生成标识显示为“人工创作”并放在右下角',preserve:'保留原有标题',negative:'不要增加其他文字',overlay:normalizeManualOverlay({text:'人工创作',textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',position:'bottom-right'})};

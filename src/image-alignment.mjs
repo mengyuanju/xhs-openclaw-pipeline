@@ -1,4 +1,6 @@
 import { businessPrompt, promptPolicy, promptRuntimeSnapshot } from './prompt-runtime.mjs';
+import { codexErrorCode } from './codex-protocol.mjs';
+import { safeTraceText } from './model-call-trace.mjs';
 
 const FAILURE_CLASSES = new Set([
   'PASS',
@@ -36,10 +38,15 @@ export class ImageAlignmentResponseError extends SyntaxError {
 
 export class ImageAlignmentServiceError extends Error {
   constructor(cause) {
-    super('image alignment service failed before returning a response', { cause });
+    const serviceCode = codexErrorCode(cause)
+      ?? (typeof cause?.code === 'string' ? cause.code : 'UNKNOWN');
+    const detail = safeTraceText(cause?.message ?? cause ?? 'unknown service failure').text.slice(0, 500);
+    super(`图片视觉验收服务调用失败（${serviceCode}）：${detail}`, { cause });
     this.name = 'ImageAlignmentServiceError';
     this.code = 'ALIGNMENT_SERVICE_FAILED';
-    this.retryable = true;
+    this.serviceCode = serviceCode;
+    this.retryable = !['CODEX_AUTH_REQUIRED', 'CODEX_QUOTA_EXHAUSTED'].includes(serviceCode);
+    this.haltWorker = cause?.haltWorker === true;
   }
 }
 

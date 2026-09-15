@@ -450,15 +450,21 @@ test('image review stores optional low-score feedback and validates current-run 
   assert.equal(staleAsset.assessments.length, 0);
 });
 
-test('image self-review is owner-only while the independent QA pool is reviewer/admin-only', async () => {
+test('image self-review accepts an assigned user or admin while the independent QA pool stays reviewer/admin-only', async () => {
   const selfReviewCalls = [];
   const listCalls = [];
+  const identities = {
+    alice: { id: 1, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 },
+    admin: { id: 2, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credentialVersion: 1 },
+    reviewer: { id: 3, username: 'reviewer', role: 'REVIEWER', status: 'ACTIVE', credentialVersion: 1 },
+  };
+  let assignee = identities.alice;
   const repository = {
-    getUserByUsername: async (username) => ({ id: 1, username, role: username === 'alice' ? 'USER' : username === 'admin' ? 'ADMIN' : 'REVIEWER', status: 'ACTIVE', credentialVersion: 1 }),
+    getUserByUsername: async (username) => identities[username],
     getTaskAccess: async () => ({ id: 7, state: 'MANUAL_ARCHIVE', createdByUserId: 'alice', createdByAccountId: 1,
-      assignedToUserId: 'alice', assignedToAccountId: 1, activeBlindQa: false }),
+      assignedToUserId: assignee.username, assignedToAccountId: assignee.id, activeBlindQa: false }),
     getTask: async () => ({ id: 7, state: 'MANUAL_ARCHIVE', createdByUserId: 'alice', createdByAccountId: 1,
-      assignedToUserId: 'alice', assignedToAccountId: 1 }),
+      assignedToUserId: assignee.username, assignedToAccountId: assignee.id }),
     submitImageSelfReview: async (...args) => { selfReviewCalls.push(args); return { state: 'IMAGE_QC_PENDING' }; },
     listImageQaItems: async (...args) => { listCalls.push(args); return { items: [], total: 0 }; },
   };
@@ -466,22 +472,27 @@ test('image self-review is owner-only while the independent QA pool is reviewer/
   await new Promise((resolve) => server.once('listening', resolve));
   try {
     const capability = await fetch(`http://127.0.0.1:${server.address().port}/v1/tasks/7/image-capabilities`, {
-      headers: { 'X-Actor-User-Id': '1', 'X-Actor-Username': 'admin', 'X-Actor-Role': 'ADMIN', 'X-Actor-Credential-Version': '1' },
+      headers: { 'X-Actor-User-Id': '2', 'X-Actor-Username': 'admin', 'X-Actor-Role': 'ADMIN', 'X-Actor-Credential-Version': '1' },
     });
     assert.equal(capability.status, 200);
     assert.equal((await capability.json()).data.reviewImagePlanEdits, true);
-    for (const [username, role, status] of [['alice', 'USER', 200], ['reviewer', 'REVIEWER', 403], ['admin', 'ADMIN', 403]]) {
+    for (const [username, role, accountId, status] of [['alice', 'USER', 1, 200], ['reviewer', 'REVIEWER', 3, 403], ['admin', 'ADMIN', 2, 403]]) {
       const response = await fetch(`http://127.0.0.1:${server.address().port}/v1/tasks/7/submit-image-self-review`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Actor-User-Id': '1', 'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1' },
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Actor-User-Id': String(accountId), 'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1' },
         body: JSON.stringify({ imageRunId: runId, reviewerUserId: 'spoofed' }),
       });
       assert.equal(response.status, status);
     }
-    assert.equal(selfReviewCalls.length, 1);
-    assert.equal(selfReviewCalls[0][2].actor.username, 'alice');
-    for (const [username, role, status] of [['reviewer', 'REVIEWER', 200], ['admin', 'ADMIN', 200], ['alice', 'USER', 403]]) {
+    assignee = identities.admin;
+    const adminSelfReview = await fetch(`http://127.0.0.1:${server.address().port}/v1/tasks/7/submit-image-self-review`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Actor-User-Id': '2', 'X-Actor-Username': 'admin', 'X-Actor-Role': 'ADMIN', 'X-Actor-Credential-Version': '1' },
+      body: JSON.stringify({ imageRunId: runId }),
+    });
+    assert.equal(adminSelfReview.status, 200);
+    assert.deepEqual(selfReviewCalls.map(([, , options]) => options.actor.username), ['alice', 'admin']);
+    for (const [username, role, accountId, status] of [['reviewer', 'REVIEWER', 3, 200], ['admin', 'ADMIN', 2, 200], ['alice', 'USER', 1, 403]]) {
       const response = await fetch(`http://127.0.0.1:${server.address().port}/v1/image-qa/items`, {
-        headers: { 'X-Actor-User-Id': '1', 'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1' },
+        headers: { 'X-Actor-User-Id': String(accountId), 'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1' },
       });
       assert.equal(response.status, status);
     }

@@ -148,7 +148,7 @@ test('IMAGE fairness retains retry ownership, recovery affinity, cooldown and pr
   assert.equal(await repository.claimImage('node-a'), null);
 
   const selection = calls.find(({ sql }) => sql.includes('FOR UPDATE OF task SKIP LOCKED'));
-  assert.deepEqual(selection.values, ['IMAGE_QUEUED', 'node-a', 'alice', 1]);
+  assert.deepEqual(selection.values, ['IMAGE_QUEUED', 'node-a', 'alice', 1, 0]);
   assert.match(selection.sql, /queued\.pending_snapshot->'imageRetry'->>'nodeId' IS NULL/u);
   assert.match(selection.sql, /queued\.pending_snapshot->'imageRetry'->>'nodeId' = \$2/u);
   assert.match(selection.sql, /queued\.pending_snapshot->'imageRecovery'->>'nodeId' IS NULL/u);
@@ -162,7 +162,7 @@ test('IMAGE fairness retains retry ownership, recovery affinity, cooldown and pr
   assert.match(selection.sql, /queued\.assigned_to_user_id IS NOT NULL/u);
   assert.match(selection.sql, /task\.assigned_to_user_id IS NOT NULL/u);
   assert.match(selection.sql, /task\.assigned_to_user_id IS NOT DISTINCT FROM ranked\.assigned_to_user_id/u);
-  assert.match(selection.sql, /PARTITION BY queued\.assigned_to_user_id[\s\S]*ORDER BY queued\.priority_paused ASC, queued\.priority_sort_at ASC, queued\.id ASC/u);
+  assert.match(selection.sql, /PARTITION BY work\.assigned_to_user_id[\s\S]*ORDER BY work\.priority_paused, work\.priority_sort_at, work\.task_id/u);
   assert.match(selection.sql, /ranked\.last_activity_at NULLS FIRST, ranked\.task_id/u);
   assert.match(selection.sql, /LIMIT \$4/u);
   assert.equal(calls.some(({ sql }) => sql.includes('UPDATE execution_claim_cursors')), false);

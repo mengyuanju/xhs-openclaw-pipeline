@@ -44,3 +44,9 @@ test('workbench URLs drop a creator name or account id when its identity pair is
   assert.equal(parseWorkbenchListState({ assignedToUserId: 'alice' }, { allowAdminFilters: true }).assignedToUserId, '');
   assert.equal(parseWorkbenchListState({ assignedToAccountId: '2' }, { allowAdminFilters: true }).assignedToAccountId, null);
 });
+
+test('personal quality-return filters round-trip through a shareable URL', () => {
+  const parsed = parseWorkbenchListState({ state: 'copyQaReturned' });
+  assert.equal(parsed.state, 'copyQaReturned');
+  assert.equal(workbenchListSearch(parsed).toString(), 'state=copyQaReturned');
+});

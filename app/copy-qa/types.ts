@@ -46,6 +46,8 @@ export type CopyQaItem = CopyQaBlindItem | CopyQaNonBlindItem;
 export type CopyQaStatistics = {
   random: Array<{
     finalApproverAccountId: number;
+    finalApproverUsername: string | null;
+    finalApproverDisplayName: string | null;
     passed: number;
     returned: number;
     decided: number;
@@ -204,8 +206,20 @@ export function normalizeCopyQaStatistics(value: unknown): CopyQaStatistics | nu
       const accountId = positiveInteger(metric?.finalApproverAccountId);
       if (!accountId) return [];
       const accuracyRate = Number(metric?.accuracyRate);
+      const finalApproverUsername = typeof metric?.finalApproverUsername === 'string'
+        ? metric.finalApproverUsername.trim()
+        : '';
+      const finalApproverDisplayName = typeof metric?.finalApproverDisplayName === 'string'
+        ? metric.finalApproverDisplayName.replace(/\s+/gu, ' ').trim()
+        : '';
       return [{
         finalApproverAccountId: accountId,
+        finalApproverUsername: finalApproverUsername && [...finalApproverUsername].length <= 50
+          ? finalApproverUsername
+          : null,
+        finalApproverDisplayName: finalApproverDisplayName && [...finalApproverDisplayName].length <= 80
+          ? finalApproverDisplayName
+          : null,
         passed: count(metric?.passed),
         returned: count(metric?.returned),
         decided: count(metric?.decided),

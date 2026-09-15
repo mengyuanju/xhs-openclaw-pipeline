@@ -62,6 +62,7 @@ import { createActionLock } from '../../src/control-plane/action-lock.mjs';
 import { WorkbenchPagination } from './workbench-pagination';
 import { PersonalOverview, PersonalStatusFilters } from '../workbench-statistics/personal-overview';
 import { PersonalTaskScopeFilter } from './personal-task-scope-filter';
+import { isLegacyTaskStateFilterError } from './task-list-compatibility';
 import { useStatistics } from '../workbench-statistics/use-statistics';
 import { STATE_GROUPS } from '../../src/web-statistics/summary.mjs';
 import type { StateGroup } from '../workbench-statistics/types';
@@ -96,6 +97,8 @@ type DistributedTask = PriorityTask & {
   imageExecutorNodeId?: string | null;
   imageExecutorNodeName?: string | null;
   currentCopyRevisionId: number | null;
+  mandatoryCopyQc?: boolean;
+  mandatoryCopyQcOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | 'IMAGE_RETRY_REVIEW' | null;
   currentExecutionId?: string | null;
   createdByUserId: string | null;
   createdByAccountId?: number | null;
@@ -883,8 +886,11 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       }
       const pageCursor = taskPageCursors.current.values.get(page);
       const useLastPage = requestedLastPage.current === page;
-      const personalStates = view.personalOnly ? Object.hasOwn(STATE_GROUPS, stateFilter)
-        ? STATE_GROUPS[stateFilter as StateGroup] : Object.values(STATE_GROUPS).flat() : null;
+      const copyQaReturnedOnly = view.personalOnly && stateFilter === 'copyQaReturned';
+      const personalStates = view.personalOnly ? copyQaReturnedOnly
+        ? ['COPY_REVIEW_PENDING', 'COPY_QC_PENDING']
+        : Object.hasOwn(STATE_GROUPS, stateFilter)
+          ? STATE_GROUPS[stateFilter as StateGroup] : Object.values(STATE_GROUPS).flat() : null;
       const search = new URLSearchParams(legacyStateFilterMode.current
         ? { limit: '200', offset: '0' }
         : {
@@ -896,6 +902,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       if (view.personalOnly) {
         search.set('mine', 'true');
         if (personalScope !== 'ALL') search.set('personalScope', personalScope);
+        if (copyQaReturnedOnly) search.set('copyQaReturned', 'true');
       }
       if (view.unassignedOnly) search.set('unassigned', 'true');
       const searchedTaskId = taskIdSearch(searchKeyword);
@@ -931,7 +938,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         ...(useLastPage ? { lastPage: true } : {}),
       }) : request<TaskPage | DistributedTask[]>(apiPath(`/v1/tasks?${search}`))
         .catch(async (caught) => {
-          if (!(caught instanceof Error) || caught.message !== 'task state filter is invalid') throw caught;
+          if (!isLegacyTaskStateFilterError(caught)) throw caught;
           legacyStateFilterMode.current = true;
           const compatibilitySearch = new URLSearchParams({ limit: '200', offset: '0' });
           if (view.personalOnly) {
@@ -967,6 +974,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
           ? matchesPersonalScope(task, personalScope, creatorUserId, creatorAccountId)
             && personalStates.includes(task.state)
           : matchesWorkbenchView(task, view, creatorUserId, creatorAccountId))
+          && (!copyQaReturnedOnly
+            || task.mandatoryCopyQc === true && task.mandatoryCopyQcOrigin === 'QA_RETURN')
           && matchesAttention(task, attentionFilter)
           && (!keyword || (searchedTaskId ? task.id === searchedTaskId : task.query.toLocaleLowerCase('zh-CN').includes(keyword)))
           && (!packageKeyword || (task.sourceQueryPackageName ?? '').toLocaleLowerCase('zh-CN').includes(packageKeyword)))
@@ -989,6 +998,11 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         !matchesPersonalScope(task, personalScope, creatorUserId, creatorAccountId)
       ))) {
         throw new Error('中心服务尚未支持个人任务筛选，请更新并重启中心服务。');
+      }
+      if (copyQaReturnedOnly && taskPage.items.some((task) => (
+        task.mandatoryCopyQc !== true || task.mandatoryCopyQcOrigin !== 'QA_RETURN'
+      ))) {
+        throw new Error('中心服务尚未支持质检打回筛选，请更新并重启中心服务。');
       }
       if (requestId !== refreshRequestId.current) return;
       setTasks(taskPage.items);
@@ -1669,6 +1683,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   function taskActions(task: DistributedTask) {
     const busy = actingTaskId === task.id;
     const queued = ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state);
+    const currentUserIsAssignee = isTaskAssignee(task, creatorUserId, creatorAccountId);
+    const canHandleAssignedImages = ['ADMIN', 'USER'].includes(role) && currentUserIsAssignee;
     const canPermanentlyDelete = role === 'ADMIN' && isPermanentlyDeletableTask(task);
     const visibleActionCount = role === 'ADMIN' && activeView !== 'UNASSIGNED' ? 2 : 1;
     const assignmentButton = role === 'ADMIN' && canManageTaskAssignment(task) && <Button unstyled className="button small" type="button"
@@ -1680,10 +1696,15 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         title="管理员单独审核通过，不等待整批完成">
         <ShieldCheck size={14} />单独通过质检
       </Button>;
+    const allJobsDetailButton = canHandleAssignedImages && task.state === 'MANUAL_ARCHIVE'
+      ? <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />图片初审</Button>
+      : canHandleAssignedImages && task.state === 'IMAGE_REWORK_PENDING'
+        ? <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><RotateCcw size={14} />返修图片</Button>
+        : <Button unstyled className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>;
     if (isAllJobs) return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
       {assignmentButton}
       {directCopyQaButton}
-      <Button unstyled className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
+      {allJobsDetailButton}
       {['COPY_RUNNING', 'COPY_FAILED'].includes(task.state) && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</Button>}
       {queued && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardQueuedTask(task); }}><Trash2 size={14} />废弃</Button>}
       {permanentDeleteButton}
@@ -1733,10 +1754,11 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     if (task.state === 'REVIEWED') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>{assignmentButton}<Button unstyled className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>{permanentDeleteButton}</TaskRowActions>;
     if (task.state === 'MANUAL_ARCHIVE') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
       {assignmentButton}
-      <Button unstyled className={`button small ${role === 'USER' && hasOwnerControl ? 'primary' : ''}`} type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />{role === 'USER' && hasOwnerControl ? '图片初审' : '查看'}</Button>
+      <Button unstyled className={`button small ${canHandleAssignedImages ? 'primary' : ''}`} type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />{canHandleAssignedImages ? '图片初审' : '查看'}</Button>
     </TaskRowActions>;
     if (task.state === 'IMAGE_REWORK_PENDING') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
-      <Button unstyled className={`button small ${role === 'USER' && hasOwnerControl ? 'primary' : ''}`} type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><RotateCcw size={14} />{role === 'USER' && hasOwnerControl ? '返修图片' : '查看返修'}</Button>
+      {assignmentButton}
+      <Button unstyled className={`button small ${canHandleAssignedImages ? 'primary' : ''}`} type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><RotateCcw size={14} />{canHandleAssignedImages ? '返修图片' : '查看返修'}</Button>
     </TaskRowActions>;
     return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
       {assignmentButton}

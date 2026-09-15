@@ -22,6 +22,7 @@ import type { LucideIcon } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { workflowNavigationHrefs } from '../../src/admin/workflow-access.mjs';
 import { WORKBENCH_VIEWS } from '../workbench/views';
 
 type NavigationItem = { href: string; label: string; icon: LucideIcon; children?: NavigationItem[]; adminOnly?: boolean };
@@ -54,7 +55,16 @@ const navigationGroups: NavigationGroup[] = [
   },
 ];
 
-export function SideNav({ session }: { session: { subject: string; username?: string; roles?: string[] } | null }) {
+type NavigationSession = {
+  subject: string;
+  username?: string;
+  roles?: string[];
+  copyReviewEnabled?: boolean;
+  copyQcEnabled?: boolean;
+  imageQcEnabled?: boolean;
+} | null;
+
+export function SideNav({ session }: { session: NavigationSession }) {
   const pathname = usePathname();
   const router = useRouter();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -63,6 +73,7 @@ export function SideNav({ session }: { session: { subject: string; username?: st
   const [signOutError, setSignOutError] = useState('');
   const role = session?.roles?.[0];
   const isAdmin = role === 'ADMIN';
+  const allowedWorkflowHrefs = new Set(workflowNavigationHrefs(session));
   const roleGroups = isAdmin
     ? navigationGroups.map((group) => ({
         ...group,
@@ -77,12 +88,12 @@ export function SideNav({ session }: { session: { subject: string; username?: st
     : role === 'REVIEWER'
       ? navigationGroups.map((group) => ({
           ...group,
-          items: group.items.filter((item) => ['/workbench', '/query-packages', '/copy-flow', '/copy-qa', '/image-qa'].includes(item.href))
+          items: group.items.filter((item) => allowedWorkflowHrefs.has(item.href))
             .map((item) => ({ ...item, children: item.children?.filter((child) => !child.adminOnly) })),
         }))
       : navigationGroups.map((group) => ({
           ...group,
-          items: group.items.filter((item) => ['/workbench', '/query-packages', '/copy-flow', '/copy-qa'].includes(item.href)).map((item) => ({
+          items: group.items.filter((item) => allowedWorkflowHrefs.has(item.href)).map((item) => ({
             ...item,
             children: item.children?.filter((child) => child.href === '/workbench/personal'),
           })),

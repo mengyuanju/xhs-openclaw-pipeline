@@ -13,6 +13,7 @@ import {
 import { resolveLoginReturnPath } from '../app/login/return-path.ts';
 
 const copyWorkbenchUrl = new URL('../app/copy-qa/copy-qa-workbench.tsx', import.meta.url);
+const workflowQualitySettingsUrl = new URL('../app/settings/workflow-quality-settings-panel.tsx', import.meta.url);
 const queryWorkbenchUrl = new URL('../app/query-packages/query-package-workbench.tsx', import.meta.url);
 const deliveryWorkbenchUrl = new URL('../app/delivery-pool/delivery-pool-workbench.tsx', import.meta.url);
 const modularE2eFixtureUrl = new URL('./fixtures/modular-workflow-e2e.mjs', import.meta.url);
@@ -74,12 +75,25 @@ test('copy QA requests the selected status from the server and exposes load-more
     'historical rows must not starve the default pending queue');
 });
 
-test('copy QA keeps the review-mode control admin-only', async () => {
+test('copy QA fixes administrators to a full-information view', async () => {
   const source = await readFile(copyWorkbenchUrl, 'utf8');
-  assert.match(source, /\{role === 'ADMIN' && <label>评审模式<Select/u);
-  assert.match(source, /role !== 'ADMIN' \|\| mode === 'ALL'/u,
-    'reviewer rows must not be filtered by local review-mode state');
+  assert.doesNotMatch(source, /<label>评审模式<Select|setMode\(|const \[mode,/u,
+    'the administrator response is already unredacted and must not expose a misleading blind-mode filter');
+  assert.match(source, /管理员固定使用完整信息视图，任务、Query、词包和来源信息不会因样本盲评策略而隐藏/u);
+  assert.match(source, /role === 'ADMIN'[\s\S]*?<strong>完整<\/strong><span>管理员信息视图<\/span>/u);
   assert.match(source, /样本评审模式由管理员预先决定，审核员不可切换或更改/u);
+});
+
+test('copy QA accuracy statistics are fetched and rendered only for administrators', async () => {
+  const source = await readFile(copyWorkbenchUrl, 'utf8');
+  assert.match(source, /role === 'ADMIN' && !append[\s\S]*?\/v1\/copy-qa\/statistics/u);
+  assert.match(source, /\{role === 'ADMIN' && <section className="panel" aria-labelledby="copy-qa-accuracy-title">/u);
+});
+
+test('workflow settings describe blind review as a non-administrator view policy', async () => {
+  const source = await readFile(workflowQualitySettingsUrl, 'utf8');
+  assert.match(source, /审核员视图：/u);
+  assert.match(source, /管理员始终使用完整信息视图/u);
 });
 
 test('copy QA exposes administrator direct passes as a dedicated server-side result filter', async () => {
@@ -158,15 +172,24 @@ test('development E2E fixture mirrors delegated screening, automatic Query produ
 });
 
 test('login returns each role only to an authorized workflow page', () => {
-  const base = { homePath: '/workbench/personal', mustChangePassword: false };
+  const base = {
+    homePath: '/workbench/personal', mustChangePassword: false,
+    copyReviewEnabled: true, copyQcEnabled: true, imageQcEnabled: true,
+  };
   assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/query-packages' }), '/query-packages');
   assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/delivery-pool?task=1' }), base.homePath);
   assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/workbench/completed' }), base.homePath);
   assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/workbench/personal?taskId=7' }), '/workbench/personal?taskId=7');
   assert.equal(resolveLoginReturnPath({ ...base, role: 'REVIEWER', requestedPath: '/copy-qa' }), '/copy-qa');
+  assert.equal(resolveLoginReturnPath({ ...base, role: 'REVIEWER', requestedPath: '/image-qa' }), '/image-qa');
+  assert.equal(resolveLoginReturnPath({ ...base, role: 'REVIEWER', requestedPath: '/image-qa', imageQcEnabled: false }), base.homePath);
   assert.equal(resolveLoginReturnPath({ ...base, role: 'REVIEWER', requestedPath: '/knowledge' }), base.homePath);
   assert.equal(resolveLoginReturnPath({ ...base, role: 'REVIEWER', requestedPath: '/query-packages' }), '/query-packages');
   assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/copy-qa' }), '/copy-qa');
+  assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/image-qa' }), base.homePath);
+  assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/query-packages', copyReviewEnabled: false }), base.homePath);
+  assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/copy-flow', copyReviewEnabled: false, copyQcEnabled: false }), base.homePath);
+  assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/copy-qa', copyQcEnabled: false }), base.homePath);
   assert.equal(resolveLoginReturnPath({ ...base, role: 'ADMIN', requestedPath: '/settings' }), '/settings');
   assert.equal(resolveLoginReturnPath({ ...base, role: 'ADMIN', requestedPath: '//evil.example' }), base.homePath);
   assert.equal(resolveLoginReturnPath({ ...base, role: 'ADMIN', requestedPath: '/\\evil.example' }), base.homePath);

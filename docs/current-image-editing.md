@@ -23,13 +23,9 @@
 
 可取消草稿、排队、执行和预览请求；失败进入 FAILED，可明确重试，最多三次执行。每次领取带独立租约 token；领取使用 `FOR UPDATE SKIP LOCKED`，执行期间续租。过期任务进入 FAILED，不自动重复收费。取消/过期后，旧执行无法回传生效；AI 调用在下一次续租检查时收到中止信号。
 
-开发环境的中心服务会自动轮询独立图片编辑队列，默认每 2 秒领取一条且同一进程不并发执行。正式环境需显式配置 `CONTROL_PLANE_IMAGE_EDIT_WORKER_ENABLED=true`；关闭处理器时，请求会保持“排队中”。仍保留显式单次执行入口，供诊断时在具备中央数据库及同一资产存储访问能力的运行机执行：
+中心服务不再运行图片编辑模型，也不再提供中心机单次改图入口。手动改图与普通生图统一进入图片执行机的 `IMAGE` 容量池；只有启用图片能力的执行机才会领取。中心在同一领取事务中按任务优先级、等待补偿和负责人轮转统一选择普通生图或改图，`PAUSE` 任务不会被领取。改图占用现有 `EXECUTOR_IMAGE_CONCURRENCY`、共享 Codex 总许可和图片许可，不会额外开启一套并发。
 
-```text
-node server/src/cli.mjs image-edit-once --environment=development
-```
-
-自动处理器和单次入口都只领取独立编辑队列，普通 IMAGE 任务领取不会领取编辑请求。处理器随中心服务启停，不安装额外后台服务、不配置生产计划；仍未新增远程 HTTP 领取/回传协议，也未将编辑任务接入现有普通 IMAGE 调度。
+执行机通过租约绑定的远程 HTTP 协议读取冻结上下文、源图和参考图，回传校验记录及最终 PNG；中心复核执行身份、源版本、PNG 尺寸/格式和校验哈希后落库。领取回执、校验提交和结果提交均支持不重放模型的网络重试。旧中心缺少 `imageEditExecutorVersion=1` 时，新图片执行机会在注册前停止并提示先升级；旧执行机不声明该版本，因此升级期间不会误领改图。
 
 运行机只需要现有 Node/Sharp/Codex 环境，不安装或下载本地 OCR。源图和每次编辑结果都复用系统现有 `createImageAlignmentValidator` 与视觉模型进行文字、语义、布局和位置验收；其模型原始结论与程序比较结果一并保存。管理员可在“生产配置 → 图片与输出”把单页“添加文字”质检失败后的自动修复次数设为 0、1 或 2；首次生成不计入修复次数，设置在创建编辑请求时冻结。添加文字失败时以上一次结果为输入继续修复，达到上限仍未通过则显式进入 FAILED，不能采用，也不会切换为程序叠字。真实产品替换、局部修改和恢复同样经过现有视觉验收，但当前不会自动生成修复轮次。
 
@@ -39,7 +35,7 @@ node server/src/cli.mjs image-edit-once --environment=development
 
 ## 数据迁移
 
-独立迁移 `server/migrations/0052_image_editing.sql`：
+基础数据迁移为 `server/migrations/0052_image_editing.sql`；执行机接管迁移为 `server/migrations/0056_executor_image_edits.sql`：
 
 - `image_edit_requests`：版本快照、操作配置、状态、次数、租约、操作者、失败/校验信息，`requeue_reason=IMAGE_MANUAL_EDIT`。
 - `image_edit_reference_assets`：请求与参考资产绑定、排序、用途、sha256。
@@ -48,6 +44,7 @@ node server/src/cli.mjs image-edit-once --environment=development
 - `assets` 新增 `parent_asset_id`、`asset_role`、`edit_metadata`；保留原有图片生产链字段。
 - `image_run_asset_members` 与 `image_run_asset_view`：支持跨运行复用资产。任务详情、图片问题资产校验、交付归档检查和格式重处理读取此视图。
 - `image_runs.execution_id` 允许 NULL：人工编辑不伪造普通模型任务执行。
+- `image_edit_requests.execution_id` 绑定真实执行机的合成 `IMAGE` 执行；用于共享容量、模型调用审计、心跳和节点追踪。编辑生成的 `image_runs.execution_id` 也指向该执行。
 
 迁移只在隔离测试数据库应用过，未操作生产数据库。使用现有数据库升级流程应用迁移。
 
@@ -66,6 +63,8 @@ node server/src/cli.mjs image-edit-once --environment=development
 | POST | `/v1/image-edits/:editId/accept` | 校验并采用 |
 | POST | `/v1/image-edits/:editId/reject` | 拒绝预览 |
 | POST | `/v1/tasks/:taskId/image-versions/:runId/restore` | 创建恢复预览请求 |
+
+执行机另使用 `/v1/executions/claim-image[-batch]` 统一领取，并通过 `/v1/executions/:executionId/image-edit/*` 完成上下文读取、租约心跳、受限资产下载、校验暂存、PNG 回传和失败上报。这些机器接口不接受普通用户会话代替执行机调用。
 
 创建/恢复必须提供 `requestId, sourceImageRunId, sourceAssetId, copyRevisionId, sha256, targetPage`。创建还提供 operation 及对应 overlay/references/instruction；新建局部修改不提交 mask，历史客户端仍可提交合法 mask。直接排队的添加文字和所有 AI 操作必须提供 `confirmation=LIVE_IMAGE_COST_ACCEPTED`；仅保存草稿不会调用模型，可以稍后在“提交草稿”时确认费用。新界面的文字 overlay 固定为 `AI_DISCLOSURE / AI_GENERATED / bottom-right`，服务端也会覆盖旧式样式参数，只接受合规标识文字。真实产品替换只绑定一张参考图。动作接口必须提供 `requestId, version, reason`；草稿首次提交或未保留旧确认的失败任务重试还需费用确认。源版本变化返回冲突，无法覆盖新图集。重复 requestId 不重复采用或审计，复用到不同输入会拒绝。
 
@@ -94,4 +93,4 @@ PowerShell 中先设置对应的环境变量。PostgreSQL 测试和付费真实�
 
 当前纯提示词定位版真实模型完整端到端测试已通过：管理员设置最高优先级、100% 文案抽检、整批打回、返工后强制复检、复检通过前阻断图片生成，随后串行完成并采用指定单页添加“AI生成”、珊瑚红马克杯实体参考图 AI 融合和无蒙版提示词局部背景修改。`openai/gpt-image-2` 每种编辑各调用 1 次，共 3 次真实图片编辑和 7 次视觉验收；新增文字识别为“低成本也能保持AI生成”且仅出现一次，位置、实体一致性、必需文字和输出尺寸均通过。人工检查确认原标题、合规标识和马克杯在后续编辑中保持一致，局部修改只增加浅鼠尾草绿背景渐变。本轮没有发布，产物保存在 `output/live-e2e/1789457682976/attempt-1`。
 
-迁移顺序已经集成为 0050 优先级、0051 文案质检、0052 图片编辑、0053 账号权限与审核分配协调、0054 交付批次、0055 图片初审与独立质检。图片编辑继续使用独立租约和 `IMAGE_MANUAL_EDIT` 原因，不会被普通图片任务误领。
+迁移顺序已经集成为 0050 优先级、0051 文案质检、0052 图片编辑、0053 账号权限与审核分配协调、0054 交付批次、0055 图片初审与独立质检、0056 执行机改图。图片编辑继续使用独立租约和 `IMAGE_MANUAL_EDIT` 原因，但由中心统一图片领取事务安全分派给声明新版能力的图片执行机。

@@ -18,6 +18,7 @@ import { executorConcurrency } from './config.mjs';
 import { reprocessStandaloneImages } from '../standalone-image-generation.mjs';
 import { IMAGE_ARTIFACT_FILE } from '../image-artifacts.mjs';
 import { guardExecutionCalls, runWithExecutionSignal } from './execution-signal.mjs';
+import { processImageEdit } from '../../server/src/image-edit-renderer.mjs';
 
 const COPY_PROGRESS = Object.freeze({
   QUERY_REVIEW: 5,
@@ -266,6 +267,43 @@ export async function executeImageClaim({
   return completed;
 }
 
+export async function executeImageEditClaim({
+  claim,
+  controlPlane,
+  workRoot,
+  environment = process.env,
+  signal,
+}) {
+  const { execution, imageEdit } = claim;
+  if (!imageEdit || execution?.snapshot?.imageEditRequestId !== imageEdit.id) {
+    throw new TypeError('image edit claim is invalid');
+  }
+  const service = {
+    claim: async () => imageEdit,
+    heartbeat: () => controlPlane.heartbeatImageEdit(execution.id, imageEdit),
+    context: () => controlPlane.imageEditContext(execution.id, imageEdit),
+    readAsset: asset => controlPlane.imageEditAsset(execution.id, imageEdit, Number(asset.id)),
+    asset: assetId => controlPlane.imageEditAssetMetadata(execution.id, imageEdit, Number(assetId)),
+    async complete(_edit, { bytes, validation }) {
+      await controlPlane.stageImageEditValidation(execution.id, imageEdit, validation);
+      return controlPlane.completeImageEdit(execution.id, imageEdit, bytes);
+    },
+    fail: (_edit, error) => controlPlane.failImageEdit(execution.id, imageEdit, error),
+  };
+  const result = await processImageEdit({
+    service,
+    storageRoot: workRoot,
+    workerId: execution.nodeId,
+    edit: imageEdit,
+    environment,
+    signal,
+  });
+  if (result.status === 'FAILED') {
+    throw Object.assign(new Error(result.error), { code: 'IMAGE_EDIT_FAILED_REPORTED' });
+  }
+  return result;
+}
+
 export function createExecutorAgent({
   controlPlane,
   nodeId,
@@ -280,6 +318,7 @@ export function createExecutorAgent({
   workRoot = resolve('data/executor-work'),
   executeCopy = executeCopyClaim,
   executeImage = executeImageClaim,
+  executeImageEdit = executeImageEditClaim,
   readinessCheck = checkExecutorReady,
   availabilityCheck = checkModelAvailability,
   environment = process.env,
@@ -295,7 +334,8 @@ export function createExecutorAgent({
     throw new RangeError('codexImageConcurrency cannot exceed codexTotalConcurrency');
   }
   const registration = () => ({ nodeId, name: nodeName, imageWorkerEnabled,
-    copyConcurrency, imageConcurrency, codexPoolId, codexTotalConcurrency, codexImageConcurrency });
+    copyConcurrency, imageConcurrency, codexPoolId, codexTotalConcurrency, codexImageConcurrency,
+    imageEditExecutorVersion: imageWorkerEnabled ? 1 : 0 });
   let ready = false;
   const pendingFailures = new Map();
   const activeExecutions = new Map();
@@ -325,11 +365,20 @@ export function createExecutorAgent({
 
   async function reportFailure(claim, error) {
     try {
+      if (claim.imageEdit) {
+        if (error?.code !== 'IMAGE_EDIT_FAILED_REPORTED') {
+          await controlPlane.failImageEdit(claim.execution.id, claim.imageEdit, error);
+        }
+        return;
+      }
       const code = codexErrorCode(error) || error?.code?.startsWith('EXECUTION_') || error?.code === 'STALE_EXECUTION';
       await controlPlane.failExecution(claim.execution.id, error,
         code ? { autoRetry: false } : {});
     } catch (reportError) {
-      if (reportError?.code !== 'STALE_EXECUTION') throw reportError;
+      if (reportError?.code !== 'STALE_EXECUTION'
+          && !(claim.imageEdit && ['IMAGE_EDIT_CONFLICT', 'NOT_FOUND'].includes(reportError?.code))) {
+        throw reportError;
+      }
     }
   }
 
@@ -382,6 +431,8 @@ export function createExecutorAgent({
         controlPlane: guardExecutionCalls(controlPlane, signal), snapshot: claim.execution.snapshot }, async (tracedPlane) => {
         if (kind === 'COPY') {
           await executeCopy({ claim, controlPlane: tracedPlane, environment, signal });
+        } else if (claim.imageEdit) {
+          await executeImageEdit({ claim, controlPlane: tracedPlane, workRoot, environment, signal });
         } else {
           await executeImage({ claim, controlPlane: tracedPlane, workRoot, environment, signal });
         }
@@ -425,6 +476,11 @@ export function createExecutorAgent({
       const poolCapabilityVersion = Number(result?.health?.capabilities?.codexConcurrencyPoolVersion);
       if (concurrencyEnabled && (!Number.isInteger(poolCapabilityVersion) || poolCapabilityVersion < 1)) {
         throw new Error('请先更新中心服务：缺少共享 Codex 并发池能力');
+      }
+      const imageEditCapabilityVersion = Number(result?.health?.capabilities?.imageEditExecutorVersion);
+      if (concurrencyEnabled && imageWorkerEnabled
+          && (!Number.isInteger(imageEditCapabilityVersion) || imageEditCapabilityVersion < 1)) {
+        throw new Error('请先更新中心服务：缺少执行机图片修改能力');
       }
       taskHeartbeatsEnabled = Boolean(result?.health?.capabilities?.executionHeartbeats);
       ready = true;
