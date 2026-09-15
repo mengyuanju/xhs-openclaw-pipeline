@@ -2,6 +2,13 @@
 
 import { Textarea } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 import { Save } from 'lucide-react';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
@@ -18,6 +25,9 @@ import { XhsQuerySearchSettingsPanel } from '../settings/xhs-query-search-settin
 import { normalizeWebSearchSettings } from '../../src/web-search-config.mjs';
 
 const endpoint = (path: string) => `/api/control-plane${path}`;
+const imageEditRepairLimit = (value: unknown) => Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 2
+  ? Number(value)
+  : 2;
 
 export function CentralDataWorkbench() {
   const [data, setData] = useState<any[]>([]);
@@ -25,11 +35,16 @@ export function CentralDataWorkbench() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [imageEditRepairMaxAttempts, setImageEditRepairMaxAttempts] = useState(2);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>('generation');
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      setData(await apiRequest<any[]>(endpoint('/v1/settings')));
+      const records = await apiRequest<any[]>(endpoint('/v1/settings'));
+      setData(records);
+      setImageEditRepairMaxAttempts(imageEditRepairLimit(
+        records.find((item) => item.key === 'production')?.value?.imageEditRepairMaxAttempts,
+      ));
       setError('');
     } catch (refreshError) {
       setError(refreshError instanceof Error ? refreshError.message : '中心数据读取失败');
@@ -56,6 +71,7 @@ export function CentralDataWorkbench() {
       const latest = await apiRequest<any[]>(endpoint('/v1/settings'));
       const latestProduction = latest.find(item => item.key === 'production')?.value ?? {};
       value.layoutPresets = latestProduction.layoutPresets ?? [];
+      value.imageEditRepairMaxAttempts = imageEditRepairLimit(latestProduction.imageEditRepairMaxAttempts);
       value.modelApi = {
         ...value.modelApi,
         ...normalizeWebSearchSettings(latestProduction.modelApi ?? {}),
@@ -69,6 +85,30 @@ export function CentralDataWorkbench() {
       await refresh();
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : '生产配置保存失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateImageEditRepair() {
+    setBusy(true);
+    setMessage('');
+    setError('');
+    try {
+      const latest = await apiRequest<any[]>(endpoint('/v1/settings'));
+      const latestProduction = latest.find(item => item.key === 'production')?.value ?? {};
+      await apiRequest(endpoint('/v1/settings/production'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: {
+          ...latestProduction,
+          imageEditRepairMaxAttempts,
+        } }),
+      });
+      setMessage('图片文字编辑自动修复次数已保存；新建编辑请求使用新值，已有请求保持原值。');
+      await refresh();
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : '图片文字编辑自动修复次数保存失败');
     } finally {
       setBusy(false);
     }
@@ -100,7 +140,23 @@ export function CentralDataWorkbench() {
           id: 'image',
           title: '图片与输出',
           description: '布局模板与图片策略',
-          children: <LayoutCatalogSettings remote />,
+          children: <>
+            <LayoutCatalogSettings remote />
+            <section className="panel settings-section" aria-labelledby="central-image-edit-repair-heading">
+              <div className="panel-head"><div><h2 id="central-image-edit-repair-heading">图片文字编辑自动修复</h2><p className="subtle">控制单页“添加文字”未通过视觉质检后，自动打回图片模型重做的次数。</p></div></div>
+              <div className="form-grid compact-settings-grid">
+                <div className="field">
+                  <label htmlFor="central-image-edit-repair-max-attempts">质检失败后最多自动修复</label>
+                  <Select value={String(imageEditRepairMaxAttempts)} disabled={busy || loading || !production} onValueChange={(value) => setImageEditRepairMaxAttempts(Number(value))}>
+                    <SelectTrigger id="central-image-edit-repair-max-attempts"><SelectValue /></SelectTrigger>
+                    <SelectContent>{[0, 1, 2].map((count) => <SelectItem key={count} value={String(count)}>{count} 次</SelectItem>)}</SelectContent>
+                  </Select>
+                  <small>首次生成不计入修复次数；设置在创建编辑请求时冻结。</small>
+                </div>
+              </div>
+              <div className="inline"><Button unstyled className="button primary" type="button" disabled={busy || loading || !production} onClick={() => { void updateImageEditRepair(); }}>保存文字修复次数</Button></div>
+            </section>
+          </>,
         },
         {
           id: 'advanced',
@@ -114,7 +170,7 @@ export function CentralDataWorkbench() {
             <RemoteLayoutPresetsSettings initialPresets={production.value?.layoutPresets ?? []} onSaved={async () => { await refresh(); setMessage('旧版自定义布局已保存。新版布局请在布局模板库中维护。'); }} />
             <form className="panel settings-section" onSubmit={updateProduction}>
               <div className="panel-head"><div><span className="section-kicker">Remote settings</span><h2>其他生产配置 JSON</h2><p className="subtle">面向高级维护；布局目录、旧版布局和人工评分标准不会在这里重复出现。</p></div><Save size={18} /></div>
-              <div className="field"><label htmlFor="central-production-settings">未结构化配置</label><Textarea className="textarea central-json-editor" id="central-production-settings" name="value" required defaultValue={JSON.stringify(Object.fromEntries(Object.entries(production?.value ?? {}).filter(([key]) => !['layoutCatalog', 'layoutPresets', 'humanQualityReasons'].includes(key))), null, 2)} /></div>
+              <div className="field"><label htmlFor="central-production-settings">未结构化配置</label><Textarea className="textarea central-json-editor" id="central-production-settings" name="value" required defaultValue={JSON.stringify(Object.fromEntries(Object.entries(production?.value ?? {}).filter(([key]) => !['layoutCatalog', 'layoutPresets', 'humanQualityReasons', 'imageEditRepairMaxAttempts'].includes(key))), null, 2)} /></div>
               <div className="inline"><Button unstyled className="button primary" disabled={busy || loading}>保存新版本</Button><small>模型 API 密钥仍只通过执行机环境变量提供，不要写入这里。</small></div>
             </form>
             </>}

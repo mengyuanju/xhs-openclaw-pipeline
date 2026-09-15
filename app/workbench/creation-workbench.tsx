@@ -36,6 +36,7 @@ import {
 } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
+import { useTextInputDialog } from '@/components/ui/text-input-dialog';
 
 import { apiRequest } from '../components/api-client';
 import { createRequestId } from '../components/request-id';
@@ -209,7 +210,9 @@ const STATE_LABELS: Record<TaskState, string> = {
   IMAGE_QUEUED: '待生图',
   IMAGE_RUNNING: '生图中',
   IMAGE_FAILED: '生图失败',
-  MANUAL_ARCHIVE: '待图文终审',
+  MANUAL_ARCHIVE: '待图片初审',
+  IMAGE_QC_PENDING: '待图片质检',
+  IMAGE_REWORK_PENDING: '图片待返修',
   REVIEWED: '交付池',
   CANCELLED: '已废弃',
 };
@@ -251,7 +254,9 @@ const STAGE_LABELS: Record<string, string> = {
   IMAGE_QUEUED: '待生图',
   IMAGE_RUNNING: '生图中',
   IMAGE_FAILED: '生图失败',
-  MANUAL_ARCHIVE: '待图文终审',
+  MANUAL_ARCHIVE: '待图片初审',
+  IMAGE_QC_PENDING: '待图片质检',
+  IMAGE_REWORK_PENDING: '图片待返修',
   REVIEWED: '交付池',
   FAILED: '执行失败',
   CANCELLED: '已废弃',
@@ -324,7 +329,7 @@ function taskProgressMessage(task: DistributedTask) {
     return '返工稿已提交强制复检；复检通过后才进入待生图队列';
   }
   if (task.progressMessage === '图文终审要求文案返工，修改后将强制重新质检') {
-    return '图文终审已退回文案；实际修改后须提交强制复检，复检通过后才进入待生图队列';
+    return '图片质检已退回文案；实际修改后须提交强制复检，复检通过后才进入待生图队列';
   }
   if (task.state === 'COPY_QUEUED' && taskOwnerId(task) === null
     && ['等待分配负责人', '等待负责人分配'].includes(task.progressMessage)) {
@@ -755,6 +760,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   const canUseQueryPackageFilter = role !== 'USER';
   const executorColumnLabel = activeView === 'IMAGE_WORK' ? '生图执行机' : '文案执行机';
   const confirm = useConfirmDialog();
+  const requestText = useTextInputDialog();
   const [tasks, setTasks] = useState<DistributedTask[]>([]);
   const [total, setTotal] = useState(0);
   const [nodes, setNodes] = useState<ExecutorNode[]>([]);
@@ -1453,8 +1459,15 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
 
   async function adminDirectApproveCopyQa(task: DistributedTask) {
     if (role !== 'ADMIN' || task.state !== 'COPY_QC_PENDING') return;
-    const note = window.prompt('请填写本次文案质检通过的原因（必填）');
-    if (!note?.trim()) return;
+    const note = await requestText({
+      title: '填写质检通过原因',
+      description: '本次说明将写入质检记录，作为管理员单独通过当前文案的审计依据。',
+      label: '通过原因（必填）',
+      placeholder: '请说明当前文案符合质检要求的具体依据',
+      confirmLabel: '填写完成，继续',
+      maxLength: 1_000,
+    });
+    if (!note) return;
     if (!await confirm({
       title: '单独通过这条文案质检？',
       description: '本次通过当前已抽中的文案。仍须等待该人员批次的全部质检与强制复检完成；系统记录通过原因。',
@@ -1467,7 +1480,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           requestId: createRequestId(),
-          note: note.trim(),
+          note,
           expectedCopyRevisionId: task.currentCopyRevisionId,
         }),
       });
@@ -1718,9 +1731,12 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       {permanentDeleteButton}
     </TaskRowActions>;
     if (task.state === 'REVIEWED') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>{assignmentButton}<Button unstyled className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>{permanentDeleteButton}</TaskRowActions>;
-    if (task.state === 'MANUAL_ARCHIVE' && ['ADMIN', 'REVIEWER'].includes(role)) return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
+    if (task.state === 'MANUAL_ARCHIVE') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
       {assignmentButton}
-      <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />审核</Button>
+      <Button unstyled className={`button small ${role === 'USER' && hasOwnerControl ? 'primary' : ''}`} type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />{role === 'USER' && hasOwnerControl ? '图片初审' : '查看'}</Button>
+    </TaskRowActions>;
+    if (task.state === 'IMAGE_REWORK_PENDING') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
+      <Button unstyled className={`button small ${role === 'USER' && hasOwnerControl ? 'primary' : ''}`} type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><RotateCcw size={14} />{role === 'USER' && hasOwnerControl ? '返修图片' : '查看返修'}</Button>
     </TaskRowActions>;
     return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
       {assignmentButton}
@@ -2057,18 +2073,21 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
           <Button unstyled className="button small" type="submit">搜索</Button>
         </form>
         <div className="workbench-sort-control">
-          <label>优先级来源 / 调整
-            <Select value={priorityMode || "ALL"} onValueChange={value => { setPriorityMode(value === "ALL" ? "" : value); setPage(1); }}><SelectTrigger aria-label="优先级筛选"><SelectValue /></SelectTrigger><SelectContent>
+          <div className="workbench-sort-field">
+            <label htmlFor="workbench-priority-filter">优先级来源 / 调整</label>
+            <Select value={priorityMode || "ALL"} onValueChange={value => { setPriorityMode(value === "ALL" ? "" : value); setPage(1); }}><SelectTrigger id="workbench-priority-filter"><SelectValue /></SelectTrigger><SelectContent>
               <SelectItem value="ALL">全部优先级</SelectItem><SelectItem value="SYSTEM">跟随系统</SelectItem>
               <SelectItem value="HIGHEST">最高优先</SelectItem><SelectItem value="HIGH">高优先</SelectItem>
               <SelectItem value="NORMAL">普通</SelectItem><SelectItem value="DEFER">暂缓</SelectItem><SelectItem value="PAUSE">暂停</SelectItem>
             </SelectContent></Select>
-          </label>
-          <label htmlFor="workbench-task-sort">排序</label>
-          <Select value={sort} onValueChange={(value) => { setSort(value as TaskSort); setPage(1); }}>
-            <SelectTrigger id="workbench-task-sort"><SelectValue /></SelectTrigger>
-            <SelectContent>{TASK_SORT_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
-          </Select>
+          </div>
+          <div className="workbench-sort-field">
+            <label htmlFor="workbench-task-sort">排序</label>
+            <Select value={sort} onValueChange={(value) => { setSort(value as TaskSort); setPage(1); }}>
+              <SelectTrigger id="workbench-task-sort"><SelectValue /></SelectTrigger>
+              <SelectContent>{TASK_SORT_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
         </div>
         <label className="switch-field workbench-query-deduplicate" htmlFor="workbench-query-deduplicate">
           <Checkbox

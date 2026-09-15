@@ -6,7 +6,7 @@ import { mkdtemp,writeFile,rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join,resolve } from 'node:path';
 import { createServer } from 'node:net';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import pg from 'pg';
 import { migrateDatabase } from '../src/database-migrations.mjs';
@@ -27,10 +27,17 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
     await ctl(['-D',data,'-l',join(root,'postgres.log'),'-o',`-h 127.0.0.1 -p ${port}`,'-w','start']);started=true;
     pool=new pg.Pool({connectionString:`postgresql://postgres@127.0.0.1:${port}/postgres`});
     await migrateDatabase(pool);
+    const imageEditPromptContent='管理员图片编辑规则：{{reviewInstruction}}；保留所有未要求修改的内容。';
+    const promptTemplate=(await pool.query("INSERT INTO prompt_templates(kind,name) VALUES('IMAGE_EDIT_SYSTEM','图片编辑') RETURNING id")).rows[0];
+    const promptVersion=(await pool.query("INSERT INTO prompt_versions(template_id,version,content,content_sha256,status,published_at) VALUES($1,1,$2,$3,'PUBLISHED',now()) RETURNING id",[promptTemplate.id,imageEditPromptContent,createHash('sha256').update(imageEditPromptContent).digest('hex')])).rows[0];
     const admin=(await pool.query("SELECT id,username,credential_version FROM app_users WHERE role='ADMIN' LIMIT 1")).rows[0];
-    const actor={userId:Number(admin.id),username:admin.username,role:'ADMIN',credentialVersion:admin.credential_version};
+    const adminActor={userId:Number(admin.id),username:admin.username,role:'ADMIN',credentialVersion:admin.credential_version};
+    const worker=(await pool.query("INSERT INTO app_users(username,display_name,role,password_hash,must_change_password) VALUES('image-editor','图片作业员','USER','not-a-credential',false) RETURNING *")).rows[0];
+    const outsider=(await pool.query("INSERT INTO app_users(username,display_name,role,password_hash,must_change_password) VALUES('other-editor','其他作业员','USER','not-a-credential',false) RETURNING *")).rows[0];
+    const actor={userId:Number(worker.id),username:worker.username,role:'USER',credentialVersion:worker.credential_version};
+    const outsiderActor={userId:Number(outsider.id),username:outsider.username,role:'USER',credentialVersion:outsider.credential_version};
     await pool.query("INSERT INTO executor_nodes(id,name) VALUES('edit-test','edit-test')");
-    const task=(await pool.query("INSERT INTO tasks(query,state,created_by_node_id,copy_executor_node_id) VALUES('edit fixture','MANUAL_ARCHIVE','edit-test','edit-test') RETURNING *")).rows[0];
+    const task=(await pool.query("INSERT INTO tasks(query,state,created_by_node_id,copy_executor_node_id,assigned_to_user_id,assignment_source,assigned_at,image_qc_legacy_accepted) VALUES('edit fixture','MANUAL_ARCHIVE','edit-test','edit-test',$1,'MANUAL',now(),true) RETURNING *",[actor.username])).rows[0];
     const taskId=Number(task.id),runId=randomUUID();
     const revision=(await pool.query("INSERT INTO copy_revisions(task_id,revision,content,approved_at) VALUES($1,1,$2,now()) RETURNING *",[taskId,{copy:{title:'标题',body:'正文',tags:[]},imagePlan:[1,2,3].map(()=>({kind:'detail',headline:'真实参考'}))}])).rows[0];
     const copyRevisionId=Number(revision.id);
@@ -43,17 +50,19 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       images.push({assetId:Number(a.id),deliveryAssetId:Number(a.id),pageIndex:i+1});
     }
     await pool.query('UPDATE image_runs SET result=$2 WHERE id=$1',[runId,{images}]);
-    await pool.query('UPDATE tasks SET current_copy_revision_id=$2,current_image_run_id=$3 WHERE id=$1',[taskId,copyRevisionId,runId]);
-    await pool.query("UPDATE global_settings SET value='{"+'"aiDisclosureEnabled":false' + "}' WHERE key='production'");
+    await pool.query('UPDATE tasks SET current_copy_revision_id=$2,current_image_run_id=$3,image_qc_legacy_accepted=true WHERE id=$1',[taskId,copyRevisionId,runId]);
+    await pool.query('UPDATE tasks SET image_qc_legacy_accepted=true WHERE id=$1',[taskId]);
+    await pool.query("UPDATE global_settings SET value=$1 WHERE key='production'",[{aiDisclosureEnabled:false,imageEditRepairMaxAttempts:1}]);
     const service=createImageEditingService({pool,storageRoot:root});
     let currentRun=runId,currentAsset=images[1].assetId,currentHash=sha256;
     const request=(extra={})=>({requestId:randomUUID(),sourceImageRunId:currentRun,sourceAssetId:currentAsset,copyRevisionId,sha256:currentHash,targetPage:2,operation:'TEXT',confirmation:'LIVE_IMAGE_COST_ACCEPTED',overlay:{text:'AI生成',textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',position:'bottom-right'},...extra});
     const validateImage=async({imagePath})=>({passed:true,model:'fake-vision',layoutMatched:true,ocrConfidence:1,
       ocrMismatches:[],unreadableText:[],recognizedText:{headline:'真实参考',subtitle:'',bullets:[],otherText:imagePath.endsWith('result.png')?['AI生成']:[]}});
-    const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{assert.match(prompt,/AI_TEXT_EDIT/u);assert.equal(inputPaths.length,1);await writeFile(outputPath,png);return{model:'fake-text-edit'};}};
-    const action=async(id,name)=>{const e=await service.get(id);return service.action(id,name,{version:e.version,requestId:randomUUID(),reason:'test'},actor);};
+    const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{assert.match(prompt,/<trusted_business_rules kind="IMAGE_EDIT_SYSTEM">/u);assert.match(prompt,/AI_DISCLOSURE_LABEL/u);assert.equal(inputPaths.length,1);await writeFile(outputPath,png);return{model:'fake-text-edit'};}};
+    const action=async(id,name,extra={})=>{const e=await service.get(id);return service.action(id,name,{version:e.version,requestId:randomUUID(),reason:'test',...extra},actor);};
     await t.test('permissions, copy gate and source conflicts fail before queue insertion',async()=>{
-      await assert.rejects(()=>service.create(taskId,request(),{...actor,role:'USER'}),{code:'FORBIDDEN'});
+      await assert.rejects(()=>service.create(taskId,request(),outsiderActor),{code:'FORBIDDEN'});
+      await assert.rejects(()=>service.create(taskId,request(),{...adminActor,role:'REVIEWER'}),{code:'FORBIDDEN'});
       await assert.rejects(()=>service.create(taskId,request(),{...actor,credentialVersion:actor.credentialVersion+1}),{code:'FORBIDDEN'});
       await assert.rejects(()=>service.create(taskId,request({sha256:'b'.repeat(64)}),actor),{code:'IMAGE_EDIT_CONFLICT'});
       await pool.query('UPDATE tasks SET mandatory_copy_qc=true WHERE id=$1',[taskId]);
@@ -68,14 +77,26 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       const binding=(await pool.query('SELECT * FROM image_edit_reference_assets WHERE request_id=$1',[draft.id])).rows[0];assert.equal(binding.sha256,uploaded.sha256);
       await action(draft.id,'cancel');
     });
+    await t.test('an unconfirmed AI draft saves without cost and requires confirmation when queued',async()=>{
+      const draft=await service.create(taskId,request({confirmation:undefined,draft:true}),actor);
+      assert.equal(draft.status,'DRAFT');assert.equal(draft.config.confirmation,null);
+      await assert.rejects(()=>action(draft.id,'queue'),/确认/u);
+      const queued=await action(draft.id,'queue',{confirmation:'LIVE_IMAGE_COST_ACCEPTED'});
+      assert.equal(queued.status,'QUEUED');assert.equal(queued.config.confirmation,'LIVE_IMAGE_COST_ACCEPTED');
+      await action(draft.id,'cancel');
+    });
     let first;
     await t.test('create is idempotent and withdraws a ready delivery before any execution',async()=>{
-      await createReadyDeliveryEntry(pool,{taskId,copyRevisionId,imageRunId:currentRun,actor});
+      await pool.query('UPDATE tasks SET image_qc_legacy_accepted=true WHERE id=$1',[taskId]);
+      await createReadyDeliveryEntry(pool,{taskId,copyRevisionId,imageRunId:currentRun,actor:adminActor});
       const input=request();first=await service.create(taskId,input,actor);
+      assert.equal(first.config.imageEditRepairMaxAttempts,1);
+      assert.equal(first.config.imageEditPrompt.versionId,Number(promptVersion.id));
+      assert.equal(first.config.imageEditPrompt.content,imageEditPromptContent);
       assert.equal((await service.create(taskId,input,actor)).id,first.id);
       await assert.rejects(()=>service.create(taskId,{...input,overlay:{text:'不同文字'}},actor),{code:'IMAGE_EDIT_CONFLICT'});
       assert.equal((await pool.query('SELECT status FROM delivery_entries WHERE task_id=$1',[taskId])).rows[0].status,'WITHDRAWN');
-      await assert.rejects(()=>createReadyDeliveryEntry(pool,{taskId,copyRevisionId,imageRunId:currentRun,actor}),/待处理/u);
+      await assert.rejects(()=>createReadyDeliveryEntry(pool,{taskId,copyRevisionId,imageRunId:currentRun,actor:adminActor}),{code:'IMAGE_QA_NOT_RELEASED'});
     });
     await t.test('concurrent workers claim a request once; cancellation fences late completion',async()=>{
       const claims=await Promise.all([service.claim('one'),service.claim('two')]);assert.equal(claims.filter(Boolean).length,1);

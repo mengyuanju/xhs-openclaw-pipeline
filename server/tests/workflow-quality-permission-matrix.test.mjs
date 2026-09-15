@@ -85,5 +85,11 @@ test('partial settings updates preserve all independent controls', () => {
       blindReviewEnabled: true,
       reviewerBatchReturnEnabled: true,
     },
+    imageSampling: {
+      enabled: false,
+      rateBps: 2_000,
+      blindReviewEnabled: false,
+      reviewerBatchReturnEnabled: false,
+    },
   });
 });

@@ -19,6 +19,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
+import { useTextInputDialog } from '@/components/ui/text-input-dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Disclosure, DisclosureContent, DisclosureTrigger } from '@/components/ui/disclosure';
 import { TransientInfoBubble } from '@/components/ui/transient-info-bubble';
@@ -52,7 +53,7 @@ import { buildCopyReviewSubmission } from '../../src/copy-review-submission.mjs'
 type TaskState =
   | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_QC_PENDING' | 'COPY_FAILED'
   | 'IMAGE_QUEUED' | 'IMAGE_RUNNING' | 'IMAGE_FAILED'
-  | 'MANUAL_ARCHIVE' | 'REVIEWED' | 'CANCELLED';
+  | 'MANUAL_ARCHIVE' | 'IMAGE_QC_PENDING' | 'IMAGE_REWORK_PENDING' | 'REVIEWED' | 'CANCELLED';
 
 type Copy = { title: string; body: string; tags: string[] };
 type ImagePlanItem = {
@@ -423,6 +424,7 @@ export function TaskReviewDialog({
   onUpdated: (message: string) => void | Promise<void>;
 }) {
   const confirm = useConfirmDialog();
+  const requestText = useTextInputDialog();
   const {
     settings: humanQualitySettings,
     loading: humanQualitySettingsLoading,
@@ -565,17 +567,22 @@ export function TaskReviewDialog({
   const canApproveCopy = isCopyRework ? copyReworkSatisfied : copyRatingComplete && (copyOriginalScore === 3 && !copyContentChanged
     || (copyOriginalScore === 2 || copyOriginalScore === 2.5) && hasEditedCopyVersion);
   const showCopyRating = detail?.state === 'COPY_REVIEW_PENDING' && !isCopyRework;
-  const isImageReviewView = detail?.state === 'MANUAL_ARCHIVE';
-  const canReviewImages = detail?.state === 'MANUAL_ARCHIVE'
-    && (isAdmin || role === 'REVIEWER' && taskHasAssignee) && Boolean(detail.currentImageRunId);
+  const isImageReviewView = detail?.state === 'MANUAL_ARCHIVE' || detail?.state === 'IMAGE_REWORK_PENDING';
+  const canSubmitImageSelfReview = detail?.state === 'MANUAL_ARCHIVE'
+    && role === 'USER' && currentUserIsAssignee && Boolean(detail.currentImageRunId);
+  // Scored pass/return decisions moved to the dedicated image-QA pool.
+  const canReviewImages = false;
   const downloadable = isAdmin && detail?.state === 'REVIEWED' && detail.deliveryStatus === 'READY';
   const canResumeImages = canResumeImageTask(detail) && hasOwnerControl && role !== 'REVIEWER';
   const canModifyImages = Boolean(detail && revision?.approvedAt && hasOwnerControl && role !== 'REVIEWER'
-    && ['MANUAL_ARCHIVE', 'REVIEWED', 'IMAGE_FAILED', 'IMAGE_QUEUED'].includes(detail.state) && !detail.currentExecutionId);
-  const canEditApprovedImagePlan = Boolean(isAdmin && canReviewImages && canModifyImages);
+    && (isAdmin
+      ? ['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING', 'REVIEWED', 'IMAGE_FAILED', 'IMAGE_QUEUED'].includes(detail.state)
+      : ['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING'].includes(detail.state))
+    && !detail.currentExecutionId);
+  const canEditApprovedImagePlan = canModifyImages;
   const planFieldsReadOnly = !(editable || canEditApprovedImagePlan)
     || isCopyOnlyFinalRework || loading || submitting;
-  const planKindDisabled = !editable || isCopyOnlyFinalRework || loading || submitting;
+  const planKindDisabled = !(editable || canEditApprovedImagePlan) || isCopyOnlyFinalRework || loading || submitting;
   const currentCopyRatingLabel = '机器原稿初评（保留）';
   const standardCopyEditBlockMessage = getCopyEditBlockMessage({
     editable,
@@ -679,6 +686,7 @@ export function TaskReviewDialog({
   const showImageDeductionReasons = humanQualitySettings?.imageReviewDisplay.showDeductionReasons === true;
   const copyFeedbackRequirement = showCopyDeductionReasons ? '扣分原因或评分说明' : '评分说明';
   const imageScoreDefinition = scoreDefinitions.find(definition => definition.score === imageScore);
+  const imageReworkReasonRequired = showImageDeductionReasons && imageReasonOptions.length > 0;
   const canApproveImages = imageSetComplete && imageRatingComplete && isPassingHumanScore(imageScore)
     && !imagePlanChanged && !imageConfigurationChanged;
   const copyAssessments = (detail?.humanQualityAssessments ?? []).filter(assessment => assessment.stage === 'COPY');
@@ -953,8 +961,15 @@ export function TaskReviewDialog({
 
   async function adminDirectApproveCopyQa() {
     if (!detail || role !== 'ADMIN' || detail.state !== 'COPY_QC_PENDING' || submitting || loading) return;
-    const note = window.prompt('请填写本次文案质检通过的原因（必填）');
-    if (!note?.trim()) return;
+    const note = await requestText({
+      title: '填写质检通过原因',
+      description: '本次说明将写入质检记录，作为管理员单独通过当前文案的审计依据。',
+      label: '通过原因（必填）',
+      placeholder: '请说明当前文案符合质检要求的具体依据',
+      confirmLabel: '填写完成，继续',
+      maxLength: 1_000,
+    });
+    if (!note) return;
     if (!await confirm({
       title: '单独通过这条文案质检？',
       description: '本次通过当前已抽中的文案。仍须等待该人员批次的全部质检与强制复检完成；系统记录通过原因。',
@@ -968,7 +983,7 @@ export function TaskReviewDialog({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           requestId: createRequestId(),
-          note: note.trim(),
+          note,
           expectedCopyRevisionId: detail.currentCopyRevisionId,
         }),
       });
@@ -985,7 +1000,7 @@ export function TaskReviewDialog({
     if (!detail || !canReviewImages || submitting) return;
     if (decision === 'REWORK' && !reworkTarget) return;
     if (decision === 'REWORK') {
-      if (imageReasons.length === 0) {
+      if (imageReworkReasonRequired && imageReasons.length === 0) {
         setError('发起返工前请至少选择一项问题原因。');
         return;
       }
@@ -1026,7 +1041,7 @@ export function TaskReviewDialog({
     }
     const targetLabel = reworkTarget === 'COPY' ? '文案' : reworkTarget === 'IMAGE' ? '图片' : '文案和图片';
     const option = decision === 'APPROVE'
-      ? { title: '确认图文终审通过？', description: `当前整套图片人工评分为 ${imageScore} 分。通过后任务进入交付池，才可下载完整资源。`, confirmLabel: '通过到交付池' }
+      ? { title: '确认图片质检通过？', description: `当前整套图片人工评分为 ${imageScore} 分。通过后任务进入交付池，才可下载完整资源。`, confirmLabel: '通过到交付池' }
       : decision === 'REWORK'
         ? { title: `确认发起${targetLabel}返工？`, description: `当前整套图片人工评分为 ${imageScore} 分。只退回${targetLabel}环节；历史版本、图片与评分记录全部保留。`, confirmLabel: `确认${targetLabel}返工` }
         : { title: '废弃这条图文任务？', description: `当前整套图片人工评分为 ${imageScore} 分。任务会移出业务列表，历史文案、执行记录、图片与评分仍会保留。`, confirmLabel: '确认废弃', tone: 'danger' as const };
@@ -1055,13 +1070,48 @@ export function TaskReviewDialog({
         body: JSON.stringify({ ...requestPayload, reviewSessionId: reviewSessionId(requestPayload) }),
       });
       reviewSessionRef.current = null;
-      await onUpdated(decision === 'APPROVE' ? '图文终审通过，任务已进入交付池。'
+      await onUpdated(decision === 'APPROVE' ? '图片质检通过，任务已进入交付池。'
         : decision === 'REWORK' ? `${targetLabel}返工已发起；历史版本与评分继续保留。`
           : '任务已废弃。');
       onOpenChange(false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '图片审核提交失败');
     } finally { setSubmitting(false); }
+  }
+
+  async function submitImageSelfReview() {
+    if (!detail || !canSubmitImageSelfReview || !detail.currentImageRunId || submitting) return;
+    if (imagePlanChanged || imageConfigurationChanged) {
+      setError('图片规划或交付配置还有未应用修改，请先重新生成或转换图片，再提交图片初审。');
+      return;
+    }
+    if (!imageSetComplete) {
+      setError('当前图集不完整，不能提交图片初审。');
+      return;
+    }
+    if (!await confirm({
+      title: '确认完成图片初审？',
+      description: '提交后将按管理员设置进入图片抽检；若未开启图片抽检则直接进入交付池。初审不需要评分或填写打回原因。',
+      confirmLabel: '提交图片抽检',
+    })) return;
+    setSubmitting(true);
+    setError('');
+    try {
+      await apiRequest(apiPath(`/v1/tasks/${detail.id}/submit-image-self-review`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageRunId: detail.currentImageRunId,
+          reviewSessionId: createRequestId(),
+        }),
+      });
+      await onUpdated('图片初审已完成；系统已按图片抽检策略进入质检等待或交付池。');
+      onOpenChange(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '图片初审提交失败');
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return <Dialog open={taskId !== null} onOpenChange={(open) => { if (!open) void discardChanges('close'); }}>
@@ -1073,20 +1123,25 @@ export function TaskReviewDialog({
           <span className="section-kicker">Task {detail ? `#${detail.id}` : ''}</span>
           <DialogTitle>{detail?.state === 'REVIEWED'
             ? role === 'USER' ? '已完成任务详情' : '交付池任务详情'
-            : detail?.state === 'MANUAL_ARCHIVE' ? '图文终审详情' : '任务详情与审核'}</DialogTitle>
+            : detail?.state === 'MANUAL_ARCHIVE' ? '图片初审详情'
+            : detail?.state === 'IMAGE_REWORK_PENDING' ? '图片返修详情' : '任务详情与审核'}</DialogTitle>
           <DialogDescription>{detail?.state === 'COPY_REVIEW_PENDING' && !taskHasAssignee
             ? '机器文案已生成；请先在任务列表分配负责人，再开始人工评分与审核。'
             : detail?.state === 'COPY_REVIEW_PENDING' && !canReviewCopy
             ? '任务已分配给其他负责人；你可以查看生成结果，但不能评分、编辑或提交审核结果。'
             : detail?.state === 'MANUAL_ARCHIVE'
             ? role === 'USER'
-              ? '图片已经生成，正在等待图文终审；当前内容仅供查看。'
-              : '核对完整图文并完成人工评分，再明确选择通过到交付池、文案返工、图片返工、文案和图片返工，或废弃。'
+              ? '图片已经生成；请逐页核对并按需使用完整图片编辑功能，确认后提交图片初审。'
+              : '图片初审由任务作业员完成；审核员和管理员请在独立图片质检池处理抽中项。'
+            : detail?.state === 'IMAGE_REWORK_PENDING'
+              ? role === 'USER'
+                ? '图片已被质检打回；请按要求修改并采用新版本，再重新提交初审和强制复检。'
+                : '图片正由任务作业员返修；新版本提交后将在图片质检池进行强制复检。'
             : detail?.state === 'REVIEWED' ? role === 'USER'
               ? '任务已经完成，可查看最终内容。'
               : downloadable
-                ? '图文终审与交付门禁均已通过，可查看详情并下载完整资源包。'
-                : '图文终审与交付门禁均已通过，可查看任务详情。'
+                ? '图片质检与交付门禁均已通过，可查看详情并下载完整资源包。'
+                : '图片质检与交付门禁均已通过，可查看任务详情。'
             : detail?.state === 'COPY_QC_PENDING' && detail.currentStage === 'QC_MANDATORY_RECHECK'
               ? '返工稿已提交强制复检；复检通过后才会进入待生图队列。当前内容仅供查看。'
             : detail?.state === 'COPY_QC_PENDING'
@@ -1155,7 +1210,7 @@ export function TaskReviewDialog({
                   && <div className="notice warning" role="status">文案已生成，但任务尚未分配负责人。请先关闭窗口并完成分配，再进行评分或修改。</div>}
                 {detail.state === 'COPY_REVIEW_PENDING' && taskHasAssignee && !canReviewCopy
                   && <div className="notice warning" role="status">当前任务由其他负责人处理；这里仅提供只读查看。</div>}
-                {editable && isCopyRework && <div className="notice warning" role="status"><strong>{revision?.reworkOrigin === 'QA_RETURN' || detail.mandatoryCopyQcOrigin === 'QA_RETURN' ? '文案抽检返工' : '图文终审文案返工'}</strong>{revision?.reworkReasonCodes?.length ? ` · 原因：${revision.reworkReasonCodes.join('、')}` : ''}{revision?.reworkNote ? ` · 要求：${revision.reworkNote}` : ''}<br />返工稿必须实际修改标题、正文或标签；仅保存不会提交复检。人工确认达标后，系统将最终稿记录为 3 分并提交强制复检；复检通过后才会进入待生图队列。</div>}
+                {editable && isCopyRework && <div className="notice warning" role="status"><strong>{revision?.reworkOrigin === 'QA_RETURN' || detail.mandatoryCopyQcOrigin === 'QA_RETURN' ? '文案抽检返工' : '图片质检文案返工'}</strong>{revision?.reworkReasonCodes?.length ? ` · 原因：${revision.reworkReasonCodes.join('、')}` : ''}{revision?.reworkNote ? ` · 要求：${revision.reworkNote}` : ''}<br />返工稿必须实际修改标题、正文或标签；仅保存不会提交复检。人工确认达标后，系统将最终稿记录为 3 分并提交强制复检；复检通过后才会进入待生图队列。</div>}
                 {isImageRetryExhausted(detail) && <div className="notice warning" role="status">{IMAGE_RETRY_EXHAUSTED_LABEL}</div>}
                 {detail.error && <div className="notice error" role="alert">{detail.error}</div>}
                 {draft ?
@@ -1239,12 +1294,12 @@ export function TaskReviewDialog({
               <div className="workbench-review-section-title workbench-image-review-section-title">
                 <div className="workbench-image-review-title-main">
                   <span>{isImageReviewView ? '01' : '02'}</span>
-                  <div><h3>{isImageReviewView ? '图片终审' : '图片审核'}</h3><p>{isImageReviewView
-                    ? '先逐页核对成品图，再结合自动质检证据完成人工评分。'
+                  <div><h3>{isImageReviewView ? detail.state === 'IMAGE_REWORK_PENDING' ? '图片返修' : '图片初审' : '图片审核'}</h3><p>{isImageReviewView
+                    ? detail.state === 'IMAGE_REWORK_PENDING' ? '图片质检已打回；可使用完整图片编辑能力，采用新版本后再完成初审。' : '由任务作业员逐页核对并修改；确认完成后提交图片抽检，无需给自己打回。'
                     : '核对当前图片运行生成的完整图集。'}</p></div>
                   {selectedAsset && <div className="workbench-image-review-title-actions">
                     <ImagePreviewBackgroundControl value={previewBackdrop} onChange={setPreviewBackdrop} />
-                    {isAdmin && canModifyImages && ['MANUAL_ARCHIVE','REVIEWED'].includes(detail.state) && detail.currentImageRunId && detail.currentCopyRevisionId && <CurrentImageEditor
+                    {canModifyImages && ['MANUAL_ARCHIVE','IMAGE_REWORK_PENDING','REVIEWED'].includes(detail.state) && detail.currentImageRunId && detail.currentCopyRevisionId && <CurrentImageEditor
                       key={`${detail.currentImageRunId}-${selectedAsset.id}`} taskId={detail.id} runId={detail.currentImageRunId}
                       copyRevisionId={detail.currentCopyRevisionId} asset={selectedAsset} page={selectedAssetIndex + 1}
                       runs={detail.imageRuns} onChanged={load} />}
@@ -1316,6 +1371,9 @@ export function TaskReviewDialog({
                       notePlaceholder={humanRatingSettings.noteGuidance.imagePlaceholder}
                       showReasonOptions={showImageDeductionReasons}
                       feedbackRequired={false}
+                      reasonRequirement="发起返工时至少选择一项"
+                      noteLabel="评分说明 / 修改要求"
+                      noteRequirement="发起返工时必填"
                       disabled={loading || submitting || humanQualitySettingsUnavailable || Boolean(savedImageAssessment)}
                       onToggleReason={(code) => { toggleImageReason(code); setError(''); }}
                       onNoteChange={(note) => { setImageReviewNote(note); setError(''); }}
@@ -1363,7 +1421,9 @@ export function TaskReviewDialog({
                   <HumanScoreBadge score={imageAssessments.at(-1)!.score} />
                   <HumanAssessmentHistory assessments={imageAssessments} scoreDefinitions={scoreDefinitions} reasonOptions={imageReasonOptions} showReasonOptions={showImageDeductionReasons} />
                 </div>}
-                {!canReviewImages && imageAssessments.length === 0 && isImageReviewView && <p className="notice">当前账号仅可查看图片和已审文案；图片终审操作由管理员或已分配审核员完成。</p>}
+                {!canReviewImages && imageAssessments.length === 0 && isImageReviewView && <p className="notice">{role === 'USER'
+                  ? detail.state === 'IMAGE_REWORK_PENDING' ? '请完成返修并采用新图片版本；系统随后回到图片初审，提交后固定进入强制图片复检。' : '请逐页核对图片。需要调整时可直接编辑或重新生成；确认无误后在底部提交图片抽检。'
+                  : '图片初审由任务作业员完成；审核员和管理员在独立的图片质检池处理抽中项。'}</p>}
                 {currentImageRun?.result?.processing?.type === 'LOCAL' && <p className="notice warning">此版本已在本地转换格式或背景，未重新调用模型验收，请检查文字对比和透明边缘后审核。</p>}
                 {imageConfigurationChanged && <p className="notice warning">下方配置尚未应用，当前预览仍是已有成品。请先提交转换或重新生图，或刷新恢复已保存的配置。</p>}
                 <div className="workbench-image-review-preference"><ImagePreviewPreference /></div>
@@ -1390,7 +1450,7 @@ export function TaskReviewDialog({
             </section>}
 
             <ImageHistoryCompare runs={detail.imageRuns} currentRunId={detail.currentImageRunId} assets={detail.assets}
-              onRestore={isAdmin && canModifyImages && !submitting ? settings => setDraft(current => current ? { ...current, imageSettings: settings } : current) : undefined} />
+              onRestore={canModifyImages && !submitting ? settings => setDraft(current => current ? { ...current, imageSettings: settings } : current) : undefined} />
             </div>
 
             {draft && <div id="review-plan-pane" className="workbench-review-pane" data-review-pane="plan">
@@ -1459,7 +1519,7 @@ export function TaskReviewDialog({
                 </div>
               </section>
               {editable && <ReviewReferences detail={detail} sources={sources} xiaohongshuLinks={xiaohongshuLinks} />}
-              {isAdmin && <Disclosure className="workbench-review-section">
+              {canModifyImages && <Disclosure className="workbench-review-section">
                 <DisclosureTrigger>交付格式与背景</DisclosureTrigger>
                 <DisclosureContent>
                   <ImageSettingsEditor value={draft.imageSettings} disabled={isCopyOnlyFinalRework || (!editable && !canModifyImages) || submitting} onChange={imageSettings => setDraft(current => current ? { ...current, imageSettings } : current)} />
@@ -1486,6 +1546,10 @@ export function TaskReviewDialog({
                   <CheckCircle2 size={15} />{submitting ? '正在提交…' : '通过文案质检'}
                 </Button>}
               {canResumeImages && <Button unstyled className="button primary" type="button" disabled={submitting || loading} onClick={() => { void resumeImages(); }}><RotateCcw size={15} />从失败步骤继续</Button>}
+              {canSubmitImageSelfReview && <Button unstyled className="button primary" type="button"
+                disabled={submitting || loading || !imageSetComplete || imagePlanChanged || imageConfigurationChanged}
+                onClick={() => { void submitImageSelfReview(); }}><CheckCircle2 size={15} />
+                {submitting ? '正在提交…' : '自检完成，提交图片抽检'}</Button>}
               {canReviewImages && <>
                 <Button unstyled className="button danger" type="button" disabled={submitting || loading || !imageRatingComplete} onClick={() => { void submitImageReview('DISCARD'); }}><Trash2 size={15} />废弃</Button>
                 <div className="workbench-image-rework-control">

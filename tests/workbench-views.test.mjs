@@ -5,7 +5,7 @@ import { compareTasksByStatePriority, TASK_STATE_PRIORITY, WORKBENCH_VIEWS, matc
 
 test('workbench routes include completed work after manual archive', () => {
   assert.deepEqual(WORKBENCH_VIEWS.map((view) => view.label), [
-    '个人作业中心', '待审核分配', '全部文案任务', '待文案审核', '生图中', '图文终审', '交付池', '全部作业',
+    '个人作业中心', '待审核分配', '全部文案任务', '待文案审核', '生图中', '图片初审与返修', '交付池', '全部作业',
   ]);
   assert.equal(new Set(WORKBENCH_VIEWS.map((view) => view.href)).size, 8);
   assert.ok(WORKBENCH_VIEWS.every((view) => view.href.startsWith('/workbench/')));
@@ -38,7 +38,7 @@ test('personal tasks include every active lifecycle state submitted by or assign
   const personal = WORKBENCH_VIEWS[0];
   assert.deepEqual(personal.states, [
     'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_QC_PENDING', 'COPY_FAILED',
-    'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'REVIEWED',
+    'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'IMAGE_QC_PENDING', 'IMAGE_REWORK_PENDING', 'REVIEWED',
   ]);
   const tasks = [
     { id: 1, state: 'COPY_QUEUED', createdByUserId: 'bob', assignedToUserId: 'alice', copyExecutorNodeId: 'other-node' },
@@ -79,6 +79,8 @@ test('task lists prioritize lifecycle state and use newest-first order within a 
     COPY_REVIEW_PENDING: 1,
     COPY_QC_PENDING: 2,
     MANUAL_ARCHIVE: 3,
+    IMAGE_REWORK_PENDING: 3,
+    IMAGE_QC_PENDING: 3,
     COPY_RUNNING: 4,
     IMAGE_RUNNING: 5,
     COPY_FAILED: 6,

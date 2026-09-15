@@ -6,6 +6,7 @@ export const DEFAULT_PRODUCTION_SETTINGS = Object.freeze({
   qualityRepairTriggerScore: 1,
   qualityRepairTargetScore: 2,
   qualityRepairMaxAttempts: 2,
+  imageEditRepairMaxAttempts: 2,
   aiDisclosureEnabled: true,
   aiDisclosureText: 'AI生成',
   humanQualityReasons: DEFAULT_HUMAN_QUALITY_SETTINGS,

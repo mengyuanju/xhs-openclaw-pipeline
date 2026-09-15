@@ -812,7 +812,8 @@ describe('standalone image generation service', () => {
     assert.equal(Object.hasOwn(originalConfig.productionSettings, 'modelApi'), false);
     assert.deepEqual(originalConfig.productionSettings, {
       qualityRepairEnabled: false, qualityRepairTriggerScore: 1, qualityRepairTargetScore: 2,
-      qualityRepairMaxAttempts: 1, knowledgeEnabled: true, aiDisclosureEnabled: true, aiDisclosureText: '历史标识', layoutPresets: [],
+      qualityRepairMaxAttempts: 1, imageEditRepairMaxAttempts: 2, knowledgeEnabled: true,
+      aiDisclosureEnabled: true, aiDisclosureText: '历史标识', layoutPresets: [],
       humanQualityReasons: DEFAULT_HUMAN_QUALITY_SETTINGS,
     });
 

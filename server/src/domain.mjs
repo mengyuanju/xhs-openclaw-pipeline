@@ -9,6 +9,8 @@ export const TASK_STATES = Object.freeze([
   'IMAGE_RUNNING',
   'IMAGE_FAILED',
   'MANUAL_ARCHIVE',
+  'IMAGE_QC_PENDING',
+  'IMAGE_REWORK_PENDING',
   'REVIEWED',
   'CANCELLED',
 ]);

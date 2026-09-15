@@ -18,6 +18,7 @@ function editableSettings(settings: WorkflowQualitySettings) {
   return {
     queryPackage: { ...settings.queryPackage },
     copySampling: { ...settings.copySampling },
+    imageSampling: { ...settings.imageSampling },
   };
 }
 
@@ -74,13 +75,14 @@ export function WorkflowQualitySettingsPanel() {
   const changed = Boolean(saved && draft
     && JSON.stringify(editableSettings(saved)) !== JSON.stringify(draft));
   const ratePercent = (draft?.copySampling.rateBps ?? 0) / 100;
+  const imageRatePercent = (draft?.imageSampling.rateBps ?? 0) / 100;
 
   return <section className="panel settings-section" aria-labelledby="workflow-quality-settings-title" aria-busy={loading || busy}>
     <div className="panel-head">
       <div>
         <span className="section-kicker">Workflow quality</span>
-        <h2 id="workflow-quality-settings-title">流程与文案抽检</h2>
-        <p className="subtle">配置抽检比例和盲评。审核与质检权限在用户管理中独立设置。</p>
+        <h2 id="workflow-quality-settings-title">流程与图文抽检</h2>
+        <p className="subtle">文案与图片使用独立抽检比例。图片初审始终由任务作业员完成，图片质检权限在用户管理中设置。</p>
       </div>
       <ClipboardCheck size={20} aria-hidden="true" />
     </div>
@@ -92,6 +94,7 @@ export function WorkflowQualitySettingsPanel() {
         <span className="pill">文案抽检：{draft.copySampling.enabled ? `${ratePercent}%` : '关闭'}</span>
         <span className="pill">质检视图：{draft.copySampling.blindReviewEnabled ? '盲评' : '非盲评'}</span>
         <span className="pill">质检权限包含单条和整批打回</span>
+        <span className="pill">图片抽检：{draft.imageSampling.enabled ? `${imageRatePercent}%` : '关闭'}</span>
       </div>
       <div className={styles.grid}>
         <div className={styles.card}>
@@ -123,6 +126,45 @@ export function WorkflowQualitySettingsPanel() {
                 setDraft((current) => current ? { ...current, copySampling: { ...current.copySampling, rateBps: Math.round(percent * 100) } } : current);
               }} />
             <span>{draft.copySampling.rateBps.toLocaleString('zh-CN')} / 10,000</span>
+          </div>
+        </div>
+        <div className={styles.card}>
+          <div className={styles.cardText}>
+            <label htmlFor="image-sampling-enabled">启用图片抽检</label>
+            <p>作业员完成图片初审后进入图片抽检池；关闭时直接进入交付池。质检打回后的图片仍强制 100% 复检。</p>
+          </div>
+          <Switch id="image-sampling-enabled" checked={draft.imageSampling.enabled} disabled={disabled}
+            onChange={(event) => { setMessage(''); setDraft((current) => current ? { ...current, imageSampling: { ...current.imageSampling, enabled: event.target.checked } } : current); }} />
+        </div>
+        <div className={styles.card}>
+          <div className={styles.cardText}>
+            <label htmlFor="image-sampling-blind">图片质检盲评</label>
+            <p>非管理员质检员看不到任务号、词包和图片提交人；管理员仍可查看完整追溯信息。</p>
+          </div>
+          <Switch id="image-sampling-blind" checked={draft.imageSampling.blindReviewEnabled} disabled={disabled || !draft.imageSampling.enabled}
+            onChange={(event) => { setMessage(''); setDraft((current) => current ? { ...current, imageSampling: { ...current.imageSampling, blindReviewEnabled: event.target.checked } } : current); }} />
+        </div>
+        <div className={styles.card}>
+          <div className={styles.cardText}>
+            <label htmlFor="image-batch-return-enabled">允许质检员整批打回</label>
+            <p>只影响审核员；管理员始终可以处理任何图片质检项。关闭后审核员只能单条打回。</p>
+          </div>
+          <Switch id="image-batch-return-enabled" checked={draft.imageSampling.reviewerBatchReturnEnabled} disabled={disabled || !draft.imageSampling.enabled}
+            onChange={(event) => { setMessage(''); setDraft((current) => current ? { ...current, imageSampling: { ...current.imageSampling, reviewerBatchReturnEnabled: event.target.checked } } : current); }} />
+        </div>
+        <div className={styles.rate}>
+          <div className={styles.rateText}>
+            <label htmlFor="image-sampling-rate">图片抽检比例</label>
+            <p>按生产批次和图片提交人独立累计整数余数；满块立即冻结，不足块等待 30 分钟。返修复检不受此比例影响，固定全检。</p>
+          </div>
+          <div className={styles.rateControl}>
+            <Input id="image-sampling-rate" type="number" min={0} max={100} step={0.01} value={imageRatePercent} disabled={disabled || !draft.imageSampling.enabled}
+              onChange={(event) => {
+                const percent = Math.min(100, Math.max(0, Number(event.target.value) || 0));
+                setMessage('');
+                setDraft((current) => current ? { ...current, imageSampling: { ...current.imageSampling, rateBps: Math.round(percent * 100) } } : current);
+              }} />
+            <span>{draft.imageSampling.rateBps.toLocaleString('zh-CN')} / 10,000</span>
           </div>
         </div>
       </div>

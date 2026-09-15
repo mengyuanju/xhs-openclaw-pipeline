@@ -35,8 +35,9 @@ test('shared image rating keeps its passing rule while copy machine drafts use d
   assert.match(rating, /human-rating-card-action/u);
   assert.match(rating, /showDescriptions && <strong className="human-rating-card-verdict">/u);
   assert.match(rating, /showDescriptions && <span className="human-rating-card-action">/u);
-  assert.match(rating, /showReasonOptions && <fieldset/u);
+  assert.match(rating, /showReasonOptions && <HumanReasonOptions/u);
   assert.match(rating, /feedbackRequired = true/u);
+  assert.match(rating, /export function HumanReasonOptions/u);
   assert.match(rating, /feedbackRequired \? '原因或说明至少填写一项' : '选填'/u);
   assert.match(rating, /showScoreDescriptions && scoreDefinition/u);
   assert.match(rating, /showReasonOptions && assessment\.reasonCodes\.length/u);
@@ -87,7 +88,7 @@ test('copy review scores the machine draft once and auto-scores an edited approv
   assert.match(source, /const copyFieldsEditable = editable && \(isCopyRework \|\| copyOriginalScore === 2 \|\| copyOriginalScore === 2\.5\)/u);
   assert.doesNotMatch(source, /copyFieldsEditable = editable && originalCopyRatingComplete/u);
   assert.match(source, /const planFieldsReadOnly = !\(editable \|\| canEditApprovedImagePlan\)/u);
-  assert.match(source, /const planKindDisabled = !editable \|\| isCopyOnlyFinalRework \|\| loading \|\| submitting/u);
+  assert.match(source, /const planKindDisabled = !\(editable \|\| canEditApprovedImagePlan\) \|\| isCopyOnlyFinalRework \|\| loading \|\| submitting/u);
   assert.match(source, /\['QA_RETURN', 'FINAL_REWORK'\]\.includes\(revision\?\.reworkOrigin \?\? ''\)/u);
   assert.match(source, /<CopyMachineDraftScoreField[\s\S]*legend=\{currentCopyRatingLabel\}/u);
   assert.match(source, /const showCopyRating = detail\?\.state === 'COPY_REVIEW_PENDING' && !isCopyRework/u);
@@ -122,6 +123,10 @@ test('copy and image review visibility settings control their own guidance and r
   assert.match(source, /<CopyMachineDraftScoreField[\s\S]{0,240}showDescriptions=\{showCopyScoreDescriptions\}/u);
   assert.match(source, /showReasonOptions=\{showCopyDeductionReasons\}/u);
   assert.match(source, /showReasonOptions=\{showImageDeductionReasons\}/u);
+  assert.match(source, /const imageReworkReasonRequired = showImageDeductionReasons && imageReasonOptions\.length > 0/u);
+  assert.match(source, /imageReworkReasonRequired && imageReasons\.length === 0/u);
+  assert.doesNotMatch(source, /!showImageDeductionReasons && <HumanReasonOptions/u);
+  assert.match(source, /noteLabel="评分说明 \/ 修改要求"[\s\S]{0,100}noteRequirement="发起返工时必填"/u);
   assert.match(source, /showScoreDescriptions=\{showCopyScoreDescriptions\} showReasonOptions=\{showCopyDeductionReasons\}/u);
   assert.match(source, /legend="整套图片评分"[\s\S]{0,180}scoreDefinitions=\{scoreDefinitions\}[\s\S]{0,180}disabled=/u);
   assert.match(source, /const canApproveImages = imageSetComplete && imageRatingComplete && isPassingHumanScore\(imageScore\)/u);

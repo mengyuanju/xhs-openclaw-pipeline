@@ -66,7 +66,7 @@ test('reprocessing cannot change layout or reference an asset outside this task 
   await assert.rejects(reviseTaskImages(f.client, 1, input, 'alice'), /源图/);
 });
 
-test('non-admin regeneration forces every inherited or submitted layout back to automatic', async () => {
+test('worker regeneration preserves every submitted layout for full image rework', async () => {
   const f = fixture();
   f.content.imagePlan = f.content.imagePlan.map((page, index) => ({
     ...page,
@@ -79,9 +79,6 @@ test('non-admin regeneration forces every inherited or submitted layout back to 
     layouts: f.content.imagePlan.map(page => page.layout),
   }, 'alice', 'USER');
   const saved = f.calls.find(c => c.sql.includes('INSERT INTO copy_revisions')).values[2];
-  assert.deepEqual(saved.imagePlan.map(page => page.layout), [
-    { mode: 'AUTO' },
-    { mode: 'AUTO' },
-    { mode: 'AUTO' },
-  ]);
+  assert.deepEqual(saved.imagePlan[0].layout, f.content.imagePlan[0].layout);
+  assert.deepEqual(saved.imagePlan.slice(1).map(page => page.layout.mode), ['CUSTOM', 'CUSTOM']);
 });

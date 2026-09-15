@@ -22,6 +22,8 @@ function fixture(overrides = {}, {
   completedRun = true,
   archiveImageResult = { images: [101, 102, 103].map((assetId) => ({ assetId })) },
   archiveAssetIds = [101, 102, 103],
+  showImageDeductionReasons = true,
+  imageReasons,
 } = {}) {
   const task = { id: 7, state: 'MANUAL_ARCHIVE', current_image_run_id: runId,
     current_copy_revision_id: 3, created_by_user_id: 'alice', current_execution_id: null,
@@ -49,6 +51,12 @@ function fixture(overrides = {}, {
       }
       if (sql.includes('FROM human_quality_review_submissions')) {
         return { rows: submissions.filter((row) => row.review_session_id === values[0]) };
+      }
+      if (sql.includes("SELECT value FROM global_settings WHERE key = 'production'")) {
+        return { rows: [{ value: { humanQualityReasons: {
+          ...(imageReasons === undefined ? {} : { imageReasons }),
+          imageReviewDisplay: { showDeductionReasons: showImageDeductionReasons },
+        } } }] };
       }
       if (sql.includes('SELECT id FROM image_runs')) return { rows: completedRun ? [{ id: runId }] : [] };
       if (sql.includes('AS available_asset_ids')) return completedRun ? { rows: [{
@@ -96,6 +104,9 @@ function fixture(overrides = {}, {
           if (delivery.task_id === Number(values[0]) && delivery.status === 'READY') delivery.status = 'WITHDRAWN';
         }
         return { rows: [] };
+      }
+      if (sql.includes('SELECT task.image_qc_legacy_accepted')) {
+        return { rows: [{ image_qc_legacy_accepted: true, release_event_id: null }] };
       }
       if (sql.includes('INSERT INTO delivery_entries')) {
         const row = {
@@ -217,7 +228,7 @@ for (const reworkTarget of ['COPY', 'BOTH']) {
   });
 }
 
-test('rework rejects ambiguous feedback before opening a transaction', async () => {
+test('rework rejects ambiguous feedback before changing task state', async () => {
   for (const patch of [
     { reasons: [], copyFields: ['BODY'], note: '修改正文' },
     { reasons: ['CONTENT_MISMATCH'], copyFields: ['BODY'], note: '' },
@@ -234,8 +245,48 @@ test('rework rejects ambiguous feedback before opening a transaction', async () 
       reviewerUserId: 'reviewer',
       ...patch,
     }), TypeError);
-    assert.equal(queries.length, 0);
+    if (patch.reasons.length === 0) {
+      assert.equal(queries.at(-1).sql, 'ROLLBACK');
+      assert.ok(queries.every(({ sql }) => !sql.includes('UPDATE tasks')));
+    } else {
+      assert.equal(queries.length, 0);
+    }
   }
+});
+
+test('rework accepts precise instructions without a reason when image reason display is disabled', async () => {
+  const { repository, assessments } = fixture({}, { showImageDeductionReasons: false });
+  const result = await repository.reviewImages(7, {
+    imageRunId: runId,
+    decision: 'REWORK',
+    reworkTarget: 'IMAGE',
+    score: 2,
+    reasons: [],
+    problemAssetIds: [101],
+    note: '重新生成第一页，修正标题文字并保持其余页面不变。',
+    reviewSessionId: '98989898-9898-4898-8898-989898989898',
+    actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
+  });
+
+  assert.equal(result.state, 'IMAGE_QUEUED');
+  assert.deepEqual(assessments[0].reason_codes, []);
+  assert.equal(assessments[0].note, '重新生成第一页，修正标题文字并保持其余页面不变。');
+});
+
+test('legacy enabled settings with no image reasons do not block rework', async () => {
+  const { repository } = fixture({}, { showImageDeductionReasons: true, imageReasons: [] });
+  const result = await repository.reviewImages(7, {
+    imageRunId: runId,
+    decision: 'REWORK',
+    reworkTarget: 'IMAGE',
+    score: 2,
+    problemAssetIds: [101],
+    note: '重新生成第一页，修正清晰度问题。',
+    reviewSessionId: '99999999-9999-4999-8999-999999999999',
+    actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
+  });
+
+  assert.equal(result.state, 'IMAGE_QUEUED');
 });
 
 test('admin image retry saves edited plan as a new approved revision and keeps the reviewed revision immutable', async () => {
@@ -399,12 +450,17 @@ test('image review stores optional low-score feedback and validates current-run 
   assert.equal(staleAsset.assessments.length, 0);
 });
 
-test('image review allows reviewers across owners, rejects ordinary users and derives reviewer identity from session', async () => {
-  const calls = [];
+test('image self-review is owner-only while the independent QA pool is reviewer/admin-only', async () => {
+  const selfReviewCalls = [];
+  const listCalls = [];
   const repository = {
     getUserByUsername: async (username) => ({ id: 1, username, role: username === 'alice' ? 'USER' : username === 'admin' ? 'ADMIN' : 'REVIEWER', status: 'ACTIVE', credentialVersion: 1 }),
-    getTask: async () => ({ id: 7, state: 'MANUAL_ARCHIVE', createdByUserId: 'alice' }),
-    reviewImages: async (...args) => { calls.push(args); return { state: 'REVIEWED' }; },
+    getTaskAccess: async () => ({ id: 7, state: 'MANUAL_ARCHIVE', createdByUserId: 'alice', createdByAccountId: 1,
+      assignedToUserId: 'alice', assignedToAccountId: 1, activeBlindQa: false }),
+    getTask: async () => ({ id: 7, state: 'MANUAL_ARCHIVE', createdByUserId: 'alice', createdByAccountId: 1,
+      assignedToUserId: 'alice', assignedToAccountId: 1 }),
+    submitImageSelfReview: async (...args) => { selfReviewCalls.push(args); return { state: 'IMAGE_QC_PENDING' }; },
+    listImageQaItems: async (...args) => { listCalls.push(args); return { items: [], total: 0 }; },
   };
   const server = createControlPlaneApp({ repository, storageRoot: 'test-storage' }).listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
@@ -414,34 +470,25 @@ test('image review allows reviewers across owners, rejects ordinary users and de
     });
     assert.equal(capability.status, 200);
     assert.equal((await capability.json()).data.reviewImagePlanEdits, true);
-    for (const [username, role, status] of [['reviewer', 'REVIEWER', 200], ['admin', 'ADMIN', 200], ['alice', 'USER', 403]]) {
-      const planEdit = username === 'admin' ? {
-        revisionId: 3,
-        nodeId: 'web-admin',
-        imagePlan: imagePlan('HTTP修正规划'),
-      } : {};
-      const response = await fetch(`http://127.0.0.1:${server.address().port}/v1/tasks/7/review-images`, {
+    for (const [username, role, status] of [['alice', 'USER', 200], ['reviewer', 'REVIEWER', 403], ['admin', 'ADMIN', 403]]) {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/v1/tasks/7/submit-image-self-review`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Actor-User-Id': '1', 'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1' },
-        body: JSON.stringify({ imageRunId: runId, decision: username === 'admin' ? 'RETRY' : 'APPROVE', score: username === 'admin' ? 2 : 2.5,
-          note: '轻微问题', reviewSessionId, reviewerUserId: 'spoofed', ...planEdit }),
+        body: JSON.stringify({ imageRunId: runId, reviewerUserId: 'spoofed' }),
       });
       assert.equal(response.status, status);
     }
-    assert.deepEqual(calls.map(([, input]) => input.actor.username), ['reviewer', 'admin']);
-    assert.deepEqual(calls[0][1], {
-      imageRunId: runId,
-      decision: 'APPROVE',
-      reworkTarget: undefined,
-      score: 2.5,
-      reasons: undefined,
-      note: '轻微问题',
-      problemAssetIds: undefined,
-      reviewSessionId,
-      actor: { userId: 1, username: 'reviewer', role: 'REVIEWER', credentialVersion: 1 },
+    assert.equal(selfReviewCalls.length, 1);
+    assert.equal(selfReviewCalls[0][2].actor.username, 'alice');
+    for (const [username, role, status] of [['reviewer', 'REVIEWER', 200], ['admin', 'ADMIN', 200], ['alice', 'USER', 403]]) {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/v1/image-qa/items`, {
+        headers: { 'X-Actor-User-Id': '1', 'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1' },
+      });
+      assert.equal(response.status, status);
+    }
+    assert.deepEqual(listCalls.map(([, options]) => options.actor.role), ['REVIEWER', 'ADMIN']);
+    const retired = await fetch(`http://127.0.0.1:${server.address().port}/v1/tasks/7/review-images`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
     });
-    assert.deepEqual(calls[1][1].imagePlan, imagePlan('HTTP修正规划'));
-    assert.equal(calls[1][1].revisionId, 3);
-    assert.equal(calls[1][1].nodeId, 'web-admin');
-    assert.equal(calls[1][1].actor.role, 'ADMIN');
+    assert.equal(retired.status, 410);
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });

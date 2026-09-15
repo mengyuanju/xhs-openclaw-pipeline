@@ -10,6 +10,20 @@ import { applyServerEnvironment, loadServerEnvironment } from './server-environm
 import { startAutoAssignmentReplenishment } from './task-auto-assignment-runner.mjs';
 import { createImageEditingService } from './image-editing.mjs';
 import { processImageEdit } from './image-edit-renderer.mjs';
+import { startImageEditProcessing } from './image-edit-runner.mjs';
+
+function optionalBoolean(value,name,fallback) {
+  if(value===undefined||value==='')return fallback;
+  if(!['true','false'].includes(value))throw new Error(`${name} must be true or false`);
+  return value==='true';
+}
+
+function boundedInterval(value,name,fallback) {
+  if(value===undefined||value==='')return fallback;
+  const parsed=Number(value);
+  if(!Number.isInteger(parsed)||parsed<100||parsed>60_000)throw new Error(`${name} must be an integer from 100 to 60000`);
+  return parsed;
+}
 
 export function configuration(environment = process.env) {
   const connectionString = environment.DATABASE_URL?.trim();
@@ -23,6 +37,8 @@ export function configuration(environment = process.env) {
     host: environment.CONTROL_PLANE_HOST?.trim() || '127.0.0.1',
     port,
     storageRoot: resolve(environment.CONTROL_PLANE_STORAGE_ROOT || 'server-storage'),
+    imageEditWorkerEnabled:optionalBoolean(environment.CONTROL_PLANE_IMAGE_EDIT_WORKER_ENABLED,'CONTROL_PLANE_IMAGE_EDIT_WORKER_ENABLED',environment.XHS_SERVER_ENV!=='production'),
+    imageEditPollMs:boundedInterval(environment.CONTROL_PLANE_IMAGE_EDIT_POLL_MS,'CONTROL_PLANE_IMAGE_EDIT_POLL_MS',2000),
   };
 }
 
@@ -76,12 +92,16 @@ async function main() {
   console.log(`Control plane listening on http://${config.host}:${config.port} (${selectedEnvironment.profile}).`);
   const stopRecovery = startExecutionRecovery(repository);
   const stopAutoAssignment = startAutoAssignmentReplenishment(repository);
+  const stopImageEdits=config.imageEditWorkerEnabled
+    ? startImageEditProcessing({service:createImageEditingService({pool:repository.pool,storageRoot:config.storageRoot}),storageRoot:config.storageRoot},{intervalMs:config.imageEditPollMs})
+    : async()=>{};
+  console.log(`Image edit queue worker ${config.imageEditWorkerEnabled?'enabled':'disabled'}.`);
 
   let stoppingPromise = null;
   function stop() {
     if (stoppingPromise) return stoppingPromise;
     stoppingPromise = (async () => {
-      await Promise.all([stopRecovery(), stopAutoAssignment()]);
+      await Promise.all([stopRecovery(), stopAutoAssignment(), stopImageEdits()]);
       const serverClosed = new Promise((resolvePromise) => server.close(resolvePromise));
       await app.context.disposeControlPlaneResources?.();
       await serverClosed;

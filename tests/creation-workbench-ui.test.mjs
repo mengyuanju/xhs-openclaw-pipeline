@@ -37,8 +37,8 @@ test('new creation workbench owns the root route and exposes lifecycle views', a
   assert.match(views, /生图连续3次失败的任务会回到此处，等待重新审核/u);
   assert.match(views, /states: \['COPY_REVIEW_PENDING'\]/u);
   assert.match(views, /states: \['IMAGE_QUEUED', 'IMAGE_RUNNING'\]/u);
-  assert.match(views, /label: '图文终审'/u);
-  assert.match(views, /states: \['MANUAL_ARCHIVE'\]/u);
+  assert.match(views, /label: '图片初审与返修'/u);
+  assert.match(views, /states: \['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING'\]/u);
   assert.match(views, /label: '交付池'/u);
   assert.match(views, /states: \['REVIEWED'\]/u);
   assert.match(listPage, /if \(definition\.adminOnly && role !== 'ADMIN'\) redirect\('\/workbench\/personal'\)/u);
@@ -78,7 +78,9 @@ test('ordinary users do not render Query package provenance or delivery download
     'assigned operators must still see the Query-specific Xiaohongshu review links');
   assert.match(reviewDialog, /role === 'USER' \? '已完成任务详情' : '交付池任务详情'/u);
   assert.match(reviewDialog, /role === 'USER'[\s\S]{0,120}'任务已经完成，可查看最终内容。'/u);
-  assert.match(reviewDialog, /role === 'USER'[\s\S]{0,120}'图片已经生成，正在等待图文终审；当前内容仅供查看。'/u);
+  assert.match(reviewDialog, /自检完成，提交图片抽检/u);
+  assert.match(reviewDialog, /\/v1\/tasks\/\$\{detail\.id\}\/submit-image-self-review/u);
+  assert.match(reviewDialog, /role !== 'REVIEWER'[\s\S]{0,160}\['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING'\]/u);
   assert.doesNotMatch(reviewDialog, /const downloadable =[^;]*currentUserIsAssignee/u,
     'ordinary assignees must not regain the administrator-only delivery download');
   assert.match(reviewDialog, /const downloadable =[^;]*\bisAdmin\b[^;]*;/u);
@@ -255,6 +257,25 @@ test('creator and assignee filters can be combined while personal work stays dis
   assert.match(workbench, /personalOwnershipLabel\(task, creatorUserId, creatorAccountId\)/u);
 });
 
+test('task sorting controls keep usable widths and stack on narrow screens', async () => {
+  const [workbench, styles] = await Promise.all([
+    readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+  ]);
+  const controlsStart = workbench.indexOf('<div className="workbench-sort-control">');
+  const controlsEnd = workbench.indexOf('<label className="switch-field workbench-query-deduplicate"', controlsStart);
+  const controls = workbench.slice(controlsStart, controlsEnd);
+  const mobileStyles = styles.slice(styles.indexOf('@media (max-width: 760px)'));
+
+  assert.ok(controlsStart >= 0 && controlsEnd > controlsStart);
+  assert.equal(controls.match(/className="workbench-sort-field"/gu)?.length, 2);
+  assert.match(controls, /htmlFor="workbench-priority-filter"[\s\S]*id="workbench-priority-filter"/u);
+  assert.match(controls, /htmlFor="workbench-task-sort"[\s\S]*id="workbench-task-sort"/u);
+  assert.match(styles, /\.workbench-sort-control \{[^}]*grid-template-columns: minmax\(170px, \.85fr\) minmax\(250px, 1\.15fr\)/u);
+  assert.match(styles, /\.workbench-sort-field \{[^}]*min-width: 0;[^}]*display: grid/u);
+  assert.match(mobileStyles, /\.workbench-sort-control \{[^}]*width: 100%;[^}]*grid-template-columns: minmax\(0, 1fr\)/u);
+});
+
 test('creation dialog accepts a single batch textarea and creates one remote batch', async () => {
   const [workbench, reviewDialog, styles] = await Promise.all([
     readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
@@ -317,9 +338,9 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(reviewDialog, /AI生成水印/u);
   assert.match(reviewDialog, /aiDisclosureEnabled \? '已开启' : '已关闭'/u);
   assert.match(reviewDialog, /const editable = taskHasAssignee && canReviewCopy && detail\?\.state === 'COPY_REVIEW_PENDING'/u);
-  assert.match(reviewDialog, /const canEditApprovedImagePlan = Boolean\(isAdmin && canReviewImages && canModifyImages\)/u);
+  assert.match(reviewDialog, /const canEditApprovedImagePlan = canModifyImages/u);
   assert.match(reviewDialog, /const planFieldsReadOnly = !\(editable \|\| canEditApprovedImagePlan\)/u);
-  assert.match(reviewDialog, /const planKindDisabled = !editable \|\| isCopyOnlyFinalRework \|\| loading \|\| submitting/u);
+  assert.match(reviewDialog, /const planKindDisabled = !\(editable \|\| canEditApprovedImagePlan\) \|\| isCopyOnlyFinalRework \|\| loading \|\| submitting/u);
   assert.match(reviewDialog, /readOnly=\{planFieldsReadOnly\}/u);
   assert.match(reviewDialog, /<Select value=\{item\.kind\} disabled=\{planKindDisabled \|\| index === 0\}/u);
   assert.match(reviewDialog, /IMAGE_KINDS\.filter\(\(kind\) => index === 0 \? kind === 'hero' : kind !== 'hero'\)/u);
@@ -395,12 +416,12 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(styles, /\.workbench-review-dialog\s*\{/u);
 });
 
-test('task detail elevates the image workspace during final image review', async () => {
+test('task detail elevates the image workspace during operator image review and rework', async () => {
   const [source, styles] = await Promise.all([
     readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
     readFile(projectFile('app/globals.css'), 'utf8'),
   ]);
-  assert.match(source, /isImageReviewView \? '图片终审' : '图片审核'/u);
+  assert.match(source, /isImageReviewView \? detail\.state === 'IMAGE_REWORK_PENDING' \? '图片返修' : '图片初审' : '图片审核'/u);
   assert.match(source, /isImageReviewView \? '已审文案对照' : '标题、正文与标签'/u);
   assert.match(source, /workbench-image-plan-section/u);
   assert.match(styles, /workbench-image-review-section \{ order: -20/u);
@@ -410,11 +431,12 @@ test('task detail elevates the image workspace during final image review', async
 });
 
 test('image review fits the complete image, supports exterior controls, and presents saved visual planning as structured cards', async () => {
-  const [reviewDialog, carouselNavigation, preview, backdropControl, visualPlan, styles] = await Promise.all([
+  const [reviewDialog, carouselNavigation, preview, backdropControl, currentImageEditor, visualPlan, styles] = await Promise.all([
     readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
     readFile(projectFile('app/components/image-carousel-navigation.tsx'), 'utf8'),
     readFile(projectFile('app/components/image-preview.tsx'), 'utf8'),
     readFile(projectFile('app/components/image-preview-background-control.tsx'), 'utf8'),
+    readFile(projectFile('app/components/current-image-editor.tsx'), 'utf8'),
     readFile(projectFile('app/components/visual-plan-summary.tsx'), 'utf8'),
     readFile(projectFile('app/globals.css'), 'utf8'),
   ]);
@@ -437,7 +459,9 @@ test('image review fits the complete image, supports exterior controls, and pres
   assert.match(backdropControl, /export function ImagePreviewBackgroundControl/u);
   assert.match(backdropControl, /value: 'white', label: '白底'/u);
   assert.match(styles, /\.preview-background-white \{ background: #fff; \}/u);
-  assert.match(styles, /\.workbench-image-review-title-actions \{[^}]*margin-right: 52px;[^}]*margin-left: auto/u);
+  assert.match(currentImageEditor, /className="current-image-editor-trigger"[\s\S]*?>修改图片<\/Button>/u);
+  assert.match(styles, /\.workbench-image-review-title-actions \{[^}]*display: inline-flex;[^}]*gap: 12px;[^}]*margin-right: 52px;[^}]*margin-left: auto/u);
+  assert.match(styles, /\.workbench-image-review-title-actions \.current-image-editor-trigger \{[^}]*width: 96px;[^}]*height: 36px;/u);
   assert.match(styles, /\.workbench-image-review-section\[data-image-primary="true"\] > \.workbench-image-review-section-title \{[^}]*grid-template-columns: minmax\(0, 1\.75fr\) minmax\(320px, \.75fr\)/u);
   assert.match(visualPlan, /<Disclosure className="visual-plan-summary">/u);
   assert.match(visualPlan, /className="visual-plan-overview"/u);

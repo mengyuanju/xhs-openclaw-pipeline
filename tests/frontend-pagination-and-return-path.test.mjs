@@ -82,6 +82,14 @@ test('copy QA keeps the review-mode control admin-only', async () => {
   assert.match(source, /样本评审模式由管理员预先决定，审核员不可切换或更改/u);
 });
 
+test('copy QA exposes administrator direct passes as a dedicated server-side result filter', async () => {
+  const source = await readFile(copyWorkbenchUrl, 'utf8');
+  assert.match(source, /role === 'ADMIN' && <SelectItem value="ADMIN_DIRECT_PASSED">管理员单独通过<\/SelectItem>/u);
+  assert.match(source, /status === 'ADMIN_DIRECT_PASSED'[\s\S]*item\.reviewMethod === 'ADMIN_DIRECT'/u);
+  assert.match(source, /管理员单独通过 ·/u);
+  assert.match(source, /质检处理[\s\S]*detail\.reviewMethod === 'ADMIN_DIRECT'/u);
+});
+
 test('visible Query packages page through the server and virtualizes cursor-paged detail rows', async () => {
   const [source, virtualList] = await Promise.all([
     readFile(queryWorkbenchUrl, 'utf8'),

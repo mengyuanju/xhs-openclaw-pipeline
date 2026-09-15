@@ -3,7 +3,7 @@ import { FileCheck2, FileText, Image as ImageIcon, Inbox, ListChecks, UserRound 
 export type TaskState =
   | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_QC_PENDING' | 'COPY_FAILED'
   | 'IMAGE_QUEUED' | 'IMAGE_RUNNING' | 'IMAGE_FAILED'
-  | 'MANUAL_ARCHIVE' | 'REVIEWED' | 'CANCELLED';
+  | 'MANUAL_ARCHIVE' | 'IMAGE_QC_PENDING' | 'IMAGE_REWORK_PENDING' | 'REVIEWED' | 'CANCELLED';
 
 export type ViewKey = 'PERSONAL' | 'UNASSIGNED' | 'ALL_COPY' | 'COPY_REVIEW' | 'IMAGE_WORK' | 'MANUAL_ARCHIVE' | 'COMPLETED' | 'ALL_JOBS';
 export type TaskSort = 'priority:desc' | 'createdAt:desc' | 'createdAt:asc' | 'id:desc' | 'id:asc';
@@ -25,6 +25,8 @@ export const TASK_STATE_PRIORITY: Record<TaskState, number> = {
   COPY_REVIEW_PENDING: 1,
   COPY_QC_PENDING: 2,
   MANUAL_ARCHIVE: 3,
+  IMAGE_REWORK_PENDING: 3,
+  IMAGE_QC_PENDING: 3,
   COPY_RUNNING: 4,
   IMAGE_RUNNING: 5,
   COPY_FAILED: 6,
@@ -85,7 +87,7 @@ export const WORKBENCH_VIEWS: Array<{
     icon: UserRound,
     states: [
       'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_QC_PENDING', 'COPY_FAILED',
-      'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'REVIEWED',
+      'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'IMAGE_QC_PENDING', 'IMAGE_REWORK_PENDING', 'REVIEWED',
     ],
     personalOnly: true,
   },
@@ -126,16 +128,16 @@ export const WORKBENCH_VIEWS: Array<{
   {
     key: 'MANUAL_ARCHIVE',
     href: '/workbench/manual-archive',
-    label: '图文终审',
-    description: '核对完整图文，可明确选择退回文案、退回图片、两者都退回，或终审通过。',
+    label: '图片初审与返修',
+    description: '作业员核对并修改自己负责的图片；初审完成后提交图片抽检，质检打回项在这里返修。',
     icon: FileCheck2,
-    states: ['MANUAL_ARCHIVE'],
+    states: ['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING'],
   },
   {
     key: 'COMPLETED',
     href: '/workbench/completed',
     label: '交付池',
-    description: '只显示图文终审通过且交付条目已就绪的任务，可查看详情和下载资源。',
+    description: '只显示图片抽检门禁已放行且交付条目就绪的任务，可查看详情和下载资源。',
     icon: FileCheck2,
     states: ['REVIEWED'],
     adminOnly: true,

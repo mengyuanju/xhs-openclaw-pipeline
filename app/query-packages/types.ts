@@ -75,14 +75,21 @@ export type WorkflowQualitySettings = {
     blindReviewEnabled: boolean;
     reviewerBatchReturnEnabled: boolean;
   };
+  imageSampling: {
+    enabled: boolean;
+    rateBps: number;
+    blindReviewEnabled: boolean;
+    reviewerBatchReturnEnabled: boolean;
+  };
 };
 
 export function normalizeWorkflowQualitySettings(value: unknown): WorkflowQualitySettings | null {
   if (!value || typeof value !== 'object') return null;
   const row = value as Partial<WorkflowQualitySettings>;
   const version = Number(row.version);
-  if (!row.queryPackage || !row.copySampling || !Number.isSafeInteger(version) || version < 1) return null;
+  if (!row.queryPackage || !row.copySampling || !row.imageSampling || !Number.isSafeInteger(version) || version < 1) return null;
   const rateBps = Number(row.copySampling.rateBps);
+  const imageRateBps = Number(row.imageSampling.rateBps);
   return {
     version,
     queryPackage: { workerImportEnabled: row.queryPackage.workerImportEnabled === true },
@@ -91,6 +98,12 @@ export function normalizeWorkflowQualitySettings(value: unknown): WorkflowQualit
       rateBps: Number.isSafeInteger(rateBps) ? Math.min(10_000, Math.max(0, rateBps)) : 0,
       blindReviewEnabled: row.copySampling.blindReviewEnabled === true,
       reviewerBatchReturnEnabled: row.copySampling.reviewerBatchReturnEnabled === true,
+    },
+    imageSampling: {
+      enabled: row.imageSampling.enabled === true,
+      rateBps: Number.isSafeInteger(imageRateBps) ? Math.min(10_000, Math.max(0, imageRateBps)) : 2000,
+      blindReviewEnabled: row.imageSampling.blindReviewEnabled === true,
+      reviewerBatchReturnEnabled: row.imageSampling.reviewerBatchReturnEnabled === true,
     },
   };
 }

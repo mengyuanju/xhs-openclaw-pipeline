@@ -1,4 +1,4 @@
-export type CopyQaStatus = 'PENDING' | 'PASSED' | 'RETURNED' | 'RELEASED' | 'BATCH_RETURNED' | 'BATCH_AFFECTED';
+export type CopyQaStatus = 'PENDING' | 'PASSED' | 'RETURNED' | 'RELEASED' | 'BATCH_RETURNED' | 'BATCH_AFFECTED' | 'SUPERSEDED';
 export type CopyQaSampleKind = 'RANDOM' | 'MANDATORY_RECHECK';
 
 export type CopyQaCapabilities = {
@@ -32,6 +32,7 @@ export type CopyQaBlindItem = CopyQaCommon & { blindReview: true };
 
 export type CopyQaNonBlindItem = CopyQaCommon & {
   blindReview: false;
+  reviewMethod: 'STANDARD' | 'ADMIN_DIRECT';
   taskId: number | null;
   productionBatchId: number | null;
   productionBatch: CopyQaCommon['productionBatch'] & { queryPackageName: string | null };
@@ -79,7 +80,7 @@ function count(value: unknown) {
 }
 
 function normalizeStatus(value: unknown): CopyQaStatus | null {
-  return ['PENDING', 'PASSED', 'RETURNED', 'RELEASED', 'BATCH_RETURNED', 'BATCH_AFFECTED'].includes(String(value))
+  return ['PENDING', 'PASSED', 'RETURNED', 'RELEASED', 'BATCH_RETURNED', 'BATCH_AFFECTED', 'SUPERSEDED'].includes(String(value))
     ? String(value) as CopyQaStatus
     : null;
 }
@@ -144,6 +145,7 @@ export function normalizeCopyQaItem(value: unknown): CopyQaItem | null {
   return {
     ...common,
     blindReview: false,
+    reviewMethod: row.reviewMethod === 'ADMIN_DIRECT' ? 'ADMIN_DIRECT' : 'STANDARD',
     taskId: positiveInteger(row.taskId),
     // The current control-plane DTO groups batch and account provenance under
     // productionBatch/source. Keep the root-field fallbacks for older servers

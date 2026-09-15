@@ -58,7 +58,7 @@ export function evaluateAdminProxyRequest(request, environment = process.env) {
       || url.pathname.startsWith('/api/control-plane/');
     if (alwaysAllowed) return { type: 'next' };
     if (role === 'REVIEWER') {
-      const allowed = url.pathname === '/copy-flow' || url.pathname === '/copy-qa'
+      const allowed = url.pathname === '/copy-flow' || url.pathname === '/copy-qa' || url.pathname === '/image-qa'
         || url.pathname === '/'
         || url.pathname === '/workbench'
         || url.pathname.startsWith('/workbench/')

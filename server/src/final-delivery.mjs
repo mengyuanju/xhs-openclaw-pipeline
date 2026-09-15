@@ -123,6 +123,25 @@ export async function createReadyDeliveryEntry(client, {
   imageRunId,
   actor,
 }) {
+  const qualityGate = await client.query(`
+    SELECT task.image_qc_legacy_accepted,
+      approval.id AS release_event_id
+    FROM tasks AS task
+    LEFT JOIN image_approval_events AS approval
+      ON approval.id = task.image_qc_released_approval_event_id
+      AND approval.task_id = task.id
+      AND approval.copy_revision_id = task.current_copy_revision_id
+      AND approval.image_run_id = task.current_image_run_id
+    WHERE task.id = $1 AND task.current_copy_revision_id = $2
+      AND task.current_image_run_id = $3
+  `, [taskId, copyRevisionId, imageRunId]);
+  if (!qualityGate.rows[0]
+      || (!qualityGate.rows[0].image_qc_legacy_accepted && !qualityGate.rows[0].release_event_id)) {
+    throw new ControlPlaneConflictError(
+      'IMAGE_QA_NOT_RELEASED',
+      '当前图片尚未通过图片质检抽检，不能进入交付池',
+    );
+  }
   await assertDeliverySourceArchivable(client, { taskId, copyRevisionId, imageRunId });
   const pendingEdits = await client.query("SELECT id FROM image_edit_requests WHERE task_id=$1 AND source_image_run_id=$2 AND status IN ('DRAFT','QUEUED','RUNNING','PREVIEW_READY') LIMIT 1", [taskId, imageRunId]);
   if (pendingEdits.rows.length) throw new TypeError('请先采用、拒绝或取消待处理的图片修改，再审核归档');
@@ -275,6 +294,7 @@ export async function assertTaskReadyForDelivery(queryable, rawTaskId) {
       AND delivery.copy_revision_id = task.current_copy_revision_id
       AND delivery.image_run_id = task.current_image_run_id
     WHERE task.id = $1 AND task.state = 'REVIEWED'
+      AND (task.image_qc_legacy_accepted OR task.image_qc_released_approval_event_id IS NOT NULL)
   `, [taskId]);
   if (!result.rows[0]) {
     const task = await queryable.query('SELECT state FROM tasks WHERE id = $1', [taskId]);
@@ -312,6 +332,7 @@ export async function assertTasksReadyForDelivery(queryable, rawBindings) {
       ON task.id = expected.task_id AND task.state = 'REVIEWED'
       AND task.current_copy_revision_id = expected.copy_revision_id
       AND task.current_image_run_id = expected.image_run_id
+      AND (task.image_qc_legacy_accepted OR task.image_qc_released_approval_event_id IS NOT NULL)
     JOIN delivery_entries AS delivery
       ON delivery.task_id = expected.task_id AND delivery.status = 'READY'
       AND delivery.copy_revision_id = expected.copy_revision_id
@@ -364,6 +385,7 @@ export async function listDeliveryPool(pool, {
       AND task.state = 'REVIEWED'
       AND task.current_copy_revision_id = delivery.copy_revision_id
       AND task.current_image_run_id = delivery.image_run_id
+      AND (task.image_qc_legacy_accepted OR task.image_qc_released_approval_event_id IS NOT NULL)
     WHERE delivery.status = 'READY' ${visibility} ${packageFilter}
     ORDER BY delivery.approved_at DESC, delivery.id DESC
     LIMIT $${limitParameter} OFFSET $${limitParameter + 1}
@@ -379,6 +401,7 @@ export async function listDeliveryPool(pool, {
       AND task.state = 'REVIEWED'
       AND task.current_copy_revision_id = delivery.copy_revision_id
       AND task.current_image_run_id = delivery.image_run_id
+      AND (task.image_qc_legacy_accepted OR task.image_qc_released_approval_event_id IS NOT NULL)
     WHERE delivery.status = 'READY' ${visibility} ${packageFilter}
   `, filteredValues), pool.query(`
     SELECT COALESCE(task.source_query_package_id, task.source_query_package_snapshot_id) AS id,
@@ -394,6 +417,7 @@ export async function listDeliveryPool(pool, {
       AND task.state = 'REVIEWED'
       AND task.current_copy_revision_id = delivery.copy_revision_id
       AND task.current_image_run_id = delivery.image_run_id
+      AND (task.image_qc_legacy_accepted OR task.image_qc_released_approval_event_id IS NOT NULL)
     WHERE delivery.status = 'READY' ${visibility}
     GROUP BY COALESCE(task.source_query_package_id, task.source_query_package_snapshot_id),
       task.source_query_package_name,

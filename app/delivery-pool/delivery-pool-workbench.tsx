@@ -651,7 +651,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
       </div>}
       <div className={styles.summary}>
         <strong>交付门禁</strong>
-        <span>图文终审通过 + 当前文案版本匹配 + 当前图片版本匹配 + READY 交付记录，四项缺一不可。</span>
+        <span>图片质检门禁放行 + 当前文案版本匹配 + 当前图片版本匹配 + READY 交付记录，四项缺一不可。</span>
       </div>
       {error && <FeedbackMessage tone="error" onDismiss={() => setError('')}>{error}</FeedbackMessage>}
       {message && <FeedbackMessage tone={messageTone} onDismiss={() => setMessage('')}>{message}</FeedbackMessage>}
@@ -662,7 +662,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
             ? '没有符合搜索条件的交付条目。'
             : queryPackageName
               ? `词包“${queryPackageName}”当前没有 READY 交付条目。`
-              : '交付池当前为空；图文终审通过后会在这里生成就绪条目。'}</div>
+              : '交付池当前为空；图片质检门禁放行后会在这里生成就绪条目。'}</div>
           : <div className="table-wrap mobile-cards" role="region" aria-label="交付内容列表，可横向滚动" tabIndex={0}>
             <table>
               <thead>

@@ -104,5 +104,10 @@ describe('runtime default prompts', () => {
     assert.match(image.content, /一次处理多组图片.*不同模板和风格/u);
     assert.doesNotMatch(image.content, /本地模板/);
     assert.match(edit.content, /\{\{reviewInstruction\}\}/);
+    assert.match(edit.content, /人工生成标识/u);
+    assert.match(edit.content, /真实产品替换/u);
+    assert.match(edit.content, /局部修改/u);
+    assert.doesNotMatch(edit.content, /移除标题、副标题、要点、标签和其他全部可见文字/u);
+    assert.doesNotMatch(edit.content, /程序会重新叠加/u);
   });
 });

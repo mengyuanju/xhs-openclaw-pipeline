@@ -170,6 +170,12 @@ function qaItemFrom(row, actor) {
   return {
     ...common,
     ...priorityFrom(row),
+    ...(actor.role === 'ADMIN' ? {
+      reviewMethod: (row.admin_direct_approval_id !== null && row.admin_direct_approval_id !== undefined)
+        || (['PASSED', 'SUPERSEDED'].includes(row.status) && Boolean(row.note) && row.reviewed_by_role === 'ADMIN')
+        ? 'ADMIN_DIRECT'
+        : 'STANDARD',
+    } : {}),
     query: row.query,
     taskId: Number(row.task_id),
     approvedRevision: {
@@ -724,13 +730,18 @@ const QA_ITEM_SQL = `
     task.created_by_user_id, task.system_priority, task.manual_priority, task.effective_priority,
     task.priority_mode, task.priority_paused, task.queue_entered_at, task.priority_sort_at,
     task.rework_count, task.requeue_reason, task.priority_version, batch.public_id AS production_batch_public_id,
-    batch.query_package_name,
+    batch.query_package_name, direct_approval.id AS admin_direct_approval_id,
+    reviewed_actor.role AS reviewed_by_role,
     settings.reviewer_batch_return_enabled
   FROM copy_sampling_items AS item
   JOIN copy_sampling_freezes AS sampling_freeze ON sampling_freeze.id = item.freeze_id
   JOIN production_batches AS batch ON batch.id = sampling_freeze.production_batch_id
   JOIN copy_revisions AS revision ON revision.id = item.copy_revision_id
   JOIN tasks AS task ON task.id = item.task_id
+  LEFT JOIN copy_qa_admin_direct_approvals AS direct_approval
+    ON direct_approval.task_id = item.task_id
+    AND direct_approval.copy_revision_id = item.copy_revision_id
+  LEFT JOIN app_users AS reviewed_actor ON reviewed_actor.id = item.reviewed_by_account_id
   CROSS JOIN workflow_quality_settings AS settings
 `;
 
@@ -741,8 +752,12 @@ export async function listCopyQaItems(pool, {
   offset: rawOffset = 0,
 } = {}, rawActor) {
   const actor = normalizeActor(rawActor);
-  const allowedStatuses = ['ALL', 'PENDING', 'PASSED', 'RETURNED', 'BATCH_AFFECTED', 'BATCH_RETURNED', 'RELEASED'];
+  const allowedStatuses = ['ALL', 'PENDING', 'PASSED', 'RETURNED', 'BATCH_AFFECTED', 'BATCH_RETURNED', 'RELEASED', 'SUPERSEDED', 'ADMIN_DIRECT_PASSED'];
   if (!allowedStatuses.includes(status)) throw new TypeError('copy QA status is invalid');
+  const adminDirectOnly = status === 'ADMIN_DIRECT_PASSED';
+  if (adminDirectOnly && actor.role !== 'ADMIN') {
+    throw new ControlPlaneAuthorizationError('只有管理员可以筛选单独通过的文案质检项');
+  }
   const queryPackageName = normalizedQueryPackageNameFilter(rawQueryPackageName);
   if (queryPackageName !== null && actor.role !== 'ADMIN') {
     throw new ControlPlaneAuthorizationError('只有管理员可以按词包名称筛选文案抽检项');
@@ -750,7 +765,7 @@ export async function listCopyQaItems(pool, {
   const { limit, offset } = normalizeListPagination(rawLimit, rawOffset);
   await lockActiveQualityActor(pool, actor);
   await flushExpiredCopyQualityBatches(pool);
-  const values = [status === 'ALL' ? null : status, actor.role === 'ADMIN' ? null : actor.userId];
+  const values = [status === 'ALL' || adminDirectOnly ? null : status, actor.role === 'ADMIN' ? null : actor.userId];
   const packageFilter = queryPackageName === null ? '' : (() => {
     values.push(queryPackageName);
     return `AND strpos(lower(batch.query_package_name), lower($${values.length})) > 0`;
@@ -758,10 +773,22 @@ export async function listCopyQaItems(pool, {
   values.push(limit, offset);
   const limitParameter = values.length - 1;
   const offsetParameter = values.length;
+  // Before this filter existed, the all-jobs shortcut used the ordinary PASS
+  // receipt. Its required note plus the administrator account is the only
+  // durable discriminator for those already-written rows.
+  const adminDirectSql = `(direct_approval.id IS NOT NULL OR (
+    item.status IN ('PASSED', 'SUPERSEDED') AND item.note IS NOT NULL
+    AND reviewed_actor.role = 'ADMIN'
+  ))`;
+  const itemScope = actor.role === 'ADMIN' && (status === 'ALL' || adminDirectOnly)
+    ? `(item.selected = true OR ${adminDirectSql})`
+    : 'item.selected = true';
+  const directApprovalFilter = adminDirectOnly ? `AND ${adminDirectSql}` : '';
   const result = await pool.query(`${QA_ITEM_SQL}
-    WHERE item.selected = true AND ($1::varchar IS NULL OR item.status = $1)
+    WHERE ${itemScope} AND ($1::varchar IS NULL OR item.status = $1)
       AND ($2::bigint IS NULL OR (item.final_approver_account_id <> $2
         AND (item.status <> 'PENDING' OR (item.assigned_review_account_id = $2 AND task.priority_paused = false))))
+      ${directApprovalFilter}
       ${packageFilter}
     ORDER BY ${priorityOrderSql('task.')}
     LIMIT $${limitParameter} OFFSET $${offsetParameter}
@@ -917,19 +944,24 @@ export async function adminDirectApproveCopyQa(pool, rawTaskId, input, rawActor)
     AND copy_revision_id = $2 AND selected = true ORDER BY id DESC LIMIT 1`,
     [taskId, normalizeTaskId(input?.expectedCopyRevisionId)])).rows[0];
   if (!item) throw new ControlPlaneConflictError('QA_ITEM_REQUIRED', '请先结批并通过质检入口操作');
-  return passCopyQaItem(pool, item.public_id, { ...input, note }, actor);
+  return passCopyQaItemWithMethod(pool, item.public_id, { ...input, note }, actor, 'ADMIN_DIRECT');
 }
 
-export async function passCopyQaItem(pool, rawItemId, input, rawActor) {
+async function passCopyQaItemWithMethod(pool, rawItemId, input, rawActor, reviewMethod) {
   const actor = normalizeActor(rawActor);
   const { requestId, reasonCodes, note } = normalizedRequest(input, 'PASS');
+  const adminDirect = reviewMethod === 'ADMIN_DIRECT';
+  const operation = adminDirect ? 'ADMIN_DIRECT_PASS' : 'PASS';
   return withTransaction(pool, async (client) => {
     await lockActiveQualityActor(client, actor);
     await lockQualityMutationRequest(client, actor, requestId);
     const item = await lockQaItem(client, rawItemId);
     const expectedRevision = assertExpectedQaRevision(item, input);
-    const fingerprint = hashJson({ itemId: String(rawItemId), ...expectedRevision, reasonCodes, note });
-    const replay = await mutationReplay(client, actor, requestId, 'PASS', fingerprint);
+    const fingerprint = hashJson({
+      itemId: String(rawItemId), ...expectedRevision, reasonCodes, note,
+      ...(adminDirect ? { reviewMethod } : {}),
+    });
+    const replay = await mutationReplay(client, actor, requestId, operation, fingerprint);
     if (replay) return replay;
     if (Number(item.final_approver_account_id) === actor.userId) {
       throw new ControlPlaneAuthorizationError('不能质检自己最终通过的文案');
@@ -943,22 +975,42 @@ export async function passCopyQaItem(pool, rawItemId, input, rawActor) {
         reviewed_by_username = $3, reason_codes = $4, note = $5,
         reviewed_at = now(), updated_at = now() WHERE id = $1
     `, [item.id, actor.userId, actor.username, reasonCodes, note]);
+    if (adminDirect) {
+      await client.query(`
+        INSERT INTO copy_qa_admin_direct_approvals(
+          task_id, copy_revision_id, approval_event_id,
+          actor_account_id, actor_username, request_id
+        ) VALUES ($1, $2, $3, $4, $5, $6)
+      `, [item.task_id, item.copy_revision_id, item.approval_event_id,
+        actor.userId, actor.username, requestId]);
+    }
     await client.query(`
       INSERT INTO copy_sampling_events(
         freeze_id, sampling_item_id, action, actor_account_id, actor_username,
-        reason_codes, note, request_id
-      ) VALUES ($1, $2, 'PASS', $3, $4, $5, $6, $7)
-    `, [item.freeze_id, item.id, actor.userId, actor.username, reasonCodes, note, requestId]);
+        reason_codes, note, request_id, details
+      ) VALUES ($1, $2, 'PASS', $3, $4, $5, $6, $7, $8)
+    `, [item.freeze_id, item.id, actor.userId, actor.username, reasonCodes, note, requestId,
+      adminDirect ? { directAdminApproval: true } : {}]);
     const currentRoundReleased = await maybeReleasePassedFreeze(client, item, actor, requestId);
     const parentRoundReleased = await maybeReleaseAncestorFreezes(client, item, actor, requestId);
     const releasedTaskIds = [...new Set([
       ...(currentRoundReleased ?? []),
       ...(parentRoundReleased ?? []),
     ])];
-    const response = qaActionResponse(item, actor, 'PASSED', releasedTaskIds);
-    await storeMutation(client, actor, requestId, 'PASS', fingerprint, response);
+    const actionResponse = qaActionResponse(item, actor, 'PASSED', releasedTaskIds);
+    const response = adminDirect
+      ? {
+          ...actionResponse,
+          task: (await client.query('SELECT * FROM tasks WHERE id = $1', [item.task_id])).rows[0] ?? null,
+        }
+      : actionResponse;
+    await storeMutation(client, actor, requestId, operation, fingerprint, response);
     return response;
   });
+}
+
+export async function passCopyQaItem(pool, rawItemId, input, rawActor) {
+  return passCopyQaItemWithMethod(pool, rawItemId, input, rawActor, 'STANDARD');
 }
 
 async function appendReturnedRevision(client, item, actor, requestId, origin, { reasonCodes, note }) {

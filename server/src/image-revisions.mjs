@@ -26,14 +26,14 @@ export async function reviseTaskImages(client, rawTaskId, input, actorUsername, 
   const imageSettings = normalizeImageSettings(input.imageSettings);
   const task = (await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId])).rows[0];
   if (!task) throw new ControlPlaneNotFoundError('task not found');
-  if (!['MANUAL_ARCHIVE', 'REVIEWED', 'IMAGE_FAILED', 'IMAGE_QUEUED'].includes(task.state) || task.current_execution_id) throw new ControlPlaneConflictError('INVALID_TASK_STATE', '请等待当前图片执行结束后修改');
+  if (!['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING', 'REVIEWED', 'IMAGE_FAILED', 'IMAGE_QUEUED'].includes(task.state) || task.current_execution_id) throw new ControlPlaneConflictError('INVALID_TASK_STATE', '请等待当前图片执行结束后修改');
   if (Number(task.current_copy_revision_id) !== revisionId || (task.current_image_run_id ?? null) !== imageRunId) throw new ControlPlaneConflictError('STALE_IMAGE_REVISION', '图片或文案版本已更新，请刷新后重新修改');
   const revision = (await client.query('SELECT * FROM copy_revisions WHERE id = $1 AND task_id = $2 FOR UPDATE', [revisionId, taskId])).rows[0];
   if (!revision?.approved_at) throw new ControlPlaneConflictError('COPY_NOT_APPROVED', '请先审核文案');
   const original = revision.content;
   const plan = original.imagePlan ?? original.reviewed?.imagePlan ?? original.post?.imagePlan;
   if (!Array.isArray(plan) || plan.length < 3 || plan.length > 5) throw new TypeError('图片计划不完整');
-  const requestedLayouts = actorRole === 'ADMIN' ? input.layouts : plan.map(() => ({ mode: 'AUTO' }));
+  const requestedLayouts = input.layouts;
   if (requestedLayouts !== undefined && (!Array.isArray(requestedLayouts) || requestedLayouts.length !== plan.length)) throw new TypeError('每页布局数量必须与图片计划一致');
   const imagePlan = plan.map((page, index) => requestedLayouts === undefined ? { ...page } : { ...page, layout: normalizePageLayout(requestedLayouts[index], page.kind) });
   const previousLayouts = plan.map(page => normalizePageLayout(page.layout ?? { mode: 'AUTO' }, page.kind));

@@ -14,6 +14,13 @@ export const DEFAULT_WORKFLOW_QUALITY_SETTINGS = Object.freeze({
     reviewerBatchReturnEnabled: false,
     samplingSeed: 'copy-sampling-v1',
   }),
+  imageSampling: Object.freeze({
+    enabled: false,
+    rateBps: 2000,
+    blindReviewEnabled: false,
+    reviewerBatchReturnEnabled: false,
+    samplingSeed: 'image-sampling-v1',
+  }),
 });
 
 function booleanValue(value, fallback, name) {
@@ -42,6 +49,13 @@ export function workflowQualitySettingsFromRow(row) {
       reviewerBatchReturnEnabled: row.reviewer_batch_return_enabled === true,
       samplingSeed: row.sampling_seed ?? 'copy-sampling-v1',
     },
+    imageSampling: {
+      enabled: row.image_sampling_enabled === true,
+      rateBps: Number(row.image_sampling_rate_bps ?? 2000),
+      blindReviewEnabled: row.image_blind_review_enabled === true,
+      reviewerBatchReturnEnabled: row.image_reviewer_batch_return_enabled === true,
+      samplingSeed: row.image_sampling_seed ?? 'image-sampling-v1',
+    },
     updatedByUsername: row.updated_by_username ?? null,
     updatedAt: row.updated_at ?? null,
   };
@@ -53,15 +67,23 @@ export function normalizeWorkflowQualitySettings(input, current = DEFAULT_WORKFL
   }
   const queryPackage = input.queryPackage ?? {};
   const copySampling = input.copySampling ?? {};
+  const imageSampling = input.imageSampling ?? {};
   if (!queryPackage || typeof queryPackage !== 'object' || Array.isArray(queryPackage)) {
     throw new TypeError('queryPackage settings must be an object');
   }
   if (!copySampling || typeof copySampling !== 'object' || Array.isArray(copySampling)) {
     throw new TypeError('copySampling settings must be an object');
   }
+  if (!imageSampling || typeof imageSampling !== 'object' || Array.isArray(imageSampling)) {
+    throw new TypeError('imageSampling settings must be an object');
+  }
   const rateBps = copySampling.rateBps ?? current.copySampling.rateBps;
   if (!Number.isInteger(rateBps) || rateBps < 0 || rateBps > 10_000) {
     throw new RangeError('copySampling.rateBps must be an integer between 0 and 10000');
+  }
+  const imageRateBps = imageSampling.rateBps ?? current.imageSampling.rateBps;
+  if (!Number.isInteger(imageRateBps) || imageRateBps < 0 || imageRateBps > 10_000) {
+    throw new RangeError('imageSampling.rateBps must be an integer between 0 and 10000');
   }
   return {
     queryPackage: {
@@ -83,6 +105,20 @@ export function normalizeWorkflowQualitySettings(input, current = DEFAULT_WORKFL
         copySampling.reviewerBatchReturnEnabled,
         current.copySampling.reviewerBatchReturnEnabled,
         'copySampling.reviewerBatchReturnEnabled',
+      ),
+    },
+    imageSampling: {
+      enabled: booleanValue(imageSampling.enabled, current.imageSampling.enabled, 'imageSampling.enabled'),
+      rateBps: imageRateBps,
+      blindReviewEnabled: booleanValue(
+        imageSampling.blindReviewEnabled,
+        current.imageSampling.blindReviewEnabled,
+        'imageSampling.blindReviewEnabled',
+      ),
+      reviewerBatchReturnEnabled: booleanValue(
+        imageSampling.reviewerBatchReturnEnabled,
+        current.imageSampling.reviewerBatchReturnEnabled,
+        'imageSampling.reviewerBatchReturnEnabled',
       ),
     },
   };
@@ -153,10 +189,14 @@ export async function updateWorkflowQualitySettings(pool, input, actor) {
         copy_sampling_rate_bps = $3,
         blind_review_enabled = $4,
         reviewer_batch_return_enabled = $5,
+        image_sampling_enabled = $6,
+        image_sampling_rate_bps = $7,
+        image_blind_review_enabled = $8,
+        image_reviewer_batch_return_enabled = $9,
         version = version + 1,
-        updated_by_username = $6,
+        updated_by_username = $10,
         updated_at = now()
-      WHERE singleton = 1 AND version = $7
+      WHERE singleton = 1 AND version = $11
       RETURNING *
     `, [
       settings.queryPackage.workerImportEnabled,
@@ -164,6 +204,10 @@ export async function updateWorkflowQualitySettings(pool, input, actor) {
       settings.copySampling.rateBps,
       settings.copySampling.blindReviewEnabled,
       settings.copySampling.reviewerBatchReturnEnabled,
+      settings.imageSampling.enabled,
+      settings.imageSampling.rateBps,
+      settings.imageSampling.blindReviewEnabled,
+      settings.imageSampling.reviewerBatchReturnEnabled,
       activeActor.username,
       expectedVersion,
     ]);

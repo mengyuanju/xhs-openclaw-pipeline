@@ -760,6 +760,11 @@ function installRoutes(
   const previewRevocationSweep = setInterval(() => { void drainRevocations(); }, 5_000);
   previewRevocationSweep.unref?.();
   void drainRevocations();
+  const imageQualitySweep = setInterval(() => {
+    void repository.flushExpiredImageQualityBatches?.()
+      .catch((error) => console.error('failed to freeze expired image QA tails', error));
+  }, 60_000);
+  imageQualitySweep.unref?.();
   const passwordLimiters = new Map();
   const currentPasswordLimiters = new Map();
   function limiterFor(limiters, userId) {
@@ -1058,6 +1063,40 @@ function installRoutes(
   router.post('/v1/tasks/batch-copy-qa-return', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
     json(ctx, 200, await repository.batchReturnCopyQa(requireJson(ctx), { actor }));
+  });
+  router.get('/v1/image-qa/items', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    json(ctx, 200, await repository.listImageQaItems({
+      status: ctx.query.status,
+      limit: ctx.query.limit,
+      offset: ctx.query.offset,
+    }, { actor }));
+  });
+  router.get('/v1/image-qa/items/:itemId/assets/:assetId', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    const asset = await repository.getImageQaAsset(ctx.params.itemId, ctx.params.assetId, { actor });
+    const path = safeStoragePath(storageRoot, relative(storageRoot, asset.storagePath));
+    await deliverAsset(ctx, asset, path);
+  });
+  router.post('/v1/image-qa/items/:itemId/pass', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    json(ctx, 200, await repository.passImageQaItem(ctx.params.itemId, requireJson(ctx), { actor }));
+  });
+  router.post('/v1/image-qa/items/:itemId/return', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    json(ctx, 200, await repository.returnImageQaItem(ctx.params.itemId, requireJson(ctx), { actor }));
+  });
+  router.get('/v1/image-qa/freezes/:freezePublicId/batch-return-preview', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    json(ctx, 200, await repository.getImageQaBatchReturnPreview(ctx.params.freezePublicId, { actor }));
+  });
+  router.post('/v1/image-qa/batch-return', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    json(ctx, 200, await repository.batchReturnImageQa(requireJson(ctx), { actor }));
+  });
+  router.post('/v1/image-qa/close-tail', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.closeImageSamplingTail(requireJson(ctx), { actor }));
   });
 
   router.post('/v1/nodes', async (ctx) => {
@@ -1656,17 +1695,17 @@ function installRoutes(
       { actor },
     ));
   });
-  router.post('/v1/tasks/:taskId/review-images', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
-    await assertTaskAccess(ctx, repository);
-    const { imageRunId, revisionId, nodeId, imagePlan, decision, reworkTarget,
-      score, reasons, note, problemAssetIds, copyFields, reviewSessionId } = requireJson(ctx);
-    json(ctx, 200, await repository.reviewImages(ctx.params.taskId, {
-      imageRunId, decision, reworkTarget, score, reasons, note, problemAssetIds, reviewSessionId,
-      ...(copyFields === undefined ? {} : { copyFields }),
-      ...(imagePlan === undefined ? {} : { revisionId, nodeId, imagePlan }),
-      actor,
-    }));
+  router.post('/v1/tasks/:taskId/submit-image-self-review', async (ctx) => {
+    const actor = requestActor(ctx, ['USER']);
+    await assertTaskAccess(ctx, repository, { ownerOnly: true });
+    json(ctx, 200, await repository.submitImageSelfReview(
+      ctx.params.taskId,
+      requireJson(ctx),
+      { actor },
+    ));
+  });
+  router.post('/v1/tasks/:taskId/review-images', async () => {
+    throw new HttpError(410, 'IMAGE_REVIEW_MOVED', '图片初审已改由作业员提交；图片质检请在图片质检池处理');
   });
   router.post('/v1/tasks/:taskId/retry', async (ctx) => {
     const actor = requestActor(ctx);
@@ -1697,39 +1736,39 @@ function installRoutes(
   });
   const imageEditing = createImageEditingService({ pool: repository.pool, storageRoot });
   router.post('/v1/tasks/:taskId/image-edit-references', async ctx => {
-    const actor = requestActor(ctx, ['ADMIN']);
-    await assertTaskAccess(ctx, repository);
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
     json(ctx, 201, await imageEditing.upload(ctx.params.taskId, requireJson(ctx), actor));
   });
   router.post('/v1/tasks/:taskId/image-edits', async ctx => {
-    const actor = requestActor(ctx, ['ADMIN']);
-    await assertTaskAccess(ctx, repository);
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
     json(ctx, 201, await imageEditing.create(ctx.params.taskId, requireJson(ctx), actor));
   });
   router.get('/v1/tasks/:taskId/image-edits', async ctx => {
-    requestActor(ctx, ['ADMIN']);
-    await assertTaskAccess(ctx, repository);
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
     json(ctx, 200, await imageEditing.list(ctx.params.taskId));
   });
   router.get('/v1/image-edits/:editId', async ctx => {
-    requestActor(ctx, ['ADMIN']);
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
     const edit = await imageEditing.get(ctx.params.editId);
     ctx.params.taskId = String(edit.task_id);
-    await assertTaskAccess(ctx, repository);
+    await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
     json(ctx, 200, edit);
   });
   for (const action of ['queue', 'retry', 'cancel', 'accept', 'reject']) {
     router.post(`/v1/image-edits/:editId/${action}`, async ctx => {
-      const actor = requestActor(ctx, ['ADMIN']);
+      const actor = requestActor(ctx, ['ADMIN', 'USER']);
       const edit = await imageEditing.get(ctx.params.editId);
       ctx.params.taskId = String(edit.task_id);
-      await assertTaskAccess(ctx, repository);
+      await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
       json(ctx, 200, await imageEditing.action(ctx.params.editId, action, requireJson(ctx), actor));
     });
   }
   router.post('/v1/tasks/:taskId/image-versions/:runId/restore', async ctx => {
-    const actor = requestActor(ctx, ['ADMIN']);
-    await assertTaskAccess(ctx, repository);
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
     json(ctx, 201, await imageEditing.create(ctx.params.taskId, {
       ...requireJson(ctx), operation: 'RESTORE', restoreRunId: ctx.params.runId,
     }, actor));
@@ -1936,6 +1975,7 @@ function installRoutes(
   return async () => {
     clearInterval(deliveryExportSweep);
     clearInterval(previewRevocationSweep);
+    clearInterval(imageQualitySweep);
     await revocationDrain;
     await deliveryExportRegistry.dispose();
   };

@@ -107,6 +107,22 @@ test('mandatory rechecks and batch-affected history retain the backend enum mean
   assert.equal(item.status, 'BATCH_AFFECTED');
 });
 
+test('administrator normalization preserves direct-pass audit origin and superseded history', () => {
+  const item = normalizeCopyQaItem(serverRow({
+    blindReview: false,
+    status: 'SUPERSEDED',
+    reviewMethod: 'ADMIN_DIRECT',
+    taskId: 991,
+    approvedRevision: { ...serverRow().approvedRevision, id: 902 },
+    productionBatch: { anonymousCode: 'PB-7XQK', id: 27, queryPackageName: '九月选题' },
+    source: { finalApproverAccountId: 64 },
+  }));
+
+  assert.ok(item && !item.blindReview);
+  assert.equal(item.status, 'SUPERSEDED');
+  assert.equal(item.reviewMethod, 'ADMIN_DIRECT');
+});
+
 test('unknown QA state and omitted capabilities fail closed', () => {
   assert.equal(normalizeCopyQaItem(serverRow({ status: 'FUTURE_SERVER_STATE' })), null);
 

@@ -236,5 +236,9 @@ export function normalizeHumanQualitySettingsUpdate(input, current) {
     throw new TypeError('copyReasons and imageReasons are required');
   }
   const baseline = current === undefined ? DEFAULT_HUMAN_QUALITY_SETTINGS : current;
-  return normalizeHumanQualitySettings({ ...normalizeHumanQualitySettings(baseline), ...input });
+  const settings = normalizeHumanQualitySettings({ ...normalizeHumanQualitySettings(baseline), ...input });
+  if (settings.imageReviewDisplay.showDeductionReasons && settings.imageReasons.length === 0) {
+    throw new RangeError('开启图片质检扣分原因时，必须至少填写一项图片扣分原因');
+  }
+  return settings;
 }

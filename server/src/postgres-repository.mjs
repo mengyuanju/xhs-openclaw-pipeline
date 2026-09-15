@@ -1,6 +1,17 @@
 import { priorityFrom, priorityOrderSql, normalizePriorityMode } from './task-priority.mjs';
 import { adjustTaskPriority, readPriorityScope } from './task-priority-store.mjs';
 import { flushExpiredCopyQualityBatches } from './copy-quality-control.mjs';
+import {
+  closeImageSamplingTail,
+  batchReturnImageQa,
+  flushExpiredImageQualityBatches,
+  getImageQaAsset,
+  listImageQaItems,
+  getImageQaBatchReturnPreview,
+  passImageQaItem,
+  returnImageQaItem,
+  submitImageSelfReview,
+} from './image-quality-control.mjs';
 import { copyQualityImageGate } from './copy-quality-flow.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
@@ -37,6 +48,7 @@ import {
   normalizeHumanQualitySettings,
   normalizeHumanQualitySettingsUpdate,
 } from '../../src/human-quality-settings.mjs';
+import { normalizeImageEditRepairMaxAttempts } from '../../src/production-settings.mjs';
 import {
   XIAOHONGSHU_SEARCH_PROTOCOL_VERSION,
   XIAOHONGSHU_SEARCH_SETTINGS_KEY,
@@ -167,7 +179,7 @@ function taskStateOrder(column) {
   return `CASE
     WHEN ${column} = 'COPY_REVIEW_PENDING' THEN 1
     WHEN ${column} = 'COPY_QC_PENDING' THEN 2
-    WHEN ${column} = 'MANUAL_ARCHIVE' THEN 3
+    WHEN ${column} IN ('MANUAL_ARCHIVE', 'IMAGE_QC_PENDING', 'IMAGE_REWORK_PENDING') THEN 3
     WHEN ${column} = 'COPY_RUNNING' THEN 4
     WHEN ${column} = 'IMAGE_RUNNING' THEN 5
     WHEN ${column} IN ('COPY_FAILED', 'IMAGE_FAILED') THEN 6
@@ -209,6 +221,8 @@ function taskFrom(row) {
     deliveryStatus: row.delivery_ready === true ? 'READY' : null,
     mandatoryCopyQc: row.mandatory_copy_qc === true,
     mandatoryCopyQcOrigin: row.mandatory_copy_qc_origin ?? null,
+    mandatoryImageQc: row.mandatory_image_qc === true,
+    mandatoryImageQcOrigin: row.mandatory_image_qc_origin ?? null,
     reworkCount: Number(row.rework_count ?? 0),
     requeueReason: row.requeue_reason ?? null,
     state: row.state,
@@ -310,7 +324,7 @@ async function assertPermanentlyDeletableTask(client, taskId) {
 
 function activeBlindQaSql(taskAlias) {
   if (!['tasks', 'task'].includes(taskAlias)) throw new TypeError('blind QA task alias is invalid');
-  return `EXISTS (
+  return `(EXISTS (
     SELECT 1 FROM copy_sampling_items AS blind_item
     JOIN copy_sampling_freezes AS blind_freeze ON blind_freeze.id = blind_item.freeze_id
     WHERE blind_item.task_id = ${taskAlias}.id
@@ -320,7 +334,18 @@ function activeBlindQaSql(taskAlias) {
         OR (blind_freeze.status = 'BATCH_RETURNED'
           AND ${taskAlias}.state IN ('COPY_REVIEW_PENDING', 'COPY_QC_PENDING'))
       )
-  )`;
+  ) OR EXISTS (
+    SELECT 1 FROM image_sampling_items AS blind_image_item
+    JOIN image_sampling_freezes AS blind_image_freeze
+      ON blind_image_freeze.id = blind_image_item.freeze_id
+    WHERE blind_image_item.task_id = ${taskAlias}.id
+      AND blind_image_freeze.blind_review_enabled = true
+      AND (
+        blind_image_freeze.status IN ('INSPECTING', 'REVIEW_REQUIRED')
+        OR (blind_image_freeze.status = 'BATCH_RETURNED'
+          AND ${taskAlias}.state IN ('IMAGE_REWORK_PENDING', 'IMAGE_QC_PENDING'))
+      )
+  ))`;
 }
 
 function normalizedDisplayName(value) {
@@ -347,6 +372,7 @@ function publicUserFrom(row) {
     hasDeletionPassword: Boolean(row.deletion_password_hash),
     copyReviewEnabled: row.copy_review_enabled !== false,
     copyQcEnabled: row.copy_qc_enabled === true,
+    imageQcEnabled: row.image_qc_enabled === true,
     credentialVersion: Number(row.credential_version),
     version: Number(row.version),
     createdAt: row.created_at,
@@ -993,7 +1019,7 @@ function normalizedTaskSort(sortBy = 'priority', sortOrder = 'desc') {
 function taskStatePriority(state) {
   if (state === 'COPY_REVIEW_PENDING') return 1;
   if (state === 'COPY_QC_PENDING') return 2;
-  if (state === 'MANUAL_ARCHIVE') return 3;
+  if (['MANUAL_ARCHIVE', 'IMAGE_QC_PENDING', 'IMAGE_REWORK_PENDING'].includes(state)) return 3;
   if (state === 'COPY_RUNNING') return 4;
   if (state === 'IMAGE_RUNNING') return 5;
   if (['COPY_FAILED', 'IMAGE_FAILED'].includes(state)) return 6;
@@ -1375,6 +1401,19 @@ export class PostgresControlPlaneRepository {
     return getProductionBatchSamplingReadiness(this.pool, id, actor);
   }
   listCopyQaItems(options, { actor } = {}) { return listCopyQaItems(this.pool, options, actor); }
+  listImageQaItems(options, { actor } = {}) { return listImageQaItems(this.pool, options, actor); }
+  getImageQaAsset(itemId, assetId, { actor } = {}) {
+    return getImageQaAsset(this.pool, itemId, assetId, actor);
+  }
+  submitImageSelfReview(taskId, input, { actor } = {}) {
+    return submitImageSelfReview(this.pool, taskId, input, actor);
+  }
+  passImageQaItem(id, input, { actor } = {}) { return passImageQaItem(this.pool, id, input, actor); }
+  returnImageQaItem(id, input, { actor } = {}) { return returnImageQaItem(this.pool, id, input, actor); }
+  getImageQaBatchReturnPreview(id, { actor } = {}) { return getImageQaBatchReturnPreview(this.pool, id, actor); }
+  batchReturnImageQa(input, { actor } = {}) { return batchReturnImageQa(this.pool, input, actor); }
+  closeImageSamplingTail(input, { actor } = {}) { return closeImageSamplingTail(this.pool, input, actor); }
+  flushExpiredImageQualityBatches(options) { return flushExpiredImageQualityBatches(this.pool, options); }
   getCopyQaItem(id, { actor } = {}) { return getCopyQaItem(this.pool, id, actor); }
   passCopyQaItem(id, input, { actor } = {}) { return passCopyQaItem(this.pool, id, input, actor); }
   async adminDirectApproveCopyQa(id, input, { actor } = {}) {
@@ -1978,18 +2017,23 @@ export class PostgresControlPlaneRepository {
     });
   }
 
-  async createUser({ username: rawUsername, displayName: rawDisplayName, role: rawRole, copyReviewEnabled = true, copyQcEnabled = false }) {
+  async createUser({ username: rawUsername, displayName: rawDisplayName, role: rawRole, copyReviewEnabled = true, copyQcEnabled = false, imageQcEnabled = false }) {
     const username = normalizedUsername(rawUsername);
     const displayName = normalizedDisplayName(rawDisplayName);
     const role = normalizedUserRole(rawRole);
-    if (typeof copyReviewEnabled !== 'boolean' || typeof copyQcEnabled !== 'boolean') throw new TypeError('permissions must be boolean');
+    if (typeof copyReviewEnabled !== 'boolean' || typeof copyQcEnabled !== 'boolean'
+        || typeof imageQcEnabled !== 'boolean') throw new TypeError('permissions must be boolean');
+    if (imageQcEnabled && role !== 'REVIEWER') {
+      throw new TypeError('图片质检权限只能授予审核员');
+    }
     const passwordHash = await hashUserPassword('123456');
     try {
       const result = await this.pool.query(`
-        INSERT INTO app_users(username, display_name, role, password_hash, must_change_password, copy_review_enabled, copy_qc_enabled)
-        VALUES ($1, $2, $3, $4, true, $5, $6)
+        INSERT INTO app_users(username, display_name, role, password_hash, must_change_password,
+          copy_review_enabled, copy_qc_enabled, image_qc_enabled)
+        VALUES ($1, $2, $3, $4, true, $5, $6, $7)
         RETURNING *
-      `, [username, displayName, role, passwordHash, copyReviewEnabled, copyQcEnabled]);
+      `, [username, displayName, role, passwordHash, copyReviewEnabled, copyQcEnabled, imageQcEnabled]);
       return publicUserFrom(result.rows[0]);
     } catch (error) {
       if (error?.code === '23505') throw new ControlPlaneConflictError('USERNAME_EXISTS', 'username already exists');
@@ -1997,7 +2041,7 @@ export class PostgresControlPlaneRepository {
     }
   }
 
-  async updateUser(rawUserId, { displayName: rawDisplayName, role: rawRole, status, expectedVersion, copyReviewEnabled, copyQcEnabled, actorUsername = null }) {
+  async updateUser(rawUserId, { displayName: rawDisplayName, role: rawRole, status, expectedVersion, copyReviewEnabled, copyQcEnabled, imageQcEnabled, actorUsername = null }) {
     const userId = normalizeTaskId(rawUserId);
     const displayName = normalizedDisplayName(rawDisplayName);
     const role = normalizedUserRole(rawRole);
@@ -2035,7 +2079,14 @@ export class PostgresControlPlaneRepository {
       }
       const reviewEnabled = copyReviewEnabled ?? current.copy_review_enabled ?? true;
       const qcEnabled = copyQcEnabled ?? current.copy_qc_enabled ?? false;
-      if (typeof reviewEnabled !== 'boolean' || typeof qcEnabled !== 'boolean') throw new TypeError('permissions must be boolean');
+      const imageQualityEnabled = role === 'REVIEWER'
+        ? imageQcEnabled ?? current.image_qc_enabled ?? false
+        : false;
+      if (typeof reviewEnabled !== 'boolean' || typeof qcEnabled !== 'boolean'
+          || typeof imageQualityEnabled !== 'boolean') throw new TypeError('permissions must be boolean');
+      if (imageQualityEnabled && role !== 'REVIEWER') {
+        throw new TypeError('图片质检权限只能授予审核员');
+      }
       if (!reviewEnabled && current.copy_review_enabled) {
         // Released assignments remain visible to administrators for reassignment.
         await client.query(`UPDATE tasks SET assigned_to_user_id = NULL, assignment_source = NULL, assigned_at = NULL, updated_at = now()
@@ -2043,15 +2094,17 @@ export class PostgresControlPlaneRepository {
         await clearQueryPackageAssignments(client, current);
       }
       const credentialChanged = current.role !== role || current.status !== status
-        || reviewEnabled !== current.copy_review_enabled || qcEnabled !== current.copy_qc_enabled;
+        || reviewEnabled !== current.copy_review_enabled || qcEnabled !== current.copy_qc_enabled
+        || imageQualityEnabled !== current.image_qc_enabled;
       const result = await client.query(`
         UPDATE app_users
         SET display_name = $1, role = $2, status = $3,
-            copy_review_enabled = $7, copy_qc_enabled = $8,
+            copy_review_enabled = $7, copy_qc_enabled = $8, image_qc_enabled = $9,
             credential_version = credential_version + $4, version = version + 1, updated_at = now()
         WHERE id = $5 AND version = $6
         RETURNING *
-      `, [displayName, role, status, credentialChanged ? 1 : 0, userId, expectedVersion, reviewEnabled, qcEnabled]);
+      `, [displayName, role, status, credentialChanged ? 1 : 0, userId, expectedVersion,
+        reviewEnabled, qcEnabled, imageQualityEnabled]);
       if (!result.rows[0]) throw new ControlPlaneConflictError('VERSION_CONFLICT', 'user was updated by another request');
       await client.query(`UPDATE tasks SET review_assigned_to_account_id = NULL,
           review_assigned_at = NULL, updated_at = now()
@@ -2065,9 +2118,18 @@ export class PostgresControlPlaneRepository {
       [userId, status, role, qcEnabled]);
       await client.query("UPDATE tasks SET state = state WHERE state = 'MANUAL_ARCHIVE' AND review_assigned_to_account_id IS NULL");
       await client.query("UPDATE copy_sampling_items SET status = status WHERE selected AND status = 'PENDING' AND assigned_review_account_id IS NULL");
+      await client.query(`UPDATE image_sampling_items SET assigned_review_account_id = NULL,
+          assigned_review_at = NULL, updated_at = now()
+        WHERE selected AND status = 'PENDING' AND assigned_review_account_id = $1
+          AND NOT ($2 = 'ACTIVE' AND $3 = 'REVIEWER' AND $4::boolean)`,
+      [userId, status, role, imageQualityEnabled]);
+      await client.query("UPDATE image_sampling_items SET status = status WHERE selected AND status = 'PENDING' AND assigned_review_account_id IS NULL");
       await client.query(`INSERT INTO copy_quality_permission_events(account_id, actor_username, previous_permissions, permissions)
         VALUES ($1, $2, $3, $4)`, [userId, actorUsername,
         { review: current.copy_review_enabled, qc: current.copy_qc_enabled }, { review: reviewEnabled, qc: qcEnabled }]);
+      await client.query(`INSERT INTO image_quality_permission_events(account_id, actor_username, previous_permissions, permissions)
+        VALUES ($1, $2, $3, $4)`, [userId, actorUsername,
+        { imageQc: current.image_qc_enabled === true }, { imageQc: imageQualityEnabled }]);
       if (status !== 'ACTIVE' || !['REVIEWER', 'USER'].includes(role)) {
         await clearQueryPackageAssignments(client, current);
       }
@@ -3974,7 +4036,6 @@ export class PostgresControlPlaneRepository {
       throw new TypeError('copyFields are only accepted for rework');
     }
     if (decision === 'REWORK') {
-      if (reasonCodes.length === 0) throw new TypeError('rework requires at least one reason code');
       if (!note) throw new TypeError('rework requires precise change instructions');
       if (['COPY', 'BOTH'].includes(reworkTarget) && copyFields.length === 0) {
         throw new TypeError('copy rework requires at least one copyFields target');
@@ -4025,6 +4086,16 @@ export class PostgresControlPlaneRepository {
       }
       if (task.current_image_run_id !== imageRunId) {
         throw new ControlPlaneConflictError('STALE_IMAGE_RUN', '图片版本已变化，请刷新后重新审核');
+      }
+      if (decision === 'REWORK') {
+        const settings = await client.query("SELECT value FROM global_settings WHERE key = 'production'");
+        const humanQualitySettings = normalizeHumanQualitySettings(
+          settings.rows[0]?.value?.humanQualityReasons,
+        );
+        if (humanQualitySettings.imageReviewDisplay.showDeductionReasons
+          && humanQualitySettings.imageReasons.length > 0 && reasonCodes.length === 0) {
+          throw new TypeError('rework requires at least one reason code while image reasons are enabled');
+        }
       }
       const run = await client.query(`
         SELECT id FROM image_runs WHERE id = $1 AND task_id = $2
@@ -4541,6 +4612,11 @@ export class PostgresControlPlaneRepository {
     const value = key === XIAOHONGSHU_SEARCH_SETTINGS_KEY
       ? normalizeXiaohongshuSearchSettings(jsonValue)
       : jsonValue;
+    if (key === 'production' && value?.imageEditRepairMaxAttempts !== undefined) {
+      value.imageEditRepairMaxAttempts = normalizeImageEditRepairMaxAttempts(
+        value.imageEditRepairMaxAttempts,
+      );
+    }
     if (key === 'production' && value?.layoutPresets !== undefined) value.layoutPresets = normalizeLayoutPresets(value.layoutPresets);
     if (key === 'production' && value?.humanQualityReasons !== undefined) {
       value.humanQualityReasons = normalizeHumanQualitySettingsUpdate(value.humanQualityReasons);
