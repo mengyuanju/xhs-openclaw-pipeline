@@ -76,6 +76,20 @@ test('all-ready task ids come from the repository snapshot and reject an empty p
   );
 });
 
+test('new delivery batches resolve only versions that have not already been packed', async () => {
+  const actor = { role: 'ADMIN', userId: 1, username: 'admin' };
+  let received;
+  assert.deepEqual(await resolveDeliveryExportTaskIds({
+    listAllDeliveryPoolTaskIds: async (options) => { received = options; return [9, 8]; },
+  }, { scope: 'ALL_READY' }, actor, { unpackedOnly: true }), [9, 8]);
+  assert.deepEqual(received, { actor, unpackedOnly: true });
+  await assert.rejects(resolveDeliveryExportTaskIds({
+    listAllDeliveryPoolTaskIds: async () => [],
+  }, { scope: 'ALL_READY' }, actor, { unpackedOnly: true }), {
+    code: 'DELIVERY_POOL_HAS_NO_PENDING_ITEMS',
+  });
+});
+
 test('delivery export finishes every READY preflight before returning tasks', async () => {
   const events = [];
   const repository = {
@@ -137,6 +151,24 @@ test('prepared delivery downloads are actor-bound, one-time and expire with clea
     (error) => error?.code === 'NOT_FOUND',
   );
   assert.equal(cleanups, 2);
+});
+
+test('prepared ZIP references expose their persistent delivery batch identity', async () => {
+  const registry = createDeliveryExportRegistry();
+  const actor = { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 };
+  const batch = { publicId: '12345678-1234-4234-8234-123456789abc', code: 'JF-12345678' };
+  const prepared = registry.issue({ cleanup: async () => {} }, actor, {
+    fileName: 'JF-12345678-交付池.zip',
+    taskCount: 1,
+    bindings: [{ taskId: 1, copyRevisionId: 2, imageRunId: 'run' }],
+    deliveryBatch: batch,
+  });
+  assert.equal(prepared.batchId, batch.publicId);
+  assert.equal(prepared.batchCode, batch.code);
+  const record = await registry.take(prepared.downloadId, actor);
+  assert.deepEqual(record.deliveryBatch, batch);
+  await registry.complete(prepared.downloadId, record);
+  await registry.dispose();
 });
 
 test('an active delivery download remains inside account and global concurrency limits', async () => {

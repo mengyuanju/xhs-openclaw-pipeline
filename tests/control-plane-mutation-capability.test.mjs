@@ -28,10 +28,12 @@ test('protected control-plane operations declare their version contracts', () =>
     ['/v1/query-packages/9/production-batches', 'POST', 'queryPackageVersion', 2],
     ['/v1/query-packages/9/abandon', 'POST', 'queryPackageVersion', 2],
     ['/v1/query-packages/9/permanent', 'DELETE', 'queryPackageVersion', 2],
-    ['/v1/delivery-pool', 'GET', 'finalDeliveryVersion', 2],
-    ['/v1/delivery-pool/archive', 'POST', 'finalDeliveryVersion', 2],
-    ['/v1/delivery-pool/archive/token', 'HEAD', 'finalDeliveryVersion', 2],
-    ['/v1/delivery-pool/archive/token', 'GET', 'finalDeliveryVersion', 2],
+    ['/v1/delivery-pool', 'GET', 'finalDeliveryVersion', 3],
+    ['/v1/delivery-pool/archive', 'POST', 'finalDeliveryVersion', 3],
+    ['/v1/delivery-pool/archive/token', 'HEAD', 'finalDeliveryVersion', 3],
+    ['/v1/delivery-pool/archive/token', 'GET', 'finalDeliveryVersion', 3],
+    ['/v1/delivery-batches', 'GET', 'finalDeliveryVersion', 3],
+    ['/v1/delivery-batches/123/archive', 'GET', 'finalDeliveryVersion', 3],
     ['/v1/delivery-pool/xlsx', 'POST', 'deliverySpreadsheetVersion', 1],
     ['/v1/delivery-pool/xlsx/token', 'HEAD', 'deliverySpreadsheetVersion', 1],
     ['/v1/delivery-pool/xlsx/token', 'GET', 'deliverySpreadsheetVersion', 1],
@@ -142,7 +144,7 @@ test('mutation capability check allows only compatible center versions', async (
     routePath: '/v1/delivery-pool/archive',
     method: 'POST',
     fetchImpl: async () => Response.json({
-      data: { capabilities: { finalDeliveryVersion: 2 } },
+      data: { capabilities: { finalDeliveryVersion: 3 } },
     }),
   });
 

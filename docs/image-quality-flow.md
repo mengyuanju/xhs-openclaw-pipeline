@@ -32,7 +32,7 @@
 
 ## 上线检查
 
-1. 先备份数据库并执行 `0054_image_quality_flow.sql`。
+1. 先备份数据库并执行 `0055_image_quality_flow.sql`。
 2. 在用户管理中为至少一名审核员开启图片质检权限。
 3. 在生产配置中设置图片抽检开关、比例、盲评和审核员整批打回权限。
 4. 如开启图片返工原因展示，先确认图片原因列表非空。
@@ -44,3 +44,5 @@
 - 默认测试和类型检查不调用模型，不消耗模型额度。
 - PostgreSQL 端到端测试会创建并删除独立临时数据库，不修改当前业务库。
 - 浏览器测试使用本地模拟接口验证图片质检页和图片编辑器，不连接正式服务。
+- 设置 `RUN_POSTGRES_E2E=1` 可直接运行 `server/tests/image-quality-flow-postgres.test.mjs`；测试自行启动并清理一次性 PostgreSQL 18 集群，不读取生产数据库地址。
+- 设置 `RUN_LIVE_WORKFLOW_PAID_E2E=1` 可运行 `server/tests/live-workflow-paid.manual.test.mjs`。该测试会真实调用图片和视觉模型，必须保留显式开关；2026-09-15 的验收记录为 3 次 `openai/gpt-image-2` 图片编辑、7 次视觉校验、0 次发布。

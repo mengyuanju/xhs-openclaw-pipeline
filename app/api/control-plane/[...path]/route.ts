@@ -41,7 +41,7 @@ async function proxyRequest(
   }
   if (role !== 'ADMIN' && ((/^\/v1\/query-packages(?:\/|$)/u.test(routePath)
       && !nonAdminCanAccessQueryPackageRoute(routePath, request.method))
-    || /^\/v1\/delivery-pool(?:\/|$)/u.test(routePath)
+    || /^\/v1\/(?:delivery-pool|delivery-batches)(?:\/|$)/u.test(routePath)
     || /^\/v1\/tasks\/[^/]+\/archive(?:\/|$)/u.test(routePath))) {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可管理词包与交付信息');
   }
@@ -71,7 +71,7 @@ async function proxyRequest(
   if (role === 'REVIEWER' && /^\/v1\/production-batches(?:\/|$)/u.test(routePath)) {
     throw new ApiError(403, 'FORBIDDEN', '质检员没有生产批次管理权限');
   }
-  if (role === 'REVIEWER' && (/^\/v1\/delivery-pool(?:\/|$)/u.test(routePath)
+  if (role === 'REVIEWER' && (/^\/v1\/(?:delivery-pool|delivery-batches)(?:\/|$)/u.test(routePath)
     || /^\/v1\/tasks\/[^/]+\/archive$/u.test(routePath))) {
     throw new ApiError(403, 'FORBIDDEN', '质检员没有交付池与交付包下载权限');
   }
@@ -115,9 +115,11 @@ async function proxyRequest(
   let upstream: Response;
   try {
     const deliveryTokenDownload = request.method === 'GET'
-      && /^\/v1\/delivery-pool\/(?:archive|xlsx)\/[^/]+$/u.test(routePath);
+      && (/^\/v1\/delivery-pool\/(?:archive|xlsx)\/[^/]+$/u.test(routePath)
+        || /^\/v1\/delivery-batches\/[^/]+\/archive$/u.test(routePath));
     const timeoutSignal = AbortSignal.timeout(
-      /^\/v1\/delivery-pool\/(?:archive|xlsx)(?:\/|$)/u.test(routePath)
+      (/^\/v1\/delivery-pool\/(?:archive|xlsx)(?:\/|$)/u.test(routePath)
+        || /^\/v1\/delivery-batches\/[^/]+\/archive$/u.test(routePath))
       ? 60 * 60_000
       : 130_000,
     );

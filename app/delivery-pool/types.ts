@@ -25,6 +25,18 @@ export type DeliveryEntry = {
   status: 'READY';
   approvedAt: string;
   preview: DeliveryPreviewLink | null;
+  packingState: 'UNPACKED' | 'PACKED' | 'VERSION_UPDATED';
+  deliveryBatch: DeliveryEntryBatch | null;
+  previousDeliveryBatch: DeliveryEntryBatch | null;
+};
+
+export type DeliveryEntryBatch = {
+  id: number;
+  publicId: string;
+  code: string;
+  status?: 'GENERATED' | 'DOWNLOADED';
+  createdAt: string;
+  downloadedAt?: string | null;
 };
 
 export type DeliveryQueryPackageFacet = {
@@ -35,6 +47,9 @@ export type DeliveryQueryPackageFacet = {
   unuploadedCount: number;
   publishedCount: number;
   revokedCount: number;
+  pendingCount: number;
+  packedCount: number;
+  updatedCount: number;
 };
 
 export type DeliveryUnassignedFacet = {
@@ -42,6 +57,9 @@ export type DeliveryUnassignedFacet = {
   unuploadedCount: number;
   publishedCount: number;
   revokedCount: number;
+  pendingCount: number;
+  packedCount: number;
+  updatedCount: number;
 };
 
 export type DeliveryPoolPage = {
@@ -51,6 +69,14 @@ export type DeliveryPoolPage = {
     queryPackages: DeliveryQueryPackageFacet[];
     unassigned: DeliveryUnassignedFacet | null;
   };
+  summary: DeliveryPoolSummary;
+};
+
+export type DeliveryPoolSummary = {
+  readyCount: number;
+  pendingCount: number;
+  packedCount: number;
+  updatedCount: number;
 };
 
 export type PreparedDeliveryExport = {
@@ -58,7 +84,43 @@ export type PreparedDeliveryExport = {
   fileName: string;
   taskCount: number;
   expiresAt: string;
+  batchId?: string;
+  batchCode?: string;
 };
+
+export type DeliveryBatchSummary = {
+  id: number;
+  publicId: string;
+  code: string;
+  scope: 'ALL_READY' | 'QUERY_PACKAGE' | 'SELECTED';
+  queryPackageName: string | null;
+  queryPackageNames: string[];
+  status: 'GENERATED' | 'DOWNLOADED';
+  fileName: string;
+  byteSize: number;
+  sha256: string;
+  taskCount: number;
+  createdByAccountId: number;
+  createdByUsername: string;
+  createdAt: string;
+  firstDownloadedAt: string | null;
+  lastDownloadedAt: string | null;
+  downloadCount: number;
+};
+
+export type DeliveryBatchItem = {
+  id: number;
+  ordinal: number;
+  taskId: number;
+  copyRevisionId: number;
+  imageRunId: string;
+  query: string;
+  queryPackageId: number | null;
+  queryPackageName: string | null;
+};
+
+export type DeliveryBatchDetail = DeliveryBatchSummary & { items: DeliveryBatchItem[] };
+export type DeliveryBatchPage = { items: DeliveryBatchSummary[]; total: number };
 
 export type DeliveryPoolExportInput =
   | { scope: 'ALL_READY' }
@@ -109,6 +171,9 @@ function normalizeEntry(value: unknown): DeliveryEntry | null {
     || !Number.isSafeInteger(copyRevisionId) || copyRevisionId < 1 || item.status !== 'READY'
     || (queryPackageId !== null && (!Number.isSafeInteger(queryPackageId) || queryPackageId < 1))
     || typeof item.imageRunId !== 'string' || !item.imageRunId.trim()) return null;
+  const packingState = ['UNPACKED', 'PACKED', 'VERSION_UPDATED'].includes(String(item.packingState))
+    ? item.packingState as DeliveryEntry['packingState']
+    : 'UNPACKED';
   return {
     id,
     taskId,
@@ -121,6 +186,30 @@ function normalizeEntry(value: unknown): DeliveryEntry | null {
     queryPackageDeleted: item.queryPackageDeleted === true,
     approvedAt: typeof item.approvedAt === 'string' ? item.approvedAt : '',
     preview: normalizePreviewLink(item.preview),
+    packingState,
+    deliveryBatch: normalizeEntryBatch(item.deliveryBatch),
+    previousDeliveryBatch: normalizeEntryBatch(item.previousDeliveryBatch),
+  };
+}
+
+function normalizeEntryBatch(value: unknown): DeliveryEntryBatch | null {
+  const item = record(value);
+  if (!item) return null;
+  const id = Number(item.id);
+  const publicId = typeof item.publicId === 'string' ? item.publicId.toLowerCase() : '';
+  const code = typeof item.code === 'string' ? item.code : '';
+  if (!Number.isSafeInteger(id) || id < 1
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(publicId)
+    || !/^JF-[0-9A-F]{8}$/u.test(code)) return null;
+  return {
+    id,
+    publicId,
+    code,
+    ...(['GENERATED', 'DOWNLOADED'].includes(String(item.status))
+      ? { status: item.status as DeliveryEntryBatch['status'] }
+      : {}),
+    createdAt: typeof item.createdAt === 'string' ? item.createdAt : '',
+    downloadedAt: typeof item.downloadedAt === 'string' ? item.downloadedAt : null,
   };
 }
 
@@ -223,10 +312,14 @@ export function normalizeDeliveryPoolPage(value: unknown): DeliveryPoolPage {
     const unuploadedCount = Number(facet?.unuploadedCount);
     const publishedCount = Number(facet?.publishedCount);
     const revokedCount = Number(facet?.revokedCount);
+    const pendingCount = facet?.pendingCount === undefined ? count : Number(facet.pendingCount);
+    const packedCount = facet?.packedCount === undefined ? 0 : Number(facet.packedCount);
+    const updatedCount = facet?.updatedCount === undefined ? 0 : Number(facet.updatedCount);
     if (!Number.isSafeInteger(id) || id < 1 || !name
-      || [count, unuploadedCount, publishedCount, revokedCount]
+      || [count, unuploadedCount, publishedCount, revokedCount, pendingCount, packedCount, updatedCount]
         .some((candidate) => !Number.isSafeInteger(candidate) || candidate < 0)
       || unuploadedCount + publishedCount + revokedCount > count
+      || pendingCount + packedCount !== count || updatedCount > pendingCount
       || queryPackageMap.has(id)) continue;
     queryPackageMap.set(id, {
       id,
@@ -236,6 +329,9 @@ export function normalizeDeliveryPoolPage(value: unknown): DeliveryPoolPage {
       unuploadedCount,
       publishedCount,
       revokedCount,
+      pendingCount,
+      packedCount,
+      updatedCount,
     });
   }
   const queryPackages = [...queryPackageMap.values()];
@@ -246,20 +342,51 @@ export function normalizeDeliveryPoolPage(value: unknown): DeliveryPoolPage {
         Number(rawUnassigned.unuploadedCount),
         Number(rawUnassigned.publishedCount),
         Number(rawUnassigned.revokedCount),
+        rawUnassigned.pendingCount === undefined
+          ? Number(rawUnassigned.count) : Number(rawUnassigned.pendingCount),
+        rawUnassigned.packedCount === undefined ? 0 : Number(rawUnassigned.packedCount),
+        rawUnassigned.updatedCount === undefined ? 0 : Number(rawUnassigned.updatedCount),
       ]
     : [];
   const unassigned = rawUnassigned
     && unassignedCounts.every((count) => Number.isSafeInteger(count) && count >= 0)
     && unassignedCounts[0] > 0
     && unassignedCounts[1] + unassignedCounts[2] + unassignedCounts[3] <= unassignedCounts[0]
+    && unassignedCounts[4] + unassignedCounts[5] === unassignedCounts[0]
+    && unassignedCounts[6] <= unassignedCounts[4]
     ? {
         count: unassignedCounts[0],
         unuploadedCount: unassignedCounts[1],
         publishedCount: unassignedCounts[2],
         revokedCount: unassignedCounts[3],
+        pendingCount: unassignedCounts[4],
+        packedCount: unassignedCounts[5],
+        updatedCount: unassignedCounts[6],
       }
     : null;
-  return { items, total, facets: { queryPackages, unassigned } };
+  const rawSummary = record(payload?.summary);
+  const summaryCounts = rawSummary
+    ? [Number(rawSummary.readyCount), Number(rawSummary.pendingCount),
+        Number(rawSummary.packedCount), Number(rawSummary.updatedCount)]
+    : [];
+  const fallbackSummary = {
+    readyCount: queryPackages.reduce((sum, facet) => sum + facet.count, 0)
+      + (unassigned?.count ?? (queryPackages.length ? 0 : items.length)),
+    pendingCount: queryPackages.reduce((sum, facet) => sum + facet.pendingCount, 0)
+      + (unassigned?.pendingCount ?? (queryPackages.length ? 0 : items.filter((item) => item.packingState !== 'PACKED').length)),
+    packedCount: queryPackages.reduce((sum, facet) => sum + facet.packedCount, 0)
+      + (unassigned?.packedCount ?? (queryPackages.length ? 0 : items.filter((item) => item.packingState === 'PACKED').length)),
+    updatedCount: queryPackages.reduce((sum, facet) => sum + facet.updatedCount, 0)
+      + (unassigned?.updatedCount ?? (queryPackages.length ? 0 : items.filter((item) => item.packingState === 'VERSION_UPDATED').length)),
+  };
+  const summary = summaryCounts.length === 4
+    && summaryCounts.every((count) => Number.isSafeInteger(count) && count >= 0)
+    && summaryCounts[1] + summaryCounts[2] === summaryCounts[0]
+    && summaryCounts[3] <= summaryCounts[1]
+    ? { readyCount: summaryCounts[0], pendingCount: summaryCounts[1],
+        packedCount: summaryCounts[2], updatedCount: summaryCounts[3] }
+    : fallbackSummary;
+  return { items, total, facets: { queryPackages, unassigned }, summary };
 }
 
 export function updateTaskSelection(
@@ -345,7 +472,16 @@ function normalizePreparedDeliveryDownload(
     || !Number.isFinite(Date.parse(expiresAt))) {
     throw new TypeError('交付池下载凭证无效，请重新导出');
   }
-  return { downloadId, fileName, taskCount, expiresAt };
+  const batchId = typeof item?.batchId === 'string' ? item.batchId.toLowerCase() : '';
+  const batchCode = typeof item?.batchCode === 'string' ? item.batchCode : '';
+  const batch = batchId || batchCode
+    ? /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(batchId)
+      && /^JF-[0-9A-F]{8}$/u.test(batchCode)
+      ? { batchId, batchCode }
+      : null
+    : {};
+  if (batch === null) throw new TypeError('交付批次凭证无效，请重新导出');
+  return { downloadId, fileName, taskCount, expiresAt, ...batch };
 }
 
 export function normalizePreparedDeliveryExport(value: unknown): PreparedDeliveryExport {
@@ -354,4 +490,96 @@ export function normalizePreparedDeliveryExport(value: unknown): PreparedDeliver
 
 export function normalizePreparedDeliveryXlsxExport(value: unknown): PreparedDeliveryExport {
   return normalizePreparedDeliveryDownload(value, '.xlsx');
+}
+
+function normalizeDeliveryBatchSummary(value: unknown): DeliveryBatchSummary | null {
+  const item = record(value);
+  if (!item) return null;
+  const id = Number(item.id);
+  const publicId = typeof item.publicId === 'string' ? item.publicId.toLowerCase() : '';
+  const code = typeof item.code === 'string' ? item.code : '';
+  const scope = String(item.scope);
+  const status = String(item.status);
+  const byteSize = Number(item.byteSize);
+  const taskCount = Number(item.taskCount);
+  const createdByAccountId = Number(item.createdByAccountId);
+  const downloadCount = Number(item.downloadCount);
+  const sha256 = typeof item.sha256 === 'string' ? item.sha256.toLowerCase() : '';
+  if (!Number.isSafeInteger(id) || id < 1
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(publicId)
+    || !/^JF-[0-9A-F]{8}$/u.test(code)
+    || !['ALL_READY', 'QUERY_PACKAGE', 'SELECTED'].includes(scope)
+    || !['GENERATED', 'DOWNLOADED'].includes(status)
+    || !Number.isSafeInteger(byteSize) || byteSize < 1
+    || !Number.isSafeInteger(taskCount) || taskCount < 1
+    || !Number.isSafeInteger(createdByAccountId) || createdByAccountId < 1
+    || !Number.isSafeInteger(downloadCount) || downloadCount < 0
+    || !/^[a-f0-9]{64}$/u.test(sha256)
+    || typeof item.fileName !== 'string' || !item.fileName.endsWith('.zip')
+    || typeof item.createdByUsername !== 'string') return null;
+  return {
+    id,
+    publicId,
+    code,
+    scope: scope as DeliveryBatchSummary['scope'],
+    queryPackageName: normalizeQueryPackageName(item.queryPackageName),
+    queryPackageNames: Array.isArray(item.queryPackageNames)
+      ? [...new Set(item.queryPackageNames.map(normalizeQueryPackageName).filter((name): name is string => Boolean(name)))]
+      : [],
+    status: status as DeliveryBatchSummary['status'],
+    fileName: item.fileName,
+    byteSize,
+    sha256,
+    taskCount,
+    createdByAccountId,
+    createdByUsername: item.createdByUsername,
+    createdAt: typeof item.createdAt === 'string' ? item.createdAt : '',
+    firstDownloadedAt: typeof item.firstDownloadedAt === 'string' ? item.firstDownloadedAt : null,
+    lastDownloadedAt: typeof item.lastDownloadedAt === 'string' ? item.lastDownloadedAt : null,
+    downloadCount,
+  };
+}
+
+export function normalizeDeliveryBatchPage(value: unknown): DeliveryBatchPage {
+  const payload = record(value);
+  const rows = Array.isArray(payload?.items) ? payload.items : [];
+  const items = rows.map(normalizeDeliveryBatchSummary)
+    .filter((item): item is DeliveryBatchSummary => item !== null);
+  const rawTotal = Number(payload?.total);
+  return {
+    items,
+    total: Number.isSafeInteger(rawTotal) && rawTotal >= items.length ? rawTotal : items.length,
+  };
+}
+
+export function normalizeDeliveryBatchDetail(value: unknown): DeliveryBatchDetail {
+  const payload = record(value);
+  const summary = normalizeDeliveryBatchSummary(payload);
+  if (!summary || !Array.isArray(payload?.items)) throw new TypeError('交付批次详情无效');
+  const items = payload.items.map((value) => {
+    const item = record(value);
+    const id = Number(item?.id);
+    const ordinal = Number(item?.ordinal);
+    const taskId = Number(item?.taskId);
+    const copyRevisionId = Number(item?.copyRevisionId);
+    const queryPackageId = item?.queryPackageId == null ? null : Number(item.queryPackageId);
+    if (![id, ordinal, taskId, copyRevisionId]
+      .every((number) => Number.isSafeInteger(number) && number > 0)
+      || (queryPackageId !== null && (!Number.isSafeInteger(queryPackageId) || queryPackageId < 1))
+      || typeof item?.imageRunId !== 'string' || typeof item?.query !== 'string') {
+      throw new TypeError('交付批次详情无效');
+    }
+    return {
+      id,
+      ordinal,
+      taskId,
+      copyRevisionId,
+      imageRunId: item.imageRunId,
+      query: item.query,
+      queryPackageId,
+      queryPackageName: normalizeQueryPackageName(item.queryPackageName),
+    };
+  });
+  if (items.length !== summary.taskCount) throw new TypeError('交付批次详情数量不一致');
+  return { ...summary, items };
 }

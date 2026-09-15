@@ -616,6 +616,7 @@ test('legacy delivery migrations retain their checksums and upgrade through the 
       '0051_copy_quality_flow',
       '0052_image_editing',
       '0053_account_review_assignment',
+      '0054_delivery_batches',
     ]);
 
     const repairedRevisionState = (await pool.query(`
@@ -806,6 +807,7 @@ test('delivery runtime integrity migration withdraws JavaScript-unsafe asset ids
       '0051_copy_quality_flow',
       '0052_image_editing',
       '0053_account_review_assignment',
+      '0054_delivery_batches',
     ]);
     const repairedDelivery = (await pool.query(`
       SELECT status, withdrawn_at FROM delivery_entries WHERE task_id = $1
@@ -1343,6 +1345,7 @@ test('Query-package preassignment repair clears only the proven legacy signature
       '0051_copy_quality_flow',
       '0052_image_editing',
       '0053_account_review_assignment',
+      '0054_delivery_batches',
       ]);
       await migrationClient.query('COMMIT');
     } catch (error) {
@@ -1719,7 +1722,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     assert.equal(health.data.ok, true);
     assert.equal(health.data.capabilities.queryPackageVersion, 5);
     assert.equal(health.data.capabilities.copySamplingVersion, 1);
-    assert.equal(health.data.capabilities.finalDeliveryVersion, 2);
+    assert.equal(health.data.capabilities.finalDeliveryVersion, 3);
 
     const currentSettings = (await requestJson(
       controlPlane.root, '/v1/workflow-quality-settings', { actor: admin },
@@ -2696,6 +2699,8 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
       },
     )).data;
     assert.equal(preparedDelivery.taskCount, 1);
+    assert.match(preparedDelivery.batchId, /^[0-9a-f-]{36}$/u);
+    assert.match(preparedDelivery.batchCode, /^JF-[0-9A-F]{8}$/u);
     const deniedWorkerDeliveryDownload = await requestJson(
       controlPlane.root, `/v1/delivery-pool/archive/${preparedDelivery.downloadId}`, {
         actor: worker,
@@ -2718,6 +2723,46 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
       await deliveredTaskFiles.file('小红书链接.txt').async('string'),
       /https:\/\/www\.xiaohongshu\.com\/explore\//u,
     );
+    const pendingAfterBatch = (await requestJson(
+      controlPlane.root,
+      '/v1/delivery-pool?limit=200&offset=0&includeTotal=true&packingState=PENDING',
+      { actor: admin },
+    )).data;
+    assert.equal(pendingAfterBatch.total, 0);
+    assert.deepEqual(pendingAfterBatch.summary, {
+      readyCount: 1,
+      pendingCount: 0,
+      packedCount: 1,
+      updatedCount: 0,
+    });
+    const deliveryHistory = (await requestJson(
+      controlPlane.root, '/v1/delivery-batches?limit=50&offset=0', { actor: admin },
+    )).data;
+    assert.equal(deliveryHistory.total, 1);
+    assert.equal(deliveryHistory.items[0].publicId, preparedDelivery.batchId);
+    assert.equal(deliveryHistory.items[0].code, preparedDelivery.batchCode);
+    const deliveryBatchDetail = (await requestJson(
+      controlPlane.root, `/v1/delivery-batches/${preparedDelivery.batchId}`, { actor: admin },
+    )).data;
+    assert.equal(deliveryBatchDetail.items.length, 1);
+    assert.equal(deliveryBatchDetail.items[0].taskId, imageClaim.task.id);
+    assert.equal(deliveryBatchDetail.items[0].copyRevisionId, delivery.copyRevisionId);
+    assert.equal(deliveryBatchDetail.items[0].imageRunId, delivery.imageRunId);
+    const historicalArchive = await fetch(
+      `${controlPlane.root}/v1/delivery-batches/${preparedDelivery.batchId}/archive`,
+      { headers: actorHeaders(admin) },
+    );
+    assert.equal(historicalArchive.status, 200);
+    assert.ok((await historicalArchive.arrayBuffer()).byteLength > 0);
+    const repeatedBatch = await requestJson(
+      controlPlane.root, '/v1/delivery-pool/archive', {
+        actor: admin,
+        method: 'POST',
+        body: { scope: 'ALL_READY' },
+        expectedStatus: 409,
+      },
+    );
+    assert.equal(repeatedBatch.error.code, 'DELIVERY_POOL_HAS_NO_PENDING_ITEMS');
     const deniedWorkerTaskArchive = await requestJson(
       controlPlane.root, `/v1/tasks/${imageClaim.task.id}/archive`, {
         actor: worker,
@@ -3328,6 +3373,7 @@ test('queue priority upgrade counts QA returns and excludes past review ownershi
         '0051_copy_quality_flow',
         '0052_image_editing',
         '0053_account_review_assignment',
+        '0054_delivery_batches',
       ]);
       await upgrade.query('COMMIT');
     } finally { upgrade.release(); }

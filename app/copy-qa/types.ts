@@ -61,6 +61,21 @@ export type CopyQaPage = {
   returnedCount: number;
 };
 
+export type CopyQaImagePlanPage = {
+  kind: string;
+  headline: string;
+  subtitle: string;
+  bullets: string[];
+  prompt: string;
+};
+
+export type CopyQaRevisionView = {
+  title: string;
+  body: string;
+  tags: string[];
+  imagePlan: CopyQaImagePlanPage[];
+};
+
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
@@ -202,15 +217,18 @@ export function normalizeCopyQaStatistics(value: unknown): CopyQaStatistics | nu
   };
 }
 
-export function copyRevisionView(content: unknown): { title: string; body: string; tags: string[] } {
+export function copyRevisionView(content: unknown): CopyQaRevisionView {
   let parsed = content;
   if (typeof parsed === 'string') {
-    try { parsed = JSON.parse(parsed); } catch { return { title: '', body: String(parsed), tags: [] }; }
+    try { parsed = JSON.parse(parsed); } catch {
+      return { title: '', body: String(parsed), tags: [], imagePlan: [] };
+    }
   }
   const row = record(parsed);
-  if (!row) return { title: '', body: String(content ?? ''), tags: [] as string[] };
-  const nested = record(row.copy);
-  const source = nested ?? row;
+  if (!row) return { title: '', body: String(content ?? ''), tags: [], imagePlan: [] };
+  const reviewed = record(row.reviewed);
+  const post = record(row.post);
+  const source = record(row.copy) ?? record(reviewed?.copy) ?? post ?? row;
   const title = typeof source.title === 'string' ? source.title : '';
   const body = typeof source.body === 'string'
     ? source.body
@@ -218,5 +236,21 @@ export function copyRevisionView(content: unknown): { title: string; body: strin
   const tags = Array.isArray(source.tags)
     ? source.tags.filter((tag): tag is string => typeof tag === 'string')
     : typeof source.tags === 'string' ? source.tags.split(/[\s,，#]+/u).filter(Boolean) : [];
-  return { title, body, tags };
+  const rawImagePlan = row.imagePlan ?? reviewed?.imagePlan ?? post?.imagePlan;
+  const imagePlan = Array.isArray(rawImagePlan)
+    ? rawImagePlan.slice(0, 5).flatMap((value): CopyQaImagePlanPage[] => {
+        const page = record(value);
+        if (!page) return [];
+        return [{
+          kind: typeof page.kind === 'string' ? page.kind : '',
+          headline: typeof page.headline === 'string' ? page.headline : '',
+          subtitle: typeof page.subtitle === 'string' ? page.subtitle : '',
+          bullets: Array.isArray(page.bullets)
+            ? page.bullets.filter((bullet): bullet is string => typeof bullet === 'string').slice(0, 5)
+            : [],
+          prompt: typeof page.prompt === 'string' ? page.prompt : '',
+        }];
+      })
+    : [];
+  return { title, body, tags, imagePlan };
 }

@@ -78,17 +78,20 @@ node server/src/cli.mjs image-edit-once --environment=development
 ```text
 node --test tests/current-image-editing.test.mjs server/tests/image-editing-http.test.mjs
 RUN_POSTGRES_E2E=1 node --test server/tests/image-editing-postgres.test.mjs
+RUN_POSTGRES_E2E=1 node --test server/tests/image-quality-flow-postgres.test.mjs
 RUN_IMAGE_EDIT_BROWSER=1 node --test tests/current-image-editor-browser.test.mjs
+RUN_IMAGE_QA_BROWSER=1 node --test tests/image-quality-browser.test.mjs
+RUN_LIVE_WORKFLOW_PAID_E2E=1 node --test server/tests/live-workflow-paid.manual.test.mjs
 npm run typecheck
 npm run build
 npm --prefix server test
 npm test
 ```
 
-PowerShell 中先使用 `$env:RUN_POSTGRES_E2E='1'` 或 `$env:RUN_IMAGE_EDIT_BROWSER='1'`。浏览器测试默认使用已安装的 Edge，`IMAGE_EDIT_BROWSER_CHANNEL` 可指定 Chrome。测试依赖安装树中已有的 esbuild/playwright-core。
+PowerShell 中先设置对应的环境变量。PostgreSQL 测试和付费真实模型测试默认自行启动并删除一次性本地 PostgreSQL 18 集群，也可显式提供专用本地维护库地址；不会读取生产 `DATABASE_URL`。浏览器测试默认使用已安装的 Edge，`IMAGE_EDIT_BROWSER_CHANNEL` 可指定 Chrome。测试依赖安装树中已有的 esbuild/playwright-core。
 
-2026-09-15 集成验收：图片编辑单元测试 11/11、隔离 PostgreSQL 图片编辑闭环 8/8、合并工作流 PostgreSQL 闭环 15/15；根目录全量 1147 通过、1 跳过、0 失败；服务端全量 559 通过、18 跳过、0 失败；全仓类型检查、两套生产构建和 smoke 均通过。
+2026-09-15 集成验收：图片编辑 PostgreSQL 生命周期 9/9、图片初审与独立质检 PostgreSQL 端到端 1/1、图片编辑与图片质检浏览器端到端 2/2；根目录全量 1160 通过、2 跳过、0 失败，服务端全量 575 通过、19 跳过、0 失败；全仓类型检查和两套生产构建均通过。
 
-历史遮罩版真实模型完整端到端测试已通过：管理员设置最高优先级、100% 按人员抽检、整批打回、返工后强制复检、复检通过前阻断图片生成，随后串行完成并采用指定单页添加“AI生成”、珊瑚红马克杯实体参考图 AI 融合、提示词矩形选区局部背景修改。本轮每种编辑各调用 1 次 `gpt-image-2`，共 3 次图片编辑和 7 次现有视觉验收；新增文字识别为“低成本也能保持AI生成”且仅出现一次，实体一致性验收通过，局部修改选区外变化像素为 0。本轮没有发布，产物保存在 `output/live-e2e/1789433589898/attempt-1`。加上此前的 4 次图片编辑调用，本次功能验证期间累计发生 7 次真实图片编辑调用；Codex 订阅未提供可换算的逐次货币账单。新的纯提示词定位流程使用同一订阅适配器，需以本次测试记录为准，不沿用遮罩外像素为零的结论。
+当前纯提示词定位版真实模型完整端到端测试已通过：管理员设置最高优先级、100% 文案抽检、整批打回、返工后强制复检、复检通过前阻断图片生成，随后串行完成并采用指定单页添加“AI生成”、珊瑚红马克杯实体参考图 AI 融合和无蒙版提示词局部背景修改。`openai/gpt-image-2` 每种编辑各调用 1 次，共 3 次真实图片编辑和 7 次视觉验收；新增文字识别为“低成本也能保持AI生成”且仅出现一次，位置、实体一致性、必需文字和输出尺寸均通过。人工检查确认原标题、合规标识和马克杯在后续编辑中保持一致，局部修改只增加浅鼠尾草绿背景渐变。本轮没有发布，产物保存在 `output/live-e2e/1789457682976/attempt-1`。
 
-迁移顺序已经集成为 0050 优先级、0051 文案质检、0052 图片编辑、0053 账号权限与审核分配协调。0053 统一权限过滤、分配与返工计数；图片编辑继续使用独立租约和 `IMAGE_MANUAL_EDIT` 原因，不会被普通图片任务误领。
+迁移顺序已经集成为 0050 优先级、0051 文案质检、0052 图片编辑、0053 账号权限与审核分配协调、0054 交付批次、0055 图片初审与独立质检。图片编辑继续使用独立租约和 `IMAGE_MANUAL_EDIT` 原因，不会被普通图片任务误领。

@@ -32,7 +32,7 @@ test('image initial review, independent QA and delivery have non-overlapping rol
 
 test('image sampling freezes batches and every returned image requires mandatory recheck', async () => {
   const [migration, imageQuality, settings] = await Promise.all([
-    source('server/migrations/0054_image_quality_flow.sql'),
+    source('server/migrations/0055_image_quality_flow.sql'),
     source('server/src/image-quality-control.mjs'),
     source('app/settings/workflow-quality-settings-panel.tsx'),
   ]);

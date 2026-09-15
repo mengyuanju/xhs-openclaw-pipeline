@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
+import { execFile, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { promisify } from 'node:util';
 
 import pg from 'pg';
 
@@ -19,12 +22,46 @@ import {
   submitImageSelfReview,
 } from '../src/image-quality-control.mjs';
 
-const maintenanceUrl = process.env.IMAGE_QUALITY_TEST_DATABASE_URL || process.env.DATABASE_URL;
+const configuredMaintenanceUrl = process.env.IMAGE_QUALITY_TEST_DATABASE_URL?.trim();
+
+async function startDisposablePostgres() {
+  const root = await mkdtemp(join(tmpdir(), 'xhs-image-quality-pg-'));
+  const data = join(root, 'data');
+  const bin = process.env.POSTGRES_E2E_BIN ?? (process.platform === 'win32' ? 'C:/Program Files/PostgreSQL/18/bin' : '/usr/lib/postgresql/18/bin');
+  const executable = (name) => join(bin, name + (process.platform === 'win32' ? '.exe' : ''));
+  const control = (args) => new Promise((accept, reject) => {
+    const child = spawn(executable('pg_ctl'), args, { shell: false, windowsHide: true, stdio: 'ignore' });
+    child.on('error', reject);
+    child.on('exit', (code) => code === 0 ? accept() : reject(new Error(`pg_ctl ${code}`)));
+  });
+  const probe = createServer();
+  await new Promise((accept) => probe.listen(0, '127.0.0.1', accept));
+  const port = probe.address().port;
+  await new Promise((accept, reject) => probe.close((error) => error ? reject(error) : accept()));
+  let started = false;
+  try {
+    await promisify(execFile)(executable('initdb'), ['-D', data, '-A', 'trust', '-U', 'postgres', '--encoding=UTF8', '--locale=C', '--no-sync'], { windowsHide: true, timeout: 60_000 });
+    await control(['-D', data, '-l', join(root, 'postgres.log'), '-o', `-h 127.0.0.1 -p ${port}`, '-w', 'start']);
+    started = true;
+    return { url: `postgresql://postgres@127.0.0.1:${port}/postgres`, async stop() {
+      if (started) { started = false; await control(['-D', data, '-m', 'fast', '-w', 'stop']); }
+      assert.ok(resolve(root).startsWith(resolve(tmpdir())));
+      await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } };
+  } catch (error) {
+    if (started) await control(['-D', data, '-m', 'fast', '-w', 'stop']).catch(() => {});
+    assert.ok(resolve(root).startsWith(resolve(tmpdir())));
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    throw error;
+  }
+}
 
 test('real PostgreSQL image self-review, sampling hold, QA return, edit version and mandatory recheck', {
-  skip: !maintenanceUrl,
+  skip: process.env.RUN_POSTGRES_E2E !== '1' && !configuredMaintenanceUrl,
   timeout: 120_000,
 }, async (t) => {
+  const isolatedPostgres = configuredMaintenanceUrl ? null : await startDisposablePostgres();
+  const maintenanceUrl = configuredMaintenanceUrl ?? isolatedPostgres.url;
   const url = new URL(maintenanceUrl);
   assert.ok(['127.0.0.1', 'localhost'].includes(url.hostname), 'image QA test database must be local');
   const adminPool = new pg.Pool({ connectionString: url.href });
@@ -32,16 +69,22 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
   const storageRoot = await mkdtemp(join(tmpdir(), 'image-qa-http-e2e-'));
   const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ\/l5y6WQAAAABJRU5ErkJggg==', 'base64');
   const imageSha256 = createHash('sha256').update(imageBytes).digest('hex');
-  await adminPool.query(`CREATE DATABASE ${databaseName}`);
-  url.pathname = `/${databaseName}`;
-  const pool = new pg.Pool({ connectionString: url.href });
+  let databaseCreated = false;
+  let pool;
   t.after(async () => {
-    await pool.end();
-    await adminPool.query('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1', [databaseName]);
-    await adminPool.query(`DROP DATABASE ${databaseName}`);
+    await pool?.end();
+    if (databaseCreated) {
+      await adminPool.query('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1', [databaseName]);
+      await adminPool.query(`DROP DATABASE ${databaseName}`);
+    }
     await adminPool.end();
     await rm(storageRoot, { recursive: true, force: true });
+    await isolatedPostgres?.stop();
   });
+  await adminPool.query(`CREATE DATABASE ${databaseName}`);
+  databaseCreated = true;
+  url.pathname = `/${databaseName}`;
+  pool = new pg.Pool({ connectionString: url.href });
   await migrateDatabase(pool);
   assert.deepEqual(await migrateDatabase(pool), []);
   await pool.query("INSERT INTO executor_nodes(id, name) VALUES ('image-qa-test', 'image qa test')");

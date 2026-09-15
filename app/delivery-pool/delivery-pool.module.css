@@ -24,6 +24,34 @@
 .selectionStatus { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 14px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid #d9e3d4; border-radius: 10px; color: #385333; background: #f4f8f1; font-size: 11px; }
 .selectionStatus span:last-child { color: var(--muted); }
 .scopeNote { margin: -5px 0 12px; color: var(--muted); font-size: 11px; line-height: 1.65; }
+.progressGrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin: 0 0 15px; }
+.progressGrid article { display: grid; gap: 5px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 11px; background: #fbfaf8; }
+.progressGrid span { color: var(--muted); font-size: 10px; font-weight: 700; }
+.progressGrid strong { font-size: 22px; line-height: 1; }
+.progressGrid .pendingCard { border-color: #d9e3d4; background: #f4f8f1; }
+.progressGrid .packedCard { border-color: #d5dfec; background: #f3f6fa; }
+.progressGrid .updatedCard { border-color: #ead9b9; background: #fff8e9; }
+.history { margin-bottom: 12px; border: 1px solid var(--line); border-radius: 12px; background: #fbfaf8; overflow: hidden; }
+.history > summary { display: flex; align-items: center; gap: 7px; padding: 12px 14px; color: var(--ink); font-size: 13px; font-weight: 800; cursor: pointer; list-style: none; }
+.history > summary::-webkit-details-marker { display: none; }
+.history[open] > summary { border-bottom: 1px solid var(--line); }
+.historyBody { display: grid; gap: 12px; padding: 12px; }
+.historyEmpty { display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 64px; color: var(--muted); font-size: 11px; }
+.blockMeta { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; font-weight: 400; }
+.batchDetail { display: grid; gap: 10px; padding: 12px; border: 1px solid #d5dfec; border-radius: 10px; background: white; }
+.batchDetailHeader { display: flex; align-items: start; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.batchDetailHeader h3 { margin: 0 0 4px; font-size: 13px; }
+.batchDetailHeader p { margin: 0; color: var(--muted); font-size: 10px; }
+.batchItemList { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 7px; max-height: 320px; overflow-y: auto; }
+.batchItemList article { display: grid; gap: 4px; min-width: 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.batchItemList strong, .batchItemList span, .batchItemList small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batchItemList strong { font-size: 11px; }
+.batchItemList span { font-size: 11px; }
+.batchItemList small { color: var(--muted); font-size: 9px; }
+.deliveryState { display: grid; justify-items: start; gap: 4px; }
+.deliveryState small { color: var(--muted); font-size: 9px; }
+.pendingPill { color: #385333; background: #edf4e9; }
+.updatedPill { color: #7a5721; background: #fff0cf; }
 .loadMore { display: flex; justify-content: center; padding-top: 14px; }
 .previewUploadControl { display: grid !important; align-items: stretch !important; gap: 4px !important; min-width: 118px; }
 .previewUploadControl label { color: var(--muted); font-size: 10px; font-weight: 700; }
@@ -46,6 +74,7 @@
 .previewPackageEmpty { grid-column: 1 / -1; padding: 18px; color: var(--muted); font-size: 11px; text-align: center; }
 @media (max-width: 680px) { .toolbar { align-items: stretch; flex-direction: column; } .toolbar > div, .toolbar > .searchField, .toolbar > .packageFilter, .toolbar button { width: 100%; } .toolbar .clearSearch { width: 30px; } .toolbar > .searchStatus { text-align: left; } }
 @media (max-width: 680px) { .previewPackageTools { grid-template-columns: 1fr; } .previewPackageTools button { width: 100%; } .previewPackageList { grid-template-columns: 1fr; max-height: 360px; } }
+@media (max-width: 760px) { .progressGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .batchItemList { grid-template-columns: 1fr; } }
 @media (max-width: 1050px) {
   .toolbar { align-items: stretch; flex-direction: column; }
   .toolbar > div, .toolbar > .searchField, .toolbar > .packageFilter { width: 100%; }

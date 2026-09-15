@@ -51,7 +51,6 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
     }
     await pool.query('UPDATE image_runs SET result=$2 WHERE id=$1',[runId,{images}]);
     await pool.query('UPDATE tasks SET current_copy_revision_id=$2,current_image_run_id=$3,image_qc_legacy_accepted=true WHERE id=$1',[taskId,copyRevisionId,runId]);
-    await pool.query('UPDATE tasks SET image_qc_legacy_accepted=true WHERE id=$1',[taskId]);
     await pool.query("UPDATE global_settings SET value=$1 WHERE key='production'",[{aiDisclosureEnabled:false,imageEditRepairMaxAttempts:1}]);
     const service=createImageEditingService({pool,storageRoot:root});
     let currentRun=runId,currentAsset=images[1].assetId,currentHash=sha256;

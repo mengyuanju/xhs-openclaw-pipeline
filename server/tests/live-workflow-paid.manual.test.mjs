@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
+import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { promisify } from 'node:util';
 import pg from 'pg';
 import sharp from 'sharp';
 
@@ -18,22 +21,56 @@ import { createAgentClient } from '../../src/agent-client.mjs';
 import { imageHash } from '../../src/image-edit-pixels.mjs';
 
 const enabled=process.env.RUN_LIVE_WORKFLOW_PAID_E2E==='1';
-const maintenanceUrl=process.env.LIVE_E2E_DATABASE_URL;
+const configuredMaintenanceUrl=process.env.LIVE_E2E_DATABASE_URL?.trim();
+
+async function startDisposablePostgres() {
+  const root=await mkdtemp(join(tmpdir(),'xhs-live-paid-pg-'));
+  const data=join(root,'data');
+  const bin=process.env.POSTGRES_E2E_BIN??(process.platform==='win32'?'C:/Program Files/PostgreSQL/18/bin':'/usr/lib/postgresql/18/bin');
+  const executable=name=>join(bin,name+(process.platform==='win32'?'.exe':''));
+  const control=args=>new Promise((accept,reject)=>{
+    const child=spawn(executable('pg_ctl'),args,{shell:false,windowsHide:true,stdio:'ignore'});
+    child.on('error',reject);
+    child.on('exit',code=>code===0?accept():reject(new Error(`pg_ctl ${code}`)));
+  });
+  const probe=createServer();
+  await new Promise(accept=>probe.listen(0,'127.0.0.1',accept));
+  const port=probe.address().port;
+  await new Promise((accept,reject)=>probe.close(error=>error?reject(error):accept()));
+  let started=false;
+  try {
+    await promisify(execFile)(executable('initdb'),['-D',data,'-A','trust','-U','postgres','--encoding=UTF8','--locale=C','--no-sync'],{windowsHide:true,timeout:60_000});
+    await control(['-D',data,'-l',join(root,'postgres.log'),'-o',`-h 127.0.0.1 -p ${port}`,'-w','start']);
+    started=true;
+    return {url:`postgresql://postgres@127.0.0.1:${port}/postgres`,async stop(){
+      if(started){started=false;await control(['-D',data,'-m','fast','-w','stop']);}
+      assert.ok(resolve(root).startsWith(resolve(tmpdir())));
+      await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+    }};
+  } catch(error) {
+    if(started)await control(['-D',data,'-m','fast','-w','stop']).catch(()=>{});
+    assert.ok(resolve(root).startsWith(resolve(tmpdir())));
+    await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+    throw error;
+  }
+}
 
 test('paid live workflow: priority, whole-person QA return/recheck, and all current-image AI edit modes', {
   skip:!enabled,
   timeout:20*60_000,
 }, async t=>{
-  assert.ok(maintenanceUrl,'LIVE_E2E_DATABASE_URL is required');
+  const isolatedPostgres=configuredMaintenanceUrl?null:await startDisposablePostgres();
+  const maintenanceUrl=configuredMaintenanceUrl??isolatedPostgres.url;
   const adminUrl=new URL(maintenanceUrl);
   assert.ok(['127.0.0.1','localhost'].includes(adminUrl.hostname),'live E2E database must be local');
   const database=`live_e2e_${randomUUID().replaceAll('-','')}`;
   const administrator=new pg.Pool({connectionString:adminUrl.href});
-  await administrator.query(`CREATE DATABASE ${database}`);
-  adminUrl.pathname=`/${database}`;
-  const storageRoot=await mkdtemp(resolve(tmpdir(),'xhs-live-paid-e2e-'));
-  let repository;
+  let repository,storageRoot,databaseCreated=false;
   try {
+    await administrator.query(`CREATE DATABASE ${database}`);
+    databaseCreated=true;
+    adminUrl.pathname=`/${database}`;
+    storageRoot=await mkdtemp(resolve(tmpdir(),'xhs-live-paid-e2e-'));
     repository=new PostgresControlPlaneRepository({connectionString:adminUrl.href});
     await repository.initialize();
     await migrateDatabase(repository.pool);
@@ -263,8 +300,9 @@ test('paid live workflow: priority, whole-person QA return/recheck, and all curr
       imageGenerationCalls,visionValidationCalls,stages:['wholeBatchReturn','mandatoryRecheck','text','entityFusion','promptLocal'],published:false}));
   } finally {
     await repository?.close();
-    await rm(storageRoot,{recursive:true,force:true});
-    await administrator.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+    if(storageRoot)await rm(storageRoot,{recursive:true,force:true});
+    if(databaseCreated)await administrator.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
     await administrator.end();
+    await isolatedPostgres?.stop();
   }
 });

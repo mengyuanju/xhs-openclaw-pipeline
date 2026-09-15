@@ -5,7 +5,7 @@ import { FeedbackMessage } from '@/components/ui/feedback-message';
 import { Checkbox, Input, Textarea } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
-import { Download, ExternalLink, FileSpreadsheet, LoaderCircle, RefreshCw, Search, UploadCloud, X } from 'lucide-react';
+import { Download, ExternalLink, FileSpreadsheet, History, LoaderCircle, PackageCheck, RefreshCw, Search, UploadCloud, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { apiRequest } from '../components/api-client';
@@ -19,19 +19,34 @@ import {
   filterDeliveryPoolEntries,
   mergeDeliveryPoolEntries,
   normalizeDeliveryPoolPage,
+  normalizeDeliveryBatchDetail,
+  normalizeDeliveryBatchPage,
   normalizePreparedDeliveryExport,
   normalizePreparedDeliveryXlsxExport,
   normalizeDeliveryPreviewPublishResult,
   parseDeliveryPoolSearchTerms,
   updateTaskSelection,
   type DeliveryEntry,
+  type DeliveryBatchDetail,
+  type DeliveryBatchSummary,
+  type DeliveryPoolSummary,
   type DeliveryQueryPackageFacet,
   type DeliveryUnassignedFacet,
 } from './types';
 
 type ExportScope = 'ALL_READY' | 'QUERY_PACKAGE' | 'SELECTED';
+type PackingFilter = 'PENDING' | 'PACKED' | 'ALL';
 const ALL_QUERY_PACKAGES = '__ALL_QUERY_PACKAGES__';
 const UNASSIGNED_PREVIEW_LABEL = '历史未归属内容';
+
+function timeLabel(value: string | null) {
+  return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—';
+}
+
+function byteLabel(value: number) {
+  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(value / 1024))} KB`;
+}
 
 export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
   const confirm = useConfirmDialog();
@@ -42,6 +57,18 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
   const [selected, setSelected] = useState<number[]>([]);
   const [search, setSearch] = useState('');
   const [queryPackageName, setQueryPackageName] = useState('');
+  const [packingFilter, setPackingFilter] = useState<PackingFilter>('PENDING');
+  const [summary, setSummary] = useState<DeliveryPoolSummary>({
+    readyCount: 0,
+    pendingCount: 0,
+    packedCount: 0,
+    updatedCount: 0,
+  });
+  const [deliveryBatches, setDeliveryBatches] = useState<DeliveryBatchSummary[]>([]);
+  const [deliveryBatchTotal, setDeliveryBatchTotal] = useState(0);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [batchDetail, setBatchDetail] = useState<DeliveryBatchDetail | null>(null);
+  const [batchDetailLoading, setBatchDetailLoading] = useState(false);
   const [queryPackages, setQueryPackages] = useState<DeliveryQueryPackageFacet[]>([]);
   const [previewUnassigned, setPreviewUnassigned] = useState<DeliveryUnassignedFacet | null>(null);
   const [previewPackageSearch, setPreviewPackageSearch] = useState('');
@@ -59,6 +86,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
   const [messageTone, setMessageTone] = useState<'info' | 'success' | 'warning'>('info');
   const searchInputRef = useRef<HTMLTextAreaElement>(null);
   const listRequestId = useRef(0);
+  const historyRequestId = useRef(0);
 
   const load = useCallback(async (offset = 0) => {
     const currentRequestId = ++listRequestId.current;
@@ -72,6 +100,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
         includeTotal: 'true',
       });
       if (queryPackageName) query.set('queryPackageName', queryPackageName);
+      query.set('packingState', packingFilter);
       const page = normalizeDeliveryPoolPage(await apiRequest<unknown>(
         `/api/control-plane/v1/delivery-pool?${query}`,
       ));
@@ -79,6 +108,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
       const followingOffset = offset + page.items.length;
       setEntries((current) => append ? mergeDeliveryPoolEntries(current, page.items) : page.items);
       setTotal(page.total);
+      setSummary(page.summary);
       setQueryPackages(page.facets.queryPackages);
       setPreviewUnassigned(page.facets.unassigned);
       if (!page.facets.unassigned) setSelectedPreviewUnassigned(false);
@@ -101,17 +131,42 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
         setLoadingMore(false);
       }
     }
+  }, [packingFilter, queryPackageName]);
+
+  const loadHistory = useCallback(async () => {
+    const currentRequestId = ++historyRequestId.current;
+    setHistoryLoading(true);
+    try {
+      const query = new URLSearchParams({ limit: '50', offset: '0' });
+      if (queryPackageName) query.set('queryPackageName', queryPackageName);
+      const page = normalizeDeliveryBatchPage(await apiRequest<unknown>(
+        `/api/control-plane/v1/delivery-batches?${query}`,
+      ));
+      if (currentRequestId !== historyRequestId.current) return;
+      setDeliveryBatches(page.items);
+      setDeliveryBatchTotal(page.total);
+    } catch (caught) {
+      if (currentRequestId !== historyRequestId.current) return;
+      setError(caught instanceof Error ? caught.message : '交付批次历史读取失败');
+    } finally {
+      if (currentRequestId === historyRequestId.current) setHistoryLoading(false);
+    }
   }, [queryPackageName]);
   useEffect(() => {
     setEntries([]);
     setTotal(0);
+    setSummary({ readyCount: 0, pendingCount: 0, packedCount: 0, updatedCount: 0 });
     setNextOffset(0);
     setHasMore(false);
     setSelected([]);
     setLoading(true);
     void load();
   }, [load]);
-  useEffect(() => () => { listRequestId.current += 1; }, []);
+  useEffect(() => { void loadHistory(); }, [loadHistory]);
+  useEffect(() => () => {
+    listRequestId.current += 1;
+    historyRequestId.current += 1;
+  }, []);
 
   const searchTermCount = useMemo(() => parseDeliveryPoolSearchTerms(search).length, [search]);
   const visible = useMemo(() => filterDeliveryPoolEntries(entries, search), [entries, search]);
@@ -119,6 +174,11 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
   const allChecked = selectionCandidates.length > 0
     && selectionCandidates.every((entry) => selected.includes(entry.taskId));
   const selectedTaskIdSet = useMemo(() => new Set(selected), [selected]);
+  const selectedEntries = useMemo(
+    () => entries.filter((entry) => selectedTaskIdSet.has(entry.taskId)),
+    [entries, selectedTaskIdSet],
+  );
+  const selectedPackableCount = selectedEntries.filter((entry) => entry.packingState !== 'PACKED').length;
   const selectedPreviewEntries = useMemo(
     () => entries.filter((entry) => selectedTaskIdSet.has(entry.taskId) && entry.preview === null),
     [entries, selectedTaskIdSet],
@@ -146,7 +206,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
     && visiblePreviewPackages.every((facet) => selectedPreviewPackageIds.includes(facet.id))
     && (!visiblePreviewUnassigned || selectedPreviewUnassigned);
   const exportBusy = exporting !== null || xlsxExporting || previewPublishing;
-  const xlsxExportCount = selected.length || total;
+  const xlsxExportCount = selected.length || summary.readyCount;
   const filteredExportScope: Exclude<ExportScope, 'SELECTED'> = queryPackageName
     ? 'QUERY_PACKAGE'
     : 'ALL_READY';
@@ -186,24 +246,25 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
     ));
   }
 
-  async function exportDelivery(scope: ExportScope) {
-    if (exportBusy || (scope === 'SELECTED' ? !selected.length : total === 0)
+  async function exportDelivery(scope: ExportScope, explicitTaskIds: number[] | null = null) {
+    const selectedTaskIds = explicitTaskIds ?? selected;
+    if (exportBusy || (scope === 'SELECTED' ? !selectedTaskIds.length : summary.pendingCount === 0)
       || (scope === 'QUERY_PACKAGE' && !queryPackageName)) return;
-    const count = scope === 'SELECTED' ? selected.length : total;
+    const count = scope === 'SELECTED' ? selectedTaskIds.length : summary.pendingCount;
     setExporting(scope);
     setError('');
     setMessageTone('info');
     setMessage(scope === 'SELECTED'
-      ? `正在打包已选 ${count} 条可交付项。`
+      ? `正在为已选 ${count} 条内容创建交付批次。`
       : scope === 'QUERY_PACKAGE'
-        ? `正在打包词包“${queryPackageName}”的全部 ${count} 条可交付项；文本搜索不会缩小导出范围。`
-        : `正在打包全部 ${count} 条可交付项；文本搜索不会缩小导出范围。`);
+        ? `正在为词包“${queryPackageName}”创建交付批次，本次仅包含 ${count} 条待交付内容。`
+        : `正在创建交付批次，本次仅包含全部 ${count} 条待交付内容。`);
     try {
       const response = await fetch('/api/control-plane/v1/delivery-pool/archive', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(scope === 'SELECTED'
-          ? { scope, taskIds: selected }
+          ? { scope, taskIds: selectedTaskIds }
           : scope === 'QUERY_PACKAGE'
             ? { scope, queryPackageName }
             : { scope }),
@@ -220,12 +281,11 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
       document.body.append(anchor);
       anchor.click();
       anchor.remove();
-      setMessage(scope === 'SELECTED'
-        ? `已选 ${prepared.taskCount} 条可交付项已准备，下载已开始。`
-        : scope === 'QUERY_PACKAGE'
-          ? `词包“${queryPackageName}”的 ${prepared.taskCount} 条可交付项已准备，下载已开始。`
-          : `全部 ${prepared.taskCount} 条可交付项已准备，下载已开始。`);
+      setMessage(`${prepared.batchCode ? `交付批次 ${prepared.batchCode}` : '交付包'}已创建，包含 ${prepared.taskCount} 条内容，下载已开始。以后可从交付历史重新下载。`);
       setMessageTone('success');
+      setSelected([]);
+      await Promise.all([load(), loadHistory()]);
+      window.setTimeout(() => { void loadHistory(); }, 1200);
     } catch (caught) {
       setMessage('');
       setError(caught instanceof Error ? caught.message : '交付池导出失败');
@@ -234,9 +294,23 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
     }
   }
 
+  async function openBatchDetail(batch: DeliveryBatchSummary) {
+    setBatchDetailLoading(true);
+    setError('');
+    try {
+      setBatchDetail(normalizeDeliveryBatchDetail(await apiRequest<unknown>(
+        `/api/control-plane/v1/delivery-batches/${encodeURIComponent(batch.publicId)}`,
+      )));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '交付批次详情读取失败');
+    } finally {
+      setBatchDetailLoading(false);
+    }
+  }
+
   async function exportXlsx() {
     if (exportBusy || xlsxExportCount === 0) return;
-    if (!selected.length && total > DELIVERY_POOL_SELECTION_LIMIT) {
+    if (!selected.length && summary.readyCount > DELIVERY_POOL_SELECTION_LIMIT) {
       setMessage('');
       setError(`Excel 一次最多导出 ${DELIVERY_POOL_SELECTION_LIMIT} 篇文章，请先勾选后分批导出。`);
       return;
@@ -250,7 +324,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
       setError(caught instanceof Error ? caught.message : 'Excel 导出范围无效，请刷新后重试');
       return;
     }
-    const count = input.scope === 'SELECTED' ? input.taskIds.length : total;
+    const count = input.scope === 'SELECTED' ? input.taskIds.length : summary.readyCount;
     setXlsxExporting(true);
     setError('');
     setMessageTone('info');
@@ -417,16 +491,16 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
     ? `package:${queryPackageName}`
     : ALL_QUERY_PACKAGES;
   const unselectedExportLabel = queryPackageName
-    ? `词包“${queryPackageName}”全部 ${total} 条`
-    : `全部 ${total} 条`;
+    ? `词包“${queryPackageName}”全部 ${summary.readyCount} 条`
+    : `全部 ${summary.readyCount} 条`;
 
   return <div className={styles.stack}>
     <section className="panel" aria-labelledby="delivery-pool-title">
       <div className={styles.toolbar}>
         <div>
           <div>
-            <h2 id="delivery-pool-title">READY 交付条目</h2>
-            <p className="subtle">每条交付记录同时绑定所属词包、当前文案修订版和图片运行版本；版本失效会自动退出交付池。</p>
+            <h2 id="delivery-pool-title">交付管理</h2>
+            <p className="subtle">新交付批次默认只收录尚未打包的当前版本；历史批次可随时追溯和重新下载。</p>
           </div>
         </div>
         <div>
@@ -437,7 +511,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
             setSelectedPreviewUnassigned(false);
             if (hadSelection) setMessage('交付池已刷新，原选择已清空，请重新确认。');
             if (hadSelection) setMessageTone('info');
-            void load();
+            void Promise.all([load(), loadHistory()]);
           }}>
             <RefreshCw className={refreshing ? 'animate-spin' : ''} size={14} />刷新
           </Button>
@@ -496,8 +570,8 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
               aria-busy={xlsxExporting}
               aria-label={selected.length
                 ? `导出已选 ${selected.length} 篇文章与图片为 Excel`
-                : `导出${unselectedExportLabel} READY 文章与图片为 Excel`}
-              title={!selected.length && total > DELIVERY_POOL_SELECTION_LIMIT
+                : `导出${unselectedExportLabel}文章与图片为 Excel`}
+              title={!selected.length && summary.readyCount > DELIVERY_POOL_SELECTION_LIMIT
                 ? `超过 ${DELIVERY_POOL_SELECTION_LIMIT} 篇时请先勾选后分批导出`
                 : undefined}
               disabled={xlsxExportCount === 0 || exportBusy}
@@ -509,27 +583,42 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
                 : selected.length
                   ? `导出 Excel（已选 ${selected.length}）`
                   : queryPackageName
-                    ? `导出 Excel（词包 ${total}）`
-                    : `导出 Excel（全部 ${total}）`}
+                    ? `导出 Excel（词包 ${summary.readyCount}）`
+                    : `导出 Excel（全部 ${summary.readyCount}）`}
             </Button>
             <Button
               unstyled
               className="button small"
               type="button"
-              disabled={total === 0 || exportBusy}
+              disabled={summary.pendingCount === 0 || exportBusy}
               onClick={() => { void exportDelivery(filteredExportScope); }}
             >
               <Download size={14} />
               {exporting === filteredExportScope
-                ? queryPackageName ? '词包打包中…' : '全部打包中…'
-                : queryPackageName ? `一键导出词包 ${total}` : `一键导出全部 ${total}`}
+                ? '交付批次创建中…'
+                : `新建交付批次（待交付 ${summary.pendingCount}）`}
             </Button>
-            <Button unstyled className="button small primary" type="button" disabled={!selected.length || exportBusy} onClick={() => { void exportDelivery('SELECTED'); }}>
+            <Button
+              unstyled
+              className="button small primary"
+              type="button"
+              disabled={!selected.length || selectedPackableCount !== selected.length || exportBusy}
+              title={selected.length && selectedPackableCount !== selected.length
+                ? '已选内容中包含已打包版本，请仅选择待交付内容'
+                : undefined}
+              onClick={() => { void exportDelivery('SELECTED'); }}
+            >
               <Download size={14} />
-              {exporting === 'SELECTED' ? '已选打包中…' : `批量下载（已选 ${selected.length}）`}
+              {exporting === 'SELECTED' ? '交付批次创建中…' : `已选新建批次（${selected.length}）`}
             </Button>
           </>}
         </div>
+      </div>
+      <div className={styles.progressGrid} aria-label="当前交付进度">
+        <article><span>READY 总数</span><strong>{summary.readyCount}</strong></article>
+        <article className={styles.pendingCard}><span>待交付</span><strong>{summary.pendingCount}</strong></article>
+        <article className={styles.packedCard}><span>已打包</span><strong>{summary.packedCount}</strong></article>
+        <article className={styles.updatedCard}><span>版本更新待重交</span><strong>{summary.updatedCount}</strong></article>
       </div>
       <div className={styles.toolbar}>
         <div className={styles.searchField}>
@@ -567,19 +656,84 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
             <SelectContent>
               <SelectItem value={ALL_QUERY_PACKAGES}>全部词包</SelectItem>
               {queryPackages.map((facet) => <SelectItem key={facet.name} value={`package:${facet.name}`}>
-                {facet.name}{facet.deleted ? '（来源已删除）' : ''}（{facet.count}）
+                {facet.name}{facet.deleted ? '（来源已删除）' : ''}（待 {facet.pendingCount} / 已打包 {facet.packedCount}）
               </SelectItem>)}
             </SelectContent>
           </Select>
           <small id="delivery-pool-package-help">选择后，列表和无勾选导出均只包含该词包。</small>
         </div>
+        <div className={styles.packageFilter}>
+          <label htmlFor="delivery-pool-packing-filter">交付状态</label>
+          <Select value={packingFilter} onValueChange={(value) => setPackingFilter(value as PackingFilter)}>
+            <SelectTrigger id="delivery-pool-packing-filter">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="PENDING">待交付（默认）</SelectItem>
+              <SelectItem value="PACKED">已打包</SelectItem>
+              <SelectItem value="ALL">全部状态</SelectItem>
+            </SelectContent>
+          </Select>
+          <small>“待交付”包含首次交付和版本更新后需要重新交付的内容。</small>
+        </div>
         <span className={`pill ${styles.searchStatus}`} role="status" aria-live="polite">
-          只读 READY · {queryPackageName ? `词包“${queryPackageName}” · ` : ''}{searchTermCount ? `${searchTermCount} 条搜索条件 · ` : ''}当前筛选 {visible.length} · 已加载 {entries.length} / 共 {total} 条
+          READY · {queryPackageName ? `词包“${queryPackageName}” · ` : ''}{packingFilter === 'PENDING' ? '待交付' : packingFilter === 'PACKED' ? '已打包' : '全部状态'} · {searchTermCount ? `${searchTermCount} 条搜索条件 · ` : ''}当前筛选 {visible.length} · 已加载 {entries.length} / 共 {total} 条
         </span>
       </div>
       <div className={styles.scopeNote}>
-        词包筛选由服务端覆盖该词包全部 READY 条目，并会限制无勾选时的 Excel 和一键 ZIP 导出；文本搜索只覆盖已加载条目，不会进一步缩小导出范围。
+        新建交付批次始终由服务端排除已经打包的相同版本；词包和交付状态筛选覆盖完整结果，文本搜索只覆盖已加载条目。
       </div>
+      <details className={styles.history} open>
+        <summary><History size={15} aria-hidden="true" />交付历史（{deliveryBatchTotal} 批）</summary>
+        <div className={styles.historyBody}>
+          {historyLoading
+            ? <div className={styles.historyEmpty}><LoaderCircle className="animate-spin" size={16} />正在读取交付历史…</div>
+            : deliveryBatches.length === 0
+              ? <div className={styles.historyEmpty}>{queryPackageName
+                ? `词包“${queryPackageName}”还没有交付批次。`
+                : '还没有交付批次；首次创建后会在这里永久保留成员和版本记录。'}</div>
+              : <div className="table-wrap mobile-cards" role="region" aria-label="交付批次历史，可横向滚动" tabIndex={0}>
+                <table>
+                  <thead><tr><th>批次</th><th>来源范围</th><th>数量</th><th>创建信息</th><th>下载状态</th><th>操作</th></tr></thead>
+                  <tbody>{deliveryBatches.map((batch) => <tr key={batch.publicId}>
+                    <td data-label="批次"><strong>{batch.code}</strong><small className={styles.blockMeta}>{byteLabel(batch.byteSize)}</small></td>
+                    <td data-label="来源范围">{batch.queryPackageNames.length
+                      ? batch.queryPackageNames.slice(0, 3).join('、')
+                      : '历史未归属内容'}{batch.queryPackageNames.length > 3 ? `等 ${batch.queryPackageNames.length} 个词包` : ''}</td>
+                    <td data-label="数量">{batch.taskCount} 条</td>
+                    <td data-label="创建信息">{timeLabel(batch.createdAt)}<small className={styles.blockMeta}>{batch.createdByUsername}</small></td>
+                    <td data-label="下载状态">{batch.downloadCount
+                      ? `已下载 ${batch.downloadCount} 次`
+                      : '已生成，尚未下载'}<small className={styles.blockMeta}>{timeLabel(batch.lastDownloadedAt)}</small></td>
+                    <td className="row-action" data-label="操作"><div className={styles.actions}>
+                      <Button unstyled className="button small" type="button" disabled={batchDetailLoading} onClick={() => { void openBatchDetail(batch); }}>
+                        查看明细
+                      </Button>
+                      <a
+                        className="button small primary"
+                        href={`/api/control-plane/v1/delivery-batches/${encodeURIComponent(batch.publicId)}/archive`}
+                        download={batch.fileName}
+                        onClick={() => window.setTimeout(() => { void loadHistory(); }, 1200)}
+                      ><Download size={14} />重新下载</a>
+                    </div></td>
+                  </tr>)}</tbody>
+                </table>
+              </div>}
+          {batchDetail && <section className={styles.batchDetail} aria-labelledby="delivery-batch-detail-title">
+            <div className={styles.batchDetailHeader}>
+              <div><h3 id="delivery-batch-detail-title">{batchDetail.code} 明细</h3><p>{batchDetail.taskCount} 条 · 创建于 {timeLabel(batchDetail.createdAt)} · 文件校验值 {batchDetail.sha256.slice(0, 12)}…</p></div>
+              <Button unstyled className="button small" type="button" onClick={() => setBatchDetail(null)}>关闭明细</Button>
+            </div>
+            <div className={styles.batchItemList}>
+              {batchDetail.items.map((item) => <article key={item.id}>
+                <strong>{item.ordinal}. 任务 #{item.taskId}</strong>
+                <span>{item.query || '未记录 Query'}</span>
+                <small>{item.queryPackageName || '未归属词包'} · 文案 #{item.copyRevisionId} · 图片 {item.imageRunId.slice(0, 8)}…</small>
+              </article>)}
+            </div>
+          </section>}
+        </div>
+      </details>
       {role === 'ADMIN' && <section className={styles.previewScope} aria-labelledby="delivery-preview-package-title">
         <div className={styles.previewScopeHeader}>
           <div>
@@ -643,10 +797,10 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
       </section>}
       {role === 'ADMIN' && <div className={styles.selectionStatus}>
         <span>{selected.length
-          ? `已选择 ${selected.length} / ${DELIVERY_POOL_SELECTION_LIMIT} 条，其中 ${selectedPreviewEntryCount} 条尚未上传；“上传已选”、Excel 与批量下载均精确处理已选条目。`
+          ? `已选择 ${selected.length} / ${DELIVERY_POOL_SELECTION_LIMIT} 条，其中 ${selectedPackableCount} 条可新建交付批次、${selectedPreviewEntryCount} 条尚未上传预览。`
           : queryPackageName
-            ? `尚未选择条目；Excel 与一键 ZIP 将按词包“${queryPackageName}”导出。单次勾选最多 ${DELIVERY_POOL_SELECTION_LIMIT} 条。`
-            : `尚未选择条目；Excel 与一键 ZIP 将导出后台全部 READY。单次勾选最多 ${DELIVERY_POOL_SELECTION_LIMIT} 条。`}</span>
+            ? `尚未选择条目；新交付批次将收录词包“${queryPackageName}”的 ${summary.pendingCount} 条待交付内容。`
+            : `尚未选择条目；新交付批次将收录后台全部 ${summary.pendingCount} 条待交付内容。`}</span>
         <span>Excel 按原文件字节内嵌图片，只调整表格中的显示尺寸，不重新编码或二次压缩（支持 PNG、JPEG、GIF），文件可能较大。</span>
       </div>}
       <div className={styles.summary}>
@@ -660,6 +814,10 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
         : visible.length === 0
           ? <div className="empty-state">{entries.length
             ? '没有符合搜索条件的交付条目。'
+            : summary.readyCount > 0 && packingFilter === 'PENDING'
+              ? '当前范围没有待交付内容；可在上方交付历史中重新下载原批次。'
+              : summary.readyCount > 0 && packingFilter === 'PACKED'
+                ? '当前范围还没有已打包内容。'
             : queryPackageName
               ? `词包“${queryPackageName}”当前没有 READY 交付条目。`
               : '交付池当前为空；图片质检门禁放行后会在这里生成就绪条目。'}</div>
@@ -668,7 +826,7 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
               <thead>
                 <tr>
                   {role === 'ADMIN' && <th><Checkbox aria-label={`选择当前已加载的筛选结果（最多 ${DELIVERY_POOL_SELECTION_LIMIT} 条）`} checked={allChecked} disabled={exportBusy} onChange={(event) => changeSelection(selectionCandidates.map((entry) => entry.taskId), event.target.checked)} /></th>}
-                  <th>正式任务</th><th>Query</th><th>词包</th><th>版本绑定</th><th>预览</th><th>终审时间</th><th>操作</th>
+                  <th>正式任务</th><th>Query</th><th>词包</th><th>交付状态</th><th>版本绑定</th><th>预览</th><th>终审时间</th><th>操作</th>
                 </tr>
               </thead>
               <tbody>{visible.map((entry) => <tr key={entry.id}>
@@ -676,6 +834,11 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
                 <td data-label="正式任务">#{entry.taskId}</td>
                 <td className={styles.query} data-label="Query">{entry.query || '未记录'}</td>
                 <td className={styles.packageName} data-label="词包">{entry.queryPackageName || '未归属词包'}</td>
+                <td data-label="交付状态">{entry.packingState === 'PACKED' && entry.deliveryBatch
+                  ? <div className={styles.deliveryState}><span className="pill">已打包</span><small>{entry.deliveryBatch.code}</small></div>
+                  : entry.packingState === 'VERSION_UPDATED'
+                    ? <div className={styles.deliveryState}><span className={`pill ${styles.updatedPill}`}>版本更新待重交</span><small>上次 {entry.previousDeliveryBatch?.code ?? '历史批次'}</small></div>
+                    : <span className={`pill ${styles.pendingPill}`}>首次待交付</span>}</td>
                 <td data-label="版本绑定"><div className={styles.version}><span>文案 #{entry.copyRevisionId}</span><span>图片 {entry.imageRunId.slice(0, 8)}…</span></div></td>
                 <td data-label="预览">{entry.preview?.status === 'PUBLISHED' && entry.preview.url
                   ? <a className="button small" href={entry.preview.url} target="_blank" rel="noreferrer"><ExternalLink size={14} />打开预览</a>
@@ -693,7 +856,11 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
                     disabled={exportBusy}
                     onClick={() => { void publishSinglePreview(entry); }}
                   ><UploadCloud size={14} />上传这一条</Button>}
-                  <a className="button small primary" href={`/api/control-plane/v1/tasks/${entry.taskId}/archive`} download><Download size={14} />下载资源</a>
+                  {entry.packingState === 'PACKED' && entry.deliveryBatch
+                    ? <a className="button small primary" href={`/api/control-plane/v1/delivery-batches/${encodeURIComponent(entry.deliveryBatch.publicId)}/archive`} download onClick={() => window.setTimeout(() => { void loadHistory(); }, 1200)}><Download size={14} />重下原批次</a>
+                    : <Button unstyled className="button small primary" type="button" disabled={exportBusy} onClick={() => { void exportDelivery('SELECTED', [entry.taskId]); }}>
+                      <PackageCheck size={14} />创建单条批次
+                    </Button>}
                 </div></td>
               </tr>)}</tbody>
             </table>

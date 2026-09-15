@@ -27,6 +27,7 @@ import {
   normalizeDeliveryExportRequest,
   resolveDeliveryExportTaskIds,
 } from './delivery-export.mjs';
+import { deliveryBatchCode } from './delivery-batches.mjs';
 import {
   DELIVERY_SPREADSHEET_MEDIA_TYPE,
   MAX_DELIVERY_SPREADSHEET_TASKS,
@@ -576,6 +577,7 @@ function lazyFileStream(path) {
 }
 
 const DELIVERY_EXPORT_DIRECTORY = '.delivery-exports';
+const DELIVERY_BATCH_DIRECTORY = '.delivery-batches';
 const DELIVERY_EXPORT_STALE_MS = Math.max(60 * 60_000, DELIVERY_EXPORT_TTL_MS * 2);
 const DELIVERY_EXPORT_SWEEP_MS = 15 * 60_000;
 const DELIVERY_EXPORT_DIRECTORY_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -655,6 +657,67 @@ async function stageDeliveryPoolArchive(repository, storageRoot, taskIds, { sign
     await rm(exportDirectory, { recursive: true, force: true }).catch(() => {});
     throw error;
   }
+}
+
+async function fileSha256(path) {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest('hex');
+}
+
+function deliveryBatchArchivePath(storageRoot, publicId) {
+  const id = String(publicId ?? '').toLowerCase();
+  if (!DELIVERY_EXPORT_DIRECTORY_PATTERN.test(id)) {
+    throw new ControlPlaneNotFoundError('delivery batch not found');
+  }
+  return safeStoragePath(storageRoot, DELIVERY_BATCH_DIRECTORY, `${id}.zip`);
+}
+
+async function persistDeliveryBatchArchive(storageRoot, staged, publicId) {
+  const destination = deliveryBatchArchivePath(storageRoot, publicId);
+  await mkdir(dirname(destination), { recursive: true });
+  try {
+    await rename(staged.archivePath, destination);
+    const metadata = await stat(destination);
+    if (!metadata.isFile() || metadata.size !== staged.byteSize) {
+      throw new Error('persisted delivery batch archive is incomplete');
+    }
+    const sha256 = await fileSha256(destination);
+    await staged.cleanup();
+    return {
+      ...staged,
+      archivePath: destination,
+      sha256,
+      cleanup: async () => {},
+      removePersistent: () => rm(destination, { force: true }),
+    };
+  } catch (error) {
+    await rm(destination, { force: true }).catch(() => {});
+    await staged.cleanup().catch(() => {});
+    throw error;
+  }
+}
+
+async function storedDeliveryBatchArtifact(repository, storageRoot, publicId, actor) {
+  const batch = await repository.getDeliveryBatchArtifact(publicId, { actor });
+  const archivePath = deliveryBatchArchivePath(storageRoot, batch.publicId);
+  const metadata = await stat(archivePath).catch((error) => {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (!metadata?.isFile() || metadata.size !== batch.byteSize) {
+    throw new ControlPlaneConflictError(
+      'DELIVERY_BATCH_ARCHIVE_MISSING',
+      '该交付批次的历史文件缺失或不完整，请联系管理员检查文件存储',
+    );
+  }
+  return { ...batch, archivePath };
+}
+
+function recordDeliveryBatchDownload(repository, publicId, actor) {
+  void repository.recordDeliveryBatchDownload(publicId, { actor }).catch((error) => {
+    console.error('failed to record delivery batch download', error);
+  });
 }
 
 async function stageDeliveryPoolSpreadsheet(repository, storageRoot, taskIds, { signal } = {}) {
@@ -1343,22 +1406,53 @@ function installRoutes(
         (reason) => controller.abort(reason),
       );
       await initialDeliveryExportCleanup;
-      const taskIds = await resolveDeliveryExportTaskIds(repository, request, actor);
+      const batchHistoryEnabled = typeof repository.createDeliveryBatch === 'function'
+        && typeof repository.getDeliveryBatchArtifact === 'function'
+        && typeof repository.recordDeliveryBatchDownload === 'function';
+      const taskIds = await resolveDeliveryExportTaskIds(repository, request, actor, {
+        unpackedOnly: batchHistoryEnabled,
+      });
       staged = await stageDeliveryPoolArchive(repository, storageRoot, taskIds, {
         signal: controller.signal,
       });
       await assertDeliveryBindingsReady(repository, staged.bindings);
       await assertCurrentActorIdentity(repository, actor);
       controller.signal.throwIfAborted();
-      const fileName = request.scope === 'ALL_READY'
+      const batchPublicId = batchHistoryEnabled ? randomUUID() : null;
+      const batchCode = batchPublicId ? deliveryBatchCode(batchPublicId) : null;
+      const sourceFileName = request.scope === 'ALL_READY'
         ? '交付池-全部可交付项.zip'
         : request.scope === 'QUERY_PACKAGE'
           ? `${queryPackageFileNameSegment(request.queryPackageName)}-交付资源.zip`
           : '交付池-已选资源.zip';
+      const fileName = batchCode ? `${batchCode}-${sourceFileName}` : sourceFileName;
+      let deliveryBatch = null;
+      if (batchPublicId) {
+        const persisted = await persistDeliveryBatchArchive(storageRoot, staged, batchPublicId);
+        staged = null;
+        try {
+          deliveryBatch = await repository.createDeliveryBatch({
+            publicId: batchPublicId,
+            scope: request.scope,
+            ...(request.scope === 'QUERY_PACKAGE'
+              ? { queryPackageName: request.queryPackageName }
+              : {}),
+            fileName,
+            byteSize: persisted.byteSize,
+            sha256: persisted.sha256,
+            bindings: persisted.bindings,
+          }, { actor });
+        } catch (error) {
+          await persisted.removePersistent().catch(() => {});
+          throw error;
+        }
+        staged = persisted;
+      }
       const prepared = deliveryExportRegistry.issue(staged, actor, {
         fileName,
         taskCount: staged.taskCount,
         bindings: staged.bindings,
+        deliveryBatch,
       });
       staged = null;
       json(ctx, 201, prepared);
@@ -1375,7 +1469,11 @@ function installRoutes(
       await deliveryExportRegistry.peek(ctx.params.downloadId, actor),
       'archivePath',
     );
-    await assertDeliveryBindingsReady(repository, record.bindings);
+    if (record.deliveryBatch) {
+      await storedDeliveryBatchArtifact(repository, storageRoot, record.deliveryBatch.publicId, actor);
+    } else {
+      await assertDeliveryBindingsReady(repository, record.bindings);
+    }
     await assertCurrentActorIdentity(repository, actor);
     ctx.status = 200;
     ctx.type = 'application/zip';
@@ -1392,7 +1490,11 @@ function installRoutes(
     );
     const record = await deliveryExportRegistry.take(downloadId, actor);
     try {
-      await assertDeliveryBindingsReady(repository, record.bindings);
+      if (record.deliveryBatch) {
+        await storedDeliveryBatchArtifact(repository, storageRoot, record.deliveryBatch.publicId, actor);
+      } else {
+        await assertDeliveryBindingsReady(repository, record.bindings);
+      }
       await assertCurrentActorIdentity(repository, actor);
       record.downloadSignal.throwIfAborted();
     } catch (error) {
@@ -1418,6 +1520,13 @@ function installRoutes(
       }
     };
     ctx.res.once('close', onResponseClosed);
+    if (record.deliveryBatch) {
+      ctx.res.once('finish', () => recordDeliveryBatchDownload(
+        repository,
+        record.deliveryBatch.publicId,
+        actor,
+      ));
+    }
     content.once('close', () => {
       if (cleanupStarted) return;
       cleanupStarted = true;
@@ -1432,6 +1541,38 @@ function installRoutes(
     ctx.set('X-Delivery-Task-Count', String(record.taskCount));
     ctx.set('Content-Disposition', `attachment; filename="delivery-pool.zip"; filename*=UTF-8''${encodeURIComponent(record.fileName)}`);
     ctx.body = content;
+  });
+  router.head('/v1/delivery-batches/:batchId/archive', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    const batch = await storedDeliveryBatchArtifact(
+      repository,
+      storageRoot,
+      ctx.params.batchId,
+      actor,
+    );
+    await assertCurrentActorIdentity(repository, actor);
+    ctx.status = 200;
+    ctx.type = 'application/zip';
+    ctx.length = batch.byteSize;
+    ctx.set('X-Delivery-Task-Count', String(batch.taskCount));
+    ctx.set('Content-Disposition', `attachment; filename="delivery-batch.zip"; filename*=UTF-8''${encodeURIComponent(batch.fileName)}`);
+  });
+  router.get('/v1/delivery-batches/:batchId/archive', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    const batch = await storedDeliveryBatchArtifact(
+      repository,
+      storageRoot,
+      ctx.params.batchId,
+      actor,
+    );
+    await assertCurrentActorIdentity(repository, actor);
+    ctx.res.once('finish', () => recordDeliveryBatchDownload(repository, batch.publicId, actor));
+    ctx.status = 200;
+    ctx.type = 'application/zip';
+    ctx.length = batch.byteSize;
+    ctx.set('X-Delivery-Task-Count', String(batch.taskCount));
+    ctx.set('Content-Disposition', `attachment; filename="delivery-batch.zip"; filename*=UTF-8''${encodeURIComponent(batch.fileName)}`);
+    ctx.body = createReadStream(batch.archivePath);
   });
   router.post('/v1/delivery-pool/xlsx', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
@@ -1851,8 +1992,22 @@ function installRoutes(
       offset: ctx.query.offset,
       includeTotal: ctx.query.includeTotal === 'true',
       queryPackageName: ctx.query.queryPackageName,
+      ...(ctx.query.packingState === undefined
+        ? {} : { packingState: ctx.query.packingState }),
     }, { actor });
     json(ctx, 200, addDeliveryPreviewUrls(deliveryPool, previewUrlResolver));
+  });
+  router.get('/v1/delivery-batches', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.listDeliveryBatches({
+      limit: ctx.query.limit,
+      offset: ctx.query.offset,
+      queryPackageName: ctx.query.queryPackageName,
+    }, { actor }));
+  });
+  router.get('/v1/delivery-batches/:batchId', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.getDeliveryBatch(ctx.params.batchId, { actor }));
   });
   router.post('/v1/delivery-pool/previews', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);

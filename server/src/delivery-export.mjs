@@ -66,13 +66,17 @@ export function normalizeDeliveryExportRequest(value) {
   throw new TypeError('delivery export scope must be ALL_READY, QUERY_PACKAGE or SELECTED');
 }
 
-export async function resolveDeliveryExportTaskIds(repository, request, actor) {
+export async function resolveDeliveryExportTaskIds(repository, request, actor, {
+  unpackedOnly = false,
+} = {}) {
+  if (typeof unpackedOnly !== 'boolean') throw new TypeError('unpackedOnly must be boolean');
   if (request.scope === DELIVERY_EXPORT_SCOPES.SELECTED) return request.taskIds;
   if (typeof repository.listAllDeliveryPoolTaskIds !== 'function') {
     throw new TypeError('delivery pool export is unavailable');
   }
   const ids = await repository.listAllDeliveryPoolTaskIds({
     actor,
+    ...(unpackedOnly ? { unpackedOnly: true } : {}),
     ...(request.scope === DELIVERY_EXPORT_SCOPES.QUERY_PACKAGE
       ? { queryPackageName: request.queryPackageName }
       : {}),
@@ -80,7 +84,10 @@ export async function resolveDeliveryExportTaskIds(repository, request, actor) {
   if (!Array.isArray(ids)) throw new TypeError('delivery pool export snapshot is invalid');
   const taskIds = [...new Set(ids.map((entry) => normalizeTaskId(entry)))];
   if (taskIds.length === 0) {
-    throw new ControlPlaneConflictError('DELIVERY_POOL_EMPTY', '交付池当前没有可导出的条目');
+      throw new ControlPlaneConflictError(
+        unpackedOnly ? 'DELIVERY_POOL_HAS_NO_PENDING_ITEMS' : 'DELIVERY_POOL_EMPTY',
+        unpackedOnly ? '当前范围没有待打包内容；可在交付历史中重新下载原批次' : '交付池当前没有可导出的条目',
+      );
   }
   return taskIds;
 }
@@ -279,7 +286,7 @@ export function createDeliveryExportRegistry({
       };
     },
 
-    issue(staged, actor, { fileName, taskCount, bindings }) {
+    issue(staged, actor, { fileName, taskCount, bindings, deliveryBatch = null }) {
       if (disposed) {
         throw new ControlPlaneConflictError(
           'DELIVERY_EXPORT_UNAVAILABLE',
@@ -297,6 +304,7 @@ export function createDeliveryExportRegistry({
         fileName,
         taskCount,
         bindings: bindings.map((binding) => ({ ...binding })),
+        deliveryBatch: deliveryBatch ? { ...deliveryBatch } : null,
         expiresAtMs,
         timer: null,
         state: 'PREPARED',
@@ -310,6 +318,10 @@ export function createDeliveryExportRegistry({
         fileName,
         taskCount,
         expiresAt: new Date(expiresAtMs).toISOString(),
+        ...(deliveryBatch ? {
+          batchId: deliveryBatch.publicId,
+          batchCode: deliveryBatch.code,
+        } : {}),
       };
     },
 

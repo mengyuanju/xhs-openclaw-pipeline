@@ -27,7 +27,16 @@ function databaseRow(patch = {}) {
     query: '如何整理小户型玄关',
     copy_revision_id: 902,
     copy_revision_number: 4,
-    copy_content: { copy: { title: '最终人工修改稿', body: '最终正文', tags: ['收纳'] } },
+    copy_content: {
+      copy: { title: '最终人工修改稿', body: '最终正文', tags: ['收纳'] },
+      imagePlan: [{
+        kind: 'hero',
+        headline: '玄关收纳先分区',
+        subtitle: '进门顺手归位',
+        bullets: ['鞋包分区', '钥匙定点'],
+        prompt: '明亮的小户型玄关，展示清晰的收纳分区。',
+      }],
+    },
     content_sha256: HASH,
     final_approver_account_id: 64,
     final_approver_username: 'SECRET-APPROVER',
@@ -89,6 +98,13 @@ test('reviewer blind list and detail are recursively server-side allowlisted', a
   assert.equal(list.length, 1);
   assert.equal(detail.id, ITEM_PUBLIC_ID);
   assert.equal(detail.approvedRevision.content.copy.title, '最终人工修改稿');
+  assert.deepEqual(detail.approvedRevision.content.imagePlan, [{
+    kind: 'hero',
+    headline: '玄关收纳先分区',
+    subtitle: '进门顺手归位',
+    bullets: ['鞋包分区', '钥匙定点'],
+    prompt: '明亮的小户型玄关，展示清晰的收纳分区。',
+  }]);
   assert.equal(detail.approvedRevision.revisionToken, HASH);
   assert.deepEqual(detail.productionBatch, {
     anonymousCode: opaqueCode('QCB', FREEZE_PUBLIC_ID),
