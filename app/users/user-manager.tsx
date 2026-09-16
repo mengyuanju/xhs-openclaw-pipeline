@@ -4,7 +4,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
-import { KeyRound, Pencil, Plus, ShieldCheck, Trash2, UserRound, Users } from 'lucide-react';
+import { KeyRound, LockOpen, Pencil, Plus, ShieldCheck, Trash2, UserRound, Users } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 
@@ -124,6 +124,18 @@ export function UserManager({
     }), `已将 ${user.displayName} 的密码重置为 123456。`);
   }
 
+  async function releaseLoginLimit() {
+    const approved = await confirm({
+      title: '解除全部登录限制？',
+      description: '将清除所有账号及全局的失败登录计数，受限账号可以立即重新登录。此操作不会修改任何账号的密码。',
+      confirmLabel: '确认解除',
+    });
+    if (!approved) return;
+    await run('release-login-limit', () => apiRequest('/api/auth/login-limit/reset', {
+      method: 'POST',
+    }), '已解除全部登录限制，受限账号现在可以重新登录。');
+  }
+
   async function deleteUser(user: ManagedUser) {
     const approved = await confirm({
       title: '删除这个用户？',
@@ -152,7 +164,10 @@ export function UserManager({
     <section className="panel user-list-panel" aria-labelledby="user-list-title">
       <div className="panel-head user-list-head">
         <div><h2 id="user-list-title">用户列表</h2><p className="subtle">集中查看账号状态，并在弹窗中完成资料维护。</p></div>
-        <Button unstyled className="button primary" type="button" onClick={() => { setEditorRole('USER'); setEditor({ mode: 'create' }); }}><Plus size={16} />新增用户</Button>
+        <div className="inline">
+          <Button unstyled className="button" type="button" disabled={Boolean(busy)} onClick={() => { void releaseLoginLimit(); }}><LockOpen size={16} />{busy === 'release-login-limit' ? '解除中…' : '解除登录限制'}</Button>
+          <Button unstyled className="button primary" type="button" disabled={Boolean(busy)} onClick={() => { setEditorRole('USER'); setEditor({ mode: 'create' }); }}><Plus size={16} />新增用户</Button>
+        </div>
       </div>
       {(message || error) && <div className={`notice ${error ? 'error' : 'success'} user-action-notice`} role={error ? 'alert' : 'status'}>{error || message}</div>}
       {initialUsers.length === 0
