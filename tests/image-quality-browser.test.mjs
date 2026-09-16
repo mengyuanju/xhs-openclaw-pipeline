@@ -8,6 +8,29 @@ import test from 'node:test';
 
 import sharp from 'sharp';
 
+test('image QA detail uses the shared dialog with white, contained image previews', async () => {
+  const [workbench, styles, preview, globals] = await Promise.all([
+    readFile(new URL('../app/image-qa/image-qa-workbench.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../app/image-qa/image-qa.module.css', import.meta.url), 'utf8'),
+    readFile(new URL('../app/components/image-preview.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../app/globals.css', import.meta.url), 'utf8'),
+  ]);
+
+  assert.match(workbench, /import \{ Dialog, DialogContent, DialogDescription, DialogTitle \} from '@\/components\/ui\/dialog'/u);
+  assert.match(workbench, /<Dialog open=\{detail !== null\}/u);
+  assert.match(workbench, /<DialogContent className=\{qaStyles\.detailDialog\}/u);
+  assert.match(workbench, /<DialogTitle>\{detail\.anonymousCode\}<\/DialogTitle>/u);
+  assert.match(workbench, /<DialogDescription>按页码顺序检查当前最终交付图/u);
+  assert.doesNotMatch(workbench, /<section className=\{`panel \$\{qaStyles\.detail\}`\}/u);
+  assert.match(workbench, /<ImagePreview hideTrigger isOpen initialMode="fit"/u);
+  assert.match(preview, /const viewMode = modeOverride \?\? initialMode \?\? defaultMode/u);
+  assert.match(styles, /\.stage\s*\{[^}]*background:\s*#fff;[^}]*\}/su);
+  assert.match(styles, /\.stage img\s*\{[^}]*object-fit:\s*contain;/su);
+  assert.match(styles, /\.thumbnail img\s*\{[^}]*object-fit:\s*contain;[^}]*background:\s*#fff;/su);
+  assert.doesNotMatch(styles, /\.detailDialog\s*\{[^}]*transform:/su);
+  assert.doesNotMatch(globals, /\.image-preview-dialog\s*\{[^}]*transform:/su);
+});
+
 test('image QA browser: blind queue, required return feedback, mandatory recheck and pass', {
   skip: process.env.RUN_IMAGE_QA_BROWSER !== '1', timeout: 60_000,
 }, async () => {
@@ -76,7 +99,7 @@ test('image QA browser: blind queue, required return feedback, mandatory recheck
         response.setHeader('content-type', 'application/json'); response.end(JSON.stringify({ data: { status: 'OK' } })); return;
       }
       response.setHeader('content-type', 'text/html');
-      response.end('<html><meta charset="utf-8"><link rel="stylesheet" href="/bundle.css"><body><div id="root"></div><script src="/bundle.js"></script></body></html>');
+      response.end('<html><meta charset="utf-8"><link rel="stylesheet" href="/bundle.css"><style>.dialog-content{transform:translate(-50%,-50%)}</style><body><div id="root"></div><script src="/bundle.js"></script></body></html>');
     });
     await new Promise((done) => server.listen(0, '127.0.0.1', done));
     browser = await chromium.launch({ headless: true, channel: process.env.IMAGE_QA_BROWSER_CHANNEL ?? 'msedge' });
@@ -89,9 +112,30 @@ test('image QA browser: blind queue, required return feedback, mandatory recheck
     assert.equal(await page.getByText('匿名', { exact: true }).count(), 1);
     assert.equal(await page.getByText('不应泄露的真实任务', { exact: false }).count(), 0);
     await page.getByRole('button', { name: '打回', exact: true }).click();
+    const qaDialog = page.getByRole('dialog', { name: 'IQ-BLIND-ONE' });
+    await qaDialog.waitFor();
     await page.getByText('2 个最终成品页', { exact: true }).waitFor();
     assert.equal(await page.getByText('第 01 / 02 页', { exact: true }).count(), 1);
     assert.equal(await page.getByText('01-image.png', { exact: true }).count(), 2);
+    const previewTrigger = qaDialog.getByRole('button', { name: '放大查看第 1 页：01-image.png' });
+    const stagePresentation = await previewTrigger.evaluate((element) => ({
+      backgroundColor: getComputedStyle(element).backgroundColor,
+      imageFit: getComputedStyle(element.querySelector('img')).objectFit,
+    }));
+    assert.equal(stagePresentation.backgroundColor, 'rgb(255, 255, 255)');
+    assert.equal(stagePresentation.imageFit, 'contain');
+    await previewTrigger.click();
+    const previewDialog = page.locator('.image-preview-dialog');
+    await previewDialog.waitFor();
+    assert.equal(await previewDialog.getAttribute('role'), 'dialog');
+    assert.equal(await previewDialog.getAttribute('aria-label'), '图片预览：第 1 页：01-image.png');
+    assert.equal(await previewDialog.getByRole('button', { name: '完整显示' }).getAttribute('aria-pressed'), 'true');
+    assert.equal(await previewDialog.locator('.image-preview-viewport').evaluate((element) => getComputedStyle(element).backgroundColor), 'rgb(255, 255, 255)');
+    const closePreview = previewDialog.getByRole('button', { name: '关闭图片预览' });
+    const [dialogBox, closeBox] = await Promise.all([previewDialog.boundingBox(), closePreview.boundingBox()]);
+    assert.ok(dialogBox && closeBox && closeBox.x >= 0 && closeBox.y >= 0 && closeBox.x < 1280 && closeBox.y < 900,
+      `preview controls must stay in the viewport: ${JSON.stringify({ dialogBox, closeBox })}`);
+    await closePreview.click();
     assert.equal(await page.getByText('返工原因 （至少一项）', { exact: true }).count(), 1);
     await page.getByRole('button', { name: '确认单条打回', exact: true }).click();
     await page.getByRole('alert').getByText('至少选择一项返工原因', { exact: false }).waitFor();

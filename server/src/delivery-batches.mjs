@@ -9,17 +9,24 @@ import { normalizeListPagination } from './list-pagination.mjs';
 import { normalizeClientBatchCode } from './client-batch.mjs';
 
 const SCOPES = new Set(['ALL_READY', 'QUERY_PACKAGE', 'CLIENT_BATCH', 'SELECTED']);
-const STATUSES = new Set(['GENERATED', 'DOWNLOADED']);
+const STATUSES = new Set(['GENERATED', 'DOWNLOADED', 'DELIVERED']);
+const BATCH_KINDS = new Set(['ADMIN_DELIVERY', 'OPERATOR_DELIVERY']);
+const CREATOR_ROLES = new Set(['ADMIN', 'USER']);
 
 function normalizeActor(actor) {
-  if (!actor || actor.role !== 'ADMIN' || !Number.isSafeInteger(Number(actor.userId))) {
-    throw new ControlPlaneAuthorizationError('only administrators can manage delivery batches');
+  if (!actor || !['ADMIN', 'USER'].includes(actor.role)
+      || !Number.isSafeInteger(Number(actor.userId))) {
+    throw new ControlPlaneAuthorizationError('current role cannot manage delivery batches');
   }
-  return {
+  const normalized = {
     ...actor,
     userId: Number(actor.userId),
     username: String(actor.username ?? '').trim().toLowerCase(),
   };
+  if (!normalized.username) {
+    throw new ControlPlaneAuthorizationError('delivery batch actor is invalid');
+  }
+  return normalized;
 }
 
 function normalizedPackageName(value, { required = false } = {}) {
@@ -66,7 +73,10 @@ export function deliveryBatchCode(publicId) {
 function batchFrom(row) {
   const id = Number(row.id);
   const status = String(row.status);
-  if (!Number.isSafeInteger(id) || id < 1 || !STATUSES.has(status)) {
+  const batchKind = String(row.batch_kind ?? 'ADMIN_DELIVERY');
+  const createdByRole = String(row.created_by_role ?? 'ADMIN');
+  if (!Number.isSafeInteger(id) || id < 1 || !STATUSES.has(status)
+      || !BATCH_KINDS.has(batchKind) || !CREATOR_ROLES.has(createdByRole)) {
     throw new TypeError('delivery batch row is invalid');
   }
   const packageNames = Array.isArray(row.query_package_names)
@@ -81,6 +91,8 @@ function batchFrom(row) {
     queryPackageNames: packageNames,
     clientBatchCode: row.client_batch_code ?? null,
     status,
+    batchKind,
+    createdByRole,
     fileName: row.archive_file_name,
     byteSize: Number(row.archive_byte_size),
     sha256: row.archive_sha256,
@@ -91,6 +103,10 @@ function batchFrom(row) {
     firstDownloadedAt: row.first_downloaded_at ?? null,
     lastDownloadedAt: row.last_downloaded_at ?? null,
     downloadCount: Number(row.download_count ?? 0),
+    deliveredAt: row.delivered_at ?? null,
+    deliveredByAccountId: row.delivered_by_account_id == null
+      ? null : Number(row.delivered_by_account_id),
+    deliveredByUsername: row.delivered_by_username ?? null,
   };
 }
 
@@ -115,6 +131,9 @@ export async function createDeliveryBatch(client, input, rawActor) {
   const code = deliveryBatchCode(publicId);
   const scope = String(input?.scope ?? '');
   if (!SCOPES.has(scope)) throw new TypeError('delivery batch scope is invalid');
+  if (actor.role === 'USER' && scope !== 'SELECTED') {
+    throw new ControlPlaneAuthorizationError('operators may deliver only explicitly selected tasks');
+  }
   const queryPackageName = normalizedPackageName(input?.queryPackageName, {
     required: scope === 'QUERY_PACKAGE',
   });
@@ -142,12 +161,15 @@ export async function createDeliveryBatch(client, input, rawActor) {
     SELECT delivery.id AS delivery_entry_id, delivery.task_id, delivery.copy_revision_id,
       delivery.image_run_id, task.query, task.source_query_package_id,
       task.source_query_package_snapshot_id, task.source_query_package_name,
-      task.source_client_batch_code
+      task.source_client_batch_code, task.assigned_to_user_id, task.assigned_at,
+      assignee.id AS assigned_to_account_id
     FROM delivery_entries AS delivery
     JOIN tasks AS task ON task.id = delivery.task_id
       AND task.state = 'REVIEWED'
       AND task.current_copy_revision_id = delivery.copy_revision_id
       AND task.current_image_run_id = delivery.image_run_id
+    LEFT JOIN app_users AS assignee ON assignee.username = task.assigned_to_user_id
+      AND assignee.created_at < task.assigned_at
     WHERE delivery.status = 'READY' AND delivery.task_id = ANY($1::bigint[])
     ORDER BY delivery.id
     FOR UPDATE OF delivery
@@ -179,6 +201,10 @@ export async function createDeliveryBatch(client, input, rawActor) {
         'DELIVERY_SCOPE_CHANGED',
         '甲方批次交付范围已经变化，请刷新后重试',
       );
+    }
+    if (actor.role === 'USER' && (row.assigned_to_user_id !== actor.username
+        || Number(row.assigned_to_account_id) !== actor.userId)) {
+      throw new ControlPlaneAuthorizationError('operators may deliver only their own assigned tasks');
     }
     return row;
   });
@@ -212,11 +238,12 @@ export async function createDeliveryBatch(client, input, rawActor) {
     INSERT INTO delivery_batches(
       public_id, code, scope, query_package_name, client_batch_code, archive_file_name,
       archive_byte_size, archive_sha256, task_count,
-      created_by_account_id, created_by_username
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      created_by_account_id, created_by_username, batch_kind, created_by_role
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
     RETURNING *
   `, [publicId, code, scope, queryPackageName, clientBatchCode, fileName, byteSize, sha256,
-    rows.length, actor.userId, actor.username]);
+    rows.length, actor.userId, actor.username,
+    actor.role === 'USER' ? 'OPERATOR_DELIVERY' : 'ADMIN_DELIVERY', actor.role]);
   const batch = inserted.rows[0];
   await client.query(`
     INSERT INTO delivery_batch_items(
@@ -260,12 +287,19 @@ export async function listDeliveryBatches(pool, {
   queryPackageName: rawQueryPackageName = null,
   clientBatchCode: rawClientBatchCode = null,
 } = {}, rawActor) {
-  normalizeActor(rawActor);
+  const actor = normalizeActor(rawActor);
   const { limit, offset } = normalizeListPagination(rawLimit, rawOffset);
   const queryPackageName = normalizedPackageName(rawQueryPackageName);
   const clientBatchCode = normalizeClientBatchCode(rawClientBatchCode, { optional: true });
   const values = [];
   const clauses = [];
+  if (actor.role === 'USER') {
+    values.push(actor.userId, actor.username);
+    clauses.push(`batch.batch_kind = 'OPERATOR_DELIVERY'
+      AND batch.created_by_role = 'USER'
+      AND batch.created_by_account_id = $1
+      AND batch.created_by_username = $2`);
+  }
   if (queryPackageName !== null) {
     values.push(queryPackageName);
     clauses.push(`EXISTS (
@@ -306,8 +340,16 @@ export async function listDeliveryBatches(pool, {
 }
 
 export async function getDeliveryBatch(pool, rawPublicId, rawActor) {
-  normalizeActor(rawActor);
+  const actor = normalizeActor(rawActor);
   const publicId = normalizeUuid(rawPublicId, 'deliveryBatchId');
+  const values = [publicId];
+  const visibility = actor.role === 'USER' ? `
+    AND batch.batch_kind = 'OPERATOR_DELIVERY'
+    AND batch.created_by_role = 'USER'
+    AND batch.created_by_account_id = $2
+    AND batch.created_by_username = $3
+  ` : '';
+  if (actor.role === 'USER') values.push(actor.userId, actor.username);
   const batch = await pool.query(`
     SELECT batch.*, COALESCE(packages.names, ARRAY[]::varchar[]) AS query_package_names
     FROM delivery_batches AS batch
@@ -317,8 +359,8 @@ export async function getDeliveryBatch(pool, rawPublicId, rawActor) {
         FILTER (WHERE item.query_package_name_snapshot IS NOT NULL) AS names
       FROM delivery_batch_items AS item WHERE item.delivery_batch_id = batch.id
     ) AS packages ON true
-    WHERE batch.public_id = $1
-  `, [publicId]);
+    WHERE batch.public_id = $1 ${visibility}
+  `, values);
   if (!batch.rows[0]) throw new ControlPlaneNotFoundError('delivery batch not found');
   const items = await pool.query(`
     SELECT * FROM delivery_batch_items
@@ -328,11 +370,19 @@ export async function getDeliveryBatch(pool, rawPublicId, rawActor) {
 }
 
 export async function getDeliveryBatchArtifact(pool, rawPublicId, rawActor) {
-  normalizeActor(rawActor);
+  const actor = normalizeActor(rawActor);
   const publicId = normalizeUuid(rawPublicId, 'deliveryBatchId');
+  const values = [publicId];
+  const visibility = actor.role === 'USER' ? `
+    AND batch_kind = 'OPERATOR_DELIVERY'
+    AND created_by_role = 'USER'
+    AND created_by_account_id = $2
+    AND created_by_username = $3
+  ` : '';
+  if (actor.role === 'USER') values.push(actor.userId, actor.username);
   const result = await pool.query(`
-    SELECT * FROM delivery_batches WHERE public_id = $1
-  `, [publicId]);
+    SELECT * FROM delivery_batches WHERE public_id = $1 ${visibility}
+  `, values);
   if (!result.rows[0]) throw new ControlPlaneNotFoundError('delivery batch not found');
   return batchFrom(result.rows[0]);
 }
@@ -340,19 +390,67 @@ export async function getDeliveryBatchArtifact(pool, rawPublicId, rawActor) {
 export async function recordDeliveryBatchDownload(client, rawPublicId, rawActor) {
   const actor = normalizeActor(rawActor);
   const publicId = normalizeUuid(rawPublicId, 'deliveryBatchId');
+  const values = [publicId];
+  const visibility = actor.role === 'USER' ? `
+    AND batch_kind = 'OPERATOR_DELIVERY'
+    AND created_by_role = 'USER'
+    AND created_by_account_id = $2
+    AND created_by_username = $3
+  ` : '';
+  if (actor.role === 'USER') values.push(actor.userId, actor.username);
   const updated = await client.query(`
     UPDATE delivery_batches
-    SET status = 'DOWNLOADED',
+    SET status = CASE WHEN status = 'GENERATED' THEN 'DOWNLOADED' ELSE status END,
       first_downloaded_at = COALESCE(first_downloaded_at, now()),
       last_downloaded_at = now(), download_count = download_count + 1
-    WHERE public_id = $1
+    WHERE public_id = $1 ${visibility}
     RETURNING *
-  `, [publicId]);
+  `, values);
   if (!updated.rows[0]) throw new ControlPlaneNotFoundError('delivery batch not found');
   await client.query(`
     INSERT INTO delivery_batch_download_events(
       delivery_batch_id, actor_account_id, actor_username
     ) VALUES ($1, $2, $3)
   `, [updated.rows[0].id, actor.userId, actor.username]);
+  return batchFrom(updated.rows[0]);
+}
+
+export async function confirmDeliveryBatch(client, rawPublicId, rawActor) {
+  const actor = normalizeActor(rawActor);
+  const publicId = normalizeUuid(rawPublicId, 'deliveryBatchId');
+  const values = [publicId];
+  const visibility = actor.role === 'USER' ? `
+    AND batch_kind = 'OPERATOR_DELIVERY'
+    AND created_by_role = 'USER'
+    AND created_by_account_id = $2
+    AND created_by_username = $3
+  ` : '';
+  if (actor.role === 'USER') values.push(actor.userId, actor.username);
+  const locked = await client.query(`
+    SELECT * FROM delivery_batches
+    WHERE public_id = $1 ${visibility}
+    FOR UPDATE
+  `, values);
+  const batch = locked.rows[0];
+  if (!batch) throw new ControlPlaneNotFoundError('delivery batch not found');
+  if (batch.status === 'DELIVERED') return batchFrom(batch);
+  if (batch.status !== 'DOWNLOADED' || Number(batch.download_count ?? 0) < 1) {
+    throw new ControlPlaneConflictError(
+      'DELIVERY_BATCH_NOT_DOWNLOADED',
+      '请先完整下载交付包，再确认已经完成交付',
+    );
+  }
+  const updated = await client.query(`
+    UPDATE delivery_batches
+    SET status = 'DELIVERED', delivered_at = now(),
+      delivered_by_account_id = $2, delivered_by_username = $3
+    WHERE id = $1
+    RETURNING *
+  `, [batch.id, actor.userId, actor.username]);
+  await client.query(`
+    INSERT INTO delivery_batch_confirmation_events(
+      delivery_batch_id, actor_account_id, actor_username
+    ) VALUES ($1, $2, $3)
+  `, [batch.id, actor.userId, actor.username]);
   return batchFrom(updated.rows[0]);
 }

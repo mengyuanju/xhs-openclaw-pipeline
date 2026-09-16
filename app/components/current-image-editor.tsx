@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { Dialog, DialogClose, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { UploadCloud } from 'lucide-react';
@@ -15,6 +15,13 @@ type Edit = { id: string; version: number; status: string; operation: string; so
 const labels: Record<string,string> = {DRAFT:'草稿',QUEUED:'排队中',RUNNING:'执行与校验中',PREVIEW_READY:'预览待确认',ACCEPTED:'已采用',REJECTED:'已拒绝',FAILED:'失败',CANCELLED:'已取消',TEXT:'人工生成标识',COMPOSITE:'实体合成（历史）',AI_FUSION:'真实产品替换',AI_LOCAL:'局部修改',AI_FULL:'整图修改（历史）',RESTORE:'恢复版本',REGENERATE:'重新生成',REPROCESS:'格式处理'};
 const path=(url:string)=>`/api/control-plane${url}`;
 const post=(url:string,body:unknown)=>apiRequest(path(url),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+const PreviewSourceImage=memo(function PreviewSourceImage({src}:{src:string}) {
+  return <img className={styles.previewImage} src={src} alt="" draggable={false}/>;
+});
+function regionBetween(start:{x:number;y:number},point:{x:number;y:number}):TargetRegion {
+  const x=Math.min(start.x,point.x),y=Math.min(start.y,point.y);
+  return {x,y,width:Math.max(1,Math.abs(point.x-start.x)),height:Math.max(1,Math.abs(point.y-start.y))};
+}
 export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,page,runs,onChanged}: {
   taskId:number;runId:string;copyRevisionId:number;asset:Asset;page:number;
   runs:Array<{id:string;result:{processing?:{type:string}}|null}>;onChanged:()=>Promise<void>;
@@ -25,11 +32,14 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,page,runs,
   const [targetDescription,setTargetDescription]=useState('');
   const [targetRegion,setTargetRegion]=useState<TargetRegion|null>(null);
   const targetDragStart=useRef<{x:number;y:number}|null>(null);
+  const pendingTargetRegion=useRef<TargetRegion|null>(null);
+  const targetSelectionFrame=useRef<number|null>(null);
   const [confirmed,setConfirmed]=useState(false),[refs,setRefs]=useState<Ref[]>([]),[edits,setEdits]=useState<Edit[]>([]);
   const [busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState(''),[compare,setCompare]=useState(50),[zoom,setZoom]=useState(1),[history,setHistory]=useState(''),[reason,setReason]=useState('');
   const [comparisonId,setComparisonId]=useState('');
   const refresh=useCallback(async()=>setEdits(await apiRequest<Edit[]>(path(`/v1/tasks/${taskId}/image-edits`))),[taskId]);
   useEffect(()=>{if(!open)return;let active=true;const poll=()=>{if(active)void refresh().catch(e=>setError(e.message));};poll();const timer=setInterval(poll,4000);return()=>{active=false;clearInterval(timer);};},[open,refresh]);
+  useEffect(()=>()=>{if(targetSelectionFrame.current!==null)window.cancelAnimationFrame(targetSelectionFrame.current);},[]);
   const operation=tab==='TEXT'?'TEXT':tab==='ENTITY'?'AI_FUSION':'AI_LOCAL';
   const requestInstruction=tab==='TEXT'?`将人工生成标识显示为“${text.trim()}”并放在右下角`:
     tab==='ENTITY'?`使用上传的真实产品参考图，只替换目标“${targetDescription.trim()}”，保持场景、人物、构图和全部文字不变`:instruction.trim();
@@ -68,26 +78,37 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,page,runs,
   const textWidth=Array.from(text).length*32+24,textHeight=64;
   const tx=1086-32-textWidth,ty=1448-32-textHeight;
   const disclosureValid=/^[\p{L}\p{N}_-]{1,12}$/u.test(text.trim());
-  function targetPoint(event:ReactPointerEvent<SVGSVGElement>) {
+  function targetPoint(event:ReactPointerEvent<HTMLDivElement>) {
     const box=event.currentTarget.getBoundingClientRect();
     return {x:Math.max(0,Math.min(1085,Math.round((event.clientX-box.left)*1086/box.width))),
       y:Math.max(0,Math.min(1447,Math.round((event.clientY-box.top)*1448/box.height)))};
   }
-  function startTargetSelection(event:ReactPointerEvent<SVGSVGElement>) {
+  function startTargetSelection(event:ReactPointerEvent<HTMLDivElement>) {
     if(tab!=='ENTITY'||event.button!==0)return;
+    if(targetSelectionFrame.current!==null){window.cancelAnimationFrame(targetSelectionFrame.current);targetSelectionFrame.current=null;}
+    pendingTargetRegion.current=null;
     const point=targetPoint(event);targetDragStart.current=point;setTargetRegion(null);setError('');
     event.currentTarget.setPointerCapture(event.pointerId);
   }
-  function moveTargetSelection(event:ReactPointerEvent<SVGSVGElement>) {
+  function moveTargetSelection(event:ReactPointerEvent<HTMLDivElement>) {
     const start=targetDragStart.current;if(tab!=='ENTITY'||!start)return;
-    const point=targetPoint(event),x=Math.min(start.x,point.x),y=Math.min(start.y,point.y);
-    setTargetRegion({x,y,width:Math.max(1,Math.abs(point.x-start.x)),height:Math.max(1,Math.abs(point.y-start.y))});
+    pendingTargetRegion.current=regionBetween(start,targetPoint(event));
+    if(targetSelectionFrame.current!==null)return;
+    targetSelectionFrame.current=window.requestAnimationFrame(()=>{
+      targetSelectionFrame.current=null;
+      if(pendingTargetRegion.current)setTargetRegion(pendingTargetRegion.current);
+      pendingTargetRegion.current=null;
+    });
   }
-  function finishTargetSelection(event:ReactPointerEvent<SVGSVGElement>) {
-    if(!targetDragStart.current)return;
+  function finishTargetSelection(event:ReactPointerEvent<HTMLDivElement>) {
+    const start=targetDragStart.current;if(!start)return;
+    const region=regionBetween(start,targetPoint(event));
     targetDragStart.current=null;
+    pendingTargetRegion.current=null;
+    if(targetSelectionFrame.current!==null){window.cancelAnimationFrame(targetSelectionFrame.current);targetSelectionFrame.current=null;}
     if(event.currentTarget.hasPointerCapture(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId);
-    setTargetRegion(region=>{if(region&&region.width>=24&&region.height>=24)return region;setError('目标框选区域过小，请完整框住一个物品并保留少量周边。');return null;});
+    if(region.width>=24&&region.height>=24){setTargetRegion(region);return;}
+    setTargetRegion(null);setError('目标框选区域过小，请完整框住一个物品并保留少量周边。');
   }
   function runHistoryAction(e:Edit,action:string) {
     const actionLabel=({accept:'采用此版本',reject:'拒绝',cancel:'取消',retry:'重试',queue:'提交草稿'} as Record<string,string>)[action]??'操作';
@@ -108,12 +129,14 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,page,runs,
     <div className={styles.workspace}>
       <section className={styles.previewPanel} aria-label="图片预览">
         <div className={styles.previewViewport}>
-        <svg className={`${styles.previewCanvas} ${tab==='ENTITY'?styles.targetCanvas:''}`} role="img" aria-label="实时修改预览" viewBox="0 0 1086 1448" style={{width:`${zoom*100}%`}}
+        <div className={`${styles.previewCanvas} ${tab==='ENTITY'?styles.targetCanvas:''}`} role="img" aria-label="实时修改预览" style={{width:`${zoom*100}%`}}
           onPointerDown={startTargetSelection} onPointerMove={moveTargetSelection} onPointerUp={finishTargetSelection} onPointerCancel={finishTargetSelection}>
-          <image href={path(asset.url)} width="1086" height="1448"/>
-          {tab==='TEXT'&&<g><rect x={tx} y={ty} width={textWidth} height={textHeight} rx="8" fill="#111827"/><text x={tx+12} y={ty+40} fill="#ffffff" fontSize="32" fontFamily="Noto Sans CJK SC,Microsoft YaHei,sans-serif">{text}</text></g>}
-          {tab==='ENTITY'&&targetRegion&&<rect className={styles.targetSelection} x={targetRegion.x} y={targetRegion.y} width={targetRegion.width} height={targetRegion.height}/>}
-        </svg>
+          <PreviewSourceImage src={path(asset.url)}/>
+          <svg className={styles.previewOverlay} aria-hidden="true" viewBox="0 0 1086 1448">
+            {tab==='TEXT'&&<g><rect x={tx} y={ty} width={textWidth} height={textHeight} rx="8" fill="#111827"/><text x={tx+12} y={ty+40} fill="#ffffff" fontSize="32" fontFamily="Noto Sans CJK SC,Microsoft YaHei,sans-serif">{text}</text></g>}
+            {tab==='ENTITY'&&targetRegion&&<rect className={styles.targetSelection} x={targetRegion.x} y={targetRegion.y} width={targetRegion.width} height={targetRegion.height}/>}
+          </svg>
+        </div>
         </div>
         <label className={styles.zoomControl}><span>预览缩放</span><input aria-label="预览缩放" type="range" min="1" max="3" step="0.1" value={zoom} onChange={e=>setZoom(Number(e.target.value))}/><strong>{Math.round(zoom*100)}%</strong></label>
         <p className={styles.help}>{tab==='TEXT'?'标识固定放在右下角；左侧仅为位置示意，最终以 AI 改图预览为准。':tab==='ENTITY'?'在原图上拖动框住一个目标物品并保留少量周边；参考图只供模型重绘，不会直接贴到画面上。':'请在右侧说明中同时写清“改哪里”和“改什么”；系统会按文字描述定位。'}</p>

@@ -18,14 +18,17 @@ export function codexFailure(error = {}, fallbackCode = 'CODEX_EXEC_FAILED') {
   const detail = [error.code, error.type, error.kind, error.message].filter(Boolean).join(' ');
   let code = typeof error.code === 'string' && error.code.startsWith('CODEX_') ? error.code : fallbackCode;
   if (/usage[_ -]limit|quota|insufficient_quota|credits? (?:exhausted|depleted)|hit your.*limit/iu.test(detail)) code = 'CODEX_QUOTA_EXHAUSTED';
-  else if (/invalid_grant|refresh_token|unauthoriz|not logged in|login required|authentication|\b401\b/iu.test(detail)) code = 'CODEX_AUTH_REQUIRED';
+  else if (/invalid_grant|refresh[_ -]?token|access token could not be refreshed|token (?:was )?revoked|unauthoriz|not logged in|login required|authentication|\b401\b/iu.test(detail)) code = 'CODEX_AUTH_REQUIRED';
   else if (/rate[_ -]limit|too many requests|\b429\b/iu.test(detail)) code = 'CODEX_RATE_LIMITED';
   else if (/model[^\n]{0,80}(?:at capacity|overloaded)|server_is_overloaded/iu.test(detail)) code = 'CODEX_MODEL_AT_CAPACITY';
   else if (/TLS close_notify|stream disconnected|unexpected EOF|connection exhausted|ECONNRESET|UND_ERR_SOCKET|socket hang up/iu.test(detail)) code = 'CODEX_TRANSPORT_FAILED';
   else if (/context[_ -](?:length|window|limit)|input exceeds the context window|prompt.*too long/iu.test(detail)) code = 'MODEL_CONTEXT_LIMIT';
   else if (/max_output_tokens|output.*incomplete|\blength\b/iu.test(detail)) code = 'MODEL_OUTPUT_INCOMPLETE';
+  const revokedAuthentication=/refresh[_ -]?token[^\n]{0,120}revoked|access token could not be refreshed[^\n]{0,120}revoked/iu.test(detail);
   const guidance = {
-    CODEX_AUTH_REQUIRED: '请在执行主机运行 codex login，再运行 npm run agent:resume。',
+    CODEX_AUTH_REQUIRED: revokedAuthentication
+      ? '请在执行主机依次运行 codex logout、codex login，再运行 npm run agent:resume。'
+      : '请在执行主机运行 codex login，再运行 npm run agent:resume。',
     CODEX_QUOTA_EXHAUSTED: '订阅额度不足；额度恢复后运行 npm run agent:resume。',
     CODEX_RATE_LIMITED: '请求限流，已进入共享冷却期。',
     CODEX_MODEL_AT_CAPACITY: '上游模型暂时满载，已进入该模型冷却期；非图片调用可按生产配置切换容量备用模型。',

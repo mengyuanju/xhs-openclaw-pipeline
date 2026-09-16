@@ -13,6 +13,7 @@ import {
   FileCheck2,
   LoaderCircle,
   LockKeyhole,
+  PackageCheck,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -61,6 +62,8 @@ import { loadAdminTaskPage } from '../../src/control-plane/admin-task-page.mjs';
 import { createActionLock } from '../../src/control-plane/action-lock.mjs';
 import { WorkbenchPagination } from './workbench-pagination';
 import { PersonalWorkbenchNavigation } from '../workbench-statistics/personal-overview';
+import { normalizePreparedDeliveryExport } from '../delivery-pool/types';
+import { OperatorDeliveryHistory } from './operator-delivery-history';
 import { personalStateFilterStates } from './personal-state-filters';
 import { isLegacyTaskStateFilterError } from './task-list-compatibility';
 import { useStatistics } from '../workbench-statistics/use-statistics';
@@ -817,6 +820,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   const [selectedTaskIds, setSelectedTaskIds] = useState<number[]>([]);
   const [assignmentTasks, setAssignmentTasks] = useState<DistributedTask[]>([]);
   const [batchAction, setBatchAction] = useState<'RETRY' | 'CANCEL_QUEUE' | 'EXPORT' | 'PERMANENT_DELETE' | null>(null);
+  const [deliveryHistoryVersion, setDeliveryHistoryVersion] = useState(0);
   const [duplicateQueryPreview, setDuplicateQueryPreview] = useState<DuplicateQueryDiscardPreview | null>(null);
   const [duplicateQueryRequestId, setDuplicateQueryRequestId] = useState<string | null>(null);
   const [duplicateQueryError, setDuplicateQueryError] = useState('');
@@ -1118,13 +1122,23 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   const retryableTasks = selectedTasks.filter((task) => ['COPY_RUNNING', 'COPY_FAILED', 'IMAGE_RUNNING', 'IMAGE_FAILED'].includes(task.state)
     || isImageRetryExhausted(task));
   const queuedTasks = selectedTasks.filter((task) => ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state));
-  const exportableTasks = selectedTasks.filter((task) => task.state === 'REVIEWED' && task.deliveryStatus === 'READY');
+  const operatorDeliveryMode = role === 'USER' && activeView === 'PERSONAL';
+  const canOperatorDeliverTask = (task: DistributedTask) => operatorDeliveryMode
+    && task.state === 'REVIEWED' && task.deliveryStatus === 'READY'
+    && isTaskAssignee(task, creatorUserId, creatorAccountId);
+  const exportableTasks = selectedTasks.filter((task) => task.state === 'REVIEWED'
+    && task.deliveryStatus === 'READY'
+    && (role === 'ADMIN' || canOperatorDeliverTask(task)));
+  const selectionCandidates = role === 'ADMIN'
+    ? visibleTasks : operatorDeliveryMode ? visibleTasks.filter(canOperatorDeliverTask) : [];
+  const showTaskSelection = role === 'ADMIN' || operatorDeliveryMode;
   const permanentlyDeletableTasks = selectedTasks.filter(isPermanentlyDeletableTask);
   const permanentDeletionSettlingTasks = selectedTasks.filter((task) => task.state === 'CANCELLED'
     && ['COPY_RUNNING', 'IMAGE_RUNNING'].includes(task.cancelledFromState || '')
     && !isPermanentlyDeletableTask(task));
   const availableSavedViews = savedViews.filter((view) => view.viewKey === activeView);
-  const allVisibleSelected = visibleTasks.length > 0 && visibleTasks.every((task) => selectedTaskIds.includes(task.id));
+  const allVisibleSelected = selectionCandidates.length > 0
+    && selectionCandidates.every((task) => selectedTaskIds.includes(task.id));
 
   const hasFilters = Boolean(searchInput || searchKeyword
     || canUseQueryPackageFilter && (queryPackageInput || queryPackageName)
@@ -1385,25 +1399,46 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   }
 
   async function exportSelectedTasks() {
-    if (exportableTasks.length === 0 || exportableTasks.length > 20 || batchAction) return;
+    const maximum = role === 'USER' ? 200 : 20;
+    if (exportableTasks.length === 0 || exportableTasks.length > maximum || batchAction) return;
     setBatchAction('EXPORT');
     try {
-      const response = await fetch(apiPath('/v1/tasks/batch-archive'), {
+      const operatorDelivery = role === 'USER';
+      const response = await fetch(apiPath(operatorDelivery
+        ? '/v1/delivery-pool/archive' : '/v1/tasks/batch-archive'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ taskIds: exportableTasks.map((task) => task.id) }),
+        body: JSON.stringify(operatorDelivery
+          ? { scope: 'SELECTED', taskIds: exportableTasks.map((task) => task.id) }
+          : { taskIds: exportableTasks.map((task) => task.id) }),
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => null);
         throw new Error(payload?.error?.message || `导出失败（${response.status}）`);
       }
-      const url = URL.createObjectURL(await response.blob());
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = '批量作业资源.zip';
-      link.click();
-      URL.revokeObjectURL(url);
-      setMessage(`已导出 ${exportableTasks.length} 条任务的资源包。`);
+      if (operatorDelivery) {
+        const prepared = normalizePreparedDeliveryExport(await response.json().catch(() => null));
+        const link = document.createElement('a');
+        link.href = apiPath(`/v1/delivery-pool/archive/${encodeURIComponent(prepared.downloadId)}`);
+        link.download = prepared.fileName;
+        link.hidden = true;
+        document.body.append(link);
+        link.click();
+        link.remove();
+        setSelectedTaskIds([]);
+        setDeliveryHistoryVersion((current) => current + 1);
+        window.setTimeout(() => setDeliveryHistoryVersion((current) => current + 1), 1500);
+        setMessage(`${prepared.batchCode ? `交付批次 ${prepared.batchCode}` : '交付包'}已创建并开始下载；文件交给接收方后，请在“我的交付记录”中确认已交付。`);
+        await refresh({ silent: true });
+      } else {
+        const url = URL.createObjectURL(await response.blob());
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = '批量作业资源.zip';
+        link.click();
+        URL.revokeObjectURL(url);
+        setMessage(`已导出 ${exportableTasks.length} 条任务的资源包。`);
+      }
       setError('');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '批量导出失败');
@@ -1901,6 +1936,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       onFilter={(value) => { setStateFilter(value); setPage(1); }}
       onScope={(value) => { setPersonalScope(value); setPage(1); }}
     />}
+    {operatorDeliveryMode && <OperatorDeliveryHistory refreshKey={deliveryHistoryVersion} />}
     <section className="panel workbench-task-panel">
       <div className="workbench-toolbar">
         <div>
@@ -2126,6 +2162,16 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       </div>}
       {lastUpdatedAt && <p className="workbench-updated-at" role="status">{loading ? `正在读取第 ${page} 页，暂时保留上次结果…` : `最近成功刷新：${timeLabel(lastUpdatedAt)} · 每 30 秒自动刷新`}</p>}
 
+        {operatorDeliveryMode && selectedTasks.length > 0 && <div className="workbench-batch-actions" role="region" aria-label="作业员交付操作">
+          <strong>已选 {selectedTasks.length} 条（当前页）</strong>
+          <Button unstyled className="button small primary" type="button"
+            title={exportableTasks.length > 200 ? '单次最多交付 200 条，请减少选择' : '仅可交付本人负责且已进入交付池的作业'}
+            disabled={Boolean(batchAction) || exportableTasks.length === 0 || exportableTasks.length > 200}
+            onClick={() => { void exportSelectedTasks(); }}><PackageCheck size={14} />创建交付包 {exportableTasks.length}</Button>
+          <Button unstyled className="button small" type="button" disabled={Boolean(batchAction)} onClick={() => setSelectedTaskIds([])}>清除选择</Button>
+          {batchAction && <span role="status">正在创建并校验交付包…</span>}
+        </div>}
+
         {role === 'ADMIN' && selectedTasks.length > 0 && <div className="workbench-batch-actions" role="region" aria-label="批量任务操作">
           <strong>已选 {selectedTasks.length} 条（当前页）</strong>
           <TaskPriorityControl tasks={selectedTasks} onChanged={() => refresh()} />
@@ -2160,9 +2206,9 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
           </div>
           : <div ref={listStart} className="table-wrap mobile-cards workbench-table-wrap" tabIndex={0} role="region" aria-label="作业列表，可横向滚动查看完整列" aria-busy={loading} inert={loading}>
             <table>
-              <thead><tr>{role === 'ADMIN' && <th className="workbench-col-select"><Checkbox aria-label="选择当前页全部任务" checked={allVisibleSelected} onChange={(event) => setSelectedTaskIds(event.target.checked ? visibleTasks.map((task) => task.id) : [])} /></th>}<th className="workbench-col-query">作业 / Query</th><th className="workbench-col-creator">负责人 / 创建人</th><th className="workbench-col-progress">状态 / 进度</th><th className="workbench-col-executor">执行机</th><th className="workbench-col-time">创建 / 开始 / 耗时</th><th className="workbench-col-actions">操作</th></tr></thead>
+              <thead><tr>{showTaskSelection && <th className="workbench-col-select"><Checkbox aria-label="选择当前页全部任务中的可交付项" checked={allVisibleSelected} disabled={selectionCandidates.length === 0} onChange={(event) => setSelectedTaskIds(event.target.checked ? selectionCandidates.map((task) => task.id) : [])} /></th>}<th className="workbench-col-query">作业 / Query</th><th className="workbench-col-creator">负责人 / 创建人</th><th className="workbench-col-progress">状态 / 进度</th><th className="workbench-col-executor">执行机</th><th className="workbench-col-time">创建 / 开始 / 耗时</th><th className="workbench-col-actions">操作</th></tr></thead>
               <tbody>{visibleTasks.map((task) => <tr key={task.id}>
-                {role === 'ADMIN' && <td className="workbench-col-select" data-label="选择"><Checkbox aria-label={`选择任务 #${task.id}`} checked={selectedTaskIds.includes(task.id)} onChange={(event) => toggleTaskSelection(task.id, event.target.checked)} /></td>}
+                {showTaskSelection && <td className="workbench-col-select" data-label="选择"><Checkbox aria-label={`选择任务 #${task.id}`} checked={selectedTaskIds.includes(task.id)} disabled={role === 'USER' && !canOperatorDeliverTask(task)} title={role === 'USER' && !canOperatorDeliverTask(task) ? '仅可交付本人负责且已完成的作业' : undefined} onChange={(event) => toggleTaskSelection(task.id, event.target.checked)} /></td>}
                 <td className="query-cell workbench-col-query" data-label="作业 / Query">
                   <div className="workbench-cell-stack">
                     <span className="mono workbench-task-id">#{task.id}</span>

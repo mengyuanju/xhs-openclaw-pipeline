@@ -321,7 +321,9 @@ function buildOcrRepairInstruction(result, allowedVisibleText) {
     instructions.push(`标题必须逐字显示为：${allowedVisibleText.headline}`);
   }
   if (result.ocrMismatches.includes('subtitle')) {
-    instructions.push(`副标题必须逐字显示为：${allowedVisibleText.subtitle}`);
+    instructions.push(allowedVisibleText.subtitle
+      ? `副标题必须逐字显示为：${allowedVisibleText.subtitle}`
+      : '删除自行添加的副标题，该页不显示副标题');
   }
   if (result.ocrMismatches.includes('bullets')) {
     instructions.push(`要点必须逐条精确显示为：${allowedVisibleText.bullets.join('、')}`);
@@ -332,7 +334,7 @@ function buildOcrRepairInstruction(result, allowedVisibleText) {
     allowedVisibleText.subtitle,
     ...allowedVisibleText.bullets,
     ...(allowedVisibleText.labels ?? []),
-  ]);
+  ].filter((value) => typeof value === 'string' && value.trim()));
   instructions.push(`只允许逐字保留：${allowed.join('、')}`);
   if (result.ocrMismatches.includes('unreadableText')) instructions.push('所有白名单文字必须完整清晰可读');
   if (result.ocrMismatches.includes('traditionalChinese')) instructions.push('全部文字改为中国大陆规范简体中文');

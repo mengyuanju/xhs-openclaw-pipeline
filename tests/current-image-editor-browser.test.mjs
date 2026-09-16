@@ -36,6 +36,8 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.getByRole('button',{name:'修改图片',exact:true}).click();
     const dialog=page.getByRole('dialog');
+    await dialog.evaluate(element=>Promise.all(element.getAnimations().map(animation=>animation.finished)));
+    const livePreview=page.getByRole('img',{name:'实时修改预览'}),sourceImage=livePreview.locator('img');
     const [dialogBox,previewBox,settingsBox,dialogStyle,overlayStyle]=await Promise.all([
       dialog.boundingBox(),
       page.getByRole('region',{name:'图片预览'}).boundingBox(),
@@ -47,8 +49,15 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     assert.ok(previewBox&&settingsBox&&previewBox.x+previewBox.width<settingsBox.x);
     assert.equal(dialogStyle.display,'grid');assert.equal(dialogStyle.overflow,'hidden');assert.equal(dialogStyle.zIndex,'141');assert.equal(dialogStyle.translate,'-50% -50%');assert.equal(dialogStyle.transform,'none');
     assert.deepEqual(overlayStyle,{position:'fixed',zIndex:'140'});
+    const [sourceNode,sourceBox,previewGutter]=await Promise.all([
+      sourceImage.elementHandle(),sourceImage.boundingBox(),
+      livePreview.locator('..').evaluate(element=>getComputedStyle(element).scrollbarGutter),
+    ]);
+    assert.match(previewGutter,/stable/u);
     await page.getByLabel('人工生成标识文字',{exact:true}).fill('人工生成');
-    assert.equal(await page.locator('svg text').textContent(),'人工生成');
+    assert.equal(await livePreview.locator('svg text').textContent(),'人工生成');
+    assert.ok(sourceNode&&await sourceImage.evaluate((element,previous)=>element===previous,sourceNode));
+    assert.deepEqual(await sourceImage.boundingBox(),sourceBox);
     assert.equal(await page.getByLabel('文本类型').count(),0);
     assert.equal(await page.getByLabel('字号').count(),0);
     assert.equal(await page.getByText('样式由管理员的图片编辑提示词控制',{exact:false}).count(),1);
@@ -112,11 +121,14 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     assert.equal(submitted,null);
     const targetCanvas=page.getByRole('img',{name:'实时修改预览'}),targetBox=await targetCanvas.boundingBox();
     assert.ok(targetBox);
+    const targetSource=targetCanvas.locator('img'),targetSourceNode=await targetSource.elementHandle(),targetSourceBox=await targetSource.boundingBox();
     await page.mouse.move(targetBox.x+targetBox.width*.62,targetBox.y+targetBox.height*.42);
     await page.mouse.down();
     await page.mouse.move(targetBox.x+targetBox.width*.88,targetBox.y+targetBox.height*.68,{steps:5});
     await page.mouse.up();
     await page.getByRole('status').getByText('已框选',{exact:false}).waitFor();
+    assert.ok(targetSourceNode&&await targetSource.evaluate((element,previous)=>element===previous,targetSourceNode));
+    assert.deepEqual(await targetSource.boundingBox(),targetSourceBox);
     assert.equal(await page.getByRole('button',{name:'重新框选',exact:true}).isDisabled(),false);
     await page.getByLabel('确认调用图片编辑与实体校验模型，会产生费用；自动修复和人工重试也可能收费。').check();
     await page.getByRole('button',{name:'生成修改预览',exact:true}).click();

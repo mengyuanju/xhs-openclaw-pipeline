@@ -35,9 +35,14 @@ export type DeliveryEntryBatch = {
   id: number;
   publicId: string;
   code: string;
-  status?: 'GENERATED' | 'DOWNLOADED';
+  status?: 'GENERATED' | 'DOWNLOADED' | 'DELIVERED';
+  batchKind?: 'ADMIN_DELIVERY' | 'OPERATOR_DELIVERY';
+  createdByRole?: 'ADMIN' | 'USER';
+  createdByUsername?: string;
   createdAt: string;
   downloadedAt?: string | null;
+  deliveredAt?: string | null;
+  deliveredByUsername?: string | null;
 };
 
 export type DeliveryQueryPackageFacet = {
@@ -108,7 +113,9 @@ export type DeliveryBatchSummary = {
   queryPackageName: string | null;
   queryPackageNames: string[];
   clientBatchCode: string | null;
-  status: 'GENERATED' | 'DOWNLOADED';
+  status: 'GENERATED' | 'DOWNLOADED' | 'DELIVERED';
+  batchKind: 'ADMIN_DELIVERY' | 'OPERATOR_DELIVERY';
+  createdByRole: 'ADMIN' | 'USER';
   fileName: string;
   byteSize: number;
   sha256: string;
@@ -119,6 +126,9 @@ export type DeliveryBatchSummary = {
   firstDownloadedAt: string | null;
   lastDownloadedAt: string | null;
   downloadCount: number;
+  deliveredAt: string | null;
+  deliveredByAccountId: number | null;
+  deliveredByUsername: string | null;
 };
 
 export type DeliveryBatchItem = {
@@ -227,11 +237,23 @@ function normalizeEntryBatch(value: unknown): DeliveryEntryBatch | null {
     id,
     publicId,
     code,
-    ...(['GENERATED', 'DOWNLOADED'].includes(String(item.status))
+    ...(['GENERATED', 'DOWNLOADED', 'DELIVERED'].includes(String(item.status))
       ? { status: item.status as DeliveryEntryBatch['status'] }
+      : {}),
+    ...(['ADMIN_DELIVERY', 'OPERATOR_DELIVERY'].includes(String(item.batchKind))
+      ? { batchKind: item.batchKind as DeliveryEntryBatch['batchKind'] }
+      : {}),
+    ...(['ADMIN', 'USER'].includes(String(item.createdByRole))
+      ? { createdByRole: item.createdByRole as DeliveryEntryBatch['createdByRole'] }
+      : {}),
+    ...(typeof item.createdByUsername === 'string'
+      ? { createdByUsername: item.createdByUsername }
       : {}),
     createdAt: typeof item.createdAt === 'string' ? item.createdAt : '',
     downloadedAt: typeof item.downloadedAt === 'string' ? item.downloadedAt : null,
+    deliveredAt: typeof item.deliveredAt === 'string' ? item.deliveredAt : null,
+    deliveredByUsername: typeof item.deliveredByUsername === 'string'
+      ? item.deliveredByUsername : null,
   };
 }
 
@@ -544,6 +566,8 @@ function normalizeDeliveryBatchSummary(value: unknown): DeliveryBatchSummary | n
   const code = typeof item.code === 'string' ? item.code : '';
   const scope = String(item.scope);
   const status = String(item.status);
+  const batchKind = String(item.batchKind ?? 'ADMIN_DELIVERY');
+  const createdByRole = String(item.createdByRole ?? 'ADMIN');
   const byteSize = Number(item.byteSize);
   const taskCount = Number(item.taskCount);
   const createdByAccountId = Number(item.createdByAccountId);
@@ -553,7 +577,9 @@ function normalizeDeliveryBatchSummary(value: unknown): DeliveryBatchSummary | n
     || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(publicId)
     || !/^JF-[0-9A-F]{8}$/u.test(code)
     || !['ALL_READY', 'QUERY_PACKAGE', 'CLIENT_BATCH', 'SELECTED'].includes(scope)
-    || !['GENERATED', 'DOWNLOADED'].includes(status)
+    || !['GENERATED', 'DOWNLOADED', 'DELIVERED'].includes(status)
+    || !['ADMIN_DELIVERY', 'OPERATOR_DELIVERY'].includes(batchKind)
+    || !['ADMIN', 'USER'].includes(createdByRole)
     || !Number.isSafeInteger(byteSize) || byteSize < 1
     || !Number.isSafeInteger(taskCount) || taskCount < 1
     || !Number.isSafeInteger(createdByAccountId) || createdByAccountId < 1
@@ -572,6 +598,8 @@ function normalizeDeliveryBatchSummary(value: unknown): DeliveryBatchSummary | n
       : [],
     clientBatchCode: normalizeClientBatchCode(item.clientBatchCode),
     status: status as DeliveryBatchSummary['status'],
+    batchKind: batchKind as DeliveryBatchSummary['batchKind'],
+    createdByRole: createdByRole as DeliveryBatchSummary['createdByRole'],
     fileName: item.fileName,
     byteSize,
     sha256,
@@ -582,6 +610,11 @@ function normalizeDeliveryBatchSummary(value: unknown): DeliveryBatchSummary | n
     firstDownloadedAt: typeof item.firstDownloadedAt === 'string' ? item.firstDownloadedAt : null,
     lastDownloadedAt: typeof item.lastDownloadedAt === 'string' ? item.lastDownloadedAt : null,
     downloadCount,
+    deliveredAt: typeof item.deliveredAt === 'string' ? item.deliveredAt : null,
+    deliveredByAccountId: Number.isSafeInteger(Number(item.deliveredByAccountId))
+      && Number(item.deliveredByAccountId) > 0 ? Number(item.deliveredByAccountId) : null,
+    deliveredByUsername: typeof item.deliveredByUsername === 'string'
+      ? item.deliveredByUsername : null,
   };
 }
 

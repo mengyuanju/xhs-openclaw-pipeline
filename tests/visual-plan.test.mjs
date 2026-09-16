@@ -137,6 +137,21 @@ describe('visual plan contract', () => {
     ], 'legacy unprefixed text instructions are rebuilt from the validated allowlist');
   });
 
+  it('keeps an empty subtitle empty without creating blank must-show or evidence entries', () => {
+    const post = postFixture();
+    post.imagePlan[0].subtitle = '';
+    const output = validVisualPlan(post);
+    const plan = parseVisualPlanOutput(JSON.stringify(output), { post, imageCount: 3 });
+    const direct = createDirectVisualPlan(post);
+    const schema = visualPlanSchema(post);
+
+    assert.equal(plan.pages[0].allowedVisibleText.subtitle, '');
+    assert.equal(schema.properties.pages.items.anyOf[0].properties.allowedVisibleText.properties.subtitle.minLength, 0);
+    assert.ok(!plan.pages[0].mustShow.includes('文字：'));
+    assert.ok(!direct.pages[0].mustShow.includes('文字：'));
+    assert.ok(direct.pages[0].sourceEvidence.every(Boolean));
+  });
+
   it('allows dense checklist text up to 40 characters while keeping steps at 30', () => {
     const checklistText = '清'.repeat(40);
     const post = postFixture();

@@ -132,7 +132,7 @@ function validateVisibleText(value, name, finalizedText, bulletMax = 30, kind) {
   const visible = {
     language: 'zh-CN',
     headline: requiredText(value.headline, `${name}.headline`, { max: 18 }),
-    subtitle: requiredText(value.subtitle, `${name}.subtitle`, { max: 30 }),
+    subtitle: requiredText(value.subtitle, `${name}.subtitle`, { min: 0, max: 30 }),
     bullets: textList(value.bullets, `${name}.bullets`, { min: 2, max: 5, itemMax: bulletMax }),
     labels: textList(value.labels ?? [], `${name}.labels`, { max: 3, itemMax: 20 }),
   };
@@ -170,7 +170,7 @@ function canonicalMustShow(allowedVisibleText) {
     allowedVisibleText.subtitle,
     ...allowedVisibleText.bullets,
     ...allowedVisibleText.labels,
-  ].map((item) => `文字：${item}`);
+  ].filter((item) => typeof item === 'string' && item.trim()).map((item) => `文字：${item}`);
 }
 
 export function safeVisualPlanValidationMessage(error, scope = 'visual plan') {

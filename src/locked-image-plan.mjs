@@ -16,7 +16,7 @@ export function directSourceEvidence(post, index) {
   const text = page.allowedVisibleText;
   const corpus = `${post.title}\n${post.body}`;
   return [...new Set([text.headline, text.subtitle, ...text.bullets])]
-    .filter((value) => typeof value === 'string' && value.length <= 200 && corpus.includes(value))
+    .filter((value) => typeof value === 'string' && value.length > 0 && value.length <= 200 && corpus.includes(value))
     .slice(0, 3);
 }
 
@@ -57,7 +57,7 @@ export function createDirectVisualPlan(post) {
         selectionMethod: 'DIRECT_VERBATIM' },
       visualSubject: post.imagePlan[index].prompt,
       layoutDirection: '依据原配图场景和当前默认版式安排主体与阅读顺序',
-      mustShow: [text.headline, text.subtitle, ...text.bullets].map((value) => `文字：${value}`),
+      mustShow: [text.headline, text.subtitle, ...text.bullets].filter((value) => value.trim()).map((value) => `文字：${value}`),
       mustShowSanitization: { droppedCount: 0, reason: 'LOCKED_TEXT_ONLY' },
       mustAvoid: ['未经确认的新事实', '文字契约外的新增文字'] };
   });

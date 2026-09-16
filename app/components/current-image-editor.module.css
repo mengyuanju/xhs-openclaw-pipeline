@@ -118,15 +118,34 @@
   background-color: #e8e8e8;
   background-image: conic-gradient(#cacaca 25%, transparent 0 50%, #cacaca 0 75%, transparent 0);
   background-size: 20px 20px;
+  scrollbar-gutter: stable both-edges;
   scrollbar-width: thin;
 }
 
 .previewCanvas {
+  position: relative;
   min-width: 100%;
-  height: auto;
+  aspect-ratio: 1086 / 1448;
   display: block;
+  overflow: hidden;
   background: #eee;
+  contain: layout paint;
   user-select: none;
+}
+
+.previewImage,
+.previewOverlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+}
+
+.previewImage {
+  object-fit: fill;
+  -webkit-user-drag: none;
 }
 
 .zoomControl {

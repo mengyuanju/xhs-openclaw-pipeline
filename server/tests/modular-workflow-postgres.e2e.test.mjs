@@ -1725,7 +1725,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     assert.equal(health.data.ok, true);
     assert.equal(health.data.capabilities.queryPackageVersion, 6);
     assert.equal(health.data.capabilities.copySamplingVersion, 1);
-    assert.equal(health.data.capabilities.finalDeliveryVersion, 4);
+    assert.equal(health.data.capabilities.finalDeliveryVersion, 5);
     assert.equal(health.data.capabilities.deliverySpreadsheetVersion, 2);
 
     const currentSettings = (await requestJson(

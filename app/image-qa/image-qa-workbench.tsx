@@ -1,6 +1,7 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { Checkbox, Textarea } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { CheckCircle2, EyeOff, Images, LoaderCircle, Maximize2, RefreshCw, RotateCcw } from 'lucide-react';
@@ -97,6 +98,7 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
   const [note, setNote] = useState('');
   const [selectedAssetIndex, setSelectedAssetIndex] = useState(0);
   const [previewAssetIndex, setPreviewAssetIndex] = useState<number | null>(null);
+  const detailTriggerRef = useRef<HTMLButtonElement | null>(null);
   const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   const load = useCallback(async () => {
@@ -122,14 +124,17 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
 
   const pendingCount = useMemo(() => items.filter((item) => item.status === 'PENDING').length, [items]);
 
-  function openDetail(item: ImageQaItem) {
+  function openDetail(item: ImageQaItem, trigger?: HTMLButtonElement) {
+    if (trigger) detailTriggerRef.current = trigger;
     setDetail(item);
     setReturning(false);
     setSelectedAssetIndex(0);
     setPreviewAssetIndex(null);
+    setError('');
   }
 
-  function openReturn(item: ImageQaItem, initialProblemAssetId?: number) {
+  function openReturn(item: ImageQaItem, initialProblemAssetId?: number, trigger?: HTMLButtonElement) {
+    if (trigger) detailTriggerRef.current = trigger;
     setDetail(item);
     const initialIndex = initialProblemAssetId === undefined
       ? 0
@@ -143,6 +148,13 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
     setProblemAssetIds(initialProblemAssetId === undefined ? [] : [initialProblemAssetId]);
     setCopyFields([]);
     setNote('');
+    setError('');
+  }
+
+  function closeDetail() {
+    setDetail(null);
+    setReturning(false);
+    setPreviewAssetIndex(null);
     setError('');
   }
 
@@ -262,7 +274,7 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
         <Button unstyled className="button" type="button" disabled={loading} onClick={() => { void load(); }}><RefreshCw size={15} />刷新</Button>
       </div>
       {role === 'REVIEWER' && <p className={`notice ${styles.blindNotice}`}><EyeOff size={16} />质检员不能处理自己提交的图片；管理员不受自检限制。盲评开启时只显示匿名样本和成品图。</p>}
-      {error && <div className="notice error" role="alert">{error}</div>}
+      {error && !detail && <div className="notice error" role="alert">{error}</div>}
       {message && <div className="notice success" role="status">{message}</div>}
       {loading ? <div className="empty-state"><LoaderCircle className="animate-spin" size={18} />正在读取图片质检池…</div>
         : items.length === 0 ? <div className="empty-state">当前筛选下没有图片质检项。</div>
@@ -273,20 +285,25 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
               <td data-label="成品页"><span className={qaStyles.imageCount}><Images size={15} aria-hidden="true" /><strong>{item.assets.length}</strong> 页</span></td>
               <td data-label="来源"><span className={qaStyles.source}>{item.blindReview ? '匿名' : item.productionBatch?.queryPackageName || '独立任务'}</span></td>
               <td data-label="操作"><div className={styles.actions}>
-                <Button unstyled className="button small" type="button" onClick={() => openDetail(item)}>查看图片</Button>
-                {item.capabilities.canReturnSingle && <Button unstyled className="button small" type="button" disabled={Boolean(action)} onClick={() => openReturn(item)}><RotateCcw size={14} />打回</Button>}
+                <Button unstyled className="button small" type="button" onClick={(event) => openDetail(item, event.currentTarget)}>查看图片</Button>
+                {item.capabilities.canReturnSingle && <Button unstyled className="button small" type="button" disabled={Boolean(action)} onClick={(event) => openReturn(item, undefined, event.currentTarget)}><RotateCcw size={14} />打回</Button>}
                 {item.capabilities.canPass && <Button unstyled className="button small primary" type="button" disabled={Boolean(action)} onClick={() => { void pass(item); }}><CheckCircle2 size={14} />通过</Button>}
               </div></td>
             </tr>)}</tbody></table></div>}
     </section>
 
-    {detail && <section className={`panel ${qaStyles.detail}`} aria-label="图片质检详情">
-      <header className={qaStyles.detailHeader}>
-        <div><div className={qaStyles.detailBadges}><span className="pill">{detail.sampleKind === 'MANDATORY_RECHECK' ? '返修强制复检' : '随机图片抽检'}</span><span className="pill">{detail.assets.length} 个成品页</span></div><h2>{detail.anonymousCode}</h2><p>按页码顺序检查当前最终交付图；源图、历史图和已被替换的旧图不会计入。</p></div>
-        <Button unstyled className="button" type="button" onClick={() => { setDetail(null); setReturning(false); setPreviewAssetIndex(null); }}>关闭详情</Button>
-      </header>
+    <Dialog open={detail !== null} onOpenChange={(open) => { if (!open) closeDetail(); }}>
+      {detail && <DialogContent className={qaStyles.detailDialog} onCloseAutoFocus={(event) => {
+        event.preventDefault();
+        detailTriggerRef.current?.focus();
+      }}>
+        <header className={qaStyles.detailHeader}>
+          <div><div className={qaStyles.detailBadges}><span className="pill">{detail.sampleKind === 'MANDATORY_RECHECK' ? '返修强制复检' : '随机图片抽检'}</span><span className="pill">{detail.assets.length} 个成品页</span></div><DialogTitle>{detail.anonymousCode}</DialogTitle><DialogDescription>按页码顺序检查当前最终交付图；源图、历史图和已被替换的旧图不会计入。</DialogDescription></div>
+        </header>
 
-      <div className={qaStyles.reviewLayout}>
+        <div className={qaStyles.detailBody}>
+          {error && <div className={`notice error ${qaStyles.detailError}`} role="alert">{error}</div>}
+          <div className={qaStyles.reviewLayout}>
         <div className={qaStyles.viewer}>
           {selectedAsset ? <>
             <ImageCarouselNavigation currentIndex={selectedAssetIndex} total={detail.assets.length}
@@ -322,9 +339,9 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
             {detail.capabilities.canPass && <Button unstyled className="button primary" onClick={() => { void pass(detail); }}><CheckCircle2 size={15} />质检通过</Button>}
           </div>}
         </aside>
-      </div>
+          </div>
 
-      {returning && <div className={qaStyles.returnPanel}>
+          {returning && <div className={qaStyles.returnPanel}>
         <div><h3>填写返工要求</h3><p>明确选择问题页和修改范围，修复后的新版本将再次进入强制复检。</p></div>
         <div className="form-grid">
           <label className="field">返工评分<Select value={score} onValueChange={(value: '1' | '2') => setScore(value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="1">1 分</SelectItem><SelectItem value="2">2 分</SelectItem></SelectContent></Select></label>
@@ -341,14 +358,16 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
         <div className={styles.actions}><Button unstyled className="button" onClick={() => setReturning(false)}>取消</Button>
           {detail.capabilities.canReturnBatch && target === 'IMAGE' && <Button unstyled className="button" disabled={Boolean(action) || settingsLoading || Boolean(settingsError)} onClick={() => { void submitBatchReturn(); }}>整批打回</Button>}
           <Button unstyled className="button danger" disabled={Boolean(action) || settingsLoading || Boolean(settingsError)} onClick={() => { void submitReturn(); }}>{action ? '提交中…' : '确认单条打回'}</Button></div>
-      </div>}
-      {previewAsset && previewAssetIndex !== null && <ImagePreview hideTrigger isOpen restoreFocusRef={previewTriggerRef}
-        src={apiPath(previewAsset.url)} alt={`第 ${previewAsset.pageIndex} 页：${displayAssetName(previewAsset, previewAssetIndex)}`}
-        position={previewAssetIndex + 1} total={detail.assets.length}
-        preloads={detail.assets.slice(Math.max(0, previewAssetIndex - 1), previewAssetIndex + 2).filter((asset) => asset.id !== previewAsset.id).map((asset) => apiPath(asset.url))}
-        onClose={() => setPreviewAssetIndex(null)}
-        onPrevious={previewAssetIndex > 0 ? () => setPreviewAssetIndex((index) => index === null ? null : index - 1) : undefined}
-        onNext={previewAssetIndex < detail.assets.length - 1 ? () => setPreviewAssetIndex((index) => index === null ? null : index + 1) : undefined} />}
-    </section>}
+          </div>}
+        </div>
+        {previewAsset && previewAssetIndex !== null && <ImagePreview hideTrigger isOpen initialMode="fit" restoreFocusRef={previewTriggerRef}
+          src={apiPath(previewAsset.url)} alt={`第 ${previewAsset.pageIndex} 页：${displayAssetName(previewAsset, previewAssetIndex)}`}
+          position={previewAssetIndex + 1} total={detail.assets.length}
+          preloads={detail.assets.slice(Math.max(0, previewAssetIndex - 1), previewAssetIndex + 2).filter((asset) => asset.id !== previewAsset.id).map((asset) => apiPath(asset.url))}
+          onClose={() => setPreviewAssetIndex(null)}
+          onPrevious={previewAssetIndex > 0 ? () => setPreviewAssetIndex((index) => index === null ? null : index - 1) : undefined}
+          onNext={previewAssetIndex < detail.assets.length - 1 ? () => setPreviewAssetIndex((index) => index === null ? null : index + 1) : undefined} />}
+      </DialogContent>}
+    </Dialog>
   </div>;
 }

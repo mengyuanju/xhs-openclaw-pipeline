@@ -234,6 +234,8 @@ test('delivery batch adapters preserve immutable history and exact version membe
     queryPackageNames: ['九月选题', '九月补充词包'],
     clientBatchCode: CLIENT_BATCH_CODE,
     status: 'DOWNLOADED',
+    batchKind: 'ADMIN_DELIVERY',
+    createdByRole: 'ADMIN',
     fileName: 'JF-42345678-九月选题-交付资源.zip',
     byteSize: 1024,
     sha256: 'a'.repeat(64),
@@ -244,6 +246,9 @@ test('delivery batch adapters preserve immutable history and exact version membe
     firstDownloadedAt: '2026-09-15T01:01:00.000Z',
     lastDownloadedAt: '2026-09-15T01:01:00.000Z',
     downloadCount: 1,
+    deliveredAt: null,
+    deliveredByAccountId: null,
+    deliveredByUsername: null,
   };
   assert.deepEqual(normalizeDeliveryBatchPage({ items: [batch], total: 1 }), {
     items: [batch], total: 1,
@@ -290,6 +295,9 @@ test('administrator delivery pool exposes client-batch facets, filtering and mer
   assert.match(source, /setQueryPackages\(page\.facets\.queryPackages\)/u);
   assert.match(source, /id="delivery-pool-client-batch"/u);
   assert.match(source, /clientBatches\.map\(\(facet\)/u);
+  assert.match(source, /batch\.batchKind === 'OPERATOR_DELIVERY' \? '作业员交付' : '管理员交付'/u);
+  assert.match(source, /batch\.status === 'DELIVERED'/u);
+  assert.match(source, /已下载，待确认交付/u);
   assert.match(source, /<Textarea[\s\S]*id="delivery-pool-search"/u,
     'delivery pool search must accept pasted line breaks');
   assert.match(source, /filterDeliveryPoolEntries\(entries, search\)/u);

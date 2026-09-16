@@ -204,6 +204,80 @@ test('delivery pool export packages the complete server-side snapshot beyond leg
   assert.equal(snapshotActors[0].role, 'ADMIN');
 });
 
+test('an operator creates and downloads one formal batch for a stable personal assignment', async () => {
+  const user = {
+    id: 22, username: 'worker', role: 'USER', status: 'ACTIVE', credentialVersion: 1,
+  };
+  const selected = task(7, 'REVIEWED');
+  selected.assignedToUserId = 'worker';
+  selected.assignedToAccountId = 22;
+  let asset;
+  let createdBatch;
+  const calls = [];
+  await withServer({
+    getUserByUsername: async (username) => username === user.username ? user : null,
+    getTaskAccess: async (id) => Number(id) === 7 ? {
+      id: 7, state: 'REVIEWED', assignedToUserId: 'worker', assignedToAccountId: 22,
+    } : null,
+    getTask: async (id) => Number(id) === 7 ? selected : null,
+    assertTaskReadyForDelivery: async () => ({
+      taskId: 7, copyRevisionId: 107, imageRunId: 'run-7',
+    }),
+    assertTasksReadyForDelivery: async (bindings) => bindings,
+    getAsset: async () => asset,
+    createDeliveryBatch: async (input, { actor }) => {
+      calls.push(['create', input, actor]);
+      createdBatch = {
+        publicId: input.publicId,
+        code: `JF-${input.publicId.slice(0, 8).toUpperCase()}`,
+        fileName: input.fileName,
+        byteSize: input.byteSize,
+        taskCount: input.bindings.length,
+      };
+      return createdBatch;
+    },
+    getDeliveryBatchArtifact: async (id, { actor }) => {
+      calls.push(['artifact', id, actor]);
+      return createdBatch;
+    },
+    recordDeliveryBatchDownload: async (id, { actor }) => {
+      calls.push(['download', id, actor]);
+      return { ...createdBatch, status: 'DOWNLOADED' };
+    },
+  }, async (root, storageRoot) => {
+    const directory = join(storageRoot, 'tasks', '7', 'image-runs', 'run-7');
+    const storagePath = join(directory, '01.png');
+    await mkdir(directory, { recursive: true });
+    await writeFile(storagePath, Buffer.from([1, 2, 3]));
+    asset = { ...selected.assets[0], storagePath };
+    const headers = {
+      'X-Actor-User-Id': '22', 'X-Actor-Username': 'worker',
+      'X-Actor-Role': 'USER', 'X-Actor-Credential-Version': '1',
+    };
+    const response = await fetch(`${root}/v1/delivery-pool/archive`, {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ scope: 'SELECTED', taskIds: [7] }),
+    });
+    assert.equal(response.status, 201);
+    const prepared = (await response.json()).data;
+    assert.match(prepared.batchCode, /^JF-[0-9A-F]{8}$/u);
+    const download = await fetch(`${root}/v1/delivery-pool/archive/${prepared.downloadId}`, {
+      headers,
+    });
+    assert.equal(download.status, 200);
+    assert.ok((await download.arrayBuffer()).byteLength > 0);
+    await new Promise((resolve) => setImmediate(resolve));
+  }, { enforceUserAuth: true });
+
+  assert.equal(calls[0][0], 'create');
+  assert.equal(calls[0][1].scope, 'SELECTED');
+  assert.deepEqual(calls[0][1].bindings, [{
+    taskId: 7, copyRevisionId: 107, imageRunId: 'run-7',
+  }]);
+  assert.equal(calls[0][2].userId, 22);
+  assert.ok(calls.some(([kind, , actor]) => kind === 'download' && actor.username === 'worker'));
+});
+
 test('legacy package-scoped exports keep their exact scope while ZIP folders use client batches', async () => {
   const selected = task(7, 'REVIEWED', '秋季/收纳');
   const snapshotCalls = [];

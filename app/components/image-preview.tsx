@@ -35,6 +35,7 @@ type ImagePreviewProps = {
   onClose?: () => void;
   onPrevious?: () => void;
   onNext?: () => void;
+  initialMode?: PreviewMode;
   backdrop?: PreviewBackdrop;
   onBackdropChange?: (value: PreviewBackdrop) => void;
 };
@@ -87,13 +88,14 @@ export function ImagePreview({
   onClose,
   onPrevious,
   onNext,
+  initialMode,
   backdrop,
   onBackdropChange,
 }: ImagePreviewProps) {
   const [internalOpen, setInternalOpen] = useState(false);
   const defaultMode = useDefaultPreviewMode();
   const [modeOverride, setViewMode] = useState<PreviewMode | null>(null);
-  const viewMode = modeOverride ?? defaultMode;
+  const viewMode = modeOverride ?? initialMode ?? defaultMode;
   const [zoom, setZoom] = useState(100);
   const [rotation, setRotation] = useState(0);
   const [internalBackdrop, setInternalBackdrop] = useState<PreviewBackdrop>('white');

@@ -8,7 +8,7 @@ import { ImagePreviewBackgroundControl, type PreviewBackdrop } from '../componen
 import { Checkbox, Input, Textarea } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 
-import { CheckCircle2, ChevronLeft, ChevronRight, Download, LoaderCircle, RefreshCw, RotateCcw, Save, Trash2 } from 'lucide-react';
+import { CheckCircle2, ChevronLeft, ChevronRight, Download, History, LoaderCircle, RefreshCw, RotateCcw, Save, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type FormEvent } from 'react';
 
 import {
@@ -24,7 +24,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Disclosure, DisclosureContent, DisclosureTrigger } from '@/components/ui/disclosure';
 import { TransientInfoBubble } from '@/components/ui/transient-info-bubble';
 
-import { apiRequest } from '../components/api-client';
+import { ApiRequestError, apiRequest } from '../components/api-client';
 import { createRequestId } from '../components/request-id';
 import { resumeImageTask } from '../components/resume-image-task';
 import { canResumeImageTask } from '../../src/control-plane/image-resume.mjs';
@@ -50,6 +50,7 @@ import {
 } from './human-quality-rating';
 import { DEFAULT_SETTINGS, useHumanQualitySettings } from './human-quality-settings';
 import { buildCopyReviewSubmission } from '../../src/copy-review-submission.mjs';
+import styles from './copy-review-drafts.module.css';
 
 type TaskState =
   | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_QC_PENDING' | 'COPY_FAILED'
@@ -66,6 +67,24 @@ type ImagePlanItem = {
   layout?: PageLayout;
 };
 type ReviewDraft = { copy: Copy; imagePlan: ImagePlanItem[]; imageSettings: ImageSettings };
+type CopyReviewDraftContent = {
+  version: 1;
+  draft: ReviewDraft;
+  aiDisclosureEnabled: boolean;
+  copyOriginalScore: HumanScore | null;
+  copyOriginalReasons: string[];
+  copyOriginalNote: string;
+};
+type CopyReviewDraftRecord = {
+  id: number;
+  taskId: number;
+  baseCopyRevisionId: number;
+  reviewerAccountId: number;
+  reviewerUsername: string;
+  version: number;
+  content: CopyReviewDraftContent;
+  createdAt: string;
+};
 type CopyRevision = {
   id: number;
   executionId: string | null;
@@ -331,6 +350,16 @@ function draftFromRevision(revision: CopyRevision | undefined): ReviewDraft | nu
   };
 }
 
+function initialAiDisclosure(detail: TaskDetail) {
+  const returnedRevision = currentRevision(detail)?.reworkOrigin != null;
+  return (detail.state !== 'COPY_REVIEW_PENDING' || returnedRevision)
+    && detail.aiDisclosureEnabled === true;
+}
+
+function copyReviewDraftFingerprint(content: CopyReviewDraftContent) {
+  return JSON.stringify(content);
+}
+
 function latestAssessment(
   detail: TaskDetail,
   predicate: (assessment: HumanQualityAssessment) => boolean,
@@ -454,7 +483,17 @@ export function TaskReviewDialog({
   const [imageReworkCopyFields, setImageReworkCopyFields] = useState<Array<'TITLE' | 'BODY' | 'TAGS'>>([]);
   const [invalidField, setInvalidField] = useState<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null>(null);
   const [copyEditNotice, setCopyEditNotice] = useState<{ area: CopyEditArea; message: string; sequence: number } | null>(null);
+  const [draftHistory, setDraftHistory] = useState<CopyReviewDraftRecord[]>([]);
+  const [draftHydrated, setDraftHydrated] = useState(false);
+  const [draftSaveStatus, setDraftSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [draftSaveError, setDraftSaveError] = useState('');
+  const [draftSaveConflict, setDraftSaveConflict] = useState(false);
+  const [lastSavedDraftFingerprint, setLastSavedDraftFingerprint] = useState<string | null>(null);
+  const [lastDraftSavedAt, setLastDraftSavedAt] = useState<string | null>(null);
+  const [restoredDraftId, setRestoredDraftId] = useState<number | null>(null);
   const loadRequestRef = useRef(0);
+  const draftSaveAbortRef = useRef<AbortController | null>(null);
+  const lastSavedDraftIdRef = useRef<number | null>(null);
   const reviewSessionRef = useRef<{ fingerprint: string; id: string } | null>(null);
   const copyEditNoticeSequenceRef = useRef(0);
   const lastCopyEditNoticeRef = useRef<{ area: CopyEditArea; message: string; at: number } | null>(null);
@@ -473,11 +512,33 @@ export function TaskReviewDialog({
       if (requestId !== loadRequestRef.current) return;
       const copyRatings = copyRatingsFromDetail(next);
       const imageAssessment = imageAssessmentFromDetail(next);
+      const revisionDraft = draftFromRevision(currentRevision(next));
+      const disclosureEnabled = initialAiDisclosure(next);
+      const history = next.state === 'COPY_REVIEW_PENDING' && next.assignedToUserId !== null
+          && next.currentCopyRevisionId && revisionDraft
+        ? await apiRequest<{ baseCopyRevisionId: number | null; drafts: CopyReviewDraftRecord[] }>(
+          apiPath(`/v1/tasks/${taskId}/copy-review-drafts`),
+        )
+        : { baseCopyRevisionId: next.currentCopyRevisionId, drafts: [] };
+      if (requestId !== loadRequestRef.current) return;
+      const latestDraft = history.baseCopyRevisionId === next.currentCopyRevisionId
+        ? history.drafts[0] : undefined;
+      const initialDraftContent: CopyReviewDraftContent | null = revisionDraft ? {
+        version: 1,
+        draft: revisionDraft,
+        aiDisclosureEnabled: disclosureEnabled,
+        copyOriginalScore: copyRatings.current?.score ?? null,
+        copyOriginalReasons: [...(copyRatings.current?.reasonCodes ?? [])].sort(),
+        copyOriginalNote: copyRatings.current?.note ?? '',
+      } : null;
+      const restoredContent = latestDraft?.content ?? initialDraftContent;
       setDetail(next);
-      setDraft(draftFromRevision(currentRevision(next)));
-      setCopyOriginalScore(copyRatings.current?.score ?? null);
-      setCopyOriginalReasons(copyRatings.current?.reasonCodes ?? []);
-      setCopyOriginalNote(copyRatings.current?.note ?? '');
+      setDraft(restoredContent?.draft ?? revisionDraft);
+      setCopyOriginalScore(restoredContent
+        ? restoredContent.copyOriginalScore
+        : copyRatings.current?.score ?? null);
+      setCopyOriginalReasons(restoredContent?.copyOriginalReasons ?? copyRatings.current?.reasonCodes ?? []);
+      setCopyOriginalNote(restoredContent?.copyOriginalNote ?? copyRatings.current?.note ?? '');
       setImageScore(imageAssessment?.score ?? null);
       setImageReasons(imageAssessment?.reasonCodes ?? []);
       setImageProblemAssetIds(imageAssessment?.problemAssetIds ?? []);
@@ -486,11 +547,18 @@ export function TaskReviewDialog({
         (field): field is 'TITLE' | 'BODY' | 'TAGS' => ['TITLE', 'BODY', 'TAGS'].includes(field),
       ));
       reviewSessionRef.current = null;
-      // Initial generated-copy review is opt-in.  A returned copy revision keeps
+      // Initial generated-copy review is opt-in. A returned copy revision keeps
       // the already-approved disclosure choice instead of silently resetting it.
-      const returnedRevision = currentRevision(next)?.reworkOrigin != null;
-      setAiDisclosureEnabled((next.state !== 'COPY_REVIEW_PENDING' || returnedRevision)
-        && next.aiDisclosureEnabled === true);
+      setAiDisclosureEnabled(restoredContent?.aiDisclosureEnabled ?? disclosureEnabled);
+      setDraftHistory(history.drafts);
+      lastSavedDraftIdRef.current = latestDraft?.id ?? null;
+      setLastSavedDraftFingerprint(restoredContent ? copyReviewDraftFingerprint(restoredContent) : null);
+      setLastDraftSavedAt(latestDraft?.createdAt ?? null);
+      setRestoredDraftId(latestDraft?.id ?? null);
+      setDraftSaveStatus(latestDraft ? 'saved' : 'idle');
+      setDraftSaveError('');
+      setDraftSaveConflict(false);
+      setDraftHydrated(true);
       setError('');
     } catch (caught) {
       if (requestId === loadRequestRef.current) setError(caught instanceof Error ? caught.message : '任务详情读取失败');
@@ -500,6 +568,9 @@ export function TaskReviewDialog({
   }, [taskId]);
 
   useEffect(() => {
+    draftSaveAbortRef.current?.abort();
+    draftSaveAbortRef.current = null;
+    lastSavedDraftIdRef.current = null;
     setDetail(null);
     setDraft(null);
     setSelectedAssetIndex(0);
@@ -516,6 +587,14 @@ export function TaskReviewDialog({
     setImageReworkTarget('IMAGE');
     setImageReworkCopyFields([]);
     setCopyEditNotice(null);
+    setDraftHistory([]);
+    setDraftHydrated(false);
+    setDraftSaveStatus('idle');
+    setDraftSaveError('');
+    setDraftSaveConflict(false);
+    setLastSavedDraftFingerprint(null);
+    setLastDraftSavedAt(null);
+    setRestoredDraftId(null);
     lastCopyEditNoticeRef.current = null;
     reviewSessionRef.current = null;
     setInvalidField(null);
@@ -526,7 +605,10 @@ export function TaskReviewDialog({
       return;
     }
     void load();
-    return () => { loadRequestRef.current += 1; };
+    return () => {
+      loadRequestRef.current += 1;
+      draftSaveAbortRef.current?.abort();
+    };
   }, [load, taskId]);
 
   const revision = currentRevision(detail);
@@ -616,6 +698,67 @@ export function TaskReviewDialog({
   const hasUnsavedChanges = editable
     ? draftChanged || aiDisclosureEnabled || copyRatingChanged
     : imagePlanChanged || imageConfigurationChanged || imageRatingChanged;
+  const copyReviewDraftContent = useMemo<CopyReviewDraftContent | null>(() => draft ? ({
+    version: 1,
+    draft,
+    aiDisclosureEnabled,
+    copyOriginalScore,
+    copyOriginalReasons: [...copyOriginalReasons].sort(),
+    copyOriginalNote,
+  }) : null, [aiDisclosureEnabled, copyOriginalNote, copyOriginalReasons, copyOriginalScore, draft]);
+  const currentDraftFingerprint = copyReviewDraftContent
+    ? copyReviewDraftFingerprint(copyReviewDraftContent)
+    : null;
+  const hasUnpersistedDraftChanges = Boolean(editable && draftHydrated && currentDraftFingerprint
+    && currentDraftFingerprint !== lastSavedDraftFingerprint);
+
+  const persistCopyReviewDraft = useCallback(async (
+    content: CopyReviewDraftContent,
+    fingerprint: string,
+  ) => {
+    if (!taskId || !revision?.id || draftSaveStatus === 'saving') return;
+    const controller = new AbortController();
+    draftSaveAbortRef.current?.abort();
+    draftSaveAbortRef.current = controller;
+    setDraftSaveStatus('saving');
+    setDraftSaveError('');
+    setDraftSaveConflict(false);
+    try {
+      const result = await apiRequest<{ created: boolean; draft: CopyReviewDraftRecord }>(
+        apiPath(`/v1/tasks/${taskId}/copy-review-drafts`),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            baseCopyRevisionId: revision.id,
+            expectedLatestDraftId: lastSavedDraftIdRef.current,
+            content,
+          }),
+          signal: controller.signal,
+          keepalive: true,
+        },
+      );
+      lastSavedDraftIdRef.current = result.draft.id;
+      setDraftHistory(current => [
+        result.draft,
+        ...current.filter(item => item.id !== result.draft.id),
+      ].slice(0, 20));
+      setLastSavedDraftFingerprint(fingerprint);
+      setLastDraftSavedAt(result.draft.createdAt);
+      setRestoredDraftId(result.draft.id);
+      setDraftSaveStatus('saved');
+    } catch (caught) {
+      if (controller.signal.aborted) return;
+      const conflict = caught instanceof ApiRequestError && caught.code === 'COPY_REVIEW_DRAFT_CONFLICT';
+      setDraftSaveStatus('error');
+      setDraftSaveConflict(conflict);
+      setDraftSaveError(conflict
+        ? '其他窗口已保存更新的草稿。请刷新任务，再从草稿历史选择要继续的版本。'
+        : caught instanceof Error ? caught.message : '草稿保存失败，请重试');
+    } finally {
+      if (draftSaveAbortRef.current === controller) draftSaveAbortRef.current = null;
+    }
+  }, [draftSaveStatus, revision?.id, taskId]);
 
   useEffect(() => {
     setCopyEditNotice(null);
@@ -623,14 +766,25 @@ export function TaskReviewDialog({
   }, [copyEditBlockMessage, planEditBlockMessage, taskId]);
 
   useEffect(() => {
-    if (!hasUnsavedChanges) return;
+    if (!hasUnpersistedDraftChanges && draftSaveStatus !== 'saving') return;
     const warnBeforeUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       event.returnValue = '';
     };
     window.addEventListener('beforeunload', warnBeforeUnload);
     return () => window.removeEventListener('beforeunload', warnBeforeUnload);
-  }, [hasUnsavedChanges]);
+  }, [draftSaveStatus, hasUnpersistedDraftChanges]);
+
+  useEffect(() => {
+    if (!editable || !draftHydrated || !copyReviewDraftContent || !currentDraftFingerprint
+        || !hasUnpersistedDraftChanges || submitting || draftSaveStatus === 'saving'
+        || draftSaveStatus === 'error' && draftSaveConflict) return;
+    const timer = window.setTimeout(() => {
+      void persistCopyReviewDraft(copyReviewDraftContent, currentDraftFingerprint);
+    }, draftSaveStatus === 'error' ? 5_000 : 1_200);
+    return () => window.clearTimeout(timer);
+  }, [copyReviewDraftContent, currentDraftFingerprint, draftHydrated, draftSaveConflict, draftSaveStatus, editable,
+    hasUnpersistedDraftChanges, persistCopyReviewDraft, submitting]);
 
   useEffect(() => {
     if (!invalidField) return;
@@ -640,15 +794,63 @@ export function TaskReviewDialog({
   }, [invalidField]);
 
   async function discardChanges(action: 'close' | 'refresh') {
-    if (submitting || (action === 'refresh' && loading)) return;
-    if (hasUnsavedChanges && !await confirm({
-      title: action === 'close' ? '放弃修改并关闭？' : '放弃修改并刷新？',
-      description: '当前文案、图片文案规划或图片配置有未提交修改，继续操作会丢失这些修改。',
-      confirmLabel: action === 'close' ? '放弃修改并关闭' : '放弃修改并刷新',
+    if (submitting || draftSaveStatus === 'saving' || (action === 'refresh' && loading)) return;
+    if (hasUnpersistedDraftChanges && !await confirm({
+      title: action === 'close' ? '未保存草稿，仍要关闭？' : '未保存草稿，仍要刷新？',
+      description: '最近的修改还没有写入服务器，继续操作会丢失这一小段内容。',
+      confirmLabel: action === 'close' ? '放弃并关闭' : '放弃并刷新',
       cancelLabel: '继续编辑',
     })) return;
     if (action === 'close') onOpenChange(false);
     else await load();
+  }
+
+  async function restoreDraftVersion(item: CopyReviewDraftRecord) {
+    if (!editable || submitting || draftSaveStatus === 'saving') return;
+    const fingerprint = copyReviewDraftFingerprint(item.content);
+    if (fingerprint !== currentDraftFingerprint && hasUnpersistedDraftChanges && !await confirm({
+      title: `恢复草稿 v${item.version}？`,
+      description: '当前尚未自动保存的修改会被这个历史草稿替换。恢复后会自动另存为最新草稿。',
+      confirmLabel: '恢复这个版本',
+      cancelLabel: '继续编辑',
+    })) return;
+    setDraft(item.content.draft);
+    setAiDisclosureEnabled(item.content.aiDisclosureEnabled);
+    setCopyOriginalScore(item.content.copyOriginalScore);
+    setCopyOriginalReasons(item.content.copyOriginalReasons);
+    setCopyOriginalNote(item.content.copyOriginalNote);
+    setRestoredDraftId(item.id);
+    setDraftSaveStatus('idle');
+    setDraftSaveError('');
+    setDraftSaveConflict(false);
+  }
+
+  async function restoreCurrentCopyRevision() {
+    if (!editable || !savedDraft || !detail || submitting || draftSaveStatus === 'saving') return;
+    const currentRating = savedCopyRatings.current;
+    const content: CopyReviewDraftContent = {
+      version: 1,
+      draft: savedDraft,
+      aiDisclosureEnabled: initialAiDisclosure(detail),
+      copyOriginalScore: currentRating?.score ?? null,
+      copyOriginalReasons: [...(currentRating?.reasonCodes ?? [])].sort(),
+      copyOriginalNote: currentRating?.note ?? '',
+    };
+    if (hasUnpersistedDraftChanges && !await confirm({
+      title: '恢复当前正式版本？',
+      description: '尚未自动保存的修改会被替换；恢复结果随后会作为一个新草稿保存。',
+      confirmLabel: '恢复正式版本',
+      cancelLabel: '继续编辑',
+    })) return;
+    setDraft(content.draft);
+    setAiDisclosureEnabled(content.aiDisclosureEnabled);
+    setCopyOriginalScore(content.copyOriginalScore);
+    setCopyOriginalReasons(content.copyOriginalReasons);
+    setCopyOriginalNote(content.copyOriginalNote);
+    setRestoredDraftId(null);
+    setDraftSaveStatus('idle');
+    setDraftSaveError('');
+    setDraftSaveConflict(false);
   }
   const sources = revision?.content.generation?.research?.sources ?? [];
   const xiaohongshuLinks = (detail?.xiaohongshuLinks ?? []).flatMap((link) => {
@@ -793,7 +995,7 @@ export function TaskReviewDialog({
   }
 
   async function submitCopyDecision(decision: 'SAVE' | 'APPROVE' | 'DISCARD', form: HTMLFormElement) {
-    if (!detail || !revision || !draft || !editable || loading || submitting) return;
+    if (!detail || !revision || !draft || !editable || loading || submitting || draftSaveStatus === 'saving') return;
     if (decision !== 'DISCARD' && imagePlanChanged) {
       setMobilePane('plan');
       setError('图片文案规划有未保存修改。请先单独保存图片规划，再提交只针对文案的评分或审核结果。');
@@ -1289,6 +1491,57 @@ export function TaskReviewDialog({
                 {editable && isCopyRework && <div className="notice warning" role="status"><strong>{revision?.reworkOrigin === 'QA_RETURN' || detail.mandatoryCopyQcOrigin === 'QA_RETURN' ? '文案抽检返工' : '图片质检文案返工'}</strong>{revision?.reworkReasonCodes?.length ? ` · 原因：${revision.reworkReasonCodes.join('、')}` : ''}{revision?.reworkNote ? ` · 要求：${revision.reworkNote}` : ''}<br />返工稿必须实际修改标题、正文或标签；仅保存不会提交复检。人工确认达标后，系统将最终稿记录为 3 分并提交强制复检；复检通过后才会进入待生图队列。</div>}
                 {isImageRetryExhausted(detail) && <div className="notice warning" role="status">{IMAGE_RETRY_EXHAUSTED_LABEL}</div>}
                 {detail.error && <div className="notice error" role="alert">{detail.error}</div>}
+                {editable && <Disclosure className={styles.panel}>
+                  <DisclosureTrigger className={styles.trigger}>
+                    <span><History size={16} /><strong>审核草稿</strong></span>
+                    <small>{draftSaveStatus === 'saving'
+                      ? '正在保存…'
+                      : draftSaveStatus === 'error'
+                        ? '保存失败'
+                        : hasUnpersistedDraftChanges
+                          ? '等待自动保存'
+                          : lastDraftSavedAt
+                            ? `已保存 ${new Date(lastDraftSavedAt).toLocaleString('zh-CN', { hour12: false })}`
+                            : '修改后自动保存到服务器'}</small>
+                  </DisclosureTrigger>
+                  <DisclosureContent className={styles.content}>
+                    <div className={styles.actions}>
+                      <div>
+                        <strong>服务器草稿历史</strong>
+                        <small>按当前文案版本和你的账号独立保存，服务或网页重启后仍可恢复。</small>
+                      </div>
+                      <Button unstyled className="button small" type="button"
+                        disabled={!hasUnpersistedDraftChanges || draftSaveStatus === 'saving' || !copyReviewDraftContent || !currentDraftFingerprint}
+                        onClick={() => {
+                          if (copyReviewDraftContent && currentDraftFingerprint) {
+                            void persistCopyReviewDraft(copyReviewDraftContent, currentDraftFingerprint);
+                          }
+                        }}>
+                        {draftSaveStatus === 'saving' ? <LoaderCircle className="animate-spin" size={14} /> : <Save size={14} />}
+                        立即保存
+                      </Button>
+                      <Button unstyled className="button small" type="button"
+                        disabled={draftSaveStatus === 'saving'} onClick={() => { void restoreCurrentCopyRevision(); }}>
+                        <RotateCcw size={14} />恢复正式版本
+                      </Button>
+                    </div>
+                    {draftSaveError && <div className="notice error" role="alert">{draftSaveError}</div>}
+                    {draftHistory.length > 0
+                      ? <ol className={styles.history}>{draftHistory.map(item => <li key={item.id} data-current={item.id === restoredDraftId}>
+                        <div>
+                          <strong>草稿 v{item.version}</strong>
+                          <span>{item.content.draft.copy.title || '未填写标题'}</span>
+                          <small>{new Date(item.createdAt).toLocaleString('zh-CN', { hour12: false })}</small>
+                        </div>
+                        <Button unstyled className="button small" type="button"
+                          disabled={draftSaveStatus === 'saving' || item.id === restoredDraftId && copyReviewDraftFingerprint(item.content) === currentDraftFingerprint}
+                          onClick={() => { void restoreDraftVersion(item); }}>
+                          {item.id === restoredDraftId && copyReviewDraftFingerprint(item.content) === currentDraftFingerprint ? '当前版本' : '恢复'}
+                        </Button>
+                      </li>)}</ol>
+                      : <div className={styles.empty}>还没有历史草稿。开始修改后会自动生成第一个版本。</div>}
+                  </DisclosureContent>
+                </Disclosure>}
                 {draft ?
                 <div className="workbench-copy-fields" data-edit-blocked={Boolean(copyEditBlockMessage)}
                   onPointerDownCapture={() => { copyEditPointerAtRef.current = Date.now(); }}
@@ -1573,8 +1826,8 @@ export function TaskReviewDialog({
                           onChange={(event) => updateImagePlan(index, { headline: event.target.value })} />
                       </div>
                       <div className="field full">
-                        <label htmlFor={`review-plan-subtitle-${index}`}>页面副标题</label>
-                        <Input id={`review-plan-subtitle-${index}`} className="input" value={item.subtitle} maxLength={30} required readOnly={planFieldsReadOnly}
+                        <label htmlFor={`review-plan-subtitle-${index}`}>页面副标题 <small>选填</small></label>
+                        <Input id={`review-plan-subtitle-${index}`} className="input" value={item.subtitle} maxLength={30} readOnly={planFieldsReadOnly}
                           onChange={(event) => updateImagePlan(index, { subtitle: event.target.value })} />
                       </div>
                       <div className="field full">
@@ -1630,11 +1883,13 @@ export function TaskReviewDialog({
 
           <footer className="workbench-review-footer">
             {error && <div className="notice error workbench-review-footer-error" role="alert">{error}</div>}
-            <span><strong className="workbench-review-dirty" role="status">{hasUnsavedChanges ? '有未提交内容 · ' : ''}</strong>{editable
+            <span><strong className="workbench-review-dirty" role="status">{hasUnsavedChanges
+              ? hasUnpersistedDraftChanges || draftSaveStatus === 'saving' ? '有未保存草稿 · ' : '草稿已保存，尚未提交 · '
+              : ''}</strong>{editable
               ? copyContentChanged ? `保存后将创建人工修订版 v${(revision?.revision ?? 0) + 1}` : `当前文案版本 v${revision?.revision ?? '—'} · 等待评分决定`
               : `当前文案版本 v${revision?.revision ?? '—'}`}</span>
             <div>
-              <DialogClose asChild><Button unstyled className="button" type="button" disabled={submitting}>关闭</Button></DialogClose>
+              <DialogClose asChild><Button unstyled className="button" type="button" disabled={submitting || draftSaveStatus === 'saving'}>关闭</Button></DialogClose>
               {canRetryCopy && <Button unstyled className="button primary" type="button" disabled={submitting || loading} onClick={() => { void retryCopy(); }}><RotateCcw size={15} />重试文案</Button>}
               {role === 'ADMIN' && detail.state === 'COPY_QC_PENDING'
                 && <Button unstyled className="button primary" type="button" disabled={submitting || loading}
@@ -1666,11 +1921,11 @@ export function TaskReviewDialog({
                   onClick={(event) => { if (event.currentTarget.form) void saveImagePlan(event.currentTarget.form); }}>
                   <Save size={15} />{submitting ? '正在保存…' : '单独保存图片规划'}
                 </Button>}
-                {!isCopyRework && copyOriginalScore === 1 && <Button unstyled className="button danger" type="button" disabled={submitting || loading || !copyRatingComplete} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('DISCARD', event.currentTarget.form); }}><Trash2 size={15} />评分并废弃</Button>}
-                {(isCopyRework || copyOriginalScore !== 1) && <Button unstyled className="button" type="button" disabled={submitting || loading || !copyRatingComplete || isCopyRework && !draftChanged} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('SAVE', event.currentTarget.form); }}>
+                {!isCopyRework && copyOriginalScore === 1 && <Button unstyled className="button danger" type="button" disabled={submitting || loading || draftSaveStatus === 'saving' || !copyRatingComplete} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('DISCARD', event.currentTarget.form); }}><Trash2 size={15} />评分并废弃</Button>}
+                {(isCopyRework || copyOriginalScore !== 1) && <Button unstyled className="button" type="button" disabled={submitting || loading || draftSaveStatus === 'saving' || !copyRatingComplete || isCopyRework && !draftChanged} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('SAVE', event.currentTarget.form); }}>
                   {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : isCopyRework ? '保存返工稿，暂不提交复检' : '保存评分，暂不提交'}
                 </Button>}
-                <Button unstyled className="button primary" type="submit" disabled={submitting || loading || !canApproveCopy}>
+                <Button unstyled className="button primary" type="submit" disabled={submitting || loading || draftSaveStatus === 'saving' || !canApproveCopy}>
                   {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : <><CheckCircle2 size={15} />{isCopyRework ? '提交强制复检' : '审核通过并进入后续流程'}</>}
                 </Button>
               </>}

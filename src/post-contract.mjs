@@ -52,7 +52,7 @@ export function postOutputSchema(imageCount = AUTO_IMAGE_COUNT) {
     properties: {
       kind: { type: 'string', enum: IMAGE_KINDS },
       headline: boundedString(18),
-      subtitle: boundedString(30),
+      subtitle: boundedString(30, 0),
       bullets: boundedStringArray(5, 40, 2),
       prompt: boundedString(1_000, 10),
     },
@@ -265,7 +265,7 @@ function validateImagePlan(value, imageCount) {
     return {
       kind,
       headline: expectString(image.headline, `imagePlan[${index}].headline`, { max: 18 }),
-      subtitle: expectString(image.subtitle, `imagePlan[${index}].subtitle`, { max: 30 }),
+      subtitle: expectString(image.subtitle, `imagePlan[${index}].subtitle`, { max: 30, allowEmpty: true }),
       bullets: expectStringArray(image.bullets, `imagePlan[${index}].bullets`, {
         min: 2,
         max: 5,
@@ -518,7 +518,7 @@ export function buildDynamicImagePlanPrompt(post) {
   });
   const content = JSON.stringify({ title: finalized.title, body: finalized.body }, null, 2);
   return businessPrompt('COPY_IMAGE_PLAN_SYSTEM', {
-    contract: '只返回 {"imagePlan":[...]}；3～5页，首项kind=hero，其他kind为steps/checklist/comparison/detail/summary。每项kind/headline/subtitle/bullets/prompt必须完整；headline≤18、subtitle≤30、bullets为2～5项，每项checklist≤40否则≤30、prompt为10～1000字符。不得修改正文。',
+    contract: '只返回 {"imagePlan":[...]}；3～5页，首项kind=hero，其他kind为steps/checklist/comparison/detail/summary。每项必须包含kind/headline/subtitle/bullets/prompt字段；headline为1～18字符，subtitle允许为空字符串、非空时≤30字符，bullets为2～5项，每项checklist≤40否则≤30、prompt为10～1000字符。不得修改正文。',
     data: { title: finalized.title, body: finalized.body },
   });
 }

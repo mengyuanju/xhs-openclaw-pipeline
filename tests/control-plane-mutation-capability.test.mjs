@@ -9,6 +9,7 @@ import {
 
 test('protected control-plane operations declare their version contracts', () => {
   for (const [routePath, method, capability, minimumVersion] of [
+    ['/v1/tasks/42/copy-review-drafts', 'POST', 'copyReviewDraftVersion', 1],
     ['/v1/tasks/42/admin-direct-copy-qa', 'POST', 'adminDirectCopyQaVersion', 1],
     ['/v1/settings/xhs_query_search', 'PUT', 'xiaohongshuQuerySearchVersion', 5],
     ['/v1/tasks', 'POST', 'taskAssignmentVersion', 3],
@@ -28,12 +29,13 @@ test('protected control-plane operations declare their version contracts', () =>
     ['/v1/query-packages/9/production-batches', 'POST', 'queryPackageVersion', 2],
     ['/v1/query-packages/9/abandon', 'POST', 'queryPackageVersion', 2],
     ['/v1/query-packages/9/permanent', 'DELETE', 'queryPackageVersion', 2],
-    ['/v1/delivery-pool', 'GET', 'finalDeliveryVersion', 4],
-    ['/v1/delivery-pool/archive', 'POST', 'finalDeliveryVersion', 4],
-    ['/v1/delivery-pool/archive/token', 'HEAD', 'finalDeliveryVersion', 4],
-    ['/v1/delivery-pool/archive/token', 'GET', 'finalDeliveryVersion', 4],
-    ['/v1/delivery-batches', 'GET', 'finalDeliveryVersion', 4],
-    ['/v1/delivery-batches/123/archive', 'GET', 'finalDeliveryVersion', 4],
+    ['/v1/delivery-pool', 'GET', 'finalDeliveryVersion', 5],
+    ['/v1/delivery-pool/archive', 'POST', 'finalDeliveryVersion', 5],
+    ['/v1/delivery-pool/archive/token', 'HEAD', 'finalDeliveryVersion', 5],
+    ['/v1/delivery-pool/archive/token', 'GET', 'finalDeliveryVersion', 5],
+    ['/v1/delivery-batches', 'GET', 'finalDeliveryVersion', 5],
+    ['/v1/delivery-batches/123/archive', 'GET', 'finalDeliveryVersion', 5],
+    ['/v1/delivery-batches/123/confirm', 'POST', 'finalDeliveryVersion', 5],
     ['/v1/delivery-pool/xlsx', 'POST', 'deliverySpreadsheetVersion', 2],
     ['/v1/delivery-pool/xlsx/token', 'HEAD', 'deliverySpreadsheetVersion', 2],
     ['/v1/delivery-pool/xlsx/token', 'GET', 'deliverySpreadsheetVersion', 2],
@@ -153,7 +155,7 @@ test('mutation capability check allows only compatible center versions', async (
     routePath: '/v1/delivery-pool/archive',
     method: 'POST',
     fetchImpl: async () => Response.json({
-      data: { capabilities: { finalDeliveryVersion: 4 } },
+      data: { capabilities: { finalDeliveryVersion: 5 } },
     }),
   });
 

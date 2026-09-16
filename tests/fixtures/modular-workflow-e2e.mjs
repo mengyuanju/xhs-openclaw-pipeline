@@ -450,7 +450,7 @@ const controlPlane = createServer(async (req, res) => {
         capabilities: {
           taskAssignmentVersion: 3,
           queryPackageVersion: 6,
-          finalDeliveryVersion: 4,
+          finalDeliveryVersion: 5,
           deliverySpreadsheetVersion: 2,
           deliveryPreviewVersion: 5,
         },
@@ -577,16 +577,19 @@ const controlPlane = createServer(async (req, res) => {
       return;
     }
     if (method === 'GET' && url.pathname === '/v1/delivery-batches') {
-      if (actorRole(req) !== 'ADMIN') {
-        error(res, 403, 'FORBIDDEN', 'fixture delivery history is admin-only');
+      if (!['ADMIN', 'USER'].includes(actorRole(req))) {
+        error(res, 403, 'FORBIDDEN', 'fixture delivery history access denied');
         return;
       }
       const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 50));
       const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
       const clientBatchCode = url.searchParams.get('clientBatchCode');
+      const visibleBatches = actorRole(req) === 'ADMIN' ? state.deliveryBatches
+        : state.deliveryBatches.filter((batch) => batch.batchKind === 'OPERATOR_DELIVERY'
+          && batch.createdByAccountId === actor.id && batch.createdByUsername === actor.username);
       const batches = clientBatchCode
-        ? state.deliveryBatches.filter((batch) => batch.clientBatchCode === clientBatchCode)
-        : state.deliveryBatches;
+        ? visibleBatches.filter((batch) => batch.clientBatchCode === clientBatchCode)
+        : visibleBatches;
       send(res, 200, {
         items: batches.slice(offset, offset + limit)
           .map(({ items: _items, content: _content, ...batch }) => batch),
@@ -596,12 +599,13 @@ const controlPlane = createServer(async (req, res) => {
     }
     const deliveryBatchMatch = url.pathname.match(/^\/v1\/delivery-batches\/([0-9a-f-]+)$/u);
     if (method === 'GET' && deliveryBatchMatch) {
-      if (actorRole(req) !== 'ADMIN') {
-        error(res, 403, 'FORBIDDEN', 'fixture delivery history is admin-only');
+      if (!['ADMIN', 'USER'].includes(actorRole(req))) {
+        error(res, 403, 'FORBIDDEN', 'fixture delivery history access denied');
         return;
       }
       const batch = state.deliveryBatches.find((entry) => entry.publicId === deliveryBatchMatch[1]);
-      if (!batch) {
+      if (!batch || (actor.role === 'USER' && (batch.batchKind !== 'OPERATOR_DELIVERY'
+          || batch.createdByAccountId !== actor.id || batch.createdByUsername !== actor.username))) {
         error(res, 404, 'DELIVERY_BATCH_NOT_FOUND', 'fixture delivery batch is missing');
         return;
       }
@@ -668,11 +672,15 @@ const controlPlane = createServer(async (req, res) => {
       return;
     }
     if (method === 'POST' && url.pathname === '/v1/delivery-pool/archive') {
-      if (actorRole(req) !== 'ADMIN') {
-        error(res, 403, 'FORBIDDEN', 'fixture delivery-pool export is admin-only');
+      if (!['ADMIN', 'USER'].includes(actorRole(req))) {
+        error(res, 403, 'FORBIDDEN', 'fixture delivery-pool export access denied');
         return;
       }
       const input = await jsonBody(req);
+      if (actor.role === 'USER' && input.scope !== 'SELECTED') {
+        error(res, 403, 'FORBIDDEN', 'fixture operators may export only selected work');
+        return;
+      }
       const requestedIds = input.scope === 'ALL_READY'
         ? state.deliveryEntries.map((entry) => entry.taskId)
         : input.scope === 'CLIENT_BATCH'
@@ -682,6 +690,14 @@ const controlPlane = createServer(async (req, res) => {
           ? state.deliveryEntries.filter((entry) => entry.queryPackageName === input.queryPackageName)
             .map((entry) => entry.taskId)
           : Array.isArray(input.taskIds) ? input.taskIds.map(Number) : [];
+      if (actor.role === 'USER' && requestedIds.some((taskId) => {
+        const task = state.tasks.find((entry) => entry.id === taskId);
+        return !task || task.assignedToAccountId !== actor.id
+          || task.assignedToUserId !== actor.username || task.state !== 'REVIEWED';
+      })) {
+        error(res, 403, 'FORBIDDEN', 'fixture operators may export only their own completed work');
+        return;
+      }
       const selectedEntries = state.deliveryEntries.filter(
         (entry) => requestedIds.includes(entry.taskId) && !entry.deliveryBatch,
       );
@@ -716,6 +732,8 @@ const controlPlane = createServer(async (req, res) => {
         queryPackageNames,
         clientBatchCode: input.scope === 'CLIENT_BATCH' ? input.clientBatchCode : null,
         status: 'GENERATED',
+        batchKind: actor.role === 'USER' ? 'OPERATOR_DELIVERY' : 'ADMIN_DELIVERY',
+        createdByRole: actor.role,
         fileName,
         byteSize: content.byteLength,
         sha256: 'a'.repeat(64),
@@ -726,6 +744,9 @@ const controlPlane = createServer(async (req, res) => {
         firstDownloadedAt: null,
         lastDownloadedAt: null,
         downloadCount: 0,
+        deliveredAt: null,
+        deliveredByAccountId: null,
+        deliveredByUsername: null,
         items: selectedEntries.map((entry, index) => ({
           id: state.deliveryBatches.length * 1000 + index + 1,
           ordinal: index + 1,
@@ -746,12 +767,16 @@ const controlPlane = createServer(async (req, res) => {
           publicId,
           code,
           status: batch.status,
+          batchKind: batch.batchKind,
+          createdByRole: batch.createdByRole,
+          createdByUsername: batch.createdByUsername,
           createdAt,
           downloadedAt: null,
         };
       }
       state.deliveryArchives.set(downloadId, {
         content, fileName, taskCount: taskIds.length, batchPublicId: publicId,
+        actorAccountId: actor.id, actorUsername: actor.username,
       });
       send(res, 201, {
         downloadId,
@@ -765,12 +790,8 @@ const controlPlane = createServer(async (req, res) => {
     }
     const deliveryDownloadMatch = url.pathname.match(/^\/v1\/delivery-pool\/archive\/([0-9a-f-]+)$/u);
     if (method === 'HEAD' && deliveryDownloadMatch) {
-      if (actorRole(req) !== 'ADMIN') {
-        error(res, 403, 'FORBIDDEN', 'fixture delivery-pool export is admin-only');
-        return;
-      }
       const archive = state.deliveryArchives.get(deliveryDownloadMatch[1]);
-      if (!archive) {
+      if (!archive || archive.actorAccountId !== actor.id || archive.actorUsername !== actor.username) {
         error(res, 404, 'NOT_FOUND', 'fixture delivery export is missing');
         return;
       }
@@ -785,12 +806,8 @@ const controlPlane = createServer(async (req, res) => {
       return;
     }
     if (method === 'GET' && deliveryDownloadMatch) {
-      if (actorRole(req) !== 'ADMIN') {
-        error(res, 403, 'FORBIDDEN', 'fixture delivery-pool export is admin-only');
-        return;
-      }
       const archive = state.deliveryArchives.get(deliveryDownloadMatch[1]);
-      if (!archive) {
+      if (!archive || archive.actorAccountId !== actor.id || archive.actorUsername !== actor.username) {
         error(res, 404, 'NOT_FOUND', 'fixture delivery export is missing');
         return;
       }
@@ -800,14 +817,14 @@ const controlPlane = createServer(async (req, res) => {
       );
       if (downloadedBatch) {
         const downloadedAt = new Date().toISOString();
-        downloadedBatch.status = 'DOWNLOADED';
+        if (downloadedBatch.status === 'GENERATED') downloadedBatch.status = 'DOWNLOADED';
         downloadedBatch.firstDownloadedAt ??= downloadedAt;
         downloadedBatch.lastDownloadedAt = downloadedAt;
         downloadedBatch.downloadCount += 1;
         for (const entry of state.deliveryEntries.filter(
           (item) => item.deliveryBatch?.publicId === downloadedBatch.publicId,
         )) {
-          entry.deliveryBatch.status = 'DOWNLOADED';
+          entry.deliveryBatch.status = downloadedBatch.status;
           entry.deliveryBatch.downloadedAt = downloadedAt;
         }
       }
@@ -824,20 +841,21 @@ const controlPlane = createServer(async (req, res) => {
       /^\/v1\/delivery-batches\/([0-9a-f-]+)\/archive$/u,
     );
     if (['HEAD', 'GET'].includes(method) && deliveryBatchArchiveMatch) {
-      if (actorRole(req) !== 'ADMIN') {
-        error(res, 403, 'FORBIDDEN', 'fixture delivery history is admin-only');
+      if (!['ADMIN', 'USER'].includes(actorRole(req))) {
+        error(res, 403, 'FORBIDDEN', 'fixture delivery history access denied');
         return;
       }
       const batch = state.deliveryBatches.find(
         (entry) => entry.publicId === deliveryBatchArchiveMatch[1],
       );
-      if (!batch) {
+      if (!batch || (actor.role === 'USER' && (batch.batchKind !== 'OPERATOR_DELIVERY'
+          || batch.createdByAccountId !== actor.id || batch.createdByUsername !== actor.username))) {
         error(res, 404, 'DELIVERY_BATCH_NOT_FOUND', 'fixture delivery batch is missing');
         return;
       }
       if (method === 'GET') {
         const downloadedAt = new Date().toISOString();
-        batch.status = 'DOWNLOADED';
+        if (batch.status === 'GENERATED') batch.status = 'DOWNLOADED';
         batch.firstDownloadedAt ??= downloadedAt;
         batch.lastDownloadedAt = downloadedAt;
         batch.downloadCount += 1;
@@ -850,6 +868,32 @@ const controlPlane = createServer(async (req, res) => {
         'Cache-Control': 'no-store',
       });
       res.end(method === 'GET' ? batch.content : undefined);
+      return;
+    }
+    const deliveryBatchConfirmMatch = url.pathname.match(
+      /^\/v1\/delivery-batches\/([0-9a-f-]+)\/confirm$/u,
+    );
+    if (method === 'POST' && deliveryBatchConfirmMatch) {
+      const batch = state.deliveryBatches.find(
+        (entry) => entry.publicId === deliveryBatchConfirmMatch[1],
+      );
+      if (!batch || (actor.role === 'USER' && (batch.batchKind !== 'OPERATOR_DELIVERY'
+          || batch.createdByAccountId !== actor.id || batch.createdByUsername !== actor.username))) {
+        error(res, 404, 'DELIVERY_BATCH_NOT_FOUND', 'fixture delivery batch is missing');
+        return;
+      }
+      if (batch.status !== 'DOWNLOADED' && batch.status !== 'DELIVERED') {
+        error(res, 409, 'DELIVERY_BATCH_NOT_DOWNLOADED', 'fixture batch must be downloaded first');
+        return;
+      }
+      if (batch.status !== 'DELIVERED') {
+        batch.status = 'DELIVERED';
+        batch.deliveredAt = new Date().toISOString();
+        batch.deliveredByAccountId = actor.id;
+        batch.deliveredByUsername = actor.username;
+      }
+      const { items: _items, content: _content, ...summary } = batch;
+      send(res, 200, summary);
       return;
     }
     if (method === 'GET' && url.pathname === '/v1/query-packages') {

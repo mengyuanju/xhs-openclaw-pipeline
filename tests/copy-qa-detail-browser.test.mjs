@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 
-test('copy QA detail browser: fixed header and footer frame a compact scrolling comparison', {
+test('copy QA detail browser: fixed frame contains a readable full-width page plan', {
   skip: process.env.RUN_COPY_QA_DETAIL_BROWSER !== '1', timeout: 60_000,
 }, async () => {
   const { build } = await import('esbuild');
@@ -106,7 +106,7 @@ test('copy QA detail browser: fixed header and footer frame a compact scrolling 
     assert.equal(metrics.dialogOverflow, 'hidden');
     assert.equal(metrics.bodyOverflowY, 'auto');
     assert.equal(metrics.bodyScrolls, true);
-    assert.equal(metrics.planColumns, 2);
+    assert.equal(metrics.planColumns, 1);
     assert.deepEqual(browserErrors, []);
   } finally {
     await browser?.close();

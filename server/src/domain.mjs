@@ -176,7 +176,7 @@ export function normalizeCopyReviewImagePlan(value) {
     return {
       kind,
       headline: normalizedReviewText(rawItem.headline, `copy review imagePlan[${index}].headline`, { max: 18 }),
-      subtitle: normalizedReviewText(rawItem.subtitle, `copy review imagePlan[${index}].subtitle`, { max: 30 }),
+      subtitle: normalizedReviewText(rawItem.subtitle, `copy review imagePlan[${index}].subtitle`, { min: 0, max: 30 }),
       bullets: normalizedReviewTextList(rawItem.bullets, `copy review imagePlan[${index}].bullets`, {
         min: 2,
         max: 5,

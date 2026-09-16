@@ -698,17 +698,22 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
                 : '还没有交付批次；首次创建后会在这里永久保留成员和版本记录。'}</div>
               : <div className="table-wrap mobile-cards" role="region" aria-label="交付批次历史，可横向滚动" tabIndex={0}>
                 <table>
-                  <thead><tr><th>批次</th><th>来源范围</th><th>数量</th><th>创建信息</th><th>下载状态</th><th>操作</th></tr></thead>
+                  <thead><tr><th>批次</th><th>来源范围</th><th>数量</th><th>创建信息</th><th>交付状态</th><th>操作</th></tr></thead>
                   <tbody>{deliveryBatches.map((batch) => <tr key={batch.publicId}>
                     <td data-label="批次"><strong>{batch.code}</strong><small className={styles.blockMeta}>{byteLabel(batch.byteSize)}</small></td>
                     <td data-label="来源范围">{batch.queryPackageNames.length
                       ? batch.queryPackageNames.slice(0, 3).join('、')
                       : '历史未归属内容'}{batch.queryPackageNames.length > 3 ? `等 ${batch.queryPackageNames.length} 个词包` : ''}<small className={styles.blockMeta}>甲方批次 {batch.clientBatchCode ?? '未记录'}</small></td>
                     <td data-label="数量">{batch.taskCount} 条</td>
-                    <td data-label="创建信息">{timeLabel(batch.createdAt)}<small className={styles.blockMeta}>{batch.createdByUsername}</small></td>
-                    <td data-label="下载状态">{batch.downloadCount
-                      ? `已下载 ${batch.downloadCount} 次`
-                      : '已生成，尚未下载'}<small className={styles.blockMeta}>{timeLabel(batch.lastDownloadedAt)}</small></td>
+                    <td data-label="创建信息">{timeLabel(batch.createdAt)}<small className={styles.blockMeta}>
+                      {batch.batchKind === 'OPERATOR_DELIVERY' ? '作业员交付' : '管理员交付'} · {batch.createdByUsername}
+                    </small></td>
+                    <td data-label="交付状态">{batch.status === 'DELIVERED'
+                      ? '已确认完成交付'
+                      : batch.downloadCount ? '已下载，待确认交付' : '已生成，尚未下载'}
+                    <small className={styles.blockMeta}>{batch.status === 'DELIVERED'
+                      ? `${timeLabel(batch.deliveredAt)} · ${batch.deliveredByUsername ?? '未知确认人'}`
+                      : batch.downloadCount ? `已下载 ${batch.downloadCount} 次 · ${timeLabel(batch.lastDownloadedAt)}` : '—'}</small></td>
                     <td className="row-action" data-label="操作"><div className={styles.actions}>
                       <Button unstyled className="button small" type="button" disabled={batchDetailLoading} onClick={() => { void openBatchDetail(batch); }}>
                         查看明细

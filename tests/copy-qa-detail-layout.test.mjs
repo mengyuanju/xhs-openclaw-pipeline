@@ -17,8 +17,9 @@ test('copy QA detail keeps its header and actions outside the scrolling content 
   assert.match(styles, /\.detailFooter\s*\{[^}]*border-top:/su);
 });
 
-test('copy QA image plan uses a compact two-column card layout on wide screens', async () => {
+test('copy QA image plan keeps each page full width and separates its content regions', async () => {
   const styles = await readFile(stylesUrl, 'utf8');
-  assert.match(styles, /@media \(min-width:\s*1080px\)[\s\S]*?\.detailDialog \.planGrid\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/u);
-  assert.match(styles, /\.detailDialog \.planCard\s*\{[^}]*grid-template-columns:/u);
+  assert.match(styles, /@media \(min-width:\s*1080px\)[\s\S]*?\.detailDialog \.planGrid\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/u);
+  assert.match(styles, /\.detailDialog \.planCard\s*\{[^}]*grid-template-areas:\s*"card-header card-header" "subtitle subtitle" "bullets prompt";/u);
+  assert.match(styles, /\.detailDialog \.planPrompt\s*\{[^}]*border-left:\s*1px solid var\(--line\);/u);
 });

@@ -2,6 +2,12 @@ import { ApiError } from '../admin/http.mjs';
 
 const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
   Object.freeze({
+    capability: 'copyReviewDraftVersion',
+    minimumVersion: 1,
+    matches: (routePath, method) => /^\/v1\/tasks\/[^/]+\/copy-review-drafts$/u.test(routePath)
+      && method === 'POST',
+  }),
+  Object.freeze({
     capability: 'adminDirectCopyQaVersion',
     minimumVersion: 1,
     matches: (routePath, method) => /^\/v1\/tasks\/[^/]+\/admin-direct-copy-qa$/u.test(routePath)
@@ -92,7 +98,7 @@ const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
   }),
   Object.freeze({
     capability: 'finalDeliveryVersion',
-    minimumVersion: 4,
+    minimumVersion: 5,
     matches: (routePath, method) => ((/^\/v1\/delivery-pool(?:\/|$)/u.test(routePath)
       || /^\/v1\/delivery-batches(?:\/|$)/u.test(routePath))
       && ['GET', 'HEAD', 'POST'].includes(method)),

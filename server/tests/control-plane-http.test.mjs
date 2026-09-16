@@ -449,6 +449,58 @@ test('copy approval forwards the editable review payload as one operation', asyn
   });
 });
 
+test('copy review draft endpoints preserve actor identity and created status', async () => {
+  const calls = [];
+  const draft = {
+    id: 3,
+    taskId: 7,
+    baseCopyRevisionId: 12,
+    reviewerAccountId: 1,
+    reviewerUsername: 'admin',
+    version: 1,
+    content: { version: 1 },
+    createdAt: '2026-09-16T00:00:00.000Z',
+  };
+  const repository = {
+    getTaskAccess: async () => ({
+      id: 7,
+      state: 'COPY_REVIEW_PENDING',
+      assignedToUserId: 'admin',
+      assignedToAccountId: 1,
+      createdByUserId: 'admin',
+      createdByAccountId: 1,
+    }),
+    listCopyReviewDrafts: async (taskId, options) => {
+      calls.push({ action: 'list', taskId, options });
+      return { baseCopyRevisionId: 12, drafts: [draft] };
+    },
+    saveCopyReviewDraft: async (taskId, input, options) => {
+      calls.push({ action: 'save', taskId, input, options });
+      return { created: true, draft };
+    },
+  };
+  await withServer(repository, async (root) => {
+    const listed = await fetch(`${root}/v1/tasks/7/copy-review-drafts`);
+    assert.equal(listed.status, 200);
+    assert.deepEqual((await listed.json()).data.drafts, [draft]);
+
+    const input = { baseCopyRevisionId: 12, expectedLatestDraftId: null, content: { version: 1 } };
+    const saved = await fetch(`${root}/v1/tasks/7/copy-review-drafts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    assert.equal(saved.status, 201);
+    assert.deepEqual((await saved.json()).data, { created: true, draft });
+    assert.deepEqual(calls.map(({ action, taskId }) => ({ action, taskId })), [
+      { action: 'list', taskId: '7' },
+      { action: 'save', taskId: '7' },
+    ]);
+    assert.deepEqual(calls[1].input, input);
+    assert.equal(calls[1].options.actor.userId, 1);
+  });
+});
+
 test('session actor identity requires the current immutable positive user id', async () => {
   const current = {
     id: 9, username: 'reused-reviewer', role: 'REVIEWER', status: 'ACTIVE', credentialVersion: 1,
@@ -690,6 +742,74 @@ test('personal task scopes are bound to the authenticated account for all, assig
   assert.equal(calls[2].createdByAccountId, 2);
   assert.equal(calls[2].assignedToUserId, undefined);
   assert.equal(calls[2].visibleToUserId, undefined);
+});
+
+test('operator delivery routes expose only personal batches and reject foreign or broad export scopes', async () => {
+  const users = {
+    alice: { id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 },
+    reviewer: { id: 3, username: 'reviewer', role: 'REVIEWER', status: 'ACTIVE', credentialVersion: 1 },
+  };
+  const calls = [];
+  const repository = {
+    getUserByUsername: async (username) => users[username] ?? null,
+    getTaskAccess: async () => ({
+      id: 41, state: 'REVIEWED', assignedToUserId: 'bob', assignedToAccountId: 9,
+    }),
+    listDeliveryBatches: async (options, { actor }) => {
+      calls.push(['list', options, actor]);
+      return { items: [], total: 0 };
+    },
+    confirmDeliveryBatch: async (id, { actor }) => {
+      calls.push(['confirm', id, actor]);
+      return { publicId: id, status: 'DELIVERED' };
+    },
+    createDeliveryBatch: async () => assert.fail('foreign ownership must reject before batch creation'),
+    getDeliveryBatchArtifact: async () => assert.fail('foreign ownership must reject before artifact access'),
+    recordDeliveryBatchDownload: async () => assert.fail('foreign ownership must reject before download'),
+  };
+  const headers = (username) => ({
+    'X-Actor-User-Id': String(users[username].id), 'X-Actor-Username': username,
+    'X-Actor-Role': users[username].role, 'X-Actor-Credential-Version': '1',
+  });
+  await withServer(repository, async (root) => {
+    const list = await fetch(`${root}/v1/delivery-batches?limit=20&offset=0`, {
+      headers: headers('alice'),
+    });
+    assert.equal(list.status, 200);
+
+    const confirmed = await fetch(`${root}/v1/delivery-batches/12345678-1234-4234-8234-123456789abc/confirm`, {
+      method: 'POST', headers: headers('alice'),
+    });
+    assert.equal(confirmed.status, 200);
+
+    const broad = await fetch(`${root}/v1/delivery-pool/archive`, {
+      method: 'POST',
+      headers: { ...headers('alice'), 'content-type': 'application/json' },
+      body: JSON.stringify({ scope: 'ALL_READY' }),
+    });
+    assert.equal(broad.status, 403);
+    assert.equal((await broad.json()).error.code, 'FORBIDDEN');
+
+    const foreign = await fetch(`${root}/v1/delivery-pool/archive`, {
+      method: 'POST',
+      headers: { ...headers('alice'), 'content-type': 'application/json' },
+      body: JSON.stringify({ scope: 'SELECTED', taskIds: [41] }),
+    });
+    assert.equal(foreign.status, 403);
+    assert.equal((await foreign.json()).error.code, 'FORBIDDEN');
+
+    const reviewer = await fetch(`${root}/v1/delivery-batches`, {
+      headers: headers('reviewer'),
+    });
+    assert.equal(reviewer.status, 403);
+  }, { enforceUserAuth: true });
+
+  assert.equal(calls[0][0], 'list');
+  assert.equal(calls[0][2].userId, 2);
+  assert.deepEqual(calls[1].slice(0, 2), [
+    'confirm', '12345678-1234-4234-8234-123456789abc',
+  ]);
+  assert.equal(calls[1][2].username, 'alice');
 });
 
 test('personal task listing forwards the copy QA return filter without trusting a synthetic task state', async () => {

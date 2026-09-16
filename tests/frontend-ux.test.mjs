@@ -228,14 +228,18 @@ test('required text prompts use the shared accessible dialog instead of the brow
   }
 });
 
-test('reviewers can switch image previews between 100 percent and full-image modes', async () => {
-  const [preview, styles] = await Promise.all([
+test('reviewers default to full-image previews and can switch to 100 percent mode', async () => {
+  const [preview, preference, styles] = await Promise.all([
     readFile(projectFile('app/components/image-preview.tsx'), 'utf8'),
+    readFile(projectFile('app/components/image-preview-preference.tsx'), 'utf8'),
     readFile(projectFile('app/globals.css'), 'utf8'),
   ]);
 
   assert.match(preview, /useDefaultPreviewMode/);
   assert.match(preview, /useState<PreviewMode \| null>\(null\)/);
+  assert.match(preference, /let fallbackMode: PreviewMode = 'fit'/);
+  assert.match(preference, /return saved === 'actual' \? 'actual' : 'fit'/);
+  assert.match(preference, /useSyncExternalStore\(subscribe, readMode, \(\): PreviewMode => 'fit'\)/);
   assert.match(preview, /aria-label="图片显示模式"/);
   assert.match(preview, />100% 查看</);
   assert.match(preview, />完整显示</);

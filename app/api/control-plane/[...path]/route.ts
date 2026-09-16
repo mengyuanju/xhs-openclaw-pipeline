@@ -6,6 +6,7 @@ import {
   isKnowledgeControlPlaneRoute,
   nonAdminCanAccessQueryPackageRoute,
   userCanAccessControlPlaneRoute,
+  userCanAccessDeliveryRoute,
 } from '../../../../src/control-plane/proxy-access.mjs';
 import { sessionActorHeaders } from '../../../../src/control-plane/session-actor-headers.mjs';
 import { apiHandler } from '../../_lib';
@@ -41,7 +42,8 @@ async function proxyRequest(
   }
   if (role !== 'ADMIN' && ((/^\/v1\/query-packages(?:\/|$)/u.test(routePath)
       && !nonAdminCanAccessQueryPackageRoute(routePath, request.method))
-    || /^\/v1\/(?:delivery-pool|delivery-batches)(?:\/|$)/u.test(routePath)
+    || (/^\/v1\/(?:delivery-pool|delivery-batches)(?:\/|$)/u.test(routePath)
+      && !(role === 'USER' && userCanAccessDeliveryRoute(routePath, request.method)))
     || /^\/v1\/tasks\/[^/]+\/archive(?:\/|$)/u.test(routePath))) {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可管理词包与交付信息');
   }
@@ -56,7 +58,8 @@ async function proxyRequest(
     || /^\/v1\/auto-assignment(?:\/|$)/u.test(routePath)
     || ['/v1/tasks/batch-actions', '/v1/tasks/batch-assignee', '/v1/tasks/batch-archive', '/v1/tasks/batch-permanent-delete',
       '/v1/tasks/duplicate-query-discard-preview', '/v1/tasks/duplicate-query-discard'].includes(routePath)
-    || /^\/v1\/delivery-pool\/(?:archive|xlsx)(?:\/|$)/u.test(routePath)
+    || (/^\/v1\/delivery-pool\/(?:archive|xlsx)(?:\/|$)/u.test(routePath)
+      && !(role === 'USER' && userCanAccessDeliveryRoute(routePath, request.method)))
     || /^\/v1\/tasks\/[^/]+\/assignee$/u.test(routePath)
     || /^\/v1\/tasks\/[^/]+\/admin-direct-copy-qa$/u.test(routePath)
     || (routePath === '/v1/tasks' && upstreamUrl.searchParams.has('attention')))) {

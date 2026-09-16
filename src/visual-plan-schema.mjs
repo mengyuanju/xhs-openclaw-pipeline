@@ -3,7 +3,7 @@ import { LAYOUT_TEMPLATES_BY_KIND } from './layout-contract.mjs';
 import { requestedLayoutTemplate } from './image-layout-controls.mjs';
 import { catalogPageOptions } from './catalog-planning.mjs';
 
-const text = (maxLength) => ({ type: 'string', minLength: 1, maxLength });
+const text = (maxLength, minLength = 1) => ({ type: 'string', minLength, maxLength });
 const list = (items, minItems, maxItems) => ({ type: 'array', items, minItems, maxItems });
 const object = (properties) => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
 
@@ -30,7 +30,7 @@ export function visualPlanSchema(post, indices = post.imagePlan.map((_, index) =
       sourceEvidence: list({ type: 'string', enum: visualEvidenceOptions(post) }, 1, 3), visualSubject: text(300), layoutDirection: text(300),
       allowedVisibleText: object({
         language: { type: 'string', enum: ['zh-CN'] }, headline: { ...text(18), ...(promptRuntimeSnapshot() ? { const: post.imagePlan[index - 1].headline } : {}) },
-        subtitle: { ...text(30), ...(promptRuntimeSnapshot() ? { const: post.imagePlan[index - 1].subtitle } : {}) },
+        subtitle: { ...text(30, 0), ...(promptRuntimeSnapshot() ? { const: post.imagePlan[index - 1].subtitle } : {}) },
         // The model schema API rejects array-valued const. Restrict the strings
         // and count here; assertLockedImageText verifies exact order after output.
         bullets: promptRuntimeSnapshot()

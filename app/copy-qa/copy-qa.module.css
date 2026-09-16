@@ -51,18 +51,19 @@
 .planHeader h3 { font-size: 15px; }
 .planHeader p { margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .planGrid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
-.planCard { min-width: 0; display: grid; align-content: start; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface); }
-.planCard header { min-width: 0; display: flex; align-items: flex-start; gap: 10px; }
+.planCard { min-width: 0; display: grid; align-content: start; overflow: hidden; border: 1px solid var(--line); border-radius: 11px; background: var(--surface); }
+.planCard header { min-width: 0; display: flex; align-items: flex-start; gap: 10px; padding: 13px 14px; background: #fffdfa; }
 .planCard header > div { min-width: 0; }
 .planCard header small { color: var(--muted); font-size: 10px; font-weight: 700; }
 .planCard h4 { margin: 4px 0 0; overflow-wrap: anywhere; font-size: 14px; line-height: 1.45; }
 .planIndex { flex: 0 0 auto; display: grid; width: 31px; height: 31px; place-items: center; border-radius: 9px; color: #fff; background: var(--ink); font-size: 11px; font-weight: 800; font-variant-numeric: tabular-nums; }
-.planField { min-width: 0; display: grid; gap: 5px; }
-.planField small { color: var(--muted); font-size: 10px; font-weight: 700; }
+.planField { min-width: 0; display: grid; align-content: start; gap: 6px; padding: 11px 14px; border-top: 1px solid var(--line); }
+.planField small { color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .02em; }
 .planField p, .planField ul { margin: 0; overflow-wrap: anywhere; font-size: 12px; line-height: 1.7; }
-.planField ul { display: grid; gap: 3px; padding-left: 18px; }
-.planPrompt { padding-top: 10px; border-top: 1px dashed var(--line); }
-.planPrompt p { white-space: pre-wrap; color: var(--muted); font-size: 11px; }
+.planField ul { display: grid; gap: 4px; padding-left: 18px; }
+.planField li::marker { color: var(--muted); }
+.planPrompt { background: #faf9f6; }
+.planPrompt p { white-space: pre-wrap; color: #625d56; font-size: 11px; }
 .planEmpty { padding: 16px; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); background: var(--surface); text-align: center; font-size: 12px; }
 .source { display: grid; gap: 11px; padding: 15px; border: 1px solid var(--line); border-radius: 12px; }
 .source h3 { margin: 0; }
@@ -81,14 +82,13 @@
   .detailDialog .copy { gap: 10px; padding: 15px; }
   .detailDialog .copyBody { line-height: 1.75; }
   .detailDialog .plan { gap: 9px; padding: 12px; }
-  .detailDialog .planGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  .detailDialog .planCard { grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); grid-template-areas: "card-header subtitle" "bullets prompt"; gap: 7px 9px; padding: 10px; }
+  .detailDialog .planGrid { grid-template-columns: minmax(0, 1fr); gap: 9px; }
+  .detailDialog .planCard { grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); grid-template-areas: "card-header card-header" "subtitle subtitle" "bullets prompt"; }
   .detailDialog .planCard header { grid-area: card-header; }
   .detailDialog .planCard > .planField:nth-of-type(1) { grid-area: subtitle; }
   .detailDialog .planCard > .planField:nth-of-type(2) { grid-area: bullets; }
-  .detailDialog .planField p, .detailDialog .planField ul { line-height: 1.45; }
-  .detailDialog .planPrompt { grid-area: prompt; padding: 0 0 0 9px; border-top: 0; border-left: 1px dashed var(--line); }
-  .detailDialog .planCard:last-child:nth-child(odd) { grid-column: 1 / -1; grid-template-columns: minmax(0, .8fr) repeat(3, minmax(0, 1fr)); grid-template-areas: "card-header subtitle bullets prompt"; }
+  .detailDialog .planField p, .detailDialog .planField ul { line-height: 1.6; }
+  .detailDialog .planPrompt { grid-area: prompt; border-left: 1px solid var(--line); }
 }
 
 @media (max-width: 900px) {

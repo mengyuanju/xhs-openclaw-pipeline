@@ -579,6 +579,19 @@ async function assertCurrentActorIdentity(repository, actor) {
   }
 }
 
+async function assertOperatorDeliveryTaskAccess(repository, taskIds, actor) {
+  if (actor.role === 'ADMIN') return;
+  if (actor.role !== 'USER' || typeof repository.getTaskAccess !== 'function') {
+    throw new ControlPlaneAuthorizationError('current role cannot create a delivery batch');
+  }
+  const tasks = await Promise.all(taskIds.map((taskId) => repository.getTaskAccess(taskId)));
+  if (tasks.some((task) => !task
+      || task.assignedToUserId !== actor.username
+      || task.assignedToAccountId !== actor.userId)) {
+    throw new ControlPlaneAuthorizationError('只能交付当前账号负责的作业');
+  }
+}
+
 function lazyFileStream(path) {
   return Readable.from((async function* readWhenRequested() {
     const source = createReadStream(path);
@@ -1403,8 +1416,11 @@ function installRoutes(
     ctx.body = content;
   });
   router.post('/v1/delivery-pool/archive', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN']);
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
     const request = normalizeDeliveryExportRequest(requireJson(ctx));
+    if (actor.role === 'USER' && request.scope !== 'SELECTED') {
+      throw new ControlPlaneAuthorizationError('作业员只能打包明确选中的本人作业');
+    }
     const controller = new AbortController();
     const cancellation = () => new DOMException(
       'delivery export client disconnected',
@@ -1427,9 +1443,16 @@ function installRoutes(
       const batchHistoryEnabled = typeof repository.createDeliveryBatch === 'function'
         && typeof repository.getDeliveryBatchArtifact === 'function'
         && typeof repository.recordDeliveryBatchDownload === 'function';
+      if (actor.role === 'USER' && !batchHistoryEnabled) {
+        throw new ControlPlaneConflictError(
+          'FINAL_DELIVERY_UNAVAILABLE',
+          '中心服务尚未支持作业员交付留痕，请升级后重试',
+        );
+      }
       const taskIds = await resolveDeliveryExportTaskIds(repository, request, actor, {
         unpackedOnly: batchHistoryEnabled,
       });
+      await assertOperatorDeliveryTaskAccess(repository, taskIds, actor);
       staged = await stageDeliveryPoolArchive(repository, storageRoot, taskIds, {
         signal: controller.signal,
       });
@@ -1487,7 +1510,7 @@ function installRoutes(
     }
   });
   router.head('/v1/delivery-pool/archive/:downloadId', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN']);
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
     const record = assertDeliveryExportArtifact(
       await deliveryExportRegistry.peek(ctx.params.downloadId, actor),
       'archivePath',
@@ -1505,7 +1528,7 @@ function installRoutes(
     ctx.set('Content-Disposition', `attachment; filename="delivery-pool.zip"; filename*=UTF-8''${encodeURIComponent(record.fileName)}`);
   });
   router.get('/v1/delivery-pool/archive/:downloadId', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN']);
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
     const { downloadId } = ctx.params;
     assertDeliveryExportArtifact(
       await deliveryExportRegistry.peek(downloadId, actor),
@@ -1566,7 +1589,7 @@ function installRoutes(
     ctx.body = content;
   });
   router.head('/v1/delivery-batches/:batchId/archive', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN']);
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
     const batch = await storedDeliveryBatchArtifact(
       repository,
       storageRoot,
@@ -1581,7 +1604,7 @@ function installRoutes(
     ctx.set('Content-Disposition', `attachment; filename="delivery-batch.zip"; filename*=UTF-8''${encodeURIComponent(batch.fileName)}`);
   });
   router.get('/v1/delivery-batches/:batchId/archive', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN']);
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
     const batch = await storedDeliveryBatchArtifact(
       repository,
       storageRoot,
@@ -1715,6 +1738,19 @@ function installRoutes(
   });
   router.get('/v1/task-counts', async (ctx) => {
     json(ctx, 200, await repository.taskCounts({ nodeId: ctx.query.nodeId }));
+  });
+  router.get('/v1/tasks/:taskId/copy-review-drafts', async (ctx) => {
+    const { actor } = await assertTaskAccess(ctx, repository);
+    json(ctx, 200, await repository.listCopyReviewDrafts(ctx.params.taskId, { actor }));
+  });
+  router.post('/v1/tasks/:taskId/copy-review-drafts', async (ctx) => {
+    const { actor } = await assertTaskAccess(ctx, repository);
+    const result = await repository.saveCopyReviewDraft(
+      ctx.params.taskId,
+      requireJson(ctx),
+      { actor },
+    );
+    json(ctx, result.created ? 201 : 200, result);
   });
   router.get('/v1/tasks/:taskId', async (ctx) => {
     const { task, actor } = await assertTaskAccess(ctx, repository, { allowCreatorRead: true });
@@ -2066,7 +2102,7 @@ function installRoutes(
     json(ctx, 200, addDeliveryPreviewUrls(deliveryPool, previewUrlResolver));
   });
   router.get('/v1/delivery-batches', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN']);
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
     json(ctx, 200, await repository.listDeliveryBatches({
       limit: ctx.query.limit,
       offset: ctx.query.offset,
@@ -2077,8 +2113,19 @@ function installRoutes(
     }, { actor }));
   });
   router.get('/v1/delivery-batches/:batchId', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN']);
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
     json(ctx, 200, await repository.getDeliveryBatch(ctx.params.batchId, { actor }));
+  });
+  router.post('/v1/delivery-batches/:batchId/confirm', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    if (typeof repository.confirmDeliveryBatch !== 'function') {
+      throw new ControlPlaneConflictError(
+        'FINAL_DELIVERY_UNAVAILABLE',
+        '中心服务尚未支持确认交付，请升级后重试',
+      );
+    }
+    await assertCurrentActorIdentity(repository, actor);
+    json(ctx, 200, await repository.confirmDeliveryBatch(ctx.params.batchId, { actor }));
   });
   router.post('/v1/delivery-pool/previews', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);

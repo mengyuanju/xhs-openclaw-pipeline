@@ -21,6 +21,7 @@ import {
   IMAGE_FORMATS,
   hasImageControls,
   normalizeImageSettings,
+  normalizePageLayout,
 } from './image-options.mjs';
 import { normalizeLayoutPresets } from './layout-library.mjs';
 import { BUILTIN_LAYOUT_CATALOG, normalizeLayoutCatalog } from './layout-catalog.mjs';
@@ -122,6 +123,7 @@ import {
   withdrawReadyDeliveryEntries,
 } from './final-delivery.mjs';
 import {
+  confirmDeliveryBatch,
   createDeliveryBatch,
   getDeliveryBatch,
   getDeliveryBatchArtifact,
@@ -896,6 +898,94 @@ function normalizedQualityNote(value) {
   return note || null;
 }
 
+const COPY_REVIEW_DRAFT_HISTORY_LIMIT = 20;
+const COPY_REVIEW_DRAFT_KINDS = Object.freeze(['hero', 'steps', 'checklist', 'comparison', 'detail', 'summary']);
+
+function copyReviewDraftText(value, field, max) {
+  if (typeof value !== 'string') throw new TypeError(`${field} must be a string`);
+  if ([...value].length > max) throw new RangeError(`${field} cannot exceed ${max} characters`);
+  return value.replace(/\r\n?/gu, '\n');
+}
+
+function normalizeCopyReviewDraftContent(value) {
+  const content = normalizeJson(value, 'copy review draft', 200_000);
+  if (!content || typeof content !== 'object' || Array.isArray(content) || content.version !== 1) {
+    throw new TypeError('copy review draft version is invalid');
+  }
+  const draft = content.draft;
+  const copy = draft?.copy;
+  if (!draft || typeof draft !== 'object' || Array.isArray(draft)
+      || !copy || typeof copy !== 'object' || Array.isArray(copy)) {
+    throw new TypeError('copy review draft content is invalid');
+  }
+  if (!Array.isArray(copy.tags) || copy.tags.length > 20) {
+    throw new RangeError('copy review draft tags must contain at most 20 items');
+  }
+  if (!Array.isArray(draft.imagePlan) || draft.imagePlan.length < 3 || draft.imagePlan.length > 5) {
+    throw new RangeError('copy review draft imagePlan must contain between 3 and 5 items');
+  }
+  const imagePlan = draft.imagePlan.map((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new TypeError(`copy review draft imagePlan[${index}] must be an object`);
+    }
+    const kind = String(item.kind ?? '').trim();
+    if (!COPY_REVIEW_DRAFT_KINDS.includes(kind)) {
+      throw new TypeError(`copy review draft imagePlan[${index}].kind is invalid`);
+    }
+    if (!Array.isArray(item.bullets) || item.bullets.length > 10) {
+      throw new RangeError(`copy review draft imagePlan[${index}].bullets must contain at most 10 items`);
+    }
+    return {
+      kind,
+      headline: copyReviewDraftText(item.headline, `copy review draft imagePlan[${index}].headline`, 100),
+      subtitle: copyReviewDraftText(item.subtitle, `copy review draft imagePlan[${index}].subtitle`, 100),
+      bullets: item.bullets.map((bullet, bulletIndex) => copyReviewDraftText(
+        bullet,
+        `copy review draft imagePlan[${index}].bullets[${bulletIndex}]`,
+        200,
+      )),
+      prompt: copyReviewDraftText(item.prompt, `copy review draft imagePlan[${index}].prompt`, 2_000),
+      ...(item.layout === undefined ? {} : { layout: normalizePageLayout(item.layout, kind) }),
+    };
+  });
+  const score = content.copyOriginalScore;
+  if (score !== null && !HUMAN_QUALITY_SCORES.includes(score)) {
+    throw new TypeError('copy review draft score is invalid');
+  }
+  if (typeof content.aiDisclosureEnabled !== 'boolean') {
+    throw new TypeError('copy review draft aiDisclosureEnabled must be a boolean');
+  }
+  return {
+    version: 1,
+    draft: {
+      copy: {
+        title: copyReviewDraftText(copy.title, 'copy review draft title', 100),
+        body: copyReviewDraftText(copy.body, 'copy review draft body', 2_000),
+        tags: copy.tags.map((tag, index) => copyReviewDraftText(tag, `copy review draft tags[${index}]`, 100)),
+      },
+      imagePlan,
+      imageSettings: normalizeImageSettings(draft.imageSettings ?? DEFAULT_IMAGE_SETTINGS),
+    },
+    aiDisclosureEnabled: content.aiDisclosureEnabled,
+    copyOriginalScore: score,
+    copyOriginalReasons: normalizedQualityReasonCodes(content.copyOriginalReasons),
+    copyOriginalNote: copyReviewDraftText(content.copyOriginalNote ?? '', 'copy review draft note', 1_000),
+  };
+}
+
+function copyReviewDraftFrom(row) {
+  return {
+    id: Number(row.id),
+    taskId: Number(row.task_id),
+    baseCopyRevisionId: Number(row.base_copy_revision_id),
+    reviewerAccountId: Number(row.reviewer_account_id),
+    reviewerUsername: row.reviewer_username,
+    version: Number(row.draft_version),
+    content: row.content,
+    createdAt: row.created_at,
+  };
+}
+
 function assertQualityExplanation(scoreX10, reasonCodes, note, name = 'score') {
   if (scoreX10 < 30 && reasonCodes.length === 0 && !note) {
     throw new TypeError(`${name} below 3 requires at least one reason or a note`);
@@ -1467,6 +1557,9 @@ export class PostgresControlPlaneRepository {
   recordDeliveryBatchDownload(id, { actor } = {}) {
     return transaction(this.pool, (client) => recordDeliveryBatchDownload(client, id, actor));
   }
+  confirmDeliveryBatch(id, { actor } = {}) {
+    return transaction(this.pool, (client) => confirmDeliveryBatch(client, id, actor));
+  }
   listDeliveryPoolTaskIdsForPreview({
     actor, queryPackageIds, includeUnassigned = false, taskIds = [], testTaskId = null, limit = 50,
   } = {}) {
@@ -1511,7 +1604,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 3, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 6, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, finalDeliveryVersion: 4, deliverySpreadsheetVersion: 2, deliveryPreviewVersion: 6 } };
+      capabilities: { taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 3, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 6, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, finalDeliveryVersion: 5, deliverySpreadsheetVersion: 2, deliveryPreviewVersion: 6 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -3032,6 +3125,79 @@ export class PostgresControlPlaneRepository {
       assignedAt: row.assigned_at ?? null,
       activeBlindQa: row.active_blind_qa === true,
     } : null;
+  }
+
+  async listCopyReviewDrafts(rawTaskId, { actor: rawActor } = {}) {
+    const taskId = normalizeTaskId(rawTaskId);
+    return transaction(this.pool, async (client) => {
+      const { actor, task } = await lockTaskForActor(client, taskId, rawActor);
+      const baseCopyRevisionId = task.current_copy_revision_id === null
+        ? null : Number(task.current_copy_revision_id);
+      if (baseCopyRevisionId === null) return { baseCopyRevisionId, drafts: [] };
+      const result = await client.query(`
+        SELECT * FROM copy_review_drafts
+        WHERE task_id = $1 AND base_copy_revision_id = $2 AND reviewer_account_id = $3
+        ORDER BY id DESC
+        LIMIT ${COPY_REVIEW_DRAFT_HISTORY_LIMIT}
+      `, [taskId, baseCopyRevisionId, actor.userId]);
+      return {
+        baseCopyRevisionId,
+        drafts: result.rows.map(copyReviewDraftFrom),
+      };
+    });
+  }
+
+  async saveCopyReviewDraft(rawTaskId, {
+    baseCopyRevisionId: rawBaseCopyRevisionId,
+    expectedLatestDraftId: rawExpectedLatestDraftId = null,
+    content: rawContent,
+  }, { actor: rawActor } = {}) {
+    const taskId = normalizeTaskId(rawTaskId);
+    const baseCopyRevisionId = normalizeTaskId(rawBaseCopyRevisionId);
+    const expectedLatestDraftId = rawExpectedLatestDraftId === null
+      ? null : normalizeTaskId(rawExpectedLatestDraftId);
+    const content = normalizeCopyReviewDraftContent(rawContent);
+    return transaction(this.pool, async (client) => {
+      const { actor, task } = await lockTaskForActor(client, taskId, rawActor);
+      if (task.assigned_to_user_id == null) {
+        throw new ControlPlaneConflictError(
+          'TASK_ASSIGNEE_REQUIRED',
+          '未分配任务不能保存文案审核草稿，请先指定负责人',
+        );
+      }
+      if (task.state !== 'COPY_REVIEW_PENDING') {
+        throw new ControlPlaneConflictError('INVALID_TASK_STATE', '当前任务已不在文案审核阶段，草稿没有保存');
+      }
+      if (Number(task.current_copy_revision_id) !== baseCopyRevisionId) {
+        throw new ControlPlaneConflictError('STALE_COPY_REVISION', '文案版本已经变化，请刷新后再编辑');
+      }
+      const latestResult = await client.query(`
+        SELECT * FROM copy_review_drafts
+        WHERE task_id = $1 AND base_copy_revision_id = $2 AND reviewer_account_id = $3
+        ORDER BY id DESC
+        LIMIT 1
+        FOR UPDATE
+      `, [taskId, baseCopyRevisionId, actor.userId]);
+      const latest = latestResult.rows[0] ?? null;
+      if (latest && isDeepStrictEqual(latest.content, content)) {
+        return { created: false, draft: copyReviewDraftFrom(latest) };
+      }
+      if ((latest === null ? null : Number(latest.id)) !== expectedLatestDraftId) {
+        throw new ControlPlaneConflictError(
+          'COPY_REVIEW_DRAFT_CONFLICT',
+          '另一个窗口已经保存了更新的草稿，请刷新并从草稿历史中选择版本',
+        );
+      }
+      const draftVersion = latest === null ? 1 : Number(latest.draft_version) + 1;
+      const inserted = await client.query(`
+        INSERT INTO copy_review_drafts(
+          task_id, base_copy_revision_id, reviewer_account_id, reviewer_username,
+          draft_version, content
+        ) VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING *
+      `, [taskId, baseCopyRevisionId, actor.userId, actor.username, draftVersion, content]);
+      return { created: true, draft: copyReviewDraftFrom(inserted.rows[0]) };
+    });
   }
 
   async getTask(rawTaskId) {

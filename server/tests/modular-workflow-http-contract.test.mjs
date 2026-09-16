@@ -451,7 +451,7 @@ test('active blind QA tasks disappear from generic reviewer task APIs, including
   });
 });
 
-test('delivery-pool list and batch exports are administrator-only', async () => {
+test('delivery-pool management stays administrator-only while operator archives use the formal selected scope', async () => {
   let snapshotReads = 0;
   const repository = {
     listDeliveryPool: async () => { snapshotReads += 1; return []; },
@@ -462,30 +462,42 @@ test('delivery-pool list and batch exports are administrator-only', async () => 
       const listing = await fetch(`${root}/v1/delivery-pool`, { headers: headers(username) });
       assert.equal(listing.status, 403, `${username}:list`);
       assert.equal((await listing.json()).error.code, 'FORBIDDEN', `${username}:list`);
-      for (const endpoint of ['archive', 'xlsx']) {
-        const response = await fetch(`${root}/v1/delivery-pool/${endpoint}`, {
-          method: 'POST',
-          headers: headers(username, true),
-          body: JSON.stringify({ scope: 'ALL_READY' }),
-        });
-        assert.equal(response.status, 403, `${username}:${endpoint}`);
-        assert.equal(
-          (await response.json()).error.code,
-          'FORBIDDEN',
-          `${username}:${endpoint}`,
-        );
-        const download = await fetch(
-          `${root}/v1/delivery-pool/${endpoint}/11111111-1111-4111-8111-111111111111`,
-          { headers: headers(username) },
-        );
-        assert.equal(download.status, 403, `${username}:${endpoint}`);
-        assert.equal(
-          (await download.json()).error.code,
-          'FORBIDDEN',
-          `${username}:${endpoint}`,
-        );
-      }
+      const spreadsheet = await fetch(`${root}/v1/delivery-pool/xlsx`, {
+        method: 'POST',
+        headers: headers(username, true),
+        body: JSON.stringify({ scope: 'ALL_READY' }),
+      });
+      assert.equal(spreadsheet.status, 403, `${username}:xlsx`);
+      const spreadsheetDownload = await fetch(
+        `${root}/v1/delivery-pool/xlsx/11111111-1111-4111-8111-111111111111`,
+        { headers: headers(username) },
+      );
+      assert.equal(spreadsheetDownload.status, 403, `${username}:xlsx-download`);
     }
+
+    const reviewerArchive = await fetch(`${root}/v1/delivery-pool/archive`, {
+      method: 'POST', headers: headers('reviewer', true),
+      body: JSON.stringify({ scope: 'SELECTED', taskIds: [77] }),
+    });
+    assert.equal(reviewerArchive.status, 403);
+    const reviewerDownload = await fetch(
+      `${root}/v1/delivery-pool/archive/11111111-1111-4111-8111-111111111111`,
+      { headers: headers('reviewer') },
+    );
+    assert.equal(reviewerDownload.status, 403);
+
+    const workerBroadScope = await fetch(`${root}/v1/delivery-pool/archive`, {
+      method: 'POST', headers: headers('worker', true),
+      body: JSON.stringify({ scope: 'ALL_READY' }),
+    });
+    assert.equal(workerBroadScope.status, 403);
+    assert.equal((await workerBroadScope.json()).error.code, 'FORBIDDEN');
+    const unknownWorkerDownload = await fetch(
+      `${root}/v1/delivery-pool/archive/11111111-1111-4111-8111-111111111111`,
+      { headers: headers('worker') },
+    );
+    assert.equal(unknownWorkerDownload.status, 404,
+      'operators may enter the actor-bound download route, but cannot access an unknown token');
   });
   assert.equal(snapshotReads, 0, 'authorization must run before reading the delivery snapshot');
 });

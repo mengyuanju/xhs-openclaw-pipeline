@@ -55,6 +55,14 @@ test('terminal errors fail even after an earlier completion and preserve stable 
   }
 });
 
+test('revoked refresh-token failures are classified as authentication failures with recovery guidance', () => {
+  const error = codexFailure({ message: 'Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.' });
+  assert.equal(error.code, 'CODEX_AUTH_REQUIRED');
+  assert.equal(error.haltWorker, true);
+  assert.match(error.message, /codex logout/u);
+  assert.match(error.message, /codex login/u);
+});
+
 test('native image items provide saved paths, while unsuccessful image items fail closed', () => {
   const parsed = parseCodexOutput(lines({ type: 'item.completed', item: {
     id: 'img-1', type: 'image_generation', status: 'completed', saved_path: 'C:/generated/result.png',

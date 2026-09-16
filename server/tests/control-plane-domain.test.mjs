@@ -63,6 +63,9 @@ test('copy review edits normalize editable copy and structured image-plan cards'
   assert.equal(normalized.copy.tags.length, 3);
   assert.equal(normalized.imagePlan[0].kind, 'hero');
   assert.equal(normalized.imagePlan.length, 3);
+  const withoutSubtitle = validReviewEdits();
+  withoutSubtitle.imagePlan[1].subtitle = '   ';
+  assert.equal(normalizeCopyReviewEdits(withoutSubtitle).imagePlan[1].subtitle, '');
   assert.throws(() => normalizeCopyReviewEdits({
     ...validReviewEdits(),
     imagePlan: validReviewEdits().imagePlan.map((item, index) => ({

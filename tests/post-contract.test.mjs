@@ -136,6 +136,18 @@ describe('post output contract', () => {
     assert.deepEqual(post.imagePlan.map((image) => image.kind), ['hero', 'steps', 'checklist']);
   });
 
+  it('accepts an explicitly empty page subtitle while keeping the field in the contract', () => {
+    const input = validPost();
+    input.imagePlan[0].subtitle = '   ';
+
+    const post = parsePostOutput(JSON.stringify(input));
+    const schema = postOutputSchema(3);
+
+    assert.equal(post.imagePlan[0].subtitle, '');
+    assert.equal(schema.properties.imagePlan.items.properties.subtitle.minLength, 0);
+    assert.ok(schema.properties.imagePlan.items.required.includes('subtitle'));
+  });
+
   it('extracts JSON from a fenced model response', () => {
     const raw = `这里是结果：\n\`\`\`json\n${JSON.stringify(validPost())}\n\`\`\``;
 
@@ -575,7 +587,7 @@ describe('post prompt', () => {
     const input = JSON.parse(prompt.match(/<untrusted_task_data>\s*([\s\S]+?)\s*<\/untrusted_task_data>/u)[1]);
     assert.deepEqual(input, { title: finalized.title, body: finalized.body });
     assert.match(prompt, /3～5页，首项kind=hero/u);
-    assert.match(prompt, /headline≤18、subtitle≤30、bullets为2～5项/u);
+    assert.match(prompt, /headline为1～18字符，subtitle允许为空字符串、非空时≤30字符/u);
     assert.match(prompt, /checklist≤40否则≤30/u);
     assert.match(prompt, /不得修改正文/u);
     assert.match(prompt, /headline、subtitle、bullets 是最终逐字上图文字/u);

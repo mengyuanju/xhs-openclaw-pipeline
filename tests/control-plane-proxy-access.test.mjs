@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   nonAdminCanAccessQueryPackageRoute,
   userCanAccessControlPlaneRoute,
+  userCanAccessDeliveryRoute,
 } from '../src/control-plane/proxy-access.mjs';
 
 test('ordinary users can work on assigned tasks and screen only their visible Query packages', () => {
@@ -52,10 +53,22 @@ test('ordinary users can work on assigned tasks and screen only their visible Qu
       assert.equal(userCanAccessControlPlaneRoute(path, method), false, `${method} ${path}`);
     }
   }
+  const operatorDeliveryAccess = [
+    ['/v1/delivery-pool/archive', 'POST'],
+    ['/v1/delivery-pool/archive/token', 'GET'],
+    ['/v1/delivery-pool/archive/token', 'HEAD'],
+    ['/v1/delivery-batches', 'GET'],
+    ['/v1/delivery-batches/batch-id', 'GET'],
+    ['/v1/delivery-batches/batch-id/archive', 'GET'],
+    ['/v1/delivery-batches/batch-id/archive', 'HEAD'],
+    ['/v1/delivery-batches/batch-id/confirm', 'POST'],
+  ];
+  for (const [path, method] of operatorDeliveryAccess) {
+    assert.equal(userCanAccessDeliveryRoute(path, method), true, `${method} ${path}`);
+    assert.equal(userCanAccessControlPlaneRoute(path, method), true, `${method} ${path}`);
+  }
   const administratorOnlyPaths = [
     '/v1/delivery-pool',
-    '/v1/delivery-pool/archive',
-    '/v1/delivery-pool/archive/token',
     '/v1/delivery-pool/xlsx',
     '/v1/delivery-pool/xlsx/token',
   ];
@@ -63,6 +76,16 @@ test('ordinary users can work on assigned tasks and screen only their visible Qu
     for (const method of ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']) {
       assert.equal(userCanAccessControlPlaneRoute(path, method), false, `${method} ${path}`);
     }
+  }
+  for (const [path, method] of [
+    ['/v1/delivery-pool/archive', 'GET'],
+    ['/v1/delivery-pool/archive', 'HEAD'],
+    ['/v1/delivery-pool/archive/token', 'POST'],
+    ['/v1/delivery-batches', 'POST'],
+    ['/v1/delivery-batches/batch-id/confirm', 'GET'],
+  ]) {
+    assert.equal(userCanAccessDeliveryRoute(path, method), false, `${method} ${path}`);
+    assert.equal(userCanAccessControlPlaneRoute(path, method), false, `${method} ${path}`);
   }
   for (const path of ['/v1/settings', '/v1/settings/xhs_query_search', '/v1/users', '/v1/prompts', '/health/private', '/v1/tasks-admin']) {
     assert.equal(userCanAccessControlPlaneRoute(path, 'GET'), false);

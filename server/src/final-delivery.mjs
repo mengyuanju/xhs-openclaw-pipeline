@@ -51,8 +51,13 @@ function deliveryFrom(row) {
     publicId: row.delivery_batch_public_id,
     code: row.delivery_batch_code,
     status: row.delivery_batch_status,
+    batchKind: row.delivery_batch_kind,
+    createdByRole: row.delivery_batch_created_by_role,
+    createdByUsername: row.delivery_batch_created_by_username,
     createdAt: row.delivery_batch_created_at,
     downloadedAt: row.delivery_batch_last_downloaded_at ?? null,
+    deliveredAt: row.delivery_batch_delivered_at ?? null,
+    deliveredByUsername: row.delivery_batch_delivered_by_username ?? null,
   } : null;
   const previousBatch = !batch && row.previous_delivery_batch_public_id ? {
     id: Number(row.previous_delivery_batch_id),
@@ -432,8 +437,13 @@ export async function listDeliveryPool(pool, {
       task.source_client_batch_code,
       packed.id AS delivery_batch_id, packed.public_id AS delivery_batch_public_id,
       packed.code AS delivery_batch_code, packed.status AS delivery_batch_status,
+      packed.batch_kind AS delivery_batch_kind,
+      packed.created_by_role AS delivery_batch_created_by_role,
+      packed.created_by_username AS delivery_batch_created_by_username,
       packed.created_at AS delivery_batch_created_at,
       packed.last_downloaded_at AS delivery_batch_last_downloaded_at,
+      packed.delivered_at AS delivery_batch_delivered_at,
+      packed.delivered_by_username AS delivery_batch_delivered_by_username,
       previous.id AS previous_delivery_batch_id,
       previous.public_id AS previous_delivery_batch_public_id,
       previous.code AS previous_delivery_batch_code,
@@ -446,7 +456,9 @@ export async function listDeliveryPool(pool, {
       AND (task.image_qc_legacy_accepted OR task.image_qc_released_approval_event_id IS NOT NULL)
     LEFT JOIN LATERAL (
       SELECT batch.id, batch.public_id, batch.code, batch.status,
-        batch.created_at, batch.last_downloaded_at
+        batch.batch_kind, batch.created_by_role, batch.created_by_username,
+        batch.created_at, batch.last_downloaded_at, batch.delivered_at,
+        batch.delivered_by_username
       FROM delivery_batch_items AS item
       JOIN delivery_batches AS batch ON batch.id = item.delivery_batch_id
       WHERE item.task_id = delivery.task_id

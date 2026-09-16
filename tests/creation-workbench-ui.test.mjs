@@ -110,6 +110,22 @@ test('ordinary users do not render Query package provenance or delivery download
   assert.match(reviewDialog, /const downloadable =[^;]*\bisAdmin\b[^;]*;/u);
 });
 
+test('ordinary operators create auditable delivery batches and confirm handoff from personal history', async () => {
+  const [workbench, history] = await Promise.all([
+    readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/operator-delivery-history.tsx'), 'utf8'),
+  ]);
+  assert.match(workbench, /const operatorDeliveryMode = role === 'USER' && activeView === 'PERSONAL'/u);
+  assert.match(workbench, /isTaskAssignee\(task, creatorUserId, creatorAccountId\)/u);
+  assert.match(workbench, /scope: 'SELECTED', taskIds: exportableTasks\.map/u);
+  assert.match(workbench, /\/v1\/delivery-pool\/archive/u);
+  assert.match(workbench, /<OperatorDeliveryHistory refreshKey=\{deliveryHistoryVersion\}/u);
+  assert.match(history, /\/v1\/delivery-batches\?limit=20&offset=0/u);
+  assert.match(history, /\/v1\/delivery-batches\/\$\{encodeURIComponent\(batch\.publicId\)\}\/confirm/u);
+  assert.match(history, /确认已交付/u);
+  assert.match(history, /管理员现在可以看到该记录/u);
+});
+
 test('all distributed task status displays distinguish exhausted image retries from normal copy review', async () => {
   for (const path of ['app/workbench/creation-workbench.tsx', 'app/workbench/task-review-dialog.tsx']) {
     const source = await readFile(projectFile(path), 'utf8');
@@ -366,6 +382,9 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(reviewDialog, /const planFieldsReadOnly = !\(editable \|\| canEditApprovedImagePlan\)/u);
   assert.match(reviewDialog, /const planKindDisabled = !\(editable \|\| canEditApprovedImagePlan\) \|\| isCopyOnlyFinalRework \|\| loading \|\| submitting/u);
   assert.match(reviewDialog, /readOnly=\{planFieldsReadOnly\}/u);
+  assert.match(reviewDialog, /页面副标题 <small>选填<\/small>/u);
+  assert.match(reviewDialog, /review-plan-subtitle-[\s\S]{0,220}maxLength=\{30\} readOnly=\{planFieldsReadOnly\}/u);
+  assert.doesNotMatch(reviewDialog, /review-plan-subtitle-[\s\S]{0,220}maxLength=\{30\} required/u);
   assert.match(reviewDialog, /<Select value=\{item\.kind\} disabled=\{planKindDisabled \|\| index === 0\}/u);
   assert.match(reviewDialog, /IMAGE_KINDS\.filter\(\(kind\) => index === 0 \? kind === 'hero' : kind !== 'hero'\)/u);
   assert.match(reviewDialog, /首图必须为封面/u);
