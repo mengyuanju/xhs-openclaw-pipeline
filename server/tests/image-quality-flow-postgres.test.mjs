@@ -105,10 +105,11 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
   const worker = actor(workerRow);
   const reviewer = actor(reviewerRow);
   const batch = (await pool.query(`
-    INSERT INTO production_batches(public_id, query_package_name, created_by_account_id,
+    INSERT INTO production_batches(public_id, query_package_name, client_batch_code, created_by_account_id,
       created_by_username, request_id, request_fingerprint)
-    VALUES ($1, 'image qa fixture', $2, $3, $4, $5) RETURNING *
-  `, [randomUUID(), admin.userId, admin.username, randomUUID(), '0'.repeat(64)])).rows[0];
+    VALUES ($1, 'image qa fixture', $2, $3, $4, $5, $6) RETURNING *
+  `, [randomUUID(), randomUUID().replaceAll('-', ''), admin.userId, admin.username,
+    randomUUID(), '0'.repeat(64)])).rows[0];
 
   async function addImageRun(taskId, copyRevisionId, label) {
     const imageRunId = randomUUID();
@@ -189,6 +190,25 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
   assert.ok(blindQueue.items[0].assets.every((asset) => !asset.originalName.startsWith('source-')));
   assert.equal(blindQueue.items[0].blindReview, true);
   assert.equal(Object.hasOwn(blindQueue.items[0], 'taskId'), false);
+  const legacyApproval = (await pool.query(`
+    SELECT approval.id, approval.task_id, approval.image_run_id
+    FROM image_approval_events AS approval
+    JOIN image_sampling_items AS item ON item.approval_event_id = approval.id
+    WHERE item.public_id = $1
+  `, [blindQueue.items[0].id])).rows[0];
+  const legacyAssets = (await pool.query(`
+    SELECT id, media_type, byte_size, sha256, original_name
+    FROM image_run_asset_view
+    WHERE task_id = $1 AND image_run_id = $2
+    ORDER BY id
+  `, [legacyApproval.task_id, legacyApproval.image_run_id])).rows.map((row) => ({
+    id: Number(row.id), mediaType: row.media_type, byteSize: Number(row.byte_size),
+    sha256: row.sha256, originalName: row.original_name,
+  }));
+  const legacySha256 = createHash('sha256').update(JSON.stringify(legacyAssets)).digest('hex');
+  await pool.query('UPDATE image_approval_events SET image_set_sha256 = $2 WHERE id = $1', [
+    legacyApproval.id, legacySha256,
+  ]);
   await passImageQaItem(pool, blindQueue.items[0].id, { requestId: randomUUID(), score: 3 }, admin);
   assert.equal(Number((await pool.query("SELECT count(*) FROM tasks WHERE state='REVIEWED'")).rows[0].count), 5);
   assert.equal(Number((await pool.query("SELECT count(*) FROM delivery_entries WHERE status='READY'")).rows[0].count), 5);

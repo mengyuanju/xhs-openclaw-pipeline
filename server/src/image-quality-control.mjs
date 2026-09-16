@@ -140,6 +140,20 @@ async function imageSnapshot(client, taskId, imageRunId) {
   return { assets, sha256: hash(assets) };
 }
 
+async function legacyImageSnapshotSha256(client, taskId, imageRunId) {
+  const result = await client.query(`
+    SELECT id, media_type, byte_size, sha256, original_name
+    FROM image_run_asset_view
+    WHERE task_id = $1 AND image_run_id = $2
+    ORDER BY id
+  `, [taskId, imageRunId]);
+  if (result.rows.length < 1) return null;
+  return hash(result.rows.map((row) => ({
+    id: Number(row.id), mediaType: row.media_type, byteSize: Number(row.byte_size),
+    sha256: row.sha256, originalName: row.original_name,
+  })));
+}
+
 async function ensureProductionBatch(client, task, actor) {
   if (task.production_batch_id) return Number(task.production_batch_id);
   const publicId = randomUUID();
@@ -169,7 +183,15 @@ async function releaseApproval(client, approval, actor, message) {
       || locked.current_image_run_id !== approval.image_run_id) return false;
   const snapshot = await imageSnapshot(client, Number(locked.id), locked.current_image_run_id);
   if (snapshot.sha256 !== approval.image_set_sha256) {
-    throw new ControlPlaneConflictError('IMAGE_VERSION_CHANGED', '图片文件已经变化，必须重新提交初审');
+    // Approvals created before the final-delivery-only snapshot rollout hashed every
+    // asset in the run and did not include page indexes. Keep those frozen approvals
+    // verifiable during the rolling upgrade without weakening checks for new records.
+    const legacySha256 = await legacyImageSnapshotSha256(
+      client, Number(locked.id), locked.current_image_run_id,
+    );
+    if (legacySha256 !== approval.image_set_sha256) {
+      throw new ControlPlaneConflictError('IMAGE_VERSION_CHANGED', '图片文件已经变化，必须重新提交初审');
+    }
   }
   const updated = (await client.query(`
     UPDATE tasks SET state = 'REVIEWED', current_stage = 'REVIEWED', progress_percent = 100,
