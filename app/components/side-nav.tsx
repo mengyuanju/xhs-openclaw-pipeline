@@ -122,9 +122,9 @@ export function SideNav({ session }: { session: NavigationSession }) {
   return (
     <aside className="sidebar">
       <div className="sidebar-head">
-        <Link className="brand" href="/workbench" aria-label="海默内容工场作业中心">
+        <Link className="brand" href="/workbench" aria-label="海墨内容工场作业中心">
           <img className="brand-mark" src="/icon.png" alt="" width={36} height={36} />
-          <div><strong>海默内容工场</strong><small>Content Studio</small></div>
+          <div><strong>海墨内容工场</strong><small>Content Studio</small></div>
         </Link>
         <Button unstyled
           className="mobile-nav-toggle"

@@ -5,8 +5,8 @@ import { readServerSession } from './server-session';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: '海默内容工场',
-  description: '海默小红书内容批量生成与审核工作台',
+  title: '海墨内容工场',
+  description: '海墨小红书内容批量生成与审核工作台',
 };
 
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
