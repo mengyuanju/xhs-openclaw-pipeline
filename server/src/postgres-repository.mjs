@@ -1511,7 +1511,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 2, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 6, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, finalDeliveryVersion: 4, deliverySpreadsheetVersion: 2, deliveryPreviewVersion: 6 } };
+      capabilities: { taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 3, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 6, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, finalDeliveryVersion: 4, deliverySpreadsheetVersion: 2, deliveryPreviewVersion: 6 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -3382,7 +3382,7 @@ export class PostgresControlPlaneRepository {
             SELECT DISTINCT ON (edit.task_id) edit.task_id, edit.id AS edit_id
             FROM image_edit_requests edit
             JOIN tasks edit_task ON edit_task.id = edit.task_id
-            WHERE $5::integer >= 2
+            WHERE $5::integer >= 3
               AND edit.status = 'QUEUED'
               AND edit_task.priority_paused = false
               AND edit_task.assigned_to_user_id IS NOT NULL
@@ -3456,7 +3456,7 @@ export class PostgresControlPlaneRepository {
         const executionId = randomUUID();
         const imageEditRequestId = task.image_edit_request_id ?? null;
         const baseSnapshot = imageEditRequestId
-          ? { imageEditRequestId, imageEditExecutorVersion: 2,
+          ? { imageEditRequestId, imageEditExecutorVersion: 3,
             task: { id: Number(task.id), query: task.query } }
           : task.pending_snapshot ?? snapshots.get(task.id);
         const imageProductionChainId = kind === 'IMAGE' && !imageEditRequestId

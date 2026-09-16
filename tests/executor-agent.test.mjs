@@ -42,6 +42,12 @@ test('concurrent executor refuses an old center before registration', async () =
   const oldImageCenter=createExecutorAgent({nodeId:'a',concurrencyEnabled:true,imageWorkerEnabled:true,controlPlane:{},
     readinessCheck:async()=>({health:{ok:true,capabilities:{executorConcurrency:true,codexConcurrencyPoolVersion:1}}})});
   await assert.rejects(oldImageCenter.prepare(),/图片修改能力/u);
+  const versionTwoImageCenter=createExecutorAgent({nodeId:'a',concurrencyEnabled:true,imageWorkerEnabled:true,controlPlane:{},
+    readinessCheck:async()=>({health:{ok:true,capabilities:{executorConcurrency:true,codexConcurrencyPoolVersion:1,imageEditExecutorVersion:2}}})});
+  await assert.rejects(versionTwoImageCenter.prepare(),/图片修改能力/u);
+  const currentImageCenter=createExecutorAgent({nodeId:'a',concurrencyEnabled:true,imageWorkerEnabled:true,controlPlane:{},
+    readinessCheck:async()=>({health:{ok:true,capabilities:{executorConcurrency:true,codexConcurrencyPoolVersion:1,imageEditExecutorVersion:3}}})});
+  await currentImageCenter.prepare();
 });
 
 test('executor never claims images when image capability is disabled', async () => {
@@ -124,7 +130,7 @@ test('image lane dispatches a manual edit to the edit processor without using no
   });
   await agent.prepare();
   await agent.register();
-  assert.equal(registration.imageEditExecutorVersion,2);
+  assert.equal(registration.imageEditExecutorVersion,3);
   const outcome=await agent.runImageOnce();
   assert.equal(outcome.status,'SUCCEEDED');
   assert.equal(edits,1);

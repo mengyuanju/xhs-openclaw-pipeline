@@ -164,6 +164,37 @@ test('AI local worker localizes the operator prompt and protects every pixel out
   const dir=await mkdtemp(join(tmpdir(),'image-edit-prompt-local-fake-'));
   try{const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});assert.equal(result.status,'PREVIEW_READY');assert.equal(calls,1);assert.equal(visionCalls,1);assert.ok(Buffer.isBuffer(completed.mask));assert.equal(completed.validation.outsideMask.changedPixels,0);assert.equal(completed.validation.localization.mode,'VISION_PROMPT_REGION_CHECK');assert.deepEqual(completed.validation.localization.region,{x:700,y:180,width:220,height:260});}finally{await rm(dir,{recursive:true,force:true});}
 });
+test('AI local removal of an adopted disclosure drops it from OCR requirements and page lineage',async()=>{
+  const disclosureText='该人物形象由AI生成';
+  const source=await png('red'),generated=await png('blue');
+  const config={imageEditPrompt,references:[],instruction:'去掉右下角的ai标识',
+    preserve:'保留原图全部已批准文字、所有未在说明中点名的区域、人物、构图、色调和人工生成标识',
+    negative:'不得修改说明之外的区域；不得新增、删除或改写已有文字',mask:null};
+  let completed,promptText='',validationCalls=0;
+  const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_LOCAL',config}),context:async()=>({source:{},refs:[],settings:{aiDisclosureEnabled:true,aiDisclosureText:disclosureText},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{imageEditRequiredText:['真实参考',disclosureText],imageEditDisclosure:{type:'AI_GENERATED',text:disclosureText}}]}},imageEditPrompt}),readAsset:async()=>source,
+    fail:async(_edit,error)=>assert.fail(error.message),complete:async(_edit,result)=>{completed=result;return{};}};
+  const agentClient={runVision:async()=>({model:'fake-vision',rawText:JSON.stringify({passed:true,confidence:0.99,candidateCount:1,
+    targetDescription:`右下角写有“${disclosureText}”的白色圆角标识牌整体`,
+    region:{x:807,y:1359,width:250,height:63},reason:'目标唯一且不包含其他文字',checks:{instructionSpecific:true,exactlyOneTarget:true,wholeTargetInsideRegion:true,protectedTextExcluded:true}})}),
+    runImageEdit:async({prompt,outputPath})=>{promptText=prompt;await writeFile(outputPath,generated);return{model:'fake-local-edit'};}};
+  const validationRequests=[];
+  const validateImage=async input=>{validationCalls++;validationRequests.push(input);return validationCalls===1?visionPass([disclosureText]):visionPass();};
+  const dir=await mkdtemp(join(tmpdir(),'image-edit-remove-disclosure-'));
+  try {
+    const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage});
+    assert.equal(result.status,'PREVIEW_READY');
+    assert.deepEqual(validationRequests[0].requiredText,['真实参考',disclosureText]);
+    assert.deepEqual(validationRequests[1].requiredText,['真实参考']);
+    assert.match(promptText,/removeDisclosure 字段指定的人工生成标识/u);
+    assert.match(promptText,/除 removeDisclosure 指定标识外，保留所有未点名区域/u);
+    assert.doesNotMatch(promptText,/保留原图全部已批准文字、所有未在说明中点名的区域、人物、构图、色调和人工生成标识/u);
+    assert.deepEqual(completed.validation.requiredText,['真实参考']);
+    assert.equal(completed.validation.disclosure.required,'');
+    assert.equal(completed.validation.disclosure.added,null);
+    assert.deepEqual(completed.validation.disclosure.removed,{type:'AI_GENERATED',text:disclosureText});
+    assert.equal(completed.validation.localization.removedInheritedDisclosure,true);
+  } finally { await rm(dir,{recursive:true,force:true}); }
+});
 test('ambiguous natural-language targets fail before the paid image model',async()=>{
   assert.equal(parseLocalTargetCheck(JSON.stringify({passed:true,confidence:0.7,candidateCount:2,region:{x:100,y:100,width:500,height:500},checks:{instructionSpecific:true,exactlyOneTarget:false,wholeTargetInsideRegion:true,protectedTextExcluded:true}})).passed,false);
   const source=await png('red'),config={imageEditPrompt,references:[],instruction:'把杯子改成蓝色',preserve:'保留其他区域',negative:'不得改写文字',mask:null};

@@ -124,6 +124,9 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     assert.equal(submitted.target.description,'画面右侧台面上、木托盘后方的米白色拿铁杯');
     assert.ok(submitted.target.region.width>24&&submitted.target.region.height>24);
     assert.match(submitted.instruction,/木托盘后方/u);
+    await page.getByRole('button',{name:'关闭工作台',exact:true}).click();
+    await dialog.waitFor({state:'hidden'});
+    assert.equal(await page.getByRole('button',{name:'修改图片',exact:true}).isVisible(),true);
     assert.deepEqual(errors,[]);
   }finally{await browser?.close();if(server)await new Promise(r=>server.close(r));assert.ok(resolve(root).startsWith(resolve(tmpdir())));await rm(root,{recursive:true,force:true});}
 });

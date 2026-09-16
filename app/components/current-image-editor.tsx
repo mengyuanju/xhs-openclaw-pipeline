@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { Dialog, DialogClose, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { UploadCloud } from 'lucide-react';
 import { apiRequest } from './api-client';
@@ -33,8 +33,8 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,page,runs,
   const operation=tab==='TEXT'?'TEXT':tab==='ENTITY'?'AI_FUSION':'AI_LOCAL';
   const requestInstruction=tab==='TEXT'?`将人工生成标识显示为“${text.trim()}”并放在右下角`:
     tab==='ENTITY'?`使用上传的真实产品参考图，只替换目标“${targetDescription.trim()}”，保持场景、人物、构图和全部文字不变`:instruction.trim();
-  const preserve=tab==='ENTITY'?'保留原图全部已批准文字、人物、背景、构图、色调和未被替换的物品':'保留原图全部已批准文字、所有未在说明中点名的区域、人物、构图、色调和人工生成标识';
-  const negative=tab==='ENTITY'?'不得新增文字；不得改变参考产品的外形、颜色、标志和关键细节':'不得修改说明之外的区域；不得新增、删除或改写已有文字';
+  const preserve=tab==='ENTITY'?'保留原图全部已批准文字、人物、背景、构图、色调和未被替换的物品':'除说明明确点名的目标外，保留原图全部已批准文字、所有未点名区域、人物、构图和色调';
+  const negative=tab==='ENTITY'?'不得新增文字；不得改变参考产品的外形、颜色、标志和关键细节':'不得修改说明之外的区域；除明确要求修改或删除的目标外，不得新增、删除或改写已有文字';
   const base=()=>({requestId:createRequestId(),sourceImageRunId:runId,sourceAssetId:asset.id,copyRevisionId,sha256:asset.sha256,targetPage:page});
   async function act(action:()=>Promise<unknown>,pending='正在处理…',success='操作完成') {setBusy(true);setError('');setNotice(pending);try{await action();await refresh();await onChanged();setNotice(success);}catch(e){setNotice('');setError(e instanceof Error?e.message:'操作失败');}finally{setBusy(false);}}
   function requestIssue(draft=false) {
@@ -135,6 +135,6 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,page,runs,
       {(e.status==='PREVIEW_READY'?['accept','reject','cancel']:e.status==='FAILED'?['retry']:e.status==='DRAFT'?['queue','cancel']:['QUEUED','RUNNING'].includes(e.status)?['cancel']:[]).map(action=><Button key={action} disabled={busy} onClick={()=>void runHistoryAction(e,action)}>{({accept:'采用此版本',reject:'拒绝',cancel:'取消',retry:'重试（AI 可能再次收费）',queue:'提交草稿'})[action as 'accept']}</Button>)}
     </li>)}</ul>
     </div>
-    <footer className={styles.footer}><Button variant="outline" type="button" onClick={()=>setOpen(false)}>关闭工作台</Button></footer>
+    <footer className={styles.footer}><DialogClose asChild><Button variant="outline" type="button">关闭工作台</Button></DialogClose></footer>
   </DialogContent></Dialog></>;
 }

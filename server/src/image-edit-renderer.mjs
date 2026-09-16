@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { imagePageDisclosure } from './image-edit-lineage.mjs';
+import { localizedTargetIsDisclosure, requestsDisclosureRemoval } from './image-edit-disclosure.mjs';
 import { normalizeImageEditRepairMaxAttempts } from '../../src/production-settings.mjs';
 import { createAgentClient } from '../../src/agent-client.mjs';
 import { ImageAlignmentServiceError, createImageAlignmentValidator } from '../../src/image-alignment.mjs';
@@ -50,12 +51,20 @@ function aiEditPrompt(context,config,required) {
   });
   if(config.operation==='AI_LOCAL') {
     const masked=config.mask!=null||config.localizedRegion!=null;
+    const removal=typeof config.removeDisclosure==='string'&&config.removeDisclosure;
+    const mustPreserve=removal
+      ? [...required,'除 removeDisclosure 指定标识外，保留所有未点名区域、人物、构图、色调和文字']
+      : [...required,config.preserve].filter(Boolean);
+    const negative=removal
+      ? '不得修改说明之外的区域；不得新增、删除或改写 removeDisclosure 指定标识以外的任何文字'
+      : config.negative;
     return governedImageEditPrompt(context,config,{reviewInstruction:'局部修改',
       contract:masked
-        ? `编辑第一个附件，最后一个附件是${config.mask?'历史任务':'根据自然语言定位结果生成'}的黑白遮罩。只允许根据任务数据中的作业员说明修改遮罩白色区域；黑色区域以及所有未要求修改的内容必须保持不变。不得新增、删除或改写已有文字。只返回一张 1086×1448 PNG。`
+        ? `编辑第一个附件，最后一个附件是${config.mask?'历史任务':'根据自然语言定位结果生成'}的黑白遮罩。只允许根据任务数据中的作业员说明修改遮罩白色区域；黑色区域以及所有未要求修改的内容必须保持不变。${removal?'移除任务数据 removeDisclosure 字段指定的人工生成标识，除该标识外不得新增、删除或改写任何文字。':'不得新增、删除或改写已有文字。'}只返回一张 1086×1448 PNG。`
         : '编辑第一个附件。任务数据中的作业员说明会同时描述目标位置和修改内容；依据该文字说明识别并定位目标，只修改被点名的对象或区域。所有未点名区域、人物、构图和已有文字必须保持不变。不得新增、删除或改写已有文字。只返回一张 1086×1448 PNG。',
       data:{operation:masked?'LOCAL_MASK_EDIT':'LOCAL_PROMPT_EDIT',operatorInstruction:config.instruction,
-        ...(masked?{mask:config.mask??{type:'rect',...config.localizedRegion}}:{}),mustPreserve:[...required,config.preserve].filter(Boolean),negative:config.negative},
+        ...(masked?{mask:config.mask??{type:'rect',...config.localizedRegion}}:{}),
+        ...(removal?{removeDisclosure:removal}:{}),mustPreserve,negative},
     });
   }
   return governedImageEditPrompt(context,config,{reviewInstruction:'历史整图修改',
@@ -132,6 +141,7 @@ export function parseLocalTargetCheck(rawText) {
   const passed=parsed?.passed===true&&confidence>=0.8&&candidateCount===1&&region!==null
     &&region.width>=24&&region.height>=24&&LOCAL_TARGET_CHECKS.every(name=>checks[name]===true);
   return {mode:'VISION_PROMPT_REGION_CHECK',passed,confidence,candidateCount,region,
+    targetIsAiDisclosure:parsed?.targetIsAiDisclosure===true,
     targetDescription:String(parsed?.targetDescription??'').slice(0,500),
     checks:Object.fromEntries(LOCAL_TARGET_CHECKS.map(name=>[name,checks[name]===true])),
     reason:String(parsed?.reason??'').slice(0,1000)};
@@ -146,7 +156,9 @@ async function validateLocalTarget(client,{inputPath,instruction,signal}) {
 
 不可信说明 JSON：${criteria}
 
-仅输出 JSON {"passed":boolean,"confidence":number,"candidateCount":integer,"targetDescription":string,"region":{"x":integer,"y":integer,"width":integer,"height":integer},"reason":string,"checks":{"instructionSpecific":boolean,"exactlyOneTarget":boolean,"wholeTargetInsideRegion":boolean,"protectedTextExcluded":boolean}}。`,
+如果被点名的目标本身是说明内容由 AI 生成的独立标识、标签或水印（例如“该人物形象由AI生成”），targetIsAiDisclosure=true；此时 protectedTextExcluded 只判断选区是否排除了该目标以外的其他文字。
+
+仅输出 JSON {"passed":boolean,"confidence":number,"candidateCount":integer,"targetDescription":string,"targetIsAiDisclosure":boolean,"region":{"x":integer,"y":integer,"width":integer,"height":integer},"reason":string,"checks":{"instructionSpecific":boolean,"exactlyOneTarget":boolean,"wholeTargetInsideRegion":boolean,"protectedTextExcluded":boolean}}。`,
       inputPaths:[inputPath],signal});
   } catch(error) {
     throw Object.assign(new Error('自然语言目标定位视觉服务失败，尚未调用图片编辑模型'),{
@@ -278,10 +290,10 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
     const sourceDisclosure=inheritedDisclosureText;
     const sourceRequired=[...new Set([...pageRequired,...(sourceDisclosure?[sourceDisclosure]:[])])];
     const targetText=e.operation==='TEXT'?config.overlay.text:null;
-    const required=e.operation==='TEXT'
+    let required=e.operation==='TEXT'
       ? [...new Set([...sourceRequired.filter(text=>cleanText(text)!==cleanText(sourceDisclosure)&&cleanText(text)!==cleanText(targetText)),targetText])]
       : sourceRequired;
-    const disclosure=targetText??sourceDisclosure;
+    let disclosure=targetText??sourceDisclosure;
     const sourceChecks=[];
     let originalCheck=null;
     for(let sourceAttempt=1;sourceAttempt<=2;sourceAttempt++) {
@@ -294,6 +306,7 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
     const refs=[];
     for(const asset of context.refs)refs.push({asset,bytes:await service.readAsset(asset)});
     let result=source,mask=null,outsideMask=null,targetLocalization=null,entityConsistency={mode:'NOT_APPLICABLE',passed:true},model=null,generationAttempts=0,textCheck=null;
+    let removedInheritedDisclosure=false;
     if(e.operation==='TEXT') {
       if(mock) throw new Error('mock 不生成可采用的 AI 编辑结果');
       const placement={...config.overlay,...disclosurePlacementRegion(config.overlay)};
@@ -332,11 +345,20 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
       } else if(e.operation==='AI_LOCAL') {
         if(config.mask)targetLocalization={mode:'MASK',instruction:config.instruction,region:config.mask};
         else targetLocalization=await validateLocalTarget(client,{inputPath,instruction:config.instruction,signal:controller.signal});
+        removedInheritedDisclosure=Boolean(sourceDisclosure
+          &&requestsDisclosureRemoval(config.instruction,sourceDisclosure)
+          &&localizedTargetIsDisclosure(targetLocalization,sourceDisclosure));
+        if(removedInheritedDisclosure) {
+          required=required.filter(text=>cleanText(text)!==cleanText(sourceDisclosure));
+          disclosure='';
+          targetLocalization={...targetLocalization,removedInheritedDisclosure:true};
+        }
         mask=await renderMask(config.mask??{type:'rect',...targetLocalization.region});
         const path=resolve(directory,'mask.png');await writeFile(path,mask);paths.push(path);
       }
       const prompt=aiEditPrompt(context,{...config,operation:e.operation,targetPage:Number(e.target_page),
-        ...(e.operation==='AI_LOCAL'&&!config.mask?{localizedRegion:targetLocalization.region}:{})},required);
+        ...(e.operation==='AI_LOCAL'&&!config.mask?{localizedRegion:targetLocalization.region}:{}),
+        ...(removedInheritedDisclosure?{removeDisclosure:sourceDisclosure}:{})},required);
       imageModelRequested=true;
       const generated=await client.runImageEdit({prompt,inputPaths:paths,outputPath:resolve(directory,'generated.png'),signal:controller.signal});
       model=generated.model??null;
@@ -385,9 +407,11 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
       restoredPages.push({page:index+1,assetId:Number(asset.id),sha256:asset.sha256,text:check});
     }
     const promptSnapshot=config.imageEditPrompt??context.imageEditPrompt;
-    const addedDisclosure=config.overlay?.disclosureType?{type:config.overlay.disclosureType,text:config.overlay.text}:inheritedDisclosure??null;
+    const addedDisclosure=removedInheritedDisclosure?null
+      :config.overlay?.disclosureType?{type:config.overlay.disclosureType,text:config.overlay.text}:inheritedDisclosure??null;
     const validation={passed:text.passed,mock,restoredPages,dimensions:{passed:finalMetadata.width===1086&&finalMetadata.height===1448,width:finalMetadata.width,height:finalMetadata.height},format:finalMetadata.format,
-      text,requiredText:required,disclosure:{required:disclosure,added:addedDisclosure},integrity:{sha256:imageHash(result)},outsideMask,
+      text,requiredText:required,disclosure:{required:disclosure,added:addedDisclosure,
+        ...(removedInheritedDisclosure?{removed:inheritedDisclosure}: {})},integrity:{sha256:imageHash(result)},outsideMask,
       localization:['AI_FUSION','AI_LOCAL'].includes(e.operation)?targetLocalization:null,
       entityConsistency,model,generationAttempts,repairMaxAttempts:e.operation==='TEXT'?generationAttemptLimit-1:0,
       prompt:promptSnapshot?{kind:'IMAGE_EDIT_SYSTEM',versionId:promptSnapshot.versionId??null,version:promptSnapshot.version??null,sha256:promptSnapshot.sha256??promptSnapshot.contentSha256??null,capturedAt:promptSnapshot.capturedAt??null}:null};

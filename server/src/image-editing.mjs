@@ -5,6 +5,7 @@ import sharp from 'sharp';
 import { ControlPlaneConflictError, ControlPlaneAuthorizationError, ControlPlaneNotFoundError, normalizeTaskId, normalizeUuid } from './domain.mjs';
 import { withdrawReadyDeliveryEntries } from './final-delivery.mjs';
 import { imagePageDisclosure, imageResultScopedToPage, imageSettingsScopedToPage } from './image-edit-lineage.mjs';
+import { disclosureRemovalConfig, requestsDisclosureRemoval } from './image-edit-disclosure.mjs';
 import { boundedNumber, shortText, normalizeManualOverlay, normalizeMask, decodeReference, imageHash, safeRect, renderMask, EDIT_WIDTH, EDIT_HEIGHT } from '../../src/image-edit-pixels.mjs';
 import { orderedImageFileName } from '../../src/image-file-name.mjs';
 import { normalizeImageEditRepairMaxAttempts } from '../../src/production-settings.mjs';
@@ -372,7 +373,12 @@ export function createImageEditingService({ pool, storageRoot }) {
           await c.query("UPDATE tasks SET current_image_run_id=$2,state='MANUAL_ARCHIVE',current_stage='MANUAL_ARCHIVE',image_reviewed_at=NULL,image_reviewed_by_user_id=NULL,progress_message='图片修改已采用，请重新审核归档',updated_at=now() WHERE id=$1",[e.task_id,adoptedRunId]);
         }
         const next={queue:'QUEUED',retry:'QUEUED',cancel:'CANCELLED',reject:'REJECTED',accept:'ACCEPTED'}[action];
-        const config=usesImageModel&&input.confirmation==='LIVE_IMAGE_COST_ACCEPTED'?{...e.config,confirmation:'LIVE_IMAGE_COST_ACCEPTED'}:e.config;
+        let config=usesImageModel&&input.confirmation==='LIVE_IMAGE_COST_ACCEPTED'?{...e.config,confirmation:'LIVE_IMAGE_COST_ACCEPTED'}:e.config;
+        const inheritedDisclosure=action==='retry'&&e.operation==='AI_LOCAL'
+          ?imagePageDisclosure(editSource?.run?.result,Number(e.target_page)):null;
+        if(inheritedDisclosure&&requestsDisclosureRemoval(config.instruction,inheritedDisclosure.text)) {
+          config=disclosureRemovalConfig(config);
+        }
         const updated=(await c.query("UPDATE image_edit_requests SET status=$2,config=$3,version=version+1,error=NULL,validation=CASE WHEN $2='QUEUED' THEN NULL ELSE validation END,lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 RETURNING *",[id,next,config])).rows[0];
         if(action==='cancel'&&e.execution_id)await c.query(`UPDATE task_executions SET
           status='ABANDONED',stage='CANCELLED',progress_message='图片修改已取消',

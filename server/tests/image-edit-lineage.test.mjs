@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { imagePageDisclosure, imageResultScopedToPage, imageSettingsScopedToPage } from '../src/image-edit-lineage.mjs';
+import { disclosureRemovalConfig, requestsDisclosureRemoval } from '../src/image-edit-disclosure.mjs';
 
 const firstPageDisclosure = { type: 'AI_GENERATED', text: '该人物形象由AI生成' };
 const result = {
@@ -34,4 +35,13 @@ test('legacy executor settings disable disclosure inference only for an unlabell
     ...settings,
     aiDisclosureEnabled: false,
   });
+});
+
+test('intentional disclosure removal is explicit and negation-safe', () => {
+  assert.equal(requestsDisclosureRemoval('去掉右下角的ai标识', firstPageDisclosure.text), true);
+  assert.equal(requestsDisclosureRemoval('不要去掉右下角的AI标识', firstPageDisclosure.text), false);
+  assert.equal(requestsDisclosureRemoval('去掉右下角的杯子', firstPageDisclosure.text), false);
+  const config = disclosureRemovalConfig({ preserve: '保留人工生成标识', negative: '不得删除已有文字' });
+  assert.match(config.preserve, /除说明明确点名的人工生成标识外/u);
+  assert.match(config.negative, /被点名人工生成标识以外/u);
 });
