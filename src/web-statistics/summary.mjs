@@ -49,6 +49,8 @@ export function compactTask(row) {
     createdByAccountId: row.createdByAccountId,
     assignedToUserId: textOrNull(row.assignedToUserId),
     assignedToAccountId: row.assignedToAccountId,
+    assignedToDisplayName: textOrNull(row.assignedToDisplayName), assignedToRole: textOrNull(row.assignedToRole),
+    assignedAt: textOrNull(row.assignedAt),
     createdByDisplayName: textOrNull(row.createdByDisplayName), createdByRole: textOrNull(row.createdByRole),
     createdAt: textOrNull(row.createdAt), updatedAt: textOrNull(row.updatedAt),
     imageReviewedAt: textOrNull(row.imageReviewedAt), lastActivityAt: textOrNull(row.lastActivityAt),
@@ -123,6 +125,40 @@ function countTask(counts, task, range, today) {
   if (STATE_GROUPS.failed.includes(task.state) || (task.state === 'COPY_REVIEW_PENDING' && task.retryExhausted)) counts.anomalies++;
 }
 
+export function resolveWorkOwner(task) {
+  if (task.assignedToUserId !== null || task.assignedToAccountId !== null) {
+    const historical = task.assignedToAccountId === null && task.assignedToUserId !== null;
+    return { accountId: task.assignedToAccountId, username: task.assignedToUserId,
+      displayName: historical ? `历史账号（${task.assignedToUserId}）`
+        : task.assignedToDisplayName || task.assignedToUserId || '待分配',
+      role: historical ? null : task.assignedToRole, source: 'assignee',
+      receivedAt: task.assignedAt || task.createdAt };
+  }
+  // Before assignment became mandatory, ordinary users owned the tasks they created.
+  if (task.createdByRole === 'USER' && task.createdByUserId !== null) {
+    return { accountId: task.createdByAccountId, username: task.createdByUserId,
+      displayName: task.createdByDisplayName || task.createdByUserId,
+      role: task.createdByRole, source: 'legacy-creator', receivedAt: task.createdAt };
+  }
+  return { accountId: null, username: null, displayName: '待分配', role: null,
+    source: 'unassigned', receivedAt: task.createdAt };
+}
+
+function workOwnerKey(owner) {
+  return owner.accountId === null
+    ? owner.username === null ? 'unassigned' : `historical:${owner.username}`
+    : `account:${owner.accountId}`;
+}
+
+function countPersonTask(counts, task, owner, range, today, now) {
+  countTask(counts, task, range, today);
+  counts.receivedInPeriod += within(owner.receivedAt, range) ? 1 : 0;
+  counts.todayReceived += within(owner.receivedAt, today) ? 1 : 0;
+  const last = dateMs(task.lastActivityAt || task.updatedAt || task.createdAt);
+  if (!['REVIEWED', 'CANCELLED'].includes(task.state) && now - last >= DAY) counts.stale++;
+  if (owner.source === 'legacy-creator') counts.legacyFallback++;
+}
+
 function daysInRange(range) {
   const days = [];
   for (let time = range.startMs; time < range.endMs; time += DAY) days.push(chinaDay(time));
@@ -135,6 +171,7 @@ export function summarizeCounts(rawTasks, range, now = Date.now()) {
   const today = normalizeRange({}, now);
   const states = Object.fromEntries(Object.keys(STATE_GROUPS).map(group => [group, 0]));
   let copyQaReturned = 0;
+  let legacyOwnerFallback = 0;
   const people = new Map();
   const trend = new Map(daysInRange(range).map(date => [date, { date, created: 0, completed: 0 }]));
   const stale = [];
@@ -142,16 +179,13 @@ export function summarizeCounts(rawTasks, range, now = Date.now()) {
   for (const task of tasks) {
     countTask(summary, task, range, today);
     if (task.copyQaReturned) copyQaReturned++;
-    const historicalAccount = task.createdByAccountId === null && task.createdByUserId !== null;
-    const key = task.createdByAccountId === null
-      ? `historical:${task.createdByUserId ?? ''}`
-      : `account:${task.createdByAccountId}`;
-    if (!people.has(key)) people.set(key, { ...emptyCounts(), accountId: task.createdByAccountId,
-      username: task.createdByUserId,
-      displayName: historicalAccount ? `历史账号（${task.createdByUserId}）`
-        : task.createdByDisplayName || task.createdByUserId || '历史无归属',
-      role: historicalAccount ? null : task.createdByRole });
-    countTask(people.get(key), task, range, today);
+    const owner = resolveWorkOwner(task);
+    const key = workOwnerKey(owner);
+    if (!people.has(key)) people.set(key, { ...emptyCounts(), receivedInPeriod: 0, todayReceived: 0,
+      stale: 0, legacyFallback: 0, accountId: owner.accountId, username: owner.username,
+      displayName: owner.displayName, role: owner.role });
+    countPersonTask(people.get(key), task, owner, range, today, now);
+    if (owner.source === 'legacy-creator') legacyOwnerFallback++;
     for (const [group, values] of Object.entries(STATE_GROUPS)) if (values.includes(task.state)) states[group]++;
     if (within(task.createdAt, range)) trend.get(chinaDay(dateMs(task.createdAt))).created++;
     if (task.state === 'REVIEWED' && within(task.imageReviewedAt, range)) {
@@ -161,10 +195,11 @@ export function summarizeCounts(rawTasks, range, now = Date.now()) {
       || (task.state === 'REVIEWED' && !Number.isFinite(dateMs(task.imageReviewedAt)))) missingDates++;
     const last = dateMs(task.lastActivityAt || task.updatedAt || task.createdAt);
     if (!['REVIEWED', 'CANCELLED'].includes(task.state) && now - last >= DAY) {
-      stale.push({ id: task.id, query: task.query, username: task.createdByUserId, hours: Math.floor((now - last) / 3_600_000) });
+      stale.push({ id: task.id, query: task.query, username: owner.username, hours: Math.floor((now - last) / 3_600_000) });
     }
   }
-  return { ...summary, states, copyQaReturned, people: [...people.values()].sort((a, b) => b.createdInPeriod - a.createdInPeriod),
+  return { ...summary, states, copyQaReturned, legacyOwnerFallback,
+    people: [...people.values()].sort((a, b) => b.completedInPeriod - a.completedInPeriod || b.receivedInPeriod - a.receivedInPeriod),
     trend: [...trend.values()], missingDates, staleCount: stale.length,
     stale: stale.sort((a, b) => b.hours - a.hours).slice(0, 20) };
 }
@@ -219,6 +254,7 @@ export function summarizeEfficiency(tasks, detailById, range) {
     IMAGE: { values: [], failed: 0, succeeded: 0, abandoned: 0, invalid: 0 } };
   const dayValues = new Map(daysInRange(range).map(date => [date, { date, copy: [], image: [] }]));
   const delivery = [], copyScores = [], imageScores = [];
+  const peopleQuality = new Map();
   let effectiveImages = 0, simulated = 0, executionTasks = 0, repeatedTasks = 0;
   for (const task of tasks) {
     if (task.state === 'REVIEWED' && within(task.imageReviewedAt, range)) {
@@ -229,8 +265,25 @@ export function summarizeEfficiency(tasks, detailById, range) {
     if (!detail) continue;
     const firstCopyAssessment = firstAssessment(detail, 'COPY');
     const firstImageAssessment = firstAssessment(detail, 'IMAGE');
-    if (firstCopyAssessment && within(firstCopyAssessment.createdAt, range)) copyScores.push(firstCopyAssessment.scoreX10);
-    if (firstImageAssessment && within(firstImageAssessment.createdAt, range)) imageScores.push(firstImageAssessment.scoreX10);
+    const periodAssessments = [];
+    if (firstCopyAssessment && within(firstCopyAssessment.createdAt, range)) {
+      copyScores.push(firstCopyAssessment.scoreX10);
+      periodAssessments.push(firstCopyAssessment);
+    }
+    if (firstImageAssessment && within(firstImageAssessment.createdAt, range)) {
+      imageScores.push(firstImageAssessment.scoreX10);
+      periodAssessments.push(firstImageAssessment);
+    }
+    if (periodAssessments.length) {
+      const owner = resolveWorkOwner(task);
+      const key = workOwnerKey(owner);
+      if (!peopleQuality.has(key)) peopleQuality.set(key, {
+        accountId: owner.accountId, username: owner.username, samples: 0, qualified: 0,
+      });
+      const quality = peopleQuality.get(key);
+      quality.samples += periodAssessments.length;
+      quality.qualified += periodAssessments.filter(assessment => assessment.scoreX10 > 20).length;
+    }
     if (task.state === 'REVIEWED' && task.currentImageRunId && within(task.imageReviewedAt, range)
       && !detail.simulatedRunIds.includes(task.currentImageRunId)) {
       effectiveImages += detail.images.filter(asset => asset.runId === task.currentImageRunId).length;
@@ -285,5 +338,7 @@ export function summarizeEfficiency(tasks, detailById, range) {
   return { copy: result(groups.COPY), image: result(groups.IMAGE), delivery: distribution(delivery), effectiveImages,
     simulated, executionTasks, repeatedTasks, repeatRate: executionTasks ? repeatedTasks / executionTasks : null,
     quality: { copy: qualityStage(copyScores), image: qualityStage(imageScores) },
+    peopleQuality: [...peopleQuality.values()].map(person => ({ ...person,
+      passRate: person.samples ? person.qualified / person.samples : null })),
     trend: [...dayValues.values()].map(day => ({ date: day.date, copyMs: distribution(day.copy).meanMs, imageMs: distribution(day.image).meanMs })) };
 }

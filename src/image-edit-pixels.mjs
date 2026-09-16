@@ -29,23 +29,29 @@ export function normalizeManualOverlay(input) {
   const opacity = boundedNumber(input.opacity ?? 1, 0.1, 1, false);
   const color = input.color ?? '#ffffff', background = input.background ?? '#111827';
   if (![color, background].every(value => /^#[a-f0-9]{6}$/iu.test(value))) throw new TypeError('颜色必须为六位十六进制');
-  const width = [...text].length * size + 24, height = Math.ceil(size * 1.5) + 16;
-  const position = input.position ?? 'bottom-right';
-  if (!['top-left','top-right','bottom-left','bottom-right','top','bottom','custom'].includes(position)) throw new TypeError('文字位置无效');
-  const x = position === 'custom' ? input.x : position.endsWith('left') ? margin : ['top','bottom'].includes(position) ? Math.floor((EDIT_WIDTH - width) / 2) : EDIT_WIDTH - margin - width;
-  const y = position === 'custom' ? input.y : position.startsWith('top') ? margin : EDIT_HEIGHT - margin - height;
-  const rect = safeRect({ x, y, width, height }, margin);
   const disclosureType = input.disclosureType ?? null;
   if (disclosureType !== null && disclosureType !== 'AI_GENERATED') throw new TypeError('标识类型无效');
   const textType = input.textType ?? (disclosureType === 'AI_GENERATED' ? 'AI_DISCLOSURE' : 'CUSTOM');
   if (!['HEADLINE','SUBTITLE','BULLET','LABEL','AI_DISCLOSURE','CUSTOM'].includes(textType)) throw new TypeError('文字类型无效');
   if (textType === 'AI_DISCLOSURE' && disclosureType !== 'AI_GENERATED') throw new TypeError('AI 标识文字必须记录合规标识类型');
   if (textType === 'AI_DISCLOSURE' && (!/^[\p{L}\p{N}_-]{1,12}$/u.test(text))) throw new TypeError('人工生成标识限 1 至 12 个文字、数字、下划线或短横线');
+  const width = [...text].length * size + 24;
+  const height = Math.ceil(size * 1.5) + 16;
+  const position = input.position ?? 'bottom-right';
+  if (!['top-left','top-right','bottom-left','bottom-right','top','bottom','custom'].includes(position)) throw new TypeError('文字位置无效');
+  const x = position === 'custom' ? input.x : position.endsWith('left') ? margin : ['top','bottom'].includes(position) ? Math.floor((EDIT_WIDTH - width) / 2) : EDIT_WIDTH - margin - width;
+  const y = position === 'custom' ? input.y : position.startsWith('top') ? margin : EDIT_HEIGHT - margin - height;
+  const rect = safeRect({ x, y, width, height }, margin);
   return { text, textType, size, margin, opacity, color, background, position, ...rect, disclosureType };
+}
+function overlaySvg(o) {
+  const textX=o.textType==='AI_DISCLOSURE'?o.x+o.width/2:o.x+12;
+  const anchor=o.textType==='AI_DISCLOSURE'?' text-anchor="middle"':'';
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1086" height="1448"><g opacity="${o.opacity}"><rect x="${o.x}" y="${o.y}" width="${o.width}" height="${o.height}" rx="8" fill="${o.background}"/><text x="${textX}" y="${o.y + 8 + o.size}"${anchor} font-family="Noto Sans CJK SC,Microsoft YaHei,sans-serif" font-size="${o.size}" font-weight="500" fill="${o.color}">${escapeXml(o.text)}</text></g></svg>`;
 }
 export function manualOverlaySvg(input) {
   const o = normalizeManualOverlay(input);
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="1086" height="1448"><g opacity="${o.opacity}"><rect x="${o.x}" y="${o.y}" width="${o.width}" height="${o.height}" rx="8" fill="${o.background}"/><text x="${o.x + 12}" y="${o.y + 8 + o.size}" font-family="Noto Sans CJK SC,Microsoft YaHei,sans-serif" font-size="${o.size}" fill="${o.color}">${escapeXml(o.text)}</text></g></svg>`;
+  return overlaySvg(o);
 }
 export async function decodeReference(bytes, mediaType) {
   if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > 5 * 1024 * 1024) throw new TypeError('参考图片上限为 5 MB');

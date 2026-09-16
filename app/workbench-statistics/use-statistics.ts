@@ -45,7 +45,7 @@ export function useStatistics(filters: Filters, enabled = true) {
         const data = payload.data as Statistics;
         setSnapshot({ query, data });
         setError('');
-        delay = Math.max(1500, data.retryAfterMs);
+        delay = Math.max(750, data.retryAfterMs);
       } catch (caught) {
         if (!disposed) setError(caught instanceof Error ? caught.message : '统计暂时无法读取');
       } finally {
@@ -80,7 +80,7 @@ export function useStatistics(filters: Filters, enabled = true) {
   }, [enabled, cooldown, busy]);
   return {
     data: enabled && snapshot?.query === query ? snapshot.data : null,
-    creators: enabled ? snapshot?.data.creators : undefined,
+    workers: enabled ? snapshot?.data.workers : undefined,
     error: enabled ? error : '',
     busy: enabled && busy,
     cooldown: enabled && cooldown,

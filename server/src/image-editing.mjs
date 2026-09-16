@@ -35,13 +35,14 @@ export function editStoragePath(root, stored) {
 }
 export function normalizeEdit(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('修改参数无效');
-  const allowed = ['requestId','sourceImageRunId','sourceAssetId','copyRevisionId','sha256','targetPage','operation','instruction','preserve','negative','overlay','mask','target','references','confirmation','draft','restoreRunId'];
+  const allowed = ['requestId','batchId','sourceImageRunId','sourceAssetId','copyRevisionId','sha256','targetPage','operation','instruction','preserve','negative','overlay','mask','target','references','referenceMode','confirmation','draft','restoreRunId'];
   if(Object.keys(input).some(k => !allowed.includes(k))) throw new TypeError('未知修改参数');
   const operation = input.operation;
   if(!['TEXT','COMPOSITE','AI_FUSION','AI_FULL','AI_LOCAL','RESTORE'].includes(operation)) throw new TypeError('修改类型无效');
-  const usesImageModel = operation === 'TEXT' || operation.startsWith('AI_');
+  if(input.batchId != null && operation !== 'TEXT') throw new TypeError('只有人工生成标识支持整套批次');
+  const usesBillableModel = operation === 'TEXT' || operation.startsWith('AI_');
   const draft=input.draft===true,confirmed=input.confirmation==='LIVE_IMAGE_COST_ACCEPTED';
-  if(usesImageModel && !draft && !confirmed) throw new TypeError('请确认图片编辑及校验模型费用');
+  if(usesBillableModel && !draft && !confirmed) throw new TypeError('请确认图片编辑或视觉校验模型费用');
   if(!/^[a-f0-9]{64}$/u.test(input.sha256 ?? '')) throw new TypeError('源图校验值无效');
   const refs = input.references ?? [];
   if(!['COMPOSITE','AI_FUSION'].includes(operation) && refs.length) throw new TypeError('仅实体图片操作可附加参考图');
@@ -53,6 +54,9 @@ export function normalizeEdit(input) {
       removeBackground: r.removeBackground === true } : {}) }));
   if(new Set(references.map(r=>r.assetId)).size !== references.length) throw new TypeError('参考图重复');
   if(operation !== 'AI_FUSION' && input.target != null) throw new TypeError('仅真实产品替换可指定目标物体');
+  if(operation !== 'AI_FUSION' && input.referenceMode != null) throw new TypeError('仅真实产品替换可指定参考图使用方式');
+  const referenceMode=operation === 'AI_FUSION' ? String(input.referenceMode??'STRICT') : null;
+  if(operation === 'AI_FUSION' && !['STRICT','APPEARANCE'].includes(referenceMode)) throw new TypeError('参考图使用方式无效');
   let target=null;
   if(operation === 'AI_FUSION') {
     const value=input.target;
@@ -66,7 +70,9 @@ export function normalizeEdit(input) {
   }
   const overlay=operation === 'TEXT' ? normalizeManualOverlay({...input.overlay,textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',
     size:32,margin:32,opacity:1,color:'#ffffff',background:'#111827',position:'bottom-right'}) : null;
-  return { requestId: normalizeUuid(input.requestId,'requestId'), sourceImageRunId: normalizeUuid(input.sourceImageRunId,'sourceImageRunId'),
+  return { requestId: normalizeUuid(input.requestId,'requestId'),
+    ...(input.batchId == null ? {} : { batchId: normalizeUuid(input.batchId,'batchId') }),
+    sourceImageRunId: normalizeUuid(input.sourceImageRunId,'sourceImageRunId'),
     sourceAssetId: normalizeTaskId(input.sourceAssetId), copyRevisionId: normalizeTaskId(input.copyRevisionId), sha256: input.sha256,
     targetPage: boundedNumber(input.targetPage,1,5), operation,
     instruction: shortText(input.instruction ?? '',2000,operation.startsWith('AI_')), preserve: shortText(input.preserve ?? '',2000,false), negative: shortText(input.negative ?? '',2000,false),
@@ -74,7 +80,7 @@ export function normalizeEdit(input) {
     // New local edits locate the target from the operator's prompt. Keep accepting
     // a mask for already-created clients and queued historical requests.
     mask: operation === 'AI_LOCAL' && input.mask != null ? normalizeMask(input.mask) : null,
-    target,references, confirmation: usesImageModel&&confirmed ? input.confirmation : null, draft,
+    target,references,referenceMode, confirmation: usesBillableModel&&confirmed ? input.confirmation : null, draft,
     restoreRunId: operation === 'RESTORE' ? normalizeUuid(input.restoreRunId,'restoreRunId') : null };
 }
 export function imageAssetIds(result) {
@@ -340,9 +346,9 @@ export function createImageEditingService({ pool, storageRoot }) {
         if(e.version !== version) conflict('编辑状态已更新，请刷新');
         const states={queue:['DRAFT'],retry:['FAILED'],cancel:['DRAFT','QUEUED','RUNNING','PREVIEW_READY'],reject:['PREVIEW_READY'],accept:['PREVIEW_READY']};
         if(!states[action]?.includes(e.status)) conflict('当前编辑状态不允许此操作');
-        const usesImageModel=e.operation==='TEXT'||e.operation.startsWith('AI_');
+        const usesBillableModel=e.operation==='TEXT'||e.operation.startsWith('AI_');
         const confirmsCost=e.config?.confirmation==='LIVE_IMAGE_COST_ACCEPTED'||input.confirmation==='LIVE_IMAGE_COST_ACCEPTED';
-        if(['queue','retry'].includes(action)&&usesImageModel&&!confirmsCost) throw new TypeError('请确认图片编辑及校验模型费用');
+        if(['queue','retry'].includes(action)&&usesBillableModel&&!confirmsCost) throw new TypeError('请确认图片编辑或视觉校验模型费用');
         const editSource=['queue','retry','accept'].includes(action)
           ? await assertEditSource(c,Number(e.task_id),e.config,{allowCompatibleCurrentRun:true})
           : null;
@@ -373,7 +379,7 @@ export function createImageEditingService({ pool, storageRoot }) {
           await c.query("UPDATE tasks SET current_image_run_id=$2,state='MANUAL_ARCHIVE',current_stage='MANUAL_ARCHIVE',image_reviewed_at=NULL,image_reviewed_by_user_id=NULL,progress_message='图片修改已采用，请重新审核归档',updated_at=now() WHERE id=$1",[e.task_id,adoptedRunId]);
         }
         const next={queue:'QUEUED',retry:'QUEUED',cancel:'CANCELLED',reject:'REJECTED',accept:'ACCEPTED'}[action];
-        let config=usesImageModel&&input.confirmation==='LIVE_IMAGE_COST_ACCEPTED'?{...e.config,confirmation:'LIVE_IMAGE_COST_ACCEPTED'}:e.config;
+        let config=usesBillableModel&&input.confirmation==='LIVE_IMAGE_COST_ACCEPTED'?{...e.config,confirmation:'LIVE_IMAGE_COST_ACCEPTED'}:e.config;
         const inheritedDisclosure=action==='retry'&&e.operation==='AI_LOCAL'
           ?imagePageDisclosure(editSource?.run?.result,Number(e.target_page)):null;
         if(inheritedDisclosure&&requestsDisclosureRemoval(config.instruction,inheritedDisclosure.text)) {
@@ -459,7 +465,14 @@ export function createImageEditingService({ pool, storageRoot }) {
           status='FAILED',stage='FAILED',progress_message=$2::text,error=$2::text,
           last_activity_at=now(),finished_at=now()
           WHERE id=$1 AND status='RUNNING'`,[updated.rows[0].execution_id,safeError]);
-        if(updated.rowCount) await audit(c,e.task_id,e.id,'FAILED',e.claimed_by,attemptRefunded?'前置视觉服务失败，未计入执行次数':'执行或校验失败',null,
+        const preflightServiceFailure=attemptRefunded&&(
+          String(error?.validation?.stage??'').includes('SERVICE')
+          || ['ALIGNMENT_SERVICE_FAILED','VISION_SERVICE_FAILED'].includes(String(error?.code??''))
+        );
+        const failureReason=attemptRefunded
+          ?(preflightServiceFailure?'前置视觉服务失败，未计入执行次数':'前置视觉校验未通过，未计入执行次数')
+          :'执行或校验失败';
+        if(updated.rowCount) await audit(c,e.task_id,e.id,'FAILED',e.claimed_by,failureReason,null,
           {attemptRefunded,attempts:Number(updated.rows[0].attempts),code:error?.code??null,serviceCode:error?.serviceCode??null});
       });
     },

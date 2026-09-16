@@ -47,6 +47,19 @@ async function lockActiveQualityActor(client, actor) {
   if (!result.rows[0]) throw new ControlPlaneAuthenticationError();
 }
 
+async function lockActiveCopyWorkerActor(client, actor) {
+  const credentialVersion = Number(actor.credentialVersion);
+  const result = await client.query(`
+    SELECT id FROM app_users
+    WHERE id = $1 AND username = $2 AND role = $3 AND status = 'ACTIVE'
+      AND ($4::integer IS NULL OR credential_version = $4)
+      AND (role = 'ADMIN' OR copy_review_enabled = true)
+    FOR SHARE
+  `, [actor.userId, actor.username, actor.role,
+    Number.isSafeInteger(credentialVersion) && credentialVersion > 0 ? credentialVersion : null]);
+  if (!result.rows[0]) throw new ControlPlaneAuthenticationError();
+}
+
 async function lockQualityMutationRequest(client, actor, requestId) {
   // A receipt row does not exist on the first attempt. Serialize the immutable
   // account/request pair before any task, freeze or item lock so concurrent
@@ -83,6 +96,30 @@ function normalizedNote(value, { required = false } = {}) {
   if ([...note].length > 1_000) throw new RangeError('note cannot exceed 1000 characters');
   if (required && !note) throw new TypeError('note is required');
   return note || null;
+}
+
+function normalizedReturnRecommendation(value) {
+  const recommendation = String(value ?? 'REWORK').trim().toUpperCase();
+  if (!['REWORK', 'DISCARD'].includes(recommendation)) {
+    throw new TypeError('recommendedDisposition must be REWORK or DISCARD');
+  }
+  return recommendation;
+}
+
+const COPY_RETURN_DISCARD_REASONS = Object.freeze([
+  'QA_RECOMMENDATION',
+  'UNRECOVERABLE_QUALITY',
+  'REWORK_COST_TOO_HIGH',
+  'MISSING_SOURCE_MATERIAL',
+  'OTHER',
+]);
+
+function normalizedCopyReturnDiscardReason(value) {
+  const reason = String(value ?? '').trim().toUpperCase();
+  if (!COPY_RETURN_DISCARD_REASONS.includes(reason)) {
+    throw new TypeError('reasonCode is invalid');
+  }
+  return reason;
 }
 
 function normalizedQueryPackageNameFilter(value) {
@@ -321,19 +358,20 @@ async function releaseFrozenMembers(client, freezeId, actor, requestId, { withEx
           AND returned.status IN ('RETURNED', 'BATCH_AFFECTED', 'BATCH_RETURNED')
           AND NOT EXISTS (
             WITH RECURSIVE rechecks AS (
-              SELECT child.id, child.status, child.sample_kind
-              FROM copy_sampling_items AS child
-              WHERE child.parent_item_id = returned.id
-                AND child.sample_kind = 'MANDATORY_RECHECK'
+              SELECT returned.id, returned.status, returned.sample_kind
               UNION ALL
               SELECT child.id, child.status, child.sample_kind
               FROM copy_sampling_items AS child
               JOIN rechecks AS parent ON child.parent_item_id = parent.id
               WHERE child.sample_kind = 'MANDATORY_RECHECK'
             )
-            SELECT 1 FROM rechecks AS recheck
-            WHERE recheck.sample_kind = 'MANDATORY_RECHECK'
-              AND recheck.status IN ('PASSED', 'RELEASED')
+          SELECT 1 FROM rechecks AS recheck
+            WHERE (recheck.sample_kind = 'MANDATORY_RECHECK'
+              AND recheck.status IN ('PASSED', 'RELEASED'))
+              OR EXISTS (
+                SELECT 1 FROM copy_return_dispositions AS disposition
+                WHERE disposition.source_sampling_item_id = recheck.id
+              )
           )
       ))
     ORDER BY task.id
@@ -737,6 +775,10 @@ const QA_ITEM_SQL = `
     task.rework_count, task.requeue_reason, task.priority_version, batch.public_id AS production_batch_public_id,
     batch.query_package_name, direct_approval.id AS admin_direct_approval_id,
     reviewed_actor.role AS reviewed_by_role,
+    ROW_NUMBER() OVER (
+      PARTITION BY item.final_approver_account_id
+      ORDER BY ${priorityOrderSql('task.')}, item.id ASC
+    ) AS approver_queue_round,
     settings.reviewer_batch_return_enabled
   FROM copy_sampling_items AS item
   JOIN copy_sampling_freezes AS sampling_freeze ON sampling_freeze.id = item.freeze_id
@@ -789,13 +831,17 @@ export async function listCopyQaItems(pool, {
     ? `(item.selected = true OR ${adminDirectSql})`
     : 'item.selected = true';
   const directApprovalFilter = adminDirectOnly ? `AND ${adminDirectSql}` : '';
+  // Keep each approver's own queue in priority order, then interleave the first
+  // item from every approver before exposing anyone's second item. This avoids
+  // a prolific or earlier approver monopolizing a reviewer's visible queue.
   const result = await pool.query(`${QA_ITEM_SQL}
     WHERE ${itemScope} AND ($1::varchar IS NULL OR item.status = $1)
       AND ($2::bigint IS NULL OR (item.final_approver_account_id <> $2
         AND (item.status <> 'PENDING' OR (item.assigned_review_account_id = $2 AND task.priority_paused = false))))
       ${directApprovalFilter}
       ${packageFilter}
-    ORDER BY ${priorityOrderSql('task.')}
+    ORDER BY task.priority_paused ASC, approver_queue_round ASC,
+      task.priority_sort_at ASC, task.id ASC, item.id ASC
     LIMIT $${limitParameter} OFFSET $${offsetParameter}
   `, values);
   return result.rows.map((row) => qaItemFrom(row, actor));
@@ -882,7 +928,7 @@ function qaActionResponse(item, actor, status, releasedTaskIds = []) {
   };
 }
 
-async function maybeReleasePassedFreeze(client, item, actor, requestId) {
+async function maybeReleasePassedFreeze(client, item, actor, requestId, { withExceptions = false } = {}) {
   const unresolved = Number((await client.query(`
     SELECT COUNT(*) AS count
     FROM copy_sampling_items AS item
@@ -892,10 +938,7 @@ async function maybeReleasePassedFreeze(client, item, actor, requestId) {
         item.status IN ('RETURNED', 'BATCH_AFFECTED', 'BATCH_RETURNED', 'SUPERSEDED')
         AND NOT EXISTS (
           WITH RECURSIVE rechecks AS (
-            SELECT child.id, child.status, child.sample_kind
-            FROM copy_sampling_items AS child
-            WHERE child.parent_item_id = item.id
-              AND child.sample_kind = 'MANDATORY_RECHECK'
+            SELECT item.id, item.status, item.sample_kind
             UNION ALL
             SELECT child.id, child.status, child.sample_kind
             FROM copy_sampling_items AS child
@@ -903,17 +946,29 @@ async function maybeReleasePassedFreeze(client, item, actor, requestId) {
             WHERE child.sample_kind = 'MANDATORY_RECHECK'
           )
           SELECT 1 FROM rechecks AS recheck
-          WHERE recheck.sample_kind = 'MANDATORY_RECHECK'
-            AND recheck.status IN ('PASSED', 'RELEASED')
+          WHERE (recheck.sample_kind = 'MANDATORY_RECHECK'
+            AND recheck.status IN ('PASSED', 'RELEASED'))
+            OR EXISTS (
+              SELECT 1 FROM copy_return_dispositions AS disposition
+              WHERE disposition.source_sampling_item_id = recheck.id
+            )
         )
       )
     )
   `, [item.freeze_id])).rows[0].count);
-  if (unresolved === 0) return releaseFrozenMembers(client, item.freeze_id, actor, requestId);
+  if (unresolved === 0) {
+    return releaseFrozenMembers(client, item.freeze_id, actor, requestId, { withExceptions });
+  }
   return null;
 }
 
-async function maybeReleaseAncestorFreezes(client, item, actor, requestId) {
+async function maybeReleaseAncestorFreezes(
+  client,
+  item,
+  actor,
+  requestId,
+  { withExceptions = false } = {},
+) {
   if (item.sample_kind !== 'MANDATORY_RECHECK') return [];
   const releasedTaskIds = [];
   const visited = new Set();
@@ -934,7 +989,13 @@ async function maybeReleaseAncestorFreezes(client, item, actor, requestId) {
     const row = parent.rows[0];
     if (!row) throw new ControlPlaneConflictError('INVALID_RECHECK_LINEAGE', '强制复检上游记录不存在');
     if (['INSPECTING', 'REVIEW_REQUIRED', 'BATCH_RETURNED'].includes(row.freeze_status)) {
-      releasedTaskIds.push(...(await maybeReleasePassedFreeze(client, row, actor, requestId) ?? []));
+      releasedTaskIds.push(...(await maybeReleasePassedFreeze(
+        client,
+        row,
+        actor,
+        requestId,
+        { withExceptions },
+      ) ?? []));
     }
     parentItemId = row.parent_item_id;
   }
@@ -1018,7 +1079,11 @@ export async function passCopyQaItem(pool, rawItemId, input, rawActor) {
   return passCopyQaItemWithMethod(pool, rawItemId, input, rawActor, 'STANDARD');
 }
 
-async function appendReturnedRevision(client, item, actor, requestId, origin, { reasonCodes, note }) {
+async function appendReturnedRevision(client, item, actor, requestId, origin, {
+  reasonCodes,
+  note,
+  recommendedDisposition = 'REWORK',
+}) {
   const current = await client.query(`
     SELECT * FROM copy_revisions WHERE id = $1 AND task_id = $2 FOR UPDATE
   `, [item.copy_revision_id, item.task_id]);
@@ -1035,6 +1100,7 @@ async function appendReturnedRevision(client, item, actor, requestId, origin, { 
       returnedByUsername: actor.username,
       reasonCodes,
       note,
+      recommendedDisposition,
       requestId,
       returnedAt: new Date().toISOString(),
     },
@@ -1064,13 +1130,20 @@ async function appendReturnedRevision(client, item, actor, requestId, origin, { 
 export async function returnCopyQaItem(pool, rawItemId, input, rawActor, expectedTaskId = null) {
   const actor = normalizeActor(rawActor);
   const { requestId, reasonCodes, note } = normalizedRequest(input, 'RETURN_SINGLE');
+  const recommendedDisposition = normalizedReturnRecommendation(input?.recommendedDisposition);
   if (!reasonCodes.length && !note) throw new TypeError('single return requires a reason or note');
+  if (recommendedDisposition === 'DISCARD' && !note) {
+    throw new TypeError('suggesting discard requires a note');
+  }
   return withTransaction(pool, async (client) => {
     await lockActiveQualityActor(client, actor);
     await lockQualityMutationRequest(client, actor, requestId);
     const item = await lockQaItem(client, rawItemId);
     const expectedRevision = assertExpectedQaRevision(item, input);
-    const fingerprint = hashJson({ itemId: String(rawItemId), expectedTaskId, ...expectedRevision, reasonCodes, note });
+    const fingerprint = hashJson({
+      itemId: String(rawItemId), expectedTaskId, ...expectedRevision,
+      reasonCodes, note, recommendedDisposition,
+    });
     const replay = await mutationReplay(client, actor, requestId, 'RETURN_SINGLE', fingerprint);
     if (replay) return replay;
     if (expectedTaskId !== null && Number(item.task_id) !== normalizeTaskId(expectedTaskId)) {
@@ -1083,7 +1156,11 @@ export async function returnCopyQaItem(pool, rawItemId, input, rawActor, expecte
         || Number(item.current_copy_revision_id) !== Number(item.copy_revision_id)) {
       throw new ControlPlaneConflictError('STALE_QA_ITEM', '抽检版本或任务状态已变化');
     }
-    const revision = await appendReturnedRevision(client, item, actor, requestId, 'SINGLE', { reasonCodes, note });
+    const revision = await appendReturnedRevision(client, item, actor, requestId, 'SINGLE', {
+      reasonCodes,
+      note,
+      recommendedDisposition,
+    });
     await client.query(`
       UPDATE copy_sampling_items SET status = 'RETURNED', reviewed_by_account_id = $2,
         reviewed_by_username = $3, reason_codes = $4, note = $5,
@@ -1107,6 +1184,139 @@ export async function returnCopyQaItem(pool, rawItemId, input, rawActor, expecte
       ? { id: item.public_id, status: 'RETURNED' }
       : { ...qaActionResponse(item, actor, 'RETURNED'), returnedRevisionId: Number(revision.id) };
     await storeMutation(client, actor, requestId, 'RETURN_SINGLE', fingerprint, response);
+    return response;
+  });
+}
+
+export async function discardReturnedCopy(pool, rawTaskId, input, rawActor) {
+  const actor = normalizeActor(rawActor);
+  const taskId = normalizeTaskId(rawTaskId);
+  const expectedCopyRevisionId = normalizeTaskId(input?.expectedCopyRevisionId);
+  const sourceSamplingItemId = normalizeUuid(input?.sourceSamplingItemId, 'sourceSamplingItemId');
+  const requestId = normalizeUuid(input?.requestId, 'requestId');
+  const reasonCode = normalizedCopyReturnDiscardReason(input?.reasonCode);
+  const note = normalizedNote(input?.note, { required: true });
+  const fingerprint = hashJson({
+    taskId,
+    expectedCopyRevisionId,
+    sourceSamplingItemId,
+    reasonCode,
+    note,
+  });
+  return withTransaction(pool, async (client) => {
+    await lockActiveCopyWorkerActor(client, actor);
+    await lockQualityMutationRequest(client, actor, requestId);
+    const replay = await mutationReplay(client, actor, requestId, 'DISCARD_REWORK', fingerprint);
+    if (replay) return replay;
+
+    const located = (await client.query(`
+      SELECT id, task_id, freeze_id FROM copy_sampling_items
+      WHERE public_id = $1
+    `, [sourceSamplingItemId])).rows[0];
+    if (!located || Number(located.task_id) !== taskId) {
+      throw new ControlPlaneConflictError('QA_RETURN_SOURCE_MISMATCH', '质检打回来源已经变化，请刷新后重试');
+    }
+    const task = (await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId])).rows[0];
+    if (!task) throw new ControlPlaneNotFoundError('task not found');
+    if (actor.role !== 'ADMIN' && task.assigned_to_user_id !== actor.username) {
+      throw new ControlPlaneAuthorizationError('只有当前任务负责人可以确认废弃质检返工任务');
+    }
+    if (task.assigned_to_user_id === null && actor.role !== 'ADMIN') {
+      throw new ControlPlaneAuthorizationError('未分配任务仅管理员可操作');
+    }
+    if (task.state !== 'COPY_REVIEW_PENDING' || task.mandatory_copy_qc !== true
+        || task.mandatory_copy_qc_origin !== 'QA_RETURN') {
+      throw new ControlPlaneConflictError(
+        'RETURNED_COPY_DISCARD_FORBIDDEN',
+        '只有质检打回且仍待返工的文案可以从此入口废弃',
+      );
+    }
+    if (Number(task.current_copy_revision_id) !== expectedCopyRevisionId) {
+      throw new ControlPlaneConflictError('STALE_COPY_REVISION', '文案版本已经变化，请刷新后重试');
+    }
+    if (task.current_execution_id !== null) {
+      throw new ControlPlaneConflictError('TASK_EXECUTION_ACTIVE', '当前任务仍有执行在进行，不能废弃');
+    }
+
+    const freeze = (await client.query(
+      'SELECT * FROM copy_sampling_freezes WHERE id = $1 FOR UPDATE',
+      [located.freeze_id],
+    )).rows[0];
+    if (!freeze) throw new ControlPlaneConflictError('QA_RETURN_SOURCE_MISMATCH', '质检批次不存在');
+    const item = (await client.query(`
+      SELECT item.*, sampling_freeze.status AS freeze_status,
+        sampling_freeze.production_batch_id
+      FROM copy_sampling_items AS item
+      JOIN copy_sampling_freezes AS sampling_freeze ON sampling_freeze.id = item.freeze_id
+      WHERE item.id = $1 AND item.task_id = $2 AND item.freeze_id = $3
+      FOR UPDATE OF item
+    `, [located.id, taskId, located.freeze_id])).rows[0];
+    if (!item || !['RETURNED', 'BATCH_AFFECTED', 'BATCH_RETURNED'].includes(item.status)) {
+      throw new ControlPlaneConflictError('QA_RETURN_SOURCE_MISMATCH', '质检打回记录已经变化，请刷新后重试');
+    }
+    const revision = (await client.query(`
+      SELECT * FROM copy_revisions WHERE id = $1 AND task_id = $2
+    `, [expectedCopyRevisionId, taskId])).rows[0];
+    const qualityReturn = revision?.content?.qualityReturn;
+    if (!revision || revision.revision_origin !== 'QA_RETURN'
+        || qualityReturn?.samplingItemId !== sourceSamplingItemId) {
+      throw new ControlPlaneConflictError('QA_RETURN_SOURCE_MISMATCH', '当前文案不是该质检项的返工版本');
+    }
+    const qaRecommendedDiscard = qualityReturn.recommendedDisposition === 'DISCARD';
+    if (actor.role !== 'ADMIN'
+        && (!qaRecommendedDiscard || reasonCode !== 'QA_RECOMMENDATION')) {
+      throw new ControlPlaneConflictError(
+        'QA_DISCARD_NOT_RECOMMENDED',
+        '质检未建议废弃，任务负责人应继续返工；如需例外处置请联系管理员',
+      );
+    }
+    if (reasonCode === 'QA_RECOMMENDATION' && !qaRecommendedDiscard) {
+      throw new ControlPlaneConflictError('QA_DISCARD_NOT_RECOMMENDED', '当前质检记录没有建议废弃');
+    }
+
+    const disposition = (await client.query(`
+      INSERT INTO copy_return_dispositions(
+        task_id, returned_revision_id, source_sampling_item_id, action,
+        reason_code, note, actor_account_id, actor_username, actor_role, request_id
+      ) VALUES ($1, $2, $3, 'DISCARD_AFTER_QA_RETURN', $4, $5, $6, $7, $8, $9)
+      RETURNING id, created_at
+    `, [taskId, expectedCopyRevisionId, item.id, reasonCode, note,
+      actor.userId, actor.username, actor.role, requestId])).rows[0];
+    const updated = (await client.query(`
+      UPDATE tasks SET
+        state = 'CANCELLED', cancelled_from_state = state,
+        current_execution_id = NULL, current_stage = 'CANCELLED',
+        progress_percent = 100,
+        progress_message = '质检打回后由任务负责人确认废弃',
+        last_activity_at = now(), finished_at = now(), updated_at = now()
+      WHERE id = $1
+      RETURNING *
+    `, [taskId])).rows[0];
+
+    const releasedTaskIds = [];
+    if (['INSPECTING', 'REVIEW_REQUIRED', 'BATCH_RETURNED'].includes(item.freeze_status)) {
+      releasedTaskIds.push(...(await maybeReleasePassedFreeze(
+        client,
+        item,
+        actor,
+        requestId,
+        { withExceptions: true },
+      ) ?? []));
+    }
+    releasedTaskIds.push(...await maybeReleaseAncestorFreezes(
+      client,
+      item,
+      actor,
+      requestId,
+      { withExceptions: true },
+    ));
+    const response = {
+      status: 'DISCARDED',
+      task: updated,
+      dispositionId: Number(disposition.id),
+      releasedTaskIds: [...new Set(releasedTaskIds)],
+    };
+    await storeMutation(client, actor, requestId, 'DISCARD_REWORK', fingerprint, response);
     return response;
   });
 }

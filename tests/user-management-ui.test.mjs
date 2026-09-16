@@ -46,6 +46,33 @@ test('central user management exposes the three fixed roles and default-password
   assert.match(migration, /CREATE TABLE IF NOT EXISTS app_users/u);
 });
 
+test('user management prioritizes one task at a time with compact filtering and secondary actions', async () => {
+  const [page, workspace, manager, poolManager, menu, styles] = await Promise.all([
+    source('app/users/page.tsx'),
+    source('app/users/user-management-workspace.tsx'),
+    source('app/users/user-manager.tsx'),
+    source('app/users/auto-assignment-pool-manager.tsx'),
+    source('components/ui/dropdown-menu.tsx'),
+    source('app/globals.css'),
+  ]);
+
+  assert.match(page, /<UserManagementWorkspace/u);
+  assert.match(workspace, /<Tabs[\s\S]*defaultValue="accounts"/u);
+  assert.match(workspace, /value="accounts"[\s\S]*账号与权限/u);
+  assert.match(workspace, /value="assignment"[\s\S]*自动分配池/u);
+  assert.match(workspace, /user-overview-strip/u);
+  assert.match(manager, /<SearchInput[\s\S]*搜索姓名或账号/u);
+  assert.match(manager, /按角色筛选/u);
+  assert.match(manager, /按状态筛选/u);
+  assert.match(manager, /const USERS_PER_PAGE = 8/u);
+  assert.match(manager, /<DropdownMenu[\s\S]*重置密码[\s\S]*删除用户/u);
+  assert.match(poolManager, /<DropdownMenu[\s\S]*暂停接单[\s\S]*移出人员池/u);
+  assert.match(menu, /@radix-ui\/react-dropdown-menu/u);
+  assert.match(styles, /\.user-overview-strip/u);
+  assert.match(styles, /\.user-management-tab-list/u);
+  assert.match(styles, /\.user-list-toolbar/u);
+});
+
 test('workbench separates assignee from creator and limits controls to stable owners or unassigned creators', async () => {
   const [workbench, repository, server] = await Promise.all([
     source('app/workbench/creation-workbench.tsx'),

@@ -22,6 +22,8 @@ preview-service/backups/
 npm-debug.log*
 .next/
 .next-local/
+.next-blue/
+.next-green/
 server/test-storage/
 test-storage/
 *.tsbuildinfo

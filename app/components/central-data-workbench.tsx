@@ -2,14 +2,6 @@
 
 import { Textarea } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-
 import { Save } from 'lucide-react';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 
@@ -35,16 +27,12 @@ export function CentralDataWorkbench() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const [imageEditRepairMaxAttempts, setImageEditRepairMaxAttempts] = useState(2);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>('generation');
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
       const records = await apiRequest<any[]>(endpoint('/v1/settings'));
       setData(records);
-      setImageEditRepairMaxAttempts(imageEditRepairLimit(
-        records.find((item) => item.key === 'production')?.value?.imageEditRepairMaxAttempts,
-      ));
       setError('');
     } catch (refreshError) {
       setError(refreshError instanceof Error ? refreshError.message : '中心数据读取失败');
@@ -90,30 +78,6 @@ export function CentralDataWorkbench() {
     }
   }
 
-  async function updateImageEditRepair() {
-    setBusy(true);
-    setMessage('');
-    setError('');
-    try {
-      const latest = await apiRequest<any[]>(endpoint('/v1/settings'));
-      const latestProduction = latest.find(item => item.key === 'production')?.value ?? {};
-      await apiRequest(endpoint('/v1/settings/production'), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ value: {
-          ...latestProduction,
-          imageEditRepairMaxAttempts,
-        } }),
-      });
-      setMessage('图片文字编辑自动修复次数已保存；新建编辑请求使用新值，已有请求保持原值。');
-      await refresh();
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : '图片文字编辑自动修复次数保存失败');
-    } finally {
-      setBusy(false);
-    }
-  }
-
   const production = data.find((item) => item.key === 'production');
 
   return <div className="central-data-stack">
@@ -143,18 +107,13 @@ export function CentralDataWorkbench() {
           children: <>
             <LayoutCatalogSettings remote />
             <section className="panel settings-section" aria-labelledby="central-image-edit-repair-heading">
-              <div className="panel-head"><div><h2 id="central-image-edit-repair-heading">图片文字编辑自动修复</h2><p className="subtle">控制单页“添加文字”未通过视觉质检后，自动打回图片模型重做的次数。</p></div></div>
+              <div className="panel-head"><div><h2 id="central-image-edit-repair-heading">人工生成标识单次生成</h2><p className="subtle">标识只调用一次图片编辑模型，不使用蒙版或局部像素贴回；校验失败后不会自动二次修改。</p></div></div>
               <div className="form-grid compact-settings-grid">
                 <div className="field">
-                  <label htmlFor="central-image-edit-repair-max-attempts">质检失败后最多自动修复</label>
-                  <Select value={String(imageEditRepairMaxAttempts)} disabled={busy || loading || !production} onValueChange={(value) => setImageEditRepairMaxAttempts(Number(value))}>
-                    <SelectTrigger id="central-image-edit-repair-max-attempts"><SelectValue /></SelectTrigger>
-                    <SelectContent>{[0, 1, 2].map((count) => <SelectItem key={count} value={String(count)}>{count} 次</SelectItem>)}</SelectContent>
-                  </Select>
-                  <small>首次生成不计入修复次数；设置在创建编辑请求时冻结。</small>
+                  <span>自动修复次数：0 次</span>
+                  <small>历史配置字段仅为兼容保留，执行时不会读取；需要重试时必须由作业员主动发起。</small>
                 </div>
               </div>
-              <div className="inline"><Button unstyled className="button primary" type="button" disabled={busy || loading || !production} onClick={() => { void updateImageEditRepair(); }}>保存文字修复次数</Button></div>
             </section>
           </>,
         },

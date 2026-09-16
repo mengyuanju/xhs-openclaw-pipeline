@@ -16,8 +16,11 @@ const row = (id, patch = {}) => {
   const assignedToAccountId = Object.hasOwn(patch, 'assignedToAccountId')
     ? patch.assignedToAccountId
     : assignedToUserId === null ? null : USER_IDS[assignedToUserId] ?? 99;
+  const assignedToRole = Object.hasOwn(patch, 'assignedToRole') ? patch.assignedToRole
+    : assignedToUserId === null ? null : 'USER';
   return { id, state: 'COPY_QUEUED', createdByUserId, createdByAccountId,
-    assignedToUserId, assignedToAccountId,
+    assignedToUserId, assignedToAccountId, assignedToDisplayName: assignedToUserId, assignedToRole,
+    assignedAt: '2026-09-06T00:00:00Z', createdByRole: 'USER',
     createdAt: '2026-09-06T00:00:00Z', updatedAt: '2026-09-06T00:00:00Z', ...patch };
 };
 function fixture(rows, options = {}) {
@@ -65,7 +68,7 @@ test('statistics identity is session-bound and admin analysis cannot be requeste
   const result = await service.read({ root, session: session(), username: 'bob' });
   assert.equal(result.summary.total, 2);
   assert.equal(result.summary.people, undefined);
-  assert.equal(result.creators, undefined);
+  assert.equal(result.workers, undefined);
   assert.equal(result.details, null);
   assert.match(calls[0].url, /personal=true/);
   assert.doesNotMatch(calls[0].url, /assignedToUserId=/);
@@ -133,14 +136,13 @@ test('details are on-demand, incremental, and not fetched for a period preceding
 });
 
 test('admin detail analysis loads a bounded concurrent batch on each refresh', async () => {
-  const data = fixture(Array.from({ length: 40 }, (_, index) => row(index + 1)));
+  const data = fixture(Array.from({ length: 140 }, (_, index) => row(index + 1)));
   const input = { root, session: session('admin', 'ADMIN'), scope: 'admin', details: true };
-  assert.equal((await data.service.read(input)).details.loaded, 0, 'the first read completes the count scan');
   const firstBatch = await data.service.read(input);
-  assert.equal(firstBatch.details.loaded, 32);
+  assert.equal(firstBatch.details.loaded, 96, 'the first detail batch starts with the completed count scan');
   assert.equal(firstBatch.details.state, 'loading');
   const complete = await data.service.read(input);
-  assert.equal(complete.details.loaded, 40);
+  assert.equal(complete.details.loaded, 140);
   assert.equal(complete.details.state, 'ready');
 });
 
@@ -151,7 +153,6 @@ test('failed detail reads honor their retry window instead of polling continuous
     return Response.json({ data: { items: [row(1)], total: 1, offset: 0, limit: 200 } });
   } });
   const input = { root, session: session('admin', 'ADMIN'), scope: 'admin', details: true };
-  assert.equal((await data.service.read(input)).details.state, 'loading');
   const partial = await data.service.read(input);
   assert.equal(partial.details.state, 'partial');
   assert.equal(partial.details.failed, 1);
@@ -215,11 +216,11 @@ test('mutable pagination restarts are bounded and never publish missing or dupli
   assert.equal(calls, 6);
 });
 
-test('caches isolate center roots and credential versions, while admin filters reuse the same scan', async () => {
-  const data = fixture([row(1, { createdByRole: 'USER' }), row(2, { createdByUserId: 'bob', createdByRole: 'REVIEWER' })]);
+test('caches isolate center roots and credential versions, while admin worker filters reuse the same scan', async () => {
+  const data = fixture([row(1), row(2, { assignedToUserId: 'bob', assignedToAccountId: 3, assignedToRole: 'REVIEWER' })]);
   const input = { root, session: session('admin', 'ADMIN'), scope: 'admin' };
   assert.equal((await data.service.read(input)).summary.total, 2);
-  assert.equal((await data.service.read({ ...input, username: 'bob', createdByAccountId: 3 })).summary.total, 1);
+  assert.equal((await data.service.read({ ...input, username: 'bob', workerAccountId: 3 })).summary.total, 1);
   assert.equal((await data.service.read({ ...input, role: 'USER' })).summary.total, 1);
   assert.equal(data.calls.length, 1);
   await data.service.read({ ...input, root: 'http://other-center.test' });
@@ -227,20 +228,20 @@ test('caches isolate center roots and credential versions, while admin filters r
   assert.equal(data.calls.length, 3);
 });
 
-test('admin creator filters and choices exclude a deleted same-name account generation', async () => {
+test('admin worker filters and choices exclude a deleted same-name account generation', async () => {
   const data = fixture([
-    row(1, { createdByAccountId: null, createdByDisplayName: null, createdByRole: null }),
-    row(2, { createdByAccountId: 9, createdByDisplayName: 'Replacement Alice', createdByRole: 'USER' }),
+    row(1, { assignedToAccountId: null, assignedToDisplayName: null, assignedToRole: null }),
+    row(2, { assignedToAccountId: 9, assignedToDisplayName: 'Replacement Alice', assignedToRole: 'USER' }),
   ]);
   const input = { root, session: session('admin', 'ADMIN'), scope: 'admin' };
   const all = await data.service.read(input);
   assert.equal(all.summary.total, 2);
   assert.equal(all.summary.people.length, 2);
-  assert.deepEqual(all.creators, [{ accountId: 9, username: 'alice',
+  assert.deepEqual(all.workers, [{ accountId: 9, username: 'alice',
     displayName: 'Replacement Alice', role: 'USER' }]);
-  const filtered = await data.service.read({ ...input, username: 'alice', createdByAccountId: 9 });
+  const filtered = await data.service.read({ ...input, username: 'alice', workerAccountId: 9 });
   assert.equal(filtered.summary.total, 1);
-  assert.equal(data.calls.length, 1, 'identity-safe creator filtering reuses the administrator scan');
+  assert.equal(data.calls.length, 1, 'identity-safe worker filtering reuses the administrator scan');
   await assert.rejects(data.service.read({ ...input, username: 'alice' }),
     error => error.status === 400 && error.code === 'INVALID_INPUT');
 });
@@ -312,14 +313,24 @@ test('identity-changing task transitions invalidate details before the five-minu
 });
 
 test('a revoked admin identity clears both cached counts and detail facts', async () => {
-  const data = fixture([], { fetchImpl: async url => new URL(url).pathname.endsWith('/1')
-    ? Response.json({}, { status: 403 })
-    : Response.json({ data: { items: [row(1)], total: 1, offset: 0 } }) });
+  let revoked = false, detailReads = 0;
+  const service = createStatisticsService({ now: () => Date.parse('2026-09-06T08:00:00Z'), fetchImpl: async rawUrl => {
+    const url = new URL(rawUrl);
+    if (url.pathname === '/v1/profile') return revoked
+      ? Response.json({}, { status: 403 }) : Response.json({ data: { id: 1 } });
+    if (url.pathname.endsWith('/1')) {
+      detailReads++;
+      return Response.json({ data: { id: 1, executions: [], imageRuns: [], assets: [] } });
+    }
+    return Response.json({ data: { items: [row(1)], total: 1, offset: 0 } });
+  } });
   const input = { root, session: session('admin', 'ADMIN'), scope: 'admin', details: true };
-  await data.service.read(input);
-  await assert.rejects(data.service.read(input), error => error.status === 403);
-  const next = await data.service.read(input);
-  assert.equal(next.details.loaded, 0);
+  assert.equal((await service.read(input)).details.loaded, 1);
+  revoked = true;
+  await assert.rejects(service.read(input), error => error.status === 403);
+  revoked = false;
+  assert.equal((await service.read(input)).details.loaded, 1);
+  assert.equal(detailReads, 2, 'detail cache must be discarded with the revoked identity');
 });
 
 test('scheduler bounds pending work, serializes active reads, and releases the queue after rejection', async () => {

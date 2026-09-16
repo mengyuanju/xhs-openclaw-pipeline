@@ -80,14 +80,14 @@ test('copy QA fixes administrators to a full-information view', async () => {
   assert.doesNotMatch(source, /<label>评审模式<Select|setMode\(|const \[mode,/u,
     'the administrator response is already unredacted and must not expose a misleading blind-mode filter');
   assert.match(source, /管理员固定使用完整信息视图，任务、Query、词包和来源信息不会因样本盲评策略而隐藏/u);
-  assert.match(source, /role === 'ADMIN'[\s\S]*?<strong>完整<\/strong><span>管理员信息视图<\/span>/u);
+  assert.match(source, /role === 'ADMIN'[\s\S]*?<TabsTrigger value="workers">作业人员<\/TabsTrigger>/u);
   assert.match(source, /样本评审模式由管理员预先决定，审核员不可切换或更改/u);
 });
 
 test('copy QA accuracy statistics are fetched and rendered only for administrators', async () => {
   const source = await readFile(copyWorkbenchUrl, 'utf8');
   assert.match(source, /role === 'ADMIN' && !append[\s\S]*?\/v1\/copy-qa\/statistics/u);
-  assert.match(source, /\{role === 'ADMIN' && <section className="panel" aria-labelledby="copy-qa-accuracy-title">/u);
+  assert.match(source, /\{role === 'ADMIN' && <TabsContent className=\{styles\.tabContent\} value="workers">[\s\S]*?id="copy-qa-accuracy-title"/u);
 });
 
 test('workflow settings describe blind review as a non-administrator view policy', async () => {

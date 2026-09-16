@@ -10,11 +10,11 @@ import sharp from 'sharp';
 test('image editor browser: prompt-localized edit, fee gate, reference upload, preview and explicit acceptance',{skip:process.env.RUN_IMAGE_EDIT_BROWSER!=='1',timeout:60000},async()=>{
   const {build}=await import('esbuild'),{chromium}=await import('playwright-core');
   const root=await mkdtemp(join(tmpdir(),'image-edit-browser-')),bundle=join(root,'bundle.js'),stylesheet=join(root,'bundle.css');
-  const runId=randomUUID(),editId=randomUUID();let edits=[],submitted=null,actions=[];
+  const runId=randomUUID(),editId=randomUUID();let edits=[],submitted=null,submissions=[],actions=[];
   const png=await sharp({create:{width:1086,height:1448,channels:4,background:'#eeeeee'}}).png().toBuffer();
   let browser,server;
   try{
-    await build({stdin:{contents:`import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{CurrentImageEditor}from'./app/components/current-image-editor';createRoot(document.getElementById('root')).render(<CurrentImageEditor taskId={1} runId="${runId}" copyRevisionId={1} asset={{id:1,sha256:'${'a'.repeat(64)}',url:'/v1/assets/1'}} page={1} runs={[]} onChanged={async()=>{}}/>);`,resolveDir:process.cwd(),loader:'tsx'},bundle:true,outfile:bundle,jsx:'automatic',platform:'browser',conditions:['style'],alias:{'@':process.cwd()},define:{'process.env.NODE_ENV':'"test"'}});
+    await build({stdin:{contents:`import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{CurrentImageEditor}from'./app/components/current-image-editor';const assets=[1,2,3].map(id=>({id,sha256:String.fromCharCode(96+id).repeat(64),url:'/v1/assets/'+id}));createRoot(document.getElementById('root')).render(<CurrentImageEditor taskId={1} runId="${runId}" copyRevisionId={1} asset={assets[0]} assets={assets} page={1} runs={[]} onChanged={async()=>{}}/>);`,resolveDir:process.cwd(),loader:'tsx'},bundle:true,outfile:bundle,jsx:'automatic',platform:'browser',conditions:['style'],alias:{'@':process.cwd()},define:{'process.env.NODE_ENV':'"test"'}});
     const [js,css]=await Promise.all([readFile(bundle),readFile(stylesheet)]);
     server=createServer(async(req,res)=>{
       if(req.url==='/bundle.js'){res.setHeader('content-type','application/javascript');res.end(js);return;}
@@ -24,9 +24,10 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
         let body='';for await(const chunk of req)body+=chunk;
         const data=body?JSON.parse(body):null;
         if(req.method==='POST'&&req.url.endsWith('/image-edit-references')){res.setHeader('content-type','application/json');res.end(JSON.stringify({data:{id:9,sha256:'b'.repeat(64),url:'/v1/assets/9'}}));return;}
-        if(req.method==='POST'&&req.url.endsWith('/image-edits')){submitted=data;edits=[{id:editId,version:1,status:'PREVIEW_READY',operation:data.operation,target_page:1,config:{instruction:data.instruction},result:{asset_id:2,image_run_id:randomUUID(),validation:{passed:true}}}];}
-        else if(req.method==='POST'){actions.push({url:req.url,data});edits=edits.map(e=>({...e,status:req.url.endsWith('/accept')?'ACCEPTED':'CANCELLED',version:2}));}
-        res.setHeader('content-type','application/json');res.end(JSON.stringify({data:req.method==='GET'?edits:edits[0]}));return;
+        let response;
+        if(req.method==='POST'&&req.url.endsWith('/image-edits')){submitted=data;submissions.push(data);const row={id:data.batchId?randomUUID():editId,version:1,status:'PREVIEW_READY',operation:data.operation,source_asset_id:data.sourceAssetId,target_page:data.targetPage,config:{instruction:data.instruction,confirmation:data.confirmation,batchId:data.batchId},result:{asset_id:data.sourceAssetId+10,image_run_id:randomUUID(),validation:{passed:true}}};edits=data.batchId?[row,...edits]:[row];response=row;}
+        else if(req.method==='POST'){actions.push({url:req.url,data});const targetId=req.url.split('/').at(-2);edits=edits.map(e=>e.id===targetId?{...e,status:req.url.endsWith('/accept')?'ACCEPTED':'CANCELLED',version:2}:e);response=edits.find(e=>e.id===targetId);}
+        res.setHeader('content-type','application/json');res.end(JSON.stringify({data:req.method==='GET'?edits:response}));return;
       }
       res.setHeader('content-type','text/html');res.end('<html><meta charset="utf-8"><link rel="stylesheet" href="/bundle.css"><style>[data-slot="dialog-content"]{translate:-50% -50%}</style><body><div id="root"></div><script src="/bundle.js"></script></body></html>');
     });
@@ -62,7 +63,7 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     assert.deepEqual(await sourceImage.boundingBox(),sourceBox);
     assert.equal(await page.getByLabel('文本类型').count(),0);
     assert.equal(await page.getByLabel('字号').count(),0);
-    assert.equal(await page.getByText('样式由管理员的图片编辑提示词控制',{exact:false}).count(),1);
+    assert.equal(await page.getByText('标识由图片编辑模型绘制',{exact:false}).count(),1);
     assert.equal(await page.getByRole('button',{name:'保存草稿',exact:true}).isDisabled(),false);
     assert.equal(await page.getByRole('button',{name:'生成修改预览',exact:true}).isDisabled(),false);
     await page.getByRole('button',{name:'保存草稿',exact:true}).click();
@@ -85,7 +86,7 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
     await page.getByRole('alert').getByText('请先勾选费用确认',{exact:false}).waitFor();
     assert.equal(submitted,null);
-    const feeCheckbox=page.getByLabel('确认调用图片编辑与实体校验模型，会产生费用；自动修复和人工重试也可能收费。');
+    const feeCheckbox=page.getByLabel('确认调用一次图片编辑与视觉校验模型，会产生费用；校验失败时不会自动二次修改，人工重试会再次收费。');
     await feeCheckbox.check();
     const feeVisual=page.locator('[data-fee-checkbox]');
     const [feeInputBox,feeBox,feeState]=await Promise.all([feeCheckbox.boundingBox(),feeVisual.boundingBox(),feeCheckbox.evaluate(element=>{const visual=element.nextElementSibling,parent=element.parentElement;return{checked:element.checked,inputOpacity:getComputedStyle(element).opacity,width:getComputedStyle(visual).width,height:getComputedStyle(visual).height,backgroundColor:getComputedStyle(visual).backgroundColor,backgroundImage:getComputedStyle(visual).backgroundImage,outlineWidth:getComputedStyle(visual).outlineWidth,parentDisplay:getComputedStyle(parent).display,parentOutlineWidth:getComputedStyle(parent).outlineWidth};})]);
@@ -119,6 +120,8 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     assert.equal(await page.getByText('PNG / JPG / WebP · 最大 5 MB',{exact:true}).count(),1);
     await uploadInput.setInputFiles({name:'reference.png',mimeType:'image/png',buffer:png});
     await page.getByRole('img',{name:'已上传的真实产品参考图',exact:true}).waitFor();
+    await page.getByLabel('参考图使用方式').selectOption('APPEARANCE');
+    await page.getByText('只迁移主产品可确认的外观',{exact:false}).waitFor();
     assert.equal(await page.getByRole('button',{name:'生成修改预览',exact:true}).isDisabled(),false);
     await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
     await page.getByRole('alert').getByText('请填写需要替换的目标物品说明',{exact:false}).waitFor();
@@ -138,12 +141,22 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     assert.ok(targetSourceNode&&await targetSource.evaluate((element,previous)=>element===previous,targetSourceNode));
     assert.deepEqual(await targetSource.boundingBox(),targetSourceBox);
     assert.equal(await page.getByRole('button',{name:'重新框选',exact:true}).isDisabled(),false);
-    await page.getByLabel('确认调用图片编辑与实体校验模型，会产生费用；自动修复和人工重试也可能收费。').check();
+    await page.getByLabel('确认调用一次图片编辑与视觉校验模型，会产生费用；校验失败时不会自动二次修改，人工重试会再次收费。').check();
     await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
-    assert.equal(submitted.operation,'AI_FUSION');assert.deepEqual(submitted.references,[{assetId:9,purpose:'真实产品替换'}]);assert.equal(submitted.mask,undefined);
+    assert.equal(submitted.operation,'AI_FUSION');assert.equal(submitted.referenceMode,'APPEARANCE');assert.deepEqual(submitted.references,[{assetId:9,purpose:'真实产品替换'}]);assert.equal(submitted.mask,undefined);
     assert.equal(submitted.target.description,'画面右侧台面上、木托盘后方的米白色拿铁杯');
     assert.ok(submitted.target.region.width>24&&submitted.target.region.height>24);
     assert.match(submitted.instruction,/木托盘后方/u);
+    await page.getByRole('tab',{name:'添加文字'}).click();
+    await page.getByRole('button',{name:'整套 3 张',exact:true}).click();
+    await page.getByLabel('确认调用一次图片编辑与视觉校验模型，会产生费用；校验失败时不会自动二次修改，人工重试会再次收费。').check();
+    await page.getByRole('button',{name:'生成整套 3 张标识预览',exact:true}).click();
+    await page.getByRole('button',{name:'一次采用整套标识',exact:true}).waitFor();
+    const batchSubmissions=submissions.slice(-3),batchIds=new Set(batchSubmissions.map(item=>item.batchId));
+    assert.equal(batchSubmissions.length,3);assert.equal(batchIds.size,1);assert.deepEqual(batchSubmissions.map(item=>item.sourceAssetId),[1,2,3]);assert.deepEqual(batchSubmissions.map(item=>item.targetPage),[1,2,3]);assert.ok(batchSubmissions.every(item=>item.operation==='TEXT'));
+    await page.getByRole('button',{name:'一次采用整套标识',exact:true}).click();
+    await page.getByRole('button',{name:'整套标识已采用',exact:true}).waitFor();
+    assert.equal(actions.length,4);assert.equal(actions.slice(-3).every(item=>item.url.endsWith('/accept')),true);
     await page.getByRole('button',{name:'关闭工作台',exact:true}).click();
     await dialog.waitFor({state:'hidden'});
     assert.equal(await page.getByRole('button',{name:'修改图片',exact:true}).isVisible(),true);

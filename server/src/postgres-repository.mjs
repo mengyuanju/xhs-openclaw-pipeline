@@ -92,6 +92,7 @@ import { taskQueryIdentitySql } from './task-query-identity.mjs';
 import {
   adminDirectApproveCopyQa,
   batchReturnCopyQa,
+  discardReturnedCopy,
   freezeCopySamplingBatch,
   getCopyQaItem,
   getCopyQaBatchReturnPreview,
@@ -248,6 +249,7 @@ function taskFrom(row) {
     ...(hasAssigneeAccountId ? { assignedToAccountId: row.assignee_account_id === null
       ? null : Number(row.assignee_account_id) } : {}),
     assignedToDisplayName: row.assigned_to_display_name ?? null,
+    assignedToRole: row.assigned_to_role ?? null,
     assigneeStatus: row.assignee_status ?? null,
     assignmentSource: row.assignment_source ?? null,
     assignedAt: row.assigned_at ?? null,
@@ -556,6 +558,8 @@ function revisionFrom(row) {
     reworkTarget: ['COPY', 'IMAGE', 'BOTH'].includes(rework?.target) ? rework.target : null,
     reworkReasonCodes: Array.isArray(rework?.reasonCodes) ? rework.reasonCodes : [],
     reworkNote: rework?.note ?? null,
+    reworkRecommendation: rework?.recommendedDisposition === 'DISCARD' ? 'DISCARD' : 'REWORK',
+    reworkSamplingItemId: typeof rework?.samplingItemId === 'string' ? rework.samplingItemId : null,
     createdAt: row.created_at,
   };
 }
@@ -661,6 +665,8 @@ function autoAssignmentWorkerFrom(row) {
   if (!row) return null;
   const assignmentLimit = Number(row.assignment_limit);
   const currentTaskCount = Number(row.current_task_count ?? 0);
+  const fixedQuantityAssignedTotal = Number(row.fixed_quantity_assigned_total ?? 0);
+  const fixedQuantityAssignedToday = Number(row.fixed_quantity_assigned_today ?? 0);
   const userRole = row.user_role ?? null;
   const userStatus = row.user_status ?? null;
   const status = row.status;
@@ -675,6 +681,8 @@ function autoAssignmentWorkerFrom(row) {
     assignmentLimit,
     allocationCount: assignmentLimit,
     currentTaskCount,
+    fixedQuantityAssignedTotal,
+    fixedQuantityAssignedToday,
     availableSlots: Math.max(0, assignmentLimit - currentTaskCount),
     canReceive: status === 'ACTIVE' && userRole === 'USER' && userStatus === 'ACTIVE',
     version: Number(row.version),
@@ -697,6 +705,8 @@ function autoAssignmentAdminEventFrom(row) {
   };
 }
 
+const FIXED_QUANTITY_ASSIGNMENT_REASON = '管理员按指定数量单次分配';
+
 const AUTO_ASSIGNMENT_WORKER_RECORD_SQL = `
   SELECT
     pool.*,
@@ -711,9 +721,28 @@ const AUTO_ASSIGNMENT_WORKER_RECORD_SQL = `
         AND assigned_task.state = 'COPY_REVIEW_PENDING'
         AND assigned_task.current_stage = 'COPY_REVIEW_PENDING'
         AND assigned_task.current_execution_id IS NULL
-    ) AS current_task_count
+    ) AS current_task_count,
+    fixed_quantity_stats.fixed_quantity_assigned_total,
+    fixed_quantity_stats.fixed_quantity_assigned_today
   FROM task_auto_assignment_workers AS pool
   JOIN app_users AS app_user ON app_user.username = pool.username
+  LEFT JOIN LATERAL (
+    SELECT
+      COUNT(*) AS fixed_quantity_assigned_total,
+      COUNT(*) FILTER (
+        WHERE assignment_event.created_at >= (
+          date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'
+        )
+          AND assignment_event.created_at < (
+            (date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') + interval '1 day')
+              AT TIME ZONE 'Asia/Shanghai'
+          )
+      ) AS fixed_quantity_assigned_today
+    FROM task_assignment_events AS assignment_event
+    WHERE assignment_event.assignee_user_id = pool.username
+      AND assignment_event.source = 'AUTO'
+      AND assignment_event.reason = '${FIXED_QUANTITY_ASSIGNMENT_REASON}'
+  ) AS fixed_quantity_stats ON true
 `;
 
 async function readAutoAssignmentWorker(client, username) {
@@ -1523,6 +1552,10 @@ export class PostgresControlPlaneRepository {
   returnCopyQaItem(id, input, { actor, expectedTaskId = null } = {}) {
     return returnCopyQaItem(this.pool, id, input, actor, expectedTaskId);
   }
+  async discardReturnedCopy(id, input, { actor } = {}) {
+    const result = await discardReturnedCopy(this.pool, id, input, actor);
+    return taskFrom(result.task);
+  }
   batchReturnCopyQa(input, { actor } = {}) { return batchReturnCopyQa(this.pool, input, actor); }
   getCopyQaBatchReturnPreview(id, { actor } = {}) {
     return getCopyQaBatchReturnPreview(this.pool, id, actor);
@@ -1604,7 +1637,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 3, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 6, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, finalDeliveryVersion: 5, deliverySpreadsheetVersion: 2, deliveryPreviewVersion: 6 } };
+      capabilities: { taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 4, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 6, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, finalDeliveryVersion: 5, deliverySpreadsheetVersion: 2, deliveryPreviewVersion: 6 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -2007,7 +2040,7 @@ export class PostgresControlPlaneRepository {
         taskIds,
         AUTO_ASSIGNMENT_ACTOR,
         username,
-        '管理员按指定数量单次分配',
+        FIXED_QUANTITY_ASSIGNMENT_REASON,
       ]);
       const auditedTaskIds = new Set(auditResult.rows.map((row) => normalizeTaskId(row.task_id)));
       if (auditedTaskIds.size !== taskIds.length
@@ -3020,6 +3053,7 @@ export class PostgresControlPlaneRepository {
         creator.display_name AS creator_display_name,
         creator.role AS creator_role, assignee.id AS assignee_account_id,
         assignee.display_name AS assigned_to_display_name,
+        assignee.role AS assigned_to_role,
         assignee.status AS assignee_status,
         EXISTS (
           SELECT 1 FROM delivery_entries AS current_delivery
@@ -3211,6 +3245,7 @@ export class PostgresControlPlaneRepository {
           creator.display_name AS creator_display_name,
           creator.role AS creator_role, assignee.id AS assignee_account_id,
           assignee.display_name AS assigned_to_display_name,
+          assignee.role AS assigned_to_role,
           assignee.status AS assignee_status,
           COALESCE((
             SELECT jsonb_agg(jsonb_build_object(
@@ -3548,7 +3583,7 @@ export class PostgresControlPlaneRepository {
             SELECT DISTINCT ON (edit.task_id) edit.task_id, edit.id AS edit_id
             FROM image_edit_requests edit
             JOIN tasks edit_task ON edit_task.id = edit.task_id
-            WHERE $5::integer >= 3
+            WHERE $5::integer >= CASE WHEN edit.config->>'referenceMode' = 'APPEARANCE' THEN 4 ELSE 3 END
               AND edit.status = 'QUEUED'
               AND edit_task.priority_paused = false
               AND edit_task.assigned_to_user_id IS NOT NULL
@@ -3622,7 +3657,7 @@ export class PostgresControlPlaneRepository {
         const executionId = randomUUID();
         const imageEditRequestId = task.image_edit_request_id ?? null;
         const baseSnapshot = imageEditRequestId
-          ? { imageEditRequestId, imageEditExecutorVersion: 3,
+          ? { imageEditRequestId, imageEditExecutorVersion,
             task: { id: Number(task.id), query: task.query } }
           : task.pending_snapshot ?? snapshots.get(task.id);
         const imageProductionChainId = kind === 'IMAGE' && !imageEditRequestId
@@ -3975,6 +4010,13 @@ export class PostgresControlPlaneRepository {
         }
       }
       const mandatoryRework = task.mandatory_copy_qc === true;
+      if (mandatoryRework && task.mandatory_copy_qc_origin === 'QA_RETURN'
+          && decision === 'DISCARD') {
+        throw new ControlPlaneConflictError(
+          'RETURNED_COPY_DISCARD_REQUIRES_DISPOSITION',
+          '质检打回任务必须通过专用废弃入口填写原因并完成质检链路处置',
+        );
+      }
       if (!mandatoryRework && decision !== 'SAVE_PLAN' && currentScoreX10 === null) throw new TypeError('score is required');
       const node = await client.query('SELECT id FROM executor_nodes WHERE id = $1', [nodeId]);
       if (!node.rows[0]) throw new ControlPlaneNotFoundError('executor node is not registered');
@@ -4805,6 +4847,13 @@ export class PostgresControlPlaneRepository {
         throw new ControlPlaneConflictError(
           'COPY_QC_CANCEL_FORBIDDEN',
           '文案抽检冻结中的任务不能从通用入口取消，请通过质检处置',
+        );
+      }
+      if (task.state === 'COPY_REVIEW_PENDING' && task.mandatory_copy_qc === true
+          && task.mandatory_copy_qc_origin === 'QA_RETURN') {
+        throw new ControlPlaneConflictError(
+          'RETURNED_COPY_DISCARD_REQUIRES_DISPOSITION',
+          '质检打回任务必须通过专用废弃入口填写原因并完成质检链路处置',
         );
       }
       if (task.current_execution_id) {

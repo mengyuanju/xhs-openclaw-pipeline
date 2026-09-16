@@ -62,14 +62,49 @@ test('personal workbench uses grouped shadcn navigation without starting a secon
   assert.match(styles, /\.personal-workbench-status-tabs \[data-slot="tabs-list"\][^{]*\{[^}]*grid-template-columns: repeat\(5/u);
 });
 
-test('historical account generations cannot navigate through the current-account creator filter', async () => {
+test('historical account generations cannot navigate through the current-account assignee filter', async () => {
   const [people, types] = await Promise.all([
     source('app/workbench-statistics/people-table.tsx'),
     source('app/workbench-statistics/types.ts'),
   ]);
   assert.match(types, /accountId: number \| null/u);
   assert.match(people, /person\.accountId !== null && person\.username/u);
-  assert.match(people, /createdByAccountId=\$\{person\.accountId\}/u);
+  assert.match(people, /assignedToAccountId=\$\{person\.accountId\}/u);
   assert.match(people, /已删除账号单列为历史账号/u);
   assert.match(people, /person\.accountId \?\? 'historical'/u);
+});
+
+test('people work table excludes unassigned work and shows first-review pass rate', async () => {
+  const [people, page] = await Promise.all([
+    source('app/workbench-statistics/people-table.tsx'),
+    source('app/workbench-statistics/admin-statistics.tsx'),
+  ]);
+  assert.match(people, /people\.filter\(person => person\.username !== null\)/u);
+  assert.match(people, /label: '首评通过率'/u);
+  assert.match(people, /尚未分配的作业不计入人员表/u);
+  assert.match(page, /<EfficiencyPanel data=\{data\?\.details \?\? null\} compact/u);
+  assert.match(page, /不作为负责人或角色展示/u);
+});
+
+test('admin statistics combines the key work views into one compact dashboard', async () => {
+  const [page, chart] = await Promise.all([
+    source('app/workbench-statistics/admin-statistics.tsx'),
+    source('app/workbench-statistics/statistics-chart.tsx'),
+  ]);
+  for (const heading of ['团队作业总览', '负责人作业', '当前作业状态']) {
+    assert.match(page, new RegExp(heading, 'u'));
+  }
+  assert.doesNotMatch(page, /<Tabs|TabsContent|TabsTrigger/u);
+  assert.match(page, /job-stats-summary-strip/u);
+  assert.match(page, /job-stats-command-grid/u);
+  assert.match(page, /workerAccountId/u);
+  assert.match(page, /本期流转与当前待处理分轴显示/u);
+  assert.match(page, /variant="team"/u);
+  assert.match(page, /variant="donut"/u);
+  assert.match(page, /size=\{20\} strokeWidth=\{2\.3\}/u);
+  assert.doesNotMatch(page, /库存|产能|经营总览|人员绩效/u);
+  assert.match(chart, /PieChart/u);
+  assert.match(chart, /chartType === 'team'/u);
+  assert.match(chart, /Number\(params\.value\) > 0 \? String\(params\.value\) : ''/u);
+  assert.match(chart, /labelLayout: \{ hideOverlap: true, moveOverlap: 'shiftY' \}/u);
 });

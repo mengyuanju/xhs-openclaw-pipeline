@@ -24,7 +24,7 @@ function EfficiencyStage({ label, data, note }: { label: string; data: Distribut
   </article>;
 }
 
-export function EfficiencyPanel({ data }: { data: Efficiency | null }) {
+export function EfficiencyPanel({ data, compact = false }: { data: Efficiency | null; compact?: boolean }) {
   const partial = data?.state === 'partial';
   const loading = !data || data.state === 'loading';
   const status = !data ? '等待作业数量汇总' : data.state === 'ready' ? `汇总完成 · ${number(data.loaded)} 项明细`
@@ -38,6 +38,25 @@ export function EfficiencyPanel({ data }: { data: Efficiency | null }) {
   const hasDeliverySamples = Boolean(data?.delivery.samples);
   const qualityNote = (qualified: number | undefined, samples: number | undefined, label: string) =>
     `${number(qualified)} / ${number(samples)} 项${label}${loading || partial ? '（已汇总明细）' : ''}`;
+  if (compact) return <article className="job-stats-command-card job-stats-efficiency-snapshot"
+    aria-label="质量与效率" aria-busy={loading}>
+    <div className="job-stats-chart-heading"><div><h3>质量与效率</h3><p>生成、交付和人工首评</p></div>
+      <span className={partial ? 'job-stats-warning' : ''} role="status" title={status}>{status}</span></div>
+    {data && data.state !== 'ready' && data.total > 0 && <div className="job-stats-efficiency-progress is-compact">
+      <progress max={data.total} value={data.loaded} aria-label={`效率明细汇总进度 ${progress}%`} />
+      <span>{progress}%</span>
+    </div>}
+    <div className="job-stats-efficiency-snapshot-grid">
+      <div><span>文案平均耗时</span><strong>{duration(data?.copy.meanMs)}</strong></div>
+      <div><span>图片平均耗时</span><strong>{duration(data?.image.meanMs)}</strong></div>
+      <div><span>平均交付耗时</span><strong>{duration(data?.delivery.meanMs)}</strong></div>
+      <div><span>一次完成率</span><strong>{percent(firstPassRate)}</strong></div>
+      <div><span>文案执行成功率</span><strong>{percent(successRate(data?.copy.failed, data?.copy.succeeded))}</strong></div>
+      <div><span>图片执行成功率</span><strong>{percent(successRate(data?.image.failed, data?.image.succeeded))}</strong></div>
+      <div><span>文案首评达标率</span><strong>{percent(data?.quality?.copy.qualifiedRate)}</strong></div>
+      <div><span>图片首轮达标率</span><strong>{percent(data?.quality?.image.qualifiedRate)}</strong></div>
+    </div>
+  </article>;
   return <section className="panel job-stats-section" aria-label="生成与交付效率">
     <div className="job-stats-heading"><div><h2>生成与交付效率</h2><p className="job-stats-note">平均值、中位数和 P90 直接对照；图片耗时按整套统计。</p></div>
       <span className={partial ? 'job-stats-warning' : 'job-stats-note'} role="status">{status}</span>

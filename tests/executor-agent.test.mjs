@@ -45,8 +45,11 @@ test('concurrent executor refuses an old center before registration', async () =
   const versionTwoImageCenter=createExecutorAgent({nodeId:'a',concurrencyEnabled:true,imageWorkerEnabled:true,controlPlane:{},
     readinessCheck:async()=>({health:{ok:true,capabilities:{executorConcurrency:true,codexConcurrencyPoolVersion:1,imageEditExecutorVersion:2}}})});
   await assert.rejects(versionTwoImageCenter.prepare(),/图片修改能力/u);
-  const currentImageCenter=createExecutorAgent({nodeId:'a',concurrencyEnabled:true,imageWorkerEnabled:true,controlPlane:{},
+  const versionThreeImageCenter=createExecutorAgent({nodeId:'a',concurrencyEnabled:true,imageWorkerEnabled:true,controlPlane:{},
     readinessCheck:async()=>({health:{ok:true,capabilities:{executorConcurrency:true,codexConcurrencyPoolVersion:1,imageEditExecutorVersion:3}}})});
+  await assert.rejects(versionThreeImageCenter.prepare(),/图片修改能力/u);
+  const currentImageCenter=createExecutorAgent({nodeId:'a',concurrencyEnabled:true,imageWorkerEnabled:true,controlPlane:{},
+    readinessCheck:async()=>({health:{ok:true,capabilities:{executorConcurrency:true,codexConcurrencyPoolVersion:1,imageEditExecutorVersion:4}}})});
   await currentImageCenter.prepare();
 });
 
@@ -130,7 +133,7 @@ test('image lane dispatches a manual edit to the edit processor without using no
   });
   await agent.prepare();
   await agent.register();
-  assert.equal(registration.imageEditExecutorVersion,3);
+  assert.equal(registration.imageEditExecutorVersion,4);
   const outcome=await agent.runImageOnce();
   assert.equal(outcome.status,'SUCCEEDED');
   assert.equal(edits,1);

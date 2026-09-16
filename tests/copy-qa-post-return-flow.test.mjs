@@ -55,6 +55,16 @@ test('mandatory recheck actions explain their dedicated gate before image genera
   assert.match(source, /未通过强制复检[\s\S]{0,120}再次进入强制复检，通过前不会进入待生图队列/u);
 });
 
+test('copy QA visibly separates one-time sampling from mandatory rechecks and explains the retry state loop', async () => {
+  const source = await readFile(new URL('../app/copy-qa/copy-qa-workbench.tsx', import.meta.url), 'utf8');
+
+  assert.match(source, /type CopyQaKindFilter = 'ALL' \| 'RANDOM' \| 'MANDATORY_RECHECK'/u);
+  assert.match(source, /<SelectItem value="RANDOM">一次抽检<\/SelectItem><SelectItem value="MANDATORY_RECHECK">强制复检<\/SelectItem>/u);
+  assert.match(source, /一次抽检对每个入选版本最多 1 次；强制复检当前不设总次数上限/u);
+  assert.match(source, /打回 → 修改 → 新强制复检/u);
+  assert.match(source, /旧的待检项会变为“旧版已失效”/u);
+});
+
 test('copy QA result filter keeps its longest option on one line', async () => {
   const [source, styles] = await Promise.all([
     readFile(new URL('../app/copy-qa/copy-qa-workbench.tsx', import.meta.url), 'utf8'),

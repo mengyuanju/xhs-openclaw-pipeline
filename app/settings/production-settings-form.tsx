@@ -185,8 +185,6 @@ function AiDisclosureSettings({
 
 function ImageEditRepairSettings({
   settings,
-  busy,
-  update,
 }: {
   settings: Settings;
   busy: boolean;
@@ -194,16 +192,12 @@ function ImageEditRepairSettings({
 }) {
   return <section className="panel settings-section" aria-labelledby="image-edit-repair-heading">
     <div className="panel-head">
-      <div><h2 id="image-edit-repair-heading">图片文字编辑自动修复</h2><p className="subtle">控制单页“添加文字”未通过视觉质检后，自动打回图片模型重做的次数。</p></div>
+      <div><h2 id="image-edit-repair-heading">人工生成标识单次生成</h2><p className="subtle">标识只调用一次图片编辑模型，不使用蒙版或局部像素贴回；校验失败后不会自动二次修改。</p></div>
     </div>
     <div className="form-grid compact-settings-grid">
       <div className="field">
-        <label htmlFor="image-edit-repair-max-attempts">质检失败后最多自动修复</label>
-        <Select value={String(settings.imageEditRepairMaxAttempts)} disabled={busy} onValueChange={(value) => update('imageEditRepairMaxAttempts', Number(value))}>
-          <SelectTrigger id="image-edit-repair-max-attempts"><SelectValue /></SelectTrigger>
-          <SelectContent>{[0, 1, 2].map((count) => <SelectItem key={count} value={String(count)}>{count} 次</SelectItem>)}</SelectContent>
-        </Select>
-        <small>首次生成不计入修复次数；最高 2 次，即最多生成并质检 3 轮。设置在创建编辑请求时冻结。</small>
+        <span>自动修复次数：0 次</span>
+        <small>旧配置值 {settings.imageEditRepairMaxAttempts} 仅为兼容保留，执行时不会读取；需要重试时必须由作业员主动发起。</small>
       </div>
     </div>
   </section>;

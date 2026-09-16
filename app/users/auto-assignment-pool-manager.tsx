@@ -1,6 +1,6 @@
 'use client';
 
-import { CheckCircle2, ListChecks, Pencil, Play, Plus, Trash2, UserRound, Users } from 'lucide-react';
+import { MoreHorizontal, Pause, Pencil, Play, Plus, RotateCcw, Trash2, UserRound } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 
@@ -15,6 +15,13 @@ import {
 } from '@/components/ui/dialog';
 import { Input, Switch } from '@/components/ui/input';
 import { SearchInput } from '@/components/ui/search-input';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import {
   Select,
   SelectContent,
@@ -52,6 +59,8 @@ type AutoAssignmentWorker = {
   assignmentLimit: number;
   allocationCount?: number;
   currentTaskCount: number;
+  fixedQuantityAssignedTotal?: number;
+  fixedQuantityAssignedToday?: number;
   availableSlots: number;
   canReceive: boolean;
   version: number;
@@ -130,13 +139,20 @@ export function AutoAssignmentPoolManager({
     ? initialSnapshot.workers.find((worker) => worker.username === editor.username) ?? null
     : null;
   const assignmentMode = initialSnapshot.settings.mode ?? 'CONTINUOUS';
-  const availableWorkerCount = initialSnapshot.workers.filter((worker) => worker.canReceive).length;
   const effectiveAssignmentCount = initialSnapshot.settings.enabled
     ? initialSnapshot.workers.filter((worker) => worker.canReceive)
       .reduce((total, worker) => total + (assignmentMode === 'CONTINUOUS'
         ? worker.availableSlots
         : workerAllocationCount(worker)), 0)
     : 0;
+  const fixedQuantityAssignedTotal = initialSnapshot.workers.reduce(
+    (total, worker) => total + (worker.fixedQuantityAssignedTotal ?? 0),
+    0,
+  );
+  const fixedQuantityAssignedToday = initialSnapshot.workers.reduce(
+    (total, worker) => total + (worker.fixedQuantityAssignedToday ?? 0),
+    0,
+  );
   // Keep the web UI usable during a center-first rolling deployment. Older
   // centers only return unassignedTaskCount until their process is restarted.
   const autoAssignableTaskCount = typeof initialSnapshot.autoAssignableTaskCount === 'number'
@@ -336,18 +352,20 @@ export function AutoAssignmentPoolManager({
   }
 
   return <div className="user-management-stack">
-    <section className="user-summary-grid" aria-label="自动分配池概况">
-      <article className="user-summary-card"><span><ListChecks size={18} /></span><div><strong>{initialSnapshot.unassignedTaskCount}</strong><small>无负责人任务</small></div></article>
-      <article className="user-summary-card"><span className="tone-green"><ListChecks size={18} /></span><div><strong>{autoAssignableTaskCount}</strong><small>待审核分配</small><div className="subtle">另有 {manualAttentionTaskCount} 条仍在机器阶段或需要管理员处理</div></div></article>
-      <article className="user-summary-card"><span className="tone-green"><Users size={18} /></span><div><strong>{availableWorkerCount}</strong><small>可用池成员</small></div></article>
-      <article className="user-summary-card"><span className="tone-amber"><CheckCircle2 size={18} /></span><div><strong>{effectiveAssignmentCount}</strong><small>{assignmentMode === 'CONTINUOUS' ? '当前可补名额' : '配置单次数量'}</small></div></article>
-    </section>
-
     <section className="panel user-list-panel" aria-labelledby="auto-assignment-pool-title">
       <div className="panel-head user-list-head">
         <div>
           <h2 id="auto-assignment-pool-title">自动分配人员池</h2>
           <p className="subtle">可选择持续补位或定量单次分配。新建用户默认不会加入自动分配池。</p>
+          <div className="auto-assignment-summary" aria-label="自动分配状态摘要">
+            <span>待分配 <strong>{autoAssignableTaskCount}</strong></span>
+            <span title="仍在机器阶段或需要管理员处理">需人工关注 <strong>{manualAttentionTaskCount}</strong></span>
+            <span>{assignmentMode === 'CONTINUOUS' ? '当前可补' : '配置单次数量'} <strong>{effectiveAssignmentCount}</strong></span>
+            {assignmentMode === 'FIXED_QUANTITY' && <>
+              <span>今日定量已分配 <strong>{fixedQuantityAssignedToday}</strong></span>
+              <span>池成员累计已分配 <strong>{fixedQuantityAssignedTotal}</strong></span>
+            </>}
+          </div>
         </div>
         <div className="inline">
           <div className="auto-assignment-mode-control">
@@ -389,7 +407,9 @@ export function AutoAssignmentPoolManager({
       {initialSnapshot.workers.length === 0
         ? <div className="empty-state">人员池为空。请点击“加入作业员”明确选择需要自动接单的人员。</div>
         : <div className="table-wrap mobile-cards user-table-wrap"><table className="user-table">
-          <thead><tr><th>作业员</th><th>池状态</th><th>当前待审核</th><th>分配规则</th><th className="user-actions-heading">操作</th></tr></thead>
+          <thead><tr><th>作业员</th><th>池状态</th><th>当前待审核</th>
+            {assignmentMode === 'FIXED_QUANTITY' && <th>分配统计</th>}
+            <th>分配规则</th><th className="user-actions-heading">操作</th></tr></thead>
           <tbody>{initialSnapshot.workers.map((worker) => {
             const isAccountEligible = worker.userRole === 'USER' && worker.userStatus === 'ACTIVE';
             const availability = workerAvailability(initialSnapshot.settings.enabled, assignmentMode, worker);
@@ -410,6 +430,10 @@ export function AutoAssignmentPoolManager({
                 <strong className="mono">{worker.currentTaskCount} 条</strong>
                 <div className="subtle">当前已分配且等待文案审核</div>
               </td>
+              {assignmentMode === 'FIXED_QUANTITY' && <td data-label="分配统计">
+                <strong className="mono">累计 {worker.fixedQuantityAssignedTotal ?? 0} 条</strong>
+                <div className="subtle">今日已分配 {worker.fixedQuantityAssignedToday ?? 0} 条</div>
+              </td>}
               <td data-label="分配规则"><span className={`pill ${availability.tone}`}>{availability.label}</span>
                 <div className="subtle">{assignmentMode === 'CONTINUOUS'
                   ? `待审核上限 ${worker.assignmentLimit} 条`
@@ -431,16 +455,24 @@ export function AutoAssignmentPoolManager({
                     ? '请先启用该普通用户'
                     : assignmentMode === 'CONTINUOUS' ? '编辑待审核任务上限' : '编辑单次分配数量'}
                   onClick={() => openWorkerEditor(worker)}><Pencil size={14} />{assignmentMode === 'CONTINUOUS' ? '编辑上限' : '编辑数量'}</Button>
-                <Button unstyled className="button small" type="button"
-                  disabled={Boolean(busy) || (!isAccountEligible && worker.status === 'PAUSED')}
-                  title={!isAccountEligible && worker.status === 'PAUSED' ? '停用账号不能恢复自动接单' : undefined}
-                  onClick={() => { void updateWorkerStatus(worker); }}>
-                  {worker.status === 'ACTIVE' ? '暂停' : '恢复'}
-                </Button>
-                <Button unstyled className="button small danger user-delete-button" type="button"
-                  disabled={Boolean(busy)} onClick={() => { void removeWorker(worker); }}>
-                  <Trash2 size={14} />移出
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button unstyled className="button small user-more-button" type="button" disabled={Boolean(busy)}
+                      aria-label={`${workerName}的更多操作`}><MoreHorizontal size={15} />更多</Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      disabled={Boolean(busy) || (!isAccountEligible && worker.status === 'PAUSED')}
+                      title={!isAccountEligible && worker.status === 'PAUSED' ? '停用账号不能恢复自动接单' : undefined}
+                      onSelect={() => { void updateWorkerStatus(worker); }}>
+                      {worker.status === 'ACTIVE' ? <Pause size={14} /> : <RotateCcw size={14} />}
+                      {worker.status === 'ACTIVE' ? '暂停接单' : '恢复接单'}
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem tone="danger" disabled={Boolean(busy)}
+                      onSelect={() => { void removeWorker(worker); }}><Trash2 size={14} />移出人员池</DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div></td>
             </tr>;
           })}</tbody>

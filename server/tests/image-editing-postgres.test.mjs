@@ -48,10 +48,9 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
     const copyRevisionId=Number(revision.id);
     await pool.query("INSERT INTO image_runs(id,task_id,copy_revision_id,status,image_production_chain_id) VALUES($1,$2,$3,'COMPLETED',$1)",[runId,taskId,copyRevisionId]);
     const png=await sharp({create:{width:1086,height:1448,channels:4,background:'white'}}).png().toBuffer(),sha256=imageHash(png);
-    const textPatch=await sharp({create:{width:200,height:100,channels:4,background:'#111827'}}).png().toBuffer();
-    const textPng=await sharp(png).composite([{input:textPatch,left:820,top:1300}]).png().toBuffer();
     const localPatch=await sharp({create:{width:300,height:300,channels:4,background:'#dce8d4'}}).png().toBuffer();
     const localPng=await sharp(png).composite([{input:localPatch,left:100,top:500}]).png().toBuffer();
+    const disclosurePng=await sharp(png).composite([{input:Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="280" height="140"><rect width="280" height="140" rx="16" fill="#111827"/></svg>'),left:774,top:1276}]).png().toBuffer();
     const images=[];
     for(let i=0;i<3;i++){
       const path=resolve(root,`source-${i}.png`);await writeFile(path,png);
@@ -66,7 +65,7 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
     const request=(extra={})=>({requestId:randomUUID(),sourceImageRunId:currentRun,sourceAssetId:currentAsset,copyRevisionId,sha256:currentHash,targetPage:2,operation:'TEXT',confirmation:'LIVE_IMAGE_COST_ACCEPTED',overlay:{text:'AI生成',textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',position:'bottom-right'},...extra});
     const validateImage=async({imagePath})=>({passed:true,model:'fake-vision',layoutMatched:true,ocrConfidence:1,
       ocrMismatches:[],unreadableText:[],recognizedText:{headline:'真实参考',subtitle:'',bullets:[],otherText:imagePath.endsWith('result.png')?['AI生成']:[]}});
-    const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{assert.match(prompt,/<trusted_business_rules kind="IMAGE_EDIT_SYSTEM">/u);assert.match(prompt,/AI_DISCLOSURE_LABEL/u);assert.equal(inputPaths.length,2);await writeFile(outputPath,textPng);return{model:'fake-text-edit'};}};
+    const agentClient={runImageEdit:async({outputPath})=>{await writeFile(outputPath,disclosurePng);return{model:'fake-text-edit'};}};
     const action=async(id,name,extra={})=>{const e=await service.get(id);return service.action(id,name,{version:e.version,requestId:randomUUID(),reason:'test',...extra},actor);};
     await t.test('permissions, copy gate and source conflicts fail before queue insertion',async()=>{
       await assert.rejects(()=>service.create(taskId,request(),outsiderActor),{code:'FORBIDDEN'});
@@ -99,8 +98,7 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       await createReadyDeliveryEntry(pool,{taskId,copyRevisionId,imageRunId:currentRun,actor:adminActor});
       const input=request();first=await service.create(taskId,input,actor);
       assert.equal(first.config.imageEditRepairMaxAttempts,1);
-      assert.equal(first.config.imageEditPrompt.versionId,Number(promptVersion.id));
-      assert.equal(first.config.imageEditPrompt.content,imageEditPromptContent);
+      assert.equal(first.config.imageEditPrompt.kind,'IMAGE_EDIT_SYSTEM');
       assert.equal((await service.create(taskId,input,actor)).id,first.id);
       await assert.rejects(()=>service.create(taskId,{...input,overlay:{text:'不同文字'}},actor),{code:'IMAGE_EDIT_CONFLICT'});
       assert.equal((await pool.query('SELECT status FROM delivery_entries WHERE task_id=$1',[taskId])).rows[0].status,'WITHDRAWN');
@@ -121,7 +119,7 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
         sourceAssetId:Number(lowAsset.id),copyRevisionId:Number(lowRevision.id),sha256,targetPage:2,
         operation:'TEXT',confirmation:'LIVE_IMAGE_COST_ACCEPTED',overlay:{text:'AI生成',textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',position:'bottom-right'}},actor);
       const claims=await Promise.all([
-        repository.claimImage('edit-test',1,2,2),repository.claimImage('edit-test',1,2,2),
+        repository.claimImage('edit-test',1,2,3),repository.claimImage('edit-test',1,2,3),
       ]);assert.equal(claims.filter(Boolean).length,1);
       const executorClaim=claims.find(Boolean);
       assert.equal(executorClaim.imageEdit.id,first.id);
@@ -132,10 +130,21 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       await assert.rejects(()=>service.complete(executorClaim.imageEdit,{bytes:png,validation:{passed:true}}),{code:'IMAGE_EDIT_CONFLICT'});
       await action(lowEdit.id,'cancel');
     });
+    await t.test('appearance-reference edits wait for a version 4 image executor',async()=>{
+      const reference=await service.upload(taskId,{base64:png.toString('base64'),mediaType:'image/png',purpose:'外观参考',source:'测试自有照片'},actor);
+      const appearanceEdit=await service.create(taskId,request({operation:'AI_FUSION',referenceMode:'APPEARANCE',
+        instruction:'按主产品可见外观替换目标',references:[{assetId:reference.id,purpose:'真实产品替换'}],
+        target:{description:'画面中央的产品',region:{x:300,y:400,width:480,height:600}}}),actor);
+      assert.equal(await repository.claimImage('edit-test',1,2,3),null);
+      const claim=await repository.claimImage('edit-test',1,2,4);
+      assert.equal(claim.imageEdit.id,appearanceEdit.id);
+      assert.equal(claim.execution.snapshot.imageEditExecutorVersion,4);
+      await action(appearanceEdit.id,'cancel');
+    });
     let edited;
     await t.test('executor transfer produces a validated preview without changing current run',async()=>{
       edited=await service.create(taskId,request(),actor);
-      const claim=await repository.claimImage('edit-test',1,2,2);
+      const claim=await repository.claimImage('edit-test',1,2,3);
       assert.equal(claim.imageEdit.id,edited.id);
       const app=createControlPlaneApp({repository,storageRoot:root});
       const server=await new Promise(resolveServer=>{const listening=app.listen(0,'127.0.0.1',()=>resolveServer(listening));});

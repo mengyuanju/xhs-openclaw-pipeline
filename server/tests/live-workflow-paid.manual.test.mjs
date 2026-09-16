@@ -212,7 +212,8 @@ test('paid live workflow: priority, whole-person QA return/recheck, and all curr
     assert.equal(completed.result.validation.text.placement.style.backgroundColor,'#111827');
     assert.equal(completed.result.validation.outsideMask.changedPixels,0);
     assert.equal(completed.result.validation.generationAttempts,1);
-    assert.match(String(completed.result.validation.model),/gpt-image-2/u);
+    assert.ok(completed.result.validation.model);
+    assert.equal(imageGenerationCalls,1);
     resultAsset=await service.asset(Number(completed.result.asset_id),taskId);
     resultBytes=await service.readAsset(resultAsset);
     assert.notEqual(resultAsset.sha256,sourceAsset.sha256);

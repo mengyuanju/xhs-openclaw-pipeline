@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import sharp from 'sharp';
 import { normalizeManualOverlay, manualOverlaySvg, decodeReference, renderMask, mergeWithMask, changedPixelMask, assertOutsideMask } from '../src/image-edit-pixels.mjs';
 import { normalizeEdit,replaceImagePage,editStoragePath,createImageEditingService } from '../server/src/image-editing.mjs';
-import { disclosurePlacementRegion, parseLocalTargetCheck, processImageEdit } from '../server/src/image-edit-renderer.mjs';
+import { disclosurePlacementRegion, parseFusionTargetCheck, parseLocalTargetCheck, processImageEdit } from '../server/src/image-edit-renderer.mjs';
 
 const png=(color='white',width=1086,height=1448)=>sharp({create:{width,height,channels:4,background:color}}).png().toBuffer();
 const visionPass=(labels=[])=>({passed:true,model:'fake-vision',layoutMatched:true,ocrConfidence:1,
@@ -28,7 +28,11 @@ test('AI text layout contract is escaped, typed, and stays inside the safe area'
   const request=normalizeEdit({...input(),overlay:{text:'人工生成',position:'top-left',size:88,color:'#ff0000'}});
   assert.deepEqual({textType:request.overlay.textType,disclosureType:request.overlay.disclosureType,position:request.overlay.position,size:request.overlay.size,color:request.overlay.color},
     {textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',position:'bottom-right',size:32,color:'#ffffff'});
-  assert.deepEqual(disclosurePlacementRegion(request.overlay),{x:774,y:1276,width:280,height:140});
+  assert.deepEqual(disclosurePlacementRegion(request.overlay),{x:902,y:1352,width:152,height:64});
+  assert.equal(Object.hasOwn(request,'batchId'),false);
+  const batchId=randomUUID();
+  assert.equal(normalizeEdit({...input(),batchId}).batchId,batchId);
+  assert.throws(()=>normalizeEdit({...input(),batchId,operation:'AI_LOCAL',instruction:'修改背景'}),/只有人工生成标识支持/u);
 });
 test('reference decoding rejects MIME spoofing, SVG, truncation and excess bytes; strips metadata',async()=>{
   const source=await sharp(await png('red',30,40)).withMetadata({orientation:6}).jpeg().toBuffer();
@@ -75,6 +79,12 @@ test('edit inputs reject commands, paths, unconfirmed AI, duplicate references a
   const fusion=normalizeEdit({...input(),operation:'AI_FUSION',instruction:'替换右侧杯子',references:[{assetId:1}],
     target:{description:'右侧台面上的白色杯子',region:{x:700,y:500,width:220,height:240}}});
   assert.deepEqual(fusion.target,{description:'右侧台面上的白色杯子',region:{x:700,y:500,width:220,height:240}});
+  assert.equal(fusion.referenceMode,'STRICT');
+  const appearance=normalizeEdit({...input(),operation:'AI_FUSION',instruction:'按可见外观替换产品',references:[{assetId:1}],referenceMode:'APPEARANCE',
+    target:{description:'右侧台面上的白色杯子',region:{x:700,y:500,width:220,height:240}}});
+  assert.equal(appearance.referenceMode,'APPEARANCE');
+  assert.throws(()=>normalizeEdit({...input(),operation:'AI_FUSION',instruction:'替换产品',references:[{assetId:1}],referenceMode:'SKIP',
+    target:{description:'杯子',region:{x:700,y:500,width:220,height:240}}}),/使用方式无效/u);
   assert.throws(()=>editStoragePath(join(tmpdir(),'owned'),join(tmpdir(),'other','secret')));
   const normalized=normalizeEdit({...input(),operation:'AI_FULL',confirmation:'LIVE_IMAGE_COST_ACCEPTED',instruction:'$(Remove-Item x)'});assert.equal(normalized.instruction,'$(Remove-Item x)');
   const promptLocal=normalizeEdit({...input(),operation:'AI_LOCAL',confirmation:'LIVE_IMAGE_COST_ACCEPTED',instruction:'把画面右上角的水杯改为蓝色'});
@@ -120,23 +130,45 @@ test('a source vision transport failure is explicit and does not consume a paid 
       code:'ALIGNMENT_SERVICE_FAILED',serviceCode:'CODEX_CONCURRENCY_MISMATCH',billedImageGeneration:false});
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
-test('AI text worker targets one image, retries visual validation failures, and never uses a deterministic overlay',async()=>{
-  const source=await png('white'),generated=await png('#111827');
+test('AI text worker makes one full-frame edit without a mask or pixel-stitching pass and never retries automatically',async()=>{
+  const source=await png('white');
+  const generated=await sharp(await png('#dbeafe')).composite([{input:Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="1086" height="1448">
+    <rect x="790" y="1330" width="250" height="70" rx="12" fill="#111827"/>
+  </svg>`)}]).png().toBuffer();
   const config={imageEditPrompt,references:[],instruction:'将人工生成标识显示为“人工创作”并放在右下角',preserve:'保留原有标题',negative:'不要增加其他文字',overlay:normalizeManualOverlay({text:'人工创作',textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',position:'bottom-right'})};
   let completed,failed=false,generationCalls=0;
-  const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'TEXT',config}),context:async()=>({source:{id:1},refs:[],settings:{aiDisclosureEnabled:true,aiDisclosureText:'AI生成'},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}],imageEditValidation:{disclosure:{added:{type:'AI_GENERATED',text:'AI生成'}}}}},imageEditPrompt}),readAsset:async()=>source,heartbeat:async()=>true,
-    fail:async()=>{failed=true;},complete:async(e,result)=>{completed=result;return{};}};
+  const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'TEXT',config}),context:async()=>({source:{id:1},refs:[],settings:{aiDisclosureEnabled:true,aiDisclosureText:'AI生成'},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),readAsset:async()=>source,heartbeat:async()=>true,
+    fail:async()=>{failed=true;},complete:async(e,result)=>{const raw=await sharp(result.bytes).ensureAlpha().raw().toBuffer();assert.deepEqual([...raw.subarray(0,4)],[219,234,254,255],'full-frame model output must be accepted without local pixel stitching');completed=result;return{};}};
   const prompts=[],inputs=[];
   const agentClient={runImageEdit:async({prompt,inputPaths,outputPath,signal})=>{generationCalls++;prompts.push(prompt);inputs.push(inputPaths);assert.equal(signal.aborted,false);await writeFile(outputPath,generated);return{model:'fake-text-edit'};}};
-  const validateImage=async()=>generationCalls===0?visionPass(['AI生成']):generationCalls===1
-    ?{...visionPass(),passed:false,layoutMatched:false,ocrMismatches:['otherText'],repairInstruction:'补充 AI 生成标识'}
-    :visionPass(['人工创作']);
+  const validateImage=async()=>generationCalls===0
+    ?{...visionPass(),passed:false,styleMatched:false,layoutMatched:false,failureClass:'STYLE_LAYOUT',contradictions:['源图布局仍可调整']}
+    :{...visionPass(['人工创作']),passed:false,styleMatched:false,layoutMatched:false,failureClass:'STYLE_LAYOUT',
+      contradictions:['视觉字号略小于约32px'],repairInstruction:'放大并左移标识',
+      modelAssessment:{failureClass:'STYLE_LAYOUT'},programAssessment:{passed:false,failureClass:'STYLE_LAYOUT'}};
   const dir=await mkdtemp(join(tmpdir(),'image-edit-ai-text-'));
-  try{const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage});assert.equal(result.status,'PREVIEW_READY');assert.equal(failed,false);assert.equal(prompts.length,2);assert.match(prompts[0],/<trusted_business_rules kind="IMAGE_EDIT_SYSTEM">/u);assert.match(prompts[0],/管理员统一图片编辑规则/u);assert.match(prompts[0],/AI_DISCLOSURE_LABEL/u);assert.match(prompts[0],/实心深炭色圆角矩形底框/u);assert.match(prompts[1],/未通过文字验收/u);assert.match(inputs[0][0],/source\.png$/u);assert.match(inputs[0][1],/disclosure-safe-region-mask\.png$/u);assert.match(inputs[1][0],/result\.png$/u);assert.match(inputs[1][1],/disclosure-safe-region-mask\.png$/u);assert.equal(completed.validation.generationAttempts,2);assert.equal(completed.validation.model,'fake-text-edit');assert.equal(completed.validation.text.engine,'existing-vision-alignment');assert.equal(completed.validation.text.targetOccurrences,1);assert.equal(completed.validation.text.placement.passed,true);assert.equal(completed.validation.text.placement.style.backgroundColor,'#111827');assert.equal(completed.validation.outsideMask.changedPixels,0);assert.deepEqual(completed.validation.requiredText,['真实参考','人工创作']);assert.deepEqual(completed.validation.disclosure.added,{type:'AI_GENERATED',text:'人工创作'});assert.equal(completed.validation.prompt.versionId,17);}finally{await rm(dir,{recursive:true,force:true});}
+  try {
+    const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage});
+    assert.equal(result.status,'PREVIEW_READY');assert.equal(failed,false);assert.equal(prompts.length,1);
+    assert.match(prompts[0],/<trusted_business_rules kind="IMAGE_EDIT_SYSTEM">/u);assert.match(prompts[0],/管理员统一图片编辑规则/u);
+    assert.match(prompts[0],/AI_DISCLOSURE_LABEL/u);assert.match(prompts[0],/不使用蒙版/u);assert.match(prompts[0],/只编辑唯一附件一次/u);
+    assert.equal(inputs[0].length,1);assert.match(inputs[0][0],/source\.png$/u);
+    assert.equal(completed.validation.generationAttempts,1);assert.equal(completed.validation.repairMaxAttempts,0);
+    assert.equal(completed.validation.model,'fake-text-edit');assert.equal(completed.validation.text.engine,'model-generated-disclosure-with-vision-ocr');
+    assert.equal(completed.validation.text.targetOccurrences,1);assert.equal(completed.validation.text.placement.passed,true);
+    assert.equal(completed.validation.text.placement.mode,'MODEL_GENERATED_DISCLOSURE');assert.equal(completed.validation.text.placement.style.backgroundColor,'#111827');
+    assert.equal(completed.validation.text.visualAdvisory.passed,false);assert.equal(completed.validation.text.passed,true);
+    assert.equal(completed.validation.outsideMask.mode,'MODEL_FULL_FRAME_NO_MASK');assert.equal(completed.validation.outsideMask.requested,false);assert.equal(completed.validation.outsideMask.programmaticPixelMerge,false);
+    assert.deepEqual(completed.validation.requiredText,['真实参考','人工创作']);assert.deepEqual(completed.validation.disclosure.added,{type:'AI_GENERATED',text:'人工创作'});
+    assert.equal(completed.validation.prompt.versionId,17);
+  } finally {await rm(dir,{recursive:true,force:true});}
 });
-test('AI text worker honors the frozen administrator repair limit',async()=>{
-  const source=await png('white'),generated=await png('#111827');
-  const config={imageEditPrompt,imageEditRepairMaxAttempts:0,references:[],instruction:'添加合规标识',preserve:'保留原有标题',negative:'不要增加其他文字',overlay:normalizeManualOverlay({text:'AI生成',textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',position:'bottom-right'})};
+test('AI text worker never makes a second edit when the only result fails text validation',async()=>{
+  const source=await png('white');
+  const generated=await sharp(source).composite([{input:Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="1086" height="1448">
+    <rect x="860" y="1320" width="190" height="80" rx="12" fill="#111827"/>
+  </svg>`)}]).png().toBuffer();
+  const config={imageEditPrompt,imageEditRepairMaxAttempts:2,references:[],instruction:'添加合规标识',preserve:'保留原有标题',negative:'不要增加其他文字',overlay:normalizeManualOverlay({text:'AI生成',textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',position:'bottom-right'})};
   let failedError=null,generationCalls=0,validationCalls=0;const validationRequests=[];
   const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'TEXT',config}),context:async()=>({source:{id:1},refs:[],settings:{aiDisclosureEnabled:true,aiDisclosureText:'AI生成',imageEditRepairMaxAttempts:2},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),readAsset:async()=>source,heartbeat:async()=>true,
     fail:async(e,error)=>{failedError=error;},complete:()=>assert.fail('must not complete')};
@@ -144,6 +176,9 @@ test('AI text worker honors the frozen administrator repair limit',async()=>{
   const validateImage=async input=>{validationCalls++;validationRequests.push(input);return validationCalls===1?visionPass():{...visionPass(),passed:false,layoutMatched:false,ocrMismatches:['otherText'],repairInstruction:'补充 AI 生成标识'};};
   const dir=await mkdtemp(join(tmpdir(),'image-edit-repair-limit-'));
   try{const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage});assert.equal(result.status,'FAILED');assert.equal(generationCalls,1);assert.equal(validationCalls,2);assert.deepEqual(validationRequests[0].requiredText,['真实参考']);assert.deepEqual(validationRequests[1].requiredText,['真实参考','AI生成']);assert.equal(failedError.validation.generationAttempts,1);assert.equal(failedError.validation.repairMaxAttempts,0);}finally{await rm(dir,{recursive:true,force:true});}
+});
+test('image edit processing rejects callers that request a second generation attempt',async()=>{
+  await assert.rejects(()=>processImageEdit({service:{},storageRoot:tmpdir(),workerId:'fake',maxGenerationAttempts:2}),/仅允许单次生成/u);
 });
 test('AI local worker uses the existing edit adapter and enforces outside-mask pixels with a fake model',async()=>{
   const source=await png('red'),generated=await png('blue'),config={imageEditPrompt,references:[],instruction:'改变选区颜色',preserve:'保留标题',negative:'不改变其他内容',mask:{type:'rect',x:20,y:20,width:100,height:100}};
@@ -217,6 +252,32 @@ test('AI fusion uses one real-product reference and the governed image-edit prom
     assert.equal(inputPaths.length,3);assert.match(prompt,/倒数第二张是编辑前源图/u);assert.match(prompt,/partTopology/u);return{rawText:JSON.stringify({passed:true,reason:'产品、位置与部件一致',checks:{referenceIdentity:true,targetLocation:true,singleReplacement:true,partTopology:true,unrelatedContentPreserved:true}}),model:'fake-vision'};}};
   const dir=await mkdtemp(join(tmpdir(),'image-edit-fusion-fake-'));
   try{const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});assert.equal(result.status,'PREVIEW_READY');assert.equal(editCalls,1);assert.equal(visionCalls,2);assert.equal(completed.validation.localization.passed,true);assert.equal(completed.validation.localization.candidateCount,1);assert.equal(completed.validation.outsideMask.changedPixels,0);assert.equal(completed.validation.entityConsistency.passed,true);assert.deepEqual(completed.validation.entityConsistency.checks,{referenceIdentity:true,targetLocation:true,singleReplacement:true,partTopology:true,unrelatedContentPreserved:true});assert.equal(completed.validation.prompt.sha256,imageEditPrompt.sha256);}finally{await rm(dir,{recursive:true,force:true});}
+});
+test('appearance-reference fusion accepts an incomplete but unambiguous primary product',async()=>{
+  const source=await png('white'),reference=await png('coral',120,120),generated=await png('#eeeeee');
+  const config={imageEditPrompt,referenceMode:'APPEARANCE',references:[{assetId:9,purpose:'真实产品替换'}],instruction:'按主产品可见外观替换右侧杯子',preserve:'保留其他内容',negative:'不要改文字',
+    target:{description:'右侧台面上的杯子',region:{x:700,y:500,width:220,height:240}}};
+  let completed,imageCalls=0,visionCalls=0;
+  const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_FUSION',config}),context:async()=>({source:{id:1},refs:[{id:9,sha256:'b'.repeat(64)}],settings:{aiDisclosureEnabled:false},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),readAsset:async asset=>asset.id===1?source:reference,
+    fail:async(_edit,error)=>assert.fail(error.message),complete:async(_edit,result)=>{completed=result;return{};}};
+  const agentClient={runImageEdit:async({prompt,outputPath})=>{imageCalls++;assert.match(prompt,/可能有手部、手腕/u);assert.match(prompt,/忽略参考图中的手部/u);await writeFile(outputPath,generated);return{model:'fake-appearance-edit'};},runVision:async({prompt})=>{visionCalls++;
+    if(prompt.includes('目标定位校验器'))return{model:'fake-vision',rawText:JSON.stringify({passed:true,confidence:0.94,candidateCount:1,reason:'主产品清楚，但底部被裁切',referenceProductDescription:'参考图中央的珊瑚红杯子',referenceWarnings:['底部被裁切','画面边缘有手部'],checks:{descriptionMatches:true,exactlyOneTarget:true,wholeTargetInsideRegion:true,protectedContentExcluded:true,referenceUsable:false,referenceRecognizable:true,referencePrimaryProductClear:true}})};
+    assert.match(prompt,/referenceMode=APPEARANCE/u);return{model:'fake-vision',rawText:JSON.stringify({passed:true,reason:'可见外观和目标位置一致',checks:{referenceIdentity:true,targetLocation:true,singleReplacement:true,partTopology:true,unrelatedContentPreserved:true}})};}};
+  const dir=await mkdtemp(join(tmpdir(),'image-edit-fusion-appearance-'));
+  try {
+    const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});
+    assert.equal(result.status,'PREVIEW_READY');assert.equal(imageCalls,1);assert.equal(visionCalls,2);
+    assert.equal(completed.validation.localization.referenceMode,'APPEARANCE');
+    assert.equal(completed.validation.localization.checks.referenceUsable,false);
+    assert.deepEqual(completed.validation.localization.referenceWarnings,['底部被裁切','画面边缘有手部']);
+  } finally { await rm(dir,{recursive:true,force:true}); }
+});
+test('strict fusion still rejects an incomplete reference before the paid image model',()=>{
+  const raw=JSON.stringify({passed:false,confidence:0.94,candidateCount:1,reason:'产品被裁切',referenceProductDescription:'中央主产品',
+    checks:{descriptionMatches:true,exactlyOneTarget:true,wholeTargetInsideRegion:true,protectedContentExcluded:true,referenceUsable:false,referenceRecognizable:true,referencePrimaryProductClear:true}});
+  const strict=parseFusionTargetCheck(raw),appearance=parseFusionTargetCheck(raw,{referenceMode:'APPEARANCE'});
+  assert.equal(strict.passed,false);assert.equal(strict.sourcePassed,true);assert.equal(strict.referencePassed,false);
+  assert.equal(appearance.passed,false,'model must explicitly approve the selected mode');
 });
 test('ambiguous fusion targets fail before the paid image model and preserve the attempt',async()=>{
   const source=await png('white'),reference=await png('coral',120,120),config={imageEditPrompt,references:[{assetId:9,purpose:'真实产品替换'}],instruction:'替换杯子',preserve:'保留其他内容',negative:'不要改文字',target:{description:'台面上的杯子',region:{x:100,y:300,width:800,height:500}}};

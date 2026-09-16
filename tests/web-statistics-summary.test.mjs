@@ -4,7 +4,8 @@ import { normalizeRange, compactTask, compactDetail, summarizeCounts, summarizeE
 
 const now = Date.parse('2026-09-06T08:00:00Z');
 const task = (id, patch = {}) => compactTask({ id, state: 'COPY_QUEUED', createdByUserId: 'alice', createdByAccountId: 2,
-  assignedToUserId: 'alice', assignedToAccountId: 2,
+  assignedToUserId: 'alice', assignedToAccountId: 2, assignedToDisplayName: 'Alice', assignedToRole: 'USER',
+  assignedAt: '2026-09-06T00:30:00Z', createdByDisplayName: 'Alice', createdByRole: 'USER',
   createdAt: '2026-09-06T01:00:00Z', updatedAt: '2026-09-06T02:00:00Z', ...patch });
 
 test('Shanghai day boundaries and valid bounded calendar ranges', () => {
@@ -34,12 +35,19 @@ test('counts deduplicate tasks, include discarded history and distinguish creati
   assert.equal(summary.trend[0].completed, 1);
 });
 
-test('people include unassigned history and no-count periods still report cumulative totals', () => {
-  const summary = summarizeCounts([task(1, { createdByUserId: null, createdByAccountId: null }), task(2, { createdByUserId: 'bob', createdByAccountId: 3,
-    createdAt: '2026-08-01T01:00:00Z' })], normalizeRange({}, now), now);
+test('people use actual assignees, preserve unassigned work and count receipt by assignment time', () => {
+  const summary = summarizeCounts([
+    task(1, { createdByUserId: 'admin', createdByAccountId: 1, createdByRole: 'ADMIN',
+      assignedToUserId: null, assignedToAccountId: null, assignedToDisplayName: null, assignedToRole: null, assignedAt: null }),
+    task(2, { createdByUserId: 'admin', createdByAccountId: 1, createdByRole: 'ADMIN',
+      assignedToUserId: 'bob', assignedToAccountId: 3, assignedToDisplayName: 'Bob', assignedToRole: 'USER',
+      createdAt: '2026-08-01T01:00:00Z', assignedAt: '2026-09-06T01:00:00Z' }),
+  ], normalizeRange({}, now), now);
+  assert.equal(summary.people.find(p => p.username === 'bob').receivedInPeriod, 1);
   assert.equal(summary.people.find(p => p.username === 'bob').createdInPeriod, 0);
   assert.equal(summary.people.find(p => p.username === 'bob').total, 1);
   assert.equal(summary.people.find(p => p.username === null).total, 1);
+  assert.equal(summary.people.some(p => p.username === 'admin'), false);
 });
 
 test('personal counts expose only active copy QA returns as a dedicated filter total', () => {
@@ -55,8 +63,8 @@ test('personal counts expose only active copy QA returns as a dedicated filter t
 
 test('people statistics keep a deleted account separate from a same-name replacement', () => {
   const summary = summarizeCounts([
-    task(1, { createdByAccountId: null, createdByDisplayName: null, createdByRole: null }),
-    task(2, { createdByAccountId: 9, createdByDisplayName: '新 Alice', createdByRole: 'USER' }),
+    task(1, { assignedToAccountId: null, assignedToDisplayName: null, assignedToRole: null }),
+    task(2, { assignedToAccountId: 9, assignedToDisplayName: '新 Alice', assignedToRole: 'USER' }),
   ], normalizeRange({}, now), now);
   assert.equal(summary.people.length, 2);
   const historical = summary.people.find(person => person.accountId === null);
@@ -66,6 +74,18 @@ test('people statistics keep a deleted account separate from a same-name replace
   assert.equal(historical.role, null);
   assert.equal(replacement.displayName, '新 Alice');
   assert.equal(replacement.total, 1);
+});
+
+test('legacy self-created user work is attributed only when no assignee exists', () => {
+  const summary = summarizeCounts([
+    task(1, { assignedToUserId: null, assignedToAccountId: null, assignedToDisplayName: null,
+      assignedToRole: null, assignedAt: null }),
+    task(2, { createdByUserId: 'admin', createdByAccountId: 1, createdByDisplayName: '管理员', createdByRole: 'ADMIN',
+      assignedToUserId: null, assignedToAccountId: null, assignedToDisplayName: null, assignedToRole: null, assignedAt: null }),
+  ], normalizeRange({}, now), now);
+  assert.equal(summary.people.find(person => person.username === 'alice').legacyFallback, 1);
+  assert.equal(summary.people.find(person => person.username === null).total, 1);
+  assert.equal(summary.legacyOwnerFallback, 1);
 });
 
 test('cached task and detail facts never retain prompts, model responses or snapshots', () => {
@@ -150,13 +170,18 @@ test('human quality uses one genuine first-rating sample per task and excludes e
     assessment('outside-first', 'COPY', 1, '2026-09-04T01:00:00Z', { copyRevisionId: 1 }),
     assessment('inside-repeat', 'COPY', 3, '2026-09-06T03:00:00Z', { copyRevisionId: 1 }),
   ] });
-  const rows = [task(1), task(2), task(3), task(4)];
+  const rows = [task(1), task(2, { assignedToUserId: 'bob', assignedToAccountId: 3,
+    assignedToDisplayName: 'Bob', assignedToRole: 'USER' }), task(3), task(4)];
   const summary = summarizeEfficiency(rows, new Map([[1, first], [2, second], [3, outside],
     [4, compactDetail({ executions: [], assets: [], imageRuns: [], humanQualityAssessments: [] })]]), normalizeRange({}, now));
   assert.deepEqual(summary.quality.copy, { samples: 2, threePoint: 1, qualified: 2,
     threePointRate: .5, qualifiedRate: 1 });
   assert.deepEqual(summary.quality.image, { samples: 2, threePoint: 1, qualified: 1,
     threePointRate: .5, qualifiedRate: .5 });
+  assert.deepEqual(summary.peopleQuality, [
+    { accountId: 2, username: 'alice', samples: 2, qualified: 1, passRate: .5 },
+    { accountId: 3, username: 'bob', samples: 2, qualified: 2, passRate: 1 },
+  ]);
 });
 
 test('terminal tasks with old retry markers are not current anomalies and unattached assets are not delivered images', () => {

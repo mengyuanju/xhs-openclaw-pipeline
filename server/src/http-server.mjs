@@ -1889,6 +1889,16 @@ function installRoutes(
     });
     json(ctx, 200, access.actor.role === 'USER' ? userVisibleTask(task) : task);
   });
+  router.post('/v1/tasks/:taskId/discard-returned-copy', async (ctx) => {
+    const actor = requestActor(ctx);
+    await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
+    const task = await repository.discardReturnedCopy(
+      ctx.params.taskId,
+      requireJson(ctx),
+      { actor },
+    );
+    json(ctx, 200, actor.role === 'USER' ? userVisibleTask(task) : task);
+  });
   router.post('/v1/tasks/:taskId/admin-direct-copy-qa', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
     await assertTaskAccess(ctx, repository);

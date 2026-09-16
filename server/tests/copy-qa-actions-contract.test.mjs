@@ -164,6 +164,7 @@ test('single return is always available to a reviewer and creates a mandatory-re
     expectedRevisionToken: REVISION_TOKEN,
     reasonCodes: ['FACT_ERROR'],
     note: '事实数据与最终来源不一致',
+    recommendedDisposition: 'DISCARD',
     requestId: '22222222-2222-4222-8222-222222222222',
   }, reviewer);
 
@@ -172,6 +173,8 @@ test('single return is always available to a reviewer and creates a mandatory-re
   const taskUpdate = fixture.state.queries.find(({ sql }) => sql.startsWith("UPDATE tasks SET state = 'COPY_REVIEW_PENDING'"));
   assert.match(taskUpdate.sql, /mandatory_copy_qc = true/u);
   assert.match(taskUpdate.sql, /mandatory_copy_qc_origin = 'QA_RETURN'/u);
+  const revisionInsert = fixture.state.queries.find(({ sql }) => sql.startsWith('INSERT INTO copy_revisions'));
+  assert.equal(revisionInsert.values[2].qualityReturn.recommendedDisposition, 'DISCARD');
   assert.equal(fixture.state.queries.some(({ sql }) => sql.includes('workflow_quality_settings')), false,
     'the reviewer batch-return switch must never disable a single-item return');
 });

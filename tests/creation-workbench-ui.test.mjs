@@ -506,6 +506,10 @@ test('image review fits the complete image, supports exterior controls, and pres
   assert.match(currentImageEditor, /useState\(DEFAULT_DISCLOSURE_TEXT\)/u);
   assert.match(currentImageEditor, /aria-label="最近常用标识文字"/u);
   assert.match(currentImageEditor, /addRecentDisclosureText\(current,text\)/u);
+  assert.match(currentImageEditor, /整套 \{imageAssets\.length\} 张/u);
+  assert.match(currentImageEditor, /batchId,sourceImageRunId:runId/u);
+  assert.match(currentImageEditor, /一次采用整套标识/u);
+  assert.match(reviewDialog, /asset=\{selectedAsset\} assets=\{assets\}/u);
   assert.match(styles, /\.workbench-image-review-title-actions \{[^}]*display: inline-flex;[^}]*gap: 12px;[^}]*margin-right: 52px;[^}]*margin-left: auto/u);
   assert.match(styles, /\.workbench-image-review-title-actions \.current-image-editor-trigger \{[^}]*width: 96px;[^}]*height: 36px;/u);
   assert.match(styles, /\.workbench-image-review-section\[data-image-primary="true"\] > \.workbench-image-review-section-title \{[^}]*grid-template-columns: minmax\(0, 1\.75fr\) minmax\(320px, \.75fr\)/u);

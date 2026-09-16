@@ -33,6 +33,8 @@ function workerRow(username, patch = {}) {
     version: 1,
     created_by_username: 'admin',
     updated_by_username: 'admin',
+    fixed_quantity_assigned_total: '0',
+    fixed_quantity_assigned_today: '0',
     created_at: new Date('2026-09-08T00:00:00.000Z'),
     updated_at: new Date('2026-09-08T00:00:00.000Z'),
     ...patch,
@@ -124,9 +126,11 @@ test('overview reports configured capacity separately from eligibility and switc
     if (source.includes('FROM task_auto_assignment_workers AS pool')) {
       return { rows: [workerRow('alice', {
         display_name: 'Alice', user_role: 'USER', user_status: 'ACTIVE', current_task_count: '3',
+        fixed_quantity_assigned_total: '23', fixed_quantity_assigned_today: '4',
       }), workerRow('bob', {
         status: 'PAUSED', assignment_limit: 2, display_name: 'Bob', user_role: 'USER',
-        user_status: 'ACTIVE', current_task_count: '1',
+        user_status: 'ACTIVE', current_task_count: '1', fixed_quantity_assigned_total: '9',
+        fixed_quantity_assigned_today: '2',
       })] };
     }
     if (source.includes('assigned_to_user_id IS NULL')) {
@@ -144,6 +148,14 @@ test('overview reports configured capacity separately from eligibility and switc
   assert.equal(overview.unassignedTaskCount, 17);
   assert.equal(overview.autoAssignableTaskCount, 11);
   assert.equal(overview.manualAttentionTaskCount, 6);
+  assert.deepEqual(overview.workers.map((worker) => ({
+    username: worker.username,
+    total: worker.fixedQuantityAssignedTotal,
+    today: worker.fixedQuantityAssignedToday,
+  })), [
+    { username: 'alice', total: 23, today: 4 },
+    { username: 'bob', total: 9, today: 2 },
+  ]);
   assert.deepEqual(overview.workers.map(({ username, availableSlots, canReceive }) => ({
     username, availableSlots, canReceive,
   })), [
@@ -155,6 +167,9 @@ test('overview reports configured capacity separately from eligibility and switc
   assert.match(workerSelection, /assigned_task\.state = 'COPY_REVIEW_PENDING'/u);
   assert.match(workerSelection, /assigned_task\.current_stage = 'COPY_REVIEW_PENDING'/u);
   assert.match(workerSelection, /assigned_task\.current_execution_id IS NULL/u);
+  assert.match(workerSelection, /assignment_event\.source = 'AUTO'/u);
+  assert.match(workerSelection, /assignment_event\.reason = '管理员按指定数量单次分配'/u);
+  assert.match(workerSelection, /now\(\) AT TIME ZONE 'Asia\/Shanghai'/u);
   const pendingSelection = queries.find((source) => source.includes('assigned_to_user_id IS NULL'));
   assert.match(pendingSelection, /state NOT IN \('REVIEWED', 'CANCELLED'\)/u);
   assert.match(pendingSelection, /state = 'COPY_REVIEW_PENDING'/u);

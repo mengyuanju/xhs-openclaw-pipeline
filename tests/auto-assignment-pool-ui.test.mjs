@@ -74,4 +74,10 @@ test('automatic assignment pool lets administrators choose continuous or one-sho
   assert.match(manager, /\$\{workerPath\(worker\.username\)\}\/allocate/u);
   assert.match(manager, /method: 'POST'[\s\S]*accountId: worker\.accountId,[\s\S]*expectedVersion: worker\.version/u);
   assert.match(manager, /assignmentMode === 'FIXED_QUANTITY'[\s\S]*分配 \{allocationCount\} 条/u);
+  assert.match(manager, /fixedQuantityAssignedTotal/u);
+  assert.match(manager, /fixedQuantityAssignedToday/u);
+  assert.match(manager, /池成员累计已分配/u);
+  assert.match(manager, /今日定量已分配/u);
+  assert.match(manager, /累计 \{worker\.fixedQuantityAssignedTotal \?\? 0\} 条/u);
+  assert.match(manager, /今日已分配 \{worker\.fixedQuantityAssignedToday \?\? 0\} 条/u);
 });

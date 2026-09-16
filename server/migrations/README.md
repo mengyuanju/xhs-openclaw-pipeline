@@ -156,3 +156,9 @@ V3 将负责人分配推迟到文案待审核阶段。任务创建、负责人�
 `0061_operator_delivery_batches.sql` 允许普通作业员把本人当前负责、已经进入交付池的内容创建为正式交付批次。批次继续使用 `0054` 的不可变成员和精确版本去重规则，并新增管理员交付/作业员交付来源、创建角色及显式交付确认记录。完整下载只把状态推进到“已下载”；作业员确认已经交给接收方后才推进到“已交付”，确认事件只追加、不修改。
 
 升级前暂停中心与 Web 写入，同时备份 PostgreSQL 与 `CONTROL_PLANE_STORAGE_ROOT`。依次应用包含 `0060`、`0061` 的迁移并同步切换新版中心和 Web，确认 `/health` 返回 `finalDeliveryVersion=5` 后再恢复使用。旧 Web 不理解“已交付”状态，新 Web 也会拒绝向低于 V5 的中心发起交付请求，因此不要混用 V4/V5 服务。
+
+## `0062` 质检打回后的负责人废弃
+
+`0062_copy_return_dispositions.sql` 增加质检返工处置审计。质检原结论继续保存在 `copy_sampling_items` 的 `RETURNED`、`BATCH_AFFECTED` 或 `BATCH_RETURNED` 状态；质检明确建议废弃后，任务负责人确认不再返工时只追加 `copy_return_dispositions`，并把任务软废弃为 `CANCELLED`，不会覆盖质检正确率数据。普通负责人不能自行废弃仅要求返工的任务，管理员保留例外处置能力。迁移同时扩展文案质检幂等收据允许 `DISCARD_REWORK` 操作。
+
+该版本的 Web 和中心必须同步切换。升级前暂停中心与 Web 写入并备份 PostgreSQL，预览后应用迁移；确认 `/health` 返回 `copyReturnedDiscardVersion=1` 后再恢复入口。不要让带有负责人废弃按钮的新 Web 请求尚未应用 `0062` 的旧中心，也不要在升级过程中手工执行页面上的废弃操作。

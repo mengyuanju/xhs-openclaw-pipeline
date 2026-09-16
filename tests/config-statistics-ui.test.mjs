@@ -28,7 +28,7 @@ test('production settings route and page expose validated repair and disclosure 
   assert.match(route, /aiDisclosureEnabled/);
   assert.match(page, /<h1 className="sr-only">生产配置<\/h1>/);
   assert.match(form, /最多修复次数/);
-  assert.match(form, /质检失败后最多自动修复/);
+  assert.match(form, /标识只调用一次图片编辑模型/);
   assert.match(form, /imageEditRepairMaxAttempts/);
   assert.match(form, /触发分数/);
   assert.match(form, /目标分数/);
@@ -47,7 +47,7 @@ test('production settings route and page expose validated repair and disclosure 
   assert.match(form, /onDirtyChange=\{reportLayoutCatalogDirty\}/u);
   assert.match(central, /SettingsWorkspace/u);
   assert.match(central, /'layoutCatalog', 'layoutPresets', 'humanQualityReasons', 'imageEditRepairMaxAttempts'/u);
-  assert.match(central, /保存文字修复次数/u);
+  assert.match(central, /标识只调用一次图片编辑模型/u);
   assert.match(central, /imageEditRepairMaxAttempts/u);
   assert.match(central, /!production \?[^]*编辑器已停用/u);
   assert.match(central, /value\.modelApi\s*=\s*\{\s*\.\.\.value\.modelApi,\s*\.\.\.normalizeWebSearchSettings\(latestProduction\.modelApi \?\? \{\}\),?\s*\}/u);

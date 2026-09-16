@@ -74,6 +74,12 @@ test('Query, QA, and delivery lists pass normalized integer pagination to Postgr
   assert.deepEqual(calls[1].values, ['PENDING', null, 200, 10]);
   assert.deepEqual(calls[2].values, [200, 10]);
   assert.ok(calls.every(({ values }) => values.every((value) => value !== '200' && value !== '0010')));
+  assert.match(calls[1].sql,
+    /ROW_NUMBER\(\) OVER \(\s*PARTITION BY item\.final_approver_account_id[\s\S]*?\) AS approver_queue_round/u,
+    'copy QA rows receive a stable round within each final approver queue');
+  assert.match(calls[1].sql,
+    /ORDER BY task\.priority_paused ASC, approver_queue_round ASC,\s*task\.priority_sort_at ASC, task\.id ASC, item\.id ASC/u,
+    'copy QA list interleaves approvers before showing the next item from one approver');
 });
 
 test('delegated Query-package lists are scoped to the stable assigned account', async () => {

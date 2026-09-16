@@ -106,6 +106,8 @@ type CopyRevision = {
   reworkTarget?: 'COPY' | 'IMAGE' | 'BOTH' | null;
   reworkReasonCodes?: string[];
   reworkNote?: string | null;
+  reworkRecommendation?: 'REWORK' | 'DISCARD';
+  reworkSamplingItemId?: string | null;
 };
 type TaskDetail = PriorityTask & {
   id: number;
@@ -650,6 +652,10 @@ export function TaskReviewDialog({
   const copyRatingComplete = isCopyRework || originalCopyRatingComplete;
   const canApproveCopy = isCopyRework ? copyReworkSatisfied : copyRatingComplete && (copyOriginalScore === 3 && !copyContentChanged
     || (copyOriginalScore === 2 || copyOriginalScore === 2.5) && hasEditedCopyVersion);
+  const canDiscardReturnedCopy = Boolean(editable && hasOwnerControl
+    && detail?.mandatoryCopyQc === true && detail.mandatoryCopyQcOrigin === 'QA_RETURN'
+    && revision?.reworkOrigin === 'QA_RETURN' && revision.reworkSamplingItemId
+    && (isAdmin || revision.reworkRecommendation === 'DISCARD'));
   const showCopyRating = detail?.state === 'COPY_REVIEW_PENDING' && !isCopyRework;
   const isImageReviewView = detail?.state === 'MANUAL_ARCHIVE' || detail?.state === 'IMAGE_REWORK_PENDING';
   const canHandleAssignedImages = (isAdmin || role === 'USER') && currentUserIsAssignee;
@@ -1103,6 +1109,52 @@ export function TaskReviewDialog({
     await submitCopyDecision('APPROVE', event.currentTarget);
   }
 
+  async function discardReturnedCopy() {
+    if (!detail || !revision || !canDiscardReturnedCopy || submitting || loading) return;
+    const followsQaRecommendation = revision.reworkRecommendation === 'DISCARD';
+    const note = await requestText({
+      title: followsQaRecommendation ? '确认质检建议并废弃任务' : '废弃质检返工任务',
+      description: followsQaRecommendation
+        ? '质检人员建议废弃。请记录你的确认依据，原质检结论、文案版本和执行历史都会保留。'
+        : '这是质检打回后的业务处置，不会把原质检结论改为通过。请说明继续返工不合适的原因。',
+      label: '废弃说明（必填）',
+      placeholder: followsQaRecommendation
+        ? '例如：已核对质检问题，继续返工无法满足本次选题要求'
+        : '例如：核心方向无法修正，继续返工成本过高',
+      confirmLabel: '填写完成，继续确认',
+      maxLength: 1_000,
+      required: true,
+    });
+    if (!note) return;
+    if (!await confirm({
+      title: '确认废弃这条质检返工作业？',
+      description: `${draftChanged ? '当前未提交的返工修改不会保存。' : ''}任务将标记为已废弃并退出返工与强制复检流程；历史文案、质检记录和执行记录仍会保留。`,
+      confirmLabel: '确认废弃',
+      tone: 'danger',
+    })) return;
+    setSubmitting(true);
+    setError('');
+    try {
+      await apiRequest(apiPath(`/v1/tasks/${detail.id}/discard-returned-copy`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requestId: createRequestId(),
+          expectedCopyRevisionId: revision.id,
+          sourceSamplingItemId: revision.reworkSamplingItemId,
+          reasonCode: followsQaRecommendation ? 'QA_RECOMMENDATION' : 'UNRECOVERABLE_QUALITY',
+          note,
+        }),
+      });
+      await onUpdated(`任务 #${detail.id} 已在保留质检记录的前提下废弃。`);
+      onOpenChange(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '废弃质检返工任务失败');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function saveImagePlan(form: HTMLFormElement) {
     if (!detail || !revision || !draft || !savedDraft || !editable || !imagePlanChanged || loading || submitting) return;
     const invalid = Array.from(form.elements).find((element) =>
@@ -1183,7 +1235,11 @@ export function TaskReviewDialog({
       setError('图片文案规划已有修改。请先完成本轮图片评分，再使用底部“重试生图”保存新规划并重新生成。');
       return;
     }
-    if (operation === 'REGENERATE' && !await confirm({ title: '重新生成图片？', description: '保留已审核文案，按配置中的布局种类随机生成整套图片，会产生模型费用。旧版图片保留。', confirmLabel: '确认费用并生成' })) return;
+    if (operation === 'REGENERATE' && !await confirm({
+      title: '重新生成整套图片？',
+      description: `保留已审核文案，按配置中的布局种类重新生成全部 ${draft.imagePlan.length} 张图片。会产生模型费用，旧版图片保留。`,
+      confirmLabel: '确认费用并生成整套',
+    })) return;
     setSubmitting(true); setError('');
     try {
       await requireImageControls();
@@ -1488,7 +1544,7 @@ export function TaskReviewDialog({
                   && <div className="notice warning" role="status">文案已生成，但任务尚未分配负责人。请先关闭窗口并完成分配，再进行评分或修改。</div>}
                 {detail.state === 'COPY_REVIEW_PENDING' && taskHasAssignee && !canReviewCopy
                   && <div className="notice warning" role="status">当前任务由其他负责人处理；这里仅提供只读查看。</div>}
-                {editable && isCopyRework && <div className="notice warning" role="status"><strong>{revision?.reworkOrigin === 'QA_RETURN' || detail.mandatoryCopyQcOrigin === 'QA_RETURN' ? '文案抽检返工' : '图片质检文案返工'}</strong>{revision?.reworkReasonCodes?.length ? ` · 原因：${revision.reworkReasonCodes.join('、')}` : ''}{revision?.reworkNote ? ` · 要求：${revision.reworkNote}` : ''}<br />返工稿必须实际修改标题、正文或标签；仅保存不会提交复检。人工确认达标后，系统将最终稿记录为 3 分并提交强制复检；复检通过后才会进入待生图队列。</div>}
+                {editable && isCopyRework && <div className="notice warning" role="status"><strong>{revision?.reworkOrigin === 'QA_RETURN' || detail.mandatoryCopyQcOrigin === 'QA_RETURN' ? '文案抽检返工' : '图片质检文案返工'}</strong>{revision?.reworkRecommendation === 'DISCARD' ? ' · 质检建议废弃' : ''}{revision?.reworkReasonCodes?.length ? ` · 原因：${revision.reworkReasonCodes.join('、')}` : ''}{revision?.reworkNote ? ` · 要求：${revision.reworkNote}` : ''}<br />{revision?.reworkRecommendation === 'DISCARD' ? '可以继续返工，也可以由当前任务负责人确认废弃；质检建议本身不会直接终止任务。' : '返工稿必须实际修改标题、正文或标签；仅保存不会提交复检。人工确认达标后，系统将最终稿记录为 3 分并提交强制复检；复检通过后才会进入待生图队列。'}</div>}
                 {isImageRetryExhausted(detail) && <div className="notice warning" role="status">{IMAGE_RETRY_EXHAUSTED_LABEL}</div>}
                 {detail.error && <div className="notice error" role="alert">{detail.error}</div>}
                 {editable && <Disclosure className={styles.panel}>
@@ -1630,7 +1686,7 @@ export function TaskReviewDialog({
                     <ImagePreviewBackgroundControl value={previewBackdrop} onChange={setPreviewBackdrop} />
                     {canModifyImages && ['MANUAL_ARCHIVE','IMAGE_REWORK_PENDING','REVIEWED'].includes(detail.state) && detail.currentImageRunId && detail.currentCopyRevisionId && <CurrentImageEditor
                       key={`${detail.currentImageRunId}-${selectedAsset.id}`} taskId={detail.id} runId={detail.currentImageRunId}
-                      copyRevisionId={detail.currentCopyRevisionId} asset={selectedAsset} page={selectedAssetIndex + 1}
+                      copyRevisionId={detail.currentCopyRevisionId} asset={selectedAsset} assets={assets} page={selectedAssetIndex + 1}
                       runs={detail.imageRuns} onChanged={load} />}
                   </div>}
                 </div>
@@ -1920,6 +1976,10 @@ export function TaskReviewDialog({
                 {imagePlanChanged && <Button unstyled className="button" type="button" disabled={submitting || loading}
                   onClick={(event) => { if (event.currentTarget.form) void saveImagePlan(event.currentTarget.form); }}>
                   <Save size={15} />{submitting ? '正在保存…' : '单独保存图片规划'}
+                </Button>}
+                {canDiscardReturnedCopy && <Button unstyled className="button danger" type="button"
+                  disabled={submitting || loading || draftSaveStatus === 'saving'} onClick={() => { void discardReturnedCopy(); }}>
+                  <Trash2 size={15} />{revision?.reworkRecommendation === 'DISCARD' ? '确认质检建议并废弃' : '废弃返工任务'}
                 </Button>}
                 {!isCopyRework && copyOriginalScore === 1 && <Button unstyled className="button danger" type="button" disabled={submitting || loading || draftSaveStatus === 'saving' || !copyRatingComplete} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('DISCARD', event.currentTarget.form); }}><Trash2 size={15} />评分并废弃</Button>}
                 {(isCopyRework || copyOriginalScore !== 1) && <Button unstyled className="button" type="button" disabled={submitting || loading || draftSaveStatus === 'saving' || !copyRatingComplete || isCopyRework && !draftChanged} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('SAVE', event.currentTarget.form); }}>

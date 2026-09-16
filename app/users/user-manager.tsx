@@ -3,8 +3,16 @@
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { SearchInput } from '@/components/ui/search-input';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
-import { KeyRound, LockOpen, Pencil, Plus, ShieldCheck, Trash2, UserRound, Users } from 'lucide-react';
+import { ChevronLeft, ChevronRight, KeyRound, LockOpen, MoreHorizontal, Pencil, Plus, Trash2, UserRound } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 
@@ -36,6 +44,10 @@ type ManagedUser = {
 };
 
 type EditorState = { mode: 'create' } | { mode: 'edit'; user: ManagedUser };
+type RoleFilter = 'ALL' | ManagedUser['role'];
+type StatusFilter = 'ALL' | ManagedUser['status'];
+
+const USERS_PER_PAGE = 8;
 
 export function UserManager({
   initialUsers,
@@ -51,9 +63,25 @@ export function UserManager({
   const [busy, setBusy] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [search, setSearch] = useState('');
+  const [roleFilter, setRoleFilter] = useState<RoleFilter>('ALL');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
+  const [page, setPage] = useState(1);
 
-  const activeCount = initialUsers.filter((user) => user.status === 'ACTIVE').length;
-  const adminCount = initialUsers.filter((user) => user.role === 'ADMIN' && user.status === 'ACTIVE').length;
+  const normalizedSearch = search.trim().toLocaleLowerCase('zh-CN');
+  const filteredUsers = initialUsers.filter((user) => {
+    if (roleFilter !== 'ALL' && user.role !== roleFilter) return false;
+    if (statusFilter !== 'ALL' && user.status !== statusFilter) return false;
+    return !normalizedSearch
+      || user.displayName.toLocaleLowerCase('zh-CN').includes(normalizedSearch)
+      || user.username.toLocaleLowerCase('zh-CN').includes(normalizedSearch);
+  });
+  const pageCount = Math.max(1, Math.ceil(filteredUsers.length / USERS_PER_PAGE));
+  const currentPage = Math.min(page, pageCount);
+  const visibleUsers = filteredUsers.slice(
+    (currentPage - 1) * USERS_PER_PAGE,
+    currentPage * USERS_PER_PAGE,
+  );
 
   async function run(key: string, action: () => Promise<unknown>, success: string) {
     setBusy(key);
@@ -155,12 +183,6 @@ export function UserManager({
   const editorBusy = busy === 'create' || busy.startsWith('update-');
 
   return <div className="user-management-stack">
-    <section className="user-summary-grid" aria-label="用户概况">
-      <article className="user-summary-card"><span><Users size={18} /></span><div><strong>{initialUsers.length}</strong><small>全部用户</small></div></article>
-      <article className="user-summary-card"><span className="tone-green"><UserRound size={18} /></span><div><strong>{activeCount}</strong><small>启用账号</small></div></article>
-      <article className="user-summary-card"><span className="tone-amber"><ShieldCheck size={18} /></span><div><strong>{adminCount}</strong><small>启用管理员</small></div></article>
-    </section>
-
     <section className="panel user-list-panel" aria-labelledby="user-list-title">
       <div className="panel-head user-list-head">
         <div><h2 id="user-list-title">用户列表</h2><p className="subtle">集中查看账号状态，并在弹窗中完成资料维护。</p></div>
@@ -170,11 +192,38 @@ export function UserManager({
         </div>
       </div>
       {(message || error) && <div className={`notice ${error ? 'error' : 'success'} user-action-notice`} role={error ? 'alert' : 'status'}>{error || message}</div>}
+      {initialUsers.length > 0 && <div className="user-list-toolbar">
+        <SearchInput
+          value={search}
+          placeholder="搜索姓名或账号"
+          disabled={Boolean(busy)}
+          onValueChange={(value) => { setSearch(value); setPage(1); }}
+        />
+        <Select value={roleFilter} disabled={Boolean(busy)}
+          onValueChange={(value) => { setRoleFilter(value as RoleFilter); setPage(1); }}>
+          <SelectTrigger aria-label="按角色筛选"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="ALL">全部角色</SelectItem>
+            {Object.entries(ROLE_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Select value={statusFilter} disabled={Boolean(busy)}
+          onValueChange={(value) => { setStatusFilter(value as StatusFilter); setPage(1); }}>
+          <SelectTrigger aria-label="按状态筛选"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="ALL">全部状态</SelectItem>
+            {Object.entries(STATUS_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <span className="user-result-count">{filteredUsers.length} 位用户</span>
+      </div>}
       {initialUsers.length === 0
         ? <div className="empty-state">还没有用户，点击“新增用户”创建第一个账号。</div>
+        : filteredUsers.length === 0
+          ? <div className="empty-state user-filter-empty">没有符合当前条件的用户。请调整搜索或筛选条件。</div>
         : <div className="table-wrap mobile-cards user-table-wrap" role="region" aria-label="用户列表，可横向滚动" tabIndex={0}><table className="user-table">
           <thead><tr><th>用户</th><th>角色</th><th>状态</th><th>密码</th><th className="user-actions-heading">操作</th></tr></thead>
-          <tbody>{initialUsers.map((user) => {
+          <tbody>{visibleUsers.map((user) => {
             const isCurrentUser = user.username === currentUsername;
             return <tr key={user.id}>
               <td data-label="用户"><div className="user-identity-cell"><span className="user-avatar" aria-hidden="true">{[...user.displayName][0]?.toUpperCase() || '?'}</span><span><strong>{user.displayName}</strong><small className="mono">@{user.username}{isCurrentUser ? ' · 当前账号' : ''}</small></span></div></td>
@@ -183,12 +232,33 @@ export function UserManager({
               <td data-label="密码"><span className={user.mustChangePassword ? 'user-password-pending' : 'user-password-ready'}>{user.mustChangePassword ? '待修改初始密码' : '已设置'}</span></td>
               <td className="row-action" data-label="操作"><div className="user-row-actions">
                 <Button unstyled className="button small" type="button" disabled={Boolean(busy)} onClick={() => { setEditorRole(user.role); setEditor({ mode: 'edit', user }); }}><Pencil size={14} />编辑</Button>
-                <Button unstyled className="button small" type="button" disabled={Boolean(busy)} onClick={() => { void resetPassword(user); }}><KeyRound size={14} />重置密码</Button>
-                <Button unstyled className="button small danger user-delete-button" type="button" disabled={Boolean(busy) || isCurrentUser} title={isCurrentUser ? '不能删除当前登录账号' : '删除用户'} onClick={() => { void deleteUser(user); }}><Trash2 size={14} /><span>删除</span></Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button unstyled className="button small user-more-button" type="button" disabled={Boolean(busy)} aria-label={`${user.displayName}的更多操作`}>
+                      <MoreHorizontal size={15} />更多
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => { void resetPassword(user); }}><KeyRound size={14} />重置密码</DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem tone="danger" disabled={isCurrentUser}
+                      title={isCurrentUser ? '不能删除当前登录账号' : '删除用户'}
+                      onSelect={() => { void deleteUser(user); }}><Trash2 size={14} />删除用户</DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div></td>
             </tr>;
           })}</tbody>
         </table></div>}
+      {pageCount > 1 && <nav className="user-pagination" aria-label="用户列表分页">
+        <span>第 {currentPage} / {pageCount} 页</span>
+        <div>
+          <Button unstyled className="button small" type="button" disabled={currentPage <= 1 || Boolean(busy)}
+            aria-label="上一页" onClick={() => setPage((value) => Math.max(1, value - 1))}><ChevronLeft size={15} />上一页</Button>
+          <Button unstyled className="button small" type="button" disabled={currentPage >= pageCount || Boolean(busy)}
+            aria-label="下一页" onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页<ChevronRight size={15} /></Button>
+        </div>
+      </nav>}
     </section>
 
     <Dialog open={editor !== null} onOpenChange={(open) => { if (!open && !editorBusy) setEditor(null); }}>

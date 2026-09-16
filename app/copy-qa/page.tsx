@@ -16,7 +16,7 @@ export default async function CopyQaPage() {
       <div>
         <span className="eyebrow">Copy sampling QA</span>
         <h1>文案质检</h1>
-        <p className="subtle">同时处理随机抽检与返工强制复检；强制复检通过后，返工任务才会进入待生图队列。</p>
+        <p className="subtle">一次抽检与返工强制复检分开显示；返工版本必须通过强制复检，才会解除待生图门禁。</p>
       </div>
     </header>
     <CopyQaWorkbench role={role as 'ADMIN' | 'REVIEWER' | 'USER'} />

@@ -145,7 +145,7 @@ test('task detail exposes the stable assignee account identity used by review co
         return { rows: source.includes('assignee.id AS assignee_account_id')
           ? [{ ...row,
             creator_account_id: '1', creator_display_name: '系统管理员', creator_role: 'ADMIN',
-            assignee_account_id: '6', assigned_to_display_name: '普通作业员 A', assignee_status: 'ACTIVE' }]
+            assignee_account_id: '6', assigned_to_display_name: '普通作业员 A', assigned_to_role: 'USER', assignee_status: 'ACTIVE' }]
           : [row] };
       }
       return { rows: [] };
@@ -157,6 +157,7 @@ test('task detail exposes the stable assignee account identity used by review co
   assert.equal(detail.createdByAccountId, 1);
   assert.equal(detail.assignedToAccountId, 6);
   assert.equal(detail.assignedToDisplayName, '普通作业员 A');
+  assert.equal(detail.assignedToRole, 'USER');
   assert.equal(detail.assigneeStatus, 'ACTIVE');
   assert.match(taskSelection, /creator\.username = task\.created_by_user_id/u);
   assert.match(taskSelection, /creator\.created_at < task\.created_at/u);
