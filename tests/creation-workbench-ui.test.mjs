@@ -503,6 +503,9 @@ test('image review fits the complete image, supports exterior controls, and pres
   assert.match(backdropControl, /value: 'white', label: '白底'/u);
   assert.match(styles, /\.preview-background-white \{ background: #fff; \}/u);
   assert.match(currentImageEditor, /className="current-image-editor-trigger"[\s\S]*?>修改图片<\/Button>/u);
+  assert.match(currentImageEditor, /useState\(DEFAULT_DISCLOSURE_TEXT\)/u);
+  assert.match(currentImageEditor, /aria-label="最近常用标识文字"/u);
+  assert.match(currentImageEditor, /addRecentDisclosureText\(current,text\)/u);
   assert.match(styles, /\.workbench-image-review-title-actions \{[^}]*display: inline-flex;[^}]*gap: 12px;[^}]*margin-right: 52px;[^}]*margin-left: auto/u);
   assert.match(styles, /\.workbench-image-review-title-actions \.current-image-editor-trigger \{[^}]*width: 96px;[^}]*height: 36px;/u);
   assert.match(styles, /\.workbench-image-review-section\[data-image-primary="true"\] > \.workbench-image-review-section-title \{[^}]*grid-template-columns: minmax\(0, 1\.75fr\) minmax\(320px, \.75fr\)/u);

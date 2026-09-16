@@ -6,6 +6,12 @@ import { Button } from '@/components/ui/button';
 import { UploadCloud } from 'lucide-react';
 import { apiRequest } from './api-client';
 import { createRequestId } from './request-id';
+import {
+  DEFAULT_DISCLOSURE_TEXT,
+  addRecentDisclosureText,
+  loadRecentDisclosureTexts,
+  saveRecentDisclosureTexts,
+} from '../../src/recent-disclosure-texts.mjs';
 import styles from './current-image-editor.module.css';
 
 type Asset = { id: number; sha256: string; url: string };
@@ -27,7 +33,8 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,page,runs,
   runs:Array<{id:string;result:{processing?:{type:string}}|null}>;onChanged:()=>Promise<void>;
 }) {
   const [open,setOpen]=useState(false),[tab,setTab]=useState('TEXT');
-  const [text,setText]=useState('AI生成');
+  const [text,setText]=useState(DEFAULT_DISCLOSURE_TEXT);
+  const [recentDisclosureTexts,setRecentDisclosureTexts]=useState<string[]>([]);
   const [instruction,setInstruction]=useState('');
   const [targetDescription,setTargetDescription]=useState('');
   const [targetRegion,setTargetRegion]=useState<TargetRegion|null>(null);
@@ -39,6 +46,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,page,runs,
   const [comparisonId,setComparisonId]=useState('');
   const refresh=useCallback(async()=>setEdits(await apiRequest<Edit[]>(path(`/v1/tasks/${taskId}/image-edits`))),[taskId]);
   useEffect(()=>{if(!open)return;let active=true;const poll=()=>{if(active)void refresh().catch(e=>setError(e.message));};poll();const timer=setInterval(poll,4000);return()=>{active=false;clearInterval(timer);};},[open,refresh]);
+  useEffect(()=>{if(open)setRecentDisclosureTexts(loadRecentDisclosureTexts(window.localStorage));},[open]);
   useEffect(()=>()=>{if(targetSelectionFrame.current!==null)window.cancelAnimationFrame(targetSelectionFrame.current);},[]);
   const operation=tab==='TEXT'?'TEXT':tab==='ENTITY'?'AI_FUSION':'AI_LOCAL';
   const requestInstruction=tab==='TEXT'?`将人工生成标识显示为“${text.trim()}”并放在右下角`:
@@ -59,11 +67,18 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,page,runs,
   function submit(draft=false) {
     const issue=requestIssue(draft);
     if(issue){setNotice('');setError(issue);return;}
-    return act(()=>post(`/v1/tasks/${taskId}/image-edits`,{...base(),operation,instruction:requestInstruction,preserve,negative,
-    ...(operation==='TEXT'?{overlay:{text:text.trim(),textType:'AI_DISCLOSURE',size:32,margin:32,opacity:1,color:'#ffffff',background:'#111827',position:'bottom-right',disclosureType:'AI_GENERATED'}}:{}),
-    references:tab==='ENTITY'?refs.map(r=>({assetId:r.id,purpose:r.purpose})):[],
-    ...(tab==='ENTITY'?{target:{description:targetDescription.trim(),region:targetRegion}}:{}),
-    confirmation:confirmed?'LIVE_IMAGE_COST_ACCEPTED':undefined,draft}),draft?'正在保存草稿…':'已提交，正在排队生成修改预览…',draft?'草稿已保存。':'修改请求已提交，系统正在处理。');}
+    return act(async()=>{
+      await post(`/v1/tasks/${taskId}/image-edits`,{...base(),operation,instruction:requestInstruction,preserve,negative,
+      ...(operation==='TEXT'?{overlay:{text:text.trim(),textType:'AI_DISCLOSURE',size:32,margin:32,opacity:1,color:'#ffffff',background:'#111827',position:'bottom-right',disclosureType:'AI_GENERATED'}}:{}),
+      references:tab==='ENTITY'?refs.map(r=>({assetId:r.id,purpose:r.purpose})):[],
+      ...(tab==='ENTITY'?{target:{description:targetDescription.trim(),region:targetRegion}}:{}),
+      confirmation:confirmed?'LIVE_IMAGE_COST_ACCEPTED':undefined,draft});
+      if(operation==='TEXT'){
+        const current=loadRecentDisclosureTexts(window.localStorage);
+        const next=addRecentDisclosureText(current,text);
+        setRecentDisclosureTexts(saveRecentDisclosureTexts(window.localStorage,next));
+      }
+    },draft?'正在保存草稿…':'已提交，正在排队生成修改预览…',draft?'草稿已保存。':'修改请求已提交，系统正在处理。');}
   async function upload(files:FileList|null) {
     const file=files?.[0];
     if(!file)return;
@@ -141,7 +156,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,page,runs,
         <label className={styles.zoomControl}><span>预览缩放</span><input aria-label="预览缩放" type="range" min="1" max="3" step="0.1" value={zoom} onChange={e=>setZoom(Number(e.target.value))}/><strong>{Math.round(zoom*100)}%</strong></label>
         <p className={styles.help}>{tab==='TEXT'?'标识固定放在右下角；左侧仅为位置示意，最终以 AI 改图预览为准。':tab==='ENTITY'?'在原图上拖动框住一个目标物品并保留少量周边；参考图只供模型重绘，不会直接贴到画面上。':'请在右侧说明中同时写清“改哪里”和“改什么”；系统会按文字描述定位。'}</p>
       </section><section className={styles.settings} aria-label="图片修改设置">
-        {tab==='TEXT'&&<><label>人工生成标识文字<input aria-label="人工生成标识文字" value={text} maxLength={12} pattern="[\p{L}\p{N}_-]+" onChange={e=>setText(e.target.value)}/><small>最多 12 个字符，仅限文字、数字、下划线或短横线。</small></label><p>仍按人工生成标识处理，只改变最终显示文字；位置固定为右下角，样式由管理员的图片编辑提示词控制。</p></>}
+        {tab==='TEXT'&&<><label>人工生成标识文字<input aria-label="人工生成标识文字" value={text} maxLength={12} pattern="[\p{L}\p{N}_-]+" onChange={e=>setText(e.target.value)}/><small>最多 12 个字符，仅限文字、数字、下划线或短横线。</small></label><div className={styles.recentDisclosureTexts} aria-label="最近常用标识文字"><span>最近常用</span>{recentDisclosureTexts.length?<div>{recentDisclosureTexts.map(item=><Button unstyled className={styles.recentDisclosureButton} type="button" key={item} aria-pressed={text===item} onClick={()=>setText(item)}>{item}</Button>)}</div>:<small>成功提交后会在这里保留最近使用的 5 条。</small>}</div><p>仍按人工生成标识处理，只改变最终显示文字；位置固定为右下角，样式由管理员的图片编辑提示词控制。</p></>}
         {tab==='ENTITY'&&<><div className={styles.referenceUpload}><div className={styles.referenceUploadHeading}><strong>上传真实产品图片</strong><p>系统会用这张图片中的真实产品替换你框选的一个物品，并自动保持原场景和文字。</p></div><label className={styles.filePicker} data-disabled={busy||undefined}><input className={styles.fileInput} aria-label="上传真实产品参考图" type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={e=>void upload(e.target.files)}/><span className={styles.filePickerIcon}><UploadCloud aria-hidden="true" size={26} strokeWidth={1.8}/></span><span className={styles.filePickerCopy}><strong>{refs.length?'更换产品图片':'点击选择产品图片'}</strong><small>也可以将图片拖放到这里</small></span><span className={styles.filePickerMeta}>PNG / JPG / WebP · 最大 5 MB</span></label>{refs.map(r=><div className={styles.referenceCard} key={r.id}><img src={path(r.url)} alt="已上传的真实产品参考图"/><span>真实产品参考图已就绪</span><Button variant="outline" size="sm" type="button" onClick={()=>setRefs([])}>移除</Button></div>)}</div><label>目标物品说明<textarea aria-label="目标物品说明" value={targetDescription} maxLength={500} placeholder="例如：画面右侧台面上、木托盘后方的米白色拿铁杯（不是咖啡机下方的红杯）" onChange={e=>setTargetDescription(e.target.value)}/><small>同时写清位置、颜色或相邻物体，避免多个同类物品时选错。</small></label><div className={styles.targetSelectionInfo} role="status"><span>{targetRegion?`已框选：x ${targetRegion.x}，y ${targetRegion.y}，宽 ${targetRegion.width}，高 ${targetRegion.height}`:'尚未框选目标。请在左侧原图上拖动。'}</span>{targetRegion&&<Button variant="outline" size="sm" type="button" onClick={()=>setTargetRegion(null)}>重新框选</Button>}</div><p>执行机会先用视觉模型确认框内只有一个符合描述的目标；不明确时不会调用图片编辑模型。确认后由 AI 在框选区域内完成真实融合，框外像素保持不变。</p></>}
         {tab==='PROMPT'&&<><label>局部修改说明<textarea aria-label="图片修改要求" value={instruction} maxLength={2000} placeholder="例如：把画面左下角人物手中的黑色书包替换成手提文件袋，保持人物动作、文字和其他区域不变" onChange={e=>setInstruction(e.target.value)}/><small>请同时描述位置和修改内容，例如“右上角的水杯”“人物左手旁的书包”。</small></label><p>不再画选区或填写坐标。系统根据这段说明定位修改区域；通用画面规则仍由管理员的图片编辑提示词统一控制。</p></>}
         <label className={styles.feeConfirmation}><input className={styles.feeCheckboxInput} type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/><span className={styles.feeCheckboxVisual} data-fee-checkbox aria-hidden="true"/><span>确认调用图片编辑与实体校验模型，会产生费用；自动修复和人工重试也可能收费。</span></label>

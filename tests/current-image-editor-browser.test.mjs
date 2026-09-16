@@ -54,6 +54,8 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
       livePreview.locator('..').evaluate(element=>getComputedStyle(element).scrollbarGutter),
     ]);
     assert.match(previewGutter,/stable/u);
+    assert.equal(await page.getByLabel('人工生成标识文字',{exact:true}).inputValue(),'该人物形象由AI生成');
+    assert.equal(await page.getByLabel('最近常用标识文字').getByText('成功提交后会在这里保留最近使用的 5 条。',{exact:true}).count(),1);
     await page.getByLabel('人工生成标识文字',{exact:true}).fill('人工生成');
     assert.equal(await livePreview.locator('svg text').textContent(),'人工生成');
     assert.ok(sourceNode&&await sourceImage.evaluate((element,previous)=>element===previous,sourceNode));
@@ -63,6 +65,12 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     assert.equal(await page.getByText('样式由管理员的图片编辑提示词控制',{exact:false}).count(),1);
     assert.equal(await page.getByRole('button',{name:'保存草稿',exact:true}).isDisabled(),false);
     assert.equal(await page.getByRole('button',{name:'生成修改预览',exact:true}).isDisabled(),false);
+    await page.getByRole('button',{name:'保存草稿',exact:true}).click();
+    const recentDisclosure=page.getByLabel('最近常用标识文字').getByRole('button',{name:'人工生成',exact:true});
+    await recentDisclosure.waitFor();
+    assert.deepEqual(await page.evaluate(()=>JSON.parse(localStorage.getItem('xhs.recent-disclosure-texts.v1'))),['人工生成']);
+    assert.equal(submitted.operation,'TEXT');assert.equal(submitted.overlay.text,'人工生成');
+    submitted=null;
     await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
     await page.getByRole('alert').getByText('请先勾选费用确认',{exact:false}).waitFor();
     assert.equal(submitted,null);
@@ -88,7 +96,7 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     await page.getByRole('heading',{name:'修改前后滑动对比'}).waitFor();
     assert.equal(submitted.operation,'AI_LOCAL');assert.equal(submitted.mask,undefined);assert.match(submitted.instruction,/画面左下角/u);
     assert.equal(submitted.confirmation,'LIVE_IMAGE_COST_ACCEPTED');assert.equal(actions.length,0);
-    assert.equal(await page.getByRole('status').getByText('系统正在处理',{exact:false}).count(),1);
+    await page.getByRole('status').getByText('系统正在处理',{exact:false}).waitFor();
     assert.equal(await page.getByRole('button',{name:'采用此版本',exact:true}).isDisabled(),false);
     await page.getByRole('button',{name:'采用此版本',exact:true}).click();
     await page.getByRole('alert').getByText('请先填写“操作原因”',{exact:false}).waitFor();
