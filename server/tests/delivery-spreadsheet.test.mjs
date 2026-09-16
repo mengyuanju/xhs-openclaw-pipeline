@@ -39,6 +39,7 @@ async function solidPng(red, green, blue) {
 function deliveryTask({
   id = 7,
   query = '收纳整理',
+  sourceClientBatchCode = 'b9759aad96a94c109fdce96ab4455294',
   sourceQueryPackageName = null,
   title = '标题',
   body = '正文',
@@ -50,6 +51,7 @@ function deliveryTask({
   return {
     id,
     query,
+    sourceClientBatchCode,
     sourceQueryPackageName,
     xiaohongshuLinks,
     currentCopyRevisionId: copyRevisionId,
@@ -147,27 +149,29 @@ test('writes one plain-text article cell and embeds selected PNG/JPEG bytes unch
     await workbook.xlsx.readFile(outputPath);
     const worksheet = workbook.getWorksheet('交付内容');
     assert.ok(worksheet);
-    assert.equal(worksheet.getCell('A1').value, '词包名称');
-    assert.equal(worksheet.getCell('A2').value, '未归属词包');
-    assert.equal(worksheet.getCell('B1').value, 'Query');
-    assert.equal(worksheet.getCell('B2').value, '小户型收纳');
-    assert.equal(worksheet.getCell('C1').value, '完整文章');
-    assert.equal(worksheet.getCell('C2').value, '收纳标题\n\n第一段\n第二段');
-    assert.equal(worksheet.getCell('C2').type, ExcelJS.ValueType.String);
-    assert.equal(typeof worksheet.getCell('C2').value, 'string');
-    assert.notEqual(worksheet.getCell('C2').font?.bold, true);
-    assert.equal(worksheet.getCell('D1').value, '小红书链接');
+    assert.equal(worksheet.getCell('A1').value, '甲方批次编号');
+    assert.equal(worksheet.getCell('A2').value, 'b9759aad96a94c109fdce96ab4455294');
+    assert.equal(worksheet.getCell('B1').value, '词包名称');
+    assert.equal(worksheet.getCell('B2').value, '未归属词包');
+    assert.equal(worksheet.getCell('C1').value, 'Query');
+    assert.equal(worksheet.getCell('C2').value, '小户型收纳');
+    assert.equal(worksheet.getCell('D1').value, '完整文章');
+    assert.equal(worksheet.getCell('D2').value, '收纳标题\n\n第一段\n第二段');
+    assert.equal(worksheet.getCell('D2').type, ExcelJS.ValueType.String);
+    assert.equal(typeof worksheet.getCell('D2').value, 'string');
+    assert.notEqual(worksheet.getCell('D2').font?.bold, true);
+    assert.equal(worksheet.getCell('E1').value, '小红书链接');
     assert.equal(
-      worksheet.getCell('D2').value,
+      worksheet.getCell('E2').value,
       'https://www.xiaohongshu.com/explore/first\nhttps://www.xiaohongshu.com/explore/later',
     );
-    assert.equal(worksheet.getCell('E1').value, '图片 1');
-    assert.equal(worksheet.getCell('F1').value, '图片 2');
+    assert.equal(worksheet.getCell('F1').value, '图片 1');
+    assert.equal(worksheet.getCell('G1').value, '图片 2');
 
     const worksheetImages = worksheet.getImages();
     assert.equal(worksheetImages.length, 2);
-    assert.equal(worksheetImages[0].range.tl.nativeCol, 4);
-    assert.equal(worksheetImages[1].range.tl.nativeCol, 5);
+    assert.equal(worksheetImages[0].range.tl.nativeCol, 5);
+    assert.equal(worksheetImages[1].range.tl.nativeCol, 6);
     assert.deepEqual(worksheetImages[0].range.ext, { width: 140, height: 200 });
     assert.deepEqual(worksheetImages[1].range.ext, { width: 150, height: 74 });
     const firstImage = embeddedImage(workbook, worksheetImages[0].imageId);
@@ -274,7 +278,7 @@ test('exports delivery while Xiaohongshu search is unfinished', async () => {
 
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(outputPath);
-    assert.equal(workbook.getWorksheet('交付内容').getCell('D2').value, '等待重新登录');
+    assert.equal(workbook.getWorksheet('交付内容').getCell('E2').value, '等待重新登录');
   });
 });
 
@@ -305,10 +309,14 @@ test('keeps dangerous formula prefixes in Query, copy and links as text and emit
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(outputPath);
     const worksheet = workbook.getWorksheet('交付内容');
-    const packageCell = worksheet.getCell('A2');
-    const queryCell = worksheet.getCell('B2');
-    const articleCell = worksheet.getCell('C2');
-    const linksCell = worksheet.getCell('D2');
+    const clientBatchCell = worksheet.getCell('A2');
+    const packageCell = worksheet.getCell('B2');
+    const queryCell = worksheet.getCell('C2');
+    const articleCell = worksheet.getCell('D2');
+    const linksCell = worksheet.getCell('E2');
+    assert.equal(clientBatchCell.value, 'b9759aad96a94c109fdce96ab4455294');
+    assert.equal(clientBatchCell.type, ExcelJS.ValueType.String);
+    assert.equal(clientBatchCell.formula, undefined);
     assert.equal(packageCell.value, '=危险词包');
     assert.equal(packageCell.type, ExcelJS.ValueType.String);
     assert.equal(packageCell.formula, undefined);

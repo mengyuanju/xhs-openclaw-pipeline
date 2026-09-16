@@ -102,7 +102,7 @@ test('image claim and edit transfer protocol carries capability, lease and idemp
   }});
   assert.deepEqual(await client.claimImageBatch({nodeId:'image-a',requestId,limit:1}),{requestId,claims:[claim]});
   const claimBody=JSON.parse(seen[0].options.body);
-  assert.equal(claimBody.imageEditExecutorVersion,1);
+  assert.equal(claimBody.imageEditExecutorVersion,2);
   assert.deepEqual(await client.imageEditContext(executionId,edit),{task:{id:7}});
   assert.deepEqual(await client.imageEditAsset(executionId,edit,31),Buffer.from('asset'));
   assert.equal((await client.imageEditAssetMetadata(executionId,edit,31)).sha256,'a'.repeat(64));

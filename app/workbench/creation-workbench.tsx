@@ -60,12 +60,10 @@ import { TaskAssignmentDialog } from './task-assignment-dialog';
 import { loadAdminTaskPage } from '../../src/control-plane/admin-task-page.mjs';
 import { createActionLock } from '../../src/control-plane/action-lock.mjs';
 import { WorkbenchPagination } from './workbench-pagination';
-import { PersonalOverview, PersonalStatusFilters } from '../workbench-statistics/personal-overview';
-import { PersonalTaskScopeFilter } from './personal-task-scope-filter';
+import { PersonalWorkbenchNavigation } from '../workbench-statistics/personal-overview';
+import { personalStateFilterStates } from './personal-state-filters';
 import { isLegacyTaskStateFilterError } from './task-list-compatibility';
 import { useStatistics } from '../workbench-statistics/use-statistics';
-import { STATE_GROUPS } from '../../src/web-statistics/summary.mjs';
-import type { StateGroup } from '../workbench-statistics/types';
 import {
   DEFAULT_WORKBENCH_LIST_STATE,
   workbenchListSearch,
@@ -215,7 +213,7 @@ const STATE_LABELS: Record<TaskState, string> = {
   IMAGE_FAILED: '生图失败',
   MANUAL_ARCHIVE: '待图片初审',
   IMAGE_QC_PENDING: '待图片质检',
-  IMAGE_REWORK_PENDING: '图片待返修',
+  IMAGE_REWORK_PENDING: '图片质检打回',
   REVIEWED: '交付池',
   CANCELLED: '已废弃',
 };
@@ -259,7 +257,7 @@ const STAGE_LABELS: Record<string, string> = {
   IMAGE_FAILED: '生图失败',
   MANUAL_ARCHIVE: '待图片初审',
   IMAGE_QC_PENDING: '待图片质检',
-  IMAGE_REWORK_PENDING: '图片待返修',
+  IMAGE_REWORK_PENDING: '图片质检打回',
   REVIEWED: '交付池',
   FAILED: '执行失败',
   CANCELLED: '已废弃',
@@ -887,10 +885,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       const pageCursor = taskPageCursors.current.values.get(page);
       const useLastPage = requestedLastPage.current === page;
       const copyQaReturnedOnly = view.personalOnly && stateFilter === 'copyQaReturned';
-      const personalStates = view.personalOnly ? copyQaReturnedOnly
-        ? ['COPY_REVIEW_PENDING', 'COPY_QC_PENDING']
-        : Object.hasOwn(STATE_GROUPS, stateFilter)
-          ? STATE_GROUPS[stateFilter as StateGroup] : Object.values(STATE_GROUPS).flat() : null;
+      const personalStates = view.personalOnly ? personalStateFilterStates(stateFilter) : null;
       const search = new URLSearchParams(legacyStateFilterMode.current
         ? { limit: '200', offset: '0' }
         : {
@@ -998,6 +993,9 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         !matchesPersonalScope(task, personalScope, creatorUserId, creatorAccountId)
       ))) {
         throw new Error('中心服务尚未支持个人任务筛选，请更新并重启中心服务。');
+      }
+      if (view.personalOnly && personalStates && taskPage.items.some((task) => !personalStates.includes(task.state))) {
+        throw new Error('中心服务返回了不符合当前状态筛选的作业，请刷新或联系管理员。');
       }
       if (copyQaReturnedOnly && taskPage.items.some((task) => (
         task.mandatoryCopyQc !== true || task.mandatoryCopyQcOrigin !== 'QA_RETURN'
@@ -1894,10 +1892,14 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         if (duplicateQueryPreview) void previewDuplicateQueries(duplicateQueryPreview.representativeTaskIds);
       }}
     />
-    {activeView === 'PERSONAL' && <PersonalOverview
+    {activeView === 'PERSONAL' && <PersonalWorkbenchNavigation
       period={personalStatisticsPeriod}
       statistics={personalStatistics}
+      filter={stateFilter}
+      scope={personalScope}
       onPeriod={setPersonalStatisticsPeriod}
+      onFilter={(value) => { setStateFilter(value); setPage(1); }}
+      onScope={(value) => { setPersonalScope(value); setPage(1); }}
     />}
     <section className="panel workbench-task-panel">
       <div className="workbench-toolbar">
@@ -2024,7 +2026,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         onRoleChange={(value) => { setCreatorRoleFilter(value); setPage(1); }}
         onStateChange={(value) => { setStateFilter(value); setPage(1); }}
       />}
-      {(role === 'ADMIN' || activeView === 'PERSONAL') && <div className="workbench-admin-list-controls">
+      {role === 'ADMIN' && <div className="workbench-admin-list-controls">
         {role === 'ADMIN' && <div className="workbench-saved-views">
           <span>常用视图</span>
           <Select value={savedViewId || undefined} onValueChange={(value) => {
@@ -2054,15 +2056,6 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
           </Dialog>
           {savedViewId && savedViewId !== DEFAULT_TASK_VIEW_VALUE && <Button unstyled className="button small danger" type="button" onClick={() => { void deleteSavedView(); }}>删除视图</Button>}
         </div>}
-        {activeView === 'PERSONAL' && <>
-          <PersonalTaskScopeFilter value={personalScope}
-            onChange={(value) => { setPersonalScope(value); setPage(1); }} />
-          <PersonalStatusFilters
-            filter={stateFilter}
-            summary={personalStatistics.data?.summary}
-            onFilter={(value) => { setStateFilter(value); setPage(1); }}
-          />
-        </>}
         {isAllJobs && <div className="workbench-attention-entry" aria-label="异常任务集中处理">
           <span><AlertTriangle size={15} />集中处理</span>
           <Button unstyled className="button small" type="button" aria-pressed={attentionFilter === 'ANOMALY'} onClick={() => { setAttentionFilter(attentionFilter === 'ANOMALY' ? 'NONE' : 'ANOMALY'); setPage(1); }}>全部异常</Button>

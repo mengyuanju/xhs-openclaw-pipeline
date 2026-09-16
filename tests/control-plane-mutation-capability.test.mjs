@@ -21,22 +21,22 @@ test('protected control-plane operations declare their version contracts', () =>
     ['/v1/xhs-search-statuses', 'DELETE', 'xiaohongshuAccountStatusVersion', 2],
     ['/v1/tasks/duplicate-query-discard-preview', 'POST', 'duplicateQueryDiscardVersion', 1],
     ['/v1/tasks/duplicate-query-discard', 'POST', 'duplicateQueryDiscardVersion', 1],
-    ['/v1/query-packages', 'POST', 'queryPackageVersion', 2],
+    ['/v1/query-packages', 'POST', 'queryPackageVersion', 6],
     ['/v1/query-packages/9/assignee', 'PATCH', 'queryPackageVersion', 3],
     ['/v1/query-packages/9/item-assignments', 'PUT', 'queryPackageVersion', 4],
     ['/v1/query-packages/9/screening', 'PUT', 'queryPackageVersion', 4],
     ['/v1/query-packages/9/production-batches', 'POST', 'queryPackageVersion', 2],
     ['/v1/query-packages/9/abandon', 'POST', 'queryPackageVersion', 2],
     ['/v1/query-packages/9/permanent', 'DELETE', 'queryPackageVersion', 2],
-    ['/v1/delivery-pool', 'GET', 'finalDeliveryVersion', 3],
-    ['/v1/delivery-pool/archive', 'POST', 'finalDeliveryVersion', 3],
-    ['/v1/delivery-pool/archive/token', 'HEAD', 'finalDeliveryVersion', 3],
-    ['/v1/delivery-pool/archive/token', 'GET', 'finalDeliveryVersion', 3],
-    ['/v1/delivery-batches', 'GET', 'finalDeliveryVersion', 3],
-    ['/v1/delivery-batches/123/archive', 'GET', 'finalDeliveryVersion', 3],
-    ['/v1/delivery-pool/xlsx', 'POST', 'deliverySpreadsheetVersion', 1],
-    ['/v1/delivery-pool/xlsx/token', 'HEAD', 'deliverySpreadsheetVersion', 1],
-    ['/v1/delivery-pool/xlsx/token', 'GET', 'deliverySpreadsheetVersion', 1],
+    ['/v1/delivery-pool', 'GET', 'finalDeliveryVersion', 4],
+    ['/v1/delivery-pool/archive', 'POST', 'finalDeliveryVersion', 4],
+    ['/v1/delivery-pool/archive/token', 'HEAD', 'finalDeliveryVersion', 4],
+    ['/v1/delivery-pool/archive/token', 'GET', 'finalDeliveryVersion', 4],
+    ['/v1/delivery-batches', 'GET', 'finalDeliveryVersion', 4],
+    ['/v1/delivery-batches/123/archive', 'GET', 'finalDeliveryVersion', 4],
+    ['/v1/delivery-pool/xlsx', 'POST', 'deliverySpreadsheetVersion', 2],
+    ['/v1/delivery-pool/xlsx/token', 'HEAD', 'deliverySpreadsheetVersion', 2],
+    ['/v1/delivery-pool/xlsx/token', 'GET', 'deliverySpreadsheetVersion', 2],
     ['/v1/delivery-pool/previews', 'POST', 'deliveryPreviewVersion', 5],
     ['/v1/tasks/batch-archive', 'POST', 'finalDeliveryVersion', 2],
     ['/v1/tasks/42/archive', 'HEAD', 'finalDeliveryVersion', 2],
@@ -63,6 +63,15 @@ test('protected control-plane operations declare their version contracts', () =>
 
 test('mutation capability check allows only compatible center versions', async () => {
   const calls = [];
+  await assertMutationCapability({
+    root: 'http://center.test',
+    routePath: '/v1/query-packages',
+    method: 'POST',
+    fetchImpl: async () => Response.json({
+      data: { capabilities: { queryPackageVersion: 6 } },
+    }),
+  });
+
   await assertMutationCapability({
     root: 'http://center.test/base',
     routePath: '/v1/tasks/42/assignee',
@@ -144,7 +153,7 @@ test('mutation capability check allows only compatible center versions', async (
     routePath: '/v1/delivery-pool/archive',
     method: 'POST',
     fetchImpl: async () => Response.json({
-      data: { capabilities: { finalDeliveryVersion: 3 } },
+      data: { capabilities: { finalDeliveryVersion: 4 } },
     }),
   });
 
@@ -153,7 +162,7 @@ test('mutation capability check allows only compatible center versions', async (
     routePath: '/v1/delivery-pool/xlsx',
     method: 'POST',
     fetchImpl: async () => Response.json({
-      data: { capabilities: { deliverySpreadsheetVersion: 1 } },
+      data: { capabilities: { deliverySpreadsheetVersion: 2 } },
     }),
   });
 

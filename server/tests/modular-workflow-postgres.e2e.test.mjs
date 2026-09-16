@@ -1414,6 +1414,7 @@ test('real PostgreSQL 18 screens and produces a full 5000-row Query package with
     const importStartedAt = performance.now();
     const imported = await createQueryPackage(repository.pool, {
       name: 'PostgreSQL 18 5000 条 Query 词包时限验证',
+      clientBatchCode: 'b9759aad96a94c109fdce96ab4455294',
       sourceFileName: 'query-scale-5000.json',
       assignedToUserId: 'query-scale-worker',
       requestId: randomUUID(),
@@ -1511,6 +1512,7 @@ test('real PostgreSQL 18 imports and cursor-pages a full 10000-row Query package
     const importStartedAt = performance.now();
     const imported = await createQueryPackage(repository.pool, {
       name: 'PostgreSQL 18 10000 条 Query 分页验证',
+      clientBatchCode: 'b9759aad96a94c109fdce96ab4455294',
       sourceFileName: 'query-paging-scale-10000.json',
       requestId: randomUUID(),
       items: Array.from({ length: QUERY_PACKAGE_PAGING_SCALE_ROWS }, (_, index) => ({
@@ -1615,6 +1617,7 @@ test('real PostgreSQL 18 distributes Query items and accepts disjoint concurrent
     }));
     const imported = await repository.createQueryPackage({
       name: 'Query 明细分配隔离验证',
+      clientBatchCode: 'b9759aad96a94c109fdce96ab4455294',
       requestId: randomUUID(),
       items: Array.from({ length: 10 }, (_, index) => ({ query: `明细分配 Query ${index + 1}` })),
     }, { actor: admin });
@@ -1720,9 +1723,10 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     controlPlane = await startRealControlPlane(repository);
     const health = await requestJson(controlPlane.root, '/health');
     assert.equal(health.data.ok, true);
-    assert.equal(health.data.capabilities.queryPackageVersion, 5);
+    assert.equal(health.data.capabilities.queryPackageVersion, 6);
     assert.equal(health.data.capabilities.copySamplingVersion, 1);
-    assert.equal(health.data.capabilities.finalDeliveryVersion, 3);
+    assert.equal(health.data.capabilities.finalDeliveryVersion, 4);
+    assert.equal(health.data.capabilities.deliverySpreadsheetVersion, 2);
 
     const currentSettings = (await requestJson(
       controlPlane.root, '/v1/workflow-quality-settings', { actor: admin },
@@ -1773,6 +1777,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     const concurrentImportRequestId = randomUUID();
     const concurrentImportBody = {
       name: 'PostgreSQL 18 并发幂等导入',
+      clientBatchCode: 'b9759aad96a94c109fdce96ab4455294',
       requestId: concurrentImportRequestId,
       items: [{ query: '隔离测试并发导入 Query' }],
     };
@@ -1804,6 +1809,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
       expectedStatus: 201,
       body: {
         name: 'PostgreSQL 18 待永久删除词包',
+        clientBatchCode: 'b9759aad96a94c109fdce96ab4455294',
         requestId: randomUUID(),
         items: [{ query: disposableQuery }],
       },
@@ -1919,6 +1925,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
       expectedStatus: 201,
       body: {
         name: 'PostgreSQL 18 隔离端到端词包',
+        clientBatchCode: 'b9759aad96a94c109fdce96ab4455294',
         sourceFileName: 'synthetic-e2e.txt',
         assignedToUserId: worker.username,
         requestId: randomUUID(),

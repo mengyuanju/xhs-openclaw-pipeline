@@ -14,6 +14,12 @@ const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
       && method === 'PUT',
   }),
   Object.freeze({
+    capability: 'queryPackageVersion',
+    minimumVersion: 6,
+    matches: (routePath, method) => routePath === '/v1/query-packages'
+      && method === 'POST',
+  }),
+  Object.freeze({
     capability: 'xiaohongshuQuerySearchVersion',
     minimumVersion: 5,
     matches: (routePath, method) => routePath === '/v1/settings/xhs_query_search'
@@ -74,7 +80,7 @@ const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
   }),
   Object.freeze({
     capability: 'deliverySpreadsheetVersion',
-    minimumVersion: 1,
+    minimumVersion: 2,
     matches: (routePath, method) => /^\/v1\/delivery-pool\/xlsx(?:\/|$)/u.test(routePath)
       && ['GET', 'HEAD', 'POST'].includes(method),
   }),
@@ -86,7 +92,7 @@ const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
   }),
   Object.freeze({
     capability: 'finalDeliveryVersion',
-    minimumVersion: 3,
+    minimumVersion: 4,
     matches: (routePath, method) => ((/^\/v1\/delivery-pool(?:\/|$)/u.test(routePath)
       || /^\/v1\/delivery-batches(?:\/|$)/u.test(routePath))
       && ['GET', 'HEAD', 'POST'].includes(method)),

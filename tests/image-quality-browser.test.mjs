@@ -28,7 +28,7 @@ test('image QA browser: blind queue, required return feedback, mandatory recheck
   const item = (id, sampleKind) => ({
     id, freezePublicId: freezeId, anonymousCode: sampleKind === 'RANDOM' ? 'IQ-BLIND-ONE' : 'IQ-RECHECK',
     status: 'PENDING', sampleKind, blindReview: true,
-    assets: [1, 2].map((assetId) => ({ id: assetId, mediaType: 'image/png', sha256: 'a'.repeat(64), originalName: null, url: `/v1/assets/${assetId}` })),
+    assets: [1, 2].map((assetId) => ({ id: assetId, mediaType: 'image/png', sha256: 'a'.repeat(64), originalName: null, pageIndex: assetId, url: `/v1/assets/${assetId}` })),
     capabilities: { canPass: true, canReturnSingle: true, canReturnBatch: false },
   });
   try {
@@ -89,11 +89,14 @@ test('image QA browser: blind queue, required return feedback, mandatory recheck
     assert.equal(await page.getByText('匿名', { exact: true }).count(), 1);
     assert.equal(await page.getByText('不应泄露的真实任务', { exact: false }).count(), 0);
     await page.getByRole('button', { name: '打回', exact: true }).click();
+    await page.getByText('2 个最终成品页', { exact: true }).waitFor();
+    assert.equal(await page.getByText('第 01 / 02 页', { exact: true }).count(), 1);
+    assert.equal(await page.getByText('01-image.png', { exact: true }).count(), 2);
     assert.equal(await page.getByText('返工原因 （至少一项）', { exact: true }).count(), 1);
     await page.getByRole('button', { name: '确认单条打回', exact: true }).click();
     await page.getByRole('alert').getByText('至少选择一项返工原因', { exact: false }).waitFor();
     await page.getByLabel('画面文字错误', { exact: true }).check();
-    await page.getByLabel('第 1 张', { exact: true }).check();
+    await page.getByLabel('第 01 页 · 01-image.png', { exact: true }).check();
     await page.getByLabel('具体修改要求（必填）', { exact: true }).fill('修正第一张中的错别字，其他内容保持不变');
     await page.getByRole('button', { name: '确认单条打回', exact: true }).click();
     await page.getByText('IQ-RECHECK', { exact: true }).waitFor();

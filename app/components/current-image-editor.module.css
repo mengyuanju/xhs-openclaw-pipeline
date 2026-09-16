@@ -253,6 +253,20 @@
   background: linear-gradient(145deg, #fffdfb, #faf7f4);
 }
 
+.targetCanvas {
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.targetSelection {
+  fill: rgba(217, 52, 70, .18);
+  stroke: #d93446;
+  stroke-width: 8;
+  stroke-dasharray: 18 12;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
 .referenceUploadHeading { display: grid; gap: 5px; }
 .referenceUploadHeading > strong { color: #282522; font-size: 14px; }
 .referenceUploadHeading > p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
@@ -348,6 +362,24 @@
 
 .referenceCard img { width: 64px; height: 64px; display: block; border-radius: 7px; object-fit: contain; background: #eee; }
 .referenceCard span { min-width: 0; color: #4f4a45; font-size: 11px; font-weight: 750; }
+
+.targetSelectionInfo {
+  grid-column: 1 / -1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #eadfd8;
+  border-radius: 9px;
+  color: #625f5a;
+  background: #faf8f5;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.targetSelectionInfo span { min-width: 0; overflow-wrap: anywhere; }
 
 .settings > fieldset {
   grid-column: 1 / -1;

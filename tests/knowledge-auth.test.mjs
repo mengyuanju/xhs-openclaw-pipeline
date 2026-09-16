@@ -129,7 +129,8 @@ test('reviewer navigation and login return paths exclude the knowledge workbench
   assert.match(navigation, /workflowNavigationHrefs\(session\)/u);
   assert.deepEqual(workflowAccess.workflowNavigationHrefs({
     subject: 'user', roles: ['REVIEWER'], copyReviewEnabled: true, copyQcEnabled: true,
-  }), ['/workbench', '/query-packages', '/copy-flow', '/copy-qa']);
+  }), ['/workbench', '/query-packages', '/copy-qa'],
+  'reviewer accounts must not receive the copy workflow landing-page entry');
   assert.doesNotMatch(navigation, /role === 'REVIEWER'[\s\S]*?\['\/workbench', '\/query-packages', '\/knowledge', '\/copy-qa'\]/u);
   assert.match(controlPlaneProxy, /role === 'REVIEWER' && isKnowledgeControlPlaneRoute\(routePath\)/u);
   assert.equal(returnPath.resolveLoginReturnPath({

@@ -37,7 +37,7 @@ PREVIEW_API_KEY=仅含preview:create权限的接口密钥
 
 `npm run init` 可重复执行，首次运行会建表并安装默认生产配置和提示词。
 
-“修改图片”仍保留独立预览、采用和审计状态，但执行工作由普通图片执行机承担。中心把普通生图和改图放入同一个图片领取与容量裁决中，按既有任务优先级和负责人轮转分派；中心机不需要 Codex 登录，也不会运行改图模型。完成 `0056_executor_image_edits.sql` 后，确认 `/health` 返回 `imageEditExecutorVersion=1`，再启动新版图片执行机。至少一台图片执行机需要启用 `IMAGE_WORKER_ENABLED=true`。
+“修改图片”仍保留独立预览、采用和审计状态，但执行工作由普通图片执行机承担。中心把普通生图和改图放入同一个图片领取与容量裁决中，按既有任务优先级和负责人轮转分派；中心机不需要 Codex 登录，也不会运行改图模型。确认 `/health` 返回 `imageEditExecutorVersion=2` 后，再启动支持目标描述、框选定位和遮罩外保护的新版图片执行机。至少一台图片执行机需要启用 `IMAGE_WORKER_ENABLED=true`。
 
 ### 开发/生产环境切换
 

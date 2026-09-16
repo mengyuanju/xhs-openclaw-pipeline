@@ -67,7 +67,10 @@ async function prepareImages(inputPaths, directory, { maximum = 5, preview = tru
 }
 
 async function verifiedImage(parsed, { directory, generatedRoot, outputPath, startedAt }) {
-  if (parsed.images.length !== 1) throw codexFailure({ message: 'expected one native image generation with saved_path' }, 'CODEX_IMAGE_UNVERIFIED');
+  if (parsed.images.length !== 1) {
+    const finalMessage=String(parsed.rawText??'').replace(/\s+/gu,' ').trim().slice(0,500);
+    throw codexFailure({ message:`expected one native image generation with saved_path${finalMessage?`; final message: ${finalMessage}`:''}` },'CODEX_IMAGE_UNVERIFIED');
+  }
   const path = parsed.images[0].path;
   const bytes = await verifiedPngBytes(path, { roots: [directory, generatedRoot], startedAt });
   await writeFile(outputPath, bytes, { flag: 'wx' });

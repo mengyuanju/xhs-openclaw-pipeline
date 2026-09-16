@@ -8,7 +8,7 @@ import { ImagePreviewBackgroundControl, type PreviewBackdrop } from '../componen
 import { Checkbox, Input, Textarea } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 
-import { CheckCircle2, ChevronLeft, ChevronRight, Download, LoaderCircle, RefreshCw, RotateCcw, Trash2 } from 'lucide-react';
+import { CheckCircle2, ChevronLeft, ChevronRight, Download, LoaderCircle, RefreshCw, RotateCcw, Save, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type FormEvent } from 'react';
 
 import {
@@ -28,12 +28,13 @@ import { apiRequest } from '../components/api-client';
 import { createRequestId } from '../components/request-id';
 import { resumeImageTask } from '../components/resume-image-task';
 import { canResumeImageTask } from '../../src/control-plane/image-resume.mjs';
+import { orderedImageFileName } from '../../src/image-file-name.mjs';
 import { TaskQualitySummary } from './task-quality-summary';
 import { ModelCallTrace } from './model-call-trace';
 import { IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
 import { ImagePreview } from '../components/image-preview';
 import { ImagePreviewPreference } from '../components/image-preview-preference';
-import { ImageSettingsEditor, defaultImageSettings, type ImageSettings, type PageLayout } from '../components/image-controls';
+import { ImageSettingsEditor, PageLayoutEditor, defaultImageSettings, type ImageSettings, type PageLayout } from '../components/image-controls';
 import { ImageHistoryCompare, type ImageArtifactInfo } from '../components/image-history-compare';
 import { CurrentImageEditor } from '../components/current-image-editor';
 import {
@@ -150,6 +151,7 @@ type TaskDetail = PriorityTask & {
     id: number;
     sha256: string;
     imageRunId: string;
+    mediaType?: string;
     originalName: string | null;
     url: string;
   }>;
@@ -698,7 +700,9 @@ export function TaskReviewDialog({
   const selectedAsset = assets[selectedAssetIndex];
   const selectedResultImage = selectedAsset ? resultImageByAssetId.get(selectedAsset.id) : undefined;
   const selectedAssetPage = selectedResultImage?.pageIndex ?? selectedAssetIndex + 1;
-  const selectedAssetAlt = selectedAsset?.originalName || `任务 ${detail?.id ?? ''} 第 ${selectedAssetPage} 张图片`;
+  const selectedAssetAlt = selectedAsset
+    ? orderedImageFileName(selectedAsset.originalName, selectedAssetPage, selectedAsset.mediaType)
+    : `任务 ${detail?.id ?? ''} 第 ${selectedAssetPage} 张图片`;
 
   useEffect(() => {
     if (activeAssetIndex !== null && activeAssetIndex >= assets.length) setActiveAssetIndex(null);
@@ -790,6 +794,11 @@ export function TaskReviewDialog({
 
   async function submitCopyDecision(decision: 'SAVE' | 'APPROVE' | 'DISCARD', form: HTMLFormElement) {
     if (!detail || !revision || !draft || !editable || loading || submitting) return;
+    if (decision !== 'DISCARD' && imagePlanChanged) {
+      setMobilePane('plan');
+      setError('图片文案规划有未保存修改。请先单独保存图片规划，再提交只针对文案的评分或审核结果。');
+      return;
+    }
     if (!isCopyRework && decision === 'SAVE' && copyOriginalScore === 1) {
       setError('机器原稿评为 1 分时只能评分并废弃，不能保存为待修改。');
       return;
@@ -890,6 +899,68 @@ export function TaskReviewDialog({
   async function submitCopyReview(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     await submitCopyDecision('APPROVE', event.currentTarget);
+  }
+
+  async function saveImagePlan(form: HTMLFormElement) {
+    if (!detail || !revision || !draft || !savedDraft || !editable || !imagePlanChanged || loading || submitting) return;
+    const invalid = Array.from(form.elements).find((element) =>
+      (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement)
+      && element.closest<HTMLElement>('[data-review-pane]')?.dataset.reviewPane === 'plan'
+      && element.willValidate && !element.validity.valid,
+    ) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | undefined;
+    if (invalid) {
+      setMobilePane('plan');
+      const page = invalid.closest<HTMLElement>('[data-plan-index]')?.dataset.planIndex;
+      if (page !== undefined) {
+        const index = Number(page);
+        setActivePlanIndex(index);
+        if (invalid.id === `review-plan-prompt-${index}`) setExpandedPrompts(current => [...new Set([...current, index])]);
+      }
+      setInvalidField(invalid);
+      return;
+    }
+    const pendingDraft = draft;
+    const pendingRating = {
+      score: copyOriginalScore,
+      reasons: copyOriginalReasons,
+      note: copyOriginalNote,
+      aiDisclosureEnabled,
+    };
+    const requestPayload = {
+      revisionId: revision.id,
+      nodeId,
+      decision: 'SAVE_PLAN',
+      edits: {
+        copy: savedDraft.copy,
+        imagePlan: draft.imagePlan,
+        imageSettings: savedDraft.imageSettings,
+      },
+    };
+    setSubmitting(true);
+    setError('');
+    try {
+      await apiRequest(apiPath(`/v1/tasks/${detail.id}/approve-copy`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...requestPayload, reviewSessionId: reviewSessionId(requestPayload) }),
+      });
+      reviewSessionRef.current = null;
+      await onUpdated('图片文案规划已单独保存；文案评分与审核状态保持不变。');
+      await load();
+      setDraft(current => current ? {
+        ...current,
+        copy: pendingDraft.copy,
+        imageSettings: pendingDraft.imageSettings,
+      } : current);
+      setCopyOriginalScore(pendingRating.score);
+      setCopyOriginalReasons(pendingRating.reasons);
+      setCopyOriginalNote(pendingRating.note);
+      setAiDisclosureEnabled(pendingRating.aiDisclosureEnabled);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '图片文案规划保存失败');
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   async function requireImageControls({ imagePlanEdits = false } = {}) {
@@ -1335,7 +1406,7 @@ export function TaskReviewDialog({
                       ? '联网搜索模拟图'
                       : selectedResultImage?.provider === 'deterministic-fallback-simulation'
                         ? '本地流程联调兜底图'
-                        : selectedAsset.originalName || `图片 #${selectedAsset.id}`}</span></div>
+                        : selectedAssetAlt}</span></div>
                     {selectedResultImage?.source?.pageUrl && <a href={selectedResultImage.source.pageUrl} target="_blank" rel="noreferrer">{selectedResultImage.source.title || '查看图片来源'}</a>}
                   </div>
                 </>}
@@ -1343,7 +1414,7 @@ export function TaskReviewDialog({
                   {assets.map((asset, index) => {
                     const resultImage = resultImageByAssetId.get(asset.id);
                     const pageIndex = resultImage?.pageIndex ?? index + 1;
-                    const alt = asset.originalName || `任务 ${detail.id} 第 ${pageIndex} 张图片`;
+                    const alt = orderedImageFileName(asset.originalName, pageIndex, asset.mediaType);
                     return <Button unstyled className="workbench-image-review-thumbnail" type="button" key={asset.id}
                       data-selected={selectedAssetIndex === index} aria-pressed={selectedAssetIndex === index}
                       aria-label={`选择第 ${pageIndex} 页：${alt}`} onClick={() => setSelectedAssetIndex(index)}>
@@ -1438,7 +1509,7 @@ export function TaskReviewDialog({
                 isOpen
                 restoreFocusRef={previewTriggerRef}
                 src={apiPath(activeAsset.url)}
-                alt={activeAsset.originalName || `任务 ${detail.id} 第 ${activeAssetIndex + 1} 张图片`}
+                alt={orderedImageFileName(activeAsset.originalName, activeAssetIndex + 1, activeAsset.mediaType)}
                 sourceSrc={activeResultImage?.sourceUrl ? apiPath(activeResultImage.sourceUrl) : undefined}
                 deliverySrc={activeResultImage?.deliveryUrl ? apiPath(activeResultImage.deliveryUrl) : undefined}
                 format={activeResultImage?.imageSettings?.format}
@@ -1462,7 +1533,7 @@ export function TaskReviewDialog({
               <section className="workbench-review-section workbench-image-plan-section">
                 <div className="workbench-review-section-title"><span>{assets.length > 0 ? '03' : '02'}</span><div><h3>图片文案规划</h3><p>{canEditApprovedImagePlan
                   ? '可修正逐页文字与画面指令；页面类型保持锁定，评分后重试会创建新的人工批准版本。'
-                    : editable ? '逐页核对画面文字；规划编辑不受文案评分档位影响。'
+                    : editable ? '逐页核对画面文字与排版；修改后单独保存，不受文案评分档位影响。'
                     : '当前状态仅供核对已审核的图片文案规划。'}</p></div></div>
                 <nav className="workbench-image-plan-nav" aria-label="图片规划页码">
                   <Button unstyled className="workbench-image-plan-nav-button" type="button" aria-label="上一页" disabled={activePlanIndex === 0}
@@ -1519,6 +1590,26 @@ export function TaskReviewDialog({
                           onChange={(event) => updateImagePlan(index, { prompt: event.target.value })} />
                         </DisclosureContent>
                       </Disclosure>
+                      <Disclosure className="field full workbench-page-layout-disclosure">
+                        <DisclosureTrigger data-edit-reminder-exempt>
+                          页面排版 <em>{item.layout?.mode === 'CUSTOM' ? '自定义' : '自动匹配'}</em>
+                        </DisclosureTrigger>
+                        <DisclosureContent>
+                          <div className="field">
+                            <label htmlFor={`review-plan-layout-mode-${index}`}>排版方式</label>
+                            <Select value={item.layout?.mode === 'CUSTOM' ? 'CUSTOM' : 'AUTO'} disabled={planFieldsReadOnly}
+                              onValueChange={(mode: 'AUTO' | 'CUSTOM') => updateImagePlan(index, { layout: { mode } })}>
+                              <SelectTrigger id={`review-plan-layout-mode-${index}`}><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="AUTO">自动匹配版式</SelectItem>
+                                <SelectItem value="CUSTOM">自定义排版</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          {item.layout?.mode === 'CUSTOM' && <PageLayoutEditor kind={item.kind} value={item.layout}
+                            disabled={planFieldsReadOnly} onChange={(layout) => updateImagePlan(index, { layout })} />}
+                        </DisclosureContent>
+                      </Disclosure>
                     </div>
                   </article>)}
                 </div>
@@ -1571,6 +1662,10 @@ export function TaskReviewDialog({
                 <Button unstyled className="button primary" type="button" disabled={submitting || loading || !canApproveImages} onClick={() => { void submitImageReview('APPROVE'); }}><CheckCircle2 size={15} />{submitting ? '正在提交…' : '通过到交付池'}</Button>
               </>}
               {editable && <>
+                {imagePlanChanged && <Button unstyled className="button" type="button" disabled={submitting || loading}
+                  onClick={(event) => { if (event.currentTarget.form) void saveImagePlan(event.currentTarget.form); }}>
+                  <Save size={15} />{submitting ? '正在保存…' : '单独保存图片规划'}
+                </Button>}
                 {!isCopyRework && copyOriginalScore === 1 && <Button unstyled className="button danger" type="button" disabled={submitting || loading || !copyRatingComplete} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('DISCARD', event.currentTarget.form); }}><Trash2 size={15} />评分并废弃</Button>}
                 {(isCopyRework || copyOriginalScore !== 1) && <Button unstyled className="button" type="button" disabled={submitting || loading || !copyRatingComplete || isCopyRework && !draftChanged} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('SAVE', event.currentTarget.form); }}>
                   {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : isCopyRework ? '保存返工稿，暂不提交复检' : '保存评分，暂不提交'}

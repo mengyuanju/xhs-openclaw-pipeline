@@ -50,3 +50,11 @@ test('personal quality-return filters round-trip through a shareable URL', () =>
   assert.equal(parsed.state, 'copyQaReturned');
   assert.equal(workbenchListSearch(parsed).toString(), 'state=copyQaReturned');
 });
+
+test('simplified personal work stages round-trip through shareable URLs', () => {
+  for (const state of ['personalReview', 'personalProduction']) {
+    const parsed = parseWorkbenchListState({ state });
+    assert.equal(parsed.state, state);
+    assert.equal(workbenchListSearch(parsed).toString(), `state=${state}`);
+  }
+});

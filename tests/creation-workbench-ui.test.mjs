@@ -73,6 +73,10 @@ test('ordinary users do not render Query package provenance or delivery download
     subject: 'user', roles: ['REVIEWER'], copyReviewEnabled: false, copyQcEnabled: false, imageQcEnabled: true,
   }), ['/workbench', '/image-qa'], 'image QA reviewers must receive only their explicitly enabled workflow');
   assert.deepEqual(workflowNavigationHrefs({
+    subject: 'user', roles: ['REVIEWER'], copyReviewEnabled: true, copyQcEnabled: true, imageQcEnabled: true,
+  }), ['/workbench', '/query-packages', '/copy-qa', '/image-qa'],
+  'reviewer accounts must not receive the copy workflow landing-page entry');
+  assert.deepEqual(workflowNavigationHrefs({
     subject: 'user', roles: ['USER'], copyReviewEnabled: false, copyQcEnabled: false, imageQcEnabled: true,
   }), ['/workbench'], 'image QA permission must remain reviewer-only');
   assert.match(workbench, /const canUseQueryPackageFilter = role !== 'USER'/u);

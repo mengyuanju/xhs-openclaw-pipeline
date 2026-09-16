@@ -85,6 +85,17 @@ test('Query package screening is pending-first, directly actionable, and item-as
   assert.doesNotMatch(source, /production-batches|创建生产批次|本次投产/u);
 });
 
+test('Query package import requires a client batch that later merges delivery scopes', async () => {
+  const source = await readFile(queryWorkbenchUrl, 'utf8');
+
+  assert.match(source, /const CLIENT_BATCH_CODE_PATTERN = \/\^\[0-9a-f\]\{32\}\$\//u);
+  assert.match(source, /id="query-package-client-batch"[\s\S]*minLength=\{32\}[\s\S]*maxLength=\{32\}[\s\S]*pattern="\[0-9a-fA-F\]\{32\}"[\s\S]*required/u);
+  assert.match(source, /clientBatchCode: normalizedClientBatchCode/u,
+    'the normalized customer identifier must be included in the import mutation');
+  assert.match(source, /相同甲方批次编号的多个词包会在交付时合并打包/u);
+  assert.match(source, /甲方批次 \{item\.clientBatchCode \?\? '历史未填写'\}/u);
+});
+
 test('Query package assignment fails closed for malformed user lists and assignment summaries', async () => {
   const source = await readFile(queryWorkbenchUrl, 'utf8');
 
@@ -128,6 +139,7 @@ test('selected task-created Query items match both decision and creation filters
   const detail = normalizePackageDetail({
     id: 7,
     name: '回归词包',
+    clientBatchCode: 'B9759AAD96A94C109FDCE96AB4455294',
     status: 'USED_UP',
     version: 2,
     counts: { total: 1, pending: 0, selected: 1, rejected: 0, produced: 1 },
@@ -143,6 +155,7 @@ test('selected task-created Query items match both decision and creation filters
     }],
   });
   assert.ok(detail);
+  assert.equal(detail.clientBatchCode, 'b9759aad96a94c109fdce96ab4455294');
   const [item] = detail.items;
   assert.equal(item.screeningDecision, 'SELECTED');
   assert.equal(item.validationStatus, 'TASK_CREATED');

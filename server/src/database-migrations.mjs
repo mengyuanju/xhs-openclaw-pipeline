@@ -32,6 +32,13 @@ export const LEGACY_MIGRATION_UPGRADES = Object.freeze([
     repairSha256: 'b1053fff6696176449ef9a20c79ad0d05a680cbc23f5c6f5a9d1026bb3de35ba',
     schemaProbe: 'xhs-search-node-retired-at-v1',
   }),
+  Object.freeze({
+    id: '0057_executor_image_edit_capability',
+    fromSha256: '1b32a068b4082ea161ec2b5524eef185e92721491472de579df071936ff0f7a0',
+    toSha256: '8a1843b241b8fb08f6a1cf8260d7193929a1590e6864932883ce3f1b2eba9d00',
+    repairedBy: '0059_executor_image_edit_capability_compatibility_repair',
+    repairSha256: '56a4e0c4eb6cc869b8b3a7c4e6837b56ee22d33e20781f900f696befb41b68ee',
+  }),
 ]);
 
 export function isAppliedMigrationCompatible(entry, source, migrations) {

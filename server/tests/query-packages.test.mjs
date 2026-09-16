@@ -32,12 +32,13 @@ function fakeQueryPackageImportDatabase() {
       return { rows: [{
         id: 9,
         name: values[0],
-        source_file_name: values[1],
+        client_batch_code: values[1],
+        source_file_name: values[2],
         status: 'IMPORTED',
-        created_by_account_id: values[2],
-        created_by_username: values[3],
-        assigned_to_account_id: values[4],
-        assigned_to_username: values[5],
+        created_by_account_id: values[3],
+        created_by_username: values[4],
+        assigned_to_account_id: values[5],
+        assigned_to_username: values[6],
         version: 1,
         created_at: new Date('2026-09-10T00:00:00.000Z'),
         updated_at: new Date('2026-09-10T00:00:00.000Z'),
@@ -88,6 +89,7 @@ test('query package import writes all 10000 rows in bounded parameterized chunks
   const fixture = fakeQueryPackageImportDatabase();
   const result = await createQueryPackage(fixture.pool, {
     name: '10000 条 Query 词包',
+    clientBatchCode: 'b9759aad96a94c109fdce96ab4455294',
     sourceFileName: 'full-boundary.json',
     assignedToUserId: 'legacy-worker',
     requestId: '91919191-9191-4191-8191-919191919191',
@@ -108,7 +110,7 @@ test('query package import writes all 10000 rows in bounded parameterized chunks
   assert.equal(fixture.state.items.at(-1).rowNumber, 10_000);
   const itemWrites = fixture.state.calls.filter(({ sql }) => sql.startsWith('INSERT INTO query_package_items'));
   const packageWrite = fixture.state.calls.find(({ sql }) => sql.startsWith('INSERT INTO query_packages'));
-  assert.deepEqual(packageWrite.values.slice(4, 6), [null, null],
+  assert.deepEqual(packageWrite.values.slice(5, 7), [null, null],
     'deprecated assignee input must not establish ownership on new packages');
   assert.equal(itemWrites.length, 20, '10000 rows use twenty bounded 500-row SQL round trips');
   assert.ok(itemWrites.every(({ sql, values }) => sql.includes('jsonb_array_elements($2::jsonb)')

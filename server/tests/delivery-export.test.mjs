@@ -9,6 +9,8 @@ import {
   resolveDeliveryExportTaskIds,
 } from '../src/delivery-export.mjs';
 
+const CLIENT_BATCH_CODE = 'b9759aad96a94c109fdce96ab4455294';
+
 test('delivery export request separates all-ready scope from selected task ids', () => {
   assert.deepEqual(normalizeDeliveryExportRequest({ scope: 'ALL_READY' }), {
     scope: 'ALL_READY',
@@ -17,6 +19,10 @@ test('delivery export request separates all-ready scope from selected task ids',
     scope: 'QUERY_PACKAGE',
     queryPackageName: '  九月   选题  ',
   }), { scope: 'QUERY_PACKAGE', queryPackageName: '九月 选题' });
+  assert.deepEqual(normalizeDeliveryExportRequest({
+    scope: 'CLIENT_BATCH',
+    clientBatchCode: CLIENT_BATCH_CODE.toUpperCase(),
+  }), { scope: 'CLIENT_BATCH', clientBatchCode: CLIENT_BATCH_CODE });
   assert.deepEqual(normalizeDeliveryExportRequest({
     scope: 'SELECTED',
     taskIds: ['2', 1, 2],
@@ -34,6 +40,10 @@ test('delivery export request separates all-ready scope from selected task ids',
     /between 1 and 200/u,
   );
   assert.throws(
+    () => normalizeDeliveryExportRequest({ scope: 'CLIENT_BATCH', clientBatchCode: 'not-a-batch' }),
+    /32-character hexadecimal/u,
+  );
+  assert.throws(
     () => normalizeDeliveryExportRequest({ scope: 'SELECTED', taskIds: [1], queryPackageName: '九月' }),
     /cannot include queryPackageName/u,
   );
@@ -44,6 +54,18 @@ test('delivery export request separates all-ready scope from selected task ids',
     }),
     /between 1 and 200/u,
   );
+});
+
+test('client-batch export resolves every Query package in the same customer batch', async () => {
+  const actor = { role: 'ADMIN', userId: 1, username: 'admin' };
+  const calls = [];
+  assert.deepEqual(await resolveDeliveryExportTaskIds({
+    listAllDeliveryPoolTaskIds: async (options) => {
+      calls.push(options);
+      return [101, 202];
+    },
+  }, { scope: 'CLIENT_BATCH', clientBatchCode: CLIENT_BATCH_CODE }, actor), [101, 202]);
+  assert.deepEqual(calls, [{ actor, clientBatchCode: CLIENT_BATCH_CODE }]);
 });
 
 test('query-package export resolves only that package and never falls back when it is empty', async () => {

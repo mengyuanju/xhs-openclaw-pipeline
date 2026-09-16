@@ -8,6 +8,7 @@ import {
   resolveDeliveryArchiveSource,
 } from './delivery-source.mjs';
 import { IMAGE_FORMATS } from './image-options.mjs';
+import { orderedImageFileName } from '../../src/image-file-name.mjs';
 
 const DELIVERY_IMAGE_FORMATS = new Map(
   Object.values(IMAGE_FORMATS).map((format) => [format.mediaType, format]),
@@ -91,7 +92,8 @@ function xiaohongshuLinksText(task, links) {
 
 export function archiveFileName(task) {
   const title = safeFileName(currentCopy(task)?.title, `任务-${task.id}`);
-  const label = `${queryPackageFileNameSegment(task.sourceQueryPackageName)}-${title}`;
+  const source = task.sourceClientBatchCode ?? task.sourceQueryPackageName;
+  const label = `${queryPackageFileNameSegment(source)}-${title}`;
   return `${safeFileName(label, `任务-${task.id}`)}-资源包.zip`;
 }
 
@@ -131,7 +133,10 @@ async function createTaskArchiveZip(task, loadAsset) {
       throw new TypeError(`asset ${asset.id} has an unsupported delivery image format`);
     }
     const extension = `.${format.extension}`;
-    const requestedName = safeFileName(loaded.originalName, `图片-${index + 1}${extension}`);
+    const requestedName = safeFileName(
+      orderedImageFileName(loaded.originalName, index + 1, loaded.mediaType),
+      `${String(index + 1).padStart(2, '0')}-image${extension}`,
+    );
     const name = /\.[a-z0-9]{2,5}$/iu.test(requestedName) ? requestedName : `${requestedName}${extension}`;
     zip.file(uniqueFileName(name, usedNames), loaded.content);
   }
@@ -195,25 +200,27 @@ export async function writeBatchTaskArchive(tasks, loadAsset, output, {
     forceZip64: true,
     zlib: { level: 0 },
   });
-  const unassignedPackageDirectory = queryPackageFileNameSegment(null);
-  const packageDirectories = new Map([['', unassignedPackageDirectory]]);
-  const usedPackageDirectories = new Set([
-    unassignedPackageDirectory.toLocaleLowerCase('zh-CN'),
+  const unassignedClientBatchDirectory = safeFileName(null, '未归属甲方批次');
+  const clientBatchDirectories = new Map([['', unassignedClientBatchDirectory]]);
+  const usedClientBatchDirectories = new Set([
+    unassignedClientBatchDirectory.toLocaleLowerCase('zh-CN'),
   ]);
 
-  function packageDirectory(task) {
-    const packageName = String(task?.sourceQueryPackageName ?? '');
-    if (packageDirectories.has(packageName)) return packageDirectories.get(packageName);
-    const base = queryPackageFileNameSegment(packageName);
+  function clientBatchDirectory(task) {
+    const clientBatchCode = String(task?.sourceClientBatchCode ?? '');
+    if (clientBatchDirectories.has(clientBatchCode)) {
+      return clientBatchDirectories.get(clientBatchCode);
+    }
+    const base = safeFileName(clientBatchCode, '未归属甲方批次');
     let candidate = base;
     let suffix = 2;
-    while (usedPackageDirectories.has(candidate.toLocaleLowerCase('zh-CN'))) {
+    while (usedClientBatchDirectories.has(candidate.toLocaleLowerCase('zh-CN'))) {
       const ending = `-${suffix}`;
       candidate = `${[...base].slice(0, 120 - ending.length).join('')}${ending}`;
       suffix += 1;
     }
-    usedPackageDirectories.add(candidate.toLocaleLowerCase('zh-CN'));
-    packageDirectories.set(packageName, candidate);
+    usedClientBatchDirectories.add(candidate.toLocaleLowerCase('zh-CN'));
+    clientBatchDirectories.set(clientBatchCode, candidate);
     return candidate;
   }
   let transferError = null;
@@ -241,7 +248,7 @@ export async function writeBatchTaskArchive(tasks, loadAsset, output, {
         compression: 'DEFLATE',
         compressionOptions: { level: 6 },
       }), {
-        name: `${packageDirectory(task)}/${safeFileName(`任务-${task.id}-资源包`, '任务-资源包')}.zip`,
+        name: `${clientBatchDirectory(task)}/${safeFileName(`任务-${task.id}-资源包`, '任务-资源包')}.zip`,
         store: true,
       });
       await entryWritten;

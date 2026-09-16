@@ -17,11 +17,12 @@ export function canQualityCheckImage(session) {
 
 export function workflowNavigationHrefs(session) {
   const hrefs = ['/workbench'];
+  const role = primaryRole(session);
   const review = canReviewCopy(session);
   const qualityCheck = canQualityCheckCopy(session);
   const imageQualityCheck = canQualityCheckImage(session);
   if (review) hrefs.push('/query-packages');
-  if (review || qualityCheck) hrefs.push('/copy-flow');
+  if (role !== 'REVIEWER' && (review || qualityCheck)) hrefs.push('/copy-flow');
   if (qualityCheck) hrefs.push('/copy-qa');
   if (imageQualityCheck) hrefs.push('/image-qa');
   return hrefs;

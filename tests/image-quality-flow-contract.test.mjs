@@ -24,6 +24,9 @@ test('image initial review, independent QA and delivery have non-overlapping rol
   assert.match(imageQuality, /normalizeActor\(rawActor, \['ADMIN', 'USER'\]\)/u);
   assert.match(imageQuality, /role IN \('ADMIN','USER'\)/u);
   assert.match(imageQuality, /actor\.role !== 'ADMIN'[\s\S]{0,120}submitter_account_id/u);
+  assert.match(imageQuality, /jsonb_array_elements\(image_run\.result->'images'\)/u);
+  assert.match(imageQuality, /page\.image->>'deliveryAssetId'[\s\S]{0,80}page\.image->>'assetId'/u,
+    'image QA must expose only the final delivery asset bound to each logical page');
   assert.match(editing, /\['ADMIN','USER'\]/u);
   assert.match(editing, /t\.state IN \('MANUAL_ARCHIVE','IMAGE_REWORK_PENDING'\)/u);
   assert.match(delivery, /IMAGE_QA_NOT_RELEASED/u);

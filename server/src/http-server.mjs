@@ -1442,6 +1442,8 @@ function installRoutes(
         ? '交付池-全部可交付项.zip'
         : request.scope === 'QUERY_PACKAGE'
           ? `${queryPackageFileNameSegment(request.queryPackageName)}-交付资源.zip`
+          : request.scope === 'CLIENT_BATCH'
+            ? `${queryPackageFileNameSegment(request.clientBatchCode)}-交付资源.zip`
           : '交付池-已选资源.zip';
       const fileName = batchCode ? `${batchCode}-${sourceFileName}` : sourceFileName;
       let deliveryBatch = null;
@@ -1454,6 +1456,9 @@ function installRoutes(
             scope: request.scope,
             ...(request.scope === 'QUERY_PACKAGE'
               ? { queryPackageName: request.queryPackageName }
+              : {}),
+            ...(request.scope === 'CLIENT_BATCH'
+              ? { clientBatchCode: request.clientBatchCode }
               : {}),
             fileName,
             byteSize: persisted.byteSize,
@@ -1625,6 +1630,8 @@ function installRoutes(
         ? '交付池-全部文章与图片.xlsx'
         : request.scope === 'QUERY_PACKAGE'
           ? `${queryPackageFileNameSegment(request.queryPackageName)}-交付内容.xlsx`
+          : request.scope === 'CLIENT_BATCH'
+            ? `${queryPackageFileNameSegment(request.clientBatchCode)}-交付内容.xlsx`
           : '交付池-已选文章与图片.xlsx';
       const prepared = deliveryExportRegistry.issue(staged, actor, {
         fileName,
@@ -2049,7 +2056,10 @@ function installRoutes(
       limit: ctx.query.limit,
       offset: ctx.query.offset,
       includeTotal: ctx.query.includeTotal === 'true',
-      queryPackageName: ctx.query.queryPackageName,
+      ...(ctx.query.queryPackageName === undefined
+        ? {} : { queryPackageName: ctx.query.queryPackageName }),
+      ...(ctx.query.clientBatchCode === undefined
+        ? {} : { clientBatchCode: ctx.query.clientBatchCode }),
       ...(ctx.query.packingState === undefined
         ? {} : { packingState: ctx.query.packingState }),
     }, { actor });
@@ -2060,7 +2070,10 @@ function installRoutes(
     json(ctx, 200, await repository.listDeliveryBatches({
       limit: ctx.query.limit,
       offset: ctx.query.offset,
-      queryPackageName: ctx.query.queryPackageName,
+      ...(ctx.query.queryPackageName === undefined
+        ? {} : { queryPackageName: ctx.query.queryPackageName }),
+      ...(ctx.query.clientBatchCode === undefined
+        ? {} : { clientBatchCode: ctx.query.clientBatchCode }),
     }, { actor }));
   });
   router.get('/v1/delivery-batches/:batchId', async (ctx) => {

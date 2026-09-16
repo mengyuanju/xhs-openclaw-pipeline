@@ -116,10 +116,12 @@ test('fixture enforces stable actors through Query-package assignment, screening
     expectedStatus: 201,
     body: {
       name: 'Fixture 分配与撤权词包',
+      clientBatchCode: 'b9759aad96a94c109fdce96ab4455294',
       items: [{ query: '稳定身份筛选 Query' }],
     },
   })).data;
   assert.equal(created.assignedToAccountId, null);
+  assert.equal(created.clientBatchCode, 'b9759aad96a94c109fdce96ab4455294');
 
   const assignedToWorker = (await request(root, `/v1/query-packages/${created.id}/assignee`, {
     actor: admin,

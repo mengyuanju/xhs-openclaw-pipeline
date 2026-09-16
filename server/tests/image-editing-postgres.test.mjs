@@ -48,6 +48,10 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
     const copyRevisionId=Number(revision.id);
     await pool.query("INSERT INTO image_runs(id,task_id,copy_revision_id,status,image_production_chain_id) VALUES($1,$2,$3,'COMPLETED',$1)",[runId,taskId,copyRevisionId]);
     const png=await sharp({create:{width:1086,height:1448,channels:4,background:'white'}}).png().toBuffer(),sha256=imageHash(png);
+    const textPatch=await sharp({create:{width:200,height:100,channels:4,background:'#111827'}}).png().toBuffer();
+    const textPng=await sharp(png).composite([{input:textPatch,left:820,top:1300}]).png().toBuffer();
+    const localPatch=await sharp({create:{width:300,height:300,channels:4,background:'#dce8d4'}}).png().toBuffer();
+    const localPng=await sharp(png).composite([{input:localPatch,left:100,top:500}]).png().toBuffer();
     const images=[];
     for(let i=0;i<3;i++){
       const path=resolve(root,`source-${i}.png`);await writeFile(path,png);
@@ -62,7 +66,7 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
     const request=(extra={})=>({requestId:randomUUID(),sourceImageRunId:currentRun,sourceAssetId:currentAsset,copyRevisionId,sha256:currentHash,targetPage:2,operation:'TEXT',confirmation:'LIVE_IMAGE_COST_ACCEPTED',overlay:{text:'AI生成',textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',position:'bottom-right'},...extra});
     const validateImage=async({imagePath})=>({passed:true,model:'fake-vision',layoutMatched:true,ocrConfidence:1,
       ocrMismatches:[],unreadableText:[],recognizedText:{headline:'真实参考',subtitle:'',bullets:[],otherText:imagePath.endsWith('result.png')?['AI生成']:[]}});
-    const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{assert.match(prompt,/<trusted_business_rules kind="IMAGE_EDIT_SYSTEM">/u);assert.match(prompt,/AI_DISCLOSURE_LABEL/u);assert.equal(inputPaths.length,1);await writeFile(outputPath,png);return{model:'fake-text-edit'};}};
+    const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{assert.match(prompt,/<trusted_business_rules kind="IMAGE_EDIT_SYSTEM">/u);assert.match(prompt,/AI_DISCLOSURE_LABEL/u);assert.equal(inputPaths.length,2);await writeFile(outputPath,textPng);return{model:'fake-text-edit'};}};
     const action=async(id,name,extra={})=>{const e=await service.get(id);return service.action(id,name,{version:e.version,requestId:randomUUID(),reason:'test',...extra},actor);};
     await t.test('permissions, copy gate and source conflicts fail before queue insertion',async()=>{
       await assert.rejects(()=>service.create(taskId,request(),outsiderActor),{code:'FORBIDDEN'});
@@ -117,7 +121,7 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
         sourceAssetId:Number(lowAsset.id),copyRevisionId:Number(lowRevision.id),sha256,targetPage:2,
         operation:'TEXT',confirmation:'LIVE_IMAGE_COST_ACCEPTED',overlay:{text:'AI生成',textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',position:'bottom-right'}},actor);
       const claims=await Promise.all([
-        repository.claimImage('edit-test',1,2,1),repository.claimImage('edit-test',1,2,1),
+        repository.claimImage('edit-test',1,2,2),repository.claimImage('edit-test',1,2,2),
       ]);assert.equal(claims.filter(Boolean).length,1);
       const executorClaim=claims.find(Boolean);
       assert.equal(executorClaim.imageEdit.id,first.id);
@@ -131,7 +135,7 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
     let edited;
     await t.test('executor transfer produces a validated preview without changing current run',async()=>{
       edited=await service.create(taskId,request(),actor);
-      const claim=await repository.claimImage('edit-test',1,2,1);
+      const claim=await repository.claimImage('edit-test',1,2,2);
       assert.equal(claim.imageEdit.id,edited.id);
       const app=createControlPlaneApp({repository,storageRoot:root});
       const server=await new Promise(resolveServer=>{const listening=app.listen(0,'127.0.0.1',()=>resolveServer(listening));});
@@ -152,6 +156,7 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       assert.equal((await pool.query('SELECT status FROM task_executions WHERE id=$1',[claim.execution.id])).rows[0].status,'SUCCEEDED');
       assert.equal((await pool.query('SELECT execution_id FROM image_runs WHERE id=$1',[e.result.image_run_id])).rows[0].execution_id,claim.execution.id);
       assert.deepEqual(run.result.images[0],images[0]);assert.deepEqual(run.result.images[2],images[2]);assert.notEqual(run.result.images[1].assetId,images[1].assetId);
+      assert.equal((await service.asset(Number(e.result.asset_id),taskId)).original_name,'02-image.png');
       const members=(await pool.query('SELECT id FROM image_run_asset_view WHERE image_run_id=$1',[e.result.image_run_id])).rows;
       assert.equal(members.length,3);
     });
@@ -180,10 +185,17 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       const source=await service.asset(sourceAssetId,taskId);
       const localEdit=await service.create(taskId,request({sourceImageRunId:currentRun,sourceAssetId,
         sha256:source.sha256,targetPage:1,operation:'AI_LOCAL',instruction:'只调整背景颜色'}),actor);
-      const localClient={runImageEdit:async({prompt,outputPath})=>{
-        assert.match(prompt,/LOCAL_PROMPT_EDIT/u);assert.doesNotMatch(prompt,/AI生成/u);
-        await writeFile(outputPath,png);return{model:'fake-local-edit'};
-      }};
+      const localClient={
+        runVision:async()=>({model:'fake-localizer',rawText:JSON.stringify({
+          passed:true,confidence:0.99,candidateCount:1,targetDescription:'唯一背景区域',
+          region:{x:100,y:500,width:300,height:300},reason:'测试目标唯一且不覆盖文字',
+          checks:{instructionSpecific:true,exactlyOneTarget:true,wholeTargetInsideRegion:true,protectedTextExcluded:true},
+        })}),
+        runImageEdit:async({prompt,outputPath})=>{
+        assert.match(prompt,/LOCAL_MASK_EDIT/u);assert.doesNotMatch(prompt,/AI生成/u);
+        await writeFile(outputPath,localPng);return{model:'fake-local-edit'};
+        },
+      };
       const localValidation=async()=>({passed:true,model:'fake-vision',layoutMatched:true,ocrConfidence:1,
         ocrMismatches:[],unreadableText:[],recognizedText:{headline:'真实参考',subtitle:'',bullets:[],otherText:[]}});
       const processed=await processImageEdit({service,storageRoot:root,workerId:'page-scoped-ai-edit',agentClient:localClient,validateImage:localValidation});

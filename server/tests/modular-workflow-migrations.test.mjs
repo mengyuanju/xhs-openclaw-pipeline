@@ -316,3 +316,24 @@ test('administrator direct copy-QA approval is revision-bound and auditable', as
     'the historical administrator identity must survive account deletion');
   assert.doesNotMatch(sql, /UPDATE\s+tasks|DELETE\s+FROM\s+tasks|TRUNCATE\s+tasks/u);
 });
+
+test('client batch migration backfills the confirmed history and preserves delivery snapshots', async () => {
+  const sql = await migration('0058_client_batch_delivery_grouping');
+  const historicalCode = 'b9759aad96a94c109fdce96ab4455294';
+
+  assert.match(sql, /ALTER TABLE query_packages[\s\S]*ADD COLUMN client_batch_code varchar\(32\)[\s\S]*NOT NULL DEFAULT 'b9759aad96a94c109fdce96ab4455294'/u);
+  assert.match(sql, /ALTER TABLE production_batches[\s\S]*ADD COLUMN client_batch_code varchar\(32\)[\s\S]*NOT NULL DEFAULT 'b9759aad96a94c109fdce96ab4455294'/u);
+  assert.equal((sql.match(/ALTER COLUMN client_batch_code DROP DEFAULT/gu) ?? []).length, 2,
+    'new imports must provide a real client batch instead of silently inheriting the historical one');
+  assert.match(sql, /UPDATE tasks[\s\S]*SET source_client_batch_code = 'b9759aad96a94c109fdce96ab4455294'[\s\S]*WHERE source_query_package_id IS NOT NULL[\s\S]*OR source_query_package_snapshot_id IS NOT NULL[\s\S]*OR source_query_package_name IS NOT NULL/u);
+  assert.doesNotMatch(sql, /UPDATE tasks\s+SET source_client_batch_code = '[0-9a-f]+'\s*;/u,
+    'the historical task attribution must never update every standalone task');
+  assert.match(sql, /scope IN \('ALL_READY', 'QUERY_PACKAGE', 'CLIENT_BATCH', 'SELECTED'\)/u);
+  assert.match(sql, /scope = 'CLIENT_BATCH'[\s\S]*query_package_name IS NULL[\s\S]*client_batch_code IS NOT NULL/u);
+  assert.match(sql, /ADD COLUMN client_batch_code_snapshot varchar\(32\)[\s\S]*DEFAULT 'b9759aad96a94c109fdce96ab4455294'/u,
+    'append-only delivery members must be backfilled by ADD COLUMN rather than UPDATE');
+  assert.doesNotMatch(sql, /UPDATE delivery_batch_items/u);
+  assert.match(sql, /ALTER COLUMN client_batch_code_snapshot DROP DEFAULT/u);
+  assert.ok(sql.includes(historicalCode));
+  assert.doesNotMatch(sql, /DELETE\s+FROM\s+tasks|TRUNCATE\s+tasks/u);
+});

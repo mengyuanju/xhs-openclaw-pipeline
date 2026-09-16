@@ -19,6 +19,7 @@ export type DeliveryEntry = {
   query: string;
   queryPackageId: number | null;
   queryPackageName: string | null;
+  clientBatchCode: string | null;
   queryPackageDeleted: boolean;
   copyRevisionId: number;
   imageRunId: string;
@@ -42,6 +43,7 @@ export type DeliveryEntryBatch = {
 export type DeliveryQueryPackageFacet = {
   id: number;
   name: string;
+  clientBatchCode: string | null;
   deleted: boolean;
   count: number;
   unuploadedCount: number;
@@ -50,6 +52,15 @@ export type DeliveryQueryPackageFacet = {
   pendingCount: number;
   packedCount: number;
   updatedCount: number;
+};
+
+export type DeliveryClientBatchFacet = {
+  code: string;
+  count: number;
+  pendingCount: number;
+  packedCount: number;
+  updatedCount: number;
+  queryPackageCount: number;
 };
 
 export type DeliveryUnassignedFacet = {
@@ -66,6 +77,7 @@ export type DeliveryPoolPage = {
   items: DeliveryEntry[];
   total: number;
   facets: {
+    clientBatches: DeliveryClientBatchFacet[];
     queryPackages: DeliveryQueryPackageFacet[];
     unassigned: DeliveryUnassignedFacet | null;
   };
@@ -92,9 +104,10 @@ export type DeliveryBatchSummary = {
   id: number;
   publicId: string;
   code: string;
-  scope: 'ALL_READY' | 'QUERY_PACKAGE' | 'SELECTED';
+  scope: 'ALL_READY' | 'QUERY_PACKAGE' | 'CLIENT_BATCH' | 'SELECTED';
   queryPackageName: string | null;
   queryPackageNames: string[];
+  clientBatchCode: string | null;
   status: 'GENERATED' | 'DOWNLOADED';
   fileName: string;
   byteSize: number;
@@ -117,6 +130,7 @@ export type DeliveryBatchItem = {
   query: string;
   queryPackageId: number | null;
   queryPackageName: string | null;
+  clientBatchCode: string | null;
 };
 
 export type DeliveryBatchDetail = DeliveryBatchSummary & { items: DeliveryBatchItem[] };
@@ -125,6 +139,7 @@ export type DeliveryBatchPage = { items: DeliveryBatchSummary[]; total: number }
 export type DeliveryPoolExportInput =
   | { scope: 'ALL_READY' }
   | { scope: 'QUERY_PACKAGE'; queryPackageName: string }
+  | { scope: 'CLIENT_BATCH'; clientBatchCode: string }
   | { scope: 'SELECTED'; taskIds: number[] };
 
 export type DeliveryPreviewPublishResult = {
@@ -157,6 +172,12 @@ function normalizeQueryPackageName(value: unknown): string | null {
   return name && [...name].length <= 200 ? name : null;
 }
 
+function normalizeClientBatchCode(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const code = value.trim().toLowerCase();
+  return /^[0-9a-f]{32}$/u.test(code) ? code : null;
+}
+
 function normalizeEntry(value: unknown): DeliveryEntry | null {
   const item = record(value);
   if (!item) return null;
@@ -183,6 +204,7 @@ function normalizeEntry(value: unknown): DeliveryEntry | null {
     query: typeof item.query === 'string' ? item.query : '',
     queryPackageId,
     queryPackageName: normalizeQueryPackageName(item.queryPackageName),
+    clientBatchCode: normalizeClientBatchCode(item.clientBatchCode),
     queryPackageDeleted: item.queryPackageDeleted === true,
     approvedAt: typeof item.approvedAt === 'string' ? item.approvedAt : '',
     preview: normalizePreviewLink(item.preview),
@@ -324,6 +346,7 @@ export function normalizeDeliveryPoolPage(value: unknown): DeliveryPoolPage {
     queryPackageMap.set(id, {
       id,
       name,
+      clientBatchCode: normalizeClientBatchCode(facet?.clientBatchCode),
       deleted: facet?.deleted === true,
       count,
       unuploadedCount,
@@ -335,6 +358,27 @@ export function normalizeDeliveryPoolPage(value: unknown): DeliveryPoolPage {
     });
   }
   const queryPackages = [...queryPackageMap.values()];
+  const rawClientBatches = Array.isArray(facetEnvelope?.clientBatches)
+    ? facetEnvelope.clientBatches
+    : [];
+  const clientBatchMap = new Map<string, DeliveryClientBatchFacet>();
+  for (const value of rawClientBatches) {
+    const facet = record(value);
+    const code = normalizeClientBatchCode(facet?.code);
+    const count = Number(facet?.count);
+    const pendingCount = Number(facet?.pendingCount);
+    const packedCount = Number(facet?.packedCount);
+    const updatedCount = Number(facet?.updatedCount);
+    const queryPackageCount = Number(facet?.queryPackageCount);
+    if (!code || [count, pendingCount, packedCount, updatedCount, queryPackageCount]
+      .some((candidate) => !Number.isSafeInteger(candidate) || candidate < 0)
+      || pendingCount + packedCount !== count || updatedCount > pendingCount
+      || clientBatchMap.has(code)) continue;
+    clientBatchMap.set(code, {
+      code, count, pendingCount, packedCount, updatedCount, queryPackageCount,
+    });
+  }
+  const clientBatches = [...clientBatchMap.values()];
   const rawUnassigned = record(facetEnvelope?.unassigned);
   const unassignedCounts = rawUnassigned
     ? [
@@ -386,7 +430,7 @@ export function normalizeDeliveryPoolPage(value: unknown): DeliveryPoolPage {
     ? { readyCount: summaryCounts[0], pendingCount: summaryCounts[1],
         packedCount: summaryCounts[2], updatedCount: summaryCounts[3] }
     : fallbackSummary;
-  return { items, total, facets: { queryPackages, unassigned }, summary };
+  return { items, total, facets: { clientBatches, queryPackages, unassigned }, summary };
 }
 
 export function updateTaskSelection(
@@ -424,26 +468,26 @@ export function filterDeliveryPoolEntries(
   const terms = parseDeliveryPoolSearchTerms(search);
   if (terms.length === 0) return entries;
   return entries.filter((entry) => {
-    const candidate = `${entry.taskId} ${entry.query} ${entry.queryPackageName ?? '未归属词包'}`.toLocaleLowerCase('zh-CN');
+    const candidate = `${entry.taskId} ${entry.query} ${entry.queryPackageName ?? '未归属词包'} ${entry.clientBatchCode ?? '未归属甲方批次'}`.toLocaleLowerCase('zh-CN');
     return terms.some((term) => candidate.includes(term));
   });
 }
 
 export function buildDeliveryPoolExportInput(
   selectedTaskIds: number[],
-  queryPackageName = '',
+  clientBatchCode = '',
 ): DeliveryPoolExportInput {
   if (!Array.isArray(selectedTaskIds)) throw new TypeError('交付池导出范围无效，请刷新后重试');
-  if (typeof queryPackageName !== 'string') {
+  if (typeof clientBatchCode !== 'string') {
     throw new TypeError('交付池导出范围无效，请刷新后重试');
   }
-  const normalizedPackageName = queryPackageName.replace(/\s+/gu, ' ').trim();
+  const normalizedClientBatchCode = clientBatchCode.trim().toLowerCase();
   if (selectedTaskIds.length === 0) {
-    if ([...normalizedPackageName].length > 200) {
+    if (normalizedClientBatchCode && !/^[0-9a-f]{32}$/u.test(normalizedClientBatchCode)) {
       throw new TypeError('交付池导出范围无效，请刷新后重试');
     }
-    return normalizedPackageName
-      ? { scope: 'QUERY_PACKAGE', queryPackageName: normalizedPackageName }
+    return normalizedClientBatchCode
+      ? { scope: 'CLIENT_BATCH', clientBatchCode: normalizedClientBatchCode }
       : { scope: 'ALL_READY' };
   }
   const taskIds = [...new Set(selectedTaskIds)];
@@ -508,7 +552,7 @@ function normalizeDeliveryBatchSummary(value: unknown): DeliveryBatchSummary | n
   if (!Number.isSafeInteger(id) || id < 1
     || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(publicId)
     || !/^JF-[0-9A-F]{8}$/u.test(code)
-    || !['ALL_READY', 'QUERY_PACKAGE', 'SELECTED'].includes(scope)
+    || !['ALL_READY', 'QUERY_PACKAGE', 'CLIENT_BATCH', 'SELECTED'].includes(scope)
     || !['GENERATED', 'DOWNLOADED'].includes(status)
     || !Number.isSafeInteger(byteSize) || byteSize < 1
     || !Number.isSafeInteger(taskCount) || taskCount < 1
@@ -526,6 +570,7 @@ function normalizeDeliveryBatchSummary(value: unknown): DeliveryBatchSummary | n
     queryPackageNames: Array.isArray(item.queryPackageNames)
       ? [...new Set(item.queryPackageNames.map(normalizeQueryPackageName).filter((name): name is string => Boolean(name)))]
       : [],
+    clientBatchCode: normalizeClientBatchCode(item.clientBatchCode),
     status: status as DeliveryBatchSummary['status'],
     fileName: item.fileName,
     byteSize,
@@ -578,6 +623,7 @@ export function normalizeDeliveryBatchDetail(value: unknown): DeliveryBatchDetai
       query: item.query,
       queryPackageId,
       queryPackageName: normalizeQueryPackageName(item.queryPackageName),
+      clientBatchCode: normalizeClientBatchCode(item.clientBatchCode),
     };
   });
   if (items.length !== summary.taskCount) throw new TypeError('交付批次详情数量不一致');

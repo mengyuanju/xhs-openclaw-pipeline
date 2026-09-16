@@ -46,7 +46,7 @@ const TASK_STATES = new Set([
   'ALL', 'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_QC_PENDING', 'COPY_FAILED',
   'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'IMAGE_QC_PENDING', 'IMAGE_REWORK_PENDING', 'REVIEWED', 'CANCELLED',
   'queued', 'running', 'copyReview', 'imageReview', 'failed', 'completed', 'cancelled',
-  'copyQaReturned',
+  'copyQaReturned', 'personalReview', 'personalProduction',
 ]);
 const ATTENTION = new Set<TaskAttention>(['NONE', 'ANOMALY', 'STALE', 'FAILED']);
 const PERSONAL_SCOPES = new Set<PersonalTaskScope>(['ALL', 'ASSIGNED', 'CREATED']);

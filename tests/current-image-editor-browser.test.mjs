@@ -86,7 +86,7 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     assert.equal(actions.length,0);
     await page.getByLabel('采用拒绝重试原因').fill('预览确认');await page.getByRole('button',{name:'采用此版本',exact:true}).click();
     await page.getByText('局部修改 · 已采用',{exact:true}).waitFor();assert.equal(actions.length,1);assert.match(actions[0].data.requestId,/^[a-f0-9-]{36}$/);
-    await page.getByRole('tab',{name:'实体替换'}).click();
+    submitted=null;await page.getByRole('tab',{name:'实体替换'}).click();
     assert.equal(await page.getByLabel('参考图来源说明').count(),0);
     assert.equal(await page.getByText('精确合成',{exact:true}).count(),0);
     const uploadInput=page.getByLabel('上传真实产品参考图'),uploadPicker=uploadInput.locator('..');
@@ -103,9 +103,27 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     await uploadInput.setInputFiles({name:'reference.png',mimeType:'image/png',buffer:png});
     await page.getByRole('img',{name:'已上传的真实产品参考图',exact:true}).waitFor();
     assert.equal(await page.getByRole('button',{name:'生成修改预览',exact:true}).isDisabled(),false);
+    await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
+    await page.getByRole('alert').getByText('请填写需要替换的目标物品说明',{exact:false}).waitFor();
+    assert.equal(submitted,null);
+    await page.getByLabel('目标物品说明').fill('画面右侧台面上、木托盘后方的米白色拿铁杯');
+    await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
+    await page.getByRole('alert').getByText('请在左侧原图上拖动框选',{exact:false}).waitFor();
+    assert.equal(submitted,null);
+    const targetCanvas=page.getByRole('img',{name:'实时修改预览'}),targetBox=await targetCanvas.boundingBox();
+    assert.ok(targetBox);
+    await page.mouse.move(targetBox.x+targetBox.width*.62,targetBox.y+targetBox.height*.42);
+    await page.mouse.down();
+    await page.mouse.move(targetBox.x+targetBox.width*.88,targetBox.y+targetBox.height*.68,{steps:5});
+    await page.mouse.up();
+    await page.getByRole('status').getByText('已框选',{exact:false}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'重新框选',exact:true}).isDisabled(),false);
     await page.getByLabel('确认调用图片编辑与实体校验模型，会产生费用；自动修复和人工重试也可能收费。').check();
     await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
     assert.equal(submitted.operation,'AI_FUSION');assert.deepEqual(submitted.references,[{assetId:9,purpose:'真实产品替换'}]);assert.equal(submitted.mask,undefined);
+    assert.equal(submitted.target.description,'画面右侧台面上、木托盘后方的米白色拿铁杯');
+    assert.ok(submitted.target.region.width>24&&submitted.target.region.height>24);
+    assert.match(submitted.instruction,/木托盘后方/u);
     assert.deepEqual(errors,[]);
   }finally{await browser?.close();if(server)await new Promise(r=>server.close(r));assert.ok(resolve(root).startsWith(resolve(tmpdir())));await rm(root,{recursive:true,force:true});}
 });

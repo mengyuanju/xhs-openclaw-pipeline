@@ -124,7 +124,7 @@ test('image lane dispatches a manual edit to the edit processor without using no
   });
   await agent.prepare();
   await agent.register();
-  assert.equal(registration.imageEditExecutorVersion,1);
+  assert.equal(registration.imageEditExecutorVersion,2);
   const outcome=await agent.runImageOnce();
   assert.equal(outcome.status,'SUCCEEDED');
   assert.equal(edits,1);

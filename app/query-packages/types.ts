@@ -16,6 +16,7 @@ export type QueryPackageCounts = {
 export type QueryPackageSummary = {
   id: number;
   name: string;
+  clientBatchCode: string | null;
   status: string;
   assignedToUserId: string | null;
   assignedToAccountId: number | null;
@@ -132,6 +133,10 @@ export function normalizePackageSummary(value: unknown): QueryPackageSummary | n
     ? row.counts as Record<string, unknown>
     : {};
   const assignedToAccountId = Number(row.assignedToAccountId);
+  const clientBatchCode = typeof row.clientBatchCode === 'string'
+    && /^[0-9a-f]{32}$/iu.test(row.clientBatchCode.trim())
+    ? row.clientBatchCode.trim().toLowerCase()
+    : null;
   const assignedToRole = ['REVIEWER', 'USER'].includes(String(row.assignedToRole))
     ? row.assignedToRole as 'REVIEWER' | 'USER'
     : null;
@@ -141,6 +146,7 @@ export function normalizePackageSummary(value: unknown): QueryPackageSummary | n
   return {
     id,
     name: row.name.trim(),
+    clientBatchCode,
     status: typeof row.status === 'string' ? row.status : 'SCREENING',
     assignedToUserId: typeof row.assignedToUserId === 'string' && row.assignedToUserId.trim()
       ? row.assignedToUserId.trim()

@@ -6,6 +6,7 @@ import { ControlPlaneConflictError, ControlPlaneAuthorizationError, ControlPlane
 import { withdrawReadyDeliveryEntries } from './final-delivery.mjs';
 import { imagePageDisclosure, imageResultScopedToPage, imageSettingsScopedToPage } from './image-edit-lineage.mjs';
 import { boundedNumber, shortText, normalizeManualOverlay, normalizeMask, decodeReference, imageHash, safeRect, renderMask, EDIT_WIDTH, EDIT_HEIGHT } from '../../src/image-edit-pixels.mjs';
+import { orderedImageFileName } from '../../src/image-file-name.mjs';
 import { normalizeImageEditRepairMaxAttempts } from '../../src/production-settings.mjs';
 
 const conflict = message => { throw new ControlPlaneConflictError('IMAGE_EDIT_CONFLICT', message); };
@@ -33,7 +34,7 @@ export function editStoragePath(root, stored) {
 }
 export function normalizeEdit(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('修改参数无效');
-  const allowed = ['requestId','sourceImageRunId','sourceAssetId','copyRevisionId','sha256','targetPage','operation','instruction','preserve','negative','overlay','mask','references','confirmation','draft','restoreRunId'];
+  const allowed = ['requestId','sourceImageRunId','sourceAssetId','copyRevisionId','sha256','targetPage','operation','instruction','preserve','negative','overlay','mask','target','references','confirmation','draft','restoreRunId'];
   if(Object.keys(input).some(k => !allowed.includes(k))) throw new TypeError('未知修改参数');
   const operation = input.operation;
   if(!['TEXT','COMPOSITE','AI_FUSION','AI_FULL','AI_LOCAL','RESTORE'].includes(operation)) throw new TypeError('修改类型无效');
@@ -50,6 +51,18 @@ export function normalizeEdit(input) {
       crop: r.crop ? { x: boundedNumber(r.crop.x,0,16000), y: boundedNumber(r.crop.y,0,16000), width: boundedNumber(r.crop.width,1,16000), height: boundedNumber(r.crop.height,1,16000) } : null,
       removeBackground: r.removeBackground === true } : {}) }));
   if(new Set(references.map(r=>r.assetId)).size !== references.length) throw new TypeError('参考图重复');
+  if(operation !== 'AI_FUSION' && input.target != null) throw new TypeError('仅真实产品替换可指定目标物体');
+  let target=null;
+  if(operation === 'AI_FUSION') {
+    const value=input.target;
+    if(!value || typeof value !== 'object' || Array.isArray(value)
+        || Object.keys(value).some(key=>!['description','region'].includes(key))) {
+      throw new TypeError('真实产品替换必须提供目标描述和框选区域');
+    }
+    const region=safeRect(value.region);
+    if(region.width < 24 || region.height < 24) throw new TypeError('目标框选区域过小');
+    target={description:shortText(value.description,500),region};
+  }
   const overlay=operation === 'TEXT' ? normalizeManualOverlay({...input.overlay,textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',
     size:32,margin:32,opacity:1,color:'#ffffff',background:'#111827',position:'bottom-right'}) : null;
   return { requestId: normalizeUuid(input.requestId,'requestId'), sourceImageRunId: normalizeUuid(input.sourceImageRunId,'sourceImageRunId'),
@@ -60,7 +73,7 @@ export function normalizeEdit(input) {
     // New local edits locate the target from the operator's prompt. Keep accepting
     // a mask for already-created clients and queued historical requests.
     mask: operation === 'AI_LOCAL' && input.mask != null ? normalizeMask(input.mask) : null,
-    references, confirmation: usesImageModel&&confirmed ? input.confirmation : null, draft,
+    target,references, confirmation: usesImageModel&&confirmed ? input.confirmation : null, draft,
     restoreRunId: operation === 'RESTORE' ? normalizeUuid(input.restoreRunId,'restoreRunId') : null };
 }
 export function imageAssetIds(result) {
@@ -139,14 +152,14 @@ export function createImageEditingService({ pool, storageRoot }) {
     try { return await editTransaction(pool,async c=>{stagedFiles.set(c,files);try{return await action(c);}finally{stagedFiles.delete(c);}}); }
     catch(error){await Promise.all(files.map(path=>unlink(path).catch(()=>{})));throw error;}
   };
-  async function storeAsset(c,taskId,run,bytes,role,metadata,parent=null) {
+  async function storeAsset(c,taskId,run,bytes,role,metadata,parent=null,originalName=null) {
     const id = randomUUID(), directory=resolve(storageRoot,'image-edits',String(normalizeTaskId(taskId)));
     await mkdir(directory,{recursive:true});
     const path=resolve(directory,`${id}.png`);
     await writeFile(path,bytes,{flag:'wx'});
     stagedFiles.get(c)?.push(path);
     try { return (await c.query(`INSERT INTO assets(task_id,image_run_id,media_type,byte_size,sha256,storage_path,original_name,image_production_chain_id,artifact_key,origin_image_run_id,active,parent_asset_id,asset_role,edit_metadata)
-      VALUES($1,$2,'image/png',$3,$4,$5,$6,$7,$8,$2,false,$9,$10,$11) RETURNING *`,[taskId,run.id,bytes.length,imageHash(bytes),path,`${role.toLowerCase()}-${id}.png`,run.image_production_chain_id,id,parent,role,metadata])).rows[0]; }
+      VALUES($1,$2,'image/png',$3,$4,$5,$6,$7,$8,$2,false,$9,$10,$11) RETURNING *`,[taskId,run.id,bytes.length,imageHash(bytes),path,originalName??`${role.toLowerCase()}-${id}.png`,run.image_production_chain_id,id,parent,role,metadata])).rows[0]; }
     catch(error) { await unlink(path).catch(()=>{}); throw error; }
   }
   async function lockedExecutorEdit(c,rawExecutionId,rawEditId,rawLeaseToken,{allowCompleted=false}={}) {
@@ -408,7 +421,8 @@ export function createImageEditingService({ pool, storageRoot }) {
         if(validation?.integrity?.sha256!==imageHash(bytes))throw new TypeError('图片修改结果与校验哈希不一致');
         if(validation?.passed!==true) throw new TypeError('校验未通过');
         const run=(await c.query("INSERT INTO image_runs(id,task_id,execution_id,copy_revision_id,status,image_production_chain_id,finished_at) VALUES($1,$2,$3,$4,'COMPLETED',$1,now()) RETURNING *",[randomUUID(),e.task_id,e.execution_id??null,e.copy_revision_id])).rows[0];
-        const asset=await storeAsset(c,Number(e.task_id),run,bytes,'DELIVERY',{operation:e.operation,editId:e.id,disclosure:e.config.overlay?.disclosureType?{type:e.config.overlay.disclosureType,text:e.config.overlay.text}:null,validation},e.source_asset_id);
+        const asset=await storeAsset(c,Number(e.task_id),run,bytes,'DELIVERY',{operation:e.operation,editId:e.id,targetPage:Number(e.target_page),disclosure:e.config.overlay?.disclosureType?{type:e.config.overlay.disclosureType,text:e.config.overlay.text}:null,validation},e.source_asset_id,
+          orderedImageFileName(source.source.original_name,e.target_page,'image/png'));
         const maskAsset=mask?await storeAsset(c,Number(e.task_id),run,mask,'MASK',{editId:e.id},e.source_asset_id):null;
         const result=replaceImagePage(originalResult??source.run.result,e.target_page,asset);
         result.images[e.target_page-1].imageEditRequiredText=validation.requiredText;

@@ -19,6 +19,7 @@ const worker = Object.freeze({
   userId: 22,
   username: 'worker',
 });
+const clientBatchCode = 'b9759aad96a94c109fdce96ab4455294';
 
 function deliveryRow(id) {
   return {
@@ -27,6 +28,7 @@ function deliveryRow(id) {
     query: `query-${id}`,
     source_query_package_id: 9,
     source_query_package_name: '九月选题',
+    source_client_batch_code: clientBatchCode,
     copy_revision_id: 200 + id,
     image_run_id: `run-${id}`,
     status: 'READY',
@@ -36,20 +38,20 @@ function deliveryRow(id) {
   };
 }
 
-test('admin delivery pool page applies an exact package-name filter and returns unfiltered facets', async () => {
+test('admin delivery pool combines different Query packages under one exact client batch', async () => {
   const calls = [];
   const pool = {
     query: async (sql, values) => {
       calls.push({ sql, values });
       if (/AS name,[\s\S]*COUNT\(\*\)/u.test(sql)) {
         return { rows: [
-          { id: '9', name: '九月选题', deleted: false, count: '51', unuploaded_count: '40', published_count: '10', revoked_count: '1' },
-          { id: '10', name: '十月选题', deleted: true, count: '7', unuploaded_count: '7', published_count: '0', revoked_count: '0' },
-          { id: null, name: null, count: '34', unuploaded_count: '34', published_count: '0', revoked_count: '0' },
+          { id: '9', name: '九月选题', client_batch_code: clientBatchCode, deleted: false, count: '51', unuploaded_count: '40', published_count: '10', revoked_count: '1' },
+          { id: '10', name: '十月选题', client_batch_code: clientBatchCode, deleted: true, count: '7', unuploaded_count: '7', published_count: '0', revoked_count: '0' },
+          { id: null, name: null, client_batch_code: null, count: '34', unuploaded_count: '34', published_count: '0', revoked_count: '0' },
         ] };
       }
       return /COUNT\(\*\)::bigint AS total/u.test(sql)
-        ? { rows: [{ total: '51' }] }
+        ? { rows: [{ total: '58' }] }
         : { rows: [deliveryRow(1)] };
     },
   };
@@ -57,33 +59,36 @@ test('admin delivery pool page applies an exact package-name filter and returns 
     limit: 200,
     offset: 0,
     includeTotal: true,
-    queryPackageName: '  九月选题  ',
+    clientBatchCode: `  ${clientBatchCode.toUpperCase()}  `,
   }, admin);
-  assert.equal(page.total, 51);
+  assert.equal(page.total, 58);
   assert.equal(page.items[0].taskId, 101);
   assert.equal(page.items[0].queryPackageName, '九月选题');
+  assert.equal(page.items[0].clientBatchCode, clientBatchCode);
   assert.equal(page.items[0].packingState, 'UNPACKED');
   assert.deepEqual(page.facets, {
     queryPackages: [
-      { id: 9, name: '九月选题', deleted: false, count: 51, unuploadedCount: 40, publishedCount: 10, revokedCount: 1, pendingCount: 51, packedCount: 0, updatedCount: 0 },
-      { id: 10, name: '十月选题', deleted: true, count: 7, unuploadedCount: 7, publishedCount: 0, revokedCount: 0, pendingCount: 7, packedCount: 0, updatedCount: 0 },
+      { id: 9, name: '九月选题', clientBatchCode, deleted: false, count: 51, unuploadedCount: 40, publishedCount: 10, revokedCount: 1, pendingCount: 51, packedCount: 0, updatedCount: 0 },
+      { id: 10, name: '十月选题', clientBatchCode, deleted: true, count: 7, unuploadedCount: 7, publishedCount: 0, revokedCount: 0, pendingCount: 7, packedCount: 0, updatedCount: 0 },
     ],
+    clientBatches: [{ code: clientBatchCode, count: 58, pendingCount: 58,
+      packedCount: 0, updatedCount: 0, queryPackageCount: 2 }],
     unassigned: { count: 34, unuploadedCount: 34, publishedCount: 0, revokedCount: 0, pendingCount: 34, packedCount: 0, updatedCount: 0 },
   });
   assert.deepEqual(page.summary, {
-    readyCount: 51, pendingCount: 51, packedCount: 0, updatedCount: 0,
+    readyCount: 58, pendingCount: 58, packedCount: 0, updatedCount: 0,
   });
   const pageCall = calls.find(({ sql }) => /LIMIT \$2 OFFSET \$3/u.test(sql));
   const countCall = calls.find(({ sql }) => /COUNT\(\*\)::bigint AS total/u.test(sql));
   const facetCall = calls.find(({ sql }) => /AS name,[\s\S]*COUNT\(\*\)::bigint AS count/u.test(sql));
-  assert.deepEqual(pageCall.values, ['九月选题', 200, 0]);
-  assert.deepEqual(countCall.values, ['九月选题']);
+  assert.deepEqual(pageCall.values, [clientBatchCode, 200, 0]);
+  assert.deepEqual(countCall.values, [clientBatchCode]);
   assert.deepEqual(facetCall.values, []);
   assert.doesNotMatch(pageCall.sql, /task\.assigned_to_user_id/u);
   assert.doesNotMatch(countCall.sql, /task\.assigned_to_user_id/u);
   assert.doesNotMatch(facetCall.sql, /task\.assigned_to_user_id/u);
-  assert.match(pageCall.sql, /task\.source_query_package_name = \$1/u);
-  assert.match(countCall.sql, /task\.source_query_package_name = \$1/u);
+  assert.match(pageCall.sql, /task\.source_client_batch_code = \$1/u);
+  assert.match(countCall.sql, /task\.source_client_batch_code = \$1/u);
   assert.doesNotMatch(facetCall.sql, /source_query_package_name =/u,
     'facets describe every package visible to the actor, not only the active package');
   assert.doesNotMatch(facetCall.sql, /source_query_package_name IS NOT NULL/u);
@@ -91,7 +96,7 @@ test('admin delivery pool page applies an exact package-name filter and returns 
   assert.match(facetCall.sql, /delivery\.preview_id IS NULL/u);
 });
 
-test('complete delivery snapshot is admin-only, exact-package scoped and has no pagination clause', async () => {
+test('complete delivery snapshot is admin-only, exact-client-batch scoped and has no pagination clause', async () => {
   let sql;
   let values;
   const pool = {
@@ -102,13 +107,13 @@ test('complete delivery snapshot is admin-only, exact-package scoped and has no 
     },
   };
   const taskIds = await listAllDeliveryPoolTaskIds(pool, admin, {
-    queryPackageName: '  九月选题  ',
+    clientBatchCode,
   });
   assert.deepEqual(taskIds, [7, 8]);
-  assert.deepEqual(values, ['九月选题']);
+  assert.deepEqual(values, [clientBatchCode]);
   assert.doesNotMatch(sql, /\bLIMIT\b|\bOFFSET\b/u);
   assert.match(sql, /delivery\.status = 'READY'/u);
-  assert.match(sql, /task\.source_query_package_name = \$1/u);
+  assert.match(sql, /task\.source_client_batch_code = \$1/u);
 });
 
 test('delivery packing state follows the exact copy and image version instead of a recycled entry id', async () => {

@@ -52,6 +52,7 @@ const apiPath = (path: string) => `/api/control-plane${path}`;
 const QUERY_PACKAGE_LIST_LIMIT = 200;
 const QUERY_PACKAGE_ITEM_FETCH_LIMIT = 200;
 const QUERY_PACKAGE_VIRTUAL_ROW_HEIGHT = 112;
+const CLIENT_BATCH_CODE_PATTERN = /^[0-9a-f]{32}$/u;
 const PACKAGE_STATUS_LABELS: Record<string, string> = {
   DRAFT: '待筛选',
   IMPORTED: '待筛选',
@@ -190,6 +191,7 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
   const [status, setStatus] = useState('ALL');
   const [importOpen, setImportOpen] = useState(false);
   const [packageName, setPackageName] = useState('');
+  const [clientBatchCode, setClientBatchCode] = useState('');
   const [sourceFileName, setSourceFileName] = useState('');
   const [queryText, setQueryText] = useState('');
   const [importError, setImportError] = useState('');
@@ -291,7 +293,7 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
   const visiblePackages = useMemo(() => {
     const keyword = search.trim().toLocaleLowerCase('zh-CN');
     return packages.filter((item) => (status === 'ALL' || item.status === status)
-      && (!keyword || `${item.name} ${item.assignedToDisplayName ?? ''} ${item.assignedToUserId ?? ''}`
+      && (!keyword || `${item.name} ${item.clientBatchCode ?? ''} ${item.assignedToDisplayName ?? ''} ${item.assignedToUserId ?? ''}`
         .toLocaleLowerCase('zh-CN').includes(keyword)));
   }, [packages, search, status]);
 
@@ -551,6 +553,11 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
   async function createPackage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (role !== 'ADMIN' || creating || readingImportFile || parsedImport.error) return;
+    const normalizedClientBatchCode = clientBatchCode.trim().toLowerCase();
+    if (!CLIENT_BATCH_CODE_PATTERN.test(normalizedClientBatchCode)) {
+      setImportError('甲方批次编号必须是 32 位十六进制编号');
+      return;
+    }
     setCreating(true);
     setImportError('');
     setMessage('');
@@ -560,6 +567,7 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: packageName.trim(),
+          clientBatchCode: normalizedClientBatchCode,
           ...(sourceFileName ? { sourceFileName } : {}),
           items: parsedImport.queries.map((query) => ({ query, input: {}, requestedImageCount: 'auto' })),
           requestId: createRequestId(),
@@ -567,6 +575,7 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
       });
       closeImportDialog();
       setPackageName('');
+      setClientBatchCode('');
       setSourceFileName('');
       setQueryText('');
       setMessage(`已导入 ${parsedImport.queries.length} 条 Query${parsedImport.duplicates ? `，自动忽略 ${parsedImport.duplicates} 条重复项` : ''}。`);
@@ -949,7 +958,7 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
 
       <div className={styles.toolbar}>
         <div className={styles.toolbarGroup}>
-          <SearchInput className={styles.search} value={search} onValueChange={setSearch} placeholder="搜索词包名称或筛选人" />
+          <SearchInput className={styles.search} value={search} onValueChange={setSearch} placeholder="搜索词包、甲方批次或筛选人" />
           <label>状态
             <Select value={status} onValueChange={setStatus}>
               <SelectTrigger className={styles.filterSelect}><SelectValue /></SelectTrigger>
@@ -979,7 +988,7 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
             <tbody>{visiblePackages.map((item) => {
               const decided = item.counts.selected + item.counts.rejected;
               return <tr key={item.id}>
-                <td data-label="词包"><div className={styles.nameCell}><strong>{item.name}</strong><small>#{item.id}</small></div></td>
+                <td data-label="词包"><div className={styles.nameCell}><strong>{item.name}</strong><small>#{item.id} · 甲方批次 {item.clientBatchCode ?? '历史未填写'}</small></div></td>
                 <td data-label="筛选进度"><div className={styles.counts}>
                   <progress className={styles.progress} max={Math.max(1, item.counts.total)} value={decided} aria-label={`${item.name} 筛选进度`} />
                   <div className={styles.countLine}><span>待筛 {item.counts.pending}</span><span>通过 {item.counts.selected}</span><span>淘汰 {item.counts.rejected}</span><span>已创建 {item.counts.produced}</span></div>
@@ -1005,6 +1014,7 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
         <form className={styles.importForm} onSubmit={createPackage}>
           <div className={styles.importFields}>
             <div className="field"><label htmlFor="query-package-name">词包名称</label><Input id="query-package-name" value={packageName} maxLength={120} required disabled={creating} onChange={(event) => setPackageName(event.target.value)} /></div>
+            <div className="field"><label htmlFor="query-package-client-batch">甲方批次编号</label><Input id="query-package-client-batch" value={clientBatchCode} minLength={32} maxLength={32} pattern="[0-9a-fA-F]{32}" required disabled={creating} placeholder="b9759aad96a94c109fdce96ab4455294" onChange={(event) => { setClientBatchCode(event.target.value); setImportError(''); }} /></div>
             <div className="field"><label htmlFor="query-package-file">读取文本或 XLSX 文件</label><Input id="query-package-file" type="file" accept=".txt,.csv,.xlsx,text/plain,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={creating} onChange={(event) => { void readImportFile(event.target.files?.[0] ?? null); }} /></div>
           </div>
           {spreadsheetPreview && <div className={styles.importFields} aria-label="XLSX 数据范围">
@@ -1016,7 +1026,7 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
           {importError && <div className="notice error" role="alert">{importError}</div>}
           {queryText && parsedImport.error && <div className="notice error" role="alert">{parsedImport.error}</div>}
           <div className={styles.fileRow}><span>{sourceFileName ? `来源文件：${sourceFileName}` : '也可以直接粘贴纯文本、单列 CSV，或从 XLSX 指定工作表和列'}</span><small>识别 {parsedImport.queries.length} 条 · 重复 {spreadsheetPreview?.duplicates ?? parsedImport.duplicates} 条</small></div>
-          <div className={styles.dialogFooter}><span>这里只导入候选 Query；点击“通过”后会自动进入文案生成。</span><div className={styles.dialogButtons}><DialogClose asChild><Button unstyled className="button" type="button" disabled={creating}>取消</Button></DialogClose><Button unstyled className="button primary" disabled={creating || readingImportFile || !packageName.trim() || Boolean(parsedImport.error)}>{creating ? '导入中…' : readingImportFile ? '读取文件中…' : '创建词包'}</Button></div></div>
+          <div className={styles.dialogFooter}><span>相同甲方批次编号的多个词包会在交付时合并打包。</span><div className={styles.dialogButtons}><DialogClose asChild><Button unstyled className="button" type="button" disabled={creating}>取消</Button></DialogClose><Button unstyled className="button primary" disabled={creating || readingImportFile || !packageName.trim() || !CLIENT_BATCH_CODE_PATTERN.test(clientBatchCode.trim().toLowerCase()) || Boolean(parsedImport.error)}>{creating ? '导入中…' : readingImportFile ? '读取文件中…' : '创建词包'}</Button></div></div>
         </form>
       </DialogContent>
     </Dialog>}

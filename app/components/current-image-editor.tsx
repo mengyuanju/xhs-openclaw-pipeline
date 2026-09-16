@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { UploadCloud } from 'lucide-react';
@@ -10,6 +10,7 @@ import styles from './current-image-editor.module.css';
 
 type Asset = { id: number; sha256: string; url: string };
 type Ref = Asset & { purpose: string };
+type TargetRegion = { x:number; y:number; width:number; height:number };
 type Edit = { id: string; version: number; status: string; operation: string; source_asset_id?:number; target_page:number; created_by:string; validation?:unknown; events?:Array<{action:string;actor:string;reason:string}>; error: string | null; config: {instruction:string;confirmation?:string|null}; result?: {asset_id: number; image_run_id: string; validation: unknown} };
 const labels: Record<string,string> = {DRAFT:'草稿',QUEUED:'排队中',RUNNING:'执行与校验中',PREVIEW_READY:'预览待确认',ACCEPTED:'已采用',REJECTED:'已拒绝',FAILED:'失败',CANCELLED:'已取消',TEXT:'人工生成标识',COMPOSITE:'实体合成（历史）',AI_FUSION:'真实产品替换',AI_LOCAL:'局部修改',AI_FULL:'整图修改（历史）',RESTORE:'恢复版本',REGENERATE:'重新生成',REPROCESS:'格式处理'};
 const path=(url:string)=>`/api/control-plane${url}`;
@@ -21,6 +22,9 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,page,runs,
   const [open,setOpen]=useState(false),[tab,setTab]=useState('TEXT');
   const [text,setText]=useState('AI生成');
   const [instruction,setInstruction]=useState('');
+  const [targetDescription,setTargetDescription]=useState('');
+  const [targetRegion,setTargetRegion]=useState<TargetRegion|null>(null);
+  const targetDragStart=useRef<{x:number;y:number}|null>(null);
   const [confirmed,setConfirmed]=useState(false),[refs,setRefs]=useState<Ref[]>([]),[edits,setEdits]=useState<Edit[]>([]);
   const [busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState(''),[compare,setCompare]=useState(50),[zoom,setZoom]=useState(1),[history,setHistory]=useState(''),[reason,setReason]=useState('');
   const [comparisonId,setComparisonId]=useState('');
@@ -28,7 +32,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,page,runs,
   useEffect(()=>{if(!open)return;let active=true;const poll=()=>{if(active)void refresh().catch(e=>setError(e.message));};poll();const timer=setInterval(poll,4000);return()=>{active=false;clearInterval(timer);};},[open,refresh]);
   const operation=tab==='TEXT'?'TEXT':tab==='ENTITY'?'AI_FUSION':'AI_LOCAL';
   const requestInstruction=tab==='TEXT'?`将人工生成标识显示为“${text.trim()}”并放在右下角`:
-    tab==='ENTITY'?'使用上传的真实产品参考图替换原图中的对应产品，保持场景、人物、构图和全部文字不变':instruction.trim();
+    tab==='ENTITY'?`使用上传的真实产品参考图，只替换目标“${targetDescription.trim()}”，保持场景、人物、构图和全部文字不变`:instruction.trim();
   const preserve=tab==='ENTITY'?'保留原图全部已批准文字、人物、背景、构图、色调和未被替换的物品':'保留原图全部已批准文字、所有未在说明中点名的区域、人物、构图、色调和人工生成标识';
   const negative=tab==='ENTITY'?'不得新增文字；不得改变参考产品的外形、颜色、标志和关键细节':'不得修改说明之外的区域；不得新增、删除或改写已有文字';
   const base=()=>({requestId:createRequestId(),sourceImageRunId:runId,sourceAssetId:asset.id,copyRevisionId,sha256:asset.sha256,targetPage:page});
@@ -36,6 +40,8 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,page,runs,
   function requestIssue(draft=false) {
     if(tab==='TEXT'&&!disclosureValid)return '人工生成标识需填写 1～12 个文字、数字、下划线或短横线。';
     if(tab==='ENTITY'&&refs.length!==1)return '请先上传 1 张真实产品图片。';
+    if(tab==='ENTITY'&&!targetDescription.trim())return '请填写需要替换的目标物品说明。';
+    if(tab==='ENTITY'&&!targetRegion)return '请在左侧原图上拖动框选需要替换的一个物品。';
     if(tab==='PROMPT'&&!instruction.trim())return '请先填写局部修改说明，并同时写清修改位置和内容。';
     if(!draft&&!confirmed)return '请先勾选费用确认，再生成修改预览。保存草稿不调用模型，无需勾选。';
     return '';
@@ -46,6 +52,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,page,runs,
     return act(()=>post(`/v1/tasks/${taskId}/image-edits`,{...base(),operation,instruction:requestInstruction,preserve,negative,
     ...(operation==='TEXT'?{overlay:{text:text.trim(),textType:'AI_DISCLOSURE',size:32,margin:32,opacity:1,color:'#ffffff',background:'#111827',position:'bottom-right',disclosureType:'AI_GENERATED'}}:{}),
     references:tab==='ENTITY'?refs.map(r=>({assetId:r.id,purpose:r.purpose})):[],
+    ...(tab==='ENTITY'?{target:{description:targetDescription.trim(),region:targetRegion}}:{}),
     confirmation:confirmed?'LIVE_IMAGE_COST_ACCEPTED':undefined,draft}),draft?'正在保存草稿…':'已提交，正在排队生成修改预览…',draft?'草稿已保存。':'修改请求已提交，系统正在处理。');}
   async function upload(files:FileList|null) {
     const file=files?.[0];
@@ -61,6 +68,27 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,page,runs,
   const textWidth=Array.from(text).length*32+24,textHeight=64;
   const tx=1086-32-textWidth,ty=1448-32-textHeight;
   const disclosureValid=/^[\p{L}\p{N}_-]{1,12}$/u.test(text.trim());
+  function targetPoint(event:ReactPointerEvent<SVGSVGElement>) {
+    const box=event.currentTarget.getBoundingClientRect();
+    return {x:Math.max(0,Math.min(1085,Math.round((event.clientX-box.left)*1086/box.width))),
+      y:Math.max(0,Math.min(1447,Math.round((event.clientY-box.top)*1448/box.height)))};
+  }
+  function startTargetSelection(event:ReactPointerEvent<SVGSVGElement>) {
+    if(tab!=='ENTITY'||event.button!==0)return;
+    const point=targetPoint(event);targetDragStart.current=point;setTargetRegion(null);setError('');
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+  function moveTargetSelection(event:ReactPointerEvent<SVGSVGElement>) {
+    const start=targetDragStart.current;if(tab!=='ENTITY'||!start)return;
+    const point=targetPoint(event),x=Math.min(start.x,point.x),y=Math.min(start.y,point.y);
+    setTargetRegion({x,y,width:Math.max(1,Math.abs(point.x-start.x)),height:Math.max(1,Math.abs(point.y-start.y))});
+  }
+  function finishTargetSelection(event:ReactPointerEvent<SVGSVGElement>) {
+    if(!targetDragStart.current)return;
+    targetDragStart.current=null;
+    if(event.currentTarget.hasPointerCapture(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId);
+    setTargetRegion(region=>{if(region&&region.width>=24&&region.height>=24)return region;setError('目标框选区域过小，请完整框住一个物品并保留少量周边。');return null;});
+  }
   function runHistoryAction(e:Edit,action:string) {
     const actionLabel=({accept:'采用此版本',reject:'拒绝',cancel:'取消',retry:'重试',queue:'提交草稿'} as Record<string,string>)[action]??'操作';
     if(!reason.trim()){setNotice('');setError(`请先填写“操作原因”，再${actionLabel}。`);return;}
@@ -80,16 +108,18 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,page,runs,
     <div className={styles.workspace}>
       <section className={styles.previewPanel} aria-label="图片预览">
         <div className={styles.previewViewport}>
-        <svg className={styles.previewCanvas} role="img" aria-label="实时修改预览" viewBox="0 0 1086 1448" style={{width:`${zoom*100}%`}}>
+        <svg className={`${styles.previewCanvas} ${tab==='ENTITY'?styles.targetCanvas:''}`} role="img" aria-label="实时修改预览" viewBox="0 0 1086 1448" style={{width:`${zoom*100}%`}}
+          onPointerDown={startTargetSelection} onPointerMove={moveTargetSelection} onPointerUp={finishTargetSelection} onPointerCancel={finishTargetSelection}>
           <image href={path(asset.url)} width="1086" height="1448"/>
           {tab==='TEXT'&&<g><rect x={tx} y={ty} width={textWidth} height={textHeight} rx="8" fill="#111827"/><text x={tx+12} y={ty+40} fill="#ffffff" fontSize="32" fontFamily="Noto Sans CJK SC,Microsoft YaHei,sans-serif">{text}</text></g>}
+          {tab==='ENTITY'&&targetRegion&&<rect className={styles.targetSelection} x={targetRegion.x} y={targetRegion.y} width={targetRegion.width} height={targetRegion.height}/>}
         </svg>
         </div>
         <label className={styles.zoomControl}><span>预览缩放</span><input aria-label="预览缩放" type="range" min="1" max="3" step="0.1" value={zoom} onChange={e=>setZoom(Number(e.target.value))}/><strong>{Math.round(zoom*100)}%</strong></label>
-        <p className={styles.help}>{tab==='TEXT'?'标识固定放在右下角；左侧仅为位置示意，最终以 AI 改图预览为准。':tab==='ENTITY'?'原图是编辑底图，上传的真实产品图将作为替换参照，不会直接贴到画面上。':'请在右侧说明中同时写清“改哪里”和“改什么”；系统会按文字描述定位。'}</p>
+        <p className={styles.help}>{tab==='TEXT'?'标识固定放在右下角；左侧仅为位置示意，最终以 AI 改图预览为准。':tab==='ENTITY'?'在原图上拖动框住一个目标物品并保留少量周边；参考图只供模型重绘，不会直接贴到画面上。':'请在右侧说明中同时写清“改哪里”和“改什么”；系统会按文字描述定位。'}</p>
       </section><section className={styles.settings} aria-label="图片修改设置">
         {tab==='TEXT'&&<><label>人工生成标识文字<input aria-label="人工生成标识文字" value={text} maxLength={12} pattern="[\p{L}\p{N}_-]+" onChange={e=>setText(e.target.value)}/><small>最多 12 个字符，仅限文字、数字、下划线或短横线。</small></label><p>仍按人工生成标识处理，只改变最终显示文字；位置固定为右下角，样式由管理员的图片编辑提示词控制。</p></>}
-        {tab==='ENTITY'&&<><div className={styles.referenceUpload}><div className={styles.referenceUploadHeading}><strong>上传真实产品图片</strong><p>系统会用这张图片中的真实产品替换原图对应物品，并自动保持原场景和文字。</p></div><label className={styles.filePicker} data-disabled={busy||undefined}><input className={styles.fileInput} aria-label="上传真实产品参考图" type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={e=>void upload(e.target.files)}/><span className={styles.filePickerIcon}><UploadCloud aria-hidden="true" size={26} strokeWidth={1.8}/></span><span className={styles.filePickerCopy}><strong>{refs.length?'更换产品图片':'点击选择产品图片'}</strong><small>也可以将图片拖放到这里</small></span><span className={styles.filePickerMeta}>PNG / JPG / WebP · 最大 5 MB</span></label>{refs.map(r=><div className={styles.referenceCard} key={r.id}><img src={path(r.url)} alt="已上传的真实产品参考图"/><span>真实产品参考图已就绪</span><Button variant="outline" size="sm" type="button" onClick={()=>setRefs([])}>移除</Button></div>)}</div><p>不再提供精确贴图、坐标、裁剪和透明度设置；产品的替换与画面融合统一由 AI 完成。</p></>}
+        {tab==='ENTITY'&&<><div className={styles.referenceUpload}><div className={styles.referenceUploadHeading}><strong>上传真实产品图片</strong><p>系统会用这张图片中的真实产品替换你框选的一个物品，并自动保持原场景和文字。</p></div><label className={styles.filePicker} data-disabled={busy||undefined}><input className={styles.fileInput} aria-label="上传真实产品参考图" type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={e=>void upload(e.target.files)}/><span className={styles.filePickerIcon}><UploadCloud aria-hidden="true" size={26} strokeWidth={1.8}/></span><span className={styles.filePickerCopy}><strong>{refs.length?'更换产品图片':'点击选择产品图片'}</strong><small>也可以将图片拖放到这里</small></span><span className={styles.filePickerMeta}>PNG / JPG / WebP · 最大 5 MB</span></label>{refs.map(r=><div className={styles.referenceCard} key={r.id}><img src={path(r.url)} alt="已上传的真实产品参考图"/><span>真实产品参考图已就绪</span><Button variant="outline" size="sm" type="button" onClick={()=>setRefs([])}>移除</Button></div>)}</div><label>目标物品说明<textarea aria-label="目标物品说明" value={targetDescription} maxLength={500} placeholder="例如：画面右侧台面上、木托盘后方的米白色拿铁杯（不是咖啡机下方的红杯）" onChange={e=>setTargetDescription(e.target.value)}/><small>同时写清位置、颜色或相邻物体，避免多个同类物品时选错。</small></label><div className={styles.targetSelectionInfo} role="status"><span>{targetRegion?`已框选：x ${targetRegion.x}，y ${targetRegion.y}，宽 ${targetRegion.width}，高 ${targetRegion.height}`:'尚未框选目标。请在左侧原图上拖动。'}</span>{targetRegion&&<Button variant="outline" size="sm" type="button" onClick={()=>setTargetRegion(null)}>重新框选</Button>}</div><p>执行机会先用视觉模型确认框内只有一个符合描述的目标；不明确时不会调用图片编辑模型。确认后由 AI 在框选区域内完成真实融合，框外像素保持不变。</p></>}
         {tab==='PROMPT'&&<><label>局部修改说明<textarea aria-label="图片修改要求" value={instruction} maxLength={2000} placeholder="例如：把画面左下角人物手中的黑色书包替换成手提文件袋，保持人物动作、文字和其他区域不变" onChange={e=>setInstruction(e.target.value)}/><small>请同时描述位置和修改内容，例如“右上角的水杯”“人物左手旁的书包”。</small></label><p>不再画选区或填写坐标。系统根据这段说明定位修改区域；通用画面规则仍由管理员的图片编辑提示词统一控制。</p></>}
         <label className={styles.feeConfirmation}><input className={styles.feeCheckboxInput} type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/><span className={styles.feeCheckboxVisual} data-fee-checkbox aria-hidden="true"/><span>确认调用图片编辑与实体校验模型，会产生费用；自动修复和人工重试也可能收费。</span></label>
         <div className={styles.actions}><Button variant="outline" disabled={busy} onClick={()=>void submit(true)}>{busy?'处理中…':'保存草稿'}</Button><Button disabled={busy} onClick={()=>void submit()}>{busy?'处理中…':'生成修改预览'}</Button></div>

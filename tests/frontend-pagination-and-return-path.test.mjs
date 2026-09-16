@@ -144,7 +144,7 @@ test('administrator delivery pagination advances by the server page offset inste
 test('development E2E fixture mirrors delegated screening, automatic Query production, pagination and held-item closure', async () => {
   const source = await readFile(modularE2eFixtureUrl, 'utf8');
   assert.match(source, /MODULAR_E2E_PAGINATION_SEED === '1'/u);
-  assert.match(source, /queryPackageVersion: 4/u);
+  assert.match(source, /queryPackageVersion: 6/u);
   assert.match(source, /send\(res, 200, page\.items\.map\(packageSummary\)\)/u,
     'Query package fixture pages must match the current bare-array server response');
   assert.match(source, /const visiblePackages = actorRole\(req\) === 'ADMIN'[\s\S]*?state\.packages\.filter\(\(record\) => canAccessPackage\(req, record\)\)[\s\S]*?paginate\(url, visiblePackages\)/u,

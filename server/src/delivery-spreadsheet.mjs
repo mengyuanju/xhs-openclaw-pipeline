@@ -16,11 +16,12 @@ const MAX_CELL_CHARACTERS = 32_767;
 const IMAGE_DISPLAY_MAX_WIDTH_PX = 150;
 const IMAGE_DISPLAY_MAX_HEIGHT_PX = 200;
 const IMAGE_COLUMN_WIDTH = 22;
+const CLIENT_BATCH_COLUMN_WIDTH = 36;
 const PACKAGE_COLUMN_WIDTH = 30;
 const QUERY_COLUMN_WIDTH = 32;
 const ARTICLE_COLUMN_WIDTH = 72;
 const LINKS_COLUMN_WIDTH = 64;
-const TEXT_COLUMN_COUNT = 4;
+const TEXT_COLUMN_COUNT = 5;
 const DATA_ROW_HEIGHT_PT = 155;
 const FONT_NAME = 'Arial';
 const DELIVERY_IMAGE_MEDIA_TYPES = new Set(
@@ -162,10 +163,11 @@ async function originalImage(content, mediaType) {
 
 function styleWorksheet(worksheet, rowCount, imageCount) {
   const columnCount = TEXT_COLUMN_COUNT + imageCount;
-  worksheet.getColumn(1).width = PACKAGE_COLUMN_WIDTH;
-  worksheet.getColumn(2).width = QUERY_COLUMN_WIDTH;
-  worksheet.getColumn(3).width = ARTICLE_COLUMN_WIDTH;
-  worksheet.getColumn(4).width = LINKS_COLUMN_WIDTH;
+  worksheet.getColumn(1).width = CLIENT_BATCH_COLUMN_WIDTH;
+  worksheet.getColumn(2).width = PACKAGE_COLUMN_WIDTH;
+  worksheet.getColumn(3).width = QUERY_COLUMN_WIDTH;
+  worksheet.getColumn(4).width = ARTICLE_COLUMN_WIDTH;
+  worksheet.getColumn(5).width = LINKS_COLUMN_WIDTH;
   for (let index = 1; index <= imageCount; index += 1) {
     const column = worksheet.getColumn(index + TEXT_COLUMN_COUNT);
     column.width = IMAGE_COLUMN_WIDTH;
@@ -224,15 +226,16 @@ export async function writeDeliverySpreadsheet(tasks, loadAsset, outputPath, {
       state: 'frozen',
       xSplit: TEXT_COLUMN_COUNT,
       ySplit: 1,
-      topLeftCell: 'E2',
+      topLeftCell: 'F2',
       showGridLines: false,
     }],
     pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
   });
-  worksheet.getCell('A1').value = '词包名称';
-  worksheet.getCell('B1').value = 'Query';
-  worksheet.getCell('C1').value = '完整文章';
-  worksheet.getCell('D1').value = '小红书链接';
+  worksheet.getCell('A1').value = '甲方批次编号';
+  worksheet.getCell('B1').value = '词包名称';
+  worksheet.getCell('C1').value = 'Query';
+  worksheet.getCell('D1').value = '完整文章';
+  worksheet.getCell('E1').value = '小红书链接';
 
   let taskCount = 0;
   let maxImageCount = 0;
@@ -248,12 +251,16 @@ export async function writeDeliverySpreadsheet(tasks, loadAsset, outputPath, {
     maxImageCount = Math.max(maxImageCount, assetIds.length);
     const row = worksheet.addRow([]);
     row.getCell(1).value = spreadsheetText(
+      task.sourceClientBatchCode ?? '未归属甲方批次',
+      '甲方批次编号',
+    );
+    row.getCell(2).value = spreadsheetText(
       task.sourceQueryPackageName ?? '未归属词包',
       '词包名称',
     );
-    row.getCell(2).value = spreadsheetText(task.query, 'Query');
-    row.getCell(3).value = articleValue(copy);
-    row.getCell(4).value = xiaohongshuLinksValue(task);
+    row.getCell(3).value = spreadsheetText(task.query, 'Query');
+    row.getCell(4).value = articleValue(copy);
+    row.getCell(5).value = xiaohongshuLinksValue(task);
 
     for (let imageIndex = 0; imageIndex < assetIds.length; imageIndex += 1) {
       signal?.throwIfAborted();

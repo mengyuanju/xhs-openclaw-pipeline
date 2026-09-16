@@ -24,6 +24,7 @@ const workbenchUrl = new URL('../app/delivery-pool/delivery-pool-workbench.tsx',
 const pageUrl = new URL('../app/delivery-pool/page.tsx', import.meta.url);
 const proxyUrl = new URL('../app/api/control-plane/[...path]/route.ts', import.meta.url);
 const feedbackMessageUrl = new URL('../components/ui/feedback-message.tsx', import.meta.url);
+const CLIENT_BATCH_CODE = 'b9759aad96a94c109fdce96ab4455294';
 
 function entry(id, overrides = {}) {
   return {
@@ -32,6 +33,7 @@ function entry(id, overrides = {}) {
     query: `query-${id}`,
     queryPackageId: 9,
     queryPackageName: '九月选题',
+    clientBatchCode: CLIENT_BATCH_CODE,
     queryPackageDeleted: false,
     copyRevisionId: 200 + id,
     imageRunId: `run-${id}`,
@@ -55,17 +57,21 @@ test('delivery pool list adapter preserves package names and valid package facet
     total: 43,
     facets: {
       queryPackages: [
-        { id: '9', name: '  九月   选题 ', count: '12', unuploadedCount: '7', publishedCount: '4', revokedCount: '1' },
+        { id: '9', name: '  九月   选题 ', clientBatchCode: CLIENT_BATCH_CODE, count: '12', unuploadedCount: '7', publishedCount: '4', revokedCount: '1' },
         { id: 10, name: '', count: 3, unuploadedCount: 3, publishedCount: 0, revokedCount: 0 },
         { id: 11, name: '无效', count: -1, unuploadedCount: 0, publishedCount: 0, revokedCount: 0 },
       ],
+      clientBatches: [{ code: CLIENT_BATCH_CODE, count: 12, pendingCount: 12,
+        packedCount: 0, updatedCount: 0, queryPackageCount: 1 }],
       unassigned: { count: '34', unuploadedCount: '34', publishedCount: '0', revokedCount: '0' },
     },
   }), {
     items: [entry(1)],
     total: 43,
     facets: {
-      queryPackages: [{ id: 9, name: '九月 选题', deleted: false, count: 12, unuploadedCount: 7, publishedCount: 4, revokedCount: 1, pendingCount: 12, packedCount: 0, updatedCount: 0 }],
+      clientBatches: [{ code: CLIENT_BATCH_CODE, count: 12, pendingCount: 12,
+        packedCount: 0, updatedCount: 0, queryPackageCount: 1 }],
+      queryPackages: [{ id: 9, name: '九月 选题', clientBatchCode: CLIENT_BATCH_CODE, deleted: false, count: 12, unuploadedCount: 7, publishedCount: 4, revokedCount: 1, pendingCount: 12, packedCount: 0, updatedCount: 0 }],
       unassigned: { count: 34, unuploadedCount: 34, publishedCount: 0, revokedCount: 0, pendingCount: 34, packedCount: 0, updatedCount: 0 },
     },
     summary: { readyCount: 46, pendingCount: 46, packedCount: 0, updatedCount: 0 },
@@ -73,6 +79,7 @@ test('delivery pool list adapter preserves package names and valid package facet
   assert.equal(normalizeDeliveryPoolPage([entry(3)]).total, 1,
     'the legacy array response stays readable during a rolling deployment');
   assert.deepEqual(normalizeDeliveryPoolPage([entry(3)]).facets, {
+    clientBatches: [],
     queryPackages: [],
     unassigned: null,
   });
@@ -148,11 +155,11 @@ test('selected delivery rows are capped at the server contract without disabling
   );
 });
 
-test('Excel export uses selected task ids and otherwise requests the complete READY pool', () => {
+test('Excel export uses selected task ids and otherwise merges one complete client batch', () => {
   assert.deepEqual(buildDeliveryPoolExportInput([]), { scope: 'ALL_READY' });
-  assert.deepEqual(buildDeliveryPoolExportInput([], '  九月   选题  '), {
-    scope: 'QUERY_PACKAGE',
-    queryPackageName: '九月 选题',
+  assert.deepEqual(buildDeliveryPoolExportInput([], `  ${CLIENT_BATCH_CODE.toUpperCase()}  `), {
+    scope: 'CLIENT_BATCH',
+    clientBatchCode: CLIENT_BATCH_CODE,
   });
   assert.deepEqual(buildDeliveryPoolExportInput([103, 101, 103]), {
     scope: 'SELECTED',
@@ -222,9 +229,10 @@ test('delivery batch adapters preserve immutable history and exact version membe
     id: 7,
     publicId: '42345678-1234-4234-8234-123456789abc',
     code: 'JF-42345678',
-    scope: 'QUERY_PACKAGE',
-    queryPackageName: '九月选题',
-    queryPackageNames: ['九月选题'],
+    scope: 'CLIENT_BATCH',
+    queryPackageName: null,
+    queryPackageNames: ['九月选题', '九月补充词包'],
+    clientBatchCode: CLIENT_BATCH_CODE,
     status: 'DOWNLOADED',
     fileName: 'JF-42345678-九月选题-交付资源.zip',
     byteSize: 1024,
@@ -244,7 +252,7 @@ test('delivery batch adapters preserve immutable history and exact version membe
     ...batch,
     items: [{ id: 9, ordinal: 1, taskId: 101, copyRevisionId: 201,
       imageRunId: 'run-1', query: '桌面收纳', queryPackageId: 5,
-      queryPackageName: '九月选题' }],
+      queryPackageName: '九月选题', clientBatchCode: CLIENT_BATCH_CODE }],
   }).items[0].copyRevisionId, 201);
 });
 
@@ -267,7 +275,7 @@ test('prepared Excel download accepts only a safe xlsx one-time reference', () =
   }), /下载凭证无效/u);
 });
 
-test('administrator delivery pool exposes package facets, server filtering and package-scoped exports', async () => {
+test('administrator delivery pool exposes client-batch facets, filtering and merged exports', async () => {
   const [source, page, proxy, feedbackMessage] = await Promise.all([
     readFile(workbenchUrl, 'utf8'),
     readFile(pageUrl, 'utf8'),
@@ -277,14 +285,15 @@ test('administrator delivery pool exposes package facets, server filtering and p
   assert.match(page, /if \(role !== 'ADMIN'\) redirect\(role === 'REVIEWER' \? '\/copy-qa' : '\/workbench\/personal'\)/u);
   assert.match(page, /<DeliveryPoolWorkbench role="ADMIN" \/>/u);
   assert.match(source, /new URLSearchParams\(\{[\s\S]*limit: String\(DELIVERY_POOL_LIST_LIMIT\)[\s\S]*includeTotal: 'true'/u);
-  assert.match(source, /if \(queryPackageName\) query\.set\('queryPackageName', queryPackageName\)/u);
+  assert.match(source, /if \(clientBatchCode\) query\.set\('clientBatchCode', clientBatchCode\)/u);
+  assert.match(source, /setClientBatches\(page\.facets\.clientBatches\)/u);
   assert.match(source, /setQueryPackages\(page\.facets\.queryPackages\)/u);
-  assert.match(source, /id="delivery-pool-query-package"/u);
-  assert.match(source, /queryPackages\.map\(\(facet\)/u);
+  assert.match(source, /id="delivery-pool-client-batch"/u);
+  assert.match(source, /clientBatches\.map\(\(facet\)/u);
   assert.match(source, /<Textarea[\s\S]*id="delivery-pool-search"/u,
     'delivery pool search must accept pasted line breaks');
   assert.match(source, /filterDeliveryPoolEntries\(entries, search\)/u);
-  assert.match(source, /每行一条，在已加载条目的 Query、词包名称或任务号中匹配任意一条/u);
+  assert.match(source, /每行一条，在已加载条目的 Query、甲方批次、词包名称或任务号中匹配任意一条/u);
   assert.match(source, /searchInputRef\.current\?\.focus\(\)/u,
     'clearing a multi-line search should return focus to its textarea');
   assert.match(source, /load\(nextOffset\)/u,
@@ -292,13 +301,13 @@ test('administrator delivery pool exposes package facets, server filtering and p
   assert.doesNotMatch(source, /load\(entries\.length\)/u,
     'de-duplicated client row count must not be reused as the mutable server offset');
   assert.match(source, /\/v1\/delivery-pool\/archive/u);
-  assert.match(source, /scope === 'QUERY_PACKAGE'[\s\S]*\{ scope, queryPackageName \}/u,
-    'an unselected package export must remain a server-side package scope');
+  assert.match(source, /scope === 'CLIENT_BATCH'[\s\S]*\{ scope, clientBatchCode \}/u,
+    'an unselected client batch export must merge every package in that server-side scope');
   assert.match(source, /exportDelivery\(filteredExportScope\)/u);
   assert.match(source, /delivery-pool\/archive\/\$\{encodeURIComponent\(prepared\.downloadId\)\}/u);
   assert.match(source, /\/v1\/delivery-pool\/xlsx/u);
-  assert.match(source, /buildDeliveryPoolExportInput\(selectedTaskIds, queryPackageName\)/u,
-    'Excel must derive its scope from both the checked task ids and active package');
+  assert.match(source, /buildDeliveryPoolExportInput\(selectedTaskIds, clientBatchCode\)/u,
+    'Excel must derive its scope from both the checked task ids and active client batch');
   assert.match(source, /delivery-pool\/xlsx\/\$\{encodeURIComponent\(prepared\.downloadId\)\}/u);
   assert.doesNotMatch(source, /response\.blob\(\)|URL\.createObjectURL/u,
     'delivery archives and Excel files must use native streamed downloads instead of page-memory Blobs');
@@ -344,7 +353,7 @@ test('administrator delivery pool exposes package facets, server filtering and p
   assert.match(feedbackMessage, /aria-label="关闭反馈消息"/u);
   assert.match(source, /打开预览/u);
   assert.match(source, /新建交付批次始终由服务端排除已经打包的相同版本/u);
-  assert.match(source, /entry\.queryPackageName \|\| '未归属词包'/u);
+  assert.match(source, /entry\.clientBatchCode \|\| '未归属甲方批次'/u);
   assert.doesNotMatch(source, /selected\.length > 20/u,
     'the UI must not disable the new delivery export contract at the legacy batch-archive limit');
   assert.match(source, /role="status" aria-live="polite"/u);

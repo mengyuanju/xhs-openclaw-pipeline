@@ -22,6 +22,11 @@ function hashJson(value) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
+function clientBatchCodeForTask(task) {
+  const existing=String(task?.source_client_batch_code??'').trim().toLowerCase();
+  return /^[0-9a-f]{32}$/u.test(existing)?existing:randomUUID().replaceAll('-','');
+}
+
 function normalizeActor(actor, roles = ['ADMIN', 'REVIEWER', 'USER']) {
   if (!actor || !roles.includes(actor.role) || !Number.isSafeInteger(Number(actor.userId))) {
     throw new ControlPlaneAuthorizationError('current role cannot perform this quality operation');
@@ -576,8 +581,8 @@ export async function routeManualCopyApproval(client, {
   });
   if (task.production_batch_id === null && !task.mandatory_copy_qc
       && (await readWorkflowQualitySettings(client)).copySampling.enabled) {
-    const batch = await client.query(`INSERT INTO production_batches(public_id, query_package_name, created_by_account_id, created_by_username, request_id, request_fingerprint)
-      VALUES ($1, '独立文案', $2, $3, $4, $5) RETURNING id`, [randomUUID(), actor.userId, actor.username, randomUUID(), hashJson({ taskId: task.id, revisionId: revision.id })]);
+    const batch = await client.query(`INSERT INTO production_batches(public_id, client_batch_code, query_package_name, created_by_account_id, created_by_username, request_id, request_fingerprint)
+      VALUES ($1, $2, '独立文案', $3, $4, $5, $6) RETURNING id`, [randomUUID(), clientBatchCodeForTask(task), actor.userId, actor.username, randomUUID(), hashJson({ taskId: task.id, revisionId: revision.id })]);
     task.production_batch_id = Number(batch.rows[0].id);
     await client.query('UPDATE tasks SET production_batch_id = $2 WHERE id = $1', [task.id, task.production_batch_id]);
     await client.query('INSERT INTO production_batch_items(production_batch_id, task_id, query_snapshot) VALUES ($1, $2, $3)', [task.production_batch_id, task.id, task.query]);
@@ -631,11 +636,11 @@ export async function routeManualCopyApproval(client, {
     // synthetic batch exists only as the immutable QA-round container.
     const syntheticBatch = await client.query(`
       INSERT INTO production_batches(
-        public_id, query_package_id, query_package_name, status, sampling_status,
+        public_id, query_package_id, query_package_name, client_batch_code, status, sampling_status,
         created_by_account_id, created_by_username, request_id, request_fingerprint
-      ) VALUES ($1, NULL, '强制文案复检', 'FROZEN', 'FROZEN', $2, $3, $4, $5)
+      ) VALUES ($1, NULL, '强制文案复检', $2, 'FROZEN', 'FROZEN', $3, $4, $5, $6)
       RETURNING *
-    `, [randomUUID(), actor?.userId ?? null, actor?.username ?? 'system', randomUUID(),
+    `, [randomUUID(), clientBatchCodeForTask(task), actor?.userId ?? null, actor?.username ?? 'system', randomUUID(),
       hashJson({ taskId: Number(task.id), revisionId: Number(revision.id), origin: task.mandatory_copy_qc_origin })]);
     const productionBatchId = Number(syntheticBatch.rows[0].id);
     const freeze = await client.query(`

@@ -20,6 +20,11 @@ function hash(value) {
   return createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
 }
 
+function clientBatchCodeForTask(task) {
+  const existing=String(task?.source_client_batch_code??'').trim().toLowerCase();
+  return /^[0-9a-f]{32}$/u.test(existing)?existing:randomUUID().replaceAll('-','');
+}
+
 function normalizeActor(actor, roles) {
   if (!actor || !roles.includes(actor.role) || !Number.isSafeInteger(Number(actor.userId))) {
     throw new ControlPlaneAuthorizationError('当前账号不能执行图片质检操作');
@@ -113,17 +118,24 @@ function normalizeScore(value, decision) {
 
 async function imageSnapshot(client, taskId, imageRunId) {
   const result = await client.query(`
-    SELECT id, media_type, byte_size, sha256, original_name
-    FROM image_run_asset_view
-    WHERE task_id = $1 AND image_run_id = $2
-    ORDER BY id
+    SELECT asset.id, asset.media_type, asset.byte_size, asset.sha256, asset.original_name,
+      page.page_index, jsonb_array_length(image_run.result->'images') AS expected_page_count
+    FROM image_runs AS image_run
+    CROSS JOIN LATERAL jsonb_array_elements(image_run.result->'images')
+      WITH ORDINALITY AS page(image, page_index)
+    JOIN image_run_asset_view AS asset
+      ON asset.task_id = image_run.task_id AND asset.image_run_id = image_run.id
+      AND asset.id::text = COALESCE(page.image->>'deliveryAssetId', page.image->>'assetId')
+    WHERE image_run.task_id = $1 AND image_run.id = $2
+    ORDER BY page.page_index
   `, [taskId, imageRunId]);
-  if (result.rows.length < 1) {
-    throw new ControlPlaneConflictError('IMAGE_ASSETS_MISSING', '当前图片版本没有可审核的图片文件');
+  const expectedPageCount = Number(result.rows[0]?.expected_page_count ?? 0);
+  if (result.rows.length < 1 || result.rows.length !== expectedPageCount) {
+    throw new ControlPlaneConflictError('IMAGE_ASSETS_MISSING', '当前图片版本的最终交付图片不完整');
   }
   const assets = result.rows.map((row) => ({
     id: Number(row.id), mediaType: row.media_type, byteSize: Number(row.byte_size),
-    sha256: row.sha256, originalName: row.original_name,
+    sha256: row.sha256, originalName: row.original_name, pageIndex: Number(row.page_index),
   }));
   return { assets, sha256: hash(assets) };
 }
@@ -135,11 +147,11 @@ async function ensureProductionBatch(client, task, actor) {
   const name = task.source_query_package_name || `单任务图片抽检-${task.id}`;
   const batch = (await client.query(`
     INSERT INTO production_batches(
-      public_id, query_package_id, query_package_name, status, sampling_status,
+      public_id, query_package_id, query_package_name, client_batch_code, status, sampling_status,
       created_by_account_id, created_by_username, request_id, request_fingerprint
-    ) VALUES ($1, NULL, $2, 'OPEN', 'OPEN', $3, $4, $5, $6)
+    ) VALUES ($1, NULL, $2, $3, 'OPEN', 'OPEN', $4, $5, $6, $7)
     RETURNING id
-  `, [publicId, name, actor.userId, actor.username, requestId,
+  `, [publicId, name, clientBatchCodeForTask(task), actor.userId, actor.username, requestId,
     hash({ taskId: Number(task.id), kind: 'IMAGE_SELF_REVIEW' })])).rows[0];
   await client.query(`
     INSERT INTO production_batch_items(production_batch_id, query_snapshot, task_id)
@@ -473,7 +485,7 @@ function imageQaItemFrom(row, actor) {
     blindReview: blind,
     assets: Array.isArray(row.assets) ? row.assets.map((asset) => ({
       id: Number(asset.id), mediaType: asset.media_type, sha256: asset.sha256,
-      originalName: asset.original_name,
+      originalName: asset.original_name, pageIndex: Number(asset.page_index),
       url: `/v1/image-qa/items/${row.public_id}/assets/${asset.id}`,
     })) : [],
     capabilities: { canPass: canAct, canReturnSingle: canAct,
@@ -502,8 +514,13 @@ export async function getImageQaAsset(pool, rawItemId, rawAssetId, rawActor) {
     const result = await client.query(`
       SELECT asset.*
       FROM image_sampling_items AS item
+      JOIN image_runs AS image_run
+        ON image_run.id = item.image_run_id AND image_run.task_id = item.task_id
+      CROSS JOIN LATERAL jsonb_array_elements(image_run.result->'images')
+        WITH ORDINALITY AS page(image, page_index)
       JOIN image_run_asset_view AS asset
         ON asset.task_id = item.task_id AND asset.image_run_id = item.image_run_id
+        AND asset.id::text = COALESCE(page.image->>'deliveryAssetId', page.image->>'assetId')
       WHERE item.public_id = $1 AND item.selected AND asset.id = $2
         AND ($3 = 'ADMIN' OR (
           item.assigned_review_account_id = $4
@@ -541,13 +558,19 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
       sampling_freeze.production_batch_id, settings.image_reviewer_batch_return_enabled,
       COALESCE(jsonb_agg(jsonb_build_object(
         'id', asset.id, 'media_type', asset.media_type, 'sha256', asset.sha256,
-        'original_name', asset.original_name
-      ) ORDER BY asset.id) FILTER (WHERE asset.id IS NOT NULL), '[]'::jsonb) AS assets
+        'original_name', asset.original_name, 'page_index', page.page_index
+      ) ORDER BY page.page_index) FILTER (WHERE asset.id IS NOT NULL), '[]'::jsonb) AS assets
     FROM image_sampling_items AS item
     JOIN image_sampling_freezes AS sampling_freeze ON sampling_freeze.id = item.freeze_id
     JOIN tasks AS task ON task.id = item.task_id
+    JOIN image_runs AS image_run
+      ON image_run.id = item.image_run_id AND image_run.task_id = item.task_id
     CROSS JOIN workflow_quality_settings AS settings
-    LEFT JOIN image_run_asset_view AS asset ON asset.task_id = item.task_id AND asset.image_run_id = item.image_run_id
+    LEFT JOIN LATERAL jsonb_array_elements(image_run.result->'images')
+      WITH ORDINALITY AS page(image, page_index) ON true
+    LEFT JOIN image_run_asset_view AS asset
+      ON asset.task_id = item.task_id AND asset.image_run_id = item.image_run_id
+      AND asset.id::text = COALESCE(page.image->>'deliveryAssetId', page.image->>'assetId')
     WHERE item.selected
       AND ($2 = 'ALL' OR item.status = $2)
       AND ($1 = item.assigned_review_account_id OR EXISTS (

@@ -10,6 +10,7 @@ import {
 
 const PUBLIC_ID = '12345678-1234-4234-8234-123456789abc';
 const IMAGE_RUN_ID = '22345678-1234-4234-8234-123456789abc';
+const CLIENT_BATCH_CODE = 'b9759aad96a94c109fdce96ab4455294';
 const ACTOR = { userId: 7, username: 'Admin', role: 'ADMIN' };
 
 function batchRow(overrides = {}) {
@@ -19,6 +20,7 @@ function batchRow(overrides = {}) {
     code: 'JF-12345678',
     scope: 'QUERY_PACKAGE',
     query_package_name: '九月选题',
+    client_batch_code: null,
     status: 'GENERATED',
     archive_file_name: 'JF-12345678-九月选题-交付资源.zip',
     archive_byte_size: '2048',
@@ -42,6 +44,52 @@ test('delivery batch migration stores immutable version members and download eve
   assert.match(sql, /delivery batch history is append-only/u);
   assert.doesNotMatch(sql, /delivery_entry_id bigint REFERENCES/u,
     'history must survive later task or delivery-entry removal');
+});
+
+test('one client-batch manifest combines immutable members from different Query packages', async () => {
+  const secondImageRunId = '32345678-1234-4234-8234-123456789abc';
+  const calls = [];
+  const client = { query: async (sql, values) => {
+    calls.push({ sql, values });
+    if (sql.includes('FOR UPDATE OF delivery')) return { rows: [{
+      delivery_entry_id: 31, task_id: 11, copy_revision_id: 21,
+      image_run_id: IMAGE_RUN_ID, query: '桌面收纳', source_query_package_id: 4,
+      source_query_package_snapshot_id: null, source_query_package_name: '九月选题',
+      source_client_batch_code: CLIENT_BATCH_CODE,
+    }, {
+      delivery_entry_id: 32, task_id: 12, copy_revision_id: 22,
+      image_run_id: secondImageRunId, query: '衣柜分区', source_query_package_id: 5,
+      source_query_package_snapshot_id: null, source_query_package_name: '九月补充词包',
+      source_client_batch_code: CLIENT_BATCH_CODE,
+    }] };
+    if (sql.includes('JOIN delivery_batch_items AS existing')) return { rows: [] };
+    if (sql.includes('INSERT INTO delivery_batches')) return { rows: [batchRow({
+      scope: 'CLIENT_BATCH', query_package_name: null, client_batch_code: CLIENT_BATCH_CODE,
+      archive_file_name: `${CLIENT_BATCH_CODE}-交付资源.zip`, task_count: 2,
+    })] };
+    if (sql.includes('INSERT INTO delivery_batch_items')) return { rows: [] };
+    throw new Error(`unexpected query: ${sql}`);
+  } };
+
+  const created = await createDeliveryBatch(client, {
+    publicId: PUBLIC_ID,
+    scope: 'CLIENT_BATCH',
+    clientBatchCode: CLIENT_BATCH_CODE.toUpperCase(),
+    fileName: `${CLIENT_BATCH_CODE}-交付资源.zip`,
+    byteSize: 2048,
+    sha256: 'a'.repeat(64),
+    bindings: [
+      { taskId: 11, copyRevisionId: 21, imageRunId: IMAGE_RUN_ID },
+      { taskId: 12, copyRevisionId: 22, imageRunId: secondImageRunId },
+    ],
+  }, ACTOR);
+
+  assert.equal(created.clientBatchCode, CLIENT_BATCH_CODE);
+  assert.deepEqual(created.queryPackageNames, ['九月选题', '九月补充词包']);
+  const header = calls.find((call) => call.sql.includes('INSERT INTO delivery_batches'));
+  assert.equal(header.values[4], CLIENT_BATCH_CODE);
+  const manifest = calls.find((call) => call.sql.includes('INSERT INTO delivery_batch_items'));
+  assert.deepEqual(manifest.values[8], [CLIENT_BATCH_CODE, CLIENT_BATCH_CODE]);
 });
 
 test('creating a delivery batch locks READY versions and writes one immutable manifest', async () => {

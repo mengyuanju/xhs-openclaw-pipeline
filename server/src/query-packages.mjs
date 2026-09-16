@@ -16,6 +16,7 @@ import {
   assertQueryPackageImportAllowed,
   readWorkflowQualitySettings,
 } from './workflow-quality-settings.mjs';
+import { normalizeClientBatchCode } from './client-batch.mjs';
 
 const PACKAGE_ACTIVE_STATUSES = Object.freeze(['IMPORTED', 'SCREENING', 'READY', 'PARTIALLY_USED']);
 const QUERY_PACKAGE_INSERT_CHUNK_SIZE = 500;
@@ -145,6 +146,7 @@ function packageFrom(row) {
   return {
     id: Number(row.id),
     name: row.name,
+    clientBatchCode: row.client_batch_code,
     sourceFileName: row.source_file_name ?? null,
     status: row.status,
     createdByUserId: row.created_by_username,
@@ -202,6 +204,7 @@ function productionBatchFrom(row) {
     publicId: row.public_id,
     queryPackageId: row.query_package_id === null ? null : Number(row.query_package_id),
     queryPackageName: row.query_package_name,
+    clientBatchCode: row.client_batch_code,
     status: row.status,
     samplingStatus: row.sampling_status,
     taskCount: Number(row.task_count ?? 0),
@@ -379,12 +382,13 @@ export async function createQueryPackage(pool, input, rawActor) {
   const actor = normalizeActor(rawActor);
   assertQueryPackageAdministrator(actor, 'create');
   const name = text(input?.name, 'name', 200);
+  const clientBatchCode = normalizeClientBatchCode(input?.clientBatchCode);
   const sourceFileName = text(input?.sourceFileName, 'sourceFileName', 255, { optional: true });
   const items = normalizeQueryPackageItems(input?.items ?? input?.queries);
   const requestId = normalizeUuid(input?.requestId, 'requestId');
   const requestedAssignee = input?.assignedToUserId === undefined
     ? null : String(input.assignedToUserId).toLowerCase();
-  const fingerprint = hashJson({ name, sourceFileName, items, requestedAssignee });
+  const fingerprint = hashJson({ name, clientBatchCode, sourceFileName, items, requestedAssignee });
   return withTransaction(pool, async (client) => {
     await lockActiveQueryPackageActor(client, actor);
     await lockMutationRequest(client, actor, requestId);
@@ -399,11 +403,12 @@ export async function createQueryPackage(pool, input, rawActor) {
     const assignedUsername = null;
     const created = await client.query(`
       INSERT INTO query_packages(
-        name, source_file_name, created_by_account_id, created_by_username,
+        name, client_batch_code, source_file_name, created_by_account_id, created_by_username,
         assigned_to_account_id, assigned_to_username
-      ) VALUES ($1, $2, $3, $4, $5, $6)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
       RETURNING *
-    `, [name, sourceFileName, actor.userId, actor.username, assignedAccountId, assignedUsername]);
+    `, [name, clientBatchCode, sourceFileName, actor.userId, actor.username,
+      assignedAccountId, assignedUsername]);
     await insertQueryPackageItems(client, created.rows[0].id, items);
     const response = { ...packageFrom(created.rows[0]), counts: {
       total: items.length,
@@ -511,10 +516,12 @@ async function createProductionBatchTasks(client, {
   `, [nodeId]);
   const batch = await client.query(`
     INSERT INTO production_batches(
-      public_id, query_package_id, query_package_name, created_by_account_id, created_by_username,
-      request_id, request_fingerprint
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *
-  `, [randomUUID(), packageId, current.name, actor.userId, actor.username, requestId, requestFingerprint]);
+      public_id, query_package_id, query_package_name,
+      created_by_account_id, created_by_username,
+      request_id, request_fingerprint, client_batch_code
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *
+  `, [randomUUID(), packageId, current.name,
+    actor.userId, actor.username, requestId, requestFingerprint, current.client_batch_code]);
   const createdTasks = await client.query(`
     WITH source_items AS MATERIALIZED (
       SELECT item.id, item.query, item.input, item.requested_image_count, item.external_id
@@ -529,12 +536,13 @@ async function createProductionBatchTasks(client, {
         query, input, requested_image_count, created_by_node_id, created_by_user_id,
         assigned_to_user_id, assigned_at, assignment_source,
         source_query_package_id, source_query_package_item_id,
-        source_query_package_name, source_query_package_external_id, production_batch_id,
+        source_query_package_name, source_query_package_external_id,
+        source_client_batch_code, production_batch_id,
         state, current_stage, progress_message
       )
       SELECT item.query, item.input, item.requested_image_count, $3, $4,
         NULL::varchar, NULL::timestamptz, NULL::varchar,
-        $1, item.id, $5, item.external_id, $6,
+        $1, item.id, $5, item.external_id, $7, $6,
         'COPY_QUEUED', 'COPY_QUEUED', '等待文案执行机领取'
       FROM source_items AS item
       ORDER BY item.id
@@ -560,7 +568,8 @@ async function createProductionBatchTasks(client, {
     FROM created_batch_items AS batch_item
     JOIN updated_items AS updated ON updated.id = batch_item.source_query_package_item_id
     ORDER BY batch_item.source_query_package_item_id
-  `, [packageId, itemIds, nodeId, taskCreatorUsername, current.name, batch.rows[0].id]);
+  `, [packageId, itemIds, nodeId, taskCreatorUsername, current.name,
+    batch.rows[0].id, current.client_batch_code]);
   if (createdTasks.rows.length !== itemIds.length) {
     throw new Error('query package production did not create every selected task');
   }

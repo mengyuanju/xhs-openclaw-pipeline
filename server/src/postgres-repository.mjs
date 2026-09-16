@@ -223,6 +223,7 @@ function taskFrom(row) {
       && row.source_query_package_snapshot_id != null,
     sourceQueryPackageName: row.source_query_package_name ?? null,
     sourceQueryPackageExternalId: row.source_query_package_external_id ?? null,
+    sourceClientBatchCode: row.source_client_batch_code ?? null,
     productionBatchId: row.production_batch_id === undefined || row.production_batch_id === null
       ? null : Number(row.production_batch_id),
     deliveryStatus: row.delivery_ready === true ? 'READY' : null,
@@ -431,7 +432,7 @@ function nodeFrom(row) {
   };
 }
 
-function contentWithReviewEdits(content, edits, { baseRevisionId, nodeId }) {
+function contentWithReviewEdits(content, edits, { baseRevisionId, nodeId, copyChanged, imagePlanChanged }) {
   const original = normalizeJson(content, 'copy revision content', 5_000_000);
   const reviewed = original.reviewed && typeof original.reviewed === 'object' && !Array.isArray(original.reviewed)
     ? { ...original.reviewed, copy: edits.copy, imagePlan: edits.imagePlan }
@@ -443,7 +444,8 @@ function contentWithReviewEdits(content, edits, { baseRevisionId, nodeId }) {
     ...(edits.imageSettings ? { imageSettings: edits.imageSettings } : {}),
     ...(reviewed ? { reviewed } : {}),
     manualReview: {
-      edited: true,
+      edited: copyChanged,
+      imagePlanEdited: imagePlanChanged || original.manualReview?.imagePlanEdited === true,
       baseRevisionId,
       reviewedByNodeId: nodeId,
       submittedAt: new Date().toISOString(),
@@ -1444,8 +1446,11 @@ export class PostgresControlPlaneRepository {
     return assertTasksReadyForDelivery(this.pool, bindings);
   }
   listDeliveryPool(options, { actor } = {}) { return listDeliveryPool(this.pool, options, actor); }
-  listAllDeliveryPoolTaskIds({ actor, queryPackageName = null, unpackedOnly = false } = {}) {
-    return listAllDeliveryPoolTaskIds(this.pool, actor, { queryPackageName, unpackedOnly });
+  listAllDeliveryPoolTaskIds({ actor, queryPackageName = null, clientBatchCode = null,
+    unpackedOnly = false } = {}) {
+    return listAllDeliveryPoolTaskIds(this.pool, actor, {
+      queryPackageName, clientBatchCode, unpackedOnly,
+    });
   }
   createDeliveryBatch(input, { actor } = {}) {
     return transaction(this.pool, (client) => createDeliveryBatch(client, input, actor));
@@ -1506,7 +1511,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 1, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 5, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, finalDeliveryVersion: 3, deliverySpreadsheetVersion: 1, deliveryPreviewVersion: 6 } };
+      capabilities: { taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 2, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 6, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, finalDeliveryVersion: 4, deliverySpreadsheetVersion: 2, deliveryPreviewVersion: 6 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -3377,7 +3382,7 @@ export class PostgresControlPlaneRepository {
             SELECT DISTINCT ON (edit.task_id) edit.task_id, edit.id AS edit_id
             FROM image_edit_requests edit
             JOIN tasks edit_task ON edit_task.id = edit.task_id
-            WHERE $5::integer >= 1
+            WHERE $5::integer >= 2
               AND edit.status = 'QUEUED'
               AND edit_task.priority_paused = false
               AND edit_task.assigned_to_user_id IS NOT NULL
@@ -3451,7 +3456,7 @@ export class PostgresControlPlaneRepository {
         const executionId = randomUUID();
         const imageEditRequestId = task.image_edit_request_id ?? null;
         const baseSnapshot = imageEditRequestId
-          ? { imageEditRequestId, imageEditExecutorVersion: 1,
+          ? { imageEditRequestId, imageEditExecutorVersion: 2,
             task: { id: Number(task.id), query: task.query } }
           : task.pending_snapshot ?? snapshots.get(task.id);
         const imageProductionChainId = kind === 'IMAGE' && !imageEditRequestId
@@ -3698,12 +3703,16 @@ export class PostgresControlPlaneRepository {
     const reviewerUsername = normalizeCreatorUserId(actorIdentity?.username ?? rawReviewerUserId);
     const reviewSessionId = normalizeUuid(rawReviewSessionId, 'reviewSessionId');
     const decision = String(rawDecision ?? '').trim().toUpperCase();
-    if (!['SAVE', 'APPROVE', 'DISCARD'].includes(decision)) throw new TypeError('copy review decision is invalid');
+    if (!['SAVE', 'SAVE_PLAN', 'APPROVE', 'DISCARD'].includes(decision)) throw new TypeError('copy review decision is invalid');
     const originalScoreX10 = rawOriginalScore === undefined
       ? null : normalizedHumanQualityScore(rawOriginalScore, 'originalScore');
     let edits = rawEdits === undefined ? null : normalizeCopyReviewEdits(rawEdits);
     if (decision === 'DISCARD' && edits) throw new TypeError('discarding copy does not accept edits');
-    if (edits && actorRole !== 'ADMIN') edits = { ...edits, imagePlan: automaticReviewImagePlan(edits.imagePlan) };
+    if (decision === 'SAVE_PLAN' && !edits) throw new TypeError('saving an image plan requires edits');
+    if (decision === 'SAVE_PLAN' && [rawOriginalScore, rawScore, rawOriginalReasons, rawOriginalReasonCodes,
+      rawOriginalNote, rawReasons, rawReasonCodes, rawNote, rawAiDisclosureEnabled].some(value => value !== undefined)) {
+      throw new TypeError('saving an image plan does not accept copy rating or disclosure fields');
+    }
     const submittedScoreX10 = rawScore === undefined ? null : normalizedHumanQualityScore(rawScore);
     const currentScoreX10 = submittedScoreX10 ?? originalScoreX10;
     const originalReasonCodes = normalizedQualityReasonCodes(rawOriginalReasons ?? rawOriginalReasonCodes);
@@ -3754,6 +3763,22 @@ export class PostgresControlPlaneRepository {
         SELECT * FROM copy_revisions WHERE id = $1 AND task_id = $2 FOR UPDATE
       `, [revisionId, taskId]);
       if (!revision.rows[0]) throw new ControlPlaneNotFoundError('copy revision not found');
+      const originalImagePlan = edits ? normalizeCopyReviewImagePlan(
+        revision.rows[0].content.imagePlan
+          ?? revision.rows[0].content.reviewed?.imagePlan
+          ?? revision.rows[0].content.post?.imagePlan,
+      ) : null;
+      const originalImageSettings = edits ? normalizeImageSettings(
+        revision.rows[0].content.imageSettings ?? DEFAULT_IMAGE_SETTINGS,
+      ) : null;
+      let imagePlanChanged = Boolean(edits && !isDeepStrictEqual(edits.imagePlan, originalImagePlan));
+      const imageSettingsChanged = Boolean(edits
+        && !isDeepStrictEqual(edits.imageSettings ?? originalImageSettings, originalImageSettings));
+      if (edits && actorRole !== 'ADMIN' && decision !== 'SAVE_PLAN' && !imagePlanChanged
+          && revision.rows[0].content.manualReview?.imagePlanEdited !== true) {
+        edits = { ...edits, imagePlan: automaticReviewImagePlan(edits.imagePlan) };
+        imagePlanChanged = !isDeepStrictEqual(edits.imagePlan, originalImagePlan);
+      }
       const revisionRework = revision.rows[0].content?.finalRework;
       const copyOnlyFinalRework = revision.rows[0].revision_origin === 'FINAL_REWORK'
         && revisionRework?.target === 'COPY';
@@ -3784,7 +3809,7 @@ export class PostgresControlPlaneRepository {
         }
       }
       const mandatoryRework = task.mandatory_copy_qc === true;
-      if (!mandatoryRework && currentScoreX10 === null) throw new TypeError('score is required');
+      if (!mandatoryRework && decision !== 'SAVE_PLAN' && currentScoreX10 === null) throw new TypeError('score is required');
       const node = await client.query('SELECT id FROM executor_nodes WHERE id = $1', [nodeId]);
       if (!node.rows[0]) throw new ControlPlaneNotFoundError('executor node is not registered');
       const sourceIsOriginal = revision.rows[0].execution_id !== null;
@@ -3813,7 +3838,18 @@ export class PostgresControlPlaneRepository {
           edits.copy,
           normalizedReviewCopy(revision.rows[0].content, edits.imagePlan),
         );
-        if (!mandatoryRework && !baseAssessment && baseScoreX10 === null) {
+        if (decision === 'SAVE_PLAN') {
+          if (copyChanged || imageSettingsChanged) {
+            throw new ControlPlaneConflictError(
+              'IMAGE_PLAN_SAVE_SCOPE_VIOLATION',
+              '单独保存图片规划不能修改标题、正文、标签、图片格式或背景设置',
+            );
+          }
+          if (!imagePlanChanged) {
+            throw new ControlPlaneConflictError('IMAGE_PLAN_UNCHANGED', '图片文案规划没有发生修改');
+          }
+        }
+        if (!mandatoryRework && decision !== 'SAVE_PLAN' && !baseAssessment && baseScoreX10 === null) {
           if (sourceIsOriginal) {
             throw new TypeError('originalScore is required when editing generated copy');
           }
@@ -3821,7 +3857,7 @@ export class PostgresControlPlaneRepository {
             'COPY_BASE_RATING_REQUIRED',
             '当前文案版本缺少可验证的评分，不能提交修改',
           );
-        } else if (!mandatoryRework && !baseAssessment) {
+        } else if (!mandatoryRework && decision !== 'SAVE_PLAN' && !baseAssessment) {
           // Legacy manual revisions and a machine draft's first edit can both
           // predate a stored assessment. Accept only an explicitly submitted,
           // fully validated base rating; the edited score never stands in for it.
@@ -3847,7 +3883,7 @@ export class PostgresControlPlaneRepository {
         if (differsFromMachine !== null) finalCopyEdited = differsFromMachine;
       }
       if (!mandatoryRework && sourceIsOriginal
-          && (baseScoreX10 ?? currentScoreX10) === 10 && decision !== 'DISCARD') {
+          && (baseScoreX10 ?? currentScoreX10) === 10 && !['DISCARD', 'SAVE_PLAN'].includes(decision)) {
         throw new ControlPlaneConflictError('SCORE_ONE_REQUIRES_DISCARD', '1 分机器初稿必须直接作废');
       }
       if (decision === 'APPROVE' && mandatoryRework && !copyReworkSatisfied) {
@@ -3877,8 +3913,14 @@ export class PostgresControlPlaneRepository {
       let reviewedRevisionId = revisionId;
       let reviewedRevisionRow = revision.rows[0];
       const reviewedContent = edits
-        ? contentWithReviewEdits(revision.rows[0].content, edits, { baseRevisionId: revisionId, nodeId })
+        ? contentWithReviewEdits(revision.rows[0].content, edits, {
+          baseRevisionId: revisionId,
+          nodeId,
+          copyChanged,
+          imagePlanChanged,
+        })
         : decision === 'APPROVE' && actorRole !== 'ADMIN'
+            && revision.rows[0].content.manualReview?.imagePlanEdited !== true
           ? contentWithAutomaticReviewLayouts(revision.rows[0].content, { baseRevisionId: revisionId, nodeId })
           : null;
       if (reviewedContent) {
@@ -3927,7 +3969,7 @@ export class PostgresControlPlaneRepository {
           taskId, stage: 'COPY', copyRevisionId: reviewedRevisionId,
           scoreX10: assessmentScoreX10,
           ratingContext: copyChanged ? 'EDITED' : sourceRatingContext,
-          action: decision,
+          action: decision === 'SAVE_PLAN' ? 'SAVE' : decision,
           reasonCodes: assessmentReasonCodes, note: assessmentNote,
           reviewerUsername, reviewSessionId, requestFingerprint,
         });
@@ -3971,7 +4013,9 @@ export class PostgresControlPlaneRepository {
         WHERE id = $1
         RETURNING *
       `, [taskId, reviewedRevisionId, aiDisclosureEnabled, Boolean(reviewedContent),
-        reviewedContent ? '人工修改已保存，等待继续审核' : '人工评分已保存，等待继续审核']);
+        reviewedContent
+          ? decision === 'SAVE_PLAN' ? '图片文案规划已保存，等待继续文案审核' : '人工修改已保存，等待继续审核'
+          : '人工评分已保存，等待继续审核']);
       return taskFrom(saved.rows[0]);
     });
   }

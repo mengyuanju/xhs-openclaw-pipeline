@@ -43,7 +43,7 @@ const positions = { titlePosition: [['top-left', '左上'], ['top-center', '上�
 
 export function PageLayoutEditor({ kind, value, onChange, disabled = false }: { kind: string; value?: PageLayout; onChange: (value: PageLayout) => void; disabled?: boolean }) {
   const id = useId();
-  const custom = normalizePageLayout(value ?? { mode: 'CUSTOM' }, kind);
+  const custom = normalizePageLayout(value?.mode === 'CUSTOM' ? value : { mode: 'CUSTOM' }, kind);
   const patch = (fields: Partial<PageLayout>) => onChange(normalizePageLayout({ ...custom, ...fields, mode: 'CUSTOM' }, kind));
   return <fieldset className="image-controls layout-controls" disabled={disabled}>
     <legend>布局格式</legend>

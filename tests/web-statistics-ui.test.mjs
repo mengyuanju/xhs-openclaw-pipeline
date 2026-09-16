@@ -31,34 +31,35 @@ test('personal statistics labels assignment ownership without claiming the worke
   assert.doesNotMatch(overview, /label="累计创建"/u);
 });
 
-test('personal status categories sit beside saved views without starting a second statistics poll', async () => {
-  const [overview, workbench, statisticsHook, styles] = await Promise.all([
+test('personal workbench uses grouped shadcn navigation without starting a second statistics poll', async () => {
+  const [overview, filters, workbench, statisticsHook, styles] = await Promise.all([
     source('app/workbench-statistics/personal-overview.tsx'),
+    source('app/workbench/personal-state-filters.ts'),
     source('app/workbench/creation-workbench.tsx'),
     source('app/workbench-statistics/use-statistics.ts'),
     source('app/globals.css'),
   ]);
-  const overviewStart = overview.indexOf('export function PersonalOverview');
-  const filtersStart = overview.indexOf('export function PersonalStatusFilters');
-  const controlsStart = workbench.indexOf("{(role === 'ADMIN' || activeView === 'PERSONAL') && <div className=\"workbench-admin-list-controls\">");
-  const listToolsStart = workbench.indexOf('<div className="workbench-list-tools">', controlsStart);
-  assert.ok(overviewStart >= 0 && filtersStart > overviewStart);
-  assert.doesNotMatch(overview.slice(overviewStart, filtersStart), /job-stats-chips/u);
-  assert.match(overview.slice(filtersStart), /job-stats-chips workbench-personal-state-filters/u);
-  assert.match(overview.slice(filtersStart), /filter === 'copyQaReturned'[\s\S]*质检打回[\s\S]*summary\?\.copyQaReturned/u);
-  assert.ok(controlsStart >= 0 && listToolsStart > controlsStart);
-  const controls = workbench.slice(controlsStart, listToolsStart);
-  assert.match(controls, /role === 'ADMIN' && <div className="workbench-saved-views"/u);
-  const personalControls = controls.match(/activeView === 'PERSONAL' && <>([\s\S]*?)<\/>/u)?.[1];
-  assert.ok(personalControls, 'personal filters must remain inside the personal-view condition');
-  assert.match(personalControls, /<PersonalTaskScopeFilter\s+value=\{personalScope\}/u);
-  assert.match(personalControls, /<PersonalStatusFilters\s+filter=\{stateFilter\}\s+summary=\{personalStatistics\.data\?\.summary\}/u,
-    'status filters reuse the existing personal statistics response');
-  assert.match(controls, /onFilter=\{\(value\) => \{ setStateFilter\(value\); setPage\(1\); \}\}/u);
+  assert.match(overview, /export function PersonalWorkbenchNavigation/u);
+  assert.match(overview, /<Tabs[\s\S]*PERSONAL_PRIMARY_FILTERS\.map/u);
+  assert.match(overview, /<Collapsible[\s\S]*高级状态/u);
+  assert.match(overview, /PERSONAL_DETAIL_FILTERS\.map/u);
+  assert.match(overview, /summary = statistics\.data\?\.summary/u,
+    'navigation counts must reuse the existing personal statistics response');
+  assert.match(filters, /personalReview[\s\S]*STATE_GROUPS\.copyReview[\s\S]*STATE_GROUPS\.imageReview/u);
+  assert.match(filters, /personalProduction[\s\S]*STATE_GROUPS\.queued[\s\S]*STATE_GROUPS\.running/u);
+  assert.match(filters, /IMAGE_REWORK_PENDING', label: '图片质检打回'/u);
+  assert.match(workbench, /IMAGE_REWORK_PENDING: '图片质检打回'/u);
+  assert.match(workbench, /activeView === 'PERSONAL' && <PersonalWorkbenchNavigation/u);
+  assert.match(workbench, /onFilter=\{\(value\) => \{ setStateFilter\(value\); setPage\(1\); \}\}/u);
+  assert.match(workbench, /onScope=\{\(value\) => \{ setPersonalScope\(value\); setPage\(1\); \}\}/u);
   assert.match(workbench, /useStatistics\([\s\S]*?activeView === 'PERSONAL',[\s\S]*?\)/u);
-  assert.match(workbench, /stateFilter === 'copyQaReturned'[\s\S]*search\.set\('copyQaReturned', 'true'\)/u);
+  assert.match(workbench, /personalStateFilterStates\(stateFilter\)/u);
+  assert.match(workbench, /search\.set\('mine', 'true'\)[\s\S]*search\.set\('personalScope', personalScope\)[\s\S]*search\.set\('copyQaReturned', 'true'\)/u);
+  assert.match(workbench, /!matchesPersonalScope\(task, personalScope, creatorUserId, creatorAccountId\)/u);
+  assert.match(workbench, /!personalStates\.includes\(task\.state\)/u,
+    'personal results must fail closed when the center ignores the selected lifecycle states');
   assert.match(statisticsHook, /export function useStatistics\(filters: Filters, enabled = true\)/u);
-  assert.match(styles, /\.workbench-personal-state-filters \{[^}]*justify-content: flex-end;[^}]*margin: 0 0 0 auto;[^}]*border: 0;/u);
+  assert.match(styles, /\.personal-workbench-status-tabs \[data-slot="tabs-list"\][^{]*\{[^}]*grid-template-columns: repeat\(5/u);
 });
 
 test('historical account generations cannot navigate through the current-account creator filter', async () => {

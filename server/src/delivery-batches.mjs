@@ -6,8 +6,9 @@ import {
   normalizeUuid,
 } from './domain.mjs';
 import { normalizeListPagination } from './list-pagination.mjs';
+import { normalizeClientBatchCode } from './client-batch.mjs';
 
-const SCOPES = new Set(['ALL_READY', 'QUERY_PACKAGE', 'SELECTED']);
+const SCOPES = new Set(['ALL_READY', 'QUERY_PACKAGE', 'CLIENT_BATCH', 'SELECTED']);
 const STATUSES = new Set(['GENERATED', 'DOWNLOADED']);
 
 function normalizeActor(actor) {
@@ -78,6 +79,7 @@ function batchFrom(row) {
     scope: row.scope,
     queryPackageName: row.query_package_name ?? null,
     queryPackageNames: packageNames,
+    clientBatchCode: row.client_batch_code ?? null,
     status,
     fileName: row.archive_file_name,
     byteSize: Number(row.archive_byte_size),
@@ -103,6 +105,7 @@ function batchItemFrom(row) {
     queryPackageId: row.query_package_id_snapshot == null
       ? null : Number(row.query_package_id_snapshot),
     queryPackageName: row.query_package_name_snapshot ?? null,
+    clientBatchCode: row.client_batch_code_snapshot ?? null,
   };
 }
 
@@ -118,6 +121,12 @@ export async function createDeliveryBatch(client, input, rawActor) {
   if (scope !== 'QUERY_PACKAGE' && queryPackageName !== null) {
     throw new TypeError('only a query-package batch may store queryPackageName');
   }
+  const clientBatchCode = normalizeClientBatchCode(input?.clientBatchCode, {
+    optional: scope !== 'CLIENT_BATCH',
+  });
+  if (scope !== 'CLIENT_BATCH' && clientBatchCode !== null) {
+    throw new TypeError('only a client-batch delivery may store clientBatchCode');
+  }
   const fileName = normalizedFileName(input?.fileName);
   const byteSize = Number(input?.byteSize);
   const sha256 = String(input?.sha256 ?? '').trim().toLowerCase();
@@ -132,7 +141,8 @@ export async function createDeliveryBatch(client, input, rawActor) {
   const locked = await client.query(`
     SELECT delivery.id AS delivery_entry_id, delivery.task_id, delivery.copy_revision_id,
       delivery.image_run_id, task.query, task.source_query_package_id,
-      task.source_query_package_snapshot_id, task.source_query_package_name
+      task.source_query_package_snapshot_id, task.source_query_package_name,
+      task.source_client_batch_code
     FROM delivery_entries AS delivery
     JOIN tasks AS task ON task.id = delivery.task_id
       AND task.state = 'REVIEWED'
@@ -162,6 +172,12 @@ export async function createDeliveryBatch(client, input, rawActor) {
       throw new ControlPlaneConflictError(
         'DELIVERY_SCOPE_CHANGED',
         '词包交付范围已经变化，请刷新后重试',
+      );
+    }
+    if (scope === 'CLIENT_BATCH' && row.source_client_batch_code !== clientBatchCode) {
+      throw new ControlPlaneConflictError(
+        'DELIVERY_SCOPE_CHANGED',
+        '甲方批次交付范围已经变化，请刷新后重试',
       );
     }
     return row;
@@ -194,28 +210,32 @@ export async function createDeliveryBatch(client, input, rawActor) {
   }
   const inserted = await client.query(`
     INSERT INTO delivery_batches(
-      public_id, code, scope, query_package_name, archive_file_name,
+      public_id, code, scope, query_package_name, client_batch_code, archive_file_name,
       archive_byte_size, archive_sha256, task_count,
       created_by_account_id, created_by_username
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
     RETURNING *
-  `, [publicId, code, scope, queryPackageName, fileName, byteSize, sha256,
+  `, [publicId, code, scope, queryPackageName, clientBatchCode, fileName, byteSize, sha256,
     rows.length, actor.userId, actor.username]);
   const batch = inserted.rows[0];
   await client.query(`
     INSERT INTO delivery_batch_items(
       delivery_batch_id, delivery_entry_id, ordinal, task_id,
       copy_revision_id, image_run_id, query_snapshot,
-      query_package_id_snapshot, query_package_name_snapshot
+      query_package_id_snapshot, query_package_name_snapshot,
+      client_batch_code_snapshot
     )
     SELECT $1, item.delivery_entry_id, item.ordinality::integer, item.task_id,
       item.copy_revision_id, item.image_run_id, item.query_snapshot,
-      item.query_package_id_snapshot, item.query_package_name_snapshot
+      item.query_package_id_snapshot, item.query_package_name_snapshot,
+      item.client_batch_code_snapshot
     FROM unnest(
-      $2::bigint[], $3::bigint[], $4::bigint[], $5::uuid[], $6::text[], $7::bigint[], $8::varchar[]
+      $2::bigint[], $3::bigint[], $4::bigint[], $5::uuid[], $6::text[],
+      $7::bigint[], $8::varchar[], $9::varchar[]
     ) WITH ORDINALITY AS item(
       delivery_entry_id, task_id, copy_revision_id, image_run_id, query_snapshot,
-      query_package_id_snapshot, query_package_name_snapshot, ordinality
+      query_package_id_snapshot, query_package_name_snapshot,
+      client_batch_code_snapshot, ordinality
     )
   `, [
     batch.id,
@@ -226,6 +246,7 @@ export async function createDeliveryBatch(client, input, rawActor) {
     rows.map((row) => String(row.query ?? '')),
     rows.map((row) => row.source_query_package_id ?? row.source_query_package_snapshot_id ?? null),
     rows.map((row) => row.source_query_package_name ?? null),
+    rows.map((row) => row.source_client_batch_code ?? null),
   ]);
   return batchFrom({
     ...batch,
@@ -237,19 +258,31 @@ export async function listDeliveryBatches(pool, {
   limit: rawLimit = 50,
   offset: rawOffset = 0,
   queryPackageName: rawQueryPackageName = null,
+  clientBatchCode: rawClientBatchCode = null,
 } = {}, rawActor) {
   normalizeActor(rawActor);
   const { limit, offset } = normalizeListPagination(rawLimit, rawOffset);
   const queryPackageName = normalizedPackageName(rawQueryPackageName);
+  const clientBatchCode = normalizeClientBatchCode(rawClientBatchCode, { optional: true });
   const values = [];
-  const filter = queryPackageName === null ? '' : (() => {
+  const clauses = [];
+  if (queryPackageName !== null) {
     values.push(queryPackageName);
-    return `WHERE EXISTS (
+    clauses.push(`EXISTS (
       SELECT 1 FROM delivery_batch_items AS filtered
       WHERE filtered.delivery_batch_id = batch.id
         AND filtered.query_package_name_snapshot = $${values.length}
-    )`;
-  })();
+    )`);
+  }
+  if (clientBatchCode !== null) {
+    values.push(clientBatchCode);
+    clauses.push(`EXISTS (
+      SELECT 1 FROM delivery_batch_items AS filtered
+      WHERE filtered.delivery_batch_id = batch.id
+        AND filtered.client_batch_code_snapshot = $${values.length}
+    )`);
+  }
+  const filter = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   const page = await pool.query(`
     SELECT batch.*, COALESCE(packages.names, ARRAY[]::varchar[]) AS query_package_names
     FROM delivery_batches AS batch

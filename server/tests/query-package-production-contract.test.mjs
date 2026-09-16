@@ -19,6 +19,7 @@ function packageRow(patch = {}) {
   return {
     id: 9,
     name: '九月选题',
+    client_batch_code: 'b9759aad96a94c109fdce96ab4455294',
     source_file_name: 'queries.txt',
     status: 'SCREENING',
     created_by_account_id: 1,

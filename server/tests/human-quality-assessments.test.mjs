@@ -320,6 +320,91 @@ test('plan-only edits can be saved for a two-point draft or approved only for a 
   }
 });
 
+test('an assigned worker can save custom image planning after scoring without changing the copy assessment', async () => {
+  const fixture = copyFixture();
+  await fixture.repository.approveCopy(41, {
+    revisionId: 12,
+    nodeId: 'node-a',
+    decision: 'SAVE',
+    score: 3,
+    reasons: [],
+    reviewSessionId,
+  }, { actorRole: 'USER', reviewerUserId: 'reviewer' });
+
+  const imagePlan = sourceEdits.imagePlan.map((item, index) => index === 0
+    ? {
+      ...item,
+      headline: '评分后单独调整封面',
+      layout: {
+        mode: 'CUSTOM',
+        titlePosition: 'top-left',
+        subjectPosition: 'right',
+        textPosition: 'left',
+        alignment: 'left',
+        imageShare: 65,
+        spacing: 'airy',
+        direction: '右侧保留主体，左侧依次放置标题和要点。',
+      },
+    }
+    : item);
+  const saved = await fixture.repository.approveCopy(41, {
+    revisionId: 12,
+    nodeId: 'node-a',
+    decision: 'SAVE_PLAN',
+    edits: { ...sourceEdits, imagePlan },
+    reviewSessionId: '45454545-4545-4545-8545-454545454545',
+  }, { actorRole: 'USER', reviewerUserId: 'reviewer' });
+
+  assert.equal(saved.state, 'COPY_REVIEW_PENDING');
+  assert.equal(saved.currentCopyRevisionId, 13);
+  assert.equal(fixture.revisions.get(13).revision_origin, 'PLAN_EDIT');
+  assert.equal(fixture.revisions.get(13).content.imagePlan[0].headline, '评分后单独调整封面');
+  assert.equal(fixture.revisions.get(13).content.imagePlan[0].layout.mode, 'CUSTOM');
+  assert.equal(fixture.revisions.get(13).content.manualReview.edited, false);
+  assert.equal(fixture.revisions.get(13).content.manualReview.imagePlanEdited, true);
+  assert.deepEqual(fixture.assessments.map(({ copy_revision_id, score_x10, action }) => ({
+    copyRevisionId: copy_revision_id,
+    scoreX10: score_x10,
+    action,
+  })), [
+    { copyRevisionId: 12, scoreX10: 30, action: 'SAVE' },
+    { copyRevisionId: 13, scoreX10: 30, action: 'SAVE' },
+  ]);
+
+  const approved = await fixture.repository.approveCopy(41, {
+    revisionId: 13,
+    nodeId: 'node-a',
+    decision: 'APPROVE',
+    score: 3,
+    reasons: [],
+    reviewSessionId: '46464646-4646-4646-8646-464646464646',
+  }, { actorRole: 'USER', reviewerUserId: 'reviewer' });
+
+  assert.equal(approved.state, 'IMAGE_QUEUED');
+  assert.equal(fixture.revisions.size, 2, 'approval must not append an automatic-layout revision');
+  assert.equal(fixture.revisions.get(13).content.imagePlan[0].layout.mode, 'CUSTOM');
+});
+
+test('the plan-only save operation rejects copy or image configuration changes', async () => {
+  for (const edits of [
+    { ...sourceEdits, copy: { ...sourceEdits.copy, title: '借图片规划保存偷改文案' }, imagePlan: validEdits.imagePlan },
+    { ...sourceEdits, imagePlan: validEdits.imagePlan, imageSettings: { version: 1, format: 'WEBP', quality: 90, background: 'SOLID', backgroundColor: '#f2eee7' } },
+  ]) {
+    const fixture = copyFixture();
+    await assert.rejects(fixture.repository.approveCopy(41, {
+      revisionId: 12,
+      nodeId: 'node-a',
+      decision: 'SAVE_PLAN',
+      edits,
+      reviewSessionId: '47474747-4747-4747-8747-474747474747',
+    }, { actorRole: 'USER', reviewerUserId: 'reviewer' }), {
+      code: 'IMAGE_PLAN_SAVE_SCOPE_VIOLATION',
+    });
+    assert.equal(fixture.revisions.size, 1);
+    assert.equal(fixture.assessments.length, 0);
+  }
+});
+
 test('a plan-only saved low-score revision still requires a real copy edit before approval', async () => {
   const fixture = copyFixture();
   const planOnlyEdits = {

@@ -82,6 +82,38 @@ export async function mergeWithMask(source, generated, mask) {
   for (let p = 0; p < m.length; p++) if (m[p] === 255) g.copy(result, p*4, p*4, p*4+4);
   return sharp(result, { raw: { width: 1086, height: 1448, channels: 4 } }).png().toBuffer();
 }
+export async function changedPixelMask(source, generated, allowedMask,{threshold=24,dilation=2,minPixels=64}={}) {
+  const [s,g,allowed]=await Promise.all([
+    sharp(source).ensureAlpha().raw().toBuffer(),
+    sharp(generated).ensureAlpha().raw().toBuffer(),
+    sharp(allowedMask).greyscale().raw().toBuffer(),
+  ]);
+  if(s.length!==EDIT_WIDTH*EDIT_HEIGHT*4||g.length!==s.length||allowed.length!==EDIT_WIDTH*EDIT_HEIGHT)throw new TypeError('图片或允许区域尺寸错误');
+  boundedNumber(threshold,1,255);
+  boundedNumber(dilation,0,8);
+  boundedNumber(minPixels,1,EDIT_WIDTH*EDIT_HEIGHT);
+  let selected=Buffer.alloc(allowed.length),count=0;
+  for(let p=0;p<allowed.length;p++) {
+    if(allowed[p]<128)continue;
+    const i=p*4;
+    const difference=Math.max(Math.abs(s[i]-g[i]),Math.abs(s[i+1]-g[i+1]),Math.abs(s[i+2]-g[i+2]),Math.abs(s[i+3]-g[i+3]));
+    if(difference>=threshold){selected[p]=255;count++;}
+  }
+  if(count<minPixels)throw new Error('图片模型没有在人工生成标识安全区内产生足够的有效改动');
+  for(let pass=0;pass<dilation;pass++) {
+    const expanded=Buffer.from(selected);
+    for(let y=1;y<EDIT_HEIGHT-1;y++)for(let x=1;x<EDIT_WIDTH-1;x++) {
+      const p=y*EDIT_WIDTH+x;
+      if(selected[p]!==255)continue;
+      for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++) {
+        const neighbor=(y+dy)*EDIT_WIDTH+x+dx;
+        if(allowed[neighbor]>=128)expanded[neighbor]=255;
+      }
+    }
+    selected=expanded;
+  }
+  return sharp(selected,{raw:{width:EDIT_WIDTH,height:EDIT_HEIGHT,channels:1}}).png().toBuffer();
+}
 export async function assertOutsideMask(source, result, mask) {
   const [s,r,m] = await Promise.all([sharp(source).ensureAlpha().raw().toBuffer(), sharp(result).ensureAlpha().raw().toBuffer(), sharp(mask).greyscale().raw().toBuffer()]);
   if (s.length !== r.length || s.length !== m.length*4) throw new TypeError('遮罩尺寸不符');

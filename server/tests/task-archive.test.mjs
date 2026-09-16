@@ -18,7 +18,7 @@ test('configured archive includes only version-pinned delivery assets, excluding
   await assert.rejects(buildTaskArchive(task, async () => assert.fail('must not substitute a preview')), /资产缺失/);
 });
 
-test('manual archive ZIP contains the current copy and current-run images under their original names', async () => {
+test('manual archive ZIP contains current-run images under stable ordered names', async () => {
   const task = {
     id: 42,
     query: '桌面收纳',
@@ -47,7 +47,7 @@ test('manual archive ZIP contains the current copy and current-run images under 
     return {
       id,
       mediaType: 'image/png',
-      originalName: id === 1 ? '01-cover.png' : '02-detail.png',
+      originalName: id === 1 ? '01-cover.png' : 'delivery-e0227b68-1bbb-4b51-811a-bbef731b2732.png',
       content: Buffer.from(`image-${id}`),
     };
   });
@@ -57,7 +57,7 @@ test('manual archive ZIP contains the current copy and current-run images under 
   assert.deepEqual(loadedIds, [1, 2]);
   assert.deepEqual(
     Object.keys(zip.files).sort(),
-    ['01-cover.png', '02-detail.png', '小红书链接.txt', '桌面_整理.txt'].sort(),
+    ['01-cover.png', '02-edited.png', '小红书链接.txt', '桌面_整理.txt'].sort(),
   );
   assert.equal(await zip.file('01-cover.png').async('string'), 'image-1');
   const copy = await zip.file('桌面_整理.txt').async('string');
@@ -119,7 +119,7 @@ test('delivery ZIP rejects a legacy TIFF binding instead of relabeling its bytes
   );
 });
 
-test('manual archive ZIP de-duplicates repeated image names without using storage hashes', async () => {
+test('manual archive ZIP prefixes repeated descriptive names with their page order', async () => {
   const task = {
     id: 9,
     currentCopyRevisionId: 1,
@@ -138,15 +138,22 @@ test('manual archive ZIP de-duplicates repeated image names without using storag
     content: Buffer.from([id]),
   }));
   const zip = await JSZip.loadAsync(buffer);
-  assert.ok(zip.file('封面图.jpg'));
-  assert.ok(zip.file('封面图-2.jpg'));
+  assert.ok(zip.file('01-封面图.jpg'));
+  assert.ok(zip.file('02-封面图.jpg'));
 });
 
-test('batch archive groups tasks under safe package directories and isolates sanitized collisions', async () => {
+test('batch archive groups different Query packages under their shared client batch', async () => {
   const packageNames = new Map([[21, '分类/A'], [22, '分类\\A'], [23, null], [24, '分类/A']]);
+  const clientBatchCodes = new Map([
+    [21, 'b9759aad96a94c109fdce96ab4455294'],
+    [22, 'b9759aad96a94c109fdce96ab4455294'],
+    [23, null],
+    [24, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+  ]);
   const tasks = [21, 22, 23, 24].map((id) => ({
     id,
     sourceQueryPackageName: packageNames.get(id),
+    sourceClientBatchCode: clientBatchCodes.get(id),
     currentCopyRevisionId: 1,
     currentImageRunId: `run-${id}`,
     copyRevisions: [{ id: 1, content: { copy: { title: `标题${id}`, body: '正文', tags: [] } } }],
@@ -160,15 +167,15 @@ test('batch archive groups tasks under safe package directories and isolates san
     'the outer archive must carry a ZIP64 end-of-central-directory record');
   const outer = await JSZip.loadAsync(content);
   assert.deepEqual(Object.keys(outer.files).sort(), [
-    '分类_A/任务-21-资源包.zip',
-    '分类_A/任务-24-资源包.zip',
-    '分类_A-2/任务-22-资源包.zip',
-    '未归属词包/任务-23-资源包.zip',
+    'b9759aad96a94c109fdce96ab4455294/任务-21-资源包.zip',
+    'b9759aad96a94c109fdce96ab4455294/任务-22-资源包.zip',
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/任务-24-资源包.zip',
+    '未归属甲方批次/任务-23-资源包.zip',
   ].sort());
   const inner = await JSZip.loadAsync(
-    await outer.file('分类_A/任务-21-资源包.zip').async('nodebuffer'),
+    await outer.file('b9759aad96a94c109fdce96ab4455294/任务-21-资源包.zip').async('nodebuffer'),
   );
-  assert.equal(await inner.file('图片.png').async('string'), '21');
+  assert.equal(await inner.file('01-图片.png').async('string'), '21');
 });
 
 test('delivery archive fails closed when the pinned copy or image snapshot is missing', async () => {

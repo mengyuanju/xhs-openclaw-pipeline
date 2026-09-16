@@ -9,6 +9,7 @@ import {
 import { resolveDeliveryArchiveSource } from './delivery-source.mjs';
 import { IMAGE_FORMATS } from './image-options.mjs';
 import { normalizeListPagination } from './list-pagination.mjs';
+import { normalizeClientBatchCode } from './client-batch.mjs';
 
 const DELIVERY_IMAGE_MEDIA_TYPES = Object.freeze(
   Object.values(IMAGE_FORMATS).map((format) => format.mediaType),
@@ -70,6 +71,7 @@ function deliveryFrom(row) {
     queryPackageDeleted: row.source_query_package_id == null
       && row.source_query_package_snapshot_id != null,
     queryPackageName: row.source_query_package_name ?? null,
+    clientBatchCode: row.source_client_batch_code ?? null,
     copyRevisionId: Number(row.copy_revision_id),
     imageRunId: row.image_run_id,
     status: row.status,
@@ -381,11 +383,13 @@ export async function listDeliveryPool(pool, {
   offset: rawOffset = 0,
   includeTotal = false,
   queryPackageName: rawQueryPackageName = null,
+  clientBatchCode: rawClientBatchCode = null,
   packingState: rawPackingState = 'ALL',
 } = {}, rawActor) {
   const actor = normalizeActor(rawActor);
   const { limit, offset } = normalizeListPagination(rawLimit, rawOffset);
   const queryPackageName = normalizeQueryPackageName(rawQueryPackageName);
+  const clientBatchCode = normalizeClientBatchCode(rawClientBatchCode, { optional: true });
   const packingState = normalizePackingState(rawPackingState);
   const visibilityValues = actor.role === 'ADMIN' ? [] : [actor.username, actor.userId];
   const filteredValues = [...visibilityValues];
@@ -400,6 +404,10 @@ export async function listDeliveryPool(pool, {
   const packageFilter = queryPackageName === null ? '' : (() => {
     filteredValues.push(queryPackageName);
     return `AND task.source_query_package_name = $${filteredValues.length}`;
+  })();
+  const clientBatchFilter = clientBatchCode === null ? '' : (() => {
+    filteredValues.push(clientBatchCode);
+    return `AND task.source_client_batch_code = $${filteredValues.length}`;
   })();
   const packingFilter = packingState === 'PENDING'
     ? `AND NOT EXISTS (
@@ -421,6 +429,7 @@ export async function listDeliveryPool(pool, {
   const pagePromise = pool.query(`
     SELECT delivery.*, task.query, task.source_query_package_id,
       task.source_query_package_snapshot_id, task.source_query_package_name,
+      task.source_client_batch_code,
       packed.id AS delivery_batch_id, packed.public_id AS delivery_batch_public_id,
       packed.code AS delivery_batch_code, packed.status AS delivery_batch_status,
       packed.created_at AS delivery_batch_created_at,
@@ -454,7 +463,7 @@ export async function listDeliveryPool(pool, {
           OR item.image_run_id <> delivery.image_run_id)
       ORDER BY item.id DESC LIMIT 1
     ) AS previous ON packed.id IS NULL
-    WHERE delivery.status = 'READY' ${visibility} ${packageFilter} ${packingFilter}
+    WHERE delivery.status = 'READY' ${visibility} ${packageFilter} ${clientBatchFilter} ${packingFilter}
     ORDER BY delivery.approved_at DESC, delivery.id DESC
     LIMIT $${limitParameter} OFFSET $${limitParameter + 1}
   `, values);
@@ -470,10 +479,11 @@ export async function listDeliveryPool(pool, {
       AND task.current_copy_revision_id = delivery.copy_revision_id
       AND task.current_image_run_id = delivery.image_run_id
       AND (task.image_qc_legacy_accepted OR task.image_qc_released_approval_event_id IS NOT NULL)
-    WHERE delivery.status = 'READY' ${visibility} ${packageFilter} ${packingFilter}
+    WHERE delivery.status = 'READY' ${visibility} ${packageFilter} ${clientBatchFilter} ${packingFilter}
   `, filteredValues), pool.query(`
     SELECT COALESCE(task.source_query_package_id, task.source_query_package_snapshot_id) AS id,
       task.source_query_package_name AS name,
+      task.source_client_batch_code AS client_batch_code,
       (task.source_query_package_id IS NULL
         AND task.source_query_package_snapshot_id IS NOT NULL) AS deleted,
       COUNT(*)::bigint AS count,
@@ -511,7 +521,7 @@ export async function listDeliveryPool(pool, {
       AND (task.image_qc_legacy_accepted OR task.image_qc_released_approval_event_id IS NOT NULL)
     WHERE delivery.status = 'READY' ${visibility}
     GROUP BY COALESCE(task.source_query_package_id, task.source_query_package_snapshot_id),
-      task.source_query_package_name,
+      task.source_query_package_name, task.source_client_batch_code,
       (task.source_query_package_id IS NULL AND task.source_query_package_snapshot_id IS NOT NULL)
     ORDER BY lower(task.source_query_package_name), task.source_query_package_name
   `, visibilityValues)]);
@@ -530,20 +540,39 @@ export async function listDeliveryPool(pool, {
   const facetRows = packageFacets.rows.map((row) => ({
     id: row.id == null ? null : Number(row.id),
     name: row.name ?? null,
+    clientBatchCode: row.client_batch_code ?? null,
     count: Number(row.count ?? 0),
     pendingCount: Number(row.pending_count ?? row.count ?? 0),
     packedCount: Number(row.packed_count ?? 0),
     updatedCount: Number(row.updated_count ?? 0),
   }));
-  const summaryRows = queryPackageName === null
-    ? facetRows
-    : facetRows.filter((row) => row.name === queryPackageName);
+  const summaryRows = facetRows.filter((row) =>
+    (queryPackageName === null || row.name === queryPackageName)
+      && (clientBatchCode === null || row.clientBatchCode === clientBatchCode));
   const summary = summaryRows.reduce((current, row) => ({
     readyCount: current.readyCount + row.count,
     pendingCount: current.pendingCount + row.pendingCount,
     packedCount: current.packedCount + row.packedCount,
     updatedCount: current.updatedCount + row.updatedCount,
   }), { readyCount: 0, pendingCount: 0, packedCount: 0, updatedCount: 0 });
+  const clientBatchMap = new Map();
+  for (const row of facetRows) {
+    if (typeof row.clientBatchCode !== 'string') continue;
+    const current = clientBatchMap.get(row.clientBatchCode) ?? {
+      code: row.clientBatchCode,
+      count: 0,
+      pendingCount: 0,
+      packedCount: 0,
+      updatedCount: 0,
+      queryPackageCount: 0,
+    };
+    current.count += row.count;
+    current.pendingCount += row.pendingCount;
+    current.packedCount += row.packedCount;
+    current.updatedCount += row.updatedCount;
+    if (row.id !== null) current.queryPackageCount += 1;
+    clientBatchMap.set(row.clientBatchCode, current);
+  }
   return {
     items: result.rows.map(deliveryFrom),
     total: Number(count.rows[0]?.total ?? 0),
@@ -554,6 +583,7 @@ export async function listDeliveryPool(pool, {
         .map((row) => ({
           id: Number(row.id),
           name: row.name,
+          clientBatchCode: row.client_batch_code ?? null,
           deleted: row.deleted === true,
           count: Number(row.count ?? 0),
           unuploadedCount: Number(row.unuploaded_count ?? 0),
@@ -563,6 +593,8 @@ export async function listDeliveryPool(pool, {
           packedCount: Number(row.packed_count ?? 0),
           updatedCount: Number(row.updated_count ?? 0),
         })),
+      clientBatches: [...clientBatchMap.values()]
+        .sort((left, right) => left.code.localeCompare(right.code)),
       unassigned: unassigned.count > 0 ? unassigned : null,
     },
     summary,
@@ -571,6 +603,7 @@ export async function listDeliveryPool(pool, {
 
 export async function listAllDeliveryPoolTaskIds(pool, rawActor, {
   queryPackageName: rawQueryPackageName = null,
+  clientBatchCode: rawClientBatchCode = null,
   unpackedOnly = false,
 } = {}) {
   const actor = normalizeActor(rawActor);
@@ -578,10 +611,15 @@ export async function listAllDeliveryPoolTaskIds(pool, rawActor, {
     throw new ControlPlaneAuthorizationError('only administrators can export the full delivery pool');
   }
   const queryPackageName = normalizeQueryPackageName(rawQueryPackageName);
+  const clientBatchCode = normalizeClientBatchCode(rawClientBatchCode, { optional: true });
   const values = [];
   const packageFilter = queryPackageName === null ? '' : (() => {
     values.push(queryPackageName);
     return `AND task.source_query_package_name = $${values.length}`;
+  })();
+  const clientBatchFilter = clientBatchCode === null ? '' : (() => {
+    values.push(clientBatchCode);
+    return `AND task.source_client_batch_code = $${values.length}`;
   })();
   if (typeof unpackedOnly !== 'boolean') throw new TypeError('unpackedOnly must be boolean');
   const packedFilter = unpackedOnly ? `AND NOT EXISTS (
@@ -597,7 +635,7 @@ export async function listAllDeliveryPoolTaskIds(pool, rawActor, {
       AND task.state = 'REVIEWED'
       AND task.current_copy_revision_id = delivery.copy_revision_id
       AND task.current_image_run_id = delivery.image_run_id
-    WHERE delivery.status = 'READY' ${packageFilter} ${packedFilter}
+    WHERE delivery.status = 'READY' ${packageFilter} ${clientBatchFilter} ${packedFilter}
     ORDER BY delivery.approved_at DESC, delivery.id DESC
   `, values);
   return result.rows.map((row) => Number(row.task_id));

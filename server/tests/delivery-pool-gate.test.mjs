@@ -11,6 +11,8 @@ import sharp from 'sharp';
 
 import { createControlPlaneApp } from '../src/http-server.mjs';
 
+const CLIENT_BATCH_CODE = 'b9759aad96a94c109fdce96ab4455294';
+
 async function withServer(repository, action, appOptions = {}) {
   const storageRoot = await mkdtemp(join(tmpdir(), 'xhs-delivery-pool-gate-'));
   const app = createControlPlaneApp({
@@ -51,6 +53,7 @@ function task(id, state, sourceQueryPackageName = null) {
     id,
     query: `Query ${id}`,
     sourceQueryPackageName,
+    sourceClientBatchCode: sourceQueryPackageName ? CLIENT_BATCH_CODE : null,
     xiaohongshuLinks: [{
       noteId: `note-${id}`,
       url: `https://www.xiaohongshu.com/explore/note-${id}`,
@@ -192,8 +195,8 @@ test('delivery pool export packages the complete server-side snapshot beyond leg
     assert.match(download.headers.get('content-disposition'), /delivery-pool\.zip/u);
     const zip = await JSZip.loadAsync(await download.arrayBuffer());
     assert.equal(Object.keys(zip.files).length, 51);
-    assert.ok(zip.file('未归属词包/任务-1-资源包.zip'));
-    assert.ok(zip.file('未归属词包/任务-51-资源包.zip'));
+    assert.ok(zip.file('未归属甲方批次/任务-1-资源包.zip'));
+    assert.ok(zip.file('未归属甲方批次/任务-51-资源包.zip'));
     const replay = await fetch(`${root}/v1/delivery-pool/archive/${prepared.downloadId}`);
     assert.equal(replay.status, 404, 'the prepared archive token must be one-time');
   });
@@ -201,7 +204,7 @@ test('delivery pool export packages the complete server-side snapshot beyond leg
   assert.equal(snapshotActors[0].role, 'ADMIN');
 });
 
-test('package-scoped ZIP and Excel exports keep the exact package scope and safe package filenames', async () => {
+test('legacy package-scoped exports keep their exact scope while ZIP folders use client batches', async () => {
   const selected = task(7, 'REVIEWED', '秋季/收纳');
   const snapshotCalls = [];
   let asset;
@@ -241,7 +244,7 @@ test('package-scoped ZIP and Excel exports keep the exact package scope and safe
     assert.equal(zipPrepared.fileName, '秋季_收纳-交付资源.zip');
     const zipDownload = await fetch(`${root}/v1/delivery-pool/archive/${zipPrepared.downloadId}`);
     const zip = await JSZip.loadAsync(await zipDownload.arrayBuffer());
-    assert.ok(zip.file('秋季_收纳/任务-7-资源包.zip'));
+    assert.ok(zip.file(`${CLIENT_BATCH_CODE}/任务-7-资源包.zip`));
 
     const xlsxResponse = await fetch(`${root}/v1/delivery-pool/xlsx`, {
       method: 'POST',
@@ -378,21 +381,23 @@ test('delivery spreadsheet exports one complete-article column plus ordered embe
     await workbook.xlsx.load(Buffer.from(await download.arrayBuffer()));
     const worksheet = workbook.getWorksheet('交付内容');
     assert.ok(worksheet);
-    assert.equal(worksheet.getCell('A1').value, '词包名称');
-    assert.equal(worksheet.getCell('A2').value, '未归属词包');
-    assert.equal(worksheet.getCell('B1').value, 'Query');
-    assert.equal(worksheet.getCell('B2').value, 'Query 7');
-    assert.equal(worksheet.getCell('C1').value, '完整文章');
-    assert.equal(worksheet.getCell('C2').value, '=这是一篇标题\n\n+这是完整正文');
-    assert.notEqual(worksheet.getCell('C2').font?.bold, true);
-    assert.equal(worksheet.getCell('D1').value, '小红书链接');
+    assert.equal(worksheet.getCell('A1').value, '甲方批次编号');
+    assert.equal(worksheet.getCell('A2').value, '未归属甲方批次');
+    assert.equal(worksheet.getCell('B1').value, '词包名称');
+    assert.equal(worksheet.getCell('B2').value, '未归属词包');
+    assert.equal(worksheet.getCell('C1').value, 'Query');
+    assert.equal(worksheet.getCell('C2').value, 'Query 7');
+    assert.equal(worksheet.getCell('D1').value, '完整文章');
+    assert.equal(worksheet.getCell('D2').value, '=这是一篇标题\n\n+这是完整正文');
+    assert.notEqual(worksheet.getCell('D2').font?.bold, true);
+    assert.equal(worksheet.getCell('E1').value, '小红书链接');
     assert.equal(
-      worksheet.getCell('D2').value,
+      worksheet.getCell('E2').value,
       'https://www.xiaohongshu.com/explore/note-7',
     );
-    assert.equal(worksheet.getCell('E1').value, '图片 1');
-    assert.equal(worksheet.getCell('F1').value, '图片 2');
-    assert.equal(worksheet.actualColumnCount, 6);
+    assert.equal(worksheet.getCell('F1').value, '图片 1');
+    assert.equal(worksheet.getCell('G1').value, '图片 2');
+    assert.equal(worksheet.actualColumnCount, 7);
     const embeddedImages = worksheet.getImages();
     assert.equal(embeddedImages.length, 2);
     assert.deepEqual(

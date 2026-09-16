@@ -127,7 +127,17 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
         VALUES ($1,$2,'image/png',$3,$4,$5,$6,$2,$7,$2,'DELIVERY') RETURNING id
       `, [taskId, imageRunId, imageBytes.length, imageSha256,
         storagePath, `${label}-${page}.png`, `${label}-${page}`])).rows[0];
-      images.push({ assetId: Number(saved.id), deliveryAssetId: Number(saved.id), pageIndex: page });
+      const sourceStoragePath = join(storageRoot, `${taskId}-source-${label}-${page}.png`);
+      await writeFile(sourceStoragePath, imageBytes);
+      const source = (await pool.query(`
+        INSERT INTO assets(task_id, image_run_id, media_type, byte_size, sha256,
+          storage_path, original_name, image_production_chain_id, artifact_key,
+          origin_image_run_id, asset_role)
+        VALUES ($1,$2,'image/png',$3,$4,$5,$6,$2,$7,$2,'DELIVERY') RETURNING id
+      `, [taskId, imageRunId, imageBytes.length, imageSha256,
+        sourceStoragePath, `source-${label}-${page}.png`, `source-${label}-${page}`])).rows[0];
+      images.push({ assetId: Number(saved.id), sourceAssetId: Number(source.id),
+        deliveryAssetId: Number(saved.id), pageIndex: page });
     }
     await pool.query('UPDATE image_runs SET result = $2, finished_at = now() WHERE id = $1', [imageRunId, { images }]);
     return { imageRunId, images };
@@ -174,6 +184,9 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
   await assert.rejects(listImageQaItems(pool, {}, worker), { code: 'FORBIDDEN' });
   const blindQueue = await listImageQaItems(pool, {}, reviewer);
   assert.equal(blindQueue.items.length, 1);
+  assert.equal(blindQueue.items[0].assets.length, 3, 'QA must expose one final delivery asset per logical page');
+  assert.deepEqual(blindQueue.items[0].assets.map((asset) => asset.pageIndex), [1, 2, 3]);
+  assert.ok(blindQueue.items[0].assets.every((asset) => !asset.originalName.startsWith('source-')));
   assert.equal(blindQueue.items[0].blindReview, true);
   assert.equal(Object.hasOwn(blindQueue.items[0], 'taskId'), false);
   await passImageQaItem(pool, blindQueue.items[0].id, { requestId: randomUUID(), score: 3 }, admin);
@@ -315,6 +328,10 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
     const qaAssetResponse = await fetch(`${root}${qaItem.assets[0].url}`, { headers: actorHeaders(reviewer) });
     assert.equal(qaAssetResponse.status, 200);
     assert.deepEqual(Buffer.from(await qaAssetResponse.arrayBuffer()), imageBytes);
+    const sourceAssetResponse = await fetch(`${root}/v1/image-qa/items/${qaItem.id}/assets/${httpTask.images[0].sourceAssetId}`, {
+      headers: actorHeaders(reviewer),
+    });
+    assert.equal(sourceAssetResponse.status, 404, 'source and historical members are not QA review targets');
     const invalidScoreResponse = await fetch(`${root}/v1/image-qa/items/${qaItem.id}/pass`, {
       method: 'POST', headers: actorHeaders(reviewer),
       body: JSON.stringify({ requestId: randomUUID(), score: 2.1 }),

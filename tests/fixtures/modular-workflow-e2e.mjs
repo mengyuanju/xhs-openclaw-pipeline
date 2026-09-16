@@ -11,6 +11,7 @@ import { join, relative } from 'node:path';
 import JSZip from 'jszip';
 
 const projectRoot = process.cwd();
+const CLIENT_BATCH_CODE = 'b9759aad96a94c109fdce96ab4455294';
 const artifactParent = join(projectRoot, '.codex_artifacts');
 await mkdir(artifactParent, { recursive: true });
 const buildRoot = await mkdtemp(join(artifactParent, 'modular-e2e-'));
@@ -67,6 +68,7 @@ const state = {
     query: '玄关收纳交付词',
     queryPackageId: 9,
     queryPackageName: '九月收纳词包',
+    clientBatchCode: CLIENT_BATCH_CODE,
     copyRevisionId: 801,
     imageRunId: '11111111-1111-4111-8111-111111111111',
     status: 'READY',
@@ -77,6 +79,7 @@ const state = {
     query: '厨房动线交付词',
     queryPackageId: 9,
     queryPackageName: '九月收纳词包',
+    clientBatchCode: CLIENT_BATCH_CODE,
     copyRevisionId: 802,
     imageRunId: '22222222-2222-4222-8222-222222222222',
     status: 'READY',
@@ -87,6 +90,7 @@ const state = {
     query: '衣柜分区交付词',
     queryPackageId: 10,
     queryPackageName: '十月整理词包',
+    clientBatchCode: CLIENT_BATCH_CODE,
     copyRevisionId: 803,
     imageRunId: '33333333-3333-4333-8333-333333333333',
     status: 'READY',
@@ -97,6 +101,7 @@ const state = {
     query: '历史独立交付词',
     queryPackageId: null,
     queryPackageName: null,
+    clientBatchCode: null,
     copyRevisionId: 804,
     imageRunId: '44444444-4444-4444-8444-444444444444',
     status: 'READY',
@@ -156,6 +161,7 @@ if (process.env.MODULAR_E2E_PAGINATION_SEED === '1') {
     state.packages.push({
       id: packageId,
       name: `分页词包-${String(index).padStart(4, '0')}`,
+      clientBatchCode: CLIENT_BATCH_CODE,
       status: 'SCREENING',
       createdByUserId: 'admin',
       createdByAccountId: users.admin.id,
@@ -235,6 +241,7 @@ function createFixtureProductionBatch(record, items, actorUsername = 'admin') {
     publicId: randomUUID(),
     queryPackageId: record.id,
     queryPackageName: record.name,
+    clientBatchCode: record.clientBatchCode,
     createdByUserId: actorUsername,
     status: 'OPEN',
     samplingStatus: 'OPEN',
@@ -259,6 +266,7 @@ function createFixtureProductionBatch(record, items, actorUsername = 'admin') {
       sourceQueryPackageItemId: item.id,
       sourceQueryPackageName: record.name,
       sourceQueryPackageExternalId: item.externalId,
+      sourceClientBatchCode: record.clientBatchCode,
       productionBatchId: batch.id,
     };
     state.tasks.push(task);
@@ -277,6 +285,7 @@ function packageSummary(record) {
   return {
     id: record.id,
     name: record.name,
+    clientBatchCode: record.clientBatchCode,
     status: record.status,
     createdByUserId: record.createdByUserId ?? 'admin',
     createdByAccountId: record.createdByAccountId ?? users.admin.id,
@@ -440,9 +449,9 @@ const controlPlane = createServer(async (req, res) => {
         fixture: true,
         capabilities: {
           taskAssignmentVersion: 3,
-          queryPackageVersion: 4,
-          finalDeliveryVersion: 3,
-          deliverySpreadsheetVersion: 1,
+          queryPackageVersion: 6,
+          finalDeliveryVersion: 4,
+          deliverySpreadsheetVersion: 2,
           deliveryPreviewVersion: 5,
         },
       });
@@ -494,10 +503,10 @@ const controlPlane = createServer(async (req, res) => {
       }
       const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 50));
       const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
-      const queryPackageName = url.searchParams.get('queryPackageName');
+      const clientBatchCode = url.searchParams.get('clientBatchCode');
       const packingState = url.searchParams.get('packingState') ?? 'ALL';
-      const sourceFiltered = queryPackageName
-        ? state.deliveryEntries.filter((entry) => entry.queryPackageName === queryPackageName)
+      const sourceFiltered = clientBatchCode
+        ? state.deliveryEntries.filter((entry) => entry.clientBatchCode === clientBatchCode)
         : state.deliveryEntries;
       const filtered = sourceFiltered.filter((entry) => packingState === 'PACKED'
         ? Boolean(entry.deliveryBatch)
@@ -520,6 +529,7 @@ const controlPlane = createServer(async (req, res) => {
         );
         return {
           ...queryPackage,
+          clientBatchCode: packageEntries[0]?.clientBatchCode ?? null,
           count: packageEntries.length,
           unuploadedCount: packageEntries.filter((entry) => !entry.preview).length,
           publishedCount: packageEntries.filter((entry) => entry.preview?.status === 'PUBLISHED').length,
@@ -539,15 +549,27 @@ const controlPlane = createServer(async (req, res) => {
         packedCount: unassignedEntries.filter((entry) => entry.deliveryBatch).length,
         updatedCount: 0,
       } : null;
+      const clientBatches = [...new Set(state.deliveryEntries
+        .map((entry) => entry.clientBatchCode).filter(Boolean))].map((code) => {
+        const batchEntries = state.deliveryEntries.filter((entry) => entry.clientBatchCode === code);
+        return {
+          code,
+          count: batchEntries.length,
+          pendingCount: batchEntries.filter((entry) => !entry.deliveryBatch).length,
+          packedCount: batchEntries.filter((entry) => entry.deliveryBatch).length,
+          updatedCount: 0,
+          queryPackageCount: new Set(batchEntries.map((entry) => entry.queryPackageId).filter(Boolean)).size,
+        };
+      });
       send(res, 200, url.searchParams.get('includeTotal') === 'true'
         ? {
             items,
             total: filtered.length,
-            facets: { queryPackages: facets, unassigned },
+            facets: { queryPackages: facets, clientBatches, unassigned },
             summary: {
-              readyCount: state.deliveryEntries.length,
-              pendingCount: state.deliveryEntries.filter((entry) => !entry.deliveryBatch).length,
-              packedCount: state.deliveryEntries.filter((entry) => entry.deliveryBatch).length,
+              readyCount: sourceFiltered.length,
+              pendingCount: sourceFiltered.filter((entry) => !entry.deliveryBatch).length,
+              packedCount: sourceFiltered.filter((entry) => entry.deliveryBatch).length,
               updatedCount: 0,
             },
           }
@@ -561,10 +583,14 @@ const controlPlane = createServer(async (req, res) => {
       }
       const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 50));
       const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
+      const clientBatchCode = url.searchParams.get('clientBatchCode');
+      const batches = clientBatchCode
+        ? state.deliveryBatches.filter((batch) => batch.clientBatchCode === clientBatchCode)
+        : state.deliveryBatches;
       send(res, 200, {
-        items: state.deliveryBatches.slice(offset, offset + limit)
+        items: batches.slice(offset, offset + limit)
           .map(({ items: _items, content: _content, ...batch }) => batch),
-        total: state.deliveryBatches.length,
+        total: batches.length,
       });
       return;
     }
@@ -649,6 +675,9 @@ const controlPlane = createServer(async (req, res) => {
       const input = await jsonBody(req);
       const requestedIds = input.scope === 'ALL_READY'
         ? state.deliveryEntries.map((entry) => entry.taskId)
+        : input.scope === 'CLIENT_BATCH'
+          ? state.deliveryEntries.filter((entry) => entry.clientBatchCode === input.clientBatchCode)
+            .map((entry) => entry.taskId)
         : input.scope === 'QUERY_PACKAGE'
           ? state.deliveryEntries.filter((entry) => entry.queryPackageName === input.queryPackageName)
             .map((entry) => entry.taskId)
@@ -685,6 +714,7 @@ const controlPlane = createServer(async (req, res) => {
         scope: input.scope,
         queryPackageName: input.scope === 'QUERY_PACKAGE' ? input.queryPackageName : null,
         queryPackageNames,
+        clientBatchCode: input.scope === 'CLIENT_BATCH' ? input.clientBatchCode : null,
         status: 'GENERATED',
         fileName,
         byteSize: content.byteLength,
@@ -705,6 +735,7 @@ const controlPlane = createServer(async (req, res) => {
           query: entry.query,
           queryPackageId: entry.queryPackageId,
           queryPackageName: entry.queryPackageName,
+          clientBatchCode: entry.clientBatchCode,
         })),
         content,
       };
@@ -835,10 +866,16 @@ const controlPlane = createServer(async (req, res) => {
         return;
       }
       const input = await jsonBody(req);
+      const clientBatchCode = String(input.clientBatchCode ?? '').trim().toLowerCase();
+      if (!/^[0-9a-f]{32}$/u.test(clientBatchCode)) {
+        error(res, 400, 'INVALID_INPUT', 'fixture client batch code is invalid');
+        return;
+      }
       const now = new Date().toISOString();
       const record = {
         id: state.nextPackageId++,
         name: String(input.name),
+        clientBatchCode,
         status: 'IMPORTED',
         createdByUserId: actorUser(req)?.username ?? 'admin',
         createdByAccountId: actorUser(req)?.id ?? users.admin.id,

@@ -69,13 +69,18 @@ test('known legacy delivery checksums only allow their exact forward repair path
   const migrations = await loadMigrations();
   const migrationById = new Map(migrations.map((migration) => [migration.id, migration]));
   const legacyFiles = new Map([
-    ['0026_final_delivery', new URL('./fixtures/0026_final_delivery.legacy.sql', import.meta.url)],
-    ['0027_delivery_archive_integrity', new URL('./fixtures/0027_delivery_archive_integrity.legacy.sql', import.meta.url)],
+    ['0026_final_delivery', { url: new URL('./fixtures/0026_final_delivery.legacy.sql', import.meta.url) }],
+    ['0027_delivery_archive_integrity', { url: new URL('./fixtures/0027_delivery_archive_integrity.legacy.sql', import.meta.url) }],
+    ['0057_executor_image_edit_capability', {
+      url: new URL('./fixtures/0057_executor_image_edit_capability.legacy.sql', import.meta.url),
+      suffix: '\n',
+    }],
   ]);
   for (const upgrade of LEGACY_MIGRATION_UPGRADES) {
-    const legacyFile = legacyFiles.get(upgrade.id);
-    if (legacyFile) {
-      const legacySql = normalizeMigrationSql(await readFile(legacyFile, 'utf8'));
+    const legacyFixture = legacyFiles.get(upgrade.id);
+    if (legacyFixture) {
+      const legacySql = normalizeMigrationSql(await readFile(legacyFixture.url, 'utf8'))
+        + (legacyFixture.suffix ?? '');
       assert.equal(sha256(legacySql), upgrade.fromSha256);
     }
     assert.equal(migrationById.get(upgrade.id)?.sha256, upgrade.toSha256);

@@ -920,8 +920,8 @@ test('administrator batch archive returns one outer ZIP for selected deliverable
       assert.match(response.headers.get('content-disposition'), /task-resources-batch\.zip/u);
       const zip = await JSZip.loadAsync(await response.arrayBuffer());
       assert.deepEqual(Object.keys(zip.files).sort(), [
-        '未归属词包/任务-12-资源包.zip',
-        '未归属词包/任务-13-资源包.zip',
+        '未归属甲方批次/任务-12-资源包.zip',
+        '未归属甲方批次/任务-13-资源包.zip',
       ]);
     }, { storageRoot });
   } finally {

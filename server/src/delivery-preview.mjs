@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { relative, resolve } from 'node:path';
 
+import { orderedImageFileName } from '../../src/image-file-name.mjs';
 import { deliveryCopyFromContent, resolveDeliveryArchiveSource } from './delivery-source.mjs';
 import {
   assertDeliveryBindingsReady,
@@ -504,17 +505,7 @@ function safeAssetPath(storageRoot, storagePath) {
 }
 
 function normalizedFileName(value, position, mediaType) {
-  const extension = {
-    'image/png': 'png',
-    'image/jpeg': 'jpg',
-    'image/webp': 'webp',
-    'image/gif': 'gif',
-    'image/avif': 'avif',
-  }[mediaType] ?? 'png';
-  const name = String(value ?? '')
-    .replace(/[\u0000-\u001f\u007f]/gu, '')
-    .trim();
-  return [...(name || `image-${position}.${extension}`)].slice(0, 240).join('');
+  return orderedImageFileName(value, position, mediaType);
 }
 
 function combinedSignal(signal, timeoutMs) {

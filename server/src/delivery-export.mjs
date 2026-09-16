@@ -5,10 +5,12 @@ import {
   ControlPlaneNotFoundError,
   normalizeTaskId,
 } from './domain.mjs';
+import { normalizeClientBatchCode } from './client-batch.mjs';
 
 export const DELIVERY_EXPORT_SCOPES = Object.freeze({
   ALL_READY: 'ALL_READY',
   QUERY_PACKAGE: 'QUERY_PACKAGE',
+  CLIENT_BATCH: 'CLIENT_BATCH',
   SELECTED: 'SELECTED',
 });
 
@@ -40,30 +42,40 @@ export function normalizeDeliveryExportRequest(value) {
     throw new TypeError('delivery export request must be an object');
   }
   if (value.scope === DELIVERY_EXPORT_SCOPES.ALL_READY) {
-    if (value.taskIds !== undefined || value.queryPackageName !== undefined) {
-      throw new TypeError('ALL_READY export cannot include taskIds or queryPackageName');
+    if (value.taskIds !== undefined || value.queryPackageName !== undefined
+        || value.clientBatchCode !== undefined) {
+      throw new TypeError('ALL_READY export cannot include taskIds, queryPackageName or clientBatchCode');
     }
     return { scope: DELIVERY_EXPORT_SCOPES.ALL_READY };
   }
   if (value.scope === DELIVERY_EXPORT_SCOPES.QUERY_PACKAGE) {
-    if (value.taskIds !== undefined) {
-      throw new TypeError('QUERY_PACKAGE export cannot include taskIds');
+    if (value.taskIds !== undefined || value.clientBatchCode !== undefined) {
+      throw new TypeError('QUERY_PACKAGE export cannot include taskIds or clientBatchCode');
     }
     return {
       scope: DELIVERY_EXPORT_SCOPES.QUERY_PACKAGE,
       queryPackageName: queryPackageName(value.queryPackageName),
     };
   }
+  if (value.scope === DELIVERY_EXPORT_SCOPES.CLIENT_BATCH) {
+    if (value.taskIds !== undefined || value.queryPackageName !== undefined) {
+      throw new TypeError('CLIENT_BATCH export cannot include taskIds or queryPackageName');
+    }
+    return {
+      scope: DELIVERY_EXPORT_SCOPES.CLIENT_BATCH,
+      clientBatchCode: normalizeClientBatchCode(value.clientBatchCode),
+    };
+  }
   if (value.scope === DELIVERY_EXPORT_SCOPES.SELECTED) {
-    if (value.queryPackageName !== undefined) {
-      throw new TypeError('SELECTED export cannot include queryPackageName');
+    if (value.queryPackageName !== undefined || value.clientBatchCode !== undefined) {
+      throw new TypeError('SELECTED export cannot include queryPackageName or clientBatchCode');
     }
     return {
       scope: DELIVERY_EXPORT_SCOPES.SELECTED,
       taskIds: selectedTaskIds(value.taskIds),
     };
   }
-  throw new TypeError('delivery export scope must be ALL_READY, QUERY_PACKAGE or SELECTED');
+  throw new TypeError('delivery export scope must be ALL_READY, QUERY_PACKAGE, CLIENT_BATCH or SELECTED');
 }
 
 export async function resolveDeliveryExportTaskIds(repository, request, actor, {
@@ -79,6 +91,9 @@ export async function resolveDeliveryExportTaskIds(repository, request, actor, {
     ...(unpackedOnly ? { unpackedOnly: true } : {}),
     ...(request.scope === DELIVERY_EXPORT_SCOPES.QUERY_PACKAGE
       ? { queryPackageName: request.queryPackageName }
+      : {}),
+    ...(request.scope === DELIVERY_EXPORT_SCOPES.CLIENT_BATCH
+      ? { clientBatchCode: request.clientBatchCode }
       : {}),
   });
   if (!Array.isArray(ids)) throw new TypeError('delivery pool export snapshot is invalid');
