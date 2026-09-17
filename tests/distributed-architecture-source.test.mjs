@@ -40,8 +40,8 @@ test('image worker polling is opt-in and manual edits run on the same executor i
   assert.match(repository, /COUNT\(\*\) FILTER \(WHERE execution\.kind = 'IMAGE'\) AS image_count/u);
   assert.match(repository, /STALE_EXECUTION/u);
   assert.match(repository, /current_execution_id/u);
-  assert.match(repository,/imageEditExecutorVersion: 4/u);
-  assert.match(repository,/referenceMode' = 'APPEARANCE' THEN 4 ELSE 3/u);
+  assert.match(repository,/imageEditExecutorVersion: 5/u);
+  assert.match(repository,/edit\.operation = 'AI_LOCAL'[\s\S]*THEN 5[\s\S]*referenceMode' = 'APPEARANCE' THEN 4/u);
   assert.match(repository,/image_edit_request_id/u);
   assert.match(executor,/executeImageEditClaim/u);
   assert.match(executor,/claim\.imageEdit/u);

@@ -2009,7 +2009,7 @@ function installRoutes(
     await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
     json(ctx, 200, edit);
   });
-  for (const action of ['queue', 'retry', 'cancel', 'accept', 'reject']) {
+  for (const action of ['queue', 'retry', 'apply-suggestion', 'cancel', 'accept', 'reject']) {
     router.post(`/v1/image-edits/:editId/${action}`, async ctx => {
       const actor = requestActor(ctx, ['ADMIN', 'USER']);
       const edit = await imageEditing.get(ctx.params.editId);

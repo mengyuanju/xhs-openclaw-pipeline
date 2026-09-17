@@ -5,7 +5,7 @@ import test from 'node:test';
 const source = (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 
 test('image initial review, independent QA and delivery have non-overlapping role boundaries', async () => {
-  const [server, imageQuality, editing, delivery, proxy, navigation, page] = await Promise.all([
+  const [server, imageQuality, editing, delivery, proxy, navigation, page, taskReview, imageQa] = await Promise.all([
     source('server/src/http-server.mjs'),
     source('server/src/image-quality-control.mjs'),
     source('server/src/image-editing.mjs'),
@@ -13,6 +13,8 @@ test('image initial review, independent QA and delivery have non-overlapping rol
     source('src/admin/proxy-policy.mjs'),
     source('app/components/side-nav.tsx'),
     source('app/image-qa/page.tsx'),
+    source('app/workbench/task-review-dialog.tsx'),
+    source('app/image-qa/image-qa-workbench.tsx'),
   ]);
 
   assert.match(server, /router\.post\('\/v1\/tasks\/:taskId\/submit-image-self-review'[\s\S]{0,160}requestActor\(ctx, \['ADMIN', 'USER'\]\)/u);
@@ -30,6 +32,12 @@ test('image initial review, independent QA and delivery have non-overlapping rol
   assert.match(editing, /\['ADMIN','USER'\]/u);
   assert.match(editing, /t\.state IN \('MANUAL_ARCHIVE','IMAGE_REWORK_PENDING'\)/u);
   assert.match(delivery, /IMAGE_QA_NOT_RELEASED/u);
+  assert.match(delivery, /IMAGE_EDITS_PENDING/u);
+  assert.match(imageQuality, /assertNoPendingImageEdits\(client, \{ taskId, imageRunId \}\)/u);
+  assert.match(imageQuality, /pending_image_edit_count/u);
+  assert.match(taskReview, /pendingImageEdits\.length > 0/u);
+  assert.match(taskReview, /采用、拒绝或取消后再提交图片初审/u);
+  assert.match(imageQa, /当前版本不能质检通过/u);
   assert.match(proxy, /url\.pathname === '\/image-qa'/u);
   assert.match(navigation, /href: '\/image-qa'/u);
   assert.match(navigation, /workflowNavigationHrefs\(session\)/u);

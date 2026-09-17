@@ -8,7 +8,12 @@ import {
   normalizeTaskId,
   normalizeUuid,
 } from './domain.mjs';
-import { createReadyDeliveryEntry, withdrawReadyDeliveryEntries } from './final-delivery.mjs';
+import {
+  PENDING_IMAGE_EDIT_STATUSES,
+  assertNoPendingImageEdits,
+  createReadyDeliveryEntry,
+  withdrawReadyDeliveryEntries,
+} from './final-delivery.mjs';
 import { normalizeListPagination } from './list-pagination.mjs';
 import { lockWorkflowQualitySettings, readWorkflowQualitySettings } from './workflow-quality-settings.mjs';
 import { normalizeHumanQualitySettings } from '../../src/human-quality-settings.mjs';
@@ -443,6 +448,7 @@ export async function submitImageSelfReview(pool, rawTaskId, input, rawActor) {
         AND copy_revision_id = $3 AND status = 'COMPLETED' FOR SHARE
     `, [imageRunId, taskId, task.current_copy_revision_id])).rows[0];
     if (!run) throw new ControlPlaneConflictError('STALE_IMAGE_RUN', '当前文案对应的图片尚未生成完成');
+    await assertNoPendingImageEdits(client, { taskId, imageRunId });
     const snapshot = await imageSnapshot(client, taskId, imageRunId);
     const existing = (await client.query(`
       SELECT * FROM image_approval_events WHERE task_id = $1 AND image_run_id = $2
@@ -488,8 +494,9 @@ export async function submitImageSelfReview(pool, rawTaskId, input, rawActor) {
   });
 }
 
-function imageQaItemFrom(row, actor) {
+export function imageQaItemFrom(row, actor) {
   const blind = row.blind_review_enabled === true && actor.role !== 'ADMIN';
+  const pendingImageEdits = Number(row.pending_image_edit_count ?? 0);
   const canAct = row.status === 'PENDING' && row.priority_paused !== true
     && (actor.role === 'ADMIN' || (Number(row.assigned_review_account_id) === actor.userId
       && Number(row.submitter_account_id) !== actor.userId));
@@ -510,8 +517,9 @@ function imageQaItemFrom(row, actor) {
       originalName: asset.original_name, pageIndex: Number(asset.page_index),
       url: `/v1/image-qa/items/${row.public_id}/assets/${asset.id}`,
     })) : [],
-    capabilities: { canPass: canAct, canReturnSingle: canAct,
+    capabilities: { canPass: canAct && pendingImageEdits === 0, canReturnSingle: canAct,
       canReturnBatch: canBatch },
+    blockers: { pendingImageEdits },
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -578,6 +586,9 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
     SELECT item.*, sampling_freeze.public_id AS freeze_public_id, sampling_freeze.blind_review_enabled,
       task.query, task.priority_paused, task.source_query_package_name AS query_package_name,
       sampling_freeze.production_batch_id, settings.image_reviewer_batch_return_enabled,
+      (SELECT count(*)::integer FROM image_edit_requests AS edit
+        WHERE edit.task_id = item.task_id AND edit.source_image_run_id = item.image_run_id
+          AND edit.status = ANY($5::text[])) AS pending_image_edit_count,
       COALESCE(jsonb_agg(jsonb_build_object(
         'id', asset.id, 'media_type', asset.media_type, 'sha256', asset.sha256,
         'original_name', asset.original_name, 'page_index', page.page_index
@@ -601,7 +612,7 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
     GROUP BY item.id, sampling_freeze.id, task.id, settings.singleton
     ORDER BY task.priority_sort_at, item.id
     LIMIT $3 OFFSET $4
-  `, values);
+  `, [...values, PENDING_IMAGE_EDIT_STATUSES]);
   return { items: result.rows.map((row) => imageQaItemFrom(row, actor)), limit, offset };
 }
 
@@ -677,6 +688,10 @@ export async function passImageQaItem(pool, identifier, input, rawActor) {
     if (replay) return replay;
     const item = await lockQaItem(client, identifier);
     assertCanReview(item, actor);
+    await assertNoPendingImageEdits(client, {
+      taskId: Number(item.task_id),
+      imageRunId: item.image_run_id,
+    });
     await client.query(`
       UPDATE image_sampling_items SET status = 'PASSED', reviewed_by_account_id = $2,
         reviewed_by_username = $3, score_x10 = $4, note = $5,

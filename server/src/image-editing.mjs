@@ -88,8 +88,29 @@ export function imageAssetIds(result) {
 }
 function requestEditConfig(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) return config;
-  const { imageEditRepairMaxAttempts: _frozenRepairLimit, imageEditPrompt: _frozenPrompt, ...requestConfig } = config;
-  return requestConfig;
+  const { imageEditRepairMaxAttempts: _frozenRepairLimit, imageEditPrompt: _frozenPrompt, localPlan, ...requestConfig } = config;
+  return localPlan?.originalInstruction?{...requestConfig,instruction:localPlan.originalInstruction}:requestConfig;
+}
+const rectContains=(outer,inner)=>inner.x>=outer.x&&inner.y>=outer.y
+  &&inner.x+inner.width<=outer.x+outer.width&&inner.y+inner.height<=outer.y+outer.height;
+function localSuggestionPlan(validation,originalInstruction) {
+  if(!validation||validation.stage!=='LOCAL_EDIT_SUGGESTION'||validation.canEdit!==true
+    ||validation.decision!=='SUGGEST')throw new TypeError('当前请求没有可采用的局部修改建议');
+  const sourceRegion=safeRect(validation.sourceRegion??validation.region);
+  const destinationRegion=validation.destinationRegion?safeRect(validation.destinationRegion):null;
+  if(!Array.isArray(validation.editRegions)||validation.editRegions.length<1||validation.editRegions.length>4)throw new TypeError('局部修改建议区域无效');
+  const editRegions=validation.editRegions.map(region=>safeRect(region));
+  if(editRegions.some(region=>region.width<24||region.height<24)
+    ||!editRegions.some(region=>rectContains(region,sourceRegion))
+    ||(destinationRegion&&!editRegions.some(region=>rectContains(region,destinationRegion))))throw new TypeError('局部修改建议区域无效');
+  const operationType=String(validation.operationType??'ADJUST').toUpperCase();
+  if(!['ADJUST','MOVE','REMOVE','REPLACE','BACKGROUND'].includes(operationType))throw new TypeError('局部修改建议类型无效');
+  return {accepted:true,originalInstruction:shortText(originalInstruction,2000),suggestedInstruction:shortText(validation.suggestedInstruction,2000),
+    sourceRegion,destinationRegion,editRegions,operationType,touchesImageEdge:validation.touchesImageEdge===true,
+    targetIsAiDisclosure:validation.targetIsAiDisclosure===true,targetDescription:shortText(validation.targetDescription??'',500,false),
+    warnings:Array.isArray(validation.warnings)?validation.warnings.filter(value=>typeof value==='string').slice(0,8).map(value=>value.slice(0,300)):[],
+    reason:shortText(validation.reason??'',1000,false),confidence:typeof validation.confidence==='number'?validation.confidence:0,
+    checks:validation.checks??{},model:typeof validation.model==='string'?validation.model:null};
 }
 async function publishedImageEditPrompt(client, { required = true } = {}) {
   const row = (await client.query(`
@@ -344,15 +365,16 @@ export function createImageEditingService({ pool, storageRoot }) {
         const previous=(await c.query('SELECT * FROM image_edit_events WHERE task_id=$1 AND request_id=$2',[e.task_id,requestId])).rows[0];
         if(previous) { if(previous.edit_id !== id || previous.action !== action || previous.reason !== reason || previous.actor !== username) conflict('requestId 已用于其他操作'); return e; }
         if(e.version !== version) conflict('编辑状态已更新，请刷新');
-        const states={queue:['DRAFT'],retry:['FAILED'],cancel:['DRAFT','QUEUED','RUNNING','PREVIEW_READY'],reject:['PREVIEW_READY'],accept:['PREVIEW_READY']};
+        const states={queue:['DRAFT'],retry:['FAILED'],'apply-suggestion':['FAILED'],cancel:['DRAFT','QUEUED','RUNNING','PREVIEW_READY','FAILED'],reject:['PREVIEW_READY'],accept:['PREVIEW_READY']};
         if(!states[action]?.includes(e.status)) conflict('当前编辑状态不允许此操作');
         const usesBillableModel=e.operation==='TEXT'||e.operation.startsWith('AI_');
         const confirmsCost=e.config?.confirmation==='LIVE_IMAGE_COST_ACCEPTED'||input.confirmation==='LIVE_IMAGE_COST_ACCEPTED';
-        if(['queue','retry'].includes(action)&&usesBillableModel&&!confirmsCost) throw new TypeError('请确认图片编辑或视觉校验模型费用');
-        const editSource=['queue','retry','accept'].includes(action)
+        if(['queue','retry','apply-suggestion'].includes(action)&&usesBillableModel&&!confirmsCost) throw new TypeError('请确认图片编辑或视觉校验模型费用');
+        const editSource=['queue','retry','apply-suggestion','accept'].includes(action)
           ? await assertEditSource(c,Number(e.task_id),e.config,{allowCompatibleCurrentRun:true})
           : null;
         if(action==='retry' && e.attempts >= 3) conflict('已达到三次执行上限，请创建新请求');
+        if(action==='apply-suggestion'&&e.operation!=='AI_LOCAL')conflict('只有局部修改可以采用建议描述');
         if(action==='accept') {
           const r=(await c.query('SELECT * FROM image_edit_results WHERE request_id=$1',[id])).rows[0];
           if(r?.validation?.passed !== true || r.validation.mock === true) conflict('图片校验未通过');
@@ -378,9 +400,17 @@ export function createImageEditingService({ pool, storageRoot }) {
           await c.query('UPDATE image_edit_results SET adopted=true,image_run_id=$2 WHERE request_id=$1',[id,adoptedRunId]);
           await c.query("UPDATE tasks SET current_image_run_id=$2,state='MANUAL_ARCHIVE',current_stage='MANUAL_ARCHIVE',image_reviewed_at=NULL,image_reviewed_by_user_id=NULL,progress_message='图片修改已采用，请重新审核归档',updated_at=now() WHERE id=$1",[e.task_id,adoptedRunId]);
         }
-        const next={queue:'QUEUED',retry:'QUEUED',cancel:'CANCELLED',reject:'REJECTED',accept:'ACCEPTED'}[action];
+        const next={queue:'QUEUED',retry:'QUEUED','apply-suggestion':'QUEUED',cancel:'CANCELLED',reject:'REJECTED',accept:'ACCEPTED'}[action];
         let config=usesBillableModel&&input.confirmation==='LIVE_IMAGE_COST_ACCEPTED'?{...e.config,confirmation:'LIVE_IMAGE_COST_ACCEPTED'}:e.config;
-        const inheritedDisclosure=action==='retry'&&e.operation==='AI_LOCAL'
+        let auditDetail={};
+        if(action==='apply-suggestion') {
+          const plan=localSuggestionPlan(e.validation,e.config.instruction);
+          config={...config,instruction:plan.suggestedInstruction,
+            localPlan:{...plan,acceptedAt:new Date().toISOString(),acceptedBy:username}};
+          auditDetail={originalInstruction:plan.originalInstruction,suggestedInstruction:plan.suggestedInstruction,
+            operationType:plan.operationType,editRegions:plan.editRegions,model:plan.model};
+        }
+        const inheritedDisclosure=['retry','apply-suggestion'].includes(action)&&e.operation==='AI_LOCAL'
           ?imagePageDisclosure(editSource?.run?.result,Number(e.target_page)):null;
         if(inheritedDisclosure&&requestsDisclosureRemoval(config.instruction,inheritedDisclosure.text)) {
           config=disclosureRemovalConfig(config);
@@ -390,7 +420,7 @@ export function createImageEditingService({ pool, storageRoot }) {
           status='ABANDONED',stage='CANCELLED',progress_message='图片修改已取消',
           last_activity_at=now(),finished_at=now()
           WHERE id=$1 AND status='RUNNING'`,[e.execution_id]);
-        await audit(c,e.task_id,id,action,username,reason,requestId);
+        await audit(c,e.task_id,id,action,username,reason,requestId,auditDetail);
         return updated;
       });
     },

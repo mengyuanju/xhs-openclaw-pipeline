@@ -38,6 +38,9 @@ export type CopyQaNonBlindItem = CopyQaCommon & {
   productionBatch: CopyQaCommon['productionBatch'] & { queryPackageName: string | null };
   freezeId: number | null;
   finalApproverAccountId: number | null;
+  finalApproverUsername: string | null;
+  assignedToUserId: string | null;
+  createdByUserId: string | null;
   approvedRevision: ApprovedCopyRevision & { id: number | null };
 };
 
@@ -91,6 +94,12 @@ function positiveInteger(value: unknown) {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
+function boundedIdentity(value: unknown) {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  return normalized && [...normalized].length <= 80 ? normalized : null;
+}
+
 function count(value: unknown) {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
@@ -116,7 +125,10 @@ export function canReleaseCopyQaFreezeRest(
   return item.sampleKind === 'RANDOM' && item.status === 'RETURNED';
 }
 
-export function normalizeCopyQaItem(value: unknown): CopyQaItem | null {
+export function normalizeCopyQaItem(
+  value: unknown,
+  { role }: { role?: string } = {},
+): CopyQaItem | null {
   const row = record(value);
   if (!row) return null;
   const id = opaqueToken(row.id);
@@ -135,7 +147,10 @@ export function normalizeCopyQaItem(value: unknown): CopyQaItem | null {
     anonymousCode: typeof row.anonymousCode === 'string' && row.anonymousCode.trim()
       ? row.anonymousCode.trim()
       : `匿名样本 ${id.slice(0, 8)}`,
-    blindReview: row.blindReview === true,
+    // The server is the primary redaction boundary. Keeping the administrator
+    // exception here prevents a stale/mixed-version response flag from hiding
+    // traceable fields that the administrator is already authorized to receive.
+    blindReview: row.blindReview === true && role !== 'ADMIN',
     status,
     sampleKind: row.sampleKind === 'MANDATORY_RECHECK' ? 'MANDATORY_RECHECK' : 'RANDOM',
     ...(typeof row.prioritySummary === 'string' && /^(?:已暂停|生效 (?:10|100|150|200|300|350|400|500)) · 系统 (?:100|150|200|300|400) \/ 人工 (?:—|10|100|350|500)$/u.test(row.prioritySummary) ? { prioritySummary: row.prioritySummary } : {}),
@@ -176,24 +191,31 @@ export function normalizeCopyQaItem(value: unknown): CopyQaItem | null {
     },
     freezeId: positiveInteger(row.freezeId),
     finalApproverAccountId: positiveInteger(row.finalApproverAccountId ?? source?.finalApproverAccountId),
+    finalApproverUsername: boundedIdentity(row.finalApproverUsername ?? source?.finalApproverUsername),
+    assignedToUserId: boundedIdentity(row.assignedToUserId ?? source?.assignedToUserId),
+    createdByUserId: boundedIdentity(row.createdByUserId ?? source?.createdByUserId),
     approvedRevision: { ...common.approvedRevision, id: positiveInteger(revision.id) },
   };
 }
 
-export function normalizeCopyQaPage(value: unknown): CopyQaPage {
+export function normalizeCopyQaPage(
+  value: unknown,
+  options: { role?: string } = {},
+): CopyQaPage {
   const row = record(value);
   const rows = Array.isArray(value) ? value : Array.isArray(row?.items) ? row.items : [];
   const totalValue = row?.total;
   const rawTotal = Number(totalValue);
   return {
-    items: rows.map(normalizeCopyQaItem).filter((item): item is CopyQaItem => item !== null),
+    items: rows.map((item) => normalizeCopyQaItem(item, options))
+      .filter((item): item is CopyQaItem => item !== null),
     total: totalValue !== null && totalValue !== undefined && Number.isSafeInteger(rawTotal) && rawTotal >= 0 ? rawTotal : null,
     returnedCount: rows.length,
   };
 }
 
-export function normalizeCopyQaList(value: unknown): CopyQaItem[] {
-  return normalizeCopyQaPage(value).items;
+export function normalizeCopyQaList(value: unknown, options: { role?: string } = {}): CopyQaItem[] {
+  return normalizeCopyQaPage(value, options).items;
 }
 
 export function normalizeCopyQaStatistics(value: unknown): CopyQaStatistics | null {

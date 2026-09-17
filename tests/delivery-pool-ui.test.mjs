@@ -12,6 +12,7 @@ import {
   mergeDeliveryPoolEntries,
   normalizeDeliveryBatchDetail,
   normalizeDeliveryBatchPage,
+  normalizeDeliveryContentPreview,
   normalizeDeliveryPoolPage,
   normalizePreparedDeliveryExport,
   normalizePreparedDeliveryXlsxExport,
@@ -124,6 +125,48 @@ test('delivery preview adapter preserves the note binding and rejects inconsiste
     () => normalizeDeliveryPreviewPublishResult({ ...result, failedCount: 0 }),
     /预览上传结果无效/u,
   );
+});
+
+test('delivery content preview follows the frozen image order and reviewed copy', () => {
+  const preview = normalizeDeliveryContentPreview({
+    id: 264,
+    query: '家庭咖啡角整理',
+    currentCopyRevisionId: 458,
+    currentImageRunId: 'run-current',
+    copyRevisions: [{
+      id: 458,
+      content: { reviewed: { copy: { title: '咖啡角整理', body: '先清空，再分区。', tags: ['收纳', '#咖啡'] } } },
+    }],
+    imageRuns: [{
+      id: 'run-current',
+      result: { images: [{ deliveryAssetId: 12 }, { assetId: 11 }] },
+    }],
+    assets: [
+      { id: 11, imageRunId: 'run-current', url: '/v1/assets/11', originalName: 'page-2.png' },
+      { id: 12, imageRunId: 'run-current', url: '/v1/assets/12', originalName: 'page-1.png' },
+      { id: 13, imageRunId: 'old-run', url: '/v1/assets/13', originalName: 'old.png' },
+    ],
+  });
+  assert.equal(preview.copy.title, '咖啡角整理');
+  assert.deepEqual(preview.copy.tags, ['收纳', '#咖啡']);
+  assert.deepEqual(preview.images.map(({ id, page }) => ({ id, page })), [
+    { id: 12, page: 1 },
+    { id: 11, page: 2 },
+  ]);
+  assert.throws(() => normalizeDeliveryContentPreview({
+    id: 1,
+    currentCopyRevisionId: 2,
+    currentImageRunId: 'run',
+    copyRevisions: [],
+  }), /交付文案缺失/u);
+  assert.throws(() => normalizeDeliveryContentPreview({
+    id: 264,
+    currentCopyRevisionId: 459,
+    currentImageRunId: 'run-new',
+  }, {
+    copyRevisionId: 458,
+    imageRunId: 'run-current',
+  }), /交付版本已更新/u);
 });
 
 test('delivery list keeps a published preview visible when its domain is not configured', () => {
@@ -360,6 +403,11 @@ test('administrator delivery pool exposes client-batch facets, filtering and mer
   assert.match(feedbackMessage, /aria-live=\{tone === 'error' \? 'assertive' : 'polite'\}/u);
   assert.match(feedbackMessage, /aria-label="关闭反馈消息"/u);
   assert.match(source, /打开预览/u);
+  assert.match(source, /预览图文/u);
+  assert.match(source, /<DeliveryPreviewDialog/u);
+  assert.match(source, /activeView === 'CONTENT'/u);
+  assert.match(source, /activeView === 'PREVIEW'/u);
+  assert.match(source, /activeView === 'HISTORY'/u);
   assert.match(source, /新建交付批次始终由服务端排除已经打包的相同版本/u);
   assert.match(source, /entry\.clientBatchCode \|\| '未归属甲方批次'/u);
   assert.doesNotMatch(source, /selected\.length > 20/u,

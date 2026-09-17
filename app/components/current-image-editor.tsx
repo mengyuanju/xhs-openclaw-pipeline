@@ -1,7 +1,7 @@
 'use client';
 
 import { memo, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { Dialog, DialogClose, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { UploadCloud } from 'lucide-react';
 import { apiRequest } from './api-client';
@@ -19,8 +19,35 @@ type Ref = Asset & { purpose: string };
 type TargetRegion = { x:number; y:number; width:number; height:number };
 type ReferenceMode = 'STRICT' | 'APPEARANCE';
 type TextScope = 'CURRENT' | 'ALL';
+type EditAction = 'accept' | 'reject' | 'cancel' | 'retry' | 'queue' | 'apply-suggestion';
+type WorkspacePanel = 'EDIT' | 'HISTORY';
+type MobileView = 'PREVIEW' | WorkspacePanel;
+type PreviewMode = 'SOURCE' | 'RESULT' | 'COMPARE';
+type PromptAction = '' | '改颜色' | '替换物体' | '删除物体' | '修复瑕疵';
+type LocalSuggestion = { stage:'LOCAL_EDIT_SUGGESTION'; decision:'SUGGEST'; canEdit:true; suggestedInstruction:string; reason:string; operationType:string; touchesImageEdge:boolean; editRegions:TargetRegion[] };
 type Edit = { id: string; version: number; status: string; operation: string; source_asset_id?:number; target_page:number; created_by:string; validation?:unknown; events?:Array<{action:string;actor:string;reason:string}>; error: string | null; config: {instruction:string;confirmation?:string|null;batchId?:string|null}; result?: {asset_id: number; image_run_id: string; validation: unknown} };
 const labels: Record<string,string> = {DRAFT:'草稿',QUEUED:'排队中',RUNNING:'执行与校验中',PREVIEW_READY:'预览待确认',ACCEPTED:'已采用',REJECTED:'已拒绝',FAILED:'失败',CANCELLED:'已取消',TEXT:'人工生成标识',COMPOSITE:'实体合成（历史）',AI_FUSION:'真实产品替换',AI_LOCAL:'局部修改',AI_FULL:'整图修改（历史）',RESTORE:'恢复版本',REGENERATE:'重新生成',REPROCESS:'格式处理'};
+const actionLabels: Record<EditAction,string> = {accept:'采用此版本',reject:'拒绝',cancel:'直接删除此修复',retry:'重试（AI 可能再次收费）',queue:'提交草稿','apply-suggestion':'采用建议并修改'};
+const promptActions: PromptAction[] = ['改颜色','替换物体','删除物体','修复瑕疵'];
+const quickRequirements = ['保持材质','保持光影','不改文字'];
+const quickReasons = ['预览符合要求','定位或内容有误','调整说明后重试','不再需要此修复'];
+function localSuggestion(edit:Edit):LocalSuggestion|null {
+  if(edit.status!=='FAILED')return null;
+  const value=edit.validation;
+  if(!value||typeof value!=='object'||Array.isArray(value))return null;
+  const suggestion=value as Partial<LocalSuggestion>;
+  const editRegions=Array.isArray(suggestion.editRegions)?suggestion.editRegions.filter(region=>region&&Number.isFinite(region.x)&&Number.isFinite(region.y)&&Number.isFinite(region.width)&&Number.isFinite(region.height)):[];
+  if(suggestion.stage!=='LOCAL_EDIT_SUGGESTION'||suggestion.decision!=='SUGGEST'||suggestion.canEdit!==true
+    ||typeof suggestion.suggestedInstruction!=='string'||!suggestion.suggestedInstruction.trim()||!editRegions.length)return null;
+  return {...suggestion,reason:typeof suggestion.reason==='string'?suggestion.reason:'',operationType:typeof suggestion.operationType==='string'?suggestion.operationType:'ADJUST',
+    touchesImageEdge:suggestion.touchesImageEdge===true,editRegions} as LocalSuggestion;
+}
+function historyActions(edit:Edit):EditAction[] {
+  if(edit.status==='PREVIEW_READY')return ['accept','reject','cancel'];
+  if(edit.status==='FAILED')return localSuggestion(edit)?['apply-suggestion','cancel']:['retry','cancel'];
+  if(edit.status==='DRAFT')return ['queue','cancel'];
+  return ['QUEUED','RUNNING'].includes(edit.status)?['cancel']:[];
+}
 const path=(url:string)=>`/api/control-plane${url}`;
 const post=(url:string,body:unknown)=>apiRequest(path(url),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
 const PreviewSourceImage=memo(function PreviewSourceImage({src}:{src:string}) {
@@ -29,6 +56,15 @@ const PreviewSourceImage=memo(function PreviewSourceImage({src}:{src:string}) {
 function regionBetween(start:{x:number;y:number},point:{x:number;y:number}):TargetRegion {
   const x=Math.min(start.x,point.x),y=Math.min(start.y,point.y);
   return {x,y,width:Math.max(1,Math.abs(point.x-start.x)),height:Math.max(1,Math.abs(point.y-start.y))};
+}
+function pointLocation(point:{x:number;y:number}|null) {
+  if(!point)return '';
+  const horizontal=point.x<362?'左侧':point.x>724?'右侧':'中间';
+  const vertical=point.y<483?'上方':point.y>965?'下方':'中部';
+  if(horizontal==='中间'&&vertical==='中部')return '画面中央';
+  if(horizontal==='中间')return `画面${vertical}`;
+  if(vertical==='中部')return `画面${horizontal}`;
+  return `画面${horizontal.replace('侧','')}${vertical.replace('方','')}`;
 }
 export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,page,runs,onChanged}: {
   taskId:number;runId:string;copyRevisionId:number;asset:Asset;assets?:Asset[];page:number;
@@ -43,6 +79,13 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
   const [targetDescription,setTargetDescription]=useState('');
   const [targetRegion,setTargetRegion]=useState<TargetRegion|null>(null);
   const [referenceMode,setReferenceMode]=useState<ReferenceMode>('STRICT');
+  const [panel,setPanel]=useState<WorkspacePanel>('EDIT');
+  const [mobileView,setMobileView]=useState<MobileView>('PREVIEW');
+  const [previewMode,setPreviewMode]=useState<PreviewMode>('SOURCE');
+  const [promptAction,setPromptAction]=useState<PromptAction>('');
+  const [promptTarget,setPromptTarget]=useState<{x:number;y:number}|null>(null);
+  const [pendingHistoryAction,setPendingHistoryAction]=useState<{editId:string;action:EditAction}|null>(null);
+  const [pendingBatchAccept,setPendingBatchAccept]=useState(false);
   const targetDragStart=useRef<{x:number;y:number}|null>(null);
   const pendingTargetRegion=useRef<TargetRegion|null>(null);
   const targetSelectionFrame=useRef<number|null>(null);
@@ -55,8 +98,9 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
   useEffect(()=>{if(open)setRecentDisclosureTexts(loadRecentDisclosureTexts(window.localStorage));},[open]);
   useEffect(()=>()=>{if(targetSelectionFrame.current!==null)window.cancelAnimationFrame(targetSelectionFrame.current);},[]);
   const operation=tab==='TEXT'?'TEXT':tab==='ENTITY'?'AI_FUSION':'AI_LOCAL';
+  const promptRequestInstruction=[pointLocation(promptTarget)&&`${pointLocation(promptTarget)}附近`,promptAction,instruction.trim()].filter(Boolean).join('，');
   const requestInstruction=tab==='TEXT'?`将人工生成标识显示为“${text.trim()}”并放在右下角`:
-    tab==='ENTITY'?`${referenceMode==='APPEARANCE'?'使用上传参考图中主产品的可见外观':'使用上传的完整真实产品参考图'}，只替换目标“${targetDescription.trim()}”，保持场景、人物、构图和全部文字不变`:instruction.trim();
+    tab==='ENTITY'?`${referenceMode==='APPEARANCE'?'使用上传参考图中主产品的可见外观':'使用上传的完整真实产品参考图'}，只替换目标“${targetDescription.trim()}”，保持场景、人物、构图和全部文字不变`:promptRequestInstruction;
   const preserve=tab==='ENTITY'?'保留原图全部已批准文字、人物、背景、构图、色调和未被替换的物品':'除说明明确点名的目标外，保留原图全部已批准文字、所有未点名区域、人物、构图和色调';
   const negative=tab==='ENTITY'
     ?referenceMode==='APPEARANCE'
@@ -131,7 +175,24 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
       setRefs([{...saved,purpose:'真实产品替换'}]);
     },'正在上传真实产品图片…','真实产品图片已上传。');
   }
-  const latest=edits.find(e=>e.id===comparisonId&&e.result)??edits.find(e=>e.status==='PREVIEW_READY'&&e.target_page===page);
+  function showPanel(next:WorkspacePanel) {
+    if(next==='EDIT'){setPendingHistoryAction(null);setPendingBatchAccept(false);setReason('');}
+    setPanel(next);setMobileView(next);
+  }
+  function appendRequirement(requirement:string) {
+    setInstruction(current=>current.includes(requirement)?current:`${current.replace(/[，。\s]+$/u,'')}${current.trim()?'，':''}${requirement}`);
+  }
+  function reuseInstruction(edit:Edit) {
+    setTab('PROMPT');setInstruction(edit.config.instruction);setPromptAction('');setPromptTarget(null);
+    setConfirmed(false);setError('');setNotice('');showPanel('EDIT');
+  }
+  const latest=edits.find(e=>e.id===comparisonId&&e.result)
+    ??edits.find(e=>e.status==='PREVIEW_READY'&&e.target_page===page)
+    ??edits.find(e=>e.target_page===page&&e.result);
+  const pageEdits=edits.filter(e=>e.target_page===page);
+  const suggestedEdit=pageEdits.find(e=>localSuggestion(e)!==null);
+  const suggestedPlan=suggestedEdit?localSuggestion(suggestedEdit):null;
+  useEffect(()=>{if(latest?.result)setPreviewMode(current=>current==='SOURCE'?'COMPARE':current);},[latest?.result?.asset_id]);
   const disclosureBatchId=activeBatchId||edits.find(e=>e.operation==='TEXT'&&e.config.batchId)?.config.batchId||'';
   const disclosureBatchEdits=disclosureBatchId
     ?edits.filter(e=>e.operation==='TEXT'&&e.config.batchId===disclosureBatchId).sort((a,b)=>a.target_page-b.target_page)
@@ -154,7 +215,12 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
       y:Math.max(0,Math.min(1447,Math.round((event.clientY-box.top)*1448/box.height)))};
   }
   function startTargetSelection(event:ReactPointerEvent<HTMLDivElement>) {
-    if(tab!=='ENTITY'||event.button!==0)return;
+    if(event.button!==0)return;
+    if(tab==='PROMPT'){
+      setPromptTarget(targetPoint(event));setError('');setPreviewMode('SOURCE');
+      return;
+    }
+    if(tab!=='ENTITY')return;
     if(targetSelectionFrame.current!==null){window.cancelAnimationFrame(targetSelectionFrame.current);targetSelectionFrame.current=null;}
     pendingTargetRegion.current=null;
     const point=targetPoint(event);targetDragStart.current=point;setTargetRegion(null);setError('');
@@ -180,13 +246,15 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
     if(region.width>=24&&region.height>=24){setTargetRegion(region);return;}
     setTargetRegion(null);setError('目标框选区域过小，请完整框住一个物品并保留少量周边。');
   }
-  function runHistoryAction(e:Edit,action:string) {
-    const actionLabel=({accept:'采用此版本',reject:'拒绝',cancel:'取消',retry:'重试',queue:'提交草稿'} as Record<string,string>)[action]??'操作';
+  function runHistoryAction(e:Edit,action:EditAction) {
+    const actionLabel=actionLabels[action];
     if(!reason.trim()){setNotice('');setError(`请先填写“操作原因”，再${actionLabel}。`);return;}
-    const needsConfirmation=['queue','retry'].includes(action)&&(e.operation==='TEXT'||e.operation.startsWith('AI_'))&&e.config.confirmation!=='LIVE_IMAGE_COST_ACCEPTED';
+    if(action==='cancel'&&!window.confirm(`确认直接删除这条${labels[e.status]??e.status}的图片修复？${['QUEUED','RUNNING'].includes(e.status)?'正在排队或执行的重试会立即停止。':''}后台仍保留取消记录用于审计。`))return;
+    const needsConfirmation=['queue','retry','apply-suggestion'].includes(action)&&(e.operation==='TEXT'||e.operation.startsWith('AI_'))&&e.config.confirmation!=='LIVE_IMAGE_COST_ACCEPTED';
     if(needsConfirmation&&!confirmed){setNotice('');setError(`“${actionLabel}”会调用图片编辑或视觉校验模型，请先勾选费用确认。`);return;}
-    return act(()=>post(`/v1/image-edits/${e.id}/${action}`,{requestId:createRequestId(),version:e.version,reason,
+    const request=act(()=>post(`/v1/image-edits/${e.id}/${action}`,{requestId:createRequestId(),version:e.version,reason,
       confirmation:confirmed?'LIVE_IMAGE_COST_ACCEPTED':undefined}),`正在${actionLabel}…`,`${actionLabel}操作已完成。`);
+    setPendingHistoryAction(null);setReason('');return request;
   }
   async function acceptDisclosureBatch() {
     if(!reason.trim()){setNotice('');setError('请先填写“操作原因”，再采用整套标识预览。');return;}
@@ -203,63 +271,92 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
     } catch(e) {
       try {await refresh();await onChanged();} catch {}
       setNotice('');setError(`已采用 ${accepted} / ${pending.length} 张；${e instanceof Error?e.message:'剩余图片采用失败，可再次点击继续。'}`);
-    } finally {setBusy(false);}
+    } finally {setBusy(false);setPendingBatchAccept(false);setReason('');}
   }
-  return <><Button className="current-image-editor-trigger" type="button" onClick={()=>setOpen(true)}>修改图片</Button><Dialog open={open} onOpenChange={setOpen}><DialogContent className={styles.dialog} overlayClassName={styles.overlay}>
-    <header className={styles.header}>
-      <DialogTitle className={styles.title}>当前图片修改工作台 · 第 {page} 页</DialogTitle>
-      <DialogDescription className={styles.description}>可修改当前页，也可给整套图片批量添加同一标识。结果先生成预览，采用后需重新图片审核。</DialogDescription>
-    </header>
-    <div className={styles.tabs} role="tablist" aria-label="图片修改方式">{[['TEXT','添加文字'],['ENTITY','实体替换'],['PROMPT','局部修改']].map(([key,label])=><Button unstyled className={styles.tab} type="button" key={key} role="tab" aria-selected={tab===key} onClick={()=>{setTab(key);setConfirmed(false);setError('');setNotice('');}}>{label}</Button>)}</div>
-    <div className={styles.body}>
-    {(error||notice)&&<p className={`${styles.feedback} ${error?styles.feedbackError:''}`} role={error?'alert':'status'}>{error||notice}</p>}
-    <div className={styles.workspace}>
-      <section className={styles.previewPanel} aria-label="图片预览">
-        <div className={styles.previewViewport}>
-        <div className={`${styles.previewCanvas} ${tab==='ENTITY'?styles.targetCanvas:''}`} role="img" aria-label="实时修改预览" style={{width:`${zoom*100}%`}}
-          onPointerDown={startTargetSelection} onPointerMove={moveTargetSelection} onPointerUp={finishTargetSelection} onPointerCancel={finishTargetSelection}>
-          <PreviewSourceImage src={path(asset.url)}/>
-          <svg className={styles.previewOverlay} aria-hidden="true" viewBox="0 0 1086 1448">
-            {tab==='TEXT'&&<g><rect x={tx} y={ty} width={textWidth} height={textHeight} rx="8" fill="#111827"/><text x={tx+textWidth/2} y={ty+40} textAnchor="middle" fill="#ffffff" fontSize="32" fontWeight="500" fontFamily="Noto Sans CJK SC,Microsoft YaHei,sans-serif">{text}</text></g>}
-            {tab==='ENTITY'&&targetRegion&&<rect className={styles.targetSelection} x={targetRegion.x} y={targetRegion.y} width={targetRegion.width} height={targetRegion.height}/>}
-          </svg>
+  return <>
+    <Button className="current-image-editor-trigger" type="button" onClick={()=>setOpen(true)}>修改图片</Button>
+    <Dialog open={open} onOpenChange={setOpen}><DialogContent className={styles.dialog} overlayClassName={styles.overlay}>
+      <header className={styles.header}>
+        <div><DialogTitle className={styles.title}>当前图片修改工作台 · 第 {page} 页</DialogTitle>
+        <DialogDescription className={styles.description}>预览保持常驻；编辑、恢复和任务记录分区呈现。</DialogDescription></div>
+        <span className={styles.pageCount}>{page} / {imageAssets.length}</span>
+      </header>
+      <div className={styles.tabs} role="tablist" aria-label="图片修改方式">{[['TEXT','添加文字'],['ENTITY','实体替换'],['PROMPT','局部修改']].map(([key,label])=><Button unstyled className={styles.tab} type="button" key={key} role="tab" aria-selected={tab===key} onClick={()=>{setTab(key);setConfirmed(false);setError('');setNotice('');setPreviewMode('SOURCE');showPanel('EDIT');}}>{label}</Button>)}</div>
+      <div className={styles.mobileViewTabs} role="tablist" aria-label="移动端工作区">
+        <Button unstyled type="button" role="tab" aria-selected={mobileView==='PREVIEW'} onClick={()=>setMobileView('PREVIEW')}>预览</Button>
+        <Button unstyled type="button" role="tab" aria-selected={mobileView==='EDIT'} onClick={()=>showPanel('EDIT')}>编辑</Button>
+        <Button unstyled type="button" role="tab" aria-selected={mobileView==='HISTORY'} onClick={()=>showPanel('HISTORY')}>记录 {pageEdits.length||''}</Button>
+      </div>
+      <div className={styles.body}>
+        {(error||notice)&&<p className={`${styles.feedback} ${error?styles.feedbackError:''}`} role={error?'alert':'status'}>{error||notice}</p>}
+        <div className={styles.workspace} data-mobile-view={mobileView.toLowerCase()}>
+          <section className={styles.previewPanel} aria-label="图片预览">
+            <div className={styles.previewToolbar} role="group" aria-label="预览模式">
+              <Button unstyled type="button" aria-pressed={previewMode==='SOURCE'} onClick={()=>setPreviewMode('SOURCE')}>当前图</Button>
+              <Button unstyled type="button" disabled={!latest?.result} aria-pressed={previewMode==='RESULT'} onClick={()=>setPreviewMode('RESULT')}>修改预览</Button>
+              <Button unstyled type="button" disabled={!latest?.result} aria-pressed={previewMode==='COMPARE'} onClick={()=>setPreviewMode('COMPARE')}>前后对比</Button>
+            </div>
+            <div className={styles.previewViewport}>
+              {(previewMode==='SOURCE'||!latest?.result)&&<div className={`${styles.previewCanvas} ${['ENTITY','PROMPT'].includes(tab)?styles.targetCanvas:''}`} role="img" aria-label="实时修改预览" style={{width:`${zoom*100}%`}}
+                onPointerDown={startTargetSelection} onPointerMove={moveTargetSelection} onPointerUp={finishTargetSelection} onPointerCancel={finishTargetSelection}>
+                <PreviewSourceImage src={path(asset.url)}/>
+                <svg className={styles.previewOverlay} aria-hidden="true" viewBox="0 0 1086 1448">
+                   {tab==='TEXT'&&<g><rect x={tx} y={ty} width={textWidth} height={textHeight} rx="8" fill="#111827"/><text x={tx+textWidth/2} y={ty+40} textAnchor="middle" fill="#ffffff" fontSize="32" fontWeight="500" fontFamily="Noto Sans CJK SC,Microsoft YaHei,sans-serif">{text}</text></g>}
+                   {tab==='ENTITY'&&targetRegion&&<rect className={styles.targetSelection} x={targetRegion.x} y={targetRegion.y} width={targetRegion.width} height={targetRegion.height}/>}
+                   {tab==='PROMPT'&&panel==='HISTORY'&&suggestedPlan?.editRegions.map((region,index)=><rect key={index} className={styles.suggestionSelection} x={region.x} y={region.y} width={region.width} height={region.height}/>)}
+                   {tab==='PROMPT'&&promptTarget&&<circle className={styles.promptTarget} cx={promptTarget.x} cy={promptTarget.y} r="54"/>}
+                </svg>
+              </div>}
+              {previewMode==='RESULT'&&latest?.result&&<div className={styles.previewCanvas} role="img" aria-label="修改结果预览" style={{width:`${zoom*100}%`}}><img className={styles.previewImage} src={path(`/v1/assets/${latest.result.asset_id}`)} alt=""/></div>}
+              {previewMode==='COMPARE'&&latest?.result&&<div className={styles.previewCanvas} role="img" aria-label="修改前后对比画面" style={{width:`${zoom*100}%`}}><img className={styles.previewImage} src={path(`/v1/assets/${latest.source_asset_id??asset.id}`)} alt=""/><img className={styles.previewImage} src={path(`/v1/assets/${latest.result.asset_id}`)} alt="" style={{clipPath:`inset(0 ${100-compare}% 0 0)`}}/></div>}
+            </div>
+            {previewMode==='COMPARE'&&latest?.result?<section className={styles.inlineComparison} aria-label="修改前后对比"><div><h3>修改前后滑动对比</h3><span>第 {latest.target_page} 页 · {labels[latest.operation]}</span></div><input aria-label="修改前后对比滑块" type="range" min="0" max="100" value={compare} onChange={e=>setCompare(Number(e.target.value))}/></section>:<label className={styles.zoomControl}><span>预览缩放</span><input aria-label="预览缩放" type="range" min="1" max="3" step="0.1" value={zoom} onChange={e=>setZoom(Number(e.target.value))}/><strong>{Math.round(zoom*100)}%</strong></label>}
+            <p className={styles.help}>{tab==='TEXT'?'左侧是统一目标样式示意；最终标识由图片编辑模型绘制。':tab==='ENTITY'?'在原图上拖动框住一个目标物品并保留少量周边。':promptTarget?`已标记${pointLocation(promptTarget)}附近；右侧只需补充怎么修改。`:'可直接点击图片中的目标以自动补充位置，也可以完整输入自然语言说明。'}</p>
+          </section>
+
+          <section className={styles.controlPanel} aria-label="图片修改控制">
+            <div className={styles.panelTabs} role="tablist" aria-label="编辑与任务记录">
+              <Button unstyled type="button" role="tab" aria-selected={panel==='EDIT'} onClick={()=>showPanel('EDIT')}>本次编辑</Button>
+              <Button unstyled type="button" role="tab" aria-selected={panel==='HISTORY'} onClick={()=>showPanel('HISTORY')}>任务记录{pageEdits.length?` · ${pageEdits.length}`:''}</Button>
+            </div>
+            {panel==='EDIT'?<>
+              <section className={styles.panelBody} aria-label="本次编辑"><section className={styles.settings} aria-label="图片修改设置">
+                {tab==='TEXT'&&<>
+                  <label>人工生成标识文字<input aria-label="人工生成标识文字" value={text} maxLength={12} pattern="[\p{L}\p{N}_-]+" onChange={e=>setText(e.target.value)}/><small>最多 12 个字符，仅限文字、数字、下划线或短横线。</small></label>
+                  {imageAssets.length>1&&<div className={styles.scopeSelector} aria-label="标识应用范围"><span>应用范围</span><div role="group" aria-label="选择标识应用范围"><Button unstyled type="button" aria-pressed={textScope==='CURRENT'} onClick={()=>setTextScope('CURRENT')}>仅第 {page} 页</Button><Button unstyled type="button" aria-pressed={textScope==='ALL'} onClick={()=>setTextScope('ALL')}>整套 {imageAssets.length} 张</Button></div><small>{textScope==='ALL'?'同一标识会逐张绘制并保持统一样式。':'只为当前页创建一张模型绘制标识预览。'}</small></div>}
+                  <div className={styles.recentDisclosureTexts} aria-label="最近常用标识文字"><span>最近常用</span>{recentDisclosureTexts.length?<div>{recentDisclosureTexts.map(item=><Button unstyled className={styles.recentDisclosureButton} type="button" key={item} aria-pressed={text===item} onClick={()=>setText(item)}>{item}</Button>)}</div>:<small>成功提交后会在这里保留最近使用的 5 条。</small>}</div>
+                  <p>系统会校验文字准确性、可读性和重复标识；失败时不会自动二次修改。</p>
+                </>}
+                {tab==='ENTITY'&&<><div className={styles.referenceUpload}><div className={styles.referenceUploadHeading}><strong>上传真实产品图片</strong><p>使用参考图中的真实产品替换左侧框选的一个物品。</p></div><label className={styles.filePicker} data-disabled={busy||undefined}><input className={styles.fileInput} aria-label="上传真实产品参考图" type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={e=>void upload(e.target.files)}/><span className={styles.filePickerIcon}><UploadCloud aria-hidden="true" size={26} strokeWidth={1.8}/></span><span className={styles.filePickerCopy}><strong>{refs.length?'更换产品图片':'点击选择产品图片'}</strong><small>也可以将图片拖放到这里</small></span><span className={styles.filePickerMeta}>PNG / JPG / WebP · 最大 5 MB</span></label>{refs.map(r=><div className={styles.referenceCard} key={r.id}><img src={path(r.url)} alt="已上传的真实产品参考图"/><span>真实产品参考图已就绪</span><Button variant="outline" size="sm" type="button" onClick={()=>setRefs([])}>移除</Button></div>)}</div><label>参考图使用方式<select aria-label="参考图使用方式" value={referenceMode} onChange={e=>setReferenceMode(e.target.value as ReferenceMode)}><option value="STRICT">完整产品（严格模式）</option><option value="APPEARANCE">外观参考（允许手部、裁切或次要产品）</option></select><small>{referenceMode==='APPEARANCE'?'只迁移主产品可确认的外观，缺失部分沿用源图结构补全。':'要求参考图中只有一个清楚、完整、遮挡很少的产品。'}</small></label><label>目标物品说明<textarea aria-label="目标物品说明" value={targetDescription} maxLength={500} placeholder="例如：画面右侧台面上、木托盘后方的米白色拿铁杯" onChange={e=>setTargetDescription(e.target.value)}/><small>同时写清颜色或相邻物体，避免多个同类物品时选错。</small></label><div className={styles.targetSelectionInfo} role="status"><span>{targetRegion?`已框选：x ${targetRegion.x}，y ${targetRegion.y}，宽 ${targetRegion.width}，高 ${targetRegion.height}`:'尚未框选目标。请在左侧原图上拖动。'}</span>{targetRegion&&<Button variant="outline" size="sm" type="button" onClick={()=>setTargetRegion(null)}>重新框选</Button>}</div><p>视觉预检会先确认框内目标唯一；不明确时不会调用图片编辑模型。</p></>}
+                {tab==='PROMPT'&&<>
+                  <div className={styles.promptStep}><div className={styles.stepHeading}><strong>1. 选择修改目标</strong><span>减少位置描述</span></div><div className={styles.targetSelectionInfo} role="status"><span>{promptTarget?`已定位：${pointLocation(promptTarget)}附近`:'可在左侧图片点击要修改的目标，也可跳过并在说明中写位置。'}</span>{promptTarget&&<Button variant="outline" size="sm" type="button" onClick={()=>setPromptTarget(null)}>清除定位</Button>}</div></div>
+                  <div className={styles.promptStep}><div className={styles.stepHeading}><strong>2. 选择修改动作</strong><span>可选</span></div><div className={styles.promptActions} role="group" aria-label="局部修改动作">{promptActions.map(action=><Button unstyled type="button" key={action} aria-pressed={promptAction===action} onClick={()=>setPromptAction(current=>current===action?'':action)}>{action.replace('物体','')}</Button>)}</div></div>
+                  <label>补充要求<textarea aria-label="图片修改要求" value={instruction} maxLength={2000} placeholder={promptTarget?'例如：改成鼠尾草绿色，保持材质和光影不变':'例如：把画面左下角人物手中的黑色书包替换成手提文件袋'} onChange={e=>setInstruction(e.target.value)}/><small>{promptTarget?'位置已自动加入请求，只需描述修改结果。':'请同时描述位置和修改内容。'}</small></label>
+                  <div className={styles.quickRequirements} aria-label="快捷补充要求">{quickRequirements.map(item=><Button unstyled type="button" key={item} onClick={()=>appendRequirement(item)}>＋ {item}</Button>)}</div>
+                  <p>系统会先结合原图规划源位置、目标位置和安全编辑区域。原说明需要补强时，会先给出可采用的描述，不会提前调用图片编辑模型。</p>
+                 </>}
+                <label className={styles.feeConfirmation}><input className={styles.feeCheckboxInput} type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/><span className={styles.feeCheckboxVisual} data-fee-checkbox aria-hidden="true"/><span>确认调用视觉规划、图片编辑与结果验收模型，会产生费用；规划需要改写时会先返回建议，采用后才调用图片编辑模型。</span></label>
+              </section></section>
+              <footer className={styles.actionBar}><span>保存草稿不会调用模型</span><div>{!(tab==='TEXT'&&textScope==='ALL'&&imageAssets.length>1)&&<Button variant="outline" disabled={busy} onClick={()=>void submit(true)}>{busy?'处理中…':'保存草稿'}</Button>}<Button disabled={busy} onClick={()=>void (tab==='TEXT'&&textScope==='ALL'&&imageAssets.length>1?submitDisclosureBatch():submit())}>{busy?'处理中…':tab==='TEXT'&&textScope==='ALL'&&imageAssets.length>1?`生成整套 ${imageAssets.length} 张标识预览`:tab==='PROMPT'?'分析并生成修改预览':'生成修改预览'}</Button></div></footer>
+            </>:<section className={styles.panelBody} aria-label="任务记录">
+              <section className={styles.restorePanel} aria-label="历史图片版本"><div><strong>历史图片版本</strong><span>恢复入口与任务记录集中管理</span></div><select aria-label="历史图片版本" value={history} onChange={e=>setHistory(e.target.value)}><option value="">选择要恢复的图集</option>{runs.filter(r=>r.id!==runId).map(r=><option key={r.id} value={r.id}>{labels[r.result?.processing?.type??'']??'原始生成'} · {r.id.slice(0,8)}</option>)}</select><Button variant="outline" disabled={!history||busy} onClick={()=>void act(()=>post(`/v1/tasks/${taskId}/image-versions/${history}/restore`,{...base(),instruction:'恢复历史图片版本'}),'正在创建恢复预览…','恢复预览请求已提交。')}>生成恢复预览</Button></section>
+              {!!disclosureBatchId&&disclosureBatchEdits.length>0&&<section className={styles.batchStatus} aria-label="整套标识批次状态"><div><h3>最近整套标识批次</h3><p>{disclosureBatchComplete?`共 ${imageAssets.length} 张，全部预览就绪后可一次采用。`:`已创建 ${disclosureBatchEdits.length} / ${imageAssets.length} 张请求，批次不完整。`}</p></div><div className={styles.batchCounts}>{Object.entries(disclosureBatchCounts).map(([status,count])=><span key={status}>{labels[status]??status} {count}</span>)}</div><Button disabled={busy||!disclosureBatchReady||disclosureBatchAccepted} onClick={()=>{setReason('');setPendingHistoryAction(null);setPendingBatchAccept(true);}}>{disclosureBatchAccepted?'整套标识已采用':disclosureBatchReady?'一次采用整套标识':'等待全部预览就绪'}</Button>{pendingBatchAccept&&<form className={styles.reasonEditor} onSubmit={event=>{event.preventDefault();void acceptDisclosureBatch();}}><label>采用整套标识的原因<input aria-label="整套标识采用原因" value={reason} maxLength={1000} autoFocus onChange={e=>setReason(e.target.value)}/></label><div className={styles.quickReasons}>{quickReasons.slice(0,2).map(item=><Button variant="outline" size="sm" type="button" key={item} onClick={()=>setReason(item)}>{item}</Button>)}</div><div className={styles.reasonActions}><Button variant="outline" type="button" onClick={()=>{setPendingBatchAccept(false);setReason('');}}>取消</Button><Button type="submit" disabled={busy}>确认采用</Button></div></form>}</section>}
+              <div className={styles.historyHeading}><strong>当前页任务记录</strong><span>失败详情默认收起</span></div>
+              {pageEdits.length?<ul className={styles.history} aria-label="图片修改记录">{pageEdits.map(e=>{
+                const suggestion=localSuggestion(e);
+                return <li key={e.id}><div className={styles.historyTitle}><strong>{labels[e.operation]} · {suggestion?'待确认建议':labels[e.status]}</strong><span>第 {e.target_page} 页 · {e.created_by}</span></div><p className={styles.historySummary}>{e.config.instruction}</p>
+                  {suggestion&&<section className={styles.suggestionCard} aria-label="局部修改建议"><strong>系统已生成可执行描述</strong>{suggestion.reason&&<p>{suggestion.reason}</p>}<blockquote>{suggestion.suggestedInstruction}</blockquote><span>{suggestion.editRegions.length} 个安全编辑区域 · {suggestion.touchesImageEdge?'目标贴近画面边缘，可按可见部分处理':'目标完整位于画面内'}</span></section>}
+                  {e.error&&<details><summary>查看失败原因</summary><p role="alert">{e.error}</p></details>}
+                  <div className={styles.historyActions}>{e.operation==='AI_LOCAL'&&<Button variant="outline" size="sm" onClick={()=>reuseInstruction(e)}>复用说明并修改</Button>}{e.result&&<><Button size="sm" onClick={()=>{setComparisonId(e.id);setPreviewMode('COMPARE');setMobileView('PREVIEW');}}>在左侧对比</Button><a href={path(`/v1/assets/${e.result.asset_id}`)} target="_blank" rel="noreferrer">打开结果</a></>}{historyActions(e).map(action=><Button key={action} size="sm" variant={action==='cancel'?'outline':undefined} className={action==='cancel'?styles.deleteAction:undefined} disabled={busy} onClick={()=>{setReason('');setPendingBatchAccept(false);setPendingHistoryAction({editId:e.id,action});}}>{actionLabels[action]}</Button>)}</div>
+                  {!!(e.result?.validation??e.validation)&&<details><summary>质量校验记录</summary><pre style={{whiteSpace:'pre-wrap'}}>{JSON.stringify(e.result?.validation??e.validation,null,2)}</pre></details>}
+                  {!!e.events?.length&&<details><summary>操作审计</summary><ul>{e.events.map((event,index)=><li key={index}>{event.actor} · {event.action} · {event.reason}</li>)}</ul></details>}
+                  {pendingHistoryAction?.editId===e.id&&<form className={styles.reasonEditor} onSubmit={event=>{event.preventDefault();void runHistoryAction(e,pendingHistoryAction.action);}}><label>{actionLabels[pendingHistoryAction.action]}的操作原因<input aria-label={`${actionLabels[pendingHistoryAction.action]}操作原因`} value={reason} maxLength={1000} autoFocus onChange={event=>setReason(event.target.value)}/></label><div className={styles.quickReasons}>{quickReasons.map(item=><Button variant="outline" size="sm" type="button" key={item} onClick={()=>setReason(item)}>{item}</Button>)}</div><div className={styles.reasonActions}><Button variant="outline" type="button" onClick={()=>{setPendingHistoryAction(null);setReason('');}}>取消</Button><Button type="submit" disabled={busy}>确认{actionLabels[pendingHistoryAction.action]}</Button></div></form>}
+                </li>;
+              })}</ul>:<p className={styles.emptyHistory}>当前还没有图片修改记录。</p>}
+            </section>}
+          </section>
         </div>
-        </div>
-        <label className={styles.zoomControl}><span>预览缩放</span><input aria-label="预览缩放" type="range" min="1" max="3" step="0.1" value={zoom} onChange={e=>setZoom(Number(e.target.value))}/><strong>{Math.round(zoom*100)}%</strong></label>
-        <p className={styles.help}>{tab==='TEXT'?'左侧是统一目标样式示意；最终标识由图片编辑模型在右下角安全区内绘制，可自然融入画面。':tab==='ENTITY'?'在原图上拖动框住一个目标物品并保留少量周边；参考图只供模型重绘，不会直接贴到画面上。':'请在右侧说明中同时写清“改哪里”和“改什么”；系统会按文字描述定位。'}</p>
-      </section><section className={styles.settings} aria-label="图片修改设置">
-        {tab==='TEXT'&&<>
-          <label>人工生成标识文字<input aria-label="人工生成标识文字" value={text} maxLength={12} pattern="[\p{L}\p{N}_-]+" onChange={e=>setText(e.target.value)}/><small>最多 12 个字符，仅限文字、数字、下划线或短横线。</small></label>
-          {imageAssets.length>1&&<div className={styles.scopeSelector} aria-label="标识应用范围">
-            <span>应用范围</span><div role="group" aria-label="选择标识应用范围">
-              <Button unstyled type="button" aria-pressed={textScope==='CURRENT'} onClick={()=>setTextScope('CURRENT')}>仅第 {page} 页</Button>
-              <Button unstyled type="button" aria-pressed={textScope==='ALL'} onClick={()=>setTextScope('ALL')}>整套 {imageAssets.length} 张</Button>
-            </div><small>{textScope==='ALL'?'同一标识会使用同一批次和统一模型规则逐张绘制，统一字体、字号、颜色、底框和内边距。':'只为当前页创建一张模型绘制标识预览。'}</small>
-          </div>}
-          <div className={styles.recentDisclosureTexts} aria-label="最近常用标识文字"><span>最近常用</span>{recentDisclosureTexts.length?<div>{recentDisclosureTexts.map(item=><Button unstyled className={styles.recentDisclosureButton} type="button" key={item} aria-pressed={text===item} onClick={()=>setText(item)}>{item}</Button>)}</div>:<small>成功提交后会在这里保留最近使用的 5 条。</small>}</div>
-          <p>标识由图片编辑模型在完整原图上单次绘制，不使用蒙版或局部像素贴回；整套图片共用同一样式指令。系统硬性校验文字准确性、可读性和重复标识，失败时直接标记失败，不会自动二次修改。</p>
-        </>}
-        {tab==='ENTITY'&&<><div className={styles.referenceUpload}><div className={styles.referenceUploadHeading}><strong>上传真实产品图片</strong><p>系统会用这张图片中的真实产品替换你框选的一个物品，并自动保持原场景和文字。</p></div><label className={styles.filePicker} data-disabled={busy||undefined}><input className={styles.fileInput} aria-label="上传真实产品参考图" type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={e=>void upload(e.target.files)}/><span className={styles.filePickerIcon}><UploadCloud aria-hidden="true" size={26} strokeWidth={1.8}/></span><span className={styles.filePickerCopy}><strong>{refs.length?'更换产品图片':'点击选择产品图片'}</strong><small>也可以将图片拖放到这里</small></span><span className={styles.filePickerMeta}>PNG / JPG / WebP · 最大 5 MB</span></label>{refs.map(r=><div className={styles.referenceCard} key={r.id}><img src={path(r.url)} alt="已上传的真实产品参考图"/><span>真实产品参考图已就绪</span><Button variant="outline" size="sm" type="button" onClick={()=>setRefs([])}>移除</Button></div>)}</div><label>参考图使用方式<select aria-label="参考图使用方式" value={referenceMode} onChange={e=>setReferenceMode(e.target.value as ReferenceMode)}><option value="STRICT">完整产品（严格模式）</option><option value="APPEARANCE">外观参考（允许手部、裁切或次要产品）</option></select><small>{referenceMode==='APPEARANCE'?'只迁移主产品可确认的外观；忽略手部、背景和次要产品，缺失部分沿用源图结构补全。主产品仍必须清楚且唯一可识别。':'要求参考图中只有一个清楚、完整、遮挡很少的产品。'}</small></label><label>目标物品说明<textarea aria-label="目标物品说明" value={targetDescription} maxLength={500} placeholder="例如：画面右侧台面上、木托盘后方的米白色拿铁杯（不是咖啡机下方的红杯）" onChange={e=>setTargetDescription(e.target.value)}/><small>同时写清位置、颜色或相邻物体，避免多个同类物品时选错。</small></label><div className={styles.targetSelectionInfo} role="status"><span>{targetRegion?`已框选：x ${targetRegion.x}，y ${targetRegion.y}，宽 ${targetRegion.width}，高 ${targetRegion.height}`:'尚未框选目标。请在左侧原图上拖动。'}</span>{targetRegion&&<Button variant="outline" size="sm" type="button" onClick={()=>setTargetRegion(null)}>重新框选</Button>}</div><p>执行机会先用视觉模型确认框内只有一个符合描述的目标；不明确时不会调用图片编辑模型。外观参考模式只放宽参考图完整性，不放宽目标唯一性和文字保护。确认后由 AI 在框选区域内完成真实融合，框外像素保持不变。</p></>}
-        {tab==='PROMPT'&&<><label>局部修改说明<textarea aria-label="图片修改要求" value={instruction} maxLength={2000} placeholder="例如：把画面左下角人物手中的黑色书包替换成手提文件袋，保持人物动作、文字和其他区域不变" onChange={e=>setInstruction(e.target.value)}/><small>请同时描述位置和修改内容，例如“右上角的水杯”“人物左手旁的书包”。</small></label><p>不再画选区或填写坐标。系统根据这段说明定位修改区域；通用画面规则仍由管理员的图片编辑提示词统一控制。</p></>}
-        <label className={styles.feeConfirmation}><input className={styles.feeCheckboxInput} type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/><span className={styles.feeCheckboxVisual} data-fee-checkbox aria-hidden="true"/><span>确认调用一次图片编辑与视觉校验模型，会产生费用；校验失败时不会自动二次修改，人工重试会再次收费。</span></label>
-        <div className={styles.actions}>{!(tab==='TEXT'&&textScope==='ALL'&&imageAssets.length>1)&&<Button variant="outline" disabled={busy} onClick={()=>void submit(true)}>{busy?'处理中…':'保存草稿'}</Button>}<Button disabled={busy} onClick={()=>void (tab==='TEXT'&&textScope==='ALL'&&imageAssets.length>1?submitDisclosureBatch():submit())}>{busy?'处理中…':tab==='TEXT'&&textScope==='ALL'&&imageAssets.length>1?`生成整套 ${imageAssets.length} 张标识预览`:'生成修改预览'}</Button></div>
-        <label>历史图片版本<select value={history} onChange={e=>setHistory(e.target.value)}><option value="">选择要恢复的图集</option>{runs.filter(r=>r.id!==runId).map(r=><option key={r.id} value={r.id}>{labels[r.result?.processing?.type??'']??'原始生成'} · {r.id.slice(0,8)}</option>)}</select></label>
-        <Button variant="outline" disabled={!history||busy} onClick={()=>void act(()=>post(`/v1/tasks/${taskId}/image-versions/${history}/restore`,{...base(),instruction:'恢复历史图片版本'}),'正在创建恢复预览…','恢复预览请求已提交。')}>生成恢复预览</Button>
-      </section></div>
-    {latest?.result&&<section className={styles.comparison} aria-label="修改前后对比"><h3>修改前后滑动对比</h3><p>第 {latest.target_page} 页 · {labels[latest.operation]}</p><div className={styles.comparisonViewport}><div className={styles.comparisonImages} style={{width:320*zoom}}><img src={path(`/v1/assets/${latest.source_asset_id??asset.id}`)} alt="修改前"/><img src={path(`/v1/assets/${latest.result.asset_id}`)} alt="修改后" style={{clipPath:`inset(0 ${100-compare}% 0 0)`}}/></div></div><input aria-label="修改前后对比滑块" type="range" min="0" max="100" value={compare} onChange={e=>setCompare(Number(e.target.value))}/></section>}
-    <label className={styles.reasonField}>操作原因（提交、采用、拒绝、重试或取消前必填）<input aria-label="采用拒绝重试原因" value={reason} maxLength={1000} onChange={e=>setReason(e.target.value)}/></label>
-    {!!disclosureBatchId&&disclosureBatchEdits.length>0&&<section className={styles.batchStatus} aria-label="整套标识批次状态">
-      <div><h3>最近整套标识批次</h3><p>{disclosureBatchComplete?`共 ${imageAssets.length} 张，全部预览就绪后可一次采用。`:`已创建 ${disclosureBatchEdits.length} / ${imageAssets.length} 张请求，批次不完整。`}</p></div>
-      <div className={styles.batchCounts}>{Object.entries(disclosureBatchCounts).map(([status,count])=><span key={status}>{labels[status]??status} {count}</span>)}</div>
-      <Button disabled={busy||!disclosureBatchReady||disclosureBatchAccepted} onClick={()=>void acceptDisclosureBatch()}>{disclosureBatchAccepted?'整套标识已采用':disclosureBatchReady?'一次采用整套标识':'等待全部预览就绪'}</Button>
-    </section>}
-    <ul className={styles.history} aria-label="图片修改记录">{edits.map(e=><li key={e.id}><strong>{labels[e.operation]} · {labels[e.status]}</strong><p>第 {e.target_page} 页 · {e.created_by} · {e.config.instruction}</p>{e.error&&<p role="alert">{e.error}</p>}
-      {e.result&&<><Button onClick={()=>setComparisonId(e.id)}>对比此版本</Button><a href={path(`/v1/assets/${e.result.asset_id}`)} target="_blank" rel="noreferrer">打开此结果</a></>}
-      {!!(e.result?.validation??e.validation)&&<details><summary>质量校验记录</summary><pre style={{whiteSpace:'pre-wrap'}}>{JSON.stringify(e.result?.validation??e.validation,null,2)}</pre></details>}
-      {!!e.events?.length&&<details><summary>操作审计</summary><ul>{e.events.map((event,index)=><li key={index}>{event.actor} · {event.action} · {event.reason}</li>)}</ul></details>}
-      {(e.status==='PREVIEW_READY'?['accept','reject','cancel']:e.status==='FAILED'?['retry']:e.status==='DRAFT'?['queue','cancel']:['QUEUED','RUNNING'].includes(e.status)?['cancel']:[]).map(action=><Button key={action} disabled={busy} onClick={()=>void runHistoryAction(e,action)}>{({accept:'采用此版本',reject:'拒绝',cancel:'取消',retry:'重试（AI 可能再次收费）',queue:'提交草稿'})[action as 'accept']}</Button>)}
-    </li>)}</ul>
-    </div>
-    <footer className={styles.footer}><DialogClose asChild><Button variant="outline" type="button">关闭工作台</Button></DialogClose></footer>
-  </DialogContent></Dialog></>;
+      </div>
+    </DialogContent></Dialog>
+  </>;
 }

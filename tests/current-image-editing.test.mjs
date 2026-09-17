@@ -5,13 +5,15 @@ import { mkdtemp,writeFile,rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
-import { normalizeManualOverlay, manualOverlaySvg, decodeReference, renderMask, mergeWithMask, changedPixelMask, assertOutsideMask } from '../src/image-edit-pixels.mjs';
+import { normalizeManualOverlay, manualOverlaySvg, decodeReference, renderMask, renderRegionsMask, mergeWithMask, changedPixelMask, assertOutsideMask } from '../src/image-edit-pixels.mjs';
 import { normalizeEdit,replaceImagePage,editStoragePath,createImageEditingService } from '../server/src/image-editing.mjs';
 import { disclosurePlacementRegion, parseFusionTargetCheck, parseLocalTargetCheck, processImageEdit } from '../server/src/image-edit-renderer.mjs';
 
 const png=(color='white',width=1086,height=1448)=>sharp({create:{width,height,channels:4,background:color}}).png().toBuffer();
 const visionPass=(labels=[])=>({passed:true,model:'fake-vision',layoutMatched:true,ocrConfidence:1,
   ocrMismatches:[],unreadableText:[],recognizedText:{headline:'真实参考',subtitle:'',bullets:[],otherText:labels}});
+const localResultPass=()=>({passed:true,reason:'修改完成且未影响无关内容',checks:{requestedChangeCompleted:true,targetCountCorrect:true,
+  placementAndRepairNatural:true,protectedTextPreserved:true,unrelatedContentPreserved:true}});
 const imageEditPromptContent='管理员统一图片编辑规则：执行 {{reviewInstruction}}，保留所有未要求修改的内容。';
 const imageEditPrompt={kind:'IMAGE_EDIT_SYSTEM',name:'图片编辑',versionId:17,version:4,content:imageEditPromptContent,sha256:createHash('sha256').update(imageEditPromptContent).digest('hex'),capturedAt:'2026-09-15T00:00:00.000Z'};
 const input=()=>({requestId:randomUUID(),sourceImageRunId:randomUUID(),sourceAssetId:1,copyRevisionId:1,sha256:'a'.repeat(64),targetPage:1,operation:'TEXT',confirmation:'LIVE_IMAGE_COST_ACCEPTED',overlay:{text:'AI生成',textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED'}});
@@ -50,6 +52,16 @@ for(const mask of [{type:'rect',x:20,y:30,width:100,height:110},{type:'brush',ra
   const source=await png('red'), generated=await png('blue'),bytes=await renderMask(mask),merged=await mergeWithMask(source,generated,bytes);
   assert.deepEqual(await assertOutsideMask(source,merged,bytes),{passed:true,changedPixels:0,threshold:0});
   await assert.rejects(()=>assertOutsideMask(source,generated,bytes),/遮罩外/u);
+});
+test('planned multi-region masks cover source and destination while preserving the gap',async()=>{
+  const source=await png('red'),generated=await png('blue');
+  const mask=await renderRegionsMask([{x:20,y:30,width:100,height:110},{x:800,y:900,width:180,height:220}]);
+  const merged=await mergeWithMask(source,generated,mask),raw=await sharp(merged).ensureAlpha().raw().toBuffer();
+  const inside=(50*1086+50)*4,gap=(500*1086+500)*4,destination=(950*1086+850)*4;
+  assert.deepEqual([...raw.subarray(inside,inside+4)],[0,0,255,255]);
+  assert.deepEqual([...raw.subarray(gap,gap+4)],[255,0,0,255]);
+  assert.deepEqual([...raw.subarray(destination,destination+4)],[0,0,255,255]);
+  assert.deepEqual(await assertOutsideMask(source,merged,mask),{passed:true,changedPixels:0,threshold:0});
 });
 test('text change masks discard low-contrast model drift around the generated label',async()=>{
   const source=await png('#f7f3ea');
@@ -194,10 +206,12 @@ test('AI local worker localizes the operator prompt and protects every pixel out
   let completed,calls=0,visionCalls=0;
   const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_LOCAL',config}),context:async()=>({source:{},refs:[],settings:{aiDisclosureEnabled:false},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),readAsset:async()=>source,
     fail:async(e,error)=>assert.fail(error.message),complete:async(e,result)=>{completed=result;return{};}};
-  const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{calls++;assert.equal(inputPaths.length,2);assert.match(prompt,/LOCAL_MASK_EDIT/u);assert.match(prompt,/画面右上角的水杯/u);assert.match(prompt,/根据自然语言定位结果生成/u);assert.match(inputPaths[1],/mask\.png$/u);await writeFile(outputPath,generated);return{model:'fake-prompt-local'};},
-    runVision:async({prompt,inputPaths})=>{visionCalls++;assert.match(prompt,/自然语言定位器/u);assert.equal(inputPaths.length,1);return{model:'fake-vision',rawText:JSON.stringify({passed:true,confidence:0.94,candidateCount:1,targetDescription:'右上角水杯',region:{x:700,y:180,width:220,height:260},reason:'唯一目标',checks:{instructionSpecific:true,exactlyOneTarget:true,wholeTargetInsideRegion:true,protectedTextExcluded:true}})};}};
+  const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{calls++;assert.equal(inputPaths.length,2);assert.match(prompt,/LOCAL_MASK_EDIT/u);assert.match(prompt,/画面右上角的水杯/u);assert.match(prompt,/根据自然语言编辑规划生成/u);assert.match(inputPaths[1],/mask\.png$/u);await writeFile(outputPath,generated);return{model:'fake-prompt-local'};},
+    runVision:async({prompt,inputPaths})=>{visionCalls++;
+      if(prompt.includes('编辑规划器')){assert.equal(inputPaths.length,1);return{model:'fake-planner',rawText:JSON.stringify({decision:'READY',confidence:0.94,candidateCount:1,operationType:'ADJUST',targetDescription:'右上角水杯',touchesImageEdge:false,missingPartsRequiredForEdit:false,sourceRegion:{x:700,y:180,width:220,height:260},destinationRegion:null,editRegions:[{x:700,y:180,width:220,height:260}],suggestedInstruction:'',warnings:[],reason:'唯一目标',checks:{instructionSpecific:true,exactlyOneTarget:true,wholeVisibleTargetInsideRegion:true,protectedTextExcluded:true,editRegionSafe:true}})};}
+      assert.match(prompt,/局部图片编辑验收器/u);assert.equal(inputPaths.length,2);return{model:'fake-result-check',rawText:JSON.stringify(localResultPass())};}};
   const dir=await mkdtemp(join(tmpdir(),'image-edit-prompt-local-fake-'));
-  try{const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});assert.equal(result.status,'PREVIEW_READY');assert.equal(calls,1);assert.equal(visionCalls,1);assert.ok(Buffer.isBuffer(completed.mask));assert.equal(completed.validation.outsideMask.changedPixels,0);assert.equal(completed.validation.localization.mode,'VISION_PROMPT_REGION_CHECK');assert.deepEqual(completed.validation.localization.region,{x:700,y:180,width:220,height:260});}finally{await rm(dir,{recursive:true,force:true});}
+  try{const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});assert.equal(result.status,'PREVIEW_READY');assert.equal(calls,1);assert.equal(visionCalls,2);assert.ok(Buffer.isBuffer(completed.mask));assert.equal(completed.validation.outsideMask.changedPixels,0);assert.equal(completed.validation.localization.mode,'VISION_PROMPT_REGION_CHECK');assert.deepEqual(completed.validation.localization.region,{x:700,y:180,width:220,height:260});assert.equal(completed.validation.localConsistency.passed,true);}finally{await rm(dir,{recursive:true,force:true});}
 });
 test('AI local removal of an adopted disclosure drops it from OCR requirements and page lineage',async()=>{
   const disclosureText='该人物形象由AI生成';
@@ -208,9 +222,9 @@ test('AI local removal of an adopted disclosure drops it from OCR requirements a
   let completed,promptText='',validationCalls=0;
   const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_LOCAL',config}),context:async()=>({source:{},refs:[],settings:{aiDisclosureEnabled:true,aiDisclosureText:disclosureText},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{imageEditRequiredText:['真实参考',disclosureText],imageEditDisclosure:{type:'AI_GENERATED',text:disclosureText}}]}},imageEditPrompt}),readAsset:async()=>source,
     fail:async(_edit,error)=>assert.fail(error.message),complete:async(_edit,result)=>{completed=result;return{};}};
-  const agentClient={runVision:async()=>({model:'fake-vision',rawText:JSON.stringify({passed:true,confidence:0.99,candidateCount:1,
+  const agentClient={runVision:async({prompt})=>prompt.includes('编辑规划器')?({model:'fake-vision',rawText:JSON.stringify({passed:true,confidence:0.99,candidateCount:1,
     targetDescription:`右下角写有“${disclosureText}”的白色圆角标识牌整体`,
-    region:{x:807,y:1359,width:250,height:63},reason:'目标唯一且不包含其他文字',checks:{instructionSpecific:true,exactlyOneTarget:true,wholeTargetInsideRegion:true,protectedTextExcluded:true}})}),
+    region:{x:807,y:1359,width:250,height:63},reason:'目标唯一且不包含其他文字',checks:{instructionSpecific:true,exactlyOneTarget:true,wholeTargetInsideRegion:true,protectedTextExcluded:true}})}):({model:'fake-result-check',rawText:JSON.stringify(localResultPass())}),
     runImageEdit:async({prompt,outputPath})=>{promptText=prompt;await writeFile(outputPath,generated);return{model:'fake-local-edit'};}};
   const validationRequests=[];
   const validateImage=async input=>{validationCalls++;validationRequests.push(input);return validationCalls===1?visionPass([disclosureText]):visionPass();};
@@ -229,6 +243,39 @@ test('AI local removal of an adopted disclosure drops it from OCR requirements a
     assert.deepEqual(completed.validation.disclosure.removed,{type:'AI_GENERATED',text:disclosureText});
     assert.equal(completed.validation.localization.removedInheritedDisclosure,true);
   } finally { await rm(dir,{recursive:true,force:true}); }
+});
+test('a uniquely identified edge-clipped move returns an adoptable suggestion before image generation',async()=>{
+  const planned={decision:'SUGGEST',confidence:0.96,candidateCount:1,operationType:'MOVE',targetDescription:'右下角正在倒老抽的汤勺和可见液流',
+    targetIsAiDisclosure:false,touchesImageEdge:true,missingPartsRequiredForEdit:false,
+    sourceRegion:{x:910,y:965,width:176,height:483},destinationRegion:{x:470,y:850,width:260,height:460},
+    editRegions:[{x:890,y:940,width:196,height:508},{x:430,y:810,width:340,height:540}],
+    suggestedInstruction:'将右下角正在倒老抽的汤勺及液流移动到锅的左上方，把勺中老抽减少为半勺，保持连续液流准确落入锅内，并自然修复原位置；不要修改上方文字和其他内容。',
+    warnings:['源目标贴住右侧和底部边缘'],reason:'目标唯一且可按可见部分修改，但原说明需要明确新位置与原位置修复。',
+    checks:{instructionSpecific:true,exactlyOneTarget:true,wholeVisibleTargetInsideRegion:true,protectedTextExcluded:true,editRegionSafe:true}};
+  const parsed=parseLocalTargetCheck(JSON.stringify(planned));
+  assert.equal(parsed.canEdit,true);assert.equal(parsed.passed,false);assert.equal(parsed.touchesImageEdge,true);assert.equal(parsed.editRegions.length,2);
+  const source=await png('red'),config={imageEditPrompt,references:[],instruction:'半勺老抽对应的配图，减少液体容量，同时调整位置到左侧，保证内容物倒进锅里',preserve:'保留其他区域',negative:'不得改写文字',mask:null};
+  let failedError=null,imageCalls=0;
+  const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_LOCAL',config}),context:async()=>({source:{},refs:[],settings:{aiDisclosureEnabled:false},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),readAsset:async()=>source,
+    fail:async(_edit,error)=>{failedError=error;},complete:()=>assert.fail('must not complete')};
+  const agentClient={runImageEdit:async()=>{imageCalls++;},runVision:async()=>({model:'fake-planner',rawText:JSON.stringify(planned)})};
+  const dir=await mkdtemp(join(tmpdir(),'image-edit-edge-suggestion-'));
+  try{const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});assert.equal(result.status,'FAILED');assert.equal(imageCalls,0);assert.equal(failedError.nonBillablePreflightFailure,true);assert.equal(failedError.validation.stage,'LOCAL_EDIT_SUGGESTION');assert.equal(failedError.validation.suggestedInstruction,planned.suggestedInstruction);assert.equal(failedError.validation.billedImageGeneration,false);}finally{await rm(dir,{recursive:true,force:true});}
+});
+test('an accepted local suggestion reuses its plan, edits multiple regions, and runs result validation',async()=>{
+  const source=await png('red'),generated=await png('blue');
+  const instruction='将右下角汤勺和液流移动到锅的左上方，把勺中老抽减少为半勺，并自然修复原位置；不要修改文字和其他内容。';
+  const config={imageEditPrompt,references:[],instruction,preserve:'保留其他区域',negative:'不得改写文字',mask:null,localPlan:{accepted:true,
+    originalInstruction:'把右下角一勺老抽变成半勺并移到左侧',suggestedInstruction:instruction,sourceRegion:{x:910,y:965,width:176,height:483},destinationRegion:{x:470,y:850,width:260,height:460},
+    editRegions:[{x:890,y:940,width:196,height:508},{x:430,y:810,width:340,height:540}],operationType:'MOVE',touchesImageEdge:true,
+    targetDescription:'右下角汤勺和液流',warnings:['贴边'],reason:'采用模型建议',confidence:0.96,checks:{}}};
+  let completed,imageCalls=0,visionCalls=0;
+  const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_LOCAL',config}),context:async()=>({source:{},refs:[],settings:{aiDisclosureEnabled:false},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),readAsset:async()=>source,
+    fail:async(_edit,error)=>assert.fail(error.message),complete:async(_edit,result)=>{completed=result;return{};}};
+  const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{imageCalls++;assert.equal(inputPaths.length,2);assert.match(prompt,/汤勺和液流移动到锅的左上方/u);assert.match(prompt,/一个或多个白色区域/u);await writeFile(outputPath,generated);return{model:'fake-local-edit'};},
+    runVision:async({prompt,inputPaths})=>{visionCalls++;assert.doesNotMatch(prompt,/编辑规划器/u);assert.match(prompt,/局部图片编辑验收器/u);assert.equal(inputPaths.length,2);return{model:'fake-result-check',rawText:JSON.stringify(localResultPass())};}};
+  const dir=await mkdtemp(join(tmpdir(),'image-edit-accepted-suggestion-'));
+  try{const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});assert.equal(result.status,'PREVIEW_READY');assert.equal(imageCalls,1);assert.equal(visionCalls,1);assert.equal(completed.validation.localization.adoptedSuggestion,true);assert.equal(completed.validation.localization.editRegions.length,2);assert.equal(completed.validation.localConsistency.passed,true);assert.equal(completed.validation.outsideMask.changedPixels,0);}finally{await rm(dir,{recursive:true,force:true});}
 });
 test('ambiguous natural-language targets fail before the paid image model',async()=>{
   assert.equal(parseLocalTargetCheck(JSON.stringify({passed:true,confidence:0.7,candidateCount:2,region:{x:100,y:100,width:500,height:500},checks:{instructionSpecific:true,exactlyOneTarget:false,wholeTargetInsideRegion:true,protectedTextExcluded:true}})).passed,false);

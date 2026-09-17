@@ -141,6 +141,14 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       assert.equal(claim.execution.snapshot.imageEditExecutorVersion,4);
       await action(appearanceEdit.id,'cancel');
     });
+    await t.test('natural-language local edits wait for a version 5 image executor',async()=>{
+      const localEdit=await service.create(taskId,request({operation:'AI_LOCAL',instruction:'把右上角的白色杯子改为蓝色'}),actor);
+      assert.equal(await repository.claimImage('edit-test',1,2,4),null);
+      const claim=await repository.claimImage('edit-test',1,2,5);
+      assert.equal(claim.imageEdit.id,localEdit.id);
+      assert.equal(claim.execution.snapshot.imageEditExecutorVersion,5);
+      await action(localEdit.id,'cancel');
+    });
     let edited;
     await t.test('executor transfer produces a validated preview without changing current run',async()=>{
       edited=await service.create(taskId,request(),actor);
@@ -195,11 +203,12 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       const localEdit=await service.create(taskId,request({sourceImageRunId:currentRun,sourceAssetId,
         sha256:source.sha256,targetPage:1,operation:'AI_LOCAL',instruction:'只调整背景颜色'}),actor);
       const localClient={
-        runVision:async()=>({model:'fake-localizer',rawText:JSON.stringify({
+        runVision:async({prompt})=>prompt.includes('编辑规划器')?({model:'fake-localizer',rawText:JSON.stringify({
           passed:true,confidence:0.99,candidateCount:1,targetDescription:'唯一背景区域',
           region:{x:100,y:500,width:300,height:300},reason:'测试目标唯一且不覆盖文字',
           checks:{instructionSpecific:true,exactlyOneTarget:true,wholeTargetInsideRegion:true,protectedTextExcluded:true},
-        })}),
+        })}):({model:'fake-result-check',rawText:JSON.stringify({passed:true,reason:'结果正确',checks:{requestedChangeCompleted:true,targetCountCorrect:true,
+          placementAndRepairNatural:true,protectedTextPreserved:true,unrelatedContentPreserved:true}})}),
         runImageEdit:async({prompt,outputPath})=>{
         assert.match(prompt,/LOCAL_MASK_EDIT/u);assert.doesNotMatch(prompt,/AI生成/u);
         await writeFile(outputPath,localPng);return{model:'fake-local-edit'};
@@ -242,6 +251,26 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       assert.equal(finalRun.result.processing.previewRunId,thirdPreview.result.image_run_id);
       currentRun=finalTask.current_image_run_id;
     });
+    await t.test('a local-edit suggestion can be adopted once and freezes its executable plan',async()=>{
+      const originalInstruction='把画面右下角的一勺老抽变成半勺并移动到左侧';
+      const suggestedInstruction='将画面右下角正在倒出的汤勺和液流移动到锅的左侧，把勺中老抽减少为半勺，保持液流落入锅内并自然修复原位置；不要修改文字和其他内容。';
+      const suggested=await service.create(taskId,request({operation:'AI_LOCAL',instruction:originalInstruction}),actor);
+      const claim=await service.claim('suggestion');
+      assert.equal(claim.id,suggested.id);
+      const validation={stage:'LOCAL_EDIT_SUGGESTION',decision:'SUGGEST',canEdit:true,confidence:0.96,candidateCount:1,
+        operationType:'MOVE',targetDescription:'右下角汤勺和液流',touchesImageEdge:true,sourceRegion:{x:910,y:965,width:176,height:483},
+        destinationRegion:{x:470,y:850,width:260,height:460},editRegions:[{x:890,y:940,width:196,height:508},{x:430,y:810,width:340,height:540}],
+        suggestedInstruction,warnings:['目标贴边'],reason:'目标唯一，但需要明确落点与原位置修复。',
+        checks:{instructionSpecific:true,exactlyOneTarget:true,wholeVisibleTargetInsideRegion:true,protectedTextExcluded:true,editRegionSafe:true},
+        model:'fake-planner',billedImageGeneration:false};
+      await service.fail(claim,Object.assign(new Error('已生成更适合图片编辑的描述，请确认采用后再调用图片编辑模型'),{nonBillablePreflightFailure:true,validation}));
+      const queued=await action(suggested.id,'apply-suggestion');
+      assert.equal(queued.status,'QUEUED');assert.equal(queued.config.instruction,suggestedInstruction);assert.equal(queued.config.localPlan.accepted,true);
+      assert.equal(queued.config.localPlan.originalInstruction,originalInstruction);assert.equal(queued.config.localPlan.editRegions.length,2);
+      const event=(await pool.query("SELECT detail FROM image_edit_events WHERE edit_id=$1 AND action='apply-suggestion'",[suggested.id])).rows[0];
+      assert.equal(event.detail.suggestedInstruction,suggestedInstruction);
+      await action(suggested.id,'cancel');
+    });
     await t.test('failures can retry, rejection leaves current image untouched, restore needs preview acceptance',async()=>{
       const restore=await service.create(taskId,request({operation:'RESTORE',restoreRunId:runId,instruction:'恢复'}),actor);
       const claimed=await service.claim('failure');
@@ -251,6 +280,11 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       const result=await processImageEdit({service,storageRoot:root,workerId:'restore',validateImage:async()=>({passed:true,model:'fake-vision',layoutMatched:true,ocrConfidence:1,ocrMismatches:[],unreadableText:[],recognizedText:{headline:'真实参考',subtitle:'',bullets:[],otherText:[]}})});
       assert.equal(result.status,'PREVIEW_READY',result.error);await action(restore.id,'reject');
       assert.equal((await pool.query('SELECT current_image_run_id FROM tasks WHERE id=$1',[taskId])).rows[0].current_image_run_id,currentRun);
+      const failedEdit=await service.create(taskId,request({operation:'RESTORE',restoreRunId:runId,instruction:'删除失败修复'}),actor);
+      const failedClaim=await service.claim('failure-delete');
+      await service.fail(failedClaim,new Error('fake repair failure'));
+      const deleted=await action(failedEdit.id,'cancel');
+      assert.equal(deleted.status,'CANCELLED');
       const second=await service.create(taskId,request({operation:'RESTORE',restoreRunId:runId,instruction:'确认恢复'}),actor);
       const secondResult=await processImageEdit({service,storageRoot:root,workerId:'restore',validateImage:async()=>({passed:true,model:'fake-vision',layoutMatched:true,ocrConfidence:1,ocrMismatches:[],unreadableText:[],recognizedText:{headline:'真实参考',subtitle:'',bullets:[],otherText:[]}})});
       assert.equal(secondResult.status,'PREVIEW_READY',secondResult.error);

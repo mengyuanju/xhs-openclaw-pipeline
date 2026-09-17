@@ -15,67 +15,11 @@ import { DEFAULT_SETTINGS, useHumanQualitySettings } from '../workbench/human-qu
 import { orderedImageFileName } from '../../src/image-file-name.mjs';
 import styles from '../copy-qa/copy-qa.module.css';
 import qaStyles from './image-qa.module.css';
-
-type ImageAsset = { id: number; mediaType: string; sha256: string; originalName: string | null; pageIndex: number; url: string };
-type ImageQaItem = {
-  id: string;
-  freezePublicId: string;
-  anonymousCode: string;
-  status: string;
-  sampleKind: 'RANDOM' | 'MANDATORY_RECHECK';
-  blindReview: boolean;
-  assets: ImageAsset[];
-  capabilities: { canPass: boolean; canReturnSingle: boolean; canReturnBatch: boolean };
-  taskId?: number;
-  query?: string;
-  productionBatch?: { id: number; queryPackageName: string | null };
-  submitter?: { accountId: number; username: string };
-  createdAt?: string;
-};
-
-function normalizeItem(value: unknown): ImageQaItem | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const row = value as Record<string, unknown>;
-  if (typeof row.id !== 'string' || typeof row.anonymousCode !== 'string' || !Array.isArray(row.assets)) return null;
-  const capabilities = row.capabilities && typeof row.capabilities === 'object'
-    ? row.capabilities as Record<string, unknown> : {};
-  return {
-    id: row.id,
-    freezePublicId: String(row.freezePublicId ?? ''),
-    anonymousCode: row.anonymousCode,
-    status: String(row.status ?? 'PENDING'),
-    sampleKind: row.sampleKind === 'MANDATORY_RECHECK' ? 'MANDATORY_RECHECK' : 'RANDOM',
-    blindReview: row.blindReview === true,
-    assets: row.assets.flatMap((entry, index) => {
-      if (!entry || typeof entry !== 'object') return [];
-      const asset = entry as Record<string, unknown>;
-      const id = Number(asset.id);
-      const pageIndex = Number(asset.pageIndex);
-      return Number.isSafeInteger(id) && id > 0 && typeof asset.url === 'string' ? [{
-        id, mediaType: String(asset.mediaType ?? 'image/png'), sha256: String(asset.sha256 ?? ''),
-        originalName: typeof asset.originalName === 'string' ? asset.originalName : null,
-        pageIndex: Number.isSafeInteger(pageIndex) && pageIndex > 0 ? pageIndex : index + 1,
-        url: asset.url,
-      }] : [];
-    }),
-    capabilities: {
-      canPass: capabilities.canPass === true,
-      canReturnSingle: capabilities.canReturnSingle === true,
-      canReturnBatch: capabilities.canReturnBatch === true,
-    },
-    ...(Number.isSafeInteger(Number(row.taskId)) ? { taskId: Number(row.taskId) } : {}),
-    ...(typeof row.query === 'string' ? { query: row.query } : {}),
-    ...(row.productionBatch && typeof row.productionBatch === 'object'
-      ? { productionBatch: row.productionBatch as ImageQaItem['productionBatch'] } : {}),
-    ...(row.submitter && typeof row.submitter === 'object'
-      ? { submitter: row.submitter as ImageQaItem['submitter'] } : {}),
-    ...(typeof row.createdAt === 'string' ? { createdAt: row.createdAt } : {}),
-  };
-}
+import { normalizeImageQaItem, type ImageQaAsset, type ImageQaItem } from './types';
 
 const apiPath = (path: string) => `/api/control-plane${path}`;
 
-function displayAssetName(asset: ImageAsset, fallbackIndex: number) {
+function displayAssetName(asset: ImageQaAsset, fallbackIndex: number) {
   return orderedImageFileName(asset.originalName, asset.pageIndex || fallbackIndex + 1, asset.mediaType);
 }
 
@@ -108,13 +52,14 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
       const payload = await apiRequest<unknown>(apiPath(`/v1/image-qa/items?status=${encodeURIComponent(status)}&limit=200&offset=0`));
       const rows = payload && typeof payload === 'object' && Array.isArray((payload as { items?: unknown[] }).items)
         ? (payload as { items: unknown[] }).items : [];
-      setItems(rows.map(normalizeItem).filter((item): item is ImageQaItem => item !== null));
+      setItems(rows.map((item) => normalizeImageQaItem(item, role))
+        .filter((item): item is ImageQaItem => item !== null));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '图片质检队列读取失败');
     } finally {
       setLoading(false);
     }
-  }, [status]);
+  }, [role, status]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -260,7 +205,7 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
     <section className={styles.summary} aria-label="图片质检概况">
       <article className={qaStyles.primaryMetric}><strong>{pendingCount}</strong><span>当前结果待处理</span><small className={qaStyles.metricHint}>优先逐套检查完整成品图</small></article>
       <article><strong>{items.filter((item) => item.sampleKind === 'MANDATORY_RECHECK').length}</strong><span>返修强制复检</span><small className={qaStyles.metricHint}>必须逐页确认修复结果</small></article>
-      <article><strong>{items.filter((item) => item.blindReview).length}</strong><span>盲评样本</span><small className={qaStyles.metricHint}>隐藏任务与提交人信息</small></article>
+      <article><strong>{role === 'ADMIN' ? '完整' : items.filter((item) => item.blindReview).length}</strong><span>{role === 'ADMIN' ? '管理员视图' : '盲评样本'}</span><small className={qaStyles.metricHint}>{role === 'ADMIN' ? '盲评配置不隐藏来源信息' : '隐藏任务与提交人信息'}</small></article>
       <article><strong>{role === 'ADMIN' ? '全部' : '已分配'}</strong><span>当前可见范围</span><small className={qaStyles.metricHint}>{role === 'ADMIN' ? '管理员可处理所有样本' : '仅展示分配给我的样本'}</small></article>
     </section>
     <section className="panel">
@@ -280,7 +225,7 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
         : items.length === 0 ? <div className="empty-state">当前筛选下没有图片质检项。</div>
           : <div className={`table-wrap mobile-cards ${styles.queue} ${qaStyles.queue}`}><table><thead><tr><th>质检内容</th><th>类型</th><th>成品页</th><th>来源</th><th>操作</th></tr></thead>
             <tbody>{items.map((item) => <tr key={item.id}>
-              <td data-label="质检内容"><div className={qaStyles.sample}><span>{item.anonymousCode}</span><strong>{item.blindReview ? '匿名成品图集' : item.query || `任务 #${item.taskId}`}</strong></div></td>
+              <td data-label="质检内容"><div className={qaStyles.sample}><span>{item.anonymousCode}</span><strong>{item.blindReview ? '匿名成品图集' : `${item.taskId ? `任务 #${item.taskId}` : '任务号未记录'}${item.query ? ` · ${item.query}` : ''}`}</strong></div></td>
               <td data-label="类型"><span className="pill">{item.sampleKind === 'MANDATORY_RECHECK' ? '强制复检' : '随机抽检'}</span></td>
               <td data-label="成品页"><span className={qaStyles.imageCount}><Images size={15} aria-hidden="true" /><strong>{item.assets.length}</strong> 页</span></td>
               <td data-label="来源"><span className={qaStyles.source}>{item.blindReview ? '匿名' : item.productionBatch?.queryPackageName || '独立任务'}</span></td>
@@ -331,8 +276,13 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
         <aside className={qaStyles.inspector} aria-label="质检关键信息">
           <div><span>检查对象</span><strong>{detail.assets.length} 个最终成品页</strong></div>
           <div><span>质检类型</span><strong>{detail.sampleKind === 'MANDATORY_RECHECK' ? '返修后强制复检' : '普通图片抽检'}</strong></div>
+          {!detail.blindReview && <div><span>正式任务</span><strong>{detail.taskId ? `#${detail.taskId}` : '未记录'}</strong></div>}
           {!detail.blindReview && <div><span>来源词包</span><strong>{detail.productionBatch?.queryPackageName || '独立任务'}</strong></div>}
+          {!detail.blindReview && <div><span>图片提交人</span><strong>{detail.submitter?.username ? `@${detail.submitter.username}` : detail.submitter?.accountId ? `账号 #${detail.submitter.accountId}` : '未记录'}</strong></div>}
+          {!detail.blindReview && <div><span>生产批次</span><strong>{detail.productionBatch?.id ? `#${detail.productionBatch.id}` : '未记录'}</strong></div>}
+          {!detail.blindReview && <div><span>版本绑定</span><strong>{detail.copyRevisionId ? `文案 #${detail.copyRevisionId}` : '文案未记录'} · {detail.imageRunId ? `图片 ${detail.imageRunId}` : '图片未记录'}</strong></div>}
           {!detail.blindReview && detail.query && <div className={qaStyles.query}><span>原始 Query</span><p>{detail.query}</p></div>}
+          {detail.blockers.pendingImageEdits > 0 && <p className="notice warning" role="status">该任务在提交初审前遗留了 {detail.blockers.pendingImageEdits} 个待处理的图片修改，当前版本不能质检通过。请打回图片，让任务负责人采用、拒绝或取消修改后重新提交初审。</p>}
           <p className={qaStyles.reviewHint}>通过代表整套当前版本可以交付；发现问题时请选中具体问题页并填写可执行的修改要求。</p>
           {!returning && detail.status === 'PENDING' && <div className={qaStyles.detailActions}>
             {detail.capabilities.canReturnSingle && <Button unstyled className="button" onClick={() => openReturn(detail, selectedAsset?.id)}><RotateCcw size={15} />发起返工</Button>}

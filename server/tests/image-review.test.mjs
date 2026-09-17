@@ -84,7 +84,7 @@ function fixture(overrides = {}, {
         revisions.push(row);
         return { rows: [row] };
       }
-      if (sql.includes('SELECT id FROM image_edit_requests')) return { rows: [] };
+      if (sql.includes('FROM image_edit_requests')) return { rows: [{ count: 0 }] };
       if (sql.includes('SELECT id FROM image_run_asset_view')) {
         return { rows: values[2].filter((id) => [101, 102].includes(id)).map((id) => ({ id })) };
       }
@@ -105,8 +105,8 @@ function fixture(overrides = {}, {
         }
         return { rows: [] };
       }
-      if (sql.includes('SELECT task.image_qc_legacy_accepted')) {
-        return { rows: [{ image_qc_legacy_accepted: true, release_event_id: null }] };
+      if (sql.includes('SELECT task.input, task.image_qc_legacy_accepted')) {
+        return { rows: [{ input: {}, image_qc_legacy_accepted: true, release_event_id: null }] };
       }
       if (sql.includes('INSERT INTO delivery_entries')) {
         const row = {

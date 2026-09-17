@@ -173,6 +173,24 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
   for (let index = 0; index < 5; index++) {
     const entry = await createTask(index + 1);
     firstBatch.push(entry);
+    if (index === 0) {
+      const pendingEditId = randomUUID();
+      await pool.query(`
+        INSERT INTO image_edit_requests(
+          id, task_id, request_id, source_image_run_id, source_asset_id,
+          copy_revision_id, source_sha256, target_page, operation, config,
+          status, created_by
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,1,'TEXT','{}','DRAFT',$8)
+      `, [pendingEditId, entry.taskId, randomUUID(), entry.imageRunId,
+        entry.images[0].assetId, entry.copyRevisionId, imageSha256, worker.username]);
+      await assert.rejects(submitImageSelfReview(pool, entry.taskId, {
+        imageRunId: entry.imageRunId, reviewSessionId: randomUUID(),
+      }, worker), { code: 'IMAGE_EDITS_PENDING' });
+      assert.equal(Number((await pool.query(`
+        SELECT count(*) FROM image_approval_events WHERE task_id = $1
+      `, [entry.taskId])).rows[0].count), 0);
+      await pool.query("UPDATE image_edit_requests SET status='CANCELLED' WHERE id=$1", [pendingEditId]);
+    }
     const submitted = await submitImageSelfReview(pool, entry.taskId, {
       imageRunId: entry.imageRunId, reviewSessionId: randomUUID(),
     }, worker);
@@ -191,11 +209,30 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
   assert.equal(blindQueue.items[0].blindReview, true);
   assert.equal(Object.hasOwn(blindQueue.items[0], 'taskId'), false);
   const legacyApproval = (await pool.query(`
-    SELECT approval.id, approval.task_id, approval.image_run_id
+    SELECT approval.id, approval.task_id, approval.image_run_id, approval.copy_revision_id
     FROM image_approval_events AS approval
     JOIN image_sampling_items AS item ON item.approval_event_id = approval.id
     WHERE item.public_id = $1
   `, [blindQueue.items[0].id])).rows[0];
+  const legacyPendingEditId = randomUUID();
+  await pool.query(`
+    INSERT INTO image_edit_requests(
+      id, task_id, request_id, source_image_run_id, source_asset_id,
+      copy_revision_id, source_sha256, target_page, operation, config,
+      status, created_by
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,1,'TEXT','{}','PREVIEW_READY',$8)
+  `, [legacyPendingEditId, legacyApproval.task_id, randomUUID(), legacyApproval.image_run_id,
+    blindQueue.items[0].assets[0].id, legacyApproval.copy_revision_id,
+    blindQueue.items[0].assets[0].sha256, worker.username]);
+  const blockedQueue = await listImageQaItems(pool, {}, reviewer);
+  const blockedItem = blockedQueue.items.find((item) => item.id === blindQueue.items[0].id);
+  assert.equal(blockedItem.blockers.pendingImageEdits, 1);
+  assert.equal(blockedItem.capabilities.canPass, false);
+  assert.equal(blockedItem.capabilities.canReturnSingle, true);
+  await assert.rejects(passImageQaItem(pool, blockedItem.id, {
+    requestId: randomUUID(), score: 3,
+  }, reviewer), { code: 'IMAGE_EDITS_PENDING' });
+  await pool.query("UPDATE image_edit_requests SET status='CANCELLED' WHERE id=$1", [legacyPendingEditId]);
   const legacyAssets = (await pool.query(`
     SELECT id, media_type, byte_size, sha256, original_name
     FROM image_run_asset_view

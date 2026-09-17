@@ -25,8 +25,8 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
         const data=body?JSON.parse(body):null;
         if(req.method==='POST'&&req.url.endsWith('/image-edit-references')){res.setHeader('content-type','application/json');res.end(JSON.stringify({data:{id:9,sha256:'b'.repeat(64),url:'/v1/assets/9'}}));return;}
         let response;
-        if(req.method==='POST'&&req.url.endsWith('/image-edits')){submitted=data;submissions.push(data);const row={id:data.batchId?randomUUID():editId,version:1,status:'PREVIEW_READY',operation:data.operation,source_asset_id:data.sourceAssetId,target_page:data.targetPage,config:{instruction:data.instruction,confirmation:data.confirmation,batchId:data.batchId},result:{asset_id:data.sourceAssetId+10,image_run_id:randomUUID(),validation:{passed:true}}};edits=data.batchId?[row,...edits]:[row];response=row;}
-        else if(req.method==='POST'){actions.push({url:req.url,data});const targetId=req.url.split('/').at(-2);edits=edits.map(e=>e.id===targetId?{...e,status:req.url.endsWith('/accept')?'ACCEPTED':'CANCELLED',version:2}:e);response=edits.find(e=>e.id===targetId);}
+        if(req.method==='POST'&&req.url.endsWith('/image-edits')){submitted=data;submissions.push(data);const needsSuggestion=!data.draft&&data.operation==='AI_LOCAL'&&data.instruction.includes('一勺老抽');const suggestion=needsSuggestion?{stage:'LOCAL_EDIT_SUGGESTION',decision:'SUGGEST',canEdit:true,confidence:.96,candidateCount:1,operationType:'MOVE',targetDescription:'右下角汤勺和液流',touchesImageEdge:true,sourceRegion:{x:910,y:965,width:176,height:483},destinationRegion:{x:470,y:850,width:260,height:460},editRegions:[{x:890,y:940,width:196,height:508},{x:430,y:810,width:340,height:540}],suggestedInstruction:'将右下角汤勺和液流移动到锅的左侧，把勺中老抽减少为半勺，保持液流落入锅内并自然修复原位置；不要修改文字和其他内容。',reason:'目标唯一，但原说明需要明确落点与原位置修复。'}:null;const row={id:data.batchId?randomUUID():editId,version:1,status:needsSuggestion?'FAILED':data.draft?'DRAFT':'PREVIEW_READY',operation:data.operation,source_asset_id:data.sourceAssetId,target_page:data.targetPage,config:{instruction:data.instruction,confirmation:data.confirmation,batchId:data.batchId},...(needsSuggestion?{validation:suggestion,error:'已生成更适合图片编辑的描述，请确认采用后再调用图片编辑模型'}:data.draft?{}:{result:{asset_id:data.sourceAssetId+10,image_run_id:randomUUID(),validation:{passed:true}}})};edits=data.batchId?[row,...edits]:[row];response=row;}
+        else if(req.method==='POST'){actions.push({url:req.url,data});const targetId=req.url.split('/').at(-2);edits=edits.map(e=>e.id===targetId?{...e,status:req.url.endsWith('/accept')?'ACCEPTED':req.url.endsWith('/apply-suggestion')?'QUEUED':'CANCELLED',version:2,...(req.url.endsWith('/apply-suggestion')?{config:{...e.config,instruction:e.validation.suggestedInstruction}}:{})}:e);response=edits.find(e=>e.id===targetId);}
         res.setHeader('content-type','application/json');res.end(JSON.stringify({data:req.method==='GET'?edits:response}));return;
       }
       res.setHeader('content-type','text/html');res.end('<html><meta charset="utf-8"><link rel="stylesheet" href="/bundle.css"><style>[data-slot="dialog-content"]{translate:-50% -50%}</style><body><div id="root"></div><script src="/bundle.js"></script></body></html>');
@@ -39,17 +39,21 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     const dialog=page.getByRole('dialog');
     await dialog.evaluate(element=>Promise.all(element.getAnimations().map(animation=>animation.finished)));
     const livePreview=page.getByRole('img',{name:'实时修改预览'}),sourceImage=livePreview.locator('img');
-    const [dialogBox,previewBox,settingsBox,dialogStyle,overlayStyle]=await Promise.all([
+    const previewRegion=page.getByRole('region',{name:'图片预览'}),workspace=previewRegion.locator('..');
+    const [dialogBox,previewBox,settingsBox,dialogStyle,overlayStyle,bodyOverflow,panelOverflow]=await Promise.all([
       dialog.boundingBox(),
-      page.getByRole('region',{name:'图片预览'}).boundingBox(),
+      previewRegion.boundingBox(),
       page.getByRole('region',{name:'图片修改设置'}).boundingBox(),
       dialog.evaluate(element=>({display:getComputedStyle(element).display,overflow:getComputedStyle(element).overflow,zIndex:getComputedStyle(element).zIndex,position:getComputedStyle(element).position,left:getComputedStyle(element).left,top:getComputedStyle(element).top,translate:getComputedStyle(element).translate,transform:getComputedStyle(element).transform})),
       page.locator('[data-slot="dialog-overlay"]').evaluate(element=>({position:getComputedStyle(element).position,zIndex:getComputedStyle(element).zIndex})),
+      workspace.locator('..').evaluate(element=>getComputedStyle(element).overflow),
+      page.getByRole('region',{name:'本次编辑'}).evaluate(element=>getComputedStyle(element).overflowY),
     ]);
     assert.ok(dialogBox&&dialogBox.width<=1120&&dialogBox.height<=900&&dialogBox.x>=0&&dialogBox.y>=0&&dialogBox.x+dialogBox.width<=1010&&dialogBox.y+dialogBox.height<=878,JSON.stringify({dialogBox,dialogStyle}));
     assert.ok(previewBox&&settingsBox&&previewBox.x+previewBox.width<settingsBox.x);
     assert.equal(dialogStyle.display,'grid');assert.equal(dialogStyle.overflow,'hidden');assert.equal(dialogStyle.zIndex,'141');assert.equal(dialogStyle.translate,'-50% -50%');assert.equal(dialogStyle.transform,'none');
     assert.deepEqual(overlayStyle,{position:'fixed',zIndex:'140'});
+    assert.equal(bodyOverflow,'hidden');assert.equal(panelOverflow,'auto');
     const [sourceNode,sourceBox,previewGutter]=await Promise.all([
       sourceImage.elementHandle(),sourceImage.boundingBox(),
       livePreview.locator('..').evaluate(element=>getComputedStyle(element).scrollbarGutter),
@@ -63,7 +67,7 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     assert.deepEqual(await sourceImage.boundingBox(),sourceBox);
     assert.equal(await page.getByLabel('文本类型').count(),0);
     assert.equal(await page.getByLabel('字号').count(),0);
-    assert.equal(await page.getByText('标识由图片编辑模型绘制',{exact:false}).count(),1);
+    assert.equal(await page.getByText('系统会校验文字准确性',{exact:false}).count(),1);
     assert.equal(await page.getByRole('button',{name:'保存草稿',exact:true}).isDisabled(),false);
     assert.equal(await page.getByRole('button',{name:'生成修改预览',exact:true}).isDisabled(),false);
     await page.getByRole('button',{name:'保存草稿',exact:true}).click();
@@ -82,28 +86,45 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     await page.getByRole('button',{name:'保存草稿',exact:true}).click();
     await page.getByRole('alert').getByText('请先填写局部修改说明',{exact:false}).waitFor();
     assert.equal(submitted,null);
-    await page.getByLabel('图片修改要求').fill('把画面左下角人物手中的黑色书包替换成手提文件袋，保持其他区域不变');
-    await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
+    const promptBox=await livePreview.boundingBox();assert.ok(promptBox);
+    await page.mouse.click(promptBox.x+promptBox.width*.78,promptBox.y+promptBox.height*.22);
+    await page.getByRole('status').getByText('已定位：画面右上附近',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'改颜色',exact:true}).click();
+    await page.getByLabel('图片修改要求').fill('改成鼠尾草绿色，保持其他区域不变');
+    await page.getByRole('button',{name:'分析并生成修改预览',exact:true}).click();
     await page.getByRole('alert').getByText('请先勾选费用确认',{exact:false}).waitFor();
     assert.equal(submitted,null);
-    const feeCheckbox=page.getByLabel('确认调用一次图片编辑与视觉校验模型，会产生费用；校验失败时不会自动二次修改，人工重试会再次收费。');
+    const feeCheckbox=page.getByLabel('确认调用视觉规划、图片编辑与结果验收模型，会产生费用；规划需要改写时会先返回建议，采用后才调用图片编辑模型。');
     await feeCheckbox.check();
     const feeVisual=page.locator('[data-fee-checkbox]');
     const [feeInputBox,feeBox,feeState]=await Promise.all([feeCheckbox.boundingBox(),feeVisual.boundingBox(),feeCheckbox.evaluate(element=>{const visual=element.nextElementSibling,parent=element.parentElement;return{checked:element.checked,inputOpacity:getComputedStyle(element).opacity,width:getComputedStyle(visual).width,height:getComputedStyle(visual).height,backgroundColor:getComputedStyle(visual).backgroundColor,backgroundImage:getComputedStyle(visual).backgroundImage,outlineWidth:getComputedStyle(visual).outlineWidth,parentDisplay:getComputedStyle(parent).display,parentOutlineWidth:getComputedStyle(parent).outlineWidth};})]);
     assert.ok(feeInputBox&&feeInputBox.width<=1&&feeInputBox.height<=1,JSON.stringify({feeInputBox,feeState}));
     assert.ok(feeBox&&feeBox.width===18&&feeBox.height===18,JSON.stringify({feeBox,feeState}));
     assert.equal(feeState.checked,true);assert.equal(feeState.inputOpacity,'0');assert.equal(feeState.width,'18px');assert.equal(feeState.height,'18px');assert.equal(feeState.backgroundColor,'rgb(217, 52, 70)');assert.match(feeState.backgroundImage,/svg/u);assert.ok(Number.parseFloat(feeState.outlineWidth)<=3);assert.equal(feeState.parentDisplay,'grid');assert.equal(feeState.parentOutlineWidth,'0px');
-    await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
+    await page.getByRole('button',{name:'分析并生成修改预览',exact:true}).click();
     await page.getByRole('heading',{name:'修改前后滑动对比'}).waitFor();
-    assert.equal(submitted.operation,'AI_LOCAL');assert.equal(submitted.mask,undefined);assert.match(submitted.instruction,/画面左下角/u);
+    assert.equal(submitted.operation,'AI_LOCAL');assert.equal(submitted.mask,undefined);assert.match(submitted.instruction,/画面右上附近，改颜色/u);
     assert.equal(submitted.confirmation,'LIVE_IMAGE_COST_ACCEPTED');assert.equal(actions.length,0);
     await page.getByRole('status').getByText('系统正在处理',{exact:false}).waitFor();
+    await page.getByRole('tab',{name:/任务记录/u}).click();
     assert.equal(await page.getByRole('button',{name:'采用此版本',exact:true}).isDisabled(),false);
     await page.getByRole('button',{name:'采用此版本',exact:true}).click();
-    await page.getByRole('alert').getByText('请先填写“操作原因”',{exact:false}).waitFor();
+    await page.getByLabel('采用此版本操作原因').waitFor();
     assert.equal(actions.length,0);
-    await page.getByLabel('采用拒绝重试原因').fill('预览确认');await page.getByRole('button',{name:'采用此版本',exact:true}).click();
+    await page.getByLabel('采用此版本操作原因').fill('预览确认');await page.getByRole('button',{name:'确认采用此版本',exact:true}).click();
     await page.getByText('局部修改 · 已采用',{exact:true}).waitFor();assert.equal(actions.length,1);assert.match(actions[0].data.requestId,/^[a-f0-9-]{36}$/);
+    await page.getByRole('tab',{name:'本次编辑',exact:true}).click();
+    await page.getByLabel('图片修改要求').fill('把画面右下角的一勺老抽变成半勺并移动到左侧');
+    await page.getByRole('button',{name:'分析并生成修改预览',exact:true}).click();
+    await page.getByRole('tab',{name:/任务记录/u}).click();
+    await page.getByText('局部修改 · 待确认建议',{exact:true}).waitFor();
+    assert.equal(await page.getByRole('region',{name:'局部修改建议'}).getByText('系统已生成可执行描述',{exact:true}).count(),1);
+    assert.equal(await livePreview.locator('svg rect').count(),2);
+    await page.getByRole('button',{name:'采用建议并修改',exact:true}).click();
+    await page.getByLabel('采用建议并修改操作原因').fill('采用系统补强的可执行描述');
+    await page.getByRole('button',{name:'确认采用建议并修改',exact:true}).click();
+    await page.getByText('局部修改 · 排队中',{exact:true}).waitFor();
+    assert.equal(actions.at(-1).url.endsWith('/apply-suggestion'),true);
     submitted=null;await page.getByRole('tab',{name:'实体替换'}).click();
     assert.equal(await page.getByLabel('参考图来源说明').count(),0);
     assert.equal(await page.getByText('精确合成',{exact:true}).count(),0);
@@ -141,7 +162,7 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     assert.ok(targetSourceNode&&await targetSource.evaluate((element,previous)=>element===previous,targetSourceNode));
     assert.deepEqual(await targetSource.boundingBox(),targetSourceBox);
     assert.equal(await page.getByRole('button',{name:'重新框选',exact:true}).isDisabled(),false);
-    await page.getByLabel('确认调用一次图片编辑与视觉校验模型，会产生费用；校验失败时不会自动二次修改，人工重试会再次收费。').check();
+    await page.getByLabel('确认调用视觉规划、图片编辑与结果验收模型，会产生费用；规划需要改写时会先返回建议，采用后才调用图片编辑模型。').check();
     await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
     assert.equal(submitted.operation,'AI_FUSION');assert.equal(submitted.referenceMode,'APPEARANCE');assert.deepEqual(submitted.references,[{assetId:9,purpose:'真实产品替换'}]);assert.equal(submitted.mask,undefined);
     assert.equal(submitted.target.description,'画面右侧台面上、木托盘后方的米白色拿铁杯');
@@ -149,15 +170,30 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     assert.match(submitted.instruction,/木托盘后方/u);
     await page.getByRole('tab',{name:'添加文字'}).click();
     await page.getByRole('button',{name:'整套 3 张',exact:true}).click();
-    await page.getByLabel('确认调用一次图片编辑与视觉校验模型，会产生费用；校验失败时不会自动二次修改，人工重试会再次收费。').check();
+    await page.getByLabel('确认调用视觉规划、图片编辑与结果验收模型，会产生费用；规划需要改写时会先返回建议，采用后才调用图片编辑模型。').check();
     await page.getByRole('button',{name:'生成整套 3 张标识预览',exact:true}).click();
+    await page.getByRole('tab',{name:/任务记录/u}).click();
     await page.getByRole('button',{name:'一次采用整套标识',exact:true}).waitFor();
     const batchSubmissions=submissions.slice(-3),batchIds=new Set(batchSubmissions.map(item=>item.batchId));
     assert.equal(batchSubmissions.length,3);assert.equal(batchIds.size,1);assert.deepEqual(batchSubmissions.map(item=>item.sourceAssetId),[1,2,3]);assert.deepEqual(batchSubmissions.map(item=>item.targetPage),[1,2,3]);assert.ok(batchSubmissions.every(item=>item.operation==='TEXT'));
     await page.getByRole('button',{name:'一次采用整套标识',exact:true}).click();
+    await page.getByLabel('整套标识采用原因').fill('整套预览确认');
+    await page.getByRole('button',{name:'确认采用',exact:true}).click();
     await page.getByRole('button',{name:'整套标识已采用',exact:true}).waitFor();
-    assert.equal(actions.length,4);assert.equal(actions.slice(-3).every(item=>item.url.endsWith('/accept')),true);
-    await page.getByRole('button',{name:'关闭工作台',exact:true}).click();
+    assert.equal(actions.length,5);assert.equal(actions.slice(-3).every(item=>item.url.endsWith('/accept')),true);
+    await page.getByRole('tab',{name:'局部修改'}).click();
+    await page.getByRole('button',{name:'保存草稿',exact:true}).click();
+    await page.getByRole('tab',{name:/任务记录/u}).click();
+    await page.getByText('局部修改 · 草稿',{exact:true}).waitFor();
+    const deleteAction=page.getByRole('button',{name:'直接删除此修复',exact:true});
+    await deleteAction.waitFor();
+    await deleteAction.click();
+    await page.getByLabel('直接删除此修复操作原因').fill('草稿不再需要');
+    page.once('dialog',dialog=>dialog.accept());
+    await page.getByRole('button',{name:'确认直接删除此修复',exact:true}).click();
+    await page.getByText('局部修改 · 已取消',{exact:true}).waitFor();
+    assert.equal(actions.at(-1).url.endsWith('/cancel'),true);
+    await page.getByRole('button',{name:'关闭弹窗',exact:true}).click();
     await dialog.waitFor({state:'hidden'});
     assert.equal(await page.getByRole('button',{name:'修改图片',exact:true}).isVisible(),true);
     assert.deepEqual(errors,[]);

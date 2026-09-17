@@ -151,7 +151,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
           : Promise.resolve(null),
       ]);
       if (currentRequestId !== listRequestId.current) return;
-      const page = normalizeCopyQaPage(payload);
+      const page = normalizeCopyQaPage(payload, { role });
       const followingOffset = offset + page.returnedCount;
       setItems((current) => {
         if (!append) return page.items;
@@ -231,7 +231,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
     try {
       const payload = await apiRequest<unknown>(apiPath(`/v1/copy-qa/items/${encodeURIComponent(id)}`), { signal: controller.signal });
       if (!canCommitLatestRequest(detailRequestId.current, currentRequestId, controller.signal.aborted)) return;
-      const next = normalizeCopyQaItem(payload);
+      const next = normalizeCopyQaItem(payload, { role });
       if (!next) throw new Error('中心返回的抽检详情不完整');
       setDetail(next);
     } catch (caught) {
@@ -631,7 +631,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
                   : <div className={styles.planEmpty}>当前最终稿未记录图片文案规划。</div>}
               </section>
             </div>
-            {!detail.blindReview && <section className={styles.source} aria-labelledby="copy-qa-source-title"><h3 id="copy-qa-source-title">管理员来源信息</h3><div className={styles.metadata}><div><small>词包名称</small><strong>{detail.productionBatch.queryPackageName ?? '未归属词包'}</strong></div><div><small>正式任务</small><strong>{detail.taskId ? `#${detail.taskId}` : '未记录'}</strong></div><div><small>最终审批账号</small><strong>{detail.finalApproverAccountId ? `账号 #${detail.finalApproverAccountId}` : '未记录'}</strong></div><div><small>质检处理</small><strong>{detail.reviewMethod === 'ADMIN_DIRECT' ? '管理员单独通过' : '质检队列处理'}</strong></div><div><small>生产批次</small><strong>{detail.productionBatchId ? `#${detail.productionBatchId}` : detail.productionBatch.anonymousCode}</strong></div></div></section>}
+            {!detail.blindReview && <section className={styles.source} aria-labelledby="copy-qa-source-title"><h3 id="copy-qa-source-title">管理员来源信息</h3><div className={styles.metadata}><div><small>词包名称</small><strong>{detail.productionBatch.queryPackageName ?? '未归属词包'}</strong></div><div><small>正式任务</small><strong>{detail.taskId ? `#${detail.taskId}` : '未记录'}</strong></div><div><small>任务创建人</small><strong>{detail.createdByUserId ? `@${detail.createdByUserId}` : '未记录'}</strong></div><div><small>任务负责人</small><strong>{detail.assignedToUserId ? `@${detail.assignedToUserId}` : '未分配'}</strong></div><div><small>最终审批账号</small><strong>{detail.finalApproverUsername ? `@${detail.finalApproverUsername}` : detail.finalApproverAccountId ? `账号 #${detail.finalApproverAccountId}` : '未记录'}</strong></div><div><small>质检处理</small><strong>{detail.reviewMethod === 'ADMIN_DIRECT' ? '管理员单独通过' : '质检队列处理'}</strong></div><div><small>生产批次</small><strong>{detail.productionBatchId ? `#${detail.productionBatchId}` : detail.productionBatch.anonymousCode}</strong></div><div><small>文案版本</small><strong>{detail.approvedRevision.id ? `#${detail.approvedRevision.id}` : '未记录'}</strong></div></div></section>}
             {detailError && <div className="notice error" role="alert">{detailError}</div>}
           </>}
         </div>

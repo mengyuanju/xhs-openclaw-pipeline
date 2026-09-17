@@ -162,3 +162,9 @@ V3 将负责人分配推迟到文案待审核阶段。任务创建、负责人�
 `0062_copy_return_dispositions.sql` 增加质检返工处置审计。质检原结论继续保存在 `copy_sampling_items` 的 `RETURNED`、`BATCH_AFFECTED` 或 `BATCH_RETURNED` 状态；质检明确建议废弃后，任务负责人确认不再返工时只追加 `copy_return_dispositions`，并把任务软废弃为 `CANCELLED`，不会覆盖质检正确率数据。普通负责人不能自行废弃仅要求返工的任务，管理员保留例外处置能力。迁移同时扩展文案质检幂等收据允许 `DISCARD_REWORK` 操作。
 
 该版本的 Web 和中心必须同步切换。升级前暂停中心与 Web 写入并备份 PostgreSQL，预览后应用迁移；确认 `/health` 返回 `copyReturnedDiscardVersion=1` 后再恢复入口。不要让带有负责人废弃按钮的新 Web 请求尚未应用 `0062` 的旧中心，也不要在升级过程中手工执行页面上的废弃操作。
+
+## `0063` 测试任务交付隔离
+
+`0063_test_task_delivery_isolation.sql` 将 `tasks.input.testRun=true` 的真实链路测试任务从客户交付库存中撤回；已发布预览会进入既有撤销队列。新版中心同时在交付记录创建、交付池列表、ZIP/Excel 导出和预览发布入口执行相同的服务端隔离，测试任务仍可完成质检链路，但不会生成新的 READY 交付记录。
+
+升级前暂停中心与 Web 写入并备份 PostgreSQL；应用迁移后同步切换新版中心与 Web，并确认交付池、全量导出及预览发布均不再包含测试任务。不要仅依赖页面隐藏测试数据。

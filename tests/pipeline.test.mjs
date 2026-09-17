@@ -87,8 +87,8 @@ it('asks the image model to render the full page from the structured layout cont
     complianceDisclosure: '',
   });
   assert.doesNotMatch(portraitPrompt, /AI生成/u);
-  assert.equal(imageTaskData(portraitPrompt).requiredDisclosure, null);
-  assert.match(portraitPrompt, /合规标识为独立必需文字：关闭，不添加/u);
+  assert.equal(imageTaskData(portraitPrompt).systemDisclosure, null);
+  assert.match(portraitPrompt, /合规标识已关闭.*不得自行添加 AI 标识/u);
 
   const detailPrompt = buildDeliveryImageTaskPrompt({
     post,

@@ -81,6 +81,13 @@ export async function renderMask(input) {
     : m.points.map((p, i) => `<circle cx="${p.x}" cy="${p.y}" r="${m.radius}" fill="white"/>${i ? `<line x1="${m.points[i-1].x}" y1="${m.points[i-1].y}" x2="${p.x}" y2="${p.y}" stroke="white" stroke-width="${m.radius*2}"/>` : ''}`).join('');
   return sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="1086" height="1448"><rect width="1086" height="1448" fill="black"/>${shape}</svg>`)).greyscale().threshold(127).png().toBuffer();
 }
+export async function renderRegionsMask(regions) {
+  if(!Array.isArray(regions)||regions.length<1||regions.length>4)throw new TypeError('局部修改规划需要 1 至 4 个编辑区域');
+  const normalized=regions.map(region=>safeRect(region));
+  if(normalized.some(region=>region.width<24||region.height<24))throw new TypeError('局部修改规划区域过小');
+  const shape=normalized.map(region=>`<rect x="${region.x}" y="${region.y}" width="${region.width}" height="${region.height}" fill="white"/>`).join('');
+  return sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${EDIT_WIDTH}" height="${EDIT_HEIGHT}"><rect width="${EDIT_WIDTH}" height="${EDIT_HEIGHT}" fill="black"/>${shape}</svg>`)).greyscale().threshold(127).png().toBuffer();
+}
 export async function mergeWithMask(source, generated, mask) {
   const [s, g, m] = await Promise.all([source, generated, mask].map((bytes, i) => i === 2 ? sharp(bytes).greyscale().raw().toBuffer() : sharp(bytes).ensureAlpha().raw().toBuffer()));
   if (s.length !== 1086*1448*4 || g.length !== s.length || m.length !== 1086*1448) throw new TypeError('遮罩或图片尺寸错误');

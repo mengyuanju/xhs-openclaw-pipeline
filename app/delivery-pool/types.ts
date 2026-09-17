@@ -31,6 +31,24 @@ export type DeliveryEntry = {
   previousDeliveryBatch: DeliveryEntryBatch | null;
 };
 
+export type DeliveryContentPreview = {
+  taskId: number;
+  query: string;
+  copyRevisionId: number;
+  imageRunId: string;
+  copy: {
+    title: string;
+    body: string;
+    tags: string[];
+  };
+  images: Array<{
+    id: number;
+    page: number;
+    url: string;
+    originalName: string | null;
+  }>;
+};
+
 export type DeliveryEntryBatch = {
   id: number;
   publicId: string;
@@ -615,6 +633,76 @@ function normalizeDeliveryBatchSummary(value: unknown): DeliveryBatchSummary | n
       && Number(item.deliveredByAccountId) > 0 ? Number(item.deliveredByAccountId) : null,
     deliveredByUsername: typeof item.deliveredByUsername === 'string'
       ? item.deliveredByUsername : null,
+  };
+}
+
+export function normalizeDeliveryContentPreview(value: unknown, expected?: {
+  copyRevisionId: number;
+  imageRunId: string;
+}): DeliveryContentPreview {
+  const task = record(value);
+  const taskId = Number(task?.id);
+  const copyRevisionId = Number(task?.currentCopyRevisionId);
+  const imageRunId = typeof task?.currentImageRunId === 'string'
+    ? task.currentImageRunId.trim() : '';
+  if (!Number.isSafeInteger(taskId) || taskId < 1
+    || !Number.isSafeInteger(copyRevisionId) || copyRevisionId < 1 || !imageRunId) {
+    throw new TypeError('交付内容预览无效，请刷新后重试');
+  }
+  if (expected && (copyRevisionId !== expected.copyRevisionId
+      || imageRunId !== expected.imageRunId)) {
+    throw new TypeError('交付版本已更新，请刷新交付池后重新预览');
+  }
+
+  const revisions = Array.isArray(task?.copyRevisions) ? task.copyRevisions : [];
+  const revision = revisions.map(record).find((item) => Number(item?.id) === copyRevisionId);
+  const revisionContent = record(revision?.content);
+  const reviewed = record(revisionContent?.reviewed);
+  const copy = record(revisionContent?.copy) ?? record(reviewed?.copy)
+    ?? record(revisionContent?.post) ?? revisionContent;
+  const title = typeof copy?.title === 'string' ? copy.title : '';
+  const body = typeof copy?.body === 'string' ? copy.body : '';
+  const tags = Array.isArray(copy?.tags)
+    ? copy.tags.filter((tag): tag is string => typeof tag === 'string' && Boolean(tag.trim()))
+    : [];
+  if (!title.trim() && !body.trim()) {
+    throw new TypeError('当前交付文案缺失，无法预览');
+  }
+
+  const assets = (Array.isArray(task?.assets) ? task.assets : [])
+    .map(record)
+    .filter((asset) => asset && asset.imageRunId === imageRunId)
+    .flatMap((asset) => {
+      const id = Number(asset?.id);
+      const url = typeof asset?.url === 'string' ? asset.url : '';
+      if (!Number.isSafeInteger(id) || id < 1 || !/^\/v1\/assets\/\d+(?:\?|$)/u.test(url)) return [];
+      return [{ id, url, originalName: typeof asset?.originalName === 'string'
+        ? asset.originalName : null }];
+    });
+  const assetMap = new Map(assets.map((asset) => [asset.id, asset]));
+  const runs = Array.isArray(task?.imageRuns) ? task.imageRuns : [];
+  const run = runs.map(record).find((item) => item?.id === imageRunId);
+  const result = record(run?.result);
+  const selectedImages = Array.isArray(result?.images) ? result.images.map(record) : [];
+  const orderedAssets = selectedImages.length
+    ? selectedImages.flatMap((image) => {
+        const id = Number(image?.deliveryAssetId ?? image?.assetId);
+        const asset = assetMap.get(id);
+        return asset ? [asset] : [];
+      })
+    : assets;
+  if (orderedAssets.length === 0 || (selectedImages.length > 0
+      && orderedAssets.length !== selectedImages.length)) {
+    throw new TypeError('当前交付图片不完整，无法预览');
+  }
+
+  return {
+    taskId,
+    query: typeof task?.query === 'string' ? task.query : '',
+    copyRevisionId,
+    imageRunId,
+    copy: { title, body, tags },
+    images: orderedAssets.map((asset, index) => ({ ...asset, page: index + 1 })),
   };
 }
 

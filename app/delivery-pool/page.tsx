@@ -11,7 +11,7 @@ export default async function DeliveryPoolPage() {
   const role = session.roles?.[0] || 'USER';
   if (role !== 'ADMIN') redirect(role === 'REVIEWER' ? '/copy-qa' : '/workbench/personal');
   return <>
-    <header className="page-header"><div><span className="eyebrow">Delivery pool</span><h1>交付池</h1><p className="subtle">仅展示图片质检门禁已放行且版本绑定交付条目为 READY 的任务。</p></div></header>
+    <header className="page-header"><div><span className="eyebrow">Delivery pool</span><h1>交付池</h1><p className="subtle">集中核对、预览和打包已通过门禁的正式内容；测试任务自动隔离。</p></div></header>
     <DeliveryPoolWorkbench role="ADMIN" />
   </>;
 }

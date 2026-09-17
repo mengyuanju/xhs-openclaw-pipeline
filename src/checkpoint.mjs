@@ -4,7 +4,7 @@ import { basename, dirname, relative, resolve } from 'node:path';
 
 import { normalizeProductionSettings } from './production-settings.mjs';
 
-const CHECKPOINT_SCHEMA_VERSION = 8;
+const CHECKPOINT_SCHEMA_VERSION = 9;
 const MAX_CHECKPOINT_BYTES = 500_000;
 const MAX_CHECKPOINT_IMAGE_BYTES = 25 * 1024 * 1024;
 
@@ -161,6 +161,8 @@ export async function createImageCheckpointRecord({
     generationAttempts: image.generationAttempts,
     alignment: image.alignment,
     prompt: image.prompt,
+    complianceDisclosure: image.complianceDisclosure ?? null,
+    aiDisclosureStyle: image.aiDisclosureStyle ?? null,
   };
 }
 
@@ -200,6 +202,9 @@ export async function resolveReusableImageCheckpoints({
       generationAttempts: record.generationAttempts,
       alignment: record.alignment,
       prompt: typeof record.prompt === 'string' ? record.prompt : null,
+      complianceDisclosure: typeof record.complianceDisclosure === 'string'
+        ? record.complianceDisclosure : null,
+      aiDisclosureStyle: record.aiDisclosureStyle ?? null,
       reusedFromCheckpoint: true,
     };
   }

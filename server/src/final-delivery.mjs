@@ -15,6 +15,41 @@ const DELIVERY_IMAGE_MEDIA_TYPES = Object.freeze(
   Object.values(IMAGE_FORMATS).map((format) => format.mediaType),
 );
 
+const NON_TEST_DELIVERY_TASK_SQL = `NOT (task.input @> '{"testRun":true}'::jsonb)`;
+
+function isTestTaskInput(input) {
+  return input && typeof input === 'object' && !Array.isArray(input) && input.testRun === true;
+}
+
+export const PENDING_IMAGE_EDIT_STATUSES = Object.freeze([
+  'DRAFT',
+  'QUEUED',
+  'RUNNING',
+  'PREVIEW_READY',
+]);
+
+export async function assertNoPendingImageEdits(queryable, {
+  taskId: rawTaskId,
+  imageRunId: rawImageRunId,
+}) {
+  const taskId = normalizeTaskId(rawTaskId);
+  const imageRunId = normalizeUuid(rawImageRunId, 'imageRunId');
+  const result = await queryable.query(`
+    SELECT count(*)::integer AS count
+    FROM image_edit_requests
+    WHERE task_id = $1 AND source_image_run_id = $2
+      AND status = ANY($3::text[])
+  `, [taskId, imageRunId, PENDING_IMAGE_EDIT_STATUSES]);
+  const count = Number(result.rows[0]?.count ?? 0);
+  if (count > 0) {
+    throw new ControlPlaneConflictError(
+      'IMAGE_EDITS_PENDING',
+      `当前图片版本还有 ${count} 个待处理的图片修改，请回到任务详情的图片修改工作台逐项采用、拒绝或取消，然后重新提交图片初审`,
+    );
+  }
+  return count;
+}
+
 function normalizeActor(actor) {
   if (!actor || !['ADMIN', 'USER'].includes(actor.role)
       || !Number.isSafeInteger(Number(actor.userId))) {
@@ -156,7 +191,7 @@ export async function createReadyDeliveryEntry(client, {
   actor,
 }) {
   const qualityGate = await client.query(`
-    SELECT task.image_qc_legacy_accepted,
+    SELECT task.input, task.image_qc_legacy_accepted,
       approval.id AS release_event_id
     FROM tasks AS task
     LEFT JOIN image_approval_events AS approval
@@ -174,9 +209,12 @@ export async function createReadyDeliveryEntry(client, {
       '当前图片尚未通过图片质检抽检，不能进入交付池',
     );
   }
+  if (isTestTaskInput(qualityGate.rows[0].input)) {
+    await withdrawReadyDeliveryEntries(client, taskId, 'TEST_TASK_EXCLUDED');
+    return null;
+  }
   await assertDeliverySourceArchivable(client, { taskId, copyRevisionId, imageRunId });
-  const pendingEdits = await client.query("SELECT id FROM image_edit_requests WHERE task_id=$1 AND source_image_run_id=$2 AND status IN ('DRAFT','QUEUED','RUNNING','PREVIEW_READY') LIMIT 1", [taskId, imageRunId]);
-  if (pendingEdits.rows.length) throw new TypeError('请先采用、拒绝或取消待处理的图片修改，再审核归档');
+  await assertNoPendingImageEdits(client, { taskId, imageRunId });
   await withdrawReadyDeliveryEntries(client, taskId, 'SUPERSEDED_DELIVERY');
   const result = await client.query(`
     INSERT INTO delivery_entries(
@@ -326,6 +364,7 @@ export async function assertTaskReadyForDelivery(queryable, rawTaskId) {
       AND delivery.copy_revision_id = task.current_copy_revision_id
       AND delivery.image_run_id = task.current_image_run_id
     WHERE task.id = $1 AND task.state = 'REVIEWED'
+      AND ${NON_TEST_DELIVERY_TASK_SQL}
       AND (task.image_qc_legacy_accepted OR task.image_qc_released_approval_event_id IS NOT NULL)
   `, [taskId]);
   if (!result.rows[0]) {
@@ -364,6 +403,7 @@ export async function assertTasksReadyForDelivery(queryable, rawBindings) {
       ON task.id = expected.task_id AND task.state = 'REVIEWED'
       AND task.current_copy_revision_id = expected.copy_revision_id
       AND task.current_image_run_id = expected.image_run_id
+      AND ${NON_TEST_DELIVERY_TASK_SQL}
       AND (task.image_qc_legacy_accepted OR task.image_qc_released_approval_event_id IS NOT NULL)
     JOIN delivery_entries AS delivery
       ON delivery.task_id = expected.task_id AND delivery.status = 'READY'
@@ -453,6 +493,7 @@ export async function listDeliveryPool(pool, {
       AND task.state = 'REVIEWED'
       AND task.current_copy_revision_id = delivery.copy_revision_id
       AND task.current_image_run_id = delivery.image_run_id
+      AND ${NON_TEST_DELIVERY_TASK_SQL}
       AND (task.image_qc_legacy_accepted OR task.image_qc_released_approval_event_id IS NOT NULL)
     LEFT JOIN LATERAL (
       SELECT batch.id, batch.public_id, batch.code, batch.status,
@@ -490,6 +531,7 @@ export async function listDeliveryPool(pool, {
       AND task.state = 'REVIEWED'
       AND task.current_copy_revision_id = delivery.copy_revision_id
       AND task.current_image_run_id = delivery.image_run_id
+      AND ${NON_TEST_DELIVERY_TASK_SQL}
       AND (task.image_qc_legacy_accepted OR task.image_qc_released_approval_event_id IS NOT NULL)
     WHERE delivery.status = 'READY' ${visibility} ${packageFilter} ${clientBatchFilter} ${packingFilter}
   `, filteredValues), pool.query(`
@@ -530,6 +572,7 @@ export async function listDeliveryPool(pool, {
       AND task.state = 'REVIEWED'
       AND task.current_copy_revision_id = delivery.copy_revision_id
       AND task.current_image_run_id = delivery.image_run_id
+      AND ${NON_TEST_DELIVERY_TASK_SQL}
       AND (task.image_qc_legacy_accepted OR task.image_qc_released_approval_event_id IS NOT NULL)
     WHERE delivery.status = 'READY' ${visibility}
     GROUP BY COALESCE(task.source_query_package_id, task.source_query_package_snapshot_id),
@@ -647,6 +690,7 @@ export async function listAllDeliveryPoolTaskIds(pool, rawActor, {
       AND task.state = 'REVIEWED'
       AND task.current_copy_revision_id = delivery.copy_revision_id
       AND task.current_image_run_id = delivery.image_run_id
+      AND ${NON_TEST_DELIVERY_TASK_SQL}
     WHERE delivery.status = 'READY' ${packageFilter} ${clientBatchFilter} ${packedFilter}
     ORDER BY delivery.approved_at DESC, delivery.id DESC
   `, values);
@@ -695,6 +739,7 @@ export async function listDeliveryPoolTaskIdsForPreview(pool, rawActor, {
       AND task.state = 'REVIEWED'
       AND task.current_copy_revision_id = delivery.copy_revision_id
       AND task.current_image_run_id = delivery.image_run_id
+      AND ${NON_TEST_DELIVERY_TASK_SQL}
     WHERE delivery.status = 'READY'
       AND delivery.preview_id IS NULL
       AND (

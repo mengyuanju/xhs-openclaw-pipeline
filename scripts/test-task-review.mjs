@@ -153,6 +153,7 @@ try {
     if (request.method() === 'GET' && /\/assets\/91[01]$/.test(requestUrl.pathname)) return route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="400"><rect width="300" height="400" fill="#e7ded0"/><text x="25" y="70" font-size="24">TEST IMAGE</text></svg>' });
     let data;
     if (request.method() === 'GET' && /\/tasks\/900001$/.test(requestUrl.pathname)) data = detail;
+    else if (request.method() === 'GET' && requestUrl.pathname.endsWith('/image-edits')) data = [];
     else if (request.method() === 'GET' && requestUrl.pathname.endsWith('/image-capabilities')) data = { version: 1 };
     else if (request.method() === 'GET' && requestUrl.pathname.endsWith('/model-calls')) data = { items: [], total: 0 };
     else if (request.method() === 'POST' && requestUrl.pathname.endsWith('/approve-copy')) {

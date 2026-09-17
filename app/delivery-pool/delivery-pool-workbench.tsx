@@ -5,10 +5,11 @@ import { FeedbackMessage } from '@/components/ui/feedback-message';
 import { Checkbox, Input, Textarea } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
-import { Download, ExternalLink, FileSpreadsheet, History, LoaderCircle, PackageCheck, RefreshCw, Search, UploadCloud, X } from 'lucide-react';
+import { Download, ExternalLink, Eye, FileSpreadsheet, History, Images, ListChecks, LoaderCircle, PackageCheck, RefreshCw, Search, UploadCloud, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { apiRequest } from '../components/api-client';
+import { DeliveryPreviewDialog } from './delivery-preview-dialog';
 import styles from './delivery-pool.module.css';
 import {
   DELIVERY_POOL_LIST_LIMIT,
@@ -37,6 +38,7 @@ import {
 
 type ExportScope = 'ALL_READY' | 'CLIENT_BATCH' | 'SELECTED';
 type PackingFilter = 'PENDING' | 'PACKED' | 'ALL';
+type WorkspaceView = 'CONTENT' | 'PREVIEW' | 'HISTORY';
 const ALL_CLIENT_BATCHES = '__ALL_CLIENT_BATCHES__';
 const UNASSIGNED_PREVIEW_LABEL = '历史未归属内容';
 
@@ -56,6 +58,8 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
   const [nextOffset, setNextOffset] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [selected, setSelected] = useState<number[]>([]);
+  const [activeView, setActiveView] = useState<WorkspaceView>('CONTENT');
+  const [previewEntry, setPreviewEntry] = useState<DeliveryEntry | null>(null);
   const [search, setSearch] = useState('');
   const [clientBatchCode, setClientBatchCode] = useState('');
   const [packingFilter, setPackingFilter] = useState<PackingFilter>('PENDING');
@@ -499,390 +503,269 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
     : `全部 ${summary.readyCount} 条`;
 
   return <div className={styles.stack}>
-    <section className="panel" aria-labelledby="delivery-pool-title">
-      <div className={styles.toolbar}>
+    <section className={`panel ${styles.workspace}`} aria-labelledby="delivery-pool-title">
+      <header className={styles.workspaceHeader}>
         <div>
-          <div>
-            <h2 id="delivery-pool-title">交付管理</h2>
-            <p className="subtle">新交付批次默认只收录尚未打包的当前版本；历史批次可随时追溯和重新下载。</p>
+          <span className={styles.eyebrow}>DELIVERY CONTROL</span>
+          <h2 id="delivery-pool-title">交付管理</h2>
+          <p>核对内容、生成交付包与发布预览分区处理；测试任务已由服务端隔离。</p>
+        </div>
+        <Button unstyled className="button small" type="button" disabled={refreshing || loadingMore || exportBusy} onClick={() => {
+          const hadSelection = selected.length > 0 || selectedPreviewScopeCount > 0;
+          setSelected([]);
+          setSelectedPreviewPackageIds([]);
+          setSelectedPreviewUnassigned(false);
+          if (hadSelection) setMessage('交付池已刷新，原选择已清空，请重新确认。');
+          if (hadSelection) setMessageTone('info');
+          void Promise.all([load(), loadHistory()]);
+        }}>
+          <RefreshCw className={refreshing ? 'animate-spin' : ''} size={14} />刷新数据
+        </Button>
+      </header>
+
+      <div className={styles.progressGrid} aria-label="当前交付进度">
+        <article><span>READY 总数</span><strong>{summary.readyCount}</strong><small>通过全部门禁</small></article>
+        <article className={styles.pendingCard}><span>待交付</span><strong>{summary.pendingCount}</strong><small>可创建新批次</small></article>
+        <article className={styles.packedCard}><span>已打包</span><strong>{summary.packedCount}</strong><small>可追溯下载</small></article>
+        <article className={styles.updatedCard}><span>版本更新</span><strong>{summary.updatedCount}</strong><small>需要重新交付</small></article>
+      </div>
+
+      <nav className={styles.workspaceTabs} aria-label="交付池工作区" role="tablist">
+        <Button unstyled id="delivery-content-tab" type="button" role="tab" aria-selected={activeView === 'CONTENT'} aria-controls="delivery-content-panel" data-active={activeView === 'CONTENT'} onClick={() => setActiveView('CONTENT')}>
+          <ListChecks size={16} /><span>交付内容<small>{summary.pendingCount} 条待处理</small></span>
+        </Button>
+        <Button unstyled id="delivery-preview-tab" type="button" role="tab" aria-selected={activeView === 'PREVIEW'} aria-controls="delivery-preview-panel" data-active={activeView === 'PREVIEW'} onClick={() => setActiveView('PREVIEW')}>
+          <Images size={16} /><span>预览发布<small>{queryPackages.length + Number(Boolean(previewUnassigned))} 个范围</small></span>
+        </Button>
+        <Button unstyled id="delivery-history-tab" type="button" role="tab" aria-selected={activeView === 'HISTORY'} aria-controls="delivery-history-panel" data-active={activeView === 'HISTORY'} onClick={() => setActiveView('HISTORY')}>
+          <History size={16} /><span>交付历史<small>{deliveryBatchTotal} 个批次</small></span>
+        </Button>
+      </nav>
+
+      {error && <FeedbackMessage tone="error" onDismiss={() => setError('')}>{error}</FeedbackMessage>}
+      {message && <FeedbackMessage tone={messageTone} onDismiss={() => setMessage('')}>{message}</FeedbackMessage>}
+
+      {activeView === 'CONTENT' && <div className={styles.workspacePane} id="delivery-content-panel" role="tabpanel" aria-labelledby="delivery-content-tab">
+        <div className={styles.filterPanel}>
+          <div className={styles.searchField}>
+            <label htmlFor="delivery-pool-search">搜索交付内容</label>
+            <div className={styles.searchControl}>
+              <Search className={styles.searchIcon} size={16} aria-hidden="true" />
+              <Textarea ref={searchInputRef} id="delivery-pool-search" className={styles.search}
+                value={search} rows={2} maxLength={20_000} aria-describedby="delivery-pool-search-help"
+                placeholder={'每行一条：Query、甲方批次、词包或任务号'}
+                onChange={(event) => setSearch(event.target.value)} />
+              {search && <Button unstyled className={styles.clearSearch} type="button" aria-label="清除全部搜索条件" onClick={() => {
+                setSearch('');
+                searchInputRef.current?.focus();
+              }}><X size={15} aria-hidden="true" /></Button>}
+            </div>
+            <span id="delivery-pool-search-help">每行一条，在已加载条目的 Query、甲方批次、词包名称或任务号中匹配任意一条；自动忽略空行和重复项。</span>
+          </div>
+          <div className={styles.packageFilter}>
+            <label htmlFor="delivery-pool-client-batch">甲方批次</label>
+            <Select value={clientBatchSelectValue} onValueChange={(value) => {
+              setClientBatchCode(value === ALL_CLIENT_BATCHES ? '' : value.slice('client-batch:'.length));
+            }}>
+              <SelectTrigger id="delivery-pool-client-batch" aria-describedby="delivery-pool-client-batch-help"><SelectValue placeholder="全部甲方批次" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL_CLIENT_BATCHES}>全部甲方批次</SelectItem>
+                {clientBatches.map((facet) => <SelectItem key={facet.code} value={`client-batch:${facet.code}`}>
+                  {facet.code}（{facet.queryPackageCount} 个词包 · 待 {facet.pendingCount} / 已打包 {facet.packedCount}）
+                </SelectItem>)}
+              </SelectContent>
+            </Select>
+            <small id="delivery-pool-client-batch-help">筛选与无勾选导出都会覆盖该批次下全部词包。</small>
+          </div>
+          <div className={styles.packageFilter}>
+            <label htmlFor="delivery-pool-packing-filter">交付状态</label>
+            <Select value={packingFilter} onValueChange={(value) => setPackingFilter(value as PackingFilter)}>
+              <SelectTrigger id="delivery-pool-packing-filter"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="PENDING">待交付（默认）</SelectItem>
+                <SelectItem value="PACKED">已打包</SelectItem>
+                <SelectItem value="ALL">全部状态</SelectItem>
+              </SelectContent>
+            </Select>
+            <small>待交付包含首次交付与版本更新后重交。</small>
           </div>
         </div>
-        <div>
-          <Button unstyled className="button small" type="button" disabled={refreshing || loadingMore || exportBusy} onClick={() => {
-            const hadSelection = selected.length > 0 || selectedPreviewScopeCount > 0;
-            setSelected([]);
-            setSelectedPreviewPackageIds([]);
-            setSelectedPreviewUnassigned(false);
-            if (hadSelection) setMessage('交付池已刷新，原选择已清空，请重新确认。');
-            if (hadSelection) setMessageTone('info');
-            void Promise.all([load(), loadHistory()]);
-          }}>
-            <RefreshCw className={refreshing ? 'animate-spin' : ''} size={14} />刷新
-          </Button>
-          {role === 'ADMIN' && <>
+
+        <div className={styles.resultBar}>
+          <div><strong>{visible.length}</strong><span>当前结果</span><small>已加载 {entries.length} / 共 {total} 条{searchTermCount ? ` · ${searchTermCount} 个搜索词` : ''}</small></div>
+          <span className={`pill ${styles.searchStatus}`} role="status" aria-live="polite">
+            {clientBatchCode ? `甲方批次 ${clientBatchCode}` : '全部甲方批次'} · {packingFilter === 'PENDING' ? '待交付' : packingFilter === 'PACKED' ? '已打包' : '全部状态'}
+          </span>
+        </div>
+
+        {role === 'ADMIN' && <div className={styles.selectionBar}>
+          <div>
+            <strong>{selected.length ? `已选 ${selected.length} 条` : '未选择具体条目'}</strong>
+            <span>{selected.length
+              ? `${selectedPackableCount} 条可打包 · ${selectedPreviewEntryCount} 条尚未发布预览`
+              : clientBatchCode
+                ? `未勾选时处理该甲方批次全部 ${summary.pendingCount} 条待交付内容`
+                : `未勾选时处理全部 ${summary.pendingCount} 条待交付内容`}</span>
+          </div>
+          <div className={styles.contextActions}>
+            <Button unstyled className="button small" type="button" aria-busy={xlsxExporting}
+              aria-label={selected.length ? `导出已选 ${selected.length} 篇文章与图片为 Excel` : `导出${unselectedExportLabel}文章与图片为 Excel`}
+              title={!selected.length && summary.readyCount > DELIVERY_POOL_SELECTION_LIMIT ? `超过 ${DELIVERY_POOL_SELECTION_LIMIT} 篇时请先勾选后分批导出` : undefined}
+              disabled={xlsxExportCount === 0 || exportBusy} onClick={() => { void exportXlsx(); }}>
+              <FileSpreadsheet aria-hidden="true" size={14} />
+              {xlsxExporting ? '正在生成 Excel…' : selected.length ? `导出 Excel（已选 ${selected.length}）` : `导出 Excel（全部 ${summary.readyCount}）`}
+            </Button>
+            <Button unstyled className="button small" type="button" disabled={summary.pendingCount === 0 || exportBusy}
+              onClick={() => { void exportDelivery(filteredExportScope); }}>
+              <Download size={14} />{exporting === filteredExportScope ? '交付批次创建中…' : `新建交付批次（待交付 ${summary.pendingCount}）`}
+            </Button>
+            <Button unstyled className="button small primary" type="button"
+              disabled={!selected.length || selectedPackableCount !== selected.length || exportBusy}
+              title={selected.length && selectedPackableCount !== selected.length ? '已选内容中包含已打包版本，请仅选择待交付内容' : undefined}
+              onClick={() => { void exportDelivery('SELECTED'); }}>
+              <PackageCheck size={14} />{exporting === 'SELECTED' ? '交付批次创建中…' : `已选新建批次（${selected.length}）`}
+            </Button>
+          </div>
+        </div>}
+        <p className={styles.scopeNote}>新建交付批次始终由服务端排除已经打包的相同版本；文本搜索只覆盖已加载条目。Excel 按原文件字节内嵌图片，只调整表格中的显示尺寸，不重新编码或二次压缩。</p>
+
+        {loading
+          ? <div className="empty-state"><LoaderCircle className="animate-spin" size={20} />正在读取交付池…</div>
+          : visible.length === 0
+            ? <div className="empty-state">{entries.length ? '没有符合搜索条件的交付条目。'
+              : summary.readyCount > 0 && packingFilter === 'PENDING' ? '当前范围没有待交付内容，可在“交付历史”重新下载原批次。'
+                : summary.readyCount > 0 && packingFilter === 'PACKED' ? '当前范围还没有已打包内容。'
+                  : clientBatchCode ? `甲方批次“${clientBatchCode}”当前没有 READY 交付条目。`
+                    : '交付池当前为空；图片质检门禁放行后会在这里生成就绪条目。'}</div>
+            : <div className={`${styles.deliveryTable} table-wrap mobile-cards`} role="region" aria-label="交付内容列表，可横向滚动" tabIndex={0}>
+              <table>
+                <thead><tr>
+                  <th><Checkbox aria-label={`选择当前已加载的筛选结果（最多 ${DELIVERY_POOL_SELECTION_LIMIT} 条）`} checked={allChecked} disabled={exportBusy} onChange={(event) => changeSelection(selectionCandidates.map((entry) => entry.taskId), event.target.checked)} /></th>
+                  <th>内容与来源</th><th>交付状态</th><th>冻结版本</th><th>操作</th>
+                </tr></thead>
+                <tbody>{visible.map((entry) => <tr key={entry.id}>
+                  <td data-label="选择"><Checkbox aria-label={`选择任务 ${entry.taskId}`} checked={selected.includes(entry.taskId)} disabled={exportBusy || (!selected.includes(entry.taskId) && selected.length >= DELIVERY_POOL_SELECTION_LIMIT)} onChange={(event) => changeSelection([entry.taskId], event.target.checked)} /></td>
+                  <td data-label="内容与来源"><div className={styles.contentCell}>
+                    <div><strong>#{entry.taskId}</strong><span>{entry.query || '未记录 Query'}</span></div>
+                    <small>{entry.clientBatchCode || '未归属甲方批次'} · {entry.queryPackageName || '未归属词包'}</small>
+                  </div></td>
+                  <td data-label="交付状态"><div className={styles.deliveryState}>
+                    {entry.packingState === 'PACKED' && entry.deliveryBatch
+                      ? <><span className="pill">已打包</span><small>{entry.deliveryBatch.code}</small></>
+                      : entry.packingState === 'VERSION_UPDATED'
+                        ? <><span className={`pill ${styles.updatedPill}`}>版本更新待重交</span><small>上次 {entry.previousDeliveryBatch?.code ?? '历史批次'}</small></>
+                        : <span className={`pill ${styles.pendingPill}`}>首次待交付</span>}
+                    <small>{entry.preview?.status === 'PUBLISHED' ? '预览已发布' : entry.preview?.status === 'REVOKED' ? '预览已撤销' : '预览未发布'}</small>
+                  </div></td>
+                  <td data-label="冻结版本"><div className={styles.version}>
+                    <span>文案 #{entry.copyRevisionId} · 图片 {entry.imageRunId.slice(0, 8)}…</span>
+                    <span>终审 {entry.approvedAt ? new Date(entry.approvedAt).toLocaleString('zh-CN', { hour12: false }) : '未记录'}</span>
+                  </div></td>
+                  <td className="row-action" data-label="操作"><div className={styles.actions}>
+                    <Button unstyled className="button small" type="button" onClick={() => setPreviewEntry(entry)}><Eye size={14} />预览图文</Button>
+                    {entry.preview?.status === 'PUBLISHED' && entry.preview.url
+                      ? <a className="button small" href={entry.preview.url} target="_blank" rel="noreferrer"><ExternalLink size={14} />打开预览</a>
+                      : entry.preview === null && <Button unstyled className="button small" type="button" disabled={exportBusy} onClick={() => { void publishSinglePreview(entry); }}><UploadCloud size={14} />上传这一条</Button>}
+                    {entry.packingState === 'PACKED' && entry.deliveryBatch
+                      ? <a className="button small primary" href={`/api/control-plane/v1/delivery-batches/${encodeURIComponent(entry.deliveryBatch.publicId)}/archive`} download onClick={() => window.setTimeout(() => { void loadHistory(); }, 1200)}><Download size={14} />重下原批次</a>
+                      : <Button unstyled className="button small primary" type="button" disabled={exportBusy} onClick={() => { void exportDelivery('SELECTED', [entry.taskId]); }}><PackageCheck size={14} />创建单条批次</Button>}
+                  </div></td>
+                </tr>)}</tbody>
+              </table>
+            </div>}
+        {hasMore && <div className={styles.loadMore}><Button unstyled className="button small" type="button" disabled={loadingMore || refreshing || exportBusy} onClick={() => { void load(nextOffset); }}>
+          {loadingMore ? <><LoaderCircle className="animate-spin" size={14} />正在加载…</> : clientBatchCode
+            ? `加载更多（该甲方批次剩余约 ${Math.max(0, total - nextOffset)} 条）`
+            : `加载更多（服务端剩余约 ${Math.max(0, total - nextOffset)} 条）`}
+        </Button></div>}
+        <div className={styles.summary}><strong>交付门禁</strong><span>测试任务隔离 + 图片质检放行 + 当前文案与图片版本匹配 + READY 记录，缺一不可。</span></div>
+      </div>}
+
+      {activeView === 'PREVIEW' && role === 'ADMIN' && <div className={styles.workspacePane} id="delivery-preview-panel" role="tabpanel" aria-labelledby="delivery-preview-tab">
+        <section className={styles.previewScope} aria-labelledby="delivery-preview-package-title">
+          <div className={styles.previewScopeHeader}>
+            <div><span className={styles.eyebrow}>PREVIEW PUBLISHING</span><h3 id="delivery-preview-package-title">选择发布范围</h3>
+              <p>整包发布按词包选择；精确发布则先到“交付内容”勾选任务。任务行勾选不会改变这里的整包范围。</p></div>
+            <strong>{selectedPreviewScopeCount ? `已选 ${selectedPreviewScopeCount} 个范围 · ${selectedPreviewUnuploadedCount} 条未上传` : '尚未选择上传范围'}</strong>
+          </div>
+          <div className={styles.previewActionBar}>
             <div className={styles.previewUploadControl}>
               <label htmlFor="delivery-preview-upload-limit">整包上传上限</label>
               <Select value={String(previewUploadLimit)} onValueChange={(value) => setPreviewUploadLimit(Number(value))}>
-                <SelectTrigger id="delivery-preview-upload-limit" aria-label="本次预览上传条数上限">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {DELIVERY_PREVIEW_UPLOAD_LIMITS.map((limit) => <SelectItem key={limit} value={String(limit)}>
-                    {limit === 1 ? '1 条（测试）' : `${limit} 条`}
-                  </SelectItem>)}
-                </SelectContent>
+                <SelectTrigger id="delivery-preview-upload-limit" aria-label="本次预览上传条数上限"><SelectValue /></SelectTrigger>
+                <SelectContent>{DELIVERY_PREVIEW_UPLOAD_LIMITS.map((limit) => <SelectItem key={limit} value={String(limit)}>{limit === 1 ? '1 条（测试）' : `${limit} 条`}</SelectItem>)}</SelectContent>
               </Select>
             </div>
-            <Button
-              unstyled
-              className="button small"
-              type="button"
-              aria-busy={previewPublishing}
-              disabled={selectedPreviewScopeCount === 0
-                || selectedPreviewUnuploadedCount === 0 || exportBusy}
-              onClick={() => { void publishPreviews(); }}
-            >
-              {previewPublishing
-                ? <><LoaderCircle className="animate-spin" size={14} />正在上传预览…</>
-                : <><UploadCloud size={14} />{selectedPreviewScopeCount === 0
-                  ? '请先勾选上传范围'
-                  : selectedPreviewUnuploadedCount === 0
-                    ? '所选范围无需上传'
+            <Button unstyled className="button small primary" type="button" aria-busy={previewPublishing}
+              disabled={selectedPreviewScopeCount === 0 || selectedPreviewUnuploadedCount === 0 || exportBusy}
+              onClick={() => { void publishPreviews(); }}>
+              {previewPublishing ? <><LoaderCircle className="animate-spin" size={14} />正在上传预览…</>
+                : <><UploadCloud size={14} />{selectedPreviewScopeCount === 0 ? '请先勾选上传范围'
+                  : selectedPreviewUnuploadedCount === 0 ? '所选范围无需上传'
                     : `整包上传（${selectedPreviewScopeCount} 个范围 / 最多 ${previewUploadLimit} 条）`}</>}
             </Button>
-            <Button
-              unstyled
-              className="button small primary"
-              type="button"
-              aria-busy={previewPublishing}
+            <Button unstyled className="button small" type="button" aria-busy={previewPublishing}
               aria-label={`上传已指定的 ${selectedPreviewEntryCount} 条尚未上传内容`}
-              disabled={selectedPreviewEntryCount === 0 || exportBusy}
-              onClick={() => { void publishSelectedPreviews(); }}
-              title={selected.length > 0 && selectedPreviewEntryCount === 0
-                ? '已选内容均已有预览，无需重复上传'
-                : undefined}
-            >
-              <UploadCloud size={14} />
-              {previewPublishing ? '正在上传预览…' : selectedPreviewEntryCount
-                ? `上传已选（${selectedPreviewEntryCount} 条）`
-                : '上传已选'}
+              disabled={selectedPreviewEntryCount === 0 || exportBusy} onClick={() => { void publishSelectedPreviews(); }}
+              title={selected.length > 0 && selectedPreviewEntryCount === 0 ? '已选内容均已有预览，无需重复上传' : undefined}>
+              <UploadCloud size={14} />{previewPublishing ? '正在上传预览…' : selectedPreviewEntryCount ? `上传已选（${selectedPreviewEntryCount} 条）` : '上传已选'}
             </Button>
-            <Button
-              unstyled
-              className="button small"
-              type="button"
-              aria-busy={xlsxExporting}
-              aria-label={selected.length
-                ? `导出已选 ${selected.length} 篇文章与图片为 Excel`
-                : `导出${unselectedExportLabel}文章与图片为 Excel`}
-              title={!selected.length && summary.readyCount > DELIVERY_POOL_SELECTION_LIMIT
-                ? `超过 ${DELIVERY_POOL_SELECTION_LIMIT} 篇时请先勾选后分批导出`
-                : undefined}
-              disabled={xlsxExportCount === 0 || exportBusy}
-              onClick={() => { void exportXlsx(); }}
-            >
-              <FileSpreadsheet aria-hidden="true" size={14} />
-              {xlsxExporting
-                ? '正在生成 Excel…'
-                : selected.length
-                  ? `导出 Excel（已选 ${selected.length}）`
-                  : clientBatchCode
-                    ? `导出 Excel（甲方批次 ${summary.readyCount}）`
-                    : `导出 Excel（全部 ${summary.readyCount}）`}
-            </Button>
-            <Button
-              unstyled
-              className="button small"
-              type="button"
-              disabled={summary.pendingCount === 0 || exportBusy}
-              onClick={() => { void exportDelivery(filteredExportScope); }}
-            >
-              <Download size={14} />
-              {exporting === filteredExportScope
-                ? '交付批次创建中…'
-                : `新建交付批次（待交付 ${summary.pendingCount}）`}
-            </Button>
-            <Button
-              unstyled
-              className="button small primary"
-              type="button"
-              disabled={!selected.length || selectedPackableCount !== selected.length || exportBusy}
-              title={selected.length && selectedPackableCount !== selected.length
-                ? '已选内容中包含已打包版本，请仅选择待交付内容'
-                : undefined}
-              onClick={() => { void exportDelivery('SELECTED'); }}
-            >
-              <Download size={14} />
-              {exporting === 'SELECTED' ? '交付批次创建中…' : `已选新建批次（${selected.length}）`}
-            </Button>
-          </>}
-        </div>
-      </div>
-      <div className={styles.progressGrid} aria-label="当前交付进度">
-        <article><span>READY 总数</span><strong>{summary.readyCount}</strong></article>
-        <article className={styles.pendingCard}><span>待交付</span><strong>{summary.pendingCount}</strong></article>
-        <article className={styles.packedCard}><span>已打包</span><strong>{summary.packedCount}</strong></article>
-        <article className={styles.updatedCard}><span>版本更新待重交</span><strong>{summary.updatedCount}</strong></article>
-      </div>
-      <div className={styles.toolbar}>
-        <div className={styles.searchField}>
-          <label htmlFor="delivery-pool-search">搜索 Query、甲方批次、词包名称或正式任务号</label>
-          <div className={styles.searchControl}>
-            <Search className={styles.searchIcon} size={16} aria-hidden="true" />
-            <Textarea
-              ref={searchInputRef}
-              id="delivery-pool-search"
-              className={styles.search}
-              value={search}
-              rows={3}
-              maxLength={20_000}
-              aria-describedby="delivery-pool-search-help"
-              placeholder={'每行一条，例如：\n租房桌面收纳\n九月收纳词包\n1024'}
-              onChange={(event) => setSearch(event.target.value)}
-            />
-            {search && <Button unstyled className={styles.clearSearch} type="button" aria-label="清除全部搜索条件" onClick={() => {
-              setSearch('');
-              searchInputRef.current?.focus();
-            }}>
-              <X size={15} aria-hidden="true" />
-            </Button>}
           </div>
-          <span id="delivery-pool-search-help">每行一条，在已加载条目的 Query、甲方批次、词包名称或任务号中匹配任意一条；自动忽略空行和重复项。</span>
-        </div>
-        <div className={styles.packageFilter}>
-          <label htmlFor="delivery-pool-client-batch">按甲方批次分类</label>
-          <Select value={clientBatchSelectValue} onValueChange={(value) => {
-            setClientBatchCode(value === ALL_CLIENT_BATCHES ? '' : value.slice('client-batch:'.length));
-          }}>
-            <SelectTrigger id="delivery-pool-client-batch" aria-describedby="delivery-pool-client-batch-help">
-              <SelectValue placeholder="全部甲方批次" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_CLIENT_BATCHES}>全部甲方批次</SelectItem>
-              {clientBatches.map((facet) => <SelectItem key={facet.code} value={`client-batch:${facet.code}`}>
-                {facet.code}（{facet.queryPackageCount} 个词包 · 待 {facet.pendingCount} / 已打包 {facet.packedCount}）
-              </SelectItem>)}
-            </SelectContent>
-          </Select>
-          <small id="delivery-pool-client-batch-help">选择后，列表和无勾选导出会合并该甲方批次下的全部词包。</small>
-        </div>
-        <div className={styles.packageFilter}>
-          <label htmlFor="delivery-pool-packing-filter">交付状态</label>
-          <Select value={packingFilter} onValueChange={(value) => setPackingFilter(value as PackingFilter)}>
-            <SelectTrigger id="delivery-pool-packing-filter">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="PENDING">待交付（默认）</SelectItem>
-              <SelectItem value="PACKED">已打包</SelectItem>
-              <SelectItem value="ALL">全部状态</SelectItem>
-            </SelectContent>
-          </Select>
-          <small>“待交付”包含首次交付和版本更新后需要重新交付的内容。</small>
-        </div>
-        <span className={`pill ${styles.searchStatus}`} role="status" aria-live="polite">
-          READY · {clientBatchCode ? `甲方批次“${clientBatchCode}” · ` : ''}{packingFilter === 'PENDING' ? '待交付' : packingFilter === 'PACKED' ? '已打包' : '全部状态'} · {searchTermCount ? `${searchTermCount} 条搜索条件 · ` : ''}当前筛选 {visible.length} · 已加载 {entries.length} / 共 {total} 条
-        </span>
-      </div>
-      <div className={styles.scopeNote}>
-        新建交付批次始终由服务端排除已经打包的相同版本；甲方批次和交付状态筛选覆盖完整结果，文本搜索只覆盖已加载条目。
-      </div>
-      <details className={styles.history} open>
-        <summary><History size={15} aria-hidden="true" />交付历史（{deliveryBatchTotal} 批）</summary>
-        <div className={styles.historyBody}>
-          {historyLoading
-            ? <div className={styles.historyEmpty}><LoaderCircle className="animate-spin" size={16} />正在读取交付历史…</div>
-            : deliveryBatches.length === 0
-              ? <div className={styles.historyEmpty}>{clientBatchCode
-                ? `甲方批次“${clientBatchCode}”还没有交付批次。`
-                : '还没有交付批次；首次创建后会在这里永久保留成员和版本记录。'}</div>
-              : <div className="table-wrap mobile-cards" role="region" aria-label="交付批次历史，可横向滚动" tabIndex={0}>
-                <table>
-                  <thead><tr><th>批次</th><th>来源范围</th><th>数量</th><th>创建信息</th><th>交付状态</th><th>操作</th></tr></thead>
-                  <tbody>{deliveryBatches.map((batch) => <tr key={batch.publicId}>
-                    <td data-label="批次"><strong>{batch.code}</strong><small className={styles.blockMeta}>{byteLabel(batch.byteSize)}</small></td>
-                    <td data-label="来源范围">{batch.queryPackageNames.length
-                      ? batch.queryPackageNames.slice(0, 3).join('、')
-                      : '历史未归属内容'}{batch.queryPackageNames.length > 3 ? `等 ${batch.queryPackageNames.length} 个词包` : ''}<small className={styles.blockMeta}>甲方批次 {batch.clientBatchCode ?? '未记录'}</small></td>
-                    <td data-label="数量">{batch.taskCount} 条</td>
-                    <td data-label="创建信息">{timeLabel(batch.createdAt)}<small className={styles.blockMeta}>
-                      {batch.batchKind === 'OPERATOR_DELIVERY' ? '作业员交付' : '管理员交付'} · {batch.createdByUsername}
-                    </small></td>
-                    <td data-label="交付状态">{batch.status === 'DELIVERED'
-                      ? '已确认完成交付'
-                      : batch.downloadCount ? '已下载，待确认交付' : '已生成，尚未下载'}
-                    <small className={styles.blockMeta}>{batch.status === 'DELIVERED'
-                      ? `${timeLabel(batch.deliveredAt)} · ${batch.deliveredByUsername ?? '未知确认人'}`
-                      : batch.downloadCount ? `已下载 ${batch.downloadCount} 次 · ${timeLabel(batch.lastDownloadedAt)}` : '—'}</small></td>
-                    <td className="row-action" data-label="操作"><div className={styles.actions}>
-                      <Button unstyled className="button small" type="button" disabled={batchDetailLoading} onClick={() => { void openBatchDetail(batch); }}>
-                        查看明细
-                      </Button>
-                      <a
-                        className="button small primary"
-                        href={`/api/control-plane/v1/delivery-batches/${encodeURIComponent(batch.publicId)}/archive`}
-                        download={batch.fileName}
-                        onClick={() => window.setTimeout(() => { void loadHistory(); }, 1200)}
-                      ><Download size={14} />重新下载</a>
-                    </div></td>
-                  </tr>)}</tbody>
-                </table>
-              </div>}
-          {batchDetail && <section className={styles.batchDetail} aria-labelledby="delivery-batch-detail-title">
-            <div className={styles.batchDetailHeader}>
-              <div><h3 id="delivery-batch-detail-title">{batchDetail.code} 明细</h3><p>{batchDetail.taskCount} 条 · 创建于 {timeLabel(batchDetail.createdAt)} · 文件校验值 {batchDetail.sha256.slice(0, 12)}…</p></div>
-              <Button unstyled className="button small" type="button" onClick={() => setBatchDetail(null)}>关闭明细</Button>
-            </div>
-            <div className={styles.batchItemList}>
-              {batchDetail.items.map((item) => <article key={item.id}>
-                <strong>{item.ordinal}. 任务 #{item.taskId}</strong>
-                <span>{item.query || '未记录 Query'}</span>
-                <small>甲方批次 {item.clientBatchCode ?? '未记录'} · {item.queryPackageName || '未归属词包'} · 文案 #{item.copyRevisionId} · 图片 {item.imageRunId.slice(0, 8)}…</small>
-              </article>)}
-            </div>
-          </section>}
-        </div>
-      </details>
-      {role === 'ADMIN' && <section className={styles.previewScope} aria-labelledby="delivery-preview-package-title">
-        <div className={styles.previewScopeHeader}>
-          <div>
-            <h3 id="delivery-preview-package-title">选择要上传预览的范围</h3>
-            <p>按词包明确勾选后可整包上传；要指定具体数据，先按词包筛选列表并勾选任务行，再点“上传已选”。早期未绑定词包的内容会作为独立范围显示，任务行勾选不会改变这里的整包范围。</p>
+          <div className={styles.previewPackageTools}>
+            <Input id="delivery-preview-package-search" value={previewPackageSearch} placeholder="搜索词包或历史未归属内容" aria-label="搜索预览上传范围" onChange={(event) => setPreviewPackageSearch(event.target.value)} />
+            <Button unstyled className="button small" type="button" disabled={visiblePreviewScopeCount === 0 || exportBusy}
+              onClick={() => changePreviewScopeSelection(visiblePreviewPackages.map((facet) => facet.id), visiblePreviewUnassigned, !allVisiblePreviewScopesChecked)}>
+              {allVisiblePreviewScopesChecked ? '取消当前结果' : '勾选当前结果'}
+            </Button>
+            <Button unstyled className="button small" type="button" disabled={selectedPreviewScopeCount === 0 || exportBusy} onClick={() => {
+              setSelectedPreviewPackageIds([]);
+              setSelectedPreviewUnassigned(false);
+            }}>清空选择</Button>
           </div>
-          <strong>{selectedPreviewScopeCount
-            ? `已选 ${selectedPreviewScopeCount} 个范围 · ${selectedPreviewUnuploadedCount} 条未上传`
-            : '尚未选择上传范围'}</strong>
-        </div>
-        <div className={styles.previewPackageTools}>
-          <Input
-            id="delivery-preview-package-search"
-            value={previewPackageSearch}
-            placeholder="搜索词包或历史未归属内容"
-            aria-label="搜索预览上传范围"
-            onChange={(event) => setPreviewPackageSearch(event.target.value)}
-          />
-          <Button
-            unstyled
-            className="button small"
-            type="button"
-            disabled={visiblePreviewScopeCount === 0 || exportBusy}
-            onClick={() => changePreviewScopeSelection(
-              visiblePreviewPackages.map((facet) => facet.id),
-              visiblePreviewUnassigned,
-              !allVisiblePreviewScopesChecked,
-            )}
-          >
-            {allVisiblePreviewScopesChecked ? '取消当前结果' : '勾选当前结果'}
-          </Button>
-          <Button unstyled className="button small" type="button" disabled={selectedPreviewScopeCount === 0 || exportBusy} onClick={() => {
-            setSelectedPreviewPackageIds([]);
-            setSelectedPreviewUnassigned(false);
-          }}>清空选择</Button>
-        </div>
-        <div className={styles.previewPackageList} role="group" aria-label="预览上传范围">
-          {visiblePreviewScopeCount
-            ? <>
+          <div className={styles.previewPackageList} role="group" aria-label="预览上传范围">
+            {visiblePreviewScopeCount ? <>
               {visiblePreviewUnassigned && previewUnassigned && <label className={`${styles.previewPackageOption} ${styles.previewUnassignedOption}`}>
-                <Checkbox
-                  checked={selectedPreviewUnassigned}
-                  disabled={exportBusy || (!selectedPreviewUnassigned
-                    && selectedPreviewScopeCount >= DELIVERY_PREVIEW_PACKAGE_SELECTION_LIMIT)}
-                  onChange={(event) => changePreviewScopeSelection([], true, event.target.checked)}
-                />
-                <span><strong>{UNASSIGNED_PREVIEW_LABEL}</strong><small>早期未绑定词包的交付项 · READY {previewUnassigned.count} · 未上传 {previewUnassigned.unuploadedCount} · 已发布 {previewUnassigned.publishedCount}{previewUnassigned.revokedCount ? ` · 已撤销 ${previewUnassigned.revokedCount}` : ''}</small></span>
+                <Checkbox checked={selectedPreviewUnassigned} disabled={exportBusy || (!selectedPreviewUnassigned && selectedPreviewScopeCount >= DELIVERY_PREVIEW_PACKAGE_SELECTION_LIMIT)} onChange={(event) => changePreviewScopeSelection([], true, event.target.checked)} />
+                <span><strong>{UNASSIGNED_PREVIEW_LABEL}</strong><small>READY {previewUnassigned.count} · 未上传 {previewUnassigned.unuploadedCount} · 已发布 {previewUnassigned.publishedCount}{previewUnassigned.revokedCount ? ` · 已撤销 ${previewUnassigned.revokedCount}` : ''}</small></span>
               </label>}
               {visiblePreviewPackages.map((facet) => <label key={facet.id} className={styles.previewPackageOption}>
-                <Checkbox
-                  checked={selectedPreviewPackageIds.includes(facet.id)}
-                  disabled={exportBusy || (!selectedPreviewPackageIds.includes(facet.id)
-                    && selectedPreviewScopeCount >= DELIVERY_PREVIEW_PACKAGE_SELECTION_LIMIT)}
-                  onChange={(event) => changePreviewScopeSelection([facet.id], false, event.target.checked)}
-                />
+                <Checkbox checked={selectedPreviewPackageIds.includes(facet.id)} disabled={exportBusy || (!selectedPreviewPackageIds.includes(facet.id) && selectedPreviewScopeCount >= DELIVERY_PREVIEW_PACKAGE_SELECTION_LIMIT)} onChange={(event) => changePreviewScopeSelection([facet.id], false, event.target.checked)} />
                 <span><strong>{facet.name}{facet.deleted ? '（来源已删除）' : ''}</strong><small>READY {facet.count} · 未上传 {facet.unuploadedCount} · 已发布 {facet.publishedCount}{facet.revokedCount ? ` · 已撤销 ${facet.revokedCount}` : ''}</small></span>
               </label>)}
-            </>
-            : <div className={styles.previewPackageEmpty}>没有匹配的可上传范围。</div>}
-        </div>
-      </section>}
-      {role === 'ADMIN' && <div className={styles.selectionStatus}>
-        <span>{selected.length
-          ? `已选择 ${selected.length} / ${DELIVERY_POOL_SELECTION_LIMIT} 条，其中 ${selectedPackableCount} 条可新建交付批次、${selectedPreviewEntryCount} 条尚未上传预览。`
-          : clientBatchCode
-            ? `尚未选择条目；新交付批次将合并甲方批次“${clientBatchCode}”下全部词包的 ${summary.pendingCount} 条待交付内容。`
-            : `尚未选择条目；新交付批次将收录后台全部 ${summary.pendingCount} 条待交付内容。`}</span>
-        <span>Excel 按原文件字节内嵌图片，只调整表格中的显示尺寸，不重新编码或二次压缩（支持 PNG、JPEG、GIF），文件可能较大。</span>
+            </> : <div className={styles.previewPackageEmpty}>没有匹配的可上传范围。</div>}
+          </div>
+        </section>
       </div>}
-      <div className={styles.summary}>
-        <strong>交付门禁</strong>
-        <span>图片质检门禁放行 + 当前文案版本匹配 + 当前图片版本匹配 + READY 交付记录，四项缺一不可。</span>
-      </div>
-      {error && <FeedbackMessage tone="error" onDismiss={() => setError('')}>{error}</FeedbackMessage>}
-      {message && <FeedbackMessage tone={messageTone} onDismiss={() => setMessage('')}>{message}</FeedbackMessage>}
-      {loading
-        ? <div className="empty-state"><LoaderCircle className="animate-spin" size={20} />正在读取交付池…</div>
-        : visible.length === 0
-          ? <div className="empty-state">{entries.length
-            ? '没有符合搜索条件的交付条目。'
-            : summary.readyCount > 0 && packingFilter === 'PENDING'
-              ? '当前范围没有待交付内容；可在上方交付历史中重新下载原批次。'
-              : summary.readyCount > 0 && packingFilter === 'PACKED'
-                ? '当前范围还没有已打包内容。'
-            : clientBatchCode
-              ? `甲方批次“${clientBatchCode}”当前没有 READY 交付条目。`
-              : '交付池当前为空；图片质检门禁放行后会在这里生成就绪条目。'}</div>
-          : <div className="table-wrap mobile-cards" role="region" aria-label="交付内容列表，可横向滚动" tabIndex={0}>
-            <table>
-              <thead>
-                <tr>
-                  {role === 'ADMIN' && <th><Checkbox aria-label={`选择当前已加载的筛选结果（最多 ${DELIVERY_POOL_SELECTION_LIMIT} 条）`} checked={allChecked} disabled={exportBusy} onChange={(event) => changeSelection(selectionCandidates.map((entry) => entry.taskId), event.target.checked)} /></th>}
-                  <th>正式任务</th><th>Query</th><th>甲方批次 / 词包</th><th>交付状态</th><th>版本绑定</th><th>预览</th><th>终审时间</th><th>操作</th>
-                </tr>
-              </thead>
-              <tbody>{visible.map((entry) => <tr key={entry.id}>
-                {role === 'ADMIN' && <td data-label="选择"><Checkbox aria-label={`选择任务 ${entry.taskId}`} checked={selected.includes(entry.taskId)} disabled={exportBusy || (!selected.includes(entry.taskId) && selected.length >= DELIVERY_POOL_SELECTION_LIMIT)} onChange={(event) => changeSelection([entry.taskId], event.target.checked)} /></td>}
-                <td data-label="正式任务">#{entry.taskId}</td>
-                <td className={styles.query} data-label="Query">{entry.query || '未记录'}</td>
-                <td className={styles.packageName} data-label="甲方批次 / 词包"><div className={styles.version}><span>{entry.clientBatchCode || '未归属甲方批次'}</span><span>{entry.queryPackageName || '未归属词包'}</span></div></td>
-                <td data-label="交付状态">{entry.packingState === 'PACKED' && entry.deliveryBatch
-                  ? <div className={styles.deliveryState}><span className="pill">已打包</span><small>{entry.deliveryBatch.code}</small></div>
-                  : entry.packingState === 'VERSION_UPDATED'
-                    ? <div className={styles.deliveryState}><span className={`pill ${styles.updatedPill}`}>版本更新待重交</span><small>上次 {entry.previousDeliveryBatch?.code ?? '历史批次'}</small></div>
-                    : <span className={`pill ${styles.pendingPill}`}>首次待交付</span>}</td>
-                <td data-label="版本绑定"><div className={styles.version}><span>文案 #{entry.copyRevisionId}</span><span>图片 {entry.imageRunId.slice(0, 8)}…</span></div></td>
-                <td data-label="预览">{entry.preview?.status === 'PUBLISHED' && entry.preview.url
-                  ? <a className="button small" href={entry.preview.url} target="_blank" rel="noreferrer"><ExternalLink size={14} />打开预览</a>
-                  : entry.preview?.status === 'PUBLISHED'
-                    ? <span className="subtle">已上传，预览域名未配置</span>
-                  : entry.preview?.status === 'REVOKED'
-                    ? <span className="pill">已撤销</span>
-                    : <span className="subtle">未上传</span>}</td>
-                <td data-label="终审时间">{entry.approvedAt ? new Date(entry.approvedAt).toLocaleString('zh-CN', { hour12: false }) : '未记录'}</td>
-                <td className="row-action" data-label="操作"><div className={styles.actions}>
-                  {entry.preview === null && <Button
-                    unstyled
-                    className="button small"
-                    type="button"
-                    disabled={exportBusy}
-                    onClick={() => { void publishSinglePreview(entry); }}
-                  ><UploadCloud size={14} />上传这一条</Button>}
-                  {entry.packingState === 'PACKED' && entry.deliveryBatch
-                    ? <a className="button small primary" href={`/api/control-plane/v1/delivery-batches/${encodeURIComponent(entry.deliveryBatch.publicId)}/archive`} download onClick={() => window.setTimeout(() => { void loadHistory(); }, 1200)}><Download size={14} />重下原批次</a>
-                    : <Button unstyled className="button small primary" type="button" disabled={exportBusy} onClick={() => { void exportDelivery('SELECTED', [entry.taskId]); }}>
-                      <PackageCheck size={14} />创建单条批次
-                    </Button>}
-                </div></td>
-              </tr>)}</tbody>
-            </table>
-          </div>}
-      {hasMore && <div className={styles.loadMore}>
-        <Button unstyled className="button small" type="button" disabled={loadingMore || refreshing || exportBusy} onClick={() => { void load(nextOffset); }}>
-          {loadingMore
-            ? <><LoaderCircle className="animate-spin" size={14} />正在加载…</>
-            : clientBatchCode
-              ? `加载更多（该甲方批次剩余约 ${Math.max(0, total - nextOffset)} 条）`
-              : `加载更多（服务端剩余约 ${Math.max(0, total - nextOffset)} 条）`}
-        </Button>
+
+      {activeView === 'HISTORY' && <div className={styles.workspacePane} id="delivery-history-panel" role="tabpanel" aria-labelledby="delivery-history-tab">
+        <section className={styles.history} aria-labelledby="delivery-history-title">
+          <div className={styles.sectionHeader}><div><span className={styles.eyebrow}>IMMUTABLE ARCHIVE</span><h3 id="delivery-history-title">交付历史</h3><p>每个批次冻结成员和版本，可查看明细或重新下载原文件。</p></div><strong>{deliveryBatchTotal} 批</strong></div>
+          <div className={styles.historyBody}>
+            {historyLoading ? <div className={styles.historyEmpty}><LoaderCircle className="animate-spin" size={16} />正在读取交付历史…</div>
+              : deliveryBatches.length === 0 ? <div className={styles.historyEmpty}>{clientBatchCode ? `甲方批次“${clientBatchCode}”还没有交付批次。` : '还没有交付批次；首次创建后会在这里永久保留成员和版本记录。'}</div>
+                : <div className="table-wrap mobile-cards" role="region" aria-label="交付批次历史，可横向滚动" tabIndex={0}>
+                  <table><thead><tr><th>批次</th><th>来源范围</th><th>数量</th><th>创建信息</th><th>交付状态</th><th>操作</th></tr></thead>
+                    <tbody>{deliveryBatches.map((batch) => <tr key={batch.publicId}>
+                      <td data-label="批次"><strong>{batch.code}</strong><small className={styles.blockMeta}>{byteLabel(batch.byteSize)}</small></td>
+                      <td data-label="来源范围">{batch.queryPackageNames.length ? batch.queryPackageNames.slice(0, 3).join('、') : '历史未归属内容'}{batch.queryPackageNames.length > 3 ? `等 ${batch.queryPackageNames.length} 个词包` : ''}<small className={styles.blockMeta}>甲方批次 {batch.clientBatchCode ?? '未记录'}</small></td>
+                      <td data-label="数量">{batch.taskCount} 条</td>
+                      <td data-label="创建信息">{timeLabel(batch.createdAt)}<small className={styles.blockMeta}>{batch.batchKind === 'OPERATOR_DELIVERY' ? '作业员交付' : '管理员交付'} · {batch.createdByUsername}</small></td>
+                      <td data-label="交付状态">{batch.status === 'DELIVERED' ? '已确认完成交付' : batch.downloadCount ? '已下载，待确认交付' : '已生成，尚未下载'}<small className={styles.blockMeta}>{batch.status === 'DELIVERED' ? `${timeLabel(batch.deliveredAt)} · ${batch.deliveredByUsername ?? '未知确认人'}` : batch.downloadCount ? `已下载 ${batch.downloadCount} 次 · ${timeLabel(batch.lastDownloadedAt)}` : '—'}</small></td>
+                      <td className="row-action" data-label="操作"><div className={styles.actions}>
+                        <Button unstyled className="button small" type="button" disabled={batchDetailLoading} onClick={() => { void openBatchDetail(batch); }}>查看明细</Button>
+                        <a className="button small primary" href={`/api/control-plane/v1/delivery-batches/${encodeURIComponent(batch.publicId)}/archive`} download={batch.fileName} onClick={() => window.setTimeout(() => { void loadHistory(); }, 1200)}><Download size={14} />重新下载</a>
+                      </div></td>
+                    </tr>)}</tbody>
+                  </table>
+                </div>}
+            {batchDetail && <section className={styles.batchDetail} aria-labelledby="delivery-batch-detail-title">
+              <div className={styles.batchDetailHeader}><div><h3 id="delivery-batch-detail-title">{batchDetail.code} 明细</h3><p>{batchDetail.taskCount} 条 · 创建于 {timeLabel(batchDetail.createdAt)} · 文件校验值 {batchDetail.sha256.slice(0, 12)}…</p></div><Button unstyled className="button small" type="button" onClick={() => setBatchDetail(null)}>关闭明细</Button></div>
+              <div className={styles.batchItemList}>{batchDetail.items.map((item) => <article key={item.id}><strong>{item.ordinal}. 任务 #{item.taskId}</strong><span>{item.query || '未记录 Query'}</span><small>甲方批次 {item.clientBatchCode ?? '未记录'} · {item.queryPackageName || '未归属词包'} · 文案 #{item.copyRevisionId} · 图片 {item.imageRunId.slice(0, 8)}…</small></article>)}</div>
+            </section>}
+          </div>
+        </section>
       </div>}
+      <DeliveryPreviewDialog entry={previewEntry} onClose={() => setPreviewEntry(null)} />
     </section>
   </div>;
 }

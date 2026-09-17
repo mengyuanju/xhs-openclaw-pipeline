@@ -509,6 +509,12 @@ test('image review fits the complete image, supports exterior controls, and pres
   assert.match(currentImageEditor, /整套 \{imageAssets\.length\} 张/u);
   assert.match(currentImageEditor, /batchId,sourceImageRunId:runId/u);
   assert.match(currentImageEditor, /一次采用整套标识/u);
+  assert.match(currentImageEditor, /cancel:'直接删除此修复'/u);
+  assert.match(currentImageEditor, /'apply-suggestion':'采用建议并修改'/u);
+  assert.match(currentImageEditor, /LOCAL_EDIT_SUGGESTION/u);
+  assert.match(currentImageEditor, /系统已生成可执行描述/u);
+  assert.match(currentImageEditor, /\['QUEUED','RUNNING'\]\.includes\(edit\.status\)/u);
+  assert.match(currentImageEditor, /后台仍保留取消记录用于审计/u);
   assert.match(reviewDialog, /asset=\{selectedAsset\} assets=\{assets\}/u);
   assert.match(styles, /\.workbench-image-review-title-actions \{[^}]*display: inline-flex;[^}]*gap: 12px;[^}]*margin-right: 52px;[^}]*margin-left: auto/u);
   assert.match(styles, /\.workbench-image-review-title-actions \.current-image-editor-trigger \{[^}]*width: 96px;[^}]*height: 36px;/u);

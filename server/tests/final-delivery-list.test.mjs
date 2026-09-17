@@ -89,6 +89,9 @@ test('admin delivery pool combines different Query packages under one exact clie
   assert.doesNotMatch(facetCall.sql, /task\.assigned_to_user_id/u);
   assert.match(pageCall.sql, /task\.source_client_batch_code = \$1/u);
   assert.match(countCall.sql, /task\.source_client_batch_code = \$1/u);
+  assert.match(pageCall.sql, /NOT \(task\.input @> '\{"testRun":true\}'::jsonb\)/u);
+  assert.match(countCall.sql, /NOT \(task\.input @> '\{"testRun":true\}'::jsonb\)/u);
+  assert.match(facetCall.sql, /NOT \(task\.input @> '\{"testRun":true\}'::jsonb\)/u);
   assert.doesNotMatch(facetCall.sql, /source_query_package_name =/u,
     'facets describe every package visible to the actor, not only the active package');
   assert.doesNotMatch(facetCall.sql, /source_query_package_name IS NOT NULL/u);
@@ -114,6 +117,7 @@ test('complete delivery snapshot is admin-only, exact-client-batch scoped and ha
   assert.doesNotMatch(sql, /\bLIMIT\b|\bOFFSET\b/u);
   assert.match(sql, /delivery\.status = 'READY'/u);
   assert.match(sql, /task\.source_client_batch_code = \$1/u);
+  assert.match(sql, /NOT \(task\.input @> '\{"testRun":true\}'::jsonb\)/u);
 });
 
 test('delivery packing state follows the exact copy and image version instead of a recycled entry id', async () => {

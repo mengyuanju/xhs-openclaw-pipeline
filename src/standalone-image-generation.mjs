@@ -16,6 +16,7 @@ import {
   createImageAlignmentValidator,
 } from './image-alignment.mjs';
 import { renderDeliveryImages } from './images.mjs';
+import { resolveAiDisclosureVisualStyle } from './ai-disclosure-badge.mjs';
 import { parsePostOutput } from './post-contract.mjs';
 import {
   normalizeProductionSettings,
@@ -367,6 +368,9 @@ function normalizedStoredResult(value, runId) {
       model: image.model === null ? null : boundedText(image.model, `images[${index}].model`, 1, 200),
       generationAttempts: Number.isInteger(image.generationAttempts) ? image.generationAttempts : null,
       alignmentPassed: typeof image.alignmentPassed === 'boolean' ? image.alignmentPassed : null,
+      ...(image.aiDisclosureStyle === undefined ? {} : {
+        aiDisclosureStyle: publicAiDisclosureStyle(image.aiDisclosureStyle, `images[${index}].aiDisclosureStyle`),
+      }),
       layout: image.layout === null || image.layout === undefined
         ? null
         : publicLayout(image.layout, `images[${index}].layout`),
@@ -756,6 +760,39 @@ function publicQualityDetails(qc) {
   };
 }
 
+function publicAiDisclosureStyle(value, field = 'aiDisclosureStyle') {
+  if (value === null || value === undefined) return null;
+  if (!isRecord(value) || value.version !== 1
+    || typeof value.text !== 'string' || !/^[\p{L}\p{N}_-]{1,12}$/u.test(value.text)
+    || typeof value.color !== 'string' || !/^#[0-9a-f]{6}$/iu.test(value.color)
+    || !['VISUAL_PLAN', 'FALLBACK'].includes(value.colorSource)
+    || !['disclosure', 'accent', 'fallback'].includes(value.colorRole)
+    || value.fontSize !== 20 || value.fontWeight !== 600
+    || value.position !== 'bottom-right' || value.variant !== 'outline-pill'
+    || !Number.isInteger(value.width) || value.width < 120 || value.width > 300
+    || value.height !== 36 || value.margin !== 24 || value.strokeWidth !== 1.5
+    || value.x !== 1086 - 24 - value.width || value.y !== 1448 - 24 - 36) {
+    throw new TypeError(`${field} is invalid`);
+  }
+  return {
+    version: 1,
+    text: value.text,
+    color: value.color.toUpperCase(),
+    colorSource: value.colorSource,
+    colorRole: value.colorRole,
+    fontSize: 20,
+    fontWeight: 600,
+    position: 'bottom-right',
+    variant: 'outline-pill',
+    width: value.width,
+    height: 36,
+    margin: 24,
+    strokeWidth: 1.5,
+    x: value.x,
+    y: value.y,
+  };
+}
+
 function publicResult({ runId, mode, images, qc, visualPlan, planning, post, inputPost = post }) {
   const blocked = qc?.disposition === 'blocked'
     || qc?.issues?.some((issue) => issue?.severity === 'blocking');
@@ -777,6 +814,7 @@ function publicResult({ runId, mode, images, qc, visualPlan, planning, post, inp
       model: image.model ?? null,
       generationAttempts: image.generationAttempts ?? null,
       alignmentPassed: image.alignment?.passed ?? null,
+      ...(image.aiDisclosureStyle ? { aiDisclosureStyle: publicAiDisclosureStyle(image.aiDisclosureStyle) } : {}),
       layout: publicLayout(visualPlan.pages[index], `visualPlan.pages[${index}]`),
     })),
     visualPlan: {
@@ -1019,6 +1057,7 @@ async function generateStandaloneImagesInContext({
         layoutDirections: visualPlan.pages.map((page) => page.layoutDirection),
         layoutTemplates: visualPlan.pages.map((page) => page.layoutTemplate),
         complianceDisclosure,
+        disclosureVisualStyle: resolveAiDisclosureVisualStyle(visualPlan),
         textRenderingMode: 'model-native',
         validateImage: validator,
         recoveryImages: recovery?.images ?? [],

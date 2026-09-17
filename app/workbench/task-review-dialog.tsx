@@ -177,6 +177,12 @@ type TaskDetail = PriorityTask & {
     url: string;
   }>;
 };
+type ImageEditSummary = {
+  id: string;
+  status: string;
+};
+
+const PENDING_IMAGE_EDIT_STATUSES = new Set(['DRAFT', 'QUEUED', 'RUNNING', 'PREVIEW_READY']);
 
 const IMAGE_KINDS: ImagePlanItem['kind'][] = ['hero', 'steps', 'checklist', 'comparison', 'detail', 'summary'];
 const IMAGE_KIND_LABELS: Record<ImagePlanItem['kind'], string> = {
@@ -493,6 +499,7 @@ export function TaskReviewDialog({
   const [lastSavedDraftFingerprint, setLastSavedDraftFingerprint] = useState<string | null>(null);
   const [lastDraftSavedAt, setLastDraftSavedAt] = useState<string | null>(null);
   const [restoredDraftId, setRestoredDraftId] = useState<number | null>(null);
+  const [pendingImageEdits, setPendingImageEdits] = useState<ImageEditSummary[]>([]);
   const loadRequestRef = useRef(0);
   const draftSaveAbortRef = useRef<AbortController | null>(null);
   const lastSavedDraftIdRef = useRef<number | null>(null);
@@ -516,12 +523,20 @@ export function TaskReviewDialog({
       const imageAssessment = imageAssessmentFromDetail(next);
       const revisionDraft = draftFromRevision(currentRevision(next));
       const disclosureEnabled = initialAiDisclosure(next);
-      const history = next.state === 'COPY_REVIEW_PENDING' && next.assignedToUserId !== null
-          && next.currentCopyRevisionId && revisionDraft
-        ? await apiRequest<{ baseCopyRevisionId: number | null; drafts: CopyReviewDraftRecord[] }>(
-          apiPath(`/v1/tasks/${taskId}/copy-review-drafts`),
-        )
-        : { baseCopyRevisionId: next.currentCopyRevisionId, drafts: [] };
+      const canLoadImageEdits = ['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING'].includes(next.state)
+        && (role === 'ADMIN' || (next.assignedToUserId === currentUsername
+          && next.assignedToAccountId === currentAccountId));
+      const [history, imageEdits] = await Promise.all([
+        next.state === 'COPY_REVIEW_PENDING' && next.assignedToUserId !== null
+            && next.currentCopyRevisionId && revisionDraft
+          ? apiRequest<{ baseCopyRevisionId: number | null; drafts: CopyReviewDraftRecord[] }>(
+            apiPath(`/v1/tasks/${taskId}/copy-review-drafts`),
+          )
+          : Promise.resolve({ baseCopyRevisionId: next.currentCopyRevisionId, drafts: [] }),
+        canLoadImageEdits
+          ? apiRequest<ImageEditSummary[]>(apiPath(`/v1/tasks/${taskId}/image-edits`))
+          : Promise.resolve([]),
+      ]);
       if (requestId !== loadRequestRef.current) return;
       const latestDraft = history.baseCopyRevisionId === next.currentCopyRevisionId
         ? history.drafts[0] : undefined;
@@ -557,6 +572,7 @@ export function TaskReviewDialog({
       setLastSavedDraftFingerprint(restoredContent ? copyReviewDraftFingerprint(restoredContent) : null);
       setLastDraftSavedAt(latestDraft?.createdAt ?? null);
       setRestoredDraftId(latestDraft?.id ?? null);
+      setPendingImageEdits(imageEdits.filter(edit => PENDING_IMAGE_EDIT_STATUSES.has(edit.status)));
       setDraftSaveStatus(latestDraft ? 'saved' : 'idle');
       setDraftSaveError('');
       setDraftSaveConflict(false);
@@ -567,7 +583,7 @@ export function TaskReviewDialog({
     } finally {
       if (requestId === loadRequestRef.current) setLoading(false);
     }
-  }, [taskId]);
+  }, [currentAccountId, currentUsername, role, taskId]);
 
   useEffect(() => {
     draftSaveAbortRef.current?.abort();
@@ -597,6 +613,7 @@ export function TaskReviewDialog({
     setLastSavedDraftFingerprint(null);
     setLastDraftSavedAt(null);
     setRestoredDraftId(null);
+    setPendingImageEdits([]);
     lastCopyEditNoticeRef.current = null;
     reviewSessionRef.current = null;
     setInvalidField(null);
@@ -1411,6 +1428,10 @@ export function TaskReviewDialog({
 
   async function submitImageSelfReview() {
     if (!detail || !canSubmitImageSelfReview || !detail.currentImageRunId || submitting) return;
+    if (pendingImageEdits.length > 0) {
+      setError(`当前图片版本还有 ${pendingImageEdits.length} 个待处理的图片修改。请点击“修改图片”，在历史记录中逐项采用、拒绝或取消后再提交图片初审。`);
+      return;
+    }
     if (imagePlanChanged || imageConfigurationChanged) {
       setError('图片规划或交付配置还有未应用修改，请先重新生成或转换图片，再提交图片初审。');
       return;
@@ -1811,6 +1832,7 @@ export function TaskReviewDialog({
                   : isAdmin ? '当前任务由其他负责人处理；如需代办，请先将任务改派给自己。' : '图片初审由任务负责人完成；审核员在独立图片质检池处理抽中项。'}</p>}
                 {currentImageRun?.result?.processing?.type === 'LOCAL' && <p className="notice warning">此版本已在本地转换格式或背景，未重新调用模型验收，请检查文字对比和透明边缘后审核。</p>}
                 {imageConfigurationChanged && <p className="notice warning">下方配置尚未应用，当前预览仍是已有成品。请先提交转换或重新生图，或刷新恢复已保存的配置。</p>}
+                {pendingImageEdits.length > 0 && <p className="notice warning" role="status"><strong>还有 {pendingImageEdits.length} 个待处理的图片修改。</strong> 请点击“修改图片”，在历史记录中逐项采用、拒绝或取消；全部处理后才能提交图片抽检。</p>}
                 <div className="workbench-image-review-preference"><ImagePreviewPreference /></div>
               </aside>
               {activeAsset && activeAssetIndex !== null && <ImagePreview
@@ -1954,7 +1976,7 @@ export function TaskReviewDialog({
                 </Button>}
               {canResumeImages && <Button unstyled className="button primary" type="button" disabled={submitting || loading} onClick={() => { void resumeImages(); }}><RotateCcw size={15} />从失败步骤继续</Button>}
               {canSubmitImageSelfReview && <Button unstyled className="button primary" type="button"
-                disabled={submitting || loading || !imageSetComplete || imagePlanChanged || imageConfigurationChanged}
+                disabled={submitting || loading || !imageSetComplete || imagePlanChanged || imageConfigurationChanged || pendingImageEdits.length > 0}
                 onClick={() => { void submitImageSelfReview(); }}><CheckCircle2 size={15} />
                 {submitting ? '正在提交…' : '初审完成，提交图片抽检'}</Button>}
               {canReviewImages && <>

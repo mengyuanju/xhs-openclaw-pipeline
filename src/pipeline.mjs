@@ -7,6 +7,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 
 import { renderDeliveryImages } from './images.mjs';
+import { resolveAiDisclosureVisualStyle } from './ai-disclosure-badge.mjs';
 import { createImageAlignmentValidator } from './image-alignment.mjs';
 import { effectiveModelApiConfig } from './model-api-config.mjs';
 import { createAgentClient } from './agent-client.mjs';
@@ -646,6 +647,7 @@ export async function processNext({
       layoutDirections: visualPlan.pages.map((page) => page.layoutDirection),
       layoutTemplates: visualPlan.pages.map((page) => page.layoutTemplate),
       complianceDisclosure,
+      disclosureVisualStyle: resolveAiDisclosureVisualStyle(visualPlan),
       textRenderingMode: mock ? 'deterministic-overlay' : 'model-native',
       referenceImagePaths,
       validateImage,

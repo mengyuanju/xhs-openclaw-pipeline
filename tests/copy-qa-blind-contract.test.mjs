@@ -226,6 +226,28 @@ test('non-blind normalization accepts current nested provenance and legacy root 
   assert.equal(legacy.finalApproverAccountId, 65);
 });
 
+test('administrator normalization keeps full provenance even when a mixed-version response carries the blind flag', () => {
+  const item = normalizeCopyQaItem(serverRow({
+    taskId: 991,
+    approvedRevision: { ...serverRow().approvedRevision, id: 902 },
+    productionBatch: { anonymousCode: 'PB-7XQK', id: 27, queryPackageName: '九月选题' },
+    source: {
+      finalApproverAccountId: 64,
+      finalApproverUsername: 'approver',
+      assignedToUserId: 'worker',
+      createdByUserId: 'creator',
+    },
+  }), { role: 'ADMIN' });
+
+  assert.ok(item && !item.blindReview);
+  assert.equal(item.query, '如何整理小户型玄关');
+  assert.equal(item.taskId, 991);
+  assert.equal(item.productionBatch.queryPackageName, '九月选题');
+  assert.equal(item.finalApproverUsername, 'approver');
+  assert.equal(item.assignedToUserId, 'worker');
+  assert.equal(item.createdByUserId, 'creator');
+});
+
 test('administrator statistics preserve the final approver username for display', () => {
   const statistics = normalizeCopyQaStatistics({
     random: [{
