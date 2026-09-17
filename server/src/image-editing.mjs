@@ -410,6 +410,7 @@ export function createImageEditingService({ pool, storageRoot }) {
           if(!acceptedRejectedPreview&&r.validation?.passed!==true)conflict('图片校验未通过');
           const output=(await c.query('SELECT * FROM assets WHERE id=$1 AND task_id=$2',[r.asset_id,e.task_id])).rows[0];
           if(!output || imageHash(await readFile(editStoragePath(storageRoot,output.storage_path)))!==output.sha256 || output.sha256!==r.validation.integrity?.sha256) conflict('预览图片完整性校验失败');
+          if(acceptedRejectedPreview)await c.query("UPDATE assets SET asset_role='DELIVERY' WHERE id=$1 AND task_id=$2",[output.id,e.task_id]);
           await withdrawReadyDeliveryEntries(c,e.task_id,'IMAGE_MANUAL_EDIT_ACCEPTED');
           let adoptedRunId=r.image_run_id;
           if(editSource.currentRun.id !== e.source_image_run_id) {
