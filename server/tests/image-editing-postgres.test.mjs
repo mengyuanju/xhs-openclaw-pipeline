@@ -171,6 +171,24 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       assert.equal((await pool.query('SELECT status FROM image_runs WHERE id=$1',[adopted.result.image_run_id])).rows[0].status,'COMPLETED');
       currentRun=adopted.result.image_run_id;currentAsset=Number(adopted.result.asset_id);currentHash=(await service.asset(currentAsset,taskId)).sha256;
     });
+    await t.test('executor rejected-result upload is lease-bound and idempotent',async()=>{
+      const rejected=await service.create(taskId,request(),actor);
+      const claim=await repository.claimImage('edit-test',1,2,6);
+      assert.equal(claim.imageEdit.id,rejected.id);
+      const app=createControlPlaneApp({repository,storageRoot:root});
+      const server=await new Promise(resolveServer=>{const listening=app.listen(0,'127.0.0.1',()=>resolveServer(listening));});
+      try {
+        const control=createControlPlaneClient({baseUrl:`http://127.0.0.1:${server.address().port}`});
+        const failure=Object.assign(new Error('图片已生成，但目标位置不正确'),{validation:{stage:'LOCAL_EDIT_RESULT',passed:false,billedImageGeneration:true}});
+        const firstResult=await control.rejectImageEdit(claim.execution.id,claim.imageEdit,disclosurePng,failure);
+        const replayed=await control.rejectImageEdit(claim.execution.id,claim.imageEdit,disclosurePng,failure);
+        assert.equal(replayed.assetId,firstResult.assetId);
+      } finally { await new Promise(close=>server.close(close));await app.context.disposeControlPlaneResources?.(); }
+      const failed=await service.get(rejected.id);
+      assert.equal(failed.status,'FAILED');assert.equal(failed.error,'图片已生成，但目标位置不正确');
+      assert.equal((await service.asset(Number(failed.result.asset_id),taskId)).asset_role,'REJECTED_PREVIEW');
+      await action(rejected.id,'cancel');
+    });
     let edited;
     await t.test('executor transfer produces a validated preview without changing current run',async()=>{
       edited=await service.create(taskId,request(),actor);
