@@ -209,6 +209,26 @@ function resumableLiveClient({
 }
 
 describe('standalone image generation service', () => {
+  it('allows an empty subtitle through quality-check result publishing', async (t) => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-empty-subtitle-'));
+    t.after(() => rm(outputRoot, { recursive: true, force: true }));
+    const source = validSource();
+    source.imagePlan[2].subtitle = '';
+    const runtime = resumableLiveClient({ source });
+
+    const result = await generateStandaloneImages({
+      source,
+      mode: 'LIVE',
+      outputRoot,
+      runId: RUN_ID,
+      runtime,
+    });
+
+    assert.equal(result.status, 'COMPLETED');
+    assert.equal(result.images[2].layout.allowedVisibleText.subtitle, '');
+    assert.equal(result.qc.passed, true);
+  });
+
   it('persists catalog planning before the first image and reuses it after failure with changed global templates', async (t) => {
     const outputRoot = await mkdtemp(join(tmpdir(), 'catalog-persist-resume-'));
     t.after(() => rm(outputRoot, { recursive: true, force: true }));

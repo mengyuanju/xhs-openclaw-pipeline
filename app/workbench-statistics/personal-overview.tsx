@@ -1,11 +1,12 @@
 'use client';
 
-import { useState } from 'react';
-import { BarChart3, ChevronDown, SlidersHorizontal } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { BarChart3, CalendarDays, ChevronDown, FileText, ImageIcon, Search, SlidersHorizontal } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { Input } from '@/components/ui/input';
 import {
   Select,
   SelectContent,
@@ -30,7 +31,7 @@ import {
 } from '../workbench/personal-state-filters';
 import type { PersonalTaskScope } from '../workbench/list-state';
 import { Chart, Metric, number, STATE_LABELS, StatisticsStatus } from './shared';
-import type { Statistics, StateGroup } from './types';
+import type { CompletedWork, PersonalStatisticsRange, Statistics, StateGroup } from './types';
 
 type PersonalStatistics = {
   data: Statistics | null;
@@ -40,30 +41,190 @@ type PersonalStatistics = {
   refresh: () => void;
 };
 
-type PersonalPeriod = '7d' | '30d';
-
 const SCOPE_OPTIONS: ReadonlyArray<{ value: PersonalTaskScope; label: string }> = [
   { value: 'ALL', label: '全部相关' },
   { value: 'ASSIGNED', label: '我负责的' },
   { value: 'CREATED', label: '我创建的' },
 ];
 
+const DAY = 86_400_000;
+const COMPLETION_STATE_LABELS: Record<string, string> = {
+  COPY_QUEUED: '待文案生成',
+  COPY_RUNNING: '文案生成中',
+  COPY_REVIEW_PENDING: '待文案审核',
+  COPY_QC_PENDING: '待文案质检',
+  COPY_FAILED: '文案执行失败',
+  IMAGE_QUEUED: '待生图',
+  IMAGE_RUNNING: '生图中',
+  IMAGE_FAILED: '图片执行失败',
+  MANUAL_ARCHIVE: '待人工归档',
+  IMAGE_QC_PENDING: '待图片质检',
+  IMAGE_REWORK_PENDING: '图片质检打回',
+  REVIEWED: '完整交付',
+  CANCELLED: '已废弃',
+};
+const COMPLETION_STATE_ORDER = Object.keys(COMPLETION_STATE_LABELS);
+
+function shanghaiDay(milliseconds = Date.now()) {
+  return new Date(milliseconds + 8 * 3_600_000).toISOString().slice(0, 10);
+}
+
+function completionRangeLabel(range: { from: string; to: string }) {
+  if (range.from === range.to) return range.from;
+  return `${range.from} 至 ${range.to}`;
+}
+
+function completedAtLabel(value: string) {
+  return new Date(value).toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+function PersonalCompletionOverview({
+  completedWork,
+  dataRange,
+  range,
+  busy,
+  onRange,
+  onTaskSelect,
+}: {
+  completedWork?: CompletedWork;
+  dataRange?: { from: string; to: string };
+  range: PersonalStatisticsRange;
+  busy: boolean;
+  onRange: (range: PersonalStatisticsRange) => void;
+  onTaskSelect?: (taskId: number) => void;
+}) {
+  const [state, setState] = useState('ALL');
+  const [search, setSearch] = useState('');
+  const [showAll, setShowAll] = useState(false);
+  const today = shanghaiDay();
+  const yesterday = shanghaiDay(Date.now() - DAY);
+  const resolvedRange = dataRange ?? { from: range.from ?? today, to: range.to ?? range.from ?? today };
+  const availableStates = useMemo(() => {
+    const present = Object.keys(completedWork?.states ?? {});
+    const base = COMPLETION_STATE_ORDER.filter((value) => present.includes(value));
+    const extra = present.filter((value) => !COMPLETION_STATE_ORDER.includes(value)).sort();
+    return [...base, ...extra];
+  }, [completedWork]);
+  const matchingTasks = useMemo(() => {
+    const needle = search.trim().toLocaleLowerCase('zh-CN');
+    return (completedWork?.tasks ?? []).filter((task) => (state === 'ALL' || task.state === state)
+      && (!needle || String(task.id).includes(needle) || task.query.toLocaleLowerCase('zh-CN').includes(needle)));
+  }, [completedWork, search, state]);
+  const visibleTasks = showAll ? matchingTasks : matchingTasks.slice(0, 8);
+  const singleDayValue = resolvedRange.from === resolvedRange.to ? resolvedRange.from : '';
+  const rangeName = range.period === 'today' ? '今天'
+    : range.period === '7d' ? '近 7 天'
+      : resolvedRange.from === yesterday && resolvedRange.to === yesterday ? '昨天'
+        : completionRangeLabel(resolvedRange);
+
+  return <section className="personal-completion" aria-labelledby="personal-completion-title">
+    <div className="personal-completion-heading">
+      <div>
+        <span className="section-kicker">Completion data</span>
+        <h3 id="personal-completion-title">完成数据</h3>
+        <p>统计你在所选日期完成过文案或图片的任务，并展示这些任务现在所在的状态。</p>
+      </div>
+      <div className="personal-completion-date-controls" aria-label="选择完成日期">
+        <div className="job-stats-segments">
+          <Button unstyled type="button" aria-pressed={range.period === 'today'}
+            onClick={() => onRange({ period: 'today' })}>今天</Button>
+          <Button unstyled type="button"
+            aria-pressed={range.period === 'custom' && range.from === yesterday && range.to === yesterday}
+            onClick={() => onRange({ period: 'custom', from: yesterday, to: yesterday })}>昨天</Button>
+          <Button unstyled type="button" aria-pressed={range.period === '7d'}
+            onClick={() => onRange({ period: '7d' })}>近 7 天</Button>
+        </div>
+        <label className="personal-completion-date">
+          <CalendarDays size={14} aria-hidden="true" />
+          <span className="sr-only">选择日期</span>
+          <Input type="date" max={today} value={singleDayValue}
+            onChange={(event) => event.target.value
+              && onRange({ period: 'custom', from: event.target.value, to: event.target.value })} />
+        </label>
+      </div>
+    </div>
+
+    <div className="personal-completion-summary" aria-busy={!completedWork && busy}>
+      <div className="personal-completion-primary-card">
+        <span>{rangeName}完成任务</span>
+        {completedWork ? <strong>{number(completedWork.total)}</strong> : <Skeleton className="personal-completion-value-skeleton" />}
+        <small>同一任务只计一次 · {completionRangeLabel(resolvedRange)}</small>
+      </div>
+      <div className="personal-completion-action-card">
+        <div><FileText size={16} aria-hidden="true" /><span>文案完成</span><strong>{number(completedWork?.copy)}</strong></div>
+        <div><ImageIcon size={16} aria-hidden="true" /><span>图片完成</span><strong>{number(completedWork?.image)}</strong></div>
+        <small>共 {number(completedWork ? completedWork.copy + completedWork.image : null)} 次阶段完成
+          {!!completedWork?.overlap && `；其中 ${number(completedWork.overlap)} 个任务同时完成文案和图片`}</small>
+      </div>
+    </div>
+
+    <div className="personal-completion-section-heading">
+      <div><h4>完成任务当前在哪</h4><p>这里是当前状态，不是完成当天的状态。</p></div>
+      {state !== 'ALL' && <Button unstyled className="button small" type="button" onClick={() => setState('ALL')}>查看全部状态</Button>}
+    </div>
+    <div className="personal-completion-states">
+      {(availableStates.length ? availableStates : ['COPY_QC_PENDING', 'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_QC_PENDING', 'IMAGE_REWORK_PENDING', 'REVIEWED'])
+        .map((value) => <Button unstyled type="button" key={value}
+          className="personal-completion-state-card" aria-pressed={state === value}
+          onClick={() => { setState((current) => current === value ? 'ALL' : value); setShowAll(false); }}>
+          <span>{COMPLETION_STATE_LABELS[value] ?? value}</span>
+          <strong>{number(completedWork?.states[value] ?? (completedWork ? 0 : null))}</strong>
+        </Button>)}
+    </div>
+
+    <div className="personal-completion-section-heading personal-completion-list-heading">
+      <div><h4>对应任务</h4><p>{state === 'ALL' ? '全部当前状态' : COMPLETION_STATE_LABELS[state] ?? state} · {number(matchingTasks.length)} 项</p></div>
+      <label className="personal-completion-search">
+        <Search size={14} aria-hidden="true" />
+        <span className="sr-only">搜索完成任务</span>
+        <Input value={search} onChange={(event) => { setSearch(event.target.value); setShowAll(false); }} placeholder="任务 ID / Query" />
+      </label>
+    </div>
+    <div className="personal-completion-task-list">
+      {visibleTasks.map((task) => <Button unstyled type="button" key={task.id}
+        className="personal-completion-task" onClick={() => onTaskSelect?.(task.id)} disabled={!onTaskSelect}>
+        <span className="personal-completion-task-id">#{task.id}</span>
+        <span className="personal-completion-task-query" title={task.query}>{task.query || '未命名任务'}</span>
+        <span className="personal-completion-task-work">
+          {task.stages.includes('COPY') && <Badge variant="outline">文案</Badge>}
+          {task.stages.includes('IMAGE') && <Badge variant="outline">图片</Badge>}
+        </span>
+        <span className="personal-completion-task-state">{COMPLETION_STATE_LABELS[task.state] ?? task.state}</span>
+        <time dateTime={task.latestCompletedAt}>{completedAtLabel(task.latestCompletedAt)}</time>
+      </Button>)}
+      {completedWork && matchingTasks.length === 0 && <p className="personal-completion-empty">这个日期和筛选条件下没有完成记录。</p>}
+      {!completedWork && <div className="personal-completion-loading"><Skeleton /><Skeleton /><Skeleton /></div>}
+    </div>
+    {matchingTasks.length > 8 && <Button unstyled className="personal-completion-more" type="button"
+      onClick={() => setShowAll((value) => !value)}>{showAll ? '收起任务' : `查看全部 ${number(matchingTasks.length)} 项`}</Button>}
+  </section>;
+}
+
 export function PersonalWorkbenchNavigation({
-  period,
+  range,
   statistics,
   filter,
   scope,
-  onPeriod,
+  onRange,
   onFilter,
   onScope,
+  onTaskSelect,
 }: {
-  period: PersonalPeriod;
+  range: PersonalStatisticsRange;
   statistics: PersonalStatistics;
   filter: string;
   scope: PersonalTaskScope;
-  onPeriod: (period: PersonalPeriod) => void;
+  onRange: (range: PersonalStatisticsRange) => void;
   onFilter: (filter: string) => void;
   onScope: (scope: PersonalTaskScope) => void;
+  onTaskSelect?: (taskId: number) => void;
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(isPersonalAdvancedStateFilter(filter));
   const [statisticsOpen, setStatisticsOpen] = useState(false);
@@ -140,6 +301,17 @@ export function PersonalWorkbenchNavigation({
 
     <Separator />
 
+    <PersonalCompletionOverview
+      completedWork={summary?.completedWork}
+      dataRange={statistics.data?.range}
+      range={range}
+      busy={statistics.busy}
+      onRange={onRange}
+      onTaskSelect={onTaskSelect}
+    />
+
+    <Separator />
+
     <Collapsible className="personal-workbench-statistics" open={statisticsOpen} onOpenChange={setStatisticsOpen}>
       <CollapsibleTrigger asChild>
         <Button unstyled className="personal-workbench-statistics-trigger" type="button">
@@ -159,7 +331,7 @@ export function PersonalWorkbenchNavigation({
           <h3>新建与审核完成趋势</h3>
           <div className="job-stats-segments">
             {(['7d', '30d'] as const).map((value) => <Button unstyled key={value} type="button"
-              aria-pressed={period === value} onClick={() => onPeriod(value)}>近 {value === '7d' ? 7 : 30} 天</Button>)}
+              aria-pressed={range.period === value} onClick={() => onRange({ period: value })}>近 {value === '7d' ? 7 : 30} 天</Button>)}
           </div>
         </div>
         {summary && <div className="job-stats-two-columns">

@@ -168,3 +168,21 @@ V3 将负责人分配推迟到文案待审核阶段。任务创建、负责人�
 `0063_test_task_delivery_isolation.sql` 将 `tasks.input.testRun=true` 的真实链路测试任务从客户交付库存中撤回；已发布预览会进入既有撤销队列。新版中心同时在交付记录创建、交付池列表、ZIP/Excel 导出和预览发布入口执行相同的服务端隔离，测试任务仍可完成质检链路，但不会生成新的 READY 交付记录。
 
 升级前暂停中心与 Web 写入并备份 PostgreSQL；应用迁移后同步切换新版中心与 Web，并确认交付池、全量导出及预览发布均不再包含测试任务。不要仅依赖页面隐藏测试数据。
+
+## `0064` 程序生成 AI 标识
+
+`0064_programmatic_ai_disclosure.sql` 在保留现有图片模型绘制标识的同时，增加 `SVG_DISCLOSURE` 修改类型。该类型使用既有的 AI 标识 SVG 规范和 Sharp 确定性合成，不调用图片编辑或视觉模型；结果仍进入独立预览、采用和审计流程。
+
+升级前暂停中心与 Web 写入并备份 PostgreSQL；应用迁移后同步切换中心、Web 和图片执行机，并确认 `/health` 返回 `imageEditExecutorVersion=8`。旧版执行机不会领取 `SVG_DISCLOSURE` 请求。
+
+## `0068` 分布式图文规划重生成
+
+`0068_distributed_copy_image_plan_regeneration.sql` 把人工审核阶段的图文规划重生成改为独立作业。中心只保存当前文案快照、冻结已发布提示词并管理状态；新版文案执行机通过现有 COPY 并发池领取、调用模型并回传结果。主任务在全过程中保持 `COPY_REVIEW_PENDING`，不会因互动式生成破坏作业员草稿。
+
+升级时先停止中心写入和所有执行机，备份数据库，应用迁移并启动新中心与 Web，确认 `/health` 返回 `copyImagePlanRegenerationVersion=2`，再升级并启动至少一台文案执行机。旧执行机继续处理普通文案任务，但不会领取本类作业。
+
+## `0067` 图片规划返修继承文案质检
+
+`0067_image_plan_copy_qc_inheritance.sql` 为图片终审中的管理员图片规划返修增加显式文案质检继承。只有父版本已经放行、标题/正文/标签逐字段一致、且新版本带有可信 `imageRevision.REGENERATE` 来源时才能继承；普通 `PLAN_EDIT`、文案修改和所有未解决的强制复检继续关闭生图门禁。
+
+迁移会识别并修复已被旧触发器错误送入文案返工的同形任务，恢复原质检结论并放回待生图队列。升级前应暂停中心与 Web 写入并备份 PostgreSQL，升级后检查 `copy_qc_revision_inheritances`、待生图队列和执行机领取情况。

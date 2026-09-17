@@ -1,4 +1,5 @@
 import type { TaskSort } from './views';
+import { normalizeTaskDateRange } from '../../src/control-plane/task-date-filter.mjs';
 
 export type TaskAttention = 'NONE' | 'ANOMALY' | 'STALE' | 'FAILED';
 export type PersonalTaskScope = 'ALL' | 'ASSIGNED' | 'CREATED';
@@ -15,6 +16,8 @@ export type WorkbenchListState = {
   assignedToUserId: string;
   assignedToAccountId: number | null;
   createdByRole: string;
+  createdDateFrom: string;
+  createdDateTo: string;
   personalScope: PersonalTaskScope;
   state: string;
   attention: TaskAttention;
@@ -33,6 +36,8 @@ export const DEFAULT_WORKBENCH_LIST_STATE: WorkbenchListState = Object.freeze({
   assignedToUserId: '',
   assignedToAccountId: null,
   createdByRole: 'ALL',
+  createdDateFrom: '',
+  createdDateTo: '',
   personalScope: 'ALL',
   state: 'ALL',
   attention: 'NONE',
@@ -79,6 +84,17 @@ export function parseWorkbenchListState(
   const query = one(search.query)?.trim() ?? '';
   const queryPackageName = one(search.queryPackageName)?.replace(/\s+/gu, ' ').trim() ?? '';
   const taskId = positiveInteger(one(search.taskId), 0);
+  let createdDateFrom = '';
+  let createdDateTo = '';
+  if (allowAdminFilters) {
+    try {
+      const range = normalizeTaskDateRange(one(search.createdDateFrom), one(search.createdDateTo));
+      createdDateFrom = range.createdDateFrom ?? '';
+      createdDateTo = range.createdDateTo ?? '';
+    } catch {
+      // Invalid or reversed URL ranges are ignored rather than sent to the center.
+    }
+  }
   return {
     page: positiveInteger(one(search.page), 1),
     pageSize: PAGE_SIZES.has(pageSize) ? pageSize as WorkbenchListState['pageSize'] : 20,
@@ -91,6 +107,8 @@ export function parseWorkbenchListState(
     assignedToUserId: validAssignee ? assignee : '',
     assignedToAccountId: validAssignee ? assigneeAccountId : null,
     createdByRole: allowAdminFilters && role && CREATOR_ROLES.has(role) ? role : 'ALL',
+    createdDateFrom,
+    createdDateTo,
     personalScope: personalScope && PERSONAL_SCOPES.has(personalScope) ? personalScope : 'ALL',
     state: state && TASK_STATES.has(state) ? state : 'ALL',
     attention: allowAdminFilters && attention && ATTENTION.has(attention) ? attention : 'NONE',
@@ -118,6 +136,8 @@ export function workbenchListSearch(state: WorkbenchListState, { includeAdminFil
       search.set('assignedToAccountId', String(state.assignedToAccountId));
     }
     if (state.createdByRole !== 'ALL') search.set('createdByRole', state.createdByRole);
+    if (state.createdDateFrom) search.set('createdDateFrom', state.createdDateFrom);
+    if (state.createdDateTo) search.set('createdDateTo', state.createdDateTo);
     if (state.attention !== 'NONE') search.set('attention', state.attention);
   }
   if (state.taskId) search.set('taskId', String(state.taskId));

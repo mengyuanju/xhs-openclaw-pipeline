@@ -67,7 +67,9 @@ import { normalizePreparedDeliveryExport } from '../delivery-pool/types';
 import { OperatorDeliveryHistory } from './operator-delivery-history';
 import { personalStateFilterStates } from './personal-state-filters';
 import { isLegacyTaskStateFilterError } from './task-list-compatibility';
+import { shanghaiCalendarDate } from '../../src/control-plane/task-date-filter.mjs';
 import { useStatistics } from '../workbench-statistics/use-statistics';
+import type { PersonalStatisticsRange } from '../workbench-statistics/types';
 import {
   DEFAULT_WORKBENCH_LIST_STATE,
   workbenchListSearch,
@@ -762,6 +764,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   const pathname = usePathname();
   const activeDefinition = WORKBENCH_VIEWS.find((view) => view.key === activeView)!;
   const isAllJobs = activeView === 'ALL_JOBS';
+  const defaultCreatedDate = useMemo(() => shanghaiCalendarDate(), []);
   const canUseQueryPackageFilter = role !== 'USER';
   const executorColumnLabel = activeView === 'IMAGE_WORK' ? '生图执行机' : '文案执行机';
   const confirm = useConfirmDialog();
@@ -792,11 +795,17 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     && initialListState.assignedToAccountId && isAllJobs
     ? { id: initialListState.assignedToAccountId, username: initialListState.assignedToUserId,
         displayName: initialListState.assignedToUserId, role: '', status: 'ACTIVE' } : null);
+  const [createdDateFrom, setCreatedDateFrom] = useState(
+    isAllJobs ? initialListState.createdDateFrom || defaultCreatedDate : '',
+  );
+  const [createdDateTo, setCreatedDateTo] = useState(
+    isAllJobs ? initialListState.createdDateTo || defaultCreatedDate : '',
+  );
   const [stateFilter, setStateFilter] = useState(initialListState.state);
   const [personalScope, setPersonalScope] = useState<PersonalTaskScope>(
     activeView === 'PERSONAL' ? initialListState.personalScope : 'ALL',
   );
-  const [personalStatisticsPeriod, setPersonalStatisticsPeriod] = useState<'7d' | '30d'>('7d');
+  const [personalStatisticsRange, setPersonalStatisticsRange] = useState<PersonalStatisticsRange>({ period: 'today' });
   const [attentionFilter, setAttentionFilter] = useState<TaskAttention>(initialListState.attention);
   const [fetchError, setFetchError] = useState('');
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
@@ -849,7 +858,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   const effectiveSkipCopyReview = copyReviewBypassAllowed && skipCopyReview;
   const duplicateQueryCleanupBusy = duplicateQueryPreviewing || duplicateQueryDiscarding;
   const personalStatistics = useStatistics(
-    { scope: 'personal', period: personalStatisticsPeriod },
+    { scope: 'personal', ...personalStatisticsRange },
     activeView === 'PERSONAL',
   );
   const currentAdmin = useMemo<JobCreator>(() => ({
@@ -880,7 +889,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       const paginationScope = JSON.stringify([
         activeView, creatorUserId, creatorAccountId, pageSize, creatorFilter?.username,
         creatorFilter?.id, assigneeFilter?.username, assigneeFilter?.id, creatorRoleFilter,
-        personalScope, stateFilter, searchKeyword, queryPackageName,
+        createdDateFrom, createdDateTo, personalScope, stateFilter, searchKeyword, queryPackageName,
         deduplicateQuery, sort, priorityMode, attentionFilter, role,
       ]);
       if (taskPageCursors.current.scope !== paginationScope) {
@@ -924,6 +933,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         assignedToUserId: assigneeFilter?.username,
         assignedToAccountId: assigneeFilter?.id ?? undefined,
         createdByRole: creatorRoleFilter === 'ALL' ? undefined : creatorRoleFilter,
+        createdDateFrom: createdDateFrom || undefined,
+        createdDateTo: createdDateTo || undefined,
         state: stateFilter === 'ALL' ? undefined : stateFilter,
         taskId: searchedTaskId ?? undefined,
         query: searchedTaskId ? undefined : searchKeyword,
@@ -1042,7 +1053,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       }
     }
   }, [activeDefinition, creatorUserId, creatorAccountId, page, pageSize, isAllJobs, creatorFilter,
-    assigneeFilter, creatorRoleFilter, personalScope, stateFilter, searchKeyword, queryPackageName,
+    assigneeFilter, creatorRoleFilter, createdDateFrom, createdDateTo, personalScope, stateFilter, searchKeyword, queryPackageName,
     deduplicateQuery, sort, priorityMode, attentionFilter, role, canUseQueryPackageFilter]);
 
   useEffect(() => {
@@ -1059,6 +1070,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       assignedToUserId: isAllJobs ? assigneeFilter?.username ?? '' : '',
       assignedToAccountId: isAllJobs ? assigneeFilter?.id ?? null : null,
       createdByRole: isAllJobs ? creatorRoleFilter : 'ALL',
+      createdDateFrom: isAllJobs ? createdDateFrom : '',
+      createdDateTo: isAllJobs ? createdDateTo : '',
       personalScope: activeView === 'PERSONAL' ? personalScope : 'ALL',
       state: activeView === 'PERSONAL' || isAllJobs ? stateFilter : 'ALL',
       attention: isAllJobs ? attentionFilter : 'NONE',
@@ -1068,7 +1081,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     if (`${window.location.pathname}${window.location.search}` !== href) {
       router.replace(href, { scroll: false });
     }
-  }, [activeView, assigneeFilter, attentionFilter, creatorFilter, creatorRoleFilter, deduplicateQuery, isAllJobs,
+  }, [activeView, assigneeFilter, attentionFilter, creatorFilter, creatorRoleFilter, createdDateFrom, createdDateTo, deduplicateQuery, isAllJobs,
     page, pageSize, pathname, queryPackageName, role, router, searchKeyword, selectedTaskId, sort, stateFilter,
     canUseQueryPackageFilter, personalScope]);
 
@@ -1144,6 +1157,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   const hasFilters = Boolean(searchInput || searchKeyword
     || canUseQueryPackageFilter && (queryPackageInput || queryPackageName)
     || deduplicateQuery || creatorFilter || assigneeFilter || creatorRoleFilter !== 'ALL'
+    || createdDateFrom || createdDateTo
     || personalScope !== 'ALL'
     || stateFilter !== 'ALL' || attentionFilter !== 'NONE');
   const searchScopeLabel = [
@@ -1162,6 +1176,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       assignedToUserId: isAllJobs ? assigneeFilter?.username ?? '' : '',
       assignedToAccountId: isAllJobs ? assigneeFilter?.id ?? null : null,
       createdByRole: isAllJobs ? creatorRoleFilter : 'ALL',
+      createdDateFrom: isAllJobs ? createdDateFrom : '',
+      createdDateTo: isAllJobs ? createdDateTo : '',
       personalScope: activeView === 'PERSONAL' ? personalScope : 'ALL',
       state: activeView === 'PERSONAL' || isAllJobs ? stateFilter : 'ALL',
       attention: isAllJobs ? attentionFilter : 'NONE',
@@ -1179,6 +1195,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     setCreatorRoleFilter(DEFAULT_WORKBENCH_LIST_STATE.createdByRole);
     setCreatorFilter(null);
     setAssigneeFilter(null);
+    setCreatedDateFrom(isAllJobs ? defaultCreatedDate : DEFAULT_WORKBENCH_LIST_STATE.createdDateFrom);
+    setCreatedDateTo(isAllJobs ? defaultCreatedDate : DEFAULT_WORKBENCH_LIST_STATE.createdDateTo);
     setPersonalScope(DEFAULT_WORKBENCH_LIST_STATE.personalScope);
     setStateFilter(DEFAULT_WORKBENCH_LIST_STATE.state);
     setAttentionFilter(DEFAULT_WORKBENCH_LIST_STATE.attention);
@@ -1208,6 +1226,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
           displayName: view.filters.assignedToUserId === creatorUserId ? '我' : view.filters.assignedToUserId,
           role: '', status: 'ACTIVE' }
       : null);
+    setCreatedDateFrom(isAllJobs ? view.filters.createdDateFrom ?? '' : '');
+    setCreatedDateTo(isAllJobs ? view.filters.createdDateTo ?? '' : '');
     setPersonalScope(activeView === 'PERSONAL' ? view.filters.personalScope ?? 'ALL' : 'ALL');
     setStateFilter(activeView === 'PERSONAL' || isAllJobs ? view.filters.state : 'ALL');
     setAttentionFilter(isAllJobs ? view.filters.attention : 'NONE');
@@ -1929,13 +1949,14 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       }}
     />
     {activeView === 'PERSONAL' && <PersonalWorkbenchNavigation
-      period={personalStatisticsPeriod}
+      range={personalStatisticsRange}
       statistics={personalStatistics}
       filter={stateFilter}
       scope={personalScope}
-      onPeriod={setPersonalStatisticsPeriod}
+      onRange={setPersonalStatisticsRange}
       onFilter={(value) => { setStateFilter(value); setPage(1); }}
       onScope={(value) => { setPersonalScope(value); setPage(1); }}
+      onTaskSelect={setSelectedTaskId}
     />}
     {operatorDeliveryMode && <OperatorDeliveryHistory refreshKey={deliveryHistoryVersion} />}
     <section className="panel workbench-task-panel">
@@ -2057,11 +2078,23 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         state={stateFilter}
         creator={creatorFilter}
         assignee={assigneeFilter}
+        createdDateFrom={createdDateFrom}
+        createdDateTo={createdDateTo}
         stateLabels={STATE_LABELS}
         onCreatorChange={(value) => { setCreatorFilter(value); setPage(1); }}
         onAssigneeChange={(value) => { setAssigneeFilter(value); setPage(1); }}
         onRoleChange={(value) => { setCreatorRoleFilter(value); setPage(1); }}
         onStateChange={(value) => { setStateFilter(value); setPage(1); }}
+        onCreatedDateFromChange={(value) => {
+          setCreatedDateFrom(value);
+          if (value && createdDateTo && value > createdDateTo) setCreatedDateTo(value);
+          setPage(1);
+        }}
+        onCreatedDateToChange={(value) => {
+          setCreatedDateTo(value);
+          if (value && createdDateFrom && value < createdDateFrom) setCreatedDateFrom(value);
+          setPage(1);
+        }}
       />}
       {role === 'ADMIN' && <div className="workbench-admin-list-controls">
         {role === 'ADMIN' && <div className="workbench-saved-views">

@@ -7,10 +7,19 @@ export type Worker = { accountId: number | null; username: string | null; displa
 export type Person = Worker & Counts & {
   receivedInPeriod: number; todayReceived: number; stale: number; legacyFallback: number;
 };
+export type CompletedWorkTask = {
+  id: number; query: string; state: string; stages: Array<'COPY' | 'IMAGE'>;
+  copyCompletedAt: string | null; imageCompletedAt: string | null; latestCompletedAt: string;
+};
+export type CompletedWork = {
+  total: number; copy: number; image: number; overlap: number;
+  states: Record<string, number>; tasks: CompletedWorkTask[];
+};
 export type Summary = Counts & {
   states: Record<StateGroup, number>; copyQaReturned: number; people?: Person[];
   trend: { date: string; created: number; completed: number }[];
   missingDates: number; staleCount: number; legacyOwnerFallback: number;
+  completedWork?: CompletedWork;
   stale?: { id: number; query: string; username: string | null; hours: number }[];
 };
 export type Distribution = { samples: number; meanMs: number | null; medianMs: number | null; p90Ms: number | null };
@@ -39,4 +48,5 @@ export type Statistics = {
   updatedAt: string | null; notice: string | null; retryAfterMs: number;
 };
 export type Period = 'today' | '7d' | '30d' | 'custom';
+export type PersonalStatisticsRange = { period: Period; from?: string; to?: string };
 export type Filters = { scope: 'personal' | 'admin'; period: Period; from?: string; to?: string; username?: string; workerAccountId?: number; role?: string; details?: boolean };

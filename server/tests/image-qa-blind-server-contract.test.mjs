@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { imageQaItemFrom } from '../src/image-quality-control.mjs';
+import { imageQaItemFrom, listImageQaItems } from '../src/image-quality-control.mjs';
 
 function databaseRow() {
   return {
@@ -42,4 +42,68 @@ test('image QA server ignores blind redaction for administrators only', () => {
   for (const key of ['taskId', 'query', 'productionBatch', 'submitter', 'imageRunId', 'copyRevisionId']) {
     assert.equal(Object.hasOwn(reviewer, key), false, key);
   }
+});
+
+test('administrator can act on their own submitted image while reviewers still cannot', () => {
+  const row = { ...databaseRow(), submitter_account_id: 1, assigned_review_account_id: 1 };
+  const admin = imageQaItemFrom(row, { userId: 1, username: 'admin', role: 'ADMIN' });
+  const reviewer = imageQaItemFrom({ ...row, submitter_account_id: 91, assigned_review_account_id: 91 }, {
+    userId: 91, username: 'reviewer', role: 'REVIEWER',
+  });
+
+  assert.equal(admin.capabilities.canPass, true);
+  assert.equal(admin.capabilities.canReturnSingle, true);
+  assert.equal(reviewer.capabilities.canPass, false);
+  assert.equal(reviewer.capabilities.canReturnSingle, false);
+});
+
+function imageListPool(actor) {
+  let listCall = null;
+  const client = {
+    async query(sql, values = []) {
+      const source = String(sql).replace(/\s+/gu, ' ').trim();
+      if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(source)) return { rows: [] };
+      if (source.startsWith('SELECT id, username, role FROM app_users')) {
+        return { rows: [{ id: actor.userId, username: actor.username, role: actor.role }] };
+      }
+      throw new Error(`unexpected client SQL: ${source}`);
+    },
+    release() {},
+  };
+  return {
+    get listCall() { return listCall; },
+    pool: {
+      connect: async () => client,
+      query: async (sql, values = []) => {
+        const source = String(sql).replace(/\s+/gu, ' ').trim();
+        if (source === 'SELECT * FROM workflow_quality_settings WHERE singleton = 1') return { rows: [] };
+        listCall = { sql: source, values };
+        return { rows: [databaseRow()] };
+      },
+    },
+  };
+}
+
+test('administrator image QA list filters by submitter display name or account name', async () => {
+  const admin = { userId: 1, username: 'admin', role: 'ADMIN' };
+  const fixture = imageListPool(admin);
+
+  const result = await listImageQaItems(fixture.pool, { personName: '  图片   作业员  ' }, admin);
+
+  assert.equal(result.items.length, 1);
+  assert.deepEqual(fixture.listCall.values.slice(0, 5), [1, 'PENDING', 50, 0, '图片 作业员']);
+  assert.match(fixture.listCall.sql,
+    /strpos\(lower\(item\.submitter_username\), lower\(\$5\)\)[\s\S]*person_filter\.display_name/u);
+  assert.match(fixture.listCall.sql, /edit\.status = ANY\(\$6::text\[\]\)/u);
+});
+
+test('reviewers cannot request the administrator personnel filter for image QA', async () => {
+  const reviewer = { userId: 91, username: 'reviewer', role: 'REVIEWER' };
+  const fixture = imageListPool(reviewer);
+
+  await assert.rejects(
+    listImageQaItems(fixture.pool, { personName: '图片作业员' }, reviewer),
+    (error) => error?.code === 'FORBIDDEN',
+  );
+  assert.equal(fixture.listCall, null);
 });

@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { planCopyQualityChunk, copyQualityImageGate } from '../src/copy-quality-flow.mjs';
+import { startTemporaryPostgres18 } from './temporary-postgres18.mjs';
+
+const RUN_POSTGRES_E2E = process.env.RUN_POSTGRES_E2E === '1';
 
 test('sampling integer boundaries, full inspection, closing tails and per-account carry', () => {
   assert.deepEqual(planCopyQualityChunk({ count: 0, rateBps: 2000 }), { memberCount: 0, sampleCount: 0, remainder: 0 });
@@ -21,19 +24,27 @@ test('sampling integer boundaries, full inspection, closing tails and per-accoun
 });
 
 test('real PostgreSQL quality flow: isolation, concurrent freeze, batch return, recheck and final gate', {
-  skip: !process.env.COPY_QUALITY_TEST_DATABASE_URL,
+  skip: !process.env.COPY_QUALITY_TEST_DATABASE_URL && !RUN_POSTGRES_E2E,
 }, async t => {
   const { default: pg } = await import('pg');
   const { applyMigrations, loadMigrations } = await import('../src/database-migrations.mjs');
   const qa = await import('../src/copy-quality-control.mjs');
-  const url = new URL(process.env.COPY_QUALITY_TEST_DATABASE_URL);
+  const temporaryPostgres = process.env.COPY_QUALITY_TEST_DATABASE_URL
+    ? null
+    : await startTemporaryPostgres18('xhs-copy-quality-pg18-');
+  const url = new URL(process.env.COPY_QUALITY_TEST_DATABASE_URL ?? temporaryPostgres.connectionString);
   assert.ok(['127.0.0.1', 'localhost'].includes(url.hostname), 'test database must be local');
   const admin = new pg.Pool({ connectionString: url.href });
   const name = `qc_test_${randomUUID().replaceAll('-', '')}`;
   await admin.query(`CREATE DATABASE ${name}`);
   url.pathname = `/${name}`;
   const pool = new pg.Pool({ connectionString: url.href });
-  t.after(async () => { await pool.end(); await admin.query(`DROP DATABASE ${name}`); await admin.end(); });
+  t.after(async () => {
+    await pool.end();
+    await admin.query(`DROP DATABASE ${name}`);
+    await admin.end();
+    if (temporaryPostgres) await temporaryPostgres.stop();
+  });
   // Exercise the merged production schema: 0053 reconciles the priority queue
   // assignments from 0050 with the account permissions introduced by 0051.
   const migrations = await loadMigrations();
@@ -63,8 +74,11 @@ test('real PostgreSQL quality flow: isolation, concurrent freeze, batch return, 
   }
   const [alice, bob, inspector] = actors;
   await pool.query('UPDATE workflow_quality_settings SET copy_sampling_enabled = true, copy_sampling_rate_bps = 2000');
-  const batch = (await pool.query(`INSERT INTO production_batches(public_id, query_package_name, created_by_username, request_id, request_fingerprint)
-    VALUES ($1, 'test', 'admin', $2, $3) RETURNING *`, [randomUUID(), randomUUID(), '0'.repeat(64)])).rows[0];
+  const batch = (await pool.query(`INSERT INTO production_batches(
+      public_id, client_batch_code, query_package_name,
+      created_by_username, request_id, request_fingerprint
+    ) VALUES ($1, '11111111111111111111111111111111', 'test', 'admin', $2, $3) RETURNING *`,
+  [randomUUID(), randomUUID(), '0'.repeat(64)])).rows[0];
   const tasks = [];
   for (let n = 0; n < 12; n++) {
     const task = (await pool.query(`INSERT INTO tasks(query, created_by_node_id, copy_executor_node_id, state, production_batch_id, assigned_to_user_id, assignment_source, assigned_at)
@@ -116,6 +130,107 @@ test('real PostgreSQL quality flow: isolation, concurrent freeze, batch return, 
   assert.equal(result.releasedTaskIds.length, 5);
   assert.deepEqual(await qa.passCopyQaItem(pool, item.public_id, passInput, inspector), result);
   assert.equal(Number((await pool.query("SELECT count(*) FROM tasks WHERE state = 'IMAGE_QUEUED'")).rows[0].count), 5);
+  // An admin image-only retry may create an approved PLAN_EDIT revision after
+  // copy QA. Its explicit inheritance keeps the original verdict and image gate.
+  const inheritedEntry = tasks.slice(0, 5)
+    .find(entry => Number(entry.task.id) !== Number(item.task_id));
+  const inheritedSource = (await pool.query(
+    'SELECT * FROM copy_revisions WHERE id = $1',
+    [inheritedEntry.revision.id],
+  )).rows[0];
+  const inheritedItemBefore = (await pool.query(
+    'SELECT status FROM copy_sampling_items WHERE task_id = $1 AND copy_revision_id = $2',
+    [inheritedEntry.task.id, inheritedSource.id],
+  )).rows[0].status;
+  await pool.query(`UPDATE tasks SET state = 'MANUAL_ARCHIVE', current_stage = 'MANUAL_ARCHIVE'
+    WHERE id = $1`, [inheritedEntry.task.id]);
+  const inheritedTarget = (await pool.query(`
+    INSERT INTO copy_revisions(
+      task_id, revision, parent_revision_id, content, approved_at,
+      revision_origin, approval_mode
+    ) VALUES ($1, 2, $2, $3, now(), 'PLAN_EDIT', 'MANUAL')
+    RETURNING *
+  `, [inheritedEntry.task.id, inheritedSource.id, {
+    ...inheritedSource.content,
+    imagePlan: [{ kind: 'hero', headline: '修正规划', subtitle: '', bullets: ['一', '二'], prompt: '修正图片规划' }],
+    imageRevision: {
+      version: 1,
+      operation: 'REGENERATE',
+      planEdited: true,
+      baseRevisionId: Number(inheritedSource.id),
+      baseImageRunId: randomUUID(),
+      actorUsername: 'inspector',
+      createdAt: new Date().toISOString(),
+    },
+  }])).rows[0];
+  await pool.query(`
+    INSERT INTO copy_qc_revision_inheritances(
+      target_revision_id, task_id, source_revision_id,
+      inherited_by_account_id, inherited_by_username, reason
+    ) VALUES ($1, $2, $3, $4, $5, 'IMAGE_PLAN_RETRY')
+  `, [inheritedTarget.id, inheritedEntry.task.id, inheritedSource.id,
+    inspector.userId, inspector.username]);
+  const inheritedTask = (await pool.query(`
+    UPDATE tasks SET state = 'IMAGE_QUEUED', current_stage = 'IMAGE_QUEUED',
+      current_copy_revision_id = $2, current_image_run_id = NULL
+    WHERE id = $1 RETURNING *
+  `, [inheritedEntry.task.id, inheritedTarget.id])).rows[0];
+  assert.equal(inheritedTask.state, 'IMAGE_QUEUED');
+  assert.equal(inheritedTask.mandatory_copy_qc, false);
+  assert.equal(Number(inheritedTask.copy_qc_released_revision_id), Number(inheritedTarget.id));
+  assert.equal((await pool.query(
+    'SELECT status FROM copy_sampling_items WHERE task_id = $1 AND copy_revision_id = $2',
+    [inheritedEntry.task.id, inheritedSource.id],
+  )).rows[0].status, inheritedItemBefore);
+  assert.equal((await pool.query(
+    `SELECT ${copyQualityImageGate('task')} AS ok FROM tasks task WHERE id = $1`,
+    [inheritedEntry.task.id],
+  )).rows[0].ok, true);
+  await pool.query(`UPDATE tasks SET state = 'MANUAL_ARCHIVE', current_stage = 'MANUAL_ARCHIVE'
+    WHERE id = $1`, [inheritedEntry.task.id]);
+  const untrustedContent = structuredClone(inheritedTarget.content);
+  delete untrustedContent.imageRevision;
+  untrustedContent.imagePlan = [
+    { kind: 'hero', headline: '无来源规划', subtitle: '', bullets: ['一', '二'], prompt: '无来源图片规划' },
+  ];
+  const untrustedTarget = (await pool.query(`
+    INSERT INTO copy_revisions(
+      task_id, revision, parent_revision_id, content, approved_at,
+      revision_origin, approval_mode
+    ) VALUES ($1, 3, $2, $3, now(), 'PLAN_EDIT', 'MANUAL')
+    RETURNING *
+  `, [inheritedEntry.task.id, inheritedTarget.id, untrustedContent])).rows[0];
+  await assert.rejects(pool.query(`
+    INSERT INTO copy_qc_revision_inheritances(
+      target_revision_id, task_id, source_revision_id,
+      inherited_by_account_id, inherited_by_username, reason
+    ) VALUES ($1, $2, $3, $4, $5, 'IMAGE_PLAN_RETRY')
+  `, [untrustedTarget.id, inheritedEntry.task.id, inheritedTarget.id,
+    inspector.userId, inspector.username]), { code: '23514' });
+  const tamperedTarget = (await pool.query(`
+    INSERT INTO copy_revisions(
+      task_id, revision, parent_revision_id, content, approved_at,
+      revision_origin, approval_mode
+    ) VALUES ($1, 4, $2, $3, now(), 'PLAN_EDIT', 'MANUAL')
+    RETURNING *
+  `, [inheritedEntry.task.id, inheritedTarget.id, {
+    ...inheritedTarget.content,
+    copy: { ...inheritedTarget.content.copy, title: '借图片返修偷改文案' },
+    imageRevision: {
+      ...inheritedTarget.content.imageRevision,
+      baseRevisionId: Number(inheritedTarget.id),
+      createdAt: new Date().toISOString(),
+    },
+  }])).rows[0];
+  await assert.rejects(pool.query(`
+    INSERT INTO copy_qc_revision_inheritances(
+      target_revision_id, task_id, source_revision_id,
+      inherited_by_account_id, inherited_by_username, reason
+    ) VALUES ($1, $2, $3, $4, $5, 'IMAGE_PLAN_RETRY')
+  `, [tamperedTarget.id, inheritedEntry.task.id, inheritedTarget.id,
+    inspector.userId, inspector.username]), { code: '23514' });
+  await pool.query(`UPDATE tasks SET state = 'IMAGE_QUEUED', current_stage = 'IMAGE_QUEUED'
+    WHERE id = $1`, [inheritedEntry.task.id]);
   // A returned batch affects Bob only and retains the original reviewer.
   const preview = await qa.getCopyQaBatchReturnPreview(pool, freezes[1].public_id, inspector);
   const input = { requestId: randomUUID(), freezePublicId: freezes[1].public_id,
@@ -148,8 +263,31 @@ test('real PostgreSQL quality flow: isolation, concurrent freeze, batch return, 
   const changed = tasks.find(entry => Number(entry.task.id) === Number(item.task_id)).task;
   await pool.query('UPDATE tasks SET mandatory_copy_qc = true WHERE id = $1', [changed.id]);
   assert.equal((await pool.query(`SELECT ${copyQualityImageGate('task')} AS ok FROM tasks task WHERE id = $1`, [changed.id])).rows[0].ok, false);
-  const newer = (await pool.query('INSERT INTO copy_revisions(task_id, revision, content) VALUES ($1, 2, $2) RETURNING id', [changed.id, { copy: {} }])).rows[0];
-  await pool.query('UPDATE tasks SET current_copy_revision_id = $2, mandatory_copy_qc = false WHERE id = $1', [changed.id, newer.id]);
+  const changedSource = (await pool.query(
+    'SELECT * FROM copy_revisions WHERE id = $1',
+    [changed.current_copy_revision_id],
+  )).rows[0];
+  const newer = (await pool.query(`INSERT INTO copy_revisions(
+      task_id, revision, parent_revision_id, content, approved_at, revision_origin, approval_mode
+    ) VALUES ($1, 2, $2, $3, now(), 'PLAN_EDIT', 'MANUAL') RETURNING id`,
+  [changed.id, changedSource.id, {
+    ...changedSource.content,
+    imagePlan: [{ kind: 'hero', headline: '未授权继承', subtitle: '', bullets: ['一', '二'], prompt: '修改图片规划' }],
+    imageRevision: {
+      version: 1,
+      operation: 'REGENERATE',
+      planEdited: true,
+      baseRevisionId: Number(changedSource.id),
+      baseImageRunId: randomUUID(),
+      actorUsername: 'inspector',
+      createdAt: new Date().toISOString(),
+    },
+  }])).rows[0];
+  const blockedPlanEdit = (await pool.query(`UPDATE tasks SET current_copy_revision_id = $2,
+    state = 'IMAGE_QUEUED', current_stage = 'IMAGE_QUEUED', mandatory_copy_qc = false
+    WHERE id = $1 RETURNING *`, [changed.id, newer.id])).rows[0];
+  assert.equal(blockedPlanEdit.state, 'COPY_REVIEW_PENDING');
+  assert.equal(blockedPlanEdit.mandatory_copy_qc, true);
   assert.equal((await pool.query('SELECT status FROM copy_sampling_items WHERE id = $1', [item.id])).rows[0].status, 'SUPERSEDED');
   assert.notEqual((await pool.query(`SELECT ${copyQualityImageGate('task')} AS ok FROM tasks task WHERE id = $1`, [changed.id])).rows[0].ok, true);
   // Manual closure freezes an incomplete person's nonempty tail, never zero samples.

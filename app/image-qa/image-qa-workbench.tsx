@@ -3,6 +3,7 @@
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { Checkbox, Textarea } from '@/components/ui/input';
+import { SearchInput } from '@/components/ui/search-input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { CheckCircle2, EyeOff, ImageOff, Images, ListChecks, LoaderCircle, Maximize2, RefreshCw, RotateCcw, ShieldCheck } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -71,6 +72,8 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
   const settings = loadedSettings ?? DEFAULT_SETTINGS;
   const [items, setItems] = useState<ImageQaItem[]>([]);
   const [status, setStatus] = useState<ImageQaStatus>('PENDING');
+  const [personSearchInput, setPersonSearchInput] = useState('');
+  const [personName, setPersonName] = useState('');
   const [loading, setLoading] = useState(true);
   const [action, setAction] = useState('');
   const [error, setError] = useState('');
@@ -94,7 +97,9 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
     setLoading(true);
     setError('');
     try {
-      const payload = await apiRequest<unknown>(apiPath(`/v1/image-qa/items?status=${encodeURIComponent(status)}&limit=200&offset=0`));
+      const params = new URLSearchParams({ status, limit: '200', offset: '0' });
+      if (role === 'ADMIN' && personName) params.set('personName', personName);
+      const payload = await apiRequest<unknown>(apiPath(`/v1/image-qa/items?${params.toString()}`));
       const rows = payload && typeof payload === 'object' && Array.isArray((payload as { items?: unknown[] }).items)
         ? (payload as { items: unknown[] }).items : [];
       if (sequence !== loadSequenceRef.current) return;
@@ -110,7 +115,7 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
     } finally {
       if (sequence === loadSequenceRef.current) setLoading(false);
     }
-  }, [role, status]);
+  }, [personName, role, status]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -303,7 +308,20 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
             type="button" role="tab" aria-selected={status === option.value} aria-controls="image-qa-results"
             data-active={status === option.value} onClick={() => setStatus(option.value)}>{option.label}</Button>)}
         </nav>
-        <span className={qaStyles.scopeBadge}><ShieldCheck size={14} aria-hidden="true" />{role === 'ADMIN' ? '管理员完整视图' : '审核员盲评视图'}</span>
+        <div className={qaStyles.filterActions}>
+          {role === 'ADMIN' && <form className={qaStyles.personSearch} onSubmit={(event) => {
+            event.preventDefault();
+            setPersonName(personSearchInput.replace(/\s+/gu, ' ').trim());
+          }}>
+            <SearchInput aria-label="按人员姓名筛选全部图片质检项" maxLength={80} value={personSearchInput} onValueChange={setPersonSearchInput} placeholder="按图片提交人姓名或账号筛选" />
+            <Button unstyled className="button small" type="submit">应用人员</Button>
+            {personName && <Button unstyled className="button small" type="button" onClick={() => {
+              setPersonSearchInput('');
+              setPersonName('');
+            }}>清除人员</Button>}
+          </form>}
+          <span className={qaStyles.scopeBadge}><ShieldCheck size={14} aria-hidden="true" />{role === 'ADMIN' ? '管理员完整视图' : '审核员盲评视图'}</span>
+        </div>
       </div>
       {role === 'REVIEWER' && <p className={`notice ${styles.blindNotice}`}><EyeOff size={16} />质检员不能处理自己提交的图片；管理员不受自检限制。盲评开启时只显示匿名样本和成品图。</p>}
       <div id="image-qa-results" role="tabpanel" aria-labelledby={`image-qa-${status.toLowerCase()}-tab`} className={qaStyles.queueContent}>
@@ -325,7 +343,7 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
               <td data-label="类型"><span className="pill">{item.sampleKind === 'MANDATORY_RECHECK' ? '强制复检' : '随机抽检'}</span></td>
               <td data-label="状态"><span className={qaStyles.statusBadge} data-status={item.status}>{STATUS_LABELS[item.status] ?? '未知状态'}</span></td>
               <td data-label="成品页"><span className={qaStyles.imageCount}><Images size={15} aria-hidden="true" /><strong>{item.assets.length}</strong> 页</span></td>
-              <td data-label="来源"><span className={qaStyles.source}>{item.blindReview ? '匿名' : item.productionBatch?.queryPackageName || '独立任务'}</span></td>
+              <td data-label="来源"><span className={qaStyles.source}>{item.blindReview ? '匿名' : <>{item.productionBatch?.queryPackageName || '独立任务'}{item.submitter?.username ? <small>提交 @{item.submitter.username}</small> : null}</>}</span></td>
               <td data-label="操作"><div className={styles.actions}>
                 <Button unstyled className="button small" type="button" onClick={(event) => openDetail(item, event.currentTarget)}>查看图片</Button>
                 {item.capabilities.canReturnSingle && <Button unstyled className="button small" type="button" disabled={Boolean(action)} onClick={(event) => openReturn(item, undefined, event.currentTarget)}><RotateCcw size={14} />打回</Button>}

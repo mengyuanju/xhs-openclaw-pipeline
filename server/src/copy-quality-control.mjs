@@ -132,6 +132,16 @@ function normalizedQueryPackageNameFilter(value) {
   return name;
 }
 
+function normalizedPersonNameFilter(value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string') throw new TypeError('personName must be a string');
+  const name = value.replace(/\s+/gu, ' ').trim();
+  if (!name || [...name].length > 80) {
+    throw new RangeError('personName must contain between 1 and 80 characters');
+  }
+  return name;
+}
+
 function normalizedRequest(input, operation) {
   const requestId = normalizeUuid(input?.requestId, 'requestId');
   const reasonCodes = normalizedReasons(input?.reasonCodes);
@@ -183,6 +193,8 @@ function qaItemFrom(row, actor) {
   const approvedContent = blind
     ? blindApprovedContent(row.copy_content)
     : row.copy_content;
+  const canReviewOwnItem = actor.role === 'ADMIN'
+    || Number(row.final_approver_account_id) !== actor.userId;
   const common = {
     ...(row.system_priority === undefined ? {} : { prioritySummary: `${row.priority_paused ? '已暂停' : `生效 ${row.effective_priority}`} · 系统 ${row.system_priority} / 人工 ${row.manual_priority ?? '—'}` }),
     id: row.public_id,
@@ -200,8 +212,8 @@ function qaItemFrom(row, actor) {
       anonymousCode: opaqueCode('QCB', row.freeze_public_id),
     },
     capabilities: {
-      canPass: Number(row.final_approver_account_id) !== actor.userId && row.status === 'PENDING' && row.priority_paused !== true,
-      canReturnSingle: Number(row.final_approver_account_id) !== actor.userId && row.status === 'PENDING' && row.priority_paused !== true,
+      canPass: canReviewOwnItem && row.status === 'PENDING' && row.priority_paused !== true,
+      canReturnSingle: canReviewOwnItem && row.status === 'PENDING' && row.priority_paused !== true,
       canReturnBatch: row.priority_paused !== true,
     },
     createdAt: row.created_at,
@@ -795,6 +807,7 @@ const QA_ITEM_SQL = `
 export async function listCopyQaItems(pool, {
   status = 'PENDING',
   queryPackageName: rawQueryPackageName = null,
+  personName: rawPersonName = null,
   limit: rawLimit = 50,
   offset: rawOffset = 0,
 } = {}, rawActor) {
@@ -809,6 +822,10 @@ export async function listCopyQaItems(pool, {
   if (queryPackageName !== null && actor.role !== 'ADMIN') {
     throw new ControlPlaneAuthorizationError('只有管理员可以按词包名称筛选文案抽检项');
   }
+  const personName = normalizedPersonNameFilter(rawPersonName);
+  if (personName !== null && actor.role !== 'ADMIN') {
+    throw new ControlPlaneAuthorizationError('只有管理员可以按人员姓名筛选文案抽检项');
+  }
   const { limit, offset } = normalizeListPagination(rawLimit, rawOffset);
   await lockActiveQualityActor(pool, actor);
   await flushExpiredCopyQualityBatches(pool);
@@ -816,6 +833,17 @@ export async function listCopyQaItems(pool, {
   const packageFilter = queryPackageName === null ? '' : (() => {
     values.push(queryPackageName);
     return `AND strpos(lower(batch.query_package_name), lower($${values.length})) > 0`;
+  })();
+  const personFilter = personName === null ? '' : (() => {
+    values.push(personName);
+    return `AND (
+      strpos(lower(item.final_approver_username), lower($${values.length})) > 0
+      OR EXISTS (
+        SELECT 1 FROM app_users AS person_filter
+        WHERE person_filter.id = item.final_approver_account_id
+          AND strpos(lower(person_filter.display_name), lower($${values.length})) > 0
+      )
+    )`;
   })();
   values.push(limit, offset);
   const limitParameter = values.length - 1;
@@ -840,6 +868,7 @@ export async function listCopyQaItems(pool, {
         AND (item.status <> 'PENDING' OR (item.assigned_review_account_id = $2 AND task.priority_paused = false))))
       ${directApprovalFilter}
       ${packageFilter}
+      ${personFilter}
     ORDER BY task.priority_paused ASC, approver_queue_round ASC,
       task.priority_sort_at ASC, task.id ASC, item.id ASC
     LIMIT $${limitParameter} OFFSET $${offsetParameter}
@@ -1029,7 +1058,7 @@ async function passCopyQaItemWithMethod(pool, rawItemId, input, rawActor, review
     });
     const replay = await mutationReplay(client, actor, requestId, operation, fingerprint);
     if (replay) return replay;
-    if (Number(item.final_approver_account_id) === actor.userId) {
+    if (actor.role !== 'ADMIN' && Number(item.final_approver_account_id) === actor.userId) {
       throw new ControlPlaneAuthorizationError('不能质检自己最终通过的文案');
     }
     if (item.status !== 'PENDING' || item.task_state !== 'COPY_QC_PENDING'
@@ -1149,7 +1178,7 @@ export async function returnCopyQaItem(pool, rawItemId, input, rawActor, expecte
     if (expectedTaskId !== null && Number(item.task_id) !== normalizeTaskId(expectedTaskId)) {
       throw new ControlPlaneConflictError('STALE_QA_ITEM', '抽检项不属于指定任务');
     }
-    if (Number(item.final_approver_account_id) === actor.userId) {
+    if (actor.role !== 'ADMIN' && Number(item.final_approver_account_id) === actor.userId) {
       throw new ControlPlaneAuthorizationError('不能质检自己最终通过的文案');
     }
     if (item.status !== 'PENDING' || item.task_state !== 'COPY_QC_PENDING'
@@ -1441,7 +1470,8 @@ export async function batchReturnCopyQa(pool, input, rawActor) {
         || trigger.sample_kind !== 'RANDOM') {
       throw new ControlPlaneConflictError('INVALID_BATCH_TRIGGER', '整批打回必须指定本次确认错误的随机抽检项');
     }
-    if (eligible.rows.some(row => Number(row.final_approver_account_id) === actor.userId)) {
+    if (actor.role !== 'ADMIN'
+        && eligible.rows.some(row => Number(row.final_approver_account_id) === actor.userId)) {
       throw new ControlPlaneAuthorizationError('不能以自己最终通过的文案作为整批打回触发项');
     }
     if (eligible.rows.length !== itemIds.length

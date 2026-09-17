@@ -40,11 +40,14 @@ function actorHeaders(username, role = USERS[username]?.role, credentialVersion 
 // from the saved users, and filtering precedes pagination in this repository fake.
 function taskRepository(tasks = TASKS, users = USERS) {
   let listCalls = 0;
+  let lastFilters = null;
   return {
     get listCalls() { return listCalls; },
+    get lastFilters() { return lastFilters; },
     getUserByUsername: async (username) => users[username] ?? null,
     async listTasks(filters) {
       listCalls += 1;
+      lastFilters = filters;
       const states = [filters.state, ...(filters.states?.split(',') ?? [])].filter(Boolean);
       const matches = tasks.filter((task) => (
         (!filters.createdByRole || (users[task.createdByUserId]?.role ?? 'UNKNOWN') === filters.createdByRole)
@@ -170,6 +173,26 @@ test('ordinary users and reviewers cannot use creator role filtering', async () 
     }
     assert.equal(repository.listCalls, 0);
   });
+});
+
+test('creation date filters are administrator-only and reach the repository unchanged', async () => {
+  const repository = taskRepository();
+  await withServer(repository, async (root) => {
+    const admin = await fetch(`${root}/v1/tasks?createdDateFrom=2026-09-01&createdDateTo=2026-09-17`, {
+      headers: actorHeaders('admin'),
+    });
+    assert.equal(admin.status, 200);
+    assert.equal(repository.lastFilters.createdDateFrom, '2026-09-01');
+    assert.equal(repository.lastFilters.createdDateTo, '2026-09-17');
+
+    for (const username of ['alice', 'reviewer']) {
+      const denied = await fetch(`${root}/v1/tasks?createdDateFrom=2026-09-01`, {
+        headers: actorHeaders(username),
+      });
+      assert.equal(denied.status, 403);
+    }
+  });
+  assert.equal(repository.listCalls, 1);
 });
 
 test('assignee filters allow self-service without exposing another worker or the pending pool', async () => {

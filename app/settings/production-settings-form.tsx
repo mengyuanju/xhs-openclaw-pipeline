@@ -193,7 +193,7 @@ function ImageEditRepairSettings({
 }) {
   return <section className="panel settings-section" aria-labelledby="image-edit-repair-heading">
     <div className="panel-head">
-      <div><h2 id="image-edit-repair-heading">人工生成标识单次生成</h2><p className="subtle">标识只调用一次图片编辑模型，不使用蒙版或局部像素贴回；校验失败后不会自动二次修改。</p></div>
+      <div><h2 id="image-edit-repair-heading">图片模型标识单次生成</h2><p className="subtle">图片模型融合方式只调用一次图片编辑模型，不使用蒙版或局部像素贴回；校验失败后不会自动二次修改。SVG + Sharp 程序标识不使用此配置。</p></div>
     </div>
     <div className="form-grid compact-settings-grid">
       <div className="field">

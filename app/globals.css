@@ -510,7 +510,8 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .dialog-default-close { position: absolute; top: 14px; right: 14px; width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); background: white; cursor: pointer; }
 .dialog-default-close:hover { color: var(--ink); background: #f7f4ef; }
 .dialog-default-close:focus-visible { outline: 3px solid var(--control-ring); outline-offset: 2px; }
-.confirm-dialog-content { position: fixed; left: 50%; top: 50%; z-index: 101; width: min(calc(100vw - 32px), 460px); display: grid; gap: 22px; padding: 24px; border: 1px solid var(--line); border-radius: 14px; color: var(--ink); background: var(--surface); box-shadow: 0 28px 80px rgba(45,35,28,.22); outline: 0; }
+.confirm-dialog-overlay { z-index: 200; }
+.confirm-dialog-content { position: fixed; left: 50%; top: 50%; z-index: 201; width: min(calc(100vw - 32px), 460px); display: grid; gap: 22px; padding: 24px; border: 1px solid var(--line); border-radius: 14px; color: var(--ink); background: var(--surface); box-shadow: 0 28px 80px rgba(45,35,28,.22); outline: 0; }
 .confirm-dialog-header { display: grid; gap: 9px; }
 .confirm-dialog-title { margin: 0; font-family: Georgia, "Songti SC", serif; font-size: 20px; line-height: 1.3; }
 .confirm-dialog-description { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.75; white-space: pre-line; }
@@ -696,6 +697,56 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .personal-workbench-trend-heading { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
 .personal-workbench-trend-heading h3 { margin: 0; font-size: 14px; }
 .personal-workbench-statistics-content .job-stats-two-columns { margin-top: 16px; }
+.personal-completion { display: grid; gap: 16px; padding: 20px; }
+.personal-completion-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.personal-completion-heading h3 { margin: 1px 0 0; font-size: 17px; }
+.personal-completion-heading p { max-width: 620px; margin: 6px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.personal-completion-date-controls { display: flex; align-items: center; gap: 8px; }
+.personal-completion-date-controls .job-stats-segments { flex: none; }
+.personal-completion-date { position: relative; display: flex; align-items: center; }
+.personal-completion-date > svg { position: absolute; z-index: 1; left: 10px; color: var(--muted); pointer-events: none; }
+.personal-completion-date .input { width: 148px; min-height: 34px; padding-left: 31px; font-size: 11px; }
+.personal-completion-summary { display: grid; grid-template-columns: minmax(220px, .8fr) minmax(360px, 1.4fr); gap: 10px; }
+.personal-completion-primary-card, .personal-completion-action-card { min-width: 0; border: 1px solid var(--line); border-radius: 12px; background: #faf8f5; }
+.personal-completion-primary-card { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 12px; padding: 14px 16px; border-color: #e6aeb5; background: linear-gradient(135deg, #fff8f8, #fff); }
+.personal-completion-primary-card > span { color: #645c56; font-size: 12px; font-weight: 750; }
+.personal-completion-primary-card > strong { grid-row: 1 / 3; grid-column: 2; color: var(--red-dark); font-size: 32px; line-height: 1; font-variant-numeric: tabular-nums; }
+.personal-completion-primary-card > small, .personal-completion-action-card > small { color: var(--muted); font-size: 10px; line-height: 1.5; }
+.personal-completion-value-skeleton { width: 54px; height: 32px; }
+.personal-completion-action-card { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 18px; padding: 12px 16px; }
+.personal-completion-action-card > div { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 7px; min-width: 0; }
+.personal-completion-action-card > div + div { padding-left: 18px; border-left: 1px solid var(--line); }
+.personal-completion-action-card svg { color: var(--red-dark); }
+.personal-completion-action-card span { color: #645c56; font-size: 11px; font-weight: 700; }
+.personal-completion-action-card strong { font-size: 21px; font-variant-numeric: tabular-nums; }
+.personal-completion-action-card > small { grid-column: 1 / -1; }
+.personal-completion-section-heading { display: flex; align-items: end; justify-content: space-between; gap: 12px; padding-top: 2px; }
+.personal-completion-section-heading h4 { margin: 0; font-size: 13px; }
+.personal-completion-section-heading p { margin: 4px 0 0; color: var(--muted); font-size: 10px; }
+.personal-completion-states { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+.personal-completion-state-card { min-width: 0; display: grid; gap: 6px; padding: 10px 11px; border: 1px solid var(--line); border-radius: 10px; color: #5f5953; background: #fff; cursor: pointer; text-align: left; }
+.personal-completion-state-card:hover { border-color: #d8c6c5; background: #fffafa; }
+.personal-completion-state-card[aria-pressed="true"] { border-color: #de8e98; color: var(--red-dark); background: #fff2f3; box-shadow: inset 0 0 0 1px rgba(217,52,70,.05); }
+.personal-completion-state-card span { overflow: hidden; font-size: 10px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.personal-completion-state-card strong { font-size: 21px; line-height: 1; font-variant-numeric: tabular-nums; }
+.personal-completion-list-heading { padding-top: 5px; border-top: 1px solid var(--line); }
+.personal-completion-search { position: relative; display: flex; align-items: center; }
+.personal-completion-search > svg { position: absolute; z-index: 1; left: 10px; color: var(--muted); pointer-events: none; }
+.personal-completion-search .input { width: 220px; min-height: 34px; padding-left: 31px; font-size: 11px; }
+.personal-completion-task-list { overflow: hidden; border: 1px solid var(--line); border-radius: 11px; }
+.personal-completion-task { width: 100%; min-height: 45px; display: grid; grid-template-columns: 64px minmax(160px, 1fr) 110px 116px 108px; align-items: center; gap: 10px; padding: 8px 12px; border: 0; color: inherit; background: #fff; cursor: pointer; text-align: left; }
+.personal-completion-task + .personal-completion-task { border-top: 1px solid var(--line); }
+.personal-completion-task:hover { background: #fcfaf8; }
+.personal-completion-task:disabled { cursor: default; opacity: 1; }
+.personal-completion-task-id, .personal-completion-task time { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.personal-completion-task-query { overflow: hidden; font-size: 11px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.personal-completion-task-work { display: flex; gap: 4px; }
+.personal-completion-task-work [data-slot="badge"] { padding-inline: 6px; font-size: 9px; }
+.personal-completion-task-state { width: fit-content; max-width: 100%; overflow: hidden; padding: 4px 7px; border-radius: 999px; color: #6b544f; background: #f4eeeb; font-size: 9px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+.personal-completion-empty { margin: 0; padding: 26px 14px; color: var(--muted); font-size: 11px; text-align: center; }
+.personal-completion-loading { display: grid; gap: 1px; }
+.personal-completion-loading > * { height: 45px; border-radius: 0; }
+.personal-completion-more { justify-self: center; border: 0; color: var(--red-dark); background: transparent; cursor: pointer; font-size: 11px; font-weight: 750; }
 .workbench-attention-entry .button[aria-pressed="true"] { color: white; border-color: var(--red); background: var(--red); }
 .workbench-save-view-dialog { width: min(calc(100vw - 32px), 500px); display: grid; gap: 16px; padding: 24px; border: 1px solid var(--line); border-radius: 16px; color: var(--ink); background: var(--surface); }
 .workbench-save-view-dialog h2, .workbench-save-view-dialog p { margin: 0; }
@@ -929,10 +980,12 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .workbench-review-source-disclosure { gap: 0; }
 .workbench-review-dirty { color: var(--red-dark); font-weight: 600; }
 .workbench-review-section { display: grid; gap: 14px; padding: 18px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); }
-.workbench-review-section-title { display: flex; align-items: flex-start; gap: 10px; }
+.workbench-review-section-title { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px; }
+.workbench-review-section-title > div { min-width: 0; flex: 1 1 220px; }
 .workbench-review-section-title > span, .workbench-image-review-title-main > span { width: 28px; height: 28px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 8px; color: var(--red-dark); background: #ffe8eb; font-size: 10px; font-weight: 850; }
 .workbench-review-section-title h3 { margin: 1px 0 0; font-size: 15px; }
 .workbench-review-section-title p { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.workbench-image-plan-regenerate { margin-left: auto; flex: 0 0 auto; }
 .workbench-copy-fields { display: grid; grid-template-columns: 1fr; gap: 12px; }
 .workbench-copy-fields label, .workbench-image-plan-fields label { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .workbench-copy-fields label small, .workbench-image-plan-fields label small { color: var(--muted); font-size: 9px; font-weight: 500; }
@@ -1378,6 +1431,22 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
   .personal-workbench-advanced-content { position: static; width: 100%; margin-top: 8px; box-shadow: none; }
   .personal-workbench-count-note { padding-inline: 14px; }
   .personal-workbench-statistics { padding-inline: 14px; }
+  .personal-completion { padding: 16px 14px; }
+  .personal-completion-heading { align-items: stretch; flex-direction: column; }
+  .personal-completion-date-controls { align-items: stretch; flex-wrap: wrap; }
+  .personal-completion-date-controls .job-stats-segments { flex: 1 1 100%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .personal-completion-date .input { width: 100%; }
+  .personal-completion-date { width: 100%; }
+  .personal-completion-summary { grid-template-columns: minmax(0, 1fr); }
+  .personal-completion-states { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .personal-completion-list-heading { align-items: stretch; flex-direction: column; }
+  .personal-completion-search, .personal-completion-search .input { width: 100%; }
+  .personal-completion-task { grid-template-columns: 52px minmax(0, 1fr) auto; grid-template-rows: auto auto; gap: 6px 8px; padding: 10px; }
+  .personal-completion-task-id { grid-column: 1; grid-row: 1; }
+  .personal-completion-task-query { grid-column: 2 / 4; grid-row: 1; }
+  .personal-completion-task time { grid-column: 1; grid-row: 2; }
+  .personal-completion-task-work { grid-column: 2; grid-row: 2; }
+  .personal-completion-task-state { grid-column: 3; grid-row: 2; }
   .workbench-batch-actions { margin-inline: 12px; }
   .workbench-toolbar-actions { width: 100%; }
   .workbench-toolbar-actions .button { flex: 1; }

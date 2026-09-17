@@ -192,10 +192,12 @@ test('confirmation prompts use one accessible Radix alert dialog provider', asyn
   const paths = [
     'app/knowledge/knowledge-workbench.tsx',
     'app/prompts/prompt-editor.tsx',
+    'app/components/current-image-editor.tsx',
   ];
-  const [confirmation, frame, ...screens] = await Promise.all([
+  const [confirmation, frame, styles, ...screens] = await Promise.all([
     readFile(projectFile('components/ui/confirm-dialog.tsx'), 'utf8'),
     readFile(projectFile('app/components/app-frame.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
     ...paths.map((path) => readFile(projectFile(path), 'utf8')),
   ]);
 
@@ -206,6 +208,9 @@ test('confirmation prompts use one accessible Radix alert dialog provider', asyn
   assert.match(confirmation, /<AlertDialogPrimitive\.Description/);
   assert.match(confirmation, /returnFocusRef/);
   assert.match(confirmation, /requestAnimationFrame/);
+  assert.match(confirmation, /confirm-dialog-overlay/);
+  assert.match(styles, /\.confirm-dialog-overlay \{ z-index: 200; \}/u);
+  assert.match(styles, /\.confirm-dialog-content \{[^}]*z-index: 201;/u);
   assert.match(frame, /<ConfirmDialogProvider>/);
   for (const screen of screens) {
     assert.doesNotMatch(screen, /window\.confirm/);

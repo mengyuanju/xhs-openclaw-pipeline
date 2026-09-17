@@ -7,15 +7,17 @@ test('workbench list state safely round-trips filters and sorting through the UR
   const parsed = parseWorkbenchListState({
     page: '3', pageSize: '50', query: '  #42 ', queryPackageName: '  九月   选题  ', sort: 'createdAt:asc', deduplicateQuery: '1',
     createdByUserId: 'alice', createdByAccountId: '2', assignedToUserId: 'bob', assignedToAccountId: '3',
-    createdByRole: 'USER', personalScope: 'ASSIGNED', state: 'IMAGE_FAILED', attention: 'FAILED', taskId: '99',
+    createdByRole: 'USER', createdDateFrom: '2026-09-01', createdDateTo: '2026-09-17',
+    personalScope: 'ASSIGNED', state: 'IMAGE_FAILED', attention: 'FAILED', taskId: '99',
   }, { allowAdminFilters: true });
   assert.deepEqual(parsed, {
     page: 3, pageSize: 50, query: '#42', queryPackageName: '九月 选题', sort: 'createdAt:asc', deduplicateQuery: true,
     createdByUserId: 'alice', createdByAccountId: 2, assignedToUserId: 'bob', assignedToAccountId: 3,
-    createdByRole: 'USER', personalScope: 'ASSIGNED', state: 'IMAGE_FAILED', attention: 'FAILED', taskId: 99,
+    createdByRole: 'USER', createdDateFrom: '2026-09-01', createdDateTo: '2026-09-17',
+    personalScope: 'ASSIGNED', state: 'IMAGE_FAILED', attention: 'FAILED', taskId: 99,
   });
   assert.equal(workbenchListSearch(parsed, { includeAdminFilters: true }).toString(),
-    'page=3&pageSize=50&query=%2342&queryPackageName=%E4%B9%9D%E6%9C%88+%E9%80%89%E9%A2%98&sort=createdAt%3Aasc&deduplicateQuery=1&state=IMAGE_FAILED&personalScope=ASSIGNED&createdByUserId=alice&createdByAccountId=2&assignedToUserId=bob&assignedToAccountId=3&createdByRole=USER&attention=FAILED&taskId=99');
+    'page=3&pageSize=50&query=%2342&queryPackageName=%E4%B9%9D%E6%9C%88+%E9%80%89%E9%A2%98&sort=createdAt%3Aasc&deduplicateQuery=1&state=IMAGE_FAILED&personalScope=ASSIGNED&createdByUserId=alice&createdByAccountId=2&assignedToUserId=bob&assignedToAccountId=3&createdByRole=USER&createdDateFrom=2026-09-01&createdDateTo=2026-09-17&attention=FAILED&taskId=99');
 });
 
 test('workbench URL parsing drops invalid and unauthorized administrator filters', () => {
@@ -30,6 +32,8 @@ test('workbench URL parsing drops invalid and unauthorized administrator filters
   assert.equal(parsed.createdByUserId, '');
   assert.equal(parsed.createdByAccountId, null);
   assert.equal(parsed.createdByRole, 'ALL');
+  assert.equal(parsed.createdDateFrom, '');
+  assert.equal(parsed.createdDateTo, '');
   assert.equal(parsed.assignedToUserId, '');
   assert.equal(parsed.assignedToAccountId, null);
   assert.equal(parsed.personalScope, 'ALL');
@@ -49,6 +53,18 @@ test('personal quality-return filters round-trip through a shareable URL', () =>
   const parsed = parseWorkbenchListState({ state: 'copyQaReturned' });
   assert.equal(parsed.state, 'copyQaReturned');
   assert.equal(workbenchListSearch(parsed).toString(), 'state=copyQaReturned');
+});
+
+test('workbench URLs reject invalid or reversed administrator date ranges', () => {
+  for (const search of [
+    { createdDateFrom: '2026-02-30' },
+    { createdDateFrom: '2026-09-18', createdDateTo: '2026-09-17' },
+    { createdDateTo: "2026-09-17' OR true--" },
+  ]) {
+    const parsed = parseWorkbenchListState(search, { allowAdminFilters: true });
+    assert.equal(parsed.createdDateFrom, '');
+    assert.equal(parsed.createdDateTo, '');
+  }
 });
 
 test('simplified personal work stages round-trip through shareable URLs', () => {

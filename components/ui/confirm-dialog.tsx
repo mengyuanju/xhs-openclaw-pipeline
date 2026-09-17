@@ -71,7 +71,7 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
         }}
       >
         <AlertDialogPrimitive.Portal>
-          <AlertDialogPrimitive.Overlay className="dialog-overlay fixed inset-0 z-50" />
+          <AlertDialogPrimitive.Overlay className="dialog-overlay confirm-dialog-overlay fixed inset-0 z-50" />
           <AlertDialogPrimitive.Content className="confirm-dialog-content fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2">
             <div className="confirm-dialog-header">
               <AlertDialogPrimitive.Title className="confirm-dialog-title">

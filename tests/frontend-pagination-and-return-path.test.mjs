@@ -66,7 +66,9 @@ test('copy QA requests the selected status from the server and exposes load-more
   assert.match(source, /const params = new URLSearchParams\(\{[\s\S]*?status,[\s\S]*?limit: String\(COPY_QA_LIST_LIMIT\),[\s\S]*?offset: String\(offset\)/u);
   assert.match(source, /copy-qa\/items\?\$\{params\.toString\(\)\}/u);
   assert.match(source, /role === 'ADMIN' && queryPackageName[\s\S]*params\.set\('queryPackageName', queryPackageName\)/u);
+  assert.match(source, /role === 'ADMIN' && personName[\s\S]*params\.set\('personName', personName\)/u);
   assert.match(source, /aria-label="按词包名称筛选全部抽检项"/u);
+  assert.match(source, /aria-label="按人员姓名筛选全部文案质检项"/u);
   assert.match(source, /!item\.blindReview && <small>词包：\{item\.productionBatch\.queryPackageName \?\? '未归属词包'\}/u);
   assert.match(source, /!detail\.blindReview && <section[\s\S]*词包名称[\s\S]*detail\.productionBatch\.queryPackageName/u);
   assert.match(source, /load\(\{ silent: true, offset: nextOffset \}\)/u);

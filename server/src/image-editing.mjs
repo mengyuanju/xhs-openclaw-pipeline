@@ -38,8 +38,8 @@ export function normalizeEdit(input) {
   const allowed = ['requestId','batchId','sourceImageRunId','sourceAssetId','copyRevisionId','sha256','targetPage','operation','instruction','preserve','negative','overlay','mask','target','references','referenceMode','confirmation','draft','restoreRunId'];
   if(Object.keys(input).some(k => !allowed.includes(k))) throw new TypeError('未知修改参数');
   const operation = input.operation;
-  if(!['TEXT','COMPOSITE','AI_FUSION','AI_FULL','AI_LOCAL','RESTORE'].includes(operation)) throw new TypeError('修改类型无效');
-  if(input.batchId != null && operation !== 'TEXT') throw new TypeError('只有人工生成标识支持整套批次');
+  if(!['TEXT','SVG_DISCLOSURE','COMPOSITE','AI_FUSION','AI_FULL','AI_LOCAL','RESTORE'].includes(operation)) throw new TypeError('修改类型无效');
+  if(input.batchId != null && !['TEXT','SVG_DISCLOSURE'].includes(operation)) throw new TypeError('只有人工生成标识支持整套批次');
   const usesBillableModel = operation === 'TEXT' || operation.startsWith('AI_');
   const draft=input.draft===true,confirmed=input.confirmation==='LIVE_IMAGE_COST_ACCEPTED';
   if(usesBillableModel && !draft && !confirmed) throw new TypeError('请确认图片编辑或视觉校验模型费用');
@@ -68,8 +68,11 @@ export function normalizeEdit(input) {
     if(region.width < 24 || region.height < 24) throw new TypeError('目标框选区域过小');
     target={description:shortText(value.description,500),region};
   }
-  const overlay=operation === 'TEXT' ? normalizeManualOverlay({...input.overlay,textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',
+  const normalizedOverlay=['TEXT','SVG_DISCLOSURE'].includes(operation) ? normalizeManualOverlay({...input.overlay,textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',
     size:32,margin:32,opacity:1,color:'#ffffff',background:'#111827',position:'bottom-right'}) : null;
+  const overlay=operation==='SVG_DISCLOSURE'
+    ?{text:normalizedOverlay.text,textType:normalizedOverlay.textType,disclosureType:normalizedOverlay.disclosureType,position:'bottom-right'}
+    :normalizedOverlay;
   return { requestId: normalizeUuid(input.requestId,'requestId'),
     ...(input.batchId == null ? {} : { batchId: normalizeUuid(input.batchId,'batchId') }),
     sourceImageRunId: normalizeUuid(input.sourceImageRunId,'sourceImageRunId'),
@@ -118,7 +121,8 @@ function localSuggestionPlan(validation,originalInstruction) {
     checks:validation.checks??{},model:typeof validation.model==='string'?validation.model:null};
 }
 const LOCAL_REPAIR_FAILURE_CODES=new Set(['SOURCE_NOT_CLEARED','DESTINATION_OBJECT_MISSING','QUANTITY_INCORRECT',
-  'POUR_CONTACT_MISSING','TARGET_COUNT_INCORRECT','PLACEMENT_OR_RELATIONSHIP_INCORRECT','REQUESTED_CHANGE_INCOMPLETE']);
+  'POUR_CONTACT_MISSING','TARGET_COUNT_INCORRECT','PLACEMENT_OR_RELATIONSHIP_INCORRECT',
+  'TARGET_INCOMPLETE_OR_OCCLUDED','COMPOSITION_UNBALANCED','REQUESTED_CHANGE_INCOMPLETE']);
 function rejectedLocalRepairPlan(edit,result) {
   if(edit.operation!=='AI_LOCAL'||!result?.validation||result.validation.stage!=='LOCAL_EDIT_RESULT') {
     conflict('当前失败结果不能基于失败图定向修复，请调整说明后从原图重试');
@@ -132,8 +136,8 @@ function rejectedLocalRepairPlan(edit,result) {
     ||!localization||typeof localization!=='object'||Array.isArray(localization)) {
     conflict('当前失败结果不能安全局部补救，请调整说明后从原图重试');
   }
-  const repairRegions=Array.isArray(local.repairRegions)?local.repairRegions.map(safeRect):[];
-  const allowedRegions=Array.isArray(localization.editRegions)?localization.editRegions.map(safeRect):[];
+  const repairRegions=Array.isArray(local.repairRegions)?local.repairRegions.map(region=>safeRect(region)):[];
+  const allowedRegions=Array.isArray(localization.editRegions)?localization.editRegions.map(region=>safeRect(region)):[];
   if(!repairRegions.length||repairRegions.length>4||!allowedRegions.length
     ||repairRegions.some(region=>!allowedRegions.some(allowed=>rectContains(allowed,region)))) {
     conflict('失败结果的定向修复区域无效，请调整说明后从原图重试');
@@ -164,6 +168,23 @@ function rejectedLocalRepairPlan(edit,result) {
       touchesImageEdge:localization.touchesImageEdge===true,targetIsAiDisclosure:localization.targetIsAiDisclosure===true,
       warnings:Array.isArray(localization.warnings)?localization.warnings.slice(0,8):[],reason:shortText(localization.reason??'',1000,false),
       confidence:typeof localization.confidence==='number'?localization.confidence:1,checks:localization.checks??{},model:localization.model??null}};
+}
+function availableRejectedLocalRepairPlan(edit,result) {
+  try { return rejectedLocalRepairPlan(edit,result); }
+  catch(error) {
+    if(error instanceof ControlPlaneConflictError)return null;
+    throw error;
+  }
+}
+export function resolveImageEditRetry(edit,result,input={}) {
+  if(input.useRejectedPreview===true) {
+    return {targetedRepair:true,localRepair:rejectedLocalRepairPlan(edit,result)};
+  }
+  if(availableRejectedLocalRepairPlan(edit,result)) {
+    conflict('当前失败结果可以定向修复，请刷新工作台后选择“基于失败图定向修复”；如需从原图改做，请复用说明并创建新的修改请求');
+  }
+  if(Number(edit?.attempts??0)>=3)conflict('已达到三次执行上限，请创建新请求');
+  return {targetedRepair:false,localRepair:null};
 }
 async function publishedImageEditPrompt(client, { required = true } = {}) {
   const row = (await client.query(`
@@ -462,7 +483,11 @@ export function createImageEditingService({ pool, storageRoot }) {
         const editSource=['queue','retry','apply-suggestion','accept'].includes(action)
           ? await assertEditSource(c,Number(e.task_id),e.config,{allowCompatibleCurrentRun:true})
           : null;
-        if(action==='retry' && e.attempts >= 3) conflict('已达到三次执行上限，请创建新请求');
+        let retryResolution=null;
+        if(action==='retry') {
+          const result=(await c.query('SELECT * FROM image_edit_results WHERE request_id=$1',[e.id])).rows[0]??null;
+          retryResolution=resolveImageEditRetry(e,result,input);
+        }
         if(action==='apply-suggestion'&&e.operation!=='AI_LOCAL')conflict('只有局部修改可以采用建议描述');
         let acceptedRejectedPreview=false;
         if(action==='accept') {
@@ -501,9 +526,8 @@ export function createImageEditingService({ pool, storageRoot }) {
         let config=usesBillableModel&&input.confirmation==='LIVE_IMAGE_COST_ACCEPTED'?{...e.config,confirmation:'LIVE_IMAGE_COST_ACCEPTED'}:e.config;
         let auditDetail=acceptedRejectedPreview?{acceptedRejectedPreview:true,validationPassed:false}:{};
         if(action==='retry') {
-          if(input.useRejectedPreview===true) {
-            const result=(await c.query('SELECT * FROM image_edit_results WHERE request_id=$1',[e.id])).rows[0];
-            const localRepair=rejectedLocalRepairPlan(e,result);
+          if(retryResolution.targetedRepair) {
+            const localRepair=retryResolution.localRepair;
             config={...config,localRepair};
             auditDetail={targetedRepair:true,baseAssetId:localRepair.baseAssetId,attempt:localRepair.attempt,
               failureCodes:localRepair.failureCodes,repairInstruction:localRepair.repairInstruction,

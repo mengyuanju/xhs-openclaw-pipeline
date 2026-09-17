@@ -2,6 +2,12 @@ import { ApiError } from '../admin/http.mjs';
 
 const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
   Object.freeze({
+    capability: 'copyImagePlanRegenerationVersion',
+    minimumVersion: 2,
+    matches: (routePath, method) => /^\/v1\/tasks\/[^/]+\/regenerate-image-plan$/u.test(routePath)
+      && method === 'POST',
+  }),
+  Object.freeze({
     capability: 'copyReviewDraftVersion',
     minimumVersion: 1,
     matches: (routePath, method) => /^\/v1\/tasks\/[^/]+\/copy-review-drafts$/u.test(routePath)

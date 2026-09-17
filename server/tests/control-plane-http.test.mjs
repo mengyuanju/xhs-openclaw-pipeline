@@ -744,6 +744,36 @@ test('personal task scopes are bound to the authenticated account for all, assig
   assert.equal(calls[2].visibleToUserId, undefined);
 });
 
+test('personal completion events are bound to the authenticated account and requested range', async () => {
+  const calls = [];
+  const user = { id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 };
+  const repository = {
+    getUserByUsername: async (username) => username === user.username ? user : null,
+    listPersonalTaskCompletions: async (input) => {
+      calls.push(input);
+      return [{ id: 41, query: '秋日路线', state: 'IMAGE_QC_PENDING', completions: [
+        { stage: 'COPY', completedAt: '2026-09-06T01:00:00.000Z' },
+      ] }];
+    },
+  };
+  await withServer(repository, async (root) => {
+    const response = await fetch(`${root}/v1/task-completions?from=2026-09-05T16%3A00%3A00.000Z&to=2026-09-06T16%3A00%3A00.000Z`, {
+      headers: {
+        'X-Actor-User-Id': '2', 'X-Actor-Username': 'alice', 'X-Actor-Role': 'USER',
+        'X-Actor-Credential-Version': '1',
+      },
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).data[0].id, 41);
+  }, { enforceUserAuth: true });
+  assert.deepEqual(calls, [{
+    accountId: 2,
+    username: 'alice',
+    from: '2026-09-05T16:00:00.000Z',
+    to: '2026-09-06T16:00:00.000Z',
+  }]);
+});
+
 test('operator delivery routes expose only personal batches and reject foreign or broad export scopes', async () => {
   const users = {
     alice: { id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 },
@@ -1300,7 +1330,7 @@ test('delivery listing forwards an exact package name and returns package facets
   });
 });
 
-test('copy QA listing forwards package-name search only through the administrator route', async () => {
+test('copy QA listing forwards package-name and personnel search through the administrator route', async () => {
   let received;
   await withServer({
     listCopyQaItems: async (options) => {
@@ -1308,11 +1338,27 @@ test('copy QA listing forwards package-name search only through the administrato
       return [];
     },
   }, async (root) => {
-    const response = await fetch(`${root}/v1/copy-qa/items?status=PENDING&queryPackageName=%E4%B9%9D%E6%9C%88%E9%80%89%E9%A2%98&limit=20&offset=0`);
+    const response = await fetch(`${root}/v1/copy-qa/items?status=PENDING&queryPackageName=%E4%B9%9D%E6%9C%88%E9%80%89%E9%A2%98&personName=%E5%AE%A1%E6%A0%B8%E5%91%98%E7%94%B2&limit=20&offset=0`);
     assert.equal(response.status, 200);
   });
   assert.deepEqual(received, {
-    status: 'PENDING', queryPackageName: '九月选题', limit: '20', offset: '0',
+    status: 'PENDING', queryPackageName: '九月选题', personName: '审核员甲', limit: '20', offset: '0',
+  });
+});
+
+test('image QA listing forwards personnel search through the administrator route', async () => {
+  let received;
+  await withServer({
+    listImageQaItems: async (options) => {
+      received = options;
+      return { items: [], total: 0 };
+    },
+  }, async (root) => {
+    const response = await fetch(`${root}/v1/image-qa/items?status=PENDING&personName=%E5%9B%BE%E7%89%87%E4%BD%9C%E4%B8%9A%E5%91%98&limit=20&offset=0`);
+    assert.equal(response.status, 200);
+  });
+  assert.deepEqual(received, {
+    status: 'PENDING', personName: '图片作业员', limit: '20', offset: '0',
   });
 });
 

@@ -5,6 +5,7 @@ import {
   nonAdminCanAccessQueryPackageRoute,
   userCanAccessControlPlaneRoute,
   userCanAccessDeliveryRoute,
+  userCanAccessImageEditRoute,
 } from '../src/control-plane/proxy-access.mjs';
 
 test('ordinary users can work on assigned tasks and screen only their visible Query packages', () => {
@@ -22,6 +23,26 @@ test('ordinary users can work on assigned tasks and screen only their visible Qu
   assert.equal(userCanAccessControlPlaneRoute('/v1/tasks/7/retry', 'POST'), true);
   assert.equal(userCanAccessControlPlaneRoute('/v1/tasks/7/archive', 'HEAD'), false);
   assert.equal(userCanAccessControlPlaneRoute('/v1/tasks/7/archive', 'GET'), false);
+  for (const [path, method] of [
+    ['/v1/image-edits/0199a7dc-b866-7d6f-a758-fae74aa9d2cc', 'GET'],
+    ['/v1/image-edits/0199a7dc-b866-7d6f-a758-fae74aa9d2cc', 'HEAD'],
+    ...['queue', 'retry', 'apply-suggestion', 'cancel', 'accept', 'reject'].map((action) => [
+      `/v1/image-edits/0199a7dc-b866-7d6f-a758-fae74aa9d2cc/${action}`,
+      'POST',
+    ]),
+  ]) {
+    assert.equal(userCanAccessImageEditRoute(path, method), true, `${method} ${path}`);
+    assert.equal(userCanAccessControlPlaneRoute(path, method), true, `${method} ${path}`);
+  }
+  for (const [path, method] of [
+    ['/v1/image-edits/0199a7dc-b866-7d6f-a758-fae74aa9d2cc', 'POST'],
+    ['/v1/image-edits/0199a7dc-b866-7d6f-a758-fae74aa9d2cc/accept', 'GET'],
+    ['/v1/image-edits/0199a7dc-b866-7d6f-a758-fae74aa9d2cc/delete', 'POST'],
+    ['/v1/image-edits/0199a7dc-b866-7d6f-a758-fae74aa9d2cc/accept/extra', 'POST'],
+  ]) {
+    assert.equal(userCanAccessImageEditRoute(path, method), false, `${method} ${path}`);
+    assert.equal(userCanAccessControlPlaneRoute(path, method), false, `${method} ${path}`);
+  }
   const queryPackageAccess = [
     ['/v1/query-packages', 'GET'],
     ['/v1/query-packages', 'HEAD'],

@@ -19,7 +19,9 @@ export async function heartbeatExecutions(pool, { nodeId: rawNodeId, executionId
               AND t.state IN ('COPY_RUNNING', 'IMAGE_RUNNING'))
           OR EXISTS (SELECT 1 FROM image_edit_requests edit
             WHERE edit.execution_id=e.id AND edit.status='RUNNING'
-              AND edit.lease_expires_at>now()))
+              AND edit.lease_expires_at>now())
+          OR EXISTS (SELECT 1 FROM copy_image_plan_regeneration_jobs regeneration
+            WHERE regeneration.execution_id=e.id AND regeneration.status='RUNNING'))
       RETURNING e.id
     ), renewed_edits AS (
       UPDATE image_edit_requests edit SET lease_expires_at=now()+interval '15 minutes'
@@ -86,8 +88,29 @@ export async function recoverStaleExecutions(pool) {
         finished_at=now(),duration_ms=NULL
         WHERE execution_id=$1 AND status='RUNNING'`,[execution.id,message]);
     }
+    const regenerationRows = (await client.query(`SELECT e.id,e.task_id,e.kind,
+        regeneration.id AS regeneration_id,
+        e.last_activity_at <= now()-interval '30 minutes' AS progress_expired
+      FROM task_executions e
+      JOIN copy_image_plan_regeneration_jobs regeneration ON regeneration.execution_id=e.id
+      WHERE e.status='RUNNING' AND regeneration.status='RUNNING' AND NOT (${liveExecution})
+      ORDER BY e.id LIMIT 100 FOR UPDATE OF e,regeneration SKIP LOCKED`)).rows;
+    for (const execution of regenerationRows) {
+      const message = execution.progress_expired
+        ? 'EXECUTION_PROGRESS_TIMEOUT：图文规划重生成超过30分钟没有阶段进度，请重试'
+        : 'EXECUTION_HEARTBEAT_EXPIRED：图文规划重生成超过2分钟未收到执行机心跳，请重试';
+      await client.query(`UPDATE task_executions SET status='FAILED',stage='FAILED',
+        progress_message=$2::text,error=$2::text,finished_at=now() WHERE id=$1`, [execution.id, message]);
+      await client.query(`UPDATE copy_image_plan_regeneration_jobs SET status='FAILED',
+        result=NULL,error=$2,finished_at=now(),updated_at=now()
+        WHERE id=$1 AND status='RUNNING'`, [execution.regeneration_id, message]);
+      await client.query(`UPDATE model_call_traces SET status='FAILED',error=$2,
+        finished_at=now(),duration_ms=NULL
+        WHERE execution_id=$1 AND status='RUNNING'`, [execution.id, message]);
+    }
     await client.query('COMMIT');
-    return [...rows,...editRows].map(({ id, task_id, kind }) => ({ id, taskId: Number(task_id), kind }));
+    return [...rows, ...editRows, ...regenerationRows]
+      .map(({ id, task_id, kind }) => ({ id, taskId: Number(task_id), kind }));
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;

@@ -108,18 +108,32 @@ export function createControlPlaneClient({
         const { task, execution } = claim ?? {};
         const editId=execution?.snapshot?.imageEditRequestId;
         const isEdit=kind==='IMAGE'&&uuid.test(editId??'');
+        const regenerationId = execution?.snapshot?.imagePlanRegeneration?.id;
+        const isRegeneration = kind === 'COPY' && uuid.test(regenerationId ?? '');
         const validEdit=isEdit&&claim?.imageEdit?.id===editId
           && Number(claim.imageEdit.task_id)===task?.id
           && (execution?.status!=='RUNNING'||(claim.imageEdit.status==='RUNNING'
             && claim.imageEdit.execution_id===execution.id
             && claim.imageEdit.claimed_by===input.nodeId
             && uuid.test(claim.imageEdit.lease_token??'')));
+        const validRegeneration = isRegeneration
+          && claim?.imagePlanRegeneration?.id === regenerationId
+          && claim.imagePlanRegeneration.taskId === task?.id
+          && (execution?.status !== 'RUNNING'
+            || (claim.imagePlanRegeneration.status === 'RUNNING'
+              && claim.imagePlanRegeneration.executionId === execution.id
+              && claim.imagePlanRegeneration.claimedByNodeId === input.nodeId));
         return Number.isSafeInteger(task?.id) && task.id > 0 && uuid.test(execution?.id)
         && execution.taskId === task.id && execution.nodeId === input.nodeId && execution.kind === kind
         && ['RUNNING', 'SUCCEEDED', 'FAILED', 'ABANDONED'].includes(execution.status)
         && Boolean(claim?.imageEdit)===isEdit && (!isEdit||validEdit)
-        && (execution.status !== 'RUNNING' || (isEdit||(
+        && Boolean(claim?.imagePlanRegeneration) === isRegeneration
+        && (!isRegeneration || validRegeneration)
+        && (execution.status !== 'RUNNING' || (isEdit || (isRegeneration
+          ? task.state === 'COPY_REVIEW_PENDING'
+          : (
           task.currentExecutionId === execution.id && task.state === `${kind}_RUNNING`))
+          )
           && execution.snapshot !== null && typeof execution.snapshot === 'object' && !Array.isArray(execution.snapshot));
       });
     if (!valid || new Set(result.claims.map(claim => claim.execution.id)).size !== result.claims.length) {
@@ -247,10 +261,10 @@ export function createControlPlaneClient({
       method: 'POST', body: { nodeId },
     }),
     claimImage: (nodeId) => request('/v1/executions/claim-image', {
-      method: 'POST', body: { nodeId, imageControlsVersion: 1, layoutCatalogVersion: 2, imageEditExecutorVersion: 7 },
+      method: 'POST', body: { nodeId, imageControlsVersion: 1, layoutCatalogVersion: 2, imageEditExecutorVersion: 8 },
     }),
     claimCopyBatch: (input) => claimBatch('COPY', input),
-    claimImageBatch: (input) => claimBatch('IMAGE', { ...input, imageControlsVersion: 1, layoutCatalogVersion: 2, imageEditExecutorVersion: 7 }),
+    claimImageBatch: (input) => claimBatch('IMAGE', { ...input, imageControlsVersion: 1, layoutCatalogVersion: 2, imageEditExecutorVersion: 8 }),
     imageEditContext: (executionId, edit) => request(`/v1/executions/${executionId}/image-edit/context`, {
       headers: imageEditHeaders(executionId, edit),
     }),
@@ -337,6 +351,19 @@ export function createControlPlaneClient({
     completeCopy: (executionId, result) => request(
       `/v1/executions/${executionId}/complete-copy`,
       { method: 'POST', body: { result }, timeoutMs: 60_000 },
+    ),
+    async completeImagePlanRegeneration(executionId, result) {
+      const path = `/v1/executions/${executionId}/complete-image-plan-regeneration`;
+      const options = { method: 'POST', body: { result }, timeoutMs: 60_000 };
+      try { return await request(path, options); }
+      catch (error) {
+        if (error instanceof ControlPlaneApiError && error.status < 500) throw error;
+        return request(path, options);
+      }
+    },
+    failImagePlanRegeneration: (executionId, error) => request(
+      `/v1/executions/${executionId}/fail-image-plan-regeneration`,
+      { method: 'POST', body: { error: error instanceof Error ? error.message : String(error) } },
     ),
     completeImage: (executionId, result) => request(
       `/v1/executions/${executionId}/complete-image`,

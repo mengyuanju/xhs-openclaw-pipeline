@@ -5,7 +5,11 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 
-import { checkExecutorReady, createExecutorAgent } from '../src/executor/agent.mjs';
+import {
+  checkExecutorReady,
+  createExecutorAgent,
+  executeImagePlanRegenerationClaim,
+} from '../src/executor/agent.mjs';
 import { createCodexRuntime } from '../src/codex-runtime.mjs';
 
 test('concurrent same-kind failures retain independent reports without rerunning either model', async () => {
@@ -57,8 +61,11 @@ test('concurrent executor refuses an old center before registration', async () =
   const versionSixImageCenter=createExecutorAgent({nodeId:'a',concurrencyEnabled:true,imageWorkerEnabled:true,controlPlane:{},
     readinessCheck:async()=>({health:{ok:true,capabilities:{executorConcurrency:true,codexConcurrencyPoolVersion:1,imageEditExecutorVersion:6}}})});
   await assert.rejects(versionSixImageCenter.prepare(),/图片修改能力/u);
-  const currentImageCenter=createExecutorAgent({nodeId:'a',concurrencyEnabled:true,imageWorkerEnabled:true,controlPlane:{},
+  const versionSevenImageCenter=createExecutorAgent({nodeId:'a',concurrencyEnabled:true,imageWorkerEnabled:true,controlPlane:{},
     readinessCheck:async()=>({health:{ok:true,capabilities:{executorConcurrency:true,codexConcurrencyPoolVersion:1,imageEditExecutorVersion:7}}})});
+  await assert.rejects(versionSevenImageCenter.prepare(),/图片修改能力/u);
+  const currentImageCenter=createExecutorAgent({nodeId:'a',concurrencyEnabled:true,imageWorkerEnabled:true,controlPlane:{},
+    readinessCheck:async()=>({health:{ok:true,capabilities:{executorConcurrency:true,codexConcurrencyPoolVersion:1,imageEditExecutorVersion:8}}})});
   await currentImageCenter.prepare();
 });
 
@@ -142,10 +149,119 @@ test('image lane dispatches a manual edit to the edit processor without using no
   });
   await agent.prepare();
   await agent.register();
-  assert.equal(registration.imageEditExecutorVersion,7);
+  assert.equal(registration.imageEditExecutorVersion,8);
   const outcome=await agent.runImageOnce();
   assert.equal(outcome.status,'SUCCEEDED');
   assert.equal(edits,1);
+});
+
+test('copy lane dispatches image-plan regeneration without changing the task lifecycle', async () => {
+  const regenerationId = randomUUID();
+  const executionId = randomUUID();
+  const claim = {
+    task: { id: 24, state: 'COPY_REVIEW_PENDING', currentExecutionId: null },
+    execution: {
+      id: executionId,
+      status: 'RUNNING',
+      snapshot: { imagePlanRegeneration: { id: regenerationId } },
+    },
+    imagePlanRegeneration: {
+      id: regenerationId,
+      taskId: 24,
+      executionId,
+      claimedByNodeId: 'copy-node',
+      status: 'RUNNING',
+    },
+  };
+  let regenerations = 0;
+  let registration;
+  const agent = createExecutorAgent({
+    nodeId: 'copy-node',
+    readinessCheck: async () => {},
+    availabilityCheck: async () => {},
+    controlPlane: {
+      registerNode: async input => { registration = input; },
+      claimCopy: async () => claim,
+      failImagePlanRegeneration: async () => assert.fail('successful regeneration was failed'),
+    },
+    executeCopy: async () => assert.fail('regeneration reached normal copy generation'),
+    executeImagePlanRegeneration: async ({ claim: received }) => {
+      assert.equal(received, claim);
+      regenerations += 1;
+    },
+  });
+  await agent.prepare();
+  await agent.register();
+  assert.equal(registration.copyImagePlanRegenerationVersion, 1);
+  const outcome = await agent.runCopyOnce();
+  assert.equal(outcome.status, 'SUCCEEDED');
+  assert.equal(regenerations, 1);
+  assert.equal(claim.task.state, 'COPY_REVIEW_PENDING');
+});
+
+test('image-plan regeneration executes with the published prompt frozen by the center', async () => {
+  const regenerationId = randomUUID();
+  const executionId = randomUUID();
+  const copy = {
+    title: '当前标题',
+    body: '当前正文',
+    tags: ['#标签一', '#标签二', '#标签三'],
+  };
+  const claim = {
+    task: { id: 25 },
+    execution: {
+      id: executionId,
+      snapshot: {
+        capturedAt: new Date().toISOString(),
+        productionSettings: {
+          production: { value: { modelApi: {} } },
+          prompt_runtime: { value: {} },
+        },
+        prompts: {
+          COPY_IMAGE_PLAN_SYSTEM: {
+            content: '已发布的图文规划业务规则',
+            versionId: 9,
+            version: 3,
+          },
+        },
+        imagePlanRegeneration: { id: regenerationId, copy },
+      },
+    },
+    imagePlanRegeneration: {
+      id: regenerationId,
+      taskId: 25,
+      executionId,
+      status: 'RUNNING',
+    },
+  };
+  const plan = [
+    { kind: 'hero', headline: '封面', subtitle: '', bullets: ['要点一', '要点二'], prompt: '生成一张突出当前主题的封面画面。' },
+    { kind: 'steps', headline: '步骤', subtitle: '', bullets: ['第一步', '第二步'], prompt: '展示当前文案所述的完整操作步骤。' },
+    { kind: 'summary', headline: '总结', subtitle: '', bullets: ['核对事实', '核对顺序'], prompt: '总结当前文案的关键事实和执行顺序。' },
+  ];
+  let prompt;
+  let completed;
+  await executeImagePlanRegenerationClaim({
+    claim,
+    controlPlane: {
+      completeImagePlanRegeneration: async (id, result) => {
+        completed = { id, result };
+        return result;
+      },
+    },
+    client: {
+      runText: async input => {
+        prompt = input.prompt;
+        return { rawText: JSON.stringify({ imagePlan: plan }), model: 'fake-text' };
+      },
+    },
+  });
+  assert.match(prompt, /已发布的图文规划业务规则/u);
+  assert.match(prompt, /当前标题/u);
+  assert.deepEqual(completed, {
+    id: executionId,
+    result: { imagePlan: plan, model: 'fake-text' },
+  });
 });
 
 test('a cooling image driver pauses only image claims while copy can use its fallback', async (t) => {

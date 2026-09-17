@@ -6,6 +6,7 @@ import { passCopyQaItem, returnCopyQaItem } from '../src/copy-quality-control.mj
 const ITEM_ID = '71717171-7171-4717-8717-717171717171';
 const REVISION_TOKEN = 'a'.repeat(64);
 const reviewer = Object.freeze({ userId: 91, username: 'qa-reviewer', role: 'REVIEWER' });
+const admin = Object.freeze({ userId: 1, username: 'admin', role: 'ADMIN' });
 
 function actionFixture() {
   const state = {
@@ -204,4 +205,20 @@ test('a reviewer cannot pass or return their own final approval', async () => {
     await assert.rejects(call(fixture.pool, ITEM_ID, input, reviewer), { code: 'FORBIDDEN' });
     assert.deepEqual(fixture.state.updates, []);
   }
+});
+
+test('an administrator can pass their own final approval', async () => {
+  const fixture = actionFixture();
+  fixture.state.activeActor = admin;
+  fixture.state.item.final_approver_account_id = admin.userId;
+  fixture.state.item.final_approver_username = admin.username;
+
+  const passed = await passCopyQaItem(fixture.pool, ITEM_ID, {
+    expectedRevisionToken: REVISION_TOKEN,
+    requestId: '66666666-6666-4666-8666-666666666666',
+  }, admin);
+
+  assert.equal(passed.status, 'PASSED');
+  assert.equal(passed.taskId, fixture.state.item.task_id);
+  assert.deepEqual(fixture.state.updates, ['PASS']);
 });

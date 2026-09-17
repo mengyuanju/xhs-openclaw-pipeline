@@ -380,7 +380,7 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(reviewDialog, /const editable = taskHasAssignee && canReviewCopy && detail\?\.state === 'COPY_REVIEW_PENDING'/u);
   assert.match(reviewDialog, /const canEditApprovedImagePlan = canModifyImages/u);
   assert.match(reviewDialog, /const planFieldsReadOnly = !\(editable \|\| canEditApprovedImagePlan\)/u);
-  assert.match(reviewDialog, /const planKindDisabled = !\(editable \|\| canEditApprovedImagePlan\) \|\| isCopyOnlyFinalRework \|\| loading \|\| submitting/u);
+  assert.match(reviewDialog, /const planKindDisabled = !\(editable \|\| canEditApprovedImagePlan\)[\s\S]{0,120}regeneratingImagePlan/u);
   assert.match(reviewDialog, /readOnly=\{planFieldsReadOnly\}/u);
   assert.match(reviewDialog, /页面副标题 <small>选填<\/small>/u);
   assert.match(reviewDialog, /review-plan-subtitle-[\s\S]{0,220}maxLength=\{30\} readOnly=\{planFieldsReadOnly\}/u);
@@ -390,6 +390,15 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(reviewDialog, /首图必须为封面/u);
   assert.match(reviewDialog, /workbench-image-plan-nav-button/u);
   assert.match(reviewDialog, /第 \{activePlanIndex \+ 1\} \/ \{draft\.imagePlan\.length\} 页/u);
+  assert.match(reviewDialog, /\/regenerate-image-plan/u);
+  assert.match(reviewDialog, /requestId: createRequestId\(\)/u);
+  assert.match(reviewDialog, /\['QUEUED', 'RUNNING'\]\.includes\(job\.status\)/u);
+  assert.match(reviewDialog, /regenerate-image-plan\/\$\{job\.id\}/u);
+  assert.match(reviewDialog, /执行机生成中/u);
+  assert.match(reviewDialog, /按当前文案重新生成规划/u);
+  assert.match(reviewDialog, /disabled=\{loading \|\| submitting \|\| regeneratingImagePlan\}/u);
+  assert.doesNotMatch(reviewDialog, /disabled=\{!hasEditedCopyVersion[^}]*regeneratingImagePlan/u);
+  assert.match(reviewDialog, /setDraft\(current => current \? \{ \.\.\.current, imagePlan: result\.imagePlan \}/u);
   assert.doesNotMatch(reviewDialog, /workbench-image-plan-head/u);
   assert.match(reviewDialog, /function AutosizeTextarea/u);
   assert.match(reviewDialog, /function ReviewScrollTextarea/u);
@@ -504,6 +513,10 @@ test('image review fits the complete image, supports exterior controls, and pres
   assert.match(styles, /\.preview-background-white \{ background: #fff; \}/u);
   assert.match(currentImageEditor, /className="current-image-editor-trigger"[\s\S]*?>修改图片<\/Button>/u);
   assert.match(currentImageEditor, /useState\(DEFAULT_DISCLOSURE_TEXT\)/u);
+  assert.match(currentImageEditor, /useState<DisclosureMethod>\('MODEL'\)/u);
+  assert.match(currentImageEditor, /SVG_DISCLOSURE/u);
+  assert.match(currentImageEditor, /程序叠加（SVG \+ Sharp）/u);
+  assert.match(currentImageEditor, /图片模型融合/u);
   assert.match(currentImageEditor, /aria-label="最近常用标识文字"/u);
   assert.match(currentImageEditor, /addRecentDisclosureText\(current,text\)/u);
   assert.match(currentImageEditor, /整套 \{imageAssets\.length\} 张/u);
@@ -518,6 +531,8 @@ test('image review fits the complete image, supports exterior controls, and pres
   assert.match(currentImageEditor, /acceptRejectedResult:true/u);
   assert.match(currentImageEditor, /基于失败图定向修复（再次收费）/u);
   assert.match(currentImageEditor, /useRejectedPreview:true/u);
+  assert.match(currentImageEditor, /const NOTICE_DURATION_MS=6_000/u);
+  assert.match(currentImageEditor, /window\.setTimeout\(\(\)=>setNotice\(''\),NOTICE_DURATION_MS\)/u);
   assert.match(currentImageEditor, /\['QUEUED','RUNNING'\]\.includes\(edit\.status\)/u);
   assert.match(currentImageEditor, /后台仍保留取消记录用于审计/u);
   assert.match(reviewDialog, /asset=\{selectedAsset\} assets=\{assets\}/u);

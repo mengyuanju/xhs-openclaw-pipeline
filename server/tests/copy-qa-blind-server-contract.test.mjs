@@ -127,7 +127,7 @@ test('admin non-blind inspection retains traceable frozen identifiers', async ()
     return { rows: [databaseRow({ query_package_name: '九月 选题' })] };
   } };
   const [listed] = await listCopyQaItems(pool, {
-    status: 'PENDING', queryPackageName: '  九月   选题  ',
+    status: 'PENDING', queryPackageName: '  九月   选题  ', personName: '  审核员   甲  ',
   }, admin);
   const detail = await getCopyQaItem(pool, ITEM_PUBLIC_ID, admin);
   assert.equal(detail.blindReview, false,
@@ -138,15 +138,39 @@ test('admin non-blind inspection retains traceable frozen identifiers', async ()
   assert.equal(listed.productionBatch.queryPackageName, '九月 选题');
   assert.equal(detail.productionBatch.queryPackageName, '九月 选题');
   assert.equal(detail.source.finalApproverAccountId, 64);
-  assert.deepEqual(queries[0].values, ['PENDING', null, '九月 选题', 50, 0]);
+  assert.deepEqual(queries[0].values, ['PENDING', null, '九月 选题', '审核员 甲', 50, 0]);
   assert.match(queries[0].sql,
     /strpos\(lower\(batch\.query_package_name\), lower\(\$3\)\) > 0/u);
+  assert.match(queries[0].sql,
+    /strpos\(lower\(item\.final_approver_username\), lower\(\$4\)\)[\s\S]*person_filter\.display_name/u);
+});
+
+test('admin receives action capabilities for their own final approval', async () => {
+  const admin = { userId: 1, username: 'admin', role: 'ADMIN' };
+  const pool = { query: async (sql) => {
+    if (sql.includes('SELECT DISTINCT task.production_batch_id')) return { rows: [] };
+    if (sql.includes('SELECT id FROM app_users')) return { rows: [{ id: admin.userId }] };
+    return { rows: [databaseRow({ final_approver_account_id: admin.userId, final_approver_username: admin.username })] };
+  } };
+
+  const [item] = await listCopyQaItems(pool, { status: 'PENDING' }, admin);
+  assert.equal(item.capabilities.canPass, true);
+  assert.equal(item.capabilities.canReturnSingle, true);
 });
 
 test('reviewers cannot request a package-name QA filter', async () => {
   await assert.rejects(
     listCopyQaItems({ query: async () => assert.fail('filter must fail before SQL') }, {
       queryPackageName: '九月选题',
+    }, reviewer),
+    (error) => error?.code === 'FORBIDDEN',
+  );
+});
+
+test('reviewers cannot request a personnel-name QA filter', async () => {
+  await assert.rejects(
+    listCopyQaItems({ query: async () => assert.fail('filter must fail before SQL') }, {
+      personName: '审核员甲',
     }, reviewer),
     (error) => error?.code === 'FORBIDDEN',
   );

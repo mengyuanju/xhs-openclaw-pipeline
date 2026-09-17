@@ -77,6 +77,62 @@ test('control plane client sends image claims only when called', async () => {
   assert.equal(calls[1].init.method, 'GET');
 });
 
+test('copy claims accept distributed image-plan work and report its terminal result idempotently', async () => {
+  const requestId = randomUUID();
+  const executionId = randomUUID();
+  const regenerationId = randomUUID();
+  const job = {
+    id: regenerationId,
+    taskId: 7,
+    status: 'RUNNING',
+    executionId,
+    claimedByNodeId: 'copy-a',
+  };
+  const claim = {
+    task: { id: 7, state: 'COPY_REVIEW_PENDING', currentExecutionId: null },
+    execution: {
+      id: executionId,
+      taskId: 7,
+      nodeId: 'copy-a',
+      kind: 'COPY',
+      status: 'RUNNING',
+      snapshot: { imagePlanRegeneration: { id: regenerationId } },
+    },
+    imagePlanRegeneration: job,
+  };
+  let completionAttempts = 0;
+  const seen = [];
+  const client = createControlPlaneClient({
+    baseUrl: 'http://localhost',
+    fetchImpl: async (url, options = {}) => {
+      const path = new URL(url).pathname;
+      seen.push({ path, options });
+      if (path.endsWith('/claim-copy-batch')) {
+        return Response.json({ data: { requestId, claims: [claim] } });
+      }
+      if (path.endsWith('/complete-image-plan-regeneration')) {
+        completionAttempts += 1;
+        if (completionAttempts === 1) throw new TypeError('response lost');
+        return Response.json({ data: { ...job, status: 'SUCCEEDED' } });
+      }
+      if (path.endsWith('/fail-image-plan-regeneration')) {
+        return Response.json({ data: { ...job, status: 'FAILED' } });
+      }
+      assert.fail(`unexpected path ${path}`);
+    },
+  });
+  assert.deepEqual(
+    await client.claimCopyBatch({ nodeId: 'copy-a', requestId, limit: 1 }),
+    { requestId, claims: [claim] },
+  );
+  const result = { imagePlan: [], model: 'fake' };
+  assert.equal((await client.completeImagePlanRegeneration(executionId, result)).status, 'SUCCEEDED');
+  assert.equal(completionAttempts, 2);
+  assert.deepEqual(JSON.parse(seen.find(item => item.path.endsWith('/complete-image-plan-regeneration')).options.body), { result });
+  assert.equal((await client.failImagePlanRegeneration(executionId, new Error('failed'))).status, 'FAILED');
+  assert.deepEqual(JSON.parse(seen.at(-1).options.body), { error: 'failed' });
+});
+
 test('image claim and edit transfer protocol carries capability, lease and idempotent result replay',async()=>{
   const requestId=randomUUID(),executionId=randomUUID(),editId=randomUUID(),leaseToken=randomUUID();
   const edit={id:editId,task_id:'7',execution_id:executionId,claimed_by:'image-a',status:'RUNNING',lease_token:leaseToken};
@@ -108,7 +164,7 @@ test('image claim and edit transfer protocol carries capability, lease and idemp
   }});
   assert.deepEqual(await client.claimImageBatch({nodeId:'image-a',requestId,limit:1}),{requestId,claims:[claim]});
   const claimBody=JSON.parse(seen[0].options.body);
-  assert.equal(claimBody.imageEditExecutorVersion,7);
+  assert.equal(claimBody.imageEditExecutorVersion,8);
   assert.deepEqual(await client.imageEditContext(executionId,edit),{task:{id:7}});
   assert.deepEqual(await client.imageEditAsset(executionId,edit,31),Buffer.from('asset'));
   assert.equal((await client.imageEditAssetMetadata(executionId,edit,31)).sha256,'a'.repeat(64));

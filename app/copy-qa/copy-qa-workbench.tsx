@@ -97,6 +97,8 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
   const [search, setSearch] = useState('');
   const [packageSearchInput, setPackageSearchInput] = useState('');
   const [queryPackageName, setQueryPackageName] = useState('');
+  const [personSearchInput, setPersonSearchInput] = useState('');
+  const [personName, setPersonName] = useState('');
   const [status, setStatus] = useState<CopyQaStatus | 'ALL' | 'ADMIN_DIRECT_PASSED'>('PENDING');
   const [sampleKind, setSampleKind] = useState<CopyQaKindFilter>('ALL');
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
@@ -145,6 +147,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
         offset: String(offset),
       });
       if (role === 'ADMIN' && queryPackageName) params.set('queryPackageName', queryPackageName);
+      if (role === 'ADMIN' && personName) params.set('personName', personName);
       const [payload, statisticsPayload] = await Promise.all([
         apiRequest<unknown>(apiPath(`/v1/copy-qa/items?${params.toString()}`)),
         role === 'ADMIN' && !append
@@ -186,7 +189,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
         if (!silent) setRefreshing(false);
       }
     }
-  }, [queryPackageName, role, status]);
+  }, [personName, queryPackageName, role, status]);
 
   useEffect(() => {
     setCheckedIds([]);
@@ -493,7 +496,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
         </TabsList>
         <div className={styles.accessSummary} data-role={role === 'ADMIN' ? 'admin' : 'reviewer'}>
           <strong>{role === 'ADMIN' ? '管理员视图' : '质检视图'}</strong>
-          <span>{role === 'ADMIN' ? '完整信息 · 跨页词包筛选 · 人员统计' : '按样本策略脱敏 · 仅显示已授权操作'}</span>
+          <span>{role === 'ADMIN' ? '完整信息 · 跨页词包/人员筛选 · 人员统计' : '按样本策略脱敏 · 仅显示已授权操作'}</span>
         </div>
       </div>
 
@@ -520,12 +523,23 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
               setQueryPackageName('');
             }}>清除词包</Button>}
           </form>}
+          {role === 'ADMIN' && <form className={styles.packageSearch} onSubmit={(event) => {
+            event.preventDefault();
+            setPersonName(personSearchInput.replace(/\s+/gu, ' ').trim());
+          }}>
+            <SearchInput aria-label="按人员姓名筛选全部文案质检项" maxLength={80} value={personSearchInput} onValueChange={setPersonSearchInput} placeholder="按审核人姓名或账号筛选" />
+            <Button unstyled className="button small" type="submit">应用人员</Button>
+            {personName && <Button unstyled className="button small" type="button" onClick={() => {
+              setPersonSearchInput('');
+              setPersonName('');
+            }}>清除人员</Button>}
+          </form>}
           <label>类型<Select value={sampleKind} onValueChange={(value) => { setSampleKind(value as CopyQaKindFilter); setCheckedIds([]); }}><SelectTrigger className={styles.kindSelect}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ALL">全部类型</SelectItem><SelectItem value="RANDOM">一次抽检</SelectItem><SelectItem value="MANDATORY_RECHECK">强制复检</SelectItem></SelectContent></Select></label>
           <label>结果<Select value={status} onValueChange={(value) => setStatus(value as typeof status)}><SelectTrigger className={styles.filterSelect}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ALL">全部结果</SelectItem>{role === 'ADMIN' && <SelectItem value="ADMIN_DIRECT_PASSED">管理员单独通过</SelectItem>}{Object.entries(STATUS_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></label>
         </div>
         <span className="pill">{role === 'ADMIN' ? '管理员可对一次抽检发起整批打回' : items.some(canStartCopyQaBatchReturn) ? '当前可对一次抽检发起整批打回' : '当前仅可单条打回；需要扩大范围时请联系管理员整批处置'}</span>
       </div>
-      <div className={styles.scopeNote}><strong>队列顺序：</strong>按最终审核人员逐轮交错，每人先显示 1 条再进入下一轮；同一人员内部仍按任务优先级和入队时间排序。结果状态{role === 'ADMIN' ? '和词包名称' : ''}由服务端跨全部结果筛选；Query 和匿名编号搜索仅作用于当前已加载的 {items.length} 条。{role === 'ADMIN' && '管理员固定使用完整信息视图，任务、Query、词包和来源信息不会因样本盲评策略而隐藏。'}{role === 'REVIEWER' && '样本评审模式由管理员预先决定，审核员不可切换或更改。'}{hasMore ? '仍有更多结果可继续加载。' : '当前状态结果已全部加载。'}</div>
+      <div className={styles.scopeNote}><strong>队列顺序：</strong>按最终审核人员逐轮交错，每人先显示 1 条再进入下一轮；同一人员内部仍按任务优先级和入队时间排序。结果状态{role === 'ADMIN' ? '、词包名称和人员姓名' : ''}由服务端跨全部结果筛选；Query 和匿名编号搜索仅作用于当前已加载的 {items.length} 条。{role === 'ADMIN' && '管理员固定使用完整信息视图，任务、Query、词包和来源信息不会因样本盲评策略而隐藏，也可处理自己最终审核的文案。'}{role === 'REVIEWER' && '样本评审模式由管理员预先决定，审核员不可切换或更改。'}{hasMore ? '仍有更多结果可继续加载。' : '当前状态结果已全部加载。'}</div>
       {items.some((item) => item.blindReview) && <div className={`notice ${styles.blindNotice}`}><EyeOff size={17} aria-hidden="true" /><span>独立盲评样本仅显示匿名编号、最终通过稿和匿名批次编号；任务号、Query、词包自由名称、上游身份、原评分及原因均不可见。</span></div>}
       <ToastFeedback id="copy-qa-feedback" message={message} />
       {error && <div className="notice error" role="alert">{error}</div>}
@@ -542,7 +556,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
                   : !item.blindReview && item.reviewMethod === 'ADMIN_DIRECT'
                     ? `管理员单独通过 · ${item.status === 'SUPERSEDED' ? '旧版已失效' : '已通过'}`
                     : STATUS_LABELS[item.status]}</strong></div></td>
-                <td data-label="样本 / 批次"><div className={styles.sampleCell}>{item.sampleKind === 'RANDOM' && <Checkbox aria-label={`将 ${item.anonymousCode} 作为整批打回触发错误项`} checked={checkedIds.includes(item.id)} disabled={!canCheck} onChange={(event) => setCheckedIds(event.target.checked ? [item.id] : [])} />}<div className={styles.code}><strong>{item.anonymousCode}</strong><small>批次 {item.productionBatch.anonymousCode}</small>{!item.blindReview && <small>词包：{item.productionBatch.queryPackageName ?? '未归属词包'}{item.taskId ? ` · 任务 #${item.taskId}` : ''}</small>}<small>{item.blindReview ? '独立盲评' : '完整信息'}</small></div></div></td>
+                <td data-label="样本 / 批次"><div className={styles.sampleCell}>{item.sampleKind === 'RANDOM' && <Checkbox aria-label={`将 ${item.anonymousCode} 作为整批打回触发错误项`} checked={checkedIds.includes(item.id)} disabled={!canCheck} onChange={(event) => setCheckedIds(event.target.checked ? [item.id] : [])} />}<div className={styles.code}><strong>{item.anonymousCode}</strong><small>批次 {item.productionBatch.anonymousCode}</small>{!item.blindReview && <small>词包：{item.productionBatch.queryPackageName ?? '未归属词包'}{item.taskId ? ` · 任务 #${item.taskId}` : ''}{item.finalApproverUsername ? ` · 审核 @${item.finalApproverUsername}` : ''}</small>}<small>{item.blindReview ? '独立盲评' : '完整信息'}</small></div></div></td>
                 <td data-label="内容 / 最终稿" className={styles.query}>{item.query && <strong>{item.query}</strong>}<div className="subtle">{item.sampleKind === 'MANDATORY_RECHECK' ? '返工稿（已按最终 3 分记录）' : '最终人工通过稿'}{itemCopy.title ? ` · ${itemCopy.title}` : ''}</div></td>
                 <td data-label="进入时间"><div className={styles.timeCell}><span>{timeLabel(item.createdAt)}</span><small>{item.prioritySummary ?? '跟随系统优先级'}</small></div></td>
                 <td className="row-action" data-label="操作"><div className={styles.actions}><Button unstyled className={`button small ${styles.actionView}`} type="button" onClick={() => { void openItem(item.id); }}><Eye size={14} />查看</Button>{item.status === 'PENDING' && item.capabilities.canPass && <Button unstyled className={`button small primary ${styles.actionPrimary}`} type="button" disabled={Boolean(action)} onClick={() => { void passItem(item); }}><CheckCircle2 size={14} />{item.sampleKind === 'MANDATORY_RECHECK' ? '通过强制复检' : '通过抽检'}</Button>}{item.status === 'PENDING' && item.capabilities.canReturnSingle && <Button unstyled className={`button small danger ${styles.actionReturn}`} type="button" disabled={Boolean(action)} onClick={() => beginSingleReturn(item)}><RotateCcw size={14} />仅打回此条</Button>}{role === 'ADMIN' && canReleaseCopyQaFreezeRest(item) && <Button unstyled className={`button small primary ${styles.actionPrimary}`} type="button" disabled={Boolean(action)} onClick={() => beginReleaseRest(item)}><CheckCircle2 size={14} />放行同批其余</Button>}{item.status === 'RETURNED' && canStartCopyQaBatchReturn(item) && <Button unstyled className={`button small danger ${styles.actionReturn}`} type="button" disabled={Boolean(action)} onClick={() => { void beginBatchReturn(item); }}><ShieldAlert size={14} />升级整批打回</Button>}</div></td>

@@ -34,6 +34,7 @@ function fixture(overrides = {}, {
   const submissions = [];
   const sourceContent = { copy: { title: '原文', body: '正文', tags: ['#标签'] }, imagePlan: imagePlan() };
   const revisions = [];
+  const copyQcInheritances = [];
   const deliveries = [];
   const client = {
     release() {},
@@ -83,6 +84,18 @@ function fixture(overrides = {}, {
         };
         revisions.push(row);
         return { rows: [row] };
+      }
+      if (sql.includes('INSERT INTO copy_qc_revision_inheritances')) {
+        const row = {
+          target_revision_id: values[0],
+          task_id: values[1],
+          source_revision_id: values[2],
+          inherited_by_account_id: values[3],
+          inherited_by_username: values[4],
+          reason: 'IMAGE_PLAN_RETRY',
+        };
+        copyQcInheritances.push(row);
+        return { rows: [] };
       }
       if (sql.includes('FROM image_edit_requests')) return { rows: [{ count: 0 }] };
       if (sql.includes('SELECT id FROM image_run_asset_view')) {
@@ -136,7 +149,7 @@ function fixture(overrides = {}, {
       throw new Error(`Unexpected SQL: ${sql}`);
     },
   };
-  return { task, queries, assessments, revisions, deliveries, sourceContent,
+  return { task, queries, assessments, revisions, copyQcInheritances, deliveries, sourceContent,
     repository: new PostgresControlPlaneRepository({ pool: { connect: async () => client } }) };
 }
 
@@ -290,7 +303,7 @@ test('legacy enabled settings with no image reasons do not block rework', async 
 });
 
 test('admin image retry saves edited plan as a new approved revision and keeps the reviewed revision immutable', async () => {
-  const { repository, task, queries, assessments, revisions, sourceContent } = fixture();
+  const { repository, task, queries, assessments, revisions, copyQcInheritances, sourceContent } = fixture();
   sourceContent.imageReprocess = {
     version: 1,
     sourceRunId: otherRunId,
@@ -334,6 +347,14 @@ test('admin image retry saves edited plan as a new approved revision and keeps t
   });
   assert.match(revisions[0].content.imageRevision.createdAt, /^\d{4}-\d{2}-\d{2}T/u);
   assert.ok(queries.find(({ sql }) => sql.includes('INSERT INTO copy_revisions') && sql.includes("'MANUAL'")));
+  assert.deepEqual(copyQcInheritances, [{
+    target_revision_id: 4,
+    task_id: 7,
+    source_revision_id: 3,
+    inherited_by_account_id: 1,
+    inherited_by_username: 'admin',
+    reason: 'IMAGE_PLAN_RETRY',
+  }]);
   assert.equal(assessments.length, 1);
   assert.equal(assessments[0].action, 'RETRY');
 

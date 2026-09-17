@@ -1114,6 +1114,7 @@ function installRoutes(
     json(ctx, 200, await repository.listCopyQaItems({
       status: ctx.query.status,
       queryPackageName: ctx.query.queryPackageName,
+      personName: ctx.query.personName,
       limit: ctx.query.limit,
       offset: ctx.query.offset,
     }, { actor }));
@@ -1158,6 +1159,7 @@ function installRoutes(
     const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
     json(ctx, 200, await repository.listImageQaItems({
       status: ctx.query.status,
+      personName: ctx.query.personName,
       limit: ctx.query.limit,
       offset: ctx.query.offset,
     }, { actor }));
@@ -1250,6 +1252,15 @@ function installRoutes(
       tasks: body.tasks,
     }));
   });
+  router.get('/v1/task-completions', async (ctx) => {
+    const actor = requestActor(ctx);
+    json(ctx, 200, await repository.listPersonalTaskCompletions({
+      accountId: actor.userId,
+      username: actor.username,
+      from: ctx.query.from,
+      to: ctx.query.to,
+    }));
+  });
   router.get('/v1/tasks', async (ctx) => {
     const actor = requestActor(ctx);
     if (actor.role === 'USER' && ctx.query.queryPackageName !== undefined) {
@@ -1280,6 +1291,9 @@ function installRoutes(
     if (ctx.query.createdByAccountId !== undefined) requestActor(ctx, ['ADMIN']);
     if (ctx.query.assignedToAccountId !== undefined) requestActor(ctx, ['ADMIN']);
     if (ctx.query.attention !== undefined) requestActor(ctx, ['ADMIN']);
+    if (ctx.query.createdDateFrom !== undefined || ctx.query.createdDateTo !== undefined) {
+      requestActor(ctx, ['ADMIN']);
+    }
     if (ctx.query.unassigned !== undefined
       || (ctx.query.assignedToUserId !== undefined
         && actor.role !== 'ADMIN'
@@ -1303,6 +1317,8 @@ function installRoutes(
       unassignedOnly: !personal && actor.role === 'ADMIN' && ctx.query.unassigned === 'true',
       excludeUnassigned: actor.role !== 'ADMIN' && !personal,
       ...(createdByRole !== null ? { createdByRole } : {}),
+      ...(ctx.query.createdDateFrom !== undefined ? { createdDateFrom: ctx.query.createdDateFrom } : {}),
+      ...(ctx.query.createdDateTo !== undefined ? { createdDateTo: ctx.query.createdDateTo } : {}),
       ...(ctx.query.taskId !== undefined ? { taskId: ctx.query.taskId } : {}),
       query: ctx.query.query,
       queryPackageName: ctx.query.queryPackageName,
@@ -1752,6 +1768,19 @@ function installRoutes(
     );
     json(ctx, result.created ? 201 : 200, result);
   });
+  router.post('/v1/tasks/:taskId/regenerate-image-plan', async (ctx) => {
+    const { actor } = await assertTaskAccess(ctx, repository);
+    const result = await repository.createImagePlanRegeneration(
+      ctx.params.taskId,
+      requireJson(ctx),
+      { actor },
+    );
+    json(ctx, result.created ? 202 : 200, result);
+  });
+  router.get('/v1/tasks/:taskId/regenerate-image-plan/:jobId', async (ctx) => {
+    await assertTaskAccess(ctx, repository);
+    json(ctx, 200, await repository.getImagePlanRegeneration(ctx.params.taskId, ctx.params.jobId));
+  });
   router.get('/v1/tasks/:taskId', async (ctx) => {
     const { task, actor } = await assertTaskAccess(ctx, repository, { allowCreatorRead: true });
     // Execution snapshots include internal prompts and model configuration.
@@ -1832,6 +1861,18 @@ function installRoutes(
   });
   router.post('/v1/executions/:executionId/complete-copy', async (ctx) => {
     json(ctx, 200, await repository.completeCopy(ctx.params.executionId, requireJson(ctx).result));
+  });
+  router.post('/v1/executions/:executionId/complete-image-plan-regeneration', async (ctx) => {
+    json(ctx, 200, await repository.completeImagePlanRegeneration(
+      ctx.params.executionId,
+      requireJson(ctx).result,
+    ));
+  });
+  router.post('/v1/executions/:executionId/fail-image-plan-regeneration', async (ctx) => {
+    json(ctx, 200, await repository.failImagePlanRegeneration(
+      ctx.params.executionId,
+      requireJson(ctx).error,
+    ));
   });
   router.post('/v1/executions/:executionId/complete-image', async (ctx) => {
     json(ctx, 200, await repository.completeImage(ctx.params.executionId, requireJson(ctx).result));

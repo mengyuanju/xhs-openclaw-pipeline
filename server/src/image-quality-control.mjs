@@ -121,6 +121,16 @@ function normalizeScore(value, decision) {
   return scoreX10;
 }
 
+function normalizedPersonNameFilter(value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string') throw new TypeError('personName must be a string');
+  const name = value.replace(/\s+/gu, ' ').trim();
+  if (!name || [...name].length > 80) {
+    throw new RangeError('personName must contain between 1 and 80 characters');
+  }
+  return name;
+}
+
 async function imageSnapshot(client, taskId, imageRunId) {
   const result = await client.query(`
     SELECT asset.id, asset.media_type, asset.byte_size, asset.sha256, asset.original_name,
@@ -575,20 +585,24 @@ async function qaActor(pool, rawActor) {
 
 export async function listImageQaItems(pool, options = {}, rawActor) {
   const actor = await qaActor(pool, rawActor);
-  await flushExpiredImageQualityBatches(pool);
   const { limit, offset } = normalizeListPagination(options.limit ?? 50, options.offset ?? 0);
   const status = String(options.status ?? 'PENDING').trim().toUpperCase();
   if (!['PENDING', 'PASSED', 'RETURNED', 'BATCH_RETURNED', 'ALL'].includes(status)) {
     throw new TypeError('image QA status filter is invalid');
   }
-  const values = [actor.userId, status, limit, offset];
+  const personName = normalizedPersonNameFilter(options.personName);
+  if (personName !== null && actor.role !== 'ADMIN') {
+    throw new ControlPlaneAuthorizationError('只有管理员可以按人员姓名筛选图片质检项');
+  }
+  await flushExpiredImageQualityBatches(pool);
+  const values = [actor.userId, status, limit, offset, personName];
   const result = await pool.query(`
     SELECT item.*, sampling_freeze.public_id AS freeze_public_id, sampling_freeze.blind_review_enabled,
       task.query, task.priority_paused, task.source_query_package_name AS query_package_name,
       sampling_freeze.production_batch_id, settings.image_reviewer_batch_return_enabled,
       (SELECT count(*)::integer FROM image_edit_requests AS edit
         WHERE edit.task_id = item.task_id AND edit.source_image_run_id = item.image_run_id
-          AND edit.status = ANY($5::text[])) AS pending_image_edit_count,
+          AND edit.status = ANY($6::text[])) AS pending_image_edit_count,
       COALESCE(jsonb_agg(jsonb_build_object(
         'id', asset.id, 'media_type', asset.media_type, 'sha256', asset.sha256,
         'original_name', asset.original_name, 'page_index', page.page_index
@@ -606,6 +620,14 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
       AND asset.id::text = COALESCE(page.image->>'deliveryAssetId', page.image->>'assetId')
     WHERE item.selected
       AND ($2 = 'ALL' OR item.status = $2)
+      AND ($5::varchar IS NULL OR (
+        strpos(lower(item.submitter_username), lower($5)) > 0
+        OR EXISTS (
+          SELECT 1 FROM app_users AS person_filter
+          WHERE person_filter.id = item.submitter_account_id
+            AND strpos(lower(person_filter.display_name), lower($5)) > 0
+        )
+      ))
       AND ($1 = item.assigned_review_account_id OR EXISTS (
         SELECT 1 FROM app_users actor WHERE actor.id = $1 AND actor.role = 'ADMIN' AND actor.status = 'ACTIVE'
       ))

@@ -181,6 +181,12 @@ type ImageEditSummary = {
   id: string;
   status: string;
 };
+type ImagePlanRegenerationJob = {
+  id: string;
+  status: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'STALE';
+  result: { imagePlan: ImagePlanItem[]; model: string | null } | null;
+  error: string | null;
+};
 
 const PENDING_IMAGE_EDIT_STATUSES = new Set(['DRAFT', 'QUEUED', 'RUNNING', 'PREVIEW_READY']);
 
@@ -473,6 +479,8 @@ export function TaskReviewDialog({
   const [draft, setDraft] = useState<ReviewDraft | null>(null);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [regeneratingImagePlan, setRegeneratingImagePlan] = useState(false);
+  const [imagePlanGenerationNotice, setImagePlanGenerationNotice] = useState('');
   const [aiDisclosureEnabled, setAiDisclosureEnabled] = useState(false);
   const [activeAssetIndex, setActiveAssetIndex] = useState<number | null>(null);
   const [selectedAssetIndex, setSelectedAssetIndex] = useState(0);
@@ -501,6 +509,7 @@ export function TaskReviewDialog({
   const [restoredDraftId, setRestoredDraftId] = useState<number | null>(null);
   const [pendingImageEdits, setPendingImageEdits] = useState<ImageEditSummary[]>([]);
   const loadRequestRef = useRef(0);
+  const imagePlanGenerationRequestRef = useRef(0);
   const draftSaveAbortRef = useRef<AbortController | null>(null);
   const lastSavedDraftIdRef = useRef<number | null>(null);
   const reviewSessionRef = useRef<{ fingerprint: string; id: string } | null>(null);
@@ -614,6 +623,9 @@ export function TaskReviewDialog({
     setLastDraftSavedAt(null);
     setRestoredDraftId(null);
     setPendingImageEdits([]);
+    setRegeneratingImagePlan(false);
+    setImagePlanGenerationNotice('');
+    imagePlanGenerationRequestRef.current += 1;
     lastCopyEditNoticeRef.current = null;
     reviewSessionRef.current = null;
     setInvalidField(null);
@@ -662,7 +674,7 @@ export function TaskReviewDialog({
   const savedCopyRatings = detail ? copyRatingsFromDetail(detail) : { current: undefined };
   const originalCopyRatingComplete = ratingFeedbackComplete(copyOriginalScore, copyOriginalReasons, copyOriginalNote);
   const copyFieldsEditable = editable && (isCopyRework || copyOriginalScore === 2 || copyOriginalScore === 2.5);
-  const copyFieldsReadOnly = !copyFieldsEditable || loading || submitting;
+  const copyFieldsReadOnly = !copyFieldsEditable || loading || submitting || regeneratingImagePlan;
   const copyContentChangedFromMachine = revision?.copyContentChangedFromMachine === true;
   const hasEditedCopyVersion = copyContentChanged || copyContentChangedFromMachine;
   const copyReworkSatisfied = copyContentChanged || revision?.copyReworkSatisfied === true;
@@ -689,14 +701,14 @@ export function TaskReviewDialog({
     && !detail.currentExecutionId);
   const canEditApprovedImagePlan = canModifyImages;
   const planFieldsReadOnly = !(editable || canEditApprovedImagePlan)
-    || isCopyOnlyFinalRework || loading || submitting;
-  const planKindDisabled = !(editable || canEditApprovedImagePlan) || isCopyOnlyFinalRework || loading || submitting;
+    || isCopyOnlyFinalRework || loading || submitting || regeneratingImagePlan;
+  const planKindDisabled = !(editable || canEditApprovedImagePlan) || isCopyOnlyFinalRework || loading || submitting || regeneratingImagePlan;
   const currentCopyRatingLabel = '机器原稿初评（保留）';
   const standardCopyEditBlockMessage = getCopyEditBlockMessage({
     editable,
     assigned: taskHasAssignee,
     canControl: canReviewCopy,
-    busy: loading || submitting,
+    busy: loading || submitting || regeneratingImagePlan,
     score: copyOriginalScore,
     ratingComplete: originalCopyRatingComplete,
   });
@@ -708,7 +720,7 @@ export function TaskReviewDialog({
     canControl: canReviewCopy,
     editable,
     canEditApproved: canEditApprovedImagePlan,
-    busy: loading || submitting,
+    busy: loading || submitting || regeneratingImagePlan,
   });
   const savedImageAssessment = detail ? imageAssessmentFromDetail(detail) : undefined;
   const copyRatingChanged = editable && (copyOriginalScore !== (savedCopyRatings.current?.score ?? null)
@@ -817,7 +829,7 @@ export function TaskReviewDialog({
   }, [invalidField]);
 
   async function discardChanges(action: 'close' | 'refresh') {
-    if (submitting || draftSaveStatus === 'saving' || (action === 'refresh' && loading)) return;
+    if (submitting || regeneratingImagePlan || draftSaveStatus === 'saving' || (action === 'refresh' && loading)) return;
     if (hasUnpersistedDraftChanges && !await confirm({
       title: action === 'close' ? '未保存草稿，仍要关闭？' : '未保存草稿，仍要刷新？',
       description: '最近的修改还没有写入服务器，继续操作会丢失这一小段内容。',
@@ -829,7 +841,7 @@ export function TaskReviewDialog({
   }
 
   async function restoreDraftVersion(item: CopyReviewDraftRecord) {
-    if (!editable || submitting || draftSaveStatus === 'saving') return;
+    if (!editable || submitting || regeneratingImagePlan || draftSaveStatus === 'saving') return;
     const fingerprint = copyReviewDraftFingerprint(item.content);
     if (fingerprint !== currentDraftFingerprint && hasUnpersistedDraftChanges && !await confirm({
       title: `恢复草稿 v${item.version}？`,
@@ -849,7 +861,7 @@ export function TaskReviewDialog({
   }
 
   async function restoreCurrentCopyRevision() {
-    if (!editable || !savedDraft || !detail || submitting || draftSaveStatus === 'saving') return;
+    if (!editable || !savedDraft || !detail || submitting || regeneratingImagePlan || draftSaveStatus === 'saving') return;
     const currentRating = savedCopyRatings.current;
     const content: CopyReviewDraftContent = {
       version: 1,
@@ -962,6 +974,7 @@ export function TaskReviewDialog({
           : value,
       },
     } : current);
+    setImagePlanGenerationNotice('');
   }
 
   function updateImagePlan(index: number, patch: Partial<ImagePlanItem>) {
@@ -971,6 +984,80 @@ export function TaskReviewDialog({
         ? { ...item, ...patch }
         : item),
     } : current);
+    setImagePlanGenerationNotice('');
+  }
+
+  async function regenerateImagePlan(form: HTMLFormElement | null) {
+    if (!detail || !revision || !draft || !editable
+        || loading || submitting || regeneratingImagePlan) return;
+    const invalid = form ? Array.from(form.elements).find((element) =>
+      (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)
+      && element.closest<HTMLElement>('[data-review-pane]')?.dataset.reviewPane === 'copy'
+      && element.willValidate && !element.validity.valid,
+    ) as HTMLInputElement | HTMLTextAreaElement | undefined : undefined;
+    if (invalid) {
+      setMobilePane('copy');
+      setInvalidField(invalid);
+      setError('请先把当前标题、正文和标签填写完整，再重新生成图片文案规划。');
+      return;
+    }
+    const tags = draft.copy.tags;
+    if (tags.length < 3 || tags.length > 8
+        || tags.some(tag => !/^#[^#\s]+$/u.test(tag)) || new Set(tags).size !== tags.length) {
+      setMobilePane('copy');
+      setError('请先填写 3–8 个不重复的标签；每个标签需以 # 开头且不能包含空格。');
+      return;
+    }
+    if (imagePlanChanged && !await confirm({
+      title: '覆盖当前图片文案规划？',
+      description: '当前逐页规划已有未提交修改。继续后会调用文本模型，并用基于当前文案生成的新规划覆盖这些修改；文案本身不会改变。',
+      confirmLabel: '覆盖并重新生成',
+    })) return;
+
+    const generationSequence = imagePlanGenerationRequestRef.current + 1;
+    imagePlanGenerationRequestRef.current = generationSequence;
+    const copy = structuredClone(draft.copy);
+    setRegeneratingImagePlan(true);
+    setImagePlanGenerationNotice('');
+    setError('');
+    try {
+      const queued = await apiRequest<{ created: boolean; job: ImagePlanRegenerationJob }>(
+        apiPath(`/v1/tasks/${detail.id}/regenerate-image-plan`),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            requestId: createRequestId(),
+            copyRevisionId: revision.id,
+            copy,
+          }),
+        },
+      );
+      let job = queued.job;
+      while (['QUEUED', 'RUNNING'].includes(job.status)) {
+        await new Promise(resolve => window.setTimeout(resolve, 1_500));
+        if (imagePlanGenerationRequestRef.current !== generationSequence) return;
+        job = await apiRequest<ImagePlanRegenerationJob>(
+          apiPath(`/v1/tasks/${detail.id}/regenerate-image-plan/${job.id}`),
+        );
+      }
+      if (imagePlanGenerationRequestRef.current !== generationSequence) return;
+      if (job.status !== 'SUCCEEDED' || !job.result) {
+        throw new Error(job.error || '图片文案规划重新生成失败');
+      }
+      const result = job.result;
+      setDraft(current => current ? { ...current, imagePlan: result.imagePlan } : current);
+      setActivePlanIndex(0);
+      setExpandedPrompts([]);
+      setMobilePane('plan');
+      setImagePlanGenerationNotice(`已根据当前文案重新生成 ${result.imagePlan.length} 页规划。请逐页核对后单独保存图片规划。`);
+    } catch (caught) {
+      if (imagePlanGenerationRequestRef.current === generationSequence) {
+        setError(caught instanceof Error ? caught.message : '图片文案规划重新生成失败');
+      }
+    } finally {
+      if (imagePlanGenerationRequestRef.current === generationSequence) setRegeneratingImagePlan(false);
+    }
   }
 
   function updateCopyOriginalScore(score: HumanScore) {
@@ -1018,7 +1105,8 @@ export function TaskReviewDialog({
   }
 
   async function submitCopyDecision(decision: 'SAVE' | 'APPROVE' | 'DISCARD', form: HTMLFormElement) {
-    if (!detail || !revision || !draft || !editable || loading || submitting || draftSaveStatus === 'saving') return;
+    if (!detail || !revision || !draft || !editable || loading || submitting
+        || regeneratingImagePlan || draftSaveStatus === 'saving') return;
     if (decision !== 'DISCARD' && imagePlanChanged) {
       setMobilePane('plan');
       setError('图片文案规划有未保存修改。请先单独保存图片规划，再提交只针对文案的评分或审核结果。');
@@ -1127,7 +1215,7 @@ export function TaskReviewDialog({
   }
 
   async function discardReturnedCopy() {
-    if (!detail || !revision || !canDiscardReturnedCopy || submitting || loading) return;
+    if (!detail || !revision || !canDiscardReturnedCopy || submitting || loading || regeneratingImagePlan) return;
     const followsQaRecommendation = revision.reworkRecommendation === 'DISCARD';
     const note = await requestText({
       title: followsQaRecommendation ? '确认质检建议并废弃任务' : '废弃质检返工任务',
@@ -1173,7 +1261,8 @@ export function TaskReviewDialog({
   }
 
   async function saveImagePlan(form: HTMLFormElement) {
-    if (!detail || !revision || !draft || !savedDraft || !editable || !imagePlanChanged || loading || submitting) return;
+    if (!detail || !revision || !draft || !savedDraft || !editable || !imagePlanChanged
+        || loading || submitting || regeneratingImagePlan) return;
     const invalid = Array.from(form.elements).find((element) =>
       (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement)
       && element.closest<HTMLElement>('[data-review-pane]')?.dataset.reviewPane === 'plan'
@@ -1522,14 +1611,14 @@ export function TaskReviewDialog({
             <Checkbox
 
               checked={aiDisclosureEnabled}
-              disabled={!editable || isCopyOnlyFinalRework || loading || submitting}
+              disabled={!editable || isCopyOnlyFinalRework || loading || submitting || regeneratingImagePlan}
               onChange={(event) => setAiDisclosureEnabled(event.target.checked)}
             />
             <span className="workbench-ai-disclosure-switch" aria-hidden="true" />
             <span className="workbench-ai-disclosure-label">AI生成水印</span>
             <strong>{aiDisclosureEnabled ? '已开启' : '已关闭'}</strong>
           </label>}
-          <Button unstyled className="button small" type="button" disabled={loading || submitting} onClick={() => { void discardChanges('refresh'); }}>
+          <Button unstyled className="button small" type="button" disabled={loading || submitting || regeneratingImagePlan} onClick={() => { void discardChanges('refresh'); }}>
             <RefreshCw className={loading ? 'animate-spin' : ''} size={14} />刷新
           </Button>
         </div>
@@ -1588,7 +1677,7 @@ export function TaskReviewDialog({
                         <small>按当前文案版本和你的账号独立保存，服务或网页重启后仍可恢复。</small>
                       </div>
                       <Button unstyled className="button small" type="button"
-                        disabled={!hasUnpersistedDraftChanges || draftSaveStatus === 'saving' || !copyReviewDraftContent || !currentDraftFingerprint}
+                        disabled={regeneratingImagePlan || !hasUnpersistedDraftChanges || draftSaveStatus === 'saving' || !copyReviewDraftContent || !currentDraftFingerprint}
                         onClick={() => {
                           if (copyReviewDraftContent && currentDraftFingerprint) {
                             void persistCopyReviewDraft(copyReviewDraftContent, currentDraftFingerprint);
@@ -1598,7 +1687,7 @@ export function TaskReviewDialog({
                         立即保存
                       </Button>
                       <Button unstyled className="button small" type="button"
-                        disabled={draftSaveStatus === 'saving'} onClick={() => { void restoreCurrentCopyRevision(); }}>
+                        disabled={regeneratingImagePlan || draftSaveStatus === 'saving'} onClick={() => { void restoreCurrentCopyRevision(); }}>
                         <RotateCcw size={14} />恢复正式版本
                       </Button>
                     </div>
@@ -1611,7 +1700,7 @@ export function TaskReviewDialog({
                           <small>{new Date(item.createdAt).toLocaleString('zh-CN', { hour12: false })}</small>
                         </div>
                         <Button unstyled className="button small" type="button"
-                          disabled={draftSaveStatus === 'saving' || item.id === restoredDraftId && copyReviewDraftFingerprint(item.content) === currentDraftFingerprint}
+                          disabled={regeneratingImagePlan || draftSaveStatus === 'saving' || item.id === restoredDraftId && copyReviewDraftFingerprint(item.content) === currentDraftFingerprint}
                           onClick={() => { void restoreDraftVersion(item); }}>
                           {item.id === restoredDraftId && copyReviewDraftFingerprint(item.content) === currentDraftFingerprint ? '当前版本' : '恢复'}
                         </Button>
@@ -1865,7 +1954,17 @@ export function TaskReviewDialog({
                 <div className="workbench-review-section-title"><span>{assets.length > 0 ? '03' : '02'}</span><div><h3>图片文案规划</h3><p>{canEditApprovedImagePlan
                   ? '可修正逐页文字与画面指令；页面类型保持锁定，评分后重试会创建新的人工批准版本。'
                     : editable ? '逐页核对画面文字与排版；修改后单独保存，不受文案评分档位影响。'
-                    : '当前状态仅供核对已审核的图片文案规划。'}</p></div></div>
+                    : '当前状态仅供核对已审核的图片文案规划。'}</p></div>
+                  {editable && <Button unstyled className="button small workbench-image-plan-regenerate" type="button"
+                    disabled={loading || submitting || regeneratingImagePlan}
+                    title="调用文本模型，根据当前文案重新生成全部逐页规划"
+                    onClick={(event) => { void regenerateImagePlan(event.currentTarget.form); }}>
+                    {regeneratingImagePlan
+                      ? <><LoaderCircle className="animate-spin" size={14} />执行机生成中…</>
+                      : <><RefreshCw size={14} />按当前文案重新生成规划</>}
+                  </Button>}
+                </div>
+                {imagePlanGenerationNotice && <div className="notice success" role="status">{imagePlanGenerationNotice}</div>}
                 <nav className="workbench-image-plan-nav" aria-label="图片规划页码">
                   <Button unstyled className="workbench-image-plan-nav-button" type="button" aria-label="上一页" disabled={activePlanIndex === 0}
                     onClick={() => setActivePlanIndex(index => Math.max(0, index - 1))}><ChevronLeft size={16} /><span>上一页</span></Button>
@@ -1966,7 +2065,7 @@ export function TaskReviewDialog({
               ? copyContentChanged ? `保存后将创建人工修订版 v${(revision?.revision ?? 0) + 1}` : `当前文案版本 v${revision?.revision ?? '—'} · 等待评分决定`
               : `当前文案版本 v${revision?.revision ?? '—'}`}</span>
             <div>
-              <DialogClose asChild><Button unstyled className="button" type="button" disabled={submitting || draftSaveStatus === 'saving'}>关闭</Button></DialogClose>
+              <DialogClose asChild><Button unstyled className="button" type="button" disabled={submitting || regeneratingImagePlan || draftSaveStatus === 'saving'}>关闭</Button></DialogClose>
               {canModifyImages && <Button unstyled className="button primary" type="button" disabled={submitting} onClick={() => void reviseImages('REGENERATE')}><RotateCcw size={15} />重新生成图片</Button>}
               {canRetryCopy && <Button unstyled className="button primary" type="button" disabled={submitting || loading} onClick={() => { void retryCopy(); }}><RotateCcw size={15} />重试文案</Button>}
               {role === 'ADMIN' && detail.state === 'COPY_QC_PENDING'
@@ -1995,19 +2094,19 @@ export function TaskReviewDialog({
                 <Button unstyled className="button primary" type="button" disabled={submitting || loading || !canApproveImages} onClick={() => { void submitImageReview('APPROVE'); }}><CheckCircle2 size={15} />{submitting ? '正在提交…' : '通过到交付池'}</Button>
               </>}
               {editable && <>
-                {imagePlanChanged && <Button unstyled className="button" type="button" disabled={submitting || loading}
+                {imagePlanChanged && <Button unstyled className="button" type="button" disabled={submitting || loading || regeneratingImagePlan}
                   onClick={(event) => { if (event.currentTarget.form) void saveImagePlan(event.currentTarget.form); }}>
                   <Save size={15} />{submitting ? '正在保存…' : '单独保存图片规划'}
                 </Button>}
                 {canDiscardReturnedCopy && <Button unstyled className="button danger" type="button"
-                  disabled={submitting || loading || draftSaveStatus === 'saving'} onClick={() => { void discardReturnedCopy(); }}>
+                  disabled={submitting || loading || regeneratingImagePlan || draftSaveStatus === 'saving'} onClick={() => { void discardReturnedCopy(); }}>
                   <Trash2 size={15} />{revision?.reworkRecommendation === 'DISCARD' ? '确认质检建议并废弃' : '废弃返工任务'}
                 </Button>}
-                {!isCopyRework && copyOriginalScore === 1 && <Button unstyled className="button danger" type="button" disabled={submitting || loading || draftSaveStatus === 'saving' || !copyRatingComplete} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('DISCARD', event.currentTarget.form); }}><Trash2 size={15} />评分并废弃</Button>}
-                {(isCopyRework || copyOriginalScore !== 1) && <Button unstyled className="button" type="button" disabled={submitting || loading || draftSaveStatus === 'saving' || !copyRatingComplete || isCopyRework && !draftChanged} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('SAVE', event.currentTarget.form); }}>
+                {!isCopyRework && copyOriginalScore === 1 && <Button unstyled className="button danger" type="button" disabled={submitting || loading || regeneratingImagePlan || draftSaveStatus === 'saving' || !copyRatingComplete} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('DISCARD', event.currentTarget.form); }}><Trash2 size={15} />评分并废弃</Button>}
+                {(isCopyRework || copyOriginalScore !== 1) && <Button unstyled className="button" type="button" disabled={submitting || loading || regeneratingImagePlan || draftSaveStatus === 'saving' || !copyRatingComplete || isCopyRework && !draftChanged} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('SAVE', event.currentTarget.form); }}>
                   {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : isCopyRework ? '保存返工稿，暂不提交复检' : '保存评分，暂不提交'}
                 </Button>}
-                <Button unstyled className="button primary" type="submit" disabled={submitting || loading || draftSaveStatus === 'saving' || !canApproveCopy}>
+                <Button unstyled className="button primary" type="submit" disabled={submitting || loading || regeneratingImagePlan || draftSaveStatus === 'saving' || !canApproveCopy}>
                   {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : <><CheckCircle2 size={15} />{isCopyRework ? '提交强制复检' : '审核通过并进入后续流程'}</>}
                 </Button>
               </>}

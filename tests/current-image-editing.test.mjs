@@ -6,14 +6,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { normalizeManualOverlay, manualOverlaySvg, decodeReference, renderMask, renderRegionsMask, mergeWithMask, changedPixelMask, assertOutsideMask } from '../src/image-edit-pixels.mjs';
-import { normalizeEdit,replaceImagePage,editStoragePath,createImageEditingService } from '../server/src/image-editing.mjs';
+import { normalizeEdit,replaceImagePage,editStoragePath,createImageEditingService,resolveImageEditRetry } from '../server/src/image-editing.mjs';
 import { disclosurePlacementRegion, parseFusionTargetCheck, parseLocalTargetCheck, processImageEdit } from '../server/src/image-edit-renderer.mjs';
 
 const png=(color='white',width=1086,height=1448)=>sharp({create:{width,height,channels:4,background:color}}).png().toBuffer();
 const visionPass=(labels=[])=>({passed:true,model:'fake-vision',layoutMatched:true,ocrConfidence:1,
   ocrMismatches:[],unreadableText:[],recognizedText:{headline:'真实参考',subtitle:'',bullets:[],otherText:labels}});
 const localResultPass=()=>({passed:true,reason:'修改完成且未影响无关内容',checks:{requestedChangeCompleted:true,targetCountCorrect:true,
-  placementAndRepairNatural:true,protectedTextPreserved:true,unrelatedContentPreserved:true}});
+  placementAndRepairNatural:true,movedTargetFullyVisible:true,compositionBalanced:true,protectedTextPreserved:true,unrelatedContentPreserved:true}});
 const imageEditPromptContent='管理员统一图片编辑规则：执行 {{reviewInstruction}}，保留所有未要求修改的内容。';
 const imageEditPrompt={kind:'IMAGE_EDIT_SYSTEM',name:'图片编辑',versionId:17,version:4,content:imageEditPromptContent,sha256:createHash('sha256').update(imageEditPromptContent).digest('hex'),capturedAt:'2026-09-15T00:00:00.000Z'};
 const input=()=>({requestId:randomUUID(),sourceImageRunId:randomUUID(),sourceAssetId:1,copyRevisionId:1,sha256:'a'.repeat(64),targetPage:1,operation:'TEXT',confirmation:'LIVE_IMAGE_COST_ACCEPTED',overlay:{text:'AI生成',textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED'}});
@@ -34,6 +34,9 @@ test('AI text layout contract is escaped, typed, and stays inside the safe area'
   assert.equal(Object.hasOwn(request,'batchId'),false);
   const batchId=randomUUID();
   assert.equal(normalizeEdit({...input(),batchId}).batchId,batchId);
+  const programmatic=normalizeEdit({...input(),operation:'SVG_DISCLOSURE',confirmation:undefined,batchId});
+  assert.equal(programmatic.operation,'SVG_DISCLOSURE');assert.equal(programmatic.confirmation,null);
+  assert.equal(programmatic.overlay.text,'AI生成');assert.equal(programmatic.batchId,batchId);
   assert.throws(()=>normalizeEdit({...input(),batchId,operation:'AI_LOCAL',instruction:'修改背景'}),/只有人工生成标识支持/u);
 });
 test('reference decoding rejects MIME spoofing, SVG, truncation and excess bytes; strips metadata',async()=>{
@@ -111,6 +114,24 @@ test('reviewers cannot create image edits before any database or filesystem work
   const service=createImageEditingService({pool:{connect(){assert.fail('must not connect');}},storageRoot:tmpdir()});
   await assert.rejects(()=>service.create(1,input(),{role:'REVIEWER',username:'reviewer'}),{code:'FORBIDDEN'});
 });
+test('safe rejected-preview repair survives the ordinary three-attempt cap and stale clients cannot silently restart from source',()=>{
+  const instruction='把右下角汤勺移动到锅左侧，并让半勺老抽连续倒入锅内';
+  const sourceRegion={x:866,y:1164,width:220,height:284},destinationRegion={x:686,y:1164,width:220,height:284};
+  const localization={operationType:'MOVE',targetDescription:'右下角白色老抽勺及液流',sourceAction:'清除旧勺并修复背景',
+    destinationAction:'在左侧重建白色勺子',quantity:'半勺老抽',relationship:'液流连续落入锅内',sourceRegion,destinationRegion,
+    contactRegion:{x:716,y:1240,width:92,height:208},editRegions:[sourceRegion,destinationRegion],checks:{},warnings:[]};
+  const localConsistency={repairableFromRejected:true,failureCodes:['DESTINATION_OBJECT_MISSING','POUR_CONTACT_MISSING'],
+    repairInstruction:'只在左侧补生成白色老抽勺和连续入锅液流',repairRegions:[destinationRegion],
+    checks:{protectedTextPreserved:true,unrelatedContentPreserved:true},reason:'目标勺和液流缺失'};
+  const edit={operation:'AI_LOCAL',attempts:3,error:'验收未通过',config:{instruction,imageEditRepairMaxAttempts:2}};
+  const result={asset_id:719,validation:{stage:'LOCAL_EDIT_RESULT',integrity:{sha256:'b'.repeat(64)},localization,localConsistency}};
+  assert.throws(()=>resolveImageEditRetry(edit,result),/可以定向修复/u);
+  const resolved=resolveImageEditRetry(edit,result,{useRejectedPreview:true});
+  assert.equal(resolved.targetedRepair,true);assert.equal(resolved.localRepair.attempt,1);
+  assert.equal(resolved.localRepair.baseAssetId,719);assert.deepEqual(resolved.localRepair.repairRegions,[destinationRegion]);
+  const unsafe={...result,validation:{...result.validation,localConsistency:{...localConsistency,repairableFromRejected:false}}};
+  assert.throws(()=>resolveImageEditRetry(edit,unsafe),/三次执行上限/u);
+});
 test('mock mode never calls image models or produces an adoptable AI edit',async()=>{
   let failed=false;
   const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_FULL',config:{}}),context:async()=>({source:{},refs:[],settings:{aiDisclosureEnabled:false},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}}}),readAsset:async()=>png(),fail:async()=>{failed=true;},complete:()=>assert.fail('must not complete')};
@@ -173,6 +194,32 @@ test('AI text worker makes one full-frame edit without a mask or pixel-stitching
     assert.equal(completed.validation.outsideMask.mode,'MODEL_FULL_FRAME_NO_MASK');assert.equal(completed.validation.outsideMask.requested,false);assert.equal(completed.validation.outsideMask.programmaticPixelMerge,false);
     assert.deepEqual(completed.validation.requiredText,['真实参考','人工创作']);assert.deepEqual(completed.validation.disclosure.added,{type:'AI_GENERATED',text:'人工创作'});
     assert.equal(completed.validation.prompt.versionId,17);
+  } finally {await rm(dir,{recursive:true,force:true});}
+});
+test('SVG disclosure worker uses the canonical badge and Sharp without calling image or vision models',async()=>{
+  const source=await png('white');
+  const config=normalizeEdit({...input(),operation:'SVG_DISCLOSURE',confirmation:undefined,overlay:{text:'AI生成'}});
+  let completed,failed=false;
+  const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'SVG_DISCLOSURE',config}),
+    context:async()=>({source:{id:1},refs:[],settings:{},revision:{content:{imagePlan:[{headline:'真实参考'}]}},
+      run:{result:{images:[{aiDisclosureStyle:{color:'#6f7d5f'}}]}}}),readAsset:async()=>source,heartbeat:async()=>true,
+    fail:async()=>{failed=true;},complete:async(e,result)=>{completed=result;return{};}};
+  const noModel={runImageEdit:()=>assert.fail('must not call image model'),runVision:()=>assert.fail('must not call vision model')};
+  const dir=await mkdtemp(join(tmpdir(),'image-edit-svg-disclosure-'));
+  try {
+    const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient:noModel,
+      validateImage:async()=>assert.fail('must not validate with a model'),mock:true});
+    assert.equal(result.status,'PREVIEW_READY');assert.equal(failed,false);assert.ok(Buffer.isBuffer(completed.mask));
+    assert.equal(completed.validation.passed,true);assert.equal(completed.validation.billedImageGeneration,false);
+    assert.equal(completed.validation.model,null);assert.equal(completed.validation.generationAttempts,0);
+    assert.equal(completed.validation.text.engine,'sharp-svg-disclosure');
+    assert.equal(completed.validation.text.placement.mode,'PROGRAMMATIC_SVG_DISCLOSURE');
+    assert.equal(completed.validation.renderer.engine,'sharp-svg');
+    assert.equal(completed.validation.renderer.style.color,'#6F7D5F');
+    assert.deepEqual(completed.validation.disclosure.added,{type:'AI_GENERATED',text:'AI生成'});
+    assert.deepEqual(completed.validation.requiredText,['真实参考','AI生成']);
+    assert.equal(completed.validation.outsideMask.changedPixels,0);
+    assert.equal(completed.bytes.equals(source),false);
   } finally {await rm(dir,{recursive:true,force:true});}
 });
 test('AI text worker never makes a second edit when the only result fails text validation',async()=>{
@@ -262,20 +309,25 @@ test('a uniquely identified edge-clipped move returns an adoptable suggestion be
   const dir=await mkdtemp(join(tmpdir(),'image-edit-edge-suggestion-'));
   try{const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});assert.equal(result.status,'FAILED');assert.equal(imageCalls,0);assert.equal(failedError.nonBillablePreflightFailure,true);assert.equal(failedError.validation.stage,'LOCAL_EDIT_SUGGESTION');assert.equal(failedError.validation.suggestedInstruction,planned.suggestedInstruction);assert.equal(failedError.validation.billedImageGeneration,false);}finally{await rm(dir,{recursive:true,force:true});}
 });
-test('an accepted local suggestion reuses its plan, edits multiple regions, and runs result validation',async()=>{
+test('an accepted move suggestion uses one full-frame edit without mask stitching and runs strict result validation',async()=>{
   const source=await png('red'),generated=await png('blue');
   const instruction='将右下角汤勺和液流移动到锅的左上方，把勺中老抽减少为半勺，并自然修复原位置；不要修改文字和其他内容。';
   const config={imageEditPrompt,references:[],instruction,preserve:'保留其他区域',negative:'不得改写文字',mask:null,localPlan:{accepted:true,
-    originalInstruction:'把右下角一勺老抽变成半勺并移到左侧',suggestedInstruction:instruction,sourceRegion:{x:910,y:965,width:176,height:483},destinationRegion:{x:470,y:850,width:260,height:460},
-    editRegions:[{x:890,y:940,width:196,height:508},{x:430,y:810,width:340,height:540}],operationType:'MOVE',touchesImageEdge:true,
-    targetDescription:'右下角汤勺和液流',warnings:['贴边'],reason:'采用模型建议',confidence:0.96,checks:{}}};
+    originalInstruction:'把右下角一勺老抽变成半勺并移到左侧',suggestedInstruction:instruction,sourceRegion:{x:866,y:1164,width:220,height:284},destinationRegion:{x:686,y:1164,width:220,height:284},
+    contactRegion:{x:716,y:1240,width:92,height:208},editRegions:[{x:866,y:1164,width:220,height:284},{x:686,y:1164,width:220,height:284}],operationType:'MOVE',touchesImageEdge:true,
+    targetDescription:'右下角与“加半勺老抽翻匀”对应的老抽汤勺和液流',sourceAction:'移除原勺和原液流并自然修复背景',destinationAction:'把汤勺向左移动约180像素到锅内',quantity:'水平向左约180像素；把一勺老抽减少为半勺',
+    relationship:'让少量老抽从勺口流出并明确倒入锅内',warnings:['贴边'],reason:'采用模型建议',confidence:0.96,checks:{}}};
   let completed,imageCalls=0,visionCalls=0;
   const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_LOCAL',config}),context:async()=>({source:{},refs:[],settings:{aiDisclosureEnabled:false},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),readAsset:async()=>source,
     fail:async(_edit,error)=>assert.fail(error.message),complete:async(_edit,result)=>{completed=result;return{};}};
-  const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{imageCalls++;assert.equal(inputPaths.length,3);assert.match(prompt,/汤勺和液流移动到锅的左上方/u);assert.match(prompt,/一个或多个白色区域/u);assert.match(prompt,/只删除原目标不算完成/u);assert.match(inputPaths[1],/local-role-guide\.png$/u);assert.match(inputPaths[2],/mask\.png$/u);await writeFile(outputPath,generated);return{model:'fake-local-edit'};},
-    runVision:async({prompt,inputPaths})=>{visionCalls++;assert.doesNotMatch(prompt,/编辑规划器/u);assert.match(prompt,/局部图片编辑验收器/u);assert.equal(inputPaths.length,2);return{model:'fake-result-check',rawText:JSON.stringify(localResultPass())};}};
+  const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{imageCalls++;assert.equal(inputPaths.length,3);assert.match(inputPaths[1],/original-source-reference\.png$/u);assert.match(inputPaths[2],/direct-move-guide\.png$/u);
+    assert.match(prompt,/LOCAL_MOVE_FULL_FRAME/u);assert.match(prompt,/第二个附件是完全相同的原图保护参照/u);assert.match(prompt,/黑底彩色几何引导图/u);assert.match(prompt,/直接编辑完整画面/u);assert.match(prompt,/绝不能越过容器下沿/u);assert.match(prompt,/勺碗中心位于画面横向约 75% 至 79%/u);assert.match(prompt,/勺柄端位于横向约 63% 至 67%/u);assert.match(prompt,/整体长度约占画面宽度 17% 至 22%/u);assert.match(prompt,/不得移到锅中央/u);assert.match(prompt,/明显只有半勺老抽/u);assert.match(prompt,/液流长度不超过画面高度约 3%/u);assert.match(prompt,/已忽略规划器自行估算的像素距离/u);assert.doesNotMatch(prompt,/180像素/u);assert.match(prompt,/"destinationRegion":null/u);assert.match(prompt,/"geometryPolicy"/u);assert.match(prompt,/唯一允许移动的目标/u);assert.match(prompt,/同画面其他外观相似的对象/u);assert.match(prompt,/最终画面必须仍有两把用途不同的白色调料勺/u);assert.match(prompt,/整个目标轮廓、主体和附属部分/u);assert.match(prompt,/不得放在任何文字标签/u);assert.match(prompt,/将勺柄转向左上方/u);assert.match(prompt,/最右端和最下端分别至少保留约 6%/u);
+    assert.doesNotMatch(prompt,/黑白遮罩。一个或多个白色区域/u);await writeFile(outputPath,generated);return{model:'fake-local-move'};},
+    runVision:async({prompt,inputPaths})=>{visionCalls++;assert.doesNotMatch(prompt,/编辑规划器/u);assert.match(prompt,/局部图片编辑验收器/u);assert.match(prompt,/不是像素级硬边界/u);assert.match(prompt,/movedTargetFullyVisible/u);assert.match(prompt,/compositionBalanced/u);assert.match(prompt,/明确在锅沿内侧的右下锅面/u);assert.match(prompt,/不得机械要求白色内壁恰好占图像面积 50%/u);assert.match(prompt,/勺子必须同时完整显示勺碗和勺柄/u);assert.match(prompt,/discardedPlannerConstraint/u);assert.doesNotMatch(prompt,/180像素/u);assert.match(prompt,/语义任务/u);assert.equal(inputPaths.length,2);return{model:'fake-result-check',rawText:JSON.stringify(localResultPass())};}};
   const dir=await mkdtemp(join(tmpdir(),'image-edit-accepted-suggestion-'));
-  try{const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});assert.equal(result.status,'PREVIEW_READY');assert.equal(imageCalls,1);assert.equal(visionCalls,1);assert.equal(completed.validation.localization.adoptedSuggestion,true);assert.equal(completed.validation.localization.editRegions.length,2);assert.equal(completed.validation.localConsistency.passed,true);assert.equal(completed.validation.outsideMask.changedPixels,0);}finally{await rm(dir,{recursive:true,force:true});}
+  try{const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});assert.equal(result.status,'PREVIEW_READY');assert.equal(imageCalls,1);assert.equal(visionCalls,1);assert.equal(completed.validation.localization.adoptedSuggestion,true);assert.equal(completed.validation.localization.editRegions.length,2);assert.equal(completed.validation.localConsistency.passed,true);assert.equal(completed.validation.outsideMask.mode,'MODEL_FULL_FRAME_MOVE_WITH_VISION_GATE');assert.equal(completed.validation.outsideMask.programmaticPixelMerge,false);assert.equal(completed.validation.generationAttempts,1);
+    const raw=await sharp(completed.bytes).ensureAlpha().raw().toBuffer();assert.deepEqual([...raw.subarray(0,4)],[0,0,255,255]);
+  }finally{await rm(dir,{recursive:true,force:true});}
 });
 test('a generated image that fails result validation is returned as a rejected preview',async()=>{
   const source=await png('red'),generated=await png('blue');
@@ -291,7 +343,7 @@ test('a generated image that fails result validation is returned as a rejected p
     runVision:async()=>({model:'fake-result-check',rawText:JSON.stringify({passed:false,reason:'原目标被删除，但没有在目标位置重新出现',
       failureCodes:['DESTINATION_OBJECT_MISSING','POUR_CONTACT_MISSING'],repairInstruction:'只在锅左侧补生成汤勺和入锅液流',
       repairRegions:[{x:450,y:830,width:300,height:500}],
-      checks:{requestedChangeCompleted:false,targetCountCorrect:false,placementAndRepairNatural:false,protectedTextPreserved:true,unrelatedContentPreserved:true}})})};
+      checks:{requestedChangeCompleted:false,targetCountCorrect:false,placementAndRepairNatural:false,movedTargetFullyVisible:true,compositionBalanced:true,protectedTextPreserved:true,unrelatedContentPreserved:true}})})};
   const dir=await mkdtemp(join(tmpdir(),'image-edit-rejected-preview-'));
   try {
     const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});
@@ -302,10 +354,57 @@ test('a generated image that fails result validation is returned as a rejected p
     assert.deepEqual(rejected.error.validation.localConsistency.repairRegions,[{x:450,y:830,width:300,height:500}]);
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
-test('a user-approved repair edits the rejected preview only inside the reduced destination region',async()=>{
+test('a move result cannot pass when the rebuilt target is clipped or hidden by a text label',async()=>{
+  const source=await png('red'),generated=await png('blue');
+  const instruction='把右下角汤勺移到左侧并完整显示，让半勺老抽倒入锅内';
+  const destinationRegion={x:470,y:850,width:260,height:460},destinationEditRegion={x:450,y:830,width:300,height:500};
+  const config={imageEditPrompt,imageEditRepairMaxAttempts:2,references:[],instruction,preserve:'保留其他区域',negative:'不得改写文字',mask:null,localPlan:{accepted:true,
+    originalInstruction:instruction,suggestedInstruction:instruction,sourceRegion:{x:850,y:980,width:236,height:468},destinationRegion,
+    editRegions:[{x:830,y:960,width:256,height:488},destinationEditRegion],operationType:'MOVE',touchesImageEdge:true,
+    targetDescription:'右下角汤勺和液流',warnings:['贴边'],reason:'采用模型建议',confidence:0.96,checks:{}}};
+  let rejected=null;
+  const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_LOCAL',config}),context:async()=>({source:{},refs:[],settings:{aiDisclosureEnabled:false},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),readAsset:async()=>source,
+    fail:async(_edit,error,preview)=>{rejected={error,preview};},complete:()=>assert.fail('must not complete')};
+  const agentClient={runImageEdit:async({outputPath})=>{await writeFile(outputPath,generated);return{model:'fake-local-edit'};},
+    runVision:async()=>({model:'fake-result-check',rawText:JSON.stringify({passed:true,reason:'勺柄被标签遮住',failureCodes:[],repairInstruction:'补全勺柄并移动到标签左上方，保持整把勺子无遮挡',repairRegions:[destinationRegion],
+      checks:{requestedChangeCompleted:true,targetCountCorrect:true,placementAndRepairNatural:true,movedTargetFullyVisible:false,compositionBalanced:true,protectedTextPreserved:true,unrelatedContentPreserved:true}})})};
+  const dir=await mkdtemp(join(tmpdir(),'image-edit-incomplete-target-'));
+  try {
+    const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});
+    assert.equal(result.status,'FAILED');assert.ok(Buffer.isBuffer(rejected.preview.bytes));
+    assert.equal(rejected.error.validation.localConsistency.passed,false);
+    assert.equal(rejected.error.validation.localConsistency.checks.movedTargetFullyVisible,false);
+    assert.deepEqual(rejected.error.validation.localConsistency.failureCodes,['TARGET_INCOMPLETE_OR_OCCLUDED']);
+    assert.equal(rejected.error.validation.localConsistency.repairableFromRejected,true);
+  } finally { await rm(dir,{recursive:true,force:true}); }
+});
+test('a complete moved spoon still fails when it dominates the visual center',async()=>{
+  const source=await png('red'),generated=await png('blue');
+  const instruction='把右下角汤勺移到右侧次要视觉区，让半勺老抽倒入锅内';
+  const destinationRegion={x:586,y:780,width:260,height:350},destinationEditRegion={x:550,y:740,width:340,height:440};
+  const config={imageEditPrompt,imageEditRepairMaxAttempts:2,references:[],instruction,preserve:'保留其他区域',negative:'不得改写文字',mask:null,localPlan:{accepted:true,
+    originalInstruction:instruction,suggestedInstruction:instruction,sourceRegion:{x:850,y:980,width:236,height:468},destinationRegion,
+    editRegions:[{x:830,y:960,width:256,height:488},destinationEditRegion],operationType:'MOVE',touchesImageEdge:true,
+    targetDescription:'右下角与“加半勺老抽翻匀”对应的老抽汤勺和液流',warnings:['贴边'],reason:'采用模型建议',confidence:0.96,checks:{}}};
+  let rejected=null;
+  const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_LOCAL',config}),context:async()=>({source:{},refs:[],settings:{aiDisclosureEnabled:false},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),readAsset:async()=>source,
+    fail:async(_edit,error,preview)=>{rejected={error,preview};},complete:()=>assert.fail('must not complete')};
+  const agentClient={runImageEdit:async({outputPath})=>{await writeFile(outputPath,generated);return{model:'fake-local-edit'};},
+    runVision:async()=>({model:'fake-result-check',rawText:JSON.stringify({passed:true,reason:'勺子完整但横跨中央主菜，视觉权重过大',failureCodes:[],repairInstruction:'缩小勺子并整体右移到次要视觉区，不要越过画面中线',repairRegions:[destinationRegion],
+      checks:{requestedChangeCompleted:true,targetCountCorrect:true,placementAndRepairNatural:true,movedTargetFullyVisible:true,compositionBalanced:false,protectedTextPreserved:true,unrelatedContentPreserved:true}})})};
+  const dir=await mkdtemp(join(tmpdir(),'image-edit-unbalanced-composition-'));
+  try {
+    const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});
+    assert.equal(result.status,'FAILED');assert.ok(Buffer.isBuffer(rejected.preview.bytes));
+    assert.equal(rejected.error.validation.localConsistency.checks.compositionBalanced,false);
+    assert.deepEqual(rejected.error.validation.localConsistency.failureCodes,['COMPOSITION_UNBALANCED']);
+    assert.equal(rejected.error.validation.localConsistency.repairableFromRejected,true);
+  } finally { await rm(dir,{recursive:true,force:true}); }
+});
+test('a user-approved move repair uses the rejected preview and original source without mask stitching',async()=>{
   const original=await png('red'),rejected=await png('green'),generated=await png('blue');
   const instruction='把右下角汤勺移动到锅的左侧，并保持半勺老抽倒入锅内';
-  const plan={operationType:'MOVE',targetDescription:'右下角汤勺和液流',sourceAction:'清除右下角旧勺和液流',
+  const plan={operationType:'MOVE',targetDescription:'右下角与“加半勺老抽翻匀”对应的老抽汤勺和液流',sourceAction:'清除右下角旧勺和液流',
     destinationAction:'在锅左侧重建同一把勺子',quantity:'半勺老抽',relationship:'液流连续落入锅内',
     sourceRegion:{x:850,y:980,width:236,height:468},destinationRegion:{x:470,y:850,width:260,height:460},
     contactRegion:{x:560,y:1180,width:90,height:80},editRegions:[{x:830,y:960,width:256,height:488},{x:450,y:830,width:300,height:500}],
@@ -317,14 +416,14 @@ test('a user-approved repair edits the rejected preview only inside the reduced 
   const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_LOCAL',config}),
     context:async()=>({source:{id:1},repairSource:{id:2},refs:[],settings:{aiDisclosureEnabled:false},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),
     readAsset:async asset=>asset.id===2?rejected:original,fail:(_edit,error)=>assert.fail(error.message),complete:async(_edit,result)=>{completed=result;return{};}};
-  const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{imageInputs=inputPaths;assert.equal(inputPaths.length,4);assert.match(prompt,/上次自动验收未通过的结果/u);assert.match(prompt,/只在锅左侧补生成半勺老抽/u);assert.match(inputPaths[1],/original-source\.png$/u);assert.match(inputPaths[2],/local-role-guide\.png$/u);assert.match(inputPaths[3],/mask\.png$/u);await writeFile(outputPath,generated);return{model:'fake-repair'};},
+  const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{imageInputs=inputPaths;assert.equal(inputPaths.length,3);assert.match(prompt,/上次自动验收未通过的结果/u);assert.match(prompt,/只在锅左侧补生成半勺老抽/u);assert.match(prompt,/最后一个附件是黑底彩色几何引导图/u);assert.match(prompt,/直接编辑完整画面/u);assert.match(inputPaths[1],/original-source\.png$/u);assert.match(inputPaths[2],/direct-move-guide\.png$/u);assert.doesNotMatch(inputPaths.join('\n'),/mask\.png/u);await writeFile(outputPath,generated);return{model:'fake-repair'};},
     runVision:async({inputPaths})=>{validationInputs=inputPaths;return{model:'fake-result-check',rawText:JSON.stringify(localResultPass())};}};
   const dir=await mkdtemp(join(tmpdir(),'image-edit-targeted-repair-'));
   try {
     const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});
-    assert.equal(result.status,'PREVIEW_READY');assert.equal(imageInputs.length,4);assert.equal(validationInputs.length,3);
+    assert.equal(result.status,'PREVIEW_READY');assert.equal(imageInputs.length,3);assert.equal(validationInputs.length,3);
     assert.equal(completed.validation.repairAttempt,1);assert.equal(completed.validation.repairMaxAttempts,2);
-    assert.equal(completed.validation.localization.rejectedPreviewRepair,true);assert.equal(completed.validation.outsideMask.changedPixels,0);
+    assert.equal(completed.validation.localization.rejectedPreviewRepair,true);assert.equal(completed.validation.outsideMask.mode,'MODEL_FULL_FRAME_MOVE_WITH_VISION_GATE');
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
 test('ambiguous natural-language targets fail before the paid image model',async()=>{

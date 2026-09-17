@@ -9,6 +9,7 @@ import {
 
 test('protected control-plane operations declare their version contracts', () => {
   for (const [routePath, method, capability, minimumVersion] of [
+    ['/v1/tasks/42/regenerate-image-plan', 'POST', 'copyImagePlanRegenerationVersion', 2],
     ['/v1/tasks/42/copy-review-drafts', 'POST', 'copyReviewDraftVersion', 1],
     ['/v1/tasks/42/admin-direct-copy-qa', 'POST', 'adminDirectCopyQaVersion', 1],
     ['/v1/settings/xhs_query_search', 'PUT', 'xiaohongshuQuerySearchVersion', 5],

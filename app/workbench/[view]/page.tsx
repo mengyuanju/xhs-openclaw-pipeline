@@ -6,6 +6,7 @@ import { CreationWorkbench } from '../creation-workbench';
 import { parseWorkbenchListState } from '../list-state';
 import { isPersonalStateFilter } from '../personal-state-filters';
 import { WORKBENCH_VIEWS } from '../views';
+import { shanghaiCalendarDate } from '../../../src/control-plane/task-date-filter.mjs';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,6 +26,11 @@ export default async function WorkbenchListPage({ params, searchParams }: {
   const initialListState = parseWorkbenchListState(search, { allowAdminFilters: role === 'ADMIN' });
   if (definition.key === 'PERSONAL' && !isPersonalStateFilter(initialListState.state)) initialListState.state = 'ALL';
   if (definition.key === 'ALL_JOBS' && !new Set<string>(['ALL', ...definition.states]).has(initialListState.state)) initialListState.state = 'ALL';
+  if (definition.key === 'ALL_JOBS' && !initialListState.createdDateFrom && !initialListState.createdDateTo) {
+    const today = shanghaiCalendarDate();
+    initialListState.createdDateFrom = today;
+    initialListState.createdDateTo = today;
+  }
   if (definition.key !== 'PERSONAL' && definition.key !== 'ALL_JOBS') initialListState.state = 'ALL';
   if (definition.key !== 'ALL_JOBS') initialListState.attention = 'NONE';
 

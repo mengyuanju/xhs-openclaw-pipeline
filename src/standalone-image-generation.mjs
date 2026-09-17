@@ -664,7 +664,7 @@ function publicLayout(page, field = 'layout') {
     visualSubject: boundedText(page.visualSubject, `${field}.visualSubject`, 1, 1000),
     allowedVisibleText: {
       headline: boundedText(page.allowedVisibleText.headline, `${field}.allowedVisibleText.headline`, 1, 18),
-      subtitle: boundedText(page.allowedVisibleText.subtitle, `${field}.allowedVisibleText.subtitle`, 1, 30),
+      subtitle: boundedText(page.allowedVisibleText.subtitle, `${field}.allowedVisibleText.subtitle`, 0, 30),
       bullets: publicTextList(page.allowedVisibleText.bullets, `${field}.allowedVisibleText.bullets`, {
         minimum: 2,
         maximum: 5,

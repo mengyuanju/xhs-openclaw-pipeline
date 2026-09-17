@@ -1,5 +1,14 @@
 import { ApiError } from '../admin/http.mjs';
-import { compactDetail, compactTask, normalizeRange, resolveWorkOwner, summarizeCounts, summarizeEfficiency } from './summary.mjs';
+import {
+  compactDetail,
+  compactPersonalTaskCompletion,
+  compactTask,
+  normalizeRange,
+  resolveWorkOwner,
+  summarizeCounts,
+  summarizeEfficiency,
+  summarizePersonalCompletions,
+} from './summary.mjs';
 import { createReadScheduler } from './read-scheduler.mjs';
 
 const PAGE_SIZE = 200;
@@ -209,6 +218,24 @@ export function createStatisticsService({ fetchImpl = fetch, now = Date.now, sle
       });
       const allSummary = entry.rows ? summarizeCounts(rows, range, now()) : null;
       const summary = !entry.rows ? null : scope === 'admin' && (username || role) ? summarizeCounts(filtered, range, now()) : allSummary;
+      let completionNotice = null;
+      if (scope === 'personal' && summary && !entry.error) {
+        try {
+          const completionQuery = new URLSearchParams({
+            from: new Date(range.startMs).toISOString(),
+            to: new Date(range.endMs).toISOString(),
+          });
+          const rawCompletions = await request(root, actor, `/v1/task-completions?${completionQuery}`);
+          if (!Array.isArray(rawCompletions) || rawCompletions.length > maxTasks) {
+            throw new Error('个人完成统计超出读取上限');
+          }
+          const completions = rawCompletions.map(compactPersonalTaskCompletion);
+          summary.completedWork = summarizePersonalCompletions(completions, range);
+        } catch (error) {
+          if (error instanceof ApiError && [401, 403].includes(error.status)) throw error;
+          completionNotice = '完成数据暂时不可用，其他作业统计仍可查看。';
+        }
+      }
       const workers = scope === 'admin' && allSummary ? allSummary.people
         .filter(person => person.accountId !== null || person.username === null)
         .map(person => ({ accountId: person.accountId,
@@ -237,7 +264,8 @@ export function createStatisticsService({ fetchImpl = fetch, now = Date.now, sle
         scope, range, summary, workers, details: detailSummary,
         state: entry.error ? 'error' : entry.scan ? entry.rows ? 'refreshing' : 'loading' : entry.rows ? 'ready' : 'loading',
         progress: { loaded: entry.scan?.rows.size ?? rows.length, total: entry.scan?.total ?? (entry.rows ? rows.length : null) },
-        updatedAt: entry.rows ? new Date(entry.updatedAt).toISOString() : null, notice: entry.error,
+        updatedAt: entry.rows ? new Date(entry.updatedAt).toISOString() : null,
+        notice: [entry.error, completionNotice].filter(Boolean).join(' ') || null,
         retryAfterMs: entry.error ? Math.max(1000, entry.nextRetry - now())
           : entry.scan ? 1500 : details && detailSummary?.state !== 'ready' ? detailRetryAfterMs : COUNTS_TTL,
       };

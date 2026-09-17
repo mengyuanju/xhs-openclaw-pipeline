@@ -1,11 +1,13 @@
+import { normalizeTaskDateRange } from './task-date-filter.mjs';
+
 /**
  * Read a complete server page; old centers must not silently ignore admin filters.
  * @param {(path: string) => Promise<any>} request
- * @param {{createdByUserId?: string, createdByAccountId?: number, assignedToUserId?: string, assignedToAccountId?: number, createdByRole?: string, state?: string, taskId?: number, query?: string, queryPackageName?: string, deduplicateQuery?: boolean, attention?: string, sortBy?: string, sortOrder?: string, limit?: number, offset?: number, cursor?: string, lastPage?: boolean}} options
+ * @param {{createdByUserId?: string, createdByAccountId?: number, assignedToUserId?: string, assignedToAccountId?: number, createdByRole?: string, createdDateFrom?: string, createdDateTo?: string, state?: string, taskId?: number, query?: string, queryPackageName?: string, deduplicateQuery?: boolean, attention?: string, sortBy?: string, sortOrder?: string, limit?: number, offset?: number, cursor?: string, lastPage?: boolean}} options
  */
 export async function loadAdminTaskPage(request, {
   createdByUserId, createdByAccountId, assignedToUserId, assignedToAccountId,
-  createdByRole, state, taskId, query, queryPackageName,
+  createdByRole, createdDateFrom, createdDateTo, state, taskId, query, queryPackageName,
   deduplicateQuery = false,
   attention, sortBy, sortOrder, limit = 20, offset = 0, cursor, lastPage = false,
 } = {}) {
@@ -15,12 +17,15 @@ export async function loadAdminTaskPage(request, {
   const hasAssignee = Boolean(assignedToUserId);
   const hasAssigneeAccount = Number.isSafeInteger(assignedToAccountId) && assignedToAccountId > 0;
   if (hasAssignee !== hasAssigneeAccount) throw new TypeError('负责人筛选缺少稳定账号身份，请重新选择负责人。');
+  const dateRange = normalizeTaskDateRange(createdDateFrom, createdDateTo);
   const search = new URLSearchParams({ limit: String(limit), offset: String(offset), includeTotal: 'true' });
   if (createdByUserId) search.set('createdByUserId', createdByUserId);
   if (hasCreatorAccount) search.set('createdByAccountId', String(createdByAccountId));
   if (assignedToUserId) search.set('assignedToUserId', assignedToUserId);
   if (hasAssigneeAccount) search.set('assignedToAccountId', String(assignedToAccountId));
   if (createdByRole) search.set('createdByRole', createdByRole);
+  if (dateRange.createdDateFrom) search.set('createdDateFrom', dateRange.createdDateFrom);
+  if (dateRange.createdDateTo) search.set('createdDateTo', dateRange.createdDateTo);
   if (state) search.set('state', state);
   if (taskId) search.set('taskId', String(taskId));
   if (query) search.set('query', query);
@@ -46,6 +51,10 @@ export async function loadAdminTaskPage(request, {
   }
   if (hasAssignee && health?.capabilities?.assigneeAccountFilters !== true) {
     throw new Error('请更新并重启中心服务，以支持精确负责人筛选。');
+  }
+  if ((dateRange.createdDateFrom || dateRange.createdDateTo)
+      && health?.capabilities?.adminTaskDateFilters !== true) {
+    throw new Error('请更新并重启中心服务，以支持作业创建日期筛选。');
   }
   const result = await pageRequest;
   if ('error' in result) throw result.error;

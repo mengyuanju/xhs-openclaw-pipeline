@@ -32,6 +32,9 @@ test('image QA uses Sonner and the shared dialog with white, contained image pre
   assert.doesNotMatch(styles, /\.detailDialog\s*\{[^}]*transform:/su);
   assert.doesNotMatch(globals, /\.image-preview-dialog\s*\{[^}]*transform:/su);
   assert.match(workbench, /role="tablist" aria-label="图片质检处理状态"/u);
+  assert.match(workbench, /role === 'ADMIN' && personName[\s\S]*params\.set\('personName', personName\)/u);
+  assert.match(workbench, /aria-label="按人员姓名筛选全部图片质检项"/u);
+  assert.match(workbench, />应用人员<\/Button>/u);
   assert.match(workbench, /<h2 id="image-qa-queue-title">质检队列<\/h2>/u);
   assert.match(workbench, /当前没有待质检任务/u);
   assert.match(workbench, /<th>状态<\/th>/u);

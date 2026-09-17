@@ -50,6 +50,52 @@ const executorManagementActor = Object.freeze({
   credentialVersion: 1,
 });
 
+test('personal completion history combines copy and image events without trusting query-supplied identity', async () => {
+  const queries = [];
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql, values) {
+      queries.push({ sql: String(sql), values });
+      return { rows: [{
+        id: '41',
+        query: '秋日路线',
+        state: 'IMAGE_QC_PENDING',
+        completions: [
+          { stage: 'COPY', completedAt: '2026-09-06T01:00:00.000Z' },
+          { stage: 'IMAGE', completedAt: '2026-09-06T02:00:00.000Z' },
+        ],
+      }] };
+    },
+  } });
+  const rows = await repository.listPersonalTaskCompletions({
+    accountId: 2,
+    username: 'alice',
+    from: '2026-09-05T16:00:00.000Z',
+    to: '2026-09-06T16:00:00.000Z',
+  });
+  assert.deepEqual(rows, [{
+    id: 41,
+    query: '秋日路线',
+    state: 'IMAGE_QC_PENDING',
+    completions: [
+      { stage: 'COPY', completedAt: '2026-09-06T01:00:00.000Z' },
+      { stage: 'IMAGE', completedAt: '2026-09-06T02:00:00.000Z' },
+    ],
+  }]);
+  assert.deepEqual(queries[0].values, [2, 'alice', '2026-09-05T16:00:00.000Z', '2026-09-06T16:00:00.000Z', 20_001]);
+  assert.match(queries[0].sql, /copy_approval_events/u);
+  assert.match(queries[0].sql, /image_approval_events/u);
+  assert.match(queries[0].sql, /approved_by_account_id = \$1/u);
+  assert.match(queries[0].sql, /submitted_by_account_id = \$1/u);
+  assert.match(queries[0].sql, /visible_assignee\.id = \$1/u);
+  assert.match(queries[0].sql, /visible_creator\.id = \$1/u);
+  await assert.rejects(repository.listPersonalTaskCompletions({
+    accountId: 2,
+    username: 'alice',
+    from: '2026-09-06T16:00:00.000Z',
+    to: '2026-09-05T16:00:00.000Z',
+  }), /completion range/u);
+});
+
 test('delivery export reads only the pinned copy, image run and current-run asset metadata', async () => {
   const queries = [];
   const imageRunId = '11111111-1111-4111-8111-111111111111';
@@ -531,7 +577,8 @@ test('saved task views are owner-scoped and upsert a validated filter document',
   assert.equal(saved.id, 8);
   assert.equal(saved.ownerUsername, 'admin');
   assert.deepEqual(queries[0].values[3], {
-    query: '', queryPackageName: '', deduplicateQuery: false, createdByUserId: 'admin', createdByAccountId: 1, createdByRole: 'ALL', state: 'ALL',
+    query: '', queryPackageName: '', deduplicateQuery: false, createdByUserId: 'admin', createdByAccountId: 1, createdByRole: 'ALL',
+    createdDateFrom: '', createdDateTo: '', state: 'ALL',
     assignedToUserId: '', assignedToAccountId: null, personalScope: 'ALL',
     sort: 'priority:desc', attention: 'FAILED', pageSize: 20,
   });
@@ -861,6 +908,30 @@ test('executor inventory counts every running image execution, including manual 
   assert.match(selection, /WHERE n\.retired_at IS NULL/u);
 });
 
+test('task creation date filters use inclusive Shanghai calendar days for pages and totals', async () => {
+  const queries = [];
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql, values) {
+      queries.push({ sql: String(sql), values });
+      return { rows: String(sql).includes('COUNT(*) AS total') ? [{ total: '0' }] : [] };
+    },
+  } });
+  await repository.listTasks({
+    state: 'IMAGE_FAILED', createdDateFrom: '2026-09-01', createdDateTo: '2026-09-17', includeTotal: true,
+  });
+  assert.equal(queries.length, 2);
+  for (const { sql, values } of queries) {
+    assert.match(sql, /created_at >= \(\$1::date::timestamp AT TIME ZONE 'Asia\/Shanghai'\)/u);
+    assert.match(sql, /created_at < \(\(\$2::date \+ 1\)::timestamp AT TIME ZONE 'Asia\/Shanghai'\)/u);
+    assert.match(sql, /state = ANY\(\$3::varchar\[\]\)/u);
+    assert.deepEqual(values.slice(0, 3), ['2026-09-01', '2026-09-17', ['IMAGE_FAILED']]);
+  }
+
+  await assert.rejects(repository.listTasks({
+    createdDateFrom: '2026-09-18', createdDateTo: '2026-09-17',
+  }), /cannot be after/u);
+});
+
 test('task pages partially match a normalized package name and expose its source snapshot', async () => {
   const queries = [];
   const repository = new PostgresControlPlaneRepository({
@@ -917,8 +988,9 @@ test('executor registration restores a previously retired node and binds its sha
   });
   assert.match(registration.sql, /ON CONFLICT\(id\) DO UPDATE SET[\s\S]*retired_at = NULL/u);
   assert.match(registration.sql, /image_edit_executor_version = excluded\.image_edit_executor_version/u);
-  assert.deepEqual(registration.values, ['node-a', '执行机 A', false, null, null, 'node-a', 1, 1, 1]);
+  assert.deepEqual(registration.values, ['node-a', '执行机 A', false, null, null, 'node-a', 1, 1, 1, 0]);
   assert.equal(registered.imageEditExecutorVersion, 1);
+  assert.equal(registered.copyImagePlanRegenerationVersion, 0);
 });
 
 test('executor retirement hides only offline nodes without running work', async () => {

@@ -1,5 +1,6 @@
 import { TASK_STATES, normalizeCreatorUserId, normalizeTaskCreatorRole } from './domain.mjs';
 import { normalizeAssigneeUserId } from './task-assignment-domain.mjs';
+import { normalizeTaskDateRange } from '../../src/control-plane/task-date-filter.mjs';
 
 export const TASK_ATTENTION_FILTERS = Object.freeze(['ANOMALY', 'STALE', 'FAILED']);
 export const SAVED_TASK_VIEW_KEYS = Object.freeze([
@@ -76,6 +77,7 @@ export function normalizeSavedTaskView(value) {
   }
   const createdByRole = raw.createdByRole === 'ALL' || raw.createdByRole === undefined || raw.createdByRole === null
     ? 'ALL' : normalizeTaskCreatorRole(raw.createdByRole);
+  const createdDateRange = normalizeTaskDateRange(raw.createdDateFrom, raw.createdDateTo);
   const state = String(raw.state ?? 'ALL');
   if (!SAVED_STATES.has(state)) throw new TypeError('saved task view state is invalid');
   const sort = String(raw.sort ?? 'priority:desc');
@@ -96,6 +98,8 @@ export function normalizeSavedTaskView(value) {
       assignedToUserId,
       assignedToAccountId,
       createdByRole,
+      createdDateFrom: createdDateRange.createdDateFrom ?? '',
+      createdDateTo: createdDateRange.createdDateTo ?? '',
       personalScope,
       state,
       sort,

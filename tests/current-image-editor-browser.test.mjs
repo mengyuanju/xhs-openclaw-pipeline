@@ -7,14 +7,14 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 
-test('image editor browser: prompt-localized edit, fee gate, reference upload, preview and explicit acceptance',{skip:process.env.RUN_IMAGE_EDIT_BROWSER!=='1',timeout:60000},async()=>{
+test('image editor browser: prompt-localized edit, fee gate, reference upload, preview and explicit acceptance',{skip:process.env.RUN_IMAGE_EDIT_BROWSER!=='1',timeout:75000},async()=>{
   const {build}=await import('esbuild'),{chromium}=await import('playwright-core');
   const root=await mkdtemp(join(tmpdir(),'image-edit-browser-')),bundle=join(root,'bundle.js'),stylesheet=join(root,'bundle.css');
   const runId=randomUUID(),editId=randomUUID(),failedEditId=randomUUID();let edits=[],submitted=null,submissions=[],actions=[];
   const png=await sharp({create:{width:1086,height:1448,channels:4,background:'#eeeeee'}}).png().toBuffer();
   let browser,server;
   try{
-    await build({stdin:{contents:`import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{CurrentImageEditor}from'./app/components/current-image-editor';const assets=[1,2,3].map(id=>({id,sha256:String.fromCharCode(96+id).repeat(64),url:'/v1/assets/'+id}));createRoot(document.getElementById('root')).render(<CurrentImageEditor taskId={1} runId="${runId}" copyRevisionId={1} asset={assets[0]} assets={assets} page={1} runs={[]} onChanged={async()=>{}}/>);`,resolveDir:process.cwd(),loader:'tsx'},bundle:true,outfile:bundle,jsx:'automatic',platform:'browser',conditions:['style'],alias:{'@':process.cwd()},define:{'process.env.NODE_ENV':'"test"'}});
+    await build({stdin:{contents:`import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{ConfirmDialogProvider}from'./components/ui/confirm-dialog';import{CurrentImageEditor}from'./app/components/current-image-editor';const assets=[1,2,3].map(id=>({id,sha256:String.fromCharCode(96+id).repeat(64),url:'/v1/assets/'+id}));createRoot(document.getElementById('root')).render(<ConfirmDialogProvider><CurrentImageEditor taskId={1} runId="${runId}" copyRevisionId={1} asset={assets[0]} assets={assets} page={1} runs={[]} onChanged={async()=>{}}/></ConfirmDialogProvider>);`,resolveDir:process.cwd(),loader:'tsx'},bundle:true,outfile:bundle,jsx:'automatic',platform:'browser',conditions:['style'],alias:{'@':process.cwd()},define:{'process.env.NODE_ENV':'"test"'}});
     const [js,css]=await Promise.all([readFile(bundle),readFile(stylesheet)]);
     server=createServer(async(req,res)=>{
       if(req.url==='/bundle.js'){res.setHeader('content-type','application/javascript');res.end(js);return;}
@@ -36,7 +36,7 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
         const data=body?JSON.parse(body):null;
         if(req.method==='POST'&&req.url.endsWith('/image-edit-references')){res.setHeader('content-type','application/json');res.end(JSON.stringify({data:{id:9,sha256:'b'.repeat(64),url:'/v1/assets/9'}}));return;}
         let response;
-        if(req.method==='POST'&&req.url.endsWith('/image-edits')){submitted=data;submissions.push(data);const needsSuggestion=!data.draft&&data.operation==='AI_LOCAL'&&data.instruction.includes('一勺老抽');const suggestion=needsSuggestion?{stage:'LOCAL_EDIT_SUGGESTION',decision:'SUGGEST',canEdit:true,confidence:.96,candidateCount:1,operationType:'MOVE',targetDescription:'右下角汤勺和液流',touchesImageEdge:true,sourceRegion:{x:910,y:965,width:176,height:483},destinationRegion:{x:470,y:850,width:260,height:460},editRegions:[{x:890,y:940,width:196,height:508},{x:430,y:810,width:340,height:540}],suggestedInstruction:'将右下角汤勺和液流移动到锅的左侧，把勺中老抽减少为半勺，保持液流落入锅内并自然修复原位置；不要修改文字和其他内容。',reason:'目标唯一，但原说明需要明确落点与原位置修复。'}:null;const row={id:data.batchId?randomUUID():editId,version:1,status:needsSuggestion?'FAILED':data.draft?'DRAFT':'PREVIEW_READY',operation:data.operation,source_asset_id:data.sourceAssetId,target_page:data.targetPage,config:{instruction:data.instruction,confirmation:data.confirmation,batchId:data.batchId},...(needsSuggestion?{validation:suggestion,error:'已生成更适合图片编辑的描述，请确认采用后再调用图片编辑模型'}:data.draft?{}:{result:{asset_id:data.sourceAssetId+10,image_run_id:randomUUID(),validation:{passed:true}}})};edits=data.batchId?[row,...edits]:[row];response=row;}
+        if(req.method==='POST'&&req.url.endsWith('/image-edits')){submitted=data;submissions.push(data);const needsSuggestion=!data.draft&&data.operation==='AI_LOCAL'&&data.instruction.includes('一勺老抽');const suggestion=needsSuggestion?{stage:'LOCAL_EDIT_SUGGESTION',decision:'SUGGEST',canEdit:true,confidence:.96,candidateCount:1,operationType:'MOVE',targetDescription:'右下角汤勺和液流',touchesImageEdge:true,sourceRegion:{x:910,y:965,width:176,height:483},destinationRegion:{x:470,y:850,width:260,height:460},editRegions:[{x:890,y:940,width:196,height:508},{x:430,y:810,width:340,height:540}],suggestedInstruction:'将右下角汤勺和液流移动到锅的左侧，把勺中老抽减少为半勺，保持液流落入锅内并自然修复原位置；不要修改文字和其他内容。',reason:'目标唯一，但原说明需要明确落点与原位置修复。'}:null;const row={id:data.batchId?randomUUID():editId,version:1,status:needsSuggestion?'FAILED':data.draft?'DRAFT':'PREVIEW_READY',operation:data.operation,source_asset_id:data.sourceAssetId,target_page:data.targetPage,config:{instruction:data.instruction,confirmation:data.confirmation,batchId:data.batchId},...(needsSuggestion?{validation:suggestion,error:'已生成更适合图片编辑的描述，请确认采用后再调用图片编辑模型'}:data.draft?{}:{result:{asset_id:data.sourceAssetId+10+submissions.length,image_run_id:randomUUID(),validation:{passed:true}}})};edits=data.batchId?[row,...edits]:[row];response=row;}
         else if(req.method==='POST'){actions.push({url:req.url,data});const targetId=req.url.split('/').at(-2);edits=edits.map(e=>e.id===targetId?{...e,status:req.url.endsWith('/accept')?'ACCEPTED':req.url.endsWith('/apply-suggestion')||req.url.endsWith('/retry')?'QUEUED':'CANCELLED',version:e.version+1,...(req.url.endsWith('/apply-suggestion')?{config:{...e.config,instruction:e.validation.suggestedInstruction}}:{})}:e);response=edits.find(e=>e.id===targetId);}
         res.setHeader('content-type','application/json');res.end(JSON.stringify({data:req.method==='GET'?edits:response}));return;
       }
@@ -78,16 +78,25 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     assert.deepEqual(await sourceImage.boundingBox(),sourceBox);
     assert.equal(await page.getByLabel('文本类型').count(),0);
     assert.equal(await page.getByLabel('字号').count(),0);
-    assert.equal(await page.getByText('系统会校验文字准确性',{exact:false}).count(),1);
+    assert.equal(await page.getByRole('button',{name:'图片模型融合',exact:true}).getAttribute('aria-pressed'),'true');
+    await page.getByRole('button',{name:'程序叠加（SVG + Sharp）',exact:true}).click();
+    assert.equal(await page.getByText('逐像素确认标识区域外没有变化',{exact:false}).count(),1);
+    assert.equal(await page.getByText('无需费用确认',{exact:false}).count(),1);
     assert.equal(await page.getByRole('button',{name:'保存草稿',exact:true}).isDisabled(),false);
-    assert.equal(await page.getByRole('button',{name:'生成修改预览',exact:true}).isDisabled(),false);
+    assert.equal(await page.getByRole('button',{name:'生成程序标识预览',exact:true}).isDisabled(),false);
     await page.getByRole('button',{name:'保存草稿',exact:true}).click();
     const recentDisclosure=page.getByLabel('最近常用标识文字').getByRole('button',{name:'人工生成',exact:true});
     await recentDisclosure.waitFor();
     assert.deepEqual(await page.evaluate(()=>JSON.parse(localStorage.getItem('xhs.recent-disclosure-texts.v1'))),['人工生成']);
-    assert.equal(submitted.operation,'TEXT');assert.equal(submitted.overlay.text,'人工生成');
+    assert.equal(submitted.operation,'SVG_DISCLOSURE');assert.equal(submitted.overlay.text,'人工生成');assert.equal(submitted.confirmation,undefined);
     submitted=null;
-    await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
+    await page.getByRole('button',{name:'生成程序标识预览',exact:true}).click();
+    await page.getByRole('heading',{name:'修改前后滑动对比'}).waitFor();
+    assert.equal(submitted.operation,'SVG_DISCLOSURE');assert.equal(submitted.confirmation,undefined);
+    await page.getByRole('button',{name:'图片模型融合',exact:true}).click();
+    submitted=null;
+    assert.equal(await page.getByText('系统会校验文字准确性',{exact:false}).count(),1);
+    await page.getByRole('button',{name:'生成模型标识预览',exact:true}).click();
     await page.getByRole('alert').getByText('请先勾选费用确认',{exact:false}).waitFor();
     assert.equal(submitted,null);
     await page.getByRole('tab',{name:'局部修改'}).click();
@@ -135,6 +144,9 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     await page.getByLabel('采用建议并修改操作原因').fill('采用系统补强的可执行描述');
     await page.getByRole('button',{name:'确认采用建议并修改',exact:true}).click();
     await page.getByText('局部修改 · 排队中',{exact:true}).waitFor();
+    const successFeedback=page.getByRole('status').getByText('采用建议并修改操作已完成。',{exact:true});
+    await successFeedback.waitFor();
+    await successFeedback.waitFor({state:'hidden',timeout:7000});
     assert.equal(actions.at(-1).url.endsWith('/apply-suggestion'),true);
     await page.evaluate(()=>fetch('/inject-rejected',{method:'POST'}));
     await page.getByText('局部修改 · 验收未通过 · 结果已保留',{exact:true}).waitFor({timeout:6000});
@@ -155,8 +167,10 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     await page.getByRole('alert').getByText('自动验收未通过',{exact:true}).waitFor();
     await page.getByRole('button',{name:'仍采用此结果',exact:true}).click();
     await page.getByLabel('仍采用此结果操作原因').fill('人工检查后可以接受');
-    page.once('dialog',dialog=>dialog.accept());
     await page.getByRole('button',{name:'确认仍采用此结果',exact:true}).click();
+    const rejectedAcceptance=page.getByRole('alertdialog');
+    await rejectedAcceptance.getByRole('heading',{name:'仍采用未通过验收的结果？',exact:true}).waitFor();
+    await rejectedAcceptance.getByRole('button',{name:'仍然采用',exact:true}).click();
     await page.getByText('局部修改 · 已人工采用 · 自动验收未通过',{exact:true}).waitFor();
     assert.equal(actions.at(-1).data.acceptRejectedResult,true);
     submitted=null;await page.getByRole('tab',{name:'实体替换'}).click();
@@ -205,7 +219,7 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     await page.getByRole('tab',{name:'添加文字'}).click();
     await page.getByRole('button',{name:'整套 3 张',exact:true}).click();
     await page.getByLabel('确认调用视觉规划、图片编辑与结果验收模型，会产生费用；规划需要改写时会先返回建议，采用后才调用图片编辑模型。').check();
-    await page.getByRole('button',{name:'生成整套 3 张标识预览',exact:true}).click();
+    await page.getByRole('button',{name:'生成整套 3 张模型标识预览',exact:true}).click();
     await page.getByRole('tab',{name:/任务记录/u}).click();
     await page.getByRole('button',{name:'一次采用整套标识',exact:true}).waitFor();
     const batchSubmissions=submissions.slice(-3),batchIds=new Set(batchSubmissions.map(item=>item.batchId));
@@ -223,8 +237,11 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     await deleteAction.waitFor();
     await deleteAction.click();
     await page.getByLabel('直接删除此修复操作原因').fill('草稿不再需要');
-    page.once('dialog',dialog=>dialog.accept());
     await page.getByRole('button',{name:'确认直接删除此修复',exact:true}).click();
+    const deleteConfirmation=page.getByRole('alertdialog');
+    await deleteConfirmation.getByRole('heading',{name:'直接删除此修复？',exact:true}).waitFor();
+    await deleteConfirmation.getByText('后台仍保留取消记录用于审计。',{exact:false}).waitFor();
+    await deleteConfirmation.getByRole('button',{name:'确认直接删除',exact:true}).click();
     await page.getByText('局部修改 · 已取消',{exact:true}).waitFor();
     assert.equal(actions.at(-1).url.endsWith('/cancel'),true);
     await page.getByRole('button',{name:'关闭弹窗',exact:true}).click();

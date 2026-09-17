@@ -27,12 +27,17 @@ function fixture(rows, options = {}) {
   let time = Date.parse('2026-09-06T08:00:00Z');
   const calls = [];
   const identityCalls = [];
+  const completionCalls = [];
   const service = createStatisticsService({ now: () => time, sleep: async ms => { time += ms; },
     fetchImpl: async (rawUrl, init) => {
       const url = new URL(rawUrl);
       if (url.pathname === '/v1/profile') {
         identityCalls.push({ url: rawUrl.toString(), init, time });
         return Response.json({ data: { id: Number(init.headers['X-Actor-User-Id']) } });
+      }
+      if (url.pathname === '/v1/task-completions') {
+        completionCalls.push({ url: rawUrl.toString(), init, time });
+        return Response.json({ data: options.completions ?? [] });
       }
       calls.push({ url: rawUrl.toString(), init, time });
       const id = Number(url.pathname.split('/').at(-1));
@@ -53,7 +58,7 @@ function fixture(rows, options = {}) {
       const offset = Number(url.searchParams.get('offset'));
       return Response.json({ data: { items: selected.slice(offset, offset + 200), total: selected.length, offset, limit: 200 } });
     }, ...options });
-  return { service, calls, identityCalls, advance: ms => { time += ms; } };
+  return { service, calls, identityCalls, completionCalls, advance: ms => { time += ms; } };
 }
 test('statistics identity is session-bound and admin analysis cannot be requested by other roles', async () => {
   const { service, calls } = fixture([
@@ -75,6 +80,35 @@ test('statistics identity is session-bound and admin analysis cannot be requeste
   assert.doesNotMatch(calls[0].url, /createdByUserId=/);
   assert.equal(calls[0].init.method, 'GET');
   assert.equal(calls[0].init.headers['X-Actor-User-Id'], '2');
+});
+
+test('personal statistics include stage completion counts and current task states for the selected range', async () => {
+  const completions = [{ id: 1, query: '秋日路线', state: 'IMAGE_QC_PENDING', completions: [
+    { stage: 'COPY', completedAt: '2026-09-06T01:00:00Z' },
+    { stage: 'IMAGE', completedAt: '2026-09-06T02:00:00Z' },
+  ] }];
+  const { service, completionCalls } = fixture([row(1, { state: 'IMAGE_QC_PENDING' })], { completions });
+  const result = await service.read({ root, session: session(), period: 'today' });
+  assert.deepEqual(result.summary.completedWork, {
+    total: 1,
+    copy: 1,
+    image: 1,
+    overlap: 1,
+    states: { IMAGE_QC_PENDING: 1 },
+    tasks: [{
+      id: 1,
+      query: '秋日路线',
+      state: 'IMAGE_QC_PENDING',
+      stages: ['COPY', 'IMAGE'],
+      copyCompletedAt: '2026-09-06T01:00:00Z',
+      imageCompletedAt: '2026-09-06T02:00:00Z',
+      latestCompletedAt: '2026-09-06T02:00:00Z',
+    }],
+  });
+  assert.equal(completionCalls.length, 1);
+  const completionUrl = new URL(completionCalls[0].url);
+  assert.equal(completionUrl.searchParams.get('from'), '2026-09-05T16:00:00.000Z');
+  assert.equal(completionUrl.searchParams.get('to'), '2026-09-06T16:00:00.000Z');
 });
 
 test('personal statistics rejects a center response containing another assignee', async () => {
@@ -185,7 +219,9 @@ test('expired identities never receive stale cached data after an upstream denia
 test('stale complete snapshots survive availability errors with a retry cooldown', async () => {
   let failTasks = false;
   const data = fixture([], { fetchImpl: async rawUrl => {
-    if (new URL(rawUrl).pathname === '/v1/profile') return Response.json({ data: { id: 2 } });
+    const pathname = new URL(rawUrl).pathname;
+    if (pathname === '/v1/profile') return Response.json({ data: { id: 2 } });
+    if (pathname === '/v1/task-completions') return Response.json({ data: [] });
     return failTasks ? Response.json({}, { status: 503 })
       : Response.json({ data: { items: [row(1)], total: 1, offset: 0 } });
   } });

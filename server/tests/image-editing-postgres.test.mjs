@@ -92,6 +92,16 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       assert.equal(queued.status,'QUEUED');assert.equal(queued.config.confirmation,'LIVE_IMAGE_COST_ACCEPTED');
       await action(draft.id,'cancel');
     });
+    await t.test('programmatic disclosure skips cost confirmation and waits for a version 8 image executor',async()=>{
+      const programmatic=await service.create(taskId,request({operation:'SVG_DISCLOSURE',confirmation:undefined}),actor);
+      assert.equal(programmatic.status,'QUEUED');assert.equal(programmatic.config.confirmation,null);
+      assert.equal(programmatic.config.imageEditPrompt,undefined);
+      assert.equal(await repository.claimImage('edit-test',1,2,7),null);
+      const claim=await repository.claimImage('edit-test',1,2,8);
+      assert.equal(claim.imageEdit.id,programmatic.id);
+      assert.equal(claim.execution.snapshot.imageEditExecutorVersion,8);
+      await action(programmatic.id,'cancel');
+    });
     let first;
     await t.test('create is idempotent and withdraws a ready delivery before any execution',async()=>{
       await pool.query('UPDATE tasks SET image_qc_legacy_accepted=true WHERE id=$1',[taskId]);

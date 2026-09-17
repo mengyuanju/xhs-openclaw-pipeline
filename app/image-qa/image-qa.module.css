@@ -25,6 +25,9 @@
 .statusTabs button:hover { color: var(--ink); background: rgba(255,255,255,.65); }
 .statusTabs button[data-active="true"] { color: var(--ink); background: #fff; box-shadow: 0 2px 8px rgba(45,35,28,.1); }
 .statusTabs button:focus-visible { outline: 3px solid var(--control-ring); outline-offset: 1px; }
+.filterActions { min-width: 0; display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
+.personSearch { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.personSearch > :first-child { width: min(280px, 42vw); }
 .scopeBadge { display: inline-flex; align-items: center; gap: 6px; color: #6b5146; font-size: 10px; font-weight: 800; white-space: nowrap; }
 .queueContent { min-height: 0; }
 .loadingState, .emptyState { min-height: 250px; display: grid; place-items: center; align-content: center; text-align: center; }
@@ -58,7 +61,8 @@
 .statusBadge[data-status="PENDING"] { color: #825312; background: #fff0cf; }
 .statusBadge[data-status="PASSED"] { color: #20695a; background: #dff4ee; }
 .statusBadge[data-status="RETURNED"] { color: #a52232; background: #ffe8eb; }
-.source { display: block; max-width: 360px; overflow: hidden; color: #5f5953; text-overflow: ellipsis; white-space: nowrap; }
+.source { display: grid; max-width: 360px; overflow: hidden; gap: 3px; color: #5f5953; text-overflow: ellipsis; white-space: nowrap; }
+.source small { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; }
 
 .detailDialog { width: min(calc(100vw - 24px), 1480px); max-width: none; height: min(94dvh, 1000px); max-height: none; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; padding: 0; border: 1px solid var(--line); border-radius: 18px; color: var(--ink); background: var(--surface); box-shadow: 0 32px 96px rgba(45,35,28,.28); }
 .detailHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 20px 64px 18px 22px; border-bottom: 1px solid var(--line); background: linear-gradient(135deg, #fff9f8 0%, var(--surface) 62%); }
@@ -118,6 +122,8 @@
   .filterBar { padding: 11px 16px; }
   .statusTabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .statusTabs button { min-width: 0; }
+  .filterActions, .personSearch { width: 100%; align-items: stretch; flex-direction: column; }
+  .personSearch > *, .scopeBadge { width: 100%; }
   .scopeBadge { justify-content: center; }
   .queue { width: calc(100% - 24px); max-height: none; min-height: 0; margin: 12px; overflow: visible; }
   .queue :global(table) { min-width: 0; table-layout: auto; }

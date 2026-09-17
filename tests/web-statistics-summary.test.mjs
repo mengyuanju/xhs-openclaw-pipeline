@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeRange, compactTask, compactDetail, summarizeCounts, summarizeEfficiency } from '../src/web-statistics/summary.mjs';
+import {
+  compactDetail,
+  compactPersonalTaskCompletion,
+  compactTask,
+  normalizeRange,
+  summarizeCounts,
+  summarizeEfficiency,
+  summarizePersonalCompletions,
+} from '../src/web-statistics/summary.mjs';
 
 const now = Date.parse('2026-09-06T08:00:00Z');
 const task = (id, patch = {}) => compactTask({ id, state: 'COPY_QUEUED', createdByUserId: 'alice', createdByAccountId: 2,
@@ -74,6 +82,29 @@ test('people statistics keep a deleted account separate from a same-name replace
   assert.equal(historical.role, null);
   assert.equal(replacement.displayName, '新 Alice');
   assert.equal(replacement.total, 1);
+});
+
+test('personal completion statistics count unique tasks, stage overlap and current states', () => {
+  const range = normalizeRange({}, now);
+  const completed = [
+    compactPersonalTaskCompletion({ id: 1, query: 'one', state: 'IMAGE_QC_PENDING', completions: [
+      { stage: 'COPY', completedAt: '2026-09-06T01:00:00Z' },
+      { stage: 'IMAGE', completedAt: '2026-09-06T02:00:00Z' },
+    ] }),
+    compactPersonalTaskCompletion({ id: 2, query: 'two', state: 'REVIEWED', completions: [
+      { stage: 'COPY', completedAt: '2026-09-06T03:00:00Z' },
+      { stage: 'COPY', completedAt: '2026-09-06T04:00:00Z' },
+      { stage: 'IMAGE', completedAt: '2026-09-05T15:59:59Z' },
+    ] }),
+  ];
+  const summary = summarizePersonalCompletions(completed, range);
+  assert.equal(summary.total, 2);
+  assert.equal(summary.copy, 2);
+  assert.equal(summary.image, 1);
+  assert.equal(summary.overlap, 1);
+  assert.deepEqual(summary.states, { IMAGE_QC_PENDING: 1, REVIEWED: 1 });
+  assert.equal(summary.tasks[0].id, 2);
+  assert.equal(summary.tasks[0].copyCompletedAt, '2026-09-06T04:00:00Z');
 });
 
 test('legacy self-created user work is attributed only when no assignee exists', () => {

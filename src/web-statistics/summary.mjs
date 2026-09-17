@@ -61,6 +61,59 @@ export function compactTask(row) {
   };
 }
 
+export function compactPersonalTaskCompletion(row) {
+  if (!row || !Number.isSafeInteger(row.id) || row.id < 1 || !STATES.includes(row.state)
+    || !Array.isArray(row.completions) || row.completions.length > 10_000) {
+    throw new TypeError('个人完成统计数据不完整');
+  }
+  const completions = row.completions.map((completion) => {
+    if (!completion || !['COPY', 'IMAGE'].includes(completion.stage)
+      || typeof completion.completedAt !== 'string'
+      || !Number.isFinite(dateMs(completion.completedAt))) {
+      throw new TypeError('个人完成统计事件不完整');
+    }
+    return { stage: completion.stage, completedAt: completion.completedAt };
+  });
+  return {
+    id: row.id,
+    query: String(row.query ?? '').slice(0, 500),
+    state: row.state,
+    completions,
+  };
+}
+
+export function summarizePersonalCompletions(rawTasks, range) {
+  const tasks = [];
+  const states = {};
+  let copy = 0;
+  let image = 0;
+  let overlap = 0;
+  for (const task of [...new Map(rawTasks.map((item) => [item.id, item])).values()]) {
+    const events = task.completions.filter((completion) => within(completion.completedAt, range));
+    const latestFor = (stage) => events.filter((event) => event.stage === stage)
+      .toSorted((left, right) => dateMs(right.completedAt) - dateMs(left.completedAt))[0]?.completedAt ?? null;
+    const copyCompletedAt = latestFor('COPY');
+    const imageCompletedAt = latestFor('IMAGE');
+    if (!copyCompletedAt && !imageCompletedAt) continue;
+    if (copyCompletedAt) copy++;
+    if (imageCompletedAt) image++;
+    if (copyCompletedAt && imageCompletedAt) overlap++;
+    states[task.state] = (states[task.state] ?? 0) + 1;
+    tasks.push({
+      id: task.id,
+      query: task.query,
+      state: task.state,
+      stages: [copyCompletedAt ? 'COPY' : null, imageCompletedAt ? 'IMAGE' : null].filter(Boolean),
+      copyCompletedAt,
+      imageCompletedAt,
+      latestCompletedAt: [copyCompletedAt, imageCompletedAt]
+        .filter(Boolean).toSorted((left, right) => dateMs(right) - dateMs(left))[0],
+    });
+  }
+  tasks.sort((left, right) => dateMs(right.latestCompletedAt) - dateMs(left.latestCompletedAt) || right.id - left.id);
+  return { total: tasks.length, copy, image, overlap, states, tasks };
+}
+
 export function compactDetail(detail) {
   if (!Array.isArray(detail?.executions) || !Array.isArray(detail?.imageRuns) || !Array.isArray(detail?.assets)) {
     throw new TypeError('执行统计字段不完整');
