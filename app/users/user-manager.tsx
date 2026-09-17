@@ -4,6 +4,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { SearchInput } from '@/components/ui/search-input';
+import { ToastFeedback } from '@/components/ui/sonner';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -191,7 +192,8 @@ export function UserManager({
           <Button unstyled className="button primary" type="button" disabled={Boolean(busy)} onClick={() => { setEditorRole('USER'); setEditor({ mode: 'create' }); }}><Plus size={16} />新增用户</Button>
         </div>
       </div>
-      {(message || error) && <div className={`notice ${error ? 'error' : 'success'} user-action-notice`} role={error ? 'alert' : 'status'}>{error || message}</div>}
+      <ToastFeedback id="user-manager-success" message={message} />
+      <ToastFeedback id="user-manager-error" message={error} tone="error" />
       {initialUsers.length > 0 && <div className="user-list-toolbar">
         <SearchInput
           value={search}

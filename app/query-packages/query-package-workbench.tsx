@@ -1,6 +1,7 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
+import { ToastFeedback } from '@/components/ui/sonner';
 import { Checkbox, Input, Textarea } from '@/components/ui/input';
 import {
   Dialog,
@@ -971,7 +972,7 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
         </div>
       </div>
 
-      {message && <div className="notice success" role="status">{message}</div>}
+      <ToastFeedback id="query-package-feedback" message={message} />
       {error && <div className="notice error" role="alert">{error}</div>}
       {loading
         ? <div className="empty-state"><LoaderCircle className="animate-spin" size={20} />正在读取 Query 词包…</div>

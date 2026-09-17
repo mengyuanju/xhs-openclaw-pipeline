@@ -24,7 +24,7 @@ import {
 const workbenchUrl = new URL('../app/delivery-pool/delivery-pool-workbench.tsx', import.meta.url);
 const pageUrl = new URL('../app/delivery-pool/page.tsx', import.meta.url);
 const proxyUrl = new URL('../app/api/control-plane/[...path]/route.ts', import.meta.url);
-const feedbackMessageUrl = new URL('../components/ui/feedback-message.tsx', import.meta.url);
+const sonnerUrl = new URL('../components/ui/sonner.tsx', import.meta.url);
 const CLIENT_BATCH_CODE = 'b9759aad96a94c109fdce96ab4455294';
 
 function entry(id, overrides = {}) {
@@ -324,11 +324,11 @@ test('prepared Excel download accepts only a safe xlsx one-time reference', () =
 });
 
 test('administrator delivery pool exposes client-batch facets, filtering and merged exports', async () => {
-  const [source, page, proxy, feedbackMessage] = await Promise.all([
+  const [source, page, proxy, sonner] = await Promise.all([
     readFile(workbenchUrl, 'utf8'),
     readFile(pageUrl, 'utf8'),
     readFile(proxyUrl, 'utf8'),
-    readFile(feedbackMessageUrl, 'utf8'),
+    readFile(sonnerUrl, 'utf8'),
   ]);
   assert.match(page, /if \(role !== 'ADMIN'\) redirect\(role === 'REVIEWER' \? '\/copy-qa' : '\/workbench\/personal'\)/u);
   assert.match(page, /<DeliveryPoolWorkbench role="ADMIN" \/>/u);
@@ -396,12 +396,13 @@ test('administrator delivery pool exposes client-batch facets, filtering and mer
   assert.match(source, /所选范围无需上传/u);
   assert.match(source, /useConfirmDialog/u);
   assert.doesNotMatch(source, /window\.confirm/u);
-  assert.match(source, /<FeedbackMessage tone="error"/u);
+  assert.match(source, /<ToastFeedback id="delivery-pool-error" message=\{error\} tone="error"/u);
   assert.match(source, /任务行勾选不会改变本次范围/u);
-  assert.match(feedbackMessage, /'info' \| 'success' \| 'warning' \| 'error'/u);
-  assert.match(feedbackMessage, /role=\{tone === 'error' \? 'alert' : 'status'\}/u);
-  assert.match(feedbackMessage, /aria-live=\{tone === 'error' \? 'assertive' : 'polite'\}/u);
-  assert.match(feedbackMessage, /aria-label="关闭反馈消息"/u);
+  assert.match(sonner, /'error' \| 'info' \| 'success' \| 'warning'/u);
+  assert.match(sonner, /toast\[tone\]\(message, \{ id \}\)/u);
+  assert.match(sonner, /closeButton/u);
+  assert.match(sonner, /visibleToasts=\{4\}/u);
+  assert.doesNotMatch(source, /FeedbackMessage/u);
   assert.match(source, /打开预览/u);
   assert.match(source, /预览图文/u);
   assert.match(source, /<DeliveryPreviewDialog/u);

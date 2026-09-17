@@ -1,6 +1,7 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
+import { ToastFeedback } from '@/components/ui/sonner';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Input, Switch } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -504,7 +505,7 @@ export function XhsQuerySearchSettingsPanel({
     {pacingError && <div className="notice error" role="alert">{pacingError}</div>}
     {updatedAt && <p className="subtle">最近保存：{new Date(updatedAt).toLocaleString('zh-CN')}</p>}
     {error && <div className="notice error" role="alert">{error}</div>}
-    {message && <div className="notice success" role="status">{message}</div>}
+    <ToastFeedback id="xhs-query-search-settings-feedback" message={message} />
     <div className="settings-actions">
       {!loaded && !loading && <Button unstyled type="button" className="button" onClick={() => { void load(); }}>重新读取</Button>}
       {loaded && <Button unstyled type="button" className="button" disabled={disabled || pacingAtDefaults} onClick={restoreDefaultPacing}>

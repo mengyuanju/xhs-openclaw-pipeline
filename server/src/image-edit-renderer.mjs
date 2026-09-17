@@ -408,6 +408,7 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
   const directory=resolve(storageRoot,'image-edit-work',String(Number(e.task_id)),randomUUID());
   let lostLease=false;
   let imageModelRequested=false;
+  let failedPreviewBytes=null;
   const controller=new AbortController();
   let alignmentStage='SOURCE';
   const stop=(reason=new Error('图片编辑租约失效或已取消'))=>{lostLease=true;if(!controller.signal.aborted)controller.abort(reason);};
@@ -472,6 +473,7 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
       model=generated.model??model;
       result=await sharp(await readFile(generatedPath),{limitInputPixels:16_000_000})
         .resize(EDIT_WIDTH,EDIT_HEIGHT,{fit:'fill'}).png().toBuffer();
+      failedPreviewBytes=result;
       mask=null;
       outsideMask={mode:'MODEL_FULL_FRAME_NO_MASK',requested:false,programmaticPixelMerge:false};
       await writeFile(outputPath,result);
@@ -519,6 +521,7 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
         if(e.operation==='AI_LOCAL'&&!config.mask)mask=await changedPixelMask(source,result,mask);
         result=await mergeWithMask(source,result,mask);outsideMask=await assertOutsideMask(source,result,mask);
       }
+      failedPreviewBytes=result;
       await writeFile(outputPath,result);
       if(e.operation==='AI_LOCAL'&&!config.mask) {
         try {
@@ -595,7 +598,8 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
       error.validation={stage:alignmentStage==='RESULT'?'RESULT_SERVICE':'SOURCE_SERVICE',passed:false,retryable:error.retryable,
         code:error.code,serviceCode:error.serviceCode,billedImageGeneration:false};
     }
-    await service.fail(e,error);return {status:'FAILED',error:String(error.message)};
+    await service.fail(e,error,imageModelRequested&&failedPreviewBytes?{bytes:failedPreviewBytes}:undefined);
+    return {status:'FAILED',error:String(error.message)};
   }
   finally {clearInterval(heartbeat);signal?.removeEventListener('abort',externalAbort);await rm(directory,{recursive:true,force:true});}
 }

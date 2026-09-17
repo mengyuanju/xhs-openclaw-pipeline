@@ -1637,7 +1637,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 5, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 6, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, finalDeliveryVersion: 5, deliverySpreadsheetVersion: 2, deliveryPreviewVersion: 6 } };
+      capabilities: { taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 6, executorManagementVersion: 1, adminTaskFilters: true, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 6, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, finalDeliveryVersion: 5, deliverySpreadsheetVersion: 2, deliveryPreviewVersion: 6 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -3585,8 +3585,7 @@ export class PostgresControlPlaneRepository {
             FROM image_edit_requests edit
             JOIN tasks edit_task ON edit_task.id = edit.task_id
             WHERE $5::integer >= CASE
-                WHEN edit.operation = 'AI_LOCAL' AND edit.config->'mask' = 'null'::jsonb THEN 5
-                WHEN edit.config->>'referenceMode' = 'APPEARANCE' THEN 4
+                WHEN edit.operation = 'TEXT' OR edit.operation LIKE 'AI_%' THEN 6
                 ELSE 3
               END
               AND edit.status = 'QUEUED'

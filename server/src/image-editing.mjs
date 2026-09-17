@@ -190,7 +190,15 @@ export function createImageEditingService({ pool, storageRoot }) {
       VALUES($1,$2,'image/png',$3,$4,$5,$6,$7,$8,$2,false,$9,$10,$11) RETURNING *`,[taskId,run.id,bytes.length,imageHash(bytes),path,originalName??`${role.toLowerCase()}-${id}.png`,run.image_production_chain_id,id,parent,role,metadata])).rows[0]; }
     catch(error) { await unlink(path).catch(()=>{}); throw error; }
   }
-  async function lockedExecutorEdit(c,rawExecutionId,rawEditId,rawLeaseToken,{allowCompleted=false}={}) {
+  async function previewMetadata(bytes) {
+    if(!Buffer.isBuffer(bytes)||!bytes.length||bytes.length>20*1024*1024)throw new TypeError('图片修改结果无效');
+    const metadata=await sharp(bytes,{failOn:'warning',limitInputPixels:16_000_000,animated:true}).metadata();
+    if(metadata.format!=='png'||metadata.width!==EDIT_WIDTH||metadata.height!==EDIT_HEIGHT||(metadata.pages??1)!==1) {
+      throw new TypeError('图片修改结果必须为 1086×1448 单页 PNG');
+    }
+    return {metadata,sha256:imageHash(bytes)};
+  }
+  async function lockedExecutorEdit(c,rawExecutionId,rawEditId,rawLeaseToken,{allowCompleted=false,allowFailed=false}={}) {
     const executionId=normalizeUuid(rawExecutionId,'executionId');
     const editId=normalizeUuid(rawEditId,'editId');
     const leaseToken=normalizeUuid(rawLeaseToken,'leaseToken');
@@ -199,6 +207,7 @@ export function createImageEditingService({ pool, storageRoot }) {
       WHERE e.id=$1 AND e.execution_id=$2 FOR UPDATE OF e,x`,[editId,executionId])).rows[0];
     if(!row)throw new ControlPlaneNotFoundError('image edit execution not found');
     if(allowCompleted&&row.status==='PREVIEW_READY')return row;
+    if(allowFailed&&row.status==='FAILED')return row;
     if(row.status!=='RUNNING'||row.execution_status!=='RUNNING'||row.lease_token!==leaseToken
       ||new Date(row.lease_expires_at)<=new Date())conflict('图片修改执行已取消或租约过期');
     return row;
@@ -286,6 +295,23 @@ export function createImageEditingService({ pool, storageRoot }) {
       const mask=prepared.e.config.mask?await renderMask(prepared.e.config.mask):null;
       return this.complete(prepared.e,{bytes,mask,validation:prepared.validation,originalResult:prepared.originalResult});
     },
+    async rejectExecutor(executionId,editId,leaseToken,bytes) {
+      const prepared=await tx(async c=>{
+        const e=await lockedExecutorEdit(c,executionId,editId,leaseToken,{allowFailed:true});
+        if(e.status==='FAILED') {
+          const result=(await c.query('SELECT * FROM image_edit_results WHERE request_id=$1',[e.id])).rows[0];
+          if(!result)conflict('失败结果尚未保存');
+          return {completed:{assetId:Number(result.asset_id),imageRunId:result.image_run_id,status:'FAILED'}};
+        }
+        return {e,validation:e.validation};
+      });
+      if(prepared.completed)return prepared.completed;
+      if(!prepared.validation||prepared.validation.passed===true)throw new TypeError('失败图片校验记录无效');
+      const failureMessage=String(prepared.validation.failureMessage??'图片修改结果未通过自动验收').slice(0,1000);
+      const validation={...prepared.validation};delete validation.failureMessage;
+      const error=Object.assign(new Error(failureMessage),{validation});
+      return this.fail(prepared.e,error,{bytes});
+    },
     async failExecutor(executionId,editId,leaseToken,input={}) {
       const e=await tx(c=>lockedExecutorEdit(c,executionId,editId,leaseToken,{allowCompleted:true}));
       if(e.status==='PREVIEW_READY')return e;
@@ -365,7 +391,7 @@ export function createImageEditingService({ pool, storageRoot }) {
         const previous=(await c.query('SELECT * FROM image_edit_events WHERE task_id=$1 AND request_id=$2',[e.task_id,requestId])).rows[0];
         if(previous) { if(previous.edit_id !== id || previous.action !== action || previous.reason !== reason || previous.actor !== username) conflict('requestId 已用于其他操作'); return e; }
         if(e.version !== version) conflict('编辑状态已更新，请刷新');
-        const states={queue:['DRAFT'],retry:['FAILED'],'apply-suggestion':['FAILED'],cancel:['DRAFT','QUEUED','RUNNING','PREVIEW_READY','FAILED'],reject:['PREVIEW_READY'],accept:['PREVIEW_READY']};
+        const states={queue:['DRAFT'],retry:['FAILED'],'apply-suggestion':['FAILED'],cancel:['DRAFT','QUEUED','RUNNING','PREVIEW_READY','FAILED'],reject:['PREVIEW_READY'],accept:['PREVIEW_READY','FAILED']};
         if(!states[action]?.includes(e.status)) conflict('当前编辑状态不允许此操作');
         const usesBillableModel=e.operation==='TEXT'||e.operation.startsWith('AI_');
         const confirmsCost=e.config?.confirmation==='LIVE_IMAGE_COST_ACCEPTED'||input.confirmation==='LIVE_IMAGE_COST_ACCEPTED';
@@ -375,9 +401,13 @@ export function createImageEditingService({ pool, storageRoot }) {
           : null;
         if(action==='retry' && e.attempts >= 3) conflict('已达到三次执行上限，请创建新请求');
         if(action==='apply-suggestion'&&e.operation!=='AI_LOCAL')conflict('只有局部修改可以采用建议描述');
+        let acceptedRejectedPreview=false;
         if(action==='accept') {
           const r=(await c.query('SELECT * FROM image_edit_results WHERE request_id=$1',[id])).rows[0];
-          if(r?.validation?.passed !== true || r.validation.mock === true) conflict('图片校验未通过');
+          acceptedRejectedPreview=e.status==='FAILED'&&r?.validation?.passed!==true;
+          if(!r || r.validation?.mock === true) conflict('当前请求没有可采用的图片结果');
+          if(acceptedRejectedPreview&&input.acceptRejectedResult!==true)conflict('请明确确认采用未通过自动验收的结果');
+          if(!acceptedRejectedPreview&&r.validation?.passed!==true)conflict('图片校验未通过');
           const output=(await c.query('SELECT * FROM assets WHERE id=$1 AND task_id=$2',[r.asset_id,e.task_id])).rows[0];
           if(!output || imageHash(await readFile(editStoragePath(storageRoot,output.storage_path)))!==output.sha256 || output.sha256!==r.validation.integrity?.sha256) conflict('预览图片完整性校验失败');
           await withdrawReadyDeliveryEntries(c,e.task_id,'IMAGE_MANUAL_EDIT_ACCEPTED');
@@ -396,13 +426,16 @@ export function createImageEditingService({ pool, storageRoot }) {
               if(member.rowCount!==1)conflict('图集包含不属于当前任务的交付资产');
             }
             adoptedRunId=mergedRunId;
+          } else if(acceptedRejectedPreview) {
+            const promoted=await c.query("UPDATE image_runs SET status='COMPLETED' WHERE id=$1 AND task_id=$2 AND status='FAILED' RETURNING id",[adoptedRunId,e.task_id]);
+            if(promoted.rowCount!==1)conflict('失败预览对应的图片版本不可采用');
           }
           await c.query('UPDATE image_edit_results SET adopted=true,image_run_id=$2 WHERE request_id=$1',[id,adoptedRunId]);
           await c.query("UPDATE tasks SET current_image_run_id=$2,state='MANUAL_ARCHIVE',current_stage='MANUAL_ARCHIVE',image_reviewed_at=NULL,image_reviewed_by_user_id=NULL,progress_message='图片修改已采用，请重新审核归档',updated_at=now() WHERE id=$1",[e.task_id,adoptedRunId]);
         }
         const next={queue:'QUEUED',retry:'QUEUED','apply-suggestion':'QUEUED',cancel:'CANCELLED',reject:'REJECTED',accept:'ACCEPTED'}[action];
         let config=usesBillableModel&&input.confirmation==='LIVE_IMAGE_COST_ACCEPTED'?{...e.config,confirmation:'LIVE_IMAGE_COST_ACCEPTED'}:e.config;
-        let auditDetail={};
+        let auditDetail=acceptedRejectedPreview?{acceptedRejectedPreview:true,validationPassed:false}:{};
         if(action==='apply-suggestion') {
           const plan=localSuggestionPlan(e.validation,e.config.instruction);
           config={...config,instruction:plan.suggestedInstruction,
@@ -458,8 +491,7 @@ export function createImageEditingService({ pool, storageRoot }) {
         const locked=(await c.query('SELECT * FROM image_edit_requests WHERE id=$1 FOR UPDATE',[e.id])).rows[0];
         if(!locked||locked.status!=='RUNNING' || locked.lease_token!==e.lease_token || new Date(locked.lease_expires_at)<=new Date()) conflict('执行已取消或租约过期');
         if(!Buffer.isBuffer(bytes)||!bytes.length||bytes.length>20*1024*1024)throw new TypeError('图片修改结果无效');
-        const metadata=await sharp(bytes,{failOn:'warning',limitInputPixels:16_000_000,animated:true}).metadata();
-        if(metadata.format!=='png'||metadata.width!==EDIT_WIDTH||metadata.height!==EDIT_HEIGHT||(metadata.pages??1)!==1)throw new TypeError('图片修改结果必须为 1086×1448 单页 PNG');
+        await previewMetadata(bytes);
         if(validation?.integrity?.sha256!==imageHash(bytes))throw new TypeError('图片修改结果与校验哈希不一致');
         if(validation?.passed!==true) throw new TypeError('校验未通过');
         const run=(await c.query("INSERT INTO image_runs(id,task_id,execution_id,copy_revision_id,status,image_production_chain_id,finished_at) VALUES($1,$2,$3,$4,'COMPLETED',$1,now()) RETURNING *",[randomUUID(),e.task_id,e.execution_id??null,e.copy_revision_id])).rows[0];
@@ -476,7 +508,10 @@ export function createImageEditingService({ pool, storageRoot }) {
           const member=await c.query("INSERT INTO image_run_asset_members(image_run_id,asset_id) SELECT $1,id FROM assets WHERE id=$2 AND task_id=$3 AND asset_role='DELIVERY' RETURNING asset_id",[run.id,id,e.task_id]);
           if(member.rowCount!==1)conflict('图集包含不属于当前任务的交付资产');
         }
-        await c.query('INSERT INTO image_edit_results(request_id,asset_id,image_run_id,mask_asset_id,validation) VALUES($1,$2,$3,$4,$5)',[e.id,asset.id,run.id,maskAsset?.id??null,validation]);
+        await c.query(`INSERT INTO image_edit_results(request_id,asset_id,image_run_id,mask_asset_id,validation,adopted)
+          VALUES($1,$2,$3,$4,$5,false) ON CONFLICT(request_id) DO UPDATE SET
+          asset_id=EXCLUDED.asset_id,image_run_id=EXCLUDED.image_run_id,mask_asset_id=EXCLUDED.mask_asset_id,
+          validation=EXCLUDED.validation,adopted=false`,[e.id,asset.id,run.id,maskAsset?.id??null,validation]);
         await c.query("UPDATE image_edit_requests SET status='PREVIEW_READY',validation=$2,version=version+1,lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1",[e.id,validation]);
         if(e.execution_id)await c.query(`UPDATE task_executions SET
           status='SUCCEEDED',stage='COMPLETED',progress_percent=100,
@@ -486,7 +521,44 @@ export function createImageEditingService({ pool, storageRoot }) {
         return {assetId:Number(asset.id),imageRunId:run.id};
       });
     },
-    async fail(e,error) {
+    async fail(e,error,preview={}) {
+      if(preview?.bytes) return tx(async c=> {
+        const source=await assertEditSource(c,Number(e.task_id),e.config,{allowCompatibleCurrentRun:true});
+        const locked=(await c.query('SELECT * FROM image_edit_requests WHERE id=$1 FOR UPDATE',[e.id])).rows[0];
+        if(!locked||locked.status!=='RUNNING'||locked.lease_token!==e.lease_token||new Date(locked.lease_expires_at)<=new Date())conflict('执行已取消或租约过期');
+        const safeError=String(error?.message??'图片修改失败').replace(/sk-[\w-]+|Bearer\s+\S+/gu,'[REDACTED]').slice(0,1000);
+        const {sha256}=await previewMetadata(preview.bytes);
+        const validation={...(error?.validation??{}),passed:false,billedImageGeneration:true,
+          integrity:{...(error?.validation?.integrity??{}),sha256}};
+        const run=(await c.query("INSERT INTO image_runs(id,task_id,execution_id,copy_revision_id,status,image_production_chain_id,result,finished_at) VALUES($1,$2,$3,$4,'FAILED',$1,$5,now()) RETURNING *",
+          [randomUUID(),e.task_id,e.execution_id??null,e.copy_revision_id,{failure:safeError}])).rows[0];
+        const asset=await storeAsset(c,Number(e.task_id),run,preview.bytes,'REJECTED_PREVIEW',{
+          operation:e.operation,editId:e.id,targetPage:Number(e.target_page),rejected:true,validation,
+        },e.source_asset_id,orderedImageFileName(source.source.original_name,e.target_page,'image/png'));
+        const result=replaceImagePage(source.run.result,e.target_page,asset);
+        if(Array.isArray(validation.requiredText))result.images[e.target_page-1].imageEditRequiredText=validation.requiredText;
+        if(validation.disclosure)result.images[e.target_page-1].imageEditDisclosure=validation.disclosure.added??null;
+        result.processing={type:e.operation,editId:e.id,parentRunId:e.source_image_run_id,rejectedPreview:true};
+        result.imageEditValidation=validation;
+        await c.query('UPDATE image_runs SET result=$2 WHERE id=$1',[run.id,result]);
+        for(const assetId of imageAssetIds(result)) {
+          const member=await c.query("INSERT INTO image_run_asset_members(image_run_id,asset_id) SELECT $1,id FROM assets WHERE id=$2 AND task_id=$3 RETURNING asset_id",[run.id,assetId,e.task_id]);
+          if(member.rowCount!==1)conflict('失败预览图集包含不属于当前任务的资产');
+        }
+        await c.query(`INSERT INTO image_edit_results(request_id,asset_id,image_run_id,mask_asset_id,validation,adopted)
+          VALUES($1,$2,$3,NULL,$4,false) ON CONFLICT(request_id) DO UPDATE SET
+          asset_id=EXCLUDED.asset_id,image_run_id=EXCLUDED.image_run_id,mask_asset_id=NULL,
+          validation=EXCLUDED.validation,adopted=false`,[e.id,asset.id,run.id,validation]);
+        await c.query("UPDATE image_edit_requests SET status='FAILED',error=$2,validation=$3,version=version+1,lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1",
+          [e.id,safeError,validation]);
+        if(e.execution_id)await c.query(`UPDATE task_executions SET
+          status='FAILED',stage='FAILED',progress_message=$2::text,error=$2::text,
+          last_activity_at=now(),finished_at=now()
+          WHERE id=$1 AND status='RUNNING'`,[e.execution_id,safeError]);
+        await audit(c,e.task_id,e.id,'FAILED',e.claimed_by,'执行或校验失败，已保留结果',null,
+          {attemptRefunded:false,attempts:Number(locked.attempts),previewAssetId:Number(asset.id)});
+        return {assetId:Number(asset.id),imageRunId:run.id,status:'FAILED'};
+      });
       return tx(async c=> {
         const attemptRefunded=error?.nonBillablePreflightFailure===true;
         const safeError=String(error?.message??'图片修改失败').replace(/sk-[\w-]+|Bearer\s+\S+/gu,'[REDACTED]').slice(0,1000);

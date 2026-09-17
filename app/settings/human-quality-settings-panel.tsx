@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
+import { ToastFeedback } from '@/components/ui/sonner';
 import { Input, Switch, Textarea } from '@/components/ui/input';
 
 import { apiRequest } from '../components/api-client';
@@ -268,7 +269,7 @@ export function HumanQualitySettingsPanel({
         </div>
       </div>
     </>}
-    {message && <div className="notice success" role="status">{message}</div>}
+    <ToastFeedback id="human-quality-settings-feedback" message={message} />
     {error && <div className="notice error" role="alert">{error}</div>}
     <div className="settings-actions">
       <span className="subtle">原因中的空行会自动忽略；所有展示文本保存时都会再次校验。</span>

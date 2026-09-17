@@ -1,6 +1,7 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
+import { ToastFeedback } from '@/components/ui/sonner';
 import { Checkbox, Input, Textarea } from '@/components/ui/input';
 import { SearchInput } from '@/components/ui/search-input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -578,7 +579,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
       </div>
       <div className={styles.scopeNote}><strong>队列顺序：</strong>按最终审核人员逐轮交错，每人先显示 1 条再进入下一轮；同一人员内部仍按任务优先级和入队时间排序。结果状态{role === 'ADMIN' ? '和词包名称' : ''}由服务端跨全部结果筛选；Query 和匿名编号搜索仅作用于当前已加载的 {items.length} 条。{role === 'ADMIN' && '管理员固定使用完整信息视图，任务、Query、词包和来源信息不会因样本盲评策略而隐藏。'}{role === 'REVIEWER' && '样本评审模式由管理员预先决定，审核员不可切换或更改。'}{hasMore ? '仍有更多结果可继续加载。' : '当前状态结果已全部加载。'}</div>
       {items.some((item) => item.blindReview) && <div className={`notice ${styles.blindNotice}`}><EyeOff size={17} aria-hidden="true" /><span>独立盲评样本仅显示匿名编号、最终通过稿和匿名批次编号；任务号、Query、词包自由名称、上游身份、原评分及原因均不可见。</span></div>}
-      {message && <div className="notice success" role="status">{message}</div>}
+      <ToastFeedback id="copy-qa-feedback" message={message} />
       {error && <div className="notice error" role="alert">{error}</div>}
       {loading ? <div className="empty-state" role="status"><LoaderCircle className="animate-spin" size={20} />正在读取文案质检队列…</div>
         : visibleItems.length === 0 ? <div className="empty-state">{items.length ? '没有符合当前筛选条件的质检项。' : '当前没有待处理的文案质检项。'}</div>

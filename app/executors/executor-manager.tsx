@@ -2,6 +2,7 @@
 
 import { Button } from '@/components/ui/button';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
+import { ToastFeedback } from '@/components/ui/sonner';
 
 import { Cpu, Image as ImageIcon, RefreshCw, Search, ServerCog, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -196,7 +197,9 @@ export function ExecutorManager({
           </Button>
         </div>
       </div>
-      {(message || actionError || refreshError) && <div className={`notice ${actionError || refreshError ? 'error' : 'success'}`} role={actionError || refreshError ? 'alert' : 'status'}>{actionError || refreshError || message}</div>}
+      <ToastFeedback id="executor-manager-success" message={message} />
+      <ToastFeedback id="executor-manager-error" message={actionError} tone="error" />
+      {refreshError && <div className="notice error" role="alert">{refreshError}</div>}
       {nodes.length === 0
         ? <div className="executor-empty">当前还没有执行机注册到中心服务。</div>
         : <div className="table-wrap executor-table-wrap mobile-cards"><table>
@@ -239,7 +242,8 @@ export function ExecutorManager({
           <p id="xhs-search-delete-policy">中心服务器密钥：<strong>{xhsSearchMachineTokenConfigured ? '已配置' : '未配置'}</strong>。密钥原文不会显示；离线且无运行任务的节点记录可移除。</p>
         </div>
       </div>
-      {(xhsActionMessage || xhsActionError) && <div className={`notice ${xhsActionError ? 'error' : 'success'}`} role={xhsActionError ? 'alert' : 'status'}>{xhsActionError || xhsActionMessage}</div>}
+      <ToastFeedback id="xhs-executor-success" message={xhsActionMessage} />
+      <ToastFeedback id="xhs-executor-error" message={xhsActionError} tone="error" />
       {xhsSearchNodes.length === 0
         ? <div className="executor-empty">当前还没有主机启动并注册小红书搜索功能。</div>
         : <div className="table-wrap executor-table-wrap mobile-cards"><table>

@@ -2,6 +2,7 @@
 
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { ToastFeedback } from '@/components/ui/sonner';
 
 import { Search, RotateCcw } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
@@ -144,7 +145,7 @@ export function WebSearchSettingsPanel({
         : record ? (record.apiKeyConfigured ? ' 本机已配置 Key。' : ' 本机尚未配置 Key。') : ''}
     </p>
     {error && <div className="notice error" role="alert">{error}</div>}
-    {message && <div className="notice success" role="status">{message}</div>}
+    <ToastFeedback id="web-search-settings-feedback" message={message} />
     <div className="settings-actions">
       <Button unstyled type="button" className="button" disabled={disabled} onClick={() => {
         setSettings({ webSearchProvider: DEFAULT_WEB_SEARCH_PROVIDER, deepseekSearchModel: DEFAULT_DEEPSEEK_SEARCH_MODEL, webSearchTimeoutMs: DEFAULT_WEB_SEARCH_TIMEOUT_MS });

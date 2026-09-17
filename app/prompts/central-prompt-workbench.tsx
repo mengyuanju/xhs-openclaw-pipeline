@@ -2,6 +2,7 @@
 
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
+import { ToastFeedback } from '@/components/ui/sonner';
 import { Textarea } from '@/components/ui/input';
 import { Disclosure, DisclosureTrigger, DisclosureContent } from '@/components/ui/disclosure';
 
@@ -152,7 +153,7 @@ export function CentralPromptWorkbench({ catalog }: { catalog: Candidate[] }) {
         <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />刷新中心数据
       </Button>
     </div>
-    {message && <div className="notice success" role="status">{message}</div>}
+    <ToastFeedback id="central-prompt-feedback" message={message} />
     {error && <div className="notice error" role="alert">{error}</div>}
     {loading && templates.length === 0 ? <div className="panel empty-state"><LoaderCircle className="animate-spin" size={20} />正在读取中心提示词…</div>
       : templates.length === 0 ? <div className="panel empty-state">{error ? '暂时无法读取提示词，请重试刷新。' : '中心暂无提示词，请先初始化中心服务的默认提示词。'}</div>

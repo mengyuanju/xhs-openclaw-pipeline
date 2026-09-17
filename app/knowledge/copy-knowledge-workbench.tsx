@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
 
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
+import { ToastFeedback } from '@/components/ui/sonner';
 import {
   Dialog,
   DialogClose,
@@ -148,7 +149,7 @@ export function CopyKnowledgeWorkbench({
       </DialogContent>
     </Dialog>
 
-    {message && <div className={messageIsError ? 'notice error' : 'notice success'} role={messageIsError ? 'alert' : 'status'} aria-live="polite">{message}</div>}
+    <ToastFeedback id="copy-knowledge-workbench-feedback" message={message} tone={messageIsError ? 'error' : 'success'} />
 
     <CopyKnowledgeLibrary
       items={items}

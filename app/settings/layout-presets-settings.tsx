@@ -2,6 +2,7 @@
 
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
+import { ToastFeedback } from '@/components/ui/sonner';
 import { Disclosure, DisclosureTrigger, DisclosureContent } from '@/components/ui/disclosure';
 import { Input, Switch } from '@/components/ui/input';
 
@@ -68,7 +69,7 @@ export function RemoteLayoutPresetsSettings({ initialPresets, onSaved }: {
   return <div className="settings-stack">
     <LayoutPresetsEditor value={presets} onChange={setPresets} disabled={busy} />
     {error && <p className="notice error" role="alert">{error}</p>}
-    {message && <p className="notice success" role="status">{message}</p>}
+    <ToastFeedback id="layout-presets-settings-feedback" message={message} />
     <div className="settings-actions"><Button unstyled className="button primary" type="button" disabled={busy || presets.some(preset => !preset.name.trim())} onClick={() => void save()}>{busy ? '保存中…' : '保存布局种类'}</Button></div>
   </div>;
 }

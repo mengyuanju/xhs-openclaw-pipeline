@@ -247,10 +247,10 @@ export function createControlPlaneClient({
       method: 'POST', body: { nodeId },
     }),
     claimImage: (nodeId) => request('/v1/executions/claim-image', {
-      method: 'POST', body: { nodeId, imageControlsVersion: 1, layoutCatalogVersion: 2, imageEditExecutorVersion: 5 },
+      method: 'POST', body: { nodeId, imageControlsVersion: 1, layoutCatalogVersion: 2, imageEditExecutorVersion: 6 },
     }),
     claimCopyBatch: (input) => claimBatch('COPY', input),
-    claimImageBatch: (input) => claimBatch('IMAGE', { ...input, imageControlsVersion: 1, layoutCatalogVersion: 2, imageEditExecutorVersion: 5 }),
+    claimImageBatch: (input) => claimBatch('IMAGE', { ...input, imageControlsVersion: 1, layoutCatalogVersion: 2, imageEditExecutorVersion: 6 }),
     imageEditContext: (executionId, edit) => request(`/v1/executions/${executionId}/image-edit/context`, {
       headers: imageEditHeaders(executionId, edit),
     }),
@@ -291,6 +291,26 @@ export function createControlPlaneClient({
         // The center may have committed before the response was lost. Completion
         // is lease-bound and idempotent, so one replay never reruns the model.
         return request(path, options);
+      }
+    },
+    async rejectImageEdit(executionId, edit, content, error) {
+      const failureMessage=String(error instanceof Error?error.message:error??'图片修改结果未通过自动验收')
+        .replace(/sk-[\w-]+|Bearer\s+\S+/gu,'[REDACTED]').slice(0,1000);
+      const validation={...(error?.validation??{}),passed:false,failureMessage};
+      const validationPath=`/v1/executions/${executionId}/image-edit/validation`;
+      const validationOptions={method:'POST',body:{validation},headers:imageEditHeaders(executionId,edit),timeoutMs:60_000};
+      try { await request(validationPath,validationOptions); }
+      catch(stageError) {
+        if(stageError instanceof ControlPlaneApiError&&stageError.status<500)throw stageError;
+        await request(validationPath,validationOptions);
+      }
+      const path=`/v1/executions/${executionId}/image-edit/rejected-result`;
+      const options={method:'PUT',body:Buffer.from(content),
+        headers:{...imageEditHeaders(executionId,edit),'Content-Type':'image/png'},timeoutMs:120_000};
+      try { return await request(path,options); }
+      catch(uploadError) {
+        if(uploadError instanceof ControlPlaneApiError&&uploadError.status<500)throw uploadError;
+        return request(path,options);
       }
     },
     failImageEdit: (executionId, edit, error) => request(

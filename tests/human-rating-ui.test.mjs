@@ -52,10 +52,10 @@ test('shared image rating keeps its passing rule while copy machine drafts use d
 });
 
 test('locked copy fields explain score gates while plan fields use their own permission gate', async () => {
-  const [source, styles, bubble] = await Promise.all([
+  const [source, styles, sonner] = await Promise.all([
     readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
     readFile(projectFile('app/globals.css'), 'utf8'),
-    readFile(projectFile('components/ui/transient-info-bubble.tsx'), 'utf8'),
+    readFile(projectFile('components/ui/sonner.tsx'), 'utf8'),
   ]);
 
   assert.match(source, /请先完成机器原稿评分；2 分或 2\.5 分可编辑文案内容/u);
@@ -73,12 +73,12 @@ test('locked copy fields explain score gates while plan fields use their own per
   assert.match(source, /onClickCapture=\{\(\) => revealCopyEditNotice\('copy'\)\}/u);
   assert.match(source, /Date\.now\(\) - copyEditPointerAtRef\.current > 500/u);
   assert.match(source, /data-edit-reminder-exempt/u);
-  assert.match(source, /TransientInfoBubble/u);
-  assert.match(bubble, /role="status" aria-live="polite"/u);
-  assert.match(bubble, /window\.setTimeout/u);
+  assert.match(source, /<ToastFeedback id="task-review-copy-edit"/u);
+  assert.match(source, /revision=\{copyEditNotice\?\.sequence\}/u);
+  assert.match(sonner, /toast\[tone\]\(message, \{ id \}\)/u);
+  assert.doesNotMatch(source, /TransientInfoBubble/u);
   assert.doesNotMatch(source, /copyEditDescriptionId/u);
-  assert.match(styles, /\.transient-info-bubble \{[^}]*position: absolute/u);
-  assert.match(styles, /@keyframes workbench-edit-tip-in/u);
+  assert.doesNotMatch(styles, /\.transient-info-bubble/u);
   assert.match(styles, /\[data-edit-blocked="true"\][\s\S]*cursor: not-allowed/u);
 });
 

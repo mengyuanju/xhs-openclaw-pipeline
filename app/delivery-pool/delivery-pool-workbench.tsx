@@ -1,9 +1,9 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
-import { FeedbackMessage } from '@/components/ui/feedback-message';
 import { Checkbox, Input, Textarea } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { ToastFeedback } from '@/components/ui/sonner';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Download, ExternalLink, Eye, FileSpreadsheet, History, Images, ListChecks, LoaderCircle, PackageCheck, RefreshCw, Search, UploadCloud, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -542,8 +542,8 @@ export function DeliveryPoolWorkbench({ role }: { role: 'ADMIN' }) {
         </Button>
       </nav>
 
-      {error && <FeedbackMessage tone="error" onDismiss={() => setError('')}>{error}</FeedbackMessage>}
-      {message && <FeedbackMessage tone={messageTone} onDismiss={() => setMessage('')}>{message}</FeedbackMessage>}
+      <ToastFeedback id="delivery-pool-error" message={error} tone="error" />
+      <ToastFeedback id="delivery-pool-feedback" message={message} tone={messageTone} />
 
       {activeView === 'CONTENT' && <div className={styles.workspacePane} id="delivery-content-panel" role="tabpanel" aria-labelledby="delivery-content-tab">
         <div className={styles.filterPanel}>

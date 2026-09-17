@@ -4,8 +4,9 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { Checkbox, Textarea } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { CheckCircle2, EyeOff, Images, LoaderCircle, Maximize2, RefreshCw, RotateCcw } from 'lucide-react';
+import { CheckCircle2, EyeOff, ImageOff, Images, ListChecks, LoaderCircle, Maximize2, RefreshCw, RotateCcw, ShieldCheck } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { toast } from 'sonner';
 
 import { apiRequest } from '../components/api-client';
 import { ImageCarouselNavigation } from '../components/image-carousel-navigation';
@@ -18,6 +19,48 @@ import qaStyles from './image-qa.module.css';
 import { normalizeImageQaItem, type ImageQaAsset, type ImageQaItem } from './types';
 
 const apiPath = (path: string) => `/api/control-plane${path}`;
+const IMAGE_QA_LOAD_TOAST_ID = 'image-qa-load';
+const IMAGE_QA_ACTION_TOAST_ID = 'image-qa-action';
+
+type ImageQaStatus = 'PENDING' | 'PASSED' | 'RETURNED' | 'ALL';
+
+const STATUS_OPTIONS: Array<{
+  value: ImageQaStatus;
+  label: string;
+  emptyTitle: string;
+  emptyDescription: string;
+}> = [
+  {
+    value: 'PENDING',
+    label: '待质检',
+    emptyTitle: '当前没有待质检任务',
+    emptyDescription: '新的随机抽检或返修强制复检进入队列后，会显示在这里。',
+  },
+  {
+    value: 'PASSED',
+    label: '已通过',
+    emptyTitle: '当前没有已通过记录',
+    emptyDescription: '质检通过的冻结版本会保留在这里，便于后续核对。',
+  },
+  {
+    value: 'RETURNED',
+    label: '已打回',
+    emptyTitle: '当前没有已打回记录',
+    emptyDescription: '需要返工的图片任务会保留问题页和修改要求。',
+  },
+  {
+    value: 'ALL',
+    label: '全部记录',
+    emptyTitle: '图片质检池暂无记录',
+    emptyDescription: '完成图片初审并命中抽检规则后，质检记录会出现在这里。',
+  },
+];
+
+const STATUS_LABELS: Record<ImageQaItem['status'], string> = {
+  PENDING: '待质检',
+  PASSED: '已通过',
+  RETURNED: '已打回',
+};
 
 function displayAssetName(asset: ImageQaAsset, fallbackIndex: number) {
   return orderedImageFileName(asset.originalName, asset.pageIndex || fallbackIndex + 1, asset.mediaType);
@@ -27,11 +70,10 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
   const { settings: loadedSettings, loading: settingsLoading, error: settingsError } = useHumanQualitySettings();
   const settings = loadedSettings ?? DEFAULT_SETTINGS;
   const [items, setItems] = useState<ImageQaItem[]>([]);
-  const [status, setStatus] = useState('PENDING');
+  const [status, setStatus] = useState<ImageQaStatus>('PENDING');
   const [loading, setLoading] = useState(true);
   const [action, setAction] = useState('');
   const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
   const [detail, setDetail] = useState<ImageQaItem | null>(null);
   const [returning, setReturning] = useState(false);
   const [score, setScore] = useState<'1' | '2'>('2');
@@ -44,20 +86,29 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
   const [previewAssetIndex, setPreviewAssetIndex] = useState<number | null>(null);
   const detailTriggerRef = useRef<HTMLButtonElement | null>(null);
   const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const loadSequenceRef = useRef(0);
 
   const load = useCallback(async () => {
+    const sequence = loadSequenceRef.current + 1;
+    loadSequenceRef.current = sequence;
     setLoading(true);
     setError('');
     try {
       const payload = await apiRequest<unknown>(apiPath(`/v1/image-qa/items?status=${encodeURIComponent(status)}&limit=200&offset=0`));
       const rows = payload && typeof payload === 'object' && Array.isArray((payload as { items?: unknown[] }).items)
         ? (payload as { items: unknown[] }).items : [];
+      if (sequence !== loadSequenceRef.current) return;
+      toast.dismiss(IMAGE_QA_LOAD_TOAST_ID);
       setItems(rows.map((item) => normalizeImageQaItem(item, role))
         .filter((item): item is ImageQaItem => item !== null));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '图片质检队列读取失败');
+      if (sequence !== loadSequenceRef.current) return;
+      toast.error(caught instanceof Error ? caught.message : '图片质检队列读取失败', {
+        id: IMAGE_QA_LOAD_TOAST_ID,
+        duration: Infinity,
+      });
     } finally {
-      setLoading(false);
+      if (sequence === loadSequenceRef.current) setLoading(false);
     }
   }, [role, status]);
 
@@ -67,7 +118,9 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
     if (detail && selectedAssetIndex >= detail.assets.length) setSelectedAssetIndex(0);
   }, [detail, selectedAssetIndex]);
 
-  const pendingCount = useMemo(() => items.filter((item) => item.status === 'PENDING').length, [items]);
+  const mandatoryCount = useMemo(() => items.filter((item) => item.sampleKind === 'MANDATORY_RECHECK').length, [items]);
+  const pageCount = useMemo(() => items.reduce((total, item) => total + item.assets.length, 0), [items]);
+  const activeStatus = STATUS_OPTIONS.find((option) => option.value === status) ?? STATUS_OPTIONS[0];
 
   function openDetail(item: ImageQaItem, trigger?: HTMLButtonElement) {
     if (trigger) detailTriggerRef.current = trigger;
@@ -111,11 +164,15 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ requestId: createRequestId(), score: 3, note: '' }),
       });
-      setMessage(`${item.anonymousCode} 已通过；本冻结批次全部通过后才会整体进入交付池。`);
+      toast.success(`${item.anonymousCode} 已通过；本冻结批次全部通过后才会整体进入交付池。`, {
+        id: IMAGE_QA_ACTION_TOAST_ID,
+      });
       if (detail?.id === item.id) setDetail(null);
       await load();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '图片质检通过失败');
+      toast.error(caught instanceof Error ? caught.message : '图片质检通过失败', {
+        id: IMAGE_QA_ACTION_TOAST_ID,
+      });
     } finally {
       setAction('');
     }
@@ -150,12 +207,16 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
           reasonCodes: reasons, note: note.trim(), problemAssetIds, copyFields,
         }),
       });
-      setMessage(`${detail.anonymousCode} 已打回；作业员采用新图片后将自动进入 100% 强制复检。`);
+      toast.success(`${detail.anonymousCode} 已打回；作业员采用新图片后将自动进入 100% 强制复检。`, {
+        id: IMAGE_QA_ACTION_TOAST_ID,
+      });
       setReturning(false);
       setDetail(null);
       await load();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '图片质检打回失败');
+      toast.error(caught instanceof Error ? caught.message : '图片质检打回失败', {
+        id: IMAGE_QA_ACTION_TOAST_ID,
+      });
     } finally {
       setAction('');
     }
@@ -187,12 +248,16 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
           reasonCodes: reasons, note: note.trim(),
         }),
       });
-      setMessage(`图片抽检批次已整批打回 ${preview.confirmedCount} 条；每条新版本都会进入强制复检。`);
+      toast.success(`图片抽检批次已整批打回 ${preview.confirmedCount} 条；每条新版本都会进入强制复检。`, {
+        id: IMAGE_QA_ACTION_TOAST_ID,
+      });
       setReturning(false);
       setDetail(null);
       await load();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '图片整批打回失败');
+      toast.error(caught instanceof Error ? caught.message : '图片整批打回失败', {
+        id: IMAGE_QA_ACTION_TOAST_ID,
+      });
     } finally {
       setAction('');
     }
@@ -201,32 +266,64 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
   const selectedAsset = detail?.assets[selectedAssetIndex] ?? null;
   const previewAsset = detail && previewAssetIndex !== null ? detail.assets[previewAssetIndex] : null;
 
-  return <div className={styles.stack}>
-    <section className={styles.summary} aria-label="图片质检概况">
-      <article className={qaStyles.primaryMetric}><strong>{pendingCount}</strong><span>当前结果待处理</span><small className={qaStyles.metricHint}>优先逐套检查完整成品图</small></article>
-      <article><strong>{items.filter((item) => item.sampleKind === 'MANDATORY_RECHECK').length}</strong><span>返修强制复检</span><small className={qaStyles.metricHint}>必须逐页确认修复结果</small></article>
-      <article><strong>{role === 'ADMIN' ? '完整' : items.filter((item) => item.blindReview).length}</strong><span>{role === 'ADMIN' ? '管理员视图' : '盲评样本'}</span><small className={qaStyles.metricHint}>{role === 'ADMIN' ? '盲评配置不隐藏来源信息' : '隐藏任务与提交人信息'}</small></article>
-      <article><strong>{role === 'ADMIN' ? '全部' : '已分配'}</strong><span>当前可见范围</span><small className={qaStyles.metricHint}>{role === 'ADMIN' ? '管理员可处理所有样本' : '仅展示分配给我的样本'}</small></article>
+  return <div className={`${styles.stack} ${qaStyles.workbench}`}>
+    <section className={qaStyles.overview} aria-label="图片质检概况">
+      <article className={qaStyles.primaryMetric}>
+        <span className={qaStyles.metricIcon}><ListChecks size={18} aria-hidden="true" /></span>
+        <div><strong>{items.length}</strong><span>当前筛选结果</span><small>{activeStatus.label}范围内的质检记录</small></div>
+      </article>
+      <article>
+        <span className={qaStyles.metricIcon}><RotateCcw size={18} aria-hidden="true" /></span>
+        <div><strong>{mandatoryCount}</strong><span>返修强制复检</span><small>必须逐页确认修复结果</small></div>
+      </article>
+      <article>
+        <span className={qaStyles.metricIcon}><Images size={18} aria-hidden="true" /></span>
+        <div><strong>{pageCount}</strong><span>最终成品页</span><small>仅统计当前冻结版本</small></div>
+      </article>
+      <article>
+        <span className={qaStyles.metricIcon}><ShieldCheck size={18} aria-hidden="true" /></span>
+        <div><strong>{role === 'ADMIN' ? '全部' : '我的'}</strong><span>可见任务范围</span><small>{role === 'ADMIN' ? '管理员保留完整来源信息' : '仅显示分配给我的样本'}</small></div>
+      </article>
     </section>
-    <section className="panel">
-      <div className={styles.toolbar}>
+    <section className={`panel ${qaStyles.queuePanel}`} aria-labelledby="image-qa-queue-title">
+      <header className={qaStyles.queueHeader}>
         <div>
-          <label>处理状态<Select value={status} onValueChange={setStatus}><SelectTrigger className={styles.filterSelect}><SelectValue /></SelectTrigger><SelectContent>
-            <SelectItem value="PENDING">待质检</SelectItem><SelectItem value="PASSED">已通过</SelectItem>
-            <SelectItem value="RETURNED">已打回</SelectItem><SelectItem value="ALL">全部</SelectItem>
-          </SelectContent></Select></label>
+          <span className={qaStyles.eyebrow}>REVIEW QUEUE</span>
+          <h2 id="image-qa-queue-title">质检队列</h2>
+          <p>先逐页检查完整成品图，再通过或填写可执行的返工要求。</p>
         </div>
-        <Button unstyled className="button" type="button" disabled={loading} onClick={() => { void load(); }}><RefreshCw size={15} />刷新</Button>
+        <div className={qaStyles.queueHeaderActions}>
+          <span className={qaStyles.resultCount} aria-live="polite">{loading ? '正在更新' : `${items.length} 条结果`}</span>
+          <Button unstyled className="button" type="button" disabled={loading} onClick={() => { void load(); }}><RefreshCw className={loading ? 'animate-spin' : ''} size={15} />刷新队列</Button>
+        </div>
+      </header>
+      <div className={qaStyles.filterBar}>
+        <nav className={qaStyles.statusTabs} role="tablist" aria-label="图片质检处理状态">
+          {STATUS_OPTIONS.map((option) => <Button unstyled id={`image-qa-${option.value.toLowerCase()}-tab`} key={option.value}
+            type="button" role="tab" aria-selected={status === option.value} aria-controls="image-qa-results"
+            data-active={status === option.value} onClick={() => setStatus(option.value)}>{option.label}</Button>)}
+        </nav>
+        <span className={qaStyles.scopeBadge}><ShieldCheck size={14} aria-hidden="true" />{role === 'ADMIN' ? '管理员完整视图' : '审核员盲评视图'}</span>
       </div>
       {role === 'REVIEWER' && <p className={`notice ${styles.blindNotice}`}><EyeOff size={16} />质检员不能处理自己提交的图片；管理员不受自检限制。盲评开启时只显示匿名样本和成品图。</p>}
-      {error && !detail && <div className="notice error" role="alert">{error}</div>}
-      {message && <div className="notice success" role="status">{message}</div>}
-      {loading ? <div className="empty-state"><LoaderCircle className="animate-spin" size={18} />正在读取图片质检池…</div>
-        : items.length === 0 ? <div className="empty-state">当前筛选下没有图片质检项。</div>
-          : <div className={`table-wrap mobile-cards ${styles.queue} ${qaStyles.queue}`}><table><thead><tr><th>质检内容</th><th>类型</th><th>成品页</th><th>来源</th><th>操作</th></tr></thead>
+      <div id="image-qa-results" role="tabpanel" aria-labelledby={`image-qa-${status.toLowerCase()}-tab`} className={qaStyles.queueContent}>
+        {loading ? <div className={qaStyles.loadingState}><LoaderCircle className="animate-spin" size={22} /><strong>正在读取图片质检池</strong><span>正在同步最新冻结版本与质检状态…</span></div>
+        : items.length === 0 ? <div className={qaStyles.emptyState}>
+            <span className={qaStyles.emptyIcon}><ImageOff size={25} aria-hidden="true" /></span>
+            <span className={qaStyles.eyebrow}>QUEUE CLEAR</span>
+            <h3>{activeStatus.emptyTitle}</h3>
+            <p>{activeStatus.emptyDescription}</p>
+            <div className={qaStyles.emptyActions}>
+              <Button unstyled className="button primary" type="button" onClick={() => { void load(); }}><RefreshCw size={15} />重新检查</Button>
+              {status !== 'PENDING' && <Button unstyled className="button" type="button" onClick={() => setStatus('PENDING')}>查看待质检</Button>}
+            </div>
+            <small>普通作业员的图片初审不会进入此队列。</small>
+          </div>
+          : <div className={`table-wrap mobile-cards ${qaStyles.queue}`} role="region" aria-label="图片质检队列，可横向滚动" tabIndex={0}><table><thead><tr><th>质检内容</th><th>类型</th><th>状态</th><th>成品页</th><th>来源</th><th>操作</th></tr></thead>
             <tbody>{items.map((item) => <tr key={item.id}>
               <td data-label="质检内容"><div className={qaStyles.sample}><span>{item.anonymousCode}</span><strong>{item.blindReview ? '匿名成品图集' : `${item.taskId ? `任务 #${item.taskId}` : '任务号未记录'}${item.query ? ` · ${item.query}` : ''}`}</strong></div></td>
               <td data-label="类型"><span className="pill">{item.sampleKind === 'MANDATORY_RECHECK' ? '强制复检' : '随机抽检'}</span></td>
+              <td data-label="状态"><span className={qaStyles.statusBadge} data-status={item.status}>{STATUS_LABELS[item.status] ?? '未知状态'}</span></td>
               <td data-label="成品页"><span className={qaStyles.imageCount}><Images size={15} aria-hidden="true" /><strong>{item.assets.length}</strong> 页</span></td>
               <td data-label="来源"><span className={qaStyles.source}>{item.blindReview ? '匿名' : item.productionBatch?.queryPackageName || '独立任务'}</span></td>
               <td data-label="操作"><div className={styles.actions}>
@@ -235,6 +332,7 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
                 {item.capabilities.canPass && <Button unstyled className="button small primary" type="button" disabled={Boolean(action)} onClick={() => { void pass(item); }}><CheckCircle2 size={14} />通过</Button>}
               </div></td>
             </tr>)}</tbody></table></div>}
+      </div>
     </section>
 
     <Dialog open={detail !== null} onOpenChange={(open) => { if (!open) closeDetail(); }}>

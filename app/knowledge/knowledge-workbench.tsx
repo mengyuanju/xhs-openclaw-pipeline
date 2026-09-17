@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
+import { ToastFeedback } from '@/components/ui/sonner';
 
 import { apiRequest } from '../components/api-client';
 import { StatusPill } from '../components/status-pill';
@@ -184,7 +185,7 @@ export function KnowledgeWorkbench({ items }: { items: any[] }) {
       </div>
     </section>}
 
-    {message && <div className={messageIsError ? 'notice error' : 'notice success'} role={messageIsError ? 'alert' : 'status'} aria-live="polite">{message}</div>}
+    <ToastFeedback id="knowledge-workbench-feedback" message={message} tone={messageIsError ? 'error' : 'success'} />
 
     <section className="panel">
       <div className="panel-head"><h2>视觉配方库</h2><span className="subtle">{items.length} 条</span></div>

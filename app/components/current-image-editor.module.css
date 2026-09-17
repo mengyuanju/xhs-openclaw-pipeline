@@ -107,6 +107,7 @@
   background: #ece8e3;
 }
 
+.previewHeader { display: grid; gap: 8px; }
 .previewToolbar { display: flex; flex-wrap: wrap; gap: 6px; }
 .previewToolbar button,
 .panelTabs button,
@@ -134,6 +135,22 @@
 .mobileViewTabs button:focus-visible,
 .promptActions button:focus-visible,
 .quickRequirements button:focus-visible { outline: 3px solid var(--control-ring); outline-offset: 2px; }
+
+.rejectedPreviewNotice {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #e5b45d;
+  border-radius: 8px;
+  color: #754a08;
+  background: #fff8e8;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.rejectedPreviewNotice strong { flex: 0 0 auto; font-size: 11px; }
+.rejectedPreviewNotice span { min-width: 0; }
 
 .previewViewport {
   display: grid;
@@ -791,6 +808,19 @@
 .suggestionCard > strong { color: #145a88; font-size: 12px; }
 .suggestionCard blockquote { margin: 0; padding: 10px 11px; border-left: 3px solid #1c72b2; color: #2f3f49; background: white; font-size: 12px; line-height: 1.65; }
 .suggestionCard > span { color: #567181; font-size: 10px; }
+
+.rejectedResultCard {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid #e5b45d;
+  border-radius: 9px;
+  background: #fff8e8;
+}
+
+.rejectedResultCard > strong { color: #754a08; font-size: 12px; }
+.rejectedResultCard > p { color: #684f28; }
+.rejectedResultCard > span { color: #806637; font-size: 10px; line-height: 1.6; }
 
 .reasonEditor {
   display: grid;

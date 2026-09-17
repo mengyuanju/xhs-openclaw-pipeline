@@ -2,6 +2,7 @@
 
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
+import { ToastFeedback } from '@/components/ui/sonner';
 import { Switch, Input } from '@/components/ui/input';
 import { Disclosure, DisclosureTrigger, DisclosureContent } from '@/components/ui/disclosure';
 
@@ -38,7 +39,7 @@ export function PromptRuntimeSettings({ onPrepared }: { onPrepared?: () => void 
     <div className="panel-head"><div><h2>执行配置</h2><p className="subtle">规则来源：{state?.source === 'CENTER' ? '中心服务' : state?.source === 'LOCAL' ? '本地离线' : '读取中'} · {state?.active ? '统一规则已启用' : '尚未启用，历史兼容规则仍在使用'}</p></div>
       <Button unstyled className="button" type="button" disabled={busy || !state} onClick={() => void submit(true)}>准备缺失的候选草稿</Button></div>
     {error && <div className="notice error" role="alert">{error}</div>}
-    {message && <div className="notice success" role="status">{message}</div>}
+    <ToastFeedback id="prompt-runtime-feedback" message={message} />
     {policy && <form className="stack" onSubmit={(event) => { event.preventDefault(); void submit(false); }}>
       <label className="inline"><Switch   aria-label="启用 Query 筛选" checked={policy.queryReviewEnabled} disabled={busy}
         onChange={(event) => setPolicy({ ...policy, queryReviewEnabled: event.target.checked })} />启用 Query 筛选（选题审核）</label>

@@ -1,6 +1,7 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
+import { ToastFeedback } from '@/components/ui/sonner';
 import { Input, Switch } from '@/components/ui/input';
 import { ClipboardCheck, RefreshCw, Save } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
@@ -184,7 +185,7 @@ export function WorkflowQualitySettingsPanel() {
       {changed && <div className="notice" role="status">有未保存的流程配置更改。</div>}
     </>}
     {error && <div className="notice error" role="alert">{error}</div>}
-    {message && <div className="notice success" role="status">{message}</div>}
+    <ToastFeedback id="workflow-quality-settings-feedback" message={message} />
     {draft && <div className={styles.actions}>
       <Button unstyled className="button" type="button" disabled={disabled || !changed} onClick={() => { if (saved) setDraft(editableSettings(saved)); setCopyRateInput(null); setImageRateInput(null); setMessage(''); }}>撤销更改</Button>
       <Button unstyled className="button" type="button" disabled={loading || busy} onClick={() => { void load(); }}><RefreshCw size={15} aria-hidden="true" />重新读取</Button>

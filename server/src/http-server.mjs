@@ -1982,6 +1982,14 @@ function installRoutes(
     json(ctx,200,await imageEditing.completeExecutor(identity.executionId,identity.editId,
       identity.leaseToken,await readBody(ctx.req,ASSET_BODY_LIMIT)));
   });
+  router.put('/v1/executions/:executionId/image-edit/rejected-result', async ctx => {
+    if(String(ctx.request.headers['content-type']??'').split(';')[0].trim()!=='image/png') {
+      throw new HttpError(415,'UNSUPPORTED_MEDIA_TYPE','rejected image edit result must be image/png');
+    }
+    const identity=imageEditExecutionIdentity(ctx);
+    json(ctx,200,await imageEditing.rejectExecutor(identity.executionId,identity.editId,
+      identity.leaseToken,await readBody(ctx.req,ASSET_BODY_LIMIT)));
+  });
   router.post('/v1/executions/:executionId/image-edit/fail', async ctx => {
     const identity=imageEditExecutionIdentity(ctx);
     json(ctx,200,await imageEditing.failExecutor(identity.executionId,identity.editId,

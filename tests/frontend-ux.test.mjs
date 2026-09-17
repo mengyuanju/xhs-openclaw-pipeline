@@ -280,7 +280,7 @@ test('image previews retain local zoom and rotation', async () => {
 test('current editors announce results and use explicit button behavior', async () => {
   for (const file of ['app/prompts/prompt-editor.tsx', 'app/knowledge/knowledge-workbench.tsx']) {
     const source = await readFile(projectFile(file), 'utf8');
-    assert.match(source, /role=\{messageIsError \? 'alert' : 'status'\}/);
+    assert.match(source, /<ToastFeedback[^>]*tone=\{messageIsError \? 'error' : 'success'\}/);
     assert.doesNotMatch(source, /<button(?![^>]*type=)[^>]*onClick=/);
   }
 });
@@ -322,6 +322,6 @@ test('the unified knowledge base exposes visual and copy modules with accessible
   assert.match(workbench, /htmlFor="knowledge-image"/);
   assert.match(workbench, /PROMPT_ONLY/);
   assert.match(workbench, /IMAGE_AND_PROMPT/);
-  assert.match(workbench, /role=\{messageIsError \? 'alert' : 'status'\}/);
+  assert.match(workbench, /<ToastFeedback[^>]*tone=\{messageIsError \? 'error' : 'success'\}/);
   assert.doesNotMatch(workbench, /<button(?![^>]*type=)[^>]*onClick=/);
 });

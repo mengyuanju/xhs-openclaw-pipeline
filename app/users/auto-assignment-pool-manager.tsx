@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input, Switch } from '@/components/ui/input';
 import { SearchInput } from '@/components/ui/search-input';
+import { ToastFeedback } from '@/components/ui/sonner';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -401,8 +402,8 @@ export function AutoAssignmentPoolManager({
         </div>
       </div>
 
-      {(message || error) && <div className={`notice ${error ? 'error' : 'success'} user-action-notice`}
-        role={error ? 'alert' : 'status'}>{error || message}</div>}
+      <ToastFeedback id="auto-assignment-pool-success" message={message} />
+      <ToastFeedback id="auto-assignment-pool-error" message={error} tone="error" />
 
       {initialSnapshot.workers.length === 0
         ? <div className="empty-state">人员池为空。请点击“加入作业员”明确选择需要自动接单的人员。</div>

@@ -81,7 +81,7 @@ test('image claim and edit transfer protocol carries capability, lease and idemp
   const requestId=randomUUID(),executionId=randomUUID(),editId=randomUUID(),leaseToken=randomUUID();
   const edit={id:editId,task_id:'7',execution_id:executionId,claimed_by:'image-a',status:'RUNNING',lease_token:leaseToken};
   const claim={task:{id:7,state:'MANUAL_ARCHIVE'},execution:{id:executionId,taskId:7,nodeId:'image-a',kind:'IMAGE',status:'RUNNING',snapshot:{imageEditRequestId:editId}},imageEdit:edit};
-  const seen=[];let resultAttempts=0;
+  const seen=[];let resultAttempts=0,rejectedAttempts=0;
   const client=createControlPlaneClient({baseUrl:'http://localhost',fetchImpl:async(url,options={})=>{
     const path=new URL(url).pathname;seen.push({path,options});
     if(path.endsWith('/claim-image-batch'))return Response.json({data:{requestId,claims:[claim]}});
@@ -91,6 +91,12 @@ test('image claim and edit transfer protocol carries capability, lease and idemp
     if(path.endsWith('/asset-metadata/31'))return Response.json({data:{id:'31',sha256:'a'.repeat(64)}});
     if(path.endsWith('/heartbeat'))return Response.json({data:{active:true}});
     if(path.endsWith('/validation'))return Response.json({data:{passed:true}});
+    if(path.endsWith('/rejected-result')){
+      rejectedAttempts++;
+      if(rejectedAttempts===1)throw new TypeError('response lost');
+      assert.deepEqual(Buffer.from(options.body),Buffer.from('rejected-png'));
+      return Response.json({data:{assetId:33,imageRunId:randomUUID(),status:'FAILED'}});
+    }
     if(path.endsWith('/result')){
       resultAttempts++;
       if(resultAttempts===1)throw new TypeError('response lost');
@@ -102,7 +108,7 @@ test('image claim and edit transfer protocol carries capability, lease and idemp
   }});
   assert.deepEqual(await client.claimImageBatch({nodeId:'image-a',requestId,limit:1}),{requestId,claims:[claim]});
   const claimBody=JSON.parse(seen[0].options.body);
-  assert.equal(claimBody.imageEditExecutorVersion,5);
+  assert.equal(claimBody.imageEditExecutorVersion,6);
   assert.deepEqual(await client.imageEditContext(executionId,edit),{task:{id:7}});
   assert.deepEqual(await client.imageEditAsset(executionId,edit,31),Buffer.from('asset'));
   assert.equal((await client.imageEditAssetMetadata(executionId,edit,31)).sha256,'a'.repeat(64));
@@ -110,6 +116,10 @@ test('image claim and edit transfer protocol carries capability, lease and idemp
   await client.stageImageEditValidation(executionId,edit,{passed:true});
   assert.equal((await client.completeImageEdit(executionId,edit,Buffer.from('png'))).assetId,32);
   assert.equal(resultAttempts,2);
+  assert.equal((await client.rejectImageEdit(executionId,edit,Buffer.from('rejected-png'),Object.assign(new Error('未完成移动'),{validation:{stage:'LOCAL_EDIT_RESULT'}}))).assetId,33);
+  assert.equal(rejectedAttempts,2);
+  const rejectedValidation=seen.filter(item=>item.path.endsWith('/validation')).at(-1);
+  assert.equal(JSON.parse(rejectedValidation.options.body).validation.failureMessage,'未完成移动');
 });
 
 test('Xiaohongshu search client authenticates and validates every state-changing response', async () => {

@@ -1,6 +1,7 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
+import { ToastFeedback } from '@/components/ui/sonner';
 import { Input, Switch } from '@/components/ui/input';
 import {
   Select,
@@ -346,7 +347,7 @@ export function ProductionSettingsForm({
 
   return <div className="settings-stack">
     <SettingsWorkspace sections={sections} activeSection={activeSection} onSectionChange={setActiveSection} />
-    {message && <div className={messageIsError ? 'notice error' : 'notice success'} role={messageIsError ? 'alert' : 'status'} aria-live="polite">{message}</div>}
+    <ToastFeedback id="production-settings-feedback" message={message} tone={messageIsError ? 'error' : 'success'} />
     <div className="settings-save-bar" data-dirty={dirtyBySection[activeSection] || undefined}>
       <div>
         <strong>{SECTION_SAVE_COPY[activeSection].title}</strong>

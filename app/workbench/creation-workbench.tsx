@@ -2,6 +2,7 @@
 
 import * as AlertDialogPrimitive from '@radix-ui/react-alert-dialog';
 import { Button } from '@/components/ui/button';
+import { ToastFeedback } from '@/components/ui/sonner';
 import { Checkbox, Input, Textarea } from '@/components/ui/input';
 import { SearchInput } from '@/components/ui/search-input';
 
@@ -2279,7 +2280,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       }}
     />
 
-    {message && <div className="notice success" role="status">{message}</div>}
+    <ToastFeedback id="creation-workbench-feedback" message={message} />
     {error && <div className="notice error" role="alert">{error}</div>}
   </div>;
 }

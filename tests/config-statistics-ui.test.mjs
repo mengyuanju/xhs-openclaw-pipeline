@@ -34,7 +34,7 @@ test('production settings route and page expose validated repair and disclosure 
   assert.match(form, /目标分数/);
   assert.match(form, /AI生成标识/);
   assert.match(form, /fetch|apiRequest/);
-  assert.match(form, /aria-live="polite"/);
+  assert.match(form, /<ToastFeedback id="production-settings-feedback"/u);
   for (const label of ['生成与模型', '质量与审核', '图片与输出', '兼容与高级']) {
     assert.match(form, new RegExp(label, 'u'));
   }

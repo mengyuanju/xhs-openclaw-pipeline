@@ -1,5 +1,7 @@
 import type { Metadata } from 'next';
 
+import { Toaster } from '@/components/ui/sonner';
+
 import { AppFrame } from './components/app-frame';
 import { readServerSession } from './server-session';
 import './globals.css';
@@ -15,6 +17,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
     <html lang="zh-CN">
       <body>
         <AppFrame session={session}>{children}</AppFrame>
+        <Toaster />
       </body>
     </html>
   );

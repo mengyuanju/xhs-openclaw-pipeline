@@ -288,7 +288,9 @@ export async function executeImageEditClaim({
       await controlPlane.stageImageEditValidation(execution.id, imageEdit, validation);
       return controlPlane.completeImageEdit(execution.id, imageEdit, bytes);
     },
-    fail: (_edit, error) => controlPlane.failImageEdit(execution.id, imageEdit, error),
+    fail: (_edit, error, preview) => preview?.bytes
+      ? controlPlane.rejectImageEdit(execution.id, imageEdit, preview.bytes, error)
+      : controlPlane.failImageEdit(execution.id, imageEdit, error),
   };
   const result = await processImageEdit({
     service,
@@ -335,7 +337,7 @@ export function createExecutorAgent({
   }
   const registration = () => ({ nodeId, name: nodeName, imageWorkerEnabled,
     copyConcurrency, imageConcurrency, codexPoolId, codexTotalConcurrency, codexImageConcurrency,
-    imageEditExecutorVersion: imageWorkerEnabled ? 5 : 0 });
+    imageEditExecutorVersion: imageWorkerEnabled ? 6 : 0 });
   let ready = false;
   const pendingFailures = new Map();
   const activeExecutions = new Map();
@@ -479,7 +481,7 @@ export function createExecutorAgent({
       }
       const imageEditCapabilityVersion = Number(result?.health?.capabilities?.imageEditExecutorVersion);
       if (concurrencyEnabled && imageWorkerEnabled
-          && (!Number.isInteger(imageEditCapabilityVersion) || imageEditCapabilityVersion < 5)) {
+          && (!Number.isInteger(imageEditCapabilityVersion) || imageEditCapabilityVersion < 6)) {
         throw new Error('请先更新中心服务：缺少执行机图片修改能力');
       }
       taskHeartbeatsEnabled = Boolean(result?.health?.capabilities?.executionHeartbeats);

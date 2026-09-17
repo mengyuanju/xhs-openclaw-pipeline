@@ -2,6 +2,7 @@
 
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { ToastFeedback } from '@/components/ui/sonner';
 
 import { useState, type FormEvent } from 'react';
 
@@ -76,7 +77,7 @@ export function LoginForm({ nextPath, passwordChanged = false }: { nextPath: str
           required
         />
       </div>
-      {passwordChanged && <div className="notice success" role="status">密码已修改，请使用新密码重新登录。</div>}
+      <ToastFeedback id="login-password-changed" message={passwordChanged ? '密码已修改，请使用新密码重新登录。' : ''} />
       {error && <div className="notice error" role="alert">{error}</div>}
       <Button unstyled className="button primary login-submit" type="submit" disabled={isBusy}>
         {isBusy ? '正在验证…' : '进入后台'}

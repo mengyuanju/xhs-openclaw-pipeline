@@ -22,7 +22,7 @@ import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { useTextInputDialog } from '@/components/ui/text-input-dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Disclosure, DisclosureContent, DisclosureTrigger } from '@/components/ui/disclosure';
-import { TransientInfoBubble } from '@/components/ui/transient-info-bubble';
+import { ToastFeedback } from '@/components/ui/sonner';
 
 import { ApiRequestError, apiRequest } from '../components/api-client';
 import { createRequestId } from '../components/request-id';
@@ -1467,8 +1467,8 @@ export function TaskReviewDialog({
 
   return <Dialog open={taskId !== null} onOpenChange={(open) => { if (!open) void discardChanges('close'); }}>
     <DialogContent className="workbench-review-dialog">
-      <TransientInfoBubble message={copyEditNotice?.message ?? null}
-        announcementKey={copyEditNotice?.sequence} onDismiss={() => setCopyEditNotice(null)} />
+      <ToastFeedback id="task-review-copy-edit" message={copyEditNotice?.message ?? ''}
+        revision={copyEditNotice?.sequence} tone="info" />
       <header className="workbench-review-heading">
         <div>
           <span className="section-kicker">Task {detail ? `#${detail.id}` : ''}</span>

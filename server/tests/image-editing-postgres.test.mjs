@@ -119,7 +119,7 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
         sourceAssetId:Number(lowAsset.id),copyRevisionId:Number(lowRevision.id),sha256,targetPage:2,
         operation:'TEXT',confirmation:'LIVE_IMAGE_COST_ACCEPTED',overlay:{text:'AI生成',textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',position:'bottom-right'}},actor);
       const claims=await Promise.all([
-        repository.claimImage('edit-test',1,2,3),repository.claimImage('edit-test',1,2,3),
+        repository.claimImage('edit-test',1,2,6),repository.claimImage('edit-test',1,2,6),
       ]);assert.equal(claims.filter(Boolean).length,1);
       const executorClaim=claims.find(Boolean);
       assert.equal(executorClaim.imageEdit.id,first.id);
@@ -130,29 +130,51 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       await assert.rejects(()=>service.complete(executorClaim.imageEdit,{bytes:png,validation:{passed:true}}),{code:'IMAGE_EDIT_CONFLICT'});
       await action(lowEdit.id,'cancel');
     });
-    await t.test('appearance-reference edits wait for a version 4 image executor',async()=>{
+    await t.test('paid appearance-reference edits wait for a version 6 image executor',async()=>{
       const reference=await service.upload(taskId,{base64:png.toString('base64'),mediaType:'image/png',purpose:'外观参考',source:'测试自有照片'},actor);
       const appearanceEdit=await service.create(taskId,request({operation:'AI_FUSION',referenceMode:'APPEARANCE',
         instruction:'按主产品可见外观替换目标',references:[{assetId:reference.id,purpose:'真实产品替换'}],
         target:{description:'画面中央的产品',region:{x:300,y:400,width:480,height:600}}}),actor);
-      assert.equal(await repository.claimImage('edit-test',1,2,3),null);
-      const claim=await repository.claimImage('edit-test',1,2,4);
+      assert.equal(await repository.claimImage('edit-test',1,2,5),null);
+      const claim=await repository.claimImage('edit-test',1,2,6);
       assert.equal(claim.imageEdit.id,appearanceEdit.id);
-      assert.equal(claim.execution.snapshot.imageEditExecutorVersion,4);
+      assert.equal(claim.execution.snapshot.imageEditExecutorVersion,6);
       await action(appearanceEdit.id,'cancel');
     });
-    await t.test('natural-language local edits wait for a version 5 image executor',async()=>{
+    await t.test('natural-language local edits wait for a version 6 image executor',async()=>{
       const localEdit=await service.create(taskId,request({operation:'AI_LOCAL',instruction:'把右上角的白色杯子改为蓝色'}),actor);
-      assert.equal(await repository.claimImage('edit-test',1,2,4),null);
-      const claim=await repository.claimImage('edit-test',1,2,5);
+      assert.equal(await repository.claimImage('edit-test',1,2,5),null);
+      const claim=await repository.claimImage('edit-test',1,2,6);
       assert.equal(claim.imageEdit.id,localEdit.id);
-      assert.equal(claim.execution.snapshot.imageEditExecutorVersion,5);
+      assert.equal(claim.execution.snapshot.imageEditExecutorVersion,6);
       await action(localEdit.id,'cancel');
+    });
+    await t.test('a rejected generated result remains visible and can be adopted by explicit human choice',async()=>{
+      const rejected=await service.create(taskId,request(),actor);
+      let checks=0;
+      const rejectValidation=async({imagePath})=>{
+        checks++;
+        if(!imagePath.endsWith('result.png'))return validateImage({imagePath});
+        return {passed:false,model:'fake-vision',layoutMatched:false,ocrConfidence:.95,ocrMismatches:['人工生成标识缺失'],
+          unreadableText:[],recognizedText:{headline:'真实参考',subtitle:'',bullets:[],otherText:[]}};
+      };
+      const rendered=await processImageEdit({service,storageRoot:root,workerId:'rejected-preview',agentClient,validateImage:rejectValidation});
+      assert.equal(rendered.status,'FAILED');assert.ok(checks>=2);
+      const failed=await service.get(rejected.id);
+      assert.equal(failed.status,'FAILED');assert.equal(failed.result.validation.passed,false);
+      assert.equal((await service.asset(Number(failed.result.asset_id),taskId)).asset_role,'REJECTED_PREVIEW');
+      assert.equal((await pool.query('SELECT status FROM image_runs WHERE id=$1',[failed.result.image_run_id])).rows[0].status,'FAILED');
+      await assert.rejects(()=>action(rejected.id,'accept'),/明确确认/u);
+      await action(rejected.id,'accept',{acceptRejectedResult:true});
+      const adopted=await service.get(rejected.id);
+      assert.equal(adopted.status,'ACCEPTED');assert.equal(adopted.result.adopted,true);
+      assert.equal((await pool.query('SELECT status FROM image_runs WHERE id=$1',[adopted.result.image_run_id])).rows[0].status,'COMPLETED');
+      currentRun=adopted.result.image_run_id;currentAsset=Number(adopted.result.asset_id);currentHash=(await service.asset(currentAsset,taskId)).sha256;
     });
     let edited;
     await t.test('executor transfer produces a validated preview without changing current run',async()=>{
       edited=await service.create(taskId,request(),actor);
-      const claim=await repository.claimImage('edit-test',1,2,3);
+      const claim=await repository.claimImage('edit-test',1,2,6);
       assert.equal(claim.imageEdit.id,edited.id);
       const app=createControlPlaneApp({repository,storageRoot:root});
       const server=await new Promise(resolveServer=>{const listening=app.listen(0,'127.0.0.1',()=>resolveServer(listening));});

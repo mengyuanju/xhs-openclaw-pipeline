@@ -1,6 +1,7 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
+import { ToastFeedback } from '@/components/ui/sonner';
 import { CheckCircle2, Download, LoaderCircle, PackageCheck, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -83,7 +84,7 @@ export function OperatorDeliveryHistory({ refreshKey }: { refreshKey: number }) 
         </Button>
       </div>
     </div>
-    {message && <div className="notice success" role="status">{message}</div>}
+    <ToastFeedback id="operator-delivery-history-feedback" message={message} />
     {error && <div className="notice error" role="alert">{error}</div>}
     {loading && batches.length === 0
       ? <div className="empty-state"><LoaderCircle className="animate-spin" size={18} />正在读取交付记录…</div>

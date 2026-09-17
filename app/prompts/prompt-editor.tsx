@@ -2,6 +2,7 @@
 
 import { Textarea } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { ToastFeedback } from '@/components/ui/sonner';
 import { Disclosure, DisclosureTrigger, DisclosureContent } from '@/components/ui/disclosure';
 
 import { useRouter } from 'next/navigation';
@@ -74,7 +75,7 @@ export function PromptEditor({ template }: { template: any }) {
     <div className="field"><label htmlFor={`prompt-${template.id}`}>系统提示词</label><Textarea id={`prompt-${template.id}`} className="textarea mono" value={content} onChange={(event) => setContent(event.target.value)} maxLength={20_000} /></div>
     <div className="code-hint">可用变量由系统白名单校验；未知变量会被拒绝。{published ? `当前 v${published.version} · ${published.contentSha256?.slice(0, 10)}…` : '尚未发布'}</div>
     <PromptPreview kind={template.kind} content={content} published={published?.content} />
-    {message && <div className={messageIsError ? 'notice error' : 'notice success'} role={messageIsError ? 'alert' : 'status'} aria-live="polite">{message}</div>}
+    <ToastFeedback id="prompt-editor-feedback" message={message} tone={messageIsError ? 'error' : 'success'} />
     <div className="inline"><Button unstyled className="button" type="button" disabled={busy || !content.trim()} onClick={() => void saveAndPublish(false)}>保存草稿</Button><Button unstyled className="button primary" type="button" disabled={busy || !content.trim()} onClick={() => void saveAndPublish(true)}>{busy ? '处理中…' : '创建新版本并发布'}</Button></div>
     <Disclosure><DisclosureTrigger className="subtle" style={{cursor: 'pointer'}}>查看 {template.versions.length} 个历史版本</DisclosureTrigger><DisclosureContent><div className="history" style={{marginTop: 12}}>{template.versions.map((version: any) => <Disclosure className="history-item" key={version.id}><DisclosureTrigger>v{version.version} · {version.status} · {version.contentSha256.slice(0, 10)}…</DisclosureTrigger><DisclosureContent><pre className="prompt-history-content">{version.content}</pre><div className="inline"><Button unstyled className="button small" type="button" disabled={busy} onClick={() => setContent(version.content)}>载入此版本编辑</Button>{version.status !== 'PUBLISHED' && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => rollback(version.id, version.version)}>重新发布</Button>}</div></DisclosureContent></Disclosure>)}</div></DisclosureContent></Disclosure>
   </article>;

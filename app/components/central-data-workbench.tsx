@@ -2,6 +2,7 @@
 
 import { Textarea } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { ToastFeedback } from '@/components/ui/sonner';
 import { Save } from 'lucide-react';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 
@@ -138,7 +139,7 @@ export function CentralDataWorkbench() {
       ]}
     />
 
-    {message && <div className="notice success" role="status">{message}</div>}
+    <ToastFeedback id="central-data-feedback" message={message} />
     {error && <div className="notice error" role="alert">{error}</div>}
   </div>;
 }

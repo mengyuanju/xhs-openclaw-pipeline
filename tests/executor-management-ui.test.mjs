@@ -42,7 +42,8 @@ test('administrator-only executor management shows status and safely removes ret
   assert.match(manager, /current\.filter\(\(candidate\) => candidate\.id !== node\.id\)/u);
   assert.match(manager, /node\.online \|\| hasRunningTasks/u);
   assert.match(manager, /manualRefreshRunning\.current/u);
-  assert.match(manager, /actionError \|\| refreshError/u);
+  assert.match(manager, /<ToastFeedback id="executor-manager-error" message=\{actionError\} tone="error"/u);
+  assert.match(manager, /refreshError && <div className="notice error" role="alert"/u);
   assert.match(manager, /aria-label=\{`删除执行机 \$\{node\.name\}`\}/u);
   assert.match(manager, /className="row-action" data-label="操作"/u);
   assert.match(capability, /executorManagementVersion[\s\S]*method === 'DELETE'/u);

@@ -8,12 +8,14 @@ import test from 'node:test';
 
 import sharp from 'sharp';
 
-test('image QA detail uses the shared dialog with white, contained image previews', async () => {
-  const [workbench, styles, preview, globals] = await Promise.all([
+test('image QA uses Sonner and the shared dialog with white, contained image previews', async () => {
+  const [workbench, styles, preview, globals, toaster, layout] = await Promise.all([
     readFile(new URL('../app/image-qa/image-qa-workbench.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../app/image-qa/image-qa.module.css', import.meta.url), 'utf8'),
     readFile(new URL('../app/components/image-preview.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../app/globals.css', import.meta.url), 'utf8'),
+    readFile(new URL('../components/ui/sonner.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../app/layout.tsx', import.meta.url), 'utf8'),
   ]);
 
   assert.match(workbench, /import \{ Dialog, DialogContent, DialogDescription, DialogTitle \} from '@\/components\/ui\/dialog'/u);
@@ -29,6 +31,19 @@ test('image QA detail uses the shared dialog with white, contained image preview
   assert.match(styles, /\.thumbnail img\s*\{[^}]*object-fit:\s*contain;[^}]*background:\s*#fff;/su);
   assert.doesNotMatch(styles, /\.detailDialog\s*\{[^}]*transform:/su);
   assert.doesNotMatch(globals, /\.image-preview-dialog\s*\{[^}]*transform:/su);
+  assert.match(workbench, /role="tablist" aria-label="图片质检处理状态"/u);
+  assert.match(workbench, /<h2 id="image-qa-queue-title">质检队列<\/h2>/u);
+  assert.match(workbench, /当前没有待质检任务/u);
+  assert.match(workbench, /<th>状态<\/th>/u);
+  assert.match(styles, /\.overview\s*\{[^}]*grid-template-columns:\s*repeat\(4,/su);
+  assert.match(styles, /\.emptyState\s*\{[^}]*min-height:\s*250px;/su);
+  assert.match(workbench, /import \{ toast \} from 'sonner'/u);
+  assert.match(workbench, /toast\.success/u);
+  assert.match(workbench, /toast\.error/u);
+  assert.match(toaster, /import \{ toast, Toaster as Sonner \} from 'sonner'/u);
+  assert.match(toaster, /position="top-center"/u);
+  assert.match(toaster, /closeButton/u);
+  assert.match(layout, /<Toaster \/>/u);
 });
 
 test('image QA browser: blind queue, required return feedback, mandatory recheck and pass', {
@@ -57,7 +72,7 @@ test('image QA browser: blind queue, required return feedback, mandatory recheck
   try {
     await build({
       stdin: {
-        contents: "import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{ImageQaWorkbench}from'./app/image-qa/image-qa-workbench';createRoot(document.getElementById('root')).render(<ImageQaWorkbench role=\"REVIEWER\"/>);",
+        contents: "import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{Toaster}from'./components/ui/sonner';import{ImageQaWorkbench}from'./app/image-qa/image-qa-workbench';createRoot(document.getElementById('root')).render(<><ImageQaWorkbench role=\"REVIEWER\"/><Toaster/></>);",
         resolveDir: process.cwd(), loader: 'tsx',
       },
       bundle: true, outfile: bundle, jsx: 'automatic', platform: 'browser', conditions: ['style'],
@@ -109,6 +124,13 @@ test('image QA browser: blind queue, required return feedback, mandatory recheck
     await page.goto(`http://127.0.0.1:${server.address().port}`);
 
     await page.getByText('IQ-BLIND-ONE', { exact: true }).waitFor();
+    const overviewPresentation = await page.locator('[aria-label="图片质检概况"]').evaluate((element) => ({
+      columns: getComputedStyle(element).gridTemplateColumns.split(' ').length,
+      width: element.getBoundingClientRect().width,
+    }));
+    assert.equal(overviewPresentation.columns, 4);
+    assert.ok(overviewPresentation.width > 1000);
+    assert.equal(await page.getByRole('tab', { name: /待质检|已通过|已打回|全部记录/u }).count(), 4);
     assert.equal(await page.getByText('匿名', { exact: true }).count(), 1);
     assert.equal(await page.getByText('不应泄露的真实任务', { exact: false }).count(), 0);
     await page.getByRole('button', { name: '打回', exact: true }).click();
@@ -149,7 +171,25 @@ test('image QA browser: blind queue, required return feedback, mandatory recheck
     assert.equal(returned.reworkTarget, 'IMAGE');
     assert.match(returned.requestId, /^[a-f0-9-]{36}$/u);
     await page.getByRole('button', { name: '通过', exact: true }).click();
-    await page.getByText('当前筛选下没有图片质检项。', { exact: true }).waitFor();
+    await page.getByText('当前没有待质检任务', { exact: true }).waitFor();
+    const successFeedback = page.getByText('IQ-RECHECK 已通过；本冻结批次全部通过后才会整体进入交付池。', { exact: true });
+    await successFeedback.waitFor();
+    const successToast = successFeedback.locator('xpath=ancestor::*[@data-sonner-toast]');
+    assert.equal(await successToast.getAttribute('data-type'), 'success');
+    await page.waitForTimeout(450);
+    const toastBox = await successToast.boundingBox();
+    assert.ok(toastBox && toastBox.y >= 16 && toastBox.x >= 0 && toastBox.x + toastBox.width <= 1280,
+      `Sonner feedback must stay inside the viewport: ${JSON.stringify(toastBox)}`);
+    const emptyPresentation = await page.getByText('当前没有待质检任务', { exact: true }).locator('..').evaluate((element) => ({
+      height: element.getBoundingClientRect().height,
+      centered: getComputedStyle(element).textAlign,
+    }));
+    assert.ok(emptyPresentation.height >= 240 && emptyPresentation.height <= 330,
+      `empty queue should stay compact: ${JSON.stringify(emptyPresentation)}`);
+    assert.equal(emptyPresentation.centered, 'center');
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobileOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    assert.ok(mobileOverflow <= 1, `mobile page must not overflow horizontally: ${mobileOverflow}px`);
     assert.equal(passed.score, 3);
     assert.match(passed.requestId, /^[a-f0-9-]{36}$/u);
     assert.deepEqual(browserErrors, []);
