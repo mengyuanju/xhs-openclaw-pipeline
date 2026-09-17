@@ -169,6 +169,7 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       const adopted=await service.get(rejected.id);
       assert.equal(adopted.status,'ACCEPTED');assert.equal(adopted.result.adopted,true);
       assert.equal((await pool.query('SELECT status FROM image_runs WHERE id=$1',[adopted.result.image_run_id])).rows[0].status,'COMPLETED');
+      assert.equal((await service.asset(Number(adopted.result.asset_id),taskId)).asset_role,'DELIVERY');
       currentRun=adopted.result.image_run_id;currentAsset=Number(adopted.result.asset_id);currentHash=(await service.asset(currentAsset,taskId)).sha256;
     });
     await t.test('executor rejected-result upload is lease-bound and idempotent',async()=>{

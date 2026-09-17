@@ -513,6 +513,10 @@ test('image review fits the complete image, supports exterior controls, and pres
   assert.match(currentImageEditor, /'apply-suggestion':'采用建议并修改'/u);
   assert.match(currentImageEditor, /LOCAL_EDIT_SUGGESTION/u);
   assert.match(currentImageEditor, /系统已生成可执行描述/u);
+  assert.match(currentImageEditor, /验收未通过 · 结果已保留/u);
+  assert.match(currentImageEditor, /仍采用此结果/u);
+  assert.match(currentImageEditor, /acceptRejectedResult:true/u);
+  assert.match(currentImageEditor, /根据验收建议重试（可能再次收费）/u);
   assert.match(currentImageEditor, /\['QUEUED','RUNNING'\]\.includes\(edit\.status\)/u);
   assert.match(currentImageEditor, /后台仍保留取消记录用于审计/u);
   assert.match(reviewDialog, /asset=\{selectedAsset\} assets=\{assets\}/u);
