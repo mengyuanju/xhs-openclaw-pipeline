@@ -1952,7 +1952,7 @@ function installRoutes(
     const identity=imageEditExecutionIdentity(ctx);
     const context=await imageEditing.executorContext(identity.executionId,identity.editId,identity.leaseToken);
     json(ctx,200,{...context,source:imageEditExecutorAsset(context.source),
-      refs:context.refs.map(imageEditExecutorAsset)});
+      repairSource:imageEditExecutorAsset(context.repairSource),refs:context.refs.map(imageEditExecutorAsset)});
   });
   router.get('/v1/executions/:executionId/image-edit/assets/:assetId', async ctx => {
     const identity=imageEditExecutionIdentity(ctx);

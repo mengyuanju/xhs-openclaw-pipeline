@@ -359,7 +359,7 @@ export function AutoAssignmentPoolManager({
           <h2 id="auto-assignment-pool-title">自动分配人员池</h2>
           <p className="subtle">可选择持续补位或定量单次分配。新建用户默认不会加入自动分配池。</p>
           <div className="auto-assignment-summary" aria-label="自动分配状态摘要">
-            <span>待分配 <strong>{autoAssignableTaskCount}</strong></span>
+            <span>当前可分配 <strong>{autoAssignableTaskCount}</strong></span>
             <span title="仍在机器阶段或需要管理员处理">需人工关注 <strong>{manualAttentionTaskCount}</strong></span>
             <span>{assignmentMode === 'CONTINUOUS' ? '当前可补' : '配置单次数量'} <strong>{effectiveAssignmentCount}</strong></span>
             {assignmentMode === 'FIXED_QUANTITY' && <>
@@ -404,6 +404,13 @@ export function AutoAssignmentPoolManager({
 
       <ToastFeedback id="auto-assignment-pool-success" message={message} />
       <ToastFeedback id="auto-assignment-pool-error" message={error} tone="error" />
+      {initialSnapshot.settings.enabled && autoAssignableTaskCount === 0 && <div className="notice" role="status">
+        当前没有可分配的数据。
+        {manualAttentionTaskCount > 0 && <>当前 {manualAttentionTaskCount} 条需人工关注的任务不在自动分配队列中。</>}
+        {assignmentMode === 'FIXED_QUANTITY'
+          ? '待新任务进入未分配的待审核队列后，即可执行定量分配。'
+          : '待新任务进入未分配的待审核队列后，系统会按配置自动补位。'}
+      </div>}
 
       {initialSnapshot.workers.length === 0
         ? <div className="empty-state">人员池为空。请点击“加入作业员”明确选择需要自动接单的人员。</div>
@@ -416,6 +423,7 @@ export function AutoAssignmentPoolManager({
             const availability = workerAvailability(initialSnapshot.settings.enabled, assignmentMode, worker);
             const workerName = worker.displayName || worker.username;
             const allocationCount = workerAllocationCount(worker);
+            const currentlyAllocatableCount = Math.min(autoAssignableTaskCount, allocationCount);
             return <tr key={worker.username}>
               <td data-label="作业员"><div className="user-identity-cell">
                 <span className="user-avatar" aria-hidden="true">{[...workerName][0]?.toUpperCase() || '?'}</span>
@@ -438,7 +446,7 @@ export function AutoAssignmentPoolManager({
               <td data-label="分配规则"><span className={`pill ${availability.tone}`}>{availability.label}</span>
                 <div className="subtle">{assignmentMode === 'CONTINUOUS'
                   ? `待审核上限 ${worker.assignmentLimit} 条`
-                  : '只在管理员点击后执行一次'}</div>
+                  : `共享池当前 ${autoAssignableTaskCount} 条，本次最多可分配 ${currentlyAllocatableCount} 条`}</div>
               </td>
               <td className="row-action" data-label="操作"><div className="user-row-actions">
                 {assignmentMode === 'FIXED_QUANTITY' && <Button unstyled className="button small primary" type="button"

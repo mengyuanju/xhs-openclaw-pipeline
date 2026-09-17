@@ -119,7 +119,7 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
         sourceAssetId:Number(lowAsset.id),copyRevisionId:Number(lowRevision.id),sha256,targetPage:2,
         operation:'TEXT',confirmation:'LIVE_IMAGE_COST_ACCEPTED',overlay:{text:'AI生成',textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',position:'bottom-right'}},actor);
       const claims=await Promise.all([
-        repository.claimImage('edit-test',1,2,6),repository.claimImage('edit-test',1,2,6),
+        repository.claimImage('edit-test',1,2,7),repository.claimImage('edit-test',1,2,7),
       ]);assert.equal(claims.filter(Boolean).length,1);
       const executorClaim=claims.find(Boolean);
       assert.equal(executorClaim.imageEdit.id,first.id);
@@ -130,23 +130,23 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       await assert.rejects(()=>service.complete(executorClaim.imageEdit,{bytes:png,validation:{passed:true}}),{code:'IMAGE_EDIT_CONFLICT'});
       await action(lowEdit.id,'cancel');
     });
-    await t.test('paid appearance-reference edits wait for a version 6 image executor',async()=>{
+    await t.test('paid appearance-reference edits wait for a version 7 image executor',async()=>{
       const reference=await service.upload(taskId,{base64:png.toString('base64'),mediaType:'image/png',purpose:'外观参考',source:'测试自有照片'},actor);
       const appearanceEdit=await service.create(taskId,request({operation:'AI_FUSION',referenceMode:'APPEARANCE',
         instruction:'按主产品可见外观替换目标',references:[{assetId:reference.id,purpose:'真实产品替换'}],
         target:{description:'画面中央的产品',region:{x:300,y:400,width:480,height:600}}}),actor);
-      assert.equal(await repository.claimImage('edit-test',1,2,5),null);
-      const claim=await repository.claimImage('edit-test',1,2,6);
+      assert.equal(await repository.claimImage('edit-test',1,2,6),null);
+      const claim=await repository.claimImage('edit-test',1,2,7);
       assert.equal(claim.imageEdit.id,appearanceEdit.id);
-      assert.equal(claim.execution.snapshot.imageEditExecutorVersion,6);
+      assert.equal(claim.execution.snapshot.imageEditExecutorVersion,7);
       await action(appearanceEdit.id,'cancel');
     });
-    await t.test('natural-language local edits wait for a version 6 image executor',async()=>{
+    await t.test('natural-language local edits wait for a version 7 image executor',async()=>{
       const localEdit=await service.create(taskId,request({operation:'AI_LOCAL',instruction:'把右上角的白色杯子改为蓝色'}),actor);
-      assert.equal(await repository.claimImage('edit-test',1,2,5),null);
-      const claim=await repository.claimImage('edit-test',1,2,6);
+      assert.equal(await repository.claimImage('edit-test',1,2,6),null);
+      const claim=await repository.claimImage('edit-test',1,2,7);
       assert.equal(claim.imageEdit.id,localEdit.id);
-      assert.equal(claim.execution.snapshot.imageEditExecutorVersion,6);
+      assert.equal(claim.execution.snapshot.imageEditExecutorVersion,7);
       await action(localEdit.id,'cancel');
     });
     await t.test('a rejected generated result remains visible and can be adopted by explicit human choice',async()=>{
@@ -174,7 +174,7 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
     });
     await t.test('executor rejected-result upload is lease-bound and idempotent',async()=>{
       const rejected=await service.create(taskId,request(),actor);
-      const claim=await repository.claimImage('edit-test',1,2,6);
+      const claim=await repository.claimImage('edit-test',1,2,7);
       assert.equal(claim.imageEdit.id,rejected.id);
       const app=createControlPlaneApp({repository,storageRoot:root});
       const server=await new Promise(resolveServer=>{const listening=app.listen(0,'127.0.0.1',()=>resolveServer(listening));});
@@ -193,7 +193,7 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
     let edited;
     await t.test('executor transfer produces a validated preview without changing current run',async()=>{
       edited=await service.create(taskId,request(),actor);
-      const claim=await repository.claimImage('edit-test',1,2,6);
+      const claim=await repository.claimImage('edit-test',1,2,7);
       assert.equal(claim.imageEdit.id,edited.id);
       const app=createControlPlaneApp({repository,storageRoot:root});
       const server=await new Promise(resolveServer=>{const listening=app.listen(0,'127.0.0.1',()=>resolveServer(listening));});
@@ -311,6 +311,50 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       const event=(await pool.query("SELECT detail FROM image_edit_events WHERE edit_id=$1 AND action='apply-suggestion'",[suggested.id])).rows[0];
       assert.equal(event.detail.suggestedInstruction,suggestedInstruction);
       await action(suggested.id,'cancel');
+    });
+    await t.test('a user-approved targeted retry freezes the rejected preview and reduced repair region',async()=>{
+      const instruction='把右下角汤勺移动到锅的左侧，并保持半勺老抽倒入锅内';
+      const local=await service.create(taskId,request({operation:'AI_LOCAL',instruction}),actor);
+      const claimed=await service.claim('targeted-repair-source');
+      assert.equal(claimed.id,local.id);
+      const sourceRegion={x:830,y:960,width:256,height:488},destinationRegion={x:450,y:830,width:300,height:500};
+      const validation={stage:'LOCAL_EDIT_RESULT',passed:false,billedImageGeneration:true,
+        localization:{mode:'VISION_PROMPT_REGION_CHECK',operationType:'MOVE',targetDescription:'右下角汤勺和液流',
+          sourceAction:'清除右下角旧勺和液流',destinationAction:'在锅左侧重建同一把勺子',quantity:'半勺老抽',relationship:'液流落入锅内',
+          sourceRegion,destinationRegion,contactRegion:{x:560,y:1180,width:90,height:80},editRegions:[sourceRegion,destinationRegion],
+          touchesImageEdge:true,warnings:['贴边'],reason:'唯一目标',confidence:.96,checks:{}},
+        localConsistency:{passed:false,reason:'旧勺已删除，但左侧没有出现新勺和入锅液流',
+          failureCodes:['DESTINATION_OBJECT_MISSING','POUR_CONTACT_MISSING'],repairableFromRejected:true,
+          repairInstruction:'只在锅左侧补生成半勺老抽的汤勺，并让连续液流落入锅内',repairRegions:[destinationRegion],
+          checks:{requestedChangeCompleted:false,targetCountCorrect:false,placementAndRepairNatural:false,protectedTextPreserved:true,unrelatedContentPreserved:true},
+          repairAttempt:0,repairMaxAttempts:1}};
+      await service.fail(claimed,Object.assign(new Error('局部修改结果未通过验收'),{validation}),{bytes:localPng});
+      const failed=await service.get(local.id);
+      await assert.rejects(()=>action(local.id,'retry',{useRejectedPreview:true}),/重新确认费用/u);
+      const unsafeValidation=structuredClone(failed.result.validation);
+      unsafeValidation.localConsistency.checks.protectedTextPreserved=false;
+      unsafeValidation.localConsistency.failureCodes.push('PROTECTED_TEXT_CHANGED');
+      await pool.query('UPDATE image_edit_results SET validation=$2 WHERE request_id=$1',[local.id,unsafeValidation]);
+      await assert.rejects(()=>action(local.id,'retry',{useRejectedPreview:true,confirmation:'LIVE_IMAGE_COST_ACCEPTED'}),/不能安全局部补救/u);
+      await pool.query('UPDATE image_edit_results SET validation=$2 WHERE request_id=$1',[local.id,failed.result.validation]);
+      const queued=await action(local.id,'retry',{useRejectedPreview:true,confirmation:'LIVE_IMAGE_COST_ACCEPTED'});
+      assert.equal(queued.status,'QUEUED');assert.equal(queued.config.localRepair.attempt,1);
+      assert.equal(queued.config.localRepair.baseAssetId,Number(failed.result.asset_id));
+      assert.deepEqual(queued.config.localRepair.failureCodes,['DESTINATION_OBJECT_MISSING','POUR_CONTACT_MISSING']);
+      assert.deepEqual(queued.config.localRepair.repairRegions,[destinationRegion]);
+      const repairClaim=await repository.claimImage('edit-test',1,2,7);
+      assert.equal(repairClaim.imageEdit.id,local.id);
+      const app=createControlPlaneApp({repository,storageRoot:root});
+      const server=await new Promise(resolveServer=>{const listening=app.listen(0,'127.0.0.1',()=>resolveServer(listening));});
+      try {
+        const control=createControlPlaneClient({baseUrl:`http://127.0.0.1:${server.address().port}`});
+        const context=await control.imageEditContext(repairClaim.execution.id,repairClaim.imageEdit);
+        assert.equal(Number(context.repairSource.id),Number(failed.result.asset_id));
+        assert.equal((await control.imageEditAsset(repairClaim.execution.id,repairClaim.imageEdit,Number(context.repairSource.id))).equals(localPng),true);
+      } finally { await new Promise(close=>server.close(close));await app.context.disposeControlPlaneResources?.(); }
+      const event=(await pool.query("SELECT detail FROM image_edit_events WHERE edit_id=$1 AND action='retry' ORDER BY id DESC LIMIT 1",[local.id])).rows[0];
+      assert.equal(event.detail.targetedRepair,true);assert.equal(event.detail.attempt,1);
+      await action(local.id,'cancel');
     });
     await t.test('failures can retry, rejection leaves current image untouched, restore needs preview acceptance',async()=>{
       const restore=await service.create(taskId,request({operation:'RESTORE',restoreRunId:runId,instruction:'恢复'}),actor);

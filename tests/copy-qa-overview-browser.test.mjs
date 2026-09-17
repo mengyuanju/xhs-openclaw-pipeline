@@ -23,7 +23,7 @@ function copyQaItem(index) {
   };
 }
 
-test('copy QA overview browser: desktop uses a bounded two-column workspace and mobile does not overflow', {
+test('copy QA overview browser: every workspace tab uses the full panel and mobile does not overflow', {
   skip: process.env.RUN_COPY_QA_OVERVIEW_BROWSER !== '1', timeout: 60_000,
 }, async () => {
   const { build } = await import('esbuild');
@@ -72,17 +72,18 @@ test('copy QA overview browser: desktop uses a bounded two-column workspace and 
     const browserErrors = [];
     page.on('pageerror', (error) => browserErrors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.address().port}`);
-    await page.getByRole('tab', { name: '数据概览', exact: true }).waitFor();
+    await page.getByRole('tab', { name: /质检队列/u }).waitFor();
     await page.getByText('QC-0001', { exact: true }).waitFor();
 
-    assert.equal(await page.getByRole('tab', { name: '数据概览', exact: true }).getAttribute('aria-selected'), 'true');
+    assert.equal(await page.getByRole('tab', { name: /质检队列/u }).getAttribute('aria-selected'), 'true');
+    await page.getByRole('tab', { name: '数据概览', exact: true }).click();
     assert.equal(await page.getByLabel('质检数据概览').isVisible(), true);
     await page.getByRole('tab', { name: '作业人员', exact: true }).click();
     await page.getByLabel('文案质检作业人员数据，可滚动查看').waitFor();
     assert.equal(await page.getByText('审核员 1', { exact: true }).isVisible(), true);
-    await page.getByRole('tab', { name: '说明', exact: true }).click();
+    await page.getByRole('tab', { name: '规则说明', exact: true }).click();
     await page.getByRole('heading', { name: '质检类型与状态变化', exact: true }).waitFor();
-    await page.getByRole('tab', { name: '数据概览', exact: true }).click();
+    await page.getByRole('tab', { name: /质检队列/u }).click();
 
     const firstQueueRow = page.getByText('QC-0001', { exact: true }).locator('xpath=ancestor::tr');
     const [viewButton, passButton, returnButton] = await Promise.all([
@@ -97,16 +98,18 @@ test('copy QA overview browser: desktop uses a bounded two-column workspace and 
       'primary and return actions use the same stable column');
 
     const desktop = await page.evaluate(() => {
-      const insight = document.querySelector('[aria-label="质检数据与作业人员"]');
-      const workspace = insight?.parentElement;
+      const workbench = document.querySelector('[aria-label="质检数据与作业人员"]');
+      const activePanel = document.querySelector('[role="tabpanel"][data-state="active"]');
       const queue = document.querySelector('[aria-label="待质检队列，可横向滚动"]');
       return {
-        workspaceColumns: workspace ? getComputedStyle(workspace).gridTemplateColumns.split(' ').length : 0,
+        workbenchWidth: workbench?.getBoundingClientRect().width ?? 0,
+        activePanelWidth: activePanel?.getBoundingClientRect().width ?? 0,
         queueScrolls: queue ? queue.scrollHeight > queue.clientHeight : false,
         horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
       };
     });
-    assert.equal(desktop.workspaceColumns, 2);
+    assert.ok(desktop.workbenchWidth > 1400, 'the tabbed workbench uses the desktop content width');
+    assert.ok(Math.abs(desktop.workbenchWidth - desktop.activePanelWidth) <= 4, `the active tab fills the workbench width: ${JSON.stringify(desktop)}`);
     assert.equal(desktop.queueScrolls, true);
     assert.equal(desktop.horizontalOverflow, false);
     if (process.env.COPY_QA_OVERVIEW_SCREENSHOT) {
@@ -115,11 +118,10 @@ test('copy QA overview browser: desktop uses a bounded two-column workspace and 
 
     await page.setViewportSize({ width: 390, height: 844 });
     const mobile = await page.evaluate(() => {
-      const insight = document.querySelector('[aria-label="质检数据与作业人员"]');
+      const workbench = document.querySelector('[aria-label="质检数据与作业人员"]');
       return {
         horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
-        workspaceColumns: getComputedStyle(insight?.parentElement).gridTemplateColumns.split(' ').length,
-        insightBounds: insight ? { rect: insight.getBoundingClientRect().toJSON(), clientWidth: insight.clientWidth, scrollWidth: insight.scrollWidth, overflow: getComputedStyle(insight).overflow } : null,
+        workbenchBounds: workbench ? { rect: workbench.getBoundingClientRect().toJSON(), clientWidth: workbench.clientWidth, scrollWidth: workbench.scrollWidth, overflow: getComputedStyle(workbench).overflow } : null,
         offenders: Array.from(document.querySelectorAll('body *')).flatMap((element) => {
         const box = element.getBoundingClientRect();
         return box.right > document.documentElement.clientWidth + 1
@@ -128,8 +130,7 @@ test('copy QA overview browser: desktop uses a bounded two-column workspace and 
         }).slice(0, 10),
       };
     });
-    assert.equal(mobile.workspaceColumns, 1);
-    assert.equal(mobile.horizontalOverflow, false, JSON.stringify({ bounds: mobile.insightBounds, offenders: mobile.offenders }));
+    assert.equal(mobile.horizontalOverflow, false, JSON.stringify({ bounds: mobile.workbenchBounds, offenders: mobile.offenders }));
     assert.deepEqual(browserErrors, []);
   } finally {
     await browser?.close();

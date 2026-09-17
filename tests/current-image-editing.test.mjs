@@ -206,7 +206,7 @@ test('AI local worker localizes the operator prompt and protects every pixel out
   let completed,calls=0,visionCalls=0;
   const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_LOCAL',config}),context:async()=>({source:{},refs:[],settings:{aiDisclosureEnabled:false},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),readAsset:async()=>source,
     fail:async(e,error)=>assert.fail(error.message),complete:async(e,result)=>{completed=result;return{};}};
-  const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{calls++;assert.equal(inputPaths.length,2);assert.match(prompt,/LOCAL_MASK_EDIT/u);assert.match(prompt,/画面右上角的水杯/u);assert.match(prompt,/根据自然语言编辑规划生成/u);assert.match(inputPaths[1],/mask\.png$/u);await writeFile(outputPath,generated);return{model:'fake-prompt-local'};},
+  const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{calls++;assert.equal(inputPaths.length,3);assert.match(prompt,/LOCAL_MASK_EDIT/u);assert.match(prompt,/画面右上角的水杯/u);assert.match(prompt,/根据自然语言编辑规划生成/u);assert.match(prompt,/语义位置图/u);assert.match(inputPaths[1],/local-role-guide\.png$/u);assert.match(inputPaths[2],/mask\.png$/u);await writeFile(outputPath,generated);return{model:'fake-prompt-local'};},
     runVision:async({prompt,inputPaths})=>{visionCalls++;
       if(prompt.includes('编辑规划器')){assert.equal(inputPaths.length,1);return{model:'fake-planner',rawText:JSON.stringify({decision:'READY',confidence:0.94,candidateCount:1,operationType:'ADJUST',targetDescription:'右上角水杯',touchesImageEdge:false,missingPartsRequiredForEdit:false,sourceRegion:{x:700,y:180,width:220,height:260},destinationRegion:null,editRegions:[{x:700,y:180,width:220,height:260}],suggestedInstruction:'',warnings:[],reason:'唯一目标',checks:{instructionSpecific:true,exactlyOneTarget:true,wholeVisibleTargetInsideRegion:true,protectedTextExcluded:true,editRegionSafe:true}})};}
       assert.match(prompt,/局部图片编辑验收器/u);assert.equal(inputPaths.length,2);return{model:'fake-result-check',rawText:JSON.stringify(localResultPass())};}};
@@ -272,7 +272,7 @@ test('an accepted local suggestion reuses its plan, edits multiple regions, and 
   let completed,imageCalls=0,visionCalls=0;
   const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_LOCAL',config}),context:async()=>({source:{},refs:[],settings:{aiDisclosureEnabled:false},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),readAsset:async()=>source,
     fail:async(_edit,error)=>assert.fail(error.message),complete:async(_edit,result)=>{completed=result;return{};}};
-  const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{imageCalls++;assert.equal(inputPaths.length,2);assert.match(prompt,/汤勺和液流移动到锅的左上方/u);assert.match(prompt,/一个或多个白色区域/u);await writeFile(outputPath,generated);return{model:'fake-local-edit'};},
+  const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{imageCalls++;assert.equal(inputPaths.length,3);assert.match(prompt,/汤勺和液流移动到锅的左上方/u);assert.match(prompt,/一个或多个白色区域/u);assert.match(prompt,/只删除原目标不算完成/u);assert.match(inputPaths[1],/local-role-guide\.png$/u);assert.match(inputPaths[2],/mask\.png$/u);await writeFile(outputPath,generated);return{model:'fake-local-edit'};},
     runVision:async({prompt,inputPaths})=>{visionCalls++;assert.doesNotMatch(prompt,/编辑规划器/u);assert.match(prompt,/局部图片编辑验收器/u);assert.equal(inputPaths.length,2);return{model:'fake-result-check',rawText:JSON.stringify(localResultPass())};}};
   const dir=await mkdtemp(join(tmpdir(),'image-edit-accepted-suggestion-'));
   try{const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});assert.equal(result.status,'PREVIEW_READY');assert.equal(imageCalls,1);assert.equal(visionCalls,1);assert.equal(completed.validation.localization.adoptedSuggestion,true);assert.equal(completed.validation.localization.editRegions.length,2);assert.equal(completed.validation.localConsistency.passed,true);assert.equal(completed.validation.outsideMask.changedPixels,0);}finally{await rm(dir,{recursive:true,force:true});}
@@ -280,7 +280,7 @@ test('an accepted local suggestion reuses its plan, edits multiple regions, and 
 test('a generated image that fails result validation is returned as a rejected preview',async()=>{
   const source=await png('red'),generated=await png('blue');
   const instruction='把右下角汤勺移动到锅的左侧，并保持液流倒入锅内';
-  const config={imageEditPrompt,references:[],instruction,preserve:'保留其他区域',negative:'不得改写文字',mask:null,localPlan:{accepted:true,
+  const config={imageEditPrompt,imageEditRepairMaxAttempts:2,references:[],instruction,preserve:'保留其他区域',negative:'不得改写文字',mask:null,localPlan:{accepted:true,
     originalInstruction:instruction,suggestedInstruction:instruction,sourceRegion:{x:850,y:980,width:236,height:468},destinationRegion:{x:470,y:850,width:260,height:460},
     editRegions:[{x:830,y:960,width:256,height:488},{x:450,y:830,width:300,height:500}],operationType:'MOVE',touchesImageEdge:true,
     targetDescription:'右下角汤勺和液流',warnings:['贴边'],reason:'采用模型建议',confidence:0.96,checks:{}}};
@@ -288,12 +288,43 @@ test('a generated image that fails result validation is returned as a rejected p
   const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_LOCAL',config}),context:async()=>({source:{},refs:[],settings:{aiDisclosureEnabled:false},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),readAsset:async()=>source,
     fail:async(_edit,error,preview)=>{rejected={error,preview};},complete:()=>assert.fail('must not complete')};
   const agentClient={runImageEdit:async({outputPath})=>{await writeFile(outputPath,generated);return{model:'fake-local-edit'};},
-    runVision:async()=>({model:'fake-result-check',rawText:JSON.stringify({passed:false,reason:'原目标被删除，但没有在目标位置重新出现',checks:{requestedChangeCompleted:false,targetCountCorrect:false,placementAndRepairNatural:false,protectedTextPreserved:true,unrelatedContentPreserved:true}})})};
+    runVision:async()=>({model:'fake-result-check',rawText:JSON.stringify({passed:false,reason:'原目标被删除，但没有在目标位置重新出现',
+      failureCodes:['DESTINATION_OBJECT_MISSING','POUR_CONTACT_MISSING'],repairInstruction:'只在锅左侧补生成汤勺和入锅液流',
+      repairRegions:[{x:450,y:830,width:300,height:500}],
+      checks:{requestedChangeCompleted:false,targetCountCorrect:false,placementAndRepairNatural:false,protectedTextPreserved:true,unrelatedContentPreserved:true}})})};
   const dir=await mkdtemp(join(tmpdir(),'image-edit-rejected-preview-'));
   try {
     const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});
     assert.equal(result.status,'FAILED');assert.ok(Buffer.isBuffer(rejected.preview.bytes));assert.ok(rejected.preview.bytes.length>0);
     assert.equal(rejected.error.validation.billedImageGeneration,true);assert.equal(rejected.error.validation.localConsistency.passed,false);
+    assert.deepEqual(rejected.error.validation.localConsistency.failureCodes,['DESTINATION_OBJECT_MISSING','POUR_CONTACT_MISSING']);
+    assert.equal(rejected.error.validation.localConsistency.repairableFromRejected,true);
+    assert.deepEqual(rejected.error.validation.localConsistency.repairRegions,[{x:450,y:830,width:300,height:500}]);
+  } finally { await rm(dir,{recursive:true,force:true}); }
+});
+test('a user-approved repair edits the rejected preview only inside the reduced destination region',async()=>{
+  const original=await png('red'),rejected=await png('green'),generated=await png('blue');
+  const instruction='把右下角汤勺移动到锅的左侧，并保持半勺老抽倒入锅内';
+  const plan={operationType:'MOVE',targetDescription:'右下角汤勺和液流',sourceAction:'清除右下角旧勺和液流',
+    destinationAction:'在锅左侧重建同一把勺子',quantity:'半勺老抽',relationship:'液流连续落入锅内',
+    sourceRegion:{x:850,y:980,width:236,height:468},destinationRegion:{x:470,y:850,width:260,height:460},
+    contactRegion:{x:560,y:1180,width:90,height:80},editRegions:[{x:830,y:960,width:256,height:488},{x:450,y:830,width:300,height:500}],
+    touchesImageEdge:true,warnings:['贴边'],reason:'原计划',confidence:.96,checks:{}};
+  const config={imageEditPrompt,imageEditRepairMaxAttempts:2,references:[],instruction,preserve:'保留其他区域',negative:'不得改写文字',mask:null,
+    localRepair:{attempt:1,originalInstruction:instruction,failureCodes:['DESTINATION_OBJECT_MISSING','POUR_CONTACT_MISSING'],
+      repairInstruction:'只在锅左侧补生成半勺老抽的汤勺，并让连续液流落入锅内',repairRegions:[{x:450,y:830,width:300,height:500}],plan}};
+  let completed,imageInputs,validationInputs;
+  const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_LOCAL',config}),
+    context:async()=>({source:{id:1},repairSource:{id:2},refs:[],settings:{aiDisclosureEnabled:false},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),
+    readAsset:async asset=>asset.id===2?rejected:original,fail:(_edit,error)=>assert.fail(error.message),complete:async(_edit,result)=>{completed=result;return{};}};
+  const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{imageInputs=inputPaths;assert.equal(inputPaths.length,4);assert.match(prompt,/上次自动验收未通过的结果/u);assert.match(prompt,/只在锅左侧补生成半勺老抽/u);assert.match(inputPaths[1],/original-source\.png$/u);assert.match(inputPaths[2],/local-role-guide\.png$/u);assert.match(inputPaths[3],/mask\.png$/u);await writeFile(outputPath,generated);return{model:'fake-repair'};},
+    runVision:async({inputPaths})=>{validationInputs=inputPaths;return{model:'fake-result-check',rawText:JSON.stringify(localResultPass())};}};
+  const dir=await mkdtemp(join(tmpdir(),'image-edit-targeted-repair-'));
+  try {
+    const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});
+    assert.equal(result.status,'PREVIEW_READY');assert.equal(imageInputs.length,4);assert.equal(validationInputs.length,3);
+    assert.equal(completed.validation.repairAttempt,1);assert.equal(completed.validation.repairMaxAttempts,2);
+    assert.equal(completed.validation.localization.rejectedPreviewRepair,true);assert.equal(completed.validation.outsideMask.changedPixels,0);
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
 test('ambiguous natural-language targets fail before the paid image model',async()=>{

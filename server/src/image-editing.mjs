@@ -88,7 +88,7 @@ export function imageAssetIds(result) {
 }
 function requestEditConfig(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) return config;
-  const { imageEditRepairMaxAttempts: _frozenRepairLimit, imageEditPrompt: _frozenPrompt, localPlan, ...requestConfig } = config;
+  const { imageEditRepairMaxAttempts: _frozenRepairLimit, imageEditPrompt: _frozenPrompt, localPlan, localRepair: _localRepair, ...requestConfig } = config;
   return localPlan?.originalInstruction?{...requestConfig,instruction:localPlan.originalInstruction}:requestConfig;
 }
 const rectContains=(outer,inner)=>inner.x>=outer.x&&inner.y>=outer.y
@@ -100,17 +100,70 @@ function localSuggestionPlan(validation,originalInstruction) {
   const destinationRegion=validation.destinationRegion?safeRect(validation.destinationRegion):null;
   if(!Array.isArray(validation.editRegions)||validation.editRegions.length<1||validation.editRegions.length>4)throw new TypeError('局部修改建议区域无效');
   const editRegions=validation.editRegions.map(region=>safeRect(region));
+  const contactRegion=validation.contactRegion?safeRect(validation.contactRegion):null;
   if(editRegions.some(region=>region.width<24||region.height<24)
     ||!editRegions.some(region=>rectContains(region,sourceRegion))
-    ||(destinationRegion&&!editRegions.some(region=>rectContains(region,destinationRegion))))throw new TypeError('局部修改建议区域无效');
+    ||(destinationRegion&&!editRegions.some(region=>rectContains(region,destinationRegion)))
+    ||(contactRegion&&!editRegions.some(region=>rectContains(region,contactRegion))))throw new TypeError('局部修改建议区域无效');
   const operationType=String(validation.operationType??'ADJUST').toUpperCase();
   if(!['ADJUST','MOVE','REMOVE','REPLACE','BACKGROUND'].includes(operationType))throw new TypeError('局部修改建议类型无效');
   return {accepted:true,originalInstruction:shortText(originalInstruction,2000),suggestedInstruction:shortText(validation.suggestedInstruction,2000),
     sourceRegion,destinationRegion,editRegions,operationType,touchesImageEdge:validation.touchesImageEdge===true,
     targetIsAiDisclosure:validation.targetIsAiDisclosure===true,targetDescription:shortText(validation.targetDescription??'',500,false),
+    sourceAction:shortText(validation.sourceAction??'',500,false),destinationAction:shortText(validation.destinationAction??'',500,false),
+    quantity:shortText(validation.quantity??'',500,false),relationship:shortText(validation.relationship??'',500,false),
+    contactRegion,
     warnings:Array.isArray(validation.warnings)?validation.warnings.filter(value=>typeof value==='string').slice(0,8).map(value=>value.slice(0,300)):[],
     reason:shortText(validation.reason??'',1000,false),confidence:typeof validation.confidence==='number'?validation.confidence:0,
     checks:validation.checks??{},model:typeof validation.model==='string'?validation.model:null};
+}
+const LOCAL_REPAIR_FAILURE_CODES=new Set(['SOURCE_NOT_CLEARED','DESTINATION_OBJECT_MISSING','QUANTITY_INCORRECT',
+  'POUR_CONTACT_MISSING','TARGET_COUNT_INCORRECT','PLACEMENT_OR_RELATIONSHIP_INCORRECT','REQUESTED_CHANGE_INCOMPLETE']);
+function rejectedLocalRepairPlan(edit,result) {
+  if(edit.operation!=='AI_LOCAL'||!result?.validation||result.validation.stage!=='LOCAL_EDIT_RESULT') {
+    conflict('当前失败结果不能基于失败图定向修复，请调整说明后从原图重试');
+  }
+  const validation=result.validation,local=validation.localConsistency,localization=validation.localization;
+  const rawFailureCodes=Array.isArray(local?.failureCodes)?local.failureCodes:[];
+  const failureCodes=[...new Set(rawFailureCodes.filter(code=>typeof code==='string'))];
+  if(local?.repairableFromRejected!==true||local?.checks?.protectedTextPreserved!==true
+    ||local?.checks?.unrelatedContentPreserved!==true||!failureCodes.length
+    ||failureCodes.length!==rawFailureCodes.length||failureCodes.some(code=>!LOCAL_REPAIR_FAILURE_CODES.has(code))
+    ||!localization||typeof localization!=='object'||Array.isArray(localization)) {
+    conflict('当前失败结果不能安全局部补救，请调整说明后从原图重试');
+  }
+  const repairRegions=Array.isArray(local.repairRegions)?local.repairRegions.map(safeRect):[];
+  const allowedRegions=Array.isArray(localization.editRegions)?localization.editRegions.map(safeRect):[];
+  if(!repairRegions.length||repairRegions.length>4||!allowedRegions.length
+    ||repairRegions.some(region=>!allowedRegions.some(allowed=>rectContains(allowed,region)))) {
+    conflict('失败结果的定向修复区域无效，请调整说明后从原图重试');
+  }
+  const sourceRegion=safeRect(localization.sourceRegion??localization.region);
+  const destinationRegion=localization.destinationRegion?safeRect(localization.destinationRegion):null;
+  const contactRegion=localization.contactRegion?safeRect(localization.contactRegion):null;
+  if(!allowedRegions.some(region=>rectContains(region,sourceRegion))
+    ||(destinationRegion&&!allowedRegions.some(region=>rectContains(region,destinationRegion)))
+    ||(contactRegion&&!allowedRegions.some(region=>rectContains(region,contactRegion)))) {
+    conflict('失败结果的原始编辑规划无效，请调整说明后从原图重试');
+  }
+  const maxAttempts=normalizeImageEditRepairMaxAttempts(edit.config.imageEditRepairMaxAttempts);
+  const attempt=Number(edit.config.localRepair?.attempt??0)+1;
+  if(attempt>maxAttempts)conflict('已达到定向修复次数上限，请人工采用结果或创建新的修改请求');
+  const assetId=normalizeTaskId(result.asset_id);
+  const sha256=String(validation.integrity?.sha256??'');
+  if(!/^[a-f0-9]{64}$/u.test(sha256))conflict('失败预览完整性记录无效，不能作为修复起点');
+  return {attempt,maxAttempts,baseAssetId:assetId,baseSha256:sha256,
+    originalInstruction:shortText(edit.config.localRepair?.originalInstruction??edit.config.instruction,2000),
+    failureCodes,repairInstruction:shortText(local.repairInstruction,2000),repairRegions,
+    validationReason:shortText(local.reason??edit.error??'',1000,false),
+    plan:{operationType:String(localization.operationType??'ADJUST').slice(0,50),
+      targetDescription:shortText(localization.targetDescription??'',500,false),sourceAction:shortText(localization.sourceAction??'',500,false),
+      destinationAction:shortText(localization.destinationAction??'',500,false),quantity:shortText(localization.quantity??'',500,false),
+      relationship:shortText(localization.relationship??'',500,false),sourceRegion,destinationRegion,
+      contactRegion,editRegions:allowedRegions,
+      touchesImageEdge:localization.touchesImageEdge===true,targetIsAiDisclosure:localization.targetIsAiDisclosure===true,
+      warnings:Array.isArray(localization.warnings)?localization.warnings.slice(0,8):[],reason:shortText(localization.reason??'',1000,false),
+      confidence:typeof localization.confidence==='number'?localization.confidence:1,checks:localization.checks??{},model:localization.model??null}};
 }
 async function publishedImageEditPrompt(client, { required = true } = {}) {
   const row = (await client.query(`
@@ -224,10 +277,16 @@ export function createImageEditingService({ pool, storageRoot }) {
     if(e.operation==='RESTORE' && !restored) conflict('仅能恢复当前已批准文案对应的历史图集');
     const usesImageModel=e.operation==='TEXT'||e.operation.startsWith('AI_');
     const imageEditPrompt=e.config.imageEditPrompt??(usesImageModel?await publishedImageEditPrompt(c):null);
+    let repairSource=null;
+    if(e.config.localRepair) {
+      repairSource=(await c.query("SELECT * FROM assets WHERE id=$1 AND task_id=$2 AND sha256=$3 AND asset_role='REJECTED_PREVIEW'",
+        [e.config.localRepair.baseAssetId,e.task_id,e.config.localRepair.baseSha256])).rows[0]??null;
+      if(!repairSource)conflict('失败预览已变化或不可用，不能继续定向修复');
+    }
     const page=Number(e.target_page);
     const run={...source.run,result:imageResultScopedToPage(source.run.result,page)};
     const executorSettings=imageSettingsScopedToPage(settings,source.run.result,page);
-    return {...source,run,refs,settings:executorSettings,restored,imageEditPrompt};
+    return {...source,run,refs,settings:executorSettings,restored,imageEditPrompt,repairSource};
   }
   async function get(id) {
     const row=(await pool.query(`SELECT e.*,row_to_json(r) AS result,
@@ -247,6 +306,7 @@ export function createImageEditingService({ pool, storageRoot }) {
         const e=await lockedExecutorEdit(c,executionId,editId,leaseToken);
         const context=await loadContext(c,e);
         const allowed=new Set([Number(context.source.id),...context.refs.map(asset=>Number(asset.id))]);
+        if(context.repairSource)allowed.add(Number(context.repairSource.id));
         if(context.restored)for(const image of context.restored.result?.images??[]) {
           const id=Number(image.deliveryAssetId??image.assetId);
           if(Number.isSafeInteger(id))allowed.add(id);
@@ -396,6 +456,9 @@ export function createImageEditingService({ pool, storageRoot }) {
         const usesBillableModel=e.operation==='TEXT'||e.operation.startsWith('AI_');
         const confirmsCost=e.config?.confirmation==='LIVE_IMAGE_COST_ACCEPTED'||input.confirmation==='LIVE_IMAGE_COST_ACCEPTED';
         if(['queue','retry','apply-suggestion'].includes(action)&&usesBillableModel&&!confirmsCost) throw new TypeError('请确认图片编辑或视觉校验模型费用');
+        if(action==='retry'&&input.useRejectedPreview===true&&input.confirmation!=='LIVE_IMAGE_COST_ACCEPTED') {
+          throw new TypeError('基于失败图定向修复会再次调用图片模型，请重新确认费用');
+        }
         const editSource=['queue','retry','apply-suggestion','accept'].includes(action)
           ? await assertEditSource(c,Number(e.task_id),e.config,{allowCompatibleCurrentRun:true})
           : null;
@@ -437,6 +500,19 @@ export function createImageEditingService({ pool, storageRoot }) {
         const next={queue:'QUEUED',retry:'QUEUED','apply-suggestion':'QUEUED',cancel:'CANCELLED',reject:'REJECTED',accept:'ACCEPTED'}[action];
         let config=usesBillableModel&&input.confirmation==='LIVE_IMAGE_COST_ACCEPTED'?{...e.config,confirmation:'LIVE_IMAGE_COST_ACCEPTED'}:e.config;
         let auditDetail=acceptedRejectedPreview?{acceptedRejectedPreview:true,validationPassed:false}:{};
+        if(action==='retry') {
+          if(input.useRejectedPreview===true) {
+            const result=(await c.query('SELECT * FROM image_edit_results WHERE request_id=$1',[e.id])).rows[0];
+            const localRepair=rejectedLocalRepairPlan(e,result);
+            config={...config,localRepair};
+            auditDetail={targetedRepair:true,baseAssetId:localRepair.baseAssetId,attempt:localRepair.attempt,
+              failureCodes:localRepair.failureCodes,repairInstruction:localRepair.repairInstruction,
+              repairRegions:localRepair.repairRegions};
+          } else if(config.localRepair) {
+            const {localRepair:_discardedRepair,...originalRetryConfig}=config;
+            config=originalRetryConfig;
+          }
+        }
         if(action==='apply-suggestion') {
           const plan=localSuggestionPlan(e.validation,e.config.instruction);
           config={...config,instruction:plan.suggestedInstruction,

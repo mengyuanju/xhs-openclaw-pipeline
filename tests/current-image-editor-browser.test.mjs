@@ -24,8 +24,11 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
         edits=[{id:failedEditId,version:3,status:'FAILED',operation:'AI_LOCAL',source_asset_id:1,target_page:1,created_by:'operator',
           config:{instruction:'把右下角汤勺移动到锅的左侧，并保持少量老抽倒入锅内',confirmation:'LIVE_IMAGE_COST_ACCEPTED'},
           error:'局部修改结果未通过验收：汤勺被删除但没有在左侧重新出现',
-          result:{asset_id:17,image_run_id:randomUUID(),validation:{passed:false,billedImageGeneration:true,
-            localConsistency:{passed:false,reason:'汤勺被删除，但没有在左侧重新出现，也没有形成老抽倒入锅内的接触关系。'}}}},...edits];
+          result:{asset_id:17,image_run_id:randomUUID(),validation:{stage:'LOCAL_EDIT_RESULT',passed:false,billedImageGeneration:true,
+            localConsistency:{passed:false,reason:'汤勺被删除，但没有在左侧重新出现，也没有形成老抽倒入锅内的接触关系。',
+              repairableFromRejected:true,failureCodes:['DESTINATION_OBJECT_MISSING','POUR_CONTACT_MISSING'],
+              repairInstruction:'只在锅左侧补生成半勺老抽的汤勺，并让连续液流落入锅内',repairRegions:[{x:430,y:810,width:340,height:540}],repairAttempt:0,repairMaxAttempts:2}}}},
+          ...edits.filter(edit=>edit.id!==failedEditId)];
         res.setHeader('content-type','application/json');res.end(JSON.stringify({ok:true}));return;
       }
       if(req.url?.startsWith('/api/')){
@@ -34,7 +37,7 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
         if(req.method==='POST'&&req.url.endsWith('/image-edit-references')){res.setHeader('content-type','application/json');res.end(JSON.stringify({data:{id:9,sha256:'b'.repeat(64),url:'/v1/assets/9'}}));return;}
         let response;
         if(req.method==='POST'&&req.url.endsWith('/image-edits')){submitted=data;submissions.push(data);const needsSuggestion=!data.draft&&data.operation==='AI_LOCAL'&&data.instruction.includes('一勺老抽');const suggestion=needsSuggestion?{stage:'LOCAL_EDIT_SUGGESTION',decision:'SUGGEST',canEdit:true,confidence:.96,candidateCount:1,operationType:'MOVE',targetDescription:'右下角汤勺和液流',touchesImageEdge:true,sourceRegion:{x:910,y:965,width:176,height:483},destinationRegion:{x:470,y:850,width:260,height:460},editRegions:[{x:890,y:940,width:196,height:508},{x:430,y:810,width:340,height:540}],suggestedInstruction:'将右下角汤勺和液流移动到锅的左侧，把勺中老抽减少为半勺，保持液流落入锅内并自然修复原位置；不要修改文字和其他内容。',reason:'目标唯一，但原说明需要明确落点与原位置修复。'}:null;const row={id:data.batchId?randomUUID():editId,version:1,status:needsSuggestion?'FAILED':data.draft?'DRAFT':'PREVIEW_READY',operation:data.operation,source_asset_id:data.sourceAssetId,target_page:data.targetPage,config:{instruction:data.instruction,confirmation:data.confirmation,batchId:data.batchId},...(needsSuggestion?{validation:suggestion,error:'已生成更适合图片编辑的描述，请确认采用后再调用图片编辑模型'}:data.draft?{}:{result:{asset_id:data.sourceAssetId+10,image_run_id:randomUUID(),validation:{passed:true}}})};edits=data.batchId?[row,...edits]:[row];response=row;}
-        else if(req.method==='POST'){actions.push({url:req.url,data});const targetId=req.url.split('/').at(-2);edits=edits.map(e=>e.id===targetId?{...e,status:req.url.endsWith('/accept')?'ACCEPTED':req.url.endsWith('/apply-suggestion')?'QUEUED':'CANCELLED',version:2,...(req.url.endsWith('/apply-suggestion')?{config:{...e.config,instruction:e.validation.suggestedInstruction}}:{})}:e);response=edits.find(e=>e.id===targetId);}
+        else if(req.method==='POST'){actions.push({url:req.url,data});const targetId=req.url.split('/').at(-2);edits=edits.map(e=>e.id===targetId?{...e,status:req.url.endsWith('/accept')?'ACCEPTED':req.url.endsWith('/apply-suggestion')||req.url.endsWith('/retry')?'QUEUED':'CANCELLED',version:e.version+1,...(req.url.endsWith('/apply-suggestion')?{config:{...e.config,instruction:e.validation.suggestedInstruction}}:{})}:e);response=edits.find(e=>e.id===targetId);}
         res.setHeader('content-type','application/json');res.end(JSON.stringify({data:req.method==='GET'?edits:response}));return;
       }
       res.setHeader('content-type','text/html');res.end('<html><meta charset="utf-8"><link rel="stylesheet" href="/bundle.css"><style>[data-slot="dialog-content"]{translate:-50% -50%}</style><body><div id="root"></div><script src="/bundle.js"></script></body></html>');
@@ -137,7 +140,17 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     await page.getByText('局部修改 · 验收未通过 · 结果已保留',{exact:true}).waitFor({timeout:6000});
     const rejectedCard=page.getByRole('region',{name:'自动验收未通过的结果'});
     await rejectedCard.getByText('图片已生成，但没有完整完成任务',{exact:true}).waitFor();
-    assert.equal(await rejectedCard.getByText('重试可能再次产生模型费用',{exact:false}).count(),1);
+    assert.equal(await rejectedCard.getByText('再次调用图片模型并产生费用',{exact:false}).count(),1);
+    await rejectedCard.getByText('只在锅左侧补生成半勺老抽的汤勺，并让连续液流落入锅内',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'基于失败图定向修复（再次收费）',exact:true}).click();
+    await page.getByLabel('基于失败图定向修复（再次收费）操作原因').fill('按验收建议只补充缺失内容');
+    await page.getByLabel('确认本次定向修复会再次调用图片模型并产生费用').check();
+    await page.getByRole('button',{name:'确认基于失败图定向修复（再次收费）',exact:true}).click();
+    await page.getByText('局部修改 · 排队中',{exact:true}).waitFor();
+    assert.equal(actions.at(-1).url.endsWith('/retry'),true);assert.equal(actions.at(-1).data.useRejectedPreview,true);
+    assert.equal(actions.at(-1).data.confirmation,'LIVE_IMAGE_COST_ACCEPTED');
+    await page.evaluate(()=>fetch('/inject-rejected',{method:'POST'}));
+    await page.getByText('局部修改 · 验收未通过 · 结果已保留',{exact:true}).waitFor({timeout:6000});
     await page.getByRole('button',{name:'在左侧对比',exact:true}).first().click();
     await page.getByRole('alert').getByText('自动验收未通过',{exact:true}).waitFor();
     await page.getByRole('button',{name:'仍采用此结果',exact:true}).click();
@@ -201,7 +214,7 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     await page.getByLabel('整套标识采用原因').fill('整套预览确认');
     await page.getByRole('button',{name:'确认采用',exact:true}).click();
     await page.getByRole('button',{name:'整套标识已采用',exact:true}).waitFor();
-    assert.equal(actions.length,6);assert.equal(actions.slice(-3).every(item=>item.url.endsWith('/accept')),true);
+    assert.equal(actions.length,7);assert.equal(actions.slice(-3).every(item=>item.url.endsWith('/accept')),true);
     await page.getByRole('tab',{name:'局部修改'}).click();
     await page.getByRole('button',{name:'保存草稿',exact:true}).click();
     await page.getByRole('tab',{name:/任务记录/u}).click();

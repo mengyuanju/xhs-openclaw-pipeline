@@ -25,6 +25,7 @@ type MobileView = 'PREVIEW' | WorkspacePanel;
 type PreviewMode = 'SOURCE' | 'RESULT' | 'COMPARE';
 type PromptAction = '' | '改颜色' | '替换物体' | '删除物体' | '修复瑕疵';
 type LocalSuggestion = { stage:'LOCAL_EDIT_SUGGESTION'; decision:'SUGGEST'; canEdit:true; suggestedInstruction:string; reason:string; operationType:string; touchesImageEdge:boolean; editRegions:TargetRegion[] };
+type LocalRepairRecommendation = { repairableFromRejected:true; repairInstruction:string; failureCodes:string[]; repairRegions:TargetRegion[]; repairAttempt:number; repairMaxAttempts:number };
 type Edit = { id: string; version: number; status: string; operation: string; source_asset_id?:number; target_page:number; created_by:string; validation?:unknown; events?:Array<{action:string;actor:string;reason:string}>; error: string | null; config: {instruction:string;confirmation?:string|null;batchId?:string|null}; result?: {asset_id: number; image_run_id: string; validation: unknown} };
 const labels: Record<string,string> = {DRAFT:'草稿',QUEUED:'排队中',RUNNING:'执行与校验中',PREVIEW_READY:'预览待确认',ACCEPTED:'已采用',REJECTED:'已拒绝',FAILED:'失败',CANCELLED:'已取消',TEXT:'人工生成标识',COMPOSITE:'实体合成（历史）',AI_FUSION:'真实产品替换',AI_LOCAL:'局部修改',AI_FULL:'整图修改（历史）',RESTORE:'恢复版本',REGENERATE:'重新生成',REPROCESS:'格式处理'};
 const actionLabels: Record<EditAction,string> = {accept:'采用此版本',reject:'拒绝',cancel:'直接删除此修复',retry:'重试（AI 可能再次收费）',queue:'提交草稿','apply-suggestion':'采用建议并修改'};
@@ -61,9 +62,20 @@ function failedPreviewReason(edit:Edit) {
   }
   return edit.error||'自动验收未通过，请对照原图检查修改结果。';
 }
+function localRepairRecommendation(edit:Edit):LocalRepairRecommendation|null {
+  if(!isRejectedPreview(edit))return null;
+  const validation=edit.result?.validation;
+  if(!validation||typeof validation!=='object'||Array.isArray(validation))return null;
+  const local=(validation as {localConsistency?:Partial<LocalRepairRecommendation>}).localConsistency;
+  if(local?.repairableFromRejected!==true||typeof local.repairInstruction!=='string'||!local.repairInstruction.trim()
+    ||!Array.isArray(local.failureCodes)||!Array.isArray(local.repairRegions)||!local.repairRegions.length)return null;
+  return {repairableFromRejected:true,repairInstruction:local.repairInstruction,failureCodes:local.failureCodes.filter(code=>typeof code==='string'),
+    repairRegions:local.repairRegions,repairAttempt:Number(local.repairAttempt??0),repairMaxAttempts:Number(local.repairMaxAttempts??0)};
+}
 function historyActionLabel(edit:Edit,action:EditAction) {
   if(action==='accept'&&isRejectedPreview(edit))return '仍采用此结果';
-  if(action==='retry'&&isRejectedPreview(edit))return '根据验收建议重试（可能再次收费）';
+  if(action==='retry'&&localRepairRecommendation(edit))return '基于失败图定向修复（再次收费）';
+  if(action==='retry'&&isRejectedPreview(edit))return '从原图重新重试（可能再次收费）';
   return actionLabels[action];
 }
 const path=(url:string)=>`/api/control-plane${url}`;
@@ -107,7 +119,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
   const targetDragStart=useRef<{x:number;y:number}|null>(null);
   const pendingTargetRegion=useRef<TargetRegion|null>(null);
   const targetSelectionFrame=useRef<number|null>(null);
-  const [confirmed,setConfirmed]=useState(false),[refs,setRefs]=useState<Ref[]>([]),[edits,setEdits]=useState<Edit[]>([]);
+  const [confirmed,setConfirmed]=useState(false),[historyCostConfirmed,setHistoryCostConfirmed]=useState(false),[refs,setRefs]=useState<Ref[]>([]),[edits,setEdits]=useState<Edit[]>([]);
   const [busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState(''),[compare,setCompare]=useState(50),[zoom,setZoom]=useState(1),[history,setHistory]=useState(''),[reason,setReason]=useState('');
   const [comparisonId,setComparisonId]=useState('');
   const imageAssets=assets?.length?assets:[asset];
@@ -269,12 +281,16 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
     if(!reason.trim()){setNotice('');setError(`请先填写“操作原因”，再${actionLabel}。`);return;}
     if(action==='cancel'&&!window.confirm(`确认直接删除这条${labels[e.status]??e.status}的图片修复？${['QUEUED','RUNNING'].includes(e.status)?'正在排队或执行的重试会立即停止。':''}后台仍保留取消记录用于审计。`))return;
     if(action==='accept'&&isRejectedPreview(e)&&!window.confirm('此结果未通过自动验收。确认仍采用并进入正式图集吗？系统会保留本次人工决定和原因。'))return;
-    const needsConfirmation=['queue','retry','apply-suggestion'].includes(action)&&(e.operation==='TEXT'||e.operation.startsWith('AI_'))&&e.config.confirmation!=='LIVE_IMAGE_COST_ACCEPTED';
-    if(needsConfirmation&&!confirmed){setNotice('');setError(`“${actionLabel}”会调用图片编辑或视觉校验模型，请先勾选费用确认。`);return;}
+    const targetedRepair=action==='retry'?localRepairRecommendation(e):null;
+    const needsConfirmation=['queue','retry','apply-suggestion'].includes(action)&&(e.operation==='TEXT'||e.operation.startsWith('AI_'))
+      &&(e.config.confirmation!=='LIVE_IMAGE_COST_ACCEPTED'||Boolean(targetedRepair));
+    const costConfirmed=targetedRepair?historyCostConfirmed:confirmed;
+    if(needsConfirmation&&!costConfirmed){setNotice('');setError(`“${actionLabel}”会调用图片编辑或视觉校验模型，请先勾选费用确认。`);return;}
     const request=act(()=>post(`/v1/image-edits/${e.id}/${action}`,{requestId:createRequestId(),version:e.version,reason,
-      confirmation:confirmed?'LIVE_IMAGE_COST_ACCEPTED':undefined,
+      confirmation:costConfirmed?'LIVE_IMAGE_COST_ACCEPTED':undefined,
+      ...(targetedRepair?{useRejectedPreview:true}:{}),
       ...(action==='accept'&&isRejectedPreview(e)?{acceptRejectedResult:true}:{})}),`正在${actionLabel}…`,`${actionLabel}操作已完成。`);
-    setPendingHistoryAction(null);setReason('');return request;
+    setPendingHistoryAction(null);setHistoryCostConfirmed(false);setReason('');return request;
   }
   async function acceptDisclosureBatch() {
     if(!reason.trim()){setNotice('');setError('请先填写“操作原因”，再采用整套标识预览。');return;}
@@ -367,15 +383,15 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
               <div className={styles.historyHeading}><strong>当前页任务记录</strong><span>失败详情默认收起</span></div>
               {pageEdits.length?<ul className={styles.history} aria-label="图片修改记录">{pageEdits.map(e=>{
                 const suggestion=localSuggestion(e);
-                const rejectedPreview=isRejectedPreview(e);
+                const rejectedPreview=isRejectedPreview(e),repairRecommendation=localRepairRecommendation(e);
                 return <li key={e.id}><div className={styles.historyTitle}><strong>{labels[e.operation]} · {suggestion?'待确认建议':rejectedPreview?(e.status==='ACCEPTED'?'已人工采用 · 自动验收未通过':'验收未通过 · 结果已保留'):labels[e.status]}</strong><span>第 {e.target_page} 页 · {e.created_by}</span></div><p className={styles.historySummary}>{e.config.instruction}</p>
                   {suggestion&&<section className={styles.suggestionCard} aria-label="局部修改建议"><strong>系统已生成可执行描述</strong>{suggestion.reason&&<p>{suggestion.reason}</p>}<blockquote>{suggestion.suggestedInstruction}</blockquote><span>{suggestion.editRegions.length} 个安全编辑区域 · {suggestion.touchesImageEdge?'目标贴近画面边缘，可按可见部分处理':'目标完整位于画面内'}</span></section>}
-                  {rejectedPreview&&<section className={styles.rejectedResultCard} aria-label="自动验收未通过的结果"><strong>图片已生成，但没有完整完成任务</strong><p>{failedPreviewReason(e)}</p><span>这是一张可查看的失败预览。你可以仍然采用，也可以根据验收意见重试；重试可能再次产生模型费用。</span></section>}
+                  {rejectedPreview&&<section className={styles.rejectedResultCard} aria-label="自动验收未通过的结果"><strong>图片已生成，但没有完整完成任务</strong><p>{failedPreviewReason(e)}</p>{repairRecommendation?<><span>系统可以上一张失败图为起点，仅处理以下未完成部分：</span><blockquote>{repairRecommendation.repairInstruction}</blockquote><span>定向修复会再次调用图片模型并产生费用，只有确认后才会执行；修复结果仍由你决定是否采用。</span></>:<span>这是一张可查看的失败预览。当前问题不适合安全局部补救，你可以仍然采用，也可以调整说明后从原图重试；重试可能再次产生模型费用。</span>}</section>}
                   {e.error&&<details><summary>查看失败原因</summary><p role="alert">{e.error}</p></details>}
-                  <div className={styles.historyActions}>{e.operation==='AI_LOCAL'&&<Button variant="outline" size="sm" onClick={()=>reuseInstruction(e)}>复用说明并修改</Button>}{e.result&&<><Button size="sm" onClick={()=>{setComparisonId(e.id);setPreviewMode('COMPARE');setMobileView('PREVIEW');}}>在左侧对比</Button><a href={path(`/v1/assets/${e.result.asset_id}`)} target="_blank" rel="noreferrer">打开结果</a></>}{historyActions(e).map(action=><Button key={action} size="sm" variant={action==='cancel'?'outline':undefined} className={action==='cancel'?styles.deleteAction:undefined} disabled={busy} onClick={()=>{setReason('');setPendingBatchAccept(false);setPendingHistoryAction({editId:e.id,action});}}>{historyActionLabel(e,action)}</Button>)}</div>
+                  <div className={styles.historyActions}>{e.operation==='AI_LOCAL'&&<Button variant="outline" size="sm" onClick={()=>reuseInstruction(e)}>复用说明并修改</Button>}{e.result&&<><Button size="sm" onClick={()=>{setComparisonId(e.id);setPreviewMode('COMPARE');setMobileView('PREVIEW');}}>在左侧对比</Button><a href={path(`/v1/assets/${e.result.asset_id}`)} target="_blank" rel="noreferrer">打开结果</a></>}{historyActions(e).map(action=><Button key={action} size="sm" variant={action==='cancel'?'outline':undefined} className={action==='cancel'?styles.deleteAction:undefined} disabled={busy} onClick={()=>{setReason('');setHistoryCostConfirmed(false);setPendingBatchAccept(false);setPendingHistoryAction({editId:e.id,action});}}>{historyActionLabel(e,action)}</Button>)}</div>
                   {!!(e.result?.validation??e.validation)&&<details><summary>质量校验记录</summary><pre style={{whiteSpace:'pre-wrap'}}>{JSON.stringify(e.result?.validation??e.validation,null,2)}</pre></details>}
                   {!!e.events?.length&&<details><summary>操作审计</summary><ul>{e.events.map((event,index)=><li key={index}>{event.actor} · {event.action} · {event.reason}</li>)}</ul></details>}
-                  {pendingHistoryAction?.editId===e.id&&<form className={styles.reasonEditor} onSubmit={event=>{event.preventDefault();void runHistoryAction(e,pendingHistoryAction.action);}}><label>{historyActionLabel(e,pendingHistoryAction.action)}的操作原因<input aria-label={`${historyActionLabel(e,pendingHistoryAction.action)}操作原因`} value={reason} maxLength={1000} autoFocus onChange={event=>setReason(event.target.value)}/></label><div className={styles.quickReasons}>{quickReasons.map(item=><Button variant="outline" size="sm" type="button" key={item} onClick={()=>setReason(item)}>{item}</Button>)}</div><div className={styles.reasonActions}><Button variant="outline" type="button" onClick={()=>{setPendingHistoryAction(null);setReason('');}}>取消</Button><Button type="submit" disabled={busy}>确认{historyActionLabel(e,pendingHistoryAction.action)}</Button></div></form>}
+                  {pendingHistoryAction?.editId===e.id&&<form className={styles.reasonEditor} onSubmit={event=>{event.preventDefault();void runHistoryAction(e,pendingHistoryAction.action);}}><label>{historyActionLabel(e,pendingHistoryAction.action)}的操作原因<input aria-label={`${historyActionLabel(e,pendingHistoryAction.action)}操作原因`} value={reason} maxLength={1000} autoFocus onChange={event=>setReason(event.target.value)}/></label>{pendingHistoryAction.action==='retry'&&repairRecommendation&&<label className={styles.feeConfirmation}><input type="checkbox" checked={historyCostConfirmed} onChange={event=>setHistoryCostConfirmed(event.target.checked)}/><span>确认本次定向修复会再次调用图片模型并产生费用</span></label>}<div className={styles.quickReasons}>{quickReasons.map(item=><Button variant="outline" size="sm" type="button" key={item} onClick={()=>setReason(item)}>{item}</Button>)}</div><div className={styles.reasonActions}><Button variant="outline" type="button" onClick={()=>{setPendingHistoryAction(null);setHistoryCostConfirmed(false);setReason('');}}>取消</Button><Button type="submit" disabled={busy}>确认{historyActionLabel(e,pendingHistoryAction.action)}</Button></div></form>}
                 </li>;
               })}</ul>:<p className={styles.emptyHistory}>当前还没有图片修改记录。</p>}
             </section>}

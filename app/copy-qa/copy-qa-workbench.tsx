@@ -483,74 +483,22 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
   const previewAffectedCount = Number(batchPreview?.confirmedCount ?? 0);
 
   return <div className={styles.stack}>
-    <div className={styles.workspace}>
-      <aside className={`panel ${styles.insightPanel}`} aria-label="质检数据与作业人员">
-        <Tabs className={styles.insightTabs} defaultValue="overview">
-          <div className={styles.tabHeader}>
-            <div><h2>质检看板</h2><p>数据、人员与规则分开展示。</p></div>
-            <TabsList className={styles.tabList} aria-label="质检看板内容">
-              <TabsTrigger value="overview">数据概览</TabsTrigger>
-              {role === 'ADMIN' && <TabsTrigger value="workers">作业人员</TabsTrigger>}
-              <TabsTrigger value="guide">说明</TabsTrigger>
-            </TabsList>
-          </div>
+    <Tabs className={`panel ${styles.workbenchTabs}`} defaultValue="queue" aria-label="质检数据与作业人员">
+      <div className={styles.workbenchHeader}>
+        <TabsList className={styles.tabList} aria-label="质检看板内容">
+          <TabsTrigger value="queue">质检队列<span className={styles.tabCount}>{currentStatusTotal}</span></TabsTrigger>
+          <TabsTrigger value="overview">数据概览</TabsTrigger>
+          {role === 'ADMIN' && <TabsTrigger value="workers">作业人员</TabsTrigger>}
+          <TabsTrigger value="guide">规则说明</TabsTrigger>
+        </TabsList>
+        <div className={styles.accessSummary} data-role={role === 'ADMIN' ? 'admin' : 'reviewer'}>
+          <strong>{role === 'ADMIN' ? '管理员视图' : '质检视图'}</strong>
+          <span>{role === 'ADMIN' ? '完整信息 · 跨页词包筛选 · 人员统计' : '按样本策略脱敏 · 仅显示已授权操作'}</span>
+        </div>
+      </div>
 
-          <TabsContent className={styles.tabContent} value="overview">
-            <section className={styles.summary} aria-label="质检数据概览">
-              <article><strong>{currentStatusTotal}</strong><span>当前状态总数{total === null && hasMore ? '（至少）' : ''}</span><small>服务端结果</small></article>
-              <article><strong>{visibleItems.length.toLocaleString('zh-CN')}</strong><span>当前显示</span><small>搜索与类型筛选后</small></article>
-              <article data-kind="random"><strong>{randomCount.toLocaleString('zh-CN')}</strong><span>一次抽检</span><small>已加载范围</small></article>
-              <article data-kind="mandatory"><strong>{mandatoryCount.toLocaleString('zh-CN')}</strong><span>强制复检</span><small>已加载范围</small></article>
-              {role === 'ADMIN'
-                ? <article><strong>{statistics?.random.length.toLocaleString('zh-CN') ?? '—'}</strong><span>作业人员</span><small>已有抽检结论</small></article>
-                : <article><strong>{blindCount.toLocaleString('zh-CN')}</strong><span>盲评样本</span><small>已加载范围</small></article>}
-            </section>
-            {role === 'ADMIN' && <section className={styles.outcomeSection} aria-labelledby="copy-qa-outcome-title">
-              <div className={styles.tabSectionHeader}><h3 id="copy-qa-outcome-title">强制复检数据</h3><p>强制复检和整批影响单独统计。</p></div>
-              {statisticsError && <div className="notice error" role="alert">{statisticsError}</div>}
-              {!statistics && !statisticsError ? <div className={styles.compactEmpty}>正在读取质检统计…</div>
-                : statistics && <div className={styles.outcomeGrid}>
-                  <article><span>强制通过</span><strong>{statistics.mandatory.passed}</strong></article>
-                  <article><span>强制打回</span><strong>{statistics.mandatory.returned}</strong></article>
-                  <article><span>强制待处理</span><strong>{statistics.mandatory.pending}</strong></article>
-                  <article><span>整批受影响</span><strong>{statistics.batchAffectedCount}</strong></article>
-                </div>}
-            </section>}
-          </TabsContent>
-
-          {role === 'ADMIN' && <TabsContent className={styles.tabContent} value="workers">
-            <div className={styles.tabSectionHeader}><h3 id="copy-qa-accuracy-title">作业人员抽检数据</h3><p>仅统计已有结论的一次抽检；强制复检单独计入数据概览。</p></div>
-            {statisticsError && <div className="notice error" role="alert">{statisticsError}</div>}
-            {!statistics && !statisticsError ? <div className={styles.compactEmpty}>正在读取作业人员数据…</div>
-              : statistics && statistics.random.length === 0 ? <div className={styles.compactEmpty}>还没有已决的一次抽检样本。</div>
-                : statistics && <div className={styles.workerList} role="region" aria-label="文案质检作业人员数据，可滚动查看" tabIndex={0}>{statistics.random.map((metric) => <article key={metric.finalApproverAccountId}>
-                  <header><div><strong>{metric.finalApproverDisplayName ?? metric.finalApproverUsername ?? `账号 #${metric.finalApproverAccountId}`}</strong>{metric.finalApproverDisplayName && metric.finalApproverUsername && <small>@{metric.finalApproverUsername}</small>}</div><b>{(metric.accuracyRate * 100).toFixed(1)}%</b></header>
-                  <dl><div><dt>已决</dt><dd>{metric.decided}</dd></div><div><dt>通过</dt><dd>{metric.passed}</dd></div><div><dt>打回</dt><dd>{metric.returned}</dd></div></dl>
-                </article>)}</div>}
-          </TabsContent>}
-
-          <TabsContent className={styles.tabContent} value="guide">
-            <section className={styles.guidePanel} aria-labelledby="copy-qa-guide-title">
-              <div className={styles.guideHeader}><div><h3 id="copy-qa-guide-title">质检类型与状态变化</h3><p>两种质检分开计数、分开流转。</p></div><span className="pill">不会到次数自动放行</span></div>
-              <div className={styles.flowList}>
-                <article data-kind="random">
-                  <header><strong>一次抽检</strong><span>当前版本只判定 1 次</span></header>
-                  <p><b>通过</b> 同轮项目均解决后，任务进入“待生图”。</p>
-                  <p><b>打回</b> 当前项变为“已打回”，任务进入“待修改”，修改后转为强制复检。</p>
-                </article>
-                <article data-kind="mandatory">
-                  <header><strong>强制复检</strong><span>返工版本 100% 必检</span></header>
-                  <p><b>通过</b> 解除强制门禁；上游批次也已解决时进入“待生图”。</p>
-                  <p><b>打回</b> 当前项保留为“已打回”，实际修改后生成新的“待强制复检”。</p>
-                </article>
-              </div>
-              <div className={styles.attemptRule}><strong>最多质检几次？</strong><p>一次抽检对每个入选版本最多 1 次；强制复检当前不设总次数上限，会按“打回 → 修改 → 新强制复检”循环，直到通过。文案版本被替换时，旧的待检项会变为“旧版已失效”。</p></div>
-            </section>
-          </TabsContent>
-        </Tabs>
-      </aside>
-
-      <section className={`panel ${styles.queuePanel}`} aria-labelledby="copy-qa-queue-title">
+      <TabsContent className={`${styles.tabViewport} ${styles.queueView}`} value="queue">
+      <section className={styles.queuePanel} aria-labelledby="copy-qa-queue-title">
       <div className={styles.toolbar}>
         <div><div><h2 id="copy-qa-queue-title">待质检队列</h2><p className="subtle">一次抽检与返工强制复检集中处理；类型和状态已分列显示。</p></div></div>
         <div>
@@ -603,7 +551,71 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
           </table></div>}
       {hasMore && <div className={styles.loadMore}><Button unstyled className="button small" type="button" disabled={loadingMore || refreshing} onClick={() => { void load({ silent: true, offset: nextOffset }); }}>{loadingMore ? <><LoaderCircle className="animate-spin" size={14} />正在加载…</> : '加载更多抽检项'}</Button></div>}
       </section>
-    </div>
+      </TabsContent>
+
+      <TabsContent className={styles.tabViewport} value="overview">
+        <section className={styles.viewContent} aria-labelledby="copy-qa-overview-title">
+          <div className={styles.viewHeader}><div><h2 id="copy-qa-overview-title">数据概览</h2><p>快速判断当前积压、抽检构成和强制复检结果。</p></div><span className="pill">{role === 'ADMIN' ? '全局统计' : '当前授权范围'}</span></div>
+          <section className={styles.summary} aria-label="质检数据概览">
+            <article><strong>{currentStatusTotal}</strong><span>当前状态总数{total === null && hasMore ? '（至少）' : ''}</span><small>服务端结果</small></article>
+            <article><strong>{visibleItems.length.toLocaleString('zh-CN')}</strong><span>当前显示</span><small>搜索与类型筛选后</small></article>
+            <article data-kind="random"><strong>{randomCount.toLocaleString('zh-CN')}</strong><span>一次抽检</span><small>已加载范围</small></article>
+            <article data-kind="mandatory"><strong>{mandatoryCount.toLocaleString('zh-CN')}</strong><span>强制复检</span><small>已加载范围</small></article>
+            {role === 'ADMIN'
+              ? <article><strong>{statistics?.random.length.toLocaleString('zh-CN') ?? '—'}</strong><span>作业人员</span><small>已有抽检结论</small></article>
+              : <article><strong>{blindCount.toLocaleString('zh-CN')}</strong><span>盲评样本</span><small>已加载范围</small></article>}
+          </section>
+          {role === 'ADMIN' && <section className={styles.outcomeSection} aria-labelledby="copy-qa-outcome-title">
+            <div className={styles.tabSectionHeader}><h3 id="copy-qa-outcome-title">强制复检数据</h3><p>强制复检和整批影响单独统计。</p></div>
+            {statisticsError && <div className="notice error" role="alert">{statisticsError}</div>}
+            {!statistics && !statisticsError ? <div className={styles.compactEmpty}>正在读取质检统计…</div>
+              : statistics && <div className={styles.outcomeGrid}>
+                <article><span>强制通过</span><strong>{statistics.mandatory.passed}</strong></article>
+                <article><span>强制打回</span><strong>{statistics.mandatory.returned}</strong></article>
+                <article><span>强制待处理</span><strong>{statistics.mandatory.pending}</strong></article>
+                <article><span>整批受影响</span><strong>{statistics.batchAffectedCount}</strong></article>
+              </div>}
+          </section>}
+          {role !== 'ADMIN' && <div className={styles.permissionNote}><strong>质检权限范围</strong><span>此处只汇总当前账号可见的队列数据；作业人员统计、词包跨页筛选和管理员单独通过记录仅管理员可见。</span></div>}
+        </section>
+      </TabsContent>
+
+      {role === 'ADMIN' && <TabsContent className={styles.tabViewport} value="workers">
+        <section className={styles.viewContent} aria-labelledby="copy-qa-accuracy-title">
+          <div className={styles.viewHeader}><div><h2 id="copy-qa-accuracy-title">作业人员抽检数据</h2><p>仅统计已有结论的一次抽检；强制复检单独计入数据概览。</p></div><span className="pill">仅管理员可见</span></div>
+          {statisticsError && <div className="notice error" role="alert">{statisticsError}</div>}
+          {!statistics && !statisticsError ? <div className={styles.compactEmpty}>正在读取作业人员数据…</div>
+            : statistics && statistics.random.length === 0 ? <div className={styles.compactEmpty}>还没有已决的一次抽检样本。</div>
+              : statistics && <div className={styles.workerList} role="region" aria-label="文案质检作业人员数据，可滚动查看" tabIndex={0}>{statistics.random.map((metric) => <article key={metric.finalApproverAccountId}>
+                <header><div><strong>{metric.finalApproverDisplayName ?? metric.finalApproverUsername ?? `账号 #${metric.finalApproverAccountId}`}</strong>{metric.finalApproverDisplayName && metric.finalApproverUsername && <small>@{metric.finalApproverUsername}</small>}</div><b>{(metric.accuracyRate * 100).toFixed(1)}%</b></header>
+                <dl><div><dt>已决</dt><dd>{metric.decided}</dd></div><div><dt>通过</dt><dd>{metric.passed}</dd></div><div><dt>打回</dt><dd>{metric.returned}</dd></div></dl>
+              </article>)}</div>}
+        </section>
+      </TabsContent>}
+
+      <TabsContent className={styles.tabViewport} value="guide">
+        <section className={`${styles.viewContent} ${styles.guidePanel}`} aria-labelledby="copy-qa-guide-title">
+          <div className={styles.viewHeader}><div><h2 id="copy-qa-guide-title">质检类型与状态变化</h2><p>两种质检分开计数、分开流转。</p></div><span className="pill">不会到次数自动放行</span></div>
+          <div className={styles.flowList}>
+            <article data-kind="random">
+              <header><strong>一次抽检</strong><span>当前版本只判定 1 次</span></header>
+              <p><b>通过</b> 同轮项目均解决后，任务进入“待生图”。</p>
+              <p><b>打回</b> 当前项变为“已打回”，任务进入“待修改”，修改后转为强制复检。</p>
+            </article>
+            <article data-kind="mandatory">
+              <header><strong>强制复检</strong><span>返工版本 100% 必检</span></header>
+              <p><b>通过</b> 解除强制门禁；上游批次也已解决时进入“待生图”。</p>
+              <p><b>打回</b> 当前项保留为“已打回”，实际修改后生成新的“待强制复检”。</p>
+            </article>
+          </div>
+          <div className={styles.attemptRule}><strong>最多质检几次？</strong><p>一次抽检对每个入选版本最多 1 次；强制复检当前不设总次数上限，会按“打回 → 修改 → 新强制复检”循环，直到通过。文案版本被替换时，旧的待检项会变为“旧版已失效”。</p></div>
+          <div className={styles.permissionMatrix}>
+            <div><strong>质检账号</strong><span>处理授权范围内的样本；盲评时隐藏任务、人员、词包和原评分信息，批次操作仅在条目明确授权时显示。</span></div>
+            <div><strong>管理员</strong><span>始终使用完整信息视图，并额外查看人员统计、跨页词包筛选和管理员单独通过记录。</span></div>
+          </div>
+        </section>
+      </TabsContent>
+    </Tabs>
 
     <Dialog open={detail !== null || detailLoading} onOpenChange={(open) => { if (!open && !action) closeItemDetail(); }}>
       <DialogContent className={`${styles.dialog} ${styles.detailDialog}`}>

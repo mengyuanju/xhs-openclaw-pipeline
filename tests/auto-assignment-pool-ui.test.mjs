@@ -77,7 +77,14 @@ test('automatic assignment pool lets administrators choose continuous or one-sho
   assert.match(manager, /fixedQuantityAssignedTotal/u);
   assert.match(manager, /fixedQuantityAssignedToday/u);
   assert.match(manager, /池成员累计已分配/u);
+  assert.match(manager, /当前可分配 <strong>\{autoAssignableTaskCount\}<\/strong>/u);
+  assert.match(manager, /const currentlyAllocatableCount = Math\.min\(autoAssignableTaskCount, allocationCount\)/u);
+  assert.match(manager, /共享池当前 \$\{autoAssignableTaskCount\} 条，本次最多可分配 \$\{currentlyAllocatableCount\} 条/u);
   assert.match(manager, /今日定量已分配/u);
   assert.match(manager, /累计 \{worker\.fixedQuantityAssignedTotal \?\? 0\} 条/u);
   assert.match(manager, /今日已分配 \{worker\.fixedQuantityAssignedToday \?\? 0\} 条/u);
+  assert.match(manager, /initialSnapshot\.settings\.enabled && autoAssignableTaskCount === 0[\s\S]*当前没有可分配的数据/u);
+  assert.match(manager, /需人工关注的任务不在自动分配队列中/u);
+  assert.match(manager, /待新任务进入未分配的待审核队列后，即可执行定量分配/u);
+  assert.match(manager, /待新任务进入未分配的待审核队列后，系统会按配置自动补位/u);
 });
