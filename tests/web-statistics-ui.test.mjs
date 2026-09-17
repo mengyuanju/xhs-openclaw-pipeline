@@ -31,6 +31,23 @@ test('personal statistics labels assignment ownership without claiming the worke
   assert.doesNotMatch(overview, /label="累计创建"/u);
 });
 
+test('personal workbench exposes completion dates, stage totals, current states and task lookup', async () => {
+  const [overview, types, styles] = await Promise.all([
+    source('app/workbench-statistics/personal-overview.tsx'),
+    source('app/workbench-statistics/types.ts'),
+    source('app/globals.css'),
+  ]);
+  for (const label of ['完成数据', '今天', '昨天', '近 7 天', '文案完成', '图片完成', '完成任务当前在哪', '对应任务']) {
+    assert.match(overview, new RegExp(label, 'u'));
+  }
+  assert.match(overview, /type="date"/u);
+  assert.match(overview, /任务 ID \/ Query/u);
+  assert.match(overview, /onTaskSelect\?\.\(task\.id\)/u);
+  assert.match(types, /completedWork\?: CompletedWork/u);
+  assert.match(styles, /\.personal-completion-states/u);
+  assert.match(styles, /\.personal-completion-task-list/u);
+});
+
 test('personal workbench uses grouped shadcn navigation without starting a second statistics poll', async () => {
   const [overview, filters, workbench, statisticsHook, styles] = await Promise.all([
     source('app/workbench-statistics/personal-overview.tsx'),
