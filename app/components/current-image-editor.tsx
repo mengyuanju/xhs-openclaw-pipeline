@@ -49,7 +49,7 @@ function historyActions(edit:Edit):EditAction[] {
   return ['QUEUED','RUNNING'].includes(edit.status)?['cancel']:[];
 }
 function isRejectedPreview(edit:Edit|undefined) {
-  if(!edit||edit.status!=='FAILED'||!edit.result)return false;
+  if(!edit?.result)return false;
   const validation=edit.result.validation;
   return !validation||typeof validation!=='object'||Array.isArray(validation)||(validation as {passed?:boolean}).passed!==true;
 }
@@ -317,7 +317,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
                 <Button unstyled type="button" disabled={!latest?.result} aria-pressed={previewMode==='RESULT'} onClick={()=>setPreviewMode('RESULT')}>{latestRejected?'失败结果':'修改预览'}</Button>
                 <Button unstyled type="button" disabled={!latest?.result} aria-pressed={previewMode==='COMPARE'} onClick={()=>setPreviewMode('COMPARE')}>前后对比</Button>
               </div>
-              {latestRejected&&<div className={styles.rejectedPreviewNotice} role="alert"><strong>自动验收未通过</strong><span>结果已保留，可检查后自行决定采用或重试。</span></div>}
+              {latestRejected&&<div className={styles.rejectedPreviewNotice} role="alert"><strong>自动验收未通过</strong><span>{latest?.status==='ACCEPTED'?'该结果已由用户明确采用，审计记录已保留。':'结果已保留，可检查后自行决定采用或重试。'}</span></div>}
             </div>
             <div className={styles.previewViewport}>
               {(previewMode==='SOURCE'||!latest?.result)&&<div className={`${styles.previewCanvas} ${['ENTITY','PROMPT'].includes(tab)?styles.targetCanvas:''}`} role="img" aria-label="实时修改预览" style={{width:`${zoom*100}%`}}
@@ -368,7 +368,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
               {pageEdits.length?<ul className={styles.history} aria-label="图片修改记录">{pageEdits.map(e=>{
                 const suggestion=localSuggestion(e);
                 const rejectedPreview=isRejectedPreview(e);
-                return <li key={e.id}><div className={styles.historyTitle}><strong>{labels[e.operation]} · {suggestion?'待确认建议':rejectedPreview?'验收未通过 · 结果已保留':labels[e.status]}</strong><span>第 {e.target_page} 页 · {e.created_by}</span></div><p className={styles.historySummary}>{e.config.instruction}</p>
+                return <li key={e.id}><div className={styles.historyTitle}><strong>{labels[e.operation]} · {suggestion?'待确认建议':rejectedPreview?(e.status==='ACCEPTED'?'已人工采用 · 自动验收未通过':'验收未通过 · 结果已保留'):labels[e.status]}</strong><span>第 {e.target_page} 页 · {e.created_by}</span></div><p className={styles.historySummary}>{e.config.instruction}</p>
                   {suggestion&&<section className={styles.suggestionCard} aria-label="局部修改建议"><strong>系统已生成可执行描述</strong>{suggestion.reason&&<p>{suggestion.reason}</p>}<blockquote>{suggestion.suggestedInstruction}</blockquote><span>{suggestion.editRegions.length} 个安全编辑区域 · {suggestion.touchesImageEdge?'目标贴近画面边缘，可按可见部分处理':'目标完整位于画面内'}</span></section>}
                   {rejectedPreview&&<section className={styles.rejectedResultCard} aria-label="自动验收未通过的结果"><strong>图片已生成，但没有完整完成任务</strong><p>{failedPreviewReason(e)}</p><span>这是一张可查看的失败预览。你可以仍然采用，也可以根据验收意见重试；重试可能再次产生模型费用。</span></section>}
                   {e.error&&<details><summary>查看失败原因</summary><p role="alert">{e.error}</p></details>}
