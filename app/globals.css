@@ -1706,7 +1706,6 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .image-preview-backdrop-control[data-tone="dark"] .image-preview-backdrop-option:hover { color: white; background: #45413d; }
 .image-preview-backdrop-control[data-tone="dark"] .image-preview-backdrop-option[aria-pressed="true"] { color: #fff2f3; background: #63313a; box-shadow: inset 0 0 0 1px #a34d59; }
 .image-preview-background-controls small { width: 100%; opacity: .75; }
-.image-revision-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0; }
 .image-history-compare { margin-top: 18px; border-top: 1px solid #dce3e9; padding-top: 16px; }
 .image-history-compare > [data-slot="disclosure-trigger"] { cursor: pointer; font-weight: 600; margin-bottom: 12px; }
 .image-history-compare .distributed-asset-grid { margin-top: 12px; }

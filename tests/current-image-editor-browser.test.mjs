@@ -10,7 +10,7 @@ import sharp from 'sharp';
 test('image editor browser: prompt-localized edit, fee gate, reference upload, preview and explicit acceptance',{skip:process.env.RUN_IMAGE_EDIT_BROWSER!=='1',timeout:60000},async()=>{
   const {build}=await import('esbuild'),{chromium}=await import('playwright-core');
   const root=await mkdtemp(join(tmpdir(),'image-edit-browser-')),bundle=join(root,'bundle.js'),stylesheet=join(root,'bundle.css');
-  const runId=randomUUID(),editId=randomUUID();let edits=[],submitted=null,submissions=[],actions=[];
+  const runId=randomUUID(),editId=randomUUID(),failedEditId=randomUUID();let edits=[],submitted=null,submissions=[],actions=[];
   const png=await sharp({create:{width:1086,height:1448,channels:4,background:'#eeeeee'}}).png().toBuffer();
   let browser,server;
   try{
@@ -20,6 +20,14 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
       if(req.url==='/bundle.js'){res.setHeader('content-type','application/javascript');res.end(js);return;}
       if(req.url==='/bundle.css'){res.setHeader('content-type','text/css');res.end(css);return;}
       if(req.url?.includes('/assets/')){res.setHeader('content-type','image/png');res.end(png);return;}
+      if(req.url==='/inject-rejected'&&req.method==='POST'){
+        edits=[{id:failedEditId,version:3,status:'FAILED',operation:'AI_LOCAL',source_asset_id:1,target_page:1,created_by:'operator',
+          config:{instruction:'把右下角汤勺移动到锅的左侧，并保持少量老抽倒入锅内',confirmation:'LIVE_IMAGE_COST_ACCEPTED'},
+          error:'局部修改结果未通过验收：汤勺被删除但没有在左侧重新出现',
+          result:{asset_id:17,image_run_id:randomUUID(),validation:{passed:false,billedImageGeneration:true,
+            localConsistency:{passed:false,reason:'汤勺被删除，但没有在左侧重新出现，也没有形成老抽倒入锅内的接触关系。'}}}},...edits];
+        res.setHeader('content-type','application/json');res.end(JSON.stringify({ok:true}));return;
+      }
       if(req.url?.startsWith('/api/')){
         let body='';for await(const chunk of req)body+=chunk;
         const data=body?JSON.parse(body):null;
@@ -125,6 +133,19 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     await page.getByRole('button',{name:'确认采用建议并修改',exact:true}).click();
     await page.getByText('局部修改 · 排队中',{exact:true}).waitFor();
     assert.equal(actions.at(-1).url.endsWith('/apply-suggestion'),true);
+    await page.evaluate(()=>fetch('/inject-rejected',{method:'POST'}));
+    await page.getByText('局部修改 · 验收未通过 · 结果已保留',{exact:true}).waitFor({timeout:6000});
+    const rejectedCard=page.getByRole('region',{name:'自动验收未通过的结果'});
+    await rejectedCard.getByText('图片已生成，但没有完整完成任务',{exact:true}).waitFor();
+    assert.equal(await rejectedCard.getByText('重试可能再次产生模型费用',{exact:false}).count(),1);
+    await page.getByRole('button',{name:'在左侧对比',exact:true}).first().click();
+    await page.getByRole('alert').getByText('自动验收未通过',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'仍采用此结果',exact:true}).click();
+    await page.getByLabel('仍采用此结果操作原因').fill('人工检查后可以接受');
+    page.once('dialog',dialog=>dialog.accept());
+    await page.getByRole('button',{name:'确认仍采用此结果',exact:true}).click();
+    await page.getByText('局部修改 · 已人工采用 · 自动验收未通过',{exact:true}).waitFor();
+    assert.equal(actions.at(-1).data.acceptRejectedResult,true);
     submitted=null;await page.getByRole('tab',{name:'实体替换'}).click();
     assert.equal(await page.getByLabel('参考图来源说明').count(),0);
     assert.equal(await page.getByText('精确合成',{exact:true}).count(),0);
@@ -180,7 +201,7 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     await page.getByLabel('整套标识采用原因').fill('整套预览确认');
     await page.getByRole('button',{name:'确认采用',exact:true}).click();
     await page.getByRole('button',{name:'整套标识已采用',exact:true}).waitFor();
-    assert.equal(actions.length,5);assert.equal(actions.slice(-3).every(item=>item.url.endsWith('/accept')),true);
+    assert.equal(actions.length,6);assert.equal(actions.slice(-3).every(item=>item.url.endsWith('/accept')),true);
     await page.getByRole('tab',{name:'局部修改'}).click();
     await page.getByRole('button',{name:'保存草稿',exact:true}).click();
     await page.getByRole('tab',{name:/任务记录/u}).click();

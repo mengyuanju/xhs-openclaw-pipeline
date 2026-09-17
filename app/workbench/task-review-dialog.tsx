@@ -1953,7 +1953,6 @@ export function TaskReviewDialog({
                   {canModifyImages && <Button unstyled className="button" type="button" disabled={submitting || !assets.length} onClick={() => void reviseImages('REPROCESS')}>仅转换格式 / 背景（不调用模型）</Button>}
                 </DisclosureContent>
               </Disclosure>}
-              {canModifyImages && <div className="image-revision-actions"><Button unstyled className="button primary" type="button" disabled={submitting} onClick={() => void reviseImages('REGENERATE')}>重新生成图片</Button></div>}
               {role === 'ADMIN' && <ModelCallTrace key={detail.id} taskId={detail.id} />}
             </div>}
             {!draft && role === 'ADMIN' && <ModelCallTrace key={detail.id} taskId={detail.id} />}
@@ -1968,6 +1967,7 @@ export function TaskReviewDialog({
               : `当前文案版本 v${revision?.revision ?? '—'}`}</span>
             <div>
               <DialogClose asChild><Button unstyled className="button" type="button" disabled={submitting || draftSaveStatus === 'saving'}>关闭</Button></DialogClose>
+              {canModifyImages && <Button unstyled className="button primary" type="button" disabled={submitting} onClick={() => void reviseImages('REGENERATE')}><RotateCcw size={15} />重新生成图片</Button>}
               {canRetryCopy && <Button unstyled className="button primary" type="button" disabled={submitting || loading} onClick={() => { void retryCopy(); }}><RotateCcw size={15} />重试文案</Button>}
               {role === 'ADMIN' && detail.state === 'COPY_QC_PENDING'
                 && <Button unstyled className="button primary" type="button" disabled={submitting || loading}

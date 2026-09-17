@@ -403,6 +403,14 @@ try {
         assert.equal(await page.getByRole('button', { name: '通过到交付池', exact: true }).count(), role === 'USER' ? 0 : 1);
       }
     });
+    await check('image owner can regenerate from the fixed footer without scrolling', async () => {
+      await open('USER', 'MANUAL_ARCHIVE', withImages);
+      const regenerate = page.getByRole('button', { name: '重新生成图片', exact: true });
+      await regenerate.waitFor();
+      assert.equal(await regenerate.evaluate(node => node.closest('footer')?.classList.contains('workbench-review-footer')), true);
+      const buttonBox = await regenerate.boundingBox();
+      assert.ok(buttonBox.y + buttonBox.height <= page.viewportSize().height);
+    });
     await check('image review enables decisions from the score alone and submits optional feedback', async () => {
       await open('REVIEWER', 'MANUAL_ARCHIVE', withImages);
       const approve = page.getByRole('button', { name: '通过到交付池', exact: true });

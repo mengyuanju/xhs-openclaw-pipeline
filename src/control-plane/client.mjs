@@ -301,8 +301,9 @@ export function createControlPlaneClient({
       const validationOptions={method:'POST',body:{validation},headers:imageEditHeaders(executionId,edit),timeoutMs:60_000};
       try { await request(validationPath,validationOptions); }
       catch(stageError) {
-        if(stageError instanceof ControlPlaneApiError&&stageError.status<500)throw stageError;
-        await request(validationPath,validationOptions);
+        if(stageError instanceof ControlPlaneApiError&&stageError.status<500) {
+          if(stageError.code!=='IMAGE_EDIT_CONFLICT')throw stageError;
+        } else await request(validationPath,validationOptions);
       }
       const path=`/v1/executions/${executionId}/image-edit/rejected-result`;
       const options={method:'PUT',body:Buffer.from(content),

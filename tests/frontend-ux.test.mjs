@@ -146,6 +146,18 @@ test('generated assets open in an accessible centered Radix dialog preview', asy
   assert.match(styles, /\.image-preview-full/);
 });
 
+test('image regeneration stays in the always-visible review footer', async () => {
+  const reviewDialog = await readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8');
+  const footerStart = reviewDialog.indexOf('<footer className="workbench-review-footer">');
+  const footerEnd = reviewDialog.indexOf('</footer>', footerStart);
+  const regenerateButton = reviewDialog.indexOf('>重新生成图片</Button>');
+
+  assert.ok(footerStart >= 0);
+  assert.ok(footerEnd > footerStart);
+  assert.ok(regenerateButton > footerStart && regenerateButton < footerEnd);
+  assert.equal(reviewDialog.match(/>重新生成图片<\/Button>/gu)?.length, 1);
+});
+
 test('application dropdowns use the shared Radix select instead of native selects', async () => {
   const paths = [
     'app/knowledge/knowledge-workbench.tsx',
