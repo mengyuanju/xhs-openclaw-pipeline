@@ -9,9 +9,11 @@ import { TextInputDialogProvider } from '@/components/ui/text-input-dialog';
 import { AppTopbar } from './app-topbar';
 import { SideNav } from './side-nav';
 import { XhsAccountAlert } from './xhs-account-alert';
+import { BackgroundTasksProvider } from './background-tasks';
 
 type ShellSession = {
   subject: string;
+  userId?: number;
   username?: string;
   roles?: string[];
   copyReviewEnabled?: boolean;
@@ -28,17 +30,19 @@ export function AppFrame({ children, session }: { children: React.ReactNode; ses
   return (
     <ConfirmDialogProvider>
       <TextInputDialogProvider>
-        <XhsAccountAlert enabled={session?.roles?.includes('ADMIN') === true} />
-        <div className="app-shell">
-          <a className="skip-link" href="#main-content" onClick={() => {
-            window.requestAnimationFrame(() => mainRef.current?.focus());
-          }}>跳到主要内容</a>
-          <SideNav session={session} />
-          <div className="app-workspace">
-            <AppTopbar />
-            <main className="main-shell" id="main-content" ref={mainRef} tabIndex={-1}>{children}</main>
+        <BackgroundTasksProvider key={`${session?.subject}:${session?.userId}:${session?.username}`} accountKey={`${session?.subject}:${session?.userId}:${session?.username}`}>
+          <XhsAccountAlert enabled={session?.roles?.includes('ADMIN') === true} />
+          <div className="app-shell" data-work-mode={pathname === '/work-mode' || undefined}>
+            <a className="skip-link" href="#main-content" onClick={() => {
+              window.requestAnimationFrame(() => mainRef.current?.focus());
+            }}>跳到主要内容</a>
+            <SideNav session={session} />
+            <div className="app-workspace">
+              <AppTopbar />
+              <main className="main-shell" id="main-content" ref={mainRef} tabIndex={-1}>{children}</main>
+            </div>
           </div>
-        </div>
+        </BackgroundTasksProvider>
       </TextInputDialogProvider>
     </ConfirmDialogProvider>
   );

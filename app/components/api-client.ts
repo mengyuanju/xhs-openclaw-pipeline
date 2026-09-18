@@ -1,3 +1,5 @@
+import { notifyWorkspaceUpdated } from './workspace-updates';
+
 export class ApiRequestError extends Error {
   constructor(public status: number, public code: string, message: string) {
     super(`${message}（${code}）`);
@@ -19,5 +21,6 @@ export async function apiRequest<T>(url: string, init?: RequestInit): Promise<T>
       ? payload.error.message : `请求失败（${response.status}）`;
     throw new ApiRequestError(response.status, code, message);
   }
+  if (url.startsWith('/api/control-plane/') && !['GET', 'HEAD'].includes((init?.method ?? 'GET').toUpperCase())) notifyWorkspaceUpdated();
   return payload.data as T;
 }

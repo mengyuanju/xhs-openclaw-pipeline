@@ -55,9 +55,13 @@ function normalizeActor(actor) {
       || !Number.isSafeInteger(Number(actor.userId))) {
     throw new ControlPlaneAuthorizationError('current role cannot access the delivery pool');
   }
-  const normalized = { ...actor, userId: Number(actor.userId), username: String(actor.username).toLowerCase() };
-  if (normalized.role !== 'ADMIN') {
-    throw new ControlPlaneAuthorizationError('only administrators can access the delivery pool');
+  const normalized = {
+    ...actor,
+    userId: Number(actor.userId),
+    username: String(actor.username ?? '').trim().toLowerCase(),
+  };
+  if (!normalized.username) {
+    throw new ControlPlaneAuthorizationError('delivery pool actor is invalid');
   }
   return normalized;
 }
@@ -122,6 +126,27 @@ function deliveryFrom(row) {
     packingState: batch ? 'PACKED' : previousBatch ? 'VERSION_UPDATED' : 'UNPACKED',
     deliveryBatch: batch,
     previousDeliveryBatch: previousBatch,
+  };
+}
+
+function deliveryForActor(row, actor) {
+  const delivery = deliveryFrom(row);
+  if (actor.role === 'ADMIN') return delivery;
+  const redactBatchActor = (batch) => !batch ? null : {
+    ...batch,
+    createdByUsername: batch.createdByUsername === actor.username
+      ? batch.createdByUsername : undefined,
+    deliveredByUsername: batch.deliveredByUsername === actor.username
+      ? batch.deliveredByUsername : null,
+  };
+  return {
+    ...delivery,
+    queryPackageId: null,
+    queryPackageDeleted: false,
+    queryPackageName: null,
+    clientBatchCode: null,
+    approvedByUserId: null,
+    deliveryBatch: redactBatchActor(delivery.deliveryBatch),
   };
 }
 
@@ -522,7 +547,7 @@ export async function listDeliveryPool(pool, {
   `, values);
   if (!includeTotal) {
     const result = await pagePromise;
-    return result.rows.map(deliveryFrom);
+    return result.rows.map((row) => deliveryForActor(row, actor));
   }
   const [result, count, packageFacets] = await Promise.all([pagePromise, pool.query(`
     SELECT COUNT(*)::bigint AS total
@@ -629,10 +654,10 @@ export async function listDeliveryPool(pool, {
     clientBatchMap.set(row.clientBatchCode, current);
   }
   return {
-    items: result.rows.map(deliveryFrom),
+    items: result.rows.map((row) => deliveryForActor(row, actor)),
     total: Number(count.rows[0]?.total ?? 0),
     facets: {
-      queryPackages: packageFacets.rows
+      queryPackages: actor.role === 'ADMIN' ? packageFacets.rows
         .filter((row) => Number.isSafeInteger(Number(row.id)) && Number(row.id) > 0
           && typeof row.name === 'string' && row.name)
         .map((row) => ({
@@ -647,10 +672,10 @@ export async function listDeliveryPool(pool, {
           pendingCount: Number(row.pending_count ?? row.count ?? 0),
           packedCount: Number(row.packed_count ?? 0),
           updatedCount: Number(row.updated_count ?? 0),
-        })),
-      clientBatches: [...clientBatchMap.values()]
-        .sort((left, right) => left.code.localeCompare(right.code)),
-      unassigned: unassigned.count > 0 ? unassigned : null,
+        })) : [],
+      clientBatches: actor.role === 'ADMIN' ? [...clientBatchMap.values()]
+        .sort((left, right) => left.code.localeCompare(right.code)) : [],
+      unassigned: actor.role === 'ADMIN' && unassigned.count > 0 ? unassigned : null,
     },
     summary,
   };
@@ -704,7 +729,10 @@ export async function listDeliveryPoolTaskIdsForPreview(pool, rawActor, {
   testTaskId: rawTestTaskId = null,
   limit: rawLimit = 50,
 } = {}) {
-  normalizeActor(rawActor);
+  const actor = normalizeActor(rawActor);
+  if (actor.role !== 'ADMIN') {
+    throw new ControlPlaneAuthorizationError('only administrators can publish delivery previews');
+  }
   const queryPackageIds = normalizePreviewQueryPackageIds(rawQueryPackageIds);
   if (typeof rawIncludeUnassigned !== 'boolean') {
     throw new TypeError('includeUnassigned must be a boolean');
@@ -763,6 +791,9 @@ export async function listDeliveryPoolTaskIdsForPreview(pool, rawActor, {
 
 export async function recordDeliveryPreviewLinks(queryable, rawRecords, rawActor) {
   const actor = normalizeActor(rawActor);
+  if (actor.role !== 'ADMIN') {
+    throw new ControlPlaneAuthorizationError('only administrators can publish delivery previews');
+  }
   if (!Array.isArray(rawRecords) || rawRecords.length < 1 || rawRecords.length > 10) {
     throw new RangeError('preview links must contain between 1 and 10 items');
   }

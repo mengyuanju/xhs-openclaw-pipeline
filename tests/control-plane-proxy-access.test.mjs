@@ -9,6 +9,11 @@ import {
 } from '../src/control-plane/proxy-access.mjs';
 
 test('ordinary users can work on assigned tasks and screen only their visible Query packages', () => {
+  for (const path of ['/v1/personal-workspace/statistics','/v1/personal-workspace/tasks']) {
+    assert.equal(userCanAccessControlPlaneRoute(path,'GET'),true);
+    assert.equal(userCanAccessControlPlaneRoute(path,'HEAD'),true);
+    assert.equal(userCanAccessControlPlaneRoute(path,'POST'),false);
+  }
   assert.equal(userCanAccessControlPlaneRoute('/health', 'GET'), true);
   assert.equal(userCanAccessControlPlaneRoute('/health', 'POST'), false);
   for (const path of ['/v1/tasks/7/retry', '/v1/profile', '/v1/assets/7', '/v1/nodes', '/v1/human-quality-settings']) {
@@ -21,8 +26,8 @@ test('ordinary users can work on assigned tasks and screen only their visible Qu
   assert.equal(userCanAccessControlPlaneRoute('/v1/tasks', 'POST'), false);
   assert.equal(userCanAccessControlPlaneRoute('/v1/tasks', 'GET'), true);
   assert.equal(userCanAccessControlPlaneRoute('/v1/tasks/7/retry', 'POST'), true);
-  assert.equal(userCanAccessControlPlaneRoute('/v1/tasks/7/archive', 'HEAD'), false);
-  assert.equal(userCanAccessControlPlaneRoute('/v1/tasks/7/archive', 'GET'), false);
+  assert.equal(userCanAccessControlPlaneRoute('/v1/tasks/7/archive', 'HEAD'), true);
+  assert.equal(userCanAccessControlPlaneRoute('/v1/tasks/7/archive', 'GET'), true);
   for (const [path, method] of [
     ['/v1/image-edits/0199a7dc-b866-7d6f-a758-fae74aa9d2cc', 'GET'],
     ['/v1/image-edits/0199a7dc-b866-7d6f-a758-fae74aa9d2cc', 'HEAD'],
@@ -75,24 +80,25 @@ test('ordinary users can work on assigned tasks and screen only their visible Qu
     }
   }
   const operatorDeliveryAccess = [
+    ['/v1/delivery-pool', 'GET'],
+    ['/v1/delivery-pool', 'HEAD'],
     ['/v1/delivery-pool/archive', 'POST'],
     ['/v1/delivery-pool/archive/token', 'GET'],
     ['/v1/delivery-pool/archive/token', 'HEAD'],
+    ['/v1/delivery-pool/xlsx/token', 'GET'],
+    ['/v1/delivery-pool/xlsx/token', 'HEAD'],
     ['/v1/delivery-batches', 'GET'],
     ['/v1/delivery-batches/batch-id', 'GET'],
     ['/v1/delivery-batches/batch-id/archive', 'GET'],
     ['/v1/delivery-batches/batch-id/archive', 'HEAD'],
+    ['/v1/delivery-batches/batch-id/xlsx', 'POST'],
     ['/v1/delivery-batches/batch-id/confirm', 'POST'],
   ];
   for (const [path, method] of operatorDeliveryAccess) {
     assert.equal(userCanAccessDeliveryRoute(path, method), true, `${method} ${path}`);
     assert.equal(userCanAccessControlPlaneRoute(path, method), true, `${method} ${path}`);
   }
-  const administratorOnlyPaths = [
-    '/v1/delivery-pool',
-    '/v1/delivery-pool/xlsx',
-    '/v1/delivery-pool/xlsx/token',
-  ];
+  const administratorOnlyPaths = ['/v1/delivery-pool/xlsx'];
   for (const path of administratorOnlyPaths) {
     for (const method of ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']) {
       assert.equal(userCanAccessControlPlaneRoute(path, method), false, `${method} ${path}`);
@@ -102,7 +108,9 @@ test('ordinary users can work on assigned tasks and screen only their visible Qu
     ['/v1/delivery-pool/archive', 'GET'],
     ['/v1/delivery-pool/archive', 'HEAD'],
     ['/v1/delivery-pool/archive/token', 'POST'],
+    ['/v1/delivery-pool/xlsx/token', 'POST'],
     ['/v1/delivery-batches', 'POST'],
+    ['/v1/delivery-batches/batch-id/xlsx', 'GET'],
     ['/v1/delivery-batches/batch-id/confirm', 'GET'],
   ]) {
     assert.equal(userCanAccessDeliveryRoute(path, method), false, `${method} ${path}`);

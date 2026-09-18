@@ -417,7 +417,7 @@ test('delivery spreadsheet exports one complete-article column plus ordered embe
       assets.set(id, {
         id,
         taskId: 7,
-        imageRunId: 'run-7',
+        imageRunId: 'source-run',
         mediaType: 'image/png',
         byteSize: content.length,
         sha256: createHash('sha256').update(content).digest('hex'),
@@ -484,6 +484,86 @@ test('delivery spreadsheet exports one complete-article column plus ordered embe
     const replay = await fetch(`${root}/v1/delivery-pool/xlsx/${prepared.downloadId}`);
     assert.equal(replay.status, 404, 'the prepared spreadsheet token must be one-time');
   });
+});
+
+test('delivery history exports Excel from its frozen copy and image versions', async () => {
+  const batchId = '42345678-1234-4234-8234-123456789abc';
+  const user = {
+    id: 22, username: 'worker', role: 'USER', status: 'ACTIVE', credentialVersion: 1,
+  };
+  const frozen = task(7, 'REVIEWED', '冻结词包');
+  frozen.query = '冻结 Query';
+  frozen.sourceClientBatchCode = CLIENT_BATCH_CODE;
+  frozen.currentCopyRevisionId = 107;
+  frozen.currentImageRunId = 'run-7';
+  frozen.copyRevisions = [{
+    id: 107,
+    content: { copy: { title: '冻结标题', body: '冻结正文', tags: [] } },
+  }];
+  frozen.imageRuns = [{ id: 'run-7', result: { images: [{ assetId: 207 }] } }];
+  frozen.assets = [{
+    id: 207, taskId: 7, imageRunId: 'run-7', mediaType: 'image/png',
+  }];
+  const assets = new Map();
+  await withServer({
+    getUserByUsername: async (username) => username === user.username ? user : null,
+    getDeliveryBatchSpreadsheet: async (id, { actor }) => {
+      assert.equal(id, batchId);
+      assert.equal(actor.role, 'USER');
+      assert.equal(actor.userId, 22);
+      return {
+        publicId: batchId,
+        code: 'JF-42345678',
+        taskCount: 1,
+        tasks: [frozen],
+        bindings: [{ taskId: 7, copyRevisionId: 107, imageRunId: 'run-7' }],
+      };
+    },
+    getAsset: async (id) => assets.get(Number(id)),
+    assertTasksReadyForDelivery: async () => assert.fail(
+      'history exports must not be compared with the task current version',
+    ),
+  }, async (root, storageRoot) => {
+    const imageDirectory = join(storageRoot, 'tasks', '7', 'image-runs', 'run-7');
+    await mkdir(imageDirectory, { recursive: true });
+    const storagePath = join(imageDirectory, 'frozen.png');
+    const content = await writeSolidPng(storagePath, '#16A34A');
+    assets.set(207, {
+      id: 207,
+      taskId: 7,
+      imageRunId: 'run-7',
+      mediaType: 'image/png',
+      byteSize: content.length,
+      sha256: createHash('sha256').update(content).digest('hex'),
+      originalName: 'frozen.png',
+      storagePath,
+    });
+
+    const headers = {
+      'X-Actor-User-Id': '22', 'X-Actor-Username': 'worker',
+      'X-Actor-Role': 'USER', 'X-Actor-Credential-Version': '1',
+    };
+    const response = await fetch(`${root}/v1/delivery-batches/${batchId}/xlsx`, {
+      method: 'POST', headers,
+    });
+    const responsePayload = await response.json();
+    assert.equal(response.status, 201, JSON.stringify(responsePayload));
+    assert.equal(responsePayload.data.fileName, 'JF-42345678-交付内容.xlsx');
+
+    const download = await fetch(
+      `${root}/v1/delivery-pool/xlsx/${responsePayload.data.downloadId}`,
+      { headers },
+    );
+    assert.equal(download.status, 200);
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(Buffer.from(await download.arrayBuffer()));
+    const worksheet = workbook.getWorksheet('交付内容');
+    assert.equal(worksheet.getCell('A2').value, CLIENT_BATCH_CODE);
+    assert.equal(worksheet.getCell('B2').value, '冻结词包');
+    assert.equal(worksheet.getCell('C2').value, '冻结 Query');
+    assert.equal(worksheet.getCell('D2').value, '冻结标题\n\n冻结正文');
+    assert.equal(worksheet.getImages().length, 1);
+  }, { enforceUserAuth: true });
 });
 
 test('delivery spreadsheet rejects unsupported original formats without leaving staged files or locking export', async () => {

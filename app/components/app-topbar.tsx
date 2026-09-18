@@ -4,6 +4,7 @@ import {
   BarChart3,
   ChevronRight,
   LayoutDashboard,
+  PanelsTopLeft,
   LibraryBig,
   MessageSquareText,
   PackageSearch,
@@ -17,6 +18,7 @@ import type { LucideIcon } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { WORKBENCH_VIEWS } from '../workbench/views';
+import { BackgroundTaskNotifications } from './background-tasks';
 
 type RouteMeta = {
   section: string;
@@ -25,6 +27,8 @@ type RouteMeta = {
 };
 
 const routeMeta: Array<{ match: (pathname: string) => boolean; meta: RouteMeta }> = [
+  { match: (pathname) => pathname === '/workbench/personal-statistics', meta: { section:'作业中心', title:'个人数据统计', icon:BarChart3 } },
+  { match: (pathname) => pathname === '/work-mode', meta: { section: '作业中心', title: '作业模式', icon: PanelsTopLeft } },
   { match: (pathname) => pathname === '/workbench-statistics', meta: { section: '运营与系统', title: '作业统计', icon: BarChart3 } },
   { match: (pathname) => pathname.startsWith('/query-packages'), meta: { section: '创作工作台', title: 'Query 词包', icon: PackageSearch } },
   { match: (pathname) => pathname.startsWith('/copy-qa'), meta: { section: '质量与审核', title: '文案质检', icon: ShieldCheck } },
@@ -60,6 +64,7 @@ export function AppTopbar() {
           </li>
         </ol>
       </nav>
+      <BackgroundTaskNotifications />
     </header>
   );
 }

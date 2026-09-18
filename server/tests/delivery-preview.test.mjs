@@ -257,7 +257,7 @@ test('preview client sends server-side credentials, sourceRef and original bytes
   }
 });
 
-test('delivery preview upload binds the remote noteId to the immutable delivery entry', async () => {
+test('delivery preview accepts current membership with an earlier asset owner and binds the immutable entry', async () => {
   const storageRoot = await mkdtemp(join(tmpdir(), 'xhs-delivery-preview-'));
   try {
     const directory = join(storageRoot, 'tasks', '7', 'image-runs', imageRunId);
@@ -281,7 +281,7 @@ test('delivery preview upload binds the remote noteId to the immutable delivery 
         content: { copy: { title: '标题', body: '正文', tags: ['收纳'] } },
       }],
       imageRuns: [{ id: imageRunId, result: { images: [{ assetId: 207 }] } }],
-      assets: [{ id: 207 }],
+      assets: [{ id: 207, imageRunId }],
     };
     let recorded;
     const repository = {
@@ -303,7 +303,7 @@ test('delivery preview upload binds the remote noteId to the immutable delivery 
       getAsset: async () => ({
         id: 207,
         taskId: 7,
-        imageRunId,
+        imageRunId: '33333333-3333-4333-8333-333333333333',
         mediaType: 'image/png',
         originalName: '01.png',
         storagePath,
@@ -368,7 +368,7 @@ test('delivery preview upload rejects TIFF before calling the preview service', 
     currentImageRunId: imageRunId,
     copyRevisions: [{ id: 107, content: { copy: { title: '标题', body: '', tags: [] } } }],
     imageRuns: [{ id: imageRunId, result: { images: [{ assetId: 207 }] } }],
-    assets: [{ id: 207 }],
+    assets: [{ id: 207, imageRunId }],
   };
   let remoteCalls = 0;
   await assert.rejects(publishDeliveryPreviews({

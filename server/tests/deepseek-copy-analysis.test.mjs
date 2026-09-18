@@ -79,7 +79,7 @@ test('analysis parser rejects malformed or unclassified output', () => {
 
 test('control-plane endpoint runs the injected center analyzer and returns the persisted record', async () => {
   const calls = [];
-  const repository = {};
+  const repository = { listPrompts: async () => [], listSettings: async () => [], listKnowledge: async () => [] };
   const app = createControlPlaneApp({
     repository, storageRoot: 'test-storage', enforceUserAuth: false,
     analyzeCopy: async (input) => {

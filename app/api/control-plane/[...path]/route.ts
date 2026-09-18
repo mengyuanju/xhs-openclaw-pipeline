@@ -7,6 +7,7 @@ import {
   nonAdminCanAccessQueryPackageRoute,
   userCanAccessControlPlaneRoute,
   userCanAccessDeliveryRoute,
+  userCanAccessTaskArchiveRoute,
 } from '../../../../src/control-plane/proxy-access.mjs';
 import { sessionActorHeaders } from '../../../../src/control-plane/session-actor-headers.mjs';
 import { apiHandler } from '../../_lib';
@@ -37,14 +38,18 @@ async function proxyRequest(
     throw new ApiError(403, 'FORBIDDEN', '当前账号尚未迁移到用户管理中心');
   }
   const routePath = `/${path.join('/')}`;
+  if (role !== 'ADMIN' && /^\/v1\/admin(?:\/|$)/u.test(routePath)) {
+    throw new ApiError(403, 'FORBIDDEN', '仅管理员可查看团队人员统计');
+  }
   if (/^\/v1\/tasks\/[^/]+\/model-calls(?:\/|$)/u.test(routePath) && role !== 'ADMIN') {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可查看模型执行链路');
   }
   if (role !== 'ADMIN' && ((/^\/v1\/query-packages(?:\/|$)/u.test(routePath)
       && !nonAdminCanAccessQueryPackageRoute(routePath, request.method))
-    || (/^\/v1\/(?:delivery-pool|delivery-batches)(?:\/|$)/u.test(routePath)
+    || (/^\/v1\/(?:delivery-pool|delivery-batches|delivery-items|delivery-archives)(?:\/|$)/u.test(routePath)
       && !(role === 'USER' && userCanAccessDeliveryRoute(routePath, request.method)))
-    || /^\/v1\/tasks\/[^/]+\/archive(?:\/|$)/u.test(routePath))) {
+    || (/^\/v1\/tasks\/[^/]+\/archive(?:\/|$)/u.test(routePath)
+      && !(role === 'USER' && userCanAccessTaskArchiveRoute(routePath, request.method))))) {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可管理词包与交付信息');
   }
   if (routePath === '/v1/tasks' && upstreamUrl.searchParams.has('createdByRole') && role !== 'ADMIN') {
@@ -122,7 +127,7 @@ async function proxyRequest(
         || /^\/v1\/delivery-batches\/[^/]+\/archive$/u.test(routePath));
     const timeoutSignal = AbortSignal.timeout(
       (/^\/v1\/delivery-pool\/(?:archive|xlsx)(?:\/|$)/u.test(routePath)
-        || /^\/v1\/delivery-batches\/[^/]+\/archive$/u.test(routePath))
+        || /^\/v1\/delivery-batches\/[^/]+\/(?:archive|xlsx)$/u.test(routePath))
       ? 60 * 60_000
       : 130_000,
     );

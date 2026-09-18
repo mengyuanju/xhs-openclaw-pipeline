@@ -1,0 +1,61 @@
+.dashboard { display:grid; gap:20px; min-width:0; padding-bottom:24px; }
+.section, .controls { min-width:0; padding:22px; display:grid; gap:18px; }
+.controls { border-radius:14px; box-shadow:0 2px 8px color-mix(in srgb, var(--ink) 3%, transparent); }
+.heading { display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:16px; }
+.heading h1, .heading h2, .section h2 { margin:0; }
+.heading h1 { font-size:26px; letter-spacing:-.04em; }
+.section h2 { font-size:17px; letter-spacing:-.02em; }
+.heading p, .section p { margin:6px 0 0; }
+.muted { color:var(--muted); font-size:13px; line-height:1.7; }
+.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); gap:12px; }
+.card { min-width:0; display:grid; gap:9px; padding:18px; border:1px solid var(--line); border-radius:12px; background:var(--surface); color:var(--ink); text-decoration:none; text-align:left; transition:border-color .15s, box-shadow .15s; }
+.card > span { color:var(--muted); font-size:12px; font-weight:600; }
+a.card:hover, button.card:hover { border-color:color-mix(in srgb, var(--red) 45%, var(--line)); box-shadow:0 4px 14px color-mix(in srgb, var(--ink) 5%, transparent); }
+.card:focus-visible { outline:3px solid var(--control-ring); outline-offset:3px; }
+.card strong { font-size:30px; letter-spacing:-.035em; line-height:1.1; font-variant-numeric:tabular-nums; }
+.card small { color:var(--muted); font-size:12px; }
+.card[data-emphasis=true] { background:var(--control-accent-bg); border-color:var(--control-accent-border); }
+.card[data-emphasis=true] strong { color:var(--red-dark); }
+.inline, .tabs, .dateRange { display:flex; align-items:center; flex-wrap:wrap; gap:10px; min-width:0; }
+.scopeRow { display:flex; align-items:flex-end; flex-wrap:wrap; gap:14px 24px; }
+.scopeRow > .muted { flex:1 1 260px; padding-bottom:9px; font-size:12px; }
+.field { display:grid; gap:7px; width:200px; max-width:100%; min-width:0; color:var(--muted); font-size:12px; font-weight:500; }
+.field :global(.select-trigger) { min-height:40px; border-radius:8px; font-size:13px; font-weight:500; }
+.modeTabs, .periodTabs { min-width:0; display:flex; align-items:center; flex-wrap:wrap; gap:4px; padding:4px; border:1px solid var(--line); border-radius:10px; background:var(--control-bg-muted); }
+.modeTabs button, .periodTabs button { border-color:transparent; background:transparent; box-shadow:none; color:var(--muted); min-height:34px; padding:7px 12px; border-radius:7px; }
+.modeTabs button:hover, .periodTabs button:hover { color:var(--ink); background:var(--surface); }
+.modeTabs [aria-pressed=true], .periodTabs [aria-pressed=true] { color:var(--red-dark); background:var(--surface); border-color:var(--line); box-shadow:0 1px 3px color-mix(in srgb, var(--ink) 7%, transparent); font-weight:700; }
+.tabs { gap:8px; }
+.tabs button { min-height:35px; padding:6px 10px; border-radius:8px; background:var(--surface); color:var(--muted); }
+.tabs [aria-pressed=true] { background:var(--control-accent-bg); border-color:var(--control-accent-border); color:var(--red-dark); }
+.tabs span { display:inline-flex; align-items:center; justify-content:center; min-width:22px; padding:1px 5px; border-radius:5px; background:var(--control-bg-muted); color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; }
+.tabs [aria-pressed=true] span { background:var(--red); color:var(--primary-foreground); }
+.filterDisclosure { border:1px solid var(--line); border-radius:10px; background:var(--surface); }
+.filterDisclosure :global(.disclosure-trigger) { padding:12px 14px; border-radius:9px; color:var(--muted); font-size:12px; font-weight:600; }
+.filterDisclosure :global(.disclosure-trigger):hover { color:var(--red-dark); background:var(--control-bg-muted); }
+.filterDisclosure :global(.disclosure-trigger)[aria-expanded=true] { color:var(--ink); background:var(--control-bg-muted); border-radius:9px 9px 0 0; }
+.filterDisclosure :global(.disclosure-content) { padding:16px; border-top:1px solid var(--line); }
+.filterGrid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
+.filterGrid .field { width:100%; }
+.activeHint { padding:2px 7px; border-radius:5px; background:var(--control-accent-bg); color:var(--red-dark); font-size:10px; font-weight:500; }
+.checks { display:flex; gap:12px 22px; flex-wrap:wrap; margin-top:16px; padding-top:14px; border-top:1px solid var(--line); }
+.checks label { display:flex; gap:8px; align-items:center; font-size:12px; color:var(--muted); cursor:pointer; }
+.checks label:has(input:checked) { color:var(--red-dark); }
+.filterFooter { display:flex; justify-content:flex-end; border-top:1px solid var(--line); padding-top:10px; }
+.filterFooter button { color:var(--muted); }
+.dateRange { align-items:flex-end; gap:16px 20px; }
+.dateForm { display:flex; align-items:flex-end; flex-wrap:wrap; gap:12px; min-width:0; }
+.dateForm :global(.ui-date-field) { flex:1 1 150px; }
+.dateForm :global(.ui-date-field) > label { color:var(--muted); font-size:12px; }
+.dateForm :global(.ui-date-input) { width:100%; }
+.dateForm :global(.ui-date-input) input { min-height:40px; height:40px; border-radius:8px; font-size:13px; }
+.dateForm > [role=alert] { flex-basis:100%; color:var(--red-dark); font-size:12px; }
+.section summary { cursor:pointer; padding:8px 0; }
+.charts { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+.rowDetails { display:grid; gap:5px; line-height:1.6; font-size:12px; margin-top:6px; }
+.warning { color:var(--red-dark); }
+.deliveryDialog { width:min(1100px,96vw); max-width:1100px; max-height:90dvh; overflow:auto; }
+.quality { display:grid; gap:16px; margin-top:12px; }
+.reasons { display:flex; flex-wrap:wrap; gap:10px; }
+@media(max-width:760px) { .section,.controls { padding:16px; } .charts { grid-template-columns:1fr; } .cards { grid-template-columns:repeat(2,minmax(0,1fr)); } .card { padding:14px; } .card strong { font-size:25px; } .modeTabs { width:100%; } .modeTabs button { flex:1 1 auto; } .scopeRow { align-items:stretch; } .filterGrid { grid-template-columns:1fr; } .filterDisclosure :global(.disclosure-content) { padding:12px; } .scopeRow .field { width:100%; } .dateRange > *, .dateForm { width:100%; } .periodTabs button { flex:1; padding-inline:8px; } .dateForm :global(.ui-date-field) { flex-basis:120px; } }
+@media(prefers-reduced-motion:reduce) { .card { transition:none; } }

@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { withPromptTraceContext, requestPromptProvenance } from './prompt-trace-context.mjs';
-import { promptRuntimeSnapshot } from './prompt-runtime.mjs';
+import { promptExecutionSnapshot } from './prompt-runtime.mjs';
 
 const contexts = new AsyncLocalStorage();
 const LIMIT = 200_000;
@@ -46,9 +46,9 @@ export async function traceModelCall(metadata, operation, secrets = []) {
   const request = safeTraceText({ format: 'xhs-model-request', schemaVersion: 1,
     stageContext: { name: stage, details: context.stageDetails },
     scope: metadata.requestScope ?? 'UNSPECIFIED', provenance: {
-      ...requestPromptProvenance(metadata.prompt),
-      runtime: promptRuntimeSnapshot() ? { source: promptRuntimeSnapshot().source,
-        capturedAt: promptRuntimeSnapshot().capturedAt, settings: promptRuntimeSnapshot().settings } : null,
+      ...requestPromptProvenance({ prompt: metadata.prompt, request: metadata.request }),
+      runtime: promptExecutionSnapshot() ? { source: promptExecutionSnapshot().source,
+        capturedAt: promptExecutionSnapshot().capturedAt, settings: promptExecutionSnapshot().settings } : null,
     }, payload: metadata.request }, secrets);
   const record = {
     id: randomUUID(), sequence: ++context.sequence, stage,

@@ -38,7 +38,7 @@ export function initializePromptGovernance(db) {
       const now = new Date().toISOString();
       if (!lookup.get(item.kind)) insert.run(`business-${item.kind.toLowerCase()}`, item.label, item.kind, now);
       const template = lookup.get(item.kind);
-      if (count.get(template.id).count === 0) {
+      if (item.editable !== false && count.get(template.id).count === 0) {
         const content = defaultBusinessPrompt(item.kind);
         draft.run(template.id, content, hashPrompt(content), now);
       }
@@ -61,7 +61,8 @@ export function createPromptGovernanceStore(db) {
           WHERE pt.kind=? AND pv.content=? ORDER BY pv.id DESC LIMIT 1`).get(kind, content);
         prompts[kind] = { content, versionId: original?.id ?? null, version: original?.version ?? null };
       }
-      const value = settings ? createPromptRuntime({ prompts, settings: JSON.parse(settings.value_json), source: 'LOCAL_TASK_SNAPSHOT' }) : null;
+      const value = settings || Object.values(prompts).some(Boolean)
+        ? createPromptRuntime({ prompts, settings: settings ? JSON.parse(settings.value_json) : null, source: 'LOCAL_TASK_SNAPSHOT' }) : null;
       db.prepare('INSERT OR IGNORE INTO task_prompt_runtimes VALUES (?,?,?)').run(taskId, JSON.stringify(value), new Date().toISOString());
       return JSON.parse(db.prepare('SELECT value_json FROM task_prompt_runtimes WHERE task_id=?').get(taskId).value_json);
     },

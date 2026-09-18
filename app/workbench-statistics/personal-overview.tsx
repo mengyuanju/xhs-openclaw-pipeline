@@ -160,7 +160,7 @@ function PersonalCompletionOverview({
       <div className="personal-completion-action-card">
         <div><FileText size={16} aria-hidden="true" /><span>文案完成</span><strong>{number(completedWork?.copy)}</strong></div>
         <div><ImageIcon size={16} aria-hidden="true" /><span>图片完成</span><strong>{number(completedWork?.image)}</strong></div>
-        <small>共 {number(completedWork ? completedWork.copy + completedWork.image : null)} 次阶段完成
+        <small>阶段任务合计 {number(completedWork ? completedWork.copy + completedWork.image : null)} 项
           {!!completedWork?.overlap && `；其中 ${number(completedWork.overlap)} 个任务同时完成文案和图片`}</small>
       </div>
     </div>

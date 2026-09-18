@@ -1,3 +1,4 @@
+import { internalPrompt } from '../prompt-runtime.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { codexErrorCode } from '../codex-protocol.mjs';
 import { mkdir, readFile, unlink } from 'node:fs/promises';
@@ -10,7 +11,7 @@ import { createImageAlignmentValidator } from '../image-alignment.mjs';
 import { createAgentClient } from '../agent-client.mjs';
 import { normalizeProductionSettings, productionDisclosure } from '../production-settings.mjs';
 import { renderPrompt } from './prompt-service.mjs';
-import { businessPrompt, promptRuntimeSnapshot } from '../prompt-runtime.mjs';
+import { businessPrompt, promptRuntimeSnapshot, hasPublishedPrompt } from '../prompt-runtime.mjs';
 import { withPromptExecution } from './prompt-execution.mjs';
 
 function safeAbsolute(root, child) {
@@ -78,8 +79,8 @@ export async function processNextImageEdit({
         imageCount: config.imageCount,
         reviewInstruction: request.instruction,
       };
-      const prompt = promptRuntimeSnapshot() ? businessPrompt('IMAGE_EDIT_SYSTEM', { variables,
-        contract: '编辑第一个附件，保留未要求修改的内容。已有交付页面仍需通过原锁定文字验收。输出单张 3:4 PNG。',
+      const prompt = promptRuntimeSnapshot() || hasPublishedPrompt('IMAGE_EDIT_SYSTEM') ? businessPrompt('IMAGE_EDIT_SYSTEM', { variables,
+        contract: internalPrompt('INTERNAL_LOCAL_IMAGE_EDIT_OUTPUT'),
         data: { query: config.query, reviewInstruction: request.instruction } })
         : renderPrompt(config.imageEditPromptContent, variables);
       const generated = await client.runImageEdit({

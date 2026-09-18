@@ -15,7 +15,9 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
   let browser,server;
   try{
     await build({stdin:{contents:`import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{ConfirmDialogProvider}from'./components/ui/confirm-dialog';import{CurrentImageEditor}from'./app/components/current-image-editor';const assets=[1,2,3].map(id=>({id,sha256:String.fromCharCode(96+id).repeat(64),url:'/v1/assets/'+id}));createRoot(document.getElementById('root')).render(<ConfirmDialogProvider><CurrentImageEditor taskId={1} runId="${runId}" copyRevisionId={1} asset={assets[0]} assets={assets} page={1} runs={[]} onChanged={async()=>{}}/></ConfirmDialogProvider>);`,resolveDir:process.cwd(),loader:'tsx'},bundle:true,outfile:bundle,jsx:'automatic',platform:'browser',conditions:['style'],alias:{'@':process.cwd()},define:{'process.env.NODE_ENV':'"test"'}});
-    const [js,css]=await Promise.all([readFile(bundle),readFile(stylesheet)]);
+    const [js,rawCss]=await Promise.all([readFile(bundle),readFile(stylesheet,'utf8')]);
+    const {default:postcss}=await import('postcss'), {default:tailwind}=await import('@tailwindcss/postcss');
+    const {css}=await postcss([tailwind()]).process(rawCss,{from:join(process.cwd(),'app/globals.css')});
     server=createServer(async(req,res)=>{
       if(req.url==='/bundle.js'){res.setHeader('content-type','application/javascript');res.end(js);return;}
       if(req.url==='/bundle.css'){res.setHeader('content-type','text/css');res.end(css);return;}
@@ -125,7 +127,7 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     await page.getByRole('heading',{name:'修改前后滑动对比'}).waitFor();
     assert.equal(submitted.operation,'AI_LOCAL');assert.equal(submitted.mask,undefined);assert.match(submitted.instruction,/画面右上附近，改颜色/u);
     assert.equal(submitted.confirmation,'LIVE_IMAGE_COST_ACCEPTED');assert.equal(actions.length,0);
-    await page.getByRole('status').getByText('系统正在处理',{exact:false}).waitFor();
+    await page.getByRole('status').getByText('修改请求已提交，可关闭窗口',{exact:false}).waitFor();
     await page.getByRole('tab',{name:/任务记录/u}).click();
     assert.equal(await page.getByRole('button',{name:'采用此版本',exact:true}).isDisabled(),false);
     await page.getByRole('button',{name:'采用此版本',exact:true}).click();
@@ -144,7 +146,7 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     await page.getByLabel('采用建议并修改操作原因').fill('采用系统补强的可执行描述');
     await page.getByRole('button',{name:'确认采用建议并修改',exact:true}).click();
     await page.getByText('局部修改 · 排队中',{exact:true}).waitFor();
-    const successFeedback=page.getByRole('status').getByText('采用建议并修改操作已完成。',{exact:true});
+    const successFeedback=page.getByRole('status').getByText('修复已提交，可关闭窗口；完成或失败后会在“后台任务”中提醒。',{exact:true});
     await successFeedback.waitFor();
     await successFeedback.waitFor({state:'hidden',timeout:7000});
     assert.equal(actions.at(-1).url.endsWith('/apply-suggestion'),true);
@@ -189,7 +191,8 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     assert.equal(await page.getByText('PNG / JPG / WebP · 最大 5 MB',{exact:true}).count(),1);
     await uploadInput.setInputFiles({name:'reference.png',mimeType:'image/png',buffer:png});
     await page.getByRole('img',{name:'已上传的真实产品参考图',exact:true}).waitFor();
-    await page.getByLabel('参考图使用方式').selectOption('APPEARANCE');
+    await page.getByRole('combobox',{name:'参考图使用方式',exact:true}).click();
+    await page.getByRole('option',{name:'外观参考（允许手部、裁切或次要产品）',exact:true}).click();
     await page.getByText('只迁移主产品可确认的外观',{exact:false}).waitFor();
     assert.equal(await page.getByRole('button',{name:'生成修改预览',exact:true}).isDisabled(),false);
     await page.getByRole('button',{name:'生成修改预览',exact:true}).click();

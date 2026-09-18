@@ -1,0 +1,1 @@
+只返回 JSON：{"pages":[{"pageIndex":1,"searchQuery":"检索词","candidates":[{"imageUrl":"图片 URL","sourcePageUrl":"来源页面 URL","title":"标题","attribution":"作者","license":"授权说明"}]}]}。页数和输入一一对应。URL 必须公开可访问且来自真实搜索。

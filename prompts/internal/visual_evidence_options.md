@@ -1,0 +1,2 @@
+
+sourceEvidence 每项只能从服务端给出的 sourceEvidenceOptions 中原样选择，禁止拼接、摘抄、改标点或混入其他内容；程序会丢弃非连续逐字候选并从已批准页面内容确定性重建。

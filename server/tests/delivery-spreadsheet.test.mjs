@@ -10,9 +10,11 @@ import JSZip from 'jszip';
 import sharp from 'sharp';
 
 import {
+  DELIVERY_SPREADSHEET_ARCHIVE_MEDIA_TYPE,
   MAX_DELIVERY_SPREADSHEET_IMAGE_BYTES,
   MAX_DELIVERY_SPREADSHEET_TASKS,
   writeDeliverySpreadsheet,
+  writeDeliverySpreadsheetExport,
 } from '../src/delivery-spreadsheet.mjs';
 
 async function withSpreadsheet(action) {
@@ -415,6 +417,58 @@ test('enforces the cumulative original-image byte limit', async () => {
   });
 });
 
+test('automatically shards an oversized original-image export into exact-image workbooks in a zip', async () => {
+  await withSpreadsheet(async (outputPath) => {
+    const tasks = [
+      deliveryTask({ id: 7, query: '第一卷', assetIds: [701] }),
+      deliveryTask({ id: 8, query: '第二卷', assetIds: [801] }),
+    ];
+    const firstContent = await solidPng(220, 38, 38);
+    const secondContent = await solidPng(37, 99, 235);
+    const contentByAssetId = new Map([
+      [701, firstContent],
+      [801, secondContent],
+    ]);
+    for (const task of tasks) {
+      task.assets[0].byteSize = contentByAssetId.get(task.assets[0].id).byteLength;
+    }
+    const maxImageBytes = Math.max(firstContent.byteLength, secondContent.byteLength);
+
+    const result = await writeDeliverySpreadsheetExport(
+      tasks,
+      async (task, assetId) => ({
+        ...task.assets.find((asset) => asset.id === assetId),
+        content: contentByAssetId.get(assetId),
+      }),
+      dirname(outputPath),
+      { maxImageBytes },
+    );
+
+    assert.equal(result.mediaType, DELIVERY_SPREADSHEET_ARCHIVE_MEDIA_TYPE);
+    assert.equal(result.fileExtension, '.zip');
+    assert.equal(result.taskCount, 2);
+    assert.equal(result.partCount, 2);
+    assert.deepEqual(readdirSync(dirname(outputPath)), ['delivery-pool.zip']);
+
+    const archive = await JSZip.loadAsync(await readFile(result.artifactPath));
+    const entries = Object.values(archive.files)
+      .filter((entry) => entry.name.endsWith('.xlsx'))
+      .sort((left, right) => left.name.localeCompare(right.name));
+    assert.deepEqual(entries.map((entry) => entry.name), [
+      'delivery-pool-part-01-of-02.xlsx',
+      'delivery-pool-part-02-of-02.xlsx',
+    ]);
+    for (let index = 0; index < entries.length; index += 1) {
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(await entries[index].async('nodebuffer'));
+      const worksheet = workbook.getWorksheet('交付内容');
+      assert.equal(worksheet.getCell('C2').value, tasks[index].query);
+      const image = embeddedImage(workbook, worksheet.getImages()[0].imageId);
+      assert.deepEqual(Buffer.from(image.buffer), contentByAssetId.get(tasks[index].assets[0].id));
+    }
+  });
+});
+
 test('does not leave a workbook or temporary file when cancelled after serialization', async () => {
   await withSpreadsheet(async (outputPath) => {
     const task = deliveryTask();
@@ -443,6 +497,23 @@ test('does not leave a workbook or temporary file when cancelled after serializa
   });
 });
 
+test('accepts a current image-run member whose immutable asset belongs to an earlier run', async () => {
+  await withSpreadsheet(async (outputPath) => {
+    const task = deliveryTask();
+    const content = await solidPng(128, 128, 128);
+    const result = await writeDeliverySpreadsheet(
+      [task],
+      async (_loadedTask, assetId) => ({
+        ...task.assets.find((asset) => asset.id === assetId),
+        imageRunId: 'source-run',
+        content,
+      }),
+      outputPath,
+    );
+    assert.deepEqual(result, { taskCount: 1, imageColumnCount: 1 });
+  });
+});
+
 test('rejects missing, mismatched, non-image, and invalid-content assets', async (t) => {
   const validContent = await solidPng(128, 128, 128);
   const cases = [
@@ -459,11 +530,6 @@ test('rejects missing, mismatched, non-image, and invalid-content assets', async
     {
       name: 'wrong task binding',
       change: (asset) => ({ ...asset, taskId: asset.taskId + 1, content: validContent }),
-      expected: /交付图片缺失/u,
-    },
-    {
-      name: 'wrong image-run binding',
-      change: (asset) => ({ ...asset, imageRunId: 'wrong-run', content: validContent }),
       expected: /交付图片缺失/u,
     },
     {

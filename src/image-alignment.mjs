@@ -1,3 +1,4 @@
+import { internalPrompt } from './prompt-runtime.mjs';
 import { businessPrompt, promptPolicy, promptRuntimeSnapshot } from './prompt-runtime.mjs';
 import { codexErrorCode } from './codex-protocol.mjs';
 import { safeTraceText } from './model-call-trace.mjs';
@@ -409,12 +410,9 @@ export function buildImageAlignmentPrompt({ post, visualPage, pageIndex, imageCo
   const prompt = businessPrompt('IMAGE_ALIGNMENT_SYSTEM', {
     dataTag: 'untrusted_alignment_contract',
     data: { title: post.title, body: post.body, pageIndex, imageCount, page: visualPage },
-    contract: '只返回 JSON：schemaVersion=1；subjectMatched、sceneMatched、headlineMatched、styleMatched、layoutMatched 为布尔值；bulletCoverage 为 0～1；contradictions、extraClaims、textErrors 为字符串数组；recognizedText 包含 headline、subtitle、bullets、otherText，其中 bullets 按画面自然读取顺序逐项抄录，程序以无序多重集合核对白名单完整性，逻辑或布局顺序错误由 layoutMatched、contradictions 和 failureClass 报告；unreadableText 只列 allowedVisibleText 或合规标识中不可读的任务预期文字，不要列背景书脊、屏幕边框等非预期装饰字；hasTraditionalChinese 为布尔值；ocrConfidence 为 0～1；failureClass 为 PASS、MINOR_TEXT、SEMANTIC、EXTRA_FACT、STYLE_LAYOUT、OCR_MISMATCH、OCR_UNCERTAIN；repairInstruction 为字符串，通过时为空，失败时 5～1000 字。程序按当前 OCR 比较配置校验，模型原始结论完整保留。',
+    contract: internalPrompt('INTERNAL_IMAGE_ALIGNMENT_OUTPUT', { slot1: internalPrompt('INTERNAL_OCR_CELSIUS_EQUIVALENCE') }),
   });
-  return prompt.replace(
-    '；hasTraditionalChinese 为布尔值；',
-    '；温度标注中连续的 ℃ 与 °C 是等价写法，不得仅因两者差异报错；hasTraditionalChinese 为布尔值；',
-  );
+  return prompt;
 }
 export function parseImageAlignmentOutput(raw, { allowedVisibleText } = {}) {
   const root = parseObject(raw);
@@ -580,7 +578,7 @@ export function createImageAlignmentValidator({
     for (let responseAttempt = 1; responseAttempt <= MAX_ALIGNMENT_RESPONSE_ATTEMPTS; responseAttempt += 1) {
       const correction = responseAttempt === 1
         ? ''
-        : `\n\n上一次响应未通过 JSON 契约（${lastContractError?.message ?? '结构无效'}）。这是格式纠正重试：只输出一个完整 JSON 对象，不要 Markdown、解释、前后缀或代码块。`;
+        : internalPrompt('INTERNAL_IMAGE_ALIGNMENT_RETRY', { slot1: (lastContractError?.message ?? '结构无效') });
       let generated;
       try {
         generated = await agentClient.runVision({

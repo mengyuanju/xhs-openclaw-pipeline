@@ -44,7 +44,7 @@ export default function StatisticsChart({ label, labels, series, variant, bar = 
     if (!chart) return;
     const style = getComputedStyle(document.documentElement);
     const token = (name: string) => style.getPropertyValue(name).trim();
-    const palette = [token('--red'), token('--green'), '#5b73d8', token('--amber'), '#8b63c7', '#2395a7', '#9b8b7d'];
+    const palette = ['#637e9a', '#629487', '#8882ad', '#b49a68', '#7699ad', '#87956b', '#9b8b7d'];
     const chartType = variant ?? (bar ? 'bar' : 'line');
     if (chartType === 'donut') {
       const values = series[0]?.values ?? [];

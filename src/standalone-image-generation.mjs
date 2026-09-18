@@ -1,5 +1,5 @@
 import { buildGovernedImageTaskPrompt, preserveImageSystemPrompt } from './image-prompt.mjs';
-import { withPromptRuntime, promptRuntimeSnapshot, createPromptRuntime } from './prompt-runtime.mjs';
+import { withPromptRuntime, promptExecutionSnapshot, createPromptRuntime } from './prompt-runtime.mjs';
 import { prepareImageArtifacts, publicImageArtifacts, IMAGE_ARTIFACT_FILE } from './image-artifacts.mjs';
 import { normalizeImageSettings } from '../server/src/image-options.mjs';
 import { preparePageLayouts } from './image-layout-controls.mjs';
@@ -963,7 +963,7 @@ async function generateStandaloneImagesInContext({
       assessment: { schemaVersion: 1, ...recovery.assessed.assessment },
       model: recovery.assessed.model,
     });
-    await writeJsonAtomic(join(outputDir, 'prompt-runtime.json'), promptRuntimeSnapshot());
+    await writeJsonAtomic(join(outputDir, 'prompt-runtime.json'), promptExecutionSnapshot());
     const { modelApi: _transportOnly, ...frozenBusinessSettings } = normalizeProductionSettings(runtime.productionSettings ?? {});
     await writeJsonAtomic(join(outputDir, 'image-execution-config.json'), { schemaVersion: 1,
       productionSettings: frozenBusinessSettings, imageSystemPrompt: runtime.imageSystemPrompt ?? '', visualReference: runtime.visualReference ?? null });

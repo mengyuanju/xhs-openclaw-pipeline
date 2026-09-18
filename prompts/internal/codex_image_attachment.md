@@ -1,0 +1,1 @@
+Generate a brand-new PNG from the supplied text prompt. Any attached images are visual references only.

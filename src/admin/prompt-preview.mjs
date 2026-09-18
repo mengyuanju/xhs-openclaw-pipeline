@@ -1,6 +1,6 @@
-import { businessPrompt, createPromptRuntime, withPromptRuntime } from '../prompt-runtime.mjs';
-import { PROMPT_KINDS, PROMPT_CONTRACT_DESCRIPTION } from '../prompt-catalog.mjs';
-import { normalizePromptContent } from './prompt-service.mjs';
+import { businessPrompt, internalPrompt, createPromptRuntime, withPromptRuntime } from '../prompt-runtime.mjs';
+import { PROMPT_CATALOG, PROMPT_KINDS, PROMPT_CONTRACT_DESCRIPTION } from '../prompt-catalog.mjs';
+import { assertPromptEditable, normalizePromptContent } from './prompt-service.mjs';
 
 export function promptCompatibilityIssues(kind, content) {
   return kind === 'IMAGE_SYSTEM' && content.includes('整套图片均由图像模型逐张生成视觉底图')
@@ -8,6 +8,7 @@ export function promptCompatibilityIssues(kind, content) {
 }
 
 export function assertPromptPublishable(kind, content) {
+  assertPromptEditable(kind, content);
   normalizePromptContent(content);
   const issues = promptCompatibilityIssues(kind, content);
   if (issues.length) throw new TypeError(issues.join('；'));
@@ -16,6 +17,13 @@ export function assertPromptPublishable(kind, content) {
 export function previewPrompt({ kind, content, query = '预览示例' }, configuration) {
   if (!PROMPT_KINDS.includes(kind)) throw new TypeError('未知提示词类型');
   const candidate = normalizePromptContent(content);
+  const definition = PROMPT_CATALOG.find(item => item.kind === kind);
+  if (definition.defaultPath) {
+    assertPromptEditable(kind, candidate);
+    const runtime = createPromptRuntime({ source: 'ADMIN_DRAFT_PREVIEW', settings: null, prompts: { [kind]: { content: candidate } } });
+    return { prompt: withPromptRuntime(runtime, () => internalPrompt(kind, Object.fromEntries(definition.variables.map(item => [item.name, `[运行时传入：${item.description}]`])))),
+      issues: [], templateSha256: runtime.prompts[kind].sha256, note: '仅预览本项补充提示词。方括号标出执行时注入的数据或组合规则，不调用模型。' };
+  }
   const runtime = createPromptRuntime({ source: 'ADMIN_DRAFT_PREVIEW', settings: configuration.settings ?? {},
     prompts: { [kind]: { content: candidate } } });
   const prompt = withPromptRuntime(runtime, () => businessPrompt(kind, { contract: PROMPT_CONTRACT_DESCRIPTION,

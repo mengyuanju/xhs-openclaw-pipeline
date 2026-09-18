@@ -451,7 +451,7 @@ const controlPlane = createServer(async (req, res) => {
           taskAssignmentVersion: 3,
           queryPackageVersion: 6,
           finalDeliveryVersion: 5,
-          deliverySpreadsheetVersion: 2,
+          deliverySpreadsheetVersion: 3,
           deliveryPreviewVersion: 5,
         },
       });

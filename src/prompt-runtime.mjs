@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { PROMPT_KINDS, PROMPT_VARIABLES } from './prompt-catalog.mjs';
+import { PROMPT_CATALOG, PROMPT_KINDS, PROMPT_VARIABLES } from './prompt-catalog.mjs';
 import { recordPromptRendering } from './prompt-trace-context.mjs';
 
 const contexts = new AsyncLocalStorage();
@@ -38,9 +38,20 @@ export function createPromptRuntime({ prompts = {}, settings = {}, source = 'PUB
     if (typeof item.content !== 'string' || !item.content.trim()) throw new TypeError(`${kind} 内容为空`);
     const sha256 = hash(item.content);
     if ((item.sha256 ?? item.contentSha256) && (item.sha256 ?? item.contentSha256) !== sha256) throw new TypeError(`${kind} hash 不匹配`);
-    pinned[kind] = { content: item.content, versionId: item.versionId ?? item.id ?? null, version: item.version ?? null, sha256 };
+    pinned[kind] = { content: item.content, versionId: item.versionId ?? item.id ?? null, version: item.version ?? null, sha256,
+      ...(item.source ? { source: item.source } : {}) };
   }
-  return freeze({ schemaVersion: 1, source, capturedAt, settings: normalizePromptPolicy(settings), prompts: pinned });
+  // Freeze supplemental defaults too: a retry must not silently pick up a new
+  // bundled file merely because no administrator version was published yet.
+  for (const definition of PROMPT_CATALOG.filter(item => item.defaultPath && item.editable)) {
+    if (pinned[definition.kind]) continue;
+    const content = defaultBusinessPrompt(definition.kind);
+    pinned[definition.kind] = { content, versionId: null, version: null, sha256: hash(content), source: 'BUNDLED_DEFAULT' };
+  }
+  // Null means published templates are available, but the managed policies
+  // have not been configured. It must survive snapshot serialization/replay.
+  return freeze({ schemaVersion: 1, source, capturedAt,
+    settings: settings === null ? null : normalizePromptPolicy(settings), prompts: pinned });
 }
 
 export function withPromptRuntime(runtime, action) {
@@ -49,7 +60,14 @@ export function withPromptRuntime(runtime, action) {
   const pinned = createPromptRuntime(runtime);
   return contexts.run({ runtime: pinned, used: new Map() }, action);
 }
-export const promptRuntimeSnapshot = () => contexts.getStore()?.runtime ?? null;
+export const promptExecutionSnapshot = () => contexts.getStore()?.runtime ?? null;
+// Existing consumers use this as the managed-policy switch (OCR, validation,
+// visual planning, etc.). Loading published templates alone must not enable it.
+export const promptRuntimeSnapshot = () => {
+  const runtime = promptExecutionSnapshot();
+  return runtime?.settings ? runtime : null;
+};
+export const hasPublishedPrompt = (kind) => Boolean(promptExecutionSnapshot()?.prompts[kind]);
 export const promptPolicy = () => promptRuntimeSnapshot()?.settings ?? DEFAULT_PROMPT_POLICY;
 export function promptProvenance() {
   const context = contexts.getStore();
@@ -59,8 +77,38 @@ export function promptProvenance() {
 
 export function defaultBusinessPrompt(kind) {
   if (!PROMPT_KINDS.includes(kind)) throw new TypeError(`未知提示词类型：${kind}`);
+  const definition = PROMPT_CATALOG.find(item => item.kind === kind);
+  if (definition.defaultPath === 'prompts/post.md') return readFileSync(new URL('../prompts/post.md', import.meta.url), 'utf8');
+  if (definition.defaultPath?.startsWith('prompts/internal/')) {
+    const filename = definition.defaultPath.slice('prompts/internal/'.length);
+    // Keep the bundler's filesystem context inside the prompt directory. A
+    // dynamic ../${path} URL would scan the entire repository and its artifacts.
+    return readFileSync(new URL(`../prompts/internal/${filename}`, import.meta.url), 'utf8');
+  }
   const originals = { TEXT_SYSTEM: 'text-system', IMAGE_SYSTEM: 'image-system', IMAGE_EDIT_SYSTEM: 'image-edit-system' };
   return readFileSync(new URL(originals[kind] ? `../server/prompts/${originals[kind]}.md` : `../prompts/business/${kind.toLowerCase()}.md`, import.meta.url), 'utf8').trim();
+}
+
+// Supplemental rules use the same version store as stage rules. Program protocols
+// are visible in that catalog too, but cannot be overridden by published prose.
+export function internalPrompt(kind, values = {}) {
+  const definition = PROMPT_CATALOG.find(item => item.kind === kind && item.defaultPath);
+  if (!definition) throw new TypeError(`未知内部提示词：${kind}`);
+  const context = contexts.getStore();
+  const version = definition.editable ? context?.runtime.prompts[kind] : null;
+  const template = version?.content ?? defaultBusinessPrompt(kind);
+  const names = new Set(definition.variables.map(item => item.name));
+  for (const name of names) if (!Object.hasOwn(values, name)) throw new TypeError(`${kind} 缺少变量 ${name}`);
+  const rendered = template.replace(/\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}/gu, (original, name) => {
+    if (!names.has(name)) return original; // A read-only schema may document literal template variables.
+    return String(values[name]);
+  });
+  if (Buffer.byteLength(rendered, 'utf8') > 200_000) throw new RangeError('组合提示词超过 200000 字节，未截断或发送');
+  const source = version?.source ?? (version ? context.runtime.source : definition.editable ? 'BUNDLED_DEFAULT' : 'PROGRAM_CONTRACT');
+  context?.used.set(kind, { kind, versionId: version?.versionId ?? null, version: version?.version ?? null,
+    templateSha256: hash(template), renderedSha256: hash(rendered), source });
+  recordPromptRendering({ template, rendered, kind, version, source, raw: true });
+  return rendered;
 }
 
 export function businessPrompt(kind, { contract = '', data, dataTag = 'untrusted_task_data', inherits = [], variables = {} } = {}) {
@@ -73,17 +121,18 @@ export function businessPrompt(kind, { contract = '', data, dataTag = 'untrusted
     repairTargetMax: policy.copyRepairTargetMax, copyKnowledgeThreshold: policy.copyKnowledgeThreshold };
   const rules = [...new Set([...inherits, kind])].map((type) => {
     const version = context?.runtime.prompts[type];
-    if (context && !version) throw new Error(`缺少已发布提示词 ${type}，请在管理员提示词页面发布后重试`);
+    if (context?.runtime.settings && !version) throw new Error(`缺少已发布提示词 ${type}，请在管理员提示词页面发布后重试`);
     const content = version?.content ?? defaultBusinessPrompt(type);
+    const source = version ? context.runtime.source : 'BUNDLED_DEFAULT';
     const rendered = content.replace(/\{\{\s*([A-Za-z][A-Za-z0-9]*)\s*\}\}/gu, (_, name) => {
       if (!PROMPT_VARIABLES.includes(name)) throw new TypeError(`未知提示词变量：${name}`);
       return dataValue(values[name]);
     });
-    context?.used.set(type, { kind: type, versionId: version.versionId, version: version.version,
-      templateSha256: version.sha256, renderedSha256: hash(rendered) });
+    context?.used.set(type, { kind: type, versionId: version?.versionId ?? null, version: version?.version ?? null,
+      templateSha256: version?.sha256 ?? hash(content), renderedSha256: hash(rendered), source });
     // Associate the rendered text with its frozen version for each actual request.
     recordPromptRendering({ template: content, rendered, kind: type, version,
-      source: context?.runtime.source ?? 'BUNDLED_DEFAULT' });
+      source });
     return `<trusted_business_rules kind="${type}">\n${rendered}\n</trusted_business_rules>`;
   });
   if (!/^untrusted_[a-z_]+$/u.test(dataTag)) throw new TypeError('任务数据标签无效');

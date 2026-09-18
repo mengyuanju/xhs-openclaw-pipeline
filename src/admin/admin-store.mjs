@@ -22,6 +22,7 @@ import {
   PROMPT_KINDS,
   hashPrompt,
   normalizePromptContent,
+  assertPromptEditable,
 } from './prompt-service.mjs';
 import { readTaskTimingStats } from './task-timing.mjs';
 import { createReviewWorkStore, initializeReviewWorkSchema } from './review-work-store.mjs';
@@ -656,8 +657,9 @@ export function createAdminStore(databasePath) {
     },
 
     createPromptVersion({ templateId, content: rawContent }) {
-      const template = db.prepare('SELECT id FROM prompt_templates WHERE id = ?').get(templateId);
+      const template = db.prepare('SELECT id,kind FROM prompt_templates WHERE id = ?').get(templateId);
       if (!template) throw new Error('prompt template not found');
+      assertPromptEditable(template.kind, rawContent);
       const content = normalizePromptContent(rawContent);
       const next = Number(db.prepare(`
         SELECT COALESCE(MAX(version), 0) + 1 AS version FROM prompt_versions WHERE template_id = ?
@@ -675,6 +677,7 @@ export function createAdminStore(databasePath) {
       const current = getPromptVersionRow.get(id);
       if (!current) throw new Error('prompt version not found');
       if (current.status !== 'DRAFT') throw new Error('published prompt versions are immutable');
+      assertPromptEditable(db.prepare('SELECT kind FROM prompt_templates WHERE id=?').get(current.template_id).kind, rawContent);
       const content = normalizePromptContent(rawContent);
       db.prepare('UPDATE prompt_versions SET content = ?, content_sha256 = ? WHERE id = ?')
         .run(content, hashPrompt(content), id);

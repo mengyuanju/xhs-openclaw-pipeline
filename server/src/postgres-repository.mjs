@@ -1,6 +1,9 @@
 import { priorityFrom, priorityOrderSql, normalizePriorityMode } from './task-priority.mjs';
 import { adjustTaskPriority, readPriorityScope } from './task-priority-store.mjs';
 import { flushExpiredCopyQualityBatches } from './copy-quality-control.mjs';
+import { readPersonalWorkspace } from './personal-workspace.mjs';
+import { confirmDeliveryBatchMembers } from './delivery-ledger.mjs';
+import { readOperatorPerformance } from './operator-performance.mjs';
 import {
   closeImageSamplingTail,
   batchReturnImageQa,
@@ -32,6 +35,7 @@ import { migrateDatabase } from './database-migrations.mjs';
 import { claimRequestExpiry } from './claim-request.mjs';
 import { saveModelCall, listModelCalls, getModelCall } from './model-call-traces.mjs';
 import { hashUserPassword, verifyUserPassword } from './user-auth.mjs';
+import { createPromptRuntime } from '../../src/prompt-runtime.mjs';
 import { heartbeatExecutions, recoverStaleExecutions } from './execution-recovery.mjs';
 import {
   AUTO_ASSIGNABLE_TASK_STATES,
@@ -128,6 +132,7 @@ import {
   confirmDeliveryBatch,
   createDeliveryBatch,
   getDeliveryBatch,
+  getDeliveryBatchSpreadsheet,
   getDeliveryBatchArtifact,
   listDeliveryBatches,
   recordDeliveryBatchDownload,
@@ -200,6 +205,8 @@ function taskStateOrder(column) {
     ELSE 10
   END`;
 }
+
+const TASK_LATEST_ACTIVITY_SQL = 'GREATEST(created_at, updated_at, COALESCE(last_activity_at, updated_at))';
 
 function taskFrom(row) {
   if (!row) return null;
@@ -1409,6 +1416,10 @@ async function configurationSnapshots(client, tasks, kind) {
       sha256: row.content_sha256,
     })),
   };
+  const supplementalRuntime = createPromptRuntime({ prompts: shared.prompts, settings: null });
+  for (const [promptKind, item] of Object.entries(supplementalRuntime.prompts)) {
+    if (item.source === 'BUNDLED_DEFAULT') shared.prompts[promptKind] = item;
+  }
   const revisions = new Map(revision.rows.map(row => [String(row.id), revisionFrom(row)]));
   return new Map(tasks.map(task => [task.id, {
     ...shared,
@@ -1629,6 +1640,9 @@ export class PostgresControlPlaneRepository {
   getDeliveryBatch(id, { actor } = {}) {
     return getDeliveryBatch(this.pool, id, actor);
   }
+  getDeliveryBatchSpreadsheet(id, { actor } = {}) {
+    return getDeliveryBatchSpreadsheet(this.pool, id, actor);
+  }
   getDeliveryBatchArtifact(id, { actor } = {}) {
     return getDeliveryBatchArtifact(this.pool, id, actor);
   }
@@ -1636,7 +1650,10 @@ export class PostgresControlPlaneRepository {
     return transaction(this.pool, (client) => recordDeliveryBatchDownload(client, id, actor));
   }
   confirmDeliveryBatch(id, { actor } = {}) {
-    return transaction(this.pool, (client) => confirmDeliveryBatch(client, id, actor));
+    return transaction(this.pool, async (client) => {
+      await confirmDeliveryBatchMembers(client, id, actor);
+      return confirmDeliveryBatch(client, id, actor);
+    });
   }
   listDeliveryPoolTaskIdsForPreview({
     actor, queryPackageIds, includeUnassigned = false, taskIds = [], testTaskId = null, limit = 50,
@@ -1682,7 +1699,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 8, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 6, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, deliverySpreadsheetVersion: 2, deliveryPreviewVersion: 6 } };
+      capabilities: { taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 8, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, adminTaskActivityDateFilters: 1, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 6, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, sharedDeliveryVersion: 1, deliverySpreadsheetVersion: 3, deliveryPreviewVersion: 6 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -2881,7 +2898,19 @@ export class PostgresControlPlaneRepository {
     });
   }
 
+  async personalWorkspace(actor, input, report = false) {
+    return readPersonalWorkspace(this.pool, actor, input, {
+      report, blindSql: activeBlindQaSql('task'),
+      loadTasks: (client, taskIds) => new PostgresControlPlaneRepository({ pool: client }).listTasks({ taskIds, limit: 100 }),
+    });
+  }
+
+  async operatorPerformance(actor, input, options = {}) {
+    return readOperatorPerformance(this.pool, actor, input, options);
+  }
+
   async listTasks({
+    taskIds = null,
     state = null,
     states = null,
     nodeId = null,
@@ -2912,6 +2941,7 @@ export class PostgresControlPlaneRepository {
     includeTotal = false,
     excludeActiveBlindQa = false,
     copyQaReturnedOnly = false,
+    workModeKind = null,
   } = {}) {
     const safeLimit = Math.max(1, Math.min(200, Number(limit) || 50));
     const safeOffset = Math.max(0, Number(offset) || 0);
@@ -2939,14 +2969,24 @@ export class PostgresControlPlaneRepository {
     }
     const values = [];
     const filters = [];
+    if (taskIds !== null) {
+      if (!Array.isArray(taskIds) || taskIds.length > 100) throw new TypeError('invalid personal task page');
+      values.push(taskIds.map(normalizeTaskId));
+      filters.push(`id = ANY($${values.length}::bigint[])`);
+    }
+    if (workModeKind !== null) {
+      if (!['COPY', 'IMAGE'].includes(workModeKind)) throw new TypeError('invalid work mode kind');
+      filters.push('priority_paused = false AND current_copy_revision_id IS NOT NULL');
+      if (workModeKind === 'IMAGE') filters.push('current_image_run_id IS NOT NULL');
+    }
     const createdDateRange = normalizeTaskDateRange(createdDateFrom, createdDateTo);
     if (createdDateRange.createdDateFrom !== null) {
       values.push(createdDateRange.createdDateFrom);
-      filters.push(`created_at >= ($${values.length}::date::timestamp AT TIME ZONE 'Asia/Shanghai')`);
+      filters.push(`${TASK_LATEST_ACTIVITY_SQL} >= ($${values.length}::date::timestamp AT TIME ZONE 'Asia/Shanghai')`);
     }
     if (createdDateRange.createdDateTo !== null) {
       values.push(createdDateRange.createdDateTo);
-      filters.push(`created_at < (($${values.length}::date + 1)::timestamp AT TIME ZONE 'Asia/Shanghai')`);
+      filters.push(`${TASK_LATEST_ACTIVITY_SQL} < (($${values.length}::date + 1)::timestamp AT TIME ZONE 'Asia/Shanghai')`);
     }
     if (reviewAssignedToAccountId !== null) {
       values.push(normalizeTaskId(reviewAssignedToAccountId));
@@ -3462,6 +3502,10 @@ export class PostgresControlPlaneRepository {
           SELECT * FROM tasks WHERE id = $1
         )
         SELECT task.*, creator.id AS creator_account_id,
+          (SELECT to_jsonb(p) FROM copy_image_plan_regeneration_jobs p
+            WHERE p.task_id=task.id AND p.copy_revision_id=task.current_copy_revision_id
+              AND task.state='COPY_REVIEW_PENDING'
+            ORDER BY p.created_at DESC,p.id DESC LIMIT 1) AS personal_image_plan_job,
           creator.display_name AS creator_display_name,
           creator.role AS creator_role, assignee.id AS assignee_account_id,
           assignee.display_name AS assigned_to_display_name,
@@ -3521,6 +3565,8 @@ export class PostgresControlPlaneRepository {
     if (!task.rows[0]) return null;
     return {
       ...taskFrom(task.rows[0]),
+      imagePlanRegeneration: task.rows[0].personal_image_plan_job
+        ? imagePlanRegenerationFrom(task.rows[0].personal_image_plan_job) : null,
       xiaohongshuLinks: Array.isArray(task.rows[0].xiaohongshu_links)
         ? task.rows[0].xiaohongshu_links.map((link) => ({
           noteId: String(link.noteId),

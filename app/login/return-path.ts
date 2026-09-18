@@ -1,8 +1,8 @@
 import { canAccessWorkflowPage } from '../../src/admin/workflow-access.mjs';
 
 const ROLE_RETURN_PATHS: Record<string, string[]> = {
-  REVIEWER: ['/profile', '/workbench', '/query-packages', '/copy-flow', '/copy-qa', '/image-qa'],
-  USER: ['/profile', '/workbench/personal', '/query-packages', '/copy-flow', '/copy-qa'],
+  REVIEWER: ['/work-mode', '/profile', '/workbench', '/query-packages', '/copy-flow', '/copy-qa', '/image-qa'],
+  USER: ['/work-mode', '/profile', '/workbench/personal', '/workbench/personal-statistics', '/query-packages', '/copy-qa', '/delivery-pool'],
 };
 
 function isLocalPath(path: string) {

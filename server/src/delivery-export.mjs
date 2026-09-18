@@ -301,7 +301,13 @@ export function createDeliveryExportRegistry({
       };
     },
 
-    issue(staged, actor, { fileName, taskCount, bindings, deliveryBatch = null }) {
+    issue(staged, actor, {
+      fileName,
+      taskCount,
+      bindings,
+      deliveryBatch = null,
+      validateBindings = true,
+    }) {
       if (disposed) {
         throw new ControlPlaneConflictError(
           'DELIVERY_EXPORT_UNAVAILABLE',
@@ -311,6 +317,9 @@ export function createDeliveryExportRegistry({
       if (!Array.isArray(bindings) || bindings.length !== taskCount) {
         throw new TypeError('delivery export bindings must match the task count');
       }
+      if (typeof validateBindings !== 'boolean') {
+        throw new TypeError('delivery export binding validation flag must be boolean');
+      }
       const downloadId = randomUUID();
       const expiresAtMs = now() + ttlMs;
       const record = {
@@ -319,6 +328,7 @@ export function createDeliveryExportRegistry({
         fileName,
         taskCount,
         bindings: bindings.map((binding) => ({ ...binding })),
+        validateBindings,
         deliveryBatch: deliveryBatch ? { ...deliveryBatch } : null,
         expiresAtMs,
         timer: null,

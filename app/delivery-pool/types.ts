@@ -540,7 +540,7 @@ export function buildDeliveryPoolExportInput(
 
 function normalizePreparedDeliveryDownload(
   value: unknown,
-  expectedExtension: '.zip' | '.xlsx',
+  expectedExtensions: readonly ('.zip' | '.xlsx')[],
 ): PreparedDeliveryExport {
   const envelope = record(value);
   const item = record(envelope?.data) ?? envelope;
@@ -548,9 +548,10 @@ function normalizePreparedDeliveryDownload(
   const fileName = typeof item?.fileName === 'string' ? item.fileName.trim() : '';
   const taskCount = Number(item?.taskCount);
   const expiresAt = typeof item?.expiresAt === 'string' ? item.expiresAt : '';
-  const fileStem = fileName.slice(0, -expectedExtension.length).trim();
+  const extension = expectedExtensions.find((candidate) => fileName.endsWith(candidate));
+  const fileStem = extension ? fileName.slice(0, -extension.length).trim() : '';
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(downloadId)
-    || !fileName.endsWith(expectedExtension) || !fileStem || fileName.length > 180
+    || !extension || !fileStem || fileName.length > 180
     || /[\\/\u0000-\u001f\u007f]/u.test(fileName)
     || !Number.isSafeInteger(taskCount) || taskCount < 1
     || !Number.isFinite(Date.parse(expiresAt))) {
@@ -569,11 +570,11 @@ function normalizePreparedDeliveryDownload(
 }
 
 export function normalizePreparedDeliveryExport(value: unknown): PreparedDeliveryExport {
-  return normalizePreparedDeliveryDownload(value, '.zip');
+  return normalizePreparedDeliveryDownload(value, ['.zip']);
 }
 
 export function normalizePreparedDeliveryXlsxExport(value: unknown): PreparedDeliveryExport {
-  return normalizePreparedDeliveryDownload(value, '.xlsx');
+  return normalizePreparedDeliveryDownload(value, ['.xlsx', '.zip']);
 }
 
 function normalizeDeliveryBatchSummary(value: unknown): DeliveryBatchSummary | null {

@@ -1,0 +1,1 @@
+只返回一个合法 JSON 对象：{"schemaVersion":1,"dimensions":{"queryRelevance":{"score":3,"evidence":["具体证据"],"applicable":true},"contentOriginality":{"score":null,"evidence":["未提供站内正文和图集候选，不参与最终评分"],"applicable":false}},"issueLabels":[],"typeAdjustments":[]}。dimensions 必须恰好包含全部十个维度，不要 Markdown，不要解释。

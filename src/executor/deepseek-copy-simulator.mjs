@@ -50,7 +50,7 @@ export async function executeDeepSeekCopySimulation({
     systemPrompt: publishedTextPrompt(snapshot),
     imageCount: snapshot.task.requestedImageCount,
     autoReviseOnReject: false,
-    textReviewEnabled: Boolean(promptRuntimeFromSnapshot(snapshot)),
+    textReviewEnabled: Boolean(promptRuntimeFromSnapshot(snapshot)?.settings),
     onStageChange: async (stage, details = {}) => controlPlane.updateProgress(execution.id, {
       stage,
       progressPercent: COPY_PROGRESS[stage] ?? 0,

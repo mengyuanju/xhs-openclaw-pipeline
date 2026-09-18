@@ -1,8 +1,11 @@
 'use client';
 
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Fragment } from 'react';
+import {
+  Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
-import type { TaskState } from './views';
+import { TASK_STATE_FILTER_GROUPS, type TaskState } from './views';
 import { AdminCreatorFilter, type JobCreator } from './admin-creator-filter';
 import { AdminAssigneeFilter } from './admin-assignee-filter';
 
@@ -46,18 +49,24 @@ export function AdminJobFilters({ role, state, creator, assignee, createdDateFro
         <SelectTrigger id="workbench-task-state"><SelectValue /></SelectTrigger>
         <SelectContent>
           <SelectItem value="ALL">全部状态</SelectItem>
-          {Object.entries(stateLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
+          {TASK_STATE_FILTER_GROUPS.map((group) => <Fragment key={group.label}>
+            <SelectSeparator />
+            <SelectGroup>
+              <SelectLabel>{group.label}</SelectLabel>
+              {group.states.map((value) => <SelectItem key={value} value={value}>{stateLabels[value]}</SelectItem>)}
+            </SelectGroup>
+          </Fragment>)}
         </SelectContent>
       </Select>
     </div>
     <div>
-      <label htmlFor="workbench-created-date-from">创建日期（起）</label>
+      <label htmlFor="workbench-created-date-from">最近变更日期（起）</label>
       <Input id="workbench-created-date-from" type="date" value={createdDateFrom}
         max={createdDateTo || undefined}
         onChange={(event) => onCreatedDateFromChange(event.target.value)} />
     </div>
     <div>
-      <label htmlFor="workbench-created-date-to">创建日期（止，含当天）</label>
+      <label htmlFor="workbench-created-date-to">最近变更日期（止，含当天）</label>
       <Input id="workbench-created-date-to" type="date" value={createdDateTo}
         min={createdDateFrom || undefined}
         onChange={(event) => onCreatedDateToChange(event.target.value)} />

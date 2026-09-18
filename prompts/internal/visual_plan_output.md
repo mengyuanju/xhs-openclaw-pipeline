@@ -1,0 +1,1 @@
+只返回 schemaVersion=1 的 JSON，contentProfile 和 pages 遵循提供的输出 schema。每页 index/kind 必须与原 imagePlan 一致，保留原 headline/subtitle/bullets，labels=[]。可选版式：{{slot1}}。sourceEvidence 必须为标题或正文中的逐字片段。mustShow 只返回“画面：”开头的非文字视觉元素，不要返回、拼接或转述任何文字；程序会从已锁定的 allowedVisibleText 确定性加入全部可见文字。输出 {{slot2}} 页；最终图为1086×1448。合规标识：{{slot3}}。

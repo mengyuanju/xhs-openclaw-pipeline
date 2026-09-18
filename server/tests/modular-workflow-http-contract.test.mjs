@@ -451,29 +451,42 @@ test('active blind QA tasks disappear from generic reviewer task APIs, including
   });
 });
 
-test('delivery-pool management stays administrator-only while operator archives use the formal selected scope', async () => {
-  let snapshotReads = 0;
+test('operators can list their scoped delivery pool while management exports stay administrator-only', async () => {
+  const snapshotActors = [];
   const repository = {
-    listDeliveryPool: async () => { snapshotReads += 1; return []; },
-    listAllDeliveryPoolTaskIds: async () => { snapshotReads += 1; return []; },
+    listDeliveryPool: async (options, { actor }) => {
+      snapshotActors.push(actor);
+      return [];
+    },
+    listAllDeliveryPoolTaskIds: async () => assert.fail('operator broad exports must be rejected'),
   };
   await withServer(repository, async (root) => {
+    const workerListing = await fetch(`${root}/v1/delivery-pool`, { headers: headers('worker') });
+    assert.equal(workerListing.status, 200);
+    assert.deepEqual((await workerListing.json()).data, []);
+    const reviewerListing = await fetch(`${root}/v1/delivery-pool`, { headers: headers('reviewer') });
+    assert.equal(reviewerListing.status, 403);
+    assert.equal((await reviewerListing.json()).error.code, 'FORBIDDEN');
+
     for (const username of ['worker', 'reviewer']) {
-      const listing = await fetch(`${root}/v1/delivery-pool`, { headers: headers(username) });
-      assert.equal(listing.status, 403, `${username}:list`);
-      assert.equal((await listing.json()).error.code, 'FORBIDDEN', `${username}:list`);
       const spreadsheet = await fetch(`${root}/v1/delivery-pool/xlsx`, {
         method: 'POST',
         headers: headers(username, true),
         body: JSON.stringify({ scope: 'ALL_READY' }),
       });
       assert.equal(spreadsheet.status, 403, `${username}:xlsx`);
-      const spreadsheetDownload = await fetch(
-        `${root}/v1/delivery-pool/xlsx/11111111-1111-4111-8111-111111111111`,
-        { headers: headers(username) },
-      );
-      assert.equal(spreadsheetDownload.status, 403, `${username}:xlsx-download`);
     }
+    const unknownWorkerSpreadsheet = await fetch(
+      `${root}/v1/delivery-pool/xlsx/11111111-1111-4111-8111-111111111111`,
+      { headers: headers('worker') },
+    );
+    assert.equal(unknownWorkerSpreadsheet.status, 404,
+      'operators may download their prepared history workbook but cannot use an unknown token');
+    const reviewerSpreadsheetDownload = await fetch(
+      `${root}/v1/delivery-pool/xlsx/11111111-1111-4111-8111-111111111111`,
+      { headers: headers('reviewer') },
+    );
+    assert.equal(reviewerSpreadsheetDownload.status, 403);
 
     const reviewerArchive = await fetch(`${root}/v1/delivery-pool/archive`, {
       method: 'POST', headers: headers('reviewer', true),
@@ -499,11 +512,15 @@ test('delivery-pool management stays administrator-only while operator archives 
     assert.equal(unknownWorkerDownload.status, 404,
       'operators may enter the actor-bound download route, but cannot access an unknown token');
   });
-  assert.equal(snapshotReads, 0, 'authorization must run before reading the delivery snapshot');
+  assert.equal(snapshotActors.length, 1);
+  assert.equal(snapshotActors[0].role, 'USER');
+  assert.equal(snapshotActors[0].userId, users.worker.id);
+  assert.equal(snapshotActors[0].username, users.worker.username);
 });
 
-test('single delivery packages are administrator-only', async () => {
+test('single delivery packages allow only the current task owner or an administrator', async () => {
   let accessReads = 0;
+  let assetStoragePath = '';
   const access = {
     id: 77,
     state: 'REVIEWED',
@@ -533,14 +550,23 @@ test('single delivery packages are administrator-only', async () => {
   };
   const repository = {
     getTaskAccess: async () => { accessReads += 1; return access; },
-    getTask: async () => task,
+    getTask: async () => ({ ...task,
+      assignedToUserId: access.assignedToUserId,
+      assignedToAccountId: access.assignedToAccountId,
+    }),
+    getAsset: async (assetId) => assetId === 277 ? {
+      ...task.assets[0],
+      storagePath: assetStoragePath,
+    } : null,
     assertTaskReadyForDelivery: async () => ({
       taskId: 77,
       copyRevisionId: 177,
       imageRunId: access.currentImageRunId,
     }),
   };
-  await withServer(repository, async (root) => {
+  await withServer(repository, async (root, storageRoot) => {
+    assetStoragePath = join(storageRoot, '277.png');
+    await writeFile(assetStoragePath, Buffer.from('owned delivery image'));
     const reviewer = await fetch(`${root}/v1/tasks/77/archive`, {
       method: 'HEAD', headers: headers('reviewer'),
     });
@@ -551,7 +577,21 @@ test('single delivery packages are administrator-only', async () => {
       method: 'HEAD', headers: headers('worker'),
     });
     assert.equal(worker.status, 403);
-    assert.equal(accessReads, 0, 'non-admin denial must happen before task lookup');
+    assert.equal(accessReads, 1, 'ownership must be checked before a worker receives archive metadata');
+
+    access.assignedToUserId = users.worker.username;
+    access.assignedToAccountId = users.worker.id;
+    const owner = await fetch(`${root}/v1/tasks/77/archive`, {
+      method: 'HEAD', headers: headers('worker'),
+    });
+    assert.equal(owner.status, 200);
+    assert.equal(owner.headers.get('content-type'), 'application/zip');
+    const ownerDownload = await fetch(`${root}/v1/tasks/77/archive`, {
+      headers: headers('worker'),
+    });
+    assert.equal(ownerDownload.status, 200);
+    assert.match(ownerDownload.headers.get('content-disposition'), /attachment/u);
+    assert.ok((await ownerDownload.arrayBuffer()).byteLength > 0);
 
     const administrator = await fetch(`${root}/v1/tasks/77/archive`, {
       method: 'HEAD', headers: headers('admin'),
@@ -561,7 +601,7 @@ test('single delivery packages are administrator-only', async () => {
   });
 });
 
-test('single worker delivery is rejected before archive data is read', async () => {
+test('an inaccessible worker delivery fails before archive bytes are read', async () => {
   let taskReads = 0;
   let assetReads = 0;
   await withServer({
@@ -572,10 +612,10 @@ test('single worker delivery is rejected before archive data is read', async () 
     const response = await fetch(`${root}/v1/tasks/78/archive`, {
       headers: headers('worker'),
     });
-    assert.equal(response.status, 403);
+    assert.equal(response.status, 404);
     assert.equal(response.headers.get('content-disposition'), null);
   });
-  assert.equal(taskReads, 0);
+  assert.equal(taskReads, 1);
   assert.equal(assetReads, 0);
 });
 

@@ -37,6 +37,23 @@ export const TASK_STATE_PRIORITY: Record<TaskState, number> = {
   CANCELLED: 9,
 };
 
+export const TASK_STATE_FILTER_GROUPS: Array<{ label: string; states: TaskState[] }> = [
+  {
+    label: '文案阶段',
+    states: ['COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_QC_PENDING', 'COPY_FAILED'],
+  },
+  {
+    label: '图片阶段',
+    states: ['IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'IMAGE_QC_PENDING', 'IMAGE_REWORK_PENDING'],
+  },
+  {
+    label: '结束状态',
+    states: ['REVIEWED', 'CANCELLED'],
+  },
+];
+
+export const TASK_STATE_FILTER_ORDER: TaskState[] = TASK_STATE_FILTER_GROUPS.flatMap((group) => group.states);
+
 export function compareTasksByStatePriority<T extends { id: number; state: TaskState; createdAt: string; priorityPaused?: boolean; queueEnteredAt?: string; effectivePriority?: number }>(left: T, right: T) {
   if (left.queueEnteredAt && right.queueEnteredAt) {
     const paused = Number(left.priorityPaused === true) - Number(right.priorityPaused === true);
@@ -82,8 +99,8 @@ export const WORKBENCH_VIEWS: Array<{
   {
     key: 'PERSONAL',
     href: '/workbench/personal',
-    label: '个人作业中心',
-    description: '显示当前账号提交或负责的 Query；机器阶段可跟踪进度，分配后按权限审核或处理。',
+    label: '我的作业',
+    description: '查询当前负责或创建的作业，处理审核与返修，也可按日期查看本人完成历史。',
     icon: UserRound,
     states: [
       'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_QC_PENDING', 'COPY_FAILED',
@@ -148,7 +165,7 @@ export const WORKBENCH_VIEWS: Array<{
     label: '全部作业',
     description: '查看所有账号和执行节点的任务，包含生图失败、已废弃与历史任务。角色按创建者当前角色筛选。',
     icon: ListChecks,
-    states: Object.keys(TASK_STATE_PRIORITY) as TaskState[],
+    states: TASK_STATE_FILTER_ORDER,
     adminOnly: true,
   },
 ];

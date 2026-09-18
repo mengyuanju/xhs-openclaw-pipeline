@@ -107,3 +107,16 @@ test('reviewers cannot request the administrator personnel filter for image QA',
   );
   assert.equal(fixture.listCall, null);
 });
+
+test('image lookup keeps public-id parameter positions valid with and without the work-mode gate', async () => {
+  const reviewer = { userId: 91, username: 'reviewer', role: 'REVIEWER' };
+  for (const actionableOnly of [false, true]) {
+    const fixture = imageListPool(reviewer), itemPublicId = databaseRow().public_id;
+    const result = await listImageQaItems(fixture.pool, { actionableOnly, itemPublicId }, reviewer);
+    const parameter = fixture.listCall.sql.match(/item\.public_id = \$(\d+)::uuid/u);
+    assert.ok(parameter); assert.equal(fixture.listCall.values[Number(parameter[1]) - 1], itemPublicId);
+    assert.match(fixture.listCall.sql, /\$1 = item\.assigned_review_account_id/u);
+    if (actionableOnly) assert.match(fixture.listCall.sql, /task\.priority_paused = false/u);
+    assert.equal(result.items[0].blindReview, true); assert.equal(result.items[0].taskId, undefined);
+  }
+});

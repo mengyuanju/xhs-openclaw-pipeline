@@ -304,7 +304,7 @@ test('delivery batch adapters preserve immutable history and exact version membe
   }).items[0].copyRevisionId, 201);
 });
 
-test('prepared Excel download accepts only a safe xlsx one-time reference', () => {
+test('prepared Excel download accepts safe xlsx and automatically sharded zip references', () => {
   const prepared = {
     downloadId: '22345678-1234-4234-8234-123456789abc',
     fileName: '交付池-已选数据.xlsx',
@@ -312,26 +312,32 @@ test('prepared Excel download accepts only a safe xlsx one-time reference', () =
     expiresAt: '2026-09-09T09:00:00.000Z',
   };
   assert.deepEqual(normalizePreparedDeliveryXlsxExport({ data: prepared }), prepared);
+  assert.deepEqual(normalizePreparedDeliveryXlsxExport({
+    data: { ...prepared, fileName: '交付池-分卷.zip' },
+  }), { ...prepared, fileName: '交付池-分卷.zip' });
   assert.throws(() => normalizePreparedDeliveryXlsxExport({
     data: { ...prepared, fileName: '../escape.xlsx' },
   }), /下载凭证无效/u);
   assert.throws(() => normalizePreparedDeliveryXlsxExport({
-    data: { ...prepared, fileName: '交付池.zip' },
+    data: { ...prepared, fileName: '交付池.csv' },
   }), /下载凭证无效/u);
   assert.throws(() => normalizePreparedDeliveryXlsxExport({
     data: { ...prepared, fileName: '交付池\n.xlsx' },
   }), /下载凭证无效/u);
 });
 
-test('administrator delivery pool exposes client-batch facets, filtering and merged exports', async () => {
+test('delivery pool keeps administrator controls while exposing an ownership-scoped operator view', async () => {
   const [source, page, proxy, sonner] = await Promise.all([
     readFile(workbenchUrl, 'utf8'),
     readFile(pageUrl, 'utf8'),
     readFile(proxyUrl, 'utf8'),
     readFile(sonnerUrl, 'utf8'),
   ]);
-  assert.match(page, /if \(role !== 'ADMIN'\) redirect\(role === 'REVIEWER' \? '\/copy-qa' : '\/workbench\/personal'\)/u);
-  assert.match(page, /<DeliveryPoolWorkbench role="ADMIN" \/>/u);
+  assert.match(page, /if \(!\['ADMIN', 'USER'\]\.includes\(role\)\) redirect\('\/copy-qa'\)/u);
+  assert.match(page, /<DeliveryPoolWorkbench role=\{role as 'ADMIN' \| 'USER'\} username=\{session\.username \?\? ''\} \/>/u);
+  assert.match(page, /我的交付池/u);
+  assert.match(source, /role: 'ADMIN' \| 'USER'/u);
+  assert.match(source, /useState<PackingFilter>\(role === 'USER' \? 'ALL' : 'PENDING'\)/u);
   assert.match(source, /new URLSearchParams\(\{[\s\S]*limit: String\(DELIVERY_POOL_LIST_LIMIT\)[\s\S]*includeTotal: 'true'/u);
   assert.match(source, /if \(clientBatchCode\) query\.set\('clientBatchCode', clientBatchCode\)/u);
   assert.match(source, /setClientBatches\(page\.facets\.clientBatches\)/u);
@@ -360,9 +366,14 @@ test('administrator delivery pool exposes client-batch facets, filtering and mer
   assert.match(source, /buildDeliveryPoolExportInput\(selectedTaskIds, clientBatchCode\)/u,
     'Excel must derive its scope from both the checked task ids and active client batch');
   assert.match(source, /delivery-pool\/xlsx\/\$\{encodeURIComponent\(prepared\.downloadId\)\}/u);
+  assert.match(source, /delivery-batches\/\$\{encodeURIComponent\(batch\.publicId\)\}\/xlsx/u,
+    'history rows prepare Excel from the immutable batch scope');
+  assert.match(source, /exportBatchXlsx\(batch\)/u);
+  assert.match(source, /下载 Excel/u);
+  assert.match(source, /重新下载 ZIP/u);
   assert.doesNotMatch(source, /response\.blob\(\)|URL\.createObjectURL/u,
     'delivery archives and Excel files must use native streamed downloads instead of page-memory Blobs');
-  assert.match(source, /const exportBusy = exporting !== null \|\| xlsxExporting \|\| previewPublishing/u);
+  assert.match(source, /const exportBusy = exporting !== null \|\| xlsxExporting \|\| batchXlsxExporting !== null[\s\S]*\|\| previewPublishing/u);
   assert.match(source, /aria-busy=\{xlsxExporting\}/u);
   assert.match(source, /导出 Excel（已选/u);
   assert.match(source, /导出 Excel（全部/u);
@@ -372,6 +383,14 @@ test('administrator delivery pool exposes client-batch facets, filtering and mer
   assert.match(source, /Excel 一次最多导出.*请先勾选后分批导出/u);
   assert.match(source, /新建交付批次（待交付/u);
   assert.match(source, /已选新建批次/u);
+  assert.match(source, /打包并下载已选/u);
+  assert.match(source, /只会打包当前账号负责的已选内容/u);
+  assert.match(source, /role === 'USER' && entry\.packingState === 'PACKED'/u,
+    'operators cannot select an already packed version into another immutable batch');
+  assert.match(source, /\/v1\/tasks\/\$\{entry\.taskId\}\/archive/u,
+    'an operator can still download their own item when an administrator owns the original batch');
+  assert.match(source, /entry\.deliveryBatch\.createdByUsername === username/u,
+    'operator batch downloads must only be offered to the creator of that batch');
   assert.match(source, /packingState/u);
   assert.match(source, /交付历史/u);
   assert.match(source, /delivery-batches/u);
@@ -408,6 +427,8 @@ test('administrator delivery pool exposes client-batch facets, filtering and mer
   assert.match(source, /<DeliveryPreviewDialog/u);
   assert.match(source, /activeView === 'CONTENT'/u);
   assert.match(source, /activeView === 'PREVIEW'/u);
+  assert.match(source, /role === 'ADMIN' && <Button unstyled id="delivery-preview-tab"/u);
+  assert.match(source, /entry\.preview === null && role === 'ADMIN'/u);
   assert.match(source, /activeView === 'HISTORY'/u);
   assert.match(source, /新建交付批次始终由服务端排除已经打包的相同版本/u);
   assert.match(source, /entry\.clientBatchCode \|\| '未归属甲方批次'/u);

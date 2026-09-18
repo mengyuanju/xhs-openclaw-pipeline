@@ -53,8 +53,8 @@ export async function loadAdminTaskPage(request, {
     throw new Error('请更新并重启中心服务，以支持精确负责人筛选。');
   }
   if ((dateRange.createdDateFrom || dateRange.createdDateTo)
-      && health?.capabilities?.adminTaskDateFilters !== true) {
-    throw new Error('请更新并重启中心服务，以支持作业创建日期筛选。');
+      && health?.capabilities?.adminTaskActivityDateFilters !== 1) {
+    throw new Error('请更新并重启中心服务，以支持作业最近变更日期筛选。');
   }
   const result = await pageRequest;
   if ('error' in result) throw result.error;

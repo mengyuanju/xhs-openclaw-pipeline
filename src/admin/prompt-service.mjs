@@ -2,9 +2,24 @@ import { createHash } from 'node:crypto';
 import { recordPromptRendering } from '../prompt-trace-context.mjs';
 
 export { PROMPT_KINDS } from '../prompt-catalog.mjs';
-import { PROMPT_VARIABLES } from '../prompt-catalog.mjs';
+import { PROMPT_CATALOG, PROMPT_VARIABLES } from '../prompt-catalog.mjs';
 export const PROMPT_STATUSES = ['DRAFT', 'PUBLISHED', 'RETIRED'];
 export const ALLOWED_PROMPT_VARIABLES = new Set(PROMPT_VARIABLES);
+
+export function assertPromptEditable(kind, content) {
+  const definition = PROMPT_CATALOG.find(item => item.kind === kind);
+  if (definition?.editable === false) throw new TypeError('此项是程序执行协议，只读展示；需要修改对应程序校验后才能变更');
+  if (!definition?.defaultPath) return;
+  for (const variable of definition.variables) {
+    if (!new RegExp(`\\{\\{\\s*${variable.name}\\s*\\}\\}`).test(content)) {
+      throw new TypeError(`请保留运行时变量 {{${variable.name}}}：${variable.description}`);
+    }
+  }
+  const allowed = new Set(definition.variables.map(item => item.name));
+  for (const match of content.matchAll(/\{\{\s*([A-Za-z][A-Za-z0-9]*)\s*\}\}/gu)) {
+    if (!allowed.has(match[1])) throw new TypeError(`${kind} 不支持变量 ${match[1]}`);
+  }
+}
 
 export function normalizePromptContent(value) {
   if (typeof value !== 'string' || value.trim() === '') {

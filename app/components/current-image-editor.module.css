@@ -107,6 +107,9 @@
   background: #ece8e3;
 }
 
+/* Select menus are portaled to the body, above this editor's nested dialog. */
+.selectContent { z-index: 142; }
+
 .previewHeader { display: grid; gap: 8px; }
 .previewToolbar { display: flex; flex-wrap: wrap; gap: 6px; }
 .previewToolbar button,
@@ -592,10 +595,10 @@
 .settings > fieldset legend { padding: 0 7px; font-size: 12px; font-weight: 800; }
 .settings > fieldset img { border-radius: 8px; }
 
-.settings :is(input:not([type="checkbox"]):not([type="range"]):not([type="color"]):not([type="file"]), select, textarea),
+.settings :is(input:not([type="checkbox"]):not([type="range"]):not([type="color"]):not([type="file"]), [data-slot="select-trigger"], textarea),
 .reasonField input,
 .reasonEditor input,
-.restorePanel select {
+.restorePanel [data-slot="select-trigger"] {
   width: 100%;
   min-width: 0;
   min-height: 40px;
@@ -610,10 +613,11 @@
 }
 
 .settings textarea { min-height: 86px; resize: vertical; line-height: 1.6; }
-.settings :is(input:not([type="checkbox"]):not([type="range"]):not([type="color"]):not([type="file"]), select, textarea):focus,
+.settings :is(input:not([type="checkbox"]):not([type="range"]):not([type="color"]):not([type="file"]), [data-slot="select-trigger"], textarea):focus,
 .reasonField input:focus,
 .reasonEditor input:focus,
-.restorePanel select:focus { border-color: var(--red); background: white; box-shadow: 0 0 0 3px var(--control-ring); }
+.restorePanel [data-slot="select-trigger"]:focus { border-color: var(--red); background: var(--surface); box-shadow: 0 0 0 3px var(--control-ring); }
+.restorePanel [data-slot="select-trigger"][data-disabled] { color: var(--muted); background: var(--control-bg-muted); border-color: var(--line); }
 
 .settings input[type="color"] {
   width: 100%;
@@ -759,8 +763,8 @@
 }
 .restorePanel > div { grid-column: 1 / -1; display: grid; gap: 4px; }
 .restorePanel strong { font-size: 13px; }
-.restorePanel span { color: var(--muted); font-size: 10px; }
-.restorePanel select { min-height: 36px; }
+.restorePanel > div > span { color: var(--muted); font-size: 10px; }
+.restorePanel [data-slot="select-trigger"] { min-height: 36px; }
 .historyHeading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-top: 16px; }
 .historyHeading strong { font-size: 13px; }
 .historyHeading span { color: var(--muted); font-size: 10px; }

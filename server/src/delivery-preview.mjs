@@ -345,10 +345,13 @@ async function prepareDeliveryPreviewItem({ repository, storageRoot, taskId }) {
     (item) => Number(item.id) === binding.copyRevisionId,
   );
   const run = task.imageRuns.find((item) => String(item.id) === binding.imageRunId);
+  const currentAssets = task.assets.filter(
+    (asset) => String(asset.imageRunId) === binding.imageRunId,
+  );
   const source = resolveDeliveryArchiveSource({
     content: revision?.content,
     imageResult: run?.result,
-    availableAssetIds: task.assets.map((asset) => asset.id),
+    availableAssetIds: currentAssets.map((asset) => asset.id),
   });
   const copy = deliveryCopyFromContent(revision?.content);
   const title = String(copy?.title ?? '').trim();
@@ -368,8 +371,7 @@ async function prepareDeliveryPreviewItem({ repository, storageRoot, taskId }) {
   const assets = [];
   for (const assetId of source.assetIds) {
     const asset = await repository.getAsset(assetId);
-    if (!asset || Number(asset.taskId) !== Number(task.id)
-        || String(asset.imageRunId) !== binding.imageRunId) {
+    if (!asset || Number(asset.taskId) !== Number(task.id)) {
       throw new ControlPlaneConflictError(
         'DELIVERY_ASSET_MISSING',
         `任务 ${task.id} 的交付图片缺失`,

@@ -1,4 +1,6 @@
 import { getCopyQualityQueues } from './copy-quality-control.mjs';
+import { loadWorkModePage } from './work-mode.mjs';
+import { installSharedDeliveryRoutes } from './delivery-routes.mjs';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
@@ -29,9 +31,10 @@ import {
 } from './delivery-export.mjs';
 import { deliveryBatchCode } from './delivery-batches.mjs';
 import {
+  deliverySpreadsheetAssetIds,
   DELIVERY_SPREADSHEET_MEDIA_TYPE,
   MAX_DELIVERY_SPREADSHEET_TASKS,
-  writeDeliverySpreadsheet,
+  writeDeliverySpreadsheetExport,
 } from './delivery-spreadsheet.mjs';
 import { IMAGE_FORMATS } from './image-options.mjs';
 import { createImageEditingService } from './image-editing.mjs';
@@ -44,7 +47,7 @@ import {
   publishDeliveryPreviews,
 } from './delivery-preview.mjs';
 import { AssetDeliveryError, createAssetDelivery } from './asset-delivery.mjs';
-import { normalizePromptContent } from '../../src/admin/prompt-service.mjs';
+import { assertPromptEditable, normalizePromptContent } from '../../src/admin/prompt-service.mjs';
 import { assertPromptPublishable } from '../../src/admin/prompt-preview.mjs';
 import { readPromptConfiguration, savePromptPolicy } from '../../src/admin/prompt-runtime-service.mjs';
 import { analyzeVisualImage } from '../../src/admin/visual-knowledge-service.mjs';
@@ -747,6 +750,62 @@ function recordDeliveryBatchDownload(repository, publicId, actor) {
   });
 }
 
+async function loadDeliverySpreadsheetAsset(
+  repository,
+  storageRoot,
+  task,
+  assetId,
+  signal,
+  cachedAsset,
+) {
+  signal?.throwIfAborted();
+  const asset = cachedAsset ?? await repository.getAsset(assetId);
+  signal?.throwIfAborted();
+  const byteSize = Number(asset?.byteSize);
+  const sha256 = String(asset?.sha256 ?? '').toLowerCase();
+  if (!asset || Number(asset.id) !== Number(assetId)
+      || Number(asset.taskId) !== Number(task.id)
+      || !DELIVERY_IMAGE_MEDIA_TYPES.has(String(asset.mediaType))
+      || !Number.isSafeInteger(byteSize) || byteSize < 1 || byteSize > ASSET_BODY_LIMIT
+      || !/^[a-f0-9]{64}$/u.test(sha256)) return null;
+  const path = safeStoragePath(storageRoot, relative(storageRoot, asset.storagePath));
+  const metadata = await stat(path).catch((error) => {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  });
+  signal?.throwIfAborted();
+  if (!metadata?.isFile() || metadata.size !== byteSize) return null;
+  const content = await readFile(path, { signal });
+  signal?.throwIfAborted();
+  if (createHash('sha256').update(content).digest('hex') !== sha256) return null;
+  return { ...asset, content };
+}
+
+async function hydrateDeliverySpreadsheetAssetSizes(repository, tasks, signal) {
+  const assets = new Map();
+  for (const task of tasks) {
+    for (const assetId of deliverySpreadsheetAssetIds(task)) {
+      signal?.throwIfAborted();
+      const asset = await repository.getAsset(assetId);
+      signal?.throwIfAborted();
+      const byteSize = Number(asset?.byteSize);
+      if (!asset || Number(asset.id) !== Number(assetId)
+          || Number(asset.taskId) !== Number(task.id)
+          || !DELIVERY_IMAGE_MEDIA_TYPES.has(String(asset.mediaType))
+          || !Number.isSafeInteger(byteSize) || byteSize < 1 || byteSize > ASSET_BODY_LIMIT) {
+        throw new TypeError(`任务 ${task.id} 的交付图片缺失`);
+      }
+      const membership = task.assets?.find((candidate) =>
+        Number(candidate.id) === Number(assetId)
+          && String(candidate.imageRunId) === String(task.currentImageRunId));
+      if (!membership) throw new TypeError(`任务 ${task.id} 的交付图片缺失`);
+      membership.byteSize = byteSize;
+      assets.set(Number(assetId), asset);
+    }
+  }
+  return assets;
+}
+
 async function stageDeliveryPoolSpreadsheet(repository, storageRoot, taskIds, { signal } = {}) {
   if (taskIds.length > MAX_DELIVERY_SPREADSHEET_TASKS) {
     throw new ControlPlaneConflictError(
@@ -759,47 +818,113 @@ async function stageDeliveryPoolSpreadsheet(repository, storageRoot, taskIds, { 
     DELIVERY_EXPORT_DIRECTORY,
     randomUUID(),
   );
-  const spreadsheetPath = safeStoragePath(exportDirectory, 'delivery-pool.xlsx');
   await mkdir(exportDirectory, { recursive: true });
   const bindings = [];
   try {
-    async function* readyTasks() {
-      for (const taskId of taskIds) {
-        signal?.throwIfAborted();
-        const snapshot = await loadReadyDeliveryTask(repository, taskId);
-        bindings.push(snapshot.binding);
-        yield snapshot.task;
-      }
+    const tasks = [];
+    for (const taskId of taskIds) {
+      signal?.throwIfAborted();
+      const snapshot = await loadReadyDeliveryTask(repository, taskId);
+      bindings.push(snapshot.binding);
+      tasks.push(snapshot.task);
     }
-    const result = await writeDeliverySpreadsheet(readyTasks(), async (task, assetId) => {
-      signal?.throwIfAborted();
-      const asset = await repository.getAsset(assetId);
-      signal?.throwIfAborted();
-      const byteSize = Number(asset?.byteSize);
-      const sha256 = String(asset?.sha256 ?? '').toLowerCase();
-      if (!asset || Number(asset.id) !== Number(assetId)
-          || Number(asset.taskId) !== Number(task.id)
-          || String(asset.imageRunId) !== String(task.currentImageRunId)
-          || !DELIVERY_IMAGE_MEDIA_TYPES.has(String(asset.mediaType))
-          || !Number.isSafeInteger(byteSize) || byteSize < 1 || byteSize > ASSET_BODY_LIMIT
-          || !/^[a-f0-9]{64}$/u.test(sha256)) return null;
-      const path = safeStoragePath(storageRoot, relative(storageRoot, asset.storagePath));
-      const metadata = await stat(path).catch((error) => {
-        if (error?.code === 'ENOENT') return null;
-        throw error;
-      });
-      signal?.throwIfAborted();
-      if (!metadata?.isFile() || metadata.size !== byteSize) return null;
-      const content = await readFile(path, { signal });
-      signal?.throwIfAborted();
-      if (createHash('sha256').update(content).digest('hex') !== sha256) return null;
-      return { ...asset, content };
-    }, spreadsheetPath, { signal, maxTasks: MAX_DELIVERY_SPREADSHEET_TASKS });
+    const assets = await hydrateDeliverySpreadsheetAssetSizes(repository, tasks, signal);
+    const result = await writeDeliverySpreadsheetExport(
+      tasks,
+      (task, assetId) => loadDeliverySpreadsheetAsset(
+        repository,
+        storageRoot,
+        task,
+        assetId,
+        signal,
+        assets.get(Number(assetId)),
+      ),
+      exportDirectory,
+      { signal, maxTasks: MAX_DELIVERY_SPREADSHEET_TASKS },
+    );
     return {
-      spreadsheetPath,
-      byteSize: (await stat(spreadsheetPath)).size,
+      spreadsheetPath: result.artifactPath,
+      mediaType: result.mediaType,
+      fileExtension: result.fileExtension,
+      partCount: result.partCount,
+      byteSize: (await stat(result.artifactPath)).size,
       taskCount: result.taskCount,
       bindings,
+      cleanup: () => rm(exportDirectory, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      }),
+    };
+  } catch (error) {
+    await rm(exportDirectory, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+async function stageDeliveryBatchSpreadsheet(
+  repository,
+  storageRoot,
+  publicId,
+  actor,
+  { signal } = {},
+) {
+  if (typeof repository.getDeliveryBatchSpreadsheet !== 'function') {
+    throw new ControlPlaneConflictError(
+      'FINAL_DELIVERY_UNAVAILABLE',
+      '中心服务尚未支持历史批次 Excel，请升级后重试',
+    );
+  }
+  const snapshot = await repository.getDeliveryBatchSpreadsheet(publicId, { actor });
+  if (!Array.isArray(snapshot?.tasks) || !Array.isArray(snapshot?.bindings)
+      || snapshot.tasks.length !== snapshot.taskCount
+      || snapshot.bindings.length !== snapshot.taskCount) {
+    throw new ControlPlaneConflictError(
+      'DELIVERY_BATCH_SOURCE_MISSING',
+      '该历史批次的冻结数据不完整，无法生成 Excel',
+    );
+  }
+  if (snapshot.taskCount > MAX_DELIVERY_SPREADSHEET_TASKS) {
+    throw new ControlPlaneConflictError(
+      'DELIVERY_SPREADSHEET_TOO_LARGE',
+      `Excel 图片导出一次最多 ${MAX_DELIVERY_SPREADSHEET_TASKS} 篇文章`,
+    );
+  }
+  const exportDirectory = safeStoragePath(
+    storageRoot,
+    DELIVERY_EXPORT_DIRECTORY,
+    randomUUID(),
+  );
+  await mkdir(exportDirectory, { recursive: true });
+  try {
+    const assets = await hydrateDeliverySpreadsheetAssetSizes(
+      repository,
+      snapshot.tasks,
+      signal,
+    );
+    const result = await writeDeliverySpreadsheetExport(
+      snapshot.tasks,
+      (task, assetId) => loadDeliverySpreadsheetAsset(
+        repository,
+        storageRoot,
+        task,
+        assetId,
+        signal,
+        assets.get(Number(assetId)),
+      ),
+      exportDirectory,
+      { signal, maxTasks: MAX_DELIVERY_SPREADSHEET_TASKS },
+    );
+    return {
+      spreadsheetPath: result.artifactPath,
+      mediaType: result.mediaType,
+      fileExtension: result.fileExtension,
+      partCount: result.partCount,
+      byteSize: (await stat(result.artifactPath)).size,
+      taskCount: result.taskCount,
+      bindings: snapshot.bindings,
+      batch: snapshot,
       cleanup: () => rm(exportDirectory, {
         recursive: true,
         force: true,
@@ -832,6 +957,9 @@ function installRoutes(
 ) {
   const deliverAsset = createAssetDelivery({ storageRoot });
   const deliveryExportRegistry = createDeliveryExportRegistry();
+  const disposeSharedDelivery = installSharedDeliveryRoutes(router, repository, storageRoot, {
+    requestActor, requireJson, json, assertCurrentActorIdentity,
+  });
   const initialDeliveryExportCleanup = cleanStaleDeliveryExportDirectories(storageRoot)
     .catch((error) => console.error('failed to clean stale delivery exports', error));
   const deliveryExportSweep = setInterval(() => {
@@ -1252,6 +1380,35 @@ function installRoutes(
       tasks: body.tasks,
     }));
   });
+  for (const kind of ['statistics', 'tasks']) router.get(`/v1/personal-workspace/${kind}`, async (ctx) => {
+    const actor = requestActor(ctx);
+    if (actor.role === 'USER' && ctx.query.queryPackageName) throw new HttpError(403,'FORBIDDEN','普通用户不能按词包名称筛选任务');
+    const result = await repository.personalWorkspace(actor, ctx.query, kind === 'statistics');
+    ctx.set('Cache-Control','private, no-store');
+    json(ctx,200,kind === 'tasks' && actor.role === 'USER' ? userVisibleTaskList(result) : result);
+  });
+  router.get('/v1/admin/operator-performance', async (ctx) => {
+    const actor=requestActor(ctx,['ADMIN']);
+    ctx.set('Cache-Control','private, no-store');
+    json(ctx,200,await repository.operatorPerformance(actor,ctx.query));
+  });
+  router.get('/v1/admin/operator-performance/tasks', async(ctx)=>{
+    const actor=requestActor(ctx,['ADMIN']);
+    ctx.set('Cache-Control','private, no-store');
+    json(ctx,200,await repository.operatorPerformance(actor,ctx.query,{kind:'detail'}));
+  });
+  router.get('/v1/admin/operator-performance/export', async (ctx) => {
+    const actor=requestActor(ctx,['ADMIN']);
+    const result=await repository.operatorPerformance(actor,ctx.query,{kind:'export'});
+    ctx.set('Cache-Control','private, no-store');
+    ctx.set('Content-Disposition','attachment; filename="operator-performance.csv"');
+    ctx.type='text/csv; charset=utf-8';ctx.body=result.csv;
+  });
+  for(const suffix of ['', '/tasks']) router.get(`/v1/admin/operator-performance/:accountId${suffix}`,async(ctx)=>{
+    const actor=requestActor(ctx,['ADMIN']);
+    ctx.set('Cache-Control','private, no-store');
+    json(ctx,200,await repository.operatorPerformance(actor,ctx.query,{kind:'detail',accountId:ctx.params.accountId}));
+  });
   router.get('/v1/task-completions', async (ctx) => {
     const actor = requestActor(ctx);
     json(ctx, 200, await repository.listPersonalTaskCompletions({
@@ -1260,6 +1417,13 @@ function installRoutes(
       from: ctx.query.from,
       to: ctx.query.to,
     }));
+  });
+  router.get('/v1/work-mode/items', async (ctx) => {
+    const actor = requestActor(ctx);
+    json(ctx, 200, await loadWorkModePage(repository, {
+      kind: ctx.query.kind, limit: ctx.query.limit, offset: ctx.query.offset,
+      itemId: ctx.query.itemId,
+    }, actor));
   });
   router.get('/v1/tasks', async (ctx) => {
     const actor = requestActor(ctx);
@@ -1472,6 +1636,15 @@ function installRoutes(
       staged = await stageDeliveryPoolArchive(repository, storageRoot, taskIds, {
         signal: controller.signal,
       });
+      const expectedBindings = requireJson(ctx).expectedBindings;
+      if (expectedBindings !== undefined) {
+        if (!Array.isArray(expectedBindings) || expectedBindings.length !== staged.bindings.length
+            || new Set(expectedBindings.map(binding => binding?.taskId)).size !== expectedBindings.length
+            || expectedBindings.some(expected => !staged.bindings.some(binding => binding.taskId === expected?.taskId
+              && binding.copyRevisionId === expected?.copyRevisionId && binding.imageRunId === expected?.imageRunId))) {
+          throw new ControlPlaneConflictError('DELIVERY_VERSION_CHANGED', '所选内容版本已变化，请刷新后重新确认打包范围');
+        }
+      }
       await assertDeliveryBindingsReady(repository, staged.bindings);
       await assertCurrentActorIdentity(repository, actor);
       controller.signal.throwIfAborted();
@@ -1636,6 +1809,51 @@ function installRoutes(
     ctx.set('Content-Disposition', `attachment; filename="delivery-batch.zip"; filename*=UTF-8''${encodeURIComponent(batch.fileName)}`);
     ctx.body = createReadStream(batch.archivePath);
   });
+  router.post('/v1/delivery-batches/:batchId/xlsx', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    const controller = new AbortController();
+    const cancellation = () => new DOMException(
+      'delivery batch spreadsheet client disconnected',
+      'AbortError',
+    );
+    const onRequestAborted = () => controller.abort(cancellation());
+    const onResponseClosed = () => {
+      if (!ctx.res.writableEnded) controller.abort(cancellation());
+    };
+    ctx.req.once('aborted', onRequestAborted);
+    ctx.res.once('close', onResponseClosed);
+    let releasePreparation = () => {};
+    let staged = null;
+    try {
+      releasePreparation = deliveryExportRegistry.beginPreparation(
+        actor,
+        (reason) => controller.abort(reason),
+      );
+      await initialDeliveryExportCleanup;
+      staged = await stageDeliveryBatchSpreadsheet(
+        repository,
+        storageRoot,
+        ctx.params.batchId,
+        actor,
+        { signal: controller.signal },
+      );
+      await assertCurrentActorIdentity(repository, actor);
+      controller.signal.throwIfAborted();
+      const prepared = deliveryExportRegistry.issue(staged, actor, {
+        fileName: `${staged.batch.code}-交付内容${staged.fileExtension}`,
+        taskCount: staged.taskCount,
+        bindings: staged.bindings,
+        validateBindings: false,
+      });
+      staged = null;
+      json(ctx, 201, prepared);
+    } finally {
+      releasePreparation();
+      ctx.req.off('aborted', onRequestAborted);
+      ctx.res.off('close', onResponseClosed);
+      await staged?.cleanup().catch(() => {});
+    }
+  });
   router.post('/v1/delivery-pool/xlsx', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
     const request = normalizeDeliveryExportRequest(requireJson(ctx));
@@ -1665,15 +1883,15 @@ function installRoutes(
       await assertDeliveryBindingsReady(repository, staged.bindings);
       await assertCurrentActorIdentity(repository, actor);
       controller.signal.throwIfAborted();
-      const fileName = request.scope === 'ALL_READY'
-        ? '交付池-全部文章与图片.xlsx'
+      const fileStem = request.scope === 'ALL_READY'
+        ? '交付池-全部文章与图片'
         : request.scope === 'QUERY_PACKAGE'
-          ? `${queryPackageFileNameSegment(request.queryPackageName)}-交付内容.xlsx`
+          ? `${queryPackageFileNameSegment(request.queryPackageName)}-交付内容`
           : request.scope === 'CLIENT_BATCH'
-            ? `${queryPackageFileNameSegment(request.clientBatchCode)}-交付内容.xlsx`
-          : '交付池-已选文章与图片.xlsx';
+            ? `${queryPackageFileNameSegment(request.clientBatchCode)}-交付内容`
+          : '交付池-已选文章与图片';
       const prepared = deliveryExportRegistry.issue(staged, actor, {
-        fileName,
+        fileName: `${fileStem}${staged.fileExtension}`,
         taskCount: staged.taskCount,
         bindings: staged.bindings,
       });
@@ -1687,21 +1905,27 @@ function installRoutes(
     }
   });
   router.head('/v1/delivery-pool/xlsx/:downloadId', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN']);
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
     const record = assertDeliveryExportArtifact(
       await deliveryExportRegistry.peek(ctx.params.downloadId, actor),
       'spreadsheetPath',
     );
-    await assertDeliveryBindingsReady(repository, record.bindings);
+    if (record.validateBindings) {
+      await assertDeliveryBindingsReady(repository, record.bindings);
+    }
     await assertCurrentActorIdentity(repository, actor);
     ctx.status = 200;
-    ctx.type = DELIVERY_SPREADSHEET_MEDIA_TYPE;
+    ctx.type = record.staged.mediaType ?? DELIVERY_SPREADSHEET_MEDIA_TYPE;
     ctx.length = record.staged.byteSize;
     ctx.set('X-Delivery-Task-Count', String(record.taskCount));
-    ctx.set('Content-Disposition', `attachment; filename="delivery-pool.xlsx"; filename*=UTF-8''${encodeURIComponent(record.fileName)}`);
+    ctx.set('X-Delivery-Part-Count', String(record.staged.partCount ?? 1));
+    const fallbackFileName = record.staged.fileExtension === '.zip'
+      ? 'delivery-pool.zip'
+      : 'delivery-pool.xlsx';
+    ctx.set('Content-Disposition', `attachment; filename="${fallbackFileName}"; filename*=UTF-8''${encodeURIComponent(record.fileName)}`);
   });
   router.get('/v1/delivery-pool/xlsx/:downloadId', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN']);
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
     const { downloadId } = ctx.params;
     assertDeliveryExportArtifact(
       await deliveryExportRegistry.peek(downloadId, actor),
@@ -1709,7 +1933,9 @@ function installRoutes(
     );
     const record = await deliveryExportRegistry.take(downloadId, actor);
     try {
-      await assertDeliveryBindingsReady(repository, record.bindings);
+      if (record.validateBindings) {
+        await assertDeliveryBindingsReady(repository, record.bindings);
+      }
       await assertCurrentActorIdentity(repository, actor);
       record.downloadSignal.throwIfAborted();
     } catch (error) {
@@ -1746,10 +1972,14 @@ function installRoutes(
       });
     });
     ctx.status = 200;
-    ctx.type = DELIVERY_SPREADSHEET_MEDIA_TYPE;
+    ctx.type = record.staged.mediaType ?? DELIVERY_SPREADSHEET_MEDIA_TYPE;
     ctx.length = record.staged.byteSize;
     ctx.set('X-Delivery-Task-Count', String(record.taskCount));
-    ctx.set('Content-Disposition', `attachment; filename="delivery-pool.xlsx"; filename*=UTF-8''${encodeURIComponent(record.fileName)}`);
+    ctx.set('X-Delivery-Part-Count', String(record.staged.partCount ?? 1));
+    const fallbackFileName = record.staged.fileExtension === '.zip'
+      ? 'delivery-pool.zip'
+      : 'delivery-pool.xlsx';
+    ctx.set('Content-Disposition', `attachment; filename="${fallbackFileName}"; filename*=UTF-8''${encodeURIComponent(record.fileName)}`);
     ctx.body = content;
   });
   router.get('/v1/task-counts', async (ctx) => {
@@ -1802,7 +2032,7 @@ function installRoutes(
     }));
   });
   router.head('/v1/tasks/:taskId/archive', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN']);
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
     const { task } = await assertTaskAccess(ctx, repository, {
       ownerOnly: actor.role !== 'ADMIN',
     });
@@ -1812,7 +2042,7 @@ function installRoutes(
     ctx.set('Content-Disposition', `attachment; filename="task-${task.id}-resources.zip"; filename*=UTF-8''${encodeURIComponent(archiveFileName(task))}`);
   });
   router.get('/v1/tasks/:taskId/archive', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN']);
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
     const { task } = await assertTaskAccess(ctx, repository, {
       ownerOnly: actor.role !== 'ADMIN',
     });
@@ -2146,7 +2376,7 @@ function installRoutes(
   });
 
   router.get('/v1/delivery-pool', async (ctx) => {
-    const actor = requestActor(ctx, ['ADMIN']);
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
     const deliveryPool = await repository.listDeliveryPool({
       limit: ctx.query.limit,
       offset: ctx.query.offset,
@@ -2165,6 +2395,7 @@ function installRoutes(
     json(ctx, 200, await repository.listDeliveryBatches({
       limit: ctx.query.limit,
       offset: ctx.query.offset,
+      ...(ctx.query.status === undefined ? {} : { status: ctx.query.status }),
       ...(ctx.query.queryPackageName === undefined
         ? {} : { queryPackageName: ctx.query.queryPackageName }),
       ...(ctx.query.clientBatchCode === undefined
@@ -2232,6 +2463,7 @@ function installRoutes(
   router.post('/v1/prompts/versions', async (ctx) => {
     requestActor(ctx, ['ADMIN']);
     const body = requireJson(ctx);
+    assertPromptEditable(body.kind, body.content);
     json(ctx, 201, await repository.createPromptVersion({ ...body, content: normalizePromptContent(body.content) }));
   });
   router.post('/v1/prompt-versions/:versionId/publish', async (ctx) => {
@@ -2251,7 +2483,9 @@ function installRoutes(
   router.post('/v1/knowledge/labels/import', async (ctx) => { requestActor(ctx, ['ADMIN']); json(ctx, 200, await importCopyKnowledgeLabels(repository.pool, requireJson(ctx).labels)); });
   router.post('/v1/copy-knowledge/analyze', async (ctx) => {
     requestActor(ctx, ['ADMIN']);
-    json(ctx, 201, await withPromptExecution({ outputRoot: storageRoot, configuration: { source: 'CENTER_ANALYSIS_TEMPLATE', promptRuntime: null },
+    const controlPlane = { listPrompts: () => repository.listPrompts(), listSettings: () => repository.listSettings(), listKnowledge: () => repository.listKnowledge() };
+    const configuration = await readPromptConfiguration({ controlPlane });
+    json(ctx, 201, await withPromptExecution({ outputRoot: storageRoot, configuration,
       kind: 'COPY_ANALYSIS' }, () => analyzeCopy({ repository, input: requireJson(ctx) })));
   });
   router.post('/v1/visual-knowledge/analyze', async (ctx) => {
@@ -2310,6 +2544,7 @@ function installRoutes(
     clearInterval(imageQualitySweep);
     await revocationDrain;
     await deliveryExportRegistry.dispose();
+    await disposeSharedDelivery();
   };
 }
 

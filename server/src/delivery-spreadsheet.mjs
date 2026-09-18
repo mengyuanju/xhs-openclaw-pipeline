@@ -1,6 +1,11 @@
 import ExcelJS from '@excel.js/exceljs';
 import { randomUUID } from 'node:crypto';
+import { createWriteStream } from 'node:fs';
 import { rename, rm } from 'node:fs/promises';
+import { basename, join } from 'node:path';
+import { pipeline } from 'node:stream/promises';
+
+import { ZipArchive } from 'archiver';
 import sharp from 'sharp';
 
 import { resolveDeliveryArchiveSource } from './delivery-source.mjs';
@@ -8,6 +13,7 @@ import { IMAGE_FORMATS } from './image-options.mjs';
 
 export const DELIVERY_SPREADSHEET_MEDIA_TYPE =
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+export const DELIVERY_SPREADSHEET_ARCHIVE_MEDIA_TYPE = 'application/zip';
 export const MAX_DELIVERY_SPREADSHEET_TASKS = 200;
 export const MAX_DELIVERY_SPREADSHEET_IMAGES_PER_TASK = 5;
 export const MAX_DELIVERY_SPREADSHEET_IMAGE_BYTES = 256 * 1024 * 1024;
@@ -68,6 +74,73 @@ function currentDeliverySource(task) {
     throw new TypeError('当前交付图片资产绑定无效，请重新检查图片版本');
   }
   return source;
+}
+
+export function deliverySpreadsheetAssetIds(task) {
+  return [...currentDeliverySource(task).assetIds];
+}
+
+function taskImageByteSize(task) {
+  const assetIds = deliverySpreadsheetAssetIds(task);
+  return assetIds.reduce((total, assetId) => {
+    const candidates = (task.assets ?? []).filter((asset) =>
+      Number(asset.id) === Number(assetId)
+        && String(asset.imageRunId) === String(task.currentImageRunId));
+    const byteSize = Number(candidates[0]?.byteSize);
+    if (candidates.length !== 1 || !Number.isSafeInteger(byteSize) || byteSize < 1) {
+      throw new TypeError(`任务 ${task.id} 的交付图片元数据缺失`);
+    }
+    return total + byteSize;
+  }, 0);
+}
+
+function partitionSpreadsheetTasks(tasks, maxImageBytes) {
+  const parts = [];
+  let currentPart = [];
+  let currentImageBytes = 0;
+  for (const task of tasks) {
+    const imageBytes = taskImageByteSize(task);
+    if (imageBytes > maxImageBytes) {
+      throw new RangeError(`任务 ${task.id} 的 Excel 原图总大小超出单卷上限`);
+    }
+    if (currentPart.length > 0 && currentImageBytes + imageBytes > maxImageBytes) {
+      parts.push(currentPart);
+      currentPart = [];
+      currentImageBytes = 0;
+    }
+    currentPart.push(task);
+    currentImageBytes += imageBytes;
+  }
+  if (currentPart.length > 0) parts.push(currentPart);
+  return parts;
+}
+
+async function writeSpreadsheetArchive(entries, outputPath, signal) {
+  const temporaryPath = `${outputPath}.${randomUUID()}.tmp`;
+  const output = createWriteStream(temporaryPath, { flags: 'wx' });
+  const archive = new ZipArchive({ forceZip64: true, zlib: { level: 0 } });
+  let transferError = null;
+  const transfer = pipeline(archive, output, { signal }).catch((error) => {
+    transferError = error;
+  });
+  try {
+    for (const entry of entries) {
+      signal?.throwIfAborted();
+      archive.file(entry.path, { name: entry.name, store: true });
+    }
+    await archive.finalize();
+    await transfer;
+    if (transferError) throw transferError;
+    signal?.throwIfAborted();
+    await rename(temporaryPath, outputPath);
+  } catch (error) {
+    archive.abort();
+    if (!output.destroyed) output.destroy(error);
+    await transfer;
+    throw transferError ?? error;
+  } finally {
+    await rm(temporaryPath, { force: true }).catch(() => {});
+  }
 }
 
 function articleValue(copy) {
@@ -268,7 +341,6 @@ export async function writeDeliverySpreadsheet(tasks, loadAsset, outputPath, {
       signal?.throwIfAborted();
       if (!asset || Number(asset.id) !== Number(assetIds[imageIndex])
           || Number(asset.taskId) !== Number(task.id)
-          || String(asset.imageRunId) !== String(task.currentImageRunId)
           || !DELIVERY_IMAGE_MEDIA_TYPES.has(String(asset.mediaType))) {
         throw new TypeError(`任务 ${task.id} 的交付图片缺失`);
       }
@@ -305,4 +377,71 @@ export async function writeDeliverySpreadsheet(tasks, loadAsset, outputPath, {
     await rm(temporaryPath, { force: true }).catch(() => {});
   }
   return { taskCount, imageColumnCount: maxImageCount };
+}
+
+export async function writeDeliverySpreadsheetExport(tasks, loadAsset, outputDirectory, {
+  signal,
+  maxTasks = MAX_DELIVERY_SPREADSHEET_TASKS,
+  maxImageBytes = MAX_DELIVERY_SPREADSHEET_IMAGE_BYTES,
+} = {}) {
+  if (!iterable(tasks)) throw new TypeError('delivery spreadsheet tasks must be iterable');
+  if (typeof loadAsset !== 'function') throw new TypeError('delivery spreadsheet asset loader is required');
+  if (!Number.isSafeInteger(maxTasks) || maxTasks < 1) {
+    throw new RangeError('delivery spreadsheet task limit must be a positive integer');
+  }
+  if (!Number.isSafeInteger(maxImageBytes) || maxImageBytes < 1) {
+    throw new RangeError('delivery spreadsheet image byte limit must be a positive integer');
+  }
+
+  const taskList = [];
+  for await (const task of tasks) {
+    signal?.throwIfAborted();
+    taskList.push(task);
+    if (taskList.length > maxTasks) {
+      throw new RangeError(`Excel 图片导出一次最多 ${maxTasks} 篇文章`);
+    }
+  }
+  if (taskList.length < 1) {
+    throw new RangeError('delivery spreadsheet must contain at least one task');
+  }
+
+  const parts = partitionSpreadsheetTasks(taskList, maxImageBytes);
+  const partNumberWidth = Math.max(2, String(parts.length).length);
+  const entries = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    signal?.throwIfAborted();
+    const partNumber = String(index + 1).padStart(partNumberWidth, '0');
+    const partCount = String(parts.length).padStart(partNumberWidth, '0');
+    const fileName = parts.length === 1
+      ? 'delivery-pool.xlsx'
+      : `delivery-pool-part-${partNumber}-of-${partCount}.xlsx`;
+    const path = join(outputDirectory, fileName);
+    await writeDeliverySpreadsheet(parts[index], loadAsset, path, {
+      signal,
+      maxTasks,
+      maxImageBytes,
+    });
+    entries.push({ path, name: basename(path) });
+  }
+
+  if (entries.length === 1) {
+    return {
+      artifactPath: entries[0].path,
+      mediaType: DELIVERY_SPREADSHEET_MEDIA_TYPE,
+      fileExtension: '.xlsx',
+      taskCount: taskList.length,
+      partCount: 1,
+    };
+  }
+
+  const artifactPath = join(outputDirectory, 'delivery-pool.zip');
+  await writeSpreadsheetArchive(entries, artifactPath, signal);
+  await Promise.all(entries.map((entry) => rm(entry.path, { force: true })));
+  return {
+    artifactPath,
+    mediaType: DELIVERY_SPREADSHEET_ARCHIVE_MEDIA_TYPE,
+    fileExtension: '.zip',
+    taskCount: taskList.length,
+    partCount: entries.length,
+  };
 }

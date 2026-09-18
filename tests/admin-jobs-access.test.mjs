@@ -15,9 +15,18 @@ test('permitted workflows stay available to current roles while administrator-on
       headers: { cookie: `${ADMIN_SESSION_COOKIE}=${token}` },
     });
     const environment = { XHS_SESSION_SECRET: secret };
+    assert.deepEqual(evaluateAdminProxyRequest(request('/copy-flow'), environment),
+      role === 'USER' ? { type: 'redirect', location: '/workbench/personal' } : { type: 'next' });
+    if (role === 'USER') {
+      for (const path of ['/copy-flow/', '/copy-flow?source=bookmark']) {
+        assert.deepEqual(evaluateAdminProxyRequest(request(path), environment),
+          { type: 'redirect', location: '/workbench/personal' }, path);
+      }
+    }
     assert.deepEqual(evaluateAdminProxyRequest(request('/workbench/all'), environment),
       { type: role === 'ADMIN' ? 'next' : 'forbidden' });
     assert.equal(evaluateAdminProxyRequest(request('/workbench/personal'), environment).type, 'next');
+    assert.equal(evaluateAdminProxyRequest(request('/workbench/personal-statistics'), environment).type, 'next');
     assert.equal(evaluateAdminProxyRequest(request('/api/workbench-statistics?scope=personal'), environment).type, 'next');
     assert.equal(evaluateAdminProxyRequest(request('/workbench-statistics'), environment).type,
       role === 'ADMIN' ? 'next' : 'forbidden');
@@ -30,7 +39,8 @@ test('permitted workflows stay available to current roles while administrator-on
       role === 'ADMIN' ? 'next' : 'forbidden');
     for (const path of ['/delivery-pool', '/delivery-pool/ready']) {
       assert.equal(evaluateAdminProxyRequest(request(path), environment).type,
-        role === 'ADMIN' ? 'next' : 'forbidden', `${role} ${path}`);
+        role === 'ADMIN' || (role === 'USER' && path === '/delivery-pool') ? 'next' : 'forbidden',
+        `${role} ${path}`);
     }
     if (role === 'REVIEWER') {
       assert.equal(evaluateAdminProxyRequest(request('/workbench/copy-review'), environment).type, 'next');
@@ -56,7 +66,9 @@ test('ordinary users cannot enter workflow pages whose permission switches are o
   const environment = { XHS_SESSION_SECRET: secret };
 
   assert.equal(evaluateAdminProxyRequest(request('/workbench/personal'), environment).type, 'next');
-  for (const path of ['/query-packages', '/copy-flow', '/copy-qa']) {
+  assert.deepEqual(evaluateAdminProxyRequest(request('/copy-flow'), environment),
+    { type: 'redirect', location: '/workbench/personal' });
+  for (const path of ['/query-packages', '/copy-qa']) {
     assert.equal(evaluateAdminProxyRequest(request(path), environment).type, 'forbidden', path);
   }
 });

@@ -596,6 +596,8 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
   }
   await flushExpiredImageQualityBatches(pool);
   const values = [actor.userId, status, limit, offset, personName];
+  const itemPublicId = options.itemPublicId == null ? null : normalizeUuid(options.itemPublicId, 'itemPublicId');
+  const itemParameter = options.actionableOnly ? 8 : 7;
   const result = await pool.query(`
     SELECT item.*, sampling_freeze.public_id AS freeze_public_id, sampling_freeze.blind_review_enabled,
       task.query, task.priority_paused, task.source_query_package_name AS query_package_name,
@@ -619,6 +621,8 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
       ON asset.task_id = item.task_id AND asset.image_run_id = item.image_run_id
       AND asset.id::text = COALESCE(page.image->>'deliveryAssetId', page.image->>'assetId')
     WHERE item.selected
+      ${itemPublicId === null ? '' : `AND item.public_id = $${itemParameter}::uuid`}
+      ${options.actionableOnly ? "AND item.status = 'PENDING' AND task.priority_paused = false AND ($7 = 'ADMIN' OR item.submitter_account_id <> $1)" : ''}
       AND ($2 = 'ALL' OR item.status = $2)
       AND ($5::varchar IS NULL OR (
         strpos(lower(item.submitter_username), lower($5)) > 0
@@ -634,7 +638,7 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
     GROUP BY item.id, sampling_freeze.id, task.id, settings.singleton
     ORDER BY task.priority_sort_at, item.id
     LIMIT $3 OFFSET $4
-  `, [...values, PENDING_IMAGE_EDIT_STATUSES]);
+  `, [...values, PENDING_IMAGE_EDIT_STATUSES, ...(options.actionableOnly ? [actor.role] : []), ...(itemPublicId === null ? [] : [itemPublicId])]);
   return { items: result.rows.map((row) => imageQaItemFrom(row, actor)), limit, offset };
 }
 

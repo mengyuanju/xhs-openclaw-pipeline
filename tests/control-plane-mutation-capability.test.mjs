@@ -40,6 +40,7 @@ test('protected control-plane operations declare their version contracts', () =>
     ['/v1/delivery-pool/xlsx', 'POST', 'deliverySpreadsheetVersion', 2],
     ['/v1/delivery-pool/xlsx/token', 'HEAD', 'deliverySpreadsheetVersion', 2],
     ['/v1/delivery-pool/xlsx/token', 'GET', 'deliverySpreadsheetVersion', 2],
+    ['/v1/delivery-batches/123/xlsx', 'POST', 'deliverySpreadsheetVersion', 3],
     ['/v1/delivery-pool/previews', 'POST', 'deliveryPreviewVersion', 5],
     ['/v1/tasks/batch-archive', 'POST', 'finalDeliveryVersion', 2],
     ['/v1/tasks/42/archive', 'HEAD', 'finalDeliveryVersion', 2],

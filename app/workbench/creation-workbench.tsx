@@ -62,14 +62,16 @@ import { TaskAssignmentDialog } from './task-assignment-dialog';
 import { loadAdminTaskPage } from '../../src/control-plane/admin-task-page.mjs';
 import { createActionLock } from '../../src/control-plane/action-lock.mjs';
 import { WorkbenchPagination } from './workbench-pagination';
-import { PersonalWorkbenchNavigation } from '../workbench-statistics/personal-overview';
+import { PersonalTaskControls, PersonalWorkDetails } from './personal-controls';
+import { appendPersonalOptions, DEFAULT_PERSONAL_OPTIONS, parsePersonalOptions, type PersonalOptions, type PersonalWork, type PersonalEvent } from './personal-filters';
+import { subscribeWorkspaceUpdates } from '../components/workspace-updates';
+import { normalizePersonalFilters } from '../../src/personal-workspace.mjs';
+import personalStyles from './personal-workspace.module.css';
 import { normalizePreparedDeliveryExport } from '../delivery-pool/types';
 import { OperatorDeliveryHistory } from './operator-delivery-history';
 import { personalStateFilterStates } from './personal-state-filters';
 import { isLegacyTaskStateFilterError } from './task-list-compatibility';
 import { shanghaiCalendarDate } from '../../src/control-plane/task-date-filter.mjs';
-import { useStatistics } from '../workbench-statistics/use-statistics';
-import type { PersonalStatisticsRange } from '../workbench-statistics/types';
 import {
   DEFAULT_WORKBENCH_LIST_STATE,
   workbenchListSearch,
@@ -90,6 +92,9 @@ import {
 } from './views';
 
 type DistributedTask = PriorityTask & {
+  canOpen?: boolean;
+  personalWork?: PersonalWork | null;
+  personalHistory?: PersonalEvent[];
   id: number;
   query: string;
   sourceQueryPackageName?: string | null;
@@ -139,6 +144,8 @@ type ExecutorNode = {
 };
 
 type TaskPage = {
+  counts?: Record<string, number>;
+  updatedAt?: string;
   items: DistributedTask[];
   total: number;
   limit: number;
@@ -216,7 +223,7 @@ const STATE_LABELS: Record<TaskState, string> = {
   COPY_FAILED: '文案生成失败',
   IMAGE_QUEUED: '待生图',
   IMAGE_RUNNING: '生图中',
-  IMAGE_FAILED: '生图失败',
+  IMAGE_FAILED: '图片生成失败',
   MANUAL_ARCHIVE: '待图片初审',
   IMAGE_QC_PENDING: '待图片质检',
   IMAGE_REWORK_PENDING: '图片质检打回',
@@ -469,6 +476,12 @@ function isStale(task: DistributedTask) {
   return ['COPY_RUNNING', 'IMAGE_RUNNING'].includes(task.state)
     && Number.isFinite(Date.parse(lastProgressAt))
     && Date.now() - Date.parse(lastProgressAt) >= STALE_AFTER_MS;
+}
+
+function taskLatestActivityAt(task: DistributedTask) {
+  return [task.updatedAt, task.lastActivityAt, task.createdAt]
+    .filter((value): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value)))
+    .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? task.createdAt;
 }
 
 function durationLabel(milliseconds: number) {
@@ -757,8 +770,8 @@ function DuplicateQueryDiscardDialog({
   </Dialog>;
 }
 
-export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, role, viewKey: activeView, initialListState = DEFAULT_WORKBENCH_LIST_STATE }: {
-  nodeId: string; creatorUserId: string; creatorAccountId: number; role: string; viewKey: ViewKey; initialListState?: WorkbenchListState;
+export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, role, viewKey: activeView, initialListState = DEFAULT_WORKBENCH_LIST_STATE, initialPersonalOptions = DEFAULT_PERSONAL_OPTIONS, initialPriorityMode = '' }: {
+  nodeId: string; creatorUserId: string; creatorAccountId: number; role: string; viewKey: ViewKey; initialListState?: WorkbenchListState; initialPersonalOptions?: PersonalOptions; initialPriorityMode?: string;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -784,7 +797,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     canUseQueryPackageFilter ? initialListState.queryPackageName : '',
   );
   const [sort, setSort] = useState<TaskSort>(initialListState.sort);
-  const [priorityMode, setPriorityMode] = useState('');
+  const [priorityMode, setPriorityMode] = useState(initialPriorityMode);
   const [deduplicateQuery, setDeduplicateQuery] = useState(initialListState.deduplicateQuery);
   const [creatorRoleFilter, setCreatorRoleFilter] = useState(initialListState.createdByRole);
   const [creatorFilter, setCreatorFilter] = useState<JobCreator | null>(initialListState.createdByUserId
@@ -805,7 +818,9 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   const [personalScope, setPersonalScope] = useState<PersonalTaskScope>(
     activeView === 'PERSONAL' ? initialListState.personalScope : 'ALL',
   );
-  const [personalStatisticsRange, setPersonalStatisticsRange] = useState<PersonalStatisticsRange>({ period: 'today' });
+  const [personalOptions, setPersonalOptions] = useState(initialPersonalOptions);
+  const [personalCounts, setPersonalCounts] = useState<Record<string, number> | null>(null);
+  const [deliveryHistoryOpen, setDeliveryHistoryOpen] = useState(false);
   const [attentionFilter, setAttentionFilter] = useState<TaskAttention>(initialListState.attention);
   const [fetchError, setFetchError] = useState('');
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
@@ -857,10 +872,6 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   const copyReviewBypassAllowed = role === 'ADMIN';
   const effectiveSkipCopyReview = copyReviewBypassAllowed && skipCopyReview;
   const duplicateQueryCleanupBusy = duplicateQueryPreviewing || duplicateQueryDiscarding;
-  const personalStatistics = useStatistics(
-    { scope: 'personal', ...personalStatisticsRange },
-    activeView === 'PERSONAL',
-  );
   const currentAdmin = useMemo<JobCreator>(() => ({
     id: creatorAccountId,
     username: creatorUserId,
@@ -886,6 +897,22 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     }
     try {
       const view = activeDefinition;
+      if (view.personalOnly) {
+        const search = appendPersonalOptions(new URLSearchParams({
+          personalScope, category:stateFilter, query:searchKeyword, page:String(page), pageSize:String(pageSize),
+          sort, priorityMode, deduplicateQuery:deduplicateQuery ? '1' : '',
+          ...(canUseQueryPackageFilter && queryPackageName ? {queryPackageName} : {}),
+        }), personalOptions);
+        const taskPage = await request<TaskPage>(apiPath(`/v1/personal-workspace/tasks?${search}`));
+        if (!Array.isArray(taskPage.items) || !taskPage.counts || !Number.isSafeInteger(taskPage.total)) throw new Error('个人作业数据格式不完整，请更新中心服务后重试');
+        if (requestId !== refreshRequestId.current) return;
+        setTasks(taskPage.items); setTotal(taskPage.total); setResultOffset(taskPage.offset); setPersonalCounts(taskPage.counts);
+        const lastPage = Math.max(1, Math.ceil(taskPage.total/pageSize));
+        if (page > lastPage) setPage(lastPage);
+        requestedLastPage.current = null;
+        setFetchError(''); setLastUpdatedAt(taskPage.updatedAt || new Date().toISOString());
+        return;
+      }
       const paginationScope = JSON.stringify([
         activeView, creatorUserId, creatorAccountId, pageSize, creatorFilter?.username,
         creatorFilter?.id, assigneeFilter?.username, assigneeFilter?.id, creatorRoleFilter,
@@ -1054,7 +1081,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     }
   }, [activeDefinition, creatorUserId, creatorAccountId, page, pageSize, isAllJobs, creatorFilter,
     assigneeFilter, creatorRoleFilter, createdDateFrom, createdDateTo, personalScope, stateFilter, searchKeyword, queryPackageName,
-    deduplicateQuery, sort, priorityMode, attentionFilter, role, canUseQueryPackageFilter]);
+    deduplicateQuery, sort, priorityMode, attentionFilter, role, canUseQueryPackageFilter, personalOptions]);
 
   useEffect(() => {
     if (leavingWorkbenchView.current) return;
@@ -1077,13 +1104,37 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       attention: isAllJobs ? attentionFilter : 'NONE',
       taskId: selectedTaskId,
     }, { includeAdminFilters: role === 'ADMIN' && isAllJobs });
+    if (activeView === 'PERSONAL') {
+      appendPersonalOptions(search, personalOptions);
+      search.set('personalScope', personalScope);
+      if (priorityMode) search.set('priorityMode', priorityMode);
+    }
     const href = search.size ? `${pathname}?${search}` : pathname;
     if (`${window.location.pathname}${window.location.search}` !== href) {
-      router.replace(href, { scroll: false });
+      if (activeView === 'PERSONAL') window.history.replaceState(null, '', href);
+      else router.replace(href, { scroll: false });
     }
   }, [activeView, assigneeFilter, attentionFilter, creatorFilter, creatorRoleFilter, createdDateFrom, createdDateTo, deduplicateQuery, isAllJobs,
     page, pageSize, pathname, queryPackageName, role, router, searchKeyword, selectedTaskId, sort, stateFilter,
-    canUseQueryPackageFilter, personalScope]);
+    canUseQueryPackageFilter, personalScope, personalOptions, priorityMode]);
+
+  useEffect(() => {
+    if (activeView !== 'PERSONAL') return;
+    const restore = () => {
+      const input = Object.fromEntries(new URLSearchParams(window.location.search));
+      const options = parsePersonalOptions(input);
+      const filters = normalizePersonalFilters({ ...input,...options });
+      setPersonalOptions(options); setPersonalScope(filters.personalScope as PersonalTaskScope);
+      setStateFilter(filters.category); setPage(filters.page); setPageSize(filters.pageSize as WorkbenchListState['pageSize']);
+      setSearchInput(filters.query); setSearchKeyword(filters.query); setSort(filters.sort as TaskSort);
+      setPriorityMode(filters.priorityMode); setDeduplicateQuery(filters.deduplicateQuery);
+      setQueryPackageInput(filters.queryPackageName); setQueryPackageName(filters.queryPackageName); setSelectedTaskId(filters.taskId);
+    };
+    window.addEventListener('popstate',restore);
+    return () => window.removeEventListener('popstate',restore);
+  },[activeView]);
+
+  useEffect(() => activeView === 'PERSONAL' ? subscribeWorkspaceUpdates(()=>void refresh({silent:true})) : undefined,[activeView,refresh]);
 
   const loadSavedViews = useCallback(async () => {
     if (role !== 'ADMIN') return;
@@ -1138,13 +1189,13 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   const queuedTasks = selectedTasks.filter((task) => ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state));
   const operatorDeliveryMode = role === 'USER' && activeView === 'PERSONAL';
   const canOperatorDeliverTask = (task: DistributedTask) => operatorDeliveryMode
-    && task.state === 'REVIEWED' && task.deliveryStatus === 'READY'
+    && task.canOpen !== false && task.state === 'REVIEWED' && (task.deliveryStatus === 'READY' || task.personalWork?.categories.includes('ready'))
     && isTaskAssignee(task, creatorUserId, creatorAccountId);
   const exportableTasks = selectedTasks.filter((task) => task.state === 'REVIEWED'
-    && task.deliveryStatus === 'READY'
+    && (task.deliveryStatus === 'READY' || task.personalWork?.categories.includes('ready'))
     && (role === 'ADMIN' || canOperatorDeliverTask(task)));
   const selectionCandidates = role === 'ADMIN'
-    ? visibleTasks : operatorDeliveryMode ? visibleTasks.filter(canOperatorDeliverTask) : [];
+    ? visibleTasks.filter(task => task.canOpen !== false) : operatorDeliveryMode ? visibleTasks.filter(canOperatorDeliverTask) : [];
   const showTaskSelection = role === 'ADMIN' || operatorDeliveryMode;
   const permanentlyDeletableTasks = selectedTasks.filter(isPermanentlyDeletableTask);
   const permanentDeletionSettlingTasks = selectedTasks.filter((task) => task.state === 'CANCELLED'
@@ -1159,7 +1210,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     || deduplicateQuery || creatorFilter || assigneeFilter || creatorRoleFilter !== 'ALL'
     || createdDateFrom || createdDateTo
     || personalScope !== 'ALL'
-    || stateFilter !== 'ALL' || attentionFilter !== 'NONE');
+    || stateFilter !== 'ALL' || attentionFilter !== 'NONE' || priorityMode
+    || activeView === 'PERSONAL' && JSON.stringify(personalOptions) !== JSON.stringify(DEFAULT_PERSONAL_OPTIONS));
   const searchScopeLabel = [
     searchKeyword ? `Query“${searchKeyword}”` : '',
     canUseQueryPackageFilter && queryPackageName ? `词包“${queryPackageName}”` : '',
@@ -1469,6 +1521,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   }
 
   function clearFilters() {
+    setPersonalOptions(DEFAULT_PERSONAL_OPTIONS);
+    setPriorityMode('');
     setSearchInput('');
     setSearchKeyword('');
     setQueryPackageInput('');
@@ -1477,7 +1531,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     setCreatorFilter(null);
     setAssigneeFilter(null);
     setCreatorRoleFilter('ALL');
-    setPersonalScope('ALL');
+    setPersonalScope(activeView === 'PERSONAL' ? 'ASSIGNED' : 'ALL');
     setStateFilter('ALL');
     setAttentionFilter('NONE');
     setSavedViewId('');
@@ -1735,6 +1789,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   }
 
   function taskActions(task: DistributedTask) {
+    if (task.canOpen === false) return <span className="muted">历史记录 · 无当前详情权限</span>;
     const busy = actingTaskId === task.id;
     const queued = ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state);
     const currentUserIsAssignee = isTaskAssignee(task, creatorUserId, creatorAccountId);
@@ -1948,17 +2003,18 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         if (duplicateQueryPreview) void previewDuplicateQueries(duplicateQueryPreview.representativeTaskIds);
       }}
     />
-    {activeView === 'PERSONAL' && <PersonalWorkbenchNavigation
-      range={personalStatisticsRange}
-      statistics={personalStatistics}
-      filter={stateFilter}
-      scope={personalScope}
-      onRange={setPersonalStatisticsRange}
-      onFilter={(value) => { setStateFilter(value); setPage(1); }}
-      onScope={(value) => { setPersonalScope(value); setPage(1); }}
-      onTaskSelect={setSelectedTaskId}
+    {activeView === 'PERSONAL' && <PersonalTaskControls
+      options={personalOptions} onChange={value => { setPersonalOptions(value); setPage(1); }}
+      category={stateFilter} onCategory={value => { setStateFilter(value); setPage(1); }}
+      scope={personalScope} onScope={value => { setPersonalScope(value); setPage(1); }}
+      counts={personalCounts} onDelivery={operatorDeliveryMode ? () => setDeliveryHistoryOpen(true) : undefined}
     />}
-    {operatorDeliveryMode && <OperatorDeliveryHistory refreshKey={deliveryHistoryVersion} />}
+    {operatorDeliveryMode && <Dialog open={deliveryHistoryOpen} onOpenChange={setDeliveryHistoryOpen}>
+      <DialogContent className={personalStyles.deliveryDialog}><DialogTitle>我的交付记录</DialogTitle>
+        <DialogDescription>查看下载记录并确认交付。</DialogDescription>
+        {deliveryHistoryOpen && <OperatorDeliveryHistory refreshKey={deliveryHistoryVersion} />}
+      </DialogContent>
+    </Dialog>}
     <section className="panel workbench-task-panel">
       <div className="workbench-toolbar">
         <div>
@@ -2170,7 +2226,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
             <label htmlFor="workbench-task-sort">排序</label>
             <Select value={sort} onValueChange={(value) => { setSort(value as TaskSort); setPage(1); }}>
               <SelectTrigger id="workbench-task-sort"><SelectValue /></SelectTrigger>
-              <SelectContent>{TASK_SORT_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+              <SelectContent>{activeView === 'PERSONAL' && <SelectItem value="waiting:desc">待处理等待最长</SelectItem>}{TASK_SORT_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
             </Select>
           </div>
         </div>
@@ -2240,13 +2296,13 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
           </div>
           : <div ref={listStart} className="table-wrap mobile-cards workbench-table-wrap" tabIndex={0} role="region" aria-label="作业列表，可横向滚动查看完整列" aria-busy={loading} inert={loading}>
             <table>
-              <thead><tr>{showTaskSelection && <th className="workbench-col-select"><Checkbox aria-label="选择当前页全部任务中的可交付项" checked={allVisibleSelected} disabled={selectionCandidates.length === 0} onChange={(event) => setSelectedTaskIds(event.target.checked ? selectionCandidates.map((task) => task.id) : [])} /></th>}<th className="workbench-col-query">作业 / Query</th><th className="workbench-col-creator">负责人 / 创建人</th><th className="workbench-col-progress">状态 / 进度</th><th className="workbench-col-executor">执行机</th><th className="workbench-col-time">创建 / 开始 / 耗时</th><th className="workbench-col-actions">操作</th></tr></thead>
+              <thead><tr>{showTaskSelection && <th className="workbench-col-select"><Checkbox aria-label="选择当前页全部任务中的可交付项" checked={allVisibleSelected} disabled={selectionCandidates.length === 0} onChange={(event) => setSelectedTaskIds(event.target.checked ? selectionCandidates.map((task) => task.id) : [])} /></th>}<th className="workbench-col-query">作业 / Query</th><th className="workbench-col-creator">负责人 / 创建人</th><th className="workbench-col-progress">状态 / 进度</th><th className="workbench-col-executor">执行机</th><th className="workbench-col-time">{isAllJobs ? '变更 / 创建 / 耗时' : '创建 / 开始 / 耗时'}</th><th className="workbench-col-actions">操作</th></tr></thead>
               <tbody>{visibleTasks.map((task) => <tr key={task.id}>
                 {showTaskSelection && <td className="workbench-col-select" data-label="选择"><Checkbox aria-label={`选择任务 #${task.id}`} checked={selectedTaskIds.includes(task.id)} disabled={role === 'USER' && !canOperatorDeliverTask(task)} title={role === 'USER' && !canOperatorDeliverTask(task) ? '仅可交付本人负责且已完成的作业' : undefined} onChange={(event) => toggleTaskSelection(task.id, event.target.checked)} /></td>}
                 <td className="query-cell workbench-col-query" data-label="作业 / Query">
                   <div className="workbench-cell-stack">
                     <span className="mono workbench-task-id">#{task.id}</span>
-                    <Button unstyled className="workbench-query-preview workbench-text-preview" type="button" title={task.query} aria-label={`查看作业 #${task.id}：${task.query}`} onClick={() => setSelectedTaskId(task.id)}>{task.query}</Button>
+                    <Button unstyled className="workbench-query-preview workbench-text-preview" type="button" disabled={task.canOpen === false} title={task.query} aria-label={`查看作业 #${task.id}：${task.query}`} onClick={() => setSelectedTaskId(task.id)}>{task.query}</Button>
                     {role !== 'USER' && <small className="workbench-text-preview" title={task.sourceQueryPackageName || '未归属词包'}>词包：{task.sourceQueryPackageName || '未归属词包'}</small>}
                   </div>
                 </td>
@@ -2260,17 +2316,20 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
                     创建人：{task.createdByDisplayName || task.createdByUserId || '历史任务'}
                   </small>
                   {activeView === 'PERSONAL' && <small className="pill">
-                    {personalOwnershipLabel(task, creatorUserId, creatorAccountId)}
+                    {task.canOpen === false ? '本人完成历史' : personalOwnershipLabel(task, creatorUserId, creatorAccountId)}
                   </small>}
                   {isAllJobs && <small>{CREATOR_ROLE_LABELS[task.createdByRole || 'UNKNOWN'] || '未知创建者角色'}</small>}
                 </div></td>
                 <td className="workbench-col-progress" data-label="状态 / 进度">
                   <div className="distributed-progress">
+                    {activeView === 'PERSONAL' && <PersonalWorkDetails work={task.personalWork} events={personalOptions.mode !== 'CURRENT' ? task.personalHistory : undefined} />}
+                    {task.canOpen === false ? <small>仅展示历史记录</small> : <>
                     <small><PrioritySummary task={task} /></small>
                     {role === 'ADMIN' && <TaskPriorityControl tasks={[task]} onChanged={() => refresh()} />}
                     <span className={`pill ${isImageRetryExhausted(task) ? 'pill-rejected' : `workbench-state-${task.state.toLowerCase()}`}${isStale(task) ? ' pill-rejected' : ''}`}>{isImageRetryExhausted(task) ? IMAGE_RETRY_EXHAUSTED_LABEL : taskStateLabel(task, role)}</span>
                     <span>{stageLabel(task, role)} · {task.state.endsWith('_FAILED') && !task.executionStartedAt && task.progressPercent === 0 ? '进度未记录' : `${task.progressPercent}%`}</span>
                     <small className="workbench-text-preview" title={isStale(task) ? '超过 30 分钟没有进度，请进入详情处理' : taskProgressMessage(task)}>{isStale(task) ? '超过 30 分钟没有进度，请进入详情处理' : taskProgressMessage(task)}</small>
+                    </>}
                   </div>
                 </td>
                 <td className="workbench-col-executor" data-label="执行机"><div className="workbench-cell-stack workbench-executors">
@@ -2278,8 +2337,11 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
                   {(activeView === 'MANUAL_ARCHIVE' || isAllJobs) && <div><small>生图执行机</small><span className="mono workbench-text-preview" title={imageExecutorLabel(task)}>{imageExecutorLabel(task)}</span></div>}
                   {activeView === 'PERSONAL' && (task.state.startsWith('IMAGE_') || task.imageExecutorNodeId || isImageRetryExhausted(task)) && <div><small>生图执行机</small><span className="mono workbench-text-preview" title={imageExecutorLabel(task)}>{imageExecutorLabel(task)}</span></div>}
                 </div></td>
-                <td className="workbench-col-time" data-label="创建 / 开始 / 耗时"><div className="workbench-cell-stack">
-                  <time dateTime={task.createdAt}>{timeLabel(task.createdAt)}</time>
+                <td className="workbench-col-time" data-label={isAllJobs ? '变更 / 创建 / 耗时' : '创建 / 开始 / 耗时'}><div className="workbench-cell-stack">
+                  {isAllJobs
+                    ? <><time dateTime={taskLatestActivityAt(task)}>最近变更：{timeLabel(taskLatestActivityAt(task))}</time>
+                      <small>创建：<time dateTime={task.createdAt}>{timeLabel(task.createdAt)}</time></small></>
+                    : <time dateTime={task.createdAt}>{timeLabel(task.createdAt)}</time>}
                   <small>开始：<time dateTime={task.executionStartedAt || undefined}>{timeLabel(task.executionStartedAt, task.state)}</time></small>
                   <small className="workbench-elapsed"><Clock3 aria-hidden="true" size={13} />本次：{elapsed(task)}</small>
                   {cumulativeImageElapsed(task) && <small className="workbench-elapsed" title="包含同一恢复链中失败运行与续跑的累计图片生产耗时"><Clock3 aria-hidden="true" size={13} />生图累计：{cumulativeImageElapsed(task)}</small>}

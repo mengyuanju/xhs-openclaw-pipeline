@@ -286,6 +286,7 @@ export async function listDeliveryBatches(pool, {
   offset: rawOffset = 0,
   queryPackageName: rawQueryPackageName = null,
   clientBatchCode: rawClientBatchCode = null,
+  status = null,
 } = {}, rawActor) {
   const actor = normalizeActor(rawActor);
   const { limit, offset } = normalizeListPagination(rawLimit, rawOffset);
@@ -293,6 +294,9 @@ export async function listDeliveryBatches(pool, {
   const clientBatchCode = normalizeClientBatchCode(rawClientBatchCode, { optional: true });
   const values = [];
   const clauses = [];
+  if (status !== null) {
+    if (!STATUSES.has(status)) throw new TypeError('delivery batch status is invalid');
+  }
   if (actor.role === 'USER') {
     values.push(actor.userId, actor.username);
     clauses.push(`batch.batch_kind = 'OPERATOR_DELIVERY'
@@ -316,6 +320,7 @@ export async function listDeliveryBatches(pool, {
         AND filtered.client_batch_code_snapshot = $${values.length}
     )`);
   }
+  if (status !== null) { values.push(status); clauses.push(`batch.status = $${values.length}`); }
   const filter = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   const page = await pool.query(`
     SELECT batch.*, COALESCE(packages.names, ARRAY[]::varchar[]) AS query_package_names
@@ -367,6 +372,117 @@ export async function getDeliveryBatch(pool, rawPublicId, rawActor) {
     WHERE delivery_batch_id = $1 ORDER BY ordinal
   `, [batch.rows[0].id]);
   return { ...batchFrom(batch.rows[0]), items: items.rows.map(batchItemFrom) };
+}
+
+function spreadsheetTaskFrom(row) {
+  const taskId = Number(row.task_id);
+  const copyRevisionId = Number(row.copy_revision_id);
+  const imageRunId = row.image_run_id;
+  return {
+    id: taskId,
+    query: row.query_snapshot,
+    sourceQueryPackageName: row.query_package_name_snapshot ?? null,
+    sourceClientBatchCode: row.client_batch_code_snapshot ?? null,
+    currentCopyRevisionId: copyRevisionId,
+    currentImageRunId: imageRunId,
+    copyRevisions: [{ id: copyRevisionId, content: row.copy_content }],
+    imageRuns: [{ id: imageRunId, result: row.image_result }],
+    xiaohongshuLinks: Array.isArray(row.xiaohongshu_links)
+      ? row.xiaohongshu_links.map((link) => ({
+        noteId: String(link.noteId),
+        url: String(link.url),
+        title: link.title === null || link.title === undefined ? null : String(link.title),
+        rank: Number(link.rank),
+      }))
+      : [],
+    xiaohongshuSearchStatus: row.xiaohongshu_search_status ?? null,
+    xiaohongshuSearchBlockedReason: row.xiaohongshu_search_blocked_reason ?? null,
+    assets: Array.isArray(row.assets) ? row.assets.map((asset) => ({
+      ...asset,
+      id: Number(asset.id),
+      taskId: Number(asset.taskId),
+    })) : [],
+  };
+}
+
+export async function getDeliveryBatchSpreadsheet(pool, rawPublicId, rawActor) {
+  const actor = normalizeActor(rawActor);
+  const publicId = normalizeUuid(rawPublicId, 'deliveryBatchId');
+  const values = [publicId];
+  const visibility = actor.role === 'USER' ? `
+    AND batch.batch_kind = 'OPERATOR_DELIVERY'
+    AND batch.created_by_role = 'USER'
+    AND batch.created_by_account_id = $2
+    AND batch.created_by_username = $3
+  ` : '';
+  if (actor.role === 'USER') values.push(actor.userId, actor.username);
+  const result = await pool.query(`
+    SELECT batch.*, item.id AS item_id, item.ordinal, item.task_id,
+      item.copy_revision_id, item.image_run_id, item.query_snapshot,
+      item.query_package_id_snapshot, item.query_package_name_snapshot,
+      item.client_batch_code_snapshot, revision.content AS copy_content,
+      image_run.result AS image_result,
+      COALESCE((
+        SELECT jsonb_agg(jsonb_build_object(
+          'noteId', link.note_id,
+          'url', link.url,
+          'title', link.title,
+          'rank', link.rank
+        ) ORDER BY link.rank, link.id)
+        FROM xhs_query_search_jobs AS search
+        JOIN xhs_query_links AS link ON link.search_job_id = search.id
+        WHERE search.task_id = item.task_id AND search.status = 'SUCCEEDED'
+      ), '[]'::jsonb) AS xiaohongshu_links,
+      (
+        SELECT search.status
+        FROM xhs_query_search_jobs AS search
+        WHERE search.task_id = item.task_id
+      ) AS xiaohongshu_search_status,
+      (
+        SELECT search.blocked_reason
+        FROM xhs_query_search_jobs AS search
+        WHERE search.task_id = item.task_id
+      ) AS xiaohongshu_search_blocked_reason,
+      COALESCE((
+        SELECT jsonb_agg(jsonb_build_object(
+          'id', asset.id,
+          'taskId', asset.task_id,
+          'imageRunId', asset.image_run_id,
+          'mediaType', asset.media_type,
+          'originalName', asset.original_name
+        ) ORDER BY asset.id)
+        FROM image_run_asset_view AS asset
+        WHERE asset.task_id = item.task_id
+          AND asset.image_run_id = item.image_run_id
+          AND asset.media_type LIKE 'image/%'
+      ), '[]'::jsonb) AS assets
+    FROM delivery_batches AS batch
+    JOIN delivery_batch_items AS item ON item.delivery_batch_id = batch.id
+    LEFT JOIN copy_revisions AS revision
+      ON revision.id = item.copy_revision_id AND revision.task_id = item.task_id
+    LEFT JOIN image_runs AS image_run
+      ON image_run.id = item.image_run_id AND image_run.task_id = item.task_id
+    WHERE batch.public_id = $1 ${visibility}
+    ORDER BY item.ordinal
+  `, values);
+  if (!result.rows[0]) throw new ControlPlaneNotFoundError('delivery batch not found');
+  const batch = batchFrom(result.rows[0]);
+  if (result.rows.length !== batch.taskCount
+      || result.rows.some((row) => row.copy_content == null || row.image_result == null)) {
+    throw new ControlPlaneConflictError(
+      'DELIVERY_BATCH_SOURCE_MISSING',
+      '该历史批次的冻结文案或图片版本缺失，无法生成 Excel',
+    );
+  }
+  return {
+    ...batch,
+    tasks: result.rows.map(spreadsheetTaskFrom),
+    bindings: result.rows.map((row) => ({
+      taskId: Number(row.task_id),
+      copyRevisionId: Number(row.copy_revision_id),
+      imageRunId: row.image_run_id,
+    })),
+  };
 }
 
 export async function getDeliveryBatchArtifact(pool, rawPublicId, rawActor) {

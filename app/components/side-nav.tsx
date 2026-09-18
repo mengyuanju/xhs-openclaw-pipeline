@@ -6,6 +6,7 @@ import {
   BarChart3,
   ChevronDown,
   LayoutDashboard,
+  PanelsTopLeft,
   LibraryBig,
   LogOut,
   Menu,
@@ -30,7 +31,10 @@ type NavigationGroup = { label: string; items: NavigationItem[] };
 
 const navigationGroups: NavigationGroup[] = [
   { label: '创作工作台', items: [
-    { href: '/workbench', label: '作业中心', icon: LayoutDashboard, children: WORKBENCH_VIEWS },
+    { href: '/workbench', label: '作业中心', icon: LayoutDashboard, children: [
+      { href: '/workbench/personal-statistics', label: '个人数据统计', icon: BarChart3 }, ...WORKBENCH_VIEWS,
+    ] },
+    { href: '/work-mode', label: '作业模式', icon: PanelsTopLeft },
     { href: '/query-packages', label: 'Query 词包', icon: PackageSearch },
     { href: '/copy-flow', label: '文案工作入口', icon: ShieldCheck },
     { href: '/copy-qa', label: '文案质检', icon: ShieldCheck },
@@ -95,7 +99,7 @@ export function SideNav({ session }: { session: NavigationSession }) {
           ...group,
           items: group.items.filter((item) => allowedWorkflowHrefs.has(item.href)).map((item) => ({
             ...item,
-            children: item.children?.filter((child) => child.href === '/workbench/personal'),
+            children: item.children?.filter((child) => ['/workbench/personal','/workbench/personal-statistics'].includes(child.href)),
           })),
         }));
   const visibleGroups = roleGroups.filter((group) => group.items.length > 0);

@@ -45,7 +45,7 @@ test('new creation workbench owns the root route and exposes lifecycle views', a
   assert.match(views, /states: \['REVIEWED'\]/u);
   assert.match(listPage, /if \(definition\.adminOnly && role !== 'ADMIN'\) redirect\('\/workbench\/personal'\)/u);
   assert.match(workbench, /role=\{role\}/u);
-  assert.match(navigation, /children: WORKBENCH_VIEWS/u);
+  assert.match(navigation, /children: \[[\s\S]*personal-statistics[\s\S]*\.\.\.WORKBENCH_VIEWS/u);
   assert.match(navigation, /child\.href !== '\/workbench\/completed'/u);
   assert.match(navigation, /aria-current=\{selected \? 'page' : undefined\}/u);
   assert.match(navigation, /href: '\/workbench', label: '作业中心'/u);
@@ -54,7 +54,7 @@ test('new creation workbench owns the root route and exposes lifecycle views', a
   assert.doesNotMatch(proxyPolicy, /legacyReviewPath|location: '\/reviews'/u);
 });
 
-test('ordinary users do not render Query package provenance or delivery downloads', async () => {
+test('ordinary workbench rows hide Query provenance and keep delivery downloads in the delivery pool', async () => {
   const [workbench, reviewDialog, navigation] = await Promise.all([
     readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
     readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
@@ -64,21 +64,28 @@ test('ordinary users do not render Query package provenance or delivery download
   assert.match(navigation, /workflowNavigationHrefs\(session\)/u);
   assert.deepEqual(workflowNavigationHrefs({
     subject: 'user', roles: ['USER'], copyReviewEnabled: true, copyQcEnabled: false,
-  }), ['/workbench', '/query-packages', '/copy-flow'],
-  'ordinary reviewers must receive review tools without receiving QA or delivery tools');
+  }), ['/workbench', '/work-mode', '/query-packages', '/delivery-pool'],
+  'ordinary reviewers must receive review tools and their personal delivery pool without receiving QA tools');
   assert.deepEqual(workflowNavigationHrefs({
     subject: 'user', roles: ['USER'], copyReviewEnabled: false, copyQcEnabled: false,
-  }), ['/workbench'], 'ordinary users without workflow permissions must only receive their workbench');
+  }), ['/workbench', '/work-mode', '/delivery-pool'],
+  'ordinary users always retain their workbench and personal delivery pool');
+  assert.deepEqual(workflowNavigationHrefs({
+    subject: 'user', roles: ['USER'], copyReviewEnabled: true, copyQcEnabled: true,
+  }), ['/workbench', '/work-mode', '/query-packages', '/copy-qa', '/delivery-pool'],
+  'enabling copy QA must not restore the removed operator landing-page entry');
+  assert.equal(workflowNavigationHrefs({ subject: 'user', roles: ['ADMIN'] }).includes('/copy-flow'), true,
+    'administrators retain their batch-management entry');
   assert.deepEqual(workflowNavigationHrefs({
     subject: 'user', roles: ['REVIEWER'], copyReviewEnabled: false, copyQcEnabled: false, imageQcEnabled: true,
-  }), ['/workbench', '/image-qa'], 'image QA reviewers must receive only their explicitly enabled workflow');
+  }), ['/workbench', '/work-mode', '/image-qa'], 'image QA reviewers must receive only their explicitly enabled workflow');
   assert.deepEqual(workflowNavigationHrefs({
     subject: 'user', roles: ['REVIEWER'], copyReviewEnabled: true, copyQcEnabled: true, imageQcEnabled: true,
-  }), ['/workbench', '/query-packages', '/copy-qa', '/image-qa'],
+  }), ['/workbench', '/work-mode', '/query-packages', '/copy-qa', '/image-qa'],
   'reviewer accounts must not receive the copy workflow landing-page entry');
   assert.deepEqual(workflowNavigationHrefs({
     subject: 'user', roles: ['USER'], copyReviewEnabled: false, copyQcEnabled: false, imageQcEnabled: true,
-  }), ['/workbench'], 'image QA permission must remain reviewer-only');
+  }), ['/workbench', '/work-mode', '/delivery-pool'], 'image QA permission must remain reviewer-only');
   assert.match(workbench, /const canUseQueryPackageFilter = role !== 'USER'/u);
   assert.match(workbench, /canUseQueryPackageFilter \? initialListState\.queryPackageName : ''/u,
     'a package filter from the URL must not initialize for an ordinary user');
@@ -111,19 +118,23 @@ test('ordinary users do not render Query package provenance or delivery download
 });
 
 test('ordinary operators create auditable delivery batches and confirm handoff from personal history', async () => {
-  const [workbench, history] = await Promise.all([
+  const [workbench, history, shared] = await Promise.all([
     readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
     readFile(projectFile('app/workbench/operator-delivery-history.tsx'), 'utf8'),
+    readFile(projectFile('app/delivery-pool/shared-delivery-workbench.tsx'), 'utf8'),
   ]);
   assert.match(workbench, /const operatorDeliveryMode = role === 'USER' && activeView === 'PERSONAL'/u);
   assert.match(workbench, /isTaskAssignee\(task, creatorUserId, creatorAccountId\)/u);
   assert.match(workbench, /scope: 'SELECTED', taskIds: exportableTasks\.map/u);
   assert.match(workbench, /\/v1\/delivery-pool\/archive/u);
   assert.match(workbench, /<OperatorDeliveryHistory refreshKey=\{deliveryHistoryVersion\}/u);
-  assert.match(history, /\/v1\/delivery-batches\?limit=20&offset=0/u);
-  assert.match(history, /\/v1\/delivery-batches\/\$\{encodeURIComponent\(batch\.publicId\)\}\/confirm/u);
-  assert.match(history, /确认已交付/u);
-  assert.match(history, /管理员现在可以看到该记录/u);
+  assert.match(history, /<SharedDeliveryWorkbench role="USER" historyOnly/u);
+  assert.match(shared, /\/v1\/delivery-items\?/u);
+  assert.match(shared, /<WorkbenchPagination/u);
+  assert.match(shared, /已打包，待交付/u);
+  assert.match(shared, /\/v1\/delivery-items\/confirm/u);
+  assert.match(shared, /确认已交付/u);
+  assert.match(shared, /双方交付状态已更新/u);
 });
 
 test('all distributed task status displays distinguish exhausted image retries from normal copy review', async () => {
@@ -286,6 +297,9 @@ test('creator and assignee filters can be combined while personal work stays dis
     readFile(projectFile('app/workbench/list-state.ts'), 'utf8'),
   ]);
   assert.match(adminFilters, /<AdminCreatorFilter[\s\S]{0,240}<AdminAssigneeFilter/u);
+  assert.match(adminFilters, /最近变更日期（起）[\s\S]*最近变更日期（止，含当天）/u);
+  assert.match(adminFilters, /TASK_STATE_FILTER_GROUPS\.map/u);
+  assert.match(adminFilters, /<SelectLabel>\{group\.label\}<\/SelectLabel>/u);
   assert.match(assigneeFilter, /label="负责人"[\s\S]{0,180}emptyLabel="全部负责人"/u);
   assert.match(workbench, /assignedToUserId: assigneeFilter\?\.username/u);
   assert.match(workbench, /assignedToAccountId: assigneeFilter\?\.id/u);
@@ -295,6 +309,7 @@ test('creator and assignee filters can be combined while personal work stays dis
   assert.match(workbench, /负责人：\{assignmentLabel\(task\)\}/u);
   assert.match(workbench, /创建人：\{task\.createdByDisplayName/u);
   assert.match(workbench, /personalOwnershipLabel\(task, creatorUserId, creatorAccountId\)/u);
+  assert.match(workbench, /最近变更：\{timeLabel\(taskLatestActivityAt\(task\)\)\}/u);
 });
 
 test('task sorting controls keep usable widths and stack on narrow screens', async () => {
@@ -392,8 +407,9 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(reviewDialog, /第 \{activePlanIndex \+ 1\} \/ \{draft\.imagePlan\.length\} 页/u);
   assert.match(reviewDialog, /\/regenerate-image-plan/u);
   assert.match(reviewDialog, /requestId: createRequestId\(\)/u);
-  assert.match(reviewDialog, /\['QUEUED', 'RUNNING'\]\.includes\(job\.status\)/u);
-  assert.match(reviewDialog, /regenerate-image-plan\/\$\{job\.id\}/u);
+  const backgroundMonitor = await readFile(projectFile('app/components/background-task-store.ts'), 'utf8');
+  assert.match(backgroundMonitor, /\['QUEUED', 'RUNNING'\]\.includes\(task\.status\)/u);
+  assert.match(backgroundMonitor, /regenerate-image-plan\/\$\{encodeURIComponent\(task\.id\)\}/u);
   assert.match(reviewDialog, /执行机生成中/u);
   assert.match(reviewDialog, /按当前文案重新生成规划/u);
   assert.match(reviewDialog, /disabled=\{loading \|\| submitting \|\| regeneratingImagePlan\}/u);
@@ -402,7 +418,7 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.doesNotMatch(reviewDialog, /workbench-image-plan-head/u);
   assert.match(reviewDialog, /function AutosizeTextarea/u);
   assert.match(reviewDialog, /function ReviewScrollTextarea/u);
-  assert.match(reviewDialog, /\{!editable && <ReviewReferences detail=\{detail\}/u);
+  assert.match(reviewDialog, /\{!imageWorkMode && !editable && <ReviewReferences detail=\{detail\}/u);
   assert.match(reviewDialog, /\{editable && <ReviewReferences detail=\{detail\}/u);
   assert.match(reviewDialog, /className="textarea workbench-copy-body-editor"/u);
   assert.match(reviewDialog, /className="textarea workbench-plan-bullets-editor"/u);
@@ -464,7 +480,7 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.doesNotMatch(workbench, /\{task\.currentStage \|\| STATE_LABELS/u);
   assert.doesNotMatch(reviewDialog, /\{detail\.currentStage \?\? '尚未开始'\}/u);
   // Compare layouts internally while keeping raw image-plan JSON out of the rendered review.
-  assert.doesNotMatch(reviewDialog.slice(reviewDialog.indexOf('return <Dialog')), /JSON\.stringify\(.*imagePlan/u);
+  assert.doesNotMatch(reviewDialog.slice(reviewDialog.indexOf('return <TaskReviewFrame')), /JSON\.stringify\(.*imagePlan/u);
   assert.match(styles, /\.workbench-review-dialog\s*\{/u);
 });
 
@@ -501,10 +517,11 @@ test('image review fits the complete image, supports exterior controls, and pres
   assert.match(carouselNavigation, /canPrevious \? `上一张图片，第 \$\{formatPage\(currentIndex\)\} 页` : '上一张图片，当前已经是首张'/u);
   assert.match(styles, /\.image-carousel-navigation \{[^}]*grid-template-columns: 46px minmax\(0, 1fr\) 46px/u);
   assert.match(styles, /\.workbench-image-review-section\[data-image-primary="true"\] \{[^}]*minmax\(0, 1\.75fr\)[^}]*minmax\(320px, \.75fr\)/u);
-  assert.match(styles, /\.image-carousel-navigation-button:hover:not\(:disabled\) \{[^}]*transform: translateY\(-2px\)/u);
+  // Pointer stability and arrow clipping are covered by the work-mode browser test.
   assert.match(reviewDialog, /useState<PreviewBackdrop>\('white'\)/u);
   assert.match(reviewDialog, /workbench-image-review-stage preview-background-\$\{previewBackdrop\}/u);
-  assert.match(reviewDialog, /workbench-review-section-title workbench-image-review-section-title[\s\S]*workbench-image-review-title-main[\s\S]*workbench-image-review-title-actions[\s\S]*<ImagePreviewBackgroundControl value=\{previewBackdrop\}/u);
+  assert.match(reviewDialog, /const imageActions =[\s\S]*workbench-image-review-title-actions[\s\S]*<ImagePreviewBackgroundControl value=\{previewBackdrop\}/u);
+  assert.match(reviewDialog, /workbench-review-section-title workbench-image-review-section-title[\s\S]*workbench-image-review-title-main[\s\S]*\{imageActions\}/u);
   assert.match(reviewDialog, /<ImagePreviewBackgroundControl value=\{previewBackdrop\} onChange=\{setPreviewBackdrop\}/u);
   assert.match(preview, /useState<PreviewBackdrop>\('white'\)/u);
   assert.match(preview, /<ImagePreviewBackgroundControl tone="dark" value=\{activeBackdrop\} onChange=\{setBackdrop\}/u);

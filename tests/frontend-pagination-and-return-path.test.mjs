@@ -181,9 +181,16 @@ test('login returns each role only to an authorized workflow page', () => {
     copyReviewEnabled: true, copyQcEnabled: true, imageQcEnabled: true,
   };
   assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/query-packages' }), '/query-packages');
-  assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/delivery-pool?task=1' }), base.homePath);
+  for (const requestedPath of ['/copy-flow', '/copy-flow/', '/copy-flow?source=bookmark', '/copy-flow#queues']) {
+    assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath }), base.homePath);
+  }
+  assert.equal(resolveLoginReturnPath({ ...base, role: 'ADMIN', requestedPath: '/copy-flow' }), '/copy-flow');
+  assert.equal(resolveLoginReturnPath({ ...base, role: 'REVIEWER', requestedPath: '/copy-flow' }), '/copy-flow');
+  assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/delivery-pool?task=1' }), '/delivery-pool?task=1');
   assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/workbench/completed' }), base.homePath);
   assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/workbench/personal?taskId=7' }), '/workbench/personal?taskId=7');
+  assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/workbench/personal-statistics' }), '/workbench/personal-statistics');
+  assert.equal(resolveLoginReturnPath({ ...base, role: 'USER', requestedPath: '/workbench/personal-statistics-evil' }), base.homePath);
   assert.equal(resolveLoginReturnPath({ ...base, role: 'REVIEWER', requestedPath: '/copy-qa' }), '/copy-qa');
   assert.equal(resolveLoginReturnPath({ ...base, role: 'REVIEWER', requestedPath: '/image-qa' }), '/image-qa');
   assert.equal(resolveLoginReturnPath({ ...base, role: 'REVIEWER', requestedPath: '/image-qa', imageQcEnabled: false }), base.homePath);

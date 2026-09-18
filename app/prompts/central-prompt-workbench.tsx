@@ -15,6 +15,7 @@ import { missingPromptOptimizationGuards } from '../../src/prompt-optimization-g
 import { PromptOptimizationGuard } from './prompt-optimization-guard';
 import { PromptRuntimeSettings } from './prompt-runtime-settings';
 import { PromptPreview } from './prompt-preview';
+import { PromptCatalogSearch, PromptTemplateGuide } from './prompt-template-guide';
 import { apiRequest } from '../components/api-client';
 
 type Version = {
@@ -44,6 +45,7 @@ export function CentralPromptWorkbench({ catalog }: { catalog: Candidate[] }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [managed, setManaged] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -143,7 +145,8 @@ export function CentralPromptWorkbench({ catalog }: { catalog: Candidate[] }) {
   }
 
   return <div className="central-data-stack">
-    <PromptRuntimeSettings onPrepared={() => { void refresh(); }} />
+    <PromptRuntimeSettings onPrepared={() => { void refresh(); }} onPolicyLoaded={setManaged} />
+    <PromptCatalogSearch onSelect={(kind, nextGroup) => { setGroup(nextGroup); setActiveKind(kind); }} />
     <div className="prompt-manager-toolbar">
       <div><strong>提示词管理</strong><p className="subtle">按类型管理当前规则；提交更新会创建并发布新版本。</p></div>
       <Button unstyled className="button small" type="button" disabled={loading || busy} onClick={() => {
@@ -170,9 +173,10 @@ export function CentralPromptWorkbench({ catalog }: { catalog: Candidate[] }) {
             </Button>)}
           </div>
           {templates.map((template) => {
+            const readonly = PROMPT_CATALOG.find(item => item.kind === template.kind)?.editable === false;
             const published = publishedVersion(template);
             const draft = drafts[template.kind];
-            const content = draft?.content ?? published?.content ?? template.versions.find((item) => item.status === 'DRAFT')?.content ?? template.candidate ?? '';
+            const content = readonly ? template.candidate ?? '' : draft?.content ?? published?.content ?? template.versions.find((item) => item.status === 'DRAFT')?.content ?? template.candidate ?? '';
             const changed = content !== (published?.content ?? '');
             const stale = Boolean(draft && draft.baseId !== (published?.id ?? null));
             return <div key={template.kind} id={`prompt-panel-${template.kind}`} role="tabpanel"
@@ -180,20 +184,21 @@ export function CentralPromptWorkbench({ catalog }: { catalog: Candidate[] }) {
               <div className="prompt-manager-content">
                 <form className="panel prompt-card" onSubmit={(event) => { event.preventDefault(); void save(template, content, draft?.baseId ?? published?.id ?? null); }}>
                   <div className="panel-head"><div><h2>{template.name}</h2><p className="subtle">{TYPES[template.kind]?.description}</p></div>
-                    <span className="pill">{published ? `当前发布 v${published.version}` : '尚未发布'}</span></div>
+                    <span className="pill">{readonly ? '程序协议 · 只读' : published ? `当前发布 v${published.version}` : '使用系统默认 / 草稿待发布'}</span></div>
+                  <PromptTemplateGuide kind={template.kind} candidate={template.candidate} published={published} managed={managed} />
                   <div className="prompt-version-meta"><span>发布时间：{dateTime(published?.publishedAt ?? null)}</span><span>历史版本：{template.versions.length} 个</span></div>
-                  {template.id === null && <p className="notice">中心尚未创建此模板。下方默认内容可直接编辑；保存草稿或提交更新后创建首个版本。</p>}
+                  {template.id === null && !readonly && <p className="notice">中心尚未创建此模板。下方默认内容可直接编辑；保存草稿或提交更新后创建首个版本。</p>}
                   {stale && <div className="notice warning">中心已发布版本已变化，当前保留的是你的旧版本修改。请核对历史版本后重新编辑。</div>}
                   <PromptOptimizationGuard kind={template.kind} content={content} />
                   <div className="field"><label htmlFor={`central-prompt-content-${template.kind}`}>提示词内容</label>
                     <Textarea id={`central-prompt-content-${template.kind}`} className="textarea mono prompt-manager-editor"
-                      value={content} required disabled={busy} spellCheck={false} onChange={(event) => {
+                      value={content} required disabled={busy} readOnly={readonly} spellCheck={false} onChange={(event) => {
                         const value = event.target.value;
                         if (value === (published?.content ?? '')) discardDraft(template.kind);
                         else setDrafts((current) => ({ ...current, [template.kind]: { content: value, baseId: draft ? draft.baseId : published?.id ?? null } }));
                       }} />
                   </div>
-                  <div className="prompt-manager-actions"><small>{[...content].length} 字符 · {changed ? '有未提交修改' : '与当前发布内容一致'} · 切换页签会保留编辑内容</small>
+                  {!readonly && <div className="prompt-manager-actions"><small>{[...content].length} 字符 · {draft ? '有未提交修改' : published ? '与当前发布内容一致' : '默认内容或未发布草稿'} · 切换页签会保留编辑内容</small>
                     <div className="inline">
                       <Button unstyled className="button" type="button" disabled={busy || loading || stale || !content.trim()} onClick={() => void save(template, content, draft?.baseId ?? published?.id ?? null, false)}>保存草稿</Button>
                       {draft && <Button unstyled className="button" type="button" disabled={busy || loading} onClick={async () => {
@@ -203,8 +208,8 @@ export function CentralPromptWorkbench({ catalog }: { catalog: Candidate[] }) {
                         {busy ? <LoaderCircle className="animate-spin" size={15} /> : <Save size={15} />}{busy ? '正在提交…' : '提交更新'}
                       </Button>
                     </div>
-                  </div>
-                  <PromptPreview kind={template.kind} content={content} published={published?.content} />
+                  </div>}
+                  {!readonly && <PromptPreview kind={template.kind} content={content} published={published?.content} />}
                 </form>
                 <section className="panel prompt-card" aria-label={`${template.name}历史版本`}>
                   <div><h3>历史版本</h3><p className="subtle">展开查看完整内容。历史内容只读，可载入编辑器后提交为新版本。</p></div>

@@ -60,7 +60,7 @@ test('health advertises the task assignment and pool contracts for Web compatibi
   assert.equal(health.capabilities.autoAssignmentPoolVersion, 3);
   assert.equal(health.capabilities.queryPackageVersion, 6);
   assert.equal(health.capabilities.finalDeliveryVersion, 5);
-  assert.equal(health.capabilities.deliverySpreadsheetVersion, 2);
+  assert.equal(health.capabilities.deliverySpreadsheetVersion, 3);
   assert.equal(health.capabilities.deliveryPreviewVersion, 6);
   assert.equal(health.capabilities.codexConcurrencyPoolVersion, 1);
   assert.equal(health.capabilities.taskCursorPaginationVersion, 1);

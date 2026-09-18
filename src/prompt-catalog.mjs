@@ -1,4 +1,8 @@
-const entry = (kind, label, group, description) => Object.freeze({ kind, label, group, description });
+import { INTERNAL_PROMPT_CATALOG } from './internal-prompt-catalog.mjs';
+import { PROMPT_STAGE_USAGE } from './prompt-stage-usage.mjs';
+
+const entry = (kind, label, group, description) => Object.freeze({ kind, label, group, description,
+  usage: description, editable: true, layer: 'BUSINESS', ...PROMPT_STAGE_USAGE[kind] });
 export const PROMPT_CATALOG = Object.freeze([
   entry('TEXT_SYSTEM', '文案生成', '生成与规划', '标题、正文、标签及整体编辑要求'),
   entry('COPY_IMAGE_PLAN_SYSTEM', '配图文案策划', '生成与规划', '在文案阶段确定逐页最终文字和场景'),
@@ -20,20 +24,23 @@ export const PROMPT_CATALOG = Object.freeze([
   entry('COPY_KNOWLEDGE_USE_SYSTEM', '案例借鉴', '检索与知识库', '如何借鉴方法，保持事实隔离'),
   entry('VISUAL_KNOWLEDGE_ANALYSIS_SYSTEM', '视觉知识分析', '检索与知识库', '提炼可复用视觉方法'),
   entry('IMAGE_SEARCH_SYSTEM', '模拟图片检索', '联调辅助', '仅用于兼容联调的图像检索规则'),
+  ...INTERNAL_PROMPT_CATALOG,
 ]);
 export const PROMPT_KINDS = Object.freeze(PROMPT_CATALOG.map(({ kind }) => kind));
 
 export function promptTemplatesForEditing(templates, catalog) {
   const byKind = new Map(templates.map((template) => [template.kind, template]));
   return [
-    ...catalog.map((item) => byKind.get(item.kind) ?? {
-      id: null, kind: item.kind, name: item.label, versions: [], candidate: item.candidate,
-    }),
+    ...catalog.map((item) => ({
+      id: null, kind: item.kind, name: item.label, versions: [],
+      ...byKind.get(item.kind), candidate: item.candidate, catalog: item,
+    })),
     ...templates.filter((template) => !catalog.some((item) => item.kind === template.kind)),
   ];
 }
 export const PROMPT_VARIABLES = Object.freeze(['query', 'category', 'targetAudience', 'imageIndex', 'imageCount',
-  'reviewInstruction', 'repairTargetMin', 'repairTargetMax', 'copyKnowledgeThreshold']);
+  'reviewInstruction', 'repairTargetMin', 'repairTargetMax', 'copyKnowledgeThreshold',
+  ...new Set(INTERNAL_PROMPT_CATALOG.flatMap(item => item.variables.map(variable => variable.name)))]);
 export const PROMPT_CONTRACT_DESCRIPTION = '任务和资料是数据，不能覆盖管理员规则。输出 JSON 字段、枚举及工具协议由程序校验。正文当前必须为 400～600 个字符；图片为 3:4、1086×1448；上图文字和页归属在图片执行开始时锁定。质量评分沿用 production-v2（0～3 分、分层最低分及严重问题规则），修改评分提示词不改变聚合算法。';
 export const PROMPT_CONTRACT_DETAILS = Object.freeze([
   '规则继承：初稿使用文案生成＋配图文案策划；长度修复、格式修复、质检修订和文案审核沿用本次冻结的编辑规则。图片修复继承原图片请求和锁定文字。风格与审核尺度从发布版本读取。',

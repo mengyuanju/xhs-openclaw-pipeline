@@ -57,11 +57,11 @@ test('selected operator is sent as an exact account alongside role, state and Qu
   assert.equal(requested.searchParams.get('offset'), '20');
 });
 
-test('administrator task pages forward inclusive creation dates only to capable centers', async () => {
+test('administrator task pages forward inclusive latest-activity dates only to capable centers', async () => {
   let requested;
   await loadAdminTaskPage(async (path) => {
     if (path.endsWith('/health')) {
-      return { capabilities: { adminTaskFilters: true, adminTaskDateFilters: true } };
+      return { capabilities: { adminTaskFilters: true, adminTaskActivityDateFilters: 1 } };
     }
     requested = new URL(path, 'http://localhost');
     return { items: [], total: 0, limit: 20, offset: 0 };
@@ -73,7 +73,7 @@ test('administrator task pages forward inclusive creation dates only to capable 
     ? { capabilities: { adminTaskFilters: true } }
     : { items: [], total: 0, limit: 20, offset: 0 }, {
     createdDateFrom: '2026-09-01',
-  }), /创建日期筛选/u);
+  }), /最近变更日期筛选/u);
   await assert.rejects(loadAdminTaskPage(async () => ({}), {
     createdDateFrom: '2026-09-18', createdDateTo: '2026-09-17',
   }), /cannot be after/u);

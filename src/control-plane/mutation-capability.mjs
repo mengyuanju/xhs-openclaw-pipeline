@@ -2,6 +2,11 @@ import { ApiError } from '../admin/http.mjs';
 
 const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
   Object.freeze({
+    capability: 'sharedDeliveryVersion', minimumVersion: 1,
+    matches: (routePath, method) => /^\/v1\/(?:delivery-items|delivery-archives)(?:\/|$)/u.test(routePath)
+      && !['GET','HEAD'].includes(method),
+  }),
+  Object.freeze({
     capability: 'copyImagePlanRegenerationVersion',
     minimumVersion: 2,
     matches: (routePath, method) => /^\/v1\/tasks\/[^/]+\/regenerate-image-plan$/u.test(routePath)
@@ -89,6 +94,12 @@ const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
     minimumVersion: 2,
     matches: (routePath, method) => /^\/v1\/query-packages(?:\/|$)/u.test(routePath)
       && !['GET', 'HEAD'].includes(method),
+  }),
+  Object.freeze({
+    capability: 'deliverySpreadsheetVersion',
+    minimumVersion: 3,
+    matches: (routePath, method) => /^\/v1\/delivery-batches\/[^/]+\/xlsx$/u.test(routePath)
+      && method === 'POST',
   }),
   Object.freeze({
     capability: 'deliverySpreadsheetVersion',

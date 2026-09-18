@@ -9,6 +9,7 @@ import { disclosureRemovalConfig, requestsDisclosureRemoval } from './image-edit
 import { boundedNumber, shortText, normalizeManualOverlay, normalizeMask, decodeReference, imageHash, safeRect, renderMask, EDIT_WIDTH, EDIT_HEIGHT } from '../../src/image-edit-pixels.mjs';
 import { orderedImageFileName } from '../../src/image-file-name.mjs';
 import { normalizeImageEditRepairMaxAttempts } from '../../src/production-settings.mjs';
+import { createPromptRuntime } from '../../src/prompt-runtime.mjs';
 
 const conflict = message => { throw new ControlPlaneConflictError('IMAGE_EDIT_CONFLICT', message); };
 const actorName = actor => { if(!['ADMIN','USER'].includes(actor?.role) || !actor.username) throw new ControlPlaneAuthorizationError('当前账号不能修改图片'); return actor.username; };
@@ -187,12 +188,13 @@ export function resolveImageEditRetry(edit,result,input={}) {
   return {targetedRepair:false,localRepair:null};
 }
 async function publishedImageEditPrompt(client, { required = true } = {}) {
-  const row = (await client.query(`
-    SELECT t.name, v.id AS version_id, v.version, v.content, v.content_sha256
+  const rows = (await client.query(`
+    SELECT t.kind, t.name, v.id AS version_id, v.version, v.content, v.content_sha256
     FROM prompt_templates t
     JOIN prompt_versions v ON v.template_id = t.id AND v.status = 'PUBLISHED'
-    WHERE t.kind = 'IMAGE_EDIT_SYSTEM'
-  `)).rows[0];
+    WHERE t.kind = 'IMAGE_EDIT_SYSTEM' OR t.kind = 'IMAGE_ALIGNMENT_SYSTEM' OR t.kind LIKE 'INTERNAL_%'
+  `)).rows;
+  const row = rows.find(item => item.kind === 'IMAGE_EDIT_SYSTEM');
   if (!row) {
     if (required) throw new TypeError('请先在提示词管理中发布图片编辑提示词');
     return null;
@@ -205,6 +207,9 @@ async function publishedImageEditPrompt(client, { required = true } = {}) {
     content: row.content,
     sha256: row.content_sha256,
     capturedAt: new Date().toISOString(),
+    runtime: createPromptRuntime({ source: 'IMAGE_EDIT_REQUEST', settings: null,
+      prompts: Object.fromEntries(rows.map(item => [item.kind, { content: item.content, versionId: Number(item.version_id),
+        version: Number(item.version), sha256: item.content_sha256 }])) }),
   };
 }
 export function replaceImagePage(result, page, asset) {

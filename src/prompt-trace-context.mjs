@@ -13,7 +13,7 @@ export function withPromptTraceContext(snapshot, action) {
 
 // Register at rendering time. A later request only claims versions whose rendered
 // text is actually included; a template used in an earlier call is not enough.
-export function recordPromptRendering({ template, rendered, kind, version, source }) {
+export function recordPromptRendering({ template, rendered, kind, version, source, raw = false }) {
   const context = contexts.getStore();
   if (!context || !rendered.trim()) return;
   const templateSha256 = hash(template);
@@ -23,7 +23,7 @@ export function recordPromptRendering({ template, rendered, kind, version, sourc
     : context.versions.filter(item => item.templateSha256 === templateSha256 && (!kind || item.kind === kind));
   const matches = candidates.length === 1 ? candidates : [{ kind: kind ?? 'UNVERSIONED',
     versionId: null, version: null, templateSha256, source: candidates.length ? 'AMBIGUOUS' : 'UNVERSIONED' }];
-  const matchText = source && kind ? `<trusted_business_rules kind="${kind}">\n${rendered}\n</trusted_business_rules>` : rendered;
+  const matchText = source && kind && !raw ? `<trusted_business_rules kind="${kind}">\n${rendered}\n</trusted_business_rules>` : rendered;
   for (const item of matches) context.rendered.set(`${item.kind}:${renderedSha256}`, { ...item, renderedSha256, matchText });
 }
 

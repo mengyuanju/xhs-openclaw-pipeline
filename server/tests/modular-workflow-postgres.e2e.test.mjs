@@ -1726,7 +1726,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     assert.equal(health.data.capabilities.queryPackageVersion, 6);
     assert.equal(health.data.capabilities.copySamplingVersion, 1);
     assert.equal(health.data.capabilities.finalDeliveryVersion, 5);
-    assert.equal(health.data.capabilities.deliverySpreadsheetVersion, 2);
+    assert.equal(health.data.capabilities.deliverySpreadsheetVersion, 3);
 
     const currentSettings = (await requestJson(
       controlPlane.root, '/v1/workflow-quality-settings', { actor: admin },
@@ -2676,13 +2676,13 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     assert.equal(delivery.taskId, imageClaim.task.id);
     assert.equal(delivery.status, 'READY');
     assert.equal(delivery.imageRunId, finalImageClaim.execution.id);
-    const deniedWorkerDeliveryPool = await requestJson(
-      controlPlane.root, '/v1/delivery-pool', {
+    const workerDeliveryPage = (await requestJson(
+      controlPlane.root, '/v1/delivery-pool?limit=200&offset=0&includeTotal=true', {
         actor: worker,
-        expectedStatus: 403,
       },
-    );
-    assert.equal(deniedWorkerDeliveryPool.error.code, 'FORBIDDEN');
+    )).data;
+    assert.equal(workerDeliveryPage.total, 1);
+    assert.equal(workerDeliveryPage.items[0].taskId, imageClaim.task.id);
     const adminDeliveryPage = (await requestJson(
       controlPlane.root, '/v1/delivery-pool?limit=200&offset=0&includeTotal=true', { actor: admin },
     )).data;
@@ -2728,6 +2728,17 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     const deliveredTaskFiles = await JSZip.loadAsync(await deliveredTaskArchive.async('nodebuffer'));
     assert.match(
       await deliveredTaskFiles.file('小红书链接.txt').async('string'),
+      /https:\/\/www\.xiaohongshu\.com\/explore\//u,
+    );
+    const workerTaskDelivery = await fetch(
+      `${controlPlane.root}/v1/tasks/${imageClaim.task.id}/archive`,
+      { headers: actorHeaders(worker) },
+    );
+    assert.equal(workerTaskDelivery.status, 200);
+    assert.match(workerTaskDelivery.headers.get('content-disposition'), /attachment/u);
+    const workerTaskFiles = await JSZip.loadAsync(await workerTaskDelivery.arrayBuffer());
+    assert.match(
+      await workerTaskFiles.file('小红书链接.txt').async('string'),
       /https:\/\/www\.xiaohongshu\.com\/explore\//u,
     );
     const pendingAfterBatch = (await requestJson(

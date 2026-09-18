@@ -908,7 +908,7 @@ test('executor inventory counts every running image execution, including manual 
   assert.match(selection, /WHERE n\.retired_at IS NULL/u);
 });
 
-test('task creation date filters use inclusive Shanghai calendar days for pages and totals', async () => {
+test('task latest-activity date filters use inclusive Shanghai calendar days for pages and totals', async () => {
   const queries = [];
   const repository = new PostgresControlPlaneRepository({ pool: {
     async query(sql, values) {
@@ -921,8 +921,8 @@ test('task creation date filters use inclusive Shanghai calendar days for pages 
   });
   assert.equal(queries.length, 2);
   for (const { sql, values } of queries) {
-    assert.match(sql, /created_at >= \(\$1::date::timestamp AT TIME ZONE 'Asia\/Shanghai'\)/u);
-    assert.match(sql, /created_at < \(\(\$2::date \+ 1\)::timestamp AT TIME ZONE 'Asia\/Shanghai'\)/u);
+    assert.match(sql, /GREATEST\(created_at, updated_at, COALESCE\(last_activity_at, updated_at\)\) >= \(\$1::date::timestamp AT TIME ZONE 'Asia\/Shanghai'\)/u);
+    assert.match(sql, /GREATEST\(created_at, updated_at, COALESCE\(last_activity_at, updated_at\)\) < \(\(\$2::date \+ 1\)::timestamp AT TIME ZONE 'Asia\/Shanghai'\)/u);
     assert.match(sql, /state = ANY\(\$3::varchar\[\]\)/u);
     assert.deepEqual(values.slice(0, 3), ['2026-09-01', '2026-09-17', ['IMAGE_FAILED']]);
   }

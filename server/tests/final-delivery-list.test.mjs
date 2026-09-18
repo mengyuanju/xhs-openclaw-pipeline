@@ -273,26 +273,47 @@ test('preview noteId is saved against the exact frozen delivery version', async 
   assert.equal(calls[1].values[5], admin.username);
 });
 
-test('delivery-list services reject users before reading the database', async () => {
-  let databaseReadCount = 0;
+test('operator delivery list is limited to the current stable assignee identity', async () => {
+  const calls = [];
   const pool = {
-    query: async () => {
-      databaseReadCount += 1;
-      throw new Error('database reads are forbidden for users');
+    query: async (sql, values) => {
+      calls.push({ sql, values });
+      if (/AS name,[\s\S]*COUNT\(\*\)/u.test(sql)) return { rows: [{
+        id: '9', name: '不应泄露的词包', client_batch_code: clientBatchCode,
+        deleted: false, count: '1', pending_count: '1', packed_count: '0', updated_count: '0',
+        unuploaded_count: '1', published_count: '0', revoked_count: '0',
+      }] };
+      if (/COUNT\(\*\)::bigint AS total/u.test(sql)) return { rows: [{ total: '1' }] };
+      return { rows: [deliveryRow(1)] };
     },
   };
-
-  await assert.rejects(listDeliveryPool(pool, {
+  const page = await listDeliveryPool(pool, {
     limit: 50,
     offset: 0,
     includeTotal: true,
-    queryPackageName: '九月选题',
-  }, worker), { code: 'FORBIDDEN' });
-  await assert.rejects(listAllDeliveryPoolTaskIds(pool, worker, {
+  }, worker);
+  assert.equal(page.items[0].taskId, 101);
+  assert.equal(page.items[0].queryPackageId, null);
+  assert.equal(page.items[0].queryPackageName, null);
+  assert.equal(page.items[0].clientBatchCode, null);
+  assert.deepEqual(page.facets, { queryPackages: [], clientBatches: [], unassigned: null });
+  assert.deepEqual(page.summary, { readyCount: 1, pendingCount: 1, packedCount: 0, updatedCount: 0 });
+  assert.equal(calls.length, 3);
+  const pageCall = calls.find(({ sql }) => /ORDER BY delivery\.approved_at[\s\S]*LIMIT/u.test(sql));
+  assert.deepEqual(pageCall.values, [worker.username, worker.userId, 50, 0]);
+  assert.match(pageCall.sql, /task\.assigned_to_user_id = \$1/u);
+  assert.match(pageCall.sql, /assignee\.id = \$2/u);
+  assert.match(pageCall.sql, /assignee\.username = task\.assigned_to_user_id/u);
+  assert.match(pageCall.sql, /assignee\.created_at < task\.assigned_at/u);
+
+  const deniedPool = { query: async () => assert.fail('admin-only operations must fail before PostgreSQL') };
+  await assert.rejects(listAllDeliveryPoolTaskIds(deniedPool, worker, {
     queryPackageName: '九月选题',
   }), { code: 'FORBIDDEN' });
-
-  assert.equal(databaseReadCount, 0);
+  await assert.rejects(listDeliveryPoolTaskIdsForPreview(deniedPool, worker, {
+    queryPackageIds: [9],
+    limit: 1,
+  }), { code: 'FORBIDDEN' });
 });
 
 test('delivery bindings are revalidated together in one database snapshot', async () => {

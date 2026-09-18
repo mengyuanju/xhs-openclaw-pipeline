@@ -61,9 +61,10 @@ test('manual archive ZIP contains current-run images under stable ordered names'
   );
   assert.equal(await zip.file('01-cover.png').async('string'), 'image-1');
   const copy = await zip.file('桌面_整理.txt').async('string');
-  assert.match(copy, /^\uFEFF标题：桌面\/整理/u);
+  assert.match(copy, /^\uFEFF原始 Query：桌面收纳/u);
+  assert.match(copy, /标题：桌面\/整理/u);
   assert.match(copy, /文案内容：\r\n正文内容/u);
-  assert.match(copy, /标签：#收纳 #租房/u);
+  assert.doesNotMatch(copy, /标签：|#收纳|#租房/u);
   const links = await zip.file('小红书链接.txt').async('string');
   assert.match(links, /^\uFEFFQuery：桌面收纳/u);
   assert.match(links, /1\. 第一篇参考\r\nhttps:\/\/www\.xiaohongshu\.com\/explore\/first/u);

@@ -145,6 +145,21 @@ test('admin non-blind inspection retains traceable frozen identifiers', async ()
     /strpos\(lower\(item\.final_approver_username\), lower\(\$4\)\)[\s\S]*person_filter\.display_name/u);
 });
 
+test('work mode copy lookup filters the public identifier without bypassing assignment or blind redaction', async () => {
+  let statement;
+  const pool = { query: async (sql, values) => {
+    if (sql.includes('SELECT DISTINCT task.production_batch_id')) return { rows: [] };
+    if (sql.includes('SELECT id FROM app_users')) return { rows: [{ id: 91 }] };
+    statement = { sql, values }; return { rows: [databaseRow()] };
+  } };
+  const rows = await listCopyQaItems(pool, { actionableOnly: true, itemPublicId: ITEM_PUBLIC_ID }, reviewer);
+  assertBlindAllowlist(rows);
+  const parameter = statement.sql.match(/item\.public_id = \$(\d+)::uuid/u);
+  assert.ok(parameter); assert.equal(statement.values[Number(parameter[1]) - 1], ITEM_PUBLIC_ID);
+  assert.match(statement.sql, /item\.assigned_review_account_id = \$2/u);
+  assert.match(statement.sql, /task\.priority_paused = false/u);
+});
+
 test('admin receives action capabilities for their own final approval', async () => {
   const admin = { userId: 1, username: 'admin', role: 'ADMIN' };
   const pool = { query: async (sql) => {

@@ -16,13 +16,15 @@ function parseDate(value: string) {
   return Number.isFinite(date.getTime()) && dateValue(date) === value ? date : null;
 }
 
-export function DatePicker({ name, label, defaultValue = '', required, disabled }: {
-  name: string; label: string; defaultValue?: string; required?: boolean; disabled?: boolean;
+export function DatePicker({ name, label, defaultValue = '', value: controlledValue, onValueChange, 'aria-label': ariaLabel, required, disabled }: {
+  name: string; label: string; defaultValue?: string; value?: string; onValueChange?: (value: string) => void;
+  'aria-label'?: string; required?: boolean; disabled?: boolean;
 }) {
   const id = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
-  const [value, setValue] = useState(defaultValue);
+  const [localValue, setLocalValue] = useState(defaultValue);
+  const value = controlledValue ?? localValue;
   const [open, setOpen] = useState(false);
   const [focused, setFocused] = useState(() => dateValue(new Date()));
   const [month, setMonth] = useState(() => new Date());
@@ -32,16 +34,25 @@ export function DatePicker({ name, label, defaultValue = '', required, disabled 
 
   useEffect(() => {
     const form = inputRef.current?.form;
-    function reset() { setValue(defaultValue); setError(''); }
+    function reset() {
+      if (controlledValue === undefined) setLocalValue(defaultValue);
+      onValueChange?.(defaultValue);
+      setError('');
+    }
     form?.addEventListener('reset', reset);
     return () => form?.removeEventListener('reset', reset);
-  }, [defaultValue]);
+  }, [defaultValue, controlledValue, onValueChange]);
 
   useEffect(() => {
     inputRef.current?.setCustomValidity(value && !parseDate(value) ? '请输入有效日期，例如 2026-09-07' : '');
   }, [value]);
 
-  function select(next: string) { setValue(next); setError(''); setOpen(false); }
+  function changeValue(next: string) {
+    if (controlledValue === undefined) setLocalValue(next);
+    onValueChange?.(next);
+    setError('');
+  }
+  function select(next: string) { changeValue(next); setOpen(false); }
   function moveMonth(delta: number) {
     const next = new Date(month.getFullYear(), month.getMonth() + delta, 1);
     setMonth(next); setFocused(dateValue(next));
@@ -50,9 +61,9 @@ export function DatePicker({ name, label, defaultValue = '', required, disabled 
   return <div className="ui-date-field">
     <label htmlFor={id}>{label}</label>
     <div className="ui-date-input">
-      <Input id={id} ref={inputRef} name={name} value={value} required={required} disabled={disabled} maxLength={10}
+      <Input id={id} ref={inputRef} name={name} value={value} aria-label={ariaLabel} required={required} disabled={disabled} maxLength={10}
         placeholder="YYYY-MM-DD" autoComplete="off" aria-invalid={Boolean(error)} aria-describedby={error ? `${id}-error` : undefined}
-        onChange={event => { setValue(event.target.value); setError(''); }}
+        onChange={event => changeValue(event.target.value)}
         onBlur={() => setError(value && !parseDate(value) ? '请输入有效日期，例如 2026-09-07' : '')} />
       <Dialog open={open} onOpenChange={next => {
         if (next) { const date = parseDate(value) ?? new Date(); setMonth(date); setFocused(dateValue(date)); }

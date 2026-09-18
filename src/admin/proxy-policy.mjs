@@ -58,7 +58,11 @@ export function evaluateAdminProxyRequest(request, environment = process.env) {
       || (['USER', 'REVIEWER'].includes(role) && url.pathname === '/api/human-quality-settings')
       || url.pathname.startsWith('/api/control-plane/');
     if (alwaysAllowed) return { type: 'next' };
+    if (role === 'USER' && matchesExactPath(url.pathname, '/copy-flow')) {
+      return { type: 'redirect', location: '/workbench/personal' };
+    }
     if (!canAccessWorkflowPage(session, url.pathname)) return { type: 'forbidden' };
+    if (['USER', 'REVIEWER'].includes(role) && matchesExactPath(url.pathname, '/work-mode')) return { type: 'next' };
     if (role === 'REVIEWER') {
       const allowed = url.pathname === '/copy-flow' || url.pathname === '/copy-qa'
         || url.pathname === '/image-qa' || url.pathname.startsWith('/image-qa/')
@@ -72,10 +76,12 @@ export function evaluateAdminProxyRequest(request, environment = process.env) {
       return allowed ? { type: 'next' } : { type: 'forbidden' };
     }
     if (role === 'USER') {
-      const allowed = url.pathname === '/copy-flow' || url.pathname === '/copy-qa'
+      const allowed = url.pathname === '/copy-qa'
         || url.pathname === '/'
         || url.pathname === '/workbench'
         || url.pathname === '/workbench/personal'
+        || matchesExactPath(url.pathname, '/workbench/personal-statistics')
+        || matchesExactPath(url.pathname, '/delivery-pool')
         || matchesExactPath(url.pathname, '/query-packages')
         || url.pathname.startsWith('/query-packages/');
       return allowed ? { type: 'next' } : { type: 'forbidden' };

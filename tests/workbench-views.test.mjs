@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { compareTasksByStatePriority, TASK_STATE_PRIORITY, WORKBENCH_VIEWS, matchesWorkbenchView } from '../app/workbench/views.ts';
+import {
+  compareTasksByStatePriority, TASK_STATE_FILTER_GROUPS, TASK_STATE_FILTER_ORDER, TASK_STATE_PRIORITY,
+  WORKBENCH_VIEWS, matchesWorkbenchView,
+} from '../app/workbench/views.ts';
 
 test('workbench routes include completed work after manual archive', () => {
   assert.deepEqual(WORKBENCH_VIEWS.map((view) => view.label), [
-    '个人作业中心', '待审核分配', '全部文案任务', '待文案审核', '生图中', '图片初审与返修', '交付池', '全部作业',
+    '我的作业', '待审核分配', '全部文案任务', '待文案审核', '生图中', '图片初审与返修', '交付池', '全部作业',
   ]);
   assert.equal(new Set(WORKBENCH_VIEWS.map((view) => view.href)).size, 8);
   assert.ok(WORKBENCH_VIEWS.every((view) => view.href.startsWith('/workbench/')));
@@ -90,6 +93,19 @@ test('task lists prioritize lifecycle state and use newest-first order within a 
     REVIEWED: 8,
     CANCELLED: 9,
   });
+  assert.deepEqual(TASK_STATE_FILTER_GROUPS, [
+    {
+      label: '文案阶段',
+      states: ['COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_QC_PENDING', 'COPY_FAILED'],
+    },
+    {
+      label: '图片阶段',
+      states: ['IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'IMAGE_QC_PENDING', 'IMAGE_REWORK_PENDING'],
+    },
+    { label: '结束状态', states: ['REVIEWED', 'CANCELLED'] },
+  ]);
+  assert.equal(TASK_STATE_FILTER_ORDER.indexOf('IMAGE_FAILED'), TASK_STATE_FILTER_ORDER.indexOf('IMAGE_RUNNING') + 1);
+  assert.notEqual(TASK_STATE_FILTER_ORDER.indexOf('IMAGE_FAILED'), TASK_STATE_FILTER_ORDER.indexOf('COPY_FAILED') + 1);
   const tasks = [
     { id: 1, state: 'MANUAL_ARCHIVE', createdAt: '2026-09-05T12:00:00.000Z' },
     { id: 2, state: 'COPY_REVIEW_PENDING', createdAt: '2026-09-05T08:00:00.000Z' },
@@ -98,8 +114,9 @@ test('task lists prioritize lifecycle state and use newest-first order within a 
     { id: 5, state: 'IMAGE_RUNNING', createdAt: '2026-09-05T14:00:00.000Z' },
     { id: 6, state: 'COPY_FAILED', createdAt: '2026-09-05T15:00:00.000Z' },
     { id: 7, state: 'IMAGE_QUEUED', createdAt: '2026-09-05T16:00:00.000Z' },
+    { id: 8, state: 'IMAGE_FAILED', createdAt: '2026-09-05T17:00:00.000Z' },
   ];
-  assert.deepEqual(tasks.sort(compareTasksByStatePriority).map((task) => task.id), [4, 2, 1, 3, 5, 6, 7]);
+  assert.deepEqual(tasks.sort(compareTasksByStatePriority).map((task) => task.id), [4, 2, 1, 3, 5, 8, 6, 7]);
 });
 
 test('only approved images enter completed work and remain visible to their creator', () => {

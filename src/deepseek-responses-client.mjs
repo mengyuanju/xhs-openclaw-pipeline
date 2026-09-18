@@ -1,3 +1,4 @@
+import { internalPrompt } from './prompt-runtime.mjs';
 import { buildResearchPrompt } from './research-prompt.mjs';
 import { businessPrompt } from './prompt-runtime.mjs';
 import { tracedModelFetch } from './model-call-trace.mjs';
@@ -365,12 +366,12 @@ export function createDeepSeekResponsesClient({
         })),
       };
       const prompt = businessPrompt('IMAGE_SEARCH_SYSTEM', { dataTag: 'untrusted_image_brief', data: searchInput,
-        contract: '只返回 JSON：{"pages":[{"pageIndex":1,"searchQuery":"检索词","candidates":[{"imageUrl":"图片 URL","sourcePageUrl":"来源页面 URL","title":"标题","attribution":"作者","license":"授权说明"}]}]}。页数和输入一一对应。URL 必须公开可访问且来自真实搜索。' });
+        contract: internalPrompt('INTERNAL_IMAGE_SEARCH_OUTPUT') });
       let lastError;
       for (let attempt = 1; attempt <= 3; attempt += 1) {
         const repairInstruction = attempt === 1
           ? ''
-          : `\n\n上一次返回为空或结构校验失败。请重新联网搜索并返回完整 JSON；必须包含 ${imagePlan.length} 个 pages，每页至少一个可下载候选，不要解释、不要 Markdown。`;
+          : internalPrompt('INTERNAL_IMAGE_SEARCH_RETRY', { slot1: (imagePlan.length) });
         try {
           const generated = await createResponse({
             prompt: `${prompt}${repairInstruction}`,

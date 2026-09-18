@@ -1,4 +1,5 @@
-import { businessPrompt, promptPolicy, promptRuntimeSnapshot } from './prompt-runtime.mjs';
+import { internalPrompt } from './prompt-runtime.mjs';
+import { businessPrompt, promptPolicy, promptRuntimeSnapshot, hasPublishedPrompt } from './prompt-runtime.mjs';
 import { createHash } from 'node:crypto';
 
 const REVIEW_SCHEMA_VERSION = 1;
@@ -195,14 +196,14 @@ export function buildQueryReviewPrompt(task) {
 }
 
 function reviewContract() {
-  return '只返回合法 JSON：{"schemaVersion":1,"decision":"PASS|REJECT","summary":"中文摘要","issues":[{"code":"UPPERCASE_CODE","severity":"WARNING|BLOCKING","message":"中文证据"}]}。PASS 不得包含 BLOCKING；REJECT 必须至少包含一个 BLOCKING。';
+  return internalPrompt('INTERNAL_STAGE_REVIEW_OUTPUT');
 }
 
 export function buildTextReviewPrompt({ query, post, allowedSources = [], editorialInstruction = '', evidence = {} }) {
   const bodyCharacterCount = visibleLength(post?.body);
   return businessPrompt('TEXT_REVIEW_SYSTEM', {
-    inherits: promptRuntimeSnapshot() ? ['TEXT_SYSTEM'] : [],
-    contract: `${reviewContract()}\n正文当前范围为400～600个可见字符，使用 deterministicMetrics 的实际计数。\n管理员编辑要求：\n${editorialInstruction}`,
+    inherits: promptRuntimeSnapshot() || hasPublishedPrompt('TEXT_SYSTEM') ? ['TEXT_SYSTEM'] : [],
+    contract: internalPrompt('INTERNAL_TEXT_REVIEW_METRICS', { slot1: (reviewContract()), slot2: (editorialInstruction) }),
     data: { query, post, allowedSources, evidence: normalizedReviewEvidence(evidence),
       deterministicMetrics: { bodyCharacterCount, requiredBodyRange: { min: 400, max: 600 },
         bodyLengthWithinRequiredRange: bodyCharacterCount >= 400 && bodyCharacterCount <= 600 } },
@@ -246,7 +247,7 @@ async function runReview({ client, stage, subject, prompt, thinking, mock, now }
 
   let lastError;
   for (let attempt = 0; attempt < REVIEW_MAX_ATTEMPTS; attempt += 1) {
-    const repairSuffix = attempt === 0 ? '' : `\n\n上一次审核输出不符合 JSON 契约：${JSON.stringify({ validationError: String(lastError?.message ?? lastError).slice(0, 300) })}。请重新返回完整合法 JSON，不要加 Markdown。`;
+    const repairSuffix = attempt === 0 ? '' : internalPrompt('INTERNAL_STAGE_REVIEW_RETRY', { slot1: (JSON.stringify({ validationError: String(lastError?.message ?? lastError).slice(0, 300) })) });
     const generated = await client.runReview({ prompt: `${prompt}${repairSuffix}`, thinking });
     try {
       const parsed = parseStageReviewOutput(generated.rawText);

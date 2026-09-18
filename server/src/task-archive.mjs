@@ -110,10 +110,10 @@ async function createTaskArchiveZip(task, loadAsset) {
   const assets = assetIds.map((id) => candidates.find((item) => Number(item.id) === id));
 
   const zip = new JSZip();
+  const query = singleLine(task.query);
   const title = String(copy.title ?? '').trim();
   const body = String(copy.body ?? '').trim();
-  const tags = Array.isArray(copy.tags) ? copy.tags.map(String).join(' ') : '';
-  const text = `\uFEFF标题：${title}\r\n\r\n文案内容：\r\n${body}\r\n\r\n标签：${tags}\r\n`;
+  const text = `\uFEFF原始 Query：${query}\r\n\r\n标题：${title}\r\n\r\n文案内容：\r\n${body}\r\n`;
   const usedNames = new Set();
   zip.file(uniqueFileName(`${safeFileName(title, `任务-${task.id}`)}.txt`, usedNames), text);
   const xiaohongshuLinks = rankedXiaohongshuLinks(task);

@@ -805,11 +805,13 @@ const QA_ITEM_SQL = `
 `;
 
 export async function listCopyQaItems(pool, {
+  itemPublicId = null,
   status = 'PENDING',
   queryPackageName: rawQueryPackageName = null,
   personName: rawPersonName = null,
   limit: rawLimit = 50,
   offset: rawOffset = 0,
+  actionableOnly = false,
 } = {}, rawActor) {
   const actor = normalizeActor(rawActor);
   const allowedStatuses = ['ALL', 'PENDING', 'PASSED', 'RETURNED', 'BATCH_AFFECTED', 'BATCH_RETURNED', 'RELEASED', 'SUPERSEDED', 'ADMIN_DIRECT_PASSED'];
@@ -830,6 +832,10 @@ export async function listCopyQaItems(pool, {
   await lockActiveQualityActor(pool, actor);
   await flushExpiredCopyQualityBatches(pool);
   const values = [status === 'ALL' || adminDirectOnly ? null : status, actor.role === 'ADMIN' ? null : actor.userId];
+  const itemFilter = itemPublicId === null ? '' : (() => {
+    values.push(normalizeUuid(itemPublicId, 'itemPublicId'));
+    return `AND item.public_id = $${values.length}::uuid`;
+  })();
   const packageFilter = queryPackageName === null ? '' : (() => {
     values.push(queryPackageName);
     return `AND strpos(lower(batch.query_package_name), lower($${values.length})) > 0`;
@@ -864,9 +870,11 @@ export async function listCopyQaItems(pool, {
   // a prolific or earlier approver monopolizing a reviewer's visible queue.
   const result = await pool.query(`${QA_ITEM_SQL}
     WHERE ${itemScope} AND ($1::varchar IS NULL OR item.status = $1)
+      ${actionableOnly ? "AND item.status = 'PENDING' AND task.priority_paused = false" : ''}
       AND ($2::bigint IS NULL OR (item.final_approver_account_id <> $2
         AND (item.status <> 'PENDING' OR (item.assigned_review_account_id = $2 AND task.priority_paused = false))))
       ${directApprovalFilter}
+      ${itemFilter}
       ${packageFilter}
       ${personFilter}
     ORDER BY task.priority_paused ASC, approver_queue_round ASC,

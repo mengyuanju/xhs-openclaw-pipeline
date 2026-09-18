@@ -39,6 +39,14 @@ test('copy sampling migration is opt-in and introduces one canonical pending sta
   assert.match(sql, /CHECK \(copy_sampling_rate_bps BETWEEN 0 AND 10000\)/u);
 });
 
+test('administrator latest-activity filtering has a matching expression index', async () => {
+  const sql = await migration('0070_admin_task_latest_activity_filter');
+  assert.match(sql, /CREATE INDEX tasks_latest_activity_idx/u);
+  assert.match(sql,
+    /GREATEST\(created_at, updated_at, COALESCE\(last_activity_at, updated_at\)\)\) DESC, id DESC/u);
+  assert.doesNotMatch(sql, /UPDATE|DELETE|TRUNCATE|DROP/u);
+});
+
 test('a frozen sample binds final approval evidence and persists the whole population', async () => {
   const sql = await migration('0025_copy_sampling');
   assert.match(sql, /CREATE TABLE copy_approval_events/u);

@@ -6,6 +6,7 @@ import {
   confirmDeliveryBatch,
   createDeliveryBatch,
   deliveryBatchCode,
+  getDeliveryBatchSpreadsheet,
   listDeliveryBatches,
   recordDeliveryBatchDownload,
 } from '../src/delivery-batches.mjs';
@@ -229,6 +230,17 @@ test('an operator can create a selected batch only for the stable current assign
   }, OPERATOR), { code: 'FORBIDDEN' });
 });
 
+test('delivery history status filter applies to both the page and total using bound parameters', async () => {
+  const calls=[];
+  const pool={async query(sql,values){calls.push({sql,values});return {rows:sql.includes('COUNT(*)')?[{total:'0'}]:[]};}};
+  const result=await listDeliveryBatches(pool,{status:'DOWNLOADED',limit:20,offset:20},OPERATOR);
+  assert.equal(result.total,0);
+  assert.ok(calls.every(call=>call.sql.includes('batch.status = $3')));
+  assert.ok(calls.every(call=>call.values[2]==='DOWNLOADED'));
+  assert.deepEqual(calls[0].values.slice(-2),[20,20]);
+  await assert.rejects(listDeliveryBatches(pool,{status:'invalid'},OPERATOR),/status is invalid/);
+});
+
 test('operators list only delivery batches created by their stable account identity', async () => {
   const calls = [];
   const pool = { query: async (sql, values) => {
@@ -247,6 +259,56 @@ test('operators list only delivery batches created by their stable account ident
     assert.match(call.sql, /created_by_username = \$2/u);
     assert.deepEqual(call.values.slice(0, 2), [12, 'alice']);
   }
+});
+
+test('history spreadsheet reads the immutable batch versions and snapshot labels', async () => {
+  const calls = [];
+  const pool = { query: async (sql, values) => {
+    calls.push({ sql, values });
+    return { rows: [{
+      ...batchRow({
+        scope: 'SELECTED', query_package_name: null,
+        batch_kind: 'OPERATOR_DELIVERY', created_by_role: 'USER',
+        created_by_account_id: 12, created_by_username: 'alice',
+      }),
+      item_id: 91,
+      ordinal: 1,
+      task_id: 11,
+      copy_revision_id: 21,
+      image_run_id: IMAGE_RUN_ID,
+      query_snapshot: '冻结 Query',
+      query_package_id_snapshot: 4,
+      query_package_name_snapshot: '冻结词包',
+      client_batch_code_snapshot: CLIENT_BATCH_CODE,
+      copy_content: { copy: { title: '冻结标题', body: '冻结正文', tags: [] } },
+      image_result: { images: [{ assetId: 31 }] },
+      xiaohongshu_links: [{
+        noteId: 'note-1', url: 'https://www.xiaohongshu.com/explore/note-1',
+        title: '参考', rank: 1,
+      }],
+      xiaohongshu_search_status: 'SUCCEEDED',
+      xiaohongshu_search_blocked_reason: null,
+      assets: [{
+        id: 31, taskId: 11, imageRunId: IMAGE_RUN_ID,
+        mediaType: 'image/png', originalName: '01.png',
+      }],
+    }] };
+  } };
+
+  const snapshot = await getDeliveryBatchSpreadsheet(pool, PUBLIC_ID, OPERATOR);
+  assert.equal(snapshot.code, 'JF-12345678');
+  assert.deepEqual(snapshot.bindings, [{
+    taskId: 11, copyRevisionId: 21, imageRunId: IMAGE_RUN_ID,
+  }]);
+  assert.equal(snapshot.tasks[0].query, '冻结 Query');
+  assert.equal(snapshot.tasks[0].sourceQueryPackageName, '冻结词包');
+  assert.equal(snapshot.tasks[0].sourceClientBatchCode, CLIENT_BATCH_CODE);
+  assert.equal(snapshot.tasks[0].currentCopyRevisionId, 21);
+  assert.equal(snapshot.tasks[0].currentImageRunId, IMAGE_RUN_ID);
+  assert.deepEqual(calls[0].values, [PUBLIC_ID, 12, 'alice']);
+  assert.match(calls[0].sql, /revision\.id = item\.copy_revision_id/u);
+  assert.match(calls[0].sql, /image_run\.id = item\.image_run_id/u);
+  assert.match(calls[0].sql, /batch\.created_by_account_id = \$2/u);
 });
 
 test('successful downloads update the batch and append an actor event', async () => {

@@ -1,0 +1,1 @@
+Return the requested business JSON object directly, conforming to the provided output schema. Do not wrap it in rawText.

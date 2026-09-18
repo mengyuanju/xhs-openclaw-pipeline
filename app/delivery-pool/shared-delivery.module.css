@@ -1,0 +1,22 @@
+.workbench { display: grid; gap: 18px; padding: 22px; border: 1px solid var(--border, #e1e5e9); border-radius: 16px; background: var(--surface, #fff); }
+.workbench :global(.workbench-pagination) { position: static; box-shadow: none; }
+.toolbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.toolbar h2, .toolbar h3 { margin: 0 0 6px; }
+.toolbar p { margin: 0; }
+.tabs, .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.card { display: grid; text-align: left; gap: 8px; padding: 16px; border: 1px solid var(--border, #dde3e9); border-radius: 12px; background: var(--surface, #fff); color: inherit; cursor: pointer; }
+.card[aria-pressed='true'] { border-color: #16745a; background: #f1faf6; }
+.card strong { font-size: 28px; }
+.card small, .hint, .meta { color: var(--muted, #64748b); font-size: 12px; }
+.filters { display: grid; gap: 12px; padding: 16px; background: var(--muted-surface, #f7f9fa); border-radius: 12px; }
+.filterGrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; border: 0; margin: 0; padding: 0; align-items: end; }
+.field { min-width: 0; display: grid; gap: 6px; font-size: 13px; }
+.hint { margin: 0; line-height: 1.7; }
+.meta { display: block; margin-top: 5px; overflow-wrap: anywhere; }
+.warning { display: block; color: #a54a12; margin-top: 6px; font-size: 12px; }
+.delivered { background: #e4f5ec; color: #13643c; }
+.jobList { display: grid; gap: 10px; }
+.job { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; padding: 14px; border: 1px solid var(--border, #dde3e9); border-radius: 10px; }
+@media (max-width: 1000px) { .filterGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } .filterGrid { grid-template-columns: 1fr; } .workbench { padding: 14px; } .toolbar { align-items: flex-start; } }

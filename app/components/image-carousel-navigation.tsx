@@ -40,7 +40,6 @@ export function ImageCarouselNavigation({
       onClick={onPrevious}
     >
       <span className="image-carousel-navigation-icon"><ChevronLeft size={19} aria-hidden="true" /></span>
-      <strong>上张</strong>
     </Button>
 
     <div className="image-carousel-navigation-viewport">{children}</div>
@@ -56,7 +55,6 @@ export function ImageCarouselNavigation({
       onClick={onNext}
     >
       <span className="image-carousel-navigation-icon"><ChevronRight size={19} aria-hidden="true" /></span>
-      <strong>下张</strong>
     </Button>
   </div>;
 }
