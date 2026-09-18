@@ -82,3 +82,15 @@ test('saving or discarding rework does not submit a premature final score', () =
     assert.equal('note' in payload, false, decision);
   }
 });
+
+test('a plan-only returned revision submits its edits and final score in one request', () => {
+  const draft = { copy: { title: '未修改的标题' }, imagePlan: [{ headline: '已修改的规划' }] };
+  const payload = buildCopyReviewSubmission({
+    ...base, draft, copyRework: true, copyContentChanged: false,
+    copyContentChangedFromMachine: false, originalScore: null,
+  });
+  assert.equal(payload.decision, 'APPROVE');
+  assert.equal(payload.score, 3);
+  assert.deepEqual(payload.edits, draft);
+  assert.equal('originalScore' in payload, false);
+});

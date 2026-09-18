@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
 import { apiRequest } from '../components/api-client';
+import { ImageDiscardButton } from '../components/image-discard-button';
 import { ImageCarouselNavigation } from '../components/image-carousel-navigation';
 import { ImagePreview } from '../components/image-preview';
 import { createRequestId } from '../components/request-id';
@@ -23,7 +24,7 @@ const apiPath = (path: string) => `/api/control-plane${path}`;
 const IMAGE_QA_LOAD_TOAST_ID = 'image-qa-load';
 const IMAGE_QA_ACTION_TOAST_ID = 'image-qa-action';
 
-type ImageQaStatus = 'PENDING' | 'PASSED' | 'RETURNED' | 'ALL';
+type ImageQaStatus = 'PENDING' | 'PASSED' | 'RETURNED' | 'DISCARDED' | 'ALL';
 
 const STATUS_OPTIONS: Array<{
   value: ImageQaStatus;
@@ -55,12 +56,14 @@ const STATUS_OPTIONS: Array<{
     emptyTitle: '图片质检池暂无记录',
     emptyDescription: '完成图片初审并命中抽检规则后，质检记录会出现在这里。',
   },
+  { value: 'DISCARDED', label: '已废弃', emptyTitle: '当前没有已废弃记录', emptyDescription: '废弃原因和历史图片会保留，便于后续核对。' },
 ];
 
 const STATUS_LABELS: Record<ImageQaItem['status'], string> = {
   PENDING: '待质检',
   PASSED: '已通过',
   RETURNED: '已打回',
+  DISCARDED: '已废弃',
 };
 
 function displayAssetName(asset: ImageQaAsset, fallbackIndex: number) {
@@ -347,6 +350,8 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
               <td data-label="操作"><div className={styles.actions}>
                 <Button unstyled className="button small" type="button" onClick={(event) => openDetail(item, event.currentTarget)}>查看图片</Button>
                 {item.capabilities.canReturnSingle && <Button unstyled className="button small" type="button" disabled={Boolean(action)} onClick={(event) => openReturn(item, undefined, event.currentTarget)}><RotateCcw size={14} />打回</Button>}
+                {item.capabilities.canDiscard && <ImageDiscardButton target={{ samplingItemId: item.id }} disabled={Boolean(action)}
+                  onBusyChange={busy => setAction(busy ? item.id : '')} onCompleted={load} />}
                 {item.capabilities.canPass && <Button unstyled className="button small primary" type="button" disabled={Boolean(action)} onClick={() => { void pass(item); }}><CheckCircle2 size={14} />通过</Button>}
               </div></td>
             </tr>)}</tbody></table></div>}
@@ -400,9 +405,12 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
           {!detail.blindReview && detail.query && <div className={qaStyles.query}><span>原始 Query</span><p>{detail.query}</p></div>}
           {detail.blockers.pendingImageEdits > 0 && <p className="notice warning" role="status">该任务在提交初审前遗留了 {detail.blockers.pendingImageEdits} 个待处理的图片修改，当前版本不能质检通过。请打回图片，让任务负责人采用、拒绝或取消修改后重新提交初审。</p>}
           <p className={qaStyles.reviewHint}>通过代表整套当前版本可以交付；发现问题时请选中具体问题页并填写可执行的修改要求。</p>
+          {detail.discardReason && <p className="notice warning">废弃原因：{detail.discardReason}</p>}
           {!returning && detail.status === 'PENDING' && <div className={qaStyles.detailActions}>
-            {detail.capabilities.canReturnSingle && <Button unstyled className="button" onClick={() => openReturn(detail, selectedAsset?.id)}><RotateCcw size={15} />发起返工</Button>}
-            {detail.capabilities.canPass && <Button unstyled className="button primary" onClick={() => { void pass(detail); }}><CheckCircle2 size={15} />质检通过</Button>}
+            {detail.capabilities.canReturnSingle && <Button unstyled className="button" disabled={Boolean(action)} onClick={() => openReturn(detail, selectedAsset?.id)}><RotateCcw size={15} />发起返工</Button>}
+            {detail.capabilities.canDiscard && <ImageDiscardButton target={{ samplingItemId: detail.id }} disabled={Boolean(action)}
+              onBusyChange={busy => setAction(busy ? detail.id : '')} onCompleted={async () => { closeDetail(); await load(); }} />}
+            {detail.capabilities.canPass && <Button unstyled className="button primary" disabled={Boolean(action)} onClick={() => { void pass(detail); }}><CheckCircle2 size={15} />质检通过</Button>}
           </div>}
         </aside>
           </div>

@@ -88,10 +88,11 @@ test('copy review scores the machine draft once and auto-scores an edited approv
   assert.match(source, /const copyFieldsEditable = editable && \(isCopyRework \|\| copyOriginalScore === 2 \|\| copyOriginalScore === 2\.5\)/u);
   assert.doesNotMatch(source, /copyFieldsEditable = editable && originalCopyRatingComplete/u);
   assert.match(source, /const planFieldsReadOnly = !\(editable \|\| canEditApprovedImagePlan\)/u);
-  assert.match(source, /const planKindDisabled = !\(editable \|\| canEditApprovedImagePlan\) \|\| isCopyOnlyFinalRework \|\| loading \|\| submitting/u);
+  assert.match(source, /const planKindDisabled = !\(editable \|\| canEditApprovedImagePlan\) \|\| loading \|\| submitting/u);
   assert.match(source, /decision: 'SAVE_PLAN'/u);
   assert.match(source, /单独保存图片规划/u);
   assert.match(source, /请先单独保存图片规划，再提交只针对文案的评分或审核结果/u);
+  assert.match(source, /if \(!isCopyRework && decision !== 'DISCARD' && imagePlanChanged\)/u);
   assert.match(source, /copy: savedDraft\.copy,[\s\S]{0,100}imagePlan: draft\.imagePlan,[\s\S]{0,100}imageSettings: savedDraft\.imageSettings/u);
   assert.match(source, /页面排版 <em>\{item\.layout\?\.mode === 'CUSTOM' \? '自定义' : '自动匹配'\}/u);
   assert.match(source, /<PageLayoutEditor kind=\{item\.kind\}/u);

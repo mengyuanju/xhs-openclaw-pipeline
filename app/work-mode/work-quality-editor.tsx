@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Disclosure, DisclosureContent, DisclosureTrigger } from '@/components/ui/disclosure';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { apiRequest } from '../components/api-client';
+import { ImageDiscardButton } from '../components/image-discard-button';
 import { ImageCarouselNavigation } from '../components/image-carousel-navigation';
 import { ImagePreview } from '../components/image-preview';
 import { ImagePreviewBackgroundControl, type PreviewBackdrop } from '../components/image-preview-background-control';
@@ -204,6 +205,9 @@ export function WorkQualityEditor({ item, navigationGuardRef, onSkip, onComplete
     <footer className={styles.qualityFooter}>{error && <div className="notice error" role="alert">{error}</div>}
       <span>{item.rework ? '当前版本须通过强制复检' : '本次结论绑定当前待检版本'}</span><div>
         <Button unstyled className="button" disabled={busy} onClick={onSkip}>暂跳过</Button>
+        {imageItem?.capabilities.canDiscard && <ImageDiscardButton target={{ samplingItemId: imageItem.id }} disabled={busy}
+          onBusyChange={value => { submitting.current = value; setBusy(value); }}
+          onCompleted={() => onCompleted(`${qa.anonymousCode} 已废弃，原因已记录。`)} />}
         {returning ? <><Button unstyled className="button" disabled={busy} onClick={() => { setReturning(false); setMobilePane('content'); setError(''); }}>返回核验</Button><Button unstyled className="button danger" disabled={busy || !qa.capabilities.canReturnSingle || imageMode && (settingsLoading || !!settingsError)} onClick={() => void submit(true)}><RotateCcw size={15} />打回并下一条</Button></>
           : <><Button unstyled className="button" disabled={busy || !qa.capabilities.canReturnSingle} onClick={beginReturn}>打回</Button><Button unstyled className="button primary" disabled={busy || passBlocked} onClick={() => void submit(false)}>{busy ? <LoaderCircle className="animate-spin" size={15} /> : <ArrowRight size={15} />}通过并下一条</Button></>}
       </div></footer>

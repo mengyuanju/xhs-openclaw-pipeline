@@ -13,11 +13,14 @@ import {
   getImageQaBatchReturnPreview,
   passImageQaItem,
   returnImageQaItem,
+  discardTaskImages,
+  discardImageQaItem,
   submitImageSelfReview,
 } from './image-quality-control.mjs';
 import { copyQualityImageGate } from './copy-quality-flow.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import { copyReworkChanges, findCopyReworkBaseline } from '../../src/copy-rework.mjs';
 import { assertImageResultSettings, reviseTaskImages } from './image-revisions.mjs';
 import {
   DEFAULT_IMAGE_SETTINGS,
@@ -544,9 +547,32 @@ async function copyDiffersFromMachineAncestor(client, {
   return !isDeepStrictEqual(finalCopy, normalizedReviewCopy(machine.rows[0].content));
 }
 
+async function copyReworkBaseline(client, taskId, revision) {
+  if (['QA_RETURN', 'FINAL_REWORK'].includes(revision.revision_origin)) return revision;
+  const result = await client.query(`
+    WITH RECURSIVE rework_lineage AS (
+      SELECT id, task_id, parent_revision_id, revision_origin, content, ARRAY[id] AS path
+      FROM copy_revisions WHERE id = $1 AND task_id = $2
+      UNION ALL
+      SELECT parent.id, parent.task_id, parent.parent_revision_id, parent.revision_origin,
+        parent.content, child.path || parent.id
+      FROM copy_revisions parent
+      JOIN rework_lineage child ON parent.id = child.parent_revision_id
+      WHERE parent.task_id = $2
+        AND COALESCE(child.revision_origin, '') NOT IN ('QA_RETURN', 'FINAL_REWORK')
+        AND NOT parent.id = ANY(child.path)
+    )
+    SELECT id, revision_origin, content FROM rework_lineage
+    WHERE revision_origin IN ('QA_RETURN', 'FINAL_REWORK')
+    ORDER BY cardinality(path) LIMIT 1
+  `, [revision.id, taskId]);
+  return result.rows[0] ?? revision;
+}
+
 function revisionFrom(row) {
   if (!row) return null;
-  const rework = row.content?.qualityReturn ?? row.content?.finalRework ?? null;
+  const rework = row.revision_origin === 'FINAL_REWORK'
+    ? row.content?.finalRework : row.content?.qualityReturn ?? row.content?.finalRework ?? null;
   const reworkOrigin = [rework?.origin, row.revision_origin]
     .find((origin) => origin === 'QA_RETURN' || origin === 'FINAL_REWORK') ?? null;
   return {
@@ -1595,6 +1621,8 @@ export class PostgresControlPlaneRepository {
   }
   passImageQaItem(id, input, { actor } = {}) { return passImageQaItem(this.pool, id, input, actor); }
   returnImageQaItem(id, input, { actor } = {}) { return returnImageQaItem(this.pool, id, input, actor); }
+  discardTaskImages(id, input, { actor } = {}) { return discardTaskImages(this.pool, id, input, actor); }
+  discardImageQaItem(id, input, { actor } = {}) { return discardImageQaItem(this.pool, id, input, actor); }
   getImageQaBatchReturnPreview(id, { actor } = {}) { return getImageQaBatchReturnPreview(this.pool, id, actor); }
   batchReturnImageQa(input, { actor } = {}) { return batchReturnImageQa(this.pool, input, actor); }
   closeImageSamplingTail(input, { actor } = {}) { return closeImageSamplingTail(this.pool, input, actor); }
@@ -1699,7 +1727,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 8, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, adminTaskActivityDateFilters: 1, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 6, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, sharedDeliveryVersion: 1, deliverySpreadsheetVersion: 3, deliveryPreviewVersion: 6 } };
+      capabilities: { taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 8, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, adminTaskActivityDateFilters: 1, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 6, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, sharedDeliveryVersion: 1, imageDiscardVersion: 1, deliverySpreadsheetVersion: 3, deliveryPreviewVersion: 6 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -3502,6 +3530,10 @@ export class PostgresControlPlaneRepository {
           SELECT * FROM tasks WHERE id = $1
         )
         SELECT task.*, creator.id AS creator_account_id,
+          (SELECT jsonb_agg(jsonb_build_object('note', disposition.note,
+            'actorUsername', disposition.actor_username, 'createdAt', disposition.created_at)
+            ORDER BY disposition.id DESC) FROM image_task_dispositions disposition
+            WHERE disposition.task_id = task.id) AS image_discard_events,
           (SELECT to_jsonb(p) FROM copy_image_plan_regeneration_jobs p
             WHERE p.task_id=task.id AND p.copy_revision_id=task.current_copy_revision_id
               AND task.state='COPY_REVIEW_PENDING'
@@ -3563,8 +3595,19 @@ export class PostgresControlPlaneRepository {
       `, [taskId]),
     ]);
     if (!task.rows[0]) return null;
+    const copyRevisions = revisions.rows.map(revisionFrom);
+    if (task.rows[0].mandatory_copy_qc === true) {
+      const current = copyRevisions.find(item => item.id === Number(task.rows[0].current_copy_revision_id));
+      const baseline = findCopyReworkBaseline(copyRevisions, task.rows[0].current_copy_revision_id);
+      if (current && baseline) {
+        current.copyReworkSatisfied = copyReworkChanges(baseline.content, current.content).satisfied;
+        for (const key of ['reworkOrigin', 'reworkTarget', 'reworkReasonCodes', 'reworkNote',
+          'reworkRecommendation', 'reworkSamplingItemId']) current[key] = baseline[key];
+      }
+    }
     return {
       ...taskFrom(task.rows[0]),
+      imageDiscardEvents: task.rows[0].image_discard_events ?? [],
       imagePlanRegeneration: task.rows[0].personal_image_plan_job
         ? imagePlanRegenerationFrom(task.rows[0].personal_image_plan_job) : null,
       xiaohongshuLinks: Array.isArray(task.rows[0].xiaohongshu_links)
@@ -3578,7 +3621,7 @@ export class PostgresControlPlaneRepository {
       xiaohongshuSearchStatus: task.rows[0].xiaohongshu_search_status ?? null,
       xiaohongshuSearchBlockedReason: task.rows[0].xiaohongshu_search_blocked_reason ?? null,
       executions: executions.rows.map(executionFrom),
-      copyRevisions: revisions.rows.map(revisionFrom),
+      copyRevisions,
       imageRuns: imageRuns.rows.map((row) => ({
         id: row.id,
         taskId: Number(row.task_id),
@@ -4424,6 +4467,8 @@ export class PostgresControlPlaneRepository {
         SELECT * FROM copy_revisions WHERE id = $1 AND task_id = $2 FOR UPDATE
       `, [revisionId, taskId]);
       if (!revision.rows[0]) throw new ControlPlaneNotFoundError('copy revision not found');
+      const mandatoryRework = task.mandatory_copy_qc === true;
+      const reworkBaseline = mandatoryRework ? await copyReworkBaseline(client, taskId, revision.rows[0]) : null;
       const originalImagePlan = edits ? normalizeCopyReviewImagePlan(
         revision.rows[0].content.imagePlan
           ?? revision.rows[0].content.reviewed?.imagePlan
@@ -4435,13 +4480,13 @@ export class PostgresControlPlaneRepository {
       let imagePlanChanged = Boolean(edits && !isDeepStrictEqual(edits.imagePlan, originalImagePlan));
       const imageSettingsChanged = Boolean(edits
         && !isDeepStrictEqual(edits.imageSettings ?? originalImageSettings, originalImageSettings));
-      if (edits && actorRole !== 'ADMIN' && decision !== 'SAVE_PLAN' && !imagePlanChanged
+      if (edits && !mandatoryRework && actorRole !== 'ADMIN' && decision !== 'SAVE_PLAN' && !imagePlanChanged
           && revision.rows[0].content.manualReview?.imagePlanEdited !== true) {
         edits = { ...edits, imagePlan: automaticReviewImagePlan(edits.imagePlan) };
         imagePlanChanged = !isDeepStrictEqual(edits.imagePlan, originalImagePlan);
       }
-      const revisionRework = revision.rows[0].content?.finalRework;
-      const copyOnlyFinalRework = revision.rows[0].revision_origin === 'FINAL_REWORK'
+      const revisionRework = reworkBaseline?.content?.finalRework;
+      const copyOnlyFinalRework = reworkBaseline?.revision_origin === 'FINAL_REWORK'
         && revisionRework?.target === 'COPY';
       if (copyOnlyFinalRework) {
         if (rawAiDisclosureEnabled !== undefined
@@ -4452,24 +4497,17 @@ export class PostgresControlPlaneRepository {
           );
         }
         if (edits) {
-          const originalPlan = normalizeCopyReviewImagePlan(
-            revision.rows[0].content.imagePlan
-              ?? revision.rows[0].content.reviewed?.imagePlan
-              ?? revision.rows[0].content.post?.imagePlan,
-          );
           const originalSettings = normalizeImageSettings(
             revision.rows[0].content.imageSettings ?? DEFAULT_IMAGE_SETTINGS,
           );
-          if (!isDeepStrictEqual(edits.imagePlan, originalPlan)
-              || !isDeepStrictEqual(edits.imageSettings ?? originalSettings, originalSettings)) {
+          if (!isDeepStrictEqual(edits.imageSettings ?? originalSettings, originalSettings)) {
             throw new ControlPlaneConflictError(
               'COPY_REWORK_SCOPE_VIOLATION',
-              '仅文案返工不能改变图片规划、格式或背景设置',
+              '仅文案返工不能改变图片格式或背景设置',
             );
           }
         }
       }
-      const mandatoryRework = task.mandatory_copy_qc === true;
       if (mandatoryRework && task.mandatory_copy_qc_origin === 'QA_RETURN'
           && decision === 'DISCARD') {
         throw new ControlPlaneConflictError(
@@ -4539,7 +4577,9 @@ export class PostgresControlPlaneRepository {
         }
       }
       const wasCopyEdited = revision.rows[0].copy_content_changed_from_machine === true;
-      const copyReworkSatisfied = revision.rows[0].copy_rework_satisfied === true || copyChanged;
+      const copyReworkSatisfied = mandatoryRework && copyReworkChanges(
+        reworkBaseline.content, edits ?? revision.rows[0].content,
+      ).satisfied;
       let finalCopyEdited = wasCopyEdited || copyChanged;
       if (decision === 'APPROVE' && !mandatoryRework && !sourceIsOriginal && wasCopyEdited) {
         const differsFromMachine = await copyDiffersFromMachineAncestor(client, {
@@ -4557,7 +4597,7 @@ export class PostgresControlPlaneRepository {
       if (decision === 'APPROVE' && mandatoryRework && !copyReworkSatisfied) {
         throw new ControlPlaneConflictError(
           'COPY_REWORK_NOT_SATISFIED',
-          '返工稿尚未发生实际修改；请修改标题、正文或标签后再提交强制复检',
+          '返工稿尚未发生实际修改；请修改文案或图片规划后再提交强制复检',
         );
       }
       if (decision === 'APPROVE' && !mandatoryRework
@@ -4587,7 +4627,7 @@ export class PostgresControlPlaneRepository {
           copyChanged,
           imagePlanChanged,
         })
-        : decision === 'APPROVE' && actorRole !== 'ADMIN'
+        : decision === 'APPROVE' && !mandatoryRework && actorRole !== 'ADMIN'
             && revision.rows[0].content.manualReview?.imagePlanEdited !== true
           ? contentWithAutomaticReviewLayouts(revision.rows[0].content, { baseRevisionId: revisionId, nodeId })
           : null;
@@ -4613,9 +4653,10 @@ export class PostgresControlPlaneRepository {
         reviewedRevisionRow = reviewedRevision.rows[0];
       } else if (decision === 'APPROVE') {
         const approvedRevision = await client.query(`
-          UPDATE copy_revisions SET approved_at = now(), approved_by_node_id = $2, approval_mode = 'MANUAL'
+          UPDATE copy_revisions SET approved_at = now(), approved_by_node_id = $2, approval_mode = 'MANUAL',
+            copy_rework_satisfied = $3
           WHERE id = $1 RETURNING *
-        `, [revisionId, nodeId]);
+        `, [revisionId, nodeId, copyReworkSatisfied]);
         reviewedRevisionRow = approvedRevision.rows[0];
       }
       let finalAssessment = null;
@@ -5310,6 +5351,10 @@ export class PostgresControlPlaneRepository {
         throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'only queued work can be cancelled in bulk');
       }
       if (task.state === 'CANCELLED') return taskFrom(task);
+      if (actorIdentity && actorIdentity.role !== 'ADMIN'
+          && ['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING', 'IMAGE_QC_PENDING'].includes(task.state)) {
+        throw new ControlPlaneConflictError('IMAGE_DISCARD_REQUIRES_REASON', '请通过图片环节的废弃入口填写原因');
+      }
       if (task.state === 'COPY_QC_PENDING') {
         throw new ControlPlaneConflictError(
           'COPY_QC_CANCEL_FORBIDDEN',

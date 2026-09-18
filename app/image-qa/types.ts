@@ -15,7 +15,8 @@ export type ImageQaItem = {
   sampleKind: 'RANDOM' | 'MANDATORY_RECHECK';
   blindReview: boolean;
   assets: ImageQaAsset[];
-  capabilities: { canPass: boolean; canReturnSingle: boolean; canReturnBatch: boolean };
+  capabilities: { canPass: boolean; canReturnSingle: boolean; canReturnBatch: boolean; canDiscard?: boolean };
+  discardReason?: string;
   blockers: { pendingImageEdits: number };
   taskId?: number;
   query?: string;
@@ -60,12 +61,14 @@ export function normalizeImageQaItem(value: unknown, role: 'ADMIN' | 'REVIEWER')
       canPass: capabilities.canPass === true,
       canReturnSingle: capabilities.canReturnSingle === true,
       canReturnBatch: capabilities.canReturnBatch === true,
+      canDiscard: capabilities.canDiscard === true,
     },
     blockers: {
       pendingImageEdits: Number.isSafeInteger(Number((row.blockers as Record<string, unknown> | undefined)?.pendingImageEdits))
         ? Math.max(0, Number((row.blockers as Record<string, unknown>).pendingImageEdits)) : 0,
     },
     ...(typeof row.createdAt === 'string' ? { createdAt: row.createdAt } : {}),
+    ...(typeof row.discardReason === 'string' ? { discardReason: row.discardReason } : {}),
   };
   if (blindReview) return common;
   return {

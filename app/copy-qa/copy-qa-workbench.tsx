@@ -331,7 +331,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
       setMessage(returned.sampleKind === 'MANDATORY_RECHECK'
         ? returnRecommendation === 'DISCARD'
           ? `${code} 未通过强制复检，并已向任务负责人建议废弃。`
-          : `${code} 未通过强制复检，已退回继续修改；实际修改标题、正文或标签后，新返工稿会按最终 3 分记录并再次进入强制复检，通过前不会进入待生图队列。`
+          : `${code} 未通过强制复检，已退回继续修改；实际修改文案或图片规划后，新返工稿会按最终 3 分记录并再次进入强制复检，通过前不会进入待生图队列。`
         : returnRecommendation === 'DISCARD'
           ? `${code} 已单条打回并建议废弃；同批其他任务仍需显式放行或整批处置。`
           : `${code} 已单条打回；同批其他任务保持等待，可随后显式放行其余或发起整批打回。`);
@@ -674,7 +674,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
           ? returnCompleted ? '强制复检未通过，已退回修改' : '打回强制复检返工稿'
           : returnCompleted ? '当前错误项已单条打回' : '只打回当前错误项'}</DialogTitle><DialogDescription>{returnItem?.sampleKind === 'MANDATORY_RECHECK'
           ? returnCompleted
-            ? '当前返工稿未通过强制复检；实际修改标题、正文或标签后，新返工稿会按最终 3 分记录并再次进入强制复检，通过前不会进入待生图队列。'
+            ? '当前返工稿未通过强制复检；实际修改文案或图片规划后，新返工稿会按最终 3 分记录并再次进入强制复检，通过前不会进入待生图队列。'
             : `${returnItem.anonymousCode} 的返工稿将退回修改；强制复检不会放行同批其余或扩大为整批打回，通过复检前不会进入待生图队列。`
           : returnCompleted
             ? '同批其他任务仍在冻结等待。请明确选择放行其余，或以这个已确认的错误项升级整批打回。'
@@ -696,7 +696,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
           <div className={styles.impact}><strong>{returnItem.sampleKind === 'MANDATORY_RECHECK' ? '强制复检项' : '错误项'}：{returnItem.anonymousCode}</strong><span>{returnItem.sampleKind === 'MANDATORY_RECHECK' ? '返工稿已退回继续修改，当前不会进入待生图队列。' : '单条打回已生效；关闭弹窗也不会自动放行或扩大范围。'}</span></div>
           {returnItem.sampleKind === 'MANDATORY_RECHECK'
             ? <>
-              <div className="notice">实际修改标题、正文或标签后，新返工稿会按最终 3 分记录并再次进入强制复检；只有复检通过后才会进入待生图队列。</div>
+              <div className="notice">实际修改文案或图片规划后，新返工稿会按最终 3 分记录并再次进入强制复检；只有复检通过后才会进入待生图队列。</div>
               <div className={styles.footer}><span className="subtle">强制复检只处理当前返工项；此处不会提供整批打回或放行同批其余操作。</span><DialogClose asChild><Button unstyled className="button" type="button">完成</Button></DialogClose></div>
             </>
             : <>

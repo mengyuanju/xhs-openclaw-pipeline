@@ -3,13 +3,14 @@ import { mkdir, writeFile, readFile, unlink } from 'node:fs/promises';
 import { resolve, relative, isAbsolute } from 'node:path';
 import sharp from 'sharp';
 import { ControlPlaneConflictError, ControlPlaneAuthorizationError, ControlPlaneNotFoundError, normalizeTaskId, normalizeUuid } from './domain.mjs';
-import { withdrawReadyDeliveryEntries } from './final-delivery.mjs';
+import { PENDING_IMAGE_EDIT_STATUSES, withdrawReadyDeliveryEntries } from './final-delivery.mjs';
 import { imagePageDisclosure, imageResultScopedToPage, imageSettingsScopedToPage } from './image-edit-lineage.mjs';
 import { disclosureRemovalConfig, requestsDisclosureRemoval } from './image-edit-disclosure.mjs';
 import { boundedNumber, shortText, normalizeManualOverlay, normalizeMask, decodeReference, imageHash, safeRect, renderMask, EDIT_WIDTH, EDIT_HEIGHT } from '../../src/image-edit-pixels.mjs';
 import { orderedImageFileName } from '../../src/image-file-name.mjs';
 import { normalizeImageEditRepairMaxAttempts } from '../../src/production-settings.mjs';
 import { createPromptRuntime } from '../../src/prompt-runtime.mjs';
+import { selectLocalEditAlternative } from '../../src/local-edit-alternatives.mjs';
 
 const conflict = message => { throw new ControlPlaneConflictError('IMAGE_EDIT_CONFLICT', message); };
 const actorName = actor => { if(!['ADMIN','USER'].includes(actor?.role) || !actor.username) throw new ControlPlaneAuthorizationError('当前账号不能修改图片'); return actor.username; };
@@ -92,8 +93,9 @@ export function imageAssetIds(result) {
 }
 function requestEditConfig(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) return config;
-  const { imageEditRepairMaxAttempts: _frozenRepairLimit, imageEditPrompt: _frozenPrompt, localPlan, localRepair: _localRepair, ...requestConfig } = config;
-  return localPlan?.originalInstruction?{...requestConfig,instruction:localPlan.originalInstruction}:requestConfig;
+  const { imageEditRepairMaxAttempts: _frozenRepairLimit, imageEditPrompt: _frozenPrompt, localPlan, localAlternative, localRepair: _localRepair, ...requestConfig } = config;
+  const originalInstruction=localAlternative?.originalInstruction??localPlan?.originalInstruction;
+  return originalInstruction?{...requestConfig,instruction:originalInstruction}:requestConfig;
 }
 const rectContains=(outer,inner)=>inner.x>=outer.x&&inner.y>=outer.y
   &&inner.x+inner.width<=outer.x+outer.width&&inner.y+inner.height<=outer.y+outer.height;
@@ -321,6 +323,111 @@ export function createImageEditingService({ pool, storageRoot }) {
     if(!row) throw new ControlPlaneNotFoundError('image edit not found');
     return row;
   }
+  async function applyAction(c,id,action,input,actor) {
+    const username=actorName(actor), requestId=normalizeUuid(input.requestId,'requestId'), version=boundedNumber(input.version,1,2147483647), reason=shortText(input.reason,1000);
+    const e=(await c.query('SELECT * FROM image_edit_requests WHERE id=$1 FOR UPDATE',[id])).rows[0];
+    const previous=(await c.query('SELECT * FROM image_edit_events WHERE task_id=$1 AND request_id=$2',[e.task_id,requestId])).rows[0];
+    if(previous) { if(previous.edit_id !== id || previous.action !== action || previous.reason !== reason || previous.actor !== username
+      || (action==='apply-suggestion' && (previous.detail?.suggestionId??null)!==(input.suggestionId??null))) conflict('requestId 已用于其他操作'); return e; }
+    if(e.version !== version) conflict('编辑状态已更新，请刷新');
+    const states={queue:['DRAFT'],retry:['FAILED'],'apply-suggestion':['FAILED'],cancel:['DRAFT','QUEUED','RUNNING','PREVIEW_READY','FAILED'],reject:['PREVIEW_READY'],accept:['PREVIEW_READY','FAILED']};
+    if(!states[action]?.includes(e.status)) conflict('当前编辑状态不允许此操作');
+    const usesBillableModel=e.operation==='TEXT'||e.operation.startsWith('AI_');
+    const confirmsCost=e.config?.confirmation==='LIVE_IMAGE_COST_ACCEPTED'||input.confirmation==='LIVE_IMAGE_COST_ACCEPTED';
+    if(['queue','retry','apply-suggestion'].includes(action)&&usesBillableModel&&!confirmsCost) throw new TypeError('请确认图片编辑或视觉校验模型费用');
+    if(action==='retry'&&input.useRejectedPreview===true&&input.confirmation!=='LIVE_IMAGE_COST_ACCEPTED') {
+      throw new TypeError('基于失败图定向修复会再次调用图片模型，请重新确认费用');
+    }
+    const editSource=['queue','retry','apply-suggestion','accept'].includes(action)
+      ? await assertEditSource(c,Number(e.task_id),e.config,{allowCompatibleCurrentRun:true})
+      : null;
+    let retryResolution=null;
+    if(action==='retry') {
+      const result=(await c.query('SELECT * FROM image_edit_results WHERE request_id=$1',[e.id])).rows[0]??null;
+      retryResolution=resolveImageEditRetry(e,result,input);
+    }
+    if(action==='apply-suggestion'&&e.operation!=='AI_LOCAL')conflict('只有局部修改可以采用建议描述');
+    let acceptedRejectedPreview=false;
+    if(action==='accept') {
+      const r=(await c.query('SELECT * FROM image_edit_results WHERE request_id=$1',[id])).rows[0];
+      acceptedRejectedPreview=e.status==='FAILED'&&r?.validation?.passed!==true;
+      if(!r || r.validation?.mock === true) conflict('当前请求没有可采用的图片结果');
+      if(acceptedRejectedPreview&&input.acceptRejectedResult!==true)conflict('请明确确认采用未通过自动验收的结果');
+      if(!acceptedRejectedPreview&&r.validation?.passed!==true)conflict('图片校验未通过');
+      const output=(await c.query('SELECT * FROM assets WHERE id=$1 AND task_id=$2',[r.asset_id,e.task_id])).rows[0];
+      if(!output || imageHash(await readFile(editStoragePath(storageRoot,output.storage_path)))!==output.sha256 || output.sha256!==r.validation.integrity?.sha256) conflict('预览图片完整性校验失败');
+      if(acceptedRejectedPreview)await c.query("UPDATE assets SET asset_role='DELIVERY' WHERE id=$1 AND task_id=$2",[output.id,e.task_id]);
+      await withdrawReadyDeliveryEntries(c,e.task_id,'IMAGE_MANUAL_EDIT_ACCEPTED');
+      let adoptedRunId=r.image_run_id;
+      if(editSource.currentRun.id !== e.source_image_run_id) {
+        const mergedRunId=randomUUID();
+        const mergedResult=replaceImagePage(editSource.currentRun.result,e.target_page,output);
+        mergedResult.images[e.target_page-1].imageEditRequiredText=r.validation.requiredText;
+        mergedResult.images[e.target_page-1].imageEditDisclosure=r.validation.disclosure?.added??null;
+        mergedResult.processing={type:e.operation,editId:e.id,parentRunId:editSource.currentRun.id,
+          sourceRunId:e.source_image_run_id,previewRunId:r.image_run_id};
+        mergedResult.imageEditValidation=r.validation;
+        await c.query("INSERT INTO image_runs(id,task_id,copy_revision_id,status,image_production_chain_id,result,finished_at) VALUES($1,$2,$3,'COMPLETED',$1,$4,now())",[mergedRunId,e.task_id,e.copy_revision_id,mergedResult]);
+        for(const assetId of imageAssetIds(mergedResult)) {
+          const member=await c.query("INSERT INTO image_run_asset_members(image_run_id,asset_id) SELECT $1,id FROM assets WHERE id=$2 AND task_id=$3 AND asset_role='DELIVERY' RETURNING asset_id",[mergedRunId,assetId,e.task_id]);
+          if(member.rowCount!==1)conflict('图集包含不属于当前任务的交付资产');
+        }
+        adoptedRunId=mergedRunId;
+      } else if(acceptedRejectedPreview) {
+        const promoted=await c.query("UPDATE image_runs SET status='COMPLETED' WHERE id=$1 AND task_id=$2 AND status='FAILED' RETURNING id",[adoptedRunId,e.task_id]);
+        if(promoted.rowCount!==1)conflict('失败预览对应的图片版本不可采用');
+      }
+      await c.query('UPDATE image_edit_results SET adopted=true,image_run_id=$2 WHERE request_id=$1',[id,adoptedRunId]);
+      await c.query("UPDATE tasks SET current_image_run_id=$2,state='MANUAL_ARCHIVE',current_stage='MANUAL_ARCHIVE',image_reviewed_at=NULL,image_reviewed_by_user_id=NULL,progress_message='图片修改已采用，请重新审核归档',updated_at=now() WHERE id=$1",[e.task_id,adoptedRunId]);
+    }
+    const next={queue:'QUEUED',retry:'QUEUED','apply-suggestion':'QUEUED',cancel:'CANCELLED',reject:'REJECTED',accept:'ACCEPTED'}[action];
+    let config=usesBillableModel&&input.confirmation==='LIVE_IMAGE_COST_ACCEPTED'?{...e.config,confirmation:'LIVE_IMAGE_COST_ACCEPTED'}:e.config;
+    let auditDetail=acceptedRejectedPreview?{acceptedRejectedPreview:true,validationPassed:false}:{};
+    if(action==='retry') {
+      if(retryResolution.targetedRepair) {
+        const localRepair=retryResolution.localRepair;
+        config={...config,localRepair};
+        auditDetail={targetedRepair:true,baseAssetId:localRepair.baseAssetId,attempt:localRepair.attempt,
+          failureCodes:localRepair.failureCodes,repairInstruction:localRepair.repairInstruction,
+          repairRegions:localRepair.repairRegions};
+      } else if(config.localRepair) {
+        const {localRepair:_discardedRepair,...originalRetryConfig}=config;
+        config=originalRetryConfig;
+      }
+    }
+    if(action==='apply-suggestion') {
+      const choice=input.suggestionId==null?null:selectLocalEditAlternative(e,input.suggestionId);
+      if(choice && (e.validation?.stage!=='LOCAL_EDIT_SUGGESTION'||e.validation.canEdit!==true)) {
+        // Rewording a blocked request must re-run localization, never adopt its unsafe regions.
+        const {localPlan:_oldPlan,localRepair:_oldRepair,...unplanned}=config;
+        config={...unplanned,instruction:choice.instruction,mask:null};
+        auditDetail={originalInstruction:e.config.instruction,suggestedInstruction:choice.instruction,requiresPreflight:true};
+      } else {
+        const plan=localSuggestionPlan(choice?{...e.validation,suggestedInstruction:choice.instruction}:e.validation,e.config.instruction);
+        config={...config,instruction:plan.suggestedInstruction,mask:null,
+          localPlan:{...plan,acceptedAt:new Date().toISOString(),acceptedBy:username}};
+        auditDetail={originalInstruction:plan.originalInstruction,suggestedInstruction:plan.suggestedInstruction,
+          operationType:plan.operationType,editRegions:plan.editRegions,model:plan.model};
+      }
+      if(choice) {
+        config={...config,localAlternative:{id:choice.id,title:choice.title,
+          originalInstruction:e.config.localAlternative?.originalInstruction??e.config.localPlan?.originalInstruction??e.config.instruction}};
+        auditDetail={...auditDetail,suggestionId:choice.id,suggestionTitle:choice.title};
+      }
+    }
+    const inheritedDisclosure=['retry','apply-suggestion'].includes(action)&&e.operation==='AI_LOCAL'
+      ?imagePageDisclosure(editSource?.run?.result,Number(e.target_page)):null;
+    if(inheritedDisclosure&&requestsDisclosureRemoval(config.instruction,inheritedDisclosure.text)) {
+      config=disclosureRemovalConfig(config);
+    }
+    const updated=(await c.query("UPDATE image_edit_requests SET status=$2,config=$3,version=version+1,error=NULL,validation=CASE WHEN $2='QUEUED' THEN NULL ELSE validation END,lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 RETURNING *",[id,next,config])).rows[0];
+    if(action==='cancel'&&e.execution_id)await c.query(`UPDATE task_executions SET
+      status='ABANDONED',stage='CANCELLED',progress_message='图片修改已取消',
+      last_activity_at=now(),finished_at=now()
+      WHERE id=$1 AND status='RUNNING'`,[e.execution_id]);
+    await audit(c,e.task_id,id,action,username,reason,requestId,auditDetail);
+    return updated;
+  }
   return {
     get,
     async asset(id,taskId) { const a=(await pool.query('SELECT * FROM assets WHERE id=$1 AND task_id=$2',[normalizeTaskId(id),normalizeTaskId(taskId)])).rows[0];if(!a)throw new ControlPlaneNotFoundError('asset not found');return a; },
@@ -410,7 +517,71 @@ export function createImageEditingService({ pool, storageRoot }) {
       await this.fail(e,error);
       return get(e.id);
     },
-    async list(taskId) { return (await pool.query('SELECT e.*,row_to_json(r) AS result, (SELECT json_agg(a ORDER BY a.id) FROM image_edit_events a WHERE a.edit_id=e.id) AS events FROM image_edit_requests e LEFT JOIN image_edit_results r ON r.request_id=e.id WHERE task_id=$1 ORDER BY created_at DESC LIMIT 100',[normalizeTaskId(taskId)])).rows; },
+    async list(taskId, { pendingOnly = false } = {}) {
+      return (await pool.query(`SELECT e.*,row_to_json(r) AS result,
+        (SELECT json_agg(a ORDER BY a.id) FROM image_edit_events a WHERE a.edit_id=e.id) AS events
+        FROM image_edit_requests e LEFT JOIN image_edit_results r ON r.request_id=e.id
+        WHERE task_id=$1 ${pendingOnly ? 'AND e.status = ANY($2::text[])' : ''}
+        ORDER BY e.created_at DESC, e.id ${pendingOnly ? '' : 'LIMIT 100'}`,
+      pendingOnly ? [normalizeTaskId(taskId), PENDING_IMAGE_EDIT_STATUSES] : [normalizeTaskId(taskId)])).rows;
+    },
+    async resolvePending(taskId, input, actor) {
+      taskId = normalizeTaskId(taskId);
+      const username = actorName(actor);
+      const requestId = normalizeUuid(input.requestId, 'requestId');
+      const imageRunId = normalizeUuid(input.imageRunId, 'imageRunId');
+      if (!Array.isArray(input.decisions) || !input.decisions.length || input.decisions.length > 500) {
+        throw new TypeError('每次请选择 1 至 500 个图片修改');
+      }
+      const decisions = input.decisions.map(item => {
+        if (!['accept', 'reject', 'cancel'].includes(item?.action)) throw new TypeError('无效的图片处理操作');
+        return { id: normalizeUuid(item.id, 'editId'), version: boundedNumber(item.version, 1, 2147483647), action: item.action };
+      }).sort((a, b) => a.id.localeCompare(b.id));
+      if (new Set(decisions.map(item => item.id)).size !== decisions.length) throw new TypeError('图片修改不能重复提交');
+      const snapshot = { imageRunId, decisions };
+      return tx(async c => {
+        await lockEditor(c, actor, taskId);
+        const task = (await c.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE', [taskId])).rows[0];
+        const prior = (await c.query('SELECT * FROM image_edit_events WHERE task_id=$1 AND request_id=$2', [taskId, requestId])).rows[0];
+        if (prior) {
+          if (prior.action !== 'RESOLVE_PENDING' || prior.actor !== username || !sameJson(prior.detail?.snapshot, snapshot)) {
+            conflict('requestId 已用于其他操作');
+          }
+          return prior.detail.result;
+        }
+        if (!task || !['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING'].includes(task.state)
+          || task.current_image_run_id !== imageRunId || task.current_execution_id || task.mandatory_copy_qc) {
+          conflict('任务或图片版本已变化，请刷新待处理列表');
+        }
+        const rows = (await c.query('SELECT * FROM image_edit_requests WHERE task_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR UPDATE',
+          [taskId, decisions.map(item => item.id)])).rows;
+        const edits = new Map(rows.map(row => [row.id, row]));
+        const pages = new Set();
+        for (const decision of decisions) {
+          const edit = edits.get(decision.id);
+          if (!edit || edit.version !== decision.version || !PENDING_IMAGE_EDIT_STATUSES.includes(edit.status)) {
+            conflict('待处理图片修改已变化，请刷新后重新选择');
+          }
+          if (decision.action === 'accept') {
+            if (pages.has(edit.target_page)) conflict(`第 ${edit.target_page} 页有多个采用结果，请只选择一个`);
+            pages.add(edit.target_page);
+          }
+          if (decision.action !== 'cancel' && edit.status !== 'PREVIEW_READY') conflict('只有待确认的预览可以采用或拒绝');
+        }
+        // Reuse the single-edit checks and page merge inside one transaction. Any
+        // stale source, invalid output or concurrent update rolls back the whole batch.
+        for (const decision of decisions) {
+          await applyAction(c, decision.id, decision.action, {
+            version: decision.version, requestId: randomUUID(),
+            reason: { accept: '初审前集中处理：预览符合要求，采用修改', reject: '初审前集中处理：拒绝修改，保留当前图片', cancel: '初审前集中处理：取消未完成的修改' }[decision.action],
+          }, actor);
+        }
+        const current = (await c.query('SELECT current_image_run_id FROM tasks WHERE id=$1', [taskId])).rows[0];
+        const result = { imageRunId: current.current_image_run_id, processed: decisions.length };
+        await audit(c, taskId, null, 'RESOLVE_PENDING', username, '初审前集中处理图片修改', requestId, { snapshot, result });
+        return result;
+      });
+    },
     async upload(taskId,input,actor) {
       const username=actorName(actor); taskId=normalizeTaskId(taskId);
       if(typeof input?.base64 !== 'string' || input.base64.length > 7_000_000 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(input.base64)) throw new TypeError('图片编码无效');
@@ -468,99 +639,11 @@ export function createImageEditingService({ pool, storageRoot }) {
       });
     },
     async action(id,action,input,actor) {
-      const username=actorName(actor), requestId=normalizeUuid(input.requestId,'requestId'), version=boundedNumber(input.version,1,2147483647), reason=shortText(input.reason,1000);
       const initial=await get(id);
       return tx(async c=> {
         await lockEditor(c,actor,initial.task_id);
         await c.query('SELECT id FROM tasks WHERE id=$1 FOR UPDATE',[initial.task_id]);
-        const e=(await c.query('SELECT * FROM image_edit_requests WHERE id=$1 FOR UPDATE',[initial.id])).rows[0];
-        const previous=(await c.query('SELECT * FROM image_edit_events WHERE task_id=$1 AND request_id=$2',[e.task_id,requestId])).rows[0];
-        if(previous) { if(previous.edit_id !== id || previous.action !== action || previous.reason !== reason || previous.actor !== username) conflict('requestId 已用于其他操作'); return e; }
-        if(e.version !== version) conflict('编辑状态已更新，请刷新');
-        const states={queue:['DRAFT'],retry:['FAILED'],'apply-suggestion':['FAILED'],cancel:['DRAFT','QUEUED','RUNNING','PREVIEW_READY','FAILED'],reject:['PREVIEW_READY'],accept:['PREVIEW_READY','FAILED']};
-        if(!states[action]?.includes(e.status)) conflict('当前编辑状态不允许此操作');
-        const usesBillableModel=e.operation==='TEXT'||e.operation.startsWith('AI_');
-        const confirmsCost=e.config?.confirmation==='LIVE_IMAGE_COST_ACCEPTED'||input.confirmation==='LIVE_IMAGE_COST_ACCEPTED';
-        if(['queue','retry','apply-suggestion'].includes(action)&&usesBillableModel&&!confirmsCost) throw new TypeError('请确认图片编辑或视觉校验模型费用');
-        if(action==='retry'&&input.useRejectedPreview===true&&input.confirmation!=='LIVE_IMAGE_COST_ACCEPTED') {
-          throw new TypeError('基于失败图定向修复会再次调用图片模型，请重新确认费用');
-        }
-        const editSource=['queue','retry','apply-suggestion','accept'].includes(action)
-          ? await assertEditSource(c,Number(e.task_id),e.config,{allowCompatibleCurrentRun:true})
-          : null;
-        let retryResolution=null;
-        if(action==='retry') {
-          const result=(await c.query('SELECT * FROM image_edit_results WHERE request_id=$1',[e.id])).rows[0]??null;
-          retryResolution=resolveImageEditRetry(e,result,input);
-        }
-        if(action==='apply-suggestion'&&e.operation!=='AI_LOCAL')conflict('只有局部修改可以采用建议描述');
-        let acceptedRejectedPreview=false;
-        if(action==='accept') {
-          const r=(await c.query('SELECT * FROM image_edit_results WHERE request_id=$1',[id])).rows[0];
-          acceptedRejectedPreview=e.status==='FAILED'&&r?.validation?.passed!==true;
-          if(!r || r.validation?.mock === true) conflict('当前请求没有可采用的图片结果');
-          if(acceptedRejectedPreview&&input.acceptRejectedResult!==true)conflict('请明确确认采用未通过自动验收的结果');
-          if(!acceptedRejectedPreview&&r.validation?.passed!==true)conflict('图片校验未通过');
-          const output=(await c.query('SELECT * FROM assets WHERE id=$1 AND task_id=$2',[r.asset_id,e.task_id])).rows[0];
-          if(!output || imageHash(await readFile(editStoragePath(storageRoot,output.storage_path)))!==output.sha256 || output.sha256!==r.validation.integrity?.sha256) conflict('预览图片完整性校验失败');
-          if(acceptedRejectedPreview)await c.query("UPDATE assets SET asset_role='DELIVERY' WHERE id=$1 AND task_id=$2",[output.id,e.task_id]);
-          await withdrawReadyDeliveryEntries(c,e.task_id,'IMAGE_MANUAL_EDIT_ACCEPTED');
-          let adoptedRunId=r.image_run_id;
-          if(editSource.currentRun.id !== e.source_image_run_id) {
-            const mergedRunId=randomUUID();
-            const mergedResult=replaceImagePage(editSource.currentRun.result,e.target_page,output);
-            mergedResult.images[e.target_page-1].imageEditRequiredText=r.validation.requiredText;
-            mergedResult.images[e.target_page-1].imageEditDisclosure=r.validation.disclosure?.added??null;
-            mergedResult.processing={type:e.operation,editId:e.id,parentRunId:editSource.currentRun.id,
-              sourceRunId:e.source_image_run_id,previewRunId:r.image_run_id};
-            mergedResult.imageEditValidation=r.validation;
-            await c.query("INSERT INTO image_runs(id,task_id,copy_revision_id,status,image_production_chain_id,result,finished_at) VALUES($1,$2,$3,'COMPLETED',$1,$4,now())",[mergedRunId,e.task_id,e.copy_revision_id,mergedResult]);
-            for(const assetId of imageAssetIds(mergedResult)) {
-              const member=await c.query("INSERT INTO image_run_asset_members(image_run_id,asset_id) SELECT $1,id FROM assets WHERE id=$2 AND task_id=$3 AND asset_role='DELIVERY' RETURNING asset_id",[mergedRunId,assetId,e.task_id]);
-              if(member.rowCount!==1)conflict('图集包含不属于当前任务的交付资产');
-            }
-            adoptedRunId=mergedRunId;
-          } else if(acceptedRejectedPreview) {
-            const promoted=await c.query("UPDATE image_runs SET status='COMPLETED' WHERE id=$1 AND task_id=$2 AND status='FAILED' RETURNING id",[adoptedRunId,e.task_id]);
-            if(promoted.rowCount!==1)conflict('失败预览对应的图片版本不可采用');
-          }
-          await c.query('UPDATE image_edit_results SET adopted=true,image_run_id=$2 WHERE request_id=$1',[id,adoptedRunId]);
-          await c.query("UPDATE tasks SET current_image_run_id=$2,state='MANUAL_ARCHIVE',current_stage='MANUAL_ARCHIVE',image_reviewed_at=NULL,image_reviewed_by_user_id=NULL,progress_message='图片修改已采用，请重新审核归档',updated_at=now() WHERE id=$1",[e.task_id,adoptedRunId]);
-        }
-        const next={queue:'QUEUED',retry:'QUEUED','apply-suggestion':'QUEUED',cancel:'CANCELLED',reject:'REJECTED',accept:'ACCEPTED'}[action];
-        let config=usesBillableModel&&input.confirmation==='LIVE_IMAGE_COST_ACCEPTED'?{...e.config,confirmation:'LIVE_IMAGE_COST_ACCEPTED'}:e.config;
-        let auditDetail=acceptedRejectedPreview?{acceptedRejectedPreview:true,validationPassed:false}:{};
-        if(action==='retry') {
-          if(retryResolution.targetedRepair) {
-            const localRepair=retryResolution.localRepair;
-            config={...config,localRepair};
-            auditDetail={targetedRepair:true,baseAssetId:localRepair.baseAssetId,attempt:localRepair.attempt,
-              failureCodes:localRepair.failureCodes,repairInstruction:localRepair.repairInstruction,
-              repairRegions:localRepair.repairRegions};
-          } else if(config.localRepair) {
-            const {localRepair:_discardedRepair,...originalRetryConfig}=config;
-            config=originalRetryConfig;
-          }
-        }
-        if(action==='apply-suggestion') {
-          const plan=localSuggestionPlan(e.validation,e.config.instruction);
-          config={...config,instruction:plan.suggestedInstruction,
-            localPlan:{...plan,acceptedAt:new Date().toISOString(),acceptedBy:username}};
-          auditDetail={originalInstruction:plan.originalInstruction,suggestedInstruction:plan.suggestedInstruction,
-            operationType:plan.operationType,editRegions:plan.editRegions,model:plan.model};
-        }
-        const inheritedDisclosure=['retry','apply-suggestion'].includes(action)&&e.operation==='AI_LOCAL'
-          ?imagePageDisclosure(editSource?.run?.result,Number(e.target_page)):null;
-        if(inheritedDisclosure&&requestsDisclosureRemoval(config.instruction,inheritedDisclosure.text)) {
-          config=disclosureRemovalConfig(config);
-        }
-        const updated=(await c.query("UPDATE image_edit_requests SET status=$2,config=$3,version=version+1,error=NULL,validation=CASE WHEN $2='QUEUED' THEN NULL ELSE validation END,lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 RETURNING *",[id,next,config])).rows[0];
-        if(action==='cancel'&&e.execution_id)await c.query(`UPDATE task_executions SET
-          status='ABANDONED',stage='CANCELLED',progress_message='图片修改已取消',
-          last_activity_at=now(),finished_at=now()
-          WHERE id=$1 AND status='RUNNING'`,[e.execution_id]);
-        await audit(c,e.task_id,id,action,username,reason,requestId,auditDetail);
-        return updated;
+        return applyAction(c,initial.id,action,input,actor);
       });
     },
     async claim(worker) {

@@ -1387,6 +1387,10 @@ function installRoutes(
     ctx.set('Cache-Control','private, no-store');
     json(ctx,200,kind === 'tasks' && actor.role === 'USER' ? userVisibleTaskList(result) : result);
   });
+  router.post('/v1/image-qa/items/:itemId/discard', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
+    json(ctx, 200, await repository.discardImageQaItem(ctx.params.itemId, requireJson(ctx), { actor }));
+  });
   router.get('/v1/admin/operator-performance', async (ctx) => {
     const actor=requestActor(ctx,['ADMIN']);
     ctx.set('Cache-Control','private, no-store');
@@ -2191,6 +2195,11 @@ function installRoutes(
   router.post('/v1/tasks/:taskId/review-images', async () => {
     throw new HttpError(410, 'IMAGE_REVIEW_MOVED', '图片初审已改由任务负责人提交；图片质检请在图片质检池处理');
   });
+  router.post('/v1/tasks/:taskId/discard-images', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    await assertTaskAccess(ctx, repository, { ownerOnly: true });
+    json(ctx, 200, await repository.discardTaskImages(ctx.params.taskId, requireJson(ctx), { actor }));
+  });
   router.post('/v1/tasks/:taskId/retry', async (ctx) => {
     const actor = requestActor(ctx);
     await assertTaskAccess(ctx, repository, {
@@ -2279,7 +2288,12 @@ function installRoutes(
   router.get('/v1/tasks/:taskId/image-edits', async ctx => {
     const actor = requestActor(ctx, ['ADMIN', 'USER']);
     await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
-    json(ctx, 200, await imageEditing.list(ctx.params.taskId));
+    json(ctx, 200, await imageEditing.list(ctx.params.taskId, { pendingOnly: ctx.query.pending === 'true' }));
+  });
+  router.post('/v1/tasks/:taskId/image-edits/resolve-pending', async ctx => {
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
+    json(ctx, 200, await imageEditing.resolvePending(ctx.params.taskId, requireJson(ctx), actor));
   });
   router.get('/v1/image-edits/:editId', async ctx => {
     const actor = requestActor(ctx, ['ADMIN', 'USER']);

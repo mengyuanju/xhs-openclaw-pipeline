@@ -61,7 +61,7 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
   const imageQaItems = [1, 2].map(i => ({ id: randomUUID(), freezePublicId: randomUUID(), anonymousCode: `IMG-QA-${i}`,
     status: 'PENDING', blindReview: i === 1, query: i === 1 ? null : '请核对这组四页收纳图片，确认标题清晰、说明完整、版式一致，并逐页标记需要修改的位置。'.repeat(3), sampleKind: 'RANDOM',
     assets: [...imageTask.assets, ...imageTask.assets.map((asset, index) => ({ ...asset, id: 403 + index, url: `/v1/assets/${403 + index}` }))],
-    capabilities: { canPass: i === 1, canReturnSingle: true, canReturnBatch: false }, blockers: { pendingImageEdits: i === 1 ? 0 : 1 } }));
+    capabilities: { canPass: i === 1, canReturnSingle: true, canReturnBatch: false, canDiscard: true }, blockers: { pendingImageEdits: i === 1 ? 0 : 1 } }));
   const drafts = new Map(); const requests = []; const jobs = new Map(); let failSubmit = false; let failList = false; let failDraft = false; let failQaSubmit = false;
   let browser, page;
   const server = createServer(async (req, res) => {
@@ -97,6 +97,7 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
         if (action === 'image-edits') { reply([]); return; }
         if (action?.startsWith('regenerate-image-plan/')) { reply(jobs.get(action.split('/')[1])); return; }
         if (action === 'submit-image-self-review') { task.state = 'IMAGE_QC_PENDING'; reply(task); return; }
+        if (action === 'discard-images') { task.state = 'CANCELLED'; reply(task); return; }
         if (action === 'copy-review-drafts') {
           if (req.method === 'POST' && failDraft) { reply('测试草稿保存失败', 503); return; }
           if (req.method === 'POST') { const record = { id: (drafts.get(id)?.id ?? 0)+1, taskId: id, baseCopyRevisionId: task.currentCopyRevisionId,
@@ -112,8 +113,8 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
       }
       const qa = pathname.match(/\/copy-qa\/items\/([^/]+)\/(pass|return)$/u);
       if (qa) { if (failQaSubmit) { reply('测试质检提交失败', 409); return; } qaItems.find(q => q.id === qa[1]).status = qa[2] === 'pass' ? 'PASSED' : 'RETURNED'; reply({ ok: true }); return; }
-      const imageQa = pathname.match(/\/image-qa\/items\/([^/]+)\/(pass|return)$/u);
-      if (imageQa) { imageQaItems.find(q => q.id === imageQa[1]).status = imageQa[2] === 'pass' ? 'PASSED' : 'RETURNED'; reply({ ok: true }); return; }
+      const imageQa = pathname.match(/\/image-qa\/items\/([^/]+)\/(pass|return|discard)$/u);
+      if (imageQa) { imageQaItems.find(q => q.id === imageQa[1]).status = imageQa[2] === 'discard' ? 'DISCARDED' : imageQa[2] === 'pass' ? 'PASSED' : 'RETURNED'; reply({ ok: true }); return; }
       reply('未配置的测试接口 '+pathname, 404);
     } catch (e) { res.statusCode = 500; res.end(JSON.stringify({ error: { code: 'FIXTURE', message: e.message } })); }
   });
@@ -543,6 +544,37 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     await page.getByRole('dialog').getByRole('article').filter({ hasText: '任务 #65' }).getByRole('button', { name: '查看任务' }).click();
     await page.getByRole('alert').filter({ hasText: '该任务已不在你的文案或图片待办中' }).waitFor();
     await page.getByRole('heading', { name: '图片初审详情', exact: true }).waitFor();
+    // Both image work entries offer mandatory-reason discard without losing image history.
+    await page.getByRole('button', { name: '废弃任务', exact: true }).click();
+    const discardDialog = page.getByRole('dialog', { name: '废弃图片任务', exact: true });
+    await discardDialog.getByLabel('废弃原因（必填）', { exact: true }).fill('   ');
+    await discardDialog.getByRole('button', { name: '确认废弃', exact: true }).click();
+    await discardDialog.getByRole('alert').filter({ hasText: '请填写废弃原因后再提交' }).waitFor();
+    assert.equal(requests.filter(request => request.path.endsWith('/discard-images')).length, 0);
+    await discardDialog.getByRole('button', { name: '继续处理', exact: true }).click();
+    assert.equal(imageTask.state, 'MANUAL_ARCHIVE');
+    await page.getByRole('button', { name: '废弃任务', exact: true }).click();
+    await discardDialog.getByLabel('废弃原因（必填）', { exact: true }).fill('  图片不适合当前主题  ');
+    await page.screenshot({ path: join(directory, 'image-discard-reason.png'), animations: 'disabled' });
+    await discardDialog.getByRole('button', { name: '确认废弃', exact: true }).click();
+    await page.getByRole('heading', { name: '当前暂无待处理作业' }).waitFor();
+    assert.equal(imageTask.state, 'CANCELLED');
+    const discardRequest = requests.find(request => request.path.endsWith('/discard-images'));
+    assert.equal(discardRequest.body.note, '图片不适合当前主题');
+    assert.equal(discardRequest.body.imageRunId, imageTask.currentImageRunId);
+    assert.equal(discardRequest.body.expectedCopyRevisionId, imageTask.currentCopyRevisionId);
+    assert.ok(discardRequest.body.requestId);
+    imageQaItems[0].status = 'PENDING';
+    await page.getByRole('button', { name: /^图片质检/u }).click();
+    await page.getByText('IMG-QA-1', { exact: true }).last().waitFor();
+    await page.getByRole('button', { name: '废弃任务', exact: true }).click();
+    await discardDialog.getByLabel('废弃原因（必填）', { exact: true }).fill('审核发现整组图片内容错误');
+    await discardDialog.getByRole('button', { name: '确认废弃', exact: true }).click();
+    await page.getByRole('heading', { name: '当前暂无待处理作业' }).waitFor();
+    assert.equal(imageQaItems[0].status, 'DISCARDED');
+    const qaDiscardRequest = requests.find(request => request.path.endsWith(imageQaItems[0].id + '/discard'));
+    assert.equal(qaDiscardRequest.body.note, '审核发现整组图片内容错误');
+    assert.equal(qaDiscardRequest.body.taskId, undefined, 'blind review never needs the original task ID');
     assert.deepEqual(errors, []);
     assert.ok(requests.filter(r => r.path.endsWith('approve-copy')).length >= 3);
     console.log('Work mode browser screenshots: '+directory);

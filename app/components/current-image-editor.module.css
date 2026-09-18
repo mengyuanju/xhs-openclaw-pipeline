@@ -654,6 +654,9 @@
 .actions > [data-slot="button"] { min-width: 116px; }
 
 .feedback {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   position: absolute;
   top: 10px;
   left: 50%;
@@ -671,6 +674,25 @@
   font-size: 12px;
   line-height: 1.6;
 }
+
+.feedback > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.feedbackClose {
+  display: grid;
+  place-items: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  margin: -4px -6px -4px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.feedbackClose:hover { background: rgba(0, 0, 0, .06); }
+.feedbackClose:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
 
 .feedbackError {
   padding: 11px 13px;
@@ -812,6 +834,14 @@
 .suggestionCard > strong { color: #145a88; font-size: 12px; }
 .suggestionCard blockquote { margin: 0; padding: 10px 11px; border-left: 3px solid #1c72b2; color: #2f3f49; background: white; font-size: 12px; line-height: 1.65; }
 .suggestionCard > span { color: #567181; font-size: 10px; }
+.suggestionOptions { display: grid; gap: 7px; }
+.suggestionOptions > label { display: flex; align-items: flex-start; gap: 8px; padding: 9px; border: 1px solid #d7e4ee; border-radius: 7px; background: white; cursor: pointer; }
+.suggestionOptions > label[data-selected="true"] { border-color: #1c72b2; background: #eaf4fc; }
+.suggestionOptions input { flex-shrink: 0; margin-top: 2px; }
+.suggestionOptions > label > span { min-width: 0; display: grid; gap: 3px; }
+.suggestionOptions strong { color: #145a88; font-size: 12px; }
+.suggestionOptions small { color: #567181; font-size: 11px; line-height: 1.6; }
+.suggestionCard blockquote { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .rejectedResultCard {
   display: grid;

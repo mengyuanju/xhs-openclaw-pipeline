@@ -104,7 +104,7 @@ test('ordinary workbench rows hide Query provenance and keep delivery downloads 
   assert.match(reviewDialog, /role === 'USER' \? '已完成任务详情' : '交付池任务详情'/u);
   assert.match(reviewDialog, /role === 'USER'[\s\S]{0,120}'任务已经完成，可查看最终内容。'/u);
   assert.match(reviewDialog, /初审完成，提交图片抽检/u);
-  assert.match(reviewDialog, /\/v1\/tasks\/\$\{detail\.id\}\/submit-image-self-review/u);
+  assert.match(reviewDialog, /\/v1\/tasks\/\$\{reviewDetail\.id\}\/submit-image-self-review/u);
   assert.match(reviewDialog, /const canHandleAssignedImages = \(isAdmin \|\| role === 'USER'\) && currentUserIsAssignee/u,
     'an administrator must become the exact task assignee before submitting image initial review');
   assert.match(workbench, /const canHandleAssignedImages = \['ADMIN', 'USER'\]\.includes\(role\) && currentUserIsAssignee/u);
@@ -542,13 +542,13 @@ test('image review fits the complete image, supports exterior controls, and pres
   assert.match(currentImageEditor, /cancel:'直接删除此修复'/u);
   assert.match(currentImageEditor, /'apply-suggestion':'采用建议并修改'/u);
   assert.match(currentImageEditor, /LOCAL_EDIT_SUGGESTION/u);
-  assert.match(currentImageEditor, /系统已生成可执行描述/u);
+  assert.match(currentImageEditor, /选择一种修改描述/u);
   assert.match(currentImageEditor, /验收未通过 · 结果已保留/u);
   assert.match(currentImageEditor, /仍采用此结果/u);
   assert.match(currentImageEditor, /acceptRejectedResult:true/u);
   assert.match(currentImageEditor, /基于失败图定向修复（再次收费）/u);
   assert.match(currentImageEditor, /useRejectedPreview:true/u);
-  assert.match(currentImageEditor, /const NOTICE_DURATION_MS=6_000/u);
+  assert.match(currentImageEditor, /const NOTICE_DURATION_MS=2_500/u);
   assert.match(currentImageEditor, /window\.setTimeout\(\(\)=>setNotice\(''\),NOTICE_DURATION_MS\)/u);
   assert.match(currentImageEditor, /\['QUEUED','RUNNING'\]\.includes\(edit\.status\)/u);
   assert.match(currentImageEditor, /后台仍保留取消记录用于审计/u);

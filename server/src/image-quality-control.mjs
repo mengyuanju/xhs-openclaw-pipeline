@@ -40,7 +40,7 @@ function normalizeActor(actor, roles) {
 async function lockActiveActor(client, actor, { quality = false } = {}) {
   const credentialVersion = Number(actor.credentialVersion);
   const result = await client.query(`
-    SELECT id, username, role FROM app_users
+    SELECT id, username, role, created_at FROM app_users
     WHERE id = $1 AND username = $2 AND role = $3 AND status = 'ACTIVE'
       AND ($4::integer IS NULL OR credential_version = $4)
       ${quality ? "AND (role = 'ADMIN' OR (role = 'REVIEWER' AND image_qc_enabled))" : "AND role IN ('ADMIN','USER')"}
@@ -48,6 +48,7 @@ async function lockActiveActor(client, actor, { quality = false } = {}) {
   `, [actor.userId, actor.username, actor.role,
     Number.isSafeInteger(credentialVersion) && credentialVersion > 0 ? credentialVersion : null]);
   if (!result.rows[0]) throw new ControlPlaneAuthenticationError();
+  return result.rows[0];
 }
 
 async function transaction(pool, action) {
@@ -194,7 +195,8 @@ async function releaseApproval(client, approval, actor, message) {
   const locked = (await client.query(`
     SELECT * FROM tasks WHERE id = $1 FOR UPDATE
   `, [approval.task_id])).rows[0];
-  if (!locked || Number(locked.current_copy_revision_id) !== Number(approval.copy_revision_id)
+  if (!locked || !['MANUAL_ARCHIVE', 'IMAGE_QC_PENDING'].includes(locked.state)
+      || Number(locked.current_copy_revision_id) !== Number(approval.copy_revision_id)
       || locked.current_image_run_id !== approval.image_run_id) return false;
   const snapshot = await imageSnapshot(client, Number(locked.id), locked.current_image_run_id);
   if (snapshot.sha256 !== approval.image_set_sha256) {
@@ -295,6 +297,17 @@ async function pendingApprovalRows(client, productionBatchId, submitterAccountId
   `, values)).rows;
 }
 
+async function freezeBlockerCount(client, freezeId) {
+  return Number((await client.query(`
+    SELECT count(*)::integer AS count FROM image_sampling_items item
+    JOIN tasks task ON task.id = item.task_id
+    WHERE item.freeze_id = $1 AND task.state <> 'CANCELLED' AND (
+      (item.selected AND item.status NOT IN ('PASSED', 'RELEASED', 'SUPERSEDED', 'DISCARDED'))
+      OR item.status IN ('RETURNED', 'BATCH_RETURNED')
+    )
+  `, [freezeId])).rows[0].count);
+}
+
 async function releaseFreeze(client, freeze, actor) {
   const approvals = (await client.query(`
     SELECT approval.*, item.id AS item_id, item.status AS item_status,
@@ -304,6 +317,7 @@ async function releaseFreeze(client, freeze, actor) {
     WHERE item.freeze_id = $1 ORDER BY item.id FOR UPDATE OF item
   `, [freeze.id])).rows;
   for (const approval of approvals) {
+    if (!['NOT_SELECTED', 'PASSED'].includes(approval.item_status)) continue;
     await releaseApproval(client, approval, actor, '图片抽检批次已通过，进入交付池');
   }
   await client.query(`
@@ -311,7 +325,10 @@ async function releaseFreeze(client, freeze, actor) {
       updated_at = now() WHERE freeze_id = $1 AND status IN ('NOT_SELECTED', 'PASSED')
   `, [freeze.id]);
   await client.query(`
-    UPDATE image_sampling_freezes SET status = 'RELEASED', resolved_at = now(), version = version + 1
+    UPDATE image_sampling_freezes SET status = CASE WHEN EXISTS (
+      SELECT 1 FROM image_sampling_items item JOIN tasks task ON task.id = item.task_id
+      WHERE item.freeze_id = $1 AND task.state = 'CANCELLED'
+    ) THEN 'RELEASED_WITH_EXCEPTIONS' ELSE 'RELEASED' END, resolved_at = now(), version = version + 1
     WHERE id = $1
   `, [freeze.id]);
   await client.query(`
@@ -328,13 +345,7 @@ async function releaseFreeze(client, freeze, actor) {
       RETURNING freeze_id
     `, [parentId])).rows[0];
     if (!parent) continue;
-    const blockers = Number((await client.query(`
-      SELECT count(*)::integer AS count FROM image_sampling_items
-      WHERE freeze_id = $1 AND (
-        (selected AND status NOT IN ('PASSED', 'RELEASED', 'SUPERSEDED'))
-        OR status IN ('RETURNED', 'BATCH_RETURNED')
-      )
-    `, [parent.freeze_id])).rows[0].count);
+    const blockers = await freezeBlockerCount(client, parent.freeze_id);
     if (blockers === 0) await releaseFreeze(client, { id: parent.freeze_id }, actor);
   }
 }
@@ -507,11 +518,11 @@ export async function submitImageSelfReview(pool, rawTaskId, input, rawActor) {
 export function imageQaItemFrom(row, actor) {
   const blind = row.blind_review_enabled === true && actor.role !== 'ADMIN';
   const pendingImageEdits = Number(row.pending_image_edit_count ?? 0);
-  const canAct = row.status === 'PENDING' && row.priority_paused !== true
+  const canAct = row.status === 'PENDING' && row.priority_paused !== true && row.task_state !== 'CANCELLED'
     && (actor.role === 'ADMIN' || (Number(row.assigned_review_account_id) === actor.userId
       && Number(row.submitter_account_id) !== actor.userId));
   const canBatch = row.sample_kind === 'RANDOM' && ['PENDING', 'RETURNED'].includes(row.status)
-    && row.priority_paused !== true
+    && row.priority_paused !== true && row.task_state !== 'CANCELLED'
     && (actor.role === 'ADMIN' || (Number(row.assigned_review_account_id) === actor.userId
       && Number(row.submitter_account_id) !== actor.userId
       && row.image_reviewer_batch_return_enabled === true));
@@ -527,8 +538,9 @@ export function imageQaItemFrom(row, actor) {
       originalName: asset.original_name, pageIndex: Number(asset.page_index),
       url: `/v1/image-qa/items/${row.public_id}/assets/${asset.id}`,
     })) : [],
-    capabilities: { canPass: canAct && pendingImageEdits === 0, canReturnSingle: canAct,
+    capabilities: { canPass: canAct && pendingImageEdits === 0, canReturnSingle: canAct, canDiscard: canAct,
       canReturnBatch: canBatch },
+    ...(row.status === 'DISCARDED' ? { discardReason: row.note } : {}),
     blockers: { pendingImageEdits },
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -587,7 +599,7 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
   const actor = await qaActor(pool, rawActor);
   const { limit, offset } = normalizeListPagination(options.limit ?? 50, options.offset ?? 0);
   const status = String(options.status ?? 'PENDING').trim().toUpperCase();
-  if (!['PENDING', 'PASSED', 'RETURNED', 'BATCH_RETURNED', 'ALL'].includes(status)) {
+  if (!['PENDING', 'PASSED', 'RETURNED', 'BATCH_RETURNED', 'DISCARDED', 'ALL'].includes(status)) {
     throw new TypeError('image QA status filter is invalid');
   }
   const personName = normalizedPersonNameFilter(options.personName);
@@ -600,7 +612,7 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
   const itemParameter = options.actionableOnly ? 8 : 7;
   const result = await pool.query(`
     SELECT item.*, sampling_freeze.public_id AS freeze_public_id, sampling_freeze.blind_review_enabled,
-      task.query, task.priority_paused, task.source_query_package_name AS query_package_name,
+      task.query, task.priority_paused, task.state AS task_state, task.source_query_package_name AS query_package_name,
       sampling_freeze.production_batch_id, settings.image_reviewer_batch_return_enabled,
       (SELECT count(*)::integer FROM image_edit_requests AS edit
         WHERE edit.task_id = item.task_id AND edit.source_image_run_id = item.image_run_id
@@ -650,7 +662,7 @@ async function lockQaItem(client, identifier) {
     SELECT item.*, sampling_freeze.public_id AS freeze_public_id, sampling_freeze.status AS freeze_status,
       sampling_freeze.version AS freeze_version, sampling_freeze.blind_review_enabled,
       sampling_freeze.production_batch_id, task.priority_paused, task.current_image_run_id,
-      task.current_copy_revision_id, task.assigned_to_user_id
+      task.current_copy_revision_id, task.assigned_to_user_id, task.state AS task_state
     FROM image_sampling_items AS item
     JOIN image_sampling_freezes AS sampling_freeze ON sampling_freeze.id = item.freeze_id
     JOIN tasks AS task ON task.id = item.task_id
@@ -678,6 +690,109 @@ function assertCanReview(item, actor) {
       || Number(item.current_copy_revision_id) !== Number(item.copy_revision_id)) {
     throw new ControlPlaneConflictError('IMAGE_VERSION_CHANGED', '图片或文案版本已经变化');
   }
+}
+
+function imageDiscardNote(value) {
+  if (typeof value !== 'string' || !value.trim()) throw new TypeError('请填写废弃原因');
+  return normalizeNote(value);
+}
+
+async function recordImageDiscard(client, task, { actor, requestId, note, item = null }) {
+  if (task.current_execution_id) {
+    throw new ControlPlaneConflictError('TASK_EXECUTION_ACTIVE', '当前图片仍在执行，请等待完成后再废弃');
+  }
+  await assertNoPendingImageEdits(client, { taskId: Number(task.id), imageRunId: task.current_image_run_id });
+  await client.query(`
+    INSERT INTO image_task_dispositions(task_id, copy_revision_id, image_run_id, sampling_item_id,
+      from_state, note, actor_account_id, actor_username, actor_role, request_id)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+  `, [task.id, task.current_copy_revision_id, task.current_image_run_id, item?.id ?? null,
+    task.state, note, actor.userId, actor.username, actor.role, requestId]);
+  await withdrawReadyDeliveryEntries(client, Number(task.id), 'IMAGE_TASK_DISCARDED');
+  await client.query(`
+    UPDATE tasks SET state = 'CANCELLED', cancelled_from_state = state, current_stage = 'CANCELLED',
+      progress_message = '图片环节已废弃：' || $2, current_execution_id = NULL,
+      pending_snapshot = NULL, image_qc_released_approval_event_id = NULL, image_qc_legacy_accepted = false,
+      last_activity_at = now(), finished_at = now(), updated_at = now() WHERE id = $1
+  `, [task.id, note]);
+  // Preserve earlier pass/return outcomes; a separate disposition records the final decision.
+  await client.query(`
+    UPDATE image_sampling_items SET status = 'DISCARDED', note = $2,
+      reviewed_by_account_id = $3, reviewed_by_username = $4, reviewed_at = now(), updated_at = now()
+    WHERE task_id = $1 AND status IN ('PENDING', 'NOT_SELECTED')
+  `, [task.id, note, actor.userId, actor.username]);
+  const freezes = (await client.query(`
+    SELECT sampling_freeze.* FROM image_sampling_freezes sampling_freeze
+    WHERE sampling_freeze.status IN ('INSPECTING', 'REVIEW_REQUIRED', 'BATCH_RETURNED')
+      AND EXISTS (SELECT 1 FROM image_sampling_items member
+        WHERE member.freeze_id = sampling_freeze.id AND member.task_id = $1)
+    ORDER BY sampling_freeze.id FOR UPDATE OF sampling_freeze
+  `, [task.id])).rows;
+  for (const freeze of freezes) {
+    await client.query(`
+      INSERT INTO image_sampling_events(freeze_id, sampling_item_id, action,
+        actor_account_id, actor_username, request_id, note, details)
+      VALUES ($1,$2,'DISCARD',$3,$4,$5,$6,$7)
+    `, [freeze.id, item && Number(item.freeze_id) === Number(freeze.id) ? item.id : null,
+      actor.userId, actor.username, requestId, note, { taskId: Number(task.id), fromState: task.state }]);
+    if (await freezeBlockerCount(client, freeze.id) === 0) await releaseFreeze(client, freeze, actor);
+  }
+}
+
+export async function discardTaskImages(pool, rawTaskId, input, rawActor) {
+  const actor = normalizeActor(rawActor, ['ADMIN', 'USER']);
+  const taskId = normalizeTaskId(rawTaskId);
+  const imageRunId = normalizeUuid(input?.imageRunId, 'imageRunId');
+  const copyRevisionId = normalizeTaskId(input?.expectedCopyRevisionId);
+  const requestId = normalizeUuid(input?.requestId, 'requestId');
+  const note = imageDiscardNote(input?.note);
+  const fingerprint = hash({ taskId, imageRunId, copyRevisionId, note, actorAccountId: actor.userId });
+  return transaction(pool, async (client) => {
+    const account = await lockActiveActor(client, actor);
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', [`image-qa:${actor.userId}`, requestId]);
+    const replay = await mutationReplay(client, actor, requestId, 'DISCARD_OWNER', fingerprint);
+    if (replay) return replay;
+    const task = (await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId])).rows[0];
+    if (!task) throw new ControlPlaneNotFoundError('task not found');
+    if (task.assigned_to_user_id !== actor.username || !task.assigned_at
+        || new Date(task.assigned_at) < new Date(account.created_at)) {
+      throw new ControlPlaneAuthorizationError('只能废弃当前账号负责的图片任务');
+    }
+    if (!['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING'].includes(task.state) || task.priority_paused) {
+      throw new ControlPlaneConflictError('INVALID_TASK_STATE', '任务已不在可处理的图片初审或返修阶段，请刷新后重试');
+    }
+    if (task.current_image_run_id !== imageRunId || Number(task.current_copy_revision_id) !== copyRevisionId) {
+      throw new ControlPlaneConflictError('IMAGE_VERSION_CHANGED', '图片或文案版本已经变化，请刷新后重试');
+    }
+    await recordImageDiscard(client, task, { actor, requestId, note });
+    const response = { taskId, state: 'CANCELLED' };
+    await saveMutation(client, actor, requestId, 'DISCARD_OWNER', fingerprint, response);
+    return response;
+  });
+}
+
+export async function discardImageQaItem(pool, identifier, input, rawActor) {
+  const actor = normalizeActor(rawActor, ['ADMIN', 'REVIEWER']);
+  const requestId = normalizeUuid(input?.requestId, 'requestId');
+  const note = imageDiscardNote(input?.note);
+  const fingerprint = hash({ identifier, note, actorAccountId: actor.userId });
+  return transaction(pool, async (client) => {
+    await lockActiveActor(client, actor, { quality: true });
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', [`image-qa:${actor.userId}`, requestId]);
+    const replay = await mutationReplay(client, actor, requestId, 'DISCARD_QA', fingerprint);
+    if (replay) return replay;
+    const item = await lockQaItem(client, identifier);
+    assertCanReview(item, actor);
+    if (item.task_state !== 'IMAGE_QC_PENDING') {
+      throw new ControlPlaneConflictError('IMAGE_QA_NOT_PENDING', '任务已不在图片质检阶段，请刷新后重试');
+    }
+    const task = (await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [item.task_id])).rows[0];
+    await recordImageDiscard(client, task, { actor, requestId, note, item });
+    // Keep blind-review responses free of task IDs and submitter identities.
+    const response = { id: item.public_id, status: 'DISCARDED', taskState: 'CANCELLED' };
+    await saveMutation(client, actor, requestId, 'DISCARD_QA', fingerprint, response);
+    return response;
+  });
 }
 
 async function mutationReplay(client, actor, requestId, operation, fingerprint) {
@@ -728,10 +843,7 @@ export async function passImageQaItem(pool, identifier, input, rawActor) {
         actor_account_id, actor_username, request_id, note, details)
       VALUES ($1,$2,'PASS',$3,$4,$5,$6,$7)
     `, [item.freeze_id, item.id, actor.userId, actor.username, requestId, note, { scoreX10 }]);
-    const pending = Number((await client.query(`
-      SELECT count(*)::integer AS count FROM image_sampling_items
-      WHERE freeze_id = $1 AND selected AND status = 'PENDING'
-    `, [item.freeze_id])).rows[0].count);
+    const pending = await freezeBlockerCount(client, item.freeze_id);
     if (pending === 0) await releaseFreeze(client, { id: item.freeze_id }, actor);
     const response = { id: item.public_id, status: 'PASSED', freezeReleased: pending === 0 };
     await saveMutation(client, actor, requestId, 'PASS', fingerprint, response);
@@ -866,7 +978,8 @@ export async function getImageQaBatchReturnPreview(pool, rawFreezePublicId, rawA
       item.assigned_review_account_id, item.status AS item_status, item.selected
     FROM image_sampling_freezes AS sampling_freeze
     JOIN image_sampling_items AS item ON item.freeze_id = sampling_freeze.id
-    WHERE sampling_freeze.public_id = $1 AND item.sample_kind = 'RANDOM'
+    JOIN tasks AS task ON task.id = item.task_id
+    WHERE sampling_freeze.public_id = $1 AND item.sample_kind = 'RANDOM' AND task.state <> 'CANCELLED'
     ORDER BY item.id
   `, [freezePublicId]);
   if (result.rows.length < 1) throw new ControlPlaneNotFoundError('image QA freeze not found');
@@ -913,7 +1026,7 @@ export async function batchReturnImageQa(pool, input, rawActor) {
       FROM image_sampling_freezes AS sampling_freeze
       JOIN image_sampling_items AS item ON item.freeze_id = sampling_freeze.id
       JOIN tasks AS task ON task.id = item.task_id
-      WHERE sampling_freeze.public_id = $1 AND item.sample_kind = 'RANDOM'
+      WHERE sampling_freeze.public_id = $1 AND item.sample_kind = 'RANDOM' AND task.state <> 'CANCELLED'
       ORDER BY item.id FOR UPDATE OF sampling_freeze, item, task
     `, [freezePublicId])).rows;
     if (rows.length < 1) throw new ControlPlaneNotFoundError('image QA freeze not found');
@@ -950,8 +1063,8 @@ export async function batchReturnImageQa(pool, input, rawActor) {
     await client.query(`
       UPDATE image_sampling_items SET status = 'BATCH_RETURNED', reviewed_by_account_id = $2,
         reviewed_by_username = $3, reason_codes = $4, note = $5, rework_target = 'IMAGE',
-        reviewed_at = now(), updated_at = now() WHERE freeze_id = $1
-    `, [freezeId, actor.userId, actor.username, reasonCodes, note]);
+        reviewed_at = now(), updated_at = now() WHERE freeze_id = $1 AND id = ANY($6::bigint[])
+    `, [freezeId, actor.userId, actor.username, reasonCodes, note, rows.map(row => row.id)]);
     await client.query(`
       UPDATE image_sampling_freezes SET status = 'BATCH_RETURNED', resolved_at = now(), version = version + 1
       WHERE id = $1

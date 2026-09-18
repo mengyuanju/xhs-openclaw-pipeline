@@ -3,14 +3,15 @@
 import { memo, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Checkbox, Input, Slider, Textarea } from '@/components/ui/input';
+import { Checkbox, Input, Radio, Slider, Textarea } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
-import { UploadCloud } from 'lucide-react';
+import { UploadCloud, X } from 'lucide-react';
 import { apiRequest } from './api-client';
 import { createRequestId } from './request-id';
 import { useBackgroundTasks } from './background-tasks';
 import { isBackgroundTaskRunning } from './background-task-store';
+import { localEditAlternatives } from '../../src/local-edit-alternatives.mjs';
 import {
   DEFAULT_DISCLOSURE_TEXT,
   addRecentDisclosureText,
@@ -38,7 +39,7 @@ const actionLabels: Record<EditAction,string> = {accept:'采用此版本',reject
 const promptActions: PromptAction[] = ['改颜色','替换物体','删除物体','修复瑕疵'];
 const quickRequirements = ['保持材质','保持光影','不改文字'];
 const quickReasons = ['预览符合要求','定位或内容有误','调整说明后重试','不再需要此修复'];
-const NOTICE_DURATION_MS=6_000;
+const NOTICE_DURATION_MS=2_500;
 const isDisclosureOperation=(operation:string)=>['TEXT','SVG_DISCLOSURE'].includes(operation);
 function localSuggestion(edit:Edit):LocalSuggestion|null {
   if(edit.status!=='FAILED')return null;
@@ -54,7 +55,7 @@ function localSuggestion(edit:Edit):LocalSuggestion|null {
 function historyActions(edit:Edit):EditAction[] {
   if(edit.status==='PREVIEW_READY')return ['accept','reject','cancel'];
   if(edit.status==='FAILED') {
-    if(localSuggestion(edit))return ['apply-suggestion','cancel'];
+    if(localEditAlternatives(edit).length)return ['apply-suggestion','cancel'];
     const canRetry=Boolean(localRepairRecommendation(edit))||Number(edit.attempts??0)<3;
     if(edit.result)return canRetry?['accept','retry','cancel']:['accept','cancel'];
     return canRetry?['retry','cancel']:['cancel'];
@@ -132,6 +133,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
   const [promptAction,setPromptAction]=useState<PromptAction>('');
   const [promptTarget,setPromptTarget]=useState<{x:number;y:number}|null>(null);
   const [pendingHistoryAction,setPendingHistoryAction]=useState<{editId:string;action:EditAction}|null>(null);
+  const [selectedAlternatives,setSelectedAlternatives]=useState<Record<string,string>>({});
   const [pendingBatchAccept,setPendingBatchAccept]=useState(false);
   const targetDragStart=useRef<{x:number;y:number}|null>(null);
   const pendingTargetRegion=useRef<TargetRegion|null>(null);
@@ -311,6 +313,8 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
     setTargetRegion(null);setError('目标框选区域过小，请完整框住一个物品并保留少量周边。');
   }
   async function runHistoryAction(e:Edit,action:EditAction) {
+    const choice=action==='apply-suggestion'?localEditAlternatives(e).find(option=>option.id===selectedAlternatives[`${e.id}:${e.version}`]):null;
+    if(action==='apply-suggestion'&&!choice){setError('请先选择一种修改描述。');return;}
     const actionLabel=historyActionLabel(e,action);
     if(!reason.trim()){setNotice('');setError(`请先填写“操作原因”，再${actionLabel}。`);return;}
     if(action==='cancel'&&!await confirm({
@@ -330,6 +334,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
     if(needsConfirmation&&!costConfirmed){setNotice('');setError(`“${actionLabel}”会调用图片编辑或视觉校验模型，请先勾选费用确认。`);return;}
     const request=act(()=>trackedPost(`/v1/image-edits/${e.id}/${action}`,{requestId:createRequestId(),version:e.version,reason,
       confirmation:costConfirmed?'LIVE_IMAGE_COST_ACCEPTED':undefined,
+      ...(choice?{suggestionId:choice.id}:{}),
       ...(targetedRepair?{useRejectedPreview:true}:{}),
       ...(action==='accept'&&isRejectedPreview(e)?{acceptRejectedResult:true}:{})}),`正在${actionLabel}…`,['queue','retry','apply-suggestion'].includes(action)?'修复已提交，可关闭窗口；完成或失败后会在“后台任务”中提醒。':`${actionLabel}操作已完成。`);
     setPendingHistoryAction(null);setHistoryCostConfirmed(false);setReason('');return request;
@@ -367,7 +372,10 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
         <Button unstyled type="button" role="tab" aria-selected={mobileView==='HISTORY'} onClick={()=>showPanel('HISTORY')}>记录 {pageEdits.length||''}</Button>
       </div>
       <div className={styles.body}>
-        {(error||notice)&&<p className={`${styles.feedback} ${error?styles.feedbackError:''}`} role={error?'alert':'status'}>{error||notice}</p>}
+        {(error||notice)&&<div className={`${styles.feedback} ${error?styles.feedbackError:''}`} role={error?'alert':'status'}>
+          <span>{error||notice}</span>
+          <Button unstyled type="button" className={styles.feedbackClose} aria-label="关闭提示" title="关闭提示" onClick={()=>{setNotice('');setError('');}}><X size={16} aria-hidden="true"/></Button>
+        </div>}
         <div className={styles.workspace} data-mobile-view={mobileView.toLowerCase()}>
           <section className={styles.previewPanel} aria-label="图片预览">
             <div className={styles.previewHeader}>
@@ -429,12 +437,23 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
               <div className={styles.historyHeading}><strong>当前页任务记录</strong><span>失败详情默认收起</span></div>
               {pageEdits.length?<ul className={styles.history} aria-label="图片修改记录">{pageEdits.map(e=>{
                 const suggestion=localSuggestion(e);
+                const alternatives=localEditAlternatives(e);
+                const selectedAlternative=alternatives.find(option=>option.id===selectedAlternatives[`${e.id}:${e.version}`]);
                 const rejectedPreview=isRejectedPreview(e),repairRecommendation=localRepairRecommendation(e);
-                return <li key={e.id}><div className={styles.historyTitle}><strong>{labels[e.operation]} · {suggestion?'待确认建议':rejectedPreview?(e.status==='ACCEPTED'?'已人工采用 · 自动验收未通过':'验收未通过 · 结果已保留'):labels[e.status]}</strong><span>第 {e.target_page} 页 · {e.created_by} · 已执行 {e.attempts??0} 次</span></div><p className={styles.historySummary}>{e.config.instruction}</p>
-                  {suggestion&&<section className={styles.suggestionCard} aria-label="局部修改建议"><strong>系统已生成可执行描述</strong>{suggestion.reason&&<p>{suggestion.reason}</p>}<blockquote>{suggestion.suggestedInstruction}</blockquote><span>{suggestion.editRegions.length} 个安全编辑区域 · {suggestion.touchesImageEdge?'目标贴近画面边缘，可按可见部分处理':'目标完整位于画面内'}</span></section>}
+                return <li key={e.id}><div className={styles.historyTitle}><strong>{labels[e.operation]} · {alternatives.length?'待确认建议':rejectedPreview?(e.status==='ACCEPTED'?'已人工采用 · 自动验收未通过':'验收未通过 · 结果已保留'):labels[e.status]}</strong><span>第 {e.target_page} 页 · {e.created_by} · 已执行 {e.attempts??0} 次</span></div><p className={styles.historySummary}>{e.config.instruction}</p>
+                  {alternatives.length>0&&<section className={styles.suggestionCard} aria-label="局部修改建议"><strong>选择一种修改描述</strong><span>3 个方向均保留原要求，只补充目标范围和处理约束。</span>
+                    <div className={styles.suggestionOptions} role="radiogroup" aria-label="替代描述方案">{alternatives.map(option=><label key={option.id} data-selected={selectedAlternative?.id===option.id}>
+                      <Radio name={`suggestion-${e.id}`} aria-label={option.title} checked={selectedAlternative?.id===option.id} disabled={busy} onChange={()=>{
+                        setSelectedAlternatives(current=>({...current,[`${e.id}:${e.version}`]:option.id}));
+                        if(pendingHistoryAction?.editId===e.id&&pendingHistoryAction.action==='apply-suggestion')setReason(`采用「${option.title}」方案`);
+                      }}/><span><strong>{option.title}</strong><small>{option.description}</small></span>
+                    </label>)}</div>
+                    {selectedAlternative&&<blockquote aria-label="所选修改描述">{selectedAlternative.instruction}</blockquote>}
+                    <span>{suggestion?'选择方案后点击下方“采用建议并修改”，结果仍需确认。':'选择方案后将重新检查目标与编辑范围，再生成修改预览。'}</span>
+                  </section>}
                   {rejectedPreview&&<section className={styles.rejectedResultCard} aria-label="自动验收未通过的结果"><strong>图片已生成，但没有完整完成任务</strong><p>{failedPreviewReason(e)}</p>{repairRecommendation?<><span>系统可以上一张失败图为起点，仅处理以下未完成部分：</span><blockquote>{repairRecommendation.repairInstruction}</blockquote><span>定向修复会再次调用图片模型并产生费用，只有确认后才会执行；修复结果仍由你决定是否采用。</span></>:<span>这是一张可查看的失败预览。当前问题不适合安全局部补救，你可以仍然采用，也可以调整说明后从原图重试；重试可能再次产生模型费用。</span>}</section>}
                   {e.error&&<details><summary>查看失败原因</summary><p role="alert">{e.error}</p></details>}
-                  <div className={styles.historyActions}>{e.operation==='AI_LOCAL'&&<Button variant="outline" size="sm" onClick={()=>reuseInstruction(e)}>复用说明并修改</Button>}{e.result&&<><Button size="sm" onClick={()=>{setComparisonId(e.id);setPreviewMode('COMPARE');setMobileView('PREVIEW');}}>在左侧对比</Button><a href={path(`/v1/assets/${e.result.asset_id}`)} target="_blank" rel="noreferrer">打开结果</a></>}{historyActions(e).map(action=><Button key={action} size="sm" variant={action==='cancel'?'outline':undefined} className={action==='cancel'?styles.deleteAction:undefined} disabled={busy} onClick={()=>{setReason('');setHistoryCostConfirmed(false);setPendingBatchAccept(false);setPendingHistoryAction({editId:e.id,action});}}>{historyActionLabel(e,action)}</Button>)}</div>
+                  <div className={styles.historyActions}>{e.operation==='AI_LOCAL'&&<Button variant="outline" size="sm" onClick={()=>reuseInstruction(e)}>复用说明并修改</Button>}{e.result&&<><Button size="sm" onClick={()=>{setComparisonId(e.id);setPreviewMode('COMPARE');setMobileView('PREVIEW');}}>在左侧对比</Button><a href={path(`/v1/assets/${e.result.asset_id}`)} target="_blank" rel="noreferrer">打开结果</a></>}{historyActions(e).map(action=><Button key={action} size="sm" variant={action==='cancel'?'outline':undefined} className={action==='cancel'?styles.deleteAction:undefined} disabled={busy||action==='apply-suggestion'&&!selectedAlternative} onClick={()=>{setReason(action==='apply-suggestion'&&selectedAlternative?`采用「${selectedAlternative.title}」方案`:'');setHistoryCostConfirmed(false);setPendingBatchAccept(false);setPendingHistoryAction({editId:e.id,action});}}>{historyActionLabel(e,action)}</Button>)}</div>
                   {!!(e.result?.validation??e.validation)&&<details><summary>质量校验记录</summary><pre style={{whiteSpace:'pre-wrap'}}>{JSON.stringify(e.result?.validation??e.validation,null,2)}</pre></details>}
                   {!!e.events?.length&&<details><summary>操作审计</summary><ul>{e.events.map((event,index)=><li key={index}>{event.actor} · {event.action} · {event.reason}</li>)}</ul></details>}
                   {pendingHistoryAction?.editId===e.id&&<form className={styles.reasonEditor} onSubmit={event=>{event.preventDefault();void runHistoryAction(e,pendingHistoryAction.action);}}><label>{historyActionLabel(e,pendingHistoryAction.action)}的操作原因<Input aria-label={`${historyActionLabel(e,pendingHistoryAction.action)}操作原因`} value={reason} maxLength={1000} autoFocus onChange={event=>setReason(event.target.value)}/></label>{pendingHistoryAction.action==='retry'&&repairRecommendation&&<label className={styles.feeConfirmation}><Checkbox checked={historyCostConfirmed} onChange={event=>setHistoryCostConfirmed(event.target.checked)}/><span>确认本次定向修复会再次调用图片模型并产生费用</span></label>}<div className={styles.quickReasons}>{quickReasons.map(item=><Button variant="outline" size="sm" type="button" key={item} onClick={()=>setReason(item)}>{item}</Button>)}</div><div className={styles.reasonActions}><Button variant="outline" type="button" onClick={()=>{setPendingHistoryAction(null);setHistoryCostConfirmed(false);setReason('');}}>取消</Button><Button type="submit" disabled={busy}>确认{historyActionLabel(e,pendingHistoryAction.action)}</Button></div></form>}

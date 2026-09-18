@@ -64,18 +64,20 @@ test('image QA browser: blind queue, required return feedback, mandatory recheck
   let phase = 0;
   let returned = null;
   let passed = null;
+  let discarded = null;
+  let failDiscard = false;
   let browser;
   let server;
   const item = (id, sampleKind) => ({
     id, freezePublicId: freezeId, anonymousCode: sampleKind === 'RANDOM' ? 'IQ-BLIND-ONE' : 'IQ-RECHECK',
     status: 'PENDING', sampleKind, blindReview: true,
     assets: [1, 2].map((assetId) => ({ id: assetId, mediaType: 'image/png', sha256: 'a'.repeat(64), originalName: null, pageIndex: assetId, url: `/v1/assets/${assetId}` })),
-    capabilities: { canPass: true, canReturnSingle: true, canReturnBatch: false },
+    capabilities: { canPass: true, canReturnSingle: true, canReturnBatch: false, canDiscard: true },
   });
   try {
     await build({
       stdin: {
-        contents: "import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{Toaster}from'./components/ui/sonner';import{ImageQaWorkbench}from'./app/image-qa/image-qa-workbench';createRoot(document.getElementById('root')).render(<><ImageQaWorkbench role=\"REVIEWER\"/><Toaster/></>);",
+        contents: "import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{Toaster}from'./components/ui/sonner';import{TextInputDialogProvider}from'./components/ui/text-input-dialog';import{ImageQaWorkbench}from'./app/image-qa/image-qa-workbench';createRoot(document.getElementById('root')).render(<TextInputDialogProvider><ImageQaWorkbench role=\"REVIEWER\"/><Toaster/></TextInputDialogProvider>);",
         resolveDir: process.cwd(), loader: 'tsx',
       },
       bundle: true, outfile: bundle, jsx: 'automatic', platform: 'browser', conditions: ['style'],
@@ -106,7 +108,11 @@ test('image QA browser: blind queue, required return feedback, mandatory recheck
         } })); return;
       }
       if (request.url?.startsWith('/api/control-plane/v1/image-qa/items') && request.method === 'GET') {
-        const items = phase === 0 ? [item(firstId, 'RANDOM')] : phase === 1 ? [item(secondId, 'MANDATORY_RECHECK')] : [];
+        const status = new URL(request.url, 'http://localhost').searchParams.get('status');
+        const items = phase === 3 && status === 'DISCARDED'
+          ? [{ ...item(firstId, 'RANDOM'), status: 'DISCARDED', discardReason: discarded.note,
+            capabilities: { canPass: false, canReturnSingle: false, canReturnBatch: false, canDiscard: false } }]
+          : phase === 0 ? [item(firstId, 'RANDOM')] : phase === 1 ? [item(secondId, 'MANDATORY_RECHECK')] : [];
         response.setHeader('content-type', 'application/json'); response.end(JSON.stringify({ data: { items, limit: 200, offset: 0 } })); return;
       }
       if (request.url?.startsWith('/api/control-plane/v1/image-qa/items/') && request.method === 'POST') {
@@ -114,6 +120,14 @@ test('image QA browser: blind queue, required return feedback, mandatory recheck
         for await (const chunk of request) body += chunk;
         if (request.url.endsWith('/return')) { returned = JSON.parse(body); phase = 1; }
         if (request.url.endsWith('/pass')) { passed = JSON.parse(body); phase = 2; }
+        if (request.url.endsWith('/discard')) {
+          discarded = JSON.parse(body);
+          if (failDiscard) {
+            response.statusCode = 409; response.setHeader('content-type', 'application/json');
+            response.end(JSON.stringify({ error: { code: 'TEST_DISCARD', message: '测试废弃暂时失败' } })); return;
+          }
+          phase = 3;
+        }
         response.setHeader('content-type', 'application/json'); response.end(JSON.stringify({ data: { status: 'OK' } })); return;
       }
       response.setHeader('content-type', 'text/html');
@@ -195,6 +209,33 @@ test('image QA browser: blind queue, required return feedback, mandatory recheck
     assert.ok(mobileOverflow <= 1, `mobile page must not overflow horizontally: ${mobileOverflow}px`);
     assert.equal(passed.score, 3);
     assert.match(passed.requestId, /^[a-f0-9-]{36}$/u);
+    phase = 0;
+    await page.reload();
+    await page.getByRole('button', { name: '废弃任务', exact: true }).click();
+    const reasonDialog = page.getByRole('dialog', { name: '废弃图片任务', exact: true });
+    await reasonDialog.getByRole('button', { name: '确认废弃', exact: true }).click();
+    await reasonDialog.getByRole('alert').waitFor();
+    assert.equal(discarded, null);
+    await reasonDialog.getByRole('button', { name: '继续处理', exact: true }).click();
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.getByRole('button', { name: '查看图片', exact: true }).click();
+    await page.getByRole('dialog', { name: 'IQ-BLIND-ONE' }).getByRole('button', { name: '废弃任务', exact: true }).click();
+    await reasonDialog.getByLabel('废弃原因（必填）', { exact: true }).fill('审核发现图片不符合主题');
+    failDiscard = true;
+    await reasonDialog.getByRole('button', { name: '确认废弃', exact: true }).click();
+    await page.getByText('测试废弃暂时失败（TEST_DISCARD）', { exact: true }).waitFor();
+    const failedRequestId = discarded.requestId;
+    await page.getByRole('dialog', { name: 'IQ-BLIND-ONE' }).getByRole('button', { name: '废弃任务', exact: true }).click();
+    assert.equal(await reasonDialog.getByLabel('废弃原因（必填）', { exact: true }).inputValue(), '审核发现图片不符合主题');
+    failDiscard = false;
+    await reasonDialog.getByRole('button', { name: '确认废弃', exact: true }).click();
+    await page.getByText('当前没有待质检任务', { exact: true }).waitFor();
+    assert.equal(discarded.requestId, failedRequestId, 'retry uses the same mutation identity');
+    assert.equal(await page.getByRole('dialog').count(), 0);
+    await page.getByRole('tab', { name: '已废弃', exact: true }).click();
+    await page.getByRole('button', { name: '查看图片', exact: true }).click();
+    await page.getByText('废弃原因：审核发现图片不符合主题', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('dialog').getByRole('button', { name: '废弃任务', exact: true }).count(), 0);
     assert.deepEqual(browserErrors, []);
   } finally {
     await browser?.close();

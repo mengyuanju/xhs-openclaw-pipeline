@@ -17,6 +17,7 @@ import { createReadyDeliveryEntry } from '../src/final-delivery.mjs';
 import { createPostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import { createControlPlaneApp } from '../src/http-server.mjs';
 import { createControlPlaneClient } from '../../src/control-plane/client.mjs';
+import { localEditAlternatives } from '../../src/local-edit-alternatives.mjs';
 
 test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry, restoration and delivery revocation', {skip:process.env.RUN_POSTGRES_E2E!=='1',timeout:120000},async t=>{
   const root=await mkdtemp(join(tmpdir(),'xhs-image-edit-pg-')),data=join(root,'data');
@@ -321,6 +322,39 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       const event=(await pool.query("SELECT detail FROM image_edit_events WHERE edit_id=$1 AND action='apply-suggestion'",[suggested.id])).rows[0];
       assert.equal(event.detail.suggestedInstruction,suggestedInstruction);
       await action(suggested.id,'cancel');
+    });
+    await t.test('alternative selection is authoritative, auditable, and rechecks blocked plans',async()=>{
+      for(const suggestionId of ['precise','natural','protected'])for(const safe of [true,false]) {
+        const originalInstruction='去掉右下角灰色和浅蓝色两件短袖，其他衣物和标签保持原样';
+        const createInput=request({operation:'AI_LOCAL',instruction:originalInstruction});
+        const created=await service.create(taskId,createInput,actor);
+        const claim=await service.claim('alternatives');assert.equal(claim.id,created.id);
+        const validation={stage:safe?'LOCAL_EDIT_SUGGESTION':'LOCAL_TARGET_LOCALIZATION',decision:'SUGGEST',canEdit:safe,
+          confidence:.96,candidateCount:1,operationType:'REMOVE',targetDescription:'灰色和浅蓝色两件短袖',
+          sourceRegion:{x:760,y:950,width:280,height:430},editRegions:[{x:750,y:940,width:300,height:460}],
+          suggestedInstruction:'只删除指定的两件短袖并自然修复背景，保护原有文字与未点名物体。',
+          checks:{instructionSpecific:safe,exactlyOneTarget:true,wholeVisibleTargetInsideRegion:true,protectedTextExcluded:safe,editRegionSafe:safe},
+          billedImageGeneration:false};
+        await service.fail(claim,Object.assign(new Error('需要补充修改约束'),{nonBillablePreflightFailure:true,validation}));
+        const failed=await service.get(created.id);
+        const choice=localEditAlternatives(failed).find(option=>option.id===suggestionId);
+        await assert.rejects(()=>action(created.id,'apply-suggestion',{suggestionId:'forged'}),/请选择/u);
+        const input={version:failed.version,requestId:randomUUID(),reason:'选择替代描述',suggestionId,instruction:'客户端伪造的整图删除指令'};
+        const queued=await service.action(created.id,'apply-suggestion',input,actor);
+        assert.equal(queued.config.instruction,choice.instruction);
+        assert.equal(Boolean(queued.config.localPlan?.accepted),safe);
+        assert.equal(queued.config.mask,null);
+        assert.equal(queued.status,'QUEUED');
+        assert.equal((await service.create(taskId,createInput,actor)).id,created.id,'creation replay still recognizes the original request');
+        const repeated=await service.action(created.id,'apply-suggestion',input,actor);
+        assert.equal(repeated.version,queued.version);
+        await assert.rejects(()=>service.action(created.id,'apply-suggestion',{...input,suggestionId:suggestionId==='precise'?'natural':'precise'},actor),/requestId/u);
+        const {detail}=(await pool.query('SELECT detail FROM image_edit_events WHERE request_id=$1',[input.requestId])).rows[0];
+        assert.equal(detail.suggestionId,suggestionId);assert.equal(detail.suggestionTitle,choice.title);
+        assert.equal(detail.originalInstruction,originalInstruction);assert.equal(detail.suggestedInstruction,choice.instruction);
+        if(!safe)assert.equal(detail.requiresPreflight,true);
+        await action(created.id,'cancel');
+      }
     });
     await t.test('a user-approved targeted retry freezes the rejected preview and reduced repair region',async()=>{
       const instruction='把右下角汤勺移动到锅的左侧，并保持半勺老抽倒入锅内';

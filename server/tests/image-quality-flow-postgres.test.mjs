@@ -15,6 +15,8 @@ import { migrateDatabase } from '../src/database-migrations.mjs';
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import {
   batchReturnImageQa,
+  discardTaskImages,
+  discardImageQaItem,
   getImageQaBatchReturnPreview,
   listImageQaItems,
   passImageQaItem,
@@ -407,6 +409,106 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
     assert.equal((await pool.query('SELECT state FROM tasks WHERE id=$1', [httpTask.taskId])).rows[0].state, 'REVIEWED');
     assert.equal(Number((await pool.query(`SELECT count(*) FROM delivery_entries
       WHERE task_id=$1 AND status='READY'`, [httpTask.taskId])).rows[0].count), 1);
+
+    await t.test('owner discard requires a reason, assignment and the current version; retries are idempotent', async () => {
+      const member = await createTask(20);
+      const input = { imageRunId: member.imageRunId, expectedCopyRevisionId: member.copyRevisionId,
+        requestId: randomUUID(), note: '  图片内容无法使用，重新创建任务  ' };
+      for (const note of [undefined, '', '   ']) {
+        await assert.rejects(discardTaskImages(pool, member.taskId, { ...input, note }, worker), TypeError);
+      }
+      await assert.rejects(discardTaskImages(pool, member.taskId, { ...input, note: 'a'.repeat(1001) }, worker), RangeError);
+      await assert.rejects(discardTaskImages(pool, member.taskId, input, admin), { code: 'FORBIDDEN' });
+      await assert.rejects(discardTaskImages(pool, member.taskId, input, reviewer), { code: 'FORBIDDEN' });
+      await assert.rejects(discardTaskImages(pool, member.taskId, { ...input, imageRunId: randomUUID() }, worker), { code: 'IMAGE_VERSION_CHANGED' });
+      const post = (suffix, body, identity = worker) => fetch(`${root}/v1/tasks/${member.taskId}/${suffix}`, {
+        method: 'POST', headers: actorHeaders(identity), body: JSON.stringify(body),
+      });
+      assert.equal((await post('cancel', {})).status, 409, 'legacy cancel cannot bypass the required reason');
+      assert.equal((await post('discard-images', { ...input, note: ' ' })).status, 400);
+      assert.equal((await pool.query('SELECT state FROM tasks WHERE id=$1', [member.taskId])).rows[0].state, 'MANUAL_ARCHIVE');
+      const pendingId = randomUUID();
+      await pool.query(`INSERT INTO image_edit_requests(id, task_id, request_id, source_image_run_id,
+        source_asset_id, copy_revision_id, source_sha256, target_page, operation, config, status, created_by)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,1,'TEXT','{}','DRAFT',$8)`,
+      [pendingId, member.taskId, randomUUID(), member.imageRunId, member.images[0].assetId, member.copyRevisionId, imageSha256, worker.username]);
+      await assert.rejects(discardTaskImages(pool, member.taskId, input, worker), { code: 'IMAGE_EDITS_PENDING' });
+      await pool.query("UPDATE image_edit_requests SET status='CANCELLED' WHERE id=$1", [pendingId]);
+      const response = await post('discard-images', input);
+      assert.equal(response.status, 200);
+      const result = (await response.json()).data;
+      assert.deepEqual(result, { taskId: member.taskId, state: 'CANCELLED' });
+      assert.deepEqual(await discardTaskImages(pool, member.taskId, input, worker), result);
+      await assert.rejects(discardTaskImages(pool, member.taskId, { ...input, note: 'another reason' }, worker), { code: 'REQUEST_ID_CONFLICT' });
+      const records = (await pool.query('SELECT * FROM image_task_dispositions WHERE task_id=$1', [member.taskId])).rows;
+      assert.equal(records.length, 1); assert.equal(records[0].note, input.note.trim());
+      assert.equal(records[0].actor_username, worker.username); assert.equal(records[0].from_state, 'MANUAL_ARCHIVE');
+      const detail = await repository.getTask(member.taskId);
+      assert.equal(detail.imageDiscardEvents[0].note, input.note.trim());
+      assert.equal(detail.currentImageRunId, member.imageRunId);
+      assert.ok(detail.assets.length > 0, 'discard preserves original assets');
+      const ownAdmin = await createTask(21, admin);
+      await discardTaskImages(pool, ownAdmin.taskId, { ...input, requestId: randomUUID(), imageRunId: ownAdmin.imageRunId,
+        expectedCopyRevisionId: ownAdmin.copyRevisionId }, admin);
+      assert.equal((await pool.query('SELECT state FROM tasks WHERE id=$1', [ownAdmin.taskId])).rows[0].state, 'CANCELLED');
+    });
+
+    await t.test('blind reviewer discard releases other sampled batch members and never revives the discarded task', async () => {
+      await pool.query(`UPDATE workflow_quality_settings SET image_sampling_rate_bps=2000, image_blind_review_enabled=true`);
+      const members = [];
+      for (let index = 0; index < 5; index++) {
+        const member = await createTask(30 + index); members.push(member);
+        await submitImageSelfReview(pool, member.taskId, { imageRunId: member.imageRunId, reviewSessionId: randomUUID() }, worker);
+      }
+      const item = (await listImageQaItems(pool, {}, reviewer)).items[0];
+      assert.ok(item.capabilities.canDiscard); assert.equal(item.taskId, undefined);
+      const taskId = Number((await pool.query('SELECT task_id FROM image_sampling_items WHERE public_id=$1', [item.id])).rows[0].task_id);
+      const input = { requestId: randomUUID(), note: '图片主题错误，整组废弃' };
+      const post = (identity, body) => fetch(`${root}/v1/image-qa/items/${item.id}/discard`, {
+        method: 'POST', headers: actorHeaders(identity), body: JSON.stringify(body),
+      });
+      assert.equal((await post(worker, input)).status, 403);
+      assert.equal((await post(reviewer, { ...input, note: '' })).status, 400);
+      await pool.query('UPDATE image_sampling_items SET assigned_review_account_id=$2 WHERE public_id=$1', [item.id, admin.userId]);
+      assert.equal((await post(reviewer, input)).status, 403);
+      await pool.query('UPDATE image_sampling_items SET assigned_review_account_id=$2 WHERE public_id=$1', [item.id, reviewer.userId]);
+      const response = await post(reviewer, input);
+      assert.equal(response.status, 200);
+      const result = (await response.json()).data;
+      assert.deepEqual(result, { id: item.id, status: 'DISCARDED', taskState: 'CANCELLED' });
+      assert.deepEqual(await discardImageQaItem(pool, item.id, input, reviewer), result);
+      assert.equal((await pool.query('SELECT status FROM image_sampling_freezes WHERE public_id=$1', [item.freezePublicId])).rows[0].status, 'RELEASED_WITH_EXCEPTIONS');
+      const states = (await pool.query('SELECT id, state FROM tasks WHERE id=ANY($1::bigint[])', [members.map(member => member.taskId)])).rows;
+      for (const row of states) assert.equal(row.state, Number(row.id) === taskId ? 'CANCELLED' : 'REVIEWED');
+      assert.equal(Number((await pool.query('SELECT count(*) FROM delivery_entries WHERE task_id=$1', [taskId])).rows[0].count), 0);
+      const discarded = (await listImageQaItems(pool, { status: 'DISCARDED' }, reviewer)).items.find(row => row.id === item.id);
+      assert.equal(discarded.discardReason, input.note); assert.equal(discarded.capabilities.canDiscard, false);
+      assert.equal(discarded.taskId, undefined); assert.equal(discarded.submitter, undefined);
+      const preview = await getImageQaBatchReturnPreview(pool, item.freezePublicId, admin);
+      assert.equal(preview.confirmedCount, 4);
+      await batchReturnImageQa(pool, { requestId: randomUUID(), freezePublicId: item.freezePublicId,
+        itemIds: preview.itemIds, confirmedCount: preview.confirmedCount, note: '其他图片需要返修', reasonCodes: ['IMAGE_QUALITY_ISSUE'] }, admin);
+      assert.equal((await pool.query('SELECT state FROM tasks WHERE id=$1', [taskId])).rows[0].state, 'CANCELLED');
+      assert.equal((await pool.query('SELECT status FROM image_sampling_items WHERE public_id=$1', [item.id])).rows[0].status, 'DISCARDED');
+    });
+
+    await t.test('owner may discard image rework while preserving the original QA return and releasing its sibling', async () => {
+      await pool.query(`UPDATE workflow_quality_settings SET image_sampling_rate_bps=5000, image_blind_review_enabled=false`);
+      const members = [await createTask(40), await createTask(41)];
+      for (const member of members) await submitImageSelfReview(pool, member.taskId, {
+        imageRunId: member.imageRunId, reviewSessionId: randomUUID(),
+      }, worker);
+      const item = (await listImageQaItems(pool, {}, reviewer)).items.find(row => members.some(member => member.taskId === row.taskId));
+      await returnImageQaItem(pool, item.id, { requestId: randomUUID(), score: 2, reworkTarget: 'IMAGE',
+        note: '图片无法修复', reasonCodes: ['IMAGE_QUALITY_ISSUE'], problemAssetIds: [item.assets[0].id] }, reviewer);
+      const member = members.find(row => row.taskId === item.taskId);
+      await discardTaskImages(pool, member.taskId, { requestId: randomUUID(), imageRunId: member.imageRunId,
+        expectedCopyRevisionId: member.copyRevisionId, note: '确认无法修复，废弃' }, worker);
+      assert.equal((await pool.query('SELECT status FROM image_sampling_items WHERE public_id=$1', [item.id])).rows[0].status, 'RETURNED');
+      const sibling = members.find(row => row !== member);
+      assert.equal((await pool.query('SELECT state FROM tasks WHERE id=$1', [sibling.taskId])).rows[0].state, 'REVIEWED');
+      assert.equal((await pool.query('SELECT status FROM image_sampling_freezes WHERE public_id=$1', [item.freezePublicId])).rows[0].status, 'RELEASED_WITH_EXCEPTIONS');
+    });
   } finally {
     await new Promise((resolve) => server.close(resolve));
     await app.context.disposeControlPlaneResources();

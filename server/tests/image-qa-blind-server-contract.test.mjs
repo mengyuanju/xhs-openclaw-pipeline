@@ -63,7 +63,7 @@ function imageListPool(actor) {
     async query(sql, values = []) {
       const source = String(sql).replace(/\s+/gu, ' ').trim();
       if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(source)) return { rows: [] };
-      if (source.startsWith('SELECT id, username, role FROM app_users')) {
+      if (source.startsWith('SELECT id, username, role, created_at FROM app_users')) {
         return { rows: [{ id: actor.userId, username: actor.username, role: actor.role }] };
       }
       throw new Error(`unexpected client SQL: ${source}`);

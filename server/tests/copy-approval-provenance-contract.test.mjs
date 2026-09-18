@@ -86,7 +86,7 @@ test('a plan-only saved revision cannot turn a below-3 copy into an automatic 3 
   assert.equal(fixture.queries.at(-1), 'ROLLBACK');
   assert.equal(fixture.queries.some((sql) => sql.startsWith('UPDATE copy_revisions')), false);
 });
-test('a QA-return revision cannot be approved until copy changed relative to that return', async () => {
+test('a QA-return revision cannot be approved until copy or plan changed relative to that return', async () => {
   const fixture = rejectionFixture({
     mandatoryCopyQc: true,
     copyContentChangedFromMachine: true,
@@ -97,7 +97,7 @@ test('a QA-return revision cannot be approved until copy changed relative to tha
     approveInput('22222222-2222-4222-8222-222222222222'),
     { actorRole: 'ADMIN', reviewerUserId: 'reviewer' }), {
     code: 'COPY_REWORK_NOT_SATISFIED',
-    message: /修改标题、正文或标签后再提交强制复检/u,
+    message: /修改文案或图片规划后再提交强制复检/u,
   });
   assert.equal(fixture.queries.at(-1), 'ROLLBACK');
   assert.equal(fixture.queries.some((sql) => sql.startsWith('UPDATE copy_revisions')), false);
