@@ -1070,9 +1070,12 @@ test('administrator batch archive returns one outer ZIP for selected deliverable
       assert.match(response.headers.get('content-disposition'), /task-resources-batch\.zip/u);
       const zip = await JSZip.loadAsync(await response.arrayBuffer());
       assert.deepEqual(Object.keys(zip.files).sort(), [
-        '未归属甲方批次/任务-12-资源包.zip',
-        '未归属甲方批次/任务-13-资源包.zip',
+        '未归属甲方批次/任务-12-资源包/01-图片.png',
+        '未归属甲方批次/任务-12-资源包/任务12.txt',
+        '未归属甲方批次/任务-13-资源包/01-图片.png',
+        '未归属甲方批次/任务-13-资源包/任务13.txt',
       ]);
+      assert.equal(await zip.file('未归属甲方批次/任务-12-资源包/01-图片.png').async('string'), 'image-12');
     }, { storageRoot });
   } finally {
     await rm(storageRoot, { recursive: true, force: true });

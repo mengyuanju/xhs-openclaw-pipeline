@@ -713,7 +713,7 @@ const controlPlane = createServer(async (req, res) => {
       });
       const zip = new JSZip();
       for (const taskId of taskIds) {
-        zip.file(`任务-${taskId}-资源包.zip`, Buffer.from(`fixture-${taskId}`));
+        zip.file(`任务-${taskId}-资源包/文案.txt`, Buffer.from(`fixture-${taskId}`));
       }
       const content = await zip.generateAsync({ type: 'nodebuffer' });
       const downloadId = randomUUID();

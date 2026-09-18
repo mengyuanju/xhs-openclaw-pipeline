@@ -31,13 +31,14 @@ type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onBusyChange: (busy: boolean) => void;
+  onRefreshTask: () => Promise<void>;
   onResolved: (remaining: PendingImageEdit[]) => Promise<void>;
 };
 const statusLabels: Record<string, string> = { DRAFT: '草稿', QUEUED: '排队中', RUNNING: '执行中', PREVIEW_READY: '结果待确认' };
 const operationLabels: Record<string, string> = { TEXT: '添加文字', SVG_DISCLOSURE: '添加标识', AI_LOCAL: '局部修改', AI_FUSION: '产品替换', RESTORE: '恢复版本' };
 const endpoint = (taskId: number) => `/api/control-plane/v1/tasks/${taskId}/image-edits`;
 
-export function PendingImageEditsDialog({ taskId, imageRunId, copyRevisionId, currentPages, open, onOpenChange, onBusyChange, onResolved }: Props) {
+export function PendingImageEditsDialog({ taskId, imageRunId, copyRevisionId, currentPages, open, onOpenChange, onBusyChange, onRefreshTask, onResolved }: Props) {
   const [edits, setEdits] = useState<PendingImageEdit[]>([]);
   const [decisions, setDecisions] = useState<Record<string, Decision>>({});
   const [cancelUnfinished, setCancelUnfinished] = useState(false);
@@ -48,12 +49,15 @@ export function PendingImageEditsDialog({ taskId, imageRunId, copyRevisionId, cu
   const requestRef = useRef<{ fingerprint: string; id: string } | null>(null);
   const activeRef = useRef(false);
   const loadSequence = useRef(0);
+  const refreshTaskRef = useRef(onRefreshTask);
+  refreshTaskRef.current = onRefreshTask;
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (reloadTask = false) => {
     const sequence = ++loadSequence.current;
     setLoading(true);
     setError('');
     try {
+      if (reloadTask) await refreshTaskRef.current();
       const rows = await apiRequest<PendingImageEdit[]>(`${endpoint(taskId)}?pending=true`);
       if (sequence !== loadSequence.current) return;
       setEdits(rows);
@@ -126,15 +130,26 @@ export function PendingImageEditsDialog({ taskId, imageRunId, copyRevisionId, cu
     }
   }
 
+  async function continueReview() {
+    if (activeRef.current || loading) return;
+    activeRef.current = true;
+    setBusy(true);
+    onBusyChange(true);
+    setError('');
+    try { await onResolved([]); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : '刷新图集失败，请重试'); }
+    finally { activeRef.current = false; setBusy(false); onBusyChange(false); }
+  }
+
   return <Dialog open={open} onOpenChange={next => { if (!activeRef.current) onOpenChange(next); }}>
     <DialogContent className={styles.dialog} showCloseButton={!busy}
       onEscapeKeyDown={event => { if (busy) event.preventDefault(); }}
       onInteractOutside={event => event.preventDefault()}>
       <header className={styles.header}>
         <DialogTitle>集中处理图片修改</DialogTitle>
-        <DialogDescription>采用、拒绝或取消后再提交图片初审。拒绝会保留当前图片；采用会更新对应页面。处理完成后继续初审确认。</DialogDescription>
+        <DialogDescription>采用、拒绝或取消后再提交图片初审。拒绝会保留当前图片；采用会更新对应页面。处理完成后可继续初审确认。</DialogDescription>
         <div className={styles.summary}><strong>{ready.length} 项结果待确认</strong><span>{unfinished.length} 项尚未完成</span>
-          <Button variant="outline" size="sm" disabled={busy || loading} onClick={() => void refresh()}>刷新列表</Button></div>
+          <Button variant="outline" size="sm" disabled={busy || loading} onClick={() => void refresh(true)}>刷新列表</Button></div>
       </header>
       <div className={styles.body} aria-busy={busy || loading}>
         {loading ? <p role="status">正在读取待处理修改…</p> : <>
@@ -177,7 +192,7 @@ export function PendingImageEditsDialog({ taskId, imageRunId, copyRevisionId, cu
             <Button variant="outline" disabled={busy || loading || !ready.length} onClick={() => void apply(Object.fromEntries(ready.map(edit => [edit.id, 'reject'])))}>一键拒绝 {ready.length} 项</Button>
             <Button disabled={busy || loading || !ready.length || conflictingPages.length > 0 || !ready.every(canAccept)} onClick={() => void apply(Object.fromEntries(ready.map(edit => [edit.id, 'accept'])))}>一键采用 {ready.length} 项</Button>
             <Button variant="outline" disabled={busy || loading || (!Object.keys(decisions).length && !cancelUnfinished)} onClick={() => void apply(decisions)}>{busy ? '正在处理…' : '应用所选处理'}</Button>
-          </> : <Button disabled={busy || loading || Boolean(error)} onClick={() => void onResolved([])}>继续初审</Button>}
+          </> : <Button disabled={busy || loading || Boolean(error)} onClick={() => void continueReview()}>继续初审</Button>}
         </div>
       </footer>
     </DialogContent>

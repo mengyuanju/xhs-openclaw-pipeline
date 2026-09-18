@@ -9,7 +9,7 @@ test('all image-edit mutations and read endpoints reject reviewers before access
   const server=await new Promise(resolve=>{const s=app.listen(0,'127.0.0.1',()=>resolve(s));});
   try{
     for(const role of ['REVIEWER'])for(const [method,path]of [
-      ['POST','/v1/tasks/1/image-edit-references'],['POST','/v1/tasks/1/image-edits'],['GET','/v1/tasks/1/image-edits'],['GET',`/v1/image-edits/${randomUUID()}`],
+      ['POST','/v1/tasks/1/image-edit-references'],['POST','/v1/tasks/1/image-edits'],['GET','/v1/tasks/1/image-edits'],['GET','/v1/tasks/1/image-edits?pending=true'],['POST','/v1/tasks/1/image-edits/resolve-pending'],['GET',`/v1/image-edits/${randomUUID()}`],
       ...['queue','retry','apply-suggestion','cancel','accept','reject'].map(a=>['POST',`/v1/image-edits/${randomUUID()}/${a}`]),['POST',`/v1/tasks/1/image-versions/${randomUUID()}/restore`],
     ]){
       const response=await fetch(`http://127.0.0.1:${server.address().port}${path}`,{method,headers:{'content-type':'application/json','x-actor-role':role,'x-actor-username':role.toLowerCase(),'x-actor-user-id':'1','x-actor-credential-version':'1'},...(method==='POST'?{body:'{}'}:{})});

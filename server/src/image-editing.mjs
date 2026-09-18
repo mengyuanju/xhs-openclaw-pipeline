@@ -378,7 +378,11 @@ export function createImageEditingService({ pool, storageRoot }) {
         if(promoted.rowCount!==1)conflict('失败预览对应的图片版本不可采用');
       }
       await c.query('UPDATE image_edit_results SET adopted=true,image_run_id=$2 WHERE request_id=$1',[id,adoptedRunId]);
-      await c.query("UPDATE tasks SET current_image_run_id=$2,state='MANUAL_ARCHIVE',current_stage='MANUAL_ARCHIVE',image_reviewed_at=NULL,image_reviewed_by_user_id=NULL,progress_message='图片修改已采用，请重新审核归档',updated_at=now() WHERE id=$1",[e.task_id,adoptedRunId]);
+      await c.query(`UPDATE tasks SET
+        current_image_run_id=$2,state='MANUAL_ARCHIVE',current_stage='MANUAL_ARCHIVE',
+        image_qc_released_approval_event_id=NULL,image_qc_legacy_accepted=false,
+        image_reviewed_at=NULL,image_reviewed_by_user_id=NULL,
+        progress_message='图片修改已采用，请重新提交图片初审',updated_at=now() WHERE id=$1`,[e.task_id,adoptedRunId]);
     }
     const next={queue:'QUEUED',retry:'QUEUED','apply-suggestion':'QUEUED',cancel:'CANCELLED',reject:'REJECTED',accept:'ACCEPTED'}[action];
     let config=usesBillableModel&&input.confirmation==='LIVE_IMAGE_COST_ACCEPTED'?{...e.config,confirmation:'LIVE_IMAGE_COST_ACCEPTED'}:e.config;
@@ -549,7 +553,7 @@ export function createImageEditingService({ pool, storageRoot }) {
           }
           return prior.detail.result;
         }
-        if (!task || !['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING'].includes(task.state)
+        if (!task || !['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING', 'REVIEWED'].includes(task.state)
           || task.current_image_run_id !== imageRunId || task.current_execution_id || task.mandatory_copy_qc) {
           conflict('任务或图片版本已变化，请刷新待处理列表');
         }
@@ -628,12 +632,7 @@ export function createImageEditingService({ pool, storageRoot }) {
         const row=(await c.query(`INSERT INTO image_edit_requests(id,task_id,request_id,source_image_run_id,source_asset_id,copy_revision_id,source_sha256,target_page,operation,config,status,created_by)
           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,[id,taskId,config.requestId,config.sourceImageRunId,config.sourceAssetId,config.copyRevisionId,config.sha256,config.targetPage,config.operation,config,config.draft?'DRAFT':'QUEUED',username])).rows[0];
         for(const [i,ref] of config.references.entries()) await c.query('INSERT INTO image_edit_reference_assets(request_id,asset_id,purpose,sort_order,sha256) SELECT $1,id,$3,$4,sha256 FROM assets WHERE id=$2',[id,ref.assetId,ref.purpose,i]);
-        await withdrawReadyDeliveryEntries(c,taskId,'IMAGE_MANUAL_EDIT');
-        await c.query(`UPDATE tasks SET
-          state=CASE WHEN state='IMAGE_REWORK_PENDING' THEN state ELSE 'MANUAL_ARCHIVE' END,
-          current_stage=CASE WHEN state='IMAGE_REWORK_PENDING' THEN state ELSE 'MANUAL_ARCHIVE' END,
-          image_qc_released_approval_event_id=NULL,image_qc_legacy_accepted=false,
-          image_reviewed_at=NULL,image_reviewed_by_user_id=NULL,updated_at=now() WHERE id=$1`,[taskId]);
+        // Drafts and previews leave the approved version deliverable until acceptance.
         await audit(c,taskId,id,'CREATE',username,config.instruction || config.operation);
         return row;
       });

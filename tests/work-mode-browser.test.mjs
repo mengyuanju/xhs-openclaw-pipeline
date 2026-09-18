@@ -64,6 +64,7 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     capabilities: { canPass: i === 1, canReturnSingle: true, canReturnBatch: false, canDiscard: true }, blockers: { pendingImageEdits: i === 1 ? 0 : 1 } }));
   const drafts = new Map(); const requests = []; const jobs = new Map(); let failSubmit = false; let failList = false; let failDraft = false; let failQaSubmit = false;
   let browser, page;
+  let pendingEdits = [], failPendingResolution = false;
   const server = createServer(async (req, res) => {
     try {
       if (req.url === '/bundle.js') { res.setHeader('content-type', 'application/javascript'); res.end(js); return; }
@@ -78,7 +79,7 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
       const reply = (data, status = 200) => { res.statusCode = status; res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(status === 200 ? { data } : { error: { code: 'TEST_FAILURE', message: data } })); };
       if (pathname.includes('/assets/')) { res.setHeader('content-type', 'image/png'); res.end(fixtureImages[pathname.includes('/402') ? 1 : 0]); return; }
       if (pathname === '/api/human-quality-settings') { reply(DEFAULT_HUMAN_QUALITY_SETTINGS); return; }
-      if (/\/image-edits\/[^/]+$/u.test(pathname)) { reply(jobs.get(pathname.split('/').at(-1))); return; }
+      if (/\/v1\/image-edits\/[^/]+$/u.test(pathname)) { reply(jobs.get(pathname.split('/').at(-1))); return; }
       if (pathname.endsWith('/work-mode/items')) {
         if (failList) { reply('测试列表暂时不可用', 503); return; }
         const kind = url.searchParams.get('kind'); const offset = Number(url.searchParams.get('offset')); const limit = Number(url.searchParams.get('limit'));
@@ -94,7 +95,25 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
         const id = Number(match[1]); const task = tasks.find(t => t.id === id); const action = match[2];
         if (!action) { reply(task); return; }
         if (action === 'image-capabilities') { reply({ version: 1, reviewImagePlanEdits: true }); return; }
-        if (action === 'image-edits') { reply([]); return; }
+        if (action === 'image-edits') { reply(pendingEdits); return; }
+        if (action === 'image-edits/resolve-pending') {
+          if (failPendingResolution) { reply('测试版本冲突，整批未处理', 409); return; }
+          const accepted = body.decisions.filter(item => item.action === 'accept');
+          if (accepted.length) {
+            const run = structuredClone(task.imageRuns.find(run => run.id === task.currentImageRunId));
+            task.currentImageRunId = randomUUID(); run.id = task.currentImageRunId;
+            for (const item of accepted) {
+              const edit = pendingEdits.find(edit => edit.id === item.id);
+              const assetId = Number(edit.result.asset_id);
+              run.result.images[edit.target_page - 1] = { assetId, deliveryAssetId: assetId, pageIndex: edit.target_page };
+              task.assets[edit.target_page - 1] = { ...task.assets[edit.target_page - 1], id: assetId, url: `/v1/assets/${assetId}` };
+            }
+            task.assets.forEach(asset => { asset.imageRunId = task.currentImageRunId; });
+            task.imageRuns.unshift(run);
+          }
+          pendingEdits = pendingEdits.filter(edit => !body.decisions.some(item => item.id === edit.id));
+          reply({ imageRunId: task.currentImageRunId, processed: body.decisions.length }); return;
+        }
         if (action?.startsWith('regenerate-image-plan/')) { reply(jobs.get(action.split('/')[1])); return; }
         if (action === 'submit-image-self-review') { task.state = 'IMAGE_QC_PENDING'; reply(task); return; }
         if (action === 'discard-images') { task.state = 'CANCELLED'; reply(task); return; }
@@ -348,10 +367,57 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     }
     await page.screenshot({ path: join(directory, 'image-columns-mobile.png'), fullPage: true });
     await page.setViewportSize({ width: 1360, height: 1040 });
+    const pendingEdit = (pageIndex, status = 'PREVIEW_READY') => ({ id: randomUUID(), version: 3, status,
+      target_page: pageIndex, source_asset_id: imageTask.assets[pageIndex - 1].id,
+      source_image_run_id: imageTask.currentImageRunId, copy_revision_id: imageTask.currentCopyRevisionId,
+      operation: 'AI_LOCAL', config: { instruction: `调整第 ${pageIndex} 页背景颜色` },
+      ...(status === 'PREVIEW_READY' ? { result: { asset_id: 410 + pageIndex, validation: { passed: true } } } : {}) });
+    const draftEdit = pendingEdit(2, 'DRAFT');
+    pendingEdits = [pendingEdit(1), pendingEdit(2), draftEdit];
     await page.getByRole('button', { name: '提交并下一条', exact: true }).click();
+    const pendingDialog = page.getByRole('dialog', { name: '集中处理图片修改', exact: true });
+    await pendingDialog.getByText('2 项结果待确认', { exact: true }).waitFor();
+    assert.equal(requests.filter(request => request.path.endsWith('/submit-image-self-review')).length, 0);
+    failPendingResolution = true;
+    await pendingDialog.getByRole('button', { name: '一键拒绝 2 项', exact: true }).click();
+    await pendingDialog.getByRole('alert').filter({ hasText: '测试版本冲突' }).waitFor();
+    assert.equal(pendingEdits.length, 3, 'failure leaves every edit pending');
+    failPendingResolution = false;
+    await pendingDialog.getByRole('button', { name: '一键拒绝 2 项', exact: true }).click();
+    await pendingDialog.getByText('0 项结果待确认', { exact: true }).waitFor();
+    assert.deepEqual(pendingEdits.map(edit => edit.id), [draftEdit.id], 'quick rejection does not silently cancel drafts');
+    const rejectedRequests = requests.filter(request => request.path.endsWith('/resolve-pending'));
+    assert.equal(rejectedRequests[0].body.requestId, rejectedRequests[1].body.requestId, 'retries reuse the idempotency key');
+    // Exercise adopting a result while an unfinished request remains and the dialog
+    // remounts for the new current run; initial review must stay blocked.
+    pendingEdits.unshift(pendingEdit(1));
+    await pendingDialog.getByRole('button', { name: '刷新列表', exact: true }).click();
+    await pendingDialog.getByRole('button', { name: '一键采用 1 项', exact: true }).click();
+    await pendingDialog.getByText('0 项结果待确认', { exact: true }).waitFor();
+    assert.equal(imageTask.assets[0].id, 411);
+    assert.equal(requests.filter(request => request.path.endsWith('/submit-image-self-review')).length, 0);
+    const chosen = pendingEdit(1), other = pendingEdit(1), secondPage = pendingEdit(2);
+    pendingEdits.unshift(chosen, other, secondPage);
+    await pendingDialog.getByRole('button', { name: '刷新列表', exact: true }).click();
+    await pendingDialog.getByText('3 项结果待确认', { exact: true }).waitFor();
+    assert.equal(await pendingDialog.getByRole('button', { name: '一键采用 3 项', exact: true }).isDisabled(), true);
+    await pendingDialog.getByRole('combobox', { name: `第 1 页修改 ${chosen.id} 处理方式`, exact: true }).selectOption('accept');
+    assert.equal(await pendingDialog.getByRole('combobox', { name: `第 1 页修改 ${other.id} 处理方式`, exact: true }).inputValue(), 'reject');
+    await pendingDialog.getByRole('combobox', { name: `第 2 页修改 ${secondPage.id} 处理方式`, exact: true }).selectOption('accept');
+    await pendingDialog.getByRole('checkbox', { name: '同时取消全部 1 项未完成修改', exact: true }).check();
+    await page.screenshot({ path: join(directory, 'pending-edits-desktop.png'), animations: 'disabled' });
+    await page.setViewportSize({ width: 390, height: 844 });
+    const pendingBounds = await pendingDialog.boundingBox();
+    assert.ok(pendingBounds.x >= 0 && pendingBounds.x + pendingBounds.width <= 391 && pendingBounds.height <= 844);
+    assert.equal(await pendingDialog.evaluate(element => element.scrollWidth > element.clientWidth + 1), false);
+    await page.screenshot({ path: join(directory, 'pending-edits-mobile.png'), animations: 'disabled' });
+    await page.setViewportSize({ width: 1360, height: 1040 });
+    await pendingDialog.getByRole('button', { name: '应用所选处理', exact: true }).click();
     await page.getByRole('button', { name: '提交图片抽检', exact: true }).click();
     await page.getByRole('heading', { name: '当前暂无待处理作业' }).waitFor();
     assert.equal(imageTask.state, 'IMAGE_QC_PENDING');
+    assert.equal(pendingEdits.length, 0);
+    assert.equal(requests.find(request => request.path.endsWith('/submit-image-self-review')).body.imageRunId, imageTask.currentImageRunId);
     await page.getByRole('button', { name: '图片质检', exact: true }).click();
     const imageQaContent = page.getByRole('region', { name: '图片核对', exact: true });
     const imageQaActions = page.getByRole('complementary', { name: '图片质检操作', exact: true });

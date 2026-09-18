@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
+import { Readable, Writable } from 'node:stream';
 import test from 'node:test';
 
 import JSZip from 'jszip';
 
-import { archiveFileName, buildBatchTaskArchive, buildTaskArchive } from '../src/task-archive.mjs';
+import { archiveFileName, buildBatchTaskArchive, buildTaskArchive, writeBatchTaskArchive } from '../src/task-archive.mjs';
 
 test('configured archive includes only version-pinned delivery assets, excluding PNG previews, sources and historical runs', async () => {
   const task = { id: 1, currentCopyRevisionId: 1, currentImageRunId: 'new', copyRevisions: [{ id: 1, content: { copy: { title: '当前', body: '正文', tags: [] } } }],
@@ -143,7 +144,7 @@ test('manual archive ZIP prefixes repeated descriptive names with their page ord
   assert.ok(zip.file('02-封面图.jpg'));
 });
 
-test('batch archive groups different Query packages under their shared client batch', async () => {
+test('batch archive groups task files directly under their shared client batch without nested ZIPs', async () => {
   const packageNames = new Map([[21, '分类/A'], [22, '分类\\A'], [23, null], [24, '分类/A']]);
   const clientBatchCodes = new Map([
     [21, 'b9759aad96a94c109fdce96ab4455294'],
@@ -168,15 +169,21 @@ test('batch archive groups different Query packages under their shared client ba
     'the outer archive must carry a ZIP64 end-of-central-directory record');
   const outer = await JSZip.loadAsync(content);
   assert.deepEqual(Object.keys(outer.files).sort(), [
-    'b9759aad96a94c109fdce96ab4455294/任务-21-资源包.zip',
-    'b9759aad96a94c109fdce96ab4455294/任务-22-资源包.zip',
-    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/任务-24-资源包.zip',
-    '未归属甲方批次/任务-23-资源包.zip',
+    'b9759aad96a94c109fdce96ab4455294/任务-21-资源包/标题21.txt',
+    'b9759aad96a94c109fdce96ab4455294/任务-21-资源包/01-图片.png',
+    'b9759aad96a94c109fdce96ab4455294/任务-22-资源包/标题22.txt',
+    'b9759aad96a94c109fdce96ab4455294/任务-22-资源包/01-图片.png',
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/任务-24-资源包/标题24.txt',
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/任务-24-资源包/01-图片.png',
+    '未归属甲方批次/任务-23-资源包/标题23.txt',
+    '未归属甲方批次/任务-23-资源包/01-图片.png',
   ].sort());
-  const inner = await JSZip.loadAsync(
-    await outer.file('b9759aad96a94c109fdce96ab4455294/任务-21-资源包.zip').async('nodebuffer'),
-  );
-  assert.equal(await inner.file('01-图片.png').async('string'), '21');
+  assert.equal(Object.keys(outer.files).some(name => name.endsWith('.zip')), false);
+  for (const task of tasks) {
+    const directory = `${task.sourceClientBatchCode ?? '未归属甲方批次'}/任务-${task.id}-资源包`;
+    assert.equal(await outer.file(`${directory}/01-图片.png`).async('string'), String(task.id));
+    assert.match(await outer.file(`${directory}/标题${task.id}.txt`).async('string'), /文案内容：\r\n正文/u);
+  }
 });
 
 test('delivery archive fails closed when the pinned copy or image snapshot is missing', async () => {
@@ -192,6 +199,30 @@ test('delivery archive fails closed when the pinned copy or image snapshot is mi
   task.copyRevisions = [{ id: 9, content: { copy: { title: '当前文案', body: '正文', tags: [] } } }];
   task.imageRuns = [];
   await assert.rejects(buildTaskArchive(task, async () => assert.fail('must not read assets')), /当前交付图片版本缺失/u);
+});
+
+test('batch file streaming propagates image read failures and cancellation', { timeout: 5000 }, async () => {
+  const task = {
+    id: 1, currentCopyRevisionId: 1, currentImageRunId: 'run',
+    copyRevisions: [{ id: 1, content: { copy: { title: '文案', body: '正文' } } }],
+    imageRuns: [{ id: 'run', result: { images: [{ assetId: 1 }] } }],
+    assets: [{ id: 1, imageRunId: 'run', mediaType: 'image/png' }],
+  };
+  for (const cancel of [false, true]) {
+    const controller = new AbortController();
+    const error = new Error(cancel ? 'download cancelled' : 'image read failed');
+    const stream = Readable.from((async function* () {
+      yield Buffer.from('partial image');
+      if (cancel) controller.abort(error);
+      else throw error;
+    })());
+    const output = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
+    await assert.rejects(writeBatchTaskArchive([task], async () => ({
+      mediaType: 'image/png', originalName: '01.png', content: stream,
+    }), output, { signal: controller.signal }), cancel ? /cancelled|aborted/u : /image read failed/u);
+    assert.equal(stream.destroyed, true);
+    assert.equal(output.destroyed, true);
+  }
 });
 
 test('delivery archive keeps migrated post-shaped copy content compatible', async () => {

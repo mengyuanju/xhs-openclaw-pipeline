@@ -194,9 +194,14 @@ test('delivery pool export packages the complete server-side snapshot beyond leg
     assert.equal(download.status, 200);
     assert.match(download.headers.get('content-disposition'), /delivery-pool\.zip/u);
     const zip = await JSZip.loadAsync(await download.arrayBuffer());
-    assert.equal(Object.keys(zip.files).length, 51);
-    assert.ok(zip.file('未归属甲方批次/任务-1-资源包.zip'));
-    assert.ok(zip.file('未归属甲方批次/任务-51-资源包.zip'));
+    assert.equal(Object.keys(zip.files).length, 51 * 3);
+    assert.equal(Object.keys(zip.files).some(name => name.endsWith('.zip')), false);
+    for (const id of taskIds) {
+      const directory = `未归属甲方批次/任务-${id}-资源包`;
+      assert.deepEqual(await zip.file(`${directory}/01.png`).async('nodebuffer'), Buffer.from([id]));
+      assert.ok(zip.file(`${directory}/任务${id}.txt`));
+      assert.ok(zip.file(`${directory}/小红书链接.txt`));
+    }
     const replay = await fetch(`${root}/v1/delivery-pool/archive/${prepared.downloadId}`);
     assert.equal(replay.status, 404, 'the prepared archive token must be one-time');
   });
@@ -318,7 +323,8 @@ test('legacy package-scoped exports keep their exact scope while ZIP folders use
     assert.equal(zipPrepared.fileName, '秋季_收纳-交付资源.zip');
     const zipDownload = await fetch(`${root}/v1/delivery-pool/archive/${zipPrepared.downloadId}`);
     const zip = await JSZip.loadAsync(await zipDownload.arrayBuffer());
-    assert.ok(zip.file(`${CLIENT_BATCH_CODE}/任务-7-资源包.zip`));
+    assert.ok(zip.file(`${CLIENT_BATCH_CODE}/任务-7-资源包/任务7.txt`));
+    assert.deepEqual(await zip.file(`${CLIENT_BATCH_CODE}/任务-7-资源包/01.png`).async('nodebuffer'), content);
 
     const xlsxResponse = await fetch(`${root}/v1/delivery-pool/xlsx`, {
       method: 'POST',
@@ -372,7 +378,8 @@ test('selected delivery pool export accepts more than the legacy 20-task limit',
     const download = await fetch(`${root}/v1/delivery-pool/archive/${prepared.downloadId}`);
     assert.equal(download.status, 200);
     const zip = await JSZip.loadAsync(await download.arrayBuffer());
-    assert.equal(Object.keys(zip.files).length, 21);
+    assert.equal(Object.keys(zip.files).length, 21 * 3);
+    assert.equal(Object.keys(zip.files).some(name => name.endsWith('.zip')), false);
   });
 });
 

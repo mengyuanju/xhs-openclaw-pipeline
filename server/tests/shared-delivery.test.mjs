@@ -82,8 +82,15 @@ test('shared delivery PostgreSQL: cross-role visibility, partial confirmation, o
     }
     await finished(created.id,a);
     const artifact=await service.download(created.id,1,a),downloaded=await JSZip.loadAsync(await readFile(artifact.path));
-    const nested=Object.keys(downloaded.files).filter(name=>name.endsWith('/资源包.zip'));
-    assert.equal(nested.length,1);assert.deepEqual(await downloaded.file(nested[0]).async('nodebuffer'),bytesByTask.get(tasks[0].taskId));
+    async function assertFrozenFiles(zip) {
+      assert.equal(Object.keys(zip.files).some(name=>name.endsWith('.zip')),false);
+      const original=await JSZip.loadAsync(bytesByTask.get(tasks[0].taskId));
+      const directory=`${tasks[0].taskId}/${tasks[0].copyRevisionId}/${tasks[0].imageRunId}`;
+      for(const file of Object.values(original.files)) {
+        assert.deepEqual(await zip.file(`${directory}/${file.name}`).async('nodebuffer'),await file.async('nodebuffer'));
+      }
+    }
+    await assertFrozenFiles(downloaded);
     assert.equal(Object.keys(downloaded.files).some(name=>name.startsWith(`${tasks[2].taskId}/`)),false,'another operator is never included');
     await artifact.record();
     const confirmations=await Promise.all([confirmDeliveryItems(pool,{itemIds:[itemA.itemId]},a),confirmDeliveryItems(pool,{itemIds:[itemA.itemId]},a)]);
@@ -148,8 +155,7 @@ test('shared delivery PostgreSQL: cross-role visibility, partial confirmation, o
     await writeFile(join(root,'.delivery-batches',`${publicId}.zip`),bytes);
     await service.retry(interrupted.id,admin);await finished(interrupted.id,admin);
     const recovered=await service.download(interrupted.id,1,admin),recoveredZip=await JSZip.loadAsync(await readFile(recovered.path));
-    const recoveredMember=Object.keys(recoveredZip.files).find(name=>name.endsWith('/资源包.zip'));
-    assert.deepEqual(await recoveredZip.file(recoveredMember).async('nodebuffer'),bytesByTask.get(tasks[0].taskId),'retry keeps the old delivered bytes even after rework');
+    await assertFrozenFiles(recoveredZip);
   } finally {
     if(server)await new Promise(resolve=>server.close(resolve));await app?.context.disposeControlPlaneResources();
     await service?.dispose();await repository.pool.end();await database.stop();

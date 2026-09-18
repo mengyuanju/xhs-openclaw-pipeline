@@ -8,6 +8,7 @@ import {
   resolveDeliveryArchiveSource,
 } from './delivery-source.mjs';
 import { IMAGE_FORMATS } from './image-options.mjs';
+import { normalizeTaskId } from './domain.mjs';
 import { orderedImageFileName } from '../../src/image-file-name.mjs';
 
 const DELIVERY_IMAGE_FORMATS = new Map(
@@ -97,7 +98,7 @@ export function archiveFileName(task) {
   return `${safeFileName(label, `任务-${task.id}`)}-资源包.zip`;
 }
 
-async function createTaskArchiveZip(task, loadAsset) {
+async function* taskArchiveFiles(task, loadAsset) {
   const revision = task.copyRevisions.find((item) => item.id === task.currentCopyRevisionId);
   const run = task.imageRuns?.find(item => item.id === task.currentImageRunId);
   const candidates = task.assets.filter((asset) => asset.imageRunId === task.currentImageRunId
@@ -109,19 +110,18 @@ async function createTaskArchiveZip(task, loadAsset) {
   });
   const assets = assetIds.map((id) => candidates.find((item) => Number(item.id) === id));
 
-  const zip = new JSZip();
   const query = singleLine(task.query);
   const title = String(copy.title ?? '').trim();
   const body = String(copy.body ?? '').trim();
   const text = `\uFEFF原始 Query：${query}\r\n\r\n标题：${title}\r\n\r\n文案内容：\r\n${body}\r\n`;
   const usedNames = new Set();
-  zip.file(uniqueFileName(`${safeFileName(title, `任务-${task.id}`)}.txt`, usedNames), text);
+  yield { name: uniqueFileName(`${safeFileName(title, `任务-${task.id}`)}.txt`, usedNames), content: text };
   const xiaohongshuLinks = rankedXiaohongshuLinks(task);
   if (xiaohongshuLinks.length > 0 || task.xiaohongshuSearchStatus) {
-    zip.file(
-      uniqueFileName('小红书链接.txt', usedNames),
-      xiaohongshuLinksText(task, xiaohongshuLinks),
-    );
+    yield {
+      name: uniqueFileName('小红书链接.txt', usedNames),
+      content: xiaohongshuLinksText(task, xiaohongshuLinks),
+    };
   }
 
   for (let index = 0; index < assets.length; index += 1) {
@@ -138,14 +138,13 @@ async function createTaskArchiveZip(task, loadAsset) {
       `${String(index + 1).padStart(2, '0')}-image${extension}`,
     );
     const name = /\.[a-z0-9]{2,5}$/iu.test(requestedName) ? requestedName : `${requestedName}${extension}`;
-    zip.file(uniqueFileName(name, usedNames), loaded.content);
+    yield { name: uniqueFileName(name, usedNames), content: loaded.content };
   }
-
-  return zip;
 }
 
 export async function buildTaskArchive(task, loadAsset) {
-  const zip = await createTaskArchiveZip(task, loadAsset);
+  const zip = new JSZip();
+  for await (const file of taskArchiveFiles(task, loadAsset)) zip.file(file.name, file.content);
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
 }
 
@@ -185,8 +184,7 @@ function waitForArchiveEntry(archive, output, signal) {
 }
 
 /**
- * Streams an outer ZIP64 archive while loading one task snapshot at a time.
- * This keeps a full-delivery export bounded by one task's metadata and assets.
+ * Streams task folders directly into a single ZIP64 archive, one file at a time.
  */
 export async function writeBatchTaskArchive(tasks, loadAsset, output, {
   maxTasks = 20,
@@ -198,7 +196,7 @@ export async function writeBatchTaskArchive(tasks, loadAsset, output, {
   }
   const archive = new ZipArchive({
     forceZip64: true,
-    zlib: { level: 0 },
+    zlib: { level: 6 },
   });
   const unassignedClientBatchDirectory = safeFileName(null, '未归属甲方批次');
   const clientBatchDirectories = new Map([['', unassignedClientBatchDirectory]]);
@@ -236,22 +234,23 @@ export async function writeBatchTaskArchive(tasks, loadAsset, output, {
         throw new RangeError(`batch archive must contain between 1 and ${maxTasks} tasks`);
       }
       if (transferError) throw transferError;
-      const taskZip = await createTaskArchiveZip(
-        task,
-        (assetId) => loadAsset(task, assetId),
-      );
-      signal?.throwIfAborted();
-      const entryWritten = waitForArchiveEntry(archive, output, signal);
-      archive.append(taskZip.generateNodeStream({
-        type: 'nodebuffer',
-        streamFiles: true,
-        compression: 'DEFLATE',
-        compressionOptions: { level: 6 },
-      }), {
-        name: `${clientBatchDirectory(task)}/${safeFileName(`任务-${task.id}-资源包`, '任务-资源包')}.zip`,
-        store: true,
-      });
-      await entryWritten;
+      const directory = `${clientBatchDirectory(task)}/任务-${normalizeTaskId(task.id)}-资源包`;
+      for await (const file of taskArchiveFiles(task, (assetId) => loadAsset(task, assetId))) {
+        const stream = typeof file.content?.pipe === 'function' ? file.content : null;
+        const onAbort = () => stream?.destroy(signal.reason);
+        stream?.once('error', (error) => archive.destroy(error));
+        signal?.addEventListener('abort', onAbort, { once: true });
+        try {
+          signal?.throwIfAborted();
+          if (transferError) throw transferError;
+          const entryWritten = waitForArchiveEntry(archive, output, signal);
+          archive.append(file.content, { name: `${directory}/${file.name}` });
+          await entryWritten;
+        } finally {
+          signal?.removeEventListener('abort', onAbort);
+          stream?.destroy();
+        }
+      }
     }
     if (taskCount === 0) throw new RangeError('batch archive must contain at least 1 task');
     signal?.throwIfAborted();

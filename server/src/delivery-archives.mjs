@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, rename, stat, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rename, stat, rm, rmdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { once } from 'node:events';
@@ -28,6 +29,53 @@ function sourcePath(root, row) {
   return join(root,'.delivery-batches',`${normalizeUuid(row.batch_public_id,'batchId')}.zip`);
 }
 
+function ambiguousMember(member) {
+  return new ControlPlaneConflictError('DELIVERY_SOURCE_AMBIGUOUS',`任务 #${member.row.task_id} 的原文件成员重复`);
+}
+
+function addMemberFile(member, entry, name) {
+  const key=name.normalize('NFC').toLocaleLowerCase('zh-CN');
+  if (yauzl.validateFileName(name) || name.split('/').some(part=>!part || part==='.')
+      || /[\u0000-\u001f]/u.test(name)) throw new TypeError('冻结文件路径无效');
+  if (member.files.some(file=>file.key===key)) throw ambiguousMember(member);
+  if (!Number.isSafeInteger(entry.uncompressedSize) || entry.uncompressedSize<0
+      || member.byteSize+entry.uncompressedSize>MAX_PART_BYTES) {
+    throw new RangeError(`任务 #${member.row.task_id} 的文件超过单卷 1 GiB 上限`);
+  }
+  member.files.push({entryName:entry.fileName,name,key,byteSize:entry.uncompressedSize});
+  member.byteSize+=entry.uncompressedSize;
+}
+
+// Legacy batches contain a ZIP per task. Stage only that ZIP on disk so its
+// files can be read individually without buffering an entire task in memory.
+async function withTaskSourceZip(member, operation, signal) {
+  const zip=await yauzl.openPromise(member.path,{lazyEntries:true,autoClose:false,strictFileNames:true});
+  try {
+    if (!member.entryName) return await operation(zip);
+    for await (const entry of zip.eachEntry()) {
+      signal?.throwIfAborted();
+      if (entry.fileName!==member.entryName) continue;
+      const directory=await mkdtemp(join(tmpdir(),'xhs-delivery-member-'));
+      const temporary=join(directory,'member.zip');
+      try {
+        const stream=await zip.openReadStreamPromise(entry);
+        await pipeline(stream,createWriteStream(temporary,{flags:'wx'}),{signal});
+        const inner=await yauzl.openPromise(temporary,{lazyEntries:true,autoClose:false,strictFileNames:true});
+        try { return await operation(inner); }
+        finally {
+          const closed=once(inner,'close');
+          inner.close();
+          await closed;
+        }
+      } finally {
+        await rm(temporary,{force:true});
+        await rmdir(directory);
+      }
+    }
+    throw new Error(`冻结成员丢失：${member.row.task_id}`);
+  } finally { zip.close(); }
+}
+
 // Read central directories and stream only exact task members out of immutable
 // original ZIPs. Never reconstruct a historical delivery from current tasks.
 export async function inspectDeliverySources(root, rows) {
@@ -49,31 +97,53 @@ export async function inspectDeliverySources(root, rows) {
     const zip=await yauzl.openPromise(path,{lazyEntries:true,autoClose:false,strictFileNames:true});
     try {
       for await (const entry of zip.eachEntry()) {
-        const match=/(?:^|\/)任务-(\d+)-资源包\.zip$/u.exec(entry.fileName);
-        if (!match || !targets.has(Number(match[1]))) continue;
-        const row=targets.get(Number(match[1])), id=Number(row.item_id);
-        if (found.has(id)) throw new ControlPlaneConflictError('DELIVERY_SOURCE_AMBIGUOUS',`任务 #${row.task_id} 的原文件成员重复`);
-        if (!Number.isSafeInteger(entry.uncompressedSize) || entry.uncompressedSize<1 || entry.uncompressedSize>MAX_PART_BYTES) {
-          throw new RangeError(`任务 #${row.task_id} 的文件超过单卷 1 GiB 上限`);
+        if (entry.fileName.endsWith('/')) continue;
+        const match=/^((?:[^/]+\/)?任务-(\d+)-资源包)(?:\.zip|\/(.+))$/u.exec(entry.fileName);
+        if (!match || !targets.has(Number(match[2]))) continue;
+        const row=targets.get(Number(match[2])), id=Number(row.item_id);
+        const entryName=match[3] ? null : entry.fileName;
+        let member=found.get(id);
+        if (member && (member.entryName || entryName || member.directory!==match[1])) {
+          throw ambiguousMember(member);
         }
-        found.set(id,{row,path,entryName:entry.fileName,byteSize:entry.uncompressedSize});
-        totalBytes+=entry.uncompressedSize;
-        if (totalBytes>MAX_TOTAL_BYTES) throw new RangeError('汇总内容超过 10 GiB，请缩小范围');
+        if (!member) {
+          member={row,path,entryName,directory:match[1],files:[],byteSize:0};
+          found.set(id,member);
+        }
+        if (entryName) {
+          if (!Number.isSafeInteger(entry.uncompressedSize) || entry.uncompressedSize<1 || entry.uncompressedSize>MAX_PART_BYTES) {
+            throw new RangeError(`任务 #${row.task_id} 的文件超过单卷 1 GiB 上限`);
+          }
+        } else addMemberFile(member,entry,match[3]);
       }
     } finally { zip.close(); }
     for (const row of members) if (!found.has(Number(row.item_id))) {
       throw new ControlPlaneConflictError('DELIVERY_SOURCE_MISSING',`原始包中找不到任务 #${row.task_id}，未替换为当前版本`);
+    }
+    for (const row of members) {
+      const member=found.get(Number(row.item_id));
+      if (member.entryName) await withTaskSourceZip(member,async inner=>{
+        for await (const entry of inner.eachEntry()) {
+          if (!entry.fileName.endsWith('/')) addMemberFile(member,entry,entry.fileName);
+        }
+      });
+      if (!member.files.length) throw new ControlPlaneConflictError('DELIVERY_SOURCE_MISSING',`任务 #${row.task_id} 的原始包没有文件`);
+      totalBytes+=member.byteSize;
+      if (totalBytes>MAX_TOTAL_BYTES) throw new RangeError('汇总内容超过 10 GiB，请缩小范围');
     }
   }
   return {members:rows.map(row=>found.get(Number(row.item_id))),totalBytes};
 }
 
 async function appendOriginalMember(archive, member, signal) {
-  const zip=await yauzl.openPromise(member.path,{lazyEntries:true,autoClose:false,strictFileNames:true});
-  try {
+  const directory=`${normalizeTaskId(member.row.task_id)}/${normalizeTaskId(member.row.copy_revision_id)}/${normalizeUuid(member.row.image_run_id,'imageRunId')}`;
+  await withTaskSourceZip(member,async zip=>{
+    const remaining=new Map(member.files.map(file=>[file.entryName,file]));
     for await (const entry of zip.eachEntry()) {
       signal.throwIfAborted();
-      if (entry.fileName!==member.entryName) continue;
+      const file=remaining.get(entry.fileName);
+      if (!file) continue;
+      if (file.byteSize!==entry.uncompressedSize) throw new Error(`冻结文件已变化：${member.row.task_id}`);
       const stream=await zip.openReadStreamPromise(entry);
       const onAbort=()=>stream.destroy(signal.reason);
       signal.addEventListener('abort',onAbort,{once:true});
@@ -81,13 +151,13 @@ async function appendOriginalMember(archive, member, signal) {
         if(archive.destroyed)throw new Error('汇总文件输出已中断');
         const done=once(archive,'entry',{signal});
         stream.once('error',error=>archive.emit('error',error));
-        archive.append(stream,{name:`${normalizeTaskId(member.row.task_id)}/${normalizeTaskId(member.row.copy_revision_id)}/${normalizeUuid(member.row.image_run_id,'imageRunId')}/资源包.zip`,store:true});
+        archive.append(stream,{name:`${directory}/${file.name}`});
         await done;
       } finally { signal.removeEventListener('abort',onAbort); stream.destroy(); }
-      return;
+      remaining.delete(entry.fileName);
     }
-    throw new Error(`冻结成员丢失：${member.row.task_id}`);
-  } finally { zip.close(); }
+    if (remaining.size) throw new Error(`冻结成员丢失：${member.row.task_id}`);
+  },signal);
 }
 
 export async function writeDeliveryAggregate(root, job, members, {signal}={signal:new AbortController().signal}) {
@@ -106,7 +176,7 @@ export async function writeDeliveryAggregate(root, job, members, {signal}={signa
   for (const [index,part] of parts.entries()) {
     signal.throwIfAborted();
     const base=`${normalizeUuid(job.run_token,'runToken')}-${index+1}.zip`,path=join(directory,base),temporary=`${path}.tmp`;
-    const output=createWriteStream(temporary,{flags:'wx'}),archive=new ZipArchive({forceZip64:true,zlib:{level:0}});
+    const output=createWriteStream(temporary,{flags:'wx'}),archive=new ZipArchive({forceZip64:true,zlib:{level:6}});
     let transferError;
     const transfer=pipeline(archive,output,{signal}).catch(error=>{transferError=error;});
     try {

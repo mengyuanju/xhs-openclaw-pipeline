@@ -2721,13 +2721,12 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     );
     assert.equal(allDeliveryResponse.status, 200);
     const allDeliveryArchive = await JSZip.loadAsync(await allDeliveryResponse.arrayBuffer());
-    const deliveredTaskArchive = allDeliveryArchive.file(
-      `PostgreSQL 18 隔离端到端词包/任务-${imageClaim.task.id}-资源包.zip`,
+    const deliveredTaskLinks = allDeliveryArchive.file(
+      `b9759aad96a94c109fdce96ab4455294/任务-${imageClaim.task.id}-资源包/小红书链接.txt`,
     );
-    assert.ok(deliveredTaskArchive);
-    const deliveredTaskFiles = await JSZip.loadAsync(await deliveredTaskArchive.async('nodebuffer'));
+    assert.ok(deliveredTaskLinks);
     assert.match(
-      await deliveredTaskFiles.file('小红书链接.txt').async('string'),
+      await deliveredTaskLinks.async('string'),
       /https:\/\/www\.xiaohongshu\.com\/explore\//u,
     );
     const workerTaskDelivery = await fetch(

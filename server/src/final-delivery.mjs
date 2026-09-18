@@ -44,7 +44,7 @@ export async function assertNoPendingImageEdits(queryable, {
   if (count > 0) {
     throw new ControlPlaneConflictError(
       'IMAGE_EDITS_PENDING',
-      `当前图片版本还有 ${count} 个待处理的图片修改，请回到任务详情的图片修改工作台逐项采用、拒绝或取消，然后重新提交图片初审`,
+      `当前图片版本还有 ${count} 个待处理的图片修改，请在“集中处理修改”中采用、拒绝或取消，然后继续提交图片初审`,
     );
   }
   return count;

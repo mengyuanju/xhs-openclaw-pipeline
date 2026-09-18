@@ -361,7 +361,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
     <Dialog open={open} onOpenChange={next=>{if(!busy)setOpen(next);}}><DialogContent className={styles.dialog} overlayClassName={styles.overlay}>
       <header className={styles.header}>
         <div><DialogTitle className={styles.title}>当前图片修改工作台 · 第 {page} 页</DialogTitle>
-        <DialogDescription className={styles.description}>提交后可关闭窗口，后台继续修复；完成或失败后会在“后台任务”中提醒。完成后请检查并采用预览。</DialogDescription>
+        <DialogDescription className={styles.description}>草稿和预览保留当前图片及交付状态，采用新图后需重新初审。提交后可关闭窗口，完成或失败会在“后台任务”中提醒。</DialogDescription>
         {backgroundTasks.some(item=>item.taskId===taskId&&item.kind==='IMAGE_EDIT'&&isBackgroundTaskRunning(item))&&<p className={styles.description} role="status">图片修复正在排队或处理中，可关闭窗口继续其他工作。</p>}</div>
         <span className={styles.pageCount}>{page} / {imageAssets.length}</span>
       </header>

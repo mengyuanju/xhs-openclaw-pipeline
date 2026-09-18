@@ -1656,7 +1656,12 @@ export function TaskReviewDialog({
     {canModifyImages && ['MANUAL_ARCHIVE','IMAGE_REWORK_PENDING','REVIEWED'].includes(detail.state) && detail.currentImageRunId && detail.currentCopyRevisionId && <CurrentImageEditor
       key={`${detail.currentImageRunId}-${selectedAsset.id}`} taskId={detail.id} runId={detail.currentImageRunId}
       copyRevisionId={detail.currentCopyRevisionId} asset={selectedAsset} assets={assets} page={selectedAssetIndex + 1}
-      runs={detail.imageRuns} onChanged={async () => { await load(); }} />}
+      runs={detail.imageRuns} onChanged={async () => {
+        const next = await load();
+        if (next && (next.state !== detail.state || next.currentImageRunId !== detail.currentImageRunId)) {
+          await onUpdated('图片修改已采用，请重新提交图片初审。');
+        }
+      }} />}
   </div>;
   const imagePosition = selectedAsset && <div className="workbench-image-review-current">
     <div><strong>第 {selectedAssetPage} / {assets.length} 页</strong><span>{selectedResultImage?.provider === 'deepseek-web-image-simulation'
@@ -2252,6 +2257,7 @@ export function TaskReviewDialog({
         taskId={detail.id} imageRunId={detail.currentImageRunId} copyRevisionId={detail.currentCopyRevisionId}
         currentPages={assets.map((asset, index) => ({ assetId: asset.id, page: resultImageByAssetId.get(asset.id)?.pageIndex ?? index + 1 }))}
         open={pendingEditsOpen} onOpenChange={setPendingEditsOpen} onBusyChange={setSubmitting}
+        onRefreshTask={async () => { if (!await load()) throw new Error('任务刷新失败，请重试'); }}
         onResolved={async remaining => {
           const next = await load();
           if (!next) throw new Error('修改已处理，刷新图集失败，请刷新后继续初审');

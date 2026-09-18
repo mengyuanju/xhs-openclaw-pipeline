@@ -1,10 +1,15 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { PROMPT_CATALOG, PROMPT_KINDS, PROMPT_VARIABLES } from './prompt-catalog.mjs';
 import { recordPromptRendering } from './prompt-trace-context.mjs';
 
 const contexts = new AsyncLocalStorage();
+// Pass native filesystem paths to fs: Turbopack rewrites new URL(...,
+// import.meta.url) asset expressions to relativeURL objects that Node rejects.
+const sourceDirectory = dirname(fileURLToPath(import.meta.url));
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const freeze = (value) => {
   if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); }
@@ -78,15 +83,17 @@ export function promptProvenance() {
 export function defaultBusinessPrompt(kind) {
   if (!PROMPT_KINDS.includes(kind)) throw new TypeError(`未知提示词类型：${kind}`);
   const definition = PROMPT_CATALOG.find(item => item.kind === kind);
-  if (definition.defaultPath === 'prompts/post.md') return readFileSync(new URL('../prompts/post.md', import.meta.url), 'utf8');
+  if (definition.defaultPath === 'prompts/post.md') return readFileSync(join(sourceDirectory, '../prompts/post.md'), 'utf8');
   if (definition.defaultPath?.startsWith('prompts/internal/')) {
     const filename = definition.defaultPath.slice('prompts/internal/'.length);
-    // Keep the bundler's filesystem context inside the prompt directory. A
-    // dynamic ../${path} URL would scan the entire repository and its artifacts.
-    return readFileSync(new URL(`../prompts/internal/${filename}`, import.meta.url), 'utf8');
+    // Keep file tracing scoped to the prompt directory, not the repository.
+    return readFileSync(join(sourceDirectory, '../prompts/internal', filename), 'utf8');
   }
   const originals = { TEXT_SYSTEM: 'text-system', IMAGE_SYSTEM: 'image-system', IMAGE_EDIT_SYSTEM: 'image-edit-system' };
-  return readFileSync(new URL(originals[kind] ? `../server/prompts/${originals[kind]}.md` : `../prompts/business/${kind.toLowerCase()}.md`, import.meta.url), 'utf8').trim();
+  const path = originals[kind]
+    ? join(sourceDirectory, '../server/prompts', `${originals[kind]}.md`)
+    : join(sourceDirectory, '../prompts/business', `${kind.toLowerCase()}.md`);
+  return readFileSync(path, 'utf8').trim();
 }
 
 // Supplemental rules use the same version store as stage rules. Program protocols

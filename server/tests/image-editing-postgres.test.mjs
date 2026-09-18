@@ -13,7 +13,7 @@ import { migrateDatabase } from '../src/database-migrations.mjs';
 import { createImageEditingService } from '../src/image-editing.mjs';
 import { processImageEdit } from '../src/image-edit-renderer.mjs';
 import { imageHash } from '../../src/image-edit-pixels.mjs';
-import { createReadyDeliveryEntry } from '../src/final-delivery.mjs';
+import { assertTaskReadyForDelivery, createReadyDeliveryEntry } from '../src/final-delivery.mjs';
 import { createPostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import { createControlPlaneApp } from '../src/http-server.mjs';
 import { createControlPlaneClient } from '../../src/control-plane/client.mjs';
@@ -104,7 +104,7 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       await action(programmatic.id,'cancel');
     });
     let first;
-    await t.test('create is idempotent and withdraws a ready delivery before any execution',async()=>{
+    await t.test('create is idempotent and preserves an existing delivery while blocking new approval with pending edits',async()=>{
       await pool.query('UPDATE tasks SET image_qc_legacy_accepted=true WHERE id=$1',[taskId]);
       await createReadyDeliveryEntry(pool,{taskId,copyRevisionId,imageRunId:currentRun,actor:adminActor});
       const input=request();first=await service.create(taskId,input,actor);
@@ -112,8 +112,8 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       assert.equal(first.config.imageEditPrompt.kind,'IMAGE_EDIT_SYSTEM');
       assert.equal((await service.create(taskId,input,actor)).id,first.id);
       await assert.rejects(()=>service.create(taskId,{...input,overlay:{text:'不同文字'}},actor),{code:'IMAGE_EDIT_CONFLICT'});
-      assert.equal((await pool.query('SELECT status FROM delivery_entries WHERE task_id=$1',[taskId])).rows[0].status,'WITHDRAWN');
-      await assert.rejects(()=>createReadyDeliveryEntry(pool,{taskId,copyRevisionId,imageRunId:currentRun,actor:adminActor}),{code:'IMAGE_QA_NOT_RELEASED'});
+      assert.equal((await pool.query('SELECT status FROM delivery_entries WHERE task_id=$1',[taskId])).rows[0].status,'READY');
+      await assert.rejects(()=>createReadyDeliveryEntry(pool,{taskId,copyRevisionId,imageRunId:currentRun,actor:adminActor}),{code:'IMAGE_EDITS_PENDING'});
     });
     await t.test('executor image capacity claims a request once; cancellation fences late completion',async()=>{
       await pool.query("UPDATE tasks SET priority_mode='HIGHEST' WHERE id=$1",[taskId]);
@@ -303,6 +303,82 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       assert.equal(finalRun.result.processing.previewRunId,thirdPreview.result.image_run_id);
       currentRun=finalTask.current_image_run_id;
     });
+    await t.test('pending edit batches merge pages atomically, reject alternatives, fence stale input and retry idempotently', async () => {
+      const baseRun = currentRun;
+      const baseResult = (await pool.query('SELECT result FROM image_runs WHERE id=$1', [baseRun])).rows[0].result;
+      const createPageEdit = async (targetPage, draft = false) => {
+        const sourceAssetId = Number(baseResult.images[targetPage - 1].deliveryAssetId ?? baseResult.images[targetPage - 1].assetId);
+        const source = await service.asset(sourceAssetId, taskId);
+        return service.create(taskId, request({ sourceAssetId, sha256: source.sha256, targetPage, draft }), actor);
+      };
+      const preview = async page => {
+        const edit = await createPageEdit(page);
+        const result = await processImageEdit({ service, storageRoot: root, workerId: 'batch-test', agentClient, validateImage });
+        assert.equal(result.status, 'PREVIEW_READY', result.error);
+        return service.get(edit.id);
+      };
+      const first = await preview(1), third = await preview(3), alternative = await preview(1);
+      const draft = await createPageEdit(2, true);
+      const decision = (edit, action = 'accept') => ({ id: edit.id, version: edit.version, action });
+      const input = { requestId: randomUUID(), imageRunId: baseRun,
+        decisions: [decision(first), decision(third), decision(alternative, 'reject'), decision(draft, 'cancel')] };
+      const statuses = async () => Promise.all([first, third, alternative, draft].map(async edit => (await service.get(edit.id)).status));
+      const expected = ['PREVIEW_READY', 'PREVIEW_READY', 'PREVIEW_READY', 'DRAFT'];
+      await assert.rejects(service.resolvePending(taskId, input, outsiderActor), { code: 'FORBIDDEN' });
+      await assert.rejects(service.resolvePending(taskId, { ...input, imageRunId: randomUUID() }, actor), { code: 'IMAGE_EDIT_CONFLICT' });
+      await assert.rejects(service.resolvePending(taskId, { ...input, decisions: [decision(first), decision(alternative)] }, actor), /只选择一个/u);
+      await assert.rejects(service.resolvePending(taskId, { ...input, decisions: [decision(first), decision(first)] }, actor), /重复/u);
+      await assert.rejects(service.resolvePending(taskId, { ...input, decisions: [decision(first), { ...decision(third), version: third.version + 1 }] }, actor), /已变化/u);
+      await assert.rejects(service.resolvePending(taskId, { ...input, decisions: [decision(first), decision(draft)] }, actor), /只有待确认/u);
+      await assert.rejects(service.resolvePending(taskId, { ...input, decisions: [decision(first), { ...decision(third), id: randomUUID() }] }, actor), /已变化/u);
+      assert.deepEqual(await statuses(), expected);
+      // Corrupt the later accepted asset so the first adoption has to roll back.
+      const lastAccepted = [first, third].sort((a, b) => a.id.localeCompare(b.id)).at(-1);
+      const output = await service.asset(Number(lastAccepted.result.asset_id), taskId);
+      const { readFile } = await import('node:fs/promises');
+      const original = await readFile(output.storage_path);
+      await writeFile(output.storage_path, 'corrupt test fixture');
+      await assert.rejects(service.resolvePending(taskId, input, actor), /完整性校验失败/u);
+      assert.deepEqual(await statuses(), expected);
+      assert.equal((await pool.query('SELECT current_image_run_id FROM tasks WHERE id=$1', [taskId])).rows[0].current_image_run_id, baseRun);
+      assert.equal((await pool.query('SELECT count(*)::int AS count FROM image_edit_events WHERE task_id=$1 AND request_id=$2', [taskId, input.requestId])).rows[0].count, 0);
+      await writeFile(output.storage_path, original);
+      const applied = await service.resolvePending(taskId, input, actor);
+      assert.equal(applied.processed, 4);
+      assert.deepEqual(await statuses(), ['ACCEPTED', 'ACCEPTED', 'REJECTED', 'CANCELLED']);
+      const final = (await pool.query('SELECT result FROM image_runs WHERE id=$1', [applied.imageRunId])).rows[0].result;
+      assert.equal(Number(final.images[0].deliveryAssetId), Number(first.result.asset_id));
+      assert.equal(Number(final.images[2].deliveryAssetId), Number(third.result.asset_id));
+      assert.deepEqual(final.images[1], baseResult.images[1]);
+      assert.deepEqual(await service.resolvePending(taskId, input, actor), applied);
+      assert.equal((await pool.query('SELECT count(*)::int AS count FROM image_edit_events WHERE task_id=$1 AND request_id=$2', [taskId, input.requestId])).rows[0].count, 1);
+      await assert.rejects(service.resolvePending(taskId, { ...input, decisions: [decision(first, 'reject')] }, actor), /requestId/u);
+      currentRun = applied.imageRunId;
+      const queued = await service.create(taskId, request(), actor);
+      const running = await service.claim('batch-cancel');
+      assert.equal(running.id, queued.id);
+      const active = await service.get(queued.id);
+      await service.resolvePending(taskId, { requestId: randomUUID(), imageRunId: currentRun, decisions: [decision(active, 'cancel')] }, actor);
+      await assert.rejects(service.complete(running, { bytes: png, validation: { passed: true } }), { code: 'IMAGE_EDIT_CONFLICT' });
+      const toReject = await service.create(taskId, request(), actor);
+      await processImageEdit({ service, storageRoot: root, workerId: 'batch-reject', agentClient, validateImage });
+      const rejected = await service.resolvePending(taskId, { requestId: randomUUID(), imageRunId: currentRun,
+        decisions: [decision(await service.get(toReject.id), 'reject')] }, actor);
+      assert.equal(rejected.imageRunId, currentRun, 'rejecting keeps the current image set');
+      const pending = await service.list(taskId, { pendingOnly: true });
+      assert.ok(pending.every(edit => ['DRAFT', 'QUEUED', 'RUNNING', 'PREVIEW_READY'].includes(edit.status)));
+      assert.ok(!pending.some(edit => input.decisions.some(item => item.id === edit.id)));
+      const oldPending = await service.create(taskId, request({ draft: true }), actor);
+      await pool.query(`INSERT INTO image_edit_requests(id,task_id,request_id,source_image_run_id,source_asset_id,
+        copy_revision_id,source_sha256,target_page,operation,config,status,created_by)
+        SELECT gen_random_uuid(),e.task_id,gen_random_uuid(),e.source_image_run_id,e.source_asset_id,
+          e.copy_revision_id,e.source_sha256,e.target_page,e.operation,e.config,'CANCELLED',e.created_by
+        FROM image_edit_requests e CROSS JOIN generate_series(1,105) WHERE e.id=$1`, [oldPending.id]);
+      assert.equal((await service.list(taskId)).length, 100);
+      assert.ok(!(await service.list(taskId)).some(edit => edit.id === oldPending.id));
+      assert.ok((await service.list(taskId, { pendingOnly: true })).some(edit => edit.id === oldPending.id), 'older pending edits are not hidden by the history limit');
+      await action(oldPending.id, 'cancel');
+    });
     await t.test('a local-edit suggestion can be adopted once and freezes its executable plan',async()=>{
       const originalInstruction='把画面右下角的一勺老抽变成半勺并移动到左侧';
       const suggestedInstruction='将画面右下角正在倒出的汤勺和液流移动到锅的左侧，把勺中老抽减少为半勺，保持液流落入锅内并自然修复原位置；不要修改文字和其他内容。';
@@ -421,5 +497,129 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       const restored=(await pool.query('SELECT r.result FROM tasks t JOIN image_runs r ON r.id=t.current_image_run_id WHERE t.id=$1',[taskId])).rows[0].result;
       assert.equal(restored.processing.type,'RESTORE');assert.deepEqual(restored.images[0],images[0]);assert.deepEqual(restored.images[2],images[2]);
     });
+    for (const legacy of [false, true]) {
+      await t.test(`reviewed delivery stays available until ${legacy ? 'batch' : 'single'} acceptance (${legacy ? 'legacy' : 'quality approval'} release)`, async () => {
+        const reviewedTask = (await pool.query(`INSERT INTO tasks(query,state,current_stage,created_by_node_id,
+          assigned_to_user_id,assignment_source,assigned_at,image_qc_legacy_accepted,image_reviewed_at,image_reviewed_by_user_id)
+          VALUES('reviewed edit fixture','REVIEWED','REVIEWED','edit-test',$1,'MANUAL',now(),$2,now(),$1) RETURNING *`,
+        [actor.username, legacy])).rows[0];
+        const id = Number(reviewedTask.id), sourceRunId = randomUUID();
+        const copy = (await pool.query(`INSERT INTO copy_revisions(task_id,revision,content,approved_at)
+          VALUES($1,1,$2,now()) RETURNING id`, [id, revision.content])).rows[0];
+        await pool.query(`INSERT INTO image_runs(id,task_id,copy_revision_id,status,image_production_chain_id)
+          VALUES($1,$2,$3,'COMPLETED',$1)`, [sourceRunId, id, copy.id]);
+        const sourceImages = [];
+        for (let index = 0; index < images.length; index++) {
+          const sourcePath = resolve(root, `reviewed-${id}-${index}.png`);
+          await writeFile(sourcePath, png);
+          const asset = (await pool.query(`INSERT INTO assets(task_id,image_run_id,media_type,byte_size,sha256,
+            storage_path,image_production_chain_id,artifact_key,origin_image_run_id)
+            VALUES($1,$2,'image/png',$3,$4,$5,$2,$6,$2) RETURNING id`,
+          [id, sourceRunId, png.length, sha256, sourcePath, `reviewed-${index}`])).rows[0];
+          sourceImages.push({ assetId: Number(asset.id), deliveryAssetId: Number(asset.id), pageIndex: index + 1 });
+        }
+        await pool.query('UPDATE image_runs SET result=$2 WHERE id=$1', [sourceRunId, { images: sourceImages }]);
+        let approvalId = null;
+        if (!legacy) {
+          approvalId = (await pool.query(`INSERT INTO image_approval_events(task_id,copy_revision_id,image_run_id,
+            submitted_by_account_id,submitted_by_username,review_session_id,image_set_sha256)
+            VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+          [id, copy.id, sourceRunId, actor.userId, actor.username, randomUUID(), sha256])).rows[0].id;
+        }
+        await pool.query('UPDATE tasks SET current_copy_revision_id=$2,current_image_run_id=$3 WHERE id=$1', [id, copy.id, sourceRunId]);
+        await pool.query(`UPDATE tasks SET image_qc_released_approval_event_id=$2,image_qc_legacy_accepted=$3,
+          image_reviewed_at=now(),image_reviewed_by_user_id=$4 WHERE id=$1`, [id, approvalId, legacy, actor.username]);
+        const delivery = await createReadyDeliveryEntry(pool, { taskId: id, copyRevisionId: Number(copy.id), imageRunId: sourceRunId, actor: adminActor });
+        await pool.query(`UPDATE delivery_entries SET preview_id=$2,preview_note_id=$3,
+          preview_content_hash=$4,preview_status='PUBLISHED',preview_uploaded_by_account_id=$5,
+          preview_uploaded_by_username=$6,preview_published_at=now() WHERE id=$1`,
+        [delivery.id, randomUUID(), randomUUID().replaceAll('-', ''), sha256, adminActor.userId, adminActor.username]);
+        const snapshot = async () => ({
+          task: (await pool.query(`SELECT state,current_stage,current_image_run_id,image_qc_released_approval_event_id,
+            image_qc_legacy_accepted,image_reviewed_at,image_reviewed_by_user_id FROM tasks WHERE id=$1`, [id])).rows[0],
+          delivery: (await pool.query('SELECT status,withdrawn_at,preview_status FROM delivery_entries WHERE id=$1', [delivery.id])).rows[0],
+          revocations: (await pool.query('SELECT count(*)::int AS count FROM delivery_preview_revocation_jobs WHERE task_id=$1', [id])).rows[0].count,
+        });
+        const before = await snapshot();
+        const assertUnchanged = async () => {
+          assert.deepEqual(await snapshot(), before);
+          await assertTaskReadyForDelivery(pool, id);
+        };
+        const editInput = (extra = {}) => request({ sourceImageRunId: sourceRunId, sourceAssetId: sourceImages[1].assetId,
+          copyRevisionId: Number(copy.id), sha256, ...extra });
+        const create = (extra = {}) => service.create(id, editInput(extra), adminActor);
+        const act = async (edit, name, extra = {}) => service.action(edit.id, name, {
+          version: (await service.get(edit.id)).version, requestId: randomUUID(), reason: 'reviewed delivery test', ...extra,
+        }, adminActor);
+        const complete = claim => service.complete(claim, { bytes: disclosurePng,
+          validation: { passed: true, requiredText: [], integrity: { sha256: imageHash(disclosurePng) } } });
+        await assert.rejects(service.create(id, editInput(), actor), { code: 'FORBIDDEN' });
+        const draft = await create({ draft: true, confirmation: undefined });
+        await assertUnchanged();
+        await act(draft, 'cancel');
+        await assertUnchanged();
+        const queuedDraft = await create({ draft: true, confirmation: undefined });
+        await act(queuedDraft, 'queue', { confirmation: 'LIVE_IMAGE_COST_ACCEPTED' });
+        await assertUnchanged();
+        await service.resolvePending(id, { requestId: randomUUID(), imageRunId: sourceRunId,
+          decisions: [{ id: queuedDraft.id, version: (await service.get(queuedDraft.id)).version, action: 'cancel' }] }, adminActor);
+        await assertUnchanged();
+        const edit = await create();
+        await assertUnchanged();
+        const claimed = await repository.claimImage('edit-test', 1, 2, 8);
+        assert.equal(claimed.imageEdit.id, edit.id);
+        assert.equal((await service.context(claimed.imageEdit)).task.state, 'REVIEWED');
+        await assertUnchanged();
+        await service.fail(claimed.imageEdit, new Error('fake edit failure'));
+        await assertUnchanged();
+        await act(edit, 'retry');
+        const retry = await service.claim('reviewed-retry');
+        assert.equal(retry.id, edit.id);
+        await complete(retry);
+        await assertUnchanged();
+        await act(edit, 'reject');
+        await assertUnchanged();
+        const cancelled = await create();
+        const cancelledClaim = await service.claim('reviewed-cancel');
+        assert.equal(cancelledClaim.id, cancelled.id);
+        await act(cancelled, 'cancel');
+        await assert.rejects(complete(cancelledClaim), { code: 'IMAGE_EDIT_CONFLICT' });
+        await assertUnchanged();
+        const accepted = await create();
+        const acceptedClaim = await service.claim('reviewed-accept');
+        assert.equal(acceptedClaim.id, accepted.id);
+        await complete(acceptedClaim);
+        const preview = await service.get(accepted.id);
+        const otherDraft = await create({ draft: true });
+        const input = { version: preview.version, requestId: randomUUID(), reason: '确认采用' };
+        const batchInput = { requestId: randomUUID(), imageRunId: sourceRunId,
+          decisions: [{ id: preview.id, version: preview.version, action: 'accept' }] };
+        const accept = () => legacy ? service.resolvePending(id, batchInput, adminActor) : service.action(preview.id, 'accept', input, adminActor);
+        const output = await service.asset(Number(preview.result.asset_id), id);
+        await writeFile(output.storage_path, 'corrupt test preview');
+        await assert.rejects(accept(), /完整性校验失败/u);
+        await assertUnchanged();
+        await writeFile(output.storage_path, disclosurePng);
+        await accept();
+        await accept();
+        const after = await snapshot();
+        assert.equal(after.task.state, 'MANUAL_ARCHIVE');
+        assert.equal(after.task.current_stage, 'MANUAL_ARCHIVE');
+        assert.equal(after.task.current_image_run_id, preview.result.image_run_id);
+        assert.equal(after.task.image_qc_released_approval_event_id, null);
+        assert.equal(after.task.image_qc_legacy_accepted, false);
+        assert.equal(after.task.image_reviewed_at, null);
+        assert.equal(after.task.image_reviewed_by_user_id, null);
+        assert.equal(after.delivery.status, 'WITHDRAWN');
+        assert.ok(after.delivery.withdrawn_at);
+        assert.equal(after.delivery.preview_status, 'REVOKING');
+        assert.equal(after.revocations, 1);
+        await assert.rejects(assertTaskReadyForDelivery(pool, id), { code: 'DELIVERY_NOT_READY' });
+        await assert.rejects(createReadyDeliveryEntry(pool, { taskId: id, copyRevisionId: Number(copy.id),
+          imageRunId: preview.result.image_run_id, actor: adminActor }), { code: 'IMAGE_QA_NOT_RELEASED' });
+        await act(otherDraft, 'cancel');
+        assert.deepEqual(await snapshot(), after, 'cancelling another edit must not undo an accepted version');
+      });
+    }
   }finally{if(pool)await pool.end();if(started)await ctl(['-D',data,'-m','fast','-w','stop']);assert.ok(resolve(root).startsWith(resolve(tmpdir())));await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
