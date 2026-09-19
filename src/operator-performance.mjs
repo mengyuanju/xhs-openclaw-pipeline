@@ -1,8 +1,9 @@
+import { isQaActivity, qaMetricRows, summarizeQa, uniqueTaskCount, validQaReview } from './quality-review-statistics.mjs';
 import { chinaDay, normalizeRange } from './web-statistics/summary.mjs';
 
-export const PERFORMANCE_VERSION = 1;
-export const PERFORMANCE_METRICS = Object.freeze(['all','submitted','firstPass','recheck','firstRecheck','returned','reworked','released','delivered','batchAffected','excluded','pending']);
-export const PERFORMANCE_SORTS = Object.freeze(['submitted','released','copyRate','imageRate','returned','pending','copyMedian','imageMedian']);
+export const PERFORMANCE_VERSION = 3;
+export const PERFORMANCE_METRICS = Object.freeze(['all','contributed','qaAll','qa','qaRecheck','qaBatch','qaSpecial','qaPending','qaBlocked','submitted','firstSubmitted','firstPass','recheck','firstRecheck','returned','reworked','reassign','released','delivered','batchAffected','excluded','pending']);
+export const PERFORMANCE_SORTS = Object.freeze(['contributed','qa','qaPending','submitted','released','copyRate','imageRate','returned','pending','copyMedian','imageMedian','copySubmitted','imageSubmitted','copyQa','imageQa','qaReviews','qaPassed','qaReturned','qaRecheck','reworked']);
 const ms = value => value == null ? NaN : Date.parse(value);
 const uniqueTasks = rows => new Set(rows.map(row => row.taskId)).size;
 const valid = row => !row.exclusion && row.accountId !== null;
@@ -22,7 +23,7 @@ function integer(value, fallback, max = Number.MAX_SAFE_INTEGER) {
   return n;
 }
 export function normalizePerformanceFilters(input = {}, now = Date.now()) {
-  const keys = ['period','from','to','accountId','stage','batchId','query','page','pageSize','sort','order','metric','sampleSet','snapshotToken'];
+  const keys = ['period','from','to','accountId','stage','batchId','query','page','pageSize','sort','order','metric','sampleSet','snapshotToken','activity'];
   if (Object.keys(input).some(key => !keys.includes(key)) || Object.values(input).some(Array.isArray)) throw new TypeError('统计筛选参数无效');
   const period = choice(input.period, ['today','7d','30d','custom'], '30d');
   const query = String(input.query ?? '').trim();
@@ -31,7 +32,8 @@ export function normalizePerformanceFilters(input = {}, now = Date.now()) {
   return { period, range: normalizeRange({ period, from:input.from,to:input.to }, now),
     accountId:integer(input.accountId,null),stage:choice(input.stage,['COPY','IMAGE'],''),batchId:integer(input.batchId,null),query,
     page:integer(input.page,1,1_000_000),pageSize:integer(input.pageSize,20,100),
-    sort:choice(input.sort,PERFORMANCE_SORTS,'submitted'),order:choice(input.order,['asc','desc'],'desc'),
+    activity:choice(input.activity,['ALL','PRODUCTION','QA'],'ALL'),
+    sort:choice(input.sort,PERFORMANCE_SORTS,'contributed'),order:choice(input.order,['asc','desc'],'desc'),
     metric:choice(input.metric,PERFORMANCE_METRICS,'all'),sampleSet:choice(input.sampleSet,['all','passed','failed'],'all'),
     snapshotToken:input.snapshotToken || null };
 }
@@ -82,8 +84,11 @@ export function qualityRate(rows, first = true) {
 }
 
 export function performanceMetricRows(rows, metric, stage='', sampleSet='all') {
+  if (metric.startsWith('qa')) return qaMetricRows(rows,metric,stage,sampleSet==='all'?'':sampleSet==='passed'?'PASS':'RETURN');
   return rows.filter(row=>(!stage || row.stage===stage) && (
-    metric==='all' || metric==='submitted' && row.kind==='SUBMIT' && valid(row)
+    metric==='contributed' && (row.kind==='SUBMIT' && valid(row) || validQaReview(row))
+    || metric==='all' || metric==='submitted' && row.kind==='SUBMIT' && valid(row)
+    || metric==='firstSubmitted' && row.kind==='SUBMIT' && row.firstSubmission && valid(row)
     || metric==='firstPass' && row.kind==='QUALITY' && row.first && row.sampleKind==='RANDOM' && valid(row)
     || metric==='recheck' && row.kind==='QUALITY' && row.sampleKind==='MANDATORY_RECHECK' && valid(row)
     || metric==='firstRecheck' && row.kind==='QUALITY' && row.firstRecheck && valid(row)
@@ -94,10 +99,12 @@ export function performanceMetricRows(rows, metric, stage='', sampleSet='all') {
     || metric==='batchAffected' && row.kind==='BATCH_RETURN'
     || metric==='excluded' && (!valid(row) || row.kind==='EXCLUDED')
     || metric==='pending' && row.kind==='PENDING'
+    || metric==='reassign' && row.kind==='REASSIGN'
   ) && (sampleSet==='all' || row.outcome===(sampleSet==='passed'?'PASS':'RETURN')));
 }
 
 export function summarizeOperator(rows, current=[]) {
+  const qa=summarizeQa(rows);
   const submissions=rows.filter(row=>row.kind==='SUBMIT' && valid(row));
   const returns=rows.filter(returned);
   const reworks=submissions.filter(row=>row.rework);
@@ -108,18 +115,21 @@ export function summarizeOperator(rows, current=[]) {
     const eligible=firstSubmissions.filter(row=>typeof row.sampleSelected==='boolean');
     const sampled=eligible.filter(row=>row.sampleSelected).length;
     return { submitted:uniqueTasks(submitted),submissions:submitted.length,
+      firstSubmitted:uniqueTasks(firstSubmissions),reworked:uniqueTasks(submitted.filter(row=>row.rework)),
+      reworkSubmissions:submitted.filter(row=>row.rework).length,
+      returned:uniqueTasks(selected.filter(returned)),
       firstPass:qualityRate(selected),recheck:qualityRate(selected,false),firstRecheck:qualityRate(selected.filter(row=>row.firstRecheck),false),
       duration:durationDistribution(durations,submitted.length-durations.length),
       qualityWait:durationDistribution(selected.filter(row=>row.kind==='QUALITY' && valid(row))
         .map(row=>ms(row.at)-ms(row.submittedAt))),
       coverage:{eligible:eligible.length,sampled,unresolved:firstSubmissions.length-eligible.length,rate:eligible.length?sampled/eligible.length:null},
       pending:selected.filter(row=>row.kind==='PENDING').length,
-      excluded:selected.filter(row=>!valid(row) || row.kind==='EXCLUDED').length };
+      excluded:selected.filter(row=>!isQaActivity(row) && (!valid(row) || row.kind==='EXCLUDED')).length };
   };
   const returnDurations=reworks.map(row=>ms(row.at)-ms(row.returnedAt)).filter(Number.isFinite);
   const reasons=new Map();
   for(const row of returns) for(const code of new Set(row.reasons ?? [])) reasons.set(code,(reasons.get(code)??0)+1);
-  return { submitted:uniqueTasks(submissions),submissions:submissions.length,
+  return { contributed:uniqueTaskCount([...submissions,...qaMetricRows(rows)]),qa,submitted:uniqueTasks(submissions),submissions:submissions.length,
     delivered:uniqueTasks(rows.filter(row=>row.kind==='DELIVERY'&&valid(row))),
     deliveredBatches:new Set(rows.filter(row=>row.kind==='DELIVERY'&&valid(row)).map(row=>row.deliveryBatchId)).size,
     released:uniqueTasks(rows.filter(row=>row.kind==='RELEASE' && row.first && valid(row))),
@@ -127,6 +137,7 @@ export function summarizeOperator(rows, current=[]) {
     returned:uniqueTasks(returns),returnRounds:returns.length,
     repeatedReturns:uniqueTasks(returns.filter(row=>row.returnRound>=2)),
     reworked:uniqueTasks(reworks),reworkRounds:reworks.length,
+    reassignSuggested:uniqueTasks(rows.filter(row=>row.kind==='REASSIGN')),
     batchAffected:uniqueTasks(rows.filter(row=>row.kind==='BATCH_RETURN')),
     reworkDuration:durationDistribution(returnDurations,reworks.length-returnDurations.length),
     pending:current.filter(row=>row.phase==='HUMAN').length,
@@ -142,8 +153,9 @@ export function buildPerformanceSnapshot(events,current,timeline,filters,asOf) {
   const matchingAccounts=new Set([...events,...current].filter(nameMatches).map(row=>row.accountId).filter(id=>id!==null));
   const matches=row=>(!filters.accountId || row.accountId===filters.accountId)
     && (!filters.stage || row.stage===filters.stage) && (!filters.batchId || row.batchId===filters.batchId)
+    && (filters.activity==='QA' ? isQaActivity(row) : filters.activity==='PRODUCTION' ? !isQaActivity(row) : true)
     && (!keyword || (row.accountId===null ? nameMatches(row):matchingAccounts.has(row.accountId)));
-  const rows=events.filter(row=>matches(row) && (['PENDING','EXCLUDED'].includes(row.kind) || inRange(row,filters.range)));
+  const rows=events.filter(row=>matches(row) && (['PENDING','EXCLUDED','QA_PENDING','REASSIGN'].includes(row.kind) || inRange(row,filters.range)));
   const historyByTask=new Map();
   for(const item of timeline) { if(!historyByTask.has(item.taskId)) historyByTask.set(item.taskId,[]);historyByTask.get(item.taskId).push(item); }
   for(const row of rows) if(row.kind==='SUBMIT' && valid(row)) row.timing=submissionTiming(row,historyByTask.get(row.taskId)??[]);
@@ -155,24 +167,29 @@ export function buildPerformanceSnapshot(events,current,timeline,filters,asOf) {
     ...summarizeOperator(rows.filter(row=>row.accountId===person.accountId),present.filter(row=>row.accountId===person.accountId))}));
   const trend=[];
   for(let at=filters.range.startMs;at<filters.range.endMs;at+=86_400_000) {
-    const date=chinaDay(at),day=rows.filter(row=>chinaDay(ms(row.at))===date);
-    trend.push({date,submitted:uniqueTasks(day.filter(row=>row.kind==='SUBMIT'&&valid(row))),
+    const date=chinaDay(at),day=rows.filter(row=>Number.isFinite(ms(row.at)) && chinaDay(ms(row.at))===date);
+    trend.push({date,qa:summarizeQa(day).reviews,submitted:uniqueTasks(day.filter(row=>row.kind==='SUBMIT'&&valid(row))),
+      copySubmitted:uniqueTasks(day.filter(row=>row.kind==='SUBMIT'&&row.stage==='COPY'&&valid(row))),
+      imageSubmitted:uniqueTasks(day.filter(row=>row.kind==='SUBMIT'&&row.stage==='IMAGE'&&valid(row))),
+      copyQa:summarizeQa(day).COPY.tasks,imageQa:summarizeQa(day).IMAGE.tasks,
       released:uniqueTasks(day.filter(row=>row.kind==='RELEASE'&&row.first&&valid(row))),COPY:qualityRate(day.filter(row=>row.stage==='COPY')),IMAGE:qualityRate(day.filter(row=>row.stage==='IMAGE'))});
   }
   const exclusions=new Map();
-  for(const row of rows) if(row.exclusion) exclusions.set(row.exclusion,(exclusions.get(row.exclusion)??0)+1);
+  for(const row of rows) if(row.exclusion && !isQaActivity(row)) exclusions.set(row.exclusion,(exclusions.get(row.exclusion)??0)+1);
   return {metricVersion:PERFORMANCE_VERSION,timezone:'Asia/Shanghai',asOf,
     range:{from:filters.range.from,to:filters.range.to},filters,summary:summarizeOperator(rows,present),people,trend,rows,
     dataQuality:{unknownIdentity:rows.filter(row=>row.accountId===null).length,
       excluded:[...exclusions].map(([reason,count])=>({reason,count})),
       timingSince:timeline.length ? timeline.reduce((min,row)=>row.at<min?row.at:min,timeline[0].at):null,
-      historyNotice:'提交与质检按实际账号统计；缺失历史身份和时间不补造。待办周转为自然时间，不是操作工时。'} };
+      historyNotice:'制作提交与质检操作分别归实际操作账号；内容通过率归提交人。缺失历史身份和时间不补造。'} };
 }
 
 export function performancePeoplePage(snapshot,filters) {
-  const value=(person,key)=>({submitted:person.submitted,released:person.released,copyRate:person.COPY.firstPass.rate,
+  const value=(person,key)=>({contributed:person.contributed,qa:person.qa.reviews,qaPending:person.qa.pending,submitted:person.submitted,released:person.released,copyRate:person.COPY.firstPass.rate,
     imageRate:person.IMAGE.firstPass.rate,returned:person.returned,pending:person.pending,
-    copyMedian:person.COPY.duration.medianMs,imageMedian:person.IMAGE.duration.medianMs})[key];
+    copyMedian:person.COPY.duration.medianMs,imageMedian:person.IMAGE.duration.medianMs,
+    copySubmitted:person.COPY.submitted,imageSubmitted:person.IMAGE.submitted,copyQa:person.qa.COPY.tasks,imageQa:person.qa.IMAGE.tasks,
+    qaReviews:person.qa.reviews,qaPassed:person.qa.passed,qaReturned:person.qa.returned,qaRecheck:person.qa.rechecks,reworked:person.reworked})[key];
   const rows=snapshot.people.toSorted((a,b)=>{
     const av=value(a,filters.sort),bv=value(b,filters.sort);
     if(av==null || bv==null) return av==null && bv==null ? a.accountId-b.accountId:av==null?1:-1;
@@ -185,10 +202,14 @@ export function performancePeoplePage(snapshot,filters) {
 export function performanceCsv(snapshot) {
   const cell=value=>`"${String(value??'').replace(/^[\s]*[=+@-]/u,match=>`'${match}`).replaceAll('"','""')}"`;
   const heading=['账号ID','姓名','账号','文案提交任务','图片提交任务','首次放行','文案通过','文案已审','图片通过','图片已审','退回任务','返修提交次数','文案周转中位毫秒','图片周转中位毫秒','当前待办','开始日期','结束日期','时区','报表时点','口径版本','交付确认任务','交付确认批次','文案抽中','文案已结批首次提交','图片抽中','图片已结批首次提交','文案时长缺失','图片时长缺失','批次退回影响','文案排除记录','图片排除记录'];
+  heading.push('参与处理作业','文案质检次数','图片质检次数','质检作业','质检通过次数','质检退回次数','其中复检次数','批量退回次数','已知批量影响作业','旧批量影响项次','批量范围缺失次数','快捷直放次数','质检废弃次数','质检待办','质检阻塞','贡献视图');
+  heading.push('文案首次标注条数','图片首次标注条数','文案返修条数','图片返修条数','文案质检条数','图片质检条数','文案首次返修通过','文案首次返修已检','图片首次返修通过','图片首次返修已检','当前建议改派');
   return '\uFEFF'+[heading,...snapshot.people.map(p=>[p.accountId,p.displayName,p.username,p.COPY.submitted,p.IMAGE.submitted,p.released,
     p.COPY.firstPass.passed,p.COPY.firstPass.decided,p.IMAGE.firstPass.passed,p.IMAGE.firstPass.decided,p.returned,p.reworkRounds,
     p.COPY.duration.medianMs,p.IMAGE.duration.medianMs,p.pending,snapshot.range.from,snapshot.range.to,snapshot.timezone,snapshot.asOf,snapshot.metricVersion,
     p.delivered,p.deliveredBatches,p.COPY.coverage.sampled,p.COPY.coverage.eligible,p.IMAGE.coverage.sampled,p.IMAGE.coverage.eligible,
-    p.COPY.duration.missing,p.IMAGE.duration.missing,p.batchAffected,p.COPY.excluded,p.IMAGE.excluded])]
+    p.COPY.duration.missing,p.IMAGE.duration.missing,p.batchAffected,p.COPY.excluded,p.IMAGE.excluded,p.contributed,p.qa.COPY.reviews,p.qa.IMAGE.reviews,p.qa.tasks,p.qa.passed,p.qa.returned,p.qa.rechecks,p.qa.batchActions,p.qa.affectedTasks,p.qa.legacyAffectedCount,p.qa.unknownBatchScopes,p.qa.directPass,p.qa.discarded,p.qa.pending,p.qa.blocked,snapshot.filters.activity,
+    p.COPY.firstSubmitted,p.IMAGE.firstSubmitted,p.COPY.reworked,p.IMAGE.reworked,p.qa.COPY.tasks,p.qa.IMAGE.tasks,
+    p.COPY.firstRecheck.passed,p.COPY.firstRecheck.decided,p.IMAGE.firstRecheck.passed,p.IMAGE.firstRecheck.decided,p.reassignSuggested])]
     .map(row=>row.map(cell).join(',')).join('\r\n');
 }

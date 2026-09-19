@@ -127,7 +127,7 @@ test('admin non-blind inspection retains traceable frozen identifiers', async ()
     return { rows: [databaseRow({ query_package_name: '九月 选题' })] };
   } };
   const [listed] = await listCopyQaItems(pool, {
-    status: 'PENDING', queryPackageName: '  九月   选题  ', personName: '  审核员   甲  ',
+    status: 'PENDING', queryPackageName: '  九月   选题  ', personName: '  质检   甲  ',
   }, admin);
   const detail = await getCopyQaItem(pool, ITEM_PUBLIC_ID, admin);
   assert.equal(detail.blindReview, false,
@@ -138,7 +138,7 @@ test('admin non-blind inspection retains traceable frozen identifiers', async ()
   assert.equal(listed.productionBatch.queryPackageName, '九月 选题');
   assert.equal(detail.productionBatch.queryPackageName, '九月 选题');
   assert.equal(detail.source.finalApproverAccountId, 64);
-  assert.deepEqual(queries[0].values, ['PENDING', null, '九月 选题', '审核员 甲', 50, 0]);
+  assert.deepEqual(queries[0].values, ['PENDING', null, '九月 选题', '质检 甲', 50, 0]);
   assert.match(queries[0].sql,
     /strpos\(lower\(batch\.query_package_name\), lower\(\$3\)\) > 0/u);
   assert.match(queries[0].sql,
@@ -185,7 +185,7 @@ test('reviewers cannot request a package-name QA filter', async () => {
 test('reviewers cannot request a personnel-name QA filter', async () => {
   await assert.rejects(
     listCopyQaItems({ query: async () => assert.fail('filter must fail before SQL') }, {
-      personName: '审核员甲',
+      personName: '质检甲',
     }, reviewer),
     (error) => error?.code === 'FORBIDDEN',
   );

@@ -13,7 +13,7 @@ export async function loadAdminTaskPage(request, {
 } = {}) {
   const hasCreator = Boolean(createdByUserId);
   const hasCreatorAccount = Number.isSafeInteger(createdByAccountId) && createdByAccountId > 0;
-  if (hasCreator !== hasCreatorAccount) throw new TypeError('作业员筛选缺少稳定账号身份，请重新选择作业员。');
+  if (hasCreator !== hasCreatorAccount) throw new TypeError('标注筛选缺少稳定账号身份，请重新选择标注。');
   const hasAssignee = Boolean(assignedToUserId);
   const hasAssigneeAccount = Number.isSafeInteger(assignedToAccountId) && assignedToAccountId > 0;
   if (hasAssignee !== hasAssigneeAccount) throw new TypeError('负责人筛选缺少稳定账号身份，请重新选择负责人。');

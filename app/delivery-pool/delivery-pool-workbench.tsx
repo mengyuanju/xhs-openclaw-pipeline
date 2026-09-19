@@ -695,7 +695,7 @@ export function DeliveryPoolWorkbench({
         </div>}
         <p className={styles.scopeNote}>{role === 'ADMIN'
           ? '新建交付批次始终由服务端排除已经打包的相同版本；文本搜索只覆盖已加载条目。Excel 按原文件字节内嵌图片，只调整表格中的显示尺寸，不重新编码或二次压缩。'
-          : '作业员仅能选择本人当前负责的待交付内容；下载时服务端会再次校验负责人、质检门禁和冻结版本。'}</p>
+          : '标注仅能选择本人当前负责的待交付内容；下载时服务端会再次校验负责人、质检门禁和冻结版本。'}</p>
 
         {loading
           ? <div className="empty-state"><LoaderCircle className="animate-spin" size={20} />正在读取交付池…</div>
@@ -817,7 +817,7 @@ export function DeliveryPoolWorkbench({
         <section className={styles.history} aria-labelledby="delivery-history-title">
           <div className={styles.sectionHeader}><div><span className={styles.eyebrow}>IMMUTABLE ARCHIVE</span><h3 id="delivery-history-title">{role === 'ADMIN' ? '交付历史' : '我创建的交付批次'}</h3><p>{role === 'ADMIN'
             ? '每个批次冻结成员和版本，可查看明细、重新下载 ZIP 或导出 Excel。'
-            : '只显示当前账号创建的作业员交付批次，可查看明细、重新下载 ZIP 或导出 Excel。'}</p></div><strong>{deliveryBatchTotal} 批</strong></div>
+            : '只显示当前账号创建的标注交付批次，可查看明细、重新下载 ZIP 或导出 Excel。'}</p></div><strong>{deliveryBatchTotal} 批</strong></div>
           <div className={styles.historyBody}>
             {historyLoading ? <div className={styles.historyEmpty}><LoaderCircle className="animate-spin" size={16} />正在读取交付历史…</div>
               : deliveryBatches.length === 0 ? <div className={styles.historyEmpty}>{clientBatchCode ? `甲方批次“${clientBatchCode}”还没有交付批次。` : '还没有交付批次；首次创建后会在这里永久保留成员和版本记录。'}</div>
@@ -829,7 +829,7 @@ export function DeliveryPoolWorkbench({
                         ? <>{batch.queryPackageNames.length ? batch.queryPackageNames.slice(0, 3).join('、') : '历史未归属内容'}{batch.queryPackageNames.length > 3 ? `等 ${batch.queryPackageNames.length} 个词包` : ''}<small className={styles.blockMeta}>甲方批次 {batch.clientBatchCode ?? '未记录'}</small></>
                         : '当前账号选中的已通过内容'}</td>
                       <td data-label="数量">{batch.taskCount} 条</td>
-                      <td data-label="创建信息">{timeLabel(batch.createdAt)}<small className={styles.blockMeta}>{batch.batchKind === 'OPERATOR_DELIVERY' ? '作业员交付' : '管理员交付'} · {batch.createdByUsername}</small></td>
+                      <td data-label="创建信息">{timeLabel(batch.createdAt)}<small className={styles.blockMeta}>{batch.batchKind === 'OPERATOR_DELIVERY' ? '标注交付' : '管理员交付'} · {batch.createdByUsername}</small></td>
                       <td data-label="交付状态">{batch.status === 'DELIVERED' ? '已确认完成交付' : batch.downloadCount ? '已下载，待确认交付' : '已生成，尚未下载'}<small className={styles.blockMeta}>{batch.status === 'DELIVERED' ? `${timeLabel(batch.deliveredAt)} · ${batch.deliveredByUsername ?? '未知确认人'}` : batch.downloadCount ? `已下载 ${batch.downloadCount} 次 · ${timeLabel(batch.lastDownloadedAt)}` : '—'}</small></td>
                       <td className="row-action" data-label="操作"><div className={styles.actions}>
                         <Button unstyled className="button small" type="button" disabled={batchDetailLoading} onClick={() => { void openBatchDetail(batch); }}>查看明细</Button>

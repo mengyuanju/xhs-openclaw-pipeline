@@ -1,6 +1,10 @@
 import { normalizePersonalFilters, selectPersonalTasks, summarizePersonalWorkspace } from '../../src/personal-workspace.mjs';
 import { normalizeRange } from '../../src/web-statistics/summary.mjs';
 import { ControlPlaneAuthenticationError } from './domain.mjs';
+import { createHash } from 'node:crypto';
+import { readQaFacts } from './quality-review-statistics.mjs';
+import { readInspectionRounds } from './quality-rounds.mjs';
+import { qaMetricRows, summarizeQa, uniqueTaskCount } from '../../src/quality-review-statistics.mjs';
 
 const MAX_FACTS = 50_000;
 const iso = value => value instanceof Date ? value.toISOString() : value ?? null;
@@ -79,50 +83,23 @@ function factFrom(row) {
 
 // Event identity is the original submitter account, never the current owner.
 // Reassignments therefore affect pending work but not historical contributions.
-export const PERSONAL_EVENTS_SQL = `WITH returns AS (
-    SELECT 'copy-return:'||r.id AS id,r.task_id,'COPY' AS stage,r.created_at AS at,
-      approval.approved_by_account_id AS account_id,
-      COALESCE(r.content->'qualityReturn'->'reasonCodes','[]'::jsonb) AS reasons
-    FROM copy_revisions r LEFT JOIN copy_approval_events approval ON approval.copy_revision_id=r.parent_revision_id
-    WHERE r.revision_origin='QA_RETURN'
-    UNION ALL
-    SELECT 'image-return:'||i.id,i.task_id,'IMAGE',i.reviewed_at,i.submitter_account_id,to_jsonb(i.reason_codes)
-    FROM image_sampling_items i WHERE i.rework_target IS NOT NULL AND i.reviewed_at IS NOT NULL
-    UNION ALL
-    SELECT 'final-return:'||a.id,a.task_id,'IMAGE',a.created_at,approval.submitted_by_account_id,to_jsonb(a.reason_codes)
-    FROM human_quality_assessments a LEFT JOIN image_approval_events approval ON approval.image_run_id=a.image_run_id
-    WHERE a.rework_target IS NOT NULL
-  ), completions AS (
-    SELECT 'copy:'||a.id AS id,a.task_id,'COPY' AS stage,a.approved_at AS at,a.approved_by_account_id AS account_id,
-      (r.revision_origin IN ('QA_RETURN','FINAL_REWORK') OR COALESCE(r.copy_rework_satisfied,false)) AS rework
-    FROM copy_approval_events a JOIN copy_revisions r ON r.id=a.copy_revision_id
-    WHERE a.approval_mode='MANUAL'
-    UNION ALL
-    SELECT 'image:'||a.id,a.task_id,'IMAGE',a.submitted_at,a.submitted_by_account_id,a.submission_mode='MANDATORY_RECHECK'
-    FROM image_approval_events a JOIN image_runs run ON run.id=a.image_run_id
-    WHERE COALESCE(run.result->'simulation'->>'enabled','false')<>'true'
-  ), quality AS (
-    SELECT event_key AS id,task_id,stage,occurred_at AS at,account_id,
-      data->>'outcome'='PASS' AS passed,COALESCE((data->>'first')::boolean,false) AS first
-    FROM operator_performance_events WHERE kind='QUALITY' AND data->>'exclusion' IS NULL
+export const PERSONAL_EVENTS_SQL = `WITH personal_events AS (
+    SELECT e.event_key AS id,e.task_id,e.stage,e.occurred_at AS at,e.data,
+      CASE WHEN e.kind='SUBMIT' THEN 'COMPLETE' ELSE e.kind END AS kind,
+      (SELECT max(r.occurred_at) FROM operator_performance_events r WHERE r.task_id=e.task_id
+        AND r.occurred_at<e.occurred_at AND (r.kind IN ('RETURN','BATCH_RETURN') OR r.kind='QUALITY' AND r.data->>'outcome'='RETURN')
+        AND COALESCE(r.data->>'target',r.stage) IN (e.stage,'BOTH')) AS returned_at
+    FROM operator_performance_events e WHERE e.account_id=$1 AND e.occurred_at >= $2 AND e.occurred_at < $3
+      AND e.kind IN ('SUBMIT','QUALITY','RETURN') AND e.data->>'exclusion' IS NULL
   ), events AS (
-    SELECT c.id,c.task_id,'COMPLETE' AS kind,c.stage,c.at,c.account_id,
-      (c.rework AND EXISTS (SELECT 1 FROM returns r WHERE r.task_id=c.task_id AND r.at<c.at
-        AND NOT EXISTS (SELECT 1 FROM completions prior WHERE prior.task_id=c.task_id AND prior.stage=c.stage
-          AND prior.at>=r.at AND prior.at<c.at))) AS rework,
-      (SELECT max(r.at) FROM returns r WHERE r.task_id=c.task_id AND r.at<c.at) AS returned_at,
-      NULL::boolean AS passed,NULL::boolean AS first,'[]'::jsonb AS reasons,0::bigint AS round
-    FROM completions c
+    SELECT * FROM personal_events
     UNION ALL
-    SELECT r.id,r.task_id,'RETURN',r.stage,r.at,r.account_id,false,NULL::timestamptz,NULL::boolean,NULL::boolean,r.reasons,
-      row_number() OVER (PARTITION BY r.task_id ORDER BY r.at,r.id)
-    FROM returns r
-    UNION ALL
-    SELECT q.id,q.task_id,'QUALITY',q.stage,q.at,q.account_id,false,NULL::timestamptz,q.passed,q.first,'[]'::jsonb,0::bigint
-    FROM quality q
-  ) SELECT id,task_id,kind,stage,at,rework,returned_at,passed,first,reasons,round FROM events
-    WHERE account_id=$1 AND at >= $2::timestamptz AND at < $3::timestamptz
-    ORDER BY at,id LIMIT ${MAX_FACTS + 1}`;
+    SELECT id||':return',task_id,stage,at,data,'RETURN',returned_at FROM personal_events
+      WHERE kind='QUALITY' AND data->>'outcome'='RETURN'
+  ) SELECT id,task_id,kind,stage,at,data,COALESCE((data->>'rework')::boolean,false) AS rework,returned_at,
+    data->>'outcome'='PASS' AS passed,COALESCE((data->>'first')::boolean,false) AS first,
+    COALESCE(data->'reasons','[]'::jsonb) AS reasons,NULL::bigint AS round
+  FROM events ORDER BY at,id LIMIT ${MAX_FACTS + 1}`;
 
 const BATCH_SQL = `SELECT b.id AS batch_id,
     CASE WHEN confirmation.item_id IS NOT NULL THEN 'DELIVERED' ELSE 'DOWNLOADED' END AS status,
@@ -154,8 +131,11 @@ export async function readPersonalWorkspace(pool, actor, input, { report = false
       try {
         const result = await client.query(PERSONAL_EVENTS_SQL, [actor.userId,new Date(filters.range.startMs).toISOString(),new Date(filters.range.endMs).toISOString()]);
         if (result.rows.length > MAX_FACTS) throw new RangeError('个人历史记录超出统计上限，请缩小日期范围');
-        events = result.rows.map(row => ({ id:row.id,taskId:Number(row.task_id),kind:row.kind,stage:row.stage,at:iso(row.at),
-          rework:row.rework===true,returnedAt:iso(row.returned_at),passed:row.passed===true,first:row.first===true,reasons:row.reasons,round:Number(row.round) }));
+        events = result.rows.map(row => ({accountId:actor.userId,id:row.id,taskId:Number(row.task_id),kind:row.kind,stage:row.stage,at:iso(row.at),
+          samplingItemId:row.data?.samplingItemId,sampleKind:row.data?.sampleKind,approvalId:row.data?.approvalId,
+          firstSubmission:row.data?.firstSubmission,firstRecheck:row.data?.firstRecheck,outcome:row.data?.outcome,
+          rework:row.rework===true,returnedAt:iso(row.returned_at),passed:row.passed===true,first:row.first===true,reasons:row.reasons,round:null }));
+        events=(await readInspectionRounds(client,events,new Date(now).toISOString())).map(event=>({...event,round:event.returnRound??null}));
       } catch (error) {
         await client.query('ROLLBACK TO SAVEPOINT personal_history');
         if (!report) throw error;
@@ -179,12 +159,27 @@ export async function readPersonalWorkspace(pool, actor, input, { report = false
       }
       await client.query('RELEASE SAVEPOINT personal_delivery');
       output = summarizePersonalWorkspace(facts,events,batches,filters,now);
-      if (!historyAvailable) Object.assign(output,{period:null,trend:null,quality:null,reworkDuration:null,reasons:null,repeatReworkTasks:null});
+      await client.query('SAVEPOINT personal_qa');
+      try {
+        const qaEvents = await readQaFacts(client,{range:filters.range,accountId:actor.userId,asOf:new Date(now).toISOString()});
+        output.qa = summarizeQa(qaEvents);
+        output.contribution = historyAvailable ? uniqueTaskCount([...events.filter(event=>event.kind==='COMPLETE'),...qaMetricRows(qaEvents)]) : null;
+        output.qaTrend = [];
+        for (let at=filters.range.startMs;at<filters.range.endMs;at+=86400000) {
+          const daily=qaEvents.filter(event=>Date.parse(event.at)>=at && Date.parse(event.at)<at+86400000);
+          output.qaTrend.push({date:new Date(at+8*3600000).toISOString().slice(0,10),...summarizeQa(daily)});
+        }
+      } catch {
+        await client.query('ROLLBACK TO SAVEPOINT personal_qa');
+        output.qa=null;output.contribution=null;output.qaTrend=null;
+      }
+      await client.query('RELEASE SAVEPOINT personal_qa');
+      if (!historyAvailable) Object.assign(output,{period:null,annotation:null,trend:null,quality:null,reworkDuration:null,reasons:null,repeatReworkTasks:null});
       if (!deliveryAvailable) {
         output.pendingDeliveryBatches = null;
         if (output.period) Object.assign(output.period,{deliveredBatches:null,deliveredTasks:null,confirmedByMeTasks:null});
       }
-      output.notices = [!historyAvailable && '历史完成与质量数据暂不可用，当前待办仍可查看。',!deliveryAvailable && '交付统计暂不可用。'].filter(Boolean);
+      output.notices = [!historyAvailable && '历史完成与质量数据暂不可用，当前待办仍可查看。',!deliveryAvailable && '交付统计暂不可用。',!output.qa && '质检贡献暂不可用，请确认中心已升级后重试。'].filter(Boolean);
     } else {
       output = selectPersonalTasks(facts,events,filters,now);
       const ids = output.items.filter(task=>task.canOpen).map(task=>task.id);
@@ -201,4 +196,38 @@ export async function readPersonalWorkspace(pool, actor, input, { report = false
     return output;
   } catch (error) { await client.query('ROLLBACK'); throw error; }
   finally { client.release(); }
+}
+
+// Personal history exposes only the actor's own receipt, never the producer's
+// identity, task query, version or task id. Existing blind-review rules still apply.
+export async function readPersonalQualityActivity(pool,actor,input={}) {
+  if (!Number.isSafeInteger(actor.userId) || actor.userId<=0) throw new ControlPlaneAuthenticationError();
+  const allowed=new Set(['period','from','to','metric','stage','sampleSet','page','pageSize']);
+  if(Object.keys(input).some(key=>!allowed.has(key)) || Object.values(input).some(Array.isArray)) throw new TypeError('质检历史筛选无效');
+  const metric=input.metric || 'qa';
+  if(!['contributed','qaAll','qa','qaRecheck','qaBatch','qaSpecial','qaPending','qaBlocked'].includes(metric)
+    || input.stage && !['COPY','IMAGE'].includes(input.stage)
+    || input.sampleSet && !['all','passed','failed'].includes(input.sampleSet)) throw new TypeError('质检指标无效');
+  const filters=normalizePersonalFilters(input),client=await pool.connect();
+  try {
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    await client.query("SET LOCAL statement_timeout='15s'");
+    const facts=await readInspectionRounds(client,await readQaFacts(client,{range:filters.range,accountId:actor.userId,stage:filters.stage}),new Date().toISOString());
+    let rows=qaMetricRows(facts,metric==='contributed'?'qa':metric,filters.stage,input.sampleSet==='passed'?'PASS':input.sampleSet==='failed'?'RETURN':'');
+    if(metric==='contributed') {
+      const completed=(await client.query(PERSONAL_EVENTS_SQL,[actor.userId,new Date(filters.range.startMs).toISOString(),new Date(filters.range.endMs).toISOString()])).rows;
+      if(completed.length>MAX_FACTS) throw new RangeError('历史记录超出上限，请缩小日期');
+      rows.push(...completed.filter(row=>row.kind==='COMPLETE' && (!filters.stage || row.stage===filters.stage)).map(row=>({id:row.id,kind:row.kind,stage:row.stage,at:iso(row.at),taskId:Number(row.task_id)})));
+    }
+    rows.sort((a,b)=>Date.parse(b.at)-Date.parse(a.at)||a.id.localeCompare(b.id));
+    const page=Math.min(filters.page,Math.max(1,Math.ceil(rows.length/filters.pageSize)));
+    const result={total:rows.length,tasks:uniqueTaskCount(rows),page,pageSize:filters.pageSize,
+      items:rows.slice((page-1)*filters.pageSize,page*filters.pageSize).map(row=>({
+        id:row.id,code:`QA-${createHash('sha256').update(String(row.samplingItemPublicId??row.id)).digest('hex').slice(0,12).toUpperCase()}`,
+        stage:row.stage,kind:row.kind,at:row.at,outcome:row.outcome,sampleKind:row.sampleKind,blocked:row.blocked,passBlocked:row.passBlocked,
+        reviewRound:row.reviewRound,returnRound:row.returnRound,roundKnown:row.roundKnown,
+        affectedCount:row.affectedCount,exclusion:row.exclusion,
+      }))};
+    await client.query('COMMIT');return result;
+  } catch(error) {await client.query('ROLLBACK');throw error;} finally {client.release();}
 }

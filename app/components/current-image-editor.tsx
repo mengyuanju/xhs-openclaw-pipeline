@@ -233,7 +233,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
     if(file.size>5*1024*1024){setError('实体图片不能超过 5 MB');return;}
     await act(async()=>{
       const base64=await new Promise<string>((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=reject;reader.readAsDataURL(file);});
-      const saved=await apiRequest<Asset>(path(`/v1/tasks/${taskId}/image-edit-references`),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({base64,mediaType:file.type,source:'作业员上传的真实产品参考图',purpose:'真实产品替换'})});
+      const saved=await apiRequest<Asset>(path(`/v1/tasks/${taskId}/image-edit-references`),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({base64,mediaType:file.type,source:'标注上传的真实产品参考图',purpose:'真实产品替换'})});
       setRefs([{...saved,purpose:'真实产品替换'}]);
     },'正在上传真实产品图片…','真实产品图片已上传。');
   }

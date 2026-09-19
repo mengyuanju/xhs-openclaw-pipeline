@@ -43,7 +43,7 @@ function taskRow(id, patch = {}) {
     assignment_source: null,
     assigned_at: null,
     progress_percent: 0,
-    progress_message: '等待管理员分配作业员',
+    progress_message: '等待管理员分配标注',
     ...patch,
   };
 }

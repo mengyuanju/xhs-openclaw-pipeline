@@ -9,7 +9,7 @@ export const PROMPT_CATALOG = Object.freeze([
   entry('VISUAL_PLAN_SYSTEM', '视觉规划', '生成与规划', '仅设计画面，不能改写已确认文字；支持关闭'),
   entry('LAYOUT_CATALOG_SYSTEM', '布局模板设计', '生成与规划', '生成可复用版式候选；未发布时在布局库明确使用内置规则'),
   entry('IMAGE_SYSTEM', '图片生成', '生成与规划', '主体、构图、配色和图文排版'),
-  entry('IMAGE_EDIT_SYSTEM', '图片编辑', '生成与规划', '用于人工生成标识、真实产品 AI 融合替换和按文字定位的局部修改；作业员说明作为任务数据附加'),
+  entry('IMAGE_EDIT_SYSTEM', '图片编辑', '生成与规划', '用于人工生成标识、真实产品 AI 融合替换和按文字定位的局部修改；标注说明作为任务数据附加'),
   entry('QUERY_REVIEW_SYSTEM', 'Query 筛选（选题审核）', '审核与修复', '文案生成前判断选题是否准入；筛选标准可编辑，执行配置中可关闭'),
   entry('TEXT_REVIEW_SYSTEM', '文案审核', '审核与修复', '依据本次编辑要求和证据审核，不自动降级'),
   entry('COPY_LENGTH_REPAIR_SYSTEM', '正文定向修复', '审核与修复', '沿用原文风，修复正文长度或残句'),

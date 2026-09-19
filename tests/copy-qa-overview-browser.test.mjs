@@ -55,7 +55,7 @@ test('copy QA overview browser: every workspace tab uses the full panel and mobi
       if (request.url?.startsWith('/api/control-plane/v1/copy-qa/statistics')) {
         response.end(JSON.stringify({ data: {
           random: Array.from({ length: 7 }, (_, index) => ({
-            finalApproverAccountId: index + 1, finalApproverDisplayName: `审核员 ${index + 1}`,
+            finalApproverAccountId: index + 1, finalApproverDisplayName: `质检 ${index + 1}`,
             finalApproverUsername: `reviewer${index + 1}`, decided: 10, passed: 8, returned: 2, accuracyRate: 0.8,
           })),
           mandatory: { passed: 12, returned: 3, pending: 6 }, batchAffectedCount: 4,
@@ -78,9 +78,9 @@ test('copy QA overview browser: every workspace tab uses the full panel and mobi
     assert.equal(await page.getByRole('tab', { name: /质检队列/u }).getAttribute('aria-selected'), 'true');
     await page.getByRole('tab', { name: '数据概览', exact: true }).click();
     assert.equal(await page.getByLabel('质检数据概览').isVisible(), true);
-    await page.getByRole('tab', { name: '作业人员', exact: true }).click();
-    await page.getByLabel('文案质检作业人员数据，可滚动查看').waitFor();
-    assert.equal(await page.getByText('审核员 1', { exact: true }).isVisible(), true);
+    await page.getByRole('tab', { name: '标注', exact: true }).click();
+    await page.getByLabel('文案质检标注数据，可滚动查看').waitFor();
+    assert.equal(await page.getByText('质检 1', { exact: true }).isVisible(), true);
     await page.getByRole('tab', { name: '规则说明', exact: true }).click();
     await page.getByRole('heading', { name: '质检类型与状态变化', exact: true }).waitFor();
     await page.getByRole('tab', { name: /质检队列/u }).click();
@@ -98,7 +98,7 @@ test('copy QA overview browser: every workspace tab uses the full panel and mobi
       'primary and return actions use the same stable column');
 
     const desktop = await page.evaluate(() => {
-      const workbench = document.querySelector('[aria-label="质检数据与作业人员"]');
+      const workbench = document.querySelector('[aria-label="质检数据与标注"]');
       const activePanel = document.querySelector('[role="tabpanel"][data-state="active"]');
       const queue = document.querySelector('[aria-label="待质检队列，可横向滚动"]');
       return {
@@ -118,7 +118,7 @@ test('copy QA overview browser: every workspace tab uses the full panel and mobi
 
     await page.setViewportSize({ width: 390, height: 844 });
     const mobile = await page.evaluate(() => {
-      const workbench = document.querySelector('[aria-label="质检数据与作业人员"]');
+      const workbench = document.querySelector('[aria-label="质检数据与标注"]');
       return {
         horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
         workbenchBounds: workbench ? { rect: workbench.getBoundingClientRect().toJSON(), clientWidth: workbench.clientWidth, scrollWidth: workbench.scrollWidth, overflow: getComputedStyle(workbench).overflow } : null,

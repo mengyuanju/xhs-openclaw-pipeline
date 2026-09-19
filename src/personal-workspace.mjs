@@ -32,6 +32,7 @@ export function normalizePersonalFilters(input = {}, now = Date.now()) {
     reworkSource: choice(input.reworkSource, ['COPY_QA','IMAGE_QA','FINAL_REWORK'], ''),
     longWaiting: [true,'true','1'].includes(one(input.longWaiting)), repeated: [true,'true','1'].includes(one(input.repeated)),
     qualityFirst: [true,'true','1'].includes(one(input.qualityFirst)),
+    qualityRecheck: [true,'true','1'].includes(one(input.qualityRecheck)),
     stage: choice(input.stage, ['COPY','IMAGE'], ''),
     sort: choice(input.sort, ['priority:desc','createdAt:desc','createdAt:asc','id:desc','id:asc','waiting:desc'], 'priority:desc'),
     deduplicateQuery: [true,'true','1'].includes(one(input.deduplicateQuery)),
@@ -126,6 +127,7 @@ export function selectPersonalTasks(facts, events, filters, now = Date.now()) {
   for (const event of events) {
     if (!inRange(event.at, filters.range) || filters.stage && event.stage !== filters.stage) continue;
     if (filters.mode === 'QUALITY' && filters.qualityFirst && !event.first) continue;
+    if (filters.mode === 'QUALITY' && filters.qualityRecheck && !event.firstRecheck) continue;
     if (filters.mode === 'COMPLETED' && event.kind !== 'COMPLETE'
       || filters.mode === 'REWORK' && !(event.kind === 'COMPLETE' && event.rework)
       || filters.mode === 'RETURNS' && event.kind !== 'RETURN'
@@ -133,7 +135,13 @@ export function selectPersonalTasks(facts, events, filters, now = Date.now()) {
     const prior = history.get(event.taskId) ?? [];
     history.set(event.taskId, [...prior, event]);
   }
-  const candidates = facts.map(task => ({ ...task, personalWork: classifyPersonalTask(task, now), history: history.get(task.id) ?? [] }))
+  const historicalFacts=[...facts];
+  if(filters.mode!=='CURRENT') {
+    const available=new Set(facts.map(task=>task.id));
+    for(const id of history.keys()) if(!available.has(id)) historicalFacts.push({id,query:`历史内容 #${id}`,state:'HISTORY_ONLY',
+      createdAt:null,isAssigned:false,isCreated:false,canOpen:false});
+  }
+  const candidates = historicalFacts.map(task => ({ ...task, personalWork: classifyPersonalTask(task, now), history: history.get(task.id) ?? [] }))
     .filter(task => filters.mode === 'CURRENT' ? relation(task, filters.personalScope) : history.has(task.id))
     .filter(task => baseMatches(task, filters));
   const counts = Object.fromEntries(PERSONAL_WORK_CATEGORIES.map(category => [category,
@@ -174,12 +182,18 @@ export function summarizePersonalWorkspace(facts, events, batches, filters, now 
     const passed = samples.filter(event => event.passed).length;
     return [stage, { samples: samples.length, passed, rate: samples.length ? passed/samples.length : null }];
   }));
+  const annotation=Object.fromEntries(['COPY','IMAGE'].map(stage=>{
+    const submitted=completed.filter(event=>event.stage===stage),rechecks=periodEvents.filter(event=>event.stage===stage&&event.kind==='QUALITY'&&event.firstRecheck===true);
+    const passed=rechecks.filter(event=>event.passed).length;
+    return [stage,{firstSubmitted:countTasks(submitted.filter(event=>event.firstSubmission)),reworked:countTasks(submitted.filter(event=>event.rework)),
+      submissions:submitted.length,firstRecheck:{passed,samples:rechecks.length,rate:rechecks.length?passed/rechecks.length:null}}];
+  }));
   const reasons = new Map();
   for (const event of returned) for (const reason of new Set(event.reasons ?? [])) reasons.set(reason,(reasons.get(reason) ?? 0)+1);
   const durations = reworked.map(event => Date.parse(event.at)-Date.parse(event.returnedAt)).filter(value => Number.isFinite(value) && value >= 0).sort((a,b) => a-b);
   const delivered = batches.filter(batch => batch.status === 'DELIVERED' && inRange(batch.deliveredAt, filters.range));
   return { updatedAt: new Date(now).toISOString(), scope: filters.personalScope, range: { from: filters.range.from, to: filters.range.to },
-    counts, rework: { copy: counts.copyRework, image: counts.imageRework, both: counts.bothRework,
+    counts, annotation, rework: { copy: counts.copyRework, image: counts.imageRework, both: counts.bothRework,
       edit: current.filter(task => task.personalWork.reworkProgress === 'EDIT').length,
       processing: current.filter(task => task.personalWork.reworkProgress === 'PROCESSING').length,
       confirm: current.filter(task => task.personalWork.reworkProgress === 'CONFIRM').length,

@@ -112,8 +112,8 @@ type UserDirectory = {
 
 const ROLE_LABELS: Record<QueryPackageRole, string> = {
   ADMIN: '管理员',
-  REVIEWER: '审核员',
-  USER: '普通用户',
+  REVIEWER: '质检',
+  USER: '标注',
 };
 const SCREENABLE_PACKAGE_STATUSES = new Set(['IMPORTED', 'SCREENING', 'READY', 'PARTIALLY_USED']);
 
@@ -943,7 +943,7 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
         <div>
           <h2 id="query-package-list-title">词包列表</h2>
           <p className="subtle">{role === 'ADMIN'
-            ? '管理员可导入词包，并把每个词包的筛选权限分配给审核员或普通用户；通过后会自动创建正式作业。'
+            ? '管理员可导入词包，并把每个词包的筛选权限分配给质检或标注；通过后会自动创建正式作业。'
             : '这里只显示管理员分配给你的词包；通过的 Query 会自动创建正式作业并进入文案生成。'}</p>
         </div>
         <div className={styles.toolbarGroup}>
@@ -1090,7 +1090,7 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
 
     {role === 'ADMIN' && <Dialog open={assignPackage !== null} onOpenChange={(open) => { if (!open && acting !== 'assign') closeAssignmentDialog(); }}>
       <DialogContent className={styles.dialog}>
-        <div className={styles.dialogHeader}><DialogTitle>按 Query 分配筛选任务</DialogTitle><DialogDescription>可将待筛 Query 平均分给多人，也可为每个人指定条数。作业人员只会看到分给自己的明细。</DialogDescription></div>
+        <div className={styles.dialogHeader}><DialogTitle>按 Query 分配筛选任务</DialogTitle><DialogDescription>可将待筛 Query 平均分给多人，也可为每个人指定条数。标注只会看到分给自己的明细。</DialogDescription></div>
         {assignPackage && <div className={styles.importForm}>
           <div className={styles.fileRow}><strong>{assignPackage.name}</strong><small>{assignmentSummary ? `${assignmentSummary.eligibleTotal} 条待筛 · 已分配 ${assignmentSummary.assignedTotal} 条` : `${assignPackage.counts.pending} 条待筛`}</small></div>
           {assignLoading
@@ -1118,7 +1118,7 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
               return <label key={user.id} className={styles.assignmentUser}><Checkbox checked={selected} aria-label={`选择 ${user.displayName}`} onChange={(event) => { setSelectedAssigneeIds((current) => event.target.checked ? [...current, user.id] : current.filter((id) => id !== user.id)); if (event.target.checked && !assignmentCounts[user.id]) setAssignmentCounts((current) => ({ ...current, [user.id]: '1' })); setAssignError(''); }} /><span><strong>{user.displayName}</strong><small>{ROLE_LABELS[user.role]} · @{user.username}</small></span>{assignmentStrategy === 'EVEN' ? <b>{selected ? evenAssignmentCount(selectedIndex) : 0} 条</b> : <Input type="number" min="1" max={assignmentSummary?.eligibleTotal ?? 0} value={assignmentCounts[user.id] ?? ''} disabled={!selected} aria-label={`${user.displayName} 分配条数`} onChange={(event) => { setAssignmentCounts((current) => ({ ...current, [user.id]: event.target.value })); setAssignError(''); }} />}</label>;
             })}</div></>}
           {!assignLoading && assignmentSummary?.eligibleTotal === 0 && <div className="notice">当前没有待筛 Query，无需重新分配。</div>}
-          {!assignLoading && assignmentSummary && assignmentSummary.eligibleTotal > 0 && assignableUsers.length === 0 && <div className="notice">当前没有启用中的审核员或普通用户；保存后会收回现有待筛分配。</div>}
+          {!assignLoading && assignmentSummary && assignmentSummary.eligibleTotal > 0 && assignableUsers.length === 0 && <div className="notice">当前没有启用中的质检或标注；保存后会收回现有待筛分配。</div>}
           {assignError && <div className="notice error" role="alert">{assignError}</div>}
           <div className={styles.dialogFooter}><span>重新分配只影响尚未筛选的 Query，已提交结果和正式作业不变；不选择任何人员即可全部收回。</span><div className={styles.dialogButtons}><DialogClose asChild><Button unstyled className="button" type="button" disabled={acting === 'assign'}>取消</Button></DialogClose><Button unstyled className="button primary" type="button" disabled={assignLoading || !assignReady || assignmentSummary?.eligibleTotal === 0 || acting === 'assign'} onClick={() => { void saveAssignment(); }}>{acting === 'assign' ? '保存中…' : '保存分配'}</Button></div></div>
         </div>}

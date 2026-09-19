@@ -290,7 +290,7 @@ test('QA statistics use final approver accounts and separate verdicts, pending, 
     const source = String(sql).replace(/\s+/gu, ' ').trim();
     queries.push(source);
     if (source.includes("WHERE item.sample_kind = 'RANDOM'")) return { rows: [
-      { final_approver_account_id: '41', final_approver_username: 'approver-a', final_approver_display_name: '审核员甲', returned_count: '1', passed_count: '3', pending_count: '2' },
+      { final_approver_account_id: '41', final_approver_username: 'approver-a', final_approver_display_name: '质检甲', returned_count: '1', passed_count: '3', pending_count: '2' },
       { final_approver_account_id: '42', final_approver_username: 'approver-b', final_approver_display_name: null, returned_count: '0', passed_count: '0', pending_count: '4' },
     ] };
     if (source.includes("sample_kind = 'MANDATORY_RECHECK'")) {
@@ -302,7 +302,7 @@ test('QA statistics use final approver accounts and separate verdicts, pending, 
 
   const statistics = await getCopyQaStatistics(pool, admin);
   assert.deepEqual(statistics.random, [
-    { finalApproverAccountId: 41, finalApproverUsername: 'approver-a', finalApproverDisplayName: '审核员甲', passed: 3, returned: 1, pending: 2, decided: 4, accuracyRate: 0.75 },
+    { finalApproverAccountId: 41, finalApproverUsername: 'approver-a', finalApproverDisplayName: '质检甲', passed: 3, returned: 1, pending: 2, decided: 4, accuracyRate: 0.75 },
     { finalApproverAccountId: 42, finalApproverUsername: 'approver-b', finalApproverDisplayName: null, passed: 0, returned: 0, pending: 4, decided: 0, accuracyRate: null },
   ]);
   assert.deepEqual(statistics.mandatory, { passed: 2, returned: 1, pending: 1 });

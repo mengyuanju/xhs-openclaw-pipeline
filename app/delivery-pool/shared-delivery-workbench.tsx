@@ -165,7 +165,7 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
     window.setTimeout(() => { if (mounted.current) void load(true); }, 1500);
   });
   const confirmItems = () => perform('确认交付', async () => {
-    if (!await confirm({ title: `确认 ${selected.length} 条已实际交付？`, description: `任务：${selected.map(item => `#${item.taskId}`).join('、')}。提交后管理员和作业人员共同看到确认人及确认时间。`, confirmLabel: '确认已交付' })) return;
+    if (!await confirm({ title: `确认 ${selected.length} 条已实际交付？`, description: `任务：${selected.map(item => `#${item.taskId}`).join('、')}。提交后管理员和标注共同看到确认人及确认时间。`, confirmLabel: '确认已交付' })) return;
     const response = await apiRequest<{ confirmed: number; alreadyConfirmed: number }>('/api/control-plane/v1/delivery-items/confirm', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ itemIds: selected.map(item => item.itemId) }),
     });

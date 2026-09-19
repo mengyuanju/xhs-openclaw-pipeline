@@ -13,8 +13,8 @@ test('personal workspace PostgreSQL: exact pending counts, planning result, rech
     await repository.initialize();
     const pool = repository.pool;
     const users = (await pool.query(`INSERT INTO app_users(username,display_name,role,password_hash,status,created_at)
-      VALUES ('personal-a','作业员甲','USER','test-only','ACTIVE',now()-interval '3 days'),
-      ('personal-b','作业员乙','USER','test-only','ACTIVE',now()-interval '3 days') RETURNING id,username`)).rows;
+      VALUES ('personal-a','标注甲','USER','test-only','ACTIVE',now()-interval '3 days'),
+      ('personal-b','标注乙','USER','test-only','ACTIVE',now()-interval '3 days') RETURNING id,username`)).rows;
     const actor = {userId:Number(users[0].id),username:users[0].username,role:'USER'};
     await pool.query("INSERT INTO executor_nodes(id,name) VALUES ('personal-test','Test')");
     const tasks = (await pool.query(`INSERT INTO tasks(query,input,state,created_by_node_id,created_by_user_id,assigned_to_user_id,assignment_source,assigned_at,created_at)
@@ -42,7 +42,7 @@ test('personal workspace PostgreSQL: exact pending counts, planning result, rech
     await pool.query("UPDATE tasks SET personal_stage_entered_at=now()-interval '25 hours' WHERE id=$1",[tasks[0]]);
     report=await repository.personalWorkspace(actor,{},true);
     assert.equal(report.counts.rework,1); assert.equal(report.rework.longWaiting,1);
-    assert.equal(report.period.returned,1); assert.equal(report.period.copy,1);
+    assert.equal(report.period.returned,0,'a legacy repair revision without a verdict is not an inspected failure'); assert.equal(report.period.copy,1);
     const waitingBefore=(await pool.query('SELECT personal_stage_entered_at FROM tasks WHERE id=$1',[tasks[0]])).rows[0].personal_stage_entered_at;
     await pool.query('UPDATE tasks SET updated_at=now(),last_activity_at=now(),queue_entered_at=now() WHERE id=$1',[tasks[0]]);
     assert.deepEqual((await pool.query('SELECT personal_stage_entered_at FROM tasks WHERE id=$1',[tasks[0]])).rows[0].personal_stage_entered_at,waitingBefore);
@@ -84,7 +84,7 @@ test('personal workspace PostgreSQL: exact pending counts, planning result, rech
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'personal-a',$7,true,'SUPERSEDED',ARRAY['TEXT_ERROR'],'图片文字有误','BOTH',now()) RETURNING id`,[randomUUID(),freeze,imageTask,imageApproval,imageRevision,imageRun,'e'.repeat(64),actor.userId])).rows[0].id);
     await pool.query(`INSERT INTO image_sampling_events(freeze_id,sampling_item_id,action,actor_username,request_id) VALUES ($1,$2,'RETURN_SINGLE','admin',$3)`,[freeze,sample,randomUUID()]);
     report=await repository.personalWorkspace(actor,{},true);
-    assert.deepEqual(report.notices,[]);assert.equal(report.period.returned,2);
+    assert.deepEqual(report.notices,[]);assert.equal(report.period.returned,1);
     assert.equal(report.quality.IMAGE.samples,1);assert.equal(report.quality.IMAGE.passed,0);
     assert.equal(report.rework.both,1);
     const asset=Number((await pool.query("INSERT INTO assets(task_id,image_run_id,media_type,byte_size,sha256,storage_path,image_production_chain_id,origin_image_run_id,artifact_key) VALUES ($1,$2,'image/png',10,$3,'fake.png',$2,$2,'fake') RETURNING id",[imageTask,imageRun,'f'.repeat(64)])).rows[0].id);

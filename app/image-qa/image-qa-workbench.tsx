@@ -215,7 +215,7 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
           reasonCodes: reasons, note: note.trim(), problemAssetIds, copyFields,
         }),
       });
-      toast.success(`${detail.anonymousCode} 已打回；作业员采用新图片后将自动进入 100% 强制复检。`, {
+      toast.success(`${detail.anonymousCode} 已打回；标注采用新图片后将自动进入 100% 强制复检。`, {
         id: IMAGE_QA_ACTION_TOAST_ID,
       });
       setReturning(false);
@@ -323,7 +323,7 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
               setPersonName('');
             }}>清除人员</Button>}
           </form>}
-          <span className={qaStyles.scopeBadge}><ShieldCheck size={14} aria-hidden="true" />{role === 'ADMIN' ? '管理员完整视图' : '审核员盲评视图'}</span>
+          <span className={qaStyles.scopeBadge}><ShieldCheck size={14} aria-hidden="true" />{role === 'ADMIN' ? '管理员完整视图' : '质检盲评视图'}</span>
         </div>
       </div>
       {role === 'REVIEWER' && <p className={`notice ${styles.blindNotice}`}><EyeOff size={16} />质检员不能处理自己提交的图片；管理员不受自检限制。盲评开启时只显示匿名样本和成品图。</p>}
@@ -338,7 +338,7 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
               <Button unstyled className="button primary" type="button" onClick={() => { void load(); }}><RefreshCw size={15} />重新检查</Button>
               {status !== 'PENDING' && <Button unstyled className="button" type="button" onClick={() => setStatus('PENDING')}>查看待质检</Button>}
             </div>
-            <small>普通作业员的图片初审不会进入此队列。</small>
+            <small>标注的图片初审不会进入此队列。</small>
           </div>
           : <div className={`table-wrap mobile-cards ${qaStyles.queue}`} role="region" aria-label="图片质检队列，可横向滚动" tabIndex={0}><table><thead><tr><th>质检内容</th><th>类型</th><th>状态</th><th>成品页</th><th>来源</th><th>操作</th></tr></thead>
             <tbody>{items.map((item) => <tr key={item.id}>

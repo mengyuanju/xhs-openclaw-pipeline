@@ -167,7 +167,7 @@ test('production settings and review clients expose the dedicated editable scori
   assert.match(panel, /文案审核中显示评分档位说明/u);
   assert.match(panel, /文案审核中显示扣分原因/u);
   assert.match(panel, /图片质检中显示扣分原因/u);
-  assert.match(panel, /审核员发起图片返工时必须选择原因/u);
+  assert.match(panel, /质检发起图片返工时必须选择原因/u);
   assert.match(panel, /当前原因列表为空，无法保存/u);
   assert.match(panel, /imageReasonsMissing/u);
   assert.match(panel, /copyReviewDisplay: current\.copyReviewDisplay/u);

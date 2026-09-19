@@ -188,7 +188,7 @@ test('legacy task creation is admin-only and copy-review bypass requires an expl
   await withServer(repository, async (root) => {
     const userCreated = await fetch(`${root}/v1/tasks`, {
       method: 'POST', headers: headers('alice', 'USER'),
-      body: JSON.stringify({ nodeId: 'node-a', tasks: [{ query: '普通用户提交' }] }),
+      body: JSON.stringify({ nodeId: 'node-a', tasks: [{ query: '标注提交' }] }),
     });
     assert.equal(userCreated.status, 403);
     assert.equal((await userCreated.json()).error.code, 'FORBIDDEN');
@@ -1341,11 +1341,11 @@ test('copy QA listing forwards package-name and personnel search through the adm
       return [];
     },
   }, async (root) => {
-    const response = await fetch(`${root}/v1/copy-qa/items?status=PENDING&queryPackageName=%E4%B9%9D%E6%9C%88%E9%80%89%E9%A2%98&personName=%E5%AE%A1%E6%A0%B8%E5%91%98%E7%94%B2&limit=20&offset=0`);
+    const response = await fetch(`${root}/v1/copy-qa/items?status=PENDING&queryPackageName=%E4%B9%9D%E6%9C%88%E9%80%89%E9%A2%98&personName=%E8%B4%A8%E6%A3%80%E7%94%B2&limit=20&offset=0`);
     assert.equal(response.status, 200);
   });
   assert.deepEqual(received, {
-    status: 'PENDING', queryPackageName: '九月选题', personName: '审核员甲', limit: '20', offset: '0',
+    status: 'PENDING', queryPackageName: '九月选题', personName: '质检甲', limit: '20', offset: '0',
   });
 });
 
@@ -1357,11 +1357,11 @@ test('image QA listing forwards personnel search through the administrator route
       return { items: [], total: 0 };
     },
   }, async (root) => {
-    const response = await fetch(`${root}/v1/image-qa/items?status=PENDING&personName=%E5%9B%BE%E7%89%87%E4%BD%9C%E4%B8%9A%E5%91%98&limit=20&offset=0`);
+    const response = await fetch(`${root}/v1/image-qa/items?status=PENDING&personName=%E5%9B%BE%E7%89%87%E6%A0%87%E6%B3%A8&limit=20&offset=0`);
     assert.equal(response.status, 200);
   });
   assert.deepEqual(received, {
-    status: 'PENDING', personName: '图片作业员', limit: '20', offset: '0',
+    status: 'PENDING', personName: '图片标注', limit: '20', offset: '0',
   });
 });
 

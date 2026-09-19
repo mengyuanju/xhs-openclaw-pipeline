@@ -198,7 +198,7 @@ function ImageEditRepairSettings({
     <div className="form-grid compact-settings-grid">
       <div className="field">
         <span>自动修复次数：0 次</span>
-        <small>旧配置值 {settings.imageEditRepairMaxAttempts} 仅为兼容保留，执行时不会读取；需要重试时必须由作业员主动发起。</small>
+        <small>旧配置值 {settings.imageEditRepairMaxAttempts} 仅为兼容保留，执行时不会读取；需要重试时必须由标注主动发起。</small>
       </div>
     </div>
   </section>;

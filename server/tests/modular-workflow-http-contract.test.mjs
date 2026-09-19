@@ -246,7 +246,7 @@ test('ordinary task responses remove package, delivery and Xiaohongshu search me
   ];
   const task = {
     id: 42,
-    query: '普通用户仍需处理的 Query',
+    query: '标注仍需处理的 Query',
     state: 'COPY_REVIEW_PENDING',
     createdByUserId: 'admin',
     createdByAccountId: users.admin.id,

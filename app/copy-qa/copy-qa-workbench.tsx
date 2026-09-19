@@ -486,12 +486,12 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
   const previewAffectedCount = Number(batchPreview?.confirmedCount ?? 0);
 
   return <div className={styles.stack}>
-    <Tabs className={`panel ${styles.workbenchTabs}`} defaultValue="queue" aria-label="质检数据与作业人员">
+    <Tabs className={`panel ${styles.workbenchTabs}`} defaultValue="queue" aria-label="质检数据与标注">
       <div className={styles.workbenchHeader}>
         <TabsList className={styles.tabList} aria-label="质检看板内容">
           <TabsTrigger value="queue">质检队列<span className={styles.tabCount}>{currentStatusTotal}</span></TabsTrigger>
           <TabsTrigger value="overview">数据概览</TabsTrigger>
-          {role === 'ADMIN' && <TabsTrigger value="workers">作业人员</TabsTrigger>}
+          {role === 'ADMIN' && <TabsTrigger value="workers">标注</TabsTrigger>}
           <TabsTrigger value="guide">规则说明</TabsTrigger>
         </TabsList>
         <div className={styles.accessSummary} data-role={role === 'ADMIN' ? 'admin' : 'reviewer'}>
@@ -539,7 +539,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
         </div>
         <span className="pill">{role === 'ADMIN' ? '管理员可对一次抽检发起整批打回' : items.some(canStartCopyQaBatchReturn) ? '当前可对一次抽检发起整批打回' : '当前仅可单条打回；需要扩大范围时请联系管理员整批处置'}</span>
       </div>
-      <div className={styles.scopeNote}><strong>队列顺序：</strong>按最终审核人员逐轮交错，每人先显示 1 条再进入下一轮；同一人员内部仍按任务优先级和入队时间排序。结果状态{role === 'ADMIN' ? '、词包名称和人员姓名' : ''}由服务端跨全部结果筛选；Query 和匿名编号搜索仅作用于当前已加载的 {items.length} 条。{role === 'ADMIN' && '管理员固定使用完整信息视图，任务、Query、词包和来源信息不会因样本盲评策略而隐藏，也可处理自己最终审核的文案。'}{role === 'REVIEWER' && '样本评审模式由管理员预先决定，审核员不可切换或更改。'}{hasMore ? '仍有更多结果可继续加载。' : '当前状态结果已全部加载。'}</div>
+      <div className={styles.scopeNote}><strong>队列顺序：</strong>按标注逐轮交错，每人先显示 1 条再进入下一轮；同一人员内部仍按任务优先级和入队时间排序。结果状态{role === 'ADMIN' ? '、词包名称和人员姓名' : ''}由服务端跨全部结果筛选；Query 和匿名编号搜索仅作用于当前已加载的 {items.length} 条。{role === 'ADMIN' && '管理员固定使用完整信息视图，任务、Query、词包和来源信息不会因样本盲评策略而隐藏，也可处理自己最终审核的文案。'}{role === 'REVIEWER' && '样本评审模式由管理员预先决定，质检不可切换或更改。'}{hasMore ? '仍有更多结果可继续加载。' : '当前状态结果已全部加载。'}</div>
       {items.some((item) => item.blindReview) && <div className={`notice ${styles.blindNotice}`}><EyeOff size={17} aria-hidden="true" /><span>独立盲评样本仅显示匿名编号、最终通过稿和匿名批次编号；任务号、Query、词包自由名称、上游身份、原评分及原因均不可见。</span></div>}
       <ToastFeedback id="copy-qa-feedback" message={message} />
       {error && <div className="notice error" role="alert">{error}</div>}
@@ -576,7 +576,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
             <article data-kind="random"><strong>{randomCount.toLocaleString('zh-CN')}</strong><span>一次抽检</span><small>已加载范围</small></article>
             <article data-kind="mandatory"><strong>{mandatoryCount.toLocaleString('zh-CN')}</strong><span>强制复检</span><small>已加载范围</small></article>
             {role === 'ADMIN'
-              ? <article><strong>{statistics?.random.length.toLocaleString('zh-CN') ?? '—'}</strong><span>作业人员</span><small>已有抽检结论</small></article>
+              ? <article><strong>{statistics?.random.length.toLocaleString('zh-CN') ?? '—'}</strong><span>标注</span><small>已有抽检结论</small></article>
               : <article><strong>{blindCount.toLocaleString('zh-CN')}</strong><span>盲评样本</span><small>已加载范围</small></article>}
           </section>
           {role === 'ADMIN' && <section className={styles.outcomeSection} aria-labelledby="copy-qa-outcome-title">
@@ -590,17 +590,17 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
                 <article><span>整批受影响</span><strong>{statistics.batchAffectedCount}</strong></article>
               </div>}
           </section>}
-          {role !== 'ADMIN' && <div className={styles.permissionNote}><strong>质检权限范围</strong><span>此处只汇总当前账号可见的队列数据；作业人员统计、词包跨页筛选和管理员单独通过记录仅管理员可见。</span></div>}
+          {role !== 'ADMIN' && <div className={styles.permissionNote}><strong>质检权限范围</strong><span>此处只汇总当前账号可见的队列数据；标注统计、词包跨页筛选和管理员单独通过记录仅管理员可见。</span></div>}
         </section>
       </TabsContent>
 
       {role === 'ADMIN' && <TabsContent className={styles.tabViewport} value="workers">
         <section className={styles.viewContent} aria-labelledby="copy-qa-accuracy-title">
-          <div className={styles.viewHeader}><div><h2 id="copy-qa-accuracy-title">作业人员抽检数据</h2><p>仅统计已有结论的一次抽检；强制复检单独计入数据概览。</p></div><span className="pill">仅管理员可见</span></div>
+          <div className={styles.viewHeader}><div><h2 id="copy-qa-accuracy-title">标注抽检数据</h2><p>仅统计已有结论的一次抽检；强制复检单独计入数据概览。</p></div><span className="pill">仅管理员可见</span></div>
           {statisticsError && <div className="notice error" role="alert">{statisticsError}</div>}
-          {!statistics && !statisticsError ? <div className={styles.compactEmpty}>正在读取作业人员数据…</div>
+          {!statistics && !statisticsError ? <div className={styles.compactEmpty}>正在读取标注数据…</div>
             : statistics && statistics.random.length === 0 ? <div className={styles.compactEmpty}>还没有已决的一次抽检样本。</div>
-              : statistics && <div className={styles.workerList} role="region" aria-label="文案质检作业人员数据，可滚动查看" tabIndex={0}>{statistics.random.map((metric) => <article key={metric.finalApproverAccountId}>
+              : statistics && <div className={styles.workerList} role="region" aria-label="文案质检标注数据，可滚动查看" tabIndex={0}>{statistics.random.map((metric) => <article key={metric.finalApproverAccountId}>
                 <header><div><strong>{metric.finalApproverDisplayName ?? metric.finalApproverUsername ?? `账号 #${metric.finalApproverAccountId}`}</strong>{metric.finalApproverDisplayName && metric.finalApproverUsername && <small>@{metric.finalApproverUsername}</small>}</div><b>{(metric.accuracyRate * 100).toFixed(1)}%</b></header>
                 <dl><div><dt>已决</dt><dd>{metric.decided}</dd></div><div><dt>通过</dt><dd>{metric.passed}</dd></div><div><dt>打回</dt><dd>{metric.returned}</dd></div></dl>
               </article>)}</div>}
@@ -689,7 +689,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
             </SelectContent>
           </Select>{returnRecommendation === 'DISCARD' && <small className="subtle">质检建议不会直接终止任务，当前任务负责人或管理员确认后才会废弃。</small>}</div>
           <div className={styles.reasonGrid}>{RETURN_REASONS.map((reason) => <label key={reason.code}><Checkbox checked={returnReasons.includes(reason.code)} disabled={action === 'return-single'} onChange={() => toggleReason(reason.code, setReturnReasons)} />{reason.label}</label>)}</div>
-          <div className="field"><label htmlFor="copy-qa-single-note">具体说明{returnRecommendation === 'DISCARD' ? '（建议废弃时必填）' : ''}</label><Textarea id="copy-qa-single-note" value={returnNote} maxLength={500} rows={5} disabled={action === 'return-single'} placeholder={returnRecommendation === 'DISCARD' ? '说明为什么继续返工不合适，供任务负责人确认' : '指出错误位置和修改要求，便于原作业人员处理'} onChange={(event) => { setReturnNote(event.target.value); setReturnError(''); }} /></div>
+          <div className="field"><label htmlFor="copy-qa-single-note">具体说明{returnRecommendation === 'DISCARD' ? '（建议废弃时必填）' : ''}</label><Textarea id="copy-qa-single-note" value={returnNote} maxLength={500} rows={5} disabled={action === 'return-single'} placeholder={returnRecommendation === 'DISCARD' ? '说明为什么继续返工不合适，供任务负责人确认' : '指出错误位置和修改要求，便于原标注处理'} onChange={(event) => { setReturnNote(event.target.value); setReturnError(''); }} /></div>
           {returnError && <div className="notice error" role="alert">{returnError}</div>}
           <div className={styles.footer}><span className="subtle">{returnItem?.sampleKind === 'MANDATORY_RECHECK' ? '本次只处理当前强制复检返工稿。' : '默认最小影响范围：当前单条任务。'}</span><div><DialogClose asChild><Button unstyled className="button" type="button" disabled={action === 'return-single'}>取消</Button></DialogClose><Button unstyled className="button danger" type="button" disabled={action === 'return-single'} onClick={() => { void submitSingleReturn(); }}>{action === 'return-single' ? '打回中…' : returnItem?.sampleKind === 'MANDATORY_RECHECK' ? '确认打回返工稿' : '确认仅打回此条'}</Button></div></div>
         </> : returnItem && <>

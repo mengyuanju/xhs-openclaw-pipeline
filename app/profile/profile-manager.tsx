@@ -16,7 +16,7 @@ import { useRouter } from 'next/navigation';
 
 import { apiRequest } from '../components/api-client';
 
-const ROLE_LABELS: Record<string, string> = { ADMIN: '管理员', REVIEWER: '审核员', USER: '普通用户' };
+const ROLE_LABELS: Record<string, string> = { ADMIN: '管理员', REVIEWER: '质检', USER: '标注' };
 const LOGOUT_TIMEOUT_MS = 4_000;
 
 type ProfileUser = {

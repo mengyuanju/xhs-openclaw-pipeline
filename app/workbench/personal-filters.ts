@@ -3,11 +3,11 @@ import { normalizePersonalFilters } from '../../src/personal-workspace.mjs';
 export type PersonalOptions = {
   mode: string; period: string; from: string; to: string; stage: string;
   reworkType: string; reworkProgress: string; reworkSource: string;
-  longWaiting: string; repeated: string; qualityFirst: string; createdFrom: string; createdTo: string;
+  longWaiting: string; repeated: string; qualityFirst: string; qualityRecheck:string; createdFrom: string; createdTo: string;
 };
 export const DEFAULT_PERSONAL_OPTIONS: PersonalOptions = {
   mode: 'CURRENT', period: 'today', from: '', to: '', stage: '', reworkType: '',
-  reworkProgress: '', reworkSource: '', longWaiting: '', repeated: '', qualityFirst: '', createdFrom: '', createdTo: '',
+  reworkProgress: '', reworkSource: '', longWaiting: '', repeated: '', qualityFirst: '', qualityRecheck:'', createdFrom: '', createdTo: '',
 };
 export function parsePersonalOptions(input: Record<string, string | string[] | undefined>): PersonalOptions {
   let filters;
@@ -17,6 +17,7 @@ export function parsePersonalOptions(input: Record<string, string | string[] | u
     from: filters.range.period === 'custom' ? filters.range.from : '', to: filters.range.period === 'custom' ? filters.range.to : '',
     stage: filters.stage, reworkType: filters.reworkType, reworkProgress: filters.reworkProgress, reworkSource: filters.reworkSource,
     longWaiting: filters.longWaiting ? '1' : '', repeated: filters.repeated ? '1' : '', qualityFirst: filters.qualityFirst ? '1' : '',
+    qualityRecheck:filters.qualityRecheck?'1':'',
     createdFrom: filters.createdFrom, createdTo: filters.createdTo };
 }
 export function appendPersonalOptions(search: URLSearchParams, options: PersonalOptions) {
@@ -32,4 +33,4 @@ export type PersonalWork = {
   returnedAt: string | null; returnNote: string | null; reworkCount: number;
   planStatus: string | null; imageEdits: { queued: number; running: number; ready: number; failed: number };
 };
-export type PersonalEvent = { id: string; kind: string; stage: string; at: string; rework: boolean; passed: boolean };
+export type PersonalEvent = { id: string; kind: string; stage: string; at: string; rework: boolean; passed: boolean;reviewRound?:number|null;returnRound?:number|null;roundKnown?:boolean };

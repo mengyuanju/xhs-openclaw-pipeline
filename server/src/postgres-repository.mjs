@@ -1,7 +1,7 @@
 import { priorityFrom, priorityOrderSql, normalizePriorityMode } from './task-priority.mjs';
 import { adjustTaskPriority, readPriorityScope } from './task-priority-store.mjs';
 import { flushExpiredCopyQualityBatches } from './copy-quality-control.mjs';
-import { readPersonalWorkspace } from './personal-workspace.mjs';
+import { readPersonalWorkspace, readPersonalQualityActivity } from './personal-workspace.mjs';
 import { confirmDeliveryBatchMembers } from './delivery-ledger.mjs';
 import { readOperatorPerformance } from './operator-performance.mjs';
 import {
@@ -849,7 +849,7 @@ async function assertActiveAssignableUser(client, username, accountId = null) {
       FOR UPDATE
     `, [accountId, username]);
   if (!result.rows[0]) {
-    throw new ControlPlaneConflictError('ASSIGNEE_UNAVAILABLE', '指定的作业员不存在、已停用或不是普通作业员');
+    throw new ControlPlaneConflictError('ASSIGNEE_UNAVAILABLE', '指定的标注不存在、已停用或不是标注');
   }
 }
 
@@ -891,7 +891,7 @@ async function lockAccountIdentity(client, username, accountId) {
     FOR UPDATE
   `, [accountId, username]);
   if (!result.rows[0]) {
-    throw new ControlPlaneConflictError('ASSIGNEE_UNAVAILABLE', '指定的作业员账号已变化，请刷新后重试');
+    throw new ControlPlaneConflictError('ASSIGNEE_UNAVAILABLE', '指定的标注账号已变化，请刷新后重试');
   }
 }
 
@@ -2094,7 +2094,8 @@ export class PostgresControlPlaneRepository {
             assigned_at = now(),
             progress_message = CASE
               WHEN task.progress_message IS NULL OR task.progress_message IN (
-                  '等待管理员分配作业员',
+                  '等待管理员分配标注',
+                '等待管理员分配作业员',
                   '等待分配负责人',
                   '负责人待分配，等待文案执行机领取',
                   '文案生成完成，等待分配负责人后审核'
@@ -2268,7 +2269,7 @@ export class PostgresControlPlaneRepository {
     if (typeof copyReviewEnabled !== 'boolean' || typeof copyQcEnabled !== 'boolean'
         || typeof imageQcEnabled !== 'boolean') throw new TypeError('permissions must be boolean');
     if (imageQcEnabled && role !== 'REVIEWER') {
-      throw new TypeError('图片质检权限只能授予审核员');
+      throw new TypeError('图片质检权限只能授予质检');
     }
     const passwordHash = await hashUserPassword('123456');
     try {
@@ -2329,7 +2330,7 @@ export class PostgresControlPlaneRepository {
       if (typeof reviewEnabled !== 'boolean' || typeof qcEnabled !== 'boolean'
           || typeof imageQualityEnabled !== 'boolean') throw new TypeError('permissions must be boolean');
       if (imageQualityEnabled && role !== 'REVIEWER') {
-        throw new TypeError('图片质检权限只能授予审核员');
+        throw new TypeError('图片质检权限只能授予质检');
       }
       if (!reviewEnabled && current.copy_review_enabled) {
         // Released assignments remain visible to administrators for reassignment.
@@ -2892,6 +2893,7 @@ export class PostgresControlPlaneRepository {
             WHEN $2::varchar IS NOT NULL AND state = 'COPY_QUEUED' THEN '等待文案执行机领取'
             WHEN $2::varchar IS NOT NULL
               AND (progress_message IS NULL OR progress_message IN (
+                '等待管理员分配标注',
                 '等待管理员分配作业员',
                 '等待分配负责人',
                 '负责人待分配，等待文案执行机领取',
@@ -2935,6 +2937,10 @@ export class PostgresControlPlaneRepository {
 
   async operatorPerformance(actor, input, options = {}) {
     return readOperatorPerformance(this.pool, actor, input, options);
+  }
+
+  async personalQualityActivity(actor,input) {
+    return readPersonalQualityActivity(this.pool,actor,input);
   }
 
   async listTasks({
@@ -4700,7 +4706,7 @@ export class PostgresControlPlaneRepository {
           UPDATE tasks SET
             state = 'CANCELLED', cancelled_from_state = state,
             current_execution_id = NULL, current_stage = 'CANCELLED',
-            progress_percent = 100, progress_message = '文案已被审核员废弃',
+            progress_percent = 100, progress_message = '文案已被质检废弃',
             last_activity_at = now(), finished_at = now(), updated_at = now()
           WHERE id = $1
           RETURNING *
@@ -4914,7 +4920,7 @@ export class PostgresControlPlaneRepository {
       : retry ? 'IMAGE_QUEUED' : 'CANCELLED';
     const message = approved ? '图片审核通过，任务已完成'
       : copyRework ? '图文终审已退回文案；实际修改后须提交强制复检，复检通过后才进入待生图队列'
-        : retry ? '审核员要求重新生成图片，等待图片执行机领取' : '任务已被审核员废弃';
+        : retry ? '质检要求重新生成图片，等待图片执行机领取' : '任务已被质检废弃';
     return transaction(this.pool, async (client) => {
       const task = actorIdentity === null
         ? (await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId])).rows[0]

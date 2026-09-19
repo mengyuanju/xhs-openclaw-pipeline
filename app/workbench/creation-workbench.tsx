@@ -292,6 +292,7 @@ function stageLabel(task: DistributedTask, role: string) {
 }
 
 function taskStateLabel(task: DistributedTask, role: string) {
+  if(task.canOpen===false && String(task.state)==='HISTORY_ONLY') return '历史记录';
   return task.currentStage === 'QC_MANDATORY_RECHECK' ? '待强制复检' : visibleStateLabel(task.state, role);
 }
 
@@ -1895,7 +1896,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     event.preventDefault();
     if (creating) return;
     if (role !== 'ADMIN') {
-      setCreateError('普通用户不能直接创建作业。');
+      setCreateError('标注不能直接创建作业。');
       return;
     }
     const { queries, error: validationError } = queryBatch;
@@ -2102,7 +2103,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
                   triggerId="workbench-create-assignee"
                   emptyLabel="请选择负责人"
                   dialogTitle="选择免审任务负责人"
-                  dialogDescription="可选择已启用的审核员或普通作业员，也可由当前管理员自己负责；其他管理员不可选。"
+                  dialogDescription="可选择已启用的质检或标注，也可由当前管理员自己负责；其他管理员不可选。"
                   roleLabels={CREATOR_ROLE_LABELS}
                   eligibleRoles={['REVIEWER', 'USER']}
                   additionallyEligibleUserIds={[creatorAccountId]}
@@ -2252,7 +2253,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       </div>}
       {lastUpdatedAt && <p className="workbench-updated-at" role="status">{loading ? `正在读取第 ${page} 页，暂时保留上次结果…` : `最近成功刷新：${timeLabel(lastUpdatedAt)} · 每 30 秒自动刷新`}</p>}
 
-        {operatorDeliveryMode && selectedTasks.length > 0 && <div className="workbench-batch-actions" role="region" aria-label="作业员交付操作">
+        {operatorDeliveryMode && selectedTasks.length > 0 && <div className="workbench-batch-actions" role="region" aria-label="标注交付操作">
           <strong>已选 {selectedTasks.length} 条（当前页）</strong>
           <Button unstyled className="button small primary" type="button"
             title={exportableTasks.length > 200 ? '单次最多交付 200 条，请减少选择' : '仅可交付本人负责且已进入交付池的作业'}

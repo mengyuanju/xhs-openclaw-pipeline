@@ -15,7 +15,7 @@ test('central user management exposes the three fixed roles and default-password
     source('server/migrations/0005_user_management.sql'),
   ]);
   assert.match(page, /用户管理/u);
-  assert.match(manager, /ADMIN: '管理员', REVIEWER: '审核员', USER: '普通用户'/u);
+  assert.match(manager, /ADMIN: '管理员', REVIEWER: '质检', USER: '标注'/u);
   assert.match(manager, /初始密码为 123456/u);
   assert.match(profile, /currentPassword/u);
   assert.match(profile, /newPassword/u);

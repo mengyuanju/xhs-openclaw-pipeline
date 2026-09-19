@@ -56,7 +56,7 @@ async function proxyRequest(
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可按创建者角色筛选任务');
   }
   if (routePath === '/v1/tasks' && upstreamUrl.searchParams.has('queryPackageName') && role === 'USER') {
-    throw new ApiError(403, 'FORBIDDEN', '普通用户不能按词包名称筛选任务');
+    throw new ApiError(403, 'FORBIDDEN', '标注不能按词包名称筛选任务');
   }
   if (role !== 'ADMIN' && (routePath === '/v1/task-views'
     || /^\/v1\/task-views\//u.test(routePath)
@@ -84,13 +84,13 @@ async function proxyRequest(
     throw new ApiError(403, 'FORBIDDEN', '质检员没有交付池与交付包下载权限');
   }
   if (role === 'REVIEWER' && (/^\/v1\/(?:settings|prompts|prompt-versions|users|executor-statuses|xhs-search-statuses)(?:\/|$)/u.test(routePath))) {
-    throw new ApiError(403, 'FORBIDDEN', '审核员没有该管理权限');
+    throw new ApiError(403, 'FORBIDDEN', '质检没有该管理权限');
   }
   if (role === 'REVIEWER' && isKnowledgeControlPlaneRoute(routePath)) {
-    throw new ApiError(403, 'FORBIDDEN', '审核员没有知识库管理权限');
+    throw new ApiError(403, 'FORBIDDEN', '质检没有知识库管理权限');
   }
   if (role === 'USER' && !userCanAccessControlPlaneRoute(routePath, request.method)) {
-    throw new ApiError(403, 'FORBIDDEN', '普通用户没有该操作权限');
+    throw new ApiError(403, 'FORBIDDEN', '标注没有该操作权限');
   }
   if (path.join('/') === 'v1/tasks' && upstreamUrl.searchParams.get('mine') === 'true') {
     upstreamUrl.searchParams.set('personal', 'true');

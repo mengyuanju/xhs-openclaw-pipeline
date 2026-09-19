@@ -16,7 +16,7 @@ export default async function ImageQaPage() {
       <div>
         <span className="eyebrow">Image sampling QA</span>
         <h1>图片质检</h1>
-        <p className="subtle">处理随机图片抽检和返修后的强制全检。普通作业员只负责自己的图片初审，不进入此质检池。</p>
+        <p className="subtle">处理随机图片抽检和返修后的强制全检。标注只负责自己的图片初审，不进入此质检池。</p>
       </div>
     </header>
     <ImageQaWorkbench role={role as 'ADMIN' | 'REVIEWER'} />

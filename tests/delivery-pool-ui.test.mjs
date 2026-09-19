@@ -344,7 +344,7 @@ test('delivery pool keeps administrator controls while exposing an ownership-sco
   assert.match(source, /setQueryPackages\(page\.facets\.queryPackages\)/u);
   assert.match(source, /id="delivery-pool-client-batch"/u);
   assert.match(source, /clientBatches\.map\(\(facet\)/u);
-  assert.match(source, /batch\.batchKind === 'OPERATOR_DELIVERY' \? '作业员交付' : '管理员交付'/u);
+  assert.match(source, /batch\.batchKind === 'OPERATOR_DELIVERY' \? '标注交付' : '管理员交付'/u);
   assert.match(source, /batch\.status === 'DELIVERED'/u);
   assert.match(source, /已下载，待确认交付/u);
   assert.match(source, /<Textarea[\s\S]*id="delivery-pool-search"/u,

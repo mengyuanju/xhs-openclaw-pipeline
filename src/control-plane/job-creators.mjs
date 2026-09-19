@@ -8,7 +8,7 @@ export async function loadJobCreators(request) {
   if (!Array.isArray(users) || users.some((user) => !user
     || !Number.isSafeInteger(user.id) || user.id < 1
     || ['username', 'displayName', 'role', 'status'].some((key) => typeof user[key] !== 'string' || !user[key].trim()))) {
-    throw new Error('中心服务返回的作业员数据无效，请重试或更新中心服务。');
+    throw new Error('中心服务返回的标注数据无效，请重试或更新中心服务。');
   }
   return users;
 }

@@ -36,8 +36,8 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
     const promptVersion=(await pool.query("INSERT INTO prompt_versions(template_id,version,content,content_sha256,status,published_at) VALUES($1,1,$2,$3,'PUBLISHED',now()) RETURNING id",[promptTemplate.id,imageEditPromptContent,createHash('sha256').update(imageEditPromptContent).digest('hex')])).rows[0];
     const admin=(await pool.query("SELECT id,username,credential_version FROM app_users WHERE role='ADMIN' LIMIT 1")).rows[0];
     const adminActor={userId:Number(admin.id),username:admin.username,role:'ADMIN',credentialVersion:admin.credential_version};
-    const worker=(await pool.query("INSERT INTO app_users(username,display_name,role,password_hash,must_change_password) VALUES('image-editor','图片作业员','USER','not-a-credential',false) RETURNING *")).rows[0];
-    const outsider=(await pool.query("INSERT INTO app_users(username,display_name,role,password_hash,must_change_password) VALUES('other-editor','其他作业员','USER','not-a-credential',false) RETURNING *")).rows[0];
+    const worker=(await pool.query("INSERT INTO app_users(username,display_name,role,password_hash,must_change_password) VALUES('image-editor','图片标注','USER','not-a-credential',false) RETURNING *")).rows[0];
+    const outsider=(await pool.query("INSERT INTO app_users(username,display_name,role,password_hash,must_change_password) VALUES('other-editor','其他标注','USER','not-a-credential',false) RETURNING *")).rows[0];
     const actor={userId:Number(worker.id),username:worker.username,role:'USER',credentialVersion:worker.credential_version};
     const outsiderActor={userId:Number(outsider.id),username:outsider.username,role:'USER',credentialVersion:outsider.credential_version};
     const repository=createPostgresControlPlaneRepository({pool});

@@ -382,7 +382,7 @@ function acceptedLocalPlan(config) {
     targetIsAiDisclosure:plan.targetIsAiDisclosure===true,targetDescription:String(plan.targetDescription??'').slice(0,500),
     checks:{instructionSpecific:true,exactlyOneTarget:true,wholeVisibleTargetInsideRegion:true,
       protectedTextExcluded:true,editRegionSafe:true,wholeTargetInsideRegion:plan.checks?.wholeTargetInsideRegion===true},
-    reason:String(plan.reason??'已由作业员采用视觉模型建议').slice(0,1000),model:plan.model??null};
+    reason:String(plan.reason??'已由标注采用视觉模型建议').slice(0,1000),model:plan.model??null};
 }
 function repairedLocalPlan(config) {
   const repair=config?.localRepair,plan=repair?.plan;

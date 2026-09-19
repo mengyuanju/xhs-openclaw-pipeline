@@ -4,7 +4,7 @@ import { buildPerformanceSnapshot,durationDistribution,normalizePerformanceFilte
 
 const now=Date.parse('2026-09-18T08:00:00Z');
 const at=offset=>new Date(now+offset).toISOString();
-const event=(id,extra={})=>({id:String(id),taskId:id,accountId:11,username:'worker-a',displayName:'作业员甲',stage:'COPY',kind:'SUBMIT',at:at(-1000),exclusion:null,...extra});
+const event=(id,extra={})=>({id:String(id),taskId:id,accountId:11,username:'worker-a',displayName:'标注甲',stage:'COPY',kind:'SUBMIT',at:at(-1000),exclusion:null,...extra});
 const qa=(id,outcome,extra={})=>event(id,{kind:'QUALITY',first:true,sampleKind:'RANDOM',outcome,...extra});
 
 test('first pass rate counts actual first random verdicts, not submissions or later rechecks',()=>{

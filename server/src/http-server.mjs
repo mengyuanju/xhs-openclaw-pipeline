@@ -341,12 +341,12 @@ function assignmentTarget(body) {
   }
   const assignedToAccountId = Number(rawAccountId);
   if (!Number.isSafeInteger(assignedToAccountId) || assignedToAccountId < 1) {
-    throw new TypeError('请选择有效的作业员账号后重试');
+    throw new TypeError('请选择有效的标注账号后重试');
   }
   return { assignedToUserId, assignedToAccountId };
 }
 
-function requiredAccountId(value, message = '请选择有效的作业员账号后重试') {
+function requiredAccountId(value, message = '请选择有效的标注账号后重试') {
   const accountId = Number(value);
   if (!Number.isSafeInteger(accountId) || accountId < 1) throw new TypeError(message);
   return accountId;
@@ -1380,9 +1380,13 @@ function installRoutes(
       tasks: body.tasks,
     }));
   });
+  router.get('/v1/personal-workspace/qa-activities',async(ctx)=>{
+    ctx.set('Cache-Control','private, no-store');
+    json(ctx,200,await repository.personalQualityActivity(requestActor(ctx),ctx.query));
+  });
   for (const kind of ['statistics', 'tasks']) router.get(`/v1/personal-workspace/${kind}`, async (ctx) => {
     const actor = requestActor(ctx);
-    if (actor.role === 'USER' && ctx.query.queryPackageName) throw new HttpError(403,'FORBIDDEN','普通用户不能按词包名称筛选任务');
+    if (actor.role === 'USER' && ctx.query.queryPackageName) throw new HttpError(403,'FORBIDDEN','标注不能按词包名称筛选任务');
     const result = await repository.personalWorkspace(actor, ctx.query, kind === 'statistics');
     ctx.set('Cache-Control','private, no-store');
     json(ctx,200,kind === 'tasks' && actor.role === 'USER' ? userVisibleTaskList(result) : result);
@@ -1432,7 +1436,7 @@ function installRoutes(
   router.get('/v1/tasks', async (ctx) => {
     const actor = requestActor(ctx);
     if (actor.role === 'USER' && ctx.query.queryPackageName !== undefined) {
-      throw new HttpError(403, 'FORBIDDEN', '普通用户不能按词包名称筛选任务');
+      throw new HttpError(403, 'FORBIDDEN', '标注不能按词包名称筛选任务');
     }
     const personal = ctx.query.personal === 'true';
     if (ctx.query.personal !== undefined && !['true', 'false'].includes(ctx.query.personal)) {
@@ -1603,7 +1607,7 @@ function installRoutes(
     const actor = requestActor(ctx, ['ADMIN', 'USER']);
     const request = normalizeDeliveryExportRequest(requireJson(ctx));
     if (actor.role === 'USER' && request.scope !== 'SELECTED') {
-      throw new ControlPlaneAuthorizationError('作业员只能打包明确选中的本人作业');
+      throw new ControlPlaneAuthorizationError('标注只能打包明确选中的本人作业');
     }
     const controller = new AbortController();
     const cancellation = () => new DOMException(
@@ -1630,7 +1634,7 @@ function installRoutes(
       if (actor.role === 'USER' && !batchHistoryEnabled) {
         throw new ControlPlaneConflictError(
           'FINAL_DELIVERY_UNAVAILABLE',
-          '中心服务尚未支持作业员交付留痕，请升级后重试',
+          '中心服务尚未支持标注交付留痕，请升级后重试',
         );
       }
       const taskIds = await resolveDeliveryExportTaskIds(repository, request, actor, {

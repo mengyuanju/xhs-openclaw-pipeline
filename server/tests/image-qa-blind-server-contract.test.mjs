@@ -88,10 +88,10 @@ test('administrator image QA list filters by submitter display name or account n
   const admin = { userId: 1, username: 'admin', role: 'ADMIN' };
   const fixture = imageListPool(admin);
 
-  const result = await listImageQaItems(fixture.pool, { personName: '  图片   作业员  ' }, admin);
+  const result = await listImageQaItems(fixture.pool, { personName: '  图片   标注  ' }, admin);
 
   assert.equal(result.items.length, 1);
-  assert.deepEqual(fixture.listCall.values.slice(0, 5), [1, 'PENDING', 50, 0, '图片 作业员']);
+  assert.deepEqual(fixture.listCall.values.slice(0, 5), [1, 'PENDING', 50, 0, '图片 标注']);
   assert.match(fixture.listCall.sql,
     /strpos\(lower\(item\.submitter_username\), lower\(\$5\)\)[\s\S]*person_filter\.display_name/u);
   assert.match(fixture.listCall.sql, /edit\.status = ANY\(\$6::text\[\]\)/u);
@@ -102,7 +102,7 @@ test('reviewers cannot request the administrator personnel filter for image QA',
   const fixture = imageListPool(reviewer);
 
   await assert.rejects(
-    listImageQaItems(fixture.pool, { personName: '图片作业员' }, reviewer),
+    listImageQaItems(fixture.pool, { personName: '图片标注' }, reviewer),
     (error) => error?.code === 'FORBIDDEN',
   );
   assert.equal(fixture.listCall, null);

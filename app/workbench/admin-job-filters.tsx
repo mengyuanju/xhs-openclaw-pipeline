@@ -10,7 +10,7 @@ import { AdminCreatorFilter, type JobCreator } from './admin-creator-filter';
 import { AdminAssigneeFilter } from './admin-assignee-filter';
 
 export const CREATOR_ROLE_LABELS: Record<string, string> = {
-  ADMIN: '管理员', REVIEWER: '审核员', USER: '普通用户', UNKNOWN: '未知角色',
+  ADMIN: '管理员', REVIEWER: '质检', USER: '标注', UNKNOWN: '未知角色',
 };
 
 export function AdminJobFilters({ role, state, creator, assignee, createdDateFrom, createdDateTo, stateLabels,

@@ -337,7 +337,7 @@ test('manual assignment is atomic, audited and targets active non-admin workers'
   assert.equal(calls.at(-1).sql, 'COMMIT');
 
   const reviewerTask = await repository.assignTask(3, {
-    assignedToUserId: 'reviewer', actorUserId: 'admin', reason: '交给审核员',
+    assignedToUserId: 'reviewer', actorUserId: 'admin', reason: '交给质检',
   });
   assert.equal(reviewerTask.assignedToUserId, 'reviewer');
 

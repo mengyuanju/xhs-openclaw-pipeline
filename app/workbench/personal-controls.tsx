@@ -125,12 +125,13 @@ const progress: Record<string,string> = { EDIT:'待修改',PROCESSING:'后台处
 const sources: Record<string,string> = { COPY_QA:'文案质检',IMAGE_QA:'图片质检',FINAL_REWORK:'最终审核' };
 export function PersonalWorkDetails({ work, events }: { work?: PersonalWork | null; events?: PersonalEvent[] }) {
   const history=events?.slice().sort((a,b)=>Date.parse(b.at)-Date.parse(a.at)).map(event => <small key={event.id}>
-    {event.stage === 'COPY' ? '文案' : '图片'}{event.kind === 'COMPLETE' ? event.rework ? '返修提交' : '审核提交' : event.kind === 'RETURN' ? '退回' : event.passed ? '质检通过' : '质检退回'}：{new Date(event.at).toLocaleString('zh-CN')}
+    {event.stage === 'COPY' ? '文案' : '图片'}{event.kind === 'COMPLETE' ? event.rework ? '返修提交' : '标注提交' : event.kind === 'RETURN' ? '退回' : event.passed ? '质检通过' : '质检退回'}：{new Date(event.at).toLocaleString('zh-CN')}
+    {event.kind!=='COMPLETE'&&(event.roundKnown?` · 第 ${event.reviewRound} 轮质检 · 有效退回 ${event.returnRound} 次`:' · 历史轮次不明')}
   </small>);
   if (!work) return <div className={styles.rowDetails}>{history}</div>;
   return <div className={styles.rowDetails}>
     {work.reworkType && <><strong>{types[work.reworkType]} · {progress[work.reworkProgress || 'EDIT']}</strong>
-      <small>{sources[work.reworkSource || ''] || '退回'} · 累计 {work.reworkCount} 次退回{work.returnedAt ? ` · ${new Date(work.returnedAt).toLocaleString('zh-CN')}` : ''}</small>
+      <small>{sources[work.reworkSource || ''] || '退回'} · 跨阶段返修记录 {work.reworkCount} 次{work.returnedAt ? ` · ${new Date(work.returnedAt).toLocaleString('zh-CN')}` : ''}</small>
       {work.returnNote && <small title={work.returnNote} className="workbench-text-preview">退回原因：{work.returnNote}</small>}</>}
     {work.waitingHours !== null && <small className={work.waitingHours >= 24 ? styles.warning : ''}>当前待处理已等待 {work.waitingHours.toFixed(1)} 小时</small>}
     {work.categories.includes('planRunning') && <small>文案规划处理中，可关闭操作窗口</small>}

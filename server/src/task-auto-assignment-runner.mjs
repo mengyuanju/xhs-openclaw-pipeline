@@ -13,7 +13,7 @@ export const AUTO_ASSIGNABLE_TASK_STATES = Object.freeze([
 ]);
 
 const AUTO_ASSIGNMENT_LOCK_KEYS = Object.freeze([4310, 8205]);
-const AUTO_ASSIGNMENT_REASON = '自动补充至作业员配额';
+const AUTO_ASSIGNMENT_REASON = '自动补充至标注配额';
 
 function normalizeMaxAssignments(value) {
   if (!Number.isInteger(value) || value < 1 || value > AUTO_ASSIGNMENT_MAX_PER_RUN) {
@@ -287,6 +287,7 @@ export async function runAutoAssignmentReplenishment(pool, {
           assigned_at = now(),
           progress_message = CASE
             WHEN task.progress_message IS NULL OR task.progress_message IN (
+                '等待管理员分配标注',
                 '等待管理员分配作业员',
                 '等待分配负责人',
                 '负责人待分配，等待文案执行机领取',

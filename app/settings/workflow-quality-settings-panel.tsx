@@ -90,7 +90,7 @@ export function WorkflowQualitySettingsPanel() {
       <div>
         <span className="section-kicker">Workflow quality</span>
         <h2 id="workflow-quality-settings-title">流程与图文抽检</h2>
-        <p className="subtle">文案与图片使用独立抽检比例。图片初审始终由任务作业员完成，图片质检权限在用户管理中设置。</p>
+        <p className="subtle">文案与图片使用独立抽检比例。图片初审始终由任务标注完成，图片质检权限在用户管理中设置。</p>
       </div>
       <ClipboardCheck size={20} aria-hidden="true" />
     </div>
@@ -100,7 +100,7 @@ export function WorkflowQualitySettingsPanel() {
     {draft && <>
       <div className={styles.modeSummary} aria-label="当前配置摘要">
         <span className="pill">文案抽检：{draft.copySampling.enabled ? `${ratePercent}%` : '关闭'}</span>
-        <span className="pill">审核员视图：{draft.copySampling.blindReviewEnabled ? '盲评' : '非盲评'}</span>
+        <span className="pill">质检视图：{draft.copySampling.blindReviewEnabled ? '盲评' : '非盲评'}</span>
         <span className="pill">质检权限包含单条和整批打回</span>
         <span className="pill">图片抽检：{draft.imageSampling.enabled ? `${imageRatePercent}%` : '关闭'}</span>
       </div>
@@ -142,7 +142,7 @@ export function WorkflowQualitySettingsPanel() {
         <div className={styles.card}>
           <div className={styles.cardText}>
             <label htmlFor="image-sampling-enabled">启用图片抽检</label>
-            <p>作业员完成图片初审后进入图片抽检池；关闭时直接进入交付池。质检打回后的图片仍强制 100% 复检。</p>
+            <p>标注完成图片初审后进入图片抽检池；关闭时直接进入交付池。质检打回后的图片仍强制 100% 复检。</p>
           </div>
           <Switch id="image-sampling-enabled" checked={draft.imageSampling.enabled} disabled={disabled}
             onChange={(event) => { setMessage(''); setDraft((current) => current ? { ...current, imageSampling: { ...current.imageSampling, enabled: event.target.checked } } : current); }} />
@@ -158,7 +158,7 @@ export function WorkflowQualitySettingsPanel() {
         <div className={styles.card}>
           <div className={styles.cardText}>
             <label htmlFor="image-batch-return-enabled">允许质检员整批打回</label>
-            <p>只影响审核员；管理员始终可以处理任何图片质检项。关闭后审核员只能单条打回。</p>
+            <p>只影响质检；管理员始终可以处理任何图片质检项。关闭后质检只能单条打回。</p>
           </div>
           <Switch id="image-batch-return-enabled" checked={draft.imageSampling.reviewerBatchReturnEnabled} disabled={disabled || !draft.imageSampling.enabled}
             onChange={(event) => { setMessage(''); setDraft((current) => current ? { ...current, imageSampling: { ...current.imageSampling, reviewerBatchReturnEnabled: event.target.checked } } : current); }} />

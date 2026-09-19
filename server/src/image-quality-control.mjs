@@ -970,7 +970,7 @@ export async function getImageQaBatchReturnPreview(pool, rawFreezePublicId, rawA
   const freezePublicId = normalizeUuid(rawFreezePublicId, 'freezePublicId');
   const settings = await readWorkflowQualitySettings(pool);
   if (actor.role !== 'ADMIN' && !settings.imageSampling.reviewerBatchReturnEnabled) {
-    throw new ControlPlaneAuthorizationError('管理员尚未允许审核员整批打回图片');
+    throw new ControlPlaneAuthorizationError('管理员尚未允许质检整批打回图片');
   }
   const result = await pool.query(`
     SELECT sampling_freeze.id, sampling_freeze.public_id, sampling_freeze.blind_review_enabled, sampling_freeze.status,
@@ -1017,7 +1017,7 @@ export async function batchReturnImageQa(pool, input, rawActor) {
     if (replay) return replay;
     const settings = await lockWorkflowQualitySettings(client);
     if (actor.role !== 'ADMIN' && !settings.imageSampling.reviewerBatchReturnEnabled) {
-      throw new ControlPlaneAuthorizationError('管理员尚未允许审核员整批打回图片');
+      throw new ControlPlaneAuthorizationError('管理员尚未允许质检整批打回图片');
     }
     await validateReturnReasons(client, reasonCodes);
     const rows = (await client.query(`
@@ -1073,7 +1073,7 @@ export async function batchReturnImageQa(pool, input, rawActor) {
       INSERT INTO image_sampling_events(freeze_id, action, actor_account_id, actor_username,
         request_id, reason_codes, note, details)
       VALUES ($1,'RETURN_BATCH',$2,$3,$4,$5,$6,$7)
-    `, [freezeId, actor.userId, actor.username, requestId, reasonCodes, note, { affectedCount: rows.length }]);
+    `, [freezeId, actor.userId, actor.username, requestId, reasonCodes, note, { affectedCount: rows.length, affectedTaskIds: rows.map(row=>Number(row.task_id)) }]);
     const response = { freezePublicId, status: 'BATCH_RETURNED', affectedCount: rows.length };
     await saveMutation(client, actor, requestId, 'RETURN_BATCH', fingerprint, response);
     return response;

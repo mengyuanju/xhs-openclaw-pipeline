@@ -17,6 +17,7 @@ export function useOperatorPerformance(filters:Record<string,string>) {
     const timer=setTimeout(()=>controller.abort(),30_000);
     const search=new URLSearchParams(query);
     if(cache.current?.key===base && Date.parse(cache.current.expires)>Date.now()) search.set('snapshotToken',cache.current.token);
+    if(cache.current && cache.current.key!==base) setReport(null);
     setBusy(true);setError('');
     void (async()=>{
       try{
@@ -28,6 +29,7 @@ export function useOperatorPerformance(filters:Record<string,string>) {
           }else throw caught;
         }
         if(!next?.snapshotToken || !next.summary || !Array.isArray(next.people?.items)) throw Error('统计数据格式不完整');
+        if(next.metricVersion<3 || !next.summary.qa) throw Error('中心尚未支持新版标注与质检统计，请先升级中心服务');
         if(!disposed){setReport(next);cache.current={key:base,token:next.snapshotToken,expires:next.expiresAt};}
       }catch(caught){
         if(!disposed){

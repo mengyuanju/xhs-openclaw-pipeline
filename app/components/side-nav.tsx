@@ -51,7 +51,7 @@ const navigationGroups: NavigationGroup[] = [
   {
     label: '运营与系统',
     items: [
-      { href: '/workbench-statistics', label: '作业统计', icon: BarChart3 },
+      { href: '/workbench-statistics', label: '数据统计', icon: BarChart3 },
       { href: '/settings', label: '生产配置', icon: Settings2 },
       { href: '/executors', label: '执行机管理', icon: ServerCog },
       { href: '/users', label: '用户管理', icon: Users },
@@ -193,7 +193,7 @@ export function SideNav({ session }: { session: NavigationSession }) {
       <div className="sidebar-foot">
         <div className="sidebar-auth-summary">
           <span className="sidebar-auth-label"><span className="status-dot" /> 局域网认证已启用</span>
-          <small>{isAdmin ? '管理员' : role === 'REVIEWER' ? '审核员' : '普通用户'} · {session?.username || 'admin'}</small>
+          <small>{isAdmin ? '管理员' : role === 'REVIEWER' ? '质检' : '标注'} · {session?.username || 'admin'}</small>
         </div>
         <Link className="sidebar-signout" href="/profile"><Users aria-hidden="true" size={14} />个人信息</Link>
         <Button unstyled className="sidebar-signout" type="button" onClick={signOut} disabled={isSigningOut}>

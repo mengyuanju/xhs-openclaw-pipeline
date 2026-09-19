@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { normalizePersonalFilters,selectPersonalTasks,summarizePersonalWorkspace } from '../src/personal-workspace.mjs';
 import { DEFAULT_HUMAN_QUALITY_SETTINGS } from '../src/human-quality-settings.mjs';
+import { summarizeQa,qaMetricRows,uniqueTaskCount } from '../src/quality-review-statistics.mjs';
 
 test('personal workspace browser: card drilldowns, URL restoration, history permission, refresh, delivery dialog and mobile',{
   skip:process.env.RUN_PERSONAL_WORKSPACE_BROWSER !== '1',timeout:90_000,
@@ -20,6 +21,7 @@ test('personal workspace browser: card drilldowns, URL restoration, history perm
   let facts=[make(1),make(2,{copyReworkOrigin:'QA_RETURN',reworkCount:2,returnNote:'修正文案事实错误',returnedAt:new Date(now-90000000).toISOString()}),
     make(3,{state:'IMAGE_REWORK_PENDING',reworkTarget:'BOTH',reworkCount:1}),make(4,{isAssigned:false,isCreated:false,canOpen:false})];
   const events=[{id:'done',taskId:4,kind:'COMPLETE',stage:'COPY',at:new Date(now).toISOString(),rework:false}];
+  const qaEvents=Array.from({length:8},(_,i)=>({id:`qa:${i}`,samplingItemId:i+1,taskId:i+1,accountId:22,stage:i<5?'COPY':'IMAGE',kind:'QA_REVIEW',outcome:'PASS',at:new Date(now).toISOString()}));
   let browser,server,failStatistics=false;
   const errors=[],requests=[];
   try {
@@ -57,7 +59,10 @@ test('personal workspace browser: card drilldowns, URL restoration, history perm
         requests.push(req.url); const url=new URL(req.url,'http://localhost'); let data;
         if(url.pathname.endsWith('/personal-workspace/statistics')){
           if(failStatistics){res.statusCode=503;res.setHeader('content-type','application/json');res.end(JSON.stringify({error:{code:'TEST_UNAVAILABLE',message:'统计服务暂不可用'}}));return;}
-          data={...summarizePersonalWorkspace(facts,events,[],normalizePersonalFilters(Object.fromEntries(url.searchParams))),notices:[]};
+          data={...summarizePersonalWorkspace(facts,events,[],normalizePersonalFilters(Object.fromEntries(url.searchParams))),notices:[],qa:summarizeQa(qaEvents),contribution:uniqueTaskCount([...events,...qaEvents])};
+        } else if(url.pathname.endsWith('/personal-workspace/qa-activities')) {
+          const rows=qaMetricRows(qaEvents,url.searchParams.get('metric'),url.searchParams.get('stage'));
+          data={items:rows.map(row=>({id:row.id,code:'QA-TEST',kind:row.kind,stage:row.stage,outcome:row.outcome,at:row.at})),total:rows.length,tasks:uniqueTaskCount(rows),page:1,pageSize:15};
         } else if(url.pathname.endsWith('/personal-workspace/tasks')) {
           data=selectPersonalTasks(facts,events,normalizePersonalFilters(Object.fromEntries(url.searchParams)));
           data.items=data.items.map(item=>({...item,personalHistory:item.history}));data.updatedAt=new Date().toISOString();
@@ -72,10 +77,10 @@ test('personal workspace browser: card drilldowns, URL restoration, history perm
     const base=`http://127.0.0.1:${server.address().port}`;
     browser=await chromium.launch({channel:process.env.BROWSER_CHANNEL||'msedge',headless:true});
     const page=await browser.newPage({viewport:{width:1440,height:1000}});page.on('pageerror',error=>errors.push(error.message));
-    await page.goto(`${base}/workbench/personal-statistics`);
+    await page.goto(`${base}/workbench/personal-statistics`);await page.getByText('当前待办与返修跟进',{exact:true}).click();
     const rework=page.getByRole('link',{name:'待返修 2 项作业 · 含返修处理/确认',exact:true});await rework.waitFor();
     assert.equal(requests.some(url=>url.includes('/delivery-items')),false,'delivery history is lazy');
-    await page.getByRole('img',{name:'每日文案与图片完成作业',exact:true}).waitFor();
+    await page.getByRole('img',{name:'每日标注条数',exact:true}).waitFor();
     if(process.env.PERSONAL_WORKSPACE_SCREENSHOTS){await mkdir(process.env.PERSONAL_WORKSPACE_SCREENSHOTS,{recursive:true});await page.screenshot({path:join(process.env.PERSONAL_WORKSPACE_SCREENSHOTS,'statistics-desktop.png'),fullPage:true});}
     await rework.click();await page.getByRole('button',{name:'查看作业 #2：桌面整理 2',exact:true}).waitFor();
     assert.equal(new URL(page.url()).searchParams.get('state'),'rework');
@@ -130,13 +135,13 @@ test('personal workspace browser: card drilldowns, URL restoration, history perm
     await page.getByRole('option',{name:'全部状态',exact:true}).click();
     assert.equal(await page.getByRole('dialog').count(),1,'selecting inside the delivery dialog keeps it open');
     await page.keyboard.press('Escape');
-    await page.goto(`${base}/workbench/personal-statistics`);await rework.waitFor();
+    await page.goto(`${base}/workbench/personal-statistics`);await page.getByText('当前待办与返修跟进',{exact:true}).click();await rework.waitFor();
     facts=facts.map(item=>item.id===2?{...item,state:'COPY_QC_PENDING',mandatoryCopyQc:true}:item);
     await page.evaluate(()=>window.dispatchEvent(new Event('xhs:workspace-updated')));
     await page.getByRole('link',{name:'待返修 1 项作业 · 含返修处理/确认',exact:true}).waitFor();
     failStatistics=true;await page.getByRole('button',{name:'刷新',exact:true}).click();await page.getByRole('alert').filter({hasText:'保留上次成功'}).waitFor();
     assert.ok(await page.getByRole('link',{name:'待返修 1 项作业 · 含返修处理/确认',exact:true}).isVisible());failStatistics=false;
-    await page.setViewportSize({width:390,height:844});await page.goto(`${base}/workbench/personal-statistics`);
+    await page.setViewportSize({width:390,height:844});await page.goto(`${base}/workbench/personal-statistics`);await page.getByText('当前待办与返修跟进',{exact:true}).click();
     await page.getByRole('link',{name:'待返修 1 项作业 · 含返修处理/确认',exact:true}).waitFor();
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+2),'mobile statistics should not overflow');
     if(process.env.PERSONAL_WORKSPACE_SCREENSHOTS)await page.screenshot({path:join(process.env.PERSONAL_WORKSPACE_SCREENSHOTS,'statistics-mobile.png'),fullPage:true});
@@ -150,6 +155,15 @@ test('personal workspace browser: card drilldowns, URL restoration, history perm
     await page.waitForFunction(()=>new URLSearchParams(location.search).get('personalScope')==='CREATED');
     await page.getByRole('button',{name:'重置个人筛选',exact:true}).click();
     assert.equal(await page.getByRole('combobox',{name:'作业关系',exact:true}).textContent(),'我负责的');
+    facts=[];events.length=0;
+    await page.goto(`${base}/workbench/personal-statistics`);await page.getByText('当前待办与返修跟进',{exact:true}).click();
+    await page.getByRole('link',{name:/文案标注 0/}).waitFor();await page.getByRole('button',{name:'质检',exact:true}).click();
+    await page.getByRole('button',{name:'文案质检 5 5 次质检 · 含复检 0 次',exact:true}).click();
+    await page.getByRole('dialog').getByText('共 5 条记录',{exact:false}).waitFor();
+    assert.ok(!(await page.getByRole('dialog').textContent()).includes('桌面整理'));
+    await page.keyboard.press('Escape');
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+2));
+    if(process.env.PERSONAL_WORKSPACE_SCREENSHOTS)await page.screenshot({path:join(process.env.PERSONAL_WORKSPACE_SCREENSHOTS,'qa-only-mobile.png'),fullPage:true});
     assert.deepEqual(errors,[]);
   } finally {
     await browser?.close();if(server)await new Promise(resolve=>server.close(resolve));

@@ -28,7 +28,7 @@ import {
 
 import { apiRequest } from '../components/api-client';
 
-const ROLE_LABELS = { ADMIN: '管理员', REVIEWER: '审核员', USER: '普通用户' } as const;
+const ROLE_LABELS = { ADMIN: '管理员', REVIEWER: '质检', USER: '标注' } as const;
 const STATUS_LABELS = { ACTIVE: '启用', DISABLED: '停用' } as const;
 
 type ManagedUser = {
@@ -280,9 +280,9 @@ export function UserManager({
             <div className="user-editor-permission-options">
               <label><input type="checkbox" name="copyReviewEnabled" defaultChecked={editorUser?.copyReviewEnabled ?? true} /> 文案审核</label>
               <label><input type="checkbox" name="copyQcEnabled" defaultChecked={editorUser?.copyQcEnabled ?? false} /> 文案质检</label>
-              <label><input type="checkbox" name="imageQcEnabled" defaultChecked={editorRole === 'REVIEWER' && (editorUser?.imageQcEnabled ?? false)} disabled={editorRole !== 'REVIEWER'} /> 图片质检（仅审核员）</label>
+              <label><input type="checkbox" name="imageQcEnabled" defaultChecked={editorRole === 'REVIEWER' && (editorUser?.imageQcEnabled ?? false)} disabled={editorRole !== 'REVIEWER'} /> 图片质检（仅质检）</label>
             </div>
-            <small>文案审核、文案质检和图片质检独立设置；图片质检只能授予审核员。图片初审无需授权，普通作业员只初审自己负责的任务；管理员始终拥有质检管理权限。</small>
+            <small>文案审核、文案质检和图片质检独立设置；图片质检只能授予质检。图片初审无需授权，标注只初审自己负责的任务；管理员始终拥有质检管理权限。</small>
           </div>
           {error && <div className="notice error" role="alert">{error}</div>}
           <div className="user-editor-actions"><DialogClose asChild><Button unstyled className="button" type="button" disabled={editorBusy}>取消</Button></DialogClose><Button unstyled className="button primary" disabled={editorBusy}>{editorBusy ? '保存中…' : editor?.mode === 'create' ? '创建用户' : '保存修改'}</Button></div>

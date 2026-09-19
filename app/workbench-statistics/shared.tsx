@@ -11,7 +11,7 @@ export const STATE_LABELS: Record<StateGroup, string> = {
   queued: '排队中', running: '生成中', copyReview: '待文案审核', imageReview: '待图片审核',
   failed: '执行失败', completed: '已完成', cancelled: '已废弃',
 };
-export const ROLE_LABELS: Record<string, string> = { USER: '作业员', REVIEWER: '审核员', ADMIN: '管理员' };
+export const ROLE_LABELS: Record<string, string> = { USER: '标注', REVIEWER: '质检', ADMIN: '管理员' };
 export const number = (value: number | undefined | null) => value == null ? '—' : value.toLocaleString('zh-CN');
 export const duration = (ms: number | null | undefined) => ms == null ? '暂无样本'
   : ms < 60_000 ? `${(ms / 1000).toFixed(1)} 秒` : ms < 3_600_000 ? `${(ms / 60_000).toFixed(1)} 分` : `${(ms / 3_600_000).toFixed(1)} 小时`;

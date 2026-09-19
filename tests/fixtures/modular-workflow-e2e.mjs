@@ -47,7 +47,7 @@ const passwords = {
 const users = {
   admin: { id: 1, username: 'admin', displayName: 'E2E 管理员', role: 'ADMIN', status: 'ACTIVE', credentialVersion: 1, mustChangePassword: false },
   reviewer: { id: 91, username: 'reviewer', displayName: 'E2E 质检员', role: 'REVIEWER', status: 'ACTIVE', credentialVersion: 1, mustChangePassword: false, copyReviewEnabled: true, copyQcEnabled: true },
-  worker: { id: 22, username: 'worker', displayName: 'E2E 作业人员', role: 'USER', status: 'ACTIVE', credentialVersion: 1, mustChangePassword: false, copyReviewEnabled: true, copyQcEnabled: false },
+  worker: { id: 22, username: 'worker', displayName: 'E2E 标注', role: 'USER', status: 'ACTIVE', credentialVersion: 1, mustChangePassword: false, copyReviewEnabled: true, copyQcEnabled: false },
 };
 
 const state = {

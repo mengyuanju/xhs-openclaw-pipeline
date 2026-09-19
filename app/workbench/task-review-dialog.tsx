@@ -1700,7 +1700,7 @@ export function TaskReviewDialog({
               ? '图片已经生成；请逐页核对并按需使用完整图片编辑功能，确认后提交图片初审。'
               : isAdmin
                 ? '图片初审由任务负责人完成；如需代办，请先将任务改派给自己。'
-                : '图片初审由任务负责人完成；审核员请在独立图片质检池处理抽中项。'
+                : '图片初审由任务负责人完成；质检请在独立图片质检池处理抽中项。'
             : detail?.state === 'IMAGE_REWORK_PENDING'
               ? canHandleAssignedImages
                 ? '图片已被质检打回；请按要求修改并采用新版本，再重新提交初审和强制复检。'
@@ -2045,7 +2045,7 @@ export function TaskReviewDialog({
                 </div>}
                 {!canReviewImages && imageAssessments.length === 0 && isImageReviewView && <p className="notice">{canHandleAssignedImages
                   ? detail.state === 'IMAGE_REWORK_PENDING' ? '请完成返修并采用新图片版本；系统随后回到图片初审，提交后固定进入强制图片复检。' : '请逐页核对图片。需要调整时可直接编辑或重新生成；确认无误后在底部提交图片抽检。'
-                  : isAdmin ? '当前任务由其他负责人处理；如需代办，请先将任务改派给自己。' : '图片初审由任务负责人完成；审核员在独立图片质检池处理抽中项。'}</p>}
+                  : isAdmin ? '当前任务由其他负责人处理；如需代办，请先将任务改派给自己。' : '图片初审由任务负责人完成；质检在独立图片质检池处理抽中项。'}</p>}
                 {currentImageRun?.result?.processing?.type === 'LOCAL' && <p className="notice warning">此版本已在本地转换格式或背景，未重新调用模型验收，请检查文字对比和透明边缘后审核。</p>}
                 {imageConfigurationChanged && <p className="notice warning">格式与背景配置尚未应用，当前预览仍是已有成品。请先提交转换或重新生图，或刷新恢复已保存的配置。</p>}
                 {pendingImageEdits.length > 0 && <div className="notice warning" role="status"><strong>还有 {pendingImageEdits.length} 个待处理的图片修改。</strong> 可集中对比并一键采用或拒绝。

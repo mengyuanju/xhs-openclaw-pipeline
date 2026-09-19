@@ -3,11 +3,12 @@ import test from 'node:test';
 import { readPersonalWorkspace } from '../src/personal-workspace.mjs';
 const actor={userId:11,username:'worker',role:'USER'};
 
-function fake({historyFails=false,deliveryFails=false,canOpen=false}={}) {
+function fake({historyFails=false,deliveryFails=false,qaFails=false,canOpen=false}={}) {
   const calls=[]; let released=false;
   const client={release(){released=true;},async query(sql,values){
     calls.push({sql,values});
-    if(sql.startsWith('WITH returns')){
+    if(qaFails&&sql.includes('FROM quality_review_activity_events'))throw Error('quality activity unavailable');
+    if(sql.startsWith('WITH personal_events')){
       if(historyFails)throw Error('history unavailable');
       return {rows:[{id:'copy:1',task_id:1,kind:'COMPLETE',stage:'COPY',at:new Date(),rework:false,reasons:[]}]};
     }
@@ -25,6 +26,16 @@ test('personal statistics isolate unavailable history and delivery instead of si
   assert.ok(db.calls.some(call=>call.sql==='ROLLBACK TO SAVEPOINT personal_history'));
   assert.equal(db.calls.at(-1).sql,'COMMIT');
 });
+
+test('unavailable QA history is null, leaves production available and releases its savepoint',async()=>{
+  const db=fake({qaFails:true});
+  const report=await readPersonalWorkspace(db.pool,actor,{}, {report:true,blindSql:'false'});
+  assert.equal(report.qa,null);assert.equal(report.contribution,null);assert.equal(report.qaTrend,null);
+  assert.equal(report.period.completed,1);assert.equal(report.counts.copyInitial,1);
+  assert.match(report.notices.join(' '),/质检贡献暂不可用/);
+  assert.ok(db.calls.some(call=>call.sql==='ROLLBACK TO SAVEPOINT personal_qa'));
+  assert.equal(db.calls.at(-1).sql,'COMMIT');
+});
 test('historical list failures fail explicitly and roll back; they never masquerade as an empty list',async()=>{
   const db=fake({historyFails:true});
   await assert.rejects(readPersonalWorkspace(db.pool,actor,{mode:'COMPLETED'},{blindSql:'false'}),/history unavailable/);
@@ -34,7 +45,7 @@ test('current list avoids historical aggregation and only hydrates accessible pa
   const db=fake({canOpen:true});let loaded;
   const page=await readPersonalWorkspace(db.pool,actor,{}, {blindSql:'false',loadTasks:async(client,ids)=>{loaded=ids;return[{id:1,query:'my task'}];}});
   assert.deepEqual(loaded,[1]);assert.equal(page.total,1);assert.equal(page.items[0].canOpen,true);
-  assert.equal(db.calls.some(call=>call.sql.startsWith('WITH returns')),false);
+  assert.equal(db.calls.some(call=>call.sql.startsWith('WITH personal_events')),false);
   assert.equal(db.calls.some(call=>call.sql.startsWith('SELECT b.id AS batch_id')),false);
 });
 test('read-only historical rows do not hydrate current detail',async()=>{

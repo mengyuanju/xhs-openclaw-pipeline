@@ -13,8 +13,8 @@ test('operator report: real SQL, immutable identity, sampling denominator, snaps
     await repository.initialize();
     const db=repository.pool;
     const users=(await db.query(`INSERT INTO app_users(username,display_name,role,password_hash,status,created_at)
-      VALUES ('perf-a','作业员甲','USER','fake-only','ACTIVE',now()-interval '5 days'),
-      ('perf-b','作业员乙','USER','fake-only','ACTIVE',now()-interval '5 days'),
+      VALUES ('perf-a','标注甲','USER','fake-only','ACTIVE',now()-interval '5 days'),
+      ('perf-b','标注乙','USER','fake-only','ACTIVE',now()-interval '5 days'),
       ('perf-admin','管理员','ADMIN','fake-only','ACTIVE',now()-interval '5 days') RETURNING *`)).rows;
     const [a,b,admin]=users.map(row=>({userId:Number(row.id),username:row.username,role:row.role}));
     await db.query("INSERT INTO executor_nodes(id,name) VALUES('perf-node','Test')");
@@ -72,7 +72,7 @@ test('operator report: real SQL, immutable identity, sampling denominator, snaps
     // Later samples cannot mutate the saved report or export.
     const csv=await repository.operatorPerformance(admin,{snapshotToken:report.snapshotToken},{kind:'export'});
     assert.match(csv.csv,/文案通过/);
-    assert.match(csv.csv,/作业员甲/);
+    assert.match(csv.csv,/标注甲/);
     const before=(await db.query('SELECT count(*) FROM operator_performance_events')).rows[0].count;
     await db.query('SELECT capture_operator_facts()');
     assert.equal((await db.query('SELECT count(*) FROM operator_performance_events')).rows[0].count,before);
@@ -107,6 +107,14 @@ test('operator report: real SQL, immutable identity, sampling denominator, snaps
     assert.equal(deleted.people.items.find(row=>row.accountId===b.userId).COPY.recheck.rate,1);
     const removedDetails=await repository.operatorPerformance(admin,{snapshotToken:deleted.snapshotToken,metric:'recheck'},{kind:'detail',accountId:b.userId});
     assert.equal(removedDetails.items[0].canOpen,false);
+    assert.equal(removedDetails.items[0].reviewRound,2,'inspection ancestry survives deletion');
+    assert.equal(removedDetails.items[0].returnRound,1);
+    const own=await repository.personalWorkspace(b,{},true);
+    assert.equal(own.annotation.COPY.firstRecheck.rate,1,'personal and admin use the same preserved history');
+    const ownHistory=await repository.personalWorkspace(b,{mode:'QUALITY',qualityRecheck:'1'});
+    assert.equal(ownHistory.total,1,'deleted content remains auditable in personal history');
+    assert.equal(ownHistory.items[0].canOpen,false);assert.equal(ownHistory.items[0].state,'HISTORY_ONLY');
+    assert.equal(ownHistory.items[0].personalHistory[0].reviewRound,2);
     // A batch event can carry a trigger item ID. It must still record every
     // affected member, dated by the batch event rather than old sample creation.
     const affected=tasks.slice(6).map(row=>row.item);
@@ -129,5 +137,30 @@ test('operator report: real SQL, immutable identity, sampling denominator, snaps
     assert.equal(excluded.summary.COPY.firstPass.rate,.75);
     assert.equal(excluded.dataQuality.excluded.find(item=>item.reason==='ADMIN_DIRECT').count,1);
     assert.equal(excluded.dataQuality.excluded.find(item=>item.reason==='SELF_REVIEW').count,1);
+    // Two real failures in one stage/chain suggest reassignment only while the
+    // same producer still owns the open work. The second failure is outside the
+    // selected period but current actionability must remain visible.
+    const followup=tasks[2];
+    let parent=followup.item;
+    for(let round=2;round<=3;round++) {
+      const revision=Number((await db.query(`INSERT INTO copy_revisions(task_id,revision,content,revision_origin,parent_revision_id)
+        VALUES($1,$2,'{}','QA_RETURN',$3) RETURNING id`,[followup.task,round,followup.revision])).rows[0].id);
+      await db.query('UPDATE tasks SET current_copy_revision_id=$2 WHERE id=$1',[followup.task,revision]);
+      const approval=Number((await db.query(`INSERT INTO copy_approval_events(task_id,copy_revision_id,approval_mode,approved_by_account_id,approved_by_username,content_sha256)
+        VALUES($1,$2,'MANUAL',$3,'perf-a',$4) RETURNING id`,[followup.task,revision,a.userId,'a'.repeat(64)])).rows[0].id);
+      const item=Number((await db.query(`INSERT INTO copy_sampling_items(public_id,freeze_id,task_id,approval_event_id,copy_revision_id,content_sha256,final_approver_account_id,final_approver_username,rank_hash,selected,status,sample_kind,parent_item_id)
+        VALUES($1,$2,$3,$4,$5,$6,$7,'perf-a',$6,true,'RETURNED','MANDATORY_RECHECK',$8) RETURNING id`,[randomUUID(),extraFreeze,followup.task,approval,revision,'f'.repeat(64),a.userId,parent])).rows[0].id);
+      await db.query(`INSERT INTO copy_sampling_events(freeze_id,sampling_item_id,action,actor_account_id,actor_username,request_id)
+        VALUES($1,$2,'RETURN_SINGLE',$3,'perf-admin',$4)`,[extraFreeze,item,admin.userId,randomUUID()]);
+      parent=item;
+    }
+    const attention=await repository.operatorPerformance(admin,{period:'custom',from:'2026-01-01',to:'2026-01-01'});
+    assert.equal(attention.summary.reassignSuggested,1);
+    const action=await repository.operatorPerformance(admin,{snapshotToken:attention.snapshotToken,metric:'reassign'},{kind:'detail'});
+    assert.equal(action.items[0].consecutiveReturns,2);assert.equal(action.items[0].reviewRound,3);
+    await db.query("UPDATE tasks SET assigned_to_user_id='perf-b',assigned_at=now() WHERE id=$1",[followup.task]);
+    const reassigned=await repository.operatorPerformance(admin,{});
+    assert.equal(reassigned.summary.reassignSuggested,0);
+    assert.equal(reassigned.people.items.find(row=>row.accountId===a.userId).repeatedReturns,1);
   }finally{await repository.pool.end();await database.stop();}
 });

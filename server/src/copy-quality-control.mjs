@@ -1529,6 +1529,7 @@ export async function batchReturnCopyQa(pool, input, rawActor) {
         memberHashes: eligible.rows.map((row) => ({ id: row.public_id, memberHash: batchMemberHash(row) })),
         snapshotSha256: freeze.snapshot_sha256,
         affectedCount: affectedItemIds.length,
+        affectedTaskIds: eligible.rows.filter(row=>affectedItemIds.includes(row.public_id)).map(row=>Number(row.task_id)),
       }]);
     const blind = freeze.blind_review_enabled === true && actor.role !== 'ADMIN';
     const response = {

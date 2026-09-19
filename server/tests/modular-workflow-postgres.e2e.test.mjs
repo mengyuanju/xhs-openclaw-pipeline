@@ -1406,7 +1406,7 @@ test('real PostgreSQL 18 screens and produces a full 5000-row Query package with
         username, display_name, role, password_hash, status,
         must_change_password, credential_version, created_at, updated_at
       ) VALUES (
-        'query-scale-worker', '词包性能测试作业员', 'USER', 'unused-scale-password-hash', 'ACTIVE',
+        'query-scale-worker', '词包性能测试标注', 'USER', 'unused-scale-password-hash', 'ACTIVE',
         false, 1, clock_timestamp(), clock_timestamp()
       )
     `);
@@ -1566,8 +1566,8 @@ test('real PostgreSQL 18 imports and cursor-pages a full 10000-row Query package
         username, display_name, role, password_hash, status,
         must_change_password, credential_version
       ) VALUES
-        ('scale-query-worker-a', '规模作业员 A', 'USER', 'unused', 'ACTIVE', false, 1),
-        ('scale-query-worker-b', '规模作业员 B', 'REVIEWER', 'unused', 'ACTIVE', false, 1)
+        ('scale-query-worker-a', '规模标注 A', 'USER', 'unused', 'ACTIVE', false, 1),
+        ('scale-query-worker-b', '规模标注 B', 'REVIEWER', 'unused', 'ACTIVE', false, 1)
       RETURNING id
     `);
     const assignmentStartedAt = performance.now();
@@ -1604,8 +1604,8 @@ test('real PostgreSQL 18 distributes Query items and accepts disjoint concurrent
         username, display_name, role, password_hash, status,
         must_change_password, credential_version
       ) VALUES
-        ('query-worker-a', 'Query 作业员 A', 'USER', 'unused', 'ACTIVE', false, 1),
-        ('query-worker-b', 'Query 作业员 B', 'REVIEWER', 'unused', 'ACTIVE', false, 1)
+        ('query-worker-a', 'Query 标注 A', 'USER', 'unused', 'ACTIVE', false, 1),
+        ('query-worker-b', 'Query 标注 B', 'REVIEWER', 'unused', 'ACTIVE', false, 1)
       RETURNING id, username, role, credential_version
     `);
     const admin = actorFrom(await repository.getUserByUsername('admin'));
@@ -1697,7 +1697,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
         username, display_name, role, password_hash, status,
         must_change_password, credential_version, copy_review_enabled, copy_qc_enabled, created_at, updated_at
       ) VALUES
-        ('worker-pg-e2e', '隔离测试作业员', 'USER', 'unused-e2e-password-hash', 'ACTIVE', false, 1, true, false,
+        ('worker-pg-e2e', '隔离测试标注', 'USER', 'unused-e2e-password-hash', 'ACTIVE', false, 1, true, false,
           clock_timestamp() - interval '1 second', clock_timestamp() - interval '1 second'),
         ('reviewer-pg-e2e', '隔离测试质检员', 'REVIEWER', 'unused-e2e-password-hash', 'ACTIVE', false, 1, true, true,
           clock_timestamp() - interval '1 second', clock_timestamp() - interval '1 second')
@@ -1759,7 +1759,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
       actor: worker,
       method: 'POST',
       body: {
-        name: '作业员无权导入',
+        name: '标注无权导入',
         requestId: randomUUID(),
         items: [{ query: '这条数据必须回滚' }],
       },
@@ -1979,7 +1979,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     }, {
       assignedToUserId: worker.username,
       assignedToAccountId: worker.userId,
-      assignedToDisplayName: '隔离测试作业员',
+      assignedToDisplayName: '隔离测试标注',
       assignedToRole: 'USER',
       assigneeStatus: 'ACTIVE',
     });

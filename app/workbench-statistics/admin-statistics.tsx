@@ -99,7 +99,7 @@ export function AdminStatistics() {
           icon={<ListPlus size={20} strokeWidth={2.3} />} />
         <SummaryItem label="当前待处理" value={number(summary?.pending)} note={`新增减完成 ${signed(pendingChange)}`}
           icon={<Inbox size={20} strokeWidth={2.3} />} tone={pendingChange != null && pendingChange > 0 ? 'warning' : 'neutral'} />
-        <SummaryItem label="参与负责人" value={number(summary ? activeWorkers : null)} note="本期有分配或完成记录"
+        <SummaryItem label="参与生产负责人" value={number(summary ? activeWorkers : null)} note="生产责任范围；质检贡献见上方人员表现"
           icon={<UsersRound size={20} strokeWidth={2.3} />} />
         <SummaryItem label="当前异常" value={number(summary?.anomalies)} note={`${percent(anomalyRate)} 的待处理作业`}
           icon={<AlertTriangle size={20} strokeWidth={2.3} />} tone={summary?.anomalies ? 'risk' : 'neutral'} />
@@ -135,7 +135,7 @@ export function AdminStatistics() {
 
     <Disclosure className="panel job-stats-section job-stats-methods job-stats-compact-methods"><DisclosureTrigger>统计口径与更新说明</DisclosureTrigger><DisclosureContent>
       <p>一条 Query 为一项作业，按任务 ID 去重，重试不新增作业。团队新增量按任务创建时间；人员分配量按当前任务的分配时间；完成量按当前有效审核时间，重新生图后可能变化。</p>
-      <p>人员归属优先采用当前负责人。为兼容旧流程，未分配且由普通作业员自建的历史任务归属原创建者{summary?.legacyOwnerFallback ? `（当前共 ${summary.legacyOwnerFallback} 项）` : ''}；其余未分配任务只计入“尚未分配负责人”，不作为负责人或角色展示。改派后历史作业随当前负责人重新归属。</p>
+      <p>人员归属优先采用当前负责人。为兼容旧流程，未分配且由标注自建的历史任务归属原创建者{summary?.legacyOwnerFallback ? `（当前共 ${summary.legacyOwnerFallback} 项）` : ''}；其余未分配任务只计入“尚未分配负责人”，不作为负责人或角色展示。改派后历史作业随当前负责人重新归属。</p>
       <p>质量效率明细按需增量读取并缓存；人工首评达标指高于 2 分，无评分作业不进入分母。数量和明细均为近实时参考。</p>
     </DisclosureContent></Disclosure>
   </div>;

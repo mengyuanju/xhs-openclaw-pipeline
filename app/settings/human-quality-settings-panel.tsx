@@ -239,7 +239,7 @@ export function HumanQualitySettingsPanel({
           </label>
         </div>
         {current.imageReviewDisplay.showDeductionReasons && <p className={`notice ${imageReasonsMissing ? 'warning' : ''}`} role={imageReasonsMissing ? 'alert' : 'status'}>
-          审核员发起图片返工时必须选择原因，请至少保留一项图片扣分原因。{imageReasonsMissing ? '当前原因列表为空，无法保存。' : ''}
+          质检发起图片返工时必须选择原因，请至少保留一项图片扣分原因。{imageReasonsMissing ? '当前原因列表为空，无法保存。' : ''}
         </p>}
         <div className="form-grid human-reason-config-grid">
           <div className="field">

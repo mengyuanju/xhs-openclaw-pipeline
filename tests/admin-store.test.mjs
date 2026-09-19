@@ -599,7 +599,7 @@ describe('admin review revisions', () => {
       });
       const manual = store.addTextRevision(task.id, {
         title: '租房桌面整理，先做减法',
-        body: '这是审核人员修改后的正文。',
+        body: '这是质检修改后的正文。',
         tags: ['#桌面整理', '#租房生活'],
         source: 'MANUAL',
       });

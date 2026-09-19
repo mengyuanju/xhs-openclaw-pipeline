@@ -65,8 +65,8 @@ function fakeQueryPackageDatabase() {
     deletionPasswordHash: null,
     activeActors: new Map([
       [1, { id: 1, username: 'admin', displayName: '管理员', role: 'ADMIN', status: 'ACTIVE', credentialVersion: 1 }],
-      [22, { id: 22, username: 'worker-22', displayName: '普通用户', role: 'USER', status: 'ACTIVE', credentialVersion: 1 }],
-      [91, { id: 91, username: 'reviewer-91', displayName: '审核员', role: 'REVIEWER', status: 'ACTIVE', credentialVersion: 1 }],
+      [22, { id: 22, username: 'worker-22', displayName: '标注', role: 'USER', status: 'ACTIVE', credentialVersion: 1 }],
+      [91, { id: 91, username: 'reviewer-91', displayName: '质检', role: 'REVIEWER', status: 'ACTIVE', credentialVersion: 1 }],
     ]),
     sql: [],
   };
@@ -429,7 +429,7 @@ test('administrator can assign or unassign active USER and REVIEWER accounts wit
   }, admin);
   assert.equal(assignedReviewer.assignedToAccountId, reviewer.userId);
   assert.equal(assignedReviewer.assignedToUserId, reviewer.username);
-  assert.equal(assignedReviewer.assignedToDisplayName, '审核员');
+  assert.equal(assignedReviewer.assignedToDisplayName, '质检');
   assert.equal(assignedReviewer.assignedToRole, 'REVIEWER');
   assert.equal(assignedReviewer.assigneeStatus, 'ACTIVE');
   assert.equal(assignedReviewer.version, 2);
