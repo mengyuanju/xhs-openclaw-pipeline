@@ -257,7 +257,7 @@ export async function evaluateDelivery({
   });
   checks.push({
     id: 'title_quality',
-    passed: Boolean(promptRuntimeSnapshot()) || (!FORBIDDEN_TITLE_HOOKS.test(post.title) && !/[!！~～]/u.test(post.title) && !EMOJI.test(post.title)),
+    passed: Boolean(promptRuntimeSnapshot()) || (!FORBIDDEN_TITLE_HOOKS.test(post.title) && !/[!！～]/u.test(post.title) && !EMOJI.test(post.title)),
     evaluatedBy: promptRuntimeSnapshot() ? 'MANAGED_TEXT_REVIEW' : 'LEGACY_MECHANICAL_POLICY',
   });
   checks.push({ id: 'body_emoji', passed: Boolean(promptRuntimeSnapshot()) || !EMOJI.test(post.body), evaluatedBy: promptRuntimeSnapshot() ? 'MANAGED_TEXT_REVIEW' : 'LEGACY_MECHANICAL_POLICY' });

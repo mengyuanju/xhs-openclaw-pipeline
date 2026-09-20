@@ -1,11 +1,11 @@
-import { FileCheck2, FileText, Image as ImageIcon, Inbox, ListChecks, UserRound } from 'lucide-react';
+import { FileCheck2, FileText, Image as ImageIcon, Inbox, ListChecks, Trash2, UserRound } from 'lucide-react';
 
 export type TaskState =
   | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_QC_PENDING' | 'COPY_FAILED'
   | 'IMAGE_QUEUED' | 'IMAGE_RUNNING' | 'IMAGE_FAILED'
   | 'MANUAL_ARCHIVE' | 'IMAGE_QC_PENDING' | 'IMAGE_REWORK_PENDING' | 'REVIEWED' | 'CANCELLED';
 
-export type ViewKey = 'PERSONAL' | 'UNASSIGNED' | 'ALL_COPY' | 'COPY_REVIEW' | 'IMAGE_WORK' | 'MANUAL_ARCHIVE' | 'COMPLETED' | 'ALL_JOBS';
+export type ViewKey = 'PERSONAL' | 'UNASSIGNED' | 'ALL_COPY' | 'COPY_REVIEW' | 'IMAGE_WORK' | 'MANUAL_ARCHIVE' | 'COMPLETED' | 'ALL_JOBS' | 'DISCARDED';
 export type TaskSort = 'priority:desc' | 'createdAt:desc' | 'createdAt:asc' | 'id:desc' | 'id:asc';
 
 export const TASK_SORT_OPTIONS: Array<{ value: TaskSort; label: string }> = [
@@ -166,6 +166,15 @@ export const WORKBENCH_VIEWS: Array<{
     description: '查看所有账号和执行节点的任务，包含生图失败、已废弃与历史任务。角色按创建者当前角色筛选。',
     icon: ListChecks,
     states: TASK_STATE_FILTER_ORDER,
+    adminOnly: true,
+  },
+  {
+    key: 'DISCARDED',
+    href: '/workbench/discarded',
+    label: '废弃池',
+    description: '查看已废弃任务；管理员可恢复任务继续处理，历史文案、图片和审核记录保留。',
+    icon: Trash2,
+    states: ['CANCELLED'],
     adminOnly: true,
   },
 ];

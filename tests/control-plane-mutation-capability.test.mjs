@@ -9,6 +9,7 @@ import {
 
 test('protected control-plane operations declare their version contracts', () => {
   for (const [routePath, method, capability, minimumVersion] of [
+    ['/v1/tasks/42/restore', 'POST', 'taskRestoreVersion', 1],
     ['/v1/tasks/42/image-edits/resolve-pending', 'POST', 'pendingImageEditResolutionVersion', 1],
     ['/v1/tasks/42/discard-images', 'POST', 'imageDiscardVersion', 1],
     ['/v1/image-qa/items/opaque-id/discard', 'POST', 'imageDiscardVersion', 1],

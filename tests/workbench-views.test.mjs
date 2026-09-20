@@ -8,9 +8,9 @@ import {
 
 test('workbench routes include completed work after manual archive', () => {
   assert.deepEqual(WORKBENCH_VIEWS.map((view) => view.label), [
-    '我的作业', '待审核分配', '全部文案任务', '待文案审核', '生图中', '图片初审与返修', '交付池', '全部作业',
+    '我的作业', '待审核分配', '全部文案任务', '待文案审核', '生图中', '图片初审与返修', '交付池', '全部作业', '废弃池',
   ]);
-  assert.equal(new Set(WORKBENCH_VIEWS.map((view) => view.href)).size, 8);
+  assert.equal(new Set(WORKBENCH_VIEWS.map((view) => view.href)).size, 9);
   assert.ok(WORKBENCH_VIEWS.every((view) => view.href.startsWith('/workbench/')));
 });
 
@@ -117,6 +117,15 @@ test('task lists prioritize lifecycle state and use newest-first order within a 
     { id: 8, state: 'IMAGE_FAILED', createdAt: '2026-09-05T17:00:00.000Z' },
   ];
   assert.deepEqual(tasks.sort(compareTasksByStatePriority).map((task) => task.id), [4, 2, 1, 3, 5, 8, 6, 7]);
+});
+
+test('discard pool is an administrator view containing only cancelled tasks', () => {
+  const discarded = WORKBENCH_VIEWS.find(view => view.key === 'DISCARDED');
+  assert.equal(discarded.adminOnly, true);
+  assert.equal(discarded.href, '/workbench/discarded');
+  for (const state of Object.keys(TASK_STATE_PRIORITY)) {
+    assert.equal(matchesWorkbenchView({ state, assignedToUserId: 'worker' }, discarded, 'admin'), state === 'CANCELLED');
+  }
 });
 
 test('only approved images enter completed work and remain visible to their creator', () => {

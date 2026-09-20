@@ -137,7 +137,7 @@ type TaskDetail = PriorityTask & {
   assignedToAccountId?: number | null;
   aiDisclosureEnabled: boolean;
   mandatoryCopyQc?: boolean;
-  mandatoryCopyQcOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | 'IMAGE_RETRY_REVIEW' | null;
+  mandatoryCopyQcOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | 'IMAGE_RETRY_REVIEW' | 'DISCARD_RESTORE' | null;
   deliveryStatus?: 'READY' | null;
   state: TaskState;
   imageReviewedAt: string | null;
@@ -704,7 +704,7 @@ export function TaskReviewDialog({
     && (hasOwnerControl || detail.assignedToUserId === null && currentUserIsCreator));
   const editable = taskHasAssignee && canReviewCopy && detail?.state === 'COPY_REVIEW_PENDING'
     && Boolean(revision && draft);
-  const isCopyRework = Boolean(detail?.mandatoryCopyQc
+  const isCopyRework = detail?.mandatoryCopyQcOrigin !== 'DISCARD_RESTORE' && Boolean(detail?.mandatoryCopyQc
     || ['QA_RETURN', 'FINAL_REWORK'].includes(revision?.revisionOrigin ?? '')
     || ['QA_RETURN', 'FINAL_REWORK'].includes(revision?.reworkOrigin ?? ''));
   const reworkBaseline = isCopyRework && detail && revision

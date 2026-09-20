@@ -72,6 +72,28 @@ test('failure HTTP route forwards optional retry control without changing legacy
   });
 });
 
+test('discarded task restoration is admin-only and forwards the current identity and snapshot', async () => {
+  const calls = [];
+  const roles = { admin: 'ADMIN', reviewer: 'REVIEWER', user: 'USER' };
+  const ids = { admin: 1, reviewer: 2, user: 3 };
+  const repository = {
+    getUserByUsername: async username => ({ id: ids[username], username, role: roles[username], status: 'ACTIVE', credentialVersion: 1 }),
+    getTaskAccess: async () => ({ id: 1, state: 'CANCELLED', assignedToUserId: 'user', assignedToAccountId: 3 }),
+    restoreCancelledTask: async (...args) => { calls.push(args); return { id: 1, state: 'COPY_REVIEW_PENDING' }; },
+  };
+  const input = { expectedUpdatedAt: '2026-09-20T00:00:00.000Z' };
+  await withServer(repository, async root => {
+    for (const [username, role] of Object.entries(roles)) {
+      const response = await fetch(`${root}/v1/tasks/1/restore`, { method: 'POST', headers: {
+        'Content-Type': 'application/json', 'X-Actor-User-Id': String(ids[username]),
+        'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1',
+      }, body: JSON.stringify(input) });
+      assert.equal(response.status, role === 'ADMIN' ? 200 : 403);
+    }
+  }, { enforceUserAuth: true });
+  assert.deepEqual(calls, [['1', input, { actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 } }]]);
+});
+
 test('model trace HTTP routes forward execution uploads and task-scoped lazy reads', async () => {
   const calls = [];
   const repository = {

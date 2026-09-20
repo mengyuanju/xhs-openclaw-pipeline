@@ -2335,6 +2335,11 @@ function installRoutes(
     const task = await repository.cancelTask(ctx.params.taskId, { actor });
     json(ctx, 200, actor.role === 'USER' ? userVisibleTask(task) : task);
   });
+  router.post('/v1/tasks/:taskId/restore', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    await assertTaskAccess(ctx, repository);
+    json(ctx, 200, await repository.restoreCancelledTask(ctx.params.taskId, requireJson(ctx), { actor }));
+  });
   router.post('/v1/tasks/:taskId/requeue', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
     await assertTaskAccess(ctx, repository);

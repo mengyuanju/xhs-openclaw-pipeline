@@ -193,14 +193,16 @@ test('admin queued tasks expose a direct discard then permanent-delete workflow'
     readFile(projectFile('app/globals.css'), 'utf8'),
   ]);
   assert.match(source, /async function discardQueuedTask\(task: DistributedTask\)/u);
-  assert.match(source, /已废弃；现在可以永久删除/u);
+  assert.match(source, /已废弃；管理员可从废弃池恢复任务/u);
   assert.match(source, /canDiscard && !canDiscardQueue/u);
   assert.match(source, /creatorCanControlMachineCopy[\s\S]*\['COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED'\]\.includes\(task\.state\)/u);
   assert.match(source, /visibleActionCount=\{visibleActionCount\}/u);
   assert.match(source, /const visibleActionCount = role === 'ADMIN' && activeView !== 'UNASSIGNED' \? 2 : 1/u);
   assert.match(styles, /\.workbench-col-actions \{ width: 216px; min-width: 216px; max-width: 216px; \}/u);
   assert.match(source, /queued && <Button[^>]*onClick=\{\(\) => \{ void discardQueuedTask\(task\); \}\}[^>]*><Trash2[^>]*\/>废弃<\/Button>/u);
-  assert.match(source, /\{permanentDeleteButton\}[\s\S]*\{task\.state === 'CANCELLED'/u);
+  assert.match(source, /const restoreButton = role === 'ADMIN' && task\.state === 'CANCELLED'/u);
+  assert.match(source, /\{restoreButton\}[\s\S]*\{permanentDeleteButton\}/u);
+  assert.match(source, /expectedUpdatedAt: task.updatedAt/u);
   assert.match(rowActions, /visibleActionCount = 1/u);
   assert.match(rowActions, /actions\.slice\(0, Math\.max\(1, Math\.trunc\(visibleActionCount\)\)\)/u);
   assert.match(styles, /\.workbench-action-menu \.button\.primary \{ color: white; background: var\(--red\); \}/u,

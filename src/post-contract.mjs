@@ -380,7 +380,7 @@ function validatePost(value, { imageCount = 3, allowedSources = [], query = '' }
   const body = expectString(normalizedBody, 'body', { min: 200, max: 700 });
   if (!promptRuntimeSnapshot()) validateExplicitItineraryCoverage(body, query);
 
-  if (!promptRuntimeSnapshot() && /[!！~～]/u.test(title)) throw new TypeError('title cannot contain exclamation marks or decorative tildes');
+  if (!promptRuntimeSnapshot() && /[!！～]/u.test(title)) throw new TypeError('title cannot contain exclamation marks or full-width tildes');
   if (!promptRuntimeSnapshot() && hasQuery && normalizedTopicKey(title) === normalizedTopicKey(query)) {
     throw new TypeError('title cannot merely repeat the Query');
   }

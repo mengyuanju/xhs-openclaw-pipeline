@@ -4,7 +4,7 @@ import { normalizeTaskDateRange } from '../../src/control-plane/task-date-filter
 
 export const TASK_ATTENTION_FILTERS = Object.freeze(['ANOMALY', 'STALE', 'FAILED']);
 export const SAVED_TASK_VIEW_KEYS = Object.freeze([
-  'PERSONAL', 'ALL_COPY', 'COPY_REVIEW', 'IMAGE_WORK', 'MANUAL_ARCHIVE', 'COMPLETED', 'ALL_JOBS',
+  'PERSONAL', 'ALL_COPY', 'COPY_REVIEW', 'IMAGE_WORK', 'MANUAL_ARCHIVE', 'COMPLETED', 'ALL_JOBS', 'DISCARDED',
 ]);
 
 const SAVED_STATES = new Set([

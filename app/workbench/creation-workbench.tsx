@@ -107,7 +107,7 @@ type DistributedTask = PriorityTask & {
   imageExecutorNodeName?: string | null;
   currentCopyRevisionId: number | null;
   mandatoryCopyQc?: boolean;
-  mandatoryCopyQcOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | 'IMAGE_RETRY_REVIEW' | null;
+  mandatoryCopyQcOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | 'IMAGE_RETRY_REVIEW' | 'DISCARD_RESTORE' | null;
   currentExecutionId?: string | null;
   createdByUserId: string | null;
   createdByAccountId?: number | null;
@@ -1691,7 +1691,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     if (!['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state)) return;
     if (!await confirm({
       title: '废弃这条排队任务？',
-      description: '任务会立即退出队列并标记为已废弃，但保留全部数据。之后可以永久删除，也可以从“更多操作”重新排队。',
+      description: '任务会立即退出队列并标记为已废弃，但保留全部数据。管理员之后可以从废弃池恢复任务。',
       confirmLabel: '确认废弃',
       tone: 'danger',
     })) return;
@@ -1700,7 +1700,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       await apiRequest(apiPath(`/v1/tasks/${task.id}/cancel`), {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
       });
-      setMessage(`任务 #${task.id} 已废弃；现在可以永久删除，或从“更多操作”重新排队。`);
+      setMessage(`任务 #${task.id} 已废弃；管理员可从废弃池恢复任务。`);
       setError('');
       await refresh({ silent: true });
     } catch (caught) {
@@ -1708,13 +1708,21 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     } finally { setActingTaskId(null); }
   }
 
-  async function requeueCancelledTask(task: DistributedTask) {
-    if (!await confirm({ title: '重新加入队列？', description: '任务会恢复到取消前的队列，并由空闲执行机按顺序领取。', confirmLabel: '确认重新排队' })) return;
+  async function restoreCancelledTask(task: DistributedTask) {
+    if (role !== 'ADMIN' || task.state !== 'CANCELLED') return;
+    if (!await confirm({ title: '从废弃池恢复任务？',
+      description: '保留历史文案、图片和审核记录，根据现有内容恢复到待执行、待审核或图片返修。恢复后需要重新审核和质检；待执行任务将由空闲执行机领取。',
+      confirmLabel: '确认恢复' })) return;
     setActingTaskId(task.id);
     try {
-      await apiRequest(apiPath(`/v1/tasks/${task.id}/requeue`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-      setMessage(`任务 #${task.id} 已重新加入队列。`); setError(''); await refresh({ silent: true });
-    } catch (caught) { setError(caught instanceof Error ? caught.message : '重新排队失败'); } finally { setActingTaskId(null); }
+      const restored = await apiRequest<DistributedTask>(apiPath(`/v1/tasks/${task.id}/restore`), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expectedUpdatedAt: task.updatedAt }),
+      });
+      setMessage(`任务 #${task.id} 已恢复到“${STATE_LABELS[restored.state]}”。`);
+      setSelectedTaskIds(current => current.filter(id => id !== task.id));
+      setError(''); await refresh({ silent: true });
+    } catch (caught) { setError(caught instanceof Error ? caught.message : '恢复任务失败'); } finally { setActingTaskId(null); }
   }
 
   async function permanentlyDeleteTask() {
@@ -1800,6 +1808,9 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     const assignmentButton = role === 'ADMIN' && canManageTaskAssignment(task) && <Button unstyled className="button small" type="button"
       disabled={busy} onClick={() => setAssignmentTasks([task])}><UserRound size={14} />{task.assignedToUserId === null ? '分配' : '改派'}</Button>;
     const permanentDeleteButton = canPermanentlyDelete && <Button unstyled className="button small danger" type="button" disabled={busy || Boolean(batchAction) || batchPermanentDeleteTasks.length > 0} onClick={() => { setDeletionError(''); setDeletionPassword(''); setPermanentDeleteTask(task); }}><Trash2 size={14} />永久删除</Button>;
+    const restoreButton = role === 'ADMIN' && task.state === 'CANCELLED'
+      && <Button unstyled className="button small primary" type="button" disabled={busy || Boolean(batchAction)}
+        onClick={() => { void restoreCancelledTask(task); }}><RotateCcw size={14} />恢复任务</Button>;
     const directCopyQaButton = role === 'ADMIN' && task.state === 'COPY_QC_PENDING'
       && <Button unstyled className="button small primary" type="button" disabled={busy}
         onClick={() => { void adminDirectApproveCopyQa(task); }}
@@ -1815,10 +1826,10 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       {assignmentButton}
       {directCopyQaButton}
       {allJobsDetailButton}
+      {restoreButton}
       {['COPY_RUNNING', 'COPY_FAILED'].includes(task.state) && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</Button>}
       {queued && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardQueuedTask(task); }}><Trash2 size={14} />废弃</Button>}
       {permanentDeleteButton}
-      {task.state === 'CANCELLED' && ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.cancelledFromState || '') && <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => { void requeueCancelledTask(task); }}><RotateCcw size={14} />一键排队</Button>}
     </TaskRowActions>;
     const hasOwnerControl = role === 'ADMIN' || isTaskAssignee(task, creatorUserId, creatorAccountId);
     const creatorCanControlMachineCopy = taskOwnerId(task) === null
@@ -1826,7 +1837,6 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       && ['COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED'].includes(task.state);
     const canDiscard = (hasOwnerControl || creatorCanControlMachineCopy) && task.state !== 'CANCELLED';
     const canDiscardQueue = role === 'ADMIN' && queued;
-    const canRequeue = role === 'ADMIN' && task.state === 'CANCELLED' && ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.cancelledFromState || '');
     const canRetryCopy = (hasOwnerControl || creatorCanControlMachineCopy)
       && ['COPY_RUNNING', 'COPY_FAILED'].includes(task.state);
     const canRetryImages = hasOwnerControl && task.state !== 'MANUAL_ARCHIVE' && canRequeueImages(task);
@@ -1875,8 +1885,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       {directCopyQaButton}
       <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
       {canDiscardQueue && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardQueuedTask(task); }}><Trash2 size={14} />废弃</Button>}
+      {restoreButton}
       {permanentDeleteButton}
-      {canRequeue && <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => { void requeueCancelledTask(task); }}><RotateCcw size={14} />一键排队</Button>}
       {canDiscard && canResumeImageTask(task) && <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => { void resumeImages(task); }}><RotateCcw size={14} />从失败步骤继续</Button>}
       {activeView === 'PERSONAL' && canRetryCopy && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</Button>}
       {activeView === 'PERSONAL' && retryImageButton}

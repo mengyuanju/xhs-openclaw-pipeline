@@ -67,6 +67,7 @@ async function proxyRequest(
       && !(role === 'USER' && userCanAccessDeliveryRoute(routePath, request.method)))
     || /^\/v1\/tasks\/[^/]+\/assignee$/u.test(routePath)
     || /^\/v1\/tasks\/[^/]+\/admin-direct-copy-qa$/u.test(routePath)
+    || /^\/v1\/tasks\/[^/]+\/(?:restore|requeue)$/u.test(routePath)
     || (routePath === '/v1/tasks' && upstreamUrl.searchParams.has('attention')))) {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可使用任务集中处理功能');
   }

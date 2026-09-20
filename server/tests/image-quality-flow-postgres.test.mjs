@@ -13,6 +13,7 @@ import pg from 'pg';
 import { createControlPlaneApp } from '../src/http-server.mjs';
 import { migrateDatabase } from '../src/database-migrations.mjs';
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
+import { passCopyQaItem } from '../src/copy-quality-control.mjs';
 import {
   batchReturnImageQa,
   discardTaskImages,
@@ -508,6 +509,57 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
       const sibling = members.find(row => row !== member);
       assert.equal((await pool.query('SELECT state FROM tasks WHERE id=$1', [sibling.taskId])).rows[0].state, 'REVIEWED');
       assert.equal((await pool.query('SELECT status FROM image_sampling_freezes WHERE public_id=$1', [item.freezePublicId])).rows[0].status, 'RELEASED_WITH_EXCEPTIONS');
+    });
+    await t.test('administrators restore discarded content into usable review flows without reviving old approvals', async () => {
+      const restore = async (member) => {
+        const task = await repository.getTask(member.taskId);
+        return repository.restoreCancelledTask(member.taskId, { expectedUpdatedAt: new Date(task.updatedAt).toISOString() }, { actor: admin });
+      };
+      const initial = await createTask(60);
+      await pool.query('UPDATE tasks SET copy_qc_released_revision_id=current_copy_revision_id WHERE id=$1', [initial.taskId]);
+      await discardTaskImages(pool, initial.taskId, { imageRunId: initial.imageRunId,
+        expectedCopyRevisionId: initial.copyRevisionId, requestId: randomUUID(), note: '误废弃' }, worker);
+      const restored = await restore(initial);
+      assert.equal(restored.state, 'MANUAL_ARCHIVE');
+      assert.equal(restored.currentImageRunId, initial.imageRunId);
+      assert.equal(restored.mandatoryImageQc, true);
+      await submitImageSelfReview(pool, initial.taskId, { imageRunId: initial.imageRunId, reviewSessionId: randomUUID() }, worker);
+      const initialItem = (await listImageQaItems(pool, {}, admin)).items.find(item => item.taskId === initial.taskId);
+      assert.ok(initialItem, 'restored images must enter a new mandatory QA round');
+      await passImageQaItem(pool, initialItem.id, { requestId: randomUUID(), score: 3 }, admin);
+      assert.equal((await repository.getTask(initial.taskId)).state, 'REVIEWED');
+
+      await repository.cancelTask(initial.taskId, { actor: admin });
+      const snapshot = await repository.getTask(initial.taskId);
+      const restoreInput = { expectedUpdatedAt: new Date(snapshot.updatedAt).toISOString() };
+      const outcomes = await Promise.allSettled([1, 2].map(() => repository.restoreCancelledTask(initial.taskId, restoreInput, { actor: admin })));
+      assert.equal(outcomes.filter(result => result.status === 'fulfilled').length, 1);
+      assert.equal((await repository.getTask(initial.taskId)).state, 'IMAGE_REWORK_PENDING');
+      assert.equal((await pool.query('SELECT status FROM image_sampling_items WHERE public_id=$1', [initialItem.id])).rows[0].status, 'PASSED');
+      assert.equal(Number((await pool.query("SELECT count(*) FROM delivery_entries WHERE task_id=$1 AND status='READY'", [initial.taskId])).rows[0].count), 0);
+      const edited = await addImageRun(initial.taskId, initial.copyRevisionId, 'restored-edit');
+      await pool.query("UPDATE tasks SET current_image_run_id=$2, state='MANUAL_ARCHIVE', current_stage='MANUAL_ARCHIVE' WHERE id=$1", [initial.taskId, edited.imageRunId]);
+      await submitImageSelfReview(pool, initial.taskId, { imageRunId: edited.imageRunId, reviewSessionId: randomUUID() }, worker);
+      const recheck = (await listImageQaItems(pool, {}, admin)).items.find(item => item.taskId === initial.taskId);
+      await passImageQaItem(pool, recheck.id, { requestId: randomUUID(), score: 3 }, admin);
+      assert.equal((await repository.getTask(initial.taskId)).state, 'REVIEWED');
+
+      const copy = await createTask(61);
+      await pool.query("UPDATE tasks SET state='COPY_REVIEW_PENDING', current_stage='COPY_REVIEW_PENDING', current_image_run_id=NULL WHERE id=$1", [copy.taskId]);
+      await repository.cancelTask(copy.taskId, { actor: admin });
+      const restoredCopy = await restore(copy);
+      assert.equal(restoredCopy.state, 'COPY_REVIEW_PENDING');
+      assert.notEqual(restoredCopy.currentCopyRevisionId, copy.copyRevisionId);
+      assert.equal(restoredCopy.mandatoryCopyQcOrigin, 'DISCARD_RESTORE');
+      assert.ok((await pool.query('SELECT approved_at FROM copy_revisions WHERE id=$1', [copy.copyRevisionId])).rows[0].approved_at);
+      const approved = await repository.approveCopy(copy.taskId, { revisionId: restoredCopy.currentCopyRevisionId,
+        nodeId: 'image-qa-test', decision: 'APPROVE', score: 3, reviewSessionId: randomUUID() }, { actor: admin });
+      assert.equal(approved.state, 'COPY_QC_PENDING');
+      const copyItem = (await pool.query("SELECT public_id FROM copy_sampling_items WHERE task_id=$1 AND status='PENDING'", [copy.taskId])).rows[0];
+      await passCopyQaItem(pool, copyItem.public_id, { requestId: randomUUID(), expectedCopyRevisionId: approved.currentCopyRevisionId }, admin);
+      assert.equal((await repository.getTask(copy.taskId)).state, 'IMAGE_QUEUED');
+      assert.equal((await pool.query('SELECT copy_quality_image_eligible(id,current_copy_revision_id,mandatory_copy_qc) AS eligible FROM tasks WHERE id=$1', [copy.taskId])).rows[0].eligible, true);
+      assert.equal(Number((await pool.query('SELECT count(*) FROM task_restore_events WHERE task_id=$1', [initial.taskId])).rows[0].count), 2);
     });
   } finally {
     await new Promise((resolve) => server.close(resolve));

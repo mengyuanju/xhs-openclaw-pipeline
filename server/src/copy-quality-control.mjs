@@ -662,10 +662,9 @@ export async function routeManualCopyApproval(client, {
       parent = priorReturn.rows[0] ?? null;
       policyVersion = Number(parent?.parent_policy_version);
       blindReviewEnabled = parent?.parent_blind_review_enabled === true;
-    } else if (['FINAL_REWORK', 'IMAGE_RETRY_REVIEW'].includes(mandatoryOrigin)) {
-      // A final image-review return has no random-sampling parent. Freeze a new
-      // one-task QA round against the live policy instead of attaching it to an
-      // unrelated historical return for the same task.
+    } else if (['FINAL_REWORK', 'IMAGE_RETRY_REVIEW', 'DISCARD_RESTORE'].includes(mandatoryOrigin)) {
+      // These review rounds have no random-sampling parent. Freeze one task
+      // against the live policy without attaching unrelated historical returns.
       const settings = await lockWorkflowQualitySettings(client);
       policyVersion = settings.version;
       blindReviewEnabled = settings.copySampling.blindReviewEnabled;

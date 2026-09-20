@@ -514,7 +514,9 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .image-preview-thumbnail { display: block; width: 100%; aspect-ratio: 3/4; object-fit: cover; background: #eee; transition: transform .18s ease; }
 .image-preview-trigger:hover .image-preview-thumbnail { transform: scale(1.015); }
 .image-preview-hint { position: absolute; right: 10px; bottom: 10px; padding: 6px 9px; border-radius: 8px; color: white; background: rgba(32,32,31,.78); font-size: 11px; font-weight: 750; backdrop-filter: blur(5px); }
-.dialog-overlay { position: fixed; inset: 0; z-index: 100; background: rgba(18,18,17,.84); backdrop-filter: blur(7px); }
+/* Keep each portal's overlay and content on the same layer so a later nested
+   overlay also covers the parent dialog, while its own content stays above it. */
+.dialog-overlay { position: fixed; inset: 0; z-index: 101; background: rgba(18,18,17,.84); backdrop-filter: blur(7px); }
 .dialog-overlay[data-state="open"] { animation: dialog-overlay-in .16s ease-out; }
 .dialog-content { position: fixed; left: 50%; top: 50%; z-index: 101; outline: 0; }
 .dialog-content[data-state="open"], .confirm-dialog-content[data-state="open"] { animation: dialog-content-in .18s cubic-bezier(.16, 1, .3, 1); }

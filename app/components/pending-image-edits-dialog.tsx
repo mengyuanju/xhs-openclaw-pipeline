@@ -38,6 +38,15 @@ const statusLabels: Record<string, string> = { DRAFT: '草稿', QUEUED: '排队�
 const operationLabels: Record<string, string> = { TEXT: '添加文字', SVG_DISCLOSURE: '添加标识', AI_LOCAL: '局部修改', AI_FUSION: '产品替换', RESTORE: '恢复版本' };
 const endpoint = (taskId: number) => `/api/control-plane/v1/tasks/${taskId}/image-edits`;
 
+function EditInstruction({ instruction }: { instruction?: string }) {
+  if (!instruction) return null;
+  if (instruction.length <= 160) return <p className={styles.instruction}>{instruction}</p>;
+  return <details className={styles.instructionDetails}>
+    <summary>查看完整修改指令</summary>
+    <p className={styles.instruction}>{instruction}</p>
+  </details>;
+}
+
 export function PendingImageEditsDialog({ taskId, imageRunId, copyRevisionId, currentPages, open, onOpenChange, onBusyChange, onRefreshTask, onResolved }: Props) {
   const [edits, setEdits] = useState<PendingImageEdit[]>([]);
   const [decisions, setDecisions] = useState<Record<string, Decision>>({});
@@ -159,7 +168,7 @@ export function PendingImageEditsDialog({ taskId, imageRunId, copyRevisionId, cu
           <div className={styles.list}>{[...ready].sort((a, b) => a.target_page - b.target_page).map(edit => <article className={styles.card} key={edit.id}>
             <div className={styles.cardTitle}><strong>第 {edit.target_page} 页 · {operationLabels[edit.operation] ?? '图片修改'}</strong>
               <span>{statusLabels[edit.status]}</span></div>
-            <p className={styles.instruction}>{edit.config?.instruction || '请对比原图与修改结果'}</p>
+            <EditInstruction instruction={edit.config?.instruction || '请对比原图与修改结果'} />
             <div className={styles.comparison}>
               <figure><figcaption>修改前</figcaption><ImagePreview src={`/api/control-plane/v1/assets/${edit.source_asset_id}`} alt={`第 ${edit.target_page} 页修改前`} /></figure>
               <figure><figcaption>修改结果</figcaption>{edit.result ? <ImagePreview src={`/api/control-plane/v1/assets/${edit.result.asset_id}`} alt={`第 ${edit.target_page} 页修改结果`} /> : <p>结果不可用</p>}</figure>
@@ -175,11 +184,15 @@ export function PendingImageEditsDialog({ taskId, imageRunId, copyRevisionId, cu
           {unfinished.length > 0 && <section className={styles.unfinished}>
             <strong>尚未生成可确认结果</strong>
             <p>可以稍后刷新等待结果，或明确取消这些修改。取消执行中的修改不会退回已产生的模型费用。</p>
-            {unfinished.map(edit => <label key={edit.id} className={styles.unfinishedRow}>
-              <Checkbox checked={cancelUnfinished || decisions[edit.id] === 'cancel'} disabled={busy || cancelUnfinished}
-                onChange={event => choose(edit, event.target.checked ? 'cancel' : '')} />
-              <span>取消第 {edit.target_page} 页 · {statusLabels[edit.status] ?? edit.status} · {edit.config?.instruction || operationLabels[edit.operation] || '图片修改'}</span>
-            </label>)}
+            {unfinished.map(edit => <div key={edit.id} className={styles.unfinishedRow}>
+              <label className={styles.unfinishedChoice}>
+                <Checkbox checked={cancelUnfinished || decisions[edit.id] === 'cancel'} disabled={busy || cancelUnfinished}
+                  onChange={event => choose(edit, event.target.checked ? 'cancel' : '')} />
+                <span>取消第 {edit.target_page} 页 · {operationLabels[edit.operation] || '图片修改'}</span>
+                <span className={styles.status}>{statusLabels[edit.status] ?? edit.status}</span>
+              </label>
+              <div className={styles.unfinishedInstruction}><EditInstruction instruction={edit.config?.instruction} /></div>
+            </div>)}
           </section>}
         </>}
       </div>
@@ -189,8 +202,10 @@ export function PendingImageEditsDialog({ taskId, imageRunId, copyRevisionId, cu
         <div className={styles.actions}>
           <Button variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>稍后处理</Button>
           {edits.length > 0 ? <>
-            <Button variant="outline" disabled={busy || loading || !ready.length} onClick={() => void apply(Object.fromEntries(ready.map(edit => [edit.id, 'reject'])))}>一键拒绝 {ready.length} 项</Button>
-            <Button disabled={busy || loading || !ready.length || conflictingPages.length > 0 || !ready.every(canAccept)} onClick={() => void apply(Object.fromEntries(ready.map(edit => [edit.id, 'accept'])))}>一键采用 {ready.length} 项</Button>
+            {ready.length > 0 && <>
+              <Button variant="outline" disabled={busy || loading} onClick={() => void apply(Object.fromEntries(ready.map(edit => [edit.id, 'reject'])))}>一键拒绝 {ready.length} 项</Button>
+              <Button disabled={busy || loading || conflictingPages.length > 0 || !ready.every(canAccept)} onClick={() => void apply(Object.fromEntries(ready.map(edit => [edit.id, 'accept'])))}>一键采用 {ready.length} 项</Button>
+            </>}
             <Button variant="outline" disabled={busy || loading || (!Object.keys(decisions).length && !cancelUnfinished)} onClick={() => void apply(decisions)}>{busy ? '正在处理…' : '应用所选处理'}</Button>
           </> : <Button disabled={busy || loading || Boolean(error)} onClick={() => void continueReview()}>继续初审</Button>}
         </div>

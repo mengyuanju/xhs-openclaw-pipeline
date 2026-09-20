@@ -97,6 +97,7 @@ import {
   previewDuplicateQueryDiscard,
 } from './query-duplicate-discard.mjs';
 import { taskQueryIdentitySql } from './task-query-identity.mjs';
+import { restoreDiscardedTask } from './task-restoration.mjs';
 import {
   adminDirectApproveCopyQa,
   batchReturnCopyQa,
@@ -1727,7 +1728,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 9, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, adminTaskActivityDateFilters: 1, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 6, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, sharedDeliveryVersion: 1, imageDiscardVersion: 1, pendingImageEditResolutionVersion: 1, deliverySpreadsheetVersion: 3, deliveryPreviewVersion: 6 } };
+      capabilities: { taskRestoreVersion: 1, taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 9, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, adminTaskActivityDateFilters: 1, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 6, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, sharedDeliveryVersion: 1, imageDiscardVersion: 1, pendingImageEditResolutionVersion: 1, deliverySpreadsheetVersion: 3, deliveryPreviewVersion: 6 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -4474,7 +4475,8 @@ export class PostgresControlPlaneRepository {
         SELECT * FROM copy_revisions WHERE id = $1 AND task_id = $2 FOR UPDATE
       `, [revisionId, taskId]);
       if (!revision.rows[0]) throw new ControlPlaneNotFoundError('copy revision not found');
-      const mandatoryRework = task.mandatory_copy_qc === true;
+      const mandatoryRework = task.mandatory_copy_qc === true
+        && task.mandatory_copy_qc_origin !== 'DISCARD_RESTORE';
       const reworkBaseline = mandatoryRework ? await copyReworkBaseline(client, taskId, revision.rows[0]) : null;
       const originalImagePlan = edits ? normalizeCopyReviewImagePlan(
         revision.rows[0].content.imagePlan
@@ -5223,6 +5225,15 @@ export class PostgresControlPlaneRepository {
         throw new ControlPlaneAuthorizationError('saved task views belong to the current administrator');
       }
       return remove(client);
+    });
+  }
+
+  async restoreCancelledTask(rawTaskId, input, { actor: rawActor } = {}) {
+    const taskId = normalizeTaskId(rawTaskId);
+    const actor = normalizedActorIdentity(rawActor);
+    return transaction(this.pool, async (client) => {
+      const { task } = await lockTaskForActor(client, taskId, actor, { allowedRoles: ['ADMIN'] });
+      return taskFrom(await restoreDiscardedTask(client, task, actor, input));
     });
   }
 
