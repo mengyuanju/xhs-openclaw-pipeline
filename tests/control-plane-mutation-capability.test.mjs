@@ -9,6 +9,8 @@ import {
 
 test('protected control-plane operations declare their version contracts', () => {
   for (const [routePath, method, capability, minimumVersion] of [
+    ['/v1/copy-qa/reason-tags', 'POST', 'copyQaReasonTagsVersion', 1],
+    ['/v1/copy-qa/reason-tags/11111111-1111-4111-8111-111111111111', 'PATCH', 'copyQaReasonTagsVersion', 1],
     ['/v1/tasks/42/restore', 'POST', 'taskRestoreVersion', 1],
     ['/v1/tasks/42/image-edits/resolve-pending', 'POST', 'pendingImageEditResolutionVersion', 1],
     ['/v1/tasks/42/discard-images', 'POST', 'imageDiscardVersion', 1],
@@ -56,6 +58,7 @@ test('protected control-plane operations declare their version contracts', () =>
     });
   }
   assert.equal(requiredMutationCapability('/v1/tasks', 'GET'), null);
+  assert.equal(requiredMutationCapability('/v1/copy-qa/reason-tags', 'GET'), null);
   assert.equal(requiredMutationCapability('/v1/settings/xhs_query_search', 'GET'), null);
   assert.equal(requiredMutationCapability('/v1/settings/production', 'PUT'), null);
   assert.equal(requiredMutationCapability('/v1/tasks/42/retry', 'POST'), null);

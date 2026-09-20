@@ -177,6 +177,19 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       assert.equal(claim.imageEdit.id,multiEdit.id);assert.equal(claim.execution.snapshot.imageEditExecutorVersion,10);
       await action(multiEdit.id,'cancel');
     });
+    await t.test('all-matches product replacement waits for a version 11 image executor',async()=>{
+      const reference=await service.upload(taskId,{base64:png.toString('base64'),mediaType:'image/png',purpose:'同款产品参考',source:'测试自有照片'},actor);
+      const allMatchesEdit=await service.create(taskId,request({operation:'AI_FUSION',instruction:'替换框内全部同款产品',
+        references:[{assetId:reference.id,purpose:'真实产品替换'}],replacements:[
+          {referenceAssetId:reference.id,referenceMode:'APPEARANCE',targetMode:'ALL_MATCHES',
+            target:{description:'框内全部同款手表及特写',region:{x:100,y:200,width:850,height:1000}}},
+        ]}),actor);
+      assert.equal(allMatchesEdit.config.replacements[0].targetMode,'ALL_MATCHES');
+      assert.equal(await repository.claimImage('edit-test',1,2,10),null);
+      const claim=await repository.claimImage('edit-test',1,2,11);
+      assert.equal(claim.imageEdit.id,allMatchesEdit.id);assert.equal(claim.execution.snapshot.imageEditExecutorVersion,11);
+      await action(allMatchesEdit.id,'cancel');
+    });
     await t.test('direct local edits wait for a version 9 image executor',async()=>{
       const localEdit=await service.create(taskId,request({operation:'AI_LOCAL',instruction:'把右上角的白色杯子改为蓝色'}),actor);
       assert.equal(await repository.claimImage('edit-test',1,2,6),null);

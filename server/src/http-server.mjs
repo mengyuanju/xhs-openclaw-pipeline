@@ -1237,6 +1237,22 @@ function installRoutes(
     const actor = requestActor(ctx, ['ADMIN']);
     json(ctx, 200, await repository.getCopyQaStatistics({ actor }));
   });
+  router.get('/v1/copy-qa/reason-tags', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
+    json(ctx, 200, await repository.listCopyQaReasonTags({ actor }));
+  });
+  router.post('/v1/copy-qa/reason-tags', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
+    json(ctx, 201, await repository.createCopyQaReasonTag(requireJson(ctx), { actor }));
+  });
+  router.patch('/v1/copy-qa/reason-tags/:tagId', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
+    json(ctx, 200, await repository.updateCopyQaReasonTag(
+      ctx.params.tagId,
+      requireJson(ctx),
+      { actor },
+    ));
+  });
   router.get('/v1/copy-qa/items', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
     json(ctx, 200, await repository.listCopyQaItems({

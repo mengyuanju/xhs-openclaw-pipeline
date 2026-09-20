@@ -82,7 +82,7 @@ export async function renderMask(input) {
   return sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="1086" height="1448"><rect width="1086" height="1448" fill="black"/>${shape}</svg>`)).greyscale().threshold(127).png().toBuffer();
 }
 export async function renderRegionsMask(regions) {
-  if(!Array.isArray(regions)||regions.length<1||regions.length>4)throw new TypeError('局部修改规划需要 1 至 4 个编辑区域');
+  if(!Array.isArray(regions)||regions.length<1||regions.length>16)throw new TypeError('一次图片修改需要 1 至 16 个编辑区域');
   const normalized=regions.map(region=>safeRect(region));
   if(normalized.some(region=>region.width<24||region.height<24))throw new TypeError('局部修改规划区域过小');
   const shape=normalized.map(region=>`<rect x="${region.x}" y="${region.y}" width="${region.width}" height="${region.height}" fill="white"/>`).join('');

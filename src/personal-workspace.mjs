@@ -87,6 +87,7 @@ export function classifyPersonalTask(task, now = Date.now()) {
   return { categories, reworkType, reworkProgress, waitingSince: needsHuman ? waitingSince : null, waitingHours,
     reworkSource: rework ? task.reworkSource ?? (imageRework ? 'IMAGE_QA' : task.copyReworkOrigin === 'FINAL_REWORK' ? 'FINAL_REWORK' : 'COPY_QA') : null,
     returnedAt: rework ? task.returnedAt : null, returnNote: rework ? task.returnNote : null,
+    returnReasons: rework && Array.isArray(task.returnReasons) ? task.returnReasons : [],
     reworkCount: task.reworkCount ?? 0, imageEdits: edits, planStatus: active ? task.planStatus : null };
 }
 

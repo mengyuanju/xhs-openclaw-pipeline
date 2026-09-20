@@ -63,6 +63,15 @@ export async function reviseTaskImages(client, rawTaskId, input, actorUsername, 
     RETURNING *`, [taskId, revisionNumber, content, nodeId, revisionId,
     revision.copy_content_changed_from_machine === true,
     revision.copy_rework_satisfied === true])).rows[0];
+  // This revision changes only image-production metadata. Record the trusted
+  // lineage before tasks.current_copy_revision_id changes so the copy-QA
+  // invalidation trigger can carry the already released verdict forward.
+  await client.query(`INSERT INTO copy_qc_revision_inheritances(
+      target_revision_id, task_id, source_revision_id,
+      inherited_by_username, reason
+    ) VALUES ($1, $2, $3, $4, 'IMAGE_PLAN_RETRY')`, [
+    Number(saved.id), taskId, revisionId, actorUsername,
+  ]);
   await withdrawReadyDeliveryEntries(client, taskId, 'IMAGE_REVISION');
   return (await client.query(`UPDATE tasks SET state = 'IMAGE_QUEUED', current_copy_revision_id = $2,
     current_image_run_id = NULL, current_execution_id = NULL, current_stage = 'IMAGE_QUEUED',

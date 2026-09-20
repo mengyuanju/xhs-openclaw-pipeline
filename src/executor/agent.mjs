@@ -369,7 +369,7 @@ export function createExecutorAgent({
   }
   const registration = () => ({ nodeId, name: nodeName, imageWorkerEnabled,
     copyConcurrency, imageConcurrency, codexPoolId, codexTotalConcurrency, codexImageConcurrency,
-    imageEditExecutorVersion: imageWorkerEnabled ? 10 : 0,
+    imageEditExecutorVersion: imageWorkerEnabled ? 11 : 0,
     copyImagePlanRegenerationVersion: 1 });
   let ready = false;
   const pendingFailures = new Map();

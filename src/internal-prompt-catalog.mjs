@@ -870,6 +870,20 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
     "variables": []
   },
   {
+    "kind": "INTERNAL_EDIT_PRODUCT_ALL_MATCHES",
+    "label": "同款产品多实例替换",
+    "group": "图片编辑",
+    "description": "按视觉预检生成的多个紧框，一次替换搜索范围内的全部同款产品实例。",
+    "usage": "按视觉预检生成的多个紧框，一次替换搜索范围内的全部同款产品实例。",
+    "editable": true,
+    "layer": "SUPPLEMENT",
+    "defaultPath": "prompts/internal/edit_product_all_matches.md",
+    "callSites": [
+      "server/src/image-edit-renderer.mjs#aiEditPrompt"
+    ],
+    "variables": []
+  },
+  {
     "kind": "INTERNAL_EDIT_REPAIR_ATTACHMENTS",
     "label": "失败图修复附件说明",
     "group": "图片编辑",
@@ -1415,6 +1429,25 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
     "editable": true,
     "layer": "SUPPLEMENT",
     "defaultPath": "prompts/internal/edit_product_multi_review.md",
+    "callSites": [
+      "server/src/image-edit-renderer.mjs#processImageEdit"
+    ],
+    "variables": [
+      {
+        "name": "slot1",
+        "description": "criteria"
+      }
+    ]
+  },
+  {
+    "kind": "INTERNAL_EDIT_PRODUCT_ALL_MATCHES_REVIEW",
+    "label": "同款产品多实例替换验收",
+    "group": "编辑检查",
+    "description": "按预检目标数量逐个核对同款产品多实例替换及内容保护。",
+    "usage": "按预检目标数量逐个核对同款产品多实例替换及内容保护。",
+    "editable": true,
+    "layer": "SUPPLEMENT",
+    "defaultPath": "prompts/internal/edit_product_all_matches_review.md",
     "callSites": [
       "server/src/image-edit-renderer.mjs#processImageEdit"
     ],

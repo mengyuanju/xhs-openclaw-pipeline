@@ -26,6 +26,10 @@ test('ordinary users can work on assigned tasks and screen only their visible Qu
   assert.equal(userCanAccessControlPlaneRoute('/v1/tasks', 'POST'), false);
   assert.equal(userCanAccessControlPlaneRoute('/v1/tasks', 'GET'), true);
   assert.equal(userCanAccessControlPlaneRoute('/v1/tasks/7/retry', 'POST'), true);
+  assert.equal(userCanAccessControlPlaneRoute('/v1/copy-qa/reason-tags', 'GET'), true);
+  assert.equal(userCanAccessControlPlaneRoute('/v1/copy-qa/reason-tags', 'POST'), true);
+  assert.equal(userCanAccessControlPlaneRoute('/v1/copy-qa/reason-tags/11111111-1111-4111-8111-111111111111', 'PATCH'), true);
+  assert.equal(userCanAccessControlPlaneRoute('/v1/copy-qa/reason-tags/11111111-1111-4111-8111-111111111111', 'DELETE'), false);
   assert.equal(userCanAccessControlPlaneRoute('/v1/tasks/7/archive', 'HEAD'), true);
   assert.equal(userCanAccessControlPlaneRoute('/v1/tasks/7/archive', 'GET'), true);
   for (const [path, method] of [

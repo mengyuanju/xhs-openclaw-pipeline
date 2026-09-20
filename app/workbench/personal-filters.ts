@@ -30,7 +30,7 @@ export function appendPersonalOptions(search: URLSearchParams, options: Personal
 export type PersonalWork = {
   categories: string[]; reworkType: string | null; reworkProgress: string | null;
   reworkSource: string | null; waitingHours: number | null; waitingSince: string | null;
-  returnedAt: string | null; returnNote: string | null; reworkCount: number;
+  returnedAt: string | null; returnNote: string | null; returnReasons: string[]; reworkCount: number;
   planStatus: string | null; imageEdits: { queued: number; running: number; ready: number; failed: number };
 };
 export type PersonalEvent = { id: string; kind: string; stage: string; at: string; rework: boolean; passed: boolean;reviewRound?:number|null;returnRound?:number|null;roundKnown?:boolean };

@@ -21,6 +21,7 @@ export function personalFactsSql(blindSql) {
         AND NOT ($3::varchar = 'REVIEWER' AND ${blindSql})) AS has_access,
       COALESCE(returns.target, revision.content->'finalRework'->>'target', 'COPY') AS rework_target,
       returns.source AS rework_source, returns.at AS returned_at, returns.note AS return_note,
+      returns.reasons AS return_reasons,
       returns.rounds AS rework_rounds, plan.status AS plan_status, plan.finished_at AS plan_ready_at,
       edits.queued, edits.running, edits.ready, edits.failed, edits.preview_ready_at,
       EXISTS (SELECT 1 FROM delivery_entries d WHERE d.task_id=task.id AND d.status='READY'
@@ -48,13 +49,15 @@ export function personalFactsSql(blindSql) {
     ) edits ON true
     LEFT JOIN LATERAL (
       SELECT latest.*, count(*) OVER () AS rounds FROM (
-        SELECT r.created_at AS at,'COPY_QA' AS source,'COPY' AS target,r.content->'qualityReturn'->>'note' AS note
+        SELECT r.created_at AS at,'COPY_QA' AS source,'COPY' AS target,
+          r.content->'qualityReturn'->>'note' AS note,
+          r.content->'qualityReturn'->'reasonSnapshots' AS reasons
           FROM copy_revisions r WHERE r.task_id=task.id AND r.revision_origin='QA_RETURN'
         UNION ALL
-        SELECT i.reviewed_at,'IMAGE_QA',COALESCE(i.rework_target,'IMAGE'),i.note
+        SELECT i.reviewed_at,'IMAGE_QA',COALESCE(i.rework_target,'IMAGE'),i.note,NULL::jsonb
           FROM image_sampling_items i WHERE i.task_id=task.id AND i.rework_target IS NOT NULL AND i.reviewed_at IS NOT NULL
         UNION ALL
-        SELECT a.created_at,'FINAL_REWORK',a.rework_target,a.note FROM human_quality_assessments a
+        SELECT a.created_at,'FINAL_REWORK',a.rework_target,a.note,NULL::jsonb FROM human_quality_assessments a
           WHERE a.task_id=task.id AND a.rework_target IS NOT NULL
       ) latest ORDER BY at DESC LIMIT 1
     ) returns ON true
@@ -76,6 +79,9 @@ function factFrom(row) {
     copyReworkOrigin: ['QA_RETURN','FINAL_REWORK'].includes(row.mandatory_copy_qc_origin)
       ? row.mandatory_copy_qc_origin : row.revision_origin,
     reworkTarget: row.rework_target, reworkSource: row.rework_source, returnedAt: iso(row.returned_at), returnNote: row.return_note,
+    returnReasons: Array.isArray(row.return_reasons)
+      ? row.return_reasons.map((reason) => String(reason?.label ?? '')).filter(Boolean)
+      : [],
     reworkCount: Number(row.rework_rounds ?? 0), planStatus: row.plan_status, planReadyAt: iso(row.plan_ready_at),
     imageEdits: { queued: Number(row.queued ?? 0), running: Number(row.running ?? 0), ready: Number(row.ready ?? 0), failed: Number(row.failed ?? 0) },
     previewReadyAt: iso(row.preview_ready_at), deliveryReady: row.delivery_ready === true };

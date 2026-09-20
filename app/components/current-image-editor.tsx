@@ -24,7 +24,8 @@ type Asset = { id: number; sha256: string; url: string };
 type Ref = Asset & { purpose: string };
 type TargetRegion = { x:number; y:number; width:number; height:number };
 type ReferenceMode = 'STRICT' | 'APPEARANCE';
-type ProductTarget = { description:string; region:TargetRegion|null };
+type TargetMode = 'SINGLE' | 'ALL_MATCHES';
+type ProductTarget = { description:string; region:TargetRegion|null; targetMode:TargetMode };
 type ProductReplacement = { key:string; reference:Ref|null; referenceMode:ReferenceMode; targets:Record<number,ProductTarget> };
 type TextScope = 'CURRENT' | 'ALL';
 type DisclosureMethod = 'SVG' | 'MODEL';
@@ -113,7 +114,7 @@ function pointLocation(point:{x:number;y:number}|null) {
   if(vertical==='中部')return `画面${horizontal}`;
   return `画面${horizontal.replace('侧','')}${vertical.replace('方','')}`;
 }
-const newReplacement=(index:number,page:number):ProductReplacement=>({key:`product-${index}`,reference:null,referenceMode:'STRICT',targets:{[page]:{description:'',region:null}}});
+const newReplacement=(index:number,page:number):ProductReplacement=>({key:`product-${index}`,reference:null,referenceMode:'STRICT',targets:{[page]:{description:'',region:null,targetMode:'SINGLE'}}});
 export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,page,runs,onChanged}: {
   taskId:number;runId:string;copyRevisionId:number;asset:Asset;assets?:Asset[];page:number;
   runs:Array<{id:string;result:{processing?:{type:string}}|null}>;onChanged:()=>Promise<void>;
@@ -149,6 +150,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
   const activeTarget=activeReplacement?.targets[entityPage]??null;
   const targetDescription=activeTarget?.description??'';
   const targetRegion=activeTarget?.region??null;
+  const targetMode=activeTarget?.targetMode??'SINGLE';
   const referenceMode=activeReplacement?.referenceMode??'STRICT';
   const displayPage=tab==='ENTITY'?entityPage:page;
   const displayAsset=imageAssets[displayPage-1]??asset;
@@ -162,6 +164,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
   }
   function setTargetDescription(value:string) {updateActiveTarget(current=>({...current,description:value}));}
   function setTargetRegion(value:TargetRegion|null) {updateActiveTarget(current=>({...current,region:value}));}
+  function setTargetMode(value:TargetMode) {updateActiveTarget(current=>({...current,targetMode:value,region:null}));}
   function setReferenceMode(value:ReferenceMode) {if(activeReplacement)updateReplacement(activeReplacement.key,current=>({...current,referenceMode:value}));}
   const refresh=useCallback(async()=>{
     const items=await apiRequest<Edit[]>(path(`/v1/tasks/${taskId}/image-edits`));
@@ -235,9 +238,9 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
         try {
           await trackedPost(`/v1/tasks/${taskId}/image-edits`,{
             ...pageBase(targetPage),...(batchId?{batchId,batchSize:pages.length}:{}),operation:'AI_FUSION',
-            instruction:`按 ${pageReplacements.length} 组参考图和框选区域，分别替换：${pageReplacements.map(item=>`“${item.targets[targetPage].description.trim().slice(0,120)}”`).join('、')}；保持场景、人物、构图和全部文字不变`,
+            instruction:`按 ${pageReplacements.length} 组参考图和框选区域，分别替换：${pageReplacements.map(item=>`${item.targets[targetPage].targetMode==='ALL_MATCHES'?'框内全部匹配的':'单个'}“${item.targets[targetPage].description.trim().slice(0,120)}”`).join('、')}；保持场景、人物、构图和全部文字不变`,
             preserve,negative,references:references.map(reference=>({assetId:reference.id,purpose:reference.purpose})),
-            replacements:pageReplacements.map(item=>({referenceAssetId:item.reference!.id,referenceMode:item.referenceMode,
+            replacements:pageReplacements.map(item=>({referenceAssetId:item.reference!.id,referenceMode:item.referenceMode,targetMode:item.targets[targetPage].targetMode,
               target:{description:item.targets[targetPage].description.trim(),region:item.targets[targetPage].region}})),
             confirmation:!draft&&confirmed?'LIVE_IMAGE_COST_ACCEPTED':undefined,draft,
           });
@@ -310,7 +313,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
       const targets={...current.targets};
       if(checked) {
         const example=Object.values(targets)[0];
-        targets[entityPage]={description:example?.description??'',region:null};
+        targets[entityPage]={description:example?.description??'',region:null,targetMode:example?.targetMode??'SINGLE'};
       } else delete targets[entityPage];
       return {...current,targets};
     });
@@ -509,7 +512,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
               {previewMode==='COMPARE'&&latest?.result&&<div className={styles.previewCanvas} role="img" aria-label="修改前后对比画面" style={{width:`${zoom*100}%`}}><img className={styles.previewImage} src={path(`/v1/assets/${latest.source_asset_id??displayAsset.id}`)} alt=""/><img className={styles.previewImage} src={path(`/v1/assets/${latest.result.asset_id}`)} alt="" style={{clipPath:`inset(0 ${100-compare}% 0 0)`}}/></div>}
             </div>
             {previewMode==='COMPARE'&&latest?.result?<section className={styles.inlineComparison} aria-label="修改前后对比"><div><h3>修改前后滑动对比</h3><span>第 {latest.target_page} 页 · {labels[latest.operation]}{latestRejected?' · 自动验收未通过':''}</span></div><Slider aria-label="修改前后对比滑块" min="0" max="100" value={compare} onChange={e=>setCompare(Number(e.target.value))}/></section>:<label className={styles.zoomControl}><span>预览缩放</span><Slider aria-label="预览缩放" min="1" max="3" step="0.1" value={zoom} onChange={e=>setZoom(Number(e.target.value))}/><strong>{Math.round(zoom*100)}%</strong></label>}
-            <p className={styles.help}>{tab==='TEXT'?(disclosureMethod==='SVG'?'左侧预览程序标识的描边胶囊样式；提交后由 SVG + Sharp 确定性合成。':'左侧是模型标识的统一目标样式示意；提交后由图片编辑模型融合绘制。'):tab==='ENTITY'?`正在标注第 ${displayPage} 页、产品 ${Math.max(1,replacements.findIndex(item=>item.key===activeReplacement?.key)+1)}；每个目标需单独框选。`:promptTarget?`已标记${pointLocation(promptTarget)}附近；右侧只需补充怎么修改。`:'可直接点击图片中的目标以自动补充位置，也可以完整输入自然语言说明。'}</p>
+            <p className={styles.help}>{tab==='TEXT'?(disclosureMethod==='SVG'?'左侧预览程序标识的描边胶囊样式；提交后由 SVG + Sharp 确定性合成。':'左侧是模型标识的统一目标样式示意；提交后由图片编辑模型融合绘制。'):tab==='ENTITY'?`正在标注第 ${displayPage} 页、产品 ${Math.max(1,replacements.findIndex(item=>item.key===activeReplacement?.key)+1)}；${targetMode==='ALL_MATCHES'?'框选包含全部同款目标的搜索范围。':'框内只放一个目标。'}`:promptTarget?`已标记${pointLocation(promptTarget)}附近；右侧只需补充怎么修改。`:'可直接点击图片中的目标以自动补充位置，也可以完整输入自然语言说明。'}</p>
           </section>
 
           <section className={styles.controlPanel} aria-label="图片修改控制">
@@ -535,8 +538,8 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
                   <div className={styles.referenceUpload}><div className={styles.referenceUploadHeading}><strong>上传产品 {Math.max(1,replacements.findIndex(item=>item.key===activeReplacement?.key)+1)} 的真实图片</strong><p>每个替换项绑定自己的参考图，单张图内不会串用产品。</p></div><label className={styles.filePicker} data-disabled={busy||undefined}><input className={styles.fileInput} aria-label={replacements.findIndex(item=>item.key===activeReplacement?.key)===0?'上传真实产品参考图':`上传产品 ${replacements.findIndex(item=>item.key===activeReplacement?.key)+1} 参考图`} type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={e=>activeReplacement&&void upload(activeReplacement.key,e.target.files)}/><span className={styles.filePickerIcon}><UploadCloud aria-hidden="true" size={26} strokeWidth={1.8}/></span><span className={styles.filePickerCopy}><strong>{activeReplacement?.reference?'更换产品图片':'点击选择产品图片'}</strong><small>也可以将图片拖放到这里</small></span><span className={styles.filePickerMeta}>PNG / JPG / WebP · 最大 5 MB</span></label>{activeReplacement?.reference&&<div className={styles.referenceCard}><img src={path(activeReplacement.reference.url)} alt="已上传的真实产品参考图"/><span>产品 {replacements.findIndex(item=>item.key===activeReplacement.key)+1} 参考图已就绪</span><Button variant="outline" size="sm" type="button" onClick={()=>updateReplacement(activeReplacement.key,current=>({...current,reference:null}))}>移除</Button></div>}</div>
                   <label>参考图使用方式<Select value={referenceMode} onValueChange={value=>setReferenceMode(value as ReferenceMode)}><SelectTrigger aria-label="参考图使用方式"><SelectValue /></SelectTrigger><SelectContent className={styles.selectContent}><SelectItem value="STRICT">完整产品（严格模式）</SelectItem><SelectItem value="APPEARANCE">外观参考（允许手部、裁切或次要产品）</SelectItem></SelectContent></Select><small>{referenceMode==='APPEARANCE'?'只迁移主产品可确认的外观，缺失部分沿用源图结构补全。':'要求参考图中只有一个清楚、完整、遮挡很少的产品。'}</small></label>
                   <div className={styles.entityPagePlanner} aria-label="产品应用图片"><span>选择正在标注的图片</span><div>{imageAssets.map((_,index)=>{const targetPage=index+1,target=activeReplacement?.targets[targetPage];return <Button unstyled type="button" key={targetPage} aria-pressed={entityPage===targetPage} onClick={()=>selectEntityPage(targetPage)}>第 {targetPage} 页<small>{target?.region?'已框选':target?'待框选':'未应用'}</small></Button>;})}</div><label><Checkbox checked={Boolean(activeTarget)} onChange={event=>toggleActivePage(event.target.checked)}/><span>在第 {entityPage} 页替换这个产品</span></label><small>跨图片使用同一参考产品时，逐页切换并分别框选目标；系统会按图片建立同一批次。</small></div>
-                  {activeTarget?<><label>目标物品说明<Textarea aria-label={replacements.findIndex(item=>item.key===activeReplacement?.key)===0&&entityPage===page?'目标物品说明':`产品 ${replacements.findIndex(item=>item.key===activeReplacement?.key)+1} 第 ${entityPage} 页目标物品说明`} value={targetDescription} maxLength={500} placeholder="例如：画面右侧台面上、木托盘后方的米白色拿铁杯" onChange={e=>setTargetDescription(e.target.value)}/><small>同时写清颜色或相邻物体，避免多个同类物品时选错。</small></label><div className={styles.targetSelectionInfo} role="status"><span>{targetRegion?`第 ${entityPage} 页已框选：x ${targetRegion.x}，y ${targetRegion.y}，宽 ${targetRegion.width}，高 ${targetRegion.height}`:`第 ${entityPage} 页尚未框选目标，请在左侧原图上拖动。`}</span>{targetRegion&&<Button variant="outline" size="sm" type="button" onClick={()=>setTargetRegion(null)}>重新框选</Button>}</div></>:<div className={styles.inactivePageNotice}>当前产品不应用到第 {entityPage} 页；勾选后可填写说明并框选目标。</div>}
-                  <p>每个目标会先独立完成唯一性预检；一张图中的多个目标会在一次模型编辑中同时完成，避免结果互相覆盖。</p>
+                  {activeTarget?<><label>替换范围<Select value={targetMode} onValueChange={value=>setTargetMode(value as TargetMode)}><SelectTrigger aria-label="产品替换范围"><SelectValue /></SelectTrigger><SelectContent className={styles.selectContent}><SelectItem value="SINGLE">只替换一个产品</SelectItem><SelectItem value="ALL_MATCHES">替换框内全部同款产品或特写</SelectItem></SelectContent></Select><small>{targetMode==='ALL_MATCHES'?'框选搜索范围；系统会先定位每个匹配目标并生成紧框，再一次交给模型替换。':'框内必须只有一个完整目标，其他位置的同款产品不会改变。'}</small></label><label>目标物品说明<Textarea aria-label={replacements.findIndex(item=>item.key===activeReplacement?.key)===0&&entityPage===page?'目标物品说明':`产品 ${replacements.findIndex(item=>item.key===activeReplacement?.key)+1} 第 ${entityPage} 页目标物品说明`} value={targetDescription} maxLength={500} placeholder={targetMode==='ALL_MATCHES'?'例如：框内全部蓝黑色儿童手表及旋钮特写':'例如：画面右侧台面上、木托盘后方的米白色拿铁杯'} onChange={e=>setTargetDescription(e.target.value)}/><small>{targetMode==='ALL_MATCHES'?'描述所有需要匹配的同款产品；已批准文字和其他物体不会进入最终编辑蒙版。':'同时写清颜色或相邻物体，避免多个同类物品时选错。'}</small></label><div className={styles.targetSelectionInfo} role="status"><span>{targetRegion?`第 ${entityPage} 页已框选${targetMode==='ALL_MATCHES'?'搜索范围':'目标'}：x ${targetRegion.x}，y ${targetRegion.y}，宽 ${targetRegion.width}，高 ${targetRegion.height}`:`第 ${entityPage} 页尚未框选${targetMode==='ALL_MATCHES'?'搜索范围':'目标'}，请在左侧原图上拖动。`}</span>{targetRegion&&<Button variant="outline" size="sm" type="button" onClick={()=>setTargetRegion(null)}>重新框选</Button>}</div></>:<div className={styles.inactivePageNotice}>当前产品不应用到第 {entityPage} 页；勾选后可填写说明并框选目标。</div>}
+                  <p>单目标模式会检查目标唯一性；全部同款模式会先识别最多 4 个目标并生成紧框，再在一次模型编辑中完成。</p>
                 </>}
                 {tab==='PROMPT'&&<>
                   <div className={styles.promptStep}><div className={styles.stepHeading}><strong>1. 选择修改目标</strong><span>减少位置描述</span></div><div className={styles.targetSelectionInfo} role="status"><span>{promptTarget?`已定位：${pointLocation(promptTarget)}附近`:'可在左侧图片点击要修改的目标，也可跳过并在说明中写位置。'}</span>{promptTarget&&<Button variant="outline" size="sm" type="button" onClick={()=>setPromptTarget(null)}>清除定位</Button>}</div></div>

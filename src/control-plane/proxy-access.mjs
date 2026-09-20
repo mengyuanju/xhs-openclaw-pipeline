@@ -51,6 +51,8 @@ export function userCanAccessControlPlaneRoute(path, method) {
     || (path === '/v1/copy-quality/queues' && ['GET', 'HEAD'].includes(method))
     || (/^\/v1\/copy-qa\/(?:items(?:\/[^/]+(?:\/(?:pass|return))?)?|freezes\/[^/]+\/batch-return-preview|batch-return)$/u.test(path)
       && ['GET', 'HEAD', 'POST'].includes(method))
+    || (path === '/v1/copy-qa/reason-tags' && ['GET', 'HEAD', 'POST'].includes(method))
+    || (/^\/v1\/copy-qa\/reason-tags\/[^/]+$/u.test(path) && method === 'PATCH')
     || nonAdminCanAccessQueryPackageRoute(path, method)
     || userCanAccessDeliveryRoute(path, method)
     || userCanAccessImageEditRoute(path, method)

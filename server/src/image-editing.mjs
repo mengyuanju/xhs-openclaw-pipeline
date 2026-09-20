@@ -37,7 +37,7 @@ export function editStoragePath(root, stored) {
 }
 export function normalizeEdit(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('修改参数无效');
-  const allowed = ['requestId','batchId','batchSize','sourceImageRunId','sourceAssetId','copyRevisionId','sha256','targetPage','operation','instruction','preserve','negative','overlay','mask','target','references','replacements','referenceMode','confirmation','draft','restoreRunId'];
+  const allowed = ['requestId','batchId','batchSize','sourceImageRunId','sourceAssetId','copyRevisionId','sha256','targetPage','operation','instruction','preserve','negative','overlay','mask','target','references','replacements','referenceMode','targetMode','confirmation','draft','restoreRunId'];
   if(Object.keys(input).some(k => !allowed.includes(k))) throw new TypeError('未知修改参数');
   const operation = input.operation;
   if(!['TEXT','SVG_DISCLOSURE','COMPOSITE','AI_FUSION','AI_FULL','AI_LOCAL','RESTORE'].includes(operation)) throw new TypeError('修改类型无效');
@@ -57,8 +57,11 @@ export function normalizeEdit(input) {
   if(new Set(references.map(r=>r.assetId)).size !== references.length) throw new TypeError('参考图重复');
   if(operation !== 'AI_FUSION' && (input.target != null||input.replacements != null)) throw new TypeError('仅真实产品替换可指定目标物体');
   if(operation !== 'AI_FUSION' && input.referenceMode != null) throw new TypeError('仅真实产品替换可指定参考图使用方式');
+  if(operation !== 'AI_FUSION' && input.targetMode != null) throw new TypeError('仅真实产品替换可指定目标匹配方式');
   let referenceMode=operation === 'AI_FUSION' ? String(input.referenceMode??'STRICT') : null;
   if(operation === 'AI_FUSION' && !['STRICT','APPEARANCE'].includes(referenceMode)) throw new TypeError('参考图使用方式无效');
+  let targetMode=operation === 'AI_FUSION' ? String(input.targetMode??'SINGLE') : null;
+  if(operation === 'AI_FUSION' && !['SINGLE','ALL_MATCHES'].includes(targetMode)) throw new TypeError('目标匹配方式无效');
   let target=null;
   let replacements=null;
   if(operation === 'AI_FUSION') {
@@ -77,20 +80,23 @@ export function normalizeEdit(input) {
       }
       replacements=input.replacements.map(value=>{
         if(!value||typeof value!=='object'||Array.isArray(value)
-          ||Object.keys(value).some(key=>!['referenceAssetId','referenceMode','target'].includes(key))) {
+          ||Object.keys(value).some(key=>!['referenceAssetId','referenceMode','targetMode','target'].includes(key))) {
           throw new TypeError('产品替换项无效');
         }
         const referenceAssetId=normalizeTaskId(value.referenceAssetId);
         if(!references.some(reference=>reference.assetId===referenceAssetId))throw new TypeError('产品替换项引用了未绑定的参考图');
         const mode=String(value.referenceMode??'STRICT');
         if(!['STRICT','APPEARANCE'].includes(mode))throw new TypeError('参考图使用方式无效');
-        return {referenceAssetId,referenceMode:mode,target:normalizeTarget(value.target)};
+        const matchMode=String(value.targetMode??'SINGLE');
+        if(!['SINGLE','ALL_MATCHES'].includes(matchMode))throw new TypeError('目标匹配方式无效');
+        return {referenceAssetId,referenceMode:mode,targetMode:matchMode,target:normalizeTarget(value.target)};
       });
       if(references.some(reference=>!replacements.some(value=>value.referenceAssetId===reference.assetId))) {
         throw new TypeError('存在未使用的产品参考图');
       }
       target=replacements[0].target;
       referenceMode=replacements[0].referenceMode;
+      targetMode=replacements[0].targetMode;
     } else {
       if(references.length!==1)throw new TypeError('单个真实产品替换只能上传 1 张参考图');
       target=normalizeTarget(input.target);
@@ -113,7 +119,7 @@ export function normalizeEdit(input) {
     // New local edits locate the target from the operator's prompt. Keep accepting
     // a mask for already-created clients and queued historical requests.
     mask: operation === 'AI_LOCAL' && input.mask != null ? normalizeMask(input.mask) : null,
-    target,references,replacements,referenceMode, confirmation: usesBillableModel&&confirmed ? input.confirmation : null, draft,
+    target,references,replacements,referenceMode,targetMode, confirmation: usesBillableModel&&confirmed ? input.confirmation : null, draft,
     restoreRunId: operation === 'RESTORE' ? normalizeUuid(input.restoreRunId,'restoreRunId') : null };
 }
 export function imageAssetIds(result) {

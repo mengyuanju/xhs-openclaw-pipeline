@@ -23,12 +23,13 @@ import {
   RotateCcw,
   ShieldAlert,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { apiRequest } from '../components/api-client';
 import { canCommitLatestRequest } from '../components/latest-request';
 import { createRequestId } from '../components/request-id';
 import { buildCopyQaBatchReturnPayload } from '../../src/copy-qa-batch-return.mjs';
+import { CopyQaReasonPicker } from './copy-qa-reason-picker';
 import styles from './copy-qa.module.css';
 import {
   canReleaseCopyQaFreezeRest,
@@ -45,12 +46,6 @@ import {
 const apiPath = (path: string) => `/api/control-plane${path}`;
 const COPY_QA_LIST_LIMIT = 200;
 type CopyQaKindFilter = 'ALL' | 'RANDOM' | 'MANDATORY_RECHECK';
-const RETURN_REASONS = [
-  { code: 'FACT_ERROR', label: '事实或数据错误' },
-  { code: 'QUERY_MISMATCH', label: '偏离 Query' },
-  { code: 'STRUCTURE_ERROR', label: '结构不完整' },
-  { code: 'EXPRESSION_ERROR', label: '表达或合规问题' },
-];
 const STATUS_LABELS: Record<CopyQaStatus, string> = {
   PENDING: '待抽检',
   PASSED: '抽检通过',
@@ -345,10 +340,6 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
     } finally {
       setAction('');
     }
-  }
-
-  function toggleReason(code: string, setter: Dispatch<SetStateAction<string[]>>) {
-    setter((current) => current.includes(code) ? current.filter((item) => item !== code) : [...current, code]);
   }
 
   function beginReleaseRest(item: CopyQaItem) {
@@ -688,10 +679,10 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
               <SelectItem value="DISCARD">建议任务负责人废弃</SelectItem>
             </SelectContent>
           </Select>{returnRecommendation === 'DISCARD' && <small className="subtle">质检建议不会直接终止任务，当前任务负责人或管理员确认后才会废弃。</small>}</div>
-          <div className={styles.reasonGrid}>{RETURN_REASONS.map((reason) => <label key={reason.code}><Checkbox checked={returnReasons.includes(reason.code)} disabled={action === 'return-single'} onChange={() => toggleReason(reason.code, setReturnReasons)} />{reason.label}</label>)}</div>
-          <div className="field"><label htmlFor="copy-qa-single-note">具体说明{returnRecommendation === 'DISCARD' ? '（建议废弃时必填）' : ''}</label><Textarea id="copy-qa-single-note" value={returnNote} maxLength={500} rows={5} disabled={action === 'return-single'} placeholder={returnRecommendation === 'DISCARD' ? '说明为什么继续返工不合适，供任务负责人确认' : '指出错误位置和修改要求，便于原标注处理'} onChange={(event) => { setReturnNote(event.target.value); setReturnError(''); }} /></div>
+          <CopyQaReasonPicker selected={returnReasons} onChange={(reasons) => { setReturnReasons(reasons); setReturnError(''); }} disabled={action === 'return-single'} />
+          <div className="field"><label htmlFor="copy-qa-single-note">详细说明{returnRecommendation === 'DISCARD' ? '（建议废弃时必填）' : '（选填）'}</label><Textarea id="copy-qa-single-note" value={returnNote} maxLength={500} rows={4} disabled={action === 'return-single'} placeholder={returnRecommendation === 'DISCARD' ? '说明为什么继续返工不合适，供任务负责人确认' : '可选：补充具体句子、页码或修改要求'} onChange={(event) => { setReturnNote(event.target.value); setReturnError(''); }} /></div>
           {returnError && <div className="notice error" role="alert">{returnError}</div>}
-          <div className={styles.footer}><span className="subtle">{returnItem?.sampleKind === 'MANDATORY_RECHECK' ? '本次只处理当前强制复检返工稿。' : '默认最小影响范围：当前单条任务。'}</span><div><DialogClose asChild><Button unstyled className="button" type="button" disabled={action === 'return-single'}>取消</Button></DialogClose><Button unstyled className="button danger" type="button" disabled={action === 'return-single'} onClick={() => { void submitSingleReturn(); }}>{action === 'return-single' ? '打回中…' : returnItem?.sampleKind === 'MANDATORY_RECHECK' ? '确认打回返工稿' : '确认仅打回此条'}</Button></div></div>
+          <div className={styles.footer}><span className="subtle">{returnItem?.sampleKind === 'MANDATORY_RECHECK' ? '本次只处理当前强制复检返工稿。' : '默认最小影响范围：当前单条任务。'}</span><div><DialogClose asChild><Button unstyled className="button" type="button" disabled={action === 'return-single'}>取消</Button></DialogClose><Button unstyled className="button danger" type="button" disabled={action === 'return-single'} onClick={() => { void submitSingleReturn(); }}>{action === 'return-single' ? '打回中…' : `${returnItem?.sampleKind === 'MANDATORY_RECHECK' ? '确认打回返工稿' : '确认仅打回此条'}${returnReasons.length ? `（${returnReasons.length}项）` : ''}`}</Button></div></div>
         </> : returnItem && <>
           <div className={styles.impact}><strong>{returnItem.sampleKind === 'MANDATORY_RECHECK' ? '强制复检项' : '错误项'}：{returnItem.anonymousCode}</strong><span>{returnItem.sampleKind === 'MANDATORY_RECHECK' ? '返工稿已退回继续修改，当前不会进入待生图队列。' : '单条打回已生效；关闭弹窗也不会自动放行或扩大范围。'}</span></div>
           {returnItem.sampleKind === 'MANDATORY_RECHECK'
@@ -724,7 +715,7 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
       <DialogContent className={styles.dialog}>
         <div className={styles.dialogHeader}><div><DialogTitle>整批打回 · 高风险操作</DialogTitle><DialogDescription>这是独立的显式管理操作，不会由单条抽检失败自动触发。</DialogDescription></div><ShieldAlert size={21} aria-hidden="true" /></div>
         <div className={styles.impact}><strong>预检影响：匿名批次 {batchTriggerItem?.productionBatch.anonymousCode}，触发错误项 {batchTriggerItem?.anonymousCode}</strong><span>{batchPreviewLoading ? '正在由服务端重新核对批次快照与影响范围…' : batchPreview ? `服务端预检完成，预计影响 ${previewAffectedCount} 条正式任务。提交时使用本次预检返回的完整范围。` : '服务端预检尚未完成，不能提交整批打回。'}</span></div>
-        <div className={styles.reasonGrid}>{RETURN_REASONS.map((reason) => <label key={reason.code}><Checkbox checked={batchReasons.includes(reason.code)} disabled={action === 'return-batch'} onChange={() => toggleReason(reason.code, setBatchReasons)} />{reason.label}</label>)}</div>
+        <CopyQaReasonPicker selected={batchReasons} onChange={(reasons) => { setBatchReasons(reasons); setBatchError(''); }} disabled={action === 'return-batch'} />
         <div className="field"><label htmlFor="copy-qa-batch-note">整批打回说明（必填）</label><Textarea id="copy-qa-batch-note" value={batchNote} maxLength={500} rows={5} disabled={action === 'return-batch'} placeholder="说明为何需要扩大到整批，以及统一返工要求" onChange={(event) => { setBatchNote(event.target.value); setBatchError(''); }} /></div>
         <div className="field"><label htmlFor="copy-qa-batch-confirmation">输入预检受影响数量 {previewAffectedCount} 二次确认</label><Input id="copy-qa-batch-confirmation" type="number" min={0} value={batchConfirmation} disabled={action === 'return-batch'} onChange={(event) => { setBatchConfirmation(event.target.value); setBatchError(''); }} /></div>
         {batchError && <div className="notice error" role="alert">{batchError}</div>}

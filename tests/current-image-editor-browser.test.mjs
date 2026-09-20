@@ -250,6 +250,9 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
     await page.getByRole('combobox',{name:'参考图使用方式',exact:true}).click();
     await page.getByRole('option',{name:'外观参考（允许手部、裁切或次要产品）',exact:true}).click();
     await page.getByText('只迁移主产品可确认的外观',{exact:false}).waitFor();
+    await page.getByRole('combobox',{name:'产品替换范围',exact:true}).click();
+    await page.getByRole('option',{name:'替换框内全部同款产品或特写',exact:true}).click();
+    await page.getByText('系统会先定位每个匹配目标并生成紧框',{exact:false}).waitFor();
     assert.equal(await page.getByRole('button',{name:'生成修改预览',exact:true}).isDisabled(),false);
     await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
     await page.getByRole('alert').getByText('请填写产品 1 在第 1 页的目标物品说明',{exact:false}).waitFor();
@@ -273,6 +276,7 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
     await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
     assert.equal(submitted.operation,'AI_FUSION');assert.deepEqual(submitted.references,[{assetId:9,purpose:'真实产品替换'}]);assert.equal(submitted.mask,undefined);
     assert.equal(submitted.replacements[0].referenceMode,'APPEARANCE');assert.equal(submitted.replacements[0].referenceAssetId,9);
+    assert.equal(submitted.replacements[0].targetMode,'ALL_MATCHES');
     assert.equal(submitted.replacements[0].target.description,'画面右侧台面上、木托盘后方的米白色拿铁杯');
     assert.ok(submitted.replacements[0].target.region.width>24&&submitted.replacements[0].target.region.height>24);
     assert.match(submitted.instruction,/木托盘后方/u);
@@ -300,6 +304,8 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
     assert.equal(entityBatchSubmissions.length,2);assert.equal(entityBatchIds.size,1);
     assert.deepEqual(entityBatchSubmissions.map(item=>item.targetPage),[1,2]);assert.ok(entityBatchSubmissions.every(item=>item.batchSize===2));
     assert.equal(entityBatchSubmissions[0].replacements.length,1);assert.equal(entityBatchSubmissions[1].replacements.length,2);
+    assert.equal(entityBatchSubmissions[1].replacements[0].targetMode,'ALL_MATCHES');
+    assert.equal(entityBatchSubmissions[1].replacements[1].targetMode,'SINGLE');
     assert.equal(entityBatchSubmissions[1].replacements[0].target.description,'第 2 页右上角的米白色杯子');
     assert.equal(entityBatchSubmissions[1].replacements[1].target.description,'第 2 页左下角的黑色手表');
     await page.getByRole('tab',{name:/任务记录/u}).click();

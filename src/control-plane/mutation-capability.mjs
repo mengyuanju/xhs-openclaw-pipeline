@@ -2,6 +2,11 @@ import { ApiError } from '../admin/http.mjs';
 
 const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
   Object.freeze({
+    capability: 'copyQaReasonTagsVersion', minimumVersion: 1,
+    matches: (routePath, method) => /^\/v1\/copy-qa\/reason-tags(?:\/[^/]+)?$/u.test(routePath)
+      && ['POST', 'PATCH'].includes(method),
+  }),
+  Object.freeze({
     capability: 'taskRestoreVersion', minimumVersion: 1,
     matches: (routePath, method) => method === 'POST' && /^\/v1\/tasks\/[^/]+\/restore$/u.test(routePath),
   }),

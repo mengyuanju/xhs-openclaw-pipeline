@@ -57,6 +57,7 @@ import {
 import { DEFAULT_SETTINGS, useHumanQualitySettings } from './human-quality-settings';
 import { buildCopyReviewSubmission } from '../../src/copy-review-submission.mjs';
 import { copyReworkChanges, findCopyReworkBaseline } from '../../src/copy-rework.mjs';
+import { copyQaReasonLabels } from '../../src/copy-qa-reasons.mjs';
 import {
   imagePlanPageDeletionBlockReason,
   planDisclosureIndicesAfterDeletion,
@@ -119,6 +120,7 @@ type CopyRevision = {
   reworkOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | null;
   reworkTarget?: 'COPY' | 'IMAGE' | 'BOTH' | null;
   reworkReasonCodes?: string[];
+  reworkReasonSnapshots?: Array<{ code: string; group: string; label: string }>;
   reworkNote?: string | null;
   reworkRecommendation?: 'REWORK' | 'DISCARD';
   reworkSamplingItemId?: string | null;
@@ -687,6 +689,10 @@ export function TaskReviewDialog({
   }, [load, taskId]);
 
   const revision = currentRevision(detail);
+  const reworkReasonLabels = copyQaReasonLabels(
+    revision?.reworkReasonCodes,
+    revision?.reworkReasonSnapshots,
+  );
   const savedDraft = draftFromRevision(revision);
   const draftChanged = Boolean(draft && savedDraft && JSON.stringify(draft) !== JSON.stringify(savedDraft));
   const copyContentChanged = Boolean(draft && savedDraft
@@ -1835,7 +1841,7 @@ export function TaskReviewDialog({
                   && <div className="notice warning" role="status">文案已生成，但任务尚未分配负责人。请先关闭窗口并完成分配，再进行评分或修改。</div>}
                 {detail.state === 'COPY_REVIEW_PENDING' && taskHasAssignee && !canReviewCopy
                   && <div className="notice warning" role="status">当前任务由其他负责人处理；这里仅提供只读查看。</div>}
-                {editable && isCopyRework && <div className="notice warning" role="status"><strong>{revision?.reworkOrigin === 'QA_RETURN' || detail.mandatoryCopyQcOrigin === 'QA_RETURN' ? '文案抽检返工' : '图片质检文案返工'}</strong>{revision?.reworkRecommendation === 'DISCARD' ? ' · 质检建议废弃' : ''}{revision?.reworkReasonCodes?.length ? ` · 原因：${revision.reworkReasonCodes.join('、')}` : ''}{revision?.reworkNote ? ` · 要求：${revision.reworkNote}` : ''}<br />{revision?.reworkRecommendation === 'DISCARD' ? '可以继续返工，也可以由当前任务负责人确认废弃；质检建议本身不会直接终止任务。' : '请根据打回原因修改文案或图片规划，任意一处实际修改后即可直接提交强制复检，无需先单独保存。人工确认达标后，系统将最终稿记录为 3 分并提交强制复检；复检通过后才会进入待生图队列。'}</div>}
+                {editable && isCopyRework && <div className="notice warning" role="status"><strong>{revision?.reworkOrigin === 'QA_RETURN' || detail.mandatoryCopyQcOrigin === 'QA_RETURN' ? '文案抽检返工' : '图片质检文案返工'}</strong>{revision?.reworkRecommendation === 'DISCARD' ? ' · 质检建议废弃' : ''}{reworkReasonLabels.length ? ` · 原因：${reworkReasonLabels.join('、')}` : ''}{revision?.reworkNote ? ` · 要求：${revision.reworkNote}` : ''}<br />{revision?.reworkRecommendation === 'DISCARD' ? '可以继续返工，也可以由当前任务负责人确认废弃；质检建议本身不会直接终止任务。' : '请根据打回原因修改文案或图片规划，任意一处实际修改后即可直接提交强制复检，无需先单独保存。人工确认达标后，系统将最终稿记录为 3 分并提交强制复检；复检通过后才会进入待生图队列。'}</div>}
                 {isImageRetryExhausted(detail) && <div className="notice warning" role="status">{IMAGE_RETRY_EXHAUSTED_LABEL}</div>}
                 {detail.error && <div className="notice error" role="alert">{detail.error}</div>}
                 {editable && <Disclosure className={styles.panel}>

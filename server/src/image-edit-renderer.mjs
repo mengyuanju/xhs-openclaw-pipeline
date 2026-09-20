@@ -51,7 +51,8 @@ function textEditPrompt(context,config,required,alreadyPresent,placementRegion) 
 export function fusionReplacements(config) {
   if(Array.isArray(config.replacements)&&config.replacements.length) return config.replacements;
   if(!config.target||!config.references?.[0])return [];
-  return [{referenceAssetId:config.references[0].assetId,referenceMode:config.referenceMode??'STRICT',target:config.target}];
+  return [{referenceAssetId:config.references[0].assetId,referenceMode:config.referenceMode??'STRICT',
+    targetMode:config.targetMode??'SINGLE',target:config.target}];
 }
 function aiEditPrompt(context,config,required) {
   if(config.operation==='AI_FUSION') {
@@ -60,13 +61,17 @@ function aiEditPrompt(context,config,required) {
       ...replacement,
       referenceAttachmentIndex:config.references.findIndex(reference=>reference.assetId===replacement.referenceAssetId)+2,
       referenceProductDescription:config.referenceProductDescriptions?.[index]??config.referenceProductDescription??null,
+      candidateCount:config.candidateCounts?.[index]??1,
+      localizedRegions:config.localizedRegions?.[index]??[replacement.target.region],
     }));
     const appearanceReference=replacements[0]?.referenceMode==='APPEARANCE';
+    const allMatches=replacements.length===1&&replacements[0]?.targetMode==='ALL_MATCHES';
     const contract=replacements.length>1
       ?internalPrompt('INTERNAL_EDIT_PRODUCT_MULTI')
+      :allMatches?internalPrompt('INTERNAL_EDIT_PRODUCT_ALL_MATCHES')
       :appearanceReference?internalPrompt('INTERNAL_EDIT_PRODUCT_APPEARANCE'):internalPrompt('INTERNAL_EDIT_PRODUCT_STRICT');
     return governedImageEditPrompt(context,config,{reviewInstruction:'真实产品替换',contract,
-      data:{operation:replacements.length>1?'MULTI_REAL_PRODUCT_REPLACEMENT':'REAL_PRODUCT_REPLACEMENT',
+      data:{operation:replacements.length>1?'MULTI_REAL_PRODUCT_REPLACEMENT':allMatches?'REAL_PRODUCT_REPLACEMENT_ALL_MATCHES':'REAL_PRODUCT_REPLACEMENT',
         referenceMode:replacements[0]?.referenceMode??config.referenceMode??'STRICT',target:replacements[0]?.target??config.target,
         replacements:enriched,referenceProductDescription:enriched[0]?.referenceProductDescription??null,
         referencePurpose:config.references.map(r=>r.purpose),
@@ -99,14 +104,29 @@ function aiEditPrompt(context,config,required) {
   });
 }
 const FUSION_SOURCE_TARGET_CHECKS=['descriptionMatches','exactlyOneTarget','wholeTargetInsideRegion','protectedContentExcluded'];
+const FUSION_ALL_MATCHES_TARGET_CHECKS=['descriptionMatches','allMatchingTargetsFound','wholeTargetInsideRegion','protectedContentExcluded'];
 const FUSION_REFERENCE_CHECKS=['referenceUsable','referenceRecognizable','referencePrimaryProductClear'];
-export function parseFusionTargetCheck(rawText,{referenceMode='STRICT'}={}) {
+const rectContains=(outer,inner)=>inner.x>=outer.x&&inner.y>=outer.y
+  &&inner.x+inner.width<=outer.x+outer.width&&inner.y+inner.height<=outer.y+outer.height;
+export function parseFusionTargetCheck(rawText,{referenceMode='STRICT',targetMode='SINGLE',targetRegion=null}={}) {
   const parsed=JSON.parse(rawText);
   const checks=parsed?.checks&&typeof parsed.checks==='object'&&!Array.isArray(parsed.checks)?parsed.checks:{};
   const confidence=typeof parsed?.confidence==='number'&&Number.isFinite(parsed.confidence)?parsed.confidence:0;
   const candidateCount=Number.isInteger(parsed?.candidateCount)?parsed.candidateCount:0;
+  if(!['SINGLE','ALL_MATCHES'].includes(targetMode))throw new TypeError('目标匹配方式无效');
+  const candidateRegions=targetMode==='ALL_MATCHES'&&Array.isArray(parsed?.candidateRegions)
+    ?parsed.candidateRegions.map(region=>safeRect(region))
+    :[];
+  const candidateRegionsValid=targetMode==='ALL_MATCHES'
+    ?candidateCount>=1&&candidateCount<=4
+      &&candidateRegions.length===candidateCount
+      &&candidateRegions.every(region=>region.width>=24&&region.height>=24&&(!targetRegion||rectContains(targetRegion,region)))
+    :null;
   const referenceProductDescription=String(parsed?.referenceProductDescription??'').slice(0,500);
-  const sourcePassed=confidence>=0.8&&candidateCount===1&&FUSION_SOURCE_TARGET_CHECKS.every(name=>checks[name]===true);
+  const sourceChecks=targetMode==='ALL_MATCHES'?FUSION_ALL_MATCHES_TARGET_CHECKS:FUSION_SOURCE_TARGET_CHECKS;
+  const sourcePassed=confidence>=0.8
+    &&(targetMode==='ALL_MATCHES'?candidateRegionsValid:candidateCount===1)
+    &&sourceChecks.every(name=>checks[name]===true);
   const referencePassed=referenceMode==='APPEARANCE'
     ?checks.referenceRecognizable===true&&checks.referencePrimaryProductClear===true&&referenceProductDescription.trim().length>0
     :checks.referenceUsable===true;
@@ -114,19 +134,20 @@ export function parseFusionTargetCheck(rawText,{referenceMode='STRICT'}={}) {
   const referenceWarnings=Array.isArray(parsed?.referenceWarnings)
     ?parsed.referenceWarnings.filter(item=>typeof item==='string').slice(0,10).map(item=>item.slice(0,300))
     :[];
-  return {mode:'VISION_TARGET_REGION_CHECK',referenceMode,passed,sourcePassed,referencePassed,confidence,candidateCount,
+  return {mode:'VISION_TARGET_REGION_CHECK',referenceMode,targetMode,passed,sourcePassed,referencePassed,confidence,candidateCount,
+    ...(targetMode==='ALL_MATCHES'?{candidateRegions,candidateRegionsValid}:{}),
     referenceProductDescription,referenceWarnings,
-    checks:Object.fromEntries([...FUSION_SOURCE_TARGET_CHECKS,...FUSION_REFERENCE_CHECKS].map(name=>[name,checks[name]===true])),
+    checks:Object.fromEntries([...new Set([...sourceChecks,...FUSION_REFERENCE_CHECKS])].map(name=>[name,checks[name]===true])),
     reason:String(parsed?.reason??'').slice(0,1000)};
 }
-async function validateFusionTarget(client,{inputPath,referencePaths,target,referenceMode='STRICT',signal}) {
+async function validateFusionTarget(client,{inputPath,referencePaths,target,referenceMode='STRICT',targetMode='SINGLE',signal}) {
   if(!target?.description||!target?.region) {
     throw Object.assign(new Error('旧版真实产品替换请求缺少目标描述或框选区域，请重新创建请求'),{
       nonBillablePreflightFailure:true,
       validation:{stage:'TARGET_LOCALIZATION',passed:false,billedImageGeneration:false,reason:'TARGET_REQUIRED'},
     });
   }
-  const criteria=JSON.stringify({target,referenceMode}).replaceAll('<','\\u003c').replaceAll('>','\\u003e');
+  const criteria=JSON.stringify({target,referenceMode,targetMode}).replaceAll('<','\\u003c').replaceAll('>','\\u003e');
   let response;
   try {
     response=await client.runVision({prompt:internalPrompt('INTERNAL_EDIT_TARGET_CHECK', { slot1: (criteria) }),
@@ -139,7 +160,7 @@ async function validateFusionTarget(client,{inputPath,referencePaths,target,refe
     });
   }
   let check;
-  try { check=parseFusionTargetCheck(response.rawText,{referenceMode}); }
+  try { check=parseFusionTargetCheck(response.rawText,{referenceMode,targetMode,targetRegion:target.region}); }
   catch(error) {
     throw Object.assign(new Error('目标定位视觉结果格式无效，尚未调用图片编辑模型'),{
       cause:error,nonBillablePreflightFailure:true,
@@ -458,7 +479,7 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
           if(referenceIndex<0)throw new Error('产品替换项引用的参考图未绑定');
           try {
             const localization=await validateFusionTarget(client,{inputPath,referencePaths:[paths[referenceIndex+1]],target:replacement.target,
-              referenceMode:replacement.referenceMode??'STRICT',signal:controller.signal});
+              referenceMode:replacement.referenceMode??'STRICT',targetMode:replacement.targetMode??'SINGLE',signal:controller.signal});
             localizations.push(localization);
           } catch(error) {
             if(replacements.length>1) {
@@ -475,9 +496,13 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
             referenceAssetId:replacements[index].referenceAssetId,target:replacements[index].target,...localization,
           })),
         };
-        mask=replacements.length===1
-          ?await renderMask({type:'rect',...replacements[0].target.region})
-          :await renderRegionsMask(replacements.map(replacement=>replacement.target.region));
+        const localizedMaskRegions=localizations.flatMap((localization,index)=>
+          (replacements[index].targetMode??'SINGLE')==='ALL_MATCHES'
+            ?localization.candidateRegions
+            :[replacements[index].target.region]);
+        mask=localizedMaskRegions.length===1
+          ?await renderMask({type:'rect',...localizedMaskRegions[0]})
+          :await renderRegionsMask(localizedMaskRegions);
         const path=resolve(directory,'target-mask.png');await writeFile(path,mask);paths.push(path);
       } else if(e.operation==='AI_LOCAL') {
         targetLocalization=config.mask?{mode:'MASK',instruction:config.instruction,region:config.mask}:directLocalEdit(config);
@@ -499,10 +524,15 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
       const fusionLocalizations=e.operation==='AI_FUSION'
         ?(targetLocalization?.mode==='MULTI_TARGET_REGION_CHECK'?targetLocalization.replacements:[targetLocalization])
         :[];
+      const fusionReplacementConfigs=e.operation==='AI_FUSION'?fusionReplacements(config):[];
       const promptConfig={...directConfig,operation:e.operation,targetPage:Number(e.target_page),
         ...(e.operation==='AI_FUSION'?{
           referenceProductDescription:fusionLocalizations[0]?.referenceProductDescription??null,
           referenceProductDescriptions:fusionLocalizations.map(value=>value?.referenceProductDescription??null),
+          candidateCounts:fusionLocalizations.map(value=>value?.candidateCount??1),
+          localizedRegions:fusionLocalizations.map((value,index)=>(fusionReplacementConfigs[index]?.targetMode??'SINGLE')==='ALL_MATCHES'
+            ?value?.candidateRegions??[]
+            :[fusionReplacementConfigs[index].target.region]),
         }:{}),
         ...(removedInheritedDisclosure?{removeDisclosure:sourceDisclosure}:{})};
       imageModelRequested=true;
@@ -540,22 +570,31 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
       if(refs.length){
         const replacements=e.operation==='AI_FUSION'?fusionReplacements(config):[];
         const multiReplacement=replacements.length>1;
+        const allMatches=!multiReplacement&&replacements[0]?.targetMode==='ALL_MATCHES';
         const appearanceReference=(replacements[0]?.referenceMode??config.referenceMode)==='APPEARANCE';
         const criteria=JSON.stringify({operatorInstruction:config.instruction,target:replacements[0]?.target??config.target,
           referenceMode:replacements[0]?.referenceMode??config.referenceMode??'STRICT',
           referenceProductDescription:fusionLocalizations[0]?.referenceProductDescription??null,
           replacements:replacements.map((replacement,index)=>({...replacement,
             referenceAttachmentIndex:config.references.findIndex(reference=>reference.assetId===replacement.referenceAssetId)+1,
-            referenceProductDescription:fusionLocalizations[index]?.referenceProductDescription??null})),
+            referenceProductDescription:fusionLocalizations[index]?.referenceProductDescription??null,
+            candidateCount:fusionLocalizations[index]?.candidateCount??1,
+            localizedRegions:(replacement.targetMode??'SINGLE')==='ALL_MATCHES'
+              ?fusionLocalizations[index]?.candidateRegions??[]
+              :[replacement.target.region]})),
           referencePurpose:config.references.map(r=>r.purpose)})
           .replaceAll('<','\\u003c').replaceAll('>','\\u003e');
         const reviewPrompt=multiReplacement
           ?internalPrompt('INTERNAL_EDIT_PRODUCT_MULTI_REVIEW',{slot1:criteria})
+          :allMatches
+            ?internalPrompt('INTERNAL_EDIT_PRODUCT_ALL_MATCHES_REVIEW',{slot1:criteria})
           :internalPrompt('INTERNAL_EDIT_PRODUCT_REVIEW', { slot1: (appearanceReference?internalPrompt('INTERNAL_EDIT_APPEARANCE_REVIEW'):internalPrompt('INTERNAL_EDIT_STRICT_REVIEW')), slot2: (criteria) });
         const check=await client.runVision({prompt:reviewPrompt,inputPaths:[...paths.slice(1,1+refs.length),inputPath,outputPath],signal:controller.signal});
         const parsed=JSON.parse(check.rawText);
         const requiredChecks=multiReplacement
           ?['allReferenceIdentities','allTargetLocations','replacementCountCorrect','partTopology','unrelatedContentPreserved']
+          :allMatches
+            ?['referenceIdentity','allTargetLocations','replacementCountCorrect','partTopology','unrelatedContentPreserved']
           :['referenceIdentity','targetLocation','singleReplacement','partTopology','unrelatedContentPreserved'];
         const checks=parsed?.checks&&typeof parsed.checks==='object'&&!Array.isArray(parsed.checks)?parsed.checks:{};
         const passed=parsed.passed===true&&requiredChecks.every(name=>checks[name]===true);

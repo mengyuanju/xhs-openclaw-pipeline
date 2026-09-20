@@ -132,7 +132,7 @@ export function PersonalWorkDetails({ work, events }: { work?: PersonalWork | nu
   return <div className={styles.rowDetails}>
     {work.reworkType && <><strong>{types[work.reworkType]} · {progress[work.reworkProgress || 'EDIT']}</strong>
       <small>{sources[work.reworkSource || ''] || '退回'} · 跨阶段返修记录 {work.reworkCount} 次{work.returnedAt ? ` · ${new Date(work.returnedAt).toLocaleString('zh-CN')}` : ''}</small>
-      {work.returnNote && <small title={work.returnNote} className="workbench-text-preview">退回原因：{work.returnNote}</small>}</>}
+      {((work.returnReasons?.length ?? 0) > 0 || work.returnNote) && <small title={[...(work.returnReasons ?? []), work.returnNote].filter(Boolean).join('；')} className="workbench-text-preview">退回原因：{[(work.returnReasons ?? []).join('、'), work.returnNote].filter(Boolean).join('；')}</small>}</>}
     {work.waitingHours !== null && <small className={work.waitingHours >= 24 ? styles.warning : ''}>当前待处理已等待 {work.waitingHours.toFixed(1)} 小时</small>}
     {work.categories.includes('planRunning') && <small>文案规划处理中，可关闭操作窗口</small>}
     {work.categories.includes('repairRunning') && <small>图片修复处理中 · {work.imageEdits.queued+work.imageEdits.running} 项</small>}

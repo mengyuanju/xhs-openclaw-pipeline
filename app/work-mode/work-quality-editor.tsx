@@ -14,12 +14,12 @@ import { ImagePreview } from '../components/image-preview';
 import { ImagePreviewBackgroundControl, type PreviewBackdrop } from '../components/image-preview-background-control';
 import { createRequestId } from '../components/request-id';
 import { copyRevisionView, type CopyQaItem } from '../copy-qa/types';
+import { CopyQaReasonPicker } from '../copy-qa/copy-qa-reason-picker';
 import type { ImageQaItem } from '../image-qa/types';
 import { useHumanQualitySettings } from '../workbench/human-quality-settings';
 import { WORK_LABELS, type WorkItem } from './types';
 import styles from './work-mode.module.css';
 
-const COPY_REASONS = [ ['FACT_ERROR', '事实或数据错误'], ['QUERY_MISMATCH', '偏离 Query'], ['STRUCTURE_ERROR', '结构不完整'], ['EXPRESSION_ERROR', '表达或合规问题'] ];
 const apiPath = (path: string) => `/api/control-plane${path}`;
 
 function QualityCopyPlan({ pages }: { pages: ReturnType<typeof copyRevisionView>['imagePlan'] }) {
@@ -124,7 +124,7 @@ export function WorkQualityEditor({ item, navigationGuardRef, onSkip, onComplete
     finally { submitting.current = false; setBusy(false); }
   }
 
-  const reasonOptions = imageMode ? settings?.imageReasons.map(r => [r.code, r.label]) ?? [] : COPY_REASONS;
+  const reasonOptions = settings?.imageReasons.map(r => [r.code, r.label]) ?? [];
   const toggle = <T,>(values: T[], value: T) => values.includes(value) ? values.filter(v => v !== value) : [...values, value];
 
   function beginReturn() { setReturning(true); setMobilePane('decision'); setError(''); }
@@ -196,8 +196,9 @@ export function WorkQualityEditor({ item, navigationGuardRef, onSkip, onComplete
           </fieldset>}
           {settingsError && <p role="alert">{settingsError}<Button unstyled className="button small" onClick={() => void refresh()}>重试配置</Button></p>}</>}
         {!imageMode && <label>处理建议<Select value={recommendation} onValueChange={setRecommendation} disabled={busy}><SelectTrigger aria-label="处理建议"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="REWORK">修改后复检</SelectItem><SelectItem value="DISCARD">建议负责人废弃</SelectItem></SelectContent></Select></label>}
-        {(!imageMode || settings?.imageReviewDisplay.showDeductionReasons) && <fieldset className={styles.qualityReasonOptions} disabled={busy}><legend>问题原因</legend>{reasonOptions.map(([code, label]) => <label key={code}><Checkbox checked={reasons.includes(code)} onChange={() => setReasons(toggle(reasons, code))} />{label}</label>)}</fieldset>}
-        <label>具体问题与修改要求<Textarea rows={imageMode ? 3 : 4} value={note} disabled={busy} onChange={e => setNote(e.target.value)} placeholder="请说明需要修改的位置和内容" /></label>
+        {imageMode && settings?.imageReviewDisplay.showDeductionReasons && <fieldset className={styles.qualityReasonOptions} disabled={busy}><legend>问题原因</legend>{reasonOptions.map(([code, label]) => <label key={code}><Checkbox checked={reasons.includes(code)} onChange={() => setReasons(toggle(reasons, code))} />{label}</label>)}</fieldset>}
+        {!imageMode && <CopyQaReasonPicker selected={reasons} onChange={(value) => { setReasons(value); setError(''); }} disabled={busy} />}
+        <label>{imageMode ? '具体问题与修改要求' : `详细说明${recommendation === 'DISCARD' ? '（建议废弃时必填）' : '（选填）'}`}<Textarea rows={imageMode ? 3 : 4} value={note} disabled={busy} onChange={e => setNote(e.target.value)} placeholder={imageMode ? '请说明需要修改的位置和内容' : '可选：补充具体句子、页码或修改要求'} /></label>
       </section>}
       {copy && <QualityCopyPlan pages={copy.imagePlan} />}
       </aside>
@@ -208,7 +209,7 @@ export function WorkQualityEditor({ item, navigationGuardRef, onSkip, onComplete
         {imageItem?.capabilities.canDiscard && <ImageDiscardButton target={{ samplingItemId: imageItem.id }} disabled={busy}
           onBusyChange={value => { submitting.current = value; setBusy(value); }}
           onCompleted={() => onCompleted(`${qa.anonymousCode} 已废弃，原因已记录。`)} />}
-        {returning ? <><Button unstyled className="button" disabled={busy} onClick={() => { setReturning(false); setMobilePane('content'); setError(''); }}>返回核验</Button><Button unstyled className="button danger" disabled={busy || !qa.capabilities.canReturnSingle || imageMode && (settingsLoading || !!settingsError)} onClick={() => void submit(true)}><RotateCcw size={15} />打回并下一条</Button></>
+        {returning ? <><Button unstyled className="button" disabled={busy} onClick={() => { setReturning(false); setMobilePane('content'); setError(''); }}>返回核验</Button><Button unstyled className="button danger" disabled={busy || !qa.capabilities.canReturnSingle || imageMode && (settingsLoading || !!settingsError)} onClick={() => void submit(true)}><RotateCcw size={15} />打回并下一条{!imageMode && reasons.length ? `（${reasons.length}项）` : ''}</Button></>
           : <><Button unstyled className="button" disabled={busy || !qa.capabilities.canReturnSingle} onClick={beginReturn}>打回</Button><Button unstyled className="button primary" disabled={busy || passBlocked} onClick={() => void submit(false)}>{busy ? <LoaderCircle className="animate-spin" size={15} /> : <ArrowRight size={15} />}通过并下一条</Button></>}
       </div></footer>
     {previewAsset && preview !== null && <ImagePreview hideTrigger isOpen src={apiPath(previewAsset.url)} alt={`待检图片 · 第 ${pageNumber(preview)} 页`}

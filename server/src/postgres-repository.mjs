@@ -1,6 +1,11 @@
 import { priorityFrom, priorityOrderSql, normalizePriorityMode } from './task-priority.mjs';
 import { adjustTaskPriority, readPriorityScope } from './task-priority-store.mjs';
 import { flushExpiredCopyQualityBatches } from './copy-quality-control.mjs';
+import {
+  createCopyQaReasonTag,
+  listCopyQaReasonTags,
+  updateCopyQaReasonTag,
+} from './copy-qa-reason-tags.mjs';
 import { readPersonalWorkspace, readPersonalQualityActivity } from './personal-workspace.mjs';
 import { confirmDeliveryBatchMembers } from './delivery-ledger.mjs';
 import { readOperatorPerformance } from './operator-performance.mjs';
@@ -593,6 +598,9 @@ function revisionFrom(row) {
     reworkOrigin,
     reworkTarget: ['COPY', 'IMAGE', 'BOTH'].includes(rework?.target) ? rework.target : null,
     reworkReasonCodes: Array.isArray(rework?.reasonCodes) ? rework.reasonCodes : [],
+    reworkReasonSnapshots: Array.isArray(rework?.reasonSnapshots)
+      ? rework.reasonSnapshots.filter((entry) => entry && typeof entry === 'object')
+      : [],
     reworkNote: rework?.note ?? null,
     reworkRecommendation: rework?.recommendedDisposition === 'DISCARD' ? 'DISCARD' : 'REWORK',
     reworkSamplingItemId: typeof rework?.samplingItemId === 'string' ? rework.samplingItemId : null,
@@ -1646,6 +1654,13 @@ export class PostgresControlPlaneRepository {
     return getCopyQaBatchReturnPreview(this.pool, id, actor);
   }
   getCopyQaStatistics({ actor } = {}) { return getCopyQaStatistics(this.pool, actor); }
+  listCopyQaReasonTags({ actor } = {}) { return listCopyQaReasonTags(this.pool, actor); }
+  createCopyQaReasonTag(input, { actor } = {}) {
+    return createCopyQaReasonTag(this.pool, input, actor);
+  }
+  updateCopyQaReasonTag(id, input, { actor } = {}) {
+    return updateCopyQaReasonTag(this.pool, id, input, actor);
+  }
   releaseCopyQaFreeze(id, input, { actor } = {}) {
     return releaseCopyQaFreeze(this.pool, id, input, actor);
   }
@@ -1728,7 +1743,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { taskRestoreVersion: 1, taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 10, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, adminTaskActivityDateFilters: 1, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 6, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, sharedDeliveryVersion: 1, imageDiscardVersion: 1, pendingImageEditResolutionVersion: 1, deliverySpreadsheetVersion: 3, deliveryPreviewVersion: 6 } };
+      capabilities: { taskRestoreVersion: 1, taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 11, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, adminTaskActivityDateFilters: 1, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 6, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, copyQaReasonTagsVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, sharedDeliveryVersion: 1, imageDiscardVersion: 1, pendingImageEditResolutionVersion: 1, deliverySpreadsheetVersion: 3, deliveryPreviewVersion: 6 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -3608,7 +3623,7 @@ export class PostgresControlPlaneRepository {
       const baseline = findCopyReworkBaseline(copyRevisions, task.rows[0].current_copy_revision_id);
       if (current && baseline) {
         current.copyReworkSatisfied = copyReworkChanges(baseline.content, current.content).satisfied;
-        for (const key of ['reworkOrigin', 'reworkTarget', 'reworkReasonCodes', 'reworkNote',
+        for (const key of ['reworkOrigin', 'reworkTarget', 'reworkReasonCodes', 'reworkReasonSnapshots', 'reworkNote',
           'reworkRecommendation', 'reworkSamplingItemId']) current[key] = baseline[key];
       }
     }
@@ -3938,6 +3953,10 @@ export class PostgresControlPlaneRepository {
             FROM image_edit_requests edit
             JOIN tasks edit_task ON edit_task.id = edit.task_id
             WHERE $5::integer >= CASE
+                WHEN edit.operation = 'AI_FUSION' AND (
+                  edit.config->>'targetMode' = 'ALL_MATCHES'
+                  OR edit.config @? '$.replacements[*] ? (@.targetMode == "ALL_MATCHES")'
+                ) THEN 11
                 WHEN edit.operation = 'AI_FUSION' AND jsonb_typeof(edit.config->'replacements') = 'array' THEN 10
                 WHEN edit.operation = 'AI_LOCAL' THEN 9
                 WHEN edit.operation = 'SVG_DISCLOSURE' THEN 8

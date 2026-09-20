@@ -16,7 +16,8 @@ test('completion refuses silently ignored formats and missing source or delivery
 
 const runId = '11111111-1111-4111-8111-111111111111';
 function fixture() {
-  const task = { id: 1, state: 'MANUAL_ARCHIVE', current_copy_revision_id: 4, current_image_run_id: runId };
+  const task = { id: 1, state: 'MANUAL_ARCHIVE', current_copy_revision_id: 4,
+    copy_qc_released_revision_id: 4, mandatory_copy_qc: false, current_image_run_id: runId };
   const content = { copy: { title: '已审核标题', body: '已审核正文', tags: ['#标签'] }, imagePlan: ['hero', 'steps', 'summary'].map(kind => ({ kind, prompt: '保留画面内容' })) };
   const result = { images: content.imagePlan.map((p, index) => ({ file: `0${index + 1}-${p.kind}.png`, assetId: index + 10, provider: 'original-model' })) };
   const calls = [];
@@ -28,6 +29,7 @@ function fixture() {
     if (sql.includes('SELECT id, sha256')) return { rows: [10, 11, 12].map(id => ({ id, sha256: 'a'.repeat(64), media_type: 'image/png' })) };
     if (sql.includes('MAX(revision)')) return { rows: [{ revision: 3 }] };
     if (sql.includes('INSERT INTO copy_revisions')) return { rows: [{ id: 5 }] };
+    if (sql.includes('INSERT INTO copy_qc_revision_inheritances')) return { rows: [] };
     if (sql.includes('UPDATE delivery_entries')) return { rows: [] };
     if (sql.includes('UPDATE tasks')) return { rows: [{ ...task, state: 'IMAGE_QUEUED' }] };
     throw new Error(sql);
@@ -47,6 +49,10 @@ test('local conversion pins source assets and creates an approved revision witho
   assert.equal(saved.imageReprocess.originalResult.images[0].provider, 'original-model');
   assert.equal(JSON.stringify(f.content), original);
   assert.equal(f.calls.some(c => /UPDATE image_runs|DELETE/.test(c.sql)), false);
+  const inheritance = f.calls.find(c => c.sql.includes('INSERT INTO copy_qc_revision_inheritances'));
+  assert.deepEqual(inheritance.values, [5, 1, 4, 'alice']);
+  assert.ok(f.calls.indexOf(inheritance) < f.calls.findIndex(c => c.sql.includes('UPDATE tasks')),
+    'copy-QA inheritance must exist before the task switches revisions');
 });
 
 test('stale revision, stale image version, active generation and unsupported model confirmation fail before mutation', async () => {

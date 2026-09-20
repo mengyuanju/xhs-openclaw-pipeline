@@ -1,5 +1,7 @@
 import { priorityOrderSql, priorityFrom } from './task-priority.mjs';
 import { createHash, randomUUID } from 'node:crypto';
+import { MAX_COPY_QA_REASON_CODES } from '../../src/copy-qa-reasons.mjs';
+import { resolveCopyQaReasonSnapshots } from './copy-qa-reason-tags.mjs';
 
 import {
   ControlPlaneAuthenticationError,
@@ -77,7 +79,9 @@ function positiveVersion(value, name = 'expectedVersion') {
 
 function normalizedReasons(value) {
   if (value === undefined || value === null) return [];
-  if (!Array.isArray(value) || value.length > 10) throw new RangeError('reasonCodes must contain at most 10 items');
+  if (!Array.isArray(value) || value.length > MAX_COPY_QA_REASON_CODES) {
+    throw new RangeError(`reasonCodes must contain at most ${MAX_COPY_QA_REASON_CODES} items`);
+  }
   const reasons = value.map((entry, index) => {
     const reason = String(entry ?? '').trim();
     if (!reason || [...reason].length > 50) throw new RangeError(`reasonCodes[${index}] is invalid`);
@@ -1117,6 +1121,7 @@ export async function passCopyQaItem(pool, rawItemId, input, rawActor) {
 
 async function appendReturnedRevision(client, item, actor, requestId, origin, {
   reasonCodes,
+  reasonSnapshots,
   note,
   recommendedDisposition = 'REWORK',
 }) {
@@ -1135,6 +1140,7 @@ async function appendReturnedRevision(client, item, actor, requestId, origin, {
       samplingItemId: item.public_id,
       returnedByUsername: actor.username,
       reasonCodes,
+      reasonSnapshots,
       note,
       recommendedDisposition,
       requestId,
@@ -1182,6 +1188,7 @@ export async function returnCopyQaItem(pool, rawItemId, input, rawActor, expecte
     });
     const replay = await mutationReplay(client, actor, requestId, 'RETURN_SINGLE', fingerprint);
     if (replay) return replay;
+    const reasonSnapshots = await resolveCopyQaReasonSnapshots(client, reasonCodes, actor);
     if (expectedTaskId !== null && Number(item.task_id) !== normalizeTaskId(expectedTaskId)) {
       throw new ControlPlaneConflictError('STALE_QA_ITEM', '抽检项不属于指定任务');
     }
@@ -1194,6 +1201,7 @@ export async function returnCopyQaItem(pool, rawItemId, input, rawActor, expecte
     }
     const revision = await appendReturnedRevision(client, item, actor, requestId, 'SINGLE', {
       reasonCodes,
+      reasonSnapshots,
       note,
       recommendedDisposition,
     });
@@ -1213,9 +1221,10 @@ export async function returnCopyQaItem(pool, rawItemId, input, rawActor, expecte
     await client.query(`
       INSERT INTO copy_sampling_events(
         freeze_id, sampling_item_id, action, actor_account_id, actor_username,
-        reason_codes, note, request_id
-      ) VALUES ($1, $2, 'RETURN_SINGLE', $3, $4, $5, $6, $7)
-    `, [item.freeze_id, item.id, actor.userId, actor.username, reasonCodes, note, requestId]);
+        reason_codes, note, request_id, details
+      ) VALUES ($1, $2, 'RETURN_SINGLE', $3, $4, $5, $6, $7, $8)
+    `, [item.freeze_id, item.id, actor.userId, actor.username, reasonCodes, note,
+      requestId, { reasonSnapshots, recommendedDisposition }]);
     const response = item.blind_review_enabled === true && actor.role !== 'ADMIN'
       ? { id: item.public_id, status: 'RETURNED' }
       : { ...qaActionResponse(item, actor, 'RETURNED'), returnedRevisionId: Number(revision.id) };
@@ -1459,6 +1468,7 @@ export async function batchReturnCopyQa(pool, input, rawActor) {
     await lockQualityMutationRequest(client, actor, requestId);
     const replay = await mutationReplay(client, actor, requestId, 'RETURN_BATCH', fingerprint);
     if (replay) return replay;
+    const reasonSnapshots = await resolveCopyQaReasonSnapshots(client, reasonCodes, actor);
     assertReviewerBatchReturnAllowed(actor, await lockWorkflowQualitySettings(client));
     const freeze = await lockQaFreezeAfterMemberTasks(client, freezePublicId);
     if (!freeze || !['INSPECTING', 'REVIEW_REQUIRED'].includes(freeze.status)) {
@@ -1495,7 +1505,11 @@ export async function batchReturnCopyQa(pool, input, rawActor) {
       taskIds.push(Number(item.task_id));
       if (item.status === 'RETURNED') continue;
       const isTrigger = item.public_id === triggerSamplingItemId;
-      await appendReturnedRevision(client, item, actor, requestId, 'BATCH', { reasonCodes, note });
+      await appendReturnedRevision(client, item, actor, requestId, 'BATCH', {
+        reasonCodes,
+        reasonSnapshots,
+        note,
+      });
       if (!isTrigger) affectedItemIds.push(item.public_id);
       await client.query(`
         UPDATE copy_sampling_items SET status = $2, reviewed_by_account_id = $3,
@@ -1520,6 +1534,7 @@ export async function batchReturnCopyQa(pool, input, rawActor) {
       ) VALUES ($1, $2, 'RETURN_BATCH', $3, $4, $5, $6, $7, $8)
     `, [freeze.id, trigger.id, actor.userId, actor.username, reasonCodes, note,
       requestId, {
+        reasonSnapshots,
         triggerSamplingItemId,
         affectedItemIds,
         alreadyReturnedItemIds: eligible.rows
