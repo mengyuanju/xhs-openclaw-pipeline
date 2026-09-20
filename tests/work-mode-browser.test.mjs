@@ -30,13 +30,21 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
   const [js, rawCss] = await Promise.all([readFile(bundle), readFile(join(directory, 'bundle.css'), 'utf8')]);
   const { default: postcss } = await import('postcss'), { default: tailwind } = await import('@tailwindcss/postcss');
   const { css } = await postcss([tailwind()]).process(rawCss, { from: join(process.cwd(), 'app/globals.css') });
+  const imagePlanFixture = count => Array.from({ length: count }, (_, index) => ({
+    kind: index === 0 ? 'hero' : ['steps', 'checklist', 'comparison', 'detail', 'summary'][(index - 1) % 5],
+    headline: `桌面整理第 ${index + 1} 页`,
+    subtitle: index === 0 ? '常用物品放在手边' : '逐页说明整理方法',
+    bullets: ['分类整理', '留出空间'],
+    prompt: `整洁的桌面和第 ${index + 1} 页收纳区域，文字清晰可读。`,
+    layout: { mode: 'AUTO' },
+  }));
   const tasks = [1, 2, 3].map(id => ({ id, query: `Query ${id} · 桌面收纳`, state: 'COPY_REVIEW_PENDING',
     aiDisclosureEnabled: false, assignedToUserId: 'worker', assignedToAccountId: 8,
     currentCopyRevisionId: 100 + id, currentImageRunId: null, currentExecutionId: null,
     currentStage: null, progressPercent: 100, priorityPaused: false,
     xiaohongshuLinks: [], copyRevisions: [{ id: 100 + id, revision: 1, approvedAt: null,
       content: { copy: { title: `桌面收纳文案 ${id}`, body: '常用物品放在手边，备用物品分类放进抽屉。给桌面留出写字和阅读的空间。'.repeat(12), tags: ['桌面收纳', '空间整理', '生活技巧'] },
-        imagePlan: [{ kind: 'hero', headline: '桌面整理', subtitle: '常用物品放在手边', bullets: ['分类整理', '留出空间'], prompt: '整洁的桌面和收纳区域，文字清晰可读。', layout: { mode: 'AUTO' } }],
+        imagePlan: imagePlanFixture(id === 1 ? 5 : 3),
         imageSettings: DEFAULT_IMAGE_SETTINGS } }],
     humanQualityAssessments: [], imageRuns: [], assets: [],
   }));
@@ -126,7 +134,13 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
         }
         if (action === 'approve-copy') {
           if (failSubmit) { reply('测试提交失败，草稿保留', 409); return; }
-          if (body.decision !== 'SAVE') task.state = body.decision === 'DISCARD' ? 'CANCELLED' : 'COPY_QC_PENDING';
+          if (body.decision === 'SAVE_PLAN') {
+            const source = task.copyRevisions.find(revision => revision.id === task.currentCopyRevisionId);
+            const revision = { ...structuredClone(source), id: task.currentCopyRevisionId + 1_000,
+              revision: source.revision + 1, content: { ...source.content, ...structuredClone(body.edits) } };
+            task.copyRevisions.push(revision); task.currentCopyRevisionId = revision.id;
+          } else if (body.decision === 'APPROVE') task.state = 'COPY_QC_PENDING';
+          else if (body.decision === 'DISCARD') task.state = 'CANCELLED';
           reply(task); return;
         }
       }
@@ -211,6 +225,27 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     await page.setViewportSize({ width: 1360, height: 1040 });
     await assertCopyColumns();
     await page.screenshot({ path: join(directory, 'copy-columns-desktop.png'), fullPage: true });
+    const coverDelete = page.getByRole('button', { name: '删除第 1 页规划', exact: true });
+    assert.equal(await coverDelete.isDisabled(), true, 'the required cover page cannot be deleted');
+    assert.match(await coverDelete.getAttribute('title'), /封面页必须保留/u);
+    await page.getByRole('button', { name: '下一页', exact: true }).click();
+    const deleteSecondPage = page.getByRole('button', { name: '删除第 2 页规划', exact: true });
+    await deleteSecondPage.click();
+    const deleteDialog = page.getByRole('alertdialog', { name: '删除第 2 页图片规划？', exact: true });
+    await deleteDialog.getByRole('button', { name: '保留本页', exact: true }).click();
+    await page.getByText('第 2 / 5 页', { exact: true }).waitFor();
+    for (const remaining of [4, 3]) {
+      await deleteSecondPage.click();
+      await deleteDialog.getByRole('button', { name: '删除本页', exact: true }).click();
+      await page.getByText(`第 2 / ${remaining} 页`, { exact: true }).waitFor();
+    }
+    assert.equal(await deleteSecondPage.isDisabled(), true, 'three-page plans cannot be shortened further');
+    assert.match(await deleteSecondPage.getAttribute('title'), /至少保留 3 页/u);
+    await page.getByRole('button', { name: '单独保存图片规划', exact: true }).click();
+    await page.waitForFunction(() => document.querySelectorAll('[data-plan-index]').length === 3);
+    const savedPlanRequest = requests.findLast(request => request.path.endsWith('/approve-copy') && request.body.decision === 'SAVE_PLAN');
+    assert.equal(savedPlanRequest.body.edits.imagePlan.length, 3);
+    assert.equal(tasks[0].state, 'COPY_REVIEW_PENDING', 'saving the shorter plan keeps the task in copy review');
     await page.locator('input[type="radio"][value="3"]').check();
     await page.getByRole('button', { name: '提交并下一条', exact: true }).click();
     await page.waitForFunction(() => document.querySelector('#review-copy-title')?.value === '桌面收纳文案 2');

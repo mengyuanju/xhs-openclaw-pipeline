@@ -856,6 +856,20 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
     "variables": []
   },
   {
+    "kind": "INTERNAL_EDIT_PRODUCT_MULTI",
+    "label": "多产品一次替换",
+    "group": "图片编辑",
+    "description": "在一张图内按独立参考图和选区一次完成多个产品替换。",
+    "usage": "在一张图内按独立参考图和选区一次完成多个产品替换。",
+    "editable": true,
+    "layer": "SUPPLEMENT",
+    "defaultPath": "prompts/internal/edit_product_multi.md",
+    "callSites": [
+      "server/src/image-edit-renderer.mjs#aiEditPrompt"
+    ],
+    "variables": []
+  },
+  {
     "kind": "INTERNAL_EDIT_REPAIR_ATTACHMENTS",
     "label": "失败图修复附件说明",
     "group": "图片编辑",
@@ -1388,6 +1402,25 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
       },
       {
         "name": "slot2",
+        "description": "criteria"
+      }
+    ]
+  },
+  {
+    "kind": "INTERNAL_EDIT_PRODUCT_MULTI_REVIEW",
+    "label": "多产品替换验收",
+    "group": "编辑检查",
+    "description": "逐项核对多产品替换的参考图、目标区域、数量和内容保护。",
+    "usage": "逐项核对多产品替换的参考图、目标区域、数量和内容保护。",
+    "editable": true,
+    "layer": "SUPPLEMENT",
+    "defaultPath": "prompts/internal/edit_product_multi_review.md",
+    "callSites": [
+      "server/src/image-edit-renderer.mjs#processImageEdit"
+    ],
+    "variables": [
+      {
+        "name": "slot1",
         "description": "criteria"
       }
     ]

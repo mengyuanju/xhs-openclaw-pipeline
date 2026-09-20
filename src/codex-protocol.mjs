@@ -56,10 +56,23 @@ export function parseCodexOutput(stdout, { requireText = true } = {}) {
   let reconnectError = null;
   let reconnectCount = 0;
   let answerAfterReconnect = false;
+  let recoveredTransientError = null;
+  let recoveredTransientCount = 0;
+  const recoveredTransientCodes = [];
   const images = [];
+  const recoverTransientImageFailure = (failure) => {
+    if (requireText || completed || !isCodexCooldown(failure.code)) return false;
+    recoveredTransientError = failure;
+    recoveredTransientCount++;
+    if (!recoveredTransientCodes.includes(failure.code)) recoveredTransientCodes.push(failure.code);
+    return true;
+  };
   for (const event of events) {
     if (!event || typeof event !== 'object') throw codexFailure({}, 'MODEL_OUTPUT_INCOMPLETE');
-    if (event.type === 'warning' && event.will_retry === true) reconnectCount++;
+    if (event.type === 'warning' && event.will_retry === true) {
+      reconnectCount++;
+      recoverTransientImageFailure(codexFailure(event.error ?? event));
+    }
     if (event.type === 'thread.started') threadId = event.thread_id ?? null;
     if (event.type === 'turn.started') completed = false;
     if (event.type === 'turn.failed' || event.type === 'error') {
@@ -74,6 +87,11 @@ export function parseCodexOutput(stdout, { requireText = true } = {}) {
         completed = false;
         continue;
       }
+      // The image tool can surface a transient capacity/rate event and still
+      // finish the same turn with a native saved image. Defer only those
+      // non-terminal events; the completed turn and fresh PNG are still
+      // required before the caller can report success.
+      if (event.type === 'error' && recoverTransientImageFailure(failure)) continue;
       throw failure;
     }
     if (event.type === 'turn.completed') {
@@ -91,7 +109,11 @@ export function parseCodexOutput(stdout, { requireText = true } = {}) {
     }
     if (item?.type === 'web_search' && !['failed', 'in_progress'].includes(item.status)) searched = true;
     if (['image_generation', 'imageGeneration'].includes(item?.type)) {
-      if (item.failure) throw codexFailure(item.failure);
+      if (item.failure) {
+        const failure = codexFailure(item.failure);
+        if (recoverTransientImageFailure(failure)) continue;
+        throw failure;
+      }
       if (item.status !== 'completed') throw codexFailure({ message: 'image_generation did not complete' }, 'CODEX_IMAGE_UNVERIFIED');
       const path = item.saved_path ?? item.savedPath;
       if (typeof path === 'string' && path && !images.some((image) => image.id === item.id && image.path === path)) {
@@ -100,6 +122,10 @@ export function parseCodexOutput(stdout, { requireText = true } = {}) {
     }
   }
   if (reconnectError && (!completed || !answerAfterReconnect)) throw reconnectError;
+  if ((!completed || (!requireText && images.length === 0)) && recoveredTransientError) {
+    throw recoveredTransientError;
+  }
   if (!completed || (requireText && !rawText.trim())) throw codexFailure({ message: 'missing completed turn or final message' }, 'MODEL_OUTPUT_INCOMPLETE');
-  return { rawText, threadId, usage, searched, images, reconnectCount };
+  return { rawText, threadId, usage, searched, images, reconnectCount,
+    recoveredTransientCount, recoveredTransientCodes };
 }

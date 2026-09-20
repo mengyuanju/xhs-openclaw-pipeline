@@ -166,6 +166,8 @@ export function createCodexClient({
         capture.response({ ...parsed, images: parsed.images, usage: parsed.usage });
         const execution = { runtime: image ? 'codex-app-server' : 'codex-exec', sessionId: parsed.threadId,
           runId, usage: parsed.usage, queueWaitMs, reconnectCount: parsed.reconnectCount,
+          recoveredTransientCount: parsed.recoveredTransientCount,
+          ...(parsed.recoveredTransientCodes.length ? { recoveredTransientCodes: parsed.recoveredTransientCodes } : {}),
           requestedModel: routing.primaryModel, effectiveModel: resolvedModel, fallbackUsed: routing.fallbackUsed,
           ...(routing.fallbackUsed ? { fallback: { from: routing.primaryModel, to: resolvedModel,
             reason: 'CODEX_MODEL_AT_CAPACITY' } } : {}),

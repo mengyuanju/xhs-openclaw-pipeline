@@ -385,6 +385,35 @@ test('an assigned worker can save custom image planning after scoring without ch
   assert.equal(fixture.revisions.get(13).content.imagePlan[0].layout.mode, 'CUSTOM');
 });
 
+test('a plan-only save can remove an excess non-cover page while preserving revision history', async () => {
+  const fixture = copyFixture();
+  const original = fixture.revisions.get(12);
+  original.content = {
+    ...original.content,
+    imagePlan: [
+      ...original.content.imagePlan,
+      { kind: 'detail', headline: '多余规划页', subtitle: '审核时删除', bullets: ['信息重复', '无需出图'], prompt: '重复的桌面整理细节画面，应在审核时删除' },
+    ],
+  };
+
+  const saved = await fixture.repository.approveCopy(41, {
+    revisionId: 12,
+    nodeId: 'node-a',
+    decision: 'SAVE_PLAN',
+    edits: sourceEdits,
+    reviewSessionId: '56565656-5656-4565-8565-565656565656',
+  }, { actorRole: 'USER', reviewerUserId: 'reviewer' });
+
+  assert.equal(saved.state, 'COPY_REVIEW_PENDING');
+  assert.equal(saved.currentCopyRevisionId, 13);
+  assert.equal(fixture.revisions.get(12).content.imagePlan.length, 4, 'the source revision remains immutable');
+  assert.equal(fixture.revisions.get(13).content.imagePlan.length, 3);
+  assert.deepEqual(fixture.revisions.get(13).content.imagePlan.map(page => page.headline),
+    sourceEdits.imagePlan.map(page => page.headline));
+  assert.equal(fixture.revisions.get(13).revision_origin, 'PLAN_EDIT');
+  assert.equal(fixture.revisions.get(13).content.manualReview.imagePlanEdited, true);
+});
+
 test('the plan-only save operation rejects copy or image configuration changes', async () => {
   for (const edits of [
     { ...sourceEdits, copy: { ...sourceEdits.copy, title: '借图片规划保存偷改文案' }, imagePlan: validEdits.imagePlan },

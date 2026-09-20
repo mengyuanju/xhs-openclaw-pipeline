@@ -369,7 +369,7 @@ export function createExecutorAgent({
   }
   const registration = () => ({ nodeId, name: nodeName, imageWorkerEnabled,
     copyConcurrency, imageConcurrency, codexPoolId, codexTotalConcurrency, codexImageConcurrency,
-    imageEditExecutorVersion: imageWorkerEnabled ? 9 : 0,
+    imageEditExecutorVersion: imageWorkerEnabled ? 10 : 0,
     copyImagePlanRegenerationVersion: 1 });
   let ready = false;
   const pendingFailures = new Map();
@@ -410,9 +410,12 @@ export function createExecutorAgent({
         }
         return;
       }
-      const code = codexErrorCode(error) || error?.code?.startsWith('EXECUTION_') || error?.code === 'STALE_EXECUTION';
+      const codexCode = codexErrorCode(error);
+      const code = codexCode ?? (error?.code?.startsWith('EXECUTION_') || error?.code === 'STALE_EXECUTION'
+        ? error.code : null);
+      const retryableModelAvailability = ['CODEX_MODEL_AT_CAPACITY', 'CODEX_RATE_LIMITED'].includes(codexCode);
       await controlPlane.failExecution(claim.execution.id, error,
-        code ? { autoRetry: false } : {});
+        code ? { autoRetry: retryableModelAvailability } : {});
     } catch (reportError) {
       if (reportError?.code !== 'STALE_EXECUTION'
           && !(claim.imageEdit && ['IMAGE_EDIT_CONFLICT', 'NOT_FOUND'].includes(reportError?.code))) {

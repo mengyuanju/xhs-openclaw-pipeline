@@ -57,6 +57,12 @@ import {
 import { DEFAULT_SETTINGS, useHumanQualitySettings } from './human-quality-settings';
 import { buildCopyReviewSubmission } from '../../src/copy-review-submission.mjs';
 import { copyReworkChanges, findCopyReworkBaseline } from '../../src/copy-rework.mjs';
+import {
+  imagePlanPageDeletionBlockReason,
+  planDisclosureIndicesAfterDeletion,
+  planIndexAfterDeletion,
+  removeImagePlanPage,
+} from '../../src/image-plan-editing.mjs';
 import styles from './copy-review-drafts.module.css';
 import { ReviewActionButton } from './review-action-button';
 
@@ -1108,6 +1114,30 @@ export function TaskReviewDialog({
     setImagePlanGenerationNotice('');
   }
 
+  async function deleteImagePlanPage(index: number) {
+    if (!draft || !editable || loading || submitting || regeneratingImagePlan) return;
+    const page = draft.imagePlan[index];
+    const blockedReason = imagePlanPageDeletionBlockReason(draft.imagePlan, index);
+    if (!page || blockedReason) return;
+    if (!await confirm({
+      title: `删除第 ${index + 1} 页图片规划？`,
+      description: `“${page.headline}”会从当前审核草稿中移除，后续页面将自动重新编号。点击“单独保存图片规划”后正式生效。`,
+      confirmLabel: '删除本页',
+      cancelLabel: '保留本页',
+      tone: 'danger',
+    })) return;
+    const nextLength = draft.imagePlan.length - 1;
+    setDraft(current => {
+      if (!current || imagePlanPageDeletionBlockReason(current.imagePlan, index)) return current;
+      return { ...current, imagePlan: removeImagePlanPage(current.imagePlan, index) };
+    });
+    setActivePlanIndex(current => planIndexAfterDeletion(current, index, nextLength));
+    setExpandedPrompts(current => planDisclosureIndicesAfterDeletion(current, index));
+    setInvalidField(null);
+    setError('');
+    setImagePlanGenerationNotice(`已从草稿删除第 ${index + 1} 页“${page.headline}”，当前剩余 ${nextLength} 页；单独保存图片规划后正式生效。`);
+  }
+
   async function regenerateImagePlan(form: HTMLFormElement | null) {
     if (!detail || !revision || !draft || !editable
         || !backgroundStore || loading || submitting || regeneratingImagePlan || draftSaveStatus === 'saving') return;
@@ -2133,7 +2163,9 @@ export function TaskReviewDialog({
                     onClick={() => setActivePlanIndex(index => Math.min(draft.imagePlan.length - 1, index + 1))}><span>下一页</span><ChevronRight size={16} /></Button>
                 </nav>
                 <div className="workbench-image-plan-grid">
-                  {draft.imagePlan.map((item, index) => <article id={`review-plan-page-${index}`} className="workbench-image-plan-card" key={index} data-plan-index={index} hidden={activePlanIndex !== index}>
+                  {draft.imagePlan.map((item, index) => {
+                    const deletionBlockReason = imagePlanPageDeletionBlockReason(draft.imagePlan, index);
+                    return <article id={`review-plan-page-${index}`} className="workbench-image-plan-card" key={index} data-plan-index={index} hidden={activePlanIndex !== index}>
                     <div className="workbench-image-plan-fields" data-edit-blocked={Boolean(planEditBlockMessage)}
                       onPointerDownCapture={(event) => {
                         if (!(event.target as Element).closest('[data-edit-reminder-exempt]')) copyEditPointerAtRef.current = Date.now();
@@ -2144,6 +2176,16 @@ export function TaskReviewDialog({
                       onFocusCapture={(event) => {
                         if (Date.now() - copyEditPointerAtRef.current > 500 && !(event.target as Element).closest('[data-edit-reminder-exempt]')) revealCopyEditNotice('plan');
                       }}>
+                      {editable && <div className="workbench-image-plan-page-actions full" data-edit-reminder-exempt>
+                        <small>{deletionBlockReason ?? '删除后，后续页面会自动重新编号。'}</small>
+                        <Button unstyled className="button small danger" type="button"
+                          aria-label={`删除第 ${index + 1} 页规划`}
+                          title={deletionBlockReason ?? `删除第 ${index + 1} 页“${item.headline}”`}
+                          disabled={Boolean(deletionBlockReason) || loading || submitting || regeneratingImagePlan}
+                          onClick={() => { void deleteImagePlanPage(index); }}>
+                          <Trash2 size={13} />删除本页
+                        </Button>
+                      </div>}
                       <div className="field">
                         <label htmlFor={`review-plan-kind-${index}`}>页面类型 <small>{index === 0 ? '首图固定' : '影响页面版式'}</small></label>
                         <Select value={item.kind} disabled={planKindDisabled || index === 0} onValueChange={(kind: ImagePlanItem['kind']) => updateImagePlan(index, { kind, layout: { mode: 'AUTO' } })}>
@@ -2198,7 +2240,7 @@ export function TaskReviewDialog({
                         </DisclosureContent>
                       </Disclosure>
                     </div>
-                  </article>)}
+                  </article>})}
                 </div>
               </section>
               {editable && <ReviewReferences detail={detail} sources={sources} xiaohongshuLinks={xiaohongshuLinks} />}

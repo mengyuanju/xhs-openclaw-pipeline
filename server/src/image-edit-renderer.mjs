@@ -48,15 +48,28 @@ function textEditPrompt(context,config,required,alreadyPresent,placementRegion) 
       mustPreserve:[...required,config.preserve].filter(Boolean),negative:config.negative},
   });
 }
+export function fusionReplacements(config) {
+  if(Array.isArray(config.replacements)&&config.replacements.length) return config.replacements;
+  if(!config.target||!config.references?.[0])return [];
+  return [{referenceAssetId:config.references[0].assetId,referenceMode:config.referenceMode??'STRICT',target:config.target}];
+}
 function aiEditPrompt(context,config,required) {
   if(config.operation==='AI_FUSION') {
-    const appearanceReference=config.referenceMode==='APPEARANCE';
-    const contract=appearanceReference
-      ?internalPrompt('INTERNAL_EDIT_PRODUCT_APPEARANCE')
-      :internalPrompt('INTERNAL_EDIT_PRODUCT_STRICT');
+    const replacements=fusionReplacements(config);
+    const enriched=replacements.map((replacement,index)=>({
+      ...replacement,
+      referenceAttachmentIndex:config.references.findIndex(reference=>reference.assetId===replacement.referenceAssetId)+2,
+      referenceProductDescription:config.referenceProductDescriptions?.[index]??config.referenceProductDescription??null,
+    }));
+    const appearanceReference=replacements[0]?.referenceMode==='APPEARANCE';
+    const contract=replacements.length>1
+      ?internalPrompt('INTERNAL_EDIT_PRODUCT_MULTI')
+      :appearanceReference?internalPrompt('INTERNAL_EDIT_PRODUCT_APPEARANCE'):internalPrompt('INTERNAL_EDIT_PRODUCT_STRICT');
     return governedImageEditPrompt(context,config,{reviewInstruction:'真实产品替换',contract,
-      data:{operation:'REAL_PRODUCT_REPLACEMENT',referenceMode:config.referenceMode??'STRICT',target:config.target,
-        referenceProductDescription:config.referenceProductDescription??null,referencePurpose:config.references.map(r=>r.purpose),
+      data:{operation:replacements.length>1?'MULTI_REAL_PRODUCT_REPLACEMENT':'REAL_PRODUCT_REPLACEMENT',
+        referenceMode:replacements[0]?.referenceMode??config.referenceMode??'STRICT',target:replacements[0]?.target??config.target,
+        replacements:enriched,referenceProductDescription:enriched[0]?.referenceProductDescription??null,
+        referencePurpose:config.references.map(r=>r.purpose),
         mustPreserve:[...required,config.preserve].filter(Boolean),negative:config.negative},
     });
   }
@@ -439,9 +452,32 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
       const paths=[inputPath];
       for(const [i,ref]of refs.entries()){const path=resolve(directory,`reference-${i}.png`);await writeFile(path,ref.bytes);paths.push(path);}
       if(e.operation==='AI_FUSION') {
-        targetLocalization=await validateFusionTarget(client,{inputPath,referencePaths:paths.slice(1),target:config.target,
-          referenceMode:config.referenceMode??'STRICT',signal:controller.signal});
-        mask=await renderMask({type:'rect',...config.target.region});
+        const replacements=fusionReplacements(config),localizations=[];
+        for(const [replacementIndex,replacement] of replacements.entries()) {
+          const referenceIndex=config.references.findIndex(reference=>reference.assetId===replacement.referenceAssetId);
+          if(referenceIndex<0)throw new Error('产品替换项引用的参考图未绑定');
+          try {
+            const localization=await validateFusionTarget(client,{inputPath,referencePaths:[paths[referenceIndex+1]],target:replacement.target,
+              referenceMode:replacement.referenceMode??'STRICT',signal:controller.signal});
+            localizations.push(localization);
+          } catch(error) {
+            if(replacements.length>1) {
+              error.message=`产品 ${replacementIndex+1} 的目标或参考图预检失败：${error.message}`;
+              error.validation={...(error.validation??{}),replacementIndex:replacementIndex+1,
+                referenceAssetId:replacement.referenceAssetId,target:replacement.target};
+            }
+            throw error;
+          }
+        }
+        targetLocalization=localizations.length===1?localizations[0]:{
+          mode:'MULTI_TARGET_REGION_CHECK',passed:true,count:localizations.length,
+          replacements:localizations.map((localization,index)=>({
+            referenceAssetId:replacements[index].referenceAssetId,target:replacements[index].target,...localization,
+          })),
+        };
+        mask=replacements.length===1
+          ?await renderMask({type:'rect',...replacements[0].target.region})
+          :await renderRegionsMask(replacements.map(replacement=>replacement.target.region));
         const path=resolve(directory,'target-mask.png');await writeFile(path,mask);paths.push(path);
       } else if(e.operation==='AI_LOCAL') {
         targetLocalization=config.mask?{mode:'MASK',instruction:config.instruction,region:config.mask}:directLocalEdit(config);
@@ -460,8 +496,14 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
       // Historical machine-generated geometry must not reintroduce the removed preflight or a mask.
       const {localPlan:_legacyPlan,localizedRegions:_legacyRegions,localizedRegion:_legacyRegion,
         localMoveDirect:_legacyMove,roleGuideAttached:_legacyGuide,directMoveGuideAttached:_legacyMoveGuide,...directConfig}=config;
+      const fusionLocalizations=e.operation==='AI_FUSION'
+        ?(targetLocalization?.mode==='MULTI_TARGET_REGION_CHECK'?targetLocalization.replacements:[targetLocalization])
+        :[];
       const promptConfig={...directConfig,operation:e.operation,targetPage:Number(e.target_page),
-        ...(e.operation==='AI_FUSION'?{referenceProductDescription:targetLocalization.referenceProductDescription}:{}),
+        ...(e.operation==='AI_FUSION'?{
+          referenceProductDescription:fusionLocalizations[0]?.referenceProductDescription??null,
+          referenceProductDescriptions:fusionLocalizations.map(value=>value?.referenceProductDescription??null),
+        }:{}),
         ...(removedInheritedDisclosure?{removeDisclosure:sourceDisclosure}:{})};
       imageModelRequested=true;
       {
@@ -496,14 +538,25 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
         });
       }
       if(refs.length){
-        const appearanceReference=config.referenceMode==='APPEARANCE';
-        const criteria=JSON.stringify({operatorInstruction:config.instruction,target:config.target,
-          referenceMode:config.referenceMode??'STRICT',referenceProductDescription:targetLocalization?.referenceProductDescription??null,
+        const replacements=e.operation==='AI_FUSION'?fusionReplacements(config):[];
+        const multiReplacement=replacements.length>1;
+        const appearanceReference=(replacements[0]?.referenceMode??config.referenceMode)==='APPEARANCE';
+        const criteria=JSON.stringify({operatorInstruction:config.instruction,target:replacements[0]?.target??config.target,
+          referenceMode:replacements[0]?.referenceMode??config.referenceMode??'STRICT',
+          referenceProductDescription:fusionLocalizations[0]?.referenceProductDescription??null,
+          replacements:replacements.map((replacement,index)=>({...replacement,
+            referenceAttachmentIndex:config.references.findIndex(reference=>reference.assetId===replacement.referenceAssetId)+1,
+            referenceProductDescription:fusionLocalizations[index]?.referenceProductDescription??null})),
           referencePurpose:config.references.map(r=>r.purpose)})
           .replaceAll('<','\\u003c').replaceAll('>','\\u003e');
-        const check=await client.runVision({prompt:internalPrompt('INTERNAL_EDIT_PRODUCT_REVIEW', { slot1: (appearanceReference?internalPrompt('INTERNAL_EDIT_APPEARANCE_REVIEW'):internalPrompt('INTERNAL_EDIT_STRICT_REVIEW')), slot2: (criteria) }),inputPaths:[...paths.slice(1,1+refs.length),inputPath,outputPath],signal:controller.signal});
+        const reviewPrompt=multiReplacement
+          ?internalPrompt('INTERNAL_EDIT_PRODUCT_MULTI_REVIEW',{slot1:criteria})
+          :internalPrompt('INTERNAL_EDIT_PRODUCT_REVIEW', { slot1: (appearanceReference?internalPrompt('INTERNAL_EDIT_APPEARANCE_REVIEW'):internalPrompt('INTERNAL_EDIT_STRICT_REVIEW')), slot2: (criteria) });
+        const check=await client.runVision({prompt:reviewPrompt,inputPaths:[...paths.slice(1,1+refs.length),inputPath,outputPath],signal:controller.signal});
         const parsed=JSON.parse(check.rawText);
-        const requiredChecks=['referenceIdentity','targetLocation','singleReplacement','partTopology','unrelatedContentPreserved'];
+        const requiredChecks=multiReplacement
+          ?['allReferenceIdentities','allTargetLocations','replacementCountCorrect','partTopology','unrelatedContentPreserved']
+          :['referenceIdentity','targetLocation','singleReplacement','partTopology','unrelatedContentPreserved'];
         const checks=parsed?.checks&&typeof parsed.checks==='object'&&!Array.isArray(parsed.checks)?parsed.checks:{};
         const passed=parsed.passed===true&&requiredChecks.every(name=>checks[name]===true);
         entityConsistency={mode:'AI_REFERENCE_CHECK',passed,checks:Object.fromEntries(requiredChecks.map(name=>[name,checks[name]===true])),reason:String(parsed.reason??'').slice(0,1000),model:check.model??null};

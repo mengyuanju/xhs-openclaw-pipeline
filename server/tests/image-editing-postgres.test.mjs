@@ -161,6 +161,22 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       assert.equal(claim.execution.snapshot.imageEditExecutorVersion,7);
       await action(appearanceEdit.id,'cancel');
     });
+    await t.test('multi-product replacements bind every reference and wait for a version 10 image executor',async()=>{
+      const firstReference=await service.upload(taskId,{base64:png.toString('base64'),mediaType:'image/png',purpose:'杯子参考',source:'测试自有照片'},actor);
+      const secondReference=await service.upload(taskId,{base64:localPng.toString('base64'),mediaType:'image/png',purpose:'手表参考',source:'测试自有照片'},actor);
+      const batchId=randomUUID();
+      const multiEdit=await service.create(taskId,request({batchId,batchSize:2,operation:'AI_FUSION',instruction:'同时替换杯子和手表',
+        references:[{assetId:firstReference.id,purpose:'杯子'},{assetId:secondReference.id,purpose:'手表'}],replacements:[
+          {referenceAssetId:firstReference.id,referenceMode:'STRICT',target:{description:'右侧杯子',region:{x:700,y:500,width:220,height:240}}},
+          {referenceAssetId:secondReference.id,referenceMode:'APPEARANCE',target:{description:'左侧手表',region:{x:100,y:700,width:180,height:160}}},
+        ]}),actor);
+      assert.equal(multiEdit.config.batchId,batchId);assert.equal(multiEdit.config.replacements.length,2);
+      assert.equal((await pool.query('SELECT count(*)::integer AS count FROM image_edit_reference_assets WHERE request_id=$1',[multiEdit.id])).rows[0].count,2);
+      assert.equal(await repository.claimImage('edit-test',1,2,9),null);
+      const claim=await repository.claimImage('edit-test',1,2,10);
+      assert.equal(claim.imageEdit.id,multiEdit.id);assert.equal(claim.execution.snapshot.imageEditExecutorVersion,10);
+      await action(multiEdit.id,'cancel');
+    });
     await t.test('direct local edits wait for a version 9 image executor',async()=>{
       const localEdit=await service.create(taskId,request({operation:'AI_LOCAL',instruction:'把右上角的白色杯子改为蓝色'}),actor);
       assert.equal(await repository.claimImage('edit-test',1,2,6),null);
@@ -312,6 +328,40 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       assert.equal(finalRun.result.processing.parentRunId,firstAdoptedRun);
       assert.equal(finalRun.result.processing.previewRunId,thirdPreview.result.image_run_id);
       currentRun=finalTask.current_image_run_id;
+    });
+    await t.test('accepting another ready preview for the same page switches the selected version',async()=>{
+      const baseRun=currentRun;
+      const baseResult=(await pool.query('SELECT result FROM image_runs WHERE id=$1',[baseRun])).rows[0].result;
+      const sourceAssetId=Number(baseResult.images[1].deliveryAssetId??baseResult.images[1].assetId);
+      const source=await service.asset(sourceAssetId,taskId);
+      const editInput=()=>request({sourceImageRunId:baseRun,sourceAssetId,sha256:source.sha256,targetPage:2});
+      const firstEdit=await service.create(taskId,editInput(),actor);
+      const secondEdit=await service.create(taskId,editInput(),actor);
+      for(let index=0;index<2;index++) {
+        const result=await processImageEdit({service,storageRoot:root,workerId:`same-page-${index}`,agentClient,validateImage});
+        assert.equal(result.status,'PREVIEW_READY',result.error);
+      }
+      const firstPreview=await service.get(firstEdit.id),secondPreview=await service.get(secondEdit.id);
+      await action(firstEdit.id,'accept');
+      const firstAdoptedRun=(await pool.query('SELECT current_image_run_id FROM tasks WHERE id=$1',[taskId])).rows[0].current_image_run_id;
+      await action(secondEdit.id,'accept');
+      const finalTask=(await pool.query('SELECT current_image_run_id FROM tasks WHERE id=$1',[taskId])).rows[0];
+      const finalRun=(await pool.query('SELECT result FROM image_runs WHERE id=$1',[finalTask.current_image_run_id])).rows[0].result;
+      const adoptedSecond=await service.get(secondEdit.id);
+      const acceptEvent=adoptedSecond.events.find(event=>event.action==='accept');
+      assert.equal(Number(finalRun.images[1].deliveryAssetId),Number(secondPreview.result.asset_id));
+      assert.deepEqual(finalRun.images[0],baseResult.images[0]);
+      assert.deepEqual(finalRun.images[2],baseResult.images[2]);
+      assert.equal(finalRun.processing.parentRunId,firstAdoptedRun);
+      assert.equal(finalRun.processing.previewRunId,secondPreview.result.image_run_id);
+      assert.equal(adoptedSecond.result.image_run_id,finalTask.current_image_run_id);
+      assert.notEqual(adoptedSecond.result.image_run_id,secondPreview.result.image_run_id);
+      assert.equal(acceptEvent.detail.replacedCurrentPage,true);
+      assert.equal(Number(acceptEvent.detail.previousAssetId),Number(firstPreview.result.asset_id));
+      await assert.rejects(()=>service.create(taskId,editInput(),actor),{code:'IMAGE_EDIT_CONFLICT'},'new edits still require the latest page as their source');
+      currentRun=finalTask.current_image_run_id;
+      currentAsset=Number(secondPreview.result.asset_id);
+      currentHash=(await service.asset(currentAsset,taskId)).sha256;
     });
     await t.test('pending edit batches merge pages atomically, reject alternatives, fence stale input and retry idempotently', async () => {
       const baseRun = currentRun;

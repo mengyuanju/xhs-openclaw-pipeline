@@ -37,11 +37,12 @@ export function editStoragePath(root, stored) {
 }
 export function normalizeEdit(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('修改参数无效');
-  const allowed = ['requestId','batchId','sourceImageRunId','sourceAssetId','copyRevisionId','sha256','targetPage','operation','instruction','preserve','negative','overlay','mask','target','references','referenceMode','confirmation','draft','restoreRunId'];
+  const allowed = ['requestId','batchId','batchSize','sourceImageRunId','sourceAssetId','copyRevisionId','sha256','targetPage','operation','instruction','preserve','negative','overlay','mask','target','references','replacements','referenceMode','confirmation','draft','restoreRunId'];
   if(Object.keys(input).some(k => !allowed.includes(k))) throw new TypeError('未知修改参数');
   const operation = input.operation;
   if(!['TEXT','SVG_DISCLOSURE','COMPOSITE','AI_FUSION','AI_FULL','AI_LOCAL','RESTORE'].includes(operation)) throw new TypeError('修改类型无效');
-  if(input.batchId != null && !['TEXT','SVG_DISCLOSURE'].includes(operation)) throw new TypeError('只有人工生成标识支持整套批次');
+  if(input.batchId != null && !['TEXT','SVG_DISCLOSURE','AI_FUSION'].includes(operation)) throw new TypeError('只有人工生成标识或真实产品替换支持整套批次');
+  if(input.batchSize != null && input.batchId == null)throw new TypeError('批次大小必须与批次编号同时提供');
   const usesBillableModel = operation === 'TEXT' || operation.startsWith('AI_');
   const draft=input.draft===true,confirmed=input.confirmation==='LIVE_IMAGE_COST_ACCEPTED';
   if(usesBillableModel && !draft && !confirmed) throw new TypeError('请确认图片编辑或视觉校验模型费用');
@@ -49,26 +50,52 @@ export function normalizeEdit(input) {
   const refs = input.references ?? [];
   if(!['COMPOSITE','AI_FUSION'].includes(operation) && refs.length) throw new TypeError('仅实体图片操作可附加参考图');
   if(!Array.isArray(refs) || refs.length > 4 || (['COMPOSITE','AI_FUSION'].includes(operation) && !refs.length)) throw new TypeError('请选择 1 至 4 张参考图');
-  if(operation === 'AI_FUSION' && refs.length !== 1) throw new TypeError('真实产品替换只能上传 1 张参考图');
   const references = refs.map((r, i) => ({ assetId: normalizeTaskId(r.assetId), purpose: shortText(r.purpose ?? '实体参考',200),
     ...(operation === 'COMPOSITE' ? { ...safeRect(r), opacity: boundedNumber(r.opacity ?? 1,0.01,1,false), z: boundedNumber(r.z ?? i,0,10),
       crop: r.crop ? { x: boundedNumber(r.crop.x,0,16000), y: boundedNumber(r.crop.y,0,16000), width: boundedNumber(r.crop.width,1,16000), height: boundedNumber(r.crop.height,1,16000) } : null,
       removeBackground: r.removeBackground === true } : {}) }));
   if(new Set(references.map(r=>r.assetId)).size !== references.length) throw new TypeError('参考图重复');
-  if(operation !== 'AI_FUSION' && input.target != null) throw new TypeError('仅真实产品替换可指定目标物体');
+  if(operation !== 'AI_FUSION' && (input.target != null||input.replacements != null)) throw new TypeError('仅真实产品替换可指定目标物体');
   if(operation !== 'AI_FUSION' && input.referenceMode != null) throw new TypeError('仅真实产品替换可指定参考图使用方式');
-  const referenceMode=operation === 'AI_FUSION' ? String(input.referenceMode??'STRICT') : null;
+  let referenceMode=operation === 'AI_FUSION' ? String(input.referenceMode??'STRICT') : null;
   if(operation === 'AI_FUSION' && !['STRICT','APPEARANCE'].includes(referenceMode)) throw new TypeError('参考图使用方式无效');
   let target=null;
+  let replacements=null;
   if(operation === 'AI_FUSION') {
-    const value=input.target;
-    if(!value || typeof value !== 'object' || Array.isArray(value)
-        || Object.keys(value).some(key=>!['description','region'].includes(key))) {
-      throw new TypeError('真实产品替换必须提供目标描述和框选区域');
+    const normalizeTarget=value=>{
+      if(!value || typeof value !== 'object' || Array.isArray(value)
+          || Object.keys(value).some(key=>!['description','region'].includes(key))) {
+        throw new TypeError('真实产品替换必须提供目标描述和框选区域');
+      }
+      const region=safeRect(value.region);
+      if(region.width < 24 || region.height < 24) throw new TypeError('目标框选区域过小');
+      return {description:shortText(value.description,500),region};
+    };
+    if(input.replacements != null) {
+      if(!Array.isArray(input.replacements)||input.replacements.length<1||input.replacements.length>4) {
+        throw new TypeError('每张图片请选择 1 至 4 个产品替换项');
+      }
+      replacements=input.replacements.map(value=>{
+        if(!value||typeof value!=='object'||Array.isArray(value)
+          ||Object.keys(value).some(key=>!['referenceAssetId','referenceMode','target'].includes(key))) {
+          throw new TypeError('产品替换项无效');
+        }
+        const referenceAssetId=normalizeTaskId(value.referenceAssetId);
+        if(!references.some(reference=>reference.assetId===referenceAssetId))throw new TypeError('产品替换项引用了未绑定的参考图');
+        const mode=String(value.referenceMode??'STRICT');
+        if(!['STRICT','APPEARANCE'].includes(mode))throw new TypeError('参考图使用方式无效');
+        return {referenceAssetId,referenceMode:mode,target:normalizeTarget(value.target)};
+      });
+      if(references.some(reference=>!replacements.some(value=>value.referenceAssetId===reference.assetId))) {
+        throw new TypeError('存在未使用的产品参考图');
+      }
+      target=replacements[0].target;
+      referenceMode=replacements[0].referenceMode;
+    } else {
+      if(references.length!==1)throw new TypeError('单个真实产品替换只能上传 1 张参考图');
+      target=normalizeTarget(input.target);
+      replacements=null;
     }
-    const region=safeRect(value.region);
-    if(region.width < 24 || region.height < 24) throw new TypeError('目标框选区域过小');
-    target={description:shortText(value.description,500),region};
   }
   const normalizedOverlay=['TEXT','SVG_DISCLOSURE'].includes(operation) ? normalizeManualOverlay({...input.overlay,textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',
     size:32,margin:32,opacity:1,color:'#ffffff',background:'#111827',position:'bottom-right'}) : null;
@@ -77,6 +104,7 @@ export function normalizeEdit(input) {
     :normalizedOverlay;
   return { requestId: normalizeUuid(input.requestId,'requestId'),
     ...(input.batchId == null ? {} : { batchId: normalizeUuid(input.batchId,'batchId') }),
+    ...(input.batchSize == null ? {} : { batchSize: boundedNumber(input.batchSize,2,5) }),
     sourceImageRunId: normalizeUuid(input.sourceImageRunId,'sourceImageRunId'),
     sourceAssetId: normalizeTaskId(input.sourceAssetId), copyRevisionId: normalizeTaskId(input.copyRevisionId), sha256: input.sha256,
     targetPage: boundedNumber(input.targetPage,1,5), operation,
@@ -85,7 +113,7 @@ export function normalizeEdit(input) {
     // New local edits locate the target from the operator's prompt. Keep accepting
     // a mask for already-created clients and queued historical requests.
     mask: operation === 'AI_LOCAL' && input.mask != null ? normalizeMask(input.mask) : null,
-    target,references,referenceMode, confirmation: usesBillableModel&&confirmed ? input.confirmation : null, draft,
+    target,references,replacements,referenceMode, confirmation: usesBillableModel&&confirmed ? input.confirmation : null, draft,
     restoreRunId: operation === 'RESTORE' ? normalizeUuid(input.restoreRunId,'restoreRunId') : null };
 }
 export function imageAssetIds(result) {
@@ -207,7 +235,10 @@ export function replaceImagePage(result, page, asset) {
 async function audit(c, taskId, id, action, actor, reason, requestId = null, detail = {}) {
   await c.query('INSERT INTO image_edit_events(task_id,edit_id,action,actor,reason,request_id,detail) VALUES($1,$2,$3,$4,$5,$6,$7)',[taskId,id,action,actor,reason,requestId,detail]);
 }
-export async function assertEditSource(c, taskId, config, { allowCompatibleCurrentRun = false } = {}) {
+export async function assertEditSource(c, taskId, config, {
+  allowCompatibleCurrentRun = false,
+  allowAlternativeTargetPage = false,
+} = {}) {
   const task = (await c.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[taskId])).rows[0];
   if(!task) throw new ControlPlaneNotFoundError('task not found');
   if(!['MANUAL_ARCHIVE','IMAGE_REWORK_PENDING','REVIEWED'].includes(task.state) || task.current_execution_id || task.mandatory_copy_qc) conflict('任务不在可编辑状态，或文案仍需质检');
@@ -222,14 +253,17 @@ export async function assertEditSource(c, taskId, config, { allowCompatibleCurre
   if(!page || Number(page.deliveryAssetId ?? page.assetId) !== config.sourceAssetId) conflict('所选资产不是当前页交付图');
   const source = (await c.query('SELECT * FROM assets WHERE id=$1 AND task_id=$2',[config.sourceAssetId,taskId])).rows[0];
   if(!source || source.sha256 !== config.sha256) conflict('源图片校验值已变化');
-  let currentRun=run;
+  let currentRun=run,currentPage=page;
   if(currentRunChanged) {
     currentRun=(await c.query('SELECT * FROM image_runs WHERE id=$1 AND task_id=$2',[task.current_image_run_id,taskId])).rows[0];
     if(currentRun?.status !== 'COMPLETED' || Number(currentRun.copy_revision_id) !== config.copyRevisionId) conflict('当前图集未完成或文案不匹配');
-    const currentPage=currentRun.result?.images?.[config.targetPage-1];
-    if(!currentPage || Number(currentPage.deliveryAssetId ?? currentPage.assetId) !== config.sourceAssetId) conflict('当前页图片已更新，请刷新后重新修改');
+    currentPage=currentRun.result?.images?.[config.targetPage-1];
+    if(!currentPage || (!allowAlternativeTargetPage
+      && Number(currentPage.deliveryAssetId ?? currentPage.assetId) !== config.sourceAssetId)) {
+      conflict('当前页图片已更新，请刷新后重新修改');
+    }
   }
-  return { task, revision, run, currentRun, source };
+  return { task, revision, run, currentRun, currentPage, source };
 }
 export function createImageEditingService({ pool, storageRoot }) {
   const stagedFiles=new WeakMap();
@@ -316,7 +350,12 @@ export function createImageEditingService({ pool, storageRoot }) {
       throw new TypeError('基于失败图定向修复会再次调用图片模型，请重新确认费用');
     }
     const editSource=['queue','retry','apply-suggestion','accept'].includes(action)
-      ? await assertEditSource(c,Number(e.task_id),e.config,{allowCompatibleCurrentRun:true})
+      ? await assertEditSource(c,Number(e.task_id),e.config,{
+        allowCompatibleCurrentRun:true,
+        // A ready preview is an explicit version choice. It may replace another
+        // preview that was adopted from the same page while this one waited.
+        allowAlternativeTargetPage:action==='accept',
+      })
       : null;
     let retryResolution=null;
     if(action==='retry') {
@@ -363,7 +402,13 @@ export function createImageEditingService({ pool, storageRoot }) {
     }
     const next={queue:'QUEUED',retry:'QUEUED','apply-suggestion':'QUEUED',cancel:'CANCELLED',reject:'REJECTED',accept:'ACCEPTED'}[action];
     let config=usesBillableModel&&input.confirmation==='LIVE_IMAGE_COST_ACCEPTED'?{...e.config,confirmation:'LIVE_IMAGE_COST_ACCEPTED'}:e.config;
-    let auditDetail=acceptedRejectedPreview?{acceptedRejectedPreview:true,validationPassed:false}:{};
+    const previousPageAssetId=Number(editSource?.currentPage?.deliveryAssetId??editSource?.currentPage?.assetId);
+    const replacesCurrentPage=action==='accept'&&editSource.currentRun.id!==e.source_image_run_id
+      &&previousPageAssetId!==Number(e.source_asset_id);
+    let auditDetail={
+      ...(acceptedRejectedPreview?{acceptedRejectedPreview:true,validationPassed:false}:{}),
+      ...(replacesCurrentPage?{replacedCurrentPage:true,previousAssetId:previousPageAssetId}:{}),
+    };
     if(action==='retry') {
       if(retryResolution.targetedRepair) {
         const localRepair=retryResolution.localRepair;

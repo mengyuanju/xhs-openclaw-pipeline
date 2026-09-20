@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { localEditAlternatives } from '../src/local-edit-alternatives.mjs';
 
-test('image editor browser: prompt-localized edit, fee gate, reference upload, preview and explicit acceptance',{skip:process.env.RUN_IMAGE_EDIT_BROWSER!=='1',timeout:75000},async()=>{
+test('image editor browser: prompt-localized edit, multi-page product replacement, preview and explicit acceptance',{skip:process.env.RUN_IMAGE_EDIT_BROWSER!=='1',timeout:75000},async()=>{
   const {build}=await import('esbuild'),{chromium}=await import('playwright-core');
   const root=await mkdtemp(join(tmpdir(),'image-edit-browser-')),bundle=join(root,'bundle.js'),stylesheet=join(root,'bundle.css');
   const runId=randomUUID(),editId=randomUUID(),failedEditId=randomUUID();let edits=[],submitted=null,submissions=[],actions=[];
@@ -39,7 +39,7 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
         const data=body?JSON.parse(body):null;
         if(req.method==='POST'&&req.url.endsWith('/image-edit-references')){res.setHeader('content-type','application/json');res.end(JSON.stringify({data:{id:9,sha256:'b'.repeat(64),url:'/v1/assets/9'}}));return;}
         let response;
-        if(req.method==='POST'&&req.url.endsWith('/image-edits')){submitted=data;submissions.push(data);const needsSuggestion=!data.draft&&data.operation==='AI_LOCAL'&&data.instruction.includes('一勺老抽');const suggestion=needsSuggestion?{stage:'LOCAL_EDIT_SUGGESTION',decision:'SUGGEST',canEdit:true,confidence:.96,candidateCount:1,operationType:'MOVE',targetDescription:'右下角汤勺和液流',touchesImageEdge:true,sourceRegion:{x:910,y:965,width:176,height:483},destinationRegion:{x:470,y:850,width:260,height:460},editRegions:[{x:890,y:940,width:196,height:508},{x:430,y:810,width:340,height:540}],suggestedInstruction:'将右下角汤勺和液流移动到锅的左侧，把勺中老抽减少为半勺，保持液流落入锅内并自然修复原位置；不要修改文字和其他内容。',reason:'目标唯一，但原说明需要明确落点与原位置修复。'}:null;const row={id:data.batchId?randomUUID():editId,version:1,status:needsSuggestion?'FAILED':data.draft?'DRAFT':'PREVIEW_READY',operation:data.operation,source_asset_id:data.sourceAssetId,target_page:data.targetPage,config:{instruction:data.instruction,confirmation:data.confirmation,batchId:data.batchId},...(needsSuggestion?{validation:suggestion,error:'已生成更适合图片编辑的描述，请确认采用后再调用图片编辑模型'}:data.draft?{}:{result:{asset_id:data.sourceAssetId+10+submissions.length,image_run_id:randomUUID(),validation:{passed:true}}})};edits=data.batchId?[row,...edits]:[row];response=row;}
+        if(req.method==='POST'&&req.url.endsWith('/image-edits')){submitted=data;submissions.push(data);const needsSuggestion=!data.draft&&data.operation==='AI_LOCAL'&&data.instruction.includes('一勺老抽');const suggestion=needsSuggestion?{stage:'LOCAL_EDIT_SUGGESTION',decision:'SUGGEST',canEdit:true,confidence:.96,candidateCount:1,operationType:'MOVE',targetDescription:'右下角汤勺和液流',touchesImageEdge:true,sourceRegion:{x:910,y:965,width:176,height:483},destinationRegion:{x:470,y:850,width:260,height:460},editRegions:[{x:890,y:940,width:196,height:508},{x:430,y:810,width:340,height:540}],suggestedInstruction:'将右下角汤勺和液流移动到锅的左侧，把勺中老抽减少为半勺，保持液流落入锅内并自然修复原位置；不要修改文字和其他内容。',reason:'目标唯一，但原说明需要明确落点与原位置修复。'}:null;const row={id:data.batchId?randomUUID():editId,version:1,status:needsSuggestion?'FAILED':data.draft?'DRAFT':'PREVIEW_READY',operation:data.operation,source_asset_id:data.sourceAssetId,target_page:data.targetPage,config:{instruction:data.instruction,confirmation:data.confirmation,batchId:data.batchId,batchSize:data.batchSize},...(needsSuggestion?{validation:suggestion,error:'已生成更适合图片编辑的描述，请确认采用后再调用图片编辑模型'}:data.draft?{}:{result:{asset_id:data.sourceAssetId+10+submissions.length,image_run_id:randomUUID(),validation:{passed:true}}})};edits=data.batchId?[row,...edits]:[row];response=row;}
         else if(req.method==='POST'){actions.push({url:req.url,data});const targetId=req.url.split('/').at(-2);edits=edits.map(e=>e.id===targetId?{...e,status:req.url.endsWith('/accept')?'ACCEPTED':req.url.endsWith('/apply-suggestion')||req.url.endsWith('/retry')?'QUEUED':'CANCELLED',version:e.version+1,...(req.url.endsWith('/apply-suggestion')?{config:{...e.config,instruction:localEditAlternatives(e).find(option=>option.id===data.suggestionId).instruction}}:{})}:e);response=edits.find(e=>e.id===targetId);}
         res.setHeader('content-type','application/json');res.end(JSON.stringify({data:req.method==='GET'?edits:response}));return;
       }
@@ -232,16 +232,31 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     assert.equal(await page.getByText('PNG / JPG / WebP · 最大 5 MB',{exact:true}).count(),1);
     await uploadInput.setInputFiles({name:'reference.png',mimeType:'image/png',buffer:png});
     await page.getByRole('img',{name:'已上传的真实产品参考图',exact:true}).waitFor();
+    // Navigation can load the global select rule after the editor's CSS module.
+    // Both options must still be above the editor and receive pointer events.
+    const globalSelectRule=rawCss.match(/\.select-content\s*\{[^}]*\}/u)?.[0];
+    assert.ok(globalSelectRule);
+    await page.addStyleTag({content:globalSelectRule});
+    await page.getByRole('combobox',{name:'参考图使用方式',exact:true}).click();
+    const referenceMenu=page.getByRole('listbox');
+    assert.equal(await referenceMenu.getByRole('option').count(),2);
+    const menuZIndex=await referenceMenu.evaluate(element=>Number(getComputedStyle(element).zIndex));
+    assert.ok(menuZIndex>Number(dialogStyle.zIndex),`reference options (${menuZIndex}) must be above editor (${dialogStyle.zIndex})`);
+    const referenceScreenshots=resolve('.codex_artifacts/reference-mode');
+    await mkdir(referenceScreenshots,{recursive:true});
+    await page.screenshot({path:join(referenceScreenshots,'desktop-options.png'),animations:'disabled'});
+    await page.getByRole('option',{name:'完整产品（严格模式）',exact:true}).click();
+    assert.equal(await page.getByRole('combobox',{name:'参考图使用方式',exact:true}).textContent(),'完整产品（严格模式）');
     await page.getByRole('combobox',{name:'参考图使用方式',exact:true}).click();
     await page.getByRole('option',{name:'外观参考（允许手部、裁切或次要产品）',exact:true}).click();
     await page.getByText('只迁移主产品可确认的外观',{exact:false}).waitFor();
     assert.equal(await page.getByRole('button',{name:'生成修改预览',exact:true}).isDisabled(),false);
     await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
-    await page.getByRole('alert').getByText('请填写需要替换的目标物品说明',{exact:false}).waitFor();
+    await page.getByRole('alert').getByText('请填写产品 1 在第 1 页的目标物品说明',{exact:false}).waitFor();
     assert.equal(submitted,null);
     await page.getByLabel('目标物品说明').fill('画面右侧台面上、木托盘后方的米白色拿铁杯');
     await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
-    await page.getByRole('alert').getByText('请在左侧原图上拖动框选',{exact:false}).waitFor();
+    await page.getByRole('alert').getByText('请在左侧第 1 页框选产品 1',{exact:false}).waitFor();
     assert.equal(submitted,null);
     const targetCanvas=page.getByRole('img',{name:'实时修改预览'}),targetBox=await targetCanvas.boundingBox();
     assert.ok(targetBox);
@@ -256,10 +271,44 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     assert.equal(await page.getByRole('button',{name:'重新框选',exact:true}).isDisabled(),false);
     await page.getByLabel('确认调用图片编辑与视觉验收模型，会产生费用；生成结果需查看并采用后才会替换当前图片。').check();
     await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
-    assert.equal(submitted.operation,'AI_FUSION');assert.equal(submitted.referenceMode,'APPEARANCE');assert.deepEqual(submitted.references,[{assetId:9,purpose:'真实产品替换'}]);assert.equal(submitted.mask,undefined);
-    assert.equal(submitted.target.description,'画面右侧台面上、木托盘后方的米白色拿铁杯');
-    assert.ok(submitted.target.region.width>24&&submitted.target.region.height>24);
+    assert.equal(submitted.operation,'AI_FUSION');assert.deepEqual(submitted.references,[{assetId:9,purpose:'真实产品替换'}]);assert.equal(submitted.mask,undefined);
+    assert.equal(submitted.replacements[0].referenceMode,'APPEARANCE');assert.equal(submitted.replacements[0].referenceAssetId,9);
+    assert.equal(submitted.replacements[0].target.description,'画面右侧台面上、木托盘后方的米白色拿铁杯');
+    assert.ok(submitted.replacements[0].target.region.width>24&&submitted.replacements[0].target.region.height>24);
     assert.match(submitted.instruction,/木托盘后方/u);
+    await page.getByLabel('产品应用图片').getByRole('button').nth(1).click();
+    await page.getByLabel('在第 2 页替换这个产品').check();
+    await page.getByLabel('产品 1 第 2 页目标物品说明').fill('第 2 页右上角的米白色杯子');
+    const pageTwoCanvas=page.getByRole('img',{name:'实时修改预览'}),pageTwoBox=await pageTwoCanvas.boundingBox();
+    assert.ok(pageTwoBox);
+    await page.mouse.move(pageTwoBox.x+pageTwoBox.width*.62,pageTwoBox.y+pageTwoBox.height*.18);
+    await page.mouse.down();await page.mouse.move(pageTwoBox.x+pageTwoBox.width*.86,pageTwoBox.y+pageTwoBox.height*.42,{steps:5});await page.mouse.up();
+    await page.getByRole('button',{name:'添加另一个产品',exact:true}).click();
+    await page.getByLabel('上传产品 2 参考图').setInputFiles({name:'second-reference.png',mimeType:'image/png',buffer:png});
+    await page.getByLabel('产品 2 第 2 页目标物品说明').fill('第 2 页左下角的黑色手表');
+    const secondProductCanvas=page.getByRole('img',{name:'实时修改预览'}),secondProductBox=await secondProductCanvas.boundingBox();
+    assert.ok(secondProductBox);
+    await page.mouse.move(secondProductBox.x+secondProductBox.width*.12,secondProductBox.y+secondProductBox.height*.60);
+    await page.mouse.down();await page.mouse.move(secondProductBox.x+secondProductBox.width*.36,secondProductBox.y+secondProductBox.height*.82,{steps:5});await page.mouse.up();
+    assert.equal(await secondProductCanvas.locator('svg rect').count(),2);
+    const replacementScreenshots=resolve('.codex_artifacts/product-replacement');await mkdir(replacementScreenshots,{recursive:true});
+    await page.screenshot({path:join(replacementScreenshots,'multi-page-multi-product.png'),animations:'disabled'});
+    const entityBatchStart=submissions.length;
+    await page.getByRole('button',{name:'生成 2 张批量替换预览',exact:true}).click();
+    await page.getByText('共 2 张产品替换预览已提交',{exact:false}).waitFor();
+    const entityBatchSubmissions=submissions.slice(entityBatchStart),entityBatchIds=new Set(entityBatchSubmissions.map(item=>item.batchId));
+    assert.equal(entityBatchSubmissions.length,2);assert.equal(entityBatchIds.size,1);
+    assert.deepEqual(entityBatchSubmissions.map(item=>item.targetPage),[1,2]);assert.ok(entityBatchSubmissions.every(item=>item.batchSize===2));
+    assert.equal(entityBatchSubmissions[0].replacements.length,1);assert.equal(entityBatchSubmissions[1].replacements.length,2);
+    assert.equal(entityBatchSubmissions[1].replacements[0].target.description,'第 2 页右上角的米白色杯子');
+    assert.equal(entityBatchSubmissions[1].replacements[1].target.description,'第 2 页左下角的黑色手表');
+    await page.getByRole('tab',{name:/任务记录/u}).click();
+    await page.getByRole('button',{name:'一次采用全部替换',exact:true}).click();
+    const actionsBeforeEntityBatch=actions.length;
+    await page.getByLabel('批量替换采用原因').fill('两页产品替换均符合要求');
+    await page.getByRole('button',{name:'确认采用',exact:true}).click();
+    await page.getByRole('button',{name:'批量替换已采用',exact:true}).waitFor();
+    assert.equal(actions.length,actionsBeforeEntityBatch+2);assert.equal(actions.slice(-2).every(item=>item.url.endsWith('/accept')),true);
     await page.getByRole('tab',{name:'添加文字'}).click();
     await page.getByRole('button',{name:'整套 3 张',exact:true}).click();
     await page.getByLabel('确认调用图片编辑与视觉验收模型，会产生费用；生成结果需查看并采用后才会替换当前图片。').check();

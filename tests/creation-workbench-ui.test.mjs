@@ -407,6 +407,11 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(reviewDialog, /首图必须为封面/u);
   assert.match(reviewDialog, /workbench-image-plan-nav-button/u);
   assert.match(reviewDialog, /第 \{activePlanIndex \+ 1\} \/ \{draft\.imagePlan\.length\} 页/u);
+  assert.match(reviewDialog, /imagePlanPageDeletionBlockReason\(draft\.imagePlan, index\)/u);
+  assert.match(reviewDialog, /删除第 \$\{index \+ 1\} 页图片规划/u);
+  assert.match(reviewDialog, /单独保存图片规划后正式生效/u);
+  assert.match(reviewDialog, /aria-label=\{`删除第 \$\{index \+ 1\} 页规划`\}/u);
+  assert.match(reviewDialog, /disabled=\{Boolean\(deletionBlockReason\) \|\| loading \|\| submitting \|\| regeneratingImagePlan\}/u);
   assert.match(reviewDialog, /\/regenerate-image-plan/u);
   assert.match(reviewDialog, /requestId: createRequestId\(\)/u);
   const backgroundMonitor = await readFile(projectFile('app/components/background-task-store.ts'), 'utf8');

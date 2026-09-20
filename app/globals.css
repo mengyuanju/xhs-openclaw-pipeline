@@ -1030,6 +1030,9 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .workbench-image-plan-card { min-width: 0; overflow: hidden; border: 1px solid #ddd6ce; border-radius: 11px; background: #fcfbf9; }
 .workbench-image-plan-fields { display: grid; grid-template-columns: minmax(130px, .65fr) minmax(0, 1.35fr); align-items: start; gap: 10px; padding: 13px; }
 .workbench-image-plan-fields .full { grid-column: 1 / -1; }
+.workbench-image-plan-page-actions { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding-bottom: 2px; }
+.workbench-image-plan-page-actions > small { margin-right: auto; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.workbench-image-plan-page-actions .button { flex: 0 0 auto; }
 .workbench-image-plan-fields textarea { min-height: 92px; line-height: 1.6; }
 .workbench-image-plan-kind-help { margin: -1px 1px 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
 .workbench-plan-bullets-editor { min-height: 92px; }
@@ -1347,6 +1350,7 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
   .workbench-review-section { padding: 14px; }
   .workbench-image-plan-grid, .workbench-image-plan-fields { grid-template-columns: 1fr; }
   .workbench-image-plan-fields .full { grid-column: auto; }
+  .workbench-image-plan-page-actions { align-items: flex-start; }
   .image-carousel-navigation { grid-template-columns: 38px minmax(0, 1fr) 38px; gap: 4px; }
   .workbench-image-review-stage { height: min(52dvh, 460px); min-height: 320px; }
   .workbench-image-review-thumbnails { display: flex; overflow-x: auto; padding: 2px 2px 7px; scrollbar-width: thin; }

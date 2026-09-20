@@ -37,7 +37,7 @@ test('AI text layout contract is escaped, typed, and stays inside the safe area'
   const programmatic=normalizeEdit({...input(),operation:'SVG_DISCLOSURE',confirmation:undefined,batchId});
   assert.equal(programmatic.operation,'SVG_DISCLOSURE');assert.equal(programmatic.confirmation,null);
   assert.equal(programmatic.overlay.text,'AI生成');assert.equal(programmatic.batchId,batchId);
-  assert.throws(()=>normalizeEdit({...input(),batchId,operation:'AI_LOCAL',instruction:'修改背景'}),/只有人工生成标识支持/u);
+  assert.throws(()=>normalizeEdit({...input(),batchId,operation:'AI_LOCAL',instruction:'修改背景'}),/只有人工生成标识或真实产品替换支持/u);
 });
 test('reference decoding rejects MIME spoofing, SVG, truncation and excess bytes; strips metadata',async()=>{
   const source=await sharp(await png('red',30,40)).withMetadata({orientation:6}).jpeg().toBuffer();
@@ -98,6 +98,16 @@ test('edit inputs reject commands, paths, unconfirmed AI, duplicate references a
   const appearance=normalizeEdit({...input(),operation:'AI_FUSION',instruction:'按可见外观替换产品',references:[{assetId:1}],referenceMode:'APPEARANCE',
     target:{description:'右侧台面上的白色杯子',region:{x:700,y:500,width:220,height:240}}});
   assert.equal(appearance.referenceMode,'APPEARANCE');
+  const batchId=randomUUID();
+  const multiple=normalizeEdit({...input(),batchId,batchSize:2,operation:'AI_FUSION',instruction:'同时替换杯子和手表',
+    references:[{assetId:1,purpose:'杯子'},{assetId:2,purpose:'手表'}],replacements:[
+      {referenceAssetId:1,referenceMode:'STRICT',target:{description:'右侧杯子',region:{x:700,y:500,width:220,height:240}}},
+      {referenceAssetId:2,referenceMode:'APPEARANCE',target:{description:'左侧手表',region:{x:100,y:700,width:180,height:160}}},
+    ]});
+  assert.equal(multiple.batchId,batchId);assert.equal(multiple.batchSize,2);assert.equal(multiple.replacements.length,2);
+  assert.equal(multiple.replacements[1].referenceMode,'APPEARANCE');assert.equal(multiple.replacements[1].referenceAssetId,2);
+  assert.throws(()=>normalizeEdit({...input(),operation:'AI_FUSION',instruction:'替换产品',references:[{assetId:1}],
+    replacements:[{referenceAssetId:2,target:{description:'杯子',region:{x:700,y:500,width:220,height:240}}}]}),/未绑定/u);
   assert.throws(()=>normalizeEdit({...input(),operation:'AI_FUSION',instruction:'替换产品',references:[{assetId:1}],referenceMode:'SKIP',
     target:{description:'杯子',region:{x:700,y:500,width:220,height:240}}}),/使用方式无效/u);
   assert.throws(()=>editStoragePath(join(tmpdir(),'owned'),join(tmpdir(),'other','secret')));
@@ -472,6 +482,31 @@ test('AI fusion uses one real-product reference and the governed image-edit prom
     assert.equal(inputPaths.length,3);assert.match(prompt,/倒数第二张是编辑前源图/u);assert.match(prompt,/partTopology/u);return{rawText:JSON.stringify({passed:true,reason:'产品、位置与部件一致',checks:{referenceIdentity:true,targetLocation:true,singleReplacement:true,partTopology:true,unrelatedContentPreserved:true}}),model:'fake-vision'};}};
   const dir=await mkdtemp(join(tmpdir(),'image-edit-fusion-fake-'));
   try{const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});assert.equal(result.status,'PREVIEW_READY');assert.equal(editCalls,1);assert.equal(visionCalls,2);assert.equal(completed.validation.localization.passed,true);assert.equal(completed.validation.localization.candidateCount,1);assert.equal(completed.validation.outsideMask.changedPixels,0);assert.equal(completed.validation.entityConsistency.passed,true);assert.deepEqual(completed.validation.entityConsistency.checks,{referenceIdentity:true,targetLocation:true,singleReplacement:true,partTopology:true,unrelatedContentPreserved:true});assert.equal(completed.validation.prompt.sha256,imageEditPrompt.sha256);}finally{await rm(dir,{recursive:true,force:true});}
+});
+test('one fusion request validates and replaces multiple products atomically',async()=>{
+  const source=await png('white'),cup=await png('coral',120,120),watch=await png('navy',120,120),generated=await png('#eeeeee');
+  const replacements=[
+    {referenceAssetId:9,referenceMode:'STRICT',target:{description:'右侧台面上的杯子',region:{x:700,y:500,width:220,height:240}}},
+    {referenceAssetId:10,referenceMode:'APPEARANCE',target:{description:'左侧手腕旁的手表',region:{x:100,y:700,width:180,height:160}}},
+  ];
+  const config={imageEditPrompt,references:[{assetId:9,purpose:'杯子'},{assetId:10,purpose:'手表'}],replacements,
+    target:replacements[0].target,referenceMode:'STRICT',instruction:'同时替换杯子和手表',preserve:'保留其他内容',negative:'不要改文字'};
+  let completed,imageCalls=0,preflightCalls=0,reviewCalls=0;
+  const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_FUSION',config}),context:async()=>({source:{id:1},refs:[{id:9,sha256:'b'.repeat(64)},{id:10,sha256:'c'.repeat(64)}],settings:{aiDisclosureEnabled:false},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),readAsset:async asset=>asset.id===1?source:asset.id===9?cup:watch,
+    fail:async(_edit,error)=>assert.fail(error.message),complete:async(_edit,result)=>{completed=result;return{};}};
+  const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{imageCalls++;assert.equal(inputPaths.length,4);assert.match(prompt,/MULTI_REAL_PRODUCT_REPLACEMENT/u);assert.match(prompt,/不得遗漏、重复或互换目标/u);await writeFile(outputPath,generated);return{model:'fake-multi-fusion'};},
+    runVision:async({prompt,inputPaths})=>{
+      if(prompt.includes('目标定位校验器')){preflightCalls++;assert.equal(inputPaths.length,2);return{model:'fake-vision',rawText:JSON.stringify({passed:true,confidence:.97,candidateCount:1,reason:'目标唯一',referenceProductDescription:preflightCalls===1?'珊瑚色杯子':'深蓝色手表',checks:{descriptionMatches:true,exactlyOneTarget:true,wholeTargetInsideRegion:true,protectedContentExcluded:true,referenceUsable:true,referenceRecognizable:true,referencePrimaryProductClear:true}})};}
+      reviewCalls++;assert.equal(inputPaths.length,4);assert.match(prompt,/多产品替换验收器/u);return{model:'fake-vision',rawText:JSON.stringify({passed:true,reason:'两个产品均正确替换',checks:{allReferenceIdentities:true,allTargetLocations:true,replacementCountCorrect:true,partTopology:true,unrelatedContentPreserved:true}})};
+    }};
+  const dir=await mkdtemp(join(tmpdir(),'image-edit-fusion-multiple-'));
+  try {
+    const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});
+    assert.equal(result.status,'PREVIEW_READY');assert.equal(imageCalls,1);assert.equal(preflightCalls,2);assert.equal(reviewCalls,1);
+    assert.equal(completed.validation.localization.mode,'MULTI_TARGET_REGION_CHECK');assert.equal(completed.validation.localization.count,2);
+    assert.deepEqual(completed.validation.entityConsistency.checks,{allReferenceIdentities:true,allTargetLocations:true,replacementCountCorrect:true,partTopology:true,unrelatedContentPreserved:true});
+    assert.equal(completed.validation.outsideMask.changedPixels,0);
+  } finally {await rm(dir,{recursive:true,force:true});}
 });
 test('appearance-reference fusion accepts an incomplete but unambiguous primary product',async()=>{
   const source=await png('white'),reference=await png('coral',120,120),generated=await png('#eeeeee');
