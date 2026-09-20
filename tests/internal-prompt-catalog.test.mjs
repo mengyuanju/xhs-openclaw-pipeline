@@ -22,7 +22,7 @@ test('every catalog item documents its purpose and every extracted template is t
   assert.equal(new Set(PROMPT_CATALOG.map(item => item.kind)).size, PROMPT_CATALOG.length);
   for (const entry of PROMPT_CATALOG) {
     assert.ok(entry.group && entry.description && entry.usage, entry.kind);
-    assert.ok(entry.callSites?.length || entry.executionStatus === 'RESERVED', entry.kind);
+    assert.ok(entry.callSites?.length || ['RESERVED','RETIRED'].includes(entry.executionStatus), entry.kind);
     assert.ok(defaultBusinessPrompt(entry.kind).trim(), entry.kind);
   }
   for (const entry of INTERNAL_PROMPT_CATALOG) {

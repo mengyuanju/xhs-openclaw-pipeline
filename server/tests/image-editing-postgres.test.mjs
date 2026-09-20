@@ -25,11 +25,20 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
   const exe=name=>join(bin,name+(process.platform==='win32'?'.exe':''));
   const ctl=args=>new Promise((res,rej)=>{const p=spawn(exe('pg_ctl'),args,{shell:false,windowsHide:true,stdio:'ignore'});p.on('error',rej);p.on('exit',code=>code===0?res():rej(new Error(`pg_ctl ${code}`)));});
   const probe=createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r));
-  let pool,started=false;
+  let pool,started=false,adminPool,isolatedDatabase;
+  const maintenanceUrl=process.env.IMAGE_EDIT_TEST_DATABASE_URL;
   try{
+    if(maintenanceUrl) {
+      const url=new URL(maintenanceUrl);assert.ok(['127.0.0.1','localhost'].includes(url.hostname));
+      adminPool=new pg.Pool({connectionString:url.href});
+      isolatedDatabase='image_edit_test_'+randomUUID().replaceAll('-','');
+      await adminPool.query(`CREATE DATABASE ${isolatedDatabase}`);
+      url.pathname='/'+isolatedDatabase;pool=new pg.Pool({connectionString:url.href});
+    } else {
     await promisify(execFile)(exe('initdb'),['-D',data,'-A','trust','-U','postgres','--encoding=UTF8','--locale=C','--no-sync'],{windowsHide:true,timeout:60000});
     await ctl(['-D',data,'-l',join(root,'postgres.log'),'-o',`-h 127.0.0.1 -p ${port}`,'-w','start']);started=true;
     pool=new pg.Pool({connectionString:`postgresql://postgres@127.0.0.1:${port}/postgres`});
+    }
     await migrateDatabase(pool);
     const imageEditPromptContent='管理员图片编辑规则：{{reviewInstruction}}；保留所有未要求修改的内容。';
     const promptTemplate=(await pool.query("INSERT INTO prompt_templates(kind,name) VALUES('IMAGE_EDIT_SYSTEM','图片编辑') RETURNING id")).rows[0];
@@ -152,12 +161,13 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       assert.equal(claim.execution.snapshot.imageEditExecutorVersion,7);
       await action(appearanceEdit.id,'cancel');
     });
-    await t.test('natural-language local edits wait for a version 7 image executor',async()=>{
+    await t.test('direct local edits wait for a version 9 image executor',async()=>{
       const localEdit=await service.create(taskId,request({operation:'AI_LOCAL',instruction:'把右上角的白色杯子改为蓝色'}),actor);
       assert.equal(await repository.claimImage('edit-test',1,2,6),null);
-      const claim=await repository.claimImage('edit-test',1,2,7);
+      assert.equal(await repository.claimImage('edit-test',1,2,8),null);
+      const claim=await repository.claimImage('edit-test',1,2,9);
       assert.equal(claim.imageEdit.id,localEdit.id);
-      assert.equal(claim.execution.snapshot.imageEditExecutorVersion,7);
+      assert.equal(claim.execution.snapshot.imageEditExecutorVersion,9);
       await action(localEdit.id,'cancel');
     });
     await t.test('a rejected generated result remains visible and can be adopted by explicit human choice',async()=>{
@@ -260,9 +270,9 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
           region:{x:100,y:500,width:300,height:300},reason:'测试目标唯一且不覆盖文字',
           checks:{instructionSpecific:true,exactlyOneTarget:true,wholeTargetInsideRegion:true,protectedTextExcluded:true},
         })}):({model:'fake-result-check',rawText:JSON.stringify({passed:true,reason:'结果正确',checks:{requestedChangeCompleted:true,targetCountCorrect:true,
-          placementAndRepairNatural:true,protectedTextPreserved:true,unrelatedContentPreserved:true}})}),
+          placementAndRepairNatural:true,movedTargetFullyVisible:true,compositionBalanced:true,protectedTextPreserved:true,unrelatedContentPreserved:true}})}),
         runImageEdit:async({prompt,outputPath})=>{
-        assert.match(prompt,/LOCAL_MASK_EDIT/u);assert.doesNotMatch(prompt,/AI生成/u);
+        assert.match(prompt,/LOCAL_PROMPT_EDIT/u);assert.doesNotMatch(prompt,/AI生成/u);
         await writeFile(outputPath,localPng);return{model:'fake-local-edit'};
         },
       };
@@ -379,27 +389,27 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       assert.ok((await service.list(taskId, { pendingOnly: true })).some(edit => edit.id === oldPending.id), 'older pending edits are not hidden by the history limit');
       await action(oldPending.id, 'cancel');
     });
-    await t.test('a local-edit suggestion can be adopted once and freezes its executable plan',async()=>{
+    await t.test('a historical suggestion keeps its text and discards even invalid thin planned regions',async()=>{
       const originalInstruction='把画面右下角的一勺老抽变成半勺并移动到左侧';
       const suggestedInstruction='将画面右下角正在倒出的汤勺和液流移动到锅的左侧，把勺中老抽减少为半勺，保持液流落入锅内并自然修复原位置；不要修改文字和其他内容。';
       const suggested=await service.create(taskId,request({operation:'AI_LOCAL',instruction:originalInstruction}),actor);
       const claim=await service.claim('suggestion');
       assert.equal(claim.id,suggested.id);
       const validation={stage:'LOCAL_EDIT_SUGGESTION',decision:'SUGGEST',canEdit:true,confidence:0.96,candidateCount:1,
-        operationType:'MOVE',targetDescription:'右下角汤勺和液流',touchesImageEdge:true,sourceRegion:{x:910,y:965,width:176,height:483},
-        destinationRegion:{x:470,y:850,width:260,height:460},editRegions:[{x:890,y:940,width:196,height:508},{x:430,y:810,width:340,height:540}],
+        operationType:'MOVE',targetDescription:'右下角汤勺和液流',touchesImageEdge:true,sourceRegion:{x:30,y:896,width:635,height:6},
+        destinationRegion:null,editRegions:[],
         suggestedInstruction,warnings:['目标贴边'],reason:'目标唯一，但需要明确落点与原位置修复。',
         checks:{instructionSpecific:true,exactlyOneTarget:true,wholeVisibleTargetInsideRegion:true,protectedTextExcluded:true,editRegionSafe:true},
         model:'fake-planner',billedImageGeneration:false};
       await service.fail(claim,Object.assign(new Error('已生成更适合图片编辑的描述，请确认采用后再调用图片编辑模型'),{nonBillablePreflightFailure:true,validation}));
       const queued=await action(suggested.id,'apply-suggestion');
-      assert.equal(queued.status,'QUEUED');assert.equal(queued.config.instruction,suggestedInstruction);assert.equal(queued.config.localPlan.accepted,true);
-      assert.equal(queued.config.localPlan.originalInstruction,originalInstruction);assert.equal(queued.config.localPlan.editRegions.length,2);
+      assert.equal(queued.status,'QUEUED');assert.equal(queued.config.instruction,suggestedInstruction);assert.equal(queued.config.localPlan,undefined);
+      assert.equal(queued.config.localAlternative.originalInstruction,originalInstruction);
       const event=(await pool.query("SELECT detail FROM image_edit_events WHERE edit_id=$1 AND action='apply-suggestion'",[suggested.id])).rows[0];
       assert.equal(event.detail.suggestedInstruction,suggestedInstruction);
       await action(suggested.id,'cancel');
     });
-    await t.test('alternative selection is authoritative, auditable, and rechecks blocked plans',async()=>{
+    await t.test('alternative selection is authoritative, auditable, and submits direct edits',async()=>{
       for(const suggestionId of ['precise','natural','protected'])for(const safe of [true,false]) {
         const originalInstruction='去掉右下角灰色和浅蓝色两件短袖，其他衣物和标签保持原样';
         const createInput=request({operation:'AI_LOCAL',instruction:originalInstruction});
@@ -418,7 +428,7 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
         const input={version:failed.version,requestId:randomUUID(),reason:'选择替代描述',suggestionId,instruction:'客户端伪造的整图删除指令'};
         const queued=await service.action(created.id,'apply-suggestion',input,actor);
         assert.equal(queued.config.instruction,choice.instruction);
-        assert.equal(Boolean(queued.config.localPlan?.accepted),safe);
+        assert.equal(queued.config.localPlan,undefined);
         assert.equal(queued.config.mask,null);
         assert.equal(queued.status,'QUEUED');
         assert.equal((await service.create(taskId,createInput,actor)).id,created.id,'creation replay still recognizes the original request');
@@ -428,7 +438,7 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
         const {detail}=(await pool.query('SELECT detail FROM image_edit_events WHERE request_id=$1',[input.requestId])).rows[0];
         assert.equal(detail.suggestionId,suggestionId);assert.equal(detail.suggestionTitle,choice.title);
         assert.equal(detail.originalInstruction,originalInstruction);assert.equal(detail.suggestedInstruction,choice.instruction);
-        if(!safe)assert.equal(detail.requiresPreflight,true);
+        assert.equal(detail.requiresPreflight,false);assert.equal(detail.executionMode,'DIRECT_PROMPT_EDIT');
         await action(created.id,'cancel');
       }
     });
@@ -462,7 +472,7 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       assert.equal(queued.config.localRepair.baseAssetId,Number(failed.result.asset_id));
       assert.deepEqual(queued.config.localRepair.failureCodes,['DESTINATION_OBJECT_MISSING','POUR_CONTACT_MISSING']);
       assert.deepEqual(queued.config.localRepair.repairRegions,[destinationRegion]);
-      const repairClaim=await repository.claimImage('edit-test',1,2,7);
+      const repairClaim=await repository.claimImage('edit-test',1,2,9);
       assert.equal(repairClaim.imageEdit.id,local.id);
       const app=createControlPlaneApp({repository,storageRoot:root});
       const server=await new Promise(resolveServer=>{const listening=app.listen(0,'127.0.0.1',()=>resolveServer(listening));});
@@ -621,5 +631,5 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
         assert.deepEqual(await snapshot(), after, 'cancelling another edit must not undo an accepted version');
       });
     }
-  }finally{if(pool)await pool.end();if(started)await ctl(['-D',data,'-m','fast','-w','stop']);assert.ok(resolve(root).startsWith(resolve(tmpdir())));await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+  }finally{if(pool)await pool.end();if(adminPool){try{if(isolatedDatabase)await adminPool.query(`DROP DATABASE ${isolatedDatabase} WITH (FORCE)`);}finally{await adminPool.end();}}if(started)await ctl(['-D',data,'-m','fast','-w','stop']);assert.ok(resolve(root).startsWith(resolve(tmpdir())));await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });

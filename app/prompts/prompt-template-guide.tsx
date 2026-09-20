@@ -29,7 +29,7 @@ export function PromptTemplateGuide({ kind, candidate, published, managed = fals
   if (!item) return null;
   const readonly = item.editable === false;
   const optionalStage = ['LAYOUT_CATALOG_SYSTEM', 'IMAGE_SEARCH_SYSTEM', 'QUERY_REVIEW_SYSTEM', 'VISUAL_PLAN_SYSTEM'].includes(kind);
-  const source = item.executionStatus === 'RESERVED' ? '预留，当前没有运行入口' : readonly ? '程序执行协议（只读）' : published ? `已发布 v${published.version}`
+  const source = item.executionStatus === 'RETIRED' ? '历史停用，当前流程不再调用' : item.executionStatus === 'RESERVED' ? '预留，当前没有运行入口' : readonly ? '程序执行协议（只读）' : published ? `已发布 v${published.version}`
     : managed && item.layer === 'BUSINESS' && !optionalStage ? '缺少已发布版本：调用本阶段时将阻断' : '系统默认模板（未发布修改版）';
   return <section className="stack" aria-label="提示词用途与生效来源">
     <p><strong>用途与触发：</strong>{item.usage ?? item.description}</p>

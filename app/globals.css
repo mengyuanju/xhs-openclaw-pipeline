@@ -1144,6 +1144,8 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .workbench-review-footer .button, .workbench-review-heading .button { gap: 6px; white-space: nowrap; }
 .workbench-review-footer .button svg, .workbench-review-heading .button svg { flex: 0 0 auto; }
 .workbench-review-footer > .workbench-review-footer-error { display: block; flex: 0 0 auto; width: 100%; margin: 0; }
+.workbench-review-action-hint { display: flex; flex: 0 0 auto; width: 100%; align-items: flex-start; gap: 7px; margin: 0; color: #8d571a; font-size: 12px; line-height: 1.6; }
+.workbench-review-action-hint > svg { flex: 0 0 auto; margin-top: 2px; }
 .workbench-final-score-card { display: grid; gap: 6px; padding: 11px 13px; border: 1px solid #b7d8ce; border-radius: 9px; background: #f2faf7; }
 .workbench-final-score-card > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #2d5e54; font-size: 11px; font-weight: 800; }
 .workbench-final-score-card p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.55; }

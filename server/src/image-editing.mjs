@@ -99,30 +99,6 @@ function requestEditConfig(config) {
 }
 const rectContains=(outer,inner)=>inner.x>=outer.x&&inner.y>=outer.y
   &&inner.x+inner.width<=outer.x+outer.width&&inner.y+inner.height<=outer.y+outer.height;
-function localSuggestionPlan(validation,originalInstruction) {
-  if(!validation||validation.stage!=='LOCAL_EDIT_SUGGESTION'||validation.canEdit!==true
-    ||validation.decision!=='SUGGEST')throw new TypeError('当前请求没有可采用的局部修改建议');
-  const sourceRegion=safeRect(validation.sourceRegion??validation.region);
-  const destinationRegion=validation.destinationRegion?safeRect(validation.destinationRegion):null;
-  if(!Array.isArray(validation.editRegions)||validation.editRegions.length<1||validation.editRegions.length>4)throw new TypeError('局部修改建议区域无效');
-  const editRegions=validation.editRegions.map(region=>safeRect(region));
-  const contactRegion=validation.contactRegion?safeRect(validation.contactRegion):null;
-  if(editRegions.some(region=>region.width<24||region.height<24)
-    ||!editRegions.some(region=>rectContains(region,sourceRegion))
-    ||(destinationRegion&&!editRegions.some(region=>rectContains(region,destinationRegion)))
-    ||(contactRegion&&!editRegions.some(region=>rectContains(region,contactRegion))))throw new TypeError('局部修改建议区域无效');
-  const operationType=String(validation.operationType??'ADJUST').toUpperCase();
-  if(!['ADJUST','MOVE','REMOVE','REPLACE','BACKGROUND'].includes(operationType))throw new TypeError('局部修改建议类型无效');
-  return {accepted:true,originalInstruction:shortText(originalInstruction,2000),suggestedInstruction:shortText(validation.suggestedInstruction,2000),
-    sourceRegion,destinationRegion,editRegions,operationType,touchesImageEdge:validation.touchesImageEdge===true,
-    targetIsAiDisclosure:validation.targetIsAiDisclosure===true,targetDescription:shortText(validation.targetDescription??'',500,false),
-    sourceAction:shortText(validation.sourceAction??'',500,false),destinationAction:shortText(validation.destinationAction??'',500,false),
-    quantity:shortText(validation.quantity??'',500,false),relationship:shortText(validation.relationship??'',500,false),
-    contactRegion,
-    warnings:Array.isArray(validation.warnings)?validation.warnings.filter(value=>typeof value==='string').slice(0,8).map(value=>value.slice(0,300)):[],
-    reason:shortText(validation.reason??'',1000,false),confidence:typeof validation.confidence==='number'?validation.confidence:0,
-    checks:validation.checks??{},model:typeof validation.model==='string'?validation.model:null};
-}
 const LOCAL_REPAIR_FAILURE_CODES=new Set(['SOURCE_NOT_CLEARED','DESTINATION_OBJECT_MISSING','QUANTITY_INCORRECT',
   'POUR_CONTACT_MISSING','TARGET_COUNT_INCORRECT','PLACEMENT_OR_RELATIONSHIP_INCORRECT',
   'TARGET_INCOMPLETE_OR_OCCLUDED','COMPOSITION_UNBALANCED','REQUESTED_CHANGE_INCOMPLETE']);
@@ -139,18 +115,19 @@ function rejectedLocalRepairPlan(edit,result) {
     ||!localization||typeof localization!=='object'||Array.isArray(localization)) {
     conflict('当前失败结果不能安全局部补救，请调整说明后从原图重试');
   }
-  const repairRegions=Array.isArray(local.repairRegions)?local.repairRegions.map(region=>safeRect(region)):[];
-  const allowedRegions=Array.isArray(localization.editRegions)?localization.editRegions.map(region=>safeRect(region)):[];
-  if(!repairRegions.length||repairRegions.length>4||!allowedRegions.length
-    ||repairRegions.some(region=>!allowedRegions.some(allowed=>rectContains(allowed,region)))) {
+  const direct=localization.mode==='DIRECT_PROMPT_EDIT';
+  const repairRegions=!direct&&Array.isArray(local.repairRegions)?local.repairRegions.map(region=>safeRect(region)):[];
+  const allowedRegions=!direct&&Array.isArray(localization.editRegions)?localization.editRegions.map(region=>safeRect(region)):[];
+  if(!direct&&(!repairRegions.length||repairRegions.length>4||!allowedRegions.length
+    ||repairRegions.some(region=>!allowedRegions.some(allowed=>rectContains(allowed,region))))) {
     conflict('失败结果的定向修复区域无效，请调整说明后从原图重试');
   }
-  const sourceRegion=safeRect(localization.sourceRegion??localization.region);
-  const destinationRegion=localization.destinationRegion?safeRect(localization.destinationRegion):null;
-  const contactRegion=localization.contactRegion?safeRect(localization.contactRegion):null;
-  if(!allowedRegions.some(region=>rectContains(region,sourceRegion))
+  const sourceRegion=direct?null:safeRect(localization.sourceRegion??localization.region);
+  const destinationRegion=!direct&&localization.destinationRegion?safeRect(localization.destinationRegion):null;
+  const contactRegion=!direct&&localization.contactRegion?safeRect(localization.contactRegion):null;
+  if(!direct&&(!allowedRegions.some(region=>rectContains(region,sourceRegion))
     ||(destinationRegion&&!allowedRegions.some(region=>rectContains(region,destinationRegion)))
-    ||(contactRegion&&!allowedRegions.some(region=>rectContains(region,contactRegion)))) {
+    ||(contactRegion&&!allowedRegions.some(region=>rectContains(region,contactRegion))))) {
     conflict('失败结果的原始编辑规划无效，请调整说明后从原图重试');
   }
   const maxAttempts=normalizeImageEditRepairMaxAttempts(edit.config.imageEditRepairMaxAttempts);
@@ -163,7 +140,7 @@ function rejectedLocalRepairPlan(edit,result) {
     originalInstruction:shortText(edit.config.localRepair?.originalInstruction??edit.config.instruction,2000),
     failureCodes,repairInstruction:shortText(local.repairInstruction,2000),repairRegions,
     validationReason:shortText(local.reason??edit.error??'',1000,false),
-    plan:{operationType:String(localization.operationType??'ADJUST').slice(0,50),
+    plan:{mode:localization.mode,operationType:String(localization.operationType??'ADJUST').slice(0,50),
       targetDescription:shortText(localization.targetDescription??'',500,false),sourceAction:shortText(localization.sourceAction??'',500,false),
       destinationAction:shortText(localization.destinationAction??'',500,false),quantity:shortText(localization.quantity??'',500,false),
       relationship:shortText(localization.relationship??'',500,false),sourceRegion,destinationRegion,
@@ -401,18 +378,16 @@ export function createImageEditingService({ pool, storageRoot }) {
     }
     if(action==='apply-suggestion') {
       const choice=input.suggestionId==null?null:selectLocalEditAlternative(e,input.suggestionId);
-      if(choice && (e.validation?.stage!=='LOCAL_EDIT_SUGGESTION'||e.validation.canEdit!==true)) {
-        // Rewording a blocked request must re-run localization, never adopt its unsafe regions.
-        const {localPlan:_oldPlan,localRepair:_oldRepair,...unplanned}=config;
-        config={...unplanned,instruction:choice.instruction,mask:null};
-        auditDetail={originalInstruction:e.config.instruction,suggestedInstruction:choice.instruction,requiresPreflight:true};
-      } else {
-        const plan=localSuggestionPlan(choice?{...e.validation,suggestedInstruction:choice.instruction}:e.validation,e.config.instruction);
-        config={...config,instruction:plan.suggestedInstruction,mask:null,
-          localPlan:{...plan,acceptedAt:new Date().toISOString(),acceptedBy:username}};
-        auditDetail={originalInstruction:plan.originalInstruction,suggestedInstruction:plan.suggestedInstruction,
-          operationType:plan.operationType,editRegions:plan.editRegions,model:plan.model};
+      if(!choice&&(e.validation?.stage!=='LOCAL_EDIT_SUGGESTION'||e.validation.canEdit!==true)) {
+        throw new TypeError('当前请求没有可采用的局部修改建议');
       }
+      const instruction=shortText(choice?.instruction??e.validation.suggestedInstruction,2000);
+      const originalInstruction=e.config.localAlternative?.originalInstruction??e.config.localPlan?.originalInstruction??e.config.instruction;
+      const {localPlan:_oldPlan,localRepair:_oldRepair,...unplanned}=config;
+      config={...unplanned,instruction,mask:null,
+        localAlternative:{id:choice?.id??'legacy',title:choice?.title??'历史建议',originalInstruction}};
+      auditDetail={originalInstruction:e.config.instruction,suggestedInstruction:instruction,
+        requiresPreflight:false,executionMode:'DIRECT_PROMPT_EDIT'};
       if(choice) {
         config={...config,localAlternative:{id:choice.id,title:choice.title,
           originalInstruction:e.config.localAlternative?.originalInstruction??e.config.localPlan?.originalInstruction??e.config.instruction}};

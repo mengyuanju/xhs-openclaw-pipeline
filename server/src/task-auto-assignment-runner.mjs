@@ -148,7 +148,7 @@ export async function runAutoAssignmentReplenishment(pool, {
     if (lockResult.rows[0]?.acquired !== true) return summary('BUSY');
 
     const settingsResult = await client.query(`
-      SELECT enabled, version
+      SELECT enabled, mode, version
       FROM task_auto_assignment_settings
       WHERE singleton = 1
       FOR SHARE

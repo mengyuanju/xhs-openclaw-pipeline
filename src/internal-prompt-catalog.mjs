@@ -871,44 +871,41 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
   },
   {
     "kind": "INTERNAL_EDIT_MOVE_ATTACHMENTS",
-    "label": "整图移动附件说明",
+    "label": "整图移动附件说明（历史停用）",
     "group": "图片编辑",
-    "description": "整图移动时，第二张原图用于保护未点名对象。",
-    "usage": "整图移动时，第二张原图用于保护未点名对象。",
-    "editable": true,
+    "description": "历史局部编辑规则，当前直接编辑流程不再调用。",
+    "usage": "仅保留历史提示词版本的查询兼容；当前局部修改不使用此规则。",
+    "executionStatus": "RETIRED",
+    "editable": false,
     "layer": "SUPPLEMENT",
     "defaultPath": "prompts/internal/edit_move_attachments.md",
-    "callSites": [
-      "server/src/image-edit-renderer.mjs#aiEditPrompt"
-    ],
+    "callSites": [],
     "variables": []
   },
   {
     "kind": "INTERNAL_EDIT_MOVE_GUIDE",
-    "label": "移动几何引导图说明",
+    "label": "移动几何引导图说明（历史停用）",
     "group": "图片编辑",
-    "description": "有几何引导图时，解释目标位置与液流颜色，不复制引导线。",
-    "usage": "有几何引导图时，解释目标位置与液流颜色，不复制引导线。",
-    "editable": true,
+    "description": "历史局部编辑规则，当前直接编辑流程不再调用。",
+    "usage": "仅保留历史提示词版本的查询兼容；当前局部修改不使用此规则。",
+    "executionStatus": "RETIRED",
+    "editable": false,
     "layer": "SUPPLEMENT",
     "defaultPath": "prompts/internal/edit_move_guide.md",
-    "callSites": [
-      "server/src/image-edit-renderer.mjs#aiEditPrompt"
-    ],
+    "callSites": [],
     "variables": []
   },
   {
     "kind": "INTERNAL_EDIT_ROLE_GUIDE",
-    "label": "语义位置图说明",
+    "label": "语义位置图说明（历史停用）",
     "group": "图片编辑",
-    "description": "有位置引导图时，解释原位置、目标位置和接触区域的颜色。",
-    "usage": "有位置引导图时，解释原位置、目标位置和接触区域的颜色。",
-    "editable": true,
+    "description": "历史局部编辑规则，当前直接编辑流程不再调用。",
+    "usage": "仅保留历史提示词版本的查询兼容；当前局部修改不使用此规则。",
+    "executionStatus": "RETIRED",
+    "editable": false,
     "layer": "SUPPLEMENT",
     "defaultPath": "prompts/internal/edit_role_guide.md",
-    "callSites": [
-      "server/src/image-edit-renderer.mjs#aiEditPrompt"
-    ],
+    "callSites": [],
     "variables": []
   },
   {
@@ -941,16 +938,15 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
   },
   {
     "kind": "INTERNAL_EDIT_MOVE_FULL_FRAME",
-    "label": "对象移动整图编辑",
+    "label": "对象移动整图编辑（历史停用）",
     "group": "图片编辑",
-    "description": "移动任务同时完成原位置修复、目标重建和接触关系。",
-    "usage": "移动任务同时完成原位置修复、目标重建和接触关系。",
-    "editable": true,
+    "description": "历史局部编辑规则，当前直接编辑流程不再调用。",
+    "usage": "仅保留历史提示词版本的查询兼容；当前局部修改不使用此规则。",
+    "executionStatus": "RETIRED",
+    "editable": false,
     "layer": "SUPPLEMENT",
     "defaultPath": "prompts/internal/edit_move_full_frame.md",
-    "callSites": [
-      "server/src/image-edit-renderer.mjs#aiEditPrompt"
-    ],
+    "callSites": [],
     "variables": [
       {
         "name": "slot1",
@@ -968,16 +964,15 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
   },
   {
     "kind": "INTERNAL_EDIT_MOVE_REPAIR",
-    "label": "对象移动失败补救",
+    "label": "对象移动失败补救（历史停用）",
     "group": "图片编辑",
-    "description": "整图移动失败后，补齐未完成项并保证完整移动任务成立。",
-    "usage": "整图移动失败后，补齐未完成项并保证完整移动任务成立。",
-    "editable": true,
+    "description": "历史局部编辑规则，当前直接编辑流程不再调用。",
+    "usage": "仅保留历史提示词版本的查询兼容；当前局部修改不使用此规则。",
+    "executionStatus": "RETIRED",
+    "editable": false,
     "layer": "SUPPLEMENT",
     "defaultPath": "prompts/internal/edit_move_repair.md",
-    "callSites": [
-      "server/src/image-edit-renderer.mjs#aiEditPrompt"
-    ],
+    "callSites": [],
     "variables": []
   },
   {
@@ -1045,16 +1040,15 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
   },
   {
     "kind": "INTERNAL_EDIT_LOCAL_TEXT",
-    "label": "按文字定位局部编辑",
+    "label": "按文字定位局部编辑（历史停用）",
     "group": "图片编辑",
-    "description": "没有蒙版时，根据标注说明定位并修改指定对象。",
-    "usage": "没有蒙版时，根据标注说明定位并修改指定对象。",
-    "editable": true,
+    "description": "历史局部编辑规则，当前直接编辑流程不再调用。",
+    "usage": "仅保留历史提示词版本的查询兼容；当前局部修改不使用此规则。",
+    "executionStatus": "RETIRED",
+    "editable": false,
     "layer": "SUPPLEMENT",
     "defaultPath": "prompts/internal/edit_local_text.md",
-    "callSites": [
-      "server/src/image-edit-renderer.mjs#aiEditPrompt"
-    ],
+    "callSites": [],
     "variables": []
   },
   {
@@ -1092,30 +1086,28 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
   },
   {
     "kind": "INTERNAL_EDIT_SOY_SPOON_GEOMETRY",
-    "label": "老抽勺移动构图特例",
+    "label": "老抽勺移动构图特例（历史停用）",
     "group": "构图补充",
-    "description": "仅匹配“加半勺老抽”类目标时，使用现有勺子位置、容量和液流构图规则。",
-    "usage": "仅匹配“加半勺老抽”类目标时，使用现有勺子位置、容量和液流构图规则。",
-    "editable": true,
+    "description": "历史局部编辑规则，当前直接编辑流程不再调用。",
+    "usage": "仅保留历史提示词版本的查询兼容；当前局部修改不使用此规则。",
+    "executionStatus": "RETIRED",
+    "editable": false,
     "layer": "SUPPLEMENT",
     "defaultPath": "prompts/internal/edit_soy_spoon_geometry.md",
-    "callSites": [
-      "server/src/image-edit-renderer.mjs#localMoveDirectInstruction"
-    ],
+    "callSites": [],
     "variables": []
   },
   {
     "kind": "INTERNAL_EDIT_DESTINATION_BAND",
-    "label": "移动目标参考区域",
+    "label": "移动目标参考区域（历史停用）",
     "group": "构图补充",
-    "description": "提供目标横向参考带，避开文字及画面边缘。",
-    "usage": "提供目标横向参考带，避开文字及画面边缘。",
-    "editable": true,
+    "description": "历史局部编辑规则，当前直接编辑流程不再调用。",
+    "usage": "仅保留历史提示词版本的查询兼容；当前局部修改不使用此规则。",
+    "executionStatus": "RETIRED",
+    "editable": false,
     "layer": "SUPPLEMENT",
     "defaultPath": "prompts/internal/edit_destination_band.md",
-    "callSites": [
-      "server/src/image-edit-renderer.mjs#localMoveDirectInstruction"
-    ],
+    "callSites": [],
     "variables": [
       {
         "name": "slot1",
@@ -1129,30 +1121,28 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
   },
   {
     "kind": "INTERNAL_EDIT_SOY_SPOON_DESTINATION",
-    "label": "老抽勺目标位置特例",
+    "label": "老抽勺目标位置特例（历史停用）",
     "group": "构图补充",
-    "description": "老抽勺移动分支的目的位置描述。",
-    "usage": "老抽勺移动分支的目的位置描述。",
-    "editable": true,
+    "description": "历史局部编辑规则，当前直接编辑流程不再调用。",
+    "usage": "仅保留历史提示词版本的查询兼容；当前局部修改不使用此规则。",
+    "executionStatus": "RETIRED",
+    "editable": false,
     "layer": "SUPPLEMENT",
     "defaultPath": "prompts/internal/edit_soy_spoon_destination.md",
-    "callSites": [
-      "server/src/image-edit-renderer.mjs#localMoveDirectInstruction"
-    ],
+    "callSites": [],
     "variables": []
   },
   {
     "kind": "INTERNAL_EDIT_SPOON_VISIBILITY",
-    "label": "勺子移动可见性",
+    "label": "勺子移动可见性（历史停用）",
     "group": "构图补充",
-    "description": "移动目标为勺子时，要求勺碗和完整勺柄同时可见。",
-    "usage": "移动目标为勺子时，要求勺碗和完整勺柄同时可见。",
-    "editable": true,
+    "description": "历史局部编辑规则，当前直接编辑流程不再调用。",
+    "usage": "仅保留历史提示词版本的查询兼容；当前局部修改不使用此规则。",
+    "executionStatus": "RETIRED",
+    "editable": false,
     "layer": "SUPPLEMENT",
     "defaultPath": "prompts/internal/edit_spoon_visibility.md",
-    "callSites": [
-      "server/src/image-edit-renderer.mjs#localMoveDirectInstruction"
-    ],
+    "callSites": [],
     "variables": [
       {
         "name": "slot1",
@@ -1162,30 +1152,28 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
   },
   {
     "kind": "INTERNAL_EDIT_SOY_SPOON_PROTECTION",
-    "label": "非目标生抽勺保护特例",
+    "label": "非目标生抽勺保护特例（历史停用）",
     "group": "构图补充",
-    "description": "老抽勺移动时，保留画面中另一个生抽勺。",
-    "usage": "老抽勺移动时，保留画面中另一个生抽勺。",
-    "editable": true,
+    "description": "历史局部编辑规则，当前直接编辑流程不再调用。",
+    "usage": "仅保留历史提示词版本的查询兼容；当前局部修改不使用此规则。",
+    "executionStatus": "RETIRED",
+    "editable": false,
     "layer": "SUPPLEMENT",
     "defaultPath": "prompts/internal/edit_soy_spoon_protection.md",
-    "callSites": [
-      "server/src/image-edit-renderer.mjs#localMoveDirectInstruction"
-    ],
+    "callSites": [],
     "variables": []
   },
   {
     "kind": "INTERNAL_EDIT_EDGE_CLEARANCE",
-    "label": "贴边目标移动留白",
+    "label": "贴边目标移动留白（历史停用）",
     "group": "构图补充",
-    "description": "原目标贴右边或底边时，为移动后的完整目标保留边缘空隙。",
-    "usage": "原目标贴右边或底边时，为移动后的完整目标保留边缘空隙。",
-    "editable": true,
+    "description": "历史局部编辑规则，当前直接编辑流程不再调用。",
+    "usage": "仅保留历史提示词版本的查询兼容；当前局部修改不使用此规则。",
+    "executionStatus": "RETIRED",
+    "editable": false,
     "layer": "SUPPLEMENT",
     "defaultPath": "prompts/internal/edit_edge_clearance.md",
-    "callSites": [
-      "server/src/image-edit-renderer.mjs#localMoveDirectInstruction"
-    ],
+    "callSites": [],
     "variables": [
       {
         "name": "slot1",
@@ -1203,16 +1191,15 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
   },
   {
     "kind": "INTERNAL_EDIT_MOVE_INSTRUCTION",
-    "label": "对象移动完整指令",
+    "label": "对象移动完整指令（历史停用）",
     "group": "图片编辑",
-    "description": "把编辑计划中的目标、构图、数量、关系和原位置修复组合为移动指令。",
-    "usage": "把编辑计划中的目标、构图、数量、关系和原位置修复组合为移动指令。",
-    "editable": true,
+    "description": "历史局部编辑规则，当前直接编辑流程不再调用。",
+    "usage": "仅保留历史提示词版本的查询兼容；当前局部修改不使用此规则。",
+    "executionStatus": "RETIRED",
+    "editable": false,
     "layer": "SUPPLEMENT",
     "defaultPath": "prompts/internal/edit_move_instruction.md",
-    "callSites": [
-      "server/src/image-edit-renderer.mjs#localMoveDirectInstruction"
-    ],
+    "callSites": [],
     "variables": [
       {
         "name": "slot1",
@@ -1262,30 +1249,28 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
   },
   {
     "kind": "INTERNAL_EDIT_FLOW_CONTACT",
-    "label": "液流接触关系",
+    "label": "液流接触关系（历史停用）",
     "group": "构图补充",
-    "description": "存在倾倒关系时，要求液流在容器内部接触并结束。",
-    "usage": "存在倾倒关系时，要求液流在容器内部接触并结束。",
-    "editable": true,
+    "description": "历史局部编辑规则，当前直接编辑流程不再调用。",
+    "usage": "仅保留历史提示词版本的查询兼容；当前局部修改不使用此规则。",
+    "executionStatus": "RETIRED",
+    "editable": false,
     "layer": "SUPPLEMENT",
     "defaultPath": "prompts/internal/edit_flow_contact.md",
-    "callSites": [
-      "server/src/image-edit-renderer.mjs#localMoveDirectInstruction"
-    ],
+    "callSites": [],
     "variables": []
   },
   {
     "kind": "INTERNAL_EDIT_LOCAL_PLAN",
-    "label": "自然语言局部编辑规划",
+    "label": "自然语言局部编辑规划（历史停用）",
     "group": "编辑检查",
-    "description": "编辑前将标注说明转为目标、区域及修改计划，返回可执行、建议或阻断。",
-    "usage": "编辑前将标注说明转为目标、区域及修改计划，返回可执行、建议或阻断。",
-    "editable": true,
+    "description": "历史局部编辑规则，当前直接编辑流程不再调用。",
+    "usage": "仅保留历史提示词版本的查询兼容；当前局部修改不使用此规则。",
+    "executionStatus": "RETIRED",
+    "editable": false,
     "layer": "SUPPLEMENT",
     "defaultPath": "prompts/internal/edit_local_plan.md",
-    "callSites": [
-      "server/src/image-edit-renderer.mjs#validateLocalTarget"
-    ],
+    "callSites": [],
     "variables": [
       {
         "name": "slot1",
@@ -1295,16 +1280,15 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
   },
   {
     "kind": "INTERNAL_EDIT_LOCAL_REVIEW",
-    "label": "局部编辑结果验收",
+    "label": "局部编辑结果验收（历史停用）",
     "group": "编辑检查",
-    "description": "对编辑前后图核对修改完成度、构图、目标完整性和文字保护，并生成失败修复建议。",
-    "usage": "对编辑前后图核对修改完成度、构图、目标完整性和文字保护，并生成失败修复建议。",
-    "editable": true,
+    "description": "历史局部编辑规则，当前直接编辑流程不再调用。",
+    "usage": "仅保留历史提示词版本的查询兼容；当前局部修改不使用此规则。",
+    "executionStatus": "RETIRED",
+    "editable": false,
     "layer": "SUPPLEMENT",
     "defaultPath": "prompts/internal/edit_local_review.md",
-    "callSites": [
-      "server/src/image-edit-renderer.mjs#validateLocalEditResult"
-    ],
+    "callSites": [],
     "variables": [
       {
         "name": "slot1",
@@ -1676,6 +1660,43 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
       {
         "name": "slot2",
         "description": "本次结构校验错误 JSON"
+      }
+    ]
+  },
+  {
+    "kind": "INTERNAL_EDIT_DIRECT_TEXT",
+    "label": "直接局部图片编辑",
+    "group": "图片编辑",
+    "description": "依据原图与说明直接完成修改，不使用视觉规划选区。",
+    "usage": "依据原图与说明直接完成修改，不使用视觉规划选区。",
+    "editable": true,
+    "layer": "SUPPLEMENT",
+    "defaultPath": "prompts/internal/edit_direct_text.md",
+    "callSites": [
+      "server/src/image-edit-renderer.mjs#aiEditPrompt"
+    ],
+    "variables": []
+  },
+  {
+    "kind": "INTERNAL_EDIT_DIRECT_REVIEW",
+    "label": "直接局部图片结果验收",
+    "group": "编辑检查",
+    "description": "依据原图、说明与结果验收修改完成度、文字和未点名内容，不依赖规划坐标。",
+    "usage": "依据原图、说明与结果验收修改完成度、文字和未点名内容，不依赖规划坐标。",
+    "editable": true,
+    "layer": "SUPPLEMENT",
+    "defaultPath": "prompts/internal/edit_direct_review.md",
+    "callSites": [
+      "server/src/image-edit-renderer.mjs#validateLocalEditResult"
+    ],
+    "variables": [
+      {
+        "name": "slot1",
+        "description": "repairMode?'第一个附件是最初源图，第二个附件是上次失败结果，第三个附件是本次定向修复结果；必须按最初源图和完整任务核对最终状态，同时确认没有破坏失败结果中已经正确完成的部分。':'第一个附件是编辑前源图，第二个附件是编辑结果。'"
+      },
+      {
+        "name": "slot2",
+        "description": "criteria"
       }
     ]
   }

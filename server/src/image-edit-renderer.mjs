@@ -4,10 +4,10 @@ import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { imagePageDisclosure } from './image-edit-lineage.mjs';
-import { localizedTargetIsDisclosure, requestsDisclosureRemoval } from './image-edit-disclosure.mjs';
+import { requestsDisclosureRemoval } from './image-edit-disclosure.mjs';
 import { createAgentClient } from '../../src/agent-client.mjs';
 import { ImageAlignmentServiceError, createImageAlignmentValidator } from '../../src/image-alignment.mjs';
-import { imageHash, renderMask, renderRegionsMask, mergeWithMask, changedPixelMask, assertOutsideMask, safeRect, EDIT_WIDTH, EDIT_HEIGHT } from '../../src/image-edit-pixels.mjs';
+import { imageHash, renderMask, renderRegionsMask, mergeWithMask, assertOutsideMask, safeRect, EDIT_WIDTH, EDIT_HEIGHT } from '../../src/image-edit-pixels.mjs';
 import { aiDisclosureBadgeSvg, createAiDisclosureStyle, resolveAiDisclosureVisualStyle } from '../../src/ai-disclosure-badge.mjs';
 import { businessPrompt, withPromptRuntime, promptExecutionSnapshot, promptProvenance } from '../../src/prompt-runtime.mjs';
 
@@ -61,49 +61,23 @@ function aiEditPrompt(context,config,required) {
     });
   }
   if(config.operation==='AI_LOCAL') {
-    const masked=config.mask!=null||config.localizedRegion!=null||config.localizedRegions!=null;
-    const directMove=config.localMoveDirect===true;
-    const repair=config.localRepair??null;
-    const attachmentContract=repair
-      ? internalPrompt('INTERNAL_EDIT_REPAIR_ATTACHMENTS')
-      : directMove
-      ? internalPrompt('INTERNAL_EDIT_MOVE_ATTACHMENTS')
-      : '第一个附件是待编辑源图。';
-    const directGuideContract=config.directMoveGuideAttached
-      ? internalPrompt('INTERNAL_EDIT_MOVE_GUIDE')
-      : '';
-    const guideContract=config.roleGuideAttached
-      ? internalPrompt('INTERNAL_EDIT_ROLE_GUIDE')
-      : '';
+    const repair=config.localRepair??null,masked=config.mask!=null;
     const removal=typeof config.removeDisclosure==='string'&&config.removeDisclosure;
-    const mustPreserve=removal
-      ? [...required,internalPrompt('INTERNAL_EDIT_REMOVE_PRESERVE')]
-      : [...required,config.preserve].filter(Boolean);
-    const negative=removal
-      ? internalPrompt('INTERNAL_EDIT_REMOVE_NEGATIVE')
-      : config.negative;
-    return governedImageEditPrompt(context,config,{reviewInstruction:'局部修改',
-      contract:directMove
-        ? internalPrompt('INTERNAL_EDIT_MOVE_FULL_FRAME', { slot1: (attachmentContract), slot2: (directGuideContract), slot3: (repair?internalPrompt('INTERNAL_EDIT_MOVE_REPAIR'):'') })
-        : masked
-        ? internalPrompt('INTERNAL_EDIT_LOCAL_MASK', { slot1: (attachmentContract), slot2: (guideContract), slot3: (config.mask?'历史任务':'根据自然语言编辑规划生成'), slot4: (repair?internalPrompt('INTERNAL_EDIT_MASK_REPAIR'):''), slot5: (removal?internalPrompt('INTERNAL_EDIT_REMOVE_DISCLOSURE'):'不得新增、删除或改写已有文字。') })
-        : internalPrompt('INTERNAL_EDIT_LOCAL_TEXT'),
-      data:{operation:directMove?'LOCAL_MOVE_FULL_FRAME':masked?'LOCAL_MASK_EDIT':'LOCAL_PROMPT_EDIT',operatorInstruction:config.instruction,
-        ...(masked?{mask:config.mask??(config.localizedRegions?{type:'regions',regions:config.localizedRegions}:{type:'rect',...config.localizedRegion})}:{}),
-        ...(config.localPlan?{editPlan:{operationType:config.localPlan.operationType,targetDescription:config.localPlan.targetDescription,
-          originalInstruction:config.localPlan.originalInstruction,
-          sourceAction:config.localPlan.sourceAction,
-          destinationAction:directMove?null:config.localPlan.destinationAction,
-          quantity:directMove?null:config.localPlan.quantity,
-          relationship:config.localPlan.relationship,sourceRegion:config.localPlan.sourceRegion,
-          destinationRegion:directMove?null:config.localPlan.destinationRegion,
-          contactRegion:directMove?null:config.localPlan.contactRegion,
-          ...(directMove?{geometryPolicy:'自然语言中的目标关系与避让文字要求优先；旧坐标仅用于验收参考，不提供给生成模型'}:{})}}:{}),
+    const attachmentContract=repair?internalPrompt('INTERNAL_EDIT_REPAIR_ATTACHMENTS'):'第一个附件是待编辑源图。';
+    const contract=masked
+      ?internalPrompt('INTERNAL_EDIT_LOCAL_MASK',{slot1:attachmentContract,slot2:'',slot3:'历史任务',
+        slot4:repair?internalPrompt('INTERNAL_EDIT_MASK_REPAIR'):'',slot5:'不得新增、删除或改写已有文字。'})
+      :[internalPrompt('INTERNAL_EDIT_DIRECT_TEXT'),attachmentContract,
+        removal?internalPrompt('INTERNAL_EDIT_REMOVE_DISCLOSURE'):''].filter(Boolean).join('\n');
+    return governedImageEditPrompt(context,config,{reviewInstruction:'局部修改',contract,
+      data:{operation:masked?'LOCAL_MASK_EDIT':'LOCAL_PROMPT_EDIT',operatorInstruction:config.instruction,
+        ...(masked?{mask:config.mask}:{}),
         ...(repair?{repair:{attempt:repair.attempt,originalInstruction:repair.originalInstruction,
-          failureCodes:repair.failureCodes,repairInstruction:repair.repairInstruction,repairRegions:repair.repairRegions}}:{}),
-        attachmentRoles:{editTarget:'attachment-1',originalSourceReference:repair||directMove?'attachment-2':null,
-          semanticRoleGuide:config.directMoveGuideAttached?'last':config.roleGuideAttached?'penultimate':null,binaryMask:masked?'last':null},
-        ...(removal?{removeDisclosure:removal}:{}),mustPreserve,negative},
+          failureCodes:repair.failureCodes,repairInstruction:repair.repairInstruction}}:{}),
+        attachmentRoles:{editTarget:'attachment-1',originalSourceReference:repair?'attachment-2':null,binaryMask:masked?'last':null},
+        ...(removal?{removeDisclosure:removal}:{}),
+        mustPreserve:removal?[...required,internalPrompt('INTERNAL_EDIT_REMOVE_PRESERVE')]:[...required,config.preserve].filter(Boolean),
+        negative:removal?internalPrompt('INTERNAL_EDIT_REMOVE_NEGATIVE'):config.negative},
     });
   }
   return governedImageEditPrompt(context,config,{reviewInstruction:'历史整图修改',
@@ -170,27 +144,6 @@ async function validateFusionTarget(client,{inputPath,referencePaths,target,refe
   }
   return check;
 }
-const LOCAL_PLAN_DECISIONS=new Set(['READY','SUGGEST','BLOCKED']);
-const rectContains=(outer,inner)=>outer&&inner&&inner.x>=outer.x&&inner.y>=outer.y
-  &&inner.x+inner.width<=outer.x+outer.width&&inner.y+inner.height<=outer.y+outer.height;
-function localRect(value) {
-  try{return safeRect(value);}catch{return null;}
-}
-function uniqueLocalRegions(values) {
-  const regions=[];
-  for(const value of values??[]) {
-    const region=localRect(value);
-    if(!region||region.width<24||region.height<24)continue;
-    if(!regions.some(item=>JSON.stringify(item)===JSON.stringify(region)))regions.push(region);
-  }
-  return regions.slice(0,4);
-}
-function boundingRegion(regions) {
-  if(!regions.length)return null;
-  const x=Math.min(...regions.map(region=>region.x)),y=Math.min(...regions.map(region=>region.y));
-  const right=Math.max(...regions.map(region=>region.x+region.width)),bottom=Math.max(...regions.map(region=>region.y+region.height));
-  return {x,y,width:right-x,height:bottom-y};
-}
 const LOCAL_RESULT_FAILURE_CODES=new Set(['SOURCE_NOT_CLEARED','DESTINATION_OBJECT_MISSING','QUANTITY_INCORRECT',
   'POUR_CONTACT_MISSING','TARGET_COUNT_INCORRECT','PLACEMENT_OR_RELATIONSHIP_INCORRECT',
   'TARGET_INCOMPLETE_OR_OCCLUDED','COMPOSITION_UNBALANCED','REQUESTED_CHANGE_INCOMPLETE',
@@ -198,13 +151,6 @@ const LOCAL_RESULT_FAILURE_CODES=new Set(['SOURCE_NOT_CLEARED','DESTINATION_OBJE
 const LOCAL_REPAIRABLE_FAILURE_CODES=new Set(['SOURCE_NOT_CLEARED','DESTINATION_OBJECT_MISSING','QUANTITY_INCORRECT',
   'POUR_CONTACT_MISSING','TARGET_COUNT_INCORRECT','PLACEMENT_OR_RELATIONSHIP_INCORRECT',
   'TARGET_INCOMPLETE_OR_OCCLUDED','COMPOSITION_UNBALANCED','REQUESTED_CHANGE_INCOMPLETE']);
-const shortPlanText=value=>String(value??'').trim().slice(0,500);
-function regionInsideAny(region,allowed) {
-  return Boolean(region&&allowed.some(outer=>rectContains(outer,region)));
-}
-function normalizeRepairRegions(values,plan) {
-  return uniqueLocalRegions(values).filter(region=>regionInsideAny(region,plan.editRegions??[]));
-}
 function derivedFailureCodes(checks) {
   const codes=[];
   if(!checks.requestedChangeCompleted)codes.push('REQUESTED_CHANGE_INCOMPLETE');
@@ -216,218 +162,22 @@ function derivedFailureCodes(checks) {
   if(!checks.unrelatedContentPreserved)codes.push('UNRELATED_CONTENT_CHANGED');
   return codes;
 }
-function deriveRepairRegions(codes,plan) {
-  const regions=[];
-  const addContaining=region=>{for(const allowed of plan.editRegions??[])if(region&&rectContains(allowed,region))regions.push(allowed);};
-  if(codes.includes('SOURCE_NOT_CLEARED'))addContaining(plan.sourceRegion);
-  if(codes.some(code=>['DESTINATION_OBJECT_MISSING','QUANTITY_INCORRECT','POUR_CONTACT_MISSING',
-    'TARGET_COUNT_INCORRECT','PLACEMENT_OR_RELATIONSHIP_INCORRECT','TARGET_INCOMPLETE_OR_OCCLUDED','COMPOSITION_UNBALANCED'].includes(code))) {
-    addContaining(plan.destinationRegion);addContaining(plan.contactRegion);
-  }
-  if(!regions.length&&codes.includes('REQUESTED_CHANGE_INCOMPLETE')) {
-    addContaining(plan.destinationRegion);addContaining(plan.contactRegion);
-  }
-  return uniqueLocalRegions(regions.length?regions:(plan.editRegions??[]));
-}
-async function renderLocalRoleGuide(plan,activeRegions) {
-  const rectangles=[];
-  const add=(regions,fill)=>{for(const region of regions??[])rectangles.push(`<rect x="${region.x}" y="${region.y}" width="${region.width}" height="${region.height}" fill="${fill}"/>`);};
-  add(activeRegions,'#4b5563');add(plan.sourceRegion?[plan.sourceRegion]:[],'#ef4444');
-  add(plan.destinationRegion?[plan.destinationRegion]:[],'#22c55e');add(plan.contactRegion?[plan.contactRegion]:[],'#3b82f6');
-  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${EDIT_WIDTH}" height="${EDIT_HEIGHT}" viewBox="0 0 ${EDIT_WIDTH} ${EDIT_HEIGHT}"><rect width="100%" height="100%" fill="#000000"/>${rectangles.join('')}</svg>`;
-  return sharp(Buffer.from(svg)).png().toBuffer();
-}
-function needsSoySpoonMoveGuide(plan) {
-  return plan?.operationType==='MOVE'&&/加半勺老抽|老抽.*勺/u.test(plan.targetDescription??'');
-}
-async function renderSoySpoonMoveGuide(plan) {
-  const bowlX=Math.round(EDIT_WIDTH*.77),bowlY=Math.round(EDIT_HEIGHT*.835);
-  const handleX=Math.round(EDIT_WIDTH*.65),handleY=Math.round(EDIT_HEIGHT*.815);
-  const streamX=Math.round(EDIT_WIDTH*.71),streamEndY=Math.round(EDIT_HEIGHT*.88);
-  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${EDIT_WIDTH}" height="${EDIT_HEIGHT}" viewBox="0 0 ${EDIT_WIDTH} ${EDIT_HEIGHT}">
-    <rect width="100%" height="100%" fill="#000000"/>
-    <line x1="${handleX}" y1="${handleY}" x2="${bowlX-36}" y2="${bowlY-20}" stroke="#22c55e" stroke-width="26" stroke-linecap="round"/>
-    <ellipse cx="${bowlX}" cy="${bowlY}" rx="60" ry="42" fill="none" stroke="#22c55e" stroke-width="14" transform="rotate(25 ${bowlX} ${bowlY})"/>
-    <path d="M ${bowlX-12} ${bowlY+36} Q ${bowlX-28} ${bowlY+52}, ${streamX} ${streamEndY}" fill="none" stroke="#3b82f6" stroke-width="14" stroke-linecap="round"/>
-    <circle cx="${streamX}" cy="${streamEndY}" r="21" fill="#3b82f6"/>
-  </svg>`;
-  return sharp(Buffer.from(svg)).png().toBuffer();
-}
-function localMoveDirectInstruction(plan) {
-  const flowRequired=/液流|倒入|流入|倾倒/u.test(`${plan.relationship??''}${plan.destinationAction??''}`);
-  const estimatedPixelDistance=/\d+\s*(?:像素|px)/iu.test(`${plan.destinationAction??''}${plan.quantity??''}`)
-    &&!/\d+\s*(?:像素|px)/iu.test(plan.originalInstruction??'');
-  const soySpoonTask=/加半勺老抽|老抽.*勺/u.test(plan.targetDescription??'');
-  const destination=plan.destinationRegion;
-  const horizontalGuide=soySpoonTask
-    ?internalPrompt('INTERNAL_EDIT_SOY_SPOON_GEOMETRY')
-    :destination
-    ?internalPrompt('INTERNAL_EDIT_DESTINATION_BAND', { slot1: (Math.round(destination.x/EDIT_WIDTH*100)), slot2: (Math.round((destination.x+destination.width)/EDIT_WIDTH*100)) })
-    :'';
-  const destinationAction=soySpoonTask
-    ?internalPrompt('INTERNAL_EDIT_SOY_SPOON_DESTINATION')
-    :estimatedPixelDistance
-    ?`将该目标向${/左/u.test(plan.originalInstruction??'')?'左':'指定方向'}移动到不遮挡任何文字且能完成接触关系的自然位置`
-    :plan.destinationAction||`将${plan.targetDescription||'目标对象'}移动到目标位置`;
-  const quantity=estimatedPixelDistance
-    ?String(plan.quantity??'').split(/[；;]/u).filter(part=>part&&!/\d+\s*(?:像素|px)/iu.test(part)).join('；')
-    :plan.quantity;
-  const source=plan.sourceRegion;
-  const touchedRight=Boolean(source&&source.x+source.width>=EDIT_WIDTH);
-  const touchedBottom=Boolean(source&&source.y+source.height>=EDIT_HEIGHT);
-  const spoonGuide=/勺/u.test(plan.targetDescription??'')
-    ?internalPrompt('INTERNAL_EDIT_SPOON_VISIBILITY', { slot1: (soySpoonTask?'并严格按上述勺碗中心、勺柄端安全带落位':'或上方') })
-    :'';
-  const soySpoonProtection=soySpoonTask
-    ?internalPrompt('INTERNAL_EDIT_SOY_SPOON_PROTECTION')
-    :'';
-  const edgeGuide=touchedRight||touchedBottom
-    ?internalPrompt('INTERNAL_EDIT_EDGE_CLEARANCE', { slot1: (touchedRight?'贴住右边缘':''), slot2: (touchedRight&&touchedBottom?'且':''), slot3: (touchedBottom?'贴住下边缘':'') })
-    :'';
-  return internalPrompt('INTERNAL_EDIT_MOVE_INSTRUCTION', { slot1: (plan.targetDescription||'任务明确点名的目标对象'), slot2: (soySpoonProtection), slot3: (destinationAction), slot4: (horizontalGuide), slot5: (spoonGuide), slot6: (edgeGuide), slot7: (quantity?`数量或容量要求：${quantity}。`:''), slot8: (estimatedPixelDistance?'原始说明没有要求精确像素，已忽略规划器自行估算的像素距离。':''), slot9: (plan.relationship?`必须形成的关系：${plan.relationship}。`:''), slot10: (flowRequired?internalPrompt('INTERNAL_EDIT_FLOW_CONTACT'):''), slot11: (plan.sourceAction||'彻底移除原位置对象及其痕迹并自然修复背景') });
-}
-export function parseLocalTargetCheck(rawText) {
-  const parsed=JSON.parse(rawText);
-  const checks=parsed?.checks&&typeof parsed.checks==='object'&&!Array.isArray(parsed.checks)?parsed.checks:{};
-  const confidence=typeof parsed?.confidence==='number'&&Number.isFinite(parsed.confidence)?parsed.confidence:0;
-  const candidateCount=Number.isInteger(parsed?.candidateCount)?parsed.candidateCount:0;
-  const sourceRegion=localRect(parsed?.sourceRegion??parsed?.region);
-  const destinationRegion=localRect(parsed?.destinationRegion);
-  let editRegions=uniqueLocalRegions(parsed?.editRegions);
-  if(!editRegions.length)editRegions=uniqueLocalRegions([parsed?.editRegion,sourceRegion,destinationRegion]);
-  const wholeVisibleTargetInsideRegion=checks.wholeVisibleTargetInsideRegion===true
-    ||(checks.wholeVisibleTargetInsideRegion==null&&checks.wholeTargetInsideRegion===true);
-  const protectedTextExcluded=checks.protectedTextExcluded===true;
-  const editRegionSafe=checks.editRegionSafe===true||(checks.editRegionSafe==null&&protectedTextExcluded);
-  const missingPartsRequiredForEdit=parsed?.missingPartsRequiredForEdit===true;
-  const sourceCovered=sourceRegion!==null&&editRegions.some(region=>rectContains(region,sourceRegion));
-  const destinationCovered=destinationRegion===null||editRegions.some(region=>rectContains(region,destinationRegion));
-  const explicitDecision=String(parsed?.decision??'').toUpperCase();
-  const decision=LOCAL_PLAN_DECISIONS.has(explicitDecision)?explicitDecision:(parsed?.passed===true?'READY':'BLOCKED');
-  const suggestedInstruction=String(parsed?.suggestedInstruction??'').trim().slice(0,2000);
-  const contactCandidate=localRect(parsed?.contactRegion);
-  const contactRegion=regionInsideAny(contactCandidate,editRegions)?contactCandidate:null;
-  const baseSafe=confidence>=0.8&&candidateCount===1&&sourceRegion!==null&&editRegions.length>0
-    &&sourceCovered&&destinationCovered&&!missingPartsRequiredForEdit
-    &&checks.instructionSpecific===true&&checks.exactlyOneTarget===true&&wholeVisibleTargetInsideRegion
-    &&protectedTextExcluded&&editRegionSafe;
-  const canEdit=baseSafe&&decision!=='BLOCKED'&&(decision!=='SUGGEST'||suggestedInstruction.length>0);
-  const passed=canEdit&&decision==='READY'&&parsed?.passed!==false;
-  const touchesImageEdge=parsed?.touchesImageEdge===true||Boolean(sourceRegion&&(sourceRegion.x===0||sourceRegion.y===0
-    ||sourceRegion.x+sourceRegion.width===EDIT_WIDTH||sourceRegion.y+sourceRegion.height===EDIT_HEIGHT));
-  const normalizedChecks={instructionSpecific:checks.instructionSpecific===true,exactlyOneTarget:checks.exactlyOneTarget===true,
-    wholeVisibleTargetInsideRegion,protectedTextExcluded,editRegionSafe};
-  return {mode:'VISION_PROMPT_REGION_CHECK',decision,canEdit,passed,confidence,candidateCount,
-    region:sourceRegion,sourceRegion,destinationRegion,editRegion:boundingRegion(editRegions),editRegions,touchesImageEdge,
-    missingPartsRequiredForEdit,operationType:String(parsed?.operationType??'ADJUST').slice(0,50),suggestedInstruction,
-    sourceAction:shortPlanText(parsed?.sourceAction),destinationAction:shortPlanText(parsed?.destinationAction),
-    quantity:shortPlanText(parsed?.quantity),relationship:shortPlanText(parsed?.relationship),contactRegion,
-    warnings:Array.isArray(parsed?.warnings)?parsed.warnings.filter(value=>typeof value==='string').slice(0,8).map(value=>value.slice(0,300)):[],
-    targetIsAiDisclosure:parsed?.targetIsAiDisclosure===true,
-    targetDescription:String(parsed?.targetDescription??'').slice(0,500),
-    checks:{...normalizedChecks,wholeTargetInsideRegion:checks.wholeTargetInsideRegion===true},
-    reason:String(parsed?.reason??'').slice(0,1000)};
-}
-async function validateLocalTarget(client,{inputPath,instruction,signal}) {
-  const criteria=JSON.stringify({instruction}).replaceAll('<','\\u003c').replaceAll('>','\\u003e');
-  let response;
-  try {
-    response=await client.runVision({prompt:internalPrompt('INTERNAL_EDIT_LOCAL_PLAN', { slot1: (criteria) }),
-      inputPaths:[inputPath],signal});
-  } catch(error) {
-    throw Object.assign(new Error('自然语言目标定位视觉服务失败，尚未调用图片编辑模型'),{
-      cause:error,nonBillablePreflightFailure:true,
-      validation:{stage:'LOCAL_TARGET_LOCALIZATION_SERVICE',passed:false,billedImageGeneration:false,
-        code:String(error?.code??'VISION_SERVICE_FAILED').slice(0,100)},
-    });
-  }
-  let check;
-  try{check=parseLocalTargetCheck(response.rawText);}catch(error){
-    throw Object.assign(new Error('自然语言目标定位结果格式无效，尚未调用图片编辑模型'),{
-      cause:error,nonBillablePreflightFailure:true,
-      validation:{stage:'LOCAL_TARGET_LOCALIZATION',passed:false,billedImageGeneration:false,reason:'INVALID_VISION_RESULT'},
-    });
-  }
-  check.model=response.model??null;
-  check.instruction=instruction;
-  if(check.decision==='SUGGEST'&&check.canEdit)throw Object.assign(new Error('已生成更适合图片编辑的描述，请确认采用后再调用图片编辑模型'),{
-    nonBillablePreflightFailure:true,
-    validation:{stage:'LOCAL_EDIT_SUGGESTION',...check,billedImageGeneration:false},
-  });
-  if(!check.passed)throw Object.assign(new Error(`局部修改规划未通过，尚未调用图片编辑模型：${check.reason||'请补充目标位置、外观特征或修改后的目标位置'}`),{
-    nonBillablePreflightFailure:true,
-    validation:{stage:'LOCAL_TARGET_LOCALIZATION',...check,billedImageGeneration:false},
-  });
-  return check;
-}
-function acceptedLocalPlan(config) {
-  const plan=config?.localPlan;
-  if(!plan||typeof plan!=='object'||Array.isArray(plan)||plan.accepted!==true)return null;
-  const suggestedInstruction=String(plan.suggestedInstruction??'').slice(0,2000);
-  if(!suggestedInstruction||suggestedInstruction!==String(config.instruction??''))throw new Error('已采用的局部修改描述与规划不一致，请重新创建请求');
-  const sourceRegion=localRect(plan.sourceRegion??plan.region);
-  const destinationRegion=localRect(plan.destinationRegion);
-  const editRegions=uniqueLocalRegions(plan.editRegions);
-  if(!sourceRegion||!editRegions.length||!editRegions.some(region=>rectContains(region,sourceRegion))
-    ||(destinationRegion&&!editRegions.some(region=>rectContains(region,destinationRegion))))throw new Error('已采用的局部修改规划无效，请重新创建请求');
-  return {mode:'VISION_PROMPT_REGION_CHECK',decision:'READY',canEdit:true,passed:true,adoptedSuggestion:true,
-    confidence:typeof plan.confidence==='number'?plan.confidence:1,candidateCount:1,region:sourceRegion,sourceRegion,destinationRegion,
-    editRegion:boundingRegion(editRegions),editRegions,touchesImageEdge:plan.touchesImageEdge===true,
-    missingPartsRequiredForEdit:false,operationType:String(plan.operationType??'ADJUST').slice(0,50),
-    originalInstruction:String(plan.originalInstruction??'').slice(0,2000),suggestedInstruction,
-    sourceAction:shortPlanText(plan.sourceAction),destinationAction:shortPlanText(plan.destinationAction),
-    quantity:shortPlanText(plan.quantity),relationship:shortPlanText(plan.relationship),
-    contactRegion:regionInsideAny(localRect(plan.contactRegion),editRegions)?localRect(plan.contactRegion):null,
-    warnings:Array.isArray(plan.warnings)?plan.warnings.filter(value=>typeof value==='string').slice(0,8).map(value=>value.slice(0,300)):[],
-    targetIsAiDisclosure:plan.targetIsAiDisclosure===true,targetDescription:String(plan.targetDescription??'').slice(0,500),
-    checks:{instructionSpecific:true,exactlyOneTarget:true,wholeVisibleTargetInsideRegion:true,
-      protectedTextExcluded:true,editRegionSafe:true,wholeTargetInsideRegion:plan.checks?.wholeTargetInsideRegion===true},
-    reason:String(plan.reason??'已由标注采用视觉模型建议').slice(0,1000),model:plan.model??null};
-}
-function repairedLocalPlan(config) {
-  const repair=config?.localRepair,plan=repair?.plan;
-  if(!repair||!plan||typeof plan!=='object'||Array.isArray(plan))return null;
-  const sourceRegion=localRect(plan.sourceRegion??plan.region),destinationRegion=localRect(plan.destinationRegion);
-  const editRegions=uniqueLocalRegions(plan.editRegions);
-  if(!sourceRegion||!editRegions.length||!editRegions.some(region=>rectContains(region,sourceRegion))) {
-    throw new Error('失败预览的局部修复规划无效，请从原图重新创建请求');
-  }
-  const contactRegion=regionInsideAny(localRect(plan.contactRegion),editRegions)?localRect(plan.contactRegion):null;
-  return {mode:'VISION_PROMPT_REGION_CHECK',decision:'READY',canEdit:true,passed:true,rejectedPreviewRepair:true,
-    confidence:typeof plan.confidence==='number'?plan.confidence:1,candidateCount:1,region:sourceRegion,sourceRegion,destinationRegion,
-    editRegion:boundingRegion(editRegions),editRegions,touchesImageEdge:plan.touchesImageEdge===true,
-    missingPartsRequiredForEdit:false,operationType:String(plan.operationType??'ADJUST').slice(0,50),
-    originalInstruction:String(repair.originalInstruction??config.instruction??'').slice(0,2000),
-    suggestedInstruction:String(config.instruction??'').slice(0,2000),sourceAction:shortPlanText(plan.sourceAction),
-    destinationAction:shortPlanText(plan.destinationAction),quantity:shortPlanText(plan.quantity),
-    relationship:shortPlanText(plan.relationship),contactRegion,targetIsAiDisclosure:plan.targetIsAiDisclosure===true,
-    targetDescription:String(plan.targetDescription??'').slice(0,500),warnings:Array.isArray(plan.warnings)?plan.warnings.slice(0,8):[],
-    checks:{instructionSpecific:true,exactlyOneTarget:true,wholeVisibleTargetInsideRegion:true,
-      protectedTextExcluded:true,editRegionSafe:true,wholeTargetInsideRegion:plan.checks?.wholeTargetInsideRegion===true},
-    reason:String(plan.reason??'基于失败预览定向修复').slice(0,1000),model:plan.model??null};
+function directLocalEdit(config) {
+  return {mode:'DIRECT_PROMPT_EDIT',preflightPerformed:false,instruction:config.instruction,
+    originalInstruction:config.localRepair?.originalInstruction??config.instruction,
+    operationType:'FROM_INSTRUCTION',editRegions:[],
+    ...(config.localRepair?{rejectedPreviewRepair:true}:{})};
 }
 const LOCAL_RESULT_CHECKS=['requestedChangeCompleted','targetCountCorrect','placementAndRepairNatural','protectedTextPreserved','unrelatedContentPreserved'];
 async function validateLocalEditResult(client,{inputPath,originalInputPath,outputPath,instruction,plan,repair,signal}) {
-  const estimatedPixelDistance=/\d+\s*(?:像素|px)/iu.test(`${plan.destinationAction??''}${plan.quantity??''}`)
-    &&!/\d+\s*(?:像素|px)/iu.test(plan.originalInstruction??'');
-  const semanticSoySpoonMove=plan.operationType==='MOVE'&&/加半勺老抽|老抽.*勺/u.test(plan.targetDescription??'');
-  const discardPlannerGeometry=estimatedPixelDistance||semanticSoySpoonMove;
-  const semanticQuantity=estimatedPixelDistance
-    ?String(plan.quantity??'').split(/[；;]/u).filter(part=>part&&!/\d+\s*(?:像素|px)/iu.test(part)).join('；')
-    :plan.quantity;
-  const criteria=JSON.stringify({instruction,originalInstruction:plan.originalInstruction??instruction,operationType:plan.operationType,targetDescription:plan.targetDescription,
-    sourceAction:plan.sourceAction,destinationAction:discardPlannerGeometry?null:plan.destinationAction,quantity:semanticQuantity,relationship:plan.relationship,
-    sourceRegion:plan.sourceRegion,destinationRegion:discardPlannerGeometry?null:plan.destinationRegion,contactRegion:discardPlannerGeometry?null:plan.contactRegion,
-    ...(discardPlannerGeometry?{discardedPlannerConstraint:semanticSoySpoonMove
-      ?'本任务使用最终语义构图规则；规划器早期估算的目标框、接触框和移动距离不得用于判定'
-      :'用户未要求精确像素；规划器自行估算的像素距离和冲突坐标不得用于判定'}:{}),
-    editRegions:plan.editRegions,warnings:plan.warnings,repair:repair?{failureCodes:repair.failureCodes,
-      repairInstruction:repair.repairInstruction,repairRegions:repair.repairRegions}:null})
+  const criteria=JSON.stringify({instruction,originalInstruction:plan.originalInstruction??instruction,
+    operationType:plan.operationType,mode:plan.mode,removeDisclosure:plan.removeDisclosure??null,
+    repair:repair?{failureCodes:repair.failureCodes,repairInstruction:repair.repairInstruction}:null})
     .replaceAll('<','\\u003c').replaceAll('>','\\u003e');
   const repairMode=Boolean(repair&&originalInputPath);
   let response;
   try {
-    response=await client.runVision({prompt:internalPrompt('INTERNAL_EDIT_LOCAL_REVIEW', { slot1: (repairMode?internalPrompt('INTERNAL_EDIT_REVIEW_ATTACHMENTS'):'第一个附件是编辑前源图，第二个附件是编辑结果。'), slot2: (criteria) }),
+    response=await client.runVision({prompt:internalPrompt('INTERNAL_EDIT_DIRECT_REVIEW', { slot1: (repairMode?internalPrompt('INTERNAL_EDIT_REVIEW_ATTACHMENTS'):'第一个附件是编辑前源图，第二个附件是编辑结果。'), slot2: (criteria) }),
       inputPaths:repairMode?[originalInputPath,inputPath,outputPath]:[inputPath,outputPath],signal});
   } catch(error) {
     throw Object.assign(new Error('局部修改结果视觉验收服务失败，图片编辑模型已经调用'),{cause:error,
@@ -440,19 +190,18 @@ async function validateLocalEditResult(client,{inputPath,originalInputPath,outpu
       validation:{stage:'LOCAL_EDIT_RESULT',passed:false,billedImageGeneration:true,reason:'INVALID_VISION_RESULT'}});
   }
   const checks=parsed?.checks&&typeof parsed.checks==='object'&&!Array.isArray(parsed.checks)?parsed.checks:{};
-  const requiredChecks=plan.operationType==='MOVE'?[...LOCAL_RESULT_CHECKS,'movedTargetFullyVisible','compositionBalanced']:LOCAL_RESULT_CHECKS;
+  const requiredChecks=[...LOCAL_RESULT_CHECKS,'movedTargetFullyVisible','compositionBalanced'];
   const passed=parsed?.passed===true&&requiredChecks.every(name=>checks[name]===true);
   const normalizedChecks=Object.fromEntries(requiredChecks.map(name=>[name,checks[name]===true]));
   let failureCodes=Array.isArray(parsed?.failureCodes)
     ? [...new Set(parsed.failureCodes.filter(code=>typeof code==='string'&&LOCAL_RESULT_FAILURE_CODES.has(code)))]
     : [];
   if(!passed&&!failureCodes.length)failureCodes=derivedFailureCodes(normalizedChecks);
-  let repairRegions=normalizeRepairRegions(parsed?.repairRegions,plan);
-  if(!passed&&!repairRegions.length)repairRegions=deriveRepairRegions(failureCodes,plan);
+  const repairRegions=[];
   const repairInstruction=String(parsed?.repairInstruction??'').trim().slice(0,2000)
     ||(!passed?`只修复以下未完成项：${String(parsed?.reason??'任务未完整完成').slice(0,1000)}。完整目标仍为：${instruction}`:'');
   const repairableFromRejected=!passed&&normalizedChecks.protectedTextPreserved&&normalizedChecks.unrelatedContentPreserved
-    &&failureCodes.length>0&&failureCodes.every(code=>LOCAL_REPAIRABLE_FAILURE_CODES.has(code))&&repairRegions.length>0;
+    &&failureCodes.length>0&&failureCodes.every(code=>LOCAL_REPAIRABLE_FAILURE_CODES.has(code))&&repairInstruction.length>0;
   return {mode:'VISION_LOCAL_EDIT_RESULT_CHECK',passed,
     checks:normalizedChecks,failureCodes,repairInstruction,repairRegions,repairableFromRejected,
     reason:String(parsed?.reason??'').slice(0,1000),model:response.model??null};
@@ -659,7 +408,7 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
     alignmentStage='RESULT';
     const refs=[];
     for(const asset of context.refs)refs.push({asset,bytes:await service.readAsset(asset)});
-    let result=source,mask=null,outsideMask=null,targetLocalization=null,directLocalMove=false,directMoveGuideAttached=false,localExecutionInstruction=config.instruction,entityConsistency={mode:'NOT_APPLICABLE',passed:true},
+    let result=source,mask=null,outsideMask=null,targetLocalization=null,localExecutionInstruction=config.instruction,entityConsistency={mode:'NOT_APPLICABLE',passed:true},
       localConsistency={mode:'NOT_APPLICABLE',passed:true},model=null,generationAttempts=0,textCheck=null;
     let removedInheritedDisclosure=false;
     if(e.operation==='TEXT') {
@@ -695,64 +444,35 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
         mask=await renderMask({type:'rect',...config.target.region});
         const path=resolve(directory,'target-mask.png');await writeFile(path,mask);paths.push(path);
       } else if(e.operation==='AI_LOCAL') {
-        if(config.mask)targetLocalization={mode:'MASK',instruction:config.instruction,region:config.mask};
-        else targetLocalization=repairedLocalPlan(config)??acceptedLocalPlan(config)
-          ??await validateLocalTarget(client,{inputPath,instruction:config.instruction,signal:controller.signal});
-        removedInheritedDisclosure=Boolean(sourceDisclosure
-          &&requestsDisclosureRemoval(config.instruction,sourceDisclosure)
-          &&localizedTargetIsDisclosure(targetLocalization,sourceDisclosure));
+        targetLocalization=config.mask?{mode:'MASK',instruction:config.instruction,region:config.mask}:directLocalEdit(config);
+        removedInheritedDisclosure=Boolean(!config.mask&&sourceDisclosure&&requestsDisclosureRemoval(config.instruction,sourceDisclosure));
         if(removedInheritedDisclosure) {
           required=required.filter(text=>cleanText(text)!==cleanText(sourceDisclosure));
           disclosure='';
-          targetLocalization={...targetLocalization,removedInheritedDisclosure:true};
+          targetLocalization={...targetLocalization,removedInheritedDisclosure:true,removeDisclosure:sourceDisclosure};
         }
-        directLocalMove=!config.mask&&targetLocalization.operationType==='MOVE'
-          &&Boolean(targetLocalization.sourceRegion&&targetLocalization.destinationRegion);
-        const activeRegions=config.localRepair?.repairRegions??targetLocalization.editRegions??[targetLocalization.region];
-        if(directLocalMove) {
-          mask=null;
-          if(config.localRepair&&originalInputPath)paths.push(originalInputPath);
-          else {
-            const protectedSourcePath=resolve(directory,'original-source-reference.png');
-            await writeFile(protectedSourcePath,source);paths.push(protectedSourcePath);
-          }
-          if(needsSoySpoonMoveGuide(targetLocalization)) {
-            const directGuidePath=resolve(directory,'direct-move-guide.png');
-            await writeFile(directGuidePath,await renderSoySpoonMoveGuide(targetLocalization));paths.push(directGuidePath);
-            directMoveGuideAttached=true;
-          }
-        } else {
-          mask=config.mask?await renderMask(config.mask):await renderRegionsMask(activeRegions);
-          if(config.localRepair&&originalInputPath)paths.push(originalInputPath);
-          if(!config.mask&&targetLocalization.editRegions?.length) {
-            const roleGuidePath=resolve(directory,'local-role-guide.png');
-            await writeFile(roleGuidePath,await renderLocalRoleGuide(targetLocalization,activeRegions));
-            paths.push(roleGuidePath);
-          }
+        if(config.localRepair&&originalInputPath)paths.push(originalInputPath);
+        if(config.mask) {
+          mask=await renderMask(config.mask);
           const path=resolve(directory,'mask.png');await writeFile(path,mask);paths.push(path);
         }
       }
-      const promptConfig={...config,operation:e.operation,targetPage:Number(e.target_page),
+      // Historical machine-generated geometry must not reintroduce the removed preflight or a mask.
+      const {localPlan:_legacyPlan,localizedRegions:_legacyRegions,localizedRegion:_legacyRegion,
+        localMoveDirect:_legacyMove,roleGuideAttached:_legacyGuide,directMoveGuideAttached:_legacyMoveGuide,...directConfig}=config;
+      const promptConfig={...directConfig,operation:e.operation,targetPage:Number(e.target_page),
         ...(e.operation==='AI_FUSION'?{referenceProductDescription:targetLocalization.referenceProductDescription}:{}),
-        ...(e.operation==='AI_LOCAL'&&!config.mask?(directLocalMove
-          ?{localPlan:targetLocalization,localMoveDirect:true,roleGuideAttached:false,directMoveGuideAttached}
-          :{localizedRegions:config.localRepair?.repairRegions??targetLocalization.editRegions??[targetLocalization.region],
-            localPlan:targetLocalization,roleGuideAttached:Boolean(targetLocalization.editRegions?.length)}):{}),
         ...(removedInheritedDisclosure?{removeDisclosure:sourceDisclosure}:{})};
       imageModelRequested=true;
       {
-        if(directLocalMove)localExecutionInstruction=localMoveDirectInstruction(targetLocalization);
-        const prompt=aiEditPrompt(context,directLocalMove
-          ?{...promptConfig,instruction:localExecutionInstruction}
-          :promptConfig,required);
+        const prompt=aiEditPrompt(context,promptConfig,required);
         const generated=await client.runImageEdit({prompt,inputPaths:paths,outputPath:resolve(directory,'generated.png'),signal:controller.signal});
         model=generated.model??null;
         generationAttempts=1;
         // Only consume the requested destination, never a model-supplied filesystem path.
         result=await sharp(await readFile(resolve(directory,'generated.png')),{limitInputPixels:16_000_000}).resize(1086,1448,{fit:'fill'}).png().toBuffer();
-        if(directLocalMove)outsideMask={mode:'MODEL_FULL_FRAME_MOVE_WITH_VISION_GATE',requested:false,programmaticPixelMerge:false};
+        if(e.operation==='AI_LOCAL'&&!config.mask)outsideMask={mode:'MODEL_FULL_FRAME_WITH_RESULT_REVIEW',requested:false,programmaticPixelMerge:false};
         else if(mask){
-          if(e.operation==='AI_LOCAL'&&!config.mask)mask=await changedPixelMask(source,result,mask);
           result=await mergeWithMask(source,result,mask);outsideMask=await assertOutsideMask(source,result,mask);
         }
       }

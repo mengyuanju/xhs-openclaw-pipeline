@@ -10,7 +10,7 @@ import { ImagePreviewBackgroundControl, type PreviewBackdrop } from '../componen
 import { Checkbox, Input, Textarea } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 
-import { CheckCircle2, ChevronLeft, ChevronRight, Download, History, LoaderCircle, RefreshCw, RotateCcw, Save, Trash2 } from 'lucide-react';
+import { CheckCircle2, ChevronLeft, ChevronRight, Download, History, Info, LoaderCircle, RefreshCw, RotateCcw, Save, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type FormEvent, type ReactNode, type RefObject } from 'react';
 
 import {
@@ -58,6 +58,7 @@ import { DEFAULT_SETTINGS, useHumanQualitySettings } from './human-quality-setti
 import { buildCopyReviewSubmission } from '../../src/copy-review-submission.mjs';
 import { copyReworkChanges, findCopyReworkBaseline } from '../../src/copy-rework.mjs';
 import styles from './copy-review-drafts.module.css';
+import { ReviewActionButton } from './review-action-button';
 
 type TaskState =
   | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_QC_PENDING' | 'COPY_FAILED'
@@ -1026,6 +1027,25 @@ export function TaskReviewDialog({
   const showCopyDeductionReasons = humanQualitySettings?.copyReviewDisplay.showDeductionReasons === true;
   const showImageDeductionReasons = humanQualitySettings?.imageReviewDisplay.showDeductionReasons === true;
   const copyFeedbackRequirement = showCopyDeductionReasons ? '扣分原因或评分说明' : '评分说明';
+  const copyActionBusyReason = loading ? '正在刷新任务，请稍候再操作。'
+    : submitting ? '正在提交当前操作，请等待完成后再继续。'
+    : submittingImagePlan ? '正在提交图片规划生成请求，请稍候再操作。'
+    : draftSaveStatus === 'saving' ? '正在自动保存审核草稿，请等待保存完成后再操作。'
+    : regeneratingImagePlan ? '图片规划正在生成，暂时无法保存、提交或废弃。可关闭窗口，完成后会收到提醒；重新打开任务核对规划后再继续。' : null;
+  const copyRatingBlockReason = copyRatingComplete ? null
+    : humanQualitySettingsLoading ? '正在加载评分设置，请稍候再完成机器原稿初评。'
+    : humanQualitySettingsError ? '评分设置加载失败，请点击右上角“刷新”后再完成评分。'
+    : copyOriginalScore === null ? '请先在“标题、正文与标签”中完成机器原稿初评，再保存或提交。'
+    : `原稿低于 3 分，请补充${copyFeedbackRequirement}（至少一项），再保存或提交。`;
+  const saveCopyBlockReason = copyActionBusyReason || copyRatingBlockReason
+    || (isCopyRework && !draftChanged ? copyReworkSatisfied
+      ? '当前返工修改已保存，无需重复保存。确认达标后可直接提交强制复检。'
+      : '返工稿没有新的修改，无需重复保存。请先修改文案或图片规划；修改达标后也可直接提交强制复检。' : null);
+  const approveCopyBlockReason = copyActionBusyReason || (canApproveCopy ? null : copyRatingBlockReason
+    || (isCopyRework ? '请先按返工原因实际修改文案或图片规划，再提交强制复检；无需先单独保存。'
+      : copyOriginalScore === 1 ? '原稿评为 1 分，无法审核通过。请使用“评分并废弃”处理任务。'
+      : copyOriginalScore === 3 ? '3 分原稿需保持文案不变。请在“审核草稿”中恢复正式版本后再提交。'
+      : '原稿为 2 分或 2.5 分，请先修改标题、正文或标签，确认达标后再提交。'));
   const imageScoreDefinition = scoreDefinitions.find(definition => definition.score === imageScore);
   const imageReworkReasonRequired = showImageDeductionReasons && imageReasonOptions.length > 0;
   const canApproveImages = imageSetComplete && imageRatingComplete && isPassingHumanScore(imageScore)
@@ -2190,6 +2210,9 @@ export function TaskReviewDialog({
 
           <footer className="workbench-review-footer">
             {error && <div className="notice error workbench-review-footer-error" role="alert">{error}</div>}
+            {editable && approveCopyBlockReason && <p className="workbench-review-action-hint" role="status">
+              <Info size={15} aria-hidden="true" /><span>{approveCopyBlockReason}</span>
+            </p>}
             <span><strong className="workbench-review-dirty" role="status">{hasUnsavedChanges
               ? hasUnpersistedDraftChanges || draftSaveStatus === 'saving' ? '有未保存草稿 · ' : '草稿已保存，尚未提交 · '
               : ''}</strong>{imageWorkMode ? `当前图集 · ${assets.length} 页` : editable
@@ -2232,21 +2255,23 @@ export function TaskReviewDialog({
                 <Button unstyled className="button primary" type="button" disabled={submitting || loading || !canApproveImages} onClick={() => { void submitImageReview('APPROVE'); }}><CheckCircle2 size={15} />{submitting ? '正在提交…' : '通过到交付池'}</Button>
               </>}
               {editable && <>
-                {imagePlanChanged && <Button unstyled className="button" type="button" disabled={submitting || loading || regeneratingImagePlan}
+                {imagePlanChanged && <ReviewActionButton unstyled className="button" type="button" disabled={submitting || loading || regeneratingImagePlan}
+                  disabledReason={copyActionBusyReason}
                   onClick={(event) => { if (event.currentTarget.form) void saveImagePlan(event.currentTarget.form); }}>
                   <Save size={15} />{submitting ? '正在保存…' : '单独保存图片规划'}
-                </Button>}
-                {canDiscardReturnedCopy && <Button unstyled className="button danger" type="button"
+                </ReviewActionButton>}
+                {canDiscardReturnedCopy && <ReviewActionButton unstyled className="button danger" type="button"
+                  disabledReason={copyActionBusyReason}
                   disabled={submitting || loading || regeneratingImagePlan || draftSaveStatus === 'saving'} onClick={() => { void discardReturnedCopy(); }}>
                   <Trash2 size={15} />{revision?.reworkRecommendation === 'DISCARD' ? '确认质检建议并废弃' : '废弃返工任务'}
-                </Button>}
-                {!isCopyRework && copyOriginalScore === 1 && <Button unstyled className="button danger" type="button" disabled={submitting || loading || regeneratingImagePlan || draftSaveStatus === 'saving' || !copyRatingComplete} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('DISCARD', event.currentTarget.form); }}><Trash2 size={15} />评分并废弃</Button>}
-                {(isCopyRework || copyOriginalScore !== 1) && <Button unstyled className="button" type="button" disabled={submitting || loading || regeneratingImagePlan || draftSaveStatus === 'saving' || !copyRatingComplete || isCopyRework && !draftChanged} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('SAVE', event.currentTarget.form); }}>
+                </ReviewActionButton>}
+                {!isCopyRework && copyOriginalScore === 1 && <ReviewActionButton unstyled className="button danger" type="button" disabledReason={copyActionBusyReason || copyRatingBlockReason} disabled={submitting || loading || regeneratingImagePlan || draftSaveStatus === 'saving' || !copyRatingComplete} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('DISCARD', event.currentTarget.form); }}><Trash2 size={15} />评分并废弃</ReviewActionButton>}
+                {(isCopyRework || copyOriginalScore !== 1) && <ReviewActionButton unstyled className="button" type="button" disabledReason={saveCopyBlockReason} disabled={submitting || loading || regeneratingImagePlan || draftSaveStatus === 'saving' || !copyRatingComplete || isCopyRework && !draftChanged} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('SAVE', event.currentTarget.form); }}>
                   {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : isCopyRework ? '保存返工稿，暂不提交复检' : '保存评分，暂不提交'}
-                </Button>}
-                <Button unstyled className="button primary" type="submit" disabled={submitting || loading || regeneratingImagePlan || draftSaveStatus === 'saving' || !canApproveCopy}>
+                </ReviewActionButton>}
+                <ReviewActionButton unstyled className="button primary" type="submit" disabledReason={approveCopyBlockReason} disabled={submitting || loading || regeneratingImagePlan || draftSaveStatus === 'saving' || !canApproveCopy}>
                   {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : <><CheckCircle2 size={15} />{embedded ? isCopyRework ? '提交复检并下一条' : '提交并下一条' : isCopyRework ? '提交强制复检' : '审核通过并进入后续流程'}</>}
-                </Button>
+                </ReviewActionButton>
               </>}
             </div>
           </footer>

@@ -14,8 +14,8 @@ test('prompt catalog browser: search, actual defaults, draft editing, readonly c
   const { chromium } = await import('playwright-core');
   const root = await mkdtemp(join(tmpdir(), 'prompt-catalog-browser-'));
   const catalog = PROMPT_CATALOG.map(item => ({ ...item, candidate: defaultBusinessPrompt(item.kind) }));
-  const kind = 'INTERNAL_EDIT_LOCAL_TEXT';
-  const templates = [{ id: 11, kind, name: '按文字定位局部编辑', versions: [{ id: 21, version: 1,
+  const kind = 'INTERNAL_EDIT_DIRECT_TEXT';
+  const templates = [{ id: 11, kind, name: '直接局部图片编辑', versions: [{ id: 21, version: 1,
     content: '未发布的旧草稿', status: 'DRAFT', createdAt: new Date().toISOString(), publishedAt: null }] }];
   const writes = [], errors = [];
   let server, browser;
@@ -58,8 +58,8 @@ test('prompt catalog browser: search, actual defaults, draft editing, readonly c
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.getByRole('tab', { name: '文案生成', exact: true }).waitFor();
     const search = page.getByLabel('查找所有提示词');
-    await search.fill('按文字定位局部编辑');
-    await page.getByRole('button', { name: '图片编辑 · 按文字定位局部编辑', exact: true }).click();
+    await search.fill('直接局部图片编辑');
+    await page.getByRole('button', { name: '图片编辑 · 直接局部图片编辑', exact: true }).click();
     const panel = page.locator(`#prompt-panel-${kind}`);
     assert.equal(await panel.getByLabel('提示词内容', { exact: true }).inputValue(), '未发布的旧草稿');
     assert.match(await panel.innerText(), /当前生效来源：系统默认模板/u);
@@ -71,8 +71,8 @@ test('prompt catalog browser: search, actual defaults, draft editing, readonly c
     const protocol = page.locator('#prompt-panel-INTERNAL_CODEX_TEXT_EXECUTION');
     assert.equal(await protocol.getByLabel('提示词内容', { exact: true }).getAttribute('readonly'), '');
     assert.equal(await protocol.getByRole('button', { name: '提交更新', exact: true }).count(), 0);
-    await search.fill('按文字定位局部编辑');
-    await page.getByRole('button', { name: '图片编辑 · 按文字定位局部编辑', exact: true }).click();
+    await search.fill('直接局部图片编辑');
+    await page.getByRole('button', { name: '图片编辑 · 直接局部图片编辑', exact: true }).click();
     assert.equal(await panel.getByLabel('提示词内容', { exact: true }).inputValue(), '新的局部编辑草稿');
     await panel.getByRole('button', { name: '保存草稿', exact: true }).click();
     await panel.getByText('v2', { exact: true }).waitFor();

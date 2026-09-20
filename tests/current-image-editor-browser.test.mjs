@@ -114,17 +114,17 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     await page.getByRole('status').getByText('已定位：画面右上附近',{exact:true}).waitFor();
     await page.getByRole('button',{name:'改颜色',exact:true}).click();
     await page.getByLabel('图片修改要求').fill('改成鼠尾草绿色，保持其他区域不变');
-    await page.getByRole('button',{name:'分析并生成修改预览',exact:true}).click();
+    await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
     await page.getByRole('alert').getByText('请先勾选费用确认',{exact:false}).waitFor();
     assert.equal(submitted,null);
-    const feeCheckbox=page.getByLabel('确认调用视觉规划、图片编辑与结果验收模型，会产生费用；规划需要改写时会先返回建议，采用后才调用图片编辑模型。');
+    const feeCheckbox=page.getByLabel('确认调用图片编辑与视觉验收模型，会产生费用；生成结果需查看并采用后才会替换当前图片。');
     await feeCheckbox.check();
     const feeVisual=page.locator('[data-fee-checkbox]');
     const [feeInputBox,feeBox,feeState]=await Promise.all([feeCheckbox.boundingBox(),feeVisual.boundingBox(),feeCheckbox.evaluate(element=>{const visual=element.nextElementSibling,parent=element.parentElement;return{checked:element.checked,inputOpacity:getComputedStyle(element).opacity,width:getComputedStyle(visual).width,height:getComputedStyle(visual).height,backgroundColor:getComputedStyle(visual).backgroundColor,backgroundImage:getComputedStyle(visual).backgroundImage,outlineWidth:getComputedStyle(visual).outlineWidth,parentDisplay:getComputedStyle(parent).display,parentOutlineWidth:getComputedStyle(parent).outlineWidth};})]);
     assert.ok(feeInputBox&&feeInputBox.width<=1&&feeInputBox.height<=1,JSON.stringify({feeInputBox,feeState}));
     assert.ok(feeBox&&feeBox.width===18&&feeBox.height===18,JSON.stringify({feeBox,feeState}));
     assert.equal(feeState.checked,true);assert.equal(feeState.inputOpacity,'0');assert.equal(feeState.width,'18px');assert.equal(feeState.height,'18px');assert.equal(feeState.backgroundColor,'rgb(217, 52, 70)');assert.match(feeState.backgroundImage,/svg/u);assert.ok(Number.parseFloat(feeState.outlineWidth)<=3);assert.equal(feeState.parentDisplay,'grid');assert.equal(feeState.parentOutlineWidth,'0px');
-    await page.getByRole('button',{name:'分析并生成修改预览',exact:true}).click();
+    await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
     await page.getByRole('heading',{name:'修改前后滑动对比'}).waitFor();
     assert.equal(submitted.operation,'AI_LOCAL');assert.equal(submitted.mask,undefined);assert.match(submitted.instruction,/画面右上附近，改颜色/u);
     assert.equal(submitted.confirmation,'LIVE_IMAGE_COST_ACCEPTED');assert.equal(actions.length,0);
@@ -141,7 +141,7 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     await page.getByText('局部修改 · 已采用',{exact:true}).waitFor();assert.equal(actions.length,1);assert.match(actions[0].data.requestId,/^[a-f0-9-]{36}$/);
     await page.getByRole('tab',{name:'本次编辑',exact:true}).click();
     await page.getByLabel('图片修改要求').fill('把画面右下角的一勺老抽变成半勺并移动到左侧');
-    await page.getByRole('button',{name:'分析并生成修改预览',exact:true}).click();
+    await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
     await page.getByRole('tab',{name:/任务记录/u}).click();
     await page.getByText('局部修改 · 待确认建议',{exact:true}).waitFor();
     const suggestions=page.getByRole('region',{name:'局部修改建议'});
@@ -254,7 +254,7 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     assert.ok(targetSourceNode&&await targetSource.evaluate((element,previous)=>element===previous,targetSourceNode));
     assert.deepEqual(await targetSource.boundingBox(),targetSourceBox);
     assert.equal(await page.getByRole('button',{name:'重新框选',exact:true}).isDisabled(),false);
-    await page.getByLabel('确认调用视觉规划、图片编辑与结果验收模型，会产生费用；规划需要改写时会先返回建议，采用后才调用图片编辑模型。').check();
+    await page.getByLabel('确认调用图片编辑与视觉验收模型，会产生费用；生成结果需查看并采用后才会替换当前图片。').check();
     await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
     assert.equal(submitted.operation,'AI_FUSION');assert.equal(submitted.referenceMode,'APPEARANCE');assert.deepEqual(submitted.references,[{assetId:9,purpose:'真实产品替换'}]);assert.equal(submitted.mask,undefined);
     assert.equal(submitted.target.description,'画面右侧台面上、木托盘后方的米白色拿铁杯');
@@ -262,7 +262,7 @@ test('image editor browser: prompt-localized edit, fee gate, reference upload, p
     assert.match(submitted.instruction,/木托盘后方/u);
     await page.getByRole('tab',{name:'添加文字'}).click();
     await page.getByRole('button',{name:'整套 3 张',exact:true}).click();
-    await page.getByLabel('确认调用视觉规划、图片编辑与结果验收模型，会产生费用；规划需要改写时会先返回建议，采用后才调用图片编辑模型。').check();
+    await page.getByLabel('确认调用图片编辑与视觉验收模型，会产生费用；生成结果需查看并采用后才会替换当前图片。').check();
     await page.getByRole('button',{name:'生成整套 3 张模型标识预览',exact:true}).click();
     await page.getByRole('tab',{name:/任务记录/u}).click();
     await page.getByRole('button',{name:'一次采用整套标识',exact:true}).waitFor();

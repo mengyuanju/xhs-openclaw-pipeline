@@ -369,7 +369,7 @@ export function createExecutorAgent({
   }
   const registration = () => ({ nodeId, name: nodeName, imageWorkerEnabled,
     copyConcurrency, imageConcurrency, codexPoolId, codexTotalConcurrency, codexImageConcurrency,
-    imageEditExecutorVersion: imageWorkerEnabled ? 8 : 0,
+    imageEditExecutorVersion: imageWorkerEnabled ? 9 : 0,
     copyImagePlanRegenerationVersion: 1 });
   let ready = false;
   const pendingFailures = new Map();
@@ -527,7 +527,7 @@ export function createExecutorAgent({
       }
       const imageEditCapabilityVersion = Number(result?.health?.capabilities?.imageEditExecutorVersion);
       if (concurrencyEnabled && imageWorkerEnabled
-          && (!Number.isInteger(imageEditCapabilityVersion) || imageEditCapabilityVersion < 8)) {
+          && (!Number.isInteger(imageEditCapabilityVersion) || imageEditCapabilityVersion < 9)) {
         throw new Error('请先更新中心服务：缺少执行机图片修改能力');
       }
       taskHeartbeatsEnabled = Boolean(result?.health?.capabilities?.executionHeartbeats);
