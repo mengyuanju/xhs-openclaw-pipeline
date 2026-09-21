@@ -106,7 +106,9 @@ test('delivery export reads only the pinned copy, image run and current-run asse
         return { rows: [{
           id: '41',
           query: '黄山路线',
+          issued_query: '带老人去黄山应该怎么规划路线？',
           source_query_package_name: '九月选题',
+          source_client_batch_code: 'b9759aad96a94c109fdce96ab4455294',
           state: 'REVIEWED',
           current_copy_revision_id: '51',
           current_image_run_id: imageRunId,
@@ -132,6 +134,9 @@ test('delivery export reads only the pinned copy, image run and current-run asse
   assert.equal(snapshot.task.imageRuns.length, 1);
   assert.equal(snapshot.task.assets.length, 1);
   assert.equal(snapshot.task.query, '黄山路线');
+  assert.equal(snapshot.task.issuedQuery, '带老人去黄山应该怎么规划路线？');
+  assert.equal(snapshot.task.sourceClientBatchCode, 'b9759aad96a94c109fdce96ab4455294');
+  assert.match(queries[0].sql, /SELECT source\.issued_query FROM query_package_items AS source\s+WHERE source\.id = task\.source_query_package_item_id/u);
   assert.equal(snapshot.task.sourceQueryPackageName, '九月选题');
   assert.equal(queries.length, 1);
   assert.deepEqual(queries[0].values, [41]);
@@ -447,7 +452,7 @@ test('task pages sort by creation time or Query ID and can locate an exact ID', 
   });
 
   await repository.listTasks({ taskId: '42', sortBy: 'createdAt', sortOrder: 'asc' });
-  assert.match(queries[0].sql, /WHERE id = \$1/u);
+  assert.match(queries[0].sql, /WHERE task_kind = 'CONTENT' AND id = \$1/u);
   assert.match(queries[0].sql, /ORDER BY cursor_page\.created_at ASC, cursor_page\.id ASC/u);
   assert.match(queries[0].sql, /ORDER BY page\.created_at ASC, page\.id ASC/u);
   assert.deepEqual(queries[0].values, [42, 51, 0]);

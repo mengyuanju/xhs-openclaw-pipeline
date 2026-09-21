@@ -1743,7 +1743,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { taskRestoreVersion: 1, taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 12, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, adminTaskActivityDateFilters: 1, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 6, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, copyQaReasonTagsVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, sharedDeliveryVersion: 1, imageDiscardVersion: 1, pendingImageEditResolutionVersion: 1, deliverySpreadsheetVersion: 3, deliveryPreviewVersion: 6 } };
+      capabilities: { taskRestoreVersion: 1, taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 13, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, adminTaskActivityDateFilters: 1, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 7, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, copyQaReasonTagsVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, sharedDeliveryVersion: 1, imageDiscardVersion: 1, pendingImageEditResolutionVersion: 1, deliverySpreadsheetVersion: 3, deliveryPreviewVersion: 6 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -3018,7 +3018,7 @@ export class PostgresControlPlaneRepository {
       throw new TypeError('visibility and assignee filters conflict');
     }
     const values = [];
-    const filters = [];
+    const filters = ["task_kind = 'CONTENT'"];
     if (taskIds !== null) {
       if (!Array.isArray(taskIds) || taskIds.length > 100) throw new TypeError('invalid personal task page');
       values.push(taskIds.map(normalizeTaskId));
@@ -3336,7 +3336,7 @@ export class PostgresControlPlaneRepository {
         COUNT(*) FILTER (WHERE state IN ('IMAGE_QUEUED', 'IMAGE_RUNNING')) AS image_work,
         COUNT(*) FILTER (WHERE state = 'MANUAL_ARCHIVE') AS manual_archive
       FROM tasks
-      WHERE state <> 'CANCELLED'
+      WHERE state <> 'CANCELLED' AND task_kind = 'CONTENT'
     `, [nodeId]);
     const row = result.rows[0];
     return {
@@ -3348,9 +3348,16 @@ export class PostgresControlPlaneRepository {
     };
   }
 
+  async assertContentTaskIds(rawIds) {
+    const ids=rawIds.map(normalizeTaskId);
+    if(!ids.length)return;
+    const result=await this.pool.query("SELECT id FROM tasks WHERE id=ANY($1::bigint[]) AND task_kind='STANDALONE_IMAGE_EDIT' LIMIT 1",[ids]);
+    if(result.rows.length)throw new ControlPlaneNotFoundError('独立图片编辑仅可通过图片编辑入口操作');
+  }
+
   async getTaskAccess(rawTaskId) {
     const result = await this.pool.query(`
-      SELECT task.id, task.state, task.cancelled_from_state, task.assigned_at,
+      SELECT task.id, task.task_kind, task.state, task.cancelled_from_state, task.assigned_at,
         task.created_by_user_id, task.assigned_to_user_id,
         creator.id AS creator_account_id, assignee.id AS assignee_account_id,
         ${activeBlindQaSql('task')} AS active_blind_qa
@@ -3364,6 +3371,7 @@ export class PostgresControlPlaneRepository {
     const row = result.rows[0];
     return row ? {
       id: Number(row.id),
+      ...(row.task_kind === 'STANDALONE_IMAGE_EDIT' ? {taskKind:row.task_kind} : {}),
       state: row.state,
       cancelledFromState: row.cancelled_from_state ?? null,
       createdByUserId: row.created_by_user_id,
@@ -3552,6 +3560,8 @@ export class PostgresControlPlaneRepository {
           SELECT * FROM tasks WHERE id = $1
         )
         SELECT task.*, creator.id AS creator_account_id,
+          (SELECT source.issued_query FROM query_package_items AS source
+            WHERE source.id = task.source_query_package_item_id) AS issued_query,
           (SELECT jsonb_agg(jsonb_build_object('note', disposition.note,
             'actorUsername', disposition.actor_username, 'createdAt', disposition.created_at)
             ORDER BY disposition.id DESC) FROM image_task_dispositions disposition
@@ -3629,6 +3639,7 @@ export class PostgresControlPlaneRepository {
     }
     return {
       ...taskFrom(task.rows[0]),
+      issuedQuery: task.rows[0].issued_query ?? null,
       imageDiscardEvents: task.rows[0].image_discard_events ?? [],
       imagePlanRegeneration: task.rows[0].personal_image_plan_job
         ? imagePlanRegenerationFrom(task.rows[0].personal_image_plan_job) : null,
@@ -3675,7 +3686,10 @@ export class PostgresControlPlaneRepository {
       SELECT
         task.id,
         task.query,
+        (SELECT source.issued_query FROM query_package_items AS source
+          WHERE source.id = task.source_query_package_item_id) AS issued_query,
         task.source_query_package_name,
+        task.source_client_batch_code,
         task.state,
         task.current_copy_revision_id,
         task.current_image_run_id,
@@ -3740,7 +3754,9 @@ export class PostgresControlPlaneRepository {
       task: {
         id: Number(row.id),
         query: row.query,
+        issuedQuery: row.issued_query ?? null,
         sourceQueryPackageName: row.source_query_package_name ?? null,
+        sourceClientBatchCode: row.source_client_batch_code ?? null,
         state: row.state,
         currentCopyRevisionId: copyRevisionId,
         currentImageRunId: imageRunId,
@@ -3953,6 +3969,7 @@ export class PostgresControlPlaneRepository {
             FROM image_edit_requests edit
             JOIN tasks edit_task ON edit_task.id = edit.task_id
             WHERE $5::integer >= CASE
+                WHEN edit_task.task_kind = 'STANDALONE_IMAGE_EDIT' THEN 13
                 WHEN edit.operation = 'AI_FUSION' THEN 12
                 WHEN edit.operation = 'AI_LOCAL' THEN 9
                 WHEN edit.operation = 'SVG_DISCLOSURE' THEN 8
@@ -4045,7 +4062,7 @@ export class PostgresControlPlaneRepository {
             }
           : imageEditRequestId
           ? { imageEditRequestId, imageEditExecutorVersion,
-            task: { id: Number(task.id), query: task.query } }
+            task: { id: Number(task.id), query: task.query, ...(task.task_kind === 'STANDALONE_IMAGE_EDIT' ? {kind:task.task_kind} : {}) } }
           : task.pending_snapshot ?? snapshots.get(task.id);
         const imageProductionChainId = kind === 'IMAGE' && !imageEditRequestId
           ? task.image_production_chain_id ?? baseSnapshot?.imageProductionChainId ?? randomUUID()

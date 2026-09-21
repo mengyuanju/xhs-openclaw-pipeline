@@ -8,6 +8,7 @@ import {
   resolveDeliveryArchiveSource,
 } from './delivery-source.mjs';
 import { IMAGE_FORMATS } from './image-options.mjs';
+import { originalDeliveryQuery } from './delivery-copy-query.mjs';
 import { normalizeTaskId } from './domain.mjs';
 import { orderedImageFileName } from '../../src/image-file-name.mjs';
 
@@ -110,7 +111,7 @@ async function* taskArchiveFiles(task, loadAsset) {
   });
   const assets = assetIds.map((id) => candidates.find((item) => Number(item.id) === id));
 
-  const query = singleLine(task.query);
+  const query = originalDeliveryQuery(task);
   const title = String(copy.title ?? '').trim();
   const body = String(copy.body ?? '').trim();
   const text = `\uFEFF原始 Query：${query}\r\n\r\n标题：${title}\r\n\r\n文案内容：\r\n${body}\r\n`;

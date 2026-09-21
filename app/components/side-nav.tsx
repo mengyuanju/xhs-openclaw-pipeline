@@ -35,6 +35,7 @@ const navigationGroups: NavigationGroup[] = [
       { href: '/workbench/personal-statistics', label: '个人数据统计', icon: BarChart3 }, ...WORKBENCH_VIEWS,
     ] },
     { href: '/work-mode', label: '作业模式', icon: PanelsTopLeft },
+    { href: '/image-editor', label: '图片编辑', icon: PanelsTopLeft },
     { href: '/query-packages', label: 'Query 词包', icon: PackageSearch },
     { href: '/copy-flow', label: '文案工作入口', icon: ShieldCheck },
     { href: '/copy-qa', label: '文案质检', icon: ShieldCheck },

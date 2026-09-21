@@ -58,7 +58,7 @@ test('health advertises the task assignment and pool contracts for Web compatibi
   const health = await repository.health();
   assert.equal(health.capabilities.taskAssignmentVersion, 3);
   assert.equal(health.capabilities.autoAssignmentPoolVersion, 3);
-  assert.equal(health.capabilities.queryPackageVersion, 6);
+  assert.equal(health.capabilities.queryPackageVersion, 7);
   assert.equal(health.capabilities.finalDeliveryVersion, 5);
   assert.equal(health.capabilities.deliverySpreadsheetVersion, 3);
   assert.equal(health.capabilities.deliveryPreviewVersion, 6);

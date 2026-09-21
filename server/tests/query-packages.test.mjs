@@ -17,7 +17,7 @@ const admin = Object.freeze({
 });
 
 function fakeQueryPackageImportDatabase() {
-  const state = { calls: [], items: [] };
+  const state = { calls: [], items: [], packages: [], mutations: new Map() };
   const query = async (sql, values = []) => {
     const source = String(sql).replace(/\s+/gu, ' ').trim();
     state.calls.push({ sql: source, values });
@@ -26,11 +26,15 @@ function fakeQueryPackageImportDatabase() {
       return { rows: [{ id: admin.userId }] };
     }
     if (source.startsWith('SELECT pg_advisory_xact_lock')) return { rows: [{}] };
-    if (source.startsWith('SELECT * FROM query_package_mutation_requests')) return { rows: [] };
+    if (source.startsWith('SELECT * FROM query_package_mutation_requests')) {
+      const row = state.mutations.get(values[1]);
+      return { rows: row ? [row] : [] };
+    }
     if (source === 'SELECT * FROM workflow_quality_settings WHERE singleton = 1') return { rows: [] };
     if (source.startsWith('INSERT INTO query_packages')) {
+      state.packages.push(values);
       return { rows: [{
-        id: 9,
+        id: 8 + state.packages.length,
         name: values[0],
         client_batch_code: values[1],
         source_file_name: values[2],
@@ -50,7 +54,10 @@ function fakeQueryPackageImportDatabase() {
       state.items.push(...chunk.map((item) => ({ ...item, packageId })));
       return { rows: [] };
     }
-    if (source.startsWith('INSERT INTO query_package_mutation_requests')) return { rows: [] };
+    if (source.startsWith('INSERT INTO query_package_mutation_requests')) {
+      state.mutations.set(values[2], { operation: values[3], query_package_id: values[4], request_fingerprint: values[5], response: values[6] });
+      return { rows: [] };
+    }
     throw new Error(`unexpected SQL: ${source}`);
   };
   const client = { query, release() {} };
@@ -212,4 +219,60 @@ test('query package detail returns a bounded keyset page without loading the ful
   const pageCall = calls.find(({ source }) => source.startsWith('SELECT item.*, production_item.task_id'));
   assert.deepEqual(pageCall.values, [9, 'PENDING', '桌面', 10, 100, 3]);
   assert.match(pageCall.source, /ORDER BY item\.row_number, item\.id LIMIT \$6/u);
+});
+
+test('effective Query and issued Query retain their separate meanings', () => {
+  const rows = normalizeQueryPackageItems([
+    { productionQuery: '生产词', issuedQuery: '原始问题\n第二行' },
+    { productionQuery: ' \t ', issuedQuery: '回退词' },
+    { productionQuery: '仅生产词', issuedQuery: '' },
+    { query: '旧文本导入' },
+  ]);
+  assert.deepEqual(rows.map((row) => row.query), ['生产词', '回退词', '仅生产词', '旧文本导入']);
+  assert.deepEqual(rows.map((row) => row.issuedQuery), ['原始问题\n第二行', '回退词', null, '旧文本导入']);
+  assert.throws(() => normalizeQueryPackageItems([{ query: '生产词', issuedQuery: 'x'.repeat(5001) }]), /5000/u);
+});
+
+test('standard import atomically splits task IDs and retries without creating duplicate packages', async () => {
+  const fixture = fakeQueryPackageImportDatabase();
+  const a = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const b = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const payload = {
+    name: '标准表', splitByClientBatchCode: true, requestId: '15151515-1515-4515-8515-151515151515',
+    items: [
+      { productionQuery: '同一生产词', issuedQuery: '原始 A', clientBatchCode: a },
+      { productionQuery: '', issuedQuery: '同一生产词', clientBatchCode: b },
+      { productionQuery: ' \n ', issuedQuery: '回退 A', clientBatchCode: a.toUpperCase() },
+      { productionQuery: '同一生产词', issuedQuery: '原始 A 第二条', clientBatchCode: a },
+    ],
+  };
+  const result = await createQueryPackage(fixture.pool, payload, admin);
+  assert.equal(result.totalItemCount, 4);
+  assert.deepEqual(result.packages.map((pack) => pack.clientBatchCode), [a, b]);
+  assert.deepEqual(result.packages.map((pack) => pack.counts.total), [3, 1]);
+  assert.deepEqual(result.packages.map((pack) => pack.counts.duplicate), [1, 0]);
+  assert.deepEqual(fixture.state.items.map((item) => item.issuedQuery),
+    ['原始 A', '回退 A', '原始 A 第二条', '同一生产词']);
+  assert.deepEqual(fixture.state.items.map((item) => item.query),
+    ['同一生产词', '回退 A', '同一生产词', '同一生产词']);
+  assert.deepEqual(await createQueryPackage(fixture.pool, payload, admin), result);
+  assert.equal(fixture.state.packages.length, 2);
+  assert.equal(fixture.state.items.length, 4);
+  await assert.rejects(createQueryPackage(fixture.pool, {
+    ...payload, items: payload.items.map((item, i) => i === 0 ? { ...item, issuedQuery: '改动原始词' } : item),
+  }, admin), /requestId/u);
+});
+
+test('all standard groups are validated before opening a transaction', async () => {
+  const fixture = fakeQueryPackageImportDatabase();
+  const a = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const b = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const base = { name: '错误标准表', splitByClientBatchCode: true, requestId: '16161616-1616-4616-8616-161616161616' };
+  await assert.rejects(createQueryPackage(fixture.pool, {
+    ...base, items: [{ query: '正常', clientBatchCode: a }, { query: '缺批次' }],
+  }, admin), /clientBatchCode/u);
+  await assert.rejects(createQueryPackage(fixture.pool, {
+    ...base, items: [{ query: '正常', clientBatchCode: a }, { productionQuery: '', issuedQuery: '', clientBatchCode: b }],
+  }, admin), /无效 Query/u);
+  assert.equal(fixture.state.calls.length, 0);
 });

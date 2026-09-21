@@ -82,6 +82,7 @@ export function evaluateAdminProxyRequest(request, environment = process.env) {
         || url.pathname === '/workbench/personal'
         || matchesExactPath(url.pathname, '/workbench/personal-statistics')
         || matchesExactPath(url.pathname, '/delivery-pool')
+        || matchesExactPath(url.pathname, '/image-editor')
         || matchesExactPath(url.pathname, '/query-packages')
         || url.pathname.startsWith('/query-packages/');
       return allowed ? { type: 'next' } : { type: 'forbidden' };

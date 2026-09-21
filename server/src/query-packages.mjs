@@ -89,7 +89,17 @@ export function normalizeQueryPackageItems(rawItems) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) {
       throw new TypeError(`items[${index}] must be a string or object`);
     }
-    const rawQuery = String(item.query ?? '').replace(/\r\n?/gu, '\n').trim().slice(0, 5_000);
+    const issuedSource = Object.hasOwn(item, 'issuedQuery') ? item.issuedQuery : item.query;
+    if (issuedSource !== undefined && issuedSource !== null && typeof issuedSource !== 'string') {
+      throw new TypeError(`items[${index}].issuedQuery must be a string`);
+    }
+    const issuedQuery = String(issuedSource ?? '').replace(/\r\n?/gu, '\n').trim();
+    if ([...issuedQuery].length > 5_000) {
+      throw new RangeError(`items[${index}].issuedQuery cannot exceed 5000 characters`);
+    }
+    const productionSource = Object.hasOwn(item, 'productionQuery') ? item.productionQuery : item.query;
+    const effectiveQuery = String(productionSource ?? '').replace(/\r\n?/gu, '\n').trim() || issuedQuery;
+    const rawQuery = effectiveQuery.slice(0, 5_000);
     const errors = [];
     let query = rawQuery;
     if (!query) errors.push('QUERY_EMPTY');
@@ -105,6 +115,7 @@ export function normalizeQueryPackageItems(rawItems) {
       rowNumber: index + 1,
       externalId: text(item.externalId, `items[${index}].externalId`, 200, { optional: true }),
       rawQuery,
+      issuedQuery: issuedQuery || null,
       query: errors.length ? null : query,
       input,
       requestedImageCount: imageCount ?? 'auto',
@@ -181,6 +192,7 @@ function packageItemFrom(row) {
     rowNumber: Number(row.row_number),
     externalId: row.external_id ?? null,
     query: row.query ?? row.raw_query,
+    issuedQuery: row.issued_query ?? null,
     input: row.input,
     requestedImageCount: row.requested_image_count === 'auto' ? 'auto' : Number(row.requested_image_count),
     status: row.status,
@@ -355,7 +367,7 @@ async function insertQueryPackageItems(client, packageId, items) {
     const chunk = items.slice(offset, offset + QUERY_PACKAGE_INSERT_CHUNK_SIZE);
     await client.query(`
       INSERT INTO query_package_items(
-        query_package_id, row_number, external_id, raw_query, query, input,
+        query_package_id, row_number, external_id, raw_query, query, issued_query, input,
         requested_image_count, status, validation_errors, screening_decision
       )
       SELECT $1,
@@ -363,6 +375,7 @@ async function insertQueryPackageItems(client, packageId, items) {
         source.item ->> 'externalId',
         source.item ->> 'rawQuery',
         source.item ->> 'query',
+        source.item ->> 'issuedQuery',
         source.item -> 'input',
         source.item ->> 'requestedImageCount',
         source.item ->> 'status',
@@ -382,13 +395,48 @@ export async function createQueryPackage(pool, input, rawActor) {
   const actor = normalizeActor(rawActor);
   assertQueryPackageAdministrator(actor, 'create');
   const name = text(input?.name, 'name', 200);
-  const clientBatchCode = normalizeClientBatchCode(input?.clientBatchCode);
   const sourceFileName = text(input?.sourceFileName, 'sourceFileName', 255, { optional: true });
-  const items = normalizeQueryPackageItems(input?.items ?? input?.queries);
+  const groupedImport = input?.splitByClientBatchCode === true;
+  const rawItems = input?.items ?? input?.queries;
+  if (!Array.isArray(rawItems) || rawItems.length < 1 || rawItems.length > QUERY_PACKAGE_MAX_ITEMS) {
+    throw new RangeError(`items must contain between 1 and ${QUERY_PACKAGE_MAX_ITEMS} rows`);
+  }
+  const groups = new Map();
+  if (groupedImport) {
+    for (const item of rawItems) {
+      const code = normalizeClientBatchCode(item?.clientBatchCode);
+      if (!groups.has(code)) groups.set(code, []);
+      groups.get(code).push(item);
+    }
+  } else {
+    const code = normalizeClientBatchCode(input?.clientBatchCode);
+    for (const item of rawItems) {
+      if (item && typeof item === 'object' && Object.hasOwn(item, 'clientBatchCode')
+          && normalizeClientBatchCode(item.clientBatchCode) !== code) {
+        throw new TypeError('任务ID必须与甲方批次编号相同');
+      }
+    }
+    groups.set(code, rawItems);
+  }
+  const packages = [...groups].map(([clientBatchCode, rows]) => ({
+    name: groups.size === 1 ? name : `${[...name].slice(0, 165).join('')} · ${clientBatchCode}`,
+    clientBatchCode,
+    items: normalizeQueryPackageItems(rows),
+  }));
+  if (groupedImport && packages.some((group) => group.items.some((item) => item.status === 'INVALID'))) {
+    throw new TypeError('标准表包含无效 Query，请修正后重新导入');
+  }
+  const [{ clientBatchCode, items }] = packages;
   const requestId = normalizeUuid(input?.requestId, 'requestId');
   const requestedAssignee = input?.assignedToUserId === undefined
     ? null : String(input.assignedToUserId).toLowerCase();
-  const fingerprint = hashJson({ name, clientBatchCode, sourceFileName, items, requestedAssignee });
+  const fingerprint = hashJson(groupedImport
+    ? { packages, sourceFileName, requestedAssignee, splitByClientBatchCode: true }
+    : { name, clientBatchCode, sourceFileName,
+        items: rawItems.some((item) => item && typeof item === 'object'
+          && (Object.hasOwn(item, 'issuedQuery') || Object.hasOwn(item, 'productionQuery')))
+          ? items : items.map(({ issuedQuery, ...legacyItem }) => legacyItem),
+        requestedAssignee });
   return withTransaction(pool, async (client) => {
     await lockActiveQueryPackageActor(client, actor);
     await lockMutationRequest(client, actor, requestId);
@@ -401,25 +449,30 @@ export async function createQueryPackage(pool, input, rawActor) {
     // their idempotency boundary without creating a new ownership dependency.
     const assignedAccountId = null;
     const assignedUsername = null;
-    const created = await client.query(`
-      INSERT INTO query_packages(
-        name, client_batch_code, source_file_name, created_by_account_id, created_by_username,
-        assigned_to_account_id, assigned_to_username
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-      RETURNING *
-    `, [name, clientBatchCode, sourceFileName, actor.userId, actor.username,
-      assignedAccountId, assignedUsername]);
-    await insertQueryPackageItems(client, created.rows[0].id, items);
-    const response = { ...packageFrom(created.rows[0]), counts: {
-      total: items.length,
-      pending: items.filter((item) => item.screeningDecision === 'PENDING').length,
-      selected: 0,
-      rejected: items.filter((item) => item.screeningDecision === 'REJECTED').length,
-      produced: 0,
-      invalid: items.filter((item) => item.status === 'INVALID').length,
-      duplicate: items.filter((item) => item.status === 'DUPLICATE').length,
-    } };
-    await saveMutation(client, actor, requestId, 'CREATE', Number(created.rows[0].id), fingerprint, response);
+    const responses = [];
+    for (const { name: groupName, clientBatchCode, items } of packages) {
+      const created = await client.query(`
+        INSERT INTO query_packages(
+          name, client_batch_code, source_file_name, created_by_account_id, created_by_username,
+          assigned_to_account_id, assigned_to_username
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING *
+      `, [groupName, clientBatchCode, sourceFileName, actor.userId, actor.username,
+        assignedAccountId, assignedUsername]);
+      await insertQueryPackageItems(client, created.rows[0].id, items);
+      const response = { ...packageFrom(created.rows[0]), counts: {
+        total: items.length,
+        pending: items.filter((item) => item.screeningDecision === 'PENDING').length,
+        selected: 0,
+        rejected: items.filter((item) => item.screeningDecision === 'REJECTED').length,
+        produced: 0,
+        invalid: items.filter((item) => item.status === 'INVALID').length,
+        duplicate: items.filter((item) => item.status === 'DUPLICATE').length,
+      } };
+      responses.push(response);
+    }
+    const response = groupedImport ? { packages: responses, totalItemCount: rawItems.length } : responses[0];
+    await saveMutation(client, actor, requestId, 'CREATE', responses[0].id, fingerprint, response);
     return response;
   });
 }

@@ -10,6 +10,7 @@ import { promisify } from 'node:util';
 import test from 'node:test';
 
 import JSZip from 'jszip';
+import ExcelJS from '@excel.js/exceljs';
 import pg from 'pg';
 
 import { normalizeCopyQaList } from '../../app/copy-qa/types.ts';
@@ -1723,7 +1724,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     controlPlane = await startRealControlPlane(repository);
     const health = await requestJson(controlPlane.root, '/health');
     assert.equal(health.data.ok, true);
-    assert.equal(health.data.capabilities.queryPackageVersion, 6);
+    assert.equal(health.data.capabilities.queryPackageVersion, 7);
     assert.equal(health.data.capabilities.copySamplingVersion, 1);
     assert.equal(health.data.capabilities.finalDeliveryVersion, 5);
     assert.equal(health.data.capabilities.deliverySpreadsheetVersion, 3);
@@ -3412,4 +3413,90 @@ test('queue priority upgrade counts QA returns and excludes past review ownershi
     assert.equal((await pool.query('SELECT choose_priority_reviewer(NULL) AS id')).rows[0].id, pastReviewer,
       'active review work must count toward the current reviewer load');
   } finally { await pool.end(); await cluster.stop(); }
+});
+
+test('standard Query import persists source rows, splits batches atomically and produces the effective Query', {
+  skip: !RUN_POSTGRES_E2E,
+  timeout: 120_000,
+}, async () => {
+  const cluster = await startTemporaryPostgres18();
+  const repository = new PostgresControlPlaneRepository({ connectionString: cluster.connectionString });
+  let server;
+  try {
+    await repository.initialize();
+    await repository.pool.query("UPDATE app_users SET must_change_password = false WHERE username = 'admin'");
+    const admin = actorFrom(await repository.getUserByUsername('admin'));
+    server = await startRealControlPlane(repository);
+    const a = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const b = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('标准表');
+    sheet.addRow(['序号', '下发query', '是否进入生产', '生产query', '任务ID']);
+    sheet.addRow([1, '原始下发 A\n第二行', '是', '实际生产 A', a]);
+    sheet.addRow([2, '实际生产 A', '否', '', b]);
+    sheet.addRow([3, '原始下发重复', '是', '实际生产 A', a]);
+    sheet.addRow([4, '回退 B\n第二行', '是', ' \t ', b]);
+    const previewResponse = await fetch(server.root + '/v1/query-packages/import-preview', {
+      method: 'PUT',
+      headers: { ...actorHeaders(admin), 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+      body: Buffer.from(await workbook.xlsx.writeBuffer()),
+    });
+    assert.equal(previewResponse.status, 200);
+    const preview = (await previewResponse.json()).data;
+    assert.equal(preview.error, null);
+    const payload = { name: 'standard-e2e', splitByClientBatchCode: true, items: preview.items, requestId: randomUUID() };
+    const imported = (await requestJson(server.root, '/v1/query-packages', {
+      actor: admin, method: 'POST', body: payload, expectedStatus: 201,
+    })).data;
+    assert.deepEqual(imported.packages.map((pack) => [pack.clientBatchCode, pack.counts.total, pack.counts.duplicate]),
+      [[a, 2, 1], [b, 2, 0]]);
+    const replay = (await requestJson(server.root, '/v1/query-packages', {
+      actor: admin, method: 'POST', body: payload, expectedStatus: 201,
+    })).data;
+    assert.deepEqual(replay, imported);
+    const rows = (await repository.pool.query(
+      'SELECT query, issued_query, external_id, status FROM query_package_items ORDER BY id',
+    )).rows;
+    assert.equal(rows.length, 4);
+    assert.deepEqual(rows[0], { query: '实际生产 A', issued_query: '原始下发 A\n第二行', external_id: '1', status: 'READY' });
+    assert.equal(rows[3].query, '回退 B\n第二行');
+    for (const pack of imported.packages) {
+      const detail = (await requestJson(server.root, '/v1/query-packages/' + pack.id, { actor: admin })).data;
+      assert.equal(normalizePackageDetail(detail).items[0].issuedQuery, pack.clientBatchCode === a ? '原始下发 A\n第二行' : '实际生产 A');
+      const ready = detail.items.filter((item) => item.status === 'READY');
+      await updateQueryPackageScreening(repository.pool, pack.id, {
+        expectedVersion: pack.version, requestId: randomUUID(),
+        decisions: ready.map((item) => ({ itemId: item.id, decision: 'SELECT' })),
+      }, admin);
+    }
+    const tasks = (await repository.pool.query('SELECT query, source_client_batch_code FROM tasks ORDER BY id')).rows;
+    assert.deepEqual(tasks, [
+      { query: '实际生产 A', source_client_batch_code: a },
+      { query: '实际生产 A', source_client_batch_code: b },
+      { query: '回退 B\n第二行', source_client_batch_code: b },
+    ]);
+    const before = await repository.pool.query('SELECT COUNT(*) FROM query_packages');
+    await repository.pool.query(`
+      CREATE FUNCTION reject_second_import_group() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.name LIKE 'rollback-check%' AND NEW.client_batch_code = '${b}' THEN
+          RAISE EXCEPTION 'injected second group failure';
+        END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER reject_second_import_group BEFORE INSERT ON query_packages
+      FOR EACH ROW EXECUTE FUNCTION reject_second_import_group();
+    `);
+    const failedRequest = randomUUID();
+    await assert.rejects(repository.createQueryPackage({ ...payload, name: 'rollback-check', requestId: failedRequest }, { actor: admin }),
+      /injected second group failure/u);
+    assert.deepEqual((await repository.pool.query('SELECT COUNT(*) FROM query_packages')).rows, before.rows);
+    assert.equal((await repository.pool.query(
+      'SELECT COUNT(*) FROM query_package_mutation_requests WHERE request_id = $1', [failedRequest],
+    )).rows[0].count, '0');
+  } finally {
+    if (server) await server.stop();
+    await repository.close().catch(() => {});
+    await cluster.stop();
+  }
 });

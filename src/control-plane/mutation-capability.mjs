@@ -46,13 +46,13 @@ const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
   }),
   Object.freeze({
     capability: 'queryPackageVersion',
-    minimumVersion: 5,
+    minimumVersion: 7,
     matches: (routePath, method) => routePath === '/v1/query-packages/import-preview'
       && method === 'PUT',
   }),
   Object.freeze({
     capability: 'queryPackageVersion',
-    minimumVersion: 6,
+    minimumVersion: 7,
     matches: (routePath, method) => routePath === '/v1/query-packages'
       && method === 'POST',
   }),

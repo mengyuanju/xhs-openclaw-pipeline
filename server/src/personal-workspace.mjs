@@ -66,6 +66,7 @@ export function personalFactsSql(blindSql) {
         OR ($4::varchar='CREATED' AND creator.id=$1)
         OR ($4::varchar='ALL' AND (creator.id=$1 OR assignee.id=$1))))
       OR task.id=ANY($2::bigint[]))
+      AND task.task_kind='CONTENT'
       AND NOT ($3::varchar='REVIEWER' AND ${blindSql})
     ORDER BY task.id LIMIT ${MAX_FACTS + 1}`;
 }

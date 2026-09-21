@@ -244,3 +244,32 @@ test('delivery archive keeps migrated post-shaped copy content compatible', asyn
   assert.ok(zip.file('迁移文案.txt'));
   assert.match(await zip.file('迁移文案.txt').async('string'), /兼容正文/u);
 });
+
+test('copy TXT uses the issued Query first and falls back for historical or blank source values', async () => {
+  for (const [issuedQuery, expected] of [
+    ['Excel 下发的完整原始问题', 'Excel 下发的完整原始问题'],
+    [' 原始问题第一行\r\n第二行 ', '原始问题第一行 第二行'],
+    [undefined, '实际生产 Query'],
+    [null, '实际生产 Query'],
+    ['', '实际生产 Query'],
+    [' \r\n\t ', '实际生产 Query'],
+  ]) {
+    const task = {
+      id: 90, query: '实际生产 Query', issuedQuery,
+      currentCopyRevisionId: 1, currentImageRunId: 'current',
+      copyRevisions: [{ id: 1, content: { copy: { title: '交付文案', body: '批准的正文', tags: [] } } }],
+      imageRuns: [{ id: 'current', result: { images: [{ assetId: 1 }] } }],
+      assets: [{ id: 1, imageRunId: 'current', mediaType: 'image/png' }],
+      xiaohongshuSearchStatus: 'SUCCEEDED',
+    };
+    const before = structuredClone(task);
+    const zip = await JSZip.loadAsync(await buildTaskArchive(task, async () => ({
+      mediaType: 'image/png', originalName: '01.png', content: Buffer.from('image'),
+    })));
+    const copy = await zip.file('交付文案.txt').async('string');
+    assert.equal(copy.split('\r\n')[0], '\uFEFF原始 Query：' + expected);
+    assert.ok(copy.includes('文案内容：\r\n批准的正文'));
+    assert.ok((await zip.file('小红书链接.txt').async('string')).startsWith('\uFEFFQuery：实际生产 Query\r\n'));
+    assert.deepEqual(task, before, 'formatting an export must not modify the production task');
+  }
+});

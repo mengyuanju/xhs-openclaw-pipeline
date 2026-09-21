@@ -1,6 +1,6 @@
 export type BackgroundTask = {
   id: string;
-  kind: 'IMAGE_PLAN' | 'IMAGE_EDIT';
+  kind: 'IMAGE_PLAN' | 'IMAGE_EDIT' | 'STANDALONE_IMAGE_EDIT';
   taskId: number;
   page?: number;
   status: string;
@@ -42,6 +42,7 @@ export function isPlanSourceCurrent(job: { copyRevisionId: number; copy?: { titl
 }
 
 export function backgroundTaskTitle(task: BackgroundTask) {
+  if (task.kind === 'STANDALONE_IMAGE_EDIT') return `独立图片编辑 #${task.taskId} · 第 ${task.page ?? 1} 页`;
   return `任务 #${task.taskId} · ${task.kind === 'IMAGE_PLAN' ? '文案规划' : `第 ${task.page ?? 1} 页图片修复`}`;
 }
 
@@ -60,6 +61,7 @@ export function backgroundTaskMessage(task: BackgroundTask) {
 }
 
 export function backgroundTaskPath(task: BackgroundTask) {
+  if (task.kind === 'STANDALONE_IMAGE_EDIT') return `/v1/image-editor/edits/${encodeURIComponent(task.id)}`;
   return task.kind === 'IMAGE_PLAN'
     ? `/v1/tasks/${task.taskId}/regenerate-image-plan/${encodeURIComponent(task.id)}`
     : `/v1/image-edits/${encodeURIComponent(task.id)}`;
@@ -94,7 +96,7 @@ export function createBackgroundTaskStore({ storage, storageKey, request, onComp
     try {
       const saved: unknown = JSON.parse(serialized ?? storage?.getItem(storageKey) ?? '[]');
       return Array.isArray(saved) ? saved.filter((task): task is BackgroundTask => task
-      && uuid.test(task.id) && ['IMAGE_PLAN', 'IMAGE_EDIT'].includes(task.kind)
+      && uuid.test(task.id) && ['IMAGE_PLAN', 'IMAGE_EDIT', 'STANDALONE_IMAGE_EDIT'].includes(task.kind)
       && Number.isSafeInteger(task.taskId) && task.taskId > 0 && statuses.has(task.status)
       && Number.isFinite(task.createdAt) && typeof task.read === 'boolean'
       && (task.updatedAt === undefined || Number.isFinite(task.updatedAt))
@@ -159,7 +161,7 @@ export function createBackgroundTaskStore({ storage, storageKey, request, onComp
     if (stopped) return;
     sync();
     await Promise.allSettled(tasks.filter(task => isBackgroundTaskRunning(task)
-      || task.kind === 'IMAGE_EDIT' && task.status === 'PREVIEW_READY'
+      || ['IMAGE_EDIT','STANDALONE_IMAGE_EDIT'].includes(task.kind) && task.status === 'PREVIEW_READY'
       || task.kind === 'IMAGE_PLAN' && task.status === 'SUCCEEDED' && !task.consumed && !task.payload).map(async task => {
       if (inFlight.has(task.id)) return;
       inFlight.add(task.id);

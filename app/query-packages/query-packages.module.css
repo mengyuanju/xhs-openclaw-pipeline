@@ -24,6 +24,15 @@
 .dialogHeader p { color: var(--muted); font-size: 12px; line-height: 1.7; }
 .importForm, .deleteForm { display: grid; gap: 16px; }
 .importFields { display: grid; grid-template-columns: 1fr 180px; gap: 12px; }
+.importPreview { display: grid; gap: 12px; min-width: 0; }
+.importPreview p, .importPreview small { font-size: 12px; line-height: 1.7; color: var(--muted); }
+.importBatchList { display: grid; gap: 6px; max-height: 130px; overflow-y: auto; font-size: 12px; }
+.importBatchList > div { display: flex; justify-content: space-between; gap: 12px; }
+.importPreviewTable { max-height: 330px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+.importPreviewTable table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 12px; }
+.importPreviewTable th, .importPreviewTable td { padding: 8px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; }
+.importPreviewTable th { position: sticky; top: 0; background: var(--surface-soft); }
+.importPreviewTable th:first-child { width: 70px; }
 .queryInput { min-height: 260px; resize: vertical; }
 .fileRow { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 12px; border: 1px dashed var(--line-strong); border-radius: 12px; background: var(--surface-soft); }
 .fileRow small { color: var(--muted); }
@@ -45,7 +54,7 @@
 .screeningFooter { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 24px; border-top: 1px solid var(--line); background: var(--surface); }
 .screeningFooter > div { display: flex; flex-wrap: wrap; gap: 8px; }
 .virtualTable { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
-.virtualGrid { min-width: 1080px; display: grid; grid-template-columns: 48px 70px minmax(300px, 1fr) 130px 190px 100px; align-items: center; }
+.virtualGrid { min-width: 1080px; display: grid; grid-template-columns: 48px 60px minmax(260px, 1fr) minmax(260px, 1fr) 130px 190px 100px; align-items: center; }
 .virtualHeader { min-height: 46px; padding: 0 12px; border-bottom: 1px solid var(--line-strong); color: var(--muted); background: var(--surface-soft); font-size: 11px; font-weight: 750; }
 .virtualViewport { min-width: 1080px; min-height: 0; flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .virtualInner { position: relative; min-width: 1080px; }

@@ -72,3 +72,14 @@ test('ordinary users cannot enter workflow pages whose permission switches are o
     assert.equal(evaluateAdminProxyRequest(request(path), environment).type, 'forbidden', path);
   }
 });
+
+
+test('standalone image editing is independent of business workflow permission switches',()=>{
+  const secret='standalone-editor-session-test-secret';
+  for(const role of ['ADMIN','USER','REVIEWER']) {
+    const token=createSessionToken(secret,{actor:{username:role.toLowerCase(),userId:1,roles:[role],credentialVersion:1,
+      copyReviewEnabled:false,copyQcEnabled:false,imageQcEnabled:false}});
+    const request=new Request('http://127.0.0.1:3001/image-editor?workspace=1',{headers:{cookie:`${ADMIN_SESSION_COOKIE}=${token}`}});
+    assert.equal(evaluateAdminProxyRequest(request,{XHS_SESSION_SECRET:secret}).type,role==='REVIEWER'?'forbidden':'next');
+  }
+});

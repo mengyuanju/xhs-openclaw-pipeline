@@ -38,6 +38,7 @@ import {
 } from './delivery-spreadsheet.mjs';
 import { IMAGE_FORMATS } from './image-options.mjs';
 import { createImageEditingService } from './image-editing.mjs';
+import { installStandaloneImageEditorRoutes } from './standalone-image-editor-routes.mjs';
 import {
   addDeliveryPreviewUrls,
   createDeliveryPreviewUrlResolver,
@@ -527,6 +528,7 @@ async function assertTaskAccess(ctx, repository, {
   const accessTask = await readAccess.call(repository, ctx.params.taskId);
   if (!accessTask) throw new ControlPlaneNotFoundError('task not found');
   const authorize = (candidate) => {
+    if(candidate.taskKind === 'STANDALONE_IMAGE_EDIT') throw new ControlPlaneNotFoundError('请从独立图片编辑入口访问');
     if (actor.role === 'REVIEWER' && candidate.activeBlindQa === true) {
       // A blind-QA task must be reachable only through its opaque QA assignment.
       // Return 404 so guessed task ids do not reveal membership.
@@ -956,6 +958,7 @@ function installRoutes(
   xhsSearchMachineTokenConfigured,
 ) {
   const deliverAsset = createAssetDelivery({ storageRoot });
+  installStandaloneImageEditorRoutes(router,repository,storageRoot,{requestActor,requireJson,json});
   const deliveryExportRegistry = createDeliveryExportRegistry();
   const disposeSharedDelivery = installSharedDeliveryRoutes(router, repository, storageRoot, {
     requestActor, requireJson, json, assertCurrentActorIdentity,
@@ -2642,6 +2645,7 @@ export function createControlPlaneApp({
     }
   });
 
+  const parseImageEditorUpload = bodyParser({enableTypes:['json'],jsonLimit:36*1024*1024,parsedMethods:['POST']});
   const parseJsonBody = bodyParser({
     enableTypes: ['json'],
     jsonLimit: JSON_BODY_LIMIT,
@@ -2654,6 +2658,7 @@ export function createControlPlaneApp({
         || /^\/v1\/knowledge-versions\/[^/]+\/asset$/u.test(ctx.path)
         || ctx.path === '/v1/query-packages/import-preview');
     if (rawUpload) return next();
+    if (ctx.method==='POST' && ctx.path==='/v1/image-editor/workspaces') return parseImageEditorUpload(ctx,next);
     return parseJsonBody(ctx, next);
   });
   app.use(async (ctx, next) => {
@@ -2719,6 +2724,14 @@ export function createControlPlaneApp({
       || (ctx.path === '/v1/nodes' && ctx.method !== 'GET');
     if (machineRoute && ctx.state.actor && ctx.state.actor.role !== 'ADMIN') {
       throw new HttpError(403, 'FORBIDDEN', 'user sessions cannot use executor machine routes');
+    }
+    return next();
+  });
+  app.use(async (ctx,next)=>{
+    if(ctx.state.actor && typeof repository.assertContentTaskIds==='function' && ctx.path.startsWith('/v1/tasks/')) {
+      const match=/^\/v1\/tasks\/([1-9]\d*)(?:\/|$)/u.exec(ctx.path);
+      const ids=match?[Number(match[1])]:Array.isArray(ctx.request.body?.taskIds)?ctx.request.body.taskIds:[];
+      if(ids.length)await repository.assertContentTaskIds(ids);
     }
     return next();
   });

@@ -64,15 +64,15 @@ test('ordinary workbench rows hide Query provenance and keep delivery downloads 
   assert.match(navigation, /workflowNavigationHrefs\(session\)/u);
   assert.deepEqual(workflowNavigationHrefs({
     subject: 'user', roles: ['USER'], copyReviewEnabled: true, copyQcEnabled: false,
-  }), ['/workbench', '/work-mode', '/query-packages', '/delivery-pool'],
+  }), ['/workbench', '/work-mode', '/query-packages', '/delivery-pool', '/image-editor'],
   'ordinary reviewers must receive review tools and their personal delivery pool without receiving QA tools');
   assert.deepEqual(workflowNavigationHrefs({
     subject: 'user', roles: ['USER'], copyReviewEnabled: false, copyQcEnabled: false,
-  }), ['/workbench', '/work-mode', '/delivery-pool'],
+  }), ['/workbench', '/work-mode', '/delivery-pool', '/image-editor'],
   'ordinary users always retain their workbench and personal delivery pool');
   assert.deepEqual(workflowNavigationHrefs({
     subject: 'user', roles: ['USER'], copyReviewEnabled: true, copyQcEnabled: true,
-  }), ['/workbench', '/work-mode', '/query-packages', '/copy-qa', '/delivery-pool'],
+  }), ['/workbench', '/work-mode', '/query-packages', '/copy-qa', '/delivery-pool', '/image-editor'],
   'enabling copy QA must not restore the removed operator landing-page entry');
   assert.equal(workflowNavigationHrefs({ subject: 'user', roles: ['ADMIN'] }).includes('/copy-flow'), true,
     'administrators retain their batch-management entry');
@@ -85,7 +85,7 @@ test('ordinary workbench rows hide Query provenance and keep delivery downloads 
   'reviewer accounts must not receive the copy workflow landing-page entry');
   assert.deepEqual(workflowNavigationHrefs({
     subject: 'user', roles: ['USER'], copyReviewEnabled: false, copyQcEnabled: false, imageQcEnabled: true,
-  }), ['/workbench', '/work-mode', '/delivery-pool'], 'image QA permission must remain reviewer-only');
+  }), ['/workbench', '/work-mode', '/delivery-pool', '/image-editor'], 'image QA permission must remain reviewer-only');
   assert.match(workbench, /const canUseQueryPackageFilter = role !== 'USER'/u);
   assert.match(workbench, /canUseQueryPackageFilter \? initialListState\.queryPackageName : ''/u,
     'a package filter from the URL must not initialize for an ordinary user');

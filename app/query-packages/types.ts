@@ -44,6 +44,7 @@ export type QueryPackageItem = {
   rowNumber: number;
   externalId: string | null;
   query: string;
+  issuedQuery: string | null;
   input: Record<string, unknown>;
   requestedImageCount: number | 'auto';
   validationStatus: QueryPackageValidationStatus;
@@ -266,6 +267,7 @@ function normalizePackageItem(value: unknown): QueryPackageItem | null {
     rowNumber: Number.isSafeInteger(rowNumber) && rowNumber > 0 ? rowNumber : id,
     externalId: typeof row.externalId === 'string' ? row.externalId : null,
     query,
+    issuedQuery: typeof row.issuedQuery === 'string' ? row.issuedQuery : null,
     input: row.input && typeof row.input === 'object' && !Array.isArray(row.input)
       ? row.input as Record<string, unknown>
       : {},

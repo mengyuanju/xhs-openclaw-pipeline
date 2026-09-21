@@ -28,6 +28,7 @@ type Page = { items: Item[]; total: number; summary: Summary; updatedAt: string 
 type Job = { id: number; kind: string; status: string; itemCount: number; createdBy: string; createdAt: string; finishedAt: string | null; error: string | null;
   downloadCount: number; lastDownloadedAt: string | null;
   artifacts: { part: number; fileName: string; byteSize: number }[] };
+type DownloadState = { job: Job; phase: 'WAITING' | 'STARTED' | 'FAILED'; error: string };
 const emptySummary: Summary = { total: 0, unpacked: 0, packed: 0, delivered: 0, updated: 0 };
 const labels = { UNPACKED: '待打包', PACKED: '已打包，待交付', DELIVERED: '已交付' };
 const time = (value: string | null) => value ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '—';
@@ -58,6 +59,8 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
   const [jobs, setJobs] = useState<Job[]>([]), [jobTotal, setJobTotal] = useState(0), [jobPage, setJobPage] = useState(1);
   const [showJobs, setShowJobs] = useState(false), [busy, setBusy] = useState(''), [loading, setLoading] = useState(false);
   const [error, setError] = useState(''), [message, setMessage] = useState('');
+  const [downloadState, setDownloadState] = useState<DownloadState | null>(null);
+  const pendingDownloadId = downloadState?.phase === 'WAITING' ? downloadState.job.id : null;
   const [users, setUsers] = useState<{ id: number; username: string; displayName?: string }[]>([]);
   const requestId = useRef(0), jobRequestId = useRef(0), failures = useRef(0), mounted = useRef(true);
 
@@ -113,6 +116,40 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
       setJobs(data.items); setJobTotal(data.total);
     } catch (caught) { if (id === jobRequestId.current && mounted.current) setError(caught instanceof Error ? caught.message : '文件记录读取失败'); }
   }, [jobPage]);
+
+  useEffect(() => {
+    if (pendingDownloadId === null) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const controller = new AbortController();
+    const poll = async () => {
+      try {
+        const job = await apiRequest<Job>(`/api/control-plane/v1/delivery-archives/${pendingDownloadId}`, { cache: 'no-store', signal: controller.signal });
+        if (cancelled) return;
+        setJobs(previous => previous.map(value => value.id === job.id ? job : value));
+        if (job.status === 'FAILED' || (job.status === 'SUCCEEDED' && !job.artifacts.length)) {
+          setDownloadState({ job, phase: 'FAILED', error: job.error || (job.status === 'FAILED' ? '文件生成失败，请按原范围重试' : '文件生成完成，但没有可下载的文件') });
+          return;
+        }
+        if (job.status === 'SUCCEEDED') {
+          setDownloadState({ job, phase: 'STARTED', error: '' });
+          for (const artifact of job.artifacts) download(`/api/control-plane/v1/delivery-archives/${job.id}/download/${artifact.part}`, artifact.fileName);
+          window.setTimeout(() => { if (mounted.current) void load(true); }, 1500);
+          return;
+        }
+        setDownloadState({ job, phase: 'WAITING', error: '' });
+        timer = setTimeout(() => void poll(), 2000);
+      } catch (caught) {
+        if (cancelled) return;
+        const stop = caught instanceof ApiRequestError && [400, 401, 403, 404].includes(caught.status);
+        setDownloadState(previous => previous && { ...previous, phase: stop ? 'FAILED' : 'WAITING',
+          error: `读取文件进度失败：${caught instanceof Error ? caught.message : '网络异常'}。${stop ? '请在文件记录中查看或重新登录后重试。' : '正在自动重试。'}` });
+        if (!stop) timer = setTimeout(() => void poll(), 5000);
+      }
+    };
+    void poll();
+    return () => { cancelled = true; controller.abort(); clearTimeout(timer); };
+  }, [pendingDownloadId, load]);
 
   useEffect(() => { if (initialized) void load(); }, [load, initialized, refreshKey]);
   useEffect(() => { if (showJobs) void loadJobs(); }, [loadJobs, showJobs]);
@@ -177,10 +214,11 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
         ...(allFiltered && kind === 'ARCHIVE' ? { filters } : { itemIds: selected.map(item => item.itemId) }) }),
     });
     if (!await confirm({ title: `${kind === 'ARCHIVE' ? '汇总保存' : '下载'} ${preview.itemCount} 条内容？`,
-      description: `涉及 ${preview.batchCount} 个原批次，内容约 ${(preview.totalBytes / 1024 / 1024).toFixed(1)} MB。按冻结版本生成文件，保留原交付人和交付时间。生成完成后可在“文件记录”下载。`, confirmLabel: '生成文件' })) return;
+      description: `涉及 ${preview.batchCount} 个原批次，内容约 ${(preview.totalBytes / 1024 / 1024).toFixed(1)} MB。按冻结版本生成文件，保留原交付人和交付时间。${kind === 'DOWNLOAD' ? '请保持本页面打开，生成完成后自动开始下载；离开后仍可从“文件记录”下载。' : '生成完成后可在“文件记录”下载。'}`, confirmLabel: kind === 'DOWNLOAD' ? '生成并下载' : '生成文件' })) return;
     const job = await apiRequest<Job>('/api/control-plane/v1/delivery-archives', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: preview.token, requestId: crypto.randomUUID() }) });
-    setMessage(`文件任务 HG-${job.id} 已创建，共 ${job.itemCount} 条。可离开页面，稍后从文件记录下载。`);
+    if (kind === 'DOWNLOAD') setDownloadState({ job, phase: 'WAITING', error: '' });
+    else setMessage(`文件任务 HG-${job.id} 已创建，共 ${job.itemCount} 条。可离开页面，稍后从文件记录下载。`);
     setSelected([]); setAllFiltered(false); setShowJobs(true); setJobPage(1); await loadJobs();
   });
   const quickDate = (days: number, yesterday = false) => {
@@ -240,7 +278,7 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
     <div className={styles.actions}>
       <span>{allFiltered ? `已选择符合筛选的全部 ${result.total} 条` : `已选 ${selected.length} 条（最多 200 条）`}</span>
       <Button unstyled className="button small" disabled={Boolean(busy) || !canPack || allFiltered} onClick={() => void pack()}><PackageCheck size={14} />打包并下载</Button>
-      <Button unstyled className="button small" disabled={Boolean(busy) || !canDownload || allFiltered} onClick={() => void createArchive('DOWNLOAD')}><Download size={14} />下载所选冻结内容</Button>
+      <Button unstyled className="button small" disabled={Boolean(busy) || pendingDownloadId !== null || !canDownload || allFiltered} onClick={() => void createArchive('DOWNLOAD')}><Download size={14} />下载所选冻结内容</Button>
       <Button unstyled className="button small primary" disabled={Boolean(busy) || !canConfirm || allFiltered} onClick={() => void confirmItems()}><CheckCircle2 size={14} />确认所选已交付</Button>
       {role === 'ADMIN' && <Button unstyled className="button small" disabled={Boolean(busy) || (!canArchive && !allFiltered)} onClick={() => void createArchive('ARCHIVE')}>汇总保存已交付内容</Button>}
       {role === 'ADMIN' && filters.state === 'DELIVERED' && result.total > 0 && <Button unstyled className="button small" disabled={Boolean(busy) || result.total > 2000} onClick={() => { setAllFiltered(true); setSelected([]); }}>选择全部筛选结果（{result.total} 条）</Button>}
@@ -249,6 +287,17 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
     {selected.some(item => item.state === 'PACKED' && !item.downloadedByMe) && <p className={styles.hint}>所选内容中有本人尚未下载的条目。请先下载并实际发送，再确认交付。</p>}
     {busy && <p role="status">正在{busy}…</p>}
     {message && <div className="notice" role="status">{message}</div>}
+    {downloadState && <div className={`notice ${downloadState.phase === 'FAILED' ? 'error' : ''}`} role={downloadState.phase === 'FAILED' ? 'alert' : 'status'} aria-label="冻结内容下载进度">
+      {downloadState.phase === 'WAITING' && <p>文件任务 HG-{downloadState.job.id}：{downloadState.job.status === 'QUEUED' ? '排队中' : '正在生成文件'}，共 {downloadState.job.itemCount} 条。请保持本页面打开，完成后将自动下载。</p>}
+      {downloadState.phase === 'FAILED' && <p>文件任务 HG-{downloadState.job.id} 未能自动下载，请在文件记录中查看或重试。</p>}
+      {downloadState.error && <p>{downloadState.error}</p>}
+      {downloadState.phase === 'STARTED' && <>
+        <p>文件任务 HG-{downloadState.job.id} 已生成，已发起 {downloadState.job.artifacts.length} 个文件的下载。{downloadState.job.artifacts.length > 1 && '浏览器提示时请允许下载多个文件。'}若未开始，可点击下面的链接下载。</p>
+        <div className={styles.actions}>{downloadState.job.artifacts.map(artifact => <a key={artifact.part} className="button small"
+          href={`/api/control-plane/v1/delivery-archives/${downloadState.job.id}/download/${artifact.part}`} download={artifact.fileName}
+          onClick={() => window.setTimeout(() => { if (mounted.current) void load(true); }, 1500)}><Download size={14} />重新下载第 {artifact.part} 卷</a>)}</div>
+      </>}
+    </div>}
     {error && <div className="notice error" role="alert">{error}。当前内容可能尚未更新，请重试刷新。</div>}
     <p className={styles.hint}>共 {result.updatedAt ? result.total : '—'} 条 · 最近同步：{time(result.updatedAt || null)} · 页面打开时每 15 秒自动同步</p>
     <div className="table-wrap mobile-cards" role="region" aria-label="共享交付内容" tabIndex={0}>
@@ -283,8 +332,10 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
         <div className={styles.actions}>{job.artifacts.map(artifact => <a key={artifact.part} className="button small"
           href={`/api/control-plane/v1/delivery-archives/${job.id}/download/${artifact.part}`} download={artifact.fileName}
           onClick={() => window.setTimeout(() => { if (mounted.current) void load(true); }, 1500)}><Download size={14} />下载第 {artifact.part} 卷</a>)}
-          {job.status === 'FAILED' && <Button unstyled className="button small" disabled={Boolean(busy)} onClick={() => void perform('重试', async () => {
-            await apiRequest(`/api/control-plane/v1/delivery-archives/${job.id}/retry`, { method: 'POST' }); await loadJobs();
+          {job.status === 'FAILED' && <Button unstyled className="button small" disabled={Boolean(busy) || (job.kind === 'DOWNLOAD' && pendingDownloadId !== null)} onClick={() => void perform('重试', async () => {
+            const retried = await apiRequest<Job>(`/api/control-plane/v1/delivery-archives/${job.id}/retry`, { method: 'POST' });
+            if (job.kind === 'DOWNLOAD') setDownloadState({ job: retried, phase: 'WAITING', error: '' });
+            await loadJobs();
           })}>按原范围重试</Button>}</div>
       </article>)}</div>
       {!jobs.length && <p className={styles.hint}>暂无文件记录。</p>}
