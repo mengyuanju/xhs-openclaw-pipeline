@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   IMAGE_PLAN_BULLET_HARD_MAX,
   MIN_IMAGE_PLAN_PAGES,
+  imagePlanBlankBulletLines,
   imagePlanBulletLengthWarnings,
   imagePlanPageDeletionBlockReason,
   planDisclosureIndicesAfterDeletion,
@@ -54,5 +55,32 @@ test('image plan bullet warnings keep checklist and other page recommendations d
     { pageIndex: 0, bulletIndex: 1, length: 31, recommendedMax: 30 },
     { pageIndex: 1, bulletIndex: 1, length: 31, recommendedMax: 30 },
     { pageIndex: 2, bulletIndex: 1, length: 41, recommendedMax: 40 },
+  ]);
+});
+
+test('image plan bullet warnings count user-visible graphemes instead of Unicode code points', () => {
+  const heart = '\u2764\uFE0F';
+  const imagePlan = [{
+    kind: 'detail',
+    bullets: [
+      `${'字'.repeat(29)}${heart}`,
+      `${'字'.repeat(30)}${heart}`,
+      `${'字'.repeat(29)}e\u0301`,
+    ],
+  }];
+
+  assert.deepEqual(imagePlanBulletLengthWarnings(imagePlan), [
+    { pageIndex: 0, bulletIndex: 1, length: 31, recommendedMax: 30 },
+  ]);
+});
+
+test('image plan reports empty and whitespace-only bullet lines with their page positions', () => {
+  assert.deepEqual(imagePlanBlankBulletLines([
+    { kind: 'hero', bullets: ['有效要点', '', '   '] },
+    { kind: 'detail', bullets: ['另一个要点', '\t'] },
+  ]), [
+    { pageIndex: 0, bulletIndex: 1 },
+    { pageIndex: 0, bulletIndex: 2 },
+    { pageIndex: 1, bulletIndex: 1 },
   ]);
 });

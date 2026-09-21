@@ -368,16 +368,16 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
     "variables": [
       {
         "name": "slot1",
-        "description": "OCR 温度单位等价协议"
+        "description": "OCR 温度与画幅比例符号等价协议"
       }
     ]
   },
   {
     "kind": "INTERNAL_OCR_CELSIUS_EQUIVALENCE",
-    "label": "温度单位等价协议",
+    "label": "OCR 符号等价协议",
     "group": "输出与校验协议",
-    "description": "图片验收中 ℃ 与 °C 的等价处理，与程序比较保持一致。",
-    "usage": "图片验收中 ℃ 与 °C 的等价处理，与程序比较保持一致。",
+    "description": "图片验收中 ℃/°C 与数字比例 :/∶ 的等价处理，与程序比较保持一致。",
+    "usage": "图片验收中 ℃/°C 与数字比例 :/∶ 的等价处理，与程序比较保持一致。",
     "editable": false,
     "layer": "CONTRACT",
     "defaultPath": "prompts/internal/ocr_celsius_equivalence.md",

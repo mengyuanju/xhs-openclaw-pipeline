@@ -89,3 +89,17 @@ test('copy review requires explicit confirmation for overlong bullets and retain
     allowImagePlanBulletOverflow: true,
   }), /between 1 and 200 characters/u);
 });
+
+test('copy review bullet limits count user-visible graphemes consistently with the workbench', () => {
+  const heart = '\u2764\uFE0F';
+  const edits = validReviewEdits();
+  edits.imagePlan[1].bullets[0] = `${'字'.repeat(29)}${heart}`;
+
+  assert.equal(
+    normalizeCopyReviewEdits(edits).imagePlan[1].bullets[0],
+    `${'字'.repeat(29)}${heart}`,
+  );
+
+  edits.imagePlan[1].bullets[0] = `${'字'.repeat(30)}${heart}`;
+  assert.throws(() => normalizeCopyReviewEdits(edits), /between 1 and 30 characters/u);
+});

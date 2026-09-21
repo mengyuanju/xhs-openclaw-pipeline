@@ -121,6 +121,8 @@ test('copy review scores the machine draft once and auto-scores an edited approv
   assert.match(source, /const canApproveCopy = isCopyRework \? copyReworkSatisfied/u);
   assert.match(source, /disabled=\{!editable \|\| loading \|\| submitting \|\| humanQualitySettingsUnavailable \|\| Boolean\(savedCopyRatings\.current\) \|\| copyContentChanged\}/u);
   assert.match(source, /最终修改稿无需再次评分/u);
+  assert.match(source, /document\.getElementById\(`copy-original-\$\{detail\.id\}-note`\)\?\.focus\(\)/u,
+    'when deduction reasons are hidden, selecting a low score should focus its required note');
 });
 
 test('copy and image review visibility settings control their own guidance and reasons', async () => {

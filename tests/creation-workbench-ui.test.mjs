@@ -412,6 +412,8 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(reviewDialog, /单独保存图片规划后正式生效/u);
   assert.match(reviewDialog, /建议每条不超过 40 字/u);
   assert.match(reviewDialog, /建议每条不超过 30 字/u);
+  assert.match(reviewDialog, /无效空行，请删除/u);
+  assert.match(reviewDialog, /rejectImagePlanBlankLines\(draft\.imagePlan\)/u);
   assert.match(reviewDialog, /保存时需确认/u);
   assert.match(reviewDialog, /aria-label=\{`删除第 \$\{index \+ 1\} 页规划`\}/u);
   assert.match(reviewDialog, /disabled=\{Boolean\(deletionBlockReason\) \|\| loading \|\| submitting \|\| regeneratingImagePlan\}/u);
@@ -554,6 +556,8 @@ test('image review fits the complete image, supports exterior controls, and pres
   assert.match(currentImageEditor, /LOCAL_EDIT_SUGGESTION/u);
   assert.match(currentImageEditor, /选择一种修改描述/u);
   assert.match(currentImageEditor, /验收未通过 · 结果已保留/u);
+  assert.match(currentImageEditor, /执行前提醒（未阻止生成）/u);
+  assert.match(currentImageEditor, /紧框略超出搜索范围、目标未完整包含或含持握手部时会提醒，但不会阻止调用图片模型/u);
   assert.match(currentImageEditor, /仍采用此结果/u);
   assert.match(currentImageEditor, /acceptRejectedResult:true/u);
   assert.match(currentImageEditor, /基于失败图定向修复（再次收费）/u);
@@ -565,6 +569,7 @@ test('image review fits the complete image, supports exterior controls, and pres
   assert.match(reviewDialog, /asset=\{selectedAsset\} assets=\{assets\}/u);
   assert.match(styles, /\.workbench-image-review-title-actions \{[^}]*display: inline-flex;[^}]*gap: 12px;[^}]*margin-right: 52px;[^}]*margin-left: auto/u);
   assert.match(styles, /\.workbench-image-review-title-actions \.current-image-editor-trigger \{[^}]*width: 96px;[^}]*height: 36px;/u);
+  assert.match(await readFile(projectFile('app/components/current-image-editor.module.css'), 'utf8'), /\.preflightWarningCard/u);
   assert.match(styles, /\.workbench-image-review-section\[data-image-primary="true"\] > \.workbench-image-review-section-title \{[^}]*grid-template-columns: minmax\(0, 1\.75fr\) minmax\(320px, \.75fr\)/u);
   assert.match(visualPlan, /<Disclosure className="visual-plan-summary">/u);
   assert.match(visualPlan, /className="visual-plan-overview"/u);

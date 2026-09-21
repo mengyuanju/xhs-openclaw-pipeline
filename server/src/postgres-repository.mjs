@@ -4552,7 +4552,13 @@ export class PostgresControlPlaneRepository {
       if (!mandatoryRework && decision !== 'SAVE_PLAN' && currentScoreX10 === null) throw new TypeError('score is required');
       const node = await client.query('SELECT id FROM executor_nodes WHERE id = $1', [nodeId]);
       if (!node.rows[0]) throw new ControlPlaneNotFoundError('executor node is not registered');
-      const sourceIsOriginal = revision.rows[0].execution_id !== null;
+      // Saving image planning creates a manual PLAN_EDIT revision with no
+      // execution id, but it does not turn the unchanged machine copy into an
+      // edited draft. Copy provenance is tracked explicitly on the revision;
+      // use it so the first rating after a plan-only save remains ORIGINAL.
+      const sourceIsOriginal = revision.rows[0].execution_id !== null
+        || (revision.rows[0].revision_origin === 'PLAN_EDIT'
+          && revision.rows[0].copy_content_changed_from_machine !== true);
       let sourceRatingContext = sourceIsOriginal ? 'ORIGINAL' : 'EDITED';
       let copyChanged = false;
       let baseScoreX10 = originalScoreX10;

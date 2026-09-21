@@ -59,6 +59,7 @@ import { buildCopyReviewSubmission } from '../../src/copy-review-submission.mjs'
 import { copyReworkChanges, findCopyReworkBaseline } from '../../src/copy-rework.mjs';
 import { copyQaReasonLabels } from '../../src/copy-qa-reasons.mjs';
 import {
+  imagePlanBlankBulletLines,
   imagePlanBulletLengthWarnings,
   imagePlanPageDeletionBlockReason,
   planDisclosureIndicesAfterDeletion,
@@ -88,6 +89,10 @@ type ImagePlanBulletLengthWarning = {
   bulletIndex: number;
   length: number;
   recommendedMax: number;
+};
+type ImagePlanBlankBulletLine = {
+  pageIndex: number;
+  bulletIndex: number;
 };
 type CopyReviewDraftContent = {
   version: 1;
@@ -393,6 +398,12 @@ function imagePlanBulletOverflowDescription(warnings: ImagePlanBulletLengthWarni
   ).join('；');
   const remainder = warnings.length > 3 ? `；另有 ${warnings.length - 3} 条超出建议字数` : '';
   return `${examples}${remainder}。超出建议字数可能导致图片排版拥挤、字号过小或文字截断。是否确认仍按当前内容继续？`;
+}
+
+function imagePlanBlankLineDescription(blankLines: ImagePlanBlankBulletLine[]) {
+  const first = blankLines[0];
+  const remainder = blankLines.length > 1 ? `，另有 ${blankLines.length - 1} 个空行` : '';
+  return `第 ${first.pageIndex + 1} 页画面要点的第 ${first.bulletIndex + 1} 行是无效空行${remainder}。请删除空行后再保存。`;
 }
 
 function initialAiDisclosure(detail: TaskDetail) {
@@ -1227,6 +1238,14 @@ export function TaskReviewDialog({
     if (score === 3) {
       setCopyOriginalReasons([]);
       setCopyOriginalNote('');
+    } else if (!showCopyDeductionReasons && detail) {
+      // With structured reasons hidden, a note is the only way to complete a
+      // low score. Move the reviewer straight to that required field after it
+      // mounts instead of leaving the footer action looking inexplicably
+      // unavailable.
+      window.requestAnimationFrame(() => {
+        document.getElementById(`copy-original-${detail.id}-note`)?.focus();
+      });
     }
   }
 
@@ -1278,6 +1297,18 @@ export function TaskReviewDialog({
     });
   }
 
+  function rejectImagePlanBlankLines(imagePlan: ImagePlanItem[]) {
+    const blankLines = imagePlanBlankBulletLines(imagePlan) as ImagePlanBlankBulletLine[];
+    if (blankLines.length === 0) return false;
+    setMobilePane('plan');
+    setActivePlanIndex(blankLines[0].pageIndex);
+    setError(imagePlanBlankLineDescription(blankLines));
+    window.requestAnimationFrame(() => {
+      document.getElementById(`review-plan-bullets-${blankLines[0].pageIndex}`)?.focus();
+    });
+    return true;
+  }
+
   async function submitCopyDecision(decision: 'SAVE' | 'APPROVE' | 'DISCARD', form: HTMLFormElement) {
     if (!detail || !revision || !draft || !editable || loading || submitting
         || regeneratingImagePlan || draftSaveStatus === 'saving') return;
@@ -1323,6 +1354,7 @@ export function TaskReviewDialog({
       setInvalidField(invalid);
       return;
     }
+    if (decision !== 'DISCARD' && draftChanged && rejectImagePlanBlankLines(draft.imagePlan)) return;
     const bulletOverflowWarnings = decision === 'DISCARD' || !draftChanged
       ? [] : imagePlanBulletLengthWarnings(draft.imagePlan);
     if (!await confirmImagePlanBulletOverflow(bulletOverflowWarnings)) return;
@@ -1459,6 +1491,7 @@ export function TaskReviewDialog({
       setInvalidField(invalid);
       return;
     }
+    if (rejectImagePlanBlankLines(draft.imagePlan)) return;
     const bulletOverflowWarnings = imagePlanBulletLengthWarnings(draft.imagePlan);
     if (!await confirmImagePlanBulletOverflow(bulletOverflowWarnings)) return;
     const pendingDraft = draft;
@@ -1659,6 +1692,8 @@ export function TaskReviewDialog({
       return;
     }
     const targetLabel = reworkTarget === 'COPY' ? '文案' : reworkTarget === 'IMAGE' ? '图片' : '文案和图片';
+    if (decision === 'REWORK' && reworkTarget !== 'COPY' && imagePlanChanged
+        && rejectImagePlanBlankLines(draft!.imagePlan)) return;
     const bulletOverflowWarnings = decision === 'REWORK' && reworkTarget !== 'COPY' && imagePlanChanged
       ? imagePlanBulletLengthWarnings(draft!.imagePlan) : [];
     if (!await confirmImagePlanBulletOverflow(bulletOverflowWarnings)) return;
@@ -2211,6 +2246,7 @@ export function TaskReviewDialog({
                 <div className="workbench-image-plan-grid">
                   {draft.imagePlan.map((item, index) => {
                     const deletionBlockReason = imagePlanPageDeletionBlockReason(draft.imagePlan, index);
+                    const blankBulletLines = imagePlanBlankBulletLines([item]);
                     const bulletLengthWarnings = imagePlanBulletLengthWarnings([item]);
                     return <article id={`review-plan-page-${index}`} className="workbench-image-plan-card" key={index} data-plan-index={index} hidden={activePlanIndex !== index}>
                     <div className="workbench-image-plan-fields" data-edit-blocked={Boolean(planEditBlockMessage)}
@@ -2254,8 +2290,9 @@ export function TaskReviewDialog({
                           onChange={(event) => updateImagePlan(index, { subtitle: event.target.value })} />
                       </div>
                       <div className="field full">
-                        <label htmlFor={`review-plan-bullets-${index}`}>画面要点 <small>每行一条，2–5 条；{item.kind === 'checklist' ? '建议每条不超过 40 字' : '建议每条不超过 30 字'}{bulletLengthWarnings.length ? `，当前有 ${bulletLengthWarnings.length} 条超出，保存时需确认` : ''}</small></label>
+                        <label htmlFor={`review-plan-bullets-${index}`}>画面要点 <small id={`review-plan-bullets-help-${index}`}>每行一条，2–5 条；{item.kind === 'checklist' ? '建议每条不超过 40 字' : '建议每条不超过 30 字'}{blankBulletLines.length ? `，有 ${blankBulletLines.length} 个无效空行，请删除` : ''}{bulletLengthWarnings.length ? `，当前有 ${bulletLengthWarnings.length} 条超出，保存时需确认` : ''}</small></label>
                         <AutosizeTextarea id={`review-plan-bullets-${index}`} className="textarea workbench-plan-bullets-editor" value={item.bullets.join('\n')} required readOnly={planFieldsReadOnly}
+                          aria-describedby={`review-plan-bullets-help-${index}`} aria-invalid={blankBulletLines.length > 0}
                           resizeToken={activePlanIndex === index} onChange={(event) => updateImagePlan(index, { bullets: event.target.value.split(/\r?\n/u) })} />
                       </div>
                       <Disclosure className="field full" open={expandedPrompts.includes(index)} onOpenChange={open => setExpandedPrompts(current => open ? [...current, index] : current.filter(value => value !== index))}>

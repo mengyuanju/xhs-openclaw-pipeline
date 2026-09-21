@@ -51,7 +51,7 @@ function textEditPrompt(context,config,required,alreadyPresent,placementRegion) 
 export function fusionReplacements(config) {
   if(Array.isArray(config.replacements)&&config.replacements.length) return config.replacements;
   if(!config.target||!config.references?.[0])return [];
-  return [{referenceAssetId:config.references[0].assetId,referenceMode:config.referenceMode??'STRICT',
+  return [{referenceAssetId:config.references[0].assetId,referenceMode:config.referenceMode??'APPEARANCE',
     targetMode:config.targetMode??'SINGLE',target:config.target}];
 }
 function aiEditPrompt(context,config,required) {
@@ -73,7 +73,7 @@ function aiEditPrompt(context,config,required) {
     return governedImageEditPrompt(context,config,{reviewInstruction:'真实产品替换',contract,
       data:{operation:replacements.length>1?'MULTI_REAL_PRODUCT_REPLACEMENT':allMatches?'REAL_PRODUCT_REPLACEMENT_ALL_MATCHES':'REAL_PRODUCT_REPLACEMENT',
         maskAttached:config.fusionMaskAttached===true,
-        referenceMode:replacements[0]?.referenceMode??config.referenceMode??'STRICT',target:replacements[0]?.target??config.target,
+        referenceMode:replacements[0]?.referenceMode??config.referenceMode??'APPEARANCE',target:replacements[0]?.target??config.target,
         replacements:enriched,referenceProductDescription:enriched[0]?.referenceProductDescription??null,
         referencePurpose:config.references.map(r=>r.purpose),
         mustPreserve:[...required,config.preserve].filter(Boolean),negative:config.negative},
@@ -109,7 +109,7 @@ const FUSION_ALL_MATCHES_TARGET_CHECKS=['descriptionMatches','allMatchingTargets
 const FUSION_REFERENCE_CHECKS=['referenceUsable','referenceRecognizable','referencePrimaryProductClear'];
 const rectContains=(outer,inner)=>inner.x>=outer.x&&inner.y>=outer.y
   &&inner.x+inner.width<=outer.x+outer.width&&inner.y+inner.height<=outer.y+outer.height;
-export function parseFusionTargetCheck(rawText,{referenceMode='STRICT',targetMode='SINGLE',targetRegion=null}={}) {
+export function parseFusionTargetCheck(rawText,{referenceMode='APPEARANCE',targetMode='SINGLE',targetRegion=null}={}) {
   const parsed=JSON.parse(rawText);
   const checks=parsed?.checks&&typeof parsed.checks==='object'&&!Array.isArray(parsed.checks)?parsed.checks:{};
   const confidence=typeof parsed?.confidence==='number'&&Number.isFinite(parsed.confidence)?parsed.confidence:0;
@@ -121,12 +121,18 @@ export function parseFusionTargetCheck(rawText,{referenceMode='STRICT',targetMod
   const candidateRegionsValid=targetMode==='ALL_MATCHES'
     ?candidateCount>=1&&candidateCount<=4
       &&candidateRegions.length===candidateCount
-      &&candidateRegions.every(region=>region.width>=24&&region.height>=24&&(!targetRegion||rectContains(targetRegion,region)))
+      &&candidateRegions.every(region=>region.width>=24&&region.height>=24)
+    :null;
+  const candidateRegionsInsideSearch=targetMode==='ALL_MATCHES'
+    ?candidateRegionsValid&&(!targetRegion||candidateRegions.every(region=>rectContains(targetRegion,region)))
     :null;
   const referenceProductDescription=String(parsed?.referenceProductDescription??'').slice(0,500);
   const sourceChecks=targetMode==='ALL_MATCHES'?FUSION_ALL_MATCHES_TARGET_CHECKS:FUSION_SOURCE_TARGET_CHECKS;
-  const sourcePassed=confidence>=0.8
+  const localizationPassed=confidence>=0.8
     &&(targetMode==='ALL_MATCHES'?candidateRegionsValid:candidateCount===1)
+    &&sourceChecks.filter(name=>!['wholeTargetInsideRegion','protectedContentExcluded'].includes(name)).every(name=>checks[name]===true);
+  const sourcePassed=localizationPassed
+    &&(targetMode!=='ALL_MATCHES'||candidateRegionsInsideSearch)
     &&sourceChecks.every(name=>checks[name]===true);
   const referencePassed=referenceMode==='APPEARANCE'
     ?checks.referenceRecognizable===true&&checks.referencePrimaryProductClear===true&&referenceProductDescription.trim().length>0
@@ -135,13 +141,30 @@ export function parseFusionTargetCheck(rawText,{referenceMode='STRICT',targetMod
   const referenceWarnings=Array.isArray(parsed?.referenceWarnings)
     ?parsed.referenceWarnings.filter(item=>typeof item==='string').slice(0,10).map(item=>item.slice(0,300))
     :[];
-  return {mode:'VISION_TARGET_REGION_CHECK',referenceMode,targetMode,passed,sourcePassed,referencePassed,confidence,candidateCount,
-    ...(targetMode==='ALL_MATCHES'?{candidateRegions,candidateRegionsValid}:{}),
+  const reason=String(parsed?.reason??'').slice(0,1000);
+  const fallbackRegion=targetMode==='ALL_MATCHES'&&targetRegion?safeRect(targetRegion):null;
+  const editRegions=targetMode==='ALL_MATCHES'
+    ?candidateRegionsValid?candidateRegions:fallbackRegion?[fallbackRegion]:[]
+    :[];
+  const executionAllowed=targetMode==='SINGLE'||editRegions.length>0;
+  const warnings=[...new Set([...referenceWarnings,...(!passed&&reason?[reason]:[])])];
+  return {mode:'VISION_TARGET_REGION_CHECK',referenceMode,targetMode,passed,sourcePassed,localizationPassed,referencePassed,
+    executionAllowed,advisory:executionAllowed&&(!passed||warnings.length>0),blocking:!executionAllowed,warnings,confidence,candidateCount,
+    ...(targetMode==='ALL_MATCHES'?{candidateRegions,candidateRegionsValid,candidateRegionsInsideSearch,editRegions,
+      fallbackRegionUsed:!candidateRegionsValid&&Boolean(fallbackRegion)}:{}),
     referenceProductDescription,referenceWarnings,
     checks:Object.fromEntries([...new Set([...sourceChecks,...FUSION_REFERENCE_CHECKS])].map(name=>[name,checks[name]===true])),
-    reason:String(parsed?.reason??'').slice(0,1000)};
+    reason};
 }
-async function validateFusionTarget(client,{inputPath,referencePaths,target,referenceMode='STRICT',targetMode='SINGLE',signal}) {
+function advisoryFusionFallback({target,referenceMode,targetMode,stage,reason,code=null}) {
+  const fallbackRegion=safeRect(target.region);
+  return {mode:'VISION_TARGET_REGION_CHECK',preflightPerformed:true,stage,referenceMode,targetMode,target,
+    passed:false,sourcePassed:false,localizationPassed:false,referencePassed:false,executionAllowed:true,
+    advisory:true,blocking:false,warnings:[reason],reason,code,confidence:0,candidateCount:0,
+    candidateRegions:[],candidateRegionsValid:false,candidateRegionsInsideSearch:false,
+    editRegions:[fallbackRegion],fallbackRegionUsed:true,referenceProductDescription:'',referenceWarnings:[],checks:{}};
+}
+async function validateFusionTarget(client,{inputPath,referencePaths,target,referenceMode='APPEARANCE',targetMode='SINGLE',signal}) {
   if(!target?.description||!target?.region) {
     throw Object.assign(new Error('旧版真实产品替换请求缺少目标描述或框选区域，请重新创建请求'),{
       nonBillablePreflightFailure:true,
@@ -154,34 +177,27 @@ async function validateFusionTarget(client,{inputPath,referencePaths,target,refe
     response=await client.runVision({prompt:internalPrompt('INTERNAL_EDIT_TARGET_CHECK', { slot1: (criteria) }),
       inputPaths:[inputPath,...referencePaths],signal});
   } catch(error) {
-    throw Object.assign(new Error('目标定位视觉服务失败，尚未调用图片编辑模型'),{
-      cause:error,nonBillablePreflightFailure:true,
-      validation:{stage:'TARGET_LOCALIZATION_SERVICE',passed:false,billedImageGeneration:false,
-        code:String(error?.code??'VISION_SERVICE_FAILED').slice(0,100)},
-    });
+    return advisoryFusionFallback({target,referenceMode,targetMode,stage:'TARGET_LOCALIZATION_SERVICE',
+      reason:'目标定位视觉服务暂不可用，已退回用户框选范围并继续调用图片模型',
+      code:String(error?.code??'VISION_SERVICE_FAILED').slice(0,100)});
   }
   let check;
   try { check=parseFusionTargetCheck(response.rawText,{referenceMode,targetMode,targetRegion:target.region}); }
   catch(error) {
-    throw Object.assign(new Error('目标定位视觉结果格式无效，尚未调用图片编辑模型'),{
-      cause:error,nonBillablePreflightFailure:true,
-      validation:{stage:'TARGET_LOCALIZATION',passed:false,billedImageGeneration:false,reason:'INVALID_VISION_RESULT'},
-    });
+    return advisoryFusionFallback({target,referenceMode,targetMode,stage:'TARGET_LOCALIZATION',
+      reason:'目标定位视觉结果无法使用，已退回用户框选范围并继续调用图片模型',code:'INVALID_VISION_RESULT'});
   }
   check.model=response.model??null;
   check.target=target;
-  if(!check.passed) {
-    const stage=check.sourcePassed?'REFERENCE_QUALITY':'TARGET_LOCALIZATION';
-    throw Object.assign(new Error(`真实产品替换前置检查未通过，尚未调用图片编辑模型：${check.reason||'请调整目标选区或参考图使用方式'}`),{
-      nonBillablePreflightFailure:true,
-      validation:{stage,...check,billedImageGeneration:false},
-    });
+  if(!check.executionAllowed) {
+    return advisoryFusionFallback({target,referenceMode,targetMode,stage:'TARGET_LOCALIZATION',
+      reason:check.reason||'目标定位信息不足，已退回用户框选范围并继续调用图片模型',code:'LOCALIZATION_FALLBACK'});
   }
   return check;
 }
-function directFusionTarget({target,referenceMode='STRICT'}) {
+function directFusionTarget({target,referenceMode='APPEARANCE'}) {
   return {mode:'DIRECT_PRODUCT_REPLACEMENT',referenceMode,targetMode:'SINGLE',passed:true,preflightPerformed:false,
-    candidateCount:1,referenceProductDescription:'',referenceWarnings:[],target,
+    executionAllowed:true,advisory:false,blocking:false,warnings:[],candidateCount:1,referenceProductDescription:'',referenceWarnings:[],target,
     reason:'单目标框仅作为定位提示，目标完整性与框内遮挡不再阻止图片编辑模型执行'};
 }
 const LOCAL_RESULT_FAILURE_CODES=new Set(['SOURCE_NOT_CLEARED','DESTINATION_OBJECT_MISSING','QUANTITY_INCORRECT',
@@ -343,6 +359,20 @@ function visionTextCheck(alignment,targetText=null,placement=null,{ocrOnly=false
   return {...alignment,passed:alignment?.passed===true,engine:'existing-vision-alignment',
     recognizedFields:fields,recognizedText,targetOccurrences,placement:placementCheck,missing,extra,uncertain};
 }
+function sourcePreflightResult(checks) {
+  const finalCheck=checks.at(-1)??null;
+  const passed=finalCheck?.passed===true;
+  const warnings=[];
+  for(const warning of finalCheck?.warnings??[])if(typeof warning==='string'&&warning.trim())warnings.push(warning.trim());
+  for(const warning of finalCheck?.visualAdvisory?.warnings??[])if(typeof warning==='string'&&warning.trim())warnings.push(warning.trim());
+  for(const contradiction of finalCheck?.contradictions??[])if(typeof contradiction==='string'&&contradiction.trim())warnings.push(contradiction.trim());
+  if(!passed&&!warnings.length&&typeof finalCheck?.reason==='string'&&finalCheck.reason.trim())warnings.push(finalCheck.reason.trim());
+  if(!passed&&!warnings.length&&typeof finalCheck?.repairInstruction==='string'&&finalCheck.repairInstruction.trim())warnings.push(finalCheck.repairInstruction.trim());
+  if(!passed&&!warnings.length&&Array.isArray(finalCheck?.missing)&&finalCheck.missing.length)warnings.push(`源图必需内容未确认：${finalCheck.missing.join('、')}`);
+  if(!passed&&!warnings.length&&Array.isArray(finalCheck?.uncertain)&&finalCheck.uncertain.length)warnings.push(`源图文字可读性仍不确定：${finalCheck.uncertain.join('、')}`);
+  if(!passed&&!warnings.length)warnings.push('源图视觉预检未能完全确认，但系统已继续调用图片模型。');
+  return {mode:'ADVISORY_SOURCE_CHECK',passed,blocking:false,warnings:[...new Set(warnings)].slice(0,10),checks};
+}
 export async function processImageEdit({service,storageRoot,workerId,edit=null,signal,environment=process.env,agentClient,validateImage,mock=false,maxGenerationAttempts}) {
   if(maxGenerationAttempts!==undefined&&maxGenerationAttempts!==1) throw new TypeError('图片修改仅允许单次生成');
   if(validateImage!==undefined&&typeof validateImage!=='function')throw new TypeError('图片视觉验收器无效');
@@ -354,6 +384,7 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
   let failedPreviewBytes=null;
   const controller=new AbortController();
   let alignmentStage='SOURCE';
+  let sourcePreflight=null;
   const stop=(reason=new Error('图片编辑租约失效或已取消'))=>{lostLease=true;if(!controller.signal.aborted)controller.abort(reason);};
   const externalAbort=()=>stop(signal.reason);
   if(signal?.aborted)externalAbort();else signal?.addEventListener('abort',externalAbort,{once:true});
@@ -439,12 +470,21 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
     const sourceChecks=[];
     let originalCheck=null;
     for(let sourceAttempt=1;sourceAttempt<=2;sourceAttempt++) {
-      const beforeAlignment=await verify({context:validationContext,imagePath:inputPath,pageIndex:Number(e.target_page),attempt:sourceAttempt-1,requiredText:sourceRequired,overlay:null});
+      let beforeAlignment;
+      try {
+        beforeAlignment=await verify({context:validationContext,imagePath:inputPath,pageIndex:Number(e.target_page),attempt:sourceAttempt-1,requiredText:sourceRequired,overlay:null});
+      } catch(error) {
+        if(!(error instanceof ImageAlignmentServiceError))throw error;
+        originalCheck={mode:'SOURCE_SERVICE_ADVISORY',passed:false,reason:'源图视觉预检服务暂不可用，系统已继续调用图片模型',
+          warnings:['源图视觉预检服务暂不可用，系统已继续调用图片模型'],code:error.code,serviceCode:error.serviceCode};
+        sourceChecks.push(originalCheck);
+        break;
+      }
       originalCheck=visionTextCheck(beforeAlignment,null,null,{ocrOnly:e.operation==='TEXT'});
       sourceChecks.push(originalCheck);
       if(originalCheck.passed)break;
     }
-    if(!originalCheck?.passed)throw Object.assign(new Error('源图视觉验收不确定或必需文字缺失，不能安全编辑'),{validation:{stage:'SOURCE',passed:false,checks:sourceChecks}});
+    sourcePreflight=sourcePreflightResult(sourceChecks);
     alignmentStage='RESULT';
     const refs=[];
     for(const asset of context.refs)refs.push({asset,bytes:await service.readAsset(asset)});
@@ -484,12 +524,12 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
           const referenceIndex=config.references.findIndex(reference=>reference.assetId===replacement.referenceAssetId);
           if(referenceIndex<0)throw new Error('产品替换项引用的参考图未绑定');
           if((replacement.targetMode??'SINGLE')==='SINGLE') {
-            localizations.push(directFusionTarget({target:replacement.target,referenceMode:replacement.referenceMode??'STRICT'}));
+            localizations.push(directFusionTarget({target:replacement.target,referenceMode:replacement.referenceMode??'APPEARANCE'}));
             continue;
           }
           try {
             const localization=await validateFusionTarget(client,{inputPath,referencePaths:[paths[referenceIndex+1]],target:replacement.target,
-              referenceMode:replacement.referenceMode??'STRICT',targetMode:replacement.targetMode??'SINGLE',signal:controller.signal});
+              referenceMode:replacement.referenceMode??'APPEARANCE',targetMode:replacement.targetMode??'SINGLE',signal:controller.signal});
             localizations.push(localization);
           } catch(error) {
             if(replacements.length>1) {
@@ -501,14 +541,17 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
           }
         }
         targetLocalization=localizations.length===1?localizations[0]:{
-          mode:'MULTI_TARGET_REGION_CHECK',passed:true,count:localizations.length,
+          mode:'MULTI_TARGET_REGION_CHECK',passed:localizations.every(localization=>localization.passed),
+          executionAllowed:localizations.every(localization=>localization.executionAllowed!==false),
+          advisory:localizations.some(localization=>localization.advisory===true),blocking:false,
+          warnings:[...new Set(localizations.flatMap(localization=>localization.warnings??[]))],count:localizations.length,
           replacements:localizations.map((localization,index)=>({
             referenceAssetId:replacements[index].referenceAssetId,target:replacements[index].target,...localization,
           })),
         };
         fusionMaskAttached=replacements.every(replacement=>(replacement.targetMode??'SINGLE')==='ALL_MATCHES');
         if(fusionMaskAttached) {
-          const localizedMaskRegions=localizations.flatMap(localization=>localization.candidateRegions);
+          const localizedMaskRegions=localizations.flatMap(localization=>localization.editRegions??localization.candidateRegions??[]);
           mask=localizedMaskRegions.length===1
             ?await renderMask({type:'rect',...localizedMaskRegions[0]})
             :await renderRegionsMask(localizedMaskRegions);
@@ -540,9 +583,9 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
           fusionMaskAttached,
           referenceProductDescription:fusionLocalizations[0]?.referenceProductDescription??null,
           referenceProductDescriptions:fusionLocalizations.map(value=>value?.referenceProductDescription??null),
-          candidateCounts:fusionLocalizations.map(value=>value?.candidateCount??1),
+          candidateCounts:fusionLocalizations.map(value=>value?.editRegions?.length??value?.candidateCount??1),
           localizedRegions:fusionLocalizations.map((value,index)=>(fusionReplacementConfigs[index]?.targetMode??'SINGLE')==='ALL_MATCHES'
-            ?value?.candidateRegions??[]
+            ?value?.editRegions??value?.candidateRegions??[]
             :[fusionReplacementConfigs[index].target.region]),
         }:{}),
         ...(removedInheritedDisclosure?{removeDisclosure:sourceDisclosure}:{})};
@@ -554,7 +597,11 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
         generationAttempts=1;
         // Only consume the requested destination, never a model-supplied filesystem path.
         result=await sharp(await readFile(resolve(directory,'generated.png')),{limitInputPixels:16_000_000}).resize(1086,1448,{fit:'fill'}).png().toBuffer();
-        if((e.operation==='AI_LOCAL'&&!config.mask)||(e.operation==='AI_FUSION'&&!mask))outsideMask={mode:'MODEL_FULL_FRAME_WITH_RESULT_REVIEW',requested:false,programmaticPixelMerge:false};
+        if(e.operation==='AI_FUSION')outsideMask={
+          mode:mask?'MODEL_FULL_FRAME_WITH_GUIDANCE_MASK':'MODEL_FULL_FRAME_WITH_RESULT_REVIEW',
+          requested:Boolean(mask),programmaticPixelMerge:false,
+        };
+        else if(e.operation==='AI_LOCAL'&&!config.mask)outsideMask={mode:'MODEL_FULL_FRAME_WITH_RESULT_REVIEW',requested:false,programmaticPixelMerge:false};
         else if(mask){
           result=await mergeWithMask(source,result,mask);outsideMask=await assertOutsideMask(source,result,mask);
         }
@@ -582,16 +629,16 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
         const replacements=e.operation==='AI_FUSION'?fusionReplacements(config):[];
         const multiReplacement=replacements.length>1;
         const allMatches=!multiReplacement&&replacements[0]?.targetMode==='ALL_MATCHES';
-        const appearanceReference=(replacements[0]?.referenceMode??config.referenceMode)==='APPEARANCE';
+        const appearanceReference=(replacements[0]?.referenceMode??config.referenceMode??'APPEARANCE')==='APPEARANCE';
         const criteria=JSON.stringify({operatorInstruction:config.instruction,target:replacements[0]?.target??config.target,
-          referenceMode:replacements[0]?.referenceMode??config.referenceMode??'STRICT',
+          referenceMode:replacements[0]?.referenceMode??config.referenceMode??'APPEARANCE',
           referenceProductDescription:fusionLocalizations[0]?.referenceProductDescription??null,
           replacements:replacements.map((replacement,index)=>({...replacement,
             referenceAttachmentIndex:config.references.findIndex(reference=>reference.assetId===replacement.referenceAssetId)+1,
             referenceProductDescription:fusionLocalizations[index]?.referenceProductDescription??null,
-            candidateCount:fusionLocalizations[index]?.candidateCount??1,
+            candidateCount:fusionLocalizations[index]?.editRegions?.length??fusionLocalizations[index]?.candidateCount??1,
             localizedRegions:(replacement.targetMode??'SINGLE')==='ALL_MATCHES'
-              ?fusionLocalizations[index]?.candidateRegions??[]
+              ?fusionLocalizations[index]?.editRegions??fusionLocalizations[index]?.candidateRegions??[]
               :[replacement.target.region]})),
           referencePurpose:config.references.map(r=>r.purpose)})
           .replaceAll('<','\\u003c').replaceAll('>','\\u003e');
@@ -637,6 +684,7 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
     const validation={passed:text.passed,mock,restoredPages,promptProvenance:promptProvenance(),dimensions:{passed:finalMetadata.width===1086&&finalMetadata.height===1448,width:finalMetadata.width,height:finalMetadata.height},format:finalMetadata.format,
       text,requiredText:required,disclosure:{required:disclosure,added:addedDisclosure,
         ...(removedInheritedDisclosure?{removed:inheritedDisclosure}: {})},integrity:{sha256:imageHash(result)},outsideMask,
+      sourcePreflight,
       localization:['AI_FUSION','AI_LOCAL'].includes(e.operation)?targetLocalization:null,
       entityConsistency,localConsistency,model,generationAttempts,
       repairAttempt:e.operation==='AI_LOCAL'?Number(config.localRepair?.attempt??0):0,
@@ -652,11 +700,12 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
     return {status:'PREVIEW_READY',...await service.complete(e,{bytes:result,mask,validation,originalResult:context.restored?.result})};
     });
   } catch(error) {
-    if(error instanceof ImageAlignmentServiceError && !imageModelRequested) {
-      error.nonBillablePreflightFailure=true;
-      error.validation={stage:alignmentStage==='RESULT'?'RESULT_SERVICE':'SOURCE_SERVICE',passed:false,retryable:error.retryable,
-        code:error.code,serviceCode:error.serviceCode,billedImageGeneration:false};
+    if(error instanceof ImageAlignmentServiceError) {
+      if(!imageModelRequested)error.nonBillablePreflightFailure=true;
+      error.validation={...(error.validation??{}),stage:alignmentStage==='RESULT'?'RESULT_SERVICE':'SOURCE_SERVICE',passed:false,retryable:error.retryable,
+        code:error.code,serviceCode:error.serviceCode,billedImageGeneration:imageModelRequested};
     }
+    if(sourcePreflight)error.validation={...(error.validation??{}),sourcePreflight};
     await service.fail(e,error,imageModelRequested&&failedPreviewBytes?{bytes:failedPreviewBytes}:undefined);
     return {status:'FAILED',error:String(error.message)};
   }

@@ -94,7 +94,7 @@ test('edit inputs reject commands, paths, unconfirmed AI, duplicate references a
   const fusion=normalizeEdit({...input(),operation:'AI_FUSION',instruction:'替换右侧杯子',references:[{assetId:1}],
     target:{description:'右侧台面上的白色杯子',region:{x:700,y:500,width:220,height:240}}});
   assert.deepEqual(fusion.target,{description:'右侧台面上的白色杯子',region:{x:700,y:500,width:220,height:240}});
-  assert.equal(fusion.referenceMode,'STRICT');
+  assert.equal(fusion.referenceMode,'APPEARANCE');
   assert.equal(fusion.targetMode,'SINGLE');
   const appearance=normalizeEdit({...input(),operation:'AI_FUSION',instruction:'按可见外观替换产品',references:[{assetId:1}],referenceMode:'APPEARANCE',
     target:{description:'右侧台面上的白色杯子',region:{x:700,y:500,width:220,height:240}}});
@@ -166,29 +166,39 @@ test('mock mode never calls image models or produces an adoptable AI edit',async
   const dir=await mkdtemp(join(tmpdir(),'image-edit-mock-'));
   try{const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',mock:true,validateImage:async()=>visionPass()});assert.equal(result.status,'FAILED');assert.equal(failed,true);}finally{await rm(dir,{recursive:true,force:true});}
 });
-test('source visual precheck retries once and stores both failures for operator feedback',async()=>{
-  let failedError=null,validationCalls=0;
-  const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_LOCAL',config:{references:[],instruction:'修改右上角背景',preserve:'保留标题',negative:'不要增加文字'}}),
-    context:async()=>({source:{id:1},refs:[],settings:{aiDisclosureEnabled:false},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}}}),
-    readAsset:async()=>png(),heartbeat:async()=>true,fail:async(e,error)=>{failedError=error;},complete:()=>assert.fail('must not complete')};
-  const validateImage=async()=>{validationCalls++;return{...visionPass(),passed:false,ocrConfidence:0.6,ocrMismatches:['headline']};};
+test('source visual precheck retries once, warns, and still calls the image model',async()=>{
+  const source=await png('white'),generated=await png('#eeeeee');
+  let completed=null,validationCalls=0,imageCalls=0;
+  const config={imageEditPrompt,references:[],instruction:'修改右上角背景',preserve:'保留标题',negative:'不要增加文字'};
+  const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_LOCAL',config}),
+    context:async()=>({source:{id:1},refs:[],settings:{aiDisclosureEnabled:false},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),
+    readAsset:async()=>source,heartbeat:async()=>true,fail:async(_edit,error)=>assert.fail(error.message),complete:async(_edit,result)=>{completed=result;return{};}};
+  const agentClient={runImageEdit:async({outputPath})=>{imageCalls++;await writeFile(outputPath,generated);return{model:'fake-edit'};},
+    runVision:async()=>({model:'fake-review',rawText:JSON.stringify(localResultPass())})};
+  const validateImage=async()=>{validationCalls++;return validationCalls<=2
+    ?{...visionPass(),passed:false,ocrConfidence:0.6,ocrMismatches:['headline'],repairInstruction:'源图标题识别不确定'}
+    :visionPass();};
   const dir=await mkdtemp(join(tmpdir(),'image-edit-source-check-'));
-  try{const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',validateImage});assert.equal(result.status,'FAILED');assert.equal(validationCalls,2);assert.equal(failedError.validation.stage,'SOURCE');assert.equal(failedError.validation.checks.length,2);}finally{await rm(dir,{recursive:true,force:true});}
+  try{const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage});assert.equal(result.status,'PREVIEW_READY');assert.equal(imageCalls,1);assert.equal(validationCalls,3);assert.equal(completed.validation.sourcePreflight.passed,false);assert.equal(completed.validation.sourcePreflight.blocking,false);assert.equal(completed.validation.sourcePreflight.checks.length,2);assert.deepEqual(completed.validation.sourcePreflight.warnings,['源图标题识别不确定']);}finally{await rm(dir,{recursive:true,force:true});}
 });
-test('a source vision transport failure is explicit and does not consume a paid image attempt',async()=>{
-  let failedError=null;
+test('a source vision transport failure warns, calls the image model, and remains hard only if result review is unavailable',async()=>{
+  const source=await png('white'),generated=await png('#eeeeee');
+  let failedError=null,failedPreview=null,generationCalls=0;
   const config={imageEditPrompt,references:[],instruction:'添加合规标识',preserve:'保留原有标题',negative:'不要增加其他文字',overlay:normalizeManualOverlay({text:'AI生成',textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',position:'bottom-right'})};
   const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'TEXT',config}),context:async()=>({source:{id:1},refs:[],settings:{aiDisclosureEnabled:true,aiDisclosureText:'AI生成'},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),readAsset:async()=>png(),heartbeat:async()=>true,
-    fail:async(e,error)=>{failedError=error;},complete:()=>assert.fail('must not complete')};
-  const agentClient={runVision:async()=>{throw Object.assign(new Error('shared caller configuration differs'),{code:'CODEX_CONCURRENCY_MISMATCH'});},runImageEdit:()=>assert.fail('image model must not start')};
+    fail:async(_edit,error,preview)=>{failedError=error;failedPreview=preview;},complete:()=>assert.fail('must not complete')};
+  const agentClient={runVision:async()=>{throw Object.assign(new Error('shared caller configuration differs'),{code:'CODEX_CONCURRENCY_MISMATCH'});},
+    runImageEdit:async({outputPath})=>{generationCalls++;await writeFile(outputPath,generated);return{model:'fake-text-edit'};}};
   const dir=await mkdtemp(join(tmpdir(),'image-edit-source-service-'));
   try {
     const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient});
     assert.equal(result.status,'FAILED');
     assert.match(result.error,/CODEX_CONCURRENCY_MISMATCH/u);
-    assert.equal(failedError.nonBillablePreflightFailure,true);
-    assert.deepEqual(failedError.validation,{stage:'SOURCE_SERVICE',passed:false,retryable:true,
-      code:'ALIGNMENT_SERVICE_FAILED',serviceCode:'CODEX_CONCURRENCY_MISMATCH',billedImageGeneration:false});
+    assert.equal(generationCalls,1);assert.ok(Buffer.isBuffer(failedPreview.bytes));
+    assert.equal(failedError.nonBillablePreflightFailure,undefined);
+    assert.equal(failedError.validation.stage,'RESULT_SERVICE');assert.equal(failedError.validation.billedImageGeneration,true);
+    assert.equal(failedError.validation.sourcePreflight.passed,false);assert.equal(failedError.validation.sourcePreflight.blocking,false);
+    assert.deepEqual(failedError.validation.sourcePreflight.warnings,['源图视觉预检服务暂不可用，系统已继续调用图片模型']);
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
 test('AI text worker makes one full-frame edit without a mask or pixel-stitching pass and never retries automatically',async()=>{
@@ -481,7 +491,7 @@ test('AI fusion uses one real-product reference and the governed image-edit prom
   let completed,editCalls=0,visionCalls=0;
   const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_FUSION',config}),context:async()=>({source:{id:1},refs:[{id:9,sha256:'b'.repeat(64)}],settings:{aiDisclosureEnabled:false},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),readAsset:async asset=>asset.id===1?source:reference,
     fail:async(e,error)=>assert.fail(error.message),complete:async(e,result)=>{completed=result;return{};}};
-  const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{editCalls++;assert.equal(inputPaths.length,2);assert.match(prompt,/管理员统一图片编辑规则/u);assert.match(prompt,/REAL_PRODUCT_REPLACEMENT/u);assert.match(prompt,/不附带黑白遮罩/u);assert.match(prompt,/只是帮助定位目标的大致框/u);assert.match(prompt,/右侧台面上的白色杯子/u);assert.doesNotMatch(inputPaths.join('\n'),/target-mask\.png/u);await writeFile(outputPath,generated);return{model:'fake-fusion'};},runVision:async({prompt,inputPaths})=>{visionCalls++;
+  const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{editCalls++;assert.equal(inputPaths.length,2);assert.match(prompt,/管理员统一图片编辑规则/u);assert.match(prompt,/REAL_PRODUCT_REPLACEMENT/u);assert.match(prompt,/不附带黑白遮罩/u);assert.match(prompt,/只是帮助定位源目标的大致框/u);assert.match(prompt,/右侧台面上的白色杯子/u);assert.doesNotMatch(inputPaths.join('\n'),/target-mask\.png/u);await writeFile(outputPath,generated);return{model:'fake-fusion'};},runVision:async({prompt,inputPaths})=>{visionCalls++;
     assert.equal(inputPaths.length,3);assert.match(prompt,/倒数第二张是编辑前源图/u);assert.match(prompt,/partTopology/u);return{rawText:JSON.stringify({passed:true,reason:'产品、位置与部件一致',checks:{referenceIdentity:true,targetLocation:true,singleReplacement:true,partTopology:true,unrelatedContentPreserved:true}}),model:'fake-vision'};}};
   const dir=await mkdtemp(join(tmpdir(),'image-edit-fusion-fake-'));
   try{const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});assert.equal(result.status,'PREVIEW_READY');assert.equal(editCalls,1);assert.equal(visionCalls,1);assert.equal(completed.validation.localization.passed,true);assert.equal(completed.validation.localization.preflightPerformed,false);assert.equal(completed.validation.localization.candidateCount,1);assert.equal(completed.validation.outsideMask.mode,'MODEL_FULL_FRAME_WITH_RESULT_REVIEW');assert.equal(completed.validation.outsideMask.programmaticPixelMerge,false);assert.equal(completed.validation.entityConsistency.passed,true);assert.deepEqual(completed.validation.entityConsistency.checks,{referenceIdentity:true,targetLocation:true,singleReplacement:true,partTopology:true,unrelatedContentPreserved:true});assert.equal(completed.validation.prompt.sha256,imageEditPrompt.sha256);}finally{await rm(dir,{recursive:true,force:true});}
@@ -529,45 +539,108 @@ test('appearance-reference fusion accepts an incomplete but unambiguous primary 
     assert.deepEqual(completed.validation.localization.referenceWarnings,[]);
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
-test('all-matches fusion localizes tight regions, replaces every match, and preserves the search-area gap',async()=>{
+test('all-matches boundary and protected-content warnings keep the complete model result without mask compositing',async()=>{
   const source=await png('white'),reference=await png('coral',120,120),generated=await png('#eeeeee');
   const target={description:'框内全部儿童手表及产品特写',region:{x:100,y:250,width:850,height:900}};
   const replacement={referenceAssetId:9,referenceMode:'APPEARANCE',targetMode:'ALL_MATCHES',target};
   const config={imageEditPrompt,referenceMode:'APPEARANCE',targetMode:'ALL_MATCHES',target,
     references:[{assetId:9,purpose:'真实产品替换'}],replacements:[replacement],instruction:'替换框内全部同款手表',
     preserve:'保留其他内容和文字',negative:'不要改文字'};
-  const candidateRegions=[{x:140,y:300,width:220,height:240},{x:610,y:760,width:180,height:190}];
+  const candidateRegions=[{x:140,y:300,width:220,height:240},{x:610,y:1080,width:180,height:100}];
   let completed,imageCalls=0,visionCalls=0;
   const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_FUSION',config}),context:async()=>({source:{id:1},refs:[{id:9,sha256:'b'.repeat(64)}],settings:{aiDisclosureEnabled:false},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),readAsset:async asset=>asset.id===1?source:reference,
     fail:async(_edit,error)=>assert.fail(error.message),complete:async(_edit,result)=>{completed=result;return{};}};
   const agentClient={runImageEdit:async({prompt,outputPath})=>{imageCalls++;assert.match(prompt,/REAL_PRODUCT_REPLACEMENT_ALL_MATCHES/u);assert.match(prompt,/candidateCount/u);assert.match(prompt,/全部产品实例/u);await writeFile(outputPath,generated);return{model:'fake-all-matches-edit'};},runVision:async({prompt})=>{visionCalls++;
-    if(prompt.includes('目标定位校验器'))return{model:'fake-vision',rawText:JSON.stringify({passed:true,confidence:.98,candidateCount:2,candidateRegions,reason:'找到两个同款手表展示',referenceProductDescription:'参考图中央的珊瑚色儿童手表',referenceWarnings:['表带轻微裁切'],checks:{descriptionMatches:true,exactlyOneTarget:false,allMatchingTargetsFound:true,wholeTargetInsideRegion:true,protectedContentExcluded:true,referenceUsable:false,referenceRecognizable:true,referencePrimaryProductClear:true}})};
+    if(prompt.includes('目标定位校验器'))return{model:'fake-vision',rawText:JSON.stringify({passed:false,confidence:.98,candidateCount:2,candidateRegions,reason:'第二个目标略超出搜索范围并与持握手指重叠',referenceProductDescription:'参考图中央的珊瑚色儿童手表',referenceWarnings:['表带轻微裁切'],checks:{descriptionMatches:true,exactlyOneTarget:false,allMatchingTargetsFound:true,wholeTargetInsideRegion:false,protectedContentExcluded:false,referenceUsable:false,referenceRecognizable:true,referencePrimaryProductClear:true}})};
     assert.match(prompt,/多实例替换验收器/u);return{model:'fake-vision',rawText:JSON.stringify({passed:true,reason:'两个目标均已替换且文字未变',checks:{referenceIdentity:true,allTargetLocations:true,replacementCountCorrect:true,partTopology:true,unrelatedContentPreserved:true}})};}};
   const dir=await mkdtemp(join(tmpdir(),'image-edit-fusion-all-matches-'));
   try {
     const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});
     assert.equal(result.status,'PREVIEW_READY');assert.equal(imageCalls,1);assert.equal(visionCalls,2);
     assert.equal(completed.validation.localization.targetMode,'ALL_MATCHES');assert.equal(completed.validation.localization.candidateCount,2);
+    assert.equal(completed.validation.localization.passed,false);assert.equal(completed.validation.localization.executionAllowed,true);
+    assert.equal(completed.validation.localization.advisory,true);assert.equal(completed.validation.localization.blocking,false);
+    assert.equal(completed.validation.localization.candidateRegionsValid,true);assert.equal(completed.validation.localization.candidateRegionsInsideSearch,false);
+    assert.deepEqual(completed.validation.localization.warnings,['表带轻微裁切','第二个目标略超出搜索范围并与持握手指重叠']);
     assert.deepEqual(completed.validation.localization.candidateRegions,candidateRegions);
     assert.deepEqual(completed.validation.entityConsistency.checks,{referenceIdentity:true,allTargetLocations:true,replacementCountCorrect:true,partTopology:true,unrelatedContentPreserved:true});
+    assert.deepEqual(completed.validation.outsideMask,{mode:'MODEL_FULL_FRAME_WITH_GUIDANCE_MASK',requested:true,programmaticPixelMerge:false});
     const raw=await sharp(completed.bytes).ensureAlpha().raw().toBuffer();
-    const first=(350*1086+200)*4,gap=(600*1086+500)*4,second=(800*1086+650)*4;
+    const first=(350*1086+200)*4,gap=(600*1086+500)*4,second=(1100*1086+650)*4;
     assert.deepEqual([...raw.subarray(first,first+4)],[238,238,238,255]);
-    assert.deepEqual([...raw.subarray(gap,gap+4)],[255,255,255,255]);
+    assert.deepEqual([...raw.subarray(gap,gap+4)],[238,238,238,255]);
     assert.deepEqual([...raw.subarray(second,second+4)],[238,238,238,255]);
   } finally {await rm(dir,{recursive:true,force:true});}
 });
-test('all-matches preflight rejects missing or out-of-search candidate regions',()=>{
+test('all-matches localization service failure falls back to the user search region and still calls the image model',async()=>{
+  const source=await png('white'),reference=await png('coral',120,120),generated=await png('#eeeeee');
+  const target={description:'框内全部儿童手表',region:{x:100,y:250,width:850,height:900}};
+  const config={imageEditPrompt,referenceMode:'APPEARANCE',targetMode:'ALL_MATCHES',target,
+    references:[{assetId:9,purpose:'真实产品替换'}],replacements:[{referenceAssetId:9,referenceMode:'APPEARANCE',targetMode:'ALL_MATCHES',target}],
+    instruction:'替换框内全部同款手表',preserve:'保留其他内容和文字',negative:'不要改文字'};
+  let completed,imageCalls=0,visionCalls=0;
+  const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_FUSION',config}),
+    context:async()=>({source:{id:1},refs:[{id:9,sha256:'b'.repeat(64)}],settings:{},task:{query:'测试选题',input:{}},
+      revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),
+    readAsset:async asset=>asset.id===1?source:reference,fail:async(_edit,error)=>assert.fail(error.message),
+    complete:async(_edit,result)=>{completed=result;return{};}};
+  const agentClient={runImageEdit:async({outputPath})=>{imageCalls++;await writeFile(outputPath,generated);return{model:'fake-edit'};},
+    runVision:async({prompt})=>{visionCalls++;if(prompt.includes('目标定位校验器'))throw Object.assign(new Error('vision unavailable'),{code:'VISION_OFFLINE'});
+      return{model:'fake-review',rawText:JSON.stringify({passed:true,reason:'替换完成',checks:{referenceIdentity:true,allTargetLocations:true,
+        replacementCountCorrect:true,partTopology:true,unrelatedContentPreserved:true}})};}};
+  const dir=await mkdtemp(join(tmpdir(),'image-edit-fusion-fallback-'));
+  try {
+    const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});
+    assert.equal(result.status,'PREVIEW_READY');assert.equal(imageCalls,1);assert.equal(visionCalls,2);
+    assert.equal(completed.validation.localization.stage,'TARGET_LOCALIZATION_SERVICE');
+    assert.equal(completed.validation.localization.fallbackRegionUsed,true);
+    assert.equal(completed.validation.localization.executionAllowed,true);assert.equal(completed.validation.localization.blocking,false);
+    assert.deepEqual(completed.validation.localization.editRegions,[target.region]);
+    assert.match(completed.validation.localization.warnings[0],/继续调用图片模型/u);
+    assert.deepEqual(completed.validation.outsideMask,{mode:'MODEL_FULL_FRAME_WITH_GUIDANCE_MASK',requested:true,programmaticPixelMerge:false});
+    const raw=await sharp(completed.bytes).ensureAlpha().raw().toBuffer();
+    const outside=(100*1086+100)*4,inside=(500*1086+500)*4;
+    assert.deepEqual([...raw.subarray(outside,outside+4)],[238,238,238,255]);
+    assert.deepEqual([...raw.subarray(inside,inside+4)],[238,238,238,255]);
+  } finally {await rm(dir,{recursive:true,force:true});}
+});
+test('all-matches missing or out-of-search regions fall back or warn without blocking execution',()=>{
   const base={passed:true,confidence:.98,candidateCount:2,reason:'两个目标',referenceProductDescription:'中央主产品',referenceWarnings:[],
     checks:{descriptionMatches:true,exactlyOneTarget:false,allMatchingTargetsFound:true,wholeTargetInsideRegion:true,protectedContentExcluded:true,referenceUsable:true,referenceRecognizable:true,referencePrimaryProductClear:true}};
   const options={targetMode:'ALL_MATCHES',targetRegion:{x:100,y:200,width:500,height:600}};
-  assert.equal(parseFusionTargetCheck(JSON.stringify({...base,candidateRegions:[{x:120,y:220,width:100,height:120}]}),options).passed,false);
-  assert.equal(parseFusionTargetCheck(JSON.stringify({...base,candidateRegions:[{x:120,y:220,width:100,height:120},{x:580,y:700,width:100,height:120}]}),options).passed,false);
+  const missing=parseFusionTargetCheck(JSON.stringify({...base,candidateRegions:[{x:120,y:220,width:100,height:120}]}),options);
+  assert.equal(missing.passed,false);assert.equal(missing.executionAllowed,true);assert.equal(missing.candidateRegionsValid,false);
+  assert.equal(missing.fallbackRegionUsed,true);assert.deepEqual(missing.editRegions,[options.targetRegion]);
+  const outside=parseFusionTargetCheck(JSON.stringify({...base,candidateRegions:[{x:120,y:220,width:100,height:120},{x:580,y:700,width:100,height:120}]}),options);
+  assert.equal(outside.passed,false);assert.equal(outside.executionAllowed,true);assert.equal(outside.advisory,true);
+  assert.equal(outside.candidateRegionsValid,true);assert.equal(outside.candidateRegionsInsideSearch,false);
+});
+test('all-matches protected-content overlap is advisory when localization remains usable',()=>{
+  const result=parseFusionTargetCheck(JSON.stringify({passed:false,confidence:.98,candidateCount:2,
+    candidateRegions:[{x:120,y:220,width:100,height:120},{x:320,y:420,width:100,height:120}],reason:'第二个目标包含持握手指',
+    referenceProductDescription:'中央主产品',referenceWarnings:[],checks:{descriptionMatches:true,allMatchingTargetsFound:true,
+      wholeTargetInsideRegion:true,protectedContentExcluded:false,referenceUsable:true,referenceRecognizable:true,referencePrimaryProductClear:true}}),
+  {targetMode:'ALL_MATCHES',targetRegion:{x:100,y:200,width:500,height:600}});
+  assert.equal(result.passed,false);assert.equal(result.sourcePassed,false);assert.equal(result.localizationPassed,true);
+  assert.equal(result.executionAllowed,true);assert.equal(result.advisory,true);assert.equal(result.blocking,false);
+  assert.deepEqual(result.warnings,['第二个目标包含持握手指']);
+});
+test('all target and reference content judgments are advisory when a user search region exists',()=>{
+  const targetRegion={x:100,y:200,width:500,height:600};
+  const result=parseFusionTargetCheck(JSON.stringify({passed:false,confidence:.2,candidateCount:0,candidateRegions:[],
+    reason:'描述不匹配、目标未找全且参考产品不可确认',referenceProductDescription:'',referenceWarnings:['参考图主体不清楚'],
+    checks:{descriptionMatches:false,allMatchingTargetsFound:false,wholeTargetInsideRegion:false,protectedContentExcluded:false,
+      referenceUsable:false,referenceRecognizable:false,referencePrimaryProductClear:false}}),
+  {targetMode:'ALL_MATCHES',referenceMode:'APPEARANCE',targetRegion});
+  assert.equal(result.passed,false);assert.equal(result.localizationPassed,false);assert.equal(result.referencePassed,false);
+  assert.equal(result.executionAllowed,true);assert.equal(result.advisory,true);assert.equal(result.blocking,false);
+  assert.equal(result.fallbackRegionUsed,true);assert.deepEqual(result.editRegions,[targetRegion]);
+  assert.deepEqual(result.warnings,['参考图主体不清楚','描述不匹配、目标未找全且参考产品不可确认']);
 });
 test('the legacy target-check parser still records strict reference failures',()=>{
   const raw=JSON.stringify({passed:false,confidence:0.94,candidateCount:1,reason:'产品被裁切',referenceProductDescription:'中央主产品',
     checks:{descriptionMatches:true,exactlyOneTarget:true,wholeTargetInsideRegion:true,protectedContentExcluded:true,referenceUsable:false,referenceRecognizable:true,referencePrimaryProductClear:true}});
-  const strict=parseFusionTargetCheck(raw),appearance=parseFusionTargetCheck(raw,{referenceMode:'APPEARANCE'});
+  const strict=parseFusionTargetCheck(raw,{referenceMode:'STRICT'}),appearance=parseFusionTargetCheck(raw);
   assert.equal(strict.passed,false);assert.equal(strict.sourcePassed,true);assert.equal(strict.referencePassed,false);
   assert.equal(appearance.passed,false,'model must explicitly approve the selected mode');
 });
@@ -576,7 +649,7 @@ test('an incomplete single-target box goes directly to the paid image model',asy
   let completed=null,imageCalls=0,visionCalls=0;
   const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'AI_FUSION',config}),context:async()=>({source:{id:1},refs:[{id:9,sha256:'b'.repeat(64)}],settings:{aiDisclosureEnabled:false},task:{query:'测试选题',input:{}},revision:{content:{imagePlan:[{headline:'真实参考'}]}},run:{result:{images:[{}]}},imageEditPrompt}),readAsset:async asset=>asset.id===1?source:reference,
     fail:async(_edit,error)=>assert.fail(error.message),complete:async(_edit,result)=>{completed=result;return{};}};
-  const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{imageCalls++;assert.equal(inputPaths.length,2);assert.match(prompt,/即使目标的上沿、右侧或其他可见部分超出框外/u);assert.match(prompt,/手部、手指/u);await writeFile(outputPath,generated);return{model:'fake-fusion'};},runVision:async({prompt})=>{visionCalls++;assert.doesNotMatch(prompt,/目标定位校验器/u);return{rawText:JSON.stringify({passed:true,reason:'红本已完整替换且手部未改变',checks:{referenceIdentity:true,targetLocation:true,singleReplacement:true,partTopology:true,unrelatedContentPreserved:true}}),model:'fake-review'};}};
+  const agentClient={runImageEdit:async({prompt,inputPaths,outputPath})=>{imageCalls++;assert.equal(inputPaths.length,2);assert.match(prompt,/即使同一目标有可见部分超出框外/u);assert.match(prompt,/手部、手指/u);await writeFile(outputPath,generated);return{model:'fake-fusion'};},runVision:async({prompt})=>{visionCalls++;assert.doesNotMatch(prompt,/目标定位校验器/u);return{rawText:JSON.stringify({passed:true,reason:'红本已完整替换且手部未改变',checks:{referenceIdentity:true,targetLocation:true,singleReplacement:true,partTopology:true,unrelatedContentPreserved:true}}),model:'fake-review'};}};
   const dir=await mkdtemp(join(tmpdir(),'image-edit-fusion-ambiguous-'));
   try{const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient,validateImage:async()=>visionPass()});assert.equal(result.status,'PREVIEW_READY');assert.equal(imageCalls,1);assert.equal(visionCalls,1);assert.equal(completed.validation.localization.preflightPerformed,false);assert.equal(completed.validation.outsideMask.mode,'MODEL_FULL_FRAME_WITH_RESULT_REVIEW');}finally{await rm(dir,{recursive:true,force:true});}
 });

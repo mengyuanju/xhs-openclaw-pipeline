@@ -1,4 +1,5 @@
 import { normalizeImageSettings, normalizePageLayout } from './image-options.mjs';
+import { visibleCharacterCount } from '../../src/visible-text.mjs';
 export const TASK_STATES = Object.freeze([
   'COPY_QUEUED',
   'COPY_RUNNING',
@@ -148,7 +149,8 @@ export function normalizeTaskBatch(value) {
 function normalizedReviewText(value, field, { min = 1, max }) {
   if (typeof value !== 'string') throw new TypeError(`${field} must be a string`);
   const text = value.replace(/\r\n?/gu, '\n').trim();
-  if ([...text].length < min || [...text].length > max) {
+  const length = visibleCharacterCount(text);
+  if (length < min || length > max) {
     throw new RangeError(`${field} must contain between ${min} and ${max} characters`);
   }
   return text;

@@ -174,6 +174,118 @@ describe('governed OCR comparison and isolated prompt execution', () => {
     }
   });
 
+  it('accepts ASCII colon and the ratio symbol as equivalent only for numeric aspect ratios', () => {
+    const allowedVisibleText = {
+      language: 'zh-CN',
+      headline: '第1点和第2点',
+      subtitle: '看发布平台和内容形式',
+      bullets: [
+        '网站、长视频选16∶9横屏',
+        '手机短视频选9∶16竖屏',
+        '完整问答适合横屏',
+        '单个金句适合竖屏',
+      ],
+      labels: [],
+    };
+    const output = modelOutput({
+      bulletCoverage: 0.5,
+      textErrors: [
+        '左上要点实际为“网站、长视频选16:9横屏”，其中半角冒号“:”与确认文字“网站、长视频选16∶9横屏”中的比例符号“∶”不一致。',
+        '右上要点实际为“手机短视频选9:16竖屏”，其中比例分隔符“:”与预期“∶”不一致。',
+      ],
+      failureClass: 'MINOR_TEXT',
+      repairInstruction: '将左上要点中的“16:9”改为“16∶9”，将右上要点中的“9:16”改为“9∶16”；其余文字、主体、场景、风格和版式保持不变。',
+      recognizedText: {
+        headline: '第1点和第2点',
+        subtitle: '看发布平台和内容形式',
+        bullets: [
+          '网站、长视频选16:9横屏',
+          '手机短视频选9:16竖屏',
+          '完整问答适合横屏',
+          '单个金句适合竖屏',
+        ],
+        otherText: [],
+      },
+    });
+    const result = parseAllowedUnderRuntime(output, allowedVisibleText);
+
+    assert.equal(result.passed, true);
+    assert.equal(result.failureClass, 'PASS');
+    assert.deepEqual(result.textErrors, []);
+    assert.deepEqual(result.ocrMismatches, []);
+    assert.equal(result.programAssessment.bulletComparison.passed, true);
+    assert.equal(result.programAssessment.aspectRatioEquivalence.method,
+      'ASCII_COLON_EQUIVALENT_TO_U+2236_BETWEEN_DIGITS');
+    assert.equal(result.programAssessment.aspectRatioEquivalence.applied, true);
+    assert.equal(result.programAssessment.aspectRatioEquivalence.applications.length, 2);
+    assert.equal(result.programAssessment.aspectRatioEquivalence.normalizedModelRejection, true);
+    assert.deepEqual(result.programAssessment.aspectRatioEquivalence.bulletCoverage, {
+      normalized: true,
+      modelValue: 0.5,
+      effectiveValue: 1,
+    });
+    assert.deepEqual(result.programAssessment.aspectRatioEquivalence.ignoredTextErrors, output.textErrors);
+  });
+
+  it('does not broaden aspect-ratio equivalence to other punctuation, values or numeric contexts', async (t) => {
+    const allowedVisibleText = {
+      language: 'zh-CN',
+      headline: '发布时间2026∶09',
+      subtitle: '长视频选16∶9横屏',
+      bullets: [],
+      labels: [],
+    };
+    const cases = [
+      ['non-aspect-context', '发布时间2026:09', '长视频选16∶9横屏'],
+      ['different-value', '发布时间2026∶09', '长视频选16:10横屏'],
+      ['full-width-colon', '发布时间2026∶09', '长视频选16：9横屏'],
+      ['spaced-ratio', '发布时间2026∶09', '长视频选16 : 9横屏'],
+    ];
+    for (const [name, headline, subtitle] of cases) {
+      await t.test(name, () => {
+        const output = modelOutput({
+          recognizedText: { headline, subtitle, bullets: [], otherText: [] },
+        });
+        const result = parseAllowedUnderRuntime(output, allowedVisibleText);
+
+        assert.equal(result.passed, false);
+        assert.equal(result.failureClass, 'OCR_MISMATCH');
+        assert.ok(result.ocrMismatches.length > 0);
+      });
+    }
+  });
+
+  it('keeps mixed model rejections even when an aspect-ratio notation pair is present', () => {
+    const allowedVisibleText = {
+      language: 'zh-CN',
+      headline: '选择视频画幅',
+      subtitle: '看发布平台',
+      bullets: ['长视频选16∶9横屏'],
+      labels: [],
+    };
+    const textError = '画面文字“长视频选16:9横屏”与确认文字“长视频选16∶9横屏”的比例符号不一致，同时人物有六根手指。';
+    const output = modelOutput({
+      bulletCoverage: 0.5,
+      textErrors: [textError],
+      failureClass: 'MINOR_TEXT',
+      repairInstruction: '将“16:9”改为“16∶9”，同时修复人物手指。',
+      recognizedText: {
+        headline: '选择视频画幅',
+        subtitle: '看发布平台',
+        bullets: ['长视频选16:9横屏'],
+        otherText: [],
+      },
+    });
+    const result = parseAllowedUnderRuntime(output, allowedVisibleText);
+
+    assert.equal(result.passed, false);
+    assert.deepEqual(result.textErrors, [textError]);
+    assert.equal(result.bulletCoverage, 0.5);
+    assert.equal(result.programAssessment.aspectRatioEquivalence.applied, true);
+    assert.equal(result.programAssessment.aspectRatioEquivalence.normalizedModelRejection, false);
+    assert.equal(result.programAssessment.aspectRatioEquivalence.bulletCoverage.normalized, false);
+  });
+
   it('does not broaden Celsius equivalence to missing, lowercase, spaced, Fahrenheit or other characters', async (t) => {
     const allowedVisibleText = {
       language: 'zh-CN',
