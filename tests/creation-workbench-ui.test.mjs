@@ -555,7 +555,7 @@ test('image review fits the complete image, supports exterior controls, and pres
   assert.match(currentImageEditor, /选择一种修改描述/u);
   assert.match(currentImageEditor, /验收未通过 · 结果已保留/u);
   assert.match(currentImageEditor, /执行前提醒（未阻止生成）/u);
-  assert.match(currentImageEditor, /紧框含持握手部等情况会提醒，但不会阻止调用图片模型/u);
+  assert.match(currentImageEditor, /紧框略超出搜索范围、目标未完整包含或含持握手部时会提醒，但不会阻止调用图片模型/u);
   assert.match(currentImageEditor, /仍采用此结果/u);
   assert.match(currentImageEditor, /acceptRejectedResult:true/u);
   assert.match(currentImageEditor, /基于失败图定向修复（再次收费）/u);
