@@ -320,6 +320,52 @@ test('plan-only edits can be saved for a two-point draft or approved only for a 
   }
 });
 
+test('an unrated machine draft can receive its first score after a plan-only save', async () => {
+  for (const { score, reasons, note } of [
+    { score: 3, reasons: [], note: '' },
+    { score: 2.5, reasons: [], note: '标题表达需要小修' },
+  ]) {
+    const fixture = copyFixture();
+    const imagePlan = sourceEdits.imagePlan.map((item, index) => index === 0
+      ? { ...item, headline: `评分前保存规划 ${score}` }
+      : item);
+
+    const planSaved = await fixture.repository.approveCopy(41, {
+      revisionId: 12,
+      nodeId: 'node-a',
+      decision: 'SAVE_PLAN',
+      edits: { ...sourceEdits, imagePlan },
+      reviewSessionId: score === 3
+        ? '10101010-1010-4010-8010-101010101010'
+        : '20202020-2020-4020-8020-202020202020',
+    }, { actorRole: 'USER', reviewerUserId: 'reviewer' });
+
+    assert.equal(planSaved.currentCopyRevisionId, 13);
+    assert.equal(fixture.assessments.length, 0, 'saving planning must not invent a copy score');
+
+    const rated = await fixture.repository.approveCopy(41, {
+      revisionId: 13,
+      nodeId: 'node-a',
+      decision: 'SAVE',
+      score,
+      reasons,
+      note,
+      reviewSessionId: score === 3
+        ? '30303030-3030-4030-8030-303030303030'
+        : '40404040-4040-4040-8040-404040404040',
+    }, { actorRole: 'USER', reviewerUserId: 'reviewer' });
+
+    assert.equal(rated.state, 'COPY_REVIEW_PENDING');
+    assert.equal(rated.currentCopyRevisionId, 13);
+    assert.deepEqual(fixture.assessments.map(({ copy_revision_id, score_x10, rating_context, action }) => ({
+      copyRevisionId: copy_revision_id,
+      scoreX10: score_x10,
+      ratingContext: rating_context,
+      action,
+    })), [{ copyRevisionId: 13, scoreX10: score * 10, ratingContext: 'ORIGINAL', action: 'SAVE' }]);
+  }
+});
+
 test('an assigned worker can save custom image planning after scoring without changing the copy assessment', async () => {
   const fixture = copyFixture();
   await fixture.repository.approveCopy(41, {

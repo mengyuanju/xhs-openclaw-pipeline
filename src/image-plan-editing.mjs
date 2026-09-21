@@ -1,3 +1,5 @@
+import { visibleCharacterCount } from './visible-text.mjs';
+
 export const MIN_IMAGE_PLAN_PAGES = 3;
 export const IMAGE_PLAN_BULLET_HARD_MAX = 200;
 
@@ -11,12 +13,21 @@ export function imagePlanBulletLengthWarnings(imagePlan) {
     const recommendedMax = recommendedImagePlanBulletMax(page?.kind);
     return (Array.isArray(page?.bullets) ? page.bullets : []).flatMap((bullet, bulletIndex) => {
       if (typeof bullet !== 'string') return [];
-      const length = [...bullet.replace(/\r\n?/gu, '\n').trim()].length;
+      const length = visibleCharacterCount(bullet.replace(/\r\n?/gu, '\n').trim());
       return length > recommendedMax
         ? [{ pageIndex, bulletIndex, length, recommendedMax }]
         : [];
     });
   });
+}
+
+export function imagePlanBlankBulletLines(imagePlan) {
+  if (!Array.isArray(imagePlan)) throw new TypeError('imagePlan must be an array');
+  return imagePlan.flatMap((page, pageIndex) =>
+    (Array.isArray(page?.bullets) ? page.bullets : []).flatMap((bullet, bulletIndex) =>
+      typeof bullet === 'string' && bullet.trim() === '' ? [{ pageIndex, bulletIndex }] : [],
+    ),
+  );
 }
 
 export function imagePlanPageDeletionBlockReason(imagePlan, pageIndex) {

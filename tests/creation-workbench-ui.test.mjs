@@ -412,6 +412,8 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(reviewDialog, /单独保存图片规划后正式生效/u);
   assert.match(reviewDialog, /建议每条不超过 40 字/u);
   assert.match(reviewDialog, /建议每条不超过 30 字/u);
+  assert.match(reviewDialog, /无效空行，请删除/u);
+  assert.match(reviewDialog, /rejectImagePlanBlankLines\(draft\.imagePlan\)/u);
   assert.match(reviewDialog, /保存时需确认/u);
   assert.match(reviewDialog, /aria-label=\{`删除第 \$\{index \+ 1\} 页规划`\}/u);
   assert.match(reviewDialog, /disabled=\{Boolean\(deletionBlockReason\) \|\| loading \|\| submitting \|\| regeneratingImagePlan\}/u);

@@ -26,6 +26,11 @@ const CELSIUS_EQUIVALENCE_METHOD = 'U+2103_EQUIVALENT_TO_U+00B0_LATIN_CAPITAL_C'
 const CELSIUS_FORM_PATTERN = /(?:℃|°C)/u;
 const CELSIUS_DESCRIPTION_SOURCE = '(?:温度单位写法|温度单位符号|温度符号写法|温度标注写法|摄氏度单位|摄氏度符号|摄氏度写法|摄氏单位符号)';
 const CELSIUS_DIFFERENCE_SOURCE = '(?:写法不同|写法不一致|符号不同|符号不一致|不同|不一致|存在差异|有差异|差异|等价写法|等价|相同|一致|无需修改|不应报错)';
+const ASPECT_RATIO_EQUIVALENCE_METHOD = 'ASCII_COLON_EQUIVALENT_TO_U+2236_BETWEEN_DIGITS';
+const ASPECT_RATIO_PATTERN = /\d+(?::|∶)\d+/gu;
+const ASPECT_RATIO_CONTEXT_PATTERN = /(?:画幅|横屏|竖屏|宽高比|长宽比|(?:视频|屏幕|照片|图片|画面)(?:比例|尺寸)|(?:比例|尺寸)(?:视频|屏幕|照片|图片|画面))/u;
+const ASPECT_RATIO_DIFFERENCE_PATTERN = /(?:(?:半角冒号|比例(?:分隔符|符号|号)|画幅比例)[^。；;]*(?:不同|不一致|差异|改为|改成|替换为|替换成|调整为|统一为|等价|相同|一致|无需修改|不应报错)|\d+(?::|∶)\d+[^。；;]*(?:改为|改成|替换为|替换成|调整为|统一为)[^。；;]*\d+(?::|∶)\d+)/u;
+const MIXED_ASPECT_RATIO_ERROR_PATTERN = /(?:同时|另外|此外|以及|并且|还需|仍需|缺失|缺少|漏字|多字|多出|乱码|模糊|不可读|额外|人物|手指|主体不|场景不|布局不|版式不)/u;
 
 export class ImageAlignmentResponseError extends SyntaxError {
   constructor(cause, responseAttempts = MAX_ALIGNMENT_RESPONSE_ATTEMPTS) {
@@ -115,8 +120,14 @@ function normalizeCelsiusNotation(value) {
   return value.replace(/\u2103/gu, '°C');
 }
 
+function normalizeAspectRatioNotation(value) {
+  return ASPECT_RATIO_CONTEXT_PATTERN.test(value)
+    ? value.replace(/(?<=\d)∶(?=\d)/gu, ':')
+    : value;
+}
+
 function normalizeOcrText(value) {
-  return normalizeCelsiusNotation(normalizeOcrTextWithoutCelsius(value));
+  return normalizeAspectRatioNotation(normalizeCelsiusNotation(normalizeOcrTextWithoutCelsius(value)));
 }
 
 function isCelsiusRepresentationPair(left, right) {
@@ -182,6 +193,48 @@ function celsiusEquivalenceApplications(recognizedText, allowedVisibleText) {
   return applications;
 }
 
+function isAspectRatioRepresentationPair(left, right) {
+  const rawLeft = normalizeCelsiusNotation(normalizeOcrTextWithoutCelsius(left));
+  const rawRight = normalizeCelsiusNotation(normalizeOcrTextWithoutCelsius(right));
+  const leftRatios = rawLeft.match(ASPECT_RATIO_PATTERN) ?? [];
+  const rightRatios = rawRight.match(ASPECT_RATIO_PATTERN) ?? [];
+  return rawLeft !== rawRight
+    && leftRatios.length > 0
+    && rightRatios.length > 0
+    && ((leftRatios.some((value) => value.includes(':')) && rightRatios.some((value) => value.includes('∶')))
+      || (leftRatios.some((value) => value.includes('∶')) && rightRatios.some((value) => value.includes(':'))))
+    && normalizeAspectRatioNotation(rawLeft) === normalizeAspectRatioNotation(rawRight);
+}
+
+function aspectRatioEquivalenceApplications(recognizedText, allowedVisibleText) {
+  const applications = [];
+  const addPair = (field, recognized, allowed, index = null) => {
+    if (!isAspectRatioRepresentationPair(recognized, allowed) || applications.length >= 10) return;
+    applications.push({
+      field,
+      ...(index === null ? {} : { index }),
+      recognized: boundedAuditText(recognized),
+      allowed: boundedAuditText(allowed),
+    });
+  };
+  addPair('headline', recognizedText.headline, allowedVisibleText.headline);
+  addPair('subtitle', recognizedText.subtitle, allowedVisibleText.subtitle);
+  for (const [field, recognizedValues, allowedValues] of [
+    ['bullets', recognizedText.bullets, allowedVisibleText.bullets],
+    ['otherText', recognizedText.otherText, allowedVisibleText.labels ?? []],
+  ]) {
+    const remaining = [...allowedValues];
+    for (const [recognizedIndex, recognized] of recognizedValues.entries()) {
+      const index = remaining.findIndex((allowed) =>
+        normalizeOcrText(recognized) === normalizeOcrText(allowed));
+      if (index < 0) continue;
+      addPair(field, recognized, remaining[index], recognizedIndex);
+      remaining.splice(index, 1);
+    }
+  }
+  return applications;
+}
+
 function isCelsiusNotationOnlyMessage(value, applications) {
   const text = String(value ?? '').trim();
   if (!text || !text.includes('℃') || !text.includes('°C') || applications.length === 0) return false;
@@ -209,6 +262,35 @@ function isCelsiusNotationOnlyMessage(value, applications) {
   return differences === 1
     && ((observedValues >= 1 && requiredValues >= 1) || pairedValues >= 1)
     && observedValues + requiredValues + pairedValues + differences === clauses.length;
+}
+
+function quotedValues(value) {
+  return [...String(value).matchAll(/“([^”]+)”|‘([^’]+)’|"([^"]+)"|'([^']+)'/gu)]
+    .map((match) => match.slice(1).find((item) => item !== undefined));
+}
+
+function aspectRatioApplicationValues(applications) {
+  const values = new Set([':', '∶']);
+  for (const application of applications) {
+    for (const value of [application.recognized, application.allowed]) {
+      values.add(String(value));
+      for (const ratio of String(value).match(ASPECT_RATIO_PATTERN) ?? []) values.add(ratio);
+    }
+  }
+  return values;
+}
+
+function isAspectRatioNotationOnlyMessage(value, applications) {
+  let text = String(value ?? '').trim();
+  if (!text || applications.length === 0 || !text.includes(':') || !text.includes('∶')) return false;
+  const allowedValues = aspectRatioApplicationValues(applications);
+  const quoted = quotedValues(text);
+  if (quoted.length === 0 || quoted.some((item) => !allowedValues.has(item))) return false;
+  const ratios = text.match(ASPECT_RATIO_PATTERN) ?? [];
+  if (ratios.length === 0 || ratios.some((ratio) => !allowedValues.has(ratio))) return false;
+  text = text.replace(/(?:[；;，,]\s*)?(?:其余|其他)[^；;。.]*(?:保持不变|不变)[。.]?$/u, '');
+  return ASPECT_RATIO_DIFFERENCE_PATTERN.test(text)
+    && !MIXED_ASPECT_RATIO_ERROR_PATTERN.test(text);
 }
 
 function isQuoteVariantOnlyError(value) {
@@ -446,12 +528,16 @@ export function parseImageAlignmentOutput(raw, { allowedVisibleText } = {}) {
     ocrConfidence,
   });
   const celsiusApplications = celsiusEquivalenceApplications(recognizedText, allowedVisibleText);
+  const aspectRatioApplications = aspectRatioEquivalenceApplications(recognizedText, allowedVisibleText);
   const rawTextErrors = textList(root.textErrors, 'textErrors');
   const ignoredCelsiusTextErrors = celsiusApplications.length > 0 && ocrMismatches.length === 0
     ? rawTextErrors.filter((value) => isCelsiusNotationOnlyMessage(value, celsiusApplications))
     : [];
+  const ignoredAspectRatioTextErrors = aspectRatioApplications.length > 0 && ocrMismatches.length === 0
+    ? rawTextErrors.filter((value) => isAspectRatioNotationOnlyMessage(value, aspectRatioApplications))
+    : [];
   const textErrors = rawTextErrors.filter((value) => {
-    if (ignoredCelsiusTextErrors.includes(value)) return false;
+    if (ignoredCelsiusTextErrors.includes(value) || ignoredAspectRatioTextErrors.includes(value)) return false;
     return promptRuntimeSnapshot()
       || ocrMismatches.length > 0
       || (!isQuoteVariantOnlyError(value) && !isSelfContradictoryExactMatchError(value));
@@ -463,12 +549,25 @@ export function parseImageAlignmentOutput(raw, { allowedVisibleText } = {}) {
     && textErrors.length === 0
     && rawTextErrors.every((value) => isCelsiusNotationOnlyMessage(value, celsiusApplications))
     && isCelsiusNotationOnlyMessage(root.repairInstruction, celsiusApplications);
+  const aspectRatioOnlyModelRejection = promptRuntimeSnapshot()
+    && ['MINOR_TEXT', 'OCR_MISMATCH'].includes(modelFailureClass)
+    && aspectRatioApplications.length > 0
+    && ocrMismatches.length === 0
+    && textErrors.length === 0
+    && rawTextErrors.every((value) => isAspectRatioNotationOnlyMessage(value, aspectRatioApplications))
+    && isAspectRatioNotationOnlyMessage(root.repairInstruction, aspectRatioApplications);
+  const normalizedAspectRatioBulletCoverage = aspectRatioOnlyModelRejection
+    && bulletComparison.passed && bulletCoverage < 0.8;
+  const normalizedAspectRatioHeadline = aspectRatioOnlyModelRejection
+    && aspectRatioApplications.some((application) => application.field === 'headline');
   const result = {
     schemaVersion: 1,
     subjectMatched: booleanValue(root.subjectMatched, 'subjectMatched'),
     sceneMatched: booleanValue(root.sceneMatched, 'sceneMatched'),
-    headlineMatched: booleanValue(root.headlineMatched, 'headlineMatched'),
-    bulletCoverage,
+    headlineMatched: normalizedAspectRatioHeadline
+      ? true
+      : booleanValue(root.headlineMatched, 'headlineMatched'),
+    bulletCoverage: normalizedAspectRatioBulletCoverage ? 1 : bulletCoverage,
     styleMatched: booleanValue(root.styleMatched, 'styleMatched'),
     layoutMatched: booleanValue(root.layoutMatched, 'layoutMatched'),
     contradictions: textList(root.contradictions, 'contradictions'),
@@ -493,7 +592,8 @@ export function parseImageAlignmentOutput(raw, { allowedVisibleText } = {}) {
     && result.extraClaims.length === 0
     && result.textErrors.length === 0
     && result.ocrExactMatch;
-  if (promptRuntimeSnapshot() && root.failureClass !== 'PASS' && !celsiusOnlyModelRejection) {
+  if (promptRuntimeSnapshot() && root.failureClass !== 'PASS'
+    && !celsiusOnlyModelRejection && !aspectRatioOnlyModelRejection) {
     result.passed = false;
   }
   if (result.passed) {
@@ -519,6 +619,19 @@ export function parseImageAlignmentOutput(raw, { allowedVisibleText } = {}) {
       applications: celsiusApplications,
       ignoredTextErrors: ignoredCelsiusTextErrors,
       normalizedModelRejection: Boolean(celsiusOnlyModelRejection),
+    },
+    aspectRatioEquivalence: {
+      method: ASPECT_RATIO_EQUIVALENCE_METHOD,
+      applied: aspectRatioApplications.length > 0,
+      applications: aspectRatioApplications,
+      ignoredTextErrors: ignoredAspectRatioTextErrors,
+      normalizedModelRejection: Boolean(aspectRatioOnlyModelRejection),
+      normalizedHeadlineMatched: Boolean(normalizedAspectRatioHeadline),
+      bulletCoverage: {
+        normalized: Boolean(normalizedAspectRatioBulletCoverage),
+        modelValue: bulletCoverage,
+        effectiveValue: normalizedAspectRatioBulletCoverage ? 1 : bulletCoverage,
+      },
     },
     bulletComparison: {
       method: 'NORMALIZED_MULTISET',
