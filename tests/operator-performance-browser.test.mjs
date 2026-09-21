@@ -36,6 +36,10 @@ test('operator dashboard browser: denominators, drilldown, stale report, export,
       if(req.url==='/bundle.css'){res.setHeader('Content-Type','text/css');res.end(css);return;}
       if(req.url.startsWith('/api/')){
         requests.push(req.url);const url=new URL(req.url,'http://localhost'),input=Object.fromEntries(url.searchParams);
+        if(url.pathname.endsWith('/users')){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({data:[
+          {id:11,username:'worker-a',displayName:'标注甲',status:'ACTIVE'},
+          {id:22,username:'qa-only',displayName:'质检同学',status:'ACTIVE'},
+        ]}));return;}
         if(fail&&!url.pathname.endsWith('/export')){res.statusCode=503;res.setHeader('Content-Type','application/json');res.end(JSON.stringify({error:{code:'TEST_DOWN',message:'统计服务暂不可用'}}));return;}
         if(url.pathname.endsWith('/export')){res.setHeader('Content-Type','text/csv');res.end(performanceCsv(snapshot));return;}
         const filters=normalizePerformanceFilters(input,now);let data;
@@ -61,8 +65,18 @@ test('operator dashboard browser: denominators, drilldown, stale report, export,
     await page.getByRole('button',{name:/文案标注：10 条/}).waitFor();
     assert.equal(await page.locator('[aria-label="总数据"] > article').count(),5);
     await page.getByRole('img',{name:'每日标注与质检条数',exact:true}).waitFor();
+    await page.getByLabel('人员',{exact:true}).selectOption('11');
+    await Promise.all([page.waitForResponse(response=>response.url().includes('accountId=11')),
+      page.getByRole('button',{name:'应用筛选',exact:true}).click()]);
+    await page.getByText('人员：标注甲（worker-a）',{exact:true}).waitFor();
+    assert.equal(new URL(page.url()).searchParams.get('view'),'overview');
+    assert.equal(new URL(page.url()).searchParams.get('accountId'),'11');
     await page.screenshot({path:join(screenshots,'overview-desktop.png'),fullPage:true});
     await page.getByRole('button',{name:'账号数据',exact:true}).click();
+    assert.equal(await page.getByLabel('人员',{exact:true}).inputValue(),'11','person scope survives the view switch');
+    await page.getByLabel('人员',{exact:true}).selectOption('');
+    await Promise.all([page.waitForResponse(response=>!response.url().includes('accountId=11')&&response.url().includes('activity=PRODUCTION')),
+      page.getByRole('button',{name:'应用筛选',exact:true}).click()]);
     await page.getByRole('button',{name:'标注甲',exact:true}).waitFor();
     assert.equal(await page.getByRole('button',{name:'近 7 天',exact:true}).getAttribute('aria-pressed'),'true');
     const person=page.getByRole('row').filter({hasText:'标注甲'});

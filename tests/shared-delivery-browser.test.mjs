@@ -34,10 +34,13 @@ test('shared delivery browser: common state, date filters, confirmation, aggrega
         if(url.pathname.endsWith('/delivery-items')){
           const state=url.searchParams.get('state'),search=url.searchParams.get('search'),offset=Number(url.searchParams.get('offset')),limit=Number(url.searchParams.get('limit'));
           let filtered=rows.filter(row=>!search||row.query.includes(search));
+          if(url.searchParams.get('assigneeId')) filtered=filtered.filter(row=>url.searchParams.get('assigneeId')==='2'&&row.assigneeUsername==='worker');
+          if(url.searchParams.get('packedById')) filtered=filtered.filter(row=>url.searchParams.get('packedById')==='1'&&row.packedBy==='admin');
+          if(url.searchParams.get('deliveredById')) filtered=filtered.filter(row=>url.searchParams.get('deliveredById')===(row.deliveredBy==='admin'?'1':'2'));
           const summary={total:filtered.length,unpacked:0,packed:filtered.filter(row=>row.state==='PACKED').length,delivered:filtered.filter(row=>row.state==='DELIVERED').length,updated:0};
           filtered=filtered.filter(row=>state==='ALL'||(state==='PENDING'?row.state!=='DELIVERED':row.state===state));
           data={items:filtered.slice(offset,offset+limit),total:filtered.length,summary,updatedAt:new Date().toISOString()};
-        }else if(url.pathname.endsWith('/users'))data=[{id:1,username:'admin'},{id:2,username:'worker'}];
+        }else if(url.pathname.endsWith('/users'))data=[{id:1,username:'admin',displayName:'管理员'},{id:2,username:'worker',displayName:'标注甲'}];
         else if(url.pathname.endsWith('/delivery-items/confirm')){
           rows=rows.map(row=>input.itemIds.includes(row.itemId)?{...row,state:'DELIVERED',deliveredBy:'admin',deliveredAt:new Date().toISOString(),canConfirm:false}:row);
           data={confirmed:input.itemIds.length,alreadyConfirmed:0};
@@ -64,6 +67,13 @@ test('shared delivery browser: common state, date filters, confirmation, aggrega
     await operator.evaluate(()=>window.dispatchEvent(new Event('focus')));
     await operator.waitForFunction(()=>Array.from(document.querySelectorAll('tbody tr')).find(row=>row.textContent.includes('#1 交付内容 1'))?.querySelector('[data-label="交付信息"]')?.textContent.includes('admin'));
     assert.equal(requests.filter(req=>req.url.endsWith('/delivery-items/confirm')).length,1);
+    await admin.getByRole('combobox',{name:'负责人',exact:true}).click();await admin.getByRole('option',{name:'标注甲（worker）',exact:true}).click();
+    await Promise.all([admin.waitForResponse(response=>response.url().includes('assigneeId=2')),
+      admin.getByRole('button',{name:'查询',exact:true}).click()]);
+    await admin.getByText('人员筛选结果',{exact:true}).waitFor();
+    assert.match(await admin.getByRole('status').filter({hasText:'负责人：标注甲'}).textContent(),/全部 25 条 · 未交付 1 条 · 已交付 24 条/u);
+    await Promise.all([admin.waitForResponse(response=>response.url().includes('/delivery-items?')&&!response.url().includes('assigneeId=2')),
+      admin.getByRole('button',{name:'清除人员筛选',exact:true}).click()]);
     await admin.getByRole('combobox',{name:'交付状态',exact:true}).click();await admin.getByRole('option',{name:'已交付',exact:true}).click();
     await admin.getByRole('combobox',{name:'日期依据',exact:true}).click();await admin.getByRole('option',{name:'交付确认时间',exact:true}).click();
     await admin.getByLabel('交付开始日期',{exact:true}).fill('2026-09-18');await admin.getByLabel('交付结束日期',{exact:true}).fill('2026-09-18');

@@ -71,6 +71,12 @@ test('native image items provide saved paths, while unsuccessful image items fai
   assert.throws(() => parseCodexOutput(lines({ type: 'item.completed', item: {
     id: 'img-1', type: 'image_generation', status: 'failed', failure: { type: 'usage_limit_exceeded' },
   } }, message('cannot generate'), complete)), { code: 'CODEX_QUOTA_EXHAUSTED' });
+  assert.throws(() => parseCodexOutput(lines({ type: 'item.completed', item: {
+    id: 'img-2', type: 'image_generation', status: 'failed', failure: {
+      type: 'image_generation_user_error', code: 'moderation_blocked',
+      message: 'Your request was rejected by the safety system.',
+    },
+  } }, message('cannot generate'), complete)), { code: 'CODEX_IMAGE_SAFETY_BLOCKED' });
 });
 
 test('a successful native image can recover from earlier capacity events in the same turn', () => {

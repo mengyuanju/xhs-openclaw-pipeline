@@ -55,6 +55,13 @@ test('terminal image errors preserve retry and quota categories', async t => {
   assert.throws(() => parseCodexOutput(failed.stdout), { code: 'CODEX_RATE_LIMITED' });
   assert.equal((await fixture(t, 'quota')).error.code, 'CODEX_QUOTA_EXHAUSTED');
 });
+test('an app-server image safety rejection retains its precise category when the native item omits failure details', async t => {
+  const blocked = await fixture(t, 'moderation-blocked');
+  assert.equal(blocked.status, 0, blocked.stderr);
+  assert.throws(() => parseCodexOutput(blocked.stdout, { requireText: false }), {
+    code: 'CODEX_IMAGE_SAFETY_BLOCKED',
+  });
+});
 test('malformed protocol and timeout stop the owned process before returning', async t => {
   const malformed = await fixture(t, 'malformed');
   assert.equal(malformed.error.code, 'CODEX_EXEC_FAILED');

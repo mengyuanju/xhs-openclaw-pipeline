@@ -26,6 +26,27 @@ function isTransientImageEditError(error) {
   return TRANSIENT_IMAGE_EDIT_ERROR.test(error instanceof Error ? error.message : String(error));
 }
 
+export function promptWithImageSafetyRetry(basePrompt) {
+  if (typeof basePrompt !== 'string' || basePrompt.length < 10) throw new TypeError('basePrompt is invalid');
+  const suffix = `<trusted_image_safety_retry>
+上一次图片输出被安全系统拒绝。仅调整视觉表达，不修改 allowedVisibleText、事实、页数、尺寸或版式职责。
+改用温和、静态、非写实的编辑插画和信息卡表达：不得呈现战斗、攻击、伤口、血液、武器、受害、威胁或恐怖特写；不得出现真人面孔或影视演员肖像。用抽象剪影、通用符号、卡片、色块和环境物件表达人物或类别关系。若内容涉及受保护角色，只保留原文锁定的可见名称，使用蜘蛛网、漫画书页等通用视觉线索，不复刻具体角色的面孔、服装、标志或经典动作。画面整体保持明亮、克制、适合大众阅读。
+</trusted_image_safety_retry>`;
+  const prompt = `${basePrompt}\n\n${suffix}`;
+  if (Buffer.byteLength(prompt, 'utf8') > 200_000) throw new RangeError('图片安全重试提示词超出限制，未截断或发送');
+  return prompt;
+}
+
+async function runWithImageSafetyRetry(operation, prompt) {
+  try {
+    return { generated: await operation(prompt), prompt };
+  } catch (error) {
+    if (codexErrorCode(error) !== 'CODEX_IMAGE_SAFETY_BLOCKED') throw error;
+    const retryPrompt = promptWithImageSafetyRetry(prompt);
+    return { generated: await operation(retryPrompt), prompt: retryPrompt };
+  }
+}
+
 function escapeXml(value) {
   return String(value)
     .replaceAll('&', '&amp;')
@@ -833,23 +854,31 @@ export async function renderDeliveryImages({
             throw new TypeError('model image edit client is required when reference images are present');
           }
           try {
-            generated = await agentClient.runImageEdit({
-              prompt,
-              inputPaths: attemptInputPaths,
-              outputPath: rawOutputPath,
-            });
+            const result = await runWithImageSafetyRetry((candidatePrompt) => agentClient.runImageEdit({
+              prompt: candidatePrompt, inputPaths: attemptInputPaths, outputPath: rawOutputPath,
+            }), prompt);
+            generated = result.generated;
+            prompt = result.prompt;
             provider = generated.provider ?? `${agentClient.provider ?? 'openclaw'}-image-edit`;
           } catch (error) {
             if (!isTransientImageEditError(error) || !agentClient?.runImage) throw error;
             await unlink(rawOutputPath).catch(() => {});
-            generated = await agentClient.runImage({ prompt, outputPath: rawOutputPath });
+            const result = await runWithImageSafetyRetry((candidatePrompt) => agentClient.runImage({
+              prompt: candidatePrompt, outputPath: rawOutputPath,
+            }), prompt);
+            generated = result.generated;
+            prompt = result.prompt;
             provider = generated.provider ?? agentClient.provider ?? 'openclaw';
           }
         } else {
           if (!agentClient?.runImage) {
             throw new TypeError('model image client is required in live mode');
           }
-          generated = await agentClient.runImage({ prompt, outputPath: rawOutputPath });
+          const result = await runWithImageSafetyRetry((candidatePrompt) => agentClient.runImage({
+            prompt: candidatePrompt, outputPath: rawOutputPath,
+          }), prompt);
+          generated = result.generated;
+          prompt = result.prompt;
           provider = generated.provider ?? agentClient.provider ?? 'openclaw';
         }
         model = generated.model;

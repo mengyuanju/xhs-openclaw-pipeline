@@ -34,6 +34,18 @@ createInterface({ input: process.stdin }).on('line', line => {
     send({ method: 'item/completed', params: { threadId: 'another-thread', turnId, item: { ...image, id: 'foreign' } } });
     send({ method: 'item/completed', params: { threadId, turnId: 'another-turn', item: { ...image, id: 'foreign-turn' } } });
     send({ method: 'error', params: { threadId, turnId, willRetry: true, error: { message: 'temporary reconnect' } } });
+    if (scenario === 'moderation-blocked') {
+      process.stderr.write('image generation failed: http 400 Bad Request: {"error":{"type":"image_generation_user_error","code":"moderation_blocked","message":"Your request was rejected by the safety system."}}\n');
+      send({ method: 'item/completed', params: { threadId, turnId, item: {
+        ...image, status: 'failed', savedPath: undefined, failure: null,
+      } } });
+      send({ method: 'item/completed', params: { threadId, turnId,
+        item: { type: 'agentMessage', id: 'answer', text: 'The image could not be generated.' } } });
+      send({ method: 'turn/completed', params: { threadId, turn: {
+        id: turnId, status: 'completed', error: null, items: [],
+      } } });
+      return;
+    }
     if (['capacity-recovered', 'capacity-same-id'].includes(scenario)) {
       send({ method: 'error', params: { threadId, turnId, willRetry: false,
         error: { message: 'Selected model is at capacity. Please try a different model.' } } });

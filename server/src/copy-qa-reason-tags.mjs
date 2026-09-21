@@ -146,8 +146,8 @@ export async function createCopyQaReasonTag(pool, input, rawActor) {
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
         CASE WHEN $9::boolean THEN now() ELSE NULL END,
         CASE WHEN $10::boolean THEN now() ELSE NULL END,
-        CASE WHEN $10::boolean THEN $5 ELSE NULL END,
-        CASE WHEN $10::boolean THEN $6 ELSE NULL END)
+        CASE WHEN $10::boolean THEN $5::bigint ELSE NULL END,
+        CASE WHEN $10::boolean THEN $6::varchar ELSE NULL END)
       RETURNING *
     `, [randomUUID(), group, label, canonicalLabel, actor.userId, actor.username,
       publishImmediately ? 'PUBLIC' : 'PRIVATE',

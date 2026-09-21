@@ -3,7 +3,7 @@
 import { Button } from '@/components/ui/button';
 import { Checkbox, Slider } from '@/components/ui/input';
 
-import { useEffect, useLayoutEffect, useState, type ComponentProps, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type RefObject } from 'react';
 
 import {
   Dialog,
@@ -39,6 +39,17 @@ type ImagePreviewProps = {
   backdrop?: PreviewBackdrop;
   onBackdropChange?: (value: PreviewBackdrop) => void;
 };
+
+const KEYBOARD_NAVIGATION_CONTROL_SELECTOR = [
+  'input',
+  'textarea',
+  'select',
+  '[contenteditable]:not([contenteditable="false"])',
+  '[role="slider"]',
+  '[role="spinbutton"]',
+  '[role="combobox"]',
+  '[role="textbox"]',
+].join(', ');
 
 function detectImageAlpha(image: HTMLImageElement): boolean | null {
   if (image.naturalWidth * image.naturalHeight > 40_000_000) return null;
@@ -106,6 +117,7 @@ export function ImagePreview({
   const [loadedImage, setLoadedImage] = useState<{ src: string; width: number; height: number } | null>(null);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
+  const previewDialogRef = useRef<HTMLDivElement>(null);
   const open = isOpen ?? internalOpen;
   useLayoutEffect(() => { setShowSource(false); setRotation(0); }, [src]);
   const previewSrc = showSource && sourceSrc ? sourceSrc : src;
@@ -173,9 +185,33 @@ export function ImagePreview({
   const isQuarterTurn = Math.abs(rotation % 180) === 90;
   const hasNavigation = typeof position === 'number' && typeof total === 'number' && total > 1;
 
+  useEffect(() => {
+    if (!open || !hasNavigation) return;
+    function handlePreviewKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (event.target instanceof Element) {
+        const containingDialog = event.target.closest('[role="dialog"]');
+        if (containingDialog && containingDialog !== previewDialogRef.current) return;
+        if (event.target.closest(KEYBOARD_NAVIGATION_CONTROL_SELECTOR)) return;
+      }
+      const navigate = event.key === 'ArrowLeft'
+        ? onPrevious
+        : event.key === 'ArrowRight'
+          ? onNext
+          : undefined;
+      if (!navigate) return;
+      event.preventDefault();
+      event.stopPropagation();
+      navigate();
+    }
+    document.addEventListener('keydown', handlePreviewKeyDown);
+    return () => document.removeEventListener('keydown', handlePreviewKeyDown);
+  }, [hasNavigation, onNext, onPrevious, open]);
+
   return <Dialog open={open} onOpenChange={setPreviewOpen}>
     {!hideTrigger && <DialogTrigger asChild><ImagePreviewThumbnail src={src} alt={alt} /></DialogTrigger>}
     <DialogContent
+      ref={previewDialogRef}
       className="image-preview-dialog"
       aria-label={`图片预览：${alt}`}
       aria-describedby={undefined}

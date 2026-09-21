@@ -3,6 +3,18 @@ import { readFile } from 'node:fs/promises';
 import { codexFailure } from './codex-protocol.mjs';
 import { terminateCodexTree } from './codex-process.mjs';
 
+function imageFailureFromStderr(stderr) {
+  const detail = String(stderr ?? '');
+  if (/moderation[_ -]blocked|image_generation_user_error|request was rejected by the safety system/iu.test(detail)) {
+    return {
+      code: 'moderation_blocked',
+      type: 'image_generation_user_error',
+      message: 'image generation request was rejected by the safety system',
+    };
+  }
+  return null;
+}
+
 // Codex 0.152 exec JSONL omits imageGeneration items. The versioned app-server
 // protocol retains native savedPath evidence; never infer it from agent prose.
 export async function runCodexImageProcess(command, args, { input = '', cwd, env, timeoutMs = 300_000,
@@ -31,6 +43,14 @@ export async function runCodexImageProcess(command, args, { input = '', cwd, env
       settled = true;
       clearTimeout(timer); clearTimeout(exitTimer); clearTimeout(shutdownTimer);
       signal?.removeEventListener('abort', abort);
+      const inferredImageFailure = imageFailureFromStderr(stderr);
+      if (inferredImageFailure) {
+        for (const event of events) {
+          if (event.item?.type === 'image_generation' && event.item.status === 'failed' && !event.item.failure) {
+            event.item.failure = inferredImageFailure;
+          }
+        }
+      }
       if (!terminationConfirmed) {
         failure ??= codexFailure({ message: 'image process termination was not confirmed; outcome may be unknown' }, 'CODEX_EXEC_TIMEOUT');
         child.unref(); child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
