@@ -58,7 +58,7 @@ export function normalizeEdit(input) {
   if(operation !== 'AI_FUSION' && (input.target != null||input.replacements != null)) throw new TypeError('仅真实产品替换可指定目标物体');
   if(operation !== 'AI_FUSION' && input.referenceMode != null) throw new TypeError('仅真实产品替换可指定参考图使用方式');
   if(operation !== 'AI_FUSION' && input.targetMode != null) throw new TypeError('仅真实产品替换可指定目标匹配方式');
-  let referenceMode=operation === 'AI_FUSION' ? String(input.referenceMode??'STRICT') : null;
+  let referenceMode=operation === 'AI_FUSION' ? String(input.referenceMode??'APPEARANCE') : null;
   if(operation === 'AI_FUSION' && !['STRICT','APPEARANCE'].includes(referenceMode)) throw new TypeError('参考图使用方式无效');
   let targetMode=operation === 'AI_FUSION' ? String(input.targetMode??'SINGLE') : null;
   if(operation === 'AI_FUSION' && !['SINGLE','ALL_MATCHES'].includes(targetMode)) throw new TypeError('目标匹配方式无效');
@@ -85,7 +85,7 @@ export function normalizeEdit(input) {
         }
         const referenceAssetId=normalizeTaskId(value.referenceAssetId);
         if(!references.some(reference=>reference.assetId===referenceAssetId))throw new TypeError('产品替换项引用了未绑定的参考图');
-        const mode=String(value.referenceMode??'STRICT');
+        const mode=String(value.referenceMode??'APPEARANCE');
         if(!['STRICT','APPEARANCE'].includes(mode))throw new TypeError('参考图使用方式无效');
         const matchMode=String(value.targetMode??'SINGLE');
         if(!['SINGLE','ALL_MATCHES'].includes(matchMode))throw new TypeError('目标匹配方式无效');

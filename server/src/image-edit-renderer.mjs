@@ -51,7 +51,7 @@ function textEditPrompt(context,config,required,alreadyPresent,placementRegion) 
 export function fusionReplacements(config) {
   if(Array.isArray(config.replacements)&&config.replacements.length) return config.replacements;
   if(!config.target||!config.references?.[0])return [];
-  return [{referenceAssetId:config.references[0].assetId,referenceMode:config.referenceMode??'STRICT',
+  return [{referenceAssetId:config.references[0].assetId,referenceMode:config.referenceMode??'APPEARANCE',
     targetMode:config.targetMode??'SINGLE',target:config.target}];
 }
 function aiEditPrompt(context,config,required) {
@@ -73,7 +73,7 @@ function aiEditPrompt(context,config,required) {
     return governedImageEditPrompt(context,config,{reviewInstruction:'真实产品替换',contract,
       data:{operation:replacements.length>1?'MULTI_REAL_PRODUCT_REPLACEMENT':allMatches?'REAL_PRODUCT_REPLACEMENT_ALL_MATCHES':'REAL_PRODUCT_REPLACEMENT',
         maskAttached:config.fusionMaskAttached===true,
-        referenceMode:replacements[0]?.referenceMode??config.referenceMode??'STRICT',target:replacements[0]?.target??config.target,
+        referenceMode:replacements[0]?.referenceMode??config.referenceMode??'APPEARANCE',target:replacements[0]?.target??config.target,
         replacements:enriched,referenceProductDescription:enriched[0]?.referenceProductDescription??null,
         referencePurpose:config.references.map(r=>r.purpose),
         mustPreserve:[...required,config.preserve].filter(Boolean),negative:config.negative},
@@ -109,7 +109,7 @@ const FUSION_ALL_MATCHES_TARGET_CHECKS=['descriptionMatches','allMatchingTargets
 const FUSION_REFERENCE_CHECKS=['referenceUsable','referenceRecognizable','referencePrimaryProductClear'];
 const rectContains=(outer,inner)=>inner.x>=outer.x&&inner.y>=outer.y
   &&inner.x+inner.width<=outer.x+outer.width&&inner.y+inner.height<=outer.y+outer.height;
-export function parseFusionTargetCheck(rawText,{referenceMode='STRICT',targetMode='SINGLE',targetRegion=null}={}) {
+export function parseFusionTargetCheck(rawText,{referenceMode='APPEARANCE',targetMode='SINGLE',targetRegion=null}={}) {
   const parsed=JSON.parse(rawText);
   const checks=parsed?.checks&&typeof parsed.checks==='object'&&!Array.isArray(parsed.checks)?parsed.checks:{};
   const confidence=typeof parsed?.confidence==='number'&&Number.isFinite(parsed.confidence)?parsed.confidence:0;
@@ -164,7 +164,7 @@ function advisoryFusionFallback({target,referenceMode,targetMode,stage,reason,co
     candidateRegions:[],candidateRegionsValid:false,candidateRegionsInsideSearch:false,
     editRegions:[fallbackRegion],fallbackRegionUsed:true,referenceProductDescription:'',referenceWarnings:[],checks:{}};
 }
-async function validateFusionTarget(client,{inputPath,referencePaths,target,referenceMode='STRICT',targetMode='SINGLE',signal}) {
+async function validateFusionTarget(client,{inputPath,referencePaths,target,referenceMode='APPEARANCE',targetMode='SINGLE',signal}) {
   if(!target?.description||!target?.region) {
     throw Object.assign(new Error('旧版真实产品替换请求缺少目标描述或框选区域，请重新创建请求'),{
       nonBillablePreflightFailure:true,
@@ -195,7 +195,7 @@ async function validateFusionTarget(client,{inputPath,referencePaths,target,refe
   }
   return check;
 }
-function directFusionTarget({target,referenceMode='STRICT'}) {
+function directFusionTarget({target,referenceMode='APPEARANCE'}) {
   return {mode:'DIRECT_PRODUCT_REPLACEMENT',referenceMode,targetMode:'SINGLE',passed:true,preflightPerformed:false,
     executionAllowed:true,advisory:false,blocking:false,warnings:[],candidateCount:1,referenceProductDescription:'',referenceWarnings:[],target,
     reason:'单目标框仅作为定位提示，目标完整性与框内遮挡不再阻止图片编辑模型执行'};
@@ -524,12 +524,12 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
           const referenceIndex=config.references.findIndex(reference=>reference.assetId===replacement.referenceAssetId);
           if(referenceIndex<0)throw new Error('产品替换项引用的参考图未绑定');
           if((replacement.targetMode??'SINGLE')==='SINGLE') {
-            localizations.push(directFusionTarget({target:replacement.target,referenceMode:replacement.referenceMode??'STRICT'}));
+            localizations.push(directFusionTarget({target:replacement.target,referenceMode:replacement.referenceMode??'APPEARANCE'}));
             continue;
           }
           try {
             const localization=await validateFusionTarget(client,{inputPath,referencePaths:[paths[referenceIndex+1]],target:replacement.target,
-              referenceMode:replacement.referenceMode??'STRICT',targetMode:replacement.targetMode??'SINGLE',signal:controller.signal});
+              referenceMode:replacement.referenceMode??'APPEARANCE',targetMode:replacement.targetMode??'SINGLE',signal:controller.signal});
             localizations.push(localization);
           } catch(error) {
             if(replacements.length>1) {
@@ -597,7 +597,11 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
         generationAttempts=1;
         // Only consume the requested destination, never a model-supplied filesystem path.
         result=await sharp(await readFile(resolve(directory,'generated.png')),{limitInputPixels:16_000_000}).resize(1086,1448,{fit:'fill'}).png().toBuffer();
-        if((e.operation==='AI_LOCAL'&&!config.mask)||(e.operation==='AI_FUSION'&&!mask))outsideMask={mode:'MODEL_FULL_FRAME_WITH_RESULT_REVIEW',requested:false,programmaticPixelMerge:false};
+        if(e.operation==='AI_FUSION')outsideMask={
+          mode:mask?'MODEL_FULL_FRAME_WITH_GUIDANCE_MASK':'MODEL_FULL_FRAME_WITH_RESULT_REVIEW',
+          requested:Boolean(mask),programmaticPixelMerge:false,
+        };
+        else if(e.operation==='AI_LOCAL'&&!config.mask)outsideMask={mode:'MODEL_FULL_FRAME_WITH_RESULT_REVIEW',requested:false,programmaticPixelMerge:false};
         else if(mask){
           result=await mergeWithMask(source,result,mask);outsideMask=await assertOutsideMask(source,result,mask);
         }
@@ -625,9 +629,9 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
         const replacements=e.operation==='AI_FUSION'?fusionReplacements(config):[];
         const multiReplacement=replacements.length>1;
         const allMatches=!multiReplacement&&replacements[0]?.targetMode==='ALL_MATCHES';
-        const appearanceReference=(replacements[0]?.referenceMode??config.referenceMode)==='APPEARANCE';
+        const appearanceReference=(replacements[0]?.referenceMode??config.referenceMode??'APPEARANCE')==='APPEARANCE';
         const criteria=JSON.stringify({operatorInstruction:config.instruction,target:replacements[0]?.target??config.target,
-          referenceMode:replacements[0]?.referenceMode??config.referenceMode??'STRICT',
+          referenceMode:replacements[0]?.referenceMode??config.referenceMode??'APPEARANCE',
           referenceProductDescription:fusionLocalizations[0]?.referenceProductDescription??null,
           replacements:replacements.map((replacement,index)=>({...replacement,
             referenceAttachmentIndex:config.references.findIndex(reference=>reference.assetId===replacement.referenceAssetId)+1,

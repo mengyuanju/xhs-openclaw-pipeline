@@ -237,6 +237,7 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
     const globalSelectRule=rawCss.match(/\.select-content\s*\{[^}]*\}/u)?.[0];
     assert.ok(globalSelectRule);
     await page.addStyleTag({content:globalSelectRule});
+    assert.equal(await page.getByRole('combobox',{name:'参考图使用方式',exact:true}).textContent(),'外观参考（允许手部、裁切或次要产品）');
     await page.getByRole('combobox',{name:'参考图使用方式',exact:true}).click();
     const referenceMenu=page.getByRole('listbox');
     assert.equal(await referenceMenu.getByRole('option').count(),2);
