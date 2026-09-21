@@ -1,4 +1,23 @@
 export const MIN_IMAGE_PLAN_PAGES = 3;
+export const IMAGE_PLAN_BULLET_HARD_MAX = 200;
+
+export function recommendedImagePlanBulletMax(kind) {
+  return kind === 'checklist' ? 40 : 30;
+}
+
+export function imagePlanBulletLengthWarnings(imagePlan) {
+  if (!Array.isArray(imagePlan)) throw new TypeError('imagePlan must be an array');
+  return imagePlan.flatMap((page, pageIndex) => {
+    const recommendedMax = recommendedImagePlanBulletMax(page?.kind);
+    return (Array.isArray(page?.bullets) ? page.bullets : []).flatMap((bullet, bulletIndex) => {
+      if (typeof bullet !== 'string') return [];
+      const length = [...bullet.replace(/\r\n?/gu, '\n').trim()].length;
+      return length > recommendedMax
+        ? [{ pageIndex, bulletIndex, length, recommendedMax }]
+        : [];
+    });
+  });
+}
 
 export function imagePlanPageDeletionBlockReason(imagePlan, pageIndex) {
   if (!Array.isArray(imagePlan)) throw new TypeError('imagePlan must be an array');

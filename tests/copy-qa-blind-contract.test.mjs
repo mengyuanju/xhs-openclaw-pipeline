@@ -258,6 +258,8 @@ test('administrator statistics preserve the final approver username for display'
       returned: 1,
       decided: 4,
       accuracyRate: 0.75,
+      overallPassed: 4,
+      overallPassRate: 1,
     }],
     mandatory: { passed: 0, returned: 0, pending: 0 },
     batchAffectedCount: 0,
@@ -266,4 +268,6 @@ test('administrator statistics preserve the final approver username for display'
   assert.ok(statistics);
   assert.equal(statistics.random[0].finalApproverUsername, 'worker');
   assert.equal(statistics.random[0].finalApproverDisplayName, '张三 质检员');
+  assert.equal(statistics.random[0].overallPassed, 4);
+  assert.equal(statistics.random[0].overallPassRate, 1);
 });

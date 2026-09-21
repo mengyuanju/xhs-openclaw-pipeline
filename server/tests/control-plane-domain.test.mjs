@@ -74,3 +74,18 @@ test('copy review edits normalize editable copy and structured image-plan cards'
     })),
   }), /hero/u);
 });
+
+test('copy review requires explicit confirmation for overlong bullets and retains a safety cap', () => {
+  const edits = validReviewEdits();
+  edits.imagePlan[1].bullets[0] = '长'.repeat(31);
+
+  assert.throws(() => normalizeCopyReviewEdits(edits), /between 1 and 30 characters/u);
+  assert.equal(normalizeCopyReviewEdits(edits, {
+    allowImagePlanBulletOverflow: true,
+  }).imagePlan[1].bullets[0], '长'.repeat(31));
+
+  edits.imagePlan[1].bullets[0] = '长'.repeat(201);
+  assert.throws(() => normalizeCopyReviewEdits(edits, {
+    allowImagePlanBulletOverflow: true,
+  }), /between 1 and 200 characters/u);
+});

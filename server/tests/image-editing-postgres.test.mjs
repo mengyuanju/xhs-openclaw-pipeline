@@ -150,18 +150,18 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       await assert.rejects(()=>service.complete(executorClaim.imageEdit,{bytes:png,validation:{passed:true}}),{code:'IMAGE_EDIT_CONFLICT'});
       await action(lowEdit.id,'cancel');
     });
-    await t.test('paid appearance-reference edits wait for a version 7 image executor',async()=>{
+    await t.test('paid appearance-reference edits wait for a version 12 image executor',async()=>{
       const reference=await service.upload(taskId,{base64:png.toString('base64'),mediaType:'image/png',purpose:'外观参考',source:'测试自有照片'},actor);
       const appearanceEdit=await service.create(taskId,request({operation:'AI_FUSION',referenceMode:'APPEARANCE',
         instruction:'按主产品可见外观替换目标',references:[{assetId:reference.id,purpose:'真实产品替换'}],
         target:{description:'画面中央的产品',region:{x:300,y:400,width:480,height:600}}}),actor);
-      assert.equal(await repository.claimImage('edit-test',1,2,6),null);
-      const claim=await repository.claimImage('edit-test',1,2,7);
+      assert.equal(await repository.claimImage('edit-test',1,2,11),null);
+      const claim=await repository.claimImage('edit-test',1,2,12);
       assert.equal(claim.imageEdit.id,appearanceEdit.id);
-      assert.equal(claim.execution.snapshot.imageEditExecutorVersion,7);
+      assert.equal(claim.execution.snapshot.imageEditExecutorVersion,12);
       await action(appearanceEdit.id,'cancel');
     });
-    await t.test('multi-product replacements bind every reference and wait for a version 10 image executor',async()=>{
+    await t.test('multi-product replacements bind every reference and wait for a version 12 image executor',async()=>{
       const firstReference=await service.upload(taskId,{base64:png.toString('base64'),mediaType:'image/png',purpose:'杯子参考',source:'测试自有照片'},actor);
       const secondReference=await service.upload(taskId,{base64:localPng.toString('base64'),mediaType:'image/png',purpose:'手表参考',source:'测试自有照片'},actor);
       const batchId=randomUUID();
@@ -172,12 +172,12 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
         ]}),actor);
       assert.equal(multiEdit.config.batchId,batchId);assert.equal(multiEdit.config.replacements.length,2);
       assert.equal((await pool.query('SELECT count(*)::integer AS count FROM image_edit_reference_assets WHERE request_id=$1',[multiEdit.id])).rows[0].count,2);
-      assert.equal(await repository.claimImage('edit-test',1,2,9),null);
-      const claim=await repository.claimImage('edit-test',1,2,10);
-      assert.equal(claim.imageEdit.id,multiEdit.id);assert.equal(claim.execution.snapshot.imageEditExecutorVersion,10);
+      assert.equal(await repository.claimImage('edit-test',1,2,11),null);
+      const claim=await repository.claimImage('edit-test',1,2,12);
+      assert.equal(claim.imageEdit.id,multiEdit.id);assert.equal(claim.execution.snapshot.imageEditExecutorVersion,12);
       await action(multiEdit.id,'cancel');
     });
-    await t.test('all-matches product replacement waits for a version 11 image executor',async()=>{
+    await t.test('all-matches product replacement waits for a version 12 image executor',async()=>{
       const reference=await service.upload(taskId,{base64:png.toString('base64'),mediaType:'image/png',purpose:'同款产品参考',source:'测试自有照片'},actor);
       const allMatchesEdit=await service.create(taskId,request({operation:'AI_FUSION',instruction:'替换框内全部同款产品',
         references:[{assetId:reference.id,purpose:'真实产品替换'}],replacements:[
@@ -185,9 +185,9 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
             target:{description:'框内全部同款手表及特写',region:{x:100,y:200,width:850,height:1000}}},
         ]}),actor);
       assert.equal(allMatchesEdit.config.replacements[0].targetMode,'ALL_MATCHES');
-      assert.equal(await repository.claimImage('edit-test',1,2,10),null);
-      const claim=await repository.claimImage('edit-test',1,2,11);
-      assert.equal(claim.imageEdit.id,allMatchesEdit.id);assert.equal(claim.execution.snapshot.imageEditExecutorVersion,11);
+      assert.equal(await repository.claimImage('edit-test',1,2,11),null);
+      const claim=await repository.claimImage('edit-test',1,2,12);
+      assert.equal(claim.imageEdit.id,allMatchesEdit.id);assert.equal(claim.execution.snapshot.imageEditExecutorVersion,12);
       await action(allMatchesEdit.id,'cancel');
     });
     await t.test('direct local edits wait for a version 9 image executor',async()=>{

@@ -385,6 +385,31 @@ test('an assigned worker can save custom image planning after scoring without ch
   assert.equal(fixture.revisions.get(13).content.imagePlan[0].layout.mode, 'CUSTOM');
 });
 
+test('a plan-only save accepts an overlong bullet only after explicit user confirmation', async () => {
+  const fixture = copyFixture();
+  const imagePlan = sourceEdits.imagePlan.map((item, index) => index === 1
+    ? { ...item, bullets: ['长'.repeat(31), item.bullets[1]] }
+    : item);
+  const input = {
+    revisionId: 12,
+    nodeId: 'node-a',
+    decision: 'SAVE_PLAN',
+    edits: { ...sourceEdits, imagePlan },
+    reviewSessionId: '48484848-4848-4848-8848-484848484848',
+  };
+
+  await assert.rejects(fixture.repository.approveCopy(41, input, {
+    actorRole: 'USER', reviewerUserId: 'reviewer',
+  }), /between 1 and 30 characters/u);
+
+  const saved = await fixture.repository.approveCopy(41, {
+    ...input,
+    imagePlanBulletOverflowConfirmed: true,
+  }, { actorRole: 'USER', reviewerUserId: 'reviewer' });
+  assert.equal(saved.currentCopyRevisionId, 13);
+  assert.equal(fixture.revisions.get(13).content.imagePlan[1].bullets[0], '长'.repeat(31));
+});
+
 test('a plan-only save can remove an excess non-cover page while preserving revision history', async () => {
   const fixture = copyFixture();
   const original = fixture.revisions.get(12);

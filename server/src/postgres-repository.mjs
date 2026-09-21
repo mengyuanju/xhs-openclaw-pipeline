@@ -522,7 +522,7 @@ function normalizedReviewCopy(content, imagePlan) {
     // The caller only needs the normalized copy fields. Reusing the already
     // normalized submitted plan avoids assigning edit semantics to the plan.
     imagePlan: imagePlan ?? original.imagePlan ?? original.reviewed?.imagePlan ?? original.post?.imagePlan,
-  }).copy;
+  }, { allowImagePlanBulletOverflow: true }).copy;
 }
 
 async function copyDiffersFromMachineAncestor(client, {
@@ -1743,7 +1743,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { taskRestoreVersion: 1, taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 11, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, adminTaskActivityDateFilters: 1, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 6, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, copyQaReasonTagsVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, sharedDeliveryVersion: 1, imageDiscardVersion: 1, pendingImageEditResolutionVersion: 1, deliverySpreadsheetVersion: 3, deliveryPreviewVersion: 6 } };
+      capabilities: { taskRestoreVersion: 1, taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 12, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, adminTaskActivityDateFilters: 1, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 6, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, copyQaReasonTagsVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, sharedDeliveryVersion: 1, imageDiscardVersion: 1, pendingImageEditResolutionVersion: 1, deliverySpreadsheetVersion: 3, deliveryPreviewVersion: 6 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -3953,11 +3953,7 @@ export class PostgresControlPlaneRepository {
             FROM image_edit_requests edit
             JOIN tasks edit_task ON edit_task.id = edit.task_id
             WHERE $5::integer >= CASE
-                WHEN edit.operation = 'AI_FUSION' AND (
-                  edit.config->>'targetMode' = 'ALL_MATCHES'
-                  OR edit.config @? '$.replacements[*] ? (@.targetMode == "ALL_MATCHES")'
-                ) THEN 11
-                WHEN edit.operation = 'AI_FUSION' AND jsonb_typeof(edit.config->'replacements') = 'array' THEN 10
+                WHEN edit.operation = 'AI_FUSION' THEN 12
                 WHEN edit.operation = 'AI_LOCAL' THEN 9
                 WHEN edit.operation = 'SVG_DISCLOSURE' THEN 8
                 WHEN edit.operation = 'TEXT' OR edit.operation LIKE 'AI_%' THEN 7
@@ -4425,6 +4421,7 @@ export class PostgresControlPlaneRepository {
     reasons: rawReasons,
     reasonCodes: rawReasonCodes,
     note: rawNote,
+    imagePlanBulletOverflowConfirmed: rawImagePlanBulletOverflowConfirmed,
     reviewSessionId: rawReviewSessionId,
   }, { actor: rawActor = null, actorRole: rawActorRole = 'ADMIN', reviewerUserId: rawReviewerUserId } = {}) {
     const taskId = normalizeTaskId(rawTaskId);
@@ -4436,9 +4433,15 @@ export class PostgresControlPlaneRepository {
     const reviewSessionId = normalizeUuid(rawReviewSessionId, 'reviewSessionId');
     const decision = String(rawDecision ?? '').trim().toUpperCase();
     if (!['SAVE', 'SAVE_PLAN', 'APPROVE', 'DISCARD'].includes(decision)) throw new TypeError('copy review decision is invalid');
+    if (rawImagePlanBulletOverflowConfirmed !== undefined
+        && typeof rawImagePlanBulletOverflowConfirmed !== 'boolean') {
+      throw new TypeError('imagePlanBulletOverflowConfirmed must be a boolean');
+    }
     const originalScoreX10 = rawOriginalScore === undefined
       ? null : normalizedHumanQualityScore(rawOriginalScore, 'originalScore');
-    let edits = rawEdits === undefined ? null : normalizeCopyReviewEdits(rawEdits);
+    let edits = rawEdits === undefined ? null : normalizeCopyReviewEdits(rawEdits, {
+      allowImagePlanBulletOverflow: rawImagePlanBulletOverflowConfirmed === true,
+    });
     if (decision === 'DISCARD' && edits) throw new TypeError('discarding copy does not accept edits');
     if (decision === 'SAVE_PLAN' && !edits) throw new TypeError('saving an image plan requires edits');
     if (decision === 'SAVE_PLAN' && [rawOriginalScore, rawScore, rawOriginalReasons, rawOriginalReasonCodes,
@@ -4467,6 +4470,7 @@ export class PostgresControlPlaneRepository {
       originalScoreX10, currentScoreX10, edits,
       originalReasonCodes, originalNote, currentReasonCodes, currentNote,
       aiDisclosureEnabled: rawAiDisclosureEnabled ?? null,
+      imagePlanBulletOverflowConfirmed: rawImagePlanBulletOverflowConfirmed === true,
       reviewerUsername,
     });
     return transaction(this.pool, async (client) => {
@@ -4502,6 +4506,7 @@ export class PostgresControlPlaneRepository {
         revision.rows[0].content.imagePlan
           ?? revision.rows[0].content.reviewed?.imagePlan
           ?? revision.rows[0].content.post?.imagePlan,
+        { allowBulletOverflow: true },
       ) : null;
       const originalImageSettings = edits ? normalizeImageSettings(
         revision.rows[0].content.imageSettings ?? DEFAULT_IMAGE_SETTINGS,
@@ -4886,6 +4891,7 @@ export class PostgresControlPlaneRepository {
     note: rawNote,
     problemAssetIds: rawProblemAssetIds,
     copyFields: rawCopyFields,
+    imagePlanBulletOverflowConfirmed: rawImagePlanBulletOverflowConfirmed,
     reviewerUserId: rawReviewerUserId,
     reviewSessionId: rawReviewSessionId,
     actor: rawActor = null,
@@ -4902,6 +4908,10 @@ export class PostgresControlPlaneRepository {
     const note = normalizedQualityNote(rawNote);
     const decision = String(rawDecision ?? '').trim().toUpperCase();
     if (!['APPROVE', 'RETRY', 'REWORK', 'DISCARD'].includes(decision)) throw new TypeError('image review decision is invalid');
+    if (rawImagePlanBulletOverflowConfirmed !== undefined
+        && typeof rawImagePlanBulletOverflowConfirmed !== 'boolean') {
+      throw new TypeError('imagePlanBulletOverflowConfirmed must be a boolean');
+    }
     const reworkTarget = decision === 'RETRY' ? 'IMAGE'
       : decision === 'REWORK' ? String(rawReworkTarget ?? '').trim().toUpperCase() : null;
     if (decision === 'REWORK' && !['COPY', 'IMAGE', 'BOTH'].includes(reworkTarget)) {
@@ -4919,7 +4929,9 @@ export class PostgresControlPlaneRepository {
         throw new TypeError('image rework requires at least one problemAssetIds target');
       }
     }
-    const editedImagePlan = rawImagePlan === undefined ? null : normalizeCopyReviewImagePlan(rawImagePlan);
+    const editedImagePlan = rawImagePlan === undefined ? null : normalizeCopyReviewImagePlan(rawImagePlan, {
+      allowBulletOverflow: rawImagePlanBulletOverflowConfirmed === true,
+    });
     if (editedImagePlan && reworkTarget !== 'IMAGE') {
       throw new TypeError('imagePlan edits are only accepted for image-only rework');
     }
@@ -4934,6 +4946,7 @@ export class PostgresControlPlaneRepository {
     const requestFingerprint = qualityReviewFingerprint({
       stage: 'IMAGE', taskId, imageRunId, decision, scoreX10,
       reworkTarget, reasonCodes, problemAssetIds, copyFields, note, reviewerUsername,
+      imagePlanBulletOverflowConfirmed: rawImagePlanBulletOverflowConfirmed === true,
       ...(editedImagePlan ? { revisionId, nodeId, imagePlan: editedImagePlan } : {}),
     });
     const retry = reworkTarget !== null;

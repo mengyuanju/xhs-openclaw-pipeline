@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  IMAGE_PLAN_BULLET_HARD_MAX,
   MIN_IMAGE_PLAN_PAGES,
+  imagePlanBulletLengthWarnings,
   imagePlanPageDeletionBlockReason,
   planDisclosureIndicesAfterDeletion,
   planIndexAfterDeletion,
@@ -38,4 +40,19 @@ test('image plan deletion keeps active and expanded page indices aligned', () =>
   assert.equal(planIndexAfterDeletion(4, 4, 4), 3);
   assert.equal(planIndexAfterDeletion(1, 1, 4), 1);
   assert.deepEqual(planDisclosureIndicesAfterDeletion([0, 1, 3, 4], 1), [0, 2, 3]);
+});
+
+test('image plan bullet warnings keep checklist and other page recommendations distinct', () => {
+  const imagePlan = [
+    { kind: 'hero', bullets: ['封'.repeat(30), '封'.repeat(31)] },
+    { kind: 'steps', bullets: ['Windows PowerShell用powershell', '步'.repeat(31)] },
+    { kind: 'checklist', bullets: ['清'.repeat(40), '清'.repeat(41)] },
+  ];
+
+  assert.equal(IMAGE_PLAN_BULLET_HARD_MAX, 200);
+  assert.deepEqual(imagePlanBulletLengthWarnings(imagePlan), [
+    { pageIndex: 0, bulletIndex: 1, length: 31, recommendedMax: 30 },
+    { pageIndex: 1, bulletIndex: 1, length: 31, recommendedMax: 30 },
+    { pageIndex: 2, bulletIndex: 1, length: 41, recommendedMax: 40 },
+  ]);
 });

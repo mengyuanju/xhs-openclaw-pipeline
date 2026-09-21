@@ -59,6 +59,7 @@ import { buildCopyReviewSubmission } from '../../src/copy-review-submission.mjs'
 import { copyReworkChanges, findCopyReworkBaseline } from '../../src/copy-rework.mjs';
 import { copyQaReasonLabels } from '../../src/copy-qa-reasons.mjs';
 import {
+  imagePlanBulletLengthWarnings,
   imagePlanPageDeletionBlockReason,
   planDisclosureIndicesAfterDeletion,
   planIndexAfterDeletion,
@@ -82,6 +83,12 @@ type ImagePlanItem = {
   layout?: PageLayout;
 };
 type ReviewDraft = { copy: Copy; imagePlan: ImagePlanItem[]; imageSettings: ImageSettings };
+type ImagePlanBulletLengthWarning = {
+  pageIndex: number;
+  bulletIndex: number;
+  length: number;
+  recommendedMax: number;
+};
 type CopyReviewDraftContent = {
   version: 1;
   draft: ReviewDraft;
@@ -378,6 +385,14 @@ function draftFromRevision(revision: CopyRevision | undefined): ReviewDraft | nu
     imagePlan: imagePlan.map((item) => ({ ...item, bullets: [...item.bullets] })),
     imageSettings: revision?.content.imageSettings ?? { ...defaultImageSettings },
   };
+}
+
+function imagePlanBulletOverflowDescription(warnings: ImagePlanBulletLengthWarning[]) {
+  const examples = warnings.slice(0, 3).map(warning =>
+    `第 ${warning.pageIndex + 1} 页第 ${warning.bulletIndex + 1} 条为 ${warning.length} 字（建议不超过 ${warning.recommendedMax} 字）`,
+  ).join('；');
+  const remainder = warnings.length > 3 ? `；另有 ${warnings.length - 3} 条超出建议字数` : '';
+  return `${examples}${remainder}。超出建议字数可能导致图片排版拥挤、字号过小或文字截断。是否确认仍按当前内容继续？`;
 }
 
 function initialAiDisclosure(detail: TaskDetail) {
@@ -1251,6 +1266,18 @@ export function TaskReviewDialog({
     return id;
   }
 
+  async function confirmImagePlanBulletOverflow(warnings: ImagePlanBulletLengthWarning[]) {
+    if (warnings.length === 0) return true;
+    setMobilePane('plan');
+    setActivePlanIndex(warnings[0].pageIndex);
+    return confirm({
+      title: '图片规划文字超出建议字数',
+      description: imagePlanBulletOverflowDescription(warnings),
+      confirmLabel: '确认超长并继续',
+      cancelLabel: '返回修改',
+    });
+  }
+
   async function submitCopyDecision(decision: 'SAVE' | 'APPROVE' | 'DISCARD', form: HTMLFormElement) {
     if (!detail || !revision || !draft || !editable || loading || submitting
         || regeneratingImagePlan || draftSaveStatus === 'saving') return;
@@ -1296,6 +1323,9 @@ export function TaskReviewDialog({
       setInvalidField(invalid);
       return;
     }
+    const bulletOverflowWarnings = decision === 'DISCARD' || !draftChanged
+      ? [] : imagePlanBulletLengthWarnings(draft.imagePlan);
+    if (!await confirmImagePlanBulletOverflow(bulletOverflowWarnings)) return;
     const submittedScore = isCopyRework || decision === 'APPROVE' && hasEditedCopyVersion ? 3 : copyOriginalScore;
     if ((!embedded || decision === 'DISCARD') && !await confirm({
       title: decision === 'APPROVE'
@@ -1319,20 +1349,23 @@ export function TaskReviewDialog({
     setError('');
     try {
       if (draftChanged) await requireImageControls();
-      const requestPayload = buildCopyReviewSubmission({
-        revisionId: revision.id,
-        nodeId,
-        decision,
-        draft,
-        draftChanged,
-        copyContentChanged,
-        copyContentChangedFromMachine,
-        copyRework: isCopyRework,
-        originalScore: copyOriginalScore,
-        originalReasons: copyOriginalReasons,
-        originalNote: copyOriginalNote,
-        aiDisclosureEnabled,
-      });
+      const requestPayload = {
+        ...buildCopyReviewSubmission({
+          revisionId: revision.id,
+          nodeId,
+          decision,
+          draft,
+          draftChanged,
+          copyContentChanged,
+          copyContentChangedFromMachine,
+          copyRework: isCopyRework,
+          originalScore: copyOriginalScore,
+          originalReasons: copyOriginalReasons,
+          originalNote: copyOriginalNote,
+          aiDisclosureEnabled,
+        }),
+        ...(bulletOverflowWarnings.length ? { imagePlanBulletOverflowConfirmed: true } : {}),
+      };
       await apiRequest(apiPath(`/v1/tasks/${detail.id}/approve-copy`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1426,6 +1459,8 @@ export function TaskReviewDialog({
       setInvalidField(invalid);
       return;
     }
+    const bulletOverflowWarnings = imagePlanBulletLengthWarnings(draft.imagePlan);
+    if (!await confirmImagePlanBulletOverflow(bulletOverflowWarnings)) return;
     const pendingDraft = draft;
     const pendingRating = {
       score: copyOriginalScore,
@@ -1442,6 +1477,7 @@ export function TaskReviewDialog({
         imagePlan: draft.imagePlan,
         imageSettings: savedDraft.imageSettings,
       },
+      ...(bulletOverflowWarnings.length ? { imagePlanBulletOverflowConfirmed: true } : {}),
     };
     setSubmitting(true);
     setError('');
@@ -1623,6 +1659,9 @@ export function TaskReviewDialog({
       return;
     }
     const targetLabel = reworkTarget === 'COPY' ? '文案' : reworkTarget === 'IMAGE' ? '图片' : '文案和图片';
+    const bulletOverflowWarnings = decision === 'REWORK' && reworkTarget !== 'COPY' && imagePlanChanged
+      ? imagePlanBulletLengthWarnings(draft!.imagePlan) : [];
+    if (!await confirmImagePlanBulletOverflow(bulletOverflowWarnings)) return;
     const option = decision === 'APPROVE'
       ? { title: '确认图片质检通过？', description: `当前整套图片人工评分为 ${imageScore} 分。通过后任务进入交付池，才可下载完整资源。`, confirmLabel: '通过到交付池' }
       : decision === 'REWORK'
@@ -1646,6 +1685,7 @@ export function TaskReviewDialog({
           revisionId: revision!.id,
           nodeId,
           imagePlan: draft!.imagePlan,
+          ...(bulletOverflowWarnings.length ? { imagePlanBulletOverflowConfirmed: true } : {}),
         } : {}),
       };
       await apiRequest(apiPath(`/v1/tasks/${detail.id}/review-images`), {
@@ -2171,6 +2211,7 @@ export function TaskReviewDialog({
                 <div className="workbench-image-plan-grid">
                   {draft.imagePlan.map((item, index) => {
                     const deletionBlockReason = imagePlanPageDeletionBlockReason(draft.imagePlan, index);
+                    const bulletLengthWarnings = imagePlanBulletLengthWarnings([item]);
                     return <article id={`review-plan-page-${index}`} className="workbench-image-plan-card" key={index} data-plan-index={index} hidden={activePlanIndex !== index}>
                     <div className="workbench-image-plan-fields" data-edit-blocked={Boolean(planEditBlockMessage)}
                       onPointerDownCapture={(event) => {
@@ -2213,7 +2254,7 @@ export function TaskReviewDialog({
                           onChange={(event) => updateImagePlan(index, { subtitle: event.target.value })} />
                       </div>
                       <div className="field full">
-                        <label htmlFor={`review-plan-bullets-${index}`}>画面要点 <small>每行一条，2–5 条</small></label>
+                        <label htmlFor={`review-plan-bullets-${index}`}>画面要点 <small>每行一条，2–5 条；{item.kind === 'checklist' ? '建议每条不超过 40 字' : '建议每条不超过 30 字'}{bulletLengthWarnings.length ? `，当前有 ${bulletLengthWarnings.length} 条超出，保存时需确认` : ''}</small></label>
                         <AutosizeTextarea id={`review-plan-bullets-${index}`} className="textarea workbench-plan-bullets-editor" value={item.bullets.join('\n')} required readOnly={planFieldsReadOnly}
                           resizeToken={activePlanIndex === index} onChange={(event) => updateImagePlan(index, { bullets: event.target.value.split(/\r?\n/u) })} />
                       </div>

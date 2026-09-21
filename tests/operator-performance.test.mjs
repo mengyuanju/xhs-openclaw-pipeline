@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildPerformanceSnapshot,durationDistribution,normalizePerformanceFilters,performanceCsv,performanceMetricRows,performancePeoplePage,qualityRate,submissionTiming } from '../src/operator-performance.mjs';
+import { buildPerformanceSnapshot,durationDistribution,normalizePerformanceFilters,overallQualityRate,performanceCsv,performanceMetricRows,performancePeoplePage,qualityRate,submissionTiming } from '../src/operator-performance.mjs';
 
 const now=Date.parse('2026-09-18T08:00:00Z');
 const at=offset=>new Date(now+offset).toISOString();
@@ -12,6 +12,7 @@ test('first pass rate counts actual first random verdicts, not submissions or la
     qa(4,'PASS',{sampleKind:'MANDATORY_RECHECK',first:false}),qa(5,'PASS',{exclusion:'ADMIN_DIRECT'}),qa(6,'PASS',{exclusion:'SELF_REVIEW'}),
     qa(7,'PASS',{first:false}),qa(8,'PASS',{exclusion:'SIMULATED'}),event(9,{kind:'PENDING'})];
   assert.deepEqual(qualityRate(rows),{passed:3,failed:1,decided:4,rate:.75});
+  assert.deepEqual(overallQualityRate(rows),{passed:4,failed:0,decided:4,rate:1});
   assert.deepEqual(qualityRate(rows,false),{passed:1,failed:0,decided:1,rate:1});
   assert.equal(performanceMetricRows(rows,'firstPass','','failed').length,1);
   assert.equal(qualityRate([]).rate,null);
@@ -26,6 +27,14 @@ test('team counts deduplicate cross-stage contribution and weight sample counts'
   assert.equal(report.summary.COPY.firstPass.rate,.9);
   assert.equal(report.people.find(p=>p.accountId===11).COPY.firstPass.rate,0);
   assert.equal(report.people.find(p=>p.accountId===22).COPY.firstPass.rate,1);
+});
+test('overall pass rate attributes a later valid recheck pass to the original sample once',()=>{
+  const rows=[qa(1,'RETURN',{accountId:11}),qa(1,'RETURN',{accountId:22,first:false,sampleKind:'MANDATORY_RECHECK',at:at(-900)}),
+    qa(1,'PASS',{accountId:22,first:false,sampleKind:'MANDATORY_RECHECK',at:at(-800)})];
+  const report=buildPerformanceSnapshot(rows,[],[],normalizePerformanceFilters({},now),at(0));
+  assert.deepEqual(report.summary.COPY.overallPass,{passed:1,failed:0,decided:1,rate:1});
+  assert.deepEqual(report.people.find(person=>person.accountId===11).COPY.overallPass,{passed:1,failed:0,decided:1,rate:1});
+  assert.equal(report.people.find(person=>person.accountId===22).COPY.overallPass.decided,0);
 });
 test('timeline separates reassignment, machine wait and background work without inventing active labor',()=>{
   const timeline=[{id:1,taskId:1,accountId:11,stage:'COPY',phase:'HUMAN',at:at(-600_000),baseline:false},

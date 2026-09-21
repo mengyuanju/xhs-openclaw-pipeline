@@ -81,7 +81,7 @@ export function OperatorPerformance({initialFilters={}}:{initialFilters?:Record<
       <td><button className={styles.link} onClick={()=>show(person.accountId,'reworked',filters.stage)}>{number(person.reworked)}</button><small>{number(person.reworkRounds)} 次提交</small></td></>;
   }
   return <div className={styles.page}>
-    <header className={styles.header}><div><h1>数据统计</h1><p className={styles.muted}>查看标注与质检工作量，了解内容一次通过的情况。</p></div><div className={styles.actions}>
+    <header className={styles.header}><div><h1>数据统计</h1><p className={styles.muted}>查看标注与质检工作量，了解内容一次与整体通过的情况。</p></div><div className={styles.actions}>
       <Button variant="outline" size="sm" disabled={!report||busy||exporting} onClick={()=>void exportReport()}><Download size={14}/>{exporting?'导出中…':'导出报表'}</Button>
       <Button variant="outline" size="sm" disabled={busy} onClick={refresh}><RefreshCw size={14}/>{busy?'更新中…':'刷新'}</Button></div></header>
     <nav className={styles.mainTabs} aria-label="统计视图">{[['overview','总数据'],['accounts','账号数据']].map(([value,label])=><button type="button" key={value} aria-current={view===value?'page':undefined} onClick={()=>changeView(value)}>{label}</button>)}</nav>
@@ -105,8 +105,11 @@ export function OperatorPerformance({initialFilters={}}:{initialFilters?:Record<
           note={`${number(summary?.qa[stage].reviews)} 次质检 · 含复检 ${number(summary?.qa[stage].rechecks)} 次`} onClick={()=>show(0,'qa',stage)}/>)}
         <Card label="新增可交付内容" value={summary?.released} note="整条内容首次达到交付条件" onClick={()=>show(0,'released')}/>
       </section>
-      <section className={`panel ${styles.section}`} aria-label="内容质量"><h2>一次通过率</h2><p className={styles.muted}>首次随机抽检已出结论的内容；通过数 / 已检数。</p>
-        <div className={styles.qualityGrid}>{stages.map(([stage,label])=><article key={stage}><span>{label}</span>{summary?<RateValue value={summary[stage].firstPass} onClick={()=>show(0,'firstPass',stage)}/>:<strong>—</strong>}</article>)}</div>
+      <section className={`panel ${styles.section}`} aria-label="内容质量"><h2>内容通过率</h2><p className={styles.muted}>一次通过率只看首次随机抽检；整体通过率还包含打回后通过有效强制复检的内容，同一条内容只计一次。</p>
+        <div className={styles.qualityGrid}>{stages.flatMap(([stage,label])=>[
+          <article key={`${stage}-first`}><span>{label}一次通过率</span>{summary?<RateValue value={summary[stage].firstPass} onClick={()=>show(0,'firstPass',stage)}/>:<strong>—</strong>}</article>,
+          <article key={`${stage}-overall`}><span>{label}整体通过率</span>{summary?<RateValue value={summary[stage].overallPass} onClick={()=>show(0,'firstPass',stage)}/>:<strong>—</strong>}</article>,
+        ])}</div>
         <details className={styles.methods}><summary>返修通过率与抽检覆盖</summary><div className={styles.qualityGrid}>{stages.map(([stage,label])=><article key={stage}><span>{label}首次返修通过率</span>{summary?<RateValue value={summary[stage].firstRecheck} onClick={()=>show(0,'firstRecheck',stage)}/>:<strong>—</strong>}
           <small className={styles.muted}>抽检覆盖：{summary?.[stage].coverage.rate==null?'—':`${(summary[stage].coverage.rate!*100).toFixed(1)}%`} · {number(summary?.[stage].coverage.sampled)} / {number(summary?.[stage].coverage.eligible)} 条已结批首次提交</small></article>)}</div>
           <p>首次返修通过率只统计首检实际退回后第一次复检的有效结论。</p></details>
@@ -127,7 +130,7 @@ export function OperatorPerformance({initialFilters={}}:{initialFilters?:Record<
     <details className={`panel ${styles.section} ${styles.methods}`}><summary>统计口径</summary>
       <p>标注按提交日、质检及通过率按结论日统计。条数按任务和内容阶段去重；图片的一组图计一条。文案和图片不能相加作为成品数。新增可交付不等于已实际交付。</p>
       <p>返修重复提交不增加同一期间的内容条数；首次提交与返修子项可能重叠。团队去重与个人贡献各自计算，多人接力或跨日处理时，个人或每日条数相加可能大于团队期间条数。</p>
-      <p>未抽中、免检、待结论、快捷直放、自检及模拟数据不计通过率；批量连带退回不等于逐条判错。团队通过率按样本加权，样本少于 20 条时仅供参考。</p>
+      <p>整体通过率以首次随机抽检样本为分母，首检通过或打回后在所选期间通过有效强制复检均计为通过，同一内容只计一次。未抽中、免检、待结论、快捷直放、自检及模拟数据不计通过率；批量连带退回不等于逐条判错。团队通过率按样本加权，样本少于 20 条时仅供参考。</p>
       <p>历史贡献归实际操作账号，改派不转移。轮次沿文案、图片各自的质检链自动计算，历史链不完整则显示未知。改派提示按当前负责人和有效连续退回计算，不自动改派。</p>
     </details>
     {selection&&<OperatorDetailDialog key={`${selection.report.snapshotToken}:${selection.accountId}:${selection.metric}:${selection.stage}`} report={selection.report} selection={selection} onClose={()=>setSelection(null)}/>}

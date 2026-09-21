@@ -1631,6 +1631,20 @@ export async function getCopyQaStatistics(pool, rawActor) {
   normalizeActor(rawActor, ['ADMIN']);
   const [random, mandatory, affected] = await Promise.all([
     pool.query(`
+      WITH RECURSIVE roots AS (
+        SELECT item.* FROM copy_sampling_items AS item
+        WHERE item.sample_kind = 'RANDOM' AND item.selected = true
+      ), lineage AS (
+        SELECT root.id AS root_item_id, root.id AS item_id FROM roots AS root
+        UNION ALL
+        SELECT lineage.root_item_id, child.id
+        FROM lineage JOIN copy_sampling_items AS child ON child.parent_item_id = lineage.item_id
+        WHERE child.sample_kind = 'MANDATORY_RECHECK'
+      ), passed_roots AS (
+        SELECT DISTINCT lineage.root_item_id
+        FROM lineage JOIN copy_sampling_events AS event ON event.sampling_item_id = lineage.item_id
+        WHERE event.action = 'PASS'
+      )
       SELECT item.final_approver_account_id,
         MAX(item.final_approver_username) AS final_approver_username,
         MAX(approver.display_name) AS final_approver_display_name,
@@ -1641,10 +1655,18 @@ export async function getCopyQaStatistics(pool, rawActor) {
             WHERE event.sampling_item_id = item.id AND event.action = 'PASS'
           )
         ) AS passed_count,
+        COUNT(*) FILTER (
+          WHERE passed_root.root_item_id IS NOT NULL AND (
+            item.status = 'RETURNED' OR EXISTS (
+              SELECT 1 FROM copy_sampling_events AS event
+              WHERE event.sampling_item_id = item.id AND event.action = 'PASS'
+            )
+          )
+        ) AS overall_passed_count,
         COUNT(*) FILTER (WHERE item.status = 'PENDING') AS pending_count
-      FROM copy_sampling_items AS item
+      FROM roots AS item
       LEFT JOIN app_users AS approver ON approver.id = item.final_approver_account_id
-      WHERE item.sample_kind = 'RANDOM' AND item.selected = true
+      LEFT JOIN passed_roots AS passed_root ON passed_root.root_item_id = item.id
       GROUP BY item.final_approver_account_id
       ORDER BY item.final_approver_account_id
     `),
@@ -1662,6 +1684,7 @@ export async function getCopyQaStatistics(pool, rawActor) {
       const passed = Number(row.passed_count ?? 0);
       const returned = Number(row.returned_count ?? 0);
       const decided = passed + returned;
+      const overallPassed = Number(row.overall_passed_count ?? 0);
       return {
         finalApproverAccountId: Number(row.final_approver_account_id),
         finalApproverUsername: row.final_approver_username,
@@ -1671,6 +1694,8 @@ export async function getCopyQaStatistics(pool, rawActor) {
         pending: Number(row.pending_count ?? 0),
         decided,
         accuracyRate: decided === 0 ? null : passed / decided,
+        overallPassed,
+        overallPassRate: decided === 0 ? null : overallPassed / decided,
       };
     }),
     mandatory: {

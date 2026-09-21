@@ -290,8 +290,8 @@ test('QA statistics use final approver accounts and separate verdicts, pending, 
     const source = String(sql).replace(/\s+/gu, ' ').trim();
     queries.push(source);
     if (source.includes("WHERE item.sample_kind = 'RANDOM'")) return { rows: [
-      { final_approver_account_id: '41', final_approver_username: 'approver-a', final_approver_display_name: '质检甲', returned_count: '1', passed_count: '3', pending_count: '2' },
-      { final_approver_account_id: '42', final_approver_username: 'approver-b', final_approver_display_name: null, returned_count: '0', passed_count: '0', pending_count: '4' },
+      { final_approver_account_id: '41', final_approver_username: 'approver-a', final_approver_display_name: '质检甲', returned_count: '1', passed_count: '3', overall_passed_count: '4', pending_count: '2' },
+      { final_approver_account_id: '42', final_approver_username: 'approver-b', final_approver_display_name: null, returned_count: '0', passed_count: '0', overall_passed_count: '0', pending_count: '4' },
     ] };
     if (source.includes("sample_kind = 'MANDATORY_RECHECK'")) {
       return { rows: [{ passed_count: '2', returned_count: '1', pending_count: '1' }] };
@@ -302,8 +302,8 @@ test('QA statistics use final approver accounts and separate verdicts, pending, 
 
   const statistics = await getCopyQaStatistics(pool, admin);
   assert.deepEqual(statistics.random, [
-    { finalApproverAccountId: 41, finalApproverUsername: 'approver-a', finalApproverDisplayName: '质检甲', passed: 3, returned: 1, pending: 2, decided: 4, accuracyRate: 0.75 },
-    { finalApproverAccountId: 42, finalApproverUsername: 'approver-b', finalApproverDisplayName: null, passed: 0, returned: 0, pending: 4, decided: 0, accuracyRate: null },
+    { finalApproverAccountId: 41, finalApproverUsername: 'approver-a', finalApproverDisplayName: '质检甲', passed: 3, returned: 1, pending: 2, decided: 4, accuracyRate: 0.75, overallPassed: 4, overallPassRate: 1 },
+    { finalApproverAccountId: 42, finalApproverUsername: 'approver-b', finalApproverDisplayName: null, passed: 0, returned: 0, pending: 4, decided: 0, accuracyRate: null, overallPassed: 0, overallPassRate: null },
   ]);
   assert.deepEqual(statistics.mandatory, { passed: 2, returned: 1, pending: 1 });
   assert.equal(statistics.batchAffectedCount, 7);
@@ -313,6 +313,8 @@ test('QA statistics use final approver accounts and separate verdicts, pending, 
   assert.match(queries[0], /item\.selected = true/u);
   assert.match(queries[0], /item\.status = 'RETURNED'/u);
   assert.match(queries[0], /event\.action = 'PASS'/u);
+  assert.match(queries[0], /WITH RECURSIVE roots/u);
+  assert.match(queries[0], /child\.parent_item_id = lineage\.item_id/u);
   assert.doesNotMatch(queries[0], /status = 'NOT_SELECTED'[^)]*passed_count/u);
   await assert.rejects(getCopyQaStatistics(pool, reviewer), { code: 'FORBIDDEN' });
 });

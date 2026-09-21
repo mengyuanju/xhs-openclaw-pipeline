@@ -23,11 +23,11 @@ Object.assign(METRICS,{firstSubmitted:'首次标注提交',reassign:'当前建�
 Object.assign(KINDS,{REASSIGN:'建议改派'});
 
 function StageCard({stage,data}:{stage:'COPY'|'IMAGE';data:StagePerformance}) {
-  const hasSamples=data.firstPass.decided+data.recheck.decided+data.firstRecheck.decided+data.coverage.eligible
+  const hasSamples=data.firstPass.decided+data.overallPass.decided+data.recheck.decided+data.firstRecheck.decided+data.coverage.eligible
     +data.coverage.unresolved+data.duration.samples+data.duration.missing+data.qualityWait.samples+data.pending>0;
   return <article className={ui.qualityCard}><header><h3>{STAGE_LABEL[stage]}质量与效率</h3><span>{data.submitted} 项提交</span></header>
     {hasSamples?<><dl className={ui.metricList}>
-      {([['一次通过率',data.firstPass],['强制复检通过率',data.recheck],['首次返修通过率',data.firstRecheck]] as const).map(([label,rate])=><div key={label}><dt>{label}</dt><dd>{rate.decided?<><strong>{RATE_LABEL(rate)}</strong><small>{rate.passed} / {rate.decided} 已审</small></>:<span className={styles.muted}>暂无已审样本</span>}</dd></div>)}
+      {([['一次通过率',data.firstPass],['整体通过率',data.overallPass],['强制复检通过率',data.recheck],['首次返修通过率',data.firstRecheck]] as const).map(([label,rate])=><div key={label}><dt>{label}</dt><dd>{rate.decided?<><strong>{RATE_LABEL(rate)}</strong><small>{rate.passed} / {rate.decided} 已审</small></>:<span className={styles.muted}>暂无已审样本</span>}</dd></div>)}
       <div><dt>人工待办周转 · 中位数</dt><dd>{duration(data.duration.medianMs)}</dd></div>
       <div><dt>提交到质检结论 · 中位数</dt><dd>{duration(data.qualityWait.medianMs)}</dd></div>
       <div><dt>当前待质检样本</dt><dd>{data.pending} 条</dd></div>
@@ -82,7 +82,7 @@ function QualityPanel({person}:{person:OperatorSummary}) {
       <div><span>重复退回</span><strong>{person.repeatedReturns} <small>项</small></strong></div>
       <div><span>交付确认</span><strong>{person.delivered} <small>项 / {person.deliveredBatches} 批</small></strong></div>
     </div></section>
-    <details className={ui.disclosure}><summary>统计口径说明</summary><p>首次返修复检只计可追溯至原随机抽检的返修链。周转时间包含自然等待，不代表操作工时。</p><p>交付归属实际确认账号，不改变文案和图片提交贡献。明细与原报表使用同一份样本。</p></details>
+    <details className={ui.disclosure}><summary>统计口径说明</summary><p>整体通过率以首次抽检样本去重，包含打回后通过有效强制复检的内容；首次返修复检只计可追溯至原随机抽检的返修链。周转时间包含自然等待，不代表操作工时。</p><p>交付归属实际确认账号，不改变文案和图片提交贡献。明细与原报表使用同一份样本。</p></details>
   </div>;
 }
 

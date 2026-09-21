@@ -91,6 +91,9 @@ test('copy review scores the machine draft once and auto-scores an edited approv
   assert.match(source, /const planKindDisabled = !\(editable \|\| canEditApprovedImagePlan\) \|\| loading \|\| submitting/u);
   assert.match(source, /decision: 'SAVE_PLAN'/u);
   assert.match(source, /单独保存图片规划/u);
+  assert.match(source, /图片规划文字超出建议字数/u);
+  assert.match(source, /imagePlanBulletOverflowConfirmed: true/u);
+  assert.match(source, /确认超长并继续/u);
   assert.match(source, /请先单独保存图片规划，再提交只针对文案的评分或审核结果/u);
   assert.match(source, /if \(!isCopyRework && decision !== 'DISCARD' && imagePlanChanged\)/u);
   assert.match(source, /copy: savedDraft\.copy,[\s\S]{0,100}imagePlan: draft\.imagePlan,[\s\S]{0,100}imageSettings: savedDraft\.imageSettings/u);

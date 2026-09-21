@@ -56,7 +56,10 @@
 .workerList header strong, .workerList header small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workerList header strong { font-size: 13px; }
 .workerList header small { color: var(--muted); font-size: 10px; }
-.workerList header b { flex: 0 0 auto; color: #277463; font-size: 18px; font-variant-numeric: tabular-nums; }
+.workerRates { flex: 0 0 auto; display: flex; align-items: flex-end; gap: 14px; }
+.workerRates > span { display: grid; justify-items: end; gap: 2px; }
+.workerRates small { color: var(--muted); font-size: 9px; font-weight: 500; white-space: nowrap; }
+.workerRates b { color: #277463; font-size: 18px; font-variant-numeric: tabular-nums; }
 .workerList dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; overflow: hidden; border-radius: 8px; background: #f1efeb; }
 .workerList dl > div { min-width: 0; display: flex; align-items: baseline; justify-content: center; gap: 5px; padding: 9px 5px; border-right: 1px solid #dfdcd6; }
 .workerList dl > div:last-child { border-right: 0; }

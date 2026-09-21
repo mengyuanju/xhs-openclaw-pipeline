@@ -114,7 +114,7 @@
 | 图片编辑 | 移除指定生成标识（INTERNAL_EDIT_REMOVE_DISCLOSURE） | 在允许的选区中移除任务点名的标识，其他文字保持原样。 | 可编辑 |
 | 图片编辑 | 按文字定位局部编辑（INTERNAL_EDIT_LOCAL_TEXT） | 没有蒙版时，根据作业员说明定位并修改指定对象。 | 可编辑 |
 | 图片编辑 | 历史整图编辑（INTERNAL_EDIT_LEGACY_FULL） | 兼容历史整图修改请求，保留未明确要求修改的内容。 | 可编辑 |
-| 编辑检查 | 产品替换目标定位检查（INTERNAL_EDIT_TARGET_CHECK） | 付费编辑前核对选区内目标数量、保护范围及参考图可用性。 | 可编辑 |
+| 编辑检查 | 产品替换目标定位检查（INTERNAL_EDIT_TARGET_CHECK） | 多实例产品替换付费编辑前定位框内全部目标；单目标替换不调用。 | 可编辑 |
 | 构图补充 | 老抽勺移动构图特例（INTERNAL_EDIT_SOY_SPOON_GEOMETRY） | 仅匹配“加半勺老抽”类目标时，使用现有勺子位置、容量和液流构图规则。 | 可编辑 |
 | 构图补充 | 移动目标参考区域（INTERNAL_EDIT_DESTINATION_BAND） | 提供目标横向参考带，避开文字及画面边缘。 | 可编辑 |
 | 构图补充 | 老抽勺目标位置特例（INTERNAL_EDIT_SOY_SPOON_DESTINATION） | 老抽勺移动分支的目的位置描述。 | 可编辑 |

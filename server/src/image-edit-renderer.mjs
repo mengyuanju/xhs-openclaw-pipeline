@@ -72,6 +72,7 @@ function aiEditPrompt(context,config,required) {
       :appearanceReference?internalPrompt('INTERNAL_EDIT_PRODUCT_APPEARANCE'):internalPrompt('INTERNAL_EDIT_PRODUCT_STRICT');
     return governedImageEditPrompt(context,config,{reviewInstruction:'真实产品替换',contract,
       data:{operation:replacements.length>1?'MULTI_REAL_PRODUCT_REPLACEMENT':allMatches?'REAL_PRODUCT_REPLACEMENT_ALL_MATCHES':'REAL_PRODUCT_REPLACEMENT',
+        maskAttached:config.fusionMaskAttached===true,
         referenceMode:replacements[0]?.referenceMode??config.referenceMode??'STRICT',target:replacements[0]?.target??config.target,
         replacements:enriched,referenceProductDescription:enriched[0]?.referenceProductDescription??null,
         referencePurpose:config.references.map(r=>r.purpose),
@@ -177,6 +178,11 @@ async function validateFusionTarget(client,{inputPath,referencePaths,target,refe
     });
   }
   return check;
+}
+function directFusionTarget({target,referenceMode='STRICT'}) {
+  return {mode:'DIRECT_PRODUCT_REPLACEMENT',referenceMode,targetMode:'SINGLE',passed:true,preflightPerformed:false,
+    candidateCount:1,referenceProductDescription:'',referenceWarnings:[],target,
+    reason:'单目标框仅作为定位提示，目标完整性与框内遮挡不再阻止图片编辑模型执行'};
 }
 const LOCAL_RESULT_FAILURE_CODES=new Set(['SOURCE_NOT_CLEARED','DESTINATION_OBJECT_MISSING','QUANTITY_INCORRECT',
   'POUR_CONTACT_MISSING','TARGET_COUNT_INCORRECT','PLACEMENT_OR_RELATIONSHIP_INCORRECT',
@@ -442,7 +448,7 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
     alignmentStage='RESULT';
     const refs=[];
     for(const asset of context.refs)refs.push({asset,bytes:await service.readAsset(asset)});
-    let result=source,mask=null,outsideMask=null,targetLocalization=null,localExecutionInstruction=config.instruction,entityConsistency={mode:'NOT_APPLICABLE',passed:true},
+    let result=source,mask=null,outsideMask=null,targetLocalization=null,localExecutionInstruction=config.instruction,fusionMaskAttached=false,entityConsistency={mode:'NOT_APPLICABLE',passed:true},
       localConsistency={mode:'NOT_APPLICABLE',passed:true},model=null,generationAttempts=0,textCheck=null;
     let removedInheritedDisclosure=false;
     if(e.operation==='TEXT') {
@@ -477,6 +483,10 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
         for(const [replacementIndex,replacement] of replacements.entries()) {
           const referenceIndex=config.references.findIndex(reference=>reference.assetId===replacement.referenceAssetId);
           if(referenceIndex<0)throw new Error('产品替换项引用的参考图未绑定');
+          if((replacement.targetMode??'SINGLE')==='SINGLE') {
+            localizations.push(directFusionTarget({target:replacement.target,referenceMode:replacement.referenceMode??'STRICT'}));
+            continue;
+          }
           try {
             const localization=await validateFusionTarget(client,{inputPath,referencePaths:[paths[referenceIndex+1]],target:replacement.target,
               referenceMode:replacement.referenceMode??'STRICT',targetMode:replacement.targetMode??'SINGLE',signal:controller.signal});
@@ -496,14 +506,14 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
             referenceAssetId:replacements[index].referenceAssetId,target:replacements[index].target,...localization,
           })),
         };
-        const localizedMaskRegions=localizations.flatMap((localization,index)=>
-          (replacements[index].targetMode??'SINGLE')==='ALL_MATCHES'
-            ?localization.candidateRegions
-            :[replacements[index].target.region]);
-        mask=localizedMaskRegions.length===1
-          ?await renderMask({type:'rect',...localizedMaskRegions[0]})
-          :await renderRegionsMask(localizedMaskRegions);
-        const path=resolve(directory,'target-mask.png');await writeFile(path,mask);paths.push(path);
+        fusionMaskAttached=replacements.every(replacement=>(replacement.targetMode??'SINGLE')==='ALL_MATCHES');
+        if(fusionMaskAttached) {
+          const localizedMaskRegions=localizations.flatMap(localization=>localization.candidateRegions);
+          mask=localizedMaskRegions.length===1
+            ?await renderMask({type:'rect',...localizedMaskRegions[0]})
+            :await renderRegionsMask(localizedMaskRegions);
+          const path=resolve(directory,'target-mask.png');await writeFile(path,mask);paths.push(path);
+        }
       } else if(e.operation==='AI_LOCAL') {
         targetLocalization=config.mask?{mode:'MASK',instruction:config.instruction,region:config.mask}:directLocalEdit(config);
         removedInheritedDisclosure=Boolean(!config.mask&&sourceDisclosure&&requestsDisclosureRemoval(config.instruction,sourceDisclosure));
@@ -527,6 +537,7 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
       const fusionReplacementConfigs=e.operation==='AI_FUSION'?fusionReplacements(config):[];
       const promptConfig={...directConfig,operation:e.operation,targetPage:Number(e.target_page),
         ...(e.operation==='AI_FUSION'?{
+          fusionMaskAttached,
           referenceProductDescription:fusionLocalizations[0]?.referenceProductDescription??null,
           referenceProductDescriptions:fusionLocalizations.map(value=>value?.referenceProductDescription??null),
           candidateCounts:fusionLocalizations.map(value=>value?.candidateCount??1),
@@ -543,7 +554,7 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
         generationAttempts=1;
         // Only consume the requested destination, never a model-supplied filesystem path.
         result=await sharp(await readFile(resolve(directory,'generated.png')),{limitInputPixels:16_000_000}).resize(1086,1448,{fit:'fill'}).png().toBuffer();
-        if(e.operation==='AI_LOCAL'&&!config.mask)outsideMask={mode:'MODEL_FULL_FRAME_WITH_RESULT_REVIEW',requested:false,programmaticPixelMerge:false};
+        if((e.operation==='AI_LOCAL'&&!config.mask)||(e.operation==='AI_FUSION'&&!mask))outsideMask={mode:'MODEL_FULL_FRAME_WITH_RESULT_REVIEW',requested:false,programmaticPixelMerge:false};
         else if(mask){
           result=await mergeWithMask(source,result,mask);outsideMask=await assertOutsideMask(source,result,mask);
         }

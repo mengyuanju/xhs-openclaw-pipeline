@@ -57,6 +57,7 @@ test('copy QA overview browser: every workspace tab uses the full panel and mobi
           random: Array.from({ length: 7 }, (_, index) => ({
             finalApproverAccountId: index + 1, finalApproverDisplayName: `质检 ${index + 1}`,
             finalApproverUsername: `reviewer${index + 1}`, decided: 10, passed: 8, returned: 2, accuracyRate: 0.8,
+            overallPassed: 9, overallPassRate: 0.9,
           })),
           mandatory: { passed: 12, returned: 3, pending: 6 }, batchAffectedCount: 4,
         } })); return;
@@ -81,6 +82,8 @@ test('copy QA overview browser: every workspace tab uses the full panel and mobi
     await page.getByRole('tab', { name: '标注', exact: true }).click();
     await page.getByLabel('文案质检标注数据，可滚动查看').waitFor();
     assert.equal(await page.getByText('质检 1', { exact: true }).isVisible(), true);
+    assert.equal(await page.getByText('整体通过率', { exact: true }).first().isVisible(), true);
+    assert.equal(await page.getByText('90.0%', { exact: true }).first().isVisible(), true);
     await page.getByRole('tab', { name: '规则说明', exact: true }).click();
     await page.getByRole('heading', { name: '质检类型与状态变化', exact: true }).waitFor();
     await page.getByRole('tab', { name: /质检队列/u }).click();

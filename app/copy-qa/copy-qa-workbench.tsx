@@ -587,12 +587,12 @@ export function CopyQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' | 'USER' 
 
       {role === 'ADMIN' && <TabsContent className={styles.tabViewport} value="workers">
         <section className={styles.viewContent} aria-labelledby="copy-qa-accuracy-title">
-          <div className={styles.viewHeader}><div><h2 id="copy-qa-accuracy-title">标注抽检数据</h2><p>仅统计已有结论的一次抽检；强制复检单独计入数据概览。</p></div><span className="pill">仅管理员可见</span></div>
+          <div className={styles.viewHeader}><div><h2 id="copy-qa-accuracy-title">标注抽检数据</h2><p>一次通过率只看首次抽检；整体通过率包含打回后通过强制复检，同一条内容只计一次。</p></div><span className="pill">仅管理员可见</span></div>
           {statisticsError && <div className="notice error" role="alert">{statisticsError}</div>}
           {!statistics && !statisticsError ? <div className={styles.compactEmpty}>正在读取标注数据…</div>
             : statistics && statistics.random.length === 0 ? <div className={styles.compactEmpty}>还没有已决的一次抽检样本。</div>
               : statistics && <div className={styles.workerList} role="region" aria-label="文案质检标注数据，可滚动查看" tabIndex={0}>{statistics.random.map((metric) => <article key={metric.finalApproverAccountId}>
-                <header><div><strong>{metric.finalApproverDisplayName ?? metric.finalApproverUsername ?? `账号 #${metric.finalApproverAccountId}`}</strong>{metric.finalApproverDisplayName && metric.finalApproverUsername && <small>@{metric.finalApproverUsername}</small>}</div><b>{(metric.accuracyRate * 100).toFixed(1)}%</b></header>
+                <header><div><strong>{metric.finalApproverDisplayName ?? metric.finalApproverUsername ?? `账号 #${metric.finalApproverAccountId}`}</strong>{metric.finalApproverDisplayName && metric.finalApproverUsername && <small>@{metric.finalApproverUsername}</small>}</div><div className={styles.workerRates}><span><small>一次通过率</small><b>{(metric.accuracyRate * 100).toFixed(1)}%</b></span><span title={metric.overallPassed === null ? '中心服务升级后显示' : `整体通过 ${metric.overallPassed} / ${metric.decided}`}><small>整体通过率</small><b>{metric.overallPassRate === null ? '—' : `${(metric.overallPassRate * 100).toFixed(1)}%`}</b></span></div></header>
                 <dl><div><dt>已决</dt><dd>{metric.decided}</dd></div><div><dt>通过</dt><dd>{metric.passed}</dd></div><div><dt>打回</dt><dd>{metric.returned}</dd></div></dl>
               </article>)}</div>}
         </section>

@@ -3,7 +3,7 @@ export type QaStage = {tasks:number;reviews:number;passed:number;returned:number
 export type QaSummary = {tasks:number;reviews:number;passed:number;returned:number;rechecks:number;batchActions:number;affectedTasks:number;
   legacyAffectedCount:number;unknownBatchScopes:number;specialActions:number;directPass:number;discarded:number;participants:number;pending:number;blocked:number;COPY:QaStage;IMAGE:QaStage};
 export type Timing = {samples:number;missing:number;meanMs:number|null;medianMs:number|null;p90Ms:number|null};
-export type StagePerformance = {submitted:number;submissions:number;firstSubmitted:number;reworked:number;reworkSubmissions:number;returned:number;firstPass:Rate;recheck:Rate;firstRecheck:Rate;duration:Timing;qualityWait:Timing;
+export type StagePerformance = {submitted:number;submissions:number;firstSubmitted:number;reworked:number;reworkSubmissions:number;returned:number;firstPass:Rate;overallPass:Rate;recheck:Rate;firstRecheck:Rate;duration:Timing;qualityWait:Timing;
   pending:number;excluded:number;coverage:{eligible:number;sampled:number;unresolved:number;rate:number|null}};
 export type OperatorSummary = {contributed:number;qa:QaSummary;submitted:number;submissions:number;released:number;rereleased:number;delivered:number;deliveredBatches:number;returned:number;returnRounds:number;reassignSuggested:number;
   repeatedReturns:number;reworked:number;reworkRounds:number;batchAffected:number;reworkDuration:Timing;pending:number;waitingQuality:number;longWaiting:number;

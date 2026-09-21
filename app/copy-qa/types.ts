@@ -55,6 +55,8 @@ export type CopyQaStatistics = {
     returned: number;
     decided: number;
     accuracyRate: number;
+    overallPassed: number | null;
+    overallPassRate: number | null;
   }>;
   mandatory: { passed: number; returned: number; pending: number };
   batchAffectedCount: number;
@@ -228,6 +230,8 @@ export function normalizeCopyQaStatistics(value: unknown): CopyQaStatistics | nu
       const accountId = positiveInteger(metric?.finalApproverAccountId);
       if (!accountId) return [];
       const accuracyRate = Number(metric?.accuracyRate);
+      const overallPassedValue = Number(metric?.overallPassed);
+      const overallPassRateValue = Number(metric?.overallPassRate);
       const finalApproverUsername = typeof metric?.finalApproverUsername === 'string'
         ? metric.finalApproverUsername.trim()
         : '';
@@ -246,6 +250,10 @@ export function normalizeCopyQaStatistics(value: unknown): CopyQaStatistics | nu
         returned: count(metric?.returned),
         decided: count(metric?.decided),
         accuracyRate: Number.isFinite(accuracyRate) ? Math.max(0, Math.min(1, accuracyRate > 1 ? accuracyRate / 100 : accuracyRate)) : 0,
+        overallPassed: Number.isSafeInteger(overallPassedValue) && overallPassedValue >= 0 ? overallPassedValue : null,
+        overallPassRate: metric?.overallPassRate !== null && metric?.overallPassRate !== undefined && Number.isFinite(overallPassRateValue)
+          ? Math.max(0, Math.min(1, overallPassRateValue > 1 ? overallPassRateValue / 100 : overallPassRateValue))
+          : null,
       }];
     }),
     mandatory: { passed: count(mandatory.passed), returned: count(mandatory.returned), pending: count(mandatory.pending) },
