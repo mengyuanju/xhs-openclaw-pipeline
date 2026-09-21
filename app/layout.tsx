@@ -1,12 +1,14 @@
 import type { Metadata } from 'next';
 
+import { Toaster } from '@/components/ui/sonner';
+
 import { AppFrame } from './components/app-frame';
 import { readServerSession } from './server-session';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: '内容工场 · Codex',
-  description: '小红书内容批量生成与审核后台',
+  title: '海墨内容工场',
+  description: '海墨小红书内容批量生成与审核工作台',
 };
 
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
@@ -15,6 +17,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
     <html lang="zh-CN">
       <body>
         <AppFrame session={session}>{children}</AppFrame>
+        <Toaster />
       </body>
     </html>
   );

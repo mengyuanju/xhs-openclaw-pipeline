@@ -38,7 +38,6 @@ export function CopyAnalysisPromptReplacementDialog({
   prompts,
   replacementId,
   busy,
-  message,
   onOpenChange,
   onReplacementChange,
   onReplace,
@@ -47,14 +46,11 @@ export function CopyAnalysisPromptReplacementDialog({
   prompts: CopyAnalysisPrompt[];
   replacementId: string;
   busy: boolean;
-  message: string;
   onOpenChange: (open: boolean) => void;
   onReplacementChange: (id: string) => void;
   onReplace: () => void;
 }) {
   const replacementPrompt = prompts.find(({ id }) => String(id) === replacementId);
-  const messageIsError = message.includes('失败');
-
   return <Dialog open={open} onOpenChange={onOpenChange}>
     <DialogContent className="copy-analysis-prompt-dialog">
       <div className="copy-analysis-prompt-dialog-head">
@@ -82,11 +78,6 @@ export function CopyAnalysisPromptReplacementDialog({
         <strong>将被替换的内容</strong>
         <p>{replacementPrompt.content}</p>
       </div>}
-      {message && <p
-        className={messageIsError ? 'notice error copy-analysis-prompt-status' : 'notice success copy-analysis-prompt-status'}
-        role={messageIsError ? 'alert' : 'status'}
-        aria-live="polite"
-      >{message}</p>}
       <div className="copy-analysis-prompt-dialog-actions">
         <DialogClose asChild>
           <Button unstyled className="button" type="button" disabled={busy}>取消</Button>

@@ -433,8 +433,10 @@ describe('governed OCR comparison and isolated prompt execution', () => {
     ]) {
       assert.equal(record.snapshot.source, runtime.source);
       assert.deepEqual(record.snapshot.settings, runtime.settings);
-      assert.equal(record.provenance.versions.length, 1);
-      assert.equal(record.provenance.versions[0].versionId, runtime.prompts.IMAGE_ALIGNMENT_SYSTEM.versionId);
+      const businessVersions = record.provenance.versions.filter(item => item.kind === 'IMAGE_ALIGNMENT_SYSTEM');
+      assert.equal(businessVersions.length, 1);
+      assert.equal(businessVersions[0].versionId, runtime.prompts.IMAGE_ALIGNMENT_SYSTEM.versionId);
+      assert.ok(record.provenance.versions.some(item => item.kind === 'INTERNAL_IMAGE_ALIGNMENT_OUTPUT'));
       const prompt = calls.find((input) => input.prompt.includes(ownName))?.prompt;
       assert.ok(prompt, 'each call must use its own published rule content');
       assert.ok(!prompt.includes(otherName));

@@ -9,7 +9,7 @@ test('activation requires published stages and never publishes candidates implic
   try {
     await assert.rejects(savePromptPolicy({ visualPlanningEnabled: false }, { store }), /请先发布/);
     assert.equal(store.getPromptRuntimeSettings(), null);
-    for (const template of store.listPromptTemplates()) if (template.versions[0].status === 'DRAFT') store.publishPromptVersion(template.versions[0].id);
+    for (const template of store.listPromptTemplates()) if (template.versions[0]?.status === 'DRAFT') store.publishPromptVersion(template.versions[0].id);
     await savePromptPolicy({ visualPlanningEnabled: false, copyKnowledgeThreshold: 80 }, { store });
     const config = await readPromptConfiguration({ store });
     assert.equal(config.promptRuntime.settings.copyKnowledgeThreshold, 80);
@@ -42,6 +42,6 @@ test('preparing candidates preserves existing center versions and does not publi
     createPromptVersion: async (value) => { writes.push(value); return value; },
     publishPromptVersion() { throw new Error('must not publish'); } };
   await preparePromptDrafts({ controlPlane });
-  assert.equal(writes.length, PROMPT_CATALOG.length - 1);
+  assert.equal(writes.length, PROMPT_CATALOG.filter(item => item.editable !== false).length - 1);
   assert.ok(writes.every((item) => item.kind !== 'TEXT_SYSTEM'));
 });

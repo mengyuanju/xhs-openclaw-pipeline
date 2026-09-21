@@ -489,6 +489,7 @@ describe('delivery images', () => {
         '标题置于顶部中央，中部为卡片清单。',
       ],
       complianceDisclosure: 'AI生成',
+      disclosureVisualStyle: { palette: ['#F4E6A2', '#1D1D1D', '#6F7D5F'], tone: '自然' },
       textRenderingMode: 'model-native',
     });
 
@@ -502,6 +503,9 @@ describe('delivery images', () => {
     assert.ok(images.every((image) => image.model === 'openai/gpt-image-2'));
     assert.ok(images.every((image) => image.provider !== 'local-template'));
     assert.ok(images.every((image) => image.textRenderer === 'gpt-image-native'));
+    assert.ok(images.every((image) => image.aiDisclosureStyle?.color === '#6F7D5F'));
+    assert.ok(images.every((image) => image.aiDisclosureStyle?.fontSize === 20));
+    assert.ok(images.every((image) => image.aiDisclosureStyle?.position === 'bottom-right'));
     for (const image of images) {
       const metadata = await sharp(join(directory, image.file)).metadata();
       assert.deepEqual([metadata.width, metadata.height], [1086, 1448]);

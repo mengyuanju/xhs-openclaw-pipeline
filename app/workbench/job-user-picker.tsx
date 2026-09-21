@@ -60,7 +60,7 @@ export function JobUserPicker({
     void loadJobCreators(apiRequest).then((nextUsers) => {
       if (!cancelled) setUsers(nextUsers);
     }).catch((caught) => {
-      if (!cancelled) setError(caught instanceof Error ? caught.message : '作业员列表读取失败');
+      if (!cancelled) setError(caught instanceof Error ? caught.message : '标注列表读取失败');
     }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [open, attempt]);
@@ -100,17 +100,17 @@ export function JobUserPicker({
             <DialogDescription>{dialogDescription}</DialogDescription>
           </div>
           <div className="workbench-creator-search">
-            <SearchInput aria-label="搜索作业员姓名或账号" placeholder="输入姓名或账号" value={search}
+            <SearchInput aria-label="搜索标注姓名或账号" placeholder="输入姓名或账号" value={search}
               maxLength={100} onValueChange={setSearch} />
           </div>
           <div className="workbench-creator-results" aria-busy={loading}>
             {allowEmptyOption && <Button unstyled className="workbench-creator-option" type="button"
               aria-pressed={emptyOptionSelected ?? !value}
               onClick={() => choose(null)}>{emptyOptionLabel}</Button>}
-            {loading ? <p role="status">正在读取作业员…</p>
+            {loading ? <p role="status">正在读取标注…</p>
               : error ? <div role="alert"><p>读取失败：{error}</p><Button unstyled className="button small" type="button"
-                  onClick={() => setAttempt((count) => count + 1)}>重新读取作业员</Button></div>
-                : matches.length === 0 ? <p role="status">没有可选的作业员，请更换姓名或账号。</p>
+                  onClick={() => setAttempt((count) => count + 1)}>重新读取标注</Button></div>
+                : matches.length === 0 ? <p role="status">没有可选的标注，请更换姓名或账号。</p>
                   : matches.map((user) => <Button unstyled className="workbench-creator-option" key={user.id}
                       type="button" aria-pressed={value?.id === user.id} onClick={() => choose(user)}>
                     <span><strong>{user.displayName}</strong><small className="mono">{user.username}</small></span>

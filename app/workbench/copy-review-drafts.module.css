@@ -1,0 +1,111 @@
+.panel {
+  overflow: hidden;
+  border: 1px solid #ded6cc;
+  border-radius: 12px;
+  background: #fbfaf8;
+}
+
+.trigger {
+  display: flex;
+  width: 100%;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 14px;
+  color: inherit;
+  text-align: left;
+}
+
+.trigger > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.trigger > small,
+.actions small,
+.history small,
+.empty {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.content {
+  display: grid;
+  gap: 12px;
+  padding: 0 14px 14px;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.actions > div:first-child {
+  display: grid;
+  min-width: 0;
+  margin-right: auto;
+  gap: 2px;
+}
+
+.history {
+  display: grid;
+  max-height: 250px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.history li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+
+.history li[data-current='true'] {
+  color: var(--red-dark);
+}
+
+.history li > div {
+  display: grid;
+  min-width: 0;
+  margin-right: auto;
+  gap: 2px;
+}
+
+.history span {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty {
+  padding: 12px 0 2px;
+  border-top: 1px solid var(--line);
+}
+
+@media (max-width: 700px) {
+  .trigger,
+  .actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .trigger > small {
+    padding-left: 24px;
+  }
+
+  .actions > div:first-child {
+    margin-right: 0;
+  }
+}

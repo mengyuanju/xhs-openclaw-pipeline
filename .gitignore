@@ -6,16 +6,24 @@ output/
 outputs/
 server/server-storage/
 server/backups/
+server/logs/
+service-logs/
+server/reports/repair-backups/
+preview-service/backups/
 
 .codex_artifacts/
 .tmp-control-plane/
 .tmp-deepseek-executor/
 .env
 .env.*.local
+.env.production
 *.pem
 *.key
 npm-debug.log*
 .next/
 .next-local/
+.next-blue/
+.next-green/
 server/test-storage/
+test-storage/
 *.tsbuildinfo

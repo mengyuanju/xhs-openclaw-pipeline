@@ -1,6 +1,7 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
+import { ToastFeedback } from '@/components/ui/sonner';
 import { Input, Switch } from '@/components/ui/input';
 import {
   Select,
@@ -34,6 +35,7 @@ type Settings = {
   qualityRepairTriggerScore: number;
   qualityRepairTargetScore: number;
   qualityRepairMaxAttempts: number;
+  imageEditRepairMaxAttempts: number;
   aiDisclosureEnabled: boolean;
   aiDisclosureText: string;
   modelApi: ModelApiSettings;
@@ -81,6 +83,7 @@ function sectionValue(settings: Settings, section: SettingsSectionId) {
     qualityRepairMaxAttempts: settings.qualityRepairMaxAttempts,
   };
   if (section === 'image') return {
+    imageEditRepairMaxAttempts: settings.imageEditRepairMaxAttempts,
     aiDisclosureEnabled: settings.aiDisclosureEnabled,
     aiDisclosureText: settings.aiDisclosureText,
   };
@@ -104,6 +107,7 @@ function mergeSection(current: Settings, saved: Settings, section: SettingsSecti
   };
   if (section === 'image') return {
     ...current,
+    imageEditRepairMaxAttempts: saved.imageEditRepairMaxAttempts,
     aiDisclosureEnabled: saved.aiDisclosureEnabled,
     aiDisclosureText: saved.aiDisclosureText,
   };
@@ -177,6 +181,26 @@ function AiDisclosureSettings({
       <label className="switch-field"><Switch checked={settings.aiDisclosureEnabled} disabled={busy} onChange={(event) => update('aiDisclosureEnabled', event.target.checked)} /><span>显示标识</span></label>
     </div>
     <div className="field disclosure-field"><label htmlFor="ai-disclosure-text">标识文字</label><Input id="ai-disclosure-text" className="input" value={settings.aiDisclosureText} maxLength={12} pattern="[\\p{L}\\p{N}_-]+" disabled={busy || !settings.aiDisclosureEnabled} onChange={(event) => update('aiDisclosureText', event.target.value)} /><small>最多 12 个字符，仅限文字、数字、下划线或短横线；关闭后生成和验收都不再要求该标识。</small></div>
+  </section>;
+}
+
+function ImageEditRepairSettings({
+  settings,
+}: {
+  settings: Settings;
+  busy: boolean;
+  update: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
+}) {
+  return <section className="panel settings-section" aria-labelledby="image-edit-repair-heading">
+    <div className="panel-head">
+      <div><h2 id="image-edit-repair-heading">图片模型标识单次生成</h2><p className="subtle">图片模型融合方式只调用一次图片编辑模型，不使用蒙版或局部像素贴回；校验失败后不会自动二次修改。SVG + Sharp 程序标识不使用此配置。</p></div>
+    </div>
+    <div className="form-grid compact-settings-grid">
+      <div className="field">
+        <span>自动修复次数：0 次</span>
+        <small>旧配置值 {settings.imageEditRepairMaxAttempts} 仅为兼容保留，执行时不会读取；需要重试时必须由标注主动发起。</small>
+      </div>
+    </div>
   </section>;
 }
 
@@ -305,6 +329,7 @@ export function ProductionSettingsForm({
       dirty: dirtyBySection.image,
       children: <>
         <LayoutCatalogSettings onDirtyChange={reportLayoutCatalogDirty} />
+        <ImageEditRepairSettings settings={settings} busy={busy} update={update} />
         <AiDisclosureSettings settings={settings} busy={busy} update={update} />
       </>,
     },
@@ -322,7 +347,7 @@ export function ProductionSettingsForm({
 
   return <div className="settings-stack">
     <SettingsWorkspace sections={sections} activeSection={activeSection} onSectionChange={setActiveSection} />
-    {message && <div className={messageIsError ? 'notice error' : 'notice success'} role={messageIsError ? 'alert' : 'status'} aria-live="polite">{message}</div>}
+    <ToastFeedback id="production-settings-feedback" message={message} tone={messageIsError ? 'error' : 'success'} />
     <div className="settings-save-bar" data-dirty={dirtyBySection[activeSection] || undefined}>
       <div>
         <strong>{SECTION_SAVE_COPY[activeSection].title}</strong>

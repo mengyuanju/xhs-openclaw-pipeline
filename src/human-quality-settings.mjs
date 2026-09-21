@@ -22,6 +22,15 @@ export const DEFAULT_HUMAN_QUALITY_NOTE_GUIDANCE = Object.freeze({
   imagePlaceholder: '说明图片的具体问题、问题页与建议处理方式',
 });
 
+export const DEFAULT_COPY_REVIEW_DISPLAY = Object.freeze({
+  showScoreDescriptions: true,
+  showDeductionReasons: true,
+});
+
+export const DEFAULT_IMAGE_REVIEW_DISPLAY = Object.freeze({
+  showDeductionReasons: true,
+});
+
 function frozenReason(code, label) {
   return Object.freeze({ code, label });
 }
@@ -53,6 +62,8 @@ export const DEFAULT_HUMAN_QUALITY_SETTINGS = Object.freeze({
   copyReasons: DEFAULT_COPY_REASONS,
   imageReasons: DEFAULT_IMAGE_REASONS,
   noteGuidance: DEFAULT_HUMAN_QUALITY_NOTE_GUIDANCE,
+  copyReviewDisplay: DEFAULT_COPY_REVIEW_DISPLAY,
+  imageReviewDisplay: DEFAULT_IMAGE_REVIEW_DISPLAY,
 });
 
 function normalizedText(value, path, maximum) {
@@ -136,6 +147,43 @@ function normalizedNoteGuidance(value) {
   };
 }
 
+function normalizedCopyReviewDisplay(value) {
+  const source = value === undefined ? DEFAULT_COPY_REVIEW_DISPLAY : value;
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    throw new TypeError('copyReviewDisplay must be an object');
+  }
+  const keys = Object.keys(source);
+  if (keys.some((key) => !['showScoreDescriptions', 'showDeductionReasons'].includes(key))
+    || !['showScoreDescriptions', 'showDeductionReasons'].every((key) => keys.includes(key))) {
+    throw new TypeError('copyReviewDisplay must contain only showScoreDescriptions and showDeductionReasons');
+  }
+  if (typeof source.showScoreDescriptions !== 'boolean') {
+    throw new TypeError('copyReviewDisplay.showScoreDescriptions must be a boolean');
+  }
+  if (typeof source.showDeductionReasons !== 'boolean') {
+    throw new TypeError('copyReviewDisplay.showDeductionReasons must be a boolean');
+  }
+  return {
+    showScoreDescriptions: source.showScoreDescriptions,
+    showDeductionReasons: source.showDeductionReasons,
+  };
+}
+
+function normalizedImageReviewDisplay(value) {
+  const source = value === undefined ? DEFAULT_IMAGE_REVIEW_DISPLAY : value;
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    throw new TypeError('imageReviewDisplay must be an object');
+  }
+  const keys = Object.keys(source);
+  if (keys.some((key) => key !== 'showDeductionReasons') || !keys.includes('showDeductionReasons')) {
+    throw new TypeError('imageReviewDisplay must contain only showDeductionReasons');
+  }
+  if (typeof source.showDeductionReasons !== 'boolean') {
+    throw new TypeError('imageReviewDisplay.showDeductionReasons must be a boolean');
+  }
+  return { showDeductionReasons: source.showDeductionReasons };
+}
+
 function normalizedReasonList(value, fallback, path) {
   const source = value === undefined ? fallback : value;
   if (!Array.isArray(source) || source.length > MAX_HUMAN_QUALITY_REASONS) {
@@ -167,7 +215,7 @@ export function normalizeHumanQualitySettings(input = {}) {
     throw new TypeError('human quality settings must be an object');
   }
   if (Object.keys(input).some((key) => ![
-    'scoreDefinitions', 'copyReasons', 'imageReasons', 'noteGuidance',
+    'scoreDefinitions', 'copyReasons', 'imageReasons', 'noteGuidance', 'copyReviewDisplay', 'imageReviewDisplay',
   ].includes(key))) {
     throw new TypeError('human quality settings contain unsupported fields');
   }
@@ -176,6 +224,8 @@ export function normalizeHumanQualitySettings(input = {}) {
     copyReasons: normalizedReasonList(input.copyReasons, DEFAULT_COPY_REASONS, 'copyReasons'),
     imageReasons: normalizedReasonList(input.imageReasons, DEFAULT_IMAGE_REASONS, 'imageReasons'),
     noteGuidance: normalizedNoteGuidance(input.noteGuidance),
+    copyReviewDisplay: normalizedCopyReviewDisplay(input.copyReviewDisplay),
+    imageReviewDisplay: normalizedImageReviewDisplay(input.imageReviewDisplay),
   };
 }
 
@@ -186,5 +236,9 @@ export function normalizeHumanQualitySettingsUpdate(input, current) {
     throw new TypeError('copyReasons and imageReasons are required');
   }
   const baseline = current === undefined ? DEFAULT_HUMAN_QUALITY_SETTINGS : current;
-  return normalizeHumanQualitySettings({ ...normalizeHumanQualitySettings(baseline), ...input });
+  const settings = normalizeHumanQualitySettings({ ...normalizeHumanQualitySettings(baseline), ...input });
+  if (settings.imageReviewDisplay.showDeductionReasons && settings.imageReasons.length === 0) {
+    throw new RangeError('开启图片质检扣分原因时，必须至少填写一项图片扣分原因');
+  }
+  return settings;
 }

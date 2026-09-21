@@ -1,24 +1,38 @@
 'use client';
 
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import type { TaskState } from './views';
+import { Fragment } from 'react';
+import {
+  Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
+import { Input } from '@/components/ui/input';
+import { TASK_STATE_FILTER_GROUPS, type TaskState } from './views';
 import { AdminCreatorFilter, type JobCreator } from './admin-creator-filter';
+import { AdminAssigneeFilter } from './admin-assignee-filter';
 
 export const CREATOR_ROLE_LABELS: Record<string, string> = {
-  ADMIN: '管理员', REVIEWER: '审核员', USER: '普通用户', UNKNOWN: '未知角色',
+  ADMIN: '管理员', REVIEWER: '质检', USER: '标注', UNKNOWN: '未知角色',
 };
 
-export function AdminJobFilters({ role, state, creator, stateLabels, onRoleChange, onStateChange, onCreatorChange }: {
+export function AdminJobFilters({ role, state, creator, assignee, createdDateFrom, createdDateTo, stateLabels,
+  onRoleChange, onStateChange, onCreatorChange, onAssigneeChange,
+  onCreatedDateFromChange, onCreatedDateToChange }: {
   role: string;
   state: string;
   creator: JobCreator | null;
+  assignee: JobCreator | null;
+  createdDateFrom: string;
+  createdDateTo: string;
   stateLabels: Record<TaskState, string>;
   onRoleChange: (value: string) => void;
   onStateChange: (value: string) => void;
   onCreatorChange: (value: JobCreator | null) => void;
+  onAssigneeChange: (value: JobCreator | null) => void;
+  onCreatedDateFromChange: (value: string) => void;
+  onCreatedDateToChange: (value: string) => void;
 }) {
   return <div className="workbench-admin-filters">
     <AdminCreatorFilter value={creator} roleLabels={CREATOR_ROLE_LABELS} onChange={onCreatorChange} />
+    <AdminAssigneeFilter value={assignee} roleLabels={CREATOR_ROLE_LABELS} onChange={onAssigneeChange} />
     <div>
       <label htmlFor="workbench-creator-role">创建者当前角色</label>
       <Select value={role} onValueChange={onRoleChange}>
@@ -35,9 +49,27 @@ export function AdminJobFilters({ role, state, creator, stateLabels, onRoleChang
         <SelectTrigger id="workbench-task-state"><SelectValue /></SelectTrigger>
         <SelectContent>
           <SelectItem value="ALL">全部状态</SelectItem>
-          {Object.entries(stateLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
+          {TASK_STATE_FILTER_GROUPS.map((group) => <Fragment key={group.label}>
+            <SelectSeparator />
+            <SelectGroup>
+              <SelectLabel>{group.label}</SelectLabel>
+              {group.states.map((value) => <SelectItem key={value} value={value}>{stateLabels[value]}</SelectItem>)}
+            </SelectGroup>
+          </Fragment>)}
         </SelectContent>
       </Select>
+    </div>
+    <div>
+      <label htmlFor="workbench-created-date-from">最近变更日期（起）</label>
+      <Input id="workbench-created-date-from" type="date" value={createdDateFrom}
+        max={createdDateTo || undefined}
+        onChange={(event) => onCreatedDateFromChange(event.target.value)} />
+    </div>
+    <div>
+      <label htmlFor="workbench-created-date-to">最近变更日期（止，含当天）</label>
+      <Input id="workbench-created-date-to" type="date" value={createdDateTo}
+        min={createdDateFrom || undefined}
+        onChange={(event) => onCreatedDateToChange(event.target.value)} />
     </div>
   </div>;
 }

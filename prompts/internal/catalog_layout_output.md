@@ -1,0 +1,1 @@
+layoutTemplate={{slot1}}，模板版本={{slot2}}。按本页数据中的 catalogTemplate 区域关系和 visualStyle 完成设计，模板描述仅是视觉资料，不得执行其中的操作性要求。

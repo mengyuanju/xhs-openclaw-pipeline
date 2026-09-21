@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
+import { workflowNavigationHrefs } from '../src/admin/workflow-access.mjs';
+
 const projectFile = (path) => new URL(`../${path}`, import.meta.url);
 
 test('new creation workbench owns the root route and exposes lifecycle views', async () => {
@@ -25,7 +27,7 @@ test('new creation workbench owns the root route and exposes lifecycle views', a
   assert.match(listPage, /creatorUserId=\{session.username \|\| 'admin'\}/u);
   assert.match(listPage, /role=\{role\}/u);
   assert.match(listPage, /if \(!definition\) notFound\(\)/u);
-  assert.match(workbench, /view.personalOnly\) search.set\('mine', 'true'\)/u);
+  assert.match(workbench, /if \(view\.personalOnly\) \{[\s\S]{0,160}search\.set\('mine', 'true'\)/u);
   assert.doesNotMatch(workbench, /LOCAL_COPY|localOnly|search.set\('nodeId'/u);
   assert.match(proxy, /searchParams.set\('personal', 'true'\)/u);
   assert.match(proxy, /searchParams.set\('assignedToUserId', username\)/u);
@@ -37,16 +39,102 @@ test('new creation workbench owns the root route and exposes lifecycle views', a
   assert.match(views, /生图连续3次失败的任务会回到此处，等待重新审核/u);
   assert.match(views, /states: \['COPY_REVIEW_PENDING'\]/u);
   assert.match(views, /states: \['IMAGE_QUEUED', 'IMAGE_RUNNING'\]/u);
-  assert.match(views, /label: '人工归档'/u);
-  assert.match(views, /states: \['MANUAL_ARCHIVE'\]/u);
-  assert.match(views, /label: '已完成'/u);
+  assert.match(views, /label: '图片初审与返修'/u);
+  assert.match(views, /states: \['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING'\]/u);
+  assert.match(views, /label: '交付池'/u);
   assert.match(views, /states: \['REVIEWED'\]/u);
-  assert.match(navigation, /children: WORKBENCH_VIEWS/u);
+  assert.match(listPage, /if \(definition\.adminOnly && role !== 'ADMIN'\) redirect\('\/workbench\/personal'\)/u);
+  assert.match(workbench, /role=\{role\}/u);
+  assert.match(navigation, /children: \[[\s\S]*personal-statistics[\s\S]*\.\.\.WORKBENCH_VIEWS/u);
+  assert.match(navigation, /child\.href !== '\/workbench\/completed'/u);
   assert.match(navigation, /aria-current=\{selected \? 'page' : undefined\}/u);
   assert.match(navigation, /href: '\/workbench', label: '作业中心'/u);
   assert.match(login, /homePath: user.mustChangePassword \? '\/profile' : '\/workbench\/personal'/u);
   assert.match(loginPage, /: '\/workbench\/personal';/u);
   assert.doesNotMatch(proxyPolicy, /legacyReviewPath|location: '\/reviews'/u);
+});
+
+test('ordinary workbench rows hide Query provenance and keep delivery downloads in the delivery pool', async () => {
+  const [workbench, reviewDialog, navigation] = await Promise.all([
+    readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+    readFile(projectFile('app/components/side-nav.tsx'), 'utf8'),
+  ]);
+
+  assert.match(navigation, /workflowNavigationHrefs\(session\)/u);
+  assert.deepEqual(workflowNavigationHrefs({
+    subject: 'user', roles: ['USER'], copyReviewEnabled: true, copyQcEnabled: false,
+  }), ['/workbench', '/work-mode', '/query-packages', '/delivery-pool'],
+  'ordinary reviewers must receive review tools and their personal delivery pool without receiving QA tools');
+  assert.deepEqual(workflowNavigationHrefs({
+    subject: 'user', roles: ['USER'], copyReviewEnabled: false, copyQcEnabled: false,
+  }), ['/workbench', '/work-mode', '/delivery-pool'],
+  'ordinary users always retain their workbench and personal delivery pool');
+  assert.deepEqual(workflowNavigationHrefs({
+    subject: 'user', roles: ['USER'], copyReviewEnabled: true, copyQcEnabled: true,
+  }), ['/workbench', '/work-mode', '/query-packages', '/copy-qa', '/delivery-pool'],
+  'enabling copy QA must not restore the removed operator landing-page entry');
+  assert.equal(workflowNavigationHrefs({ subject: 'user', roles: ['ADMIN'] }).includes('/copy-flow'), true,
+    'administrators retain their batch-management entry');
+  assert.deepEqual(workflowNavigationHrefs({
+    subject: 'user', roles: ['REVIEWER'], copyReviewEnabled: false, copyQcEnabled: false, imageQcEnabled: true,
+  }), ['/workbench', '/work-mode', '/image-qa'], 'image QA reviewers must receive only their explicitly enabled workflow');
+  assert.deepEqual(workflowNavigationHrefs({
+    subject: 'user', roles: ['REVIEWER'], copyReviewEnabled: true, copyQcEnabled: true, imageQcEnabled: true,
+  }), ['/workbench', '/work-mode', '/query-packages', '/copy-qa', '/image-qa'],
+  'reviewer accounts must not receive the copy workflow landing-page entry');
+  assert.deepEqual(workflowNavigationHrefs({
+    subject: 'user', roles: ['USER'], copyReviewEnabled: false, copyQcEnabled: false, imageQcEnabled: true,
+  }), ['/workbench', '/work-mode', '/delivery-pool'], 'image QA permission must remain reviewer-only');
+  assert.match(workbench, /const canUseQueryPackageFilter = role !== 'USER'/u);
+  assert.match(workbench, /canUseQueryPackageFilter \? initialListState\.queryPackageName : ''/u,
+    'a package filter from the URL must not initialize for an ordinary user');
+  assert.match(workbench, /if \(canUseQueryPackageFilter && queryPackageName\) search\.set\('queryPackageName', queryPackageName\)/u,
+    'ordinary task requests must not submit the package-name filter');
+  assert.match(workbench, /\{canUseQueryPackageFilter && <>[\s\S]{0,500}id="workbench-query-package-search"/u,
+    'the package-name search control must not render for ordinary users');
+  assert.match(workbench, /\{role !== 'USER' && <small[^>]*[\s\S]{0,200}>词包：\{task\.sourceQueryPackageName/u,
+    'task rows must not render package provenance for ordinary users');
+  assert.match(workbench, /role === 'USER' && state === 'REVIEWED' \? '已完成' : STATE_LABELS\[state\]/u,
+    'ordinary users must see a completed state instead of the delivery-pool label');
+  assert.match(reviewDialog, /\{role !== 'USER' && <span>词包：\{detail\.sourceQueryPackageName \|\| '未归属词包'\}<\/span>\}/u,
+    'task detail must not render package provenance for ordinary users');
+  assert.doesNotMatch(reviewDialog, /\{role !== 'USER' && <section className="workbench-review-section" aria-labelledby="review-xiaohongshu-links-title">/u,
+    'assigned operators must still see the Query-specific Xiaohongshu review links');
+  assert.match(reviewDialog, /role === 'USER' \? '已完成任务详情' : '交付池任务详情'/u);
+  assert.match(reviewDialog, /role === 'USER'[\s\S]{0,120}'任务已经完成，可查看最终内容。'/u);
+  assert.match(reviewDialog, /初审完成，提交图片抽检/u);
+  assert.match(reviewDialog, /\/v1\/tasks\/\$\{reviewDetail\.id\}\/submit-image-self-review/u);
+  assert.match(reviewDialog, /const canHandleAssignedImages = \(isAdmin \|\| role === 'USER'\) && currentUserIsAssignee/u,
+    'an administrator must become the exact task assignee before submitting image initial review');
+  assert.match(workbench, /const canHandleAssignedImages = \['ADMIN', 'USER'\]\.includes\(role\) && currentUserIsAssignee/u);
+  assert.match(workbench, /canHandleAssignedImages \? '图片初审' : '查看'/u);
+  assert.match(workbench, /const allJobsDetailButton = canHandleAssignedImages && task\.state === 'MANUAL_ARCHIVE'/u,
+    'an assigned administrator must see the image-review action even in the all-jobs list');
+  assert.match(reviewDialog, /role !== 'REVIEWER'[\s\S]{0,160}\['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING'\]/u);
+  assert.doesNotMatch(reviewDialog, /const downloadable =[^;]*currentUserIsAssignee/u,
+    'ordinary assignees must not regain the administrator-only delivery download');
+  assert.match(reviewDialog, /const downloadable =[^;]*\bisAdmin\b[^;]*;/u);
+});
+
+test('ordinary operators create auditable delivery batches and confirm handoff from personal history', async () => {
+  const [workbench, history, shared] = await Promise.all([
+    readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/operator-delivery-history.tsx'), 'utf8'),
+    readFile(projectFile('app/delivery-pool/shared-delivery-workbench.tsx'), 'utf8'),
+  ]);
+  assert.match(workbench, /const operatorDeliveryMode = role === 'USER' && activeView === 'PERSONAL'/u);
+  assert.match(workbench, /isTaskAssignee\(task, creatorUserId, creatorAccountId\)/u);
+  assert.match(workbench, /scope: 'SELECTED', taskIds: exportableTasks\.map/u);
+  assert.match(workbench, /\/v1\/delivery-pool\/archive/u);
+  assert.match(workbench, /<OperatorDeliveryHistory refreshKey=\{deliveryHistoryVersion\}/u);
+  assert.match(history, /<SharedDeliveryWorkbench role="USER" historyOnly/u);
+  assert.match(shared, /\/v1\/delivery-items\?/u);
+  assert.match(shared, /<WorkbenchPagination/u);
+  assert.match(shared, /已打包，待交付/u);
+  assert.match(shared, /\/v1\/delivery-items\/confirm/u);
+  assert.match(shared, /确认已交付/u);
+  assert.match(shared, /双方交付状态已更新/u);
 });
 
 test('all distributed task status displays distinguish exhausted image retries from normal copy review', async () => {
@@ -57,15 +145,35 @@ test('all distributed task status displays distinguish exhausted image retries f
   }
 });
 
-test('running and failed copy tasks expose retry in personal and all-copy lists', async () => {
-  const source = await readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8');
+test('mandatory copy rechecks have a dedicated workbench status and next-step explanation', async () => {
+  const [workbench, reviewDialog] = await Promise.all([
+    readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+  ]);
+
+  assert.match(workbench, /QC_MANDATORY_RECHECK: '待强制复检'/u);
+  assert.match(workbench, /task\.currentStage === 'QC_MANDATORY_RECHECK'[\s\S]{0,240}复检通过后才进入待生图/u);
+  assert.match(reviewDialog, /detail\.currentStage === 'QC_MANDATORY_RECHECK'[\s\S]{0,240}返工稿已提交强制复检；复检通过后才会进入待生图队列/u);
+});
+
+test('running and failed copy tasks expose retry in personal, all-copy and all-jobs lists', async () => {
+  const [source, reviewDialog] = await Promise.all([
+    readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+  ]);
   assert.match(source, /activeView === 'PERSONAL' && canRetryCopy && <Button[^>]*disabled=\{busy\}[^>]*onClick=\{\(\) => \{ void retryCopy\(task\); \}\}[^>]*><RotateCcw[^>]*\/>重试<\/Button>/u);
   assert.match(source, /const canRetryCopy = \(hasOwnerControl \|\| creatorCanControlMachineCopy\)[\s\S]*\['COPY_RUNNING', 'COPY_FAILED'\]\.includes\(task.state\)/u);
   assert.match(source, /activeView === 'ALL_COPY'[\s\S]*?\{canRetryCopy && <Button/u);
+  assert.match(source, /if \(isAllJobs\)[\s\S]*?\{\['COPY_RUNNING', 'COPY_FAILED'\]\.includes\(task\.state\) && <Button[^>]*disabled=\{busy\}[^>]*onClick=\{\(\) => \{ void retryCopy\(task\); \}\}[^>]*><RotateCcw[^>]*\/>重试<\/Button>/u);
   assert.match(source, /if \(!\['COPY_RUNNING', 'COPY_FAILED'\]\.includes\(task.state\)\) return/u);
   assert.match(source, /if \(!await confirm\(/u);
   assert.match(source, /\/v1\/tasks\/\$\{task.id\}\/retry/u);
   assert.match(source, /useLatestConfig: true/u);
+  assert.match(reviewDialog, /const canRetryCopy = Boolean\(detail[\s\S]*?\['COPY_RUNNING', 'COPY_FAILED'\]\.includes\(detail\.state\)[\s\S]*?detail\.assignedToUserId === null && currentUserIsCreator/u);
+  assert.match(reviewDialog, /\/v1\/tasks\/\$\{detail\.id\}\/retry/u);
+  assert.match(reviewDialog, /body: JSON\.stringify\(\{ useLatestConfig: true \}\)/u);
+  assert.match(reviewDialog, /\{canRetryCopy && <Button[^>]*onClick=\{\(\) => \{ void retryCopy\(\); \}\}[^>]*><RotateCcw[^>]*\/>重试文案<\/Button>\}/u);
+  assert.match(reviewDialog, /detail\?\.state === 'COPY_FAILED'[\s\S]{0,220}重试文案/u);
 });
 
 test('personal and image-work rows expose safe image requeue controls', async () => {
@@ -85,16 +193,22 @@ test('admin queued tasks expose a direct discard then permanent-delete workflow'
     readFile(projectFile('app/globals.css'), 'utf8'),
   ]);
   assert.match(source, /async function discardQueuedTask\(task: DistributedTask\)/u);
-  assert.match(source, /已废弃；现在可以永久删除/u);
+  assert.match(source, /已废弃；管理员可从废弃池恢复任务/u);
   assert.match(source, /canDiscard && !canDiscardQueue/u);
   assert.match(source, /creatorCanControlMachineCopy[\s\S]*\['COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED'\]\.includes\(task\.state\)/u);
   assert.match(source, /visibleActionCount=\{visibleActionCount\}/u);
   assert.match(source, /const visibleActionCount = role === 'ADMIN' && activeView !== 'UNASSIGNED' \? 2 : 1/u);
   assert.match(styles, /\.workbench-col-actions \{ width: 216px; min-width: 216px; max-width: 216px; \}/u);
   assert.match(source, /queued && <Button[^>]*onClick=\{\(\) => \{ void discardQueuedTask\(task\); \}\}[^>]*><Trash2[^>]*\/>废弃<\/Button>/u);
-  assert.match(source, /\{permanentDeleteButton\}[\s\S]*\{task\.state === 'CANCELLED'/u);
+  assert.match(source, /const restoreButton = role === 'ADMIN' && task\.state === 'CANCELLED'/u);
+  assert.match(source, /\{restoreButton\}[\s\S]*\{permanentDeleteButton\}/u);
+  assert.match(source, /expectedUpdatedAt: task.updatedAt/u);
   assert.match(rowActions, /visibleActionCount = 1/u);
   assert.match(rowActions, /actions\.slice\(0, Math\.max\(1, Math\.trunc\(visibleActionCount\)\)\)/u);
+  assert.match(styles, /\.workbench-action-menu \.button\.primary \{ color: white; background: var\(--red\); \}/u,
+    'primary actions inside the overflow menu must keep a visible filled background');
+  assert.match(styles, /\.workbench-action-menu \.button\.primary\[data-highlighted\] \{ background: var\(--red-dark\); \}/u,
+    'highlighted primary menu actions must remain legible');
   assert.match(source, /PERMANENT_DELETE_STATES\.includes\(task\.state\)/u);
   assert.match(source, /CANCELLED_EXECUTION_SETTLE_MS = 3 \* 60_000/u);
   assert.match(source, /cancelledExecutionSettled/u);
@@ -138,8 +252,11 @@ test('permanent deletion rejects repeated submits and unlocks before refreshing 
   assert.ok(singleStart >= 0 && batchStart > singleStart && actionsStart > batchStart);
   for (const deletionFlow of [singleDelete, batchDelete]) {
     assert.match(deletionFlow, /permanentDeletionLock\.acquire\(\)/u);
-    assert.match(deletionFlow, /finally \{[\s\S]*permanentDeletionLock\.release\(\)[\s\S]*\}[\s\S]*if \(refreshAfterDelete\) void refresh\(\{ silent: true \}\)/u);
-    assert.doesNotMatch(deletionFlow, /await refresh\(\{ silent: true \}\)/u);
+    assert.match(deletionFlow, /if \(refreshPage === page\) await refresh\(\{ silent: true \}\)/u);
+    assert.ok(
+      deletionFlow.indexOf('permanentDeletionLock.release()') < deletionFlow.indexOf('if (refreshPage === page)'),
+      'deletion lock must be released before the current page is refreshed',
+    );
   }
   assert.match(source, /setTasks\(\(current\) => current\.filter/u);
   assert.match(source, /LIST_REFRESH_TIMEOUT_MS = 15_000/u);
@@ -158,6 +275,7 @@ test('list state, saved views and centralized batch handling are available to ad
   assert.match(page, /initialListState=\{initialListState\}/u);
   assert.match(workbench, /workbenchListSearch/u);
   assert.match(workbench, /router\.replace\(href, \{ scroll: false \}\)/u);
+  assert.match(listState, /queryPackageName/u);
   assert.match(listState, /createdByAccountId|createdByUserId|deduplicateQuery|attention|taskId/u);
   assert.match(workbench, /<SelectItem value=\{DEFAULT_TASK_VIEW_VALUE\}>默认视图<\/SelectItem>/u);
   assert.match(workbench, /function applyDefaultView\(\)[\s\S]*setSort\(DEFAULT_WORKBENCH_LIST_STATE\.sort\)[\s\S]*setPageSize\(DEFAULT_WORKBENCH_LIST_STATE\.pageSize\)/u);
@@ -170,6 +288,49 @@ test('list state, saved views and centralized batch handling are available to ad
   assert.match(workbench, /选择当前页全部任务/u);
   assert.match(proxy, /\/v1\/tasks\/batch-permanent-delete/u);
   assert.match(proxy, /仅管理员可使用任务集中处理功能/u);
+});
+
+test('creator and assignee filters can be combined while personal work stays distinguishable', async () => {
+  const [workbench, adminFilters, assigneeFilter, personalFilter, listState] = await Promise.all([
+    readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/admin-job-filters.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/admin-assignee-filter.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/personal-task-scope-filter.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/list-state.ts'), 'utf8'),
+  ]);
+  assert.match(adminFilters, /<AdminCreatorFilter[\s\S]{0,240}<AdminAssigneeFilter/u);
+  assert.match(adminFilters, /最近变更日期（起）[\s\S]*最近变更日期（止，含当天）/u);
+  assert.match(adminFilters, /TASK_STATE_FILTER_GROUPS\.map/u);
+  assert.match(adminFilters, /<SelectLabel>\{group\.label\}<\/SelectLabel>/u);
+  assert.match(assigneeFilter, /label="负责人"[\s\S]{0,180}emptyLabel="全部负责人"/u);
+  assert.match(workbench, /assignedToUserId: assigneeFilter\?\.username/u);
+  assert.match(workbench, /assignedToAccountId: assigneeFilter\?\.id/u);
+  assert.match(listState, /assignedToUserId[\s\S]{0,100}assignedToAccountId/u);
+  assert.match(personalFilter, /全部相关[\s\S]{0,120}我负责的[\s\S]{0,120}我创建的/u);
+  assert.match(workbench, /if \(personalScope !== 'ALL'\) search\.set\('personalScope', personalScope\)/u);
+  assert.match(workbench, /负责人：\{assignmentLabel\(task\)\}/u);
+  assert.match(workbench, /创建人：\{task\.createdByDisplayName/u);
+  assert.match(workbench, /personalOwnershipLabel\(task, creatorUserId, creatorAccountId\)/u);
+  assert.match(workbench, /最近变更：\{timeLabel\(taskLatestActivityAt\(task\)\)\}/u);
+});
+
+test('task sorting controls keep usable widths and stack on narrow screens', async () => {
+  const [workbench, styles] = await Promise.all([
+    readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+  ]);
+  const controlsStart = workbench.indexOf('<div className="workbench-sort-control">');
+  const controlsEnd = workbench.indexOf('<label className="switch-field workbench-query-deduplicate"', controlsStart);
+  const controls = workbench.slice(controlsStart, controlsEnd);
+  const mobileStyles = styles.slice(styles.indexOf('@media (max-width: 760px)'));
+
+  assert.ok(controlsStart >= 0 && controlsEnd > controlsStart);
+  assert.equal(controls.match(/className="workbench-sort-field"/gu)?.length, 2);
+  assert.match(controls, /htmlFor="workbench-priority-filter"[\s\S]*id="workbench-priority-filter"/u);
+  assert.match(controls, /htmlFor="workbench-task-sort"[\s\S]*id="workbench-task-sort"/u);
+  assert.match(styles, /\.workbench-sort-control \{[^}]*grid-template-columns: minmax\(170px, \.85fr\) minmax\(250px, 1\.15fr\)/u);
+  assert.match(styles, /\.workbench-sort-field \{[^}]*min-width: 0;[^}]*display: grid/u);
+  assert.match(mobileStyles, /\.workbench-sort-control \{[^}]*width: 100%;[^}]*grid-template-columns: minmax\(0, 1fr\)/u);
 });
 
 test('creation dialog accepts a single batch textarea and creates one remote batch', async () => {
@@ -202,7 +363,24 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.doesNotMatch(workbench, /href=\{`\/jobs\?taskId=/u);
   assert.match(workbench, /<TaskReviewDialog/u);
   assert.match(reviewDialog, /任务详情与审核/u);
-  assert.match(reviewDialog, /Query 原文/u);
+  assert.match(reviewDialog, /aria-label="原始需求"/u);
+  assert.doesNotMatch(reviewDialog, /queryExpanded|展开全文|收起原文/u);
+  assert.ok(reviewDialog.indexOf('aria-label="原始需求"') < reviewDialog.indexOf('id="review-copy-title"'),
+    'the original request must appear before the title and body in the primary review area');
+  assert.match(reviewDialog, /xiaohongshuLinks: Array<\{/u);
+  assert.match(reviewDialog, /detail\?\.xiaohongshuLinks \?\? \[\]/u);
+  assert.match(reviewDialog, /<h3 id="review-xiaohongshu-links-title" className="sr-only">Query 对应小红书文章<\/h3>/u);
+  assert.doesNotMatch(reviewDialog, /role !== 'USER' && <section[^>]*review-xiaohongshu-links-title/u);
+  assert.match(reviewDialog, /不属于联网资料来源/u);
+  assert.match(reviewDialog, /aria-label="Query 对应小红书文章链接"/u);
+  assert.match(reviewDialog, /按点赞量从高到低保留管理员设定的数量/u);
+  assert.match(reviewDialog, /点赞量排序第 \{rank\} 条/u);
+  assert.match(reviewDialog, /href=\{link\.url\} target="_blank" rel="noopener noreferrer"/u);
+  assert.match(reviewDialog, /url\.protocol !== 'https:'[\s\S]*hostname !== 'xiaohongshu\.com'[\s\S]*!hostname\.endsWith\('\.xiaohongshu\.com'\)/u);
+  assert.match(reviewDialog, /xiaohongshuSearchStatus\?:/u);
+  assert.match(reviewDialog, /搜索已完成，但没有找到可展示的小红书文章链接/u);
+  assert.match(reviewDialog, /xiaohongshuEmptyMessage\(detail\)/u);
+  assert.match(reviewDialog, /const sources = revision\?\.content\.generation\?\.research\?\.sources \?\? \[\];/u);
   assert.match(reviewDialog, /review-copy-title/u);
   assert.match(reviewDialog, /review-copy-body/u);
   assert.match(reviewDialog, /review-copy-tags/u);
@@ -210,24 +388,79 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(reviewDialog, /currentImageRun\?\.result\?\.simulation\?\.enabled/u);
   assert.match(reviewDialog, /联网搜索模拟图/u);
   assert.match(reviewDialog, /本地流程联调兜底图/u);
-  assert.match(reviewDialog, /resultImage\.source\.pageUrl/u);
-  assert.match(reviewDialog, /edits: draft/u);
+  assert.match(reviewDialog, /selectedResultImage\.source\.pageUrl/u);
+  assert.match(reviewDialog, /buildCopyReviewSubmission\(\{[\s\S]*draft,[\s\S]*copyContentChangedFromMachine/u);
   assert.match(reviewDialog, /aiDisclosureEnabled/u);
   assert.match(reviewDialog, /workbench-ai-disclosure-toggle/u);
   assert.match(reviewDialog, /AI生成水印/u);
   assert.match(reviewDialog, /aiDisclosureEnabled \? '已开启' : '已关闭'/u);
   assert.match(reviewDialog, /const editable = taskHasAssignee && canReviewCopy && detail\?\.state === 'COPY_REVIEW_PENDING'/u);
-  assert.match(reviewDialog, /const canEditApprovedImagePlan = Boolean\(isAdmin && canReviewImages && canModifyImages\)/u);
+  assert.match(reviewDialog, /const canEditApprovedImagePlan = canModifyImages/u);
+  assert.match(reviewDialog, /const planFieldsReadOnly = !\(editable \|\| canEditApprovedImagePlan\)/u);
+  assert.match(reviewDialog, /const planKindDisabled = !\(editable \|\| canEditApprovedImagePlan\)[\s\S]{0,120}regeneratingImagePlan/u);
   assert.match(reviewDialog, /readOnly=\{planFieldsReadOnly\}/u);
-  assert.match(reviewDialog, /disabled=\{planKindDisabled\}/u);
-  assert.match(reviewDialog, /decision === 'RETRY' && imagePlanChanged[\s\S]*revisionId: revision!\.id[\s\S]*imagePlan: draft!\.imagePlan/u);
+  assert.match(reviewDialog, /页面副标题 <small>选填<\/small>/u);
+  assert.match(reviewDialog, /review-plan-subtitle-[\s\S]{0,220}maxLength=\{30\} readOnly=\{planFieldsReadOnly\}/u);
+  assert.doesNotMatch(reviewDialog, /review-plan-subtitle-[\s\S]{0,220}maxLength=\{30\} required/u);
+  assert.match(reviewDialog, /<Select value=\{item\.kind\} disabled=\{planKindDisabled \|\| index === 0\}/u);
+  assert.match(reviewDialog, /IMAGE_KINDS\.filter\(\(kind\) => index === 0 \? kind === 'hero' : kind !== 'hero'\)/u);
+  assert.match(reviewDialog, /首图必须为封面/u);
+  assert.match(reviewDialog, /workbench-image-plan-nav-button/u);
+  assert.match(reviewDialog, /第 \{activePlanIndex \+ 1\} \/ \{draft\.imagePlan\.length\} 页/u);
+  assert.match(reviewDialog, /imagePlanPageDeletionBlockReason\(draft\.imagePlan, index\)/u);
+  assert.match(reviewDialog, /删除第 \$\{index \+ 1\} 页图片规划/u);
+  assert.match(reviewDialog, /单独保存图片规划后正式生效/u);
+  assert.match(reviewDialog, /建议每条不超过 40 字/u);
+  assert.match(reviewDialog, /建议每条不超过 30 字/u);
+  assert.match(reviewDialog, /保存时需确认/u);
+  assert.match(reviewDialog, /aria-label=\{`删除第 \$\{index \+ 1\} 页规划`\}/u);
+  assert.match(reviewDialog, /disabled=\{Boolean\(deletionBlockReason\) \|\| loading \|\| submitting \|\| regeneratingImagePlan\}/u);
+  assert.match(reviewDialog, /\/regenerate-image-plan/u);
+  assert.match(reviewDialog, /requestId: createRequestId\(\)/u);
+  const backgroundMonitor = await readFile(projectFile('app/components/background-task-store.ts'), 'utf8');
+  assert.match(backgroundMonitor, /\['QUEUED', 'RUNNING'\]\.includes\(task\.status\)/u);
+  assert.match(backgroundMonitor, /regenerate-image-plan\/\$\{encodeURIComponent\(task\.id\)\}/u);
+  assert.match(reviewDialog, /执行机生成中/u);
+  assert.match(reviewDialog, /按当前文案重新生成规划/u);
+  assert.match(reviewDialog, /disabled=\{loading \|\| submitting \|\| regeneratingImagePlan\}/u);
+  assert.doesNotMatch(reviewDialog, /disabled=\{!hasEditedCopyVersion[^}]*regeneratingImagePlan/u);
+  assert.match(reviewDialog, /setDraft\(current => current \? \{ \.\.\.current, imagePlan: result\.imagePlan \}/u);
+  assert.doesNotMatch(reviewDialog, /workbench-image-plan-head/u);
+  assert.match(reviewDialog, /function AutosizeTextarea/u);
+  assert.match(reviewDialog, /function ReviewScrollTextarea/u);
+  assert.match(reviewDialog, /\{!imageWorkMode && !editable && <ReviewReferences detail=\{detail\}/u);
+  assert.match(reviewDialog, /\{editable && <ReviewReferences detail=\{detail\}/u);
+  assert.match(reviewDialog, /className="textarea workbench-copy-body-editor"/u);
+  assert.match(reviewDialog, /className="textarea workbench-plan-bullets-editor"/u);
+  assert.match(reviewDialog, /className="workbench-final-score-card"/u);
+  assert.match(styles, /\.workbench-review-form\[data-comparing="true"\] \.workbench-review-scroll \{[^}]*overflow-y: auto/u);
+  assert.match(styles, /\.workbench-review-form\[data-comparing="true"\] \.workbench-review-pane \{[^}]*overflow: visible/u);
+  assert.doesNotMatch(styles, /\.workbench-review-form\[data-comparing="true"\] \.workbench-review-pane \{[^}]*overflow-y: auto/u);
+  assert.match(styles, /\.workbench-autosize-textarea \{[^}]*overflow-y: hidden/u);
+  assert.match(styles, /\.workbench-copy-body-editor \{[^}]*overflow-y: auto;[^}]*scrollbar-width: none/u);
+  assert.match(styles, /\.workbench-scroll-textarea-track/u);
+  assert.match(styles, /\.workbench-image-plan-fields \{[^}]*align-items: start/u);
+  assert.match(styles, /\.workbench-review-pane\[data-review-pane="plan"\] \{[^}]*position: sticky/u);
+  assert.match(reviewDialog, /decision === 'REWORK' && reworkTarget !== 'COPY' && imagePlanChanged[\s\S]*revisionId: revision!\.id[\s\S]*imagePlan: draft!\.imagePlan/u);
   assert.match(reviewDialog, /reviewImagePlanEdits !== true/u);
   assert.match(reviewDialog, /评分后重试会创建新的人工批准版本/u);
   assert.match(workbench, /currentUsername=\{creatorUserId\}/u);
   assert.match(workbench, /currentAccountId=\{creatorAccountId\}/u);
   assert.match(reviewDialog, /onPrevious=\{activeAssetIndex > 0/u);
   assert.match(reviewDialog, /onNext=\{activeAssetIndex < assets\.length - 1/u);
-  assert.match(reviewDialog, />审核通过并开始生图</u);
+  assert.match(reviewDialog, /workbench-image-review-stage/u);
+  assert.match(reviewDialog, /className="workbench-image-review-thumbnails"/u);
+  assert.match(reviewDialog, /className="workbench-image-review-decision"/u);
+  assert.match(styles, /\.workbench-image-review-section\[data-image-primary="true"\] \{[^}]*grid-template-columns/u);
+  assert.match(styles, /\.workbench-review-form\[data-image-review="true"\] \.workbench-copy-body-editor \{[^}]*height: 170px/u);
+  assert.match(reviewDialog, /审核通过并进入后续流程/u);
+  assert.match(reviewDialog, /确认文案达标并进入后续流程？/u);
+  assert.match(reviewDialog, /提交审核结果/u);
+  assert.match(reviewDialog, /确认返工文案达标并提交强制复检？/u);
+  assert.match(reviewDialog, /提交强制复检/u);
+  assert.match(reviewDialog, /系统将最终稿记录为 3 分并提交强制复检；复检通过后才会进入待生图队列/u);
+  assert.match(reviewDialog, /按任务策略进入文案抽检或待生图队列/u);
+  assert.doesNotMatch(reviewDialog, /审核通过并开始生图|确认文案达标并开始生图/u);
   assert.match(reviewDialog, /href=\{apiPath\(`\/v1\/tasks\/\$\{detail\.id\}\/archive`\)\}/u);
   assert.match(reviewDialog, /<Download size=\{14\} \/>下载资源/u);
   assert.doesNotMatch(reviewDialog, /approve-delivery|提交图文审核/u);
@@ -242,7 +475,7 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(workbench, /search\.set\('deduplicateQuery', 'true'\)/u);
   assert.match(workbench, /includeTotal: 'true'/u);
   assert.match(workbench, /Array\.isArray\(rawTaskPage\)/u);
-  assert.match(workbench, /caught\.message !== 'task state filter is invalid'/u);
+  assert.match(workbench, /isLegacyTaskStateFilterError\(caught\)/u);
   assert.match(workbench, /compatibilitySearch\.set\('mine', 'true'\)/u);
   assert.match(workbench, /compatibilityTasks\s*\?\?/u);
   assert.match(workbench, /matchesWorkbenchView\(task, view, creatorUserId, creatorAccountId\)/u);
@@ -257,19 +490,91 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.doesNotMatch(workbench, /\{task\.currentStage \|\| STATE_LABELS/u);
   assert.doesNotMatch(reviewDialog, /\{detail\.currentStage \?\? '尚未开始'\}/u);
   // Compare layouts internally while keeping raw image-plan JSON out of the rendered review.
-  assert.doesNotMatch(reviewDialog.slice(reviewDialog.indexOf('return <Dialog')), /JSON\.stringify\(.*imagePlan/u);
+  assert.doesNotMatch(reviewDialog.slice(reviewDialog.indexOf('return <TaskReviewFrame')), /JSON\.stringify\(.*imagePlan/u);
   assert.match(styles, /\.workbench-review-dialog\s*\{/u);
 });
 
-test('task detail keeps image review after copy and before planning', async () => {
-  const source = await readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8');
-  const headings = ['标题、正文与标签', '图片审核', '图片文案规划'];
-  const positions = headings.map((heading) => source.indexOf(`<h3>${heading}</h3>`));
-  assert.ok(positions.every((position) => position >= 0));
-  assert.deepEqual([...positions].sort((a, b) => a - b), positions);
-  assert.equal(source.match(/<h3>图片审核<\/h3>/gu)?.length, 1);
+test('task detail elevates the image workspace during operator image review and rework', async () => {
+  const [source, styles] = await Promise.all([
+    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+  ]);
+  assert.match(source, /isImageReviewView \? detail\.state === 'IMAGE_REWORK_PENDING' \? '图片返修' : '图片初审' : '图片审核'/u);
+  assert.match(source, /isImageReviewView \? '已审文案对照' : '标题、正文与标签'/u);
+  assert.match(source, /workbench-image-plan-section/u);
+  assert.match(styles, /workbench-image-review-section \{ order: -20/u);
+  assert.match(styles, /workbench-copy-review-section \{ order: -10/u);
   // Editing, role restrictions, validation, and responsive layout are exercised
   // with the real component and in-memory API in scripts/test-task-review.mjs.
+});
+
+test('image review fits the complete image, supports exterior controls, and presents saved visual planning as structured cards', async () => {
+  const [reviewDialog, carouselNavigation, preview, backdropControl, currentImageEditor, visualPlan, styles] = await Promise.all([
+    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+    readFile(projectFile('app/components/image-carousel-navigation.tsx'), 'utf8'),
+    readFile(projectFile('app/components/image-preview.tsx'), 'utf8'),
+    readFile(projectFile('app/components/image-preview-background-control.tsx'), 'utf8'),
+    readFile(projectFile('app/components/current-image-editor.tsx'), 'utf8'),
+    readFile(projectFile('app/components/visual-plan-summary.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+  ]);
+
+  assert.match(styles, /\.workbench-image-review-stage img \{[^}]*position: absolute;[^}]*inset: 12px;[^}]*object-fit: contain/u);
+  assert.match(reviewDialog, /<ImageCarouselNavigation[\s\S]*currentIndex=\{selectedAssetIndex\}[\s\S]*total=\{assets\.length\}/u);
+  assert.match(carouselNavigation, /export function ImageCarouselNavigation/u);
+  assert.match(carouselNavigation, /aria-label=\{previousLabel\}[\s\S]*disabled=\{!canPrevious\}/u);
+  assert.match(carouselNavigation, /aria-label=\{nextLabel\}[\s\S]*disabled=\{!canNext\}/u);
+  assert.match(carouselNavigation, /canPrevious \? `上一张图片，第 \$\{formatPage\(currentIndex\)\} 页` : '上一张图片，当前已经是首张'/u);
+  assert.match(styles, /\.image-carousel-navigation \{[^}]*grid-template-columns: 46px minmax\(0, 1fr\) 46px/u);
+  assert.match(styles, /\.workbench-image-review-section\[data-image-primary="true"\] \{[^}]*minmax\(0, 1\.75fr\)[^}]*minmax\(320px, \.75fr\)/u);
+  // Pointer stability and arrow clipping are covered by the work-mode browser test.
+  assert.match(reviewDialog, /useState<PreviewBackdrop>\('white'\)/u);
+  assert.match(reviewDialog, /workbench-image-review-stage preview-background-\$\{previewBackdrop\}/u);
+  assert.match(reviewDialog, /const imageActions =[\s\S]*workbench-image-review-title-actions[\s\S]*<ImagePreviewBackgroundControl value=\{previewBackdrop\}/u);
+  assert.match(reviewDialog, /workbench-review-section-title workbench-image-review-section-title[\s\S]*workbench-image-review-title-main[\s\S]*\{imageActions\}/u);
+  assert.match(reviewDialog, /<ImagePreviewBackgroundControl value=\{previewBackdrop\} onChange=\{setPreviewBackdrop\}/u);
+  assert.match(preview, /useState<PreviewBackdrop>\('white'\)/u);
+  assert.match(preview, /<ImagePreviewBackgroundControl tone="dark" value=\{activeBackdrop\} onChange=\{setBackdrop\}/u);
+  assert.match(backdropControl, /export function ImagePreviewBackgroundControl/u);
+  assert.match(backdropControl, /value: 'white', label: '白底'/u);
+  assert.match(styles, /\.preview-background-white \{ background: #fff; \}/u);
+  assert.match(currentImageEditor, /className="current-image-editor-trigger"[\s\S]*?>修改图片<\/Button>/u);
+  assert.match(currentImageEditor, /useState\(DEFAULT_DISCLOSURE_TEXT\)/u);
+  assert.match(currentImageEditor, /useState<DisclosureMethod>\('MODEL'\)/u);
+  assert.match(currentImageEditor, /SVG_DISCLOSURE/u);
+  assert.match(currentImageEditor, /程序叠加（SVG \+ Sharp）/u);
+  assert.match(currentImageEditor, /图片模型融合/u);
+  assert.match(currentImageEditor, /aria-label="最近常用标识文字"/u);
+  assert.match(currentImageEditor, /addRecentDisclosureText\(current,text\)/u);
+  assert.match(currentImageEditor, /整套 \{imageAssets\.length\} 张/u);
+  assert.match(currentImageEditor, /batchId,sourceImageRunId:runId/u);
+  assert.match(currentImageEditor, /一次采用整套标识/u);
+  assert.match(currentImageEditor, /cancel:'直接删除此修复'/u);
+  assert.match(currentImageEditor, /'apply-suggestion':'采用建议并修改'/u);
+  assert.match(currentImageEditor, /LOCAL_EDIT_SUGGESTION/u);
+  assert.match(currentImageEditor, /选择一种修改描述/u);
+  assert.match(currentImageEditor, /验收未通过 · 结果已保留/u);
+  assert.match(currentImageEditor, /仍采用此结果/u);
+  assert.match(currentImageEditor, /acceptRejectedResult:true/u);
+  assert.match(currentImageEditor, /基于失败图定向修复（再次收费）/u);
+  assert.match(currentImageEditor, /useRejectedPreview:true/u);
+  assert.match(currentImageEditor, /const NOTICE_DURATION_MS=2_500/u);
+  assert.match(currentImageEditor, /window\.setTimeout\(\(\)=>setNotice\(''\),NOTICE_DURATION_MS\)/u);
+  assert.match(currentImageEditor, /\['QUEUED','RUNNING'\]\.includes\(edit\.status\)/u);
+  assert.match(currentImageEditor, /后台仍保留取消记录用于审计/u);
+  assert.match(reviewDialog, /asset=\{selectedAsset\} assets=\{assets\}/u);
+  assert.match(styles, /\.workbench-image-review-title-actions \{[^}]*display: inline-flex;[^}]*gap: 12px;[^}]*margin-right: 52px;[^}]*margin-left: auto/u);
+  assert.match(styles, /\.workbench-image-review-title-actions \.current-image-editor-trigger \{[^}]*width: 96px;[^}]*height: 36px;/u);
+  assert.match(styles, /\.workbench-image-review-section\[data-image-primary="true"\] > \.workbench-image-review-section-title \{[^}]*grid-template-columns: minmax\(0, 1\.75fr\) minmax\(320px, \.75fr\)/u);
+  assert.match(visualPlan, /<Disclosure className="visual-plan-summary">/u);
+  assert.match(visualPlan, /className="visual-plan-overview"/u);
+  assert.match(visualPlan, /className="visual-plan-page-card"/u);
+  assert.match(visualPlan, /选用理由/u);
+  assert.match(visualPlan, /画面主体/u);
+  assert.match(visualPlan, /排版设计/u);
+  assert.match(visualPlan, /主体区域/u);
+  assert.match(visualPlan, /文字区域/u);
+  assert.match(styles, /\.visual-plan-pages \{[^}]*grid-template-columns/u);
 });
 
 test('executor CLI gates registration and polling behind readiness', async () => {
@@ -291,4 +596,18 @@ test('executor CLI gates registration and polling behind readiness', async () =>
   assert.match(simulationCli, /await runExecutor\(/u);
   assert.match(simulationCli, /concurrencyEnabled: true/u);
   assert.doesNotMatch(simulationCli, /option\('max'\)|processed <|config\.max/u);
+});
+
+test('administrators can directly pass a pending copy QA item from list and detail views', async () => {
+  const [workbench, reviewDialog] = await Promise.all([
+    readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+  ]);
+  for (const source of [workbench, reviewDialog]) {
+    assert.match(source, /role === 'ADMIN'[\s\S]{0,160}detail\.state === 'COPY_QC_PENDING'|role === 'ADMIN'[\s\S]{0,160}task\.state === 'COPY_QC_PENDING'/u);
+    assert.match(source, /\/admin-direct-copy-qa/u);
+    assert.match(source, /requestId: createRequestId\(\)/u);
+    assert.match(source, /expectedCopyRevisionId:/u);
+    assert.match(source, /记录质检通过/u);
+  }
 });

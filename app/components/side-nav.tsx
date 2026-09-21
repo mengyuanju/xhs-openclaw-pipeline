@@ -6,10 +6,14 @@ import {
   BarChart3,
   ChevronDown,
   LayoutDashboard,
+  PanelsTopLeft,
   LibraryBig,
   LogOut,
   Menu,
   MessageSquareText,
+  PackageSearch,
+  PackageCheck,
+  ShieldCheck,
   Settings2,
   ServerCog,
   Users,
@@ -19,13 +23,24 @@ import type { LucideIcon } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { workflowNavigationHrefs } from '../../src/admin/workflow-access.mjs';
 import { WORKBENCH_VIEWS } from '../workbench/views';
 
-type NavigationItem = { href: string; label: string; icon: LucideIcon; children?: NavigationItem[] };
+type NavigationItem = { href: string; label: string; icon: LucideIcon; children?: NavigationItem[]; adminOnly?: boolean };
 type NavigationGroup = { label: string; items: NavigationItem[] };
 
 const navigationGroups: NavigationGroup[] = [
-  { label: '创作工作台', items: [{ href: '/workbench', label: '作业中心', icon: LayoutDashboard, children: WORKBENCH_VIEWS }] },
+  { label: '创作工作台', items: [
+    { href: '/workbench', label: '作业中心', icon: LayoutDashboard, children: [
+      { href: '/workbench/personal-statistics', label: '个人数据统计', icon: BarChart3 }, ...WORKBENCH_VIEWS,
+    ] },
+    { href: '/work-mode', label: '作业模式', icon: PanelsTopLeft },
+    { href: '/query-packages', label: 'Query 词包', icon: PackageSearch },
+    { href: '/copy-flow', label: '文案工作入口', icon: ShieldCheck },
+    { href: '/copy-qa', label: '文案质检', icon: ShieldCheck },
+    { href: '/image-qa', label: '图片质检', icon: ShieldCheck },
+    { href: '/delivery-pool', label: '交付池', icon: PackageCheck },
+  ] },
   {
     label: '内容资产',
     items: [
@@ -36,7 +51,7 @@ const navigationGroups: NavigationGroup[] = [
   {
     label: '运营与系统',
     items: [
-      { href: '/workbench-statistics', label: '作业统计', icon: BarChart3 },
+      { href: '/workbench-statistics', label: '数据统计', icon: BarChart3 },
       { href: '/settings', label: '生产配置', icon: Settings2 },
       { href: '/executors', label: '执行机管理', icon: ServerCog },
       { href: '/users', label: '用户管理', icon: Users },
@@ -44,7 +59,16 @@ const navigationGroups: NavigationGroup[] = [
   },
 ];
 
-export function SideNav({ session }: { session: { subject: string; username?: string; roles?: string[] } | null }) {
+type NavigationSession = {
+  subject: string;
+  username?: string;
+  roles?: string[];
+  copyReviewEnabled?: boolean;
+  copyQcEnabled?: boolean;
+  imageQcEnabled?: boolean;
+} | null;
+
+export function SideNav({ session }: { session: NavigationSession }) {
   const pathname = usePathname();
   const router = useRouter();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -53,19 +77,29 @@ export function SideNav({ session }: { session: { subject: string; username?: st
   const [signOutError, setSignOutError] = useState('');
   const role = session?.roles?.[0];
   const isAdmin = role === 'ADMIN';
+  const allowedWorkflowHrefs = new Set(workflowNavigationHrefs(session));
   const roleGroups = isAdmin
-    ? navigationGroups
+    ? navigationGroups.map((group) => ({
+        ...group,
+        items: group.items.map((item) => ({
+          ...item,
+          // Administrators use the dedicated READY delivery pool; keep the
+          // historical completed-work route available without duplicating it
+          // as a second, identically named sidebar entry.
+          children: item.children?.filter((child) => child.href !== '/workbench/completed'),
+        })),
+      }))
     : role === 'REVIEWER'
       ? navigationGroups.map((group) => ({
           ...group,
-          items: group.items.filter((item) => item.href === '/workbench' || item.href === '/knowledge')
-            .map((item) => ({ ...item, children: item.children?.filter((child) => child.href !== '/workbench/all') })),
+          items: group.items.filter((item) => allowedWorkflowHrefs.has(item.href))
+            .map((item) => ({ ...item, children: item.children?.filter((child) => !child.adminOnly) })),
         }))
       : navigationGroups.map((group) => ({
           ...group,
-          items: group.items.filter((item) => item.href === '/workbench').map((item) => ({
+          items: group.items.filter((item) => allowedWorkflowHrefs.has(item.href)).map((item) => ({
             ...item,
-            children: item.children?.filter((child) => child.href === '/workbench/personal'),
+            children: item.children?.filter((child) => ['/workbench/personal','/workbench/personal-statistics'].includes(child.href)),
           })),
         }));
   const visibleGroups = roleGroups.filter((group) => group.items.length > 0);
@@ -92,9 +126,9 @@ export function SideNav({ session }: { session: { subject: string; username?: st
   return (
     <aside className="sidebar">
       <div className="sidebar-head">
-        <Link className="brand" href="/workbench" aria-label="内容工场作业中心">
-          <span className="brand-mark">RED</span>
-          <div><strong>内容工场</strong><small>Codex Console</small></div>
+        <Link className="brand" href="/workbench" aria-label="海墨内容工场作业中心">
+          <img className="brand-mark" src="/icon.png" alt="" width={36} height={36} />
+          <div><strong>海墨内容工场</strong><small>Content Studio</small></div>
         </Link>
         <Button unstyled
           className="mobile-nav-toggle"
@@ -159,7 +193,7 @@ export function SideNav({ session }: { session: { subject: string; username?: st
       <div className="sidebar-foot">
         <div className="sidebar-auth-summary">
           <span className="sidebar-auth-label"><span className="status-dot" /> 局域网认证已启用</span>
-          <small>{isAdmin ? '管理员' : role === 'REVIEWER' ? '审核员' : '普通用户'} · {session?.username || 'admin'}</small>
+          <small>{isAdmin ? '管理员' : role === 'REVIEWER' ? '质检' : '标注'} · {session?.username || 'admin'}</small>
         </div>
         <Link className="sidebar-signout" href="/profile"><Users aria-hidden="true" size={14} />个人信息</Link>
         <Button unstyled className="sidebar-signout" type="button" onClick={signOut} disabled={isSigningOut}>

@@ -34,6 +34,13 @@ function currentAssignee(tasks: AssignmentTask[]): JobCreator | null {
   };
 }
 
+function assignmentActionLabel(tasks: AssignmentTask[]) {
+  const assignedCount = tasks.filter((task) => task.assignedToUserId !== null).length;
+  if (assignedCount === 0) return '分配';
+  if (assignedCount === tasks.length) return '改派';
+  return '分配/改派';
+}
+
 export function TaskAssignmentDialog({ tasks, open, currentAdmin, onOpenChange, onAssigned }: {
   tasks: AssignmentTask[];
   open: boolean;
@@ -46,6 +53,8 @@ export function TaskAssignmentDialog({ tasks, open, currentAdmin, onOpenChange, 
   const [reason, setReason] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const actionLabel = assignmentActionLabel(tasks);
+  const isReassignment=tasks.some(task=>task.assignedToUserId!==null && task.assignedToUserId!==assignee?.username);
   const canReturnToPool = tasks.every((task) => (
     ['COPY_QUEUED', 'COPY_REVIEW_PENDING'].includes(task.state)
       && !(task.skipCopyReview === true && task.state === 'COPY_QUEUED')
@@ -72,6 +81,7 @@ export function TaskAssignmentDialog({ tasks, open, currentAdmin, onOpenChange, 
         : '当前任务不能退回待分配池，请先明确选择新的负责人。');
       return;
     }
+    if(isReassignment && !reason.trim()) {setError('请填写改派原因，便于追溯返修与责任交接。');return;}
     setSubmitting(true);
     setError('');
     try {
@@ -102,9 +112,9 @@ export function TaskAssignmentDialog({ tasks, open, currentAdmin, onOpenChange, 
 
   return <Dialog open={open} onOpenChange={(nextOpen) => { if (!submitting) onOpenChange(nextOpen); }}>
     <DialogContent className="workbench-save-view-dialog">
-      <DialogTitle>{tasks.length > 1 ? `批量分配 ${tasks.length} 条任务` : '分配任务'}</DialogTitle>
+      <DialogTitle>{tasks.length > 1 ? `批量${actionLabel} ${tasks.length} 条任务` : `${actionLabel}任务`}</DialogTitle>
       <DialogDescription>
-        文案生成完成后可分配给普通作业员，或由当前管理员领取。负责人变更不会影响机器执行队列。
+        文案生成完成后可分配给质检或标注，也可由当前管理员领取。负责人变更不会影响机器执行队列。
       </DialogDescription>
       <form className="workbench-create-form" onSubmit={submit}>
         <JobUserPicker
@@ -115,9 +125,9 @@ export function TaskAssignmentDialog({ tasks, open, currentAdmin, onOpenChange, 
           emptyOptionLabel="待分配任务池"
           emptyOptionSelected={!destinationRequired && assignee === null}
           dialogTitle="选择任务负责人"
-          dialogDescription="显示已启用的普通作业员和当前管理员；未加入自动分配池的普通作业员仍可手动指定。"
+          dialogDescription="显示已启用的质检、标注和当前管理员；其他管理员不可选。未加入自动分配池的标注仍可手动指定。"
           roleLabels={CREATOR_ROLE_LABELS}
-          eligibleRoles={['USER']}
+          eligibleRoles={['REVIEWER', 'USER']}
           additionallyEligibleUserIds={[Number(currentAdmin.id)]}
           activeOnly
           allowEmptyOption={canReturnToPool}
@@ -135,10 +145,11 @@ export function TaskAssignmentDialog({ tasks, open, currentAdmin, onOpenChange, 
               setDestinationRequired(false);
               setError('');
             }}>我来处理</Button>
-          {!canReturnToPool && <small>当前状态只能改派负责人，不能退回待分配池。</small>}
+          {!canReturnToPool && <small>当前状态只能改派负责人，不能退回待分配池；已完成或已废弃的任务不能改派。</small>}
         </div>
         <div className="field">
-          <label htmlFor="task-assignment-reason">分配说明（可选）</label>
+          <label htmlFor="task-assignment-reason">{actionLabel}说明{isReassignment?'（必填）':'（可选）'}</label>
+          <small>改派转移整条任务的标注责任；已产生的标注、质检贡献仍归原操作账号。</small>
           <Textarea id="task-assignment-reason" value={reason} maxLength={200} rows={3} disabled={submitting}
             placeholder="例如：补充夜班作业量" onChange={(event) => setReason(event.target.value)} />
         </div>
@@ -149,7 +160,7 @@ export function TaskAssignmentDialog({ tasks, open, currentAdmin, onOpenChange, 
             <Button unstyled className="button" type="button" disabled={submitting} onClick={() => onOpenChange(false)}>取消</Button>
             <Button unstyled className="button primary" type="submit"
               disabled={submitting || tasks.length === 0 || destinationRequired}>
-              {submitting ? '正在分配…' : '确认分配'}
+              {submitting ? `正在${actionLabel}…` : `确认${actionLabel}`}
             </Button>
           </div>
         </div>

@@ -19,6 +19,13 @@ const settingsSchema = z.object({
   copyReasons: z.unknown(),
   imageReasons: z.unknown(),
   noteGuidance: z.unknown().optional(),
+  copyReviewDisplay: z.object({
+    showScoreDescriptions: z.boolean(),
+    showDeductionReasons: z.boolean(),
+  }).strict().optional(),
+  imageReviewDisplay: z.object({
+    showDeductionReasons: z.boolean(),
+  }).strict().optional(),
 }).strict();
 
 type Session = {

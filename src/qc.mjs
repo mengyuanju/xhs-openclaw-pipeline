@@ -21,6 +21,60 @@ function checkPassed(checks, id) {
   return checks.find((check) => check.id === id)?.passed === true;
 }
 
+function riskAssessments(post) {
+  if (Array.isArray(post?.riskAssessments)) {
+    return post.riskAssessments.map((risk) => ({
+      severity: ['INFO', 'WARNING', 'BLOCKING'].includes(risk?.severity) ? risk.severity : 'WARNING',
+      status: risk?.status === 'MITIGATED' ? 'MITIGATED' : 'UNRESOLVED',
+      message: String(risk?.message ?? '').trim() || '未说明的风险',
+      mitigation: String(risk?.mitigation ?? '').trim(),
+    }));
+  }
+  return (post?.riskFlags ?? []).map((message) => ({
+    severity: 'WARNING',
+    status: 'UNRESOLVED',
+    message: String(message),
+    mitigation: '',
+  }));
+}
+
+function riskEvidence(risk) {
+  const status = risk.status === 'MITIGATED' ? '已规避' : '未解决';
+  return `${risk.message}（${status}${risk.mitigation ? `：${risk.mitigation}` : ''}）`;
+}
+
+export async function analyzeAlphaQuality(input) {
+  const { data, info } = await sharp(input).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const pixels = info.width * info.height;
+  let visible = 0;
+  let partial = 0;
+  let lowAlphaDark = 0;
+  for (let offset = 0; offset < data.length; offset += info.channels) {
+    const red = data[offset];
+    const green = data[offset + 1];
+    const blue = data[offset + 2];
+    const alpha = data[offset + 3];
+    if (alpha >= 16) visible += 1;
+    if (alpha > 0 && alpha < 255) partial += 1;
+    if (alpha > 0 && alpha < 96 && (red * 0.2126 + green * 0.7152 + blue * 0.0722) < 24) {
+      lowAlphaDark += 1;
+    }
+  }
+  const visibleRatio = pixels ? visible / pixels : 0;
+  const partialRatio = pixels ? partial / pixels : 0;
+  const lowAlphaDarkRatio = pixels ? lowAlphaDark / pixels : 0;
+  const passed = visibleRatio >= 0.03 && partialRatio <= 0.25 && lowAlphaDarkRatio <= 0.01;
+  return {
+    passed,
+    observed: {
+      visibleRatio: Number(visibleRatio.toFixed(5)),
+      partialAlphaRatio: Number(partialRatio.toFixed(5)),
+      lowAlphaDarkRatio: Number(lowAlphaDarkRatio.toFixed(5)),
+      backgroundsChecked: ['WHITE', 'BLACK', 'NEUTRAL'],
+    },
+  };
+}
+
 function mergeRubricAssessment(mechanical, external) {
   if (!external) return mechanical;
   const dimensions = { ...mechanical.dimensions };
@@ -189,6 +243,9 @@ export async function evaluateDelivery({
 }) {
   const checks = [];
   const issues = [];
+  const assessedRisks = riskAssessments(post);
+  const blockingRisks = assessedRisks.filter((risk) => risk.severity === 'BLOCKING'
+    && risk.status === 'UNRESOLVED');
 
   checks.push({ id: 'title_length', passed: [...post.title].length <= 25 });
   checks.push({ id: 'body_length', passed: [...post.body].length >= 200 && [...post.body].length <= 700 });
@@ -200,7 +257,7 @@ export async function evaluateDelivery({
   });
   checks.push({
     id: 'title_quality',
-    passed: Boolean(promptRuntimeSnapshot()) || (!FORBIDDEN_TITLE_HOOKS.test(post.title) && !/[!！~～]/u.test(post.title) && !EMOJI.test(post.title)),
+    passed: Boolean(promptRuntimeSnapshot()) || (!FORBIDDEN_TITLE_HOOKS.test(post.title) && !/[!！～]/u.test(post.title) && !EMOJI.test(post.title)),
     evaluatedBy: promptRuntimeSnapshot() ? 'MANAGED_TEXT_REVIEW' : 'LEGACY_MECHANICAL_POLICY',
   });
   checks.push({ id: 'body_emoji', passed: Boolean(promptRuntimeSnapshot()) || !EMOJI.test(post.body), evaluatedBy: promptRuntimeSnapshot() ? 'MANAGED_TEXT_REVIEW' : 'LEGACY_MECHANICAL_POLICY' });
@@ -229,13 +286,26 @@ export async function evaluateDelivery({
     },
   });
   checks.push({ id: 'fabricated_experience', passed: post.fabricatedExperience === false });
-  checks.push({ id: 'risk_flags', passed: post.riskFlags.length === 0 });
+  checks.push({
+    id: 'risk_flags',
+    passed: blockingRisks.length === 0,
+    observed: {
+      blocking: blockingRisks.map(riskEvidence),
+      mitigated: assessedRisks.filter((risk) => risk.status === 'MITIGATED').map(riskEvidence),
+      warnings: assessedRisks.filter((risk) => risk.severity !== 'BLOCKING').map(riskEvidence),
+    },
+  });
   checks.push({ id: 'unverified_claims', passed: post.unverifiedClaims.length === 0 });
 
   const imageHashes = [];
+  const alphaFailures = [];
   for (const image of images) {
     const imagePath = join(outputDir, image.file);
-    const [metadata, content] = await Promise.all([sharp(imagePath).metadata(), readFile(imagePath)]);
+    const [metadata, content, alphaQuality] = await Promise.all([
+      sharp(imagePath).metadata(),
+      readFile(imagePath),
+      analyzeAlphaQuality(imagePath),
+    ]);
     const passed = metadata.format === 'png'
       && metadata.width === DELIVERY_IMAGE_WIDTH
       && metadata.height === DELIVERY_IMAGE_HEIGHT;
@@ -245,6 +315,8 @@ export async function evaluateDelivery({
       passed,
       observed: { format: metadata.format, width: metadata.width, height: metadata.height },
     });
+    checks.push({ id: `image_alpha_${image.file}`, ...alphaQuality });
+    if (!alphaQuality.passed) alphaFailures.push({ file: image.file, ...alphaQuality.observed });
   }
   const uniqueImageHashes = new Set(imageHashes);
   checks.push({
@@ -268,11 +340,13 @@ export async function evaluateDelivery({
       evidence: `存在 ${post.unverifiedClaims.length} 条待核验事实。`,
     });
   }
-  if (post.riskFlags.length > 0) {
+  for (const risk of assessedRisks) {
     issues.push({
-      severity: 'blocking',
-      label: '安全合规-严重问题',
-      evidence: `模型标记 ${post.riskFlags.length} 条风险。`,
+      severity: risk.severity === 'BLOCKING' && risk.status === 'UNRESOLVED'
+        ? 'blocking' : 'warning',
+      label: risk.status === 'MITIGATED' ? '安全合规-已规避'
+        : risk.severity === 'BLOCKING' ? '安全合规-严重问题' : '安全合规-提示',
+      evidence: riskEvidence(risk),
     });
   }
   if (!promptRuntimeSnapshot() && FORBIDDEN_TITLE_HOOKS.test(post.title)) {
@@ -287,6 +361,13 @@ export async function evaluateDelivery({
       severity: 'blocking',
       label: '配图-重复配图',
       evidence: `交付图片 ${imageHashes.length} 张，其中仅 ${uniqueImageHashes.size} 个不同文件内容。`,
+    });
+  }
+  if (alphaFailures.length > 0) {
+    issues.push({
+      severity: 'blocking',
+      label: '配图-透明边缘异常',
+      evidence: `${alphaFailures.length} 张图片在白、黑、中性背景检查中出现大面积半透明、近透明黑边或可见内容过少。`,
     });
   }
   if (mode === 'live' && nonModelImages.length > 0) {

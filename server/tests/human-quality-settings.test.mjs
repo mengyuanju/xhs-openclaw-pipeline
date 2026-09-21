@@ -49,7 +49,7 @@ test('all signed-in roles can read reason options while only administrators can 
     getUserByUsername: async username => USERS[username] ?? null,
     getHumanQualitySettings: async () => settings,
     updateHumanQualitySettings: async input => {
-      const normalized = normalizeHumanQualitySettings(input);
+      const normalized = normalizeHumanQualitySettingsUpdate(input, settings);
       updates++;
       settings = normalized;
       return settings;
@@ -59,11 +59,19 @@ test('all signed-in roles can read reason options while only administrators can 
     for (const username of Object.keys(USERS)) {
       const response = await fetch(`${root}/v1/human-quality-settings`, { headers: actorHeaders(username) });
       assert.equal(response.status, 200, username);
-      assert.equal((await response.json()).data.copyReasons.length, 8);
+      const data = (await response.json()).data;
+      assert.equal(data.copyReasons.length, 8);
+      assert.deepEqual(data.copyReviewDisplay, { showScoreDescriptions: true, showDeductionReasons: true });
+      assert.deepEqual(data.imageReviewDisplay, { showDeductionReasons: true });
     }
     assert.equal((await fetch(`${root}/v1/human-quality-settings`)).status, 401);
 
-    const payload = { copyReasons: [{ code: '信息不完整', label: '信息不完整' }], imageReasons: [] };
+    const payload = {
+      copyReasons: [{ code: '信息不完整', label: '信息不完整' }],
+      imageReasons: [],
+      copyReviewDisplay: { showScoreDescriptions: false, showDeductionReasons: false },
+      imageReviewDisplay: { showDeductionReasons: false },
+    };
     const expected = normalizeHumanQualitySettings(payload);
     const forbidden = await fetch(`${root}/v1/human-quality-settings`, {
       method: 'PUT', headers: { ...actorHeaders('reviewer'), 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
@@ -76,6 +84,8 @@ test('all signed-in roles can read reason options while only administrators can 
     });
     assert.equal(saved.status, 200);
     assert.deepEqual((await saved.json()).data, expected);
+    assert.deepEqual(settings.copyReviewDisplay, { showScoreDescriptions: false, showDeductionReasons: false });
+    assert.deepEqual(settings.imageReviewDisplay, { showDeductionReasons: false });
     assert.equal(updates, 1);
 
     const invalid = await fetch(`${root}/v1/human-quality-settings`, {
@@ -83,6 +93,37 @@ test('all signed-in roles can read reason options while only administrators can 
       body: JSON.stringify({ copyReasons: [{ code: '重复', label: '一' }, { code: '重复', label: '二' }], imageReasons: [] }),
     });
     assert.equal(invalid.status, 400);
+    assert.equal(updates, 1);
+
+    const invalidDisplay = await fetch(`${root}/v1/human-quality-settings`, {
+      method: 'PUT', headers: { ...actorHeaders('admin'), 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        copyReasons: [], imageReasons: [],
+        copyReviewDisplay: { showScoreDescriptions: true, showDeductionReasons: 'yes' },
+      }),
+    });
+    assert.equal(invalidDisplay.status, 400);
+    assert.equal(updates, 1);
+
+    const invalidImageDisplay = await fetch(`${root}/v1/human-quality-settings`, {
+      method: 'PUT', headers: { ...actorHeaders('admin'), 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        copyReasons: [], imageReasons: [],
+        imageReviewDisplay: { showDeductionReasons: 'yes' },
+      }),
+    });
+    assert.equal(invalidImageDisplay.status, 400);
+    assert.equal(updates, 1);
+
+    const enabledWithoutImageReasons = await fetch(`${root}/v1/human-quality-settings`, {
+      method: 'PUT', headers: { ...actorHeaders('admin'), 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        copyReasons: [], imageReasons: [],
+        imageReviewDisplay: { showDeductionReasons: true },
+      }),
+    });
+    assert.equal(enabledWithoutImageReasons.status, 400);
+    assert.match((await enabledWithoutImageReasons.json()).error.message, /必须至少填写一项图片扣分原因/u);
     assert.equal(updates, 1);
   });
 });
@@ -94,6 +135,8 @@ test('repository replaces only human quality reasons inside the production recor
     title: `${definition.score} 分自定义`,
   }));
   currentReasons.noteGuidance = { copyPlaceholder: '自定义文案提示', imagePlaceholder: '自定义图片提示' };
+  currentReasons.copyReviewDisplay = { showScoreDescriptions: false, showDeductionReasons: false };
+  currentReasons.imageReviewDisplay = { showDeductionReasons: false };
   let production = {
     existingPolicy: 'preserved',
     modelApi: { agentProvider: 'CODEX' },
@@ -115,16 +158,22 @@ test('repository replaces only human quality reasons inside the production recor
   };
   const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
   const input = { copyReasons: [{ code: '结构松散', label: '结构松散' }], imageReasons: [] };
-  assert.deepEqual(
-    await repository.updateHumanQualitySettings(input),
-    normalizeHumanQualitySettingsUpdate(input, currentReasons),
-  );
+  const updated = await repository.updateHumanQualitySettings(input);
+  assert.deepEqual(updated, normalizeHumanQualitySettingsUpdate(input, currentReasons));
+  assert.deepEqual(updated.copyReviewDisplay, currentReasons.copyReviewDisplay,
+    'legacy PUT clients must not reset copy review display settings');
+  assert.deepEqual(updated.imageReviewDisplay, currentReasons.imageReviewDisplay,
+    'legacy PUT clients must not reset image review display settings');
   assert.equal(production.existingPolicy, 'preserved');
   assert.equal(production.modelApi.agentProvider, 'CODEX');
 });
 
 test('generic production upsert preserves independently managed reasons even when submitted', async () => {
-  const reasons = { copyReasons: [{ code: '内容太泛', label: '内容太泛' }], imageReasons: [] };
+  const reasons = {
+    copyReasons: [{ code: '内容太泛', label: '内容太泛' }],
+    imageReasons: [],
+    imageReviewDisplay: { showDeductionReasons: false },
+  };
   const pool = {
     async query(sql) {
       assert.match(sql, /global_settings\.value \? 'humanQualityReasons'/u);
@@ -140,7 +189,11 @@ test('generic production upsert preserves independently managed reasons even whe
   const repository = new PostgresControlPlaneRepository({ pool });
   const result = await repository.upsertSetting('production', {
     knowledgeEnabled: false,
-    humanQualityReasons: { copyReasons: [{ code: 'STALE', label: '旧页面原因' }], imageReasons: [] },
+    humanQualityReasons: {
+      copyReasons: [{ code: 'STALE', label: '旧页面原因' }],
+      imageReasons: [{ code: 'STALE_IMAGE', label: '旧页面图片原因' }],
+      imageReviewDisplay: { showDeductionReasons: true },
+    },
   });
   assert.deepEqual(result.value.humanQualityReasons, reasons);
 });

@@ -1,0 +1,1 @@
+；温度标注中连续的 ℃ 与 °C 是等价写法，不得仅因两者差异报错；hasTraditionalChinese 为布尔值；

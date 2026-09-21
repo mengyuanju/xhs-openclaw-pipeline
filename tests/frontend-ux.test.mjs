@@ -60,6 +60,32 @@ test('application shell groups product areas and keeps page context visible', as
   assert.match(packageJson, /"lucide-react"/);
 });
 
+test('the main workbench has distinct Haimo branding without exposing bootstrap credentials', async () => {
+  const [layout, loginPage, loginForm, navigation, topbar, icon, proxy] = await Promise.all([
+    readFile(projectFile('app/layout.tsx'), 'utf8'),
+    readFile(projectFile('app/login/page.tsx'), 'utf8'),
+    readFile(projectFile('app/login/login-form.tsx'), 'utf8'),
+    readFile(projectFile('app/components/side-nav.tsx'), 'utf8'),
+    readFile(projectFile('app/components/app-topbar.tsx'), 'utf8'),
+    readFile(projectFile('app/icon.png')),
+    readFile(projectFile('proxy.ts'), 'utf8'),
+  ]);
+
+  assert.match(layout, /title: '海墨内容工场'/u);
+  assert.match(loginPage, /title: '登录 \| 海墨内容工场'/u);
+  assert.match(loginPage, /HAIMO CONTENT STUDIO/u);
+  assert.match(loginPage, /海墨内容生产工作台/u);
+  assert.match(loginPage, /登录海墨内容工场/u);
+  assert.match(navigation, /<strong>海墨内容工场<\/strong>/u);
+  assert.match(navigation, /<img className="brand-mark" src="\/icon\.png"/u);
+  assert.match(topbar, />海墨内容工场<\/Link>/u);
+  assert.doesNotMatch(loginForm, /初始管理员账号|默认密码|123456/u);
+  assert.equal(icon.subarray(1, 4).toString('ascii'), 'PNG');
+  assert.equal(icon.readUInt32BE(16), 512);
+  assert.equal(icon.readUInt32BE(20), 512);
+  assert.match(proxy, /favicon\.ico\|icon\.svg\|icon\.png/u);
+});
+
 test('the unified knowledge base remains grouped with reusable content assets', async () => {
   const navigation = await readFile(projectFile('app/components/side-nav.tsx'), 'utf8');
 
@@ -120,11 +146,22 @@ test('generated assets open in an accessible centered Radix dialog preview', asy
   assert.match(styles, /\.image-preview-full/);
 });
 
+test('image regeneration stays in the always-visible review footer', async () => {
+  const reviewDialog = await readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8');
+  const footerStart = reviewDialog.indexOf('<footer className="workbench-review-footer">');
+  const footerEnd = reviewDialog.indexOf('</footer>', footerStart);
+  const regenerateButton = reviewDialog.indexOf('>重新生成图片</Button>');
+
+  assert.ok(footerStart >= 0);
+  assert.ok(footerEnd > footerStart);
+  assert.ok(regenerateButton > footerStart && regenerateButton < footerEnd);
+  assert.equal(reviewDialog.match(/>重新生成图片<\/Button>/gu)?.length, 1);
+});
+
 test('application dropdowns use the shared Radix select instead of native selects', async () => {
   const paths = [
     'app/knowledge/knowledge-workbench.tsx',
     'app/settings/production-settings-form.tsx',
-    'app/components/image-preview.tsx',
     'app/components/image-controls.tsx',
     'app/components/image-history-compare.tsx',
   ];
@@ -155,10 +192,12 @@ test('confirmation prompts use one accessible Radix alert dialog provider', asyn
   const paths = [
     'app/knowledge/knowledge-workbench.tsx',
     'app/prompts/prompt-editor.tsx',
+    'app/components/current-image-editor.tsx',
   ];
-  const [confirmation, frame, ...screens] = await Promise.all([
+  const [confirmation, frame, styles, ...screens] = await Promise.all([
     readFile(projectFile('components/ui/confirm-dialog.tsx'), 'utf8'),
     readFile(projectFile('app/components/app-frame.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
     ...paths.map((path) => readFile(projectFile(path), 'utf8')),
   ]);
 
@@ -169,6 +208,9 @@ test('confirmation prompts use one accessible Radix alert dialog provider', asyn
   assert.match(confirmation, /<AlertDialogPrimitive\.Description/);
   assert.match(confirmation, /returnFocusRef/);
   assert.match(confirmation, /requestAnimationFrame/);
+  assert.match(confirmation, /confirm-dialog-overlay/);
+  assert.match(styles, /\.confirm-dialog-overlay \{ z-index: 200; \}/u);
+  assert.match(styles, /\.confirm-dialog-content \{[^}]*z-index: 201;/u);
   assert.match(frame, /<ConfirmDialogProvider>/);
   for (const screen of screens) {
     assert.doesNotMatch(screen, /window\.confirm/);
@@ -176,14 +218,45 @@ test('confirmation prompts use one accessible Radix alert dialog provider', asyn
   }
 });
 
-test('reviewers can switch image previews between 100 percent and full-image modes', async () => {
-  const [preview, styles] = await Promise.all([
+test('required text prompts use the shared accessible dialog instead of the browser prompt', async () => {
+  const paths = [
+    'app/workbench/creation-workbench.tsx',
+    'app/workbench/task-review-dialog.tsx',
+  ];
+  const [textInputDialog, frame, styles, ...screens] = await Promise.all([
+    readFile(projectFile('components/ui/text-input-dialog.tsx'), 'utf8'),
+    readFile(projectFile('app/components/app-frame.tsx'), 'utf8'),
+    readFile(projectFile('app/globals.css'), 'utf8'),
+    ...paths.map((path) => readFile(projectFile(path), 'utf8')),
+  ]);
+
+  assert.match(textInputDialog, /export function TextInputDialogProvider/u);
+  assert.match(textInputDialog, /export function useTextInputDialog/u);
+  assert.match(textInputDialog, /<DialogContent className="text-input-dialog-content">/u);
+  assert.match(textInputDialog, /<Textarea/u);
+  assert.match(textInputDialog, /aria-required=/u);
+  assert.match(textInputDialog, /returnFocusRef/u);
+  assert.match(frame, /<TextInputDialogProvider>/u);
+  assert.match(styles, /\.text-input-dialog-content/u);
+  for (const screen of screens) {
+    assert.doesNotMatch(screen, /window\.prompt/u);
+    assert.match(screen, /useTextInputDialog/u);
+    assert.match(screen, /maxLength: 1_000/u);
+  }
+});
+
+test('reviewers default to full-image previews and can switch to 100 percent mode', async () => {
+  const [preview, preference, styles] = await Promise.all([
     readFile(projectFile('app/components/image-preview.tsx'), 'utf8'),
+    readFile(projectFile('app/components/image-preview-preference.tsx'), 'utf8'),
     readFile(projectFile('app/globals.css'), 'utf8'),
   ]);
 
   assert.match(preview, /useDefaultPreviewMode/);
   assert.match(preview, /useState<PreviewMode \| null>\(null\)/);
+  assert.match(preference, /let fallbackMode: PreviewMode = 'fit'/);
+  assert.match(preference, /return saved === 'actual' \? 'actual' : 'fit'/);
+  assert.match(preference, /useSyncExternalStore\(subscribe, readMode, \(\): PreviewMode => 'fit'\)/);
   assert.match(preview, /aria-label="图片显示模式"/);
   assert.match(preview, />100% 查看</);
   assert.match(preview, />完整显示</);
@@ -224,7 +297,7 @@ test('image previews retain local zoom and rotation', async () => {
 test('current editors announce results and use explicit button behavior', async () => {
   for (const file of ['app/prompts/prompt-editor.tsx', 'app/knowledge/knowledge-workbench.tsx']) {
     const source = await readFile(projectFile(file), 'utf8');
-    assert.match(source, /role=\{messageIsError \? 'alert' : 'status'\}/);
+    assert.match(source, /<ToastFeedback[^>]*tone=\{messageIsError \? 'error' : 'success'\}/);
     assert.doesNotMatch(source, /<button(?![^>]*type=)[^>]*onClick=/);
   }
 });
@@ -266,6 +339,6 @@ test('the unified knowledge base exposes visual and copy modules with accessible
   assert.match(workbench, /htmlFor="knowledge-image"/);
   assert.match(workbench, /PROMPT_ONLY/);
   assert.match(workbench, /IMAGE_AND_PROMPT/);
-  assert.match(workbench, /role=\{messageIsError \? 'alert' : 'status'\}/);
+  assert.match(workbench, /<ToastFeedback[^>]*tone=\{messageIsError \? 'error' : 'success'\}/);
   assert.doesNotMatch(workbench, /<button(?![^>]*type=)[^>]*onClick=/);
 });

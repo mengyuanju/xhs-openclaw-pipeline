@@ -255,7 +255,7 @@ describe('review work item operations', () => {
       const batch = createBatch(store, '驳回原因批次');
       const reviewer = await createUser(store, {
         username: 'reason-reviewer',
-        displayName: '原因审核员',
+        displayName: '原因质检',
         roles: ['QUERY_REVIEWER'],
       });
       store.seedReviewWorkItems(ADMIN, { reviewType: 'QUERY', importBatchId: batch.id });

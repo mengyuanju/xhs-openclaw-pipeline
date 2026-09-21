@@ -185,10 +185,13 @@ export function createCodexRuntime({ databasePath = codexRuntimePath(), pollMs =
       });
     },
     reset() { transaction((db) => { db.prepare('DELETE FROM pause WHERE id = 1').run(); db.prepare('DELETE FROM model_capacity').run(); }); },
-    async run(operation, { image = false, signal, waitMs = 600_000, model } = {}) {
+    async run(operation, { image = false, signal, waitMs = null, model } = {}) {
       const id = randomUUID();
       const selectedModel = model ? modelKey(model) : null;
-      const deadline = Date.now() + waitMs;
+      if (waitMs !== null && (!Number.isFinite(waitMs) || waitMs < 0)) {
+        throw new RangeError('waitMs must be null or a non-negative number');
+      }
+      const deadline = waitMs === null ? null : Date.now() + waitMs;
       let probeClaimed = false;
       while (true) {
         signal?.throwIfAborted();
@@ -211,7 +214,7 @@ export function createCodexRuntime({ databasePath = codexRuntimePath(), pollMs =
           return true;
         });
         if (acquired) break;
-        if (Date.now() >= deadline) throw codexFailure({ message: 'local concurrency queue timed out' }, 'CODEX_QUEUE_TIMEOUT');
+        if (deadline !== null && Date.now() >= deadline) throw codexFailure({ message: 'local concurrency queue timed out' }, 'CODEX_QUEUE_TIMEOUT');
         await sleep(pollMs, undefined, { signal });
       }
       try {

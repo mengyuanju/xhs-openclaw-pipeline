@@ -41,13 +41,14 @@ async function fixture(t, scenario) {
     },
   });
 }
-for (const scenario of ['normal', 'terminal-only']) test(`native image evidence is correlated and deduplicated: ${scenario}`, async t => {
+for (const scenario of ['normal', 'terminal-only', 'capacity-recovered', 'capacity-same-id']) test(`native image evidence is correlated and deduplicated: ${scenario}`, async t => {
   const result = await fixture(t, scenario);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.error, undefined);
   const parsed = parseCodexOutput(result.stdout, { requireText: false });
   assert.deepEqual(parsed.images, [{ id: 'native', path: '/generated/native.png' }]);
   assert.equal(parsed.reconnectCount, 1);
+  assert.equal(parsed.recoveredTransientCount, scenario.startsWith('capacity-') ? scenario === 'capacity-recovered' ? 2 : 1 : 0);
 });
 test('terminal image errors preserve retry and quota categories', async t => {
   const failed = await fixture(t, 'failed');

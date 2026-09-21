@@ -72,9 +72,9 @@ export async function exportDatabase(config, outputRoot = join(SERVER_ROOT, 'bac
 }
 
 export async function main() {
-  const options = parseOptions(process.argv.slice(2), ['out', 'help']);
-  if (options.help) { console.log('npm run db:export -- [--out=FOLDER]'); return; }
-  const config = loadConfiguration();
+  const options = parseOptions(process.argv.slice(2), ['out', 'environment', 'help']);
+  if (options.help) { console.log('npm run db:export -- [--out=FOLDER] [--environment=development|production]'); return; }
+  const config = loadConfiguration({ profile: options.environment });
   try {
     console.log(`Exporting ${config.display} (read-only snapshot)…`);
     console.log(JSON.stringify(await exportDatabase(config, options.out), null, 2));

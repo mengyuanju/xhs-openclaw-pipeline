@@ -10,6 +10,7 @@ import { prepareImageArtifacts } from '../src/image-artifacts.mjs';
 test('image options reject unsupported formats, alpha loss and untrusted configuration fields', () => {
   assert.equal(normalizeImageSettings({ format: 'jpg' }).format, 'JPEG');
   assert.throws(() => normalizeImageSettings({ format: 'SVG' }), /format/);
+  assert.throws(() => normalizeImageSettings({ format: 'TIFF' }), /format/);
   assert.throws(() => normalizeImageSettings({ format: 'JPEG', background: 'TRANSPARENT' }), /JPEG/);
   assert.throws(() => normalizeImageSettings({ backgroundColor: 'url(secret)' }), /backgroundColor/);
   assert.throws(() => normalizeImageSettings({ quality: 101 }), /quality/);
@@ -20,11 +21,11 @@ test('image options reject unsupported formats, alpha loss and untrusted configu
   assert.equal(custom.imageShare, 65);
 });
 
-test('all six formats produce actual encoded delivery and a preview decoded from delivery; source alpha survives', async t => {
+test('all supported formats produce actual encoded delivery and a preview decoded from delivery; source alpha survives', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'image-options-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const source = await sharp({ create: { width: 24, height: 32, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).png().toBuffer();
-  for (const [format, detected] of Object.entries({ PNG: 'png', JPEG: 'jpeg', WEBP: 'webp', AVIF: 'heif', TIFF: 'tiff', GIF: 'gif' })) {
+  for (const [format, detected] of Object.entries({ PNG: 'png', JPEG: 'jpeg', WEBP: 'webp', AVIF: 'heif', GIF: 'gif' })) {
     const result = await prepareImageArtifacts({ source, outputDir: directory, file: '01-hero.png', settings: { format, backgroundColor: '#29aabb' } });
     const delivery = await readFile(join(directory, result.deliveryFile));
     assert.equal((await sharp(delivery).metadata()).format, detected);
@@ -38,4 +39,26 @@ test('all six formats produce actual encoded delivery and a preview decoded from
   }
   const result = await prepareImageArtifacts({ source, outputDir: directory, file: '01-hero.png', settings: { format: 'PNG', background: 'TRANSPARENT' } });
   assert.equal(result.transparency.delivery, true);
+});
+
+test('delivery-only SVG overlay keeps the editable source clean', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'image-options-overlay-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const source = await sharp({
+    create: { width: 24, height: 32, channels: 4, background: '#ffffff' },
+  }).png().toBuffer();
+  const overlay = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="32"><rect x="18" y="26" width="4" height="4" fill="#68744A"/></svg>';
+  const result = await prepareImageArtifacts({
+    source,
+    outputDir: directory,
+    file: '01-hero.png',
+    settings: { format: 'PNG', background: 'SOLID' },
+    deliveryOverlaySvg: overlay,
+  });
+
+  const clean = await sharp(join(directory, result.sourceFile)).ensureAlpha().raw().toBuffer();
+  const delivery = await sharp(join(directory, result.file)).ensureAlpha().raw().toBuffer();
+  const offset = (27 * 24 + 19) * 4;
+  assert.deepEqual([...clean.subarray(offset, offset + 3)], [255, 255, 255]);
+  assert.deepEqual([...delivery.subarray(offset, offset + 3)], [104, 116, 74]);
 });

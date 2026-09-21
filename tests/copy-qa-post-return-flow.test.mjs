@@ -1,0 +1,95 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import test from 'node:test';
+
+import { buildCopyQaBatchReturnPayload } from '../src/copy-qa-batch-return.mjs';
+
+const returnedId = '71717171-7171-4717-8717-717171717171';
+const freezeId = '81818181-8181-4818-8818-818181818181';
+
+test('a returned public item remains the trigger for a freshly previewed batch upgrade', () => {
+  const payload = buildCopyQaBatchReturnPayload({
+    freezePublicId: freezeId,
+    triggerSamplingItemId: returnedId,
+    preview: {
+      confirmedCount: 3,
+      items: [
+        { id: returnedId, status: 'RETURNED' },
+        { id: '72727272-7272-4727-8727-727272727272', status: 'PENDING' },
+        { id: '73737373-7373-4737-8737-737373737373', status: 'NOT_SELECTED' },
+      ],
+    },
+    reasonCodes: ['FACT_ERROR'],
+    note: '同批内容存在系统性事实问题',
+    requestId: '91919191-9191-4919-8919-919191919191',
+  });
+
+  assert.equal(payload.freezePublicId, freezeId);
+  assert.equal(payload.triggerSamplingItemId, returnedId);
+  assert.deepEqual(payload.itemIds, [
+    returnedId,
+    '72727272-7272-4727-8727-727272727272',
+    '73737373-7373-4737-8737-737373737373',
+  ]);
+  assert.equal(payload.confirmedCount, 3);
+});
+
+test('the single-return success state offers release-rest and batch-upgrade branches', async () => {
+  const source = await readFile(new URL('../app/copy-qa/copy-qa-workbench.tsx', import.meta.url), 'utf8');
+  assert.match(source, /setReturnItem\(\{ \.\.\.returned, status: 'RETURNED' \}\)[\s\S]*setReturnCompleted\(true\)/u);
+  assert.match(source, /放行同批其余/u);
+  assert.match(source, /升级整批打回/u);
+  assert.match(source, /beginBatchReturn\(returnItem,[\s\S]*reasonCodes: returnReasons[\s\S]*note: returnNote/u);
+  assert.match(source, /triggerSamplingItemId: batchTriggerItem\.id/u);
+  assert.doesNotMatch(source, /triggerSamplingItemId: selectedItems\[0\]\.id/u);
+});
+
+test('mandatory recheck actions explain their dedicated gate before image generation', async () => {
+  const source = await readFile(new URL('../app/copy-qa/copy-qa-workbench.tsx', import.meta.url), 'utf8');
+
+  assert.match(source, /const mandatoryRecheck = item\.sampleKind === 'MANDATORY_RECHECK'/u);
+  assert.match(source, /title: mandatoryRecheck \? '确认返工稿通过强制复检？' : '确认当前最终稿通过抽检？'/u);
+  assert.match(source, /返工稿已按最终 3 分记录；通过强制复检后才会进入待生图队列/u);
+  assert.match(source, /confirmLabel: mandatoryRecheck \? '(?:确认)?通过强制复检' : '确认通过'/u);
+  assert.match(source, /已通过强制复检并进入待生图队列/u);
+  assert.match(source, /未通过强制复检[\s\S]{0,120}再次进入强制复检，通过前不会进入待生图队列/u);
+});
+
+test('copy QA visibly separates one-time sampling from mandatory rechecks and explains the retry state loop', async () => {
+  const source = await readFile(new URL('../app/copy-qa/copy-qa-workbench.tsx', import.meta.url), 'utf8');
+
+  assert.match(source, /type CopyQaKindFilter = 'ALL' \| 'RANDOM' \| 'MANDATORY_RECHECK'/u);
+  assert.match(source, /<SelectItem value="RANDOM">一次抽检<\/SelectItem><SelectItem value="MANDATORY_RECHECK">强制复检<\/SelectItem>/u);
+  assert.match(source, /一次抽检对每个入选版本最多 1 次；强制复检当前不设总次数上限/u);
+  assert.match(source, /打回 → 修改 → 新强制复检/u);
+  assert.match(source, /旧的待检项会变为“旧版已失效”/u);
+});
+
+test('copy QA result filter keeps its longest option on one line', async () => {
+  const [source, styles] = await Promise.all([
+    readFile(new URL('../app/copy-qa/copy-qa-workbench.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../app/copy-qa/copy-qa.module.css', import.meta.url), 'utf8'),
+  ]);
+
+  assert.equal(source.match(/<SelectTrigger className=\{styles\.filterSelect\}>/gu)?.length, 1);
+  assert.match(styles, /\.filterSelect\s*\{[^}]*min-width:\s*128px;/su);
+});
+
+test('copy QA detail compares final copy and image planning in responsive columns', async () => {
+  const [source, styles] = await Promise.all([
+    readFile(new URL('../app/copy-qa/copy-qa-workbench.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../app/copy-qa/copy-qa.module.css', import.meta.url), 'utf8'),
+  ]);
+
+  assert.match(source, /className=\{styles\.comparison\} aria-label="最终文案与图片文案规划对照"/u);
+  assert.match(styles, /\.comparison\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*\.95fr\)\s+minmax\(0,\s*1\.05fr\)/su);
+  assert.match(styles, /@media \(max-width:\s*900px\)[\s\S]*?\.comparison\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/u);
+});
+
+test('the local E2E fixture preserves a returned trigger while upgrading its full frozen scope', async () => {
+  const source = await readFile(new URL('./fixtures/modular-workflow-e2e.mjs', import.meta.url), 'utf8');
+  assert.match(source, /canReturnBatch: \['PENDING', 'RETURNED'\]\.includes\(item\.status\)/u);
+  assert.match(source, /\['PENDING', 'RETURNED', 'PASSED', 'NOT_SELECTED'\]\.includes\(item\.status\)/u);
+  assert.match(source, /if \(item\.id !== input\.triggerSamplingItemId\) item\.status = 'BATCH_AFFECTED'/u);
+  assert.match(source, /else if \(item\.status !== 'RETURNED'\) item\.status = 'RETURNED'/u);
+});

@@ -24,14 +24,17 @@ test('production settings route and page expose validated repair and disclosure 
   assert.match(route, /export async function PATCH/);
   assert.match(route, /\.strict\(\)/);
   assert.match(route, /qualityRepairMaxAttempts/);
+  assert.match(route, /imageEditRepairMaxAttempts:\s*z\.number\(\)\.int\(\)\.min\(0\)\.max\(2\)/u);
   assert.match(route, /aiDisclosureEnabled/);
   assert.match(page, /<h1 className="sr-only">生产配置<\/h1>/);
   assert.match(form, /最多修复次数/);
+  assert.match(form, /图片模型融合方式只调用一次图片编辑模型/);
+  assert.match(form, /imageEditRepairMaxAttempts/);
   assert.match(form, /触发分数/);
   assert.match(form, /目标分数/);
   assert.match(form, /AI生成标识/);
   assert.match(form, /fetch|apiRequest/);
-  assert.match(form, /aria-live="polite"/);
+  assert.match(form, /<ToastFeedback id="production-settings-feedback"/u);
   for (const label of ['生成与模型', '质量与审核', '图片与输出', '兼容与高级']) {
     assert.match(form, new RegExp(label, 'u'));
   }
@@ -43,7 +46,9 @@ test('production settings route and page expose validated repair and disclosure 
   assert.match(form, /onDirtyChange=\{reportHumanQualityDirty\}/u);
   assert.match(form, /onDirtyChange=\{reportLayoutCatalogDirty\}/u);
   assert.match(central, /SettingsWorkspace/u);
-  assert.match(central, /'layoutCatalog', 'layoutPresets', 'humanQualityReasons'/u);
+  assert.match(central, /'layoutCatalog', 'layoutPresets', 'humanQualityReasons', 'imageEditRepairMaxAttempts'/u);
+  assert.match(central, /图片模型融合方式只调用一次图片编辑模型/u);
+  assert.match(central, /imageEditRepairMaxAttempts/u);
   assert.match(central, /!production \?[^]*编辑器已停用/u);
   assert.match(central, /value\.modelApi\s*=\s*\{\s*\.\.\.value\.modelApi,\s*\.\.\.normalizeWebSearchSettings\(latestProduction\.modelApi \?\? \{\}\),?\s*\}/u);
   assert.doesNotMatch(central, /key=\{`(?:layout-presets|production-settings)-\$\{production/u);

@@ -19,10 +19,10 @@ test('task creation assignment fields preserve server authority for every role',
   }), { assignedToUserId: null, assignedToAccountId: null });
   assert.throws(() => createAssignmentFields({
     role: 'ADMIN', mode: CREATE_ASSIGNMENT_MODES.MANUAL, assigneeUserId: null,
-  }), /请选择有效的作业员/u);
+  }), /请选择有效的标注/u);
   assert.throws(() => createAssignmentFields({
     role: 'ADMIN', mode: CREATE_ASSIGNMENT_MODES.MANUAL, assigneeUserId: 'alice', assigneeAccountId: null,
-  }), /作业员账号/u);
+  }), /标注账号/u);
   assert.throws(() => createAssignmentFields({
     role: 'ADMIN', mode: CREATE_ASSIGNMENT_MODES.SELF, assigneeUserId: 'admin',
   }), /分配方式/u);

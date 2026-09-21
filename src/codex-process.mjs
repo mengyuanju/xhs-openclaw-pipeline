@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { codexFailure } from './codex-protocol.mjs';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join, delimiter, isAbsolute } from 'node:path';
 
 const ENV_KEYS = new Set(['PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'USERPROFILE',
@@ -11,6 +11,22 @@ export function codexChildEnvironment(environment = process.env, proxyUrl) {
   const env = Object.fromEntries(Object.entries(environment).filter(([key]) => ENV_KEYS.has(key.toUpperCase())));
   if (proxyUrl) Object.assign(env, { HTTP_PROXY: proxyUrl, HTTPS_PROXY: proxyUrl, http_proxy: proxyUrl, https_proxy: proxyUrl });
   return env;
+}
+
+function desktopCodexCandidates(localAppData) {
+  if (!localAppData) return [];
+  const root = join(localAppData, 'OpenAI', 'Codex', 'bin');
+  try {
+    return readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && /^[a-f0-9]{16,64}$/iu.test(entry.name))
+      .map((entry) => join(root, entry.name, 'codex.exe'))
+      .filter((path) => existsSync(path))
+      .map((path) => ({ path, modified: statSync(path).mtimeMs }))
+      .sort((left, right) => right.modified - left.modified || right.path.localeCompare(left.path))
+      .map((item) => item.path);
+  } catch {
+    return [];
+  }
 }
 
 export function resolveCodexExecutable(environment = process.env) {
@@ -28,6 +44,7 @@ export function resolveCodexExecutable(environment = process.env) {
     if (environment.APPDATA) candidates.push(join(environment.APPDATA, 'npm', 'node_modules', '@openai', 'codex',
       'node_modules', '@openai', `codex-win32-${arch}`, 'vendor', target, 'bin', 'codex.exe'));
     if (environment.LOCALAPPDATA) candidates.push(join(environment.LOCALAPPDATA, 'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe'));
+    candidates.push(...desktopCodexCandidates(environment.LOCALAPPDATA));
   }
   const pathValue = Object.entries(environment).find(([key]) => key.toUpperCase() === 'PATH')?.[1] ?? '';
   for (const directory of pathValue.split(delimiter).filter(Boolean)) {

@@ -9,7 +9,7 @@ export function QualitySettingsOverview() {
         <span className="section-kicker">Scoring map</span>
         <h2 id="quality-systems-heading">先分清两套评分</h2>
       </div>
-      <p>自动质检负责发现问题，人工评分决定是否放行；两套分值不会互相覆盖。</p>
+      <p>自动质检负责发现问题，人工评分记录审核判断；任务仍需完成适用的抽检或强制复检，两套分值不会互相覆盖。</p>
     </div>
     <div className="quality-system-grid">
       <article className="quality-system-card">
@@ -19,7 +19,7 @@ export function QualitySettingsOverview() {
       </article>
       <article className="quality-system-card" data-human>
         <div className="quality-system-card-head"><UserRoundCheck size={18} aria-hidden="true" /><span>人工审核评分</span><strong>1 / 2 / 2.5 / 3</strong></div>
-        <p>2.5 分和 3 分可以放行；低于 3 分时，扣分原因或评分说明至少填写一项。下方只配置展示文案，不改变固定工作流。</p>
+        <p>文案机器原稿只有 3 分可直接提交；2 分和 2.5 分须实际修改，人工确认达标后最终稿记录为 3 分。图片初审不评分，图片质检为 2.5 分或 3 分时可通过。</p>
       </article>
     </div>
   </section>;

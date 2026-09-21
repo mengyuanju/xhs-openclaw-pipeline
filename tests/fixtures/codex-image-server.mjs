@@ -34,7 +34,17 @@ createInterface({ input: process.stdin }).on('line', line => {
     send({ method: 'item/completed', params: { threadId: 'another-thread', turnId, item: { ...image, id: 'foreign' } } });
     send({ method: 'item/completed', params: { threadId, turnId: 'another-turn', item: { ...image, id: 'foreign-turn' } } });
     send({ method: 'error', params: { threadId, turnId, willRetry: true, error: { message: 'temporary reconnect' } } });
-    if (scenario !== 'terminal-only') send({ method: 'item/completed', params: { threadId, turnId, item: image } });
+    if (['capacity-recovered', 'capacity-same-id'].includes(scenario)) {
+      send({ method: 'error', params: { threadId, turnId, willRetry: false,
+        error: { message: 'Selected model is at capacity. Please try a different model.' } } });
+      send({ method: 'item/completed', params: { threadId, turnId, item: {
+        ...image, id: scenario === 'capacity-same-id' ? image.id : 'failed-native', status: 'failed', savedPath: undefined,
+        failure: { message: 'Selected model is at capacity. Please try a different model.' },
+      } } });
+    }
+    if (!['terminal-only', 'capacity-same-id'].includes(scenario)) {
+      send({ method: 'item/completed', params: { threadId, turnId, item: image } });
+    }
     send({ method: 'item/completed', params: { threadId, turnId,
       item: { type: 'agentMessage', id: 'answer', text: '{"rawText":"Generated /forged/location.png"}' } } });
     send({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: scenario === 'failed' ? 'failed' : 'completed',

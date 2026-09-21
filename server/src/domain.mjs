@@ -4,10 +4,13 @@ export const TASK_STATES = Object.freeze([
   'COPY_RUNNING',
   'COPY_REVIEW_PENDING',
   'COPY_FAILED',
+  'COPY_QC_PENDING',
   'IMAGE_QUEUED',
   'IMAGE_RUNNING',
   'IMAGE_FAILED',
   'MANUAL_ARCHIVE',
+  'IMAGE_QC_PENDING',
+  'IMAGE_REWORK_PENDING',
   'REVIEWED',
   'CANCELLED',
 ]);
@@ -158,7 +161,7 @@ function normalizedReviewTextList(value, field, { min, max, itemMax }) {
   return value.map((item, index) => normalizedReviewText(item, `${field}[${index}]`, { max: itemMax }));
 }
 
-export function normalizeCopyReviewImagePlan(value) {
+export function normalizeCopyReviewImagePlan(value, { allowBulletOverflow = false } = {}) {
   if (!Array.isArray(value) || value.length < 3 || value.length > 5) {
     throw new RangeError('copy review imagePlan must contain between 3 and 5 items');
   }
@@ -173,11 +176,11 @@ export function normalizeCopyReviewImagePlan(value) {
     return {
       kind,
       headline: normalizedReviewText(rawItem.headline, `copy review imagePlan[${index}].headline`, { max: 18 }),
-      subtitle: normalizedReviewText(rawItem.subtitle, `copy review imagePlan[${index}].subtitle`, { max: 30 }),
+      subtitle: normalizedReviewText(rawItem.subtitle, `copy review imagePlan[${index}].subtitle`, { min: 0, max: 30 }),
       bullets: normalizedReviewTextList(rawItem.bullets, `copy review imagePlan[${index}].bullets`, {
         min: 2,
         max: 5,
-        itemMax: kind === 'checklist' ? 40 : 30,
+        itemMax: allowBulletOverflow ? 200 : kind === 'checklist' ? 40 : 30,
       }),
       prompt: normalizedReviewText(rawItem.prompt, `copy review imagePlan[${index}].prompt`, {
         min: 10,
@@ -192,7 +195,7 @@ export function normalizeCopyReviewImagePlan(value) {
   return imagePlan;
 }
 
-export function normalizeCopyReviewEdits(value) {
+export function normalizeCopyReviewEdits(value, { allowImagePlanBulletOverflow = false } = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new TypeError('copy review edits must be an object');
   }
@@ -208,7 +211,9 @@ export function normalizeCopyReviewEdits(value) {
   if (tags.some((tag) => !/^#[^#\s]+$/u.test(tag)) || new Set(tags).size !== tags.length) {
     throw new TypeError('copy review tags must be unique hashtags without whitespace');
   }
-  const imagePlan = normalizeCopyReviewImagePlan(value.imagePlan);
+  const imagePlan = normalizeCopyReviewImagePlan(value.imagePlan, {
+    allowBulletOverflow: allowImagePlanBulletOverflow,
+  });
   return {
     copy: {
       title: normalizedReviewText(copy.title, 'copy review title', { max: 25 }),

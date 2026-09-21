@@ -1,5 +1,5 @@
 import { buildGovernedImageTaskPrompt, preserveImageSystemPrompt } from './image-prompt.mjs';
-import { withPromptRuntime, promptRuntimeSnapshot, createPromptRuntime } from './prompt-runtime.mjs';
+import { withPromptRuntime, promptExecutionSnapshot, createPromptRuntime } from './prompt-runtime.mjs';
 import { prepareImageArtifacts, publicImageArtifacts, IMAGE_ARTIFACT_FILE } from './image-artifacts.mjs';
 import { normalizeImageSettings } from '../server/src/image-options.mjs';
 import { preparePageLayouts } from './image-layout-controls.mjs';
@@ -16,6 +16,7 @@ import {
   createImageAlignmentValidator,
 } from './image-alignment.mjs';
 import { renderDeliveryImages } from './images.mjs';
+import { resolveAiDisclosureVisualStyle } from './ai-disclosure-badge.mjs';
 import { parsePostOutput } from './post-contract.mjs';
 import {
   normalizeProductionSettings,
@@ -367,6 +368,9 @@ function normalizedStoredResult(value, runId) {
       model: image.model === null ? null : boundedText(image.model, `images[${index}].model`, 1, 200),
       generationAttempts: Number.isInteger(image.generationAttempts) ? image.generationAttempts : null,
       alignmentPassed: typeof image.alignmentPassed === 'boolean' ? image.alignmentPassed : null,
+      ...(image.aiDisclosureStyle === undefined ? {} : {
+        aiDisclosureStyle: publicAiDisclosureStyle(image.aiDisclosureStyle, `images[${index}].aiDisclosureStyle`),
+      }),
       layout: image.layout === null || image.layout === undefined
         ? null
         : publicLayout(image.layout, `images[${index}].layout`),
@@ -532,6 +536,25 @@ function normalizedEvidenceTextList(value, { maximum, itemMaximum }) {
     .slice(0, maximum);
 }
 
+function normalizedRiskAssessments(value) {
+  if (!Array.isArray(value)) return undefined;
+  return value.slice(0, 10).flatMap((entry) => {
+    if (!isRecord(entry)) return [];
+    const severity = ['INFO', 'WARNING', 'BLOCKING'].includes(entry.severity)
+      ? entry.severity : null;
+    const status = ['MITIGATED', 'UNRESOLVED'].includes(entry.status)
+      ? entry.status : null;
+    const message = boundedOptionalText(entry.message, 200);
+    if (!severity || !status || !message) return [];
+    return [{
+      severity,
+      status,
+      message,
+      mitigation: boundedOptionalText(entry.mitigation, 300),
+    }];
+  });
+}
+
 /** Keep approved copy evidence bounded and inert before it reaches the quality prompt. */
 export function normalizeStandaloneQualityEvidence(source) {
   const root = isRecord(source?.qualityEvidence) ? source.qualityEvidence : source;
@@ -557,6 +580,8 @@ export function normalizeStandaloneQualityEvidence(source) {
     metadata: {
       sources: allowedMetadataSources,
       expressionReferences: normalizedEvidenceTextList(metadata.expressionReferences, { maximum: 5, itemMaximum: 500 }),
+      ...(normalizedRiskAssessments(metadata.riskAssessments) === undefined
+        ? {} : { riskAssessments: normalizedRiskAssessments(metadata.riskAssessments) }),
       riskFlags: normalizedEvidenceTextList(metadata.riskFlags, { maximum: 10, itemMaximum: 200 }),
       fabricatedExperience: metadata.fabricatedExperience === true,
       unverifiedClaims: normalizedEvidenceTextList(metadata.unverifiedClaims, { maximum: 10, itemMaximum: 300 }),
@@ -639,7 +664,7 @@ function publicLayout(page, field = 'layout') {
     visualSubject: boundedText(page.visualSubject, `${field}.visualSubject`, 1, 1000),
     allowedVisibleText: {
       headline: boundedText(page.allowedVisibleText.headline, `${field}.allowedVisibleText.headline`, 1, 18),
-      subtitle: boundedText(page.allowedVisibleText.subtitle, `${field}.allowedVisibleText.subtitle`, 1, 30),
+      subtitle: boundedText(page.allowedVisibleText.subtitle, `${field}.allowedVisibleText.subtitle`, 0, 30),
       bullets: publicTextList(page.allowedVisibleText.bullets, `${field}.allowedVisibleText.bullets`, {
         minimum: 2,
         maximum: 5,
@@ -735,6 +760,39 @@ function publicQualityDetails(qc) {
   };
 }
 
+function publicAiDisclosureStyle(value, field = 'aiDisclosureStyle') {
+  if (value === null || value === undefined) return null;
+  if (!isRecord(value) || value.version !== 1
+    || typeof value.text !== 'string' || !/^[\p{L}\p{N}_-]{1,12}$/u.test(value.text)
+    || typeof value.color !== 'string' || !/^#[0-9a-f]{6}$/iu.test(value.color)
+    || !['VISUAL_PLAN', 'FALLBACK'].includes(value.colorSource)
+    || !['disclosure', 'accent', 'fallback'].includes(value.colorRole)
+    || value.fontSize !== 20 || value.fontWeight !== 600
+    || value.position !== 'bottom-right' || value.variant !== 'outline-pill'
+    || !Number.isInteger(value.width) || value.width < 120 || value.width > 300
+    || value.height !== 36 || value.margin !== 24 || value.strokeWidth !== 1.5
+    || value.x !== 1086 - 24 - value.width || value.y !== 1448 - 24 - 36) {
+    throw new TypeError(`${field} is invalid`);
+  }
+  return {
+    version: 1,
+    text: value.text,
+    color: value.color.toUpperCase(),
+    colorSource: value.colorSource,
+    colorRole: value.colorRole,
+    fontSize: 20,
+    fontWeight: 600,
+    position: 'bottom-right',
+    variant: 'outline-pill',
+    width: value.width,
+    height: 36,
+    margin: 24,
+    strokeWidth: 1.5,
+    x: value.x,
+    y: value.y,
+  };
+}
+
 function publicResult({ runId, mode, images, qc, visualPlan, planning, post, inputPost = post }) {
   const blocked = qc?.disposition === 'blocked'
     || qc?.issues?.some((issue) => issue?.severity === 'blocking');
@@ -756,6 +814,7 @@ function publicResult({ runId, mode, images, qc, visualPlan, planning, post, inp
       model: image.model ?? null,
       generationAttempts: image.generationAttempts ?? null,
       alignmentPassed: image.alignment?.passed ?? null,
+      ...(image.aiDisclosureStyle ? { aiDisclosureStyle: publicAiDisclosureStyle(image.aiDisclosureStyle) } : {}),
       layout: publicLayout(visualPlan.pages[index], `visualPlan.pages[${index}]`),
     })),
     visualPlan: {
@@ -904,7 +963,7 @@ async function generateStandaloneImagesInContext({
       assessment: { schemaVersion: 1, ...recovery.assessed.assessment },
       model: recovery.assessed.model,
     });
-    await writeJsonAtomic(join(outputDir, 'prompt-runtime.json'), promptRuntimeSnapshot());
+    await writeJsonAtomic(join(outputDir, 'prompt-runtime.json'), promptExecutionSnapshot());
     const { modelApi: _transportOnly, ...frozenBusinessSettings } = normalizeProductionSettings(runtime.productionSettings ?? {});
     await writeJsonAtomic(join(outputDir, 'image-execution-config.json'), { schemaVersion: 1,
       productionSettings: frozenBusinessSettings, imageSystemPrompt: runtime.imageSystemPrompt ?? '', visualReference: runtime.visualReference ?? null });
@@ -998,6 +1057,7 @@ async function generateStandaloneImagesInContext({
         layoutDirections: visualPlan.pages.map((page) => page.layoutDirection),
         layoutTemplates: visualPlan.pages.map((page) => page.layoutTemplate),
         complianceDisclosure,
+        disclosureVisualStyle: resolveAiDisclosureVisualStyle(visualPlan),
         textRenderingMode: 'model-native',
         validateImage: validator,
         recoveryImages: recovery?.images ?? [],
@@ -1454,7 +1514,7 @@ export async function readStandaloneImageFile({ outputRoot, runId: rawRunId, fil
   if (!relation || relation.startsWith('..')) throw new Error('standalone image path escaped the run');
   const content = await readFile(path);
   if (content.byteLength > IMAGE_MAX_BYTES) throw new Error('standalone image file is too large');
-  const extensions = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp', avif: 'image/avif', tiff: 'image/tiff', gif: 'image/gif' };
+  const extensions = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp', avif: 'image/avif', gif: 'image/gif' };
   return { content, file, mediaType: extensions[file.split('.').at(-1)] };
 }
 

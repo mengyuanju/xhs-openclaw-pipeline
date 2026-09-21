@@ -25,7 +25,7 @@ export function ImageHistoryCompare({ runs, currentRunId, assets, onRestore }: {
     <div className="field"><label htmlFor={id}>查看历史版本</label>
       <Select value={run.id} onValueChange={setSelected}>
         <SelectTrigger id={id} aria-label="历史图片版本"><SelectValue /></SelectTrigger>
-        <SelectContent>{previous.map((item, index) => <SelectItem key={item.id} value={item.id}>历史 {index + 1} · {item.result?.imageSettings?.format ?? 'PNG'} · {item.id.slice(0, 8)}</SelectItem>)}</SelectContent>
+        <SelectContent>{previous.map((item, index) => <SelectItem key={item.id} value={item.id}>历史 {index + 1} · {({ SVG_DISCLOSURE: '程序生成标识', TEXT: '模型生成标识', COMPOSITE: '实体合成（历史）', AI_FUSION: '真实产品替换', AI_FULL: '整图修改（历史）', AI_LOCAL: '局部修改', RESTORE: '恢复版本', REGENERATE: '重新生成', REPROCESS: '格式处理' } as Record<string,string>)[item.result?.processing?.type ?? ''] ?? '原始生成'} · {item.id.slice(0, 8)}</SelectItem>)}</SelectContent>
       </Select>
     </div>
     <div className="distributed-asset-grid">{run.result?.images?.map((image, index) => {

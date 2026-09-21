@@ -33,7 +33,7 @@ test('automatic assignment pool is explicit, versioned and built from shared con
   assert.doesNotMatch(userManager, /autoAssignment|assignmentLimit/u);
 
   assert.match(manager, /\/api\/control-plane\/v1\/auto-assignment\/settings/u);
-  assert.match(manager, /method: 'PATCH'[\s\S]*enabled[\s\S]*expectedVersion: initialSnapshot\.settings\.version/u);
+  assert.match(manager, /method: 'PATCH'[\s\S]*enabled[\s\S]*mode[\s\S]*expectedVersion: initialSnapshot\.settings\.version/u);
   const addStart = manager.indexOf("if (editor.mode === 'add')");
   const editStart = manager.indexOf('const worker = editorWorker;', addStart);
   const statusStart = manager.indexOf('async function updateWorkerStatus', editStart);
@@ -54,7 +54,7 @@ test('automatic assignment pool is explicit, versioned and built from shared con
   assert.match(manager, /method: 'DELETE'[\s\S]*expectedVersion: worker\.version/u);
 });
 
-test('automatic assignment pool exposes safe pause and removal semantics without a run-now action', async () => {
+test('automatic assignment pool lets administrators choose continuous or one-shot fixed quantities', async () => {
   const manager = await source('app/users/auto-assignment-pool-manager.tsx');
 
   assert.match(manager, /新建用户默认不会加入自动分配池/u);
@@ -67,5 +67,24 @@ test('automatic assignment pool exposes safe pause and removal semantics without
   assert.match(manager, /停用账号不能恢复自动接单/u);
   assert.match(manager, /worker\.userRole === 'USER' && worker\.userStatus === 'ACTIVE'/u);
   assert.match(manager, /disabled=\{Boolean\(busy\) \|\| \(!isAccountEligible && worker\.status === 'PAUSED'\)\}/u);
-  assert.doesNotMatch(manager, /run.?now|立即补充|立即调度/iu);
+  assert.match(manager, /<SelectItem value="CONTINUOUS">持续补位<\/SelectItem>/u);
+  assert.match(manager, /<SelectItem value="FIXED_QUANTITY">定量分配<\/SelectItem>/u);
+  assert.match(manager, /系统将停止循环补位/u);
+  assert.match(manager, /完成后不会自动补位/u);
+  assert.match(manager, /\$\{workerPath\(worker\.username\)\}\/allocate/u);
+  assert.match(manager, /method: 'POST'[\s\S]*accountId: worker\.accountId,[\s\S]*expectedVersion: worker\.version/u);
+  assert.match(manager, /assignmentMode === 'FIXED_QUANTITY'[\s\S]*分配 \{allocationCount\} 条/u);
+  assert.match(manager, /fixedQuantityAssignedTotal/u);
+  assert.match(manager, /fixedQuantityAssignedToday/u);
+  assert.match(manager, /池成员累计已分配/u);
+  assert.match(manager, /当前可分配 <strong>\{autoAssignableTaskCount\}<\/strong>/u);
+  assert.match(manager, /const currentlyAllocatableCount = Math\.min\(autoAssignableTaskCount, allocationCount\)/u);
+  assert.match(manager, /共享池当前 \$\{autoAssignableTaskCount\} 条，本次最多可分配 \$\{currentlyAllocatableCount\} 条/u);
+  assert.match(manager, /今日定量已分配/u);
+  assert.match(manager, /累计 \{worker\.fixedQuantityAssignedTotal \?\? 0\} 条/u);
+  assert.match(manager, /今日已分配 \{worker\.fixedQuantityAssignedToday \?\? 0\} 条/u);
+  assert.match(manager, /initialSnapshot\.settings\.enabled && autoAssignableTaskCount === 0[\s\S]*当前没有可分配的数据/u);
+  assert.match(manager, /需人工关注的任务不在自动分配队列中/u);
+  assert.match(manager, /待新任务进入未分配的待审核队列后，即可执行定量分配/u);
+  assert.match(manager, /待新任务进入未分配的待审核队列后，系统会按配置自动补位/u);
 });

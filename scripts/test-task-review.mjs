@@ -7,6 +7,8 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import { DEFAULT_HUMAN_QUALITY_SETTINGS } from '../src/human-quality-settings.mjs';
+
 // A standalone copy of the UI: no application routes, credentials, database,
 // workers, or model clients. Every control-plane request is answered in memory.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -54,14 +56,17 @@ await write('app/page.tsx', `'use client';
 import { useState } from 'react';
 import { TaskReviewDialog } from './workbench/task-review-dialog';
 import { ConfirmDialogProvider } from '@/components/ui/confirm-dialog';
+import { TextInputDialogProvider } from '@/components/ui/text-input-dialog';
 export default function Page() {
   const [taskId, setTaskId] = useState<number | null>(null);
   const [role, setRole] = useState('USER');
-  return <ConfirmDialogProvider><main><h1>隔离审核测试 · 全部为假数据</h1>
+  return <ConfirmDialogProvider><TextInputDialogProvider><main><h1>隔离审核测试 · 全部为假数据</h1>
     <label>测试角色<select value={role} onChange={event => setRole(event.target.value)}><option>USER</option><option>REVIEWER</option><option>ADMIN</option></select></label>
     <button onClick={() => setTaskId(900001)}>打开测试任务</button>
-    <TaskReviewDialog taskId={taskId} nodeId="test-only" role={role} onOpenChange={open => { if (!open) setTaskId(null); }} onUpdated={() => {}} />
-  </main></ConfirmDialogProvider>;
+    <TaskReviewDialog taskId={taskId} nodeId="test-only" role={role}
+      currentUsername="test-reviewer" currentAccountId={77}
+      onOpenChange={open => { if (!open) setTaskId(null); }} onUpdated={() => {}} />
+  </main></TextInputDialogProvider></ConfirmDialogProvider>;
 }`);
 
 const settings = { version: 1, format: 'WEBP', quality: 73, background: 'TRANSPARENT', backgroundColor: '#123456' };
@@ -69,6 +74,7 @@ function task(state = 'COPY_REVIEW_PENDING') {
   const copy = { title: '小户型桌面整理指南', body: '从清理桌面开始，把每天使用的物品放在伸手可及的位置。分类收纳以后，给充电线留出固定通道，避免影响日常操作。'.repeat(9), tags: ['桌面整理', '收纳', '小户型'] };
   return {
     id: 900001, query: '  小户型桌面如何整理？\n保留原始需求与空格。', state, aiDisclosureEnabled: false,
+    assignedToUserId: 'test-reviewer', assignedToAccountId: 77,
     currentCopyRevisionId: 901, currentImageRunId: null, currentExecutionId: null,
     error: state === 'COPY_FAILED' ? '测试生成失败，请重试。' : null,
     copyRevisions: state === 'COPY_RUNNING' || state === 'COPY_FAILED' ? [] : [{ id: 901, revision: 1,
@@ -87,6 +93,21 @@ function withImages(value) {
     imageSettings: settings, images: [{ assetId: 910 + index, pageIndex: 1, provider: 'test-fixture' }],
   } }));
   value.assets = value.imageRuns.map((run, index) => ({ id: 910 + index, imageRunId: run.id, originalName: '假图片.svg', url: `/v1/assets/${910 + index}` }));
+  return value;
+}
+
+function asCopyRework(value, origin = 'FINAL_REWORK') {
+  value.mandatoryCopyQc = true;
+  value.mandatoryCopyQcOrigin = origin;
+  const revision = value.copyRevisions.find(item => item.id === value.currentCopyRevisionId);
+  Object.assign(revision, {
+    executionId: null,
+    revisionOrigin: origin,
+    reworkOrigin: origin,
+    reworkReasonCodes: ['FACT_OR_COMPLIANCE'],
+    reworkNote: '请核对事实后修改文案',
+    copyReworkSatisfied: false,
+  });
   return value;
 }
 
@@ -117,6 +138,7 @@ try {
   browser = await chromium.launch({ headless: true, ...(process.platform === 'win32' ? { channel: 'msedge' } : {}) });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, serviceWorkers: 'block' });
   let detail = task();
+  let qualitySettings = DEFAULT_HUMAN_QUALITY_SETTINGS;
   let failSubmission = false;
   const writes = [];
   const blocked = [];
@@ -124,10 +146,14 @@ try {
     const request = route.request();
     const requestUrl = new URL(request.url());
     if (requestUrl.origin !== url) { blocked.push(request.url()); return route.abort(); }
+    if (request.method() === 'GET' && requestUrl.pathname === '/api/human-quality-settings') {
+      return route.fulfill({ json: { data: qualitySettings } });
+    }
     if (!requestUrl.pathname.startsWith('/api/control-plane/')) return route.continue();
     if (request.method() === 'GET' && /\/assets\/91[01]$/.test(requestUrl.pathname)) return route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="400"><rect width="300" height="400" fill="#e7ded0"/><text x="25" y="70" font-size="24">TEST IMAGE</text></svg>' });
     let data;
     if (request.method() === 'GET' && /\/tasks\/900001$/.test(requestUrl.pathname)) data = detail;
+    else if (request.method() === 'GET' && requestUrl.pathname.endsWith('/image-edits')) data = [];
     else if (request.method() === 'GET' && requestUrl.pathname.endsWith('/image-capabilities')) data = { version: 1 };
     else if (request.method() === 'GET' && requestUrl.pathname.endsWith('/model-calls')) data = { items: [], total: 0 };
     else if (request.method() === 'POST' && requestUrl.pathname.endsWith('/approve-copy')) {
@@ -139,6 +165,7 @@ try {
         const revisionId = submitted.edits ? base.id + 1 : base.id;
         if (submitted.edits) detail.copyRevisions.push({
           ...base, id: revisionId, revision: base.revision + 1, executionId: null, approvedAt: null,
+          copyContentChangedFromMachine: true,
           content: { ...base.content, ...submitted.edits },
         });
         detail.currentCopyRevisionId = revisionId;
@@ -150,7 +177,8 @@ try {
           reviewerUsername: 'test-reviewer', reviewSessionId: submitted.reviewSessionId, createdAt: new Date().toISOString(),
         });
         data = detail;
-      } else data = { state: submitted.decision === 'DISCARD' ? 'CANCELLED' : 'IMAGE_QUEUED' };
+      } else data = { state: submitted.decision === 'DISCARD'
+        ? 'CANCELLED' : detail.mandatoryCopyQc ? 'COPY_QC_PENDING' : 'IMAGE_QUEUED' };
     } else if (request.method() === 'POST' && requestUrl.pathname.endsWith('/review-images')) {
       writes.push(request.postDataJSON());
       data = { state: 'REVIEWED' };
@@ -169,7 +197,7 @@ try {
     await page.goto(url);
     await page.getByLabel('测试角色').selectOption(role);
     await page.getByRole('button', { name: '打开测试任务' }).click();
-    await dialog().getByText('Query 原文', { exact: true }).waitFor();
+    await dialog().getByText('原始需求', { exact: true }).waitFor();
   }
   async function check(name, fn) {
     try { await fn(); console.log(`PASS ${name}`); }
@@ -178,10 +206,6 @@ try {
   async function rateOriginalCopy(score = 2.5) {
     await page.locator(`input[name^="copy-original-score-"][value="${score}"]`).check();
     if (score < 3) await page.locator('.human-rating-panel:not([data-edited]) .human-rating-feedback input[type="checkbox"]').first().check();
-  }
-  async function rateEditedCopy(score = 2.5) {
-    await page.locator(`input[name^="copy-edited-score-"][value="${score}"]`).check();
-    if (score < 3) await page.locator('.human-rating-panel[data-edited] .human-rating-feedback input[type="checkbox"]').first().check();
   }
   async function rateImages(score = 2.5) {
     await page.locator(`input[name^="image-score-"][value="${score}"]`).check();
@@ -197,7 +221,24 @@ try {
     assert.equal(await page.locator('[data-review-pane="copy"] .workbench-review-query-text').count(), 1);
   });
   if (!process.argv.includes('--baseline')) {
+    await check('planning is editable before scoring and source feedback remains editable after copy changes', async () => {
+      await open();
+      assert.equal(await page.locator('#review-copy-title').isEditable(), false);
+      assert.equal(await page.locator('#review-plan-headline-0').isEditable(), true);
+      await page.locator('#review-plan-headline-0').fill('评分前也能调整规划');
+      await page.locator('input[name^="copy-original-score-"][value="2"]').check();
+      assert.equal(await page.locator('#review-copy-title').isEditable(), true);
+      await page.locator('#review-copy-title').fill('先改正文再补反馈');
+      const sourceNote = page.locator('.human-rating-panel:not([data-edited]) .human-rating-note');
+      assert.equal(await sourceNote.isEditable(), true);
+      await sourceNote.fill('正文修改后的原稿反馈仍可补充');
+      assert.equal(await page.getByRole('button', { name: '保存评分，暂不提交', exact: true }).isEnabled(), true);
+      await page.getByRole('button', { name: '关闭', exact: true }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: '放弃修改并关闭', exact: true }).click();
+      await dialog().waitFor({ state: 'detached' });
+    });
     await check('desktop panes scroll independently and page edits survive switching', async () => {
+      await open();
       await page.setViewportSize({ width: 1440, height: 800 });
       await rateOriginalCopy();
       const left = page.locator('[data-review-pane="copy"]');
@@ -228,41 +269,66 @@ try {
     });
     await check('mock submit keeps all edits and original hidden settings; failure keeps the draft', async () => {
       failSubmission = true;
-      await rateEditedCopy();
-      await page.getByRole('button', { name: '审核通过并开始生图', exact: true }).click();
-      await page.getByRole('alertdialog').getByRole('button', { name: '确认放行', exact: true }).click();
+      await page.getByRole('button', { name: '审核通过并进入后续流程', exact: true }).click();
+      const ordinaryConfirmation = page.getByRole('alertdialog');
+      await ordinaryConfirmation.getByText('确认文案达标并进入后续流程？', { exact: true }).waitFor();
+      await ordinaryConfirmation.getByText(/按任务策略进入文案抽检或待生图队列/u).waitFor();
+      await ordinaryConfirmation.getByRole('button', { name: '提交审核结果', exact: true }).click();
       await page.getByText('测试提交失败，保留草稿。', { exact: true }).waitFor();
       assert.equal(await page.locator('#review-copy-title').inputValue(), '修改后的标题');
       assert.equal(writes.at(-1).edits.imagePlan[1].headline, '修改后的步骤');
       assert.deepEqual(writes.at(-1).edits.imageSettings, settings);
       assert.equal(writes.at(-1).originalScore, 2.5);
-      assert.equal(writes.at(-1).score, 2.5);
+      assert.equal(writes.at(-1).score, 3);
       assert.deepEqual(writes.at(-1).originalReasons, ['FACT_OR_COMPLIANCE']);
-      assert.deepEqual(writes.at(-1).reasons, ['FACT_OR_COMPLIANCE']);
+      assert.deepEqual(writes.at(-1).reasons, []);
       const failedReviewSessionId = writes.at(-1).reviewSessionId;
       failSubmission = false;
-      await page.getByRole('button', { name: '审核通过并开始生图', exact: true }).click();
-      await page.getByRole('alertdialog').getByRole('button', { name: '确认放行', exact: true }).click();
+      await page.getByRole('button', { name: '审核通过并进入后续流程', exact: true }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: '提交审核结果', exact: true }).click();
       await dialog().waitFor({ state: 'detached' });
       assert.equal(writes.at(-1).reviewSessionId, failedReviewSessionId);
     });
-    await check('saved 2.5 edited rating remains the effective score when reopened and approved', async () => {
+    await check('a saved edited draft preserves its original score and is recorded as final 3 when approved', async () => {
       await open();
       await rateOriginalCopy(2);
       await page.locator('#review-copy-title').fill('保存后的合格修改稿');
-      await rateEditedCopy(2.5);
-      await page.getByRole('button', { name: '保存评分，暂不放行', exact: true }).click();
+      await page.getByRole('button', { name: '保存评分，暂不提交', exact: true }).click();
       await page.getByRole('alertdialog').getByRole('button', { name: '保存待修改', exact: true }).click();
-      await page.locator('.human-rating-field legend').filter({ hasText: '当前修改稿评分' }).waitFor();
+      await page.locator('.human-rating-field legend').filter({ hasText: '机器原稿初评（保留）' }).waitFor();
       assert.equal(await page.locator('#review-copy-title').inputValue(), '保存后的合格修改稿');
-      const approve = page.getByRole('button', { name: '审核通过并开始生图', exact: true });
+      const approve = page.getByRole('button', { name: '审核通过并进入后续流程', exact: true });
       assert.equal(await approve.isEnabled(), true);
       await approve.click();
-      await page.getByRole('alertdialog').getByRole('button', { name: '确认放行', exact: true }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: '提交审核结果', exact: true }).click();
       await dialog().waitFor({ state: 'detached' });
-      assert.equal(writes.at(-1).score, 2.5);
-      assert.equal('originalScore' in writes.at(-1), false);
+      assert.equal(writes.at(-1).score, 3);
+      assert.equal(writes.at(-1).originalScore, 2);
       assert.equal('edits' in writes.at(-1), false);
+    });
+    await check('copy rework confirmation names the mandatory recheck and its image gate', async () => {
+      await open('USER', 'COPY_REVIEW_PENDING', asCopyRework);
+      await page.getByText('图文终审文案返工', { exact: true }).waitFor();
+      const submitRecheck = page.getByRole('button', { name: '提交强制复检', exact: true });
+      assert.equal(await submitRecheck.isDisabled(), true);
+      await page.locator('#review-copy-title').fill('返工后的合格标题');
+      assert.equal(await submitRecheck.isEnabled(), true);
+      await submitRecheck.click();
+      const confirmation = page.getByRole('alertdialog');
+      await confirmation.getByText('确认返工文案达标并提交强制复检？', { exact: true }).waitFor();
+      await confirmation.getByText(/系统将最终稿记录为 3 分并提交强制复检；复检通过后才会进入待生图队列/u).waitFor();
+      await confirmation.getByRole('button', { name: '提交强制复检', exact: true }).click();
+      await dialog().waitFor({ state: 'detached' });
+      assert.equal(writes.at(-1).decision, 'APPROVE');
+      assert.equal(writes.at(-1).score, 3);
+      assert.deepEqual(writes.at(-1).reasons, []);
+
+      await open('USER', 'COPY_QC_PENDING', value => ({
+        ...asCopyRework(value),
+        currentStage: 'QC_MANDATORY_RECHECK',
+        progressMessage: '等待质检处理',
+      }));
+      await page.getByText('返工稿已提交强制复检；复检通过后才会进入待生图队列。', { exact: true }).waitFor();
     });
     await check('one-point copy can be scored and discarded without unlocking edits', async () => {
       await open();
@@ -297,9 +363,8 @@ try {
       await page.getByRole('button', { name: /^第 1 页 ·/ }).click();
       await page.getByRole('button', { name: '文案', exact: true }).click();
       assert.equal(await page.locator('#review-copy-title').inputValue(), '手机修改的标题');
-      await rateEditedCopy();
       const before = writes.length;
-      await page.getByRole('button', { name: '审核通过并开始生图', exact: true }).click();
+      await page.getByRole('button', { name: '审核通过并进入后续流程', exact: true }).click();
       await page.locator('#review-plan-headline-1').waitFor({ state: 'visible' });
       assert.equal(await page.locator('#review-plan-headline-1').evaluate(node => node === document.activeElement), true);
       assert.equal(writes.length, before);
@@ -311,7 +376,7 @@ try {
       for (const state of ['COPY_RUNNING', 'COPY_FAILED', 'REVIEWED']) {
         await open('USER', state);
         assert.equal(await page.locator('.workbench-review-query-text').textContent(), detail.query);
-        assert.equal(await page.getByRole('button', { name: '审核通过并开始生图', exact: true }).count(), 0);
+        assert.equal(await page.getByRole('button', { name: '审核通过并进入后续流程', exact: true }).count(), 0);
         if (state === 'COPY_FAILED') await page.getByText(detail.error, { exact: true }).waitFor();
         if (state === 'REVIEWED') assert.equal(await page.locator('#review-copy-title').getAttribute('readonly'), '');
       }
@@ -335,27 +400,60 @@ try {
           await page.getByRole('button', { name: '交付格式与背景', exact: true }).click();
           await page.getByRole('button', { name: '仅转换格式 / 背景（不调用模型）' }).waitFor();
         }
-        assert.equal(await page.getByRole('button', { name: '审核通过', exact: true }).count(), role === 'USER' ? 0 : 1);
+        assert.equal(await page.getByRole('button', { name: '通过到交付池', exact: true }).count(), role === 'USER' ? 0 : 1);
       }
     });
-    await check('image review allows only a complete 2.5-or-3 rating to approve and submits issue pages', async () => {
+    await check('image owner can regenerate from the fixed footer without scrolling', async () => {
+      await open('USER', 'MANUAL_ARCHIVE', withImages);
+      const regenerate = page.getByRole('button', { name: '重新生成图片', exact: true });
+      await regenerate.waitFor();
+      assert.equal(await regenerate.evaluate(node => node.closest('footer')?.classList.contains('workbench-review-footer')), true);
+      const buttonBox = await regenerate.boundingBox();
+      assert.ok(buttonBox.y + buttonBox.height <= page.viewportSize().height);
+    });
+    await check('image review enables decisions from the score alone and submits optional feedback', async () => {
       await open('REVIEWER', 'MANUAL_ARCHIVE', withImages);
-      const approve = page.getByRole('button', { name: '审核通过', exact: true });
-      const retry = page.getByRole('button', { name: '重试生图', exact: true });
+      const approve = page.getByRole('button', { name: '通过到交付池', exact: true });
+      const retry = page.getByRole('button', { name: '图片返工', exact: true });
       assert.equal(await approve.isDisabled(), true);
-      await rateImages(2);
+      await page.locator('input[name^="image-score-"][value="2"]').check();
       assert.equal(await approve.isDisabled(), true);
       assert.equal(await retry.isEnabled(), true);
       await page.locator('input[name^="image-score-"][value="2.5"]').check();
+      await page.locator('.human-image-rating .human-rating-feedback input[type="checkbox"]').first().check();
       await page.locator('.human-rating-pages input[type="checkbox"]').first().check();
       assert.equal(await approve.isEnabled(), true);
       await approve.click();
-      await page.getByRole('alertdialog').getByRole('button', { name: '确认通过', exact: true }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: '通过到交付池', exact: true }).click();
       await dialog().waitFor({ state: 'detached' });
       assert.equal(writes.at(-1).score, 2.5);
       assert.deepEqual(writes.at(-1).reasons, ['TEXT_ERROR']);
       assert.deepEqual(writes.at(-1).problemAssetIds, [910]);
       assert.match(writes.at(-1).reviewSessionId, /^[0-9a-f-]{36}$/u);
+    });
+    await check('image rework reasons remain selectable when optional deduction reasons are hidden', async () => {
+      qualitySettings = {
+        ...DEFAULT_HUMAN_QUALITY_SETTINGS,
+        imageReviewDisplay: { showDeductionReasons: false },
+      };
+      try {
+        await open('REVIEWER', 'MANUAL_ARCHIVE', withImages);
+        await page.locator('input[name^="image-score-"][value="2.5"]').check();
+        assert.equal(await page.getByRole('group', { name: /扣分原因/u }).count(), 0);
+        const reworkReasons = page.getByRole('group', { name: /返工原因/u });
+        await reworkReasons.waitFor();
+        await reworkReasons.locator('input[type="checkbox"]').first().check();
+        await page.locator('.human-image-rating .human-rating-note').fill('缺少 AI 生成标识，请补充后重新生成。');
+        await page.getByRole('group', { name: /问题页/u }).locator('input[type="checkbox"]').first().check();
+        await page.getByRole('button', { name: '发起返工', exact: true }).click();
+        await page.getByRole('alertdialog').getByRole('button', { name: '确认图片返工', exact: true }).click();
+        await dialog().waitFor({ state: 'detached' });
+        assert.deepEqual(writes.at(-1).reasons, ['TEXT_ERROR']);
+        assert.deepEqual(writes.at(-1).problemAssetIds, [910]);
+        assert.equal(writes.at(-1).note, '缺少 AI 生成标识，请补充后重新生成。');
+      } finally {
+        qualitySettings = DEFAULT_HUMAN_QUALITY_SETTINGS;
+      }
     });
     await check('refresh confirmation restores saved content, and collapsed prompt errors are revealed', async () => {
       await open();
@@ -364,13 +462,13 @@ try {
       await page.getByRole('button', { name: '刷新', exact: true }).click();
       await page.getByRole('button', { name: '放弃修改并刷新', exact: true }).click();
       await page.waitForFunction(() => document.querySelector('#review-copy-title')?.value === '小户型桌面整理指南');
-      await rateOriginalCopy(2);
+      await rateOriginalCopy(2.5);
+      await page.locator('#review-copy-title').fill('刷新后的合格修改稿');
       await page.getByRole('button', { name: '画面生成指令', exact: true }).click();
       await page.locator('#review-plan-prompt-0').fill('');
       await page.getByRole('button', { name: '画面生成指令', exact: true }).click();
-      await rateEditedCopy();
       const before = writes.length;
-      await page.getByRole('button', { name: '审核通过并开始生图', exact: true }).click();
+      await page.getByRole('button', { name: '审核通过并进入后续流程', exact: true }).click();
       await page.locator('#review-plan-prompt-0').waitFor({ state: 'visible' });
       assert.equal(await page.locator('#review-plan-prompt-0').evaluate(node => node === document.activeElement), true);
       assert.equal(writes.length, before);

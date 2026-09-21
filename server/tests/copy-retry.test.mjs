@@ -145,7 +145,13 @@ test('copy claims select the shared queue without executor ownership filtering',
   const client = {
     release() {},
     async query(sql, values) {
-      if (sql.includes('SELECT * FROM executor_nodes')) return { rows: [{ id: values[0] }] };
+      if (sql.includes('FROM executor_nodes n') && sql.includes('codex_concurrency_pools')) return { rows: [{
+        id: values[0], codex_pool_id: 'pool-a', codex_total_concurrency: 1,
+        codex_image_concurrency: 1, image_worker_enabled: true,
+      }] };
+      if (sql.includes('COUNT(*)') && sql.includes('task_executions')) {
+        return { rows: [{ total_count: 0, image_count: 0 }] };
+      }
       if (sql.includes('SELECT last_assignee_user_id FROM execution_claim_cursors')) {
         return { rows: [{ last_assignee_user_id: null }] };
       }
@@ -162,7 +168,7 @@ test('copy claims select the shared queue without executor ownership filtering',
   for (const { sql } of selections) {
     assert.doesNotMatch(sql, /copy_executor_node_id/u);
     assert.doesNotMatch(sql, /assigned_to_user_id/u);
-    assert.match(sql, /ORDER BY task\.id/u);
+    assert.match(sql, /ORDER BY task\.priority_paused ASC, task\.priority_sort_at ASC, task\.id ASC/u);
   }
 });
 

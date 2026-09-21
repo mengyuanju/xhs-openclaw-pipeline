@@ -1,8 +1,17 @@
 export const TASK_AUTO_ASSIGNMENT_WORKER_STATUSES = Object.freeze(['ACTIVE', 'PAUSED']);
+export const TASK_AUTO_ASSIGNMENT_MODES = Object.freeze(['CONTINUOUS', 'FIXED_QUANTITY']);
 
 export function normalizeAutoAssignmentEnabled(value) {
   if (typeof value !== 'boolean') throw new TypeError('enabled must be a boolean');
   return value;
+}
+
+export function normalizeAutoAssignmentMode(value) {
+  const mode = String(value ?? '').trim().toUpperCase();
+  if (!TASK_AUTO_ASSIGNMENT_MODES.includes(mode)) {
+    throw new TypeError('mode must be CONTINUOUS or FIXED_QUANTITY');
+  }
+  return mode;
 }
 
 export function normalizeAutoAssignmentWorkerStatus(value) {

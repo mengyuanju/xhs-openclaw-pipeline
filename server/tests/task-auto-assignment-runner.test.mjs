@@ -43,12 +43,12 @@ function taskRow(id, patch = {}) {
     assignment_source: null,
     assigned_at: null,
     progress_percent: 0,
-    progress_message: '等待管理员分配作业员',
+    progress_message: '等待管理员分配标注',
     ...patch,
   };
 }
 
-test('planner fills proportionally and rotates equal loads by the durable AUTO audit order', () => {
+test('planner preserves queue priority and rotates equal loads by durable assignment order', () => {
   const assignments = planAutoAssignments({
     workers: [
       { username: 'alice', assignmentLimit: 3, currentTaskCount: 0, lastAutoEventId: 10 },
@@ -58,12 +58,12 @@ test('planner fills proportionally and rotates equal loads by the durable AUTO a
     tasks: [6, 3, 1, 5, 2, 4].map((id) => ({ id })),
   });
   assert.deepEqual(assignments, [
-    { taskId: 1, assignedToUserId: 'bob' },
+    { taskId: 6, assignedToUserId: 'bob' },
+    { taskId: 3, assignedToUserId: 'carol' },
+    { taskId: 1, assignedToUserId: 'alice' },
+    { taskId: 5, assignedToUserId: 'bob' },
     { taskId: 2, assignedToUserId: 'carol' },
-    { taskId: 3, assignedToUserId: 'alice' },
-    { taskId: 4, assignedToUserId: 'bob' },
-    { taskId: 5, assignedToUserId: 'carol' },
-    { taskId: 6, assignedToUserId: 'alice' },
+    { taskId: 4, assignedToUserId: 'alice' },
   ]);
 
   const bounded = planAutoAssignments({
@@ -113,6 +113,23 @@ test('disabled settings are a transactionally locked no-op before members or tas
   assert.ok(database.calls.every(({ sql }) => !/UPDATE tasks/u.test(sql)));
   assert.equal(database.calls.at(-1).sql, 'COMMIT');
   assert.equal(database.released, true);
+});
+
+test('continuous runner never claims tasks while fixed-quantity mode is selected', async () => {
+  const database = fakePool(({ sql }) => {
+    if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
+    if (sql.includes('pg_try_advisory_xact_lock')) return { rows: [{ acquired: true }] };
+    if (sql.includes('FROM task_auto_assignment_settings')) {
+      return { rows: [{ enabled: true, mode: 'FIXED_QUANTITY', version: 5 }] };
+    }
+    throw new Error(`unexpected query: ${sql}`);
+  });
+  const result = await runAutoAssignmentReplenishment(database.pool);
+  assert.equal(result.outcome, 'FIXED_QUANTITY_MODE');
+  assert.equal(result.assignedCount, 0);
+  assert.equal(database.calls.some(({ sql }) => sql.includes('task_auto_assignment_workers')), false);
+  assert.equal(database.calls.some(({ sql }) => /UPDATE tasks/u.test(sql)), false);
+  assert.equal(database.calls.at(-1).sql, 'COMMIT');
 });
 
 test('a center that cannot acquire the advisory transaction lock skips without waiting', async () => {
@@ -199,12 +216,12 @@ test('runner locks settings, active users, pool members and pending tasks in ord
   assert.match(workerMetricsSql, /state = 'COPY_REVIEW_PENDING'[\s\S]*current_stage = 'COPY_REVIEW_PENDING'[\s\S]*current_execution_id IS NULL/u);
   assert.doesNotMatch(workerMetricsSql, /COPY_QUEUED|COPY_FAILED|IMAGE_QUEUED|IMAGE_FAILED|IMAGE_RETRY_EXHAUSTED/u);
   assert.match(workerMetricsSql, /LEFT JOIN task_auto_assignment_cursors AS fairness_cursor/u);
-  assert.doesNotMatch(workerMetricsSql, /FROM task_assignment_events/u);
+  assert.match(workerMetricsSql, /FROM task_assignment_events/u);
   assert.doesNotMatch(workerMetricsSql, /FOR UPDATE/u);
   assert.match(candidateSql, /assigned_to_user_id IS NULL[\s\S]*state = ANY\(\$1::varchar\[\]\)[\s\S]*current_stage = 'COPY_REVIEW_PENDING'[\s\S]*current_execution_id IS NULL/u);
   assert.deepEqual(AUTO_ASSIGNABLE_TASK_STATES, ['COPY_REVIEW_PENDING']);
   assert.doesNotMatch(candidateSql, /COPY_QUEUED|COPY_FAILED|IMAGE_QUEUED|IMAGE_FAILED|IMAGE_RETRY_EXHAUSTED/u);
-  assert.match(candidateSql, /ORDER BY id[\s\S]*FOR UPDATE SKIP LOCKED/u);
+  assert.match(candidateSql, /ORDER BY priority_paused ASC, priority_sort_at ASC, id ASC[\s\S]*FOR UPDATE SKIP LOCKED/u);
   assert.match(updatedSql, /assignment_source = 'AUTO'/u);
   assert.match(updatedSql, /progress_message = CASE[\s\S]*'文案生成完成，等待人工审核'/u);
   assert.doesNotMatch(updatedSql, /COPY_QUEUED|COPY_FAILED|IMAGE_QUEUED|IMAGE_FAILED|IMAGE_RETRY_EXHAUSTED/u);
@@ -357,7 +374,7 @@ test('a fairness cursor write failure rolls task and audit changes back together
 test('manual assignment locks a target pool member before task rows without enforcing its limit', async () => {
   const database = fakePool(({ sql, values }) => {
     if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
-    if (sql.includes("status = 'ACTIVE' AND role = 'USER'")) return { rows: [{ username: 'alice' }] };
+    if (sql.includes("status = 'ACTIVE' AND role IN ('REVIEWER', 'USER')")) return { rows: [{ username: 'alice' }] };
     if (sql.includes('SELECT username FROM task_auto_assignment_workers')) return { rows: [{ username: 'alice' }] };
     if (sql.includes('SELECT * FROM tasks WHERE id = ANY')) return { rows: [taskRow(9, {
       state: 'COPY_REVIEW_PENDING',
@@ -378,7 +395,7 @@ test('manual assignment locks a target pool member before task rows without enfo
     assignedToUserId: 'alice', actorUserId: 'admin', reason: '管理员明确超额也允许',
   });
   assert.equal(task.assignedToUserId, 'alice');
-  const userLock = database.calls.findIndex(({ sql }) => sql.includes("status = 'ACTIVE' AND role = 'USER'"));
+  const userLock = database.calls.findIndex(({ sql }) => sql.includes("status = 'ACTIVE' AND role IN ('REVIEWER', 'USER')"));
   const memberLock = database.calls.findIndex(({ sql }) => sql.includes('SELECT username FROM task_auto_assignment_workers'));
   const taskLock = database.calls.findIndex(({ sql }) => sql.includes('SELECT * FROM tasks WHERE id = ANY'));
   assert.ok(userLock > 0 && userLock < memberLock && memberLock < taskLock);
@@ -386,7 +403,7 @@ test('manual assignment locks a target pool member before task rows without enfo
   assert.equal(database.calls.some(({ sql }) => sql.includes('assignment_limit')), false);
 });
 
-test('explicit SELF task creation locks an active USER account and pool member before inserting', async () => {
+test('explicit SELF task creation locks an active non-admin account and pool member before inserting', async () => {
   const database = fakePool(({ sql, values }) => {
     if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
     if (sql.includes('INSERT INTO executor_nodes')) return { rows: [] };
@@ -412,7 +429,7 @@ test('explicit SELF task creation locks an active USER account and pool member b
   assert.ok(userLock > 0 && userLock < memberLock && memberLock < nodeInsert && nodeInsert < taskInsert);
   assert.match(database.calls[userLock].sql, /FOR UPDATE/u);
   assert.match(database.calls[userLock].sql, /status = 'ACTIVE'/u);
-  assert.match(database.calls[userLock].sql, /role = 'USER'/u);
+  assert.match(database.calls[userLock].sql, /role IN \('REVIEWER', 'USER'\)/u);
 });
 
 test('SELF task creation rejects a missing or inactive account before locking the pool or inserting tasks', async () => {
@@ -503,6 +520,7 @@ test('CLI starts and stops replenishment with the center process lifecycle', asy
   const source = await readFile(new URL('../src/cli.mjs', import.meta.url), 'utf8');
   assert.match(source, /startAutoAssignmentReplenishment\(repository\)/u);
   assert.match(source, /Promise\.all\(\[stopRecovery\(\), stopAutoAssignment\(\)\]\)/u);
+  assert.doesNotMatch(source,/startImageEditProcessing|stopImageEdits/u);
   assert.match(source, /if \(stoppingPromise\) return stoppingPromise/u);
   assert.match(source, /stoppingPromise = \(async \(\) =>/u);
 });

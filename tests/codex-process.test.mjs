@@ -3,7 +3,20 @@ import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { spawn } from 'node:child_process';
-import { runCodexProcess, codexChildEnvironment, terminateCodexTree } from '../src/codex-process.mjs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { runCodexProcess, codexChildEnvironment, resolveCodexExecutable, terminateCodexTree } from '../src/codex-process.mjs';
+
+test('Windows resolves the versioned Codex desktop executable without relying on the terminal PATH',
+  { skip: process.platform !== 'win32' }, async t => {
+    const root = await mkdtemp(join(tmpdir(), 'xhs-codex-desktop-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const executable = join(root, 'OpenAI', 'Codex', 'bin', '0123456789abcdef', 'codex.exe');
+    await mkdir(join(executable, '..'), { recursive: true });
+    await writeFile(executable, 'test executable');
+    assert.equal(resolveCodexExecutable({ LOCALAPPDATA: root, APPDATA: join(root, 'roaming'), PATH: '' }), executable);
+  });
 
 test('Windows tree termination releases a referenced helper even when its kill cannot confirm exit',
   { skip: process.platform !== 'win32', timeout: 3000 }, async t => {

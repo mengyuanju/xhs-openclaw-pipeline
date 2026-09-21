@@ -5,7 +5,6 @@ export const IMAGE_FORMATS = Object.freeze({
   JPEG: { extension: 'jpg', mediaType: 'image/jpeg' },
   WEBP: { extension: 'webp', mediaType: 'image/webp' },
   AVIF: { extension: 'avif', mediaType: 'image/avif' },
-  TIFF: { extension: 'tiff', mediaType: 'image/tiff' },
   GIF: { extension: 'gif', mediaType: 'image/gif' },
 });
 export const DEFAULT_IMAGE_SETTINGS = Object.freeze({ version: 1, format: 'PNG', quality: 90, background: 'SOLID', backgroundColor: '#f2eee7' });

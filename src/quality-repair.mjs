@@ -1,3 +1,4 @@
+import { internalPrompt } from './prompt-runtime.mjs';
 import { businessPrompt } from './prompt-runtime.mjs';
 import { normalizeProductionSettings } from './production-settings.mjs';
 
@@ -129,7 +130,7 @@ function repairEvidence(qc) {
 }
 
 function repairMethod(key) {
-  return `根据实际证据修复维度 ${key}，保留无关的正确内容`;
+  return internalPrompt('INTERNAL_QUALITY_REPAIR_METHOD', { slot1: (key) });
 }
 
 export function createQualityRepairPlan({ qc, round, imageCount }) {
@@ -157,7 +158,7 @@ export function appendQualityRepairPrompt(basePrompt, plan, { pageIndex }) {
   if (typeof basePrompt !== 'string' || !basePrompt.trim()) throw new TypeError('base image prompt is required');
   if (!Number.isInteger(pageIndex) || pageIndex < 1 || pageIndex > plan?.imageCount) throw new RangeError('repair pageIndex is outside the image set');
   const suffix = businessPrompt('IMAGE_REPAIR_SYSTEM', {
-    contract: '保留原事实、allowedVisibleText 和页归属。仅修复本页实际问题，不能按页码指定新的内容职责。',
+    contract: internalPrompt('INTERNAL_QUALITY_REPAIR_BOUNDARY'),
     data: { pageIndex, imageCount: plan.imageCount, round: plan.round, scoreBefore: plan.scoreBefore,
       reasons: plan.reasons, methods: plan.methods },
   });

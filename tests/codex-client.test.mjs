@@ -53,6 +53,31 @@ test('skill loader diagnostics do not invalidate a completed response', async (t
   assert.equal((await client.runText({ prompt: 'plan' })).rawText, 'done');
 });
 
+test('image delivery succeeds when capacity is reported before a later native image completion', async (t) => {
+  const { client, root } = await fixture(t, async (_command, _args, options) => {
+    const path = join(options.cwd, 'recovered.png');
+    await sharp({ create: { width: 24, height: 32, channels: 3, background: '#dd8844' } }).png().toFile(path);
+    const capacity = { message: 'Selected model is at capacity. Please try a different model.' };
+    return { status: 0, stderr: '', stdout: [
+      { type: 'thread.started', thread_id: 'recovered-image-thread' },
+      { type: 'error', error: capacity },
+      { type: 'item.completed', item: {
+        type: 'image_generation', id: 'failed-attempt', status: 'failed', failure: capacity,
+      } },
+      { type: 'item.completed', item: {
+        type: 'image_generation', id: 'completed-attempt', status: 'completed', saved_path: path,
+      } },
+      { type: 'turn.completed' },
+    ].map(JSON.stringify).join('\n') };
+  });
+  const outputPath = join(root, 'delivered-recovered.png');
+  const result = await client.runImage({ prompt: 'Generate one orange kitten.', outputPath });
+
+  assert.equal((await sharp(outputPath).metadata()).format, 'png');
+  assert.equal(result.execution.recoveredTransientCount, 2);
+  assert.deepEqual(result.execution.recoveredTransientCodes, ['CODEX_MODEL_AT_CAPACITY']);
+});
+
 test('capacity falls back once for text and later calls skip the cooling primary model', async (t) => {
   const models = [];
   let primaryFailures = 0;

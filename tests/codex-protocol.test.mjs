@@ -55,6 +55,14 @@ test('terminal errors fail even after an earlier completion and preserve stable 
   }
 });
 
+test('revoked refresh-token failures are classified as authentication failures with recovery guidance', () => {
+  const error = codexFailure({ message: 'Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.' });
+  assert.equal(error.code, 'CODEX_AUTH_REQUIRED');
+  assert.equal(error.haltWorker, true);
+  assert.match(error.message, /codex logout/u);
+  assert.match(error.message, /codex login/u);
+});
+
 test('native image items provide saved paths, while unsuccessful image items fail closed', () => {
   const parsed = parseCodexOutput(lines({ type: 'item.completed', item: {
     id: 'img-1', type: 'image_generation', status: 'completed', saved_path: 'C:/generated/result.png',
@@ -63,6 +71,34 @@ test('native image items provide saved paths, while unsuccessful image items fai
   assert.throws(() => parseCodexOutput(lines({ type: 'item.completed', item: {
     id: 'img-1', type: 'image_generation', status: 'failed', failure: { type: 'usage_limit_exceeded' },
   } }, message('cannot generate'), complete)), { code: 'CODEX_QUOTA_EXHAUSTED' });
+});
+
+test('a successful native image can recover from earlier capacity events in the same turn', () => {
+  const capacity = { message: 'Selected model is at capacity. Please try a different model.' };
+  const parsed = parseCodexOutput(lines(
+    { type: 'error', error: capacity },
+    { type: 'item.completed', item: {
+      id: 'attempt-1', type: 'image_generation', status: 'failed', failure: capacity,
+    } },
+    { type: 'item.completed', item: {
+      id: 'attempt-2', type: 'image_generation', status: 'completed', saved_path: 'C:/generated/result.png',
+    } },
+    complete,
+  ), { requireText: false });
+
+  assert.deepEqual(parsed.images, [{ id: 'attempt-2', path: 'C:/generated/result.png' }]);
+  assert.equal(parsed.recoveredTransientCount, 2);
+  assert.deepEqual(parsed.recoveredTransientCodes, ['CODEX_MODEL_AT_CAPACITY']);
+
+  for (const stream of [
+    lines({ type: 'error', error: capacity }, complete),
+    lines({ type: 'item.completed', item: {
+      id: 'attempt-1', type: 'image_generation', status: 'failed', failure: capacity,
+    } }, complete),
+    lines({ type: 'item.completed', item: {
+      id: 'attempt-2', type: 'image_generation', status: 'completed', saved_path: 'C:/generated/result.png',
+    } }, { type: 'turn.failed', error: capacity }),
+  ]) assert.throws(() => parseCodexOutput(stream, { requireText: false }), { code: 'CODEX_MODEL_AT_CAPACITY' });
 });
 
 test('diagnostics redact access credentials and are bounded', () => {

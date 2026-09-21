@@ -1,8 +1,10 @@
 import { TASK_STATES, normalizeCreatorUserId, normalizeTaskCreatorRole } from './domain.mjs';
+import { normalizeAssigneeUserId } from './task-assignment-domain.mjs';
+import { normalizeTaskDateRange } from '../../src/control-plane/task-date-filter.mjs';
 
 export const TASK_ATTENTION_FILTERS = Object.freeze(['ANOMALY', 'STALE', 'FAILED']);
 export const SAVED_TASK_VIEW_KEYS = Object.freeze([
-  'PERSONAL', 'ALL_COPY', 'COPY_REVIEW', 'IMAGE_WORK', 'MANUAL_ARCHIVE', 'COMPLETED', 'ALL_JOBS',
+  'PERSONAL', 'ALL_COPY', 'COPY_REVIEW', 'IMAGE_WORK', 'MANUAL_ARCHIVE', 'COMPLETED', 'ALL_JOBS', 'DISCARDED',
 ]);
 
 const SAVED_STATES = new Set([
@@ -25,6 +27,16 @@ export function normalizeTaskViewName(value) {
   return name;
 }
 
+function normalizeSavedQueryPackageName(value) {
+  if (value === undefined || value === null || value === '') return '';
+  if (typeof value !== 'string') throw new TypeError('saved task view queryPackageName must be a string');
+  const name = value.replace(/\s+/gu, ' ').trim();
+  if ([...name].length > 200) {
+    throw new RangeError('saved task view queryPackageName cannot exceed 200 characters');
+  }
+  return name;
+}
+
 export function normalizeSavedTaskView(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('saved task view must be an object');
   const name = normalizeTaskViewName(value.name);
@@ -33,6 +45,7 @@ export function normalizeSavedTaskView(value) {
   const raw = value.filters;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new TypeError('saved task view filters must be an object');
   const query = String(raw.query ?? '').trim();
+  const queryPackageName = normalizeSavedQueryPackageName(raw.queryPackageName);
   if ([...query].length > 500) throw new RangeError('saved task view query cannot exceed 500 characters');
   if (raw.deduplicateQuery !== undefined && typeof raw.deduplicateQuery !== 'boolean') {
     throw new TypeError('saved task view deduplicateQuery must be a boolean');
@@ -47,8 +60,24 @@ export function normalizeSavedTaskView(value) {
   if (hasCreatorAccountId && (!Number.isSafeInteger(createdByAccountId) || createdByAccountId < 1)) {
     throw new TypeError('saved task view createdByAccountId must be a positive integer');
   }
+  const hasAssigneeUsername = raw.assignedToUserId !== undefined && raw.assignedToUserId !== null && raw.assignedToUserId !== '';
+  const hasAssigneeAccountId = raw.assignedToAccountId !== undefined && raw.assignedToAccountId !== null && raw.assignedToAccountId !== '';
+  const assignedToUserId = hasAssigneeUsername
+    ? normalizeAssigneeUserId(raw.assignedToUserId, { allowNull: false }) : '';
+  if (hasAssigneeUsername !== hasAssigneeAccountId) {
+    throw new TypeError('saved task view assignee username and account id must be provided together');
+  }
+  const assignedToAccountId = hasAssigneeAccountId ? Number(raw.assignedToAccountId) : null;
+  if (hasAssigneeAccountId && (!Number.isSafeInteger(assignedToAccountId) || assignedToAccountId < 1)) {
+    throw new TypeError('saved task view assignedToAccountId must be a positive integer');
+  }
+  const personalScope = String(raw.personalScope ?? 'ALL').toUpperCase();
+  if (!['ALL', 'ASSIGNED', 'CREATED'].includes(personalScope)) {
+    throw new TypeError('saved task view personalScope is invalid');
+  }
   const createdByRole = raw.createdByRole === 'ALL' || raw.createdByRole === undefined || raw.createdByRole === null
     ? 'ALL' : normalizeTaskCreatorRole(raw.createdByRole);
+  const createdDateRange = normalizeTaskDateRange(raw.createdDateFrom, raw.createdDateTo);
   const state = String(raw.state ?? 'ALL');
   if (!SAVED_STATES.has(state)) throw new TypeError('saved task view state is invalid');
   const sort = String(raw.sort ?? 'priority:desc');
@@ -62,10 +91,16 @@ export function normalizeSavedTaskView(value) {
     viewKey,
     filters: {
       query,
+      queryPackageName,
       deduplicateQuery: raw.deduplicateQuery === true,
       createdByUserId,
       createdByAccountId,
+      assignedToUserId,
+      assignedToAccountId,
       createdByRole,
+      createdDateFrom: createdDateRange.createdDateFrom ?? '',
+      createdDateTo: createdDateRange.createdDateTo ?? '',
+      personalScope,
       state,
       sort,
       attention,

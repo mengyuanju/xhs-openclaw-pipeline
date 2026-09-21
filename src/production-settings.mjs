@@ -15,6 +15,7 @@ export const DEFAULT_PRODUCTION_SETTINGS = Object.freeze({
   qualityRepairTriggerScore: 1,
   qualityRepairTargetScore: 2,
   qualityRepairMaxAttempts: 2,
+  imageEditRepairMaxAttempts: 2,
   aiDisclosureEnabled: true,
   aiDisclosureText: 'AI生成',
   modelApi: DEFAULT_MODEL_API_SETTINGS,
@@ -34,6 +35,16 @@ function integerSetting(value, fallback, name, minimum, maximum) {
     throw new RangeError(`${name} must be an integer between ${minimum} and ${maximum}`);
   }
   return resolved;
+}
+
+export function normalizeImageEditRepairMaxAttempts(value) {
+  return integerSetting(
+    value,
+    DEFAULT_PRODUCTION_SETTINGS.imageEditRepairMaxAttempts,
+    'imageEditRepairMaxAttempts',
+    0,
+    2,
+  );
 }
 
 function textSetting(value, fallback, name, maximum) {
@@ -84,6 +95,9 @@ export function normalizeProductionSettings(input = {}) {
       'qualityRepairMaxAttempts',
       0,
       2,
+    ),
+    imageEditRepairMaxAttempts: normalizeImageEditRepairMaxAttempts(
+      input.imageEditRepairMaxAttempts,
     ),
     aiDisclosureEnabled: booleanSetting(
       input.aiDisclosureEnabled,

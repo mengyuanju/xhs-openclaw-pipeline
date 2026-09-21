@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -8,8 +8,17 @@ import JSZip from 'jszip';
 import { createControlPlaneApp } from '../src/http-server.mjs';
 import { ControlPlaneAuthenticationError, ControlPlaneConflictError } from '../src/domain.mjs';
 
-async function withServer(repository, action, { storageRoot = 'test-storage', enforceUserAuth = false } = {}) {
-  const app = createControlPlaneApp({ repository, storageRoot, enforceUserAuth });
+async function withServer(repository, action, {
+  storageRoot = 'test-storage',
+  enforceUserAuth = false,
+  xhsSearchMachineToken,
+} = {}) {
+  const app = createControlPlaneApp({
+    repository,
+    storageRoot,
+    enforceUserAuth,
+    ...(xhsSearchMachineToken === undefined ? {} : { xhsSearchMachineToken }),
+  });
   let server;
   await new Promise((resolve, reject) => {
     server = app.listen(0, '127.0.0.1', resolve);
@@ -22,6 +31,17 @@ async function withServer(repository, action, { storageRoot = 'test-storage', en
     await new Promise((resolve) => server.close(resolve));
   }
 }
+
+test('health reports Xiaohongshu machine-token configuration without exposing the secret', async () => {
+  const machineToken = 'test-only-machine-token-that-is-never-returned';
+  await withServer({ health: async () => ({ ok: true, capabilities: {} }) }, async (root) => {
+    const response = await fetch(`${root}/health`);
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.data.xhsSearchMachineTokenConfigured, true);
+    assert.doesNotMatch(JSON.stringify(payload), new RegExp(machineToken, 'u'));
+  }, { xhsSearchMachineToken: machineToken });
+});
 
 test('batch claim routes forward request identity and return independent claims', async () => {
   for (const kind of ['copy', 'image']) {
@@ -50,6 +70,28 @@ test('failure HTTP route forwards optional retry control without changing legacy
     assert.equal(response.status, 200);
     assert.deepEqual(calls, [['test', 'outcome unknown', { autoRetry: false }]]);
   });
+});
+
+test('discarded task restoration is admin-only and forwards the current identity and snapshot', async () => {
+  const calls = [];
+  const roles = { admin: 'ADMIN', reviewer: 'REVIEWER', user: 'USER' };
+  const ids = { admin: 1, reviewer: 2, user: 3 };
+  const repository = {
+    getUserByUsername: async username => ({ id: ids[username], username, role: roles[username], status: 'ACTIVE', credentialVersion: 1 }),
+    getTaskAccess: async () => ({ id: 1, state: 'CANCELLED', assignedToUserId: 'user', assignedToAccountId: 3 }),
+    restoreCancelledTask: async (...args) => { calls.push(args); return { id: 1, state: 'COPY_REVIEW_PENDING' }; },
+  };
+  const input = { expectedUpdatedAt: '2026-09-20T00:00:00.000Z' };
+  await withServer(repository, async root => {
+    for (const [username, role] of Object.entries(roles)) {
+      const response = await fetch(`${root}/v1/tasks/1/restore`, { method: 'POST', headers: {
+        'Content-Type': 'application/json', 'X-Actor-User-Id': String(ids[username]),
+        'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1',
+      }, body: JSON.stringify(input) });
+      assert.equal(response.status, role === 'ADMIN' ? 200 : 403);
+    }
+  }, { enforceUserAuth: true });
+  assert.deepEqual(calls, [['1', input, { actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 } }]]);
 });
 
 test('model trace HTTP routes forward execution uploads and task-scoped lazy reads', async () => {
@@ -148,7 +190,7 @@ test('control plane HTTP exposes node registration and batched task creation', a
   assert.equal(calls[1][1].assignmentSource, null);
 });
 
-test('normal task creation delays assignment while copy-review bypass requires an explicit owner', async () => {
+test('legacy task creation is admin-only and copy-review bypass requires an explicit owner', async () => {
   const calls = [];
   const users = {
     admin: { id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credentialVersion: 1 },
@@ -168,9 +210,10 @@ test('normal task creation delays assignment while copy-review bypass requires a
   await withServer(repository, async (root) => {
     const userCreated = await fetch(`${root}/v1/tasks`, {
       method: 'POST', headers: headers('alice', 'USER'),
-      body: JSON.stringify({ nodeId: 'node-a', tasks: [{ query: '普通用户提交' }] }),
+      body: JSON.stringify({ nodeId: 'node-a', tasks: [{ query: '标注提交' }] }),
     });
-    assert.equal(userCreated.status, 201);
+    assert.equal(userCreated.status, 403);
+    assert.equal((await userCreated.json()).error.code, 'FORBIDDEN');
 
     const earlyAssignment = await fetch(`${root}/v1/tasks`, {
       method: 'POST', headers: headers('admin', 'ADMIN'),
@@ -195,14 +238,71 @@ test('normal task creation delays assignment while copy-review bypass requires a
     assert.equal(bypass.status, 201);
   }, { enforceUserAuth: true });
 
-  assert.equal(calls.length, 2);
-  assert.equal(calls[0].createdByUserId, 'alice');
-  assert.equal(calls[0].assignedToUserId, null);
-  assert.equal(calls[0].assignmentSource, null);
-  assert.equal(calls[1].assignedToUserId, 'admin');
-  assert.equal(calls[1].assignedToAccountId, 1);
-  assert.equal(calls[1].assignmentSource, 'MANUAL');
-  assert.equal(calls[1].skipCopyReview, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].createdByUserId, 'admin');
+  assert.equal(calls[0].assignedToUserId, 'admin');
+  assert.equal(calls[0].assignedToAccountId, 1);
+  assert.equal(calls[0].assignmentSource, 'MANUAL');
+  assert.equal(calls[0].skipCopyReview, true);
+});
+
+test('duplicate Query discard preview and confirmation are admin-only and forward actor context', async () => {
+  const calls = [];
+  const users = {
+    admin: { id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credentialVersion: 1 },
+    reviewer: { id: 2, username: 'reviewer', role: 'REVIEWER', status: 'ACTIVE', credentialVersion: 1 },
+    user: { id: 3, username: 'user', role: 'USER', status: 'ACTIVE', credentialVersion: 1 },
+  };
+  const repository = {
+    getUserByUsername: async (username) => users[username] ?? null,
+    previewDuplicateQueryDiscard: async (input, options) => {
+      calls.push(['preview', input, options]);
+      return { previewToken: 'preview-1', duplicateTaskCount: 2 };
+    },
+    discardDuplicateQueries: async (input, options) => {
+      calls.push(['discard', input, options]);
+      return { requestId: input.requestId, discardedTaskIds: [12, 13] };
+    },
+  };
+  const headers = (username) => ({
+    'Content-Type': 'application/json',
+    'X-Actor-User-Id': String(users[username].id),
+    'X-Actor-Username': username,
+    'X-Actor-Role': users[username].role,
+    'X-Actor-Credential-Version': '1',
+  });
+  const endpoints = [
+    ['/v1/tasks/duplicate-query-discard-preview', { representativeTaskIds: [11, 12, 13] }],
+    ['/v1/tasks/duplicate-query-discard', {
+      requestId: '11111111-1111-4111-8111-111111111111',
+      representativeTaskIds: [11, 12, 13],
+      previewFingerprint: 'a'.repeat(64),
+      confirmedDiscardCount: 2,
+    }],
+  ];
+
+  await withServer(repository, async (root) => {
+    for (const [path, input] of endpoints) {
+      for (const username of ['reviewer', 'user']) {
+        const denied = await fetch(`${root}${path}`, {
+          method: 'POST', headers: headers(username), body: JSON.stringify(input),
+        });
+        assert.equal(denied.status, 403, `${users[username].role} ${path}`);
+        assert.equal((await denied.json()).error.code, 'FORBIDDEN');
+      }
+
+      const allowed = await fetch(`${root}${path}`, {
+        method: 'POST', headers: headers('admin'), body: JSON.stringify(input),
+      });
+      assert.equal(allowed.status, 200, `ADMIN ${path}`);
+    }
+  }, { enforceUserAuth: true });
+
+  const actor = { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 };
+  assert.deepEqual(calls, [
+    ['preview', endpoints[0][1], { actor }],
+    ['discard', endpoints[1][1], { actor }],
+  ]);
 });
 
 test('executor status inventory and retirement are restricted to administrators', async () => {
@@ -251,6 +351,67 @@ test('executor status inventory and retirement are restricted to administrators'
     assert.equal((await deleted.json()).data.id, '..');
     assert.deepEqual(retired, [{
       nodeId: '..',
+      actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
+    }]);
+  }, { enforceUserAuth: true });
+});
+
+test('Xiaohongshu account status inventory includes every search host and is admin-only', async () => {
+  const statuses = [
+    { id: 'center-search', hostKind: 'CENTER', accountLabel: '品牌主账号', authStatus: 'READY' },
+    { id: 'worker-search', hostKind: 'EXECUTOR', accountLabel: '素材账号', authStatus: 'LOGIN_REQUIRED' },
+  ];
+  let reads = 0;
+  const retired = [];
+  const repository = {
+    listXhsQuerySearchNodes: async () => { reads += 1; return statuses; },
+    retireXhsQuerySearchNode: async (nodeId, actor) => {
+      retired.push({ nodeId, actor });
+      return { id: nodeId, name: '历史搜索节点', retiredAt: '2026-09-13T00:00:00Z' };
+    },
+    getUserByUsername: async (username) => ({
+      id: username === 'admin' ? 1 : 2,
+      username,
+      role: username === 'admin' ? 'ADMIN' : 'REVIEWER',
+      status: 'ACTIVE',
+      credentialVersion: 1,
+    }),
+  };
+  const headers = (username, role) => ({
+    'X-Actor-User-Id': String(username === 'admin' ? 1 : 2),
+    'X-Actor-Username': username,
+    'X-Actor-Role': role,
+    'X-Actor-Credential-Version': '1',
+  });
+  await withServer(repository, async (root) => {
+    const reviewer = await fetch(`${root}/v1/xhs-search-statuses`, {
+      headers: headers('reviewer', 'REVIEWER'),
+    });
+    assert.equal(reviewer.status, 403);
+    assert.equal(reads, 0);
+
+    const admin = await fetch(`${root}/v1/xhs-search-statuses`, {
+      headers: headers('admin', 'ADMIN'),
+    });
+    assert.equal(admin.status, 200);
+    assert.deepEqual((await admin.json()).data, statuses);
+    assert.equal(reads, 1);
+
+    const deniedDelete = await fetch(`${root}/v1/xhs-search-statuses`, {
+      method: 'DELETE', headers: headers('reviewer', 'REVIEWER'),
+    });
+    assert.equal(deniedDelete.status, 403);
+    assert.deepEqual(retired, []);
+
+    const deleted = await fetch(`${root}/v1/xhs-search-statuses`, {
+      method: 'DELETE',
+      headers: { ...headers('admin', 'ADMIN'), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nodeId: 'old-xhs-search' }),
+    });
+    assert.equal(deleted.status, 200);
+    assert.equal((await deleted.json()).data.id, 'old-xhs-search');
+    assert.deepEqual(retired, [{
+      nodeId: 'old-xhs-search',
       actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
     }]);
   }, { enforceUserAuth: true });
@@ -307,6 +468,58 @@ test('copy approval forwards the editable review payload as one operation', asyn
       decision: 'APPROVE', originalScore: 2, originalReasons: ['STRUCTURE'], score: 2.5,
       reasons: ['EXPRESSION'], reviewSessionId: '77777777-7777-4777-8777-777777777777' },
     actor: { actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 } },
+  });
+});
+
+test('copy review draft endpoints preserve actor identity and created status', async () => {
+  const calls = [];
+  const draft = {
+    id: 3,
+    taskId: 7,
+    baseCopyRevisionId: 12,
+    reviewerAccountId: 1,
+    reviewerUsername: 'admin',
+    version: 1,
+    content: { version: 1 },
+    createdAt: '2026-09-16T00:00:00.000Z',
+  };
+  const repository = {
+    getTaskAccess: async () => ({
+      id: 7,
+      state: 'COPY_REVIEW_PENDING',
+      assignedToUserId: 'admin',
+      assignedToAccountId: 1,
+      createdByUserId: 'admin',
+      createdByAccountId: 1,
+    }),
+    listCopyReviewDrafts: async (taskId, options) => {
+      calls.push({ action: 'list', taskId, options });
+      return { baseCopyRevisionId: 12, drafts: [draft] };
+    },
+    saveCopyReviewDraft: async (taskId, input, options) => {
+      calls.push({ action: 'save', taskId, input, options });
+      return { created: true, draft };
+    },
+  };
+  await withServer(repository, async (root) => {
+    const listed = await fetch(`${root}/v1/tasks/7/copy-review-drafts`);
+    assert.equal(listed.status, 200);
+    assert.deepEqual((await listed.json()).data.drafts, [draft]);
+
+    const input = { baseCopyRevisionId: 12, expectedLatestDraftId: null, content: { version: 1 } };
+    const saved = await fetch(`${root}/v1/tasks/7/copy-review-drafts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    assert.equal(saved.status, 201);
+    assert.deepEqual((await saved.json()).data, { created: true, draft });
+    assert.deepEqual(calls.map(({ action, taskId }) => ({ action, taskId })), [
+      { action: 'list', taskId: '7' },
+      { action: 'save', taskId: '7' },
+    ]);
+    assert.deepEqual(calls[1].input, input);
+    assert.equal(calls[1].options.actor.userId, 1);
   });
 });
 
@@ -420,7 +633,7 @@ test('manual image retry route sends the task back to the image queue', async ()
   assert.equal(receivedTaskId, '9');
 });
 
-test('manual archive download returns one ZIP with copy text and original image names', async () => {
+test('archive download is blocked before final review and returns the reviewed delivery ZIP', async () => {
   const storageRoot = await mkdtemp(join(tmpdir(), 'xhs-task-archive-http-'));
   const storagePath = join(storageRoot, 'tasks', '12', 'image-runs', 'run-1', 'stored-hash.png');
   await mkdir(join(storageRoot, 'tasks', '12', 'image-runs', 'run-1'), { recursive: true });
@@ -432,11 +645,15 @@ test('manual archive download returns one ZIP with copy text and original image 
     currentCopyRevisionId: 2,
     currentImageRunId: 'run-1',
     copyRevisions: [{ id: 2, content: { copy: { title: '归档任务', body: '文案正文', tags: ['#标签'] } } }],
+    imageRuns: [{ id: 'run-1', result: { images: [{ assetId: 7 }] } }],
     assets: [{ id: 7, taskId: 12, imageRunId: 'run-1', mediaType: 'image/png', originalName: '01-cover.png' }],
   };
   try {
     await withServer({
       getTask: async () => task,
+      assertTaskReadyForDelivery: async () => ({
+        taskId: 12, copyRevisionId: 2, imageRunId: 'run-1',
+      }),
       getAsset: async () => ({
         id: 7,
         taskId: 12,
@@ -446,23 +663,25 @@ test('manual archive download returns one ZIP with copy text and original image 
         storagePath,
       }),
     }, async (root) => {
-      for (const state of ['MANUAL_ARCHIVE', 'REVIEWED']) {
-        task.state = state;
-        const response = await fetch(`${root}/v1/tasks/12/archive`);
-        assert.equal(response.status, 200);
-        assert.equal(response.headers.get('content-type'), 'application/zip');
-        assert.match(response.headers.get('content-disposition'), /filename\*=UTF-8''/u);
-        const zip = await JSZip.loadAsync(await response.arrayBuffer());
-        assert.ok(zip.file('归档任务.txt'));
-        assert.equal(await zip.file('01-cover.png').async('string'), 'png-content');
-      }
+      const blocked = await fetch(`${root}/v1/tasks/12/archive`);
+      assert.equal(blocked.status, 409);
+      assert.equal((await blocked.json()).error.code, 'INVALID_TASK_STATE');
+
+      task.state = 'REVIEWED';
+      const response = await fetch(`${root}/v1/tasks/12/archive`);
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('content-type'), 'application/zip');
+      assert.match(response.headers.get('content-disposition'), /filename\*=UTF-8''/u);
+      const zip = await JSZip.loadAsync(await response.arrayBuffer());
+      assert.ok(zip.file('归档任务.txt'));
+      assert.equal(await zip.file('01-cover.png').async('string'), 'png-content');
     }, { storageRoot });
   } finally {
     await rm(storageRoot, { recursive: true, force: true });
   }
 });
 
-test('task listing forwards server-side pagination, states and Query search', async () => {
+test('task listing forwards server-side pagination, states, Query and package-name search', async () => {
   const calls = [];
   const repository = {
     listTasks: async (input) => {
@@ -475,7 +694,7 @@ test('task listing forwards server-side pagination, states and Query search', as
     },
   };
   await withServer(repository, async (root) => {
-    const listed = await fetch(`${root}/v1/tasks?states=COPY_QUEUED,COPY_FAILED&nodeId=node-a&taskId=42&query=%E9%BB%84%E5%B1%B1&deduplicateQuery=true&sortBy=createdAt&sortOrder=asc&limit=20&offset=20&includeTotal=true`);
+    const listed = await fetch(`${root}/v1/tasks?states=COPY_QUEUED,COPY_FAILED&nodeId=node-a&taskId=42&query=%E9%BB%84%E5%B1%B1&queryPackageName=%E4%B9%9D%E6%9C%88%20%E9%80%89%E9%A2%98&deduplicateQuery=true&sortBy=createdAt&sortOrder=asc&limit=20&offset=20&includeTotal=true`);
     assert.equal(listed.status, 200);
     assert.equal((await listed.json()).data.total, 0);
     const counts = await fetch(`${root}/v1/task-counts?nodeId=node-a`);
@@ -488,25 +707,30 @@ test('task listing forwards server-side pagination, states and Query search', as
       nodeId: 'node-a',
       taskId: '42',
       query: '黄山',
+      queryPackageName: '九月 选题',
       deduplicateQuery: true,
       sortBy: 'createdAt',
       sortOrder: 'asc',
       createdByUserId: undefined,
       createdByAccountId: undefined,
       assignedToUserId: undefined,
+      assignedToAccountId: undefined,
       visibleToUserId: undefined,
       visibleToAccountId: undefined,
       unassignedOnly: false,
       excludeUnassigned: false,
+      excludeActiveBlindQa: false,
       limit: '20',
       offset: '20',
+      cursor: undefined,
+      lastPage: false,
       includeTotal: true,
     }],
     ['counts', { nodeId: 'node-a' }],
   ]);
 });
 
-test('personal task scope is bound to the authenticated account and includes submitted work', async () => {
+test('personal task scopes are bound to the authenticated account for all, assigned and created work', async () => {
   const calls = [];
   const user = { id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 };
   const repository = {
@@ -514,20 +738,152 @@ test('personal task scope is bound to the authenticated account and includes sub
     listTasks: async (input) => { calls.push(input); return { items: [], total: 0, limit: 20, offset: 0 }; },
   };
   await withServer(repository, async (root) => {
-    const response = await fetch(`${root}/v1/tasks?personal=true&states=COPY_QUEUED,COPY_REVIEW_PENDING&limit=20&includeTotal=true`, {
+    const headers = {
+      'X-Actor-User-Id': '2', 'X-Actor-Username': 'alice', 'X-Actor-Role': 'USER',
+      'X-Actor-Credential-Version': '1',
+    };
+    for (const suffix of ['', '&personalScope=ASSIGNED', '&personalScope=CREATED']) {
+      const response = await fetch(`${root}/v1/tasks?personal=true&states=COPY_QUEUED,COPY_REVIEW_PENDING&limit=20&includeTotal=true${suffix}`, { headers });
+      assert.equal(response.status, 200);
+    }
+    assert.equal((await fetch(`${root}/v1/tasks?personalScope=ASSIGNED`, { headers })).status, 400);
+    assert.equal((await fetch(`${root}/v1/tasks?personal=true&personalScope=ANOTHER_USER`, { headers })).status, 400);
+  }, { enforceUserAuth: true });
+
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0].assignedToUserId, undefined);
+  assert.equal(calls[0].assignedToAccountId, undefined);
+  assert.equal(calls[0].visibleToUserId, 'alice');
+  assert.equal(calls[0].visibleToAccountId, 2);
+  assert.equal(calls[0].excludeUnassigned, false);
+  assert.equal(calls[1].assignedToUserId, 'alice');
+  assert.equal(calls[1].assignedToAccountId, 2);
+  assert.equal(calls[1].createdByUserId, undefined);
+  assert.equal(calls[1].visibleToUserId, undefined);
+  assert.equal(calls[2].createdByUserId, 'alice');
+  assert.equal(calls[2].createdByAccountId, 2);
+  assert.equal(calls[2].assignedToUserId, undefined);
+  assert.equal(calls[2].visibleToUserId, undefined);
+});
+
+test('personal completion events are bound to the authenticated account and requested range', async () => {
+  const calls = [];
+  const user = { id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 };
+  const repository = {
+    getUserByUsername: async (username) => username === user.username ? user : null,
+    listPersonalTaskCompletions: async (input) => {
+      calls.push(input);
+      return [{ id: 41, query: '秋日路线', state: 'IMAGE_QC_PENDING', completions: [
+        { stage: 'COPY', completedAt: '2026-09-06T01:00:00.000Z' },
+      ] }];
+    },
+  };
+  await withServer(repository, async (root) => {
+    const response = await fetch(`${root}/v1/task-completions?from=2026-09-05T16%3A00%3A00.000Z&to=2026-09-06T16%3A00%3A00.000Z`, {
       headers: {
         'X-Actor-User-Id': '2', 'X-Actor-Username': 'alice', 'X-Actor-Role': 'USER',
         'X-Actor-Credential-Version': '1',
       },
     });
     assert.equal(response.status, 200);
+    assert.equal((await response.json()).data[0].id, 41);
+  }, { enforceUserAuth: true });
+  assert.deepEqual(calls, [{
+    accountId: 2,
+    username: 'alice',
+    from: '2026-09-05T16:00:00.000Z',
+    to: '2026-09-06T16:00:00.000Z',
+  }]);
+});
+
+test('operator delivery routes expose only personal batches and reject foreign or broad export scopes', async () => {
+  const users = {
+    alice: { id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 },
+    reviewer: { id: 3, username: 'reviewer', role: 'REVIEWER', status: 'ACTIVE', credentialVersion: 1 },
+  };
+  const calls = [];
+  const repository = {
+    getUserByUsername: async (username) => users[username] ?? null,
+    getTaskAccess: async () => ({
+      id: 41, state: 'REVIEWED', assignedToUserId: 'bob', assignedToAccountId: 9,
+    }),
+    listDeliveryBatches: async (options, { actor }) => {
+      calls.push(['list', options, actor]);
+      return { items: [], total: 0 };
+    },
+    confirmDeliveryBatch: async (id, { actor }) => {
+      calls.push(['confirm', id, actor]);
+      return { publicId: id, status: 'DELIVERED' };
+    },
+    createDeliveryBatch: async () => assert.fail('foreign ownership must reject before batch creation'),
+    getDeliveryBatchArtifact: async () => assert.fail('foreign ownership must reject before artifact access'),
+    recordDeliveryBatchDownload: async () => assert.fail('foreign ownership must reject before download'),
+  };
+  const headers = (username) => ({
+    'X-Actor-User-Id': String(users[username].id), 'X-Actor-Username': username,
+    'X-Actor-Role': users[username].role, 'X-Actor-Credential-Version': '1',
+  });
+  await withServer(repository, async (root) => {
+    const list = await fetch(`${root}/v1/delivery-batches?limit=20&offset=0`, {
+      headers: headers('alice'),
+    });
+    assert.equal(list.status, 200);
+
+    const confirmed = await fetch(`${root}/v1/delivery-batches/12345678-1234-4234-8234-123456789abc/confirm`, {
+      method: 'POST', headers: headers('alice'),
+    });
+    assert.equal(confirmed.status, 200);
+
+    const broad = await fetch(`${root}/v1/delivery-pool/archive`, {
+      method: 'POST',
+      headers: { ...headers('alice'), 'content-type': 'application/json' },
+      body: JSON.stringify({ scope: 'ALL_READY' }),
+    });
+    assert.equal(broad.status, 403);
+    assert.equal((await broad.json()).error.code, 'FORBIDDEN');
+
+    const foreign = await fetch(`${root}/v1/delivery-pool/archive`, {
+      method: 'POST',
+      headers: { ...headers('alice'), 'content-type': 'application/json' },
+      body: JSON.stringify({ scope: 'SELECTED', taskIds: [41] }),
+    });
+    assert.equal(foreign.status, 403);
+    assert.equal((await foreign.json()).error.code, 'FORBIDDEN');
+
+    const reviewer = await fetch(`${root}/v1/delivery-batches`, {
+      headers: headers('reviewer'),
+    });
+    assert.equal(reviewer.status, 403);
   }, { enforceUserAuth: true });
 
+  assert.equal(calls[0][0], 'list');
+  assert.equal(calls[0][2].userId, 2);
+  assert.deepEqual(calls[1].slice(0, 2), [
+    'confirm', '12345678-1234-4234-8234-123456789abc',
+  ]);
+  assert.equal(calls[1][2].username, 'alice');
+});
+
+test('personal task listing forwards the copy QA return filter without trusting a synthetic task state', async () => {
+  const calls = [];
+  const user = { id: 2, username: 'alice', role: 'USER', status: 'ACTIVE', credentialVersion: 1 };
+  const repository = {
+    getUserByUsername: async () => user,
+    listTasks: async (input) => { calls.push(input); return { items: [], total: 0, limit: 20, offset: 0 }; },
+  };
+  await withServer(repository, async (root) => {
+    const headers = {
+      'X-Actor-User-Id': '2', 'X-Actor-Username': 'alice', 'X-Actor-Role': 'USER',
+      'X-Actor-Credential-Version': '1',
+    };
+    const response = await fetch(`${root}/v1/tasks?personal=true&states=COPY_REVIEW_PENDING,COPY_QC_PENDING&copyQaReturned=true&includeTotal=true`, { headers });
+    assert.equal(response.status, 200);
+    assert.equal((await fetch(`${root}/v1/tasks?personal=true&copyQaReturned=maybe`, { headers })).status, 400);
+  }, { enforceUserAuth: true });
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].assignedToUserId, undefined);
-  assert.equal(calls[0].visibleToUserId, 'alice');
-  assert.equal(calls[0].visibleToAccountId, 2);
-  assert.equal(calls[0].excludeUnassigned, false);
+  assert.equal(calls[0].copyQaReturnedOnly, true);
+  assert.equal(calls[0].state, undefined);
+  assert.equal(calls[0].states, 'COPY_REVIEW_PENDING,COPY_QC_PENDING');
 });
 
 test('an unassigned task creator can read and cancel machine work without gaining review access', async () => {
@@ -673,12 +1029,14 @@ test('task ownership comes from the UI server identity and is forwarded to task 
       body: JSON.stringify({ nodeId: 'node-a', createdByUserId: 'forged', tasks: [{ query: '我的任务' }] }),
     });
     assert.equal(created.status, 201);
-    const listed = await fetch(`${root}/v1/tasks?createdByUserId=admin&createdByAccountId=1&includeTotal=true`);
+    const listed = await fetch(`${root}/v1/tasks?createdByUserId=admin&createdByAccountId=1&assignedToUserId=alice&assignedToAccountId=2&includeTotal=true`);
     assert.equal(listed.status, 200);
   });
   assert.equal(calls[0].createdByUserId, 'admin');
   assert.equal(calls[1].createdByUserId, 'admin');
   assert.equal(calls[1].createdByAccountId, '1');
+  assert.equal(calls[1].assignedToUserId, 'alice');
+  assert.equal(calls[1].assignedToAccountId, '2');
   assert.equal(calls[1].nodeId, undefined);
 });
 
@@ -714,12 +1072,17 @@ test('administrator batch archive returns one outer ZIP for selected deliverable
       tasks.set(id, {
         id, state: 'REVIEWED', currentCopyRevisionId: 1, currentImageRunId: `run-${id}`,
         copyRevisions: [{ id: 1, content: { copy: { title: `任务${id}`, body: '正文', tags: [] } } }],
-        imageRuns: [], assets: [{ id, taskId: id, imageRunId: `run-${id}`, mediaType: 'image/png', originalName: '图片.png' }],
+        imageRuns: [{ id: `run-${id}`, result: { images: [{ assetId: id }] } }],
+        assets: [{ id, taskId: id, imageRunId: `run-${id}`, mediaType: 'image/png', originalName: '图片.png' }],
       });
       assets.set(id, { id, taskId: id, mediaType: 'image/png', originalName: '图片.png', storagePath });
     }
     await withServer({
       getTask: async (id) => tasks.get(Number(id)),
+      assertTaskReadyForDelivery: async (id) => ({
+        taskId: Number(id), copyRevisionId: 1, imageRunId: `run-${id}`,
+      }),
+      assertTasksReadyForDelivery: async (bindings) => bindings,
       getAsset: async (id) => assets.get(Number(id)),
     }, async (root) => {
       const response = await fetch(`${root}/v1/tasks/batch-archive`, {
@@ -728,7 +1091,13 @@ test('administrator batch archive returns one outer ZIP for selected deliverable
       assert.equal(response.status, 200);
       assert.match(response.headers.get('content-disposition'), /task-resources-batch\.zip/u);
       const zip = await JSZip.loadAsync(await response.arrayBuffer());
-      assert.deepEqual(Object.keys(zip.files).sort(), ['任务-12-资源包.zip', '任务-13-资源包.zip']);
+      assert.deepEqual(Object.keys(zip.files).sort(), [
+        '未归属甲方批次/任务-12-资源包/01-图片.png',
+        '未归属甲方批次/任务-12-资源包/任务12.txt',
+        '未归属甲方批次/任务-13-资源包/01-图片.png',
+        '未归属甲方批次/任务-13-资源包/任务13.txt',
+      ]);
+      assert.equal(await zip.file('未归属甲方批次/任务-12-资源包/01-图片.png').async('string'), 'image-12');
     }, { storageRoot });
   } finally {
     await rm(storageRoot, { recursive: true, force: true });
@@ -855,7 +1224,8 @@ test('an in-flight batch archive is rejected when the administrator account is r
   const task = {
     id: 12, state: 'REVIEWED', currentCopyRevisionId: 1, currentImageRunId: 'run-12',
     copyRevisions: [{ id: 1, content: { copy: { title: '旧会话不可下载', body: '正文', tags: [] } } }],
-    imageRuns: [], assets: [{ id: 12, taskId: 12, imageRunId: 'run-12', mediaType: 'image/png', originalName: '图片.png' }],
+    imageRuns: [{ id: 'run-12', result: { images: [{ assetId: 12 }] } }],
+    assets: [{ id: 12, taskId: 12, imageRunId: 'run-12', mediaType: 'image/png', originalName: '图片.png' }],
   };
   try {
     await mkdir(directory, { recursive: true });
@@ -864,6 +1234,9 @@ test('an in-flight batch archive is rejected when the administrator account is r
       getUserByUsername: async () => current,
       getUserByIdentity: async (actor) => current.id === actor.userId ? current : null,
       getTask: async () => task,
+      assertTaskReadyForDelivery: async () => ({
+        taskId: 12, copyRevisionId: 1, imageRunId: 'run-12',
+      }),
       getAsset: async () => {
         entered.resolve();
         await release.promise;
@@ -887,6 +1260,180 @@ test('an in-flight batch archive is rejected when the administrator account is r
       assert.equal(response.headers.get('content-disposition'), null);
       assert.equal(response.headers.get('cache-control'), 'no-store');
       assert.equal((await response.json()).error.code, 'SESSION_STALE');
+    }, { storageRoot, enforceUserAuth: true });
+  } finally {
+    await rm(storageRoot, { recursive: true, force: true });
+  }
+});
+
+test('only administrators can directly pass one pending copy QA task', async () => {
+  const calls = [];
+  const users = {
+    admin: { id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credentialVersion: 1 },
+    reviewer: { id: 2, username: 'reviewer', role: 'REVIEWER', status: 'ACTIVE', credentialVersion: 1 },
+    user: { id: 3, username: 'user', role: 'USER', status: 'ACTIVE', credentialVersion: 1 },
+  };
+  const repository = {
+    getUserByUsername: async (username) => users[username] ?? null,
+    getTaskAccess: async () => ({ id: 7, state: 'COPY_QC_PENDING', createdByUserId: 'user',
+      createdByAccountId: 3, assignedToUserId: 'user', assignedToAccountId: 3 }),
+    adminDirectApproveCopyQa: async (taskId, input, options) => {
+      calls.push({ taskId, input, options });
+      return { id: Number(taskId), state: 'IMAGE_QUEUED' };
+    },
+  };
+  const headers = (username) => ({
+    'Content-Type': 'application/json',
+    'X-Actor-User-Id': String(users[username].id),
+    'X-Actor-Username': username,
+    'X-Actor-Role': users[username].role,
+    'X-Actor-Credential-Version': '1',
+  });
+  const input = {
+    requestId: '88888888-8888-4888-8888-888888888888',
+    expectedCopyRevisionId: 901,
+  };
+  await withServer(repository, async (root) => {
+    for (const username of ['reviewer', 'user']) {
+      const denied = await fetch(`${root}/v1/tasks/7/admin-direct-copy-qa`, {
+        method: 'POST', headers: headers(username), body: JSON.stringify(input),
+      });
+      assert.equal(denied.status, 403);
+      assert.equal((await denied.json()).error.code, 'FORBIDDEN');
+    }
+    const allowed = await fetch(`${root}/v1/tasks/7/admin-direct-copy-qa`, {
+      method: 'POST', headers: headers('admin'), body: JSON.stringify(input),
+    });
+    assert.equal(allowed.status, 200);
+    assert.equal((await allowed.json()).data.state, 'IMAGE_QUEUED');
+  }, { enforceUserAuth: true });
+  assert.deepEqual(calls, [{
+    taskId: '7',
+    input,
+    options: { actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 } },
+  }]);
+});
+
+test('task listing forwards cursor navigation and rejects an invalid tail-page flag', async () => {
+  const calls = [];
+  const repository = {
+    listTasks: async (input) => { calls.push(input); return { items: [], total: 0, limit: 20, offset: 0 }; },
+  };
+  await withServer(repository, async (root) => {
+    const listed = await fetch(`${root}/v1/tasks?limit=20&offset=0&includeTotal=true&cursor=opaque-token`);
+    assert.equal(listed.status, 200);
+    const invalid = await fetch(`${root}/v1/tasks?lastPage=yes&includeTotal=true`);
+    assert.equal(invalid.status, 400);
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].cursor, 'opaque-token');
+  assert.equal(calls[0].lastPage, false);
+});
+
+test('delivery listing forwards an exact package name and returns package facets', async () => {
+  let received;
+  const page = {
+    items: [{ id: 1, taskId: 42, query: '收纳', queryPackageId: 9, queryPackageName: '九月选题' }],
+    total: 1,
+    facets: {
+      queryPackages: [{ id: 9, name: '九月选题', count: 1, unuploadedCount: 1, publishedCount: 0, revokedCount: 0 }],
+      unassigned: null,
+    },
+  };
+  await withServer({
+    listDeliveryPool: async (options) => {
+      received = options;
+      return page;
+    },
+  }, async (root) => {
+    const response = await fetch(`${root}/v1/delivery-pool?queryPackageName=%E4%B9%9D%E6%9C%88%E9%80%89%E9%A2%98&limit=20&offset=0&includeTotal=true`);
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).data, page);
+  });
+  assert.deepEqual(received, {
+    limit: '20', offset: '0', includeTotal: true, queryPackageName: '九月选题',
+  });
+});
+
+test('copy QA listing forwards package-name and personnel search through the administrator route', async () => {
+  let received;
+  await withServer({
+    listCopyQaItems: async (options) => {
+      received = options;
+      return [];
+    },
+  }, async (root) => {
+    const response = await fetch(`${root}/v1/copy-qa/items?status=PENDING&queryPackageName=%E4%B9%9D%E6%9C%88%E9%80%89%E9%A2%98&personName=%E8%B4%A8%E6%A3%80%E7%94%B2&limit=20&offset=0`);
+    assert.equal(response.status, 200);
+  });
+  assert.deepEqual(received, {
+    status: 'PENDING', queryPackageName: '九月选题', personName: '质检甲', limit: '20', offset: '0',
+  });
+});
+
+test('image QA listing forwards personnel search through the administrator route', async () => {
+  let received;
+  await withServer({
+    listImageQaItems: async (options) => {
+      received = options;
+      return { items: [], total: 0 };
+    },
+  }, async (root) => {
+    const response = await fetch(`${root}/v1/image-qa/items?status=PENDING&personName=%E5%9B%BE%E7%89%87%E6%A0%87%E6%B3%A8&limit=20&offset=0`);
+    assert.equal(response.status, 200);
+  });
+  assert.deepEqual(received, {
+    status: 'PENDING', personName: '图片标注', limit: '20', offset: '0',
+  });
+});
+
+test('a staged full delivery export is discarded when the administrator account is replaced', async () => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'xhs-delivery-pool-export-stale-'));
+  const directory = join(storageRoot, 'tasks', '12', 'image-runs', 'run-12');
+  const storagePath = join(directory, 'image.png');
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  let current = { id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credentialVersion: 1 };
+  const task = {
+    id: 12, state: 'REVIEWED', currentCopyRevisionId: 1, currentImageRunId: 'run-12',
+    copyRevisions: [{ id: 1, content: { copy: { title: '失效会话不可导出', body: '正文', tags: [] } } }],
+    imageRuns: [{ id: 'run-12', result: { images: [{ assetId: 12 }] } }],
+    assets: [{ id: 12, taskId: 12, imageRunId: 'run-12', mediaType: 'image/png', originalName: '图片.png' }],
+  };
+  try {
+    await mkdir(directory, { recursive: true });
+    await writeFile(storagePath, 'image-12');
+    await withServer({
+      getUserByUsername: async () => current,
+      getUserByIdentity: async (actor) => current.id === actor.userId ? current : null,
+      listAllDeliveryPoolTaskIds: async () => [12],
+      getTask: async () => task,
+      assertTaskReadyForDelivery: async () => ({
+        taskId: 12, copyRevisionId: 1, imageRunId: 'run-12',
+      }),
+      getAsset: async () => {
+        entered.resolve();
+        await release.promise;
+        return { id: 12, taskId: 12, mediaType: 'image/png', originalName: '图片.png', storagePath };
+      },
+    }, async (root) => {
+      const pending = fetch(`${root}/v1/delivery-pool/archive`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'X-Actor-User-Id': '1', 'X-Actor-Username': 'admin',
+          'X-Actor-Role': 'ADMIN', 'X-Actor-Credential-Version': '1',
+        },
+        body: JSON.stringify({ scope: 'ALL_READY' }),
+      });
+      await entered.promise;
+      current = { ...current, id: 9 };
+      release.resolve();
+      const response = await pending;
+      assert.equal(response.status, 401);
+      assert.equal(response.headers.get('content-disposition'), null);
+      assert.equal((await response.json()).error.code, 'SESSION_STALE');
+      assert.deepEqual(await readdir(join(storageRoot, '.delivery-exports')), []);
     }, { storageRoot, enforceUserAuth: true });
   } finally {
     await rm(storageRoot, { recursive: true, force: true });

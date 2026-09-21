@@ -2,7 +2,7 @@
 
 import { Textarea } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-
+import { ToastFeedback } from '@/components/ui/sonner';
 import { Save } from 'lucide-react';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 
@@ -12,10 +12,15 @@ import { RemoteLayoutPresetsSettings } from '../settings/layout-presets-settings
 import { LayoutCatalogSettings } from '../settings/layout-catalog-settings';
 import { HumanQualitySettingsPanel } from '../settings/human-quality-settings-panel';
 import { QualitySettingsOverview } from '../settings/quality-settings-overview';
+import { WorkflowQualitySettingsPanel } from '../settings/workflow-quality-settings-panel';
 import { SettingsWorkspace, type SettingsSectionId } from '../settings/settings-workspace';
+import { XhsQuerySearchSettingsPanel } from '../settings/xhs-query-search-settings-panel';
 import { normalizeWebSearchSettings } from '../../src/web-search-config.mjs';
 
 const endpoint = (path: string) => `/api/control-plane${path}`;
+const imageEditRepairLimit = (value: unknown) => Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 2
+  ? Number(value)
+  : 2;
 
 export function CentralDataWorkbench() {
   const [data, setData] = useState<any[]>([]);
@@ -27,7 +32,8 @@ export function CentralDataWorkbench() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      setData(await apiRequest<any[]>(endpoint('/v1/settings')));
+      const records = await apiRequest<any[]>(endpoint('/v1/settings'));
+      setData(records);
       setError('');
     } catch (refreshError) {
       setError(refreshError instanceof Error ? refreshError.message : '中心数据读取失败');
@@ -54,6 +60,7 @@ export function CentralDataWorkbench() {
       const latest = await apiRequest<any[]>(endpoint('/v1/settings'));
       const latestProduction = latest.find(item => item.key === 'production')?.value ?? {};
       value.layoutPresets = latestProduction.layoutPresets ?? [];
+      value.imageEditRepairMaxAttempts = imageEditRepairLimit(latestProduction.imageEditRepairMaxAttempts);
       value.modelApi = {
         ...value.modelApi,
         ...normalizeWebSearchSettings(latestProduction.modelApi ?? {}),
@@ -83,19 +90,33 @@ export function CentralDataWorkbench() {
           id: 'generation',
           title: '生成与模型',
           description: '联网检索与中心生成策略',
-          children: <WebSearchSettingsPanel onSaved={refresh} />,
+          children: <>
+            <WebSearchSettingsPanel onSaved={refresh} />
+            <XhsQuerySearchSettingsPanel onSaved={refresh} />
+          </>,
         },
         {
           id: 'quality',
           title: '质量与审核',
           description: '评分标准、扣分原因与说明',
-          children: <><QualitySettingsOverview /><HumanQualitySettingsPanel /></>,
+          children: <><WorkflowQualitySettingsPanel /><QualitySettingsOverview /><HumanQualitySettingsPanel /></>,
         },
         {
           id: 'image',
           title: '图片与输出',
           description: '布局模板与图片策略',
-          children: <LayoutCatalogSettings remote />,
+          children: <>
+            <LayoutCatalogSettings remote />
+            <section className="panel settings-section" aria-labelledby="central-image-edit-repair-heading">
+              <div className="panel-head"><div><h2 id="central-image-edit-repair-heading">图片模型标识单次生成</h2><p className="subtle">图片模型融合方式只调用一次图片编辑模型，不使用蒙版或局部像素贴回；校验失败后不会自动二次修改。SVG + Sharp 程序标识不使用此配置。</p></div></div>
+              <div className="form-grid compact-settings-grid">
+                <div className="field">
+                  <span>自动修复次数：0 次</span>
+                  <small>历史配置字段仅为兼容保留，执行时不会读取；需要重试时必须由标注主动发起。</small>
+                </div>
+              </div>
+            </section>
+          </>,
         },
         {
           id: 'advanced',
@@ -109,7 +130,7 @@ export function CentralDataWorkbench() {
             <RemoteLayoutPresetsSettings initialPresets={production.value?.layoutPresets ?? []} onSaved={async () => { await refresh(); setMessage('旧版自定义布局已保存。新版布局请在布局模板库中维护。'); }} />
             <form className="panel settings-section" onSubmit={updateProduction}>
               <div className="panel-head"><div><span className="section-kicker">Remote settings</span><h2>其他生产配置 JSON</h2><p className="subtle">面向高级维护；布局目录、旧版布局和人工评分标准不会在这里重复出现。</p></div><Save size={18} /></div>
-              <div className="field"><label htmlFor="central-production-settings">未结构化配置</label><Textarea className="textarea central-json-editor" id="central-production-settings" name="value" required defaultValue={JSON.stringify(Object.fromEntries(Object.entries(production?.value ?? {}).filter(([key]) => !['layoutCatalog', 'layoutPresets', 'humanQualityReasons'].includes(key))), null, 2)} /></div>
+              <div className="field"><label htmlFor="central-production-settings">未结构化配置</label><Textarea className="textarea central-json-editor" id="central-production-settings" name="value" required defaultValue={JSON.stringify(Object.fromEntries(Object.entries(production?.value ?? {}).filter(([key]) => !['layoutCatalog', 'layoutPresets', 'humanQualityReasons', 'imageEditRepairMaxAttempts'].includes(key))), null, 2)} /></div>
               <div className="inline"><Button unstyled className="button primary" disabled={busy || loading}>保存新版本</Button><small>模型 API 密钥仍只通过执行机环境变量提供，不要写入这里。</small></div>
             </form>
             </>}
@@ -118,7 +139,7 @@ export function CentralDataWorkbench() {
       ]}
     />
 
-    {message && <div className="notice success" role="status">{message}</div>}
+    <ToastFeedback id="central-data-feedback" message={message} />
     {error && <div className="notice error" role="alert">{error}</div>}
   </div>;
 }

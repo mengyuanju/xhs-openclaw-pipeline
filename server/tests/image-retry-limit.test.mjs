@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
+import { routeManualCopyApproval } from '../src/copy-quality-control.mjs';
 
 const executionId = '47d841f5-3808-46f0-9f2a-fa9781379b38';
 
@@ -91,7 +92,13 @@ test('image retry claim is pinned to its previous executor while fresh work rema
   const client = {
     release() {},
     async query(sql, values) {
-      if (sql.includes('SELECT * FROM executor_nodes')) return { rows: [{ id: 'other-node', image_worker_enabled: true }] };
+      if (sql.includes('FROM executor_nodes n') && sql.includes('codex_concurrency_pools')) return { rows: [{
+        id: 'other-node', image_worker_enabled: true, codex_pool_id: 'pool-a',
+        codex_total_concurrency: 1, codex_image_concurrency: 1,
+      }] };
+      if (sql.includes('COUNT(*)') && sql.includes('task_executions')) {
+        return { rows: [{ total_count: 0, image_count: 0 }] };
+      }
       if (sql.includes('SELECT last_assignee_user_id FROM execution_claim_cursors')) {
         return { rows: [{ last_assignee_user_id: null }] };
       }
@@ -101,7 +108,7 @@ test('image retry claim is pinned to its previous executor while fresh work rema
   };
   const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
   assert.equal(await repository.claimImage('other-node'), null);
-  assert.deepEqual(selection.values, ['IMAGE_QUEUED', 'other-node', null, 1]);
+  assert.deepEqual(selection.values, ['IMAGE_QUEUED', 'other-node', null, 1, 0]);
   assert.match(selection.sql, /pending_snapshot->'imageRetry'->>'nodeId' IS NULL/u);
   assert.match(selection.sql, /pending_snapshot->'imageRetry'->>'nodeId' = \$2/u);
   assert.match(selection.sql, /interval '5 seconds'/u);
@@ -150,10 +157,17 @@ test('re-approving an exhausted task clears its failure budget and queues review
       if (sql.includes('INSERT INTO human_quality_review_submissions')) return { rows: [{ review_session_id: values[0] }] };
       if (sql.includes('SELECT * FROM tasks WHERE id')) return { rows: [{
         id: 41, state: 'COPY_REVIEW_PENDING', current_stage: 'IMAGE_RETRY_EXHAUSTED', current_copy_revision_id: 12,
-        assigned_to_user_id: 'alice',
+        assigned_to_user_id: 'alice', production_batch_id: null, mandatory_copy_qc: false,
+        ai_disclosure_enabled: true,
       }] };
       if (sql.includes('SELECT * FROM copy_revisions')) return { rows: [{ id: 12, content: {} }] };
       if (sql.includes('SELECT id FROM executor_nodes')) return { rows: [{ id: 'reviewer' }] };
+      if (sql.includes('UPDATE copy_revisions')) return { rows: [{ id: 12, content: {} }] };
+      if (sql.includes('INSERT INTO copy_approval_events')) return { rows: [{
+        id: 1, task_id: values[0], copy_revision_id: values[1], assessment_id: values[2],
+        approval_mode: values[3], approved_by_account_id: values[4], approved_by_username: values[5],
+        review_session_id: values[6], content_sha256: values[7],
+      }] };
       if (sql.includes('UPDATE tasks SET')) {
         update = { sql, values };
         return { rows: [{ id: 41, state: 'IMAGE_QUEUED', current_copy_revision_id: 12 }] };
@@ -166,11 +180,59 @@ test('re-approving an exhausted task clears its failure budget and queues review
     revisionId: 12,
     nodeId: 'reviewer',
     decision: 'APPROVE',
-    originalScore: 2.5,
-    note: '轻微问题可接受',
+    originalScore: 3,
     reviewSessionId: '77777777-7777-4777-8777-777777777777',
   }, { reviewerUserId: 'reviewer' });
   assert.equal(task.state, 'IMAGE_QUEUED');
   assert.match(update.sql, /pending_snapshot = NULL/u);
-  assert.match(update.sql, /current_stage = 'IMAGE_QUEUED'/u);
+  assert.match(update.sql, /current_stage = \$2/u);
+  assert.equal(update.values[1], 'IMAGE_QUEUED');
+});
+
+test('edited copy after image retry exhaustion creates a new isolated mandatory QA round', async () => {
+  const calls = [];
+  const client = {
+    async query(sql, values = []) {
+      const source = String(sql);
+      calls.push({ sql: source, values });
+      if (source.includes('INSERT INTO copy_approval_events')) return { rows: [{
+        id: 70, content_sha256: values[7], approved_by_account_id: 3,
+        approved_by_username: 'alice',
+      }] };
+      if (source.includes('SELECT * FROM workflow_quality_settings')) return { rows: [{
+        version: 8, copy_sampling_enabled: true, copy_sampling_rate_bps: 1000,
+        blind_review_enabled: true, reviewer_batch_return_enabled: false,
+      }] };
+      if (source.includes('INSERT INTO production_batches')) return { rows: [{ id: 90 }] };
+      if (source.includes('INSERT INTO copy_sampling_freezes')) return { rows: [{ id: 91 }] };
+      if (source.includes('INSERT INTO copy_sampling_items')) return { rows: [{ id: 92, status: 'PENDING' }] };
+      if (source.includes('UPDATE tasks SET')) return { rows: [{
+        id: 41, state: 'COPY_QC_PENDING', current_stage: 'QC_MANDATORY_RECHECK',
+        current_copy_revision_id: 13, mandatory_copy_qc: true,
+        mandatory_copy_qc_origin: 'IMAGE_RETRY_REVIEW',
+      }] };
+      return { rows: [] };
+    },
+  };
+  const routed = await routeManualCopyApproval(client, {
+    task: {
+      id: 41, current_stage: 'IMAGE_RETRY_EXHAUSTED', production_batch_id: 4,
+      mandatory_copy_qc: false, mandatory_copy_qc_origin: null,
+    },
+    revision: { id: 13, content: { copy: { title: '已修改标题' } } },
+    assessment: null,
+    actor: { userId: 3, username: 'alice', role: 'USER' },
+    reviewSessionId: '77777777-7777-4777-8777-777777777777',
+    aiDisclosureEnabled: true,
+    retryExhaustedCopyChanged: true,
+  });
+  assert.equal(routed.task.state, 'COPY_QC_PENDING');
+  assert.equal(routed.samplingItem.status, 'PENDING');
+  const freeze = calls.find(({ sql }) => sql.includes('INSERT INTO copy_sampling_freezes'));
+  assert.equal(freeze.values[1], 90);
+  assert.equal(freeze.values[2], 8);
+  assert.equal(freeze.values[4], true);
+  const update = calls.find(({ sql }) => sql.includes('UPDATE tasks SET'));
+  assert.equal(update.values[4], 'IMAGE_RETRY_REVIEW');
+  assert.match(update.sql, /current_stage = 'QC_MANDATORY_RECHECK'/u);
 });

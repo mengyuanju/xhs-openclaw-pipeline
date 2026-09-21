@@ -1,15 +1,15 @@
-import { FileCheck2, FileText, Image as ImageIcon, Inbox, ListChecks, UserRound } from 'lucide-react';
+import { FileCheck2, FileText, Image as ImageIcon, Inbox, ListChecks, Trash2, UserRound } from 'lucide-react';
 
 export type TaskState =
-  | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_FAILED'
+  | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_QC_PENDING' | 'COPY_FAILED'
   | 'IMAGE_QUEUED' | 'IMAGE_RUNNING' | 'IMAGE_FAILED'
-  | 'MANUAL_ARCHIVE' | 'REVIEWED' | 'CANCELLED';
+  | 'MANUAL_ARCHIVE' | 'IMAGE_QC_PENDING' | 'IMAGE_REWORK_PENDING' | 'REVIEWED' | 'CANCELLED';
 
-export type ViewKey = 'PERSONAL' | 'UNASSIGNED' | 'ALL_COPY' | 'COPY_REVIEW' | 'IMAGE_WORK' | 'MANUAL_ARCHIVE' | 'COMPLETED' | 'ALL_JOBS';
+export type ViewKey = 'PERSONAL' | 'UNASSIGNED' | 'ALL_COPY' | 'COPY_REVIEW' | 'IMAGE_WORK' | 'MANUAL_ARCHIVE' | 'COMPLETED' | 'ALL_JOBS' | 'DISCARDED';
 export type TaskSort = 'priority:desc' | 'createdAt:desc' | 'createdAt:asc' | 'id:desc' | 'id:asc';
 
 export const TASK_SORT_OPTIONS: Array<{ value: TaskSort; label: string }> = [
-  { value: 'priority:desc', label: '待处理优先' },
+  { value: 'priority:desc', label: '任务优先级（含等待补偿）' },
   { value: 'createdAt:desc', label: '创建时间：最新在前' },
   { value: 'createdAt:asc', label: '创建时间：最早在前' },
   { value: 'id:desc', label: 'Query ID：从大到小' },
@@ -23,18 +23,44 @@ export function taskSortParams(sort: TaskSort) {
 
 export const TASK_STATE_PRIORITY: Record<TaskState, number> = {
   COPY_REVIEW_PENDING: 1,
-  MANUAL_ARCHIVE: 2,
-  COPY_RUNNING: 3,
-  IMAGE_RUNNING: 4,
-  COPY_FAILED: 5,
-  IMAGE_FAILED: 5,
-  COPY_QUEUED: 6,
-  IMAGE_QUEUED: 6,
-  REVIEWED: 7,
-  CANCELLED: 8,
+  COPY_QC_PENDING: 2,
+  MANUAL_ARCHIVE: 3,
+  IMAGE_REWORK_PENDING: 3,
+  IMAGE_QC_PENDING: 3,
+  COPY_RUNNING: 4,
+  IMAGE_RUNNING: 5,
+  COPY_FAILED: 6,
+  IMAGE_FAILED: 6,
+  COPY_QUEUED: 7,
+  IMAGE_QUEUED: 7,
+  REVIEWED: 8,
+  CANCELLED: 9,
 };
 
-export function compareTasksByStatePriority<T extends { id: number; state: TaskState; createdAt: string }>(left: T, right: T) {
+export const TASK_STATE_FILTER_GROUPS: Array<{ label: string; states: TaskState[] }> = [
+  {
+    label: '文案阶段',
+    states: ['COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_QC_PENDING', 'COPY_FAILED'],
+  },
+  {
+    label: '图片阶段',
+    states: ['IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'IMAGE_QC_PENDING', 'IMAGE_REWORK_PENDING'],
+  },
+  {
+    label: '结束状态',
+    states: ['REVIEWED', 'CANCELLED'],
+  },
+];
+
+export const TASK_STATE_FILTER_ORDER: TaskState[] = TASK_STATE_FILTER_GROUPS.flatMap((group) => group.states);
+
+export function compareTasksByStatePriority<T extends { id: number; state: TaskState; createdAt: string; priorityPaused?: boolean; queueEnteredAt?: string; effectivePriority?: number }>(left: T, right: T) {
+  if (left.queueEnteredAt && right.queueEnteredAt) {
+    const paused = Number(left.priorityPaused === true) - Number(right.priorityPaused === true);
+    const rank = (Date.parse(left.queueEnteredAt) - (left.effectivePriority ?? 100) * 600_000)
+      - (Date.parse(right.queueEnteredAt) - (right.effectivePriority ?? 100) * 600_000);
+    return paused || rank || left.id - right.id;
+  }
   const priorityDifference = TASK_STATE_PRIORITY[left.state] - TASK_STATE_PRIORITY[right.state];
   if (priorityDifference) return priorityDifference;
   const leftCreatedAt = Date.parse(left.createdAt);
@@ -44,7 +70,7 @@ export function compareTasksByStatePriority<T extends { id: number; state: TaskS
   return createdAtDifference || right.id - left.id;
 }
 
-export function compareTasks<T extends { id: number; state: TaskState; createdAt: string }>(
+export function compareTasks<T extends { id: number; state: TaskState; createdAt: string; priorityPaused?: boolean; queueEnteredAt?: string; effectivePriority?: number }>(
   left: T,
   right: T,
   sort: TaskSort,
@@ -73,12 +99,12 @@ export const WORKBENCH_VIEWS: Array<{
   {
     key: 'PERSONAL',
     href: '/workbench/personal',
-    label: '个人作业中心',
-    description: '显示当前账号提交或负责的 Query；机器阶段可跟踪进度，分配后按权限审核或处理。',
+    label: '我的作业',
+    description: '查询当前负责或创建的作业，处理审核与返修，也可按日期查看本人完成历史。',
     icon: UserRound,
     states: [
-      'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_FAILED',
-      'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'REVIEWED',
+      'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_QC_PENDING', 'COPY_FAILED',
+      'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'IMAGE_QC_PENDING', 'IMAGE_REWORK_PENDING', 'REVIEWED',
     ],
     personalOnly: true,
   },
@@ -98,7 +124,7 @@ export const WORKBENCH_VIEWS: Array<{
     label: '全部文案任务',
     description: '显示所有用户待执行、执行中和执行失败的文案任务，可进入详情重试。',
     icon: FileText,
-    states: ['COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED'],
+    states: ['COPY_QUEUED', 'COPY_RUNNING', 'COPY_QC_PENDING', 'COPY_FAILED'],
   },
   {
     key: 'COPY_REVIEW',
@@ -119,18 +145,19 @@ export const WORKBENCH_VIEWS: Array<{
   {
     key: 'MANUAL_ARCHIVE',
     href: '/workbench/manual-archive',
-    label: '人工归档',
-    description: '审核生成的图文，由审核员选择审核通过、重试生图或废弃。',
+    label: '图片初审与返修',
+    description: '任务负责人核对并修改自己负责的图片；管理员改派给自己后也可初审和返修。',
     icon: FileCheck2,
-    states: ['MANUAL_ARCHIVE'],
+    states: ['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING'],
   },
   {
     key: 'COMPLETED',
     href: '/workbench/completed',
-    label: '已完成',
-    description: '显示图片已审核通过的图文任务，可查看详情和下载资源。',
+    label: '交付池',
+    description: '只显示图片抽检门禁已放行且交付条目就绪的任务，可查看详情和下载资源。',
     icon: FileCheck2,
     states: ['REVIEWED'],
+    adminOnly: true,
   },
   {
     key: 'ALL_JOBS',
@@ -138,7 +165,16 @@ export const WORKBENCH_VIEWS: Array<{
     label: '全部作业',
     description: '查看所有账号和执行节点的任务，包含生图失败、已废弃与历史任务。角色按创建者当前角色筛选。',
     icon: ListChecks,
-    states: Object.keys(TASK_STATE_PRIORITY) as TaskState[],
+    states: TASK_STATE_FILTER_ORDER,
+    adminOnly: true,
+  },
+  {
+    key: 'DISCARDED',
+    href: '/workbench/discarded',
+    label: '废弃池',
+    description: '查看已废弃任务；管理员可恢复任务继续处理，历史文案、图片和审核记录保留。',
+    icon: Trash2,
+    states: ['CANCELLED'],
     adminOnly: true,
   },
 ];

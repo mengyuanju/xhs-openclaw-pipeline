@@ -6,9 +6,10 @@ import { createControlPlaneApp } from './http-server.mjs';
 import { createPostgresControlPlaneRepository } from './postgres-repository.mjs';
 import { DEFAULT_PRODUCTION_SETTINGS, loadDefaultPrompts } from './defaults.mjs';
 import { startExecutionRecovery } from './execution-recovery.mjs';
+import { applyServerEnvironment, loadServerEnvironment } from './server-environment.mjs';
 import { startAutoAssignmentReplenishment } from './task-auto-assignment-runner.mjs';
 
-function configuration(environment = process.env) {
+export function configuration(environment = process.env) {
   const connectionString = environment.DATABASE_URL?.trim();
   if (!connectionString) throw new Error('DATABASE_URL is required');
   const port = Number(environment.CONTROL_PLANE_PORT ?? 4310);
@@ -28,7 +29,13 @@ async function main() {
   if (!['init', 'serve'].includes(command)) {
     throw new Error('usage: node src/cli.mjs <init|serve>');
   }
-  const config = configuration();
+  const args = process.argv.slice(3);
+  if (args.some((arg) => !arg.startsWith('--environment='))) {
+    throw new Error('usage: node src/cli.mjs <init|serve> [--environment=development|production]');
+  }
+  const selectedEnvironment = loadServerEnvironment({ args });
+  applyServerEnvironment(selectedEnvironment.environment);
+  const config = configuration(selectedEnvironment.environment);
   const repository = createPostgresControlPlaneRepository(config);
   if (command === 'init') {
     await repository.initialize();
@@ -45,7 +52,7 @@ async function main() {
       await repository.publishPromptVersion(version.id);
     }
     await repository.close();
-    console.log('Control plane database and storage are initialized.');
+    console.log(`Control plane database and storage are initialized (${selectedEnvironment.profile}).`);
     return;
   }
 
@@ -57,16 +64,19 @@ async function main() {
     const listeningServer = app.listen(config.port, config.host, () => resolvePromise(listeningServer));
     listeningServer.once('error', rejectPromise);
   });
-  console.log(`Control plane listening on http://${config.host}:${config.port}`);
+  console.log(`Control plane listening on http://${config.host}:${config.port} (${selectedEnvironment.profile}).`);
   const stopRecovery = startExecutionRecovery(repository);
   const stopAutoAssignment = startAutoAssignmentReplenishment(repository);
+  console.log('Image edit queue is assigned to registered image executors.');
 
   let stoppingPromise = null;
   function stop() {
     if (stoppingPromise) return stoppingPromise;
     stoppingPromise = (async () => {
       await Promise.all([stopRecovery(), stopAutoAssignment()]);
-      await new Promise((resolvePromise) => server.close(resolvePromise));
+      const serverClosed = new Promise((resolvePromise) => server.close(resolvePromise));
+      await app.context.disposeControlPlaneResources?.();
+      await serverClosed;
       await repository.close();
     })();
     return stoppingPromise;

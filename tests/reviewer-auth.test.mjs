@@ -71,6 +71,35 @@ describe('reviewer session authentication', () => {
     });
   });
 
+  it('carries explicit workflow permissions in a signed user session', () => {
+    const issuedAt = 1_800_000_000;
+    const token = createSessionToken(SESSION_SECRET, {
+      nowSeconds: issuedAt,
+      actor: {
+        userId: 43,
+        username: 'ordinary-worker',
+        roles: ['USER'],
+        credentialVersion: 4,
+        copyReviewEnabled: true,
+        copyQcEnabled: false,
+        imageQcEnabled: false,
+      },
+    });
+
+    assert.deepEqual(verifySessionToken(token, SESSION_SECRET, { nowSeconds: issuedAt + 1 }), {
+      subject: 'user',
+      userId: 43,
+      username: 'ordinary-worker',
+      roles: ['USER'],
+      credentialVersion: 4,
+      copyReviewEnabled: true,
+      copyQcEnabled: false,
+      imageQcEnabled: false,
+      issuedAt,
+      expiresAt: issuedAt + (8 * 60 * 60),
+    });
+  });
+
   it('authenticates an active reviewer without revealing whether a username exists', async () => {
     const passwordHash = await hashAdminPassword('correct horse battery staple');
     const lookupUser = (username) => username === 'query-qc-01' ? {

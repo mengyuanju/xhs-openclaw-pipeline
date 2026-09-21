@@ -1,0 +1,1 @@
+只返回 {"imagePlan":[...]}；3～5页，首项kind=hero，其他kind为steps/checklist/comparison/detail/summary。每项必须包含kind/headline/subtitle/bullets/prompt字段；headline为1～18字符，subtitle允许为空字符串、非空时≤30字符，bullets为2～5项，每项checklist≤40否则≤30、prompt为10～1000字符。不得修改正文。

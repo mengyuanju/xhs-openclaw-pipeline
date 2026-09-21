@@ -79,7 +79,11 @@ test('missing center Query template remains editable as an unpublished candidate
   const existing = { id: 8, kind: 'TEXT_SYSTEM', name: '人工文案', versions: [{ id: 9, content: '保留人工原文' }] };
   const catalog = PROMPT_CATALOG.map((item) => ({ ...item, candidate: defaultBusinessPrompt(item.kind) }));
   const templates = promptTemplatesForEditing([existing], catalog);
-  assert.equal(templates.find(({ kind }) => kind === 'TEXT_SYSTEM'), existing);
+  const textTemplate = templates.find(({ kind }) => kind === 'TEXT_SYSTEM');
+  assert.equal(textTemplate.id, existing.id);
+  assert.equal(textTemplate.versions, existing.versions);
+  assert.equal(textTemplate.name, existing.name);
+  assert.equal(textTemplate.candidate, defaultBusinessPrompt('TEXT_SYSTEM'));
   const query = templates.find(({ kind }) => kind === 'QUERY_REVIEW_SYSTEM');
   assert.equal(query.id, null);
   assert.deepEqual(query.versions, []);
@@ -91,7 +95,7 @@ test('policy saves while Query rules are unpublished only when screening is off,
   const store = createAdminStore(':memory:');
   try {
     for (const template of store.listPromptTemplates()) {
-      if (template.kind !== 'QUERY_REVIEW_SYSTEM' && template.versions[0].status === 'DRAFT') {
+      if (template.kind !== 'QUERY_REVIEW_SYSTEM' && template.versions[0]?.status === 'DRAFT') {
         store.publishPromptVersion(template.versions[0].id);
       }
     }

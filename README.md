@@ -7,13 +7,14 @@
 ## 当前功能与数据流
 
 - `/workbench/*`：个人任务、待审核派单、文案审核、生图、图文审核与归档；保留批量操作、重试、断点恢复、执行证据和资源下载。
+- `/query-packages`、`/copy-qa`、`/delivery-pool`：Query 词包筛选后自动进入文案生成、文案抽检和最终交付；创建作业时的词包名称作为任务快照保留，可用于下游列表搜索、按词包导出，以及由管理员按 10–200 条操作上限批量创建独立预览。预览 noteId 关联冻结交付条目，不与本地主键混用；独立盲评不暴露来源。
 - `/workbench-statistics`：个人与管理员作业效率统计。
 - `/prompts`：提示词版本、发布与回滚。任务使用冻结的执行快照，全局修改不会污染在途任务。
 - `/knowledge`：文案知识分析与发布；保留视觉知识及素材能力。
 - `/settings`：生产参数、布局模板、人工作业评分、文案提供方、联网搜索、模型及并发配置。
 - `/executors`、`/users`、`/profile`：执行机状态、用户管理与个人信息。
 
-普通 Query 进入全局文案队列时不预先绑定执行机或人工负责人，执行机按容量领取；文案生成完成后，系统才按自动派单池或管理员选择分配审核负责人。显式跳过文案审核的任务必须在创建时指定普通作业员或当前管理员。文案经人工审核后进入生图队列；只有启用图片能力的执行机可以领取。人工重试产生新的执行代次，旧执行不能覆盖新结果。
+普通 Query 进入全局文案队列时不预先绑定执行机或人工负责人，执行机按容量领取；文案生成完成后，系统才按自动派单池或管理员选择分配审核负责人。管理员手动派单时可选择启用中的审核员或普通作业员，也可选择自己，但不能选择其他管理员；自动派单池仍只包含普通作业员。显式跳过文案审核的任务同样必须在创建时按这套范围指定负责人。需要人工审核时，机器原稿只有 `3` 分可在不修改文案的情况下确认通过；`2` 分或 `2.5` 分必须实际修改标题、正文或标签，人工确认达标后系统把最终稿记录为 `3` 分。普通生产批次可能先进入文案抽检；抽检或图文终审打回的返工稿必须提交强制复检，提交本身不会立即开始生图。只有无需抽检、普通抽检完成或强制复检通过后，任务才进入待生图队列。图片审核仍允许 `2.5` 分或 `3` 分通过。只有启用图片能力的执行机可以领取待生图任务；人工重试产生新的执行代次，旧执行不能覆盖新结果。
 
 当前 Codex 图片执行失败时上报 `autoRetry:false`，进入 `IMAGE_FAILED`，由人工检查后从失败步骤继续。已验收图片不重画，上传失败仅补传；检查点缺失时明确报错。保留原节点 ID 和 `data/executor-work/<task-id>/`，详见 [生图断点恢复](docs/image-resume-spec.md)。中心仍保留其他调用方使用的有限自动重试协议。
 
@@ -59,6 +60,8 @@ npm run auth:setup
 npm run dev
 ```
 
+根目录已声明 `server` 与 `preview-service` 工作区；这一次安装会同时锁定并安装主站、中心服务和独立预览服务依赖。安装后可直接运行 `npm run typecheck:all`，无需再进入子目录补装依赖。
+
 默认打开 `http://127.0.0.1:3001`。登录由中心账户服务验证，初始管理员需按界面提示修改密码。
 
 ```powershell
@@ -66,6 +69,20 @@ npm run build
 npm start
 # 如需监听可信局域网：
 npm run start:lan
+```
+
+### Windows 后台常驻
+
+中心机可把正式 Web 和小红书搜索进程注册为当前 Windows 账号的后台计划任务。任务在登录时自动启动，不依赖命令窗口，异常退出后每分钟重启，并拒绝同一计划任务重复运行。搜索进程使用当前账号的小红书登录资料，因此不应改为 SYSTEM 账号运行。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install-project-service-tasks.ps1
+```
+
+服务日志按日期保存在 `service-logs/`，默认保留 14 天。首次安装时不要和手工进程重复启动；安装后重启或重新登录即可由计划任务接管。也可在手工进程正常停止后运行桌面的“启动全部服务”程序。卸载任务不会删除日志：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/uninstall-project-service-tasks.ps1
 ```
 
 执行机使用 `.env` 中的中心地址及稳定节点 ID，先完成预检：
@@ -79,6 +96,10 @@ npm run executor -- --disable-image-worker
 npm run executor -- --enable-image-worker
 ```
 
+启用图片通道后，同一个图片容量池会按中心统一优先级领取普通生图和人工改图；中心机不执行改图模型。升级时先升级并迁移中心，再更新所有图片执行机；新版图片执行机发现中心缺少 `imageEditExecutorVersion=12` 会拒绝启动。版本 12 执行机支持单目标产品以大致定位框直接编辑完整画面，不再因框未完整覆盖或包含持握手部而在付费模型前失败；产品替换结果仍会校验参考身份、替换数量、文字和无关内容。自动验收未通过的生成结果会隔离保存并显示，作业员可人工采用、从原图重试或按支持的失败类型定向补救。版本 3 执行机仅兼容确定性合成与历史恢复。
+
+图文规划重生成同样由文案执行机在 COPY 并发池中执行，中心机只负责冻结配置、排队和保存结果。中心报告 `copyImagePlanRegenerationVersion=2`；执行机管理页会显示每台文案执行机是否已支持该能力。旧执行机不会领取重生成作业。
+
 同机 Codex 默认总调用许可为 2、图片许可为 1；任务池容量和模型许可分别控制。详细配置见 [执行机并发](docs/executor-concurrency.md)。认证或额度失败会暂停新任务，解决原因后使用 `npm run agent:resume` 清除暂停。预检不消耗模型额度，也不能证明实际生成成功或持续吞吐量。
 
 ## 提供方与配置
@@ -91,12 +112,14 @@ npm run executor -- --enable-image-worker
 XHS_AGENT_PROVIDER=CODEX
 XHS_COPY_GENERATION_PROVIDER=CODEX
 XHS_WEB_SEARCH_PROVIDER=DEEPSEEK
-XHS_DEEPSEEK_SEARCH_MODEL=deepseek-v4-flash
+XHS_DEEPSEEK_SEARCH_MODEL=deepseek-v4-pro
 XHS_DEEPSEEK_SEARCH_TIMEOUT_MS=120000
 DEEPSEEK_API_KEY=
 ```
 
 Dots 使用 `XHS_DOTS_API_KEY`、`XHS_DOTS_BASE_URL`、`XHS_DOTS_MODEL`。Codex 模型和代理变量见 `.env.example`。模型调用使用参数数组、`shell:false`，模型输出和外部 Query 始终作为不可信输入验证。
+
+DeepSeek 搜索模型不使用版本白名单：生产配置或 `XHS_DEEPSEEK_SEARCH_MODEL` 可填写任意符合安全格式的模型 ID（最多 128 个字符），因此 DeepSeek 发布新模型时无需升级执行机代码。项目默认使用已验证能完成服务端 `web_search` 的 `deepseek-v4-pro`；切换模型前应先实测响应包含完成的 `web_search_call`，不能只以 HTTP 成功作为可用依据。
 
 `executor:deepseek-sim` 仍是内部流程联调入口。搜图或本地兜底结果明确标记为模拟，不能视为 Codex 原生生成，也不能作为真实模型验收证据。
 

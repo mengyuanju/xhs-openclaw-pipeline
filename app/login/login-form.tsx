@@ -2,10 +2,12 @@
 
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { ToastFeedback } from '@/components/ui/sonner';
 
 import { useState, type FormEvent } from 'react';
 
 import { apiRequest } from '../components/api-client';
+import { resolveLoginReturnPath } from './return-path';
 
 export function LoginForm({ nextPath, passwordChanged = false }: { nextPath: string; passwordChanged?: boolean }) {
   const [isBusy, setIsBusy] = useState(false);
@@ -17,17 +19,27 @@ export function LoginForm({ nextPath, passwordChanged = false }: { nextPath: str
     setError('');
     const form = new FormData(event.currentTarget);
     try {
-      const result = await apiRequest<{ homePath: string; role: string; mustChangePassword: boolean }>('/api/auth/login', {
+      const result = await apiRequest<{
+        homePath: string;
+        role: string;
+        mustChangePassword: boolean;
+        copyReviewEnabled: boolean;
+        copyQcEnabled: boolean;
+        imageQcEnabled: boolean;
+      }>('/api/auth/login', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ username: form.get('username'), password: form.get('password') }),
       });
-      const requested = nextPath.startsWith('/') && !nextPath.startsWith('//') ? nextPath : result.homePath;
-      const permitted = result.role === 'ADMIN'
-        || requested === '/profile'
-        || requested.startsWith('/workbench')
-        || (result.role === 'REVIEWER' && requested.startsWith('/knowledge'));
-      const target = result.mustChangePassword ? '/profile' : permitted ? requested : result.homePath;
+      const target = resolveLoginReturnPath({
+        requestedPath: nextPath,
+        homePath: result.homePath,
+        role: result.role,
+        mustChangePassword: result.mustChangePassword,
+        copyReviewEnabled: result.copyReviewEnabled,
+        copyQcEnabled: result.copyQcEnabled,
+        imageQcEnabled: result.imageQcEnabled,
+      });
       window.location.assign(target);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '登录失败');
@@ -65,12 +77,11 @@ export function LoginForm({ nextPath, passwordChanged = false }: { nextPath: str
           required
         />
       </div>
-      {passwordChanged && <div className="notice success" role="status">密码已修改，请使用新密码重新登录。</div>}
+      <ToastFeedback id="login-password-changed" message={passwordChanged ? '密码已修改，请使用新密码重新登录。' : ''} />
       {error && <div className="notice error" role="alert">{error}</div>}
       <Button unstyled className="button primary login-submit" type="submit" disabled={isBusy}>
         {isBusy ? '正在验证…' : '进入后台'}
       </Button>
-      <p className="login-help">初始管理员账号为 <code>admin</code>，默认密码为 <code>123456</code>。首次登录必须先修改密码，重新登录后才能使用其他功能。</p>
     </form>
   );
 }

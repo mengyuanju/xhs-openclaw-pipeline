@@ -10,6 +10,8 @@ import { effectiveModelApiConfig } from '../model-api-config.mjs';
 import { codexErrorCode } from '../codex-protocol.mjs';
 import { codexConcurrencyConfig, codexRuntimePath, createCodexRuntime } from '../codex-runtime.mjs';
 import { generateCopy, toCopyGenerationResponse } from '../copy-generation.mjs';
+import { generateReviewImagePlan } from '../review-image-plan-generation.mjs';
+import { withPromptRuntime } from '../prompt-runtime.mjs';
 import { createAgentClient } from '../agent-client.mjs';
 import { generateStandaloneImages, normalizeStandaloneImageSource, retryStandaloneImageRun, standaloneImageRunDirectory } from '../standalone-image-generation.mjs';
 import { plannedForStandaloneRecovery } from '../standalone-image-recovery.mjs';
@@ -18,15 +20,23 @@ import { executorConcurrency } from './config.mjs';
 import { reprocessStandaloneImages } from '../standalone-image-generation.mjs';
 import { IMAGE_ARTIFACT_FILE } from '../image-artifacts.mjs';
 import { guardExecutionCalls, runWithExecutionSignal } from './execution-signal.mjs';
+import { processImageEdit } from '../../server/src/image-edit-renderer.mjs';
 
 const COPY_PROGRESS = Object.freeze({
   QUERY_REVIEW: 5,
   KNOWLEDGE_MATCH: 12,
   RESEARCH: 20,
   ORIGINAL_GENERATION: 45,
+  COPY_LENGTH_REPAIR: 55,
+  COPY_CONTRACT_REPAIR: 55,
   ORIGINAL_REVIEW: 70,
   REVIEWED_GENERATION: 80,
   REVIEWED_REVIEW: 92,
+});
+const COPY_STAGE_MESSAGES = Object.freeze({
+  KNOWLEDGE_MATCH: '正在匹配优秀文案案例',
+  COPY_LENGTH_REPAIR: '首稿长度或完整性未通过，正在定向修复正文',
+  COPY_CONTRACT_REPAIR: '首稿格式未通过，正在修复失败字段',
 });
 
 export function productionSettings(snapshot) {
@@ -129,7 +139,7 @@ export async function executeCopyClaim({ claim, controlPlane, environment = proc
     onStageChange: async (stage, details = {}) => controlPlane.updateProgress(execution.id, {
       stage,
       progressPercent: COPY_PROGRESS[stage] ?? 0,
-      message: stage === 'KNOWLEDGE_MATCH' ? '正在匹配优秀文案案例' : `正在执行文案阶段：${stage}`,
+      message: COPY_STAGE_MESSAGES[stage] ?? `正在执行文案阶段：${stage}`,
       details,
     }),
   });
@@ -140,6 +150,35 @@ export async function executeCopyClaim({ claim, controlPlane, environment = proc
     ...generated,
   });
   return controlPlane.completeCopy(execution.id, result);
+}
+
+export async function executeImagePlanRegenerationClaim({
+  claim,
+  controlPlane,
+  environment = process.env,
+  client,
+  signal,
+}) {
+  const { execution, imagePlanRegeneration } = claim;
+  const request = execution?.snapshot?.imagePlanRegeneration;
+  if (!imagePlanRegeneration || request?.id !== imagePlanRegeneration.id
+      || imagePlanRegeneration.executionId !== execution.id
+      || imagePlanRegeneration.status !== 'RUNNING') {
+    throw new TypeError('image plan regeneration claim is invalid');
+  }
+  const settings = productionSettings(execution.snapshot);
+  const modelClient = client ?? createCopyGenerationClient({
+    modelApi: settings.modelApi ?? {},
+    environment,
+  });
+  const guardedClient = signal
+    ? guardExecutionCalls(modelClient, signal, { model: true })
+    : modelClient;
+  const result = await withPromptRuntime(
+    promptRuntimeFromSnapshot(execution.snapshot),
+    () => generateReviewImagePlan({ client: guardedClient, copy: request.copy }),
+  );
+  return controlPlane.completeImagePlanRegeneration(execution.id, result);
 }
 
 export async function executeImageClaim({
@@ -259,6 +298,45 @@ export async function executeImageClaim({
   return completed;
 }
 
+export async function executeImageEditClaim({
+  claim,
+  controlPlane,
+  workRoot,
+  environment = process.env,
+  signal,
+}) {
+  const { execution, imageEdit } = claim;
+  if (!imageEdit || execution?.snapshot?.imageEditRequestId !== imageEdit.id) {
+    throw new TypeError('image edit claim is invalid');
+  }
+  const service = {
+    claim: async () => imageEdit,
+    heartbeat: () => controlPlane.heartbeatImageEdit(execution.id, imageEdit),
+    context: () => controlPlane.imageEditContext(execution.id, imageEdit),
+    readAsset: asset => controlPlane.imageEditAsset(execution.id, imageEdit, Number(asset.id)),
+    asset: assetId => controlPlane.imageEditAssetMetadata(execution.id, imageEdit, Number(assetId)),
+    async complete(_edit, { bytes, validation }) {
+      await controlPlane.stageImageEditValidation(execution.id, imageEdit, validation);
+      return controlPlane.completeImageEdit(execution.id, imageEdit, bytes);
+    },
+    fail: (_edit, error, preview) => preview?.bytes
+      ? controlPlane.rejectImageEdit(execution.id, imageEdit, preview.bytes, error)
+      : controlPlane.failImageEdit(execution.id, imageEdit, error),
+  };
+  const result = await processImageEdit({
+    service,
+    storageRoot: workRoot,
+    workerId: execution.nodeId,
+    edit: imageEdit,
+    environment,
+    signal,
+  });
+  if (result.status === 'FAILED') {
+    throw Object.assign(new Error(result.error), { code: 'IMAGE_EDIT_FAILED_REPORTED' });
+  }
+  return result;
+}
+
 export function createExecutorAgent({
   controlPlane,
   nodeId,
@@ -266,10 +344,15 @@ export function createExecutorAgent({
   imageWorkerEnabled = false,
   copyConcurrency = 1,
   imageConcurrency = 1,
+  codexPoolId = nodeId,
+  codexTotalConcurrency = Math.max(copyConcurrency, imageConcurrency),
+  codexImageConcurrency = imageConcurrency,
   concurrencyEnabled = false,
   workRoot = resolve('data/executor-work'),
   executeCopy = executeCopyClaim,
+  executeImagePlanRegeneration = executeImagePlanRegenerationClaim,
   executeImage = executeImageClaim,
+  executeImageEdit = executeImageEditClaim,
   readinessCheck = checkExecutorReady,
   availabilityCheck = checkModelAvailability,
   environment = process.env,
@@ -279,6 +362,15 @@ export function createExecutorAgent({
   if (typeof imageWorkerEnabled !== 'boolean') throw new TypeError('imageWorkerEnabled must be a boolean');
   executorConcurrency(copyConcurrency, 'copyConcurrency');
   executorConcurrency(imageConcurrency, 'imageConcurrency');
+  executorConcurrency(codexTotalConcurrency, 'codexTotalConcurrency');
+  executorConcurrency(codexImageConcurrency, 'codexImageConcurrency');
+  if (codexImageConcurrency > codexTotalConcurrency) {
+    throw new RangeError('codexImageConcurrency cannot exceed codexTotalConcurrency');
+  }
+  const registration = () => ({ nodeId, name: nodeName, imageWorkerEnabled,
+    copyConcurrency, imageConcurrency, codexPoolId, codexTotalConcurrency, codexImageConcurrency,
+    imageEditExecutorVersion: imageWorkerEnabled ? 12 : 0,
+    copyImagePlanRegenerationVersion: 1 });
   let ready = false;
   const pendingFailures = new Map();
   const activeExecutions = new Map();
@@ -308,11 +400,27 @@ export function createExecutorAgent({
 
   async function reportFailure(claim, error) {
     try {
-      const code = codexErrorCode(error) || error?.code?.startsWith('EXECUTION_') || error?.code === 'STALE_EXECUTION';
+      if (claim.imagePlanRegeneration) {
+        await controlPlane.failImagePlanRegeneration(claim.execution.id, error);
+        return;
+      }
+      if (claim.imageEdit) {
+        if (error?.code !== 'IMAGE_EDIT_FAILED_REPORTED') {
+          await controlPlane.failImageEdit(claim.execution.id, claim.imageEdit, error);
+        }
+        return;
+      }
+      const codexCode = codexErrorCode(error);
+      const code = codexCode ?? (error?.code?.startsWith('EXECUTION_') || error?.code === 'STALE_EXECUTION'
+        ? error.code : null);
+      const retryableModelAvailability = ['CODEX_MODEL_AT_CAPACITY', 'CODEX_RATE_LIMITED'].includes(codexCode);
       await controlPlane.failExecution(claim.execution.id, error,
-        code ? { autoRetry: false } : {});
+        code ? { autoRetry: retryableModelAvailability } : {});
     } catch (reportError) {
-      if (reportError?.code !== 'STALE_EXECUTION') throw reportError;
+      if (reportError?.code !== 'STALE_EXECUTION'
+          && !(claim.imageEdit && ['IMAGE_EDIT_CONFLICT', 'NOT_FOUND'].includes(reportError?.code))) {
+        throw reportError;
+      }
     }
   }
 
@@ -364,7 +472,18 @@ export function createExecutorAgent({
       await runWithExecutionSignal(signal, () => withModelCallTracing({ executionId: claim.execution.id,
         controlPlane: guardExecutionCalls(controlPlane, signal), snapshot: claim.execution.snapshot }, async (tracedPlane) => {
         if (kind === 'COPY') {
-          await executeCopy({ claim, controlPlane: tracedPlane, environment, signal });
+          if (claim.imagePlanRegeneration) {
+            await executeImagePlanRegeneration({
+              claim,
+              controlPlane: tracedPlane,
+              environment,
+              signal,
+            });
+          } else {
+            await executeCopy({ claim, controlPlane: tracedPlane, environment, signal });
+          }
+        } else if (claim.imageEdit) {
+          await executeImageEdit({ claim, controlPlane: tracedPlane, workRoot, environment, signal });
         } else {
           await executeImage({ claim, controlPlane: tracedPlane, workRoot, environment, signal });
         }
@@ -405,6 +524,15 @@ export function createExecutorAgent({
       if (concurrencyEnabled && !result?.health?.capabilities?.executorConcurrency) {
         throw new Error('请先更新中心服务：缺少 executorConcurrency 并发领取能力');
       }
+      const poolCapabilityVersion = Number(result?.health?.capabilities?.codexConcurrencyPoolVersion);
+      if (concurrencyEnabled && (!Number.isInteger(poolCapabilityVersion) || poolCapabilityVersion < 1)) {
+        throw new Error('请先更新中心服务：缺少共享 Codex 并发池能力');
+      }
+      const imageEditCapabilityVersion = Number(result?.health?.capabilities?.imageEditExecutorVersion);
+      if (concurrencyEnabled && imageWorkerEnabled
+          && (!Number.isInteger(imageEditCapabilityVersion) || imageEditCapabilityVersion < 12)) {
+        throw new Error('请先更新中心服务：缺少执行机图片修改能力');
+      }
       taskHeartbeatsEnabled = Boolean(result?.health?.capabilities?.executionHeartbeats);
       ready = true;
       return result;
@@ -412,14 +540,14 @@ export function createExecutorAgent({
 
     async register() {
       if (!ready) throw new Error('executor is not ready; call prepare before register');
-      return controlPlane.registerNode({ nodeId, name: nodeName, imageWorkerEnabled, copyConcurrency, imageConcurrency });
+      return controlPlane.registerNode(registration());
     },
 
     async heartbeat() {
       if (!ready) throw new Error('executor is not ready; call prepare before heartbeat');
       // A failed node heartbeat must not prevent local task lease expiry checks.
       const results = await Promise.allSettled([
-        controlPlane.registerNode({ nodeId, name: nodeName, imageWorkerEnabled, copyConcurrency, imageConcurrency }),
+        controlPlane.registerNode(registration()),
         renewExecutionHeartbeats(),
       ]);
       for (const result of results) if (result.status === 'rejected') throw result.reason;

@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { compareTasksByStatePriority, TASK_STATE_PRIORITY, WORKBENCH_VIEWS, matchesWorkbenchView } from '../app/workbench/views.ts';
+import {
+  compareTasksByStatePriority, TASK_STATE_FILTER_GROUPS, TASK_STATE_FILTER_ORDER, TASK_STATE_PRIORITY,
+  WORKBENCH_VIEWS, matchesWorkbenchView,
+} from '../app/workbench/views.ts';
 
 test('workbench routes include completed work after manual archive', () => {
   assert.deepEqual(WORKBENCH_VIEWS.map((view) => view.label), [
-    '个人作业中心', '待审核分配', '全部文案任务', '待文案审核', '生图中', '人工归档', '已完成', '全部作业',
+    '我的作业', '待审核分配', '全部文案任务', '待文案审核', '生图中', '图片初审与返修', '交付池', '全部作业', '废弃池',
   ]);
-  assert.equal(new Set(WORKBENCH_VIEWS.map((view) => view.href)).size, 8);
+  assert.equal(new Set(WORKBENCH_VIEWS.map((view) => view.href)).size, 9);
   assert.ok(WORKBENCH_VIEWS.every((view) => view.href.startsWith('/workbench/')));
 });
 
@@ -37,8 +40,8 @@ test('pending-assignment view exposes only unassigned normal copy review', () =>
 test('personal tasks include every active lifecycle state submitted by or assigned to the current user', () => {
   const personal = WORKBENCH_VIEWS[0];
   assert.deepEqual(personal.states, [
-    'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_FAILED',
-    'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'REVIEWED',
+    'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_QC_PENDING', 'COPY_FAILED',
+    'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'IMAGE_QC_PENDING', 'IMAGE_REWORK_PENDING', 'REVIEWED',
   ]);
   const tasks = [
     { id: 1, state: 'COPY_QUEUED', createdByUserId: 'bob', assignedToUserId: 'alice', copyExecutorNodeId: 'other-node' },
@@ -77,16 +80,32 @@ test('personal tasks include every active lifecycle state submitted by or assign
 test('task lists prioritize lifecycle state and use newest-first order within a state', () => {
   assert.deepEqual(TASK_STATE_PRIORITY, {
     COPY_REVIEW_PENDING: 1,
-    MANUAL_ARCHIVE: 2,
-    COPY_RUNNING: 3,
-    IMAGE_RUNNING: 4,
-    COPY_FAILED: 5,
-    IMAGE_FAILED: 5,
-    COPY_QUEUED: 6,
-    IMAGE_QUEUED: 6,
-    REVIEWED: 7,
-    CANCELLED: 8,
+    COPY_QC_PENDING: 2,
+    MANUAL_ARCHIVE: 3,
+    IMAGE_REWORK_PENDING: 3,
+    IMAGE_QC_PENDING: 3,
+    COPY_RUNNING: 4,
+    IMAGE_RUNNING: 5,
+    COPY_FAILED: 6,
+    IMAGE_FAILED: 6,
+    COPY_QUEUED: 7,
+    IMAGE_QUEUED: 7,
+    REVIEWED: 8,
+    CANCELLED: 9,
   });
+  assert.deepEqual(TASK_STATE_FILTER_GROUPS, [
+    {
+      label: '文案阶段',
+      states: ['COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_QC_PENDING', 'COPY_FAILED'],
+    },
+    {
+      label: '图片阶段',
+      states: ['IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'IMAGE_QC_PENDING', 'IMAGE_REWORK_PENDING'],
+    },
+    { label: '结束状态', states: ['REVIEWED', 'CANCELLED'] },
+  ]);
+  assert.equal(TASK_STATE_FILTER_ORDER.indexOf('IMAGE_FAILED'), TASK_STATE_FILTER_ORDER.indexOf('IMAGE_RUNNING') + 1);
+  assert.notEqual(TASK_STATE_FILTER_ORDER.indexOf('IMAGE_FAILED'), TASK_STATE_FILTER_ORDER.indexOf('COPY_FAILED') + 1);
   const tasks = [
     { id: 1, state: 'MANUAL_ARCHIVE', createdAt: '2026-09-05T12:00:00.000Z' },
     { id: 2, state: 'COPY_REVIEW_PENDING', createdAt: '2026-09-05T08:00:00.000Z' },
@@ -95,14 +114,25 @@ test('task lists prioritize lifecycle state and use newest-first order within a 
     { id: 5, state: 'IMAGE_RUNNING', createdAt: '2026-09-05T14:00:00.000Z' },
     { id: 6, state: 'COPY_FAILED', createdAt: '2026-09-05T15:00:00.000Z' },
     { id: 7, state: 'IMAGE_QUEUED', createdAt: '2026-09-05T16:00:00.000Z' },
+    { id: 8, state: 'IMAGE_FAILED', createdAt: '2026-09-05T17:00:00.000Z' },
   ];
-  assert.deepEqual(tasks.sort(compareTasksByStatePriority).map((task) => task.id), [4, 2, 1, 3, 5, 6, 7]);
+  assert.deepEqual(tasks.sort(compareTasksByStatePriority).map((task) => task.id), [4, 2, 1, 3, 5, 8, 6, 7]);
+});
+
+test('discard pool is an administrator view containing only cancelled tasks', () => {
+  const discarded = WORKBENCH_VIEWS.find(view => view.key === 'DISCARDED');
+  assert.equal(discarded.adminOnly, true);
+  assert.equal(discarded.href, '/workbench/discarded');
+  for (const state of Object.keys(TASK_STATE_PRIORITY)) {
+    assert.equal(matchesWorkbenchView({ state, assignedToUserId: 'worker' }, discarded, 'admin'), state === 'CANCELLED');
+  }
 });
 
 test('only approved images enter completed work and remain visible to their creator', () => {
   const completed = WORKBENCH_VIEWS.find((view) => view.key === 'COMPLETED');
   assert.ok(completed);
   assert.equal(completed.href, '/workbench/completed');
+  assert.equal(completed.adminOnly, true);
   for (const state of Object.keys(TASK_STATE_PRIORITY)) {
     assert.equal(matchesWorkbenchView({ state }, completed, 'reviewer'), state === 'REVIEWED');
   }

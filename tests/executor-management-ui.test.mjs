@@ -32,9 +32,11 @@ test('administrator-only executor management shows status and safely removes ret
   assert.match(repository, /EXECUTOR_STILL_ONLINE/u);
   assert.match(repository, /EXECUTOR_HAS_RUNNING_TASKS/u);
   assert.match(repository, /executorManagementVersion: 1/u);
-  assert.match(repository, /SELECT \* FROM executor_nodes WHERE id = \$1 AND retired_at IS NULL FOR UPDATE/u);
+  assert.match(repository, /SELECT \*, last_seen_at >= now\(\) - interval '90 seconds' AS online[\s\S]*FROM executor_nodes[\s\S]*WHERE id = \$1 AND retired_at IS NULL[\s\S]*FOR UPDATE/u);
   assert.match(manager, /每 15 秒自动刷新/u);
   assert.match(manager, /node\.copyRunningCount[\s\S]*node\.copyConcurrency/u);
+  assert.match(manager, /copyImagePlanRegenerationVersion/u);
+  assert.match(manager, /支持图文规划重生成/u);
   assert.match(manager, /node\.imageRunningCount[\s\S]*node\.imageConcurrency/u);
   assert.match(manager, /useConfirmDialog/u);
   assert.match(manager, /删除这条执行机信息/u);
@@ -42,7 +44,8 @@ test('administrator-only executor management shows status and safely removes ret
   assert.match(manager, /current\.filter\(\(candidate\) => candidate\.id !== node\.id\)/u);
   assert.match(manager, /node\.online \|\| hasRunningTasks/u);
   assert.match(manager, /manualRefreshRunning\.current/u);
-  assert.match(manager, /actionError \|\| refreshError/u);
+  assert.match(manager, /<ToastFeedback id="executor-manager-error" message=\{actionError\} tone="error"/u);
+  assert.match(manager, /refreshError && <div className="notice error" role="alert"/u);
   assert.match(manager, /aria-label=\{`删除执行机 \$\{node\.name\}`\}/u);
   assert.match(manager, /className="row-action" data-label="操作"/u);
   assert.match(capability, /executorManagementVersion[\s\S]*method === 'DELETE'/u);

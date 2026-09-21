@@ -4,8 +4,12 @@ import {
   BarChart3,
   ChevronRight,
   LayoutDashboard,
+  PanelsTopLeft,
   LibraryBig,
   MessageSquareText,
+  PackageSearch,
+  PackageCheck,
+  ShieldCheck,
   Settings2,
   ServerCog,
   Users,
@@ -14,6 +18,7 @@ import type { LucideIcon } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { WORKBENCH_VIEWS } from '../workbench/views';
+import { BackgroundTaskNotifications } from './background-tasks';
 
 type RouteMeta = {
   section: string;
@@ -22,7 +27,12 @@ type RouteMeta = {
 };
 
 const routeMeta: Array<{ match: (pathname: string) => boolean; meta: RouteMeta }> = [
+  { match: (pathname) => pathname === '/workbench/personal-statistics', meta: { section:'作业中心', title:'个人数据统计', icon:BarChart3 } },
+  { match: (pathname) => pathname === '/work-mode', meta: { section: '作业中心', title: '作业模式', icon: PanelsTopLeft } },
   { match: (pathname) => pathname === '/workbench-statistics', meta: { section: '运营与系统', title: '作业统计', icon: BarChart3 } },
+  { match: (pathname) => pathname.startsWith('/query-packages'), meta: { section: '创作工作台', title: 'Query 词包', icon: PackageSearch } },
+  { match: (pathname) => pathname.startsWith('/copy-qa'), meta: { section: '质量与审核', title: '文案质检', icon: ShieldCheck } },
+  { match: (pathname) => pathname.startsWith('/delivery-pool'), meta: { section: '创作工作台', title: '交付池', icon: PackageCheck } },
   ...WORKBENCH_VIEWS.map((view) => ({
     match: (pathname: string) => pathname === view.href,
     meta: { section: '作业中心', title: view.label, icon: view.icon },
@@ -45,7 +55,7 @@ export function AppTopbar() {
     <header className="app-topbar">
       <nav className="topbar-breadcrumb" aria-label="当前位置">
         <ol>
-          <li className="topbar-home"><Link href="/workbench">内容工场</Link></li>
+          <li className="topbar-home"><Link href="/workbench">海墨内容工场</Link></li>
           <li className="topbar-section"><ChevronRight aria-hidden="true" size={13} /><span>{current.section}</span></li>
           <li className="topbar-title" aria-current="page">
             <ChevronRight aria-hidden="true" size={13} />
@@ -54,6 +64,7 @@ export function AppTopbar() {
           </li>
         </ol>
       </nav>
+      <BackgroundTaskNotifications />
     </header>
   );
 }

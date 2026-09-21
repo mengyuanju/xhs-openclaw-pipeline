@@ -1,5 +1,4 @@
 import { isIP } from 'node:net';
-import { promptRuntimeSnapshot } from './prompt-runtime.mjs';
 import { codexErrorCode } from './codex-protocol.mjs';
 
 const RESEARCH_SCHEMA_VERSION = 1;
@@ -49,7 +48,6 @@ function normalizedPublicUrl(value) {
 }
 
 function sourceAuthorityScore(source) {
-  if (promptRuntimeSnapshot()) return 0;
   let hostname = '';
   try {
     hostname = new URL(source?.url).hostname.toLowerCase().replace(/\.$/u, '');
@@ -134,11 +132,43 @@ function hasGroundedSummary(evidence, provider) {
 
 function hasSufficientDeepSeekEvidence(evidence) {
   if (!evidence.summary) return false;
-  // A hostname substituted for a missing title is not a complete source record.
-  const hosts = new Set(evidence.sources.filter((source) => source.snippet.trim()
+  // Distinct official help pages on one product domain are useful independent
+  // evidence for ordinary how-to content. High-risk topics still use the
+  // explicit authoritative-source policy below.
+  const completeUrls = new Set(evidence.sources.filter((source) => source.snippet.trim()
     && source.title !== new URL(source.url).hostname)
-    .map((source) => new URL(source.url).hostname.toLowerCase().replace(/^www\./u, '').replace(/\.$/u, '')));
-  return hosts.size >= 2;
+    .map((source) => source.url));
+  return completeUrls.size >= 2;
+}
+
+const MEDICAL_RESEARCH = /(诊断|诊疗|疾病|症状|用药|药物|剂量|手术|治疗|急救|孕期|婴幼儿健康)/u;
+const LEGAL_RESEARCH = /(法律|法规|诉讼|仲裁|合同纠纷|劳动争议|行政处罚|刑事|判决)/u;
+const FINANCIAL_RESEARCH = /(投资|股票|基金|期货|证券|理财|贷款|信贷|保险理赔|虚拟货币|加密货币)/u;
+const POLICY_RESEARCH = /(政策|补贴|税务|报税|落户|社保|医保|签证|政府规定)/u;
+
+function highRiskResearchKind(value) {
+  const text = String(value ?? '');
+  if (MEDICAL_RESEARCH.test(text)) return 'MEDICAL';
+  if (LEGAL_RESEARCH.test(text)) return 'LEGAL';
+  if (FINANCIAL_RESEARCH.test(text)) return 'FINANCIAL';
+  if (POLICY_RESEARCH.test(text)) return 'POLICY';
+  return null;
+}
+
+export function requiresAuthoritativeResearch(task) {
+  const query = typeof task?.query === 'string' ? task.query : '';
+  const category = typeof task?.input?.category === 'string' ? task.input.category : '';
+  return highRiskResearchKind(`${query} ${category}`) !== null;
+}
+
+function supplementalResearchQuery(query, requireAuthoritative) {
+  const kind = requireAuthoritative ? highRiskResearchKind(query) : null;
+  const suffix = kind === 'MEDICAL' ? '卫健委 官方指南'
+    : kind === 'LEGAL' ? '政府官网 现行规定'
+      : kind === 'FINANCIAL' ? '监管机构 风险提示 官方资料'
+        : kind === 'POLICY' ? '政府官网 现行政策'
+          : '官方帮助 使用指南';
+  return `${query} ${suffix}`.slice(0, 500);
 }
 
 function normalizedTimestamp(value, field) {
@@ -244,8 +274,8 @@ export async function createResearchSnapshot({
   const searchedAt = normalizedTimestamp(now(), 'research searchedAt');
   const attempts = [];
   const unavailableProviders = new Set();
-  const authorityQuery = `${normalizedQuery} 官方 标准 技术规范`.slice(0, 500);
-  const queryVariants = promptRuntimeSnapshot() ? [normalizedQuery] : [...new Set([normalizedQuery, authorityQuery])];
+  const supplementalQuery = supplementalResearchQuery(normalizedQuery, requireAuthoritative);
+  const queryVariants = [...new Set([normalizedQuery, supplementalQuery])];
   let bestFallback = null;
   searchLoop:
   for (const searchQuery of queryVariants) {
@@ -267,7 +297,7 @@ export async function createResearchSnapshot({
         }
         const authorityScore = Math.max(...evidence.sources.map(sourceAuthorityScore));
         const groundedSummary = hasGroundedSummary(evidence, actualProvider);
-        if (authorityScore === 0 && ((!promptRuntimeSnapshot() && requireAuthoritative) || !groundedSummary)) {
+        if (authorityScore === 0 && (requireAuthoritative || !groundedSummary)) {
           attempts.push({
             provider,
             status: 'FAILED',
@@ -276,7 +306,7 @@ export async function createResearchSnapshot({
           continue;
         }
         attempts.push({ provider, status: 'COMPLETED', error: null });
-        if ((promptRuntimeSnapshot() && groundedSummary) || authorityScore > 0 || (!requireAuthoritative && (
+        if (authorityScore > 0 || (!requireAuthoritative && (
           (actualProvider === 'codex' && groundedSummary)
           || (actualProvider === 'deepseek' && hasSufficientDeepSeekEvidence(evidence))))) {
           return normalizeResearchSnapshot({

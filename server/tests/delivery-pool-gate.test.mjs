@@ -1,0 +1,687 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+
+import ExcelJS from '@excel.js/exceljs';
+import JSZip from 'jszip';
+import sharp from 'sharp';
+
+import { createControlPlaneApp } from '../src/http-server.mjs';
+
+const CLIENT_BATCH_CODE = 'b9759aad96a94c109fdce96ab4455294';
+
+async function withServer(repository, action, appOptions = {}) {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'xhs-delivery-pool-gate-'));
+  const app = createControlPlaneApp({
+    repository,
+    storageRoot,
+    enforceUserAuth: false,
+    ...appOptions,
+  });
+  let server;
+  try {
+    await new Promise((resolve, reject) => {
+      server = app.listen(0, '127.0.0.1', resolve);
+      server.once('error', reject);
+    });
+    await action(`http://127.0.0.1:${server.address().port}`, storageRoot);
+  } finally {
+    if (server?.listening) await new Promise((resolve) => server.close(resolve));
+    await rm(storageRoot, { recursive: true, force: true });
+  }
+}
+
+test('delivery preview route fails closed when the server-side preview connection is absent', async () => {
+  await withServer({
+    recordDeliveryPreviewLinks: async () => assert.fail('must not write without preview service'),
+  }, async (root) => {
+    const response = await fetch(`${root}/v1/delivery-pool/previews`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scope: 'QUERY_PACKAGES', queryPackageIds: [9], limit: 10 }),
+    });
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).error.code, 'PREVIEW_SERVICE_NOT_CONFIGURED');
+  }, { previewClient: null });
+});
+
+function task(id, state, sourceQueryPackageName = null) {
+  return {
+    id,
+    query: `Query ${id}`,
+    sourceQueryPackageName,
+    sourceClientBatchCode: sourceQueryPackageName ? CLIENT_BATCH_CODE : null,
+    xiaohongshuLinks: [{
+      noteId: `note-${id}`,
+      url: `https://www.xiaohongshu.com/explore/note-${id}`,
+      title: `参考 ${id}`,
+      rank: 1,
+    }],
+    state,
+    createdByUserId: 'admin',
+    currentCopyRevisionId: 100 + id,
+    currentImageRunId: `run-${id}`,
+    copyRevisions: [{
+      id: 100 + id,
+      content: { copy: { title: `任务${id}`, body: '正文', tags: [] } },
+    }],
+    imageRuns: [{
+      id: `run-${id}`,
+      result: { images: [{ assetId: 200 + id }] },
+    }],
+    assets: [{
+      id: 200 + id,
+      taskId: id,
+      imageRunId: `run-${id}`,
+      mediaType: 'image/png',
+      originalName: '01.png',
+    }],
+  };
+}
+
+async function writeSolidPng(path, background) {
+  const content = await sharp({
+    create: { width: 24, height: 32, channels: 4, background },
+  }).png().toBuffer();
+  await writeFile(path, content);
+  return content;
+}
+
+test('single delivery download rejects every state before final image review', async () => {
+  let currentState = 'MANUAL_ARCHIVE';
+  let assetReads = 0;
+  await withServer({
+    getTask: async () => task(7, currentState),
+    getAsset: async () => {
+      assetReads += 1;
+      assert.fail('a non-deliverable task must be rejected before reading files');
+    },
+  }, async (root) => {
+    for (const state of ['COPY_QC_PENDING', 'IMAGE_QUEUED', 'MANUAL_ARCHIVE']) {
+      currentState = state;
+      const response = await fetch(`${root}/v1/tasks/7/archive`);
+      assert.equal(response.status, 409, state);
+      assert.equal((await response.json()).error.code, 'INVALID_TASK_STATE', state);
+      assert.equal(response.headers.get('content-disposition'), null, state);
+    }
+  });
+  assert.equal(assetReads, 0);
+});
+
+test('batch delivery download is fail-closed when one selected task is not in the delivery pool', async () => {
+  const tasks = new Map([
+    [7, task(7, 'REVIEWED')],
+    [8, task(8, 'MANUAL_ARCHIVE')],
+  ]);
+  let assetReads = 0;
+  await withServer({
+    getTask: async (id) => tasks.get(Number(id)),
+    assertTaskReadyForDelivery: async (id) => ({
+      taskId: Number(id),
+      copyRevisionId: 100 + Number(id),
+      imageRunId: `run-${id}`,
+    }),
+    assertTasksReadyForDelivery: async (bindings) => bindings,
+    getAsset: async () => {
+      assetReads += 1;
+      assert.fail('batch preflight must finish before any delivery file is read');
+    },
+  }, async (root) => {
+    const response = await fetch(`${root}/v1/tasks/batch-archive`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ taskIds: [7, 8] }),
+    });
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error.code, 'INVALID_TASK_STATE');
+    assert.equal(response.headers.get('content-disposition'), null);
+  });
+  assert.equal(assetReads, 0);
+});
+
+test('delivery pool export packages the complete server-side snapshot beyond legacy page and batch limits', async () => {
+  const taskIds = Array.from({ length: 51 }, (_, index) => index + 1);
+  const tasks = new Map(taskIds.map((id) => [id, task(id, 'REVIEWED')]));
+  const assets = new Map();
+  const snapshotActors = [];
+  await withServer({
+    listAllDeliveryPoolTaskIds: async ({ actor }) => {
+      snapshotActors.push(actor);
+      return taskIds;
+    },
+    getTask: async (id) => tasks.get(Number(id)),
+    assertTaskReadyForDelivery: async (id) => ({
+      taskId: Number(id),
+      copyRevisionId: 100 + Number(id),
+      imageRunId: `run-${id}`,
+    }),
+    assertTasksReadyForDelivery: async (bindings) => bindings,
+    getAsset: async (id) => assets.get(Number(id)),
+  }, async (root, storageRoot) => {
+    for (const id of taskIds) {
+      const storagePath = join(storageRoot, 'tasks', String(id), 'image-runs', `run-${id}`, '01.png');
+      await mkdir(join(storageRoot, 'tasks', String(id), 'image-runs', `run-${id}`), { recursive: true });
+      await writeFile(storagePath, Buffer.from([id]));
+      assets.set(200 + id, {
+        id: 200 + id,
+        taskId: id,
+        imageRunId: `run-${id}`,
+        mediaType: 'image/png',
+        originalName: '01.png',
+        storagePath,
+      });
+    }
+
+    const response = await fetch(`${root}/v1/delivery-pool/archive`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scope: 'ALL_READY' }),
+    });
+    assert.equal(response.status, 201);
+    const prepared = (await response.json()).data;
+    assert.equal(prepared.taskCount, 51);
+    const probe = await fetch(`${root}/v1/delivery-pool/archive/${prepared.downloadId}`, {
+      method: 'HEAD',
+    });
+    assert.equal(probe.status, 200);
+    assert.equal(probe.headers.get('x-delivery-task-count'), '51');
+    assert.ok(Number(probe.headers.get('content-length')) > 0);
+    assert.equal(await probe.text(), '');
+    const download = await fetch(`${root}/v1/delivery-pool/archive/${prepared.downloadId}`);
+    assert.equal(download.status, 200);
+    assert.match(download.headers.get('content-disposition'), /delivery-pool\.zip/u);
+    const zip = await JSZip.loadAsync(await download.arrayBuffer());
+    assert.equal(Object.keys(zip.files).length, 51 * 3);
+    assert.equal(Object.keys(zip.files).some(name => name.endsWith('.zip')), false);
+    for (const id of taskIds) {
+      const directory = `未归属甲方批次/任务-${id}-资源包`;
+      assert.deepEqual(await zip.file(`${directory}/01.png`).async('nodebuffer'), Buffer.from([id]));
+      assert.ok(zip.file(`${directory}/任务${id}.txt`));
+      assert.ok(zip.file(`${directory}/小红书链接.txt`));
+    }
+    const replay = await fetch(`${root}/v1/delivery-pool/archive/${prepared.downloadId}`);
+    assert.equal(replay.status, 404, 'the prepared archive token must be one-time');
+  });
+  assert.equal(snapshotActors.length, 1);
+  assert.equal(snapshotActors[0].role, 'ADMIN');
+});
+
+test('an operator creates and downloads one formal batch for a stable personal assignment', async () => {
+  const user = {
+    id: 22, username: 'worker', role: 'USER', status: 'ACTIVE', credentialVersion: 1,
+  };
+  const selected = task(7, 'REVIEWED');
+  selected.assignedToUserId = 'worker';
+  selected.assignedToAccountId = 22;
+  let asset;
+  let createdBatch;
+  const calls = [];
+  await withServer({
+    getUserByUsername: async (username) => username === user.username ? user : null,
+    getTaskAccess: async (id) => Number(id) === 7 ? {
+      id: 7, state: 'REVIEWED', assignedToUserId: 'worker', assignedToAccountId: 22,
+    } : null,
+    getTask: async (id) => Number(id) === 7 ? selected : null,
+    assertTaskReadyForDelivery: async () => ({
+      taskId: 7, copyRevisionId: 107, imageRunId: 'run-7',
+    }),
+    assertTasksReadyForDelivery: async (bindings) => bindings,
+    getAsset: async () => asset,
+    createDeliveryBatch: async (input, { actor }) => {
+      calls.push(['create', input, actor]);
+      createdBatch = {
+        publicId: input.publicId,
+        code: `JF-${input.publicId.slice(0, 8).toUpperCase()}`,
+        fileName: input.fileName,
+        byteSize: input.byteSize,
+        taskCount: input.bindings.length,
+      };
+      return createdBatch;
+    },
+    getDeliveryBatchArtifact: async (id, { actor }) => {
+      calls.push(['artifact', id, actor]);
+      return createdBatch;
+    },
+    recordDeliveryBatchDownload: async (id, { actor }) => {
+      calls.push(['download', id, actor]);
+      return { ...createdBatch, status: 'DOWNLOADED' };
+    },
+  }, async (root, storageRoot) => {
+    const directory = join(storageRoot, 'tasks', '7', 'image-runs', 'run-7');
+    const storagePath = join(directory, '01.png');
+    await mkdir(directory, { recursive: true });
+    await writeFile(storagePath, Buffer.from([1, 2, 3]));
+    asset = { ...selected.assets[0], storagePath };
+    const headers = {
+      'X-Actor-User-Id': '22', 'X-Actor-Username': 'worker',
+      'X-Actor-Role': 'USER', 'X-Actor-Credential-Version': '1',
+    };
+    const response = await fetch(`${root}/v1/delivery-pool/archive`, {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ scope: 'SELECTED', taskIds: [7] }),
+    });
+    assert.equal(response.status, 201);
+    const prepared = (await response.json()).data;
+    assert.match(prepared.batchCode, /^JF-[0-9A-F]{8}$/u);
+    const download = await fetch(`${root}/v1/delivery-pool/archive/${prepared.downloadId}`, {
+      headers,
+    });
+    assert.equal(download.status, 200);
+    assert.ok((await download.arrayBuffer()).byteLength > 0);
+    await new Promise((resolve) => setImmediate(resolve));
+  }, { enforceUserAuth: true });
+
+  assert.equal(calls[0][0], 'create');
+  assert.equal(calls[0][1].scope, 'SELECTED');
+  assert.deepEqual(calls[0][1].bindings, [{
+    taskId: 7, copyRevisionId: 107, imageRunId: 'run-7',
+  }]);
+  assert.equal(calls[0][2].userId, 22);
+  assert.ok(calls.some(([kind, , actor]) => kind === 'download' && actor.username === 'worker'));
+});
+
+test('legacy package-scoped exports keep their exact scope while ZIP folders use client batches', async () => {
+  const selected = task(7, 'REVIEWED', '秋季/收纳');
+  const snapshotCalls = [];
+  let asset;
+  await withServer({
+    listAllDeliveryPoolTaskIds: async (options) => {
+      snapshotCalls.push(options);
+      return [7];
+    },
+    getTask: async (id) => Number(id) === 7 ? selected : null,
+    assertTaskReadyForDelivery: async () => ({
+      taskId: 7,
+      copyRevisionId: 107,
+      imageRunId: 'run-7',
+    }),
+    assertTasksReadyForDelivery: async (bindings) => bindings,
+    getAsset: async () => asset,
+  }, async (root, storageRoot) => {
+    const directory = join(storageRoot, 'tasks', '7', 'image-runs', 'run-7');
+    const storagePath = join(directory, '01.png');
+    await mkdir(directory, { recursive: true });
+    const content = await writeSolidPng(storagePath, '#2563EB');
+    asset = {
+      ...selected.assets[0],
+      byteSize: content.length,
+      sha256: createHash('sha256').update(content).digest('hex'),
+      storagePath,
+    };
+
+    const input = { scope: 'QUERY_PACKAGE', queryPackageName: '  秋季/收纳  ' };
+    const zipResponse = await fetch(`${root}/v1/delivery-pool/archive`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    assert.equal(zipResponse.status, 201);
+    const zipPrepared = (await zipResponse.json()).data;
+    assert.equal(zipPrepared.fileName, '秋季_收纳-交付资源.zip');
+    const zipDownload = await fetch(`${root}/v1/delivery-pool/archive/${zipPrepared.downloadId}`);
+    const zip = await JSZip.loadAsync(await zipDownload.arrayBuffer());
+    assert.ok(zip.file(`${CLIENT_BATCH_CODE}/任务-7-资源包/任务7.txt`));
+    assert.deepEqual(await zip.file(`${CLIENT_BATCH_CODE}/任务-7-资源包/01.png`).async('nodebuffer'), content);
+
+    const xlsxResponse = await fetch(`${root}/v1/delivery-pool/xlsx`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    assert.equal(xlsxResponse.status, 201);
+    assert.equal((await xlsxResponse.json()).data.fileName, '秋季_收纳-交付内容.xlsx');
+  });
+  assert.deepEqual(snapshotCalls.map(({ queryPackageName }) => queryPackageName), [
+    '秋季/收纳', '秋季/收纳',
+  ]);
+  assert.ok(snapshotCalls.every(({ actor }) => actor.role === 'ADMIN'));
+});
+
+test('selected delivery pool export accepts more than the legacy 20-task limit', async () => {
+  const taskIds = Array.from({ length: 21 }, (_, index) => index + 1);
+  const tasks = new Map(taskIds.map((id) => [id, task(id, 'REVIEWED')]));
+  const assets = new Map();
+  await withServer({
+    getTask: async (id) => tasks.get(Number(id)),
+    assertTaskReadyForDelivery: async (id) => ({
+      taskId: Number(id),
+      copyRevisionId: 100 + Number(id),
+      imageRunId: `run-${id}`,
+    }),
+    assertTasksReadyForDelivery: async (bindings) => bindings,
+    getAsset: async (id) => assets.get(Number(id)),
+  }, async (root, storageRoot) => {
+    for (const id of taskIds) {
+      const storagePath = join(storageRoot, 'tasks', String(id), 'image-runs', `run-${id}`, '01.png');
+      await mkdir(join(storageRoot, 'tasks', String(id), 'image-runs', `run-${id}`), { recursive: true });
+      await writeFile(storagePath, Buffer.from([id]));
+      assets.set(200 + id, {
+        id: 200 + id,
+        taskId: id,
+        imageRunId: `run-${id}`,
+        mediaType: 'image/png',
+        originalName: '01.png',
+        storagePath,
+      });
+    }
+    const response = await fetch(`${root}/v1/delivery-pool/archive`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scope: 'SELECTED', taskIds }),
+    });
+    assert.equal(response.status, 201);
+    const prepared = (await response.json()).data;
+    assert.equal(prepared.taskCount, 21);
+    const download = await fetch(`${root}/v1/delivery-pool/archive/${prepared.downloadId}`);
+    assert.equal(download.status, 200);
+    const zip = await JSZip.loadAsync(await download.arrayBuffer());
+    assert.equal(Object.keys(zip.files).length, 21 * 3);
+    assert.equal(Object.keys(zip.files).some(name => name.endsWith('.zip')), false);
+  });
+});
+
+test('delivery spreadsheet exports one complete-article column plus ordered embedded images', async () => {
+  const selected = task(7, 'REVIEWED');
+  selected.copyRevisions[0].content.copy = {
+    title: '=这是一篇标题',
+    body: '+这是完整正文',
+    tags: ['不应导出'],
+  };
+  selected.imageRuns[0].result.images = [{ assetId: 209 }, { assetId: 207 }];
+  selected.assets = [
+    { id: 207, taskId: 7, imageRunId: 'run-7', mediaType: 'image/png' },
+    { id: 209, taskId: 7, imageRunId: 'run-7', mediaType: 'image/png' },
+    { id: 999, taskId: 7, imageRunId: 'run-7', mediaType: 'image/png' },
+  ];
+  const assets = new Map();
+  const sourceContentById = new Map();
+  const loadedAssetIds = [];
+  await withServer({
+    getTask: async (id) => (Number(id) === 7 ? selected : null),
+    assertTaskReadyForDelivery: async () => ({
+      taskId: 7,
+      copyRevisionId: 107,
+      imageRunId: 'run-7',
+    }),
+    assertTasksReadyForDelivery: async (bindings) => bindings,
+    getAsset: async (id) => {
+      loadedAssetIds.push(Number(id));
+      return assets.get(Number(id));
+    },
+  }, async (root, storageRoot) => {
+    const imageDirectory = join(storageRoot, 'tasks', '7', 'image-runs', 'run-7');
+    await mkdir(imageDirectory, { recursive: true });
+    for (const [id, name, background] of [
+      [209, 'first.png', '#DC2626'],
+      [207, 'second.png', '#2563EB'],
+    ]) {
+      const storagePath = join(imageDirectory, name);
+      const content = await writeSolidPng(storagePath, background);
+      sourceContentById.set(id, content);
+      assets.set(id, {
+        id,
+        taskId: 7,
+        imageRunId: 'source-run',
+        mediaType: 'image/png',
+        byteSize: content.length,
+        sha256: createHash('sha256').update(content).digest('hex'),
+        originalName: name,
+        storagePath,
+      });
+    }
+
+    const response = await fetch(`${root}/v1/delivery-pool/xlsx`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scope: 'SELECTED', taskIds: [7] }),
+    });
+    const responsePayload = await response.json();
+    assert.equal(response.status, 201, JSON.stringify(responsePayload));
+    const prepared = responsePayload.data;
+    assert.equal(prepared.taskCount, 1);
+    assert.match(prepared.fileName, /\.xlsx$/u);
+
+    const probe = await fetch(`${root}/v1/delivery-pool/xlsx/${prepared.downloadId}`, {
+      method: 'HEAD',
+    });
+    assert.equal(probe.status, 200);
+    assert.equal(
+      probe.headers.get('content-type'),
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    assert.equal(probe.headers.get('x-delivery-task-count'), '1');
+    assert.ok(Number(probe.headers.get('content-length')) > 0);
+
+    const download = await fetch(`${root}/v1/delivery-pool/xlsx/${prepared.downloadId}`);
+    assert.equal(download.status, 200);
+    assert.match(download.headers.get('content-disposition'), /delivery-pool\.xlsx/u);
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(Buffer.from(await download.arrayBuffer()));
+    const worksheet = workbook.getWorksheet('交付内容');
+    assert.ok(worksheet);
+    assert.equal(worksheet.getCell('A1').value, '甲方批次编号');
+    assert.equal(worksheet.getCell('A2').value, '未归属甲方批次');
+    assert.equal(worksheet.getCell('B1').value, '词包名称');
+    assert.equal(worksheet.getCell('B2').value, '未归属词包');
+    assert.equal(worksheet.getCell('C1').value, 'Query');
+    assert.equal(worksheet.getCell('C2').value, 'Query 7');
+    assert.equal(worksheet.getCell('D1').value, '完整文章');
+    assert.equal(worksheet.getCell('D2').value, '=这是一篇标题\n\n+这是完整正文');
+    assert.notEqual(worksheet.getCell('D2').font?.bold, true);
+    assert.equal(worksheet.getCell('E1').value, '小红书链接');
+    assert.equal(
+      worksheet.getCell('E2').value,
+      'https://www.xiaohongshu.com/explore/note-7',
+    );
+    assert.equal(worksheet.getCell('F1').value, '图片 1');
+    assert.equal(worksheet.getCell('G1').value, '图片 2');
+    assert.equal(worksheet.actualColumnCount, 7);
+    const embeddedImages = worksheet.getImages();
+    assert.equal(embeddedImages.length, 2);
+    assert.deepEqual(
+      embeddedImages.map((image) => Buffer.from(workbook.getImage(Number(image.imageId)).buffer)),
+      [sourceContentById.get(209), sourceContentById.get(207)],
+      'the downloaded workbook must contain the exact original image bytes in result order',
+    );
+    assert.deepEqual(loadedAssetIds, [209, 207]);
+
+    const replay = await fetch(`${root}/v1/delivery-pool/xlsx/${prepared.downloadId}`);
+    assert.equal(replay.status, 404, 'the prepared spreadsheet token must be one-time');
+  });
+});
+
+test('delivery history exports Excel from its frozen copy and image versions', async () => {
+  const batchId = '42345678-1234-4234-8234-123456789abc';
+  const user = {
+    id: 22, username: 'worker', role: 'USER', status: 'ACTIVE', credentialVersion: 1,
+  };
+  const frozen = task(7, 'REVIEWED', '冻结词包');
+  frozen.query = '冻结 Query';
+  frozen.sourceClientBatchCode = CLIENT_BATCH_CODE;
+  frozen.currentCopyRevisionId = 107;
+  frozen.currentImageRunId = 'run-7';
+  frozen.copyRevisions = [{
+    id: 107,
+    content: { copy: { title: '冻结标题', body: '冻结正文', tags: [] } },
+  }];
+  frozen.imageRuns = [{ id: 'run-7', result: { images: [{ assetId: 207 }] } }];
+  frozen.assets = [{
+    id: 207, taskId: 7, imageRunId: 'run-7', mediaType: 'image/png',
+  }];
+  const assets = new Map();
+  await withServer({
+    getUserByUsername: async (username) => username === user.username ? user : null,
+    getDeliveryBatchSpreadsheet: async (id, { actor }) => {
+      assert.equal(id, batchId);
+      assert.equal(actor.role, 'USER');
+      assert.equal(actor.userId, 22);
+      return {
+        publicId: batchId,
+        code: 'JF-42345678',
+        taskCount: 1,
+        tasks: [frozen],
+        bindings: [{ taskId: 7, copyRevisionId: 107, imageRunId: 'run-7' }],
+      };
+    },
+    getAsset: async (id) => assets.get(Number(id)),
+    assertTasksReadyForDelivery: async () => assert.fail(
+      'history exports must not be compared with the task current version',
+    ),
+  }, async (root, storageRoot) => {
+    const imageDirectory = join(storageRoot, 'tasks', '7', 'image-runs', 'run-7');
+    await mkdir(imageDirectory, { recursive: true });
+    const storagePath = join(imageDirectory, 'frozen.png');
+    const content = await writeSolidPng(storagePath, '#16A34A');
+    assets.set(207, {
+      id: 207,
+      taskId: 7,
+      imageRunId: 'run-7',
+      mediaType: 'image/png',
+      byteSize: content.length,
+      sha256: createHash('sha256').update(content).digest('hex'),
+      originalName: 'frozen.png',
+      storagePath,
+    });
+
+    const headers = {
+      'X-Actor-User-Id': '22', 'X-Actor-Username': 'worker',
+      'X-Actor-Role': 'USER', 'X-Actor-Credential-Version': '1',
+    };
+    const response = await fetch(`${root}/v1/delivery-batches/${batchId}/xlsx`, {
+      method: 'POST', headers,
+    });
+    const responsePayload = await response.json();
+    assert.equal(response.status, 201, JSON.stringify(responsePayload));
+    assert.equal(responsePayload.data.fileName, 'JF-42345678-交付内容.xlsx');
+
+    const download = await fetch(
+      `${root}/v1/delivery-pool/xlsx/${responsePayload.data.downloadId}`,
+      { headers },
+    );
+    assert.equal(download.status, 200);
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(Buffer.from(await download.arrayBuffer()));
+    const worksheet = workbook.getWorksheet('交付内容');
+    assert.equal(worksheet.getCell('A2').value, CLIENT_BATCH_CODE);
+    assert.equal(worksheet.getCell('B2').value, '冻结词包');
+    assert.equal(worksheet.getCell('C2').value, '冻结 Query');
+    assert.equal(worksheet.getCell('D2').value, '冻结标题\n\n冻结正文');
+    assert.equal(worksheet.getImages().length, 1);
+  }, { enforceUserAuth: true });
+});
+
+test('delivery spreadsheet rejects unsupported original formats without leaving staged files or locking export', async () => {
+  const selected = task(7, 'REVIEWED');
+  selected.assets[0].mediaType = 'image/webp';
+  selected.assets[0].originalName = '01.webp';
+  let asset;
+  await withServer({
+    getTask: async (id) => (Number(id) === 7 ? selected : null),
+    assertTaskReadyForDelivery: async () => ({
+      taskId: 7,
+      copyRevisionId: 107,
+      imageRunId: 'run-7',
+    }),
+    assertTasksReadyForDelivery: async (bindings) => bindings,
+    getAsset: async () => asset,
+  }, async (root, storageRoot) => {
+    const imageDirectory = join(storageRoot, 'tasks', '7', 'image-runs', 'run-7');
+    const storagePath = join(imageDirectory, '01.webp');
+    await mkdir(imageDirectory, { recursive: true });
+    const content = await sharp({
+      create: {
+        width: 30,
+        height: 20,
+        channels: 3,
+        background: { r: 37, g: 99, b: 235 },
+      },
+    }).webp().toBuffer();
+    await writeFile(storagePath, content);
+    asset = {
+      ...selected.assets[0],
+      byteSize: content.length,
+      sha256: createHash('sha256').update(content).digest('hex'),
+      storagePath,
+    };
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await fetch(`${root}/v1/delivery-pool/xlsx`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ scope: 'SELECTED', taskIds: [7] }),
+      });
+      const payload = await response.json();
+      assert.equal(response.status, 400);
+      assert.equal(payload.error.code, 'VALIDATION_ERROR');
+      assert.match(payload.error.message, /仅支持 PNG、JPEG 或 GIF/u);
+      assert.equal(payload.data, undefined);
+    }
+
+    assert.deepEqual(await readdir(join(storageRoot, '.delivery-exports')), []);
+  });
+});
+
+test('all-ready spreadsheet export rejects more than 200 articles before loading tasks', async () => {
+  let taskReads = 0;
+  await withServer({
+    listAllDeliveryPoolTaskIds: async () => Array.from({ length: 201 }, (_, index) => index + 1),
+    getTask: async () => { taskReads += 1; },
+  }, async (root) => {
+    const response = await fetch(`${root}/v1/delivery-pool/xlsx`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scope: 'ALL_READY' }),
+    });
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error.code, 'DELIVERY_SPREADSHEET_TOO_LARGE');
+  });
+  assert.equal(taskReads, 0);
+});
+
+test('empty all-ready delivery export returns a clear conflict without reading tasks', async () => {
+  let taskReads = 0;
+  await withServer({
+    listAllDeliveryPoolTaskIds: async () => [],
+    getTask: async () => { taskReads += 1; },
+  }, async (root) => {
+    const response = await fetch(`${root}/v1/delivery-pool/archive`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scope: 'ALL_READY' }),
+    });
+    assert.equal(response.status, 409);
+    const payload = await response.json();
+    assert.equal(payload.error.code, 'DELIVERY_POOL_EMPTY');
+  });
+  assert.equal(taskReads, 0);
+});
+
+test('delivery downloads fail closed without the READY version-binding capability', async () => {
+  await withServer({
+    getTask: async () => task(7, 'REVIEWED'),
+    getAsset: async () => assert.fail('must not read an asset without the READY gate'),
+  }, async (root) => {
+    const response = await fetch(`${root}/v1/tasks/7/archive`);
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error.code, 'FINAL_DELIVERY_UNAVAILABLE');
+  });
+});
+
+test('delivery downloads reject a task snapshot that differs from the READY binding', async () => {
+  await withServer({
+    getTask: async () => task(7, 'REVIEWED'),
+    assertTaskReadyForDelivery: async () => ({
+      taskId: 7,
+      copyRevisionId: 108,
+      imageRunId: 'run-7',
+    }),
+    getAsset: async () => assert.fail('must not read an asset from a stale snapshot'),
+  }, async (root) => {
+    const response = await fetch(`${root}/v1/tasks/7/archive`);
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error.code, 'DELIVERY_VERSION_CHANGED');
+  });
+});

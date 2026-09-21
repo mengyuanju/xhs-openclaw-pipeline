@@ -18,6 +18,8 @@ function taskRow(overrides = {}) {
     assigned_to_user_id: 'alice',
     copy_executor_node_id: 'node-b',
     current_copy_revision_id: null,
+    source_query_package_name: null,
+    production_batch_id: null,
     current_image_run_id: null,
     current_execution_id: null,
     current_stage: null,
@@ -35,8 +37,9 @@ function taskRow(overrides = {}) {
 
 const copyReviewMetadata = Object.freeze({
   decision: 'APPROVE',
-  originalScore: 2.5,
-  note: '轻微措辞可后续优化',
+  score: 3,
+  originalScore: 3,
+  note: '',
   reviewSessionId: '77777777-7777-4777-8777-777777777777',
 });
 const copyReviewActor = Object.freeze({ reviewerUserId: 'admin' });
@@ -45,6 +48,98 @@ const executorManagementActor = Object.freeze({
   username: 'admin',
   role: 'ADMIN',
   credentialVersion: 1,
+});
+
+test('personal completion history combines copy and image events without trusting query-supplied identity', async () => {
+  const queries = [];
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql, values) {
+      queries.push({ sql: String(sql), values });
+      return { rows: [{
+        id: '41',
+        query: '秋日路线',
+        state: 'IMAGE_QC_PENDING',
+        completions: [
+          { stage: 'COPY', completedAt: '2026-09-06T01:00:00.000Z' },
+          { stage: 'IMAGE', completedAt: '2026-09-06T02:00:00.000Z' },
+        ],
+      }] };
+    },
+  } });
+  const rows = await repository.listPersonalTaskCompletions({
+    accountId: 2,
+    username: 'alice',
+    from: '2026-09-05T16:00:00.000Z',
+    to: '2026-09-06T16:00:00.000Z',
+  });
+  assert.deepEqual(rows, [{
+    id: 41,
+    query: '秋日路线',
+    state: 'IMAGE_QC_PENDING',
+    completions: [
+      { stage: 'COPY', completedAt: '2026-09-06T01:00:00.000Z' },
+      { stage: 'IMAGE', completedAt: '2026-09-06T02:00:00.000Z' },
+    ],
+  }]);
+  assert.deepEqual(queries[0].values, [2, 'alice', '2026-09-05T16:00:00.000Z', '2026-09-06T16:00:00.000Z', 20_001]);
+  assert.match(queries[0].sql, /copy_approval_events/u);
+  assert.match(queries[0].sql, /image_approval_events/u);
+  assert.match(queries[0].sql, /approved_by_account_id = \$1/u);
+  assert.match(queries[0].sql, /submitted_by_account_id = \$1/u);
+  assert.match(queries[0].sql, /visible_assignee\.id = \$1/u);
+  assert.match(queries[0].sql, /visible_creator\.id = \$1/u);
+  await assert.rejects(repository.listPersonalTaskCompletions({
+    accountId: 2,
+    username: 'alice',
+    from: '2026-09-06T16:00:00.000Z',
+    to: '2026-09-05T16:00:00.000Z',
+  }), /completion range/u);
+});
+
+test('delivery export reads only the pinned copy, image run and current-run asset metadata', async () => {
+  const queries = [];
+  const imageRunId = '11111111-1111-4111-8111-111111111111';
+  const repository = new PostgresControlPlaneRepository({
+    pool: {
+      query: async (sql, values) => {
+        queries.push({ sql: String(sql), values });
+        return { rows: [{
+          id: '41',
+          query: '黄山路线',
+          source_query_package_name: '九月选题',
+          state: 'REVIEWED',
+          current_copy_revision_id: '51',
+          current_image_run_id: imageRunId,
+          delivery_entry_id: '71',
+          copy_content: { copy: { title: '当前', body: '正文', tags: [] } },
+          image_result: { images: [{ assetId: 61 }] },
+          assets: [{
+            id: 61,
+            taskId: 41,
+            imageRunId,
+            mediaType: 'image/png',
+            originalName: '图片.png',
+          }],
+        }] };
+      },
+    },
+  });
+  const snapshot = await repository.getTaskForDelivery(41);
+  assert.deepEqual(snapshot.binding, {
+    deliveryEntryId: 71, taskId: 41, copyRevisionId: 51, imageRunId,
+  });
+  assert.equal(snapshot.task.copyRevisions.length, 1);
+  assert.equal(snapshot.task.imageRuns.length, 1);
+  assert.equal(snapshot.task.assets.length, 1);
+  assert.equal(snapshot.task.query, '黄山路线');
+  assert.equal(snapshot.task.sourceQueryPackageName, '九月选题');
+  assert.equal(queries.length, 1);
+  assert.deepEqual(queries[0].values, [41]);
+  assert.match(queries[0].sql, /delivery\.status = 'READY'/u);
+  assert.match(queries[0].sql, /task\.query/u);
+  assert.match(queries[0].sql, /task\.source_query_package_name/u);
+  assert.match(queries[0].sql, /delivery\.id AS delivery_entry_id/u);
+  assert.doesNotMatch(queries[0].sql, /task_executions|human_quality_assessments/u);
 });
 
 test('creator role filters apply equally to pages and totals without joining a same-name replacement', async () => {
@@ -96,7 +191,7 @@ test('task detail exposes the stable assignee account identity used by review co
         return { rows: source.includes('assignee.id AS assignee_account_id')
           ? [{ ...row,
             creator_account_id: '1', creator_display_name: '系统管理员', creator_role: 'ADMIN',
-            assignee_account_id: '6', assigned_to_display_name: '普通作业员 A', assignee_status: 'ACTIVE' }]
+            assignee_account_id: '6', assigned_to_display_name: '标注 A', assigned_to_role: 'USER', assignee_status: 'ACTIVE' }]
           : [row] };
       }
       return { rows: [] };
@@ -107,7 +202,8 @@ test('task detail exposes the stable assignee account identity used by review co
 
   assert.equal(detail.createdByAccountId, 1);
   assert.equal(detail.assignedToAccountId, 6);
-  assert.equal(detail.assignedToDisplayName, '普通作业员 A');
+  assert.equal(detail.assignedToDisplayName, '标注 A');
+  assert.equal(detail.assignedToRole, 'USER');
   assert.equal(detail.assigneeStatus, 'ACTIVE');
   assert.match(taskSelection, /creator\.username = task\.created_by_user_id/u);
   assert.match(taskSelection, /creator\.created_at < task\.created_at/u);
@@ -260,7 +356,7 @@ for (const kind of ['COPY', 'IMAGE']) {
       const taskMessage = kind === 'IMAGE' ? '生图第1次失败，等待原执行机重试（最多3次）' : summary;
       assert.deepEqual(executionUpdate.values, [executionId, summary, detail]);
       assert.deepEqual(taskUpdate.values, [41, nextState, taskMessage, detail, executionId,
-        ...(kind === 'IMAGE' ? [{ ...snapshot, imageRetry: { failedAttempts: 1, nodeId: 'node-b' } }, 'IMAGE_QUEUED', 0, null] : ['FAILED'])]);
+        ...(kind === 'IMAGE' ? [{ ...snapshot, imageRetry: { failedAttempts: 1, nodeId: 'node-b' } }, 'IMAGE_QUEUED', 0, null, null] : ['FAILED'])]);
       assert.equal(failed.state, nextState);
       assert.equal(failed.progressMessage, taskMessage);
       if (kind === 'IMAGE') {
@@ -308,15 +404,15 @@ test('task pages filter multiple states and Query text while returning a total',
     ['COPY_QUEUED', 'COPY_FAILED'],
     'node-b',
     '远端',
-    20,
+    21,
     20,
   ]);
   assert.match(pageQuery.sql, /state = ANY\(\$1::varchar\[\]\)/u);
-  assert.match(pageQuery.sql, /strpos\(lower\(query\), lower\(\$3\)\) > 0/u);
-  assert.match(pageQuery.sql, /WHEN state = 'COPY_REVIEW_PENDING' THEN 1[\s\S]*WHEN state = 'MANUAL_ARCHIVE' THEN 2[\s\S]*WHEN state = 'COPY_RUNNING' THEN 3[\s\S]*WHEN state = 'IMAGE_RUNNING' THEN 4/u);
-  assert.match(pageQuery.sql, /WHEN state IN \('COPY_FAILED', 'IMAGE_FAILED'\) THEN 5[\s\S]*WHEN state IN \('COPY_QUEUED', 'IMAGE_QUEUED'\) THEN 6/u);
-  assert.match(pageQuery.sql, /ORDER BY CASE[\s\S]*created_at DESC, id DESC/u);
-  assert.match(pageQuery.sql, /ORDER BY CASE[\s\S]*page\.created_at DESC, page\.id DESC/u);
+  assert.match(pageQuery.sql, /lower\(query\) LIKE '%' \|\| lower\(\$3\) \|\| '%'/u);
+  assert.match(pageQuery.sql, /cursor_page\.priority_paused ASC, cursor_page\.priority_sort_at ASC, cursor_page\.id ASC/u);
+  assert.match(pageQuery.sql, /cursor_page\.priority_paused ASC, cursor_page\.priority_sort_at ASC, cursor_page\.id ASC/u);
+  assert.match(pageQuery.sql, /ORDER BY cursor_page\.priority_paused ASC, cursor_page\.priority_sort_at ASC, cursor_page\.id ASC/u);
+  assert.match(pageQuery.sql, /ORDER BY page\.priority_paused ASC, page\.priority_sort_at ASC, page\.id ASC/u);
 });
 
 test('task pages can de-duplicate normalized Query values before pagination', async () => {
@@ -352,17 +448,102 @@ test('task pages sort by creation time or Query ID and can locate an exact ID', 
 
   await repository.listTasks({ taskId: '42', sortBy: 'createdAt', sortOrder: 'asc' });
   assert.match(queries[0].sql, /WHERE id = \$1/u);
-  assert.match(queries[0].sql, /ORDER BY created_at ASC, id ASC/u);
+  assert.match(queries[0].sql, /ORDER BY cursor_page\.created_at ASC, cursor_page\.id ASC/u);
   assert.match(queries[0].sql, /ORDER BY page\.created_at ASC, page\.id ASC/u);
-  assert.deepEqual(queries[0].values, [42, 50, 0]);
+  assert.deepEqual(queries[0].values, [42, 51, 0]);
 
   queries.length = 0;
   await repository.listTasks({ sortBy: 'id', sortOrder: 'desc' });
-  assert.match(queries[0].sql, /ORDER BY id DESC/u);
+  assert.match(queries[0].sql, /ORDER BY cursor_page\.id DESC/u);
   assert.match(queries[0].sql, /ORDER BY page\.id DESC/u);
 
   await assert.rejects(repository.listTasks({ sortBy: 'query' }), /sort field/u);
   await assert.rejects(repository.listTasks({ sortOrder: 'sideways' }), /sort order/u);
+});
+
+test('task cursor pages use stable keyset predicates in both directions without SQL offsets', async () => {
+  const pageQueries = [];
+  let pageRead = 0;
+  const rows = [5, 4, 3, 2, 1].map((id) => taskRow({
+    id,
+    created_at: `2026-09-13T00:00:0${id}.000Z`,
+  }));
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql, values) {
+      const source = String(sql);
+      if (source.includes('COUNT(*) AS total')) return { rows: [{ total: '5' }] };
+      pageQueries.push({ sql: source, values });
+      pageRead += 1;
+      if (pageRead === 1) return { rows: rows.slice(0, 3) };
+      if (pageRead === 2) return { rows: rows.slice(2) };
+      return { rows: rows.slice(0, 3) };
+    },
+  } });
+
+  const first = await repository.listTasks({ sortBy: 'id', sortOrder: 'desc', limit: 2,
+    includeTotal: true });
+  assert.deepEqual(first.items.map(({ id }) => id), [5, 4]);
+  assert.equal(typeof first.nextCursor, 'string');
+  assert.equal(first.previousCursor, null);
+
+  const second = await repository.listTasks({ sortBy: 'id', sortOrder: 'desc', limit: 2,
+    offset: 2, cursor: first.nextCursor, includeTotal: true });
+  assert.deepEqual(second.items.map(({ id }) => id), [3, 2]);
+  assert.equal(typeof second.previousCursor, 'string');
+  assert.equal(typeof second.nextCursor, 'string');
+  assert.match(pageQueries[1].sql, /WHERE cursor_page\.id < \$1/u);
+  assert.doesNotMatch(pageQueries[1].sql, /OFFSET/u);
+  assert.deepEqual(pageQueries[1].values, [4, 3]);
+
+  await repository.listTasks({ sortBy: 'id', sortOrder: 'desc', limit: 2,
+    offset: 0, cursor: second.previousCursor, includeTotal: true });
+  assert.match(pageQueries[2].sql, /WHERE cursor_page\.id > \$1/u);
+  assert.match(pageQueries[2].sql, /ORDER BY cursor_page\.id ASC/u);
+  assert.doesNotMatch(pageQueries[2].sql, /OFFSET/u);
+});
+
+test('task tail paging reverses the indexed order and returns only the true final-page remainder', async () => {
+  const queries = [];
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql, values) {
+      const source = String(sql);
+      queries.push({ sql: source, values });
+      if (source.includes('COUNT(*) AS total')) return { rows: [{ total: '5' }] };
+      return { rows: [taskRow({ id: 1, created_at: '2026-09-13T00:00:01.000Z' })] };
+    },
+  } });
+
+  const last = await repository.listTasks({ sortBy: 'id', sortOrder: 'desc', limit: 2,
+    offset: 4, lastPage: true, includeTotal: true });
+  assert.deepEqual(last.items.map(({ id }) => id), [1]);
+  assert.equal(last.offset, 4);
+  assert.equal(last.nextCursor, null);
+  assert.equal(typeof last.previousCursor, 'string');
+  const pageQuery = queries.find(({ sql }) => !sql.includes('COUNT(*) AS total'));
+  assert.match(pageQuery.sql, /ORDER BY cursor_page\.id ASC/u);
+  assert.match(pageQuery.sql, /ORDER BY page\.id DESC/u);
+  assert.doesNotMatch(pageQuery.sql, /OFFSET/u);
+  assert.deepEqual(pageQuery.values, [1]);
+});
+
+test('task cursors reject tampering and cannot be replayed under another sort', async () => {
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql) {
+      if (String(sql).includes('COUNT(*) AS total')) return { rows: [{ total: '2' }] };
+      return { rows: [taskRow({ id: 2 }), taskRow({ id: 1 })] };
+    },
+  } });
+  const first = await repository.listTasks({ sortBy: 'id', sortOrder: 'desc', limit: 1,
+    includeTotal: true });
+
+  await assert.rejects(repository.listTasks({ cursor: 'not-json', includeTotal: true }), /cursor/u);
+  await assert.rejects(repository.listTasks({ cursor: first.nextCursor, sortBy: 'createdAt',
+    sortOrder: 'desc', includeTotal: true }), /does not match/u);
+  await assert.rejects(repository.listTasks({ cursor: first.nextCursor, sortBy: 'id',
+    sortOrder: 'desc', query: '另一个范围', includeTotal: true }), /does not match/u);
+  await assert.rejects(repository.listTasks({ lastPage: true }), /requires includeTotal/u);
+  await assert.rejects(repository.listTasks({ cursor: first.nextCursor, lastPage: true,
+    sortBy: 'id', sortOrder: 'desc', includeTotal: true }), /cannot be combined/u);
 });
 
 test('administrator attention filters use fixed SQL for stale and failed work', async () => {
@@ -373,7 +554,7 @@ test('administrator attention filters use fixed SQL for stale and failed work', 
   await repository.listTasks({ attention: 'ANOMALY' });
   assert.match(queries[0].sql, /COALESCE\(last_activity_at, execution_started_at, updated_at, created_at\) <= now\(\) - interval '30 minutes'/u);
   assert.match(queries[0].sql, /current_stage = 'IMAGE_RETRY_EXHAUSTED'/u);
-  assert.deepEqual(queries[0].values, [50, 0]);
+  assert.deepEqual(queries[0].values, [51, 0]);
   await assert.rejects(repository.listTasks({ attention: 'ALL' }), /attention/u);
 });
 
@@ -396,7 +577,9 @@ test('saved task views are owner-scoped and upsert a validated filter document',
   assert.equal(saved.id, 8);
   assert.equal(saved.ownerUsername, 'admin');
   assert.deepEqual(queries[0].values[3], {
-    query: '', deduplicateQuery: false, createdByUserId: 'admin', createdByAccountId: 1, createdByRole: 'ALL', state: 'ALL',
+    query: '', queryPackageName: '', deduplicateQuery: false, createdByUserId: 'admin', createdByAccountId: 1, createdByRole: 'ALL',
+    createdDateFrom: '', createdDateTo: '', state: 'ALL',
+    assignedToUserId: '', assignedToAccountId: null, personalScope: 'ALL',
     sort: 'priority:desc', attention: 'FAILED', pageSize: 20,
   });
   assert.match(queries[0].sql, /ON CONFLICT\(owner_username, name\) DO UPDATE/u);
@@ -453,6 +636,56 @@ test('personal task pagination and totals filter the creator independently of ex
     /creator\.id AS creator_account_id/u);
   await assert.rejects(repository.listTasks({ createdByUserId: '' }), /createdByUserId/u);
   await assert.rejects(repository.listTasks({ createdByAccountId: 1 }), /requires createdByUserId/u);
+});
+
+test('task pages combine exact creator and assignee account filters', async () => {
+  const queries = [];
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql, values) {
+      queries.push({ sql: String(sql), values });
+      return { rows: String(sql).includes('COUNT(*) AS total')
+        ? [{ total: '1' }]
+        : [taskRow({ assignee_account_id: '3', assigned_to_user_id: 'bob' })] };
+    },
+  } });
+  const page = await repository.listTasks({
+    createdByUserId: 'admin', createdByAccountId: 1,
+    assignedToUserId: 'bob', assignedToAccountId: 3,
+    includeTotal: true,
+  });
+  assert.equal(page.total, 1);
+  assert.equal(page.items[0].assignedToAccountId, 3);
+  for (const { sql, values } of queries) {
+    assert.match(sql, /exact_creator\.id = \$2/u);
+    assert.match(sql, /assigned_to_user_id = \$3/u);
+    assert.match(sql, /exact_assignee\.id = \$4/u);
+    assert.match(sql, /exact_assignee\.created_at < tasks\.assigned_at/u);
+    assert.deepEqual(values.slice(0, 4), ['admin', 1, 'bob', 3]);
+  }
+  await assert.rejects(repository.listTasks({ assignedToAccountId: 3 }), /requires assignedToUserId/u);
+});
+
+test('copy QA return filtering uses the durable active-return provenance for pages and totals', async () => {
+  const queries = [];
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql) {
+      queries.push(String(sql));
+      return { rows: String(sql).includes('COUNT(*) AS total')
+        ? [{ total: '1' }]
+        : [taskRow({ state: 'COPY_REVIEW_PENDING', mandatory_copy_qc: true,
+          mandatory_copy_qc_origin: 'QA_RETURN' })] };
+    },
+  } });
+  const page = await repository.listTasks({
+    states: ['COPY_REVIEW_PENDING', 'COPY_QC_PENDING'], copyQaReturnedOnly: true, includeTotal: true,
+  });
+  assert.equal(page.total, 1);
+  assert.equal(page.items[0].mandatoryCopyQcOrigin, 'QA_RETURN');
+  for (const sql of queries) {
+    assert.match(sql, /state = ANY\(/u);
+    assert.match(sql, /mandatory_copy_qc = true AND mandatory_copy_qc_origin = 'QA_RETURN'/u);
+  }
+  await assert.rejects(repository.listTasks({ copyQaReturnedOnly: 'true' }), /copyQaReturnedOnly/u);
 });
 
 test('task pages expose the current running image executor independently of copy ownership', async () => {
@@ -565,7 +798,21 @@ test('copy approval submits reviewed copy to the image queue', async () => {
         }] };
       }
       if (source.includes('SELECT id FROM executor_nodes')) return { rows: [{ id: 'node-b' }] };
-      if (source.includes('UPDATE copy_revisions')) return { rows: [] };
+      if (source.includes('UPDATE copy_revisions')) return { rows: [{
+        id: 12,
+        task_id: 41,
+        execution_id: null,
+        revision: 2,
+        content: {},
+        approved_at: new Date(),
+        approved_by_node_id: 'node-b',
+      }] };
+      if (source.includes('INSERT INTO copy_approval_events')) return { rows: [{
+        id: 31,
+        task_id: values[0],
+        copy_revision_id: values[1],
+        content_sha256: values[7],
+      }] };
       if (source.includes('UPDATE tasks SET')) {
         return { rows: [taskRow({ state: 'IMAGE_QUEUED', current_copy_revision_id: 12 })] };
       }
@@ -583,10 +830,11 @@ test('copy approval submits reviewed copy to the image queue', async () => {
   }, copyReviewActor);
 
   assert.equal(approved.state, 'IMAGE_QUEUED');
-  const taskUpdate = queries.find((item) => item.sql.includes("state = 'IMAGE_QUEUED'"));
+  const taskUpdate = queries.find((item) => item.sql.includes('UPDATE tasks SET') && item.values?.[1] === 'IMAGE_QUEUED');
   assert.ok(taskUpdate);
-  assert.match(taskUpdate.sql, /ai_disclosure_enabled = \$3/u);
-  assert.equal(taskUpdate.values[2], false);
+  assert.match(taskUpdate.sql, /state = \$2/u);
+  assert.match(taskUpdate.sql, /ai_disclosure_enabled = \$4/u);
+  assert.equal(taskUpdate.values[3], false);
 });
 
 test('non-admin approval without edits creates an automatic-layout revision instead of preserving manual layouts', async () => {
@@ -609,7 +857,18 @@ test('non-admin approval without edits creates an automatic-layout revision inst
       if (source.includes('SELECT * FROM copy_revisions')) return { rows: [{ id: 12, task_id: 41, revision: 2, content: sourceContent }] };
       if (source.includes('SELECT id FROM executor_nodes')) return { rows: [{ id: 'node-b' }] };
       if (source.includes('MAX(revision)')) return { rows: [{ revision: 3 }] };
-      if (source.includes('INSERT INTO copy_revisions')) return { rows: [{ id: 13 }] };
+      if (source.includes('INSERT INTO copy_revisions')) return { rows: [{
+        id: 13,
+        task_id: values[0],
+        revision: values[1],
+        content: values[2],
+      }] };
+      if (source.includes('INSERT INTO copy_approval_events')) return { rows: [{
+        id: 32,
+        task_id: values[0],
+        copy_revision_id: values[1],
+        content_sha256: values[7],
+      }] };
       if (source.includes('UPDATE tasks SET')) return { rows: [taskRow({ state: 'IMAGE_QUEUED', current_copy_revision_id: 13 })] };
       return { rows: [] };
     },
@@ -623,7 +882,7 @@ test('non-admin approval without edits creates an automatic-layout revision inst
   assert.equal(saved.manualReview.layoutsForcedAutomatic, true);
 });
 
-test('executor inventory reports independent copy and image running capacity', async () => {
+test('executor inventory counts every running image execution, including manual image edits', async () => {
   let selection;
   const repository = new PostgresControlPlaneRepository({
     pool: {
@@ -644,11 +903,71 @@ test('executor inventory reports independent copy and image running capacity', a
   assert.equal(nodes[0].copyConcurrency, 4);
   assert.equal(nodes[0].imageConcurrency, 2);
   assert.match(selection, /e\.kind = 'IMAGE' AND e\.status = 'RUNNING'/u);
-  assert.match(selection, /t\.state = 'IMAGE_RUNNING'/u);
+  assert.doesNotMatch(selection, /t\.state = 'IMAGE_RUNNING'/u);
+  assert.doesNotMatch(selection, /t\.current_execution_id = e\.id/u);
   assert.match(selection, /WHERE n\.retired_at IS NULL/u);
 });
 
-test('executor registration restores a previously retired node', async () => {
+test('task latest-activity date filters use inclusive Shanghai calendar days for pages and totals', async () => {
+  const queries = [];
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql, values) {
+      queries.push({ sql: String(sql), values });
+      return { rows: String(sql).includes('COUNT(*) AS total') ? [{ total: '0' }] : [] };
+    },
+  } });
+  await repository.listTasks({
+    state: 'IMAGE_FAILED', createdDateFrom: '2026-09-01', createdDateTo: '2026-09-17', includeTotal: true,
+  });
+  assert.equal(queries.length, 2);
+  for (const { sql, values } of queries) {
+    assert.match(sql, /GREATEST\(created_at, updated_at, COALESCE\(last_activity_at, updated_at\)\) >= \(\$1::date::timestamp AT TIME ZONE 'Asia\/Shanghai'\)/u);
+    assert.match(sql, /GREATEST\(created_at, updated_at, COALESCE\(last_activity_at, updated_at\)\) < \(\(\$2::date \+ 1\)::timestamp AT TIME ZONE 'Asia\/Shanghai'\)/u);
+    assert.match(sql, /state = ANY\(\$3::varchar\[\]\)/u);
+    assert.deepEqual(values.slice(0, 3), ['2026-09-01', '2026-09-17', ['IMAGE_FAILED']]);
+  }
+
+  await assert.rejects(repository.listTasks({
+    createdDateFrom: '2026-09-18', createdDateTo: '2026-09-17',
+  }), /cannot be after/u);
+});
+
+test('task pages partially match a normalized package name and expose its source snapshot', async () => {
+  const queries = [];
+  const repository = new PostgresControlPlaneRepository({
+    pool: {
+      async query(sql, values) {
+        const source = String(sql);
+        queries.push({ sql: source, values });
+        if (source.includes('COUNT(*) AS total')) return { rows: [{ total: '1' }] };
+        return { rows: [taskRow({ source_query_package_name: '九月 秋季选题' })] };
+      },
+    },
+  });
+
+  const page = await repository.listTasks({
+    queryPackageName: '  九月   秋季  ',
+    limit: 20,
+    offset: 20,
+    includeTotal: true,
+  });
+
+  assert.equal(page.total, 1);
+  assert.equal(page.items[0].sourceQueryPackageName, '九月 秋季选题');
+  const pageQuery = queries.find((item) => item.sql.includes('SELECT * FROM tasks'));
+  const countQuery = queries.find((item) => item.sql.includes('COUNT(*) AS total'));
+  assert.deepEqual(pageQuery.values, ['九月 秋季', 21, 20]);
+  assert.deepEqual(countQuery.values, ['九月 秋季']);
+  assert.match(pageQuery.sql,
+    /lower\(COALESCE\(source_query_package_name, ''\)\) LIKE '%' \|\| lower\(\$1\) \|\| '%'/u);
+  assert.match(countQuery.sql,
+    /lower\(COALESCE\(source_query_package_name, ''\)\) LIKE '%' \|\| lower\(\$1\) \|\| '%'/u);
+
+  await assert.rejects(repository.listTasks({ queryPackageName: ['九月'] }), /queryPackageName/u);
+  await assert.rejects(repository.listTasks({ queryPackageName: 'x'.repeat(201) }), /queryPackageName/u);
+});
+
+test('executor registration restores a previously retired node and binds its shared Codex pool', async () => {
   let registration;
   const repository = new PostgresControlPlaneRepository({
     pool: {
@@ -656,15 +975,22 @@ test('executor registration restores a previously retired node', async () => {
         registration = { sql: String(sql), values };
         return { rows: [{
           id: 'node-a', name: '执行机 A', image_worker_enabled: false,
-          copy_concurrency: 1, image_concurrency: 1,
+          copy_concurrency: 1, image_concurrency: 1, codex_pool_id: 'node-a',
+          codex_total_concurrency: 1, codex_image_concurrency: 1,
+          image_edit_executor_version: 1,
           last_seen_at: '2026-09-09T00:00:00Z',
         }] };
       },
     },
   });
-  await repository.registerNode({ nodeId: 'node-a', name: '执行机 A' });
+  const registered = await repository.registerNode({
+    nodeId: 'node-a', name: '执行机 A', imageEditExecutorVersion: 1,
+  });
   assert.match(registration.sql, /ON CONFLICT\(id\) DO UPDATE SET[\s\S]*retired_at = NULL/u);
-  assert.deepEqual(registration.values, ['node-a', '执行机 A', false, null, null]);
+  assert.match(registration.sql, /image_edit_executor_version = excluded\.image_edit_executor_version/u);
+  assert.deepEqual(registration.values, ['node-a', '执行机 A', false, null, null, 'node-a', 1, 1, 1, 0]);
+  assert.equal(registered.imageEditExecutorVersion, 1);
+  assert.equal(registered.copyImagePlanRegenerationVersion, 0);
 });
 
 test('executor retirement hides only offline nodes without running work', async () => {
@@ -774,13 +1100,20 @@ test('requeued images cannot be edited through copy approval', async () => {
 test('image claims apply a shared retry cooldown and reuse the approved snapshot in a new execution', async () => {
   const queries = [];
   const previousId = '47d841f5-3808-46f0-9f2a-fa9781379b38';
+  const chainId = '57d841f5-3808-46f0-9f2a-fa9781379b38';
   const snapshot = { copyRevision: { id: 12, content: { reviewed: true } },
-    imageRetry: { failedAttempts: 2, nodeId: 'node-b' } };
+    imageRetry: { failedAttempts: 2, nodeId: 'node-b' }, imageProductionChainId: chainId };
   let execution;
   const client = {
     async query(sql, values) {
       queries.push({ sql, values });
-      if (sql.includes('SELECT * FROM executor_nodes')) return { rows: [{ id: 'node-b', image_worker_enabled: true }] };
+      if (sql.includes('FROM executor_nodes n') && sql.includes('codex_concurrency_pools')) return { rows: [{
+        id: 'node-b', codex_pool_id: 'pool-a', image_worker_enabled: true,
+        codex_total_concurrency: 1, codex_image_concurrency: 1,
+      }] };
+      if (sql.includes('COUNT(*)') && sql.includes('task_executions')) {
+        return { rows: [{ total_count: 0, image_count: 0 }] };
+      }
       if (sql.includes('SELECT last_assignee_user_id FROM execution_claim_cursors')) {
         return { rows: [{ last_assignee_user_id: null }] };
       }
@@ -806,9 +1139,9 @@ test('image claims apply a shared retry cooldown and reuse the approved snapshot
   const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
   const claim = await repository.claimImage('node-b');
   const candidate = queries.find((query) => query.sql.includes('FOR UPDATE OF task SKIP LOCKED'));
-  assert.deepEqual(candidate.values, ['IMAGE_QUEUED', 'node-b', null, 1]);
+  assert.deepEqual(candidate.values, ['IMAGE_QUEUED', 'node-b', null, 1, 0]);
   assert.match(candidate.sql, /queued\.error IS NULL OR queued\.last_activity_at <= now\(\) - interval '5 seconds'/u);
-  assert.match(candidate.sql, /ORDER BY queued\.last_activity_at NULLS FIRST, queued\.id/u);
+  assert.match(candidate.sql, /ORDER BY work\.priority_paused, work\.priority_sort_at, work\.task_id/u);
   assert.match(candidate.sql, /FOR UPDATE OF task SKIP LOCKED/u);
   assert.doesNotMatch(candidate.sql, /copy_executor_node_id/u);
   assert.notEqual(claim.execution.id, previousId);
@@ -1052,4 +1385,59 @@ test('batch permanent deletion verifies the administrator once and deletes eligi
   assert.deepEqual(prepared, [41]);
   assert.deepEqual(deleted, [41]);
   assert.equal(queries.at(-1).sql, 'COMMIT');
+});
+
+test('image asset upload is idempotent across recovery runs in the same production chain', async () => {
+  const executionId = '88888888-8888-4888-8888-888888888888';
+  const chainId = '99999999-9999-4999-8999-999999999999';
+  const runId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const sha256 = 'b'.repeat(64);
+  const queries = [];
+  let asset = null;
+  const client = {
+    release() {},
+    async query(sql, values = []) {
+      const source = String(sql);
+      queries.push({ sql: source, values });
+      if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(source)) return { rows: [] };
+      if (source.includes('SELECT t.id')) return { rows: [{ id: 7 }] };
+      if (source.includes('SELECT e.*, t.current_execution_id')) return { rows: [{
+        id: executionId, task_id: 7, kind: 'IMAGE', status: 'RUNNING',
+        current_execution_id: executionId,
+      }] };
+      if (source.includes('SELECT e.id, e.task_id, e.image_production_chain_id')) return { rows: [{
+        id: executionId, task_id: 7, image_production_chain_id: chainId, image_run_id: runId,
+      }] };
+      if (source.includes('SELECT * FROM assets') && source.includes('artifact_key')) {
+        return { rows: asset ? [asset] : [] };
+      }
+      if (source.includes('INSERT INTO assets')) {
+        asset = {
+          id: 55, task_id: 7, image_run_id: runId, media_type: values[2], byte_size: values[3],
+          sha256: values[4], storage_path: values[5], original_name: values[6],
+          image_production_chain_id: values[7], artifact_key: values[8], created_at: '2026-09-13T12:00:00Z',
+        };
+        return { rows: [asset] };
+      }
+      if (source.includes('UPDATE assets SET image_run_id')) {
+        asset = { ...asset, image_run_id: values[1], active: true };
+        return { rows: [asset] };
+      }
+      return { rows: [] };
+    },
+  };
+  const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
+  const input = {
+    executionId, mediaType: 'image/png', byteSize: 123, sha256,
+    storagePath: 'C:\\assets\\7\\01-hero.png', originalName: '01-hero.png',
+  };
+  assert.equal((await repository.recordAsset(input)).reused, false);
+  const replay = await repository.recordAsset(input);
+  assert.equal(replay.id, 55);
+  assert.equal(replay.reused, true);
+  assert.equal(queries.filter(({ sql }) => sql.includes('INSERT INTO assets')).length, 1);
+  assert.equal(queries.filter(({ sql }) => sql.includes('UPDATE assets SET image_run_id')).length, 1);
+  await assert.rejects(repository.recordAsset({ ...input, sha256: 'c'.repeat(64) }), {
+    code: 'ASSET_IDEMPOTENCY_CONFLICT',
+  });
 });

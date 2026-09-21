@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
+import {
+  canManageTaskAssignment,
+  isTaskAssignmentLocked,
+} from '../src/control-plane/task-assignment.mjs';
 import { WORKBENCH_VIEWS, matchesWorkbenchView } from '../app/workbench/views.ts';
 
 const source = (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
@@ -76,7 +80,7 @@ test('pending-assignment is review-only while personal view includes submitted a
   assert.match(workbench, /task\.createdByAccountId === accountId/u);
   assert.match(workbench, /task\.assignedToAccountId === accountId/u);
   assert.match(workbench, /assignedToDisplayName/u);
-  assert.match(workbench, /创建：\{task\.createdByDisplayName/u);
+  assert.match(workbench, /创建人：\{task\.createdByDisplayName \|\| task\.createdByUserId \|\| '历史任务'\}/u);
   assert.match(workbench, /\['COPY_QUEUED', 'COPY_RUNNING'\]\.includes\(task\.state\)\) return '尚未到派单节点'/u);
   assert.match(workbench, /task\.state === 'COPY_REVIEW_PENDING'\) return '待分配'/u);
   assert.match(workbench, /return '等待文案执行机领取'/u);
@@ -107,6 +111,9 @@ test('administrators can assign one task or the current selection through protec
   assert.match(dialog, /负责人不一致，请重新选择/u);
   assert.match(dialog, /disabled=\{submitting \|\| tasks\.length === 0 \|\| destinationRequired\}/u);
   assert.match(dialog, /additionallyEligibleUserIds=\{\[Number\(currentAdmin\.id\)\]\}/u);
+  assert.match(dialog, /eligibleRoles=\{\['REVIEWER', 'USER'\]\}/u);
+  assert.match(dialog, /其他管理员不可选/u);
+  assert.match(workbench, /eligibleRoles=\{\['REVIEWER', 'USER'\]\}/u);
   assert.match(dialog, />我来处理<\/Button>/u);
   assert.match(dialog, /allowEmptyOption=\{canReturnToPool\}/u);
   assert.match(dialog, /task\.skipCopyReview === true && task\.state === 'COPY_QUEUED'/u);
@@ -118,4 +125,16 @@ test('administrators can assign one task or the current selection through protec
   assert.match(proxy, /'\/v1\/tasks\/batch-assignee'/u);
   assert.match(proxy, /assignee\$\//u);
   assert.match(repository, /taskAssignmentVersion: 3/u);
+});
+
+test('assignment controls distinguish assignment from reassignment and lock terminal work', async () => {
+  const workbench = await source('app/workbench/creation-workbench.tsx');
+  assert.equal(canManageTaskAssignment({ state: 'COPY_REVIEW_PENDING', assignedToUserId: null }), true);
+  assert.equal(canManageTaskAssignment({ state: 'IMAGE_QUEUED', assignedToUserId: 'alice' }), true);
+  assert.equal(isTaskAssignmentLocked({ state: 'REVIEWED' }), true);
+  assert.equal(isTaskAssignmentLocked({ state: 'CANCELLED' }), true);
+  assert.equal(canManageTaskAssignment({ state: 'REVIEWED', assignedToUserId: 'alice' }), false);
+  assert.equal(canManageTaskAssignment({ state: 'CANCELLED', assignedToUserId: 'alice' }), false);
+  assert.match(workbench, /task\.assignedToUserId === null \? '分配' : '改派'/u);
+  assert.match(workbench, /批量分配\/改派/u);
 });

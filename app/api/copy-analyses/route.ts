@@ -11,7 +11,7 @@ const bodySchema = z.object({
 }).strict();
 
 export async function POST(request: Request) {
-  return apiHandler(request, { mutation: true, roles: ['ADMIN', 'REVIEWER'] }, async () => {
+  return apiHandler(request, { mutation: true, roles: ['ADMIN'] }, async () => {
     await parseJson(request, bodySchema, { maxBytes: 128 * 1024 });
     return new Response(null, {
       status: 308,

@@ -10,12 +10,24 @@ export async function heartbeatExecutions(pool, { nodeId: rawNodeId, executionId
   if (!Array.isArray(executionIds) || executionIds.length > 64) throw new TypeError('executionIds must contain at most 64 IDs');
   const ids = executionIds.map(id => normalizeUuid(id, 'executionId'));
   if (new Set(ids).size !== ids.length) throw new TypeError('executionIds must be unique');
-  const result = await pool.query(`UPDATE task_executions e SET heartbeat_at = now()
-    WHERE e.node_id = $1 AND e.id = ANY($2::uuid[]) AND e.status = 'RUNNING'
-      AND ${liveExecution}
-      AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = e.task_id AND t.current_execution_id = e.id
-        AND t.state IN ('COPY_RUNNING', 'IMAGE_RUNNING'))
-    RETURNING e.id`, [nodeId, ids]);
+  const result = await pool.query(`WITH active AS (
+      UPDATE task_executions e SET heartbeat_at = now()
+      WHERE e.node_id = $1 AND e.id = ANY($2::uuid[]) AND e.status = 'RUNNING'
+        AND ${liveExecution}
+        AND (EXISTS (SELECT 1 FROM tasks t
+            WHERE t.id = e.task_id AND t.current_execution_id = e.id
+              AND t.state IN ('COPY_RUNNING', 'IMAGE_RUNNING'))
+          OR EXISTS (SELECT 1 FROM image_edit_requests edit
+            WHERE edit.execution_id=e.id AND edit.status='RUNNING'
+              AND edit.lease_expires_at>now())
+          OR EXISTS (SELECT 1 FROM copy_image_plan_regeneration_jobs regeneration
+            WHERE regeneration.execution_id=e.id AND regeneration.status='RUNNING'))
+      RETURNING e.id
+    ), renewed_edits AS (
+      UPDATE image_edit_requests edit SET lease_expires_at=now()+interval '15 minutes'
+      FROM active WHERE edit.execution_id=active.id AND edit.status='RUNNING'
+      RETURNING edit.id
+    ) SELECT id FROM active`, [nodeId, ids]);
   const activeExecutionIds = result.rows.map(row => row.id);
   const active = new Set(activeExecutionIds);
   return { activeExecutionIds, staleExecutionIds: ids.filter(id => !active.has(id)) };
@@ -53,8 +65,52 @@ export async function recoverStaleExecutions(pool) {
         finished_at = now(), duration_ms = NULL
         WHERE execution_id = $1 AND status = 'RUNNING'`, [execution.id, message]);
     }
+    const editRows=(await client.query(`SELECT e.id,e.task_id,e.kind,edit.id AS edit_id,
+        e.last_activity_at <= now()-interval '30 minutes' AS progress_expired
+      FROM task_executions e
+      JOIN image_edit_requests edit ON edit.execution_id=e.id
+      WHERE e.status='RUNNING' AND edit.status='RUNNING' AND NOT (${liveExecution})
+      ORDER BY e.id LIMIT 100 FOR UPDATE OF e,edit SKIP LOCKED`)).rows;
+    for(const execution of editRows) {
+      const message=execution.progress_expired
+        ? 'EXECUTION_PROGRESS_TIMEOUT：图片修改超过30分钟没有阶段进度，执行结果未确认，请重试'
+        : 'EXECUTION_HEARTBEAT_EXPIRED：图片修改超过2分钟未收到执行机心跳，执行结果未确认，请重试';
+      await client.query(`UPDATE task_executions SET status='FAILED',stage='FAILED',
+        progress_message=$2::text,error=$2::text,finished_at=now() WHERE id=$1`,[execution.id,message]);
+      const failed=await client.query(`UPDATE image_edit_requests SET status='FAILED',error=$2,
+        version=version+1,lease_token=NULL,lease_expires_at=NULL,updated_at=now()
+        WHERE id=$1 AND status='RUNNING' RETURNING id`,[execution.edit_id,message]);
+      if(failed.rowCount)await client.query(`INSERT INTO image_edit_events(
+        task_id,edit_id,action,actor,reason,detail)
+        VALUES($1,$2,'LEASE_EXPIRED','control-plane-recovery',$3,$4)`,
+      [execution.task_id,execution.edit_id,message,{executionId:execution.id}]);
+      await client.query(`UPDATE model_call_traces SET status='FAILED',error=$2,
+        finished_at=now(),duration_ms=NULL
+        WHERE execution_id=$1 AND status='RUNNING'`,[execution.id,message]);
+    }
+    const regenerationRows = (await client.query(`SELECT e.id,e.task_id,e.kind,
+        regeneration.id AS regeneration_id,
+        e.last_activity_at <= now()-interval '30 minutes' AS progress_expired
+      FROM task_executions e
+      JOIN copy_image_plan_regeneration_jobs regeneration ON regeneration.execution_id=e.id
+      WHERE e.status='RUNNING' AND regeneration.status='RUNNING' AND NOT (${liveExecution})
+      ORDER BY e.id LIMIT 100 FOR UPDATE OF e,regeneration SKIP LOCKED`)).rows;
+    for (const execution of regenerationRows) {
+      const message = execution.progress_expired
+        ? 'EXECUTION_PROGRESS_TIMEOUT：图文规划重生成超过30分钟没有阶段进度，请重试'
+        : 'EXECUTION_HEARTBEAT_EXPIRED：图文规划重生成超过2分钟未收到执行机心跳，请重试';
+      await client.query(`UPDATE task_executions SET status='FAILED',stage='FAILED',
+        progress_message=$2::text,error=$2::text,finished_at=now() WHERE id=$1`, [execution.id, message]);
+      await client.query(`UPDATE copy_image_plan_regeneration_jobs SET status='FAILED',
+        result=NULL,error=$2,finished_at=now(),updated_at=now()
+        WHERE id=$1 AND status='RUNNING'`, [execution.regeneration_id, message]);
+      await client.query(`UPDATE model_call_traces SET status='FAILED',error=$2,
+        finished_at=now(),duration_ms=NULL
+        WHERE execution_id=$1 AND status='RUNNING'`, [execution.id, message]);
+    }
     await client.query('COMMIT');
-    return rows.map(({ id, task_id, kind }) => ({ id, taskId: Number(task_id), kind }));
+    return [...rows, ...editRows, ...regenerationRows]
+      .map(({ id, task_id, kind }) => ({ id, taskId: Number(task_id), kind }));
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;

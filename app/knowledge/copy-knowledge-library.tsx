@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input, Textarea } from '@/components/ui/input';
 import { SearchInput } from '@/components/ui/search-input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { ToastFeedback } from '@/components/ui/sonner';
 
 import { ChevronLeft, ChevronRight, Eye, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
@@ -300,7 +301,7 @@ export function CopyKnowledgeLibrary({
       <span className="sr-only">根据分析标题搜索</span>
       <SearchInput className="input" value={searchValue} maxLength={200} placeholder="搜索分析标题" onValueChange={setSearchValue} />
     </div>
-    {message && <div className={messageIsError ? 'notice error copy-knowledge-library-message' : 'notice success copy-knowledge-library-message'} role={messageIsError ? 'alert' : 'status'} aria-live="polite">{message}</div>}
+    <ToastFeedback id="copy-knowledge-library-feedback" message={message} tone={messageIsError ? 'error' : 'success'} />
     {availableItems.length === 0 ? <div className="empty-state">{emptyMessage}</div> : <ul className="copy-knowledge-list" aria-busy={isPending}>
       {availableItems.map((item) => <li key={item.id}>
         <div className="copy-knowledge-item-head">

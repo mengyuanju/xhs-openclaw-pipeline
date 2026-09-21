@@ -23,6 +23,10 @@ const nextConfig = {
   distDir: process.env.XHS_NEXT_DIST_DIR || '.next',
   allowedDevOrigins: developmentOrigins,
   serverExternalPackages: ['exceljs', 'sharp'],
+  // Prompt defaults are read through module-relative filesystem paths at runtime.
+  outputFileTracingIncludes: {
+    '/*': ['prompts/post.md', 'prompts/internal/*.md', 'prompts/business/*.md', 'server/prompts/*.md'],
+  },
   poweredByHeader: false,
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }];

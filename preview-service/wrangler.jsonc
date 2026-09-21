@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "xhs-preview-service-local",
+  "main": "vinext/server/fetch-handler",
+  "compatibility_date": "2026-05-15",
+  "secrets": {
+    "required": ["ADMIN_USERNAME", "ADMIN_PASSWORD_HASH"],
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "site-creator-d1",
+      "database_id": "00000000-0000-4000-8000-000000000000",
+      "migrations_dir": "d1-migrations",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "site-creator-r2",
+    },
+  ],
+}

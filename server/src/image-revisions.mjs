@@ -1,5 +1,6 @@
 import { ControlPlaneConflictError, ControlPlaneNotFoundError, normalizeNodeId, normalizeTaskId, normalizeUuid } from './domain.mjs';
 import { normalizeImageSettings, normalizePageLayout } from './image-options.mjs';
+import { withdrawReadyDeliveryEntries } from './final-delivery.mjs';
 
 export function assertImageResultSettings(content, result) {
   if (!content?.imageSettings && !content?.imagePlan?.some(page => page.layout)) return;
@@ -25,14 +26,14 @@ export async function reviseTaskImages(client, rawTaskId, input, actorUsername, 
   const imageSettings = normalizeImageSettings(input.imageSettings);
   const task = (await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId])).rows[0];
   if (!task) throw new ControlPlaneNotFoundError('task not found');
-  if (!['MANUAL_ARCHIVE', 'REVIEWED', 'IMAGE_FAILED', 'IMAGE_QUEUED'].includes(task.state) || task.current_execution_id) throw new ControlPlaneConflictError('INVALID_TASK_STATE', '请等待当前图片执行结束后修改');
+  if (!['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING', 'REVIEWED', 'IMAGE_FAILED', 'IMAGE_QUEUED'].includes(task.state) || task.current_execution_id) throw new ControlPlaneConflictError('INVALID_TASK_STATE', '请等待当前图片执行结束后修改');
   if (Number(task.current_copy_revision_id) !== revisionId || (task.current_image_run_id ?? null) !== imageRunId) throw new ControlPlaneConflictError('STALE_IMAGE_REVISION', '图片或文案版本已更新，请刷新后重新修改');
   const revision = (await client.query('SELECT * FROM copy_revisions WHERE id = $1 AND task_id = $2 FOR UPDATE', [revisionId, taskId])).rows[0];
   if (!revision?.approved_at) throw new ControlPlaneConflictError('COPY_NOT_APPROVED', '请先审核文案');
   const original = revision.content;
   const plan = original.imagePlan ?? original.reviewed?.imagePlan ?? original.post?.imagePlan;
   if (!Array.isArray(plan) || plan.length < 3 || plan.length > 5) throw new TypeError('图片计划不完整');
-  const requestedLayouts = actorRole === 'ADMIN' ? input.layouts : plan.map(() => ({ mode: 'AUTO' }));
+  const requestedLayouts = input.layouts;
   if (requestedLayouts !== undefined && (!Array.isArray(requestedLayouts) || requestedLayouts.length !== plan.length)) throw new TypeError('每页布局数量必须与图片计划一致');
   const imagePlan = plan.map((page, index) => requestedLayouts === undefined ? { ...page } : { ...page, layout: normalizePageLayout(requestedLayouts[index], page.kind) });
   const previousLayouts = plan.map(page => normalizePageLayout(page.layout ?? { mode: 'AUTO' }, page.kind));
@@ -45,7 +46,7 @@ export async function reviseTaskImages(client, rawTaskId, input, actorUsername, 
     if (!imageRunId) throw new TypeError('没有可转换的图片版本');
     const run = (await client.query('SELECT * FROM image_runs WHERE id = $1 AND task_id = $2', [imageRunId, taskId])).rows[0];
     if (!Array.isArray(run?.result?.images) || run.result.images.length !== plan.length) throw new TypeError('原图片版本未完成');
-    const assets = (await client.query('SELECT id, sha256, media_type FROM assets WHERE task_id = $1 AND image_run_id = $2', [taskId, imageRunId])).rows;
+    const assets = (await client.query('SELECT id, sha256, media_type FROM image_run_asset_view WHERE task_id = $1 AND image_run_id = $2', [taskId, imageRunId])).rows;
     const sources = run.result.images.map(image => {
       const assetId = image.sourceAssetId ?? image.assetId;
       const asset = assets.find(item => Number(item.id) === assetId && item.media_type === 'image/png');
@@ -55,11 +56,28 @@ export async function reviseTaskImages(client, rawTaskId, input, actorUsername, 
     content.imageReprocess = { version: 1, sourceRunId: imageRunId, sources, originalResult: run.result };
   }
   const revisionNumber = Number((await client.query('SELECT COALESCE(MAX(revision), 0) + 1 AS revision FROM copy_revisions WHERE task_id = $1', [taskId])).rows[0].revision);
-  const saved = (await client.query(`INSERT INTO copy_revisions(task_id, execution_id, revision, content, approved_at, approved_by_node_id)
-    VALUES ($1, NULL, $2, $3, now(), $4) RETURNING *`, [taskId, revisionNumber, content, nodeId])).rows[0];
+  const saved = (await client.query(`INSERT INTO copy_revisions(
+      task_id, execution_id, revision, content, approved_at, approved_by_node_id, approval_mode,
+      parent_revision_id, revision_origin, copy_content_changed_from_machine, copy_rework_satisfied
+    ) VALUES ($1, NULL, $2, $3, now(), $4, 'MANUAL', $5, 'PLAN_EDIT', $6, $7)
+    RETURNING *`, [taskId, revisionNumber, content, nodeId, revisionId,
+    revision.copy_content_changed_from_machine === true,
+    revision.copy_rework_satisfied === true])).rows[0];
+  // This revision changes only image-production metadata. Record the trusted
+  // lineage before tasks.current_copy_revision_id changes so the copy-QA
+  // invalidation trigger can carry the already released verdict forward.
+  await client.query(`INSERT INTO copy_qc_revision_inheritances(
+      target_revision_id, task_id, source_revision_id,
+      inherited_by_username, reason
+    ) VALUES ($1, $2, $3, $4, 'IMAGE_PLAN_RETRY')`, [
+    Number(saved.id), taskId, revisionId, actorUsername,
+  ]);
+  await withdrawReadyDeliveryEntries(client, taskId, 'IMAGE_REVISION');
   return (await client.query(`UPDATE tasks SET state = 'IMAGE_QUEUED', current_copy_revision_id = $2,
     current_image_run_id = NULL, current_execution_id = NULL, current_stage = 'IMAGE_QUEUED',
     progress_percent = 0, progress_message = '图片配置已保存，等待图片执行机处理', pending_snapshot = NULL,
+    image_production_chain_id = NULL, image_production_started_at = NULL,
+    image_production_duration_ms = 0,
     image_reviewed_at = NULL, image_reviewed_by_user_id = NULL, execution_started_at = NULL,
     last_activity_at = now(), finished_at = NULL, error = NULL, updated_at = now()
     WHERE id = $1 RETURNING *`, [taskId, Number(saved.id)])).rows[0];

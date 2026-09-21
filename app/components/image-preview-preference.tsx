@@ -7,14 +7,14 @@ import { useSyncExternalStore } from 'react';
 export type PreviewMode = 'actual' | 'fit';
 const storageKey = 'xhs.image-preview.default-mode';
 const changeEvent = 'image-preview-preference-change';
-let fallbackMode: PreviewMode = 'actual';
+let fallbackMode: PreviewMode = 'fit';
 let memoryOnly = false;
 
 function readMode(): PreviewMode {
   if (memoryOnly) return fallbackMode;
   try {
     const saved = window.localStorage.getItem(storageKey);
-    return saved === 'fit' ? 'fit' : 'actual';
+    return saved === 'actual' ? 'actual' : 'fit';
   } catch {
     return fallbackMode;
   }
@@ -33,7 +33,7 @@ function subscribe(onChange: () => void) {
 }
 
 export function useDefaultPreviewMode() {
-  return useSyncExternalStore(subscribe, readMode, (): PreviewMode => 'actual');
+  return useSyncExternalStore(subscribe, readMode, (): PreviewMode => 'fit');
 }
 
 export function ImagePreviewPreference() {

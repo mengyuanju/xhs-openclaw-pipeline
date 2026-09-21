@@ -15,7 +15,7 @@ test('central user management exposes the three fixed roles and default-password
     source('server/migrations/0005_user_management.sql'),
   ]);
   assert.match(page, /用户管理/u);
-  assert.match(manager, /ADMIN: '管理员', REVIEWER: '审核员', USER: '普通用户'/u);
+  assert.match(manager, /ADMIN: '管理员', REVIEWER: '质检', USER: '标注'/u);
   assert.match(manager, /初始密码为 123456/u);
   assert.match(profile, /currentPassword/u);
   assert.match(profile, /newPassword/u);
@@ -36,11 +36,41 @@ test('central user management exposes the three fixed roles and default-password
   assert.match(profile, /window\.location\.replace\('\/login\?reauth=1&passwordChanged=1'\)/u);
   assert.match(loginPage, /passwordChanged=\{params\.passwordChanged === '1'\}/u);
   assert.match(loginForm, /密码已修改，请使用新密码重新登录/u);
-  assert.match(loginForm, /首次登录必须先修改密码，重新登录后才能使用其他功能/u);
+  assert.doesNotMatch(loginForm, /初始管理员账号|默认密码|123456/u);
   assert.doesNotMatch(loginForm, /defaultValue=["']admin["']/u);
   assert.match(styles, /\.profile-password-grid \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);[^}]*align-items: start;[^}]*max-width: 560px;/u);
   assert.match(styles, /\.forced-password-dialog \{[^}]*width: min\(calc\(100vw - 32px\), 560px\);[^}]*max-height: min\(92dvh, 720px\);/u);
+  assert.match(manager, /className="user-editor-permission-options"[\s\S]*文案审核[\s\S]*文案质检/u);
+  assert.match(manager, /name="imageQcEnabled"[\s\S]{0,180}disabled=\{editorRole !== 'REVIEWER'\}/u);
+  assert.match(styles, /\.user-editor-permission-options \{[^}]*display: flex;[^}]*flex-wrap: wrap;[^}]*align-items: center;/u);
   assert.match(migration, /CREATE TABLE IF NOT EXISTS app_users/u);
+});
+
+test('user management prioritizes one task at a time with compact filtering and secondary actions', async () => {
+  const [page, workspace, manager, poolManager, menu, styles] = await Promise.all([
+    source('app/users/page.tsx'),
+    source('app/users/user-management-workspace.tsx'),
+    source('app/users/user-manager.tsx'),
+    source('app/users/auto-assignment-pool-manager.tsx'),
+    source('components/ui/dropdown-menu.tsx'),
+    source('app/globals.css'),
+  ]);
+
+  assert.match(page, /<UserManagementWorkspace/u);
+  assert.match(workspace, /<Tabs[\s\S]*defaultValue="accounts"/u);
+  assert.match(workspace, /value="accounts"[\s\S]*账号与权限/u);
+  assert.match(workspace, /value="assignment"[\s\S]*自动分配池/u);
+  assert.match(workspace, /user-overview-strip/u);
+  assert.match(manager, /<SearchInput[\s\S]*搜索姓名或账号/u);
+  assert.match(manager, /按角色筛选/u);
+  assert.match(manager, /按状态筛选/u);
+  assert.match(manager, /const USERS_PER_PAGE = 8/u);
+  assert.match(manager, /<DropdownMenu[\s\S]*重置密码[\s\S]*删除用户/u);
+  assert.match(poolManager, /<DropdownMenu[\s\S]*暂停接单[\s\S]*移出人员池/u);
+  assert.match(menu, /@radix-ui\/react-dropdown-menu/u);
+  assert.match(styles, /\.user-overview-strip/u);
+  assert.match(styles, /\.user-management-tab-list/u);
+  assert.match(styles, /\.user-list-toolbar/u);
 });
 
 test('workbench separates assignee from creator and limits controls to stable owners or unassigned creators', async () => {

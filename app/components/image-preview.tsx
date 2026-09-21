@@ -3,7 +3,7 @@
 import { Button } from '@/components/ui/button';
 import { Checkbox, Slider } from '@/components/ui/input';
 
-import { useEffect, useId, useLayoutEffect, useState, type ComponentProps, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useState, type ComponentProps, type RefObject } from 'react';
 
 import {
   Dialog,
@@ -12,7 +12,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { ImagePreviewBackgroundControl, type PreviewBackdrop } from './image-preview-background-control';
 import { ImagePreviewPreference, useDefaultPreviewMode, type PreviewMode } from './image-preview-preference';
 import { thumbnailUrl } from '../../src/control-plane/asset-proxy.mjs';
 
@@ -35,6 +35,9 @@ type ImagePreviewProps = {
   onClose?: () => void;
   onPrevious?: () => void;
   onNext?: () => void;
+  initialMode?: PreviewMode;
+  backdrop?: PreviewBackdrop;
+  onBackdropChange?: (value: PreviewBackdrop) => void;
 };
 
 function detectImageAlpha(image: HTMLImageElement): boolean | null {
@@ -85,15 +88,19 @@ export function ImagePreview({
   onClose,
   onPrevious,
   onNext,
+  initialMode,
+  backdrop,
+  onBackdropChange,
 }: ImagePreviewProps) {
-  const id = useId();
   const [internalOpen, setInternalOpen] = useState(false);
   const defaultMode = useDefaultPreviewMode();
   const [modeOverride, setViewMode] = useState<PreviewMode | null>(null);
-  const viewMode = modeOverride ?? defaultMode;
+  const viewMode = modeOverride ?? initialMode ?? defaultMode;
   const [zoom, setZoom] = useState(100);
   const [rotation, setRotation] = useState(0);
-  const [backdrop, setBackdrop] = useState('checker');
+  const [internalBackdrop, setInternalBackdrop] = useState<PreviewBackdrop>('white');
+  const activeBackdrop = backdrop ?? internalBackdrop;
+  const setBackdrop = onBackdropChange ?? setInternalBackdrop;
   const [showSource, setShowSource] = useState(false);
   const [detectedAlpha, setDetectedAlpha] = useState<boolean | null>(null);
   const [loadedImage, setLoadedImage] = useState<{ src: string; width: number; height: number } | null>(null);
@@ -212,14 +219,7 @@ export function ImagePreview({
 
         <div className="image-preview-toolbar" aria-label="图片预览工具">
           <div className="image-preview-background-controls">
-            <div className="image-preview-background-choice"><label htmlFor={`${id}-backdrop`}>观察底色</label>
-              <Select value={backdrop} onValueChange={setBackdrop}>
-                <SelectTrigger id={`${id}-backdrop`} aria-label="预览观察底色"><SelectValue /></SelectTrigger>
-                <SelectContent className="image-preview-select-content">
-                  <SelectItem value="checker">棋盘格 · 检查透明</SelectItem><SelectItem value="white">白色</SelectItem><SelectItem value="dark">深色</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            <ImagePreviewBackgroundControl tone="dark" value={activeBackdrop} onChange={setBackdrop} />
             <span role="status">{transparent === true ? '含透明像素' : transparent === false ? '不透明图片' : '透明度待检查'}{format && !showSource ? ` · ${format}` : ''}</span>
             {sourceSrc && <label><Checkbox  checked={showSource} onChange={event => setShowSource(event.target.checked)} />查看处理前源图</label>}
             {deliverySrc && <a className="button preview-button" href={deliverySrc} download>下载交付文件</a>}
@@ -268,7 +268,7 @@ export function ImagePreview({
           {imagePending && <div className="image-preview-loading" role={imageFailed ? 'alert' : 'status'}>
             {imageFailed ? <>无法加载 {alt}<Button unstyled type="button" className="button preview-button" onClick={() => setRetry(value => value + 1)}>重试加载</Button></> : `正在加载 ${alt}…`}
           </div>}
-          <div className={`image-preview-viewport preview-background-${backdrop}${viewMode === 'fit' ? ' is-fit' : ''}`} aria-busy={imagePending && !imageFailed}>
+          <div className={`image-preview-viewport preview-background-${activeBackdrop}${viewMode === 'fit' ? ' is-fit' : ''}`} aria-busy={imagePending && !imageFailed}>
             <div className={`image-preview-stage${viewMode === 'fit' ? ' is-fit' : ''}`}>
               <img
                 className={`image-preview-full${viewMode === 'fit' ? ' is-fit' : ''}${isQuarterTurn ? ' is-quarter-turn' : ''}`}

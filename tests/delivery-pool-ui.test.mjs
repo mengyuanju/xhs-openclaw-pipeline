@@ -1,0 +1,443 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import test from 'node:test';
+
+import {
+  DELIVERY_POOL_LIST_LIMIT,
+  DELIVERY_POOL_SELECTION_LIMIT,
+  DELIVERY_PREVIEW_PACKAGE_SELECTION_LIMIT,
+  DELIVERY_PREVIEW_UPLOAD_LIMITS,
+  buildDeliveryPoolExportInput,
+  filterDeliveryPoolEntries,
+  mergeDeliveryPoolEntries,
+  normalizeDeliveryBatchDetail,
+  normalizeDeliveryBatchPage,
+  normalizeDeliveryContentPreview,
+  normalizeDeliveryPoolPage,
+  normalizePreparedDeliveryExport,
+  normalizePreparedDeliveryXlsxExport,
+  normalizeDeliveryPreviewPublishResult,
+  parseDeliveryPoolSearchTerms,
+  updateTaskSelection,
+} from '../app/delivery-pool/types.ts';
+
+const workbenchUrl = new URL('../app/delivery-pool/delivery-pool-workbench.tsx', import.meta.url);
+const pageUrl = new URL('../app/delivery-pool/page.tsx', import.meta.url);
+const proxyUrl = new URL('../app/api/control-plane/[...path]/route.ts', import.meta.url);
+const sonnerUrl = new URL('../components/ui/sonner.tsx', import.meta.url);
+const CLIENT_BATCH_CODE = 'b9759aad96a94c109fdce96ab4455294';
+
+function entry(id, overrides = {}) {
+  return {
+    id,
+    taskId: 100 + id,
+    query: `query-${id}`,
+    queryPackageId: 9,
+    queryPackageName: '九月选题',
+    clientBatchCode: CLIENT_BATCH_CODE,
+    queryPackageDeleted: false,
+    copyRevisionId: 200 + id,
+    imageRunId: `run-${id}`,
+    status: 'READY',
+    approvedAt: '2026-09-09T00:00:00.000Z',
+    preview: null,
+    packingState: 'UNPACKED',
+    deliveryBatch: null,
+    previousDeliveryBatch: null,
+    ...overrides,
+  };
+}
+
+test('delivery pool list adapter preserves package names and valid package facets', () => {
+  assert.equal(DELIVERY_POOL_LIST_LIMIT, 200);
+  assert.equal(DELIVERY_POOL_SELECTION_LIMIT, 200);
+  assert.equal(DELIVERY_PREVIEW_PACKAGE_SELECTION_LIMIT, 200);
+  assert.deepEqual([...DELIVERY_PREVIEW_UPLOAD_LIMITS], [1, 10, 25, 50, 100, 200]);
+  assert.deepEqual(normalizeDeliveryPoolPage({
+    items: [entry(1), entry(2, { status: 'WITHDRAWN' })],
+    total: 43,
+    facets: {
+      queryPackages: [
+        { id: '9', name: '  九月   选题 ', clientBatchCode: CLIENT_BATCH_CODE, count: '12', unuploadedCount: '7', publishedCount: '4', revokedCount: '1' },
+        { id: 10, name: '', count: 3, unuploadedCount: 3, publishedCount: 0, revokedCount: 0 },
+        { id: 11, name: '无效', count: -1, unuploadedCount: 0, publishedCount: 0, revokedCount: 0 },
+      ],
+      clientBatches: [{ code: CLIENT_BATCH_CODE, count: 12, pendingCount: 12,
+        packedCount: 0, updatedCount: 0, queryPackageCount: 1 }],
+      unassigned: { count: '34', unuploadedCount: '34', publishedCount: '0', revokedCount: '0' },
+    },
+  }), {
+    items: [entry(1)],
+    total: 43,
+    facets: {
+      clientBatches: [{ code: CLIENT_BATCH_CODE, count: 12, pendingCount: 12,
+        packedCount: 0, updatedCount: 0, queryPackageCount: 1 }],
+      queryPackages: [{ id: 9, name: '九月 选题', clientBatchCode: CLIENT_BATCH_CODE, deleted: false, count: 12, unuploadedCount: 7, publishedCount: 4, revokedCount: 1, pendingCount: 12, packedCount: 0, updatedCount: 0 }],
+      unassigned: { count: 34, unuploadedCount: 34, publishedCount: 0, revokedCount: 0, pendingCount: 34, packedCount: 0, updatedCount: 0 },
+    },
+    summary: { readyCount: 46, pendingCount: 46, packedCount: 0, updatedCount: 0 },
+  });
+  assert.equal(normalizeDeliveryPoolPage([entry(3)]).total, 1,
+    'the legacy array response stays readable during a rolling deployment');
+  assert.deepEqual(normalizeDeliveryPoolPage([entry(3)]).facets, {
+    clientBatches: [],
+    queryPackages: [],
+    unassigned: null,
+  });
+});
+
+test('delivery pool list adapter preserves every package facet returned by the server', () => {
+  const queryPackages = Array.from({ length: 1_005 }, (_, index) => ({
+    id: index + 1,
+    name: `词包-${String(index + 1).padStart(4, '0')}`,
+    count: 1,
+    unuploadedCount: 1,
+    publishedCount: 0,
+    revokedCount: 0,
+  }));
+
+  const page = normalizeDeliveryPoolPage({ items: [], total: 0, facets: { queryPackages } });
+
+  assert.equal(page.facets.queryPackages.length, queryPackages.length);
+  assert.equal(page.facets.queryPackages.at(-1)?.name, '词包-1005');
+});
+
+test('delivery preview adapter preserves the note binding and rejects inconsistent counts', () => {
+  const result = {
+    scope: 'QUERY_PACKAGES',
+    limit: 50,
+    requestedCount: 2,
+    publishedCount: 1,
+    createdCount: 1,
+    reusedCount: 0,
+    failedCount: 1,
+    items: [{
+      taskId: 101,
+      deliveryEntryId: 1,
+      noteId: 'a'.repeat(32),
+      previewUrl: `https://preview.example/preview?noteId=${'a'.repeat(32)}`,
+      reused: false,
+    }],
+    failures: [{ taskId: 102, code: 'FAILED', message: '上传失败' }],
+  };
+  assert.deepEqual(normalizeDeliveryPreviewPublishResult(result), result);
+  assert.throws(
+    () => normalizeDeliveryPreviewPublishResult({ ...result, failedCount: 0 }),
+    /预览上传结果无效/u,
+  );
+});
+
+test('delivery content preview follows the frozen image order and reviewed copy', () => {
+  const preview = normalizeDeliveryContentPreview({
+    id: 264,
+    query: '家庭咖啡角整理',
+    currentCopyRevisionId: 458,
+    currentImageRunId: 'run-current',
+    copyRevisions: [{
+      id: 458,
+      content: { reviewed: { copy: { title: '咖啡角整理', body: '先清空，再分区。', tags: ['收纳', '#咖啡'] } } },
+    }],
+    imageRuns: [{
+      id: 'run-current',
+      result: { images: [{ deliveryAssetId: 12 }, { assetId: 11 }] },
+    }],
+    assets: [
+      { id: 11, imageRunId: 'run-current', url: '/v1/assets/11', originalName: 'page-2.png' },
+      { id: 12, imageRunId: 'run-current', url: '/v1/assets/12', originalName: 'page-1.png' },
+      { id: 13, imageRunId: 'old-run', url: '/v1/assets/13', originalName: 'old.png' },
+    ],
+  });
+  assert.equal(preview.copy.title, '咖啡角整理');
+  assert.deepEqual(preview.copy.tags, ['收纳', '#咖啡']);
+  assert.deepEqual(preview.images.map(({ id, page }) => ({ id, page })), [
+    { id: 12, page: 1 },
+    { id: 11, page: 2 },
+  ]);
+  assert.throws(() => normalizeDeliveryContentPreview({
+    id: 1,
+    currentCopyRevisionId: 2,
+    currentImageRunId: 'run',
+    copyRevisions: [],
+  }), /交付文案缺失/u);
+  assert.throws(() => normalizeDeliveryContentPreview({
+    id: 264,
+    currentCopyRevisionId: 459,
+    currentImageRunId: 'run-new',
+  }, {
+    copyRevisionId: 458,
+    imageRunId: 'run-current',
+  }), /交付版本已更新/u);
+});
+
+test('delivery list keeps a published preview visible when its domain is not configured', () => {
+  const preview = {
+    id: '22222222-2222-4222-8222-222222222222',
+    noteId: 'a'.repeat(32),
+    url: null,
+    contentHash: 'b'.repeat(64),
+    status: 'PUBLISHED',
+    publishedAt: '2026-09-11T00:00:00.000Z',
+    revokedAt: null,
+  };
+  assert.deepEqual(
+    normalizeDeliveryPoolPage({ items: [entry(1, { preview })], total: 1 }).items[0].preview,
+    preview,
+  );
+});
+
+test('selecting a filtered result preserves selections outside the current search', () => {
+  assert.deepEqual(updateTaskSelection([101], [102, 103], true), [101, 102, 103]);
+  assert.deepEqual(updateTaskSelection([101, 102, 103], [102, 103], false), [101]);
+});
+
+test('selected delivery rows are capped at the server contract without disabling valid batches', () => {
+  const candidates = Array.from({ length: DELIVERY_POOL_SELECTION_LIMIT + 3 }, (_, index) => index + 1);
+  assert.deepEqual(
+    updateTaskSelection([], candidates, true),
+    candidates.slice(0, DELIVERY_POOL_SELECTION_LIMIT),
+  );
+});
+
+test('Excel export uses selected task ids and otherwise merges one complete client batch', () => {
+  assert.deepEqual(buildDeliveryPoolExportInput([]), { scope: 'ALL_READY' });
+  assert.deepEqual(buildDeliveryPoolExportInput([], `  ${CLIENT_BATCH_CODE.toUpperCase()}  `), {
+    scope: 'CLIENT_BATCH',
+    clientBatchCode: CLIENT_BATCH_CODE,
+  });
+  assert.deepEqual(buildDeliveryPoolExportInput([103, 101, 103]), {
+    scope: 'SELECTED',
+    taskIds: [103, 101],
+  });
+  assert.throws(() => buildDeliveryPoolExportInput([0]), /导出范围无效/u);
+  assert.throws(
+    () => buildDeliveryPoolExportInput(Array.from(
+      { length: DELIVERY_POOL_SELECTION_LIMIT + 1 },
+      (_, index) => index + 1,
+    )),
+    /导出范围无效/u,
+  );
+});
+
+test('loading another delivery page preserves prior rows and de-duplicates repeated boundaries', () => {
+  assert.deepEqual(
+    mergeDeliveryPoolEntries([entry(1), entry(2)], [entry(2, { query: 'refreshed' }), entry(3)]),
+    [entry(1), entry(2, { query: 'refreshed' }), entry(3)],
+  );
+});
+
+test('delivery pool search treats non-empty lines as independent OR conditions', () => {
+  const entries = [
+    entry(1, { query: '租房桌面收纳' }),
+    entry(2, { query: '通勤穿搭指南', queryPackageName: '秋季搭配词包' }),
+    entry(3, { query: '周末露营装备' }),
+  ];
+  assert.deepEqual(
+    filterDeliveryPoolEntries(entries, ' 桌面收纳 \r\n\n秋季搭配词包\r未命中'),
+    entries.slice(0, 2),
+  );
+});
+
+test('delivery pool multi-line search ignores blank and duplicate lines without duplicating rows', () => {
+  const entries = [
+    entry(1, { query: 'Travel Guide' }),
+    entry(2, { taskId: 2048, query: '本地生活' }),
+  ];
+  assert.deepEqual(parseDeliveryPoolSearchTerms(' GUIDE\n\n guide \r\n2048 '), ['guide', '2048']);
+  assert.deepEqual(filterDeliveryPoolEntries(entries, ' GUIDE\n\n guide \r\n2048 '), entries);
+  assert.strictEqual(filterDeliveryPoolEntries(entries, ' \r\n\r '), entries,
+    'an all-whitespace search should preserve the unfiltered list');
+});
+
+test('prepared delivery download accepts only a safe one-time archive reference', () => {
+  const prepared = {
+    downloadId: '12345678-1234-4234-8234-123456789abc',
+    fileName: '交付池-全部可交付项.zip',
+    taskCount: 51,
+    expiresAt: '2026-09-09T09:00:00.000Z',
+  };
+  assert.deepEqual(normalizePreparedDeliveryExport({ data: prepared }), prepared);
+  const withBatch = {
+    ...prepared,
+    batchId: '32345678-1234-4234-8234-123456789abc',
+    batchCode: 'JF-32345678',
+  };
+  assert.deepEqual(normalizePreparedDeliveryExport({ data: withBatch }), withBatch);
+  assert.throws(() => normalizePreparedDeliveryExport({
+    data: { ...prepared, fileName: '../escape.zip' },
+  }), /下载凭证无效/u);
+});
+
+test('delivery batch adapters preserve immutable history and exact version members', () => {
+  const batch = {
+    id: 7,
+    publicId: '42345678-1234-4234-8234-123456789abc',
+    code: 'JF-42345678',
+    scope: 'CLIENT_BATCH',
+    queryPackageName: null,
+    queryPackageNames: ['九月选题', '九月补充词包'],
+    clientBatchCode: CLIENT_BATCH_CODE,
+    status: 'DOWNLOADED',
+    batchKind: 'ADMIN_DELIVERY',
+    createdByRole: 'ADMIN',
+    fileName: 'JF-42345678-九月选题-交付资源.zip',
+    byteSize: 1024,
+    sha256: 'a'.repeat(64),
+    taskCount: 1,
+    createdByAccountId: 1,
+    createdByUsername: 'admin',
+    createdAt: '2026-09-15T01:00:00.000Z',
+    firstDownloadedAt: '2026-09-15T01:01:00.000Z',
+    lastDownloadedAt: '2026-09-15T01:01:00.000Z',
+    downloadCount: 1,
+    deliveredAt: null,
+    deliveredByAccountId: null,
+    deliveredByUsername: null,
+  };
+  assert.deepEqual(normalizeDeliveryBatchPage({ items: [batch], total: 1 }), {
+    items: [batch], total: 1,
+  });
+  assert.deepEqual(normalizeDeliveryBatchDetail({
+    ...batch,
+    items: [{ id: 9, ordinal: 1, taskId: 101, copyRevisionId: 201,
+      imageRunId: 'run-1', query: '桌面收纳', queryPackageId: 5,
+      queryPackageName: '九月选题', clientBatchCode: CLIENT_BATCH_CODE }],
+  }).items[0].copyRevisionId, 201);
+});
+
+test('prepared Excel download accepts safe xlsx and automatically sharded zip references', () => {
+  const prepared = {
+    downloadId: '22345678-1234-4234-8234-123456789abc',
+    fileName: '交付池-已选数据.xlsx',
+    taskCount: 2,
+    expiresAt: '2026-09-09T09:00:00.000Z',
+  };
+  assert.deepEqual(normalizePreparedDeliveryXlsxExport({ data: prepared }), prepared);
+  assert.deepEqual(normalizePreparedDeliveryXlsxExport({
+    data: { ...prepared, fileName: '交付池-分卷.zip' },
+  }), { ...prepared, fileName: '交付池-分卷.zip' });
+  assert.throws(() => normalizePreparedDeliveryXlsxExport({
+    data: { ...prepared, fileName: '../escape.xlsx' },
+  }), /下载凭证无效/u);
+  assert.throws(() => normalizePreparedDeliveryXlsxExport({
+    data: { ...prepared, fileName: '交付池.csv' },
+  }), /下载凭证无效/u);
+  assert.throws(() => normalizePreparedDeliveryXlsxExport({
+    data: { ...prepared, fileName: '交付池\n.xlsx' },
+  }), /下载凭证无效/u);
+});
+
+test('delivery pool keeps administrator controls while exposing an ownership-scoped operator view', async () => {
+  const [source, page, proxy, sonner] = await Promise.all([
+    readFile(workbenchUrl, 'utf8'),
+    readFile(pageUrl, 'utf8'),
+    readFile(proxyUrl, 'utf8'),
+    readFile(sonnerUrl, 'utf8'),
+  ]);
+  assert.match(page, /if \(!\['ADMIN', 'USER'\]\.includes\(role\)\) redirect\('\/copy-qa'\)/u);
+  assert.match(page, /<DeliveryPoolWorkbench role=\{role as 'ADMIN' \| 'USER'\} username=\{session\.username \?\? ''\} \/>/u);
+  assert.match(page, /我的交付池/u);
+  assert.match(source, /role: 'ADMIN' \| 'USER'/u);
+  assert.match(source, /useState<PackingFilter>\(role === 'USER' \? 'ALL' : 'PENDING'\)/u);
+  assert.match(source, /new URLSearchParams\(\{[\s\S]*limit: String\(DELIVERY_POOL_LIST_LIMIT\)[\s\S]*includeTotal: 'true'/u);
+  assert.match(source, /if \(clientBatchCode\) query\.set\('clientBatchCode', clientBatchCode\)/u);
+  assert.match(source, /setClientBatches\(page\.facets\.clientBatches\)/u);
+  assert.match(source, /setQueryPackages\(page\.facets\.queryPackages\)/u);
+  assert.match(source, /id="delivery-pool-client-batch"/u);
+  assert.match(source, /clientBatches\.map\(\(facet\)/u);
+  assert.match(source, /batch\.batchKind === 'OPERATOR_DELIVERY' \? '标注交付' : '管理员交付'/u);
+  assert.match(source, /batch\.status === 'DELIVERED'/u);
+  assert.match(source, /已下载，待确认交付/u);
+  assert.match(source, /<Textarea[\s\S]*id="delivery-pool-search"/u,
+    'delivery pool search must accept pasted line breaks');
+  assert.match(source, /filterDeliveryPoolEntries\(entries, search\)/u);
+  assert.match(source, /每行一条，在已加载条目的 Query、甲方批次、词包名称或任务号中匹配任意一条/u);
+  assert.match(source, /searchInputRef\.current\?\.focus\(\)/u,
+    'clearing a multi-line search should return focus to its textarea');
+  assert.match(source, /load\(nextOffset\)/u,
+    'delivery rows after the first 200 must remain reachable through the server offset');
+  assert.doesNotMatch(source, /load\(entries\.length\)/u,
+    'de-duplicated client row count must not be reused as the mutable server offset');
+  assert.match(source, /\/v1\/delivery-pool\/archive/u);
+  assert.match(source, /scope === 'CLIENT_BATCH'[\s\S]*\{ scope, clientBatchCode \}/u,
+    'an unselected client batch export must merge every package in that server-side scope');
+  assert.match(source, /exportDelivery\(filteredExportScope\)/u);
+  assert.match(source, /delivery-pool\/archive\/\$\{encodeURIComponent\(prepared\.downloadId\)\}/u);
+  assert.match(source, /\/v1\/delivery-pool\/xlsx/u);
+  assert.match(source, /buildDeliveryPoolExportInput\(selectedTaskIds, clientBatchCode\)/u,
+    'Excel must derive its scope from both the checked task ids and active client batch');
+  assert.match(source, /delivery-pool\/xlsx\/\$\{encodeURIComponent\(prepared\.downloadId\)\}/u);
+  assert.match(source, /delivery-batches\/\$\{encodeURIComponent\(batch\.publicId\)\}\/xlsx/u,
+    'history rows prepare Excel from the immutable batch scope');
+  assert.match(source, /exportBatchXlsx\(batch\)/u);
+  assert.match(source, /下载 Excel/u);
+  assert.match(source, /重新下载 ZIP/u);
+  assert.doesNotMatch(source, /response\.blob\(\)|URL\.createObjectURL/u,
+    'delivery archives and Excel files must use native streamed downloads instead of page-memory Blobs');
+  assert.match(source, /const exportBusy = exporting !== null \|\| xlsxExporting \|\| batchXlsxExporting !== null[\s\S]*\|\| previewPublishing/u);
+  assert.match(source, /aria-busy=\{xlsxExporting\}/u);
+  assert.match(source, /导出 Excel（已选/u);
+  assert.match(source, /导出 Excel（全部/u);
+  assert.match(source, /Excel 按原文件字节内嵌图片/u);
+  assert.match(source, /只调整表格中的显示尺寸，不重新编码或二次压缩/u);
+  assert.match(source, /图片原文件不重新编码、不二次压缩/u);
+  assert.match(source, /Excel 一次最多导出.*请先勾选后分批导出/u);
+  assert.match(source, /新建交付批次（待交付/u);
+  assert.match(source, /已选新建批次/u);
+  assert.match(source, /打包并下载已选/u);
+  assert.match(source, /只会打包当前账号负责的已选内容/u);
+  assert.match(source, /role === 'USER' && entry\.packingState === 'PACKED'/u,
+    'operators cannot select an already packed version into another immutable batch');
+  assert.match(source, /\/v1\/tasks\/\$\{entry\.taskId\}\/archive/u,
+    'an operator can still download their own item when an administrator owns the original batch');
+  assert.match(source, /entry\.deliveryBatch\.createdByUsername === username/u,
+    'operator batch downloads must only be offered to the creator of that batch');
+  assert.match(source, /packingState/u);
+  assert.match(source, /交付历史/u);
+  assert.match(source, /delivery-batches/u);
+  assert.match(source, /版本更新待重交/u);
+  assert.match(source, /delivery-pool\/previews/u);
+  assert.match(source, /整包上传上限/u);
+  assert.match(source, /DELIVERY_PREVIEW_UPLOAD_LIMITS/u);
+  assert.match(source, /queryPackageIds: selectedPreviewPackageIds/u);
+  assert.match(source, /includeUnassigned: selectedPreviewUnassigned/u);
+  assert.match(source, /1 条（测试）/u);
+  assert.match(source, /taskIds: \[entry\.taskId\]/u);
+  assert.match(source, /上传这一条/u);
+  assert.match(source, /publishSinglePreview\(entry\)/u);
+  assert.match(source, /publishSelectedPreviews/u);
+  assert.match(source, /taskIds: selectedPreviewEntries\.map|const taskIds = selectedPreviewEntries\.map/u);
+  assert.match(source, /上传已选（\$\{selectedPreviewEntryCount\} 条）/u);
+  assert.match(source, /不会自动补充同词包内的其他内容/u);
+  assert.match(source, /提交时会再次校验所属词包、READY 状态和交付版本/u);
+  assert.match(source, /selectedPreviewScopeCount === 0[\s\S]*selectedPreviewUnuploadedCount === 0 \|\| exportBusy/u,
+    'whole-package preview upload must remain disabled until a source range is explicitly selected');
+  assert.match(source, /历史未归属内容/u);
+  assert.match(source, /所选范围无需上传/u);
+  assert.match(source, /useConfirmDialog/u);
+  assert.doesNotMatch(source, /window\.confirm/u);
+  assert.match(source, /<ToastFeedback id="delivery-pool-error" message=\{error\} tone="error"/u);
+  assert.match(source, /任务行勾选不会改变本次范围/u);
+  assert.match(sonner, /'error' \| 'info' \| 'success' \| 'warning'/u);
+  assert.match(sonner, /toast\[tone\]\(message, \{ id \}\)/u);
+  assert.match(sonner, /closeButton/u);
+  assert.match(sonner, /visibleToasts=\{4\}/u);
+  assert.doesNotMatch(source, /FeedbackMessage/u);
+  assert.match(source, /打开预览/u);
+  assert.match(source, /预览图文/u);
+  assert.match(source, /<DeliveryPreviewDialog/u);
+  assert.match(source, /activeView === 'CONTENT'/u);
+  assert.match(source, /activeView === 'PREVIEW'/u);
+  assert.match(source, /role === 'ADMIN' && <Button unstyled id="delivery-preview-tab"/u);
+  assert.match(source, /entry\.preview === null && role === 'ADMIN'/u);
+  assert.match(source, /activeView === 'HISTORY'/u);
+  assert.match(source, /新建交付批次始终由服务端排除已经打包的相同版本/u);
+  assert.match(source, /entry\.clientBatchCode \|\| '未归属甲方批次'/u);
+  assert.doesNotMatch(source, /selected\.length > 20/u,
+    'the UI must not disable the new delivery export contract at the legacy batch-archive limit');
+  assert.match(source, /role="status" aria-live="polite"/u);
+  assert.match(proxy, /role === 'REVIEWER'[\s\S]*\/v1\\\/delivery-pool/u);
+  assert.match(proxy, /AbortSignal\.any\(\[request\.signal, timeoutSignal\]\)/u);
+  assert.match(proxy, /'Content-Length': contentLength/u);
+  assert.match(proxy, /'X-Delivery-Task-Count': deliveryTaskCount/u);
+  assert.match(proxy, /export const maxDuration = 3600/u);
+});

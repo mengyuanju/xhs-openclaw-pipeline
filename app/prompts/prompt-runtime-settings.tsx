@@ -2,6 +2,7 @@
 
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
+import { ToastFeedback } from '@/components/ui/sonner';
 import { Switch, Input } from '@/components/ui/input';
 import { Disclosure, DisclosureTrigger, DisclosureContent } from '@/components/ui/disclosure';
 
@@ -13,16 +14,16 @@ type Policy = { schemaVersion: number; queryReviewEnabled: boolean; visualPlanni
   copyRepairTargetMin: number; copyRepairTargetMax: number; ocrMinimumConfidence: number; ocrComparison: string };
 type State = { source: string; active: boolean; settings: Policy; contract: string; contractDetails?: string[]; variables: string[] };
 
-export function PromptRuntimeSettings({ onPrepared }: { onPrepared?: () => void } = {}) {
+export function PromptRuntimeSettings({ onPrepared, onPolicyLoaded }: { onPrepared?: () => void; onPolicyLoaded?: (active: boolean) => void } = {}) {
   const [state, setState] = useState<State | null>(null);
   const [policy, setPolicy] = useState<Policy | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const refresh = useCallback(async () => {
-    try { const result = await apiRequest<State>('/api/prompt-runtime', { cache: 'no-store' }); setState(result); setPolicy(result.settings); }
+    try { const result = await apiRequest<State>('/api/prompt-runtime', { cache: 'no-store' }); setState(result); setPolicy(result.settings); onPolicyLoaded?.(result.active); }
     catch (caught) { setError(caught instanceof Error ? caught.message : '配置读取失败'); }
-  }, []);
+  }, [onPolicyLoaded]);
   useEffect(() => { void refresh(); }, [refresh]);
   async function submit(drafts: boolean) {
     setBusy(true); setError(''); setMessage('');
@@ -35,10 +36,10 @@ export function PromptRuntimeSettings({ onPrepared }: { onPrepared?: () => void 
     finally { setBusy(false); }
   }
   return <section className="panel stack" aria-label="提示词执行配置">
-    <div className="panel-head"><div><h2>执行配置</h2><p className="subtle">规则来源：{state?.source === 'CENTER' ? '中心服务' : state?.source === 'LOCAL' ? '本地离线' : '读取中'} · {state?.active ? '统一规则已启用' : '尚未启用，历史兼容规则仍在使用'}</p></div>
+    <div className="panel-head"><div><h2>执行配置</h2><p className="subtle">规则来源：{state?.source === 'CENTER' ? '中心服务' : state?.source === 'LOCAL' ? '本地离线' : '读取中'} · {state?.active ? '完整执行策略已启用' : '未配置完整策略；已发布模板仍会加载，缺失项使用默认模板'}</p></div>
       <Button unstyled className="button" type="button" disabled={busy || !state} onClick={() => void submit(true)}>准备缺失的候选草稿</Button></div>
     {error && <div className="notice error" role="alert">{error}</div>}
-    {message && <div className="notice success" role="status">{message}</div>}
+    <ToastFeedback id="prompt-runtime-feedback" message={message} />
     {policy && <form className="stack" onSubmit={(event) => { event.preventDefault(); void submit(false); }}>
       <label className="inline"><Switch   aria-label="启用 Query 筛选" checked={policy.queryReviewEnabled} disabled={busy}
         onChange={(event) => setPolicy({ ...policy, queryReviewEnabled: event.target.checked })} />启用 Query 筛选（选题审核）</label>

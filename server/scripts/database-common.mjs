@@ -4,9 +4,10 @@ import { createReadStream } from 'node:fs';
 import { access, readFile, readdir } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadEnvFile } from 'node:process';
 import { createInterface } from 'node:readline';
 import pg from 'pg';
+
+import { loadServerEnvironment } from '../src/server-environment.mjs';
 
 export const SERVER_ROOT = fileURLToPath(new URL('../', import.meta.url));
 export const quoteId = (name) => '"' + String(name).replaceAll('"', '""') + '"';
@@ -44,9 +45,13 @@ export function configuration(environment = process.env) {
     display: `${url.hostname}:${url.port || '5432'}/${database}` };
 }
 
-export function loadConfiguration() {
-  try { loadEnvFile(join(SERVER_ROOT, '.env')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  return configuration();
+export function loadConfiguration(options = {}) {
+  const selected = loadServerEnvironment(options);
+  return {
+    ...configuration(selected.environment),
+    profile: selected.profile,
+    basePath: selected.basePath,
+  };
 }
 
 export const connectDatabase = (config) => new pg.Client({ connectionString: config.connectionString, connectionTimeoutMillis: 10_000 });

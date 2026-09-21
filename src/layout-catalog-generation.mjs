@@ -1,3 +1,4 @@
+import { internalPrompt } from './prompt-runtime.mjs';
 import { createAgentClient } from './agent-client.mjs';
 import { businessPrompt } from './prompt-runtime.mjs';
 import { importLayoutTemplates, LAYOUT_FAMILIES, CONTENT_PAGE_KINDS } from '../server/src/layout-catalog.mjs';
@@ -29,7 +30,7 @@ function validateCandidates(value) {
 
 export async function generateLayoutCandidates({ brief, catalog, modelApi = {}, client = undefined }) {
   if (typeof brief !== 'string' || !brief.trim() || [...brief].length > 2000) throw new TypeError('版式需求需为1～2000字');
-  const prompt = businessPrompt('LAYOUT_CATALOG_SYSTEM', { contract: '返回模板 JSON，遵循提供的 schema。仅提出可复用版式，不返回任务文案、代码、SQL或文件路径。新模板使用新编码，修改现有模板须增加版本。source、enabled由程序设置。',
+  const prompt = businessPrompt('LAYOUT_CATALOG_SYSTEM', { contract: internalPrompt('INTERNAL_LAYOUT_CANDIDATE_OUTPUT'),
     data: { brief, families: LAYOUT_FAMILIES, existingTemplates: catalog?.templates?.map(({ layoutTemplate, templateVersion, description }) => ({ layoutTemplate, templateVersion, description })) ?? [] } });
   const result = await (client ?? createAgentClient({ modelApi })).runText({ prompt, outputSchema: layoutCandidateSchema, thinking: 'low' });
   if (typeof result.rawText !== 'string' || result.rawText.length > 100_000) throw new TypeError('模型模板返回过大或为空');

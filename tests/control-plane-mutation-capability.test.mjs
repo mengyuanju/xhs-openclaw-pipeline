@@ -7,30 +7,82 @@ import {
   requiredMutationCapability,
 } from '../src/control-plane/mutation-capability.mjs';
 
-test('assignment and opt-in pool mutations declare their version contracts', () => {
-  for (const [routePath, method, capability] of [
-    ['/v1/tasks', 'POST', 'taskAssignmentVersion'],
-    ['/v1/tasks/42/assignee', 'PATCH', 'taskAssignmentVersion'],
-    ['/v1/tasks/batch-assignee', 'POST', 'taskAssignmentVersion'],
-    ['/v1/auto-assignment/settings', 'PATCH', 'autoAssignmentPoolVersion'],
-    ['/v1/auto-assignment/workers/alice', 'PUT', 'autoAssignmentPoolVersion'],
-    ['/v1/auto-assignment/workers/alice', 'DELETE', 'autoAssignmentPoolVersion'],
-    ['/v1/executor-statuses', 'DELETE', 'executorManagementVersion'],
+test('protected control-plane operations declare their version contracts', () => {
+  for (const [routePath, method, capability, minimumVersion] of [
+    ['/v1/copy-qa/reason-tags', 'POST', 'copyQaReasonTagsVersion', 1],
+    ['/v1/copy-qa/reason-tags/11111111-1111-4111-8111-111111111111', 'PATCH', 'copyQaReasonTagsVersion', 1],
+    ['/v1/tasks/42/restore', 'POST', 'taskRestoreVersion', 1],
+    ['/v1/tasks/42/image-edits/resolve-pending', 'POST', 'pendingImageEditResolutionVersion', 1],
+    ['/v1/tasks/42/discard-images', 'POST', 'imageDiscardVersion', 1],
+    ['/v1/image-qa/items/opaque-id/discard', 'POST', 'imageDiscardVersion', 1],
+    ['/v1/tasks/42/regenerate-image-plan', 'POST', 'copyImagePlanRegenerationVersion', 2],
+    ['/v1/tasks/42/copy-review-drafts', 'POST', 'copyReviewDraftVersion', 1],
+    ['/v1/tasks/42/admin-direct-copy-qa', 'POST', 'adminDirectCopyQaVersion', 1],
+    ['/v1/settings/xhs_query_search', 'PUT', 'xiaohongshuQuerySearchVersion', 5],
+    ['/v1/tasks', 'POST', 'taskAssignmentVersion', 3],
+    ['/v1/tasks/42/assignee', 'PATCH', 'taskAssignmentVersion', 3],
+    ['/v1/tasks/batch-assignee', 'POST', 'taskAssignmentVersion', 3],
+    ['/v1/auto-assignment/settings', 'PATCH', 'autoAssignmentPoolVersion', 3],
+    ['/v1/auto-assignment/workers/alice', 'PUT', 'autoAssignmentPoolVersion', 3],
+    ['/v1/auto-assignment/workers/alice', 'DELETE', 'autoAssignmentPoolVersion', 3],
+    ['/v1/executor-statuses', 'DELETE', 'executorManagementVersion', 1],
+    ['/v1/xhs-search-statuses', 'DELETE', 'xiaohongshuAccountStatusVersion', 2],
+    ['/v1/tasks/duplicate-query-discard-preview', 'POST', 'duplicateQueryDiscardVersion', 1],
+    ['/v1/tasks/duplicate-query-discard', 'POST', 'duplicateQueryDiscardVersion', 1],
+    ['/v1/query-packages', 'POST', 'queryPackageVersion', 6],
+    ['/v1/query-packages/9/assignee', 'PATCH', 'queryPackageVersion', 3],
+    ['/v1/query-packages/9/item-assignments', 'PUT', 'queryPackageVersion', 4],
+    ['/v1/query-packages/9/screening', 'PUT', 'queryPackageVersion', 4],
+    ['/v1/query-packages/9/production-batches', 'POST', 'queryPackageVersion', 2],
+    ['/v1/query-packages/9/abandon', 'POST', 'queryPackageVersion', 2],
+    ['/v1/query-packages/9/permanent', 'DELETE', 'queryPackageVersion', 2],
+    ['/v1/delivery-pool', 'GET', 'finalDeliveryVersion', 5],
+    ['/v1/delivery-pool/archive', 'POST', 'finalDeliveryVersion', 5],
+    ['/v1/delivery-pool/archive/token', 'HEAD', 'finalDeliveryVersion', 5],
+    ['/v1/delivery-pool/archive/token', 'GET', 'finalDeliveryVersion', 5],
+    ['/v1/delivery-batches', 'GET', 'finalDeliveryVersion', 5],
+    ['/v1/delivery-batches/123/archive', 'GET', 'finalDeliveryVersion', 5],
+    ['/v1/delivery-batches/123/confirm', 'POST', 'finalDeliveryVersion', 5],
+    ['/v1/delivery-pool/xlsx', 'POST', 'deliverySpreadsheetVersion', 2],
+    ['/v1/delivery-pool/xlsx/token', 'HEAD', 'deliverySpreadsheetVersion', 2],
+    ['/v1/delivery-pool/xlsx/token', 'GET', 'deliverySpreadsheetVersion', 2],
+    ['/v1/delivery-batches/123/xlsx', 'POST', 'deliverySpreadsheetVersion', 3],
+    ['/v1/delivery-pool/previews', 'POST', 'deliveryPreviewVersion', 5],
+    ['/v1/tasks/batch-archive', 'POST', 'finalDeliveryVersion', 2],
+    ['/v1/tasks/42/archive', 'HEAD', 'finalDeliveryVersion', 2],
+    ['/v1/tasks/42/archive', 'GET', 'finalDeliveryVersion', 2],
   ]) {
     assert.deepEqual(requiredMutationCapability(routePath, method), {
       capability,
-      minimumVersion: capability === 'executorManagementVersion' ? 1 : 3,
+      minimumVersion,
     });
   }
   assert.equal(requiredMutationCapability('/v1/tasks', 'GET'), null);
+  assert.equal(requiredMutationCapability('/v1/copy-qa/reason-tags', 'GET'), null);
+  assert.equal(requiredMutationCapability('/v1/settings/xhs_query_search', 'GET'), null);
+  assert.equal(requiredMutationCapability('/v1/settings/production', 'PUT'), null);
   assert.equal(requiredMutationCapability('/v1/tasks/42/retry', 'POST'), null);
   assert.equal(requiredMutationCapability('/v1/auto-assignment', 'GET'), null);
   assert.equal(requiredMutationCapability('/v1/executor-statuses', 'GET'), null);
+  assert.equal(requiredMutationCapability('/v1/xhs-search-statuses', 'GET'), null);
   assert.equal(requiredMutationCapability('/v1/executor-statuses/node-a', 'DELETE'), null);
+  assert.equal(requiredMutationCapability('/v1/tasks/duplicate-query-discard-preview', 'GET'), null);
+  assert.equal(requiredMutationCapability('/v1/tasks/duplicate-query-discard', 'GET'), null);
+  assert.equal(requiredMutationCapability('/v1/query-packages', 'GET'), null);
+  assert.equal(requiredMutationCapability('/v1/query-packages/9', 'GET'), null);
 });
 
 test('mutation capability check allows only compatible center versions', async () => {
   const calls = [];
+  await assertMutationCapability({
+    root: 'http://center.test',
+    routePath: '/v1/query-packages',
+    method: 'POST',
+    fetchImpl: async () => Response.json({
+      data: { capabilities: { queryPackageVersion: 6 } },
+    }),
+  });
+
   await assertMutationCapability({
     root: 'http://center.test/base',
     routePath: '/v1/tasks/42/assignee',
@@ -46,15 +98,123 @@ test('mutation capability check allows only compatible center versions', async (
 
   await assertMutationCapability({
     root: 'http://center.test',
+    routePath: '/v1/settings/xhs_query_search',
+    method: 'PUT',
+    fetchImpl: async () => Response.json({
+      data: { capabilities: { xiaohongshuQuerySearchVersion: 5 } },
+    }),
+  });
+
+  await assertMutationCapability({
+    root: 'http://center.test',
     routePath: '/v1/executor-statuses',
     method: 'DELETE',
     fetchImpl: async () => Response.json({
       data: { capabilities: { executorManagementVersion: 1 } },
     }),
   });
+
+  await assertMutationCapability({
+    root: 'http://center.test',
+    routePath: '/v1/xhs-search-statuses',
+    method: 'DELETE',
+    fetchImpl: async () => Response.json({
+      data: { capabilities: { xiaohongshuAccountStatusVersion: 2 } },
+    }),
+  });
+
+  await assertMutationCapability({
+    root: 'http://center.test',
+    routePath: '/v1/tasks/duplicate-query-discard-preview',
+    method: 'POST',
+    fetchImpl: async () => Response.json({
+      data: { capabilities: { duplicateQueryDiscardVersion: 1 } },
+    }),
+  });
+
+  await assertMutationCapability({
+    root: 'http://center.test',
+    routePath: '/v1/query-packages/9/screening',
+    method: 'PUT',
+    fetchImpl: async () => Response.json({
+      data: { capabilities: { queryPackageVersion: 4 } },
+    }),
+  });
+
+  await assertMutationCapability({
+    root: 'http://center.test',
+    routePath: '/v1/query-packages/9/item-assignments',
+    method: 'PUT',
+    fetchImpl: async () => Response.json({
+      data: { capabilities: { queryPackageVersion: 4 } },
+    }),
+  });
+
+  await assertMutationCapability({
+    root: 'http://center.test',
+    routePath: '/v1/query-packages/9/assignee',
+    method: 'PATCH',
+    fetchImpl: async () => Response.json({
+      data: { capabilities: { queryPackageVersion: 3 } },
+    }),
+  });
+
+  await assertMutationCapability({
+    root: 'http://center.test',
+    routePath: '/v1/delivery-pool/archive',
+    method: 'POST',
+    fetchImpl: async () => Response.json({
+      data: { capabilities: { finalDeliveryVersion: 5 } },
+    }),
+  });
+
+  await assertMutationCapability({
+    root: 'http://center.test',
+    routePath: '/v1/delivery-pool/xlsx',
+    method: 'POST',
+    fetchImpl: async () => Response.json({
+      data: { capabilities: { deliverySpreadsheetVersion: 2 } },
+    }),
+  });
+
+  await assertMutationCapability({
+    root: 'http://center.test',
+    routePath: '/v1/delivery-pool/previews',
+    method: 'POST',
+    fetchImpl: async () => Response.json({
+      data: { capabilities: { deliveryPreviewVersion: 5 } },
+    }),
+  });
 });
 
 test('mutation capability check fails closed for legacy, malformed and unavailable centers', async () => {
+  await assert.rejects(
+    assertMutationCapability({
+      root: 'http://center.test',
+      routePath: '/v1/settings/xhs_query_search',
+      method: 'PUT',
+      fetchImpl: async () => Response.json({
+        data: { capabilities: { xiaohongshuQuerySearchVersion: 4 } },
+      }),
+    }),
+    (error) => error instanceof ApiError
+      && error.status === 503
+      && error.code === 'CONTROL_PLANE_UPGRADE_REQUIRED',
+  );
+
+  await assert.rejects(
+    assertMutationCapability({
+      root: 'http://center.test',
+      routePath: '/v1/delivery-pool/previews',
+      method: 'POST',
+      fetchImpl: async () => Response.json({
+        data: { capabilities: { finalDeliveryVersion: 2 } },
+      }),
+    }),
+    (error) => error instanceof ApiError
+      && error.status === 503
+      && error.code === 'CONTROL_PLANE_UPGRADE_REQUIRED',
+  );
   for (const fetchImpl of [
     async () => Response.json({ data: { capabilities: { taskAssignmentVersion: 1 } } }),
     async () => Response.json({ data: { capabilities: { taskAssignmentVersion: 2 } } }),
@@ -80,6 +240,92 @@ test('mutation capability check fails closed for legacy, malformed and unavailab
       method: 'PATCH',
       fetchImpl: async () => Response.json({
         data: { capabilities: { autoAssignmentPoolVersion: 2 } },
+      }),
+    }),
+    (error) => error instanceof ApiError
+      && error.status === 503
+      && error.code === 'CONTROL_PLANE_UPGRADE_REQUIRED',
+  );
+
+  for (const routePath of [
+    '/v1/tasks/duplicate-query-discard-preview',
+    '/v1/tasks/duplicate-query-discard',
+  ]) {
+    await assert.rejects(
+      assertMutationCapability({
+        root: 'http://center.test',
+        routePath,
+        method: 'POST',
+        fetchImpl: async () => Response.json({
+          data: { capabilities: { duplicateQueryDiscardVersion: 0 } },
+        }),
+      }),
+      (error) => error instanceof ApiError
+        && error.status === 503
+        && error.code === 'CONTROL_PLANE_UPGRADE_REQUIRED',
+      routePath,
+    );
+  }
+
+  await assert.rejects(
+    assertMutationCapability({
+      root: 'http://center.test',
+      routePath: '/v1/query-packages/9/assignee',
+      method: 'PATCH',
+      fetchImpl: async () => Response.json({
+        data: { capabilities: { queryPackageVersion: 2 } },
+      }),
+    }),
+    (error) => error instanceof ApiError
+      && error.status === 503
+      && error.code === 'CONTROL_PLANE_UPGRADE_REQUIRED',
+  );
+
+  for (const routePath of [
+    '/v1/query-packages',
+    '/v1/query-packages/9/screening',
+    '/v1/query-packages/9/production-batches',
+    '/v1/query-packages/9/abandon',
+    '/v1/query-packages/9/permanent',
+  ]) {
+    await assert.rejects(
+      assertMutationCapability({
+        root: 'http://center.test',
+        routePath,
+        method: routePath.endsWith('/screening') ? 'PUT'
+          : routePath.endsWith('/permanent') ? 'DELETE' : 'POST',
+        fetchImpl: async () => Response.json({
+          data: { capabilities: { queryPackageVersion: 1 } },
+        }),
+      }),
+      (error) => error instanceof ApiError
+        && error.status === 503
+        && error.code === 'CONTROL_PLANE_UPGRADE_REQUIRED',
+      routePath,
+    );
+  }
+
+  await assert.rejects(
+    assertMutationCapability({
+      root: 'http://center.test',
+      routePath: '/v1/delivery-pool/xlsx',
+      method: 'POST',
+      fetchImpl: async () => Response.json({
+        data: { capabilities: { finalDeliveryVersion: 2 } },
+      }),
+    }),
+    (error) => error instanceof ApiError
+      && error.status === 503
+      && error.code === 'CONTROL_PLANE_UPGRADE_REQUIRED',
+  );
+
+  await assert.rejects(
+    assertMutationCapability({
+      root: 'http://center.test',
+      routePath: '/v1/delivery-pool/archive',
+      method: 'POST',
+      fetchImpl: async () => Response.json({
+        data: { capabilities: { finalDeliveryVersion: 1 } },
       }),
     }),
     (error) => error instanceof ApiError

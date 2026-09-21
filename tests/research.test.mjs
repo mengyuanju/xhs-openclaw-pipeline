@@ -12,7 +12,7 @@ import { createPromptRuntime, withPromptRuntime } from '../src/prompt-runtime.mj
 const NOW = '2026-08-29T08:00:00.000Z';
 
 describe('web research snapshots', () => {
-  it('does not append a fixed authority query when governed search yields no sources', async () => {
+  it('uses an intent-aware fallback query independently of prompt runtime configuration', async () => {
     const query = '机械键盘轴体体验比较';
     const calls = [];
     const runtime = createPromptRuntime({ prompts: {
@@ -34,9 +34,19 @@ describe('web research snapshots', () => {
     assert.deepEqual(calls.map(({ provider, query: submittedQuery }) => ({ provider, query: submittedQuery })), [
       { provider: 'codex', query },
       { provider: 'duckduckgo', query },
+      { provider: 'codex', query: `${query} 官方帮助 使用指南` },
+      { provider: 'duckduckgo', query: `${query} 官方帮助 使用指南` },
     ]);
     assert.ok(calls.every((call) => !call.query.includes('官方 标准 技术规范')));
     assert.deepEqual(snapshot.sources, []);
+  });
+
+  it('classifies medical, legal, financial and policy topics for authoritative research', async () => {
+    const { requiresAuthoritativeResearch } = await import('../src/research.mjs');
+    for (const query of ['儿童发烧怎么用药', '劳动合同纠纷怎么办', '基金定投建议', '社保补贴政策']) {
+      assert.equal(requiresAuthoritativeResearch({ query, input: {} }), true, query);
+    }
+    assert.equal(requiresAuthoritativeResearch({ query: '谷歌浏览器的使用方法', input: { category: '教程' } }), false);
   });
 
   it('uses only search providers supported by the current OpenClaw release by default', async () => {

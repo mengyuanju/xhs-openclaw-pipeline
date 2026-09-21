@@ -1,26 +1,41 @@
+import { normalizeTaskDateRange } from './task-date-filter.mjs';
+
 /**
  * Read a complete server page; old centers must not silently ignore admin filters.
  * @param {(path: string) => Promise<any>} request
- * @param {{createdByUserId?: string, createdByAccountId?: number, createdByRole?: string, state?: string, taskId?: number, query?: string, deduplicateQuery?: boolean, attention?: string, sortBy?: string, sortOrder?: string, limit?: number, offset?: number}} options
+ * @param {{createdByUserId?: string, createdByAccountId?: number, assignedToUserId?: string, assignedToAccountId?: number, createdByRole?: string, createdDateFrom?: string, createdDateTo?: string, state?: string, taskId?: number, query?: string, queryPackageName?: string, deduplicateQuery?: boolean, attention?: string, sortBy?: string, sortOrder?: string, limit?: number, offset?: number, cursor?: string, lastPage?: boolean}} options
  */
 export async function loadAdminTaskPage(request, {
-  createdByUserId, createdByAccountId, createdByRole, state, taskId, query, deduplicateQuery = false,
-  attention, sortBy, sortOrder, limit = 20, offset = 0,
+  createdByUserId, createdByAccountId, assignedToUserId, assignedToAccountId,
+  createdByRole, createdDateFrom, createdDateTo, state, taskId, query, queryPackageName,
+  deduplicateQuery = false,
+  attention, sortBy, sortOrder, limit = 20, offset = 0, cursor, lastPage = false,
 } = {}) {
   const hasCreator = Boolean(createdByUserId);
   const hasCreatorAccount = Number.isSafeInteger(createdByAccountId) && createdByAccountId > 0;
-  if (hasCreator !== hasCreatorAccount) throw new TypeError('作业员筛选缺少稳定账号身份，请重新选择作业员。');
+  if (hasCreator !== hasCreatorAccount) throw new TypeError('标注筛选缺少稳定账号身份，请重新选择标注。');
+  const hasAssignee = Boolean(assignedToUserId);
+  const hasAssigneeAccount = Number.isSafeInteger(assignedToAccountId) && assignedToAccountId > 0;
+  if (hasAssignee !== hasAssigneeAccount) throw new TypeError('负责人筛选缺少稳定账号身份，请重新选择负责人。');
+  const dateRange = normalizeTaskDateRange(createdDateFrom, createdDateTo);
   const search = new URLSearchParams({ limit: String(limit), offset: String(offset), includeTotal: 'true' });
   if (createdByUserId) search.set('createdByUserId', createdByUserId);
   if (hasCreatorAccount) search.set('createdByAccountId', String(createdByAccountId));
+  if (assignedToUserId) search.set('assignedToUserId', assignedToUserId);
+  if (hasAssigneeAccount) search.set('assignedToAccountId', String(assignedToAccountId));
   if (createdByRole) search.set('createdByRole', createdByRole);
+  if (dateRange.createdDateFrom) search.set('createdDateFrom', dateRange.createdDateFrom);
+  if (dateRange.createdDateTo) search.set('createdDateTo', dateRange.createdDateTo);
   if (state) search.set('state', state);
   if (taskId) search.set('taskId', String(taskId));
   if (query) search.set('query', query);
+  if (queryPackageName) search.set('queryPackageName', queryPackageName);
   if (deduplicateQuery) search.set('deduplicateQuery', 'true');
   if (attention) search.set('attention', attention);
   if (sortBy) search.set('sortBy', sortBy);
   if (sortOrder) search.set('sortOrder', sortOrder);
+  if (cursor) search.set('cursor', cursor);
+  if (lastPage) search.set('lastPage', 'true');
   const healthRequest = request('/api/control-plane/health');
   // Start both reads together, but keep the capability gate authoritative.
   // Observe task rejection immediately, even when health fails first.
@@ -34,12 +49,22 @@ export async function loadAdminTaskPage(request, {
   if (hasCreator && health?.capabilities?.creatorAccountFilters !== true) {
     throw new Error('请更新并重启中心服务，以支持精确账号筛选。');
   }
+  if (hasAssignee && health?.capabilities?.assigneeAccountFilters !== true) {
+    throw new Error('请更新并重启中心服务，以支持精确负责人筛选。');
+  }
+  if ((dateRange.createdDateFrom || dateRange.createdDateTo)
+      && health?.capabilities?.adminTaskActivityDateFilters !== 1) {
+    throw new Error('请更新并重启中心服务，以支持作业最近变更日期筛选。');
+  }
   const result = await pageRequest;
   if ('error' in result) throw result.error;
   const page = result.page;
   if (!page || !Array.isArray(page.items) || !Number.isSafeInteger(page.total) || page.total < 0
     || page.limit !== limit || page.offset !== offset || page.items.length > limit
-    || hasCreatorAccount && page.items.some((item) => item?.createdByAccountId !== createdByAccountId)) {
+    || page.previousCursor !== undefined && page.previousCursor !== null && typeof page.previousCursor !== 'string'
+    || page.nextCursor !== undefined && page.nextCursor !== null && typeof page.nextCursor !== 'string'
+    || hasCreatorAccount && page.items.some((item) => item?.createdByAccountId !== createdByAccountId)
+    || hasAssigneeAccount && page.items.some((item) => item?.assignedToAccountId !== assignedToAccountId)) {
     throw new Error('中心服务返回的分页数据无效，请更新中心服务后重试。');
   }
   return page;

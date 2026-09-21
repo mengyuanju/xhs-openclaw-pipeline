@@ -364,9 +364,14 @@ describe('knowledge retirement', () => {
       async query(rawSql, values = []) {
         const sql = rawSql.replace(/\s+/gu, ' ').trim();
         if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
-        if (sql.startsWith('SELECT * FROM executor_nodes')) return { rows: [{ id: 'node-a' }] };
+        if (sql.includes('FROM executor_nodes n') && sql.includes('codex_concurrency_pools')) return { rows: [{
+          id: 'node-a', codex_pool_id: 'pool-a', codex_total_concurrency: 1,
+          codex_image_concurrency: 1, image_worker_enabled: true,
+        }] };
         if (sql.startsWith('UPDATE executor_nodes')) return { rows: [] };
-        if (sql.startsWith('SELECT COUNT(*) AS count FROM task_executions')) return { rows: [{ count: 0 }] };
+        if (sql.startsWith('SELECT COUNT(*) AS total_count')) {
+          return { rows: [{ total_count: 0, image_count: 0 }] };
+        }
         if (sql.startsWith('SELECT last_assignee_user_id FROM execution_claim_cursors')) {
           return { rows: [{ last_assignee_user_id: null }] };
         }

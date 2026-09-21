@@ -7,6 +7,14 @@
 .ui-search-clear:disabled { cursor: not-allowed; opacity: .5; }
 .ui-search-input::-webkit-search-cancel-button, .ui-search-input::-webkit-search-decoration { appearance: none; }
 .ui-search-clear:focus-visible, .disclosure-trigger:focus-visible { outline: 3px solid var(--control-ring); outline-offset: 2px; }
+.ui-dropdown-content { z-index: 130; min-width: 168px; padding: 5px; border: 1px solid var(--control-border); border-radius: 10px; color: var(--ink); background: var(--surface); box-shadow: 0 16px 42px rgba(45,35,28,.16), 0 3px 10px rgba(45,35,28,.06); transform-origin: var(--radix-dropdown-menu-content-transform-origin); animation: ui-dropdown-in .12s ease-out; }
+.ui-dropdown-item { min-height: 34px; display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 7px; outline: 0; color: var(--ink); font-size: 12px; font-weight: 650; cursor: pointer; user-select: none; }
+.ui-dropdown-item[data-highlighted] { background: var(--control-bg-muted); }
+.ui-dropdown-item[data-tone="danger"] { color: var(--red-dark); }
+.ui-dropdown-item[data-disabled] { opacity: .45; cursor: not-allowed; }
+.ui-dropdown-item svg { flex: 0 0 auto; }
+.ui-dropdown-separator { height: 1px; margin: 5px 4px; background: var(--line); }
+@keyframes ui-dropdown-in { from { opacity: 0; transform: scale(.98) translateY(-2px); } }
 .disclosure { min-width: 0; }
 .disclosure-trigger { position: relative; display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 10px 0; padding-inline-end: 26px !important; border: 0; border-radius: 4px; color: inherit; background: transparent; font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
 .disclosure-trigger::after { content: ''; position: absolute; right: 9px; top: calc(50% - 4px); width: 7px; height: 7px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); transition: transform .15s; }
@@ -59,7 +67,7 @@ input.ui-slider::-moz-range-thumb { width: 14px; height: 14px; border: 2px solid
 .ui-color-swatch[aria-pressed="true"] { outline: 2px solid var(--red); outline-offset: 2px; }
 .ui-color-swatch:disabled { cursor: not-allowed; opacity: .45; }
 @media (prefers-reduced-motion: reduce) {
-  .disclosure-trigger::after, .ui-progress-indicator, input.ui-switch[type="checkbox"]::after { transition: none; animation: none; }
+  .disclosure-trigger::after, .ui-progress-indicator, input.ui-switch[type="checkbox"]::after, .ui-dropdown-content { transition: none; animation: none; }
 }
 @media (forced-colors: active) {
   input.ui-checkbox, input.ui-radio, input.ui-switch[type="checkbox"] { appearance: auto; }

@@ -1,13 +1,23 @@
 import { ApiError } from '../admin/http.mjs';
-import { compactDetail, compactTask, normalizeRange, summarizeCounts, summarizeEfficiency } from './summary.mjs';
+import {
+  compactDetail,
+  compactPersonalTaskCompletion,
+  compactTask,
+  normalizeRange,
+  resolveWorkOwner,
+  summarizeCounts,
+  summarizeEfficiency,
+  summarizePersonalCompletions,
+} from './summary.mjs';
 import { createReadScheduler } from './read-scheduler.mjs';
 
 const PAGE_SIZE = 200;
 const COUNTS_TTL = 60_000;
 const DETAIL_TTL = 300_000;
 const RETRY_DELAY = 30_000;
-const DETAIL_CONCURRENCY = 8;
-const DETAIL_BATCH_SIZE = 32;
+const DETAIL_CONCURRENCY = 16;
+const DETAIL_BATCH_SIZE = 96;
+const DETAIL_POLL_DELAY = 750;
 const identity = task => JSON.stringify([task.state, task.currentImageRunId, task.currentCopyRevisionId]);
 const signature = task => JSON.stringify([identity(task), task.updatedAt]);
 const timestamp = value => value ? Date.parse(value) : NaN;
@@ -176,18 +186,18 @@ export function createStatisticsService({ fetchImpl = fetch, now = Date.now, sle
 
   return {
     async read({ root, session, scope = 'personal', period = 'today', from, to, username = '',
-      createdByAccountId = null, role = '', details = false, refresh = false }) {
+      workerAccountId = null, role = '', details = false, refresh = false }) {
       const actor = actorFrom(session);
       if (!['personal', 'admin'].includes(scope)) throw new ApiError(400, 'INVALID_INPUT', '统计范围无效');
       if ((scope === 'admin' || details) && actor.role !== 'ADMIN') throw new ApiError(403, 'FORBIDDEN', '仅管理员可以查看团队和效率统计');
       if (details && scope !== 'admin') throw new ApiError(400, 'INVALID_INPUT', '个人统计不提供执行明细');
-      const accountFilter = createdByAccountId === null || createdByAccountId === undefined
-        ? null : Number(createdByAccountId);
+      const accountFilter = workerAccountId === null || workerAccountId === undefined
+        ? null : Number(workerAccountId);
       const accountFilterInvalid = accountFilter !== null
         && (!Number.isSafeInteger(accountFilter) || accountFilter < 1);
       const accountFilterMismatched = Boolean(username && username !== '__unassigned__') !== (accountFilter !== null);
       if (accountFilterInvalid || scope === 'admin' && accountFilterMismatched) {
-        throw new ApiError(400, 'INVALID_INPUT', '作业员筛选缺少稳定账号身份，请重新选择作业员');
+        throw new ApiError(400, 'INVALID_INPUT', '负责人筛选缺少稳定账号身份，请重新选择负责人');
       }
       if (!root) throw new ApiError(503, 'CONTROL_PLANE_NOT_CONFIGURED', '请先配置中心服务');
       let range;
@@ -200,12 +210,33 @@ export function createStatisticsService({ fetchImpl = fetch, now = Date.now, sle
       if (entry.rows) await validateCachedIdentity(entry, root, actor);
       if (refreshCounts) await advanceCounts(entry, root, actor, scope);
       const rows = entry.rows ?? [];
-      const filtered = scope === 'personal' ? rows : rows.filter(task => (!username || (username === '__unassigned__'
-        ? task.createdByUserId === null
-        : task.createdByUserId === username && task.createdByAccountId === accountFilter)) && (!role || task.createdByRole === role));
+      const filtered = scope === 'personal' ? rows : rows.filter(task => {
+        const owner = resolveWorkOwner(task);
+        return (!username || (username === '__unassigned__'
+          ? owner.username === null
+          : owner.username === username && owner.accountId === accountFilter)) && (!role || owner.role === role);
+      });
       const allSummary = entry.rows ? summarizeCounts(rows, range, now()) : null;
       const summary = !entry.rows ? null : scope === 'admin' && (username || role) ? summarizeCounts(filtered, range, now()) : allSummary;
-      const creators = scope === 'admin' && allSummary ? allSummary.people
+      let completionNotice = null;
+      if (scope === 'personal' && summary && !entry.error) {
+        try {
+          const completionQuery = new URLSearchParams({
+            from: new Date(range.startMs).toISOString(),
+            to: new Date(range.endMs).toISOString(),
+          });
+          const rawCompletions = await request(root, actor, `/v1/task-completions?${completionQuery}`);
+          if (!Array.isArray(rawCompletions) || rawCompletions.length > maxTasks) {
+            throw new Error('个人完成统计超出读取上限');
+          }
+          const completions = rawCompletions.map(compactPersonalTaskCompletion);
+          summary.completedWork = summarizePersonalCompletions(completions, range);
+        } catch (error) {
+          if (error instanceof ApiError && [401, 403].includes(error.status)) throw error;
+          completionNotice = '完成数据暂时不可用，其他作业统计仍可查看。';
+        }
+      }
+      const workers = scope === 'admin' && allSummary ? allSummary.people
         .filter(person => person.accountId !== null || person.username === null)
         .map(person => ({ accountId: person.accountId,
           username: person.username, displayName: person.displayName, role: person.role })) : undefined;
@@ -215,23 +246,26 @@ export function createStatisticsService({ fetchImpl = fetch, now = Date.now, sle
       if (details && entry.rows) {
         // updatedAt is written whenever an execution changes; older rows cannot finish in this range.
         const candidates = filtered.filter(task => !Number.isFinite(timestamp(task.updatedAt)) || timestamp(task.updatedAt) >= range.startMs);
-        if (!countsDue) await advanceDetails(entry, root, actor, candidates);
+        // Start the first detail batch as soon as a complete count snapshot exists. The bounded
+        // scheduler protects the control plane while avoiding one otherwise-empty polling cycle.
+        if (!entry.scan) await advanceDetails(entry, root, actor, candidates);
         const ready = candidates.filter(task => reusable(entry, task));
         const pending = candidates.filter(task => !reusable(entry, task));
         const values = new Map(ready.map(task => [task.id, entry.details.get(task.id).value]));
         const failed = candidates.filter(task => entry.detailErrors.has(task.id)).length;
         const times = ready.map(task => entry.details.get(task.id).readAt);
         const nextDetailRetry = pending.map(task => entry.detailErrors.get(task.id)?.retryAt ?? now()).toSorted((a, b) => a - b)[0];
-        detailRetryAfterMs = nextDetailRetry == null ? COUNTS_TTL : Math.max(1500, nextDetailRetry - now());
+        detailRetryAfterMs = nextDetailRetry == null ? COUNTS_TTL : Math.max(DETAIL_POLL_DELAY, nextDetailRetry - now());
         detailSummary = { ...summarizeEfficiency(filtered, values, range), total: candidates.length, loaded: ready.length,
           state: ready.length === candidates.length ? 'ready' : failed ? 'partial' : 'loading', failed,
           updatedAt: times.length ? new Date(Math.min(...times)).toISOString() : null };
       }
       return {
-        scope, range, summary, creators, details: detailSummary,
+        scope, range, summary, workers, details: detailSummary,
         state: entry.error ? 'error' : entry.scan ? entry.rows ? 'refreshing' : 'loading' : entry.rows ? 'ready' : 'loading',
         progress: { loaded: entry.scan?.rows.size ?? rows.length, total: entry.scan?.total ?? (entry.rows ? rows.length : null) },
-        updatedAt: entry.rows ? new Date(entry.updatedAt).toISOString() : null, notice: entry.error,
+        updatedAt: entry.rows ? new Date(entry.updatedAt).toISOString() : null,
+        notice: [entry.error, completionNotice].filter(Boolean).join(' ') || null,
         retryAfterMs: entry.error ? Math.max(1000, entry.nextRetry - now())
           : entry.scan ? 1500 : details && detailSummary?.state !== 'ready' ? detailRetryAfterMs : COUNTS_TTL,
       };

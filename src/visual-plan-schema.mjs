@@ -3,9 +3,21 @@ import { LAYOUT_TEMPLATES_BY_KIND } from './layout-contract.mjs';
 import { requestedLayoutTemplate } from './image-layout-controls.mjs';
 import { catalogPageOptions } from './catalog-planning.mjs';
 
-const text = (maxLength) => ({ type: 'string', minLength: 1, maxLength });
+const text = (maxLength, minLength = 1) => ({ type: 'string', minLength, maxLength });
 const list = (items, minItems, maxItems) => ({ type: 'array', items, minItems, maxItems });
 const object = (properties) => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
+
+// The strict-output compiler rejects JSON escapes in enum/const strings.
+// Keep those values unchanged in the prompt and enforce them after output via
+// normalizeSourceEvidence/assertLockedImageText; never sanitize approved copy.
+const supportsLiterals = (values) => values.every(value => !JSON.stringify(value).includes('\\'));
+const textChoices = (values, maxLength) => ({
+  ...text(maxLength), ...(supportsLiterals(values) ? { enum: [...new Set(values)] } : {}),
+});
+const lockedText = (value, maxLength, minLength = 1) => ({
+  ...text(maxLength, minLength),
+  ...(promptRuntimeSnapshot() && supportsLiterals([value]) ? { const: value } : {}),
+});
 
 export function visualEvidenceOptions(post) {
   return [...new Set(`${post.title}\n${post.body}`.split(/(?<=[。！？；\n])/u).flatMap((part) => {
@@ -17,6 +29,7 @@ export function visualEvidenceOptions(post) {
 }
 
 export function visualPlanSchema(post, indices = post.imagePlan.map((_, index) => index + 1), layoutCatalog = null) {
+  const evidenceItems = textChoices(visualEvidenceOptions(post), 200);
   const variants = indices.map((index) => {
     const kind = post.imagePlan[index - 1].kind;
     const candidates = catalogPageOptions(post.imagePlan[index - 1], layoutCatalog);
@@ -27,14 +40,14 @@ export function visualPlanSchema(post, indices = post.imagePlan.map((_, index) =
         templateVersion: { type: 'integer', enum: [...new Set(candidates.map(item => item.templateVersion))] }, selectionReason: text(300) } : {}),
       layoutTemplate: { type: 'string', enum: candidates ? candidates.map(item => item.layoutTemplate) : requestedLayoutTemplate(post.imagePlan[index - 1])
         ? [requestedLayoutTemplate(post.imagePlan[index - 1])] : [...LAYOUT_TEMPLATES_BY_KIND[kind]] },
-      sourceEvidence: list({ type: 'string', enum: visualEvidenceOptions(post) }, 1, 3), visualSubject: text(300), layoutDirection: text(300),
+      sourceEvidence: list(evidenceItems, 1, 3), visualSubject: text(300), layoutDirection: text(300),
       allowedVisibleText: object({
-        language: { type: 'string', enum: ['zh-CN'] }, headline: { ...text(18), ...(promptRuntimeSnapshot() ? { const: post.imagePlan[index - 1].headline } : {}) },
-        subtitle: { ...text(30), ...(promptRuntimeSnapshot() ? { const: post.imagePlan[index - 1].subtitle } : {}) },
+        language: { type: 'string', enum: ['zh-CN'] }, headline: lockedText(post.imagePlan[index - 1].headline, 18),
+        subtitle: lockedText(post.imagePlan[index - 1].subtitle, 30, 0),
         // The model schema API rejects array-valued const. Restrict the strings
         // and count here; assertLockedImageText verifies exact order after output.
         bullets: promptRuntimeSnapshot()
-          ? list({ type: 'string', enum: [...new Set(post.imagePlan[index - 1].bullets)] }, post.imagePlan[index - 1].bullets.length, post.imagePlan[index - 1].bullets.length)
+          ? list(textChoices(post.imagePlan[index - 1].bullets, kind === 'checklist' ? 40 : 30), post.imagePlan[index - 1].bullets.length, post.imagePlan[index - 1].bullets.length)
           : list(text(kind === 'checklist' ? 40 : 30), 2, 5), labels: list(text(20), 0, promptRuntimeSnapshot() ? 0 : 3),
       }),
       mustShow: list({ ...text(100), pattern: '^画面：.+' }, 0, 10),

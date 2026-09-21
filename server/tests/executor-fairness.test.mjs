@@ -47,8 +47,11 @@ function claimFixture({
   const executions = new Map();
   const node = {
     id: 'node-a',
+    codex_pool_id: 'pool-a',
     copy_concurrency: capacity,
     image_concurrency: capacity,
+    codex_total_concurrency: capacity,
+    codex_image_concurrency: capacity,
     image_worker_enabled: true,
   };
   const client = {
@@ -57,10 +60,12 @@ function claimFixture({
       const sql = String(rawSql);
       calls.push({ sql, values });
       if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
-      if (sql.includes('SELECT * FROM executor_nodes')) return { rows: [node] };
+      if (sql.includes('FROM executor_nodes n') && sql.includes('codex_concurrency_pools')) return { rows: [node] };
       if (sql.includes('SELECT * FROM execution_claim_requests')) return { rows: receipt ? [receipt] : [] };
       if (sql.includes('JOIN tasks t ON t.id = e.task_id')) return { rows: receiptRecords };
-      if (sql.includes('COUNT(*)') && sql.includes('task_executions')) return { rows: [{ count: running }] };
+      if (sql.includes('COUNT(*)') && sql.includes('task_executions')) {
+        return { rows: [{ total_count: running, image_count: running }] };
+      }
       if (sql.includes('SELECT last_assignee_user_id FROM execution_claim_cursors')) {
         return { rows: cursorPresent ? [{ last_assignee_user_id: cursor }] : [] };
       }
@@ -104,7 +109,7 @@ test('0020 creates and safely seeds only COPY and IMAGE cursors without touching
   assert.doesNotMatch(migration.sql, /UPDATE\s+tasks/u);
 });
 
-test('COPY claims use a global FIFO that accepts unassigned work without touching owner cursors', async () => {
+test('COPY claims use global priority and waiting compensation that accepts unassigned work without touching owner cursors', async () => {
   const candidates = [unassignedTask(11), queuedTask(12, 'alice')];
   const { repository, calls } = claimFixture({ candidates });
   const requestId = requestIdAt();
@@ -120,7 +125,7 @@ test('COPY claims use a global FIFO that accepts unassigned work without touchin
 
   const selection = calls[candidateIndex];
   assert.deepEqual(selection.values, ['COPY_QUEUED', 2]);
-  assert.match(selection.sql, /FROM tasks AS task[\s\S]*WHERE task\.state = \$1[\s\S]*ORDER BY task\.id/u);
+  assert.match(selection.sql, /FROM tasks AS task[\s\S]*WHERE task\.state = \$1[\s\S]*ORDER BY task\.priority_paused ASC, task\.priority_sort_at ASC, task\.id ASC/u);
   assert.match(selection.sql, /FOR UPDATE OF task SKIP LOCKED[\s\S]*LIMIT \$2/u);
   assert.doesNotMatch(selection.sql, /assigned_to_user_id/u);
   assert.doesNotMatch(selection.sql, /ranked_candidates/u);
@@ -138,12 +143,12 @@ test('COPY can claim and persist unassigned work before its first human checkpoi
   assert.equal(fixture.calls.at(-1).sql, 'COMMIT');
 });
 
-test('IMAGE fairness retains retry ownership, recovery affinity, cooldown and original age order', async () => {
+test('IMAGE fairness retains retry ownership, recovery affinity, cooldown and priority order', async () => {
   const { repository, calls } = claimFixture({ kind: 'IMAGE', cursor: 'alice' });
   assert.equal(await repository.claimImage('node-a'), null);
 
   const selection = calls.find(({ sql }) => sql.includes('FOR UPDATE OF task SKIP LOCKED'));
-  assert.deepEqual(selection.values, ['IMAGE_QUEUED', 'node-a', 'alice', 1]);
+  assert.deepEqual(selection.values, ['IMAGE_QUEUED', 'node-a', 'alice', 1, 0]);
   assert.match(selection.sql, /queued\.pending_snapshot->'imageRetry'->>'nodeId' IS NULL/u);
   assert.match(selection.sql, /queued\.pending_snapshot->'imageRetry'->>'nodeId' = \$2/u);
   assert.match(selection.sql, /queued\.pending_snapshot->'imageRecovery'->>'nodeId' IS NULL/u);
@@ -157,7 +162,7 @@ test('IMAGE fairness retains retry ownership, recovery affinity, cooldown and or
   assert.match(selection.sql, /queued\.assigned_to_user_id IS NOT NULL/u);
   assert.match(selection.sql, /task\.assigned_to_user_id IS NOT NULL/u);
   assert.match(selection.sql, /task\.assigned_to_user_id IS NOT DISTINCT FROM ranked\.assigned_to_user_id/u);
-  assert.match(selection.sql, /PARTITION BY queued\.assigned_to_user_id[\s\S]*ORDER BY queued\.last_activity_at NULLS FIRST, queued\.id/u);
+  assert.match(selection.sql, /PARTITION BY work\.assigned_to_user_id[\s\S]*ORDER BY work\.priority_paused, work\.priority_sort_at, work\.task_id/u);
   assert.match(selection.sql, /ranked\.last_activity_at NULLS FIRST, ranked\.task_id/u);
   assert.match(selection.sql, /LIMIT \$4/u);
   assert.equal(calls.some(({ sql }) => sql.includes('UPDATE execution_claim_cursors')), false);

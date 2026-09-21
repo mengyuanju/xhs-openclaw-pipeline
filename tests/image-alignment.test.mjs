@@ -643,7 +643,10 @@ describe('image alignment contract', () => {
       (error) => {
         assert.ok(error instanceof ImageAlignmentServiceError);
         assert.equal(error.code, 'ALIGNMENT_SERVICE_FAILED');
+        assert.equal(error.serviceCode, 'UNKNOWN');
         assert.equal(error.retryable, true);
+        assert.match(error.message, /图片视觉验收服务调用失败（UNKNOWN）/u);
+        assert.match(error.message, /vision service timeout/u);
         return true;
       },
     );

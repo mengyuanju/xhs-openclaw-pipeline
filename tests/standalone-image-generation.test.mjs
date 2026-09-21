@@ -209,6 +209,26 @@ function resumableLiveClient({
 }
 
 describe('standalone image generation service', () => {
+  it('allows an empty subtitle through quality-check result publishing', async (t) => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-empty-subtitle-'));
+    t.after(() => rm(outputRoot, { recursive: true, force: true }));
+    const source = validSource();
+    source.imagePlan[2].subtitle = '';
+    const runtime = resumableLiveClient({ source });
+
+    const result = await generateStandaloneImages({
+      source,
+      mode: 'LIVE',
+      outputRoot,
+      runId: RUN_ID,
+      runtime,
+    });
+
+    assert.equal(result.status, 'COMPLETED');
+    assert.equal(result.images[2].layout.allowedVisibleText.subtitle, '');
+    assert.equal(result.qc.passed, true);
+  });
+
   it('persists catalog planning before the first image and reuses it after failure with changed global templates', async (t) => {
     const outputRoot = await mkdtemp(join(tmpdir(), 'catalog-persist-resume-'));
     t.after(() => rm(outputRoot, { recursive: true, force: true }));
@@ -310,6 +330,12 @@ describe('standalone image generation service', () => {
       sources: ['https://evidence.example/approved'],
       expressionReferences: [],
       riskFlags: ['价格承诺存在合规风险'],
+      riskAssessments: [{
+        severity: 'BLOCKING',
+        status: 'UNRESOLVED',
+        message: '价格承诺存在合规风险',
+        mitigation: '',
+      }],
       fabricatedExperience: true,
       unverifiedClaims: ['具体价格仍待核验'],
     };
@@ -806,7 +832,8 @@ describe('standalone image generation service', () => {
     assert.equal(Object.hasOwn(originalConfig.productionSettings, 'modelApi'), false);
     assert.deepEqual(originalConfig.productionSettings, {
       qualityRepairEnabled: false, qualityRepairTriggerScore: 1, qualityRepairTargetScore: 2,
-      qualityRepairMaxAttempts: 1, knowledgeEnabled: true, aiDisclosureEnabled: true, aiDisclosureText: '历史标识', layoutPresets: [],
+      qualityRepairMaxAttempts: 1, imageEditRepairMaxAttempts: 2, knowledgeEnabled: true,
+      aiDisclosureEnabled: true, aiDisclosureText: '历史标识', layoutPresets: [],
       humanQualityReasons: DEFAULT_HUMAN_QUALITY_SETTINGS,
     });
 

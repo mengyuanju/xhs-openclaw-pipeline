@@ -54,12 +54,20 @@ test('DeepSeek stops after one request when a summary and two independent comple
 
 const incompleteCases = [
   ['one source', (evidence) => { evidence.sources.pop(); }],
-  ['two URLs on one hostname', (evidence) => { evidence.sources[1].url = 'https://support.example.com/another-page'; }],
   ['missing summary', (evidence) => { delete evidence.summary; }],
   ['one missing source snippet', (evidence) => { delete evidence.sources[1].snippet; }],
   ['blank source snippet', (evidence) => { evidence.sources[1].snippet = ' \n '; }],
   ['missing source title', (evidence) => { delete evidence.sources[1].title; }],
 ];
+
+test('DeepSeek accepts two complete official help pages on one hostname for ordinary content', async () => {
+  const evidence = sufficientEvidence();
+  evidence.sources[1].url = 'https://support.example.com/another-page';
+  const { snapshot, calls } = await researchWithResponses([evidence, authoritativeEvidence()]);
+  assert.equal(calls.length, 1);
+  assert.equal(snapshot.status, 'COMPLETED');
+  assert.deepEqual(researchSourceUrls(snapshot), evidence.sources.map((source) => source.url));
+});
 
 for (const [label, makeIncomplete] of incompleteCases) {
   test(`DeepSeek supplements evidence with ${label} instead of treating it as sufficient`, async () => {
@@ -130,12 +138,12 @@ test('DeepSeek early stopping does not silently broaden the default fallback-pro
   assert.deepEqual(researchSourceUrls(snapshot), ['https://www.nist.gov/testing']);
 });
 
-test('a hostname trailing-dot alias is not a second independent DeepSeek source', async () => {
+test('DeepSeek source sufficiency depends on distinct complete URLs rather than hostname spelling', async () => {
   const evidence = sufficientEvidence();
   evidence.sources[1].url = 'https://support.example.com./another-page';
   const { snapshot, calls } = await researchWithResponses([evidence, authoritativeEvidence()]);
-  assert.equal(calls.length, 2);
-  assert.deepEqual(researchSourceUrls(snapshot), ['https://www.nist.gov/testing']);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(researchSourceUrls(snapshot), evidence.sources.map((source) => source.url));
 });
 
 for (const hostname of ['gov.example.org', 'example.gov.evil.com', 'edu.example.org']) {

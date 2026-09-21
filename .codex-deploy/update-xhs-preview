@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo=/opt/xhs-openclaw-pipeline
+app="$repo/preview-service"
+state=/var/lib/xhs-preview/state
+backup_dir=/var/lib/xhs-preview/backups
+
+install -d -o xhs-preview -g xhs-preview -m 750 "$backup_dir"
+
+while IFS= read -r database_file; do
+  if [[ -f "$database_file" ]]; then
+    backup_name="$(date -u +%Y%m%dT%H%M%SZ)-$(basename "$database_file")"
+    cp --preserve=mode,timestamps "$database_file" "$backup_dir/$backup_name"
+    chown xhs-preview:xhs-preview "$backup_dir/$backup_name"
+  fi
+done < <(find "$state/v3/d1" -type f -name '*.sqlite' 2>/dev/null)
+
+cd "$repo"
+runuser -u xhs-preview -- git fetch origin auto-clow-poker
+runuser -u xhs-preview -- git merge --ff-only origin/auto-clow-poker
+runuser -u xhs-preview -- env HOME=/var/lib/xhs-preview PATH=/usr/local/bin:/usr/bin:/bin npm --prefix preview-service ci
+
+cd "$app"
+runuser -u xhs-preview -- env HOME=/var/lib/xhs-preview PATH=/usr/local/bin:/usr/bin:/bin npx wrangler d1 migrations apply DB --local --config wrangler.jsonc --persist-to "$state"
+runuser -u xhs-preview -- env HOME=/var/lib/xhs-preview PATH=/usr/local/bin:/usr/bin:/bin npm run build
+runuser -u xhs-preview -- env PATH=/usr/local/bin:/usr/bin:/bin node /usr/local/lib/xhs-preview/normalize-wrangler-config.mjs "$app/dist/server/wrangler.json"
+chmod 600 "$app/dist/server/.dev.vars"
+
+systemctl restart xhs-preview.service
+sleep 2
+curl --insecure --fail --silent --show-error --max-time 10 https://127.0.0.1:3100/login >/dev/null
+systemctl --no-pager --full status xhs-preview.service

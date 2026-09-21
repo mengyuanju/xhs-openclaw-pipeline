@@ -40,7 +40,7 @@ export default async function KnowledgePage({
 }) {
   const session = await readServerSession();
   if (!session) redirect('/login?next=%2Fknowledge');
-  if (!session.roles?.some((role: string) => ['ADMIN', 'REVIEWER'].includes(role))) redirect('/workbench/personal');
+  if (!session.roles?.includes('ADMIN')) redirect('/workbench/personal');
   const search = await searchParams;
   const requestedPageSize = positiveInteger(firstSearchParam(search.copyPageSize), 10);
   const copyPageSize = COPY_KNOWLEDGE_PAGE_SIZES.has(requestedPageSize) ? requestedPageSize : 10;

@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
-import { Input, Textarea } from '@/components/ui/input';
+import { ToastFeedback } from '@/components/ui/sonner';
+import { Input, Switch, Textarea } from '@/components/ui/input';
 
 import { apiRequest } from '../components/api-client';
 import type {
@@ -31,6 +32,8 @@ function editableSignature(settings: HumanQualitySettings, copyText: string, ima
     copyLabels: copyText.split(/\r?\n/u).map((label) => label.trim()).filter(Boolean),
     imageLabels: imageText.split(/\r?\n/u).map((label) => label.trim()).filter(Boolean),
     noteGuidance: settings.noteGuidance,
+    copyReviewDisplay: settings.copyReviewDisplay,
+    imageReviewDisplay: settings.imageReviewDisplay,
   });
 }
 
@@ -55,6 +58,8 @@ export function HumanQualitySettingsPanel({
       ...settings,
       scoreDefinitions: settings.scoreDefinitions.map((definition) => ({ ...definition })),
       noteGuidance: { ...settings.noteGuidance },
+      copyReviewDisplay: { ...settings.copyReviewDisplay },
+      imageReviewDisplay: { ...settings.imageReviewDisplay },
     });
     setCopyText(nextCopyText);
     setImageText(nextImageText);
@@ -88,6 +93,28 @@ export function HumanQualitySettingsPanel({
     } : settings);
   }
 
+  function updateCopyReviewDisplay(
+    field: keyof HumanQualitySettings['copyReviewDisplay'],
+    value: boolean,
+  ) {
+    beginEdit();
+    setCurrent((settings) => settings ? {
+      ...settings,
+      copyReviewDisplay: { ...settings.copyReviewDisplay, [field]: value },
+    } : settings);
+  }
+
+  function updateImageReviewDisplay(
+    field: keyof HumanQualitySettings['imageReviewDisplay'],
+    value: boolean,
+  ) {
+    beginEdit();
+    setCurrent((settings) => settings ? {
+      ...settings,
+      imageReviewDisplay: { ...settings.imageReviewDisplay, [field]: value },
+    } : settings);
+  }
+
   useEffect(() => {
     let active = true;
     void apiRequest<HumanQualitySettings>('/api/human-quality-settings')
@@ -99,6 +126,13 @@ export function HumanQualitySettingsPanel({
 
   async function save() {
     if (!current) return;
+    const nextCopyReasons = optionsFrom(copyText, current.copyReasons);
+    const nextImageReasons = optionsFrom(imageText, current.imageReasons);
+    if (current.imageReviewDisplay.showDeductionReasons && nextImageReasons.length === 0) {
+      setMessage('');
+      setError('已开启图片质检扣分原因，请至少填写一项图片扣分原因后再保存。');
+      return;
+    }
     setBusy(true);
     setMessage('');
     setError('');
@@ -108,9 +142,11 @@ export function HumanQualitySettingsPanel({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           scoreDefinitions: current.scoreDefinitions,
-          copyReasons: optionsFrom(copyText, current.copyReasons),
-          imageReasons: optionsFrom(imageText, current.imageReasons),
+          copyReasons: nextCopyReasons,
+          imageReasons: nextImageReasons,
           noteGuidance: current.noteGuidance,
+          copyReviewDisplay: current.copyReviewDisplay,
+          imageReviewDisplay: current.imageReviewDisplay,
         }),
       });
       applySettings(settings);
@@ -126,6 +162,8 @@ export function HumanQualitySettingsPanel({
     && current.scoreDefinitions.every((definition) => definition.title.trim() && definition.description.trim())
     && current.noteGuidance.copyPlaceholder.trim()
     && current.noteGuidance.imagePlaceholder.trim());
+  const imageReasonsMissing = Boolean(current?.imageReviewDisplay.showDeductionReasons
+    && optionsFrom(imageText, current.imageReasons).length === 0);
   const hasChanges = Boolean(current
     && editableSignature(current, copyText, imageText) !== savedSignature);
   useEffect(() => {
@@ -137,7 +175,7 @@ export function HumanQualitySettingsPanel({
     <div className="panel-head">
       <div>
         <h2 id="human-quality-settings-heading">人工评分标准与反馈</h2>
-        <p className="subtle">统一维护审核页的档位说明、扣分原因和评分说明提示。分值、2.5 分放行线和工作流动作仍由系统固定。</p>
+        <p className="subtle">统一维护审核页的档位说明、扣分原因和评分说明提示。文案机器原稿只有 3 分可直接提交，图片 2.5 分起可通过；分值和工作流动作仍由系统固定。</p>
       </div>
     </div>
     {loading ? <div className="empty-state">正在读取人工评分标准…</div> : current && <>
@@ -146,12 +184,23 @@ export function HumanQualitySettingsPanel({
           <div><span>01</span><div><h3>评分档位说明</h3><p>只能修改审核页展示的名称和说明，不能增加档位或改变数值。</p></div></div>
           <small>固定档位：1 / 2 / 2.5 / 3</small>
         </div>
+        <label className="switch-field">
+          <Switch
+            aria-label="文案审核中显示评分档位说明"
+            checked={current.copyReviewDisplay.showScoreDescriptions}
+            disabled={busy}
+            onChange={(event) => updateCopyReviewDisplay('showScoreDescriptions', event.target.checked)}
+          />
+          <span>文案审核中显示评分档位说明</span>
+        </label>
         <div className="human-score-definition-grid">
           {current.scoreDefinitions.map((definition) => <fieldset key={definition.score} className="human-score-definition" data-score={definition.score}>
             <legend className="sr-only">{definition.score} 分评分档位</legend>
             <header>
               <strong>{definition.score}<small>分</small></strong>
-              <span data-passing={definition.score > 2}>{definition.score > 2 ? '可放行' : '需处理'}</span>
+              <span data-passing={definition.score > 2}>{definition.score === 3
+                ? '文案可提交 · 图片可通过'
+                : definition.score === 2.5 ? '文案需小修 · 图片可通过' : '需处理'}</span>
             </header>
             <div className="field">
               <label htmlFor={`human-score-title-${definition.score}`}>档位名称</label>
@@ -167,15 +216,38 @@ export function HumanQualitySettingsPanel({
 
       <div className="human-quality-config-block">
         <div className="human-quality-config-heading">
-          <div><span>02</span><div><h3>扣分原因</h3><p>每行一个原因，最多 10 项、每项最多 50 字；删除或改名不会改变历史评分记录。</p></div></div>
+          <div><span>02</span><div><h3>扣分原因</h3><p>每行一个原因，最多 10 项、每项最多 50 字；文案审核和图片质检可分别关闭展示。</p></div></div>
         </div>
+        <div className="human-quality-display-switches">
+          <label className="switch-field">
+            <Switch
+              aria-label="文案审核中显示扣分原因"
+              checked={current.copyReviewDisplay.showDeductionReasons}
+              disabled={busy}
+              onChange={(event) => updateCopyReviewDisplay('showDeductionReasons', event.target.checked)}
+            />
+            <span>文案审核中显示扣分原因</span>
+          </label>
+          <label className="switch-field">
+            <Switch
+              aria-label="图片质检中显示扣分原因"
+              checked={current.imageReviewDisplay.showDeductionReasons}
+              disabled={busy}
+              onChange={(event) => updateImageReviewDisplay('showDeductionReasons', event.target.checked)}
+            />
+            <span>图片质检中显示扣分原因</span>
+          </label>
+        </div>
+        {current.imageReviewDisplay.showDeductionReasons && <p className={`notice ${imageReasonsMissing ? 'warning' : ''}`} role={imageReasonsMissing ? 'alert' : 'status'}>
+          质检发起图片返工时必须选择原因，请至少保留一项图片扣分原因。{imageReasonsMissing ? '当前原因列表为空，无法保存。' : ''}
+        </p>}
         <div className="form-grid human-reason-config-grid">
           <div className="field">
             <label htmlFor="copy-quality-reasons">文案扣分原因</label>
             <Textarea id="copy-quality-reasons" className="textarea" rows={8} value={copyText} disabled={busy} onChange={(event) => { beginEdit(); setCopyText(event.target.value); }} />
           </div>
           <div className="field">
-            <label htmlFor="image-quality-reasons">图片扣分原因</label>
+            <label htmlFor="image-quality-reasons">图片扣分原因 <small>{current.imageReviewDisplay.showDeductionReasons ? '开启展示时至少填写一项' : '关闭展示时可留空'}</small></label>
             <Textarea id="image-quality-reasons" className="textarea" rows={8} value={imageText} disabled={busy} onChange={(event) => { beginEdit(); setImageText(event.target.value); }} />
           </div>
         </div>
@@ -197,11 +269,11 @@ export function HumanQualitySettingsPanel({
         </div>
       </div>
     </>}
-    {message && <div className="notice success" role="status">{message}</div>}
+    <ToastFeedback id="human-quality-settings-feedback" message={message} />
     {error && <div className="notice error" role="alert">{error}</div>}
     <div className="settings-actions">
       <span className="subtle">原因中的空行会自动忽略；所有展示文本保存时都会再次校验。</span>
-      <Button unstyled className="button primary" type="button" disabled={loading || busy || !complete || !hasChanges} onClick={() => { void save(); }}>{busy ? '保存中…' : '保存人工评分标准'}</Button>
+      <Button unstyled className="button primary" type="button" disabled={loading || busy || !complete || imageReasonsMissing || !hasChanges} onClick={() => { void save(); }}>{busy ? '保存中…' : '保存人工评分标准'}</Button>
     </div>
   </section>;
 }

@@ -1,3 +1,8 @@
+import {
+  XIAOHONGSHU_SEARCH_MAX_LIMIT,
+  XIAOHONGSHU_SEARCH_MODES,
+} from '../xhs-query-search.mjs';
+
 export class ControlPlaneApiError extends Error {
   constructor(status, code, message) {
     super(message);
@@ -73,6 +78,27 @@ export function createControlPlaneClient({
     return responseData(response);
   }
 
+  function imageEditHeaders(executionId,edit) {
+    const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+    if(!uuid.test(executionId??'')||!uuid.test(edit?.id??'')||!uuid.test(edit?.lease_token??'')) {
+      throw new TypeError('image edit execution identity is invalid');
+    }
+    return {'X-Image-Edit-Id':edit.id,'X-Image-Edit-Lease':edit.lease_token};
+  }
+
+  async function downloadImageEditAsset(executionId,edit,assetId) {
+    if(!Number.isSafeInteger(Number(assetId))||Number(assetId)<1)throw new TypeError('image edit asset identifier is invalid');
+    const response=await fetchImpl(`${root}/v1/executions/${executionId}/image-edit/assets/${assetId}`,{
+      headers:{...defaultHeaders,...imageEditHeaders(executionId,edit)},redirect:'error',
+      signal:AbortSignal.timeout(60_000),
+    });
+    if(!response.ok)return responseData(response);
+    if(Number(response.headers.get('content-length'))>30*1024*1024)throw new Error('image edit asset is too large');
+    const chunks=[];let size=0;
+    for await(const chunk of response.body){size+=chunk.byteLength;if(size>30*1024*1024)throw new Error('image edit asset is too large');chunks.push(chunk);}
+    return Buffer.concat(chunks);
+  }
+
   /** @param {'COPY'|'IMAGE'} kind @param {{nodeId: string, limit: number, requestId: string}} input */
   async function claimBatch(kind, input) {
     const result = await request(`/v1/executions/claim-${kind.toLowerCase()}-batch`, { method: 'POST', body: input });
@@ -80,14 +106,118 @@ export function createControlPlaneClient({
     const valid = result?.requestId === input.requestId && Array.isArray(result.claims)
       && result.claims.length <= input.limit && result.claims.every(claim => {
         const { task, execution } = claim ?? {};
+        const editId=execution?.snapshot?.imageEditRequestId;
+        const isEdit=kind==='IMAGE'&&uuid.test(editId??'');
+        const regenerationId = execution?.snapshot?.imagePlanRegeneration?.id;
+        const isRegeneration = kind === 'COPY' && uuid.test(regenerationId ?? '');
+        const validEdit=isEdit&&claim?.imageEdit?.id===editId
+          && Number(claim.imageEdit.task_id)===task?.id
+          && (execution?.status!=='RUNNING'||(claim.imageEdit.status==='RUNNING'
+            && claim.imageEdit.execution_id===execution.id
+            && claim.imageEdit.claimed_by===input.nodeId
+            && uuid.test(claim.imageEdit.lease_token??'')));
+        const validRegeneration = isRegeneration
+          && claim?.imagePlanRegeneration?.id === regenerationId
+          && claim.imagePlanRegeneration.taskId === task?.id
+          && (execution?.status !== 'RUNNING'
+            || (claim.imagePlanRegeneration.status === 'RUNNING'
+              && claim.imagePlanRegeneration.executionId === execution.id
+              && claim.imagePlanRegeneration.claimedByNodeId === input.nodeId));
         return Number.isSafeInteger(task?.id) && task.id > 0 && uuid.test(execution?.id)
         && execution.taskId === task.id && execution.nodeId === input.nodeId && execution.kind === kind
         && ['RUNNING', 'SUCCEEDED', 'FAILED', 'ABANDONED'].includes(execution.status)
-        && (execution.status !== 'RUNNING' || (task.currentExecutionId === execution.id && task.state === `${kind}_RUNNING`
-          && execution.snapshot !== null && typeof execution.snapshot === 'object' && !Array.isArray(execution.snapshot)));
+        && Boolean(claim?.imageEdit)===isEdit && (!isEdit||validEdit)
+        && Boolean(claim?.imagePlanRegeneration) === isRegeneration
+        && (!isRegeneration || validRegeneration)
+        && (execution.status !== 'RUNNING' || (isEdit || (isRegeneration
+          ? task.state === 'COPY_REVIEW_PENDING'
+          : (
+          task.currentExecutionId === execution.id && task.state === `${kind}_RUNNING`))
+          )
+          && execution.snapshot !== null && typeof execution.snapshot === 'object' && !Array.isArray(execution.snapshot));
       });
     if (!valid || new Set(result.claims.map(claim => claim.execution.id)).size !== result.claims.length) {
       throw new ControlPlaneApiError(502, 'INVALID_CONTROL_PLANE_RESPONSE', '中心批量领取响应不完整，请使用原请求 ID 重试');
+    }
+    return result;
+  }
+
+  async function claimXhsQuerySearch(input) {
+    const result = await request('/v1/xhs-query-search/claim', { method: 'POST', body: input });
+    if (result === null) return null;
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+    const hasSource = (Number.isSafeInteger(result?.queryPackageItemId) && result.queryPackageItemId > 0)
+      || (Number.isSafeInteger(result?.taskId) && result.taskId > 0);
+    const valid = Number.isSafeInteger(result?.id) && result.id > 0 && hasSource
+      && typeof result?.query === 'string' && result.query.trim() !== '' && [...result.query].length <= 500
+      && result.status === 'RUNNING' && result.nodeId === input?.nodeId
+      && Number.isSafeInteger(result.attempt) && result.attempt > 0
+      && Number.isInteger(result.resultLimit) && result.resultLimit >= 1
+      && result.resultLimit <= XIAOHONGSHU_SEARCH_MAX_LIMIT
+      && XIAOHONGSHU_SEARCH_MODES.includes(result.searchMode)
+      && uuid.test(result.leaseToken);
+    if (!valid) {
+      throw new ControlPlaneApiError(
+        502,
+        'INVALID_CONTROL_PLANE_RESPONSE',
+        '中心服务返回的小红书搜索任务不完整，请停止搜索执行机并检查版本',
+      );
+    }
+    return result;
+  }
+
+  function validXhsJob(result, jobId, statuses) {
+    return Number.isSafeInteger(result?.id) && result.id === Number(jobId)
+      && statuses.includes(result.status)
+      && Number.isSafeInteger(result?.attempt) && result.attempt > 0
+      && Number.isInteger(result?.resultLimit) && result.resultLimit >= 1
+      && result.resultLimit <= XIAOHONGSHU_SEARCH_MAX_LIMIT
+      && XIAOHONGSHU_SEARCH_MODES.includes(result?.searchMode)
+      && Number.isSafeInteger(result?.resultCount) && result.resultCount >= 0
+      && result.resultCount <= result.resultLimit;
+  }
+
+  function invalidXhsResponse() {
+    return new ControlPlaneApiError(
+      502,
+      'INVALID_CONTROL_PLANE_RESPONSE',
+      '中心服务返回的小红书搜索状态不完整，请停止搜索执行机并检查版本',
+    );
+  }
+
+  async function completeXhsQuerySearch(jobId, input) {
+    const result = await request(`/v1/xhs-query-search/${jobId}/complete`, { method: 'POST', body: input });
+    if (!validXhsJob(result, jobId, ['SUCCEEDED']) || !Array.isArray(result.links)
+        || result.links.length !== result.resultCount) throw invalidXhsResponse();
+    return result;
+  }
+
+  async function blockXhsQuerySearch(jobId, input) {
+    const result = await request(`/v1/xhs-query-search/${jobId}/block`, { method: 'POST', body: input });
+    if (!validXhsJob(result, jobId, ['BLOCKED']) || result.blockedReason !== input?.reason) {
+      throw invalidXhsResponse();
+    }
+    return result;
+  }
+
+  async function failXhsQuerySearch(jobId, input) {
+    const result = await request(`/v1/xhs-query-search/${jobId}/fail`, { method: 'POST', body: input });
+    if (!validXhsJob(result, jobId, ['PENDING', 'FAILED'])) throw invalidXhsResponse();
+    return result;
+  }
+
+  async function resumeXhsQuerySearch(input) {
+    const result = await request('/v1/xhs-query-search/resume', { method: 'POST', body: input });
+    if (!Number.isSafeInteger(result?.resumedCount) || result.resumedCount < 0) {
+      throw invalidXhsResponse();
+    }
+    return result;
+  }
+
+  async function retryFailedXhsQuerySearch(input) {
+    const result = await request('/v1/xhs-query-search/retry-failed', { method: 'POST', body: input });
+    if (!Number.isSafeInteger(result?.retriedCount) || result.retriedCount < 0) {
+      throw invalidXhsResponse();
     }
     return result;
   }
@@ -109,12 +239,15 @@ export function createControlPlaneClient({
       return result;
     },
     createTasks: (input) => request('/v1/tasks', { method: 'POST', body: input }),
-    listTasks: ({ state, states, nodeId, query, limit = 50, offset = 0, includeTotal = false } = {}) => {
+    listTasks: ({ state, states, nodeId, query, limit = 50, offset = 0, cursor, lastPage = false,
+      includeTotal = false } = {}) => {
       const search = new URLSearchParams({ limit: String(limit), offset: String(offset) });
       if (state) search.set('state', state);
       if (states) search.set('states', Array.isArray(states) ? states.join(',') : states);
       if (nodeId) search.set('nodeId', nodeId);
       if (query) search.set('query', query);
+      if (cursor) search.set('cursor', cursor);
+      if (lastPage) search.set('lastPage', 'true');
       if (includeTotal) search.set('includeTotal', 'true');
       return request(`/v1/tasks?${search}`);
     },
@@ -128,10 +261,88 @@ export function createControlPlaneClient({
       method: 'POST', body: { nodeId },
     }),
     claimImage: (nodeId) => request('/v1/executions/claim-image', {
-      method: 'POST', body: { nodeId, imageControlsVersion: 1, layoutCatalogVersion: 2 },
+      method: 'POST', body: { nodeId, imageControlsVersion: 1, layoutCatalogVersion: 2, imageEditExecutorVersion: 12 },
     }),
     claimCopyBatch: (input) => claimBatch('COPY', input),
-    claimImageBatch: (input) => claimBatch('IMAGE', { ...input, imageControlsVersion: 1, layoutCatalogVersion: 2 }),
+    claimImageBatch: (input) => claimBatch('IMAGE', { ...input, imageControlsVersion: 1, layoutCatalogVersion: 2, imageEditExecutorVersion: 12 }),
+    imageEditContext: (executionId, edit) => request(`/v1/executions/${executionId}/image-edit/context`, {
+      headers: imageEditHeaders(executionId, edit),
+    }),
+    imageEditAsset: downloadImageEditAsset,
+    imageEditAssetMetadata: (executionId, edit, assetId) => request(
+      `/v1/executions/${executionId}/image-edit/asset-metadata/${assetId}`, {
+        headers: imageEditHeaders(executionId, edit),
+      },
+    ),
+    heartbeatImageEdit: async (executionId, edit) => {
+      const result = await request(`/v1/executions/${executionId}/image-edit/heartbeat`, {
+        method: 'POST', body: {}, headers: imageEditHeaders(executionId, edit),
+      });
+      return result?.active === true;
+    },
+    async stageImageEditValidation(executionId, edit, validation) {
+      const path = `/v1/executions/${executionId}/image-edit/validation`;
+      const options = {
+        method: 'POST', body: { validation }, headers: imageEditHeaders(executionId, edit), timeoutMs: 60_000,
+      };
+      try { return await request(path, options); }
+      catch (error) {
+        if (error instanceof ControlPlaneApiError && error.status < 500) throw error;
+        return request(path, options);
+      }
+    },
+    async completeImageEdit(executionId, edit, content) {
+      const path = `/v1/executions/${executionId}/image-edit/result`;
+      const options = {
+        method: 'PUT',
+        body: Buffer.from(content),
+        headers: { ...imageEditHeaders(executionId, edit), 'Content-Type': 'image/png' },
+        timeoutMs: 120_000,
+      };
+      try { return await request(path, options); }
+      catch (error) {
+        if (error instanceof ControlPlaneApiError && error.status < 500) throw error;
+        // The center may have committed before the response was lost. Completion
+        // is lease-bound and idempotent, so one replay never reruns the model.
+        return request(path, options);
+      }
+    },
+    async rejectImageEdit(executionId, edit, content, error) {
+      const failureMessage=String(error instanceof Error?error.message:error??'图片修改结果未通过自动验收')
+        .replace(/sk-[\w-]+|Bearer\s+\S+/gu,'[REDACTED]').slice(0,1000);
+      const validation={...(error?.validation??{}),passed:false,failureMessage};
+      const validationPath=`/v1/executions/${executionId}/image-edit/validation`;
+      const validationOptions={method:'POST',body:{validation},headers:imageEditHeaders(executionId,edit),timeoutMs:60_000};
+      try { await request(validationPath,validationOptions); }
+      catch(stageError) {
+        if(stageError instanceof ControlPlaneApiError&&stageError.status<500) {
+          if(stageError.code!=='IMAGE_EDIT_CONFLICT')throw stageError;
+        } else await request(validationPath,validationOptions);
+      }
+      const path=`/v1/executions/${executionId}/image-edit/rejected-result`;
+      const options={method:'PUT',body:Buffer.from(content),
+        headers:{...imageEditHeaders(executionId,edit),'Content-Type':'image/png'},timeoutMs:120_000};
+      try { return await request(path,options); }
+      catch(uploadError) {
+        if(uploadError instanceof ControlPlaneApiError&&uploadError.status<500)throw uploadError;
+        return request(path,options);
+      }
+    },
+    failImageEdit: (executionId, edit, error) => request(
+      `/v1/executions/${executionId}/image-edit/fail`, {
+        method: 'POST', headers: imageEditHeaders(executionId, edit), body: {
+          message: error instanceof Error ? error.message : String(error), validation: error?.validation ?? null,
+          code: error?.code ?? null, serviceCode: error?.serviceCode ?? null,
+          nonBillablePreflightFailure: error?.nonBillablePreflightFailure === true,
+        },
+      },
+    ),
+    claimXhsQuerySearch,
+    completeXhsQuerySearch,
+    blockXhsQuerySearch,
+    failXhsQuerySearch,
+    resumeXhsQuerySearch,
+    retryFailedXhsQuerySearch,
     saveVisualPlan: (executionId, plan) => request(`/v1/executions/${executionId}/visual-plan`, { method: 'PUT', body: plan, timeoutMs: 60_000 }),
     updateProgress: (executionId, progress) => request(
       `/v1/executions/${executionId}/progress`,
@@ -140,6 +351,19 @@ export function createControlPlaneClient({
     completeCopy: (executionId, result) => request(
       `/v1/executions/${executionId}/complete-copy`,
       { method: 'POST', body: { result }, timeoutMs: 60_000 },
+    ),
+    async completeImagePlanRegeneration(executionId, result) {
+      const path = `/v1/executions/${executionId}/complete-image-plan-regeneration`;
+      const options = { method: 'POST', body: { result }, timeoutMs: 60_000 };
+      try { return await request(path, options); }
+      catch (error) {
+        if (error instanceof ControlPlaneApiError && error.status < 500) throw error;
+        return request(path, options);
+      }
+    },
+    failImagePlanRegeneration: (executionId, error) => request(
+      `/v1/executions/${executionId}/fail-image-plan-regeneration`,
+      { method: 'POST', body: { error: error instanceof Error ? error.message : String(error) } },
     ),
     completeImage: (executionId, result) => request(
       `/v1/executions/${executionId}/complete-image`,

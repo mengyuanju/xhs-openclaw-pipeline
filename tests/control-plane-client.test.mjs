@@ -77,6 +77,168 @@ test('control plane client sends image claims only when called', async () => {
   assert.equal(calls[1].init.method, 'GET');
 });
 
+test('copy claims accept distributed image-plan work and report its terminal result idempotently', async () => {
+  const requestId = randomUUID();
+  const executionId = randomUUID();
+  const regenerationId = randomUUID();
+  const job = {
+    id: regenerationId,
+    taskId: 7,
+    status: 'RUNNING',
+    executionId,
+    claimedByNodeId: 'copy-a',
+  };
+  const claim = {
+    task: { id: 7, state: 'COPY_REVIEW_PENDING', currentExecutionId: null },
+    execution: {
+      id: executionId,
+      taskId: 7,
+      nodeId: 'copy-a',
+      kind: 'COPY',
+      status: 'RUNNING',
+      snapshot: { imagePlanRegeneration: { id: regenerationId } },
+    },
+    imagePlanRegeneration: job,
+  };
+  let completionAttempts = 0;
+  const seen = [];
+  const client = createControlPlaneClient({
+    baseUrl: 'http://localhost',
+    fetchImpl: async (url, options = {}) => {
+      const path = new URL(url).pathname;
+      seen.push({ path, options });
+      if (path.endsWith('/claim-copy-batch')) {
+        return Response.json({ data: { requestId, claims: [claim] } });
+      }
+      if (path.endsWith('/complete-image-plan-regeneration')) {
+        completionAttempts += 1;
+        if (completionAttempts === 1) throw new TypeError('response lost');
+        return Response.json({ data: { ...job, status: 'SUCCEEDED' } });
+      }
+      if (path.endsWith('/fail-image-plan-regeneration')) {
+        return Response.json({ data: { ...job, status: 'FAILED' } });
+      }
+      assert.fail(`unexpected path ${path}`);
+    },
+  });
+  assert.deepEqual(
+    await client.claimCopyBatch({ nodeId: 'copy-a', requestId, limit: 1 }),
+    { requestId, claims: [claim] },
+  );
+  const result = { imagePlan: [], model: 'fake' };
+  assert.equal((await client.completeImagePlanRegeneration(executionId, result)).status, 'SUCCEEDED');
+  assert.equal(completionAttempts, 2);
+  assert.deepEqual(JSON.parse(seen.find(item => item.path.endsWith('/complete-image-plan-regeneration')).options.body), { result });
+  assert.equal((await client.failImagePlanRegeneration(executionId, new Error('failed'))).status, 'FAILED');
+  assert.deepEqual(JSON.parse(seen.at(-1).options.body), { error: 'failed' });
+});
+
+test('image claim and edit transfer protocol carries capability, lease and idempotent result replay',async()=>{
+  const requestId=randomUUID(),executionId=randomUUID(),editId=randomUUID(),leaseToken=randomUUID();
+  const edit={id:editId,task_id:'7',execution_id:executionId,claimed_by:'image-a',status:'RUNNING',lease_token:leaseToken};
+  const claim={task:{id:7,state:'MANUAL_ARCHIVE'},execution:{id:executionId,taskId:7,nodeId:'image-a',kind:'IMAGE',status:'RUNNING',snapshot:{imageEditRequestId:editId}},imageEdit:edit};
+  const seen=[];let resultAttempts=0,rejectedAttempts=0;
+  const client=createControlPlaneClient({baseUrl:'http://localhost',fetchImpl:async(url,options={})=>{
+    const path=new URL(url).pathname;seen.push({path,options});
+    if(path.endsWith('/claim-image-batch'))return Response.json({data:{requestId,claims:[claim]}});
+    assert.equal(options.headers['X-Image-Edit-Id'],editId);
+    assert.equal(options.headers['X-Image-Edit-Lease'],leaseToken);
+    if(path.endsWith('/assets/31'))return new Response(Buffer.from('asset'),{headers:{'content-type':'image/png'}});
+    if(path.endsWith('/asset-metadata/31'))return Response.json({data:{id:'31',sha256:'a'.repeat(64)}});
+    if(path.endsWith('/heartbeat'))return Response.json({data:{active:true}});
+    if(path.endsWith('/validation'))return Response.json({data:{passed:true}});
+    if(path.endsWith('/rejected-result')){
+      rejectedAttempts++;
+      if(rejectedAttempts===1)throw new TypeError('response lost');
+      assert.deepEqual(Buffer.from(options.body),Buffer.from('rejected-png'));
+      return Response.json({data:{assetId:33,imageRunId:randomUUID(),status:'FAILED'}});
+    }
+    if(path.endsWith('/result')){
+      resultAttempts++;
+      if(resultAttempts===1)throw new TypeError('response lost');
+      assert.deepEqual(Buffer.from(options.body),Buffer.from('png'));
+      return Response.json({data:{assetId:32,imageRunId:randomUUID()}});
+    }
+    if(path.endsWith('/context'))return Response.json({data:{task:{id:7}}});
+    assert.fail(`unexpected path ${path}`);
+  }});
+  assert.deepEqual(await client.claimImageBatch({nodeId:'image-a',requestId,limit:1}),{requestId,claims:[claim]});
+  const claimBody=JSON.parse(seen[0].options.body);
+  assert.equal(claimBody.imageEditExecutorVersion,12);
+  assert.deepEqual(await client.imageEditContext(executionId,edit),{task:{id:7}});
+  assert.deepEqual(await client.imageEditAsset(executionId,edit,31),Buffer.from('asset'));
+  assert.equal((await client.imageEditAssetMetadata(executionId,edit,31)).sha256,'a'.repeat(64));
+  assert.equal(await client.heartbeatImageEdit(executionId,edit),true);
+  await client.stageImageEditValidation(executionId,edit,{passed:true});
+  assert.equal((await client.completeImageEdit(executionId,edit,Buffer.from('png'))).assetId,32);
+  assert.equal(resultAttempts,2);
+  assert.equal((await client.rejectImageEdit(executionId,edit,Buffer.from('rejected-png'),Object.assign(new Error('未完成移动'),{validation:{stage:'LOCAL_EDIT_RESULT'}}))).assetId,33);
+  assert.equal(rejectedAttempts,2);
+  const rejectedValidation=seen.filter(item=>item.path.endsWith('/validation')).at(-1);
+  assert.equal(JSON.parse(rejectedValidation.options.body).validation.failureMessage,'未完成移动');
+});
+
+test('Xiaohongshu search client authenticates and validates every state-changing response', async () => {
+  const leaseToken = randomUUID();
+  let payload = {
+    id: 5,
+    queryPackageItemId: 9,
+    taskId: null,
+    query: '桌面收纳',
+    status: 'RUNNING',
+    nodeId: 'host-xhs-search',
+    attempt: 1,
+    resultLimit: 5,
+    searchMode: 'THOROUGH',
+    leaseToken,
+  };
+  const client = createControlPlaneClient({
+    baseUrl: 'http://localhost',
+    headers: { 'X-XHS-Search-Token': 'machine-secret' },
+    fetchImpl: async (_url, options) => {
+      assert.equal(options.headers['X-XHS-Search-Token'], 'machine-secret');
+      return Response.json({ data: payload });
+    },
+  });
+  assert.equal((await client.claimXhsQuerySearch({ nodeId: 'host-xhs-search' })).id, 5);
+  const validClaim = payload;
+  for (const resultLimit of [undefined, 0, 11, 1.5, '5']) {
+    payload = { ...validClaim, resultLimit };
+    await assert.rejects(
+      client.claimXhsQuerySearch({ nodeId: 'host-xhs-search' }),
+      { code: 'INVALID_CONTROL_PLANE_RESPONSE' },
+    );
+  }
+  for (const searchMode of [undefined, 'QUICK', null]) {
+    payload = { ...validClaim, searchMode };
+    await assert.rejects(
+      client.claimXhsQuerySearch({ nodeId: 'host-xhs-search' }),
+      { code: 'INVALID_CONTROL_PLANE_RESPONSE' },
+    );
+  }
+  payload = {
+    ...validClaim,
+    status: 'SUCCEEDED',
+    nodeId: null,
+    leaseToken: null,
+    resultCount: 1,
+    links: [{ noteId: '66f000000000000000000000', url: 'https://www.xiaohongshu.com/explore/66f000000000000000000000', title: null, rank: 1 }],
+  };
+  assert.equal((await client.completeXhsQuerySearch(5, { leaseToken, links: payload.links })).status, 'SUCCEEDED');
+  payload = null;
+  await assert.rejects(
+    client.failXhsQuerySearch(5, { leaseToken, error: 'network', retryable: true }),
+    { code: 'INVALID_CONTROL_PLANE_RESPONSE' },
+  );
+  payload = { retriedCount: 2 };
+  assert.deepEqual(await client.retryFailedXhsQuerySearch({ jobId: 5 }), payload);
+  payload = { retriedCount: -1 };
+  await assert.rejects(
+    client.retryFailedXhsQuerySearch({ jobId: 5 }),
+    { code: 'INVALID_CONTROL_PLANE_RESPONSE' },
+  );
+});
+
 test('claim body timeouts propagate instead of pretending the queue is empty', async () => {
   const timeout = new DOMException('response body timed out', 'TimeoutError');
   const client = createControlPlaneClient({
@@ -144,6 +306,7 @@ test('control plane client supports paged task search, counts, image retry and l
     query: '黄山',
     limit: 20,
     offset: 40,
+    cursor: 'opaque-cursor',
     includeTotal: true,
   });
   await client.taskCounts('node-a');
@@ -153,6 +316,7 @@ test('control plane client supports paged task search, counts, image retry and l
   assert.match(calls[0].url, /states=COPY_QUEUED%2CCOPY_FAILED/u);
   assert.match(calls[0].url, /query=%E9%BB%84%E5%B1%B1/u);
   assert.match(calls[0].url, /includeTotal=true/u);
+  assert.match(calls[0].url, /cursor=opaque-cursor/u);
   assert.equal(calls[1].url, 'http://127.0.0.1:4310/v1/task-counts?nodeId=node-a');
   assert.equal(calls[2].url, 'http://127.0.0.1:4310/v1/tasks/7/retry-image');
   assert.equal(calls[2].init.method, 'POST');

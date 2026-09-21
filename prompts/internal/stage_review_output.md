@@ -1,0 +1,1 @@
+只返回合法 JSON：{"schemaVersion":1,"decision":"PASS|REJECT","summary":"中文摘要","issues":[{"code":"UPPERCASE_CODE","severity":"WARNING|BLOCKING","message":"中文证据"}]}。PASS 不得包含 BLOCKING；REJECT 必须至少包含一个 BLOCKING。

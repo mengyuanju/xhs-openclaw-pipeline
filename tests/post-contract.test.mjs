@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  bodyRepairOutputSchema,
   buildDynamicImagePlanPrompt,
   buildPostPrompt,
   parseDynamicImagePlanOutput,
   parsePostOutput,
+  postOutputSchema,
 } from '../src/post-contract.mjs';
 import { createPromptRuntime, withPromptRuntime } from '../src/prompt-runtime.mjs';
 
@@ -91,6 +93,39 @@ function editorialPost() {
 }
 
 describe('post output contract', () => {
+  it('keeps every structured-output object compatible with Codex strict schemas', () => {
+    const assertStrictObjects = (schema, path = 'schema') => {
+      if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return;
+      if (schema.type === 'object') {
+        assert.equal(schema.additionalProperties, false, `${path} must reject additional properties`);
+        assert.ok(Array.isArray(schema.required), `${path}.required must be an array`);
+        assert.deepEqual(
+          [...schema.required].sort(),
+          Object.keys(schema.properties ?? {}).sort(),
+          `${path}.required must contain every property`,
+        );
+      }
+      for (const [key, value] of Object.entries(schema)) {
+        assertStrictObjects(value, `${path}.${key}`);
+      }
+    };
+
+    assertStrictObjects(postOutputSchema(3));
+    assertStrictObjects(bodyRepairOutputSchema());
+  });
+
+  it('keeps transport limits wider than the publishing length gate', () => {
+    const generationSchema = postOutputSchema(3);
+    const repairSchema = bodyRepairOutputSchema();
+
+    assert.deepEqual(generationSchema.properties.body, {
+      type: 'string', minLength: 1, maxLength: 1_200,
+    });
+    assert.deepEqual(repairSchema.properties.body, {
+      type: 'string', minLength: 1, maxLength: 1_200,
+    });
+  });
+
   it('accepts a valid JSON object and returns only allowlisted fields', () => {
     const input = { ...validPost(), ignored: 'do not keep me' };
 
@@ -99,6 +134,18 @@ describe('post output contract', () => {
     assert.equal(post.title, input.title);
     assert.equal(post.ignored, undefined);
     assert.deepEqual(post.imagePlan.map((image) => image.kind), ['hero', 'steps', 'checklist']);
+  });
+
+  it('accepts an explicitly empty page subtitle while keeping the field in the contract', () => {
+    const input = validPost();
+    input.imagePlan[0].subtitle = '   ';
+
+    const post = parsePostOutput(JSON.stringify(input));
+    const schema = postOutputSchema(3);
+
+    assert.equal(post.imagePlan[0].subtitle, '');
+    assert.equal(schema.properties.imagePlan.items.properties.subtitle.minLength, 0);
+    assert.ok(schema.properties.imagePlan.items.required.includes('subtitle'));
   });
 
   it('extracts JSON from a fenced model response', () => {
@@ -265,6 +312,32 @@ describe('post output contract', () => {
       input.title = title;
       assert.doesNotThrow(() => parsePostOutput(JSON.stringify(input), { query }));
     }
+  });
+
+  it('rejects a body at the publishing limit when its final sentence is incomplete', () => {
+    const input = editorialPost();
+    input.body = '文'.repeat(599) + '民';
+
+    assert.throws(
+      () => parsePostOutput(JSON.stringify(input), { query: '请完整回答这个问题' }),
+      /body must end with a complete sentence/u,
+    );
+  });
+
+  it('rejects unbalanced prose delimiters even when the body ends with punctuation', () => {
+    const input = editorialPost();
+    input.body = `${'文'.repeat(500)}（仍需确认。`;
+
+    assert.throws(
+      () => parsePostOutput(JSON.stringify(input), { query: '请完整回答这个问题' }),
+      /body contains unbalanced brackets or quotation marks/u,
+    );
+
+    input.body = `${'文'.repeat(500)}“仍需确认。`;
+    assert.throws(
+      () => parsePostOutput(JSON.stringify(input), { query: '请完整回答这个问题' }),
+      /body contains unbalanced brackets or quotation marks/u,
+    );
   });
 
   it('accepts an objective opening while still rejecting invented first-person experience', () => {
@@ -514,7 +587,7 @@ describe('post prompt', () => {
     const input = JSON.parse(prompt.match(/<untrusted_task_data>\s*([\s\S]+?)\s*<\/untrusted_task_data>/u)[1]);
     assert.deepEqual(input, { title: finalized.title, body: finalized.body });
     assert.match(prompt, /3～5页，首项kind=hero/u);
-    assert.match(prompt, /headline≤18、subtitle≤30、bullets为2～5项/u);
+    assert.match(prompt, /headline为1～18字符，subtitle允许为空字符串、非空时≤30字符/u);
     assert.match(prompt, /checklist≤40否则≤30/u);
     assert.match(prompt, /不得修改正文/u);
     assert.match(prompt, /headline、subtitle、bullets 是最终逐字上图文字/u);

@@ -1,6 +1,10 @@
+import { taskLoad, priorityOrderSql } from './task-priority.mjs';
 import { normalizeTaskId } from './domain.mjs';
 import { normalizeAssigneeUserId } from './task-assignment-domain.mjs';
-import { normalizeAutoAssignmentLimit } from './task-auto-assignment-domain.mjs';
+import {
+  normalizeAutoAssignmentLimit,
+  normalizeAutoAssignmentMode,
+} from './task-auto-assignment-domain.mjs';
 
 export const AUTO_ASSIGNMENT_ACTOR = 'system:auto-assignment';
 export const AUTO_ASSIGNMENT_MAX_PER_RUN = 500;
@@ -9,7 +13,7 @@ export const AUTO_ASSIGNABLE_TASK_STATES = Object.freeze([
 ]);
 
 const AUTO_ASSIGNMENT_LOCK_KEYS = Object.freeze([4310, 8205]);
-const AUTO_ASSIGNMENT_REASON = '自动补充至作业员配额';
+const AUTO_ASSIGNMENT_REASON = '自动补充至标注配额';
 
 function normalizeMaxAssignments(value) {
   if (!Number.isInteger(value) || value < 1 || value > AUTO_ASSIGNMENT_MAX_PER_RUN) {
@@ -38,8 +42,7 @@ function normalizeEventRank(value, username) {
 }
 
 function compareWorkerPriority(left, right) {
-  const proportionalLoad = left.projectedTaskCount * right.assignmentLimit
-    - right.projectedTaskCount * left.assignmentLimit;
+  const proportionalLoad = left.projectedLoad - right.projectedLoad;
   if (proportionalLoad !== 0) return proportionalLoad;
   if (left.lastServedRank === null && right.lastServedRank !== null) return -1;
   if (left.lastServedRank !== null && right.lastServedRank === null) return 1;
@@ -63,6 +66,7 @@ export function planAutoAssignments({ workers, tasks, maxAssignments = AUTO_ASSI
       assignmentLimit,
       currentTaskCount,
       projectedTaskCount: currentTaskCount,
+      projectedLoad: Number(worker.weightedLoad ?? currentTaskCount),
       lastServedRank: normalizeEventRank(worker?.lastAutoEventId, username),
     };
   });
@@ -71,11 +75,12 @@ export function planAutoAssignments({ workers, tasks, maxAssignments = AUTO_ASSI
   }
   const pendingTasks = tasks.map((task) => ({
     id: normalizeTaskId(task?.id ?? task?.taskId),
+    load: taskLoad({ effectivePriority: Number(task.effective_priority ?? 100), reworkCount: Number(task.rework_count ?? 0) }),
   }));
   if (new Set(pendingTasks.map((task) => task.id)).size !== pendingTasks.length) {
     throw new TypeError('tasks must not contain duplicate IDs');
   }
-  pendingTasks.sort((left, right) => left.id - right.id);
+  // Preserve the priority order selected and locked by the repository.
 
   let latestRank = candidates.reduce((maximum, worker) => (
     worker.lastServedRank !== null && worker.lastServedRank > maximum
@@ -90,6 +95,7 @@ export function planAutoAssignments({ workers, tasks, maxAssignments = AUTO_ASSI
     const worker = available[0];
     assignments.push({ taskId: task.id, assignedToUserId: worker.username });
     worker.projectedTaskCount += 1;
+    worker.projectedLoad += task.load;
     latestRank += 1n;
     worker.lastServedRank = latestRank;
   }
@@ -142,7 +148,7 @@ export async function runAutoAssignmentReplenishment(pool, {
     if (lockResult.rows[0]?.acquired !== true) return summary('BUSY');
 
     const settingsResult = await client.query(`
-      SELECT enabled, version
+      SELECT enabled, mode, version
       FROM task_auto_assignment_settings
       WHERE singleton = 1
       FOR SHARE
@@ -151,6 +157,10 @@ export async function runAutoAssignmentReplenishment(pool, {
     if (!settings) throw new Error('automatic assignment settings are unavailable');
     const settingsVersion = Number(settings.version);
     if (settings.enabled !== true) return summary('DISABLED', { settingsVersion });
+    const assignmentMode = normalizeAutoAssignmentMode(settings.mode ?? 'CONTINUOUS');
+    if (assignmentMode !== 'CONTINUOUS') {
+      return summary('FIXED_QUANTITY_MODE', { settingsVersion });
+    }
 
     // Lock account rows before pool rows. User deletion takes the same order
     // before its membership is removed by the foreign-key cascade.
@@ -159,6 +169,7 @@ export async function runAutoAssignmentReplenishment(pool, {
       FROM app_users AS app_user
       WHERE app_user.role = 'USER'
         AND app_user.status = 'ACTIVE'
+        AND app_user.copy_review_enabled = true
         AND EXISTS (
           SELECT 1 FROM task_auto_assignment_workers AS membership
           WHERE membership.username = app_user.username
@@ -200,7 +211,12 @@ export async function runAutoAssignmentReplenishment(pool, {
             AND assigned_task.current_stage = 'COPY_REVIEW_PENDING'
             AND assigned_task.current_execution_id IS NULL
         ) AS current_task_count,
-        fairness_cursor.last_auto_event_id
+        (SELECT COALESCE(SUM(1 + GREATEST(0, load.effective_priority - 100)::numeric / 100
+          + LEAST(3, load.rework_count) + CASE WHEN load.current_execution_id IS NULL THEN 0 ELSE 2 END), 0)
+          FROM tasks load WHERE load.assigned_to_user_id = locked_pool.username
+            AND load.state NOT IN ('REVIEWED', 'CANCELLED')) AS weighted_load,
+        (SELECT max(event.id) FROM task_assignment_events event
+          WHERE event.assignee_user_id = locked_pool.username) AS last_auto_event_id
       FROM task_auto_assignment_workers AS locked_pool
       LEFT JOIN task_auto_assignment_cursors AS fairness_cursor
         ON fairness_cursor.username = locked_pool.username
@@ -215,6 +231,7 @@ export async function runAutoAssignmentReplenishment(pool, {
       username: row.username,
       assignmentLimit: Number(row.assignment_limit),
       currentTaskCount: Number(row.current_task_count),
+      weightedLoad: Number(row.weighted_load ?? row.current_task_count),
       lastAutoEventId: row.last_auto_event_id,
     }));
     if (!workers.length) {
@@ -232,13 +249,13 @@ export async function runAutoAssignmentReplenishment(pool, {
 
     const candidateLimit = Math.min(capacityBefore, safeMaxAssignments);
     const candidateResult = await client.query(`
-      SELECT id
+      SELECT id, effective_priority, rework_count
       FROM tasks
-      WHERE assigned_to_user_id IS NULL
+      WHERE assigned_to_user_id IS NULL AND priority_paused = false
         AND state = ANY($1::varchar[])
         AND current_stage = 'COPY_REVIEW_PENDING'
         AND current_execution_id IS NULL
-      ORDER BY id
+      ORDER BY ${priorityOrderSql()}
       FOR UPDATE SKIP LOCKED
       LIMIT $2::integer
     `, [AUTO_ASSIGNABLE_TASK_STATES, candidateLimit]);
@@ -270,6 +287,7 @@ export async function runAutoAssignmentReplenishment(pool, {
           assigned_at = now(),
           progress_message = CASE
             WHEN task.progress_message IS NULL OR task.progress_message IN (
+                '等待管理员分配标注',
                 '等待管理员分配作业员',
                 '等待分配负责人',
                 '负责人待分配，等待文案执行机领取',

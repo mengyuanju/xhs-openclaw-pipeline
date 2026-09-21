@@ -1,4 +1,5 @@
-import { businessPrompt, promptPolicy, promptRuntimeSnapshot, withPromptRuntime } from './prompt-runtime.mjs';
+import { internalPrompt } from './prompt-runtime.mjs';
+import { businessPrompt, promptPolicy, promptRuntimeSnapshot, hasPublishedPrompt, withPromptRuntime } from './prompt-runtime.mjs';
 import { performance } from 'node:perf_hooks';
 import { buildCopyKnowledgeReferencePrompt, matchCopyKnowledge } from './copy-knowledge-match.mjs';
 
@@ -9,15 +10,18 @@ import {
 } from './content-stage-review.mjs';
 import { createAgentClient } from './agent-client.mjs';
 import {
+  bodyRepairOutputSchema,
   buildPostPrompt,
   filterAllowedSourceReferences,
   normalizeProseLineBreaks,
   parsePostCandidate,
   parsePostOutput,
+  postOutputSchema,
 } from './post-contract.mjs';
 import {
   attachResearchToTask,
   createResearchSnapshot,
+  requiresAuthoritativeResearch,
   researchSourceUrls,
 } from './research.mjs';
 
@@ -25,6 +29,8 @@ const POST_MAX_ATTEMPTS = 3;
 const QUALITY_REVISION_MAX_ATTEMPTS = 2;
 const TRANSIENT_MODEL_FAILURE = /\b(?:ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET|429)\b|fetch failed|connection error|other side closed|socket hang up|timed? out|terminated|no text output returned|temporar(?:y|ily) unavailable|rate limit/iu;
 const MODEL_NOT_ALLOWED_FAILURE = /model override\b.{0,300}\bis not allowed for agent\b/iu;
+const BODY_REPAIR_FAILURE = /^body (?:must contain between|must end with|contains unbalanced|repair removed protected)/u;
+const PROTECTED_NUMERIC_FACT = /\d[\d.,，]*(?:\s*(?:亿元|万元|千克|公斤|毫升|分钟|小时|摄氏度|%|％|年|月|日|号|天|秒|元|万|亿|克|斤|升|岁|人|次|项|步|张|套|分|点|℃|°C|kg|ml|cm|mm|m|g|L))/giu;
 const COPY_GENERATION_STAGE_LABELS = Object.freeze({
   QUERY_REVIEW: '选题审核',
   KNOWLEDGE_MATCH: '优秀案例匹配',
@@ -99,18 +105,45 @@ function normalizedTask(task) {
   return { ...task, query, input };
 }
 
+function normalizedProtectedFact(value) {
+  return String(value).normalize('NFKC').toLocaleLowerCase('zh-CN').replace(/[,，\s]/gu, '');
+}
+
+function protectedNumericFacts(value) {
+  const matches = String(value ?? '').match(PROTECTED_NUMERIC_FACT) ?? [];
+  return [...new Map(matches.map((match) => [normalizedProtectedFact(match), match.trim()])).values()];
+}
+
+function assertBodyRepairPreservesNumericFacts(previousBody, repairedBody) {
+  const repaired = normalizedProtectedFact(repairedBody);
+  const missing = protectedNumericFacts(previousBody)
+    .filter((fact) => !repaired.includes(normalizedProtectedFact(fact)));
+  if (missing.length > 0) {
+    throw new TypeError(`body repair removed protected numeric facts: ${missing.slice(0, 10).join(', ')}`);
+  }
+}
+
+function isBodyRepairFailure(error) {
+  return BODY_REPAIR_FAILURE.test(String(error?.message ?? error));
+}
+
 function buildPostRepairPrompt(task, error, previousOutput, options = {}) {
   const validationError = error instanceof Error ? error.message : String(error);
-  const lengthRepair = /^body must contain between/.test(validationError);
+  const bodyRepair = isBodyRepairFailure(error);
   const receivedLength = validationError.match(/received ([0-9]+)/)?.[1];
-  return businessPrompt(lengthRepair ? 'COPY_LENGTH_REPAIR_SYSTEM' : 'COPY_REPAIR_SYSTEM', {
+  return businessPrompt(bodyRepair ? 'COPY_LENGTH_REPAIR_SYSTEM' : 'COPY_REPAIR_SYSTEM', {
     variables: { query: task.query,
       category: task.input?.category ?? '', targetAudience: task.input?.targetAudience ?? '', imageCount: options.imageCount ?? '' },
-    inherits: promptRuntimeSnapshot() ? ['TEXT_SYSTEM', 'COPY_IMAGE_PLAN_SYSTEM'] : [],
-    contract: `沿用本次编辑要求：\n${promptRuntimeSnapshot() ? '' : options.systemPrompt ?? ''}\n${lengthRepair ? '仅返回 {"body":"修订后完整正文"}，其他字段由程序保留。正文有效范围400～600。' : '返回与上一稿相同字段的完整合法 JSON，仅修改失败字段及必要联动。'}`,
+    inherits: promptRuntimeSnapshot() ? ['TEXT_SYSTEM', 'COPY_IMAGE_PLAN_SYSTEM']
+      : ['TEXT_SYSTEM', 'COPY_IMAGE_PLAN_SYSTEM'].filter(hasPublishedPrompt),
+    contract: `沿用本次编辑要求：\n${promptRuntimeSnapshot() || hasPublishedPrompt('TEXT_SYSTEM') ? '' : options.systemPrompt ?? ''}\n${bodyRepair ? internalPrompt('INTERNAL_BODY_REPAIR_OUTPUT') : internalPrompt('INTERNAL_COPY_REPAIR_OUTPUT')}`,
     data: { query: task.query, validationError, previousOutput, receivedLength: receivedLength ? Number(receivedLength) : null,
       countingRule: '英文字母、数字、标点、空格和换行均逐个计数，英文单词不能按一个字计算',
-      allowedFields: lengthRepair ? ['body'] : repairFieldsFor(error) },
+      completionRule: internalPrompt('INTERNAL_BODY_REPAIR_COMPLETENESS'),
+      protectedNumericFacts: bodyRepair
+        ? protectedNumericFacts(options.previousCandidate?.body)
+        : [],
+      allowedFields: bodyRepair ? ['body'] : repairFieldsFor(error) },
   });
 }
 
@@ -120,6 +153,7 @@ const REPAIRABLE_POST_FIELDS = new Set([
   'fabricatedExperience',
   'imagePlan',
   'platform',
+  'riskAssessments',
   'riskFlags',
   'sources',
   'tags',
@@ -175,7 +209,7 @@ function buildQualityRevisionPrompt(
 ) {
   const basePrompt = buildPostPrompt(task, options);
   return `${basePrompt}\n\n${businessPrompt('COPY_REVISION_SYSTEM', {
-    contract: '只返回与原文案相同结构的合法 JSON。已经合格字段由原编辑规则保护；不得为产生变化随意修改。',
+    contract: internalPrompt('INTERNAL_QUALITY_REVISION_OUTPUT'),
     dataTag: 'untrusted_quality_revision',
     data: { originalPost, originalReview, previousRepairUnresolved: unchangedRetry },
   })}`;
@@ -259,6 +293,9 @@ function contractFailureReason(error) {
     const received = message.match(/received (\d+)/u)?.[1];
     return `正文必须控制在400～600字${received === undefined ? '' : `（当前${received}个可见字符）`}`;
   }
+  if (/body must end with a complete sentence/iu.test(message)) return '正文结尾语句不完整，必须补全后以完整句子收尾';
+  if (/body contains unbalanced brackets or quotation marks/iu.test(message)) return '正文包含未闭合的括号或引号';
+  if (/body repair removed protected numeric facts/iu.test(message)) return '正文压缩时遗漏了原稿中的关键数字事实';
   if (/fabricated experience/iu.test(message)) return '正文不能虚构第一人称使用或实测经历';
   if (/valid JSON object/iu.test(message)) return '模型输出不是合法 JSON';
   return '标题、正文或配图规划未通过结构校验';
@@ -266,7 +303,7 @@ function contractFailureReason(error) {
 
 export class CopyGenerationContractError extends Error {
   constructor(error) {
-    super(`模型连续三次未按规则返回合格文案：${contractFailureReason(error)}`, { cause: error });
+    super(`模型多次未按规则返回合格文案：${contractFailureReason(error)}`, { cause: error });
     this.name = 'CopyGenerationContractError';
   }
 }
@@ -279,11 +316,26 @@ async function createPostFromPrompt(client, task, basePrompt, options) {
   let previousOutput = '';
   let previousCandidate = null;
   for (let attempt = 0; attempt < POST_MAX_ATTEMPTS; attempt += 1) {
+    const bodyRepair = attempt > 0 && isBodyRepairFailure(lastError);
+    if (attempt > 0) {
+      const validationError = String(lastError?.message ?? lastError);
+      const receivedLength = validationError.match(/received ([0-9]+)/u)?.[1];
+      await options.onStageChange?.(bodyRepair ? 'COPY_LENGTH_REPAIR' : 'COPY_CONTRACT_REPAIR', {
+        attempt: attempt + 1,
+        validationError,
+        ...(receivedLength ? { receivedLength: Number(receivedLength) } : {}),
+        preservedFields: bodyRepair ? ['标题', '标签', '配图策划', '来源', '其他已通过字段'] : [],
+      });
+    }
     const generated = await client.runText({
       prompt: attempt === 0
         ? basePrompt
-        : `${buildPostRepairPrompt(task, lastError, previousOutput, options)}\n\n${buildCopyKnowledgeReferencePrompt(options.knowledgeReference)}`,
+        : `${buildPostRepairPrompt(task, lastError, previousOutput, {
+          ...options,
+          previousCandidate,
+        })}\n\n${buildCopyKnowledgeReferencePrompt(options.knowledgeReference)}`,
       thinking: options.thinking,
+      outputSchema: bodyRepair ? bodyRepairOutputSchema() : postOutputSchema(options.imageCount),
     });
     previousOutput = generated.rawText;
     try {
@@ -294,6 +346,9 @@ async function createPostFromPrompt(client, task, basePrompt, options) {
           : mergeTargetedRepair(previousCandidate, generatedCandidate, lastError),
         options.allowedSources,
       );
+      if (bodyRepair) {
+        assertBodyRepairPreservesNumericFacts(previousCandidate?.body, candidate.body);
+      }
       previousCandidate = candidate;
       previousOutput = JSON.stringify(candidate);
       return {
@@ -307,6 +362,7 @@ async function createPostFromPrompt(client, task, basePrompt, options) {
       };
     } catch (error) {
       lastError = error;
+      if (previousCandidate) previousOutput = JSON.stringify(previousCandidate);
     }
   }
   throw new CopyGenerationContractError(lastError);
@@ -417,7 +473,11 @@ async function generateCopyInContext({
       timing,
       'researchMs',
       now,
-      () => createResearchSnapshot({ client, query: sourceTask.query }),
+      () => createResearchSnapshot({
+        client,
+        query: sourceTask.query,
+        requireAuthoritative: requiresAuthoritativeResearch(sourceTask),
+      }),
     );
     if (researchSnapshot.status !== 'COMPLETED') {
       throw new CopyGenerationResearchError(researchSnapshot);
@@ -440,6 +500,7 @@ async function generateCopyInContext({
       knowledgeReference,
       imageCount,
       allowedSources,
+      onStageChange,
     }),
   );
   let reviewed = original;
@@ -475,7 +536,7 @@ async function generateCopyInContext({
           generationTask,
           original.post,
           originalTextReview,
-          { systemPrompt, imageCount, allowedSources, knowledgeReference },
+          { systemPrompt, imageCount, allowedSources, knowledgeReference, onStageChange },
         ),
       );
       await onStageChange('REVIEWED_REVIEW');
@@ -530,6 +591,7 @@ function metadataFrom(post) {
   return {
     sources: post.sources,
     expressionReferences: post.expressionReferences,
+    riskAssessments: post.riskAssessments,
     riskFlags: post.riskFlags,
     fabricatedExperience: post.fabricatedExperience,
     unverifiedClaims: post.unverifiedClaims,

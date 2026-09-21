@@ -1,0 +1,1347 @@
+// Local development E2E fixture only. It starts a stateful fake control plane
+// and a real Next development server. It never opens PostgreSQL, invokes a
+// model, or exposes publishing endpoints.
+import { spawn } from 'node:child_process';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join, relative } from 'node:path';
+
+import JSZip from 'jszip';
+
+const projectRoot = process.cwd();
+const CLIENT_BATCH_CODE = 'b9759aad96a94c109fdce96ab4455294';
+const artifactParent = join(projectRoot, '.codex_artifacts');
+await mkdir(artifactParent, { recursive: true });
+const buildRoot = await mkdtemp(join(artifactParent, 'modular-e2e-'));
+const dataRoot = await mkdtemp(join(tmpdir(), 'xhs-modular-e2e-'));
+const nextManagedSnapshots = new Map(await Promise.all(
+  ['next-env.d.ts', 'tsconfig.json'].map(async (name) => [name, await readFile(join(projectRoot, name), 'utf8')]),
+));
+
+async function restoreNextManagedFiles() {
+  const buildRelative = relative(projectRoot, buildRoot).replaceAll('\\', '/');
+  for (const [name, original] of nextManagedSnapshots) {
+    const path = join(projectRoot, name);
+    const current = await readFile(path, 'utf8');
+    let normalized = current;
+    if (name === 'next-env.d.ts') {
+      normalized = normalized
+        .replaceAll(`./${buildRelative}/dev/types/routes.d.ts`, './.next/types/routes.d.ts')
+        .replaceAll(`./${buildRelative}/dev/types/root-params.d.ts`, './.next/types/root-params.d.ts');
+    } else {
+      normalized = normalized
+        .replace(`,\n    "${buildRelative}/types/**/*.ts",\n    "${buildRelative}/dev/types/**/*.ts"`, '');
+    }
+    if (normalized === original && current !== original) await writeFile(path, original, 'utf8');
+    else if (current !== original) console.warn(`MODULAR_E2E_CLEANUP_SKIPPED ${name}: concurrent edits detected`);
+  }
+}
+
+const passwords = {
+  admin: `fixture-${randomBytes(8).toString('hex')}`,
+  reviewer: `fixture-${randomBytes(8).toString('hex')}`,
+  worker: `fixture-${randomBytes(8).toString('hex')}`,
+};
+const users = {
+  admin: { id: 1, username: 'admin', displayName: 'E2E 管理员', role: 'ADMIN', status: 'ACTIVE', credentialVersion: 1, mustChangePassword: false },
+  reviewer: { id: 91, username: 'reviewer', displayName: 'E2E 质检员', role: 'REVIEWER', status: 'ACTIVE', credentialVersion: 1, mustChangePassword: false, copyReviewEnabled: true, copyQcEnabled: true },
+  worker: { id: 22, username: 'worker', displayName: 'E2E 标注', role: 'USER', status: 'ACTIVE', credentialVersion: 1, mustChangePassword: false, copyReviewEnabled: true, copyQcEnabled: false },
+};
+
+const state = {
+  nextPackageId: 9,
+  nextItemId: 101,
+  nextBatchId: 301,
+  nextTaskId: 501,
+  packages: [],
+  batches: [],
+  tasks: [],
+  requests: [],
+  deliveryExports: [],
+  deliveryArchives: new Map(),
+  deliveryBatches: [],
+  deliveryEntries: [{
+    id: 1,
+    taskId: 701,
+    query: '玄关收纳交付词',
+    queryPackageId: 9,
+    queryPackageName: '九月收纳词包',
+    clientBatchCode: CLIENT_BATCH_CODE,
+    copyRevisionId: 801,
+    imageRunId: '11111111-1111-4111-8111-111111111111',
+    status: 'READY',
+    approvedAt: '2026-09-09T08:30:00.000Z',
+  }, {
+    id: 2,
+    taskId: 702,
+    query: '厨房动线交付词',
+    queryPackageId: 9,
+    queryPackageName: '九月收纳词包',
+    clientBatchCode: CLIENT_BATCH_CODE,
+    copyRevisionId: 802,
+    imageRunId: '22222222-2222-4222-8222-222222222222',
+    status: 'READY',
+    approvedAt: '2026-09-09T08:31:00.000Z',
+  }, {
+    id: 3,
+    taskId: 703,
+    query: '衣柜分区交付词',
+    queryPackageId: 10,
+    queryPackageName: '十月整理词包',
+    clientBatchCode: CLIENT_BATCH_CODE,
+    copyRevisionId: 803,
+    imageRunId: '33333333-3333-4333-8333-333333333333',
+    status: 'READY',
+    approvedAt: '2026-09-09T08:32:00.000Z',
+  }, {
+    id: 4,
+    taskId: 704,
+    query: '历史独立交付词',
+    queryPackageId: null,
+    queryPackageName: null,
+    clientBatchCode: null,
+    copyRevisionId: 804,
+    imageRunId: '44444444-4444-4444-8444-444444444444',
+    status: 'READY',
+    approvedAt: '2026-09-09T08:33:00.000Z',
+  }],
+  qaItems: [{
+    id: '71717171-7171-4717-8717-717171717171',
+    freezePublicId: '81818181-8181-4818-8818-818181818181',
+    anonymousCode: 'QC-5B1E06B6F45A',
+    status: 'PENDING',
+    sampleKind: 'RANDOM',
+    query: 'SECRET-QUERY-MUST-NOT-REACH-BLIND-UI',
+    approvedRevision: {
+      content: { copy: { title: '玄关整理的三个动作', body: '先清空，再分区，最后只保留每天会用的物品。', tags: ['收纳', '玄关'] } },
+      contentSha256: 'a'.repeat(64),
+      revisionToken: 'a'.repeat(64),
+    },
+    productionBatch: { anonymousCode: 'QCB-977A0A73B9DA' },
+    createdAt: '2026-09-09T08:00:00.000Z',
+  }, {
+    id: '72727272-7272-4727-8727-727272727272',
+    freezePublicId: '81818181-8181-4818-8818-818181818181',
+    anonymousCode: 'QC-HELD-NOT-SELECTED',
+    status: 'NOT_SELECTED',
+    sampleKind: 'RANDOM',
+    query: 'SECOND-HELD-QUERY',
+    approvedRevision: {
+      content: { copy: { title: '同批未抽中稿', body: '保持冻结，等待明确处置。', tags: ['未抽中'] } },
+      contentSha256: 'b'.repeat(64),
+      revisionToken: 'b'.repeat(64),
+    },
+    productionBatch: { anonymousCode: 'QCB-977A0A73B9DA' },
+    createdAt: '2026-09-09T08:00:01.000Z',
+  }, {
+    id: '73737373-7373-4737-8737-737373737373',
+    freezePublicId: '81818181-8181-4818-8818-818181818181',
+    anonymousCode: 'QC-HELD-PASSED',
+    status: 'PASSED',
+    sampleKind: 'RANDOM',
+    query: 'THIRD-HELD-QUERY',
+    approvedRevision: {
+      content: { copy: { title: '同批已抽检通过稿', body: '仍属于同一冻结范围。', tags: ['已通过'] } },
+      contentSha256: 'c'.repeat(64),
+      revisionToken: 'c'.repeat(64),
+    },
+    productionBatch: { anonymousCode: 'QCB-977A0A73B9DA' },
+    createdAt: '2026-09-09T08:00:02.000Z',
+  }],
+};
+
+if (process.env.MODULAR_E2E_PAGINATION_SEED === '1') {
+  const seedCreatedAt = Date.parse('2026-09-09T07:00:00.000Z');
+  for (let index = 1; index <= 205; index += 1) {
+    const packageId = 1_000 + index;
+    const itemId = 10_000 + index;
+    const createdAt = new Date(seedCreatedAt + index * 1_000).toISOString();
+    state.packages.push({
+      id: packageId,
+      name: `分页词包-${String(index).padStart(4, '0')}`,
+      clientBatchCode: CLIENT_BATCH_CODE,
+      status: 'SCREENING',
+      createdByUserId: 'admin',
+      createdByAccountId: users.admin.id,
+      assignedToUserId: null,
+      assignedToAccountId: null,
+      version: 1,
+      createdAt,
+      updatedAt: createdAt,
+      items: [{
+        id: itemId,
+        rowNumber: 1,
+        externalId: null,
+        query: `分页 Query ${index}`,
+        input: {},
+        requestedImageCount: 'auto',
+        status: 'READY',
+        screeningDecision: 'PENDING',
+        screeningReason: null,
+        taskId: null,
+        version: 1,
+      }],
+    });
+  }
+  state.nextPackageId = 1_206;
+  state.nextItemId = 10_206;
+
+  for (let index = 1; index <= 204; index += 1) {
+    const digest = index.toString(16).padStart(64, '0');
+    state.qaItems.push({
+      id: `90000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}`,
+      freezePublicId: '81818181-8181-4818-8818-818181818181',
+      anonymousCode: `QC-PAGE-${String(index).padStart(4, '0')}`,
+      status: 'PENDING',
+      sampleKind: 'RANDOM',
+      query: `BLIND-PAGINATION-QUERY-${index}`,
+      approvedRevision: {
+        content: { copy: { title: `分页抽检稿 ${index}`, body: `用于验证第 ${index} 条分页抽检数据。`, tags: ['分页'] } },
+        contentSha256: digest,
+        revisionToken: digest,
+      },
+      productionBatch: { anonymousCode: 'QCB-977A0A73B9DA' },
+      createdAt: new Date(seedCreatedAt + index * 1_000).toISOString(),
+    });
+  }
+}
+
+function paginate(url, entries, maximumLimit = 200) {
+  const limit = Math.min(maximumLimit, Math.max(1, Number(url.searchParams.get('limit')) || 50));
+  const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
+  return { items: entries.slice(offset, offset + limit), total: entries.length };
+}
+
+function counts(record) {
+  return {
+    total: record.items.length,
+    pending: record.items.filter((item) => item.status === 'READY'
+      && item.screeningDecision === 'PENDING').length,
+    selected: record.items.filter((item) => item.screeningDecision === 'SELECTED').length,
+    rejected: record.items.filter((item) => item.screeningDecision === 'REJECTED').length,
+    produced: record.items.filter((item) => item.taskId).length,
+  };
+}
+
+function packageStatus(record) {
+  const summary = counts(record);
+  const selectedReady = record.items.filter((item) => item.status === 'READY'
+    && item.screeningDecision === 'SELECTED').length;
+  if (summary.pending > 0) return summary.produced > 0 ? 'PARTIALLY_USED' : 'SCREENING';
+  if (selectedReady > 0) return summary.produced > 0 ? 'PARTIALLY_USED' : 'READY';
+  return summary.produced > 0 ? 'USED_UP' : 'ABANDONED';
+}
+
+function createFixtureProductionBatch(record, items, actorUsername = 'admin') {
+  if (!items.length) return null;
+  const batch = {
+    id: state.nextBatchId++,
+    publicId: randomUUID(),
+    queryPackageId: record.id,
+    queryPackageName: record.name,
+    clientBatchCode: record.clientBatchCode,
+    createdByUserId: actorUsername,
+    status: 'OPEN',
+    samplingStatus: 'OPEN',
+    taskIds: [],
+  };
+  for (const item of items) {
+    const task = {
+      id: state.nextTaskId++,
+      query: item.query,
+      input: structuredClone(item.input),
+      requestedImageCount: item.requestedImageCount,
+      state: 'COPY_QUEUED',
+      currentStage: 'COPY_QUEUED',
+      progressMessage: '等待文案执行机领取',
+      createdByNodeId: 'web-query-packages',
+      createdByUserId: record.createdByUserId ?? 'admin',
+      assignedToUserId: null,
+      assignedToAccountId: null,
+      assignmentSource: null,
+      assignedAt: null,
+      sourceQueryPackageId: record.id,
+      sourceQueryPackageItemId: item.id,
+      sourceQueryPackageName: record.name,
+      sourceQueryPackageExternalId: item.externalId,
+      sourceClientBatchCode: record.clientBatchCode,
+      productionBatchId: batch.id,
+    };
+    state.tasks.push(task);
+    batch.taskIds.push(task.id);
+    item.taskId = task.id;
+    item.status = 'TASK_CREATED';
+    item.version += 1;
+  }
+  state.batches.push(batch);
+  return batch;
+}
+
+function packageSummary(record) {
+  const assignee = Object.values(users).find((candidate) => candidate.id === record.assignedToAccountId
+    && candidate.username === record.assignedToUserId) ?? null;
+  return {
+    id: record.id,
+    name: record.name,
+    clientBatchCode: record.clientBatchCode,
+    status: record.status,
+    createdByUserId: record.createdByUserId ?? 'admin',
+    createdByAccountId: record.createdByAccountId ?? users.admin.id,
+    assignedToUserId: record.assignedToUserId ?? null,
+    assignedToAccountId: record.assignedToAccountId ?? null,
+    assignedToDisplayName: assignee?.displayName ?? null,
+    assignedToRole: assignee?.role === 'REVIEWER' || assignee?.role === 'USER' ? assignee.role : null,
+    assigneeStatus: assignee?.status ?? null,
+    assignedItemCount: record.items.filter((item) => item.status === 'READY'
+      && item.screeningDecision === 'PENDING'
+      && Number.isSafeInteger(item.screeningAssignedToAccountId)).length,
+    assignedUserCount: new Set(record.items.filter((item) => item.status === 'READY'
+      && item.screeningDecision === 'PENDING'
+      && Number.isSafeInteger(item.screeningAssignedToAccountId))
+      .map((item) => item.screeningAssignedToAccountId)).size,
+    version: record.version,
+    counts: counts(record),
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
+}
+
+function packageDetail(record, req = null) {
+  const actor = req ? actorUser(req) : null;
+  const legacyAccess = actor && record.assignedToAccountId === actor.id
+    && record.assignedToUserId === actor.username;
+  const visibleItems = !actor || actor.role === 'ADMIN' || legacyAccess
+    ? record.items
+    : record.items.filter((item) => item.screeningAssignedToAccountId === actor.id
+      && item.screeningAssignedToUserId === actor.username);
+  return {
+    ...packageSummary(record),
+    items: visibleItems.map((item) => ({ ...item })),
+    productionBatches: state.batches
+      .filter((batch) => batch.queryPackageId === record.id)
+      .map((batch) => ({ ...batch, taskCount: batch.taskIds.length })),
+  };
+}
+
+function actorUser(req) {
+  const username = String(req.headers['x-actor-username'] ?? '').trim().toLowerCase();
+  const rawUserId = String(req.headers['x-actor-user-id'] ?? '').trim();
+  const userId = /^[1-9]\d*$/u.test(rawUserId) ? Number(rawUserId) : NaN;
+  const role = String(req.headers['x-actor-role'] ?? '').trim().toUpperCase();
+  const credentialVersion = Number(req.headers['x-actor-credential-version']);
+  const user = Object.values(users).find((candidate) => candidate.username === username) ?? null;
+  if (!Number.isSafeInteger(userId) || !Number.isSafeInteger(credentialVersion)
+      || !user || user.id !== userId || user.status !== 'ACTIVE'
+      || user.role !== role || user.credentialVersion !== credentialVersion) return null;
+  return user;
+}
+
+function actorRole(req) {
+  return actorUser(req)?.role ?? '';
+}
+
+function canAccessPackage(req, record) {
+  if (actorRole(req) === 'ADMIN') return true;
+  const actor = actorUser(req);
+  return actor?.status === 'ACTIVE'
+    && actor.role === actorRole(req)
+    && ['REVIEWER', 'USER'].includes(actor.role)
+    && ((record?.assignedToAccountId === actor.id
+      && record?.assignedToUserId === actor.username)
+      || record?.items.some((item) => item.screeningAssignedToAccountId === actor.id
+        && item.screeningAssignedToUserId === actor.username));
+}
+
+function fixtureItemAssignmentSummary(record) {
+  const eligible = record.items.filter((item) => item.status === 'READY'
+    && item.screeningDecision === 'PENDING');
+  const grouped = new Map();
+  for (const item of eligible) {
+    if (!Number.isSafeInteger(item.screeningAssignedToAccountId)) continue;
+    grouped.set(item.screeningAssignedToAccountId,
+      (grouped.get(item.screeningAssignedToAccountId) ?? 0) + 1);
+  }
+  const assignees = [...grouped.entries()].map(([accountId, count]) => {
+    const user = Object.values(users).find((candidate) => candidate.id === accountId);
+    return {
+      accountId,
+      username: user?.username ?? '',
+      displayName: user?.displayName ?? user?.username ?? '',
+      role: user?.role ?? null,
+      status: user?.status ?? null,
+      count,
+    };
+  });
+  const assignedTotal = assignees.reduce((sum, entry) => sum + entry.count, 0);
+  return {
+    packageId: record.id,
+    packageVersion: record.version,
+    eligibleTotal: eligible.length,
+    assignedTotal,
+    unassignedTotal: eligible.length - assignedTotal,
+    assignees,
+  };
+}
+
+function qaItemFor(req, item) {
+  if (actorRole(req) === 'ADMIN') {
+    return {
+      ...item,
+      blindReview: false,
+      query: item.query,
+      taskId: 991,
+      approvedRevision: { ...item.approvedRevision, id: 902 },
+      productionBatch: {
+        ...item.productionBatch,
+        id: 27,
+        publicId: '91919191-9191-4919-8919-919191919191',
+      },
+      source: {
+        finalApproverAccountId: 64,
+        finalApproverUsername: 'worker',
+        assignedToUserId: 'worker',
+        createdByUserId: 'admin',
+      },
+      capabilities: { canPass: item.status === 'PENDING', canReturnSingle: item.status === 'PENDING', canReturnBatch: ['PENDING', 'RETURNED'].includes(item.status) },
+    };
+  }
+  return {
+    id: item.id,
+    freezePublicId: item.freezePublicId,
+    anonymousCode: item.anonymousCode,
+    blindReview: true,
+    status: item.status,
+    sampleKind: item.sampleKind,
+    approvedRevision: structuredClone(item.approvedRevision),
+    productionBatch: structuredClone(item.productionBatch),
+    capabilities: { canPass: item.status === 'PENDING', canReturnSingle: item.status === 'PENDING', canReturnBatch: false },
+    createdAt: item.createdAt,
+  };
+}
+
+async function jsonBody(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  if (!chunks.length) return {};
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+
+function send(res, status, data) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(status >= 400 ? { error: data } : { data }));
+}
+
+function error(res, status, code, message) {
+  send(res, status, { code, message });
+}
+
+const controlPlane = createServer(async (req, res) => {
+  try {
+    const url = new URL(req.url, 'http://127.0.0.1');
+    const method = String(req.method).toUpperCase();
+    state.requests.push({ method, path: url.pathname, role: actorRole(req), at: new Date().toISOString() });
+
+    if (method === 'GET' && url.pathname === '/health') {
+      send(res, 200, {
+        ok: true,
+        fixture: true,
+        capabilities: {
+          taskAssignmentVersion: 3,
+          queryPackageVersion: 6,
+          finalDeliveryVersion: 5,
+          deliverySpreadsheetVersion: 3,
+          deliveryPreviewVersion: 5,
+        },
+      });
+      return;
+    }
+    if (method === 'POST' && url.pathname === '/v1/auth/login') {
+      const input = await jsonBody(req);
+      const user = users[String(input.username ?? '').toLowerCase()];
+      if (!user || passwords[user.username] !== input.password) {
+        error(res, 401, 'INVALID_CREDENTIALS', 'fixture login failed');
+        return;
+      }
+      send(res, 200, user);
+      return;
+    }
+    const actor = actorUser(req);
+    if (url.pathname !== '/__fixture/state' && !actor) {
+      error(res, 401, 'SESSION_STALE', 'fixture actor identity is stale');
+      return;
+    }
+    if (method === 'GET' && url.pathname === '/v1/profile') {
+      send(res, 200, actor);
+      return;
+    }
+    if (method === 'GET' && url.pathname === '/v1/workflow-quality-settings') {
+      if (actor.role !== 'ADMIN') {
+        error(res, 403, 'FORBIDDEN', 'fixture workflow settings are admin-only');
+        return;
+      }
+      send(res, 200, {
+        version: 7,
+        queryPackage: { workerImportEnabled: false },
+        copySampling: { enabled: true, rateBps: 2500, blindReviewEnabled: true, reviewerBatchReturnEnabled: false },
+      });
+      return;
+    }
+    if (method === 'GET' && url.pathname === '/v1/users') {
+      if (actor.role !== 'ADMIN') {
+        error(res, 403, 'FORBIDDEN', 'fixture user list is admin-only');
+        return;
+      }
+      send(res, 200, Object.values(users));
+      return;
+    }
+    if (method === 'GET' && url.pathname === '/v1/delivery-pool') {
+      if (!['ADMIN', 'USER'].includes(actorRole(req))) {
+        error(res, 403, 'FORBIDDEN', 'fixture delivery-pool access denied');
+        return;
+      }
+      const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 50));
+      const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
+      const clientBatchCode = url.searchParams.get('clientBatchCode');
+      const packingState = url.searchParams.get('packingState') ?? 'ALL';
+      const sourceFiltered = clientBatchCode
+        ? state.deliveryEntries.filter((entry) => entry.clientBatchCode === clientBatchCode)
+        : state.deliveryEntries;
+      const filtered = sourceFiltered.filter((entry) => packingState === 'PACKED'
+        ? Boolean(entry.deliveryBatch)
+        : packingState === 'PENDING' ? !entry.deliveryBatch : true);
+      const responseEntry = (entry) => ({
+        ...entry,
+        packingState: entry.deliveryBatch ? 'PACKED' : 'UNPACKED',
+        deliveryBatch: entry.deliveryBatch ?? null,
+        previousDeliveryBatch: null,
+      });
+      const items = filtered.slice(offset, offset + limit).map(responseEntry);
+      const facets = [...new Map(state.deliveryEntries.filter(
+        (entry) => entry.queryPackageId !== null,
+      ).map((entry) => [
+        entry.queryPackageId,
+        { id: entry.queryPackageId, name: entry.queryPackageName },
+      ])).values()].map((queryPackage) => {
+        const packageEntries = state.deliveryEntries.filter(
+          (entry) => entry.queryPackageId === queryPackage.id,
+        );
+        return {
+          ...queryPackage,
+          clientBatchCode: packageEntries[0]?.clientBatchCode ?? null,
+          count: packageEntries.length,
+          unuploadedCount: packageEntries.filter((entry) => !entry.preview).length,
+          publishedCount: packageEntries.filter((entry) => entry.preview?.status === 'PUBLISHED').length,
+          revokedCount: packageEntries.filter((entry) => entry.preview?.status === 'REVOKED').length,
+          pendingCount: packageEntries.filter((entry) => !entry.deliveryBatch).length,
+          packedCount: packageEntries.filter((entry) => entry.deliveryBatch).length,
+          updatedCount: 0,
+        };
+      });
+      const unassignedEntries = state.deliveryEntries.filter((entry) => entry.queryPackageId === null);
+      const unassigned = unassignedEntries.length ? {
+        count: unassignedEntries.length,
+        unuploadedCount: unassignedEntries.filter((entry) => !entry.preview).length,
+        publishedCount: unassignedEntries.filter((entry) => entry.preview?.status === 'PUBLISHED').length,
+        revokedCount: unassignedEntries.filter((entry) => entry.preview?.status === 'REVOKED').length,
+        pendingCount: unassignedEntries.filter((entry) => !entry.deliveryBatch).length,
+        packedCount: unassignedEntries.filter((entry) => entry.deliveryBatch).length,
+        updatedCount: 0,
+      } : null;
+      const clientBatches = [...new Set(state.deliveryEntries
+        .map((entry) => entry.clientBatchCode).filter(Boolean))].map((code) => {
+        const batchEntries = state.deliveryEntries.filter((entry) => entry.clientBatchCode === code);
+        return {
+          code,
+          count: batchEntries.length,
+          pendingCount: batchEntries.filter((entry) => !entry.deliveryBatch).length,
+          packedCount: batchEntries.filter((entry) => entry.deliveryBatch).length,
+          updatedCount: 0,
+          queryPackageCount: new Set(batchEntries.map((entry) => entry.queryPackageId).filter(Boolean)).size,
+        };
+      });
+      send(res, 200, url.searchParams.get('includeTotal') === 'true'
+        ? {
+            items,
+            total: filtered.length,
+            facets: { queryPackages: facets, clientBatches, unassigned },
+            summary: {
+              readyCount: sourceFiltered.length,
+              pendingCount: sourceFiltered.filter((entry) => !entry.deliveryBatch).length,
+              packedCount: sourceFiltered.filter((entry) => entry.deliveryBatch).length,
+              updatedCount: 0,
+            },
+          }
+        : items);
+      return;
+    }
+    if (method === 'GET' && url.pathname === '/v1/delivery-batches') {
+      if (!['ADMIN', 'USER'].includes(actorRole(req))) {
+        error(res, 403, 'FORBIDDEN', 'fixture delivery history access denied');
+        return;
+      }
+      const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 50));
+      const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
+      const clientBatchCode = url.searchParams.get('clientBatchCode');
+      const visibleBatches = actorRole(req) === 'ADMIN' ? state.deliveryBatches
+        : state.deliveryBatches.filter((batch) => batch.batchKind === 'OPERATOR_DELIVERY'
+          && batch.createdByAccountId === actor.id && batch.createdByUsername === actor.username);
+      const batches = clientBatchCode
+        ? visibleBatches.filter((batch) => batch.clientBatchCode === clientBatchCode)
+        : visibleBatches;
+      send(res, 200, {
+        items: batches.slice(offset, offset + limit)
+          .map(({ items: _items, content: _content, ...batch }) => batch),
+        total: batches.length,
+      });
+      return;
+    }
+    const deliveryBatchMatch = url.pathname.match(/^\/v1\/delivery-batches\/([0-9a-f-]+)$/u);
+    if (method === 'GET' && deliveryBatchMatch) {
+      if (!['ADMIN', 'USER'].includes(actorRole(req))) {
+        error(res, 403, 'FORBIDDEN', 'fixture delivery history access denied');
+        return;
+      }
+      const batch = state.deliveryBatches.find((entry) => entry.publicId === deliveryBatchMatch[1]);
+      if (!batch || (actor.role === 'USER' && (batch.batchKind !== 'OPERATOR_DELIVERY'
+          || batch.createdByAccountId !== actor.id || batch.createdByUsername !== actor.username))) {
+        error(res, 404, 'DELIVERY_BATCH_NOT_FOUND', 'fixture delivery batch is missing');
+        return;
+      }
+      const { content: _content, ...detail } = batch;
+      send(res, 200, detail);
+      return;
+    }
+    if (method === 'POST' && url.pathname === '/v1/delivery-pool/previews') {
+      if (actorRole(req) !== 'ADMIN') {
+        error(res, 403, 'FORBIDDEN', 'fixture preview upload is admin-only');
+        return;
+      }
+      const input = await jsonBody(req);
+      const queryPackageIds = Array.isArray(input.queryPackageIds) ? input.queryPackageIds : [];
+      const includeUnassigned = input.includeUnassigned === true;
+      if (input.scope !== 'QUERY_PACKAGES'
+          || (queryPackageIds.length === 0 && !includeUnassigned)) {
+        error(res, 400, 'INVALID_PREVIEW_SCOPE', 'fixture requires a selected delivery source');
+        return;
+      }
+      const selectedIds = new Set(queryPackageIds.map(Number));
+      const selectedTaskIds = Array.isArray(input.taskIds)
+        ? new Set(input.taskIds.map(Number))
+        : null;
+      const limit = Math.min(200, Math.max(1, Number(input.limit) || 50));
+      const candidates = state.deliveryEntries.filter(
+        (entry) => (selectedIds.has(entry.queryPackageId)
+          || (includeUnassigned && entry.queryPackageId === null))
+          && (!selectedTaskIds || selectedTaskIds.has(entry.taskId))
+          && (input.testTaskId === undefined || entry.taskId === Number(input.testTaskId))
+          && !entry.preview,
+      ).slice(0, limit);
+      const items = candidates.map((entry) => {
+        const id = randomUUID();
+        const noteId = randomUUID().replaceAll('-', '');
+        entry.preview = {
+          id,
+          noteId,
+          url: `${nextRoot}/preview?noteId=${noteId}`,
+          contentHash: 'a'.repeat(64),
+          status: 'PUBLISHED',
+          publishedAt: new Date().toISOString(),
+          revokedAt: null,
+        };
+        return {
+          taskId: entry.taskId,
+          deliveryEntryId: entry.id,
+          noteId,
+          previewUrl: entry.preview.url,
+          reused: false,
+        };
+      });
+      send(res, 200, {
+        scope: 'QUERY_PACKAGES',
+        limit,
+        requestedCount: items.length,
+        publishedCount: items.length,
+        createdCount: items.length,
+        reusedCount: 0,
+        failedCount: 0,
+        items,
+        failures: [],
+      });
+      return;
+    }
+    if (method === 'POST' && url.pathname === '/v1/delivery-pool/archive') {
+      if (!['ADMIN', 'USER'].includes(actorRole(req))) {
+        error(res, 403, 'FORBIDDEN', 'fixture delivery-pool export access denied');
+        return;
+      }
+      const input = await jsonBody(req);
+      if (actor.role === 'USER' && input.scope !== 'SELECTED') {
+        error(res, 403, 'FORBIDDEN', 'fixture operators may export only selected work');
+        return;
+      }
+      const requestedIds = input.scope === 'ALL_READY'
+        ? state.deliveryEntries.map((entry) => entry.taskId)
+        : input.scope === 'CLIENT_BATCH'
+          ? state.deliveryEntries.filter((entry) => entry.clientBatchCode === input.clientBatchCode)
+            .map((entry) => entry.taskId)
+        : input.scope === 'QUERY_PACKAGE'
+          ? state.deliveryEntries.filter((entry) => entry.queryPackageName === input.queryPackageName)
+            .map((entry) => entry.taskId)
+          : Array.isArray(input.taskIds) ? input.taskIds.map(Number) : [];
+      if (actor.role === 'USER' && requestedIds.some((taskId) => {
+        const task = state.tasks.find((entry) => entry.id === taskId);
+        return !task || task.assignedToAccountId !== actor.id
+          || task.assignedToUserId !== actor.username || task.state !== 'REVIEWED';
+      })) {
+        error(res, 403, 'FORBIDDEN', 'fixture operators may export only their own completed work');
+        return;
+      }
+      const selectedEntries = state.deliveryEntries.filter(
+        (entry) => requestedIds.includes(entry.taskId) && !entry.deliveryBatch,
+      );
+      const taskIds = selectedEntries.map((entry) => entry.taskId);
+      if (!taskIds.length) {
+        error(res, 409, 'DELIVERY_POOL_HAS_NO_PENDING_ITEMS', 'fixture delivery pool has no pending items');
+        return;
+      }
+      state.deliveryExports.push({
+        scope: input.scope,
+        taskIds,
+        requestTaskIds: input.taskIds ?? null,
+      });
+      const zip = new JSZip();
+      for (const taskId of taskIds) {
+        zip.file(`任务-${taskId}-资源包/文案.txt`, Buffer.from(`fixture-${taskId}`));
+      }
+      const content = await zip.generateAsync({ type: 'nodebuffer' });
+      const downloadId = randomUUID();
+      const publicId = randomUUID();
+      const code = `JF-${publicId.replaceAll('-', '').slice(0, 8).toUpperCase()}`;
+      const createdAt = new Date().toISOString();
+      const fileName = `${code}-交付包.zip`;
+      const queryPackageNames = [...new Set(selectedEntries
+        .map((entry) => entry.queryPackageName).filter(Boolean))];
+      const batch = {
+        id: state.deliveryBatches.length + 1,
+        publicId,
+        code,
+        scope: input.scope,
+        queryPackageName: input.scope === 'QUERY_PACKAGE' ? input.queryPackageName : null,
+        queryPackageNames,
+        clientBatchCode: input.scope === 'CLIENT_BATCH' ? input.clientBatchCode : null,
+        status: 'GENERATED',
+        batchKind: actor.role === 'USER' ? 'OPERATOR_DELIVERY' : 'ADMIN_DELIVERY',
+        createdByRole: actor.role,
+        fileName,
+        byteSize: content.byteLength,
+        sha256: 'a'.repeat(64),
+        taskCount: taskIds.length,
+        createdByAccountId: actor.id,
+        createdByUsername: actor.username,
+        createdAt,
+        firstDownloadedAt: null,
+        lastDownloadedAt: null,
+        downloadCount: 0,
+        deliveredAt: null,
+        deliveredByAccountId: null,
+        deliveredByUsername: null,
+        items: selectedEntries.map((entry, index) => ({
+          id: state.deliveryBatches.length * 1000 + index + 1,
+          ordinal: index + 1,
+          taskId: entry.taskId,
+          copyRevisionId: entry.copyRevisionId,
+          imageRunId: entry.imageRunId,
+          query: entry.query,
+          queryPackageId: entry.queryPackageId,
+          queryPackageName: entry.queryPackageName,
+          clientBatchCode: entry.clientBatchCode,
+        })),
+        content,
+      };
+      state.deliveryBatches.unshift(batch);
+      for (const entry of selectedEntries) {
+        entry.deliveryBatch = {
+          id: batch.id,
+          publicId,
+          code,
+          status: batch.status,
+          batchKind: batch.batchKind,
+          createdByRole: batch.createdByRole,
+          createdByUsername: batch.createdByUsername,
+          createdAt,
+          downloadedAt: null,
+        };
+      }
+      state.deliveryArchives.set(downloadId, {
+        content, fileName, taskCount: taskIds.length, batchPublicId: publicId,
+        actorAccountId: actor.id, actorUsername: actor.username,
+      });
+      send(res, 201, {
+        downloadId,
+        fileName,
+        taskCount: taskIds.length,
+        expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+        batchId: publicId,
+        batchCode: code,
+      });
+      return;
+    }
+    const deliveryDownloadMatch = url.pathname.match(/^\/v1\/delivery-pool\/archive\/([0-9a-f-]+)$/u);
+    if (method === 'HEAD' && deliveryDownloadMatch) {
+      const archive = state.deliveryArchives.get(deliveryDownloadMatch[1]);
+      if (!archive || archive.actorAccountId !== actor.id || archive.actorUsername !== actor.username) {
+        error(res, 404, 'NOT_FOUND', 'fixture delivery export is missing');
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': 'application/zip',
+        'Content-Disposition': 'attachment; filename="delivery-pool.zip"',
+        'Content-Length': String(archive.content.byteLength),
+        'X-Delivery-Task-Count': String(archive.taskCount),
+        'Cache-Control': 'no-store',
+      });
+      res.end();
+      return;
+    }
+    if (method === 'GET' && deliveryDownloadMatch) {
+      const archive = state.deliveryArchives.get(deliveryDownloadMatch[1]);
+      if (!archive || archive.actorAccountId !== actor.id || archive.actorUsername !== actor.username) {
+        error(res, 404, 'NOT_FOUND', 'fixture delivery export is missing');
+        return;
+      }
+      state.deliveryArchives.delete(deliveryDownloadMatch[1]);
+      const downloadedBatch = state.deliveryBatches.find(
+        (entry) => entry.publicId === archive.batchPublicId,
+      );
+      if (downloadedBatch) {
+        const downloadedAt = new Date().toISOString();
+        if (downloadedBatch.status === 'GENERATED') downloadedBatch.status = 'DOWNLOADED';
+        downloadedBatch.firstDownloadedAt ??= downloadedAt;
+        downloadedBatch.lastDownloadedAt = downloadedAt;
+        downloadedBatch.downloadCount += 1;
+        for (const entry of state.deliveryEntries.filter(
+          (item) => item.deliveryBatch?.publicId === downloadedBatch.publicId,
+        )) {
+          entry.deliveryBatch.status = downloadedBatch.status;
+          entry.deliveryBatch.downloadedAt = downloadedAt;
+        }
+      }
+      res.writeHead(200, {
+        'Content-Type': 'application/zip',
+        'Content-Disposition': 'attachment; filename="delivery-pool.zip"',
+        'Content-Length': String(archive.content.byteLength),
+        'Cache-Control': 'no-store',
+      });
+      res.end(archive.content);
+      return;
+    }
+    const deliveryBatchArchiveMatch = url.pathname.match(
+      /^\/v1\/delivery-batches\/([0-9a-f-]+)\/archive$/u,
+    );
+    if (['HEAD', 'GET'].includes(method) && deliveryBatchArchiveMatch) {
+      if (!['ADMIN', 'USER'].includes(actorRole(req))) {
+        error(res, 403, 'FORBIDDEN', 'fixture delivery history access denied');
+        return;
+      }
+      const batch = state.deliveryBatches.find(
+        (entry) => entry.publicId === deliveryBatchArchiveMatch[1],
+      );
+      if (!batch || (actor.role === 'USER' && (batch.batchKind !== 'OPERATOR_DELIVERY'
+          || batch.createdByAccountId !== actor.id || batch.createdByUsername !== actor.username))) {
+        error(res, 404, 'DELIVERY_BATCH_NOT_FOUND', 'fixture delivery batch is missing');
+        return;
+      }
+      if (method === 'GET') {
+        const downloadedAt = new Date().toISOString();
+        if (batch.status === 'GENERATED') batch.status = 'DOWNLOADED';
+        batch.firstDownloadedAt ??= downloadedAt;
+        batch.lastDownloadedAt = downloadedAt;
+        batch.downloadCount += 1;
+      }
+      res.writeHead(200, {
+        'Content-Type': 'application/zip',
+        'Content-Disposition': 'attachment; filename="delivery-batch.zip"',
+        'Content-Length': String(batch.content.byteLength),
+        'X-Delivery-Task-Count': String(batch.taskCount),
+        'Cache-Control': 'no-store',
+      });
+      res.end(method === 'GET' ? batch.content : undefined);
+      return;
+    }
+    const deliveryBatchConfirmMatch = url.pathname.match(
+      /^\/v1\/delivery-batches\/([0-9a-f-]+)\/confirm$/u,
+    );
+    if (method === 'POST' && deliveryBatchConfirmMatch) {
+      const batch = state.deliveryBatches.find(
+        (entry) => entry.publicId === deliveryBatchConfirmMatch[1],
+      );
+      if (!batch || (actor.role === 'USER' && (batch.batchKind !== 'OPERATOR_DELIVERY'
+          || batch.createdByAccountId !== actor.id || batch.createdByUsername !== actor.username))) {
+        error(res, 404, 'DELIVERY_BATCH_NOT_FOUND', 'fixture delivery batch is missing');
+        return;
+      }
+      if (batch.status !== 'DOWNLOADED' && batch.status !== 'DELIVERED') {
+        error(res, 409, 'DELIVERY_BATCH_NOT_DOWNLOADED', 'fixture batch must be downloaded first');
+        return;
+      }
+      if (batch.status !== 'DELIVERED') {
+        batch.status = 'DELIVERED';
+        batch.deliveredAt = new Date().toISOString();
+        batch.deliveredByAccountId = actor.id;
+        batch.deliveredByUsername = actor.username;
+      }
+      const { items: _items, content: _content, ...summary } = batch;
+      send(res, 200, summary);
+      return;
+    }
+    if (method === 'GET' && url.pathname === '/v1/query-packages') {
+      const visiblePackages = actorRole(req) === 'ADMIN'
+        ? state.packages
+        : state.packages.filter((record) => canAccessPackage(req, record));
+      const page = paginate(url, visiblePackages);
+      send(res, 200, page.items.map(packageSummary));
+      return;
+    }
+    if (method === 'POST' && url.pathname === '/v1/query-packages') {
+      if (actorRole(req) !== 'ADMIN') {
+        error(res, 403, 'WORKER_QUERY_IMPORT_DISABLED', 'fixture worker query import is disabled');
+        return;
+      }
+      const input = await jsonBody(req);
+      const clientBatchCode = String(input.clientBatchCode ?? '').trim().toLowerCase();
+      if (!/^[0-9a-f]{32}$/u.test(clientBatchCode)) {
+        error(res, 400, 'INVALID_INPUT', 'fixture client batch code is invalid');
+        return;
+      }
+      const now = new Date().toISOString();
+      const record = {
+        id: state.nextPackageId++,
+        name: String(input.name),
+        clientBatchCode,
+        status: 'IMPORTED',
+        createdByUserId: actorUser(req)?.username ?? 'admin',
+        createdByAccountId: actorUser(req)?.id ?? users.admin.id,
+        assignedToUserId: null,
+        assignedToAccountId: null,
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+        items: input.items.map((item, index) => ({
+          id: state.nextItemId++,
+          rowNumber: index + 1,
+          externalId: null,
+          query: String(item.query),
+          input: item.input ?? {},
+          requestedImageCount: item.requestedImageCount ?? 'auto',
+          status: 'READY',
+          screeningDecision: 'PENDING',
+          screeningReason: null,
+          screeningAssignedToAccountId: null,
+          screeningAssignedToUserId: null,
+          taskId: null,
+          version: 1,
+        })),
+      };
+      state.packages.push(record);
+      send(res, 201, packageSummary(record));
+      return;
+    }
+    const packageMatch = url.pathname.match(/^\/v1\/query-packages\/(\d+)$/u);
+    if (method === 'GET' && packageMatch) {
+      const record = state.packages.find((entry) => entry.id === Number(packageMatch[1]));
+      if (!record) {
+        error(res, 404, 'QUERY_PACKAGE_NOT_FOUND', 'fixture package missing');
+        return;
+      }
+      if (!canAccessPackage(req, record)) {
+        error(res, 403, 'FORBIDDEN', 'fixture query package access denied');
+        return;
+      }
+      send(res, 200, packageDetail(record, req));
+      return;
+    }
+    const assignmentSummaryMatch = url.pathname.match(
+      /^\/v1\/query-packages\/(\d+)\/item-assignment-summary$/u,
+    );
+    if (method === 'GET' && assignmentSummaryMatch) {
+      if (actorRole(req) !== 'ADMIN') {
+        error(res, 403, 'FORBIDDEN', 'fixture Query item assignment is admin-only');
+        return;
+      }
+      const record = state.packages.find((entry) => entry.id === Number(assignmentSummaryMatch[1]));
+      if (!record) {
+        error(res, 404, 'QUERY_PACKAGE_NOT_FOUND', 'fixture package missing');
+        return;
+      }
+      send(res, 200, fixtureItemAssignmentSummary(record));
+      return;
+    }
+    const itemAssignmentsMatch = url.pathname.match(
+      /^\/v1\/query-packages\/(\d+)\/item-assignments$/u,
+    );
+    if (method === 'PUT' && itemAssignmentsMatch) {
+      if (actorRole(req) !== 'ADMIN') {
+        error(res, 403, 'FORBIDDEN', 'fixture Query item assignment is admin-only');
+        return;
+      }
+      const record = state.packages.find((entry) => entry.id === Number(itemAssignmentsMatch[1]));
+      const input = await jsonBody(req);
+      if (!record) {
+        error(res, 404, 'QUERY_PACKAGE_NOT_FOUND', 'fixture package missing');
+        return;
+      }
+      if (Number(input.expectedVersion) !== record.version) {
+        error(res, 409, 'VERSION_CONFLICT', 'fixture package version is stale');
+        return;
+      }
+      const strategy = String(input.strategy).toUpperCase();
+      const assignees = Array.isArray(input.assignees) ? input.assignees.map((entry) => {
+        const user = Object.values(users).find((candidate) => candidate.id === Number(entry.accountId)
+          && candidate.status === 'ACTIVE' && ['REVIEWER', 'USER'].includes(candidate.role));
+        return user ? { ...user, count: Number(entry.count) } : null;
+      }) : [];
+      if (!['EVEN', 'COUNTS'].includes(strategy) || assignees.some((user) => user === null)) {
+        error(res, 400, 'INVALID_INPUT', 'fixture item assignment input is invalid');
+        return;
+      }
+      const eligible = record.items.filter((item) => item.status === 'READY'
+        && item.screeningDecision === 'PENDING');
+      const targets = [];
+      if (strategy === 'EVEN' && assignees.length > 0) {
+        const base = Math.floor(eligible.length / assignees.length);
+        let remainder = eligible.length % assignees.length;
+        for (const user of assignees) {
+          const count = base + (remainder-- > 0 ? 1 : 0);
+          targets.push(...Array.from({ length: count }, () => user));
+        }
+      } else if (strategy === 'COUNTS') {
+        for (const user of assignees) targets.push(...Array.from({ length: user.count }, () => user));
+      }
+      if (targets.length > eligible.length) {
+        error(res, 409, 'ASSIGNMENT_COUNT_EXCEEDED', 'fixture assignment exceeds pending items');
+        return;
+      }
+      eligible.forEach((item, index) => {
+        item.screeningAssignedToAccountId = targets[index]?.id ?? null;
+        item.screeningAssignedToUserId = targets[index]?.username ?? null;
+        item.version += 1;
+      });
+      record.assignedToAccountId = null;
+      record.assignedToUserId = null;
+      record.version += 1;
+      record.updatedAt = new Date().toISOString();
+      send(res, 200, {
+        queryPackage: packageSummary(record),
+        assignment: fixtureItemAssignmentSummary(record),
+      });
+      return;
+    }
+    const assigneeMatch = url.pathname.match(/^\/v1\/query-packages\/(\d+)\/assignee$/u);
+    if (method === 'PATCH' && assigneeMatch) {
+      if (actorRole(req) !== 'ADMIN') {
+        error(res, 403, 'FORBIDDEN', 'fixture Query package assignment is admin-only');
+        return;
+      }
+      const record = state.packages.find((entry) => entry.id === Number(assigneeMatch[1]));
+      const input = await jsonBody(req);
+      if (!record) {
+        error(res, 404, 'QUERY_PACKAGE_NOT_FOUND', 'fixture package missing');
+        return;
+      }
+      if (Number(input.expectedVersion) !== record.version) {
+        error(res, 409, 'VERSION_CONFLICT', 'fixture package version is stale');
+        return;
+      }
+      const includesUsername = Object.hasOwn(input, 'assignedToUserId');
+      const includesAccountId = Object.hasOwn(input, 'assignedToAccountId');
+      if (!includesUsername || !includesAccountId) {
+        error(res, 400, 'INVALID_INPUT', 'fixture assignee identity fields are required');
+        return;
+      }
+      const hasUsername = input.assignedToUserId !== null;
+      const hasAccountId = input.assignedToAccountId !== null;
+      if (hasUsername !== hasAccountId) {
+        error(res, 400, 'INVALID_INPUT', 'fixture assignee identity must be complete');
+        return;
+      }
+      const assignee = hasUsername
+        ? Object.values(users).find((candidate) => candidate.id === Number(input.assignedToAccountId)
+          && candidate.username === String(input.assignedToUserId).trim().toLowerCase()
+          && candidate.status === 'ACTIVE'
+          && ['REVIEWER', 'USER'].includes(candidate.role))
+        : null;
+      if (hasUsername && !assignee) {
+        error(res, 409, 'ASSIGNEE_UNAVAILABLE', 'fixture assignee is unavailable');
+        return;
+      }
+      record.assignedToUserId = assignee?.username ?? null;
+      record.assignedToAccountId = assignee?.id ?? null;
+      record.version += 1;
+      record.updatedAt = new Date().toISOString();
+      send(res, 200, packageSummary(record));
+      return;
+    }
+    const screenMatch = url.pathname.match(/^\/v1\/query-packages\/(\d+)\/screening$/u);
+    if (method === 'PUT' && screenMatch) {
+      const record = state.packages.find((entry) => entry.id === Number(screenMatch[1]));
+      const input = await jsonBody(req);
+      if (!record) {
+        error(res, 404, 'QUERY_PACKAGE_NOT_FOUND', 'fixture package missing');
+        return;
+      }
+      if (!canAccessPackage(req, record)) {
+        error(res, 403, 'FORBIDDEN', 'fixture query package access denied');
+        return;
+      }
+      if (!['IMPORTED', 'SCREENING', 'READY', 'PARTIALLY_USED'].includes(record.status)) {
+        error(res, 409, 'PACKAGE_NOT_SCREENABLE', 'fixture Query package is read-only');
+        return;
+      }
+      const decisions = Array.isArray(input.decisions) ? input.decisions : [];
+      const itemVersioned = decisions.length > 0
+        && decisions.every((decision) => Number.isSafeInteger(Number(decision.expectedItemVersion)));
+      if (!itemVersioned && Number(input.expectedVersion) !== record.version) {
+        error(res, 409, 'VERSION_CONFLICT', 'fixture package version is stale');
+        return;
+      }
+      const decisionIds = decisions.map((decision) => Number(decision.itemId));
+      const requestedItems = decisionIds.map((itemId) => record.items.find((item) => item.id === itemId));
+      const actor = actorUser(req);
+      if (!decisions.length || new Set(decisionIds).size !== decisions.length
+          || requestedItems.some((item, index) => !item || item.status !== 'READY'
+            || (itemVersioned && item.version !== Number(decisions[index].expectedItemVersion))
+            || (itemVersioned && actor.role !== 'ADMIN'
+              && (item.screeningAssignedToAccountId !== actor.id
+                || item.screeningAssignedToUserId !== actor.username)))) {
+        error(res, 409, 'ITEM_NOT_SCREENABLE', 'fixture screening scope is stale');
+        return;
+      }
+      const selectedItems = [];
+      for (let index = 0; index < decisions.length; index += 1) {
+        const decision = decisions[index];
+        const item = requestedItems[index];
+        item.screeningDecision = decision.decision === 'SELECT' ? 'SELECTED' : 'REJECTED';
+        item.screeningReason = decision.reason ?? null;
+        item.version += 1;
+        if (item.screeningDecision === 'SELECTED') selectedItems.push(item);
+      }
+      createFixtureProductionBatch(record, selectedItems, actorUser(req)?.username);
+      record.version += 1;
+      record.updatedAt = new Date().toISOString();
+      record.status = packageStatus(record);
+      send(res, 200, packageSummary(record));
+      return;
+    }
+    const productionMatch = url.pathname.match(/^\/v1\/query-packages\/(\d+)\/production-batches$/u);
+    if (method === 'POST' && productionMatch) {
+      if (actorRole(req) !== 'ADMIN') {
+        error(res, 403, 'FORBIDDEN', 'fixture production batch creation is admin-only');
+        return;
+      }
+      const record = state.packages.find((entry) => entry.id === Number(productionMatch[1]));
+      const input = await jsonBody(req);
+      if (!record) {
+        error(res, 404, 'QUERY_PACKAGE_NOT_FOUND', 'fixture package missing');
+        return;
+      }
+      if (Number(input.expectedVersion) !== record.version) {
+        error(res, 409, 'VERSION_CONFLICT', 'fixture package version is stale');
+        return;
+      }
+      const itemIds = input.itemIds === undefined
+        ? record.items.filter((item) => item.status === 'READY'
+          && item.screeningDecision === 'SELECTED').map((item) => item.id)
+        : input.itemIds.map(Number);
+      const requested = new Set(itemIds);
+      const items = record.items.filter((item) => requested.has(item.id)
+        && item.status === 'READY' && item.screeningDecision === 'SELECTED' && !item.taskId);
+      if (!items.length || items.length !== requested.size || requested.size !== itemIds.length) {
+        error(res, 409, 'ITEM_SCOPE_CHANGED', 'fixture production scope is stale');
+        return;
+      }
+      const batch = createFixtureProductionBatch(record, items, actorUser(req)?.username);
+      record.version += 1;
+      record.updatedAt = new Date().toISOString();
+      record.status = packageStatus(record);
+      send(res, 201, batch);
+      return;
+    }
+
+    if (method === 'GET' && url.pathname === '/v1/copy-qa/items') {
+      const visibleItems = state.qaItems
+        .filter((item) => item.status !== 'NOT_SELECTED')
+        .filter((item) => !url.searchParams.get('status') || url.searchParams.get('status') === 'ALL' || item.status === url.searchParams.get('status'));
+      const page = paginate(url, visibleItems);
+      send(res, 200, page.items.map((item) => qaItemFor(req, item)));
+      return;
+    }
+    if (method === 'GET' && url.pathname === '/v1/copy-qa/statistics') {
+      if (actorRole(req) !== 'ADMIN') error(res, 403, 'FORBIDDEN', 'fixture statistics are admin-only');
+      else send(res, 200, { random: [], mandatory: { passed: 0, returned: 0, pending: 0 }, batchAffectedCount: 0 });
+      return;
+    }
+    const qaDetailMatch = url.pathname.match(/^\/v1\/copy-qa\/items\/([0-9a-f-]+)$/u);
+    if (method === 'GET' && qaDetailMatch) {
+      const item = state.qaItems.find((entry) => entry.id === qaDetailMatch[1]);
+      if (!item) error(res, 404, 'QA_ITEM_NOT_FOUND', 'fixture QA item missing');
+      else if (actorRole(req) === 'REVIEWER' && item.status === 'NOT_SELECTED') {
+        error(res, 404, 'QA_ITEM_NOT_FOUND', 'fixture QA item missing');
+      }
+      else send(res, 200, qaItemFor(req, item));
+      return;
+    }
+    const qaActionMatch = url.pathname.match(/^\/v1\/copy-qa\/items\/([0-9a-f-]+)\/(pass|return)$/u);
+    if (method === 'POST' && qaActionMatch) {
+      const item = state.qaItems.find((entry) => entry.id === qaActionMatch[1]);
+      const input = await jsonBody(req);
+      if (!item) {
+        error(res, 404, 'QA_ITEM_NOT_FOUND', 'fixture QA item missing');
+        return;
+      }
+      if (input.expectedRevisionToken !== item.approvedRevision.revisionToken) {
+        error(res, 409, 'STALE_QA_ITEM', 'fixture revision token is stale');
+        return;
+      }
+      item.status = qaActionMatch[2] === 'pass' ? 'PASSED' : 'RETURNED';
+      send(res, 200, { id: item.id, status: item.status, ...(item.status === 'PASSED' ? { releasedCount: 0 } : {}) });
+      return;
+    }
+    const previewMatch = url.pathname.match(/^\/v1\/copy-qa\/freezes\/([0-9a-f-]+)\/batch-return-preview$/u);
+    if (method === 'GET' && previewMatch) {
+      const items = state.qaItems.filter((item) => item.freezePublicId === previewMatch[1]
+        && ['PENDING', 'RETURNED', 'PASSED', 'NOT_SELECTED'].includes(item.status));
+      send(res, 200, {
+        freezePublicId: previewMatch[1],
+        confirmedCount: items.length,
+        triggerCandidates: items.filter((item) => ['PENDING', 'RETURNED'].includes(item.status)).map((item) => item.id),
+        items: items.map((item) => ({ id: item.id, status: item.status })),
+      });
+      return;
+    }
+    if (method === 'POST' && url.pathname === '/v1/copy-qa/batch-return') {
+      const input = await jsonBody(req);
+      for (const item of state.qaItems.filter((candidate) => input.itemIds?.includes(candidate.id))) {
+        if (item.id !== input.triggerSamplingItemId) item.status = 'BATCH_AFFECTED';
+        else if (item.status !== 'RETURNED') item.status = 'RETURNED';
+      }
+      send(res, 200, { freezePublicId: input.freezePublicId, status: 'BATCH_RETURNED' });
+      return;
+    }
+    if (method === 'GET' && url.pathname === '/v1/tasks') {
+      send(res, 200, actorRole(req) === 'ADMIN'
+        ? structuredClone(state.tasks)
+        : state.tasks.filter((task) => task.assignedToUserId === actorUser(req)?.username));
+      return;
+    }
+    if (method === 'GET' && url.pathname === '/v1/tasks/991' && actorRole(req) === 'REVIEWER') {
+      error(res, 404, 'TASK_NOT_FOUND', 'task not found');
+      return;
+    }
+    if (method === 'GET' && url.pathname === '/__fixture/state') {
+      send(res, 200, {
+        packages: state.packages.map(packageDetail),
+        batches: structuredClone(state.batches),
+        tasks: structuredClone(state.tasks),
+        qaItems: state.qaItems.map((item) => ({ id: item.id, status: item.status })),
+        deliveryExports: structuredClone(state.deliveryExports),
+        requests: state.requests,
+      });
+      return;
+    }
+
+    error(res, 404, 'FIXTURE_ROUTE_NOT_FOUND', `${method} ${url.pathname} is not available in the isolated E2E fixture`);
+  } catch (caught) {
+    error(res, 500, 'FIXTURE_ERROR', caught instanceof Error ? caught.message : 'fixture failed');
+  }
+});
+
+await new Promise((resolve, reject) => {
+  controlPlane.listen(0, '127.0.0.1', resolve);
+  controlPlane.once('error', reject);
+});
+
+async function reservePort() {
+  const reservation = createServer();
+  await new Promise((resolve, reject) => {
+    reservation.listen(0, '127.0.0.1', resolve);
+    reservation.once('error', reject);
+  });
+  const port = reservation.address().port;
+  await new Promise((resolve) => reservation.close(resolve));
+  return port;
+}
+
+const controlPlaneRoot = `http://127.0.0.1:${controlPlane.address().port}`;
+const controlPlaneOnly = process.env.MODULAR_E2E_CONTROL_PLANE_ONLY === '1';
+let next = null;
+let nextRoot = controlPlaneRoot;
+if (!controlPlaneOnly) {
+  const nextPort = await reservePort();
+  nextRoot = `http://127.0.0.1:${nextPort}`;
+  const nextEnvironment = {
+    ...process.env,
+    CONTROL_PLANE_URL: controlPlaneRoot,
+    EXECUTOR_NODE_ID: 'modular-e2e-fixture',
+    XHS_SESSION_SECRET: randomBytes(32).toString('hex'),
+    XHS_NEXT_DIST_DIR: relative(projectRoot, buildRoot),
+    XHS_DB_PATH: join(dataRoot, 'unused.sqlite'),
+    XHS_OUTPUT_ROOT: join(dataRoot, 'unused-output'),
+    NEXT_TELEMETRY_DISABLED: '1',
+    NO_COLOR: '1',
+  };
+  delete nextEnvironment.NODE_ENV;
+
+  next = spawn(process.execPath, [
+    'node_modules/next/dist/bin/next', 'dev', '-H', '127.0.0.1', '-p', String(nextPort),
+  ], {
+    cwd: projectRoot,
+    env: nextEnvironment,
+    shell: false,
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  next.stdout.pipe(process.stdout);
+  next.stderr.pipe(process.stderr);
+
+  let ready = false;
+  for (let attempt = 0; attempt < 240; attempt += 1) {
+    if (next.exitCode !== null) throw new Error(`Next development server exited early (${next.exitCode})`);
+    const response = await fetch(`${nextRoot}/login`).catch(() => null);
+    if (response?.ok) {
+      ready = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  if (!ready) throw new Error('Next development server did not become ready within 60 seconds');
+}
+
+console.log(`MODULAR_E2E_READY ${JSON.stringify({
+  url: nextRoot,
+  controlPlaneUrl: controlPlaneRoot,
+  admin: { userId: users.admin.id, username: users.admin.username, role: users.admin.role,
+    credentialVersion: users.admin.credentialVersion, password: passwords.admin },
+  reviewer: { userId: users.reviewer.id, username: users.reviewer.username, role: users.reviewer.role,
+    credentialVersion: users.reviewer.credentialVersion, password: passwords.reviewer },
+  worker: { userId: users.worker.id, username: users.worker.username, role: users.worker.role,
+    credentialVersion: users.worker.credentialVersion, password: passwords.worker },
+  isolation: { fakeControlPlane: true, database: false, model: false, publishing: false },
+})}`);
+
+let stop;
+const stopped = new Promise((resolve) => { stop = resolve; });
+process.once('SIGINT', stop);
+process.once('SIGTERM', stop);
+next?.once('exit', stop);
+await stopped;
+
+if (next?.exitCode === null) {
+  next.kill('SIGTERM');
+  await new Promise((resolve) => next.once('exit', resolve));
+}
+await new Promise((resolve) => controlPlane.close(resolve));
+await restoreNextManagedFiles();
+await rm(buildRoot, { recursive: true, force: true });
+await rm(dataRoot, { recursive: true, force: true });

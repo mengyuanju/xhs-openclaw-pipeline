@@ -33,9 +33,15 @@
     "**/*.ts",
     "**/*.tsx",
     ".next/types/**/*.ts",
-    ".next/dev/types/**/*.ts"
+    ".next/dev/types/**/*.ts",
+    ".next-green/types/**/*.ts",
+    ".next-green/dev/types/**/*.ts",
+    ".next-blue/types/**/*.ts",
+    ".next-blue/dev/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "outputs",
+    "preview-service"
   ]
 }

@@ -4,23 +4,30 @@ import { join } from 'node:path';
 import sharp from 'sharp';
 import { IMAGE_FORMATS, normalizeImageSettings } from '../server/src/image-options.mjs';
 
-export const IMAGE_ARTIFACT_FILE = /^(?:source-)?\d{2}-[a-z][a-z0-9-]{0,30}\.(?:png|jpg|webp|avif|tiff|gif)$/u;
+export const IMAGE_ARTIFACT_FILE = /^(?:source-)?\d{2}-[a-z][a-z0-9-]{0,30}\.(?:png|jpg|webp|avif|gif)$/u;
 
 // Encode once, then decode the actual delivery bytes for browser preview and QC.
 // Source is the normalized full artwork before flattening, so a later revision can undo a fill.
-export async function prepareImageArtifacts({ source, outputDir, file, settings }) {
+export async function prepareImageArtifacts({ source, outputDir, file, settings, deliveryOverlaySvg = null }) {
   if (!/^\d{2}-[a-z][a-z0-9-]{0,30}\.png$/u.test(file)) throw new TypeError('invalid image artifact file');
+  if (deliveryOverlaySvg !== null
+    && (typeof deliveryOverlaySvg !== 'string' || Buffer.byteLength(deliveryOverlaySvg, 'utf8') > 100_000)) {
+    throw new TypeError('delivery overlay SVG is invalid');
+  }
   const resolved = normalizeImageSettings(settings);
   const codec = IMAGE_FORMATS[resolved.format];
   const sourceFile = `source-${file}`;
   const deliveryFile = file.replace(/\.png$/u, `.${codec.extension}`);
   const original = await sharp(source, { limitInputPixels: 40_000_000, failOn: 'error' }).png().toBuffer();
   const sourceTransparent = !(await sharp(original).stats()).isOpaque;
-  let encoder = sharp(original);
+  const rendered = deliveryOverlaySvg === null ? original : await sharp(original)
+    .composite([{ input: Buffer.from(deliveryOverlaySvg, 'utf8'), top: 0, left: 0 }])
+    .png({ compressionLevel: 8 })
+    .toBuffer();
+  let encoder = sharp(rendered);
   if (resolved.background === 'SOLID') encoder = encoder.flatten({ background: resolved.backgroundColor });
   const options = resolved.format === 'PNG' ? { compressionLevel: 8 }
-    : resolved.format === 'TIFF' ? { compression: 'lzw' }
-      : resolved.format === 'GIF' ? {} : { quality: resolved.quality };
+    : resolved.format === 'GIF' ? {} : { quality: resolved.quality };
   const delivery = await encoder.toFormat(resolved.format.toLowerCase(), options).toBuffer();
   const preview = resolved.format === 'PNG' ? delivery : await sharp(delivery).png().toBuffer();
   await writeFile(join(outputDir, sourceFile), original);

@@ -2,12 +2,12 @@ import { z } from 'zod';
 
 import { apiHandler, parseJson } from '../../_lib';
 import {
-  LoginRateLimiter,
   createSessionToken,
   readSessionConfig,
   serializeAdminSessionCookie,
 } from '../../../../src/admin/auth.mjs';
 import { ApiError } from '../../../../src/admin/http.mjs';
+import { loginRateLimitStore } from '../../../../src/admin/login-rate-limits.mjs';
 import { controlPlaneUrl } from '../../../../src/control-plane/next-runtime.mjs';
 
 export const runtime = 'nodejs';
@@ -17,40 +17,13 @@ const loginSchema = z.object({
   username: z.string().trim().toLowerCase().min(3).max(50).default('admin'),
   password: z.string().min(1).max(1_024),
 }).strict();
-const MAX_LOGIN_LIMITERS = 100;
-const loginLimiters = new Map<string, LoginRateLimiter>();
-const globalLoginLimiter = new LoginRateLimiter({ maxFailures: 50 });
-
-function getLoginLimiter(username: string) {
-  const existing = loginLimiters.get(username);
-  if (existing) {
-    loginLimiters.delete(username);
-    loginLimiters.set(username, existing);
-    return existing;
-  }
-  if (loginLimiters.size >= MAX_LOGIN_LIMITERS) {
-    const oldestUsername = loginLimiters.keys().next().value;
-    if (oldestUsername) loginLimiters.delete(oldestUsername);
-  }
-  const limiter = new LoginRateLimiter();
-  loginLimiters.set(username, limiter);
-  return limiter;
-}
-
 export async function POST(request: Request) {
   return apiHandler(request, { mutation: true, auth: false }, async () => {
     const { username, password } = await parseJson(request, loginSchema);
-    const globalRateLimit = globalLoginLimiter.check();
-    if (!globalRateLimit.allowed) {
+    const rateLimit = loginRateLimitStore.check(username);
+    if (!rateLimit.allowed) {
       throw new ApiError(429, 'TOO_MANY_ATTEMPTS', '登录尝试过多，请稍后再试', {
-        retryAfterSeconds: globalRateLimit.retryAfterSeconds,
-      });
-    }
-    const limiter = getLoginLimiter(username);
-    const accountRateLimit = limiter.check();
-    if (!accountRateLimit.allowed) {
-      throw new ApiError(429, 'TOO_MANY_ATTEMPTS', '登录尝试过多，请稍后再试', {
-        retryAfterSeconds: accountRateLimit.retryAfterSeconds,
+        retryAfterSeconds: rateLimit.retryAfterSeconds,
       });
     }
     const root = controlPlaneUrl();
@@ -65,12 +38,11 @@ export async function POST(request: Request) {
     }).catch(() => null);
     if (!userResponse) throw new ApiError(503, 'CONTROL_PLANE_UNAVAILABLE', '无法连接中心服务');
     if (!userResponse.ok) {
-      globalLoginLimiter.recordFailure();
-      limiter.recordFailure();
+      loginRateLimitStore.recordFailure(username);
       throw new ApiError(401, 'INVALID_CREDENTIALS', '登录失败');
     }
     const user = (await userResponse.json()).data;
-    limiter.reset();
+    loginRateLimitStore.resetAccount(username);
     const token = createSessionToken(config.sessionSecret, {
       actor: {
         userId: user.id,
@@ -79,6 +51,9 @@ export async function POST(request: Request) {
         roles: [user.role],
         credentialVersion: user.credentialVersion,
         mustChangePassword: user.mustChangePassword,
+        copyReviewEnabled: user.copyReviewEnabled,
+        copyQcEnabled: user.copyQcEnabled,
+        imageQcEnabled: user.imageQcEnabled,
       },
     });
 
@@ -88,6 +63,9 @@ export async function POST(request: Request) {
         homePath: user.mustChangePassword ? '/profile' : '/workbench/personal',
         role: user.role,
         mustChangePassword: user.mustChangePassword,
+        copyReviewEnabled: user.copyReviewEnabled,
+        copyQcEnabled: user.copyQcEnabled,
+        imageQcEnabled: user.imageQcEnabled,
       },
     });
     response.headers.set('cache-control', 'no-store');

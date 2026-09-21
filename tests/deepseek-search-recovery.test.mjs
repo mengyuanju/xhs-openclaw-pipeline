@@ -88,6 +88,41 @@ test('a failed finalization stops after two calls and cannot reuse earlier JSON 
   assert.equal(calls, 2);
 });
 
+test('a missing completed search call gets one bounded search retry with a distinct trace operation', async () => {
+  const noCompletedSearch = { status: 'completed', error: null, output: [
+    { type: 'web_search_call', id: 'search-failed', status: 'failed', action: { type: 'search', queries: ['fixture'] } },
+    message(JSON.stringify(evidence), 'final_answer'),
+  ] };
+  const calls = [];
+  const records = [];
+  const result = await withModelCallTracing({ executionId: 'offline-search-retry', controlPlane: {
+    async recordModelCall(_execution, _id, record) { records.push(record); },
+  } }, () => runDeepSeekWebSearch({ apiKey: 'offline-fixture-key', model: 'deepseek-v4-flash', timeoutMs: 5000,
+    fetchImpl: async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return new Response(JSON.stringify(calls.length === 1 ? noCompletedSearch
+        : payload(message(JSON.stringify(evidence), 'final_answer'))));
+    } }, { query: 'fixture' }));
+
+  assert.equal(result.result.content, evidence.summary);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(records.filter(record => record.finishedAt).map(record => [record.operation, record.status]), [
+    ['WEB_SEARCH', 'FAILED'],
+    ['WEB_SEARCH_RETRY', 'SUCCEEDED'],
+  ]);
+});
+
+test('a missing completed search call is retried only once', async () => {
+  let calls = 0;
+  await assert.rejects(runDeepSeekWebSearch({ apiKey: 'offline-fixture-key', timeoutMs: 5000,
+    fetchImpl: async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ status: 'completed', error: null, output: [] }));
+    },
+  }, { query: 'fixture' }), { code: 'DEEPSEEK_SEARCH_NO_COMPLETED_CALL' });
+  assert.equal(calls, 2);
+});
+
 test('remote #718: failed search branches do not block one bounded finalization when completed evidence exists', async () => {
   const malformed = { status: 'completed', error: null, output: [
     searched,

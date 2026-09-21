@@ -1,0 +1,25 @@
+[Unit]
+Description=XHS independent preview service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xhs-preview
+Group=xhs-preview
+WorkingDirectory=/opt/xhs-openclaw-pipeline/preview-service
+Environment=HOME=/var/lib/xhs-preview
+Environment=NODE_ENV=production
+Environment=WRANGLER_SEND_METRICS=false
+ExecStart=/usr/local/bin/npm start -- --ip 127.0.0.1 --port 3100 --local-protocol https --upstream-protocol https --persist-to /var/lib/xhs-preview/state
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

@@ -80,9 +80,9 @@ Query 仅保存在 PostgreSQL 和可选的元数据文件中。重试产生新�
 
 ## 执行机开关
 
-执行代理默认不领取图片任务。只有显式配置 `IMAGE_WORKER_ENABLED=true` 或传入 `--enable-image-worker` 时才启动图片轮询，并在节点注册信息中声明能力。关闭时不创建图片轮询定时器，也不会调用图片领取 API。
+执行代理默认不领取图片任务。只有显式配置 `IMAGE_WORKER_ENABLED=true` 或传入 `--enable-image-worker` 时才启动图片轮询，并在节点注册信息中声明能力。关闭时不创建图片轮询定时器，也不会调用图片领取 API。启用后，普通生图与人工改图由中心在同一次领取中统一排序，并共同占用图片并发；中心服务自身不调用改图模型。
 
-每台机器有两个独立的有界任务池。`EXECUTOR_COPY_CONCURRENCY` 和 `EXECUTOR_IMAGE_CONCURRENCY` 分别控制文案、图片任务并发，均默认 1、允许 1–32。每次按空闲槽位批量领取，任务结束即补位；只返回部分任务时，剩余槽位按 `EXECUTOR_POLL_MS` 继续轮询。图片池仍只在显式启用图片能力时运行。
+每台机器有两个独立的有界任务池。`EXECUTOR_COPY_CONCURRENCY` 和 `EXECUTOR_IMAGE_CONCURRENCY` 分别控制文案、图片任务并发，均默认 1、允许 1–32。每次按空闲槽位批量领取，任务结束即补位；只返回部分任务时，剩余槽位按 `EXECUTOR_POLL_MS` 继续轮询。图片池包含普通生图和人工改图，仍只在显式启用图片能力时运行。
 
 节点注册与心跳上报两类容量；中心在短事务内锁定节点行，按容量减去该节点同类 `RUNNING` 执行数，再用 `FOR UPDATE SKIP LOCKED` 领取任务。原单条接口保留返回结构并复用同一容量检查。新接口为 `POST /v1/executions/claim-copy-batch` 和 `claim-image-batch`，请求 `{ nodeId, limit, requestId }`、响应 `{ requestId, claims }`；`requestId` 是 UUIDv7。
 

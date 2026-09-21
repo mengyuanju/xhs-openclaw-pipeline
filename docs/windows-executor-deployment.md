@@ -108,7 +108,7 @@ XHS_COPY_GENERATION_PROVIDER=CODEX
 # 本示例显式选择 DeepSeek 搜索；不是对所有项目版本默认值的声明。
 XHS_WEB_SEARCH_PROVIDER=DEEPSEEK
 DEEPSEEK_API_KEY=替换为本机实际使用的Key
-XHS_DEEPSEEK_SEARCH_MODEL=deepseek-v4-flash
+XHS_DEEPSEEK_SEARCH_MODEL=deepseek-v4-pro
 XHS_DEEPSEEK_SEARCH_TIMEOUT_MS=120000
 ```
 
@@ -184,9 +184,10 @@ cd C:\xhs
 npm.cmd run executor -- --enable-image-worker
 ```
 
-两种命令选其一。命令行开关优先于 `.env` 的 `IMAGE_WORKER_ENABLED`，不要为同一个节点重复启动两个执行器。开启图片通道后，空闲时会领取符合条件的全局图片任务，并不限于本机生成文案的任务。
+两种命令选其一。命令行开关优先于 `.env` 的 `IMAGE_WORKER_ENABLED`，不要为同一个节点重复启动两个执行器。开启图片通道后，空闲时会领取符合条件的全局普通生图和人工改图，并不限于本机生成文案的任务；两类工作共享 `EXECUTOR_IMAGE_CONCURRENCY` 和图片模型许可。部署新版时应先升级中心并执行数据库迁移，再更新图片执行机。
 
 看到 `is ready and connected` 后，在现有 Web 后台查看节点是否在线。执行器约每 15 秒上报在线状态，中心以最近约 90 秒活动判断在线。它需要持续运行，空队列时会轮询等待。
+新版图片执行机还应在执行机管理页显示“支持人工改图”；如果显示“需更新执行机才能改图”，说明仍是旧进程，即使节点状态为在线也不会领取人工改图。
 
 启动执行器后会实际领取任务并调用模型。`--once` 同样可能执行真实任务，它不是只读预检或 mock 开关。
 

@@ -39,7 +39,8 @@ function configuration(templates, settings, productionSettings, knowledge, sourc
   const prompts = publishedPromptVersions(templates);
   settings = settings ? normalizePromptPolicy(settings) : null;
   return { templates, settings, productionSettings, knowledge: enabledKnowledge, source,
-    promptRuntime: settings ? createPromptRuntime({ prompts, settings, source }) : null,
+    promptRuntime: settings || Object.values(prompts).some(Boolean)
+      ? createPromptRuntime({ prompts, settings, source }) : null,
     systemPrompt: prompts.TEXT_SYSTEM?.content ?? '', imageSystemPrompt: prompts.IMAGE_SYSTEM?.content ?? '',
     visualReference: enabledKnowledge.filter((item) => item.kind === 'VISUAL')
       .map((item) => ({ ...item.content, itemId: item.itemId, versionId: item.versionId }))
@@ -51,6 +52,7 @@ export async function preparePromptDrafts({ store, controlPlane }) {
   const templates = controlPlane ? await controlPlane.listPrompts() : store.listPromptTemplates();
   const created = [];
   for (const item of PROMPT_CATALOG) {
+    if (item.editable === false) continue;
     if (templates.some((template) => template.kind === item.kind && template.versions.length)) continue;
     const content = normalizePromptContent(defaultBusinessPrompt(item.kind));
     if (controlPlane) created.push(await controlPlane.createPromptVersion({ kind: item.kind, name: item.label, content }));
@@ -72,7 +74,7 @@ export async function savePromptPolicy(input, { store, controlPlane }) {
     const issues = promptCompatibilityIssues(kind, version.content);
     if (issues.length) throw new TypeError(`${kind}：${issues.join('；')}`);
   }
-  const missing = PROMPT_CATALOG.filter(({ kind }) => !['IMAGE_SEARCH_SYSTEM', 'LAYOUT_CATALOG_SYSTEM'].includes(kind)
+  const missing = PROMPT_CATALOG.filter(({ kind, layer, executionStatus }) => layer === 'BUSINESS' && executionStatus !== 'RESERVED' && !['IMAGE_SEARCH_SYSTEM', 'LAYOUT_CATALOG_SYSTEM'].includes(kind)
     && (kind !== 'QUERY_REVIEW_SYSTEM' || value.queryReviewEnabled)
     && (kind !== 'VISUAL_PLAN_SYSTEM' || value.visualPlanningEnabled) && !published[kind]);
   if (missing.length) throw new TypeError(`请先发布以下提示词：${missing.map(({ label }) => label).join('、')}`);
@@ -82,7 +84,8 @@ export async function savePromptPolicy(input, { store, controlPlane }) {
 }
 
 export function promptRuntimeFromSnapshot(snapshot) {
-  const settings = snapshot?.productionSettings?.prompt_runtime?.value;
-  return settings ? createPromptRuntime({ prompts: snapshot.prompts ?? {}, settings,
+  const settings = snapshot?.productionSettings?.prompt_runtime?.value ?? null;
+  const prompts = snapshot?.prompts ?? {};
+  return settings || Object.values(prompts).some(Boolean) ? createPromptRuntime({ prompts, settings,
     source: 'EXECUTION_SNAPSHOT', capturedAt: snapshot.capturedAt }) : null;
 }

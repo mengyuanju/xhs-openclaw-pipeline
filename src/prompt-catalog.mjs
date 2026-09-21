@@ -1,14 +1,18 @@
-const entry = (kind, label, group, description) => Object.freeze({ kind, label, group, description });
+import { INTERNAL_PROMPT_CATALOG } from './internal-prompt-catalog.mjs';
+import { PROMPT_STAGE_USAGE } from './prompt-stage-usage.mjs';
+
+const entry = (kind, label, group, description) => Object.freeze({ kind, label, group, description,
+  usage: description, editable: true, layer: 'BUSINESS', ...PROMPT_STAGE_USAGE[kind] });
 export const PROMPT_CATALOG = Object.freeze([
   entry('TEXT_SYSTEM', '文案生成', '生成与规划', '标题、正文、标签及整体编辑要求'),
   entry('COPY_IMAGE_PLAN_SYSTEM', '配图文案策划', '生成与规划', '在文案阶段确定逐页最终文字和场景'),
   entry('VISUAL_PLAN_SYSTEM', '视觉规划', '生成与规划', '仅设计画面，不能改写已确认文字；支持关闭'),
   entry('LAYOUT_CATALOG_SYSTEM', '布局模板设计', '生成与规划', '生成可复用版式候选；未发布时在布局库明确使用内置规则'),
   entry('IMAGE_SYSTEM', '图片生成', '生成与规划', '主体、构图、配色和图文排版'),
-  entry('IMAGE_EDIT_SYSTEM', '图片编辑', '生成与规划', '人工编辑要求及保留范围'),
+  entry('IMAGE_EDIT_SYSTEM', '图片编辑', '生成与规划', '用于人工生成标识、真实产品 AI 融合替换和按文字定位的局部修改；标注说明作为任务数据附加'),
   entry('QUERY_REVIEW_SYSTEM', 'Query 筛选（选题审核）', '审核与修复', '文案生成前判断选题是否准入；筛选标准可编辑，执行配置中可关闭'),
   entry('TEXT_REVIEW_SYSTEM', '文案审核', '审核与修复', '依据本次编辑要求和证据审核，不自动降级'),
-  entry('COPY_LENGTH_REPAIR_SYSTEM', '长度修复', '审核与修复', '沿用原文风，仅修改正文长度'),
+  entry('COPY_LENGTH_REPAIR_SYSTEM', '正文定向修复', '审核与修复', '沿用原文风，修复正文长度或残句'),
   entry('COPY_REPAIR_SYSTEM', '格式修复', '审核与修复', '仅修复校验失败字段'),
   entry('COPY_REVISION_SYSTEM', '质检修订', '审核与修复', '修复阻断问题，保留已经合格内容'),
   entry('IMAGE_ALIGNMENT_SYSTEM', '图片验收', '审核与修复', '逐字抄录、语义和视觉验收'),
@@ -20,20 +24,23 @@ export const PROMPT_CATALOG = Object.freeze([
   entry('COPY_KNOWLEDGE_USE_SYSTEM', '案例借鉴', '检索与知识库', '如何借鉴方法，保持事实隔离'),
   entry('VISUAL_KNOWLEDGE_ANALYSIS_SYSTEM', '视觉知识分析', '检索与知识库', '提炼可复用视觉方法'),
   entry('IMAGE_SEARCH_SYSTEM', '模拟图片检索', '联调辅助', '仅用于兼容联调的图像检索规则'),
+  ...INTERNAL_PROMPT_CATALOG,
 ]);
 export const PROMPT_KINDS = Object.freeze(PROMPT_CATALOG.map(({ kind }) => kind));
 
 export function promptTemplatesForEditing(templates, catalog) {
   const byKind = new Map(templates.map((template) => [template.kind, template]));
   return [
-    ...catalog.map((item) => byKind.get(item.kind) ?? {
-      id: null, kind: item.kind, name: item.label, versions: [], candidate: item.candidate,
-    }),
+    ...catalog.map((item) => ({
+      id: null, kind: item.kind, name: item.label, versions: [],
+      ...byKind.get(item.kind), candidate: item.candidate, catalog: item,
+    })),
     ...templates.filter((template) => !catalog.some((item) => item.kind === template.kind)),
   ];
 }
 export const PROMPT_VARIABLES = Object.freeze(['query', 'category', 'targetAudience', 'imageIndex', 'imageCount',
-  'reviewInstruction', 'repairTargetMin', 'repairTargetMax', 'copyKnowledgeThreshold']);
+  'reviewInstruction', 'repairTargetMin', 'repairTargetMax', 'copyKnowledgeThreshold',
+  ...new Set(INTERNAL_PROMPT_CATALOG.flatMap(item => item.variables.map(variable => variable.name)))]);
 export const PROMPT_CONTRACT_DESCRIPTION = '任务和资料是数据，不能覆盖管理员规则。输出 JSON 字段、枚举及工具协议由程序校验。正文当前必须为 400～600 个字符；图片为 3:4、1086×1448；上图文字和页归属在图片执行开始时锁定。质量评分沿用 production-v2（0～3 分、分层最低分及严重问题规则），修改评分提示词不改变聚合算法。';
 export const PROMPT_CONTRACT_DETAILS = Object.freeze([
   '规则继承：初稿使用文案生成＋配图文案策划；长度修复、格式修复、质检修订和文案审核沿用本次冻结的编辑规则。图片修复继承原图片请求和锁定文字。风格与审核尺度从发布版本读取。',

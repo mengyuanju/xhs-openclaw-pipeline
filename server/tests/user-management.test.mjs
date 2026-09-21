@@ -257,7 +257,7 @@ test('task visibility and destructive actions are enforced from the central user
   });
 });
 
-test('reviewers cannot mutate prompts or production settings and cannot manage users', async () => {
+test('reviewers cannot access knowledge, prompts, production settings or user management', async () => {
   const reviewer = { id: 3, username: 'reviewer', role: 'REVIEWER', status: 'ACTIVE', credentialVersion: 1 };
   const repository = {
     ownsPool: true,
@@ -275,7 +275,24 @@ test('reviewers cannot mutate prompts or production settings and cannot manage u
     assert.equal((await fetch(`${root}/v1/prompts/versions`, { method: 'POST', headers, body: '{}' })).status, 403);
     assert.equal((await fetch(`${root}/v1/users`, { headers })).status, 403);
     assert.equal((await fetch(`${root}/v1/users/1`, { method: 'DELETE', headers, body: JSON.stringify({ expectedVersion: 1 }) })).status, 403);
-    assert.equal((await fetch(`${root}/v1/knowledge`, { headers })).status, 200);
+    assert.equal((await fetch(`${root}/v1/workflow-quality-settings`, { headers })).status, 403);
+    assert.equal((await fetch(`${root}/v1/knowledge`, { headers })).status, 403);
+    assert.equal((await fetch(`${root}/v1/knowledge/capabilities`, { headers })).status, 403);
+    assert.equal((await fetch(`${root}/v1/copy-analysis-prompts`, { headers })).status, 403);
+    assert.equal((await fetch(`${root}/v1/knowledge-versions/1/asset`, { headers })).status, 403);
+    for (const path of [
+      '/v1/copy-analysis-prompts', '/v1/knowledge/labels/import', '/v1/copy-knowledge/analyze',
+      '/v1/visual-knowledge/analyze', '/v1/knowledge/1/retire', '/v1/knowledge/versions',
+      '/v1/knowledge-versions/1/publish',
+    ]) {
+      assert.equal((await fetch(`${root}${path}`, { method: 'POST', headers, body: '{}' })).status, 403, path);
+    }
+    assert.equal((await fetch(`${root}/v1/copy-analysis-prompts/1`, {
+      method: 'PATCH', headers, body: '{}',
+    })).status, 403);
+    assert.equal((await fetch(`${root}/v1/knowledge-versions/1/asset`, {
+      method: 'PUT', headers: { ...actorHeaders('reviewer', 'REVIEWER'), 'content-type': 'image/png' }, body: 'image',
+    })).status, 403);
   });
 });
 
@@ -381,11 +398,80 @@ test('user deletion blocks unfinished assignments and safely detaches terminal h
   const audit = terminal.calls.find(({ sql }) => sql.includes('INSERT INTO task_assignment_events'));
   assert.ok(audit);
   assert.deepEqual(audit.values, ['alice', 'admin']);
+  const queryPackageDetach = terminal.calls.find(({ sql }) => sql.includes('UPDATE query_packages'));
+  const queryItemDetach = terminal.calls.find(({ sql }) => sql.includes('UPDATE query_package_items'));
+  assert.ok(queryItemDetach);
+  assert.deepEqual(queryItemDetach.values, [2, 'alice']);
+  assert.match(queryItemDetach.sql,
+    /screening_assigned_to_account_id = NULL,[\s\S]*screening_assigned_to_username = NULL/u);
+  assert.ok(queryPackageDetach);
+  assert.deepEqual(queryPackageDetach.values, [2, 'alice']);
+  assert.match(queryPackageDetach.sql,
+    /assigned_to_account_id = NULL, assigned_to_username = NULL,[\s\S]*version = version \+ 1/u);
   assert.ok(terminal.calls.findIndex(({ sql }) => sql.includes('INSERT INTO task_assignment_events'))
     < terminal.calls.findIndex(({ sql }) => sql.includes('UPDATE tasks')));
   assert.ok(terminal.calls.findIndex(({ sql }) => sql.includes('UPDATE tasks'))
+    < terminal.calls.findIndex(({ sql }) => sql.includes('UPDATE query_packages')));
+  assert.ok(terminal.calls.findIndex(({ sql }) => sql.includes('UPDATE query_packages'))
     < terminal.calls.findIndex(({ sql }) => sql.includes('DELETE FROM app_users')));
   assert.equal(terminal.calls[1].sql, 'SELECT pg_advisory_xact_lock(4310, 8301)');
+});
+
+test('user eligibility changes clear Query-package assignments while USER and REVIEWER transitions retain them', async () => {
+  function updateRepository({ currentRole, nextRole, nextStatus }) {
+    const calls = [];
+    const client = {
+      async query(sql, values = []) {
+        const source = String(sql);
+        calls.push({ sql: source, values });
+        if (source.includes('SELECT * FROM app_users WHERE id')) return { rows: [{
+          id: 2, username: 'alice', display_name: 'Alice', role: currentRole, status: 'ACTIVE', version: 1,
+        }] };
+        if (source.includes('SELECT id FROM tasks')) return { rows: [] };
+        if (source.includes("SELECT COUNT(*) AS count FROM app_users")) return { rows: [{ count: '2' }] };
+        if (source.includes('UPDATE app_users')) return { rows: [{
+          id: 2, username: 'alice', display_name: 'Alice', role: nextRole, status: nextStatus, version: 2,
+        }] };
+        return { rows: [] };
+      },
+      release() {},
+    };
+    return {
+      calls,
+      repository: new PostgresControlPlaneRepository({ pool: { connect: async () => client } }),
+    };
+  }
+
+  for (const next of [
+    { role: 'USER', status: 'DISABLED' },
+    { role: 'ADMIN', status: 'ACTIVE' },
+  ]) {
+    const fixture = updateRepository({
+      currentRole: 'USER', nextRole: next.role, nextStatus: next.status,
+    });
+    await fixture.repository.updateUser(2, {
+      displayName: 'Alice', role: next.role, status: next.status, expectedVersion: 1,
+    });
+    const detach = fixture.calls.find(({ sql }) => sql.includes('UPDATE query_packages'));
+    const itemDetach = fixture.calls.find(({ sql }) => sql.includes('UPDATE query_package_items'));
+    assert.ok(itemDetach, `${next.role}/${next.status} item assignments`);
+    assert.deepEqual(itemDetach.values, [2, 'alice']);
+    assert.ok(detach, `${next.role}/${next.status}`);
+    assert.deepEqual(detach.values, [2, 'alice']);
+    assert.ok(fixture.calls.findIndex(({ sql }) => sql.includes('UPDATE app_users'))
+      < fixture.calls.findIndex(({ sql }) => sql.includes('UPDATE query_packages')));
+  }
+
+  for (const [currentRole, nextRole] of [['USER', 'REVIEWER'], ['REVIEWER', 'USER']]) {
+    const fixture = updateRepository({ currentRole, nextRole, nextStatus: 'ACTIVE' });
+    await fixture.repository.updateUser(2, {
+      displayName: 'Alice', role: nextRole, status: 'ACTIVE', expectedVersion: 1,
+    });
+    assert.equal(fixture.calls.some(({ sql }) => sql.includes('UPDATE query_packages')), false,
+      `${currentRole} -> ${nextRole}`);
+    assert.equal(fixture.calls.some(({ sql }) => sql.includes('UPDATE query_package_items')), false,
+      `${currentRole} -> ${nextRole} item assignments`);
+  }
 });
 
 test('user updates and deletions share one roster lock before reading an account', async () => {
@@ -431,10 +517,10 @@ test('user updates and deletions share one roster lock before reading an account
   ]);
 });
 
-test('a worker with unfinished assignments cannot be disabled or moved out of the worker role', async () => {
+test('an assignee with unfinished work can move between non-admin roles but cannot be disabled or promoted', async () => {
   for (const update of [
     { displayName: 'Alice', role: 'USER', status: 'DISABLED', expectedVersion: 1 },
-    { displayName: 'Alice', role: 'REVIEWER', status: 'ACTIVE', expectedVersion: 1 },
+    { displayName: 'Alice', role: 'ADMIN', status: 'ACTIVE', expectedVersion: 1 },
   ]) {
     const calls = [];
     const client = {
@@ -455,6 +541,29 @@ test('a worker with unfinished assignments cannot be disabled or moved out of th
     await assert.rejects(repository.updateUser(2, update), { code: 'USER_HAS_ACTIVE_TASKS' });
     assert.equal(calls.some((sql) => sql.includes('UPDATE app_users')), false);
   }
+
+  const calls = [];
+  const client = {
+    async query(sql) {
+      const source = String(sql);
+      calls.push(source);
+      if (source.includes('SELECT * FROM app_users WHERE id')) return { rows: [{
+        id: 2, username: 'alice', display_name: 'Alice', role: 'USER', status: 'ACTIVE', version: 1,
+      }] };
+      if (source.includes('SELECT id FROM tasks')) return { rows: [{ id: 41 }] };
+      if (source.includes('UPDATE app_users')) return { rows: [{
+        id: 2, username: 'alice', display_name: 'Alice', role: 'REVIEWER', status: 'ACTIVE', version: 2,
+      }] };
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
+  const reviewer = await repository.updateUser(2, {
+    displayName: 'Alice', role: 'REVIEWER', status: 'ACTIVE', expectedVersion: 1,
+  });
+  assert.equal(reviewer.role, 'REVIEWER');
+  assert.equal(calls.some((sql) => sql.includes('SELECT id FROM tasks')), false);
 });
 
 test('deletion password failures are rate limited per administrator', async () => {

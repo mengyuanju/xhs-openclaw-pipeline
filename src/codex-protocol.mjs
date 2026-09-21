@@ -18,14 +18,17 @@ export function codexFailure(error = {}, fallbackCode = 'CODEX_EXEC_FAILED') {
   const detail = [error.code, error.type, error.kind, error.message].filter(Boolean).join(' ');
   let code = typeof error.code === 'string' && error.code.startsWith('CODEX_') ? error.code : fallbackCode;
   if (/usage[_ -]limit|quota|insufficient_quota|credits? (?:exhausted|depleted)|hit your.*limit/iu.test(detail)) code = 'CODEX_QUOTA_EXHAUSTED';
-  else if (/invalid_grant|refresh_token|unauthoriz|not logged in|login required|authentication|\b401\b/iu.test(detail)) code = 'CODEX_AUTH_REQUIRED';
+  else if (/invalid_grant|refresh[_ -]?token|access token could not be refreshed|token (?:was )?revoked|unauthoriz|not logged in|login required|authentication|\b401\b/iu.test(detail)) code = 'CODEX_AUTH_REQUIRED';
   else if (/rate[_ -]limit|too many requests|\b429\b/iu.test(detail)) code = 'CODEX_RATE_LIMITED';
   else if (/model[^\n]{0,80}(?:at capacity|overloaded)|server_is_overloaded/iu.test(detail)) code = 'CODEX_MODEL_AT_CAPACITY';
   else if (/TLS close_notify|stream disconnected|unexpected EOF|connection exhausted|ECONNRESET|UND_ERR_SOCKET|socket hang up/iu.test(detail)) code = 'CODEX_TRANSPORT_FAILED';
   else if (/context[_ -](?:length|window|limit)|input exceeds the context window|prompt.*too long/iu.test(detail)) code = 'MODEL_CONTEXT_LIMIT';
   else if (/max_output_tokens|output.*incomplete|\blength\b/iu.test(detail)) code = 'MODEL_OUTPUT_INCOMPLETE';
+  const revokedAuthentication=/refresh[_ -]?token[^\n]{0,120}revoked|access token could not be refreshed[^\n]{0,120}revoked/iu.test(detail);
   const guidance = {
-    CODEX_AUTH_REQUIRED: '请在执行主机运行 codex login，再运行 npm run agent:resume。',
+    CODEX_AUTH_REQUIRED: revokedAuthentication
+      ? '请在执行主机依次运行 codex logout、codex login，再运行 npm run agent:resume。'
+      : '请在执行主机运行 codex login，再运行 npm run agent:resume。',
     CODEX_QUOTA_EXHAUSTED: '订阅额度不足；额度恢复后运行 npm run agent:resume。',
     CODEX_RATE_LIMITED: '请求限流，已进入共享冷却期。',
     CODEX_MODEL_AT_CAPACITY: '上游模型暂时满载，已进入该模型冷却期；非图片调用可按生产配置切换容量备用模型。',
@@ -53,10 +56,23 @@ export function parseCodexOutput(stdout, { requireText = true } = {}) {
   let reconnectError = null;
   let reconnectCount = 0;
   let answerAfterReconnect = false;
+  let recoveredTransientError = null;
+  let recoveredTransientCount = 0;
+  const recoveredTransientCodes = [];
   const images = [];
+  const recoverTransientImageFailure = (failure) => {
+    if (requireText || completed || !isCodexCooldown(failure.code)) return false;
+    recoveredTransientError = failure;
+    recoveredTransientCount++;
+    if (!recoveredTransientCodes.includes(failure.code)) recoveredTransientCodes.push(failure.code);
+    return true;
+  };
   for (const event of events) {
     if (!event || typeof event !== 'object') throw codexFailure({}, 'MODEL_OUTPUT_INCOMPLETE');
-    if (event.type === 'warning' && event.will_retry === true) reconnectCount++;
+    if (event.type === 'warning' && event.will_retry === true) {
+      reconnectCount++;
+      recoverTransientImageFailure(codexFailure(event.error ?? event));
+    }
     if (event.type === 'thread.started') threadId = event.thread_id ?? null;
     if (event.type === 'turn.started') completed = false;
     if (event.type === 'turn.failed' || event.type === 'error') {
@@ -71,6 +87,11 @@ export function parseCodexOutput(stdout, { requireText = true } = {}) {
         completed = false;
         continue;
       }
+      // The image tool can surface a transient capacity/rate event and still
+      // finish the same turn with a native saved image. Defer only those
+      // non-terminal events; the completed turn and fresh PNG are still
+      // required before the caller can report success.
+      if (event.type === 'error' && recoverTransientImageFailure(failure)) continue;
       throw failure;
     }
     if (event.type === 'turn.completed') {
@@ -88,7 +109,11 @@ export function parseCodexOutput(stdout, { requireText = true } = {}) {
     }
     if (item?.type === 'web_search' && !['failed', 'in_progress'].includes(item.status)) searched = true;
     if (['image_generation', 'imageGeneration'].includes(item?.type)) {
-      if (item.failure) throw codexFailure(item.failure);
+      if (item.failure) {
+        const failure = codexFailure(item.failure);
+        if (recoverTransientImageFailure(failure)) continue;
+        throw failure;
+      }
       if (item.status !== 'completed') throw codexFailure({ message: 'image_generation did not complete' }, 'CODEX_IMAGE_UNVERIFIED');
       const path = item.saved_path ?? item.savedPath;
       if (typeof path === 'string' && path && !images.some((image) => image.id === item.id && image.path === path)) {
@@ -97,6 +122,10 @@ export function parseCodexOutput(stdout, { requireText = true } = {}) {
     }
   }
   if (reconnectError && (!completed || !answerAfterReconnect)) throw reconnectError;
+  if ((!completed || (!requireText && images.length === 0)) && recoveredTransientError) {
+    throw recoveredTransientError;
+  }
   if (!completed || (requireText && !rawText.trim())) throw codexFailure({ message: 'missing completed turn or final message' }, 'MODEL_OUTPUT_INCOMPLETE');
-  return { rawText, threadId, usage, searched, images, reconnectCount };
+  return { rawText, threadId, usage, searched, images, reconnectCount,
+    recoveredTransientCount, recoveredTransientCodes };
 }

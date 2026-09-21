@@ -17,7 +17,7 @@ const bodySchema = z.object({
 }).strict();
 
 export function GET(request: Request) {
-  return apiHandler(request, { roles: ['ADMIN', 'REVIEWER'] }, async (session) => {
+  return apiHandler(request, { roles: ['ADMIN'] }, async (session) => {
     const url = new URL(request.url);
     return ok(await withKnowledgeStore((store: any) => store.listCopyKnowledge({
       page: url.searchParams.get('page'), pageSize: url.searchParams.get('pageSize'),
@@ -28,7 +28,7 @@ export function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  return apiHandler(request, { mutation: true, roles: ['ADMIN', 'REVIEWER'] }, async (session) => {
+  return apiHandler(request, { mutation: true, roles: ['ADMIN'] }, async (session) => {
     const input = await parseJson(request, bodySchema, { maxBytes: 192 * 1024 });
     const created = await withKnowledgeStore((store: any) => store.createCopyKnowledge(input), session);
     return ok(created, { status: 201 });

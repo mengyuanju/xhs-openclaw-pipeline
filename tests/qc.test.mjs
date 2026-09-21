@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import sharp from 'sharp';
 
-import { evaluateDelivery } from '../src/qc.mjs';
+import { analyzeAlphaQuality, evaluateDelivery } from '../src/qc.mjs';
 
 const RUBRIC_DIMENSIONS = [
   'queryRelevance',
@@ -53,6 +53,74 @@ function completeRubricAssessment(score = 3) {
 }
 
 describe('delivery quality checks', () => {
+  it('rejects sparse, broadly translucent and dark near-transparent PNG content', async () => {
+    const opaque = await sharp({
+      create: { width: 100, height: 100, channels: 4, background: { r: 80, g: 120, b: 160, alpha: 1 } },
+    }).png().toBuffer();
+    assert.equal((await analyzeAlphaQuality(opaque)).passed, true);
+
+    const sparse = Buffer.alloc(100 * 100 * 4);
+    for (let pixel = 0; pixel < 200; pixel += 1) sparse[pixel * 4 + 3] = 255;
+    const sparsePng = await sharp(sparse, { raw: { width: 100, height: 100, channels: 4 } }).png().toBuffer();
+    assert.equal((await analyzeAlphaQuality(sparsePng)).passed, false);
+
+    const translucent = Buffer.alloc(100 * 100 * 4, 180);
+    const translucentPng = await sharp(translucent, { raw: { width: 100, height: 100, channels: 4 } }).png().toBuffer();
+    assert.equal((await analyzeAlphaQuality(translucentPng)).passed, false);
+
+    const dirtyEdge = Buffer.alloc(100 * 100 * 4);
+    for (let pixel = 0; pixel < 10000; pixel += 1) {
+      const offset = pixel * 4;
+      dirtyEdge[offset] = pixel < 200 ? 0 : 120;
+      dirtyEdge[offset + 1] = pixel < 200 ? 0 : 120;
+      dirtyEdge[offset + 2] = pixel < 200 ? 0 : 120;
+      dirtyEdge[offset + 3] = pixel < 200 ? 64 : 255;
+    }
+    const dirtyPng = await sharp(dirtyEdge, { raw: { width: 100, height: 100, channels: 4 } }).png().toBuffer();
+    const dirtyResult = await analyzeAlphaQuality(dirtyPng);
+    assert.equal(dirtyResult.passed, false);
+    assert.equal(dirtyResult.observed.lowAlphaDarkRatio, 0.02);
+    assert.deepEqual(dirtyResult.observed.backgroundsChecked, ['WHITE', 'BLACK', 'NEUTRAL']);
+  });
+
+  it('blocks only unresolved blocking risks while retaining warnings and mitigations as evidence', async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), 'xhs-qc-risk-'));
+    try {
+      const images = [
+        { file: '01.png', provider: 'openclaw', alignment: { passed: true, failureClass: 'PASS' } },
+        { file: '02.png', provider: 'openclaw-image-edit', alignment: { passed: true, failureClass: 'PASS' } },
+        { file: '03.png', provider: 'openclaw-image-edit', alignment: { passed: true, failureClass: 'PASS' } },
+      ];
+      await Promise.all([
+        writePng(join(outputDir, '01.png'), '#ff0000'),
+        writePng(join(outputDir, '02.png'), '#00ff00'),
+        writePng(join(outputDir, '03.png'), '#0000ff'),
+      ]);
+      const risks = [
+        { severity: 'WARNING', status: 'UNRESOLVED', message: '运动建议存在个体差异', mitigation: '' },
+        { severity: 'BLOCKING', status: 'MITIGATED', message: '特殊人群需谨慎', mitigation: '正文已要求咨询专业人员' },
+      ];
+      const safe = await evaluateDelivery({
+        post: post({ riskAssessments: risks }), images, outputDir, mode: 'live',
+      });
+      assert.equal(safe.checks.find(({ id }) => id === 'risk_flags').passed, true);
+      assert.notEqual(safe.disposition, 'blocked');
+      assert.ok(safe.issues.some(({ label }) => label === '安全合规-提示'));
+      assert.ok(safe.issues.some(({ label }) => label === '安全合规-已规避'));
+
+      const unsafe = await evaluateDelivery({
+        post: post({ riskAssessments: [...risks, {
+          severity: 'BLOCKING', status: 'UNRESOLVED', message: '存在未处理的隐私信息', mitigation: '',
+        }] }), images, outputDir, mode: 'live',
+      });
+      assert.equal(unsafe.checks.find(({ id }) => id === 'risk_flags').passed, false);
+      assert.equal(unsafe.disposition, 'blocked');
+      assert.ok(unsafe.issues.some(({ label }) => label === '安全合规-严重问题'));
+    } finally {
+      await rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
   it('treats the 400–600 character target as advisory rather than a hard failure', async () => {
     const outputDir = await mkdtemp(join(tmpdir(), 'xhs-qc-'));
     try {

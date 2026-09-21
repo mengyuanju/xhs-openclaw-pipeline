@@ -1,0 +1,354 @@
+{
+  "dialect": "sqlite",
+  "id": "dcaf1668-c105-43eb-9985-b0a069a8f247",
+  "prevIds": [
+    "00000000-0000-0000-0000-000000000000"
+  ],
+  "version": "7",
+  "ddl": [
+    {
+      "name": "preview_assets",
+      "entityType": "tables"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "table": "preview_assets",
+      "entityType": "columns"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "preview_assets_pk",
+      "table": "preview_assets",
+      "entityType": "pks"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "preview_id",
+      "table": "preview_assets",
+      "entityType": "columns"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "position",
+      "table": "preview_assets",
+      "entityType": "columns"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "object_key",
+      "table": "preview_assets",
+      "entityType": "columns"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "original_name",
+      "table": "preview_assets",
+      "entityType": "columns"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "media_type",
+      "table": "preview_assets",
+      "entityType": "columns"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "byte_size",
+      "table": "preview_assets",
+      "entityType": "columns"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "sha256",
+      "table": "preview_assets",
+      "entityType": "columns"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "created_at",
+      "table": "preview_assets",
+      "entityType": "columns"
+    },
+    {
+      "columns": [
+        {
+          "value": "object_key",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "preview_assets_object_key_uq",
+      "table": "preview_assets",
+      "entityType": "indexes"
+    },
+    {
+      "columns": [
+        {
+          "value": "preview_id",
+          "isExpression": false
+        },
+        {
+          "value": "position",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "preview_assets_position_uq",
+      "table": "preview_assets",
+      "entityType": "indexes"
+    },
+    {
+      "columns": [
+        {
+          "value": "preview_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "preview_assets_preview_idx",
+      "table": "preview_assets",
+      "entityType": "indexes"
+    },
+    {
+      "value": "\"preview_assets\".\"position\" > 0",
+      "name": "preview_assets_position_check",
+      "table": "preview_assets",
+      "entityType": "checks"
+    },
+    {
+      "value": "\"preview_assets\".\"byte_size\" > 0",
+      "name": "preview_assets_byte_size_check",
+      "table": "preview_assets",
+      "entityType": "checks"
+    },
+    {
+      "columns": [
+        "preview_id"
+      ],
+      "tableTo": "previews",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "preview_assets_preview_id_previews_id_fk",
+      "table": "preview_assets",
+      "entityType": "fks"
+    },
+    {
+      "name": "previews",
+      "entityType": "tables"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "table": "previews",
+      "entityType": "columns"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "previews_pk",
+      "table": "previews",
+      "entityType": "pks"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "public_id",
+      "table": "previews",
+      "entityType": "columns"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "title",
+      "table": "previews",
+      "entityType": "columns"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "body",
+      "table": "previews",
+      "entityType": "columns"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "tags_json",
+      "table": "previews",
+      "entityType": "columns"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "status",
+      "table": "previews",
+      "entityType": "columns"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "image_count",
+      "table": "previews",
+      "entityType": "columns"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "content_hash",
+      "table": "previews",
+      "entityType": "columns"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "created_at",
+      "table": "previews",
+      "entityType": "columns"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "published_at",
+      "table": "previews",
+      "entityType": "columns"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "revoked_at",
+      "table": "previews",
+      "entityType": "columns"
+    },
+    {
+      "columns": [
+        {
+          "value": "public_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "previews_public_id_uq",
+      "table": "previews",
+      "entityType": "indexes"
+    },
+    {
+      "columns": [
+        {
+          "value": "status",
+          "isExpression": false
+        },
+        {
+          "value": "created_at",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "previews_status_created_idx",
+      "table": "previews",
+      "entityType": "indexes"
+    },
+    {
+      "value": "\"previews\".\"status\" in ('PUBLISHED', 'REVOKED')",
+      "name": "previews_status_check",
+      "table": "previews",
+      "entityType": "checks"
+    },
+    {
+      "value": "\"previews\".\"image_count\" > 0",
+      "name": "previews_image_count_check",
+      "table": "previews",
+      "entityType": "checks"
+    }
+  ],
+  "renames": []
+}

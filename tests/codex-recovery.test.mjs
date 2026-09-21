@@ -18,6 +18,23 @@ test('executor reports typed Codex failures as non-retryable without losing wrap
   assert.deepEqual(reported[2], { autoRetry: false });
 });
 
+for (const code of ['CODEX_MODEL_AT_CAPACITY', 'CODEX_RATE_LIMITED']) {
+  test(`executor requeues ${code} through the bounded server recovery path`, async () => {
+    const claim = { task: { id: 2 }, execution: { id: `retry-${code}` } };
+    const failure = Object.assign(new Error('temporary model availability failure'), { code });
+    let reported;
+    const agent = createExecutorAgent({ nodeId: 'codex-node', imageWorkerEnabled: true,
+      controlPlane: { claimImage: async () => claim, failExecution: async (...args) => { reported = args; } },
+      readinessCheck: async () => {}, availabilityCheck: async () => {},
+      executeImage: async () => { throw failure; } });
+    await agent.prepare();
+
+    assert.equal((await agent.runImageOnce()).status, 'FAILED');
+    assert.equal(reported[1], failure);
+    assert.deepEqual(reported[2], { autoRetry: true });
+  });
+}
+
 test('wrapped quota errors halt new tasks without being retried as transient failures', () => {
   const error = new Error('generation failed', { cause: Object.assign(new Error('quota reached'), { code: 'CODEX_QUOTA_EXHAUSTED' }) });
   const recovery = planTaskRecovery({ error });

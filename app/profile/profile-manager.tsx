@@ -2,6 +2,7 @@
 
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { ToastFeedback } from '@/components/ui/sonner';
 import {
   Dialog,
   DialogContent,
@@ -15,7 +16,7 @@ import { useRouter } from 'next/navigation';
 
 import { apiRequest } from '../components/api-client';
 
-const ROLE_LABELS: Record<string, string> = { ADMIN: '管理员', REVIEWER: '审核员', USER: '普通用户' };
+const ROLE_LABELS: Record<string, string> = { ADMIN: '管理员', REVIEWER: '质检', USER: '标注' };
 const LOGOUT_TIMEOUT_MS = 4_000;
 
 type ProfileUser = {
@@ -218,7 +219,8 @@ export function ProfileManager({ user }: { user: ProfileUser }) {
     </aside>
 
     <div className="profile-content-stack">
-      {(notice || error) && <div className={`notice ${error ? 'error' : 'success'} profile-notice`} role={error ? 'alert' : 'status'}>{error || notice}</div>}
+      <ToastFeedback id="profile-success" message={notice} />
+      {error && <div className="notice error profile-notice" role="alert">{error}</div>}
 
       <section className="panel profile-section" aria-labelledby="basic-profile-title">
         <div className="profile-section-head"><span><UserRound size={19} /></span><div><h2 id="basic-profile-title">基本资料</h2><p>这里的姓名会显示在任务和操作记录中。</p></div></div>

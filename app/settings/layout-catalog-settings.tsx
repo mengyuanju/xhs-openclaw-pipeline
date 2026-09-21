@@ -3,6 +3,7 @@
 import { ChevronLeft, ChevronRight, Pencil } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { ToastFeedback } from '@/components/ui/sonner';
 import { Input, Switch } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { apiRequest } from '../components/api-client';
@@ -91,7 +92,7 @@ export function LayoutCatalogSettings({
     <div className="panel-head"><div><h2 id="layout-catalog-title">布局模板库</h2><p className="subtle">按内容选择版式并自动保存视觉规划。当前 {templates.length} 个模板，{templates.filter(item => item.enabled).length} 个已启用。</p></div>
       <Button variant="outline" disabled={busy} onClick={() => void load()}>刷新目录</Button></div>
     {error && <p className="notice error" role="alert">{error}</p>}
-    {message && <p className="notice success" role="status">{message}</p>}
+    <ToastFeedback id="layout-catalog-settings-feedback" message={message} />
     {!record && !error && <p role="status">正在读取布局模板…</p>}
     {record && <>
       <div className="form-grid">

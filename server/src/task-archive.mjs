@@ -1,12 +1,30 @@
+import { PassThrough } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+
+import { ZipArchive } from 'archiver';
 import JSZip from 'jszip';
+import {
+  deliveryCopyFromContent,
+  resolveDeliveryArchiveSource,
+} from './delivery-source.mjs';
 import { IMAGE_FORMATS } from './image-options.mjs';
+import { normalizeTaskId } from './domain.mjs';
+import { orderedImageFileName } from '../../src/image-file-name.mjs';
+
+const DELIVERY_IMAGE_FORMATS = new Map(
+  Object.values(IMAGE_FORMATS).map((format) => [format.mediaType, format]),
+);
 
 function safeFileName(value, fallback) {
-  const cleaned = String(value ?? '')
+  const clean = (candidate) => String(candidate ?? '')
     .replace(/[\u0000-\u001f<>:"/\\|?*]/gu, '_')
     .replace(/[. ]+$/gu, '')
     .trim();
-  return [...(cleaned || fallback)].slice(0, 120).join('');
+  return [...(clean(value) || clean(fallback) || '文件')].slice(0, 120).join('');
+}
+
+export function queryPackageFileNameSegment(value) {
+  return safeFileName(value, '未归属词包');
 }
 
 function uniqueFileName(name, used) {
@@ -24,61 +42,245 @@ function uniqueFileName(name, used) {
 }
 
 function currentCopy(task) {
-  const revision = task.copyRevisions.find((item) => item.id === task.currentCopyRevisionId)
-    ?? task.copyRevisions[0];
-  return revision?.content?.copy ?? revision?.content?.reviewed?.copy ?? null;
+  const revision = task.copyRevisions.find((item) => item.id === task.currentCopyRevisionId);
+  return deliveryCopyFromContent(revision?.content);
+}
+
+function singleLine(value) {
+  return String(value ?? '')
+    .replace(/[\r\n]+/gu, ' ')
+    .replace(/[\u0000-\u001f\u007f]/gu, '\uFFFD')
+    .trim();
+}
+
+function rankedXiaohongshuLinks(task) {
+  if (!Array.isArray(task?.xiaohongshuLinks)) return [];
+  return task.xiaohongshuLinks
+    .map((item, index) => ({
+      index,
+      rank: Number.isSafeInteger(Number(item?.rank)) && Number(item.rank) > 0
+        ? Number(item.rank)
+        : index + 1,
+      title: singleLine(item?.title),
+      url: singleLine(item?.url),
+    }))
+    .filter((item) => item.url)
+    .sort((left, right) => left.rank - right.rank || left.index - right.index);
+}
+
+function xiaohongshuSearchStatusText(task, links) {
+  if (links.length > 0) return `已完成（${links.length} 条）`;
+  if (task?.xiaohongshuSearchStatus === 'PENDING') return '等待搜索';
+  if (task?.xiaohongshuSearchStatus === 'RUNNING') return '搜索中';
+  if (task?.xiaohongshuSearchStatus === 'BLOCKED') {
+    return task.xiaohongshuSearchBlockedReason === 'CAPTCHA_REQUIRED'
+      ? '等待人工安全验证'
+      : '等待重新登录';
+  }
+  if (task?.xiaohongshuSearchStatus === 'FAILED') return '搜索失败';
+  if (task?.xiaohongshuSearchStatus === 'CANCELLED') return '搜索已取消';
+  if (task?.xiaohongshuSearchStatus === 'SUCCEEDED') return '搜索完成，暂无结果';
+  return '未建立搜索记录';
+}
+
+function xiaohongshuLinksText(task, links) {
+  const entries = links.flatMap((item) => item.title
+    ? [`${item.rank}. ${item.title}`, item.url, '']
+    : [`${item.rank}. ${item.url}`, '']);
+  const body = entries.length > 0 ? entries.join('\r\n').trimEnd() : '暂无可用链接';
+  return `\uFEFFQuery：${singleLine(task.query)}\r\n搜索状态：${xiaohongshuSearchStatusText(task, links)}\r\n\r\n小红书链接：\r\n${body}\r\n`;
 }
 
 export function archiveFileName(task) {
   const title = safeFileName(currentCopy(task)?.title, `任务-${task.id}`);
-  return `${title}-资源包.zip`;
+  const source = task.sourceClientBatchCode ?? task.sourceQueryPackageName;
+  const label = `${queryPackageFileNameSegment(source)}-${title}`;
+  return `${safeFileName(label, `任务-${task.id}`)}-资源包.zip`;
 }
 
-export async function buildTaskArchive(task, loadAsset) {
-  const copy = currentCopy(task);
-  if (!copy) throw new TypeError('task has no copy content to archive');
+async function* taskArchiveFiles(task, loadAsset) {
+  const revision = task.copyRevisions.find((item) => item.id === task.currentCopyRevisionId);
   const run = task.imageRuns?.find(item => item.id === task.currentImageRunId);
-  const selected = run?.result?.images;
-  const deliveryIds = selected?.some(image => image.deliveryAssetId)
-    ? selected.map(image => image.deliveryAssetId ?? image.assetId) : null;
   const candidates = task.assets.filter((asset) => asset.imageRunId === task.currentImageRunId
-    && String(asset.mediaType).startsWith('image/'));
-  const assets = deliveryIds ? deliveryIds.map(id => {
-    const asset = candidates.find(item => item.id === id);
-    if (!asset) throw new TypeError('交付图片资产缺失，请重新检查图片版本');
-    return asset;
-  }) : candidates;
-  if (assets.length === 0) throw new TypeError('task has no generated images to archive');
+    && DELIVERY_IMAGE_FORMATS.has(String(asset.mediaType)));
+  const { copy, assetIds } = resolveDeliveryArchiveSource({
+    content: revision?.content,
+    imageResult: run?.result,
+    availableAssetIds: candidates.map((asset) => asset.id),
+  });
+  const assets = assetIds.map((id) => candidates.find((item) => Number(item.id) === id));
 
-  const zip = new JSZip();
+  const query = singleLine(task.query);
   const title = String(copy.title ?? '').trim();
   const body = String(copy.body ?? '').trim();
-  const tags = Array.isArray(copy.tags) ? copy.tags.map(String).join(' ') : '';
-  const text = `\uFEFF标题：${title}\r\n\r\n文案内容：\r\n${body}\r\n\r\n标签：${tags}\r\n`;
-  zip.file(`${safeFileName(title, `任务-${task.id}`)}.txt`, text);
-
+  const text = `\uFEFF原始 Query：${query}\r\n\r\n标题：${title}\r\n\r\n文案内容：\r\n${body}\r\n`;
   const usedNames = new Set();
+  yield { name: uniqueFileName(`${safeFileName(title, `任务-${task.id}`)}.txt`, usedNames), content: text };
+  const xiaohongshuLinks = rankedXiaohongshuLinks(task);
+  if (xiaohongshuLinks.length > 0 || task.xiaohongshuSearchStatus) {
+    yield {
+      name: uniqueFileName('小红书链接.txt', usedNames),
+      content: xiaohongshuLinksText(task, xiaohongshuLinks),
+    };
+  }
+
   for (let index = 0; index < assets.length; index += 1) {
     const asset = assets[index];
     const loaded = await loadAsset(asset.id);
     if (!loaded) throw new TypeError(`asset ${asset.id} is missing`);
-    const extension = `.${Object.values(IMAGE_FORMATS).find(format => format.mediaType === loaded.mediaType)?.extension ?? 'png'}`;
-    const requestedName = safeFileName(loaded.originalName, `图片-${index + 1}${extension}`);
+    const format = DELIVERY_IMAGE_FORMATS.get(String(loaded.mediaType));
+    if (!format || loaded.mediaType !== asset.mediaType) {
+      throw new TypeError(`asset ${asset.id} has an unsupported delivery image format`);
+    }
+    const extension = `.${format.extension}`;
+    const requestedName = safeFileName(
+      orderedImageFileName(loaded.originalName, index + 1, loaded.mediaType),
+      `${String(index + 1).padStart(2, '0')}-image${extension}`,
+    );
     const name = /\.[a-z0-9]{2,5}$/iu.test(requestedName) ? requestedName : `${requestedName}${extension}`;
-    zip.file(uniqueFileName(name, usedNames), loaded.content);
+    yield { name: uniqueFileName(name, usedNames), content: loaded.content };
   }
+}
 
+export async function buildTaskArchive(task, loadAsset) {
+  const zip = new JSZip();
+  for await (const file of taskArchiveFiles(task, loadAsset)) zip.file(file.name, file.content);
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
 }
 
+function assertBatchTasks(tasks, maxTasks) {
+  if (!Array.isArray(tasks) || tasks.length < 1
+      || (Number.isFinite(maxTasks) && tasks.length > maxTasks)) {
+    throw new RangeError(Number.isFinite(maxTasks)
+      ? `batch archive must contain between 1 and ${maxTasks} tasks`
+      : 'batch archive must contain at least 1 task');
+  }
+}
+
+function waitForArchiveEntry(archive, output, signal) {
+  return new Promise((resolve, reject) => {
+    function cleanup() {
+      archive.off('entry', onEntry);
+      archive.off('error', onError);
+      output.off('error', onError);
+      signal?.removeEventListener('abort', onAbort);
+    }
+    function onEntry() {
+      cleanup();
+      resolve();
+    }
+    function onError(error) {
+      cleanup();
+      reject(error);
+    }
+    function onAbort() {
+      onError(signal.reason ?? new Error('archive generation was cancelled'));
+    }
+    archive.once('entry', onEntry);
+    archive.once('error', onError);
+    output.once('error', onError);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/**
+ * Streams task folders directly into a single ZIP64 archive, one file at a time.
+ */
+export async function writeBatchTaskArchive(tasks, loadAsset, output, {
+  maxTasks = 20,
+  signal,
+} = {}) {
+  if (!tasks || typeof tasks[Symbol.asyncIterator] !== 'function'
+      && typeof tasks[Symbol.iterator] !== 'function') {
+    throw new TypeError('batch archive tasks must be iterable');
+  }
+  const archive = new ZipArchive({
+    forceZip64: true,
+    zlib: { level: 6 },
+  });
+  const unassignedClientBatchDirectory = safeFileName(null, '未归属甲方批次');
+  const clientBatchDirectories = new Map([['', unassignedClientBatchDirectory]]);
+  const usedClientBatchDirectories = new Set([
+    unassignedClientBatchDirectory.toLocaleLowerCase('zh-CN'),
+  ]);
+
+  function clientBatchDirectory(task) {
+    const clientBatchCode = String(task?.sourceClientBatchCode ?? '');
+    if (clientBatchDirectories.has(clientBatchCode)) {
+      return clientBatchDirectories.get(clientBatchCode);
+    }
+    const base = safeFileName(clientBatchCode, '未归属甲方批次');
+    let candidate = base;
+    let suffix = 2;
+    while (usedClientBatchDirectories.has(candidate.toLocaleLowerCase('zh-CN'))) {
+      const ending = `-${suffix}`;
+      candidate = `${[...base].slice(0, 120 - ending.length).join('')}${ending}`;
+      suffix += 1;
+    }
+    usedClientBatchDirectories.add(candidate.toLocaleLowerCase('zh-CN'));
+    clientBatchDirectories.set(clientBatchCode, candidate);
+    return candidate;
+  }
+  let transferError = null;
+  const transfer = pipeline(archive, output, { signal }).catch((error) => {
+    transferError = error;
+  });
+  let taskCount = 0;
+  try {
+    for await (const task of tasks) {
+      signal?.throwIfAborted();
+      taskCount += 1;
+      if (Number.isFinite(maxTasks) && taskCount > maxTasks) {
+        throw new RangeError(`batch archive must contain between 1 and ${maxTasks} tasks`);
+      }
+      if (transferError) throw transferError;
+      const directory = `${clientBatchDirectory(task)}/任务-${normalizeTaskId(task.id)}-资源包`;
+      for await (const file of taskArchiveFiles(task, (assetId) => loadAsset(task, assetId))) {
+        const stream = typeof file.content?.pipe === 'function' ? file.content : null;
+        const onAbort = () => stream?.destroy(signal.reason);
+        stream?.once('error', (error) => archive.destroy(error));
+        signal?.addEventListener('abort', onAbort, { once: true });
+        try {
+          signal?.throwIfAborted();
+          if (transferError) throw transferError;
+          const entryWritten = waitForArchiveEntry(archive, output, signal);
+          archive.append(file.content, { name: `${directory}/${file.name}` });
+          await entryWritten;
+        } finally {
+          signal?.removeEventListener('abort', onAbort);
+          stream?.destroy();
+        }
+      }
+    }
+    if (taskCount === 0) throw new RangeError('batch archive must contain at least 1 task');
+    signal?.throwIfAborted();
+    await archive.finalize();
+    await transfer;
+    if (transferError) throw transferError;
+    return { taskCount };
+  } catch (error) {
+    archive.abort();
+    if (!output.destroyed) output.destroy(error);
+    await transfer;
+    throw error;
+  }
+}
+
+export async function createBatchTaskArchiveStream(tasks, loadAsset, { maxTasks = 20 } = {}) {
+  assertBatchTasks(tasks, maxTasks);
+  const output = new PassThrough();
+  void writeBatchTaskArchive(tasks, loadAsset, output, { maxTasks }).catch((error) => {
+    if (!output.destroyed) output.destroy(error);
+  });
+  return output;
+}
+
 export async function buildBatchTaskArchive(tasks, loadAsset) {
-  if (!Array.isArray(tasks) || tasks.length < 1 || tasks.length > 20) {
-    throw new RangeError('batch archive must contain between 1 and 20 tasks');
-  }
-  const zip = new JSZip();
-  for (const task of tasks) {
-    const content = await buildTaskArchive(task, (assetId) => loadAsset(task, assetId));
-    zip.file(`任务-${task.id}-资源包.zip`, content);
-  }
-  return zip.generateAsync({ type: 'nodebuffer', compression: 'STORE' });
+  const stream = await createBatchTaskArchiveStream(tasks, loadAsset);
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    stream.on('data', (chunk) => chunks.push(chunk));
+    stream.once('end', () => resolve(Buffer.concat(chunks)));
+    stream.once('error', reject);
+  });
 }

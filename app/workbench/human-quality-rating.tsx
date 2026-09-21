@@ -19,10 +19,36 @@ export type HumanQualityAssessment = {
   reasonCodes: string[];
   problemAssetIds: number[];
   note: string | null;
+  reworkTarget?: 'COPY' | 'IMAGE' | 'BOTH';
+  reworkDetails?: {
+    copyFields?: string[];
+    problemAssetIds?: number[];
+    instructions?: string;
+  };
   reviewerUsername: string;
   reviewSessionId: string;
   createdAt: string;
 };
+
+export type HumanScorePresentation = {
+  scoreDefinitions: ReadonlyArray<HumanScoreDefinition>;
+  passingScores: ReadonlyArray<HumanScore>;
+  guidance: string;
+};
+
+const DEFAULT_PASSING_SCORES: ReadonlyArray<HumanScore> = Object.freeze([2.5, 3]);
+const DEFAULT_SCORE_GUIDANCE = '2.5 分和 3 分达到放行标准；1 分和 2 分保留在当前阶段处理。';
+
+export const COPY_MACHINE_DRAFT_SCORE_PRESENTATION: HumanScorePresentation = Object.freeze({
+  scoreDefinitions: Object.freeze([
+    Object.freeze({ score: 1, title: '废弃', description: '原稿不可用，填写反馈后废弃任务' }),
+    Object.freeze({ score: 2, title: '必须修改', description: '人工确认修改达标后，最终稿记录为 3 分' }),
+    Object.freeze({ score: 2.5, title: '必须小修', description: '人工确认修改达标后，最终稿记录为 3 分' }),
+    Object.freeze({ score: 3, title: '可直接提交', description: '原稿无需修改，可直接提交审核结果' }),
+  ]),
+  passingScores: Object.freeze<HumanScore[]>([3]),
+  guidance: '机器原稿：1 分废弃；2 分和 2.5 分必须真实修改，人工确认修改达标后系统将最终稿记录为 3 分；只有原稿 3 分可直接提交审核结果。后续按任务策略进入文案抽检或待生图队列。',
+});
 
 export function isPassingHumanScore(score: HumanScore | null): score is 2.5 | 3 {
   return score === 2.5 || score === 3;
@@ -33,6 +59,9 @@ export function HumanScoreField({
   legend,
   value,
   scoreDefinitions,
+  passingScores = DEFAULT_PASSING_SCORES,
+  guidance = DEFAULT_SCORE_GUIDANCE,
+  showDescriptions = true,
   disabled = false,
   onChange,
 }: {
@@ -40,6 +69,9 @@ export function HumanScoreField({
   legend: string;
   value: HumanScore | null;
   scoreDefinitions: ReadonlyArray<HumanScoreDefinition>;
+  passingScores?: ReadonlyArray<HumanScore>;
+  guidance?: string;
+  showDescriptions?: boolean;
   disabled?: boolean;
   onChange: (score: HumanScore) => void;
 }) {
@@ -47,7 +79,7 @@ export function HumanScoreField({
     <legend>{legend}<span>人工评分</span></legend>
     <div className="human-rating-options">
       {scoreDefinitions.map((option) => <label key={option.score} data-score={option.score}
-        data-passing={isPassingHumanScore(option.score)} data-selected={value === option.score}>
+        data-passing={passingScores.includes(option.score)} data-selected={value === option.score}>
         <input
           type="radio"
           name={id}
@@ -58,18 +90,45 @@ export function HumanScoreField({
         <span className="human-rating-card-body">
           <span className="human-rating-card-heading">
             <span className="human-rating-card-score"><strong>{option.score}</strong><small>分</small></span>
-            <strong className="human-rating-card-verdict">{option.title}</strong>
+            {showDescriptions && <strong className="human-rating-card-verdict">{option.title}</strong>}
           </span>
-          <span className="human-rating-card-action">{option.description}</span>
+          {showDescriptions && <span className="human-rating-card-action">{option.description}</span>}
         </span>
       </label>)}
     </div>
-    <p>2.5 分和 3 分达到放行标准；1 分和 2 分保留在当前阶段处理。</p>
+    <p>{guidance}</p>
   </fieldset>;
 }
 
-export function HumanScoreBadge({ score }: { score: HumanScore }) {
-  return <strong className="human-score-badge" data-passing={isPassingHumanScore(score)}>{score} 分</strong>;
+export function CopyMachineDraftScoreField({
+  id,
+  legend,
+  value,
+  showDescriptions = true,
+  disabled = false,
+  onChange,
+}: Omit<Parameters<typeof HumanScoreField>[0], 'scoreDefinitions' | 'passingScores' | 'guidance'>) {
+  return <HumanScoreField
+    id={id}
+    legend={legend}
+    value={value}
+    scoreDefinitions={COPY_MACHINE_DRAFT_SCORE_PRESENTATION.scoreDefinitions}
+    passingScores={COPY_MACHINE_DRAFT_SCORE_PRESENTATION.passingScores}
+    guidance={COPY_MACHINE_DRAFT_SCORE_PRESENTATION.guidance}
+    showDescriptions={showDescriptions}
+    disabled={disabled}
+    onChange={onChange}
+  />;
+}
+
+export function HumanScoreBadge({
+  score,
+  passingScores = DEFAULT_PASSING_SCORES,
+}: {
+  score: HumanScore;
+  passingScores?: ReadonlyArray<HumanScore>;
+}) {
+  return <strong className="human-score-badge" data-passing={passingScores.includes(score)}>{score} 分</strong>;
 }
 
 export function HumanRatingFeedback({
@@ -78,6 +137,11 @@ export function HumanRatingFeedback({
   reasons,
   note,
   notePlaceholder,
+  showReasonOptions = true,
+  feedbackRequired = true,
+  reasonRequirement,
+  noteLabel = '评分说明',
+  noteRequirement,
   disabled = false,
   onToggleReason,
   onNoteChange,
@@ -87,22 +151,27 @@ export function HumanRatingFeedback({
   reasons: string[];
   note: string;
   notePlaceholder: string;
+  showReasonOptions?: boolean;
+  feedbackRequired?: boolean;
+  reasonRequirement?: string;
+  noteLabel?: string;
+  noteRequirement?: string;
   disabled?: boolean;
   onToggleReason: (code: string) => void;
   onNoteChange: (note: string) => void;
 }) {
   return <div className="human-rating-feedback">
-    <fieldset disabled={disabled}>
-      <legend>扣分原因 <span>原因或说明至少填写一项</span></legend>
-      <div className="human-rating-reasons">
-        {reasonOptions.map(reason => <label key={reason.code} data-selected={reasons.includes(reason.code)}>
-          <Checkbox checked={reasons.includes(reason.code)} onChange={() => onToggleReason(reason.code)} />
-          <span>{reason.label}</span>
-        </label>)}
-      </div>
-    </fieldset>
+    {showReasonOptions && <HumanReasonOptions
+      reasonOptions={reasonOptions}
+      reasons={reasons}
+      requirement={reasonRequirement ?? (feedbackRequired ? '原因或说明至少填写一项' : '选填')}
+      disabled={disabled}
+      onToggleReason={onToggleReason}
+    />}
     <div className="field full">
-      <label htmlFor={`${id}-note`}>评分说明 <small>{note.length}/500，可代替原因选项</small></label>
+      <label htmlFor={`${id}-note`}>{noteLabel} <small>{note.length}/500，{noteRequirement ?? (feedbackRequired
+        ? showReasonOptions ? '可代替原因选项' : '低于 3 分时必填'
+        : '选填')}</small></label>
       <Textarea
         id={`${id}-note`}
         className="textarea human-rating-note"
@@ -116,15 +185,41 @@ export function HumanRatingFeedback({
   </div>;
 }
 
+export function HumanReasonOptions({
+  reasonOptions,
+  reasons,
+  legend = '扣分原因',
+  requirement,
+  disabled = false,
+  onToggleReason,
+}: {
+  reasonOptions: ReadonlyArray<{ code: string; label: string }>;
+  reasons: string[];
+  legend?: string;
+  requirement: string;
+  disabled?: boolean;
+  onToggleReason: (code: string) => void;
+}) {
+  return <fieldset disabled={disabled}>
+    <legend>{legend} <span>{requirement}</span></legend>
+    <div className="human-rating-reasons">
+      {reasonOptions.map(reason => <label key={reason.code} data-selected={reasons.includes(reason.code)}>
+        <Checkbox checked={reasons.includes(reason.code)} onChange={() => onToggleReason(reason.code)} />
+        <span>{reason.label}</span>
+      </label>)}
+    </div>
+  </fieldset>;
+}
+
 const CONTEXT_LABELS: Record<HumanQualityAssessment['ratingContext'], string> = {
   ORIGINAL: '机器原稿初评',
-  EDITED: '修改后自评',
+  EDITED: '人工修改终稿',
   IMAGE: '整套图片评分',
 };
 
 const ACTION_LABELS: Record<string, string> = {
   SAVE: '已保存',
-  APPROVE: '已放行',
+  APPROVE: '已确认达标',
   RETRY: '已重试',
   DISCARD: '已废弃',
 };
@@ -152,10 +247,16 @@ export function HumanAssessmentHistory({
   assessments,
   scoreDefinitions,
   reasonOptions,
+  originalScorePresentation,
+  showScoreDescriptions = true,
+  showReasonOptions = true,
 }: {
   assessments: HumanQualityAssessment[];
   scoreDefinitions: ReadonlyArray<HumanScoreDefinition>;
   reasonOptions: ReadonlyArray<{ code: string; label: string }>;
+  originalScorePresentation?: HumanScorePresentation;
+  showScoreDescriptions?: boolean;
+  showReasonOptions?: boolean;
 }) {
   if (assessments.length === 0) return null;
   const configuredReasonLabels = new Map(reasonOptions.map((reason) => [reason.code, reason.label]));
@@ -163,15 +264,17 @@ export function HumanAssessmentHistory({
     <summary>人工评分记录 · {assessments.length} 条</summary>
     <ol>
       {[...assessments].reverse().map((assessment) => {
-        const scoreDefinition = scoreDefinitions.find((definition) => definition.score === assessment.score);
+        const presentation = assessment.ratingContext === 'ORIGINAL' ? originalScorePresentation : undefined;
+        const displayedScoreDefinitions = presentation?.scoreDefinitions ?? scoreDefinitions;
+        const scoreDefinition = displayedScoreDefinitions.find((definition) => definition.score === assessment.score);
         return <li key={assessment.id}>
         <div>
           <span>{CONTEXT_LABELS[assessment.ratingContext]} · {ACTION_LABELS[assessment.action] ?? assessment.action}</span>
-          <HumanScoreBadge score={assessment.score} />
+          <HumanScoreBadge score={assessment.score} passingScores={presentation?.passingScores} />
         </div>
         <small>{assessment.reviewerUsername || '历史审核人'} · {new Date(assessment.createdAt).toLocaleString('zh-CN')}</small>
-        {scoreDefinition && <p><strong>{scoreDefinition.title}</strong> · {scoreDefinition.description}</p>}
-        {assessment.reasonCodes.length > 0 && <p>{assessment.reasonCodes.map(reason => configuredReasonLabels.get(reason) ?? REASON_LABELS[reason] ?? reason).join('、')}</p>}
+        {showScoreDescriptions && scoreDefinition && <p><strong>{scoreDefinition.title}</strong> · {scoreDefinition.description}</p>}
+        {showReasonOptions && assessment.reasonCodes.length > 0 && <p>{assessment.reasonCodes.map(reason => configuredReasonLabels.get(reason) ?? REASON_LABELS[reason] ?? reason).join('、')}</p>}
         {assessment.problemAssetIds.length > 0 && <p>问题图片：{assessment.problemAssetIds.map(id => `#${id}`).join('、')}</p>}
         {assessment.note && <p>{assessment.note}</p>}
       </li>})}

@@ -1,4 +1,7 @@
+import { internalPrompt } from './prompt-runtime.mjs';
 import { businessPrompt, promptPolicy, promptRuntimeSnapshot } from './prompt-runtime.mjs';
+import { codexErrorCode } from './codex-protocol.mjs';
+import { safeTraceText } from './model-call-trace.mjs';
 
 const FAILURE_CLASSES = new Set([
   'PASS',
@@ -36,10 +39,15 @@ export class ImageAlignmentResponseError extends SyntaxError {
 
 export class ImageAlignmentServiceError extends Error {
   constructor(cause) {
-    super('image alignment service failed before returning a response', { cause });
+    const serviceCode = codexErrorCode(cause)
+      ?? (typeof cause?.code === 'string' ? cause.code : 'UNKNOWN');
+    const detail = safeTraceText(cause?.message ?? cause ?? 'unknown service failure').text.slice(0, 500);
+    super(`图片视觉验收服务调用失败（${serviceCode}）：${detail}`, { cause });
     this.name = 'ImageAlignmentServiceError';
     this.code = 'ALIGNMENT_SERVICE_FAILED';
-    this.retryable = true;
+    this.serviceCode = serviceCode;
+    this.retryable = !['CODEX_AUTH_REQUIRED', 'CODEX_QUOTA_EXHAUSTED'].includes(serviceCode);
+    this.haltWorker = cause?.haltWorker === true;
   }
 }
 
@@ -314,7 +322,9 @@ function buildOcrRepairInstruction(result, allowedVisibleText) {
     instructions.push(`标题必须逐字显示为：${allowedVisibleText.headline}`);
   }
   if (result.ocrMismatches.includes('subtitle')) {
-    instructions.push(`副标题必须逐字显示为：${allowedVisibleText.subtitle}`);
+    instructions.push(allowedVisibleText.subtitle
+      ? `副标题必须逐字显示为：${allowedVisibleText.subtitle}`
+      : '删除自行添加的副标题，该页不显示副标题');
   }
   if (result.ocrMismatches.includes('bullets')) {
     instructions.push(`要点必须逐条精确显示为：${allowedVisibleText.bullets.join('、')}`);
@@ -325,7 +335,7 @@ function buildOcrRepairInstruction(result, allowedVisibleText) {
     allowedVisibleText.subtitle,
     ...allowedVisibleText.bullets,
     ...(allowedVisibleText.labels ?? []),
-  ]);
+  ].filter((value) => typeof value === 'string' && value.trim()));
   instructions.push(`只允许逐字保留：${allowed.join('、')}`);
   if (result.ocrMismatches.includes('unreadableText')) instructions.push('所有白名单文字必须完整清晰可读');
   if (result.ocrMismatches.includes('traditionalChinese')) instructions.push('全部文字改为中国大陆规范简体中文');
@@ -400,12 +410,9 @@ export function buildImageAlignmentPrompt({ post, visualPage, pageIndex, imageCo
   const prompt = businessPrompt('IMAGE_ALIGNMENT_SYSTEM', {
     dataTag: 'untrusted_alignment_contract',
     data: { title: post.title, body: post.body, pageIndex, imageCount, page: visualPage },
-    contract: '只返回 JSON：schemaVersion=1；subjectMatched、sceneMatched、headlineMatched、styleMatched、layoutMatched 为布尔值；bulletCoverage 为 0～1；contradictions、extraClaims、textErrors 为字符串数组；recognizedText 包含 headline、subtitle、bullets、otherText，其中 bullets 按画面自然读取顺序逐项抄录，程序以无序多重集合核对白名单完整性，逻辑或布局顺序错误由 layoutMatched、contradictions 和 failureClass 报告；unreadableText 只列 allowedVisibleText 或合规标识中不可读的任务预期文字，不要列背景书脊、屏幕边框等非预期装饰字；hasTraditionalChinese 为布尔值；ocrConfidence 为 0～1；failureClass 为 PASS、MINOR_TEXT、SEMANTIC、EXTRA_FACT、STYLE_LAYOUT、OCR_MISMATCH、OCR_UNCERTAIN；repairInstruction 为字符串，通过时为空，失败时 5～1000 字。程序按当前 OCR 比较配置校验，模型原始结论完整保留。',
+    contract: internalPrompt('INTERNAL_IMAGE_ALIGNMENT_OUTPUT', { slot1: internalPrompt('INTERNAL_OCR_CELSIUS_EQUIVALENCE') }),
   });
-  return prompt.replace(
-    '；hasTraditionalChinese 为布尔值；',
-    '；温度标注中连续的 ℃ 与 °C 是等价写法，不得仅因两者差异报错；hasTraditionalChinese 为布尔值；',
-  );
+  return prompt;
 }
 export function parseImageAlignmentOutput(raw, { allowedVisibleText } = {}) {
   const root = parseObject(raw);
@@ -571,7 +578,7 @@ export function createImageAlignmentValidator({
     for (let responseAttempt = 1; responseAttempt <= MAX_ALIGNMENT_RESPONSE_ATTEMPTS; responseAttempt += 1) {
       const correction = responseAttempt === 1
         ? ''
-        : `\n\n上一次响应未通过 JSON 契约（${lastContractError?.message ?? '结构无效'}）。这是格式纠正重试：只输出一个完整 JSON 对象，不要 Markdown、解释、前后缀或代码块。`;
+        : internalPrompt('INTERNAL_IMAGE_ALIGNMENT_RETRY', { slot1: (lastContractError?.message ?? '结构无效') });
       let generated;
       try {
         generated = await agentClient.runVision({

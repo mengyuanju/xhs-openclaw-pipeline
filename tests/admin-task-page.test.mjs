@@ -4,17 +4,19 @@ import { loadAdminTaskPage } from '../src/control-plane/admin-task-page.mjs';
 
 test('admin task pages preserve server pagination beyond 200 and combine role, state and search', async () => {
   const calls = [];
-  const page = { items: [{ id: 357, state: 'IMAGE_FAILED', createdByRole: 'USER' }], total: 251, limit: 20, offset: 240 };
+  const page = { items: [{ id: 357, state: 'IMAGE_FAILED', createdByRole: 'USER', sourceQueryPackageName: '九月选题' }], total: 251, limit: 20, offset: 240 };
   const result = await loadAdminTaskPage(async (path) => {
     calls.push(path);
     return path.endsWith('/health') ? { capabilities: { adminTaskFilters: true } } : page;
-  }, { createdByRole: 'USER', state: 'IMAGE_FAILED', taskId: 357, query: '城市 & 徒步',
+  }, { createdByRole: 'USER', state: 'IMAGE_FAILED', taskId: 357, query: '城市 & 徒步', queryPackageName: '九月 选题',
     attention: 'FAILED', sortBy: 'createdAt', sortOrder: 'asc', limit: 20, offset: 240 });
   assert.equal(result, page);
   const search = new URL(calls.at(-1), 'http://localhost').searchParams;
   assert.equal(search.get('createdByRole'), 'USER');
   assert.equal(search.get('state'), 'IMAGE_FAILED');
   assert.equal(search.get('query'), '城市 & 徒步');
+  assert.equal(search.get('queryPackageName'), '九月 选题');
+  assert.equal(result.items[0].sourceQueryPackageName, '九月选题');
   assert.equal(search.get('taskId'), '357');
   assert.equal(search.get('attention'), 'FAILED');
   assert.equal(search.get('sortBy'), 'createdAt');
@@ -37,16 +39,60 @@ test('all roles and states do not add ownership or lifecycle restrictions', asyn
 test('selected operator is sent as an exact account alongside role, state and Query filters', async () => {
   let requested;
   await loadAdminTaskPage(async (path) => {
-    if (path.endsWith('/health')) return { capabilities: { adminTaskFilters: true, creatorAccountFilters: true } };
+    if (path.endsWith('/health')) return { capabilities: {
+      adminTaskFilters: true, creatorAccountFilters: true, assigneeAccountFilters: true,
+    } };
     requested = new URL(path, 'http://localhost');
     return { items: [], total: 0, limit: 20, offset: 20 };
-  }, { createdByUserId: 'operator.02', createdByAccountId: 202, createdByRole: 'USER', state: 'IMAGE_FAILED', query: '周末 & 徒步', offset: 20 });
+  }, { createdByUserId: 'operator.02', createdByAccountId: 202,
+    assignedToUserId: 'reviewer.03', assignedToAccountId: 303,
+    createdByRole: 'USER', state: 'IMAGE_FAILED', query: '周末 & 徒步', offset: 20 });
   assert.equal(requested.searchParams.get('createdByUserId'), 'operator.02');
   assert.equal(requested.searchParams.get('createdByAccountId'), '202');
+  assert.equal(requested.searchParams.get('assignedToUserId'), 'reviewer.03');
+  assert.equal(requested.searchParams.get('assignedToAccountId'), '303');
   assert.equal(requested.searchParams.get('createdByRole'), 'USER');
   assert.equal(requested.searchParams.get('state'), 'IMAGE_FAILED');
   assert.equal(requested.searchParams.get('query'), '周末 & 徒步');
   assert.equal(requested.searchParams.get('offset'), '20');
+});
+
+test('administrator task pages forward inclusive latest-activity dates only to capable centers', async () => {
+  let requested;
+  await loadAdminTaskPage(async (path) => {
+    if (path.endsWith('/health')) {
+      return { capabilities: { adminTaskFilters: true, adminTaskActivityDateFilters: 1 } };
+    }
+    requested = new URL(path, 'http://localhost');
+    return { items: [], total: 0, limit: 20, offset: 0 };
+  }, { createdDateFrom: '2026-09-01', createdDateTo: '2026-09-17' });
+  assert.equal(requested.searchParams.get('createdDateFrom'), '2026-09-01');
+  assert.equal(requested.searchParams.get('createdDateTo'), '2026-09-17');
+
+  await assert.rejects(loadAdminTaskPage(async (path) => path.endsWith('/health')
+    ? { capabilities: { adminTaskFilters: true } }
+    : { items: [], total: 0, limit: 20, offset: 0 }, {
+    createdDateFrom: '2026-09-01',
+  }), /最近变更日期筛选/u);
+  await assert.rejects(loadAdminTaskPage(async () => ({}), {
+    createdDateFrom: '2026-09-18', createdDateTo: '2026-09-17',
+  }), /cannot be after/u);
+});
+
+test('admin task pages forward opaque cursors and the indexed tail-page anchor', async () => {
+  const requested = [];
+  const request = async (path) => {
+    if (path.endsWith('/health')) return { capabilities: { adminTaskFilters: true } };
+    requested.push(new URL(path, 'http://localhost'));
+    return { items: [], total: 100, limit: 20, offset: 80, previousCursor: 'before-token', nextCursor: null };
+  };
+
+  await loadAdminTaskPage(request, { limit: 20, offset: 80, cursor: 'opaque-token' });
+  await loadAdminTaskPage(request, { limit: 20, offset: 80, lastPage: true });
+  assert.equal(requested[0].searchParams.get('cursor'), 'opaque-token');
+  assert.equal(requested[0].searchParams.has('lastPage'), false);
+  assert.equal(requested[1].searchParams.get('lastPage'), 'true');
+  assert.equal(requested[1].searchParams.has('cursor'), false);
 });
 
 test('exact creator pages reject incomplete identities and centers without account filtering', async () => {
@@ -56,6 +102,20 @@ test('exact creator pages reject incomplete identities and centers without accou
     : { items: [], total: 0, limit: 20, offset: 0 }, {
     createdByUserId: 'operator.02', createdByAccountId: 202,
   }), /精确账号筛选/u);
+  await assert.rejects(loadAdminTaskPage(async () => ({}), { assignedToUserId: 'reviewer.03' }), /负责人筛选缺少稳定账号身份/u);
+  await assert.rejects(loadAdminTaskPage(async (path) => path.endsWith('/health')
+    ? { capabilities: { adminTaskFilters: true } }
+    : { items: [], total: 0, limit: 20, offset: 0 }, {
+    assignedToUserId: 'reviewer.03', assignedToAccountId: 303,
+  }), /精确负责人筛选/u);
+});
+
+test('exact assignee pages fail closed when the center returns another account', async () => {
+  await assert.rejects(loadAdminTaskPage(async (path) => path.endsWith('/health')
+    ? { capabilities: { adminTaskFilters: true, assigneeAccountFilters: true } }
+    : { items: [{ id: 1, assignedToAccountId: 404 }], total: 1, limit: 20, offset: 0 }, {
+    assignedToUserId: 'reviewer.03', assignedToAccountId: 303,
+  }), /分页/u);
 });
 
 test('old centers and malformed pages cannot be presented as complete results', async () => {

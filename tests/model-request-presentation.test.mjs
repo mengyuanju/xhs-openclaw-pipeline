@@ -22,6 +22,17 @@ test('request view separates actual business rules, task data, references and pr
   assert.equal(view.payload.input, prompt);
 });
 
+test('request view exposes the recorded stage reason without inferring it from the current prompt', () => {
+  const raw = JSON.parse(request({ input: 'fixture' }));
+  raw.stageContext = { name: 'COPY_LENGTH_REPAIR', details: {
+    receivedLength: 742,
+    validationError: 'body must contain between 400 and 600 characters; received 742',
+    preservedFields: ['title', 'imagePlan'],
+  } };
+  const view = summarizeModelRequest({ request: JSON.stringify(raw) });
+  assert.deepEqual(view.stageContext, raw.stageContext);
+});
+
 test('legacy, truncated, unknown and malformed records never claim a complete request or invent versions', () => {
   for (const raw of ['{"model":"legacy"}', '{"broken":', '{"format":"xhs-model-request","schemaVersion":99}', 'null']) {
     const view = summarizeModelRequest({ prompt: '历史原文', request: raw });

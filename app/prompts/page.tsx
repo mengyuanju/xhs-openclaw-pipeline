@@ -5,7 +5,7 @@ import { CentralPromptWorkbench } from './central-prompt-workbench';
 import { controlPlaneUrl } from '../../src/control-plane/next-runtime.mjs';
 import { readServerSession } from '../server-session';
 import { redirect } from 'next/navigation';
-import { PROMPT_CATALOG } from '../../src/prompt-catalog.mjs';
+import { PROMPT_CATALOG, promptTemplatesForEditing } from '../../src/prompt-catalog.mjs';
 import { defaultBusinessPrompt } from '../../src/prompt-runtime.mjs';
 
 export const dynamic = 'force-dynamic';
@@ -19,10 +19,11 @@ export default async function PromptsPage() {
     <CentralPromptWorkbench catalog={PROMPT_CATALOG.map((item) => ({ ...item, candidate: defaultBusinessPrompt(item.kind) }))} />
   </>;
   const templates = withAdminStore((store: any) => store.listPromptTemplates()) as any[];
+  const managed = withAdminStore((store: any) => Boolean(store.getPromptRuntimeSettings())) as boolean;
   return <>
     <header className="page-header"><div><span className="eyebrow">Versioned instructions</span><h1 className="sr-only">提示词</h1><p className="subtle">执行开始时固定业务规则和开关；历史重试沿用原快照。原有三类任务提示词继续保留入队时版本。</p></div></header>
     <PromptRuntimeSettings />
     <div className="notice">提示词内容会直接影响批量结果。建议先用 10–20 条小批次验证，通过抽检后再扩到千条规模。</div>
-    <LocalPromptWorkbench templates={templates} />
+    <LocalPromptWorkbench managed={managed} templates={promptTemplatesForEditing(templates, PROMPT_CATALOG.map(item => ({ ...item, candidate: defaultBusinessPrompt(item.kind) })))} />
   </>;
 }

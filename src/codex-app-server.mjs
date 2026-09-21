@@ -54,8 +54,11 @@ export async function runCodexImageProcess(command, args, { input = '', cwd, env
     const timer = setTimeout(() => stop(codexFailure({ message: 'image call timed out; outcome may be unknown' }, 'CODEX_EXEC_TIMEOUT')), timeoutMs);
     signal?.addEventListener('abort', abort, { once: true });
     function itemEvent(item) {
-      if (!item?.id || items.has(item.id)) return;
+      if (!item?.id) return;
       if (item.type === 'imageGeneration') {
+        // Retried native image items can keep their id while the terminal
+        // state changes. The latest app-server state is authoritative; the
+        // saved PNG still goes through the normal path and byte validation.
         items.set(item.id, { type: 'item.completed', item: { type: 'image_generation', id: item.id,
           status: item.status, saved_path: item.savedPath, failure: item.failure } });
       } else if (item.type === 'agentMessage') {

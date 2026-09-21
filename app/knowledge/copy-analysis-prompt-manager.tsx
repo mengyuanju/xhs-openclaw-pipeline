@@ -1,6 +1,7 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
+import { ToastFeedback } from '@/components/ui/sonner';
 
 import { useState } from 'react';
 
@@ -157,18 +158,13 @@ export function CopyAnalysisPromptManager({
     <small id="copy-analysis-prompt-help">
       最多保存 10 条；达到上限后，系统会要求你选择一条旧 Prompt 进行替换，不会自动覆盖。
     </small>
-    {message && !replacementOpen && <p
-      className={messageIsError ? 'notice error copy-analysis-prompt-status' : 'notice success copy-analysis-prompt-status'}
-      role={messageIsError ? 'alert' : 'status'}
-      aria-live="polite"
-    >{message}</p>}
+    <ToastFeedback id="copy-analysis-prompt-feedback" message={message} tone={messageIsError ? 'error' : 'success'} />
 
     <CopyAnalysisPromptReplacementDialog
       open={replacementOpen}
       prompts={prompts}
       replacementId={replacementId}
       busy={busy === 'REPLACE'}
-      message={message}
       onOpenChange={changeReplacementOpen}
       onReplacementChange={setReplacementId}
       onReplace={replacePrompt}

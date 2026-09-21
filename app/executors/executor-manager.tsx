@@ -2,17 +2,26 @@
 
 import { Button } from '@/components/ui/button';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
+import { ToastFeedback } from '@/components/ui/sonner';
 
-import { Cpu, Image as ImageIcon, RefreshCw, ServerCog, Trash2 } from 'lucide-react';
+import { Cpu, Image as ImageIcon, RefreshCw, Search, ServerCog, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { apiRequest } from '../components/api-client';
+import {
+  type XhsSearchNodeStatus,
+  xhsAuthStatusLabel,
+  xhsHostKindLabel,
+  xhsSearchNeedsAttention,
+} from '../components/xhs-search-status';
 
 export type ExecutorStatus = {
   id: string;
   name: string;
   online: boolean;
   imageWorkerEnabled: boolean;
+  imageEditExecutorVersion: number;
+  copyImagePlanRegenerationVersion: number;
   copyConcurrency: number;
   imageConcurrency: number;
   copyRunningCount: number;
@@ -38,15 +47,27 @@ function dateTime(value: string) {
     : '从未上报';
 }
 
-export function ExecutorManager({ initialNodes }: { initialNodes: ExecutorStatus[] }) {
+export function ExecutorManager({
+  initialNodes,
+  initialXhsSearchNodes,
+  xhsSearchMachineTokenConfigured,
+}: {
+  initialNodes: ExecutorStatus[];
+  initialXhsSearchNodes: XhsSearchNodeStatus[];
+  xhsSearchMachineTokenConfigured: boolean;
+}) {
   const confirm = useConfirmDialog();
   const [nodes, setNodes] = useState(initialNodes);
+  const [xhsSearchNodes, setXhsSearchNodes] = useState(initialXhsSearchNodes);
   const [refreshing, setRefreshing] = useState(false);
   const [deletingNodeId, setDeletingNodeId] = useState('');
+  const [deletingXhsNodeId, setDeletingXhsNodeId] = useState('');
   const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null);
   const [message, setMessage] = useState('');
   const [refreshError, setRefreshError] = useState('');
   const [actionError, setActionError] = useState('');
+  const [xhsActionMessage, setXhsActionMessage] = useState('');
+  const [xhsActionError, setXhsActionError] = useState('');
   const latestRefreshId = useRef(0);
   const manualRefreshRunning = useRef(false);
 
@@ -58,9 +79,13 @@ export function ExecutorManager({ initialNodes }: { initialNodes: ExecutorStatus
       setRefreshing(true);
     }
     try {
-      const next = await apiRequest<ExecutorStatus[]>('/api/control-plane/v1/executor-statuses');
+      const [next, nextXhsSearchNodes] = await Promise.all([
+        apiRequest<ExecutorStatus[]>('/api/control-plane/v1/executor-statuses'),
+        apiRequest<XhsSearchNodeStatus[]>('/api/control-plane/v1/xhs-search-statuses'),
+      ]);
       if (refreshId !== latestRefreshId.current) return;
       setNodes(next);
+      setXhsSearchNodes(nextXhsSearchNodes);
       setLastRefreshedAt(new Date().toISOString());
       setRefreshError('');
     } catch (caught) {
@@ -89,7 +114,9 @@ export function ExecutorManager({ initialNodes }: { initialNodes: ExecutorStatus
       .reduce((total, node) => total + node.imageRunningCount, 0),
     imageCapacity: nodes.filter((node) => node.online && node.imageWorkerEnabled)
       .reduce((total, node) => total + node.imageConcurrency, 0),
-  }), [nodes]);
+    xhsOnline: xhsSearchNodes.filter((node) => node.online).length,
+    xhsAttention: xhsSearchNodes.filter(xhsSearchNeedsAttention).length,
+  }), [nodes, xhsSearchNodes]);
 
   async function deleteNode(node: ExecutorStatus) {
     const approved = await confirm({
@@ -120,11 +147,41 @@ export function ExecutorManager({ initialNodes }: { initialNodes: ExecutorStatus
     }
   }
 
+  async function deleteXhsSearchNode(node: XhsSearchNodeStatus) {
+    const approved = await confirm({
+      title: '移除这条搜索节点记录？',
+      description: `将从当前清单移除 ${node.name}（${node.id}），搜索任务、结果和历史记录会继续保留。若该搜索进程再次启动并连接中心服务，它会自动恢复显示。`,
+      confirmLabel: '确认移除',
+      tone: 'danger',
+    });
+    if (!approved) return;
+    setDeletingXhsNodeId(node.id);
+    setXhsActionMessage('');
+    setXhsActionError('');
+    setRefreshError('');
+    try {
+      await apiRequest('/api/control-plane/v1/xhs-search-statuses', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nodeId: node.id }),
+      });
+      latestRefreshId.current += 1;
+      setXhsSearchNodes((current) => current.filter((candidate) => candidate.id !== node.id));
+      setLastRefreshedAt(new Date().toISOString());
+      setXhsActionMessage(`搜索节点 ${node.name} 的信息已移除。`);
+    } catch (caught) {
+      setXhsActionError(caught instanceof Error ? caught.message : '搜索节点信息移除失败');
+    } finally {
+      setDeletingXhsNodeId('');
+    }
+  }
+
   return <div className="executor-manager">
     <section className="executor-summary" aria-label="执行机概览">
       <article><ServerCog aria-hidden="true" size={19} /><div><strong>{summary.online} / {nodes.length}</strong><span>在线执行机</span></div></article>
       <article><Cpu aria-hidden="true" size={19} /><div><strong>{summary.copyRunning} / {summary.copyCapacity}</strong><span>文案并发占用</span></div></article>
       <article><ImageIcon aria-hidden="true" size={19} /><div><strong>{summary.imageRunning} / {summary.imageCapacity}</strong><span>生图并发占用</span></div></article>
+      <article><Search aria-hidden="true" size={19} /><div><strong>{summary.xhsOnline} / {xhsSearchNodes.length}</strong><span>小红书搜索在线 · {summary.xhsAttention} 个需处理</span></div></article>
     </section>
 
     <section className="panel executor-panel">
@@ -141,7 +198,9 @@ export function ExecutorManager({ initialNodes }: { initialNodes: ExecutorStatus
           </Button>
         </div>
       </div>
-      {(message || actionError || refreshError) && <div className={`notice ${actionError || refreshError ? 'error' : 'success'}`} role={actionError || refreshError ? 'alert' : 'status'}>{actionError || refreshError || message}</div>}
+      <ToastFeedback id="executor-manager-success" message={message} />
+      <ToastFeedback id="executor-manager-error" message={actionError} tone="error" />
+      {refreshError && <div className="notice error" role="alert">{refreshError}</div>}
       {nodes.length === 0
         ? <div className="executor-empty">当前还没有执行机注册到中心服务。</div>
         : <div className="table-wrap executor-table-wrap mobile-cards"><table>
@@ -160,15 +219,64 @@ export function ExecutorManager({ initialNodes }: { initialNodes: ExecutorStatus
             return <tr key={node.id}>
               <td data-label="执行机"><div className="executor-identity"><strong>{node.name}</strong><code>{node.id}</code></div></td>
               <td data-label="状态"><span className={`executor-status ${status.className}`}><i aria-hidden="true" />{status.label}</span></td>
-              <td data-label="文案任务"><div className="executor-capacity"><strong>{node.copyRunningCount} / {node.copyConcurrency} 执行中</strong><span>空闲 {copyAvailable} 个槽位</span></div></td>
+              <td data-label="文案任务"><div className="executor-capacity"><strong>{node.copyRunningCount} / {node.copyConcurrency} 执行中</strong><span>空闲 {copyAvailable} 个槽位</span><span>{node.copyImagePlanRegenerationVersion >= 1 ? '支持图文规划重生成' : '需更新执行机才能重生成图文规划'}</span></div></td>
               <td data-label="生图任务">{node.imageWorkerEnabled
-                ? <div className="executor-capacity"><strong>{node.imageRunningCount} / {node.imageConcurrency} 执行中</strong><span>空闲 {imageAvailable} 个槽位</span></div>
+                ? <div className="executor-capacity"><strong>{node.imageRunningCount} / {node.imageConcurrency} 执行中</strong><span>空闲 {imageAvailable} 个槽位</span><span>{node.imageEditExecutorVersion >= 12?'支持单目标直交模型、批量、多产品与框内全部同款替换':node.imageEditExecutorVersion >= 11?'支持旧版产品遮罩替换，需升级单目标直交模型':node.imageEditExecutorVersion >= 10?'支持批量与多产品替换，需升级全部同款替换':node.imageEditExecutorVersion >= 8?'支持 AI 改图、程序标识与失败图定向修复':node.imageEditExecutorVersion >= 7?'支持 AI 改图，需升级程序标识':node.imageEditExecutorVersion >= 3?'仅支持合成与恢复，需升级 AI 改图':'需更新执行机才能改图'}</span></div>
                 : <span className="executor-disabled">未启用生图</span>}</td>
               <td data-label="最后心跳"><time dateTime={node.lastSeenAt}>{dateTime(node.lastSeenAt)}</time></td>
               <td className="row-action" data-label="操作"><div className="executor-row-actions">
                 <Button unstyled className="button small danger" type="button" disabled={deletionDisabled} title={deleteTitle} aria-label={`删除执行机 ${node.name}`} aria-describedby={deletionDisabled ? 'executor-delete-policy' : undefined} onClick={() => { void deleteNode(node); }}>
                   {deletingNodeId === node.id ? <RefreshCw className="animate-spin" size={14} /> : <Trash2 size={14} />}
                   {deletingNodeId === node.id ? '删除中…' : '删除'}
+                </Button>
+              </div></td>
+            </tr>;
+          })}</tbody>
+        </table></div>}
+    </section>
+
+    <section className="panel executor-panel">
+      <div className="panel-head executor-panel-head">
+        <div>
+          <span className="section-kicker">Xiaohongshu account status</span>
+          <h2>小红书搜索节点</h2>
+          <p id="xhs-search-delete-policy">中心服务器密钥：<strong>{xhsSearchMachineTokenConfigured ? '已配置' : '未配置'}</strong>。密钥原文不会显示；离线且无运行任务的节点记录可移除。</p>
+        </div>
+      </div>
+      <ToastFeedback id="xhs-executor-success" message={xhsActionMessage} />
+      <ToastFeedback id="xhs-executor-error" message={xhsActionError} tone="error" />
+      {xhsSearchNodes.length === 0
+        ? <div className="executor-empty">当前还没有主机启动并注册小红书搜索功能。</div>
+        : <div className="table-wrap executor-table-wrap mobile-cards"><table>
+          <thead><tr><th>主机</th><th>小红书账号</th><th>账号状态</th><th>密钥认证</th><th>搜索进程</th><th>最近任务</th><th>最后心跳</th><th className="executor-actions-heading">操作</th></tr></thead>
+          <tbody>{xhsSearchNodes.map((node) => {
+            const needsAttention = xhsSearchNeedsAttention(node);
+            const authClassName = needsAttention
+              ? 'executor-status-danger'
+              : node.authStatus === 'READY' ? 'executor-status-ready' : 'executor-status-busy';
+            const recentJob = node.runningJobId
+              ? `搜索任务 #${node.runningJobId} 执行中`
+              : node.lastJobId
+                ? `搜索任务 #${node.lastJobId}${node.lastJobTaskId ? ` · 作业 #${node.lastJobTaskId}` : ''}`
+                : '暂无搜索记录';
+            const deletionDisabled = Boolean(deletingXhsNodeId) || node.online || Boolean(node.runningJobId);
+            const deleteTitle = node.online
+              ? '请先停止搜索进程并等待其显示为离线'
+              : node.runningJobId
+                ? '请先处理这个节点仍在运行的搜索任务'
+                : `移除 ${node.name} 的搜索节点记录`;
+            return <tr key={node.id}>
+              <td data-label="主机"><div className="executor-identity"><strong>{node.name}</strong><span>{xhsHostKindLabel(node)}</span><code>{node.id}</code></div></td>
+              <td data-label="小红书账号"><strong>{node.accountLabel || '未设置账号标识'}</strong></td>
+              <td data-label="账号状态"><div className="executor-capacity"><span className={`executor-status ${authClassName}`}><i aria-hidden="true" />{xhsAuthStatusLabel(node)}</span><span>{node.authCheckedAt ? `验证于 ${dateTime(node.authCheckedAt)}` : '尚未完成实际搜索验证'}</span></div></td>
+              <td data-label="密钥认证"><div className="executor-capacity"><strong>{node.online ? '当前验证通过' : '曾验证通过'}</strong><span>{node.online ? '正在使用匹配的执行机密钥' : '进程离线，无法验证当前配置'}</span></div></td>
+              <td data-label="搜索进程"><span className={`executor-status ${node.online ? 'executor-status-ready' : 'executor-status-offline'}`}><i aria-hidden="true" />{node.online ? '在线' : '离线'}</span></td>
+              <td data-label="最近任务"><div className="executor-capacity"><strong>{recentJob}</strong><span>{node.lastJobStatus || '尚未领取任务'}</span></div></td>
+              <td data-label="最后心跳"><time dateTime={node.lastSeenAt}>{dateTime(node.lastSeenAt)}</time></td>
+              <td className="row-action" data-label="操作"><div className="executor-row-actions">
+                <Button unstyled className="button small danger" type="button" disabled={deletionDisabled} title={deleteTitle} aria-label={`移除搜索节点 ${node.name}`} aria-describedby={deletionDisabled ? 'xhs-search-delete-policy' : undefined} onClick={() => { void deleteXhsSearchNode(node); }}>
+                  {deletingXhsNodeId === node.id ? <RefreshCw className="animate-spin" size={14} /> : <Trash2 size={14} />}
+                  {deletingXhsNodeId === node.id ? '移除中…' : '移除'}
                 </Button>
               </div></td>
             </tr>;

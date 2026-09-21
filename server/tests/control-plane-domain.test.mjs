@@ -63,6 +63,9 @@ test('copy review edits normalize editable copy and structured image-plan cards'
   assert.equal(normalized.copy.tags.length, 3);
   assert.equal(normalized.imagePlan[0].kind, 'hero');
   assert.equal(normalized.imagePlan.length, 3);
+  const withoutSubtitle = validReviewEdits();
+  withoutSubtitle.imagePlan[1].subtitle = '   ';
+  assert.equal(normalizeCopyReviewEdits(withoutSubtitle).imagePlan[1].subtitle, '');
   assert.throws(() => normalizeCopyReviewEdits({
     ...validReviewEdits(),
     imagePlan: validReviewEdits().imagePlan.map((item, index) => ({
@@ -70,4 +73,19 @@ test('copy review edits normalize editable copy and structured image-plan cards'
       kind: index === 0 ? 'steps' : item.kind,
     })),
   }), /hero/u);
+});
+
+test('copy review requires explicit confirmation for overlong bullets and retains a safety cap', () => {
+  const edits = validReviewEdits();
+  edits.imagePlan[1].bullets[0] = '长'.repeat(31);
+
+  assert.throws(() => normalizeCopyReviewEdits(edits), /between 1 and 30 characters/u);
+  assert.equal(normalizeCopyReviewEdits(edits, {
+    allowImagePlanBulletOverflow: true,
+  }).imagePlan[1].bullets[0], '长'.repeat(31));
+
+  edits.imagePlan[1].bullets[0] = '长'.repeat(201);
+  assert.throws(() => normalizeCopyReviewEdits(edits, {
+    allowImagePlanBulletOverflow: true,
+  }), /between 1 and 200 characters/u);
 });
