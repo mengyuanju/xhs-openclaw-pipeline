@@ -79,6 +79,38 @@ function failedPreviewReason(edit:Edit) {
   }
   return edit.error||'自动验收未通过，请对照原图检查修改结果。';
 }
+function imageEditPreflightWarnings(edit:Edit) {
+  const value=edit.result?.validation??edit.validation;
+  if(!value||typeof value!=='object'||Array.isArray(value))return [];
+  const root=value as Record<string,unknown>,warnings:string[]=[];
+  const record=(item:unknown)=>item&&typeof item==='object'&&!Array.isArray(item)?item as Record<string,unknown>:null;
+  const addList=(item:unknown)=>{if(Array.isArray(item))for(const warning of item)if(typeof warning==='string'&&warning.trim())warnings.push(warning.trim());};
+  const collect=(item:unknown)=>{
+    const check=record(item);if(!check)return;
+    addList(check.warnings);addList(check.referenceWarnings);
+    if((check.advisory===true||check.passed===false)&&typeof check.reason==='string'&&check.reason.trim())warnings.push(check.reason.trim());
+  };
+  const source=record(root.sourcePreflight);
+  collect(source);
+  const localization=record(root.localization);
+  collect(localization);
+  const replacements=localization?.replacements;
+  if(Array.isArray(replacements))for(const replacement of replacements)collect(replacement);
+  const stage=typeof root.stage==='string'?root.stage:'';
+  if(['TARGET_LOCALIZATION','REFERENCE_QUALITY'].includes(stage))collect(root);
+  if(stage==='SOURCE') {
+    const checks=Array.isArray(root.checks)?root.checks:[];
+    const last=record(checks.at(-1));
+    addList(last?.contradictions);
+    if(typeof last?.repairInstruction==='string'&&last.repairInstruction.trim())warnings.push(last.repairInstruction.trim());
+    const missing=last?.missing,uncertain=last?.uncertain;
+    if(Array.isArray(missing)&&missing.length)warnings.push(`源图必需内容未确认：${missing.join('、')}`);
+    if(Array.isArray(uncertain)&&uncertain.length)warnings.push(`源图文字可读性仍不确定：${uncertain.join('、')}`);
+    if(!warnings.length)warnings.push('源图视觉预检未能完全确认。');
+  }
+  if(!warnings.length&&edit.error?.includes('真实产品替换前置检查未通过'))warnings.push(edit.error.split('：').at(-1)??edit.error);
+  return [...new Set(warnings)].slice(0,10);
+}
 function localRepairRecommendation(edit:Edit):LocalRepairRecommendation|null {
   if(!isRejectedPreview(edit))return null;
   const validation=edit.result?.validation;
@@ -538,7 +570,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
                   <div className={styles.referenceUpload}><div className={styles.referenceUploadHeading}><strong>上传产品 {Math.max(1,replacements.findIndex(item=>item.key===activeReplacement?.key)+1)} 的真实图片</strong><p>每个替换项绑定自己的参考图，单张图内不会串用产品。</p></div><label className={styles.filePicker} data-disabled={busy||undefined}><input className={styles.fileInput} aria-label={replacements.findIndex(item=>item.key===activeReplacement?.key)===0?'上传真实产品参考图':`上传产品 ${replacements.findIndex(item=>item.key===activeReplacement?.key)+1} 参考图`} type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={e=>activeReplacement&&void upload(activeReplacement.key,e.target.files)}/><span className={styles.filePickerIcon}><UploadCloud aria-hidden="true" size={26} strokeWidth={1.8}/></span><span className={styles.filePickerCopy}><strong>{activeReplacement?.reference?'更换产品图片':'点击选择产品图片'}</strong><small>也可以将图片拖放到这里</small></span><span className={styles.filePickerMeta}>PNG / JPG / WebP · 最大 5 MB</span></label>{activeReplacement?.reference&&<div className={styles.referenceCard}><img src={path(activeReplacement.reference.url)} alt="已上传的真实产品参考图"/><span>产品 {replacements.findIndex(item=>item.key===activeReplacement.key)+1} 参考图已就绪</span><Button variant="outline" size="sm" type="button" onClick={()=>updateReplacement(activeReplacement.key,current=>({...current,reference:null}))}>移除</Button></div>}</div>
                   <label>参考图使用方式<Select value={referenceMode} onValueChange={value=>setReferenceMode(value as ReferenceMode)}><SelectTrigger aria-label="参考图使用方式"><SelectValue /></SelectTrigger><SelectContent className={styles.selectContent}><SelectItem value="STRICT">完整产品（严格模式）</SelectItem><SelectItem value="APPEARANCE">外观参考（允许手部、裁切或次要产品）</SelectItem></SelectContent></Select><small>{referenceMode==='APPEARANCE'?'只迁移主产品可确认的外观，缺失部分沿用源图结构补全。':'要求参考图中只有一个清楚、完整、遮挡很少的产品。'}</small></label>
                   <div className={styles.entityPagePlanner} aria-label="产品应用图片"><span>选择正在标注的图片</span><div>{imageAssets.map((_,index)=>{const targetPage=index+1,target=activeReplacement?.targets[targetPage];return <Button unstyled type="button" key={targetPage} aria-pressed={entityPage===targetPage} onClick={()=>selectEntityPage(targetPage)}>第 {targetPage} 页<small>{target?.region?'已框选':target?'待框选':'未应用'}</small></Button>;})}</div><label><Checkbox checked={Boolean(activeTarget)} onChange={event=>toggleActivePage(event.target.checked)}/><span>在第 {entityPage} 页替换这个产品</span></label><small>跨图片使用同一参考产品时，逐页切换并分别框选目标；系统会按图片建立同一批次。</small></div>
-                  {activeTarget?<><label>替换范围<Select value={targetMode} onValueChange={value=>setTargetMode(value as TargetMode)}><SelectTrigger aria-label="产品替换范围"><SelectValue /></SelectTrigger><SelectContent className={styles.selectContent}><SelectItem value="SINGLE">只替换一个产品</SelectItem><SelectItem value="ALL_MATCHES">替换框内全部同款产品或特写</SelectItem></SelectContent></Select><small>{targetMode==='ALL_MATCHES'?'框选搜索范围；系统会先定位每个匹配目标并生成紧框，再一次交给模型替换。':'框出目标的大致位置即可；框未完整覆盖或带有持握手部时，仍会直接交给模型完整替换该产品。'}</small></label><label>目标物品说明<Textarea aria-label={replacements.findIndex(item=>item.key===activeReplacement?.key)===0&&entityPage===page?'目标物品说明':`产品 ${replacements.findIndex(item=>item.key===activeReplacement?.key)+1} 第 ${entityPage} 页目标物品说明`} value={targetDescription} maxLength={500} placeholder={targetMode==='ALL_MATCHES'?'例如：框内全部蓝黑色儿童手表及旋钮特写':'例如：画面右侧人物手持的红色证件本'} onChange={e=>setTargetDescription(e.target.value)}/><small>{targetMode==='ALL_MATCHES'?'描述所有需要匹配的同款产品；已批准文字和其他物体不会进入最终编辑蒙版。':'同时写清颜色、持有者或相邻物体，帮助模型锁定唯一目标；框只用于定位。'}</small></label><div className={styles.targetSelectionInfo} role="status"><span>{targetRegion?`第 ${entityPage} 页已框选${targetMode==='ALL_MATCHES'?'搜索范围':'目标'}：x ${targetRegion.x}，y ${targetRegion.y}，宽 ${targetRegion.width}，高 ${targetRegion.height}`:`第 ${entityPage} 页尚未框选${targetMode==='ALL_MATCHES'?'搜索范围':'目标'}，请在左侧原图上拖动。`}</span>{targetRegion&&<Button variant="outline" size="sm" type="button" onClick={()=>setTargetRegion(null)}>重新框选</Button>}</div></>:<div className={styles.inactivePageNotice}>当前产品不应用到第 {entityPage} 页；勾选后可填写说明并框选目标。</div>}
+                  {activeTarget?<><label>替换范围<Select value={targetMode} onValueChange={value=>setTargetMode(value as TargetMode)}><SelectTrigger aria-label="产品替换范围"><SelectValue /></SelectTrigger><SelectContent className={styles.selectContent}><SelectItem value="SINGLE">只替换一个产品</SelectItem><SelectItem value="ALL_MATCHES">替换框内全部同款产品或特写</SelectItem></SelectContent></Select><small>{targetMode==='ALL_MATCHES'?'框选搜索范围；系统会先定位每个匹配目标并生成紧框。紧框含持握手部等情况会提醒，但不会阻止调用图片模型。':'框出目标的大致位置即可；框未完整覆盖或带有持握手部时，仍会直接交给模型完整替换该产品。'}</small></label><label>目标物品说明<Textarea aria-label={replacements.findIndex(item=>item.key===activeReplacement?.key)===0&&entityPage===page?'目标物品说明':`产品 ${replacements.findIndex(item=>item.key===activeReplacement?.key)+1} 第 ${entityPage} 页目标物品说明`} value={targetDescription} maxLength={500} placeholder={targetMode==='ALL_MATCHES'?'例如：框内全部蓝黑色儿童手表及旋钮特写':'例如：画面右侧人物手持的红色证件本'} onChange={e=>setTargetDescription(e.target.value)}/><small>{targetMode==='ALL_MATCHES'?'描述所有需要匹配的同款产品；已批准文字和其他物体不会进入最终编辑蒙版。':'同时写清颜色、持有者或相邻物体，帮助模型锁定唯一目标；框只用于定位。'}</small></label><div className={styles.targetSelectionInfo} role="status"><span>{targetRegion?`第 ${entityPage} 页已框选${targetMode==='ALL_MATCHES'?'搜索范围':'目标'}：x ${targetRegion.x}，y ${targetRegion.y}，宽 ${targetRegion.width}，高 ${targetRegion.height}`:`第 ${entityPage} 页尚未框选${targetMode==='ALL_MATCHES'?'搜索范围':'目标'}，请在左侧原图上拖动。`}</span>{targetRegion&&<Button variant="outline" size="sm" type="button" onClick={()=>setTargetRegion(null)}>重新框选</Button>}</div></>:<div className={styles.inactivePageNotice}>当前产品不应用到第 {entityPage} 页；勾选后可填写说明并框选目标。</div>}
                   <p>单目标模式会把说明和大致位置直接交给图片编辑模型；全部同款模式会先识别最多 4 个目标并生成紧框，再在一次模型编辑中完成。</p>
                 </>}
                 {tab==='PROMPT'&&<>
@@ -560,7 +592,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
                 const suggestion=localSuggestion(e);
                 const alternatives=localEditAlternatives(e);
                 const selectedAlternative=alternatives.find(option=>option.id===selectedAlternatives[`${e.id}:${e.version}`]);
-                const rejectedPreview=isRejectedPreview(e),repairRecommendation=localRepairRecommendation(e);
+                const rejectedPreview=isRejectedPreview(e),repairRecommendation=localRepairRecommendation(e),preflightWarnings=imageEditPreflightWarnings(e);
                 return <li key={e.id}><div className={styles.historyTitle}><strong>{labels[e.operation]} · {alternatives.length?'待确认建议':rejectedPreview?(e.status==='ACCEPTED'?'已人工采用 · 自动验收未通过':'验收未通过 · 结果已保留'):labels[e.status]}</strong><span>第 {e.target_page} 页 · {e.created_by} · 已执行 {e.attempts??0} 次</span></div><p className={styles.historySummary}>{e.config.instruction}</p>
                   {alternatives.length>0&&<section className={styles.suggestionCard} aria-label="局部修改建议"><strong>选择一种修改描述</strong><span>3 个方向均保留原要求，只补充目标范围和处理约束。</span>
                     <div className={styles.suggestionOptions} role="radiogroup" aria-label="替代描述方案">{alternatives.map(option=><label key={option.id} data-selected={selectedAlternative?.id===option.id}>
@@ -572,6 +604,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
                     {selectedAlternative&&<blockquote aria-label="所选修改描述">{selectedAlternative.instruction}</blockquote>}
                     <span>{suggestion?'选择方案后点击下方“采用建议并修改”，结果仍需确认。':'选择方案后将直接生成修改预览，再进行结果验收。'}</span>
                   </section>}
+                  {preflightWarnings.length>0&&<section className={styles.preflightWarningCard} aria-label="执行前提醒"><strong>执行前提醒（未阻止生成）</strong><ul>{preflightWarnings.map((warning,index)=><li key={index}>{warning}</li>)}</ul><span>系统已继续调用图片模型，是否采用仍以生成后的验收结果为准。</span></section>}
                   {rejectedPreview&&<section className={styles.rejectedResultCard} aria-label="自动验收未通过的结果"><strong>图片已生成，但没有完整完成任务</strong><p>{failedPreviewReason(e)}</p>{repairRecommendation?<><span>系统可以上一张失败图为起点，仅处理以下未完成部分：</span><blockquote>{repairRecommendation.repairInstruction}</blockquote><span>定向修复会再次调用图片模型并产生费用，只有确认后才会执行；修复结果仍由你决定是否采用。</span></>:<span>这是一张可查看的失败预览。当前问题不适合安全局部补救，你可以仍然采用，也可以调整说明后从原图重试；重试可能再次产生模型费用。</span>}</section>}
                   {e.error&&<details><summary>查看失败原因</summary><p role="alert">{e.error}</p></details>}
                   <div className={styles.historyActions}>{e.operation==='AI_LOCAL'&&<Button variant="outline" size="sm" onClick={()=>reuseInstruction(e)}>复用说明并修改</Button>}{e.result&&<><Button size="sm" onClick={()=>{setComparisonId(e.id);setPreviewMode('COMPARE');setMobileView('PREVIEW');}}>在左侧对比</Button><a href={path(`/v1/assets/${e.result.asset_id}`)} target="_blank" rel="noreferrer">打开结果</a></>}{historyActions(e).map(action=><Button key={action} size="sm" variant={action==='cancel'?'outline':undefined} className={action==='cancel'?styles.deleteAction:undefined} disabled={busy||action==='apply-suggestion'&&!selectedAlternative} onClick={()=>{setReason(action==='apply-suggestion'&&selectedAlternative?`采用「${selectedAlternative.title}」方案`:'');setHistoryCostConfirmed(false);setPendingBatchAccept(false);setPendingHistoryAction({editId:e.id,action});}}>{historyActionLabel(e,action)}</Button>)}</div>

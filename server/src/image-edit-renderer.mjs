@@ -125,21 +125,26 @@ export function parseFusionTargetCheck(rawText,{referenceMode='STRICT',targetMod
     :null;
   const referenceProductDescription=String(parsed?.referenceProductDescription??'').slice(0,500);
   const sourceChecks=targetMode==='ALL_MATCHES'?FUSION_ALL_MATCHES_TARGET_CHECKS:FUSION_SOURCE_TARGET_CHECKS;
-  const sourcePassed=confidence>=0.8
+  const localizationPassed=confidence>=0.8
     &&(targetMode==='ALL_MATCHES'?candidateRegionsValid:candidateCount===1)
-    &&sourceChecks.every(name=>checks[name]===true);
+    &&sourceChecks.filter(name=>name!=='protectedContentExcluded').every(name=>checks[name]===true);
+  const sourcePassed=localizationPassed&&checks.protectedContentExcluded===true;
   const referencePassed=referenceMode==='APPEARANCE'
     ?checks.referenceRecognizable===true&&checks.referencePrimaryProductClear===true&&referenceProductDescription.trim().length>0
     :checks.referenceUsable===true;
+  const executionAllowed=localizationPassed&&referencePassed;
   const passed=parsed?.passed===true&&sourcePassed&&referencePassed;
   const referenceWarnings=Array.isArray(parsed?.referenceWarnings)
     ?parsed.referenceWarnings.filter(item=>typeof item==='string').slice(0,10).map(item=>item.slice(0,300))
     :[];
-  return {mode:'VISION_TARGET_REGION_CHECK',referenceMode,targetMode,passed,sourcePassed,referencePassed,confidence,candidateCount,
+  const reason=String(parsed?.reason??'').slice(0,1000);
+  const warnings=[...new Set([...referenceWarnings,...(!passed&&executionAllowed&&reason?[reason]:[])])];
+  return {mode:'VISION_TARGET_REGION_CHECK',referenceMode,targetMode,passed,sourcePassed,localizationPassed,referencePassed,
+    executionAllowed,advisory:executionAllowed&&!passed,blocking:!executionAllowed,warnings,confidence,candidateCount,
     ...(targetMode==='ALL_MATCHES'?{candidateRegions,candidateRegionsValid}:{}),
     referenceProductDescription,referenceWarnings,
     checks:Object.fromEntries([...new Set([...sourceChecks,...FUSION_REFERENCE_CHECKS])].map(name=>[name,checks[name]===true])),
-    reason:String(parsed?.reason??'').slice(0,1000)};
+    reason};
 }
 async function validateFusionTarget(client,{inputPath,referencePaths,target,referenceMode='STRICT',targetMode='SINGLE',signal}) {
   if(!target?.description||!target?.region) {
@@ -170,8 +175,8 @@ async function validateFusionTarget(client,{inputPath,referencePaths,target,refe
   }
   check.model=response.model??null;
   check.target=target;
-  if(!check.passed) {
-    const stage=check.sourcePassed?'REFERENCE_QUALITY':'TARGET_LOCALIZATION';
+  if(!check.executionAllowed) {
+    const stage=check.localizationPassed?'REFERENCE_QUALITY':'TARGET_LOCALIZATION';
     throw Object.assign(new Error(`真实产品替换前置检查未通过，尚未调用图片编辑模型：${check.reason||'请调整目标选区或参考图使用方式'}`),{
       nonBillablePreflightFailure:true,
       validation:{stage,...check,billedImageGeneration:false},
@@ -181,7 +186,7 @@ async function validateFusionTarget(client,{inputPath,referencePaths,target,refe
 }
 function directFusionTarget({target,referenceMode='STRICT'}) {
   return {mode:'DIRECT_PRODUCT_REPLACEMENT',referenceMode,targetMode:'SINGLE',passed:true,preflightPerformed:false,
-    candidateCount:1,referenceProductDescription:'',referenceWarnings:[],target,
+    executionAllowed:true,advisory:false,blocking:false,warnings:[],candidateCount:1,referenceProductDescription:'',referenceWarnings:[],target,
     reason:'单目标框仅作为定位提示，目标完整性与框内遮挡不再阻止图片编辑模型执行'};
 }
 const LOCAL_RESULT_FAILURE_CODES=new Set(['SOURCE_NOT_CLEARED','DESTINATION_OBJECT_MISSING','QUANTITY_INCORRECT',
@@ -343,6 +348,18 @@ function visionTextCheck(alignment,targetText=null,placement=null,{ocrOnly=false
   return {...alignment,passed:alignment?.passed===true,engine:'existing-vision-alignment',
     recognizedFields:fields,recognizedText,targetOccurrences,placement:placementCheck,missing,extra,uncertain};
 }
+function sourcePreflightResult(checks) {
+  const finalCheck=checks.at(-1)??null;
+  const passed=finalCheck?.passed===true;
+  const warnings=[];
+  for(const warning of finalCheck?.visualAdvisory?.warnings??[])if(typeof warning==='string'&&warning.trim())warnings.push(warning.trim());
+  for(const contradiction of finalCheck?.contradictions??[])if(typeof contradiction==='string'&&contradiction.trim())warnings.push(contradiction.trim());
+  if(!passed&&!warnings.length&&typeof finalCheck?.repairInstruction==='string'&&finalCheck.repairInstruction.trim())warnings.push(finalCheck.repairInstruction.trim());
+  if(!passed&&!warnings.length&&Array.isArray(finalCheck?.missing)&&finalCheck.missing.length)warnings.push(`源图必需内容未确认：${finalCheck.missing.join('、')}`);
+  if(!passed&&!warnings.length&&Array.isArray(finalCheck?.uncertain)&&finalCheck.uncertain.length)warnings.push(`源图文字可读性仍不确定：${finalCheck.uncertain.join('、')}`);
+  if(!passed&&!warnings.length)warnings.push('源图视觉预检未能完全确认，但系统已继续调用图片模型。');
+  return {mode:'ADVISORY_SOURCE_CHECK',passed,blocking:false,warnings:[...new Set(warnings)].slice(0,10),checks};
+}
 export async function processImageEdit({service,storageRoot,workerId,edit=null,signal,environment=process.env,agentClient,validateImage,mock=false,maxGenerationAttempts}) {
   if(maxGenerationAttempts!==undefined&&maxGenerationAttempts!==1) throw new TypeError('图片修改仅允许单次生成');
   if(validateImage!==undefined&&typeof validateImage!=='function')throw new TypeError('图片视觉验收器无效');
@@ -354,6 +371,7 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
   let failedPreviewBytes=null;
   const controller=new AbortController();
   let alignmentStage='SOURCE';
+  let sourcePreflight=null;
   const stop=(reason=new Error('图片编辑租约失效或已取消'))=>{lostLease=true;if(!controller.signal.aborted)controller.abort(reason);};
   const externalAbort=()=>stop(signal.reason);
   if(signal?.aborted)externalAbort();else signal?.addEventListener('abort',externalAbort,{once:true});
@@ -444,7 +462,7 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
       sourceChecks.push(originalCheck);
       if(originalCheck.passed)break;
     }
-    if(!originalCheck?.passed)throw Object.assign(new Error('源图视觉验收不确定或必需文字缺失，不能安全编辑'),{validation:{stage:'SOURCE',passed:false,checks:sourceChecks}});
+    sourcePreflight=sourcePreflightResult(sourceChecks);
     alignmentStage='RESULT';
     const refs=[];
     for(const asset of context.refs)refs.push({asset,bytes:await service.readAsset(asset)});
@@ -501,7 +519,10 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
           }
         }
         targetLocalization=localizations.length===1?localizations[0]:{
-          mode:'MULTI_TARGET_REGION_CHECK',passed:true,count:localizations.length,
+          mode:'MULTI_TARGET_REGION_CHECK',passed:localizations.every(localization=>localization.passed),
+          executionAllowed:localizations.every(localization=>localization.executionAllowed!==false),
+          advisory:localizations.some(localization=>localization.advisory===true),blocking:false,
+          warnings:[...new Set(localizations.flatMap(localization=>localization.warnings??[]))],count:localizations.length,
           replacements:localizations.map((localization,index)=>({
             referenceAssetId:replacements[index].referenceAssetId,target:replacements[index].target,...localization,
           })),
@@ -637,6 +658,7 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
     const validation={passed:text.passed,mock,restoredPages,promptProvenance:promptProvenance(),dimensions:{passed:finalMetadata.width===1086&&finalMetadata.height===1448,width:finalMetadata.width,height:finalMetadata.height},format:finalMetadata.format,
       text,requiredText:required,disclosure:{required:disclosure,added:addedDisclosure,
         ...(removedInheritedDisclosure?{removed:inheritedDisclosure}: {})},integrity:{sha256:imageHash(result)},outsideMask,
+      sourcePreflight,
       localization:['AI_FUSION','AI_LOCAL'].includes(e.operation)?targetLocalization:null,
       entityConsistency,localConsistency,model,generationAttempts,
       repairAttempt:e.operation==='AI_LOCAL'?Number(config.localRepair?.attempt??0):0,
@@ -657,6 +679,7 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
       error.validation={stage:alignmentStage==='RESULT'?'RESULT_SERVICE':'SOURCE_SERVICE',passed:false,retryable:error.retryable,
         code:error.code,serviceCode:error.serviceCode,billedImageGeneration:false};
     }
+    if(sourcePreflight)error.validation={...(error.validation??{}),sourcePreflight};
     await service.fail(e,error,imageModelRequested&&failedPreviewBytes?{bytes:failedPreviewBytes}:undefined);
     return {status:'FAILED',error:String(error.message)};
   }

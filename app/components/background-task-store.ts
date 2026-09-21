@@ -69,6 +69,15 @@ type Storage = Pick<globalThis.Storage, 'getItem' | 'setItem'>;
 type Snapshot = { status: string; error?: string | null };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const statuses = new Set(['QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'STALE', 'PREVIEW_READY', 'ACCEPTED', 'REJECTED', 'CANCELLED', 'UNAVAILABLE']);
+const advisoryImageEditPreflightErrors = [
+  '源图视觉验收不确定或必需文字缺失，不能安全编辑',
+  '真实产品替换前置检查未通过，尚未调用图片编辑模型',
+];
+
+function isAdvisoryImageEditPreflightFailure(task: Pick<BackgroundTask, 'kind' | 'status' | 'error'>) {
+  return task.kind === 'IMAGE_EDIT' && task.status === 'FAILED' && typeof task.error === 'string'
+    && advisoryImageEditPreflightErrors.some(prefix => task.error?.includes(prefix));
+}
 
 export function createBackgroundTaskStore({ storage, storageKey, request, onComplete }: {
   storage?: Storage;
@@ -90,7 +99,9 @@ export function createBackgroundTaskStore({ storage, storageKey, request, onComp
       && Number.isFinite(task.createdAt) && typeof task.read === 'boolean'
       && (task.updatedAt === undefined || Number.isFinite(task.updatedAt))
       && (task.consumed === undefined || typeof task.consumed === 'boolean'))
-      .map(({ payload: _payload, pollError: _pollError, ...task }) => task) : [];
+      .map(({ payload: _payload, pollError: _pollError, ...task }) => isAdvisoryImageEditPreflightFailure(task)
+        ? { ...task, read: true }
+        : task) : [];
     } catch { return []; }
   }
   tasks = readSaved();
@@ -137,10 +148,11 @@ export function createBackgroundTaskStore({ storage, storageKey, request, onComp
     const current = tasks.find(task => task.id === input.id);
     if (current && !restart) return;
     const createdAt = Math.max(Date.now(), (current?.createdAt ?? 0) + 1);
-    const task: BackgroundTask = { ...input, createdAt, updatedAt: createdAt, read: false };
+    const candidate: BackgroundTask = { ...input, createdAt, updatedAt: createdAt, read: false };
+    const task: BackgroundTask = isAdvisoryImageEditPreflightFailure(candidate) ? { ...candidate, read: true } : candidate;
     tasks = [task, ...tasks.filter(item => item.id !== task.id)];
     publish();
-    if (!isBackgroundTaskRunning(task)) onComplete(task);
+    if (!isBackgroundTaskRunning(task) && !isAdvisoryImageEditPreflightFailure(task)) onComplete(task);
   }
 
   async function poll() {
@@ -157,11 +169,12 @@ export function createBackgroundTaskStore({ storage, storageKey, request, onComp
         if (stopped || tasks.find(item => item.id === task.id) !== task) return;
         if (!payload || !statuses.has(payload.status)) throw new Error('任务状态暂不可用');
         const finished = isBackgroundTaskRunning(task) && !isBackgroundTaskRunning(payload);
-        const next = { ...task, status: payload.status, error: payload.error, pollError: undefined, payload, read: finished ? false : task.read,
+        const candidate = { ...task, status: payload.status, error: payload.error, pollError: undefined, payload, read: finished ? false : task.read,
           updatedAt: Math.max(Date.now(), (task.updatedAt ?? task.createdAt) + 1) };
+        const next = isAdvisoryImageEditPreflightFailure(candidate) ? { ...candidate, read: true } : candidate;
         tasks = tasks.map(item => item.id === task.id ? next : item);
         publish();
-        if (finished) onComplete(next);
+        if (finished && !isAdvisoryImageEditPreflightFailure(next)) onComplete(next);
       } catch (error) {
         sync();
         if (stopped || tasks.find(item => item.id === task.id) !== task) return;

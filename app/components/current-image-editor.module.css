@@ -909,6 +909,18 @@
 .suggestionOptions small { color: #567181; font-size: 11px; line-height: 1.6; }
 .suggestionCard blockquote { white-space: pre-wrap; overflow-wrap: anywhere; }
 
+.preflightWarningCard {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid #d8b25c;
+  border-radius: 9px;
+  background: #fffaeb;
+}
+.preflightWarningCard > strong { color: #754a08; font-size: 12px; }
+.preflightWarningCard > ul { margin: 0; padding-left: 18px; color: #684f28; font-size: 11px; line-height: 1.65; }
+.preflightWarningCard > span { color: #806637; font-size: 10px; line-height: 1.6; }
+
 .rejectedResultCard {
   display: grid;
   gap: 7px;

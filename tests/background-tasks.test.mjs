@@ -102,6 +102,22 @@ test('temporary polling errors retain running status and recover independently o
   assert.equal(f.notifications[1].error, '执行机失败');
 });
 
+test('image-edit preflight warnings stay in history without taskbar notifications', async () => {
+  const sourceId = randomUUID(), targetId = randomUUID();
+  const errors = new Map([
+    [sourceId, '源图视觉验收不确定或必需文字缺失，不能安全编辑'],
+    [targetId, '产品 1 的目标或参考图预检失败：真实产品替换前置检查未通过，尚未调用图片编辑模型：目标含持握手指'],
+  ]);
+  const f = fixture(async path => ({ status: 'FAILED', error: errors.get(path.split('/').at(-1)) }));
+  for (const id of [sourceId, targetId]) f.store.track({ ...plan(), id, kind: 'IMAGE_EDIT', status: 'QUEUED' });
+  await f.store.poll();
+  assert.equal(f.notifications.length, 0);
+  assert.ok(f.store.getSnapshot().every(task => task.read));
+  assert.ok(f.store.getSnapshot().every(task => backgroundTaskGroup(task) === 'history'));
+  const restored = createBackgroundTaskStore(f.options);
+  assert.ok(restored.getSnapshot().every(task => task.read), 'legacy preflight failures remain acknowledged after reload');
+});
+
 test('retries notify again while duplicate registration and overlapping polls do not', async () => {
   let release, count = 0;
   const f = fixture(() => { count++; return new Promise(resolve => { release = resolve; }); });
