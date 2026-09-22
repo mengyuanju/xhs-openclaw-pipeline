@@ -7,6 +7,7 @@ import { STANDALONE_IMAGE_EDITOR_LIMITS as LIMITS } from '../../src/standalone-i
 import { normalizeTaskId, normalizeUuid, ControlPlaneAuthorizationError, ControlPlaneNotFoundError, ControlPlaneConflictError } from './domain.mjs';
 
 const assetUrl = id => `/v1/image-editor/assets/${id}`;
+const visibleWorkspace = alias => `NOT EXISTS (SELECT 1 FROM image_edit_events removed WHERE removed.task_id=${alias}.task_id AND removed.action='DELETE_WORKSPACE')`;
 async function currentActor(c, actor) {
   if (!['ADMIN','USER'].includes(actor?.role)) throw new ControlPlaneAuthorizationError();
   const user = (await c.query(`SELECT id FROM app_users WHERE id=$1 AND username=$2 AND role=$3
@@ -20,13 +21,62 @@ export function createStandaloneImageEditor({ pool, storageRoot }) {
     const row = (await c.query(`SELECT w.*,t.current_image_run_id,t.current_copy_revision_id
       FROM standalone_image_workspaces w JOIN tasks t ON t.id=w.task_id
       JOIN app_users u ON u.id=$2 AND u.username=$3 AND u.role=$4 AND u.status='ACTIVE' AND u.credential_version=$5
-      WHERE w.task_id=$1 AND t.task_kind='STANDALONE_IMAGE_EDIT'`,
+      WHERE w.task_id=$1 AND t.task_kind='STANDALONE_IMAGE_EDIT' AND ${visibleWorkspace('w')}`,
     [normalizeTaskId(id),actor.userId,actor.username,actor.role,actor.credentialVersion])).rows[0];
     if (!row) throw new ControlPlaneNotFoundError('图片编辑记录不存在或账号已失效');
-    if (!['ADMIN','USER'].includes(actor?.role) || (actor.role !== 'ADMIN' && Number(row.owner_id) !== actor.userId)) {
+    if (!['ADMIN','USER'].includes(actor?.role) || Number(row.owner_id) !== actor.userId) {
       throw new ControlPlaneAuthorizationError('不能访问其他账号的图片编辑记录');
     }
     return row;
+  }
+  async function workspaceStatus(id, c=pool) {
+    const row=(await c.query(`SELECT status FROM image_edit_requests WHERE task_id=$1
+      ORDER BY CASE status WHEN 'RUNNING' THEN 0 WHEN 'QUEUED' THEN 1 WHEN 'DRAFT' THEN 3 ELSE 2 END,
+        created_at DESC,id DESC LIMIT 1`,[id])).rows[0];
+    return row?.status??'UPLOADED';
+  }
+  // The original editor owns its transaction and staged-file cleanup. This
+  // scoped pool adds our workspace guard immediately after BEGIN, holding the
+  // same task lock as executor claims until the original transaction ends.
+  function writablePool(id,actor) {
+    const guardedPool={
+      query:pool.query.bind(pool),
+      async connect() {
+        const c=await pool.connect();
+        return {
+          release:()=>c.release(),
+          async query(sql,values) {
+            const result=await c.query(sql,values);
+            if(sql==='BEGIN') {
+              // Keep the legacy editor's user -> task lock order.
+              await c.query('SELECT id FROM app_users WHERE id=$1 FOR UPDATE',[actor.userId]);
+              await c.query('SELECT id FROM tasks WHERE id=$1 FOR UPDATE',[normalizeTaskId(id)]);
+              await access(id,actor,c);
+              if(await workspaceStatus(id,c)==='RUNNING') {
+                throw new ControlPlaneConflictError('IMAGE_EDITOR_RUNNING','图片正在生图中，仅支持查看，请完成后再编辑');
+              }
+            }
+            return result;
+          },
+        };
+      },
+    };
+    return guardedPool;
+  }
+  const writableEdits=(id,actor)=>createImageEditingService({pool:writablePool(id,actor),storageRoot});
+  async function createBatch(id,input,actor) {
+    if(!Array.isArray(input.edits)||!input.edits.length||input.edits.length>LIMITS.maxImages)throw new TypeError('请选择 1 至 5 张图片');
+    if(new Set(input.edits.map(item=>Number(item.targetPage))).size!==input.edits.length)throw new TypeError('同一批次不能重复提交同一张图片');
+    return editTransaction(writablePool(id,actor),async c=>{
+      // create() writes only database rows. Join all child creates to this
+      // transaction so no executor can claim a partially submitted image set.
+      const joined={query:c.query.bind(c),release(){}};
+      const joinedPool={query:joined.query,connect:async()=>({...joined,query:(sql,values)=>
+        ['BEGIN','COMMIT','ROLLBACK'].includes(sql)?Promise.resolve({rows:[]}):joined.query(sql,values)})};
+      const service=createImageEditingService({pool:joinedPool,storageRoot}),created=[];
+      for(const item of input.edits)created.push(await service.create(id,item,actor));
+      return created;
+    });
   }
   async function detail(id, actor) {
     const workspace = await access(id, actor);
@@ -35,7 +85,7 @@ export function createStandaloneImageEditor({ pool, storageRoot }) {
     const run = runs.find(value => value.id === workspace.current_image_run_id);
     const ids = (run?.result?.images ?? []).map(image => image.deliveryAssetId ?? image.assetId);
     const assets = (await pool.query('SELECT id,sha256 FROM assets WHERE task_id=$1 AND id=ANY($2::bigint[])', [workspace.task_id,ids])).rows;
-    return { id:Number(workspace.task_id),title:workspace.title,limits:workspace.limits,
+    return { id:Number(workspace.task_id),title:workspace.title,limits:workspace.limits,status:await workspaceStatus(workspace.task_id),
       runId:workspace.current_image_run_id,copyRevisionId:Number(workspace.current_copy_revision_id),runs,
       assets:ids.map(id => { const a=assets.find(item=>Number(item.id)===Number(id));
         if (!a) throw new Error('上传图片记录不完整');
@@ -101,14 +151,43 @@ export function createStandaloneImageEditor({ pool, storageRoot }) {
     return detail(id,actor);
   }
   async function editAccess(id,actor) {const edit=await edits.get(id);await access(edit.task_id,actor);return edit;}
+  async function remove(input,actor) {
+    if(!Array.isArray(input.workspaceIds)||!input.workspaceIds.length||input.workspaceIds.length>100)throw new TypeError('请选择 1 至 100 条图片编辑记录');
+    const ids=[...new Set(input.workspaceIds.map(normalizeTaskId))].sort((a,b)=>a-b);
+    const requestId=normalizeUuid(input.requestId,'requestId');
+    return editTransaction(pool,async c=>{
+      await c.query('SELECT id FROM app_users WHERE id=$1 FOR UPDATE',[actor.userId]);
+      await currentActor(c,actor);
+      const rows=(await c.query(`SELECT w.task_id,w.owner_id,${visibleWorkspace('w')} AS visible
+        FROM standalone_image_workspaces w JOIN tasks t ON t.id=w.task_id
+        WHERE w.task_id=ANY($1::bigint[]) AND t.task_kind='STANDALONE_IMAGE_EDIT'
+        ORDER BY t.id FOR UPDATE OF t`,[ids])).rows;
+      if(rows.length!==ids.length)throw new ControlPlaneNotFoundError('图片编辑记录不存在');
+      if(rows.some(row=>Number(row.owner_id)!==actor.userId))throw new ControlPlaneAuthorizationError('只能删除自己创建的图片编辑记录');
+      const active=(await c.query("SELECT id FROM image_edit_requests WHERE task_id=ANY($1::bigint[]) AND status='RUNNING' LIMIT 1",[ids])).rows[0];
+      if(active)throw new ControlPlaneConflictError('IMAGE_EDITOR_RUNNING','所选图片正在生图中，仅支持查看，完成后才能删除');
+      for(const row of rows.filter(item=>item.visible)) {
+        // Audit-backed removal keeps assets/history intact while preventing
+        // every user-facing access and any later executor claim.
+        await c.query('UPDATE tasks SET priority_paused=true WHERE id=$1',[row.task_id]);
+        await c.query(`UPDATE image_edit_requests SET status='CANCELLED',version=version+1,
+          lease_token=NULL,lease_expires_at=NULL,updated_at=now()
+          WHERE task_id=$1 AND status IN ('DRAFT','QUEUED')`,[row.task_id]);
+        await c.query(`INSERT INTO image_edit_events(task_id,action,actor,reason,request_id,detail)
+          VALUES($1,'DELETE_WORKSPACE',$2,'删除图片编辑',$3,$4)`,[row.task_id,actor.username,requestId,{workspaceIds:ids}]);
+      }
+      return {deletedIds:ids};
+    });
+  }
   return {
-    limits:LIMITS,access,detail,create,
+    limits:LIMITS,access,detail,create,remove,createBatch,
     async list(actor,{offset=0,limit=20,queue=false}={}) {
       if(!['ADMIN','USER'].includes(actor?.role))throw new ControlPlaneAuthorizationError();
       offset=Number(offset);limit=Number(limit);
       if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(limit)||limit<1||limit>100)throw new TypeError('分页参数无效');
-      const filter=`($1::boolean OR w.owner_id=$2) ${queue?"AND EXISTS(SELECT 1 FROM image_edit_requests e WHERE e.task_id=w.task_id AND e.status<>'DRAFT')":''}`;
-      const values=[actor.role==='ADMIN',actor.userId];
+      await currentActor(pool,actor);
+      const filter=`w.owner_id=$1 AND ${visibleWorkspace('w')} ${queue?"AND EXISTS(SELECT 1 FROM image_edit_requests e WHERE e.task_id=w.task_id AND e.status<>'DRAFT')":''}`;
+      const values=[actor.userId];
       const total=Number((await pool.query(`SELECT count(*) FROM standalone_image_workspaces w WHERE ${filter}`,values)).rows[0].count);
       const rows=(await pool.query(`SELECT w.task_id,w.title,w.created_at,u.display_name AS owner,
         e.status,e.error,x.node_id,
@@ -117,15 +196,21 @@ export function createStandaloneImageEditor({ pool, storageRoot }) {
         FROM standalone_image_workspaces w JOIN app_users u ON u.id=w.owner_id
         LEFT JOIN LATERAL (SELECT * FROM image_edit_requests e WHERE e.task_id=w.task_id ORDER BY CASE e.status WHEN 'RUNNING' THEN 0 WHEN 'QUEUED' THEN 1 WHEN 'DRAFT' THEN 3 ELSE 2 END,e.created_at DESC,e.id DESC LIMIT 1) e ON true
         LEFT JOIN task_executions x ON x.id=e.execution_id
-        WHERE ${filter} ORDER BY w.task_id DESC LIMIT $3 OFFSET $4`,[...values,limit,offset])).rows;
+        WHERE ${filter} ORDER BY w.task_id DESC LIMIT $2 OFFSET $3`,[...values,limit,offset])).rows;
       return {total,items:rows.map(row=>({id:Number(row.task_id),title:row.title,owner:row.owner,createdAt:row.created_at,
         status:Number(row.running)>0?'RUNNING':Number(row.queued)>0?'QUEUED':row.status??'UPLOADED',error:row.error,nodeId:row.node_id}))};
     },
-    async listEdits(id,actor) {await access(id,actor);return edits.list(id);},
+    async listEdits(id,actor) {
+      await access(id,actor);
+      const items=await edits.list(id);
+      const refs=(await pool.query("SELECT id,sha256 FROM assets WHERE task_id=$1 AND asset_role='REFERENCE'",[id])).rows;
+      return items.map(edit=>({...edit,referenceAssets:refs.filter(ref=>edit.config.references.some(value=>Number(value.assetId)===Number(ref.id)))
+        .map(ref=>({id:Number(ref.id),sha256:ref.sha256,url:assetUrl(ref.id),purpose:edit.config.references.find(value=>Number(value.assetId)===Number(ref.id)).purpose}))}));
+    },
     async getEdit(id,actor) {return editAccess(id,actor);},
-    async createEdit(id,input,actor) {await access(id,actor);return edits.create(id,input,actor);},
-    async uploadReference(id,input,actor) {await access(id,actor);const a=await edits.upload(id,input,actor);return {...a,url:assetUrl(a.id)};},
-    async action(id,action,input,actor) {await editAccess(id,actor);return edits.action(id,action,input,actor);},
+    async createEdit(id,input,actor) {await access(id,actor);return writableEdits(id,actor).create(id,input,actor);},
+    async uploadReference(id,input,actor) {await access(id,actor);const a=await writableEdits(id,actor).upload(id,input,actor);return {...a,url:assetUrl(a.id)};},
+    async action(id,action,input,actor) {const edit=await editAccess(id,actor);return writableEdits(edit.task_id,actor).action(id,action,input,actor);},
     async asset(id,actor) {
       const asset=(await pool.query('SELECT * FROM assets WHERE id=$1',[normalizeTaskId(id)])).rows[0];
       if(!asset)throw new ControlPlaneNotFoundError('图片不存在');

@@ -11,7 +11,7 @@ import { ImageEditorList } from './image-editor-list';
 import { STANDALONE_IMAGE_EDITOR_LIMITS as limits } from '../../src/standalone-image-editor-config.mjs';
 import styles from './workbench.module.css';
 
-type Workspace = { id:number; title:string; runId:string; copyRevisionId:number; assets:Array<{id:number;url:string;sha256:string}>; runs:Array<{id:string;result:{processing?:{type:string}}|null}> };
+type Workspace = { status:string; id:number; title:string; runId:string; copyRevisionId:number; assets:Array<{id:number;url:string;sha256:string}>; runs:Array<{id:string;result:{processing?:{type:string}}|null}> };
 const url = (value:string) => `/api/control-plane${value}`;
 function encodedFile(file:File):Promise<string> {
   return new Promise((resolve,reject) => {
@@ -25,6 +25,7 @@ export function ImageEditorWorkbench() {
   const [open,setOpen] = useState(false), [workspace,setWorkspace] = useState<Workspace|null>(null);
   const [page,setPage] = useState(1), [title,setTitle] = useState('');
   const [busy,setBusy] = useState(false), [editorBusy,setEditorBusy] = useState(false);
+  const [running,setRunning] = useState(false);
   const [error,setError] = useState(''), [notice,setNotice] = useState(''), [refreshKey,setRefreshKey] = useState(0);
   const requestId = useRef(createRequestId()), selection = useRef(0);
   const locked = busy || editorBusy;
@@ -34,7 +35,7 @@ export function ImageEditorWorkbench() {
     try {
       const value = await apiRequest<Workspace>(url(`/v1/image-editor/workspaces/${id}`));
       if (selection.current !== token) return;
-      setWorkspace(value);
+      setWorkspace(value);setRunning(value.status==='RUNNING');
       window.history.replaceState(null,'',`/image-editor?workspace=${id}`);
     } catch(e) { if(selection.current === token)setError(e instanceof Error ? e.message : '读取图片失败'); }
     finally { if(selection.current === token)setBusy(false); }
@@ -46,7 +47,7 @@ export function ImageEditorWorkbench() {
   },[select]);
   function startNew() {
     selection.current += 1;
-    setWorkspace(null);setPage(1);setTitle('');setError('');setNotice('');setBusy(false);setEditorBusy(false);
+    setWorkspace(null);setRunning(false);setPage(1);setTitle('');setError('');setNotice('');setBusy(false);setEditorBusy(false);
     requestId.current = createRequestId();
     window.history.replaceState(null,'','/image-editor');
   }
@@ -90,13 +91,12 @@ export function ImageEditorWorkbench() {
       <ImageEditorList refreshKey={refreshKey} onSelect={id => void select(id)}/>
     </div>
     <DialogContent className={styles.dialog} overlayClassName={styles.overlay} showCloseButton={!locked} onPointerDownOutside={event => event.preventDefault()}>
-      <header className={styles.dialogHeader}><DialogTitle className={styles.dialogTitle}>{workspace ? '编辑图片' : '新增图片'}</DialogTitle>
-        <DialogDescription className="subtle">上传图片后设置修改内容，保存即提交生图。</DialogDescription></header>
+      <header className={styles.dialogHeader}><DialogTitle className={styles.dialogTitle}>{workspace ? running ? '查看图片' : '编辑图片' : '新增图片'}</DialogTitle>
+        <DialogDescription className="subtle">{running ? '生图中仅支持查看，完成后可下载或修改后再次保存。' : '上传图片后设置修改内容，保存即提交生图。'}</DialogDescription></header>
       <div className={styles.dialogBody}>
         <section className={styles.upload} aria-label="上传图片">
           {workspace ? <div className={styles.uploaded}><div><strong>{workspace.title}</strong><p className="subtle">已上传 {workspace.assets.length} 张图片</p></div>
             <div className={styles.pages}>{workspace.assets.map((item,index) => <Button key={item.id} size="sm" variant={page === index+1 ? 'default' : 'outline'} disabled={locked} aria-pressed={page === index+1} onClick={() => setPage(index+1)}>第 {index+1} 张</Button>)}</div>
-            {asset && <a className={styles.download} href={url(`${asset.url}?download=true`)} download>下载当前图片</a>}
           </div> : <>
             <label className={styles.titleInput}>图片名称（可选）<Input maxLength={200} value={title} disabled={busy} onChange={event => {setTitle(event.target.value);requestId.current=createRequestId();}} placeholder="例如：产品图片调整"/></label>
             <label className={styles.filePicker}><UploadCloud size={26} aria-hidden="true"/><strong>{busy ? '正在读取图片…' : '选择要编辑的图片'}</strong><span className="subtle">{limits.width} × {limits.height} · PNG / JPEG / WebP · 每张最多 {limits.maxUploadBytes/1024/1024} MB · 最多 {limits.maxImages} 张</span>
@@ -105,7 +105,7 @@ export function ImageEditorWorkbench() {
           </>}
           {error && <p className="notice" role="alert">{error}</p>}
         </section>
-        {workspace && asset && <StandaloneImageEditor key={`${workspace.id}:${page}`} taskId={workspace.id} runId={workspace.runId} copyRevisionId={workspace.copyRevisionId} asset={asset} assets={workspace.assets} page={page} runs={workspace.runs} onChanged={changed} onSubmitted={submitted} onBusyChange={setEditorBusy}/>}
+        {workspace && asset && <StandaloneImageEditor key={`${workspace.id}:${page}`} taskId={workspace.id} runId={workspace.runId} copyRevisionId={workspace.copyRevisionId} asset={asset} assets={workspace.assets} page={page} runs={workspace.runs} onChanged={changed} onSubmitted={submitted} onBusyChange={setEditorBusy} initialStatus={workspace.status} onRunningChange={setRunning}/>}
       </div>
     </DialogContent>
   </Dialog>;

@@ -9,8 +9,8 @@
 .list table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
 .list td, .list th { padding: 16px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
 .list th { white-space: nowrap; color: var(--muted); font-size: 12px; font-weight: 500; background: #faf9f7; }
-.list td:first-child { min-width: 180px; max-width: 360px; overflow-wrap: anywhere; }
-.list td:last-child { width: 110px; }
+.list td:nth-child(2) { min-width: 180px; max-width: 360px; overflow-wrap: anywhere; }
+.list td:last-child { width: 185px; }
 .meta { display: block; color: var(--muted); margin-top: 5px; }
 .date { white-space: nowrap; color: var(--muted); font-size: 12px; }
 .status { display: inline-flex; white-space: nowrap; border-radius: 6px; padding: 4px 9px; font-size: 12px; }
@@ -43,3 +43,6 @@
   .filePicker { padding: 18px 12px; }
   .pagination { gap: 8px; }
 }
+
+.heading > span { margin-right: auto; }
+.rowActions { display: flex; gap: 8px; }

@@ -8,9 +8,11 @@ export function installStandaloneImageEditorRoutes(router,repository,storageRoot
   router.get(`${base}/workspaces`,async ctx=>json(ctx,200,await service.list(actor(ctx),{
     offset:ctx.query.offset??0,limit:ctx.query.limit??20,queue:ctx.query.queue==='true',
   })));
+  router.post(`${base}/workspaces/delete`,async ctx=>json(ctx,200,await service.remove(requireJson(ctx),actor(ctx))));
   router.post(`${base}/workspaces`,async ctx=>json(ctx,201,await service.create(requireJson(ctx),actor(ctx))));
   router.get(`${base}/workspaces/:workspaceId`,async ctx=>json(ctx,200,await service.detail(ctx.params.workspaceId,actor(ctx))));
   router.get(`${base}/workspaces/:workspaceId/image-edits`,async ctx=>json(ctx,200,await service.listEdits(ctx.params.workspaceId,actor(ctx))));
+  router.post(`${base}/workspaces/:workspaceId/image-edits/batch`,async ctx=>json(ctx,201,await service.createBatch(ctx.params.workspaceId,requireJson(ctx),actor(ctx))));
   router.post(`${base}/workspaces/:workspaceId/image-edits`,async ctx=>json(ctx,201,await service.createEdit(ctx.params.workspaceId,requireJson(ctx),actor(ctx))));
   router.post(`${base}/workspaces/:workspaceId/image-edit-references`,async ctx=>json(ctx,201,await service.uploadReference(ctx.params.workspaceId,requireJson(ctx),actor(ctx))));
   router.post(`${base}/workspaces/:workspaceId/image-versions/:runId/restore`,async ctx=>json(ctx,201,await service.createEdit(ctx.params.workspaceId,

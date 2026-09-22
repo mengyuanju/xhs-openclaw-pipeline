@@ -10,3 +10,10 @@
 @media (max-width: 840px) {
   .editor { grid-template-rows: auto auto auto minmax(0, 1fr); height: max(640px, 78dvh); }
 }
+
+.fields { margin: 0; padding: 0; border: 0; min-width: 0; }
+.fields:disabled { opacity: .75; }
+.footerButtons.footerButtons { display: flex; flex-direction: row; gap: 8px; }
+@media (max-width: 620px) {
+  .footerButtons.footerButtons > * { flex: 1; min-width: 0; padding-inline: 8px; }
+}
