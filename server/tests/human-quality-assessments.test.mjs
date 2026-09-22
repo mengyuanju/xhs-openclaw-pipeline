@@ -24,15 +24,22 @@ const sourceEdits = {
   copy: { ...validEdits.copy, title: '需要修改的桌面整理方法' },
 };
 
-function copyFixture({ assignedToUserId = 'reviewer' } = {}) {
+function copyFixture({
+  assignedToUserId = 'reviewer',
+  currentStage = 'COPY_REVIEW_PENDING',
+  mandatoryCopyQc = false,
+  mandatoryCopyQcOrigin = null,
+} = {}) {
   const task = {
     id: 41,
     state: 'COPY_REVIEW_PENDING',
+    current_stage: currentStage,
     assigned_to_user_id: assignedToUserId,
     current_copy_revision_id: 12,
     current_image_run_id: null,
     production_batch_id: null,
-    mandatory_copy_qc: false,
+    mandatory_copy_qc: mandatoryCopyQc,
+    mandatory_copy_qc_origin: mandatoryCopyQcOrigin,
     ai_disclosure_enabled: true,
     progress_percent: 100,
   };
@@ -48,7 +55,13 @@ function copyFixture({ assignedToUserId = 'reviewer' } = {}) {
   const client = {
     release() {},
     async query(sql, values = []) {
-      if (sql.includes('FROM workflow_quality_settings')) return { rows: [{ copy_sampling_enabled: false }] };
+      if (sql.includes('FROM workflow_quality_settings')) return { rows: [{
+        version: 8,
+        copy_sampling_enabled: false,
+        copy_sampling_rate_bps: 0,
+        blind_review_enabled: true,
+        reviewer_batch_return_enabled: false,
+      }] };
       const source = String(sql);
       queries.push({ sql: source, values });
       if (/^(BEGIN|COMMIT|ROLLBACK)$/u.test(source)) return { rows: [] };
@@ -70,6 +83,7 @@ function copyFixture({ assignedToUserId = 'reviewer' } = {}) {
         }
         return { rows: revision?.execution_id ? [{ content: revision.content }] : [] };
       }
+      if (source.includes('WITH RECURSIVE rework_lineage')) return { rows: [] };
       if (source.includes('SELECT * FROM copy_revisions')) {
         const revision = revisions.get(Number(values[0]));
         return { rows: revision ? [revision] : [] };
@@ -108,6 +122,10 @@ function copyFixture({ assignedToUserId = 'reviewer' } = {}) {
         approvalEvents.push(row);
         return { rows: [row] };
       }
+      if (source.includes('INSERT INTO production_batches')) return { rows: [{ id: 90 }] };
+      if (source.includes('INSERT INTO copy_sampling_freezes')) return { rows: [{ id: 91 }] };
+      if (source.includes('INSERT INTO copy_sampling_items')) return { rows: [{ id: 92, status: 'PENDING' }] };
+      if (source.includes('UPDATE production_batches SET')) return { rows: [] };
       if (source.includes('FROM copy_approval_events')) {
         return { rows: approvalEvents.filter((row) => row.task_id === Number(values[0])
           && row.copy_revision_id === Number(values[1])) };
@@ -120,11 +138,18 @@ function copyFixture({ assignedToUserId = 'reviewer' } = {}) {
       }
       if (source.includes('UPDATE tasks SET')) {
         const routesApprovedCopy = source.includes('state = $2');
+        const routesMandatoryQa = source.includes("state = 'COPY_QC_PENDING'");
         Object.assign(task, {
-          state: routesApprovedCopy ? values[1]
+          state: routesMandatoryQa ? 'COPY_QC_PENDING' : routesApprovedCopy ? values[1]
             : source.includes("state = 'IMAGE_QUEUED'") ? 'IMAGE_QUEUED'
             : source.includes("state = 'CANCELLED'") ? 'CANCELLED' : 'COPY_REVIEW_PENDING',
-          current_copy_revision_id: (routesApprovedCopy ? values[2] : values[1]) ?? task.current_copy_revision_id,
+          current_copy_revision_id: (routesMandatoryQa ? values[2]
+            : routesApprovedCopy ? values[2] : values[1]) ?? task.current_copy_revision_id,
+          ...(routesMandatoryQa ? {
+            current_stage: 'QC_MANDATORY_RECHECK',
+            mandatory_copy_qc: true,
+            mandatory_copy_qc_origin: values[4],
+          } : {}),
         });
         return { rows: [{ ...task }] };
       }
@@ -140,6 +165,43 @@ function copyFixture({ assignedToUserId = 'reviewer' } = {}) {
   return { task, queries, assessments, approvalEvents, revisions,
     repository: new PostgresControlPlaneRepository({ pool: { connect: async () => client } }) };
 }
+
+test('an exhausted image retry unlocks a previously three-point copy and routes its edit to mandatory QA', async () => {
+  const fixture = copyFixture({ currentStage: 'IMAGE_RETRY_EXHAUSTED' });
+  fixture.assessments.push({
+    id: 1,
+    task_id: 41,
+    stage: 'COPY',
+    copy_revision_id: 12,
+    image_run_id: null,
+    score_x10: 30,
+    rating_context: 'EDITED',
+    action: 'APPROVE',
+    reason_codes: [],
+    problem_asset_ids: [],
+    note: null,
+    reviewer_username: 'reviewer',
+    review_session_id: '66666666-6666-4666-8666-666666666666',
+    request_fingerprint: 'prior-review',
+    created_at: new Date('2026-09-20T00:00:00Z'),
+  });
+
+  const result = await fixture.repository.approveCopy(41, {
+    revisionId: 12,
+    nodeId: 'node-a',
+    decision: 'APPROVE',
+    edits: validEdits,
+    score: 3,
+    reviewSessionId,
+  }, { actorRole: 'ADMIN', reviewerUserId: 'reviewer' });
+
+  assert.equal(result.state, 'COPY_QC_PENDING');
+  assert.equal(result.currentCopyRevisionId, 13);
+  assert.equal(result.mandatoryCopyQc, true);
+  assert.equal(result.mandatoryCopyQcOrigin, 'IMAGE_RETRY_REVIEW');
+  assert.equal(fixture.revisions.get(13).revision_origin, 'COPY_EDIT');
+  assert.ok(fixture.queries.some(({ sql }) => sql.includes("current_stage = 'QC_MANDATORY_RECHECK'")));
+});
 
 test('edited copy can be saved as an unapproved revision with version-bound original and edited ratings', async () => {
   const fixture = copyFixture();

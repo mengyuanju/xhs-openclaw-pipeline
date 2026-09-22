@@ -149,8 +149,13 @@ const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
   }),
 ]);
 
-export function requiredMutationCapability(routePath, rawMethod) {
+export function requiredMutationCapability(routePath, rawMethod, body = null) {
   const method = String(rawMethod ?? '').toUpperCase();
+  if (((routePath === '/v1/users' && method === 'POST')
+      || (/^\/v1\/users\/[^/]+$/u.test(routePath) && method === 'PATCH'))
+      && body && Object.hasOwn(body, 'copySamplingRateBpsOverride')) {
+    return { capability: 'copySamplingVersion', minimumVersion: 2 };
+  }
   const requirement = REQUIRED_MUTATION_CAPABILITIES.find((candidate) => candidate.matches(routePath, method));
   return requirement
     ? { capability: requirement.capability, minimumVersion: requirement.minimumVersion }
@@ -169,9 +174,10 @@ export async function assertMutationCapability({
   root,
   routePath,
   method,
+  body = null,
   fetchImpl = fetch,
 }) {
-  const requirement = requiredMutationCapability(routePath, method);
+  const requirement = requiredMutationCapability(routePath, method, body);
   if (!requirement) return;
 
   let response;

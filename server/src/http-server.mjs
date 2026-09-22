@@ -369,8 +369,7 @@ async function applyBatchTaskAction(repository, taskIds, action, actor) {
         await repository.cancelTask(taskId, { queuedOnly: true, actor });
       } else if (['COPY_RUNNING', 'COPY_FAILED'].includes(task.state)) {
         await repository.retryTask(taskId, { useLatestConfig: true, actor });
-      } else if (['IMAGE_RUNNING', 'IMAGE_FAILED'].includes(task.state)
-        || (task.state === 'COPY_REVIEW_PENDING' && task.currentStage === 'IMAGE_RETRY_EXHAUSTED')) {
+      } else if (['IMAGE_RUNNING', 'IMAGE_FAILED'].includes(task.state)) {
         await repository.requeueImageTask(taskId, { retryOnly: true, actor });
       } else {
         throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'only running or failed work can be retried in bulk');
@@ -1019,12 +1018,12 @@ function installRoutes(
     json(ctx, 200, await repository.listUsers({ status: ctx.query.status || null }));
   });
   router.post('/v1/users', async (ctx) => {
-    requestActor(ctx, ['ADMIN']);
-    json(ctx, 201, await repository.createUser(requireJson(ctx)));
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 201, await repository.createUser(requireJson(ctx), { actor }));
   });
   router.patch('/v1/users/:userId', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
-    json(ctx, 200, await repository.updateUser(ctx.params.userId, { ...requireJson(ctx), actorUsername: actor.username }));
+    json(ctx, 200, await repository.updateUser(ctx.params.userId, { ...requireJson(ctx), actorUsername: actor.username }, { actor }));
   });
   router.delete('/v1/users/:userId', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);

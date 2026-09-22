@@ -1,6 +1,7 @@
 import { priorityFrom, priorityOrderSql, normalizePriorityMode } from './task-priority.mjs';
 import { adjustTaskPriority, readPriorityScope } from './task-priority-store.mjs';
 import { flushExpiredCopyQualityBatches } from './copy-quality-control.mjs';
+import { normalizeCopySamplingRateOverride } from '../../src/copy-sampling-policy.mjs';
 import {
   createCopyQaReasonTag,
   listCopyQaReasonTags,
@@ -408,6 +409,18 @@ function publicUserFrom(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function managedUserFrom(row) {
+  if (!row) return null;
+  return { ...publicUserFrom(row), copySamplingRateBpsOverride: row.copy_sampling_rate_bps_override ?? null };
+}
+
+async function recordAccountSamplingPolicy(client, accountId, previous, next, actor) {
+  if (previous === next) return;
+  await client.query(`INSERT INTO account_copy_sampling_policy_events(
+    account_id, actor_account_id, actor_username, previous_rate_bps_override, rate_bps_override
+  ) VALUES ($1, $2, $3, $4, $5)`, [accountId, actor?.userId ?? null, actor?.username ?? 'system', previous, next]);
 }
 
 function executionFrom(row) {
@@ -1744,7 +1757,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { taskRestoreVersion: 1, taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 13, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, adminTaskActivityDateFilters: 1, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 7, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 1, copyQaReasonTagsVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, sharedDeliveryVersion: 1, imageDiscardVersion: 1, pendingImageEditResolutionVersion: 1, deliverySpreadsheetVersion: 3, deliveryPreviewVersion: 6 } };
+      capabilities: { taskRestoreVersion: 1, taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 13, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, adminTaskActivityDateFilters: 1, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 7, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 2, copyQaReasonTagsVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, sharedDeliveryVersion: 1, imageDiscardVersion: 1, pendingImageEditResolutionVersion: 1, deliverySpreadsheetVersion: 3, deliveryPreviewVersion: 6 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -1774,7 +1787,7 @@ export class PostgresControlPlaneRepository {
     const result = status
       ? await this.pool.query('SELECT * FROM app_users WHERE status = $1 ORDER BY id', [status])
       : await this.pool.query('SELECT * FROM app_users ORDER BY id');
-    return result.rows.map(publicUserFrom);
+    return result.rows.map(managedUserFrom);
   }
 
   async getUserByIdentity(rawActor) {
@@ -2279,10 +2292,11 @@ export class PostgresControlPlaneRepository {
     });
   }
 
-  async createUser({ username: rawUsername, displayName: rawDisplayName, role: rawRole, copyReviewEnabled = true, copyQcEnabled = false, imageQcEnabled = false }) {
+  async createUser({ username: rawUsername, displayName: rawDisplayName, role: rawRole, copyReviewEnabled = true, copyQcEnabled = false, imageQcEnabled = false, copySamplingRateBpsOverride = null }, { actor = null } = {}) {
     const username = normalizedUsername(rawUsername);
     const displayName = normalizedDisplayName(rawDisplayName);
     const role = normalizedUserRole(rawRole);
+    const samplingRate = normalizeCopySamplingRateOverride(copySamplingRateBpsOverride);
     if (typeof copyReviewEnabled !== 'boolean' || typeof copyQcEnabled !== 'boolean'
         || typeof imageQcEnabled !== 'boolean') throw new TypeError('permissions must be boolean');
     if (imageQcEnabled && role !== 'REVIEWER') {
@@ -2290,27 +2304,39 @@ export class PostgresControlPlaneRepository {
     }
     const passwordHash = await hashUserPassword('123456');
     try {
-      const result = await this.pool.query(`
+      return await transaction(this.pool, async (client) => {
+        if (actor) {
+          if (actor.role !== 'ADMIN') throw new ControlPlaneAuthorizationError('only administrators can create users');
+          await lockCurrentActor(client, actor);
+        }
+        const result = await client.query(`
         INSERT INTO app_users(username, display_name, role, password_hash, must_change_password,
-          copy_review_enabled, copy_qc_enabled, image_qc_enabled)
-        VALUES ($1, $2, $3, $4, true, $5, $6, $7)
+          copy_review_enabled, copy_qc_enabled, image_qc_enabled, copy_sampling_rate_bps_override)
+        VALUES ($1, $2, $3, $4, true, $5, $6, $7, $8)
         RETURNING *
-      `, [username, displayName, role, passwordHash, copyReviewEnabled, copyQcEnabled, imageQcEnabled]);
-      return publicUserFrom(result.rows[0]);
+        `, [username, displayName, role, passwordHash, copyReviewEnabled, copyQcEnabled, imageQcEnabled, samplingRate]);
+        await recordAccountSamplingPolicy(client, result.rows[0].id, null, samplingRate, actor);
+        return managedUserFrom(result.rows[0]);
+      });
     } catch (error) {
       if (error?.code === '23505') throw new ControlPlaneConflictError('USERNAME_EXISTS', 'username already exists');
       throw error;
     }
   }
 
-  async updateUser(rawUserId, { displayName: rawDisplayName, role: rawRole, status, expectedVersion, copyReviewEnabled, copyQcEnabled, imageQcEnabled, actorUsername = null }) {
+  async updateUser(rawUserId, { displayName: rawDisplayName, role: rawRole, status, expectedVersion, copyReviewEnabled, copyQcEnabled, imageQcEnabled, copySamplingRateBpsOverride, actorUsername = null }, { actor = null } = {}) {
     const userId = normalizeTaskId(rawUserId);
     const displayName = normalizedDisplayName(rawDisplayName);
     const role = normalizedUserRole(rawRole);
     if (!['ACTIVE', 'DISABLED'].includes(status)) throw new TypeError('status is invalid');
     if (!Number.isInteger(expectedVersion) || expectedVersion < 1) throw new TypeError('expectedVersion is invalid');
+    if (copySamplingRateBpsOverride !== undefined) normalizeCopySamplingRateOverride(copySamplingRateBpsOverride);
     return transaction(this.pool, async (client) => {
       await lockAdministratorRoster(client);
+      if (actor) {
+        if (actor.role !== 'ADMIN') throw new ControlPlaneAuthorizationError('only administrators can update users');
+        await lockCurrentActor(client, actor);
+      }
       const currentResult = await client.query('SELECT * FROM app_users WHERE id = $1 FOR UPDATE', [userId]);
       const current = currentResult.rows[0];
       if (!current) throw new ControlPlaneNotFoundError('user not found');
@@ -2340,6 +2366,8 @@ export class PostgresControlPlaneRepository {
         }
       }
       const reviewEnabled = copyReviewEnabled ?? current.copy_review_enabled ?? true;
+      const previousSamplingRate = current.copy_sampling_rate_bps_override ?? null;
+      const samplingRate = copySamplingRateBpsOverride === undefined ? previousSamplingRate : copySamplingRateBpsOverride;
       const qcEnabled = copyQcEnabled ?? current.copy_qc_enabled ?? false;
       const imageQualityEnabled = role === 'REVIEWER'
         ? imageQcEnabled ?? current.image_qc_enabled ?? false
@@ -2362,12 +2390,14 @@ export class PostgresControlPlaneRepository {
         UPDATE app_users
         SET display_name = $1, role = $2, status = $3,
             copy_review_enabled = $7, copy_qc_enabled = $8, image_qc_enabled = $9,
+            copy_sampling_rate_bps_override = $10,
             credential_version = credential_version + $4, version = version + 1, updated_at = now()
         WHERE id = $5 AND version = $6
         RETURNING *
       `, [displayName, role, status, credentialChanged ? 1 : 0, userId, expectedVersion,
-        reviewEnabled, qcEnabled, imageQualityEnabled]);
+        reviewEnabled, qcEnabled, imageQualityEnabled, samplingRate]);
       if (!result.rows[0]) throw new ControlPlaneConflictError('VERSION_CONFLICT', 'user was updated by another request');
+      await recordAccountSamplingPolicy(client, userId, previousSamplingRate, samplingRate, actor ?? { username: actorUsername ?? 'system' });
       await client.query(`UPDATE tasks SET review_assigned_to_account_id = NULL,
           review_assigned_at = NULL, updated_at = now()
         WHERE state = 'MANUAL_ARCHIVE' AND review_assigned_to_account_id = $1
@@ -2395,7 +2425,7 @@ export class PostgresControlPlaneRepository {
       if (status !== 'ACTIVE' || !['REVIEWER', 'USER'].includes(role)) {
         await clearQueryPackageAssignments(client, current);
       }
-      return publicUserFrom(result.rows[0]);
+      return managedUserFrom(result.rows[0]);
     });
   }
 
@@ -4521,8 +4551,15 @@ export class PostgresControlPlaneRepository {
         SELECT * FROM copy_revisions WHERE id = $1 AND task_id = $2 FOR UPDATE
       `, [revisionId, taskId]);
       if (!revision.rows[0]) throw new ControlPlaneNotFoundError('copy revision not found');
-      const mandatoryRework = task.mandatory_copy_qc === true
-        && task.mandatory_copy_qc_origin !== 'DISCARD_RESTORE';
+      const imageRetryRework = task.current_stage === 'IMAGE_RETRY_EXHAUSTED';
+      const mandatoryRework = imageRetryRework || (task.mandatory_copy_qc === true
+        && task.mandatory_copy_qc_origin !== 'DISCARD_RESTORE');
+      if (imageRetryRework && ['SAVE', 'SAVE_PLAN'].includes(decision)) {
+        throw new ControlPlaneConflictError(
+          'IMAGE_RETRY_REVIEW_SUBMIT_REQUIRED',
+          '生图失败修订不能单独保存正式版本；修改会自动保存为草稿，请完成修改后直接提交强制复检',
+        );
+      }
       const reworkBaseline = mandatoryRework ? await copyReworkBaseline(client, taskId, revision.rows[0]) : null;
       const originalImagePlan = edits ? normalizeCopyReviewImagePlan(
         revision.rows[0].content.imagePlan
@@ -4753,7 +4790,7 @@ export class PostgresControlPlaneRepository {
           actor: actorIdentity ?? { userId: null, username: reviewerUsername, role: actorRole },
           reviewSessionId,
           aiDisclosureEnabled,
-          retryExhaustedCopyChanged: task.current_stage === 'IMAGE_RETRY_EXHAUSTED' && copyChanged,
+          retryExhaustedCopyChanged: imageRetryRework && (copyChanged || imagePlanChanged),
         });
         return taskFrom(routed.task);
       }
@@ -4880,6 +4917,8 @@ export class PostgresControlPlaneRepository {
       const lifecycle = isImage
         ? `current_stage = $7, progress_percent = $8,
            current_image_run_id = ${exhausted || manual ? 'current_image_run_id' : 'NULL'}, pending_snapshot = $6,
+           mandatory_copy_qc = CASE WHEN ${exhausted && !manual} THEN true ELSE mandatory_copy_qc END,
+           mandatory_copy_qc_origin = CASE WHEN ${exhausted && !manual} THEN 'IMAGE_RETRY_REVIEW' ELSE mandatory_copy_qc_origin END,
            requeue_reason = 'AUTO_RECOVERY',
            execution_started_at = $9, finished_at = ${exhausted || manual ? 'now()' : 'NULL'},`
         : 'current_stage = $6, finished_at = now(),';
@@ -5361,8 +5400,13 @@ export class PostgresControlPlaneRepository {
           ownerOnly: actorIdentity.role !== 'ADMIN',
         })).task;
       if (!task) throw new ControlPlaneNotFoundError('task not found');
-      if (retryOnly && !['IMAGE_RUNNING', 'IMAGE_FAILED'].includes(task.state)
-        && !(task.state === 'COPY_REVIEW_PENDING' && task.current_stage === 'IMAGE_RETRY_EXHAUSTED')) {
+      if (task.state === 'COPY_REVIEW_PENDING' && task.current_stage === 'IMAGE_RETRY_EXHAUSTED') {
+        throw new ControlPlaneConflictError(
+          'IMAGE_RETRY_REVIEW_REQUIRED',
+          '生图重试已用尽，请进入任务详情修改文案或图片规划，并提交强制复检',
+        );
+      }
+      if (retryOnly && !['IMAGE_RUNNING', 'IMAGE_FAILED'].includes(task.state)) {
         throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'only running or failed image work can be retried in bulk');
       }
       if (!['IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'COPY_REVIEW_PENDING', 'MANUAL_ARCHIVE'].includes(task.state)) {

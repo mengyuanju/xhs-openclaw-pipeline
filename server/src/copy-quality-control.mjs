@@ -14,6 +14,7 @@ import {
 import { normalizeListPagination } from './list-pagination.mjs';
 import { selectStratifiedCopySample } from './stratified-copy-sampling.mjs';
 import { planCopyQualityChunk } from './copy-quality-flow.mjs';
+import { resolveEffectiveCopySamplingPolicy } from '../../src/copy-sampling-policy.mjs';
 import {
   assertReviewerBatchReturnAllowed,
   lockWorkflowQualitySettings,
@@ -229,6 +230,13 @@ function qaItemFrom(row, actor) {
     ...common,
     ...priorityFrom(row),
     ...(actor.role === 'ADMIN' ? {
+      samplingPolicy: {
+        rateBps: Number(row.freeze_rate_bps),
+        rateSource: row.freeze_rate_source,
+        globalPolicyVersion: Number(row.freeze_policy_version),
+        accountPolicyVersion: row.freeze_account_policy_version == null ? null : Number(row.freeze_account_policy_version),
+        frozenAt: row.freeze_frozen_at,
+      },
       reviewMethod: (row.admin_direct_approval_id !== null && row.admin_direct_approval_id !== undefined)
         || (['PASSED', 'SUPERSEDED'].includes(row.status) && Boolean(row.note) && row.reviewed_by_role === 'ADMIN')
         ? 'ADMIN_DIRECT'
@@ -452,7 +460,7 @@ async function assertExceptionalReleaseScope(client, freezeId) {
   }
 }
 
-async function createFreeze(client, productionBatch, settings, actor, requestId, group = {}) {
+async function createFreeze(client, productionBatch, settings, actor, requestId, group, policy) {
   const populationResult = await client.query(`
     SELECT task.id AS task_id, revision.id AS copy_revision_id,
       approval.id AS approval_event_id, approval.approved_by_account_id AS final_approver_account_id,
@@ -489,7 +497,7 @@ async function createFreeze(client, productionBatch, settings, actor, requestId,
   }
   const plan = selectStratifiedCopySample({
     population,
-    rateBps: settings.copySampling.rateBps,
+    rateBps: policy.rateBps,
     seed: randomUUID(),
     sampleCount: group.sampleCount ?? null,
   });
@@ -499,17 +507,19 @@ async function createFreeze(client, productionBatch, settings, actor, requestId,
       algorithm_version, blind_review_enabled, population_count, sample_count,
       snapshot_sha256, frozen_by_account_id, frozen_by_username,
       request_id, request_fingerprint, freeze_version,
-      final_approver_account_id, remainder_before, remainder_after, close_reason
+      final_approver_account_id, remainder_before, remainder_after, close_reason,
+      rate_source, account_policy_version
     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
       (SELECT COALESCE(MAX(freeze_version), 0) + 1 FROM copy_sampling_freezes WHERE production_batch_id = $2),
-      $15, $16, $17, $18)
+      $15, $16, $17, $18, $19, $20)
     RETURNING *
-  `, [randomUUID(), productionBatch.id, settings.version, plan.rateBps, plan.seed,
+  `, [randomUUID(), productionBatch.id, policy.globalPolicyVersion, plan.rateBps, plan.seed,
     plan.algorithmVersion, settings.copySampling.blindReviewEnabled,
     plan.populationCount, plan.sampleCount, plan.snapshotSha256,
     actor?.userId ?? null, actor?.username ?? 'system', requestId,
     hashJson({ productionBatchId: Number(productionBatch.id), version: Number(productionBatch.version) }),
-    group.accountId ?? null, group.remainderBefore ?? 0, group.remainderAfter ?? 0, group.closeReason ?? null]);
+    group.accountId ?? null, group.remainderBefore ?? 0, group.remainderAfter ?? 0, group.closeReason ?? null,
+    policy.rateSource, policy.accountPolicyVersion]);
   for (const stratum of plan.strata) {
     await client.query(`
       INSERT INTO copy_sampling_strata(
@@ -545,7 +555,9 @@ async function createFreeze(client, productionBatch, settings, actor, requestId,
       freeze_id, action, actor_account_id, actor_username, request_id, details
     ) VALUES ($1, 'FREEZE', $2, $3, $4, $5)
   `, [freeze.rows[0].id, actor?.userId ?? null, actor?.username ?? 'system', requestId,
-    { populationCount: plan.populationCount, sampleCount: plan.sampleCount, snapshotSha256: plan.snapshotSha256 }]);
+    { populationCount: plan.populationCount, sampleCount: plan.sampleCount, snapshotSha256: plan.snapshotSha256,
+      effectiveRateBps: policy.rateBps, rateSource: policy.rateSource,
+      globalPolicyVersion: policy.globalPolicyVersion, accountPolicyVersion: policy.accountPolicyVersion }]);
   if (plan.sampleCount === 0) {
     await releaseFrozenMembers(client, freeze.rows[0].id, actor, requestId);
   }
@@ -558,9 +570,11 @@ export async function attemptAutomaticCopySamplingFreeze(client, productionBatch
   if (!batch) return { frozen: false, reason: 'NO_BATCH' };
   const settings = await readWorkflowQualitySettings(client);
   const pending = await client.query(`
-    SELECT task.id, approval.approved_by_account_id AS account_id, approval.approved_at
+    SELECT task.id, approval.approved_by_account_id AS account_id, approval.approved_at,
+      approver.copy_sampling_rate_bps_override, approver.version AS account_policy_version
     FROM production_batch_items member JOIN tasks task ON task.id = member.task_id
     JOIN copy_approval_events approval ON approval.task_id = task.id AND approval.copy_revision_id = task.current_copy_revision_id
+    LEFT JOIN app_users approver ON approver.id = approval.approved_by_account_id
     WHERE member.production_batch_id = $1 AND task.state = 'COPY_QC_PENDING' AND NOT task.mandatory_copy_qc
       AND NOT EXISTS (SELECT 1 FROM copy_sampling_items i WHERE i.task_id = task.id AND i.copy_revision_id = task.current_copy_revision_id)
     ORDER BY approval.approved_by_account_id, approval.approved_at, task.id
@@ -577,24 +591,30 @@ export async function attemptAutomaticCopySamplingFreeze(client, productionBatch
   const freezes = [];
   for (const [accountId, rows] of groups) {
     if (!Number.isSafeInteger(accountId) || accountId < 1) throw new ControlPlaneConflictError('APPROVER_IDENTITY_MISSING', '缺少最终审核账号');
+    const policy = resolveEffectiveCopySamplingPolicy({
+      globalEnabled: settings.copySampling.enabled, globalRateBps: settings.copySampling.rateBps,
+      globalPolicyVersion: settings.version,
+      accountRateBpsOverride: rows[0].copy_sampling_rate_bps_override ?? null,
+      accountVersion: rows[0].account_policy_version == null ? null : Number(rows[0].account_policy_version),
+    });
     await client.query('INSERT INTO copy_sampling_remainders(final_approver_account_id) VALUES ($1) ON CONFLICT DO NOTHING', [accountId]);
     let remainder = Number((await client.query('SELECT remainder_bps FROM copy_sampling_remainders WHERE final_approver_account_id = $1 FOR UPDATE', [accountId])).rows[0].remainder_bps);
     const expired = Date.now() - new Date(rows[0].approved_at).getTime() >= 30 * 60 * 1000;
     const closeReason = close ? 'MANUAL_CLOSE' : readiness.ready ? 'BATCH_CLOSED' : expired ? 'TIMEOUT' : null;
-    if (!settings.copySampling.enabled) {
+    if (!policy.enabled) {
       await client.query(`UPDATE tasks SET state = 'IMAGE_QUEUED', current_stage = 'IMAGE_QUEUED',
         copy_qc_released_revision_id = current_copy_revision_id,
         progress_percent = 0, last_activity_at = now(), updated_at = now() WHERE id = ANY($1::bigint[]) AND NOT mandatory_copy_qc`, [rows.map(row => Number(row.id))]);
       continue;
     }
     while (rows.length) {
-      const plan = planCopyQualityChunk({ count: rows.length, rateBps: settings.copySampling.rateBps, remainder, close: Boolean(closeReason) });
+      const plan = planCopyQualityChunk({ count: rows.length, rateBps: policy.rateBps, remainder, close: Boolean(closeReason) });
       if (!plan.memberCount) break;
       const taskIds = rows.splice(0, plan.memberCount).map(row => Number(row.id));
       freezes.push(await createFreeze(client, batch, settings, actor, randomUUID(), {
         taskIds, accountId, sampleCount: plan.sampleCount, remainderBefore: remainder,
         remainderAfter: plan.remainder, closeReason: closeReason ?? 'RATIO_REACHED',
-      }));
+      }, policy));
       remainder = plan.remainder;
       await client.query('UPDATE copy_sampling_remainders SET remainder_bps = $2, updated_at = now() WHERE final_approver_account_id = $1', [accountId, remainder]);
     }
@@ -701,9 +721,9 @@ export async function routeManualCopyApproval(client, {
         public_id, production_batch_id, policy_version, rate_bps, seed,
         algorithm_version, blind_review_enabled, population_count, sample_count,
         snapshot_sha256, frozen_by_account_id, frozen_by_username,
-        request_id, request_fingerprint, status
+        request_id, request_fingerprint, status, rate_source
       ) VALUES ($1, $2, $3, 10000, $4, 'mandatory-recheck-v1',
-        $5, 1, 1, $6, $7, $8, $9, $10, 'REVIEW_REQUIRED')
+        $5, 1, 1, $6, $7, $8, $9, $10, 'REVIEW_REQUIRED', 'MANDATORY_RECHECK')
       RETURNING *
     `, [randomUUID(), productionBatchId, policyVersion,
       `mandatory:${task.id}:${revision.id}`,
@@ -783,6 +803,10 @@ export async function freezeCopySamplingBatch(pool, rawProductionBatchId, input,
 
 const QA_ITEM_SQL = `
   SELECT item.*, sampling_freeze.public_id AS freeze_public_id, sampling_freeze.production_batch_id,
+    sampling_freeze.rate_bps AS freeze_rate_bps, sampling_freeze.rate_source AS freeze_rate_source,
+    sampling_freeze.policy_version AS freeze_policy_version,
+    sampling_freeze.account_policy_version AS freeze_account_policy_version,
+    sampling_freeze.frozen_at AS freeze_frozen_at,
     sampling_freeze.blind_review_enabled, revision.revision AS copy_revision_number,
     revision.content AS copy_content, task.query, task.assigned_to_user_id,
     task.created_by_user_id, task.system_priority, task.manual_priority, task.effective_priority,

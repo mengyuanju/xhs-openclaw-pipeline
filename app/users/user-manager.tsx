@@ -27,6 +27,7 @@ import {
 } from '@/components/ui/dialog';
 
 import { apiRequest } from '../components/api-client';
+import { accountSamplingInputBps, accountSamplingLabel, type AccountSamplingSettings } from './copy-sampling-settings';
 
 const ROLE_LABELS = { ADMIN: '管理员', REVIEWER: '质检', USER: '标注' } as const;
 const STATUS_LABELS = { ACTIVE: '启用', DISABLED: '停用' } as const;
@@ -40,6 +41,7 @@ type ManagedUser = {
   copyReviewEnabled?: boolean;
   copyQcEnabled?: boolean;
   imageQcEnabled?: boolean;
+  copySamplingRateBpsOverride?: number | null;
   mustChangePassword: boolean;
   version: number;
 };
@@ -53,9 +55,11 @@ const USERS_PER_PAGE = 8;
 export function UserManager({
   initialUsers,
   currentUsername,
+  samplingSettings = null,
 }: {
   initialUsers: ManagedUser[];
   currentUsername: string;
+  samplingSettings?: AccountSamplingSettings | null;
 }) {
   const router = useRouter();
   const confirm = useConfirmDialog();
@@ -68,6 +72,21 @@ export function UserManager({
   const [roleFilter, setRoleFilter] = useState<RoleFilter>('ALL');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
   const [page, setPage] = useState(1);
+  const [samplingMode, setSamplingMode] = useState('INHERIT');
+  const [samplingInput, setSamplingInput] = useState('');
+  const [editorReviewEnabled, setEditorReviewEnabled] = useState(true);
+  const samplingEditable = samplingSettings?.supported === true
+    && (editor?.mode === 'create' || editor?.user.copySamplingRateBpsOverride !== undefined);
+
+  function openEditor(next: EditorState) {
+    const user = next.mode === 'edit' ? next.user : null;
+    setError('');
+    setEditorRole(user?.role ?? 'USER');
+    setEditorReviewEnabled(user?.copyReviewEnabled ?? true);
+    setSamplingMode(user?.copySamplingRateBpsOverride != null ? 'OVERRIDE' : 'INHERIT');
+    setSamplingInput(String((user?.copySamplingRateBpsOverride ?? samplingSettings?.rateBps ?? 0) / 100));
+    setEditor(next);
+  }
 
   const normalizedSearch = search.trim().toLocaleLowerCase('zh-CN');
   const filteredUsers = initialUsers.filter((user) => {
@@ -105,12 +124,22 @@ export function UserManager({
     event.preventDefault();
     if (!editor) return;
     const form = new FormData(event.currentTarget);
+    let samplingUpdate: { copySamplingRateBpsOverride?: number | null } = {};
+    try {
+      if (samplingEditable) samplingUpdate = {
+        copySamplingRateBpsOverride: samplingMode === 'INHERIT' ? null : accountSamplingInputBps(samplingInput),
+      };
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '文案抽检比例无效');
+      return;
+    }
     if (editor.mode === 'create') {
       const saved = await run('create', () => apiRequest('/api/control-plane/v1/users', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           username: form.get('username'),
+          ...samplingUpdate,
           displayName: form.get('displayName'),
           role: editorRole,
           copyReviewEnabled: form.get('copyReviewEnabled') === 'on',
@@ -127,6 +156,7 @@ export function UserManager({
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
+        ...samplingUpdate,
         displayName: form.get('displayName'),
         role: editorRole,
           copyReviewEnabled: form.get('copyReviewEnabled') === 'on',
@@ -189,7 +219,7 @@ export function UserManager({
         <div><h2 id="user-list-title">用户列表</h2><p className="subtle">集中查看账号状态，并在弹窗中完成资料维护。</p></div>
         <div className="inline">
           <Button unstyled className="button" type="button" disabled={Boolean(busy)} onClick={() => { void releaseLoginLimit(); }}><LockOpen size={16} />{busy === 'release-login-limit' ? '解除中…' : '解除登录限制'}</Button>
-          <Button unstyled className="button primary" type="button" disabled={Boolean(busy)} onClick={() => { setEditorRole('USER'); setEditor({ mode: 'create' }); }}><Plus size={16} />新增用户</Button>
+          <Button unstyled className="button primary" type="button" disabled={Boolean(busy)} onClick={() => openEditor({ mode: 'create' })}><Plus size={16} />新增用户</Button>
         </div>
       </div>
       <ToastFeedback id="user-manager-success" message={message} />
@@ -224,16 +254,17 @@ export function UserManager({
         : filteredUsers.length === 0
           ? <div className="empty-state user-filter-empty">没有符合当前条件的用户。请调整搜索或筛选条件。</div>
         : <div className="table-wrap mobile-cards user-table-wrap" role="region" aria-label="用户列表，可横向滚动" tabIndex={0}><table className="user-table">
-          <thead><tr><th>用户</th><th>角色</th><th>状态</th><th>密码</th><th className="user-actions-heading">操作</th></tr></thead>
+          <thead><tr><th>用户</th><th>角色</th><th>状态</th><th>文案抽检</th><th>密码</th><th className="user-actions-heading">操作</th></tr></thead>
           <tbody>{visibleUsers.map((user) => {
             const isCurrentUser = user.username === currentUsername;
             return <tr key={user.id}>
               <td data-label="用户"><div className="user-identity-cell"><span className="user-avatar" aria-hidden="true">{[...user.displayName][0]?.toUpperCase() || '?'}</span><span><strong>{user.displayName}</strong><small className="mono">@{user.username}{isCurrentUser ? ' · 当前账号' : ''}</small></span></div></td>
               <td data-label="角色"><span className={`pill user-role-${user.role.toLowerCase()}`}>{ROLE_LABELS[user.role]}</span></td>
               <td data-label="状态"><span className={`pill pill-${user.status.toLowerCase()}`}>{STATUS_LABELS[user.status]}</span></td>
+              <td data-label="文案抽检">{accountSamplingLabel(samplingSettings, user.copySamplingRateBpsOverride)}</td>
               <td data-label="密码"><span className={user.mustChangePassword ? 'user-password-pending' : 'user-password-ready'}>{user.mustChangePassword ? '待修改初始密码' : '已设置'}</span></td>
               <td className="row-action" data-label="操作"><div className="user-row-actions">
-                <Button unstyled className="button small" type="button" disabled={Boolean(busy)} onClick={() => { setEditorRole(user.role); setEditor({ mode: 'edit', user }); }}><Pencil size={14} />编辑</Button>
+                <Button unstyled className="button small" type="button" disabled={Boolean(busy)} onClick={() => openEditor({ mode: 'edit', user })}><Pencil size={14} />编辑</Button>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button unstyled className="button small user-more-button" type="button" disabled={Boolean(busy)} aria-label={`${user.displayName}的更多操作`}>
@@ -278,11 +309,33 @@ export function UserManager({
           </div>
           <div className="field user-editor-permissions">
             <div className="user-editor-permission-options">
-              <label><input type="checkbox" name="copyReviewEnabled" defaultChecked={editorUser?.copyReviewEnabled ?? true} /> 文案审核</label>
+              <label><input type="checkbox" name="copyReviewEnabled" checked={editorReviewEnabled} onChange={(event) => setEditorReviewEnabled(event.target.checked)} /> 文案审核</label>
               <label><input type="checkbox" name="copyQcEnabled" defaultChecked={editorUser?.copyQcEnabled ?? false} /> 文案质检</label>
               <label><input type="checkbox" name="imageQcEnabled" defaultChecked={editorRole === 'REVIEWER' && (editorUser?.imageQcEnabled ?? false)} disabled={editorRole !== 'REVIEWER'} /> 图片质检（仅质检）</label>
             </div>
             <small>文案审核、文案质检和图片质检独立设置；图片质检只能授予质检。图片初审无需授权，标注只初审自己负责的任务；管理员始终拥有质检管理权限。</small>
+          </div>
+          <div className="field">
+            <label htmlFor="user-copy-sampling-mode">文案抽检比例</label>
+            {samplingEditable && samplingSettings ? <>
+              <Select value={samplingMode} disabled={editorBusy} onValueChange={setSamplingMode}>
+                <SelectTrigger id="user-copy-sampling-mode"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="INHERIT">继承生产配置（当前默认 {samplingSettings.rateBps / 100}%）</SelectItem>
+                  <SelectItem value="OVERRIDE">单独配置</SelectItem>
+                </SelectContent>
+              </Select>
+              {samplingMode === 'OVERRIDE' && <>
+                <label htmlFor="user-copy-sampling-rate">单独配置比例（%）</label>
+                <Input id="user-copy-sampling-rate" type="number" min={0} max={100} step={0.01} required
+                  value={samplingInput} disabled={editorBusy} onChange={(event) => setSamplingInput(event.target.value)} />
+              </>}
+              <small>按此账号最终人工通过的文案抽检；单独配置优先于生产配置默认值，仅影响后续冻结。</small>
+              {!samplingSettings.enabled && <small>普通文案抽检当前全局关闭，账号配置会保留并在重新开启后生效。</small>}
+              {(samplingMode === 'OVERRIDE' ? samplingInput.trim() !== '' && Number(samplingInput) === 0 : samplingSettings.rateBps === 0)
+                && <small>0% 仍会在结批或等待超时后对非空尾批保底抽 1 条。</small>}
+              {editorRole !== 'ADMIN' && !editorReviewEnabled && <small>文案审核权限已关闭，当前不会产生新的最终审核结果；已保存的比例保留。</small>}
+            </> : <small>{samplingSettings?.supported ? '账号比例未读取，请刷新后配置。' : samplingSettings ? '中心服务尚未支持账号级比例，请先升级中心服务。' : '无法确认中心版本或读取生产配置，账号比例暂不可编辑。'}</small>}
           </div>
           {error && <div className="notice error" role="alert">{error}</div>}
           <div className="user-editor-actions"><DialogClose asChild><Button unstyled className="button" type="button" disabled={editorBusy}>取消</Button></DialogClose><Button unstyled className="button primary" disabled={editorBusy}>{editorBusy ? '保存中…' : editor?.mode === 'create' ? '创建用户' : '保存修改'}</Button></div>

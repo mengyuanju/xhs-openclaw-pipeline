@@ -32,6 +32,13 @@ export type CopyQaBlindItem = CopyQaCommon & { blindReview: true };
 
 export type CopyQaNonBlindItem = CopyQaCommon & {
   blindReview: false;
+  samplingPolicy?: {
+    rateBps: number;
+    rateSource: 'GLOBAL_DEFAULT' | 'ACCOUNT_OVERRIDE' | 'MANDATORY_RECHECK';
+    globalPolicyVersion: number | null;
+    accountPolicyVersion: number | null;
+    frozenAt?: string;
+  };
   reviewMethod: 'STANDARD' | 'ADMIN_DIRECT';
   taskId: number | null;
   productionBatchId: number | null;
@@ -176,9 +183,23 @@ export function normalizeCopyQaItem(
   const rawQueryPackageName = typeof batch?.queryPackageName === 'string'
     ? batch.queryPackageName.replace(/\s+/gu, ' ').trim()
     : '';
+  const policy = role === 'ADMIN' ? record(row.samplingPolicy) : null;
+  const policyRate = policy?.rateBps;
+  const policySource = policy?.rateSource;
+  const samplingPolicy = typeof policyRate === 'number' && Number.isInteger(policyRate)
+    && policyRate >= 0 && policyRate <= 10000
+    && ['GLOBAL_DEFAULT', 'ACCOUNT_OVERRIDE', 'MANDATORY_RECHECK'].includes(String(policySource))
+    ? {
+      rateBps: policyRate,
+      rateSource: policySource as NonNullable<CopyQaNonBlindItem['samplingPolicy']>['rateSource'],
+      globalPolicyVersion: positiveInteger(policy?.globalPolicyVersion),
+      accountPolicyVersion: positiveInteger(policy?.accountPolicyVersion),
+      frozenAt: typeof policy?.frozenAt === 'string' ? policy.frozenAt : undefined,
+    } : undefined;
   return {
     ...common,
     blindReview: false,
+    ...(samplingPolicy ? { samplingPolicy } : {}),
     reviewMethod: row.reviewMethod === 'ADMIN_DIRECT' ? 'ADMIN_DIRECT' : 'STANDARD',
     taskId: positiveInteger(row.taskId),
     // The current control-plane DTO groups batch and account provenance under

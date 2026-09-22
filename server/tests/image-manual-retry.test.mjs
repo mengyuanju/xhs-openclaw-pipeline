@@ -114,5 +114,7 @@ test('bulk retry cannot use the broader manual image requeue states', async () =
     await assert.rejects(repository.requeueImageTask(51, { retryOnly: true }), { code: 'INVALID_TASK_STATE' });
   }
   const exhausted = fixture('COPY_REVIEW_PENDING', { currentStage: 'IMAGE_RETRY_EXHAUSTED' });
-  assert.equal((await exhausted.repository.requeueImageTask(51, { retryOnly: true })).state, 'IMAGE_QUEUED');
+  await assert.rejects(exhausted.repository.requeueImageTask(51, { retryOnly: true }), {
+    code: 'IMAGE_RETRY_REVIEW_REQUIRED',
+  });
 });

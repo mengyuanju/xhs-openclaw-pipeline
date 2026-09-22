@@ -69,6 +69,7 @@ test('blind QA normalization is an allowlist even when the server accidentally a
       assessments: [{ score: 2, reviewerUsername: 'SECRET-REVIEWER', reasonCodes: ['SECRET-REASON'] }],
     },
     auditHistory: [{ actorUsername: 'SECRET-AUDITOR' }],
+    samplingPolicy: { rateBps: 5000, rateSource: 'ACCOUNT_OVERRIDE', globalPolicyVersion: 4, accountPolicyVersion: 8 },
   }));
 
   assert.ok(item);
@@ -90,7 +91,7 @@ test('blind QA normalization is an allowlist even when the server accidentally a
   for (const forbidden of [
     'taskid', 'querypackage', 'querypackagename', 'source', 'creatorusername', 'assignee', 'avatarurl',
     'finalapprover', 'assessments', 'score', 'reviewerusername', 'reasoncodes', 'audithistory',
-    'revision',
+    'revision', 'samplingpolicy', 'ratebps', 'ratesource', 'accountpolicyversion',
   ]) {
     assert.equal(normalizedKeys.includes(forbidden), false, forbidden);
   }
@@ -224,6 +225,13 @@ test('non-blind normalization accepts current nested provenance and legacy root 
   assert.equal(legacy.productionBatchId, 28);
   assert.equal(legacy.freezeId, 18);
   assert.equal(legacy.finalApproverAccountId, 65);
+});
+
+test('only administrators retain the frozen policy, without coercing missing rates to zero', () => {
+  const policy = { rateBps: 0, rateSource: 'ACCOUNT_OVERRIDE', globalPolicyVersion: 4, accountPolicyVersion: 8, frozenAt: '2026-09-22T00:00:00.000Z' };
+  assert.deepEqual(normalizeCopyQaItem(serverRow({ samplingPolicy: policy }), { role: 'ADMIN' }).samplingPolicy, policy);
+  assert.equal(normalizeCopyQaItem(serverRow({ blindReview: false, samplingPolicy: policy }), { role: 'REVIEWER' }).samplingPolicy, undefined);
+  assert.equal(normalizeCopyQaItem(serverRow({ samplingPolicy: { ...policy, rateBps: null } }), { role: 'ADMIN' }).samplingPolicy, undefined);
 });
 
 test('administrator normalization keeps full provenance even when a mixed-version response carries the blind flag', () => {

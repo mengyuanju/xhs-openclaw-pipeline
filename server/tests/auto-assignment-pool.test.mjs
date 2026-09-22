@@ -467,15 +467,17 @@ test('a stale pool editor cannot pause or update a same-name replacement account
 
 test('creating an account does not implicitly add it to the automatic assignment pool', async () => {
   const calls = [];
-  const repository = new PostgresControlPlaneRepository({ pool: { async query(sql, values) {
+  const client = { release() {}, async query(sql, values) {
     const source = String(sql);
     calls.push(source);
+    if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(source)) return { rows: [] };
     return { rows: [{
       id: 5, username: values[0], display_name: values[1], role: values[2], status: 'ACTIVE',
       must_change_password: true, credential_version: 1, version: 1,
       created_at: new Date(), updated_at: new Date(),
     }] };
-  } } });
+  } };
+  const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
   await repository.createUser({ username: 'new.worker', displayName: 'New Worker', role: 'USER' });
   assert.ok(calls.some((source) => source.includes('INSERT INTO app_users')));
   assert.ok(calls.every((source) => !source.includes('task_auto_assignment_workers')));

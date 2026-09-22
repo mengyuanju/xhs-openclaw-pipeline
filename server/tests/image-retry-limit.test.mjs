@@ -78,6 +78,8 @@ for (const priorFailures of [0, 1, 2, 3]) {
       assert.match(task.progressMessage, /生图3次失败/u);
       assert.equal(update.values[5], null, 'human review must start a new retry cycle');
       assert.match(update.sql, /finished_at = now\(\)/u);
+      assert.match(update.sql, /mandatory_copy_qc = CASE WHEN true THEN true/u);
+      assert.match(update.sql, /mandatory_copy_qc_origin = CASE WHEN true THEN 'IMAGE_RETRY_REVIEW'/u);
     }
     assert.equal(snapshot.imageRetry?.failedAttempts ?? 0, priorFailures, 'old snapshot stays immutable');
     assert.ok(fixture.queries.some(({ sql }) => sql.includes("UPDATE image_runs SET status = 'FAILED'")));
@@ -149,8 +151,7 @@ test('exhausted image work cannot bypass human review through the retry endpoint
   assert.equal(mutated, false);
 });
 
-test('re-approving an exhausted task clears its failure budget and queues reviewed copy', async () => {
-  let update;
+test('exhausted image work requires an actual rework before approval', async () => {
   const client = {
     release() {},
     async query(sql, values) {
@@ -162,31 +163,17 @@ test('re-approving an exhausted task clears its failure budget and queues review
       }] };
       if (sql.includes('SELECT * FROM copy_revisions')) return { rows: [{ id: 12, content: {} }] };
       if (sql.includes('SELECT id FROM executor_nodes')) return { rows: [{ id: 'reviewer' }] };
-      if (sql.includes('UPDATE copy_revisions')) return { rows: [{ id: 12, content: {} }] };
-      if (sql.includes('INSERT INTO copy_approval_events')) return { rows: [{
-        id: 1, task_id: values[0], copy_revision_id: values[1], assessment_id: values[2],
-        approval_mode: values[3], approved_by_account_id: values[4], approved_by_username: values[5],
-        review_session_id: values[6], content_sha256: values[7],
-      }] };
-      if (sql.includes('UPDATE tasks SET')) {
-        update = { sql, values };
-        return { rows: [{ id: 41, state: 'IMAGE_QUEUED', current_copy_revision_id: 12 }] };
-      }
       return { rows: [] };
     },
   };
   const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
-  const task = await repository.approveCopy(41, {
+  await assert.rejects(repository.approveCopy(41, {
     revisionId: 12,
     nodeId: 'reviewer',
     decision: 'APPROVE',
     originalScore: 3,
     reviewSessionId: '77777777-7777-4777-8777-777777777777',
-  }, { reviewerUserId: 'reviewer' });
-  assert.equal(task.state, 'IMAGE_QUEUED');
-  assert.match(update.sql, /pending_snapshot = NULL/u);
-  assert.match(update.sql, /current_stage = \$2/u);
-  assert.equal(update.values[1], 'IMAGE_QUEUED');
+  }, { reviewerUserId: 'reviewer' }), { code: 'COPY_REWORK_NOT_SATISFIED' });
 });
 
 test('edited copy after image retry exhaustion creates a new isolated mandatory QA round', async () => {

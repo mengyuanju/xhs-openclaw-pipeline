@@ -1,7 +1,8 @@
 import { redirect } from 'next/navigation';
 
 import { readServerSession } from '../server-session';
-import { readCentralPageData } from '../central-user-client';
+import { readCentralData, readCentralPageData } from '../central-user-client';
+import { accountSamplingSettings } from './copy-sampling-settings';
 import { AutoAssignmentPoolManager } from './auto-assignment-pool-manager';
 import { UserManager } from './user-manager';
 import { UserManagementWorkspace } from './user-management-workspace';
@@ -12,9 +13,11 @@ export default async function UsersPage() {
   const session = await readServerSession();
   if (!session) redirect('/login?next=%2Fusers');
   if (!session.roles?.includes('ADMIN')) redirect('/workbench/personal');
-  const [users, autoAssignment] = await Promise.all([
+  const [users, autoAssignment, health, qualitySettings] = await Promise.all([
     readCentralPageData('/v1/users', session, '/users'),
     readCentralPageData('/v1/auto-assignment', session, '/users'),
+    readCentralData('/health', session).catch(() => null),
+    readCentralData('/v1/workflow-quality-settings', session).catch(() => null),
   ]);
   const autoAssignableTasks = typeof autoAssignment.autoAssignableTaskCount === 'number'
     ? autoAssignment.autoAssignableTaskCount
@@ -33,7 +36,8 @@ export default async function UsersPage() {
     </header>
     <UserManagementWorkspace
       overview={overview}
-      accountManager={<UserManager initialUsers={users} currentUsername={session.username || session.subject} />}
+      accountManager={<UserManager initialUsers={users} currentUsername={session.username || session.subject}
+        samplingSettings={accountSamplingSettings(health, qualitySettings)} />}
       assignmentManager={<AutoAssignmentPoolManager users={users} initialSnapshot={autoAssignment} />}
     />
   </>;

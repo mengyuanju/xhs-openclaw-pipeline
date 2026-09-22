@@ -362,8 +362,7 @@ function copyExecutorLabel(task: DistributedTask, nodes: ExecutorNode[]) {
 
 function canRequeueImages(task: DistributedTask) {
   return task.currentCopyRevisionId !== null
-    && (['IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE'].includes(task.state)
-      || isImageRetryExhausted(task));
+    && ['IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE'].includes(task.state);
 }
 
 const STALE_AFTER_MS = 30 * 60_000;
@@ -1185,8 +1184,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     return visibleTasks.filter((task) => selected.has(task.id));
   }, [selectedTaskIds, visibleTasks]);
   const assignmentEligibleTasks = selectedTasks.filter(canManageTaskAssignment);
-  const retryableTasks = selectedTasks.filter((task) => ['COPY_RUNNING', 'COPY_FAILED', 'IMAGE_RUNNING', 'IMAGE_FAILED'].includes(task.state)
-    || isImageRetryExhausted(task));
+  const retryableTasks = selectedTasks.filter((task) => ['COPY_RUNNING', 'COPY_FAILED', 'IMAGE_RUNNING', 'IMAGE_FAILED'].includes(task.state));
   const queuedTasks = selectedTasks.filter((task) => ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state));
   const operatorDeliveryMode = role === 'USER' && activeView === 'PERSONAL';
   const canOperatorDeliverTask = (task: DistributedTask) => operatorDeliveryMode
@@ -1846,6 +1844,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       disabled={busy || !canRetryImages}
       title={canRetryImages ? '重新进入待生图队列'
         : task.state === 'MANUAL_ARCHIVE' ? '请进入审核，完成图片评分后选择重试生图'
+          : isImageRetryExhausted(task) ? '生图重试已用尽，请进入详情修改文案并提交强制复检'
           : '文案尚未审核通过，暂不能重试生图'}
       onClick={() => { void retryImages(task); }}
     ><RotateCcw size={14} />重试生图</Button>;

@@ -99,7 +99,7 @@ export function WorkflowQualitySettingsPanel() {
     {!loading && !draft && <div className="empty-state"><p>流程质检配置暂不可用，已停用编辑以避免覆盖真实数据。</p><Button unstyled className="button" type="button" onClick={() => { void load(); }}>重新读取</Button></div>}
     {draft && <>
       <div className={styles.modeSummary} aria-label="当前配置摘要">
-        <span className="pill">文案抽检：{draft.copySampling.enabled ? `${ratePercent}%` : '关闭'}</span>
+        <span className="pill">文案默认抽检：{draft.copySampling.enabled ? `${ratePercent}%（账号可覆盖）` : '关闭'}</span>
         <span className="pill">质检视图：{draft.copySampling.blindReviewEnabled ? '盲评' : '非盲评'}</span>
         <span className="pill">质检权限包含单条和整批打回</span>
         <span className="pill">图片抽检：{draft.imageSampling.enabled ? `${imageRatePercent}%` : '关闭'}</span>
@@ -123,7 +123,8 @@ export function WorkflowQualitySettingsPanel() {
         </div>
         <div className={styles.rate}>
           <div className={styles.rateText}>
-            <label htmlFor="copy-sampling-rate">抽检比例</label>
+            <label htmlFor="copy-sampling-rate">默认抽检比例</label>
+            <p>未在用户管理中单独配置的最终审核账号继承此比例；用户管理中的账号比例优先。关闭文案抽检会暂停所有账号的普通随机抽检，强制复检不受影响。</p>
             <p>按最终审核人独立累计：20% 每满 5 条抽 1 条，100% 全检。结批或等待 30 分钟后，非空余量保底抽 1 条。开启抽检时 0% 仅在结批时保底抽检；关闭抽检不影响强制复检。比例修改只影响后续冻结。</p>
           </div>
           <div className={styles.rateControl}>

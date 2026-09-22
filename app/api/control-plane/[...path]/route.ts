@@ -121,7 +121,11 @@ async function proxyRequest(
   if (body && body.byteLength > bodyLimit) {
     throw new ApiError(413, 'PAYLOAD_TOO_LARGE', '请求内容过大');
   }
-  await assertMutationCapability({ root, routePath, method: request.method });
+  let capabilityBody = null;
+  if (body && /^\/v1\/users(?:\/[^/]+)?$/u.test(routePath)) {
+    try { capabilityBody = JSON.parse(new TextDecoder().decode(body)); } catch { /* Upstream validates JSON. */ }
+  }
+  await assertMutationCapability({ root, routePath, method: request.method, body: capabilityBody });
   let upstream: Response;
   try {
     const deliveryTokenDownload = request.method === 'GET'

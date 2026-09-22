@@ -85,6 +85,8 @@ test('locked copy fields explain score gates while plan fields use their own per
 test('copy review scores the machine draft once and auto-scores an edited approval at three', async () => {
   const source = await readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8');
 
+  assert.match(source, /const isImageRetryRework = Boolean\(detail && isImageRetryExhausted\(detail\)\)/u);
+  assert.match(source, /const isCopyRework = detail\?\.mandatoryCopyQcOrigin !== 'DISCARD_RESTORE' && Boolean\(isImageRetryRework/u);
   assert.match(source, /const copyFieldsEditable = editable && \(isCopyRework \|\| copyOriginalScore === 2 \|\| copyOriginalScore === 2\.5\)/u);
   assert.doesNotMatch(source, /copyFieldsEditable = editable && originalCopyRatingComplete/u);
   assert.match(source, /const planFieldsReadOnly = !\(editable \|\| canEditApprovedImagePlan\)/u);
@@ -121,6 +123,9 @@ test('copy review scores the machine draft once and auto-scores an edited approv
   assert.match(source, /const canApproveCopy = isCopyRework \? copyReworkSatisfied/u);
   assert.match(source, /disabled=\{!editable \|\| loading \|\| submitting \|\| humanQualitySettingsUnavailable \|\| Boolean\(savedCopyRatings\.current\) \|\| copyContentChanged\}/u);
   assert.match(source, /最终修改稿无需再次评分/u);
+  assert.match(source, /生图失败文案修订/u);
+  assert.match(source, /提交修订并强制复检/u);
+  assert.match(source, /!isImageRetryRework && \(isCopyRework \|\| copyOriginalScore !== 1\)/u);
   assert.match(source, /document\.getElementById\(`copy-original-\$\{detail\.id\}-note`\)\?\.focus\(\)/u,
     'when deduction reasons are hidden, selecting a low score should focus its required note');
 });
