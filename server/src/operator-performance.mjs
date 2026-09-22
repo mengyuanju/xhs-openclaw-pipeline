@@ -1,3 +1,4 @@
+import { readAccountQualityFacts } from './account-quality-statistics.mjs';
 import { randomUUID } from 'node:crypto';
 import { readQaFacts } from './quality-review-statistics.mjs';
 import { readInspectionRounds } from './quality-rounds.mjs';
@@ -92,6 +93,7 @@ export async function readOperatorPerformance(pool,actor,input={},options={}) {
       const asOf=iso((await client.query('SELECT clock_timestamp() AS at')).rows[0].at);
       const start=new Date(filters.range.startMs).toISOString(),end=new Date(filters.range.endMs).toISOString();
       let events=filters.activity==='QA'?[]:assertComplete((await client.query(PERFORMANCE_EVENTS_SQL,[start,end,asOf,filters.accountId,filters.stage,filters.batchId])).rows).map(eventFrom);
+      if(filters.activity!=='QA') events.push(...await readAccountQualityFacts(client,{start,end,...filters}));
       if(filters.activity!=='PRODUCTION') events.push(...await readQaFacts(client,{...filters,asOf}));
       const pending=filters.activity==='QA'?[]:assertComplete((await client.query(PENDING_SQL,[start,end,filters.accountId,filters.stage,filters.batchId])).rows);
       for(const row of pending) events.push({id:`pending:${row.stage}:${row.id}`,taskId:Number(row.task_id),accountId:number(row.account_id),stage:row.stage,

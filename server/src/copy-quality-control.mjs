@@ -191,6 +191,18 @@ function qaItemIdentifier(value) {
   return { id: null, publicId: normalizeUuid(identifier, 'samplingItemId') };
 }
 
+function isOwnCopyQaItem(row, actor) {
+  return [row.final_approver_account_id, row.current_approver_account_id]
+    .some((accountId) => accountId !== null && accountId !== undefined
+      && Number(accountId) === actor.userId);
+}
+
+function assertCanReviewCopyItem(row, actor) {
+  if (actor.role !== 'ADMIN' && isOwnCopyQaItem(row, actor)) {
+    throw new ControlPlaneAuthorizationError('不能质检自己最终通过或本次提交的文案');
+  }
+}
+
 function qaItemFrom(row, actor) {
   if (!row) return null;
   const blindPolicyEnabled = row.blind_review_enabled === true;
@@ -198,8 +210,7 @@ function qaItemFrom(row, actor) {
   const approvedContent = blind
     ? blindApprovedContent(row.copy_content)
     : row.copy_content;
-  const canReviewOwnItem = actor.role === 'ADMIN'
-    || Number(row.final_approver_account_id) !== actor.userId;
+  const canReviewOwnItem = actor.role === 'ADMIN' || !isOwnCopyQaItem(row, actor);
   const common = {
     ...(row.system_priority === undefined ? {} : { prioritySummary: `${row.priority_paused ? '已暂停' : `生效 ${row.effective_priority}`} · 系统 ${row.system_priority} / 人工 ${row.manual_priority ?? '—'}` }),
     id: row.public_id,
@@ -218,8 +229,9 @@ function qaItemFrom(row, actor) {
     },
     capabilities: {
       canPass: canReviewOwnItem && row.status === 'PENDING' && row.priority_paused !== true,
-      canReturnSingle: canReviewOwnItem && row.status === 'PENDING' && row.priority_paused !== true,
-      canReturnBatch: row.priority_paused !== true,
+      canReturnSingle: canReviewOwnItem && row.status === 'PENDING' && row.priority_paused !== true && row.sample_kind !== 'MANDATORY_RECHECK',
+      canEscalate: canReviewOwnItem && row.status === 'PENDING' && row.priority_paused !== true && row.sample_kind === 'MANDATORY_RECHECK',
+      canReturnBatch: row.priority_paused !== true && row.sample_kind !== 'MANDATORY_RECHECK',
     },
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -255,9 +267,22 @@ function qaItemFrom(row, actor) {
       publicId: row.production_batch_public_id,
       queryPackageName: row.query_package_name ?? null,
     },
+    sourceProductionBatch: {
+      id: row.source_production_batch_id == null ? null : Number(row.source_production_batch_id),
+      publicId: row.source_production_batch_public_id ?? null,
+      queryPackageName: row.source_query_package_name ?? row.query_package_name ?? null,
+    },
+    qaRound: {
+      productionBatchId: Number(row.production_batch_id),
+      publicId: row.production_batch_public_id,
+      queryPackageName: row.query_package_name ?? null,
+    },
     source: {
       finalApproverAccountId: Number(row.final_approver_account_id),
       finalApproverUsername: row.final_approver_username,
+      currentApproverAccountId: row.current_approver_account_id == null
+        ? Number(row.final_approver_account_id) : Number(row.current_approver_account_id),
+      currentApproverUsername: row.current_approver_username ?? row.final_approver_username,
       assignedToUserId: row.assigned_to_user_id ?? null,
       createdByUserId: row.created_by_user_id ?? null,
     },
@@ -686,7 +711,7 @@ export async function routeManualCopyApproval(client, {
       parent = priorReturn.rows[0] ?? null;
       policyVersion = Number(parent?.parent_policy_version);
       blindReviewEnabled = parent?.parent_blind_review_enabled === true;
-    } else if (['FINAL_REWORK', 'IMAGE_RETRY_REVIEW', 'DISCARD_RESTORE'].includes(mandatoryOrigin)) {
+    } else if (['FINAL_REWORK', 'IMAGE_RETRY_REVIEW', 'DISCARD_RESTORE', 'SECOND_ASSIGNMENT'].includes(mandatoryOrigin)) {
       // These review rounds have no random-sampling parent. Freeze one task
       // against the live policy without attaching unrelated historical returns.
       const settings = await lockWorkflowQualitySettings(client);
@@ -741,7 +766,7 @@ export async function routeManualCopyApproval(client, {
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true,
         'MANDATORY_RECHECK', $10, 'PENDING') RETURNING *
     `, [randomUUID(), freezeId, task.id, approval.id, revision.id, approval.content_sha256,
-      parent?.final_approver_account_id ?? approval.approved_by_account_id, parent?.final_approver_username ?? approval.approved_by_username, rankHash, parent?.id ?? null]);
+      approval.approved_by_account_id, approval.approved_by_username, rankHash, parent?.id ?? null]);
     await client.query(`
       UPDATE production_batches SET status = 'REVIEW_REQUIRED', sampling_status = 'FROZEN',
         version = version + 1, updated_at = now() WHERE id = $1
@@ -812,7 +837,12 @@ const QA_ITEM_SQL = `
     task.created_by_user_id, task.system_priority, task.manual_priority, task.effective_priority,
     task.priority_mode, task.priority_paused, task.queue_entered_at, task.priority_sort_at,
     task.rework_count, task.requeue_reason, task.priority_version, batch.public_id AS production_batch_public_id,
-    batch.query_package_name, direct_approval.id AS admin_direct_approval_id,
+    batch.query_package_name, source_batch.id AS source_production_batch_id,
+    source_batch.public_id AS source_production_batch_public_id,
+    source_batch.query_package_name AS source_query_package_name,
+    current_approval.approved_by_account_id AS current_approver_account_id,
+    current_approval.approved_by_username AS current_approver_username,
+    direct_approval.id AS admin_direct_approval_id,
     reviewed_actor.role AS reviewed_by_role,
     ROW_NUMBER() OVER (
       PARTITION BY item.final_approver_account_id
@@ -824,6 +854,8 @@ const QA_ITEM_SQL = `
   JOIN production_batches AS batch ON batch.id = sampling_freeze.production_batch_id
   JOIN copy_revisions AS revision ON revision.id = item.copy_revision_id
   JOIN tasks AS task ON task.id = item.task_id
+  LEFT JOIN production_batches AS source_batch ON source_batch.id = task.production_batch_id
+  LEFT JOIN copy_approval_events AS current_approval ON current_approval.id = item.approval_event_id
   LEFT JOIN copy_qa_admin_direct_approvals AS direct_approval
     ON direct_approval.task_id = item.task_id
     AND direct_approval.copy_revision_id = item.copy_revision_id
@@ -834,6 +866,7 @@ const QA_ITEM_SQL = `
 export async function listCopyQaItems(pool, {
   itemPublicId = null,
   status = 'PENDING',
+  taskId: rawTaskId = null,
   queryPackageName: rawQueryPackageName = null,
   personName: rawPersonName = null,
   limit: rawLimit = 50,
@@ -841,7 +874,7 @@ export async function listCopyQaItems(pool, {
   actionableOnly = false,
 } = {}, rawActor) {
   const actor = normalizeActor(rawActor);
-  const allowedStatuses = ['ALL', 'PENDING', 'PASSED', 'RETURNED', 'BATCH_AFFECTED', 'BATCH_RETURNED', 'RELEASED', 'SUPERSEDED', 'ADMIN_DIRECT_PASSED'];
+  const allowedStatuses = ['ALL', 'PENDING', 'PASSED', 'RETURNED', 'BATCH_AFFECTED', 'BATCH_RETURNED', 'RELEASED', 'SUPERSEDED', 'ADMIN_ESCALATED', 'ADMIN_DIRECT_PASSED'];
   if (!allowedStatuses.includes(status)) throw new TypeError('copy QA status is invalid');
   const adminDirectOnly = status === 'ADMIN_DIRECT_PASSED';
   if (adminDirectOnly && actor.role !== 'ADMIN') {
@@ -855,25 +888,38 @@ export async function listCopyQaItems(pool, {
   if (personName !== null && actor.role !== 'ADMIN') {
     throw new ControlPlaneAuthorizationError('只有管理员可以按人员姓名筛选文案抽检项');
   }
+  const taskId = rawTaskId === null || rawTaskId === undefined || rawTaskId === ''
+    ? null : normalizeTaskId(rawTaskId);
+  if (taskId !== null && actor.role !== 'ADMIN') {
+    throw new ControlPlaneAuthorizationError('只有管理员可以按任务编号筛选文案抽检项');
+  }
   const { limit, offset } = normalizeListPagination(rawLimit, rawOffset);
   await lockActiveQualityActor(pool, actor);
   await flushExpiredCopyQualityBatches(pool);
   const values = [status === 'ALL' || adminDirectOnly ? null : status, actor.role === 'ADMIN' ? null : actor.userId];
+  const taskFilter = taskId === null ? '' : (() => {
+    values.push(taskId);
+    return `AND item.task_id = $${values.length}`;
+  })();
   const itemFilter = itemPublicId === null ? '' : (() => {
     values.push(normalizeUuid(itemPublicId, 'itemPublicId'));
     return `AND item.public_id = $${values.length}::uuid`;
   })();
   const packageFilter = queryPackageName === null ? '' : (() => {
     values.push(queryPackageName);
-    return `AND strpos(lower(batch.query_package_name), lower($${values.length})) > 0`;
+    return `AND (
+      strpos(lower(COALESCE(source_batch.query_package_name, '')), lower($${values.length})) > 0
+      OR strpos(lower(batch.query_package_name), lower($${values.length})) > 0
+    )`;
   })();
   const personFilter = personName === null ? '' : (() => {
     values.push(personName);
     return `AND (
       strpos(lower(item.final_approver_username), lower($${values.length})) > 0
+      OR strpos(lower(COALESCE(current_approval.approved_by_username, '')), lower($${values.length})) > 0
       OR EXISTS (
         SELECT 1 FROM app_users AS person_filter
-        WHERE person_filter.id = item.final_approver_account_id
+        WHERE person_filter.id IN (item.final_approver_account_id, current_approval.approved_by_account_id)
           AND strpos(lower(person_filter.display_name), lower($${values.length})) > 0
       )
     )`;
@@ -897,10 +943,17 @@ export async function listCopyQaItems(pool, {
   // a prolific or earlier approver monopolizing a reviewer's visible queue.
   const result = await pool.query(`${QA_ITEM_SQL}
     WHERE ${itemScope} AND ($1::varchar IS NULL OR item.status = $1)
+      AND ($1::varchar IS DISTINCT FROM 'PENDING' OR (
+        task.state = 'COPY_QC_PENDING' AND item.copy_revision_id = task.current_copy_revision_id
+      ))
       ${actionableOnly ? "AND item.status = 'PENDING' AND task.priority_paused = false" : ''}
-      AND ($2::bigint IS NULL OR item.final_approver_account_id <> $2)
+      AND ($2::bigint IS NULL OR (
+        item.final_approver_account_id <> $2
+        AND current_approval.approved_by_account_id IS DISTINCT FROM $2
+      ))
       ${directApprovalFilter}
       ${itemFilter}
+      ${taskFilter}
       ${packageFilter}
       ${personFilter}
     ORDER BY task.priority_paused ASC, approver_queue_round ASC,
@@ -925,9 +978,7 @@ export async function getCopyQaItem(pool, rawItemId, rawActor) {
     // identifiers only as an atomic batch-return confirmation scope.
     throw new ControlPlaneNotFoundError('抽检项不存在');
   }
-  if (actor.role !== 'ADMIN' && Number(row.final_approver_account_id) === actor.userId) {
-    throw new ControlPlaneAuthorizationError('不能质检自己最终通过的文案');
-  }
+  assertCanReviewCopyItem(row, actor);
   return qaItemFrom(row, actor);
 }
 
@@ -952,10 +1003,13 @@ async function lockQaItem(client, rawItemId) {
     SELECT item.*, sampling_freeze.status AS freeze_status, sampling_freeze.production_batch_id,
       sampling_freeze.blind_review_enabled, task.state AS task_state,
       task.current_copy_revision_id, task.assigned_to_user_id,
-      task.created_by_user_id
+      task.created_by_user_id,
+      current_approval.approved_by_account_id AS current_approver_account_id,
+      current_approval.approved_by_username AS current_approver_username
     FROM copy_sampling_items AS item
     JOIN copy_sampling_freezes AS sampling_freeze ON sampling_freeze.id = item.freeze_id
     JOIN tasks AS task ON task.id = item.task_id
+    LEFT JOIN copy_approval_events AS current_approval ON current_approval.id = item.approval_event_id
     WHERE item.id = $1 AND item.task_id = $2 AND item.freeze_id = $3
     FOR UPDATE OF item
   `, [located.id, located.task_id, located.freeze_id]);
@@ -995,7 +1049,9 @@ async function maybeReleasePassedFreeze(client, item, actor, requestId, { withEx
   const unresolved = Number((await client.query(`
     SELECT COUNT(*) AS count
     FROM copy_sampling_items AS item
-    WHERE item.freeze_id = $1 AND (
+    WHERE item.freeze_id = $1 AND NOT EXISTS (
+      SELECT 1 FROM task_reassignment_case_members moved WHERE moved.stage='COPY' AND moved.sampling_item_id=item.id
+    ) AND (
       item.status = 'PENDING'
       OR (
         item.status IN ('RETURNED', 'BATCH_AFFECTED', 'BATCH_RETURNED', 'SUPERSEDED')
@@ -1092,9 +1148,8 @@ async function passCopyQaItemWithMethod(pool, rawItemId, input, rawActor, review
     });
     const replay = await mutationReplay(client, actor, requestId, operation, fingerprint);
     if (replay) return replay;
-    if (actor.role !== 'ADMIN' && Number(item.final_approver_account_id) === actor.userId) {
-      throw new ControlPlaneAuthorizationError('不能质检自己最终通过的文案');
-    }
+    assertCanReviewCopyItem(item, actor);
+    if (adminDirect && item.sample_kind === 'MANDATORY_RECHECK') throw new ControlPlaneConflictError('MANDATORY_RECHECK_REQUIRED', '强制复检请从质检入口逐条核验');
     if (item.status !== 'PENDING' || item.task_state !== 'COPY_QC_PENDING'
         || Number(item.current_copy_revision_id) !== Number(item.copy_revision_id)) {
       throw new ControlPlaneConflictError('STALE_QA_ITEM', '抽检版本或任务状态已变化');
@@ -1140,6 +1195,19 @@ async function passCopyQaItemWithMethod(pool, rawItemId, input, rawActor, review
 
 export async function passCopyQaItem(pool, rawItemId, input, rawActor) {
   return passCopyQaItemWithMethod(pool, rawItemId, input, rawActor, 'STANDARD');
+}
+
+export async function releaseEscalatedCopyFreezes(client, caseId, actor, requestId) {
+  const freezes=(await client.query(`SELECT DISTINCT freeze_id FROM task_reassignment_case_members
+    WHERE case_id=$1 AND stage='COPY' ORDER BY freeze_id`,[caseId])).rows;
+  for(const freeze of freezes) {
+    const current=(await client.query(`SELECT * FROM copy_sampling_freezes WHERE id=$1
+      AND status IN ('INSPECTING','REVIEW_REQUIRED','BATCH_RETURNED') FOR UPDATE`,[freeze.freeze_id])).rows[0];
+    if(!current)continue;
+    // withExceptions=false: moving one member must never pass another pending member.
+    const released=await maybeReleasePassedFreeze(client,{freeze_id:current.id},actor,requestId);
+    if(released!==null)await client.query("UPDATE copy_sampling_freezes SET status='RELEASED_WITH_EXCEPTIONS' WHERE id=$1",[current.id]);
+  }
 }
 
 async function appendReturnedRevision(client, item, actor, requestId, origin, {
@@ -1215,12 +1283,13 @@ export async function returnCopyQaItem(pool, rawItemId, input, rawActor, expecte
     if (expectedTaskId !== null && Number(item.task_id) !== normalizeTaskId(expectedTaskId)) {
       throw new ControlPlaneConflictError('STALE_QA_ITEM', '抽检项不属于指定任务');
     }
-    if (actor.role !== 'ADMIN' && Number(item.final_approver_account_id) === actor.userId) {
-      throw new ControlPlaneAuthorizationError('不能质检自己最终通过的文案');
-    }
+    assertCanReviewCopyItem(item, actor);
     if (item.status !== 'PENDING' || item.task_state !== 'COPY_QC_PENDING'
         || Number(item.current_copy_revision_id) !== Number(item.copy_revision_id)) {
       throw new ControlPlaneConflictError('STALE_QA_ITEM', '抽检版本或任务状态已变化');
+    }
+    if (item.sample_kind === 'MANDATORY_RECHECK') {
+      throw new ControlPlaneConflictError('MANDATORY_RECHECK_ESCALATE_REQUIRED', '强制复检仅可通过或提交管理员');
     }
     const revision = await appendReturnedRevision(client, item, actor, requestId, 'SINGLE', {
       reasonCodes,
@@ -1498,9 +1567,11 @@ export async function batchReturnCopyQa(pool, input, rawActor) {
       throw new ControlPlaneConflictError('BATCH_NOT_RETURNABLE', '抽检批次已放行、已打回或不存在');
     }
     const eligible = await client.query(`
-      SELECT item.*, task.state AS task_state, task.current_copy_revision_id
+      SELECT item.*, task.state AS task_state, task.current_copy_revision_id,
+        current_approval.approved_by_account_id AS current_approver_account_id
       FROM copy_sampling_items AS item
       JOIN tasks AS task ON task.id = item.task_id
+      LEFT JOIN copy_approval_events AS current_approval ON current_approval.id = item.approval_event_id
       WHERE item.freeze_id = $1 AND item.status IN ('PENDING', 'PASSED', 'NOT_SELECTED', 'RETURNED')
       ORDER BY task.id FOR UPDATE OF item
     `, [freeze.id]);
@@ -1510,9 +1581,8 @@ export async function batchReturnCopyQa(pool, input, rawActor) {
         || trigger.sample_kind !== 'RANDOM') {
       throw new ControlPlaneConflictError('INVALID_BATCH_TRIGGER', '整批打回必须指定本次确认错误的随机抽检项');
     }
-    if (actor.role !== 'ADMIN'
-        && eligible.rows.some(row => Number(row.final_approver_account_id) === actor.userId)) {
-      throw new ControlPlaneAuthorizationError('不能以自己最终通过的文案作为整批打回触发项');
+    if (actor.role !== 'ADMIN' && eligible.rows.some(row => isOwnCopyQaItem(row, actor))) {
+      throw new ControlPlaneAuthorizationError('不能以自己最终通过或本次提交的文案作为整批打回触发项');
     }
     if (eligible.rows.length !== itemIds.length
         || eligible.rows.some((item) => !submitted.has(item.public_id)

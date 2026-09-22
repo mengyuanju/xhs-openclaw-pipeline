@@ -62,7 +62,7 @@ test('batch impact, unknown identities and missing timings remain distinct',()=>
   assert.equal(report.summary.reworkDuration.missing,1);assert.equal(report.dataQuality.unknownIdentity,1);
 });
 test('pagination sorts unknown rates last and exports literal user text safely',()=>{
-  const report=buildPerformanceSnapshot([event(1,{displayName:'=HYPERLINK("evil")'}),qa(2,'PASS',{accountId:22,username:'b'})],[],[],normalizePerformanceFilters({},now),at(0));
+  const report=buildPerformanceSnapshot([event(1,{displayName:'=HYPERLINK("evil")'}),event(2,{kind:'ACCOUNT_QUALITY',bucket:'FIRST_PASS',accountId:22,username:'b'})],[],[],normalizePerformanceFilters({},now),at(0));
   const page=performancePeoplePage(report,{sort:'copyRate',order:'asc',pageSize:1,page:1});
   assert.equal(page.items[0].accountId,22);assert.equal(page.total,2);
   const csv=performanceCsv(report);assert.match(csv,/'=HYPERLINK\(""evil""\)/u);

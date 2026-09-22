@@ -1,6 +1,6 @@
 export const isQaActivity = row => row.kind?.startsWith('QA_') === true;
-export const validQaReview = row => row.kind === 'QA_REVIEW' && !row.exclusion
-  && Number.isSafeInteger(row.accountId) && row.accountId > 0 && ['PASS','RETURN'].includes(row.outcome);
+export const validQaReview = row => ['QA_REVIEW','QA_ESCALATE'].includes(row.kind) && !row.exclusion
+  && Number.isSafeInteger(row.accountId) && row.accountId > 0 && ['PASS','RETURN','ESCALATE'].includes(row.outcome);
 export const uniqueTaskCount = rows => new Set(rows.map(row => row.taskId).filter(id => Number.isSafeInteger(id) && id > 0)).size;
 
 export function qaMetricRows(rows, metric = 'qa', stage = '', outcome = '') {
@@ -25,13 +25,13 @@ export function summarizeQa(rows) {
   const stage = name => {
     const selected = reviews.filter(row => row.stage === name), waiting = pending.filter(row => row.stage === name);
     return { tasks:uniqueTaskCount(selected), reviews:selected.length, passed:selected.filter(row=>row.outcome==='PASS').length,
-      returned:selected.filter(row=>row.outcome==='RETURN').length, rechecks:selected.filter(row=>row.sampleKind==='MANDATORY_RECHECK').length,
+      returned:selected.filter(row=>row.outcome==='RETURN').length, escalated:selected.filter(row=>row.outcome==='ESCALATE').length, rechecks:selected.filter(row=>row.sampleKind==='MANDATORY_RECHECK').length,
       pending:waiting.filter(row=>!row.blocked).length, blocked:waiting.filter(row=>row.blocked).length,
       pendingRechecks:waiting.filter(row=>!row.blocked && row.sampleKind==='MANDATORY_RECHECK').length };
   };
   const knownBatches = batches.filter(row=>Array.isArray(row.affectedTaskIds));
   return { tasks:uniqueTaskCount(reviews), reviews:reviews.length,
-    passed:reviews.filter(row=>row.outcome==='PASS').length, returned:reviews.filter(row=>row.outcome==='RETURN').length,
+    passed:reviews.filter(row=>row.outcome==='PASS').length, returned:reviews.filter(row=>row.outcome==='RETURN').length, escalated:reviews.filter(row=>row.outcome==='ESCALATE').length,
     rechecks:reviews.filter(row=>row.sampleKind==='MANDATORY_RECHECK').length, batchActions:batches.length,
     affectedTasks:new Set(knownBatches.flatMap(row=>row.affectedTaskIds)).size,
     unknownBatchScopes:batches.length-knownBatches.length,

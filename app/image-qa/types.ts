@@ -9,13 +9,14 @@ export type ImageQaAsset = {
 
 export type ImageQaItem = {
   id: string;
+  revisionToken?: string;
   freezePublicId: string;
   anonymousCode: string;
   status: string;
   sampleKind: 'RANDOM' | 'MANDATORY_RECHECK';
   blindReview: boolean;
   assets: ImageQaAsset[];
-  capabilities: { canPass: boolean; canReturnSingle: boolean; canReturnBatch: boolean; canDiscard?: boolean };
+  capabilities: { canPass: boolean; canReturnSingle: boolean; canReturnBatch: boolean; canEscalate?: boolean; canDiscard?: boolean };
   discardReason?: string;
   blockers: { pendingImageEdits: number };
   taskId?: number;
@@ -35,7 +36,7 @@ export function normalizeImageQaItem(value: unknown, role: 'ADMIN' | 'REVIEWER')
     ? row.capabilities as Record<string, unknown> : {};
   const blindReview = row.blindReview === true && role !== 'ADMIN';
   const common: ImageQaItem = {
-    id: row.id,
+    id: row.id, revisionToken: typeof row.revisionToken === 'string' ? row.revisionToken : '',
     freezePublicId: String(row.freezePublicId ?? ''),
     anonymousCode: row.anonymousCode,
     status: String(row.status ?? 'PENDING'),
@@ -59,9 +60,10 @@ export function normalizeImageQaItem(value: unknown, role: 'ADMIN' | 'REVIEWER')
     }),
     capabilities: {
       canPass: capabilities.canPass === true,
-      canReturnSingle: capabilities.canReturnSingle === true,
+      canEscalate: capabilities.canEscalate === true,
+      canReturnSingle: capabilities.canReturnSingle === true && row.sampleKind !== 'MANDATORY_RECHECK',
       canReturnBatch: capabilities.canReturnBatch === true,
-      canDiscard: capabilities.canDiscard === true,
+      canDiscard: capabilities.canDiscard === true && row.sampleKind !== 'MANDATORY_RECHECK',
     },
     blockers: {
       pendingImageEdits: Number.isSafeInteger(Number((row.blockers as Record<string, unknown> | undefined)?.pendingImageEdits))

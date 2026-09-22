@@ -52,6 +52,7 @@ const navigationGroups: NavigationGroup[] = [
   {
     label: '运营与系统',
     items: [
+      { href: '/reassignment', label: '待二次分配', icon: Users, adminOnly: true },
       { href: '/workbench-statistics', label: '数据统计', icon: BarChart3 },
       { href: '/settings', label: '生产配置', icon: Settings2 },
       { href: '/executors', label: '执行机管理', icon: ServerCog },

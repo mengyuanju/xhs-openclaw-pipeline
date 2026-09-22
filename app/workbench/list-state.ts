@@ -49,7 +49,7 @@ const PAGE_SIZES = new Set([20, 50, 100]);
 const CREATOR_ROLES = new Set(['ALL', 'ADMIN', 'REVIEWER', 'USER', 'UNKNOWN']);
 const TASK_STATES = new Set([
   'ALL', 'COPY_QUEUED', 'COPY_RUNNING', 'COPY_REVIEW_PENDING', 'COPY_QC_PENDING', 'COPY_FAILED',
-  'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'IMAGE_QC_PENDING', 'IMAGE_REWORK_PENDING', 'REVIEWED', 'CANCELLED',
+  'IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'IMAGE_QC_PENDING', 'IMAGE_REWORK_PENDING', 'REVIEWED', 'CANCELLED', 'PENDING_SECOND_ASSIGNMENT',
   'queued', 'running', 'copyReview', 'imageReview', 'failed', 'completed', 'cancelled',
   'copyQaReturned', 'personalReview', 'personalProduction',
 ]);

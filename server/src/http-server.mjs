@@ -1259,11 +1259,40 @@ function installRoutes(
     const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
     json(ctx, 200, await repository.listCopyQaItems({
       status: ctx.query.status,
+      taskId: ctx.query.taskId,
       queryPackageName: ctx.query.queryPackageName,
       personName: ctx.query.personName,
       limit: ctx.query.limit,
       offset: ctx.query.offset,
     }, { actor }));
+  });
+  for (const stage of ['COPY', 'IMAGE']) router.post(`/v1/${stage.toLowerCase()}-qa/items/:itemId/escalate`, async (ctx) => {
+    const actor = requestActor(ctx, stage === 'COPY' ? ['ADMIN', 'REVIEWER', 'USER'] : ['ADMIN', 'REVIEWER']);
+    json(ctx, 200, await repository.escalateQualityToAdmin(stage, ctx.params.itemId, requireJson(ctx), { actor, storageRoot }));
+  });
+  router.get('/v1/admin/reassignment-cases', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.listReassignmentCases(ctx.query, { actor }));
+  });
+  router.get('/v1/admin/reassignment-cases/:caseId', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.getReassignmentCase(ctx.params.caseId, { actor }));
+  });
+  router.post('/v1/admin/reassignment-cases/:caseId/restore', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.restoreReassignmentCase(ctx.params.caseId, requireJson(ctx), { actor }));
+  });
+  router.post('/v1/admin/reassignment-cases/:caseId/regenerate', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.regenerateReassignmentBaseline(ctx.params.caseId, requireJson(ctx), { actor }));
+  });
+  router.post('/v1/admin/reassignment-cases/:caseId/reset', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.retryReassignmentReset(ctx.params.caseId, requireJson(ctx), { actor, storageRoot }));
+  });
+  for (const operation of ['REASSIGN', 'DISCARD']) router.post(`/v1/admin/reassignment-cases/:caseId/${operation.toLowerCase()}`, async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    json(ctx, 200, await repository.disposeReassignmentCase(ctx.params.caseId, requireJson(ctx), { actor, operation }));
   });
   router.get('/v1/copy-qa/items/:itemId', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);

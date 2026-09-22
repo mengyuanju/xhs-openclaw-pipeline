@@ -72,7 +72,7 @@ import { ReviewActionButton } from './review-action-button';
 type TaskState =
   | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_QC_PENDING' | 'COPY_FAILED'
   | 'IMAGE_QUEUED' | 'IMAGE_RUNNING' | 'IMAGE_FAILED'
-  | 'MANUAL_ARCHIVE' | 'IMAGE_QC_PENDING' | 'IMAGE_REWORK_PENDING' | 'REVIEWED' | 'CANCELLED';
+  | 'MANUAL_ARCHIVE' | 'IMAGE_QC_PENDING' | 'IMAGE_REWORK_PENDING' | 'REVIEWED' | 'CANCELLED' | 'PENDING_SECOND_ASSIGNMENT';
 
 type Copy = { title: string; body: string; tags: string[] };
 type ImagePlanItem = {
@@ -173,9 +173,9 @@ type TaskDetail = PriorityTask & {
   assignedToAccountId?: number | null;
   aiDisclosureEnabled: boolean;
   mandatoryCopyQc?: boolean;
-  mandatoryCopyQcOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | 'IMAGE_RETRY_REVIEW' | 'DISCARD_RESTORE' | null;
+  mandatoryCopyQcOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | 'IMAGE_RETRY_REVIEW' | 'DISCARD_RESTORE' | 'SECOND_ASSIGNMENT' | null;
   mandatoryImageQc?: boolean;
-  mandatoryImageQcOrigin?: 'QA_RETURN' | 'BATCH_RETURN' | 'DISCARD_RESTORE' | null;
+  mandatoryImageQcOrigin?: 'QA_RETURN' | 'BATCH_RETURN' | 'DISCARD_RESTORE' | 'SECOND_ASSIGNMENT' | null;
   deliveryStatus?: 'READY' | null;
   state: TaskState;
   imageReviewedAt: string | null;
@@ -876,7 +876,7 @@ export function TaskReviewDialog({
   const editable = taskHasAssignee && canReviewCopy && detail?.state === 'COPY_REVIEW_PENDING'
     && Boolean(revision && draft);
   const isImageRetryRework = Boolean(detail && isImageRetryExhausted(detail));
-  const isCopyRework = detail?.mandatoryCopyQcOrigin !== 'DISCARD_RESTORE' && Boolean(isImageRetryRework
+  const isCopyRework = !['DISCARD_RESTORE', 'SECOND_ASSIGNMENT'].includes(detail?.mandatoryCopyQcOrigin ?? '') && Boolean(isImageRetryRework
     || detail?.mandatoryCopyQc
     || ['QA_RETURN', 'FINAL_REWORK'].includes(revision?.revisionOrigin ?? '')
     || ['QA_RETURN', 'FINAL_REWORK'].includes(revision?.reworkOrigin ?? ''));

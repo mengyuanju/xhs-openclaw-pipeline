@@ -79,6 +79,7 @@ test('personal tasks include every active lifecycle state submitted by or assign
 
 test('task lists prioritize lifecycle state and use newest-first order within a state', () => {
   assert.deepEqual(TASK_STATE_PRIORITY, {
+    PENDING_SECOND_ASSIGNMENT: 1,
     COPY_REVIEW_PENDING: 1,
     COPY_QC_PENDING: 2,
     MANUAL_ARCHIVE: 3,
@@ -102,6 +103,7 @@ test('task lists prioritize lifecycle state and use newest-first order within a 
       label: '图片阶段',
       states: ['IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'IMAGE_QC_PENDING', 'IMAGE_REWORK_PENDING'],
     },
+    { label: '管理员处置', states: ['PENDING_SECOND_ASSIGNMENT'] },
     { label: '结束状态', states: ['REVIEWED', 'CANCELLED'] },
   ]);
   assert.equal(TASK_STATE_FILTER_ORDER.indexOf('IMAGE_FAILED'), TASK_STATE_FILTER_ORDER.indexOf('IMAGE_RUNNING') + 1);

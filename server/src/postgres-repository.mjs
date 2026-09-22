@@ -1,6 +1,7 @@
 import { priorityFrom, priorityOrderSql, normalizePriorityMode } from './task-priority.mjs';
 import { adjustTaskPriority, readPriorityScope } from './task-priority-store.mjs';
 import { flushExpiredCopyQualityBatches } from './copy-quality-control.mjs';
+import { restoreReassignmentCase, finishReassignmentBaseline, regenerateReassignmentBaseline, escalateQualityToAdmin, listReassignmentCases, getReassignmentCase, retryReassignmentReset, disposeReassignmentCase } from './secondary-assignment.mjs';
 import { normalizeCopySamplingRateOverride } from '../../src/copy-sampling-policy.mjs';
 import {
   createCopyQaReasonTag,
@@ -1522,7 +1523,7 @@ async function lockedExecution(client, executionId) {
   const result = await client.query(`
     SELECT e.*, t.current_execution_id, t.state AS task_state,
       t.skip_copy_review, t.created_by_node_id, t.ai_disclosure_enabled,
-      t.assigned_to_user_id
+      t.assigned_to_user_id, t.mandatory_copy_qc_origin
     FROM task_executions e
     JOIN tasks t ON t.id = e.task_id
     WHERE e.id = $1
@@ -1663,6 +1664,13 @@ export class PostgresControlPlaneRepository {
     return getProductionBatchSamplingReadiness(this.pool, id, actor);
   }
   listCopyQaItems(options, { actor } = {}) { return listCopyQaItems(this.pool, options, actor); }
+  escalateQualityToAdmin(stage, id, input, { actor, storageRoot } = {}) { return escalateQualityToAdmin(this.pool, stage, id, input, actor, { storageRoot }); }
+  restoreReassignmentCase(id, input, { actor } = {}) { return restoreReassignmentCase(this.pool, id, input, actor); }
+  regenerateReassignmentBaseline(id, input, { actor } = {}) { return regenerateReassignmentBaseline(this.pool, id, input, actor); }
+  listReassignmentCases(input, { actor } = {}) { return listReassignmentCases(this.pool, input, actor); }
+  getReassignmentCase(id, { actor } = {}) { return getReassignmentCase(this.pool, id, actor); }
+  retryReassignmentReset(id, input, { actor, storageRoot } = {}) { return retryReassignmentReset(this.pool, id, input, actor, { storageRoot }); }
+  disposeReassignmentCase(id, input, { actor, operation } = {}) { return disposeReassignmentCase(this.pool, id, input, actor, operation); }
   listImageQaItems(options, { actor } = {}) { return listImageQaItems(this.pool, options, actor); }
   getImageQaAsset(itemId, assetId, { actor } = {}) {
     return getImageQaAsset(this.pool, itemId, assetId, actor);
@@ -1785,7 +1793,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { taskRestoreVersion: 1, taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 13, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, adminTaskActivityDateFilters: 1, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 7, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 2, copyQaReasonTagsVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, sharedDeliveryVersion: 1, imageDiscardVersion: 1, pendingImageEditResolutionVersion: 1, deliverySpreadsheetVersion: 3, deliveryPreviewVersion: 6 } };
+      capabilities: { taskRestoreVersion: 1, taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 13, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, adminTaskActivityDateFilters: 1, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 7, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 2, copyQaReasonTagsVersion: 1, secondaryAssignmentVersion: 1, accountQualityStatisticsVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, sharedDeliveryVersion: 1, imageDiscardVersion: 1, pendingImageEditResolutionVersion: 1, deliverySpreadsheetVersion: 3, deliveryPreviewVersion: 6 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -3696,17 +3704,17 @@ export class PostgresControlPlaneRepository {
           AND assignee.created_at < task.assigned_at
       `, [taskId]),
       this.pool.query(`
-        SELECT * FROM task_executions WHERE task_id = $1 ORDER BY started_at DESC
+        SELECT * FROM task_executions WHERE task_id = $1 AND content_cleared_at IS NULL ORDER BY started_at DESC
       `, [taskId]),
       this.pool.query(`
-        SELECT * FROM copy_revisions WHERE task_id = $1 ORDER BY revision DESC
+        SELECT * FROM copy_revisions WHERE task_id = $1 AND content_cleared_at IS NULL ORDER BY revision DESC
       `, [taskId]),
       this.pool.query(`
-        SELECT * FROM image_runs WHERE task_id = $1 ORDER BY created_at DESC
+        SELECT * FROM image_runs WHERE task_id = $1 AND content_cleared_at IS NULL ORDER BY created_at DESC
       `, [taskId]),
       this.pool.query(`
         SELECT id, task_id, image_run_id, media_type, byte_size, sha256, original_name, created_at
-        FROM image_run_asset_view WHERE task_id = $1 ORDER BY id
+        FROM image_run_asset_view WHERE task_id = $1 AND id IN (SELECT id FROM assets WHERE content_cleared_at IS NULL) ORDER BY id
       `, [taskId]),
       this.pool.query(`
         SELECT * FROM human_quality_assessments
@@ -4499,6 +4507,12 @@ export class PostgresControlPlaneRepository {
           progress_message = $2, last_activity_at = now(), finished_at = now()
         WHERE id = $1
       `, [executionId, message]);
+      if (execution.mandatory_copy_qc_origin === 'SECOND_ASSIGNMENT' && execution.assigned_to_user_id == null) {
+        const resetTask = await finishReassignmentBaseline(client, execution.task_id);
+        if (resetTask) return { task: taskFrom(resetTask), revision: revisionFrom((await client.query(
+          'SELECT * FROM copy_revisions WHERE id=$1', [resetTask.current_copy_revision_id],
+        )).rows[0]) };
+      }
       if (bypass) {
         const task = await queueApprovedCopy(client, execution.task_id, revision.rows[0].id,
           execution.ai_disclosure_enabled ?? true, message);
@@ -4611,7 +4625,7 @@ export class PostgresControlPlaneRepository {
       if (!revision.rows[0]) throw new ControlPlaneNotFoundError('copy revision not found');
       const imageRetryRework = task.current_stage === 'IMAGE_RETRY_EXHAUSTED';
       const mandatoryRework = imageRetryRework || (task.mandatory_copy_qc === true
-        && task.mandatory_copy_qc_origin !== 'DISCARD_RESTORE');
+        && !['DISCARD_RESTORE', 'SECOND_ASSIGNMENT'].includes(task.mandatory_copy_qc_origin));
       if (imageRetryRework && ['SAVE', 'SAVE_PLAN'].includes(decision)) {
         throw new ControlPlaneConflictError(
           'IMAGE_RETRY_REVIEW_SUBMIT_REQUIRED',
@@ -4673,7 +4687,7 @@ export class PostgresControlPlaneRepository {
       // execution id, but it does not turn the unchanged machine copy into an
       // edited draft. Copy provenance is tracked explicitly on the revision;
       // use it so the first rating after a plan-only save remains ORIGINAL.
-      const sourceIsOriginal = revision.rows[0].execution_id !== null
+      const sourceIsOriginal = revision.rows[0].execution_id !== null || revision.rows[0].revision_origin === 'SECOND_ASSIGNMENT_RESET'
         || (revision.rows[0].revision_origin === 'PLAN_EDIT'
           && revision.rows[0].copy_content_changed_from_machine !== true);
       let sourceRatingContext = sourceIsOriginal ? 'ORIGINAL' : 'EDITED';
@@ -6179,7 +6193,7 @@ export class PostgresControlPlaneRepository {
 
   async getAsset(rawAssetId, queryable = this.pool) {
     const assetId = normalizeTaskId(rawAssetId);
-    const result = await queryable.query('SELECT * FROM assets WHERE id = $1', [assetId]);
+    const result = await queryable.query('SELECT * FROM assets WHERE id = $1 AND content_cleared_at IS NULL', [assetId]);
     if (!result.rows[0]) return null;
     const row = result.rows[0];
     return {

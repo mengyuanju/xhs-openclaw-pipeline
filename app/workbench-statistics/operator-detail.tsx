@@ -20,14 +20,16 @@ const METRICS:Record<string,string>={all:'全部事件',submitted:'阶段提交'
 Object.assign(KINDS,{QA_REVIEW:'质检结论',QA_BATCH_RETURN:'批量退回操作',QA_DIRECT_PASS:'快捷直放',QA_DISCARD:'质检废弃',QA_PENDING:'质检待办'});
 Object.assign(METRICS,{contributed:'参与处理作业',qaAll:'全部质检记录',qa:'质检结论',qaRecheck:'质检复检',qaBatch:'批量退回操作',qaSpecial:'快捷直放与废弃',qaPending:'可处理质检待办',qaBlocked:'暂不可处理质检'});
 Object.assign(METRICS,{firstSubmitted:'首次标注提交',reassign:'当前建议改派'});
-Object.assign(KINDS,{REASSIGN:'建议改派'});
+Object.assign(KINDS,{REASSIGN:'建议改派',ACCOUNT_QUALITY:'账号判定',QA_ESCALATE:'移交管理员'});
+Object.assign(METRICS,{judged:'已判定总量',discarded:'最终废弃',firstPassed:'一次通过',qualityReturned:'打回',reassigned:'已二次分配'});
 
 function StageCard({stage,data}:{stage:'COPY'|'IMAGE';data:StagePerformance}) {
   const hasSamples=data.firstPass.decided+data.overallPass.decided+data.recheck.decided+data.firstRecheck.decided+data.coverage.eligible
     +data.coverage.unresolved+data.duration.samples+data.duration.missing+data.qualityWait.samples+data.pending>0;
   return <article className={ui.qualityCard}><header><h3>{STAGE_LABEL[stage]}质量与效率</h3><span>{data.submitted} 项提交</span></header>
+    <p>已判定 {data.qualityOutcomes.judged} 条 · 废弃 {data.qualityOutcomes.discarded} · 一次通过 {data.qualityOutcomes.firstPassed} · 打回 {data.qualityOutcomes.returned} · 已二次分配 {data.qualityOutcomes.reassigned}</p>
     {hasSamples?<><dl className={ui.metricList}>
-      {([['一次通过率',data.firstPass],['整体通过率',data.overallPass],['强制复检通过率',data.recheck],['首次返修通过率',data.firstRecheck]] as const).map(([label,rate])=><div key={label}><dt>{label}</dt><dd>{rate.decided?<><strong>{RATE_LABEL(rate)}</strong><small>{rate.passed} / {rate.decided} 已审</small></>:<span className={styles.muted}>暂无已审样本</span>}</dd></div>)}
+      {([['首次随机抽检通过率',data.firstPass],['整体通过率',data.overallPass],['强制复检通过率',data.recheck],['首次返修通过率',data.firstRecheck]] as const).map(([label,rate])=><div key={label}><dt>{label}</dt><dd>{rate.decided?<><strong>{RATE_LABEL(rate)}</strong><small>{rate.passed} / {rate.decided} 已审</small></>:<span className={styles.muted}>暂无已审样本</span>}</dd></div>)}
       <div><dt>人工待办周转 · 中位数</dt><dd>{duration(data.duration.medianMs)}</dd></div>
       <div><dt>提交到质检结论 · 中位数</dt><dd>{duration(data.qualityWait.medianMs)}</dd></div>
       <div><dt>当前待质检样本</dt><dd>{data.pending} 条</dd></div>
@@ -132,6 +134,7 @@ export function OperatorDetailDialog({report,selection,onClose}:{report:Operator
       {data.items.map(item=><article className={ui.event} key={item.id}><header><div className={ui.eventIdentity}><strong>{item.taskId?`#${item.taskId}`:'批量操作'}</strong><span className={ui.stageBadge}>{STAGE_LABEL[item.stage]}</span><span>{KINDS[item.kind]??item.kind}</span></div>
         {(item.outcome==='PASS'||item.outcome==='RETURN'||item.rework)&&<span className={`${ui.verdict} ${item.outcome==='RETURN'?ui.returned:ui.passed}`}>{item.outcome==='PASS'?'通过':item.outcome==='RETURN'?'退回':'返修提交'}</span>}</header>
         <h3 className={ui.eventQuery}>{item.query||'批量质检操作'}</h3><div className={ui.eventMeta}><span>{item.at?time(item.at):'时间未记录'}</span><span>{item.kind.startsWith('QA_')?'操作／指派账号':'提交人'} {item.displayName||item.username||'身份未确认'}{item.reviewerId?` · 质检账号 #${item.reviewerId}`:''}</span></div>
+        {item.kind==='ACCOUNT_QUALITY'&&<p>当前分类：{{DISCARDED:'废弃',FIRST_PASS:'一次通过',RETURNED:'打回'}[item.bucket??'']??item.bucket} · 首次质检 {time(item.at)}{item.outcomeChangedAt?' · 最近处置 '+time(item.outcomeChangedAt):''}{item.reassigned?' · 已二次分配（计数保留）':''}</p>}
         {item.kind==='QA_PENDING'&&<p>{item.blocked?'暂不可处理：暂停或权限变化':item.passBlocked?'图片修改待完成：仍可退回，暂不能通过':'当前可处理'}</p>}
         {item.kind==='QA_BATCH_RETURN'&&<p>影响数量 {item.affectedCount??'未记录'}；{Array.isArray(item.affectedTaskIds)?`作业 ${item.affectedTaskIds.map(id=>`#${id}`).join('、')}`:'历史完整范围未保留，不推算逐项质检次数'}</p>}
         {item.exclusion&&<p>排除原因：{EXCLUSIONS[item.exclusion]??item.exclusion}</p>}

@@ -1,3 +1,5 @@
+import { readAccountQualityFacts } from './account-quality-statistics.mjs';
+import { summarizeAccountQuality } from '../../src/account-quality-statistics.mjs';
 import { normalizePersonalFilters, selectPersonalTasks, summarizePersonalWorkspace } from '../../src/personal-workspace.mjs';
 import { normalizeRange } from '../../src/web-statistics/summary.mjs';
 import { ControlPlaneAuthenticationError } from './domain.mjs';
@@ -166,6 +168,8 @@ export async function readPersonalWorkspace(pool, actor, input, { report = false
       }
       await client.query('RELEASE SAVEPOINT personal_delivery');
       output = summarizePersonalWorkspace(facts,events,batches,filters,now);
+      const judged=await readAccountQualityFacts(client,{start:new Date(filters.range.startMs).toISOString(),end:new Date(filters.range.endMs).toISOString(),accountId:actor.userId});
+      output.qualityOutcomes=Object.fromEntries(['COPY','IMAGE'].map(stage=>[stage,summarizeAccountQuality(judged.filter(row=>row.stage===stage))]));
       await client.query('SAVEPOINT personal_qa');
       try {
         const qaEvents = await readQaFacts(client,{range:filters.range,accountId:actor.userId,asOf:new Date(now).toISOString()});

@@ -18,6 +18,8 @@ function actionFixture() {
       blind_review_enabled: true,
       final_approver_account_id: 64,
       final_approver_username: 'SECRET-APPROVER',
+      current_approver_account_id: 65,
+      current_approver_username: 'SECRET-CURRENT-APPROVER',
       task_id: 991,
       status: 'PENDING',
       task_state: 'COPY_QC_PENDING',
@@ -200,6 +202,23 @@ test('a reviewer cannot pass or return their own final approval', async () => {
       requestId: operation === 'pass'
         ? '44444444-4444-4444-8444-444444444444'
         : '55555555-5555-4555-8555-555555555555',
+    };
+    const call = operation === 'pass' ? passCopyQaItem : returnCopyQaItem;
+    await assert.rejects(call(fixture.pool, ITEM_ID, input, reviewer), { code: 'FORBIDDEN' });
+    assert.deepEqual(fixture.state.updates, []);
+  }
+});
+
+test('a reviewer cannot pass or return a recheck they submitted for another quality owner', async () => {
+  for (const operation of ['pass', 'return']) {
+    const fixture = actionFixture();
+    fixture.state.item.current_approver_account_id = reviewer.userId;
+    const input = {
+      expectedRevisionToken: REVISION_TOKEN,
+      reasonCodes: operation === 'return' ? ['FACT_ERROR'] : [],
+      requestId: operation === 'pass'
+        ? '56565656-5656-4656-8656-565656565656'
+        : '57575757-5757-4757-8757-575757575757',
     };
     const call = operation === 'pass' ? passCopyQaItem : returnCopyQaItem;
     await assert.rejects(call(fixture.pool, ITEM_ID, input, reviewer), { code: 'FORBIDDEN' });

@@ -86,7 +86,7 @@ test('copy review scores the machine draft once and auto-scores an edited approv
   const source = await readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8');
 
   assert.match(source, /const isImageRetryRework = Boolean\(detail && isImageRetryExhausted\(detail\)\)/u);
-  assert.match(source, /const isCopyRework = detail\?\.mandatoryCopyQcOrigin !== 'DISCARD_RESTORE' && Boolean\(isImageRetryRework/u);
+  assert.match(source, /const isCopyRework = !\['DISCARD_RESTORE', 'SECOND_ASSIGNMENT'\]\.includes\(detail\?\.mandatoryCopyQcOrigin \?\? ''\) && Boolean\(isImageRetryRework/u);
   assert.match(source, /const copyFieldsEditable = editable && \(isCopyRework \|\| copyOriginalScore === 2 \|\| copyOriginalScore === 2\.5\)/u);
   assert.doesNotMatch(source, /copyFieldsEditable = editable && originalCopyRatingComplete/u);
   assert.match(source, /const planFieldsReadOnly = !\(editable \|\| canEditApprovedImagePlan\)/u);

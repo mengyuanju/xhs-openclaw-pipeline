@@ -1,4 +1,5 @@
 import { ControlPlaneConflictError } from './domain.mjs';
+import { restoreSecondaryAssignment } from './secondary-assignment.mjs';
 import { copyQualityImageGate } from './copy-quality-flow.mjs';
 import { withdrawReadyDeliveryEntries } from './final-delivery.mjs';
 
@@ -13,6 +14,7 @@ export async function restoreDiscardedTask(client, task, actor, input) {
   if (Date.parse(input.expectedUpdatedAt) !== new Date(task.updated_at).getTime()) {
     throw new ControlPlaneConflictError('TASK_CHANGED', '任务已变化，请刷新后重新恢复');
   }
+  if (task.cancelled_from_state === 'PENDING_SECOND_ASSIGNMENT') return restoreSecondaryAssignment(client, task, actor);
   const versions = (await client.query(`
     SELECT ${copyQualityImageGate('task')} AS copy_released,
       EXISTS (SELECT 1 FROM image_runs run WHERE run.id = task.current_image_run_id

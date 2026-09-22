@@ -1363,11 +1363,11 @@ test('copy QA listing forwards package-name and personnel search through the adm
       return [];
     },
   }, async (root) => {
-    const response = await fetch(`${root}/v1/copy-qa/items?status=PENDING&queryPackageName=%E4%B9%9D%E6%9C%88%E9%80%89%E9%A2%98&personName=%E8%B4%A8%E6%A3%80%E7%94%B2&limit=20&offset=0`);
+    const response = await fetch(`${root}/v1/copy-qa/items?status=PENDING&taskId=69&queryPackageName=%E4%B9%9D%E6%9C%88%E9%80%89%E9%A2%98&personName=%E8%B4%A8%E6%A3%80%E7%94%B2&limit=20&offset=0`);
     assert.equal(response.status, 200);
   });
   assert.deepEqual(received, {
-    status: 'PENDING', queryPackageName: '九月选题', personName: '质检甲', limit: '20', offset: '0',
+    status: 'PENDING', taskId: '69', queryPackageName: '九月选题', personName: '质检甲', limit: '20', offset: '0',
   });
 });
 

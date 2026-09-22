@@ -3,7 +3,7 @@ import { FileCheck2, FileText, Image as ImageIcon, Inbox, ListChecks, Trash2, Us
 export type TaskState =
   | 'COPY_QUEUED' | 'COPY_RUNNING' | 'COPY_REVIEW_PENDING' | 'COPY_QC_PENDING' | 'COPY_FAILED'
   | 'IMAGE_QUEUED' | 'IMAGE_RUNNING' | 'IMAGE_FAILED'
-  | 'MANUAL_ARCHIVE' | 'IMAGE_QC_PENDING' | 'IMAGE_REWORK_PENDING' | 'REVIEWED' | 'CANCELLED';
+  | 'MANUAL_ARCHIVE' | 'IMAGE_QC_PENDING' | 'IMAGE_REWORK_PENDING' | 'REVIEWED' | 'CANCELLED' | 'PENDING_SECOND_ASSIGNMENT';
 
 export type ViewKey = 'PERSONAL' | 'UNASSIGNED' | 'ALL_COPY' | 'COPY_REVIEW' | 'IMAGE_WORK' | 'MANUAL_ARCHIVE' | 'COMPLETED' | 'ALL_JOBS' | 'DISCARDED';
 export type TaskSort = 'priority:desc' | 'createdAt:desc' | 'createdAt:asc' | 'id:desc' | 'id:asc';
@@ -22,6 +22,7 @@ export function taskSortParams(sort: TaskSort) {
 }
 
 export const TASK_STATE_PRIORITY: Record<TaskState, number> = {
+  PENDING_SECOND_ASSIGNMENT: 1,
   COPY_REVIEW_PENDING: 1,
   COPY_QC_PENDING: 2,
   MANUAL_ARCHIVE: 3,
@@ -45,6 +46,10 @@ export const TASK_STATE_FILTER_GROUPS: Array<{ label: string; states: TaskState[
   {
     label: '图片阶段',
     states: ['IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE', 'IMAGE_QC_PENDING', 'IMAGE_REWORK_PENDING'],
+  },
+  {
+    label: '管理员处置',
+    states: ['PENDING_SECOND_ASSIGNMENT'],
   },
   {
     label: '结束状态',

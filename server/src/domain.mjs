@@ -14,6 +14,7 @@ export const TASK_STATES = Object.freeze([
   'IMAGE_REWORK_PENDING',
   'REVIEWED',
   'CANCELLED',
+  'PENDING_SECOND_ASSIGNMENT',
 ]);
 
 export const EXECUTION_KINDS = Object.freeze(['COPY', 'IMAGE']);

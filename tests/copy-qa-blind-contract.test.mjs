@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   canReleaseCopyQaFreezeRest,
   canStartCopyQaBatchReturn,
+  copyQaTaskIdSearch,
   copyRevisionView,
   normalizeCopyQaItem,
   normalizeCopyQaList,
@@ -90,7 +91,8 @@ test('blind QA normalization is an allowlist even when the server accidentally a
   const normalizedKeys = keys.map((key) => key.toLocaleLowerCase('en-US'));
   for (const forbidden of [
     'taskid', 'querypackage', 'querypackagename', 'source', 'creatorusername', 'assignee', 'avatarurl',
-    'finalapprover', 'assessments', 'score', 'reviewerusername', 'reasoncodes', 'audithistory',
+    'finalapprover', 'currentapprover', 'sourceproductionbatch', 'qaround',
+    'assessments', 'score', 'reviewerusername', 'reasoncodes', 'audithistory',
     'revision', 'samplingpolicy', 'ratebps', 'ratesource', 'accountpolicyversion',
   ]) {
     assert.equal(normalizedKeys.includes(forbidden), false, forbidden);
@@ -143,6 +145,14 @@ test('mandatory rechecks and batch-affected history retain the backend enum mean
   assert.equal(item.status, 'BATCH_AFFECTED');
 });
 
+test('copy QA exact task search accepts task-number forms without treating free text as an id', () => {
+  assert.equal(copyQaTaskIdSearch('69'), 69);
+  assert.equal(copyQaTaskIdSearch('#69'), 69);
+  assert.equal(copyQaTaskIdSearch('任务 #69'), 69);
+  assert.equal(copyQaTaskIdSearch('家里 69'), null);
+  assert.equal(copyQaTaskIdSearch('#0'), null);
+});
+
 test('administrator normalization preserves direct-pass audit origin and superseded history', () => {
   const item = normalizeCopyQaItem(serverRow({
     blindReview: false,
@@ -166,6 +176,7 @@ test('unknown QA state and omitted capabilities fail closed', () => {
   assert.ok(item);
   assert.deepEqual(item.capabilities, {
     canPass: false,
+    canEscalate: false,
     canReturnSingle: false,
     canReturnBatch: false,
   });
@@ -205,12 +216,23 @@ test('non-blind normalization accepts current nested provenance and legacy root 
       id: 902,
     },
     productionBatch: { anonymousCode: 'PB-7XQK', id: 27, publicId: '91919191-9191-4919-8919-919191919191', queryPackageName: '  九月   选题  ' },
-    source: { finalApproverAccountId: 64, finalApproverUsername: 'worker' },
+    sourceProductionBatch: { id: 26, publicId: '92929292-9292-4929-8929-929292929292', queryPackageName: '  来源   词包  ' },
+    qaRound: { productionBatchId: 27, publicId: '91919191-9191-4919-8919-919191919191', queryPackageName: '强制文案复检' },
+    source: {
+      finalApproverAccountId: 64,
+      finalApproverUsername: 'worker',
+      currentApproverAccountId: 65,
+      currentApproverUsername: 'reworker',
+    },
   }));
   assert.ok(current && !current.blindReview);
   assert.equal(current.productionBatchId, 27);
   assert.equal(current.productionBatch.queryPackageName, '九月 选题');
+  assert.equal(current.sourceProductionBatch.queryPackageName, '来源 词包');
+  assert.equal(current.qaRound.queryPackageName, '强制文案复检');
   assert.equal(current.finalApproverAccountId, 64);
+  assert.equal(current.currentApproverAccountId, 65);
+  assert.equal(current.currentApproverUsername, 'reworker');
   assert.equal(current.approvedRevision.id, 902);
 
   const legacy = normalizeCopyQaItem(serverRow({

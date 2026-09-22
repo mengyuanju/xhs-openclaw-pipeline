@@ -1,4 +1,5 @@
 'use client';
+import { QaEscalateButton } from '../components/qa-escalate-button';
 
 import { ArrowRight, ChevronLeft, ChevronRight, EyeOff, LoaderCircle, Maximize2, RotateCcw } from 'lucide-react';
 import { useEffect, useId, useRef, useState, type RefObject } from 'react';
@@ -143,7 +144,7 @@ export function WorkQualityEditor({ item, navigationGuardRef, onSkip, onComplete
             if (!marked) { if (target === 'COPY') setTarget('IMAGE'); beginReturn(); }
           }}>{problemAssets.includes(currentAsset.id) ? '取消当前页问题标记' : '标记当前页有问题'}</Button>}
       </div>}
-      {!imageMode && <p className={styles.qualityHelp}>核对文案与逐页规划，发现问题后点击底部“打回”。</p>}
+      {!imageMode && <p className={styles.qualityHelp}>核对文案与逐页规划；强制复检不通过时提交管理员处理。</p>}
       {imageItem && !qa.blindReview && qa.query && <Disclosure className={styles.qualityQuery}>
         <DisclosureTrigger><strong>原始 Query</strong><span>{qa.query}</span></DisclosureTrigger>
         <DisclosureContent><p>{qa.query}</p></DisclosureContent>
@@ -206,11 +207,15 @@ export function WorkQualityEditor({ item, navigationGuardRef, onSkip, onComplete
     <footer className={styles.qualityFooter}>{error && <div className="notice error" role="alert">{error}</div>}
       <span>{item.rework ? '当前版本须通过强制复检' : '本次结论绑定当前待检版本'}</span><div>
         <Button unstyled className="button" disabled={busy} onClick={onSkip}>暂跳过</Button>
+        {qa.capabilities.canEscalate && <QaEscalateButton stage={imageMode ? 'IMAGE' : 'COPY'} itemId={item.id}
+          revisionToken={copyItem?.approvedRevision.revisionToken ?? imageItem?.revisionToken ?? ''} disabled={busy}
+          onBusyChange={value => { submitting.current = value; setBusy(value); }}
+          onCompleted={() => onCompleted(qa.anonymousCode + ' 已提交管理员。')} />}
         {imageItem?.capabilities.canDiscard && <ImageDiscardButton target={{ samplingItemId: imageItem.id }} disabled={busy}
           onBusyChange={value => { submitting.current = value; setBusy(value); }}
           onCompleted={() => onCompleted(`${qa.anonymousCode} 已废弃，原因已记录。`)} />}
         {returning ? <><Button unstyled className="button" disabled={busy} onClick={() => { setReturning(false); setMobilePane('content'); setError(''); }}>返回核验</Button><Button unstyled className="button danger" disabled={busy || !qa.capabilities.canReturnSingle || imageMode && (settingsLoading || !!settingsError)} onClick={() => void submit(true)}><RotateCcw size={15} />打回并下一条{!imageMode && reasons.length ? `（${reasons.length}项）` : ''}</Button></>
-          : <><Button unstyled className="button" disabled={busy || !qa.capabilities.canReturnSingle} onClick={beginReturn}>打回</Button><Button unstyled className="button primary" disabled={busy || passBlocked} onClick={() => void submit(false)}>{busy ? <LoaderCircle className="animate-spin" size={15} /> : <ArrowRight size={15} />}通过并下一条</Button></>}
+          : <>{qa.capabilities.canReturnSingle && <Button unstyled className="button" disabled={busy} onClick={beginReturn}>打回</Button>}<Button unstyled className="button primary" disabled={busy || passBlocked} onClick={() => void submit(false)}>{busy ? <LoaderCircle className="animate-spin" size={15} /> : <ArrowRight size={15} />}通过并下一条</Button></>}
       </div></footer>
     {previewAsset && preview !== null && <ImagePreview hideTrigger isOpen src={apiPath(previewAsset.url)} alt={`待检图片 · 第 ${pageNumber(preview)} 页`}
       restoreFocusRef={previewTriggerRef} position={preview + 1} total={assets.length} backdrop={backdrop} onBackdropChange={setBackdrop}

@@ -107,7 +107,7 @@ type DistributedTask = PriorityTask & {
   imageExecutorNodeName?: string | null;
   currentCopyRevisionId: number | null;
   mandatoryCopyQc?: boolean;
-  mandatoryCopyQcOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | 'IMAGE_RETRY_REVIEW' | 'DISCARD_RESTORE' | null;
+  mandatoryCopyQcOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | 'IMAGE_RETRY_REVIEW' | 'DISCARD_RESTORE' | 'SECOND_ASSIGNMENT' | null;
   currentExecutionId?: string | null;
   createdByUserId: string | null;
   createdByAccountId?: number | null;
@@ -219,6 +219,7 @@ const STATE_LABELS: Record<TaskState, string> = {
   COPY_QUEUED: '待文案执行',
   COPY_RUNNING: '文案生成中',
   COPY_REVIEW_PENDING: '待文案审核',
+  PENDING_SECOND_ASSIGNMENT: '待二次分配',
   COPY_QC_PENDING: '待文案质检',
   COPY_FAILED: '文案生成失败',
   IMAGE_QUEUED: '待生图',
@@ -260,6 +261,7 @@ const STAGE_LABELS: Record<string, string> = {
   COPY_QUEUED: '待文案执行',
   COPY_RUNNING: '文案生成中',
   COPY_REVIEW_PENDING: '待文案审核',
+  PENDING_SECOND_ASSIGNMENT: '待二次分配',
   COPY_QC_PENDING: '待文案质检',
   QC_SAMPLE_PENDING: '待文案抽检',
   QC_NON_SAMPLE_HELD: '等待批次抽检结果',

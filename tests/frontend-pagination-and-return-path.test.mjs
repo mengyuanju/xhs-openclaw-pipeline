@@ -67,10 +67,13 @@ test('copy QA requests the selected status from the server and exposes load-more
   assert.match(source, /copy-qa\/items\?\$\{params\.toString\(\)\}/u);
   assert.match(source, /role === 'ADMIN' && queryPackageName[\s\S]*params\.set\('queryPackageName', queryPackageName\)/u);
   assert.match(source, /role === 'ADMIN' && personName[\s\S]*params\.set\('personName', personName\)/u);
-  assert.match(source, /aria-label="按词包名称筛选全部抽检项"/u);
-  assert.match(source, /aria-label="按人员姓名筛选全部文案质检项"/u);
-  assert.match(source, /!item\.blindReview && <small>词包：\{item\.productionBatch\.queryPackageName \?\? '未归属词包'\}/u);
-  assert.match(source, /!detail\.blindReview && <section[\s\S]*词包名称[\s\S]*detail\.productionBatch\.queryPackageName/u);
+  assert.match(source, /searchedTaskId !== null[\s\S]*params\.set\('taskId', String\(searchedTaskId\)\)/u);
+  assert.match(source, /aria-label="按来源词包或质检轮次筛选全部抽检项"/u);
+  assert.match(source, /aria-label="按质量归属人或本次提交人筛选全部文案质检项"/u);
+  assert.match(source, /来源词包：\{item\.sourceProductionBatch\.queryPackageName \?\? '未归属词包'\}/u);
+  assert.match(source, /本次提交 @\$\{item\.currentApproverUsername\}/u);
+  assert.match(source, /!detail\.blindReview && <section[\s\S]*来源词包[\s\S]*detail\.sourceProductionBatch\.queryPackageName/u);
+  assert.match(source, /本次提交账号[\s\S]*detail\.currentApproverUsername/u);
   assert.match(source, /load\(\{ silent: true, offset: nextOffset \}\)/u);
   assert.match(source, /仅作用于当前已加载/u);
   assert.doesNotMatch(source, /copy-qa\/items\?status=ALL['"`]/u,

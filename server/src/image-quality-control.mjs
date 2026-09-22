@@ -255,7 +255,7 @@ async function createMandatoryFreeze(client, { task, approval, actor, settings }
   `, [publicId, batchId, version, settings.version, settings.imageSampling.samplingSeed,
     IMAGE_SAMPLING_ALGORITHM_VERSION, settings.imageSampling.blindReviewEnabled,
     actor.userId, snapshotSha256, actor.userId, actor.username, requestId])).rows[0];
-  const parentId = await latestReturnedParent(client, Number(task.id));
+  const parentId = task.mandatory_image_qc_origin === 'SECOND_ASSIGNMENT' ? null : await latestReturnedParent(client, Number(task.id));
   const item = (await client.query(`
     INSERT INTO image_sampling_items(
       public_id, freeze_id, task_id, approval_event_id, copy_revision_id,
@@ -301,7 +301,9 @@ async function freezeBlockerCount(client, freezeId) {
   return Number((await client.query(`
     SELECT count(*)::integer AS count FROM image_sampling_items item
     JOIN tasks task ON task.id = item.task_id
-    WHERE item.freeze_id = $1 AND task.state <> 'CANCELLED' AND (
+    WHERE item.freeze_id = $1 AND task.state <> 'CANCELLED' AND NOT EXISTS (
+      SELECT 1 FROM task_reassignment_case_members moved WHERE moved.stage='IMAGE' AND moved.sampling_item_id=item.id
+    ) AND (
       (item.selected AND item.status NOT IN ('PASSED', 'RELEASED', 'SUPERSEDED', 'DISCARDED'))
       OR item.status IN ('RETURNED', 'BATCH_RETURNED')
     )
@@ -518,7 +520,7 @@ export async function submitImageSelfReview(pool, rawTaskId, input, rawActor) {
 export function imageQaItemFrom(row, actor) {
   const blind = row.blind_review_enabled === true && actor.role !== 'ADMIN';
   const pendingImageEdits = Number(row.pending_image_edit_count ?? 0);
-  const canAct = row.status === 'PENDING' && row.priority_paused !== true && row.task_state !== 'CANCELLED'
+  const canAct = row.status === 'PENDING' && row.priority_paused !== true && row.task_state === 'IMAGE_QC_PENDING'
     && (actor.role === 'ADMIN' || Number(row.submitter_account_id) !== actor.userId);
   const canBatch = row.sample_kind === 'RANDOM' && ['PENDING', 'RETURNED'].includes(row.status)
     && row.priority_paused !== true && row.task_state !== 'CANCELLED'
@@ -536,7 +538,9 @@ export function imageQaItemFrom(row, actor) {
       originalName: asset.original_name, pageIndex: Number(asset.page_index),
       url: `/v1/image-qa/items/${row.public_id}/assets/${asset.id}`,
     })) : [],
-    capabilities: { canPass: canAct && pendingImageEdits === 0, canReturnSingle: canAct, canDiscard: canAct,
+    revisionToken: row.image_set_sha256,
+    capabilities: { canPass: canAct && pendingImageEdits === 0, canReturnSingle: canAct && row.sample_kind !== 'MANDATORY_RECHECK',
+      canDiscard: canAct && row.sample_kind !== 'MANDATORY_RECHECK', canEscalate: canAct && row.sample_kind === 'MANDATORY_RECHECK',
       canReturnBatch: canBatch },
     ...(row.status === 'DISCARDED' ? { discardReason: row.note } : {}),
     blockers: { pendingImageEdits },
@@ -594,7 +598,7 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
   const actor = await qaActor(pool, rawActor);
   const { limit, offset } = normalizeListPagination(options.limit ?? 50, options.offset ?? 0);
   const status = String(options.status ?? 'PENDING').trim().toUpperCase();
-  if (!['PENDING', 'PASSED', 'RETURNED', 'BATCH_RETURNED', 'DISCARDED', 'ALL'].includes(status)) {
+  if (!['PENDING', 'PASSED', 'RETURNED', 'BATCH_RETURNED', 'DISCARDED', 'ADMIN_ESCALATED', 'ALL'].includes(status)) {
     throw new TypeError('image QA status filter is invalid');
   }
   const personName = normalizedPersonNameFilter(options.personName);
@@ -668,7 +672,7 @@ async function lockQaItem(client, identifier) {
 }
 
 function assertCanReview(item, actor) {
-  if (item.status !== 'PENDING' || item.priority_paused) {
+  if (item.status !== 'PENDING' || item.priority_paused || item.task_state !== 'IMAGE_QC_PENDING') {
     throw new ControlPlaneConflictError('IMAGE_QA_NOT_PENDING', '该图片质检项已处理或任务已暂停');
   }
   if (actor.role !== 'ADMIN') {
@@ -772,6 +776,7 @@ export async function discardImageQaItem(pool, identifier, input, rawActor) {
     const replay = await mutationReplay(client, actor, requestId, 'DISCARD_QA', fingerprint);
     if (replay) return replay;
     const item = await lockQaItem(client, identifier);
+    if (item.sample_kind === 'MANDATORY_RECHECK') throw new ControlPlaneConflictError('MANDATORY_RECHECK_ESCALATE_REQUIRED', '强制复检只能通过或提交管理员处理');
     assertCanReview(item, actor);
     if (item.task_state !== 'IMAGE_QC_PENDING') {
       throw new ControlPlaneConflictError('IMAGE_QA_NOT_PENDING', '任务已不在图片质检阶段，请刷新后重试');
@@ -851,6 +856,19 @@ async function validateReturnReasons(client, reasonCodes) {
   return settings;
 }
 
+export async function releaseEscalatedImageFreezes(client, caseId, actor) {
+  const freezes=(await client.query(`SELECT DISTINCT freeze_id FROM task_reassignment_case_members
+    WHERE case_id=$1 AND stage='IMAGE' ORDER BY freeze_id`,[caseId])).rows;
+  for(const freeze of freezes) {
+    const current=(await client.query(`SELECT * FROM image_sampling_freezes WHERE id=$1
+      AND status IN ('INSPECTING','REVIEW_REQUIRED','BATCH_RETURNED') FOR UPDATE`,[freeze.freeze_id])).rows[0];
+    if(current && await freezeBlockerCount(client,current.id)===0) {
+      await releaseFreeze(client,current,actor);
+      await client.query("UPDATE image_sampling_freezes SET status='RELEASED_WITH_EXCEPTIONS' WHERE id=$1",[current.id]);
+    }
+  }
+}
+
 function imageReasonSnapshots(settings, reasonCodes) {
   const reasonByCode = new Map(settings.imageReasons.map((reason) => [reason.code, reason.label]));
   return reasonCodes.map((code) => ({ code, label: reasonByCode.get(code) ?? code }));
@@ -908,6 +926,9 @@ export async function returnImageQaItem(pool, identifier, input, rawActor) {
     const item = await lockQaItem(client, identifier);
     assertCanReview(item, actor);
     const reasonSettings = await validateReturnReasons(client, reasonCodes);
+    if (item.sample_kind === 'MANDATORY_RECHECK') {
+      throw new ControlPlaneConflictError('MANDATORY_RECHECK_ESCALATE_REQUIRED', '强制复检仅可通过或提交管理员');
+    }
     const reasonSnapshots = imageReasonSnapshots(reasonSettings, reasonCodes);
     if (problemAssetIds.length) {
       const matched = await client.query(`

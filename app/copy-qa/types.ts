@@ -1,10 +1,11 @@
-export type CopyQaStatus = 'PENDING' | 'PASSED' | 'RETURNED' | 'RELEASED' | 'BATCH_RETURNED' | 'BATCH_AFFECTED' | 'SUPERSEDED';
+export type CopyQaStatus = 'PENDING' | 'PASSED' | 'RETURNED' | 'RELEASED' | 'BATCH_RETURNED' | 'BATCH_AFFECTED' | 'SUPERSEDED' | 'ADMIN_ESCALATED';
 export type CopyQaSampleKind = 'RANDOM' | 'MANDATORY_RECHECK';
 
 export type CopyQaCapabilities = {
   canPass: boolean;
   canReturnSingle: boolean;
   canReturnBatch: boolean;
+  canEscalate?: boolean;
 };
 
 export type ApprovedCopyRevision = {
@@ -43,9 +44,21 @@ export type CopyQaNonBlindItem = CopyQaCommon & {
   taskId: number | null;
   productionBatchId: number | null;
   productionBatch: CopyQaCommon['productionBatch'] & { queryPackageName: string | null };
+  sourceProductionBatch: {
+    id: number | null;
+    publicId: string | null;
+    queryPackageName: string | null;
+  };
+  qaRound: {
+    productionBatchId: number | null;
+    publicId: string | null;
+    queryPackageName: string | null;
+  };
   freezeId: number | null;
   finalApproverAccountId: number | null;
   finalApproverUsername: string | null;
+  currentApproverAccountId: number | null;
+  currentApproverUsername: string | null;
   assignedToUserId: string | null;
   createdByUserId: string | null;
   approvedRevision: ApprovedCopyRevision & { id: number | null };
@@ -109,6 +122,13 @@ function boundedIdentity(value: unknown) {
   return normalized && [...normalized].length <= 80 ? normalized : null;
 }
 
+export function copyQaTaskIdSearch(value: string) {
+  const match = /^(?:任务\s*)?#?\s*([1-9]\d*)$/u.exec(value.trim());
+  if (!match) return null;
+  const taskId = Number(match[1]);
+  return Number.isSafeInteger(taskId) ? taskId : null;
+}
+
 function count(value: unknown) {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
@@ -146,6 +166,8 @@ export function normalizeCopyQaItem(
   const revisionToken = opaqueToken(revision?.revisionToken);
   const batch = record(row.productionBatch);
   const source = record(row.source);
+  const sourceBatch = record(row.sourceProductionBatch);
+  const qaRound = record(row.qaRound);
   const status = normalizeStatus(row.status);
   const anonymousBatchCode = typeof batch?.anonymousCode === 'string' ? batch.anonymousCode.trim() : '';
   if (!id || !freezePublicId || !revision || !revisionToken || !anonymousBatchCode || !status) return null;
@@ -172,7 +194,8 @@ export function normalizeCopyQaItem(
     productionBatch: { anonymousCode: anonymousBatchCode },
     capabilities: {
       canPass: capability?.canPass === true,
-      canReturnSingle: capability?.canReturnSingle === true,
+      canEscalate: capability?.canEscalate === true,
+      canReturnSingle: capability?.canReturnSingle === true && row.sampleKind !== 'MANDATORY_RECHECK',
       canReturnBatch: capability?.canReturnBatch === true,
     },
     createdAt: typeof row.createdAt === 'string' ? row.createdAt : undefined,
@@ -183,6 +206,12 @@ export function normalizeCopyQaItem(
   const rawQueryPackageName = typeof batch?.queryPackageName === 'string'
     ? batch.queryPackageName.replace(/\s+/gu, ' ').trim()
     : '';
+  const rawSourceQueryPackageName = typeof sourceBatch?.queryPackageName === 'string'
+    ? sourceBatch.queryPackageName.replace(/\s+/gu, ' ').trim()
+    : rawQueryPackageName;
+  const rawQaRoundName = typeof qaRound?.queryPackageName === 'string'
+    ? qaRound.queryPackageName.replace(/\s+/gu, ' ').trim()
+    : rawQueryPackageName;
   const policy = role === 'ADMIN' ? record(row.samplingPolicy) : null;
   const policyRate = policy?.rateBps;
   const policySource = policy?.rateSource;
@@ -212,9 +241,27 @@ export function normalizeCopyQaItem(
         ? rawQueryPackageName
         : null,
     },
+    sourceProductionBatch: {
+      id: positiveInteger(sourceBatch?.id ?? batch?.id),
+      publicId: boundedIdentity(sourceBatch?.publicId ?? batch?.publicId),
+      queryPackageName: rawSourceQueryPackageName && [...rawSourceQueryPackageName].length <= 200
+        ? rawSourceQueryPackageName
+        : null,
+    },
+    qaRound: {
+      productionBatchId: positiveInteger(qaRound?.productionBatchId ?? batch?.id),
+      publicId: boundedIdentity(qaRound?.publicId ?? batch?.publicId),
+      queryPackageName: rawQaRoundName && [...rawQaRoundName].length <= 200
+        ? rawQaRoundName
+        : null,
+    },
     freezeId: positiveInteger(row.freezeId),
     finalApproverAccountId: positiveInteger(row.finalApproverAccountId ?? source?.finalApproverAccountId),
     finalApproverUsername: boundedIdentity(row.finalApproverUsername ?? source?.finalApproverUsername),
+    currentApproverAccountId: positiveInteger(row.currentApproverAccountId ?? source?.currentApproverAccountId
+      ?? row.finalApproverAccountId ?? source?.finalApproverAccountId),
+    currentApproverUsername: boundedIdentity(row.currentApproverUsername ?? source?.currentApproverUsername
+      ?? row.finalApproverUsername ?? source?.finalApproverUsername),
     assignedToUserId: boundedIdentity(row.assignedToUserId ?? source?.assignedToUserId),
     createdByUserId: boundedIdentity(row.createdByUserId ?? source?.createdByUserId),
     approvedRevision: { ...common.approvedRevision, id: positiveInteger(revision.id) },

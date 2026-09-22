@@ -7,7 +7,7 @@ function databaseRow() {
   return {
     public_id: '71717171-7171-4717-8717-717171717171',
     freeze_public_id: '81818181-8181-4818-8818-818181818181',
-    status: 'PENDING',
+    status: 'PENDING', task_state: 'IMAGE_QC_PENDING',
     sample_kind: 'RANDOM',
     blind_review_enabled: true,
     selected: true,

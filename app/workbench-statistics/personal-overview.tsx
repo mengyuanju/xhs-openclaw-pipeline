@@ -52,6 +52,7 @@ const COMPLETION_STATE_LABELS: Record<string, string> = {
   COPY_QUEUED: '待文案生成',
   COPY_RUNNING: '文案生成中',
   COPY_REVIEW_PENDING: '待文案审核',
+  PENDING_SECOND_ASSIGNMENT: '待二次分配',
   COPY_QC_PENDING: '待文案质检',
   COPY_FAILED: '文案执行失败',
   IMAGE_QUEUED: '待生图',

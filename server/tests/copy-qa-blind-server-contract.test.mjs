@@ -19,6 +19,9 @@ function databaseRow(patch = {}) {
     production_batch_id: 27,
     production_batch_public_id: '27272727-2727-4727-8727-272727272727',
     query_package_name: 'SECRET-PACKAGE',
+    source_production_batch_id: 26,
+    source_production_batch_public_id: '26262626-2626-4626-8626-262626262626',
+    source_query_package_name: 'SECRET-SOURCE-PACKAGE',
     blind_review_enabled: true,
     reviewer_batch_return_enabled: false,
     task_id: 991,
@@ -40,6 +43,8 @@ function databaseRow(patch = {}) {
     content_sha256: HASH,
     final_approver_account_id: 64,
     final_approver_username: 'SECRET-APPROVER',
+    current_approver_account_id: 65,
+    current_approver_username: 'SECRET-CURRENT-APPROVER',
     assigned_to_user_id: 'SECRET-ASSIGNEE',
     created_by_user_id: 'SECRET-CREATOR',
     created_at: new Date('2026-09-09T08:00:00.000Z'),
@@ -67,7 +72,7 @@ function assertBlindAllowlist(payload) {
   const keys = rows.filter((row) => row.type === 'key').map((row) => row.value.toLocaleLowerCase('en-US'));
   for (const forbidden of [
     'taskid', 'freezeid', 'productionbatchid', 'copyrevisionid', 'revision',
-    'accountid', 'userid', 'username', 'avatar', 'creator', 'assignee', 'finalapprover',
+    'accountid', 'userid', 'username', 'avatar', 'creator', 'assignee', 'finalapprover', 'currentapprover',
     'assessment', 'score', 'reasoncodes', 'history', 'source', 'querypackage', 'querypackagename',
   ]) {
     assert.equal(keys.includes(forbidden), false, forbidden);
@@ -75,7 +80,7 @@ function assertBlindAllowlist(payload) {
   const serialized = JSON.stringify(payload);
   for (const secret of [
     '991', '902', 'SECRET-APPROVER', 'SECRET-ASSIGNEE', 'SECRET-CREATOR',
-    'SECRET-PACKAGE',
+    'SECRET-PACKAGE', 'SECRET-SOURCE-PACKAGE', 'SECRET-CURRENT-APPROVER',
     '27272727-2727-4727-8727-272727272727',
   ]) assert.equal(serialized.includes(secret), false, secret);
   assert.equal(serialized.includes('QC-00000071'), false,
@@ -124,10 +129,14 @@ test('admin non-blind inspection retains traceable frozen identifiers', async ()
     if (sql.includes('SELECT DISTINCT task.production_batch_id')) return { rows: [] };
     if (sql.includes('SELECT id FROM app_users')) return { rows: [{ id: 1 }] };
     queries.push({ sql: String(sql), values });
-    return { rows: [databaseRow({ query_package_name: '九月 选题' })] };
+    return { rows: [databaseRow({
+      query_package_name: '强制文案复检',
+      source_query_package_name: '九月 选题',
+      current_approver_username: '返工提交人',
+    })] };
   } };
   const [listed] = await listCopyQaItems(pool, {
-    status: 'PENDING', queryPackageName: '  九月   选题  ', personName: '  质检   甲  ',
+    status: 'PENDING', taskId: '991', queryPackageName: '  九月   选题  ', personName: '  质检   甲  ',
   }, admin);
   const detail = await getCopyQaItem(pool, ITEM_PUBLIC_ID, admin);
   assert.equal(detail.blindReview, false,
@@ -135,14 +144,18 @@ test('admin non-blind inspection retains traceable frozen identifiers', async ()
   assert.equal(detail.taskId, 991);
   assert.equal(detail.approvedRevision.id, 902);
   assert.equal(detail.productionBatch.id, 27);
-  assert.equal(listed.productionBatch.queryPackageName, '九月 选题');
-  assert.equal(detail.productionBatch.queryPackageName, '九月 选题');
+  assert.equal(listed.productionBatch.queryPackageName, '强制文案复检');
+  assert.equal(detail.productionBatch.queryPackageName, '强制文案复检');
+  assert.equal(listed.sourceProductionBatch.queryPackageName, '九月 选题');
+  assert.equal(detail.qaRound.queryPackageName, '强制文案复检');
+  assert.equal(detail.source.currentApproverUsername, '返工提交人');
   assert.equal(detail.source.finalApproverAccountId, 64);
-  assert.deepEqual(queries[0].values, ['PENDING', null, '九月 选题', '质检 甲', 50, 0]);
+  assert.deepEqual(queries[0].values, ['PENDING', null, 991, '九月 选题', '质检 甲', 50, 0]);
+  assert.match(queries[0].sql, /item\.task_id = \$3/u);
   assert.match(queries[0].sql,
-    /strpos\(lower\(batch\.query_package_name\), lower\(\$3\)\) > 0/u);
+    /strpos\(lower\(COALESCE\(source_batch\.query_package_name, ''\)\), lower\(\$4\)\)[\s\S]*batch\.query_package_name/u);
   assert.match(queries[0].sql,
-    /strpos\(lower\(item\.final_approver_username\), lower\(\$4\)\)[\s\S]*person_filter\.display_name/u);
+    /strpos\(lower\(item\.final_approver_username\), lower\(\$5\)\)[\s\S]*current_approval\.approved_by_username[\s\S]*person_filter\.display_name/u);
 });
 
 test('work mode copy lookup uses the shared queue while preserving self-review and blind boundaries', async () => {
@@ -187,6 +200,15 @@ test('reviewers cannot request a personnel-name QA filter', async () => {
   await assert.rejects(
     listCopyQaItems({ query: async () => assert.fail('filter must fail before SQL') }, {
       personName: '质检甲',
+    }, reviewer),
+    (error) => error?.code === 'FORBIDDEN',
+  );
+});
+
+test('only administrators can request an exact task-id QA filter', async () => {
+  await assert.rejects(
+    listCopyQaItems({ query: async () => assert.fail('filter must fail before SQL') }, {
+      taskId: '991',
     }, reviewer),
     (error) => error?.code === 'FORBIDDEN',
   );

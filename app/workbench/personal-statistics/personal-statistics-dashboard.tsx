@@ -12,13 +12,14 @@ import { subscribeWorkspaceUpdates } from '../../components/workspace-updates';
 import { personalListHref } from '../../../src/personal-workspace.mjs';
 import { PersonalDateRange } from '../personal-controls';
 import { PersonalQualityActivity } from './personal-quality-activity';
-import type { QaSummary } from '../../workbench-statistics/operator-types';
+import type { QualityOutcomes, QaSummary } from '../../workbench-statistics/operator-types';
 import { OperatorDeliveryHistory } from '../operator-delivery-history';
 import type { PersonalTaskScope } from '../list-state';
 import styles from '../personal-workspace.module.css';
 
 const Chart = dynamic(() => import('../../workbench-statistics/statistics-chart'), { ssr:false });
 type Report = {
+  qualityOutcomes?:Record<string,QualityOutcomes>;
   annotation?:Record<string,{firstSubmitted:number;reworked:number;submissions:number;firstRecheck:{passed:number;samples:number;rate:number|null}}>|null;
   qa?:QaSummary|null;contribution?:number|null;qaTrend?:({date:string}&QaSummary)[]|null;
   updatedAt:string; scope:string; range:{from:string;to:string}; counts:Record<string,number>;
@@ -91,7 +92,9 @@ export function PersonalStatisticsDashboard({ canDeliver = false }: {canDeliver?
       </>:<>
         <div className={styles.cards}>{['COPY','IMAGE'].map(stage=>card(stage==='COPY'?'文案标注':'图片标注',report?.period?.[stage==='COPY'?'copy':'image'],historyHref('COMPLETED',stage),
           '条 · 首次 '+number(report?.annotation?.[stage].firstSubmitted)+' · 返修 '+number(report?.annotation?.[stage].reworked)))}</div>
-        <h3>一次通过率</h3><p className={styles.muted}>首次随机抽检的通过数 / 已检数；未抽中与待结论不计入。</p>
+        <h3>账号判定结果</h3><p>按本人首次有效质检日归属；后续最终废弃会回写原日期，二次分配不扣减总量。</p>
+        <div className={styles.cards}>{['COPY','IMAGE'].map(stage=>{const q=report?.qualityOutcomes?.[stage];const percent=(v:number|null|undefined)=>v==null?'—':(v*100).toFixed(2)+'%';return <article className={styles.card} key={stage}><span>{stage==='COPY'?'文案':'图片'} · 已判定 {number(q?.judged)} 条</span><p>废弃 {number(q?.discarded)} · {percent(q?.discardedRate)}</p><p>一次通过 {number(q?.firstPassed)} · {percent(q?.firstPassRate)}</p><p>打回 {number(q?.returned)} · {percent(q?.returnRate)}</p><small>其中已二次分配 {number(q?.reassigned)} 条</small></article>;})}</div>
+        <h3>首次随机抽检通过率（辅助指标）</h3><p className={styles.muted}>首次随机抽检的通过数 / 已检数；未抽中与待结论不计入。</p>
         <div className={styles.cards}>{['COPY','IMAGE'].map(stage=>{const item=report?.quality?.[stage];return <Link className={styles.card} href={historyHref('QUALITY',stage,{qualityFirst:'1'})} key={stage}>
           <span>{stage==='COPY'?'文案':'图片'}一次通过率</span><strong>{item?.rate==null?'—':(item.rate*100).toFixed(1)+'%'}</strong>
           <small>{item?item.passed+' / '+item.samples+' 已检'+(item.samples>0&&item.samples<20?' · 样本较少':''):'数据暂不可用'}</small></Link>;})}</div>
