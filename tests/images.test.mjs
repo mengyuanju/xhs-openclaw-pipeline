@@ -8,6 +8,7 @@ import sharp from 'sharp';
 
 import {
   createDeterministicTextOverlaySvg,
+  promptWithImageSafetyRetry,
   renderDeliveryImages,
 } from '../src/images.mjs';
 
@@ -722,6 +723,34 @@ describe('delivery images', () => {
     assert.match(prompts[1], /不得呈现战斗、攻击、伤口、血液、武器/u);
     assert.equal(images[0].prompt, prompts[1]);
     assert.equal(images[0].generationAttempts, 1);
+  });
+
+  it('rebuilds a governed safety retry from locked text without retaining the rejected scene or body', () => {
+    const taskData = {
+      title: '不应进入安全重试的长正文',
+      body: '角色在冲突场景中使用火焰武器。',
+      pageIndex: 1,
+      imageCount: 4,
+      page: {
+        kind: 'hero',
+        layoutTemplate: 'HERO_CENTER',
+        visualSubject: '中央红蓝英雄被怪物包围',
+        visualStyle: { palette: ['#F2EEE7', '#355C7D'] },
+        allowedVisibleText: {
+          language: 'zh-CN',
+          headline: '蜘蛛侠的超自然对手',
+          subtitle: '4个代表角色快速认清',
+          bullets: ['莫比亚斯', 'Kindred', '恶魔哥布林', '人狼'],
+          labels: [],
+        },
+      },
+    };
+    const retry = promptWithImageSafetyRetry(`<trusted_business_rules>原规则</trusted_business_rules>
+<untrusted_task_data>${JSON.stringify(taskData)}</untrusted_task_data>`);
+
+    assert.match(retry, /蜘蛛侠的超自然对手/u);
+    assert.match(retry, /专有名词只作为锁定文字排版/u);
+    assert.doesNotMatch(retry, /中央红蓝英雄|怪物包围|不应进入安全重试的长正文|火焰武器/u);
   });
 
   it('returns a failed alignment after the retry limit so QC can block the task', async () => {

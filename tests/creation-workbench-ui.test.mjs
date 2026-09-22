@@ -135,6 +135,10 @@ test('ordinary operators create auditable delivery batches and confirm handoff f
   assert.match(shared, /\/v1\/delivery-items\/confirm/u);
   assert.match(shared, /确认已交付/u);
   assert.match(shared, /双方交付状态已更新/u);
+  assert.match(shared, /<ReviewActionButton[\s\S]*disabledReason=\{packDisabledReason\}/u,
+    'disabled delivery actions must expose their blocking reason');
+  assert.match(shared, /请先勾选至少 1 条待打包内容/u);
+  assert.match(shared, /所选内容中有本人尚未下载的条目，请先下载并实际发送/u);
 });
 
 test('all distributed task status displays distinguish exhausted image retries from normal copy review', async () => {

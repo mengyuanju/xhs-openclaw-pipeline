@@ -60,6 +60,11 @@ test('shared delivery browser: common state, date filters, confirmation, aggrega
     await admin.goto(`${base}/delivery-pool`);await operator.goto(`${base}/operator`);
     await admin.getByRole('checkbox',{name:'选择交付任务 1',exact:true}).waitFor();
     await operator.locator('tbody').getByText('已打包，待交付',{exact:true}).first().waitFor();
+    const disabledPack=admin.getByRole('button',{name:'打包并下载',exact:true});
+    assert.equal(await disabledPack.getAttribute('aria-disabled'),'true');
+    await disabledPack.hover();
+    await admin.getByRole('tooltip').filter({hasText:'请先勾选至少 1 条待打包内容。'}).waitFor();
+    await admin.keyboard.press('Escape');
     await admin.getByRole('checkbox',{name:'选择交付任务 1',exact:true}).check();
     await admin.getByRole('button',{name:'确认所选已交付',exact:true}).click();
     await admin.getByRole('alertdialog').getByRole('button',{name:'确认已交付',exact:true}).click();

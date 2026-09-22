@@ -28,6 +28,43 @@ function isTransientImageEditError(error) {
 
 export function promptWithImageSafetyRetry(basePrompt) {
   if (typeof basePrompt !== 'string' || basePrompt.length < 10) throw new TypeError('basePrompt is invalid');
+  const dataMatch = basePrompt.match(/<untrusted_task_data>\s*([\s\S]+?)\s*<\/untrusted_task_data>/u);
+  if (dataMatch) {
+    try {
+      const source = JSON.parse(dataMatch[1]);
+      const page = source?.page;
+      const visible = page?.allowedVisibleText;
+      const strings = [visible?.headline, visible?.subtitle, ...(visible?.bullets ?? []), ...(visible?.labels ?? [])];
+      if (page && visible && visible.language === 'zh-CN'
+        && strings.every(value => typeof value === 'string' && value.length <= 100)
+        && Array.isArray(visible.bullets) && visible.bullets.length <= 6
+        && Array.isArray(visible.labels) && visible.labels.length <= 6) {
+        const retryData = {
+          pageIndex: source.pageIndex,
+          imageCount: source.imageCount,
+          pageKind: page.kind,
+          layoutTemplate: page.layoutTemplate,
+          palette: Array.isArray(page.visualStyle?.palette) ? page.visualStyle.palette.slice(0, 6) : [],
+          allowedVisibleText: visible,
+        };
+        const serialized = JSON.stringify(retryData).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e');
+        const prompt = `<trusted_image_safety_retry>
+生成一张明亮、温和、适合大众阅读的中文知识信息卡 PNG，严格使用 1152×1536 像素竖版 3:4 不透明画布。
+这是安全重试：不要表现任何人物、角色外形、生物外形、故事情节或对抗场景；不要出现战斗、攻击、伤口、血液、武器、火焰、受害、威胁、恐怖、写实面孔、影视演员、角色服装、角色标志或经典动作。专有名词只作为锁定文字排版，不据此生成对应角色形象。
+画面只使用中性抽象信息设计：清晰的标题区、圆角卡片、几何色块、柔和渐变、细线、圆点、网格和不具角色识别性的通用装饰。全部文字必须水平、清晰、简体中文；逐字显示 allowedVisibleText，禁止增加任何其他可读文字、数字或符号。按 layoutTemplate 组织区域，并使用给定 palette；不得修改事实、页数或本页职责。
+</trusted_image_safety_retry>
+<untrusted_render_data>
+${serialized}
+</untrusted_render_data>`;
+        if (Buffer.byteLength(prompt, 'utf8') > 20_000) throw new RangeError('图片安全重试提示词超出限制，未截断或发送');
+        return prompt;
+      }
+    } catch (error) {
+      if (error instanceof RangeError) throw error;
+      // Legacy and test prompts without the governed page contract use the
+      // bounded additive fallback below.
+    }
+  }
   const suffix = `<trusted_image_safety_retry>
 上一次图片输出被安全系统拒绝。仅调整视觉表达，不修改 allowedVisibleText、事实、页数、尺寸或版式职责。
 改用温和、静态、非写实的编辑插画和信息卡表达：不得呈现战斗、攻击、伤口、血液、武器、受害、威胁或恐怖特写；不得出现真人面孔或影视演员肖像。用抽象剪影、通用符号、卡片、色块和环境物件表达人物或类别关系。若内容涉及受保护角色，只保留原文锁定的可见名称，使用蜘蛛网、漫画书页等通用视觉线索，不复刻具体角色的面孔、服装、标志或经典动作。画面整体保持明亮、克制、适合大众阅读。
