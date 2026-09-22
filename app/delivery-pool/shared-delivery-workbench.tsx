@@ -10,6 +10,7 @@ import { DatePicker } from '@/components/ui/date-picker';
 import { apiRequest, ApiRequestError } from '../components/api-client';
 import { subscribeWorkspaceUpdates } from '../components/workspace-updates';
 import { WorkbenchPagination } from '../workbench/workbench-pagination';
+import { ReviewActionButton } from '../workbench/review-action-button';
 import { normalizePreparedDeliveryExport } from './types';
 import styles from './shared-delivery.module.css';
 
@@ -191,6 +192,26 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
   const canDownload = selected.length > 0 && selected.every(item => item.itemId !== null);
   const canConfirm = selected.length > 0 && selected.every(item => item.canConfirm);
   const canArchive = selected.length > 0 && selected.every(item => item.state === 'DELIVERED');
+  const busyReason = busy ? `正在${busy}，请稍后。` : null;
+  const filteredSelectionReason = allFiltered ? '“选择全部筛选结果”仅支持汇总保存；请改为逐条勾选，最多 200 条。' : null;
+  const packDisabledReason = busyReason ?? filteredSelectionReason
+    ?? (selected.length === 0 ? '请先勾选至少 1 条待打包内容。'
+      : selected.some(item => !item.isCurrent) ? '所选内容中包含历史版本，请只选择当前版本。'
+        : selected.some(item => item.state !== 'UNPACKED') ? '所选内容中包含已打包或已交付条目，请只选择待打包内容。' : null);
+  const downloadDisabledReason = busyReason
+    ?? (pendingDownloadId !== null ? '已有文件正在准备下载，请等待当前任务完成。' : null)
+    ?? filteredSelectionReason
+    ?? (selected.length === 0 ? '请先勾选至少 1 条已冻结内容。'
+      : selected.some(item => item.itemId === null) ? '所选内容中包含尚未形成冻结记录的条目，请先完成打包。' : null);
+  const confirmDisabledReason = busyReason ?? filteredSelectionReason
+    ?? (selected.length === 0 ? '请先勾选至少 1 条待确认内容。'
+      : selected.some(item => item.state === 'UNPACKED') ? '所选内容尚未打包，请先打包并下载。'
+        : selected.some(item => item.state === 'PACKED' && !item.downloadedByMe) ? '所选内容中有本人尚未下载的条目，请先下载并实际发送。'
+          : selected.some(item => item.state === 'DELIVERED') ? '所选内容中包含已确认交付的条目。'
+            : !canConfirm ? '只能确认已打包、本人已下载且尚未交付的内容。' : null);
+  const archiveDisabledReason = busyReason
+    ?? (!allFiltered && selected.length === 0 ? '请先勾选已交付内容；或在“已交付”筛选中选择全部筛选结果。'
+      : !allFiltered && selected.some(item => item.state !== 'DELIVERED') ? '所选内容中包含未交付条目，请只选择已交付内容。' : null);
 
   const pack = () => perform('打包', async () => {
     if (!await confirm({ title: `打包 ${selected.length} 条内容？`, description: '将冻结当前选择的文案和图片版本并下载。实际发送给接收方后，再确认交付。', confirmLabel: '打包并下载' })) return;
@@ -297,12 +318,19 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
     </div>}
     <div className={styles.actions}>
       <span>{allFiltered ? `已选择符合筛选的全部 ${result.total} 条` : `已选 ${selected.length} 条（最多 200 条）`}</span>
-      <Button unstyled className="button small" disabled={Boolean(busy) || !canPack || allFiltered} onClick={() => void pack()}><PackageCheck size={14} />打包并下载</Button>
-      <Button unstyled className="button small" disabled={Boolean(busy) || pendingDownloadId !== null || !canDownload || allFiltered} onClick={() => void createArchive('DOWNLOAD')}><Download size={14} />下载所选冻结内容</Button>
-      <Button unstyled className="button small primary" disabled={Boolean(busy) || !canConfirm || allFiltered} onClick={() => void confirmItems()}><CheckCircle2 size={14} />确认所选已交付</Button>
-      {role === 'ADMIN' && <Button unstyled className="button small" disabled={Boolean(busy) || (!canArchive && !allFiltered)} onClick={() => void createArchive('ARCHIVE')}>汇总保存已交付内容</Button>}
-      {role === 'ADMIN' && filters.state === 'DELIVERED' && result.total > 0 && <Button unstyled className="button small" disabled={Boolean(busy) || result.total > 2000} onClick={() => { setAllFiltered(true); setSelected([]); }}>选择全部筛选结果（{result.total} 条）</Button>}
-      <Button unstyled className="button small" disabled={Boolean(busy)} onClick={() => { setSelected([]); setAllFiltered(false); }}>清空选择</Button>
+      <ReviewActionButton unstyled className="button small" disabledReason={packDisabledReason}
+        disabled={Boolean(busy) || !canPack || allFiltered} onClick={() => void pack()}><PackageCheck size={14} />打包并下载</ReviewActionButton>
+      <ReviewActionButton unstyled className="button small" disabledReason={downloadDisabledReason}
+        disabled={Boolean(busy) || pendingDownloadId !== null || !canDownload || allFiltered} onClick={() => void createArchive('DOWNLOAD')}><Download size={14} />下载所选冻结内容</ReviewActionButton>
+      <ReviewActionButton unstyled className="button small primary" disabledReason={confirmDisabledReason}
+        disabled={Boolean(busy) || !canConfirm || allFiltered} onClick={() => void confirmItems()}><CheckCircle2 size={14} />确认所选已交付</ReviewActionButton>
+      {role === 'ADMIN' && <ReviewActionButton unstyled className="button small" disabledReason={archiveDisabledReason}
+        disabled={Boolean(busy) || (!canArchive && !allFiltered)} onClick={() => void createArchive('ARCHIVE')}>汇总保存已交付内容</ReviewActionButton>}
+      {role === 'ADMIN' && filters.state === 'DELIVERED' && result.total > 0 && <ReviewActionButton unstyled className="button small"
+        disabledReason={busyReason ?? (result.total > 2000 ? '筛选结果超过 2000 条，请缩小筛选范围后重试。' : null)}
+        disabled={Boolean(busy) || result.total > 2000} onClick={() => { setAllFiltered(true); setSelected([]); }}>选择全部筛选结果（{result.total} 条）</ReviewActionButton>}
+      <ReviewActionButton unstyled className="button small" disabledReason={busyReason} disabled={Boolean(busy)}
+        onClick={() => { setSelected([]); setAllFiltered(false); }}>清空选择</ReviewActionButton>
     </div>
     {selected.some(item => item.state === 'PACKED' && !item.downloadedByMe) && <p className={styles.hint}>所选内容中有本人尚未下载的条目。请先下载并实际发送，再确认交付。</p>}
     {busy && <p role="status">正在{busy}…</p>}

@@ -80,6 +80,11 @@ test('shared delivery browser: state, filters, automatic downloads, retry, histo
     await admin.goto(`${base}/delivery-pool`);await operator.goto(`${base}/operator`);
     await admin.getByRole('checkbox',{name:'选择交付任务 1',exact:true}).waitFor();
     await operator.locator('tbody').getByText('已打包，待交付',{exact:true}).first().waitFor();
+    const disabledPack=admin.getByRole('button',{name:'打包并下载',exact:true});
+    assert.equal(await disabledPack.getAttribute('aria-disabled'),'true');
+    await disabledPack.hover();
+    await admin.getByRole('tooltip').filter({hasText:'请先勾选至少 1 条待打包内容。'}).waitFor();
+    await admin.keyboard.press('Escape');
     await admin.getByRole('checkbox',{name:'选择交付任务 1',exact:true}).check();
     await admin.getByRole('button',{name:'确认所选已交付',exact:true}).click();
     await admin.getByRole('alertdialog').getByRole('button',{name:'确认已交付',exact:true}).click();
@@ -134,6 +139,15 @@ test('shared delivery browser: state, filters, automatic downloads, retry, histo
     const progress=operator.getByRole('status',{name:'冻结内容下载进度'});
     await progress.getByText(/排队中/).waitFor();
     await progress.getByText(/临时网络故障.*自动重试/).waitFor();
+    await operator.getByRole('checkbox',{name:'选择交付任务 2',exact:true}).check();
+    const pendingDownload=operator.getByRole('button',{name:'下载所选冻结内容',exact:true});
+    assert.equal(await pendingDownload.getAttribute('aria-disabled'),'true','a valid new selection must remain blocked while a download is pending');
+    await pendingDownload.hover();
+    await operator.getByRole('tooltip').filter({hasText:'已有文件正在准备下载，请等待当前任务完成。'}).waitFor();
+    await pendingDownload.dispatchEvent('click');
+    assert.equal(await operator.getByRole('alertdialog').count(),0,'a pending download must not open another confirmation');
+    assert.equal(jobs.length,3,'a blocked click must not create another file job');
+    await operator.keyboard.press('Escape');
     await operator.getByRole('button',{name:'收起',exact:true}).click();
     jobs[2].status='RUNNING';
     await progress.getByText(/正在生成文件/).waitFor();
