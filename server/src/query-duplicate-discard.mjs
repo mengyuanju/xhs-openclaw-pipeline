@@ -316,7 +316,7 @@ function duplicateRowsSql() {
     WITH selected_identities AS MATERIALIZED (
       SELECT DISTINCT ${representativeIdentity} AS query_identity
       FROM tasks AS representative
-      WHERE representative.id = ANY($1::bigint[])
+      WHERE representative.id = ANY($1::bigint[]) AND representative.task_kind='CONTENT'
     )
     SELECT task.*,
       task.input::text AS input_canonical_json,
@@ -331,6 +331,7 @@ function duplicateRowsSql() {
       AND creator.created_at < task.created_at
     LEFT JOIN app_users AS assignee ON assignee.username = task.assigned_to_user_id
       AND assignee.created_at < task.assigned_at
+    WHERE task.task_kind='CONTENT'
     ORDER BY task.id
     LIMIT $2
   `;
@@ -357,12 +358,13 @@ async function lockMatchingTasks(client, representativeTaskIds) {
     WITH selected_identities AS MATERIALIZED (
       SELECT DISTINCT ${representativeIdentity} AS query_identity
       FROM tasks AS representative
-      WHERE representative.id = ANY($1::bigint[])
+      WHERE representative.id = ANY($1::bigint[]) AND representative.task_kind='CONTENT'
     )
     SELECT task.id
     FROM tasks AS task
     JOIN selected_identities AS selected
       ON selected.query_identity = ${identity}
+    WHERE task.task_kind='CONTENT'
     ORDER BY task.id
     LIMIT $2
     FOR UPDATE OF task

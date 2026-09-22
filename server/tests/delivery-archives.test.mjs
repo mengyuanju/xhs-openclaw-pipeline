@@ -7,6 +7,7 @@ import test from 'node:test';
 import JSZip from 'jszip';
 import { inspectDeliverySources, writeDeliveryAggregate } from '../src/delivery-archives.mjs';
 import { buildBatchTaskArchive } from '../src/task-archive.mjs';
+import { withOriginalDeliveryQuery } from '../src/delivery-copy-query.mjs';
 
 async function storage(t) {
   const root = await mkdtemp(join(tmpdir(), 'xhs-delivery-archive-test-'));
@@ -32,10 +33,6 @@ function job() {
   return { id: 1, run_token: randomUUID(), kind: 'DOWNLOAD', actor_role: 'ADMIN', actor_account_id: 1, actor_username: 'admin' };
 }
 
-function memberDirectory(row) {
-  return `${row.task_id}/${row.copy_revision_id}/${row.image_run_id}`;
-}
-
 test('aggregate extracts selected task files from new batch folders with unchanged bytes', async t => {
   const root = await storage(t);
   const tasks = [1, 2].map(id => ({
@@ -59,11 +56,12 @@ test('aggregate extracts selected task files from new batch folders with unchang
   const artifacts = await writeDeliveryAggregate(root, job(), members);
   const result = await JSZip.loadAsync(await readFile(join(root, '.delivery-archives', '1', artifacts[0].file)));
   assert.equal(Object.keys(result.files).some(name => name.endsWith('.zip')), false);
-  assert.equal(Object.keys(result.files).some(name => name.startsWith('2/')), false);
-  assert.ok(result.file('清单.xlsx'));
-  assert.equal(JSON.parse(await result.file('manifest.json').async('string')).items.length, 1);
+  assert.deepEqual(Object.values(result.files).filter(file => !file.dir).map(file => file.name).sort(), files.filter(file => !file.dir).map(file => file.name).sort(),
+    'selected files retain the original batch/task paths, with no added files or version directories');
+  assert.equal(result.file('清单.xlsx'), null);
+  assert.equal(result.file('manifest.json'), null);
   for (const file of files) {
-    assert.deepEqual(await result.file(`${memberDirectory(rows[0])}/${file.name.split('/').at(-1)}`).async('nodebuffer'),
+    assert.deepEqual(await result.file(file.name).async('nodebuffer'),
       await file.async('nodebuffer'));
   }
 });
@@ -87,8 +85,10 @@ test('aggregate flattens legacy task ZIPs and keeps versions separate across bat
   const result = await JSZip.loadAsync(await readFile(join(root, '.delivery-archives', '1', artifacts[0].file)));
   assert.equal(Object.keys(result.files).some(name => name.endsWith('.zip')), false);
   for (const [index, row] of rows.entries()) {
-    assert.equal(await result.file(`${memberDirectory(row)}/文案.txt`).async('string'), `冻结正文${index + 1}`);
-    assert.deepEqual(await result.file(`${memberDirectory(row)}/01-图片.png`).async('nodebuffer'), Buffer.from([0, 255, index + 1]));
+    const directory=`旧词包/任务-1-资源包${index ? '-2' : ''}`;
+    assert.equal(await result.file(`${directory}/文案.txt`).async('string'), `冻结正文${index + 1}`);
+    assert.deepEqual(await result.file(`${directory}/01-图片.png`).async('nodebuffer'), Buffer.from([0, 255, index + 1]));
+    assert.equal(directory.split('/').length,2,'historical versions must not add directory levels');
   }
 });
 
@@ -129,4 +129,55 @@ test('aggregate removes partial output when a frozen file disappears after inspe
   await writeFile(members[0].path, await zip.generateAsync({ type: 'nodebuffer' }));
   await assert.rejects(writeDeliveryAggregate(root, job(), members), /冻结成员丢失/u);
   assert.deepEqual(await readdir(join(root, '.delivery-archives', '1')), []);
+});
+
+for (const legacy of [false, true]) {
+  test(`frozen ${legacy ? 'legacy ZIP' : 'folder'} downloads correct only the original Query and add no files`, async t => {
+    const root=await storage(t);
+    for (const scenario of [
+      {issued:'甲方下发问题\r\n第二行',expected:'甲方下发问题 第二行'},
+      {issued:null,expected:'历史 Query'},
+      {issued:' \t ',expected:'历史 Query'},
+      {expected:'历史 Query'},
+    ]) {
+      const originalText='\uFEFF原始 Query：生产 Query\r\n\r\n标题：冻结标题\r\n\r\n文案内容：\r\n冻结正文\r\n原始 Query：正文中的文字不要替换\r\n';
+      const links='\uFEFFQuery：生产 Query\r\n小红书链接：\r\nhttps://example.test/frozen\r\n';
+      const picture=Buffer.from([0,255,13,10,0,1]);
+      const originalFiles={'文案.txt':originalText,'小红书链接.txt':links,'01-封面.png':picture};
+      const source=new JSZip(),directory='甲方批次/任务-1-资源包';
+      if (legacy) {
+        const inner=new JSZip();for(const [name,content] of Object.entries(originalFiles))inner.file(name,content);
+        source.file(directory+'.zip',await inner.generateAsync({type:'nodebuffer'}));
+      } else for(const [name,content] of Object.entries(originalFiles))source.file(directory+'/'+name,content);
+      const sourceBytes=await source.generateAsync({type:'nodebuffer'});
+      const [row]=await saveSource(root,sourceBytes);
+      row.query='历史 Query';row.issued_query=scenario.issued;
+      const {members}=await inspectDeliverySources(root,[row]);
+      const artifacts=await writeDeliveryAggregate(root,{...job(),kind:legacy?'ARCHIVE':'DOWNLOAD'},members);
+      const zip=await JSZip.loadAsync(await readFile(join(root,'.delivery-archives','1',artifacts[0].file)));
+      assert.deepEqual(Object.values(zip.files).filter(file=>!file.dir).map(file=>file.name).sort(),
+        Object.keys(originalFiles).map(name=>directory+'/'+name).sort());
+      const copy=await zip.file(directory+'/文案.txt').async('string');
+      assert.equal(copy,'\uFEFF原始 Query：'+scenario.expected+originalText.slice(originalText.indexOf('\r\n')));
+      assert.equal(await zip.file(directory+'/小红书链接.txt').async('string'),links);
+      assert.deepEqual(await zip.file(directory+'/01-封面.png').async('nodebuffer'),picture);
+      assert.deepEqual(await readFile(members[0].path),sourceBytes,'source ZIP must remain unchanged');
+    }
+  });
+}
+
+test('Query header correction handles UTF-8 chunk boundaries, original newlines and large non-copy files',async()=>{
+  async function transform(bytes,chunkSize) {
+    async function* chunks(){for(let index=0;index<bytes.length;index+=chunkSize)yield bytes.subarray(index,index+chunkSize);}
+    const output=[];for await(const chunk of withOriginalDeliveryQuery(chunks(),{issuedQuery:'下发问题',query:'生产问题'}))output.push(chunk);
+    return Buffer.concat(output);
+  }
+  for(const prefix of ['\uFEFF原始 Query：','原始Query:'])for(const newline of ['\r\n','\n','\r','']) {
+    const tail=newline ? newline+'冻结正文\u0000\uFEFF保留字节'+newline : '';
+    assert.deepEqual(await transform(Buffer.from(prefix+'生产问题'+tail),1),Buffer.from(prefix+'下发问题'+tail));
+  }
+  const other=Buffer.from('链接说明\n原始 Query：这不是首行\r\n');
+  assert.deepEqual(await transform(other,2),other);
+  const oversized=Buffer.from('原始 Query：'+'长'.repeat(40_000)+'\n正文');
+  assert.deepEqual(await transform(oversized,1024),oversized);
 });

@@ -31,7 +31,9 @@ export function BackgroundTasksProvider({ accountKey, children }: { accountKey: 
   const openTask = useCallback(async (task: BackgroundTask) => {
     const activeStore = storeRef.current;
     try {
-      if (openerRef.current) {
+      if (task.kind === 'STANDALONE_IMAGE_EDIT') {
+        window.location.assign(`/image-editor?workspace=${task.taskId}`);
+      } else if (openerRef.current) {
         if (!await openerRef.current(task)) return false;
       } else {
         window.location.assign(`/workbench/personal?taskId=${task.taskId}`);

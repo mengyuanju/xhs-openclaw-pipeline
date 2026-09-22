@@ -1,5 +1,6 @@
 import ExcelJS from '@excel.js/exceljs';
 import JSZip from 'jszip';
+import { normalizeClientBatchCode } from './client-batch.mjs';
 
 const MAX_XLSX_BYTES = 8 * 1024 * 1024;
 const MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024;
@@ -66,6 +67,80 @@ function resolveColumn(columns, requested) {
     || String(column.number) === token) ?? null;
 }
 
+
+function standardColumns(columns) {
+  const labels = new Map();
+  for (const column of columns) {
+    const label = column.label.replace(/\s+/gu, '').toLowerCase();
+    if (['下发query', '生产query', '任务id', '序号'].includes(label)) {
+      if (labels.has(label)) throw new TypeError(`标准表包含重复列：${column.label}`);
+      labels.set(label, column);
+    }
+  }
+  if (!labels.has('下发query') && !labels.has('生产query')) return null;
+  for (const label of ['下发query', '生产query', '任务id']) {
+    if (!labels.has(label)) throw new TypeError(`标准表缺少必需列：${label}`);
+  }
+  return {
+    issued: labels.get('下发query'), production: labels.get('生产query'),
+    batch: labels.get('任务id'), externalId: labels.get('序号'),
+  };
+}
+
+function parseStandardRows(worksheet, headerRowNumber, columns, maximum) {
+  const items = [];
+  const batches = new Map();
+  const seen = new Set();
+  const invalidRows = [];
+  let blanks = 0;
+  let duplicates = 0;
+  let dataRows = 0;
+  for (let rowNumber = headerRowNumber + 1; rowNumber <= worksheet.rowCount; rowNumber += 1) {
+    const row = worksheet.getRow(rowNumber);
+    if (!row.values.some((value) => value !== null && value !== undefined && String(value).trim())) {
+      blanks += 1;
+      continue;
+    }
+    dataRows += 1;
+    if (dataRows > maximum) throw new RangeError(`单次最多导入 ${maximum} 条 Query`);
+    try {
+      const issuedQuery = cellText(row.getCell(columns.issued.number));
+      const productionQuery = cellText(row.getCell(columns.production.number));
+      const query = productionQuery || issuedQuery;
+      const batch = cellText(row.getCell(columns.batch.number));
+      if (!/^[0-9a-f]{32}$/iu.test(batch)) {
+        throw new TypeError('任务ID必须是 32 位十六进制编号，不能为空');
+      }
+      const clientBatchCode = normalizeClientBatchCode(batch);
+      if (!query) throw new TypeError('生产query和下发query不能同时为空');
+      if ([...query].length > 500) throw new TypeError('实际作业 Query 不能超过 500 个字符');
+      if ([...issuedQuery].length > 5000) throw new TypeError('下发query不能超过 5000 个字符');
+      const externalId = columns.externalId ? cellText(row.getCell(columns.externalId.number)) || null : null;
+      if (externalId && [...externalId].length > 200) throw new TypeError('序号不能超过 200 个字符');
+      const identity = clientBatchCode + ':' + query.replace(/\s+/gu, '').toLocaleLowerCase('zh-CN');
+      if (seen.has(identity)) duplicates += 1;
+      seen.add(identity);
+      // Preserve every source row, including duplicates and cell-internal newlines.
+      items.push({ rowNumber, externalId, issuedQuery, productionQuery, query, clientBatchCode });
+      batches.set(clientBatchCode, (batches.get(clientBatchCode) ?? 0) + 1);
+    } catch (error) {
+      invalidRows.push({ rowNumber, message: error.message });
+    }
+  }
+  return {
+    mode: 'STANDARD',
+    selectedColumn: columns.production.key,
+    items,
+    queries: items.map((item) => item.query),
+    groups: [...batches].map(([clientBatchCode, count]) => ({ clientBatchCode, count })),
+    duplicates, blanks,
+    invalidRows: invalidRows.slice(0, 100),
+    error: invalidRows.length
+      ? `有 ${invalidRows.length} 行数据需要修正：${invalidRows.slice(0, 5).map((row) => `第 ${row.rowNumber} 行：${row.message}`).join('；')}`
+      : items.length === 0 ? '工作表没有可导入的 Query' : null,
+  };
+}
+
 export async function parseQueryPackageSpreadsheet(buffer, {
   sheet: requestedSheet,
   column: requestedColumn,
@@ -84,11 +159,11 @@ export async function parseQueryPackageSpreadsheet(buffer, {
     throw new RangeError(`XLSX 工作表数量必须在 1 到 ${MAX_WORKSHEETS} 之间`);
   }
   const sheets = workbook.worksheets.map((worksheet) => {
-    if (worksheet.actualRowCount > MAX_ROWS || worksheet.actualColumnCount > MAX_COLUMNS) {
+    if (worksheet.rowCount > MAX_ROWS || worksheet.actualColumnCount > MAX_COLUMNS) {
       throw new RangeError(`工作表“${worksheet.name}”超过 ${MAX_ROWS} 行或 ${MAX_COLUMNS} 列限制`);
     }
     let headerRowNumber = 1;
-    for (let row = 1; row <= Math.max(1, worksheet.actualRowCount); row += 1) {
+    for (let row = 1; row <= Math.max(1, worksheet.rowCount); row += 1) {
       if (worksheet.getRow(row).values.some((value) => value !== null && value !== undefined && String(value).trim())) {
         headerRowNumber = row;
         break;
@@ -104,6 +179,14 @@ export async function parseQueryPackageSpreadsheet(buffer, {
     ? sheets.find((candidate) => candidate.name === requestedSheet)
     : sheets[0];
   if (!selectedSheet) throw new TypeError('指定的工作表不存在');
+  const standard = standardColumns(selectedSheet.columns);
+  if (standard) {
+    return {
+      sheets,
+      selectedSheet: selectedSheet.name,
+      ...parseStandardRows(workbook.getWorksheet(selectedSheet.name), selectedSheet.headerRowNumber, standard, maximum),
+    };
+  }
   const selectedColumn = resolveColumn(selectedSheet.columns, requestedColumn);
   if (!selectedColumn) throw new TypeError('指定的 Query 列不存在');
   const worksheet = workbook.getWorksheet(selectedSheet.name);
@@ -116,7 +199,7 @@ export async function parseQueryPackageSpreadsheet(buffer, {
   const invalidRows = [];
   let duplicates = 0;
   let blanks = 0;
-  for (let rowNumber = startRow; rowNumber <= worksheet.actualRowCount; rowNumber += 1) {
+  for (let rowNumber = startRow; rowNumber <= worksheet.rowCount; rowNumber += 1) {
     let query;
     try {
       query = cellText(worksheet.getRow(rowNumber).getCell(selectedColumn.number));
@@ -136,6 +219,7 @@ export async function parseQueryPackageSpreadsheet(buffer, {
     if (queries.length > maximum) throw new RangeError(`单个词包最多导入 ${maximum} 条 Query`);
   }
   return {
+    mode: 'SINGLE_COLUMN',
     sheets,
     selectedSheet: selectedSheet.name,
     selectedColumn: selectedColumn.key,

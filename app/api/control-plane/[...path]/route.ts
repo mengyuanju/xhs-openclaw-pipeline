@@ -38,6 +38,7 @@ async function proxyRequest(
     throw new ApiError(403, 'FORBIDDEN', '当前账号尚未迁移到用户管理中心');
   }
   const routePath = `/${path.join('/')}`;
+  const bodyLimit = routePath === '/v1/image-editor/workspaces' ? 36 * 1024 * 1024 : MAX_PROXY_BODY_BYTES;
   if (role !== 'ADMIN' && /^\/v1\/admin(?:\/|$)/u.test(routePath)) {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可查看团队人员统计');
   }
@@ -111,13 +112,13 @@ async function proxyRequest(
     upstreamUrl.searchParams.delete('mine');
   }
   const declaredLength = Number(request.headers.get('content-length') ?? 0);
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_PROXY_BODY_BYTES) {
+  if (Number.isFinite(declaredLength) && declaredLength > bodyLimit) {
     throw new ApiError(413, 'PAYLOAD_TOO_LARGE', '请求内容过大');
   }
   const body = ['GET', 'HEAD'].includes(request.method)
     ? undefined
     : await request.arrayBuffer();
-  if (body && body.byteLength > MAX_PROXY_BODY_BYTES) {
+  if (body && body.byteLength > bodyLimit) {
     throw new ApiError(413, 'PAYLOAD_TOO_LARGE', '请求内容过大');
   }
   await assertMutationCapability({ root, routePath, method: request.method });

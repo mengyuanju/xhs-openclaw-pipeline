@@ -9,6 +9,8 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 
 import JSZip from 'jszip';
+import { parseQueryPackageSpreadsheet } from '../../server/src/query-package-spreadsheet.mjs';
+import { normalizeQueryPackageItems } from '../../server/src/query-packages.mjs';
 
 const projectRoot = process.cwd();
 const CLIENT_BATCH_CODE = 'b9759aad96a94c109fdce96ab4455294';
@@ -449,7 +451,7 @@ const controlPlane = createServer(async (req, res) => {
         fixture: true,
         capabilities: {
           taskAssignmentVersion: 3,
-          queryPackageVersion: 6,
+          queryPackageVersion: 7,
           finalDeliveryVersion: 5,
           deliverySpreadsheetVersion: 3,
           deliveryPreviewVersion: 5,
@@ -904,21 +906,41 @@ const controlPlane = createServer(async (req, res) => {
       send(res, 200, page.items.map(packageSummary));
       return;
     }
+
+    if (method === 'PUT' && url.pathname === '/v1/query-packages/import-preview') {
+      if (actorRole(req) !== 'ADMIN') {
+        error(res, 403, 'FORBIDDEN', 'fixture import is admin-only');
+        return;
+      }
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      send(res, 200, await parseQueryPackageSpreadsheet(Buffer.concat(chunks), {
+        sheet: url.searchParams.get('sheet') || undefined,
+        column: url.searchParams.get('column') || undefined,
+      }));
+      return;
+    }
     if (method === 'POST' && url.pathname === '/v1/query-packages') {
       if (actorRole(req) !== 'ADMIN') {
         error(res, 403, 'WORKER_QUERY_IMPORT_DISABLED', 'fixture worker query import is disabled');
         return;
       }
       const input = await jsonBody(req);
-      const clientBatchCode = String(input.clientBatchCode ?? '').trim().toLowerCase();
-      if (!/^[0-9a-f]{32}$/u.test(clientBatchCode)) {
-        error(res, 400, 'INVALID_INPUT', 'fixture client batch code is invalid');
-        return;
+      const groups = new Map();
+      for (const item of input.items) {
+        const code = String(input.splitByClientBatchCode ? item.clientBatchCode : input.clientBatchCode).trim().toLowerCase();
+        if (!/^[0-9a-f]{32}$/u.test(code)) {
+          error(res, 400, 'INVALID_INPUT', 'fixture client batch code is invalid');
+          return;
+        }
+        if (!groups.has(code)) groups.set(code, []);
+        groups.get(code).push(item);
       }
+      const normalized = [...groups].map(([code, items]) => [code, normalizeQueryPackageItems(items)]);
       const now = new Date().toISOString();
-      const record = {
+      const created = normalized.map(([clientBatchCode, items]) => ({
         id: state.nextPackageId++,
-        name: String(input.name),
+        name: groups.size === 1 ? String(input.name) : String(input.name) + ' · ' + clientBatchCode,
         clientBatchCode,
         status: 'IMPORTED',
         createdByUserId: actorUser(req)?.username ?? 'admin',
@@ -928,24 +950,20 @@ const controlPlane = createServer(async (req, res) => {
         version: 1,
         createdAt: now,
         updatedAt: now,
-        items: input.items.map((item, index) => ({
+        items: items.map((item) => ({
+          ...item,
           id: state.nextItemId++,
-          rowNumber: index + 1,
-          externalId: null,
-          query: String(item.query),
-          input: item.input ?? {},
-          requestedImageCount: item.requestedImageCount ?? 'auto',
-          status: 'READY',
-          screeningDecision: 'PENDING',
           screeningReason: null,
           screeningAssignedToAccountId: null,
           screeningAssignedToUserId: null,
           taskId: null,
           version: 1,
         })),
-      };
-      state.packages.push(record);
-      send(res, 201, packageSummary(record));
+      }));
+      state.packages.push(...created);
+      send(res, 201, input.splitByClientBatchCode
+        ? { packages: created.map(packageSummary), totalItemCount: input.items.length }
+        : packageSummary(created[0]));
       return;
     }
     const packageMatch = url.pathname.match(/^\/v1\/query-packages\/(\d+)$/u);

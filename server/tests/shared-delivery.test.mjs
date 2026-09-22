@@ -85,13 +85,15 @@ test('shared delivery PostgreSQL: cross-role visibility, partial confirmation, o
     async function assertFrozenFiles(zip) {
       assert.equal(Object.keys(zip.files).some(name=>name.endsWith('.zip')),false);
       const original=await JSZip.loadAsync(bytesByTask.get(tasks[0].taskId));
-      const directory=`${tasks[0].taskId}/${tasks[0].copyRevisionId}/${tasks[0].imageRunId}`;
+      const directory=`未归属甲方批次/任务-${tasks[0].taskId}-资源包`;
+      assert.deepEqual(Object.values(zip.files).filter(file=>!file.dir).map(file=>file.name).sort(),
+        Object.values(original.files).filter(file=>!file.dir).map(file=>`${directory}/${file.name}`).sort());
       for(const file of Object.values(original.files)) {
         assert.deepEqual(await zip.file(`${directory}/${file.name}`).async('nodebuffer'),await file.async('nodebuffer'));
       }
     }
     await assertFrozenFiles(downloaded);
-    assert.equal(Object.keys(downloaded.files).some(name=>name.startsWith(`${tasks[2].taskId}/`)),false,'another operator is never included');
+    assert.equal(Object.keys(downloaded.files).some(name=>name.includes(`/任务-${tasks[2].taskId}-资源包/`)),false,'another operator is never included');
     await artifact.record();
     const confirmations=await Promise.all([confirmDeliveryItems(pool,{itemIds:[itemA.itemId]},a),confirmDeliveryItems(pool,{itemIds:[itemA.itemId]},a)]);
     assert.equal(confirmations.reduce((sum,value)=>sum+value.confirmed,0),1);

@@ -21,6 +21,7 @@ import { reprocessStandaloneImages } from '../standalone-image-generation.mjs';
 import { IMAGE_ARTIFACT_FILE } from '../image-artifacts.mjs';
 import { guardExecutionCalls, runWithExecutionSignal } from './execution-signal.mjs';
 import { processImageEdit } from '../../server/src/image-edit-renderer.mjs';
+import { processStandaloneImageEdit } from '../../server/src/standalone-image-editor-renderer.mjs';
 
 const COPY_PROGRESS = Object.freeze({
   QUERY_REVIEW: 5,
@@ -323,7 +324,8 @@ export async function executeImageEditClaim({
       ? controlPlane.rejectImageEdit(execution.id, imageEdit, preview.bytes, error)
       : controlPlane.failImageEdit(execution.id, imageEdit, error),
   };
-  const result = await processImageEdit({
+  const render = execution.snapshot.task?.kind === 'STANDALONE_IMAGE_EDIT' ? processStandaloneImageEdit : processImageEdit;
+  const result = await render({
     service,
     storageRoot: workRoot,
     workerId: execution.nodeId,
@@ -369,7 +371,7 @@ export function createExecutorAgent({
   }
   const registration = () => ({ nodeId, name: nodeName, imageWorkerEnabled,
     copyConcurrency, imageConcurrency, codexPoolId, codexTotalConcurrency, codexImageConcurrency,
-    imageEditExecutorVersion: imageWorkerEnabled ? 12 : 0,
+    imageEditExecutorVersion: imageWorkerEnabled ? 13 : 0,
     copyImagePlanRegenerationVersion: 1 });
   let ready = false;
   const pendingFailures = new Map();

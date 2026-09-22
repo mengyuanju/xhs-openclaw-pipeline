@@ -82,6 +82,9 @@ type ConfirmedScreening = {
 };
 
 type SpreadsheetImportPreview = {
+  mode: 'STANDARD' | 'SINGLE_COLUMN';
+  items?: Array<{ rowNumber: number; externalId: string | null; query: string; issuedQuery: string; productionQuery: string; clientBatchCode: string }>;
+  groups?: Array<{ clientBatchCode: string; count: number }>;
   sheets: Array<{ name: string; columns: Array<{ key: string; number: number; label: string }> }>;
   selectedSheet: string;
   selectedColumn: string;
@@ -236,10 +239,14 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
   const itemLoadMoreInFlight = useRef(false);
   const deletePreviewRequest = useRef<{ id: number; controller: AbortController } | null>(null);
   const importFileRequestId = useRef(0);
+  const importSubmission = useRef<{ body: string; requestId: string } | null>(null);
   const assignmentRequestId = useRef(0);
   const assignmentRequestController = useRef<AbortController | null>(null);
 
-  const parsedImport = useMemo(() => parseQueryPackageText(queryText), [queryText]);
+  const isStandardImport = spreadsheetPreview?.mode === 'STANDARD';
+  const parsedImport = useMemo(() => spreadsheetPreview?.mode === 'STANDARD'
+    ? { queries: spreadsheetPreview.queries, duplicates: spreadsheetPreview.duplicates, error: spreadsheetPreview.error }
+    : parseQueryPackageText(queryText), [queryText, spreadsheetPreview]);
 
   const load = useCallback(async ({ silent = false, offset = 0 } = {}) => {
     const append = offset > 0;
@@ -447,11 +454,23 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
     setScreeningReason('');
   }
 
+  function applySpreadsheetPreview(preview: SpreadsheetImportPreview) {
+    setSpreadsheetPreview(preview);
+    setQueryText(preview.mode === 'STANDARD' ? '' : preview.queries.join('\n'));
+    if (preview.mode === 'STANDARD') setClientBatchCode(preview.groups?.length === 1 ? preview.groups[0].clientBatchCode : '');
+    setImportError(preview.error ?? (preview.invalidRows.length
+      ? `有 ${preview.invalidRows.length} 行未导入，请检查公式或超长内容。` : ''));
+  }
+
   async function readImportFile(file: File | null) {
     const currentRequestId = importFileRequestId.current + 1;
     importFileRequestId.current = currentRequestId;
     setReadingImportFile(false);
     setSourceFileName('');
+    setSpreadsheetPreview(null);
+    setSpreadsheetFile(null);
+    setQueryText('');
+    importSubmission.current = null;
     if (!file) return;
     setReadingImportFile(true);
     setQueryText('');
@@ -467,18 +486,13 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
             method: 'PUT',
             headers: {
               'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-              'X-File-Name': file.name,
             },
             body: file,
           },
         );
         if (!canCommitLatestRequest(importFileRequestId.current, currentRequestId)) return;
-        setSpreadsheetPreview(preview);
+        applySpreadsheetPreview(preview);
         setSourceFileName(file.name.slice(0, 255));
-        setQueryText(preview.queries.join('\n'));
-        setImportError(preview.error ?? (preview.invalidRows.length
-          ? `有 ${preview.invalidRows.length} 行未导入，请检查公式或超长内容。`
-          : ''));
         return;
       }
       setSpreadsheetFile(null);
@@ -499,6 +513,9 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
 
   async function selectSpreadsheetSource(sheet: string, column?: string) {
     if (!spreadsheetFile) return;
+    setSpreadsheetPreview(null);
+    setQueryText('');
+    importSubmission.current = null;
     const currentRequestId = importFileRequestId.current + 1;
     importFileRequestId.current = currentRequestId;
     setReadingImportFile(true);
@@ -512,17 +529,12 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            'X-File-Name': spreadsheetFile.name,
           },
           body: spreadsheetFile,
         },
       );
       if (!canCommitLatestRequest(importFileRequestId.current, currentRequestId)) return;
-      setSpreadsheetPreview(preview);
-      setQueryText(preview.queries.join('\n'));
-      setImportError(preview.error ?? (preview.invalidRows.length
-        ? `有 ${preview.invalidRows.length} 行未导入，请检查公式或超长内容。`
-        : ''));
+      applySpreadsheetPreview(preview);
     } catch (caught) {
       if (canCommitLatestRequest(importFileRequestId.current, currentRequestId)) {
         setImportError(caught instanceof Error ? caught.message : '表格读取失败');
@@ -543,6 +555,12 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
   }
 
   function closeImportDialog() {
+    importSubmission.current = null;
+    if (isStandardImport) {
+      setQueryText('');
+      setSourceFileName('');
+      setClientBatchCode('');
+    }
     importFileRequestId.current += 1;
     setReadingImportFile(false);
     setImportError('');
@@ -555,7 +573,7 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
     event.preventDefault();
     if (role !== 'ADMIN' || creating || readingImportFile || parsedImport.error) return;
     const normalizedClientBatchCode = clientBatchCode.trim().toLowerCase();
-    if (!CLIENT_BATCH_CODE_PATTERN.test(normalizedClientBatchCode)) {
+    if (!isStandardImport && !CLIENT_BATCH_CODE_PATTERN.test(normalizedClientBatchCode)) {
       setImportError('甲方批次编号必须是 32 位十六进制编号');
       return;
     }
@@ -563,23 +581,29 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
     setImportError('');
     setMessage('');
     try {
-      await apiRequest(apiPath('/v1/query-packages'), {
+      const payload = {
+        name: packageName.trim(),
+        ...(isStandardImport ? { splitByClientBatchCode: true } : { clientBatchCode: normalizedClientBatchCode }),
+        ...(sourceFileName ? { sourceFileName } : {}),
+        items: isStandardImport ? spreadsheetPreview.items : parsedImport.queries.map((query) => ({
+          query, issuedQuery: query, input: {}, requestedImageCount: 'auto',
+        })),
+      };
+      const body = JSON.stringify(payload);
+      if (importSubmission.current?.body !== body) importSubmission.current = { body, requestId: createRequestId() };
+      const result = await apiRequest<{ packages?: Array<{ id: number }> }>(apiPath('/v1/query-packages'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: packageName.trim(),
-          clientBatchCode: normalizedClientBatchCode,
-          ...(sourceFileName ? { sourceFileName } : {}),
-          items: parsedImport.queries.map((query) => ({ query, input: {}, requestedImageCount: 'auto' })),
-          requestId: createRequestId(),
-        }),
+        body: JSON.stringify({ ...payload, requestId: importSubmission.current.requestId }),
       });
       closeImportDialog();
       setPackageName('');
       setClientBatchCode('');
       setSourceFileName('');
       setQueryText('');
-      setMessage(`已导入 ${parsedImport.queries.length} 条 Query${parsedImport.duplicates ? `，自动忽略 ${parsedImport.duplicates} 条重复项` : ''}。`);
+      setMessage(isStandardImport
+        ? `已按任务ID创建 ${result.packages?.length ?? 0} 个词包，共 ${parsedImport.queries.length} 条 Query${parsedImport.duplicates ? `，其中 ${parsedImport.duplicates} 条重复项不参与投产` : ''}。`
+        : `已导入 ${parsedImport.queries.length} 条 Query${parsedImport.duplicates ? `，自动忽略 ${parsedImport.duplicates} 条重复项` : ''}。`);
       await load({ silent: true });
     } catch (caught) {
       setImportError(caught instanceof Error ? caught.message : '词包导入失败');
@@ -1015,19 +1039,24 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
         <form className={styles.importForm} onSubmit={createPackage}>
           <div className={styles.importFields}>
             <div className="field"><label htmlFor="query-package-name">词包名称</label><Input id="query-package-name" value={packageName} maxLength={120} required disabled={creating} onChange={(event) => setPackageName(event.target.value)} /></div>
-            <div className="field"><label htmlFor="query-package-client-batch">甲方批次编号</label><Input id="query-package-client-batch" value={clientBatchCode} minLength={32} maxLength={32} pattern="[0-9a-fA-F]{32}" required disabled={creating} placeholder="b9759aad96a94c109fdce96ab4455294" onChange={(event) => { setClientBatchCode(event.target.value); setImportError(''); }} /></div>
+            <div className="field"><label htmlFor="query-package-client-batch">甲方批次编号{isStandardImport ? "（来自任务ID）" : ""}</label>{isStandardImport && (spreadsheetPreview.groups?.length ?? 0) > 1 ? <span>按 {spreadsheetPreview.groups?.length} 个任务ID自动拆包</span> : <Input id="query-package-client-batch" value={clientBatchCode} minLength={32} maxLength={32} pattern="[0-9a-fA-F]{32}" required={!isStandardImport} readOnly={isStandardImport} disabled={creating || readingImportFile} placeholder="b9759aad96a94c109fdce96ab4455294" onChange={(event) => { setClientBatchCode(event.target.value); setImportError(''); }} />}</div>
             <div className="field"><label htmlFor="query-package-file">读取文本或 XLSX 文件</label><Input id="query-package-file" type="file" accept=".txt,.csv,.xlsx,text/plain,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={creating} onChange={(event) => { void readImportFile(event.target.files?.[0] ?? null); }} /></div>
           </div>
           {spreadsheetPreview && <div className={styles.importFields} aria-label="XLSX 数据范围">
             <div className="field"><label>工作表</label><Select value={spreadsheetPreview.selectedSheet} disabled={creating || readingImportFile} onValueChange={(value) => { void selectSpreadsheetSource(value); }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{spreadsheetPreview.sheets.map((sheet) => <SelectItem key={sheet.name} value={sheet.name}>{sheet.name}</SelectItem>)}</SelectContent></Select></div>
-            <div className="field"><label>Query 列</label><Select value={spreadsheetPreview.selectedColumn} disabled={creating || readingImportFile} onValueChange={(value) => { void selectSpreadsheetSource(spreadsheetPreview.selectedSheet, value); }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{spreadsheetPreview.sheets.find((sheet) => sheet.name === spreadsheetPreview.selectedSheet)?.columns.map((column) => <SelectItem key={column.key} value={column.key}>{column.key} · {column.label}</SelectItem>)}</SelectContent></Select></div>
+            {!isStandardImport && <div className="field"><label>Query 列</label><Select value={spreadsheetPreview.selectedColumn} disabled={creating || readingImportFile} onValueChange={(value) => { void selectSpreadsheetSource(spreadsheetPreview.selectedSheet, value); }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{spreadsheetPreview.sheets.find((sheet) => sheet.name === spreadsheetPreview.selectedSheet)?.columns.map((column) => <SelectItem key={column.key} value={column.key}>{column.key} · {column.label}</SelectItem>)}</SelectContent></Select></div>}
           </div>}
-          <div className="field"><label htmlFor="query-package-content">Query 内容</label><Textarea id="query-package-content" className={styles.queryInput} value={queryText} rows={12} required disabled={creating} placeholder={'每行一条，例如：\n租房桌面收纳\n通勤穿搭\n周末露营装备'} onChange={(event) => changeImportText(event.target.value)} /></div>
+          {isStandardImport ? <div className={styles.importPreview}>
+            <p>生产query优先，为空时使用下发query；每行保留一条记录。按任务ID自动拆包，导入后仍需人工筛选。</p>
+            <div className={styles.importBatchList}>{spreadsheetPreview.groups?.map((group) => <div key={group.clientBatchCode}><code>{group.clientBatchCode}</code><span>{group.count} 条</span></div>)}</div>
+            <div className={styles.importPreviewTable}><table><thead><tr><th>Excel 行</th><th>下发 Query</th><th>Query（实际作业）</th></tr></thead><tbody>{spreadsheetPreview.items?.slice(0, 50).map((item) => <tr key={item.rowNumber}><td>{item.rowNumber}</td><td>{item.issuedQuery || '—'}</td><td>{item.query}</td></tr>)}</tbody></table></div>
+            {(spreadsheetPreview.items?.length ?? 0) > 50 && <small>预览前 50 行，创建时导入全部已校验记录。</small>}
+          </div> : <div className="field"><label htmlFor="query-package-content">Query 内容</label><Textarea id="query-package-content" className={styles.queryInput} value={queryText} rows={12} required disabled={creating} placeholder={'每行一条，例如：\n租房桌面收纳\n通勤穿搭\n周末露营装备'} onChange={(event) => changeImportText(event.target.value)} /></div>}
           {readingImportFile && <div className="notice" role="status"><LoaderCircle className="animate-spin" size={15} />正在读取文件…</div>}
           {importError && <div className="notice error" role="alert">{importError}</div>}
           {queryText && parsedImport.error && <div className="notice error" role="alert">{parsedImport.error}</div>}
           <div className={styles.fileRow}><span>{sourceFileName ? `来源文件：${sourceFileName}` : '也可以直接粘贴纯文本、单列 CSV，或从 XLSX 指定工作表和列'}</span><small>识别 {parsedImport.queries.length} 条 · 重复 {spreadsheetPreview?.duplicates ?? parsedImport.duplicates} 条</small></div>
-          <div className={styles.dialogFooter}><span>相同甲方批次编号的多个词包会在交付时合并打包。</span><div className={styles.dialogButtons}><DialogClose asChild><Button unstyled className="button" type="button" disabled={creating}>取消</Button></DialogClose><Button unstyled className="button primary" disabled={creating || readingImportFile || !packageName.trim() || !CLIENT_BATCH_CODE_PATTERN.test(clientBatchCode.trim().toLowerCase()) || Boolean(parsedImport.error)}>{creating ? '导入中…' : readingImportFile ? '读取文件中…' : '创建词包'}</Button></div></div>
+          <div className={styles.dialogFooter}><span>相同甲方批次编号的多个词包会在交付时合并打包。</span><div className={styles.dialogButtons}><DialogClose asChild><Button unstyled className="button" type="button" disabled={creating}>取消</Button></DialogClose><Button unstyled className="button primary" disabled={creating || readingImportFile || !packageName.trim() || (!isStandardImport && !CLIENT_BATCH_CODE_PATTERN.test(clientBatchCode.trim().toLowerCase())) || Boolean(parsedImport.error)}>{creating ? '导入中…' : readingImportFile ? '读取文件中…' : '创建词包'}</Button></div></div>
         </form>
       </DialogContent>
     </Dialog>}
@@ -1046,7 +1075,7 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
           {detailLoading && (!detail || visibleItems.length === 0) ? <div className="empty-state"><LoaderCircle className="animate-spin" size={20} />正在读取词包详情…</div>
             : detailError && (!detail || visibleItems.length === 0) ? <div className="notice error" role="alert">{detailError}</div>
               : detail && visibleItems.length ? <div className={styles.virtualTable} role="table" aria-rowcount={detail.itemPage.total + 1}>
-                <div className={`${styles.virtualGrid} ${styles.virtualHeader}`} role="row"><div role="columnheader"><Checkbox aria-label="选择已加载的可筛选 Query" checked={allVisibleChecked} disabled={!detailAllowsScreening || screenableItems.length === 0} onChange={(event) => setCheckedItemIds((current) => updateQueryItemSelection(current, screenableItems.map((item) => item.id), event.target.checked))} /></div><div role="columnheader">序号</div><div role="columnheader">Query</div><div role="columnheader">筛选结果</div><div role="columnheader">操作</div><div role="columnheader">正式作业</div></div>
+                <div className={`${styles.virtualGrid} ${styles.virtualHeader}`} role="row"><div role="columnheader"><Checkbox aria-label="选择已加载的可筛选 Query" checked={allVisibleChecked} disabled={!detailAllowsScreening || screenableItems.length === 0} onChange={(event) => setCheckedItemIds((current) => updateQueryItemSelection(current, screenableItems.map((item) => item.id), event.target.checked))} /></div><div role="columnheader">序号</div><div role="columnheader">Query</div><div role="columnheader">下发 Query</div><div role="columnheader">筛选结果</div><div role="columnheader">操作</div><div role="columnheader">正式作业</div></div>
                 <VirtualQueryList
                   count={visibleItems.length}
                   rowHeight={QUERY_PACKAGE_VIRTUAL_ROW_HEIGHT}
@@ -1062,7 +1091,7 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
                     const screenable = detailAllowsScreening && item.validationStatus === 'READY'
                       && item.screeningDecision === 'PENDING' && !item.taskId;
                     const staged = stagedScreening[item.id];
-                    return <><div role="cell"><Checkbox aria-label={`选择第 ${item.rowNumber} 条 Query 进行筛选`} checked={checkedItemIdSet.has(item.id)} disabled={!screenable} onChange={(event) => setCheckedItemIds((current) => updateQueryItemSelection(current, [item.id], event.target.checked))} /></div><div role="cell">{item.rowNumber}</div><div className={styles.queryCell} role="cell"><strong title={item.query}>{item.query}</strong>{item.externalId && <div className={styles.reason}>外部编号：{item.externalId}</div>}{role === 'ADMIN' && item.screeningAssignedToUserId && <div className={styles.reason}>负责人：@{item.screeningAssignedToUserId}</div>}{item.screeningReason && <div className={styles.reason}>筛选说明：{item.screeningReason}</div>}</div><div role="cell"><span className="pill">{staged ? staged.decision === 'SELECT' ? '待提交：通过' : '待提交：淘汰' : ['INVALID', 'DUPLICATE'].includes(item.validationStatus) ? VALIDATION_STATUS_LABELS[item.validationStatus] : DECISION_LABELS[item.screeningDecision]}</span></div><div className={styles.rowDecisionActions} role="cell"><Button unstyled className={`button small ${staged?.decision === 'SELECT' ? 'primary' : ''}`} type="button" disabled={!screenable || Boolean(acting)} onClick={() => stageDecision(item.id, item.version, 'SELECT')}><CheckCircle2 size={14} />通过</Button><Button unstyled className={`button small ${staged?.decision === 'REJECT' ? 'danger' : ''}`} type="button" disabled={!screenable || Boolean(acting)} onClick={() => stageDecision(item.id, item.version, 'REJECT')}><XCircle size={14} />淘汰</Button></div><div role="cell">{item.taskId ? `#${item.taskId}` : item.screeningDecision === 'SELECTED' ? '创建中' : '—'}</div></>;
+                    return <><div role="cell"><Checkbox aria-label={`选择第 ${item.rowNumber} 条 Query 进行筛选`} checked={checkedItemIdSet.has(item.id)} disabled={!screenable} onChange={(event) => setCheckedItemIds((current) => updateQueryItemSelection(current, [item.id], event.target.checked))} /></div><div role="cell">{item.rowNumber}</div><div className={styles.queryCell} role="cell"><strong title={item.query}>{item.query}</strong>{item.externalId && <div className={styles.reason}>外部编号：{item.externalId}</div>}{role === 'ADMIN' && item.screeningAssignedToUserId && <div className={styles.reason}>负责人：@{item.screeningAssignedToUserId}</div>}{item.screeningReason && <div className={styles.reason}>筛选说明：{item.screeningReason}</div>}</div><div className={styles.queryCell} role="cell"><strong title={item.issuedQuery ?? undefined}>{item.issuedQuery || '—'}</strong></div><div role="cell"><span className="pill">{staged ? staged.decision === 'SELECT' ? '待提交：通过' : '待提交：淘汰' : ['INVALID', 'DUPLICATE'].includes(item.validationStatus) ? VALIDATION_STATUS_LABELS[item.validationStatus] : DECISION_LABELS[item.screeningDecision]}</span></div><div className={styles.rowDecisionActions} role="cell"><Button unstyled className={`button small ${staged?.decision === 'SELECT' ? 'primary' : ''}`} type="button" disabled={!screenable || Boolean(acting)} onClick={() => stageDecision(item.id, item.version, 'SELECT')}><CheckCircle2 size={14} />通过</Button><Button unstyled className={`button small ${staged?.decision === 'REJECT' ? 'danger' : ''}`} type="button" disabled={!screenable || Boolean(acting)} onClick={() => stageDecision(item.id, item.version, 'REJECT')}><XCircle size={14} />淘汰</Button></div><div role="cell">{item.taskId ? `#${item.taskId}` : item.screeningDecision === 'SELECTED' ? '创建中' : '—'}</div></>;
                   }}
                 />
                 <div className={styles.virtualStatus}><span>已加载 {visibleItems.length} / {detail.itemPage.total} 条{appliedItemSearch ? ` · 搜索“${appliedItemSearch}”` : ''}</span>{loadingMoreItems ? <span><LoaderCircle className="animate-spin" size={14} />正在加载下一批…</span> : detail.itemPage.hasMore && <Button unstyled className="button small" type="button" onClick={() => { void loadMoreQueryItems(); }}>继续加载</Button>}</div>

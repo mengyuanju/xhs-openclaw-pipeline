@@ -38,10 +38,12 @@ export function workflowNavigationHrefs(session) {
   if (qualityCheck) hrefs.push('/copy-qa');
   if (imageQualityCheck) hrefs.push('/image-qa');
   if (role === 'USER') hrefs.push('/delivery-pool');
+  if (['ADMIN','USER'].includes(role)) hrefs.push('/image-editor');
   return hrefs;
 }
 
 export function canAccessWorkflowPage(session, pathname) {
+  if (pathname === '/image-editor' || pathname.startsWith('/image-editor/')) return ['ADMIN','USER'].includes(primaryRole(session));
   if (pathname === '/work-mode' || pathname.startsWith('/work-mode/') || pathname.startsWith('/work-mode?')) {
     return workModeKinds(session).length > 0;
   }

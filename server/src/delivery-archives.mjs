@@ -7,9 +7,10 @@ import { pipeline } from 'node:stream/promises';
 import { once } from 'node:events';
 import { ZipArchive } from 'archiver';
 import yauzl from 'yauzl';
-import ExcelJS from '@excel.js/exceljs';
+import { Readable } from 'node:stream';
+import { withOriginalDeliveryQuery } from './delivery-copy-query.mjs';
 import { ControlPlaneConflictError, ControlPlaneNotFoundError, normalizeTaskId, normalizeUuid } from './domain.mjs';
-import { deliveryActor, deliveryItemFrom, inDeliveryTransaction, selectDeliveryArchiveItems } from './delivery-ledger.mjs';
+import { deliveryActor, inDeliveryTransaction, selectDeliveryArchiveItems } from './delivery-ledger.mjs';
 import { normalizeListPagination } from './list-pagination.mjs';
 
 const MAX_PART_BYTES = 1024 ** 3;
@@ -17,7 +18,7 @@ const MAX_PART_ITEMS = 200;
 const MAX_TOTAL_BYTES = 10 * 1024 ** 3;
 const PREVIEW_TTL = 10 * 60_000;
 const sha256 = value => createHash('sha256').update(value).digest('hex');
-const fingerprint = rows => sha256(JSON.stringify(rows.map(r=>[String(r.item_id),r.source_sha256,r.delivered_at])));
+const fingerprint = rows => sha256(JSON.stringify(rows.map(r=>[String(r.item_id),r.source_sha256,r.delivered_at,r.issued_query ?? null])));
 
 export async function deliveryFileHash(path) {
   const hash=createHash('sha256');
@@ -77,7 +78,8 @@ async function withTaskSourceZip(member, operation, signal) {
 }
 
 // Read central directories and stream only exact task members out of immutable
-// original ZIPs. Never reconstruct a historical delivery from current tasks.
+// original ZIPs. Keep frozen copy and image versions; only the Query header is
+// corrected to the imported issued Query when writing a new download.
 export async function inspectDeliverySources(root, rows) {
   const groups = new Map(), found = new Map();
   for (const row of rows) {
@@ -136,7 +138,7 @@ export async function inspectDeliverySources(root, rows) {
 }
 
 async function appendOriginalMember(archive, member, signal) {
-  const directory=`${normalizeTaskId(member.row.task_id)}/${normalizeTaskId(member.row.copy_revision_id)}/${normalizeUuid(member.row.image_run_id,'imageRunId')}`;
+  const directory=member.outputDirectory;
   await withTaskSourceZip(member,async zip=>{
     const remaining=new Map(member.files.map(file=>[file.entryName,file]));
     for await (const entry of zip.eachEntry()) {
@@ -145,15 +147,18 @@ async function appendOriginalMember(archive, member, signal) {
       if (!file) continue;
       if (file.byteSize!==entry.uncompressedSize) throw new Error(`冻结文件已变化：${member.row.task_id}`);
       const stream=await zip.openReadStreamPromise(entry);
-      const onAbort=()=>stream.destroy(signal.reason);
+      const content=/\.txt$/iu.test(file.name)
+        ? Readable.from(withOriginalDeliveryQuery(stream,{issuedQuery:member.row.issued_query,query:member.row.query})) : stream;
+      if(content!==stream)stream.once('error',error=>content.destroy(error));
+      const onAbort=()=>{content.destroy(signal.reason);stream.destroy(signal.reason);};
       signal.addEventListener('abort',onAbort,{once:true});
       try {
         if(archive.destroyed)throw new Error('汇总文件输出已中断');
         const done=once(archive,'entry',{signal});
-        stream.once('error',error=>archive.emit('error',error));
-        archive.append(stream,{name:`${directory}/${file.name}`});
+        content.once('error',error=>archive.emit('error',error));
+        archive.append(content,{name:`${directory}/${file.name}`});
         await done;
-      } finally { signal.removeEventListener('abort',onAbort); stream.destroy(); }
+      } finally { signal.removeEventListener('abort',onAbort); content.destroy(); stream.destroy(); }
       remaining.delete(entry.fileName);
     }
     if (remaining.size) throw new Error(`冻结成员丢失：${member.row.task_id}`);
@@ -165,7 +170,12 @@ export async function writeDeliveryAggregate(root, job, members, {signal}={signa
   await mkdir(directory,{recursive:true});
   const parts=[];
   let group=[],bytes=0;
-  for (const member of members) {
+  const usedDirectories=new Set();
+  for (const original of members) {
+    let outputDirectory=original.directory,suffix=2;
+    while(usedDirectories.has(outputDirectory.normalize('NFC').toLocaleLowerCase('zh-CN'))) outputDirectory=`${original.directory}-${suffix++}`;
+    usedDirectories.add(outputDirectory.normalize('NFC').toLocaleLowerCase('zh-CN'));
+    const member={...original,outputDirectory};
     if (group.length && (group.length>=MAX_PART_ITEMS || bytes+member.byteSize>MAX_PART_BYTES)) {
       parts.push(group); group=[]; bytes=0;
     }
@@ -180,21 +190,6 @@ export async function writeDeliveryAggregate(root, job, members, {signal}={signa
     let transferError;
     const transfer=pipeline(archive,output,{signal}).catch(error=>{transferError=error;});
     try {
-      const sheet=new ExcelJS.Workbook(),tab=sheet.addWorksheet('交付清单');
-      tab.columns=[['任务号','taskId',12],['Query','query',40],['文案版本','copyRevisionId',14],['图片版本','imageRunId',38],
-        ['负责人','ownerUsername',18],['原批次','batchCode',18],['交付人','deliveredBy',18],['交付确认时间（北京时间）','deliveredAt',28]]
-        .map(([header,key,width])=>({header,key,width}));
-      const manifest=part.map(member=>deliveryItemFrom(member.row,{role:job.actor_role,userId:job.actor_account_id,username:job.actor_username}));
-      for (const item of manifest) tab.addRow({...item,deliveredAt:item.deliveredAt?new Date(item.deliveredAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):''});
-      tab.getRow(1).font={bold:true};tab.views=[{state:'frozen',ySplit:1}];
-      const spreadsheet=Buffer.from(await sheet.xlsx.writeBuffer());
-      if(transferError)throw transferError;
-      let appended=once(archive,'entry',{signal});
-      archive.append(spreadsheet,{name:'清单.xlsx',store:true});
-      await appended;
-      appended=once(archive,'entry',{signal});
-      archive.append(JSON.stringify({archiveId:Number(job.id),kind:job.kind,part:index+1,items:manifest},null,2),{name:'manifest.json'});
-      await appended;
       for (const member of part) { if (transferError) throw transferError; await appendOriginalMember(archive,member,signal); }
       await archive.finalize();await transfer;if (transferError) throw transferError;
       await rename(temporary,path);
@@ -230,7 +225,13 @@ export function createDeliveryArchiveService({pool,storageRoot}) {
       .catch(error=>controller.abort(error));},30_000);
     heartbeat.unref?.();
     try {
-      const rows=(await pool.query('SELECT snapshot FROM delivery_archive_items WHERE job_id=$1 ORDER BY item_id',[job.id])).rows.map(row=>row.snapshot);
+      const rows=(await pool.query(`SELECT archived.snapshot,source.issued_query
+        FROM delivery_archive_items archived
+        LEFT JOIN delivery_batch_items item ON item.id=archived.item_id
+        LEFT JOIN tasks task ON task.id=item.task_id
+        LEFT JOIN query_package_items source ON source.id=task.source_query_package_item_id
+        WHERE archived.job_id=$1 ORDER BY archived.item_id`,[job.id])).rows
+        .map(row=>Object.hasOwn(row.snapshot,'issued_query') ? row.snapshot : {...row.snapshot,issued_query:row.issued_query});
       const inspected=await inspectDeliverySources(storageRoot,rows);
       const artifacts=await writeDeliveryAggregate(storageRoot,{...job,actor_account_id:Number(job.actor_account_id)},inspected.members,{signal:controller.signal});
       await pool.query(`UPDATE delivery_archive_jobs SET status='SUCCEEDED',artifacts=$3,finished_at=now(),lease_until=NULL

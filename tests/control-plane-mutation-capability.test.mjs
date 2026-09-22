@@ -29,7 +29,8 @@ test('protected control-plane operations declare their version contracts', () =>
     ['/v1/xhs-search-statuses', 'DELETE', 'xiaohongshuAccountStatusVersion', 2],
     ['/v1/tasks/duplicate-query-discard-preview', 'POST', 'duplicateQueryDiscardVersion', 1],
     ['/v1/tasks/duplicate-query-discard', 'POST', 'duplicateQueryDiscardVersion', 1],
-    ['/v1/query-packages', 'POST', 'queryPackageVersion', 6],
+    ['/v1/query-packages/import-preview', 'PUT', 'queryPackageVersion', 7],
+    ['/v1/query-packages', 'POST', 'queryPackageVersion', 7],
     ['/v1/query-packages/9/assignee', 'PATCH', 'queryPackageVersion', 3],
     ['/v1/query-packages/9/item-assignments', 'PUT', 'queryPackageVersion', 4],
     ['/v1/query-packages/9/screening', 'PUT', 'queryPackageVersion', 4],
@@ -79,7 +80,7 @@ test('mutation capability check allows only compatible center versions', async (
     routePath: '/v1/query-packages',
     method: 'POST',
     fetchImpl: async () => Response.json({
-      data: { capabilities: { queryPackageVersion: 6 } },
+      data: { capabilities: { queryPackageVersion: 7 } },
     }),
   });
 

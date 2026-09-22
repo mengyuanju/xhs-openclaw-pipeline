@@ -167,3 +167,14 @@ test('restored planning results match the exact source revision and copy regardl
   assert.equal(isPlanSourceCurrent(job, 20, { ...copy, body: '新正文' }), false);
   assert.equal(isPlanSourceCurrent(job, 20, { ...copy, tags: ['#新标签'] }), false);
 });
+
+
+test('standalone edit notifications poll their own API and persist without becoming business tasks',async()=>{
+  const paths=[];
+  const f=fixture(async path=>{paths.push(path);return {status:'PREVIEW_READY'};});
+  const job={id:randomUUID(),taskId:51,kind:'STANDALONE_IMAGE_EDIT',status:'QUEUED'};
+  f.store.track(job);await f.store.poll();
+  assert.deepEqual(paths,[`/v1/image-editor/edits/${job.id}`]);
+  assert.equal(f.notifications.length,1);
+  assert.equal(createBackgroundTaskStore(f.options).getSnapshot()[0].kind,'STANDALONE_IMAGE_EDIT');
+});

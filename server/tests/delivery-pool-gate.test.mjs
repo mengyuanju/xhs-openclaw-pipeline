@@ -145,6 +145,9 @@ test('batch delivery download is fail-closed when one selected task is not in th
 test('delivery pool export packages the complete server-side snapshot beyond legacy page and batch limits', async () => {
   const taskIds = Array.from({ length: 51 }, (_, index) => index + 1);
   const tasks = new Map(taskIds.map((id) => [id, task(id, 'REVIEWED')]));
+  tasks.get(1).issuedQuery = 'Excel 下发原始问题\r\n包含第二行';
+  tasks.get(2).issuedQuery = null;
+  tasks.get(3).issuedQuery = ' \t ';
   const assets = new Map();
   const snapshotActors = [];
   await withServer({
@@ -199,7 +202,9 @@ test('delivery pool export packages the complete server-side snapshot beyond leg
     for (const id of taskIds) {
       const directory = `未归属甲方批次/任务-${id}-资源包`;
       assert.deepEqual(await zip.file(`${directory}/01.png`).async('nodebuffer'), Buffer.from([id]));
-      assert.ok(zip.file(`${directory}/任务${id}.txt`));
+      const copy = await zip.file(`${directory}/任务${id}.txt`).async('string');
+      assert.equal(copy.split('\r\n')[0], '\uFEFF原始 Query：' + (id === 1
+        ? 'Excel 下发原始问题 包含第二行' : `Query ${id}`));
       assert.ok(zip.file(`${directory}/小红书链接.txt`));
     }
     const replay = await fetch(`${root}/v1/delivery-pool/archive/${prepared.downloadId}`);

@@ -239,7 +239,10 @@ export async function selectDeliveryArchiveItems(client, input, rawActor) {
   const ids = input.itemIds ? normalizeDeliveryItemIds(input.itemIds,2000) : null;
   if (!ids && kind!=='ARCHIVE') throw new TypeError('下载需要明确选择内容');
   const query = deliveryLedgerQuery(ids ? {view:'HISTORY'} : {...input.filters,state:'DELIVERED'},actor,{itemIds:ids});
-  const rows = (await client.query(`${query.sql} ORDER BY task_id,item_id LIMIT 2001`,query.values)).rows;
+  const rows = (await client.query(`SELECT selected.*,source.issued_query FROM (${query.sql}) selected
+    LEFT JOIN tasks source_task ON source_task.id=selected.task_id
+    LEFT JOIN query_package_items source ON source.id=source_task.source_query_package_item_id
+    ORDER BY selected.task_id,selected.item_id LIMIT 2001`,query.values)).rows;
   if (ids && rows.length!==ids.length) throw new ControlPlaneAuthorizationError('部分内容不存在或无权访问');
   if (!rows.length) throw new ControlPlaneConflictError('DELIVERY_EMPTY','当前范围没有可保存内容');
   if (rows.length>2000) throw new RangeError('单次最多汇总 2000 条，请缩小日期或人员范围');
