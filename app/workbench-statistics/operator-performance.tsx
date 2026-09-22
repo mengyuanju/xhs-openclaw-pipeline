@@ -3,6 +3,7 @@ import { useEffect,useState,type FormEvent } from 'react';
 import { RefreshCw,Download,ArrowUpDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DatePicker } from '@/components/ui/date-picker';
+import { apiRequest } from '../components/api-client';
 import { Chart,number } from './shared';
 import { useOperatorPerformance,OPERATOR_API } from './use-operator-performance';
 import { OperatorDetailDialog,RATE_LABEL } from './operator-detail';
@@ -11,6 +12,7 @@ import styles from './operator-performance.module.css';
 
 const defaults={period:'7d',from:'',to:'',stage:'',query:'',accountId:'',batchId:'',page:'1',pageSize:'20',sort:'submitted',order:'desc',activity:'ALL'};
 const stages=[['COPY','文案'],['IMAGE','图片']] as const;
+type AccountOption={id:number;username:string;displayName?:string;status?:string};
 export function RateValue({value,onClick}:{value:Rate;onClick:()=>void}) {
   return <button className={`${styles.link} ${styles.rate}`} onClick={onClick}><strong>{RATE_LABEL(value)}</strong>
     <small>{value.decided?`${value.passed} / ${value.decided} 已检`:'暂无有效样本'}</small>
@@ -22,27 +24,33 @@ function Card({label,value,note,onClick}:{label:string;value:number|undefined;no
 }
 
 export function OperatorPerformance({initialFilters={}}:{initialFilters?:Record<string,string>}) {
-  const accountView=initialFilters.view==='accounts'||!!initialFilters.accountId||!!initialFilters.query||!!initialFilters.stage||!!initialFilters.batchId||['PRODUCTION','QA'].includes(initialFilters.activity);
+  const accountView=initialFilters.view ? initialFilters.view==='accounts'
+    : !!initialFilters.accountId||!!initialFilters.query||!!initialFilters.stage||!!initialFilters.batchId||['PRODUCTION','QA'].includes(initialFilters.activity);
   const [view,setView]=useState(accountView?'accounts':'overview');
   const [filters,setFilters]=useState<Record<string,string>>(()=>({...defaults,...Object.fromEntries(Object.entries(initialFilters).filter(([key])=>key in defaults)),
     activity:accountView?(initialFilters.activity==='QA'?'QA':'PRODUCTION'):'ALL'}));
   const [dateError,setDateError]=useState('');
   const [selection,setSelection]=useState<{accountId:number;metric:string;stage:string;sampleSet:string;report:OperatorReport}|null>(null);
   const {report,error,busy,refresh}=useOperatorPerformance(filters);
+  const [accounts,setAccounts]=useState<AccountOption[]>([]);
   const [exportError,setExportError]=useState(''),[exporting,setExporting]=useState(false);
+  useEffect(()=>{let cancelled=false;void apiRequest<AccountOption[]|{items?:AccountOption[]}>('/api/control-plane/v1/users',{cache:'no-store'})
+    .then(data=>{if(!cancelled)setAccounts(Array.isArray(data)?data:data.items??[]);}).catch(()=>{});
+    return()=>{cancelled=true;};},[]);
   useEffect(()=>{const search=new URLSearchParams({...Object.fromEntries(Object.entries(filters).filter(([,v])=>v!=='')),view});
     window.history.replaceState(null,'',`${window.location.pathname}?${search}`);},[filters,view]);
   const show=(accountId:number,metric='all',stage='',sampleSet='all')=>{if(report)setSelection({accountId,metric,stage,sampleSet,report});};
   function changeView(next:string) {
     setView(next);setSelection(null);
-    setFilters(previous=>({...previous,query:'',accountId:'',batchId:'',stage:'',page:'1',sort:'submitted',activity:next==='overview'?'ALL':'PRODUCTION'}));
+    setFilters(previous=>({...previous,batchId:'',stage:'',page:'1',sort:'submitted',activity:next==='overview'?'ALL':'PRODUCTION'}));
   }
   function apply(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();const fields=new FormData(event.currentTarget),from=String(fields.get('from')||''),to=String(fields.get('to')||'');
+    const accountId=String(fields.get('accountId')||'');
     const days=(Date.parse(to)-Date.parse(from))/86400000+1;
     if((from||to)&&(!Number.isFinite(days)||days<1||days>366)){setDateError('请选择完整的日期，范围为 1–366 天');return;}
     setDateError('');setFilters(previous=>({...previous,from,to,period:from?'custom':previous.period==='custom'?'7d':previous.period,
-      query:String(fields.get('query')||'').trim(),stage:String(fields.get('stage')||''),page:'1'}));
+      accountId,query:accountId?'':String(fields.get('query')||'').trim(),stage:String(fields.get('stage')||''),page:'1'}));
   }
   function preset(value:string) {
     const today=new Date(Date.now()+8*3600000).toISOString().slice(0,10);
@@ -65,6 +73,13 @@ export function OperatorPerformance({initialFilters={}}:{initialFilters?:Record<
     }catch(caught){setExportError(caught instanceof Error?caught.message:'导出失败');}finally{setExporting(false);}
   }
   const summary=report?.summary,qa=(report?.filters?.activity??filters.activity)==='QA';
+  const accountOptions=new Map(accounts.map(account=>[account.id,account]));
+  for(const person of report?.people.items??[]) if(!accountOptions.has(person.accountId)) accountOptions.set(person.accountId,{id:person.accountId,username:person.username,displayName:person.displayName,status:'HISTORICAL'});
+  const selectedAccount=accountOptions.get(Number(filters.accountId));
+  const selectedAccountLabel=selectedAccount
+    ? `${selectedAccount.displayName||selectedAccount.username}（${selectedAccount.username}）`
+    : filters.accountId ? `历史账号 #${filters.accountId}` : '';
+  const summaryAccountId=Number(filters.accountId)||0;
   const visibleStages=stages.filter(([stage])=>!filters.stage||stage===filters.stage);
   const columns: [string,string][]=qa?
     [...visibleStages.map(([stage,label]):[string,string]=>[stage==='COPY'?'copyQa':'imageQa',`${label}质检条数`]),['qaReviews','质检次数'],['qaPassed','通过次数'],['qaReturned','退回次数'],['qaRecheck','其中复检']]:
@@ -85,13 +100,15 @@ export function OperatorPerformance({initialFilters={}}:{initialFilters?:Record<
       <Button variant="outline" size="sm" disabled={!report||busy||exporting} onClick={()=>void exportReport()}><Download size={14}/>{exporting?'导出中…':'导出报表'}</Button>
       <Button variant="outline" size="sm" disabled={busy} onClick={refresh}><RefreshCw size={14}/>{busy?'更新中…':'刷新'}</Button></div></header>
     <nav className={styles.mainTabs} aria-label="统计视图">{[['overview','总数据'],['accounts','账号数据']].map(([value,label])=><button type="button" key={value} aria-current={view===value?'page':undefined} onClick={()=>changeView(value)}>{label}</button>)}</nav>
-    <form className={`panel ${styles.filters}`} onSubmit={apply} key={`${view}:${filters.period}:${filters.from}:${filters.to}`}>
+    <form className={`panel ${styles.filters}`} onSubmit={apply} key={`${view}:${filters.period}:${filters.from}:${filters.to}:${filters.accountId}:${filters.query}:${filters.stage}:${accounts.length}`}>
       <div className={styles.presets}>{[['today','今日'],['yesterday','昨日'],['7d','近 7 天'],['month','本月'],['30d','近 30 天']].map(([value,label])=><Button key={value} variant="outline" size="sm" type="button" aria-pressed={activePreset(value)} onClick={()=>preset(value)}>{label}</Button>)}</div>
       <DatePicker name="from" label="开始日期" defaultValue={filters.from}/><DatePicker name="to" label="结束日期" defaultValue={filters.to}/>
+      <label>人员<select name="accountId" aria-label="人员" defaultValue={filters.accountId}><option value="">全部人员</option>
+        {[...accountOptions.values()].toSorted((a,b)=>(a.displayName||a.username).localeCompare(b.displayName||b.username,'zh-CN')).map(account=><option key={account.id} value={account.id}>{account.displayName||account.username}（{account.username}）{account.status==='DISABLED'?' · 已停用':account.status==='HISTORICAL'?' · 历史':''}</option>)}</select></label>
       {view==='accounts'&&<><label className={styles.search}>账号<input name="query" aria-label="账号" placeholder="搜索姓名或账号" maxLength={128} defaultValue={filters.query}/></label>
         <label>内容类型<select name="stage" defaultValue={filters.stage}><option value="">文案和图片</option><option value="COPY">文案</option><option value="IMAGE">图片</option></select></label></>}
       <Button type="submit" size="sm">应用筛选</Button></form>
-    {(filters.accountId||filters.batchId)&&<div className={styles.attention}><span>{filters.accountId?`指定账号 #${filters.accountId}`:''} {filters.batchId?`指定批次 #${filters.batchId}`:''}</span><Button variant="ghost" size="sm" onClick={()=>setFilters(previous=>({...previous,accountId:'',batchId:'',page:'1'}))}>清除指定范围</Button></div>}
+    {(filters.accountId||filters.batchId)&&<div className={styles.attention}><span>{filters.accountId?`人员：${selectedAccountLabel}`:''} {filters.batchId?`指定批次 #${filters.batchId}`:''}</span><Button variant="ghost" size="sm" onClick={()=>setFilters(previous=>({...previous,accountId:'',batchId:'',page:'1'}))}>清除指定范围</Button></div>}
     {dateError&&<div role="alert" className={`${styles.notice} ${styles.error}`}>{dateError}</div>}
     {error&&<div role="alert" className={`${styles.notice} ${styles.error}`}>{error}{report?'。以下保留上次成功的数据和范围，可能已过时。':'。尚未取得统计数据。'}</div>}
     {exportError&&<div role="alert" className={`${styles.notice} ${styles.error}`}>{exportError}</div>}
@@ -100,21 +117,21 @@ export function OperatorPerformance({initialFilters={}}:{initialFilters?:Record<
     {view==='overview'?<>
       <section className={styles.headlineCards} aria-label="总数据">
         {stages.map(([stage,label])=><Card key={stage} label={`${label}标注`} value={summary?.[stage].submitted}
-          note={`首次提交 ${number(summary?.[stage].firstSubmitted)} · 返修处理 ${number(summary?.[stage].reworked)}`} onClick={()=>show(0,'submitted',stage)}/>)}
+          note={`首次提交 ${number(summary?.[stage].firstSubmitted)} · 返修处理 ${number(summary?.[stage].reworked)}`} onClick={()=>show(summaryAccountId,'submitted',stage)}/>)}
         {stages.map(([stage,label])=><Card key={`qa-${stage}`} label={`${label}质检`} value={summary?.qa[stage].tasks}
-          note={`${number(summary?.qa[stage].reviews)} 次质检 · 含复检 ${number(summary?.qa[stage].rechecks)} 次`} onClick={()=>show(0,'qa',stage)}/>)}
-        <Card label="新增可交付内容" value={summary?.released} note="整条内容首次达到交付条件" onClick={()=>show(0,'released')}/>
+          note={`${number(summary?.qa[stage].reviews)} 次质检 · 含复检 ${number(summary?.qa[stage].rechecks)} 次`} onClick={()=>show(summaryAccountId,'qa',stage)}/>)}
+        <Card label="新增可交付内容" value={summary?.released} note="整条内容首次达到交付条件" onClick={()=>show(summaryAccountId,'released')}/>
       </section>
       <section className={`panel ${styles.section}`} aria-label="内容质量"><h2>内容通过率</h2><p className={styles.muted}>一次通过率只看首次随机抽检；整体通过率还包含打回后通过有效强制复检的内容，同一条内容只计一次。</p>
         <div className={styles.qualityGrid}>{stages.flatMap(([stage,label])=>[
-          <article key={`${stage}-first`}><span>{label}一次通过率</span>{summary?<RateValue value={summary[stage].firstPass} onClick={()=>show(0,'firstPass',stage)}/>:<strong>—</strong>}</article>,
-          <article key={`${stage}-overall`}><span>{label}整体通过率</span>{summary?<RateValue value={summary[stage].overallPass} onClick={()=>show(0,'firstPass',stage)}/>:<strong>—</strong>}</article>,
+          <article key={`${stage}-first`}><span>{label}一次通过率</span>{summary?<RateValue value={summary[stage].firstPass} onClick={()=>show(summaryAccountId,'firstPass',stage)}/>:<strong>—</strong>}</article>,
+          <article key={`${stage}-overall`}><span>{label}整体通过率</span>{summary?<RateValue value={summary[stage].overallPass} onClick={()=>show(summaryAccountId,'firstPass',stage)}/>:<strong>—</strong>}</article>,
         ])}</div>
-        <details className={styles.methods}><summary>返修通过率与抽检覆盖</summary><div className={styles.qualityGrid}>{stages.map(([stage,label])=><article key={stage}><span>{label}首次返修通过率</span>{summary?<RateValue value={summary[stage].firstRecheck} onClick={()=>show(0,'firstRecheck',stage)}/>:<strong>—</strong>}
+        <details className={styles.methods}><summary>返修通过率与抽检覆盖</summary><div className={styles.qualityGrid}>{stages.map(([stage,label])=><article key={stage}><span>{label}首次返修通过率</span>{summary?<RateValue value={summary[stage].firstRecheck} onClick={()=>show(summaryAccountId,'firstRecheck',stage)}/>:<strong>—</strong>}
           <small className={styles.muted}>抽检覆盖：{summary?.[stage].coverage.rate==null?'—':`${(summary[stage].coverage.rate!*100).toFixed(1)}%`} · {number(summary?.[stage].coverage.sampled)} / {number(summary?.[stage].coverage.eligible)} 条已结批首次提交</small></article>)}</div>
           <p>首次返修通过率只统计首检实际退回后第一次复检的有效结论。</p></details>
       </section>
-      <div className={styles.attention}><span>截至当前</span><button className={styles.link} onClick={()=>show(0,'reassign')}>建议改派 {number(summary?.reassignSuggested)} 条</button><button className={styles.link} onClick={()=>show(0,'qaPending')}>待质检 {number(summary?.qa.pending)} 项</button><small>同一标注、同一阶段连续两次有效退回时提醒管理员。</small></div>
+      <div className={styles.attention}><span>截至当前</span><button className={styles.link} onClick={()=>show(summaryAccountId,'reassign')}>建议改派 {number(summary?.reassignSuggested)} 条</button><button className={styles.link} onClick={()=>show(summaryAccountId,'qaPending')}>待质检 {number(summary?.qa.pending)} 项</button><small>同一标注、同一阶段连续两次有效退回时提醒管理员。</small></div>
       {report&&<section className={`panel ${styles.section}`}><h2>每日工作量</h2><Chart label="每日标注与质检条数" unit="条" labels={report.trend.map(day=>day.date.slice(5))} series={[
         {name:'文案标注',values:report.trend.map(day=>day.copySubmitted)},{name:'图片标注',values:report.trend.map(day=>day.imageSubmitted)},
         {name:'文案质检',values:report.trend.map(day=>day.copyQa)},{name:'图片质检',values:report.trend.map(day=>day.imageQa)}]}/></section>}

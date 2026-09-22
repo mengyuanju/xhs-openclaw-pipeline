@@ -279,6 +279,13 @@ test('image previews navigate within a batch and keep fitted landscape images ge
   assert.match(preview, /aria-label="上一张图片"/);
   assert.match(preview, /aria-label="下一张图片"/);
   assert.match(preview, /\{position\} \/ \{total\}/);
+  assert.match(preview, /document\.addEventListener\('keydown', handlePreviewKeyDown\)/);
+  assert.match(preview, /document\.removeEventListener\('keydown', handlePreviewKeyDown\)/);
+  assert.match(preview, /containingDialog !== previewDialogRef\.current/);
+  assert.match(preview, /event\.key === 'ArrowLeft'[\s\S]*onPrevious/);
+  assert.match(preview, /event\.key === 'ArrowRight'[\s\S]*onNext/);
+  assert.match(preview, /event\.target\.closest\(KEYBOARD_NAVIGATION_CONTROL_SELECTOR\)/);
+  assert.match(preview, /'input'[\s\S]*'textarea'[\s\S]*'select'[\s\S]*'\[role="slider"\]'/);
   assert.match(preview, /className=\{`image-preview-stage/);
   assert.match(styles, /\.image-preview-stage\.is-fit\s*\{[^}]*place-items:\s*unsafe center/s);
   assert.match(styles, /\.image-preview-stage\.is-fit\s*\{[^}]*grid-template:\s*minmax\(0, 1fr\) \/ minmax\(0, 1fr\)/s);

@@ -29,6 +29,7 @@ type Job = { id: number; kind: string; status: string; itemCount: number; create
   downloadCount: number; lastDownloadedAt: string | null;
   artifacts: { part: number; fileName: string; byteSize: number }[] };
 type DownloadState = { job: Job; phase: 'WAITING' | 'STARTED' | 'FAILED'; error: string };
+type UserOption = { id: number; username: string; displayName?: string; role?: string; status?: string };
 const emptySummary: Summary = { total: 0, unpacked: 0, packed: 0, delivered: 0, updated: 0 };
 const labels = { UNPACKED: '待打包', PACKED: '已打包，待交付', DELIVERED: '已交付' };
 const time = (value: string | null) => value ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '—';
@@ -61,7 +62,7 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
   const [error, setError] = useState(''), [message, setMessage] = useState('');
   const [downloadState, setDownloadState] = useState<DownloadState | null>(null);
   const pendingDownloadId = downloadState?.phase === 'WAITING' ? downloadState.job.id : null;
-  const [users, setUsers] = useState<{ id: number; username: string; displayName?: string }[]>([]);
+  const [users, setUsers] = useState<UserOption[]>([]);
   const requestId = useRef(0), jobRequestId = useRef(0), failures = useRef(0), mounted = useRef(true);
 
   useEffect(() => {
@@ -167,7 +168,7 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
   useEffect(() => {
     if (role !== 'ADMIN') return;
     let cancelled = false;
-    void apiRequest<{ items?: { id: number; username: string; displayName?: string }[] } | { id: number; username: string; displayName?: string }[]>('/api/control-plane/v1/users')
+    void apiRequest<{ items?: UserOption[] } | UserOption[]>('/api/control-plane/v1/users')
       .then(data => { if (!cancelled) setUsers(Array.isArray(data) ? data : data.items ?? []); }).catch(() => {});
     return () => { cancelled = true; };
   }, [role]);
@@ -227,6 +228,20 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
     apply({ ...draft, from: new Date(end.getTime() - (days - 1) * 86400_000).toISOString().slice(0, 10), to: end.toISOString().slice(0, 10) });
   };
   const changeDraft = (field: keyof Filters, value: string) => setDraft(previous => ({ ...previous, [field]: value }));
+  const userById = new Map(users.map(user => [String(user.id), user]));
+  const userByUsername = new Map(users.map(user => [user.username, user]));
+  const userLabel = (id: string) => {
+    const user = userById.get(id);
+    return user ? `${user.displayName || user.username}（${user.username}）` : `历史账号 #${id}`;
+  };
+  const displayUsername = (username: string | null) => {
+    if (!username) return null;
+    const user = userByUsername.get(username);
+    return user?.displayName ? `${user.displayName}（${username}）` : username;
+  };
+  const personnelScope = ([['assigneeId', '负责人'], ['packedById', '打包人'], ['deliveredById', '交付确认人']] as const)
+    .filter(([field]) => Boolean(filters[field]))
+    .map(([field, label]) => `${label}：${userLabel(filters[field])}`);
 
   return <section className={styles.workbench} aria-label={historyOnly ? '我的共享交付记录' : '共享交付池'}>
     <div className={styles.toolbar}>
@@ -259,7 +274,7 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
         {role === 'ADMIN' && <>
           {([['assigneeId', '负责人'], ['packedById', '打包人'], ['deliveredById', '交付确认人']] as const).map(([field, label]) =>
             <FilterSelect key={field} label={label} value={draft[field] || 'ALL'} onChange={value => changeDraft(field, value === 'ALL' ? '' : value)}
-              options={[['ALL', '全部人员'], ...users.map(user => [String(user.id), user.displayName ? `${user.displayName}（${user.username}）` : user.username] as [string, string])]} />)}
+              options={[['ALL', '全部人员'], ...users.map(user => [String(user.id), `${user.displayName || user.username}（${user.username}）${user.status === 'DISABLED' ? ' · 已停用' : ''}`] as [string, string])]} />)}
           <FilterSelect label="汇总保存" value={draft.archiveState} onChange={value => changeDraft('archiveState', value)} options={[
             ['ALL', '全部'], ['NO', '未汇总保存'], ['YES', '已汇总保存']]} />
           <label className={styles.field}><span>词包名称</span><Input value={draft.packageName} onChange={event => changeDraft('packageName', event.target.value)} placeholder="精确词包名" /></label>
@@ -275,6 +290,11 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
       </div>
       <p className={styles.hint}>卡片按人员、来源和日期统计全部状态；列表应用所选状态。查询未交付内容的日期时，请选择“可交付时间”。</p>
     </form>
+    {role === 'ADMIN' && personnelScope.length > 0 && <div className={styles.personnelSummary} role="status">
+      <div><strong>人员筛选结果</strong><span>{personnelScope.join(' · ')}</span></div>
+      <div className={styles.actions}><span>{loading ? '正在汇总人员范围…' : `全部 ${result.summary.total} 条 · 未交付 ${result.summary.unpacked + result.summary.packed} 条 · 已交付 ${result.summary.delivered} 条`}</span>
+        <Button unstyled type="button" className="button small" disabled={Boolean(busy)} onClick={() => apply({ ...filters, assigneeId: '', packedById: '', deliveredById: '' })}>清除人员筛选</Button></div>
+    </div>}
     <div className={styles.actions}>
       <span>{allFiltered ? `已选择符合筛选的全部 ${result.total} 条` : `已选 ${selected.length} 条（最多 200 条）`}</span>
       <Button unstyled className="button small" disabled={Boolean(busy) || !canPack || allFiltered} onClick={() => void pack()}><PackageCheck size={14} />打包并下载</Button>
@@ -307,14 +327,14 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
           <td data-label="选择"><Checkbox aria-label={`选择交付任务 ${item.taskId}`} checked={selectedKeys.has(key(item)) || allFiltered}
             disabled={Boolean(busy) || (!selectedKeys.has(key(item)) && selected.length >= 200)} onChange={event => toggle([item], event.target.checked)} /></td>
           <td data-label="内容与版本"><strong>#{item.taskId} {item.query}</strong><small className={styles.meta}>文案 #{item.copyRevisionId} · 图片 {item.imageRunId.slice(0, 8)}</small>
-            <small className={styles.meta}>负责人 {filters.view === 'HISTORY' ? item.ownerUsername ?? '历史未记录' : item.assigneeUsername ?? '未分配'}</small>
+            <small className={styles.meta}>负责人 {filters.view === 'HISTORY' ? displayUsername(item.ownerUsername) ?? '历史未记录' : displayUsername(item.assigneeUsername) ?? '未分配'}</small>
             {role === 'ADMIN' && <small className={styles.meta}>{item.packageName ?? '未归属词包'}</small>}</td>
           <td data-label="交付状态"><span className={`pill ${item.state === 'DELIVERED' ? styles.delivered : ''}`}>{labels[item.state]}</span>
             {item.versionUpdated && <small className={styles.warning}>版本更新待重交</small>}{!item.isCurrent && <small className={styles.meta}>历史版本 / 当前已不可交付</small>}
             <small className={styles.meta}>可交付 {time(item.readyAt)}</small></td>
-          <td data-label="打包信息">{item.packedBy ?? '—'}<small className={styles.meta}>{time(item.packedAt)}</small><small className={styles.meta}>{item.batchCode}</small>
+          <td data-label="打包信息">{displayUsername(item.packedBy) ?? '—'}<small className={styles.meta}>{time(item.packedAt)}</small><small className={styles.meta}>{item.batchCode}</small>
             {item.batchCode && <small className={styles.meta}>{role === 'USER' ? '本人可见内容' : '本批次'}已交付 {item.batchDeliveredCount} / {item.batchVisibleCount}</small>}</td>
-          <td data-label="交付信息">{item.deliveredBy ?? '尚未确认'}<small className={styles.meta}>{time(item.deliveredAt)}</small></td>
+          <td data-label="交付信息">{displayUsername(item.deliveredBy) ?? '尚未确认'}<small className={styles.meta}>{time(item.deliveredAt)}</small></td>
           {role === 'ADMIN' && <td data-label="汇总保存">{item.archivedAt ? '已汇总保存' : '未汇总保存'}<small className={styles.meta}>{time(item.archivedAt)}</small></td>}
         </tr>)}</tbody></table>
       {!result.items.length && <div className="empty-state">{loading ? '正在读取交付内容…' : error ? '交付内容读取失败，请查看上方提示。' : '没有符合条件的内容，请调整日期或状态筛选。'}</div>}

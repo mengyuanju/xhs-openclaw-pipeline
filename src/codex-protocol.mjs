@@ -17,7 +17,8 @@ export function codexFailure(error = {}, fallbackCode = 'CODEX_EXEC_FAILED') {
   // Inspect transport metadata only; never classify words in a model's answer.
   const detail = [error.code, error.type, error.kind, error.message].filter(Boolean).join(' ');
   let code = typeof error.code === 'string' && error.code.startsWith('CODEX_') ? error.code : fallbackCode;
-  if (/usage[_ -]limit|quota|insufficient_quota|credits? (?:exhausted|depleted)|hit your.*limit/iu.test(detail)) code = 'CODEX_QUOTA_EXHAUSTED';
+  if (/moderation[_ -]blocked|image_generation_user_error|request was rejected by the safety system/iu.test(detail)) code = 'CODEX_IMAGE_SAFETY_BLOCKED';
+  else if (/usage[_ -]limit|quota|insufficient_quota|credits? (?:exhausted|depleted)|hit your.*limit/iu.test(detail)) code = 'CODEX_QUOTA_EXHAUSTED';
   else if (/invalid_grant|refresh[_ -]?token|access token could not be refreshed|token (?:was )?revoked|unauthoriz|not logged in|login required|authentication|\b401\b/iu.test(detail)) code = 'CODEX_AUTH_REQUIRED';
   else if (/rate[_ -]limit|too many requests|\b429\b/iu.test(detail)) code = 'CODEX_RATE_LIMITED';
   else if (/model[^\n]{0,80}(?:at capacity|overloaded)|server_is_overloaded/iu.test(detail)) code = 'CODEX_MODEL_AT_CAPACITY';
@@ -34,6 +35,7 @@ export function codexFailure(error = {}, fallbackCode = 'CODEX_EXEC_FAILED') {
     CODEX_MODEL_AT_CAPACITY: '上游模型暂时满载，已进入该模型冷却期；非图片调用可按生产配置切换容量备用模型。',
     CODEX_TRANSPORT_FAILED: '传输中断，远端执行结果可能未知；请检查调用轨迹和检查点后续跑。',
     CODEX_EXEC_TIMEOUT: '执行超时，远端执行结果可能未知；请检查调用轨迹和检查点后续跑。',
+    CODEX_IMAGE_SAFETY_BLOCKED: '图片安全系统拒绝了生成结果；请改用更克制、非冲突性的视觉表达。',
   }[code] ?? '';
   return Object.assign(new Error(`Codex ${code}: ${safeTraceText(detail).text.slice(0, 4000)} ${guidance}`.trim()), {
     code,

@@ -58,8 +58,9 @@ test('unavailable private custom labels cannot be forged into a return', async (
 });
 
 test('copy QA tag migration and both review surfaces preserve scoped reusable labels', async () => {
-  const [migration, picker, standalone, workMode, worker] = await Promise.all([
+  const [migration, service, picker, standalone, workMode, worker] = await Promise.all([
     readFile(projectFile('server/migrations/0080_copy_qa_reason_tags.sql'), 'utf8'),
+    readFile(projectFile('server/src/copy-qa-reason-tags.mjs'), 'utf8'),
     readFile(projectFile('app/copy-qa/copy-qa-reason-picker.tsx'), 'utf8'),
     readFile(projectFile('app/copy-qa/copy-qa-workbench.tsx'), 'utf8'),
     readFile(projectFile('app/work-mode/work-quality-editor.tsx'), 'utf8'),
@@ -68,6 +69,8 @@ test('copy QA tag migration and both review surfaces preserve scoped reusable la
   assert.match(migration, /CREATE TABLE copy_qa_reason_tags/u);
   assert.match(migration, /visibility IN \('PRIVATE', 'PUBLIC'\)/u);
   assert.match(migration, /status IN \('ACTIVE', 'PENDING', 'DISABLED'\)/u);
+  assert.match(service, /THEN \$5::bigint ELSE NULL/u);
+  assert.match(service, /THEN \$6::varchar ELSE NULL/u);
   assert.match(picker, /添加我的标签/u);
   assert.match(picker, /REQUEST_PUBLIC/u);
   assert.match(picker, /PUBLISH/u);

@@ -688,6 +688,42 @@ describe('delivery images', () => {
     }
   });
 
+  it('retries one safety-blocked image with a constrained visual prompt and records the prompt that succeeded', async () => {
+    const directory = await makeDirectory();
+    const rawImage = await sharp({
+      create: { width: 1024, height: 1536, channels: 3, background: '#d8cdbf' },
+    }).png().toBuffer();
+    const prompts = [];
+    let blocked = false;
+    const generate = ({ prompt, outputPath }) => {
+      prompts.push(prompt);
+      if (!blocked) {
+        blocked = true;
+        throw Object.assign(new Error('image output rejected'), { code: 'CODEX_IMAGE_SAFETY_BLOCKED' });
+      }
+      writeFileSync(outputPath, rawImage);
+      return { outputPath, provider: 'codex', model: 'openai/gpt-image-2' };
+    };
+    const images = await renderDeliveryImages({
+      post: postFixture(),
+      outputDir: directory,
+      mock: false,
+      agentClient: {
+        runImage: generate,
+        runImageEdit: generate,
+      },
+      imagePrompts: ['第一页完整模型图片提示词', '第二页完整模型图片提示词', '第三页完整模型图片提示词'],
+      textRenderingMode: 'model-native',
+    });
+
+    assert.equal(prompts.length, 4);
+    assert.doesNotMatch(prompts[0], /trusted_image_safety_retry/u);
+    assert.match(prompts[1], /trusted_image_safety_retry/u);
+    assert.match(prompts[1], /不得呈现战斗、攻击、伤口、血液、武器/u);
+    assert.equal(images[0].prompt, prompts[1]);
+    assert.equal(images[0].generationAttempts, 1);
+  });
+
   it('returns a failed alignment after the retry limit so QC can block the task', async () => {
     const directory = await makeDirectory();
     const rawImage = await sharp({
