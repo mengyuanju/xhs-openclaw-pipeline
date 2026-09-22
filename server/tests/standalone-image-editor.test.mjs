@@ -146,7 +146,12 @@ test('standalone uploads: isolation, executor claims, shared capacity, preview, 
       assert.deepEqual((await service.remove(deletion,actor)).deletedIds,[a.id,b.id]);
       assert.deepEqual((await service.remove(deletion,actor)).deletedIds,[a.id,b.id]);
       assert.equal((await pool.query('SELECT status FROM image_edit_requests WHERE id=$1',[queued.id])).rows[0].status,'CANCELLED');
-      for(const path of [`/v1/image-editor/workspaces/${a.id}`,`/v1/image-editor/workspaces/${a.id}/image-edits`,`/v1/image-editor/assets/${a.assets[0].id}`,`/v1/image-editor/edits/${queued.id}`])assert.equal((await request(path)).status,404);
+      for(const path of [`/v1/image-editor/workspaces/${a.id}`,`/v1/image-editor/workspaces/${a.id}/image-edits`,`/v1/image-editor/assets/${a.assets[0].id}`])assert.equal((await request(path)).status,404);
+      const receipt=await request(`/v1/image-editor/edits/${queued.id}`);
+      assert.equal(receipt.status,200);
+      assert.deepEqual((await receipt.json()).data,{id:queued.id,task_id:String(a.id),status:'DELETED'});
+      for(const as of [other,admin])assert.equal((await request(`/v1/image-editor/edits/${queued.id}`,{as})).status,403);
+      assert.equal((await request(`/v1/image-editor/edits/${queued.id}/retry`,{method:'POST',body:{requestId:randomUUID(),version:queued.version,reason:'不可恢复'}})).status,404);
       assert.equal((await service.list(actor)).items.some(row=>[a.id,b.id].includes(row.id)),false);
       assert.equal(await machine.claimImage('standalone-executor'),null);
       assert.equal((await service.detail(foreign.id,other)).id,foreign.id);

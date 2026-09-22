@@ -156,7 +156,7 @@ export function StandaloneImageEditor({taskId,runId,copyRevisionId,asset,assets,
   runs:Array<{id:string;result:{processing?:{type:string}}|null}>;onChanged:()=>Promise<void>;onSubmitted:()=>void;onBusyChange:(busy:boolean)=>void;initialStatus:string;onRunningChange:(running:boolean)=>void;
 }) {
   const confirm=useConfirmDialog();
-  const {tasks:backgroundTasks,store:backgroundStore}=useBackgroundTasks();
+  const {store:backgroundStore}=useBackgroundTasks();
   const [tab,setTab]=useState('TEXT');
   const [text,setText]=useState(DEFAULT_DISCLOSURE_TEXT);
   const [textScope,setTextScope]=useState<TextScope>('CURRENT');
@@ -531,12 +531,6 @@ export function StandaloneImageEditor({taskId,runId,copyRevisionId,asset,assets,
     } finally {setBusy(false);setPendingBatchAccept(false);setReason('');}
   }
   return <section className={inlineStyles.editor} aria-label="图片编辑组件" aria-busy={busy}>
-      <header className={styles.header}>
-        <div><h3 className={styles.title}>编辑图片 · 第 {displayPage} 张</h3>
-        <p className={styles.description} role="status">{running?'生图中，仅支持查看；完成后可下载或修改后再次保存。':'选择修改方式，保存后开始生图。结果可在列表中打开、预览和下载。'}</p>
-        {backgroundTasks.some(item=>item.taskId===taskId&&item.kind==='STANDALONE_IMAGE_EDIT'&&isBackgroundTaskRunning(item))&&<p className={styles.description} role="status">图片修复正在排队或处理中，可关闭窗口继续其他工作。</p>}</div>
-        <span className={styles.pageCount}>{displayPage} / {imageAssets.length}</span>
-      </header>
       <div className={styles.tabs} role="tablist" aria-label="图片修改方式">{[['TEXT','添加文字'],['ENTITY','实体替换'],['PROMPT','局部修改']].map(([key,label])=><Button unstyled className={styles.tab} type="button" key={key} role="tab" disabled={readOnly} aria-selected={tab===key} onClick={()=>{setTab(key);setConfirmed(false);setError('');setNotice('');setPreviewMode('SOURCE');showPanel('EDIT');}}>{label}</Button>)}</div>
       <div className={styles.mobileViewTabs} role="tablist" aria-label="移动端工作区">
         <Button unstyled type="button" role="tab" aria-selected={mobileView==='PREVIEW'} onClick={()=>setMobileView('PREVIEW')}>预览</Button>

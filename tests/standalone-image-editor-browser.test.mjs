@@ -17,7 +17,7 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
   let server,browser,uploaded=false,edits=[],submitted,submissionCount=0,failSubmission=false,extraRows=[],batchSubmissions=0;
   const deleted=new Set(),deletions=[];
   try {
-    await build({stdin:{contents:`import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{ConfirmDialogProvider}from'./components/ui/confirm-dialog';import{ImageEditorWorkbench}from'./app/image-editor/workbench';createRoot(document.getElementById('root')).render(<ConfirmDialogProvider><ImageEditorWorkbench/></ConfirmDialogProvider>);`,resolveDir:process.cwd(),loader:'tsx'},bundle:true,outfile:join(root,'bundle.js'),jsx:'automatic',platform:'browser',conditions:['style'],alias:{'@':process.cwd()},define:{'process.env.NODE_ENV':'"test"','process.env':'{}'}});
+    await build({stdin:{contents:`import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{ConfirmDialogProvider}from'./components/ui/confirm-dialog';import{ImageEditorWorkbench}from'./app/image-editor/workbench';import{BackgroundTasksProvider,BackgroundTaskNotifications}from'./app/components/background-tasks';import{Toaster}from'./components/ui/sonner';createRoot(document.getElementById('root')).render(<ConfirmDialogProvider><BackgroundTasksProvider accountKey="browser-test"><ImageEditorWorkbench/><BackgroundTaskNotifications/><Toaster/></BackgroundTasksProvider></ConfirmDialogProvider>);`,resolveDir:process.cwd(),loader:'tsx'},bundle:true,outfile:join(root,'bundle.js'),jsx:'automatic',platform:'browser',conditions:['style'],alias:{'@':process.cwd()},define:{'process.env.NODE_ENV':'"test"','process.env':'{}'}});
     const [js,rawCss]=await Promise.all([readFile(join(root,'bundle.js')),readFile(join(root,'bundle.css'),'utf8')]);
     const {default:postcss}=await import('postcss'),{default:tailwind}=await import('@tailwindcss/postcss');
     const {css}=await postcss([tailwind()]).process(rawCss,{from:join(process.cwd(),'app/globals.css')});
@@ -32,6 +32,11 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
         if(path==='/v1/image-editor/workspaces/delete'){deletions.push(data.workspaceIds);for(const id of data.workspaceIds)deleted.add(id);result={deletedIds:data.workspaceIds};}
         else if(path==='/v1/image-editor/workspaces'&&req.method==='POST'){uploaded=true;deleted.delete(workspace.id);assert.equal(data.images.length,workspace.assets.length);result={...workspace,status:'UPLOADED'};}
         else if(path==='/v1/image-editor/workspaces'){assert.equal(new URL(req.url,'http://localhost').searchParams.get('queue'),'true');const items=[...(edits.length?[{id:501,title:workspace.title,owner:'本人',status:edits[0].status,error:edits[0].error}]:[]),...extraRows].filter(item=>!deleted.has(item.id));result={total:items.length,items};}
+        else if(path.startsWith('/v1/image-editor/edits/')) {
+          const edit=edits.find(item=>path.endsWith(item.id));
+          if(!edit){res.statusCode=404;result=null;}
+          else result=deleted.has(501)?{id:edit.id,task_id:501,status:'DELETED'}:edit;
+        }
         else if(path==='/v1/image-editor/workspaces/501')result={...workspace,status:edits[0]?.status??'UPLOADED'};
         else if(path==='/v1/image-editor/workspaces/501/image-edits/batch') {
           batchSubmissions+=1;assert.equal(data.edits.length,2);
@@ -132,6 +137,15 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     await page.getByRole('alertdialog').getByRole('button',{name:'确认删除',exact:true}).click();
     await list.getByText('暂无图片，点击右上角“新增图片”开始编辑。',{exact:true}).waitFor();
     assert.deepEqual(deletions[0],[501]);
+    await page.waitForFunction(()=>{
+      const tasks=JSON.parse(localStorage.getItem('xhs:background-tasks:v1:browser-test')??'[]');
+      return tasks.length>0&&tasks.every(task=>task.taskId!==501||task.status==='DELETED'&&task.read);
+    });
+    await page.waitForFunction(()=>![...document.querySelectorAll('[data-sonner-toast]')].some(item=>item.textContent.includes('独立图片编辑 #501')));
+    await page.getByRole('button',{name:/^后台任务，/u}).click();
+    await page.getByRole('dialog').getByText('暂无后台任务。',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'关闭弹窗',exact:true}).click();
+
     deleted.clear();extraRows=[{id:502,title:'第二张图片',owner:'本人',status:'PREVIEW_READY'}];
     await list.getByRole('button',{name:'刷新',exact:true}).click();
     await list.getByText('第二张图片',{exact:true}).waitFor();

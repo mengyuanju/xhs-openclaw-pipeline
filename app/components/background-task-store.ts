@@ -70,7 +70,7 @@ export function backgroundTaskPath(task: BackgroundTask) {
 type Storage = Pick<globalThis.Storage, 'getItem' | 'setItem'>;
 type Snapshot = { status: string; error?: string | null };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
-const statuses = new Set(['QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'STALE', 'PREVIEW_READY', 'ACCEPTED', 'REJECTED', 'CANCELLED', 'UNAVAILABLE']);
+const statuses = new Set(['QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'STALE', 'PREVIEW_READY', 'ACCEPTED', 'REJECTED', 'CANCELLED', 'UNAVAILABLE', 'DELETED']);
 const advisoryImageEditPreflightErrors = [
   '源图视觉验收不确定或必需文字缺失，不能安全编辑',
   '真实产品替换前置检查未通过，尚未调用图片编辑模型',
@@ -90,6 +90,7 @@ export function createBackgroundTaskStore({ storage, storageKey, request, onComp
   let tasks: BackgroundTask[] = [];
   const listeners = new Set<() => void>();
   const inFlight = new Set<string>();
+  const unavailableChecked = new Set<string>();
   let stopped = false;
 
   function readSaved(serialized?: string) {
@@ -110,12 +111,16 @@ export function createBackgroundTaskStore({ storage, storageKey, request, onComp
 
   function sync(serialized?: string) {
     if (stopped) return;
-    let changed = false;
+    let changed = false, repairDeleted = false;
     const merged = new Map(tasks.map(task => [task.id, task]));
     // Merge the event snapshot too: a second tab may already have overwritten
     // the shared array before this tab receives the first storage event.
     for (const saved of [...(serialized === undefined ? [] : readSaved(serialized)), ...readSaved()]) {
       const local = merged.get(saved.id);
+      // Deletion is final even if a delayed tab writes an older queued/ready
+      // snapshot or tries to restart the same request after it was removed.
+      if (local?.status === 'DELETED') { if (saved.status !== 'DELETED') repairDeleted = true; continue; }
+      if (saved.status === 'DELETED') { merged.set(saved.id, saved); changed = true; continue; }
       if (!local || saved.createdAt > local.createdAt) { merged.set(saved.id, saved); changed = true; continue; }
       if (saved.createdAt < local.createdAt) continue;
       const savedTime = saved.updatedAt ?? saved.createdAt, localTime = local.updatedAt ?? local.createdAt;
@@ -126,9 +131,9 @@ export function createBackgroundTaskStore({ storage, storageKey, request, onComp
       if (next.updatedAt !== local.updatedAt || next.status !== local.status || next.read !== local.read
           || Boolean(next.consumed) !== Boolean(local.consumed) || next.error !== local.error) { merged.set(saved.id, next); changed = true; }
     }
-    if (changed) {
+    if (changed || repairDeleted) {
       tasks = [...merged.values()].sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
-      if (serialized !== undefined) publish();
+      if (serialized !== undefined || repairDeleted) publish();
       else listeners.forEach(listener => listener());
     }
   }
@@ -148,6 +153,7 @@ export function createBackgroundTaskStore({ storage, storageKey, request, onComp
         || !Number.isSafeInteger(input.taskId) || input.taskId <= 0) return;
     sync();
     const current = tasks.find(task => task.id === input.id);
+    if (current?.status === 'DELETED' || tasks.some(task => task.kind === 'STANDALONE_IMAGE_EDIT' && input.kind === task.kind && task.taskId === input.taskId && task.status === 'DELETED')) return;
     if (current && !restart) return;
     const createdAt = Math.max(Date.now(), (current?.createdAt ?? 0) + 1);
     const candidate: BackgroundTask = { ...input, createdAt, updatedAt: createdAt, read: false };
@@ -157,19 +163,36 @@ export function createBackgroundTaskStore({ storage, storageKey, request, onComp
     if (!isBackgroundTaskRunning(task) && !isAdvisoryImageEditPreflightFailure(task)) onComplete(task);
   }
 
+  function dismissStandaloneWorkspaces(ids: number[]) {
+    if (stopped) return;
+    sync();
+    const removed = new Set(ids);
+    tasks = tasks.map(task => task.kind === 'STANDALONE_IMAGE_EDIT' && removed.has(task.taskId)
+      ? { ...task, status: 'DELETED', read: true, error: null, pollError: undefined, payload: undefined,
+        updatedAt: Math.max(Date.now(), (task.updatedAt ?? task.createdAt) + 1) }
+      : task);
+    publish();
+  }
+
   async function poll() {
     if (stopped) return;
     sync();
     await Promise.allSettled(tasks.filter(task => isBackgroundTaskRunning(task)
+      || task.kind === 'STANDALONE_IMAGE_EDIT' && task.status === 'UNAVAILABLE' && !unavailableChecked.has(task.id)
       || ['IMAGE_EDIT','STANDALONE_IMAGE_EDIT'].includes(task.kind) && task.status === 'PREVIEW_READY'
       || task.kind === 'IMAGE_PLAN' && task.status === 'SUCCEEDED' && !task.consumed && !task.payload).map(async task => {
       if (inFlight.has(task.id)) return;
       inFlight.add(task.id);
+      if (task.status === 'UNAVAILABLE') unavailableChecked.add(task.id);
       try {
         const payload = await request(backgroundTaskPath(task));
         sync();
         if (stopped || tasks.find(item => item.id === task.id) !== task) return;
         if (!payload || !statuses.has(payload.status)) throw new Error('任务状态暂不可用');
+        if (payload.status === 'DELETED' && task.kind === 'STANDALONE_IMAGE_EDIT') {
+          dismissStandaloneWorkspaces([task.taskId]);
+          return;
+        }
         const finished = isBackgroundTaskRunning(task) && !isBackgroundTaskRunning(payload);
         const candidate = { ...task, status: payload.status, error: payload.error, pollError: undefined, payload, read: finished ? false : task.read,
           updatedAt: Math.max(Date.now(), (task.updatedAt ?? task.createdAt) + 1) };
@@ -182,11 +205,12 @@ export function createBackgroundTaskStore({ storage, storageKey, request, onComp
         if (stopped || tasks.find(item => item.id === task.id) !== task) return;
         const status = (error as { status?: number })?.status;
         const unavailable = status === 403 || status === 404;
+        if (!unavailable) unavailableChecked.delete(task.id);
         const next = { ...task, ...(unavailable ? { status: 'UNAVAILABLE', read: false } : {}),
           pollError: unavailable ? undefined : '暂时无法获取进度', updatedAt: Math.max(Date.now(), (task.updatedAt ?? task.createdAt) + 1) };
         tasks = tasks.map(item => item.id === task.id ? next : item);
         publish();
-        if (unavailable) onComplete(next);
+        if (unavailable && task.status !== 'UNAVAILABLE') onComplete(next);
       } finally { inFlight.delete(task.id); }
     }));
   }
@@ -195,6 +219,7 @@ export function createBackgroundTaskStore({ storage, storageKey, request, onComp
     getSnapshot: () => tasks,
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     track,
+    dismissStandaloneWorkspaces,
     poll,
     sync,
     stop() { stopped = true; },

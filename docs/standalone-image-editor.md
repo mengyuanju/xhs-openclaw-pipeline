@@ -37,3 +37,5 @@
 若数据库已执行早期 `0082`（尚未包含工作区状态约束），迁移器仅接受已知的精确校验值，并通过 `0083` 补齐约束；已执行完整 `0082` 和全新数据库也兼容。保留原迁移校验记录，不修改任务、图片或工作区数据；未知校验值仍阻止启动。没有自动应用生产迁移、发布或增加生产定时任务。
 
 验证：`npm run typecheck`、`npm test`、`npm --prefix server test`；隔离数据库端到端测试设置 `RUN_POSTGRES_E2E=1` 后执行 `node --test server/tests/standalone-image-editor.test.mjs`；浏览器测试设置 `RUN_IMAGE_EDIT_BROWSER=1` 后执行 `node --test tests/standalone-image-editor-browser.test.mjs`。测试不消耗模型额度。
+
+删除成功后会同步清理该工作区全部后台任务与提醒，跨标签页保留删除标记，避免旧轮询响应恢复通知。已删除编辑的状态查询只向创建人返回最小删除状态，不再当作生图失败；详情、图片和修改接口仍不可访问。旧版缓存中的不可用通知会在重新打开新版页面时复查并静默清理。

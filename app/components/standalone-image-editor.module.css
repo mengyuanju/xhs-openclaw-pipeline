@@ -1,6 +1,6 @@
 .editor {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   height: clamp(620px, 72dvh, 820px);
   min-width: 0;
   overflow: hidden;
@@ -8,7 +8,7 @@
   background: #f6f3ef;
 }
 @media (max-width: 840px) {
-  .editor { grid-template-rows: auto auto auto minmax(0, 1fr); height: max(640px, 78dvh); }
+  .editor { grid-template-rows: auto auto minmax(0, 1fr); height: max(640px, 78dvh); }
 }
 
 .fields { margin: 0; padding: 0; border: 0; min-width: 0; }
