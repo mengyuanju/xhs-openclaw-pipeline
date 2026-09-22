@@ -30,6 +30,8 @@ export function BackgroundTasksProvider({ accountKey, children }: { accountKey: 
   }, []);
   const openTask = useCallback(async (task: BackgroundTask) => {
     const activeStore = storeRef.current;
+    activeStore?.sync();
+    if (activeStore?.getSnapshot().find(item => item.id === task.id)?.status === 'DELETED') return false;
     try {
       if (task.kind === 'STANDALONE_IMAGE_EDIT') {
         window.location.assign(`/image-editor?workspace=${task.taskId}`);
@@ -61,9 +63,9 @@ export function BackgroundTasksProvider({ accountKey, children }: { accountKey: 
     });
     setStore(next);
     storeRef.current = next;
-    setTasks(next.getSnapshot());
+    setTasks(next.getSnapshot().filter(task => task.status !== 'DELETED'));
     const unsubscribe = next.subscribe(() => {
-      setTasks(next.getSnapshot());
+      setTasks(next.getSnapshot().filter(task => task.status !== 'DELETED'));
       next.getSnapshot().filter(task => task.read || task.consumed).forEach(task => toast.dismiss(`background:${task.id}`));
     });
     // Only one tab polls at a time, so a completion produces one toast.

@@ -17,11 +17,11 @@ async function currentActor(c, actor) {
 }
 export function createStandaloneImageEditor({ pool, storageRoot }) {
   const edits = createImageEditingService({ pool, storageRoot });
-  async function access(id, actor, c = pool) {
-    const row = (await c.query(`SELECT w.*,t.current_image_run_id,t.current_copy_revision_id
+  async function access(id, actor, c = pool, { includeDeleted = false } = {}) {
+    const row = (await c.query(`SELECT w.*,t.current_image_run_id,t.current_copy_revision_id,NOT (${visibleWorkspace('w')}) AS deleted
       FROM standalone_image_workspaces w JOIN tasks t ON t.id=w.task_id
       JOIN app_users u ON u.id=$2 AND u.username=$3 AND u.role=$4 AND u.status='ACTIVE' AND u.credential_version=$5
-      WHERE w.task_id=$1 AND t.task_kind='STANDALONE_IMAGE_EDIT' AND ${visibleWorkspace('w')}`,
+      WHERE w.task_id=$1 AND t.task_kind='STANDALONE_IMAGE_EDIT' ${includeDeleted?'':`AND ${visibleWorkspace('w')}`}`,
     [normalizeTaskId(id),actor.userId,actor.username,actor.role,actor.credentialVersion])).rows[0];
     if (!row) throw new ControlPlaneNotFoundError('图片编辑记录不存在或账号已失效');
     if (!['ADMIN','USER'].includes(actor?.role) || Number(row.owner_id) !== actor.userId) {
@@ -207,7 +207,13 @@ export function createStandaloneImageEditor({ pool, storageRoot }) {
       return items.map(edit=>({...edit,referenceAssets:refs.filter(ref=>edit.config.references.some(value=>Number(value.assetId)===Number(ref.id)))
         .map(ref=>({id:Number(ref.id),sha256:ref.sha256,url:assetUrl(ref.id),purpose:edit.config.references.find(value=>Number(value.assetId)===Number(ref.id)).purpose}))}));
     },
-    async getEdit(id,actor) {return editAccess(id,actor);},
+    async getEdit(id,actor) {
+      const edit=await edits.get(id);
+      const workspace=await access(edit.task_id,actor,pool,{includeDeleted:true});
+      // A minimal owner-only receipt lets background monitors stop silently.
+      // Details, assets and all mutation endpoints still reject deleted data.
+      return workspace.deleted?{id:edit.id,task_id:edit.task_id,status:'DELETED'}:edit;
+    },
     async createEdit(id,input,actor) {await access(id,actor);return writableEdits(id,actor).create(id,input,actor);},
     async uploadReference(id,input,actor) {await access(id,actor);const a=await writableEdits(id,actor).upload(id,input,actor);return {...a,url:assetUrl(a.id)};},
     async action(id,action,input,actor) {const edit=await editAccess(id,actor);return writableEdits(edit.task_id,actor).action(id,action,input,actor);},

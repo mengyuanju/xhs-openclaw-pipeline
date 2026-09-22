@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/input';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { createRequestId } from '../components/request-id';
+import { useBackgroundTasks } from '../components/background-tasks';
 import styles from './workbench.module.css';
 
 type Item = { id:number; title:string; owner:string; status:string; nodeId:string|null; error:string|null; createdAt?:string };
@@ -16,6 +17,7 @@ function statusOf(status:string) {
 }
 export function ImageEditorList({refreshKey=0,onSelect}:{refreshKey?:number;onSelect:(id:number)=>void}) {
   const confirm=useConfirmDialog();
+  const {store:backgroundStore}=useBackgroundTasks();
   const [selected,setSelected]=useState<number[]>([]),[deleting,setDeleting]=useState(false),[actionError,setActionError]=useState('');
   const [offset,setOffset] = useState(0), [revision,setRevision] = useState(0);
   const [data,setData] = useState<{items:Item[];total:number}>({items:[],total:0}), [error,setError] = useState('');
@@ -47,7 +49,8 @@ export function ImageEditorList({refreshKey=0,onSelect}:{refreshKey?:number;onSe
     if(!approved)return;
     setDeleting(true);setActionError('');
     try {
-      await apiRequest('/api/control-plane/v1/image-editor/workspaces/delete',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({workspaceIds:ids,requestId:createRequestId()})});
+      const result=await apiRequest<{deletedIds:number[]}>('/api/control-plane/v1/image-editor/workspaces/delete',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({workspaceIds:ids,requestId:createRequestId()})});
+      backgroundStore?.dismissStandaloneWorkspaces(result.deletedIds);
       setSelected([]);setRevision(value=>value+1);
     } catch(e) {setActionError(e instanceof Error?e.message:'删除失败');setRevision(value=>value+1);}
     finally {setDeleting(false);}

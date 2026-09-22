@@ -178,3 +178,53 @@ test('standalone edit notifications poll their own API and persist without becom
   assert.equal(f.notifications.length,1);
   assert.equal(createBackgroundTaskStore(f.options).getSnapshot()[0].kind,'STANDALONE_IMAGE_EDIT');
 });
+
+
+test('deleting standalone workspaces clears every tracked page and fences late poll responses across tabs', async () => {
+  for (const outcome of ['success','missing']) {
+    let resolvePoll,rejectPoll;
+    const f=fixture(()=>new Promise((resolve,reject)=>{resolvePoll=resolve;rejectPoll=reject;}));
+    const a={...plan(),kind:'STANDALONE_IMAGE_EDIT',taskId:498};
+    const b={...a,id:randomUUID(),page:2,status:'PREVIEW_READY'};
+    const business={...plan(),kind:'IMAGE_EDIT',taskId:498,status:'ACCEPTED'};
+    f.store.track(a);f.store.track(b);f.store.track(business);f.notifications.length=0;
+    // Only one request needs to remain in flight for this race.
+    const options={...f.options,request:path=>path.endsWith(a.id)?f.options.request(path):Promise.resolve({status:'PREVIEW_READY'})};
+    const polling=createBackgroundTaskStore(options);
+    const pending=polling.poll();
+    const stale=f.saved.get('account:one');
+    f.store.dismissStandaloneWorkspaces([498,999]);
+    if(outcome==='success')resolvePoll({status:'PREVIEW_READY'});
+    else rejectPoll(Object.assign(new Error('removed'),{status:404}));
+    await pending;
+    f.saved.set('account:one',stale); // A delayed tab overwrites localStorage after deletion.
+    polling.sync(stale);
+    assert.equal(f.notifications.length,0,'deletion and late responses do not notify');
+    assert.ok(polling.getSnapshot().filter(task=>task.kind==='STANDALONE_IMAGE_EDIT').every(task=>task.status==='DELETED'&&task.read));
+    assert.equal(polling.getSnapshot().find(task=>task.id===business.id).status,'ACCEPTED');
+    polling.track(a,true);
+    assert.equal(polling.getSnapshot().find(task=>task.id===a.id).status,'DELETED','stale restart cannot resurrect a deleted request');
+    const restored=createBackgroundTaskStore({...f.options,request:()=>assert.fail('deleted tasks must not be polled')});
+    await restored.poll();
+  }
+});
+
+test('server deletion receipts silently clear cached unavailable and ready standalone notifications',async()=>{
+  const f=fixture(async()=>({status:'DELETED'}));
+  const a={...plan(),kind:'STANDALONE_IMAGE_EDIT',status:'UNAVAILABLE'};
+  const b={...a,id:randomUUID(),status:'PREVIEW_READY'};
+  f.store.track(a);f.store.track(b);f.notifications.length=0;
+  const restored=createBackgroundTaskStore(f.options);
+  await restored.poll();await restored.poll();
+  assert.ok(restored.getSnapshot().every(task=>task.status==='DELETED'&&task.read));
+  assert.equal(f.notifications.length,0);
+});
+
+test('standalone permission failures still notify once and cached unavailability is only rechecked once',async()=>{
+  let calls=0;
+  const f=fixture(async()=>{calls++;throw Object.assign(new Error('forbidden'),{status:403});});
+  f.store.track({...plan(),kind:'STANDALONE_IMAGE_EDIT'});
+  await f.store.poll();await f.store.poll();await f.store.poll();
+  assert.equal(calls,2);assert.equal(f.notifications.length,1);
+  assert.equal(f.store.getSnapshot()[0].status,'UNAVAILABLE');
+});
