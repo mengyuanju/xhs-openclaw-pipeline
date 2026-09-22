@@ -216,6 +216,40 @@ test('task detail exposes the stable assignee account identity used by review co
   assert.match(taskSelection, /assignee\.created_at < task\.assigned_at/u);
 });
 
+test('task detail exposes the latest image retry errors without exposing execution snapshots separately', async () => {
+  const chainId = '11111111-1111-4111-8111-111111111111';
+  const execution = (attempt, error, startedAt) => ({
+    id: `${attempt}1111111-1111-4111-8111-111111111111`,
+    task_id: '41', kind: 'IMAGE', node_id: 'image-node', image_production_chain_id: chainId,
+    status: 'FAILED', stage: 'STARTING_IMAGE', progress_percent: 0, progress_message: error,
+    progress_details: {}, error, started_at: startedAt, last_activity_at: startedAt, finished_at: startedAt,
+    snapshot: attempt === 1 ? {} : { imageRetry: { failedAttempts: attempt - 1, nodeId: 'image-node' } },
+  });
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql) {
+      const source = String(sql);
+      if (source.includes('WITH task AS')) return { rows: [taskRow({
+        state: 'COPY_REVIEW_PENDING', current_stage: 'IMAGE_RETRY_EXHAUSTED',
+        image_production_chain_id: chainId, error: '第三次失败',
+      })] };
+      if (source.includes('SELECT * FROM task_executions')) return { rows: [
+        execution(3, '第三次失败', '2026-09-22T02:10:50.000Z'),
+        execution(2, '第二次失败', '2026-09-22T02:10:45.000Z'),
+        execution(1, '第一个具体根因', '2026-09-22T02:10:40.000Z'),
+      ] };
+      return { rows: [] };
+    },
+  } });
+
+  const detail = await repository.getTask(41);
+  assert.deepEqual(detail.imageRetryFailures.map(({ attempt, error }) => ({ attempt, error })), [
+    { attempt: 1, error: '第一个具体根因' },
+    { attempt: 2, error: '第二次失败' },
+    { attempt: 3, error: '第三次失败' },
+  ]);
+  assert.equal(detail.imageRetryFailures.some(item => Object.hasOwn(item, 'snapshot')), false);
+});
+
 test('invalid creator role never reaches the database', async () => {
   const repository = new PostgresControlPlaneRepository({ pool: {
     async query() { assert.fail('invalid filter reached SQL'); },

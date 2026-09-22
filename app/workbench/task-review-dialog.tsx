@@ -33,7 +33,7 @@ import { canResumeImageTask } from '../../src/control-plane/image-resume.mjs';
 import { orderedImageFileName } from '../../src/image-file-name.mjs';
 import { TaskQualitySummary } from './task-quality-summary';
 import { ModelCallTrace } from './model-call-trace';
-import { IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
+import { IMAGE_RETRY_EXHAUSTED_LABEL, imageFailureDisplayReason, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
 import { ImagePreview } from '../components/image-preview';
 import { ImagePreviewPreference } from '../components/image-preview-preference';
 import { ImageSettingsEditor, PageLayoutEditor, defaultImageSettings, type ImageSettings, type PageLayout } from '../components/image-controls';
@@ -173,6 +173,12 @@ type TaskDetail = PriorityTask & {
   lastActivityAt: string | null;
   finishedAt: string | null;
   error: string | null;
+  imageRetryFailures?: Array<{
+    attempt: number;
+    stage: string | null;
+    error: string;
+    startedAt: string | null;
+  }>;
   createdAt: string;
   humanQualityAssessments?: HumanQualityAssessment[];
   copyRevisions: CopyRevision[];
@@ -410,6 +416,22 @@ function initialAiDisclosure(detail: TaskDetail) {
   const returnedRevision = currentRevision(detail)?.reworkOrigin != null;
   return (detail.state !== 'COPY_REVIEW_PENDING' || returnedRevision)
     && detail.aiDisclosureEnabled === true;
+}
+
+function TaskFailureNotice({ detail }: { detail: TaskDetail }) {
+  if (!isImageRetryExhausted(detail)) {
+    return detail.error ? <div className="notice error" role="alert">{detail.error}</div> : null;
+  }
+  const failures = detail.imageRetryFailures ?? [];
+  return <div className="notice error workbench-image-failure-notice" role="alert">
+    <strong>{IMAGE_RETRY_EXHAUSTED_LABEL}</strong>
+    {failures.length > 0
+      ? <ol aria-label="生图失败详情">{failures.map((failure) => <li key={`${failure.attempt}-${failure.startedAt ?? ''}`}>
+        <b>第 {failure.attempt} 次{failure.attempt === 1 ? '（首个根因）' : ''}</b>
+        <span>{imageFailureDisplayReason(failure.error)}</span>
+      </li>)}</ol>
+      : <p>{imageFailureDisplayReason(detail.error)}</p>}
+  </div>;
 }
 
 function copyReviewDraftFingerprint(content: CopyReviewDraftContent) {
@@ -1917,8 +1939,7 @@ export function TaskReviewDialog({
                 {detail.state === 'COPY_REVIEW_PENDING' && taskHasAssignee && !canReviewCopy
                   && <div className="notice warning" role="status">当前任务由其他负责人处理；这里仅提供只读查看。</div>}
                 {editable && isCopyRework && <div className="notice warning" role="status"><strong>{revision?.reworkOrigin === 'QA_RETURN' || detail.mandatoryCopyQcOrigin === 'QA_RETURN' ? '文案抽检返工' : '图片质检文案返工'}</strong>{revision?.reworkRecommendation === 'DISCARD' ? ' · 质检建议废弃' : ''}{reworkReasonLabels.length ? ` · 原因：${reworkReasonLabels.join('、')}` : ''}{revision?.reworkNote ? ` · 要求：${revision.reworkNote}` : ''}<br />{revision?.reworkRecommendation === 'DISCARD' ? '可以继续返工，也可以由当前任务负责人确认废弃；质检建议本身不会直接终止任务。' : '请根据打回原因修改文案或图片规划，任意一处实际修改后即可直接提交强制复检，无需先单独保存。人工确认达标后，系统将最终稿记录为 3 分并提交强制复检；复检通过后才会进入待生图队列。'}</div>}
-                {isImageRetryExhausted(detail) && <div className="notice warning" role="status">{IMAGE_RETRY_EXHAUSTED_LABEL}</div>}
-                {detail.error && <div className="notice error" role="alert">{detail.error}</div>}
+                <TaskFailureNotice detail={detail} />
                 {editable && <Disclosure className={styles.panel}>
                   <DisclosureTrigger className={styles.trigger}>
                     <span><History size={16} /><strong>审核草稿</strong></span>
@@ -2095,8 +2116,7 @@ export function TaskReviewDialog({
               </div>
               <aside className="workbench-image-review-decision" aria-label={imageWorkMode ? '图片操作与信息' : '图片终审结论'}>
                 {imageWorkMode && <>
-                  {detail.error && <p className="notice error" role="alert">{detail.error}</p>}
-                  {isImageRetryExhausted(detail) && <p className="notice warning" role="status">{IMAGE_RETRY_EXHAUSTED_LABEL}</p>}
+                  <TaskFailureNotice detail={detail} />
                   {currentImageRun?.result?.simulation?.enabled && <p className="notice warning">{currentImageRun.result.visualPlan?.warning?.message
                     ?? '当前图片来自联网搜索模拟，仅用于流程联调，请人工核对来源与使用范围。'}</p>}
                   {currentImageRun?.result?.visualPlan?.warning?.message && !currentImageRun.result.simulation?.enabled

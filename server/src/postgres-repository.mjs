@@ -58,6 +58,7 @@ import {
   UNASSIGNED_CREATOR_COPY_CONTROL_STATES,
 } from './task-assignment-domain.mjs';
 import { isTaskAssignmentLocked } from '../../src/control-plane/task-assignment.mjs';
+import { latestImageRetryFailures } from '../../src/control-plane/image-retry-status.mjs';
 import {
   normalizeHumanQualitySettings,
   normalizeHumanQualitySettingsUpdate,
@@ -3628,6 +3629,7 @@ export class PostgresControlPlaneRepository {
     ]);
     if (!task.rows[0]) return null;
     const copyRevisions = revisions.rows.map(revisionFrom);
+    const mappedExecutions = executions.rows.map(executionFrom);
     if (task.rows[0].mandatory_copy_qc === true) {
       const current = copyRevisions.find(item => item.id === Number(task.rows[0].current_copy_revision_id));
       const baseline = findCopyReworkBaseline(copyRevisions, task.rows[0].current_copy_revision_id);
@@ -3637,9 +3639,12 @@ export class PostgresControlPlaneRepository {
           'reworkRecommendation', 'reworkSamplingItemId']) current[key] = baseline[key];
       }
     }
+    const mappedTask = taskFrom(task.rows[0]);
+    const imageRetryFailures = latestImageRetryFailures({ ...mappedTask, executions: mappedExecutions });
     return {
-      ...taskFrom(task.rows[0]),
+      ...mappedTask,
       issuedQuery: task.rows[0].issued_query ?? null,
+      ...(imageRetryFailures.length > 0 ? { imageRetryFailures } : {}),
       imageDiscardEvents: task.rows[0].image_discard_events ?? [],
       imagePlanRegeneration: task.rows[0].personal_image_plan_job
         ? imagePlanRegenerationFrom(task.rows[0].personal_image_plan_job) : null,
@@ -3653,7 +3658,7 @@ export class PostgresControlPlaneRepository {
         : [],
       xiaohongshuSearchStatus: task.rows[0].xiaohongshu_search_status ?? null,
       xiaohongshuSearchBlockedReason: task.rows[0].xiaohongshu_search_blocked_reason ?? null,
-      executions: executions.rows.map(executionFrom),
+      executions: mappedExecutions,
       copyRevisions,
       imageRuns: imageRuns.rows.map((row) => ({
         id: row.id,

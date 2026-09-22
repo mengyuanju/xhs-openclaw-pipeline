@@ -149,6 +149,14 @@ test('all distributed task status displays distinguish exhausted image retries f
   }
 });
 
+test('exhausted image retry details show each recorded failure and identify the first root cause', async () => {
+  const source = await readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8');
+  assert.match(source, /imageRetryFailures/u);
+  assert.match(source, /生图失败详情/u);
+  assert.match(source, /首个根因/u);
+  assert.match(source, /imageFailureDisplayReason\(failure\.error\)/u);
+});
+
 test('mandatory copy rechecks have a dedicated workbench status and next-step explanation', async () => {
   const [workbench, reviewDialog] = await Promise.all([
     readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
