@@ -112,6 +112,19 @@ type CopyReviewDraftRecord = {
   content: CopyReviewDraftContent;
   createdAt: string;
 };
+type ReworkReasonSnapshot = { code: string; group?: string; label: string };
+type ReworkCopyField = 'TITLE' | 'BODY' | 'TAGS' | 'IMAGE_PLAN';
+type ReworkRequirement = {
+  source: 'COPY_QA' | 'IMAGE_QA';
+  target: 'COPY' | 'IMAGE' | 'BOTH';
+  reasonCodes: string[];
+  reasonSnapshots: ReworkReasonSnapshot[];
+  copyFields: ReworkCopyField[];
+  problemAssetIds: number[];
+  note: string | null;
+  sourceImageRunId: string | null;
+  returnedAt?: string | null;
+};
 type CopyRevision = {
   id: number;
   executionId: string | null;
@@ -132,7 +145,9 @@ type CopyRevision = {
   reworkOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | null;
   reworkTarget?: 'COPY' | 'IMAGE' | 'BOTH' | null;
   reworkReasonCodes?: string[];
-  reworkReasonSnapshots?: Array<{ code: string; group: string; label: string }>;
+  reworkReasonSnapshots?: ReworkReasonSnapshot[];
+  reworkCopyFields?: ReworkCopyField[];
+  reworkProblemAssetIds?: number[];
   reworkNote?: string | null;
   reworkRecommendation?: 'REWORK' | 'DISCARD';
   reworkSamplingItemId?: string | null;
@@ -152,12 +167,15 @@ type TaskDetail = PriorityTask & {
   }>;
   xiaohongshuSearchStatus?: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'BLOCKED' | 'FAILED' | 'CANCELLED' | null;
   imageDiscardEvents?: { note: string; actorUsername: string; createdAt: string }[];
+  imageQaReturn?: ReworkRequirement | null;
   xiaohongshuSearchBlockedReason?: 'LOGIN_REQUIRED' | 'CAPTCHA_REQUIRED' | null;
   assignedToUserId?: string | null;
   assignedToAccountId?: number | null;
   aiDisclosureEnabled: boolean;
   mandatoryCopyQc?: boolean;
   mandatoryCopyQcOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | 'IMAGE_RETRY_REVIEW' | 'DISCARD_RESTORE' | null;
+  mandatoryImageQc?: boolean;
+  mandatoryImageQcOrigin?: 'QA_RETURN' | 'BATCH_RETURN' | 'DISCARD_RESTORE' | null;
   deliveryStatus?: 'READY' | null;
   state: TaskState;
   imageReviewedAt: string | null;
@@ -431,6 +449,103 @@ function TaskFailureNotice({ detail }: { detail: TaskDetail }) {
         <span>{imageFailureDisplayReason(failure.error)}</span>
       </li>)}</ol>
       : <p>{imageFailureDisplayReason(detail.error)}</p>}
+  </div>;
+}
+
+const REWORK_TARGET_LABELS: Record<ReworkRequirement['target'], string> = {
+  COPY: '文案',
+  IMAGE: '图片',
+  BOTH: '文案和图片',
+};
+const REWORK_COPY_FIELD_LABELS: Record<ReworkCopyField, string> = {
+  TITLE: '标题',
+  BODY: '正文',
+  TAGS: '标签',
+  IMAGE_PLAN: '图片文案规划',
+};
+
+function revisionReworkRequirement(revision: CopyRevision | null | undefined): ReworkRequirement | null {
+  if (!revision?.reworkOrigin) return null;
+  const snapshotCopyFields = revision.reworkReasonSnapshots?.flatMap((snapshot): ReworkCopyField[] => {
+    if (snapshot.group === 'TITLE') return ['TITLE'];
+    if (snapshot.group === 'BODY') return ['BODY'];
+    if (snapshot.group === 'PLAN') return ['IMAGE_PLAN'];
+    return [];
+  }) ?? [];
+  return {
+    source: revision.reworkOrigin === 'FINAL_REWORK' ? 'IMAGE_QA' : 'COPY_QA',
+    target: revision.reworkTarget ?? 'COPY',
+    reasonCodes: revision.reworkReasonCodes ?? [],
+    reasonSnapshots: revision.reworkReasonSnapshots ?? [],
+    copyFields: revision.reworkCopyFields?.length
+      ? revision.reworkCopyFields
+      : [...new Set(snapshotCopyFields)],
+    problemAssetIds: revision.reworkProblemAssetIds ?? [],
+    note: revision.reworkNote ?? null,
+    sourceImageRunId: null,
+  };
+}
+
+function reworkReasonLabels(
+  requirement: ReworkRequirement | null,
+  imageReasonOptions: Array<{ code: string; label: string }>,
+) {
+  if (!requirement) return [];
+  if (requirement.source === 'COPY_QA') {
+    return copyQaReasonLabels(requirement.reasonCodes, requirement.reasonSnapshots);
+  }
+  const snapshotByCode = new Map(requirement.reasonSnapshots.map(snapshot => [snapshot.code, snapshot.label]));
+  const currentByCode = new Map(imageReasonOptions.map(reason => [reason.code, reason.label]));
+  return requirement.reasonCodes.map(code => snapshotByCode.get(code) ?? currentByCode.get(code) ?? code);
+}
+
+function reworkProblemImages(detail: TaskDetail | null, requirement: ReworkRequirement | null) {
+  if (!detail || !requirement?.problemAssetIds.length) return [];
+  const sourceRun = detail.imageRuns.find(run => run.id === requirement.sourceImageRunId);
+  const pageByAssetId = new Map<number, number>();
+  for (const [index, image] of (sourceRun?.result?.images ?? []).entries()) {
+    const assetId = image.deliveryAssetId ?? image.assetId;
+    if (Number.isSafeInteger(assetId)) pageByAssetId.set(assetId as number, image.pageIndex ?? index + 1);
+  }
+  const sourceAssets = detail.assets.filter(asset => asset.imageRunId === requirement.sourceImageRunId);
+  return requirement.problemAssetIds.flatMap((assetId) => {
+    const asset = detail.assets.find(candidate => candidate.id === assetId);
+    if (!asset) return [];
+    const fallbackIndex = sourceAssets.findIndex(candidate => candidate.id === assetId);
+    return [{ asset, page: pageByAssetId.get(assetId) ?? (fallbackIndex >= 0 ? fallbackIndex + 1 : null) }];
+  });
+}
+
+function ReworkRequirementNotice({
+  title,
+  requirement,
+  reasonLabels,
+  problemImages,
+  guidance,
+}: {
+  title: string;
+  requirement: ReworkRequirement;
+  reasonLabels: string[];
+  problemImages: ReturnType<typeof reworkProblemImages>;
+  guidance: ReactNode;
+}) {
+  const copyFieldLabels = requirement.copyFields.map(field => REWORK_COPY_FIELD_LABELS[field]);
+  return <div className="notice warning workbench-rework-requirements" role="status">
+    <strong>{title}</strong>
+    <dl>
+      <div><dt>返工范围</dt><dd>{REWORK_TARGET_LABELS[requirement.target]}</dd></div>
+      {copyFieldLabels.length > 0 && <div><dt>文案位置</dt><dd>{copyFieldLabels.join('、')}</dd></div>}
+      {reasonLabels.length > 0 && <div><dt>问题标签</dt><dd>{reasonLabels.join('、')}</dd></div>}
+      {problemImages.length > 0 && <div><dt>问题图片</dt><dd>{problemImages.map(image => image.page === null ? `素材 #${image.asset.id}` : `第 ${image.page} 页`).join('、')}</dd></div>}
+      {requirement.note && <div><dt>具体要求</dt><dd>{requirement.note}</dd></div>}
+    </dl>
+    {problemImages.length > 0 && <div className="workbench-rework-problem-images" aria-label="质检标记的问题图片">
+      {problemImages.map(({ asset, page }) => <a key={asset.id} href={apiPath(asset.url)} target="_blank" rel="noreferrer">
+        <img src={apiPath(asset.url)} alt={page === null ? '质检标记的问题图片' : `质检标记的问题图片第 ${page} 页`} loading="lazy" decoding="async" />
+        <span>{page === null ? `素材 #${asset.id}` : `第 ${page} 页`}</span>
+      </a>)}
+    </div>}
+    <p>{guidance}</p>
   </div>;
 }
 
@@ -737,10 +852,6 @@ export function TaskReviewDialog({
   }, [load, taskId]);
 
   const revision = currentRevision(detail);
-  const reworkReasonLabels = copyQaReasonLabels(
-    revision?.reworkReasonCodes,
-    revision?.reworkReasonSnapshots,
-  );
   const savedDraft = draftFromRevision(revision);
   const draftChanged = Boolean(draft && savedDraft && JSON.stringify(draft) !== JSON.stringify(savedDraft));
   const copyContentChanged = Boolean(draft && savedDraft
@@ -1084,6 +1195,9 @@ export function TaskReviewDialog({
   const scoreDefinitions = humanRatingSettings.scoreDefinitions;
   const copyReasonOptions = humanRatingSettings.copyReasons;
   const imageReasonOptions = humanRatingSettings.imageReasons;
+  const activeReworkRequirement = detail?.imageQaReturn ?? revisionReworkRequirement(revision);
+  const activeReworkReasonLabels = reworkReasonLabels(activeReworkRequirement, imageReasonOptions);
+  const activeReworkProblemImages = reworkProblemImages(detail, activeReworkRequirement);
   const showCopyScoreDescriptions = humanRatingSettings.copyReviewDisplay.showScoreDescriptions;
   // Visibility is fail-closed: never flash default reasons while task-specific settings are loading or unavailable.
   const showCopyDeductionReasons = humanQualitySettings?.copyReviewDisplay.showDeductionReasons === true;
@@ -1941,7 +2055,19 @@ export function TaskReviewDialog({
                   && <div className="notice warning" role="status">文案已生成，但任务尚未分配负责人。请先关闭窗口并完成分配，再进行评分或修改。</div>}
                 {detail.state === 'COPY_REVIEW_PENDING' && taskHasAssignee && !canReviewCopy
                   && <div className="notice warning" role="status">当前任务由其他负责人处理；这里仅提供只读查看。</div>}
-              {editable && isCopyRework && <div className="notice warning" role="status"><strong>{isImageRetryRework ? '生图失败文案修订' : revision?.reworkOrigin === 'QA_RETURN' || detail.mandatoryCopyQcOrigin === 'QA_RETURN' ? '文案抽检返工' : '图片质检文案返工'}</strong>{revision?.reworkRecommendation === 'DISCARD' ? ' · 质检建议废弃' : ''}{reworkReasonLabels.length ? ` · 原因：${reworkReasonLabels.join('、')}` : ''}{revision?.reworkNote ? ` · 要求：${revision.reworkNote}` : ''}<br />{isImageRetryRework ? '请根据上方失败原因修改文案或图片规划，然后直接提交强制复检；复检通过后系统会清除旧恢复链并从头生图。' : revision?.reworkRecommendation === 'DISCARD' ? '可以继续返工，也可以由当前任务负责人确认废弃；质检建议本身不会直接终止任务。' : '请根据打回原因修改文案或图片规划，任意一处实际修改后即可直接提交强制复检，无需先单独保存。人工确认达标后，系统将最终稿记录为 3 分并提交强制复检；复检通过后才会进入待生图队列。'}</div>}
+              {editable && isCopyRework && (isImageRetryRework
+                ? <div className="notice warning" role="status"><strong>生图失败文案修订</strong><br />请根据上方失败原因修改文案或图片规划，然后直接提交强制复检；复检通过后系统会清除旧恢复链并从头生图。</div>
+                : activeReworkRequirement
+                  ? <ReworkRequirementNotice
+                      title={`${activeReworkRequirement.source === 'IMAGE_QA' ? '图片质检打回' : '文案抽检返工'}${revision?.reworkRecommendation === 'DISCARD' ? ' · 质检建议废弃' : ''}`}
+                      requirement={activeReworkRequirement}
+                      reasonLabels={activeReworkReasonLabels}
+                      problemImages={activeReworkProblemImages}
+                      guidance={revision?.reworkRecommendation === 'DISCARD'
+                        ? '可以继续返工，也可以由当前任务负责人确认废弃；质检建议本身不会直接终止任务。'
+                        : '请按上方范围、问题标签和具体要求修改；完成实际修改后直接提交强制复检，无需先单独保存。'}
+                    />
+                  : <div className="notice warning" role="status"><strong>返工要求</strong><br />请按质检要求完成实际修改后提交强制复检。</div>)}
                 <TaskFailureNotice detail={detail} />
                 {editable && <Disclosure className={styles.panel}>
                   <DisclosureTrigger className={styles.trigger}>
@@ -2081,6 +2207,13 @@ export function TaskReviewDialog({
                   {imageActions}
                 </div>
               </div>}
+              {!imageWorkMode && isImageReviewView && activeReworkRequirement?.source === 'IMAGE_QA' && <ReworkRequirementNotice
+                title={detail.mandatoryImageQcOrigin === 'BATCH_RETURN' ? '图片质检整批打回' : '图片质检打回'}
+                requirement={activeReworkRequirement}
+                reasonLabels={activeReworkReasonLabels}
+                problemImages={activeReworkProblemImages}
+                guidance="请按上方范围、问题标签、问题图片和具体要求完成返修；采用新图片版本并重新初审后，将进入强制图片复检。"
+              />}
               {!imageWorkMode && assets.length === 0 && <p className="notice warning">当前没有可预览的图片，请刷新核对，或选择重试生图、废弃。</p>}
               {!imageWorkMode && currentImageRun?.result?.simulation?.enabled && <div className="notice warning">
                 {currentImageRun.result.visualPlan?.warning?.message
@@ -2108,17 +2241,25 @@ export function TaskReviewDialog({
                     const resultImage = resultImageByAssetId.get(asset.id);
                     const pageIndex = resultImage?.pageIndex ?? index + 1;
                     const alt = orderedImageFileName(asset.originalName, pageIndex, asset.mediaType);
+                    const markedAsProblem = activeReworkRequirement?.problemAssetIds.includes(asset.id) === true;
                     return <Button unstyled className="workbench-image-review-thumbnail" type="button" key={asset.id}
-                      data-selected={selectedAssetIndex === index} aria-pressed={selectedAssetIndex === index}
+                      data-selected={selectedAssetIndex === index} data-problem={markedAsProblem || undefined} aria-pressed={selectedAssetIndex === index}
                       aria-label={`选择第 ${pageIndex} 页：${alt}`} onClick={() => setSelectedAssetIndex(index)}>
                       <img src={apiPath(asset.url)} alt="" loading={index === 0 ? 'eager' : 'lazy'} decoding="async" />
-                      <span><strong>{String(pageIndex).padStart(2, '0')}</strong>{IMAGE_KIND_LABELS[draft?.imagePlan[index]?.kind ?? 'detail']}</span>
+                      <span><strong>{String(pageIndex).padStart(2, '0')}</strong>{markedAsProblem ? '质检标记问题' : IMAGE_KIND_LABELS[draft?.imagePlan[index]?.kind ?? 'detail']}</span>
                     </Button>;
                   })}
                 </nav>}
               </div>
               <aside className="workbench-image-review-decision" aria-label={imageWorkMode ? '图片操作与信息' : '图片终审结论'}>
                 {imageWorkMode && <>
+                  {activeReworkRequirement?.source === 'IMAGE_QA' && <ReworkRequirementNotice
+                    title={detail.mandatoryImageQcOrigin === 'BATCH_RETURN' ? '图片质检整批打回' : '图片质检打回'}
+                    requirement={activeReworkRequirement}
+                    reasonLabels={activeReworkReasonLabels}
+                    problemImages={activeReworkProblemImages}
+                    guidance="请按上方范围、问题标签、问题图片和具体要求完成返修；采用新图片版本并重新初审后，将进入强制图片复检。"
+                  />}
                   <TaskFailureNotice detail={detail} />
                   {currentImageRun?.result?.simulation?.enabled && <p className="notice warning">{currentImageRun.result.visualPlan?.warning?.message
                     ?? '当前图片来自联网搜索模拟，仅用于流程联调，请人工核对来源与使用范围。'}</p>}

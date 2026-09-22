@@ -80,3 +80,25 @@ test('an enabled image-return reason switch cannot be saved without an option', 
   assert.match(panel, /disabled=\{loading \|\| busy \|\| !complete \|\| imageReasonsMissing \|\| !hasChanges\}/u);
   assert.match(quality, /showDeductionReasons[\s\S]{0,120}imageReasons\.length > 0[\s\S]{0,100}reasonCodes\.length === 0/u);
 });
+
+test('image QA returns round-trip their target, labels, copy fields, problem images and instructions', async () => {
+  const [quality, repository, taskReview, styles] = await Promise.all([
+    source('server/src/image-quality-control.mjs'),
+    source('server/src/postgres-repository.mjs'),
+    source('app/workbench/task-review-dialog.tsx'),
+    source('app/globals.css'),
+  ]);
+
+  assert.match(quality, /finalRework:[\s\S]{0,180}reasonSnapshots[\s\S]{0,120}copyFields[\s\S]{0,80}problemAssetIds/u);
+  assert.match(quality, /details[\s\S]{0,180}reworkTarget[\s\S]{0,120}reasonSnapshots/u);
+  assert.match(repository, /AS image_qa_return/u);
+  assert.match(repository, /'target'[\s\S]{0,300}'reasonSnapshots'[\s\S]{0,300}'problemAssetIds'/u);
+  assert.match(repository, /imageQaReturn: imageQaReturnFrom/u);
+  assert.match(taskReview, /<dt>返工范围<\/dt>/u);
+  assert.match(taskReview, /<dt>文案位置<\/dt>/u);
+  assert.match(taskReview, /<dt>问题标签<\/dt>/u);
+  assert.match(taskReview, /<dt>问题图片<\/dt>/u);
+  assert.match(taskReview, /<dt>具体要求<\/dt>/u);
+  assert.match(taskReview, /workbench-rework-problem-images/u);
+  assert.match(styles, /workbench-image-review-thumbnail\[data-problem="true"\]/u);
+});

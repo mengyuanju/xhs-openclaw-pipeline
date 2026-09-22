@@ -9,6 +9,7 @@ import { Input, Switch } from '@/components/ui/input';
 import { useId, useState } from 'react';
 import { PageLayoutEditor, type PageLayout } from '../components/image-controls';
 import { apiRequest } from '../components/api-client';
+import { createRequestId } from '../components/request-id';
 import { LAYOUT_KIND_LABELS, normalizeLayoutPresets } from '../../server/src/layout-library.mjs';
 
 export type LayoutPreset = { id: string; name: string; kind: string; enabled: boolean; layout: PageLayout };
@@ -25,7 +26,7 @@ export function LayoutPresetsEditor({ value, onChange, disabled = false }: {
     <div className="panel-head">
       <div><h2 id={`${id}-heading`}>旧版自定义布局</h2><p className="subtle">供未启用模板目录的旧版任务随机选择。新版自动规划使用上方布局模板库；人工已指定的页面保留原设计。</p></div>
       <Button unstyled className="button" type="button" disabled={disabled || value.length >= 50} onClick={() => {
-        const presetId = crypto.randomUUID();
+        const presetId = createRequestId();
         setNewId(presetId);
         onChange([...value, { id: presetId, name: '新布局', kind: 'all', enabled: true, layout: { mode: 'CUSTOM' } }]);
       }}>新增布局种类</Button>

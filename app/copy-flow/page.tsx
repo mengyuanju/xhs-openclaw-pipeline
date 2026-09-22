@@ -13,6 +13,7 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
 import { apiRequest } from '../components/api-client';
+import { createRequestId } from '../components/request-id';
 import styles from './copy-flow.module.css';
 
 type Queue = { id: string | null; version: string; query_package_name: string; review: number; qc: number; frozen: number; rework: number; image: number };
@@ -43,7 +44,7 @@ export default function CopyFlowPage() {
     try {
       await apiRequest(`/api/control-plane/v1/production-batches/${queue.id}/copy-sampling-freeze`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ requestId: crypto.randomUUID(), expectedVersion: Number(queue.version) }),
+        body: JSON.stringify({ requestId: createRequestId(), expectedVersion: Number(queue.version) }),
       });
       await refresh();
     } catch (e) {

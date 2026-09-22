@@ -39,6 +39,15 @@ test('copy sampling migration is opt-in and introduces one canonical pending sta
   assert.match(sql, /CHECK \(copy_sampling_rate_bps BETWEEN 0 AND 10000\)/u);
 });
 
+test('shared quality queues remove automatic reviewer assignment and release pending items', async () => {
+  const sql = await migration('0085_shared_quality_queues');
+  assert.match(sql, /DROP TRIGGER IF EXISTS sampling_assign_review ON copy_sampling_items/u);
+  assert.match(sql, /DROP TRIGGER IF EXISTS image_sampling_assign_review ON image_sampling_items/u);
+  assert.equal((sql.match(/SET assigned_review_account_id = NULL/gu) ?? []).length, 2);
+  assert.equal((sql.match(/status = 'PENDING'/gu) ?? []).length, 2);
+  assert.doesNotMatch(sql, /DELETE\s+FROM|TRUNCATE/u);
+});
+
 test('administrator latest-activity filtering has a matching expression index', async () => {
   const sql = await migration('0070_admin_task_latest_activity_filter');
   assert.match(sql, /CREATE INDEX tasks_latest_activity_idx/u);

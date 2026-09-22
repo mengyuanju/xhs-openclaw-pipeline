@@ -145,7 +145,7 @@ test('admin non-blind inspection retains traceable frozen identifiers', async ()
     /strpos\(lower\(item\.final_approver_username\), lower\(\$4\)\)[\s\S]*person_filter\.display_name/u);
 });
 
-test('work mode copy lookup filters the public identifier without bypassing assignment or blind redaction', async () => {
+test('work mode copy lookup uses the shared queue while preserving self-review and blind boundaries', async () => {
   let statement;
   const pool = { query: async (sql, values) => {
     if (sql.includes('SELECT DISTINCT task.production_batch_id')) return { rows: [] };
@@ -156,7 +156,8 @@ test('work mode copy lookup filters the public identifier without bypassing assi
   assertBlindAllowlist(rows);
   const parameter = statement.sql.match(/item\.public_id = \$(\d+)::uuid/u);
   assert.ok(parameter); assert.equal(statement.values[Number(parameter[1]) - 1], ITEM_PUBLIC_ID);
-  assert.match(statement.sql, /item\.assigned_review_account_id = \$2/u);
+  assert.doesNotMatch(statement.sql, /item\.assigned_review_account_id = \$2/u);
+  assert.match(statement.sql, /item\.final_approver_account_id <> \$2/u);
   assert.match(statement.sql, /task\.priority_paused = false/u);
 });
 

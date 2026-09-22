@@ -90,6 +90,7 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
   pool = new pg.Pool({ connectionString: url.href });
   await migrateDatabase(pool);
   assert.deepEqual(await migrateDatabase(pool), []);
+  const repository = new PostgresControlPlaneRepository({ pool });
   await pool.query("INSERT INTO executor_nodes(id, name) VALUES ('image-qa-test', 'image qa test')");
   const adminRow = (await pool.query("SELECT * FROM app_users WHERE role = 'ADMIN' ORDER BY id LIMIT 1")).rows[0];
   const workerRow = (await pool.query(`
@@ -263,12 +264,25 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
   assert.ok(returnItem);
   await returnImageQaItem(pool, returnItem.id, {
     requestId: randomUUID(), score: 2, reworkTarget: 'IMAGE', note: '修正第 1 张图片',
-    problemAssetIds: [returnedTask.images[0].assetId], reasonCodes: ['IMAGE_QUALITY_ISSUE'],
+    problemAssetIds: [returnedTask.images[0].assetId], reasonCodes: ['TEXT_ERROR'],
   }, reviewer);
   let returnedRow = (await pool.query('SELECT * FROM tasks WHERE id = $1', [returnedTask.taskId])).rows[0];
   assert.equal(returnedRow.state, 'IMAGE_REWORK_PENDING');
   assert.equal(returnedRow.mandatory_image_qc, true);
   assert.equal(returnedRow.current_image_run_id, returnedTask.imageRunId);
+  const returnedDetail = await repository.getTask(returnedTask.taskId);
+  assert.deepEqual(returnedDetail.imageQaReturn, {
+    source: 'IMAGE_QA',
+    target: 'IMAGE',
+    reasonCodes: ['TEXT_ERROR'],
+    reasonSnapshots: [{ code: 'TEXT_ERROR', label: '画面文字错误' }],
+    copyFields: [],
+    problemAssetIds: [returnedTask.images[0].assetId],
+    note: '修正第 1 张图片',
+    sourceImageRunId: returnedTask.imageRunId,
+    returnedAt: returnedDetail.imageQaReturn.returnedAt,
+  });
+  assert.ok(returnedDetail.imageQaReturn.returnedAt);
 
   const editedRun = await addImageRun(returnedTask.taskId, returnedTask.copyRevisionId, 'edited');
   await pool.query(`UPDATE tasks SET state='MANUAL_ARCHIVE', current_stage='MANUAL_ARCHIVE',
@@ -353,7 +367,6 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
   await pool.query(`UPDATE workflow_quality_settings SET image_sampling_enabled = true,
     image_sampling_rate_bps = 10000, image_blind_review_enabled = true`);
   const httpTask = await createTask(11);
-  const repository = new PostgresControlPlaneRepository({ pool });
   const app = createControlPlaneApp({ repository, storageRoot, logger: { info() {}, error() {} } });
   const server = app.listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
@@ -470,9 +483,6 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
       });
       assert.equal((await post(worker, input)).status, 403);
       assert.equal((await post(reviewer, { ...input, note: '' })).status, 400);
-      await pool.query('UPDATE image_sampling_items SET assigned_review_account_id=$2 WHERE public_id=$1', [item.id, admin.userId]);
-      assert.equal((await post(reviewer, input)).status, 403);
-      await pool.query('UPDATE image_sampling_items SET assigned_review_account_id=$2 WHERE public_id=$1', [item.id, reviewer.userId]);
       const response = await post(reviewer, input);
       assert.equal(response.status, 200);
       const result = (await response.json()).data;

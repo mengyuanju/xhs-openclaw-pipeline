@@ -61,7 +61,7 @@ test('work mode rechecks live account permission and stable identity', async () 
   }
 });
 
-test('quality work delegates redaction and assignment to existing QA stores and preserves pagination', async () => {
+test('quality work delegates redaction and shared-queue filtering to existing QA stores and preserves pagination', async () => {
   const reviewer = { ...user, role: 'REVIEWER', copyQcEnabled: true, imageQcEnabled: true };
   const qa = Array.from({ length: 3 }, (_, i) => ({ id: `opaque-${i}`, anonymousCode: `QA-${i}`, blindReview: true,
     status: 'PENDING', sampleKind: 'MANDATORY_RECHECK', capabilities: { canPass: true, canReturnSingle: true },

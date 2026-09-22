@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { DatePicker } from '@/components/ui/date-picker';
 import { apiRequest, ApiRequestError } from '../components/api-client';
+import { createRequestId } from '../components/request-id';
 import { subscribeWorkspaceUpdates } from '../components/workspace-updates';
 import { WorkbenchPagination } from '../workbench/workbench-pagination';
 import { ReviewActionButton } from '../workbench/review-action-button';
@@ -65,6 +66,7 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
   const pendingDownloadId = downloadState?.phase === 'WAITING' ? downloadState.job.id : null;
   const [users, setUsers] = useState<UserOption[]>([]);
   const requestId = useRef(0), jobRequestId = useRef(0), failures = useRef(0), mounted = useRef(true);
+  const archiveMutation = useRef<{ fingerprint: string; requestId: string } | null>(null);
 
   useEffect(() => {
     const restore = () => {
@@ -231,14 +233,22 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
     setMessage(`已确认 ${response.confirmed} 条${response.alreadyConfirmed ? `，另 ${response.alreadyConfirmed} 条已由其他操作确认` : ''}。双方交付状态已更新。`); setSelected([]);
   });
   const createArchive = (kind: 'DOWNLOAD' | 'ARCHIVE') => perform(kind === 'ARCHIVE' ? '汇总保存' : '准备下载', async () => {
+    const selection = allFiltered && kind === 'ARCHIVE'
+      ? { filters }
+      : { itemIds: selected.map(item => item.itemId).sort((left, right) => Number(left) - Number(right)) };
+    const fingerprint = JSON.stringify({ kind, ...selection });
     const preview = await apiRequest<{ token: string; itemCount: number; totalBytes: number; batchCount: number }>('/api/control-plane/v1/delivery-archives/preview', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind,
-        ...(allFiltered && kind === 'ARCHIVE' ? { filters } : { itemIds: selected.map(item => item.itemId) }) }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind, ...selection }),
     });
     if (!await confirm({ title: `${kind === 'ARCHIVE' ? '汇总保存' : '下载'} ${preview.itemCount} 条内容？`,
       description: `涉及 ${preview.batchCount} 个原批次，内容约 ${(preview.totalBytes / 1024 / 1024).toFixed(1)} MB。按冻结版本生成文件，保留原交付人和交付时间。${kind === 'DOWNLOAD' ? '请保持本页面打开，生成完成后自动开始下载；离开后仍可从“文件记录”下载。' : '生成完成后可在“文件记录”下载。'}`, confirmLabel: kind === 'DOWNLOAD' ? '生成并下载' : '生成文件' })) return;
+    if (archiveMutation.current?.fingerprint !== fingerprint) {
+      archiveMutation.current = { fingerprint, requestId: createRequestId() };
+    }
+    const mutation = archiveMutation.current;
     const job = await apiRequest<Job>('/api/control-plane/v1/delivery-archives', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: preview.token, requestId: crypto.randomUUID() }) });
+      body: JSON.stringify({ token: preview.token, requestId: mutation.requestId }) });
+    if (archiveMutation.current === mutation) archiveMutation.current = null;
     if (kind === 'DOWNLOAD') setDownloadState({ job, phase: 'WAITING', error: '' });
     else setMessage(`文件任务 HG-${job.id} 已创建，共 ${job.itemCount} 条。可离开页面，稍后从文件记录下载。`);
     setSelected([]); setAllFiltered(false); setShowJobs(true); setJobPage(1); await loadJobs();

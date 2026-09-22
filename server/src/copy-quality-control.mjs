@@ -898,8 +898,7 @@ export async function listCopyQaItems(pool, {
   const result = await pool.query(`${QA_ITEM_SQL}
     WHERE ${itemScope} AND ($1::varchar IS NULL OR item.status = $1)
       ${actionableOnly ? "AND item.status = 'PENDING' AND task.priority_paused = false" : ''}
-      AND ($2::bigint IS NULL OR (item.final_approver_account_id <> $2
-        AND (item.status <> 'PENDING' OR (item.assigned_review_account_id = $2 AND task.priority_paused = false))))
+      AND ($2::bigint IS NULL OR item.final_approver_account_id <> $2)
       ${directApprovalFilter}
       ${itemFilter}
       ${packageFilter}

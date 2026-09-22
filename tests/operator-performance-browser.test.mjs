@@ -80,7 +80,10 @@ test('operator dashboard browser: denominators, drilldown, stale report, export,
     await page.getByRole('button',{name:'标注甲',exact:true}).waitFor();
     assert.equal(await page.getByRole('button',{name:'近 7 天',exact:true}).getAttribute('aria-pressed'),'true');
     const person=page.getByRole('row').filter({hasText:'标注甲'});
-    assert.match(await person.textContent(),/75\.0%/u);assert.match(await person.textContent(),/3 \/ 4 已检/u);
+    assert.match(await person.textContent(),/75\.0%/u);
+    assert.match(await person.textContent(),/首次随机抽检已出结论 4 条：直接通过 3 条、退回 1 条/u);
+    assert.match(await person.textContent(),/所选期间共处理 10 条文案内容；首次提交 10 条，返修处理 0 条/u);
+    assert.match(await page.getByRole('columnheader').filter({hasText:'文案一次通过率'}).textContent(),/未抽检、待结论和复检不参与计算/u);
     await person.getByRole('button',{name:/75\.0%/u}).click();
     const dialog=page.getByRole('dialog');await dialog.getByText('共 4 条事件。',{exact:false}).waitFor();
     assert.equal(await dialog.getByRole('tab',{name:'操作明细',exact:true}).getAttribute('aria-selected'),'true');
@@ -123,7 +126,8 @@ test('operator dashboard browser: denominators, drilldown, stale report, export,
     await page.waitForFunction(()=>new URLSearchParams(location.search).get('activity')==='QA');
     await page.getByRole('button',{name:'标注甲',exact:true}).waitFor({state:'detached'});
     const reviewerRow=page.getByRole('row').filter({hasText:'质检同学'});
-    assert.equal(await reviewerRow.getByRole('cell').nth(1).textContent(),'5');assert.equal(await reviewerRow.getByRole('cell').nth(2).textContent(),'3');
+    assert.match(await reviewerRow.getByRole('cell').nth(1).textContent(),/^5共质检 5 条文案内容/u);
+    assert.match(await reviewerRow.getByRole('cell').nth(2).textContent(),/^3共质检 3 条图片内容/u);
     await reviewerRow.getByRole('button',{name:'5',exact:true}).click();
     await page.getByRole('dialog').getByText('共 5 条事件。',{exact:false}).waitFor();
     await dialog.screenshot({path:join(screenshots,'detail-qa-mobile.png'),animations:'disabled'});

@@ -21,6 +21,7 @@ import {
   MAX_TOTAL_IMAGE_BYTES,
 } from '@/lib/preview-contract';
 import type { PreviewSummary } from '@/lib/preview-types';
+import { createRequestId } from '@/lib/request-id';
 
 export interface BatchPreviewDraft {
   id: string;
@@ -79,7 +80,7 @@ export function BatchPreviewCreator({
     onError('');
     onDraftsChange((current) => [
       ...current,
-      emptyBatchDraft(crypto.randomUUID()),
+      emptyBatchDraft(createRequestId()),
     ]);
   }
 

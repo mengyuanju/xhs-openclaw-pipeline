@@ -13,10 +13,13 @@ import styles from './operator-performance.module.css';
 const defaults={period:'7d',from:'',to:'',stage:'',query:'',accountId:'',batchId:'',page:'1',pageSize:'20',sort:'submitted',order:'desc',activity:'ALL'};
 const stages=[['COPY','文案'],['IMAGE','图片']] as const;
 type AccountOption={id:number;username:string;displayName?:string;status?:string};
-export function RateValue({value,onClick}:{value:Rate;onClick:()=>void}) {
+type MetricColumn={key:string;label:string;help:string};
+export function RateValue({value,onClick,detail}:{value:Rate;onClick:()=>void;detail?:string}) {
   return <button className={`${styles.link} ${styles.rate}`} onClick={onClick}><strong>{RATE_LABEL(value)}</strong>
-    <small>{value.decided?`${value.passed} / ${value.decided} 已检`:'暂无有效样本'}</small>
-    {value.decided>0&&value.decided<20&&<small className={styles.sample}>样本较少</small>}</button>;
+    <small className={styles.metricDetail}>{detail??(value.decided
+      ?`已出结论 ${value.decided} 条：通过 ${value.passed} 条、退回 ${value.failed} 条。`
+      :'当前没有符合统计口径且已出结论的样本，暂时无法计算。')}</small>
+    {value.decided>0&&value.decided<20&&<small className={styles.sample}>样本少于 20 条，结果仅供参考。</small>}</button>;
 }
 function Card({label,value,note,onClick}:{label:string;value:number|undefined;note:string;onClick:()=>void}) {
   return <article className={styles.card}><span>{label}</span><button className={`${styles.link} ${styles.cardValue}`} onClick={onClick}
@@ -81,19 +84,30 @@ export function OperatorPerformance({initialFilters={}}:{initialFilters?:Record<
     : filters.accountId ? `历史账号 #${filters.accountId}` : '';
   const summaryAccountId=Number(filters.accountId)||0;
   const visibleStages=stages.filter(([stage])=>!filters.stage||stage===filters.stage);
-  const columns: [string,string][]=qa?
-    [...visibleStages.map(([stage,label]):[string,string]=>[stage==='COPY'?'copyQa':'imageQa',`${label}质检条数`]),['qaReviews','质检次数'],['qaPassed','通过次数'],['qaReturned','退回次数'],['qaRecheck','其中复检']]:
-    [...visibleStages.map(([stage,label]):[string,string]=>[stage==='COPY'?'copySubmitted':'imageSubmitted',`${label}标注条数`]),
-      ...visibleStages.map(([stage,label]):[string,string]=>[stage==='COPY'?'copyRate':'imageRate',`${label}一次通过率`]),['returned','被退回条数'],['reworked','返修处理条数']];
+  const contentScope=filters.stage==='COPY'?'文案':filters.stage==='IMAGE'?'图片':'文案或图片';
+  const columns: MetricColumn[]=qa?
+    [...visibleStages.map(([stage,label]):MetricColumn=>({key:stage==='COPY'?'copyQa':'imageQa',label:`${label}质检条数`,help:`质检过的${label}内容数；同一内容被多次质检仍只算 1 条。`})),
+      {key:'qaReviews',label:'质检次数',help:'实际完成的质检操作总数，包含首次质检和返修后的复检。'},
+      {key:'qaPassed',label:'通过次数',help:'作出的“通过”结论次数，表示质检工作量，不代表质检准确率。'},
+      {key:'qaReturned',label:'退回次数',help:'作出的“退回”结论次数；同一内容多次退回会分别计数。'},
+      {key:'qaRecheck',label:'其中复检',help:'质检次数中，针对返修内容进行复检的次数。'}]:
+    [...visibleStages.map(([stage,label]):MetricColumn=>({key:stage==='COPY'?'copySubmitted':'imageSubmitted',label:`${label}标注条数`,help:`实际提交过的${label}内容数；同一内容重复提交只算 1 条${stage==='IMAGE'?'，一组图片算 1 条':''}。`})),
+      ...visibleStages.map(([stage,label]):MetricColumn=>({key:stage==='COPY'?'copyRate':'imageRate',label:`${label}一次通过率`,help:'首次随机抽检直接通过数 ÷ 首次随机抽检已出结论数；未抽检、待结论和复检不参与计算。'})),
+      {key:'returned',label:'被退回条数',help:'收到有效退回结论的内容数；同一内容多次退回只算 1 条。'},
+      {key:'reworked',label:'返修处理条数',help:'退回后实际提交过返修的内容数；同一内容只算 1 条，提交次数另行展示。'}];
   function cells(person:OperatorPerson) {
-    if(qa)return <>{visibleStages.map(([stage])=><td key={stage}><button className={styles.link} onClick={()=>show(person.accountId,'qa',stage)}>{number(person.qa[stage].tasks)}</button></td>)}
-      <td><button className={styles.link} onClick={()=>show(person.accountId,'qa',filters.stage)}>{number(person.qa.reviews)}</button></td><td><button className={styles.link} onClick={()=>show(person.accountId,'qa',filters.stage,'passed')}>{number(person.qa.passed)}</button></td><td><button className={styles.link} onClick={()=>show(person.accountId,'qa',filters.stage,'failed')}>{number(person.qa.returned)}</button></td>
-      <td><button className={styles.link} onClick={()=>show(person.accountId,'qaRecheck',filters.stage)}>{number(person.qa.rechecks)}</button></td></>;
-    return <>{visibleStages.map(([stage])=><td key={stage}><button className={styles.link} onClick={()=>show(person.accountId,'submitted',stage)}>{number(person[stage].submitted)}</button>
-      <small>首次 {number(person[stage].firstSubmitted)} · 返修 {number(person[stage].reworked)}</small></td>)}
-      {visibleStages.map(([stage])=><td key={`${stage}-rate`}><RateValue value={person[stage].firstPass} onClick={()=>show(person.accountId,'firstPass',stage)}/></td>)}
-      <td><button className={styles.link} onClick={()=>show(person.accountId,'returned',filters.stage)}>{number(person.returned)}</button></td>
-      <td><button className={styles.link} onClick={()=>show(person.accountId,'reworked',filters.stage)}>{number(person.reworked)}</button><small>{number(person.reworkRounds)} 次提交</small></td></>;
+    if(qa)return <>{visibleStages.map(([stage,label])=><td className={styles.metricCell} key={stage}><button className={styles.link} onClick={()=>show(person.accountId,'qa',stage)}>{number(person.qa[stage].tasks)}</button>
+      <small className={styles.metricDetail}>共质检 {number(person.qa[stage].tasks)} 条{label}内容；同一内容多次质检只计 1 条。</small></td>)}
+      <td className={styles.metricCell}><button className={styles.link} onClick={()=>show(person.accountId,'qa',filters.stage)}>{number(person.qa.reviews)}</button><small className={styles.metricDetail}>共完成 {number(person.qa.reviews)} 次质检操作，包含首次质检和复检。</small></td>
+      <td className={styles.metricCell}><button className={styles.link} onClick={()=>show(person.accountId,'qa',filters.stage,'passed')}>{number(person.qa.passed)}</button><small className={styles.metricDetail}>共作出 {number(person.qa.passed)} 次“通过”结论，仅表示质检工作量。</small></td>
+      <td className={styles.metricCell}><button className={styles.link} onClick={()=>show(person.accountId,'qa',filters.stage,'failed')}>{number(person.qa.returned)}</button><small className={styles.metricDetail}>共作出 {number(person.qa.returned)} 次“退回”结论；重复退回会分别计数。</small></td>
+      <td className={styles.metricCell}><button className={styles.link} onClick={()=>show(person.accountId,'qaRecheck',filters.stage)}>{number(person.qa.rechecks)}</button><small className={styles.metricDetail}>全部质检中有 {number(person.qa.rechecks)} 次是返修后的复检。</small></td></>;
+    return <>{visibleStages.map(([stage,label])=><td className={styles.metricCell} key={stage}><button className={styles.link} onClick={()=>show(person.accountId,'submitted',stage)}>{number(person[stage].submitted)}</button>
+      <small className={styles.metricDetail}>所选期间共处理 {number(person[stage].submitted)} 条{label}内容；首次提交 {number(person[stage].firstSubmitted)} 条，返修处理 {number(person[stage].reworked)} 条，两类可能重叠。</small></td>)}
+      {visibleStages.map(([stage])=>{const value=person[stage].firstPass;return <td className={styles.metricCell} key={`${stage}-rate`}><RateValue value={value} onClick={()=>show(person.accountId,'firstPass',stage)}
+        detail={value.decided?`首次随机抽检已出结论 ${number(value.decided)} 条：直接通过 ${number(value.passed)} 条、退回 ${number(value.failed)} 条。`:'当前没有完成首次随机抽检并得出结论的内容，暂时无法计算。'}/></td>;})}
+      <td className={styles.metricCell}><button className={styles.link} onClick={()=>show(person.accountId,'returned',filters.stage)}>{number(person.returned)}</button><small className={styles.metricDetail}>所选期间有 {number(person.returned)} 条{contentScope}内容收到有效退回；同一内容多次退回只计 1 条。</small></td>
+      <td className={styles.metricCell}><button className={styles.link} onClick={()=>show(person.accountId,'reworked',filters.stage)}>{number(person.reworked)}</button><small className={styles.metricDetail}>所选期间返修了 {number(person.reworked)} 条{contentScope}内容，累计提交返修 {number(person.reworkRounds)} 次。</small></td></>;
   }
   return <div className={styles.page}>
     <header className={styles.header}><div><h1>数据统计</h1><p className={styles.muted}>查看标注与质检工作量，了解内容一次与整体通过的情况。</p></div><div className={styles.actions}>
@@ -124,10 +138,10 @@ export function OperatorPerformance({initialFilters={}}:{initialFilters?:Record<
       </section>
       <section className={`panel ${styles.section}`} aria-label="内容质量"><h2>内容通过率</h2><p className={styles.muted}>一次通过率只看首次随机抽检；整体通过率还包含打回后通过有效强制复检的内容，同一条内容只计一次。</p>
         <div className={styles.qualityGrid}>{stages.flatMap(([stage,label])=>[
-          <article key={`${stage}-first`}><span>{label}一次通过率</span>{summary?<RateValue value={summary[stage].firstPass} onClick={()=>show(summaryAccountId,'firstPass',stage)}/>:<strong>—</strong>}</article>,
-          <article key={`${stage}-overall`}><span>{label}整体通过率</span>{summary?<RateValue value={summary[stage].overallPass} onClick={()=>show(summaryAccountId,'firstPass',stage)}/>:<strong>—</strong>}</article>,
+          <article key={`${stage}-first`}><span>{label}一次通过率</span>{summary?<RateValue value={summary[stage].firstPass} onClick={()=>show(summaryAccountId,'firstPass',stage)} detail={summary[stage].firstPass.decided?`首次随机抽检已出结论 ${number(summary[stage].firstPass.decided)} 条：直接通过 ${number(summary[stage].firstPass.passed)} 条、退回 ${number(summary[stage].firstPass.failed)} 条。`:'当前没有完成首次随机抽检并得出结论的内容，暂时无法计算。'}/>:<strong>—</strong>}</article>,
+          <article key={`${stage}-overall`}><span>{label}整体通过率</span>{summary?<RateValue value={summary[stage].overallPass} onClick={()=>show(summaryAccountId,'firstPass',stage)} detail={summary[stage].overallPass.decided?`首次随机抽检样本 ${number(summary[stage].overallPass.decided)} 条：首检或返修复检后通过 ${number(summary[stage].overallPass.passed)} 条、尚未通过 ${number(summary[stage].overallPass.failed)} 条。`:'当前没有首次随机抽检样本，暂时无法计算。'}/>:<strong>—</strong>}</article>,
         ])}</div>
-        <details className={styles.methods}><summary>返修通过率与抽检覆盖</summary><div className={styles.qualityGrid}>{stages.map(([stage,label])=><article key={stage}><span>{label}首次返修通过率</span>{summary?<RateValue value={summary[stage].firstRecheck} onClick={()=>show(summaryAccountId,'firstRecheck',stage)}/>:<strong>—</strong>}
+        <details className={styles.methods}><summary>返修通过率与抽检覆盖</summary><div className={styles.qualityGrid}>{stages.map(([stage,label])=><article key={stage}><span>{label}首次返修通过率</span>{summary?<RateValue value={summary[stage].firstRecheck} onClick={()=>show(summaryAccountId,'firstRecheck',stage)} detail={summary[stage].firstRecheck.decided?`首检退回后完成第一次复检 ${number(summary[stage].firstRecheck.decided)} 条：通过 ${number(summary[stage].firstRecheck.passed)} 条、再次退回 ${number(summary[stage].firstRecheck.failed)} 条。`:'当前没有首检退回后完成第一次复检的内容，暂时无法计算。'}/>:<strong>—</strong>}
           <small className={styles.muted}>抽检覆盖：{summary?.[stage].coverage.rate==null?'—':`${(summary[stage].coverage.rate!*100).toFixed(1)}%`} · {number(summary?.[stage].coverage.sampled)} / {number(summary?.[stage].coverage.eligible)} 条已结批首次提交</small></article>)}</div>
           <p>首次返修通过率只统计首检实际退回后第一次复检的有效结论。</p></details>
       </section>
@@ -139,7 +153,7 @@ export function OperatorPerformance({initialFilters={}}:{initialFilters?:Record<
       <div className={styles.sectionHeading}><div className={styles.presets} aria-label="工作类型">{[['PRODUCTION','标注'],['QA','质检']].map(([value,label])=><Button key={value} type="button" variant="outline" size="sm" aria-pressed={filters.activity===value}
         onClick={()=>setFilters(previous=>({...previous,activity:value,page:'1',sort:value==='QA'?'qa':'submitted'}))}>{label}</Button>)}</div><span className={styles.muted}>{number(report?.people.total)} 个账号</span></div>
       <p className={styles.muted}>{qa?'质检条数按内容去重，次数包含复检。通过与退回次数表示工作量，不代表质检人员判断的准确率。':'标注条数按实际提交内容去重，首次提交与返修处理可能重叠。点击账号查看返修、质量和操作明细。'}</p>
-      <div className={styles.tableScroll} role="region" aria-label="账号统计表" tabIndex={0}><table className={styles.table}><thead><tr><th scope="col">账号</th>{columns.map(([key,label])=><th scope="col" key={key} aria-sort={filters.sort===key?(filters.order==='asc'?'ascending':'descending'):'none'}><button className={styles.link} onClick={()=>sort(key)}>{label} <ArrowUpDown size={11} style={{display:'inline'}}/></button></th>)}</tr></thead>
+      <div className={styles.tableScroll} role="region" aria-label="账号统计表" tabIndex={0}><table className={styles.table}><thead><tr><th scope="col">账号<small className={styles.columnHelp}>姓名和登录账号；点击姓名可查看该账号的操作明细。</small></th>{columns.map(({key,label,help})=><th scope="col" key={key} aria-sort={filters.sort===key?(filters.order==='asc'?'ascending':'descending'):'none'}><button className={styles.link} onClick={()=>sort(key)}>{label} <ArrowUpDown size={11} style={{display:'inline'}}/></button><small className={styles.columnHelp}>{help}</small></th>)}</tr></thead>
         <tbody>{report?.people.items.map(person=><tr key={person.accountId}><td><button className={`${styles.link} ${styles.name}`} onClick={()=>show(person.accountId,qa?'qaAll':'submitted',filters.stage)}>{person.displayName}</button><small>@{person.username}</small></td>{cells(person)}</tr>)}
         {!report?.people.items.length&&<tr><td colSpan={columns.length+1} className={styles.empty}>{busy?'正在读取…':'当前范围暂无记录'}</td></tr>}</tbody></table></div>
       {report&&<div className={styles.pagination}><span>第 {report.people.page} / {Math.max(1,Math.ceil(report.people.total/report.people.pageSize))} 页</span><div className={styles.actions}><Button variant="outline" size="sm" disabled={busy||report.people.page<=1} onClick={()=>setFilters(previous=>({...previous,page:String(report.people.page-1)}))}>上一页</Button><Button variant="outline" size="sm" disabled={busy||report.people.page*report.people.pageSize>=report.people.total} onClick={()=>setFilters(previous=>({...previous,page:String(report.people.page+1)}))}>下一页</Button></div></div>}

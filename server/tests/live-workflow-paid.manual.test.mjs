@@ -145,7 +145,7 @@ test('paid live workflow: priority, whole-person QA return/recheck, and all curr
       assessment:null,reviewSessionId:randomUUID(),aiDisclosureEnabled:true}));
     const recheck=(await pool.query(`SELECT * FROM copy_sampling_items
       WHERE task_id=$1 AND sample_kind='MANDATORY_RECHECK' AND status='PENDING'`,[taskId])).rows[0];
-    assert.equal(Number(recheck.assigned_review_account_id),inspector.userId);
+    assert.equal(recheck.assigned_review_account_id,null);
     await passCopyQaItem(pool,recheck.public_id,{requestId:randomUUID(),
       expectedCopyRevisionId:Number(recheck.copy_revision_id)},inspector);
     task=(await pool.query('SELECT * FROM tasks WHERE id=$1',[taskId])).rows[0];

@@ -519,12 +519,10 @@ export function imageQaItemFrom(row, actor) {
   const blind = row.blind_review_enabled === true && actor.role !== 'ADMIN';
   const pendingImageEdits = Number(row.pending_image_edit_count ?? 0);
   const canAct = row.status === 'PENDING' && row.priority_paused !== true && row.task_state !== 'CANCELLED'
-    && (actor.role === 'ADMIN' || (Number(row.assigned_review_account_id) === actor.userId
-      && Number(row.submitter_account_id) !== actor.userId));
+    && (actor.role === 'ADMIN' || Number(row.submitter_account_id) !== actor.userId);
   const canBatch = row.sample_kind === 'RANDOM' && ['PENDING', 'RETURNED'].includes(row.status)
     && row.priority_paused !== true && row.task_state !== 'CANCELLED'
-    && (actor.role === 'ADMIN' || (Number(row.assigned_review_account_id) === actor.userId
-      && Number(row.submitter_account_id) !== actor.userId
+    && (actor.role === 'ADMIN' || (Number(row.submitter_account_id) !== actor.userId
       && row.image_reviewer_batch_return_enabled === true));
   const item = {
     id: row.public_id,
@@ -574,10 +572,7 @@ export async function getImageQaAsset(pool, rawItemId, rawAssetId, rawActor) {
         ON asset.task_id = item.task_id AND asset.image_run_id = item.image_run_id
         AND asset.id::text = COALESCE(page.image->>'deliveryAssetId', page.image->>'assetId')
       WHERE item.public_id = $1 AND item.selected AND asset.id = $2
-        AND ($3 = 'ADMIN' OR (
-          item.assigned_review_account_id = $4
-          AND item.submitter_account_id <> $4
-        ))
+        AND ($3 = 'ADMIN' OR item.submitter_account_id <> $4)
     `, [itemId, assetId, actor.role, actor.userId]);
     const row = result.rows[0];
     if (!row) throw new ControlPlaneNotFoundError('image QA asset not found');
@@ -609,7 +604,7 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
   await flushExpiredImageQualityBatches(pool);
   const values = [actor.userId, status, limit, offset, personName];
   const itemPublicId = options.itemPublicId == null ? null : normalizeUuid(options.itemPublicId, 'itemPublicId');
-  const itemParameter = options.actionableOnly ? 8 : 7;
+  const itemParameter = 8;
   const result = await pool.query(`
     SELECT item.*, sampling_freeze.public_id AS freeze_public_id, sampling_freeze.blind_review_enabled,
       task.query, task.priority_paused, task.state AS task_state, task.source_query_package_name AS query_package_name,
@@ -634,8 +629,9 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
       AND asset.id::text = COALESCE(page.image->>'deliveryAssetId', page.image->>'assetId')
     WHERE item.selected
       ${itemPublicId === null ? '' : `AND item.public_id = $${itemParameter}::uuid`}
-      ${options.actionableOnly ? "AND item.status = 'PENDING' AND task.priority_paused = false AND ($7 = 'ADMIN' OR item.submitter_account_id <> $1)" : ''}
+      ${options.actionableOnly ? "AND item.status = 'PENDING' AND task.priority_paused = false" : ''}
       AND ($2 = 'ALL' OR item.status = $2)
+      AND ($7 = 'ADMIN' OR item.submitter_account_id <> $1)
       AND ($5::varchar IS NULL OR (
         strpos(lower(item.submitter_username), lower($5)) > 0
         OR EXISTS (
@@ -644,13 +640,10 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
             AND strpos(lower(person_filter.display_name), lower($5)) > 0
         )
       ))
-      AND ($1 = item.assigned_review_account_id OR EXISTS (
-        SELECT 1 FROM app_users actor WHERE actor.id = $1 AND actor.role = 'ADMIN' AND actor.status = 'ACTIVE'
-      ))
     GROUP BY item.id, sampling_freeze.id, task.id, settings.singleton
     ORDER BY task.priority_sort_at, item.id
     LIMIT $3 OFFSET $4
-  `, [...values, PENDING_IMAGE_EDIT_STATUSES, ...(options.actionableOnly ? [actor.role] : []), ...(itemPublicId === null ? [] : [itemPublicId])]);
+  `, [...values, PENDING_IMAGE_EDIT_STATUSES, actor.role, ...(itemPublicId === null ? [] : [itemPublicId])]);
   return { items: result.rows.map((row) => imageQaItemFrom(row, actor)), limit, offset };
 }
 
@@ -681,9 +674,6 @@ function assertCanReview(item, actor) {
   if (actor.role !== 'ADMIN') {
     if (Number(item.submitter_account_id) === actor.userId) {
       throw new ControlPlaneAuthorizationError('质检员不能质检自己提交的图片');
-    }
-    if (Number(item.assigned_review_account_id) !== actor.userId) {
-      throw new ControlPlaneAuthorizationError('该图片质检项未分配给当前账号');
     }
   }
   if (item.current_image_run_id !== item.image_run_id
@@ -858,9 +848,17 @@ async function validateReturnReasons(client, reasonCodes) {
       && settings.imageReasons.length > 0 && reasonCodes.length === 0) {
     throw new TypeError('发起图片返工时至少选择一项返工原因');
   }
+  return settings;
 }
 
-async function createCopyReworkRevision(client, item, { actor, reworkTarget, reasonCodes, copyFields, problemAssetIds, note }) {
+function imageReasonSnapshots(settings, reasonCodes) {
+  const reasonByCode = new Map(settings.imageReasons.map((reason) => [reason.code, reason.label]));
+  return reasonCodes.map((code) => ({ code, label: reasonByCode.get(code) ?? code }));
+}
+
+async function createCopyReworkRevision(client, item, {
+  actor, reworkTarget, reasonCodes, reasonSnapshots, copyFields, problemAssetIds, note,
+}) {
   const source = (await client.query(`
     SELECT * FROM copy_revisions WHERE id = $1 AND task_id = $2 FOR UPDATE
   `, [item.copy_revision_id, item.task_id])).rows[0];
@@ -871,7 +869,7 @@ async function createCopyReworkRevision(client, item, { actor, reworkTarget, rea
   const content = {
     ...source.content,
     finalRework: {
-      target: reworkTarget, reasonCodes, copyFields, problemAssetIds,
+      target: reworkTarget, reasonCodes, reasonSnapshots, copyFields, problemAssetIds,
       instructions: note, note, returnedByUsername: actor.username,
       returnedAt: new Date().toISOString(),
     },
@@ -909,7 +907,8 @@ export async function returnImageQaItem(pool, identifier, input, rawActor) {
     if (replay) return replay;
     const item = await lockQaItem(client, identifier);
     assertCanReview(item, actor);
-    await validateReturnReasons(client, reasonCodes);
+    const reasonSettings = await validateReturnReasons(client, reasonCodes);
+    const reasonSnapshots = imageReasonSnapshots(reasonSettings, reasonCodes);
     if (problemAssetIds.length) {
       const matched = await client.query(`
         SELECT id FROM image_run_asset_view
@@ -922,7 +921,7 @@ export async function returnImageQaItem(pool, identifier, input, rawActor) {
     let nextCopyRevisionId = Number(item.copy_revision_id);
     if (['COPY', 'BOTH'].includes(reworkTarget)) {
       nextCopyRevisionId = Number((await createCopyReworkRevision(client, item, {
-        actor, reworkTarget, reasonCodes, copyFields, problemAssetIds, note,
+        actor, reworkTarget, reasonCodes, reasonSnapshots, copyFields, problemAssetIds, note,
       })).id);
     }
     await withdrawReadyDeliveryEntries(client, item.task_id, 'IMAGE_QA_RETURN');
@@ -958,7 +957,7 @@ export async function returnImageQaItem(pool, identifier, input, rawActor) {
         actor_account_id, actor_username, request_id, reason_codes, note, details)
       VALUES ($1,$2,'RETURN_SINGLE',$3,$4,$5,$6,$7,$8)
     `, [item.freeze_id, item.id, actor.userId, actor.username, requestId, reasonCodes,
-      note, { scoreX10, reworkTarget, problemAssetIds, copyFields }]);
+      note, { scoreX10, reworkTarget, problemAssetIds, copyFields, reasonSnapshots }]);
     const response = { id: item.public_id, status: 'RETURNED', taskState: copyRework ? 'COPY_REVIEW_PENDING' : 'IMAGE_REWORK_PENDING' };
     await saveMutation(client, actor, requestId, 'RETURN_SINGLE', fingerprint, response);
     return response;
@@ -975,7 +974,7 @@ export async function getImageQaBatchReturnPreview(pool, rawFreezePublicId, rawA
   const result = await pool.query(`
     SELECT sampling_freeze.id, sampling_freeze.public_id, sampling_freeze.blind_review_enabled, sampling_freeze.status,
       item.public_id AS item_public_id, item.submitter_account_id,
-      item.assigned_review_account_id, item.status AS item_status, item.selected
+      item.status AS item_status, item.selected
     FROM image_sampling_freezes AS sampling_freeze
     JOIN image_sampling_items AS item ON item.freeze_id = sampling_freeze.id
     JOIN tasks AS task ON task.id = item.task_id
@@ -983,9 +982,8 @@ export async function getImageQaBatchReturnPreview(pool, rawFreezePublicId, rawA
     ORDER BY item.id
   `, [freezePublicId]);
   if (result.rows.length < 1) throw new ControlPlaneNotFoundError('image QA freeze not found');
-  if (actor.role !== 'ADMIN' && !result.rows.some((row) => row.selected
-      && Number(row.assigned_review_account_id) === actor.userId
-      && Number(row.submitter_account_id) !== actor.userId)) {
+  if (actor.role !== 'ADMIN' && (!result.rows.some((row) => row.selected)
+      || result.rows.some((row) => Number(row.submitter_account_id) === actor.userId))) {
     throw new ControlPlaneAuthorizationError('当前账号不能整批处理该图片抽检批次');
   }
   return {
@@ -1019,7 +1017,8 @@ export async function batchReturnImageQa(pool, input, rawActor) {
     if (actor.role !== 'ADMIN' && !settings.imageSampling.reviewerBatchReturnEnabled) {
       throw new ControlPlaneAuthorizationError('管理员尚未允许质检整批打回图片');
     }
-    await validateReturnReasons(client, reasonCodes);
+    const reasonSettings = await validateReturnReasons(client, reasonCodes);
+    const reasonSnapshots = imageReasonSnapshots(reasonSettings, reasonCodes);
     const rows = (await client.query(`
       SELECT item.*, sampling_freeze.status AS freeze_status, task.priority_paused,
         task.current_image_run_id, task.current_copy_revision_id
@@ -1037,8 +1036,7 @@ export async function batchReturnImageQa(pool, input, rawActor) {
     if (rows.some((row) => row.priority_paused)) {
       throw new ControlPlaneConflictError('TASK_PRIORITY_PAUSED', '批次中存在已暂停任务，不能整批打回');
     }
-    if (actor.role !== 'ADMIN' && (!rows.some((row) => row.selected
-      && Number(row.assigned_review_account_id) === actor.userId)
+    if (actor.role !== 'ADMIN' && (!rows.some((row) => row.selected)
       || rows.some((row) => Number(row.submitter_account_id) === actor.userId))) {
       throw new ControlPlaneAuthorizationError('质检员不能整批处理自己提交的图片');
     }
@@ -1073,7 +1071,11 @@ export async function batchReturnImageQa(pool, input, rawActor) {
       INSERT INTO image_sampling_events(freeze_id, action, actor_account_id, actor_username,
         request_id, reason_codes, note, details)
       VALUES ($1,'RETURN_BATCH',$2,$3,$4,$5,$6,$7)
-    `, [freezeId, actor.userId, actor.username, requestId, reasonCodes, note, { affectedCount: rows.length, affectedTaskIds: rows.map(row=>Number(row.task_id)) }]);
+    `, [freezeId, actor.userId, actor.username, requestId, reasonCodes, note, {
+      affectedCount: rows.length,
+      affectedTaskIds: rows.map(row => Number(row.task_id)),
+      reasonSnapshots,
+    }]);
     const response = { freezePublicId, status: 'BATCH_RETURNED', affectedCount: rows.length };
     await saveMutation(client, actor, requestId, 'RETURN_BATCH', fingerprint, response);
     return response;

@@ -49,6 +49,7 @@ import {
 } from '@/lib/preview-contract';
 import { adminFetch } from '@/lib/admin-fetch';
 import type { PreviewSummary } from '@/lib/preview-types';
+import { createRequestId } from '@/lib/request-id';
 import { getPublicPreviewPath } from '@/lib/preview-url';
 import { cn } from '@/lib/utils';
 
@@ -305,7 +306,7 @@ export function PreviewManager({ username }: { username: string }) {
     setCreatedLinksCopied(false);
     setPage(1);
     void loadPreviews();
-    setBatchDrafts([createEmptyBatchDraft(crypto.randomUUID())]);
+    setBatchDrafts([createEmptyBatchDraft(createRequestId())]);
   }
 
   function beginBatchCreation() {

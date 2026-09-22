@@ -615,10 +615,38 @@ function revisionFrom(row) {
     reworkReasonSnapshots: Array.isArray(rework?.reasonSnapshots)
       ? rework.reasonSnapshots.filter((entry) => entry && typeof entry === 'object')
       : [],
+    reworkCopyFields: Array.isArray(rework?.copyFields)
+      ? rework.copyFields.filter((field) => ['TITLE', 'BODY', 'TAGS', 'IMAGE_PLAN'].includes(field))
+      : [],
+    reworkProblemAssetIds: Array.isArray(rework?.problemAssetIds)
+      ? rework.problemAssetIds.map(Number).filter(Number.isSafeInteger)
+      : [],
     reworkNote: rework?.note ?? null,
     reworkRecommendation: rework?.recommendedDisposition === 'DISCARD' ? 'DISCARD' : 'REWORK',
     reworkSamplingItemId: typeof rework?.samplingItemId === 'string' ? rework.samplingItemId : null,
     createdAt: row.created_at,
+  };
+}
+
+function imageQaReturnFrom(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const target = ['COPY', 'IMAGE', 'BOTH'].includes(value.target) ? value.target : 'IMAGE';
+  return {
+    source: 'IMAGE_QA',
+    target,
+    reasonCodes: Array.isArray(value.reasonCodes) ? value.reasonCodes.map(String).filter(Boolean) : [],
+    reasonSnapshots: Array.isArray(value.reasonSnapshots)
+      ? value.reasonSnapshots.filter((entry) => entry && typeof entry === 'object')
+      : [],
+    copyFields: Array.isArray(value.copyFields)
+      ? value.copyFields.filter((field) => ['TITLE', 'BODY', 'TAGS', 'IMAGE_PLAN'].includes(field))
+      : [],
+    problemAssetIds: Array.isArray(value.problemAssetIds)
+      ? value.problemAssetIds.map(Number).filter(Number.isSafeInteger)
+      : [],
+    note: typeof value.note === 'string' && value.note.trim() ? value.note.trim() : null,
+    sourceImageRunId: typeof value.sourceImageRunId === 'string' ? value.sourceImageRunId : null,
+    returnedAt: value.returnedAt ?? null,
   };
 }
 
@@ -3601,6 +3629,34 @@ export class PostgresControlPlaneRepository {
             WHERE p.task_id=task.id AND p.copy_revision_id=task.current_copy_revision_id
               AND task.state='COPY_REVIEW_PENDING'
             ORDER BY p.created_at DESC,p.id DESC LIMIT 1) AS personal_image_plan_job,
+          (SELECT jsonb_build_object(
+              'target', COALESCE(item.rework_target, 'IMAGE'),
+              'reasonCodes', to_jsonb(item.reason_codes),
+              'reasonSnapshots', COALESCE(return_event.details->'reasonSnapshots', '[]'::jsonb),
+              'copyFields', to_jsonb(item.copy_fields),
+              'problemAssetIds', to_jsonb(item.problem_asset_ids),
+              'note', item.note,
+              'sourceImageRunId', item.image_run_id,
+              'returnedAt', item.reviewed_at
+            )
+            FROM image_sampling_items AS item
+            LEFT JOIN LATERAL (
+              SELECT event.details
+              FROM image_sampling_events AS event
+              WHERE event.freeze_id = item.freeze_id
+                AND (event.sampling_item_id = item.id
+                  OR (event.sampling_item_id IS NULL AND event.action = 'RETURN_BATCH'))
+                AND event.action IN ('RETURN_SINGLE', 'RETURN_BATCH')
+              ORDER BY event.created_at DESC, event.id DESC
+              LIMIT 1
+            ) AS return_event ON true
+            WHERE task.mandatory_image_qc = true
+              AND task.image_rework_source_run_id IS NOT NULL
+              AND item.task_id = task.id
+              AND item.image_run_id = task.image_rework_source_run_id
+              AND item.status IN ('RETURNED', 'BATCH_RETURNED')
+            ORDER BY item.reviewed_at DESC NULLS LAST, item.id DESC
+            LIMIT 1) AS image_qa_return,
           creator.display_name AS creator_display_name,
           creator.role AS creator_role, assignee.id AS assignee_account_id,
           assignee.display_name AS assigned_to_display_name,
@@ -3665,8 +3721,9 @@ export class PostgresControlPlaneRepository {
       const baseline = findCopyReworkBaseline(copyRevisions, task.rows[0].current_copy_revision_id);
       if (current && baseline) {
         current.copyReworkSatisfied = copyReworkChanges(baseline.content, current.content).satisfied;
-        for (const key of ['reworkOrigin', 'reworkTarget', 'reworkReasonCodes', 'reworkReasonSnapshots', 'reworkNote',
-          'reworkRecommendation', 'reworkSamplingItemId']) current[key] = baseline[key];
+        for (const key of ['reworkOrigin', 'reworkTarget', 'reworkReasonCodes', 'reworkReasonSnapshots',
+          'reworkCopyFields', 'reworkProblemAssetIds', 'reworkNote', 'reworkRecommendation',
+          'reworkSamplingItemId']) current[key] = baseline[key];
       }
     }
     const mappedTask = taskFrom(task.rows[0]);
@@ -3678,6 +3735,7 @@ export class PostgresControlPlaneRepository {
       imageDiscardEvents: task.rows[0].image_discard_events ?? [],
       imagePlanRegeneration: task.rows[0].personal_image_plan_job
         ? imagePlanRegenerationFrom(task.rows[0].personal_image_plan_job) : null,
+      imageQaReturn: imageQaReturnFrom(task.rows[0].image_qa_return),
       xiaohongshuLinks: Array.isArray(task.rows[0].xiaohongshu_links)
         ? task.rows[0].xiaohongshu_links.map((link) => ({
           noteId: String(link.noteId),
