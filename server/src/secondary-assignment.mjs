@@ -132,6 +132,7 @@ async function resetContent(c, task, record, storageRoot) {
 }
 
 export async function escalateQualityToAdmin(pool,stage,identifier,input,actor,{storageRoot}={}) {
+  if(stage==='IMAGE')conflict('IMAGE_RECHECK_RETURN_REQUIRED','图片强制复检请继续打回返修');
   const config=configs[stage]; if(!config)throw new TypeError('invalid quality stage');
   const publicId=normalizeUuid(identifier,'samplingItemId'),note=noteOf(input?.note);
   const reasons=input?.reasonCodes ?? [];

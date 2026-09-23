@@ -49,7 +49,7 @@ test('image QA uses Sonner and the shared dialog with white, contained image pre
   assert.match(layout, /<Toaster \/>/u);
 });
 
-test('image QA browser: blind queue, required return feedback, mandatory recheck and pass', {
+test('image QA browser: blind queue, repeated mandatory recheck returns and pass', {
   skip: process.env.RUN_IMAGE_QA_BROWSER !== '1', timeout: 60_000,
 }, async () => {
   const { build } = await import('esbuild');
@@ -59,17 +59,20 @@ test('image QA browser: blind queue, required return feedback, mandatory recheck
   const stylesheet = join(root, 'bundle.css');
   const firstId = randomUUID();
   const secondId = randomUUID();
+  const thirdId = randomUUID();
   const freezeId = randomUUID();
   const png = await sharp({ create: { width: 400, height: 500, channels: 4, background: '#ddeee8' } }).png().toBuffer();
   let phase = 0;
   let returned = null;
+  const returnHistory = [];
   let passed = null;
+  let passedItemId = null;
   let discarded = null;
   let failDiscard = false;
   let browser;
   let server;
   const item = (id, sampleKind) => ({
-    id, freezePublicId: freezeId, anonymousCode: sampleKind === 'RANDOM' ? 'IQ-BLIND-ONE' : 'IQ-RECHECK',
+    id, freezePublicId: freezeId, anonymousCode: sampleKind === 'RANDOM' ? 'IQ-BLIND-ONE' : id === thirdId ? 'IQ-RECHECK-AGAIN' : 'IQ-RECHECK',
     status: 'PENDING', sampleKind, blindReview: true,
     assets: [1, 2].map((assetId) => ({ id: assetId, mediaType: 'image/png', sha256: 'a'.repeat(64), originalName: null, pageIndex: assetId, url: `/v1/assets/${assetId}` })),
     capabilities: { canPass: true, canReturnSingle: true, canReturnBatch: false, canDiscard: true },
@@ -109,24 +112,35 @@ test('image QA browser: blind queue, required return feedback, mandatory recheck
       }
       if (request.url?.startsWith('/api/control-plane/v1/image-qa/items') && request.method === 'GET') {
         const status = new URL(request.url, 'http://localhost').searchParams.get('status');
-        const items = phase === 3 && status === 'DISCARDED'
+        const items = phase === 4 && status === 'DISCARDED'
           ? [{ ...item(firstId, 'RANDOM'), status: 'DISCARDED', discardReason: discarded.note,
             capabilities: { canPass: false, canReturnSingle: false, canReturnBatch: false, canDiscard: false } }]
-          : phase === 0 ? [item(firstId, 'RANDOM')] : phase === 1 ? [item(secondId, 'MANDATORY_RECHECK')] : [];
+          : phase === 0 ? [item(firstId, 'RANDOM')]
+          : phase === 1 ? [item(secondId, 'MANDATORY_RECHECK')]
+          : phase === 2 ? [item(thirdId, 'MANDATORY_RECHECK')] : [];
         response.setHeader('content-type', 'application/json'); response.end(JSON.stringify({ data: { items, limit: 200, offset: 0 } })); return;
       }
       if (request.url?.startsWith('/api/control-plane/v1/image-qa/items/') && request.method === 'POST') {
         let body = '';
         for await (const chunk of request) body += chunk;
-        if (request.url.endsWith('/return')) { returned = JSON.parse(body); phase = 1; }
-        if (request.url.endsWith('/pass')) { passed = JSON.parse(body); phase = 2; }
+        if (request.url.endsWith('/return')) {
+          returned = JSON.parse(body);
+          const itemId = request.url.split('/').at(-2);
+          returnHistory.push({ itemId, body: returned });
+          phase = itemId === firstId ? 1 : 2;
+        }
+        if (request.url.endsWith('/pass')) {
+          passed = JSON.parse(body);
+          passedItemId = request.url.split('/').at(-2);
+          phase = 3;
+        }
         if (request.url.endsWith('/discard')) {
           discarded = JSON.parse(body);
           if (failDiscard) {
             response.statusCode = 409; response.setHeader('content-type', 'application/json');
             response.end(JSON.stringify({ error: { code: 'TEST_DISCARD', message: '测试废弃暂时失败' } })); return;
           }
-          phase = 3;
+          phase = 4;
         }
         response.setHeader('content-type', 'application/json'); response.end(JSON.stringify({ data: { status: 'OK' } })); return;
       }
@@ -187,9 +201,28 @@ test('image QA browser: blind queue, required return feedback, mandatory recheck
     assert.deepEqual(returned.problemAssetIds, [1]);
     assert.equal(returned.reworkTarget, 'IMAGE');
     assert.match(returned.requestId, /^[a-f0-9-]{36}$/u);
+    assert.equal(await page.getByRole('button', { name: /提交管理员/u }).count(), 0);
+    await page.getByRole('button', { name: '打回', exact: true }).click();
+    const recheckDialog = page.getByRole('dialog', { name: 'IQ-RECHECK' });
+    await recheckDialog.waitFor();
+    assert.equal(await recheckDialog.getByRole('button', { name: /提交管理员/u }).count(), 0);
+    assert.equal(await recheckDialog.getByRole('button', { name: '确认单条打回', exact: true }).count(), 1);
+    await recheckDialog.getByLabel('画面文字错误', { exact: true }).check();
+    await recheckDialog.getByLabel('第 02 页 · 02-image.png', { exact: true }).check();
+    await recheckDialog.getByLabel('具体修改要求（必填）', { exact: true }).fill('复检发现第二张仍有错字，请继续修正');
+    await recheckDialog.getByRole('button', { name: '确认单条打回', exact: true }).click();
+    await page.getByText('IQ-RECHECK-AGAIN', { exact: true }).waitFor();
+    assert.equal(returnHistory.length, 2);
+    assert.equal(returnHistory[0].itemId, firstId);
+    assert.equal(returnHistory[1].itemId, secondId);
+    assert.deepEqual(returned.reasonCodes, ['TEXT_ERROR']);
+    assert.deepEqual(returned.problemAssetIds, [2]);
+    assert.equal(returned.reworkTarget, 'IMAGE');
+    assert.equal(returned.note, '复检发现第二张仍有错字，请继续修正');
+    assert.notEqual(returnHistory[0].body.requestId, returned.requestId);
     await page.getByRole('button', { name: '通过', exact: true }).click();
     await page.getByText('当前没有待质检任务', { exact: true }).waitFor();
-    const successFeedback = page.getByText('IQ-RECHECK 已通过；本冻结批次全部通过后才会整体进入交付池。', { exact: true });
+    const successFeedback = page.getByText('IQ-RECHECK-AGAIN 已通过；本冻结批次全部通过后才会整体进入交付池。', { exact: true });
     await successFeedback.waitFor();
     const successToast = successFeedback.locator('xpath=ancestor::*[@data-sonner-toast]');
     assert.equal(await successToast.getAttribute('data-type'), 'success');
@@ -208,6 +241,7 @@ test('image QA browser: blind queue, required return feedback, mandatory recheck
     const mobileOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     assert.ok(mobileOverflow <= 1, `mobile page must not overflow horizontally: ${mobileOverflow}px`);
     assert.equal(passed.score, 3);
+    assert.equal(passedItemId, thirdId);
     assert.match(passed.requestId, /^[a-f0-9-]{36}$/u);
     phase = 0;
     await page.reload();

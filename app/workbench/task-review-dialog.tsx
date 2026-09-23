@@ -66,7 +66,19 @@ import {
   planIndexAfterDeletion,
   removeImagePlanPage,
 } from '../../src/image-plan-editing.mjs';
+import { compareCopyReviewImagePlans } from '../../src/image-plan-review.mjs';
 import styles from './copy-review-drafts.module.css';
+import {
+  clearLocalCopyReviewDrafts,
+  copyReviewDraftFingerprint,
+  importLegacyCopyReviewDrafts,
+  listLocalCopyReviewDrafts,
+  LocalCopyReviewDraftConflictError,
+  needsLegacyCopyReviewDraftImport,
+  saveLocalCopyReviewDraft,
+  type LocalCopyReviewDraftRecord,
+  type LocalCopyReviewDraftScope,
+} from './copy-review-draft-store';
 import { ReviewActionButton } from './review-action-button';
 
 type TaskState =
@@ -94,6 +106,30 @@ type ImagePlanBlankBulletLine = {
   pageIndex: number;
   bulletIndex: number;
 };
+type ImagePlanDifference = {
+  pageIndex: number;
+  field: 'pages' | 'kind' | 'headline' | 'subtitle' | 'bullets' | 'prompt' | 'layout';
+  bulletIndex?: number;
+  layoutField?: string;
+};
+
+function imagePlanDifferenceLabel(difference: ImagePlanDifference) {
+  if (difference.field === 'pages') return `第 ${difference.pageIndex + 1} 页与正式版本的页数或位置不同`;
+  const page = `第 ${difference.pageIndex + 1} 页`;
+  if (difference.field === 'bullets') {
+    return `${page}画面要点${difference.bulletIndex === undefined ? '行数' : `第 ${difference.bulletIndex + 1} 行`}与正式版本不同`;
+  }
+  const field = {
+    kind: '页面类型', headline: '页面标题', subtitle: '页面副标题',
+    prompt: '画面生成指令', layout: '页面排版',
+  }[difference.field];
+  const layoutField = difference.layoutField ? ({
+    mode: '排版方式', template: '排版模板', titlePosition: '标题位置',
+    subjectPosition: '主体位置', textPosition: '文字区域', alignment: '文字对齐',
+    imageShare: '主体占比', spacing: '留白', direction: '补充布局要求',
+  } as Record<string, string>)[difference.layoutField] ?? difference.layoutField : null;
+  return `${page}${field}${layoutField ? `（${layoutField}）` : ''}与正式版本不同`;
+}
 type CopyReviewDraftContent = {
   version: 1;
   draft: ReviewDraft;
@@ -102,7 +138,8 @@ type CopyReviewDraftContent = {
   copyOriginalReasons: string[];
   copyOriginalNote: string;
 };
-type CopyReviewDraftRecord = {
+type CopyReviewDraftRecord = LocalCopyReviewDraftRecord<CopyReviewDraftContent>;
+type LegacyCopyReviewDraftRecord = {
   id: number;
   taskId: number;
   baseCopyRevisionId: number;
@@ -550,8 +587,32 @@ function ReworkRequirementNotice({
   </div>;
 }
 
-function copyReviewDraftFingerprint(content: CopyReviewDraftContent) {
-  return JSON.stringify(content);
+function isCopyReviewDraftContent(value: unknown): value is CopyReviewDraftContent {
+  if (!value || typeof value !== 'object') return false;
+  const content = value as Partial<CopyReviewDraftContent>;
+  const draft = content.draft;
+  const copy = draft?.copy;
+  const settings = draft?.imageSettings;
+  return content.version === 1
+    && typeof content.aiDisclosureEnabled === 'boolean'
+    && (content.copyOriginalScore === null || [1, 2, 2.5, 3].includes(content.copyOriginalScore as number))
+    && Array.isArray(content.copyOriginalReasons)
+    && content.copyOriginalReasons.every(reason => typeof reason === 'string')
+    && typeof content.copyOriginalNote === 'string'
+    && typeof copy?.title === 'string'
+    && typeof copy.body === 'string'
+    && Array.isArray(copy.tags)
+    && copy.tags.every(tag => typeof tag === 'string')
+    && Array.isArray(draft?.imagePlan)
+    && draft.imagePlan.every(page => page && typeof page === 'object'
+      && typeof page.kind === 'string' && typeof page.headline === 'string'
+      && typeof page.subtitle === 'string' && typeof page.prompt === 'string'
+      && Array.isArray(page.bullets) && page.bullets.every(bullet => typeof bullet === 'string'))
+    && typeof settings?.version === 'number'
+    && typeof settings.format === 'string'
+    && typeof settings.quality === 'number'
+    && typeof settings.background === 'string'
+    && typeof settings.backgroundColor === 'string';
 }
 
 function latestAssessment(
@@ -706,16 +767,17 @@ export function TaskReviewDialog({
   const [draftSaveConflict, setDraftSaveConflict] = useState(false);
   const [lastSavedDraftFingerprint, setLastSavedDraftFingerprint] = useState<string | null>(null);
   const [lastDraftSavedAt, setLastDraftSavedAt] = useState<string | null>(null);
-  const [restoredDraftId, setRestoredDraftId] = useState<number | null>(null);
+  const [restoredDraftId, setRestoredDraftId] = useState<string | null>(null);
   const [pendingImageEdits, setPendingImageEdits] = useState<PendingImageEdit[]>([]);
   const [pendingEditsOpen, setPendingEditsOpen] = useState(false);
   const continueImageReviewRef = useRef(false);
   const loadRequestRef = useRef(0);
+  const activeDraftIdentityRef = useRef({ taskId, accountId: currentAccountId, username: currentUsername });
+  activeDraftIdentityRef.current = { taskId, accountId: currentAccountId, username: currentUsername };
   const imagePlanGenerationRequestRef = useRef(0);
   const autoLoadPlanIdRef = useRef<string | null>(null);
   const appliedPlanIdRef = useRef<string | null>(null);
-  const draftSaveAbortRef = useRef<AbortController | null>(null);
-  const lastSavedDraftIdRef = useRef<number | null>(null);
+  const lastSavedDraftIdRef = useRef<string | null>(null);
   const reviewSessionRef = useRef<{ fingerprint: string; id: string } | null>(null);
   const copyEditNoticeSequenceRef = useRef(0);
   const lastCopyEditNoticeRef = useRef<{ area: CopyEditArea; message: string; at: number } | null>(null);
@@ -723,6 +785,7 @@ export function TaskReviewDialog({
   const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
   const imageSectionRef = useRef<HTMLElement | null>(null);
   const [error, setError] = useState('');
+  const [planFocusTarget, setPlanFocusTarget] = useState<{ id: string; bulletIndex?: number } | null>(null);
 
   const load = useCallback(async () => {
     if (!taskId) return;
@@ -739,20 +802,35 @@ export function TaskReviewDialog({
       const canLoadImageEdits = ['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING'].includes(next.state)
         && (role === 'ADMIN' || (next.assignedToUserId === currentUsername
           && next.assignedToAccountId === currentAccountId));
+      const draftScope: LocalCopyReviewDraftScope | null = next.state === 'COPY_REVIEW_PENDING'
+        && next.assignedToUserId !== null && next.currentCopyRevisionId && revisionDraft
+        ? {
+          accountId: currentAccountId,
+          taskId,
+          baseCopyRevisionId: next.currentCopyRevisionId,
+          reviewerUsername: currentUsername,
+        }
+        : null;
       const [history, imageEdits] = await Promise.all([
-        next.state === 'COPY_REVIEW_PENDING' && next.assignedToUserId !== null
-            && next.currentCopyRevisionId && revisionDraft
-          ? apiRequest<{ baseCopyRevisionId: number | null; drafts: CopyReviewDraftRecord[] }>(
-            apiPath(`/v1/tasks/${taskId}/copy-review-drafts`),
-          )
-          : Promise.resolve({ baseCopyRevisionId: next.currentCopyRevisionId, drafts: [] }),
+        draftScope ? (async () => {
+          if (await needsLegacyCopyReviewDraftImport(draftScope)) {
+            const legacy = await apiRequest<{ baseCopyRevisionId: number | null; drafts: LegacyCopyReviewDraftRecord[] }>(
+              apiPath(`/v1/tasks/${taskId}/copy-review-drafts`),
+            );
+            await importLegacyCopyReviewDrafts(draftScope,
+              legacy.baseCopyRevisionId === draftScope.baseCopyRevisionId ? legacy.drafts : []);
+          }
+          return listLocalCopyReviewDrafts<CopyReviewDraftContent>(draftScope);
+        })() : Promise.resolve({ baseCopyRevisionId: next.currentCopyRevisionId, drafts: [] }),
         canLoadImageEdits
           ? apiRequest<PendingImageEdit[]>(apiPath(`/v1/tasks/${taskId}/image-edits?pending=true`))
           : Promise.resolve([]),
       ]);
       if (requestId !== loadRequestRef.current) return;
-      const latestDraft = history.baseCopyRevisionId === next.currentCopyRevisionId
-        ? history.drafts[0] : undefined;
+      const storedDrafts = history.baseCopyRevisionId === next.currentCopyRevisionId
+        ? history.drafts : [];
+      const validDrafts = storedDrafts.filter(item => isCopyReviewDraftContent(item.content));
+      const latestDraft = validDrafts[0];
       const initialDraftContent: CopyReviewDraftContent | null = revisionDraft ? {
         version: 1,
         draft: revisionDraft,
@@ -781,14 +859,15 @@ export function TaskReviewDialog({
       // Initial generated-copy review is opt-in. A returned copy revision keeps
       // the already-approved disclosure choice instead of silently resetting it.
       setAiDisclosureEnabled(restoredContent?.aiDisclosureEnabled ?? disclosureEnabled);
-      setDraftHistory(history.drafts);
-      lastSavedDraftIdRef.current = latestDraft?.id ?? null;
+      setDraftHistory(validDrafts);
+      lastSavedDraftIdRef.current = storedDrafts[0]?.id ?? null;
       setLastSavedDraftFingerprint(restoredContent ? copyReviewDraftFingerprint(restoredContent) : null);
       setLastDraftSavedAt(latestDraft?.createdAt ?? null);
       setRestoredDraftId(latestDraft?.id ?? null);
       setPendingImageEdits(imageEdits.filter(edit => PENDING_IMAGE_EDIT_STATUSES.has(edit.status)));
       setDraftSaveStatus(latestDraft ? 'saved' : 'idle');
-      setDraftSaveError('');
+      setDraftSaveError(storedDrafts.length !== validDrafts.length
+        ? '发现格式不兼容的本机草稿，已跳过这些版本。其他有效草稿仍可恢复。' : '');
       setDraftSaveConflict(false);
       setDraftHydrated(true);
       setError('');
@@ -801,8 +880,6 @@ export function TaskReviewDialog({
   }, [currentAccountId, currentUsername, role, taskId]);
 
   useEffect(() => {
-    draftSaveAbortRef.current?.abort();
-    draftSaveAbortRef.current = null;
     lastSavedDraftIdRef.current = null;
     setDetail(null);
     setPendingEditsOpen(false);
@@ -848,18 +925,18 @@ export function TaskReviewDialog({
     void load();
     return () => {
       loadRequestRef.current += 1;
-      draftSaveAbortRef.current?.abort();
     };
   }, [load, taskId]);
 
   const revision = currentRevision(detail);
   const savedDraft = draftFromRevision(revision);
-  const draftChanged = Boolean(draft && savedDraft && JSON.stringify(draft) !== JSON.stringify(savedDraft));
   const copyContentChanged = Boolean(draft && savedDraft
     && JSON.stringify(draft.copy) !== JSON.stringify(savedDraft.copy));
-  const imagePlanChanged = Boolean(draft && savedDraft
-    && JSON.stringify(draft.imagePlan) !== JSON.stringify(savedDraft.imagePlan));
+  const imagePlanComparison = draft && savedDraft
+    ? compareCopyReviewImagePlans(savedDraft.imagePlan, draft.imagePlan) : null;
+  const imagePlanChanged = imagePlanComparison?.changed === true;
   const imageConfigurationChanged = Boolean(draft && savedDraft && JSON.stringify(draft.imageSettings) !== JSON.stringify(savedDraft.imageSettings));
+  const draftChanged = copyContentChanged || imagePlanChanged || imageConfigurationChanged;
   const isAdmin = role === 'ADMIN';
   const taskHasAssignee = Boolean(detail
     && (!Object.hasOwn(detail, 'assignedToUserId') || detail.assignedToUserId !== null));
@@ -971,28 +1048,25 @@ export function TaskReviewDialog({
     fingerprint: string,
   ) => {
     if (!taskId || !revision?.id || draftSaveStatus === 'saving') return false;
+    const loadRequestId = loadRequestRef.current;
     const appliedPlanId = appliedPlanIdRef.current;
-    const controller = new AbortController();
-    draftSaveAbortRef.current?.abort();
-    draftSaveAbortRef.current = controller;
+    const scope: LocalCopyReviewDraftScope = {
+      accountId: currentAccountId,
+      taskId,
+      baseCopyRevisionId: revision.id,
+      reviewerUsername: currentUsername,
+    };
     setDraftSaveStatus('saving');
     setDraftSaveError('');
     setDraftSaveConflict(false);
     try {
-      const result = await apiRequest<{ created: boolean; draft: CopyReviewDraftRecord }>(
-        apiPath(`/v1/tasks/${taskId}/copy-review-drafts`),
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            baseCopyRevisionId: revision.id,
-            expectedLatestDraftId: lastSavedDraftIdRef.current,
-            content,
-          }),
-          signal: controller.signal,
-          keepalive: true,
-        },
-      );
+      const result = await saveLocalCopyReviewDraft(scope, {
+        expectedLatestDraftId: lastSavedDraftIdRef.current,
+        content,
+      });
+      if (loadRequestId !== loadRequestRef.current || taskId !== activeDraftIdentityRef.current.taskId
+          || currentAccountId !== activeDraftIdentityRef.current.accountId
+          || currentUsername !== activeDraftIdentityRef.current.username) return true;
       lastSavedDraftIdRef.current = result.draft.id;
       setDraftHistory(current => [
         result.draft,
@@ -1008,18 +1082,18 @@ export function TaskReviewDialog({
       }
       return true;
     } catch (caught) {
-      if (controller.signal.aborted) return;
-      const conflict = caught instanceof ApiRequestError && caught.code === 'COPY_REVIEW_DRAFT_CONFLICT';
+      if (loadRequestId !== loadRequestRef.current || taskId !== activeDraftIdentityRef.current.taskId
+          || currentAccountId !== activeDraftIdentityRef.current.accountId
+          || currentUsername !== activeDraftIdentityRef.current.username) return false;
+      const conflict = caught instanceof LocalCopyReviewDraftConflictError;
       setDraftSaveStatus('error');
       setDraftSaveConflict(conflict);
       setDraftSaveError(conflict
-        ? '其他窗口已保存更新的草稿。请刷新任务，再从草稿历史选择要继续的版本。'
-        : caught instanceof Error ? caught.message : '草稿保存失败，请重试');
+        ? '此浏览器的其他窗口已保存更新的草稿。请刷新任务，再从本机草稿历史选择要继续的版本。'
+        : caught instanceof Error ? caught.message : '本机草稿保存失败，请重试');
       return false;
-    } finally {
-      if (draftSaveAbortRef.current === controller) draftSaveAbortRef.current = null;
     }
-  }, [backgroundStore, draftSaveStatus, revision?.id, taskId]);
+  }, [backgroundStore, currentAccountId, currentUsername, draftSaveStatus, revision?.id, taskId]);
 
   const completedPlan = backgroundPlan?.status === 'SUCCEEDED' && !backgroundPlan.consumed
     ? backgroundPlan.payload as ImagePlanRegenerationJob | undefined : undefined;
@@ -1086,6 +1160,20 @@ export function TaskReviewDialog({
   }, [invalidField]);
 
   useEffect(() => {
+    if (!planFocusTarget) return;
+    const target = document.getElementById(planFocusTarget.id);
+    if (!target) return;
+    target.scrollIntoView({ block: 'center' });
+    target.focus();
+    if (target instanceof HTMLTextAreaElement && planFocusTarget.bulletIndex !== undefined) {
+      const lines = target.value.split('\n');
+      const start = lines.slice(0, planFocusTarget.bulletIndex).reduce((length, line) => length + line.length + 1, 0);
+      target.setSelectionRange(start, start + (lines[planFocusTarget.bulletIndex]?.length ?? 0));
+    }
+    setPlanFocusTarget(null);
+  }, [activePlanIndex, expandedPrompts, planFocusTarget]);
+
+  useEffect(() => {
     if (!navigationGuardRef) return;
     navigationGuardRef.current = async () => {
       if (loading || submitting || submittingImagePlan || draftSaveStatus === 'saving') return false;
@@ -1106,7 +1194,7 @@ export function TaskReviewDialog({
     if (submitting || submittingImagePlan || draftSaveStatus === 'saving' || (action === 'refresh' && (loading || regeneratingImagePlan))) return;
     if (hasUnpersistedDraftChanges && !await confirm({
       title: action === 'close' ? '未保存草稿，仍要关闭？' : '未保存草稿，仍要刷新？',
-      description: '最近的修改还没有写入服务器，继续操作会丢失这一小段内容。',
+      description: '最近的修改还没有写入此浏览器的草稿数据库，继续操作会丢失这一小段内容。',
       confirmLabel: action === 'close' ? '放弃并关闭' : '放弃并刷新',
       cancelLabel: '继续编辑',
     })) return;
@@ -1284,6 +1372,22 @@ export function TaskReviewDialog({
         : item),
     } : current);
     setImagePlanGenerationNotice('');
+    setError('');
+  }
+
+  function revealImagePlanLocation(location: { pageIndex?: number; field?: string; bulletIndex?: number }) {
+    if (!draft?.imagePlan.length) return;
+    const pageIndex = Math.min(Math.max(location.pageIndex ?? 0, 0), draft.imagePlan.length - 1);
+    setMobilePane('plan');
+    setActivePlanIndex(pageIndex);
+    if (location.field === 'prompt') setExpandedPrompts(current => [...new Set([...current, pageIndex])]);
+    const field = location.field === 'kind' || location.field === 'headline' || location.field === 'subtitle'
+      || location.field === 'bullets' || location.field === 'prompt' ? location.field
+      : location.field === 'layout' ? 'layout-trigger' : 'page';
+    setPlanFocusTarget({
+      id: `review-plan-${field}-${pageIndex}`,
+      ...(field === 'bullets' ? { bulletIndex: location.bulletIndex } : {}),
+    });
   }
 
   async function deleteImagePlanPage(index: number) {
@@ -1452,9 +1556,14 @@ export function TaskReviewDialog({
   async function submitCopyDecision(decision: 'SAVE' | 'APPROVE' | 'DISCARD', form: HTMLFormElement) {
     if (!detail || !revision || !draft || !editable || loading || submitting
         || regeneratingImagePlan || draftSaveStatus === 'saving') return;
+    if (decision !== 'DISCARD' && imagePlanComparison?.validationError) {
+      setError(imagePlanComparison.validationError.message);
+      revealImagePlanLocation(imagePlanComparison.validationError);
+      return;
+    }
     if (!isCopyRework && decision !== 'DISCARD' && imagePlanChanged) {
       setMobilePane('plan');
-      setError('图片文案规划有未保存修改。请先单独保存图片规划，再提交只针对文案的评分或审核结果。');
+      setError(`图片文案规划有 ${imagePlanComparison?.differences.length ?? 1} 处未保存修改。请先单独保存图片规划，再提交只针对文案的评分或审核结果。`);
       return;
     }
     if (!isCopyRework && decision === 'SAVE' && copyOriginalScore === 1) {
@@ -1523,6 +1632,7 @@ export function TaskReviewDialog({
     })) return;
     setSubmitting(true);
     setError('');
+    let submissionRecorded = false;
     try {
       if (draftChanged) await requireImageControls();
       const requestPayload = {
@@ -1547,7 +1657,14 @@ export function TaskReviewDialog({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...requestPayload, reviewSessionId: reviewSessionId(requestPayload) }),
       });
+      submissionRecorded = true;
       reviewSessionRef.current = null;
+      await clearLocalCopyReviewDrafts({
+        accountId: currentAccountId,
+        taskId: detail.id,
+        baseCopyRevisionId: revision.id,
+        reviewerUsername: currentUsername,
+      });
       await onUpdated(decision === 'APPROVE'
         ? isCopyRework
           ? `${isImageRetryRework ? '生图失败修订稿' : '返工稿'}已记录为最终 3 分并提交强制复检；复检通过后才会进入待生图队列。`
@@ -1557,9 +1674,10 @@ export function TaskReviewDialog({
         : decision === 'DISCARD' ? '文案评分已保存，任务已废弃。'
           : '文案评分与当前修改已保存，任务继续留在文案审核。', decision === 'SAVE' ? undefined : detail.id);
       if (decision === 'APPROVE' || decision === 'DISCARD') onOpenChange(false);
-      else await load();
+      else if (!await load()) throw new Error('未能刷新正式保存后的文案版本。请刷新任务。');
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '文案评分提交失败');
+      const message = caught instanceof Error ? caught.message : '文案评分提交失败';
+      setError(submissionRecorded ? `文案已提交，但后续本机草稿处理或页面刷新失败：${message}` : message);
     } finally {
       setSubmitting(false);
     }
@@ -1595,6 +1713,7 @@ export function TaskReviewDialog({
     })) return;
     setSubmitting(true);
     setError('');
+    let discardRecorded = false;
     try {
       await apiRequest(apiPath(`/v1/tasks/${detail.id}/discard-returned-copy`), {
         method: 'POST',
@@ -1607,10 +1726,18 @@ export function TaskReviewDialog({
           note,
         }),
       });
+      discardRecorded = true;
+      await clearLocalCopyReviewDrafts({
+        accountId: currentAccountId,
+        taskId: detail.id,
+        baseCopyRevisionId: revision.id,
+        reviewerUsername: currentUsername,
+      });
       await onUpdated(`任务 #${detail.id} 已在保留质检记录的前提下废弃。`, detail.id);
       onOpenChange(false);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '废弃质检返工任务失败');
+      const message = caught instanceof Error ? caught.message : '废弃质检返工任务失败';
+      setError(discardRecorded ? `任务已废弃，但本机草稿清理或页面刷新失败：${message}` : message);
     } finally {
       setSubmitting(false);
     }
@@ -1618,7 +1745,12 @@ export function TaskReviewDialog({
 
   async function saveImagePlan(form: HTMLFormElement) {
     if (!detail || !revision || !draft || !savedDraft || !editable || !imagePlanChanged
-        || loading || submitting || regeneratingImagePlan) return;
+        || loading || submitting || regeneratingImagePlan || draftSaveStatus === 'saving') return;
+    if (imagePlanComparison?.validationError) {
+      setError(imagePlanComparison.validationError.message);
+      revealImagePlanLocation(imagePlanComparison.validationError);
+      return;
+    }
     const invalid = Array.from(form.elements).find((element) =>
       (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement)
       && element.closest<HTMLElement>('[data-review-pane]')?.dataset.reviewPane === 'plan'
@@ -1658,15 +1790,50 @@ export function TaskReviewDialog({
     };
     setSubmitting(true);
     setError('');
+    let planRecorded = false;
     try {
-      await apiRequest(apiPath(`/v1/tasks/${detail.id}/approve-copy`), {
+      const savedTask = await apiRequest<TaskDetail>(apiPath(`/v1/tasks/${detail.id}/approve-copy`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...requestPayload, reviewSessionId: reviewSessionId(requestPayload) }),
       });
+      planRecorded = true;
       reviewSessionRef.current = null;
+      if (!savedTask.currentCopyRevisionId || savedTask.currentCopyRevisionId === revision.id) {
+        throw new Error('图片规划已保存，但未能确认新的文案版本。请刷新任务并检查草稿。');
+      }
+      const pendingContent: CopyReviewDraftContent = {
+        version: 1,
+        draft: pendingDraft,
+        aiDisclosureEnabled: pendingRating.aiDisclosureEnabled,
+        copyOriginalScore: pendingRating.score,
+        copyOriginalReasons: [...pendingRating.reasons].sort(),
+        copyOriginalNote: pendingRating.note,
+      };
+      let localTransferError: unknown = null;
+      let newDraftSaved = false;
+      try {
+        await saveLocalCopyReviewDraft({
+          accountId: currentAccountId,
+          taskId: detail.id,
+          baseCopyRevisionId: savedTask.currentCopyRevisionId,
+          reviewerUsername: currentUsername,
+        }, { expectedLatestDraftId: null, content: pendingContent });
+        newDraftSaved = true;
+        await clearLocalCopyReviewDrafts({
+          accountId: currentAccountId,
+          taskId: detail.id,
+          baseCopyRevisionId: revision.id,
+          reviewerUsername: currentUsername,
+        });
+      } catch (caught) {
+        localTransferError = caught;
+      }
       await onUpdated('图片文案规划已单独保存；文案评分与审核状态保持不变。');
-      await load();
+      const reloadedTask = await load();
+      if (!reloadedTask || reloadedTask.currentCopyRevisionId !== savedTask.currentCopyRevisionId) {
+        throw new Error('未能读取新的文案版本。请刷新任务后继续编辑。');
+      }
       setDraft(current => current ? {
         ...current,
         copy: pendingDraft.copy,
@@ -1676,8 +1843,19 @@ export function TaskReviewDialog({
       setCopyOriginalReasons(pendingRating.reasons);
       setCopyOriginalNote(pendingRating.note);
       setAiDisclosureEnabled(pendingRating.aiDisclosureEnabled);
+      if (localTransferError) {
+        const message = localTransferError instanceof Error ? localTransferError.message : '本机草稿保存失败';
+        setDraftSaveStatus('error');
+        setDraftSaveConflict(localTransferError instanceof LocalCopyReviewDraftConflictError);
+        setDraftSaveError(newDraftSaved
+          ? `图片规划和新版本草稿已保存，但旧版本草稿清理失败：${message}`
+          : `图片规划已保存，但未提交的修改未能写入新版本的本机草稿：${message}`);
+      }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '图片文案规划保存失败');
+      const message = caught instanceof ApiRequestError && caught.code === 'IMAGE_PLAN_UNCHANGED'
+        ? '图片规划内容与当前正式版本一致，无需重复保存。请刷新任务核对当前版本。'
+        : caught instanceof Error ? caught.message : '图片文案规划保存失败';
+      setError(planRecorded ? `图片规划已正式保存，但后续草稿同步或页面刷新失败：${message}` : message);
     } finally {
       setSubmitting(false);
     }
@@ -2085,13 +2263,13 @@ export function TaskReviewDialog({
                           ? '等待自动保存'
                           : lastDraftSavedAt
                             ? `已保存 ${new Date(lastDraftSavedAt).toLocaleString('zh-CN', { hour12: false })}`
-                            : '修改后自动保存到服务器'}</small>
+                            : '修改后自动保存到此浏览器'}</small>
                   </DisclosureTrigger>
                   <DisclosureContent className={styles.content}>
                     <div className={styles.actions}>
                       <div>
-                        <strong>服务器草稿历史</strong>
-                        <small>按当前文案版本和你的账号独立保存，服务或网页重启后仍可恢复。</small>
+                        <strong>本机草稿历史</strong>
+                        <small>按当前文案版本和你的账号保存在此浏览器，最多保留 7 天。清除网站数据或更换浏览器后无法恢复。</small>
                       </div>
                       <Button unstyled className="button small" type="button"
                         disabled={regeneratingImagePlan || !hasUnpersistedDraftChanges || draftSaveStatus === 'saving' || !copyReviewDraftContent || !currentDraftFingerprint}
@@ -2392,6 +2570,8 @@ export function TaskReviewDialog({
                       : <><RefreshCw size={14} />按当前文案重新生成规划</>}
                   </Button>}
                 </div>
+                {editable && imagePlanComparison?.rawChanged && !imagePlanChanged
+                  && <p className="notice" role="status">图片规划内容与当前正式版本一致，仅有空格或数据格式差异，无需单独保存。</p>}
                 {imagePlanGenerationNotice && <div className="notice success" role="status">{imagePlanGenerationNotice}</div>}
                 {backgroundPlan && !backgroundPlan.consumed && <div className="notice" role="status">
                   {backgroundTaskMessage(backgroundPlan)}
@@ -2417,7 +2597,7 @@ export function TaskReviewDialog({
                     const deletionBlockReason = imagePlanPageDeletionBlockReason(draft.imagePlan, index);
                     const blankBulletLines = imagePlanBlankBulletLines([item]);
                     const bulletLengthWarnings = imagePlanBulletLengthWarnings([item]);
-                    return <article id={`review-plan-page-${index}`} className="workbench-image-plan-card" key={index} data-plan-index={index} hidden={activePlanIndex !== index}>
+                    return <article id={`review-plan-page-${index}`} className="workbench-image-plan-card" key={index} data-plan-index={index} tabIndex={-1} hidden={activePlanIndex !== index}>
                     <div className="workbench-image-plan-fields" data-edit-blocked={Boolean(planEditBlockMessage)}
                       onPointerDownCapture={(event) => {
                         if (!(event.target as Element).closest('[data-edit-reminder-exempt]')) copyEditPointerAtRef.current = Date.now();
@@ -2473,7 +2653,7 @@ export function TaskReviewDialog({
                         </DisclosureContent>
                       </Disclosure>
                       <Disclosure className="field full workbench-page-layout-disclosure">
-                        <DisclosureTrigger data-edit-reminder-exempt>
+                         <DisclosureTrigger id={`review-plan-layout-trigger-${index}`} data-edit-reminder-exempt>
                           页面排版 <em>{item.layout?.mode === 'CUSTOM' ? '自定义' : '自动匹配'}</em>
                         </DisclosureTrigger>
                         <DisclosureContent>
@@ -2504,7 +2684,17 @@ export function TaskReviewDialog({
           </div>
 
           <footer className="workbench-review-footer">
-            {error && <div className="notice error workbench-review-footer-error" role="alert">{error}</div>}
+            {error && <div className="notice error workbench-review-footer-error" role="alert">
+              <p>{error}</p>
+              {error.startsWith('图片文案规划有 ') && imagePlanComparison?.differences.length ? <ol aria-label="未保存的图片规划差异">
+                {imagePlanComparison.differences.slice(0, 3).map((difference: ImagePlanDifference, index: number) =>
+                  <li key={`${difference.pageIndex}-${difference.field}-${difference.bulletIndex ?? ''}-${index}`}>
+                    <Button unstyled className="button small" type="button" onClick={() => revealImagePlanLocation(difference)}>
+                      {imagePlanDifferenceLabel(difference)}
+                    </Button>
+                  </li>)}
+              </ol> : null}
+            </div>}
             {editable && approveCopyBlockReason && <p className="workbench-review-action-hint" role="status">
               <Info size={15} aria-hidden="true" /><span>{approveCopyBlockReason}</span>
             </p>}

@@ -6,7 +6,7 @@ import { needsReassignment } from '../../src/quality-rounds.mjs';
 import { ControlPlaneAuthorizationError, ControlPlaneConflictError, ControlPlaneNotFoundError } from './domain.mjs';
 import { buildPerformanceSnapshot,normalizePerformanceFilters,performanceCsv,performanceMetricRows,performancePeoplePage,summarizeOperator } from '../../src/operator-performance.mjs';
 
-const LIMIT=50_000,TTL=5*60_000;
+const LIMIT=50_000,REPORT_EVENT_LIMIT=200_000,TTL=5*60_000;
 const caches=new WeakMap();
 const iso=value=>value instanceof Date ? value.toISOString():value;
 const number=value=>value==null?null:Number(value);
@@ -28,6 +28,22 @@ export const PERFORMANCE_EVENTS_SQL=`SELECT e.*,EXISTS(SELECT 1 FROM tasks t WHE
     AND ($4::bigint IS NULL OR e.account_id=$4) AND ($5::text='' OR e.stage=$5)
     AND ($6::bigint IS NULL OR (e.data->>'batchId')::bigint=$6)
   ORDER BY e.occurred_at,e.event_key LIMIT ${LIMIT+1}`;
+
+// Account-scoped reports still credit a valid recheck performed by a different
+// account to the original random sample. Each lookup is anchored to one failed
+// first sample, so the supporting history stays bounded by the report rows.
+const CROSS_ACCOUNT_RECHECK_SQL=`SELECT s.task_id,s.stage,recheck.account_id,recheck.occurred_at
+  FROM jsonb_to_recordset($1::jsonb) AS s(task_id bigint,stage text,sampled_at timestamptz)
+  JOIN LATERAL (
+    SELECT e.account_id,e.occurred_at FROM operator_performance_events e
+    WHERE e.task_id=s.task_id AND e.stage=s.stage AND e.occurred_at>=s.sampled_at
+      AND e.occurred_at<$2 AND e.occurred_at<=$3 AND e.account_id<>$4::bigint
+      AND e.kind='QUALITY' AND e.data->>'sampleKind'='MANDATORY_RECHECK'
+      AND e.data->>'outcome'='PASS' AND e.data->>'exclusion' IS NULL
+      AND ($5::bigint IS NULL OR (e.data->>'batchId')::bigint=$5)
+    ORDER BY e.occurred_at,e.sequence_id LIMIT 1
+  ) recheck ON true
+  LIMIT ${LIMIT+1}`;
 
 const CURRENT_SQL=`SELECT latest.*,t.query,t.production_batch_id AS batch_id,t.assigned_at,
     (SELECT q.data||jsonb_build_object('id',q.event_key,'taskId',q.task_id,'accountId',q.account_id,
@@ -54,6 +70,10 @@ const PENDING_SQL=`SELECT q.*,t.query,COALESCE(u.display_name,q.username,'历史
 
 function assertComplete(rows) {
   if(rows.length>LIMIT) throw new RangeError('统计范围超过 50,000 条事实，请缩小日期或选择人员；未返回不完整排名');
+  return rows;
+}
+function assertReportComplete(rows) {
+  if(rows.length>REPORT_EVENT_LIMIT) throw new RangeError('合并统计事实超过 200,000 条，请缩小日期或选择人员；未返回不完整排名');
   return rows;
 }
 function eventFrom(row) {
@@ -91,6 +111,14 @@ export async function readOperatorPerformance(pool,actor,input={},options={}) {
       await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
       await client.query("SET LOCAL statement_timeout='15s'");
       const asOf=iso((await client.query('SELECT clock_timestamp() AS at')).rows[0].at);
+      // The account roster belongs to the same database snapshot as its facts.
+      // Activity and date filters apply to metrics, not to who appears in ALL.
+      const rosterRows=filters.activity==='ALL' ? (await client.query(`
+        SELECT id,username,display_name FROM app_users
+        WHERE ($1::bigint IS NULL OR id=$1)
+        ORDER BY id LIMIT ${LIMIT+1}`, [filters.accountId])).rows : [];
+      if(rosterRows.length>LIMIT) throw new RangeError('账号超过 50,000 个，请指定人员；未返回不完整排名');
+      const roster=rosterRows.map(row=>({accountId:Number(row.id),username:row.username,displayName:row.display_name}));
       const start=new Date(filters.range.startMs).toISOString(),end=new Date(filters.range.endMs).toISOString();
       let events=filters.activity==='QA'?[]:assertComplete((await client.query(PERFORMANCE_EVENTS_SQL,[start,end,asOf,filters.accountId,filters.stage,filters.batchId])).rows).map(eventFrom);
       if(filters.activity!=='QA') events.push(...await readAccountQualityFacts(client,{start,end,...filters}));
@@ -100,7 +128,15 @@ export async function readOperatorPerformance(pool,actor,input={},options={}) {
         kind:row.selected&&row.status==='PENDING'?'PENDING':'EXCLUDED',at:iso(row.created_at),username:row.username,displayName:row.display_name,
         batchId:number(row.batch_id),query:row.query,exclusion:row.exclusion,copyRevisionId:number(row.copy_revision_id),imageRunId:row.image_run_id,
         sampleKind:row.sample_kind,first:row.first_random,policyVersion:number(row.policy_version)});
-      assertComplete(events);
+      assertReportComplete(events);
+      const firstReturns=filters.accountId ? events.filter(row=>row.kind==='QUALITY' && row.first===true
+        && row.sampleKind==='RANDOM' && row.outcome==='RETURN' && !row.exclusion && row.accountId!==null)
+        .map(row=>({task_id:row.taskId,stage:row.stage,sampled_at:row.at})):[];
+      const otherRechecks=firstReturns.length ? assertComplete((await client.query(CROSS_ACCOUNT_RECHECK_SQL,
+        [JSON.stringify(firstReturns),end,asOf,filters.accountId,filters.batchId])).rows).map(row=>({
+        taskId:Number(row.task_id),stage:row.stage,accountId:Number(row.account_id),kind:'QUALITY',
+        sampleKind:'MANDATORY_RECHECK',outcome:'PASS',at:iso(row.occurred_at),exclusion:null,
+        batchId:filters.batchId})):[];
       const current=(filters.activity==='QA'?[]:assertComplete((await client.query(CURRENT_SQL,[filters.accountId,filters.stage,filters.batchId])).rows)).map(row=>({
         taskId:Number(row.task_id),accountId:number(row.account_id),username:row.username,displayName:row.display_name,stage:row.stage,
         phase:row.phase,state:row.state,query:row.query,batchId:number(row.batch_id),at:iso(row.waiting_at),assignedAt:iso(row.assigned_at),
@@ -122,12 +158,13 @@ export async function readOperatorPerformance(pool,actor,input={},options={}) {
         AND occurred_at <= $2 ORDER BY task_id,occurred_at,id LIMIT ${LIMIT+1}`,[taskIds,asOf])).rows).map(row=>({
         id:Number(row.id),taskId:Number(row.task_id),accountId:number(row.account_id),stage:row.stage,phase:row.phase,state:row.state,
         at:iso(row.occurred_at),baseline:row.baseline})):[];
-      const report=buildPerformanceSnapshot(events,current,timeline,filters,asOf);
+      const report=buildPerformanceSnapshot(events,current,timeline,filters,asOf,[...events,...otherRechecks],roster);
       await client.query('COMMIT');
       const token=randomUUID();
       snapshot={report,current,timeline,actor:actorKey(actor),expires:now+TTL,token};
       // Keep memory bounded; an evicted snapshot returns an explicit refresh error.
-      while(cache.size>=8 || [...cache.values()].reduce((n,s)=>n+s.report.rows.length+s.timeline.length,0)+events.length+timeline.length>150_000) {
+      while(cache.size>=8 || [...cache.values()].reduce((n,s)=>n+s.report.rows.length+s.report.people.length+s.timeline.length,0)
+        +events.length+report.people.length+timeline.length>150_000) {
         if(!cache.size) break;
         cache.delete(cache.keys().next().value);
       }

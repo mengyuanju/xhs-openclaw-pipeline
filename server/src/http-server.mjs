@@ -1291,10 +1291,8 @@ function installRoutes(
       offset: ctx.query.offset,
     }, { actor }));
   });
-  for (const stage of ['COPY', 'IMAGE']) router.post(`/v1/${stage.toLowerCase()}-qa/items/:itemId/escalate`, async (ctx) => {
-    if (stage === 'COPY') throw new HttpError(410, 'LEGACY_COPY_QA_RETIRED', '旧文案质检入口已停用，请使用新质检批次');
-    const actor = requestActor(ctx, stage === 'COPY' ? ['ADMIN', 'REVIEWER', 'USER'] : ['ADMIN', 'REVIEWER']);
-    json(ctx, 200, await repository.escalateQualityToAdmin(stage, ctx.params.itemId, requireJson(ctx), { actor, storageRoot }));
+  router.post('/v1/copy-qa/items/:itemId/escalate', async (ctx) => {
+    throw new HttpError(410, 'LEGACY_COPY_QA_RETIRED', '旧文案质检入口已停用，请使用新质检批次');
   });
   router.get('/v1/admin/reassignment-cases', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);

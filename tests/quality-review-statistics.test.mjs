@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { qaMetricRows,summarizeQa } from '../src/quality-review-statistics.mjs';
-import { buildPerformanceSnapshot,normalizePerformanceFilters,performanceCsv,performanceMetricRows } from '../src/operator-performance.mjs';
+import { buildPerformanceSnapshot,combinedQaPass,normalizePerformanceFilters,performanceCsv,performanceMetricRows } from '../src/operator-performance.mjs';
 
 const now=Date.parse('2026-09-18T04:00:00Z'),at=new Date(now-1000).toISOString();
 const review=(id,stage='COPY',extra={})=>({id:`qa:${stage}:${id}`,samplingItemId:id,taskId:id,accountId:22,username:'reviewer',displayName:'质检同学',kind:'QA_REVIEW',stage,sampleKind:'RANDOM',at,outcome:'PASS',...extra});
@@ -37,8 +37,34 @@ test('batch actions, unknown historical scopes, direct pass, self-review and sim
     review(8,'COPY',{kind:'QA_BATCH_RETURN',taskId:null,affectedTaskIds:[11,12],affectedCount:2})];
   const qa=summarizeQa(rows);
   assert.equal(qa.reviews,1);assert.equal(qa.batchActions,3);assert.equal(qa.affectedTasks,3);
+  assert.equal(qa.batchImpactReturns,54);assert.equal(qa.COPY.batchImpactReturns,4);assert.equal(qa.IMAGE.batchImpactReturns,50);
   assert.equal(qa.legacyAffectedCount,50);assert.equal(qa.unknownBatchScopes,1);assert.equal(qa.specialActions,2);
   assert.equal(snapshot(rows).summary.contributed,1);
+});
+
+test('batch impact returns count each valid operation by stage without double-counting its copy trigger',()=>{
+  const copyBatch=review(2,'COPY',{kind:'QA_BATCH_RETURN',taskId:null,affectedCount:2,affectedTaskIds:[2,3]});
+  const rows=[review(1,'COPY',{outcome:'RETURN'}),copyBatch,{...copyBatch},
+    review(3,'IMAGE',{kind:'QA_BATCH_RETURN',taskId:null,affectedCount:3,affectedTaskIds:[4]}),
+    review(4,'IMAGE',{kind:'QA_BATCH_RETURN',taskId:null,affectedTaskIds:[5,6]}),
+    review(5,'IMAGE',{kind:'QA_BATCH_RETURN',taskId:null,affectedCount:25}),
+    review(6,'COPY',{kind:'QA_BATCH_RETURN',taskId:null,affectedCount:99,exclusion:'UNKNOWN_IDENTITY'}),
+    review(7,'IMAGE',{kind:'QA_BATCH_RETURN',taskId:null,affectedCount:99,accountId:null})];
+  const qa=summarizeQa(rows);
+  assert.equal(qa.reviews,1);assert.equal(qa.returned,1,'the copy trigger remains one item-level return');
+  assert.equal(qa.batchActions,4);assert.equal(qa.batchImpactReturns,32);
+  assert.equal(qa.COPY.returned,1);assert.equal(qa.COPY.batchImpactReturns,2,'the copy affected list excludes its trigger');
+  assert.equal(qa.IMAGE.returned,0);assert.equal(qa.IMAGE.batchImpactReturns,30,'image counts its full batch and historical count');
+  assert.equal(snapshot(rows,{activity:'QA',stage:'COPY'}).summary.qa.batchImpactReturns,2);
+  assert.equal(snapshot(rows,{activity:'QA',stage:'IMAGE'}).summary.qa.batchImpactReturns,30);
+});
+
+test('batch impact with no recoverable scope is reported without inventing returns',()=>{
+  const qa=summarizeQa([review(1,'COPY',{kind:'QA_BATCH_RETURN',taskId:null,
+    affectedCount:null,affectedTaskIds:null})]);
+  assert.equal(qa.batchActions,1);
+  assert.equal(qa.batchImpactReturns,0);
+  assert.equal(qa.unknownBatchCounts,1);
 });
 
 test('pending-only people survive historical date filters and blocked items have exact drilldowns',()=>{
@@ -55,4 +81,17 @@ test('Beijing date boundaries use decision time and include no synthetic missing
     review(3,'COPY',{at:'2026-09-18T16:00:00Z'}),review(4,'IMAGE',{accountId:null})],{period:'today'});
   assert.equal(report.summary.qa.reviews,1);assert.equal(report.trend[0].qa,1);
   assert.throws(()=>normalizePerformanceFilters({activity:'REVIEWER'},now));
+});
+
+test('overall pass rate counts each same-day reviewer verdict, including a recheck by another reviewer',()=>{
+  const rows=[review(1,'COPY',{taskId:1,at:'2026-09-17T15:59:59Z'}),
+    review(2,'COPY',{taskId:1,outcome:'RETURN',at:'2026-09-17T16:00:00Z'}),
+    review(3,'COPY',{taskId:1,accountId:33,username:'second-reviewer',sampleKind:'MANDATORY_RECHECK',at:'2026-09-18T03:00:00Z'}),
+    review(4,'IMAGE',{at:'2026-09-18T16:00:00Z'}),
+    review(5,'COPY',{kind:'QA_DIRECT_PASS'}),review(6,'COPY',{kind:'QA_ESCALATE',outcome:'ESCALATE'}),
+    review(7,'COPY',{exclusion:'SELF_REVIEW'})];
+  const report=snapshot(rows,{period:'today',activity:'QA'});
+  assert.deepEqual(combinedQaPass(report.summary),{passed:1,failed:1,decided:2,rate:.5});
+  assert.deepEqual(combinedQaPass(report.people.find(p=>p.accountId===22)),{passed:0,failed:1,decided:1,rate:0});
+  assert.deepEqual(combinedQaPass(report.people.find(p=>p.accountId===33)),{passed:1,failed:0,decided:1,rate:1});
 });

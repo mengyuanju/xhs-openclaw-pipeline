@@ -33,11 +33,42 @@ WHERE ($1::bigint IS NULL OR (u.status='ACTIVE' AND (u.role='ADMIN' OR (a.submit
   AND ($3::bigint IS NULL OR a.batch_id=$3)
 ORDER BY a.stage,a.id LIMIT ${LIMIT+1}`;
 
+// Older batch events may predate affectedCount/affectedTaskIds. A freeze can
+// only be batch-returned once, and its retained item statuses identify the
+// affected members without assigning them to the content submitters.
+async function legacyBatchImpactCounts(client, history) {
+  const missing = history.filter(row => row.kind === 'QA_BATCH_RETURN'
+    && !(Number.isSafeInteger(row.data?.affectedCount) && row.data.affectedCount >= 0)
+    && !(Array.isArray(row.data?.affectedTaskIds)
+      && row.data.affectedTaskIds.every(id => Number.isSafeInteger(id) && id > 0)));
+  const result = new Map();
+  for (const [stage, freezeTable, itemTable, status] of [
+    ['COPY', 'copy_sampling_freezes', 'copy_sampling_items', 'BATCH_AFFECTED'],
+    ['IMAGE', 'image_sampling_freezes', 'image_sampling_items', 'BATCH_RETURNED'],
+  ]) {
+    const ids = [...new Set(missing.filter(row => row.stage === stage)
+      .map(row => Number(row.data?.freezeId)).filter(id => Number.isSafeInteger(id) && id > 0))];
+    if (!ids.length) continue;
+    const rows = (await client.query(`SELECT f.id, count(i.id)::int AS affected_count
+      FROM ${freezeTable} f LEFT JOIN ${itemTable} i ON i.freeze_id=f.id AND i.status=$2
+      WHERE f.id=ANY($1::bigint[]) GROUP BY f.id`, [ids, status])).rows;
+    for (const row of rows) result.set(`${stage}:${row.id}`, Number(row.affected_count));
+  }
+  return result;
+}
+
 export async function readQaFacts(client, { range, accountId = null, stage = '', batchId = null, asOf = new Date().toISOString() }) {
   const history = (await client.query(QA_ACTIVITY_SQL, [new Date(range.startMs).toISOString(),new Date(range.endMs).toISOString(),asOf,accountId,stage,batchId])).rows;
   const pending = (await client.query(QA_PENDING_SQL,[accountId,stage,batchId])).rows;
   if (history.length + pending.length > LIMIT) throw new RangeError('质检记录超过 50,000 条，请缩小统计范围');
-  return [...history.map(row=>({...row.data,id:row.event_key,accountId:row.account_id==null?null:Number(row.account_id),
+  const recoveredCounts=await legacyBatchImpactCounts(client,history);
+  return [...history.map(row=>({
+    ...row.data,
+    ...(recoveredCounts.has(`${row.stage}:${row.data?.freezeId}`)
+      && !(Number.isSafeInteger(row.data?.affectedCount) && row.data.affectedCount >= 0)
+      && !(Array.isArray(row.data?.affectedTaskIds) && row.data.affectedTaskIds.every(id => Number.isSafeInteger(id) && id > 0))
+      ? {affectedCount:recoveredCounts.get(`${row.stage}:${row.data?.freezeId}`),affectedCountRecovered:true} : {}),
+    id:row.event_key,accountId:row.account_id==null?null:Number(row.account_id),
     taskId:row.task_id==null?null:Number(row.task_id),stage:row.stage,kind:row.kind,at:iso(row.occurred_at),canOpen:row.task_exists})),
   ...pending.map(row=>({id:`qa-pending:${row.stage}:${row.id}`,accountId:row.account_id==null?null:Number(row.account_id),taskId:Number(row.task_id),
     username:row.username,displayName:row.display_name,query:row.query,stage:row.stage,kind:'QA_PENDING',at:iso(row.assigned_review_at),

@@ -16,7 +16,7 @@ test('background tasks browser: close, reload, recover planning draft and receiv
   const planId = randomUUID(), editId = randomUUID(), runId = randomUUID();
   const copy = { title: '桌面整理的三个动作', body: '保留常用物品，按使用频率分区整理。'.repeat(27), tags: ['#收纳', '#桌面', '#整理'] };
   const imagePlan = [{ kind: 'hero', headline: '原规划标题', subtitle: '', bullets: ['清理桌面'], prompt: '简洁桌面' }];
-  let job = null, edits = [], drafts = [], browser, server;
+  let job = null, edits = [], browser, server;
   const errors = [], requests = [];
   try {
     await build({ stdin: { contents: `
@@ -52,8 +52,8 @@ test('background tasks browser: close, reload, recover planning draft and receiv
         else if (req.url.endsWith('/tasks/10')) response = { id: 10, query: '桌面收纳', state: 'COPY_REVIEW_PENDING', assignedToUserId: 'worker', assignedToAccountId: 22, aiDisclosureEnabled: false,
           currentCopyRevisionId: 1, currentImageRunId: null, createdAt: new Date().toISOString(), copyRevisions: [{ id: 1, revision: 1, content: { copy, imagePlan }, approvedAt: null }], imageRuns: [], assets: [], humanQualityAssessments: [] };
         else if (req.url.endsWith('/copy-review-drafts')) {
-          if (req.method === 'POST') { const draft = { id: drafts.length + 1, version: drafts.length + 1, baseCopyRevisionId: 1, content: data.content, createdAt: new Date().toISOString() }; drafts.unshift(draft); response = { created: true, draft }; }
-          else response = { baseCopyRevisionId: 1, drafts };
+          if (req.method === 'POST') { res.statusCode = 405; response = null; }
+          else response = { baseCopyRevisionId: 1, drafts: [] };
         } else if (req.url.endsWith('/regenerate-image-plan')) {
           job = { id: planId, status: 'QUEUED', copyRevisionId: 1, copy: { body: data.copy.body, tags: data.copy.tags, title: data.copy.title }, result: null };
           response = { created: true, job };
@@ -87,7 +87,8 @@ test('background tasks browser: close, reload, recover planning draft and receiv
     await page.getByRole('button', { name: '载入新规划', exact: true }).click();
     await page.waitForFunction(() => document.querySelector('#review-plan-headline-0')?.value === '后台完成的新规划');
     await page.waitForFunction(() => JSON.parse(localStorage.getItem('xhs:background-tasks:v1:browser-fixture')).some(task => task.kind === 'IMAGE_PLAN' && task.consumed));
-    assert.equal(drafts[0].content.draft.imagePlan[0].headline, '后台完成的新规划');
+    assert.equal(requests.some(([method, path]) => method === 'POST' && path.endsWith('/copy-review-drafts')), false,
+      'background plan drafts stay in the browser database');
     await page.getByRole('button', { name: '关闭', exact: true }).click();
     await page.getByRole('button', { name: '打开规划任务', exact: true }).click();
     await page.waitForFunction(() => document.querySelector('#review-plan-headline-0')?.value === '后台完成的新规划');

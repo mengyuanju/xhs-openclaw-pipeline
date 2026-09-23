@@ -4,7 +4,7 @@ const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
  Object.freeze({capability: 'copyQaBatchVersion', minimumVersion: 1,
    matches: (path, method) => method === 'POST' && /^\/v2\/copy-qa\/(?:batches|items\/[^/]+\/decision)$/u.test(path)}),
  Object.freeze({capability: 'secondaryAssignmentVersion', minimumVersion: 1,
- matches: (path, method) => method === 'POST' && (/^\/v1\/(?:copy|image)-qa\/items\/[^/]+\/escalate$/u.test(path)
+ matches: (path, method) => method === 'POST' && (/^\/v1\/copy-qa\/items\/[^/]+\/escalate$/u.test(path)
  || /^\/v1\/admin\/reassignment-cases\//u.test(path))}),
   Object.freeze({
     capability: 'copyQaReasonTagsVersion', minimumVersion: 1,

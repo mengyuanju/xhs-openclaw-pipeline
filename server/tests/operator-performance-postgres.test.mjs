@@ -15,8 +15,11 @@ test('operator report: real SQL, immutable identity, sampling denominator, snaps
     const users=(await db.query(`INSERT INTO app_users(username,display_name,role,password_hash,status,created_at)
       VALUES ('perf-a','标注甲','USER','fake-only','ACTIVE',now()-interval '5 days'),
       ('perf-b','标注乙','USER','fake-only','ACTIVE',now()-interval '5 days'),
-      ('perf-admin','管理员','ADMIN','fake-only','ACTIVE',now()-interval '5 days') RETURNING *`)).rows;
+      ('perf-admin','管理员','ADMIN','fake-only','ACTIVE',now()-interval '5 days'),
+      ('perf-idle','空闲甲','USER','fake-only','ACTIVE',now()-interval '5 days'),
+      ('perf-disabled','已停用甲','USER','fake-only','DISABLED',now()-interval '5 days') RETURNING *`)).rows;
     const [a,b,admin]=users.map(row=>({userId:Number(row.id),username:row.username,role:row.role}));
+    const [idle,disabled]=users.slice(3).map(row=>({userId:Number(row.id),username:row.username}));
     await db.query("INSERT INTO executor_nodes(id,name) VALUES('perf-node','Test')");
     const batch=Number((await db.query(`INSERT INTO production_batches(public_id,query_package_name,created_by_username,request_id,request_fingerprint,client_batch_code)
       VALUES($1,'统计测试','perf-admin',$2,$3,$4) RETURNING id`,[randomUUID(),randomUUID(),'a'.repeat(64),'b'.repeat(32)])).rows[0].id);
@@ -49,6 +52,21 @@ test('operator report: real SQL, immutable identity, sampling denominator, snaps
     await db.query(`INSERT INTO copy_sampling_events(freeze_id,action,actor_account_id,actor_username,request_id)
       VALUES($1,'FREEZE',$2,'perf-admin',$3)`,[freeze,admin.userId,randomUUID()]);
     let report=await repository.operatorPerformance(admin,{});
+    for(const account of [idle,disabled]) {
+      const row=report.people.items.find(person=>person.accountId===account.userId);
+      assert.ok(row,`${account.username} appears with zero activity`);
+      assert.equal(row.contributed,0);
+      assert.equal(row.qa.passed+row.qa.returned,0);
+      assert.equal(row.qualityOutcomes.judged,0);
+    }
+    assert.equal(report.people.total,Number((await db.query('SELECT count(*) FROM app_users')).rows[0].count));
+    const idleScoped=await repository.operatorPerformance(admin,{accountId:String(idle.userId)});
+    assert.deepEqual(idleScoped.people.items.map(person=>person.accountId),[idle.userId]);
+    const idleSearched=await repository.operatorPerformance(admin,{query:'空闲甲'});
+    assert.deepEqual(idleSearched.people.items.map(person=>person.accountId),[idle.userId]);
+    const qaOnly=await repository.operatorPerformance(admin,{activity:'QA'});
+    assert.equal(qaOnly.people.items.some(person=>person.accountId===idle.userId),false);
+    assert.equal(qaOnly.people.items.some(person=>person.accountId===disabled.userId),false);
     assert.equal(report.summary.COPY.submitted,10);
     assert.deepEqual(report.summary.COPY.coverage,{eligible:10,sampled:4,unresolved:0,rate:.4});
     assert.deepEqual(report.summary.COPY.firstPass,{passed:3,failed:1,decided:4,rate:.75});
@@ -73,6 +91,8 @@ test('operator report: real SQL, immutable identity, sampling denominator, snaps
     const csv=await repository.operatorPerformance(admin,{snapshotToken:report.snapshotToken},{kind:'export'});
     assert.match(csv.csv,/文案通过/);
     assert.match(csv.csv,/标注甲/);
+    assert.match(csv.csv,/空闲甲/);
+    assert.match(csv.csv,/已停用甲/);
     const before=(await db.query('SELECT count(*) FROM operator_performance_events')).rows[0].count;
     await db.query('SELECT capture_operator_facts()');
     assert.equal((await db.query('SELECT count(*) FROM operator_performance_events')).rows[0].count,before);
@@ -96,6 +116,16 @@ test('operator report: real SQL, immutable identity, sampling denominator, snaps
       VALUES($1,$2,'PASS',$3,'perf-admin',$4)`,[recheckFreeze,recheck,admin.userId,randomUUID()]);
     const repaired=await repository.operatorPerformance(admin,{});
     assert.equal(repaired.summary.COPY.firstPass.rate,.75);
+    assert.deepEqual(repaired.people.items.find(row=>row.accountId===a.userId).COPY.overallPass,
+      {passed:4,failed:0,decided:4,rate:1});
+    const scoped=await repository.operatorPerformance(admin,{accountId:String(a.userId)});
+    assert.deepEqual(scoped.summary.COPY.overallPass,{passed:4,failed:0,decided:4,rate:1},
+      'another worker recheck still counts for the original account after SQL account filtering');
+    assert.equal(scoped.people.items.length,1);
+    const searched=await repository.operatorPerformance(admin,{query:'标注甲'});
+    assert.deepEqual(searched.summary.COPY.overallPass,{passed:4,failed:0,decided:4,rate:1},
+      'name search keeps cross-account recheck history without showing that account');
+    assert.equal(searched.people.items.length,1);
     const bReport=repaired.people.items.find(row=>row.accountId===b.userId);
     assert.equal(bReport.COPY.firstPass.decided,0);assert.equal(bReport.COPY.recheck.rate,1);assert.equal(bReport.COPY.firstRecheck.rate,1);
     assert.equal(bReport.reworkRounds,1);assert.equal(bReport.reworkDuration.samples,1);
@@ -123,6 +153,12 @@ test('operator report: real SQL, immutable identity, sampling denominator, snaps
       VALUES($1,$2,'RETURN_BATCH',$3,'perf-admin',$4)`,[freeze,tasks[0].item,admin.userId,randomUUID()]);
     const batchReport=await repository.operatorPerformance(admin,{});
     assert.equal(batchReport.summary.batchAffected,4);
+    assert.equal(batchReport.summary.qa.batchImpactReturns,4,'legacy batch without details recovers four affected members');
+    assert.equal(batchReport.summary.qa.unknownBatchCounts,0);
+    const legacyBatch=await repository.operatorPerformance(admin,
+      {snapshotToken:batchReport.snapshotToken,metric:'qaBatch'},{kind:'detail',accountId:admin.userId});
+    assert.equal(legacyBatch.items[0].affectedCount,4);
+    assert.equal(legacyBatch.items[0].affectedCountRecovered,true);
     assert.equal(batchReport.summary.COPY.firstPass.rate,.75,'batch-affected members are not fabricated failed samples');
     const extraFreeze=Number((await db.query(`INSERT INTO copy_sampling_freezes(public_id,production_batch_id,freeze_version,policy_version,rate_bps,seed,algorithm_version,blind_review_enabled,population_count,sample_count,snapshot_sha256,frozen_by_username,request_id,request_fingerprint)
       VALUES($1,$2,3,1,10000,'test','test',false,2,2,$3,'perf-admin',$4,$5) RETURNING id`,[randomUUID(),batch,'d'.repeat(64),randomUUID(),'e'.repeat(64)])).rows[0].id);

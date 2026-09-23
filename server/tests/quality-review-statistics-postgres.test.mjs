@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
+import { combinedQaPass } from '../../src/operator-performance.mjs';
 import { startTemporaryPostgres18 } from './helpers/personal-postgres.mjs';
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 
@@ -60,6 +61,8 @@ test('reviewer activity: real migration, event capture, pending assignment, back
     assert.equal(personal.qa.reviews,8);assert.equal(personal.qa.COPY.reviews,5);assert.equal(personal.qa.IMAGE.reviews,3);
     let report=await repository.operatorPerformance(admin,{});
     assert.deepEqual(report.people.items.find(p=>p.accountId===reviewer.userId).qa,personal.qa);
+    assert.deepEqual(combinedQaPass(report.people.items.find(p=>p.accountId===reviewer.userId)),
+      {passed:8,failed:0,decided:8,rate:1});
     const history=await repository.personalQualityActivity(reviewer,{metric:'qa'});
     assert.equal(history.total,8);assert.equal(history.items[0].query,undefined);assert.equal(history.items[0].taskId,undefined);
     assert.equal(history.items[0].accountId,undefined);assert.equal(history.items[0].copyRevisionId,undefined);
@@ -75,8 +78,15 @@ test('reviewer activity: real migration, event capture, pending assignment, back
     await decision(pending,'RETURN_BATCH',admin,{affectedCount:2,affectedTaskIds:[samples[0].task,samples[1].task]});
     report=await repository.operatorPerformance(admin,{activity:'QA'});
     assert.equal(report.people.items.find(p=>p.accountId===reviewer.userId).qa.reviews,9);
-    assert.equal(report.people.items.find(p=>p.accountId===admin.userId).qa.reviews,0);
-    assert.equal(report.people.items.find(p=>p.accountId===admin.userId).qa.batchActions,1);
+    assert.deepEqual(combinedQaPass(report.people.items.find(p=>p.accountId===reviewer.userId)),
+      {passed:8,failed:1,decided:9,rate:8/9});
+    const firstAdminRow=report.people.items.find(p=>p.accountId===admin.userId);
+    assert.equal(firstAdminRow.qa.reviews,0);
+    assert.equal(firstAdminRow.qa.batchActions,1);
+    assert.equal(firstAdminRow.qa.batchImpactReturns,2);
+    assert.equal(firstAdminRow.qa.COPY.batchImpactReturns,2);
+    assert.deepEqual(combinedQaPass(firstAdminRow),{passed:0,failed:2,decided:2,rate:0},
+      'the first copy batch counts only its two affected items; the prior single-item return stays with its reviewer');
     const trigger=await sample('COPY');await decision(trigger,'RETURN_BATCH',admin,{affectedCount:1});
     const imageBatch={stage:'IMAGE',freeze:imageFreeze,item:null};await decision(imageBatch,'RETURN_BATCH',reviewer,{affectedCount:25});
     const direct=await sample('COPY');await decision(direct,'PASS',admin,{directAdminApproval:true});
@@ -86,8 +96,14 @@ test('reviewer activity: real migration, event capture, pending assignment, back
     report=await repository.operatorPerformance(admin,{activity:'QA'});
     const reviewerRow=report.people.items.find(p=>p.accountId===reviewer.userId),adminRow=report.people.items.find(p=>p.accountId===admin.userId);
     assert.equal(reviewerRow.qa.reviews,10);assert.equal(reviewerRow.qa.rechecks,1);assert.equal(reviewerRow.qa.tasks,9);
+    assert.equal(reviewerRow.qa.batchImpactReturns,25);assert.equal(reviewerRow.qa.IMAGE.batchImpactReturns,25);
+    assert.deepEqual(combinedQaPass(reviewerRow),{passed:9,failed:26,decided:35,rate:9/35},
+      'image batch affected count adds all logical returns to the reviewer denominator');
     assert.equal(reviewerRow.qa.discarded,1);assert.equal(reviewerRow.qa.legacyAffectedCount,25);
     assert.equal(adminRow.qa.reviews,1);assert.equal(adminRow.qa.directPass,1);assert.equal(adminRow.qa.batchActions,2);
+    assert.equal(adminRow.qa.batchImpactReturns,3);assert.equal(adminRow.qa.COPY.batchImpactReturns,3);
+    assert.deepEqual(combinedQaPass(adminRow),{passed:0,failed:4,decided:4,rate:0},
+      'the triggering COPY item has one return verdict plus three separate batch-affected items');
     const before=Number((await db.query('SELECT count(*) FROM quality_review_activity_events')).rows[0].count);
     await db.query('SELECT capture_quality_review_activity()');
     assert.equal(Number((await db.query('SELECT count(*) FROM quality_review_activity_events')).rows[0].count),before);

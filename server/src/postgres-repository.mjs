@@ -4751,7 +4751,7 @@ export class PostgresControlPlaneRepository {
             );
           }
           if (!imagePlanChanged) {
-            throw new ControlPlaneConflictError('IMAGE_PLAN_UNCHANGED', '图片文案规划没有发生修改');
+            throw new ControlPlaneConflictError('IMAGE_PLAN_UNCHANGED', '图片规划内容与当前正式版本一致，无需重复保存');
           }
         }
         if (!mandatoryRework && decision !== 'SAVE_PLAN' && !baseAssessment && baseScoreX10 === null) {

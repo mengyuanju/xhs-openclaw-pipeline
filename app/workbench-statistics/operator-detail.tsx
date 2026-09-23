@@ -7,7 +7,7 @@ import { Select,SelectContent,SelectItem,SelectTrigger,SelectValue } from '@/com
 import { apiRequest } from '../components/api-client';
 import { Chart,duration } from './shared';
 import { OPERATOR_API } from './use-operator-performance';
-import type { OperatorDetail,OperatorReport,OperatorSummary,Rate,StagePerformance } from './operator-types';
+import type { OperatorDetail,OperatorEvent,OperatorReport,OperatorSummary,Rate,StagePerformance } from './operator-types';
 import styles from './operator-performance.module.css';
 import ui from './operator-detail.module.css';
 
@@ -16,21 +16,26 @@ export const STAGE_LABEL={COPY:'文案',IMAGE:'图片'};
 const time=(value:string)=>new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false});
 const KINDS:Record<string,string>={SUBMIT:'阶段提交',QUALITY:'质检结论',RETURN:'终审返工',RELEASE:'最终放行',DELIVERY:'交付确认',SAMPLE:'抽样记录',BATCH_RETURN:'批次退回影响',PENDING:'等待质检',EXCLUDED:'非有效审核样本'};
 const PHASES:Record<string,string>={HUMAN:'可人工处理',BACKGROUND:'等待后台结果',MACHINE_QUEUE:'机器排队',MACHINE_RUNNING:'机器执行',QUALITY_WAIT:'等待质检/批次',UNASSIGNED:'待分配',CLOSED:'本阶段结束'};
+const batchImpactCount=(item:OperatorEvent)=>{
+  if(typeof item.affectedCount==='number' && Number.isSafeInteger(item.affectedCount) && item.affectedCount>=0) return item.affectedCount;
+  return Array.isArray(item.affectedTaskIds) && item.affectedTaskIds.every(id=>Number.isSafeInteger(id) && id>0)
+    ? item.affectedTaskIds.length : null;
+};
 export const EXCLUSIONS:Record<string,string>={BYPASS:'免人工审核',SIMULATED:'模拟数据',ADMIN_DIRECT:'管理员快捷直放',SELF_REVIEW:'自检',UNKNOWN_IDENTITY:'身份未确认',NOT_SELECTED:'未抽中',BATCH_AFFECTED:'批次退回影响',NO_VERDICT:'无有效结论'};
 const METRICS:Record<string,string>={all:'全部事件',submitted:'阶段提交',firstPass:'首轮质检',recheck:'强制复检',firstRecheck:'首次返修复检',delivered:'交付确认',returned:'实际退回',reworked:'返修提交',released:'首次最终放行',batchAffected:'批次退回影响',excluded:'排除样本',pending:'当前待质检'};
-Object.assign(KINDS,{QA_REVIEW:'质检结论',QA_BATCH_RETURN:'批量退回操作',QA_DIRECT_PASS:'快捷直放',QA_DISCARD:'质检废弃',QA_PENDING:'质检待办'});
-Object.assign(METRICS,{contributed:'参与处理作业',qaAll:'全部质检记录',qa:'质检结论',qaRecheck:'质检复检',qaBatch:'批量退回操作',qaSpecial:'快捷直放与废弃',qaPending:'可处理质检待办',qaBlocked:'暂不可处理质检'});
+Object.assign(KINDS,{QA_REVIEW:'质检结论',QA_BATCH_RETURN:'批量退回操作',QA_DIRECT_PASS:'快捷直放',QA_DISCARD:'质检废弃',QA_PENDING:'质检待办',ANNOTATION_QUALITY:'标注质检结论'});
+Object.assign(METRICS,{contributed:'参与处理作业',annotationOverall:'整体通过率判定项次',qaAll:'全部质检记录',qa:'质检结论',qaRecheck:'质检复检',qaBatch:'批量退回操作',qaSpecial:'快捷直放与废弃',qaPending:'可处理质检待办',qaBlocked:'暂不可处理质检'});
 Object.assign(METRICS,{firstSubmitted:'首次标注提交',reassign:'当前建议改派'});
-Object.assign(KINDS,{REASSIGN:'建议改派',ACCOUNT_QUALITY:'账号判定',QA_ESCALATE:'移交管理员'});
-Object.assign(METRICS,{judged:'已判定总量',discarded:'最终废弃',firstPassed:'一次通过',qualityReturned:'打回',reassigned:'已二次分配'});
+Object.assign(KINDS,{REASSIGN:'建议改派',ACCOUNT_QUALITY:'首检归属分类',QA_ESCALATE:'移交管理员'});
+Object.assign(METRICS,{judged:'首检归属总量',discarded:'首检后最终废弃',firstPassed:'首检一次通过',qualityReturned:'首检打回',reassigned:'已二次分配'});
 
 function StageCard({stage,data}:{stage:'COPY'|'IMAGE';data:StagePerformance}) {
   const hasSamples=data.firstPass.decided+data.overallPass.decided+data.recheck.decided+data.firstRecheck.decided+data.coverage.eligible
     +data.coverage.unresolved+data.duration.samples+data.duration.missing+data.qualityWait.samples+data.pending>0;
   return <article className={ui.qualityCard}><header><h3>{STAGE_LABEL[stage]}质量与效率</h3><span>{data.submitted} 项提交</span></header>
-    <p>已判定 {data.qualityOutcomes.judged} 条 · 废弃 {data.qualityOutcomes.discarded} · 一次通过 {data.qualityOutcomes.firstPassed} · 打回 {data.qualityOutcomes.returned} · 已二次分配 {data.qualityOutcomes.reassigned}</p>
+    <p>首检归属 {data.qualityOutcomes.judged} 条 · 后续废弃 {data.qualityOutcomes.discarded} · 首检一次通过 {data.qualityOutcomes.firstPassed} · 首检打回 {data.qualityOutcomes.returned} · 已二次分配 {data.qualityOutcomes.reassigned}</p>
     {hasSamples?<><dl className={ui.metricList}>
-      {([['首次随机抽检通过率',data.firstPass],['整体通过率',data.overallPass],['强制复检通过率',data.recheck],['首次返修通过率',data.firstRecheck]] as const).map(([label,rate])=><div key={label}><dt>{label}</dt><dd>{rate.decided?<><strong>{RATE_LABEL(rate)}</strong><small>{rate.passed} / {rate.decided} 已审</small></>:<span className={styles.muted}>暂无已审样本</span>}</dd></div>)}
+      {([['首次随机抽检通过率',data.firstPass],['首次抽检最终通过率',data.overallPass],['强制复检通过率',data.recheck],['首次返修通过率',data.firstRecheck]] as const).map(([label,rate])=><div key={label}><dt>{label}</dt><dd>{rate.decided?<><strong>{RATE_LABEL(rate)}</strong><small>{rate.passed} / {rate.decided} 已审</small></>:<span className={styles.muted}>暂无已审样本</span>}</dd></div>)}
       <div><dt>人工待办周转 · 中位数</dt><dd>{duration(data.duration.medianMs)}</dd></div>
       <div><dt>提交到质检结论 · 中位数</dt><dd>{duration(data.qualityWait.medianMs)}</dd></div>
       <div><dt>当前待质检样本</dt><dd>{data.pending} 条</dd></div>
@@ -43,32 +48,44 @@ function StageCard({stage,data}:{stage:'COPY'|'IMAGE';data:StagePerformance}) {
   </article>;
 }
 
-function Summary({person,qa}:{person:OperatorSummary;qa:boolean}) {
+function Summary({person,qa,scopeStage}:{person:OperatorSummary;qa:boolean;scopeStage:string}) {
+  const qaDecided=person.qa.passed+person.qa.returned+person.qa.batchImpactReturns;
   const cards=qa?[
-    {label:'已质检作业',value:person.qa.tasks,unit:'项',note:'提交过通过或退回结论 · 去重'},
+    {label:'已逐项质检作业',value:person.qa.tasks,unit:'项',note:'提交过逐项通过或退回结论 · 去重'},
     {label:'质检结论',value:person.qa.reviews,unit:'次',note:`文案 ${person.qa.COPY.reviews} · 图片 ${person.qa.IMAGE.reviews} · 含复检 ${person.qa.rechecks}`},
-    {label:'通过 / 退回',value:`${person.qa.passed} / ${person.qa.returned}`,unit:'次',note:'按实际质检结论统计'},
+    {label:'质检操作通过率',value:`${(qaDecided?person.qa.passed/qaDecided*100:0).toFixed(2)}%`,unit:'',note:`通过 ${person.qa.passed} / 判定 ${qaDecided} 项次 · 整批波及退回 ${person.qa.batchImpactReturns} 项次`},
     {label:'当前可质检',value:person.qa.pending,unit:'项',note:`另有 ${person.qa.blocked} 项暂不可处理`},
   ]:[
     {label:'参与处理作业',value:person.contributed,unit:'项',note:'标注提交与质检合并去重'},
-    {label:'阶段提交',value:person.submissions,unit:'次',note:`文案 ${person.COPY.submitted} 项 · 图片 ${person.IMAGE.submitted} 项`},
+    {label:'阶段提交',value:person.submissions,unit:'次',note:scopeStage?`${STAGE_LABEL[scopeStage as 'COPY'|'IMAGE']} ${person[scopeStage as 'COPY'|'IMAGE'].submitted} 项`:`文案 ${person.COPY.submitted} 项 · 图片 ${person.IMAGE.submitted} 项`},
     {label:'首次最终放行',value:person.released,unit:'项',note:`返修提交 ${person.reworkRounds} 次`},
     {label:'交付确认',value:person.delivered,unit:'项',note:`共 ${person.deliveredBatches} 批`},
   ];
   return <div className={ui.summary}>{cards.map(card=><div key={card.label}><span>{card.label}</span><div><strong>{card.value}</strong><span>{card.unit}</span></div><small>{card.note}</small></div>)}</div>;
 }
 
-function QualityPanel({person}:{person:OperatorSummary}) {
+function QualityPanel({person,scopeStage}:{person:OperatorSummary;scopeStage:string}) {
+  const qaDecided=person.qa.passed+person.qa.returned+person.qa.batchImpactReturns;
+  const qaRate=qaDecided?person.qa.passed/qaDecided:0;
+  const annotation=person.annotationOverallPass;
   return <div className={ui.panelSections}>
-    <section><div className={ui.sectionHeading}><h3>标注质量与时效</h3><p>通过率归属内容提交人；周转包含自然等待。</p></div>
-      <div className={ui.twoColumns}><StageCard stage="COPY" data={person.COPY}/><StageCard stage="IMAGE" data={person.IMAGE}/></div>
-    </section>
-    <section><div className={ui.sectionHeading}><h3>质检操作</h3><p>按实际操作账号统计，文案与图片合并去重。</p></div>
+    <section><div className={ui.sectionHeading}><h3>标注质量与时效</h3><p>每次有效结论按实际标注账号及质检时间归属；周转包含自然等待。</p></div>
       <div className={ui.factGrid}>
-        <div><span>已质检作业</span><strong>{person.qa.tasks} <small>项</small></strong></div>
-        <div><span>文案 / 图片质检</span><strong>{person.qa.COPY.reviews} / {person.qa.IMAGE.reviews} <small>次</small></strong></div>
-        <div><span>通过 / 退回</span><strong>{person.qa.passed} / {person.qa.returned} <small>次</small></strong></div>
+        <div><span>{scopeStage?`${STAGE_LABEL[scopeStage as 'COPY'|'IMAGE']}整体通过率`:'整体通过率'}</span><strong>{(annotation.rate*100).toFixed(2)}% <small>{annotation.passed} / {annotation.decided} 项次</small></strong></div>
+        <div><span>一次通过判定</span><strong>{annotation.firstPassed} <small>项次</small></strong></div>
+        <div><span>返修后通过判定</span><strong>{annotation.reworkPassed} <small>项次</small></strong></div>
+        <div><span>退回判定</span><strong>{annotation.failed} <small>项次</small></strong></div>
+      </div>
+      <div className={ui.twoColumns}>{(!scopeStage||scopeStage==='COPY')&&<StageCard stage="COPY" data={person.COPY}/>}{(!scopeStage||scopeStage==='IMAGE')&&<StageCard stage="IMAGE" data={person.IMAGE}/>}</div>
+    </section>
+    <section><div className={ui.sectionHeading}><h3>质检操作</h3><p>按实际操作账号统计；判定次数按每次操作累计。</p></div>
+      <div className={ui.factGrid}>
+        <div><span>已逐项质检作业</span><strong>{person.qa.tasks} <small>项</small></strong></div>
+        <div><span>{scopeStage?`${STAGE_LABEL[scopeStage as 'COPY'|'IMAGE']}质检`:'文案 / 图片质检'}</span><strong>{scopeStage?person.qa[scopeStage as 'COPY'|'IMAGE'].reviews:`${person.qa.COPY.reviews} / ${person.qa.IMAGE.reviews}`} <small>次</small></strong></div>
+        <div><span>逐项通过 / 退回</span><strong>{person.qa.passed} / {person.qa.returned} <small>次</small></strong></div>
         <div><span>其中复检</span><strong>{person.qa.rechecks} <small>次</small></strong></div>
+        <div><span>整批波及退回</span><strong>{person.qa.batchImpactReturns} <small>项次</small></strong></div>
+        <div><span>质检操作通过率</span><strong>{(qaRate*100).toFixed(2)}%</strong></div>
       </div>
       <details className={ui.disclosure}><summary>批量操作与专项处置</summary>
         <dl className={ui.metricList}>
@@ -76,7 +93,8 @@ function QualityPanel({person}:{person:OperatorSummary}) {
           <div><dt>快捷直放 / 质检废弃</dt><dd>{person.qa.directPass} / {person.qa.discarded} 次</dd></div>
         </dl>
         {(person.qa.unknownBatchScopes>0||person.qa.legacyAffectedCount>0)&&<p className={styles.muted}>{person.qa.unknownBatchScopes} 次历史操作缺少完整范围，已记录 {person.qa.legacyAffectedCount} 影响项次。</p>}
-        <p className={styles.muted}>批量影响、快捷直放和废弃不计入逐项质检结论。</p>
+        {person.qa.unknownBatchCounts>0&&<p className={styles.muted}>{person.qa.unknownBatchCounts} 次整批打回缺少可恢复的波及数量，未计入质检操作通过率。</p>}
+        <p className={styles.muted}>整批波及退回项次计入质检操作通过率的分母；快捷直放和废弃不计入。</p>
       </details>
     </section>
     <section><div className={ui.sectionHeading}><h3>返修与交付</h3></div><div className={ui.factGrid}>
@@ -85,16 +103,17 @@ function QualityPanel({person}:{person:OperatorSummary}) {
       <div><span>重复退回</span><strong>{person.repeatedReturns} <small>项</small></strong></div>
       <div><span>交付确认</span><strong>{person.delivered} <small>项 / {person.deliveredBatches} 批</small></strong></div>
     </div></section>
-    <details className={ui.disclosure}><summary>统计口径说明</summary><p>整体通过率以首次抽检样本去重，包含打回后通过有效强制复检的内容；首次返修复检只计可追溯至原随机抽检的返修链。周转时间包含自然等待，不代表操作工时。</p><p>交付归属实际确认账号，不改变文案和图片提交贡献。明细与原报表使用同一份样本。</p></details>
+    <details className={ui.disclosure}><summary>统计口径说明</summary><p>标注整体通过率按实际标注账号及北京时间每次有效质检时间归属，为期间通过判定项次 / 期间通过或退回判定总项次。同一内容同一天多次判定分别计数；整批打回的每个受影响项计一次退回，文案触发项不与逐项退回重复。首检废弃仍按首次质检日归属。首次抽检最终通过率以首次抽检样本去重，包含打回后通过有效强制复检的内容；首次返修复检只计可追溯至原随机抽检的返修链。周转时间包含自然等待，不代表操作工时。</p><p>质检操作通过率按实际操作账号和判定日归属，为逐项通过次数 /（逐项通过次数 + 逐项退回次数 + 整批波及退回项次）。文案触发项由逐项退回计入，图片整批按全部波及项计入。交付归属实际确认账号，不改变文案和图片提交贡献。</p></details>
   </div>;
 }
 
 const VIEWS=[['events','操作明细'],['quality','质量与时效'],['trends','趋势与待办']] as const;
 
-export function OperatorDetailDialog({report,selection,onClose}:{report:OperatorReport;selection:{accountId:number;metric:string;stage:string;sampleSet?:string};onClose:()=>void}) {
+export function OperatorDetailDialog({report,selection,onClose}:{report:OperatorReport;selection:{accountId:number;metric:string;stage:string;scopeStage?:string;sampleSet?:string};onClose:()=>void}) {
   const dialogId=useId();
   const [view,setView]=useState<(typeof VIEWS)[number][0]>('events');
-  const [metric,setMetric]=useState(selection.metric),[stage,setStage]=useState(selection.stage),[sampleSet,setSampleSet]=useState(selection.sampleSet??'all'),[page,setPage]=useState(1);
+  const scopeStage=selection.scopeStage==='COPY'||selection.scopeStage==='IMAGE'?selection.scopeStage:'';
+  const [metric,setMetric]=useState(selection.metric),[stage,setStage]=useState(scopeStage||selection.stage),[sampleSet,setSampleSet]=useState(selection.sampleSet??'all'),[page,setPage]=useState(1);
   const [data,setData]=useState<OperatorDetail|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false),[retry,setRetry]=useState(0);
   useEffect(()=>{
     const controller=new AbortController();let disposed=false;
@@ -116,7 +135,7 @@ export function OperatorDetailDialog({report,selection,onClose}:{report:Operator
     <header className={ui.header}><DialogTitle className={ui.title}>{name} · 质量与效率明细</DialogTitle>
       <DialogDescription className={ui.description}><span>{report.range.from} 至 {report.range.to}</span><span>报表时点 {time(report.asOf)}</span></DialogDescription>
     </header>
-    {person&&<Summary person={person} qa={qaContext}/>}
+    {person&&<Summary person={person} qa={qaContext} scopeStage={scopeStage}/>}
     <div className={ui.tabs} role="tablist" aria-label="明细视图">{VIEWS.map(([key,label],index)=><button key={key} type="button" role="tab" id={`${dialogId}-${key}-tab`} aria-controls={`${dialogId}-${key}-panel`} aria-selected={view===key} tabIndex={view===key?0:-1}
       onClick={()=>setView(key)} onKeyDown={event=>{
         const next=event.key==='ArrowRight'?(index+1)%VIEWS.length:event.key==='ArrowLeft'?(index+VIEWS.length-1)%VIEWS.length:event.key==='Home'?0:event.key==='End'?VIEWS.length-1:null;
@@ -125,9 +144,9 @@ export function OperatorDetailDialog({report,selection,onClose}:{report:Operator
       }}>{label}</button>)}</div>
     <div className={ui.body} key={view} role="tabpanel" id={`${dialogId}-${view}-panel`} aria-labelledby={`${dialogId}-${view}-tab`} tabIndex={0}>
     {view==='events'&&<div className={ui.filters}>
-      <label>明细范围 <Select value={metric} onValueChange={value=>{setMetric(value);setPage(1);setSampleSet('all');}}><SelectTrigger aria-label="明细范围" className={styles.selector}><SelectValue /></SelectTrigger><SelectContent>{Object.entries(METRICS).map(([key,label])=><SelectItem key={key} value={key}>{label}</SelectItem>)}</SelectContent></Select></label>
-      <label>阶段 <Select value={stage||'ALL'} onValueChange={value=>{setStage(value==='ALL'?'':value);setPage(1);}}><SelectTrigger aria-label="明细阶段" className={styles.selector}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ALL">全部阶段</SelectItem><SelectItem value="COPY">文案</SelectItem><SelectItem value="IMAGE">图片</SelectItem></SelectContent></Select></label>
-      {['firstPass','recheck','firstRecheck','qa','qaRecheck'].includes(metric)&&<label>结论 <Select value={sampleSet} onValueChange={value=>{setSampleSet(value);setPage(1);}}><SelectTrigger aria-label="质检结论" className={styles.selector}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部结论</SelectItem><SelectItem value="passed">通过样本</SelectItem><SelectItem value="failed">退回样本</SelectItem></SelectContent></Select></label>}
+      <label>明细范围 <Select value={metric} onValueChange={value=>{setMetric(value);setPage(1);setSampleSet('all');}}><SelectTrigger aria-label="明细范围" className={styles.selector}><SelectValue /></SelectTrigger><SelectContent className={ui.filterSelectContent}>{Object.entries(METRICS).map(([key,label])=><SelectItem key={key} value={key}>{key==='annotationOverall'&&scopeStage?`${STAGE_LABEL[scopeStage]}${label}`:label}</SelectItem>)}</SelectContent></Select></label>
+      <label>阶段 <Select value={stage||'ALL'} onValueChange={value=>{setStage(value==='ALL'?'':value);setPage(1);}}><SelectTrigger aria-label="明细阶段" className={styles.selector}><SelectValue /></SelectTrigger><SelectContent className={ui.filterSelectContent}>{!scopeStage&&<SelectItem value="ALL">全部阶段</SelectItem>}{(!scopeStage||scopeStage==='COPY')&&<SelectItem value="COPY">文案</SelectItem>}{(!scopeStage||scopeStage==='IMAGE')&&<SelectItem value="IMAGE">图片</SelectItem>}</SelectContent></Select></label>
+      {['firstPass','recheck','firstRecheck','qa','qaRecheck','annotationOverall'].includes(metric)&&<label>结论 <Select value={sampleSet} onValueChange={value=>{setSampleSet(value);setPage(1);}}><SelectTrigger aria-label="质检结论" className={styles.selector}><SelectValue /></SelectTrigger><SelectContent className={ui.filterSelectContent}><SelectItem value="all">全部结论</SelectItem>{metric==='annotationOverall'&&<SelectItem value="first">一次通过</SelectItem>}<SelectItem value="passed">通过样本</SelectItem><SelectItem value="failed">退回样本</SelectItem></SelectContent></Select></label>}
     </div>}
     {error&&<div role="alert" className={`${styles.notice} ${styles.error}`}>{error}<Button variant="ghost" size="sm" onClick={()=>setRetry(value=>value+1)}>重试</Button></div>}
     {busy&&<p role="status" className={styles.muted}>正在读取对应任务和事件…</p>}
@@ -135,9 +154,10 @@ export function OperatorDetailDialog({report,selection,onClose}:{report:Operator
       {data.items.map(item=><article className={ui.event} key={item.id}><header><div className={ui.eventIdentity}><strong>{item.taskId?`#${item.taskId}`:'批量操作'}</strong><span className={ui.stageBadge}>{STAGE_LABEL[item.stage]}</span><span>{KINDS[item.kind]??item.kind}</span></div>
         {(item.outcome==='PASS'||item.outcome==='RETURN'||item.rework)&&<span className={`${ui.verdict} ${item.outcome==='RETURN'?ui.returned:ui.passed}`}>{item.outcome==='PASS'?'通过':item.outcome==='RETURN'?'退回':'返修提交'}</span>}</header>
         <h3 className={ui.eventQuery}>{item.query||'批量质检操作'}</h3><div className={ui.eventMeta}><span>{item.at?time(item.at):'时间未记录'}</span><span>{item.kind.startsWith('QA_')?'操作／指派账号':'提交人'} {item.displayName||item.username||'身份未确认'}{item.reviewerId?` · 质检账号 #${item.reviewerId}`:''}</span></div>
+        {item.kind==='ANNOTATION_QUALITY'&&<p>本次结论：{item.firstPassed?'一次通过':item.reworkPassed?'返修后通过':item.finalPassed?'通过':'退回'} · 本次计入一项次{item.fromBatch?' · 整批打回波及项':''}</p>}
         {item.kind==='ACCOUNT_QUALITY'&&<p>当前分类：{{DISCARDED:'废弃',FIRST_PASS:'一次通过',RETURNED:'打回'}[item.bucket??'']??item.bucket} · 首次质检 {time(item.at)}{item.outcomeChangedAt?' · 最近处置 '+time(item.outcomeChangedAt):''}{item.reassigned?' · 已二次分配（计数保留）':''}</p>}
         {item.kind==='QA_PENDING'&&<p>{item.blocked?'暂不可处理：暂停或权限变化':item.passBlocked?'图片修改待完成：仍可退回，暂不能通过':'当前可处理'}</p>}
-        {item.kind==='QA_BATCH_RETURN'&&<p>影响数量 {item.affectedCount??'未记录'}；{Array.isArray(item.affectedTaskIds)?`作业 ${item.affectedTaskIds.map(id=>`#${id}`).join('、')}`:'历史完整范围未保留，不推算逐项质检次数'}</p>}
+        {item.kind==='QA_BATCH_RETURN'&&<p>{batchImpactCount(item)===null?'波及退回数量未记录':`波及退回 ${batchImpactCount(item)} 项次`}{item.affectedCountRecovered?'（由留存批次成员恢复）':''}；{Array.isArray(item.affectedTaskIds)?`作业 ${item.affectedTaskIds.map(id=>`#${id}`).join('、')}`:batchImpactCount(item)===null?'历史范围和数量均缺失，无法计入质检操作通过率':'历史完整范围未保留，按已知数量计入质检操作通过率'}</p>}
         {item.exclusion&&<p>排除原因：{EXCLUSIONS[item.exclusion]??item.exclusion}</p>}
         {['QUALITY','QA_REVIEW'].includes(item.kind)&&<p>{item.sampleKind==='MANDATORY_RECHECK'?'强制复检':item.kind==='QA_REVIEW'?'随机抽检':item.first?'首轮随机抽检':'后续随机抽检'}{item.target?` · 整改范围 ${item.target==='BOTH'?'文案与图片':STAGE_LABEL[item.target as 'COPY'|'IMAGE']??item.target}`:''}</p>}
         {['QUALITY','QA_REVIEW','REASSIGN'].includes(item.kind)&&<p className={ui.rounds}>{item.roundKnown?`第 ${item.reviewRound} 轮质检 · 本链路有效退回 ${item.returnRound} 次`:'历史轮次不明'}{item.outcome==='RETURN'&&item.roundKnown?` · 第 ${item.returnRound} 次返修`:''}{(item.consecutiveReturns??0)>0?` · 该标注连续退回 ${item.consecutiveReturns} 次`:''}</p>}
@@ -150,7 +170,7 @@ export function OperatorDetailDialog({report,selection,onClose}:{report:Operator
       </article>)}
       {!data.items.length&&<p className={styles.empty}>该范围没有符合条件的记录</p>}
     </div></>}
-    {person&&view==='quality'&&<QualityPanel person={person}/>}
+    {person&&view==='quality'&&<QualityPanel person={person} scopeStage={scopeStage}/>}
     {data&&view==='trends'&&<div className={ui.panelSections}>
       <section><div className={ui.sectionHeading}><h3>每日变化</h3></div><div className={ui.twoColumns}>
         <article className={ui.chartCard}><h4>提交与退回作业</h4><Chart label="人员每日提交和退回任务" labels={data.trend.map(day=>day.date.slice(5))} series={[

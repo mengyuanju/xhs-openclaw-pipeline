@@ -209,8 +209,8 @@ export function WorkQualityEditor({ item, navigationGuardRef, onSkip, onComplete
     <footer className={styles.qualityFooter}>{error && <div className="notice error" role="alert">{error}</div>}
       <span>{item.rework ? '当前版本须通过强制复检' : '本次结论绑定当前待检版本'}</span><div>
         <Button unstyled className="button" disabled={busy} onClick={onSkip}>暂跳过</Button>
-        {qa.capabilities.canEscalate && <QaEscalateButton stage={imageMode ? 'IMAGE' : 'COPY'} itemId={item.id}
-          revisionToken={copyItem?.approvedRevision.revisionToken ?? imageItem?.revisionToken ?? ''} disabled={busy}
+        {!imageMode && qa.capabilities.canEscalate && <QaEscalateButton stage="COPY" itemId={item.id}
+          revisionToken={copyItem?.approvedRevision.revisionToken ?? ''} disabled={busy}
           onBusyChange={value => { submitting.current = value; setBusy(value); }}
           onCompleted={() => onCompleted(qa.anonymousCode + ' 已提交管理员。')} />}
         {imageItem?.capabilities.canDiscard && <ImageDiscardButton target={{ samplingItemId: imageItem.id }} disabled={busy}

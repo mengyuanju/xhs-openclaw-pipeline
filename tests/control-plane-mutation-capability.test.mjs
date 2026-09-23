@@ -59,6 +59,10 @@ test('protected control-plane operations declare their version contracts', () =>
     });
   }
   assert.equal(requiredMutationCapability('/v1/tasks', 'GET'), null);
+  assert.deepEqual(requiredMutationCapability('/v1/copy-qa/items/opaque-id/escalate', 'POST'), {
+    capability: 'secondaryAssignmentVersion', minimumVersion: 1,
+  });
+  assert.equal(requiredMutationCapability('/v1/image-qa/items/opaque-id/escalate', 'POST'), null);
   assert.equal(requiredMutationCapability('/v1/copy-qa/reason-tags', 'GET'), null);
   assert.equal(requiredMutationCapability('/v1/settings/xhs_query_search', 'GET'), null);
   assert.equal(requiredMutationCapability('/v1/settings/production', 'PUT'), null);

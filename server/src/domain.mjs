@@ -1,5 +1,7 @@
-import { normalizeImageSettings, normalizePageLayout } from './image-options.mjs';
+import { normalizeImageSettings } from './image-options.mjs';
 import { visibleCharacterCount } from '../../src/visible-text.mjs';
+import { normalizeCopyReviewImagePlan } from '../../src/image-plan-review.mjs';
+export { normalizeCopyReviewImagePlan } from '../../src/image-plan-review.mjs';
 export const TASK_STATES = Object.freeze([
   'COPY_QUEUED',
   'COPY_RUNNING',
@@ -35,7 +37,6 @@ export const EXECUTION_STATUSES = Object.freeze([
 
 const NODE_ID_PATTERN = /^[a-zA-Z0-9._:-]{1,100}$/u;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-const IMAGE_PLAN_KINDS = Object.freeze(['hero', 'steps', 'checklist', 'comparison', 'detail', 'summary']);
 
 export class ControlPlaneConflictError extends Error {
   constructor(code, message) {
@@ -162,40 +163,6 @@ function normalizedReviewTextList(value, field, { min, max, itemMax }) {
     throw new RangeError(`${field} must contain between ${min} and ${max} items`);
   }
   return value.map((item, index) => normalizedReviewText(item, `${field}[${index}]`, { max: itemMax }));
-}
-
-export function normalizeCopyReviewImagePlan(value, { allowBulletOverflow = false } = {}) {
-  if (!Array.isArray(value) || value.length < 3 || value.length > 5) {
-    throw new RangeError('copy review imagePlan must contain between 3 and 5 items');
-  }
-  const imagePlan = value.map((rawItem, index) => {
-    if (!rawItem || typeof rawItem !== 'object' || Array.isArray(rawItem)) {
-      throw new TypeError(`copy review imagePlan[${index}] must be an object`);
-    }
-    const kind = String(rawItem.kind ?? '').trim();
-    if (!IMAGE_PLAN_KINDS.includes(kind)) {
-      throw new TypeError(`copy review imagePlan[${index}].kind is invalid`);
-    }
-    return {
-      kind,
-      headline: normalizedReviewText(rawItem.headline, `copy review imagePlan[${index}].headline`, { max: 18 }),
-      subtitle: normalizedReviewText(rawItem.subtitle, `copy review imagePlan[${index}].subtitle`, { min: 0, max: 30 }),
-      bullets: normalizedReviewTextList(rawItem.bullets, `copy review imagePlan[${index}].bullets`, {
-        min: 2,
-        max: 5,
-        itemMax: allowBulletOverflow ? 200 : kind === 'checklist' ? 40 : 30,
-      }),
-      prompt: normalizedReviewText(rawItem.prompt, `copy review imagePlan[${index}].prompt`, {
-        min: 10,
-        max: 1_000,
-      }),
-      ...(rawItem.layout === undefined ? {} : { layout: normalizePageLayout(rawItem.layout, kind) }),
-    };
-  });
-  if (imagePlan[0].kind !== 'hero' || imagePlan.slice(1).some((item) => item.kind === 'hero')) {
-    throw new TypeError('copy review imagePlan must contain hero only as its first item');
-  }
-  return imagePlan;
 }
 
 export function normalizeCopyReviewEdits(value, { allowImagePlanBulletOverflow = false } = {}) {
