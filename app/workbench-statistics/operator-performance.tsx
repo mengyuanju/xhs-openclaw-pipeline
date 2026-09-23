@@ -34,20 +34,29 @@ export function QualityOutcomeRates({value,onSelect}:{value:QualityOutcomes;onSe
   return <div className={styles.outcomeGrid}>{([['firstPassed','一次通过率',value.firstPassed,value.firstPassRate],['qualityReturned','打回率',value.returned,value.returnRate],['discarded','废弃率',value.discarded,value.discardedRate]] as const).map(([metric,label,count,rate])=><button type="button" className={styles.outcomeCard} key={metric} onClick={()=>onSelect(metric)} disabled={!value.judged}><span>{label}</span><strong>{percent(rate)}</strong><small>{number(count)} / {number(value.judged)} 条</small></button>)}</div>;
 }
 function OverallPass({summary,scoped=false}:{summary:OperatorReport['summary']|undefined;scoped?:boolean}) {
-  const passed=(summary?.COPY.overallPass.passed??0)+(summary?.IMAGE.overallPass.passed??0);
-  const decided=(summary?.COPY.overallPass.decided??0)+(summary?.IMAGE.overallPass.decided??0);
+  const passed=summary?.qa.passed??0;
+  const decided=passed+(summary?.qa.returned??0);
   return <section className={styles.overallPanel} aria-label="整体通过率"><div className={styles.overallMain}>
-    <div className={styles.overallTop}><span className={styles.eyebrow}>{scoped?'所选人员质量':'团队质量'}</span><MetricHelp title="通过率口径"><p>整体通过率以首次随机抽检且已判定的文案、图片内容为样本。首次通过或打回后有效强制复检通过，都计为通过；同一内容阶段只计一次。</p><p>账号的一次通过率、打回率、废弃率使用账号已判定内容作分母，和这里的样本范围不同。</p></MetricHelp></div>
+    <div className={styles.overallTop}><span className={styles.eyebrow}>{scoped?'所选人员质检':'团队质检'}</span><MetricHelp title="通过率口径"><p>整体通过率 = 所选日期内质检人员逐项通过次数 /（逐项通过次数 + 逐项退回次数）。首次抽检和返修后的强制复检都按实际结论时间、实际操作账号计入；同一内容多轮质检分别计数。</p><p>批量退回只计其中实际形成的逐项结论，其他批量影响项不展开计算；快捷直放、质检废弃和移交管理员不计入。标注账号的一次通过率、打回率、废弃率是内容质量指标，使用不同口径。</p></MetricHelp></div>
     <h2>整体通过率</h2><strong className={styles.overallValue}>{decided?percent(passed/decided):'—'}</strong>
-    <span className={styles.overallCount}>{decided?`${number(passed)} / ${number(decided)} 条抽检样本通过`:'当前范围暂无已判定抽检样本'}</span>
-    {decided>0&&decided<20&&<small className={styles.sample}>样本少于 20 条，仅供参考</small>}
-  </div><div className={styles.overallStages}>{stages.map(([stage,label])=>{const value=summary?.[stage].overallPass;return <div key={stage}>
-    <span>{label}</span><strong>{value?percent(value.rate):'—'}</strong><small>{value?.decided?`${number(value.passed)} / ${number(value.decided)} 条`:'暂无样本'}</small></div>;})}</div></section>;
+    <span className={styles.overallCount}>{decided?`${number(passed)} / ${number(decided)} 次质检结论通过`:'当前范围暂无逐项通过或退回结论'}</span>
+    {decided>0&&decided<20&&<small className={styles.sample}>结论少于 20 次，仅供参考</small>}
+  </div><div className={styles.overallStages}>{stages.map(([stage,label])=>{const value=summary?.qa[stage],stagePassed=value?.passed??0,stageDecided=stagePassed+(value?.returned??0);return <div key={stage}>
+    <span>{label}</span><strong>{stageDecided?percent(stagePassed/stageDecided):'—'}</strong><small>{stageDecided?`${number(stagePassed)} / ${number(stageDecided)} 次`:'暂无结论'}</small></div>;})}</div></section>;
 }
 function OutcomeCell({value,count,metric,person,onSelect,tone}:{value:number|null;count:number;metric:string;person:OperatorPerson;onSelect:()=>void;tone:string}) {
   return <td className={styles.outcomeCell}><button type="button" className={`${styles.link} ${styles.outcomeValue} ${tone}`} disabled={!person.qualityOutcomes.judged}
     aria-label={`${person.displayName}${metric} ${percent(value)}，${number(count)} / ${number(person.qualityOutcomes.judged)} 条，查看明细`} onClick={onSelect}>
     <span className={styles.mobileMetricLabel}>{metric}</span><strong>{percent(value)}</strong><small>{number(count)} / {number(person.qualityOutcomes.judged)} 条</small></button></td>;
+}
+function AccountOverallPass({person}:{person:OperatorPerson}) {
+  const passed=person.qa.passed;
+  const decided=passed+person.qa.returned;
+  return <td className={`${styles.outcomeCell} ${styles.qaOverallCell}`}><div className={`${styles.outcomeValue} ${styles.overallCell}`}
+    aria-label={`${person.displayName}整体通过率 ${decided?percent(passed/decided):'—'}，${number(passed)} / ${number(decided)} 次逐项质检结论`}>
+    <span className={styles.mobileMetricLabel}>整体通过率</span><strong>{decided?percent(passed/decided):'—'}</strong>
+    <small>{decided?`${number(passed)} / ${number(decided)} 次质检结论`:'暂无逐项质检结论'}</small>
+    {decided>0&&decided<20&&<small className={styles.sample}>结论少于 20 次</small>}</div></td>;
 }
 function Card({label,value,note,onClick}:{label:string;value:number|undefined;note:string;onClick:()=>void}) {
   return <article className={styles.card}><span>{label}</span><button className={`${styles.link} ${styles.cardValue}`} onClick={onClick}
@@ -118,6 +127,7 @@ export function OperatorPerformance({initialFilters={}}:{initialFilters?:Record<
   const visibleStages=stages.filter(([stage])=>!filters.stage||stage===filters.stage);
   const columns: MetricColumn[]=qa?
     [...visibleStages.map(([stage,label]):MetricColumn=>({key:stage==='COPY'?'copyQa':'imageQa',label:`${label}质检`})),
+      {key:'overallPassRate',label:'整体通过率'},
       {key:'qaReviews',label:'质检次数'},
       {key:'qaPassed',label:'通过次数'},
       {key:'qaReturned',label:'退回次数'},
@@ -127,12 +137,12 @@ export function OperatorPerformance({initialFilters={}}:{initialFilters?:Record<
       {key:'returnRate',label:'打回率'},
       {key:'discardedRate',label:'废弃率'}];
   function cells(person:OperatorPerson) {
-    if(qa)return <>{visibleStages.map(([stage,label])=><td className={styles.metricCell} key={stage}><button className={styles.link} onClick={()=>show(person.accountId,'qa',stage)}>{number(person.qa[stage].tasks)}</button>
-      </td>)}
-      <td className={styles.metricCell}><button className={styles.link} onClick={()=>show(person.accountId,'qa',filters.stage)}>{number(person.qa.reviews)}</button></td>
-      <td className={styles.metricCell}><button className={styles.link} onClick={()=>show(person.accountId,'qa',filters.stage,'passed')}>{number(person.qa.passed)}</button></td>
-      <td className={styles.metricCell}><button className={styles.link} onClick={()=>show(person.accountId,'qa',filters.stage,'failed')}>{number(person.qa.returned)}</button></td>
-      <td className={styles.metricCell}><button className={styles.link} onClick={()=>show(person.accountId,'qaRecheck',filters.stage)}>{number(person.qa.rechecks)}</button></td></>;
+    if(qa)return <>{visibleStages.map(([stage,label])=><td className={styles.metricCell} data-label={`${label}质检`} aria-label={`${label}质检 ${number(person.qa[stage].tasks)} 项`} key={stage}><button className={styles.link} onClick={()=>show(person.accountId,'qa',stage)}>{number(person.qa[stage].tasks)}</button>
+      </td>)}<AccountOverallPass person={person}/>
+      <td className={styles.metricCell} data-label="质检次数" aria-label={`质检次数 ${number(person.qa.reviews)} 次`}><button className={styles.link} onClick={()=>show(person.accountId,'qa',filters.stage)}>{number(person.qa.reviews)}</button></td>
+      <td className={styles.metricCell} data-label="通过次数" aria-label={`通过次数 ${number(person.qa.passed)} 次`}><button className={styles.link} onClick={()=>show(person.accountId,'qa',filters.stage,'passed')}>{number(person.qa.passed)}</button></td>
+      <td className={styles.metricCell} data-label="退回次数" aria-label={`退回次数 ${number(person.qa.returned)} 次`}><button className={styles.link} onClick={()=>show(person.accountId,'qa',filters.stage,'failed')}>{number(person.qa.returned)}</button></td>
+      <td className={styles.metricCell} data-label="复检次数" aria-label={`复检次数 ${number(person.qa.rechecks)} 次`}><button className={styles.link} onClick={()=>show(person.accountId,'qaRecheck',filters.stage)}>{number(person.qa.rechecks)}</button></td></>;
     const quality=person.qualityOutcomes;
     return <><td className={styles.metricCell}><button className={`${styles.link} ${styles.judgedValue}`} onClick={()=>show(person.accountId,'judged',filters.stage)}>{number(quality.judged)}<small>条内容判定</small></button></td>
       <OutcomeCell value={quality.firstPassRate} count={quality.firstPassed} metric="一次通过率" person={person} onSelect={()=>show(person.accountId,'firstPassed',filters.stage)} tone={styles.passValue}/>
@@ -179,11 +189,11 @@ export function OperatorPerformance({initialFilters={}}:{initialFilters?:Record<
         <div className={styles.coverage}>{stages.map(([stage,label])=><span key={stage}>{label}抽检覆盖 {summary?.[stage].coverage.rate==null?'—':percent(summary[stage].coverage.rate)} · {number(summary?.[stage].coverage.sampled)} / {number(summary?.[stage].coverage.eligible)} 条</span>)}</div>
       </details>
     </>:<>
-      {!qa&&<OverallPass summary={summary} scoped={!!filters.accountId}/>}
+      {qa&&<OverallPass summary={summary} scoped={!!filters.accountId}/>}
       <section className={`panel ${styles.section}`} aria-label="账号数据">
-        <div className={styles.sectionHeading}><div><h2>{qa?'质检工作量':'账号质量表现'}</h2><span className={styles.muted}>{number(report?.people.total)} 个账号{!qa?' · 点击百分比查看明细':''}</span></div>
-          <MetricHelp><p>{qa?'质检条数按内容去重；质检次数含复检。通过和退回次数表示质检操作量。':'每个账号按已判定的内容阶段计算一次通过率、打回率、废弃率，三类互斥，合计 100%。文案和图片可在内容类型中筛选。'}</p>
-            <p>{qa?'同一内容多次退回会分别计入退回次数。':'判定归实际操作账号；改派后原账号的历史判定仍保留。最终废弃优先于曾打回，曾打回优先于一次通过。'}</p></MetricHelp></div>
+        <div className={styles.sectionHeading}><div><h2>{qa?'质检工作量':'账号质量表现'}</h2><span className={styles.muted}>{number(report?.people.total)} 个账号{!qa?' · 一次通过、打回和废弃可点击查看明细':''}</span></div>
+          <MetricHelp><p>{qa?'整体通过率按本人在所选日期实际完成的逐项质检结论计算：通过次数 /（通过次数 + 退回次数）。首次抽检和返修后的复检都计入，同一内容多轮质检分别计数。':'一次通过率、打回率、废弃率共用账号已判定内容作分母，三类互斥且合计 100%；改派保留原账号历史判定。'}</p>
+            <p>{qa?'质检条数按内容去重；质检次数含复检及移交管理员。批量退回只计实际形成的逐项结论，其他批量影响项不展开计算；快捷直放、废弃和移交管理员不计入整体通过率。':'这些内容质量指标归实际标注提交人，质检人员的操作通过率请切换到“质检”。'}</p></MetricHelp></div>
         <div className={styles.workTabs} aria-label="工作类型">{[['PRODUCTION','标注'],['QA','质检']].map(([value,label])=><Button key={value} type="button" variant="outline" size="sm" aria-pressed={filters.activity===value}
           onClick={()=>setFilters(previous=>({...previous,activity:value,page:'1',sort:value==='QA'?'qa':'judged',order:'desc'}))}>{label}</Button>)}</div>
         {!qa&&<div className={styles.mobileSort}><label htmlFor="operator-mobile-sort">排序</label><Select value={['judged','firstPassRate','returnRate','discardedRate'].includes(filters.sort)?`${filters.sort}:${filters.order}`:'judged:desc'} onValueChange={value=>{const [sort,order]=value.split(':');setFilters(previous=>({...previous,sort,order,page:'1'}));}}><SelectTrigger id="operator-mobile-sort" aria-label="账号排序"><SelectValue/></SelectTrigger><SelectContent>
@@ -192,7 +202,11 @@ export function OperatorPerformance({initialFilters={}}:{initialFilters?:Record<
           <SelectItem value="returnRate:desc">打回率最高</SelectItem><SelectItem value="returnRate:asc">打回率最低</SelectItem>
           <SelectItem value="discardedRate:desc">废弃率最高</SelectItem><SelectItem value="discardedRate:asc">废弃率最低</SelectItem>
         </SelectContent></Select></div>}
-        <div className={styles.tableScroll} role="region" aria-label="账号统计表" tabIndex={0}><table className={`${styles.table} ${!qa?styles.qualityTable:''}`}><thead><tr><th scope="col">账号</th>{columns.map(({key,label})=><th scope="col" key={key} aria-sort={filters.sort===key?(filters.order==='asc'?'ascending':'descending'):'none'}><button type="button" className={styles.sortButton} onClick={()=>sort(key)}>{label} <ArrowUpDown size={13} aria-hidden="true"/></button></th>)}</tr></thead>
+        {qa&&<div className={styles.mobileSort}><label htmlFor="operator-mobile-sort">排序</label><Select value={['qa','overallPassRate'].includes(filters.sort)?`${filters.sort}:${filters.order}`:'qa:desc'} onValueChange={value=>{const [sort,order]=value.split(':');setFilters(previous=>({...previous,sort,order,page:'1'}));}}><SelectTrigger id="operator-mobile-sort" aria-label="账号排序"><SelectValue/></SelectTrigger><SelectContent>
+          <SelectItem value="qa:desc">质检作业最多</SelectItem><SelectItem value="qa:asc">质检作业最少</SelectItem>
+          <SelectItem value="overallPassRate:desc">整体通过率最高</SelectItem><SelectItem value="overallPassRate:asc">整体通过率最低</SelectItem>
+        </SelectContent></Select></div>}
+        <div className={styles.tableScroll} role="region" aria-label="账号统计表" tabIndex={0}><table className={`${styles.table} ${qa?styles.qaTable:styles.qualityTable}`}><thead><tr><th scope="col">账号</th>{columns.map(({key,label})=><th scope="col" key={key} aria-sort={filters.sort===key?(filters.order==='asc'?'ascending':'descending'):'none'}><button type="button" className={styles.sortButton} onClick={()=>sort(key)}>{label} <ArrowUpDown size={13} aria-hidden="true"/></button></th>)}</tr></thead>
           <tbody>{report?.people.items.map(person=><tr key={person.accountId}><td><button type="button" className={`${styles.link} ${styles.name}`} onClick={()=>show(person.accountId,qa?'qaAll':'judged',filters.stage)}>{person.displayName}</button><small>@{person.username}</small></td>{cells(person)}</tr>)}
           {!report?.people.items.length&&<tr><td colSpan={columns.length+1} className={styles.empty}>{busy?'正在读取…':'当前范围暂无记录'}</td></tr>}</tbody></table></div>
         {report&&<div className={styles.pagination}><span>第 {report.people.page} / {Math.max(1,Math.ceil(report.people.total/report.people.pageSize))} 页</span><div className={styles.actions}><Button variant="outline" size="sm" disabled={busy||report.people.page<=1} onClick={()=>setFilters(previous=>({...previous,page:String(report.people.page-1)}))}>上一页</Button><Button variant="outline" size="sm" disabled={busy||report.people.page*report.people.pageSize>=report.people.total} onClick={()=>setFilters(previous=>({...previous,page:String(report.people.page+1)}))}>下一页</Button></div></div>}

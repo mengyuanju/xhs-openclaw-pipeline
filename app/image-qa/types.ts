@@ -60,10 +60,10 @@ export function normalizeImageQaItem(value: unknown, role: 'ADMIN' | 'REVIEWER')
     }),
     capabilities: {
       canPass: capabilities.canPass === true,
-      canEscalate: capabilities.canEscalate === true,
-      canReturnSingle: capabilities.canReturnSingle === true && row.sampleKind !== 'MANDATORY_RECHECK',
+      canEscalate: false,
+      canReturnSingle: capabilities.canReturnSingle === true,
       canReturnBatch: capabilities.canReturnBatch === true,
-      canDiscard: capabilities.canDiscard === true && row.sampleKind !== 'MANDATORY_RECHECK',
+      canDiscard: capabilities.canDiscard === true,
     },
     blockers: {
       pendingImageEdits: Number.isSafeInteger(Number((row.blockers as Record<string, unknown> | undefined)?.pendingImageEdits))

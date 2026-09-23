@@ -72,14 +72,31 @@ test('copy review edits normalize editable copy and structured image-plan cards'
       ...item,
       kind: index === 0 ? 'steps' : item.kind,
     })),
-  }), /hero/u);
+  }), /第 1 页页面类型必须为封面/u);
+});
+
+test('copy review image-plan validation identifies the page, field and bullet line', () => {
+  for (const [change, expected] of [
+    [(edits) => { edits.imagePlan[1].headline = ' '; }, /第 2 页页面标题为空/u],
+    [(edits) => { edits.imagePlan[2].subtitle = '长'.repeat(31); }, /第 3 页页面副标题超过 30 字（当前 31 字）/u],
+    [(edits) => { edits.imagePlan[1].bullets.push('  '); }, /第 2 页画面要点第 3 行为空/u],
+    [(edits) => { edits.imagePlan[1].bullets[0] = 1; }, /第 2 页画面要点第 1 行必须是文本/u],
+    [(edits) => { edits.imagePlan[1].bullets = ['仅一行']; }, /第 2 页画面要点需要 2–5 行（当前 1 行）/u],
+    [(edits) => { edits.imagePlan[2].prompt = '太短'; }, /第 3 页画面生成指令至少需要 10 字（当前 2 字）/u],
+    [(edits) => { edits.imagePlan[2].kind = 'hero'; }, /第 3 页页面类型不能为封面/u],
+    [(edits) => { edits.imagePlan[1].layout = { mode: 'CUSTOM', imageShare: 99 }; }, /第 2 页主体占比须为 20–90%/u],
+  ]) {
+    const edits = validReviewEdits();
+    change(edits);
+    assert.throws(() => normalizeCopyReviewEdits(edits), expected);
+  }
 });
 
 test('copy review requires explicit confirmation for overlong bullets and retains a safety cap', () => {
   const edits = validReviewEdits();
   edits.imagePlan[1].bullets[0] = '长'.repeat(31);
 
-  assert.throws(() => normalizeCopyReviewEdits(edits), /between 1 and 30 characters/u);
+  assert.throws(() => normalizeCopyReviewEdits(edits), /第 2 页画面要点第 1 行超过 30 字（当前 31 字）/u);
   assert.equal(normalizeCopyReviewEdits(edits, {
     allowImagePlanBulletOverflow: true,
   }).imagePlan[1].bullets[0], '长'.repeat(31));
@@ -87,7 +104,7 @@ test('copy review requires explicit confirmation for overlong bullets and retain
   edits.imagePlan[1].bullets[0] = '长'.repeat(201);
   assert.throws(() => normalizeCopyReviewEdits(edits, {
     allowImagePlanBulletOverflow: true,
-  }), /between 1 and 200 characters/u);
+  }), /第 2 页画面要点第 1 行超过 200 字（当前 201 字）/u);
 });
 
 test('copy review bullet limits count user-visible graphemes consistently with the workbench', () => {
@@ -101,5 +118,5 @@ test('copy review bullet limits count user-visible graphemes consistently with t
   );
 
   edits.imagePlan[1].bullets[0] = `${'字'.repeat(30)}${heart}`;
-  assert.throws(() => normalizeCopyReviewEdits(edits), /between 1 and 30 characters/u);
+  assert.throws(() => normalizeCopyReviewEdits(edits), /第 2 页画面要点第 1 行超过 30 字（当前 31 字）/u);
 });

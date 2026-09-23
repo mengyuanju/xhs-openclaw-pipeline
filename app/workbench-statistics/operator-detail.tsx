@@ -30,7 +30,7 @@ function StageCard({stage,data}:{stage:'COPY'|'IMAGE';data:StagePerformance}) {
   return <article className={ui.qualityCard}><header><h3>{STAGE_LABEL[stage]}质量与效率</h3><span>{data.submitted} 项提交</span></header>
     <p>已判定 {data.qualityOutcomes.judged} 条 · 废弃 {data.qualityOutcomes.discarded} · 一次通过 {data.qualityOutcomes.firstPassed} · 打回 {data.qualityOutcomes.returned} · 已二次分配 {data.qualityOutcomes.reassigned}</p>
     {hasSamples?<><dl className={ui.metricList}>
-      {([['首次随机抽检通过率',data.firstPass],['整体通过率',data.overallPass],['强制复检通过率',data.recheck],['首次返修通过率',data.firstRecheck]] as const).map(([label,rate])=><div key={label}><dt>{label}</dt><dd>{rate.decided?<><strong>{RATE_LABEL(rate)}</strong><small>{rate.passed} / {rate.decided} 已审</small></>:<span className={styles.muted}>暂无已审样本</span>}</dd></div>)}
+      {([['首次随机抽检通过率',data.firstPass],['首次抽检最终通过率',data.overallPass],['强制复检通过率',data.recheck],['首次返修通过率',data.firstRecheck]] as const).map(([label,rate])=><div key={label}><dt>{label}</dt><dd>{rate.decided?<><strong>{RATE_LABEL(rate)}</strong><small>{rate.passed} / {rate.decided} 已审</small></>:<span className={styles.muted}>暂无已审样本</span>}</dd></div>)}
       <div><dt>人工待办周转 · 中位数</dt><dd>{duration(data.duration.medianMs)}</dd></div>
       <div><dt>提交到质检结论 · 中位数</dt><dd>{duration(data.qualityWait.medianMs)}</dd></div>
       <div><dt>当前待质检样本</dt><dd>{data.pending} 条</dd></div>
@@ -44,10 +44,11 @@ function StageCard({stage,data}:{stage:'COPY'|'IMAGE';data:StagePerformance}) {
 }
 
 function Summary({person,qa}:{person:OperatorSummary;qa:boolean}) {
+  const qaDecided=person.qa.passed+person.qa.returned;
   const cards=qa?[
     {label:'已质检作业',value:person.qa.tasks,unit:'项',note:'提交过通过或退回结论 · 去重'},
     {label:'质检结论',value:person.qa.reviews,unit:'次',note:`文案 ${person.qa.COPY.reviews} · 图片 ${person.qa.IMAGE.reviews} · 含复检 ${person.qa.rechecks}`},
-    {label:'通过 / 退回',value:`${person.qa.passed} / ${person.qa.returned}`,unit:'次',note:'按实际质检结论统计'},
+    {label:'整体通过率',value:qaDecided?`${(person.qa.passed/qaDecided*100).toFixed(2)}%`:'—',unit:'',note:qaDecided?`通过 ${person.qa.passed} / 已判定 ${qaDecided} 次`:'暂无逐项质检结论'},
     {label:'当前可质检',value:person.qa.pending,unit:'项',note:`另有 ${person.qa.blocked} 项暂不可处理`},
   ]:[
     {label:'参与处理作业',value:person.contributed,unit:'项',note:'标注提交与质检合并去重'},
@@ -85,7 +86,7 @@ function QualityPanel({person}:{person:OperatorSummary}) {
       <div><span>重复退回</span><strong>{person.repeatedReturns} <small>项</small></strong></div>
       <div><span>交付确认</span><strong>{person.delivered} <small>项 / {person.deliveredBatches} 批</small></strong></div>
     </div></section>
-    <details className={ui.disclosure}><summary>统计口径说明</summary><p>整体通过率以首次抽检样本去重，包含打回后通过有效强制复检的内容；首次返修复检只计可追溯至原随机抽检的返修链。周转时间包含自然等待，不代表操作工时。</p><p>交付归属实际确认账号，不改变文案和图片提交贡献。明细与原报表使用同一份样本。</p></details>
+    <details className={ui.disclosure}><summary>统计口径说明</summary><p>首次抽检最终通过率以首次抽检样本去重，包含打回后通过有效强制复检的内容；首次返修复检只计可追溯至原随机抽检的返修链。周转时间包含自然等待，不代表操作工时。</p><p>质检操作的整体通过率按实际操作账号和结论日归属，为逐项通过次数 /（逐项通过次数 + 逐项退回次数）。交付归属实际确认账号，不改变文案和图片提交贡献。</p></details>
   </div>;
 }
 
@@ -125,9 +126,9 @@ export function OperatorDetailDialog({report,selection,onClose}:{report:Operator
       }}>{label}</button>)}</div>
     <div className={ui.body} key={view} role="tabpanel" id={`${dialogId}-${view}-panel`} aria-labelledby={`${dialogId}-${view}-tab`} tabIndex={0}>
     {view==='events'&&<div className={ui.filters}>
-      <label>明细范围 <Select value={metric} onValueChange={value=>{setMetric(value);setPage(1);setSampleSet('all');}}><SelectTrigger aria-label="明细范围" className={styles.selector}><SelectValue /></SelectTrigger><SelectContent>{Object.entries(METRICS).map(([key,label])=><SelectItem key={key} value={key}>{label}</SelectItem>)}</SelectContent></Select></label>
-      <label>阶段 <Select value={stage||'ALL'} onValueChange={value=>{setStage(value==='ALL'?'':value);setPage(1);}}><SelectTrigger aria-label="明细阶段" className={styles.selector}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ALL">全部阶段</SelectItem><SelectItem value="COPY">文案</SelectItem><SelectItem value="IMAGE">图片</SelectItem></SelectContent></Select></label>
-      {['firstPass','recheck','firstRecheck','qa','qaRecheck'].includes(metric)&&<label>结论 <Select value={sampleSet} onValueChange={value=>{setSampleSet(value);setPage(1);}}><SelectTrigger aria-label="质检结论" className={styles.selector}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部结论</SelectItem><SelectItem value="passed">通过样本</SelectItem><SelectItem value="failed">退回样本</SelectItem></SelectContent></Select></label>}
+      <label>明细范围 <Select value={metric} onValueChange={value=>{setMetric(value);setPage(1);setSampleSet('all');}}><SelectTrigger aria-label="明细范围" className={styles.selector}><SelectValue /></SelectTrigger><SelectContent className={ui.filterSelectContent}>{Object.entries(METRICS).map(([key,label])=><SelectItem key={key} value={key}>{label}</SelectItem>)}</SelectContent></Select></label>
+      <label>阶段 <Select value={stage||'ALL'} onValueChange={value=>{setStage(value==='ALL'?'':value);setPage(1);}}><SelectTrigger aria-label="明细阶段" className={styles.selector}><SelectValue /></SelectTrigger><SelectContent className={ui.filterSelectContent}><SelectItem value="ALL">全部阶段</SelectItem><SelectItem value="COPY">文案</SelectItem><SelectItem value="IMAGE">图片</SelectItem></SelectContent></Select></label>
+      {['firstPass','recheck','firstRecheck','qa','qaRecheck'].includes(metric)&&<label>结论 <Select value={sampleSet} onValueChange={value=>{setSampleSet(value);setPage(1);}}><SelectTrigger aria-label="质检结论" className={styles.selector}><SelectValue /></SelectTrigger><SelectContent className={ui.filterSelectContent}><SelectItem value="all">全部结论</SelectItem><SelectItem value="passed">通过样本</SelectItem><SelectItem value="failed">退回样本</SelectItem></SelectContent></Select></label>}
     </div>}
     {error&&<div role="alert" className={`${styles.notice} ${styles.error}`}>{error}<Button variant="ghost" size="sm" onClick={()=>setRetry(value=>value+1)}>重试</Button></div>}
     {busy&&<p role="status" className={styles.muted}>正在读取对应任务和事件…</p>}

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
+import { combinedOverallPass } from '../../src/operator-performance.mjs';
 import { startTemporaryPostgres18 } from './helpers/personal-postgres.mjs';
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 
@@ -60,6 +61,8 @@ test('reviewer activity: real migration, event capture, pending assignment, back
     assert.equal(personal.qa.reviews,8);assert.equal(personal.qa.COPY.reviews,5);assert.equal(personal.qa.IMAGE.reviews,3);
     let report=await repository.operatorPerformance(admin,{});
     assert.deepEqual(report.people.items.find(p=>p.accountId===reviewer.userId).qa,personal.qa);
+    assert.deepEqual(combinedOverallPass(report.people.items.find(p=>p.accountId===reviewer.userId)),
+      {passed:8,failed:0,decided:8,rate:1});
     const history=await repository.personalQualityActivity(reviewer,{metric:'qa'});
     assert.equal(history.total,8);assert.equal(history.items[0].query,undefined);assert.equal(history.items[0].taskId,undefined);
     assert.equal(history.items[0].accountId,undefined);assert.equal(history.items[0].copyRevisionId,undefined);
@@ -75,6 +78,8 @@ test('reviewer activity: real migration, event capture, pending assignment, back
     await decision(pending,'RETURN_BATCH',admin,{affectedCount:2,affectedTaskIds:[samples[0].task,samples[1].task]});
     report=await repository.operatorPerformance(admin,{activity:'QA'});
     assert.equal(report.people.items.find(p=>p.accountId===reviewer.userId).qa.reviews,9);
+    assert.deepEqual(combinedOverallPass(report.people.items.find(p=>p.accountId===reviewer.userId)),
+      {passed:8,failed:1,decided:9,rate:8/9});
     assert.equal(report.people.items.find(p=>p.accountId===admin.userId).qa.reviews,0);
     assert.equal(report.people.items.find(p=>p.accountId===admin.userId).qa.batchActions,1);
     const trigger=await sample('COPY');await decision(trigger,'RETURN_BATCH',admin,{affectedCount:1});
@@ -86,8 +91,11 @@ test('reviewer activity: real migration, event capture, pending assignment, back
     report=await repository.operatorPerformance(admin,{activity:'QA'});
     const reviewerRow=report.people.items.find(p=>p.accountId===reviewer.userId),adminRow=report.people.items.find(p=>p.accountId===admin.userId);
     assert.equal(reviewerRow.qa.reviews,10);assert.equal(reviewerRow.qa.rechecks,1);assert.equal(reviewerRow.qa.tasks,9);
+    assert.deepEqual(combinedOverallPass(reviewerRow),{passed:9,failed:1,decided:10,rate:.9});
     assert.equal(reviewerRow.qa.discarded,1);assert.equal(reviewerRow.qa.legacyAffectedCount,25);
     assert.equal(adminRow.qa.reviews,1);assert.equal(adminRow.qa.directPass,1);assert.equal(adminRow.qa.batchActions,2);
+    assert.deepEqual(combinedOverallPass(adminRow),{passed:0,failed:1,decided:1,rate:0},
+      'the triggering COPY item has one return verdict; batch-affected items are not expanded');
     const before=Number((await db.query('SELECT count(*) FROM quality_review_activity_events')).rows[0].count);
     await db.query('SELECT capture_quality_review_activity()');
     assert.equal(Number((await db.query('SELECT count(*) FROM quality_review_activity_events')).rows[0].count),before);

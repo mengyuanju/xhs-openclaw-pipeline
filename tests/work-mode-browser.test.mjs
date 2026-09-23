@@ -80,7 +80,7 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     status: 'PENDING', blindReview: i === 1, query: i === 1 ? null : '请核对这组四页收纳图片，确认标题清晰、说明完整、版式一致，并逐页标记需要修改的位置。'.repeat(3), sampleKind: 'RANDOM',
     assets: [...imageTask.assets, ...imageTask.assets.map((asset, index) => ({ ...asset, id: 403 + index, url: `/v1/assets/${403 + index}` }))],
     capabilities: { canPass: i === 1, canReturnSingle: true, canReturnBatch: false, canDiscard: true }, blockers: { pendingImageEdits: i === 1 ? 0 : 1 } }));
-  const drafts = new Map(); const requests = []; const jobs = new Map(); let failSubmit = false; let failList = false; let failDraft = false; let failQaSubmit = false;
+  const requests = []; const jobs = new Map(); let failSubmit = false; let failList = false; let failQaSubmit = false;
   let browser, page;
   let pendingEdits = [], failPendingResolution = false;
   const server = createServer(async (req, res) => {
@@ -139,10 +139,8 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
         if (action === 'submit-image-self-review') { task.state = 'IMAGE_QC_PENDING'; reply(task); return; }
         if (action === 'discard-images') { task.state = 'CANCELLED'; reply(task); return; }
         if (action === 'copy-review-drafts') {
-          if (req.method === 'POST' && failDraft) { reply('测试草稿保存失败', 503); return; }
-          if (req.method === 'POST') { const record = { id: (drafts.get(id)?.id ?? 0)+1, taskId: id, baseCopyRevisionId: task.currentCopyRevisionId,
-            content: body.content, createdAt: new Date().toISOString() }; drafts.set(id, record); reply({ created: true, draft: record }); }
-          else reply({ baseCopyRevisionId: task.currentCopyRevisionId, drafts: drafts.has(id) ? [drafts.get(id)] : [] });
+          if (req.method === 'POST') { reply('服务器草稿写入已禁用', 405); return; }
+          reply({ baseCopyRevisionId: task.currentCopyRevisionId, drafts: [] });
           return;
         }
         if (action === 'approve-copy') {
@@ -269,7 +267,8 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     await page.locator('#review-copy-title').fill('保留的人工修改稿');
     await page.getByRole('button', { name: /#3.*Query 3/u }).click();
     await page.waitForFunction(() => document.querySelector('#review-copy-title')?.value === '桌面收纳文案 3');
-    assert.equal(drafts.get(2).content.draft.copy.title, '保留的人工修改稿');
+    assert.equal(requests.some(request => request.method === 'POST' && request.path.endsWith('/copy-review-drafts')), false,
+      'switching work items saves the copy draft locally');
     await page.getByRole('button', { name: /#2.*Query 2/u }).click();
     await page.waitForFunction(() => document.querySelector('#review-copy-title')?.value === '保留的人工修改稿');
     // Low original scores need an explanation in the existing review form.
@@ -609,7 +608,13 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     assert.match(await notificationButton.innerText(), /1 项处理中/u); assert.match(await notificationButton.innerText(), /1 条新提醒/u);
     await page.getByRole('button', { name: /#1.*规划 · 处理中/u }).waitFor();
     assert.equal(await page.getByRole('button', { name: /#65.*后续作业 65/u }).count(), 0);
-    failDraft = true;
+    await page.evaluate(() => {
+      window.__originalDraftTransaction = IDBDatabase.prototype.transaction;
+      IDBDatabase.prototype.transaction = function (...args) {
+        if (args[1] === 'readwrite') throw new Error('测试本机草稿保存失败');
+        return window.__originalDraftTransaction.apply(this, args);
+      };
+    });
     await page.locator('input[type="radio"][value="2.5"]').check();
     await page.locator('#review-copy-title').fill('通知切换前必须保留的草稿');
     await notificationButton.click();
@@ -617,11 +622,15 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     await page.getByText('草稿保存失败，已保留当前作业，请保存成功后再切换。', { exact: true }).waitFor();
     assert.equal(await page.locator('#review-copy-title').inputValue(), '通知切换前必须保留的草稿');
     assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key)).find(task => task.taskId === 65).read, storageKey), false);
-    failDraft = false;
+    await page.evaluate(() => {
+      IDBDatabase.prototype.transaction = window.__originalDraftTransaction;
+      delete window.__originalDraftTransaction;
+    });
     await notificationButton.click();
     await page.getByRole('dialog').getByRole('article').filter({ hasText: '任务 #65' }).getByRole('button', { name: '查看任务' }).click();
     await page.waitForFunction(() => document.querySelector('#review-copy-title')?.value === '后续作业文案 65');
-    assert.equal(drafts.get(3).content.draft.copy.title, '通知切换前必须保留的草稿');
+    assert.equal(requests.some(request => request.method === 'POST' && request.path.endsWith('/copy-review-drafts')), false,
+      'retrying local save must not call the old server draft endpoint');
     assert.equal(new URL(page.url()).pathname, '/');
     await page.getByRole('button', { name: /#65.*规划 · 待确认/u }).waitFor();
     await page.reload();

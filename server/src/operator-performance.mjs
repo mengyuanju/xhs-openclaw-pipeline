@@ -29,6 +29,22 @@ export const PERFORMANCE_EVENTS_SQL=`SELECT e.*,EXISTS(SELECT 1 FROM tasks t WHE
     AND ($6::bigint IS NULL OR (e.data->>'batchId')::bigint=$6)
   ORDER BY e.occurred_at,e.event_key LIMIT ${LIMIT+1}`;
 
+// Account-scoped reports still credit a valid recheck performed by a different
+// account to the original random sample. Each lookup is anchored to one failed
+// first sample, so the supporting history stays bounded by the report rows.
+const CROSS_ACCOUNT_RECHECK_SQL=`SELECT s.task_id,s.stage,recheck.account_id,recheck.occurred_at
+  FROM jsonb_to_recordset($1::jsonb) AS s(task_id bigint,stage text,sampled_at timestamptz)
+  JOIN LATERAL (
+    SELECT e.account_id,e.occurred_at FROM operator_performance_events e
+    WHERE e.task_id=s.task_id AND e.stage=s.stage AND e.occurred_at>=s.sampled_at
+      AND e.occurred_at<$2 AND e.occurred_at<=$3 AND e.account_id<>$4::bigint
+      AND e.kind='QUALITY' AND e.data->>'sampleKind'='MANDATORY_RECHECK'
+      AND e.data->>'outcome'='PASS' AND e.data->>'exclusion' IS NULL
+      AND ($5::bigint IS NULL OR (e.data->>'batchId')::bigint=$5)
+    ORDER BY e.occurred_at,e.sequence_id LIMIT 1
+  ) recheck ON true
+  LIMIT ${LIMIT+1}`;
+
 const CURRENT_SQL=`SELECT latest.*,t.query,t.production_batch_id AS batch_id,t.assigned_at,
     (SELECT q.data||jsonb_build_object('id',q.event_key,'taskId',q.task_id,'accountId',q.account_id,
       'stage',q.stage,'kind',q.kind,'at',q.occurred_at)
@@ -101,6 +117,14 @@ export async function readOperatorPerformance(pool,actor,input={},options={}) {
         batchId:number(row.batch_id),query:row.query,exclusion:row.exclusion,copyRevisionId:number(row.copy_revision_id),imageRunId:row.image_run_id,
         sampleKind:row.sample_kind,first:row.first_random,policyVersion:number(row.policy_version)});
       assertComplete(events);
+      const firstReturns=filters.accountId ? events.filter(row=>row.kind==='QUALITY' && row.first===true
+        && row.sampleKind==='RANDOM' && row.outcome==='RETURN' && !row.exclusion && row.accountId!==null)
+        .map(row=>({task_id:row.taskId,stage:row.stage,sampled_at:row.at})):[];
+      const otherRechecks=firstReturns.length ? assertComplete((await client.query(CROSS_ACCOUNT_RECHECK_SQL,
+        [JSON.stringify(firstReturns),end,asOf,filters.accountId,filters.batchId])).rows).map(row=>({
+        taskId:Number(row.task_id),stage:row.stage,accountId:Number(row.account_id),kind:'QUALITY',
+        sampleKind:'MANDATORY_RECHECK',outcome:'PASS',at:iso(row.occurred_at),exclusion:null,
+        batchId:filters.batchId})):[];
       const current=(filters.activity==='QA'?[]:assertComplete((await client.query(CURRENT_SQL,[filters.accountId,filters.stage,filters.batchId])).rows)).map(row=>({
         taskId:Number(row.task_id),accountId:number(row.account_id),username:row.username,displayName:row.display_name,stage:row.stage,
         phase:row.phase,state:row.state,query:row.query,batchId:number(row.batch_id),at:iso(row.waiting_at),assignedAt:iso(row.assigned_at),
@@ -122,7 +146,7 @@ export async function readOperatorPerformance(pool,actor,input={},options={}) {
         AND occurred_at <= $2 ORDER BY task_id,occurred_at,id LIMIT ${LIMIT+1}`,[taskIds,asOf])).rows).map(row=>({
         id:Number(row.id),taskId:Number(row.task_id),accountId:number(row.account_id),stage:row.stage,phase:row.phase,state:row.state,
         at:iso(row.occurred_at),baseline:row.baseline})):[];
-      const report=buildPerformanceSnapshot(events,current,timeline,filters,asOf);
+      const report=buildPerformanceSnapshot(events,current,timeline,filters,asOf,[...events,...otherRechecks]);
       await client.query('COMMIT');
       const token=randomUUID();
       snapshot={report,current,timeline,actor:actorKey(actor),expires:now+TTL,token};

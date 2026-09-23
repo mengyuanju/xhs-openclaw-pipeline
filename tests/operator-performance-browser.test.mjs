@@ -17,7 +17,8 @@ test('operator dashboard browser: weighted pass rate, account outcomes, explanat
     ...Array.from({length:4},(_,i)=>({...common,id:`q${i}`,taskId:i+1,kind:'QUALITY',first:true,sampleKind:'RANDOM',outcome:i===3?'RETURN':'PASS'})),
     ...Array.from({length:2},(_,i)=>({...common,id:`image-q${i}`,taskId:i+9,stage:'IMAGE',kind:'QUALITY',first:true,sampleKind:'RANDOM',outcome:i===0?'PASS':'RETURN'})),
     ...['FIRST_PASS','FIRST_PASS','RETURNED','DISCARDED','FIRST_PASS','RETURNED'].map((bucket,i)=>({...common,id:`account-quality:${i}`,taskId:i+1,stage:i<4?'COPY':'IMAGE',kind:'ACCOUNT_QUALITY',bucket}))];
-  rows.push(...Array.from({length:8},(_,i)=>({...common,id:`review:${i}`,taskId:i+1,samplingItemId:i+1,accountId:22,username:'qa-only',displayName:'质检同学',stage:i<5?'COPY':'IMAGE',kind:'QA_REVIEW',sampleKind:'RANDOM',outcome:'PASS'})));
+  rows.push(...Array.from({length:8},(_,i)=>({...common,id:`review:${i}`,taskId:i+1,samplingItemId:i+1,accountId:22,username:'qa-only',displayName:'质检同学',stage:i<5?'COPY':'IMAGE',kind:'QA_REVIEW',sampleKind:'RANDOM',outcome:[1,6].includes(i)?'RETURN':'PASS'})));
+  rows.push(...[2,7].map((taskId,i)=>({...common,id:`review:recheck:${i}`,taskId,samplingItemId:i+9,accountId:22,username:'qa-only',displayName:'质检同学',stage:i===0?'COPY':'IMAGE',kind:'QA_REVIEW',sampleKind:'MANDATORY_RECHECK',outcome:'PASS'})));
   let fail=false,snapshot,server,browser;const requests=[],errors=[];
   try{
     await build({stdin:{contents:`import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';
@@ -66,16 +67,27 @@ test('operator dashboard browser: weighted pass rate, account outcomes, explanat
       await scope.getByRole('combobox',{name:label,exact:true}).click();
       await page.getByRole('option',{name:option,exact:true}).click();
     };
+    const assertFilterLabelsSingleLine=async(scope)=>{
+      for(const name of ['明细范围','明细阶段']){
+        const label=scope.locator(`label:has([aria-label="${name}"])`);
+        const lines=await label.evaluate(element=>{
+          const text=[...element.childNodes].find(node=>node.nodeType===Node.TEXT_NODE);
+          const range=document.createRange();range.selectNodeContents(text);
+          return range.getClientRects().length;
+        });
+        assert.equal(lines,1,`${name} stays on one line`);
+      }
+    };
     const screenshots=resolve('.codex_artifacts/operator-performance');await mkdir(screenshots,{recursive:true});
     await page.goto(`${base}/workbench-statistics?period=7d`);
     const overall=page.getByRole('region',{name:'整体通过率'});
-    await overall.getByText('66.67%',{exact:true}).waitFor();
-    assert.match(await overall.textContent(),/4 \/ 6 条抽检样本通过/u,'team pass rate is weighted by six samples, not the mean of stage rates');
-    assert.match(await overall.textContent(),/文案75\.00%3 \/ 4 条/u);
-    assert.match(await overall.textContent(),/图片50\.00%1 \/ 2 条/u);
+    await overall.getByText('80.00%',{exact:true}).waitFor();
+    assert.match(await overall.textContent(),/8 \/ 10 次质检结论通过/u,'team pass rate counts initial and recheck decisions by QA operators');
+    assert.match(await overall.textContent(),/文案83\.33%5 \/ 6 次/u);
+    assert.match(await overall.textContent(),/图片75\.00%3 \/ 4 次/u);
     assert.equal(await page.getByRole('note').count(),0,'explanations start collapsed');
     await overall.getByRole('button',{name:'通过率口径',exact:true}).click();
-    await page.getByRole('note').getByText(/同一内容阶段只计一次/u).waitFor();
+    await page.getByRole('note').getByText(/返修/u).waitFor();
     await page.getByRole('button',{name:'关闭指标说明'}).click();
     assert.equal(await page.getByRole('note').count(),0);
     await page.getByText('工作量与趋势',{exact:true}).click();
@@ -88,7 +100,8 @@ test('operator dashboard browser: weighted pass rate, account outcomes, explanat
     await page.getByText('人员：标注甲（worker-a）',{exact:true}).waitFor();
     assert.equal(new URL(page.url()).searchParams.get('view'),'overview');
     assert.equal(new URL(page.url()).searchParams.get('accountId'),'11');
-    await page.getByText('所选人员质量',{exact:true}).waitFor();
+    await page.getByText('所选人员质检',{exact:true}).waitFor();
+    assert.match(await page.getByRole('region',{name:'整体通过率'}).textContent(),/当前范围暂无逐项通过或退回结论/u,'producer quality outcomes are not credited to a QA account');
     await page.screenshot({path:join(screenshots,'overview-desktop.png'),fullPage:true});
     await page.getByRole('button',{name:'账号数据',exact:true}).click();
     assert.match(await page.getByRole('combobox',{name:'人员'}).textContent(),/标注甲（worker-a）/u,'person scope survives the view switch');
@@ -97,19 +110,25 @@ test('operator dashboard browser: weighted pass rate, account outcomes, explanat
       page.getByRole('button',{name:'应用筛选',exact:true}).click()]);
     await page.getByRole('button',{name:'标注甲',exact:true}).waitFor();
     assert.equal(await page.getByRole('button',{name:'近 7 天',exact:true}).getAttribute('aria-pressed'),'true');
-    assert.equal(await page.getByRole('columnheader').count(),5,'account table has one account column and four compact metrics');
+    assert.equal(await page.getByRole('columnheader').count(),5,'production account table keeps its four content outcome metrics');
     const person=page.getByRole('row').filter({hasText:'标注甲'});
     assert.match(await person.textContent(),/6条内容判定/u);
     assert.match(await person.textContent(),/一次通过率50\.00%3 \/ 6 条/u);
+    assert.doesNotMatch(await person.textContent(),/整体通过率/u);
     assert.match(await person.textContent(),/打回率33\.33%2 \/ 6 条/u);
     assert.match(await person.textContent(),/废弃率16\.67%1 \/ 6 条/u);
     assert.equal(await page.getByRole('note').count(),0,'account methodology stays hidden until requested');
     await page.getByRole('region',{name:'账号数据'}).getByRole('button',{name:'指标说明'}).click();
-    await page.getByRole('note').getByText(/三类互斥，合计 100%/u).waitFor();
+    await page.getByRole('note').getByText(/三类互斥且合计 100%/u).waitFor();
     await page.keyboard.press('Escape');
     assert.equal(await page.getByRole('note').count(),0);
     await person.getByRole('button',{name:/标注甲一次通过率 50\.00%/u}).click();
     const dialog=page.getByRole('dialog');await dialog.getByText('共 3 条事件。',{exact:false}).waitFor();
+    await assertFilterLabelsSingleLine(dialog);
+    await dialog.getByRole('combobox',{name:'明细范围'}).click();
+    const longOption=page.getByRole('option',{name:'首次返修复检',exact:true});
+    assert.ok((await longOption.boundingBox()).height<45,'long dropdown values stay on one line');
+    await page.keyboard.press('Escape');
     assert.equal(await dialog.getByRole('tab',{name:'操作明细',exact:true}).getAttribute('aria-selected'),'true');
     assert.match(await dialog.getByRole('combobox',{name:'明细范围'}).textContent(),/一次通过/u);
     await chooseSelect(dialog,'明细范围','首轮质检');
@@ -135,7 +154,7 @@ test('operator dashboard browser: weighted pass rate, account outcomes, explanat
     await page.getByRole('button',{name:'应用筛选',exact:true}).click();
     await page.waitForFunction(()=>new URLSearchParams(location.search).get('stage')==='IMAGE');
     await page.getByRole('row').filter({hasText:'标注甲'}).getByRole('button',{name:/一次通过率 50\.00%/u}).waitFor();
-    assert.match(await page.getByRole('region',{name:'整体通过率'}).textContent(),/50\.00%1 \/ 2 条抽检样本通过/u);
+    assert.equal(await page.getByRole('region',{name:'整体通过率'}).count(),0,'production account view does not show a QA operation rate');
     await chooseSelect(page,'内容类型','文案和图片');
     await page.getByRole('button',{name:'应用筛选',exact:true}).click();
     await page.waitForFunction(()=>!new URLSearchParams(location.search).has('stage'));
@@ -162,6 +181,7 @@ test('operator dashboard browser: weighted pass rate, account outcomes, explanat
       const bounds=await metric.boundingBox();
       assert.ok(bounds&&bounds.x>=0&&bounds.x+bounds.width<=391,`${label} is fully inside the mobile viewport`);
     }
+    assert.equal(await mobilePerson.getByRole('cell').filter({hasText:'整体通过率'}).count(),0,'production card has no QA pass rate');
     assert.match(await page.getByRole('combobox',{name:'账号排序'}).textContent(),/已判定最多/u);
     await Promise.all([page.waitForResponse(response=>{
       const url=new URL(response.url());return url.pathname.endsWith('/admin/operator-performance')&&url.searchParams.get('sort')==='firstPassRate'&&url.searchParams.get('order')==='desc';
@@ -169,6 +189,7 @@ test('operator dashboard browser: weighted pass rate, account outcomes, explanat
     assert.equal(new URL(page.url()).searchParams.get('sort'),'firstPassRate');
     assert.match(await page.getByRole('combobox',{name:'账号排序'}).textContent(),/一次通过率最高/u);
     await page.getByRole('button',{name:'标注甲',exact:true}).click();await page.getByRole('dialog').getByText('共 6 条事件。',{exact:false}).waitFor();
+    await assertFilterLabelsSingleLine(dialog);
     assert.ok(await page.getByRole('button',{name:'关闭弹窗',exact:true}).isVisible());
     await dialog.screenshot({path:join(screenshots,'detail-mobile.png'),animations:'disabled'});
     await page.keyboard.press('Escape');
@@ -176,11 +197,22 @@ test('operator dashboard browser: weighted pass rate, account outcomes, explanat
     await page.getByRole('button',{name:'质检',exact:true}).click();
     await page.waitForFunction(()=>new URLSearchParams(location.search).get('activity')==='QA');
     await page.getByRole('button',{name:'标注甲',exact:true}).waitFor({state:'detached'});
+    assert.match(await page.getByRole('region',{name:'整体通过率'}).textContent(),/80\.00%8 \/ 10 次质检结论通过/u);
+    assert.equal(await page.getByRole('region',{name:'账号统计表'}).locator('thead th').count(),8,'QA account table adds overall pass rate alongside activity counts');
+    assert.equal(await page.getByRole('region',{name:'账号统计表'}).evaluate(element=>element.scrollWidth<=element.clientWidth+1),true,'mobile QA cards need no horizontal scrolling');
     const reviewerRow=page.getByRole('row').filter({hasText:'质检同学'});
     assert.equal((await reviewerRow.getByRole('cell').nth(1).textContent()).trim(),'5');
     assert.equal((await reviewerRow.getByRole('cell').nth(2).textContent()).trim(),'3');
+    assert.match(await reviewerRow.textContent(),/整体通过率80\.00%8 \/ 10 次质检结论/u);
+    const qaOverallMetric=reviewerRow.getByRole('cell').filter({hasText:'整体通过率'});
+    const qaOverallBounds=await qaOverallMetric.boundingBox();
+    assert.ok(qaOverallBounds&&qaOverallBounds.x>=0&&qaOverallBounds.x+qaOverallBounds.width<=391,'QA overall pass rate fits the mobile card');
+    await Promise.all([page.waitForResponse(response=>{
+      const url=new URL(response.url());return url.pathname.endsWith('/admin/operator-performance')&&url.searchParams.get('sort')==='overallPassRate'&&url.searchParams.get('order')==='desc';
+    }),chooseSelect(page,'账号排序','整体通过率最高')]);
+    assert.equal(new URL(page.url()).searchParams.get('sort'),'overallPassRate');
     await reviewerRow.getByRole('button',{name:'5',exact:true}).click();
-    await page.getByRole('dialog').getByText('共 5 条事件。',{exact:false}).waitFor();
+    await page.getByRole('dialog').getByText('共 6 条事件。',{exact:false}).waitFor();
     await dialog.screenshot({path:join(screenshots,'detail-qa-mobile.png'),animations:'disabled'});
     assert.equal(await dialog.evaluate(element=>element.scrollWidth<=element.clientWidth+1),true,'the detail dialog fits the mobile viewport');
     const headingBefore=await dialog.getByRole('heading',{name:/质量与效率明细/}).boundingBox();

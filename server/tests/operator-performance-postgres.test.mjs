@@ -96,6 +96,16 @@ test('operator report: real SQL, immutable identity, sampling denominator, snaps
       VALUES($1,$2,'PASS',$3,'perf-admin',$4)`,[recheckFreeze,recheck,admin.userId,randomUUID()]);
     const repaired=await repository.operatorPerformance(admin,{});
     assert.equal(repaired.summary.COPY.firstPass.rate,.75);
+    assert.deepEqual(repaired.people.items.find(row=>row.accountId===a.userId).COPY.overallPass,
+      {passed:4,failed:0,decided:4,rate:1});
+    const scoped=await repository.operatorPerformance(admin,{accountId:String(a.userId)});
+    assert.deepEqual(scoped.summary.COPY.overallPass,{passed:4,failed:0,decided:4,rate:1},
+      'another worker recheck still counts for the original account after SQL account filtering');
+    assert.equal(scoped.people.items.length,1);
+    const searched=await repository.operatorPerformance(admin,{query:'标注甲'});
+    assert.deepEqual(searched.summary.COPY.overallPass,{passed:4,failed:0,decided:4,rate:1},
+      'name search keeps cross-account recheck history without showing that account');
+    assert.equal(searched.people.items.length,1);
     const bReport=repaired.people.items.find(row=>row.accountId===b.userId);
     assert.equal(bReport.COPY.firstPass.decided,0);assert.equal(bReport.COPY.recheck.rate,1);assert.equal(bReport.COPY.firstRecheck.rate,1);
     assert.equal(bReport.reworkRounds,1);assert.equal(bReport.reworkDuration.samples,1);

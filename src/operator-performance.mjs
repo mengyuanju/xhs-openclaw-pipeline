@@ -2,9 +2,9 @@ import { summarizeAccountQuality } from './account-quality-statistics.mjs';
 import { isQaActivity, qaMetricRows, summarizeQa, uniqueTaskCount, validQaReview } from './quality-review-statistics.mjs';
 import { chinaDay, normalizeRange } from './web-statistics/summary.mjs';
 
-export const PERFORMANCE_VERSION = 5;
+export const PERFORMANCE_VERSION = 6;
 export const PERFORMANCE_METRICS = Object.freeze(['judged','discarded','firstPassed','qualityReturned','reassigned','all','contributed','qaAll','qa','qaRecheck','qaBatch','qaSpecial','qaPending','qaBlocked','submitted','firstSubmitted','firstPass','recheck','firstRecheck','returned','reworked','reassign','released','delivered','batchAffected','excluded','pending']);
-export const PERFORMANCE_SORTS = Object.freeze(['contributed','qa','qaPending','submitted','released','judged','firstPassRate','returnRate','discardedRate','copyRate','imageRate','returned','pending','copyMedian','imageMedian','copySubmitted','imageSubmitted','copyQa','imageQa','qaReviews','qaPassed','qaReturned','qaRecheck','reworked']);
+export const PERFORMANCE_SORTS = Object.freeze(['contributed','qa','qaPending','submitted','released','judged','firstPassRate','overallPassRate','returnRate','discardedRate','copyRate','imageRate','returned','pending','copyMedian','imageMedian','copySubmitted','imageSubmitted','copyQa','imageQa','qaReviews','qaPassed','qaReturned','qaRecheck','reworked']);
 const ms = value => value == null ? NaN : Date.parse(value);
 const uniqueTasks = rows => new Set(rows.map(row => row.taskId)).size;
 const valid = row => !row.exclusion && row.accountId !== null;
@@ -87,9 +87,13 @@ export function qualityRate(rows, first = true) {
 export function overallQualityRate(rows, history = rows) {
   const samples=rows.filter(row=>row.kind==='QUALITY' && valid(row) && row.first===true
     && row.sampleKind==='RANDOM' && ['PASS','RETURN'].includes(row.outcome));
-  const passed=samples.filter(sample=>sample.outcome==='PASS' || history.some(row=>row.kind==='QUALITY' && valid(row)
-    && row.sampleKind==='MANDATORY_RECHECK' && row.outcome==='PASS' && row.taskId===sample.taskId
-    && row.stage===sample.stage && ms(row.at)>=ms(sample.at))).length;
+  const latestRecheckPass=new Map();
+  for(const row of history) if(row.kind==='QUALITY' && valid(row) && row.sampleKind==='MANDATORY_RECHECK' && row.outcome==='PASS') {
+    const at=ms(row.at),key=`${row.taskId}:${row.stage}`;
+    if(Number.isFinite(at) && at>(latestRecheckPass.get(key)??-Infinity)) latestRecheckPass.set(key,at);
+  }
+  const passed=samples.filter(sample=>sample.outcome==='PASS'
+    || (latestRecheckPass.get(`${sample.taskId}:${sample.stage}`)??-Infinity)>=ms(sample.at)).length;
   return {passed,failed:samples.length-passed,decided:samples.length,rate:samples.length ? passed/samples.length:null};
 }
 
@@ -163,7 +167,7 @@ export function summarizeOperator(rows, current=[], qualityHistory=rows) {
     reasons:[...reasons].map(([code,count])=>({code,count})).sort((a,b)=>b.count-a.count).slice(0,10) };
 }
 
-export function buildPerformanceSnapshot(events,current,timeline,filters,asOf) {
+export function buildPerformanceSnapshot(events,current,timeline,filters,asOf,qualityHistory=events) {
   const keyword=filters.query.toLocaleLowerCase('zh-CN');
   const nameMatches=row=>`${row.displayName??''} ${row.username??''}`.toLocaleLowerCase('zh-CN').includes(keyword);
   const matchingAccounts=new Set([...events,...current].filter(nameMatches).map(row=>row.accountId).filter(id=>id!==null));
@@ -172,6 +176,8 @@ export function buildPerformanceSnapshot(events,current,timeline,filters,asOf) {
     && (filters.activity==='QA' ? isQaActivity(row) : filters.activity==='PRODUCTION' ? !isQaActivity(row) : true)
     && (!keyword || (row.accountId===null ? nameMatches(row):matchingAccounts.has(row.accountId)));
   const rows=events.filter(row=>matches(row) && (['PENDING','EXCLUDED','QA_PENDING','REASSIGN'].includes(row.kind) || inRange(row,filters.range)));
+  const history=qualityHistory.filter(row=>row.kind==='QUALITY' && inRange(row,filters.range)
+    && (!filters.stage || row.stage===filters.stage) && (!filters.batchId || row.batchId===filters.batchId));
   const historyByTask=new Map();
   for(const item of timeline) { if(!historyByTask.has(item.taskId)) historyByTask.set(item.taskId,[]);historyByTask.get(item.taskId).push(item); }
   for(const row of rows) if(row.kind==='SUBMIT' && valid(row)) row.timing=submissionTiming(row,historyByTask.get(row.taskId)??[]);
@@ -180,7 +186,7 @@ export function buildPerformanceSnapshot(events,current,timeline,filters,asOf) {
   for(const row of [...rows,...present]) if(row.accountId!==null) identities.set(row.accountId,
     {accountId:row.accountId,username:row.username,displayName:row.displayName||row.username||`历史账号 #${row.accountId}`});
   const people=[...identities.values()].map(person=>({...person,
-    ...summarizeOperator(rows.filter(row=>row.accountId===person.accountId),present.filter(row=>row.accountId===person.accountId),rows)}));
+    ...summarizeOperator(rows.filter(row=>row.accountId===person.accountId),present.filter(row=>row.accountId===person.accountId),history)}));
   const trend=[];
   for(let at=filters.range.startMs;at<filters.range.endMs;at+=86_400_000) {
     const date=chinaDay(at),day=rows.filter(row=>Number.isFinite(ms(row.at)) && chinaDay(ms(row.at))===date);
@@ -193,16 +199,23 @@ export function buildPerformanceSnapshot(events,current,timeline,filters,asOf) {
   const exclusions=new Map();
   for(const row of rows) if(row.exclusion && !isQaActivity(row)) exclusions.set(row.exclusion,(exclusions.get(row.exclusion)??0)+1);
   return {metricVersion:PERFORMANCE_VERSION,timezone:'Asia/Shanghai',asOf,
-    range:{from:filters.range.from,to:filters.range.to},filters,summary:summarizeOperator(rows,present),people,trend,rows,
+    range:{from:filters.range.from,to:filters.range.to},filters,summary:summarizeOperator(rows,present,history),people,trend,rows,
     dataQuality:{unknownIdentity:rows.filter(row=>row.accountId===null && row.kind!=='QA_PENDING').length,
       excluded:[...exclusions].map(([reason,count])=>({reason,count})),
       timingSince:timeline.length ? timeline.reduce((min,row)=>row.at<min?row.at:min,timeline[0].at):null,
-      historyNotice:'制作提交与质检操作分别归实际操作账号；内容通过率归提交人。缺失历史身份和时间不补造。'} };
+      historyNotice:'制作提交与质检操作分别归实际操作账号；首次抽检质量归提交人，整体通过率归质检操作人。缺失历史身份和时间不补造。'} };
+}
+
+export function combinedOverallPass(person) {
+  const passed=person.qa.passed;
+  const failed=person.qa.returned;
+  const decided=passed+failed;
+  return {passed,failed,decided,rate:decided ? passed/decided:null};
 }
 
 export function performancePeoplePage(snapshot,filters) {
   const value=(person,key)=>({contributed:person.contributed,qa:person.qa.reviews,qaPending:person.qa.pending,submitted:person.submitted,released:person.released,
-    judged:person.qualityOutcomes.judged,firstPassRate:person.qualityOutcomes.firstPassRate,
+    judged:person.qualityOutcomes.judged,firstPassRate:person.qualityOutcomes.firstPassRate,overallPassRate:combinedOverallPass(person).rate,
     returnRate:person.qualityOutcomes.returnRate,discardedRate:person.qualityOutcomes.discardedRate,
     copyRate:person.COPY.qualityOutcomes.firstPassRate,
     imageRate:person.IMAGE.qualityOutcomes.firstPassRate,returned:person.returned,pending:person.pending,
@@ -222,16 +235,18 @@ export function performanceCsv(snapshot) {
   const cell=value=>`"${String(value??'').replace(/^[\s]*[=+@-]/u,match=>`'${match}`).replaceAll('"','""')}"`;
   const heading=['账号ID','姓名','账号','文案提交任务','图片提交任务','首次放行','文案通过','文案已审','图片通过','图片已审','退回任务','返修提交次数','文案周转中位毫秒','图片周转中位毫秒','当前待办','开始日期','结束日期','时区','报表时点','口径版本','交付确认任务','交付确认批次','文案抽中','文案已结批首次提交','图片抽中','图片已结批首次提交','文案时长缺失','图片时长缺失','批次退回影响','文案排除记录','图片排除记录'];
   heading.push('参与处理作业','文案质检次数','图片质检次数','质检作业','质检通过次数','质检退回次数','其中复检次数','批量退回次数','已知批量影响作业','旧批量影响项次','批量范围缺失次数','快捷直放次数','质检废弃次数','质检待办','质检阻塞','贡献视图');
-  heading.push('文案首次标注条数','图片首次标注条数','文案返修条数','图片返修条数','文案质检条数','图片质检条数','文案首次返修通过','文案首次返修已检','图片首次返修通过','图片首次返修已检','当前建议改派','文案整体通过','文案整体已检','图片整体通过','图片整体已检');
+  heading.push('文案首次标注条数','图片首次标注条数','文案返修条数','图片返修条数','文案质检条数','图片质检条数','文案首次返修通过','文案首次返修已检','图片首次返修通过','图片首次返修已检','当前建议改派','文案首次抽检最终通过','文案首次抽检已审','图片首次抽检最终通过','图片首次抽检已审','账号质检整体通过','账号质检已判定','账号整体通过率');
   for(const stage of ['文案','图片']) heading.push(...['已判定','废弃','一次通过','打回','已二次分配','废弃率','一次通过率','打回率'].map(label=>stage+label));
   heading.push('提交管理员次数');
-  return '\uFEFF'+[heading,...snapshot.people.map(p=>[p.accountId,p.displayName,p.username,p.COPY.submitted,p.IMAGE.submitted,p.released,
+  return '\uFEFF'+[heading,...snapshot.people.map(p=>{const overall=combinedOverallPass(p);return [p.accountId,p.displayName,p.username,p.COPY.submitted,p.IMAGE.submitted,p.released,
     p.COPY.firstPass.passed,p.COPY.firstPass.decided,p.IMAGE.firstPass.passed,p.IMAGE.firstPass.decided,p.returned,p.reworkRounds,
     p.COPY.duration.medianMs,p.IMAGE.duration.medianMs,p.pending,snapshot.range.from,snapshot.range.to,snapshot.timezone,snapshot.asOf,snapshot.metricVersion,
     p.delivered,p.deliveredBatches,p.COPY.coverage.sampled,p.COPY.coverage.eligible,p.IMAGE.coverage.sampled,p.IMAGE.coverage.eligible,
     p.COPY.duration.missing,p.IMAGE.duration.missing,p.batchAffected,p.COPY.excluded,p.IMAGE.excluded,p.contributed,p.qa.COPY.reviews,p.qa.IMAGE.reviews,p.qa.tasks,p.qa.passed,p.qa.returned,p.qa.rechecks,p.qa.batchActions,p.qa.affectedTasks,p.qa.legacyAffectedCount,p.qa.unknownBatchScopes,p.qa.directPass,p.qa.discarded,p.qa.pending,p.qa.blocked,snapshot.filters.activity,
     p.COPY.firstSubmitted,p.IMAGE.firstSubmitted,p.COPY.reworked,p.IMAGE.reworked,p.qa.COPY.tasks,p.qa.IMAGE.tasks,
     p.COPY.firstRecheck.passed,p.COPY.firstRecheck.decided,p.IMAGE.firstRecheck.passed,p.IMAGE.firstRecheck.decided,p.reassignSuggested,
-    p.COPY.overallPass.passed,p.COPY.overallPass.decided,p.IMAGE.overallPass.passed,p.IMAGE.overallPass.decided,...['COPY','IMAGE'].flatMap(stage=>{const q=p[stage].qualityOutcomes;return [q.judged,q.discarded,q.firstPassed,q.returned,q.reassigned,q.discardedRate,q.firstPassRate,q.returnRate];}),p.qa.escalated])]
+    p.COPY.overallPass.passed,p.COPY.overallPass.decided,p.IMAGE.overallPass.passed,p.IMAGE.overallPass.decided,
+    overall.passed,overall.decided,overall.rate,
+    ...['COPY','IMAGE'].flatMap(stage=>{const q=p[stage].qualityOutcomes;return [q.judged,q.discarded,q.firstPassed,q.returned,q.reassigned,q.discardedRate,q.firstPassRate,q.returnRate];}),p.qa.escalated];})]
     .map(row=>row.map(cell).join(',')).join('\r\n');
 }

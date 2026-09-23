@@ -67,6 +67,17 @@ test('reviewers can act on shared image QA items regardless of legacy assignment
   assert.equal(reviewer.capabilities.canReturnSingle, true);
 });
 
+test('image mandatory rechecks allow another return and discard without reassignment', () => {
+  const item = imageQaItemFrom({ ...databaseRow(), sample_kind: 'MANDATORY_RECHECK' }, {
+    userId: 91, username: 'reviewer', role: 'REVIEWER',
+  });
+
+  assert.equal(item.capabilities.canPass, true);
+  assert.equal(item.capabilities.canReturnSingle, true);
+  assert.equal(item.capabilities.canDiscard, true);
+  assert.equal(item.capabilities.canEscalate, false);
+});
+
 function imageListPool(actor) {
   let listCall = null;
   const client = {

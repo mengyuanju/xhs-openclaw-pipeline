@@ -1266,9 +1266,9 @@ function installRoutes(
       offset: ctx.query.offset,
     }, { actor }));
   });
-  for (const stage of ['COPY', 'IMAGE']) router.post(`/v1/${stage.toLowerCase()}-qa/items/:itemId/escalate`, async (ctx) => {
-    const actor = requestActor(ctx, stage === 'COPY' ? ['ADMIN', 'REVIEWER', 'USER'] : ['ADMIN', 'REVIEWER']);
-    json(ctx, 200, await repository.escalateQualityToAdmin(stage, ctx.params.itemId, requireJson(ctx), { actor, storageRoot }));
+  router.post('/v1/copy-qa/items/:itemId/escalate', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN', 'REVIEWER', 'USER']);
+    json(ctx, 200, await repository.escalateQualityToAdmin('COPY', ctx.params.itemId, requireJson(ctx), { actor, storageRoot }));
   });
   router.get('/v1/admin/reassignment-cases', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);

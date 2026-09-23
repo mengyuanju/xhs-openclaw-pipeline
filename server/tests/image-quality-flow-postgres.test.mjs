@@ -290,17 +290,56 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
   await submitImageSelfReview(pool, returnedTask.taskId, {
     imageRunId: editedRun.imageRunId, reviewSessionId: randomUUID(),
   }, worker);
-  const mandatory = (await listImageQaItems(pool, {}, reviewer)).items.find((item) => item.sampleKind === 'MANDATORY_RECHECK');
+  const mandatory = (await listImageQaItems(pool, {}, reviewer)).items
+    .find((item) => item.sampleKind === 'MANDATORY_RECHECK' && item.taskId === returnedTask.taskId);
   assert.ok(mandatory);
-  await passImageQaItem(pool, mandatory.id, { requestId: randomUUID(), score: 3 }, reviewer);
+  assert.equal(mandatory.capabilities.canReturnSingle, true);
+  const firstReturnLink = (await pool.query(`
+    SELECT parent.id AS returned_id, recheck.parent_item_id
+    FROM image_sampling_items recheck
+    JOIN image_sampling_items parent ON parent.public_id = $2
+    WHERE recheck.public_id = $1
+  `, [mandatory.id, returnItem.id])).rows[0];
+  assert.equal(firstReturnLink.parent_item_id, firstReturnLink.returned_id);
+  await returnImageQaItem(pool, mandatory.id, {
+    requestId: randomUUID(), score: 2, reworkTarget: 'IMAGE', note: '第一页仍有文字错误',
+    problemAssetIds: [editedRun.images[0].assetId], reasonCodes: ['TEXT_ERROR'],
+  }, reviewer);
+  returnedRow = (await pool.query('SELECT * FROM tasks WHERE id = $1', [returnedTask.taskId])).rows[0];
+  assert.equal(returnedRow.state, 'IMAGE_REWORK_PENDING');
+  assert.equal(returnedRow.mandatory_image_qc, true);
+  assert.equal(Number((await pool.query(`SELECT count(*) FROM delivery_entries
+    WHERE task_id=$1 AND status='READY'`, [returnedTask.taskId])).rows[0].count), 0);
+
+  const secondEditedRun = await addImageRun(returnedTask.taskId, returnedTask.copyRevisionId, 'edited-again');
+  await pool.query(`UPDATE tasks SET state='MANUAL_ARCHIVE', current_stage='MANUAL_ARCHIVE',
+    current_image_run_id=$2 WHERE id=$1`, [returnedTask.taskId, secondEditedRun.imageRunId]);
+  await submitImageSelfReview(pool, returnedTask.taskId, {
+    imageRunId: secondEditedRun.imageRunId, reviewSessionId: randomUUID(),
+  }, worker);
+  const secondMandatory = (await listImageQaItems(pool, {}, reviewer)).items
+    .find((item) => item.sampleKind === 'MANDATORY_RECHECK' && item.taskId === returnedTask.taskId);
+  assert.ok(secondMandatory);
+  assert.notEqual(secondMandatory.id, mandatory.id);
+  assert.equal(secondMandatory.capabilities.canReturnSingle, true);
+  const secondReturnLink = (await pool.query(`
+    SELECT parent.id AS returned_id, recheck.parent_item_id
+    FROM image_sampling_items recheck
+    JOIN image_sampling_items parent ON parent.public_id = $2
+    WHERE recheck.public_id = $1
+  `, [secondMandatory.id, mandatory.id])).rows[0];
+  assert.equal(secondReturnLink.parent_item_id, secondReturnLink.returned_id);
+  await passImageQaItem(pool, secondMandatory.id, { requestId: randomUUID(), score: 3 }, reviewer);
   returnedRow = (await pool.query('SELECT * FROM tasks WHERE id = $1', [returnedTask.taskId])).rows[0];
   assert.equal(returnedRow.state, 'REVIEWED');
   assert.equal(returnedRow.mandatory_image_qc, false);
   const ready = (await pool.query(`SELECT * FROM delivery_entries
     WHERE task_id=$1 AND status='READY'`, [returnedTask.taskId])).rows[0];
-  assert.equal(ready.image_run_id, editedRun.imageRunId);
+  assert.equal(ready.image_run_id, secondEditedRun.imageRunId);
   assert.equal((await pool.query(`SELECT status FROM image_sampling_items
     WHERE public_id=$1`, [returnItem.id])).rows[0].status, 'SUPERSEDED');
+  assert.equal((await pool.query(`SELECT status FROM image_sampling_items
+    WHERE public_id=$1`, [mandatory.id])).rows[0].status, 'SUPERSEDED');
 
   await pool.query(`UPDATE workflow_quality_settings SET image_sampling_rate_bps = 5000,
     image_reviewer_batch_return_enabled = true`);

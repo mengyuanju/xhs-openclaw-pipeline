@@ -508,7 +508,7 @@ test('a plan-only save accepts an overlong bullet only after explicit user confi
 
   await assert.rejects(fixture.repository.approveCopy(41, input, {
     actorRole: 'USER', reviewerUserId: 'reviewer',
-  }), /between 1 and 30 characters/u);
+  }), /第 2 页画面要点第 1 行超过 30 字（当前 31 字）/u);
 
   const saved = await fixture.repository.approveCopy(41, {
     ...input,
@@ -516,6 +516,21 @@ test('a plan-only save accepts an overlong bullet only after explicit user confi
   }, { actorRole: 'USER', reviewerUserId: 'reviewer' });
   assert.equal(saved.currentCopyRevisionId, 13);
   assert.equal(fixture.revisions.get(13).content.imagePlan[1].bullets[0], '长'.repeat(31));
+});
+
+test('an unchanged plan-only save explains that its content equals the current official version', async () => {
+  const fixture = copyFixture();
+  await assert.rejects(fixture.repository.approveCopy(41, {
+    revisionId: 12,
+    nodeId: 'node-a',
+    decision: 'SAVE_PLAN',
+    edits: sourceEdits,
+    reviewSessionId: '49494949-4949-4494-8494-494949494949',
+  }, { actorRole: 'USER', reviewerUserId: 'reviewer' }), {
+    code: 'IMAGE_PLAN_UNCHANGED',
+    message: '图片规划内容与当前正式版本一致，无需重复保存',
+  });
+  assert.equal(fixture.revisions.size, 1);
 });
 
 test('a plan-only save can remove an excess non-cover page while preserving revision history', async () => {

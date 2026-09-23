@@ -28,13 +28,26 @@ test('team counts deduplicate cross-stage contribution and weight sample counts'
   assert.equal(report.people.find(p=>p.accountId===11).COPY.firstPass.rate,0);
   assert.equal(report.people.find(p=>p.accountId===22).COPY.firstPass.rate,1);
 });
-test('overall pass rate attributes a later valid recheck pass to the original sample once',()=>{
+test('first-sample final pass credits a later valid recheck to the original sample once',()=>{
   const rows=[qa(1,'RETURN',{accountId:11}),qa(1,'RETURN',{accountId:22,first:false,sampleKind:'MANDATORY_RECHECK',at:at(-900)}),
     qa(1,'PASS',{accountId:22,first:false,sampleKind:'MANDATORY_RECHECK',at:at(-800)})];
   const report=buildPerformanceSnapshot(rows,[],[],normalizePerformanceFilters({},now),at(0));
   assert.deepEqual(report.summary.COPY.overallPass,{passed:1,failed:0,decided:1,rate:1});
   assert.deepEqual(report.people.find(person=>person.accountId===11).COPY.overallPass,{passed:1,failed:0,decided:1,rate:1});
   assert.equal(report.people.find(person=>person.accountId===22).COPY.overallPass.decided,0);
+});
+test('account and name filters retain another worker recheck for first-sample final pass history',()=>{
+  const rows=[qa(1,'RETURN',{displayName:'目标账号',username:'target'}),
+    qa(1,'PASS',{accountId:22,displayName:'返修账号',username:'repair',first:false,sampleKind:'MANDATORY_RECHECK',at:at(-900)})];
+  for(const input of [{accountId:'11'},{query:'目标账号'}]) {
+    const filters=normalizePerformanceFilters(input,now);
+    const report=buildPerformanceSnapshot(rows,[],[],filters,at(0));
+    assert.equal(report.people.length,1);
+    assert.equal(report.summary.COPY.overallPass.rate,1);
+    assert.equal(report.rows.length,1,'other account events stay out of visible report rows');
+  }
+  const scoped=buildPerformanceSnapshot(rows.slice(0,1),[],[],normalizePerformanceFilters({accountId:'11'},now),at(0),rows);
+  assert.equal(scoped.summary.COPY.overallPass.rate,1,'server can supply bounded supporting history');
 });
 test('timeline separates reassignment, machine wait and background work without inventing active labor',()=>{
   const timeline=[{id:1,taskId:1,accountId:11,stage:'COPY',phase:'HUMAN',at:at(-600_000),baseline:false},
@@ -67,6 +80,28 @@ test('pagination sorts unknown rates last and exports literal user text safely',
   assert.equal(page.items[0].accountId,22);assert.equal(page.total,2);
   const csv=performanceCsv(report);assert.match(csv,/'=HYPERLINK\(""evil""\)/u);
   assert.match(csv,/报表时点/u);assert.match(csv,/Asia\/Shanghai/u);
+});
+test('overall pass sort and CSV use reviewer decisions, including rechecks, across stages',()=>{
+  const review=(id,accountId,outcome,stage='COPY',sampleKind='RANDOM')=>event(id,{accountId,username:`reviewer-${accountId}`,
+    kind:'QA_REVIEW',samplingItemId:id,sampleKind,outcome,stage});
+  const rows=[review(101,11,'PASS'),
+    ...Array.from({length:9},(_,i)=>review(110+i,11,'RETURN','IMAGE')),
+    review(201,22,'PASS'),review(202,22,'RETURN','IMAGE','MANDATORY_RECHECK'),
+    event(301,{accountId:33,username:'c'})];
+  const report=buildPerformanceSnapshot(rows,[],[],normalizePerformanceFilters({},now),at(0));
+  assert.deepEqual(performancePeoplePage(report,normalizePerformanceFilters({sort:'overallPassRate',order:'asc'},now))
+    .items.map(person=>person.accountId),[11,22,33]);
+  assert.deepEqual(performancePeoplePage(report,normalizePerformanceFilters({sort:'overallPassRate',order:'desc'},now))
+    .items.map(person=>person.accountId),[22,11,33]);
+  const [header,...lines]=performanceCsv(report).replace(/^\uFEFF/u,'').split('\r\n');
+  const index=header.split(',').indexOf('"账号整体通过率"');
+  const passedIndex=header.split(',').indexOf('"账号质检整体通过"');
+  const decidedIndex=header.split(',').indexOf('"账号质检已判定"');
+  assert.ok(index>0);
+  assert.equal(lines.find(line=>line.startsWith('"11",'))?.split(',')[passedIndex],'"1"');
+  assert.equal(lines.find(line=>line.startsWith('"11",'))?.split(',')[decidedIndex],'"10"');
+  assert.equal(lines.find(line=>line.startsWith('"11",'))?.split(',')[index],'"0.1"');
+  assert.equal(lines.find(line=>line.startsWith('"33",'))?.split(',')[index],'""');
 });
 test('account outcome columns sort by combined stage counts and rates in both directions',()=>{
   const fact=(id,accountId,bucket,stage='COPY')=>event(id,{accountId,username:`worker-${accountId}`,kind:'ACCOUNT_QUALITY',bucket,stage});

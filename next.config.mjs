@@ -22,6 +22,9 @@ const securityHeaders = [
 const nextConfig = {
   distDir: process.env.XHS_NEXT_DIST_DIR || '.next',
   allowedDevOrigins: developmentOrigins,
+  experimental: {
+    proxyClientMaxBodySize: '36mb',
+  },
   serverExternalPackages: ['exceljs', 'sharp'],
   // Prompt defaults are read through module-relative filesystem paths at runtime.
   outputFileTracingIncludes: {

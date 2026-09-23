@@ -380,7 +380,7 @@ test('admin image retry accepts an overlong bullet only with explicit confirmati
     actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
   };
 
-  await assert.rejects(repository.reviewImages(7, input), /between 1 and 30 characters/u);
+  await assert.rejects(repository.reviewImages(7, input), /第 2 页画面要点第 1 行超过 30 字（当前 31 字）/u);
   const result = await repository.reviewImages(7, {
     ...input,
     imagePlanBulletOverflowConfirmed: true,

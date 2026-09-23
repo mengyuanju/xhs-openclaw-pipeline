@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { qaMetricRows,summarizeQa } from '../src/quality-review-statistics.mjs';
-import { buildPerformanceSnapshot,normalizePerformanceFilters,performanceCsv,performanceMetricRows } from '../src/operator-performance.mjs';
+import { buildPerformanceSnapshot,combinedOverallPass,normalizePerformanceFilters,performanceCsv,performanceMetricRows } from '../src/operator-performance.mjs';
 
 const now=Date.parse('2026-09-18T04:00:00Z'),at=new Date(now-1000).toISOString();
 const review=(id,stage='COPY',extra={})=>({id:`qa:${stage}:${id}`,samplingItemId:id,taskId:id,accountId:22,username:'reviewer',displayName:'质检同学',kind:'QA_REVIEW',stage,sampleKind:'RANDOM',at,outcome:'PASS',...extra});
@@ -55,4 +55,17 @@ test('Beijing date boundaries use decision time and include no synthetic missing
     review(3,'COPY',{at:'2026-09-18T16:00:00Z'}),review(4,'IMAGE',{accountId:null})],{period:'today'});
   assert.equal(report.summary.qa.reviews,1);assert.equal(report.trend[0].qa,1);
   assert.throws(()=>normalizePerformanceFilters({activity:'REVIEWER'},now));
+});
+
+test('overall pass rate counts each same-day reviewer verdict, including a recheck by another reviewer',()=>{
+  const rows=[review(1,'COPY',{taskId:1,at:'2026-09-17T15:59:59Z'}),
+    review(2,'COPY',{taskId:1,outcome:'RETURN',at:'2026-09-17T16:00:00Z'}),
+    review(3,'COPY',{taskId:1,accountId:33,username:'second-reviewer',sampleKind:'MANDATORY_RECHECK',at:'2026-09-18T03:00:00Z'}),
+    review(4,'IMAGE',{at:'2026-09-18T16:00:00Z'}),
+    review(5,'COPY',{kind:'QA_DIRECT_PASS'}),review(6,'COPY',{kind:'QA_ESCALATE',outcome:'ESCALATE'}),
+    review(7,'COPY',{exclusion:'SELF_REVIEW'})];
+  const report=snapshot(rows,{period:'today',activity:'QA'});
+  assert.deepEqual(combinedOverallPass(report.summary),{passed:1,failed:1,decided:2,rate:.5});
+  assert.deepEqual(combinedOverallPass(report.people.find(p=>p.accountId===22)),{passed:0,failed:1,decided:1,rate:0});
+  assert.deepEqual(combinedOverallPass(report.people.find(p=>p.accountId===33)),{passed:1,failed:0,decided:1,rate:1});
 });

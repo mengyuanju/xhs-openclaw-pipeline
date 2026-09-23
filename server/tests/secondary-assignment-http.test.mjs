@@ -35,11 +35,13 @@ test('secondary disposition routes are admin-only and forward actor, version, re
       if(path.endsWith('/reassign'))assert.equal(call.args.at(-1).operation,'REASSIGN');
       if(path.endsWith('/discard'))assert.equal(call.args.at(-1).operation,'DISCARD');
     }
-    for(const stage of ['COPY','IMAGE']) {
-      const response=await fetch(`${base}/v1/${stage.toLowerCase()}-qa/items/opaque-id/escalate`,{method:'POST',headers:headers('qa'),body:JSON.stringify(body)});
-      assert.equal(response.status,200);
-      assert.deepEqual(calls.at(-1),{method:'escalateQualityToAdmin',args:[stage,'opaque-id',body,
-        {actor:{userId:2,username:'qa',role:'REVIEWER',credentialVersion:3},storageRoot}]});
-    }
+    const copyResponse=await fetch(`${base}/v1/copy-qa/items/opaque-id/escalate`,{method:'POST',headers:headers('qa'),body:JSON.stringify(body)});
+    assert.equal(copyResponse.status,200);
+    assert.deepEqual(calls.at(-1),{method:'escalateQualityToAdmin',args:['COPY','opaque-id',body,
+      {actor:{userId:2,username:'qa',role:'REVIEWER',credentialVersion:3},storageRoot}]});
+    const callCount=calls.length;
+    const imageResponse=await fetch(`${base}/v1/image-qa/items/opaque-id/escalate`,{method:'POST',headers:headers('qa'),body:JSON.stringify(body)});
+    assert.equal(imageResponse.status,404);
+    assert.equal(calls.length,callCount,'image rechecks cannot enter secondary assignment');
   } finally {await new Promise(done=>server.close(done));}
 });

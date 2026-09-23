@@ -1,5 +1,4 @@
 'use client';
-import { QaEscalateButton } from '../components/qa-escalate-button';
 
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
@@ -352,7 +351,7 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
               <td data-label="来源"><span className={qaStyles.source}>{item.blindReview ? '匿名' : <>{item.productionBatch?.queryPackageName || '独立任务'}{item.submitter?.username ? <small>提交 @{item.submitter.username}</small> : null}</>}</span></td>
               <td data-label="操作"><div className={styles.actions}>
                 <Button unstyled className="button small" type="button" onClick={(event) => openDetail(item, event.currentTarget)}>查看图片</Button>
-                {item.capabilities.canEscalate && <QaEscalateButton stage="IMAGE" itemId={item.id} revisionToken={item.revisionToken ?? ''} disabled={Boolean(action)} onCompleted={async () => { await load(); }} />}{item.capabilities.canReturnSingle && <Button unstyled className="button small" type="button" disabled={Boolean(action)} onClick={(event) => openReturn(item, undefined, event.currentTarget)}><RotateCcw size={14} />打回</Button>}
+                {item.capabilities.canReturnSingle && <Button unstyled className="button small" type="button" disabled={Boolean(action)} onClick={(event) => openReturn(item, undefined, event.currentTarget)}><RotateCcw size={14} />打回</Button>}
                 {item.capabilities.canDiscard && <ImageDiscardButton target={{ samplingItemId: item.id }} disabled={Boolean(action)}
                   onBusyChange={busy => setAction(busy ? item.id : '')} onCompleted={load} />}
                 {item.capabilities.canPass && <Button unstyled className="button small primary" type="button" disabled={Boolean(action)} onClick={() => { void pass(item); }}><CheckCircle2 size={14} />通过</Button>}
@@ -410,7 +409,7 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
           <p className={qaStyles.reviewHint}>通过代表整套当前版本可以交付；发现问题时请选中具体问题页并填写可执行的修改要求。</p>
           {detail.discardReason && <p className="notice warning">废弃原因：{detail.discardReason}</p>}
           {!returning && detail.status === 'PENDING' && <div className={qaStyles.detailActions}>
-            {detail.capabilities.canEscalate && <QaEscalateButton stage="IMAGE" itemId={detail.id} revisionToken={detail.revisionToken ?? ''} disabled={Boolean(action)} onCompleted={async () => { setDetail(null); await load(); }} />}{detail.capabilities.canReturnSingle && <Button unstyled className="button" disabled={Boolean(action)} onClick={() => openReturn(detail, selectedAsset?.id)}><RotateCcw size={15} />发起返工</Button>}
+            {detail.capabilities.canReturnSingle && <Button unstyled className="button" disabled={Boolean(action)} onClick={() => openReturn(detail, selectedAsset?.id)}><RotateCcw size={15} />发起返工</Button>}
             {detail.capabilities.canDiscard && <ImageDiscardButton target={{ samplingItemId: detail.id }} disabled={Boolean(action)}
               onBusyChange={busy => setAction(busy ? detail.id : '')} onCompleted={async () => { closeDetail(); await load(); }} />}
             {detail.capabilities.canPass && <Button unstyled className="button primary" disabled={Boolean(action)} onClick={() => { void pass(detail); }}><CheckCircle2 size={15} />质检通过</Button>}

@@ -29,7 +29,7 @@ export function useOperatorPerformance(filters:Record<string,string>) {
           }else throw caught;
         }
         if(!next?.snapshotToken || !next.summary || !Array.isArray(next.people?.items)) throw Error('统计数据格式不完整');
-        if(next.metricVersion<5 || !next.summary.qa || !next.summary.COPY?.overallPass || !next.summary.IMAGE?.overallPass) throw Error('中心尚未支持整体通过率统计，请先升级中心服务');
+        if(next.metricVersion<6 || !next.summary.qa || !next.summary.COPY?.overallPass || !next.summary.IMAGE?.overallPass) throw Error('中心尚未支持整体通过率统计，请先升级中心服务');
         if(!disposed){setReport(next);cache.current={key:base,token:next.snapshotToken,expires:next.expiresAt};}
       }catch(caught){
         if(!disposed){

@@ -539,8 +539,8 @@ export function imageQaItemFrom(row, actor) {
       url: `/v1/image-qa/items/${row.public_id}/assets/${asset.id}`,
     })) : [],
     revisionToken: row.image_set_sha256,
-    capabilities: { canPass: canAct && pendingImageEdits === 0, canReturnSingle: canAct && row.sample_kind !== 'MANDATORY_RECHECK',
-      canDiscard: canAct && row.sample_kind !== 'MANDATORY_RECHECK', canEscalate: canAct && row.sample_kind === 'MANDATORY_RECHECK',
+    capabilities: { canPass: canAct && pendingImageEdits === 0, canReturnSingle: canAct,
+      canDiscard: canAct, canEscalate: false,
       canReturnBatch: canBatch },
     ...(row.status === 'DISCARDED' ? { discardReason: row.note } : {}),
     blockers: { pendingImageEdits },
@@ -776,7 +776,6 @@ export async function discardImageQaItem(pool, identifier, input, rawActor) {
     const replay = await mutationReplay(client, actor, requestId, 'DISCARD_QA', fingerprint);
     if (replay) return replay;
     const item = await lockQaItem(client, identifier);
-    if (item.sample_kind === 'MANDATORY_RECHECK') throw new ControlPlaneConflictError('MANDATORY_RECHECK_ESCALATE_REQUIRED', '强制复检只能通过或提交管理员处理');
     assertCanReview(item, actor);
     if (item.task_state !== 'IMAGE_QC_PENDING') {
       throw new ControlPlaneConflictError('IMAGE_QA_NOT_PENDING', '任务已不在图片质检阶段，请刷新后重试');
@@ -926,9 +925,6 @@ export async function returnImageQaItem(pool, identifier, input, rawActor) {
     const item = await lockQaItem(client, identifier);
     assertCanReview(item, actor);
     const reasonSettings = await validateReturnReasons(client, reasonCodes);
-    if (item.sample_kind === 'MANDATORY_RECHECK') {
-      throw new ControlPlaneConflictError('MANDATORY_RECHECK_ESCALATE_REQUIRED', '强制复检仅可通过或提交管理员');
-    }
     const reasonSnapshots = imageReasonSnapshots(reasonSettings, reasonCodes);
     if (problemAssetIds.length) {
       const matched = await client.query(`
