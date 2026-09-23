@@ -51,14 +51,25 @@ function caseFrom(row) {
     baselineSource:row.baseline_source ?? null,targetAccountId:row.target_account_id == null ? null : Number(row.target_account_id),
     canAssign:row.status==='PENDING' && row.reset_status==='READY' && row.cleanup_status==='COMPLETE'};
 }
-async function lockCase(c,id,input) {
+async function lockCase(c,id,input,{allowCompletedRegeneration=false}={}) {
   const located=(await c.query('SELECT task_id FROM task_reassignment_cases WHERE id=$1',[normalizeTaskId(id)])).rows[0];
   if(!located)throw new ControlPlaneNotFoundError('处置单不存在');
   const task=(await c.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[located.task_id])).rows[0];
   if(!task)throw new ControlPlaneNotFoundError('原任务不存在');
   const record=(await c.query('SELECT * FROM task_reassignment_cases WHERE id=$1 FOR UPDATE',[id])).rows[0];
   if(!Number.isInteger(input?.expectedVersion) || record.version!==input.expectedVersion)conflict('REASSIGNMENT_CHANGED','处置单已变化，请刷新后重试');
-  if(record.status!=='PENDING' || !(task.state==='PENDING_SECOND_ASSIGNMENT' || task.state==='COPY_FAILED' && record.reset_status==='BLOCKED'))conflict('REASSIGNMENT_CLOSED','任务不在待二次分配状态');
+  let canReset=task.state==='PENDING_SECOND_ASSIGNMENT' || task.state==='COPY_FAILED' && record.reset_status==='BLOCKED';
+  if(!canReset && allowCompletedRegeneration && record.status==='PENDING'
+    && ['PENDING','BLOCKED'].includes(record.reset_status) && task.state==='COPY_RUNNING'
+    && task.mandatory_copy_qc_origin==='SECOND_ASSIGNMENT' && task.assigned_to_user_id==null
+    && task.current_execution_id) {
+    // Older regeneration completion could leave COPY_RUNNING after the execution succeeded
+    // when the initial baseline was not captured. Only RESET may recover that stopped run.
+    canReset=(await c.query(`SELECT 1 FROM task_executions WHERE id=$1 AND task_id=$2
+      AND kind='COPY' AND status='SUCCEEDED' AND finished_at IS NOT NULL`,
+    [task.current_execution_id,task.id])).rowCount>0;
+  }
+  if(record.status!=='PENDING' || !canReset)conflict('REASSIGNMENT_CLOSED','任务不在待二次分配状态');
   return {task,record};
 }
 
@@ -110,7 +121,7 @@ async function resetContent(c, task, record, storageRoot) {
   await c.query(`UPDATE tasks SET state='PENDING_SECOND_ASSIGNMENT',current_stage='PENDING_SECOND_ASSIGNMENT',
     input=$2,current_copy_revision_id=$3,current_image_run_id=NULL,current_execution_id=NULL,pending_snapshot=NULL,
     copy_qc_released_revision_id=NULL,image_qc_released_approval_event_id=NULL,image_qc_legacy_accepted=false,
-    mandatory_copy_qc=true,mandatory_copy_qc_origin='SECOND_ASSIGNMENT',mandatory_image_qc=true,mandatory_image_qc_origin='SECOND_ASSIGNMENT',
+    copy_qa_rework_pending=false,mandatory_copy_qc=true,mandatory_copy_qc_origin='SECOND_ASSIGNMENT',mandatory_image_qc=true,mandatory_image_qc_origin='SECOND_ASSIGNMENT',
     skip_copy_review=false,image_rework_source_run_id=NULL,image_reviewed_at=NULL,image_reviewed_by_user_id=NULL,
     image_production_chain_id=NULL,image_production_started_at=NULL,image_production_duration_ms=0,
     execution_started_at=NULL,finished_at=NULL,error=NULL,progress_percent=0,progress_message='初始数据已还原，待管理员二次分配',
@@ -187,6 +198,31 @@ export async function escalateQualityToAdmin(pool,stage,identifier,input,actor,{
   return actor.role==='ADMIN'?result:{id:result.id,status:result.status};
 }
 
+// Called inside the new copy QA decision transaction. Reuse the existing
+// second-assignment reset and cleanup bookkeeping, while retaining the v2
+// member as the immutable cause of this case.
+export async function escalateNewCopyQaReturn(client,task,member,actor,{note,reasonCodes,storageRoot}) {
+  const record=(await client.query(`INSERT INTO task_reassignment_cases(
+    task_id,stage,source_item_id,source_item_public_id,source_freeze_id,
+    source_copy_qa_member_v2_id,operator_account_id,assignment_record_id,
+    reviewer_account_id,reason_codes,note)
+    VALUES($1,'COPY',NULL,$2,NULL,$3,$4,
+      (SELECT id FROM task_assignment_records WHERE task_id=$1 AND ended_at IS NULL),
+      $5,$6,$7) RETURNING *`,
+  [task.id,member.public_id,member.id,member.approver_account_id,
+    actor.userId,reasonCodes,note])).rows[0];
+  await client.query(`UPDATE tasks SET state='PENDING_SECOND_ASSIGNMENT',
+    current_stage='PENDING_SECOND_ASSIGNMENT',assigned_to_user_id=NULL,
+    assignment_source=NULL,assigned_at=NULL,copy_qc_released_revision_id=NULL,
+    copy_qa_rework_pending=false,mandatory_copy_qc=true,mandatory_copy_qc_origin='SECOND_ASSIGNMENT',
+    mandatory_image_qc=true,mandatory_image_qc_origin='SECOND_ASSIGNMENT',
+    current_execution_id=NULL,pending_snapshot=NULL,work_generation=work_generation+1,
+    progress_message='待管理员二次分配',updated_at=clock_timestamp() WHERE id=$1`,[task.id]);
+  await client.query("UPDATE task_executions SET status='ABANDONED',finished_at=clock_timestamp() WHERE task_id=$1 AND status='RUNNING'",[task.id]);
+  await resetContent(client,task,record,storageRoot);
+  return Number(record.id);
+}
+
 export async function cleanReassignmentFiles(pool,caseId,storageRoot) {
   if(storageRoot) {
     const sources=(await pool.query(`SELECT DISTINCT a.id,a.task_id,a.sha256 FROM assets a
@@ -244,7 +280,7 @@ export async function retryReassignmentReset(pool,id,input,actor,{storageRoot}={
     await lockActor(c,actor);
     const fingerprint=hash({id:Number(id),expectedVersion:input.expectedVersion});
     const replay=await requestReplay(c,actor,input,'RESET',fingerprint);if(replay.response)return;
-    const {task,record}=await lockCase(c,id,input);
+    const {task,record}=await lockCase(c,id,input,{allowCompletedRegeneration:true});
     await resetContent(c,task,record,storageRoot);
     await saveResponse(c,actor,replay.requestId,'RESET',fingerprint,{id:Number(id)});
   });
@@ -321,7 +357,9 @@ export async function disposeReassignmentCase(pool,id,input,actor,operation) {
       if(!target)throw new ControlPlaneAuthorizationError('目标账号无文案标注权限或已停用');
       // Ordinary assignments cannot bypass this transaction; source record is retained by the trigger.
       await c.query(`UPDATE tasks SET assigned_to_user_id=$2,assignment_source='MANUAL',assigned_at=clock_timestamp(),
-        state='COPY_REVIEW_PENDING',current_stage='COPY_REVIEW_PENDING',progress_message='二次分配初始数据，等待重新标注',updated_at=clock_timestamp() WHERE id=$1`,[task.id,target.username]);
+        state='COPY_REVIEW_PENDING',current_stage='COPY_REVIEW_PENDING',
+        copy_qa_cycle=copy_qa_cycle+1,
+        progress_message='二次分配初始数据，等待重新标注',updated_at=clock_timestamp() WHERE id=$1`,[task.id,target.username]);
       await c.query(`INSERT INTO task_assignment_events(task_id,actor_username,previous_assignee_user_id,assignee_user_id,source,reason)
         VALUES($1,$2,NULL,$3,'MANUAL',$4)`,[task.id,actor.username,target.username,note.slice(0,200)]);
       await c.query(`UPDATE task_assignment_records SET source='SECOND_ASSIGNMENT',reason=$2,assigned_by_account_id=$3,

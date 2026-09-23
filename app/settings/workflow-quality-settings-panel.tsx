@@ -101,14 +101,14 @@ export function WorkflowQualitySettingsPanel() {
       <div className={styles.modeSummary} aria-label="当前配置摘要">
         <span className="pill">文案默认抽检：{draft.copySampling.enabled ? `${ratePercent}%（账号可覆盖）` : '关闭'}</span>
         <span className="pill">质检视图：{draft.copySampling.blindReviewEnabled ? '盲评' : '非盲评'}</span>
-        <span className="pill">质检权限包含单条和整批打回</span>
+        <span className="pill">整批驳回阈值：{draft.copySampling.returnThresholdBps / 100}%</span>
         <span className="pill">图片抽检：{draft.imageSampling.enabled ? `${imageRatePercent}%` : '关闭'}</span>
       </div>
       <div className={styles.grid}>
         <div className={styles.card}>
           <div className={styles.cardText}>
             <label htmlFor="copy-sampling-enabled">启用文案抽检</label>
-            <p>文案人工审核结果提交后，以最终达标版本为候选；同批任务等待抽检结论后再继续。关闭普通抽检不影响返工稿的强制复检。</p>
+            <p>文案人工审核通过后进入待成批任务池；达到账号自动成批数量时自动创建个人批次。关闭抽检时审核通过的任务直接进入生图。</p>
           </div>
           <Switch id="copy-sampling-enabled" checked={draft.copySampling.enabled} disabled={disabled}
             onChange={(event) => { setMessage(''); setDraft((current) => current ? { ...current, copySampling: { ...current.copySampling, enabled: event.target.checked } } : current); }} />
@@ -124,8 +124,8 @@ export function WorkflowQualitySettingsPanel() {
         <div className={styles.rate}>
           <div className={styles.rateText}>
             <label htmlFor="copy-sampling-rate">默认抽检比例</label>
-            <p>未在用户管理中单独配置的最终审核账号继承此比例；用户管理中的账号比例优先。关闭文案抽检会暂停所有账号的普通随机抽检，强制复检不受影响。</p>
-            <p>按最终审核人独立累计：20% 每满 5 条抽 1 条，100% 全检。结批或等待 30 分钟后，非空余量保底抽 1 条。开启抽检时 0% 仅在结批时保底抽检；关闭抽检不影响强制复检。比例修改只影响后续冻结。</p>
+            <p>个人自动批次按此比例随机选择质检项；未被抽中的任务仍属于批次。账号单独配置优先于此默认比例。</p>
+            <p>每批抽检数量按“入批数 × 比例”向上取整。0% 不抽检，批次成员直接放行。修改比例只影响后续新建批次。</p>
           </div>
           <div className={styles.rateControl}>
             <Input id="copy-sampling-rate" type="number" min={0} max={100} step={0.01} value={samplingRateInputValue(draft.copySampling.rateBps, copyRateInput)} disabled={disabled || !draft.copySampling.enabled}
@@ -138,6 +138,18 @@ export function WorkflowQualitySettingsPanel() {
               }}
               onBlur={() => { setCopyRateInput(null); }} />
             <span>{draft.copySampling.rateBps.toLocaleString('zh-CN')} / 10,000</span>
+          </div>
+        </div>
+        <div className={styles.rate}>
+          <div className={styles.rateText}>
+            <label htmlFor="copy-return-threshold">文案批次自动驳回率阈值</label>
+            <p>已驳回抽检项达到批次抽检项数的该比例时，系统自动驳回剩余成员；个人全量质检批次不受此阈值影响。</p>
+          </div>
+          <div className={styles.rateControl}>
+            <Input id="copy-return-threshold" type="number" min={0.01} max={100} step={0.01}
+              value={draft.copySampling.returnThresholdBps / 100} disabled={disabled}
+              onChange={event => setDraft(current => current ? {...current,copySampling:{...current.copySampling,
+                returnThresholdBps:Math.round(Number(event.target.value)*100)}} : current)} />
           </div>
         </div>
         <div className={styles.card}>

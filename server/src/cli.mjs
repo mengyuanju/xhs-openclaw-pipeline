@@ -56,7 +56,8 @@ async function main() {
     return;
   }
 
-  await repository.initialize();
+  await repository.initialize({ migrate: false });
+  await repository.reconcileAutomaticCopyQaBatches();
   await repository.recoverStaleExecutions();
   await mkdir(config.storageRoot, { recursive: true });
   const app = createControlPlaneApp({ repository, storageRoot: config.storageRoot });

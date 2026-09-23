@@ -1,3 +1,4 @@
+import { routeCopyApprovalV2 } from './copy-qa-v2.mjs';
 import { priorityOrderSql, priorityFrom } from './task-priority.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { MAX_COPY_QA_REASON_CODES } from '../../src/copy-qa-reasons.mjs';
@@ -590,6 +591,9 @@ async function createFreeze(client, productionBatch, settings, actor, requestId,
 }
 
 export async function attemptAutomaticCopySamplingFreeze(client, productionBatchId, actor = null, { close = false } = {}) {
+  // Legacy production-batch freezes are retired by copy QA v2.
+  return null;
+
   if (productionBatchId == null) return { frozen: false, reason: 'NO_BATCH' };
   const batch = (await client.query('SELECT * FROM production_batches WHERE id = $1 FOR UPDATE', [productionBatchId])).rows[0];
   if (!batch) return { frozen: false, reason: 'NO_BATCH' };
@@ -662,148 +666,14 @@ export async function flushExpiredCopyQualityBatches(pool) {
 }
 
 export async function routeManualCopyApproval(client, {
-  task,
-  revision,
-  assessment,
-  actor,
-  reviewSessionId,
-  aiDisclosureEnabled,
-  retryExhaustedCopyChanged = false,
+  task, revision, assessment, actor, reviewSessionId, aiDisclosureEnabled,
 }) {
   const approval = await insertCopyApprovalEvent(client, {
-    taskId: Number(task.id),
-    copyRevisionId: Number(revision.id),
-    assessmentId: assessment?.id ?? null,
-    actor,
-    reviewSessionId,
+    taskId: Number(task.id), copyRevisionId: Number(revision.id),
+    assessmentId: assessment?.id ?? null, actor, reviewSessionId,
     content: revision.content,
   });
-  if (task.production_batch_id === null && !task.mandatory_copy_qc
-      && (await readWorkflowQualitySettings(client)).copySampling.enabled) {
-    const batch = await client.query(`INSERT INTO production_batches(public_id, client_batch_code, query_package_name, created_by_account_id, created_by_username, request_id, request_fingerprint)
-      VALUES ($1, $2, '独立文案', $3, $4, $5, $6) RETURNING id`, [randomUUID(), clientBatchCodeForTask(task), actor.userId, actor.username, randomUUID(), hashJson({ taskId: task.id, revisionId: revision.id })]);
-    task.production_batch_id = Number(batch.rows[0].id);
-    await client.query('UPDATE tasks SET production_batch_id = $2 WHERE id = $1', [task.id, task.production_batch_id]);
-    await client.query('INSERT INTO production_batch_items(production_batch_id, task_id, query_snapshot) VALUES ($1, $2, $3)', [task.production_batch_id, task.id, task.query]);
-  }
-  const imageRetryReview = task.current_stage === 'IMAGE_RETRY_EXHAUSTED'
-    && retryExhaustedCopyChanged;
-  if (task.mandatory_copy_qc === true || imageRetryReview) {
-    const mandatoryOrigin = imageRetryReview
-      ? 'IMAGE_RETRY_REVIEW'
-      : task.mandatory_copy_qc_origin;
-    let parent = null;
-    let policyVersion;
-    let blindReviewEnabled;
-    if (mandatoryOrigin === 'QA_RETURN') {
-      const priorReturn = await client.query(`
-        SELECT item.*, sampling_freeze.production_batch_id,
-          sampling_freeze.status AS freeze_status,
-          sampling_freeze.policy_version AS parent_policy_version,
-          sampling_freeze.blind_review_enabled AS parent_blind_review_enabled
-        FROM copy_sampling_items AS item
-        JOIN copy_sampling_freezes AS sampling_freeze ON sampling_freeze.id = item.freeze_id
-        WHERE item.task_id = $1 AND item.status IN ('RETURNED', 'BATCH_AFFECTED', 'BATCH_RETURNED', 'SUPERSEDED')
-          AND sampling_freeze.status <> 'CANCELLED'
-        ORDER BY item.updated_at DESC, item.id DESC LIMIT 1
-        FOR UPDATE OF item, sampling_freeze
-      `, [task.id]);
-      parent = priorReturn.rows[0] ?? null;
-      policyVersion = Number(parent?.parent_policy_version);
-      blindReviewEnabled = parent?.parent_blind_review_enabled === true;
-    } else if (['FINAL_REWORK', 'IMAGE_RETRY_REVIEW', 'DISCARD_RESTORE', 'SECOND_ASSIGNMENT'].includes(mandatoryOrigin)) {
-      // These review rounds have no random-sampling parent. Freeze one task
-      // against the live policy without attaching unrelated historical returns.
-      const settings = await lockWorkflowQualitySettings(client);
-      policyVersion = settings.version;
-      blindReviewEnabled = settings.copySampling.blindReviewEnabled;
-    }
-    if (!Number.isSafeInteger(policyVersion) || policyVersion < 1
-        || (mandatoryOrigin === 'QA_RETURN' && !parent)) {
-      throw new ControlPlaneConflictError(
-        'MANDATORY_QA_PARENT_MISSING',
-        mandatoryOrigin === 'QA_RETURN'
-          ? '返工任务缺少原始质检记录，不能创建强制复检'
-          : '返工任务缺少有效来源，不能创建强制复检',
-      );
-    }
-    // A mandatory recheck is an isolated one-task round. Reusing the original
-    // random-sampling freeze would let "release the rest" accidentally release
-    // the returned task, or let the recheck resolve unrelated held members.
-    // The task keeps its original business production_batch_id below; this
-    // synthetic batch exists only as the immutable QA-round container.
-    const syntheticBatch = await client.query(`
-      INSERT INTO production_batches(
-        public_id, query_package_id, query_package_name, client_batch_code, status, sampling_status,
-        created_by_account_id, created_by_username, request_id, request_fingerprint
-      ) VALUES ($1, NULL, '强制文案复检', $2, 'FROZEN', 'FROZEN', $3, $4, $5, $6)
-      RETURNING *
-    `, [randomUUID(), clientBatchCodeForTask(task), actor?.userId ?? null, actor?.username ?? 'system', randomUUID(),
-      hashJson({ taskId: Number(task.id), revisionId: Number(revision.id), origin: task.mandatory_copy_qc_origin })]);
-    const productionBatchId = Number(syntheticBatch.rows[0].id);
-    const freeze = await client.query(`
-      INSERT INTO copy_sampling_freezes(
-        public_id, production_batch_id, policy_version, rate_bps, seed,
-        algorithm_version, blind_review_enabled, population_count, sample_count,
-        snapshot_sha256, frozen_by_account_id, frozen_by_username,
-        request_id, request_fingerprint, status, rate_source
-      ) VALUES ($1, $2, $3, 10000, $4, 'mandatory-recheck-v1',
-        $5, 1, 1, $6, $7, $8, $9, $10, 'REVIEW_REQUIRED', 'MANDATORY_RECHECK')
-      RETURNING *
-    `, [randomUUID(), productionBatchId, policyVersion,
-      `mandatory:${task.id}:${revision.id}`,
-      blindReviewEnabled,
-      hashJson({ taskId: Number(task.id), revisionId: Number(revision.id) }),
-      actor?.userId ?? null, actor?.username ?? 'system', randomUUID(),
-      hashJson({ taskId: Number(task.id), revisionId: Number(revision.id), mandatory: true })]);
-    const freezeId = Number(freeze.rows[0].id);
-    const rankHash = hashJson({ freezeId, taskId: Number(task.id), revisionId: Number(revision.id) });
-    const recheck = await client.query(`
-      INSERT INTO copy_sampling_items(
-        public_id, freeze_id, task_id, approval_event_id, copy_revision_id,
-        content_sha256, final_approver_account_id, final_approver_username,
-        rank_hash, selected, sample_kind, parent_item_id, status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true,
-        'MANDATORY_RECHECK', $10, 'PENDING') RETURNING *
-    `, [randomUUID(), freezeId, task.id, approval.id, revision.id, approval.content_sha256,
-      approval.approved_by_account_id, approval.approved_by_username, rankHash, parent?.id ?? null]);
-    await client.query(`
-      UPDATE production_batches SET status = 'REVIEW_REQUIRED', sampling_status = 'FROZEN',
-        version = version + 1, updated_at = now() WHERE id = $1
-    `, [productionBatchId]);
-    const updated = await client.query(`
-      UPDATE tasks SET state = 'COPY_QC_PENDING', production_batch_id = COALESCE(production_batch_id, $2),
-        current_copy_revision_id = $3, ai_disclosure_enabled = $4,
-        mandatory_copy_qc = true, mandatory_copy_qc_origin = $5,
-        current_execution_id = NULL, current_image_run_id = NULL,
-        current_stage = 'QC_MANDATORY_RECHECK', progress_percent = 100,
-        progress_message = '返工稿已记录为最终 3 分并提交强制复检；复检通过后才进入待生图队列',
-        execution_started_at = NULL, finished_at = NULL, error = NULL,
-        pending_snapshot = NULL, last_activity_at = now(), updated_at = now()
-      WHERE id = $1 RETURNING *
-    `, [task.id, productionBatchId, revision.id, aiDisclosureEnabled, mandatoryOrigin]);
-    return { task: updated.rows[0], approval, samplingItem: recheck.rows[0] };
-  }
-  // Every production-batch member is held until the batch's initial review is
-  // closed. The sampling policy is read exactly once at that boundary, so a
-  // mid-batch settings change cannot let early approvals escape the snapshot.
-  const unchangedRetryExhaustion = task.current_stage === 'IMAGE_RETRY_EXHAUSTED'
-    && !retryExhaustedCopyChanged;
-  const shouldHold = task.production_batch_id !== null && !unchangedRetryExhaustion;
-  const updated = await client.query(`
-    UPDATE tasks SET
-      state = $2, current_copy_revision_id = $3, ai_disclosure_enabled = $4,
-      copy_qc_released_revision_id = CASE WHEN $2::varchar = 'IMAGE_QUEUED' THEN $3::bigint ELSE NULL END,
-      current_execution_id = NULL, current_image_run_id = NULL,
-      current_stage = $2, progress_percent = $5, progress_message = $6,
-      execution_started_at = NULL, last_activity_at = now(), finished_at = NULL,
-      error = NULL, pending_snapshot = NULL, updated_at = now()
-    WHERE id = $1 RETURNING *
-  `, [task.id, shouldHold ? 'COPY_QC_PENDING' : 'IMAGE_QUEUED', revision.id,
-    aiDisclosureEnabled, shouldHold ? 100 : 0,
-    shouldHold ? '最终达标版本等待生产批次完成初审并进入文案抽检' : '文案审核已完成，任务已进入待生图队列，等待图片执行机领取']);
-  if (shouldHold) await attemptAutomaticCopySamplingFreeze(client, task.production_batch_id, actor);
-  return { task: updated.rows[0], approval };
+  return routeCopyApprovalV2(client, { task, revision, approval, actor, aiDisclosureEnabled });
 }
 
 export async function freezeCopySamplingBatch(pool, rawProductionBatchId, input, rawActor) {

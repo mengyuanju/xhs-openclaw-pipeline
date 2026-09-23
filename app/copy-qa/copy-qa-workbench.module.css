@@ -1,0 +1,32 @@
+.page { min-width: 0; display: grid; gap: 16px; }
+.panel { display: grid; gap: 18px; padding: 22px; min-width: 0; }
+.topbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.tabs { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 12px; background: #f2efeb; }
+.tab { min-height: 36px; padding: 0 18px; border: 0; border-radius: 8px; color: var(--muted); background: transparent; font-weight: 700; cursor: pointer; }
+.active { color: var(--ink); background: var(--surface); box-shadow: 0 2px 8px rgba(45,35,28,.1); }
+.heading { display: flex; align-items: baseline; gap: 12px; }
+.heading h2 { margin: 0; font-size: 19px; }
+.heading span { color: var(--muted); font-size: 12px; }
+.table { min-width: 750px; }
+.table td { vertical-align: middle; }
+.table td:first-child strong { white-space: nowrap; }
+.empty { padding: 36px 20px; text-align: center; color: var(--muted); }
+.detailHead { display: flex; justify-content: space-between; align-items: end; gap: 18px; flex-wrap: wrap; }
+.detailHead h2 { margin: 10px 0 4px; font-size: 22px; overflow-wrap: anywhere; }
+.detailHead p { margin: 0; color: var(--muted); font-size: 13px; }
+.back { padding: 0; border: 0; color: var(--red-dark); background: transparent; cursor: pointer; font-size: 13px; font-weight: 700; }
+.metrics { display: flex; flex-wrap: wrap; gap: 10px; }
+.metrics span { display: inline-flex; align-items: center; gap: 8px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); font-size: 12px; background: #faf8f5; }
+.metrics strong { color: var(--ink); font-size: 15px; }
+.policy { margin: 0; padding: 11px 14px; border-radius: 10px; color: var(--muted); background: #f7f4ef; font-size: 13px; line-height: 1.6; }
+.taskCell { max-width: 340px; overflow-wrap: anywhere; }
+.titleCell { max-width: 330px; overflow-wrap: anywhere; font-weight: 650; }
+.returnPanel { display: grid; gap: 10px; padding: 16px; border: 1px solid #e9c8cb; border-radius: 12px; background: #fffafa; }
+.returnPanel h3 { margin: 0; font-size: 13px; }
+.returnPanel label { font-size: 12px; font-weight: 700; }
+.returnPanel textarea { min-height: 90px; padding: 10px 12px; }
+@media (max-width: 700px) {
+  .panel { padding: 16px; }
+  .detailHead { align-items: stretch; }
+  .metrics { width: 100%; }
+}

@@ -41,7 +41,8 @@ import { BUILTIN_LAYOUT_CATALOG, normalizeLayoutCatalog } from './layout-catalog
 import { changeLayoutCatalog, layoutCatalogRecord } from './layout-catalog-settings.mjs';
 import { parseVisualPlanOutput } from '../../src/visual-plan.mjs';
 import { assertLockedImageText, imageTextHash } from '../../src/locked-image-plan.mjs';
-import { migrateDatabase } from './database-migrations.mjs';
+import { migrateDatabase, loadMigrations, pendingMigrations } from './database-migrations.mjs';
+import { autoCreateCopyQaBatchesV2 } from './copy-qa-v2.mjs';
 import { claimRequestExpiry } from './claim-request.mjs';
 import { saveModelCall, listModelCalls, getModelCall } from './model-call-traces.mjs';
 import { hashUserPassword, verifyUserPassword } from './user-auth.mjs';
@@ -251,6 +252,7 @@ function taskFrom(row) {
       ? null : Number(row.production_batch_id),
     deliveryStatus: row.delivery_ready === true ? 'READY' : null,
     mandatoryCopyQc: row.mandatory_copy_qc === true,
+    copyQaReworkPending: row.copy_qa_rework_pending === true,
     mandatoryCopyQcOrigin: row.mandatory_copy_qc_origin ?? null,
     mandatoryImageQc: row.mandatory_image_qc === true,
     mandatoryImageQcOrigin: row.mandatory_image_qc_origin ?? null,
@@ -405,6 +407,9 @@ function publicUserFrom(row) {
     copyReviewEnabled: row.copy_review_enabled !== false,
     copyQcEnabled: row.copy_qc_enabled === true,
     imageQcEnabled: row.image_qc_enabled === true,
+    autoCopyBatchEnabled: row.auto_copy_batch_enabled === true,
+    autoCopyBatchSize: Number(row.auto_copy_batch_size ?? 10),
+    copyFullInspection: row.copy_full_inspection === true,
     credentialVersion: Number(row.credential_version),
     version: Number(row.version),
     createdAt: row.created_at,
@@ -1784,16 +1789,28 @@ export class PostgresControlPlaneRepository {
     if (this.ownsPool) await this.pool.end();
   }
 
-  async initialize() {
-    await migrateDatabase(this.pool);
+  async initialize({ migrate = true } = {}) {
+    if (migrate) await migrateDatabase(this.pool);
+    else {
+      const pending = await pendingMigrations(this.pool, await loadMigrations());
+      if (pending.length) throw new Error(`Pending database migrations: ${pending.map(item => item.id).join(', ')}. Run npm run server:db:upgrade -- --apply before starting.`);
+    }
     await this.pool.query(`UPDATE global_settings SET value = value || jsonb_build_object('layoutCatalog', $1::jsonb), version = version + 1, updated_at = now()
       WHERE key = 'production' AND NOT (value ? 'layoutCatalog')`, [JSON.stringify(BUILTIN_LAYOUT_CATALOG)]);
+  }
+
+  async reconcileAutomaticCopyQaBatches() {
+    const accounts = await this.pool.query(`SELECT id FROM app_users
+      WHERE status='ACTIVE' AND auto_copy_batch_enabled=true ORDER BY id`);
+    for (const account of accounts.rows) {
+      await transaction(this.pool, client => autoCreateCopyQaBatchesV2(client, account.id));
+    }
   }
 
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { taskRestoreVersion: 1, taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 13, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, adminTaskActivityDateFilters: 1, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 7, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 2, copyQaReasonTagsVersion: 1, secondaryAssignmentVersion: 1, accountQualityStatisticsVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, sharedDeliveryVersion: 1, imageDiscardVersion: 1, pendingImageEditResolutionVersion: 1, deliverySpreadsheetVersion: 3, deliveryPreviewVersion: 6 } };
+      capabilities: { taskRestoreVersion: 1, taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 13, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, adminTaskActivityDateFilters: 1, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 7, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 2, copyQaBatchVersion: 1, copyQaReasonTagsVersion: 1, secondaryAssignmentVersion: 1, accountQualityStatisticsVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, sharedDeliveryVersion: 1, imageDiscardVersion: 1, pendingImageEditResolutionVersion: 1, deliverySpreadsheetVersion: 3, deliveryPreviewVersion: 6 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -2328,11 +2345,13 @@ export class PostgresControlPlaneRepository {
     });
   }
 
-  async createUser({ username: rawUsername, displayName: rawDisplayName, role: rawRole, copyReviewEnabled = true, copyQcEnabled = false, imageQcEnabled = false, copySamplingRateBpsOverride = null }, { actor = null } = {}) {
+  async createUser({ username: rawUsername, displayName: rawDisplayName, role: rawRole, copyReviewEnabled = true, copyQcEnabled = false, imageQcEnabled = false, copySamplingRateBpsOverride = null, autoCopyBatchEnabled = true, autoCopyBatchSize = 10, copyFullInspection = false }, { actor = null } = {}) {
     const username = normalizedUsername(rawUsername);
     const displayName = normalizedDisplayName(rawDisplayName);
     const role = normalizedUserRole(rawRole);
     const samplingRate = normalizeCopySamplingRateOverride(copySamplingRateBpsOverride);
+    if (typeof autoCopyBatchEnabled !== 'boolean' || typeof copyFullInspection !== 'boolean'
+      || !Number.isInteger(autoCopyBatchSize) || autoCopyBatchSize < 1 || autoCopyBatchSize > 5000) throw new TypeError('文案自动成批配置无效');
     if (typeof copyReviewEnabled !== 'boolean' || typeof copyQcEnabled !== 'boolean'
         || typeof imageQcEnabled !== 'boolean') throw new TypeError('permissions must be boolean');
     if (imageQcEnabled && role !== 'REVIEWER') {
@@ -2347,10 +2366,11 @@ export class PostgresControlPlaneRepository {
         }
         const result = await client.query(`
         INSERT INTO app_users(username, display_name, role, password_hash, must_change_password,
-          copy_review_enabled, copy_qc_enabled, image_qc_enabled, copy_sampling_rate_bps_override)
-        VALUES ($1, $2, $3, $4, true, $5, $6, $7, $8)
+          copy_review_enabled, copy_qc_enabled, image_qc_enabled, copy_sampling_rate_bps_override,
+          auto_copy_batch_enabled,auto_copy_batch_size,copy_full_inspection)
+        VALUES ($1, $2, $3, $4, true, $5, $6, $7, $8, $9, $10, $11)
         RETURNING *
-        `, [username, displayName, role, passwordHash, copyReviewEnabled, copyQcEnabled, imageQcEnabled, samplingRate]);
+        `, [username, displayName, role, passwordHash, copyReviewEnabled, copyQcEnabled, imageQcEnabled, samplingRate, autoCopyBatchEnabled, autoCopyBatchSize, copyFullInspection]);
         await recordAccountSamplingPolicy(client, result.rows[0].id, null, samplingRate, actor);
         return managedUserFrom(result.rows[0]);
       });
@@ -2360,13 +2380,16 @@ export class PostgresControlPlaneRepository {
     }
   }
 
-  async updateUser(rawUserId, { displayName: rawDisplayName, role: rawRole, status, expectedVersion, copyReviewEnabled, copyQcEnabled, imageQcEnabled, copySamplingRateBpsOverride, actorUsername = null }, { actor = null } = {}) {
+  async updateUser(rawUserId, { displayName: rawDisplayName, role: rawRole, status, expectedVersion, copyReviewEnabled, copyQcEnabled, imageQcEnabled, copySamplingRateBpsOverride, autoCopyBatchEnabled, autoCopyBatchSize, copyFullInspection, actorUsername = null }, { actor = null } = {}) {
     const userId = normalizeTaskId(rawUserId);
     const displayName = normalizedDisplayName(rawDisplayName);
     const role = normalizedUserRole(rawRole);
     if (!['ACTIVE', 'DISABLED'].includes(status)) throw new TypeError('status is invalid');
     if (!Number.isInteger(expectedVersion) || expectedVersion < 1) throw new TypeError('expectedVersion is invalid');
     if (copySamplingRateBpsOverride !== undefined) normalizeCopySamplingRateOverride(copySamplingRateBpsOverride);
+    if (autoCopyBatchEnabled !== undefined && typeof autoCopyBatchEnabled !== 'boolean') throw new TypeError('自动成批开关无效');
+    if (copyFullInspection !== undefined && typeof copyFullInspection !== 'boolean') throw new TypeError('全量质检设置无效');
+    if (autoCopyBatchSize !== undefined && (!Number.isInteger(autoCopyBatchSize) || autoCopyBatchSize < 1 || autoCopyBatchSize > 5000)) throw new TypeError('自动成批数量须为 1–5000');
     return transaction(this.pool, async (client) => {
       await lockAdministratorRoster(client);
       if (actor) {
@@ -2427,13 +2450,18 @@ export class PostgresControlPlaneRepository {
         SET display_name = $1, role = $2, status = $3,
             copy_review_enabled = $7, copy_qc_enabled = $8, image_qc_enabled = $9,
             copy_sampling_rate_bps_override = $10,
+            auto_copy_batch_enabled=$11,auto_copy_batch_size=$12,copy_full_inspection=$13,
             credential_version = credential_version + $4, version = version + 1, updated_at = now()
         WHERE id = $5 AND version = $6
         RETURNING *
       `, [displayName, role, status, credentialChanged ? 1 : 0, userId, expectedVersion,
-        reviewEnabled, qcEnabled, imageQualityEnabled, samplingRate]);
+        reviewEnabled, qcEnabled, imageQualityEnabled, samplingRate,
+        autoCopyBatchEnabled ?? current.auto_copy_batch_enabled,
+        autoCopyBatchSize ?? current.auto_copy_batch_size,
+        copyFullInspection ?? current.copy_full_inspection]);
       if (!result.rows[0]) throw new ControlPlaneConflictError('VERSION_CONFLICT', 'user was updated by another request');
       await recordAccountSamplingPolicy(client, userId, previousSamplingRate, samplingRate, actor ?? { username: actorUsername ?? 'system' });
+      if (result.rows[0].auto_copy_batch_enabled) await autoCreateCopyQaBatchesV2(client,userId);
       await client.query(`UPDATE tasks SET review_assigned_to_account_id = NULL,
           review_assigned_at = NULL, updated_at = now()
         WHERE state = 'MANUAL_ARCHIVE' AND review_assigned_to_account_id = $1
@@ -3118,7 +3146,7 @@ export class PostgresControlPlaneRepository {
       filters.push(`NOT ${activeBlindQaSql('tasks')}`);
     }
     if (copyQaReturnedOnly) {
-      filters.push("mandatory_copy_qc = true AND mandatory_copy_qc_origin = 'QA_RETURN'");
+      filters.push("(copy_qa_rework_pending = true OR (mandatory_copy_qc = true AND mandatory_copy_qc_origin = 'QA_RETURN'))");
     }
     const stateFilters = normalizedTaskStates(state, states);
     if (stateFilters.length > 0) {
@@ -3724,7 +3752,7 @@ export class PostgresControlPlaneRepository {
     if (!task.rows[0]) return null;
     const copyRevisions = revisions.rows.map(revisionFrom);
     const mappedExecutions = executions.rows.map(executionFrom);
-    if (task.rows[0].mandatory_copy_qc === true) {
+    if (task.rows[0].mandatory_copy_qc === true || task.rows[0].copy_qa_rework_pending === true) {
       const current = copyRevisions.find(item => item.id === Number(task.rows[0].current_copy_revision_id));
       const baseline = findCopyReworkBaseline(copyRevisions, task.rows[0].current_copy_revision_id);
       if (current && baseline) {
@@ -4624,7 +4652,7 @@ export class PostgresControlPlaneRepository {
       `, [revisionId, taskId]);
       if (!revision.rows[0]) throw new ControlPlaneNotFoundError('copy revision not found');
       const imageRetryRework = task.current_stage === 'IMAGE_RETRY_EXHAUSTED';
-      const mandatoryRework = imageRetryRework || (task.mandatory_copy_qc === true
+      const mandatoryRework = imageRetryRework || task.copy_qa_rework_pending === true || (task.mandatory_copy_qc === true
         && !['DISCARD_RESTORE', 'SECOND_ASSIGNMENT'].includes(task.mandatory_copy_qc_origin));
       if (imageRetryRework && ['SAVE', 'SAVE_PLAN'].includes(decision)) {
         throw new ControlPlaneConflictError(
@@ -4673,7 +4701,7 @@ export class PostgresControlPlaneRepository {
           }
         }
       }
-      if (mandatoryRework && task.mandatory_copy_qc_origin === 'QA_RETURN'
+      if (mandatoryRework && (task.copy_qa_rework_pending === true || task.mandatory_copy_qc_origin === 'QA_RETURN')
           && decision === 'DISCARD') {
         throw new ControlPlaneConflictError(
           'RETURNED_COPY_DISCARD_REQUIRES_DISPOSITION',
@@ -4819,7 +4847,7 @@ export class PostgresControlPlaneRepository {
           RETURNING *
         `, [taskId, revisionNumber, reviewedContent, nodeId, decision, revisionId,
           copyChanged ? 'COPY_EDIT' : 'PLAN_EDIT', finalCopyEdited,
-          task.mandatory_copy_qc === true && copyReworkSatisfied]);
+          (task.mandatory_copy_qc === true || task.copy_qa_rework_pending === true) && copyReworkSatisfied]);
         reviewedRevisionId = Number(reviewedRevision.rows[0].id);
         reviewedRevisionRow = reviewedRevision.rows[0];
       } else if (decision === 'APPROVE') {

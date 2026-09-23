@@ -35,11 +35,10 @@ test('secondary disposition routes are admin-only and forward actor, version, re
       if(path.endsWith('/reassign'))assert.equal(call.args.at(-1).operation,'REASSIGN');
       if(path.endsWith('/discard'))assert.equal(call.args.at(-1).operation,'DISCARD');
     }
-    const copyResponse=await fetch(`${base}/v1/copy-qa/items/opaque-id/escalate`,{method:'POST',headers:headers('qa'),body:JSON.stringify(body)});
-    assert.equal(copyResponse.status,200);
-    assert.deepEqual(calls.at(-1),{method:'escalateQualityToAdmin',args:['COPY','opaque-id',body,
-      {actor:{userId:2,username:'qa',role:'REVIEWER',credentialVersion:3},storageRoot}]});
     const callCount=calls.length;
+    const copyResponse=await fetch(`${base}/v1/copy-qa/items/opaque-id/escalate`,{method:'POST',headers:headers('qa'),body:JSON.stringify(body)});
+    assert.equal(copyResponse.status,410);
+    assert.equal(calls.length,callCount,'retired copy QA cannot enter secondary assignment');
     const imageResponse=await fetch(`${base}/v1/image-qa/items/opaque-id/escalate`,{method:'POST',headers:headers('qa'),body:JSON.stringify(body)});
     assert.equal(imageResponse.status,404);
     assert.equal(calls.length,callCount,'image rechecks cannot enter secondary assignment');

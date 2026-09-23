@@ -74,6 +74,7 @@ export type WorkflowQualitySettings = {
   copySampling: {
     enabled: boolean;
     rateBps: number;
+    returnThresholdBps: number;
     blindReviewEnabled: boolean;
     reviewerBatchReturnEnabled: boolean;
   };
@@ -98,6 +99,7 @@ export function normalizeWorkflowQualitySettings(value: unknown): WorkflowQualit
     copySampling: {
       enabled: row.copySampling.enabled === true,
       rateBps: Number.isSafeInteger(rateBps) ? Math.min(10_000, Math.max(0, rateBps)) : 0,
+      returnThresholdBps: Number.isInteger(row.copySampling.returnThresholdBps) ? row.copySampling.returnThresholdBps : 5000,
       blindReviewEnabled: row.copySampling.blindReviewEnabled === true,
       reviewerBatchReturnEnabled: row.copySampling.reviewerBatchReturnEnabled === true,
     },

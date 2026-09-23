@@ -10,6 +10,7 @@ export const DEFAULT_WORKFLOW_QUALITY_SETTINGS = Object.freeze({
   copySampling: Object.freeze({
     enabled: false,
     rateBps: 0,
+    returnThresholdBps: 5000,
     blindReviewEnabled: false,
     reviewerBatchReturnEnabled: false,
     samplingSeed: 'copy-sampling-v1',
@@ -45,6 +46,7 @@ export function workflowQualitySettingsFromRow(row) {
     copySampling: {
       enabled: row.copy_sampling_enabled === true,
       rateBps: Number(row.copy_sampling_rate_bps),
+      returnThresholdBps: Number(row.copy_batch_return_threshold_bps ?? 5000),
       blindReviewEnabled: row.blind_review_enabled === true,
       reviewerBatchReturnEnabled: row.reviewer_batch_return_enabled === true,
       samplingSeed: row.sampling_seed ?? 'copy-sampling-v1',
@@ -81,6 +83,10 @@ export function normalizeWorkflowQualitySettings(input, current = DEFAULT_WORKFL
   if (!Number.isInteger(rateBps) || rateBps < 0 || rateBps > 10_000) {
     throw new RangeError('copySampling.rateBps must be an integer between 0 and 10000');
   }
+  const returnThresholdBps = copySampling.returnThresholdBps ?? current.copySampling.returnThresholdBps;
+  if (!Number.isInteger(returnThresholdBps) || returnThresholdBps < 1 || returnThresholdBps > 10000) {
+    throw new RangeError('copySampling.returnThresholdBps must be 1–10000');
+  }
   const imageRateBps = imageSampling.rateBps ?? current.imageSampling.rateBps;
   if (!Number.isInteger(imageRateBps) || imageRateBps < 0 || imageRateBps > 10_000) {
     throw new RangeError('imageSampling.rateBps must be an integer between 0 and 10000');
@@ -96,6 +102,7 @@ export function normalizeWorkflowQualitySettings(input, current = DEFAULT_WORKFL
     copySampling: {
       enabled: booleanValue(copySampling.enabled, current.copySampling.enabled, 'copySampling.enabled'),
       rateBps,
+      returnThresholdBps,
       blindReviewEnabled: booleanValue(
         copySampling.blindReviewEnabled,
         current.copySampling.blindReviewEnabled,
@@ -187,6 +194,7 @@ export async function updateWorkflowQualitySettings(pool, input, actor) {
         query_package_worker_import_enabled = $1,
         copy_sampling_enabled = $2,
         copy_sampling_rate_bps = $3,
+        copy_batch_return_threshold_bps = $12,
         blind_review_enabled = $4,
         reviewer_batch_return_enabled = $5,
         image_sampling_enabled = $6,
@@ -210,6 +218,7 @@ export async function updateWorkflowQualitySettings(pool, input, actor) {
       settings.imageSampling.reviewerBatchReturnEnabled,
       activeActor.username,
       expectedVersion,
+      settings.copySampling.returnThresholdBps,
     ]);
     if (!result.rows[0]) {
       throw new ControlPlaneConflictError('VERSION_CONFLICT', '质量流程设置已被其他管理员修改');

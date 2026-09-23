@@ -1949,3 +1949,31 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
   .settings-save-bar { align-items: stretch; grid-template-columns: minmax(0, 1fr); }
   .settings-save-bar .button { width: 100%; }
 }
+
+/* Account editor layout */
+.user-editor-dialog { width: min(calc(100vw - 32px), 760px); max-height: calc(100vh - 32px); gap: 20px; padding: 26px; }
+.user-editor-form { display: grid; gap: 22px; min-width: 0; }
+.user-editor-section { display: grid; gap: 15px; min-width: 0; padding-top: 20px; border-top: 1px solid var(--line); }
+.user-editor-section:first-child { padding-top: 0; border-top: 0; }
+.user-editor-section-heading h3 { margin: 0; font-size: 15px; }
+.user-editor-section-heading p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.user-editor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.user-editor-grid > .field { min-width: 0; align-content: start; }
+.user-editor-grid .field .field { margin-top: 7px; }
+.user-editor-grid .field small { color: var(--muted); line-height: 1.5; }
+.user-editor-grid .input, .user-editor-grid .select-trigger { width: 100%; min-height: 44px; }
+.user-editor-toggle-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.user-editor-toggle-grid > label { display: flex; align-items: flex-start; gap: 10px; min-width: 0; padding: 13px; border: 1px solid var(--line); border-radius: 11px; cursor: pointer; background: #faf8f5; }
+.user-editor-toggle-grid input { width: 17px; height: 17px; flex: 0 0 17px; margin: 2px 0 0; accent-color: var(--red); }
+.user-editor-toggle-grid span { display: grid; gap: 4px; min-width: 0; }
+.user-editor-toggle-grid strong { font-size: 12px; line-height: 1.35; }
+.user-editor-toggle-grid small { color: var(--muted); font-size: 11px; line-height: 1.4; }
+.user-editor-quality-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.user-editor-actions { position: sticky; bottom: -26px; z-index: 1; align-items: center; gap: 10px; margin: 0 -26px -26px; padding: 15px 26px; border-top: 1px solid var(--line); background: var(--surface); }
+.user-editor-actions .button { min-width: 102px; }
+@media (max-width: 700px) {
+  .user-editor-dialog { width: calc(100vw - 16px); max-height: calc(100vh - 16px); padding: 20px 18px; }
+  .user-editor-grid, .user-editor-toggle-grid, .user-editor-quality-options { grid-template-columns: 1fr; }
+  .user-editor-section { padding-top: 16px; }
+  .user-editor-actions { bottom: -20px; margin: 0 -18px -20px; padding: 12px 18px; }
+}

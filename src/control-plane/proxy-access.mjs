@@ -45,6 +45,8 @@ export function userCanAccessImageEditRoute(path, method) {
 
 export function userCanAccessControlPlaneRoute(path, method) {
   return (/^\/v1\/image-editor(?:\/|$)/u.test(path) && ['GET','HEAD','POST'].includes(method))
+    || (method === 'GET' && /^\/v2\/copy-qa\/batches(?:\/[^/]+)?$/u.test(path))
+    || (method === 'POST' && /^\/v2\/copy-qa\/items\/[^/]+\/decision$/u.test(path))
     || (path === '/health' && ['GET', 'HEAD'].includes(method))
     || (/^\/v1\/personal-workspace\/(?:statistics|tasks|qa-activities)$/u.test(path) && ['GET','HEAD'].includes(method))
     || (path === '/v1/work-mode/items' && ['GET', 'HEAD'].includes(method))

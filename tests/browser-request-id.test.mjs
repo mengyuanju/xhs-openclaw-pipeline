@@ -47,14 +47,14 @@ test('copy QA mutations use request IDs that work without crypto.randomUUID', as
   const source = await readFile(new URL('../app/copy-qa/copy-qa-workbench.tsx', import.meta.url), 'utf8');
 
   assert.match(source, /import \{ createRequestId \} from '\.\.\/components\/request-id';/u);
-  assert.equal(source.match(/createRequestId\(\)/gu)?.length, 4);
+  assert.equal(source.match(/createRequestId\(\)/gu)?.length, 1);
   assert.doesNotMatch(source, /crypto\.randomUUID/u);
 });
 
 test('all browser UUID call sites use the insecure-context-compatible helper', async () => {
   const urls = [
     '../app/delivery-pool/shared-delivery-workbench.tsx',
-    '../app/copy-flow/page.tsx',
+    '../app/copy-flow/copy-flow-workbench.tsx',
     '../app/settings/layout-presets-settings.tsx',
     '../preview-service/components/preview-manager.tsx',
     '../preview-service/components/batch-preview-creator.tsx',

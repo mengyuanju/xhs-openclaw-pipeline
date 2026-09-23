@@ -56,7 +56,7 @@ export function compactTask(row) {
     imageReviewedAt: textOrNull(row.imageReviewedAt), lastActivityAt: textOrNull(row.lastActivityAt),
     currentImageRunId: textOrNull(row.currentImageRunId),
     currentCopyRevisionId: Number.isSafeInteger(row.currentCopyRevisionId) ? row.currentCopyRevisionId : null,
-    copyQaReturned: row.mandatoryCopyQc === true && row.mandatoryCopyQcOrigin === 'QA_RETURN',
+    copyQaReturned: row.copyQaReworkPending === true || row.mandatoryCopyQc === true && row.mandatoryCopyQcOrigin === 'QA_RETURN',
     retryExhausted: row.currentStage === 'IMAGE_RETRY_EXHAUSTED',
   };
 }
