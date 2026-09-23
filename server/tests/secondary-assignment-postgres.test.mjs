@@ -9,6 +9,7 @@ import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import { applyMigrations, loadMigrations } from '../src/database-migrations.mjs';
 import { readAccountQualityFacts } from '../src/account-quality-statistics.mjs';
 import { summarizeAccountQuality } from '../../src/account-quality-statistics.mjs';
+import { PERFORMANCE_VERSION } from '../../src/operator-performance.mjs';
 
 test('secondary assignment migrates existing states and preserves QA subjects while resetting content', {
   skip:process.env.RUN_SECONDARY_ASSIGNMENT_POSTGRES!=='1', timeout:180000,
@@ -139,7 +140,7 @@ test('secondary assignment migrates existing states and preserves QA subjects wh
     const totals=summarizeAccountQuality(facts);assert.equal(totals.judged,3);assert.equal(totals.tasks,2);
     assert.equal(totals.discarded+totals.firstPassed+totals.returned,totals.judged);
     assert.equal(Math.round((totals.discardedRate+totals.firstPassRate+totals.returnRate)*10000),10000);
-    const report=await repo.operatorPerformance(admin,{});assert.equal(report.metricVersion,6);assert.equal(report.summary.COPY.qualityOutcomes.judged,3);
+    const report=await repo.operatorPerformance(admin,{});assert.equal(report.metricVersion,PERFORMANCE_VERSION);assert.equal(report.summary.COPY.qualityOutcomes.judged,3);
     const detail=await repo.operatorPerformance(admin,{snapshotToken:report.snapshotToken,metric:'judged'},{kind:'detail',accountId:a.userId});assert.equal(detail.total,2);
     // A rejected image recheck escalation must leave the task and its media intact.
     const discardedDay=discarded.first_qa_at.toISOString().slice(0,10);
